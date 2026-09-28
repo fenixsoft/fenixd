@@ -26,6 +26,10 @@ PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800  # 冷却 30 分钟
 # 403 同为鉴权/订阅类——inferaiapi 实测「API Error: 403 No active subscription」
 # 反复原地重试烧链预算，fix-403-auth-failover-blindspot 一并纳入）
 PROVIDER_CIRCUIT_4XX = (400, 401, 403, 404)
+# 熔断拦截 error 文案标记（code-review item 17e5cb41806e）：_circuit_open_error
+# 生产源与全部消费点的子串匹配（pipeline.py 等）共用同一常量，防措辞调整使
+# 消费点静默失配（与 runner.FROZEN_TERMINATED_ERROR_PREFIX 同一约定）。
+PROVIDER_CIRCUIT_ERROR_MARKER = "provider circuit open"
 # 半开探针成功判据：claude CLI 正常退出（视作网关 200）。解析不到 code 视为失败、不计数。
 # （code-review item 8f7f04802d6b）原 PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE 常量
 # 全仓零引用——探针成败实际以 `_record_provider_probe(success=bool)` 的实参为准，
@@ -1918,7 +1922,8 @@ class ProviderCircuit:
         else:
             cooldown_info = "cooldown expired (probing)"
         return (
-            f"provider circuit open: {provider_name} " f"(HTTP {code} x {count}) — {cooldown_info}"
+            f"{PROVIDER_CIRCUIT_ERROR_MARKER}: {provider_name} "
+            f"(HTTP {code} x {count}) — {cooldown_info}"
         )
 
     @staticmethod

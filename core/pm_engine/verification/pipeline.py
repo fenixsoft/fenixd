@@ -38,6 +38,12 @@ import time
 # 字段（非字符串匹配）。
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 
+# code-review item 17e5cb41806e：provider 熔断判定文案与生产源
+# （provider_circuit._circuit_open_error）共用同一导出常量（与上方
+# FROZEN_TERMINATED_ERROR_PREFIX 同一约定，防 provider_circuit 侧措辞
+# 调整使本文件多处子串匹配静默失效、熔断轮误走 blocked fail-closed）。
+from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
+
 # add-blocked-reverify-lane D3：env 阻塞轮次计数清零点收敛后与 state_machine
 # 共用同一字段常量（防字符串漂移；唯一清零点=verified 落定与 unfreeze_spec）。
 from core.state_machine import (
@@ -424,10 +430,14 @@ class VerificationPipeline:
         缓存不会自动失效，必须显式重新加载。注意：子模块必须先于父包重新加载
         （依赖顺序）。
 
-        额外保障机制（fix-fix-fix-fix）：importlib.reload 不会更新其他模块中
-        已导入的名称引用，因此在 reload 之后显式重新导入核心类，确保使用最新
-        版本。测试靠 patch("core.verify_engine.VerifyEngine") 生效正因 import
-        在函数体内于调用时执行——提取时 MUST 保留 import 于本方法体内（D4）。
+        第二循环（fix-fix-fix-fix 遗留；表述修正见 code-review item
+        bf4ff4bcf5f6）：对各模块再做一次 importlib.import_module——对
+        sys.modules 中已存在的模块它只返回既有条目、绝不重读磁盘，因此
+        **不具备**「reload 失败后从磁盘恢复」的能力；实际作用仅为失败可见性
+        探测（import 失败记 WARNING）且幂等无副作用。reload 失败时 sys.modules
+        留存旧代码属已知局限（上循环 WARNING 留痕「将沿用旧代码」）。测试靠
+        patch("core.verify_engine.VerifyEngine") 生效正因 import 在函数体内于
+        调用时执行——提取时 MUST 保留 import 于本方法体内（D4）。
         """
         import importlib
         import sys
@@ -467,9 +477,11 @@ class VerificationPipeline:
                         f"{type(e).__name__}: {e}",
                     )
 
-        # 额外保障：强制从磁盘重新导入核心模块
-        # Python 的 import 系统会检查 sys.modules，但如果 reload 失败，
-        # 下面的 import 会使用已更新的 sys.modules 条目
+        # 第二循环：失败可见性探测（code-review item bf4ff4bcf5f6 修正表述）。
+        # import_module 对 sys.modules 已存在的模块只返回既有条目、不重读磁盘，
+        # 此处**不能**恢复 reload 失败留存的旧代码（reload 失败已在上循环
+        # WARNING 留痕）；作用仅为幂等探测 import 可用性，并对失败记 WARNING
+        # 而非静默 pass。
         for mod_name in _verify_modules:
             try:
                 # 条件放宽（code-review item eb64219d5fa8）：旧守卫 `not in sys.modules`
@@ -499,6 +511,21 @@ class VerificationPipeline:
         cause = verdict_ret.get("cause", "violations")
         violations = verdict_ret.get("violations") or []
         dispatch_error = verdict_ret.get("dispatch_error") or ""
+        if cause == "requeue_error":
+            # ── 回炉闭环自身异常折算（code-review item 6d5db0d31b）──
+            # _rejection_closure 处置自身异常（如 directive 计数字段损坏时
+            # int() 抛 ValueError）折算为此独立 cause。异常发生在闭环内部，
+            # _escalate_dedup_resynthesis 未到达——spec 既未 blocked 也无
+            # admin 升级记录，仍停留 testing。此处按真实状态记日志对账
+            # （不宣称「已 blocked」），零写入零告警，等下轮重验或 stuck
+            # 探测兜底。
+            self._context.logger.warning(
+                "pm_engine",
+                f"批量归因查重回炉闭环自身异常 '{spec_name}' — 未升级（spec 仍"
+                f" testing，无 blocked/admin 升级记录），保持原状等待下轮重验: "
+                f"{dispatch_error}",
+            )
+            return
         if cause == "batch_attribution_dedup":
             # ── 批量归因查重拒绝采纳（fix-verdict-dedup-resynthesis D1/D2）──
             # 查重拒绝已由 _verify_verdict_evidence 内部完成「落盘违规 →
@@ -647,19 +674,23 @@ class VerificationPipeline:
             return
         # 本轮回合计入失败历史侧车（cause_type=evidence-invalid），供升级闸门
         # 分型与轮间 diff（fix-verdict-retry-misattribution D6）。
+        # 统一口径（code-review item eb8d814fcb3b）：violations 元素形态非受控
+        # 保证（可能混入非 dict 元素），下方文案/告警宣称的违规数与失败历史
+        # 入账场景数同源——均基于过滤后的 dict 条目，防「宣称数 > 入账数」
+        # 人工对账失败侧车时对不上。
+        dict_violations = [v for v in violations if isinstance(v, dict)]
         self._append_fail_history(
             spec_name,
             "evidence-invalid",
             [
                 v.get("scenario_id") or v.get("id") or "?"
-                for v in violations
-                if isinstance(v, dict)
+                for v in dict_violations
             ],
         )
         self._context.logger.error(
             "pm_engine",
             f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
-            f"（{len(violations)} 项违规）",
+            f"（{len(dict_violations)} 项违规）",
         )
         self._context.state_machine.update_spec(
             spec_name,
@@ -667,8 +698,8 @@ class VerificationPipeline:
                 "status": "blocked",
                 "error": (
                     f"验证裁决证据分类校验连续失败：report.json 非 PASS 场景缺 "
-                    f"classification/evidence，重试一次仍不合规（{len(violations)} 项"
-                    f"违规），已 blocked 等待人工裁决"
+                    f"classification/evidence，重试一次仍不合规"
+                    f"（{len(dict_violations)} 项违规），已 blocked 等待人工裁决"
                 ),
             },
         )
@@ -677,8 +708,8 @@ class VerificationPipeline:
             signal_type="verdict_evidence_invalid",
             severity="critical",
             description=(
-                f"'{spec_name}' 验证裁决证据分类校验连续失败（{len(violations)} 项"
-                f"违规），已 blocked 等待人工裁决"
+                f"'{spec_name}' 验证裁决证据分类校验连续失败"
+                f"（{len(dict_violations)} 项违规），已 blocked 等待人工裁决"
             ),
             evidence=self._verdict_violations_evidence(spec_name, violations),
             recommended_action=(
@@ -785,7 +816,7 @@ class VerificationPipeline:
                             f"{retry_judge.error or ''}",
                         )
                         return None
-                    if "provider circuit open" in (retry_judge.error or ""):
+                    if PROVIDER_CIRCUIT_ERROR_MARKER in (retry_judge.error or ""):
                         # 熔断期 judge 失败属 provider 故障（与
                         # _dispatch_judge_or_reuse 同口径）：留 error 保持
                         # testing 等待下轮重验，挂 infra 记账，不按结构性
@@ -2147,7 +2178,7 @@ class VerificationPipeline:
             # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
             # 同阶段1：熔断期 planner judge 失败属「provider 故障」，
             # 不得 raise → legacy 降级 → bug-found → 伪 fix 级联。
-            if judge_result.error and "provider circuit open" in judge_result.error:
+            if judge_result.error and PROVIDER_CIRCUIT_ERROR_MARKER in judge_result.error:
                 self._context.state_machine.update_spec(
                     spec_name,
                     {
@@ -2486,7 +2517,7 @@ class VerificationPipeline:
                     # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
                     # 只写 error 保持 spec 在 testing（由 full_scan recovery 探测
                     # 卡死/孤儿 testing 后重排——此处无 transition，不回 implemented）。
-                    if plan_result.error and "provider circuit open" in plan_result.error:
+                    if plan_result.error and PROVIDER_CIRCUIT_ERROR_MARKER in plan_result.error:
                         self._context.state_machine.update_spec(
                             spec_name,
                             {
@@ -2738,7 +2769,9 @@ class VerificationPipeline:
                             "status": "implemented",
                             "tester_run": None,
                             "error": (
-                                f"场景验收连续失败（退回 plan 2 次仍不通过）: " f"{env_error[:280]}"
+                                f"场景验收连续失败（退回 plan "
+                                f"{initial_replan_budget - replan_left} 次仍不通过）: "
+                                f"{env_error[:280]}"
                             ),
                         },
                     )
