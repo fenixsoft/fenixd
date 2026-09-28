@@ -154,6 +154,11 @@ class H4RunRoutesMixin:
             minutes = int(query.get("minutes", ["10"])[0])
         except ValueError:
             minutes = 10
+        # 边界夹取与 _api_run tail / _api_hooks_audit limit 的防御口径对齐
+        # （code-review item d02a01a1dfcc）：负值会让 cutoff 落到未来、
+        # get_recent_events 恒返回空列表且无报错；上界 1440（1 天窗口）—
+        # get_recent_events 只读日志尾部 ≤1MB 窗口，更大值仅有截断语义
+        minutes = max(1, min(minutes, 1440))
         events = dashboard_data.get_recent_events(Path(project["path"]), minutes=minutes)
         return {"project": project["name"], "events": events}
 
