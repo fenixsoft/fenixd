@@ -23,6 +23,7 @@ CLI 特异执行语义（与 web「失败即中断」唯一的分歧点，design
 
 import asyncio
 import json
+import math
 import os
 import signal
 from pathlib import Path
@@ -141,10 +142,12 @@ class CliRunner(VerifyRunner):
             # 场景 env 非 dict 形态（如列表/字符串）：from_dict 对非空非 dict
             # 原样保留而词表校验不拦，直接进 _build_env 会 .items() 抛
             # AttributeError 穿出整个场景——归一为本步骤结构化失败（code-review
-            # item 345415c58ac8，与 timeout 非法同规）
+            # item 345415c58ac8，与 timeout 非法同规），判 error 与 cwd 缺失
+            # 同口径：场景定义缺陷不进 product-bug 管道（item 74368415e965）
             return {
                 "success": False,
                 "action": "run",
+                "error_level": "error",
                 "error": f"env 须为 object（键值表），收到 {type(declared_env).__name__}",
             }
         env = self._build_env(declared_env)
@@ -160,28 +163,47 @@ class CliRunner(VerifyRunner):
         except (TypeError, ValueError) as e:
             # 非法 timeout（非数字字符串/结构化值）归一为本步骤结构化失败，
             # 而非 ValueError 穿出令整个场景 run 异常中断（与 api_runner 同规）。
+            # 判 error 与 cwd 缺失同口径：场景定义缺陷不进 product-bug 管道
+            # （item 74368415e965）
             return {
                 "success": False,
                 "action": "run",
+                "error_level": "error",
                 "error": f"timeout 须为数字（秒）: {step_dict.get('timeout')!r} ({e})",
             }
         if timeout < 0:
             # 负数 timeout 直通 wait_for 会立即抛 TimeoutError 走超时强杀，
             # 把场景定义错误误判成 hang 缺陷：归一为本步骤结构化失败
-            # （code-review item bf2ffeded38c，词表校验层已同拦负值）
+            # （code-review item bf2ffeded38c，词表校验层已同拦负值），
+            # 判 error 同上口径（item 74368415e965）
             return {
                 "success": False,
                 "action": "run",
+                "error_level": "error",
                 "error": f"timeout 须为正数（秒）: {step_dict.get('timeout')!r}",
+            }
+        if not math.isfinite(timeout):
+            # float() 接受 "inf"/"1e999"（→inf）与 "nan"，负值检查对两者均
+            # 放行：inf 传 wait_for 等效无限等待，「超时强杀」hang 兜底失效，
+            # 一条场景声明即可挂起整轮验证——非有限值与负值同口径结构化失败
+            # （code-review item 670544033774）
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": f"timeout 须为有限数字（秒）: {step_dict.get('timeout')!r}",
             }
         name = str(step_dict.get("as") or "")
         if name == "_latest":
             # `_latest` 是框架保留键（断言缺省引用最近一次 run 结果）：场景
             # as 命名撞上会与 named_results["_latest"] 同槽自我覆盖，执行期
-            # 拒绝为结构化失败（code-review item 30a8c34f0535）
+            # 拒绝为结构化失败（code-review item 30a8c34f0535），判 error 与
+            # cwd 缺失同口径：场景定义缺陷不进 product-bug 管道
+            # （item 74368415e965）
             return {
                 "success": False,
                 "action": "run",
+                "error_level": "error",
                 "error": f"as 命名 '{name}' 是框架保留键，请改用其他名称",
             }
 
@@ -215,6 +237,16 @@ class CliRunner(VerifyRunner):
                     "action": "run",
                     "error_level": "error",
                     "error": f"cwd 目录不存在: {cwd}",
+                }
+            if use_shell:
+                # shell 形态 FileNotFoundError 只可能来自 shell 解释器本体
+                # 缺失（部署环境极罕见），按形态区分文案避免误导排障方向
+                # （code-review item 6b63412f7366）
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"shell 解释器路径错误: {e}",
                 }
             return {
                 "success": False,
