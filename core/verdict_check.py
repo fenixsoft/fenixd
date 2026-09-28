@@ -306,16 +306,30 @@ def _derived_label_tokens(entry: dict) -> List[str]:
     return [t.lower() for t in tokens if t]
 
 
+# 名称命中的最小信息量门槛（较短方长度）：双向子串匹配下，过短的归因文本
+# （如单字符 "s"）即可命中任意含该字符的候选 token，把检测③名称核对退化成
+# 纯条数核对。门槛取 4：合法归因文本是引用步骤/视觉专名的句子（tests 钉死
+# 的步骤名互含 / 裸选择器 / 裸视觉名 / 完整 visual: 标注形态较短方均 ≥11），
+# <4 字符无法标识专名；通用动作词已不入候选（_GENERIC_STEP_ACTIONS），此
+# 门槛把同一防误命中口径延到极短子串。
+_MIN_NAME_MATCH_CHARS = 4
+
+
 def _derived_entry_name_matched(entry: dict, triage: List[dict]) -> bool:
     """派生条目是否被某条归因条目按名称对应（任一候选文本互相包含即算）。
 
     允许以步骤名对应归因条目（design 风险条目：派生条目为步骤级、judge
-    归因为断言级，名称对应而非逐字相等是两粒度的对接面）。
+    归因为断言级，名称对应而非逐字相等是两粒度的对接面）。较短方长度须
+    达 _MIN_NAME_MATCH_CHARS，极短归因文本不计入名称命中。
     """
     for token in _derived_label_tokens(entry):
         for t in triage:
             assertion = _normalize_whitespace(t.get("assertion")).lower()
-            if assertion and (token in assertion or assertion in token):
+            if (
+                assertion
+                and min(len(token), len(assertion)) >= _MIN_NAME_MATCH_CHARS
+                and (token in assertion or assertion in token)
+            ):
                 return True
     return False
 
