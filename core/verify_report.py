@@ -809,6 +809,12 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
     git add + commit（add 与 commit 同 pathspec，--only 语义），使「落盘」
     与「入库」同步，不再依赖归档兜底；subprocess 惯例照 core/archive_commit.py。
 
+    第二消费方（evo-add-push-closeout-verification-report-commit）：done→pushed
+    收口（engine.approve_push，_push_lock 内、归档收口之前）经函数内延迟导入
+    复用本函数，对本 spec 报告做同款 pathspec 精确入库，闭合「报告落盘晚于
+    实现 merge、早于 pushed」的入库窗口；幂等与失败语义同下（push 场景不加
+    前缀），任何失败仅 WARNING、不阻断 pushed 落定。
+
     - pathspec 严格单文件：禁用 ``git add -A -- spec`` 整目录（会卷入其它
       spec 在途草案，engine.py 同款警示），也不吞索引中无关 staged 内容；
     - 失败语义：非 git 仓库（被管项目可能无 git）静默跳过；其余失败
