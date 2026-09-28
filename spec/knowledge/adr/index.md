@@ -194,3 +194,6 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-187](ADR-187-verify-lane-parallelization-ready-state-dispatch-capped-exemption.md) | accepted | 验证链并行化：出题挂 ready 态吃实现排队窗口，就绪短路复用既有校验禁双标准，槽位豁免带独立在飞上限防挤占网关，judge 轮内重裁决阈值先于 spec 级硬上限、低置信优先证据扩充 |
 | [ADR-188](ADR-188-underlying-signal-type-additive-field-no-top-level-replace.md) | accepted | 包装通道透传底层信号类型用独立附加字段禁顶层替换（防记账/节流/展示互吞），发现靠消费侧反查未处置记录取最新并排除自产记录，复位门判定点单点扩展 |
 | [ADR-189](ADR-189-lane-heartbeat-over-probe-exemption-terminal-last-line-invariant.md) | accepted | 最小生命周期车道运行期必须发心跳消费既有活动判据——治理探针误报优先补活性信号禁加豁免（豁免无 boot 恢复会遮蔽重启后真孤儿），停跳先于终态写保「终态末行后置」不变量 |
+| [ADR-190](ADR-190-new-periodic-role-shared-scheduler-wiring-state-key-separation.md) | accepted | 新周期角色挂共享调度入口：状态键分离禁写宿主「今日已执行」键与增量窗口锚点（共享单键双向互相抑制），早退门扩为全部角色键齐备才闭合（单角色失败同日可补跑），run 前缀独立并登记宿主统计排除集防污染零活动防护，agent 类型注册表全链路同步逐表断言（漏一处静默失效） |
+| [ADR-191](ADR-191-managed-config-key-whitelist-merge-four-point-roundtrip.md) | accepted | 受管配置键必须走白名单合并全链路四处必改点（合并分支/前置校验/键来源映射/缺省回显），禁挂只透传部分子键的既有段（被吞），验收必须含读写往返断言（保存→重新 GET→值仍在）禁只断言保存返回 200，项目级键卡片沿用 scope 约定防写入用户级 |
+| [ADR-192](ADR-192-worktree-lock-residue-recovery-inmemory-authority-and-retry-quota-layering.md) | accepted | worktree 锁残留恢复：内存锁权威源不变、落盘 sidecar 禁构造期加载为拒绝依据（反超即把重启后成功翻成拒绝），残留判定进程表为主+转录新鲜度有前缀盲区禁单凭判残留+记录缺失 fail-closed 判活动，create 层只做一次性清理重试、重试配额语义归属派发层禁双重重试链，锁冲突结构化原因对齐基础设施故障先例不落死亡 run 豁免不计 retry |
