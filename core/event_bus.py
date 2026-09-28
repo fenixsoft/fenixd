@@ -6,6 +6,7 @@ internal events to the PM Engine. Includes periodic full-scan fallback.
 """
 
 import hashlib
+import math
 import re
 import threading
 import time
@@ -804,7 +805,17 @@ class EventBus:
                 # AttributeError：schedule 键存在但值为 null（YAML 空值）时首个
                 # .get 返回 None，对其再 .get 即抛——不捕获会冲出循环杀死线程。
                 interval = interval_minutes
-            time.sleep(max(interval, 0.5) * 60)
+            # 非有限/非数值脏值统一回退缺省（code-review item 0033524fcb73）：
+            # except 的回退值 interval_minutes 源自 start() 未校验的同一配置键，
+            # 手改 YAML 写成 "abc" 时字符串原样透传，下方 max() 抛 TypeError；
+            # .nan 经 float() 解析为 nan、比较恒 False 穿透 max()，sleep(nan)
+            # 抛 ValueError——两条路都会冲出循环杀死扫描线程，周期兜底全扫、
+            # 悬空 run 清扫与 code-fix checkpoint 全部静默失效。isfinite 一并
+            # 拒绝 ±inf（YAML .inf / 1e400 溢出字面量），与 config.py 既有
+            # isfinite 防御范式同口径。
+            if not isinstance(interval, (int, float)) or not math.isfinite(interval):
+                interval = 30.0
+            time.sleep(max(float(interval), 0.5) * 60)
             if self._running:
                 self.logger.debug("event_bus", "Periodic scan triggered")
                 # ── 运行期悬空 run 清扫（add-runtime-run-sweeper 3.1/3.2）──
