@@ -6042,6 +6042,16 @@ class AgentRunner:
             return False
         return True
 
+    def instant_fail_cooldown_until(self, spec_name: str) -> float:
+        """该 spec 秒挂冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""
+        st = self._instant_fail.get(spec_name)
+        if not st:
+            return 0.0
+        try:
+            return float(st.get("cooldown_until") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _read_verify_progress(self, spec_name: str) -> dict | None:
         """读取 verifier 断点进度文件（verifier-checkpoint-resume spec）。
 
