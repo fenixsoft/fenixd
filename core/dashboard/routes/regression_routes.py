@@ -254,7 +254,7 @@ class H12RegressionRoutesMixin:
         proot = Path(project["path"])
         from core.verify_contract import load_verify_contract
 
-        contract = load_verify_contract(proot, logger=getattr(self, "logger", None))
+        contract = load_verify_contract(proot, logger=logger)
         exists = (proot / ".fenix" / "verify.yaml").is_file()
         regression = None
         if contract is not None and contract.regression is not None:
@@ -299,7 +299,7 @@ class H12RegressionRoutesMixin:
         # 项目未配置回归守卫（verify.yaml regression 段缺失/无效 → 400）
         from core.verify_contract import load_verify_contract
 
-        contract = load_verify_contract(proot, logger=getattr(self, "logger", None))
+        contract = load_verify_contract(proot, logger=logger)
         if contract is None or contract.regression is None:
             self._coded_error(
                 400, "该项目未配置全量回归（verify.yaml regression 段）",
@@ -525,7 +525,7 @@ class H12RegressionRoutesMixin:
             # A 释放锁后 B 才拿到锁，按过期快照继续会以整契约草稿整体覆盖 A
             # 刚写入（或用户刚手改）的 verify.yaml。skipped 与 full_contract
             # 均以锁内重读结果为准。
-            contract = load_verify_contract(proot, logger=getattr(self, "logger", None))
+            contract = load_verify_contract(proot, logger=logger)
             if contract is not None and contract.regression is not None:
                 self._json(
                     {
@@ -540,6 +540,7 @@ class H12RegressionRoutesMixin:
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
             proc = None  # Popen 自身抛异常（如 claude 不在 PATH）时下方兜底无进程可清场
             try:
+                # [fenix-ignore:3a5492245966] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
                 proc = subprocess.Popen(
                     ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
                     cwd=str(proot),
@@ -633,7 +634,7 @@ class H12RegressionRoutesMixin:
                     marker = s.split(":", 1)[1].strip()
 
             # 权威判定：以契约解析结果为准
-            contract_after = load_verify_contract(proot, logger=getattr(self, "logger", None))
+            contract_after = load_verify_contract(proot, logger=logger)
             if contract_after is not None and contract_after.regression is not None:
                 self._json(
                     {
