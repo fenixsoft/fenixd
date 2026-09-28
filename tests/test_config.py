@@ -544,7 +544,7 @@ class TestOverviewDaemonField(unittest.TestCase):
     def test_project_summary_has_daemon(self):
         from core.dashboard.data import project_summary
         with patch("core.dashboard.data._is_running", return_value=True):
-            s = project_summary(self.proot, "proj-a", str(self.proot))
+            s = project_summary("proj-a", str(self.proot))
         self.assertIn("daemon", s)
         self.assertEqual(s["daemon"], "running")
 

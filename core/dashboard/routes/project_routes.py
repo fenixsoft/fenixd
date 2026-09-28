@@ -45,7 +45,7 @@ class H2ProjectRoutesMixin:
                 )
                 continue
             try:
-                s = dashboard_data.project_summary(p["path"], p["name"], p["path"])
+                s = dashboard_data.project_summary(p["name"], p["path"])
                 s["discovered"] = p.get("discovered", False)
                 s["exists"] = True
                 projects.append(s)
