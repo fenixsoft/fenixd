@@ -23,7 +23,9 @@
    台账。同 project 归档事件在队列中串行，积压条目合并为一次批量 run。
 
 写路径限定 ``spec/knowledge/`` 一个目录（design D2 爆炸半径可控）；主树直跑
-（spec 元数据层非产品代码，无 merge-back）。
+（spec 元数据层非产品代码，无 merge-back）。该写面约束除提示词承载外，run
+前后还对主树做 ``git status`` 越界写面对账：合法写面之外的新增改动记 WARNING
+留痕、不自动回滚（主树是用户工作区，restore 会吞掉用户未提交改动）。
 """
 
 from __future__ import annotations
@@ -451,6 +453,65 @@ def _discard_output(proot: Path) -> None:
         logger.warning("knowledge-distill git clean 失败: %s", e)
 
 
+# 越界写面对账（code-review c8e789897144）：蒸馏 run 以 bypassPermissions 在主树
+# 直跑，「写路径限定 spec/knowledge/」仅由提示词承载，validate_knowledge 与
+# _discard_output 也只覆盖 KNOWLEDGE_DIR——run 越界改动主树其他路径（如被归档
+# spec 内容提示注入后改产品代码）既不会被校验拦截也不会被回滚。蒸馏车道合法
+# 写面 = 产出本体（KNOWLEDGE_DIR）+ .fenix/ 下框架运行时文件（distill flock
+# 锁、todo.md 重试台账），对账时排除以免误报。
+_STRAY_AUDIT_IGNORE_PREFIXES = (KNOWLEDGE_DIR + "/", ".fenix/")
+
+
+def _git_status_paths(proot: Path):
+    """主树 ``git status --porcelain`` 路径快照（含未跟踪文件）。
+
+    Returns:
+        路径集合；``None`` = git 不可用/非 git 仓库（无从对账，调用方跳过）。
+    """
+    try:
+        status = _git(proot, ["status", "--porcelain"])
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("knowledge-distill git status 失败，跳过越界写面对账: %s", e)
+        return None
+    if status.returncode != 0:
+        return None
+    paths = set()
+    for line in status.stdout.splitlines():
+        if len(line) <= 3:
+            continue
+        path = line[3:]
+        if " -> " in path:  # rename 条目取新路径侧
+            path = path.split(" -> ", 1)[1]
+        paths.add(path)
+    return paths
+
+
+def _audit_stray_writes(proot: Path, before, label: str) -> None:
+    """越界写面对账：``before``（run 前基线）之外新增的主树改动记 WARNING。
+
+    基线取 run 前快照做差集，而非单一事后快照——主树是用户工作区，用户既有
+    未提交改动不应被误报为 run 产物。只告警不 restore：restore 会吞掉用户
+    在同一批路径上的未提交改动，风险大于收益（code-review c8e789897144）。
+    """
+    if before is None:
+        return
+    after = _git_status_paths(proot)
+    if after is None:
+        return
+    strays = sorted(
+        p for p in after - before if not p.startswith(_STRAY_AUDIT_IGNORE_PREFIXES)
+    )
+    if strays:
+        logger.warning(
+            "knowledge-distill 越界写面告警（%s）: run 在蒸馏车道合法写面"
+            "（%s、.fenix/）之外新增主树改动，未回滚（避免吞掉用户未提交改动），"
+            "请人工核查: %s",
+            label,
+            KNOWLEDGE_DIR,
+            ", ".join(strays),
+        )
+
+
 def _commit_output(proot: Path, archived_names: list) -> str | None:
     """pathspec 限定自动提交（复用 archive_commit 的 fail-open 哲学）。
 
@@ -589,10 +650,12 @@ class DistillManager:
                     + "\n".join(f"- {v}" for v in violations)
                     + "\n"
                 )
+            status_before = _git_status_paths(proot)
             ok, err = self._spawn_and_wait(proot, prompt)
             if not ok:
                 result["error"] = err
                 self._give_up(proot, archived_names, f"run 失败: {err}")
+                _audit_stray_writes(proot, status_before, names)
                 return result
             violations = validate_knowledge(proot)
             if not violations:
@@ -609,6 +672,7 @@ class DistillManager:
                         round_no + 1,
                         commit or "无变更",
                     )
+                    _audit_stray_writes(proot, status_before, names)
                     return result
                 # 重试仍失败：产出已通过校验但未落库。不能标 ok=True 让它
                 # 无台账滞留工作区——后续任一批 _give_up 的 _discard_output
@@ -626,6 +690,7 @@ class DistillManager:
                     "校验通过但自动提交失败，产出滞留工作区未落库"
                     "（请人工提交；注意后续放弃产出的清理会回滚工作区）",
                 )
+                _audit_stray_writes(proot, status_before, names)
                 return result
             logger.warning(
                 "knowledge-distill 校验违规（%s，第 %d 轮）：%s",
@@ -636,6 +701,7 @@ class DistillManager:
 
         # 修正轮耗尽仍违规 → 放弃产出（rounds 为含首轮的总 run 次数）
         self._give_up(proot, archived_names, "校验违规经 %d 轮 run 仍未通过" % (result["rounds"]))
+        _audit_stray_writes(proot, status_before, names)
         result["error"] = "校验违规未通过"
         return result
 
