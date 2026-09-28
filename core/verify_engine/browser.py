@@ -46,9 +46,9 @@ def _make_handler(directory: str):
             pass  # 抑制日志
 
         def end_headers(self):
-            # 添加 CORS 头以支持跨域请求
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            # 不附加 CORS 头（code-review item 5a964f04fa22）：被测页面与本
+            # 静态服务同源加载自身资源，本不需要跨域授权；通配 CORS 反而
+            # 允许验证浏览器中任意页面跨源读取 dist 下的文件与目录列表
             self.send_header("Cache-Control", "no-store, must-revalidate")
             super().end_headers()
 
@@ -78,6 +78,9 @@ def _capped_append(bucket: list[str], entry: str) -> None:
 # mock 路由 glob → 正则编译缓存（code-review item 9af293ddcb49）：response
 # 监听对每条 4xx/5xx 都要查 mock 命中，避免逐条重复编译。
 _GLOB_RE_CACHE: dict = {}
+# 缓存条目上限（code-review item ab5534d7b2aa）：daemon 常驻进程跨多轮
+# spec/场景集运行时 pattern 只增不减，超阈值整表清空（正则重编译成本可忽略）
+_GLOB_RE_CACHE_MAX = 512
 
 
 def _mock_url_hit(url: str, patterns) -> bool:
@@ -99,6 +102,8 @@ def _mock_url_hit(url: str, patterns) -> bool:
                 )
             )
             _GLOB_RE_CACHE[pat] = regex
+            if len(_GLOB_RE_CACHE) > _GLOB_RE_CACHE_MAX:
+                _GLOB_RE_CACHE.clear()
         if regex.fullmatch(url):
             return True
     return False
@@ -456,6 +461,19 @@ class BrowserManager:
                 ),
             ),
         )
+        # 未捕获 JS 异常走 pageerror 事件、不产生 console error 消息
+        # （code-review item 6e48bf397533）：缺此监听时页面运行时抛错
+        # （如点击处理器 TypeError）不会进入收集，no_console_error 断言
+        # 与 judge 归因均不可见。并入同一桶按 _capped_append 口径截断；
+        # 断言侧网络层豁免按 net::ERR_ 等标记过滤，pageerror 条目不受
+        # 豁免影响（运行时异常属产品缺陷信号，应严格失败）
+        context.on(
+            "page",
+            lambda p: p.on(
+                "pageerror",
+                lambda err: _capped_append(console_errors, f"[pageerror] {err}"),
+            ),
+        )
         context.on(
             "page",
             lambda p: p.on(
@@ -565,14 +583,21 @@ class BrowserManager:
     async def execute_action(self, page, step: dict) -> dict:
         """执行单个用户操作。
 
-        支持的操作类型：
+        支持的操作类型（词表权威源：scenarios.py 的 WEB_ACTIONS，以该处为准）：
         - navigate: 页面导航
-        - click: 点击元素（自动检测click interception）
-        - type: 输入文本（先清空再填充）
+        - click: 点击元素（自动检测click interception，可携带 dialog/prompt_text）
+        - type: 输入文本（先清空再填充）；target=window/body 时 value 为键盘按键名
         - clear: 清空输入框
         - select: 下拉选择
-        - scroll: 滚动到元素
-        - wait: 等待指定选择器可见
+        - scroll: 滚动到元素；target=window/body 时 value 为 "dx,dy" 像素位移
+        - wait: 等待指定选择器可见；无 target 时 value 为暂停毫秒数
+        - hover: 悬停元素
+        - contextmenu: 右键点击（触发 onContextMenu）
+        - drag: 长按拖拽（target=源元素，value=目标选择器或 JSON 配置）
+        - seed: 写 localStorage（target=键，value=JSON 字符串）后重载页面
+        - dialog: 注册一次性对话框处理器（value=accept/dismiss）
+        - mock_api: 拦截 URL 模式返回固定 JSON（target=glob，value=响应体，
+          status=HTTP 状态码）
 
         对扩展项目：
         - navigate to about:blank 自动重定向到本地 HTTP 服务器的应用页面
@@ -586,8 +611,11 @@ class BrowserManager:
         # value 归一为字符串（code-review item 08ef327b2c7e）：场景 JSON 中
         # 数值/布尔形态的 value（planner 产物并非不可能）此前会在
         # startswith/fill/select_option/json.loads 等分支抛
-        # AttributeError/TypeError 并被顶层 except 归为 unknown，报错不可定位
-        value = str(step.get("value") or "")
+        # AttributeError/TypeError 并被顶层 except 归为 unknown，报错不可定位。
+        # 仅以 is None 判缺失（code-review item 205fe924442d）：or "" 会把
+        # 显式 0/False 当成「未提供」清空掉，type/select 步骤静默偏离场景意图
+        _raw_value = step.get("value")
+        value = "" if _raw_value is None else str(_raw_value)
 
         try:
             if action == "navigate":
@@ -803,7 +831,20 @@ class BrowserManager:
                     try:
                         dx, dy = (float(x) for x in (value or "0,300").split(","))
                     except ValueError:
-                        dx, dy = 0.0, 300.0
+                        # 不静默回退默认位移（code-review item 34ae9c4badaa）：
+                        # 与 wait 的 invalid_wait_value / mock_api 的
+                        # invalid_mock_status 同口径，结构化失败返回并附原始
+                        # value——场景显式声明的位移被无提示改写，滚动类断言
+                        # 失败时会难以归因到步骤配置错误
+                        return {
+                            "success": False,
+                            "action": action,
+                            "target": target,
+                            "error_type": "invalid_scroll_value",
+                            "error": (
+                                f"scroll 值非法（应为 \"dx,dy\" 像素位移）: {value!r}"
+                            ),
+                        }
                     await page.mouse.wheel(dx, dy)
                     await self._wait_stable(page)
                     return {
