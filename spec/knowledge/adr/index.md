@@ -201,3 +201,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-194](ADR-194-transient-unseal-progressive-release-single-gate-selfdrive.md) | accepted | 熔断解封渐进恢复：hold 与探针叠加非二选一（解封次数按指纹记忆稳定衰减），解封节奏全部闸态由派发首道闸单通道态序短路消费禁旁路通道，探针判败复用既有指纹记账禁新探测调用，各到期锚点单飞行定时器链自驱禁依赖外部触发点，准入 pop 前消费 pop 后对称退还，判定异常 fail-open 放行 |
 | [ADR-195](ADR-195-frozen-entry-recheck-and-escalation-cooldown-dual-leg-defense.md) | accepted | 冻结回置噪音双腿防御缺一不可：恢复/派发/重试入口 frozen 复核断「部分回置」腿（INFO 留痕零写入），daemon_errors 指纹级重启冷却+同轮孪生合并兜「整文件重置抹 frozen」腿，后续 SPEC 禁以任一腿为由删另一腿 |
 | [ADR-196](ADR-196-gate-exemption-and-dispatch-interception-two-criteria-layering.md) | accepted | 内容闸门豁免与派发拦截两判据分层：终态豁免/已交付降级只免冻结与告警，spec_has_content 四类认可名单不动且 verification-report.md 禁入（防盲目重实现已交付成果），终态 spec 入队属异常由派发层状态机管辖 |
+| [ADR-197](ADR-197-wipgate-defer-keep-scene-release-lock-zero-budget.md) | accepted | WIP 阻断延迟合回：暂态阻断零预算走独立 defer 台账禁入失败预算体系（预算语义=重跑，暂态只需等待），保留现场必须同步显式放锁（只保留不放锁=建树恒 None 车道死锁），defer 条目必退选批池，重试挂既有链节拍不新增线程 |
