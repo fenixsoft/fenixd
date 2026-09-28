@@ -276,7 +276,7 @@ class TestReadSideStale:
         _set_mtime(p, 40 * 3600)  # 40 小时 ≫ 1800s
         assert self._status(rid) == "stale"
         from core.dashboard.data import project_summary
-        s = project_summary(self.tmpdir, "p", self.tmpdir)
+        s = project_summary("p", self.tmpdir)
         assert s["active_runs"] == 0
 
     def test_fresh_transient_still_active(self):
@@ -289,7 +289,7 @@ class TestReadSideStale:
         _set_mtime(p, 120)  # 2 分钟（退避序列 30/60/120s 之内）
         assert self._status(rid) == "running"
         from core.dashboard.data import project_summary
-        s = project_summary(self.tmpdir, "p", self.tmpdir)
+        s = project_summary("p", self.tmpdir)
         assert s["active_runs"] == 1
 
     def test_empty_file_old_mtime_stale(self):
@@ -312,7 +312,7 @@ class TestReadSideStale:
         assert self._status(rid) == "done"
         # 终态也不计入活跃
         from core.dashboard.data import project_summary
-        s = project_summary(self.tmpdir, "p", self.tmpdir)
+        s = project_summary("p", self.tmpdir)
         assert s["active_runs"] == 0
 
     def test_superseded_old_mtime_not_active(self):
@@ -325,7 +325,7 @@ class TestReadSideStale:
         _set_mtime(p, 40 * 3600)
         assert self._status(rid) == "superseded"
         from core.dashboard.data import project_summary
-        s = project_summary(self.tmpdir, "p", self.tmpdir)
+        s = project_summary("p", self.tmpdir)
         assert s["active_runs"] == 0
 
     def test_stale_excluded_from_active_by_type(self):
@@ -337,6 +337,6 @@ class TestReadSideStale:
             {"type": "transient_retry", "backoff_seconds": 30}])
         _set_mtime(p, 40 * 3600)
         from core.dashboard.data import project_summary
-        s = project_summary(self.tmpdir, "p", self.tmpdir)
+        s = project_summary("p", self.tmpdir)
         assert s["active_runs"] == 0
         assert "implementer" not in s["active_runs_by_type"]

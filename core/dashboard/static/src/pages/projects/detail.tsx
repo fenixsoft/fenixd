@@ -6,7 +6,7 @@ import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, statusMeta } from '@/services/dashboard';
+import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, STREAM_URL, statusMeta } from '@/services/dashboard';
 import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
 import HookManager from '@/components/HookManager';
 import { markdownComponents } from './components/SpecDocModal';
@@ -25,6 +25,9 @@ import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdj
 // 告警严重度标签/配色走告警展示单源（code-review item a6db9e33af09：本地副本
 // 缺 warning 键与单源漂移，warning 告警在本页误渲染灰色标签）
 import { SEV_COLOR, SEV_LABEL } from '@/components/alert-shared';
+// 时长格式化与列表页「耗时」列共用单源（code-review item f8307715a795：
+// 两页逐行重复实现抽公共模块，本页不再在组件体内每渲染重建）
+import { fmtDuration } from '@/utils/duration';
 import { fmtEvidence } from '@/utils/evidence';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
@@ -571,11 +574,15 @@ export default function SpecDetailPage() {
   const [error, setError] = useState('');
   // SPEC 下拉快速切换不重挂载本组件：事件回调（handleClearInfo / 告警裁决
   // onResolved）闭包里的 name/spec 是调用时刻的值，迟到响应会把旧 SPEC 详情
-  // 整表写入已切换页面。render 期同步的 ref 提供「当前路由值」，响应返回时
+  // 整表写入已切换页面。effect 内同步的 ref 提供「当前路由值」，响应返回时
   // 比对不一致即整表丢弃（与主 effect 的 cancelled 守卫同一约定，
-  // code-review item cae55cf05562）
+  // code-review item cae55cf05562）。同步放 effect（post-commit）而非渲染期
+  // ——渲染必须保持纯净，与 SessionPanel activeRef / list.tsx specMapRef
+  // 同一纪律（code-review item 35e26d047a50）
   const nameSpecRef = useRef({ name, spec });
-  nameSpecRef.current = { name, spec };
+  useEffect(() => {
+    nameSpecRef.current = { name, spec };
+  }, [name, spec]);
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -648,7 +655,9 @@ export default function SpecDetailPage() {
       lastRefresh = now;
       void load();
     };
-    const es = new EventSource('/api/stream');
+    // SSE 端点走 services/dashboard 的 STREAM_URL 单源，不写字面量
+    // （code-review item 2099376c1f44，同 list.tsx / QualityTab）
+    const es = new EventSource(STREAM_URL);
     es.onmessage = (ev: MessageEvent) => {
       let msg: {
         type?: string; project?: string; spec?: string;
@@ -903,17 +912,6 @@ export default function SpecDetailPage() {
   const allTasks = taskGroups.flatMap((g) => g.tasks || []);
   const completedTasks = allTasks.filter((t) => t.done).length;
   const totalTasks = allTasks.length;
-
-  // 格式化时长
-  const fmtDuration = (seconds: number) => {
-    if (seconds == null || Number.isNaN(seconds)) return '';
-    let s = Math.max(0, Math.round(seconds));
-    if (s < 60) return `${s}秒`;
-    const m = Math.floor(s / 60);
-    s %= 60;
-    if (m < 60) return s ? `${m}分${s}秒` : `${m}分`;
-    return `${Math.floor(m / 60)}时${m % 60}分${s ? `${s}秒` : ''}`;
-  };
 
   // 渲染时间轴内容 — 复用运维记录页的时间轴控件（Timeline + 盒式卡片子项：头部时间+标签行，正文着色边框）
   const renderTimeline = () => {

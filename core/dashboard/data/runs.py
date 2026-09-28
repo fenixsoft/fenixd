@@ -189,25 +189,46 @@ def _load_rotated_run_metric_index(project_root: Path) -> dict:
     .fenixd.log.1（evo-fix-self-review-phantom-failed-samples 2.1）。轮转
     日志写入后冻结、下次轮转被整体替换，每槽按 size 键增量维护：
     size 变化（含被新轮转替换）仅重建本槽。
+
+    并发：与主索引同款，读改写段（定槽 fast path/落账推进 key）经
+    _RUN_METRIC_INDEX_LOCK 串行化，扫描 IO 在锁外；落账前 re-stat 复核
+    size 未变再落账（防 stat→open 撞上轮转的键内容错位）。
     """
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log.1"
     try:
         size = log_path.stat().st_size
     except OSError:
         return {}
-    slot = _ROTATED_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
     key = (size,)
-    if key == slot["key"]:
-        return slot["index"]
+    # 段 1（锁内，纯内存）：定槽 + fast path（key 未变直接返回）。与主索引
+    # _load_run_metric_index 同款并发口径：落账（换引用推进 key）是非幂等
+    # 读改写，经 _RUN_METRIC_INDEX_LOCK 串行化，扫描 IO 留在段 2 锁外。
+    with _RUN_METRIC_INDEX_LOCK:
+        slot = _ROTATED_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
+        if key == slot["key"]:
+            return slot["index"]
+    # 段 2（锁外，IO）：整体重建扫描，解析结果先落局部 dict。
     index: dict = {}
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             index = _parse_run_metric_stream(f)
     except OSError:
         pass
-    slot["index"] = index
-    slot["key"] = key
-    return index
+    # 段 3（锁内）：落账前 re-stat 复核 size 未变——本文件会被下一次轮转整体
+    # 替换，stat→open 竞态可把一轮的扫描结果以另一轮的 size 键落账，此后
+    # key 恒命中、陈旧索引要等再下一次轮转才自愈（code-review 95a3f6dcf9d2）。
+    # size 已变/文件暂不可见（轮转窗口）则本轮只返回现扫结果不落账，下轮按
+    # 新 key 重建自愈。re-stat 是单次元数据 IO，刻意留在锁内以闭合
+    # stat→open→落账窗口。
+    with _RUN_METRIC_INDEX_LOCK:
+        try:
+            unchanged = log_path.stat().st_size == size
+        except OSError:
+            unchanged = False
+        if unchanged:
+            slot["index"] = index
+            slot["key"] = key
+        return index
 
 
 def load_run_metric(project_root, run_file_stem: str) -> "dict | None":
@@ -297,8 +318,11 @@ _RUN_STALE_SECONDS = 1800
 
 def classify_run(lines: list) -> str:
     """根据产物文件行判定运行终态：done / error / interrupted / cancelled /
-    superseded / running / empty。
+    superseded / frozen-terminated / gate-blocked / running / empty。
 
+    终态全集以 _RUN_TERMINAL_STATUS_MAP 为单源（frozen-terminated=spec 冻结
+    终止、gate-blocked=门禁硬失败终止，两映射的来历见映射行内注释），映射
+    新增条目后此处枚举须同步补齐。
     runner「终态后置」不变量保证任一终态事件即文件最后一行（result/error 在
     收尾 join 后落盘，interrupted 由 daemon 停机/启动清扫追加，cancelled 由
     取消路径最后落盘，superseded 由原地重试弃置前补写），故只看末行即可判定。

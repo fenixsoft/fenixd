@@ -4,7 +4,6 @@ refactor-dashboard-data-module D3 分组：本模块承载聚合视图职责域�
 daemon/托管态检测、项目与 SPEC 摘要、摘要索引、概览。
 """
 
-import copy
 import json
 import logging
 import math
@@ -91,7 +90,7 @@ def hosting_state(project_root) -> str:
     return state
 
 
-def project_summary(project_root, name: str, path: str, specs=None) -> dict:
+def project_summary(name: str, path: str, specs=None) -> dict:
     """单个项目的聚合摘要（/api/projects、/api/overview 共用）。
 
     specs：可选的 parse_state 快照（{spec_name: entry}）。调用方已持有同
@@ -1034,7 +1033,7 @@ def overview(registry_projects: list) -> dict:
             # 单次解析 STATE.md：同份快照供 project_summary（免其内部重复 IO）
             # 与下方 spec_updated/token 统计消费
             entries = _facade.parse_state(p["path"])
-            s = _facade.project_summary(p["path"], p["name"], p["path"], entries)
+            s = _facade.project_summary(p["name"], p["path"], entries)
             s["discovered"] = p.get("discovered", False)
             s["exists"] = True
             projects.append(s)

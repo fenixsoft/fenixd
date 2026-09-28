@@ -281,10 +281,10 @@ class TestAggregationIsolation:
         import core.dashboard.data as dash_data
         real_summary = dash_data.project_summary
 
-        def flaky_summary(project_root, name, path, specs=None):
+        def flaky_summary(name, path, specs=None):
             if name == "bad-proj":
                 raise OSError(errno.EIO, "Input/output error")
-            return real_summary(project_root, name, path, specs)
+            return real_summary(name, path, specs)
 
         monkeypatch.setattr(dash_data, "project_summary", flaky_summary)
 
@@ -319,10 +319,10 @@ class TestAggregationIsolation:
         import core.dashboard.data as dash_data
         real_summary = dash_data.project_summary
 
-        def flaky_summary(project_root, name, path, specs=None):
+        def flaky_summary(name, path, specs=None):
             if name == "bad-proj":
                 raise OSError(errno.EIO, "Input/output error")
-            return real_summary(project_root, name, path, specs)
+            return real_summary(name, path, specs)
 
         monkeypatch.setattr(dash_data, "project_summary", flaky_summary)
 

@@ -972,7 +972,7 @@ class TestDashboardDescriptionConfig(unittest.TestCase):
         with open(self.config_path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, allow_unicode=True)
 
-        result = project_summary(self.tmpdir, "test-project", self.tmpdir)
+        result = project_summary("test-project", self.tmpdir)
 
         # 验证 description 字段存在且正确
         self.assertIn("description", result)

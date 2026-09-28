@@ -236,6 +236,21 @@ def _clear_preserve_sidecar() -> None:
         pass
 
 
+# 无 spec 绑定车道的 run_id 前缀（code-review item 67c551e85f1c）：这些车道
+# 的 run 不绑 SPEC（run_id 均为 <prefix>-<epoch/date> 形态），排水保全路径
+# （_preserve_interrupted_runs）解析不出 spec 属预期形态，降级 info 留痕跳过。
+# 前缀表之外的解析失败（如 admin-<spec>-<ts> / planner-<mode>-<spec>-<ts> /
+# impl-ocr-<spec>-<ts> 等绑 spec 但 _spec_from_run_id 前缀表未覆盖的命名，
+# 以及未知新形态）仍按 warning 留痕，提示可能缺前缀、须人工确认。
+_RUN_ID_NO_SPEC_PREFIXES = (
+    "code-review-",
+    "regression-",
+    "code-fix-",
+    "evo-",
+    "review-",
+)
+
+
 def _ahead_commit_count(branch: str) -> int:
     """统计 branch 相对基线分支的 ahead 提交数（recovery 保留判定同口径）。
 
@@ -1549,8 +1564,17 @@ class FenixDaemon:
         return fresh
 
     def _write_restart_history(self, entries: list) -> None:
-        """整体重写历史文件（仅清理路径使用，temp+rename 原子替换）；失败仅记日志。"""
+        """整体重写历史文件（仅清理路径使用）；失败仅记日志。
+
+        原子写（code-review item 7152c09095f8，对齐 _write_preserve_sidecar）：
+        旧实现固定名 .tmp + write_text 无 fsync，SIGKILL/断电落在写入与 replace
+        之间会留半截文件——读侧 _read_restart_history 逐行容错会跳过损坏尾行，
+        而尾行恰携带最新 self_triggered_streak，streak 归零使重启循环 critical
+        告警与冷却窗口计数低估。改用同目录 mkstemp + fsync + os.replace，
+        失败清理残留 tmp。
+        """
         path = self._restart_history_path()
+        tmp_path = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = "".join(
@@ -1565,10 +1589,22 @@ class FenixDaemon:
                 + "\n"
                 for e in entries
             )
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(payload, encoding="utf-8")
-            tmp.replace(path)
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
+            )
+            tmp_path = Path(tmp_str)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_str, str(path))
         except Exception as e:  # noqa: BLE001 — 清理失败不影响自愈
+            if tmp_path is not None:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
             self.logger.warning("fenixd", f"restart_history 清理写入失败（non-blocking）: {e}")
 
     def _append_restart_history(self, record: dict) -> None:
@@ -2307,6 +2343,21 @@ class FenixDaemon:
         if not spec:
             self.logger.warning("fenixd", "admin_invoke 请求缺少 spec，忽略")
             return
+        # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
+        # approve_push 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
+        # daemon 停机期间积压的旧唤起信号重启后仅消费不执行（人工呼叫
+        # Administrator 属昂贵动作，不对旧请求重放）；created 缺失/非法保守
+        # 按陈旧处理
+        created = payload.get("created")
+        if self._signal_created_is_stale(created):
+            self.logger.warning(
+                "fenixd",
+                f"admin_invoke 陈旧信号（created={created}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不唤起 "
+                f"Administrator: spec='{spec}'（积压旧请求，如仍需处置请在 "
+                f"dashboard 重新发起）",
+            )
+            return
 
         # 底层 signal_type 透传（fix-manual-invoke-signal-type-passthrough 1.1 +
         # fix-escalation-autoinvoke-passthrough）：手动唤起通道把信号压平为
@@ -2786,6 +2837,19 @@ class FenixDaemon:
         if not spec:
             self.logger.warning("fenixd", "spec_delete 请求缺少 spec，忽略")
             return
+        # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
+        # approve_push 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
+        # daemon 停机期间积压的旧删除信号重启后仅消费不执行（先停后删属破坏性
+        # 动作，不对旧请求重放）；created 缺失/非法保守按陈旧处理
+        created = payload.get("created")
+        if self._signal_created_is_stale(created):
+            self.logger.warning(
+                "fenixd",
+                f"spec_delete 陈旧信号（created={created}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行删除: "
+                f"spec='{spec}'（积压旧请求，如仍需删除请在 dashboard 重新发起）",
+            )
+            return
 
         self.logger.info(
             "fenixd",
@@ -2994,8 +3058,15 @@ class FenixDaemon:
         from core.code_review import write_request_result
 
         if message is None:
-            message = self.CODE_REVIEW_RESULT_MESSAGES.get(
-                reason, f"审查触发判定：{reason or '未知'}")
+            message = self.CODE_REVIEW_RESULT_MESSAGES.get(reason)
+            if message is None and status == "started":
+                # 受理回执以 reason=None 落盘（历史契约：started 不带 reason，
+                # 结果文件消费方/测试断言 reason is None）——按 status 回退取
+                # 文案，避免文案表 started 条目成死条目、message 恒落「未知」
+                # 兜底误导排障（code-review item 9570a9f752c2）。
+                message = self.CODE_REVIEW_RESULT_MESSAGES.get("started")
+            if message is None:
+                message = f"审查触发判定：{reason or '未知'}"
         write_request_result(
             PROJECT_ROOT, requested_at, status, reason, message,
             logger=self.logger,
@@ -3075,6 +3146,17 @@ class FenixDaemon:
                         "fenixd",
                         "code_review 触发信号消费遭遇 IO 异常（信号未消费、留盘待"
                         "下轮重试），不落 invalid_payload 结果",
+                    )
+                elif ident is None:
+                    # code-review item 244e1731ebbf：stat 亦失败（极端权限场景）
+                    # 时无法建身份做去重——按上方注释口径保留逐轮告警，不静默
+                    # 丢信号（持久 IO+stat 双故障期间信号留盘重试但对用户完全
+                    # 不可见，与注释宣称相矛盾）
+                    self.logger.warning(
+                        "fenixd",
+                        "code_review 触发信号消费遭遇 IO 异常且信号文件 stat 亦"
+                        "失败（信号未消费、留盘待下轮重试），无法建身份去重，"
+                        "保留逐轮告警",
                     )
             return
 
@@ -4327,10 +4409,22 @@ class FenixDaemon:
         for run_id in run_ids:
             spec = self._spec_from_run_id(run_id)
             if not spec:
-                self.logger.warning(
-                    "fenixd",
-                    f"Preserve: cannot parse spec from run_id '{run_id}' — skip",
-                )
+                # 两种日志口径（code-review item 67c551e85f1c）：无 spec 绑定
+                # 车道（code-review/regression/code-fix/evo/self-review）的
+                # run_id 解析不出 spec 属预期形态，info 留痕跳过；前缀表之外
+                # 的解析失败仍按 warning 留痕——可能是绑 spec 但前缀表未覆盖
+                # 的命名（admin-/planner-/impl-ocr- 等），须人工确认而非静默
+                # 跳过保全。
+                if str(run_id).startswith(_RUN_ID_NO_SPEC_PREFIXES):
+                    self.logger.info(
+                        "fenixd",
+                        f"Preserve: run_id '{run_id}' 属无 spec 绑定车道 — skip",
+                    )
+                else:
+                    self.logger.warning(
+                        "fenixd",
+                        f"Preserve: cannot parse spec from run_id '{run_id}' — skip",
+                    )
                 continue
             entry = self.state_machine.read_one(spec) or {}
             branch = entry.get("branch")
@@ -4885,7 +4979,17 @@ class FenixDaemon:
             self.worktree_manager.cleanup_orphans(protected=protected)
 
         _safe_log("info", "fenixd stopped")
-        sys.exit(0)
+        # code-review item ecc6fd4d27ad：仅在无在途异常时以 0 干净退出。
+        # start() 的 while 主循环包在 try/except KeyboardInterrupt/finally 中，
+        # finally 调本方法——若主循环抛出非 KeyboardInterrupt 异常，此处的
+        # 无条件 sys.exit(0) 会在 finally 内抛 SystemExit 替换在途异常
+        # （SystemExit 非 Exception，main() 的 except Exception 捕获不到），
+        # FATAL 日志不打、失败被伪造成退出码 0。有在途异常时跳过 sys.exit，
+        # 让原异常继续传播给 main() 记 FATAL 并以退出码 1 结束。
+        # 信号处理器路径（SIGTERM/SIGINT → 本方法）在主循环正常执行点进入、
+        # 无在途异常 → 仍走 sys.exit(0)，行为不变；启动窗口信号同理。
+        if sys.exc_info()[0] is None:
+            sys.exit(0)
 
 
 # 单实例锁：fd 保持全局引用，进程生命周期内持有，退出时 OS 自动释放

@@ -13,6 +13,7 @@
 import json
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -104,10 +105,25 @@ def _make_daemon(proot: Path, runner, store):
     return daemon
 
 
+def _fresh_created() -> str:
+    """新鲜 created ISO（对齐 core.signals.request_admin_invoke 写侧契约）。
+
+    消费侧有 created 时效分档（code-review item 225b38618faf）：created 缺失/
+    过期按陈旧处理仅消费不执行——本文件 fixture 须模拟真实 writer 带新鲜
+    created，否则拾取被时效分档拦截、透传断言落空。
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _pickup(monkeypatch, proot: Path, daemon, spec="myspec"):
     """写请求文件并执行一次主循环拾取。"""
     req = proot / ".fenix" / "admin_invoke_request.json"
-    req.write_text(json.dumps({"spec": spec, "source": "manual"}), encoding="utf-8")
+    req.write_text(
+        json.dumps(
+            {"spec": spec, "source": "manual", "created": _fresh_created()}
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(fenixd, "PROJECT_ROOT", proot)
     daemon._check_admin_invoke_requests()
     return req
@@ -254,6 +270,7 @@ class TestDaemonPassthrough:
         req.write_text(json.dumps({
             "spec": "myspec",
             "source": "manual",
+            "created": _fresh_created(),
             "underlying_signal_type": "verify_env_blocked",
         }), encoding="utf-8")
         monkeypatch.setattr(fenixd, "PROJECT_ROOT", proot)
@@ -280,6 +297,7 @@ class TestDaemonPassthrough:
         req.write_text(json.dumps({
             "spec": "myspec",
             "source": "manual",
+            "created": _fresh_created(),
             "underlying_signal_type": "warning_stale_triage",
         }), encoding="utf-8")
         monkeypatch.setattr(fenixd, "PROJECT_ROOT", proot)
