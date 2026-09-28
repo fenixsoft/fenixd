@@ -550,13 +550,17 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
         self.assertEqual(mon.state_machine.updates, [])
 
     def test_waiver_via_text_token(self):
-        """文本动作含显式放行动词（放行一次/经评估放行）也视为放行。"""
+        """文本动作含显式放行动词（放行一次/经评估放行）也视为放行。
+
+        命中句须含「本次处置」限定语境（4dd652206902 收紧：含「本次/该族」
+        限定词或与本次父 SPEC 名同现），夹具文本据此带「本次」。
+        """
         specs = {"fix-fix-fix-x": {"status": "bug-found"}}
         mon = self._make_monitor(specs)
 
         class _Disp:
             family_waiver = False
-            actions_taken = "经评估放行一次创建"
+            actions_taken = "本次经评估放行一次创建"
             recommended_action = ""
 
         mon._apply_family_waiver({"signal_type": "family_explosion",

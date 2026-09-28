@@ -60,7 +60,7 @@ def _rel(path: Path) -> str:
 # 文件前部插入 39 行（clear_todo 等）后 SPEC_YAML_TEMPLATE.format 由 803
 # 漂到 842，豁免失配 → 守卫误报红灯。核验接收者仍保证「非文件级/全局通配」：
 # 只有该文件的该接收者的该调用被豁免，同文件别处的同名调用仍判定。
-# 实测当前 core/ + fenixd.py 仅两族：
+# 实测当前 core/ + fenixd.py 仅三族：
 # 1. core/evolution.py `SPEC_YAML_TEMPLATE.format(...)` 是 str.format（关键字
 #    展开），与 core/logger.py 的 Formatter.format(self, record) 同名——
 #    string 方法签名不匹配 Formatter 契约，属真实误报。
@@ -68,10 +68,18 @@ def _rel(path: Path) -> str:
 #    全关键字）与 core/verify_engine/browser.py 自家
 #    screenshot(self, page, name, output_dir) 同名——Playwright API 在
 #    core 之外无签名可考，不能按 3 必填位参判定，逐接收者豁免。
+# 3. 标准库 logging 的 `logger.exception("单参消息")`（logging.getLogger 返回
+#    的 Logger 支持 *args）与 core/logger.py 自研 Logger.exception(component,
+#    message, context=None) 同名异签名——core/logger.py 的 exception 成为
+#    唯一签名后（item df6de36313c9），三处 stdlib logger 单参调用被误按
+#    双必填契约判定，逐文件豁免（接收者均为 `logger`）。
 ARITY_WHITELIST = [
     ("core/evolution.py", "format", "SPEC_YAML_TEMPLATE"),
     ("core/verify_engine/browser.py", "screenshot", "page"),
     ("core/verify_engine/visual_diff.py", "screenshot", "page"),
+    ("core/dashboard/routes/base.py", "exception", "logger"),
+    ("core/dashboard/session_manager.py", "exception", "logger"),
+    ("core/worktree_manager/artifact_paths.py", "exception", "logger"),
 ]
 
 
