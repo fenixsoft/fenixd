@@ -131,6 +131,8 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
             "ok": False,
             "conflict": False,
             "missing_run_id": True,
+            "unmanaged": False,
+            "daemon_down": False,
             "file": None,
             "created": None,
             "error": "run_id is required",
@@ -528,7 +530,13 @@ def reclassify_infra_rounds(
     try:
         n_val = int(n)
     except (TypeError, ValueError) as e:
-        return {"ok": False, "found": True, "error": f"invalid n: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：客户端收固定
+        # 文案，异常细节经服务端日志留痕（对齐 run_routes/spec_routes 脱敏）
+        logger.warning(
+            "reclassify_infra_rounds invalid n（n=%r）: %s: %s",
+            n, type(e).__name__, e,
+        )
+        return {"ok": False, "found": True, "error": "invalid n（回拨轮次参数无效）"}
     try:
         result = _recl(
             project_root,
@@ -540,10 +548,15 @@ def reclassify_infra_rounds(
             actor=actor,
         )
     except (TypeError, ValueError) as e:
+        # 同上（code-review item e584a2ede367）：固定文案 + 服务端日志留痕
+        logger.warning(
+            "reclassify_infra_rounds 内部失败（非 n 参数问题，spec=%s）: %s: %s",
+            spec_name, type(e).__name__, e,
+        )
         return {
             "ok": False,
             "found": True,
-            "error": f"reclassify_infra_rounds 内部失败（非 n 参数问题）: {e}",
+            "error": "reclassify_infra_rounds 内部失败（非 n 参数问题）",
         }
     return {
         "ok": result.get("ok", False),
@@ -1561,9 +1574,15 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                 deleted_any = True
                 steps.append(f"已删除 {fpath.relative_to(proot)}")
             except OSError as e:
+                # 不外泄裸异常文本（code-review item e584a2ede367）：OSError
+                # 可携带内部路径/errno，细节降级经服务端日志留痕
+                logger.warning(
+                    "reset_verification 删除验证进度文件失败（spec=%s file=%s）: %s: %s",
+                    spec, fname, type(e).__name__, e,
+                )
                 return {"ok": False, "found": True, "steps": steps,
                         "target_status": None,
-                        "error": f"删除验证进度文件失败 {fname}: {e}"}
+                        "error": f"删除验证进度文件失败 {fname}"}
     if not deleted_any:
         steps.append("无场景/进度文件可删（verify-progress 目录不存在或已清）")
 
@@ -1975,8 +1994,14 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             r = {"ok": False, "steps": [],
                  "error": f"注册表 action '{action}' 无执行器映射"}
     except Exception as e:
+        # 不外泄裸异常文本（code-review item e584a2ede367）：执行器异常细节
+        # 经服务端日志留痕，客户端（alert-resolve 端点）收固定文案
+        logger.warning(
+            "裁决动作执行异常（choice_id=%s action=%s spec=%s）: %s: %s",
+            choice_id, action, spec, type(e).__name__, e,
+        )
         return {"ok": False, "choice_id": choice_id, "action": action,
-                "steps": [], "error": f"动作执行异常: {e}"}
+                "steps": [], "error": "动作执行异常"}
     if not isinstance(r, dict):
         r = {"ok": False, "steps": [], "error": "执行器返回非结构化结果"}
     r = dict(r)
