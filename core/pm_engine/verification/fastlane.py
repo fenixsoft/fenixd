@@ -177,12 +177,18 @@ def judge_affected_files(pipeline, spec_name: str) -> tuple:
     )
     if not path.exists():
         return None, f"judge_attribution.json 缺失: {path.name}（影响面不可判定，保守回落）"
-    try:
-        entries = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None, "judge_attribution.json 不可读（影响面不可判定，保守回落）"
-    if not isinstance(entries, list):
-        return None, "judge_attribution.json 结构非法（影响面不可判定，保守回落）"
+    # 读取经 judge_files.load_attribution 归一化：唯一写入方
+    # verdict_evidence._handle_scenario_requeue 经 save_attribution 落盘的
+    # 顶层是 {"format_version", "scenarios": [...], "saved_at"} dict（逐场景
+    # 条目在 scenarios 键下），直接 json.loads 后要求顶层 list 会恒判「结构
+    # 非法」致条件②永不满足、fastlane 轻量通道失效；归一化读取天然兼容旧
+    # 格式整块归因的自动迁移，缺失/损坏/结构非法统一返回 None（同保守回落）。
+    from core.verify_engine.judge_files import load_attribution
+
+    data = load_attribution(Path(pipeline._context.project_root), spec_name)
+    if not isinstance(data, dict):
+        return None, "judge_attribution.json 不可读/结构非法（影响面不可判定，保守回落）"
+    entries = data.get("scenarios") or []
     files: list = []
     for e in entries:
         if isinstance(e, dict):
@@ -643,7 +649,6 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         "note": "fastlane 子集重验收敛：实跑子集见 scenarios 其余沿用上一轮原判定",
     }
     save_report(ctx.project_root, spec_name, merged)
-    sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
     # 状态机合法性：bug-found 状态下复用 _apply_verified 的 transition 到
     # verified 是非法转换（VALID_TRANSITIONS：BUG_FOUND 仅允许
     # [IMPLEMENTING, IMPLEMENTED]，转换被拒返回 False 而 _apply_verified 不
@@ -680,6 +685,12 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     pipeline._apply_verified(
         spec_name, SimpleNamespace(run_id=run_id), merged
     )
+    # 真正收敛点（两次 transition 与 _apply_verified 全部成功之后）才清零
+    # 连续失败计数：清零若前置到状态转换前，transition 被拒走
+    # _bump_fail_streak 时计数恒从 0 加回 1、在 0/1 间震荡，确定性转换失败
+    # （冻结剥离/状态机口径变化）下永远达不到 FASTLANE_MAX_CONSECUTIVE_
+    # FAILURES 熔断阈值，每个验证轮都会重新完整执行轻量修复与子集重验。
+    sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
     record_decision(pipeline, spec_name, {
         "eligible": True,
         "path": "fastlane-converged",
