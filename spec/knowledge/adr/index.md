@@ -175,3 +175,22 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-168](ADR-168-item-progress-read-side-synthesis-explicit-batch-context.md) | accepted | 进度明细类字段由读侧经 agent 产物实时合成禁新增写侧回写路径（合成字段现算不落盘、不可得恒 null 禁回退 0/空对象），读侧定位上下文由写侧显式落盘既有状态文件并随收尾清除、禁目录 glob/前缀反推，run 标识编排器预生成经形参传入（不预生成则目标窗口失效） |
 | [ADR-169](ADR-169-inflight-signal-public-method-fail-tight.md) | accepted | 在飞判定经属主层公开方法封装（带参按 spec 精确判/无参任一在飞即 busy）禁跨层直读私有登记、禁线程车道塞 Popen 注册表，判定异常按在飞处理宁紧勿松（判定不可得不得放行杀在飞 run 的动作），消费侧薄容错单点维护（缺属性不阻断/仅采纳真 bool） |
 | [ADR-170](ADR-170-fingerprint-staleness-lifecycle-exemption-constructive-git-criterion.md) | accepted | 产物指纹陈旧判定必须区分陈旧与生命周期迁移（merge-back 豁免用构造性 git 判据 merge-base==head 即已完整合入，禁状态枚举双真源），豁免最小化只跳迁移影响项、身份项 branch/head 全等仍强制（head 前移拒 stale 不变），SPEC 终态后门禁呈现确定性收口（终态豁免最高优先级+固定 reason+终态集合与流水线集合有意分离，新状态引入必须同步豁免集合） |
+| [ADR-171](ADR-171-artifact-gate-candidate-locations-shared-tree-freshness.md) | accepted | 产物门判缺失必须穷尽同一逻辑产物的全部合法落点（worktree 优先、共享主树回退带新鲜度守卫），fail-closed 只针对确实缺失不针对「在另一授权位置存在」，校验体单点共用禁双实现 |
+| [ADR-172](ADR-172-add-dir-minimal-lane-authorization-prompt-anchoring.md) | accepted | `--add-dir` 是工作区边界显式信号按车道最小授权（落点在 worktree 的车道不注入共享树），提示词产物落点与门读取层同源逐车道锚定，授权措辞禁一词多树 |
+| [ADR-173](ADR-173-file-signal-single-slot-criterion-explicit-conflict-refusal.md) | accepted | 文件信号单槽位可接受判据=写入方把 conflict 变显式拒绝，否则多槽位化（目录+每主体一文件）；写侧如实回报禁假成功，陈旧信号挂消费方时钟回收（阈值内先消费再删、超阈值仅删），路径常量落中性共享模块 |
+| [ADR-174](ADR-174-state-rmw-lock-interior-atomicity-idle-predicate-lane-completeness.md) | accepted | STATE 读改写整体收进跨进程文件锁内禁锁外快照整体回写，构造必注入 logger 写入必留痕，自愈空闲判定须对全部车道在飞经既有权威判据复核禁单一计数器与流新鲜度单独判在飞 |
+| [ADR-175](ADR-175-code-fix-lane-framework-batch-loop-mergeback-ironrule.md) | accepted | code-fix 车道框架编排一批一 run 不占 spec 预算，未过全量回归不合回不置终态，零产物行与零有效修复双重白洗防线，批收尾必释放 worktree 锁，进度分母按激活链身份定格 |
+| [ADR-176](ADR-176-impl-review-parallel-lane-join-existing-exit.md) | accepted | 长耗时收尾审查摘出实现 run 为框架并行车道（merge-back 后与 tester 同点启动审分支 head），join 于 testing 出口、打回复用 bug_found 零新状态、修轮上限 1，指纹陈旧 fail-closed、车道失败 fail-open 留痕 |
+| [ADR-177](ADR-177-visibility-artifacts-soft-constraint-no-hard-gate.md) | accepted | 为可视化新增的落盘是软约束（守卫只查格式违规仅 WARNING、缺失零拦截），权威判定已存在的项读侧合成禁框架新增写者，历史数据 fail-open 零新增打回循环 |
+| [ADR-178](ADR-178-hosting-criterion-process-topology-not-inherited-env.md) | accepted | 实例托管形态判据读父进程身份（/proc comm 恰等匹配）不用可继承环境变量（tmux/shell 传播污染双向误判），判据落代码为根本修复、入口 env 前缀只是双保险，读取失败偏向防泄漏 |
+| [ADR-179](ADR-179-adjudication-correction-write-read-same-layer.md) | accepted | 裁决修正写入层=守卫读取层（source 三态分流，branch 无落盘禁写主树就地生效），核心不变量「修正被执行⇔下次读取可见」，复发熔断独立计数禁复用可清零字段，跨轮凭据核销需替代路径真实存在，降级必留痕 |
+| [ADR-180](ADR-180-manual-trigger-override-param-keeps-guard-chain.md) | accepted | 手动触发复用编排器单一入口临时授权成参（缺省关），只放宽调度门槛不跳过安全链（失败保留/契约 fail-closed/单飞照常），结果文件+请求时间戳回链防陈旧结果误读 |
+| [ADR-181](ADR-181-adjudication-choices-registry-snapshot-atomic-resolve.md) | accepted | 人工裁决选择题化：静态注册表共同事实源，choices 写告警时快照进记录（历史不被注册表演进改写），resolve 单端点原子编排动作+推进+handled+留痕，豁免推进走状态机合法路径 |
+| [ADR-182](ADR-182-inrun-selfcheck-production-validator-single-source.md) | accepted | run 内自证入口=生产校验体的模块级 CLI 出口（同一函数对象禁复制逻辑），契约正反例动态注入禁双源，回归判定责任单点化到验证链，读侧优先级=框架车道产物>run 内自查>pending |
+| [ADR-183](ADR-183-full-chain-model-unavailable-attribution-no-same-cause-redispatch.md) | accepted | 候选链尾模型仍被拒→失败归因必含「全链模型不可用」、派发器禁同因重派（阻断冷却周期重撞循环），链内切换不递增瞬断/重派计数，运行时链摘除为人工运维步骤不进门禁 |
+| [ADR-184](ADR-184-mergeback-wip-overlap-precheck-human-escalation-default.md) | accepted | merge-back WIP 重叠交集非空不发 merge，缺省处置从 auto 静默收纳改为人工升级拦截（choices 告警附交集清单），bypass 逃生门，闸门优先序不变 |
+| [ADR-185](ADR-185-restart-drain-window-independent-key-ordering-constraint.md) | accepted | restart 排水窗口独立键与常规停机窗分离（禁一键两义），新增时间窗必须显式声明与既有协调窗口的次序不等式保证监督者后动，restart 流程广播 checkpoint 后短窗排水超窗强杀 |
+| [ADR-186](ADR-186-verdict-cache-quadruple-key-fail-closed.md) | accepted | verdict 缓存键=（场景id,内容指纹,构建指纹,验证配置指纹）四元组全等才采信、存疑 fail-closed，PASS 判定同样入缓存（否则读侧无据），重验集=失败∪受影响∪前置链 |
+| [ADR-187](ADR-187-verify-lane-parallelization-ready-state-dispatch-capped-exemption.md) | accepted | 验证链并行化：出题挂 ready 态吃实现排队窗口，就绪短路复用既有校验禁双标准，槽位豁免带独立在飞上限防挤占网关，judge 轮内重裁决阈值先于 spec 级硬上限、低置信优先证据扩充 |
+| [ADR-188](ADR-188-underlying-signal-type-additive-field-no-top-level-replace.md) | accepted | 包装通道透传底层信号类型用独立附加字段禁顶层替换（防记账/节流/展示互吞），发现靠消费侧反查未处置记录取最新并排除自产记录，复位门判定点单点扩展 |
+| [ADR-189](ADR-189-lane-heartbeat-over-probe-exemption-terminal-last-line-invariant.md) | accepted | 最小生命周期车道运行期必须发心跳消费既有活动判据——治理探针误报优先补活性信号禁加豁免（豁免无 boot 恢复会遮蔽重启后真孤儿），停跳先于终态写保「终态末行后置」不变量 |
