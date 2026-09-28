@@ -436,7 +436,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     } catch {
       // 进度读取失败静默（非关键路径）
     }
-  }, [active, project, loadItems]);
+  }, [active, project]);
 
   // 数据加载 effect（仅依赖 active/project/过滤条件）——与 SSE 订阅分离
   // （code-review item 797015d4ba47）：旧实现把 SSE/心跳与数据拉取放在同一

@@ -4293,6 +4293,9 @@ class FenixDaemon:
                         f"supervisor SIGKILL 等待窗口 {sigkill_wait}s < 排水窗口 "
                         f"{drain_seconds}s + 余量 {SUPERVISOR_KILL_MARGIN_SECONDS}s —— "
                         f"排水期可能被截断，建议重启 supervisor 使配置生效"
+                        f"（注意：supervisor 仅读项目级 .fenix/config.yaml 的 "
+                        f"admin.shutdown_drain_seconds，该值只配在用户级 "
+                        f"~/.fenix/config.yaml 时须同步写入项目级配置，重启无效）"
                     )
                 # started_at 与 daemon_started 漂移判定（残留自旧进程）
                 daemon_started = PROJECT_ROOT / ".fenix" / "daemon_started"

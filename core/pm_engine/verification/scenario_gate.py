@@ -116,6 +116,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     pipeline._last_freeze_rejected = []
     pipeline._last_freeze_rejected_covers = set()
     pipeline._last_scenario_diff = None
+    # code-review f0309026fbc9：_last_interaction_contract 同属跨 spec 串行复用的
+    # 实例缓存，冻结轮开始时一并清空——本函数早退或后续契约校验异常跳过时，
+    # 不遗留上一 spec/上一轮的 ContractResult（赋值点在
+    # _apply_interaction_contract，其入口另有同款清空）。
+    pipeline._last_interaction_contract = None
 
     verify_dir = pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name
     scenarios_path = verify_dir / "test_scenarios.json"
@@ -241,7 +246,19 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         )
 
     # 写回 scenarios.json（原子写；首轮写入 / 合并追加 / 补齐后稳定集）
-    path = save_scenario_set(pipeline._context.project_root, diff.scenario_set)
+    # code-review a06e1d42116f：3.6 口径对齐——本写点原为裸调，OSError 上抛后
+    # 只被调用方外层 except 以 WARNING 收场，冻结持久化失败无 ERROR 归因，
+    # 还会连坐跳过下方 test_scenarios.json 合法子集写回。比照同函数各写点：
+    # ERROR 留痕后继续本轮（持久化集未更新，下轮 diff 退化首轮全量口径）。
+    try:
+        path = save_scenario_set(pipeline._context.project_root, diff.scenario_set)
+    except OSError as e:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"持久化场景集写回失败 '{spec_name}'（scenarios.json 未更新，"
+            f"下轮 diff 退化为首轮全量口径）: {e}",
+        )
+        path = scenarios_path  # 写失败占位：供返回值 path 字段（当前无消费方）
     # 全量场景定义备份（_scenarios_full.json）：供无理由缺场景时按持久化集
     # 补齐 test_scenarios.json 的原始定义（design D2：不丢回归面）。
     # 仅当本轮未删减既有场景时更新备份（保留最全的历史定义）。
@@ -363,6 +380,25 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 f"- 补齐写回剔除 {len(write_rejected)} 条非法条目（未落盘）："
                 f"{'、'.join(write_rejected)}"
             )
+        # 空集兜底（3.5/3.8 同款，code-review fc4dcdc2fcf0）：收编写回 schema 门
+        # 若把合法集剔空（备份条目全坏等），MUST NOT 把空数组写入
+        # test_scenarios.json——0 场景经 engine.run([]) 产出无 env_error 的
+        # 全绿报告、会被洗白门 fail-open 放行判 verified。比照第一遍空集
+        # abort 语义：不写文件，以结构化信号交调用点退回 plan / 拒绝重入。
+        if not write_valid:
+            combined_rejected = rejected + write_rejected
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"补齐写回后无合法场景 '{spec_name}'（过滤 pass {len(rejected)} "
+                f"条 + 补齐收编剔除 {len(write_rejected)} 条，写回集为空）— "
+                f"不写空文件，退回 plan 重排: {'、'.join(combined_rejected)}",
+            )
+            return {
+                "aborted": "no_valid_scenarios",
+                "rejected": combined_rejected,
+                "total": len(planner_scenarios),
+                "path": str(scenarios_path),
+            }
         try:
             # frozen-scenario-schema-migration 2.1：补齐写回同样恒定写入
             # schema_version（备份取回条目可能为旧 schema，先迁移再落盘）
@@ -447,6 +483,9 @@ def _apply_interaction_contract(pipeline, spec_name: str) -> dict:
         {"ok": True} 或 {"ok": False, "result": ContractResult,
         "feedback": <退回 plan 的反馈文本>, "uncovered": [元素标识]}
     """
+    # code-review f0309026fbc9：入口先清空实例缓存——本函数任何异常跳过路径
+    # （下方 except 直接 return）不得遗留上一 spec/上一轮的 ContractResult。
+    pipeline._last_interaction_contract = None
     from core.interaction_contract import (
         validate_interaction_coverage,
         build_replan_feedback,
@@ -593,10 +632,12 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
     # 单文件幂等提交器补上该缝（每报告至多一段 → 额外提交至多一次）。失败
     # 降级由提交器内建（git 失败仅 WARNING、非 git 项目静默跳过），此处再兜
     # 意外异常：入库动作绝不影响渲染写盘结论与验证主流程。
-    from core.verify_report import _commit_verification_report
+    # code-review 14bc75c819c6：跨模块消费改走公开别名 commit_verification_report，
+    # 不再依赖 core.verify_report 私有符号（模块边界风格）。
+    from core.verify_report import commit_verification_report
 
     try:
-        _commit_verification_report(
+        commit_verification_report(
             pipeline._context.project_root, spec_name, pipeline._context.logger
         )
     except Exception as e:  # pragma: no cover - 防御分支（提交器已内建降级）
@@ -622,6 +663,7 @@ def _write_verify_contract_missing(
         # 文件访问，磁盘满或权限异常时若在 try 外抛出，会从本函数穿透契约
         # fail-fast 出口的调用方（验证判定主链），违背「信号通道自身不可
         # 影响验证判定」的 docstring 承诺。
+        # [fenix-ignore:5028cf9445b7] AdminStore 构造已随 item 105c8965ec12（41d7e6713728）移入 try，构造抛错不再上抛，本条目不成立
         store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
         store.append(
             {

@@ -16,6 +16,7 @@ fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal / fix-supe
 """
 
 import argparse
+import fcntl
 import json
 import os
 import signal
@@ -119,14 +120,21 @@ def _fuse_blocked() -> bool:
     return False
 
 
-def _write_fuse_marker(fail_count: int) -> None:
-    """原子写入熔断标记（.fenix/supervisor_fused，含时间戳/失败次数/pid）。"""
-    data = {"pid": os.getpid(), "failures": fail_count, "created": _now_iso()}
-    target = _fuse_marker()
+def _atomic_write_json(target: Path, data: dict, tmp_prefix: str, label: str) -> bool:
+    """原子写入 JSON 文件的共用实现（mkstemp → fsync → os.replace，失败清理 tmp）。
+
+    code-review 67015590c6ce：_write_fuse_marker / _write_supervisor_runtime /
+    _write_daemon_runtime 三处近乎逐行相同的原子写样板收敛为单一实现，消除
+    「同型逻辑多处内联、只改一处不改其余」的漂移面（本脚本漂移前科见
+    _terminate_daemon docstring 引用的 interrupt-recovery-preserve D2）。
+    mkdir 也在保护内（.fenix 只读/权限异常等）：任一步 OSError → 清理 tmp、
+    经 log 记 ``{label} write failed (non-blocking)`` 并返回 False，不炸穿
+    调用方；成功返回 True（成功日志文案各异，由各调用方自带）。
+    """
     try:
         FENIX_DIR.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=".supervisor_fused.",
+            prefix=tmp_prefix,
             suffix=".tmp",
             dir=str(FENIX_DIR),
         )
@@ -142,9 +150,17 @@ def _write_fuse_marker(fail_count: int) -> None:
             except OSError:
                 pass
             raise
-        log(f"fuse marker written: {target} (failures={fail_count})")
+        return True
     except OSError as e:
-        log(f"fuse marker write failed (non-blocking): {e}")
+        log(f"{label} write failed (non-blocking): {e}")
+        return False
+
+
+def _write_fuse_marker(fail_count: int) -> None:
+    """原子写入熔断标记（.fenix/supervisor_fused，含时间戳/失败次数/pid）。"""
+    data = {"pid": os.getpid(), "failures": fail_count, "created": _now_iso()}
+    if _atomic_write_json(_fuse_marker(), data, ".supervisor_fused.", "fuse marker"):
+        log(f"fuse marker written: {_fuse_marker()} (failures={fail_count})")
 
 
 def _write_fuse_alert() -> None:
@@ -199,6 +215,17 @@ def _load_shutdown_drain_seconds() -> int:
 
     解析失败（文件缺失/非 YAML/字段缺失/非法值）回退 0 —— 调用方按
     ``0 = 现行快速停机`` 语义回退 DEFAULT_SIGKILL_WAIT_SECONDS，保持向后兼容。
+
+    已知限制（code-review 7be89eb40a71）：本函数只读**项目级**
+    .fenix/config.yaml，不与用户级 ~/.fenix/config.yaml 深合并——与 daemon 侧
+    ``_shutdown_drain_seconds``（经 ConfigLoader.resolve_config 合并读取、
+    缺省 1800）配置源不同。admin.shutdown_drain_seconds 只配在用户级时，
+    daemon 按合并值排水而本侧按「缺失回退 0」走 60s SIGKILL 等待，排水会被
+    截断；daemon 启动自检 ``_check_supervisor_drain_consistency`` 的 WARNING
+    文案已指向该限制。未收敛同源的原因：合并读取（含 1800 缺省）会改变
+    「项目级未配置 → 60s」既有契约，且使 TestSupervisorWait 的回退断言依赖
+    宿主用户级配置（conftest 不隔离 HOME），影响面大于收益，先以标注 +
+    自检指向缓解。
     """
     cfg_path = FENIX_DIR / "config.yaml"
     try:
@@ -339,34 +366,13 @@ def _write_supervisor_runtime() -> None:
     script_hash = _script_hash()
     if script_hash:
         data["script_hash"] = script_hash
-    target = _supervisor_runtime_file()
-    try:
-        # mkdir 也在保护内（与 _write_fuse_marker 对齐）：.fenix 只读/权限异常时
-        # 本函数按契约降级为日志，不炸穿 main 循环致看门狗无痕退出。
-        FENIX_DIR.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=".supervisor_runtime.",
-            suffix=".tmp",
-            dir=str(FENIX_DIR),
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, str(target))
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+    if _atomic_write_json(
+        _supervisor_runtime_file(), data, ".supervisor_runtime.", "supervisor_runtime"
+    ):
         log(
             f"supervisor_runtime written: sigkill_wait={data['sigkill_wait']}s, "
             f"started_at={data['started_at']}, pid={data['pid']}"
         )
-    except OSError as e:
-        log(f"supervisor_runtime write failed (non-blocking): {e}")
 
 
 def start_daemon():
@@ -410,34 +416,38 @@ def _daemon_runtime_file() -> Path:
     return FENIX_DIR / "daemon_runtime.json"
 
 
+def _proc_starttime(pid: int):
+    """读 /proc/<pid>/stat 的进程启动时刻（字段 22，系统启动后的时钟节拍数）。
+
+    pid 回收精判用（code-review cf31d38b22a1）：pid 被复用后新进程的 starttime
+    必然不同（内核单调递增），据此可判定 daemon_runtime.json 记录的 pid 是否
+    仍是当年拉起的那个 daemon 进程。comm 字段（第 2 项）可含空格/括号，故以
+    最后一个 ')' 切开，其后首项为 state（字段 3），starttime 相对索引 19。
+    读取失败（进程已退 / 非 Linux / 权限）返回 None。
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_bytes()
+        fields = stat.rsplit(b")", 1)[1].split()
+        return int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def _write_daemon_runtime(pid: int) -> None:
     """daemon 拉起成功后原子记录其 pid（temp + rename，供重启后收编检测）。
 
     写入失败降级日志：收编检测退化为旧行为（无条件拉起），不炸穿主循环。
+    proc_starttime（code-review cf31d38b22a1）：写盘时一并记录该进程的
+    /proc/<pid>/stat 启动时刻，收编侧据此精判 pid 是否被回收复用（读取失败
+    省略该键，收编侧回退既有 cmdline 宽松校验，见 _adopt_leftover_daemon）。
     """
     data = {"pid": pid, "started_at": _now_iso()}
-    target = _daemon_runtime_file()
-    try:
-        FENIX_DIR.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=".daemon_runtime.",
-            suffix=".tmp",
-            dir=str(FENIX_DIR),
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, str(target))
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
-        log(f"daemon_runtime write failed (non-blocking): {e}")
+    starttime = _proc_starttime(pid)
+    if starttime is not None:
+        data["proc_starttime"] = starttime
+    _atomic_write_json(
+        _daemon_runtime_file(), data, ".daemon_runtime.", "daemon_runtime"
+    )
 
 
 def _adopt_leftover_daemon() -> None:
@@ -446,11 +456,14 @@ def _adopt_leftover_daemon() -> None:
     读 daemon_runtime.json 记录的 pid：文件缺失/损坏按无旧 daemon 处理；
     os.kill(pid, 0) 失败（进程不存在，正常重启路径）同样跳过。存活则按既有
     停止路径同款 SIGTERM → 等待（sigkill_wait 窗口）→ 超时 SIGKILL 收编，
-    等待与收编均不计入启动失败熔断。pid 回收误判（存活但非 daemon）用
-    /proc/<pid>/cmdline 含 fenixd 字样校验缓解，cmdline 不可读按存活保守
-    处理（宁可多等不双拉）。os.kill(pid, 0) 对 zombie 仍返回真，但旧
-    supervisor 死后 daemon 已 re-parent 由 init 收尸，本进程通常见不到
-    zombie，不特判。
+    等待与收编均不计入启动失败熔断。pid 回收误判（存活但非 daemon）优先比对
+    daemon_runtime.json 记录的 /proc/<pid>/stat 启动时刻（proc_starttime，
+    code-review cf31d38b22a1：starttime 内核单调，pid 被编辑器/tail 等无关
+    进程复用后必然不同，不再误发 SIGTERM/SIGKILL）；记录缺失（旧版 runtime
+    文件 / 写盘时读取失败）回退 cmdline 含 fenixd 字样的宽松校验（仅缓解），
+    cmdline 不可读按存活保守处理（宁可多等不双拉）。os.kill(pid, 0) 对
+    zombie 仍返回真，但旧 supervisor 死后 daemon 已 re-parent 由 init 收尸，
+    本进程通常见不到 zombie，不特判。
     """
     try:
         data = json.loads(_daemon_runtime_file().read_text(encoding="utf-8"))
@@ -463,13 +476,24 @@ def _adopt_leftover_daemon() -> None:
         os.kill(pid, 0)
     except OSError:
         return
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-        if b"fenixd" not in cmdline:
-            log(f"daemon_runtime pid {pid} alive but not fenixd (pid reuse) — skip adopt")
+    recorded_starttime = data.get("proc_starttime")
+    if isinstance(recorded_starttime, int):
+        # 不等（含现读为 None：进程恰在本窗口退出/不可读）均不收编——
+        # 不发信号是两种解释下都安全的取向（进程已退则无需收编）
+        if _proc_starttime(pid) != recorded_starttime:
+            log(
+                f"daemon_runtime pid {pid} alive but start time mismatch "
+                "(pid reuse) — skip adopt"
+            )
             return
-    except OSError:
-        log(f"daemon_runtime pid {pid} alive, cmdline unreadable — adopt conservatively")
+    else:
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+            if b"fenixd" not in cmdline:
+                log(f"daemon_runtime pid {pid} alive but not fenixd (pid reuse) — skip adopt")
+                return
+        except OSError:
+            log(f"daemon_runtime pid {pid} alive, cmdline unreadable — adopt conservatively")
     log(f"leftover daemon (pid {pid}) detected — SIGTERM before starting a new one")
     try:
         os.kill(pid, signal.SIGTERM)
@@ -546,6 +570,40 @@ def _terminate_daemon(proc, sigkill_wait: int) -> None:
             )
 
 
+# ── supervisor 单实例锁（code-review 8b00c1d597c4）────────────────────────
+# 锁 fd 保持全局引用，进程生命周期内持有，退出时 OS 自动释放（daemon 侧
+# _acquire_singleton_lock 同款形态）。双活 supervisor 的危害链：第二个实例
+# 拉起的 daemon 因 daemon 单例锁秒退 → 被按启动失败连计 3 次触发假熔断
+# critical 告警（服务实际经第一个 supervisor 健康）；且 _fuse_blocked 按 pid
+# 不匹配会删掉第一个 supervisor 的熔断标记，熔断状态被并发方静默清除。在
+# 入口排他掉，收编/熔断逻辑不变。
+_LOCK_FD = None
+
+
+def _acquire_supervisor_lock() -> None:
+    """获取 supervisor 单实例 flock 排他锁，第二个实例打印提示并退出（非零码）。
+
+    锁文件 .fenix/supervisor.lock，flock 非阻塞排他；持锁 fd 存入全局
+    _LOCK_FD 保活至进程退出（中途关闭即放锁）。须在 _write_supervisor_runtime()
+    与 start_daemon() 之前调用——第二实例不得覆写首个实例的 runtime 自报、
+    不得参与 daemon 拉起/收编。
+    """
+    global _LOCK_FD
+    lock_path = FENIX_DIR / "supervisor.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        print(
+            f"Fenixd supervisor 已在运行（单实例锁被持有: {lock_path}），本实例退出",
+            file=sys.stderr,
+        )
+        log("another supervisor instance holds the singleton lock — exiting")
+        sys.exit(1)
+    _LOCK_FD = fd
+
+
 def main():
     # 启动守卫（fix-supervisor-hosting-chain D1）：解析出的项目根下必须存在
     # .fenix/（目录或指向目录的软链），缺失或为普通文件时打印含解析来源与解析
@@ -563,6 +621,8 @@ def main():
         )
         sys.exit(2)
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
+    # 单实例锁（code-review 8b00c1d597c4）：先于自报/收编/拉起，双活实例在此退出
+    _acquire_supervisor_lock()
     log(f"supervisor starting (pid {os.getpid()}, root {PROJECT_ROOT})")
     # 启动自报：SIGKILL 等待窗口 + 启动时间（fix-daemon-lifecycle-races D2）。
     # daemon 启动一致性自检将读取该文件，缺失/不一致 → WARNING 提示重启 supervisor。

@@ -439,6 +439,10 @@ async function launchChromeExtension(distPath, opts = {}) {
 // 网络日志设置
 // ============================================================================
 
+// 敏感键名词表：认证/Cookie/令牌/密钥/凭据类，请求头与 URL 查询串脱敏共用同一口径
+// （key 子串已覆盖 apikey/access_key，token 已覆盖 access_token）
+const SENSITIVE_KEY_PATTERN = /auth|cookie|token|key|secret|credential/;
+
 /**
  * 脱敏请求/响应头：保留键名，敏感键（认证/Cookie/密钥类）的值替换为固定占位符
  * networkLog 会随验证产物落盘（--output 文件或 stdout），不落盘密钥；
@@ -448,11 +452,38 @@ function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== 'object') return headers;
   const sanitized = {};
   for (const [name, value] of Object.entries(headers)) {
-    sanitized[name] = /auth|cookie|token|key|secret/.test(name.toLowerCase())
+    sanitized[name] = SENSITIVE_KEY_PATTERN.test(name.toLowerCase())
       ? '[REDACTED]'
       : value;
   }
   return sanitized;
+}
+
+/**
+ * 脱敏 URL 查询串：保留路径与非敏感参数，键名命中敏感词的参数值替换为占位符
+ * 外部 API 常把凭据放在 query（如 ?key=...、?access_token=...），与请求头同口径在落盘前脱敏；
+ * 解析失败时原样返回（采集侧 isExternalUrl 已按原始 URL 判定，脱敏不影响过滤结果）
+ */
+function sanitizeUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (!parsed.search) return url;
+  const params = new URLSearchParams(parsed.search);
+  let redacted = false;
+  for (const name of [...params.keys()]) {
+    if (SENSITIVE_KEY_PATTERN.test(name.toLowerCase())) {
+      params.set(name, '[REDACTED]');
+      redacted = true;
+    }
+  }
+  if (!redacted) return url;
+  parsed.search = params.toString();
+  return parsed.toString();
 }
 
 /**
@@ -465,7 +496,7 @@ function setupNetworkLogging(context, networkLog) {
     if (isExternalUrl(req.url())) {
       networkLog.push({
         type: 'request',
-        url: req.url(),
+        url: sanitizeUrl(req.url()),
         method: req.method(),
         headers: sanitizeHeaders(req.headers()),
         timestamp: Date.now(),
@@ -477,7 +508,7 @@ function setupNetworkLogging(context, networkLog) {
     if (isExternalUrl(res.url())) {
       networkLog.push({
         type: 'response',
-        url: res.url(),
+        url: sanitizeUrl(res.url()),
         // 直接从 response 关联的 request 对象取 method：同 URL 并发时按 url 扫描会取错条目，且长采集下为 O(n^2)
         method: res.request().method() || 'GET',
         status: res.status(),
@@ -492,7 +523,7 @@ function setupNetworkLogging(context, networkLog) {
     if (isExternalUrl(req.url())) {
       networkLog.push({
         type: 'failure',
-        url: req.url(),
+        url: sanitizeUrl(req.url()),
         method: req.method(),
         error: req.failure()?.errorText || 'Unknown error',
         timestamp: Date.now(),
@@ -722,12 +753,23 @@ function checkManifestHostPermissions(manifestPath, reasons) {
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     const hostPermissions = manifest.host_permissions || [];
-    // 过滤掉通配符域名（如 <all_urls>），只检查具体的外部域名
-    const externalHosts = hostPermissions.filter(h =>
-      h.includes('://') &&
-      !h.includes('<all_urls>') &&
-      !h.includes('localhost')
-    );
+    // 过滤掉通配符域名（如 <all_urls>），只检查具体的外部域名；
+    // 回环豁免与采集侧 isLocalHostname 收敛为同一口径（code-review item
+    // 5f5e0e726788）：解析 match pattern 的 host 段（scheme://host/path，去端口）
+    // 后判定，避免 http://127.0.0.1/*、http://[::1]/* 这类纯本机权限被判为外部域名
+    const externalHosts = hostPermissions.filter(h => {
+      if (!h.includes('://') || h.includes('<all_urls>')) return false;
+      let host = (h.split('://')[1] || '').split('/')[0];
+      if (host.startsWith('[')) {
+        // [::1]:8080 形态取方括号内主机（isLocalHostname 自行去括号归一化）
+        const end = host.indexOf(']');
+        if (end >= 0) host = host.slice(0, end + 1);
+      } else if (host.includes(':')) {
+        // 普通主机去端口后再判定（localhost:8080、127.0.0.1:9944 等）
+        host = host.slice(0, host.lastIndexOf(':'));
+      }
+      return host.length > 0 && !isLocalHostname(host);
+    });
     if (externalHosts.length > 0) {
       reasons.push(`host_permissions: ${externalHosts.join(', ')}`);
     }

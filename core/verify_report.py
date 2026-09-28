@@ -948,6 +948,12 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
         _warn(f"git 入库异常: {e}")
 
 
+# code-review 14bc75c819c6：跨模块（pm_engine.verification.scenario_gate 等）复用
+# 本提交器统一走公开名，模块边界不依赖下划线私有符号；私有名保留给模块内
+# 既有调用点。别名直引同一实现，签名与行为随本体，无任何包装差异。
+commit_verification_report = _commit_verification_report
+
+
 def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     """验证报告产物闸门：裁决放行前调用。
 

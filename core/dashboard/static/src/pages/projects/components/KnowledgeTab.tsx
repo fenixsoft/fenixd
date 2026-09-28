@@ -245,7 +245,8 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
       setView({ kind: 'page', path: data.path, content: data.content });
     } catch (e) {
       if (seq !== seqRef.current) return;
-      // 文件缺失等：提示但不打断当前视图
+      // 文件缺失等：不置全局 loadError 态，而是整页切换为 page 视图、以引用
+      // 块形式提示错误（原视图被替换，可经「返回总目录」回退）
       const msg = e instanceof ApiError ? e.message : String(e);
       setView({ kind: 'page', path, content: `> 加载失败：${msg}\n` });
     }
