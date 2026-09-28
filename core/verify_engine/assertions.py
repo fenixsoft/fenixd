@@ -43,6 +43,20 @@ class AssertionRunner:
             return None
         return await self._locator(page, selector).evaluate(js, *args)
 
+    @staticmethod
+    def _int_or_none(value: Any):
+        """数值参数预校验：可安全 int() 的返回 int，否则返回 None。
+
+        供 count/expected/timeout/interval 等数字参数进轮询前预检使用，
+        非数值形态（如 "two"/null/"3s"）在此被拦下按确定性失败上报，
+        而不是在方法体内抛 ValueError/TypeError 被 run() 包成缺 selector
+        的「断言执行异常」。
+        """
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     # ── 断言执行入口 ──────────────────────────────────────────
 
     async def run(self, page, assertions: list[dict]) -> list[dict]:
@@ -121,7 +135,22 @@ class AssertionRunner:
         值判 fail。
         """
         selector = a["selector"]
-        expected = int(a.get("count", a.get("expected", 1)))
+        count_field = "count" if "count" in a else "expected"
+        expected_raw = a.get(count_field, 1)
+        expected = self._int_or_none(expected_raw)
+        if expected is None:
+            # 非数值期望是确定性配置错误：int() 在方法体内抛 ValueError/
+            # TypeError 会被 run() 包装成无 selector 的「断言执行异常」，
+            # 无法定位是哪个断言的参数非法；比照 _assert_z_index_order 的
+            # 非法 operator 口径，进轮询前返回带 selector 与参数名的失败。
+            return {
+                "type": "element_count",
+                "layer": 1,
+                "selector": selector,
+                **{count_field: expected_raw},
+                "pass": False,
+                "error": f"非法 {count_field}: {expected_raw!r}，须为数值",
+            }
         locator = page.locator(selector)
         # [fenix-ignore:87212a1756aa] 条目基于旧时点代码：此处已非瞬时一次性读数，不等时按 element_not_exist 同款 10 次×300ms 轮询收敛
         actual = await locator.count()
@@ -473,7 +502,7 @@ class AssertionRunner:
         """断言元素文字内容匹配。
 
         mode: exact（精确）/ contains（包含）/ regex（正则）
-        对 input/textarea 元素自动使用 value 属性（而非 textContent）。
+        对 input/textarea/select 元素自动使用 value 属性（而非 textContent）。
 
         与 element_visible 一致，带等待/重试：异步渲染（如 WebCrypto 密码
         哈希 + 密钥加密的用户创建流程）完成后 DOM 才更新，一次性读取会
@@ -485,8 +514,23 @@ class AssertionRunner:
         # json_path/sse_event_matches 的空串 exact 比较口径一致。
         expected = a.get("expected", None)
         mode = a.get("mode", "exact")
-        timeout_ms = int(a.get("timeout", 3000))
-        interval_ms = int(a.get("interval", 200))
+        # 数值参数预校验（同 element_count 的 count/expected 口径）：非数值
+        # timeout/interval 会让 int() 在方法体内抛 ValueError/TypeError，被
+        # run() 包装成无 selector 的「断言执行异常」，进轮询前显式失败。
+        timeout_ms = self._int_or_none(a.get("timeout", 3000))
+        interval_ms = self._int_or_none(a.get("interval", 200))
+        if timeout_ms is None or interval_ms is None:
+            bad_param = "timeout" if timeout_ms is None else "interval"
+            return {
+                "type": "text_match",
+                "layer": 3,
+                "selector": selector,
+                "expected": expected,
+                "actual": "",
+                "mode": mode,
+                "pass": False,
+                "error": f"非法 {bad_param}: {a.get(bad_param)!r}，须为数值（毫秒）",
+            }
 
         if expected is None:
             # 显式失败而非静默恒真：expected 未设置时与 dom_structure 的缺参
@@ -500,6 +544,21 @@ class AssertionRunner:
                 "mode": mode,
                 "pass": False,
                 "error": "缺少 expected 字段",
+            }
+        if not isinstance(expected, str):
+            # 非字符串 expected（planner 误写 JSON 数字/布尔等）是确定性配置
+            # 错误：_text_matches 里 expected.strip()/子串比较会抛
+            # AttributeError/TypeError，被轮询循环当「元素尚未渲染」空转至
+            # 超时，与下方非法正则/非法 mode 的预检口径一致，进轮询前显式失败。
+            return {
+                "type": "text_match",
+                "layer": 3,
+                "selector": selector,
+                "expected": expected,
+                "actual": "",
+                "mode": mode,
+                "pass": False,
+                "error": f"非法 expected: {expected!r}，须为字符串",
             }
         if expected == "" and mode in ("contains", "regex"):
             # 显式空串对 contains/regex 恒真（"" 是任意文本的子串、空串正则
@@ -561,7 +620,7 @@ class AssertionRunner:
                 # 突破预算，故显式压到单轮间隔内，交由轮询兜底。
                 # 注意不能像 attribute_match 那样进轮询前先查存在性快速
                 # 失败——本方法的等待重试正是为异步渲染设计的。
-                # input/textarea 元素使用 value 属性
+                # input/textarea/select 元素使用 value 属性
                 tag = await self._locator(page, selector).evaluate(
                     "el => el.tagName?.toLowerCase()", timeout=interval_ms
                 )
@@ -692,8 +751,22 @@ class AssertionRunner:
         # 属性可能由前端异步写入（fetch 回调设 href/data-*、状态码回填），
         # 一次性读取会读到旧值产出确定性判档的假失败；比照 text_match 做
         # deadline 轮询，超时仍不等再判 fail。
-        timeout_ms = int(a.get("timeout", 3000))
-        interval_ms = int(a.get("interval", 200))
+        # 数值参数预校验（同 text_match 口径）：非数值 timeout/interval 会让
+        # int() 在方法体内抛 ValueError/TypeError，被 run() 包装成无 selector
+        # 的「断言执行异常」，进轮询前显式失败。
+        timeout_ms = self._int_or_none(a.get("timeout", 3000))
+        interval_ms = self._int_or_none(a.get("interval", 200))
+        if timeout_ms is None or interval_ms is None:
+            bad_param = "timeout" if timeout_ms is None else "interval"
+            return {
+                "type": "attribute_match",
+                "layer": 3,
+                "selector": selector,
+                "attribute": attr,
+                "expected": expected,
+                "pass": False,
+                "error": f"非法 {bad_param}: {a.get(bad_param)!r}，须为数值（毫秒）",
+            }
         deadline = time.monotonic() + timeout_ms / 1000
         actual = None
         last_error = ""

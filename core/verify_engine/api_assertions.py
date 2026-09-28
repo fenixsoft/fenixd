@@ -22,16 +22,9 @@ import json
 import re
 from typing import Any
 
-ASSERTION_LAYERS = {
-    "status_code": 1,
-    "sse_event_count": 1,
-    "json_path": 3,
-    "response_header": 3,
-    "body_contains": 3,
-    "json_schema": 3,
-    "sse_event_matches": 3,
-    "latency_under": 4,
-}
+# 词表 layer 表单一权威源在 scenarios.py（KIND_ASSERTION_LAYERS 的 api 侧），
+# 此处别名导入不再维护副本，避免新增 api 断言类型时两表漂移、layer 静默落 0
+from .scenarios import API_ASSERTION_LAYERS as ASSERTION_LAYERS
 
 # jsonschema 缺省缺失不算词表错误——直到 json_schema 断言被使用才报错
 _JSONSCHEMA_OK = None
@@ -48,6 +41,23 @@ def json_schema_available() -> bool:
         except ImportError:
             _JSONSCHEMA_OK = False
     return _JSONSCHEMA_OK
+
+
+# ── regex 预检（API 侧四处内容断言共用）────────────────────────
+
+
+def _compile_regex(pattern: str) -> tuple[re.Pattern | None, str | None]:
+    """进匹配前编译预检：非法正则是确定性配置错误。
+
+    此前各 regex 分支 ``except re.error: passed = False`` 静默吞错，结果与
+    「内容确实不匹配」无法区分，judge 会把 planner 写错的正则误归因为产品
+    缺陷；统一预检后非法时返回带「非法正则」error 的确定性失败（口径对齐
+    web 侧 _assert_text_match）。返回 (compiled, None)；非法时 (None, 文案)。
+    """
+    try:
+        return re.compile(pattern), None
+    except re.error as e:
+        return None, f"非法正则: {e}"
 
 
 # ── JSONPath 求值（点路径子集）──────────────────────────────────
@@ -241,14 +251,25 @@ class ApiAssertionRunner:
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内事件数不少于下限（第1层存在性）。"""
         events = resp.get("events") or []
-        minimum = int(a.get("min", 1))
-        return {
+        raw_min = a.get("min", 1)
+        # fail-closed：min 非数字时不得让 int() 抛 ValueError 被 run() 包成
+        # 笼统「断言执行异常」，judge 须能区分场景配置错误与产品缺陷
+        # （口径对齐 _assert_latency_under 的 expected 预检）
+        try:
+            minimum = int(raw_min)
+        except (TypeError, ValueError):
+            minimum = None
+        actual = len(events)
+        result = {
             "type": "sse_event_count",
             "layer": 1,
             "min": minimum,
-            "actual": len(events),
-            "pass": len(events) >= minimum,
+            "actual": actual,
+            "pass": minimum is not None and actual >= minimum,
         }
+        if minimum is None:
+            result["error"] = f"sse_event_count 的 min 非数字（事件数下限）: {raw_min!r}"
+        return result
 
     # ═══════════════════════════════════════════════════════════════
     # 第3层：内容正确性（确定性，0误判）
@@ -330,12 +351,15 @@ class ApiAssertionRunner:
             # 与 sse_event_matches 口径对齐）
             passed = str(expected) in str(actual if actual is not None else "")
         else:  # regex
-            try:
+            pattern, regex_error = _compile_regex(str(expected))
+            if pattern is not None:
                 passed = bool(
-                    re.search(str(expected), str(actual if actual is not None else ""))
+                    pattern.search(str(actual if actual is not None else ""))
                 )
-            except re.error:
-                passed = False
+            else:
+                # 非法正则显式报错：与「内容确实不匹配」可区分，judge
+                # 不把场景配置错误误归因为产品缺陷
+                error = regex_error
         result = {
             "type": "json_path",
             "layer": 3,
@@ -370,10 +394,11 @@ class ApiAssertionRunner:
                 # expected 一并 str 归一（数值/布尔形态不抛 TypeError）
                 passed = str(expected) in str(actual)
             elif mode == "regex":
-                try:
-                    passed = bool(re.search(str(expected), str(actual)))
-                except re.error:
-                    passed = False
+                pattern, regex_error = _compile_regex(str(expected))
+                if pattern is not None:
+                    passed = bool(pattern.search(str(actual)))
+                else:
+                    error = regex_error
         else:
             # 头不存在与值不匹配区分归因（与 json_path 缺失分支口径对齐），
             # judge 无须从 actual=None 自行推断
@@ -407,10 +432,11 @@ class ApiAssertionRunner:
             # sse_event_matches 口径对齐）
             passed = str(expected) in str(body)
         elif mode == "regex":
-            try:
-                passed = bool(re.search(str(expected), str(body)))
-            except re.error:
-                passed = False
+            pattern, regex_error = _compile_regex(str(expected))
+            if pattern is not None:
+                passed = bool(pattern.search(str(body)))
+            else:
+                error = regex_error
         result = {
             "type": "body_contains",
             "layer": 3,
@@ -476,6 +502,16 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": f"schema 非法: {e.message}",
             }
+        except Exception as e:
+            # 终极兜底：schema 含不可解析 $ref 等校验器异常（具体类型随
+            # jsonschema 版本而异，如 RefResolutionError）也不得漏成笼统
+            # 「断言执行异常」，与上方 SchemaError 分支同口径归一
+            return {
+                "type": "json_schema",
+                "layer": 3,
+                "pass": False,
+                "error": f"schema 非法或校验器异常: {e}",
+            }
 
     async def _assert_sse_event_matches(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内存在与期望匹配的事件（data 字段）。"""
@@ -498,6 +534,13 @@ class ApiAssertionRunner:
             }
         # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐（未知 mode 不再静默）
         error = None if mode in ("exact", "contains", "regex") else f"未知 mode: {mode}"
+        # 非法正则进匹配前预检（口径对齐 web 侧 _assert_text_match）：逐事件
+        # 静默吞 re.error 会与「无事件匹配」混淆、误归因为产品缺陷
+        pattern = None
+        if mode == "regex" and error is None:
+            pattern, regex_error = _compile_regex(str(expected))
+            if pattern is None:
+                error = regex_error
         hits = []
         for ev in events:
             data = str(ev.get("data") or "")
@@ -506,10 +549,7 @@ class ApiAssertionRunner:
             elif mode == "contains":
                 matched = str(expected) in data
             elif mode == "regex":
-                try:
-                    matched = bool(re.search(str(expected), data))
-                except re.error:
-                    matched = False
+                matched = pattern is not None and bool(pattern.search(data))
             else:
                 matched = False
             if matched:
