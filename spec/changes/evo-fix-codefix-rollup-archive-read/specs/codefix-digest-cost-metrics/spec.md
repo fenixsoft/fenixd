@@ -2,9 +2,9 @@
 
 ## MODIFIED Requirements
 
-### Requirement: 链级 rollup 数据可达性
+### Requirement: 消化链级 rollup
 
-链终局 rollup 的 run 归档计数 SHALL 覆盖链中全部 run 不漏样本，包括已被 retention 移入 .fenix/runs/archive/ 的终态 run；仅当顶层与归档两处皆缺时方按零贡献，且 SHALL NOT 中断链终局。
+code-fix 消化链（同一审查台账的批次链）走到末批或链终止时，框架 SHALL 输出链级 rollup：该链 run 总数、总轮数、总 tool_use 数、resolved/ignored 条数、条均轮数；数据 SHALL 来自框架自身记录（run 归档计数与台账核销），不依赖人工 grep 台账。run 归档计数 SHALL 覆盖链中全部 run 不漏样本，包括已被 retention 移入 .fenix/runs/archive/ 的终态 run（读取先顶层 .fenix/runs/<run_id>.jsonl，缺失回退归档副本）；仅当顶层与归档两处皆缺时方按零贡献，且 SHALL NOT 中断链终局。
 
 #### Scenario: 移档后 rollup 仍计得真实值
 
