@@ -49,7 +49,8 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
         - distill 为 None 仅当 git 探测失败提前返回（派发只在 git 仓库内进行）。
     """
     proot = Path(project_root)
-    result = {"committed": False, "commit": None, "warning": None}
+    # distill 预置 None：git 探测失败的提前返回路径也要兑现 docstring 承诺的键
+    result = {"committed": False, "commit": None, "warning": None, "distill": None}
 
     def _fail(msg: str) -> dict:
         result["warning"] = msg

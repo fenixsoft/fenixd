@@ -170,7 +170,7 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except (OSError, ProcessLookupError):
+    except OSError:
         return False
 
 
@@ -225,10 +225,17 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
         wt_real = os.path.realpath(wt_text)
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as f:
-                argv_text = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+                argv_tokens = [
+                    t.decode("utf-8", "replace") for t in f.read().split(b"\0") if t
+                ]
         except OSError:
-            argv_text = ""
-        if wt_text in argv_text or wt_real in argv_text:
+            argv_tokens = []
+        # 整 token 匹配（裸子串会把 argv 中恰好含该路径字符串的无关进程
+        # 如 grep/tail 误判为身份命中并遭整组击杀）
+        if any(
+            t in (wt_text, wt_real) or t.startswith(wt_real + os.sep)
+            for t in argv_tokens
+        ):
             return True
         try:
             cwd_real = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
@@ -246,13 +253,13 @@ def kill_process_group(pid: int) -> bool:
     sent = False
     try:
         pgid = os.getpgid(pid)
-    except (ProcessLookupError, PermissionError, OSError):
+    except (PermissionError, OSError):
         pgid = None
     if pgid is not None:
         try:
             os.killpg(pgid, signal.SIGTERM)
             sent = True
-        except (ProcessLookupError, PermissionError, OSError):
+        except (PermissionError, OSError):
             pass
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
@@ -262,7 +269,7 @@ def kill_process_group(pid: int) -> bool:
     if pgid is not None:
         try:
             os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+        except (PermissionError, OSError):
             pass
     return sent
 
@@ -293,8 +300,10 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
             # 进程仍存活但属主 spec 不在飞：核对身份后收割进程组再移除登记
             # （pid 复用防误杀：身份不匹配只移除登记，不动无关进程组）
             if _harvest_identity_ok(entry, pid):
-                kill_process_group(pid)
-                harvested += 1
+                # 仅在真正向进程组发出过信号时计数（进程在 pid_alive 与
+                # getpgid 之间已退出的 already-gone 情形不算，避免虚报）
+                if kill_process_group(pid):
+                    harvested += 1
             elif logger:
                 logger.warning(
                     "serving_registry",

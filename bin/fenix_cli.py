@@ -251,9 +251,8 @@ def main():
         cmd_reflow(args)
     elif args.command == "activate":
         cmd_activate(args)
-    else:
-        print(f"未知命令：{args.command}", file=sys.stderr)
-        sys.exit(1)
+    # 未知命令分支不存在：subparsers required=True 使 parse_args 对非法/缺失
+    # 命令直接报错退出（code-review item 76318b16fefc），此处四分支已穷尽。
 
 
 if __name__ == "__main__":
