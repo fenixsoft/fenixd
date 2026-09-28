@@ -9,7 +9,7 @@
 
 ## 1. 读取路径回退
 
-- [ ] 1.1 core/code_fix.py：_read_run_metrics（约 :471-497）读 run 归档改双路径——先顶层 .fenix/runs/<run_id>.jsonl，缺失回退 .fenix/runs/archive/<run_id>.jsonl（对齐 core/admin_monitor.py:3401-3405 _admin_run_file 先例）；归零语义收窄为两路径皆缺，fail-open 保留；同步更新 :135 处「逐 run 读 .fenix/runs/<run_id>.jsonl」注释与本函数 docstring 的单路径表述为双路径
+- [x] 1.1 core/code_fix.py：_read_run_metrics（约 :471-497）读 run 归档改双路径——先顶层 .fenix/runs/<run_id>.jsonl，缺失回退 .fenix/runs/archive/<run_id>.jsonl（对齐 core/admin_monitor.py:3401-3405 _admin_run_file 先例）；归零语义收窄为两路径皆缺，fail-open 保留；同步更新 :135 处「逐 run 读 .fenix/runs/<run_id>.jsonl」注释与本函数 docstring 的单路径表述为双路径
 
 ## 2. 测试
 
