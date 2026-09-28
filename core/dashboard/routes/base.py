@@ -704,8 +704,12 @@ class H0BaseMixin:
                 except Exception:
                     pass
 
-    def _read_json_body(self) -> dict:
-        """读取并解析 JSON 请求体，做大小限制。"""
+    def _read_json_body(self) -> dict | None:
+        """读取并解析 JSON 请求体，做大小限制。
+
+        失败路径（Content-Length 不可解析/空体/超限/非法 JSON/非对象体）
+        已自行写错误响应（400/413）并返回 None，调用方必须判空后终止。
+        """
         from core.dashboard import server as _server_mod
         max_body = getattr(_server_mod, "MAX_POST_BODY", 256 * 1024)
         try:
