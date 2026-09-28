@@ -13,5 +13,5 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_codefix_digest_metrics.py：新增「run 文件仅存于 .fenix/runs/archive/ 时链末批 rollup 仍计得真实 turns/工具数」场景（以本窗口形状为夹具：runs=2 与 runs=1 两组非零期望）
-- [ ] 2.2 tests/test_codefix_digest_metrics.py：双缺失按零贡献且不炸链终局、顶层与归档副本并存时结果一致（取顶层）两组边界用例
+- [x] 2.1 tests/test_codefix_digest_metrics.py：新增「run 文件仅存于 .fenix/runs/archive/ 时链末批 rollup 仍计得真实 turns/工具数」场景（以本窗口形状为夹具：runs=2 与 runs=1 两组非零期望）
+- [x] 2.2 tests/test_codefix_digest_metrics.py：双缺失按零贡献且不炸链终局、顶层与归档副本并存时结果一致（取顶层）两组边界用例

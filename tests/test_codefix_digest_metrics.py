@@ -325,12 +325,20 @@ class _RollupRunner:
     text=n），供链级汇总断言「逐 run 求和、不漏样本」。
     """
 
-    def __init__(self, project_root, fix_success=True):
+    def __init__(self, project_root, fix_success=True, archive_runs=False,
+                 metrics_plan=None, write_run_file=True):
         self.project_root = Path(project_root)
         self._running_agents = {}
         self.config = {}
         self.worktree_manager = _FakeWM()
         self.fix_success = fix_success
+        # fix-codefix-rollup-archive-read 夹具开关：archive_runs=True 时 run
+        # 归档直接落 .fenix/runs/archive/（模拟 retention 移档后仅存归档副
+        # 本）；metrics_plan 逐 run 覆盖 metrics 行体（本窗口真实形状）；
+        # write_run_file=False 时不落任何 run 文件（双缺失边界）。
+        self.archive_runs = archive_runs
+        self._metrics_plan = list(metrics_plan or [])
+        self.write_run_file = write_run_file
         self._run_no = 0
         self.run_ids = []
 
@@ -361,19 +369,27 @@ class _RollupRunner:
                  "commit", "-q", "-m", f"fix-{rid}"],
                 cwd=wt, check=True, capture_output=True)
             # 主树 run 归档（含 run_metrics 行；run 失败=未到收尾→不落）
-            n = self._run_no
-            archive = self.project_root / ".fenix" / "runs" / f"{rid}.jsonl"
-            archive.parent.mkdir(parents=True, exist_ok=True)
-            archive.write_text(
-                json.dumps({
+            if self.write_run_file:
+                n = self._run_no
+                runs_dir = self.project_root / ".fenix" / "runs"
+                if self.archive_runs:
+                    archive = runs_dir / "archive" / f"{rid}.jsonl"
+                else:
+                    archive = runs_dir / f"{rid}.jsonl"
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                body = {
                     "type": "run_metrics",
                     "run_id": rid,
                     "turns": 10 * n,
                     "tool_uses_total": 7 * n,
                     "text_turns": n,
                     "tool_uses": {"Read": 3 * n, "Bash": 2 * n},
-                }) + "\n",
-                encoding="utf-8")
+                }
+                if n <= len(self._metrics_plan):
+                    body.update(self._metrics_plan[n - 1])
+                archive.write_text(
+                    json.dumps(body) + "\n",
+                    encoding="utf-8")
         return SimpleNamespace(
             run_id=rid, success=self.fix_success,
             fixed=len(items) if self.fix_success else 0,
@@ -599,6 +615,107 @@ class TestChainRollupMidChainTerminal:
         assert rollup["resolved"] == 1
 
 
+class TestChainRollupArchivedRuns:
+    """run 文件仅存于 .fenix/runs/archive/ 时链末批 rollup 仍计得真实值。
+
+    retention（每 300 秒 runs_retention_check）把终态 run 移入 archive/——
+    code-fix 链横跨数小时，链终局时除末批外的 run 顶层必然早已移档；单路径
+    读取曾致链级 rollup 的 turns 恒零（本窗口实测 runs=2/turns=0 与
+    runs=1/turns=0 两次全零出账）。夹具取本窗口真实形状：388+49=437 轮 /
+    272 轮，修复后同形状输入应计得非零真实值。
+    """
+
+    def test_two_run_chain_archived_only(self, seq_run_ids):
+        """runs=2 形状：两批各一 run，均仅存归档副本，末批出账逐 run 求和。"""
+        proot = _make_project_root(["a", "b"])
+        runner = _RollupRunner(
+            proot, fix_success=True, archive_runs=True,
+            metrics_plan=[
+                {"turns": 388, "tool_uses_total": 1200, "text_turns": 190},
+                {"turns": 49, "tool_uses_total": 150, "text_turns": 20},
+            ])
+        rec = _RecLogger()
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_BS1, logger=rec)
+
+        res = orch.checkpoint()
+        assert res["triggered"] is True
+        assert len(runner.run_ids) == 2
+
+        # 顶层 runs/ 无任何 run 文件残留（全链仅存归档副本）
+        assert list((proot / ".fenix" / "runs").glob("*.jsonl")) == []
+
+        prog = read_progress(proot)
+        rollup = prog["chain_rollup"]
+        assert rollup is not None
+        assert rollup["trigger"] == "chain_last_batch"
+        assert rollup["runs"] == 2
+        assert rollup["run_ids"] == runner.run_ids
+        assert rollup["turns"] == 437  # 388+49
+        assert rollup["tool_uses_total"] == 1350
+        assert rollup["text_turns"] == 210
+        assert rollup["resolved"] == 2
+
+        # 结构化日志与落盘快照一致（同为真实值非零）
+        rollup_logs = [
+            msg for lv, _tag, msg in rec.records
+            if lv == "info" and "chain rollup" in msg
+        ]
+        assert any(
+            "runs=2" in m and "turns=437" in m
+            and "tool_uses=1350" in m and "text_turns=210" in m
+            for m in rollup_logs
+        ), rollup_logs
+
+    def test_single_run_chain_archived_only(self, seq_run_ids):
+        """runs=1 形状：单 run 链末批即终局，归档副本计得 272 轮。"""
+        proot = _make_project_root(["a"])
+        runner = _RollupRunner(
+            proot, fix_success=True, archive_runs=True,
+            metrics_plan=[
+                {"turns": 272, "tool_uses_total": 650, "text_turns": 141},
+            ])
+        orch = CodeFixOrchestrator(
+            runner, proot, config=_CFG_BS1, logger=_RecLogger())
+
+        res = orch.checkpoint()
+        assert res["triggered"] is True
+        assert len(runner.run_ids) == 1
+
+        rollup = read_progress(proot)["chain_rollup"]
+        assert rollup is not None
+        assert rollup["runs"] == 1
+        assert rollup["turns"] == 272
+        assert rollup["tool_uses_total"] == 650
+        assert rollup["text_turns"] == 141
+        assert rollup["resolved"] == 1
+        assert rollup["avg_turns_per_item"] == 272.0
+
+
+class TestChainRollupRunFileMissing:
+    def test_both_missing_zero_contribution_chain_completes(self, seq_run_ids):
+        """顶层与归档两处皆缺：按零贡献，链终局正常完成不抛错。"""
+        proot = _make_project_root(["a", "b"])
+        runner = _RollupRunner(proot, fix_success=True, write_run_file=False)
+        rec = _RecLogger()
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_BS1, logger=rec)
+
+        res = orch.checkpoint()  # 不抛错即链终局未炸
+        assert res["triggered"] is True
+        assert len(runner.run_ids) == 2
+
+        prog = read_progress(proot)
+        assert prog["phase"] == "idle"
+        rollup = prog["chain_rollup"]
+        assert rollup is not None
+        assert rollup["runs"] == 2
+        assert rollup["turns"] == 0
+        assert rollup["tool_uses_total"] == 0
+        assert rollup["text_turns"] == 0
+        assert rollup["resolved"] == 2
+        # 零贡献照样出账（run 清单非空判据）且出账即清账
+        assert prog["chain_run_ids"] == []
+
+
 class TestRunMetricsReader:
     def test_last_run_metrics_line_wins(self, tmp_path):
         """同 run 多条 run_metrics 行取末条；损坏行/缺失文件安全。"""
@@ -620,8 +737,43 @@ class TestRunMetricsReader:
         assert m["turns"] == 9
         assert m["tool_uses_total"] == 4
         assert m["text_turns"] == 1
-        # 归档缺失 → 空 dict（零贡献）
+        # 顶层与归档两处皆缺 → 空 dict（零贡献）
         assert _read_run_metrics(tmp_path, "code-fix-missing") == {}
+
+    def test_archive_fallback_when_top_level_missing(self, tmp_path):
+        """顶层缺失回退归档副本（retention 移档后仍可读，本窗口根因场景）。"""
+        runs = tmp_path / ".fenix" / "runs"
+        (runs / "archive").mkdir(parents=True)
+        (runs / "archive" / "code-fix-x.jsonl").write_text(
+            json.dumps({"type": "run_metrics", "turns": 388,
+                        "tool_uses_total": 1200, "text_turns": 190}) + "\n",
+            encoding="utf-8")
+        m = _read_run_metrics(tmp_path, "code-fix-x")
+        assert m["turns"] == 388
+        assert m["tool_uses_total"] == 1200
+        assert m["text_turns"] == 190
+
+    def test_top_level_wins_over_archive_copy(self, tmp_path):
+        """顶层与归档副本并存：取顶层（retention 去重语义，先读先赢）。"""
+        runs = tmp_path / ".fenix" / "runs"
+        (runs / "archive").mkdir(parents=True)
+        (runs / "code-fix-x.jsonl").write_text(
+            json.dumps({"type": "run_metrics", "turns": 30,
+                        "tool_uses_total": 12, "text_turns": 3}) + "\n",
+            encoding="utf-8")
+        (runs / "archive" / "code-fix-x.jsonl").write_text(
+            json.dumps({"type": "run_metrics", "turns": 9,
+                        "tool_uses_total": 4, "text_turns": 1}) + "\n",
+            encoding="utf-8")
+        m = _read_run_metrics(tmp_path, "code-fix-x")
+        assert m["turns"] == 30
+        assert m["tool_uses_total"] == 12
+        assert m["text_turns"] == 3
+
+    def test_both_paths_missing_zero_dict(self, tmp_path):
+        """顶层与归档两处皆缺 → 空 dict（归零语义收窄后的零贡献）。"""
+        (tmp_path / ".fenix" / "runs" / "archive").mkdir(parents=True)
+        assert _read_run_metrics(tmp_path, "code-fix-none") == {}
 
 
 class TestProgressChainFields:
