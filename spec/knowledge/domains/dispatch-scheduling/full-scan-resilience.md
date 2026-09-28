@@ -1,4 +1,4 @@
-<!-- knowledge: capability=full-scan-resilience rev=2 sources=spec/archive/2026-09-02-fix-dispatch-orphan,spec/archive/2026-09-22-fix-orphan-ready-recovery-liveness -->
+<!-- knowledge: capability=full-scan-resilience rev=3 sources=spec/archive/2026-09-02-fix-dispatch-orphan,spec/archive/2026-09-22-fix-orphan-ready-recovery-liveness,spec/archive/2026-09-29-evo-alert-noise-governance -->
 
 # 全量扫描兜底恢复
 
@@ -9,6 +9,7 @@ full_scan 的单条异常隔离与孤儿 ready 的白名单恢复：毒条目不
 - 单条隔离：full_scan 的 recovery 循环与 check_blockers 阶段对单条 SPEC 的处理做独立异常捕获——任一 SPEC 处理抛出异常时记录 error 日志并继续处理其余 SPEC，整轮扫描不因单条异常中止。
 - 每轮扫描输出 handled 与 failed 统计日志。
 - 孤儿 ready 恢复走白名单判据：存在存活的 agent attempt 进程或未超时的活跃 worktree 锁才跳过；带 error 的 ready、有历史 run 记录但当前无活跃运行的 ready 均重新派发；重派发前清除 error 字段并保留 implementer_run 历史值。
+- 恢复入口在清 error/重派之前复核 STATE 条目 `frozen`：为 True 时跳过恢复与重派并记 INFO（含 spec 名与跳过原因），不重放「派发→闸门拦截→冻结」流程；复核先于任何 STATE 写入（该入口仅在 error 非空时写 STATE，早退天然零写入），早退条件同步登记于入口 docstring 的早退清单。冻结 spec 的人工重派须先解冻，恢复链不代为放行。
 - worktree 下仍有匹配的存活 claude agent 进程时，本轮跳过派发并记「skip: live child present」级日志，不做状态重置。
 - 恢复动作除全量扫描外另有短周期精触发：daemon 在既有周期计时段（秒级粒度，不长于 60 秒）中对当前处于 ready 的 SPEC 执行一次恢复；精触发复用与 full_scan recovery 同源的恢复入口与判据，不另立判据或第二实现点。孤儿 ready 的恢复延迟上限为一个精触发周期（缺省 60 秒），而非一个 `schedule.poll_interval_minutes` 周期；周期扫描仍为兜底，语义不变。
 - 精触发不放宽任何派发闸门：依赖 / 预算 / 内容完整性 / 冻结 / `start_after` / 退避 / 秒挂冷却 / 冷却去重全部照常生效——精触发只是把既有判据跑得更勤。

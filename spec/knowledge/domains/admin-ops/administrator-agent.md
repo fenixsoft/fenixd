@@ -1,4 +1,4 @@
-<!-- knowledge: capability=administrator-agent rev=2 sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-08-fix-admin-run-blocks-mainloop -->
+<!-- knowledge: capability=administrator-agent rev=3 sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-08-fix-admin-run-blocks-mainloop,spec/archive/2026-09-29-evo-alert-noise-governance -->
 
 # Administrator 自愈管理员 Agent
 
@@ -7,6 +7,7 @@
 ## 现行规则
 
 - 唤起条件：健康监视器检测到困境信号且节流通过时唤起 Administrator（`claude -p` 子进程，`--permission-mode bypassPermissions`，`--output-format stream-json`）；无困境不唤起、零 LLM 成本。prompt 包含困境信号详情、可用高级处置手段与「仅处置困境、不开发功能」约束；自愈不终结在飞链路时不重复唤起。
+- 夹具项目自动召唤抑制：各自动检测路径的召唤决策点对 fixture 标记项目抑制自动召唤 Administrator（含全局巡检类 admin-global run），抑制决策记 INFO 留痕（含错误指纹与抑制原因）。抑制判定位于各自动调用点、先于共用唤起入口——人工显式触发与自动检测共用该入口，抑制 MUST NOT 收进共用唤起入口本体，人工显式触发的管理员 run 不受限。抑制不修改/删除告警记录（存储信号路径先按既有语义 mark escalated 消费「写入即待唤起」，防每轮重复摄取与重复留痕，记录保留可查），仅召唤动作被阻断。标记读取失败或项目未标记一律按非夹具处理（fail-open），不因标记异常让召唤通道失效。
 - 执行模型：唤起与处置执行和 daemon 主循环解耦——主循环只负责拾取手动唤起请求与自动巡检信号并投递后台 worker 池，处置在 worker 中执行；主循环以 1 秒粒度继续 SPEC 派发、巡检与后续请求拾取，不因处置（单次可达数分钟）阻塞。
 - 并行多实例：多个 Administrator run 可同时执行；仍在主树操作、不建 worktree（主树写冲突风险已评估并容忍）；worker 数量可配置（默认 2），不无界扩张，超出部分按到达顺序在队列等待。
 - 处置状态文件按实例分离：`.fenix/admin_disposition-<run_id>.json`，每个实例 clear/write/read 仅作用自身文件，提示词中指示的写入路径按 run 注入；单 run 结束（读自身 disposition 落 final 记录）后清理自己的实例文件。
@@ -19,3 +20,4 @@
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：Administrator 为自愈 agent，健康监视器按需唤起，处置产出叙述总结与运维记录；自愈不终结在飞链路时不得重复唤起
 - 2026-09-02 add-administrator-agent — 固化按需唤起契约、高级处置权限清单与处置留痕
 - 2026-09-08 fix-admin-run-blocks-mainloop — 执行模型改后台 worker 池并行：主循环解耦、disposition 状态文件按 run 实例分离、落痕语义保持不变
+- 2026-09-29 2026-09-29-evo-alert-noise-governance — 自动召唤通道新增夹具项目抑制：fixture 标记项目的升级信号不再自动召唤 Administrator（INFO 留痕、告警记录保留、人工显式触发不受限、判定 fail-open）
