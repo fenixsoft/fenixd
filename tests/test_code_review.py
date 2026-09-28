@@ -1922,7 +1922,10 @@ class TestRequestResultWriteRead(unittest.TestCase):
             self.assertEqual(len(seen), 1)
             src, dst = seen[0]
             self.assertEqual(Path(src).parent, target.parent, "tmp MUST 与目标同目录")
-            self.assertTrue(src.endswith("code_review_request_result.json.tmp"))
+            # mkstemp 唯一临时名（.{name}.{rand}.tmp）：并发写方互不踩踏；
+            # 旧「固定名 .tmp」断言已随 item 629d47de2b54 修复失效
+            self.assertTrue(src.endswith(".tmp"))
+            self.assertNotEqual(src, str(target) + ".tmp")
             self.assertEqual(Path(dst), target)
             self.assertFalse(list(target.parent.glob("*.tmp")), "replace 后无 tmp 残留")
         finally:

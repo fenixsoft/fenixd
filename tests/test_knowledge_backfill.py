@@ -739,6 +739,22 @@ def _fake_proc(returncode: int, stdout: str, stderr: str):
     )
 
 
+def _fake_popen_proc(returncode: int, stdout: str, stderr: str):
+    """default_spawn 的 Popen+communicate 替身（spawn 进程组化后的新缝）。"""
+
+    class _Proc:
+        pid = 0
+
+        def __init__(self, rc, out, err):
+            self.returncode = rc
+            self._io = (out, err)
+
+        def communicate(self, timeout=None):
+            return self._io
+
+    return _Proc(returncode, stdout, stderr)
+
+
 def test_failure_attribution_tail_filters_noise_lines():
     """stderr 混合噪声 + 真实死因：归因取过滤后尾部，不含噪声行。"""
     stderr = (
@@ -767,8 +783,8 @@ def test_failure_attribution_tail_falls_back_to_stdout_tail():
 def test_spawn_failure_attribution_uses_filtered_tail(proj, monkeypatch):
     """spawn 失败归因端到端：噪声行不进归因文本，真实 429 死因可见。"""
     monkeypatch.setattr(
-        kb.subprocess, "run",
-        lambda *a, **k: _fake_proc(1, "", f"{NOISE_LINE}\n"),
+        kb.subprocess, "Popen",
+        lambda *a, **k: _fake_popen_proc(1, "", f"{NOISE_LINE}\n"),
     )
     spawn = kb.default_spawn(proj)
     with pytest.raises(RuntimeError) as ei:
@@ -785,8 +801,8 @@ def test_spawn_failure_attribution_falls_back_to_stdout(proj, monkeypatch):
     """
     stdout = "boot ok\nAPI Error: Request rejected (429)\n"
     monkeypatch.setattr(
-        kb.subprocess, "run",
-        lambda *a, **k: _fake_proc(1, stdout, f"{NOISE_LINE}\n"),
+        kb.subprocess, "Popen",
+        lambda *a, **k: _fake_popen_proc(1, stdout, f"{NOISE_LINE}\n"),
     )
     spawn = kb.default_spawn(proj)
     with pytest.raises(RuntimeError) as ei:

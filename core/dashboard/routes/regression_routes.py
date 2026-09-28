@@ -53,6 +53,25 @@ from core.dashboard.routes.code_review_routes import (
 # 失败留痕永不生效，见 code-review item 3f7d5ad37689）
 logger = logging.getLogger("fenixd.dashboard.routes.regression_routes")
 
+
+class _ContractLoggerAdapter:
+    """stdlib logger → verify_contract 告警回调期望的双参形态。
+
+    load_verify_contract 的 logger 参数按项目自定义 core.logger.Logger 的
+    warning(component, message) 签名调用；本模块 logger 是 stdlib Logger
+    （单参），裸传会把双参调用变成 "verify_contract" % (msg,) 格式错配
+    （TypeError、告警丢失）——item b192cd3fe295 接入告警时暴露。
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def warning(self, component, message, context=None):
+        self._inner.warning("[%s] %s", component, message)
+
+    def info(self, component, message, context=None):
+        self._inner.info("[%s] %s", component, message)
+
 # 手动触发信号文件（daemon 主循环经 fenixd._check_regression_requests 消费）。
 # 与 code_review_request / approve_push_request 同属「dashboard 原子写 →
 # daemon 主循环消费」文件信号族。
@@ -254,7 +273,7 @@ class H12RegressionRoutesMixin:
         proot = Path(project["path"])
         from core.verify_contract import load_verify_contract
 
-        contract = load_verify_contract(proot, logger=logger)
+        contract = load_verify_contract(proot, logger=_ContractLoggerAdapter(logger))
         exists = (proot / ".fenix" / "verify.yaml").is_file()
         regression = None
         if contract is not None and contract.regression is not None:
@@ -299,7 +318,7 @@ class H12RegressionRoutesMixin:
         # 项目未配置回归守卫（verify.yaml regression 段缺失/无效 → 400）
         from core.verify_contract import load_verify_contract
 
-        contract = load_verify_contract(proot, logger=logger)
+        contract = load_verify_contract(proot, logger=_ContractLoggerAdapter(logger))
         if contract is None or contract.regression is None:
             self._coded_error(
                 400, "该项目未配置全量回归（verify.yaml regression 段）",
@@ -525,7 +544,7 @@ class H12RegressionRoutesMixin:
             # A 释放锁后 B 才拿到锁，按过期快照继续会以整契约草稿整体覆盖 A
             # 刚写入（或用户刚手改）的 verify.yaml。skipped 与 full_contract
             # 均以锁内重读结果为准。
-            contract = load_verify_contract(proot, logger=logger)
+            contract = load_verify_contract(proot, logger=_ContractLoggerAdapter(logger))
             if contract is not None and contract.regression is not None:
                 self._json(
                     {
@@ -634,7 +653,9 @@ class H12RegressionRoutesMixin:
                     marker = s.split(":", 1)[1].strip()
 
             # 权威判定：以契约解析结果为准
-            contract_after = load_verify_contract(proot, logger=logger)
+            contract_after = load_verify_contract(
+                proot, logger=_ContractLoggerAdapter(logger)
+            )
             if contract_after is not None and contract_after.regression is not None:
                 self._json(
                     {
