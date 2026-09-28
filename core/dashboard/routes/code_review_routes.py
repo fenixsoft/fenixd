@@ -333,6 +333,36 @@ class H11CodeReviewRoutesMixin:
             return
         proot = Path(project["path"])
 
+        # 二次全仓叠加防护（evo-add-code-review-ratelimit-resume 4.1，spec
+        # 「Requirement: 二次全仓叠加防护」）：上一轮全仓审查未消化完（台账
+        # open 条数超阈值）时，手动 full 触发回 409 确认态而非直接开跑——
+        # 对齐 trigger-ack 409 三态回链先例（code_review_running/
+        # code_review_ack_pending 同族，code 由 ApiError.code 承载）。阈值入
+        # 配置（admin.code_review.manual_full_open_warn，缺省 30；显式 0 =
+        # 关闭守卫）。未确认不派发：body 携带 confirm=true 的二次请求才放行。
+        if scope == "full" and not bool(body.get("confirm")):
+            from core.code_review import read_items as _cr_read_items
+            from core.config import ConfigLoader as _ConfigLoader
+
+            cfg = _ConfigLoader.get_code_review_config(
+                dashboard_data.read_effective_config(str(proot)))
+            open_warn = int(cfg.get("manual_full_open_warn") or 0)
+            if open_warn > 0:
+                open_count = sum(
+                    1
+                    for rec in _cr_read_items(str(proot)).values()
+                    if isinstance(rec, dict) and rec.get("status") == "open"
+                )
+                if open_count > open_warn:
+                    self._coded_error(
+                        409,
+                        f"台账仍有 {open_count} 条 open（超过确认阈值 "
+                        f"{open_warn}），上一轮全仓审查可能未消化完。再次触发"
+                        f"并携带 confirm=true 以确认开始新一轮全仓审查",
+                        "code_review_open_backlog",
+                    )
+                    return
+
         # 运行中守卫（基于产物终态判定，见 core.code_review.read_progress——
         # 已取消/已停机的 run 必须判 running=false，否则 409 恒真锁死后续触发）
         progress = dashboard_data.read_code_review_progress(str(proot))

@@ -3171,9 +3171,72 @@ class AgentRunner:
         return error, is_transient, True  # may_switch：else 分支（provider 在位且 code 非 4xx）
 
     # ── 429 限流终态归因与重派意图登记（add-code-review-concurrency-and-429-resilience D4）──
+    def _ratelimit_terminal_hit(self, run_id: str, error: str,
+                                          api_error_status=None,
+                                          result_text: str = "") -> bool:
+        """429 终态归因双源判定（evo-add-code-review-ratelimit-resume 1.1）。
+
+        归因优先级（design 归因双源）：
+        ① 异常文本分类（既有单源，``classify_ratelimit_error``）；
+        ② result 事件回退——异常挂载的 ``api_error_status``（=429 或可解析为
+           429 的文本形态）与 ``result`` 文本（命中限流签名）；
+        ③ run jsonl result 事件兜底读取（富归因未挂载的历史调用方路径；
+           仅终局一次读取，design Risks：IO 可忽略）。
+
+        任一命中即限流终局。全源未命中（普通失败）False。
+        """
+        def _is_429_status(value) -> bool:
+            # api_error_status 字段的落盘形态：int 429 / 裸数字字符串 "429"
+            # （result 事件原样序列化）/ 含状态码的错误文本（"HTTP 429" 族，
+            # parse_api_error_status 单源解析）。bool 是 int 子类显式排除。
+            if value is None or isinstance(value, bool):
+                return False
+            if isinstance(value, str):
+                code = self.parse_api_error_status(value)
+                if code is None:
+                    digits = value.strip()
+                    code = int(digits) if digits.isdigit() else None
+                return code == 429
+            return value == 429
+
+        if error and self.classify_ratelimit_error(error):
+            return True
+        if _is_429_status(api_error_status):
+            return True
+        if result_text and self.classify_ratelimit_error(result_text):
+            return True
+        # ③ run jsonl 兜底：取**末个** type=result 事件（多次 result 的 run 以
+        # 最终终态为准），api_error_status=429 或 result 文本命中限流签名判 429。
+        # result 事件由轮询环原样落盘（dict(last_result)），429 文案就在其中；
+        # 无 result 事件（崩溃/强杀）恒 False——回退不伪造归因。
+        run_file = self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        try:
+            raw = run_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        last_event = None
+        for line in raw.splitlines():
+            line = line.strip()
+            if '"type": "result"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict):
+                last_event = ev
+        if last_event is None:
+            return False
+        if _is_429_status(last_event.get("api_error_status")):
+            return True
+        return bool(self.classify_ratelimit_error(
+            str(last_event.get("result") or "")))
+
     def _ratelimit_redispatch_on_terminal(self, run_id: str, error: str,
                                           provider_name: str | None = None,
-                                          spec_name: str = "") -> dict | None:
+                                          spec_name: str = "",
+                                          api_error_status=None,
+                                          result_text: str = "") -> dict | None:
         """run 终态归因为 429 限流时登记 ``ratelimit_redispatch`` 意图（design D4）。
 
         分工（design D4）：runner 只负责终态归因与意图登记——
@@ -3199,8 +3262,17 @@ class AgentRunner:
             provider_name: 本次 run 实际使用的 provider（限流冷却落点；未知时
                 跳过冷却记账、意图冷却到期时刻回退常量时长推算）。
             spec_name: 归属 spec（code-review 车道传 "code-review"）。
+            api_error_status: 非零退出分支挂异常的 result 事件
+                ``api_error_status``（evo-add-code-review-ratelimit-resume 1.1；
+                文本分类未命中时的回退源之一，run_code_review 传入）。
+            result_text: 非零退出分支挂异常的 result 事件 ``result`` 文本（同
+                上；命中限流签名即判 429）。
         """
-        if not error or not self.classify_ratelimit_error(error):
+        # evo-add-code-review-ratelimit-resume 1.1：归因双源——文本分类未命中
+        # 时回退 result 事件（富归因参数 → run jsonl 兜底）判 429。
+        if not self._ratelimit_terminal_hit(
+                run_id, error, api_error_status=api_error_status,
+                result_text=result_text):
             return None
         from core.agent_runner.provider_circuit import PROVIDER_RATELIMIT_COOLDOWN_SECONDS as _RL_CD
 
@@ -5178,6 +5250,19 @@ class AgentRunner:
             # （判别在 runner 层一次完成，车道层只读标记，design D1）；
             # 不改变既有异常消息文本。
             exc.api_timeout = is_api_timeout_signature(last_result)
+            # evo-add-code-review-ratelimit-resume 1.1：429 归因双源（design
+            # 归因双源）——result 事件的限流信号随异常下发（对齐 exc.api_timeout
+            # 先例：归因素材在 runner 层一次挂载，车道层只读不重复解析）。
+            # stderr 经 _denoise_stderr 降噪后只剩 "Exit code: 1"（429 文案在
+            # result 事件的 api_error_status/result 字段），车道层文本分类恒
+            # False——意图登记以此双字段回退判 429。last_result 缺失（崩溃/
+            # 强杀路径无 result 事件）None/"" 占位，回退判定自然不命中。
+            exc.api_error_status = (
+                last_result.get("api_error_status") if last_result else None
+            )
+            exc.result_text = (
+                str(last_result.get("result") or "") if last_result else ""
+            )
             raise exc
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败

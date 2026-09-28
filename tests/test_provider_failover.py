@@ -770,3 +770,261 @@ class TestRatelimitRedispatch:
         assert any(
             r.get("type") == "ratelimit_redispatch" and r.get("redispatch_of") == "run-a"
             for r in rows)
+
+
+class TestRatelimitAttributionDualSource:
+    """429 归因双源（evo-add-code-review-ratelimit-resume 1.1，task 5.1）。
+
+    事故基线（code-review-1790574672）：429 文案只在 result 事件，stderr 经
+    _denoise_stderr 降噪后只剩 "Exit code: 1"——文本分类恒 False，意图不登记、
+    provider 不冷却、run 无标注（归档 jsonl 无 ratelimit_redispatch 行）。
+    归因优先级：文本分类 → result 事件（非零退出分支挂异常的富归因 → run
+    jsonl result 事件兜底）。
+    """
+
+    NOISE_STDERR = "Exit code: 1"
+    REAL_429 = TestRatelimitRedispatch.REAL_429
+
+    @staticmethod
+    def _mk_run(tmp_path, run_id, extra_events=()):
+        rdir = tmp_path / ".fenix" / "runs"
+        rdir.mkdir(parents=True, exist_ok=True)
+        f = rdir / f"{run_id}.jsonl"
+        lines = [json.dumps({"type": "run_start", "run_id": run_id})]
+        lines.extend(json.dumps(ev) for ev in extra_events)
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return f
+
+    def test_api_error_status_429_registers_intent(self, tmp_path):
+        """stderr 全噪音 + result 事件 api_error_status=429 → 意图仍登记且
+        provider 进冷却（spec「stderr 全噪音仍归因」）。"""
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path, "run-d")
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-d", error=self.NOISE_STDERR,
+            provider_name="inferaiapi.com", spec_name="code-review",
+            api_error_status=429, result_text="")
+        assert intent is not None
+        assert intent["reason"] == "429 ratelimit"
+        assert intent["run_id"] == "run-d"
+        # provider 进限流冷却（消费侧 300 秒延迟重投递的依据）
+        assert runner._provider_circuit.is_switch_cooldown("inferaiapi.com")
+        # run jsonl 标注重派缘由（告警面板取证可见）
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        assert any(r.get("type") == "ratelimit_redispatch" for r in rows)
+
+    def test_result_text_signature_registers_intent(self, tmp_path):
+        """api_error_status 缺失但 result 文本命中限流签名 → 同样归因。"""
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        self._mk_run(tmp_path, "run-e")
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-e", error=self.NOISE_STDERR,
+            provider_name="inferaiapi.com", spec_name="code-review",
+            api_error_status=None, result_text=self.REAL_429)
+        assert intent is not None
+
+    def test_string_api_error_status_parses_to_429(self, tmp_path):
+        """result 事件 api_error_status 以文本形态落盘（"429"）→ 可解析归因。"""
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        self._mk_run(tmp_path, "run-f")
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-f", error=self.NOISE_STDERR,
+            provider_name="inferaiapi.com", spec_name="code-review",
+            api_error_status="429", result_text="")
+        assert intent is not None
+
+    def test_jsonl_result_event_fallback_registers_intent(self, tmp_path):
+        """富归因未挂载（历史调用方路径）→ 回退读 run jsonl 末个 result 事件。"""
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path, "run-g", extra_events=[
+            {"type": "assistant", "message": "working"},
+            {"type": "result", "api_error_status": 429,
+             "result": "API Error: Request rejected (429)"},
+        ])
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-g", error=self.NOISE_STDERR,
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert intent is not None
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        assert any(r.get("type") == "ratelimit_redispatch" for r in rows)
+
+    def test_all_sources_miss_returns_none(self, tmp_path):
+        """全源未命中（普通失败）→ 不登记、不冷却、不标注。"""
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path, "run-h", extra_events=[
+            {"type": "result", "api_error_status": 500,
+             "result": "API Error: 500 internal server error"},
+        ])
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-h", error=self.NOISE_STDERR,
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert intent is None
+        assert not runner._provider_circuit.is_switch_cooldown("inferaiapi.com")
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        assert not any(r.get("type") == "ratelimit_redispatch" for r in rows)
+
+
+class TestRatelimitShardedResume:
+    """分片续跑（evo-add-code-review-ratelimit-resume 3.1/3.2/3.3，task 5.1）。
+
+    事故基线：270 文件级全仓审查死于 429 时原 run 已落 4 片（自述 16 片），
+    既有重派消费复用原 manifest 全量重跑（重烧约 14 美元）。重派剃余＝原
+    清单 − 已落分片覆盖（本组以 6 文件缩比复刻该形状，剃余只删不改序）；
+    全仓快照核销以「本轮累计覆盖 = 完整 manifest」为解锁门，未覆盖完整维持
+    抢救红线（宁锁勿白洗）。
+    """
+
+    ORIGIN_FILES = [f"core/f{i}.py" for i in range(6)]
+
+    def _mk_origin(self, proot, run_id="run-a", covered=()):
+        crdir = proot / ".fenix" / "code-review"
+        crdir.mkdir(parents=True, exist_ok=True)
+        (crdir / f"manifest-{run_id}.json").write_text(
+            json.dumps({"files": list(self.ORIGIN_FILES),
+                        "review_kind": "manual_full"}),
+            encoding="utf-8")
+        (crdir / f"out-{run_id}.jsonl").write_text(
+            "".join(json.dumps({"file": f, "findings": []}) + "\n"
+                    for f in covered),
+            encoding="utf-8")
+        # runs 目录生产恒存在（run_start jsonl 落点），tmp 里自建
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _mk_monitor(proot):
+        import threading
+
+        from core.admin_monitor import AdminMonitor
+
+        mon = AdminMonitor.__new__(AdminMonitor)
+        mon.logger = FakeLogger()
+        mon.project_root = proot
+        mon._code_review_lock = threading.Lock()
+        mon._code_review_in_flight = False
+        mon._code_review_executor = None
+        mon._code_review_ratelimit_redispatches = 0
+        mon._code_review_redispatch_timer = None
+        return mon
+
+    def test_consume_shaves_manifest_to_remaining(self, tmp_path):
+        """重派剃余：run_code_review 只收剩余文件（原清单 − 已落分片覆盖），
+        redispatch_of 链路保留。"""
+        mon = self._mk_monitor(tmp_path)
+        self._mk_origin(tmp_path, covered=self.ORIGIN_FILES[:2])
+        calls = []
+
+        def fake_run(manifest, review_kind=None, window_start=None, scope=None,
+                     redispatch_of=None):
+            calls.append({"manifest": list(manifest),
+                          "redispatch_of": redispatch_of})
+            return MagicMock(run_id="run-b", inserted=0, updated=0,
+                             resolved=0, shards=1, error="")
+
+        mon.agent_runner = MagicMock()
+        mon.agent_runner.run_code_review.side_effect = fake_run
+        mon._consume_ratelimit_redispatch(
+            list(self.ORIGIN_FILES), "manual_full", None, "full", "run-a")
+        assert len(calls) == 1
+        assert calls[0]["manifest"] == self.ORIGIN_FILES[2:], "剃掉已落账 f0/f1"
+        assert calls[0]["redispatch_of"] == "run-a", "链路保留"
+
+    def test_consume_full_covered_skips_redispatch(self, tmp_path):
+        """原 run 已全覆盖（如 429 死于收尾段）→ 无需重派，配额不退（防风暴）。"""
+        mon = self._mk_monitor(tmp_path)
+        self._mk_origin(tmp_path, covered=self.ORIGIN_FILES)
+        calls = []
+        mon.agent_runner = MagicMock()
+        mon.agent_runner.run_code_review.side_effect = \
+            lambda *a, **k: calls.append(a)
+        mon._consume_ratelimit_redispatch(
+            list(self.ORIGIN_FILES), "manual_full", None, "full", "run-a")
+        assert calls == []
+        assert mon._code_review_redispatch_timer is None, "未排程重派"
+        assert mon.logger.has("累计覆盖已完整")
+
+    # ── 核销门（3.3：累计覆盖完整前 MUST NOT 核销） ─────────────────────
+
+    def _mk_success_runner(self, proot, run_id, artifact_rows):
+        from core.agent_runner import maintenance_runs as mr
+
+        runner = type("R", (), {})()
+        runner.project_root = proot
+        runner.config = {}
+        runner.logger = FakeLogger()
+        runner._unique_code_review_run_id = lambda: run_id
+        runner._build_prompt = lambda *a, **k: "PROMPT"
+        runner._get_agent_model_assignment = lambda name: None
+        runner._get_admin_model = lambda: "test-model"
+        runner._extract_usage_info = lambda x: {}
+        runner._accumulate_code_review_tokens = lambda rid, usage: None
+        runner._read_code_review_out = lambda project_root, rid: mr._read_code_review_out(
+            runner, project_root, rid)
+
+        def _run_claude(*a, **k):
+            # agent 行为：本轮产物（逐文件结果行）在 run 途中落盘
+            crdir = proot / ".fenix" / "code-review"
+            (crdir / f"out-{run_id}.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in artifact_rows),
+                encoding="utf-8")
+            return "OUT", 1, "sess", {}
+
+        runner._run_claude = _run_claude
+        return runner
+
+    @staticmethod
+    def _seed_open(proot, file_):
+        from core.code_review import upsert_findings
+
+        upsert_findings(proot, [{
+            "file": file_, "category": "maintainability",
+            "title": "存量未被本轮观测。", "severity": "minor",
+            "description": "d", "suggestion": "s", "evidence": "e",
+        }], review_id="seed", review_kind="manual_full")
+
+    @staticmethod
+    def _finding(file_):
+        return {"file": file_, "findings": [
+            {"line": 1, "severity": "minor", "category": "maintainability",
+             "title": f"{file_} 本轮新发现。", "description": "d",
+             "suggestion": "s", "evidence": "e"}]}
+
+    def test_writeoff_locked_when_cumulative_coverage_partial(self, tmp_path):
+        """剃余重派 run 只覆盖部分 → 累计覆盖 ≠ 完整 manifest → 快照核销锁定
+        （存量 open 保持，防部分覆盖白洗——事故红线）。"""
+        from core.agent_runner import maintenance_runs as mr
+        from core.code_review import read_items
+
+        self._mk_origin(tmp_path, covered=self.ORIGIN_FILES[:2])
+        self._seed_open(tmp_path, "core/f5.py")
+        runner = self._mk_success_runner(
+            tmp_path, "run-b", [self._finding("core/f2.py")])
+        result = mr.run_code_review(
+            runner, ["core/f2.py"], "manual_full", redispatch_of="run-a")
+        assert result.success is True
+        assert result.resolved == 0, "未覆盖完整 MUST NOT 核销"
+        assert runner.logger.has("核销锁定")
+        items = read_items(tmp_path)
+        seeded = [r for r in items.values() if r.get("file") == "core/f5.py"]
+        assert seeded and seeded[0]["status"] == "open"
+
+    def test_writeoff_unlocked_when_cumulative_coverage_complete(self, tmp_path):
+        """本轮补齐全部剩余文件 → 累计覆盖 = 完整 manifest → 核销解锁执行
+        （本轮未再观测的存量 open 置 resolved）。"""
+        from core.agent_runner import maintenance_runs as mr
+        from core.code_review import read_items
+
+        self._mk_origin(tmp_path, covered=self.ORIGIN_FILES[:2])
+        self._seed_open(tmp_path, "core/f5.py")
+        remaining = self.ORIGIN_FILES[2:]
+        runner = self._mk_success_runner(
+            tmp_path, "run-b", [self._finding(f) for f in remaining])
+        result = mr.run_code_review(
+            runner, remaining, "manual_full", redispatch_of="run-a")
+        assert result.success is True
+        assert result.resolved == 1, "累计覆盖完整 → 核销解锁"
+        assert runner.logger.has("核销解锁")
+        items = read_items(tmp_path)
+        seeded = [r for r in items.values()
+                  if r.get("file") == "core/f5.py"
+                  and r.get("review_id") == "seed"]
+        assert seeded and seeded[0]["status"] == "resolved"
