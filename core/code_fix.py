@@ -132,8 +132,9 @@ FIX_PROGRESS_DEFAULT = {
     # 链级持久 run 清单（evo-add-codefix-digest-cost-metrics 2.2）：本链全部
     # agent run 的 run_id 逐 run 累积。进度文件既有 run_id 字段批收尾即清除、
     # 台账核销记录（mark_resolved）不带 run_id，均不能充当「链内全部 run」
-    # 的事实源；链终局 rollup 以本清单逐 run 读 `.fenix/runs/<run_id>.jsonl`
-    # 归档计数，「覆盖链中全部 run 不漏样本」机械达成。新链启动重置为空。
+    # 的事实源；链终局 rollup 以本清单逐 run 读 run 归档（先顶层
+    # `.fenix/runs/<run_id>.jsonl`，缺失回退 `archive/` 副本）计数，「覆盖
+    # 链中全部 run 不漏样本」机械达成。新链启动重置为空。
     "chain_run_ids": [],
     # 链级核销计数（2.1「条目计数与台账核销一致」）：随链累积 mark_resolved /
     # mark_ignored 的真实命中数（终态过滤后），rollup 时点读出即台账口径。
@@ -469,30 +470,40 @@ def _synthesize_startup_stage(project_root, progress: dict, out_rows) -> None:
 
 
 def _read_run_metrics(project_root, run_id: str) -> dict:
-    """读 run 归档 ``.fenix/runs/<run_id>.jsonl`` 的**末条** run_metrics 行。
+    """读 run 归档末条 run_metrics 行：先顶层，缺失回退归档副本。
 
-    链级 rollup 逐 run 汇总的数据源（路径定位先例：``_synthesize_startup_stage``
-    既有模式）。取末条——同 run 多次落 metrics 行（resume/重跑追加）时以后写
-    者为准。文件缺失/不可读/损坏行/无 metrics 行（旧转录或 run 未跑到收尾）
-    返回空 dict：rollup 按零贡献计，MUST NOT 炸链终局。
+    双路径定位（对齐 ``admin_monitor._admin_run_file`` 仓内先例）：先顶层
+    ``.fenix/runs/<run_id>.jsonl``，缺失回退 ``.fenix/runs/archive/<run_id>.jsonl``
+    ——daemon 每 300 秒 runs retention 清理把终态 run 移入 ``archive/``，
+    code-fix 链横跨数小时，链终局时除末批外的 run 顶层必然早已移档，单路径
+    读取曾致链级 rollup 的 turns 恒零（fix-codefix-rollup-archive-read）。
+    取末条——同 run 多次落 metrics 行（resume/重跑追加）时以后写者为准。
+
+    归零语义收窄为「顶层与归档两处皆缺」；文件不可读/损坏行/无 metrics 行
+    （旧转录或 run 未跑到收尾）同样空 dict：rollup 按零贡献计，MUST NOT 炸
+    链终局（fail-open 保留）。
     """
-    path = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
-    last: dict = {}
-    try:
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(rec, dict) and rec.get("type") == "run_metrics":
-                    last = rec
-    except OSError:
-        return {}
-    return last
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    for path in (runs_dir / f"{run_id}.jsonl",
+                 runs_dir / "archive" / f"{run_id}.jsonl"):
+        last: dict = {}
+        try:
+            with path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(rec, dict) and rec.get("type") == "run_metrics":
+                        last = rec
+        except OSError:
+            continue
+        if last:
+            return last
+    return {}
 
 
 # ── 失败批保留集合（5.7 / D6）──────────────────────────────────────────
@@ -2718,9 +2729,10 @@ class CodeFixOrchestrator:
     def _chain_rollup_snapshot(self) -> dict:
         """按链级累积值汇总 rollup 快照（纯读侧，2.1/2.2）。
 
-        run 维度：以链级持久 run 清单（chain_run_ids）逐 run 读
-        ``.fenix/runs/<run_id>.jsonl`` 末条 run_metrics 行求和——「覆盖链中
-        全部 run 不漏样本」由清单机械达成；归档缺失按零贡献。条目维度：读
+        run 维度：以链级持久 run 清单（chain_run_ids）逐 run 读 run 归档（先
+        顶层 ``.fenix/runs/<run_id>.jsonl``，缺失回退 ``archive/`` 副本）末
+        条 run_metrics 行求和——「覆盖链中全部 run 不漏样本」由清单机械达成；
+        两处皆缺按零贡献。条目维度：读
         链级核销计数（chain_resolved/chain_ignored，即台账核销口径）。
         """
         prog = read_progress(self.project_root)
