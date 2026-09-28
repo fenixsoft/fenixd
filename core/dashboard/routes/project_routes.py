@@ -271,7 +271,10 @@ class H2ProjectRoutesMixin:
             # 实际 managed 时多做一次停/起（短暂中断，终态仍 managed）。
             hosting = "stopped"
         if hosting == "managed":
-            return {"ok": True, "error": None, "already": True, "hosting": "managed"}
+            # 不带 hosting 键（code-review item 13088c37c22d）：lifecycle 成功
+            # 响应只转发 ok/session/already/was_running，前端也不消费本端点
+            # 响应体，透传托管态属死数据；托管态以项目列表轮询为准。
+            return {"ok": True, "error": None, "already": True}
         # unmanaged / stopped：先停裸 daemon（幂等），再经 supervisor 启动
         stop_result = _server_mod.stop_daemon(project["path"])
         if not stop_result.get("ok"):
@@ -279,7 +282,7 @@ class H2ProjectRoutesMixin:
         start_result = _server_mod.start_daemon(project["path"])
         if not start_result.get("ok"):
             return {"ok": False, "error": f"经 supervisor 启动失败: {start_result.get('error')}"}
-        return {"ok": True, "error": None, "already": False, "hosting": "managed"}
+        return {"ok": True, "error": None, "already": False}
 
 
 
@@ -413,8 +416,10 @@ class H2ProjectRoutesMixin:
             if readme_path.exists():
                 try:
                     raw = readme_path.read_bytes()[:8192]  # ≤8KB 截断
+                    # errors="replace" 按设计吞掉坏字节、不会抛 UnicodeDecodeError
+                    # （code-review item 61f4c7a973a6），只守卫读取失败的 OSError。
                     content = raw.decode("utf-8", errors="replace")
-                except (OSError, UnicodeDecodeError):
+                except OSError:
                     content = ""
             else:
                 # 缺失时改读 package.json/pyproject.toml 前 4KB
@@ -423,9 +428,11 @@ class H2ProjectRoutesMixin:
                     if fallback_path.exists():
                         try:
                             raw = fallback_path.read_bytes()[:4096]  # 前 4KB
+                            # 同上：errors="replace" 不会抛 UnicodeDecodeError
+                            # （code-review item 61f4c7a973a6），只守卫 OSError。
                             content = raw.decode("utf-8", errors="replace")
                             break
-                        except (OSError, UnicodeDecodeError):
+                        except OSError:
                             continue
 
             # 拼固定中文指令 prompt（必须携带项目名与路径——README 主题重叠的
