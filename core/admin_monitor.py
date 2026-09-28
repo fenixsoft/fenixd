@@ -164,13 +164,22 @@ DEFAULT_STUCK_THRESHOLD_MINUTES = 160.0
 # ——与本困境无关），双重误判给已终态父 SPEC 错误写入 _family_waiver=true。
 # 修正：a) 否定清单补完成时/委婉否定；b) 赋值型/动词型模式须与「放行」动词在同句
 # 才算放行（单纯提及字段名/他族谱状态不构成放行）。
+# code-review 4dd652206902 补修：b) 的分句判定当时只落到赋值型兜底 _WAIVER_ASSIGN_RE，
+# 动词型模式（同意放行/放行一次/经评估放行）仍在拼接全文上匹配且无同句限定——
+# 处置叙述提及其他族谱/历史放行（「另一族谱已同意放行」「父 SPEC 此前已放行过
+# 一次」且不含任何否定短语）会给未放行的本族父 SPEC 误写 _family_waiver=true。
+# 现动词型模式同样分句判定，且命中句须含「本次处置」限定（_WAIVER_CURRENT_
+# MARKERS 限定词或本 spec 名同现）；否定清单补「不再放行」（非「不放行」的连续
+# 子串，此前漏检）「暂不发放」等变体。
 _WAIVER_NEGATION_PHRASES = (
     "未放行",
     "不放行",
+    "不再放行",
     "拒绝放行",
     "不予放行",
     "不发放",
     "未发放",
+    "暂不发放",
     "不启用豁免",
     "未启用豁免",
     "不予豁免",
@@ -184,6 +193,9 @@ _WAIVER_GRANT_PATTERNS = (
     r"经评估放行",
     r"设置\s*_family_waiver\s*为?\s*true",  # 设置 _family_waiver 为 true
 )
+# 动词型放行模式命中句的「本次处置」限定词：命中句须含其一（或与本次父 SPEC 名
+# 同现）才算本次放行——他族谱/历史放行的叙述提及不构成对本次对象的放行。
+_WAIVER_CURRENT_MARKERS = ("本次", "该族", "本族")
 # 赋值型 _family_waiver=true 必须与放行动词同句（。！？\n 分句）才算显式放行，
 # 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
 _WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
@@ -198,12 +210,18 @@ _RECLASSIFY_GRANT_PATTERNS = (
     r"reclassify\s*(?P<n>\d+)\s*(?:infra)?\s*rounds?",
     r"infra\s*回拨\s*(?P<n>\d+)\s*轮",
 )
-# 否定短语（保守方向：命中即不触发回拨，宁可漏回拨不可误扣 fail_rounds）
+# 否定短语（保守方向：命中即不触发回拨，宁可漏回拨不可误扣 fail_rounds）。
+# 「无需/无须/不必回拨」变体与 _WAIVER_NEGATION_PHRASES 的既有修正对称补齐
+# （code-review ce4fad2d751e：处置文本「无需回拨 3 轮」曾因否定检查不命中、
+# 反被 _RECLASSIFY_GRANT_PATTERNS 的「回拨 N 轮」当成放行，误减 fail_rounds）。
 _RECLASSIFY_NEGATION_PHRASES = (
     "不回拨",
     "不应回拨",
     "不能回拨",
     "不予回拨",
+    "无需回拨",
+    "无须回拨",
+    "不必回拨",
     "not reclassify",
     "不适用回拨",
 )
@@ -1366,6 +1384,13 @@ class AdminMonitor:
             )
             shaved_manifest = list(manifest)
         if not shaved_manifest:
+            # 触发即摘句柄（code-review 5e447f90226d）：早退分支同样在锁内复位
+            # 句柄，否则 self._code_review_redispatch_timer 永久指向已触发的
+            # Timer，后续新意图恒命中「已有待发重派 Timer」的误导性跳过路径，
+            # 重派通道静默失效。此刻句柄仍指向本 Timer（其他路径改写前都先判
+            # is not None），锁内复位不会误清新排程的句柄。
+            with self._code_review_lock:
+                self._code_review_redispatch_timer = None
             self.logger.info(
                 "admin_monitor",
                 f"code-review 429 重派跳过：原 run {original_run_id} 累计覆盖已"
@@ -2912,7 +2937,9 @@ class AdminMonitor:
         既有 cooldown 节流，不得外溢。
 
         触发动作 = 直接写一条 kind=escalation（severity critical，注明悬置
-        时长与信号首见时间），**不重新唤起 Administrator**（重唤起即重复烧钱，
+        时长与信号首见时间；signal_type 恒为 blocked_stuck 维持消费侧路由
+        口径，真实悬置信号类型经 underlying_signal_type 透传），
+        **不重新唤起 Administrator**（重唤起即重复烧钱，
         正是 cooldown 要防的）。绕过 latest_signal 冷却，但 MUST 仍受
         unhandled_for 约束：同 spec 已有任一悬置类信号类型的**未处理**人工
         告警时不再重复写，否则每轮巡检新增一条 ESCALATION = 升级风暴。人工
@@ -2948,11 +2975,19 @@ class AdminMonitor:
             ):
                 continue
             first_seen = self._first_signal_time(name) or updated_str
+            # 真实根因透传（code-review d3006f6884e0）：落盘 signal_type 恒为
+            # blocked_stuck（按 signal_type 路由的既有消费口径不变），因 ENV
+            # 阻塞族悬置而被强制升级时，真实信号类型经 underlying_signal_type
+            # 透传（对齐 disposition_signal_hits_auto_reset /
+            # fix-manual-invoke-signal-type-passthrough 2.1 约定），并在 evidence
+            # 中显式呈现供人工/看板归位。
+            underlying = self._underlying_stalled_signal_type(name)
             self.store.append(
                 attach_trigger(
                     {
                         "kind": ESCALATION,
                         "signal_type": "blocked_stuck",
+                        "underlying_signal_type": underlying,
                         "spec": name,
                         "severity": "critical",
                         "description": (
@@ -2962,6 +2997,7 @@ class AdminMonitor:
                         ),
                         "evidence": (
                             f"updated={updated_str}；悬置时长 {int(stalled_minutes)} 分钟；"
+                            f"底层信号类型 {underlying}；"
                             f"信号首见 {first_seen}；阈值 {STALLED_ESCALATION_MINUTES} 分钟"
                         ),
                         "action_taken": (
@@ -3004,6 +3040,31 @@ class AdminMonitor:
                 earliest = created
         return earliest
 
+    def _underlying_stalled_signal_type(self, spec: str) -> str:
+        """返回 spec 悬置类信号记录的真实信号类型（最新一条，反映当前根因）。
+
+        _force_escalate_stalled 落盘的 ESCALATION 恒写 signal_type=blocked_stuck，
+        ENV 阻塞族（verify_env_blocked/verify_env_inconclusive）悬置的真实类型
+        经 underlying_signal_type 透传（消费约定见
+        disposition_signal_hits_auto_reset）；无悬置族信号记录时回退
+        blocked_stuck。created 比较口径与 _first_signal_time 相同（store 统一
+        生成同格式 UTC ISO 串，字典序即时间序）。
+        """
+        latest = None
+        latest_type = "blocked_stuck"
+        for rec in self.store.read_all():
+            if (
+                rec.get("kind") != SIGNAL
+                or rec.get("spec") != spec
+                or rec.get("signal_type") not in STALLED_ESCALATION_SIGNAL_TYPES
+            ):
+                continue
+            created = rec.get("created")
+            if created and (latest is None or created > latest):
+                latest = created
+                latest_type = str(rec.get("signal_type") or "blocked_stuck")
+        return latest_type
+
     # ── 派发失败重试巡检（admin-dispatch-failure-escalation D2） ──
 
     def _retry_due_dispatch_failures(self, now: float) -> int:
@@ -3019,8 +3080,12 @@ class AdminMonitor:
         spec 跳过（同 _handle_signal 冻结语义，人工等待态不自动重试）。
         manual 派发记录不带 next_retry_at，天然不在扫描范围。
 
-        重试失败由 _invoke_administrator 内部 bump 既有记录 retry_count
-        （上限 DISPATCH_RETRY_MAX，不追加新记录）；重试成功由
+        投递前先 bump 既有记录 retry_count 入扫描闸门占锚（code-review
+        f286af2d657e：从 executor.submit 到 worker 实际执行 run_administrator
+        落 pending DISPOSITION 之间无任何在飞记录，不占锚则下一巡检周期对同一
+        条到期记录重复重派 → 并行 Administrator run 写同一批 STATE）；重试失败
+        由 _invoke_administrator 内部 bump 既有记录 retry_count（上限
+        DISPATCH_RETRY_MAX，不追加新记录，与占锚 bump 同键幂等）；重试成功由
         _invoke_administrator 内部闭环该 spec 的派发失败记录。
 
         挂 run_once 巡检（_force_escalate_stalled 之后、_run_alert_lifecycle
@@ -3089,6 +3154,13 @@ class AdminMonitor:
                 f"original signal {signal.get('signal_type')} on "
                 f"'{spec or 'daemon'}' (escalation {rec.get('id')})",
             )
+            # 投递锚（code-review f286af2d657e）：投递前先 bump retry_count 入
+            # 扫描闸门（≥DISPATCH_RETRY_MAX）占位，覆盖 executor 饱和时 submit
+            # 与 run_administrator 落 pending 之间的无锚窗口。投递失败（引擎
+            # 不可用）本就 bump 同一键，终态语义不变；投递丢失（worker 长期
+            # 饥饿未执行）不再自动重派，记录停留未处理升级待人工——保守方向：
+            # 宁可少重试一次，不可并行 Administrator run 写同一批 STATE。
+            self.store.bump_dispatch_retry(rec.get("id"), DISPATCH_RETRY_MAX)
             self._invoke_administrator(signal, rec)
             retried += 1
         return retried
@@ -3455,13 +3527,18 @@ class AdminMonitor:
         return None
 
     def _run_file_has_terminal_state(self, admin_run_id: str) -> bool:
-        """run 产物文件存在且末行为终态事件 → 确认该 admin run 已死。
+        """run 产物文件存在且**末条非空行**为终态事件 → 确认该 admin run 已死。
 
-        终态事件类型取自 `core/agent_runner/run_files.py:RUN_TERMINAL_EVENT_TYPES`
-        真源（result/interrupted/error/cancelled 等）。判定用**末行**而非全文：
-        文件一旦含终态即已终结，但只看末行同时排除「早先轮次写过终态又被后续
-        事件续写」的不可能形态（终态行是收口时追加的最后一行）；读失败/无末行
-        → False（非死亡证据，保守不升级）。
+        终态事件类型取自 `core/agent_runner/liveness.py:RUN_TERMINAL_EVENT_TYPES`
+        真源（result/interrupted/error/cancelled 等）。判定用**末行**而非全文，
+        委托 liveness 的末行语义原语 ``_file_tail_is_terminal``（64KB 尾读窗口
+        + 全量逐行回退，对齐 dashboard classify_run 只看末行）：末行终态即 run
+        已明确终结；「早先写过终态又被后续事件续写」的形态末行非终态 → 不判死
+        （code-review c2f94a923839：旧实现委托 _file_has_terminal_event 逐行
+        扫描、任一行命中即真，实为任意行口径——终态后被续写的文件会把仍存活
+        的 admin run 误判死亡，落「疑似 daemon 重启/崩溃」误报；末行口径不依赖
+        写入侧「终态后置」不变式）。读失败/无末行 → False（非死亡证据，保守
+        不升级）。
 
         Args:
             admin_run_id: admin disposition 的 admin_run_id。
@@ -3470,11 +3547,11 @@ class AdminMonitor:
         if run_file is None:
             return False
         try:
-            from core.agent_runner.liveness import _file_has_terminal_event
+            from core.agent_runner.liveness import _file_tail_is_terminal
         except Exception:
             return False
         try:
-            return bool(_file_has_terminal_event(run_file))
+            return bool(_file_tail_is_terminal(run_file))
         except OSError:
             return False
 
@@ -4334,7 +4411,16 @@ class AdminMonitor:
                     f"孤儿 testing 复位：'{spec}' transition_gate(testing)幂等"
                     " + verifier 入队重验",
                 )
+            except (TypeError, AttributeError, NameError) as pe:
+                # 编程错误升级（code-review fbb968de7b0e，对齐
+                # _reset_env_blocked_after_disposition 的 D3 分流）：三类异常是
+                # 代码缺陷典型签名，只记 WARNING 会让孤儿 spec 停留原状态、冷却
+                # 过期后 orphaned_state 重新成条再唤起、再次复位失败——每冷却
+                # 周期空转一次 admin run 且无 critical 提示。落 critical 告警
+                # （_escalate_reset_programming_error 内 unhandled_for 去重）。
+                self._escalate_reset_programming_error(pe, signal, "testing")
             except Exception as e:
+                # 运维失败（OSError/子进程/网络）保持既有 WARNING 语义，不升级
                 self.logger.warning(
                     "admin_monitor",
                     f"孤儿 testing 复位失败 '{spec}': {e}",
@@ -4351,7 +4437,11 @@ class AdminMonitor:
                     "admin_monitor",
                     f"孤儿 implementing 复位：'{spec}' → ready 重实现",
                 )
+            except (TypeError, AttributeError, NameError) as pe:
+                # 编程错误升级（同 testing 分支，code-review fbb968de7b0e）
+                self._escalate_reset_programming_error(pe, signal, "ready")
             except Exception as e:
+                # 运维失败保持既有 WARNING 语义，不升级
                 self.logger.warning(
                     "admin_monitor",
                     f"孤儿 implementing 复位失败 '{spec}': {e}",
@@ -4417,10 +4507,13 @@ class AdminMonitor:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。
 
         判定：结构字段 disp.family_waiver 为 True；或自由文本
-        actions_taken/recommended_action 含显式放行语义（赋值型 _family_waiver=true、
-        「设置 _family_waiver 为 true」「放行一次」等），且不含否定短语
-        （未放行/不发放/不予放行…）。仅在叙述中提及豁免位字面令牌不构成放行。
-        豁免位由 pm_engine 族谱门在下一轮实际创建工作开始时消费并复位（单次）。
+        actions_taken/summary/recommended_action 含显式放行语义（赋值型
+        _family_waiver=true、「设置 _family_waiver 为 true」「放行一次」等），
+        且不含否定短语（未放行/不再放行/不发放/暂不发放…）。放行模式按句
+        判定，命中句须为本次处置的显式放行表述（含「本次/该族」限定词或与本
+        spec 名同现）——仅叙述中提及豁免位字面令牌、他族谱或历史放行不构成
+        放行。豁免位由 pm_engine 族谱门在下一轮实际创建工作开始时消费并复位
+        （单次）。
 
         Args:
             signal: 本次唤起信号 dict（含 signal_type/spec）。
@@ -4445,7 +4538,16 @@ class AdminMonitor:
             if negated:
                 waived = False
             else:
-                waived = any(re.search(pattern, text) for pattern in _WAIVER_GRANT_PATTERNS)
+                # 动词型/赋值型模式同样按句（。！？\n）判定，且命中句须为本次
+                # 处置的显式放行表述：含「本次/该族」限定词或与本次父 SPEC 名
+                # 同现——叙述提及其他族谱/历史放行（「另一族谱已同意放行」
+                # 「父 SPEC 此前已放行过一次」且不含否定短语）不构成对本次对象
+                # 的放行（code-review 4dd652206902）。
+                waived = any(
+                    any(m in sent for m in _WAIVER_CURRENT_MARKERS) or spec in sent
+                    for sent in re.split(r"[。！？\n]", text)
+                    if any(re.search(p, sent) for p in _WAIVER_GRANT_PATTERNS)
+                )
                 if not waived:
                     # 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算
                     # 显式放行——叙述中对他族谱豁免状态的提及不构成放行。
