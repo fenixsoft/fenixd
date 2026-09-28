@@ -278,7 +278,10 @@ export default function CodeFixProgressCard(
   // 原因行换人类可读文案（2026-09-25 用户要求：不能只透传英文 reason 原码），
   // 已知 reason 带「可读原因（原码）」括注，未知原样回显（宁严勿松）。
   if (alarm && reason) sub.push(`原因：${blockedReasonDisplay(reason)}`);
-  if (alarm && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
+  // readFailed 停轮询事实始终呈现（code-review item 8ade78a418fc）：停轮询前
+  // 末帧可能仍是 blocked 且带 reason（含自愈等待类陈旧原因），只给红条+陈旧
+  // 原因会把「读取失败停轮询」误呈为链故障本身——此行与原因行并列展示。
+  if (alarm && readFailed) sub.push('进度读取失败，已停止轮询');
 
   // 次级文案段的 testid（嵌套三元被审查规则禁止，抽为 if/else 局部计算）：
   // 准备段 → startup-stage；fixing 阶段条级进度 → item-progress；其余不挂。
@@ -332,7 +335,7 @@ export default function CodeFixProgressCard(
             必须明确告知如何处理）。独立成行，alarm 时 warning 色与次级灰字
             区分；自愈等待类（failed_batch_retained/wip_gate_blocked）指引
             本身是「无需处理」，保持中性 secondary 不渲染成故障。readFailed
-            停轮询不在此列（无 reason 语境，原因行已覆盖）。 */}
+            停轮询不在此列（停轮询事实已由次级文案行覆盖）。 */}
         {phase === 'blocked' && !readFailed && (
           <Typography.Text
             type={selfhealWait ? 'secondary' : 'warning'}
