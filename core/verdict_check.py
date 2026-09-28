@@ -214,6 +214,20 @@ def _step_failure_label(step: dict, idx: int) -> str:
 
 def _clip_derived_text(text, limit: int = _DERIVED_ACTUAL_MAX_CHARS) -> str:
     """派生条目文本归一化 + 截断（judge 申报处方的 ≤300 字约束同款）。"""
+    # 形态归一（code-review item 114e48d39f91）：error/detail 等回传字段可能
+    # 为 dict/int 等非串真值（judge 增强时整体改写 report.json 可引入），直接
+    # 交给 _normalize_whitespace 的 re.sub 抛 TypeError 会沿 triage_violation
+    # → validate_report 调用链外溢，异常被门禁「异常不阻断」降级后整个裁决
+    # 证据校验被旁路。str 原样、dict/list 用 json.dumps、其余 str() 归一
+    # （与 _step_failure_label 对同类回传字段的 isinstance 防御同口径）。
+    if not isinstance(text, str):
+        if isinstance(text, (dict, list)):
+            try:
+                text = json.dumps(text, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                text = str(text)
+        else:
+            text = str(text or "")
     clipped = _normalize_whitespace(text)
     if len(clipped) > limit:
         return clipped[:limit] + "…"
@@ -463,6 +477,10 @@ def is_scenario_exemptible(scenario: dict) -> bool:
     仅当该场景全部失败断言均被单独归类为非 product-bug（且逐断言归因合规）时
     成立；含任一 product-bug 断言 → 不得豁免。
     """
+    # 非 dict 入参防御（code-review item c2a6dc4cf8a2，与 triage_violation /
+    # triage_entries 等同模块公共入口同口径）：scenario.get 直接抛 AttributeError
+    if not isinstance(scenario, dict):
+        return False
     if not _is_non_pass(scenario.get("status")):
         return False
     if triage_violation(scenario) is not None:
@@ -853,7 +871,9 @@ def compute_attribution_level(scenario: dict) -> str:
         结构化字段如 first_frame_ok/blank_screenshot）且与证据不矛盾
       - speculative：归因仅为推理链推测（无截图、无算法标签、无结构化字段支撑）
       - pending-visual：归因涉及视觉现象（渲染/样式/布局类断言）但既无截图
-        佐证也无算法标签
+        佐证也无算法标签（「截图佐证」指截图与失败断言归因证据共同支撑——
+        截图仅在场而 assertion_triage 无非空归因证据时不构成佐证，仍判
+        pending-visual，见函数体内规则序注释）
 
     Returns:
         归因级别字符串（ATTRIBUTION_LEVELS 之一）
@@ -906,6 +926,10 @@ def compute_attribution_level(scenario: dict) -> str:
     # 证据不解除视觉类场景的 pending-visual，视觉断言仍待截图佐证
     # （tests/test_verdict_credibility_gate.py s7 钉死该顺序；下游
     # should_suppress_bug_found 对两级别同待遇）。
+    # 「无截图佐证」的口径（code-review item a9b84150d10f）：佐证以截图与
+    # 归因证据共同支撑为准——截图在场但 assertion_triage 无非空归因证据时，
+    # 两路 evidence-backed 检测的合取条件不成立，仍穿透到本分支判
+    # pending-visual；截图文件在场本身不构成佐证。
     if _is_product_bug_classification(classification):
         if _has_visual_assertions(scenario):
             return ATTRIBUTION_LEVEL_PENDING_VISUAL
@@ -1575,13 +1599,17 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
                 # 防掉电留下截断缓存）
                 os.fsync(f.fileno())
             os.replace(tmp_path, p)
-        except OSError:
+        except (OSError, TypeError, ValueError):
+            # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理
+            # .tmp 半成品（code-review item c48f3a21b953，与 save_report 原子写
+            # 的异常口径一致）
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
             raise
-    except OSError:
+    except (OSError, TypeError, ValueError):
+        # 写失败静默（见 docstring）：缓存缺失只导致下轮全量重裁，不影响正确性
         pass
 
 
