@@ -19,10 +19,16 @@ done→pushed 收口时，框架 SHALL 对本 spec 的 spec/changes/<spec>/verif
 
 ### Requirement: 失败降级不阻断
 
-报告缺失、项目非 git 仓库或 git 操作失败时，框架 SHALL 仅记录 WARNING 并照常落定 pushed；push 幂等重入 SHALL NOT 产生重复提交。
+报告缺失或 git 操作失败时，框架 SHALL 仅记录 WARNING（复用 _commit_verification_report 既有行为，落 verify_report 通道、含 spec 名与 stderr 摘要；engine 侧调用异常兜底记 push-closeout 前缀）并照常落定 pushed；项目非 git 仓库时 SHALL 静默跳过、不落 WARNING；push 幂等重入 SHALL NOT 产生重复提交。
 
 #### Scenario: git 失败不阻塞收口
 
 - **WHEN** 报告入库因任何 git 错误失败
-- **THEN** 记录含 push-closeout 前缀的 WARNING
+- **THEN** 记录 WARNING（verify_report 通道，含 spec 名与 stderr 摘要）
 - **AND** pushed 照常落定，push 主链无感知
+
+#### Scenario: 非 git 项目静默跳过
+
+- **WHEN** 被管项目无 git 仓库且 done→pushed 收口触发报告入库
+- **THEN** 静默跳过、不落 WARNING
+- **AND** pushed 照常落定
