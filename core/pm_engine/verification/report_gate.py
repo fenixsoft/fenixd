@@ -154,11 +154,18 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     """verifier 结果文件是否不可信（陈旧重放 / 异 spec 残留 / 缺失）。
 
     判据（任一命中即陈旧）：
-    - 文件含 role 字段且 ≠ verifier，或 role 缺失（旧格式遗留 /
-      implementer 残留）→ 来源不明一律不采信（evo-verifier-result-single-
-      source R1：消除 run_id fail-open——旧行为在 run_id 不匹配
-      ``-\\d{10,}-a\\d+$`` 时直接返回 False 不判陈旧，导致 implementer
-      残留 status=success 仍被采信判 blocked）；
+    - role 闸门仅作用于主树共享回退文件：文件含 role 字段且 ≠ verifier，
+      或 role 缺失（旧格式遗留 / implementer 残留）→ 来源不明一律不采信
+      （evo-verifier-result-single-source R1：消除 run_id fail-open——旧行为
+      在 run_id 不匹配 ``-\\d{10,}-a\\d+$`` 时直接返回 False 不判陈旧，导致
+      implementer 残留 status=success 仍被采信判 blocked）。per-spec primary
+      是 verifier/judge 的新式写入落点（``_read_verdict`` 对 primary 直接
+      采信、不设 role 门），agent 直写的 primary 常缺 role 戳（judge_gate
+      快道 D3 同款教训）——role 门套到 primary 会把本轮 verifier 现写的
+      合法裁决判成 stale 触发永久重派（2026-09-28
+      evo-fix-codefix-rollup-archive-read 死循环实证）；primary 的归属仍由
+      spec 戳 + mtime + status 白名单三重护栏兜底（implementer 残留
+      status=success 落 unknown-status → blocked，fail-closed 不变）；
     - run_id 内嵌 epoch 早于文件 mtime 之前 5 秒以上 → 本轮验证器
       未曾写回；
     - 文件缺失却宣称成功 → 判定来源不明；
@@ -179,7 +186,15 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     # 被错误采信。新版先查 role 与 spec 戳（不依赖 run_id），role≠verifier
     # 或 role 缺失一律返回 True（不采信）。规则唯一实现在
     # _verifier_stamp_gate（fix-code-review DRY），陈旧处置在调用侧表达。
-    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=True)
+    # role 闸门作用域：仅主树共享回退文件要求 role=verifier（R1 原意针对
+    # 「主树共享文件 role≠verifier/缺 role 一律不采信」）；primary 豁免
+    # role 门（归属由 spec 戳 + mtime + status 白名单兜底，见函数 docstring）。
+    _primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
+    try:
+        require_role = result_path.resolve() == _shared.resolve()
+    except OSError:
+        require_role = False
+    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=require_role)
     if not ok:
         return True
     raw_run_id = getattr(result, "run_id", "") or ""

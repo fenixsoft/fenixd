@@ -245,6 +245,28 @@ class TestLegacyContamination(_ContaminationBase, unittest.TestCase):
         self.assertEqual(entry["status"], "implemented")
         self.assertIn("replayed", entry.get("error", ""))
 
+    def test_primary_missing_role_fresh_accepted(self):
+        """agent 直写的 primary 缺 role 戳但 spec 戳匹配 + mtime 新鲜 → 采信。
+
+        role 闸门仅作用于主树共享回退文件（R1 原意）；per-spec primary 是
+        verifier 的新式写入落点（_read_verdict 直接采信、不设 role 门）。
+        2026-09-28 evo-fix-codefix-rollup-archive-read 事故：agent 直写的
+        无 role primary 被 role 门判 stale → 同 SPEC 验证结果被永久丢弃
+        re-dispatch（8+ 轮整验蒸发）。回归锚：fresh 无 role primary 不判
+        陈旧，裁决照常消费。共享文件缺 role 仍拒绝（上一测试锚定）。
+        """
+        # 复刻生产毒文件形态：status/spec 合法、无 role 字段
+        (self.verify_dir / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "verified", "spec": "demo-spec", "bugs": []}),
+            encoding="utf-8")
+        # run_id 可解析（-a1 后缀）且 epoch 远早于文件 mtime → mtime 门通过
+        self._run_legacy(verifier_run_id="verify-demo-spec-1700000000-a1")
+        entry = self.sm.read_one("demo-spec")
+        self.assertIn(entry["status"], ("verified", "done"))
+        self.assertNotIn("replayed", entry.get("error", "") or "")
+        self.engine._on_spec_verified.assert_called()
+        self.engine._on_spec_bug_found.assert_not_called()
+
     def test_legacy_valid_verifier_still_works(self):
         """role=verifier 的合法裁决照常消费（bug-found 不回归）。"""
         self._write_shared(VALID_VERIFIER_RESULT)
