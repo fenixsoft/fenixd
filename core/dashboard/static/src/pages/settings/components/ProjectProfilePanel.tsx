@@ -201,11 +201,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to load verify.yaml:', e);
       message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
     } finally {
-      // 非 silent 仍按「仍是最新加载」判定清理；silent 统一清 false 无害化——
-      // 保存触发的静默重载会自增 seq 令并发「重新加载」的响应过期、其清理被
-      // 跳过，而 silent 自身又不置/不清 yamlLoading，yamlLoading 便永久悬挂为
-      // true（编辑区整体禁用且无超时兜底）。silent 加载期间 yamlLoading 本应
-      // 恒为 false，提前清掉并发的非 silent 加载锁也只是提前解禁编辑区，无害。
+      // 非 silent 是 yamlLoading 的置位者，无条件清理自身锁——即使响应已过期
+      // （保存触发的静默重载会自增 seq 令并发「重新加载」的响应过期），否则
+      // 置位者的清理被跳过后 yamlLoading 永久悬挂为 true（编辑区整体禁用且
+      // 无超时兜底）；提前清掉并发的另一把非 silent 加载锁也只是提前解禁
+      // 编辑区，无害。silent 未置位该锁，仅当仍是最新加载时才顺带清理
+      // （code-review item 5e9ba75a5074：原注释把两侧条件写反，此版与代码对齐）。
       if (!silent || seq === yamlLoadSeq.current) setYamlLoading(false);
     }
   };
@@ -235,9 +236,14 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       message.success('verify.yaml 已保存');
       setYamlExists(true);
       // 已落盘草稿不再是「未保存改动」（code-review item 4815d4896312）：
-      // 静默重载把基线重打为已保存内容，探针比对相等即自动归零，
-      // 无需（也不能）手动清整面板脏标记——简介草稿的脏态须保留
+      // 无需（也不能）手动清整面板脏标记——简介草稿的脏态须保留。先把基线
+      // 同步为本次已保存内容（code-review item d9f2bd1097f0），静默重载仅用于
+      // 对账服务端归一化差异：重载失败时基线不停留在保存前旧内容，已落盘
+      // 草稿不会被探针误判为脏（切页签误弹丢弃确认）；归属随推进到当前加载
+      // 序号，重载失败后也无需先「重新加载」即可再次保存。
+      yamlLoadedContentRef.current = yamlDraft;
       await loadVerifyYaml(true);
+      yamlDraftSourceRef.current = { project, seq: yamlLoadSeq.current };
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`保存失败：${errorMessage}`);

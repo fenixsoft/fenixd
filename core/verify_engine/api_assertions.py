@@ -62,6 +62,9 @@ def _split_path_tokens(path: str) -> list[str]:
 
     分词正则支持引号键形态（``data['a.b']``），若直接 ``re.split(r"\\.", path)``
     会把含点的引号键撕裂成两段静默求值失败，故逐字符感知引号后再切分。
+    产出空段（连续点/首尾点，如 ``a..b`` / ``.name``）时抛 ValueError：
+    空段若被静默跳过，拼错的 path 会等价于另一条路径在错误节点上求值、
+    判 pass/fail，与「未知 mode」的配置错误可见化口径相悖（fail-closed）。
     """
     parts: list[str] = []
     buf: list[str] = []
@@ -80,6 +83,8 @@ def _split_path_tokens(path: str) -> list[str]:
         else:
             buf.append(ch)
     parts.append("".join(buf))
+    if any(not part for part in parts):
+        raise ValueError(f"路径非法（含连续点或首尾点空段）: {path!r}")
     return parts
 
 
@@ -94,6 +99,7 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     求值失败（键缺失/越界）返回 ``missing``（缺省 None——与「值相等或不等」
     语义无关，断言结果通过 actual=None 与 expected 对比即可区分；
     传入哨兵可区分「路径不存在」与「显式 null」）。
+    路径非法（含空段）抛 ValueError，由调用方归一为显式 error。
     """
     if not path:
         return data
@@ -280,7 +286,20 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": "响应体非合法 JSON（或 JSON 根为 null），无 JSON 载荷可求值",
             }
-        actual = evaluate_json_path(payload, path, missing=_MISSING)
+        try:
+            actual = evaluate_json_path(payload, path, missing=_MISSING)
+        except ValueError as e:
+            # 路径非法可见化：与「未知 mode」口径对齐，避免拼错的 path 沿
+            # 另一条路径静默求值、被判为产品缺陷
+            return {
+                "type": "json_path",
+                "layer": 3,
+                "path": path,
+                "expected": expected,
+                "actual": None,
+                "pass": False,
+                "error": str(e),
+            }
         mode = a.get("mode", "exact")
         path_missing = actual is _MISSING
         if path_missing:
@@ -516,10 +535,27 @@ class ApiAssertionRunner:
         """断言响应延迟低于毫秒上限（启发式，慢环境不判产品缺陷）。"""
         expected = a.get("expected")
         actual = resp.get("latency_ms")
-        return {
+        # fail-closed：expected 缺失或非数字时不得让 int() 抛 TypeError 被
+        # run() 包成笼统「断言执行异常」，judge 须能区分场景配置错误与产品
+        # 缺陷（口径对齐 status_code 的 expected 校验）
+        try:
+            limit = int(expected)
+        except (TypeError, ValueError):
+            limit = None
+        passed = limit is not None and actual is not None and actual < limit
+        result = {
             "type": "latency_under",
             "layer": 4,
             "expected": expected,
             "actual": actual,
-            "pass": actual is not None and actual < int(expected),
+            "pass": passed,
         }
+        if expected is None:
+            result["error"] = (
+                "latency_under 缺少数字型 expected，无法与延迟上限对比（fail-closed）"
+            )
+        elif limit is None:
+            result["error"] = (
+                f"latency_under 的 expected 非数字（毫秒），无法与延迟上限对比: {expected!r}"
+            )
+        return result

@@ -82,6 +82,9 @@ VALID_EVENTS = tuple(SpecStatus.ALL) + (HOOK_EVENT_ALL_DONE,)
 # 超时缺省（D4：shell 缺省 60，webhook 缺省 10）
 DEFAULT_SHELL_TIMEOUT_SECONDS = 60
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10
+# 强杀后回收进程的兜底超时：守护化孙进程（setsid 脱离进程组）继承管道时
+# killpg 收不掉，communicate 会因管道未关闭无限阻塞
+SHELL_KILL_REAP_TIMEOUT_SECONDS = 5
 
 # webhook url scheme 白名单：urlopen 支持 file://ftp:// 等 scheme，放行会把
 # 本地/内网资源读入审计记录（响应体截 2KB 落 hook_audit.jsonl）——仅允许
@@ -1108,7 +1111,22 @@ class HookEngine:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     proc.kill()
-                out, err = proc.communicate()
+                try:
+                    out, err = proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    # 守护化孙进程（setsid 脱离进程组）继承管道且杀不掉：
+                    # 关闭读端放弃读取，保证执行线程必然返回、在飞标记必然释放
+                    for _stream in (proc.stdout, proc.stderr):
+                        try:
+                            if _stream:
+                                _stream.close()
+                        except OSError:
+                            pass
+                    try:
+                        proc.wait(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    out, err = "", ""
                 detail = f"shell 超时（>{timeout:.0f}s）已按进程组强杀"
                 tail = _tail_combined(out or "", err or "")
                 return STATUS_FAILURE, f"{detail}{('：' + tail) if tail else ''}"

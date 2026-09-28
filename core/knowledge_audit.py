@@ -8,7 +8,7 @@
 - **语义项**（矛盾、跨页重复）MUST NOT 脚本改写——转定向蒸馏 run（``audit.md``
   提示词）读两处冲突上下文后按增量蒸馏契约重写，允许「判无矛盾」零改动收场；
   重写失败登记 todo.md；
-- **报告项**（超 150 行硬顶、ADR supersede 链断裂、accepted 正文改动）进体检报告
+- **报告项**（超 150 行硬顶、ADR supersede 链断裂、ADR 目录未提交改动）进体检报告
   待人工。报告落 ``.fenix/knowledge_audit_report.md``，含规模趋势：总行数相对
   上次体检增长超 +10% 显式标「需精简」并给候选页清单。
 
@@ -131,9 +131,13 @@ def knowledge_daily_check(
             log.error("knowledge", f"audit 车道执行失败（下周期重试）：{e}")
             res = {"ok": False, "error": str(e)}
         results["audit"] = res
-        # 前置 core 缺失的跳过不落日戳（前置合并后当日即可补跑）；
-        # 正常体检（含零病灶/机械修复）落日戳，同自然日只跑一次。
-        if res.get("ok", False) and res.get("reason") != "knowledge-core-unavailable":
+        # 前置未就绪的跳过不落日戳（core 缺失 / 知识目录尚未建好，前置就绪
+        # 后当日即可补跑）；正常体检（含零病灶/机械修复）落日戳，同自然日只跑
+        # 一次。
+        if res.get("ok", False) and res.get("reason") not in (
+            "knowledge-core-unavailable",
+            "no-knowledge-dir",
+        ):
             state["last_audit_date"] = today
             _write_state(project_root, state)
 
@@ -293,7 +297,7 @@ def _adr_status_slot(ln: str) -> Optional[tuple[int, int, str]]:
 
 def _scan_adrs(project_root: Path) -> dict:
     """ADR 病灶：supersede 链断裂（报告）、index 状态与条目头不一致（机械对齐）、
-    accepted 正文未提交改动（报告）。"""
+    ADR 目录未提交改动（报告，不按条目状态过滤）。"""
     adr_dir = Path(project_root) / KNOWLEDGE_DIR / "adr"
     broken_chain: list[str] = []
     status_mismatch: list[dict] = []
@@ -323,7 +327,7 @@ def _scan_adrs(project_root: Path) -> dict:
                 status_mismatch.append(
                     {"line_no": i, "name": name, "wrong": slot[2], "expected": expected}
                 )
-    accepted_dirty: list[str] = []
+    adr_dirty: list[str] = []
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain", "--", f"{KNOWLEDGE_DIR}/adr"],
@@ -333,7 +337,7 @@ def _scan_adrs(project_root: Path) -> dict:
             timeout=60,
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            accepted_dirty = [
+            adr_dirty = [
                 ln for ln in proc.stdout.strip().splitlines() if ln.strip()
             ]
     except (OSError, subprocess.TimeoutExpired):
@@ -341,7 +345,7 @@ def _scan_adrs(project_root: Path) -> dict:
     return {
         "broken_chain": broken_chain,
         "status_mismatch": status_mismatch,
-        "accepted_dirty": accepted_dirty,
+        "adr_dirty": adr_dirty,
     }
 
 
@@ -709,8 +713,8 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
         + [f"{rel}：能力页 marker 缺失或不可解析" for rel in scan["no_marker"]]
         + [f"ADR supersede 链断裂：{item}" for item in scan["adr"]["broken_chain"]]
         + (
-            [f"accepted ADR 存在未提交改动：{len(scan['adr']['accepted_dirty'])} 项"]
-            if scan["adr"]["accepted_dirty"]
+            [f"ADR 目录存在未提交改动：{len(scan['adr']['adr_dirty'])} 项"]
+            if scan["adr"]["adr_dirty"]
             else []
         )
     )

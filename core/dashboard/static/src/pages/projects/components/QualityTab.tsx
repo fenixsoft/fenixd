@@ -142,6 +142,8 @@ const ACK_RESULT_POLL_BUDGET_MS = 120_000;
 // started 后「等启动」轮询预算（add-code-review-trigger-ack 3.4）：2s 间隔
 // 轮询 progress 等 running=true，超过即「启动较慢」提示并解禁（30s 心跳兜底）
 const ACK_START_POLL_BUDGET_MS = 60_000;
+// 触发修复后「等结果」轮询预算：1s 间隔轮询判定结果，超过即提示未受理（见 handleTriggerFixRun）
+const FIX_RUN_RESULT_POLL_BUDGET_MS = 20_000;
 
 function ProblemCell({ rec }: { rec: CodeReviewItem }) {
   const [open, setOpen] = useState(false);
@@ -663,7 +665,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       const res = await triggerCodeFixRun(project);
       setFixRunRestartTick((t) => t + 1); // 重启进度卡片轮询（见 fixRunRestartTick 注释）
       const wantedAt = res.requested_at;
-      const deadline = Date.now() + 20_000;
+      const deadline = Date.now() + FIX_RUN_RESULT_POLL_BUDGET_MS;
       let result: CodeFixRunResult | null = null;
       while (Date.now() < deadline) {
         // 卸载/切走后停止轮询与提示（finally 复位 pending）

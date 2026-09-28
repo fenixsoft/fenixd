@@ -154,9 +154,21 @@ class ApiRunner(VerifyRunner):
 
         method = str(step.get("method") or "GET").upper()
         url = rewrite_origin(str(step.get("url") or ""), self.base_url)
+        raw_headers = step.get("headers")
+        if raw_headers is not None and not isinstance(raw_headers, dict):
+            # 非法 headers（列表/字符串等非对象形态）调 .items() 会抛
+            # AttributeError 穿出令整个场景 run 异常收场——入口归一为本步骤
+            # 结构化失败，与 timeout/body 分支同款防御口径。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"headers 须为对象（键值映射）: {type(raw_headers).__name__}",
+            }
         headers = {
             k: _interpolate_env(str(v), self.config_env())
-            for k, v in (step.get("headers") or {}).items()
+            for k, v in (raw_headers or {}).items()
         }
         body = step.get("body", "")
         body_type = str(step.get("body_type") or "").lower()

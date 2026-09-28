@@ -84,21 +84,28 @@ class TestBudgetExemption:
         pm = FakePM(tmp_path)
         budget = ImplBudget(pm)
 
-        # 超时/停滞原因：不豁免（不调 bump_impl_budget）
+        # 超时/停滞原因：不豁免（不触发幂等退款，也不直接回退计数）
         budget._exempt_dead_run_budget(
             "spec-a", "test reason",
             run_reason="Timeout after 100s — extension budget exhausted (2/2)")
+        pm.state_machine.refund_dead_run_once.assert_not_called()
         pm.state_machine.bump_impl_budget.assert_not_called()
 
         # 重置 mock
+        pm.state_machine.refund_dead_run_once.reset_mock()
         pm.state_machine.bump_impl_budget.reset_mock()
         pm.state_machine.bump_budget_exempt_runs.reset_mock()
 
-        # 基础设施性死亡：豁免（调 bump_impl_budget -1）
+        # 基础设施性死亡：豁免（item cd696b7c0de9：退款动作收敛为
+        # state_machine.refund_dead_run_once 幂等锚点，锚点缺省回退
+        # STATE implementer_run；不再直接调 bump_impl_budget）
+        pm.state_machine.read_one.return_value = {"implementer_run": "run-b"}
+        pm.state_machine.refund_dead_run_once.return_value = (True, 4)
         budget._exempt_dead_run_budget(
             "spec-b", "no run-result",
             run_reason=None)  # None → 旧语义豁免
-        pm.state_machine.bump_impl_budget.assert_called_once_with("spec-b", -1)
+        pm.state_machine.refund_dead_run_once.assert_called_once_with("spec-b", "run-b")
+        pm.state_machine.bump_budget_exempt_runs.assert_called_once_with("spec-b")
 
 
 # ── 5.5 结构化诊断继承 ────────────────────────────────────────────────
