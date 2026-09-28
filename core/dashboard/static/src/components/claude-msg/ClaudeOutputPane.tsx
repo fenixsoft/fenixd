@@ -27,68 +27,62 @@ interface ClaudeOutputPaneProps {
   onRunStatus?: (status: string) => void;
 }
 
-// 前置拼接对界去重（design D5）：live run 在客户端发起窗口请求与后端切片读取
-// 之间可能又追加了 G 条 → 后端窗口整体后移 G 条，窗口尾部与已加载头部重叠。
-// 取「older 的后缀 == loaded 的前缀」的最长重叠段剔除（归档 run 无追加、重叠为
-// 0，原样前置拼接）；头部缺口接受近似，不引入事件唯一 ID（Non-Goals）。
-// 序列化各做一次 O(n)（code-review item 700e560a4062）：旧实现对每个重叠候选
-// 反复 JSON.stringify older 后缀项，最坏 ~n²/2 次大对象序列化卡主线程。
-function prependWithoutOverlap(older: RunEvent[], loaded: RunEvent[]): RunEvent[] {
-  const maxOverlap = Math.min(older.length, loaded.length);
-  if (maxOverlap === 0) return older;
-  const loadedHeads: string[] = new Array(maxOverlap);
-  for (let i = 0; i < maxOverlap; i++) {
-    loadedHeads[i] = JSON.stringify(loaded[i]);
+// 对界去重共用核心（code-review item 6d06358498b2）：prepend/append 两镜像实现
+// 的公共部分收敛于此——serializeSegment 做端部序列化（单次 O(n)，code-review
+// item 700e560a4062 口径，旧实现对每个重叠候选反复 stringify 最坏 ~n²/2 次卡
+// 主线程），longestSuffixPrefixOverlap 求「a 的后缀 == b 的前缀」的最长重叠
+// 长度；两个入口各自只保留端部方向选择与切片剔除逻辑。
+function serializeSegment(events: RunEvent[], start: number, count: number): string[] {
+  const serialized: string[] = new Array(count);
+  for (let i = 0; i < count; i++) {
+    serialized[i] = JSON.stringify(events[start + i]);
   }
-  // 只需 older 的后缀 maxOverlap 项参与比对
-  const olderTails: string[] = new Array(maxOverlap);
-  for (let i = 0; i < maxOverlap; i++) {
-    olderTails[i] = JSON.stringify(older[older.length - maxOverlap + i]);
-  }
+  return serialized;
+}
+
+// 返回最大 overlap ∈ [0, maxOverlap] 使 aSer 的后 overlap 项逐条等于 bSer 的前
+// overlap 项（aSer/bSer 均恰含 maxOverlap 项序列化端部）；无重叠返回 0。
+function longestSuffixPrefixOverlap(aSer: string[], bSer: string[], maxOverlap: number): number {
   for (let overlap = maxOverlap; overlap > 0; overlap--) {
     let matched = true;
     for (let i = 0; i < overlap; i++) {
-      if (olderTails[maxOverlap - overlap + i] !== loadedHeads[i]) {
+      if (aSer[maxOverlap - overlap + i] !== bSer[i]) {
         matched = false;
         break;
       }
     }
-    if (matched) {
-      return older.slice(0, older.length - overlap);
-    }
+    if (matched) return overlap;
   }
-  return older;
+  return 0;
+}
+
+// 前置拼接对界去重（design D5）：live run 在客户端发起窗口请求与后端切片读取
+// 之间可能又追加了 G 条 → 后端窗口整体后移 G 条，窗口尾部与已加载头部重叠。
+// 取「older 的后缀 == loaded 的前缀」的最长重叠段剔除（归档 run 无追加、重叠为
+// 0，原样前置拼接）；头部缺口接受近似，不引入事件唯一 ID（Non-Goals）。
+function prependWithoutOverlap(older: RunEvent[], loaded: RunEvent[]): RunEvent[] {
+  const maxOverlap = Math.min(older.length, loaded.length);
+  if (maxOverlap === 0) return older;
+  // 只需 older 的后缀 maxOverlap 项参与比对
+  const olderTails = serializeSegment(older, older.length - maxOverlap, maxOverlap);
+  const loadedHeads = serializeSegment(loaded, 0, maxOverlap);
+  const overlap = longestSuffixPrefixOverlap(olderTails, loadedHeads, maxOverlap);
+  return overlap > 0 ? older.slice(0, older.length - overlap) : older;
 }
 
 // 尾部追加对界去重（code-review item 289e589fb89b）：SSE hello 重同步窗口
 //（流上最后 tail 条）与已加载列表按「newer 的前缀 == loaded 的后缀」的最长
 // 重叠段剔除，只把真正新增的尾部追加进来——保留用户「加载更早事件」拉到的
 // 前缀历史（旧实现整体替换，每次重连都把已加载前缀塌缩回尾窗、计数跳变）。
-// 流轮转/截断走 reset 分支整体重拉，不经本函数。
+// 流轮转/截断走 reset 分支整体重拉，不经本函数。与 prependWithoutOverlap 互为
+// 镜像（前置方向的 D5 对界），共用上方核心。
 function appendWithoutOverlap(newer: RunEvent[], loaded: RunEvent[]): RunEvent[] {
   const maxOverlap = Math.min(newer.length, loaded.length);
   if (maxOverlap === 0) return newer;
-  const loadedTails: string[] = new Array(maxOverlap);
-  for (let i = 0; i < maxOverlap; i++) {
-    loadedTails[i] = JSON.stringify(loaded[loaded.length - maxOverlap + i]);
-  }
-  const newerHeads: string[] = new Array(maxOverlap);
-  for (let i = 0; i < maxOverlap; i++) {
-    newerHeads[i] = JSON.stringify(newer[i]);
-  }
-  for (let overlap = maxOverlap; overlap > 0; overlap--) {
-    let matched = true;
-    for (let i = 0; i < overlap; i++) {
-      if (newerHeads[i] !== loadedTails[maxOverlap - overlap + i]) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) {
-      return newer.slice(overlap);
-    }
-  }
-  return newer;
+  const loadedTails = serializeSegment(loaded, loaded.length - maxOverlap, maxOverlap);
+  const newerHeads = serializeSegment(newer, 0, maxOverlap);
+  const overlap = longestSuffixPrefixOverlap(loadedTails, newerHeads, maxOverlap);
+  return overlap > 0 ? newer.slice(overlap) : newer;
 }
 
 // 增量分支终态事件 → status 映射（code-review item 6ec9d7211411）：覆盖
