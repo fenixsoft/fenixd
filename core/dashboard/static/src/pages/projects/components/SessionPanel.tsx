@@ -1,7 +1,7 @@
 // SessionPanel.tsx — 项目级自由会话内联分面面板（add-project-detail-tabs D2）
 //
 // 由项目级会话全屏 Modal 迁移（Modal 外壳 → 「会话接入」分面内联容器），会话行为契约零变更：
-// 打开流程：GET 拉全量缓冲 → EventSource('/api/stream') → hello 分支用服务端
+// 打开流程：GET 拉全量缓冲 → EventSource(STREAM_URL) → hello 分支用服务端
 // cid 注册 watch → 再 GET 重拉一次（兜住注册前窗口），与 ClaudeOutputPane 同构。
 // 会话不存在（首次进入）→ 显示「开始会话」空态，点击后显式 POST /api/session/start。
 // 分面无会话项目不注册 watch（注册必然 404 → console.error，污染 no_console_error
@@ -26,6 +26,7 @@ import {
   stopSession,
   registerSessionWatch,
   unregisterSessionWatch,
+  STREAM_URL,
 } from '@/services/dashboard';
 import type { SessionEvent } from '@/services/dashboard';
 import { ClaudeMessageList, runEventsToChatMessages } from '@/components/claude-msg';
@@ -166,6 +167,17 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   useEffect(() => {
     activeRef.current = active;
   }, [active]);
+  // 项目名镜像（code-review item cefe51c864ea）：切离/卸载注销 watch 的 effect
+  // 依赖仅 [active]（下方 eslint-disable），project 不在依赖中——分面保持激活
+  // 跨项目切换（list.tsx 的 project 来自 useParams、组件不重挂载）时该 effect
+  // 不重跑，闭包 project 停留旧项目，切离/卸载时会对旧项目名配 cidRef 中新
+  // 项目的 cid 发 DELETE /api/session/watch，服务端查不到 → 注销静默失效
+  // （rejection 被调用点吞掉）、旧项目 watch 无人注销。经本 ref 读取最新
+  // 项目名，与 cid 同源（与上方 activeRef 同一规避模式）。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   // 快照应用串行链（code-review item e3b97bedcb43：自主 effect 局部闭包提升到
   // 组件级）：原链只在主 effect 内可见，handleStart 的快照拉取不经该链——用户
@@ -397,7 +409,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
 
     void loadAll();
 
-    const es = new EventSource('/api/stream');
+    const es = new EventSource(STREAM_URL);
     eventSourceRef.current = es;
     es.onmessage = (ev: MessageEvent) => {
       if (disposed) return;
@@ -448,8 +460,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       const cid = cidRef.current;
       // 异步注销，不阻塞切面；仅对实际注册过的 watch 注销——
       // 无会话项目从未注册，注销未注册 cid 会 404（服务端无会话判定）
-      if (watchRegisteredRef.current && cid && project) {
-        void unregisterSessionWatch(project, cid).catch(() => {});
+      if (watchRegisteredRef.current && cid && projectRef.current) {
+        void unregisterSessionWatch(projectRef.current, cid).catch(() => {});
         watchRegisteredRef.current = false;
       }
       // 注销后清空：active→false 转换路径下方清理函数已先行注销（标记已否），
@@ -473,8 +485,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       if (watchRegisteredRef.current) {
         const cid = cidRef.current;
         watchRegisteredRef.current = false;
-        if (cid && project) {
-          void unregisterSessionWatch(project, cid).catch(() => {});
+        if (cid && projectRef.current) {
+          void unregisterSessionWatch(projectRef.current, cid).catch(() => {});
         }
       }
     };
