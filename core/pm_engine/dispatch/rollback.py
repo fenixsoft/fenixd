@@ -427,6 +427,9 @@ class RRollbackMixin:
             "git stash list 查条目去向；逐文件 git show <sha>:<file> 核对"
             "（如 git show stash@{0}:<file>）"
         )
+        # 处置指引对齐自动 merge-only 重试车道语义（code-review item
+        # f64b8009ab7b）：提交/stash 重叠改动后由周期复查消费者自动重试，
+        # ready 重派仅在自动重试超限降级后使用。
         description = (
             f"SPEC '{spec_name}' merge-back 被 WIP 重叠闸门阻塞（策略=block）："
             f"主树 {len(overlap)} 个已跟踪文件存在未提交改动，与分支 "
@@ -434,7 +437,9 @@ class RRollbackMixin:
             f"已中止合并（主树零污染，未 stash/未 merge/未 pop）。"
             f"找回/核对：{recover_cmds}。"
             f"处置指引：提交（git add/commit）或 stash（git stash push）主树这些"
-            f"重叠改动后，重新放行该 spec（ready 重派）即可继续 merge-back。"
+            f"重叠改动后等待即可——周期复查车道会自动 merge-only 重试并续走 "
+            f"merge-back，无需 ready 重派；仅当自动重试超限降级为人工处置告警后，"
+            f"才需复位 ready 重派或人工完成合并。"
         )
 
         def _wip_overlap_updates() -> dict:
@@ -476,8 +481,9 @@ class RRollbackMixin:
             },
             (
                 "提交或 stash 主树与分支重叠的未提交改动"
-                "（git add/commit 或 git stash push）后重新放行该 spec"
-                "（ready 重派）继续 merge-back；被收纳/保留的改动可用 "
+                "（git add/commit 或 git stash push）后等待自动 merge-only 重试"
+                "（周期复查车道自愈，无需 ready 重派）；仅自动重试超限降级后才需"
+                "人工复位 ready 重派或手动完成合并；被收纳/保留的改动可用 "
                 "git stash list 与逐文件 git show <sha>:<file> 找回核对"
             ),
         )
