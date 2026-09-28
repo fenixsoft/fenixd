@@ -20,7 +20,7 @@
 - [recovery-continuity](domains/recovery-continuity/_domain.md) — 中断恢复与续做（13 个能力）
 - [worktree-vc](domains/worktree-vc/_domain.md) — 工作树与版本控制（14 个能力）
 - [daemon-runtime](domains/daemon-runtime/_domain.md) — 守护进程平台（12 个能力）
-- [provider-models](domains/provider-models/_domain.md) — 模型网关与配置（17 个能力）
+- [provider-models](domains/provider-models/_domain.md) — 模型网关与配置（18 个能力）
 - [cost-observability](domains/cost-observability/_domain.md) — 成本与可观测（13 个能力）
 - [dashboard-frontend](domains/dashboard-frontend/_domain.md) — 仪表盘前端（32 个能力）
 - [dashboard-platform](domains/dashboard-platform/_domain.md) — 仪表盘服务（16 个能力）

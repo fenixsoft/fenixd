@@ -12,6 +12,7 @@
 - [provider-fault-fuse](provider-fault-fuse.md) — provider 故障熔断
 - [provider-transient-backoff](provider-transient-backoff.md) — 瞬时故障原地退避
 - [transient-dispatch-gating](transient-dispatch-gating.md) — 瞬断终态重派与全局熔断
+- [transient-unseal-recovery](transient-unseal-recovery.md) — 熔断解封渐进恢复（hold/探针/错峰）
 - [transient-controls-ui](transient-controls-ui.md) — 瞬断治理配置界面
 - [provider-circuit-observability](provider-circuit-observability.md) — 瞬断风暴可观测与告警核销
 - [model-chain-health-probe](model-chain-health-probe.md) — 模型链健康探测（拒模型快速 failover）
