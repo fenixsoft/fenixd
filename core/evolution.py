@@ -1233,16 +1233,26 @@ def _write_admin_warning(project_root, message: str) -> None:
     写失败静默降级（观测增强，不阻断接受/拒绝主流程）。
     """
     try:
-        from core.admin_store import AdminStore
+        from core.admin_store import AdminStore, ESCALATION
 
-        store = AdminStore(project_root)
+        store = AdminStore(project_root, logger=_logger)
         store.append(
             {
-                "kind": "escalation",
+                "kind": ESCALATION,
                 "severity": "major",
                 "signal_type": "self-evolution",
                 "spec": None,
                 "description": message,
+                # 本函数仅收到 message（接受失败的因果文本），故 evidence 以
+                # 告警正文为据；recommended_action 按调用方语境（accept_failed
+                # 台账 + spec/changes 残留目录）给出人工跟进口径，
+                # 与 self_review.py 等其他 escalation 写入点形态对齐。
+                "evidence": message,
+                "recommended_action": (
+                    "人工核对自进化台账对应条目的 accept_failed 原因与 "
+                    "spec/changes 残留目录，按告警正文的后续处理说明"
+                    "（后缀重试/清理残留）跟进或人工接手"
+                ),
             }
         )
     except Exception as e:
