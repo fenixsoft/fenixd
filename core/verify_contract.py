@@ -430,6 +430,20 @@ def _load_verify_contract_with_raw(
                         "verify.yaml regression 段缺少必填字段 cmd/output"
                         f"（cmd={cmd!r}, output={output!r}，按未配置处理）",
                     )
+            elif not _prepare_run_valid(cmd):
+                # cmd 形态守卫（code-review item b7cabd40769b）：复用 prepare.run
+                # 同款校验对齐口径——映射或含非字符串元素的列表（如
+                # ``[npm, run, 5]`` 的数字 5）此前经真值校验放行进入
+                # RegressionSpec，run_regression 里 subprocess.Popen 直接抛
+                # TypeError 逃逸到调用方（下游只捕获 OSError），既拿不到结构化的
+                # parse_error/launch_error 快照，错误信息也不指向契约写法问题
+                # ——记 WARNING 整段按未配置处理（与缺字段/format 非法同惯例）。
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        f"verify.yaml regression 段 cmd 非法（须为非空字符串或全"
+                        f"字符串列表，整段按未配置处理）: {cmd!r}",
+                    )
             elif fmt != "junit":
                 # design D2 边界：只支持 junit 一值。声明其它格式整段无效，
                 # 不得降级成 junit 去解析（会产出无解释的 parse_error）。
@@ -467,6 +481,30 @@ def _load_verify_contract_with_raw(
 FAIL_CONTRACT_MISSING = "contract_missing"  # 契约文件不存在（exit 1）
 FAIL_CONTRACT_PARSE = "contract_parse_error"  # 契约 YAML 解析失败（exit 1）
 FAIL_SERVE_INVALID = "serve_invalid"  # serve 段非法（kind 非法/必填为空，exit 5）
+
+
+def _raw_serve_section_errors(raw_serve) -> list:
+    """serve 段静态合法性校验（纯函数）：返回错误文案列表（合法为空列表）。
+
+    口径：kind ∈ static/command、static 模式 root 非空、command 模式 cmd
+    非空。``validate_contract`` 的 valid 判定（D4）与
+    ``selfcheck_contract_light`` 的消费期自证共用本函数——此前三条校验及
+    错误文案在两处逐字复刻，任一侧调整口径（新增枚举值、改文案）都会与
+    另一侧漂移（code-review item 13d93a1f9a25），文案单点维护。
+    raw_serve 非映射（serve 段缺失/形态畸形）返回空列表：该形态由
+    load_verify_contract 静默丢弃 serve、按无 serve 段处理，两侧均不在
+    此判定。
+    """
+    if not isinstance(raw_serve, dict):
+        return []
+    kind = raw_serve.get("kind", "")
+    if kind not in ("static", "command"):
+        return [f"serve.kind 非法: {kind}（应为 static 或 command）"]
+    if kind == "static" and not raw_serve.get("root"):
+        return ["serve.root 为空（kind=static 必填）"]
+    if kind == "command" and not raw_serve.get("cmd"):
+        return ["serve.cmd 为空（kind=command 必填）"]
+    return []
 
 
 @dataclass
@@ -596,26 +634,16 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
 
     # 检查原始 YAML 中的 serve 段（load_verify_contract 会静默丢弃无效 kind）；
     # raw_data 与 contract 出自第 1 步同一次读取（item f078ddc52b6b），不再对
-    # contract_path 二次 read_text + safe_load
+    # contract_path 二次 read_text + safe_load。校验口径与错误文案走共享的
+    # _raw_serve_section_errors（与 selfcheck_contract_light 单点同源，
+    # item 13d93a1f9a25）。
     if isinstance(raw_data, dict):
-        raw_serve = raw_data.get("serve")
-        if isinstance(raw_serve, dict):
-            raw_kind = raw_serve.get("kind", "")
-            if raw_kind not in ("static", "command"):
-                valid = False
-                serve_ok = False
-                fail_kind = FAIL_SERVE_INVALID
-                serve_error = f"serve.kind 非法: {raw_kind}（应为 static 或 command）"
-            elif raw_kind == "static" and not raw_serve.get("root"):
-                valid = False
-                serve_ok = False
-                fail_kind = FAIL_SERVE_INVALID
-                serve_error = "serve.root 为空（kind=static 必填）"
-            elif raw_kind == "command" and not raw_serve.get("cmd"):
-                valid = False
-                serve_ok = False
-                fail_kind = FAIL_SERVE_INVALID
-                serve_error = "serve.cmd 为空（kind=command 必填）"
+        serve_errors = _raw_serve_section_errors(raw_data.get("serve"))
+        if serve_errors:
+            valid = False
+            serve_ok = False
+            fail_kind = FAIL_SERVE_INVALID
+            serve_error = serve_errors[0]
 
     # 从加载的契约中获取 serve 信息（用于输出）
     if contract.serve is not None:
@@ -1696,15 +1724,9 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
         try:
             raw = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
-                raw_serve = raw.get("serve")
-                if isinstance(raw_serve, dict):
-                    kind = raw_serve.get("kind", "")
-                    if kind not in ("static", "command"):
-                        errors.append(f"serve.kind 非法: {kind}（应为 static 或 command）")
-                    elif kind == "static" and not raw_serve.get("root"):
-                        errors.append("serve.root 为空（kind=static 必填）")
-                    elif kind == "command" and not raw_serve.get("cmd"):
-                        errors.append("serve.cmd 为空（kind=command 必填）")
+                # serve 段校验走共享的 _raw_serve_section_errors（与
+                # validate_contract 第 2 步单点同源，item 13d93a1f9a25）。
+                errors.extend(_raw_serve_section_errors(raw.get("serve")))
                 # ready 段形态校验（code-review item 11d679872896）：ready 为标量
                 # （如 ready: /health）时 load_verify_contract 返回 None——整份契约
                 # 按无契约回退（prepare/serve 一并失效，走 commands.start 旧行为），
@@ -1716,11 +1738,22 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
                     errors.append(
                         f"ready 段非法（须为映射，契约整体按无契约回退）: {raw_ready!r}"
                     )
+            else:
+                # 顶层非映射（列表/标量/空文档）＝契约整体失效而非「纯 cli 形态」：
+                # load_verify_contract 对该形态按无契约回退并记 warning，
+                # validate_contract 对同一输入判 valid=False
+                # （FAIL_CONTRACT_PARSE）——自证同样大声失败，否则验证无声落入
+                # 无契约回退（commands.start）。ready 标量的同类缺口已由
+                # item 11d679872896 修复，顶层非映射这一形态由本补丁补上
+                # （code-review item 5a443263ffe2）。
+                errors.append(
+                    f"契约顶层须为映射（整份契约按无契约回退）: {repr(raw)[:200]}"
+                )
         except Exception as e:
             errors.append(f"契约 YAML 解析失败: {e}")
         if errors:
             return "轻量自证失败（serve/ready 段）: " + "；".join(errors)
-        return None  # 无 serve 段（纯 cli 形态）不在消费期自证范围
+        return None  # 契约结构合法且无 serve 段（纯 cli 形态）不在消费期自证范围
 
     serve = contract.serve
     if serve is None:
@@ -1744,6 +1777,9 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
     # 4. 通过 → 写 mtime 快照
     try:
         (project_root / ".fenix" / "verify-serving").mkdir(parents=True, exist_ok=True)
+        # 非原子写（本文件 rewrite_scenarios_origin 用 mkstemp+fsync+os.replace）：
+        # 快照损坏由上方读取侧 except Exception 容错兜住（照常重证，代价仅多
+        # 一轮自证），低价值快照不为此引入原子写复杂度（item 79fdee435fdc）。
         selfcheck_path.write_text(json.dumps({"mtime_ns": mtime_ns}), encoding="utf-8")
     except OSError as e:
         if logger:
