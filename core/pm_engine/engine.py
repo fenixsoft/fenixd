@@ -2656,6 +2656,30 @@ class PMEngine:
             branch = self._resolve_push_branch(spec_name, spec)
             self._push_branch_best_effort(spec_name, branch)
 
+            # ── push 收口报告入库（evo-add-push-closeout-verification-report-commit）──
+            # 闭合「报告落盘 ∈ (实现 merge, pushed)」入库窗口：验证裁决放行出口的
+            # commit-on-write 在 merge 之前已跑完，晚于 merge 落盘（或落盘后有修改）
+            # 的报告此后再无挂点（merge-back 与归档守卫均显式豁免 spec/changes）。
+            # 本点是其后唯一 per-spec 必经收口点；插在归档收口之前是刻意选择——
+            # 报告 commit 落本地后即被 _archive_auto_commit 尾部的 _git_push_ref
+            # ("main") 顺带推上 origin，直达远端而非滞留本地 main 领先 origin 等下
+            # 一次任意 push。失败语义对齐 verify_report 既有取向「报告可丢，主链不
+            # 可断」：git add/commit 失败由 _commit_verification_report 内部捕获
+            # （WARNING 落 verify_report 通道，含 spec 名与 stderr 摘要，本处不加
+            # 前缀）、非 git 仓库静默跳过（无 WARNING）、已入库无变化幂等静默；
+            # 外层再全兜底（仅兜函数本身向外抛的异常，记 push-closeout 前缀）——
+            # 任何异常均不阻断 pushed 落定。
+            try:
+                from core.verify_report import _commit_verification_report
+
+                _commit_verification_report(self.project_root, spec_name, self.logger)
+            except Exception as e:  # noqa: BLE001 — 报告可丢，主链不可断
+                self.logger.warning(
+                    "pm_engine",
+                    f"push-closeout 报告入库异常 '{spec_name}'"
+                    f"（不阻断 pushed 落定）: {e}",
+                )
+
             # ── 归档收口（archive-auto-commit）：代码 push 之后追加归档提交 ──
             # main 与分支推送成功后在流程尾部一次性收口当天全部归档移动
             # 残留（独立 commit + push）。失败仅 WARNING 不阻塞 spec 终态，残留留给
