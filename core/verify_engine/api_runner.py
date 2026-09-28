@@ -29,6 +29,9 @@ from .env_gate import probe_http_health
 from .scenarios import validate_scenario
 
 _SSE_MAX_EVENTS = 100  # sse_connect 单窗口事件收集上限（触顶截断并在 detail 标注）
+# 响应体 JSON 解析体积上限（与 evidence 侧 64KB 截断纪律同旨）：异常端点返回
+# 超大响应时 resp.text 与解析对象树会同时驻留内存，超限跳过解析置 resp_json=None
+_JSON_PARSE_LIMIT = 1024 * 1024
 
 
 def rewrite_origin(url: str, base_url: str) -> str:
@@ -286,10 +289,17 @@ class ApiRunner(VerifyRunner):
         # 被截成非法文本 → resp_json=None → json_schema/json_path 断言必然
         # 假失败（harness 缺陷，非产品缺陷、非场景缺陷）。
         resp_text = resp.text or ""
-        try:
-            resp_json = json.loads(resp_text) if resp_text.strip() else None
-        except json.JSONDecodeError:
+        # JSON 解析必须用完整响应体（防截断破坏合法 JSON），但解析侧设体积
+        # 上限：超限响应跳过解析置 resp_json=None（json_path/json_schema 断言
+        # 按「路径不存在/非 JSON」口径失败），capture 标注便于 judge 归因。
+        json_parse_skipped = len(resp_text) > _JSON_PARSE_LIMIT
+        if json_parse_skipped:
             resp_json = None
+        else:
+            try:
+                resp_json = json.loads(resp_text) if resp_text.strip() else None
+            except json.JSONDecodeError:
+                resp_json = None
         resp_body, truncated = _truncate(resp_text)
 
         capture = {
@@ -300,6 +310,10 @@ class ApiRunner(VerifyRunner):
             "latency_ms": latency_ms,
             "truncated": truncated,
         }
+        if json_parse_skipped:
+            capture["json_parse_skipped"] = (
+                f"响应体超大未解析（{len(resp_text)} 字节 > 上限 {_JSON_PARSE_LIMIT}）"
+            )
         name = step.get("as") or ""
         if name:
             captures[name] = capture
@@ -314,7 +328,8 @@ class ApiRunner(VerifyRunner):
             "latency_ms": latency_ms,
             "detail": f"{method} {url} → {resp.status_code}"
             + ("（JSON 嗅探失败已按原文发送）" if sniff_fallback_text else "")
-            + ("（响应体已截断 64KB）" if truncated else ""),
+            + ("（响应体已截断 64KB）" if truncated else "")
+            + ("（响应体超大未解析）" if json_parse_skipped else ""),
         }
 
     async def _execute_sse_connect(self, client, step: dict, captures: dict) -> dict:

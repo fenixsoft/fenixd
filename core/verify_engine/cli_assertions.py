@@ -252,8 +252,18 @@ class CliAssertionRunner:
         count = len(paths)
         minimum = a.get("min")
         maximum = a.get("max")
-        ok_min = minimum is None or count >= int(minimum)
-        ok_max = maximum is None or count <= int(maximum)
+        try:
+            min_n = None if minimum is None else int(minimum)
+            max_n = None if maximum is None else int(maximum)
+        except (TypeError, ValueError):
+            # min/max 非法（如 "two"）显式带参数名走断言异常通道，与
+            # _assert_exit_code 对非法 expected 的文案口径对齐——裸 int() 的
+            # 「invalid literal」报错定位不到是哪个边界写错
+            raise ValueError(
+                f"min/max 非法，须为整数: min={minimum!r}, max={maximum!r}"
+            )
+        ok_min = min_n is None or count >= min_n
+        ok_max = max_n is None or count <= max_n
         passed = ok_min and ok_max
         result = {
             "type": "dir_contains",
@@ -262,10 +272,10 @@ class CliAssertionRunner:
             "count": count,
             "pass": passed,
         }
-        if minimum is not None:
-            result["min"] = int(minimum)
-        if maximum is not None:
-            result["max"] = int(maximum)
+        if min_n is not None:
+            result["min"] = min_n
+        if max_n is not None:
+            result["max"] = max_n
         if not passed:
             result["matches"] = [str(p.relative_to(self.project_root)) for p in paths[:10]]
         return result
@@ -277,6 +287,17 @@ class CliAssertionRunner:
     async def _assert_output_match(self, step, a: dict) -> dict:
         """断言命令输出匹配（stream ∈ stdout/stderr/combined；mode/negate）。"""
         stream = str(a.get("stream", "combined"))
+        if stream not in ("stdout", "stderr", "combined"):
+            # stream 非法（如拼写错误 "stdoud"）显式失败而非静默按 combined
+            # 匹配：拼接体可能因另一股流的巧合内容假通过/假失败且无任何提示，
+            # 与未知 mode / 缺 expected 的显式失败口径对齐
+            return {
+                "type": "output_match",
+                "layer": 3,
+                "stream": stream,
+                "pass": False,
+                "error": f"stream 非法，须为 stdout/stderr/combined: {stream!r}",
+            }
         stdout = str(step.get("stdout") or "")
         stderr = str(step.get("stderr") or "")
         if stream == "stdout":

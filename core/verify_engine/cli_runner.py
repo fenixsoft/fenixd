@@ -150,7 +150,13 @@ class CliRunner(VerifyRunner):
         env = self._build_env(declared_env)
         stdin = str(step_dict.get("stdin") or "")
         try:
-            timeout = float(step_dict.get("timeout") or 0) or DEFAULT_RUN_TIMEOUT
+            # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
+            # 改写成缺省 60s，与 api 侧 _execute_http_request 的 timeout 口径
+            # 对齐——缺省仅在键缺失时生效
+            _raw_timeout = step_dict.get("timeout")
+            timeout = float(
+                DEFAULT_RUN_TIMEOUT if _raw_timeout is None else _raw_timeout
+            )
         except (TypeError, ValueError) as e:
             # 非法 timeout（非数字字符串/结构化值）归一为本步骤结构化失败，
             # 而非 ValueError 穿出令整个场景 run 异常中断（与 api_runner 同规）。

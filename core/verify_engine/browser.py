@@ -942,22 +942,29 @@ class BrowserManager:
                 sy = src_box["y"] + src_box["height"] / 2
                 await page.mouse.move(sx, sy)
                 await page.mouse.down()
-                await page.wait_for_timeout(hold)  # 长按进入拖拽
+                try:
+                    await page.wait_for_timeout(hold)  # 长按进入拖拽
 
-                if via_sel:
-                    via_locator = page.locator(via_sel).first
-                    await via_locator.wait_for(state="visible", timeout=5000)
-                    via_box = await via_locator.bounding_box()
-                    if via_box:
-                        vx = via_box["x"] + via_box["width"] / 2
-                        vy = via_box["y"] + via_box["height"] / 2
-                        await page.mouse.move(vx, vy, steps=8)
-                        await page.wait_for_timeout(via_wait)
+                    if via_sel:
+                        via_locator = page.locator(via_sel).first
+                        await via_locator.wait_for(state="visible", timeout=5000)
+                        via_box = await via_locator.bounding_box()
+                        if via_box:
+                            vx = via_box["x"] + via_box["width"] / 2
+                            vy = via_box["y"] + via_box["height"] / 2
+                            await page.mouse.move(vx, vy, steps=8)
+                            await page.wait_for_timeout(via_wait)
 
-                tx = to_box["x"] + to_box["width"] / 2
-                ty = to_box["y"] + to_box["height"] / 2
-                await page.mouse.move(tx, ty, steps=8)
-                await page.wait_for_timeout(dwell)
+                    tx = to_box["x"] + to_box["width"] / 2
+                    ty = to_box["y"] + to_box["height"] / 2
+                    await page.mouse.move(tx, ty, steps=8)
+                    await page.wait_for_timeout(dwell)
+                except Exception:
+                    # 失败路径先释放左键再抛：按压状态泄漏会被同 context 内
+                    # 后续步骤（click/scroll/drag）继承，产生与场景意图无关
+                    # 的连锁失败、归因困难（code-review 4c9e4cd003c2）
+                    await page.mouse.up()
+                    raise
                 await page.mouse.up()
                 await page.wait_for_timeout(400)  # 等待 React 重渲染与持久化
                 await self._wait_stable(page)
