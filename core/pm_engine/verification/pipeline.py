@@ -31,7 +31,7 @@ import time
 
 # fix-verdict-read-failclosed D3：与 runner 产物硬门共用同一 status 白名单单一来源
 # （prompt_builder 定义、两侧 import，避免双实现漂移）。
-# fix-verdict-read-failclosed D3：planner_result_status_whitelist 随裁决读取
+# fix-verdict-read-failclosed D3：PLANNER_RESULT_STATUS_WHITELIST 随裁决读取
 # 迁至 report_gate.py（verification/report_gate.py 消费）。
 # fix-verdict-retry-misattribution D3：frozen 门 error 文案与 runner.py 派发门共用
 # 同一导出常量（防文案改动使匹配失效），取消判定沿用 AgentRunResult.cancelled 结构化

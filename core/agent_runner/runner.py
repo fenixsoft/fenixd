@@ -25,7 +25,7 @@ from typing import Optional, Dict, Any
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
     spec_review_result_path,
-    spec_review_result_status_whitelist,
+    SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
 
 # fix-verdict-read-failclosed D2（新鲜度宽限）与 add-planready-artifact-gate D2
@@ -1952,7 +1952,7 @@ class AgentRunner:
         """
         return salvage_result_from_transcript(
             self.project_root, spec_name, run_id, "spec-review",
-            statuses=spec_review_result_status_whitelist)
+            statuses=SPEC_REVIEW_RESULT_STATUS_WHITELIST)
 
     def _salvage_impl_result(self, spec_name: str, run_id: str | None,
                              wt_path: Path | None, agent_type: str) -> bool:

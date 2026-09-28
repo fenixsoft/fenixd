@@ -94,26 +94,34 @@ def _single_pass_replace(template: str, values: dict[str, str]) -> str:
 
 
 def _fill_and_scan_placeholders(
-    template: str, values: dict[str, str], agent_type: str, run_id: str
+    template: str,
+    values: dict[str, str],
+    agent_type: str,
+    context_id: str,
+    label: str = "run_id",
 ) -> str:
-    """独立构建路径共用收尾：单趟填充 + 未解析占位符残留扫描告警。
+    """独立构建路径与主路径共用收尾：单趟填充 + 未解析占位符残留扫描告警。
 
     code-review item ebd39ad068f3：self-review/evolution/code-review/code-fix
     四条独立构建路径（不走 _fill_placeholders）原先各自 _single_pass_replace
     后直接返回，仅 code-review 有残留扫描——模板漂移导致的注入静默丢失在
     其余三条车道不可见，与 add-code-review-auto-fix 的 fail-open 可观测口径
     不齐。统一收尾：扫描扣除 values 已知键（正文含合法 {snake_case} 字面量
-    时不误报），残留记 warning 不阻断派发；日志消息结构与 _build_code_review_prompt
-    既有实现一致（agent=<车道> run_id=<token> leftover=<残留键>）。
+    时不误报），残留记 warning 不阻断派发；日志消息结构沿用
+    _build_code_review_prompt 既有实现（agent=<车道> <label>=<context_id>
+    leftover=<残留键>）。独立路径用默认 label="run_id"（context_id 传 run
+    token），主路径 _fill_placeholders 传 label="spec"（context_id 传
+    spec_name）——同一收尾不再维护两份手写扫描拷贝。
     """
     out = _single_pass_replace(template, values)
     leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))
     if leftover:
         _logger.warning(
             "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
-            "agent=%s run_id=%s leftover=%s",
+            "agent=%s %s=%s leftover=%s",
             agent_type,
-            run_id,
+            label,
+            context_id,
             leftover,
         )
     return out
@@ -142,7 +150,7 @@ def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
 # （_read_verifier_result）共用此单一来源——白名单外取值（如 implementer 共享
 # 文件残留的 "success"/"error"）一律不得视作合法裁决。语义错位 status 若被
 # 读侧当作 verified 放行即历史 fail-open 事故（add-verify-contract-autodraft）。
-planner_result_status_whitelist = (
+PLANNER_RESULT_STATUS_WHITELIST = (
     "verified",
     "bug-found",
     "plan-ready",
@@ -150,7 +158,7 @@ planner_result_status_whitelist = (
 )
 
 # 评审结果 status 白名单（add-spec-review-gate）
-spec_review_result_status_whitelist = (
+SPEC_REVIEW_RESULT_STATUS_WHITELIST = (
     "approved",
     "repaired",
     "rejected",
@@ -312,19 +320,13 @@ class PromptBuilder:
         # 上一轮结果作为下一键的替换对象——注入值（信号 evidence 常嵌入 run 产物
         # 路径与提示词片段）本身含 {result_path} 等占位符字面量时被后续键二次
         # 替换、污染注入内容。re.sub 单趟扫描永不重扫替换文本，杜绝二次替换。
-        out = _single_pass_replace(template, values)
         # 廉价后置检查（add-code-review-auto-fix）：存在未解析占位符记 warning，
         # 不阻断派发（fail-open），但让模板漂移导致的注入静默丢失在日志可见。
-        leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))
-        if leftover:
-            _logger.warning(
-                "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
-                "agent=%s spec=%s leftover=%s",
-                agent_type,
-                spec_name,
-                leftover,
-            )
-        return out
+        # 与四条独立构建路径共用同一收尾 _fill_and_scan_placeholders（原手写拷贝
+        # 仅日志字段不同，已参数化），日志按本路径维度记 spec=<spec_name>。
+        return _fill_and_scan_placeholders(
+            template, values, agent_type, spec_name, label="spec"
+        )
 
     def _build_prompt(
         self,

@@ -24,7 +24,7 @@ from core.agent_runner.prompt_builder import (
     impl_result_path,
     planner_result_path,
     spec_review_result_path,
-    spec_review_result_status_whitelist,
+    SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
 from tests.helpers import FakeLogger
 
