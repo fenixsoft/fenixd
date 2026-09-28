@@ -339,45 +339,37 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
     冻结（_judge_cap_frozen 标记使两侧自动递增全部失效），与 fail-closed
     同语义需人工裁决放行。
     """
-    pipeline._context.state_machine.update_spec(
+    # code-fix 0eda9bae5886：改走 freeze_for_human 单一入口——原先裸
+    # update_spec 置 blocked 无 frozen 结构化标记、error 亦无 FREEZE_ERROR_
+    # PREFIX，blocked_stuck 看门狗的三选一豁免（frozen 字段 / 'frozen:'
+    # 前缀 / '用户指令' 子串）全不命中，声称「等待人工裁决」却会被自动派
+    # admin run。frozen 与人工升级告警经该入口成对落盘；升级通道自身失败
+    # 不得抛穿裁决流程（code-review item 7e0509f14fdd 语义）由
+    # freeze_for_human 内部容错承接（告警失败记 WARNING、不回滚冻结）。
+    pipeline._context.state_machine.freeze_for_human(
         spec_name,
-        {
-            "status": "blocked",
-            "error": (
-                f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
-                f"等待人工裁决。详见 `spec/changes/{spec_name}/verification-report.md`"
-            ),
-            "_judge_cap_frozen": True,
-        },
+        error=(
+            f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
+            f"等待人工裁决。详见 `spec/changes/{spec_name}/verification-report.md`"
+        ),
+        signal_type="judge_rerun_cap",
+        severity="major",
+        description=(
+            f"'{spec_name}' judge 重跑超上限"
+            f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
+        ),
+        evidence=f"spec={spec_name}; judge_rerun_count={count}",
+        recommended_action=(
+            "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
+            "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+        ),
+        alert_callback=pipeline._context.escalation_notifier,
+        extra_updates={"_judge_cap_frozen": True},
     )
     pipeline._context.logger.error(
         "pm_engine",
         f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— " f"冻结为 blocked，等待人工裁决",
     )
-    # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径对齐，
-    # code-review item 7e0509f14fdd）：blocked 终态已在上方 update_spec
-    # 落盘，notifier 抛异常不得打断本轮裁决流程。
-    try:
-        pipeline._context.escalation_notifier(
-            spec_name=spec_name,
-            signal_type="judge_rerun_cap",
-            severity="major",
-            description=(
-                f"'{spec_name}' judge 重跑超上限"
-                f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
-            ),
-            evidence=f"spec={spec_name}; judge_rerun_count={count}",
-            recommended_action=(
-                "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
-                "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
-            ),
-        )
-    except Exception as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"judge 重跑硬上限升级告警失败 '{spec_name}'（非阻塞，"
-            f"blocked 处置已落盘）: {type(e).__name__}: {e}",
-        )
 
 
 def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
