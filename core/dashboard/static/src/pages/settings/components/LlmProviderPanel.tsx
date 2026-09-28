@@ -86,6 +86,21 @@ function pricesForProvider(prices: PriceRowValues[] | undefined): PriceRowValues
   return (prices || []).map((p) => ({ ...p }));
 }
 
+// provider 行 → 表单值单源构建（code-review item b5c2b4e67d3b，比照
+// StaleCodeSelfhealPanel 的 buildScsFormValues 同族约定）：initialValues 与
+// 回填 effect 原各内联一份完全相同的映射，行对象增删派生字段时漏改一处即
+// 初值与回填值分叉——抽单源两处共用。
+function buildProvidersFormValues(providers: LlmProvider[] | undefined) {
+  return {
+    providers: (providers || []).map((p) => ({
+      ...p,
+      envEntries: toEnvEntries(p.env),
+      billingEnabled: p.billing?.enabled ?? false,
+      prices: pricesForProvider(p.billing?.prices),
+    })),
+  };
+}
+
 // 完全空的价格行（无模型名且四项单价全空）——保存时先行剔除，避免阻塞校验
 function isBlankPriceRow(r: PriceRowValues | undefined): boolean {
   if (!r) return true;
@@ -155,15 +170,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   // 让藏在折叠区的错误可见（折叠用 display 切换，字段恒注册，值与校验不受折叠影响）
   const activeKeysRef = useRef<number[]>([]);
 
-  // 初始化表单数据
-  const initialValues = {
-    providers: (config.llm.providers || []).map((p) => ({
-      ...p,
-      envEntries: toEnvEntries(p.env),
-      billingEnabled: p.billing?.enabled ?? false,
-      prices: pricesForProvider(p.billing?.prices),
-    })),
-  };
+  // 初始化表单数据（与回填 effect 共用 buildProvidersFormValues 单源）
+  const initialValues = buildProvidersFormValues(config.llm.providers);
 
   // 监听 config 变化，更新表单值。回填门控（code-review item 5d6582ba9951，
   // 同 AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：
@@ -172,14 +180,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   // 序列化比较，只在内容真正变化时回填。
   const lastProvidersBackfillRef = useRef('');
   useEffect(() => {
-    const next = {
-      providers: (config.llm.providers || []).map((p) => ({
-        ...p,
-        envEntries: toEnvEntries(p.env),
-        billingEnabled: p.billing?.enabled ?? false,
-        prices: pricesForProvider(p.billing?.prices),
-      })),
-    };
+    const next = buildProvidersFormValues(config.llm.providers);
     const key = JSON.stringify(next);
     if (key === lastProvidersBackfillRef.current) return;
     lastProvidersBackfillRef.current = key;

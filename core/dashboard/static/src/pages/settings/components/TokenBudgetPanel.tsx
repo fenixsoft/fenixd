@@ -83,12 +83,21 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     setSaving(true);
     try {
       const values = await form.validateFields();
+      // 规模预检开关关闭时两阈值输入被条件卸载，validateFields 只返回已注册
+      // 字段（两键为 undefined，序列化后 scale_precheck 只剩 {"enabled": false}，
+      // 后端整体替换会把自定义阈值抹成缺省——code-review item 98ad925ee64a）。
+      // 经 getFieldsValue(true) 取含已卸载字段在内的 store 值兜底：开关开启时
+      // 与 values 同值，关闭时为最近一次已知阈值。
+      const store = form.getFieldsValue(true);
       // 分离「表单校验」与「保存持久化」（code-review item def003cd8cff，比照
       // ApprovalModePanel 568b0ff8cce2 口径）：校验失败 antd 已在表单内渲染提示，
       // 静默返回；onSave 持久化失败（网络/500）拆独立 try/catch 显式反馈，避免
       // 用户误以为配置已保存。
       try {
-        const ok = await onSave({
+        // onSave 契约即 index.handleSave 的 Promise<boolean>（false=保存失败，
+        // 成功/失败 toast 均由父级兜底），此处不重复报错、也不提示成功
+        //（code-review item 0abd04f38c76，比照 SelfReviewPanel 按返回值门控的范式）。
+        await onSave({
           agents: {
             token_budget_millions: values.token_budget_millions,
             daily_run_limit: values.daily_run_limit,
@@ -98,17 +107,11 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             max_same_cause_redispatches: values.max_same_cause_redispatches,
             scale_precheck: {
               enabled: values.scale_precheck_enabled,
-              higher_threshold: values.scale_precheck_higher,
-              full_threshold: values.scale_precheck_full,
+              higher_threshold: values.scale_precheck_higher ?? store.scale_precheck_higher,
+              full_threshold: values.scale_precheck_full ?? store.scale_precheck_full,
             },
           },
         });
-        // onSave 契约即 index.handleSave 的 Promise<boolean>（false=保存失败）。
-        // 失败 toast 由父级兜底负责，此处不重复报错、也不提示成功（code-review
-        // item 0abd04f38c76，比照 SelfReviewPanel 按返回值门控的范式）。
-        if (ok) {
-          message.success('保存成功');
-        }
       } catch (error) {
         // 保存持久化失败（网络/500）：给用户显式反馈而非静默
         message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);

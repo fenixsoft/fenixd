@@ -83,6 +83,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   //（四段配置重复提交 + 重复 toast，且在飞期间二次编辑被保存往返回填覆盖）
   // ——saving 期间置 loading/disabled 并在入口短路。
   const [saving, setSaving] = useState(false);
+  // 保存重入同帧加固（code-review item b780337cdc73，比照 SystemPanel
+  // 8ccf20511320 的 savingRef 口径）：setSaving 渲染生效存在 React 调度间隙，
+  // state 短路拦不住同帧连点——经 savingRef 写读同帧原子拦截，state 只负责
+  // 按钮视觉反馈。
+  const savingRef = useRef(false);
   // 环境门只拦「开启」不拦「关闭」（code-review item 1bcde4921884）：ocr 未
   // 就绪时若把开关一律禁用，已配 verify.impl_code_review:true 的项目从此无法
   // 在 UI 关掉该 gate（禁用开关不可切换，handleSave 还会原样重提 true）。
@@ -274,10 +279,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   };
 
   const handleSave = async () => {
-    if (saving) return;
+    if (savingRef.current) return;
     // 先置位再校验（code-review item 2a72f9839b69，对齐同族面板顺序）：
     // validateFields 是异步微任务，置位晚于校验时快速双击可双双通过入口
     // 短路检查、发出重叠保存请求；校验失败在 return 前复位 saving。
+    savingRef.current = true;
     setSaving(true);
     let values;
     try {
@@ -285,6 +291,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     } catch {
       // 校验失败：antd 已在表单内渲染提示，无需额外日志
       // （避免触发验证的 no_console_error 断言）。
+      savingRef.current = false;
       setSaving(false);
       return;
     }
@@ -340,6 +347,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       // 父组件改为透传失败时，保存失败不致被静默吞掉。
       message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };

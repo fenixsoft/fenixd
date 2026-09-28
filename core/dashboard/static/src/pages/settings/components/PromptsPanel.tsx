@@ -284,10 +284,11 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
             onChange={(e) => setExtraDraft(e.target.value)}
             placeholder="自由 Markdown，例如本项目特有的验证规范、选择器约定等"
             autoSize={{ minRows: 6, maxRows: 14 }}
-            // 保存进行中禁止编辑（code-review item cbd7e62160ec）：与 Select 的
-            // disabled={saving} 同口径——在飞期间继续键入的内容不在已提交的
-            // extraDraft 里，refetch 回填会用服务端值无条件覆盖（静默丢失）。
-            disabled={saving}
+            // 保存/加载进行中禁止编辑（code-review item cbd7e62160ec /
+            // 9cc6704ab4c1）：与 Select 的 disabled={saving || loading} 同口径
+            // ——在飞期间继续键入的内容不在已提交的 extraDraft 里，加载/回填
+            // 会用服务端值无条件覆盖（静默丢失）。
+            disabled={saving || loading}
             style={{ marginTop: 8 }}
           />
           <div style={{ marginTop: 12, textAlign: 'right' }}>
