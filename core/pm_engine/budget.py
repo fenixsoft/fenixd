@@ -165,7 +165,11 @@ class ImplBudget:
         return max(1, val)
 
     def _exempt_dead_run_budget(
-        self, spec_name: str, reason: str, run_reason: str | None = None
+        self,
+        spec_name: str,
+        reason: str,
+        run_reason: str | None = None,
+        run_id: str = "",
     ) -> None:
         """死亡 run 豁免：回退本次启动的计数增量 + 侧车递增 + 审计日志。
 
@@ -180,9 +184,22 @@ class ImplBudget:
         被判停滞而杀（不可豁免判据见 ``_is_exemptable_reason``）
         MUST NOT 豁免——它确实消耗了整份预算。
 
+        **幂等**（item cd696b7c0de9）：退款动作收敛为
+        ``refund_dead_run_once`` 单把文件锁内的原子「查锚点 → 退款 →
+        记锚点」（与 infra 路径 item 40f7a931dc4c 同范式）——同一死亡 run
+        的并发豁免判定（如监督者与恢复扫描各判一次）仅首次退款，杜绝 used
+        重复回退放大预算。幂等锚点 = 本次死亡 run id（``run_id``；缺省回退
+        STATE ``implementer_run``——四个调用点（engine auto-recovery、
+        dispatch/queue、dispatch/fast_track、dispatch/rollback）判定死亡时
+        该字段仍指向刚死亡的 run（清 run 字段均发生在豁免之后），与
+        ``_exempt_infra_run_budget`` 的锚点回退同范式）。无锚点时仍退款、
+        不登记（幂等不保证，由调用方保证单轮单次）。
+
         Args:
             run_reason: 终态 reason 文本（run的 error/reason 字段），供豁免判定
                         关键词检查；None/空时按旧语义豁免。
+            run_id: 本次死亡 run 的 id（幂等退款锚点；空串回退 STATE
+                    ``implementer_run``）。
         """
         if run_reason and not self._is_exemptable_reason(run_reason):
             # 监督超时/被判停滞而杀：不豁免，保持计数
@@ -192,13 +209,24 @@ class ImplBudget:
                 f"run_reason={run_reason[:80] if run_reason else ''}",
             )
             return
-        used = self._pm.state_machine.bump_impl_budget(spec_name, -1)
+        entry0 = self._pm.state_machine.read_one(spec_name) or {}
+        anchor = run_id or str(entry0.get("implementer_run") or "")
+        refunded_flag, used = self._pm.state_machine.refund_dead_run_once(
+            spec_name, anchor
+        )
+        if not refunded_flag:
+            # 同一死亡 run 已退款——幂等跳过（不重复回退 used、不递增豁免侧车）
+            self._pm.logger.info(
+                "pm_engine",
+                f"死亡 run 预算豁免幂等跳过 '{spec_name}' run={anchor}（该 run 已退款）",
+            )
+            return
         exempt = self._pm.state_machine.bump_budget_exempt_runs(spec_name)
         self._pm.logger.warning(
             "pm_engine",
             f"预算豁免（死亡 run）: '{spec_name}' used 回退至 "
             f"{used}/{self._impl_run_budget(spec_name)}，_budget_exempt_runs={exempt}，"
-            f"reason={reason}",
+            f"run_id={anchor or '(无锚点)'}，reason={reason}",
         )
         if exempt >= self._budget_exempt_alert_threshold():
             self._alert_budget_exempt_loop(spec_name, exempt)
@@ -519,7 +547,8 @@ class ImplBudget:
         （无有效末行时同样按收工计入）。
         runs 目录缺失 ＝ 权威 0；扫描失败（IO/权限）返回 None——对账方
         （_reconcile_impl_budget）以本计数为权威改写 used，喂 0 会把预算
-        瞬态清零，故失败必须与「真实 0」区分。
+        瞬态清零，故失败必须与「真实 0」区分。单文件读取失败
+        （_run_file_died 返回 None，item bb880517c83c）同样整体降级 None。
         """
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
@@ -550,13 +579,31 @@ class ImplBudget:
             return None
         count = 0
         for _mtime, path in newest_attempt.values():
-            if not self._run_file_died(path):
+            died = self._run_file_died(path)
+            if died is None:
+                # 单文件读取失败（item bb880517c83c）：收工与否不可知 ≠ 死亡——
+                # 旧口径按死亡剔除会把 completed 压低，无豁免因素时纯漂移分支
+                # 把 used 改写成更小值，真实消耗被抹掉、spec 意外多获预算。
+                # 与上方目录扫描失败口径对齐：整体降级 None，调用方
+                # （_reconcile_impl_budget）跳过本轮对账不改数。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"run 产物读取失败 '{spec_name}'（计数不可用）: {path.name}",
+                )
+                return None
+            if not died:
                 count += 1
         return count
 
     @staticmethod
-    def _run_file_died(path: Path) -> bool:
-        """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。"""
+    def _run_file_died(path: Path) -> bool | None:
+        """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。
+
+        返回 None（不可知）：产物存在但读取失败（OSError，权限/IO 抖动、
+        文件在 glob 与 open 之间被归档移动，item bb880517c83c）——与同文件
+        目录扫描失败的保守口径对齐（不可知 ≠ 死亡），调用方据此整体降级
+        跳过本轮对账；「确认 error 终态死亡」仍返回 True。
+        """
         last = None
         try:
             with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -571,7 +618,7 @@ class ImplBudget:
                     if isinstance(entry, dict):
                         last = entry
         except OSError:
-            return True
+            return None
         return isinstance(last, dict) and last.get("type") == "error"
 
     def _impl_run_budget_used(self, spec_name: str) -> int:

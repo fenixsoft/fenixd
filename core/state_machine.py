@@ -271,6 +271,11 @@ ENV_BLOCK_FREEZE_THRESHOLD = 2
 INFRA_FAILURE_COUNT_FIELD = "_infra_failure_count"
 VERIFY_INFRA_ROUNDS_FIELD = "_verify_infra_rounds"
 INFRA_REFUNDED_RUN_IDS_FIELD = "_infra_refunded_run_ids"
+# - _dead_refunded_run_ids：JSON 字符串数组（已退款死亡 run_id）；
+#   死亡 run 预算豁免退款幂等锚点——同一死亡 run 的并发豁免判定（如
+#   监督者与恢复扫描各判一次）仅首次退款（item cd696b7c0de9，范式同
+#   _infra_refunded_run_ids）。
+DEAD_REFUNDED_RUN_IDS_FIELD = "_dead_refunded_run_ids"
 
 # ── 任务完成度类产物硬门跨轮拒绝计数（2026-09-16 改进①「只卡第一次」）──
 # _impl_gate_task_rejections：实现 run 的产物硬门以 [task-gate] 前缀（未勾任务
@@ -956,6 +961,70 @@ class StateMachine:
         self.logger.warning(
             "state_machine",
             f"refund impl budget failed: SPEC not found: {spec_name}",
+        )
+        return True, 0
+
+    def refund_dead_run_once(self, spec_name: str, anchor: str) -> tuple:
+        """死亡 run 预算豁免的锁内原子「查锚点 → 退款 → 记锚点」（item cd696b7c0de9）。
+
+        旧路径 ``bump_impl_budget(-1)`` 无锚点直接回退：同一死亡 run 的并发
+        豁免判定（如监督者与恢复扫描各判一次）都读不到退款痕迹、各自回退
+        一次（丢失更新形态，used 重复回退、spec 意外多获预算）。本方法与
+        ``refund_impl_budget_once``（infra 退款收敛，item 40f7a931dc4c）同
+        范式：把「查豁免锚点 + 回退 + 记锚点」收进单把 ``.STATE.md.lock``
+        临界区——锚点已登记 → 幂等跳过不退款；未登记的非空锚点 → 退款并
+        追加锚点一次完成。空锚点只退款、不登记，幂等不保证——由调用方
+        保证单轮单次（契约见 ``_exempt_dead_run_budget``：无锚点时仍退款）。
+
+        Returns: ``(refunded, used)``
+            refunded=False 表示该死亡 run 已退款过（幂等跳过）；used 为退款后
+            （或幂等跳过时的当前）used 值。spec 缺失按旧 bump 路径容错：
+            记 warning 并返回 (True, 0)，不阻断调用方。
+        """
+        lock_path = self._lockfile
+        missing = False
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                specs = self.read_all()
+                if spec_name not in specs:
+                    # 锁内不落日志（持锁窗口不含 I/O，见 _log_update_applied
+                    # docstring），SPEC-not-found 告警带出锁外再记
+                    missing = True
+                else:
+                    entry = specs[spec_name]
+                    refunded_raw = entry.get(DEAD_REFUNDED_RUN_IDS_FIELD) or "[]"
+                    try:
+                        refunded = (
+                            json.loads(refunded_raw)
+                            if isinstance(refunded_raw, str)
+                            else []
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        refunded = []
+                    if not isinstance(refunded, list):
+                        refunded = []
+                    try:
+                        used = int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
+                    except (TypeError, ValueError):
+                        used = 0
+                    if anchor and anchor in refunded:
+                        return False, used
+                    entry[IMPL_RUN_BUDGET_USED_FIELD] = max(0, used - 1)
+                    if anchor:
+                        refunded.append(anchor)
+                        entry[DEAD_REFUNDED_RUN_IDS_FIELD] = json.dumps(
+                            refunded, ensure_ascii=False
+                        )
+                    entry["updated"] = datetime.now(timezone.utc).isoformat()
+                    self._write_all_locked(specs)
+                    return True, entry[IMPL_RUN_BUDGET_USED_FIELD]
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+        # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
+        self.logger.warning(
+            "state_machine",
+            f"refund dead run budget failed: SPEC not found: {spec_name}",
         )
         return True, 0
 
