@@ -301,7 +301,11 @@ class Registry:
                 continue
             try:
                 rp = Path(raw).expanduser().resolve()
-            except (OSError, RuntimeError, ValueError):
+            except (OSError, RuntimeError, ValueError) as exc:
+                # 留痕口径与上方 path 守卫、下方 scan_dirs 守卫一致（item
+                # aa30f6864549）：~user 无法解析（RuntimeError）、resolve 遇
+                # EIO（OSError）等解析失败同样无声吞掉显式项目，须告警。
+                logger.warning("显式项目条目路径解析失败，跳过: %r: %s", p, exc)
                 continue
             key = str(rp)
             if key in ignored:
