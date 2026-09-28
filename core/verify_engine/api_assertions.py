@@ -45,19 +45,66 @@ def json_schema_available() -> bool:
 
 # ── regex 预检（API 侧四处内容断言共用）────────────────────────
 
+# regex 第三方库可选增强：其引擎对嵌套量词等灾难回溯形态自带线性化保护，
+# 且支持 timeout（超时抛 TimeoutError）。场景正则由 planner 生成（有幻觉
+# 正则原语前科），嵌套量词类病态模式对 64KB 级 body/事件文本 search 可指数
+# 回溯长时间阻塞验证事件循环；库缺失时回退 stdlib re（行为同无防护版）。
+try:
+    import regex as _regex_lib
+except ImportError:  # pragma: no cover - 环境相关分支
+    _regex_lib = None
 
-def _compile_regex(pattern: str) -> tuple[re.Pattern | None, str | None]:
+# 单次正则匹配的墙上时钟上限（秒）：合法断言正则对 64KB 文本远低于此值
+_REGEX_MATCH_TIMEOUT_SECONDS = 1.0
+
+
+class _TimeoutRegex:
+    """re.Pattern 的回溯安全包装：search 走 regex 库（带 timeout）防阻塞。
+
+    对外只暴露与 re.Pattern 同形的 ``search(text) -> bool``，四处内容断言
+    调用点无须感知背后是 regex 库还是 stdlib 回退。
+    """
+
+    def __init__(self, source: str, compiled: re.Pattern):
+        self._source = source
+        self._compiled = compiled
+
+    def search(self, text: str) -> bool:
+        if _regex_lib is not None:
+            try:
+                return (
+                    _regex_lib.search(
+                        self._source, text, timeout=_REGEX_MATCH_TIMEOUT_SECONDS
+                    )
+                    is not None
+                )
+            except TimeoutError:
+                # 超时按确定性配置失败 fail-closed：借 re.error 沿调用点既有
+                # 异常面传播（run() 归一为带定向归因的断言失败），防 judge
+                # 把场景正则缺陷误归因为产品缺陷
+                raise re.error(
+                    f"正则匹配超时（>{_REGEX_MATCH_TIMEOUT_SECONDS}s，"
+                    f"疑似灾难性回溯）: {self._source!r}"
+                ) from None
+        return self._compiled.search(text) is not None
+
+
+def _compile_regex(pattern: str) -> tuple[_TimeoutRegex | None, str | None]:
     """进匹配前编译预检：非法正则是确定性配置错误。
 
     此前各 regex 分支 ``except re.error: passed = False`` 静默吞错，结果与
     「内容确实不匹配」无法区分，judge 会把 planner 写错的正则误归因为产品
     缺陷；统一预检后非法时返回带「非法正则」error 的确定性失败（口径对齐
     web 侧 _assert_text_match）。返回 (compiled, None)；非法时 (None, 文案)。
+    预检仍用 stdlib re.compile（保持非法判定口径），编译产物包一层
+    _TimeoutRegex：regex 库可用时匹配带 timeout，防病态正则长时间阻塞
+    （见 _TimeoutRegex）。
     """
     try:
-        return re.compile(pattern), None
+        compiled = re.compile(pattern)
     except re.error as e:
         return None, f"非法正则: {e}"
+    return _TimeoutRegex(pattern, compiled), None
 
 
 # ── JSONPath 求值（点路径子集）──────────────────────────────────
@@ -298,6 +345,18 @@ class ApiAssertionRunner:
                     ),
                 }
             # fail-closed：无 JSON 载荷时不得以 actual=None 与 expected=None 蒙混判 pass
+            if resp.get("json_parse_skipped"):
+                # capture 标注透出：响应体超解析上限被跳过解析置 json=None，
+                # 「非合法 JSON」文案会把体积问题误归因为响应格式缺陷
+                return {
+                    "type": "json_path",
+                    "layer": 3,
+                    "path": path,
+                    "expected": expected,
+                    "actual": None,
+                    "pass": False,
+                    "error": f"{resp['json_parse_skipped']}，无 JSON 载荷可求值",
+                }
             return {
                 "type": "json_path",
                 "layer": 3,
@@ -417,8 +476,21 @@ class ApiAssertionRunner:
 
     async def _assert_body_contains(self, resp, a: dict) -> dict:
         """断言响应体包含期望文本。"""
-        expected = a.get("expected", "")
+        # fail-closed：缺 expected 时 contains 空串恒真、regex 空串恒匹配，
+        # mode 缺省 contains 下会假绿；口径对齐 _assert_sse_event_matches
+        # （exact 空串是合法期望——断言响应体为空，不在拦截之列）
+        expected = a.get("expected")
         mode = a.get("mode", "contains")
+        if expected is None or (expected == "" and mode in ("contains", "regex")):
+            return {
+                "type": "body_contains",
+                "layer": 3,
+                "expected": expected,
+                "mode": mode,
+                "pass": False,
+                "actual_snippet": "",
+                "error": "缺少 expected 字段",
+            }
         body = resp.get("body") or ""
         passed = False
         error = None
@@ -444,9 +516,19 @@ class ApiAssertionRunner:
             "mode": mode,
             "pass": passed,
             "actual_snippet": str(body)[:200] if not passed and body else "",
+            # 透出截断标记：body 证据在 capture 侧已按 64KB 截断（_truncate），
+            # 截断点之后的期望文本匹配不到会产生假失败（json 侧已以「先解析
+            # 后截断」修复同类问题，body 断言只能以标记提示兜底），judge 须
+            # 能区分「内容不匹配」与「证据不完整」
+            "body_truncated": bool(resp.get("truncated")),
         }
         if error is not None:
             result["error"] = error
+        elif not passed and result["body_truncated"]:
+            result["error"] = (
+                "响应体超过 64KB 已截断，仅前 64KB 参与匹配，"
+                "期望文本可能位于截断点之后；本失败不能单独作为产品缺陷证据"
+            )
         return result
 
     async def _assert_json_schema(self, resp, a: dict) -> dict:
@@ -477,11 +559,25 @@ class ApiAssertionRunner:
             }
         payload = resp.get("json")
         if payload is None:
+            if resp.get("type") == "sse":
+                # 定向提示：SSE 捕获（{type: sse, events, duration}）无 JSON
+                # 载荷属捕获类型不匹配，非「响应体非合法 JSON」（口径对齐
+                # json_path 的 SSE 分流），防 judge 误归因
+                error = (
+                    "json_schema 断言不支持 SSE 捕获（无 JSON 载荷）；"
+                    "事件内容断言请改用 sse_event_matches"
+                )
+            elif resp.get("json_parse_skipped"):
+                # capture 标注透出：响应体超解析上限被跳过解析置 json=None，
+                # 非「响应体非合法 JSON」
+                error = f"{resp['json_parse_skipped']}，无法做 schema 校验"
+            else:
+                error = "响应体非合法 JSON，无法做 schema 校验"
             return {
                 "type": "json_schema",
                 "layer": 3,
                 "pass": False,
-                "error": "响应体非合法 JSON，无法做 schema 校验",
+                "error": error,
             }
         try:
             jsonschema.validate(payload, schema)
@@ -598,4 +694,12 @@ class ApiAssertionRunner:
             result["error"] = (
                 f"latency_under 的 expected 非数字（毫秒），无法与延迟上限对比: {expected!r}"
             )
+        elif actual is None:
+            # 无载荷定向归因：SSE 捕获（{type: sse, events, duration}）无
+            # latency_ms 采样，静默 pass=False 会逼 judge 自行推断捕获类型
+            # 不匹配（口径对齐 json_path 的 SSE 定向提示）
+            if resp.get("type") == "sse":
+                result["error"] = "latency_under 断言不支持 SSE 捕获（无 latency_ms 延迟采样）"
+            else:
+                result["error"] = "响应捕获无 latency_ms 延迟采样，无法与延迟上限对比"
         return result
