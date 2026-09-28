@@ -723,8 +723,12 @@ class LivenessSupervisor:
                         snapshot["last_event_age"] = max(0.0, now - ts)
                     # 工具调用计数（assistant 消息中的 tool_use）
                     if etype == "assistant":
-                        msg = entry.get("message") or {}
-                        for block in msg.get("content") or []:
+                        # message 为非 dict 载荷（字符串/列表等真值）时不调 .get，
+                        # 防 AttributeError 逸出被误归因为 run thread crashed
+                        # （同 result_gate.py 的「转录损坏不抛异常」防御口径）。
+                        msg = entry.get("message")
+                        content = msg.get("content") if isinstance(msg, dict) else None
+                        for block in content or []:
                             if not isinstance(block, dict):
                                 continue
                             if block.get("type") == "tool_use":
@@ -855,12 +859,18 @@ class LivenessSupervisor:
             "4. 同参数工具调用反复失败、长时间无新输出 → stagnant。"
         )
         try:
-            cmd = ["claude", "-p", prompt, "--output-format", "json"]
+            # 提示词经 stdin 管道传入（对齐 runner._run_claude 的约定）：argv
+            # 全文驻留 /proc/<pid>/cmdline（同机用户可读 judge 上下文），且超长
+            # prompt 受 ARG_MAX 约束会以 E2BIG 直接失败。"-p" 不带位置参数时
+            # claude CLI 从 stdin 读提示词；subprocess.run(input=) 写完即关
+            # 写端并经 communicate 并发收发，超时/返回码/输出解析语义不变。
+            cmd = ["claude", "-p", "--output-format", "json"]
             model = self._pm._get_admin_model()
             if model:
                 cmd += ["--model", model]
             res = subprocess.run(
                 cmd,
+                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
