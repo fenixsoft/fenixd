@@ -65,37 +65,69 @@ class V2ServerManager:
         失败（端口耗尽/启动未就绪）记 WARNING 但**不阻断派发**：测试回退到
         PLAYWRIGHT/默认 8787（config/baseURL 缺省值），仅失去 worktree 隔离——
         比让整条 spec 失败更优。登记成功才写入 _v2_servers，供终态回收。
+
+        launch-vs-launch 竞态封堵：幂等检查与登记分处慢速启动（子进程拉起 +
+        就绪等待）两侧，同 worktree 并发 launch 可能双双通过检查各自启动。
+        故 run_seq 在锁内预留为局部变量（防锁外读漂移）；启动成功后回锁二次
+        复核——窗口期内已出现他者登记的存活条目时让位（锁外停掉自己刚启动的
+        进程，不登记、不记账）；失败清理仅按 identity 移除自己确认过的陈旧
+        条目，不动他者条目。
         """
         self._v2_ensure_state()
+        stale_entry = None
         with self._v2_lock:
-            entry = self._v2_servers.get(str(wt_path))
+            key = str(wt_path)
+            entry = self._v2_servers.get(key)
             if entry is not None and entry[1].poll() is None:
                 # 存活实例在册：幂等 ensure，不重复启动（同 worktree 双实例互斥）
                 return
             if entry is not None:
-                # 条目陈旧（进程已死）：释放其端口记账，避免 used_ports 假性占用
+                # 条目陈旧（进程已死）：释放其端口记账，避免 used_ports 假性占用；
+                # 留存条目对象，失败清理路径仅在原样在册时移除（identity 匹配）。
                 self._v2_used_ports.discard(entry[0])
+                stale_entry = entry
             self._v2_run_seq += 1
+            run_seq = self._v2_run_seq  # 序号锁内预留：锁外只读局部变量，防并发漂移
             # 端口记账快照：start 内部的 used_ports.add 只落快照副本，共享集合
             # 的写入收敛到下方临界区（与 _v2_lock 注释声称的覆盖口径一致）。
             used_snapshot = set(self._v2_used_ports)
+        loser = None
         try:
             port, proc = v2_start_dev_server(
-                wt_path, self._v2_run_seq, used_snapshot, self._pm.logger
+                wt_path, run_seq, used_snapshot, self._pm.logger
             )
             with self._v2_lock:
-                self._v2_servers[str(wt_path)] = (port, proc)
-                self._v2_used_ports.add(port)
+                current = self._v2_servers.get(key)
+                if current is not None and current[1].poll() is None:
+                    # 窗口期内他者已登记存活条目：让位复用，不得覆盖——覆盖会使
+                    # 首个实例脱管（进程不在册、端口被 used_ports 永久占用）。
+                    # 自己的实例尚未登记、端口未入共享记账（start 只写快照副本），
+                    # 锁外停掉即可，无需 discard。
+                    loser = (port, proc)
+                else:
+                    self._v2_servers[key] = (port, proc)
+                    self._v2_used_ports.add(port)
         except V2DevServerError as e:
-            # 启动失败：移除（可能残留的）陈旧条目，保证 _v2_inject_env 拿不到死
-            # 端口条目、返回空 dict，测试按承诺回退 PLAYWRIGHT/缺省 8787，
-            # 而非向 agent 注入失效端口的 V2_BASE_URL 造成假失败。
+            # 启动失败：仅当本线程锁内确认过的陈旧条目原样在册时才移除（identity
+            # 匹配），保证 _v2_inject_env 拿不到死端口条目、返回空 dict，测试按
+            # 承诺回退 PLAYWRIGHT/缺省 8787，而非向 agent 注入失效端口的
+            # V2_BASE_URL 造成假失败；窗口期内他者登记的条目一律不碰。
             with self._v2_lock:
-                self._v2_servers.pop(str(wt_path), None)
+                if stale_entry is not None and self._v2_servers.get(key) is stale_entry:
+                    self._v2_servers.pop(key, None)
             self._pm.logger.warning(
                 "agent_runner",
                 f"V2 dev-server launch failed for {wt_path} (tests fall back to " f"8787): {e}",
             )
+        if loser is not None:
+            # 让位回收在锁外进行（terminate·wait 慢操作不进临界区，与 _v2_lock
+            # 注释口径一致）；回收失败不阻断主流程。
+            try:
+                v2_stop_dev_server(loser[1], loser[0], None, self._pm.logger)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "agent_runner", f"V2 dev-server loser stop failed for {wt_path}: {e}"
+                )
 
     def _v2_inject_env(self, wt_path: Path) -> Dict[str, str]:
         """返回该 worktree 的 V2_BASE_URL 注入片段（D1 注入运行环境）。
