@@ -29,7 +29,7 @@ audit 车道 SHALL 将每个语义疑点的指纹、判定历史与状态持久�
 
 ### Requirement: 待人工挂起与第二轮升级
 
-标记待人工的疑点 SHALL 停止自动重派复核；同批内规则行来自扫描开始时快照且涉及页在本批已被纠偏的疑点 SHALL 标记 superseded-in-batch 并跳过；台账中上一轮已判 no-conflict（或仍疑似）的指纹第二轮再疑似时，SHALL 置 escalated、写入 .fenix/todo.md 并停止自动复核，直至人工消费后清除。
+标记待人工的疑点 SHALL 停止自动重派复核；同批内规则行来自扫描开始时快照且涉及页在本批已被纠偏的疑点 SHALL 标记 superseded-in-batch 并跳过；同一指纹连续两轮进入复核且两轮均未产出确定性判定（状态仍 suspected，如转写失败回滚）时，SHALL 置 escalated、写入 .fenix/todo.md 并停止自动复核，直至人工消费后清除；豁免解冻触发的重派不计入升级轮次（每次内容变更重置），与「no-conflict 按内容豁免」的解冻重派要求不相冲突。
 
 #### Scenario: 第二轮升级人工
 

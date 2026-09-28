@@ -12,13 +12,13 @@
 
 ## 状态机
 
-suspected →（no-conflict 且记录 page_hashes）exempt；（重写提交落账）fixed；任一页哈希变化 → 回 suspected；第二轮仍疑似 → escalated（终态，人工消费后清除）。待人工疑点进入挂起态等消费，不自动重派。
+suspected →（no-conflict 且记录 page_hashes）exempt；（重写提交落账）fixed；任一页哈希变化 → 回 suspected；连续两轮进入复核且均未产出确定性判定（仍 suspected，如转写失败回滚）→ escalated（终态；「人工消费后清除」即人工删除台账条目，无自动消费闭环）。豁免解冻重派不计入升级轮次（每次内容变更重置）：「上一轮 no-conflict、内容变更后复现」走解冻重派拿翻转判定，不触发升级。待人工疑点进入挂起态等消费，不自动重派。
 
 ## 复核循环接入
 
 - run_audit 的转写循环（core/knowledge_audit.py:640-698 附近）spawn 前查台账：命中 exempt 且两页哈希未变 → 跳过派发，体检计数加 exempt 档。
 - 每个判定产出后立即回写台账（现状判定只进 details["no_conflict"] 与每日被覆盖的报告）。
-- 同批去重：疑点清单在扫描开始一次性快照（:602-604 附近），同批前面的 run 提交后涉及同页的后续疑点属快照滞后重复，标记 superseded-in-batch 跳过。
+- 同批去重：疑点清单在扫描开始一次性快照（:602-604 附近），同批前面的 run 提交后涉及同页的后续疑点属快照滞后重复，标记 superseded-in-batch 跳过。「本批已纠偏」含机械自修段（:609-637）提交涉及的页——机械修复同样使快照规则行滞后。
 - escalated 落地挂点复用 append_todo_line（core/knowledge_backfill.py:128，audit 车道已在用），零新机制。
 
 ## 同模块捆绑修复
@@ -28,7 +28,7 @@ suspected →（no-conflict 且记录 page_hashes）exempt；（重写提交落�
 
 ## 配置
 
-get_knowledge_lane_config（core/config.py:1866-1881）新增两键：no_conflict_exempt（默认 true，豁免开关）、escalate_after_rounds（默认 2，升级阈值）；.fenix/config.template.yaml knowledge 节（:372 附近）登记并注释。
+get_knowledge_lane_config（core/config.py:1866-1881）新增两键：no_conflict_exempt（默认 true，豁免开关）、escalate_after_rounds（默认 2，升级阈值）；.fenix/config.template.yaml knowledge 节（:372 附近）登记并注释。通路：run_audit 增 config 形参（缺省 None 按 {} 回落缺省），knowledge_daily_check 挂载点（core/knowledge_audit.py:129）向车道透传 config——run_graph（:827）已有同款形参先例；现挂载点不传 config，不补通路则两键到不了消费点。
 
 ## 风险与对策
 

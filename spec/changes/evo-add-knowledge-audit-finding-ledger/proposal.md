@@ -9,7 +9,7 @@ add-knowledge-atlas-maintenance 落地的知识审计车道对疑点无记忆：
 1. audit 车道新增疑点台账 .fenix/knowledge_audit_findings.json（指纹为键、原子写）：记录每个语义疑点的 kind、页对、规则行、页面内容哈希、判定历史与状态。
 2. no-conflict 判定按内容豁免：两页全文 sha256 均未变时次日初筛跳过派发复核（计 exempt）；任一页内容变更自动解冻回 suspected 重新派发——保住「复核结论会翻转」情形的再审价值。
 3. 待人工疑点挂起等消费：不再自动重派；同批内因扫描快照滞后产生的重复疑点标 superseded-in-batch 跳过。
-4. 同一疑点第二轮再疑似即升级：状态置 escalated，写入 .fenix/todo.md（复用 append_todo_line）并停止自动复核，人工仲裁消费后清除。
+4. 同一疑点连续两轮复核均无确定性判定即升级：状态置 escalated，写入 .fenix/todo.md（复用 append_todo_line）并停止自动复核，人工仲裁消费后清除；豁免解冻重派不计入升级轮次。
 5. 同模块捆绑修复两项实现缺陷：ADR 断链检查改按 ADR-\d{3} 前缀匹配 slug 文件名（消除 ADR-015/019/034 三条永久误报）；每日检查点回写 state 改为先重读合并（救活 last_scale 与规模趋势基线）。
 
 ## Non-Goals

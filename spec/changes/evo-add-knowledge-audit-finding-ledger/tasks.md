@@ -20,10 +20,10 @@
 
 ## 2. 复核循环接入
 
-- [ ] 2.1 core/knowledge_audit.py：run_audit 转写循环（约 :640-698）spawn 前查台账，命中 no-conflict 豁免且两页 sha256 未变则跳过派发并计入 exempt；任一页内容哈希变化则解冻回 suspected 正常派发
+- [ ] 2.1 core/knowledge_audit.py：run_audit 转写循环（约 :640-698）spawn 前查台账，命中 no-conflict 豁免且两页 sha256 未变则跳过派发并计入 exempt；任一页内容哈希变化则解冻回 suspected 正常派发；run_audit 增 config 形参（缺省回落 {}）并由 knowledge_daily_check 挂载点（约 :129）透传；_render_report 计数行与完成日志同步增 exempt 档（两处现硬编码四档）
 - [ ] 2.2 core/knowledge_audit.py：每个判定产出后回写台账（no-conflict 记页面哈希并豁免，重写提交记 fixed），替换现状只写每日覆盖报告的单路落盘
-- [ ] 2.3 core/knowledge_audit.py：同批快照滞后重复（规则行来自扫描开始快照、涉及页本批已纠偏）标记 superseded-in-batch 跳过
-- [ ] 2.4 core/knowledge_audit.py：台账中上一轮已判定的指纹第二轮再疑似时置 escalated，复用 core/knowledge_backfill.py 的 append_todo_line 登记 todo.md 并停止自动复核，人工消费后清除
+- [ ] 2.3 core/knowledge_audit.py：同批快照滞后重复（规则行来自扫描开始快照、涉及页本批已纠偏）标记 superseded-in-batch 跳过（「本批已纠偏」含机械自修段提交涉及的页）
+- [ ] 2.4 core/knowledge_audit.py：台账中同一指纹连续两轮进入复核且均未产出确定性判定（仍 suspected，如转写失败回滚）时置 escalated（豁免解冻重派不计入升级轮次），复用 core/knowledge_backfill.py 的 append_todo_line 登记 todo.md 并停止自动复核，人工消费后清除
 
 ## 3. 同模块缺陷修复
 
