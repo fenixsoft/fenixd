@@ -392,7 +392,11 @@ def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool
                     session_id = str(sid) if sid else None
                 if etype != "assistant":
                     continue
-                for c in (entry.get("message") or {}).get("content") or []:
+                msg = entry.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for c in content:
                     if not isinstance(c, dict) or c.get("type") != "tool_use":
                         continue
                     if c.get("name") == "TaskCreate":
