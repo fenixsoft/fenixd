@@ -367,6 +367,22 @@ class CliAssertionRunner:
         expected = a.get("expected", "")
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
+        if not expected and mode != "exact":
+            # 显式失败而非静默恒真：缺 expected 时 contains 的 `"" in 内容`
+            # 恒真、regex 空串恒匹配，会产出假通过；exact 空串是空文件合法
+            # 期望故放行。与 _assert_output_match 缺 expected 口径对齐（验收
+            # 期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期
+            # 自愈/绕过验收的调用路径）
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "mode": mode,
+                "expected": expected,
+                "negate": negate,
+                "pass": False,
+                "error": "缺少 expected 字段",
+            }
         size = path.stat().st_size
         if mode == "exact" and size > _FILE_CONTENT_LIMIT:
             return {

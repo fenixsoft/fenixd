@@ -423,6 +423,11 @@ class _AttemptState:
     隐式元组」直接传参。逐字段映射原局部变量读写点，MUST NOT 改变读写
     顺序或作用域（等价搬移）；状态对象生命周期限于本函数（attempt 循环
     期间），MUST NOT 提升为实例属性（避免跨 run 泄漏）。
+
+    ⚠️ session_id / session_provider / usage_info 暂不回写：真实源在
+    _execute_agent_inner 的同名局部变量（见字段处标注，code-review item
+    41e028ab3b35）——后续方法提取把读写点迁到 st 侧前 MUST 先补齐回写点，
+    否则会拿到恒 None / 初始 dict 的陈旧值。
     """
 
     # 当前 attempt 使用的 worktree 路径（读 53 次，最高频共享标量）
@@ -434,13 +439,17 @@ class _AttemptState:
     # run 级链指针（design D1）：仅本次 run 的 attempt 间记忆切换进度，跨 run
     # 由 _select_chain_candidate 重新选点。-1 表示尚未选定
     chain_cursor: int = -1
+    # ⚠️ 暂不回写、真实源在局部变量（code-review item 41e028ab3b35）：
+    # session_id/session_provider/usage_info 建态后无回写点，真实状态只活在
+    # _execute_agent_inner 的同名局部变量里（如 _run_claude 返回的
+    # run_session_id/usage_info 经局部变量流转）。字段仅承载建态初值供顶部
+    # 别名读取，MUST NOT 把读写点迁到 st 侧（会拿到恒 None/初始 dict）。
     # session_id 所属 provider（None=默认网关）
     session_id: Optional[str] = None
     session_provider: Optional[str] = None
-    # 本 attempt 已原地重试次数（预算 = 退避序列长度）
-    transient_retries: int = 0
-    # 连续 resume 失败次数（≥2 后本次 attempt 改全新会话）
-    resume_failures: int = 0
+    # transient_retries / resume_failures 字段已移除（建态后从不回写也从不
+    # 读取的死字段，code-review item 41e028ab3b35）：真实计数是
+    # _execute_agent_inner 的 attempt 级局部变量，与状态对象无关。
     # worktree-reuse：fast-track 终态失败保留的复用遗产路径
     kept_wt_path: Optional[Path] = None
     # add-run-cancel D3/D5：本轮 run 是否被人工取消
@@ -1031,9 +1040,19 @@ class AgentRunner:
         # 持槽等待期间不派发 attempt——run 尚未创建，先写保活事件到预生成
         # run 文件（防 recovery watch 在长等待中把「已派发但未启动」误判为
         # 无进度/stuck；design D2 备选方案，见 _planner_throttle_acquire）。
-        # 恒成功：无限等待直至获取信号量（无排队超时/失败返回路径，
-        # 见 _planner_throttle_acquire 契约），无需检查返回值
-        self._planner_throttle_acquire(spec_name, run_id, sem)
+        # 返回 False = 排队期命中取消旗标：未获取信号量，直接收口为取消结果
+        #（不派发、不 release 未持有的信号量；code-review item 384d41a7e2fa）。
+        if not self._planner_throttle_acquire(spec_name, run_id, sem):
+            _meta = self._cancel_meta.get(run_id, {})
+            _reason = _meta.get("reason", "")
+            self._cancel_clear(run_id)
+            return AgentRunResult(
+                run_id, spec_name, f"planner-{mode}",
+                success=False, duration_seconds=0.0,
+                error=(CANCELLED_BY_ADMIN_ERROR_PREFIX
+                       + (f": {_reason}" if _reason else "")),
+                cancelled=True,
+            )
         try:
             return self._execute_agent(spec_name, f"planner-{mode}", run_id)
         finally:
@@ -1220,6 +1239,16 @@ class AgentRunner:
         """
         run_id = run_id or f"spec-review-{spec_name}-{int(time.time())}"
         result_path = spec_review_result_path(self.project_root, spec_name)
+        # 陈旧结果防护与 run_dispute_judge 的口径差异说明（code-review item
+        # 08f8f073c62a）：本车道结果路径同样按 spec 固定跨轮复用，但不做派发前
+        # unlink + 收工补 run stamp——读侧消费（consume_review_result →
+        # _check_agent_result_artifact）已按「结果文件 mtime ≥ 本轮 attempt 启动
+        # 时刻」做新鲜度硬门（fix-verdict-read-failclosed D2 同款，fail-closed：
+        # 陈旧残留被拦截走重试，不会替本轮放行）；固定路径残留令
+        # salvage_result_from_transcript 因 target.exists() 放弃捞回亦为
+        # fail-closed（不覆盖既有产物），正确性不受影响。dispute-judge 读侧
+        # （_read_dispute_verdicts）按 run stamp 严格匹配，故走 unlink + 补
+        # stamp 口径——两车道防护机制不同但同为 fail-closed。
         # 确保结果目录存在（与 run_dispute_judge 同口径：目录创建失败收口为
         # 结构化失败结果，OSError 不裸冒泡给调用方）
         try:
@@ -1319,12 +1348,16 @@ class AgentRunner:
             return _PLANNER_SEMAPHORE
 
     def _planner_throttle_acquire(self, spec_name: str, run_id: str,
-                                  sem: threading.BoundedSemaphore) -> None:
-        """持槽等待信号量直至获取（恒成功，无失败返回路径；可观测 + 等待期
-        保活，design D2 备选方案）。
+                                  sem: threading.BoundedSemaphore) -> bool:
+        """持槽等待信号量直至获取，或排队期命中取消旗标提前放弃（可观测 +
+        等待期保活，design D2 备选方案）。
 
-        - 排队无时长上限：本方法无限等待直至 acquire 成功才返回（恒成功，
-          调用方无需检查返回值），等待期靠保活心跳维持 run 流新鲜；
+        Returns: True=已获取（调用方 finally MUST release）；False=排队期命中
+        取消旗标（未获取，调用方 MUST NOT release、直接收口为取消结果）。
+
+        - 排队无时长上限：本方法无限等待直至 acquire 成功（返回 True）或
+          排队期命中取消旗标（返回 False）才返回，等待期靠保活心跳维持
+          run 流新鲜；
         - ``sem`` 必须传入调用方经 _planner_throttle_semaphore() 取得的同一
           实例——acquire 与调用方 finally 的 release 须落在同一对象。若在此
           处无锁重读模块全局，热更新重建信号量的窗口内会 acquire 到新对象、
@@ -1337,8 +1370,11 @@ class AgentRunner:
           追加 ``throttled-wait`` 事件行——保持 run 流新鲜，避免等待超过
           stuck 阈值（160min）且无写入时被 recovery watch 误判为
           stuck/dispatch_stalled（spec「排队不被误判」Scenario）。
-        - 取消（RunCancelledError）在等待期不可达（无子进程可终止），因此
-          仅释放义务由调用方 finally 承担。
+        - 排队期取消（code-review item 384d41a7e2fa）：每轮轮询检查取消旗标，
+          命中即返回 False——取消意图不再被延迟到 acquire 成功后才在 attempt
+          顶守卫收口，也不再在等待期占一个 planner 并发名额把其它排队的
+          planner 无谓推后；RunCancelledError 本身仍不可达（无子进程可终止），
+          已获取路径的释放义务由调用方 finally 承担。
         """
         self.logger.info(
             "agent_runner",
@@ -1355,6 +1391,26 @@ class AgentRunner:
             pass
         deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
         while True:
+            # 排队期取消检查（code-review item 384d41a7e2fa）：命中即放弃排队，
+            # 补一条 cancelled 终态行（文件已建，末行不应停在排队/保活事件上）
+            # 后返回未获取标记——调用方跳过派发且不 release 未持有的信号量。
+            if self._cancel_is_requested(run_id):
+                meta = self._cancel_meta.get(run_id, {})
+                try:
+                    append_run_line(run_file, {
+                        "type": "cancelled",
+                        "reason": meta.get("reason", ""),
+                        "by": meta.get("by", "admin"),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError:
+                    pass
+                self.logger.info(
+                    "agent_runner",
+                    f"planner 节流排队期命中取消旗标: spec={spec_name} "
+                    f"run={run_id}——放弃排队（未获取信号量，不派发）",
+                )
+                return False
             if sem.acquire(timeout=THROTTLED_WAIT_HEARTBEAT_SECONDS):
                 # 获取成功，补一次保活事件标记正式开始
                 try:
@@ -1366,7 +1422,7 @@ class AgentRunner:
                     })
                 except OSError:
                     pass
-                return
+                return True
             # 等待仍在继续：保活心跳（约每 60s 一次），run 流保持新鲜
             if time.monotonic() >= deadline:
                 deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
@@ -2332,7 +2388,9 @@ class AgentRunner:
         wt_path = st.wt_path
         session_id = st.session_id
         session_provider = st.session_provider
-        chain_cursor = st.chain_cursor
+        # chain_cursor 不设本地别名（code-review item 41e028ab3b35）：实际
+        # 读写全部经 st.chain_cursor（provider_marker / 链推进 /
+        # _resolve_provider_candidate），原别名从未被消费，已删除。
         last_provider_used = st.last_provider_used
         kept_wt_path = st.kept_wt_path
         provider_name = st.provider_name
@@ -2436,7 +2494,7 @@ class AgentRunner:
             transient_retries = 0  # 本 attempt 已原地重试次数（预算 = 退避序列长度）
             transient_budget = self._parse_transient_backoff_schedule(
                 self._get_config("agents.transient_backoff_schedule", "30,60,120"))
-            resume_failures = 0  # 连续 resume 失败次数（≥2 后本次 attempt 改全新会话）
+            resume_failures = 0  # resume 失败计数（首次命中即弃用死 session，见下）
             sub_run_id = attempt_run_id
 
             while True:
@@ -2788,16 +2846,19 @@ class AgentRunner:
                     # （典型：上一次 attempt 切换了 provider，session 在旧 CLAUDE_CONFIG_DIR 里），
                     # 若不清除，后续 attempt 会带着死 id 反复秒挂、烧尽全部重试。
                     if error and "No conversation found with session ID" in error:
+                        # 首次 resume 失败即弃用死 session（code-review item
+                        # 62a08c7663fa）：本分支位于非瞬断路径 break 之前、且
+                        # 每个 attempt 顶部 resume_failures 归零，计数实际最多
+                        # 累到 1——原「连续 2 次」阈值分支不可达，注释与行为
+                        # 按实际语义（首次即换全新会话）收口。
                         resume_failures += 1
                         session_id = None
                         session_provider = None
-                        # 连续 2 次 resume 失败后本次 attempt 剩余重试改全新会话
-                        if resume_failures >= 2:
-                            self.logger.warning(
-                                "agent_runner",
-                                f"Resume dead session x{resume_failures} for '{spec_name}' — "
-                                f"switching to fresh session for remaining in-place retries",
-                            )
+                        self.logger.warning(
+                            "agent_runner",
+                            f"Resume dead session x{resume_failures} for '{spec_name}' — "
+                            f"switching to fresh session for subsequent attempts",
+                        )
                     break  # 非瞬断（或预算耗尽）退出 while 循环
 
             # 记录分支名（在 cleanup 之前，cleanup 会从 _wt_branches 中移除）
@@ -3281,7 +3342,14 @@ class AgentRunner:
         # 上限守卫兜底——这里防的是同 run 重复登记刷屏）。
         try:
             if run_file.exists():
-                for line in run_file.read_text(encoding="utf-8").splitlines():
+                # errors="replace" 与 _ratelimit_terminal_hit 同口径
+                #（code-review item 7bb22dff92e9）：run jsonl 由多线程追加，
+                # 极端场景下被截断的多字节序列会令严格解码抛
+                # UnicodeDecodeError（ValueError 族，不被下方 except 捕获），
+                # 沿 code-review 车道调用链上抛打断意图登记——本函数设计意图
+                # 是所有失败仅丢留痕不阻断。
+                for line in run_file.read_text(
+                        encoding="utf-8", errors="replace").splitlines():
                     if '"type": "ratelimit_redispatch"' in line:
                         return None
         except OSError:
@@ -3795,7 +3863,8 @@ class AgentRunner:
             if st.wt_path is not None:
                 self._v2_stop_for_worktree(st.wt_path)
                 if agent_type == "fast-track":
-                    self.worktree_manager.keep_for_reuse(spec_name, st.wt_path)
+                    self.worktree_manager.keep_for_reuse(
+                        spec_name, st.wt_path, agent_type=agent_type)
                     st.kept_wt_path = st.wt_path
                     # 取消 keep：目录+分支有意保留供下轮复用，不参与终态收割
                     handed_off.add(st.wt_path)
@@ -3822,6 +3891,39 @@ class AgentRunner:
                 provider_used=st.provider_name, model_used=st.model,
                 worktree_path=st.kept_wt_path,
                 worktree_kept=st.kept_wt_path is not None,
+            )
+        # code-review item 822a68a98e80：attempt 间重派前复查人工接管态——
+        # 上一个 attempt 失败后的 sleep(10)/create 退避窗口内，spec 可能被
+        # admin 接管（status 迁出预期态 / _cancelled_hold）。该复查原只覆盖
+        # 原地退避（_maybe_in_place_retry）与 create 失败探针两条路径；attempt
+        # 间重派复用既有 worktree、不触达 create 探针，会把接管后的 spec 照派
+        # 白烧 token。此处使 attempt 间重派与原地退避共用同一接管复查口径
+        #（fix-verdict-dedup-resynthesis D4「退避结束的重派必须让位」）。
+        # check_lock=False：attempt ≥2 时锁由本 run 自持（worktree 复用路径），
+        # has_active_lock 会把自家锁判成并行 run 而令全部多 attempt run 误让位，
+        # 故与原地退避同口径只判「人工接管」态；attempt 1 不复查，保持既有
+        # 派发语义。
+        if attempt > 1 and self._should_give_up_before_retry(
+                spec_name, agent_type, check_lock=False):
+            self.logger.warning(
+                "agent_runner",
+                f"{agent_type} retry for '{spec_name}' yields: spec 已被接管"
+                f"（status 迁出预期态或 frozen/hold），"
+                f"attempt 间重派让位（fix-verdict-dedup-resynthesis D4）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=time.time() - start_time, turns=turns,
+                usage_info=usage_info, terminal="failure",
+                provider=st.provider_name, model=st.model,
+            )
+            return AgentRunResult(
+                run_id, spec_name, agent_type,
+                success=False, duration_seconds=time.time() - start_time,
+                error=(f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
+                       f"（status 迁出预期态或 frozen/hold），"
+                       f"attempt 间重派让位"),
+                provider_used=st.provider_name, model_used=st.model,
             )
         return None
 
@@ -4760,7 +4862,26 @@ class AgentRunner:
                                 # 单写者，内部异常仅 WARNING 不阻断读流）。
                                 self._stall_budget_record_sample(
                                     base_run_id, _sb_sample)
-                    append_run_line(run_file, entry)
+                    # code-review item c6a2b45a214d：转录事件透传改单次
+                    # os.write(O_APPEND) 落盘。assistant/tool_result 事件常超
+                    # append_run_line 的 TextIOWrapper 内部缓冲（约 8KiB）——
+                    # 超缓冲行被分发为多次 raw write，与 stderr 读线程及轮询环
+                    # 事件（timeout_extension/turn_extension/run_metrics）交错
+                    # 产生半行 JSON，被交错的转录事件（含 result/终态素材）静默
+                    # 丢失。单 syscall 写入由内核 inode 锁对并发写者串行化，整行
+                    # 原子落盘；不做截断——salvage 依赖转录末轮完整 fenced JSON，
+                    # 截断会破坏结果捞回（_GATE_ERROR_TRUNCATE 口径仅适用门禁
+                    # 事件文案）。OSError 与 append_run_line 同契约向上抛给
+                    # 外层读线程兜底 except（记 WARNING + 快速收口）。
+                    _line = (json.dumps(entry, ensure_ascii=False)
+                             + "\n").encode("utf-8")
+                    _fd = os.open(run_file,
+                                  os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+                    try:
+                        while _line:
+                            _line = _line[os.write(_fd, _line):]
+                    finally:
+                        os.close(_fd)
             except Exception as e:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取。
                 # 但不零痕迹（code-review item 2fffcc8e3be1）：与模块内「失败记
@@ -4775,6 +4896,19 @@ class AgentRunner:
                         "event": "read_stream_thread_error",
                     },
                 )
+                # code-review item e63cd8072306：stdout 读线程死亡后该 run 的
+                # stdout 管道无人排水，claude 子进程在管道缓冲写满后阻塞，轮询
+                # 环只看 poll() 与超时——run 将一直挂到 supervision deadline
+                #（还可被 timeout extension 再延长）才被强杀，整轮算超时失败。
+                # 此处立即 kill 把「读流异常」降级为快速失败：轮询环下一轮
+                # poll() 观察到 rc 即按自然失败收口（含 salvage/指标/终态行）。
+                # stderr 读线程死亡不 kill：stdout 仍在排水，子进程通常可照常
+                # 收工，保留原「仅留痕」语义。
+                if not is_stderr:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
         t_out = threading.Thread(target=_read_stream, args=(proc.stdout, False), daemon=True)
         t_err = threading.Thread(target=_read_stream, args=(proc.stderr, True), daemon=True)
@@ -4815,12 +4949,24 @@ class AgentRunner:
         extension_tail_triggered = False
         try:
             while True:
+                # ── 自然收工探测（code-review item 68d36b0b6942）──────────
+                # poll() 先于冻结/取消检查：子进程在上轮 poll 之后、本轮冻结
+                # 检查之前自然退出，且 admin 恰在该 ≤1s 窗口置位 frozen 时，
+                # 先做冻结检查会把已退出进程按冻结终止收口（returncode 伪造
+                # 成 -15、写 frozen-terminated 终态行，跳过成功收口/copyback/
+                # 产物硬门与 salvage）。已退出（rc 非 None）即按自然收工收口，
+                # 不再进入冻结/取消/判停检查。
+                rc = proc.poll()
+                if rc is not None:
+                    returncode = rc
+                    break
+
                 # ── 冻结检查（add-freeze-stop-inflight-agents D1）──
                 # 放在取消旗标检查之前：冻结是 spec 级、取消是 run 级，
                 # spec 级优先级更高。轮询环每 1 秒直接读 STATE 结构化 frozen
                 # 字段（_spec_is_frozen fail-open：读取异常不终止）。
-                # 顺序上先于 poll()：run 恰在冻结瞬间完成时，poll() 已观察到
-                # rc 非 None 走自然收工（上一轮），不误判为冻结终止。
+                # 自然收工探测（上方 poll）先于本检查：已退出进程按自然收工
+                # 处理，不误判为冻结终止（code-review item 68d36b0b6942）。
                 if self._spec_is_frozen(spec_name):
                     self.logger.info(
                         "agent_runner",
@@ -5005,10 +5151,6 @@ class AgentRunner:
                         f"{action['evidence']}"
                     )
                     proc.kill()
-                    break
-                rc = proc.poll()
-                if rc is not None:
-                    returncode = rc
                     break
                 time.sleep(1)
             if timeout_error or turn_limit_error:
@@ -5802,7 +5944,7 @@ class AgentRunner:
 
         # 达阈值：进入冷却
         cooldown_seconds = self._instant_fail_cooldown_seconds()
-        now = self._now() if hasattr(self, "_now") else time.monotonic()
+        now = self._now()
         st["cooldown_until"] = now + cooldown_seconds
         self.logger.error(
             "agent_runner",
