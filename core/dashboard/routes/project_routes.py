@@ -8,8 +8,10 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -23,6 +25,55 @@ logger = logging.getLogger("fenixd.dashboard.project_routes")
 # 数量有限，不会无限增长）。
 _DESCRIBE_LOCKS: dict[str, threading.Lock] = {}
 _DESCRIBE_LOCKS_GUARD = threading.Lock()
+
+# ── /api/overview 结果缓存（add-alerts-archive-and-overview-cache 3.1）──────
+# D3「TTL 或 签名」双键取或：TTL 窗口内直接命中；超 TTL 但「项目集合 + 全部
+# 项目数据源签名」未变时直接复用（签名 stat 比聚合便宜 1~2 个量级）。概览页
+# 由 2s SSE 心跳驱动重拉，此前每次请求都冷算 project_summary 聚合（实测稳定
+# ~200ms）。D4 单槽即可：overview 响应全局一份（无 project 参数维度）；
+# 防写撕裂用简单 threading.Lock（读竞态最坏多算一次，无正确性风险）。
+_OVERVIEW_CACHE_TTL = 2.0  # 与 watcher.REFRESH_HEARTBEAT 对齐
+_OVERVIEW_CACHE: dict = {}  # 单槽 {sig, projects_key, computed_at, payload}
+_OVERVIEW_CACHE_LOCK = threading.Lock()
+
+
+def _overview_project_sig(proot: Path) -> dict:
+    """单项目数据源签名（stat-only，不解析内容）。
+
+    复用既有 (path, mtime_ns, size) 失效键模式（summary._stat_sig /
+    summary._runs_by_spec_sigs，不引入第二套扫描）。覆盖 overview 聚合的
+    文件型数据源：STATE.md（spec 清单/状态）、各 spec tasks.md（任务计数）、
+    runs 目录（active_runs）、config.yaml（description）。daemon_health /
+    hosting_state 等动态源不入签名，由 TTL 窗口兜底（陈旧与心跳节奏同量
+    级）。注：add-dashboard-paging-and-etag 若落地
+    core/dashboard/data/signature.py，本函数应归一复用其导出（合并时处理）。
+    """
+    sigs: dict = {}
+    for p in (proot / ".fenix" / "STATE.md", proot / ".fenix" / "config.yaml"):
+        s = dashboard_data._stat_sig(p)
+        if s is not None:
+            sigs[str(p)] = s
+    try:
+        for p in (proot / "spec" / "changes").glob("*/tasks.md"):
+            s = dashboard_data._stat_sig(p)
+            if s is not None:
+                sigs[str(p)] = s
+    except OSError:
+        pass
+    for by_spec in dashboard_data._runs_by_spec_sigs(proot).values():
+        sigs.update(by_spec)
+    return sigs
+
+
+def _overview_sig(projects: list) -> dict:
+    """全部注册项目数据源签名的合并视图（键冠项目名防跨项目撞键）。"""
+    merged: dict = {}
+    for p in projects:
+        if not p.get("exists"):
+            continue
+        for k, v in _overview_project_sig(Path(p["path"])).items():
+            merged[f"{p['name']}::{k}"] = v
+    return merged
 
 
 class H2ProjectRoutesMixin:
@@ -64,7 +115,45 @@ class H2ProjectRoutesMixin:
 
 
     def _api_overview(self) -> dict:
-        return dashboard_data.overview(self.server.projects())
+        projects = self.server.projects()
+        projects_key = tuple(
+            sorted((p["name"], p["path"], bool(p.get("exists"))) for p in projects)
+        )
+        # 快路径：TTL 窗口内直接命中（免全量签名 stat）
+        with _OVERVIEW_CACHE_LOCK:
+            cached_ts = _OVERVIEW_CACHE.get("computed_at")
+            if (
+                cached_ts is not None
+                and _OVERVIEW_CACHE.get("projects_key") == projects_key
+                and time.monotonic() - cached_ts < _OVERVIEW_CACHE_TTL
+            ):
+                return copy.deepcopy(_OVERVIEW_CACHE["payload"])
+
+        # TTL 已过：签名未变仍直接复用（D3 双键取或）。复用即刷新 computed_at，
+        # 后续请求走回免 stat 快路径；签名未变即数据未变，不拉长可感知陈旧窗口。
+        sig = _overview_sig(projects)
+        with _OVERVIEW_CACHE_LOCK:
+            if (
+                _OVERVIEW_CACHE.get("projects_key") == projects_key
+                and _OVERVIEW_CACHE.get("sig") == sig
+            ):
+                _OVERVIEW_CACHE["computed_at"] = time.monotonic()
+                return copy.deepcopy(_OVERVIEW_CACHE["payload"])
+
+        payload = dashboard_data.overview(projects)
+        with _OVERVIEW_CACHE_LOCK:
+            _OVERVIEW_CACHE.clear()
+            _OVERVIEW_CACHE.update(
+                {
+                    "projects_key": projects_key,
+                    "sig": sig,
+                    "computed_at": time.monotonic(),
+                    "payload": payload,
+                }
+            )
+        # 返回前拷贝：命中/写入的缓存 payload 不得被下游原地修改（响应序列化
+        # 之外任何持有方改写都会污染缓存）
+        return copy.deepcopy(payload)
 
 
     def _project_query_or_error(self, query, what: str):

@@ -27,6 +27,19 @@ logger = logging.getLogger("fenixd.dashboard.alert_routes")
 _ADJUDICATION_LOCKS_GUARD = threading.Lock()
 _ADJUDICATION_LOCKS: dict = {}
 
+# 归档分页契约（add-alerts-archive-and-overview-cache 2.2）：与活跃路径
+# 同构的分页语义，缺省 50、上限 200（防止一次拉穿全部归档记录）。
+_ARCHIVE_DEFAULT_PAGE_SIZE = 50
+_ARCHIVE_MAX_PAGE_SIZE = 200
+
+
+def _query_int(query, key: str, default: int) -> int:
+    """从 query dict 取整数参数（urllib.parse.parse_qs 形态）；非法/缺省回退。"""
+    try:
+        return int(query.get(key, [None])[0])
+    except (TypeError, ValueError):
+        return default
+
 
 def _adjudication_lock(alert_id: str) -> threading.Lock:
     """按 alert_id 取（懒建）进程内互斥锁；字典只在告警裁决时增长，量级有限。"""
@@ -152,6 +165,14 @@ class H6AlertRoutesMixin:
         归一 0 后倒序）逐条复刻前端 allActivities 语义，置顶先于切片。缺省
         ``page`` 时响应结构与改造前逐字段一致（向后兼容，老调用方零改动）。
 
+        archived=1（add-alerts-archive-and-overview-cache 2.2）→ 改读归档
+        旁路文件（.fenix/admin_alerts_archive.jsonl），同构分页契约
+        ``{"archived": true, "total", "page", "page_size", "has_more",
+        "activities"}``：先 spec 过滤后分页，时间倒序；带 ?project= 时只读
+        该项目归档，缺省时跨项目聚合（跳过 fixture 项目、逐条注入
+        project 字段，与缺省活跃聚合同口径）合并后统一排序再分页。缺省
+        （不带 archived）响应零变化。
+
         错误契约同 _api_alerts（**有意 200**）：?project 不存在/未就绪时返回
         ``{"error": "project not found"}`` 字典——适配函数
         ``_get_admin_activities`` 为 _json 包裹式，不能改 self._error 直写
@@ -159,6 +180,8 @@ class H6AlertRoutesMixin:
         """
         project_name = query.get("project", [None])[0]
         spec_name = query.get("spec", [None])[0]
+        if (query.get("archived", [None])[0] or "").lower() in ("1", "true"):
+            return self._api_archived_activities(project_name, spec_name, query)
         page, page_size = self._parse_page_params(
             query.get("page", [None])[0],
             query.get("page_size", [None])[0],
@@ -237,6 +260,50 @@ class H6AlertRoutesMixin:
                 a["project"] = p["name"]
             projects_out.append({"name": p["name"], "activities": acts})
         return {"projects": projects_out}
+
+    def _api_archived_activities(self, project_name, spec_name, query) -> dict:
+        """archived=1 归档只读出口（spec「归档只读出口」Requirement）。
+
+        读侧经 get_archived_activities（JSONL 容错读、可选 spec 过滤、时间
+        倒序），本方法只负责聚合口径与分页切片：has_more = total >
+        page*page_size（同构活跃分页语义，先过滤后分页）。聚合口径与缺省
+        活跃聚合一致：跳过 fixture 项目与不存在项目、逐条注入 project。
+        """
+        page = max(1, _query_int(query, "page", 1))
+        page_size = _query_int(query, "page_size", _ARCHIVE_DEFAULT_PAGE_SIZE)
+        page_size = min(max(1, page_size), _ARCHIVE_MAX_PAGE_SIZE)
+
+        if project_name:
+            project = self.server.project_by_name(project_name)
+            if project is None or not project.get("exists"):
+                return {"error": "project not found"}
+            records = dashboard_data.get_archived_activities(
+                Path(project["path"]), spec=spec_name
+            )
+        else:
+            records = []
+            for p in self.server.projects():
+                if p.get("fixture"):
+                    continue  # fixture-project-governance：夹具项目归档为验证噪音，不进人工聚合
+                if not p.get("exists"):
+                    continue
+                for r in dashboard_data.get_archived_activities(Path(p["path"]), spec=spec_name):
+                    item = dict(r)
+                    item["project"] = p["name"]
+                    records.append(item)
+            # get_archived_activities 单项目内已倒序；跨项目合并后统一倒序
+            records.sort(key=lambda r: r.get("created") or "", reverse=True)
+
+        total = len(records)
+        start = (page - 1) * page_size
+        return {
+            "archived": True,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": total > page * page_size,
+            "activities": records[start:start + page_size],
+        }
 
 
     def _api_alert_handled(self, alert_id: str, query) -> None:
