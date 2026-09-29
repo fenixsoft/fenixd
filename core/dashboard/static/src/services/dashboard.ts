@@ -1783,7 +1783,11 @@ export interface CodeFixRunResult {
 export function triggerCodeFixRun(project: string) {
   return request<{ ok: boolean; requested_at: string }>(
     `/api/code-review/fix-run?project=${encodeURIComponent(project)}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
   );
 }
 

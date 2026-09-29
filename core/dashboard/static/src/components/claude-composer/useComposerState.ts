@@ -72,7 +72,17 @@ export function useComposerState({
     inputValueRef.current = readDraft(project);
   }, [project]);
 
+  // 记录落盘 effect 上一轮见过的 project：project 刚变化的那一轮，本
+  // effect 闭包里的 input 仍是旧项目文本，直接落盘会把旧内容写进新项目
+  // 草稿键（旧 input 为空串时则误清新项目草稿）。跳过该轮（inputValueRef
+  // 已由上方 effect 同步为新草稿），待新 input 到来后的下一轮再落盘。
+  const lastDraftProjectRef = useRef(project);
+
   useEffect(() => {
+    if (lastDraftProjectRef.current !== project) {
+      lastDraftProjectRef.current = project;
+      return;
+    }
     inputValueRef.current = input;
     if (input !== '') {
       writeDraft(project, input);

@@ -748,7 +748,7 @@ export default function SpecListPage() {
       } catch {
         return;
       }
-      if (msg.type === 'state' && (!msg.project || msg.project === name)) {
+      if (msg.type === 'state' && msg.project === name) {
         // 增量形态：specs 为 [{spec, summary|null}]，逐条入 patch 队列
         const items = msg.specs || [];
         for (const item of items) {

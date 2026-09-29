@@ -499,19 +499,24 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
   ];
 
   const handleSave = async (nextSpecHooks: HookConfig[]) => {
-    // config 为 null（首次加载中或加载失败）时 hooksCfg 退化为空对象，以此发起
-    // 保存，后端对 hooks 段是「patch 存在即整体替换」语义，项目级 hooks.global
-    // 会被静默抹掉；阻断保存并提示重试/刷新（code-review item a6c65167219a）
+    // config 为 null（首次加载中或加载失败）时阻断保存并提示重试/刷新
+    // （code-review item a6c65167219a）
     if (!config) {
       message.error('Hook 配置尚未加载，无法保存，请稍后重试或刷新页面');
       return;
     }
     setSaving(true);
     try {
+      // 基底用保存前重拉的最新配置，不用组件内 config 快照：后端对 hooks 段是
+      // 「patch 存在即整体替换」语义，快照可能已过期（页面挂载/上次保存后，
+      // 设置页或另一标签更新过项目级 hooks.global），以快照合并会静默回退他处
+      // 的修改（code-review item bf045d7ed0b9）
+      const latest = await getConfig(name);
+      const latestHooks: HooksConfig = latest?.hooks ?? {};
       const cfg = await saveConfig(name, {
         hooks: {
-          ...hooksCfg,
-          specs: { ...(hooksCfg.specs || {}), [spec]: nextSpecHooks },
+          ...latestHooks,
+          specs: { ...(latestHooks.specs || {}), [spec]: nextSpecHooks },
         },
       });
       setConfig(cfg);
@@ -894,17 +899,24 @@ export default function SpecDetailPage() {
     loadSpecAlerts();
   };
 
-  // 清除 spec 信息（同列表页清除 error）；成功后重拉详情使信息条消失
+  // 清除 spec 信息（同列表页清除 error）；成功后重拉详情使信息条消失。
+  // 清除与刷新分开捕获：「清除失败」只在 clearSpecError 本身失败时出现，清除已
+  // 成功后刷新失败不得误报为清除失败、诱导重复提交（code-review item 898eb44cb047）
   const handleClearInfo = async () => {
     try {
       await clearSpecError(name, spec);
-      message.success('已清除');
+    } catch (err) {
+      message.error(`清除失败：${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    message.success('已清除');
+    try {
       const fresh = await getSpecDetail(name, spec);
       // 迟到响应守卫：等待期间已切换到另一 SPEC → 丢弃旧详情，不串页
       if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
       setDetail(fresh);
     } catch (err) {
-      message.error(`清除失败：${err instanceof Error ? err.message : String(err)}`);
+      message.warning(`已清除，但刷新详情失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
