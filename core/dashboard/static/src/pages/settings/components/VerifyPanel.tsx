@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Form, Input, Radio, Space, Switch, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, message, Radio, Space, Switch, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
@@ -63,7 +63,9 @@ function buildVerifyFormValues(config: ConfigData) {
 
 interface VerifyPanelProps {
   config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<void>;
+  // 契约即 index.handleSave 的 Promise<boolean>（false=保存失败，成功/失败
+  // toast 均由父级兜底），与其他面板口径一致（code-review item 3dd377800692）
+  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
   /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮，且产物路径可编辑 */
   project?: string;
   /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
@@ -77,8 +79,12 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
   const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item 2a3a76864687）：onSave 是异步，提交期间
   // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
-  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路；setSaving 渲染
+  // 生效存在 React 调度间隙，同帧双击可穿透纯 state 守卫（code-review item
+  // e565d4593ac3，比照 SystemPanel 8ccf20511320 口径），经 savingRef 写读
+  // 同帧原子拦住连点，state 只负责按钮视觉反馈。
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   // 产物路径为项目级键：用户级作用域下只读展示（无 project 即用户级）
   const artifactEditable = Boolean(project);
   // 三态联动：无产物（false）时路径列表隐藏并显示结案提示
@@ -114,9 +120,8 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
   }, [hasBuildArtifacts, form]);
 
   const handleSave = async () => {
-    if (saving) {
-      return;
-    }
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const values = await form.validateFields();
@@ -153,11 +158,21 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
           payload.worktree.has_build_artifacts = null;
         }
       }
-      await onSave(payload);
+      // 分离「表单校验」与「保存持久化」（code-review item 9423058588de，比照
+      // TokenBudgetPanel def003cd8cff 口径）：校验失败 antd 已在表单内渲染提示，
+      // 静默返回；onSave 持久化失败（网络/500）拆独立 try/catch 显式反馈，避免
+      // 用户误以为配置已保存。
+      try {
+        await onSave(payload);
+      } catch (error) {
+        // 保存持久化失败（网络/500）：给用户显式反馈而非静默
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
     } catch {
       // 校验失败：antd 已在表单内渲染提示，不落 console（避免触发验证的
       // no_console_error 断言，与同族面板口径一致）
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
