@@ -55,9 +55,18 @@ Dashboard 手工归档路由 `spec_routes.py:615` → `archive_spec` → 同链�
 - `core/dashboard/data/runs.py`：`_RETENTION_KEEP_DEFAULT`、
   `_resolve_runs_keep`、`runs_retention_check` 签名 `config` 参数保留
   （第 2 步不再需要 resolve keep，但签名稳定优先；或一并收紧，实现自定）。
+  返回值契约同步收紧：result 中 `keep` 键移除——唯一调用方 `fenixd.py:903`
+  为 fire-and-forget 不消费返回值，仅 `tests/test_runs_retention.py` 断言
+  需同步更新。
 - `core/dashboard/data/config_admin.py`：`_MANAGED_KEYS` 去除 `"runs"`、
   缺省展示 `{"runs": {"keep": 50}}`、读取回显分支（653-662）、生效回显
-  分支（894-899）、写入分支（1042-1050）。
+  分支（894-899）、写入分支（1042-1050）；另有两处同文件 runs 触点一并
+  拆除（评审补录，原清单漏列）：①容器键非 dict 守卫元组中的 `"runs"` 项
+  （约 :1801）——不拆则非 dict runs 补丁仍被 400 拒绝，与「该键被忽略」
+  口径矛盾；②write_config 前置 runs.keep 兜底校验段（约 :2111-2119）——
+  runs 退出受管键后 merged 中的 runs 只可能来自存量死键，不拆则存量非法
+  值（如 `keep: true`）仍令一切配置写入 ValueError，且该段注释引用的
+  `runs._resolve_runs_keep` 随本 SPEC 删除成悬空引用。
 - 注释/文档语义更正：`run_files.py` 模块 docstring、`watcher.py:35/307`、
   `admin_monitor.py:3510`、`timeline.py:340` 的「旧 spec 的 run 产物被
   清理后时间轴仍可回看」更新为新语义（归档后时间轴运行节点消失）。

@@ -38,7 +38,9 @@
   替换为：`_LANE_RUN_RETENTION_DAYS = 14` 常量，每周期扫描 `spec/changes/`
   目录名集合（现算不缓存），`archive/*.jsonl` 中 `run_spec_part(stem)` 不在
   活跃集且 mtime 超天龄者删除——活跃集扫描失败 fail-closed 跳过本轮兜底
-  仅记 WARNING（防误删）；每周期删除量沿用批次上限；逐文件记日志
+  仅记 WARNING（防误删）；每周期删除量沿用批次上限；逐文件记日志；
+  返回值契约同步收紧——result 的 `keep` 键移除（唯一调用方 `fenixd.py:903`
+  fire-and-forget 无消费，测试断言同步更新）
 - [ ] 2.2 `runs_retention_check` docstring 与 runs.py:985-1000 模块注释的
   keep 语义改写为新语义（终态移入归档不变 + SPEC 归档清理 + 无主兜底）
 - [ ] 2.3 单测：无主超龄删除、无主未超龄保留、活跃 SPEC 超龄产物保留、
@@ -50,9 +52,13 @@
 - [ ] 3.1 `core/dashboard/data/config_admin.py`：`_MANAGED_KEYS` 去除
   `"runs"`；删除缺省展示（约 :426 `{"runs": {"keep": 50}}`）、读取回显
   分支（约 :653-662）、生效回显分支（约 :894-899）、写入分支
-  （约 :1042-1050）四处 runs 键处理
+  （约 :1042-1050）四处 runs 键处理；同拆容器键非 dict 守卫元组中的
+  `"runs"` 项（约 :1801）与 write_config 前置 runs.keep 兜底校验段
+  （约 :2111-2119）
 - [ ] 3.2 单测：配置补丁含 `runs` 键被忽略不落盘不回显；其余受管键正常
-  应用与回显；回显结果不含 `runs` 键
+  应用与回显；回显结果不含 `runs` 键；非 dict 值的 `runs` 补丁同样被忽略
+  不报 400；存量死键 `runs.keep` 非法值（如 `keep: true`）不阻塞其他
+  受管键写入
 
 ## 4. 注释与文档语义更正
 
