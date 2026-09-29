@@ -264,7 +264,10 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
     for v in scenario.get("visual_results") or []:
         if not (isinstance(v, dict) and v.get("status") in ("diff_detected", "warning")):
             continue
-        label = _normalize_whitespace(v.get("baseline") or v.get("name") or v.get("id") or "")
+        # 形态归一与 error/detail 同口径（_clip_derived_text，item 114e48d39f91）：
+        # baseline/name/id 为非串真值时直接进 _normalize_whitespace 的 re.sub
+        # 抛 TypeError，沿调用链外溢致裁决证据校验被旁路。
+        label = _clip_derived_text(v.get("baseline") or v.get("name") or v.get("id") or "")
         entries.append(
             {
                 "type": "screenshot_mismatch",
