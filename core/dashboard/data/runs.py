@@ -315,6 +315,13 @@ _RUN_TERMINAL_STATUS_MAP = {
 # 不做配置项（design D2：避免触发「新增配置必须带 Dashboard 界面」约束）。
 _RUN_STALE_SECONDS = 1800
 
+# 公开访问面（code-review item b569f5bb4a32）：core.code_review 跨包消费
+# 终态映射与 stale 阈值，此前只能引用下划线私有名——私有名不在公开契约内，
+# 本模块重命名/搬移即令消费方运行时 ImportError。公开名与私有定义同一对象
+# 单源绑定（非复制定义），私有名与门面 re-export 面原样保留。
+RUN_TERMINAL_STATUS_MAP = _RUN_TERMINAL_STATUS_MAP
+RUN_STALE_SECONDS = _RUN_STALE_SECONDS
+
 
 def classify_run(lines: list) -> str:
     """根据产物文件行判定运行终态：done / error / interrupted / cancelled /
@@ -685,6 +692,11 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
         return parsed
     # 窗口内完整行不足 max_lines（单行超窗等）→ 回退全量逐行读
     return _read_run_lines_full(path, max_lines)
+
+
+# 公开访问面（code-review item b569f5bb4a32）：跨包消费方 core.code_review
+# 引用公开名，与 _read_run_lines 同一函数对象单源绑定。
+read_run_lines = _read_run_lines
 
 
 def _parse_run_lines(lines) -> list:

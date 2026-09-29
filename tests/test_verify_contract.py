@@ -244,15 +244,14 @@ class TestProvisionNodeModules(unittest.TestCase):
         _write(self.tmp, "wt/v3/package.json", "{}")
         calls = []
 
-        def fake_run(cmd, **kw):
+        # item 79741f3caf63：npm 供给改经 _run_npm_provision（Popen+进程组清扫），
+        # 替身缝同步从 subprocess.run 换到该原语，断言意图（命令行构造）不变
+        def fake_provision(cmd, cwd):
             calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
 
-            class R:
-                returncode = 0
-            return R()
-
-        with patch("core.verify_contract.subprocess.run",
-                        side_effect=fake_run):
+        with patch("core.verify_contract._run_npm_provision",
+                        side_effect=fake_provision):
             linked = provision_worktree_node_modules(
                 self.tmp / "wt", self.tmp / "main-tree", ["v3"], mode="hardlink")
         self.assertEqual(linked, ["v3"])
@@ -262,15 +261,13 @@ class TestProvisionNodeModules(unittest.TestCase):
         _write(self.tmp, "wt/v3/package.json", "{}")
         calls = []
 
-        def fake_run(cmd, **kw):
+        # item 79741f3caf63：替身缝同步 _run_npm_provision（同上）
+        def fake_provision(cmd, cwd):
             calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
 
-            class R:
-                returncode = 0
-            return R()
-
-        with patch("core.verify_contract.subprocess.run",
-                        side_effect=fake_run):
+        with patch("core.verify_contract._run_npm_provision",
+                        side_effect=fake_provision):
             linked = provision_worktree_node_modules(
                 self.tmp / "wt", self.tmp / "main-tree", ["v3"],
                 mode="prefer-offline")

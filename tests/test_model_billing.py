@@ -109,13 +109,14 @@ class TestBillingWriteValidation:
 
     # 拒绝矩阵（原 6 个 test_*_rejected 合并为参数化 8 例：malformed 三子形态拆为独立参数；
     # 每例断言 ok=False + 错误文本必须含的子串，断言语义逐条保留）
+    # item c2a06ee2eb4c 补 NaN/inf 防御后非负校验文案更新为「必须为非负有限数值」
     @pytest.mark.parametrize(
         "llm_factory,expected_subs",
         [
             pytest.param(_llm_negative_price,
-                         ["必须为非负数值", "prices[0]", "providers[0]"],
+                         ["必须为非负有限数值", "prices[0]", "providers[0]"],
                          id="negative-price"),
-            pytest.param(_llm_non_numeric_price, ["必须为非负数值"],
+            pytest.param(_llm_non_numeric_price, ["必须为非负有限数值"],
                          id="non-numeric-price"),
             pytest.param(_llm_missing_price_field, ["cache_read_per_million"],
                          id="missing-price-field"),

@@ -176,7 +176,13 @@ def estimate_spec_scale(spec_dir: Path) -> int:
     if tasks_path.is_file():
         try:
             text = tasks_path.read_text(encoding="utf-8")
-            # 匹配 "- [ ]" 开头的任务行
+            # 匹配 "- [ ]" 开头的行。有意**不**要求任务编号（不与
+            # run_task_track._TASK_CHECKBOX_RE / dashboard 任务行的
+            # `^- \[(x| )\] \d+\.\d+` 编号口径对齐）：备注区、验证修复段等
+            # 非编号杂散 checkbox 也计入规模分——只会轻度抬高、方向保守
+            # （偏向 higher/full，预算只多不少）；而编号口径会漏计非标准
+            # 编号形态的任务行（本模块单测夹具即用 `- [ ] 1.x` 形态），
+            # 漏判方向是低估。取舍：宁可高估。
             unchecked_count = len(re.findall(r"^- \[ \] ", text, re.MULTILINE))
         except (OSError, UnicodeDecodeError) as e:
             logger.warning(f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}")

@@ -250,6 +250,10 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
     - action=shell 必须 command 非空字符串；
     - action=commit/commit-push 可选 paths：非空字符串数组（git pathspec，
       缺省仅 DEFAULT_COMMIT_PATHS 收口产物）；
+    - action=restart-dashboard 可选 target：字符串（tmux 会话名，缺省
+      fenix-dashboard）——非字符串（如手改 config.yaml 写成数字）会在执行
+      侧 (target or "").strip() 抛 AttributeError，被兜底误记为「hook 执行
+      异常」告警，故在配置层按「配置非法（不执行）」拦截；
     - 可选 timeout_seconds：正的有限数值（秒），bool/非有限值（.inf 等非法，
       防手改 config.yaml 绕过执行侧 _num 守卫）。
 
@@ -288,6 +292,15 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
             or not all(isinstance(p, str) and p.strip() for p in paths)
         ):
             return "commit/commit-push 的 paths 必须为非空字符串数组（git pathspec，如 [\"spec\"]）"
+    if action == "restart-dashboard":
+        target = entry.get("target")
+        # 缺省/None 合法（执行侧回退 DEFAULT_DASHBOARD_SESSION）；空串同样
+        # 合法（执行侧 (target or "").strip() 等价缺省），仅拦非字符串类型
+        if target is not None and not isinstance(target, str):
+            return (
+                f"restart-dashboard 的 target 必须为字符串（tmux 会话名，"
+                f"缺省 {DEFAULT_DASHBOARD_SESSION}），收到 {target!r}"
+            )
     timeout = entry.get("timeout_seconds")
     if timeout is not None:
         # 数值合法性（对齐 _num 语义）：非有限值（.inf/1e400/"inf"）会穿透
@@ -876,9 +889,23 @@ class HookEngine:
         """
         import yaml
 
+        # 读-改-写全程与 config_admin.write_config（dashboard 保存端点）共用
+        # 同一把进程内 config 写锁（code-review item 34488d84e084）：整文件
+        # 替换式写回无锁时，恰逢保存并发则双方各持陈旧副本，后写者静默覆盖
+        # 先写者（用户刚保存的 hook 丢失，或清扫结果被旧副本顶回）。按文件
+        # 粒度短临界区、锁内不嵌套其他锁；config_admin 不可导入时退化为无锁
+        # 清扫并记警告（不因导入失败阻断清扫语义）。
+        try:
+            from core.dashboard.data.config_admin import _CONFIG_WRITE_LOCK
+        except Exception as e:
+            _CONFIG_WRITE_LOCK = None
+            self._log_warning(f"config 写锁不可用，清扫退化为无锁读改写: {e}")
+
         changed = 0
         failed = 0
         for cfg_path in self._hook_config_paths():
+            if _CONFIG_WRITE_LOCK is not None:
+                _CONFIG_WRITE_LOCK.acquire()
             try:
                 if not cfg_path.exists():
                     continue
@@ -935,6 +962,9 @@ class HookEngine:
             except (OSError, yaml.YAMLError) as e:
                 failed += 1
                 self._log_warning(f"hook 清扫读改 {cfg_path} 失败: {e}")
+            finally:
+                if _CONFIG_WRITE_LOCK is not None:
+                    _CONFIG_WRITE_LOCK.release()
         return changed, failed
 
     def _remove_hook_ids_from_memory(self, hook_ids: set) -> None:

@@ -110,8 +110,20 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
     paths = []
     if (proot / archive_side).exists():
         paths.append(archive_side)
-    if (proot / changes_side).exists() or _has_tracked_files(proot, changes_side):
+    if (proot / changes_side).exists():
         paths.append(changes_side)
+    else:
+        tracked = _has_tracked_files(proot, changes_side)
+        if tracked:
+            paths.append(changes_side)
+        elif tracked is None:
+            # 删除侧探测失败与「无跟踪文件」不可区分会导致该侧被静默丢弃，
+            # 残留删除只能等 push 尾部兜底；此处留 warning 让失败可察觉。
+            logger.warning(
+                "changes 删除侧跟踪文件探测失败（%s），删除可能未纳入本次归档提交，"
+                "残留待 push 尾部兜底收口",
+                changes_side,
+            )
     if not paths:
         return _fail("归档路径均无可提交内容，跳过归档提交")
 
@@ -143,6 +155,9 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
         # 取哈希不用 rev-parse HEAD：commit 成功到读取 HEAD 之间有窗口，
         # daemon/dashboard 并发操作同一仓库时会记到别人的提交；本次提交恒触碰
         # paths，用 pathspec 限定的 log -1 锚定本次提交本身。
+        # 残余窗口（接受现状）：本次 commit 落库之后、下方 log -1 读取之前，
+        # 若并发方对同一 pathspec 又落库一笔提交，log -1 会返回他方哈希——
+        # 仅 commit 元数据字段失真，提交本体已正确落库。
         try:
             rev = subprocess.run(
                 ["git", "log", "-1", "--format=%H", "--"] + paths,
@@ -178,8 +193,12 @@ def _unstage(proot: Path, paths) -> None:
         pass
 
 
-def _has_tracked_files(proot: Path, pathspec: str) -> bool:
-    """pathspec 下是否有 git 跟踪文件（判定删除侧是否需要参与提交）。"""
+def _has_tracked_files(proot: Path, pathspec: str) -> bool | None:
+    """pathspec 下是否有 git 跟踪文件（判定删除侧是否需要参与提交）。
+
+    True/False = 探测成功（有/无跟踪文件）；None = 探测失败（ls-files
+    超时/OSError/非零退出），不与「无跟踪文件」混同，调用方据以留痕。
+    """
     try:
         r = subprocess.run(
             ["git", "ls-files", "--", pathspec],
@@ -188,6 +207,8 @@ def _has_tracked_files(proot: Path, pathspec: str) -> bool:
             text=True,
             timeout=_PROBE_TIMEOUT,
         )
-        return r.returncode == 0 and bool(r.stdout.strip())
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())

@@ -418,12 +418,17 @@ def _register_todo_retry(proot: Path, archived_names: list, reason: str) -> None
     写入经 ``knowledge_backfill.append_todo_line``（tmp+os.replace 原子回写
     + flock 串行读改写）：此前本处裸 write_text 截断重写，与回填车道并发
     时后写者会覆盖先写者的台账行（code-review 1bb1eacf2463）。
+
+    台账行不含时间戳（code-review 607894da6cee）：append_todo_line 以整行
+    文本精确包含做幂等去重，行内嵌时间戳每次不同会使重复失败（如 claude
+    CLI 缺失）每次都追加重复行、去重分支恒死；登记时刻由 todo.md 归位的
+    日期节（``## YYYY-MM-DD``）承载。
     """
     names = ", ".join(archived_names)
     try:
         appended = append_todo_line(
             proot,
-            f"[ ] knowledge-distill 重试（{_utcnow_iso()}）：归档 {names} — {reason}",
+            f"[ ] knowledge-distill 重试：归档 {names} — {reason}",
         )
         if not appended:
             logger.info("knowledge-distill 重试台账已存在同文本条目，跳过重复登记")
@@ -441,8 +446,36 @@ def _git(proot: Path, args: list, timeout: int = 60):
     )
 
 
-def _discard_output(proot: Path) -> None:
-    """放弃产出：restore tracked + 清理未跟踪新增（不留半成品）。"""
+def _discard_output(proot: Path, before=None) -> bool:
+    """放弃产出：restore tracked + 清理未跟踪新增（不留半成品）。
+
+    基线感知（code-review 4d1e46fa795c）：``before`` 为本次 run 前的
+    ``_git_status_paths`` 快照。仅当 spec/knowledge/ 下当前脏路径相对基线
+    确为本次 run 新增（基线中不存在）时才整目录 restore/clean；基线中已有
+    同路径改动说明用户在合法写面内有未提交的手工策展，整目录回滚会连带
+    吞掉它们——降级为 WARNING 留痕交人工处理（与 _audit_stray_writes
+    「不吞用户未提交改动」同一尺度）。基线不可用（git 失败/非 git 仓库）
+    时同样保守跳过。
+
+    Returns:
+        True = 已执行回滚清理；False = 保守跳过（含基线已有路径或基线不可用）。
+    """
+    after = _git_status_paths(proot)
+    if before is None or after is None:
+        logger.warning(
+            "knowledge-distill 放弃产出：工作区基线快照不可用，跳过 "
+            "spec/knowledge/ 回滚（避免吞掉用户未提交改动），请人工核查"
+        )
+        return False
+    overlap = sorted(p for p in after if p.startswith(KNOWLEDGE_DIR + "/") and p in before)
+    if overlap:
+        logger.warning(
+            "knowledge-distill 放弃产出：spec/knowledge/ 下改动含 run 前基线"
+            "已有路径（疑似用户未提交的手工策展），跳过整目录回滚以免吞掉"
+            "用户改动，请人工核查: %s",
+            ", ".join(overlap),
+        )
+        return False
     try:
         _git(proot, ["restore", "--", KNOWLEDGE_DIR])
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -451,6 +484,7 @@ def _discard_output(proot: Path) -> None:
         _git(proot, ["clean", "-f", "--", KNOWLEDGE_DIR])
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git clean 失败: %s", e)
+    return True
 
 
 # 越界写面对账（code-review c8e789897144）：蒸馏 run 以 bypassPermissions 在主树
@@ -469,7 +503,11 @@ def _git_status_paths(proot: Path):
         路径集合；``None`` = git 不可用/非 git 仓库（无从对账，调用方跳过）。
     """
     try:
-        status = _git(proot, ["status", "--porcelain"])
+        # --no-optional-locks：本快照在蒸馏 worker 线程上先于 spawn 运行，与
+        # 主线程 commit_archive_move 的 git add 并发；git status 的机会式索引
+        # 刷新会短暂持有 index.lock，撞出 EEXIST 让归档提交误报失败
+        # （tests/test_knowledge_e2e 回归）。只读快照不应写索引。
+        status = _git(proot, ["--no-optional-locks", "status", "--porcelain"])
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git status 失败，跳过越界写面对账: %s", e)
         return None
@@ -641,6 +679,11 @@ class DistillManager:
         violations = None
         result = {"ok": False, "names": names, "rounds": 0, "commit": None, "error": None}
 
+        # 批次级 run 前基线快照（code-review 4d1e46fa795c）：放弃产出时据此
+        # 判别 spec/knowledge/ 下哪些改动是用户 run 前既有的未提交改动，避免
+        # 整目录回滚吞掉手工策展。逐轮快照（status_before）仍供越界对账。
+        run_baseline = _git_status_paths(proot)
+
         for round_no in range(1 + self._max_fix_rounds):
             result["rounds"] = round_no + 1
             if round_no > 0:
@@ -654,7 +697,7 @@ class DistillManager:
             ok, err = self._spawn_and_wait(proot, prompt)
             if not ok:
                 result["error"] = err
-                self._give_up(proot, archived_names, f"run 失败: {err}")
+                self._give_up(proot, archived_names, f"run 失败: {err}", before=run_baseline)
                 _audit_stray_writes(proot, status_before, names)
                 return result
             violations = validate_knowledge(proot)
@@ -700,7 +743,12 @@ class DistillManager:
             )
 
         # 修正轮耗尽仍违规 → 放弃产出（rounds 为含首轮的总 run 次数）
-        self._give_up(proot, archived_names, "校验违规经 %d 轮 run 仍未通过" % (result["rounds"]))
+        self._give_up(
+            proot,
+            archived_names,
+            "校验违规经 %d 轮 run 仍未通过" % (result["rounds"]),
+            before=run_baseline,
+        )
         _audit_stray_writes(proot, status_before, names)
         result["error"] = "校验违规未通过"
         return result
@@ -740,15 +788,23 @@ class DistillManager:
             return False, f"claude 进程非零退出（exit={proc.returncode}）{detail}"
         return True, None
 
-    def _give_up(self, proot: Path, archived_names: list, reason: str) -> None:
-        """放弃产出：清理半成品 + 登重试台账。"""
-        _discard_output(proot)
+    def _give_up(self, proot: Path, archived_names: list, reason: str, before=None) -> None:
+        """放弃产出：清理半成品 + 登重试台账（``before`` = run 前基线快照）。"""
+        discarded = _discard_output(proot, before)
         _register_todo_retry(proot, archived_names, reason)
-        logger.warning(
-            "knowledge-distill 放弃产出（%s）: %s；已清理 spec/knowledge/ 半成品并登重试台账",
-            ", ".join(archived_names),
-            reason,
-        )
+        if discarded:
+            logger.warning(
+                "knowledge-distill 放弃产出（%s）: %s；已清理 spec/knowledge/ 半成品并登重试台账",
+                ", ".join(archived_names),
+                reason,
+            )
+        else:
+            logger.warning(
+                "knowledge-distill 放弃产出（%s）: %s；spec/knowledge/ 回滚已保守跳过"
+                "（详见前序告警），半成品滞留工作区请人工核查，已登重试台账",
+                ", ".join(archived_names),
+                reason,
+            )
 
 
 # 进程内单例（daemon / dashboard --serve 各进程一份；跨进程由 flock 兜底互斥）

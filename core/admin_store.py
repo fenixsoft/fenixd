@@ -233,6 +233,7 @@ class AdminStore:
                     if skip_unchanged and not result:
                         return result
                     if corrupt:
+                        # [fenix-ignore:4c8e1dfdd3f6] mark 族 mutate 全部带 skip_unchanged=True 且 corrupt 读取恒返回空记录，fn 对空记录必返假值并提前 return，本分支对 mark 族不可达，其 False/0 返回值已是如实的「未落盘」信号，不存在假成功
                         # 旧记录整体不可读（已留底取证）：拒绝本次写回
                         if self._logger is not None:
                             self._logger.error(

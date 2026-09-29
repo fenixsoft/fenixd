@@ -20,7 +20,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
-import { getAdminActivities, getAlerts, markAlertHandled } from '@/services/dashboard';
+import { getAdminActivities, getAlerts, markAlertHandled, STREAM_URL } from '@/services/dashboard';
 import type {
   AdminActivitiesData,
   ActivityItem,
@@ -315,20 +315,27 @@ export default function ActivitiesPage() {
   const pageRef = useRef(1);
   // fix 4ffc804c77cd: 节流尾沿补拉定时器句柄（useRef 保存防闭包失效，卸载时统一清理）
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // fix 01635701025b: load 自增请求序号——SSE 刷新与用户翻页触发的 load 可能并发
+  // 在飞，仅最新一次请求允许落状态，旧响应到达时直接丢弃，防旧页覆盖新页
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const fetchPage = (page: number) => getAdminActivities(undefined, undefined, page, PAGE_SIZE);
-      const [first, alerts] = await Promise.all([fetchPage(pageRef.current), getAlerts()]);
+      const pageAtStart = pageRef.current;
+      const [first, alerts] = await Promise.all([fetchPage(pageAtStart), getAlerts()]);
       let d = first;
       // 总条数收缩导致当前页越界时回退第 1 页重拉一次（design D5 语义保留：
-      // SSE 刷新保持页码，仅越界回退；第 1 页恒 ≤ 总页数，不会循环）
+      // SSE 刷新保持页码，仅越界回退；第 1 页恒 ≤ 总页数，不会循环）。
+      // 在飞期间用户已翻页（pageRef 变化）则本请求已过期，回退交给新请求处理
       const totalPages = d.total != null ? Math.max(1, Math.ceil(d.total / PAGE_SIZE)) : null;
-      if (totalPages != null && pageRef.current > totalPages) {
+      if (totalPages != null && pageAtStart > totalPages && pageRef.current === pageAtStart) {
         pageRef.current = 1;
         setCurrent(1);
         d = await fetchPage(1);
       }
+      if (seq !== loadSeqRef.current) return;
       setData(d);
       if (!alerts.error) {
         setAlertsData(alerts);
@@ -338,6 +345,8 @@ export default function ActivitiesPage() {
         setError(alerts.error);
       }
     } catch (e) {
+      // 过期请求的失败同样不落状态，避免旧请求错误覆盖新请求结果
+      if (seq !== loadSeqRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
@@ -346,8 +355,9 @@ export default function ActivitiesPage() {
 
   useEffect(() => {
     void load();
-    // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉，保持页签与滚动）
-    const es = new EventSource('/api/stream');
+    // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉，保持页签与滚动；
+    // 端点走 services/dashboard 的 STREAM_URL 单源，不写字面量）
+    const es = new EventSource(STREAM_URL);
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
       try {

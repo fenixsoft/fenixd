@@ -301,13 +301,21 @@ def _with_lock(path: Path, fn):
 
 
 def _read_items_unlocked(path: Path) -> Dict[str, dict]:
-    """锁内使用的 items.jsonl 读取（等价 read_items 但路径直传、不加锁）。"""
+    """锁内使用的 items.jsonl 读取（等价 read_items 但路径直传、不加锁）。
+
+    解析口径单源：read_items 直接复用本实现（code-review item 07bedf124a12，
+    原先两份逐字实现已漂移——锁内 OSError 静默、锁外记 WARNING）。容错与
+    read_items 同款：文件缺失按空集，OSError / 单行 JSON 损坏记 WARNING 后
+    降级，MUST NOT 让整个读取失败。MUST NOT 在此再加锁（_with_lock 契约
+    禁止在 fn 内重入同一把锁）。
+    """
     out: Dict[str, dict] = {}
     if not path.is_file():
         return out
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except OSError as e:
+        _logger.warning("code_review: 读取 items.jsonl 失败: %s", e)
         return out
     for lineno, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
@@ -315,8 +323,8 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError:
-            _logger.warning("code_review: items.jsonl 第 %s 行 JSON 损坏已跳过", lineno)
+        except json.JSONDecodeError as e:
+            _logger.warning("code_review: items.jsonl 第 %s 行 JSON 损坏已跳过: %s", lineno, e)
             continue
         if isinstance(rec, dict) and isinstance(rec.get("item_id"), str):
             out[rec["item_id"]] = rec
@@ -327,30 +335,11 @@ def read_items(project_root) -> Dict[str, dict]:
     """读取 ``.fenix/code-review/items.jsonl``，按 item_id 建索引返回 dict。
 
     文件不存在按空集合处理；单行 JSON 损坏记 WARNING 后跳过（MUST NOT 让
-    整个读取失败——dashboard 列表端点依赖此容错）。
+    整个读取失败——dashboard 列表端点依赖此容错）。解析复用
+    _read_items_unlocked（本函数本身无锁，直接走其不加锁实现，code-review
+    item 07bedf124a12）。
     """
-    path = items_path(project_root)
-    if not path.is_file():
-        return {}
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        _logger.warning("code_review: 读取 items.jsonl 失败: %s", e)
-        return {}
-    out: Dict[str, dict] = {}
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            _logger.warning("code_review: items.jsonl 第 %s 行 JSON 损坏已跳过: %s", lineno, e)
-            continue
-        if not isinstance(rec, dict) or not isinstance(rec.get("item_id"), str):
-            continue
-        out[rec["item_id"]] = rec
-    return out
+    return _read_items_unlocked(items_path(project_root))
 
 
 def write_items(project_root, records) -> None:
@@ -797,13 +786,17 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
     明确置 ``no_files``（design Risk「空场景/空 manifest 白洗」）。
     """
     if scope == "full":
-        raw = _git(project_root, ["ls-files"])
+        # -z：以 NUL 分隔原样输出路径，不做 core.quotePath 引号转义（默认
+        # true 时非 ASCII 文件名以带引号的八进制转义形式输出，与真实文件
+        # 系统路径失配被 is_file 剔除，文件被静默排除出全仓清单；含引号或
+        # 换行符的文件名同样错位）。code-review item 42577801cdb3。
+        raw = _git(project_root, ["ls-files", "-z"])
         # ls-files 列举的是索引条目：工作树中已删除但未 stage 删除的路径
         # 仍会进入全仓清单，按工作树存在性剔除，兑现与下方 window scope
         # 同款「不让审查对已删除文件空转」的排除语义。
         # code-review item 3b306434100d。
         files = [
-            line for line in raw.splitlines()
+            line for line in raw.split("\0")
             if line.strip() and (Path(project_root) / line.strip()).is_file()
         ]
     else:
@@ -1084,32 +1077,32 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
 
 
 def _read_run_tail(run_file, max_lines: int = 1) -> list:
-    """run 产物末行事件（复用 runs.py:_read_run_lines 的 64KB 尾窗读取）。
+    """run 产物末行事件（复用 runs.py 公开 read_run_lines 的 64KB 尾窗读取）。
 
     延迟导入避免 core.dashboard 导入链（与 _terminal_status_map 同款）；
     判 running 只需末行，max_lines=1 把尾窗解析成本压到最低。
     """
-    from core.dashboard.data.runs import _read_run_lines
+    from core.dashboard.data.runs import read_run_lines
 
-    return _read_run_lines(run_file, max_lines=max_lines)
+    return read_run_lines(run_file, max_lines=max_lines)
 
 
 def _terminal_status_map() -> dict:
     """run 终态事件类型集合（result/error/interrupted/cancelled/superseded）。
 
-    对齐 core/dashboard/data/runs.py:_RUN_TERMINAL_STATUS_MAP（延迟解析
-    避免 core.dashboard 导入链）。
+    读 runs.py 公开常量 RUN_TERMINAL_STATUS_MAP（延迟解析避免 core.dashboard
+    导入链）。
     """
-    from core.dashboard.data.runs import _RUN_TERMINAL_STATUS_MAP
+    from core.dashboard.data.runs import RUN_TERMINAL_STATUS_MAP
 
-    return dict(_RUN_TERMINAL_STATUS_MAP)
+    return dict(RUN_TERMINAL_STATUS_MAP)
 
 
 def _run_stale_seconds() -> float:
-    """run 产物 stale 阈值（对齐 runs.py:_RUN_STALE_SECONDS）。"""
-    from core.dashboard.data.runs import _RUN_STALE_SECONDS
+    """run 产物 stale 阈值（读 runs.py 公开常量 RUN_STALE_SECONDS）。"""
+    from core.dashboard.data.runs import RUN_STALE_SECONDS
 
-    return float(_RUN_STALE_SECONDS)
+    return float(RUN_STALE_SECONDS)
 
 
 def local_today_str() -> str:

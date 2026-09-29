@@ -434,11 +434,17 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
     """抽取 tasks.md 文本 ``## Deliverables`` 段内的 fenced yaml 块行（单点）。
 
     段边界（``_DECLARED_HEADING_RE`` 定位标题 + ``_H2_RE`` 截断）与围栏块切换
-    （``_FENCE_RE`` 翻转）的唯一实现——条目解析（``_declared_entries_from_text``
+    （``_FENCE_RE``）的唯一实现——条目解析（``_declared_entries_from_text``
     委托链）与 ``lint_declared`` 共用（code-review item aa9e700d8155：原两处各持
     一份扫描拷贝，fence 语法或段边界规则单点演进（如 ``~~~`` 支持、标题别名）会
     解析漂移——lint 放行的块下游解析为 None 静默回退正则猜测，恰是规则 0 要消灭
     的形态）。
+
+    围栏语义（code-review item 8741b4b84c82）：只取节内**首个**围栏作为声明块
+    （开栏即记标记字符、同字符才闭栏、闭栏即取完）——节内后续示例/说明性围栏
+    不再与声明 yaml 拼接（拼接会让 safe_load 失败静默降级正则猜测，或把示例
+    条目误并进声明）；``` 与 ~~~ 不互为翻转标记（CommonMark 同字符闭合语义，
+    防声明块内异字符围栏行错位块边界）。
 
     Args:
         text: tasks.md 全文（None 容错为空文本，沿用既有条目解析的入参语义）。
@@ -461,14 +467,20 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
         return None, None
 
     block: List[str] = []
-    in_fence = False
+    fence_char = ""  # 当前围栏的开栏标记（``` / ~~~）；空串 = 尚未进入围栏
     for line in lines[start:]:
         if _H2_RE.match(line):
             break
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
+        m = _FENCE_RE.match(line)
+        if m:
+            if not fence_char:
+                fence_char = m.group(1)  # 开栏：记录标记，仅同字符可闭
+                continue
+            if m.group(1) == fence_char:
+                break  # 闭栏即取完——声明块只取节内首个围栏，后续围栏不并入
+            block.append(line)  # 异字符围栏行是块内容而非闭栏（不翻转边界）
             continue
-        if in_fence:
+        if fence_char:
             block.append(line)
     if not block:
         return None, (
@@ -990,29 +1002,50 @@ def relocation_credential_target(project_root, path) -> "str | None":
     try:
         from core.admin_store import DisputeAuditStore
 
-        for rec in DisputeAuditStore(project_root).read_all():
-            if not isinstance(rec, dict):
-                continue
-            if rec.get("type") == _RELOCATION_AUDIT_TYPE and rec.get("old_path") == path:
-                target = rec.get("new_path")
-                if target:
-                    return str(target)
-            # typo 裁决改写在册：judge 给出 actual_path 的修正即「旧路径 → 替代
-            # 路径」的有据改写（审计流已落 diff），收缩防护视同重定位凭据
-            for v in rec.get("verdicts") or []:
-                if (
-                    isinstance(v, dict)
-                    and v.get("element") == path
-                    and v.get("verdict") == "typo"
-                    and v.get("actual_path")
-                ):
-                    return str(v["actual_path"])
+        return _relocation_target_in_records(
+            DisputeAuditStore(project_root).read_all(), path
+        )
     except Exception:
         return None
+
+
+def _relocation_target_in_records(records, path) -> "str | None":
+    """在已读入的审计记录列表中查旧路径的重定位替代路径（判定核心，无 IO）。
+
+    凭据形态与 ``relocation_credential_target`` 文档一致（两形态任一命中即取其
+    替代路径）。单点供两类消费复用：现读现判（``relocation_credential_target``）
+    与守卫批量豁免（``check_declaration_shrinkage`` 预读一次审计流后逐路径
+    复用——append-only 审计流跨 run 持久增长，N 个基线路径 × 2 判定各自现读
+    即 2N 次全量读，code-review item 4d7ef1c7380b），杜绝两条判定路径漂移。
+
+    Args:
+        records: ``DisputeAuditStore.read_all()`` 返回的记录列表（或 None）。
+        path: 旧路径。
+
+    Returns:
+        替代路径字符串；无凭据或无替代路径时 None。
+    """
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("type") == _RELOCATION_AUDIT_TYPE and rec.get("old_path") == path:
+            target = rec.get("new_path")
+            if target:
+                return str(target)
+        # typo 裁决改写在册：judge 给出 actual_path 的修正即「旧路径 → 替代
+        # 路径」的有据改写（审计流已落 diff），收缩防护视同重定位凭据
+        for v in rec.get("verdicts") or []:
+            if (
+                isinstance(v, dict)
+                and v.get("element") == path
+                and v.get("verdict") == "typo"
+                and v.get("actual_path")
+            ):
+                return str(v["actual_path"])
     return None
 
 
-def _has_relocation_credential(project_root, path) -> bool:
+def _has_relocation_credential(project_root, path, records=None) -> bool:
     """旧路径在 dispute 审计流是否已有重定位凭据（D3 豁免条款 1）。
 
     凭据形态见 ``relocation_credential_target``（同源读同一审计流）：
@@ -1026,21 +1059,43 @@ def _has_relocation_credential(project_root, path) -> bool:
 
     实现委托 ``relocation_credential_target``（fix-relocation-writeback-layer
     Task 4.1）：布尔判定与「替代路径可取得」同源，杜绝两条读取路径各自漂移。
+
+    Args:
+        project_root: 项目根（审计流读取基准；``records`` 传入时不读）。
+        path: 旧路径。
+        records: 预读的审计记录列表（``DisputeAuditStore.read_all()`` 结果）。
+            传入时跳过审计流读取直接在记录上判定（收缩防护批量豁免单次读
+            复用，item 4d7ef1c7380b）；缺省 None 即现读（行为不变）。
     """
-    return relocation_credential_target(project_root, path) is not None
+    if records is None:
+        return relocation_credential_target(project_root, path) is not None
+    try:
+        return _relocation_target_in_records(records, path) is not None
+    except Exception:
+        return False
 
 
-def _has_soften_audit(project_root, path) -> bool:
+def _has_soften_audit(project_root, path, records=None) -> bool:
     """该路径在审计流是否有合法软化（kind → reference）记录（D3 豁免条款 2）。
 
     软化形态：DisputeAuditStore 记录的 verdicts 数组中含 element == path 且
     verdict == "reference" 的裁决（法官 reference 软化 / guard-preclassify
     机械软化均落此形态）。读取失败/缺失 → False。
+
+    Args:
+        project_root: 项目根（审计流读取基准；``records`` 传入时不读）。
+        path: 待判路径。
+        records: 预读的审计记录列表（同 ``_has_relocation_credential``，
+            item 4d7ef1c7380b 单次读复用）；缺省 None 即现读（行为不变）。
     """
     try:
-        from core.admin_store import DisputeAuditStore
+        if records is None:
+            from core.admin_store import DisputeAuditStore
 
-        for rec in DisputeAuditStore(project_root).read_all():
+            records = DisputeAuditStore(project_root).read_all()
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
             for v in rec.get("verdicts") or []:
                 if (
                     isinstance(v, dict)
@@ -1099,6 +1154,16 @@ def check_declaration_shrinkage(
         if isinstance(e, dict) and e.get("path")
     }
     violations: list = []
+    # 审计流单次全量读入，复用于全部基线路径的豁免判定（重定位凭据 + 软化
+    # 审计）：审计 jsonl append-only 跨 run 持久增长，逐路径逐判定各自现读
+    # 即 2N 次全量 IO（code-review item 4d7ef1c7380b）。读取失败 → 空列表
+    # （fail-safe 与两个判定函数各自的现读失败语义一致：不误豁免）。
+    try:
+        from core.admin_store import DisputeAuditStore
+
+        audit_records = DisputeAuditStore(project_root).read_all()
+    except Exception:
+        audit_records = []
     for be in base_entries:
         if not isinstance(be, dict):
             continue
@@ -1119,10 +1184,11 @@ def check_declaration_shrinkage(
         # 2) 分支 HEAD 已满足原 kind 要求 → 剔除的是过时声明（交付物已落地）
         if _declared_satisfied_on_branch(path, kind, branch, project_root):
             continue
-        # 3) 合法豁免：重定位凭据 / 软化审计在册 → 不计入
-        if _has_relocation_credential(project_root, path) or _has_soften_audit(
-            project_root, path
-        ):
+        # 3) 合法豁免：重定位凭据 / 软化审计在册 → 不计入（审计记录已预读，
+        # 见上方单次读入注释）
+        if _has_relocation_credential(
+            project_root, path, audit_records
+        ) or _has_soften_audit(project_root, path, audit_records):
             continue
         violations.append({"path": path, "kind": kind, "violation": "removed"})
     return violations
