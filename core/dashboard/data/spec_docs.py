@@ -32,6 +32,16 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
        因后缀字典序更大而把后者误归属给前者）；同层内取 ``sorted()[-1]``
        （字典序最大 = 日期最新/后缀最大）
     4. 无命中 → None
+
+    与 evolution.resolve_accepted_spec_dir 的取舍差异（code-review item
+    ff739784add1）：归档下软删除墓碑目录（``archive/<spec>`` 全等形态）与
+    日期全等目录并存时，evolution 对墓碑**无条件优先**返回；本函数墓碑不
+    参与 exact 优先集（exact_pattern 只匹配日期前缀全等形态），仅当无任何
+    日期命中时经 sorted 兜底胜出——并存时本函数解析到日期最新的全等归档
+    目录，evolution 解析到墓碑。理由：本模块服务文档读取回退，日期全等
+    目录是该 spec 最后一次正规归档、文档最完整；evolution 以条目 spec_name
+    为权威做知识溯源，软删除终态墓碑即其权威位置。两处只改其一会造成
+    读取漂移，维护时须同步评估。
     """
     if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
         return None
@@ -82,10 +92,6 @@ class SpecDocPathEscape(InvalidSpecName):
 
 class InvalidSpecDoc(ValueError):
     """doc 参数非法（不在 _SPEC_DOC_WHITELIST 白名单——单一来源，防注释漂移）。"""
-
-
-class InvalidPriority(ValueError):
-    """优先级非法（非 1-9 整数）。"""
 
 
 def get_spec_doc(project_root, spec: str, doc: str) -> dict:
@@ -142,14 +148,19 @@ def _read_spec_scenarios(specs_dir: Path) -> dict:
     """汇总 change 的 specs/<capability>/spec.md 为测试场景清单（markdown 拼接）。
 
     每个 capability 以 `# <capability-name>` 一级标题分隔，场景原文保持不变。
+    越界防御（与文件型 doc 的 SpecDocPathEscape 同口径）：specs 下的
+    capability 目录可能被符号链接替换到 SPEC 目录之外，解析后的 spec.md
+    不在 SPEC 目录（specs_dir 的父目录，get_spec_doc 以 <spec_dir>/specs
+    传入）内则跳过不读。
     """
     if not specs_dir.is_dir():
         return {"found": False, "content": ""}
+    root = specs_dir.parent.resolve()
     parts = []
     try:
         for cap_dir in sorted(specs_dir.iterdir()):
             f = cap_dir / "spec.md"
-            if cap_dir.is_dir() and f.is_file():
+            if cap_dir.is_dir() and f.is_file() and f.resolve().is_relative_to(root):
                 try:
                     content = f.read_text(encoding="utf-8").strip()
                 except (OSError, UnicodeDecodeError):
@@ -181,7 +192,8 @@ def count_scenarios(project_root, spec_name) -> int:
     文档读取口径一致——归档 SPEC 的场景计数不再恒为 0；spec 完全不存在
     （活跃/归档均无命中）或无 specs 子目录时仍以 0 计（fail-open 纯展示）。
     仅逐 capability 的 ``specs/<capability>/spec.md`` 计数（与
-    _read_spec_scenarios 的汇总口径一致），capability 目录下的其它 md 不计。
+    _read_spec_scenarios 的汇总口径一致），capability 目录下的其它 md 不计；
+    解析后越出 SPEC 目录的条目（符号链接替换等）跳过不计（越界防御同口径）。
     """
     spec_name = _validated_spec_name(spec_name)
     if spec_name is None:
@@ -192,9 +204,14 @@ def count_scenarios(project_root, spec_name) -> int:
     specs_dir = spec_dir / "specs"
     if not specs_dir.is_dir():
         return 0
+    # 越界防御（与文件型 doc 的 SpecDocPathEscape 同口径）：capability 目录
+    # 被符号链接替换到 SPEC 目录之外时跳过不计，不读目录外内容
+    root = spec_dir.resolve()
     count = 0
     try:
         for sf in specs_dir.glob("*/spec.md"):
+            if not sf.resolve().is_relative_to(root):
+                continue
             try:
                 content = sf.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
