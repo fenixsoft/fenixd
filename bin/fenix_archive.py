@@ -154,12 +154,15 @@ def main():
     )
     args = parser.parse_args()
 
-    project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
-    if args.project is None and PROJECT_ROOT_FALLBACK:
-        # 提示走 stderr，避免破坏下游对 stdout JSON 的解析
-        print(f"fenix_archive: 项目根回退到框架根: {project_root}", file=sys.stderr)
-
     try:
+        # 路径解析同样收口进 try：expanduser 解析不出家目录抛 RuntimeError、
+        # 含空字节路径在构造/resolve 阶段抛 ValueError，裸抛会绕过下方统一
+        # JSON 错误载荷、破坏「stdout 恒输出 JSON」契约。
+        project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
+        if args.project is None and PROJECT_ROOT_FALLBACK:
+            # 提示走 stderr，避免破坏下游对 stdout JSON 的解析
+            print(f"fenix_archive: 项目根回退到框架根: {project_root}", file=sys.stderr)
+
         result = archive_change(project_root, args.name)
         payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
         for key in (
@@ -173,9 +176,10 @@ def main():
         ):
             if key in result:
                 payload[key] = result[key]
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, RuntimeError) as e:
         # OSError：shutil.move 因权限/只读盘等失败，或 is_dir() 检查与移动之间
-        # 目录被并发移走的竞态——与 ValueError 同走统一 JSON 错误载荷。
+        # 目录被并发移走的竞态；RuntimeError：--project expanduser 解析不出家
+        # 目录——与 ValueError 同走统一 JSON 错误载荷。
         payload = {"ok": False, "from": None, "to": None, "error": str(e)}
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))
