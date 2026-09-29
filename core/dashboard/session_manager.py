@@ -302,7 +302,10 @@ class SessionManager:
             "reason": reason,
             "ts": time.time(),
         }
-        session.events.append(event)
+        # code-review item 79d40459a39e：append 与消费端锁内快照构成互斥，
+        # 防 HTTP 线程迭代 deque 期间被并发修改抛 RuntimeError。广播不进锁。
+        with session.lock:
+            session.events.append(event)
         self._hub.broadcast(
             {"type": "session_events", "session_id": sid, "events": [event]},
             run_id=sid,
@@ -371,7 +374,9 @@ class SessionManager:
                 # 非 JSON / 非 object 行 → stderr 兜底事件（进缓冲 + 广播，前端实时可见）
                 if not isinstance(ev, dict):
                     ev = {"type": "stderr", "line": line, "ts": time.time()}
-                    session.events.append(ev)
+                    # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
+                    with session.lock:
+                        session.events.append(ev)
                     self._hub.broadcast(
                         {"type": "session_events", "session_id": sid, "events": [ev]},
                         run_id=sid,
@@ -399,7 +404,9 @@ class SessionManager:
                 if "ts" not in ev:
                     ev["ts"] = time.time()
 
-                session.events.append(ev)
+                # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
+                with session.lock:
+                    session.events.append(ev)
                 session.last_activity = time.time()
 
                 # 广播
@@ -456,7 +463,9 @@ class SessionManager:
                     "reason": "process_exit",
                     "ts": time.time(),
                 }
-                session.events.append(end_event)
+                # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
+                with session.lock:
+                    session.events.append(end_event)
                 self._hub.broadcast(
                     {"type": "session_events", "session_id": sid, "events": [end_event]},
                     run_id=sid,

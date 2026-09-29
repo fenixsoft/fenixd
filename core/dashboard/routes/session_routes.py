@@ -84,7 +84,11 @@ class H_SessionRoutesMixin:
             self._json({"session": None, "events": [], "truncated": False})
             return
 
-        events = list(session.events)
+        # code-review item 79d40459a39e：锁内快照——deque 迭代期间被读线程
+        # 并发 append 会抛 RuntimeError(deque mutated during iteration)，快照
+        # 与写端 append 共用 session.lock 互斥（写端四处 append 均已持锁）。
+        with session.lock:
+            events = list(session.events)
         from core.dashboard.session_manager import SESSION_EVENT_BUFFER
         truncated = len(events) >= SESSION_EVENT_BUFFER
         self._json({
