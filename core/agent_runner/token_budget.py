@@ -159,9 +159,24 @@ class TokenAccountant:
         # _accumulate_token_usage 调用点冒泡到 runner 收工路径，中断其后的验证链
         # 侧车与指标记录。容错口径与同模块 _to_int 对齐：非法值记 warning 并回退
         # 缺省 50，保证预算检查永不向收工路径抛异常。
-        try:
-            budget = float(budget)
-        except (TypeError, ValueError):
+        # code-review item b75b390dd579：NaN/inf 经 float() 成功且穿透下方
+        # ``not budget or budget <= 0`` 守卫（not nan 与 nan <= 0 均为 False），
+        # ratio 变 NaN 后 80%/100% 两档比较恒 False，预算告警被静默禁用且无
+        # warning 留痕；bool（true）经 float(True)=1.0 被误读为 1M 预算。比照
+        # 同模块 _positive_number 的 NaN/inf 兜底与 _record_daily_provider_attempt
+        # 的 bool 排除口径统一钳制：畸形值记 warning 并回退缺省 50。
+        budget_ok = True
+        if type(budget) is bool:
+            budget_ok = False
+        else:
+            try:
+                budget = float(budget)
+            except (TypeError, ValueError):
+                budget_ok = False
+            else:
+                if budget != budget or budget in (float("inf"), float("-inf")):
+                    budget_ok = False
+        if not budget_ok:
             self._pm.logger.warning(
                 "agent_runner",
                 f"agents.token_budget_millions 配置非法 {budget!r}，回退缺省 50M",
@@ -290,7 +305,12 @@ class TokenAccountant:
             # 注册表覆盖（choices 已快照）→ 保持未处理进待办队列，选项才有人可
             # 执行（item ded34cd04dc5）；无 choices 的警告级仍按 2026-09-01 降噪
             # 决策 born-handled，不占待办
-            if not choices and not severity_needs_human(severity):
+            # code-review item 3e202131bd3a：文件损坏留底被下限保护拒写时 append
+            # 返回 None（core/admin_store.py append 契约，item 2570ca391771：
+            # 记录未落盘，按未落地处理）——此时跳过 born-handled 闭环标记，避免
+            # rec["id"] 抛 TypeError 被外层误记为「Failed to send token budget
+            # alert」（告警本就未落盘，崩溃在 mark_handled 阶段使归因失真）。
+            if rec is not None and not choices and not severity_needs_human(severity):
                 store.mark_handled(rec["id"])
             self._pm.logger.warning(
                 "agent_runner",
