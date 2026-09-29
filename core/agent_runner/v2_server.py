@@ -163,6 +163,13 @@ class V2ServerManager:
             with self._v2_lock:
                 self._v2_used_ports.discard(port)
         except Exception as e:  # 回收失败不阻断主流程
+            # 条目既已弹出，无论底层进程死活，daemon 都失去了该 server 的全部管理
+            # 句柄（_v2_stop_all 与 launch/inject 侧回收均按 _v2_servers 键触达），
+            # 端口记账留着只缩池无保护作用：锁内释放，避免失败次数单调缩池；孤儿
+            # 真占住端口时由后续 start 绑定失败走 V2DevServerError 降级路径（与
+            # launch 侧陈旧条目 discard 口径一致）。
+            with self._v2_lock:
+                self._v2_used_ports.discard(port)
             self._pm.logger.warning("agent_runner", f"V2 dev-server stop failed for {wt_path}: {e}")
 
     def _v2_stop_all(self) -> None:
