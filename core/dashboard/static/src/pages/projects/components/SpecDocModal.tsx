@@ -39,6 +39,11 @@ const setCacheEntry = (cache: Map<string, DocCacheEntry>, key: string, entry: Do
   }
 };
 
+// 缓存键拼接的单一来源：`${project}:${spec}:${doc}`。
+// 读写（useMemo 取条目 / loadDoc 写入 / handleRetry 清除）必须共用本函数，
+// 口径不一致时读写键错开会导致文档永远停在 Spin 态且无报错
+const buildCacheKey = (project: string, spec: string, doc: string) => `${project}:${spec}:${doc}`;
+
 interface SpecDocModalProps {
   project: string;
   spec: string | null;
@@ -58,18 +63,15 @@ export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
     return <span>{children}</span>;
   }
 
-  // 页内锚点（#xxx，排除 SPA 路由 #/ 与裸 #）：拦截原生跳转，改为滚动定位到目标元素（不存在则不动作）。
-  // 本应用基于 hash 路由，原生跳转会把 location.hash 从 #/... 改写成 #xxx，被路由当作路径变更导致当前页面被切走
+  // 页内锚点（#xxx，排除 SPA 路由 #/ 与裸 #）：仅拦截原生跳转，不做页内滚动定位。
+  // 本组件管线不给标题生成 id（markdownComponents 的 heading 只定样式，无 rehype-slug），
+  // 页内锚点没有跳转目标；需要真实锚点跳转的场景（帮助中心）自建 a 组件并注入 heading
+  // slug id，不经过本组件。
+  // 仍须 preventDefault：本应用基于 hash 路由，原生跳转会把 location.hash 从 #/... 改写成
+  // #xxx，被路由当作路径变更导致当前页面被切走
   if (href.startsWith('#') && !href.startsWith('#/') && href.length > 1) {
     return (
-      <a
-        href={href}
-        onClick={(e) => {
-          e.preventDefault();
-          document.getElementById(href.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }}
-        {...props}
-      >
+      <a href={href} onClick={(e) => e.preventDefault()} {...props}>
         {children}
       </a>
     );
@@ -255,7 +257,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   // 不同项目的同名 spec 必须各自独立，避免互相串用文档内容）
   const cacheKey = useMemo(() => {
     if (!spec) return '';
-    return `${project}:${spec}:${activeTab}`;
+    return buildCacheKey(project, spec, activeTab);
   }, [project, spec, activeTab]);
 
   // 当前缓存条目
@@ -266,7 +268,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
 
   const loadDoc = useCallback(async () => {
     if (!spec) return;
-    const key = `${project}:${spec}:${activeTab}`;
+    const key = buildCacheKey(project, spec, activeTab);
 
     // 检查缓存：loading 表示该 key 已有在途请求，不重复加载
     const cached = cacheRef.current.get(key);
@@ -313,7 +315,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   // 重试加载
   const handleRetry = useCallback(() => {
     if (!spec) return;
-    const key = `${project}:${spec}:${activeTab}`;
+    const key = buildCacheKey(project, spec, activeTab);
     cacheRef.current.delete(key);
     void loadDoc();
   }, [project, spec, activeTab, loadDoc]);
