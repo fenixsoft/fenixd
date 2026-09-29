@@ -462,9 +462,13 @@ def parse_bugs(project_root, spec_name) -> list:
         classification = sc.get("classification")
         if classification in non_product_classes:
             continue
+        # assertion_results 为 null（部分写入/手改）时按空处理，对齐同函数 scenarios/screenshots 防护口径
+        assertion_results = sc.get("assertion_results")
+        if not isinstance(assertion_results, list):
+            assertion_results = []
         failed_assertions = [
             a
-            for a in sc.get("assertion_results", [])
+            for a in assertion_results
             if isinstance(a, dict) and not a.get("pass", True)
         ]
         # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
