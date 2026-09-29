@@ -1785,13 +1785,18 @@ class SelfReviewScheduler:
         - 建议：…」bullet 块；title 缺省省略标题行（历史输出兼容），空字段
               跳行；str 条目先经 dict-repr 抢救（_rescue_structured_entry，旧解析
               层产物兼容），未命中则按旧行内格式单行透传。空渲染返回 []。条目间
-              空行由 _append_todo 负责（同小节块间 join 空行）。
+              空行由 _append_todo 负责（同小节块间 join 空行）。含换行的值续行
+              统一加两空格缩进、空行丢弃（条目块保持「- 」行 + 缩进续行的封闭
+              形态，供闭环移除的块解析正确消费）。
         """
         if isinstance(item, str):
             item = _rescue_structured_entry(item) or item
         if isinstance(item, dict):
             lines: List[str] = []
-            title = str(item.get("title") or "").strip()
+            # 换行转义：裸换行会把续行落在行首（无缩进），_remove_resolved
+            # 的块解析把行首无缩进非空行视为块结束 → 多行值被撕成孤儿行、
+            # 破坏闭环移除的整块匹配，故续行统一加两空格缩进（空行丢弃）。
+            title = " ".join(str(item.get("title") or "").splitlines()).strip()
             if title:
                 lines.append(f"- **{title}**")
             for label, key in (
@@ -1801,11 +1806,17 @@ class SelfReviewScheduler:
                 ("建议", "suggestion"),
             ):
                 val = str(item.get(key) or "").strip()
-                if val:
-                    lines.append(f"  - {label}：{val}")
+                if not val:
+                    continue
+                val_lines = [ln for ln in val.splitlines() if ln.strip()]
+                lines.append(f"  - {label}：{val_lines[0]}")
+                lines.extend(f"  {ln}" for ln in val_lines[1:])
             return lines
         item_str = str(item).strip()
-        return [f"- {item_str}"] if item_str else []
+        if not item_str:
+            return []
+        str_lines = [ln for ln in item_str.splitlines() if ln.strip()]
+        return [f"- {str_lines[0]}"] + [f"  {ln}" for ln in str_lines[1:]]
 
     def _append_todo(self, date_str: str, result) -> Path:
         """把自省结果按固定结构追加到 .fenix/todo.md（首次写入创建文件）。
@@ -1886,8 +1897,18 @@ class SelfReviewScheduler:
             self.logger.warning("self_review", f"git add todo.md 失败: {add.stderr.strip()[:200]}")
             return False
         try:
+            # pathspec 限定（-- .fenix/todo.md）：只提交 todo.md 自身的暂存
+            # 变更，索引里并发暂存的其他内容（merge-back、交付物守卫等自动化
+            # 产物）不被本提交带走并随 push 外泄；_skip_review 占位提交同此防护。
             commit = subprocess.run(
-                git + ["commit", "-m", f"[fenix] daily self-review: {date_str}"],
+                git
+                + [
+                    "commit",
+                    "-m",
+                    f"[fenix] daily self-review: {date_str}",
+                    "--",
+                    ".fenix/todo.md",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
