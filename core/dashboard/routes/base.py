@@ -51,6 +51,137 @@ logger = logging.getLogger("fenixd.dashboard.routes.base")
 
 # ── GET 路由适配函数 ──────────────────────────────────────────────────
 
+# ── ETag 签名函数（add-dashboard-paging-and-etag 1.2/1.3）────────────
+# 约定：(s, q, m) → str | None。None = 该请求不参与协商（数据源无法廉价/
+# 完整签名，或项目缺失——其响应本就是错误体），适配层既不协商也不挂 ETag
+# 头（宁缺 304 不假 304）。304 短路发生在 route handler 调用之前（兼容
+# _api_config_get 等自含响应 handler），见 _dispatch_table。
+#
+# ?project=X 变体的签名只依赖 X 的数据源（spec 契约）；跨项目聚合端点的
+# 签名叠加 registry 项目清单（聚合集合本身是响应形状的一部分）。
+
+def _resolve_project_for_sig(s, query):
+    """签名函数共用的只读项目解析：缺失/未知/不存在项目返回 None。
+
+    不复用 _project_or_user_scope / _project_from_query：那些助手在失败分支
+    自写 404 响应，签名阶段绝不能写响应（协商可能命中 304 短路）。
+    """
+    name = query.get("project", [None])[0]
+    if not name:
+        return None
+    project = s.server.project_by_name(name)
+    if project is None or not project.get("exists"):
+        return None
+    return project
+
+
+def _sig_overview(s, q, m):
+    from pathlib import Path
+
+    from core.dashboard import data as dashboard_data
+    from core.dashboard.data import signature as _sig
+
+    parts = []
+    for p in s.server.projects():
+        # 项目清单本身（name/path/discovered/fixture 标记）参与哈希：
+        # registry 列表变化必翻签名（聚合集合是响应形状的一部分）
+        parts.append(
+            (p.get("name"), p.get("path"), p.get("discovered"), p.get("fixture"))
+        )
+        if not p.get("exists"):
+            continue
+        proot = Path(p["path"])
+        parts.append(_sig.project_signature(proot))
+        # daemon/托管态探针的 TTL memo 值直接参与哈希（宁多勿漏）：memo 翻转
+        # 必须翻转 ETag，否则概览 daemon/hosting 列假 304
+        parts.append(dashboard_data.daemon_health(proot))
+        parts.append(dashboard_data.hosting_state(proot))
+    parts.append(_sig.registry_signature(s.server.registry))
+    return _sig.combine(parts)
+
+
+def _sig_specs(s, q, m):
+    from pathlib import Path
+
+    from core.dashboard.data import signature as _sig
+
+    project = _resolve_project_for_sig(s, q)
+    if project is None:
+        return None
+    return s.server.summary_index.invalidation_signature(Path(project["path"]))
+
+
+def _sig_spec_detail(s, q, m):
+    from pathlib import Path
+
+    from core.dashboard import data as dashboard_data
+    from core.dashboard.data import signature as _sig
+
+    project = _resolve_project_for_sig(s, q)
+    if project is None:
+        return None
+    spec = urllib.parse.unquote(m.group(1))
+    proot = Path(project["path"])
+    # spec 不存在（活跃 STATE、归档清单、归档目录均无命中）→ 响应恒为
+    # 错误体，不参与协商（错误响应不挂 ETag）
+    entry = s.server.summary_index.state_snapshot(proot).get(spec)
+    if entry is None:
+        entry = dashboard_data.parse_archived_state(proot).get(spec)
+    if entry is None and dashboard_data.resolve_spec_dir(proot, spec) is None:
+        return None
+    return _sig.spec_detail_signature(proot, spec)
+
+
+def _sig_alerts(s, q, m):
+    from pathlib import Path
+
+    from core.dashboard.data import signature as _sig
+
+    project = _resolve_project_for_sig(s, q)
+    if project is not None:
+        return _sig.admin_alerts_signature(Path(project["path"]))
+    # 跨项目聚合：与 _api_alerts 同口径跳过 fixture/不存在项目，聚合集合
+    #（registry）参与哈希
+    parts = [_sig.registry_signature(s.server.registry)]
+    for p in s.server.projects():
+        if p.get("fixture") or not p.get("exists"):
+            continue
+        parts.append(_sig.admin_alerts_signature(Path(p["path"])))
+    return _sig.combine(parts)
+
+
+def _sig_admin_activities(s, q, m):
+    # 数据源与 /api/alerts 同一文件（admin_alerts.json）；?spec= 过滤发生在
+    # 读取之后，不改变签名源
+    return _sig_alerts(s, q, m)
+
+
+def _sig_config(s, q, m):
+    from core.dashboard.data import signature as _sig
+
+    project = _resolve_project_for_sig(s, q)
+    if project is None:
+        # 缺 project 参数 = 合法用户级作用域（_api_config_get 契约），签名
+        # 只依赖用户级 config.yaml
+        return _sig.config_signature(None)
+    return _sig.config_signature(project["path"])
+
+
+def _if_none_match_hit(header_value: str, etag: str) -> bool:
+    """RFC 7232 If-None-Match 比对：`*` 命中任意；列表逐项比对；弱化符 W/ 剥离。"""
+    for candidate in header_value.split(","):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:]
+        if candidate == etag:
+            return True
+    return False
+
+
 def _get_projects(s, p, q, m):
     s._json(s._api_projects())
 
@@ -364,18 +495,24 @@ def _del_project(s, p, q, m):
     s._api_project_delete(p, q)
 
 
+# GET 路由表条目：3 元组 (kind, pattern, handler)，或 4 元组第 4 位挂 ETag
+# 签名函数（add-dashboard-paging-and-etag 1.2：GET 读端点注册表支持挂签名
+# 函数）。_dispatch_table 按 len 容错解包，3 元组条目零改动仍有效。
 _API_GET_ROUTES = [
     # 精确路由（原 _handle_api if/elif 顺序保持优先级）
     ("exact", "/api/projects",         _get_projects),
-    ("exact", "/api/overview",         _get_overview),
-    ("exact", "/api/specs",            _get_specs),
+    ("exact", "/api/overview",         _get_overview, _sig_overview),
+    ("exact", "/api/specs",            _get_specs, _sig_specs),
     # 参数化前缀（regex）
-    ("regex", r"^/api/specs/([^/]+)$", _get_spec_detail),
+    ("regex", r"^/api/specs/([^/]+)$", _get_spec_detail, _sig_spec_detail),
     ("regex", r"^/api/runs/(.+)$",     _get_runs_watch),
     ("exact", "/api/events",           _get_events),
-    ("exact", "/api/alerts",           _get_alerts),
-    ("exact", "/api/admin-activities", _get_admin_activities),
-    ("exact", "/api/config",           _get_config),
+    ("exact", "/api/alerts",           _get_alerts, _sig_alerts),
+    ("exact", "/api/admin-activities", _get_admin_activities, _sig_admin_activities),
+    # config 是自含响应 handler（_api_config_get 自写 _json/_error）——其 304
+    # 短路与 200 的 ETag 头同样经适配层（_dispatch_table 短路在 handler 调用
+    # 之前；_json 附带 _pending_etag），无需改动 handler 本体
+    ("exact", "/api/config",           _get_config, _sig_config),
     ("exact", "/api/hooks/audit",      _get_hooks_audit),
     ("exact", "/api/prompts",          _get_prompts),
     ("exact", "/api/todo",             _get_todo),
@@ -527,13 +664,65 @@ class H0BaseMixin:
     # ── H1 表驱动路由分派（design D1 表 C H1，task 4.5）────────────────
 
     def _dispatch_table(self, table, path, query):
-        """按表遍历匹配并委派（按注册顺序，精确优先）。"""
-        for kind, pattern, handler in table:
-            m = _route_match(kind, pattern, path)
-            if m is not None:
-                handler(self, path, query, m)
+        """按表遍历匹配并委派（按注册顺序，精确优先）。
+
+        条目容错解包 3/4 元组（第 4 位为 ETag 签名函数，见 _API_GET_ROUTES
+        注记）。签名函数在场时先做条件请求协商（add-dashboard-paging-and-etag
+        1.2）：If-None-Match 命中 → 在 route handler 调用**之前**写 304 短路
+        （兼容 _api_config_get 等自含响应 handler——等返回值再拦截对它们无效）；
+        未命中 → 200 全量路径，ETag 经 _pending_etag 由 _json 附带（仅 200
+        成功响应携带，错误响应不挂）。
+        """
+        for entry in table:
+            m = _route_match(entry[0], entry[1], path)
+            if m is None:
+                continue
+            handler = entry[2]
+            sig_fn = entry[3] if len(entry) > 3 else None
+            etag = self._route_etag(sig_fn, query, m) if sig_fn is not None else None
+            if etag is not None and _if_none_match_hit(
+                self.headers.get("If-None-Match", ""), etag
+            ):
+                self._write_304(etag)
                 return
+            # keep-alive 下 handler 实例跨请求复用：_pending_etag 必须 finally
+            # 清零，防泄漏到同连接下一请求
+            self._pending_etag = etag
+            try:
+                handler(self, path, query, m)
+            finally:
+                self._pending_etag = None
+            return
         self._error(404, "Not Found")
+
+    def _route_etag(self, sig_fn, query, m) -> str | None:
+        """计算路由 ETag；签名函数缺失/抛错/返回空 → None（降级无条件 200 路径）。
+
+        签名失败按「宁缺 304 不假 304」降级：返回 None 则不协商、不挂 ETag 头，
+        行为与改造前完全一致。异常经 logger.exception 服务端留痕。
+        """
+        try:
+            etag = sig_fn(self, query, m)
+        except Exception:  # noqa: BLE001
+            logger.exception("ETag 签名计算失败，本请求降级为无条件 200 路径")
+            return None
+        if not etag:
+            return None
+        return f'"{etag}"'
+
+    def _write_304(self, etag: str) -> None:
+        """写 304 空体响应（与 _json 同一写出纪律，keep-alive 不污染）。
+
+        Content-Length: 0 让客户端明裁空体；304 本身无体（不写 wfile，与
+        _json 的 HEAD 分支同口径）。Cache-Control 与 _json 一致（no-cache：
+        ETag 协商是唯一复用通道，不引入启发式缓存）。
+        """
+        self._mark_response_started()
+        self.send_response(304)
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _handle_api(self, path: str, query: dict):
         self._dispatch_table(_API_GET_ROUTES, path, query)
@@ -794,6 +983,15 @@ class H0BaseMixin:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self._mark_response_started()
         self.send_response(status)
+        # 条件请求通道（add-dashboard-paging-and-etag 1.2）：200 成功响应附带
+        # ETag（_dispatch_table 在 handler 前挂 _pending_etag，此处消费并清零
+        # ——自含响应 handler（_api_config_get 内部调 _json）同样命中本路径）。
+        # 非 200 状态（错误响应）不挂 ETag：消费即弃，不发送。
+        etag = getattr(self, "_pending_etag", None)
+        if etag:
+            self._pending_etag = None
+            if status == 200:
+                self.send_header("ETag", etag)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         body = self._maybe_gzip(body)
