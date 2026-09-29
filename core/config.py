@@ -910,8 +910,8 @@ class ConfigLoader:
         env 校验并列——非法直接 raise ValueError，不静默忽略）。规则：
         - billing 提供时必须为对象；
         - enabled 提供时为布尔（None 缺省视为关闭，不报错）；
-        - prices 提供时必须为列表；每行 model 非空字符串、4 项单价为非负数值
-          （bool 除外）、行 model 在同一卡片内不重复；
+        - prices 提供时必须为列表；每行 model 非空字符串、4 项单价为非负有限数值
+          （bool 除外，NaN/inf 拒绝）、行 model 在同一卡片内不重复；
         错误信息含违规行路径（providers[i].billing.prices[j].字段）。
         """
         _price_fields = (
@@ -961,8 +961,13 @@ class ConfigLoader:
                     seen.add(_key)
                 for _f in _price_fields:
                     v = row.get(_f)
-                    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-                        errs.append(f"{_prefix}.{_f} 必须为非负数值: {v!r}")
+                    if (
+                        isinstance(v, bool)
+                        or not isinstance(v, (int, float))
+                        or (isinstance(v, float) and not math.isfinite(v))
+                        or v < 0
+                    ):
+                        errs.append(f"{_prefix}.{_f} 必须为非负有限数值: {v!r}")
                 if errs:
                     raise ValueError("billing 校验失败: " + "; ".join(errs))
 
@@ -996,8 +1001,11 @@ class ConfigLoader:
                     )
                 for k, v in env.items():
                     if not isinstance(k, str) or not isinstance(v, str):
+                        # 只回显键名与值类型，不回显值本身（env 常承载 token/密钥，
+                        # 对齐上方 apikey 校验的脱敏口径）
                         raise ValueError(
-                            f"llm.providers[{idx}].env keys/values must be strings: {k!r}={v!r}"
+                            f"llm.providers[{idx}].env keys/values must be strings: "
+                            f"key {k!r} (value type: {type(v).__name__})"
                         )
             if name in seen_names:
                 raise ValueError(f"llm.providers[{idx}].name must be unique: duplicate '{name}'")
@@ -2605,6 +2613,12 @@ class ConfigLoader:
         """
         verify = config.get("verify")
         if not isinstance(verify, dict):
+            if verify is not None:  # 段缺失仍静默；仅存在但非 dict（手编 YAML 误缩进）留痕
+                _logger.warning(
+                    "config.verify 整段非 dict（%s），verify 段按空段降级、"
+                    "相关键回退缺省；其余配置照常生效",
+                    type(verify).__name__,
+                )
             return False
         val = verify.get("impl_code_review")
         return val is True  # 严格 bool：1/"yes" 等非 bool 一律不算
@@ -2623,6 +2637,12 @@ class ConfigLoader:
         """
         verify = config.get("verify")
         if not isinstance(verify, dict):
+            if verify is not None:  # 段缺失仍静默；仅存在但非 dict（手编 YAML 误缩进）留痕
+                _logger.warning(
+                    "config.verify 整段非 dict（%s），verify 段按空段降级、"
+                    "相关键回退缺省；其余配置照常生效",
+                    type(verify).__name__,
+                )
             return default
         val = verify.get(key)
         if isinstance(val, bool):
@@ -2652,6 +2672,12 @@ class ConfigLoader:
         """
         verify = config.get("verify")
         if not isinstance(verify, dict):
+            if verify is not None:  # 段缺失仍静默；仅存在但非 dict（手编 YAML 误缩进）留痕
+                _logger.warning(
+                    "config.verify 整段非 dict（%s），verify 段按空段降级、"
+                    "相关键回退缺省；其余配置照常生效",
+                    type(verify).__name__,
+                )
             return default
         val = verify.get(key)
         if val in choices:
