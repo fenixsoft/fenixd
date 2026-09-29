@@ -2818,6 +2818,10 @@ class AdminMonitor:
             record, is_new = self.store.merge_signal(
                 self._signal_record(signal, escalated=False), status_hash
             )
+            if record is None:
+                # 损坏留底拒写：记录未落盘（item 27c156cb5272），无从按
+                # 「已沉淀」记日志；拒写已在 store._mutate 记 error，此处静默
+                return
             if is_new:
                 # 新记录：状态变化后首次节流（冷却期内重触发），保留既有文案
                 self.logger.info(

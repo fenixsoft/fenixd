@@ -101,14 +101,25 @@ class ServingRegistry:
     # ── 公开 API ───────────────────────────────────────────────────
 
     def register(self, pid: int, port, spec: str, worktree) -> bool:
-        """登记一条实例（创建时）。同 (pid, spec) 已登记时幂等跳过。
+        """登记一条实例（创建时）。同 (pid, spec) 已登记时幂等跳过；
+        但若该 pid 的 /proc starttime 与快照不一致（旧进程退出后 pid 被
+        复用给同 spec 的新 spawn），就地刷新身份快照后写回。
 
-        Returns: 是否发生写入（False = 已存在，幂等跳过）。
+        Returns: 是否发生写入（False = 已存在且快照未过期，幂等跳过）。
         """
 
         def _fn(records):
             for r in records:
                 if r.get("pid") == pid and r.get("spec") == spec:
+                    # pid 复用防护：身份快照过期（cur 与快照不一致）说明登记
+                    # 的已是另一个进程实例，沿用旧快照会让 sweep 收割时
+                    # _harvest_identity_ok 必然失配——只摘登记不杀组，新实例
+                    # 从此脱离登记制无人收割。cur 读不到（进程已亡/无 /proc）
+                    # 不刷新：死条目由 sweep 的 liveness 检查兜底摘除。
+                    cur = _proc_start_ticks(pid)
+                    if cur is not None and cur != r.get("start_ticks"):
+                        r["start_ticks"] = cur
+                        return True
                     return False
             records.append(
                 {
@@ -133,7 +144,8 @@ class ServingRegistry:
     def remove(self, pid: int, spec: str = "") -> bool:
         """移除登记（stop 时）。按 pid（+spec 可选）匹配。
 
-        Returns: 是否实际移除（False = 无匹配条目）。
+        Returns: 是否实际移除（False = 无匹配条目；写盘失败同样返回
+        False，但会记 warning 以便排障）。
         """
 
         def _fn(records):
@@ -149,6 +161,10 @@ class ServingRegistry:
         try:
             return bool(self._mutate(_fn))
         except OSError:
+            if self.logger:
+                self.logger.warning(
+                    "serving_registry", f"登记移除写盘失败（非阻塞）: {self.path}"
+                )
             return False
 
     def entries(self) -> list:

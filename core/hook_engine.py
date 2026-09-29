@@ -93,6 +93,34 @@ SHELL_KILL_REAP_TIMEOUT_SECONDS = 5
 # http/https，校验（validate_hook_entry）与执行侧（_action_webhook）双检。
 WEBHOOK_ALLOWED_SCHEMES = ("http", "https")
 
+
+class _WebhookRedirectGuard(urllib.request.HTTPRedirectHandler):
+    """重定向前复查目标 scheme 的守卫 handler（口径对齐 WEBHOOK_ALLOWED_SCHEMES）。
+
+    默认 opener 的重定向跟随不限制目标 scheme：webhook 端点返回 302 →
+    file:///... 会被 FileHandler 跟随读取（响应体截 2KB 落审计），绕过白名单。
+    此 handler 在每跳跟随前复查，越界（file://ftp:// 等）关流不跟随，按请求
+    失败处置（URLError 走 _action_webhook 既有 except 分支）。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        scheme = urllib.parse.urlparse(newurl).scheme.lower()
+        if scheme not in WEBHOOK_ALLOWED_SCHEMES:
+            try:
+                fp.close()
+            except OSError:
+                pass
+            raise urllib.error.URLError(
+                f"webhook 重定向目标 scheme 非法: {scheme or '(缺失)'}"
+                f"（仅允许 {list(WEBHOOK_ALLOWED_SCHEMES)}）"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# webhook 专用 opener（模块级复用，与 urlopen 内置全局 opener 同口径）：
+# 守卫 handler 是 HTTPRedirectHandler 子类，build_opener 以其替换默认跟随
+_WEBHOOK_OPENER = urllib.request.build_opener(_WebhookRedirectGuard())
+
 # dashboard 重启探测（D4：保持 8787 端口；探测超时则失败告警）
 DEFAULT_DASHBOARD_PORT = 8787
 DEFAULT_DASHBOARD_SESSION = "fenix-dashboard"
@@ -169,14 +197,46 @@ def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
 
 
 def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
-    """在项目根执行 git 子命令（统一超时 60s）。"""
-    return subprocess.run(
+    """在项目根执行 git 子命令（统一超时 60s）。
+
+    有界 spawn 口径对齐 _action_shell：start_new_session 使 git 为新进程组首，
+    超时 killpg 连项目级 hook / credential helper / gpg pinentry 等孙进程一并
+    回收，复杀仍超时再关流兜底——否则孙进程继承 stdout/stderr 管道可致
+    hook 执行线程挂死、在飞标记永不释放。超时仍抛 TimeoutExpired（与
+    subprocess.run 同契约，调用方按 SubprocessError 记失败）。
+    """
+    proc = subprocess.Popen(
         ["git"] + args,
         cwd=str(cwd),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=60,
+        start_new_session=True,
     )
+    try:
+        out, err = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        try:
+            proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # 守护化孙进程（setsid 脱离进程组）继承管道且杀不掉：关闭读端
+            # 放弃读取，保证执行线程必然返回
+            for _stream in (proc.stdout, proc.stderr):
+                try:
+                    if _stream:
+                        _stream.close()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 def render_message_template(template: str, spec: str, event: str) -> str:
@@ -208,12 +268,13 @@ def _builtin_push_restart_entry() -> dict:
 def hook_config(config: dict) -> dict:
     """返回配置中的 hooks 段（缺省空结构，不修改入参）。
 
-    dashboard-push-restart D1：返回视图在 global 段头部注入内置默认条目
+    dashboard-push-restart D1：返回副本在 global 段头部注入内置默认条目
     ``builtin-push-restart-dashboard``（pushed → restart-dashboard），新项目
     零配置即生效；逃生键 ``hooks.push_restart_dashboard: false`` 时跳过注入；
     用户 global 列表已有同 id 条目时用户条目优先（不重复注入）。
 
-    注入作用于返回副本（重建 global 列表，条目引用原样共享），MUST NOT 原地
+    注入作用于返回副本（重建 global 列表，条目引用原样共享；逃生键/同 id
+    早退路径同样浅拷贝返回，全部返回路径与入参顶层脱钩），MUST NOT 原地
     mutate 入参：match_hooks/_find_live_hook 每次事件都重复调用本函数，原地
     注入会逐次堆叠重复条目；且入参引用若被任何 config 写链路序列化，内置条目
     会被持久化进 .fenix/config.yaml，此后逃生键置 false 也无法阻止重启（文件
@@ -229,12 +290,12 @@ def hook_config(config: dict) -> dict:
     # 逃生键：bool 键缺省 true，仅显式 false 关闭（非法值按缺省开启，对齐
     # knowledge.enabled 等既有 bool 键口径）
     if hooks.get("push_restart_dashboard") is False:
-        return hooks
+        return dict(hooks)  # 浅拷贝脱钩：与注入路径同口径，返回值不回流入参
     if any(
         isinstance(h, dict) and h.get("id") == BUILTIN_PUSH_RESTART_DASHBOARD_ID
         for h in user_global
     ):
-        return hooks  # 用户已有同 id 条目：用户条目优先，不重复注入
+        return dict(hooks)  # 用户已有同 id 条目：用户条目优先，不重复注入；浅拷贝脱钩
     return {**hooks, "global": [_builtin_push_restart_entry(), *user_global]}
 
 
@@ -1205,7 +1266,9 @@ class HookEngine:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # 专用 opener：重定向每跳前复查 scheme（默认 opener 会跟随
+            # 302 → file:///... 把本地资源读入审计，绕过 scheme 白名单）
+            with _WEBHOOK_OPENER.open(req, timeout=timeout) as resp:
                 code = resp.status
                 body = resp.read(DETAIL_LIMIT)
         except urllib.error.HTTPError as e:

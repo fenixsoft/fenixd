@@ -38,7 +38,6 @@ from core.knowledge_backfill import (
     atomic_write_text,
     commit_pathspec,
     default_spawn,
-    discard_knowledge_changes,
     knowledge_distill_lock,
     load_knowledge_core,
     resolve_commit,
@@ -171,7 +170,13 @@ def _record_verdict(
 ) -> None:
     """确定性判定入账：verdicts 追加判定/日期/提交，状态迁移，升级轮次清零。
     no-conflict 同时记录两页全文哈希（下次同指纹初筛的内容豁免键）。"""
-    entry["verdicts"].append({"date": _today(), "verdict": verdict, "commit": commit})
+    verdicts = entry.get("verdicts")
+    if not isinstance(verdicts, list):
+        # 台账条目人工编辑/旧版本可能缺 verdicts 键或类型损坏：就地补齐空
+        # 列表走正常复核流程，不让单条损坏条目炸整轮 audit 车道。
+        verdicts = []
+        entry["verdicts"] = verdicts
+    verdicts.append({"date": _today(), "verdict": verdict, "commit": commit})
     if page_hashes is not None:
         entry["page_hashes"] = page_hashes
     entry["status"] = "exempt" if verdict == "no-conflict" else "fixed"
@@ -524,11 +529,15 @@ def _scan_semantic(pages: list[dict]) -> list[dict]:
 # ── 分级处置 ─────────────────────────────────────────────────────────────
 
 
-def _apply_mechanical(project_root: Path, scan: dict) -> list[str]:
+def _apply_mechanical(project_root: Path, scan: dict) -> tuple[list[str], list[str]]:
     """执行机械自修（悬空溯源行/越界 sources、格式、ADR index 状态对齐），
-    返回修复摘要明细。只写 spec/knowledge/ 内文件。"""
+    返回 ``(修复明细, 待人工明细)``：前者只收确实完成改写的条目（修复计数与
+    提交摘要的依据），槽位定位失败等无法机械处置的场景入后者转待人工。
+    只写 spec/knowledge/ 内文件。"""
     archives = _existing_archives(project_root)
     fixed: list[str] = []
+    manual: list[str] = []
+    # [fenix-ignore:9c26e33a4a68] 病灶快照已在 run_audit 蒸馏锁内采集，扫描与删行同临界区，并发蒸馏 run 无法在两者之间插写错位行号。
     for item in scan["dangling"]:
         text = item["path"].read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
@@ -569,14 +578,26 @@ def _apply_mechanical(project_root: Path, scan: dict) -> list[str]:
     mismatches = scan["adr"]["status_mismatch"]
     if mismatches and index_path.is_file():
         lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        wrote = False
         for mm in mismatches:
             ln = lines[mm["line_no"]]
             slot = _adr_status_slot(ln)
-            if slot and slot[2] != mm["expected"]:
+            if slot is None:
+                # 状态槽位重定位失败（行内容相对扫描快照已变）不盲改，转待人工
+                # 而非计入机械修复。
+                manual.append(
+                    f"adr/index.md：{mm['name']} 状态槽位定位失败，请人工对齐为 {mm['expected']}"
+                )
+                continue
+            if slot[2] != mm["expected"]:
                 lines[mm["line_no"]] = ln[: slot[0]] + mm["expected"] + ln[slot[1] :]
-            fixed.append(f"adr/index.md：{mm['name']} 状态对齐为 {mm['expected']}")
-        atomic_write_text(index_path, "\n".join(lines) + "\n")
-    return fixed
+                wrote = True
+                fixed.append(
+                    f"adr/index.md：{mm['name']} ADR 索引状态对齐为 {mm['expected']}"
+                )
+        if wrote:
+            atomic_write_text(index_path, "\n".join(lines) + "\n")
+    return fixed, manual
 
 
 def build_audit_prompt(kind: str, context_a: str, context_b: str) -> str:
@@ -749,7 +770,14 @@ def run_audit(
         # 报告类病灶就会令整轮机械修复被回滚、机械车道被单点病灶长期空转——
         # 修复前后违规清单取差集，既有违规不拦提交，仍走各自报告/待人工路径。
         before_violations = {str(v) for v in (validate(project_root) or [])}
-        fixed = _apply_mechanical(project_root, scan)
+        # carryover：机械段开始前 spec/knowledge/ 已有的未提交改动（上一轮提交
+        # 失败 fail-open 留盘的已验证产出、人工在盘上的编辑）。回滚纪律与语义
+        # 段同款：只还原本轮触达的文件，不得全目录连带清除。
+        carryover = _knowledge_dirty_files(project_root)
+        fixed, manual_fixes = _apply_mechanical(project_root, scan)
+        if manual_fixes:
+            counts["pending_manual"] += len(manual_fixes)
+            details["manual"].extend(manual_fixes)
         if fixed:
             _, violations = _validate_with_repair(
                 project_root,
@@ -780,7 +808,14 @@ def run_audit(
                 counts["fixed"] = len(fixed)
                 details["fixed"] = fixed
             else:
-                discard_knowledge_changes(project_root)
+                # 只回滚本轮机械修复触达的文件；carryover 在场改动不属本轮产出。
+                # 本轮若恰好也改写了 carryover 在场文件则无法拆分，该文件保持在
+                # 盘（转写段收尾 leftover 告警与 ADR 目录未提交改动报告可见），
+                # 交由下一轮体检或人工处置，不连带销毁既有未提交内容。
+                _discard_paths(
+                    project_root,
+                    sorted(_knowledge_dirty_files(project_root) - carryover),
+                )
                 counts["pending_manual"] += 1
                 details["manual"].append(
                     f"机械修复引入新违规，已回滚：{new_violations[:3]}"
