@@ -363,6 +363,17 @@ def _unescape_state_value(val: str) -> str:
     )
 
 
+def _spec_sort_key(item: Tuple[str, dict]) -> Tuple[int, str]:
+    """(priority, created) 排序键：serialize 落盘序与查询序共用同一口径。
+
+    code-review item aa6777dff877：缺失 created 的兜底值此前两处口径相反
+    （serialize 兜 ``""`` 排最前、_sort_by_priority 兜 ``"z"`` 排最后），
+    同键双兜底漂移。统一兜 ``"z"``——ISO 8601 时间戳以数字开头，ASCII 序
+    恒小于 ``"z"``，异常条目排最后；正常数据的既有顺序不受影响。
+    """
+    return (item[1].get("priority", 999), item[1].get("created", "z"))
+
+
 # ── 归档清单（add-archive-state-migration D1/D2）─────────────────────
 
 # 已迁出 STATE.md 条目的归档清单，与 STATE.md 同级同生命周期（.fenix/ 内、
@@ -464,7 +475,19 @@ class StateParser:
             if header_match:
                 if current_name and current_entry:
                     StateParser._admit_entry(current_name, current_entry, specs, logger)
-                current_name = header_match.group(1).strip()
+                elif current_name and logger is not None:
+                    # code-review item 4aa82fdfc368：仅标题行、其下没有任何能被
+                    # kv 正则解析的字段行（键名大写被正则拒绝/内容全是裸文本等）
+                    # 的条目同样会被丢弃——与 _admit_entry（685210d97ff8）同理，
+                    # 下个写者按「锁内读全部→改→全量回写」落盘时会把该条目
+                    # （含 branch/implementer_run 锚点与全部预算计数）从文件
+                    # 整体抹除，此处把丢弃显性化为 warning。
+                    logger.warning(
+                        "state_machine",
+                        f"跳过无可解析字段行的条目 '{current_name}'（仅标题行）—— "
+                        f"下个写者将把它从 STATE.md 移除",
+                    )
+                current_name = _unescape_state_value(header_match.group(1).strip())
                 current_entry = {}
                 continue
 
@@ -547,6 +570,13 @@ class StateParser:
         # Don't forget the last entry
         if current_name and current_entry:
             StateParser._admit_entry(current_name, current_entry, specs, logger)
+        elif current_name and logger is not None:
+            # code-review item 4aa82fdfc368：同上，仅标题行的末尾条目丢弃前留痕
+            logger.warning(
+                "state_machine",
+                f"跳过无可解析字段行的条目 '{current_name}'（仅标题行）—— "
+                f"下个写者将把它从 STATE.md 移除",
+            )
 
         return specs
 
@@ -563,17 +593,15 @@ class StateParser:
             "",
         ]
 
-        # Sort by priority then created time
-        sorted_specs = sorted(
-            specs.items(),
-            key=lambda item: (
-                item[1].get("priority", 999),
-                item[1].get("created", ""),
-            ),
-        )
+        # Sort by priority then created time（与查询序共用 _spec_sort_key 同口径，
+        # code-review item aa6777dff877）
+        sorted_specs = sorted(specs.items(), key=_spec_sort_key)
 
         for name, entry in sorted_specs:
-            lines.append(f"### {name}")
+            # 条目名单行化与字段值同纪律（code-review item dfd3b091fbb0）：
+            # 裸换行会让续行脱离条目结构；解析侧 header 经 _unescape_state_value
+            # 逆变换，转义后可无损往返。
+            lines.append(f"### {_escape_state_value(name)}")
             for key in [
                 "status",
                 "priority",
@@ -1686,7 +1714,7 @@ class StateMachine:
 
     def _render_archive_entry(self, spec_name: str, entry: dict) -> str:
         """把单个条目渲染为清单小节文本（``### name`` + 字段行，含结尾空行）。"""
-        lines = [f"### {spec_name}"]
+        lines = [f"### {_escape_state_value(spec_name)}"]
         for key, val in entry.items():
             if val is None:
                 val = "null"
@@ -2136,13 +2164,7 @@ class StateMachine:
 
     def _sort_by_priority(self, specs: List[Tuple[str, dict]]) -> List[Tuple[str, dict]]:
         """Sort by priority (lower = higher priority), then by created time."""
-        return sorted(
-            specs,
-            key=lambda item: (
-                item[1].get("priority", 999),
-                item[1].get("created", "z"),
-            ),
-        )
+        return sorted(specs, key=_spec_sort_key)
 
     # ── Recovery ───────────────────────────────────────────────────
 
