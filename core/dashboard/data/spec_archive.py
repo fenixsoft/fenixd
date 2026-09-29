@@ -129,7 +129,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
                 "archive_path": None,
                 "error": f"等待超时仍有 {len(running_ids)} 个 run 未终止",
                 "pending": running_ids,
-                "stopped": 0,
+                # 已终止计数 = 回调前在跑数 - 复查后仍未终止数（code-review
+                # item d09db0e81f6a：硬编码 0 与「已停止计数」语义不符）
+                "stopped": initial_running_count - len(running_ids),
             }
         # 全部已终止，继续正常删除流程
 
@@ -148,7 +150,6 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     archived = False
     archive_path = None
     if spec_dir.is_dir():
-        archive_root.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
         base_name = f"{spec}-{ts}"
         dest = archive_root / base_name
@@ -164,6 +165,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
                 dest = archive_root / f"{base_name}-{micros}-{n}"
                 n += 1
         try:
+            # mkdir 同样收进 try（code-review item 3dbdfe8302c9）：权限不足/
+            # 磁盘满等 OSError 一并按「归档移动失败: ...」返回 dict，不裸抛
+            archive_root.mkdir(parents=True, exist_ok=True)
             shutil.move(str(spec_dir), str(dest))
         except OSError as e:
             # 比照 archive_spec（同文件）以返回码告知调用方，不裸抛 OSError：
