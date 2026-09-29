@@ -37,12 +37,17 @@ _STATE_DIR_NAMES = frozenset({
 
 
 def parse_spec_from_worktree_name(name: str):
-    """从目录名解析 spec 名：{spec}-{10 位 Unix 时间戳}。
+    """从目录名解析 spec 名：{spec}-{时间戳后缀}。
 
-    末段须恰好 10 位数字；无法解析返回 None。
+    末段须至少 10 位数字——秒级纪元 10 位、纳秒纪元 19 位均合法。
+    code-review 78057677e669：serving.py 以 time.time_ns() 生成 19 位后缀，
+    原「恰好 10 位」全等解析对现行命名恒返回 None——目录回收把全部现行
+    命名判「无法归属」fail-safe 保留（reclaimed 恒空），boot.log 侧
+    is_spec_registered_in_servers / has_live_process_for_spec 两道防误删
+    保护随之静默失效。无法解析返回 None。
     spec 名自身可含连字符与数字后缀（如 evo-merge-back-wip-overlap-gate-575976）。
     """
-    match = re.fullmatch(r"(.+)-(\d{10})", name)
+    match = re.fullmatch(r"(.+)-(\d{10,})", name)
     if match is None:
         return None
     spec = match.group(1)
@@ -111,12 +116,18 @@ def has_live_process(wt_path: Path) -> bool:
             if not pid_name.isdigit():
                 continue
             pid_int = int(pid_name)
-            # argv check
+            # argv check（code-review f9dc60296502：与 cwd 判据同口径——cmdline
+            # 按 NUL 切分成单个 argv 后做全等/目录前缀匹配；纯子串匹配在目录名
+            # 互为前缀时误命中（…/spec-1000 命中指向 …/spec-10001 的进程），
+            # 失效方向为 fail-safe 误保留、无主目录永不回收）
             cmdline_file = pid_dir / "cmdline"
             try:
                 cmdline_bytes = cmdline_file.read_bytes()
                 cmdline = cmdline_bytes.decode("utf-8", "replace")
-                if target in cmdline:
+                if any(
+                    arg == target or arg.startswith(target + os.sep)
+                    for arg in cmdline.split("\0")
+                ):
                     return True
             except (OSError, PermissionError):
                 pass
@@ -150,7 +161,8 @@ def is_spec_registered_in_servers(spec: str, project_root: Path) -> bool:
     目录名解析为该 spec 的登记项。
 
     boot.log 无对应目录可做路径全等匹配（is_registered_in_servers），
-    退而按登记 worktree 名 {spec}-{10 位时间戳} 解析出 spec 后比对。
+    退而按登记 worktree 名 {spec}-{时间戳后缀}（≥10 位数字，与
+    parse_spec_from_worktree_name 同一契约）解析出 spec 后比对。
     无法判定时返回 True（fail-safe）。
     """
     try:
@@ -318,7 +330,7 @@ def reclaim_verify_serving(
             continue
         spec_name = parse_spec_from_worktree_name(entry.name)
         if spec_name is None:
-            # 目录名不符合 {spec}-{10 位时间戳} 约定：无法判定归属，fail-safe 保留
+            # 目录名不符合 {spec}-{时间戳后缀} 约定：无法判定归属，fail-safe 保留
             kept.append(entry.name)
             continue
         if _should_keep(spec_name, entry, project_root, is_spec_in_flight):

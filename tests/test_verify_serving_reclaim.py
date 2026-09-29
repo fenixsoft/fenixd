@@ -9,6 +9,8 @@ fix-verify-serving-disk-reclaim：
   无法解析保留 / 状态文件保留
 - 5.4 reclaim_verify_serving 返回结构（reclaimed/kept/boot_logs_reclaimed）
 - 5.5 verify.serving_reclaim.enabled=false 时早退（不调 git、不删文件）
+- 5.6 纳秒时间戳命名（serving.py time.time_ns() 19 位后缀）：解析 +
+  回收/保留双向（code-review 78057677e669/f7d8c757c7e8）
 """
 
 import json
@@ -59,7 +61,7 @@ def _no_git(calls: list):
 
 
 class TestParseSpecName:
-    """目录名 {spec}-{10 位时间戳} 解析。"""
+    """目录名 {spec}-{时间戳后缀} 解析（秒级 10 位 / 纳秒 19 位均合法）。"""
 
     def test_parse_basic(self):
         assert parse_spec_from_worktree_name("fix-foo-1789587927") == "fix-foo"
@@ -74,8 +76,9 @@ class TestParseSpecName:
         )
 
     def test_parse_rejects_non_ts(self):
+        # 11 位及以上数字后缀自 78057677e669 起按时间戳解析，用例移入
+        # TestNsTimestampNaming（≥10 位同契约）
         assert parse_spec_from_worktree_name("add-foo-123") is None
-        assert parse_spec_from_worktree_name("add-foo-12345678901") is None
         assert parse_spec_from_worktree_name("add-foo") is None
         assert parse_spec_from_worktree_name("-1789587927") is None
 
@@ -525,3 +528,86 @@ class TestSwitchEarlyExit:
         assert result == {"reclaimed": [], "kept": [], "boot_logs_reclaimed": []}
         assert (serve_root / "add-gone-1788583057").is_dir()
         assert (serve_root / "add-gone-boot.log").exists()
+
+
+# ── 5.6 纳秒时间戳命名（code-review 78057677e669/f7d8c757c7e8）───────────────
+
+
+class TestNsTimestampNaming:
+    """serving.py 以 time.time_ns() 生成 19 位纳秒后缀目录名，回收须同契约解析。
+
+    原「恰好 10 位」全等解析对现行命名恒返回 None：目录回收把全部现行
+    命名判「无法归属」fail-safe 保留（reclaimed 恒空），boot.log 侧
+    is_spec_registered_in_servers / has_live_process_for_spec 两道防误删
+    保护静默失效。双向：无主 ns 命名目录回收；存活/登记 ns 命名保留。
+    """
+
+    NS = "1789587927123456789"  # time.time_ns() 形态的 19 位纳秒后缀
+
+    def test_parse_ns_suffix(self):
+        """19 位纳秒后缀解析出 spec；≥10 位数字后缀同契约（11 位亦按时间戳）。"""
+        assert (
+            parse_spec_from_worktree_name(f"add-spec-hooks-{self.NS}")
+            == "add-spec-hooks"
+        )
+        assert parse_spec_from_worktree_name("add-foo-12345678901") == "add-foo"
+
+    def test_parse_short_suffix_still_rejected(self):
+        """<10 位后缀仍拒绝（原契约不回退）。"""
+        assert parse_spec_from_worktree_name("add-foo-123456789") is None
+
+    def test_ns_named_orphan_dir_reclaimed(self, tmp_path):
+        """无主 ns 命名目录（spec/登记/活进程三重皆无且超宽限）→ 回收。"""
+        name = f"add-gone-{self.NS}"
+        serve_root = _make_verify_serving(tmp_path, [name])
+        calls = []
+        with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
+             patch.object(sr, "has_live_process", return_value=False), \
+             patch.object(sr, "is_registered_in_servers", return_value=False):
+            result = reclaim_verify_serving(tmp_path, logger=None)
+        assert name in result["reclaimed"]
+        remove_calls = [
+            c for c in calls if c[:3] == ["git", "-C", str(tmp_path)] and "remove" in c
+        ]
+        assert len(remove_calls) == 1
+        assert str(serve_root / name) in remove_calls[0]
+
+    def test_ns_named_dir_with_live_spec_kept(self, tmp_path):
+        """spec 存活（changes）的 ns 命名目录 → 保留。"""
+        spec = "add-spec-hooks"
+        name = f"{spec}-{self.NS}"
+        (tmp_path / "spec" / "changes" / spec).mkdir(parents=True)
+        serve_root = _make_verify_serving(tmp_path, [name])
+        calls = []
+        with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
+             patch.object(sr, "has_live_process", return_value=False), \
+             patch.object(sr, "is_registered_in_servers", return_value=False):
+            result = reclaim_verify_serving(tmp_path, logger=None)
+        assert name in result["kept"]
+        assert result["reclaimed"] == []
+
+    def test_ns_registered_worktree_keeps_boot_log(self, tmp_path):
+        """boot.log 维度：servers.json 登记 ns 命名 worktree → 同 spec boot.log 保留。
+
+        is_spec_registered_in_servers 依赖同一解析器：ns 命名登记项原先恒
+        不命中，防误删保护静默失效（无主 boot.log 会被误删）。
+        """
+        name = f"add-baz-{self.NS}"
+        serve_root = _make_verify_serving(tmp_path, [name])
+        (serve_root / "servers.json").write_text(
+            json.dumps(
+                [{"pid": 1, "port": 0, "spec": "add-baz",
+                  "worktree": str(serve_root / name)}]
+            ),
+            encoding="utf-8",
+        )
+        baz_log = serve_root / "add-baz-boot.log"
+        baz_log.write_text("x", encoding="utf-8")
+        os.utime(baz_log, (OLD, OLD))
+        calls = []
+        with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
+             patch.object(sr, "has_live_process", return_value=False), \
+             patch.object(sr, "is_registered_in_servers", return_value=False):
+            result = reclaim_verify_serving(tmp_path, logger=None)
+        assert "add-baz-boot.log" not in result["boot_logs_reclaimed"]
+        assert baz_log.exists()
