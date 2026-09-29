@@ -665,32 +665,34 @@ class TestTimeoutOverrideSupervision(unittest.TestCase):
         judge.assert_called_once()
 
     def test_judge_liveness_uses_configured_timeout(self):
-        """_judge_liveness 的 subprocess timeout 读配置（supervision-judge）。"""
+        """_judge_liveness 的 judge 子进程超时读配置（supervision-judge）。
+
+        调用原语已由 subprocess.run 换为 Popen+communicate（item
+        d916fd3aa78b），timeout 落在 communicate 的调用 kwargs 上（Popen
+        本身不带 timeout）——打桩点与断言点同步换到 communicate。"""
         cfg = self._cfg({"supervision-judge": 240})
         runner = make_runner_with_config(self.root, cfg, logger=self.logger)
         snap = runner._liveness_snapshot(self.run_file, 600)
-        with patch("core.agent_runner.liveness.subprocess.run") as sr:
-            sr.return_value = MagicMock(
-                returncode=0,
-                stdout='{"result": "{\\"verdict\\": \\"advancing\\"}"}',
-                stderr="",
-            )
+        with patch("core.agent_runner.liveness.subprocess.Popen") as sp:
+            proc = MagicMock(returncode=0, pid=2 ** 24)
+            proc.communicate.return_value = (
+                '{"result": "{\\"verdict\\": \\"advancing\\"}"}', "")
+            sp.return_value = proc
             runner._judge_liveness(snap, "spec", "run-1")
-        kwargs = sr.call_args.kwargs
+        kwargs = proc.communicate.call_args.kwargs
         self.assertEqual(kwargs.get("timeout"), 240)
 
     def test_judge_liveness_default_timeout(self):
         cfg = self._cfg({})
         runner = make_runner_with_config(self.root, cfg, logger=self.logger)
         snap = runner._liveness_snapshot(self.run_file, 600)
-        with patch("core.agent_runner.liveness.subprocess.run") as sr:
-            sr.return_value = MagicMock(
-                returncode=0,
-                stdout='{"result": "{\\"verdict\\": \\"advancing\\"}"}',
-                stderr="",
-            )
+        with patch("core.agent_runner.liveness.subprocess.Popen") as sp:
+            proc = MagicMock(returncode=0, pid=2 ** 24)
+            proc.communicate.return_value = (
+                '{"result": "{\\"verdict\\": \\"advancing\\"}"}', "")
+            sp.return_value = proc
             runner._judge_liveness(snap, "spec", "run-1")
-        self.assertEqual(sr.call_args.kwargs.get("timeout"), 120)
+        self.assertEqual(proc.communicate.call_args.kwargs.get("timeout"), 120)
 
 
 # ══════════════════════════════════════════════════════════════════════

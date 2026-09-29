@@ -2021,11 +2021,24 @@ class _FakeRunner:
         self._running_agents = {}
 
 
+def _fresh_requested_at() -> str:
+    """信号 requested_at 动态取「当前时刻 −5min」（测试侧时间炸弹修复）。
+
+    时效分档守卫 _signal_created_is_stale（item 3213135bc86f）以消费方时钟
+    判 stale：写死绝对时间戳会随真实时间流逝跨过 1h 阈值——原固定值
+    2026-09-24T08:00Z 自写入后 1 小时起即被判 stale_created，fresh 路径
+    用例全数落空。−5min 既稳在阈值内，又容忍导入到执行间的时钟差。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+
+
 class TestCodeReviewTriggerConsume(unittest.TestCase):
     """daemon 消费端三态落盘（task 4.1）：started/dropped/failed、单飞旗标
     置位/复位顺序不变、守卫拒绝与 payload 非法不静默。"""
 
-    _REQ_AT = "2026-09-24T08:00:00+00:00"
+    _REQ_AT = _fresh_requested_at()
 
     def _mk_proot(self) -> Path:
         proot = Path(_mkdtemp("cr-consume-"))
@@ -2602,7 +2615,7 @@ class TestManualWorkerRatelimitConsume(unittest.TestCase):
     时记日志放弃并保持告警可见，不静默丢弃。
     """
 
-    _REQ_AT = "2026-09-24T08:00:00+00:00"
+    _REQ_AT = _fresh_requested_at()
 
     def setUp(self):
         self.proot = Path(_mkdtemp("cr-manual-rl-"))

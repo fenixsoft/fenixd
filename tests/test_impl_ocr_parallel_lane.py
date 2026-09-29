@@ -145,11 +145,13 @@ class FakePM:
     def _on_spec_bug_found(self, spec_name, failure_class="product", run_id=""):
         self.bug_found_calls.append((spec_name, failure_class, run_id))
 
-    @property
-    def _apply_verified(self):
+    def _apply_verified(self, spec_name, judge_result, report):
         # 镜像 PMEngine.__getattr__ 门面转发（design D3 规则 3）：惰性解析到
         # 当前 _verification 组件，测试替换 pm._verification 后仍被命中。
-        return self._verification._apply_verified
+        # 签名与 VerificationPipeline._apply_verified 保真（fake-double-fidelity
+        # 守卫核对 fake/prod arity：property 形态 arity=0 ≠ prod=(3,False,False)
+        # 会被判「必填不足」违规，转发方法形态行为不变）。
+        return self._verification._apply_verified(spec_name, judge_result, report)
 
 
 def _git(repo: Path, *args: str) -> str:
