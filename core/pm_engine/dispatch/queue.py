@@ -2498,8 +2498,15 @@ class QQQueueMixin:
         """WIP 等待条目重试仍被阻断：计数 +1（首阻时刻沿用），超限降级。"""
         entry = self._pm.state_machine.read_one(spec_name) or {}
         now = time.time()
-        count, first_f = self._parse_defer_accounting(entry, now)
-        count += 1
+        # first_at 非计数字段，沿用单一落点解析值；count 改走锁内原子递增
+        # （bump_counters 返回写后值，code-review item 6c89067c172a）：原先
+        # 「read_one 读 → 算 +1 → update_spec 写回」两段式，与主路径顺延
+        # 记账、rollback.py 写点并发时丢递增、超限降级晚触发（同型修复见
+        # repair_lane._fallback_after_repair）。
+        _, first_f = self._parse_defer_accounting(entry, now)
+        count = self._pm.state_machine.bump_counters(
+            spec_name, {"_merge_retry_count": 1}
+        ).get("_merge_retry_count", 0)
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
         try:
             self._pm.state_machine.update_spec(
@@ -2507,7 +2514,8 @@ class QQQueueMixin:
                 {
                     # 标志保持 True（仍在等待），error 叠加最新轮次供取证
                     "_wip_gate_deferred": True,
-                    "_merge_retry_count": count,
+                    # _merge_retry_count 已由上方 bump_counters 原子递增落盘，
+                    # 此处不再并写（防并发写回互相覆盖丢增量）
                     "_merge_retry_first_at": int(first_f),
                     "error": (
                         f"mergeback wip overlap deferred "
@@ -2584,9 +2592,23 @@ class QQQueueMixin:
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
-        prev_streak = self._parse_int_field(spec_entry, "_merge_streak", 0)
-        streak = prev_streak + 1 if prev_fp == fp else 1
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+        # _merge_streak 走锁内原子递增（bump_counters 返回写后值参与阈值判定，
+        # 仿 repair_lane._fallback_after_repair 对 _retry_count 的同型修复，
+        # code-review item 6c89067c172a）：原先「read_one 读 → 算 +1 → 并进
+        # update_spec 写回」读与写分处两次 STATE 锁临界区，merge-only 重试
+        # 定时器、WIP 周期消费者与 worker 失败链并发进入同一 spec 时各持相同
+        # 旧值写回、丢一次递增，同指纹熔断晚一轮触发、多烧一整轮实现 run。
+        # 指纹切换属重置语义（绝对写 1，无丢增量面），不 bump、随后续
+        # update_spec 落盘（streak_bumped=True 时各分支不再并写该字段）。
+        if prev_fp == fp:
+            streak = self._pm.state_machine.bump_counters(
+                spec_name, {"_merge_streak": 1}
+            ).get("_merge_streak", 0)
+            streak_bumped = True
+        else:
+            streak = 1
+            streak_bumped = False
 
         # 状态回写保护（fix-startup-double-dispatch）：
         # merge-back 失败回写 ready 前，检查 spec 当前状态——若已在
@@ -2601,15 +2623,13 @@ class QQQueueMixin:
                 f"'{current_status}' with active tester run {active_tester} "
                 f"— not downgrading to ready, conflict logged",
             )
-            # 记录冲突但不降级状态，保持 testing/implemented
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": final_error,
-                    "_merge_fp": fp,
-                    "_merge_streak": streak,
-                },
-            )
+            # 记录冲突但不降级状态，保持 testing/implemented。
+            # streak 已由 bump_counters 原子递增落盘时不再并入 update_spec
+            # （防并发写回互相覆盖丢增量），仅指纹切换重置路径补绝对写。
+            conflict_updates: dict = {"error": final_error, "_merge_fp": fp}
+            if not streak_bumped:
+                conflict_updates["_merge_streak"] = streak
+            self._pm.state_machine.update_spec(spec_name, conflict_updates)
             return
 
         # 配置侧 int() 归一（code-review item 31e28743fe1c，与 fast_track.py
@@ -2630,15 +2650,16 @@ class QQQueueMixin:
                 spec_name, "blocked",
                 trigger_run_id=None, agent_type="implementer", channel="auto",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": final_error,
-                    "_merge_fp": fp,
-                    "_merge_streak": streak,
-                    "_retry_count": 0,
-                },
-            )
+            # _retry_count: 0 是重置语义（绝对写，无丢增量面）；streak 已
+            # bump 时不再并写（同上，防覆盖丢增量）。
+            breaker_updates: dict = {
+                "error": final_error,
+                "_merge_fp": fp,
+                "_retry_count": 0,
+            }
+            if not streak_bumped:
+                breaker_updates["_merge_streak"] = streak
+            self._pm.state_machine.update_spec(spec_name, breaker_updates)
             self._pm.logger.error(
                 "pm_engine",
                 f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
@@ -2657,18 +2678,19 @@ class QQQueueMixin:
                 streak=streak,
             )
         else:
-            prev_retries = self._parse_int_field(spec_entry, "_retry_count", 0)
-            retries = prev_retries + 1
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "ready",
-                    "error": final_error,
-                    "_merge_fp": fp,
-                    "_merge_streak": streak,
-                    "_retry_count": retries,
-                },
-            )
+            # _retry_count 同型收口：锁内原子递增，写后值不再并入 update_spec
+            # （对齐 repair_lane._fallback_after_repair 的注释先例）。
+            retries = self._pm.state_machine.bump_counters(
+                spec_name, {"_retry_count": 1}
+            ).get("_retry_count", 0)
+            ready_updates: dict = {
+                "status": "ready",
+                "error": final_error,
+                "_merge_fp": fp,
+            }
+            if not streak_bumped:
+                ready_updates["_merge_streak"] = streak
+            self._pm.state_machine.update_spec(spec_name, ready_updates)
             # 本分支重试不受 agents.max_retries 约束，仅由 _merge_streak
             # 同指纹熔断兜底——日志只报 streak/阈值，避免误导。
             self._pm.logger.warning(
@@ -3348,7 +3370,11 @@ class QQQueueMixin:
                 report = _load_report_json(self._pm.project_root, spec_name)
             except Exception:  # noqa: BLE001 — 报告重载失败按空失败集记录
                 report = None
-            self._pm._verification._apply_verified(
+            # 经门面单跳调用（design D3 规则 3，code-review item 525fd816c134）：
+            # 不再穿透 self._pm._verification._apply_verified 私有链——pipeline
+            # 私有方法重命名时只在门面注册表一处断链，而非 ocr 每次停等唤醒即
+            # AttributeError 被下方 except 吞成 WARNING、spec 滞留 testing。
+            self._pm._apply_verified(
                 spec_name, SimpleNamespace(run_id=tester_run), report
             )
         except Exception as e:  # noqa: BLE001 — 续做失败不崩溃，留下次唤醒/扫描兜底
