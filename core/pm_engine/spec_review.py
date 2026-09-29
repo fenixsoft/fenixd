@@ -1142,6 +1142,13 @@ class SpecReviewManager:
             breaker = getattr(self.pm_engine, "infra_breaker", None)
             if breaker is not None:
                 triggered = breaker.record_failure("spec-review")
+                # record_failure 内部消费掉的到期恢复（返回值只见 triggered
+                # 布尔，未达阈值时为 False）经一次性标志补落 recovered 记录
+                # （D3，恰好一条；code-review item c3dfbbd563f5）
+                if breaker.take_recovery_flag("spec-review"):
+                    self.pm_engine._emit_infra_breaker_event(
+                        "recovered", spec_name, "", breaker.get_state("spec-review")
+                    )
                 if triggered:
                     self.pm_engine._emit_infra_breaker_event(
                         "triggered", spec_name, reason, breaker.get_state("spec-review")
