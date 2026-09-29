@@ -1,7 +1,7 @@
 """test_main_tree_deps_provision.py — ensure_main_tree_deps 主树供给测试。
 
 覆盖 add-main-tree-deps-provision SPEC 全部场景（tasks.md 3.1）：
-  1. 缺 node_modules 触发安装（mock subprocess）
+  1. 缺 node_modules 触发安装（mock npm 供给原语 _run_npm_provision）
   2. 已存在跳过零调用
   3. 无 package.json 跳过
   4. 安装失败记 warning 不抛异常
@@ -42,11 +42,14 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
         _write(self.tmp, "pkg/package.json", "{}")
         calls = []
 
-        def fake_run(cmd, **kw):
+        # item 79741f3caf63：npm 供给改经 _run_npm_provision（Popen+进程组清扫），
+        # 替身缝从 subprocess.run 同步到该原语，断言意图（命令行构造）不变
+        def fake_provision(cmd, cwd):
             calls.append(cmd)
             return _FakeRunResult(returncode=0)
 
-        with patch("core.verify_contract.subprocess.run", side_effect=fake_run):
+        with patch("core.verify_contract._run_npm_provision",
+                    side_effect=fake_provision):
             done = ensure_main_tree_deps(self.tmp, ["pkg"], logger=self.logger)
         self.assertEqual(done, ["pkg"])
         self.assertEqual(calls[0][:2], ["npm", "ci"])
@@ -79,7 +82,7 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
 
     def test_install_failure_records_warning(self):
         _write(self.tmp, "pkg/package.json", "{}")
-        with patch("core.verify_contract.subprocess.run",
+        with patch("core.verify_contract._run_npm_provision",
                     side_effect=[_FakeRunResult(1, "", "ERR! network"),
                                  _FakeRunResult(1, "", "ERR! network")]):
             done = ensure_main_tree_deps(self.tmp, ["pkg"], logger=self.logger)
@@ -91,7 +94,7 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
 
     def test_install_exception_records_warning(self):
         _write(self.tmp, "pkg/package.json", "{}")
-        with patch("core.verify_contract.subprocess.run",
+        with patch("core.verify_contract._run_npm_provision",
                     side_effect=OSError("permission denied")):
             done = ensure_main_tree_deps(self.tmp, ["pkg"], logger=self.logger)
         self.assertEqual(done, [])
@@ -106,13 +109,14 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
         _write(self.tmp, "pkg/package.json", "{}")
         calls = []
 
-        def fake_run(cmd, **kw):
+        def fake_provision(cmd, cwd):
             calls.append(cmd)
             if cmd[1] == "ci":
                 return _FakeRunResult(1)
             return _FakeRunResult(0)
 
-        with patch("core.verify_contract.subprocess.run", side_effect=fake_run):
+        with patch("core.verify_contract._run_npm_provision",
+                    side_effect=fake_provision):
             done = ensure_main_tree_deps(self.tmp, ["pkg"], logger=self.logger)
         self.assertEqual(done, ["pkg"])
         self.assertEqual(len(calls), 2)
@@ -127,11 +131,12 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
         (self.tmp / "b" / "node_modules").mkdir()
         calls = []
 
-        def fake_run(cmd, **kw):
+        def fake_provision(cmd, cwd):
             calls.append(cmd)
             return _FakeRunResult(returncode=0)
 
-        with patch("core.verify_contract.subprocess.run", side_effect=fake_run):
+        with patch("core.verify_contract._run_npm_provision",
+                    side_effect=fake_provision):
             done = ensure_main_tree_deps(self.tmp, ["a", "b", "c"],
                                           logger=self.logger)
         self.assertEqual(done, ["a"])
@@ -142,7 +147,7 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
 
     def test_mode_reflected_in_log(self):
         _write(self.tmp, "pkg/package.json", "{}")
-        with patch("core.verify_contract.subprocess.run",
+        with patch("core.verify_contract._run_npm_provision",
                     return_value=_FakeRunResult(0)):
             ensure_main_tree_deps(self.tmp, ["pkg"],
                                   mode="hardlink", logger=self.logger)
