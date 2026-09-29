@@ -339,13 +339,25 @@ class CliRunner(VerifyRunner):
         缺省（worktree 轮落验证树，无 worktree 轮回退 project_root）。
         目录不存在返回 None（判 error，不进 product-bug 管道）。
         """
+        root = self.scenario_root or self.project_root
         if not rel:
             # 回退链：scenario_root（有 serving worktree 时）→ project_root
-            root = self.scenario_root or self.project_root
             return Path(root)
-        # 有显式 cwd 时：相对验证树根
-        root = self.scenario_root or self.project_root
-        p = Path(root) / rel
+        # 有显式 cwd 时：相对验证树根。护栏与 cli_assertions._resolve_under_root
+        # 同款（code-review item 6b9b164b3ed9）：pathlib 的 ``/`` 对绝对路径
+        # 直接取绝对路径、``..`` 段就地折叠，放行会让子进程落在验证树之外
+        # （worktree 轮即绕过隔离语义，产物/副作用落到主树）；resolve 后
+        # 再校验前缀仍在本根内（防符号链接逃逸）。非法按 cwd 缺失同口径
+        # 判 error，不进 product-bug 管道。
+        root_path = Path(root)
+        rel_path = Path(str(rel))
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            return None
+        p = root_path / rel_path
+        try:
+            p.resolve().relative_to(root_path.resolve())
+        except ValueError:
+            return None
         return p if p.is_dir() else None
 
     def _build_env(self, declared_env: dict) -> dict:
