@@ -450,11 +450,31 @@ def _write_daemon_runtime(pid: int) -> None:
     )
 
 
+def _pid_alive(pid: int):
+    """os.kill(pid, 0) 存活探查三态：True 存活 / False 已退出 / None 权限受限。
+
+    code-review 15557c8e364a：进程存在但属其它用户（或容器 uid 边界）时
+    os.kill(pid, 0) 抛 PermissionError（EPERM）。若与 ESRCH 一并按 OSError
+    「进程不存在」处理，会跳过收编随后无条件拉起 → 双 daemon 并发写 .fenix，
+    与「宁可多等不双拉」的保守取向相悖。故两态须由调用方区分处置。
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return None
+    return True
+
+
 def _adopt_leftover_daemon() -> None:
     """拉起新 daemon 前收编 SIGKILL 遗留的存活旧 daemon（先收编再拉起）。
 
     读 daemon_runtime.json 记录的 pid：文件缺失/损坏按无旧 daemon 处理；
-    os.kill(pid, 0) 失败（进程不存在，正常重启路径）同样跳过。存活则按既有
+    os.kill(pid, 0) 报进程不存在（ESRCH，正常重启路径）同样跳过。EPERM（存活
+    但属其它用户/uid 边界，code-review 15557c8e364a）按存活保守处理：收编
+    序列中信号被拒时等待 sigkill_wait 超时后放行拉起（跳过收编立即拉起会
+    双 daemon）。存活则按既有
     停止路径同款 SIGTERM → 等待（sigkill_wait 窗口）→ 超时 SIGKILL 收编，
     等待与收编均不计入启动失败熔断。pid 回收误判（存活但非 daemon）优先比对
     daemon_runtime.json 记录的 /proc/<pid>/stat 启动时刻（proc_starttime，
@@ -472,15 +492,28 @@ def _adopt_leftover_daemon() -> None:
     pid = data.get("pid") if isinstance(data, dict) else None
     if not isinstance(pid, int) or pid <= 0:
         return
-    try:
-        os.kill(pid, 0)
-    except OSError:
+    alive = _pid_alive(pid)
+    if alive is False:
         return
+    if alive is None:
+        # EPERM：进程存在但不可发信号（其它用户 / 容器 uid 边界）。按已死亡
+        # 跳过收编随后无条件拉起 → 双 daemon 并发写 .fenix，恰是本函数要防的
+        # 场景；按存活保守处理（宁可多等不双拉），收编序列中信号被拒时在
+        # sigkill_wait 超时后放行拉起。
+        log(
+            f"daemon_runtime pid {pid} probe EPERM (alive, other uid?) "
+            "— adopt conservatively"
+        )
     recorded_starttime = data.get("proc_starttime")
     if isinstance(recorded_starttime, int):
         # 不等（含现读为 None：进程恰在本窗口退出/不可读）均不收编——
-        # 不发信号是两种解释下都安全的取向（进程已退则无需收编）
-        if _proc_starttime(pid) != recorded_starttime:
+        # 不发信号是两种解释下都安全的取向（进程已退则无需收编）。
+        # EPERM 例外：存活已被 os.kill 探查证实，现读 None 只能是权限不可读
+        # 而非退出，不据此 skip（否则 EPERM 场景恰会退回双拉）。
+        now_starttime = _proc_starttime(pid)
+        if now_starttime is None and alive is not None:
+            return
+        if now_starttime is not None and now_starttime != recorded_starttime:
             log(
                 f"daemon_runtime pid {pid} alive but start time mismatch "
                 "(pid reuse) — skip adopt"
@@ -495,29 +528,40 @@ def _adopt_leftover_daemon() -> None:
         except OSError:
             log(f"daemon_runtime pid {pid} alive, cmdline unreadable — adopt conservatively")
     log(f"leftover daemon (pid {pid}) detected — SIGTERM before starting a new one")
+    term_denied = False
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError:
+    except ProcessLookupError:
         return
+    except PermissionError:
+        # 信号被拒（跨 uid，code-review 15557c8e364a）：无法收编，但不立即
+        # 放行拉起（双 daemon）——按保守取向等满 sigkill_wait 窗口再放行。
+        term_denied = True
+        log(f"SIGTERM to pid {pid} denied (EPERM) — waiting out window conservatively")
     sigkill_wait = _sigkill_wait_seconds()
     deadline = time.monotonic() + sigkill_wait
     while True:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if _pid_alive(pid) is False:
             log(f"leftover daemon (pid {pid}) exited after SIGTERM")
             return
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
+    if term_denied:
+        # 信号被拒无法升级 SIGKILL，保守窗口已耗尽 → 放行拉起
+        log(f"pid {pid} unresponsive to denied signals — proceeding after {sigkill_wait}s")
+        return
     log(
         f"leftover daemon (pid {pid}) did not exit within {sigkill_wait}s "
         "after SIGTERM — SIGKILL"
     )
     try:
         os.kill(pid, signal.SIGKILL)
-    except OSError:
+    except ProcessLookupError:
         return
+    except PermissionError:
+        # SIGKILL 同被拒：sigkill_wait 窗口已耗尽，按保守取向放行拉起
+        pass
     # SIGKILL 后短等收尸（与 _terminate_daemon 的 5s 收尸窗口同量级）
     time.sleep(5)
 
@@ -661,6 +705,19 @@ def main():
         # 先收编再拉起（SIGKILL supervisor 后旧 daemon 可能仍存活，见
         # _adopt_leftover_daemon）：避免双 daemon 与启动失败误熔断。
         _adopt_leftover_daemon()
+
+        # 收编等待窗（最长 sigkill_wait+5s）内到达的停机/stop 请求在此复查
+        # （code-review 127aca02d9df）：循环开头的检查已过、等待期间标记只被
+        # 置位不复查，直接 start_daemon 会闪现一次完整 daemon 启动（单例锁、
+        # 启动扫描等副作用照常执行），与停机语义相悖。收编已让旧 daemon 退出，
+        # 此处直接退出无孤儿、无双 daemon。
+        if STOP_FLAG.exists():
+            log("stop flag present — supervisor exiting")
+            break
+        if _shutdown_requested:
+            log("shutdown signal received — supervisor exiting")
+            break
+
         proc = start_daemon()
         if proc is None:
             # Popen 失败（daemon 未启动）：按一次启动失败计入既有熔断计数

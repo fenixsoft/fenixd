@@ -441,7 +441,10 @@ def check_daemon():
     try:
         helper = _THIS_DIR / "fenix_session.py"
         r = subprocess.run(
-            ["python3", str(helper), "running", str(PROJECT_ROOT)],
+            # sys.executable（code-review item 88d9490f452f）：与其余子进程
+            # 拉起（runner.py/fenixd_supervisor.py/test_for.py）保持同一解释器
+            # 来源——硬编码 "python3" 在 venv/极简 PATH 下会落到别的解释器或失配
+            [sys.executable, str(helper), "running", str(PROJECT_ROOT)],
             capture_output=True,
             text=True,
             timeout=2,
@@ -512,6 +515,24 @@ def run_tui(interval=3):
 # ── Web 模式 ────────────────────────────────────────────────────
 
 
+def _user_port_key_present(reg) -> bool:
+    """判断用户级 dashboard.yaml 是否显式写了 port 键。
+
+    code-review item 48f84ba22840：Registry._load_checked 已把缺失/空 port
+    归一为 DEFAULT_PORT，cfg.get("port") 恒非 None——若按归一值与 DEFAULT_PORT
+    比较来判「未配置」，用户显式写 port: 8787 会被同等对待，项目级
+    dashboard.port 反而覆盖用户显式选择。这里直接读原始 YAML 判键存在（避免
+    动 registry 数据结构）；文件缺失/读取解析失败按未配置处理。
+    """
+    try:
+        import yaml
+
+        data = yaml.safe_load(reg.config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return isinstance(data, dict) and "port" in data
+
+
 def run_serve(port_override=None):
     """启动 Web Dashboard（跨项目）。端口优先级：--port > 用户配置(registry) > 项目 dashboard.port > 8787。
 
@@ -524,9 +545,13 @@ def run_serve(port_override=None):
     reg = Registry()
     cfg = reg.load()
     port = port_override or cfg.get("port")
-    if not port_override and port in (None, DEFAULT_PORT):
-        # 用户未显式指定端口 → 回退项目级 .fenix/config.yaml 的可选 dashboard.port
-        # （config.template.yaml 已含模板字段；跨项目场景下用户级配置优先级最高）
+    if not port_override and not _user_port_key_present(reg):
+        # 用户配置未显式写 port 键（registry 已把缺失/空 port 归一为
+        # DEFAULT_PORT）→ 回退项目级 .fenix/config.yaml 的可选 dashboard.port
+        # （config.template.yaml 已含模板字段；跨项目场景下用户级配置优先级最高）。
+        # code-review item 48f84ba22840：旧条件 `port in (None, DEFAULT_PORT)`
+        # 把显式写 port: 8787 与「未配置」同等对待，且 None 分支因 registry
+        # 归一恒为死代码，均已移除。
         try:
             from core.config import ConfigLoader
 

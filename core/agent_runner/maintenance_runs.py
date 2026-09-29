@@ -24,6 +24,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -334,6 +335,30 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         error = (
             f"admin 未写处置文件: run 正常退出但 {disp_path.name} 缺失或不可解析，"
             "Administrator 零产物，判失败（fail-closed）"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Administrator run {run_id} 产物硬门拦截: {error}",
+                {"run_id": run_id, "spec": spec},
+            )
+    # code-review item 4da16a7b2928：残缺产物同门——文件可解析但缺 result 字段
+    # （如只写 summary/actions_taken）时，下方 result 兜底同样会把残缺产物折算
+    # 成 "resolved"，与上一道门要消灭的「空跑被零动作误闭环」同方向。合法取值
+    # 以消费侧实际认可为准，不发明词表：agents/administrator.md 指令枚举
+    # resolved | partially-resolved | escalated，admin_monitor 终态消费另认
+    # failed（处置未成功的保守保留值）；pending 是框架唤起前自身的占位值、
+    # interrupted 是 monitor 孤儿接管自写值，均非管理员终态取值。一并按
+    # fail-closed 折算为失败（escalate 位不受影响，升级通道照常）。
+    if success and disp.get("result") not in (
+        "resolved", "partially-resolved", "escalated", "failed",
+    ):
+        success = False
+        error = (
+            f"admin 处置记录缺 result 字段: {disp_path.name} 可解析但 result "
+            "缺失或不在合法枚举（resolved/partially-resolved/escalated/failed），"
+            "残缺产物判失败（fail-closed）"
         )
         _log = getattr(runner, "logger", None)
         if _log is not None:
@@ -2645,6 +2670,42 @@ def _stop_impl_ocr_heartbeat(stop_event: threading.Event | None,
         thread.join(timeout=IMPL_OCR_HEARTBEAT_JOIN_TIMEOUT_SECONDS)
 
 
+def _kill_ocr_process_group(proc: subprocess.Popen) -> None:
+    """ocr 审查子进程清场：对独立进程组 SIGTERM→宽限→SIGKILL 杀整棵树。
+
+    code-review item 12df9da4bb5a：spawn 侧 start_new_session=True 独立成组
+    （pgid==pid）——bin/ocr_review.py 经 execvp 改名（同 PID）后自身还会并发
+    拉起 scan 孙进程（--concurrency），只对组长 kill/SIGTERM 会留下被收养继续
+    运行的孙进程孤儿（可能占住 detached worktree 的 git 状态，削弱
+    _remove_impl_ocr_worktree 的 --force 清理语义）。对齐仓库既有惯例
+    （core/knowledge_backfill.py _kill_process_group、core/regression.py D8、
+    core/v2_dev_server.py design D2、core/adjudication_narrative.py，均注明
+    「只杀直接子进程会让孙进程存活」）。killpg 失败（进程组已退出）按现状
+    静默降级；组长收尸与管道排空仍由调用方的 communicate 负责。
+
+    组长先行退出而孙进程仍持组籍/管道写端时补一刀 SIGKILL：进程组仍有成员
+    则 killpg 命中残余孙进程，组已空则 ESRCH 静默——否则调用方 communicate
+    会因孙进程未关尽的管道写端读不到 EOF。
+    """
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except OSError:
+        return  # 进程组已不存在（组长已自行退出），交还调用方 communicate 收尸
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass  # 进程组已不存在
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass  # 组已空/已不存在（ESRCH），静默
+
+
 def run_impl_ocr(
     runner,
     spec_name: str,
@@ -2829,6 +2890,12 @@ def run_impl_ocr(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # code-review item 12df9da4bb5a：独立进程组（pgid==pid）——
+                # bin/ocr_review.py 自身会并发拉起 scan 孙进程（--concurrency），
+                # 硬超时/异常/排水清场用 _kill_ocr_process_group 杀整棵树，杜绝
+                # 「只杀直接子进程会让孙进程存活」（仓库惯例：regression D8、
+                # v2_dev_server design D2、knowledge_backfill 等）。
+                start_new_session=True,
             )
             _register_lane = getattr(runner, "register_lane_process", None)
             if callable(_register_lane):
@@ -2836,8 +2903,9 @@ def run_impl_ocr(
                     _register_lane(run_id, proc, lane_done)
                 except BaseException:
                     # 注册失败同理收尸：进程已启动，不 kill 会以孤儿形态继续
-                    # 运行占用资源——kill+reap 后上抛（外层折算 unavailable）。
-                    proc.kill()
+                    # 运行占用资源——进程组清场+reap 后上抛（外层折算
+                    # unavailable）。
+                    _kill_ocr_process_group(proc)
                     try:
                         proc.communicate(timeout=10)
                     except Exception:
@@ -2852,9 +2920,9 @@ def run_impl_ocr(
                     )
                     timed_out = False
                 except subprocess.TimeoutExpired:
-                    # 车道硬超时：对齐 subprocess.run 语义（kill+reap 后不再
-                    # 使用 stdout/stderr，reason 走硬超时文案）
-                    proc.kill()
+                    # 车道硬超时：对齐 subprocess.run 语义（进程组清场+reap 后
+                    # 不再使用 stdout/stderr，reason 走硬超时文案）
+                    _kill_ocr_process_group(proc)
                     try:
                         proc.communicate(timeout=10)
                     except subprocess.TimeoutExpired:
@@ -2863,9 +2931,9 @@ def run_impl_ocr(
                     timed_out = True
                 except BaseException:
                     # 意外异常（如 MemoryError）中断 communicate：进程仍存活，
-                    # 先 kill+reap 收尸再上抛（外层折算 unavailable）——否则
-                    # 审查子进程以孤儿形态继续运行占用资源。
-                    proc.kill()
+                    # 先进程组清场+reap 收尸再上抛（外层折算 unavailable）——
+                    # 否则审查子进程以孤儿形态继续运行占用资源。
+                    _kill_ocr_process_group(proc)
                     try:
                         proc.communicate(timeout=10)
                     except Exception:

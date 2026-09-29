@@ -11,9 +11,18 @@ from core.agent_runner.latency import _entry_is_tool_result
 from core.agent_runner.run_files import append_run_line, run_spec_part
 from datetime import datetime, timezone
 import json
+import logging
+import os
 import re
+import signal
 import subprocess
 import time
+
+# 本模块无 pm 依赖的模块级函数（如 sweep_runs_without_terminal_state）的失败
+# 留痕通道：走裸 logging.getLogger（同 run_files.py archive_spec_runs 的
+# code-review item 23e672c8f873 可观测口径），不经 pm.logger——启动清扫在
+# AgentRunner 组件之外被 fenixd.py 直接调用，无门面可回引。
+_logger = logging.getLogger("fenixd.agent_runner.liveness")
 
 # 优雅退出时对每个在跑 agent 的 SIGTERM 缓冲窗口（秒）。daemon 收到关闭信号后对所有
 # 在跑 agent 发 SIGTERM，等此窗口让其收尾（关会话/flush 输出）；窗口结束仍未退出的
@@ -237,7 +246,13 @@ def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
     patched = []
     try:
         files = list(runs_dir.glob("*.jsonl"))
-    except OSError:
+    except OSError as e:
+        # 扫描失败与「目录不存在」同返回 [] 且上游只汇报补写成功清单——失败路径
+        # 零留痕会让悬空 run 静默等到运行期清扫器兜底（code-review item
+        # 2ac8fc286ebf），记 WARNING 使该形态可观测（对齐 run_files.archive_spec_runs）。
+        _logger.warning(
+            "sweep_runs_without_terminal_state: 扫描 %s 失败（本轮零补写）: %s", runs_dir, e
+        )
         return []
     for run_file in files:
         if _file_has_terminal_event(run_file):
@@ -253,8 +268,17 @@ def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
                 },
             )
             patched.append((run_file.stem, run_file))
-        except OSError:
-            pass
+        except OSError as e:
+            # 单文件补写失败不再静默 pass（同上 item 2ac8fc286ebf）：跳过该文件
+            # 继续处理其余文件，WARNING 留痕——悬空 run 要等运行期清扫器
+            # （≥1800s 流停 + 扫描周期）才被兜底，失败须可追溯。
+            _logger.warning(
+                "sweep_runs_without_terminal_state: 补写 %s 失败（跳过，留待运行期"
+                "清扫兜底）: %s",
+                run_file,
+                e,
+            )
+            continue
     return patched
 
 
@@ -349,23 +373,43 @@ class LivenessSupervisor:
                 continue
             if idle_seconds < RUNTIME_SWEEP_IDLE_SECONDS:
                 continue
-            # 判据 ③：全文件从未出现终态事件（出现过 → 入缓存，后续轮次零读取）
-            if _file_has_terminal_event(run_file):
-                self._terminal_verified.add(stem)
-                continue
-            # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
-            try:
-                append_run_line(
-                    run_file,
-                    {
-                        "type": "interrupted",
-                        "reason": "runtime terminal-state sweep",
-                        "idle_seconds": max(0, idle_seconds),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-            except OSError:
-                continue
+            # 判据 ③ + 锁内成员复核 + 补写整体持 _run_finalize_lock（code-review
+            # item 7947bc50ea39）：runner.py finally 段的顺序是「pop 注册表（持
+            # 本锁）→ run_metrics 追加 → result 终态落盘」，pop 之后、终态落盘
+            # 之前注册表已无该键且文件 mtime 尚未刷新——若三判据与补写在锁外
+            # 自由交错，interrupted 可追加到 result 之后成为文件末行，成功 run
+            # 被读侧末行口径（classify_run/_file_tail_is_terminal）判成
+            # interrupted（同 183ded7b526a 已修事故形态）。对齐
+            # wait_for_running_agents 的临界区协议：若 run 线程尚未 pop，pop 被
+            # 本锁挡到追加之后（其 result 严格后序，末行仍是 result）；若 pop
+            # 已先行，锁内成员复核与终态复核使补写让位于既有收尾。锁内只做
+            # 单文件终态判定与追加，glob/mtime 等慢速扫描留在锁外，不与正常
+            # 收尾路径长互斥。
+            with self._pm._run_finalize_lock:
+                # 成员复核（判据 ① 锁内重做）：判据 ① 快照取自锁外，取 snapshot
+                # 到本临界区之间注册表可能已变化，以锁内快照为追加前的最终判据
+                if base_stem in {
+                    re.sub(r"(?:-a\d+|-r\d+)+$", "", key)
+                    for key in list(self._pm._running_agents)
+                }:
+                    continue
+                # 判据 ③：全文件从未出现终态事件（出现过 → 入缓存，后续轮次零读取）
+                if _file_has_terminal_event(run_file):
+                    self._terminal_verified.add(stem)
+                    continue
+                # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
+                try:
+                    append_run_line(
+                        run_file,
+                        {
+                            "type": "interrupted",
+                            "reason": "runtime terminal-state sweep",
+                            "idle_seconds": max(0, idle_seconds),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                except OSError:
+                    continue
             self._terminal_verified.add(stem)
             patched.append((stem, run_file))
         if patched:
@@ -475,7 +519,13 @@ class LivenessSupervisor:
         # repair-（评审/修复 run 同样「新鲜 + 末行非终态」判在飞）。扩展后
         # has_live_attempt / 孤儿 ready 恢复对「评审/修复 run 在飞」的 spec 一
         # 并视为有生命（不重置状态、不重复派发），与 D0 判定同口径。
-        for prefix in ("impl", "verify", "spec-review", "repair"):
+        # code-review item 3348be8101c3：补入 planner-judge-/dispute-judge- 判官
+        # 车道（与 _run_stream_alive 的 per-run 口径对齐）——判官范式不创建
+        # worktree（cwd=主树），_pgrep_live_attempt 的 worktrees/ 前缀扫描天然
+        # 扫不到判官进程，本流判据是判官 run 在飞的唯一兜底；两前缀均已在
+        # run_files.RUN_ID_AGENT_PREFIXES 登记，下方 run_spec_part 全等守卫照常
+        # 生效，防 spec 名互为前缀时误延期。
+        for prefix in ("impl", "verify", "spec-review", "repair", "planner-judge", "dispute-judge"):
             try:
                 paths = list(runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"))
             except OSError:
@@ -873,21 +923,62 @@ class LivenessSupervisor:
             # 提示词经 stdin 管道传入（对齐 runner._run_claude 的约定）：argv
             # 全文驻留 /proc/<pid>/cmdline（同机用户可读 judge 上下文），且超长
             # prompt 受 ARG_MAX 约束会以 E2BIG 直接失败。"-p" 不带位置参数时
-            # claude CLI 从 stdin 读提示词；subprocess.run(input=) 写完即关
+            # claude CLI 从 stdin 读提示词；Popen + communicate(input=) 写完即关
             # 写端并经 communicate 并发收发，超时/返回码/输出解析语义不变。
+            # start_new_session=True（code-review item d916fd3aa78b）：judge 超时
+            # 是预期路径（每轮 deadline 可触发，且 _judge_liveness 还会减半重试
+            # 一次），裸 subprocess.run 超时只 SIGKILL 直接子进程，claude 派生的
+            # node/shell 孙进程每次超时都残留为孤儿（与既往孤儿进程误报事故同
+            # 形态）。经独立进程组启动，超时整组清场（下方 TimeoutExpired 分支），
+            # 对齐 core/adjudication_narrative._kill_process_group 的同型实现。
             cmd = ["claude", "-p", "--output-format", "json"]
             model = self._pm._get_admin_model()
             if model:
                 cmd += ["--model", model]
-            res = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 cwd=str(self._pm.project_root),
+                start_new_session=True,
             )
-            text = res.stdout or ""
+            try:
+                res_stdout, res_stderr = proc.communicate(input=prompt, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # 超时整组清场：先整组 SIGTERM 给短暂优雅窗口，未退再 SIGKILL
+                # 整组，末尾收割直接子进程并弃管道——不留僵尸、不让逃出进程组
+                # 的孙进程悬挂管道。killpg 失败（进程组已退出）静默吞掉。
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except OSError:
+                    pass  # 进程组已不存在
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass  # 进程组已不存在
+                try:
+                    proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
+                except subprocess.TimeoutExpired:
+                    pass
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    try:
+                        if stream is not None:
+                            stream.close()
+                    except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
+                        pass
+                return {
+                    "verdict": "stagnant",
+                    "evidence": (
+                        f"liveness judge unavailable: judge timed out after "
+                        f"{timeout}s (claude process group terminated)"
+                    ),
+                }
+            text = res_stdout or ""
             try:
                 payload = json.loads(text)
                 if isinstance(payload, dict) and payload.get("result"):
@@ -904,7 +995,7 @@ class LivenessSupervisor:
                 "verdict": "stagnant",
                 "evidence": (
                     f"liveness judge unavailable: unparseable output "
-                    f"(rc={res.returncode}) {(res.stderr or '')[:160]}"
+                    f"(rc={proc.returncode}) {(res_stderr or '')[:160]}"
                 ),
             }
         except Exception as e:
