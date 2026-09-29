@@ -51,12 +51,17 @@ def file_sig(path, memo: dict | None = None) -> tuple | None:
     return sig
 
 
-def tree_sigs(root, memo: dict | None = None) -> tuple:
+def tree_sigs(root, memo: dict | None = None, skip_dirs: frozenset = frozenset()) -> tuple:
     """目录树内全部文件的签名集 ``((相对路径, mtime_ns, size), ...)``，按相对路径排序。
 
     根缺失/不可读返回空元组（缺位本身参与哈希：目录出现/消失即翻签名）。
     只 stat 不读内容；符号链接不入集（conservative，宁多勿漏的对偶面：
     少入签名只会造成多余的 200，不会造成假 304）。
+
+    skip_dirs：按目录名跳过的子树（任意深度）。用于排除**读路径派生缓存**
+    （如 log_index 的 ``.idx/`` offsets 文件——它在首次时间轴读取时由服务端
+    自身物化，不是时间轴数据源；不排除会让详情 ETag 在首个请求后必然翻转
+    一次，纯 200 浪费）。
     """
     root = Path(root)
     out: list = []
@@ -68,7 +73,8 @@ def tree_sigs(root, memo: dict | None = None) -> tuple:
                 for entry in it:
                     try:
                         if entry.is_dir(follow_symlinks=False):
-                            stack.append(Path(entry.path))
+                            if entry.name not in skip_dirs:
+                                stack.append(Path(entry.path))
                         elif entry.is_file(follow_symlinks=False):
                             sig = file_sig(entry.path, memo)
                             if sig is not None:
@@ -194,10 +200,14 @@ def spec_detail_signature(proot, spec: str) -> str:
         proot / ".fenix" / "verify-progress" / spec,
         proot / ".fenix" / ".fenix-run-result.json",
         proot / ".fenix" / "admin_alerts.json",
-        proot / ".fenix" / "logs",
         proot / ".fenix" / "config.yaml",
     ]
-    parts = [data_signature(proot, sources)]
+    parts = [
+        data_signature(proot, sources),
+        # logs 树单独签名并排除 .idx 派生缓存（log_index 读时物化的 offsets
+        # 文件，非时间轴数据源——见 tree_sigs skip_dirs 注记）
+        ("logs", tree_sigs(proot / ".fenix" / "logs", skip_dirs=frozenset({".idx"}))),
+    ]
     # 本 spec 命名的 run 产物（含 archive/，_runs_by_spec_sigs 一并扫描）
     runs = _runs_by_spec_sigs(proot).get(spec) or {}
     parts.append(sorted((str(p), s[0], s[1]) for p, s in runs.items()))

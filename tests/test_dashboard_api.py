@@ -4,6 +4,8 @@ Tests for Dashboard server API functionality.
 Split from test_dashboard.py as part of refactor-test-structure.
 """
 import sys
+import json
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -2246,3 +2248,149 @@ class TestCodeReviewItemsPagination:
             assert len(body["items"]) == 30
         finally:
             srv.stop()
+
+
+# ── GET 读端点条件请求（ETag/304，add-dashboard-paging-and-etag 1.4） ──
+class TestConditionalGet:
+    """ETag/If-None-Match 协商：304 空体、签名随数据源变化、无条件请求零变化、
+    keep-alive 复用、runs 新增记录不假 304。"""
+
+    def _etag_of(self, srv, path):
+        status, headers, _ = srv.get_ex(path)
+        assert status == 200
+        etag = headers.get("ETag")
+        assert etag, f"{path} 应携带 ETag 头"
+        return etag
+
+    def test_admin_activities_304_empty_body(self, server_fx):
+        _, srv = server_fx
+        etag = self._etag_of(srv, "/api/admin-activities")
+        status, headers, body = srv.get_ex(
+            "/api/admin-activities", headers={"If-None-Match": etag}
+        )
+        assert status == 304
+        assert body == b""
+        assert len(body) <= 1024  # spec：传输量 ≤1KB
+        assert headers.get("ETag") == etag
+        assert headers.get("Content-Length") == "0"
+
+    def test_alerts_and_config_and_spec_detail_304(self, server_fx):
+        proot, srv = server_fx
+        for path in (
+            "/api/alerts",
+            "/api/alerts?project=proj-a",
+            "/api/admin-activities?project=proj-a",
+            "/api/config?project=proj-a",
+            "/api/config",
+            "/api/specs/myspec?project=proj-a",
+        ):
+            etag = self._etag_of(srv, path)
+            status, _, body = srv.get_ex(path, headers={"If-None-Match": etag})
+            assert status == 304, path
+            assert body == b"", path
+
+    def test_state_mtime_change_flips_specs_etag(self, server_fx):
+        """daemon 写 STATE.md（mtime 变化）→ /api/specs ETag 翻转（spec 场景 1）。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/specs?project=proj-a")
+        time.sleep(0.01)
+        p = proot / ".fenix" / "STATE.md"
+        p.write_text(p.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        status, headers, body = srv.get_ex(
+            "/api/specs?project=proj-a", headers={"If-None-Match": etag1}
+        )
+        assert status == 200  # 数据源变化 → 200 全量，不 304
+        assert headers["ETag"] != etag1
+        assert json.loads(body)["project"] == "proj-a"
+
+    def test_runs_new_record_flips_overview_etag(self, server_fx):
+        """runs 目录新增 run 记录（STATE.md 未变）→ overview ETag 翻转，不假 304。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/overview")
+        (proot / ".fenix" / "runs" / "impl-otherspec-1790000000.jsonl").write_text(
+            json.dumps({"type": "result", "result": "done"}) + "\n", encoding="utf-8"
+        )
+        status, headers, _ = srv.get_ex(
+            "/api/overview", headers={"If-None-Match": etag1}
+        )
+        assert status == 200
+        assert headers["ETag"] != etag1
+
+    def test_unconditional_request_body_unchanged_with_etag(self, server_fx):
+        """无 If-None-Match → 与改造前完全一致的 200 全量体，仅新增 ETag 头。"""
+        _, srv = server_fx
+        status, body = srv.get("/api/overview")
+        assert status == 200
+        status2, headers, raw = srv.get_ex("/api/overview")
+        assert status2 == 200
+        assert headers.get("ETag")
+        assert json.loads(raw) == body
+
+    def test_304_reuses_keep_alive_connection(self, server_fx):
+        """304 响应可复用同一 keep-alive 连接继续请求（Content-Length: 0 不污染）。"""
+        import http.client
+
+        _, srv = server_fx
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            conn.request("GET", "/api/admin-activities")
+            r1 = conn.getresponse()
+            assert r1.status == 200
+            r1.read()
+            etag = r1.getheader("ETag")
+            assert etag
+            conn.request("GET", "/api/admin-activities", headers={"If-None-Match": etag})
+            r2 = conn.getresponse()
+            assert r2.status == 304
+            assert r2.read() == b""
+            # 同一连接继续请求 → 必须拿到合法响应（304 空体未使连接失步）
+            conn.request("GET", "/api/overview")
+            r3 = conn.getresponse()
+            assert r3.status == 200
+            json.loads(r3.read())
+        finally:
+            conn.close()
+
+    def test_error_responses_bare_no_etag(self, server_fx):
+        """错误响应（unknown project / spec not found 错误体）不挂 ETag。"""
+        _, srv = server_fx
+        for path in ("/api/specs?project=ghost", "/api/specs/ghostspec?project=proj-a"):
+            status, headers, _ = srv.get_ex(path)
+            assert status == 200
+            assert "ETag" not in headers, path
+
+    def test_config_data_change_flips_etag(self, server_fx):
+        """config.yaml 内容变化 → /api/config 200 新 ETag。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/config?project=proj-a")
+        time.sleep(0.01)
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: fake2\n", encoding="utf-8"
+        )
+        status, headers, _ = srv.get_ex(
+            "/api/config?project=proj-a", headers={"If-None-Match": etag1}
+        )
+        assert status == 200
+        assert headers["ETag"] != etag1
+
+    def test_spec_detail_dependency_change_flips_etag(self, server_fx):
+        """详情依赖（report.json）变化 → /api/specs/<spec> 200 新 ETag。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/specs/myspec?project=proj-a")
+        time.sleep(0.01)
+        rp = proot / ".fenix" / "verify-progress" / "myspec" / "report.json"
+        rp.write_text(rp.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        status, headers, _ = srv.get_ex(
+            "/api/specs/myspec?project=proj-a", headers={"If-None-Match": etag1}
+        )
+        assert status == 200
+        assert headers["ETag"] != etag1
+
+    def test_etag_stable_across_repeated_calls(self, server_fx):
+        """同一数据状态下重复请求 ETag 稳定（签名确定性；缓存复用前提）。"""
+        _, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/overview")
+        for _ in range(3):
+            assert self._etag_of(srv, "/api/overview") == etag1
+
+

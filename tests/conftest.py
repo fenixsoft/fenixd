@@ -361,6 +361,22 @@ class _TestServer:
         finally:
             conn.close()
 
+    def get_ex(self, path: str, headers: dict | None = None):
+        """GET 的扩展形态：可带请求头，返回 (status, 响应头 dict, body bytes)。
+
+        条件请求用例（add-dashboard-paging-and-etag 1.4）需要读 ETag 响应头
+        与原始空体；既有 get() 语义零改动，本方法独立并行。
+        """
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request("GET", path, headers=headers or {})
+            resp = conn.getresponse()
+            body = resp.read()
+            return resp.status, {k: v for k, v in resp.getheaders()}, body
+        finally:
+            conn.close()
+
     def _req(self, method: str, path: str):
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
