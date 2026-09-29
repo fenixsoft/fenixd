@@ -347,7 +347,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
     runner._delete_admin_disposition(disp_path)
     return AdminDisposition(
         run_id=run_id,
-        spec=disp.get("spec") or signal.get("spec"),
+        spec=disp.get("spec") or spec,
         success=success,
         problem=disp.get("problem") or signal.get("description", ""),
         actions_taken=disp.get("actions_taken") or "",
