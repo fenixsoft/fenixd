@@ -404,12 +404,22 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
     # D9：经包命名空间延迟解析，使 patch("core.pm_engine.verification.rewrite_scenarios_origin") 生效
     import core.pm_engine.verification as _facade
 
-    n = _facade.rewrite_scenarios_origin(scenarios_path, srv.base_url)
+    n = _facade.rewrite_scenarios_origin(
+        scenarios_path, srv.base_url, pipeline._context.logger
+    )
+    # -1 = 已解析出候选目标但写盘失败（BASE_URL 铁律未落盘，WARNING 已由
+    # rewrite_scenarios_origin 记录）——note 与「本无需改写」(0) 可判别，
+    # 不再同值混淆（code-review item 90ca963ad6e7）。
+    rewrite_note = (
+        f"场景 origin 改写 {n} 处"
+        if n >= 0
+        else "场景 origin 改写写盘失败（BASE_URL 未落盘）"
+    )
     ok, probe_note = _facade.probe_ready(srv.base_url, contract.ready)
     if not ok:
         note = (
             f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
-            f"（场景 origin 改写 {n} 处）— {probe_note}"
+            f"（{rewrite_note}）— {probe_note}"
         )
         return (False, False, note)
     # D9：POST_READY_SETTLE_SECONDS 经门面解析（测试 patch 包级常量生效）
@@ -417,7 +427,7 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
     time.sleep(settled)
     note = (
         f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
-        f"（场景 origin 改写 {n} 处，探针通过后静置 "
+        f"（{rewrite_note}，探针通过后静置 "
         f"{settled}s）— {probe_note}"
     )
     return (True, False, note)
