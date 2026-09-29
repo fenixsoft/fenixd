@@ -84,8 +84,16 @@ export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
     );
   }
 
+  // 站点相对链接（index.md、./design.md 等无协议路径）：解析后仍指向本站，
+  // 而 dashboard 没有承载这些仓库相对路径的页面，target=_blank 只会新开站点
+  // 404 页——降级为纯文本作站内反馈；协议相对链接（//host）解析为外部站点，
+  // 不在此拦截
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('//')) {
+    return <span>{children}</span>;
+  }
+
   try {
-    // 相对路径（如 ./design.md）基于当前页面解析，解析结果仍须过协议白名单
+    // 绝对链接与协议相对链接基于当前页面解析，解析结果仍须过协议白名单
     const url = new URL(href, window.location.href);
     if (ALLOWED_PROTOCOLS.has(url.protocol)) {
       return (
