@@ -23,8 +23,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.hook_engine import (
-    HookEngine, match_hooks, read_hook_audit, render_message_template,
+    HookEngine, match_hooks, hook_config, read_hook_audit, render_message_template,
     validate_hook_entry, validate_hooks_config, DETAIL_LIMIT,
+    BUILTIN_PUSH_RESTART_DASHBOARD_ID,
     STATUS_SUCCESS, STATUS_NOOP, STATUS_SKIPPED, STATUS_FAILURE,
 )
 
@@ -507,7 +508,10 @@ class TestAllDoneEvent(unittest.TestCase):
             "\n".join(lines), encoding="utf-8")
 
     def _engine(self):
-        cfg = {"hooks": {"global": [
+        # push_restart_dashboard=False：本类专测 all-done 语义且 dispatch 用
+        # pushed 事件驱动，显式关闭内置 pushed→restart-dashboard 注入，
+        # 避免单测环境误触真实 tmux dashboard 重启（dashboard-push-restart 逃生键）
+        cfg = {"hooks": {"push_restart_dashboard": False, "global": [
             {"id": "g-all", "events": ["all-done"], "action": "restart-daemon"},
         ], "specs": {}}}
         return HookEngine(self.proot, cfg, logger=None, admin_store=MagicMock())
@@ -758,6 +762,186 @@ class TestAllDoneRestartOnce(unittest.TestCase):
         self.assertFalse(self.marker.exists())
         self.assertIn("h-alldone1", self.proj_cfg.read_text(encoding="utf-8"))
         self.assertIn("h-alldone1", [h["id"] for h in eng.config["hooks"]["global"]])
+
+
+class TestBuiltinPushRestartDashboard(unittest.TestCase):
+    """内置 pushed → restart-dashboard 条目（dashboard-push-restart 1.1/1.2/1.3）。
+
+    覆盖：hook_config() 读侧注入（global 头部/逃生键/同 id 去重/不 mutate 入参）、
+    动作三态返回（去抖 skipped、失败可重试、无会话静默跳过）与全链审计/告警语义。
+    tmux/端口探测全部 mock，单测不触真实会话。
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.proot = _make_repo(self.tmpdir)
+        self.cfg = {"project": {"name": "t"}, "hooks": {"global": [], "specs": {}}}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _eng(self, **kw) -> HookEngine:
+        return HookEngine(self.proot, {**self.cfg, **kw}, logger=MagicMock(),
+                          admin_store=MagicMock())
+
+    @staticmethod
+    def _tmux_ok():
+        """has-session/respawn 全部返回 0 + 端口探测成功的 patch 组。"""
+        return (
+            mock.patch("core.hook_engine.subprocess.run",
+                       return_value=subprocess.CompletedProcess([], 0, "", "")),
+            mock.patch.object(HookEngine, "_probe_dashboard", return_value=True),
+        )
+
+    # ── 1.1 内置条目注入 ────────────────────────────────────────────
+
+    def test_pushed_matches_builtin_global_scope(self):
+        matched = match_hooks({"hooks": {"global": [], "specs": {}}}, "s1", "pushed")
+        self.assertEqual([h["id"] for h, _ in matched],
+                         [BUILTIN_PUSH_RESTART_DASHBOARD_ID])
+        self.assertEqual(matched[0][1], "global")
+        self.assertEqual(matched[0][0].get("action"), "restart-dashboard")
+
+    def test_builtin_injected_without_hooks_section(self):
+        """零配置（无 hooks 段）默认生效。"""
+        matched = match_hooks({"project": {"name": "t"}}, "s1", "pushed")
+        self.assertEqual([h["id"] for h, _ in matched],
+                         [BUILTIN_PUSH_RESTART_DASHBOARD_ID])
+
+    def test_escape_hatch_false_no_injection(self):
+        cfg = {"hooks": {"push_restart_dashboard": False, "global": [], "specs": {}}}
+        self.assertEqual(match_hooks(cfg, "s1", "pushed"), [])
+        # 逃生键不影响用户自定义条目
+        cfg2 = {"hooks": {"push_restart_dashboard": False,
+                          "global": [{"id": "u1", "events": ["pushed"], "action": "push"}],
+                          "specs": {}}}
+        self.assertEqual([h["id"] for h, _ in match_hooks(cfg2, "s1", "pushed")], ["u1"])
+
+    def test_user_same_id_not_duplicated(self):
+        """用户同 id 条目优先：不重复注入、保留用户字段。"""
+        user = {"id": BUILTIN_PUSH_RESTART_DASHBOARD_ID, "enabled": True,
+                "events": ["pushed"], "action": "restart-dashboard", "target": "mine"}
+        matched = match_hooks({"hooks": {"global": [user], "specs": {}}}, "s1", "pushed")
+        self.assertEqual([h["id"] for h, _ in matched],
+                         [BUILTIN_PUSH_RESTART_DASHBOARD_ID])
+        self.assertEqual(matched[0][0].get("target"), "mine")
+
+    def test_other_events_not_triggered(self):
+        for ev in ("done", "error", "verified", "blocked", "frozen", "all-done"):
+            matched = match_hooks({"hooks": {"global": [], "specs": {}}}, "s1", ev)
+            self.assertEqual([h["id"] for h, _ in matched], [], ev)
+
+    def test_hook_config_does_not_mutate_input(self):
+        """注入作用于返回副本，重复调用不堆叠、入参不被改写（D1 关键约束）。"""
+        cfg = {"hooks": {"global": [], "specs": {}}}
+        for _ in range(3):
+            hooks = hook_config(cfg)
+            self.assertEqual([h["id"] for h in hooks["global"]],
+                             [BUILTIN_PUSH_RESTART_DASHBOARD_ID])
+        self.assertEqual(cfg["hooks"]["global"], [], "入参 global 不得被 mutate")
+
+    def test_builtin_entry_passes_validation_and_live_lookup(self):
+        """内置条目经执行链 validate_hook_entry 合法，_find_live_hook 可按 id 找回。"""
+        eng = self._eng()
+        entry = hook_config(eng.config)["global"][0]
+        self.assertIsNone(validate_hook_entry(entry))
+        self.assertIsNone(validate_hooks_config({"hooks": hook_config(eng.config)}))
+        live = eng._find_live_hook(BUILTIN_PUSH_RESTART_DASHBOARD_ID, "global", "s1")
+        self.assertIsNotNone(live)
+        self.assertEqual(live.get("action"), "restart-dashboard")
+
+    # ── 1.2 去抖 / 失败重试 / 无会话静默 ─────────────────────────────
+
+    def test_debounce_second_trigger_within_window_skipped(self):
+        eng = self._eng()
+        p_run, p_probe = self._tmux_ok()
+        with p_run as run, p_probe:
+            status, _ = eng._action_restart_dashboard({})
+            self.assertEqual(status, STATUS_SUCCESS)
+            calls_after_first = run.call_count  # has-session + respawn
+            status2, detail2 = eng._action_restart_dashboard({})
+            self.assertEqual(status2, STATUS_SKIPPED, detail2)
+            self.assertEqual(run.call_count, calls_after_first,
+                             "去抖窗口内不得再触 tmux")
+
+    def test_execute_action_maps_skipped_not_success(self):
+        """去抖 skipped 经 _execute_action 映射为 skipped 审计，不冒充 success。"""
+        eng = self._eng()
+        p_run, p_probe = self._tmux_ok()
+        with p_run, p_probe:
+            eng._action_restart_dashboard({})  # 预热进入去抖窗口
+            eng._execute_action(
+                {"id": "x", "action": "restart-dashboard"},
+                "global", "s1", None, "pushed", {})
+        recs = read_hook_audit(self.proot)
+        self.assertEqual(recs[0]["status"], STATUS_SKIPPED)
+        self.assertEqual(recs[0]["action"], "restart-dashboard")
+
+    def test_failure_then_retry_within_window(self):
+        """首次 respawn 失败 → failure；失败不写时间戳，窗口内可重试成功。"""
+        eng = self._eng()
+        fail_side = [subprocess.CompletedProcess([], 0, "", ""),   # has-session
+                     subprocess.CompletedProcess([], 1, "", "boom")]  # respawn
+        with mock.patch("core.hook_engine.subprocess.run", side_effect=fail_side):
+            status, detail = eng._action_restart_dashboard({})
+            self.assertEqual(status, STATUS_FAILURE)
+            self.assertIn("respawn", detail)
+        ok_side = [subprocess.CompletedProcess([], 0, "", ""),
+                   subprocess.CompletedProcess([], 0, "", "")]
+        with mock.patch("core.hook_engine.subprocess.run", side_effect=ok_side) as run, \
+             mock.patch.object(HookEngine, "_probe_dashboard", return_value=True):
+            status2, detail2 = eng._action_restart_dashboard({})
+            self.assertEqual(status2, STATUS_SUCCESS, detail2)
+            self.assertEqual(run.call_count, 2, "失败后窗口内重试应真实再次触发 tmux")
+
+    def test_success_then_failure_still_debounced(self):
+        """失败不推进窗口：成功后 60s 内再次失败尝试也被去抖跳过。"""
+        eng = self._eng()
+        p_run, p_probe = self._tmux_ok()
+        with p_run, p_probe:
+            self.assertEqual(eng._action_restart_dashboard({})[0], STATUS_SUCCESS)
+        fail_side = [subprocess.CompletedProcess([], 0, "", ""),
+                     subprocess.CompletedProcess([], 1, "", "boom")]
+        with mock.patch("core.hook_engine.subprocess.run", side_effect=fail_side):
+            status, _ = eng._action_restart_dashboard({})
+            self.assertEqual(status, STATUS_SKIPPED, "上次成功仍在窗口内，应先去抖")
+
+    def test_no_session_silent_skip(self):
+        """会话不存在 → skipped 语义（非 failure），不触 respawn。"""
+        eng = self._eng()
+        with mock.patch("core.hook_engine.subprocess.run",
+                        return_value=subprocess.CompletedProcess([], 1, "", "")) as run:
+            status, detail = eng._action_restart_dashboard({})
+            self.assertEqual(status, STATUS_SKIPPED, detail)
+            self.assertEqual(run.call_count, 1, "无会话不得触 respawn")
+
+    def test_no_session_full_chain_no_failure_audit_or_alert(self):
+        """全链（dispatch → 动作 → 审计/告警）：无 failure 记录、无告警。"""
+        eng = self._eng()
+        admin = eng.admin_store
+        with mock.patch("core.hook_engine.subprocess.run",
+                        return_value=subprocess.CompletedProcess([], 1, "", "")):
+            eng.dispatch("s1", "verified", "pushed", {})
+            self.assertTrue(_audit_has(
+                self.proot, BUILTIN_PUSH_RESTART_DASHBOARD_ID, STATUS_SKIPPED))
+        recs = [r for r in read_hook_audit(self.proot)
+                if r["hook_id"] == BUILTIN_PUSH_RESTART_DASHBOARD_ID]
+        self.assertTrue(recs)
+        self.assertNotIn(STATUS_FAILURE, [r["status"] for r in recs])
+        admin.append.assert_not_called()
+
+    def test_dispatch_pushed_fires_builtin_with_failure_alert(self):
+        """会话存在但 respawn 失败是真故障：failure 审计 + 站内告警。"""
+        eng = self._eng()
+        fail_side = [subprocess.CompletedProcess([], 0, "", ""),
+                     subprocess.CompletedProcess([], 1, "", "boom")]
+        with mock.patch("core.hook_engine.subprocess.run", side_effect=fail_side):
+            eng.dispatch("s1", "verified", "pushed", {})
+            self.assertTrue(_audit_has(
+                self.proot, BUILTIN_PUSH_RESTART_DASHBOARD_ID, STATUS_FAILURE))
+        eng.admin_store.append.assert_called_once()
+        self.assertIn("hook 动作失败", eng.admin_store.append.call_args[0][0]["description"])
 
 
 if __name__ == "__main__":
