@@ -192,7 +192,7 @@ const TRANSIENT_ANNOTATIONS: {
 
 // 系统页签表单值类型（code-review item 776c2c624d2c）：字段名与 ADMIN_ANNOTATIONS /
 // TRANSIENT_ANNOTATIONS 的 key 一一对应，数值字段经 InputNumber + 校验器保证非空，
-// 文本字段恒为 string。validateFields 泛型化后字段名拼错进入编译期检查。
+// 文本字段恒为 string。values 显式标注本类型后字段名拼错进入编译期检查。
 interface SystemFormValues {
   enabled: boolean;
   interval_minutes: number;
@@ -311,7 +311,8 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
       // 与持久化失败混为一谈，且丢弃 onSave 的 Promise<boolean> 结果。
       let values: SystemFormValues;
       try {
-        values = await form.validateFields<SystemFormValues>();
+        // antd 该重载不收显式泛型实参（TS2558），类型检查由 values 显式标注承担
+        values = await form.validateFields();
       } catch {
         // 校验失败：antd 已在表单内渲染 explain-error 提示，不落 console
         return;
