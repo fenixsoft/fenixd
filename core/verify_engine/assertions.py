@@ -22,6 +22,15 @@ try:
 except ImportError:  # pragma: no cover
     _regex_mod = None
 
+# 轮询类断言（text_match/attribute_match）timeout/interval 的钳制边界
+# （code-review item e396300682b6）：timeout 上界对齐 element_count/
+# element_not_exist 的 3s 收敛预算量级、放宽至 Playwright 默认单操作超时，
+# 拦截 timeout: 999999999 之类超大声明把 deadline 推到数天后、场景协程被
+# 单条断言长期占住；interval 下界防 0/负值在 deadline 前热轮询。越界一律
+# 归一为边界值并在结果 note 中注明，不按配置错误炸场景。
+_MAX_POLL_TIMEOUT_MS = 30000
+_MIN_POLL_INTERVAL_MS = 50
+
 
 class AssertionRunner:
     """执行结构化DOM断言。
@@ -63,6 +72,30 @@ class AssertionRunner:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _clamp_poll_params(timeout_ms: int, interval_ms: int):
+        """钳制轮询参数越界（同 element_count/element_not_exist 预算防线）。
+
+        超大 timeout 声明（如 999999999）会把 deadline 推到数天后，轮询循环
+        （每轮 interval 读取 + wait_for_timeout）持续占住场景协程；interval
+        为 0/负值则在 deadline 前热轮询。越界归一为边界值而非按配置错误炸
+        场景，第三元素返回注明文案供结果 note 携带（未越界为空串）。
+        """
+        clamped_timeout = min(timeout_ms, _MAX_POLL_TIMEOUT_MS)
+        clamped_interval = max(interval_ms, _MIN_POLL_INTERVAL_MS)
+        if clamped_timeout == timeout_ms and clamped_interval == interval_ms:
+            return timeout_ms, interval_ms, ""
+        parts = []
+        if clamped_timeout != timeout_ms:
+            parts.append(f"timeout {timeout_ms}→{clamped_timeout}ms")
+        if clamped_interval != interval_ms:
+            parts.append(f"interval {interval_ms}→{clamped_interval}ms")
+        return (
+            clamped_timeout,
+            clamped_interval,
+            f"参数越界已归一为边界值（{', '.join(parts)}）",
+        )
 
     # ── 断言执行入口 ──────────────────────────────────────────
 
@@ -590,6 +623,11 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"非法 {bad_param}: {a.get(bad_param)!r}，须为数值（毫秒）",
             }
+        # 越界钳制（同 attribute_match 口径）：超大 timeout/零 interval 归一为
+        # 边界值，进轮询前生效，注明文案随结果 note 带出。
+        timeout_ms, interval_ms, clamp_note = self._clamp_poll_params(
+            timeout_ms, interval_ms
+        )
 
         if expected is None:
             # 显式失败而非静默恒真：expected 未设置时与 dom_structure 的缺参
@@ -713,6 +751,7 @@ class AssertionRunner:
             "mode": mode,
             "pass": passed,
             **({"error": last_error} if not passed and last_error else {}),
+            **({"note": clamp_note} if clamp_note else {}),
         }
 
     async def _assert_text_contains(self, page, a: dict) -> dict:
@@ -744,7 +783,24 @@ class AssertionRunner:
             except Exception:
                 pass
             try:
-                texts = await page.locator(selector).all_text_contents()
+                # 逐元素取数（与 text_match 的表单元素口径一致，code-review
+                # item fdf0d3af6c79）：input/textarea/select 的页面值落在
+                # value 属性上、textContent 恒为空串，只读 textContent 会把
+                # 已渲染值确定性误判为失败；input_value 取值异常时回退
+                # textContent，取值异常不炸断言收集（落下方 except 按
+                # 普通失败收场，单次读取限时 3s 同方法既有等待口径）。
+                texts = []
+                for loc in await page.locator(selector).all():
+                    tag = await loc.evaluate(
+                        "el => el.tagName?.toLowerCase()", timeout=3000
+                    )
+                    if tag in ("input", "textarea", "select"):
+                        try:
+                            texts.append((await loc.input_value(timeout=3000)) or "")
+                            continue
+                        except Exception:
+                            pass
+                    texts.append((await loc.text_content(timeout=3000)) or "")
                 passed = any(text in (t or "") for t in texts)
             except Exception:
                 passed = False
@@ -826,6 +882,10 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"非法 {bad_param}: {a.get(bad_param)!r}，须为数值（毫秒）",
             }
+        # 越界钳制（同 text_match 口径）
+        timeout_ms, interval_ms, clamp_note = self._clamp_poll_params(
+            timeout_ms, interval_ms
+        )
         deadline = time.monotonic() + timeout_ms / 1000
         actual = None
         last_error = ""
@@ -854,6 +914,7 @@ class AssertionRunner:
             "pass": actual == expected,
             # 读数异常导致的失败附错误说明（同 text_match 口径）
             **({"error": last_error} if actual != expected and last_error else {}),
+            **({"note": clamp_note} if clamp_note else {}),
         }
 
     async def _assert_no_console_error(self, page, a: dict) -> dict:
@@ -938,7 +999,8 @@ class AssertionRunner:
             "认证失败",
             "SignatureDoesNotMatch",
             "InvalidAccessKeyId",
-            "InvalidAccessKey",
+            # 不收录前缀形态 "InvalidAccessKey"：它是 InvalidAccessKeyId 的
+            # 子串，同页命中时 matched 会出现两条同源记录（双计）。
         ]
         try:
             body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")

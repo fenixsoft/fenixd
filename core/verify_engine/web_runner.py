@@ -43,7 +43,18 @@ def locate_app_base_url(candidates: list) -> str:
             m = re.search(r"(https?://[^\s'\");，。、；：？！）】》」』]+)", detail)
             if m:
                 url = m.group(1).rstrip("/")
-                parts = urlsplit(url)
+                # 排除集缺半角「.,;:]>」等闭合标点：错误文案 URL 后紧跟句点/
+                # 逗号（如 "... at http://127.0.0.1:8787."）会把尾巴并入
+                # netloc，探针三端点因非法端口全部 ValueError 落 except
+                # continue → 伪判环境失联。只剥尾部、不动中间——本函数只回
+                # scheme://netloc，路径尾句点即使被剥也不改变返回值；含「[」
+                # 的 IPv6 字面量其收尾「]」属合法成分，不可剥。
+                url = url.rstrip(".,;:>" if "[" in url else ".,;:]>")
+                try:
+                    parts = urlsplit(url)
+                    parts.port  # netloc 端口段仍不合法（非纯数字）时抛 ValueError
+                except ValueError:
+                    continue  # 该候选损坏：不原样返回带尾巴的 URL，继续扫下一候选
                 if parts.scheme and parts.netloc:
                     return f"{parts.scheme}://{parts.netloc}"
     return ""
@@ -141,14 +152,37 @@ class WebRunner(VerifyRunner):
             page = await context.new_page()
             # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
             # 非扩展项目由场景自身的 navigate 步骤负责
+            nav_first_frame_ok = None
             if self.browser.is_extension_project:
                 nav_ok = await self.browser.navigate_to_app(page)
+                # 首帧等待结果（code-review item c109de7ea35b）：navigate_to_app
+                # 内 _wait_stable 的首帧 8s 超时此前被丢弃，健康检查通过后的
+                # 瞬态白屏在该入口被归因为「元素不存在」类产品/场景失败
+                nav_first_frame_ok = getattr(page, "_fenix_nav_first_frame_ok", None)
                 if not nav_ok:
                     self.logger.warning(
                         "verify_engine",
                         f"场景'{scenario.id}': navigate_to_app 失败，页面可能为空白",
                     )
-            return await self._execute_scenario(scenario, page, context)
+            result = await self._execute_scenario(scenario, page, context)
+            # 与 execute_action navigate 分支（B1）同款结构化标记：env_gate
+            # 只信任 step_results 里显式 first_frame_ok is False，白屏场景
+            # 据此降级 blocked-env；success=True 不影响 determine_scenario_
+            # status 的步骤成败判定，插在队首对齐预导航的时序位置
+            if nav_first_frame_ok is False:
+                result["step_results"].insert(
+                    0,
+                    {
+                        "action": "navigate",
+                        "success": True,
+                        "detail": (
+                            "扩展项目场景入口预导航（navigate_to_app）完成，"
+                            "首帧渲染等待超时"
+                        ),
+                        "first_frame_ok": False,
+                    },
+                )
+            return result
         finally:
             await context.close()
 

@@ -174,6 +174,18 @@ class VerifyEngine:
         # 空报告，由 pm_engine 退回 plan 阶段重新生成（上限与反馈机制在调用方）。
         seen_ids: set[str] = set()
         for s in normalized:
+            # id 形态守卫（code-review item 1905de7d8585）：id 为 dict/list
+            # 等不可哈希形态（冻结文件被手工修坏）时，下方对 set 的成员判断
+            # 先抛 TypeError 穿出 run()——不落报告、不走「场景验收失败」打
+            # 回通道，且成员判断先于 validate_scenario 的 isinstance 守卫执
+            # 行，绕开了该防线。非 str 直接归入验收错误打回 plan。
+            if not isinstance(s.id, str):
+                acceptance_errors.append(
+                    f"场景 id 必须为字符串，收到 {type(s.id).__name__}"
+                )
+                # id 已坏时逐字段校验无法归位（validate_scenario 内
+                # id.strip() 会再抛 AttributeError），整场景跳过即可。
+                continue
             # 跨场景 id 查重：validate 仅单场景校验不查重，重复 id 会被
             # _execute_parallel 的 completed_ids 过滤静默剔除（后到者不执行、
             # 不进报告），导致场景漏验证，故在此打回 plan。
@@ -183,7 +195,10 @@ class VerifyEngine:
                 )
             else:
                 seen_ids.add(s.id)
-            if s.kind not in VALID_KINDS:
+            # kind 形态守卫（同 item 1905de7d8585）：非 str kind 对 set 求
+            # 成员先抛 TypeError，交 validate_scenario 的同源守卫报
+            # 「未知 kind」（消息保留原值），此处仅避免成员判断先行爆炸。
+            if not isinstance(s.kind, str) or s.kind not in VALID_KINDS:
                 acceptance_errors.extend(s.validate())
                 continue
             if get_runner_class(s.kind) is None:
@@ -200,8 +215,20 @@ class VerifyEngine:
         # 存在的 dep id 会让 _execute_parallel 的就绪判定永远不满足，落入
         # 「ready 为空 → 全部并发」兜底，声明的先后顺序被静默丢弃。
         for s in normalized:
+            # depends_on 形态守卫（code-review item 1905de7d8585）：容器非
+            # list（冻结文件被修坏成 str/int 等）会让迭代本身抛 TypeError、
+            # 元素为 dict 等不可哈希形态会让下方成员判断抛 TypeError，均穿出
+            # run()。容器非 list 已由 validate_scenario 报「必须为场景ID列
+            # 表」，此处跳过避免重复记账；非 str 元素归入验收错误打回 plan。
+            if not isinstance(s.depends_on, list):
+                continue
             for dep in s.depends_on:
-                if dep not in seen_ids:
+                if not isinstance(dep, str):
+                    acceptance_errors.append(
+                        f"场景'{s.id}' depends_on 元素必须为场景ID字符串，"
+                        f"收到 {type(dep).__name__}"
+                    )
+                elif dep not in seen_ids:
                     acceptance_errors.append(
                         f"场景'{s.id}' depends_on 引用不存在的场景 id '{dep}'"
                         f"（场景集内不存在该 id）"
@@ -657,26 +684,40 @@ class VerifyEngine:
             self.logger.debug("verify_engine", f"进度文件写入失败（非致命）: {e}")
 
     def _save_report(self, report: dict):
-        """将报告写入磁盘（mkstemp+os.replace 原子替换，防并发读侧撕裂）。"""
-        report_dir = self.project_root / ".fenix" / "verify-progress" / self.spec_name
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / "report.json"
-        # 原子写（code-review item 4897aa6ba94f，同 _write_progress）
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=f".{report_path.name}.", suffix=".tmp", dir=str(report_dir)
-        )
+        """将报告写入磁盘（mkstemp+os.replace 原子替换，防并发读侧撕裂）。
+
+        写盘失败不向调用方抛出（code-review item 94bb0ab6bda3）：调用时全部
+        场景已执行完、teardown 已完成，结果只存在于传入的 report 对象，异常
+        穿出 run() 会把整轮验证结果替换成未捕获异常（验收失败早退路径还会把
+        「打回 plan」通道变成 run 崩溃）。容错口径对齐 _write_progress：
+        记日志留痕，保证 run() 恒返回报告对象。
+        """
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, report_path)
-        finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+            report_dir = self.project_root / ".fenix" / "verify-progress" / self.spec_name
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / "report.json"
+            # 原子写（code-review item 4897aa6ba94f，同 _write_progress）
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{report_path.name}.", suffix=".tmp", dir=str(report_dir)
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(report, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, report_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+        except Exception as e:
+            self.logger.error(
+                "verify_engine",
+                f"报告写盘失败（非致命，本轮结果仅在内存中，未落 report.json）: {e}",
+            )
+            return
         self.logger.info(
             "verify_engine",
             f"📊 报告已保存: {report_path}",

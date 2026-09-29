@@ -26,6 +26,7 @@ from core.admin_store import AdminStore
 from core.pm_engine import PMEngine
 from core.state_machine import StateMachine
 from core.verify_engine import env_gate as eg
+from core.verify_engine import web_runner as wr
 from core.verify_engine.engine import VerifyEngine
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "report_0827_noise.json"
@@ -107,6 +108,10 @@ class TestWaitTimeoutError(unittest.TestCase):
             "assertion failed: value 12 != 13",
             "API returned 500 with payload {err: boom}",
             "click intercepted by another element",
+            # 裸「超时」/「exceeded」收窄后（code-review 2084e503bd60），
+            # 业务型超时文案不得混入纯等待超时候选
+            "请求后端接口超时",
+            "deadline exceeded",
         ):
             self.assertFalse(eg.is_wait_timeout_error(err), repr(err))
 
@@ -301,50 +306,55 @@ class TestProbeHttpHealth(unittest.TestCase):
 
 
 class TestProbePushHealth(unittest.TestCase):
-    def _run(self, loader):
-        return asyncio.run(eg.probe_push_health(loader))
+    """推流探针：直测 web_runner._probe_web_push（唯一实现）。
 
-    async def _loader_ok(self):
-        class L:
-            async def navigate(self):
-                return True
+    env_gate 侧旧推流探针为生产无调用方的双实现且语义漂移，已删除
+    （code-review bbcc24ace16c）；本类改用假 browser（new_context/
+    new_page/navigate_to_app）+ 假 page（wait_for_selector 可控超时/异常）
+    覆盖同等分支。
+    """
 
-            async def wait_selector(self, sel, timeout_ms):
-                return True
+    def _run(self, browser):
+        return asyncio.run(wr._probe_web_push(browser))
 
-        return L()
+    @staticmethod
+    def _fake_browser(page, nav_ok=True):
+        class _Ctx:
+            async def new_page(self):
+                return page
 
-    async def _loader_wait_raises(self):
-        class L:
-            async def navigate(self):
-                return True
+            async def close(self):
+                pass
 
-            async def wait_selector(self, sel, timeout_ms):
-                raise TimeoutError("wait 超时")
+        class _Browser:
+            async def new_context(self):
+                return _Ctx()
 
-        return L()
+            async def navigate_to_app(self, p):
+                return nav_ok
 
-    async def _loader_nav_fails(self):
-        class L:
-            async def navigate(self):
-                return False
-
-        return L()
+        return _Browser()
 
     def test_push_ok(self):
-        self.assertTrue(self._run(asyncio.run(self._loader_ok())))
+        class _Page:
+            async def wait_for_selector(self, selector, timeout):
+                pass
+
+        self.assertTrue(self._run(self._fake_browser(_Page(), nav_ok=True)))
 
     def test_push_interrupted(self):
-        self.assertFalse(self._run(asyncio.run(self._loader_wait_raises())))
+        class _Page:
+            async def wait_for_selector(self, selector, timeout):
+                raise TimeoutError("wait 超时")
+
+        self.assertFalse(self._run(self._fake_browser(_Page(), nav_ok=True)))
 
     def test_navigate_failure_means_interrupted(self):
-        self.assertFalse(self._run(asyncio.run(self._loader_nav_fails())))
+        class _Page:
+            async def wait_for_selector(self, selector, timeout):
+                pass
 
-    def test_loader_without_methods_conservatively_healthy(self):
-        class L:
-            pass
-
-        self.assertTrue(self._run(L()))
+        self.assertFalse(self._run(self._fake_browser(_Page(), nav_ok=False)))
 
 
 # ── VerifyEngine 后置分类与报告 ─────────────────────────────────

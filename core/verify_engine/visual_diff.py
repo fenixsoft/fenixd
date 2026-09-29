@@ -618,6 +618,15 @@ class VisualDiffer:
 
         # 尺寸不匹配
         if baseline_img.shape != current_img.shape:
+            # detail 透出完整 shape（含通道数）：HxW 相同但通道数不同（如基线
+            # PNG 带 alpha 4 通道、当前截图 3 通道）时仅拼宽高会显示两侧完全
+            # 相同的尺寸，自相矛盾的证据会误导 judge 与人工核验
+            def _shape_desc(arr) -> str:
+                desc = f"{arr.shape[1]}x{arr.shape[0]}"
+                if arr.ndim == 3:
+                    desc += f"x{arr.shape[2]}"
+                return desc
+
             return [
                 {
                     "baseline": baseline_name,
@@ -626,8 +635,8 @@ class VisualDiffer:
                     "pass": False,
                     "detail": (
                         f"尺寸不匹配: "
-                        f"baseline={baseline_img.shape[1]}x{baseline_img.shape[0]}, "
-                        f"current={current_img.shape[1]}x{current_img.shape[0]}"
+                        f"baseline={_shape_desc(baseline_img)}, "
+                        f"current={_shape_desc(current_img)}"
                     ),
                     "scenario_id": scenario_id,
                 }

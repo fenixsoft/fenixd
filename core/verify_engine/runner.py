@@ -133,7 +133,9 @@ def determine_scenario_status(
     回退 layer=0）时按 fail 兜底，保守判失败，避免静默放行为 pass。
     步骤结果缺 ``success`` 键（上游畸形结果）同理按 fail 兜底，取向一致。
     步骤/断言混入非 dict 条目（上游畸形）亦按 fail 兜底，防御口径与
-    env_gate._failed_wait_errors 的 isinstance 逐条防御对齐。
+    env_gate._failed_wait_errors 的 isinstance 逐条防御对齐。视觉条目混入
+    非 dict（上游畸形）则按 warning 兜底（视觉层最高档），同样避免畸形
+    条目被静默放行为 pass。
     """
     # 正常路径不受影响：各 Runner 步骤执行器（browser/api/cli）的所有
     # 返回点均显式写布尔 ``success``；缺键只剩上游畸形一种来源。
@@ -162,6 +164,11 @@ def determine_scenario_status(
         return "fail"
 
     visual_results = visual_results or []
+    # 非 dict 视觉条目（上游畸形）→ 保守按 warning 兜底（视觉层最高档，
+    # 差异≠失败），与步骤/断言的非 dict 防御取向一致，避免被静默放行为
+    # pass；此判置于三处 status 读取之前，使后续 v.get 只接触 dict 条目。
+    if any(not isinstance(v, dict) for v in visual_results):
+        return "warning"
     # 视觉基线防污染（add-verdict-credibility-gate / D5）：基线被拒固化
     # （白屏/低对比度）→ 本轮按环境存疑处理（warning），不产生像素比对结论。
     # 后续轮次截图干净时正常建立基线后，视觉断言才恢复常态判定。

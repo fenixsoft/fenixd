@@ -150,6 +150,23 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": f"env 须为 object（键值表），收到 {type(declared_env).__name__}",
             }
+        # 场景 env 键为空串或含 "="、控制字符（\x00、\n、\r 等）时，环境块
+        # 无法表达，create_subprocess_shell/exec 会在 spawn 阶段抛 ValueError
+        # 穿出 execute（except 只捕 FileNotFoundError）——归一为本步骤结构化
+        # 失败（code-review item e9f97be76cd7，与 env 非 dict/timeout 非法
+        # 同规），判 error 与 cwd 缺失同口径：场景定义缺陷不进 product-bug
+        # 管道（item 74368415e965）。校验 _build_env 实际落键的 str(k) 形态
+        for _k in declared_env:
+            _key = str(_k)
+            if not _key or "=" in _key or any(
+                ord(c) < 32 or ord(c) == 127 for c in _key
+            ):
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"env 键须为非空且不含 '=' 或控制字符: {_k!r}",
+                }
         env = self._build_env(declared_env)
         stdin = str(step_dict.get("stdin") or "")
         try:
@@ -267,11 +284,24 @@ class CliRunner(VerifyRunner):
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except Exception:
                 pass
+            # 强杀后回收超时前子进程已产出的输出证据：communicate 被 wait_for
+            # 取消时传输层缓冲仍在 StreamReader 里，SIGKILL 后管道随即 EOF、
+            # read 会很快返回——丢弃会让排障看不到子进程超时前打印了什么
+            # （code-review item 728aacc5729c）。回收是尽力而为：读不到就
+            # 放弃（不因回收证据引入新故障），附进结果沿用 64KB 证据纪律
+            stdout_b = await self._drain_after_kill(proc.stdout)
+            stderr_b = await self._drain_after_kill(proc.stderr)
+            stdout, stdout_truncated = _truncate(stdout_b.decode(errors="replace"))
+            stderr, stderr_truncated = _truncate(stderr_b.decode(errors="replace"))
             return {
                 "success": False,
                 "action": "run",
                 "error_type": "timeout",
-                "error": f"命令超时（>{timeout}s），已强杀进程组: {cmd}",
+                "stdout": stdout,
+                "stderr": stderr,
+                "error": f"命令超时（>{timeout}s），已强杀进程组: {cmd}"
+                + ("（stdout 已截断 64KB）" if stdout_truncated else "")
+                + ("（stderr 已截断 64KB）" if stderr_truncated else ""),
             }
 
         exit_code = proc.returncode
@@ -404,6 +434,25 @@ class CliRunner(VerifyRunner):
                 proc.kill()
             except Exception:
                 pass
+
+    @staticmethod
+    async def _drain_after_kill(stream) -> bytes:
+        """强杀后回收超时前已缓冲的输出证据（小超时+异常安全的尽力而为）。
+
+        communicate 被 wait_for 取消后，传输层已送达的数据仍留在 StreamReader
+        缓冲；SIGKILL 后管道随即 EOF，read(_EVIDENCE_LIMIT + 1) 在缓冲枯竭
+        或 EOF 时立即返回（多读 1 字节用于区分「恰满 64KB」与「超限截断」，
+        超限部分本就按证据纪律截断丢弃）。读不到（读侧异常/1s 内未 EOF）就
+        返回空——证据回收不得引入新故障（code-review item 728aacc5729c）。
+        """
+        if stream is None:
+            return b""
+        try:
+            return await asyncio.wait_for(
+                stream.read(_EVIDENCE_LIMIT + 1), timeout=1.0
+            )
+        except Exception:
+            return b""
 
     # ── 环境探针（环境门委托）─────────────────────────────────
 

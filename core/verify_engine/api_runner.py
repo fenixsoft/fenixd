@@ -284,6 +284,21 @@ class ApiRunner(VerifyRunner):
                 "error_type": "connection_failed",
                 "error": f"连接超时（连接阶段，实例失联或不可达，环境候选）: {e}",
             }
+        except (httpx.ReadError, httpx.RemoteProtocolError) as e:
+            # 响应中途断连（aiter_bytes 读流阶段服务端断开、响应不完整）：
+            # 与建连类失败同属实例失联形态（典型：实例进程在响应中途崩溃/
+            # 重启），复用 error_type=connection_failed 进入环境候选分流
+            # （env_gate 只认该既有值，新增独立值无消费方），交由环境门
+            # 就绪探针与 judge 复核归因——mid-response 断连语义两可，此处
+            # 只补机械分流标记，不下产品/环境分类结论。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error_type": "connection_failed",
+                "error": f"响应中途断连（连接失败类，环境候选，待环境探针复核）: {e}",
+            }
         except httpx.TimeoutException as e:
             return {
                 "success": False,

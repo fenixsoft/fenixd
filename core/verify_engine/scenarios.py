@@ -637,6 +637,13 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "example": '"Content-Type"',
             "mode": "post",
         },
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"application/json"',
+            "mode": "post",
+        },
     ),
     "body_contains": (
         {
@@ -1221,6 +1228,22 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         _append_required_field_errors(
             errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
         )
+        # cli run command 形态验收（code-review item 071b40c06e33）：必填检查
+        # 仅判空（_field_missing 的 not value），dict/数字等真值非法形态可通过
+        # 验收，运行期 cli_runner 以 use_shell = not isinstance(cmd, list) 把
+        # 非 list 一律当 shell 字符串消费才失败，场景定义错误拖到运行期、归因
+        # 质量差。缺失/空值已由必填检查报告，此处仅拦形态非法（help 惯例：
+        # 字符串=经 shell 执行；列表=argv 直接执行）。
+        if (
+            kind == "cli"
+            and step.action == "run"
+            and step.command
+            and not isinstance(step.command, (str, list))
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: command 须为字符串（经 shell 执行）"
+                f"或列表（argv 直接执行），收到 {type(step.command).__name__}"
+            )
         # api 步骤 url 绝对地址验收（code-review item cf81feeaec37）：对齐
         # web navigate 同款 ^https?:// 校验——rewrite_origin 对无 scheme/netloc
         # 的 URL 原样透传，相对 URL 会拖到运行期 httpx 请求时才失败。缺失
@@ -1306,6 +1329,18 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
             f"场景'{scenario.id}': depends_on 必须为场景ID列表，"
             f"收到 {type(scenario.depends_on).__name__}"
         )
+    elif isinstance(scenario.depends_on, list):
+        # depends_on 条目形态验收（code-review item 10bc32b28d05）：条目为
+        # dict/list 等 unhashable 形态（冻结文件被手工修坏）时，engine 悬空
+        # 依赖检查的 dep in seen_ids 对 set 求成员先抛 TypeError，穿出 run()
+        # 验收门、不落「场景验收失败」报告，与 kind/steps 的手坏防线口径漂移。
+        # 逐条校验并附条目下标，验收期打回。
+        for i, dep in enumerate(scenario.depends_on):
+            if not isinstance(dep, str):
+                errors.append(
+                    f"场景'{scenario.id}': depends_on[{i}] 必须为场景ID字符串，"
+                    f"收到 {type(dep).__name__}"
+                )
     # kind 形态守卫（code-review item c74c42575c7c）：kind 为 dict/list 等不
     # 可哈希形态（冻结文件被手工修坏）时，对 set 求成员先抛 TypeError，被
     # 外层包成不含场景 id 的「解析失败」，拿不到「未知 kind」字段级定位。

@@ -28,6 +28,64 @@ from .scenarios import CLI_ASSERTION_LAYERS
 _FILE_CONTENT_LIMIT = 8 * 1024 * 1024
 
 
+def _regex_brace_body(pattern: str, i: int) -> "str | None":
+    """取 pattern[i] 起始的 ``{...}`` 量词体；无闭合 ``}`` 返回 None。"""
+    j = pattern.find("}", i + 1)
+    return pattern[i + 1 : j] if j > i else None
+
+
+def _has_nested_quantifier(pattern: str) -> bool:
+    """高危正则预检：检测「组内变长量词 × 组整体无上界量词」的嵌套形态
+    （灾难性回溯的典型结构特征，如 ``(.+)*`` / ``(\\d+)+`` / ``(a{1,2})+``）。
+
+    保守取舍（宁少拦不误拦）：
+      - 仅当组闭合紧跟无上界量词（``*``/``+``/``{m,}``）且组内直接出现变长
+        量词（``*``/``+``/``{m,n}``）才判高危——外层有界量词（``?``/``{m}``）
+        重复次数有限、内层定长（``{m}``）切分唯一，均不构成指数级回溯，不拦；
+      - 重叠分支等结构不典型的形态（如 ``(a|aa)+``）不识别，属刻意漏拦：
+        漏拦的代价是慢，误拦的代价是拒绝合法场景断言。
+    跳过转义序列与字符类（``[*+]`` 内的量词字符是字面量）。
+    """
+    group_has_variable_quant: list[bool] = []
+    in_class = False
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2  # 转义序列整体跳过（含被转义的量词字符）
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+        elif ch == "[":
+            in_class = True
+        elif ch == "(":
+            group_has_variable_quant.append(False)
+            if i + 1 < n and pattern[i + 1] == "?":
+                i += 2  # 「(?:」「(?=」等的 ? 是组语法而非量词，不计
+                continue
+        elif ch == ")":
+            if group_has_variable_quant:
+                had = group_has_variable_quant.pop()
+                nxt = pattern[i + 1] if i + 1 < n else ""
+                unbounded = nxt in ("*", "+") or (
+                    nxt == "{"
+                    and (_regex_brace_body(pattern, i + 1) or "").endswith(",")
+                )
+                if had and unbounded:
+                    return True
+        elif ch in "*+":
+            if group_has_variable_quant:
+                group_has_variable_quant[-1] = True
+        elif ch == "{":
+            body = _regex_brace_body(pattern, i)
+            if body and "," in body and group_has_variable_quant:
+                group_has_variable_quant[-1] = True
+        i += 1
+    return False
+
+
 class CliAssertionRunner:
     """执行结构化 CLI 断言。
 
@@ -148,6 +206,15 @@ class CliAssertionRunner:
         else:
             text = actual if isinstance(actual, str) else str(actual)
             if mode == "regex":
+                # 高危形态预检：灾难性回溯正则（嵌套量词类）可在 MB 级文本上
+                # 长时间占住断言协程——CLI run 步骤有 timeout 兜底而断言侧
+                # 没有任何时限。显式拒绝走断言异常通道而非静默执行（与下方
+                # 非法正则的口径对齐；预检保守宁少拦不误拦，见函数 docstring）
+                if _has_nested_quantifier(str(expected)):
+                    raise ValueError(
+                        f"正则含嵌套量词高危形态（组内变长量词再被无上界量词"
+                        f"化，灾难性回溯风险），已拒绝执行: {expected!r}"
+                    )
                 try:
                     m = bool(re.search(str(expected), text))
                 except re.error as e:
@@ -218,7 +285,20 @@ class CliAssertionRunner:
                 raise ValueError(
                     f"exists 非法，须为布尔或 'true'/'false'/'1'/'0': {raw!r}"
                 )
-        path = self._resolve_under_root(a.get("path", ""))
+        raw_path = a.get("path", "")
+        if isinstance(raw_path, str) and not raw_path.strip():
+            # 空/空白 path 经 Path("") 归一为 "." 落回验证树根本体——根本体
+            # exists() 恒真产出假通过。与缺 expected 的显式失败口径对齐
+            # （验收期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住
+            # 运行期自愈/绕过验收的调用路径）
+            return {
+                "type": "file_exists",
+                "layer": 1,
+                "path": raw_path,
+                "pass": False,
+                "error": "缺少 path 字段",
+            }
+        path = self._resolve_under_root(raw_path)
         if path is None:
             return {
                 "type": "file_exists",
@@ -239,6 +319,20 @@ class CliAssertionRunner:
     async def _assert_dir_contains(self, a: dict) -> dict:
         """断言目录通配匹配数量在 [min, max] 内（glob 相对验证树根）。"""
         glob = str(a.get("glob", ""))
+        if not glob.strip():
+            # 空/缺失 glob 经 _resolve_under_root 落回树根本体并走下方
+            # ``if glob else []`` 计 0——无 min/max 声明时恒通过。词表将 glob
+            # 列为必填（ASSERTION_REQUIRED_FIELDS mode "post"，缺失/空串均
+            # 非法，本库无「glob 缺省=只验目录存在」语义），与缺 expected 的
+            # 显式失败口径对齐
+            return {
+                "type": "dir_contains",
+                "layer": 1,
+                "glob": glob,
+                "count": 0,
+                "pass": False,
+                "error": "缺少 glob 字段",
+            }
         if self._resolve_under_root(glob) is None:
             return {
                 "type": "dir_contains",
@@ -368,21 +462,27 @@ class CliAssertionRunner:
             }
         # 大文件防护：读取前先取 size。超限时 contains/regex 只读前 N 字节匹配
         # （结果带 truncated 标记），exact 模式无法截断比对，直接判失败。
-        expected = a.get("expected", "")
+        # 哨兵区分缺参与显式空串/null（复用 api 侧 _MISSING）：缺参归一 ""
+        # 会让 explicit null 在 exact 模式放行，滑进 _match 与
+        # str(None)="None" 的比对——文件内容恰为 "None" 时断言假通过，正是
+        # _assert_output_match 判空注释防住的失效形态
+        expected = a.get("expected", _MISSING)
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
-        if not expected and mode != "exact":
+        missing = expected is _MISSING or expected is None
+        if missing or (not expected and mode != "exact"):
             # 显式失败而非静默恒真：缺 expected 时 contains 的 `"" in 内容`
             # 恒真、regex 空串恒匹配，会产出假通过；exact 空串是空文件合法
-            # 期望故放行。与 _assert_output_match 缺 expected 口径对齐（验收
-            # 期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期
-            # 自愈/绕过验收的调用路径）
+            # 期望故放行（仅显式空串，缺参/null 均按缺参失败）。与
+            # _assert_output_match 缺 expected 口径对齐（验收期必填表
+            # ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/绕过
+            # 验收的调用路径）
             return {
                 "type": "file_content",
                 "layer": 3,
                 "path": str(path),
                 "mode": mode,
-                "expected": expected,
+                "expected": None if expected is _MISSING else expected,
                 "negate": negate,
                 "pass": False,
                 "error": "缺少 expected 字段",

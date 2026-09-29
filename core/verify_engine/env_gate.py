@@ -24,15 +24,17 @@ import urllib.request
 
 _logger = logging.getLogger("fenixd.verify.env_gate")
 
-# 纯等待超时特征指纹（Playwright / 引擎 wait 步骤）
+# 纯等待超时特征指纹（Playwright / 引擎 wait 步骤）。裸「超时」「exceeded」
+# 已收窄（code-review 2084e503bd60）：业务型超时文案（「请求后端接口超时」
+# 「deadline exceeded」）不得混入候选。引擎 wait 步骤封装统一带「wait 超时」
+# 前缀；Playwright 超时文案为「Timeout ...ms exceeded.」形态，由 "timeout "
+# 前缀覆盖。
 _WAIT_TIMEOUT_MARKERS = (
     "timeout ",
     "timed out",
     "wait_for",
     "waiting for locator",
     "wait 超时",
-    "超时",
-    "exceeded",
     "locator does not exist",
     "did not appear",
 )
@@ -45,7 +47,8 @@ def is_wait_timeout_error(error: str) -> bool:
     - Playwright 统一超时文案: "Timeout 3000ms exceeded."
     - 等待过程描述: "waiting for locator" / "wait_for"
     - 元素缺席描述: "did not appear" / "locator does not exist"
-    - 引擎 wait 步骤封装: "wait 超时: ..." / "...超时..."
+    - 引擎 wait 步骤封装: "wait 超时: ..."（裸「超时」/「exceeded」已收窄，
+      业务型超时文案不判纯等待超时——code-review 2084e503bd60）
     """
     if not error:
         return False
@@ -217,42 +220,3 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
     _logger.debug("env_probe 失联: %s", base)
     return False
 
-
-async def probe_push_health(
-    page_loader: "object",
-    selector: str = ".fenix-dashboard [data-live], .fenix-dashboard [data-state], #root [data-live]",
-    timeout_ms: int = 3000,
-) -> bool:
-    """推流检查：真实加载应用页面并等待数据渲染域出现。
-
-    mock 斩断 SSE 时数据节点永不渲染 → 等待超时 → 判定推流中断。
-    page_loader 需提供 `async def navigate() -> bool` 与
-    `async def wait_selector(selector, timeout_ms) -> bool`；由引擎注入，
-    便于在无浏览器环境下用假 loader 单测两分支。
-    """
-    try:
-
-        async def _navigate() -> bool:
-            if hasattr(page_loader, "navigate"):
-                return await page_loader.navigate()
-            return True
-
-        async def _wait() -> bool:
-            if hasattr(page_loader, "wait_selector"):
-                return await page_loader.wait_selector(selector, timeout_ms)
-            return True
-
-        ok = await _navigate()
-        if not ok:
-            _logger.debug("env_probe 推流: navigate 失败")
-            return False
-        try:
-            await _wait()
-            _logger.debug("env_probe 推流: 数据域已渲染")
-            return True
-        except Exception as e:
-            _logger.debug("env_probe 推流中断: %s: %s", type(e).__name__, e)
-            return False
-    except Exception as e:  # 无 Playwright / loader 缺方法 → 无法完成，保守健康
-        _logger.debug("env_probe 推流检查不可用: %s", e)
-        return True
