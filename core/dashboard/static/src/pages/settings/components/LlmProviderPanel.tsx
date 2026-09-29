@@ -146,6 +146,13 @@ function toProviders(values: FormValues): LlmProvider[] {
   });
 }
 
+// 行身份串（item 728382baa797）：runHealthCheck 实际检测的三个字段拼接——
+// 回填等长整值替换时 rc-field-form 按位置复用行 key，healthMap 按 field.key
+// 缓存的旧检测结果会原样留给换掉的新行，需逐行比对身份后再清理
+function healthRowIdentity(p: ProviderRowValues | undefined): string {
+  return [p?.baseurl, p?.apikey, p?.model].map((v) => (v || '').trim()).join('\n');
+}
+
 interface LlmProviderPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -184,7 +191,27 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     const key = JSON.stringify(next);
     if (key === lastProvidersBackfillRef.current) return;
     lastProvidersBackfillRef.current = key;
+    // 等长整值替换时 rc-field-form 按位置复用行 key（field.key 不变），而
+    // healthMap 以 field.key 为键——载荷内容变化（如「同步用户级设置」拉平后
+    // providers 数量不变但 provider/model 已换）会让换掉的新行原样继承旧行的
+    // 健康徽标（旧配置的检测结果，item 728382baa797）。回填前先取当前各行
+    // 身份串（runHealthCheck 实测的 baseurl/apikey/model），逐 index 与回填
+    // 载荷比对，身份变化的行清掉对应 key 的缓存条目。envOpenMap/billingOpenMap
+    // 是纯界面展开偏好（非数据派生），保留不动：回填刷新后折叠区维持用户
+    // 原有的展开视野。
+    const prevRows = (form.getFieldsValue(true)?.providers || []) as ProviderRowValues[];
     form.setFieldsValue(next);
+    setHealthMap((m) => {
+      let touched = false;
+      const cleared = { ...m };
+      activeKeysRef.current.forEach((k, i) => {
+        if (cleared[k] === undefined) return;
+        if (healthRowIdentity(prevRows[i]) === healthRowIdentity(next.providers[i])) return;
+        delete cleared[k];
+        touched = true;
+      });
+      return touched ? cleared : m;
+    });
   }, [config.llm.providers, form]);
 
   // 校验/拦截失败时展开全部折叠区——错误行（价格必填、重复 model）可能藏在
