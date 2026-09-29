@@ -404,9 +404,12 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
     # D9：经包命名空间延迟解析，使 patch("core.pm_engine.verification.rewrite_scenarios_origin") 生效
     import core.pm_engine.verification as _facade
 
-    n = _facade.rewrite_scenarios_origin(
-        scenarios_path, srv.base_url, pipeline._context.logger
-    )
+    # 防御式取 logger：既有测试以 `VerificationPipeline.__new__` 裸构造（不设
+    # _pm/_context，D10「测试零修改」契约），getattr 缺省兜 None——真实链路
+    # （有 _pm）仍能拿到 logger 供 rewrite_scenarios_origin 记 WARNING。
+    _ctx = getattr(pipeline, "_context", None)
+    _logger = getattr(_ctx, "logger", None)
+    n = _facade.rewrite_scenarios_origin(scenarios_path, srv.base_url, _logger)
     # -1 = 已解析出候选目标但写盘失败（BASE_URL 铁律未落盘，WARNING 已由
     # rewrite_scenarios_origin 记录）——note 与「本无需改写」(0) 可判别，
     # 不再同值混淆（code-review item 90ca963ad6e7）。
