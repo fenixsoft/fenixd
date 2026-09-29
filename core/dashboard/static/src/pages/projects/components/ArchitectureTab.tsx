@@ -1,4 +1,4 @@
-// ArchitectureTab.tsx — 项目页「项目架构」分面（add-project-architecture-tab 2.2）
+// ArchitectureTab.tsx — 项目页「架构蓝图」分面（add-project-architecture-tab 2.2）
 //
 // 承载 archify 按需生成的项目架构图视图：
 // - active 门控：仅在选中本分面时拉取 GET /api/architecture/status，未选中零

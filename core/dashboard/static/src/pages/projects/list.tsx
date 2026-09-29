@@ -1438,7 +1438,7 @@ export default function SpecListPage() {
           },
           {
             key: 'architecture',
-            label: '项目架构',
+            label: '架构蓝图',
             // add-project-architecture-tab：承载 archify 按需生成的项目架构图。
             // ArchitectureTab active 门控：仅在选中本分面时拉取
             // GET /api/architecture/status，未选中零请求（对齐
@@ -1448,7 +1448,7 @@ export default function SpecListPage() {
           {
             key: 'knowledge',
             label: '项目知识',
-            // add-knowledge-atlas 4.2：承载知识真相源只读视图（位于「项目架构」
+            // add-knowledge-atlas 4.2：承载知识真相源只读视图（位于「架构蓝图」
             // 与「会话接入」之间）。KnowledgeTab active 门控：仅在选中本分面时
             // 拉取 GET /api/knowledge/index，未选中零请求（对齐按需加载语义）
             children: <KnowledgeTab project={name} active={activeTab === 'knowledge'} />,

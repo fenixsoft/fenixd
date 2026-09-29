@@ -745,8 +745,9 @@ export default function SpecDetailPage() {
 
   const statusInfo = statusMeta(detail?.status || '');
 
-  // 下拉快速切换项：项目下除当前 SPEC 外的其他 SPEC（只有当前一个时不展示箭头）
-  const otherSpecs = specList.filter((s) => s.name !== spec);
+  // 下拉快速切换项：项目下除当前 SPEC 外的其他未归档 SPEC（只有当前一个时不展示箭头）。
+  // archived 缺省（旧后端）按未归档处理，与列表页 !!s.archived 过滤语义一致。
+  const otherSpecs = specList.filter((s) => s.name !== spec && !s.archived);
 
   // 下拉快速切换面板（表格形式）：SPEC 名称（过长截断 + 悬停提示） + 状态标签（statusMeta 同列表页语义）。
   // 面板宽度上限 360px 且移动端不超出视口（max-width: calc(100vw - 32px)），内容区限高滚动。
