@@ -1,7 +1,7 @@
 """tests/test_llm_health.py — LLM Provider 健康检测单测（add-provider-health-check 1.2）。
 
-monkeypatch urllib.request.urlopen 替身覆盖四类失败分类与请求构造契约，
-不发起真实网络请求。
+monkeypatch 探测请求执行替身（build_opener 拦截）覆盖四类失败分类与请求构造
+契约，不发起真实网络请求。
 """
 import io
 import json
@@ -33,7 +33,11 @@ class _FakeResponse:
 
 
 def _install_urlopen(monkeypatch, fn):
-    """把 urlopen 替换为 fn(req, timeout=...) 形态的替身并捕获调用参数。"""
+    """把探测请求执行替换为 fn(req, timeout=...) 形态的替身并捕获调用参数。
+
+    生产路径走 build_opener(跨主机重定向守卫 handler).open（不再直呼 urlopen），
+    替身同形拦截 build_opener 并捕获挂载的 handler 列表。
+    """
     captured = {}
 
     def fake_urlopen(req, timeout=None):
@@ -41,7 +45,15 @@ def _install_urlopen(monkeypatch, fn):
         captured["timeout"] = timeout
         return fn(req, timeout=timeout)
 
-    monkeypatch.setattr(llm_health.urllib.request, "urlopen", fake_urlopen)
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            return fake_urlopen(req, timeout=timeout)
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return _FakeOpener()
+
+    monkeypatch.setattr(llm_health.urllib.request, "build_opener", fake_build_opener)
     return captured
 
 
@@ -77,6 +89,8 @@ def test_200_normal_reply(monkeypatch):
     ua = req.get_header("User-agent") or ""
     assert "python-urllib" not in ua.lower()
     assert ua.startswith("claude-cli/")
+    # 重定向守卫 handler 必须挂载（跨主机重定向不带认证头外泄）
+    assert llm_health._NoCrossHostRedirectHandler in captured["handlers"]
 
 
 def test_http_error_status_and_snippet(monkeypatch):
