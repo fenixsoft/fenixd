@@ -637,6 +637,13 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "example": '"Content-Type"',
             "mode": "post",
         },
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"application/json"',
+            "mode": "post",
+        },
     ),
     "body_contains": (
         {

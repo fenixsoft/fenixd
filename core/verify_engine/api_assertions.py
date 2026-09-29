@@ -386,6 +386,21 @@ class ApiAssertionRunner:
                 "error": str(e),
             }
         mode = a.get("mode", "exact")
+        if expected is None:
+            # fail-closed：expected 缺失（None 是 Assertion 的「未设置」哨兵，
+            # 非显式 null）时 exact 与 None 判等、contains 以 "None" 子串、
+            # regex 以字面 None 为模式参与匹配，配置缺失被静默当作合法期望；
+            # 口径对齐 status_code 的 expected 预检（验收期必填表未登记
+            # json_path 的 expected，此处兜住运行期路径）
+            return {
+                "type": "json_path",
+                "layer": 3,
+                "path": path,
+                "expected": expected,
+                "actual": None,
+                "pass": False,
+                "error": "断言缺 expected，无法与实际值对比（fail-closed）",
+            }
         path_missing = actual is _MISSING
         if path_missing:
             # 哨兵仅用于内部判定，不外泄到结果（actual 归一为 None）
@@ -439,7 +454,7 @@ class ApiAssertionRunner:
     async def _assert_response_header(self, resp, a: dict) -> dict:
         """断言响应头存在且匹配（header 名大小写不敏感）。"""
         header = a.get("header", "")
-        expected = a.get("expected", "")
+        expected = a.get("expected")
         mode = a.get("mode", "exact")
         actual = None
         for k, v in (resp.get("headers") or {}).items():
@@ -451,6 +466,13 @@ class ApiAssertionRunner:
         if mode not in ("exact", "contains", "regex"):
             # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐
             error = f"未知 mode: {mode}"
+        elif expected is None or (expected == "" and mode in ("contains", "regex")):
+            # fail-closed：缺 expected 时 contains 空串恒真、regex 空串恒匹配，
+            # 只要头存在即假通过（exact 与空串比较则是确定性伪失败且不附
+            # error，judge 会把配置缺失误归因为产品缺陷）；口径对齐
+            # body_contains / sse_event_matches（exact 空串是合法期望——
+            # 断言头为空值，不在拦截之列）
+            error = "缺少 expected 字段"
         elif actual is not None:
             if mode == "exact":
                 passed = str(actual).strip() == str(expected).strip()
