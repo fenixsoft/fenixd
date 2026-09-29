@@ -12,6 +12,22 @@ import {
 
 const { Text } = Typography;
 
+// 表单值的单一构建来源（code-review item 10c30b44ba75，比照 ParallelSettingsPanel
+// 3f4e251a395c 范式）：initialValues 与回填门控此前是两份逐字段重复的字面量
+// （knowledge_enabled 还另有 initialValue 第三来源），Form 首帧无初值——
+// auto_threshold 空输入框、audit_enabled 显示关，需等 paint 后的回填 effect 才
+// 显示真实配置，且同卡两开关缺省来源不一致。收敛为单个纯函数供两处共用。
+const buildFormValues = (cfg: ConfigData) => {
+  const kb = knowledgeSwitchesFromConfig(cfg.knowledge);
+  return {
+    auto_threshold: cfg.archive?.auto_threshold ?? 50,
+    // add-knowledge-atlas：knowledge.enabled 开关（缺省 true，与后端缺省一致）
+    knowledge_enabled: cfg.knowledge?.enabled ?? true,
+    // add-knowledge-atlas-maintenance：维护车道开关（缺省 true，与后端缺省一致）
+    audit_enabled: kb.auditEnabled,
+  };
+};
+
 interface MiscSettingsPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -31,20 +47,15 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   // 会重复提交保存请求——saving 期间置 loading/disabled 并在入口短路。
   const [saving, setSaving] = useState(false);
 
+  const initialValues = buildFormValues(config);
+
   // 回填门控（code-review item 0a2bd3f20fcd，比照 AgentModelPanel 9f98edec21fa）：
   // 无条件 setFieldsValue 会在其它面板保存触发父组件 setConfig 时，用外部
   // config 覆盖本面板用户正在编辑、尚未保存的阈值。改为序列化比较，只在
   // 内容真变化时回填。
   const lastBackfillRef = useRef('');
   useEffect(() => {
-    const kb = knowledgeSwitchesFromConfig(config.knowledge);
-    const next = {
-      auto_threshold: config.archive?.auto_threshold ?? 50,
-      // add-knowledge-atlas：knowledge.enabled 开关回填（缺省 true，与后端缺省一致）
-      knowledge_enabled: config.knowledge?.enabled ?? true,
-      // add-knowledge-atlas-maintenance：维护车道开关回填（缺省 true，与后端缺省一致）
-      audit_enabled: kb.auditEnabled,
-    };
+    const next = buildFormValues(config);
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
     lastBackfillRef.current = key;
@@ -99,7 +110,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
     <div>
       <h3>归档</h3>
       <Text type="secondary">SPEC 归档与知识真相源维护设置。</Text>
-      <Form form={form} layout="vertical" onValuesChange={() => setDirty(true)}>
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
         <Card style={{ marginTop: 12 }}>
           {/* add-spec-archive：自动归档阈值置于面板首字段——验证场景以
               .ant-input-number input 定位首字段（引擎 .first），归档阈值须居前 */}
@@ -147,14 +158,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               项目知识页签显示禁用占位。开关行内联样式（.switch-inline-row），
               与全站设置页一致：开关在前、名称紧随同行。 */}
           <div className="switch-inline-row">
-            <Form.Item
-              name="knowledge_enabled"
-              valuePropName="checked"
-              // SSR/首帧缺省：useEffect 回填在服务端渲染不执行，initialValue 保证
-              // 缺省（true）与后端缺省一致；挂载后 setFieldsValue 以 config 为准
-              initialValue={config.knowledge?.enabled ?? true}
-              noStyle
-            >
+            <Form.Item name="knowledge_enabled" valuePropName="checked" noStyle>
               <Switch data-testid="knowledge-enabled-switch" />
             </Form.Item>
             <span className="switch-inline-label">

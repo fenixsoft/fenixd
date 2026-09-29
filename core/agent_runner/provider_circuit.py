@@ -840,6 +840,16 @@ class ProviderCircuit:
             # 解封中间态清零 MUST 与冻结置位原子（item 62a1c4e3e71f）：并发闸门
             # 查询不得观察到「已冻结但残留 hold/probe/错峰」的中间态。
             with self._unseal_lock:
+                # 冻结置位前同临界区复检（code-review item d6a8683c3e53）：闸门
+                # 检查（is_global_transient_break）到本分支之间无原子性，两线程
+                # 可都通过闸门后各自记账达阈值同入本分支——他线程已置位（含
+                # _finish_probe 探针判败重冻结）则本次记账并非首次触发，按
+                # 「已在熔断中」返回 False，保证 True 只归首次达阈值者
+                # （docstring 契约），冻结截止/ERROR 日志/告警单飞。记账本身已
+                # 落窗不回滚。_unseal_lock 为 RLock，复检与置位同临界区即原子，
+                # 不引入新锁序。
+                if self._transient_break_until > 0:
+                    return False
                 self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
                 # 重新熔断 → 解封中间态全部作废（design D3：hold/观察窗期间在飞 run
                 # 失败再次触发熔断时按冻结语义重计，闸门先查冻结即天然满足；此处
@@ -1718,6 +1728,15 @@ class ProviderCircuit:
         with self._signal_kill_lock:
             st = self._signal_kill.setdefault(
                 spec_name, {"count": 0, "cooldown_until": 0.0})
+            # 冷却已到期（cooldown_until 已置位但 <= now）：与查询侧
+            # is_signal_kill_cooldown 到期恢复（pop 条目 = 计数清零）语义对齐，
+            # 先重置陈旧计数与冷却截止再记本次（code-review item 13e8a7c0ec5e）
+            # ——到期后无人经查询侧 pop 时，沿用已达阈值的陈旧 count 会使首个
+            # 新信号死法即满足阈值立即重进冷却。cooldown_until == 0（从未触发
+            # 过冷却的未达阈值连续计数）不清零，保留连续计数语义。
+            if 0.0 < st.get("cooldown_until", 0.0) <= now:
+                st["count"] = 0
+                st["cooldown_until"] = 0.0
             st["count"] = int(st.get("count", 0)) + 1
             if st.get("cooldown_until", 0.0) > now:
                 # 已在冷却期内：仅累加计数，不重复触发/告警（冷却到期由查询侧恢复）。

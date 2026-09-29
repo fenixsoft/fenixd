@@ -61,6 +61,55 @@ const EFFORT_RULE = {
       : Promise.reject(new Error('须为 low/medium/high')),
 };
 
+// 表单值的单一构建来源（code-review item 5ba46a1b4d6c，同族 ParallelSettingsPanel
+// item 3f4e251a395c / ApprovalModePanel item 3f618ddb51cb 口径）：字段映射旧实现
+// 只写在回填 effect 一处，<Form> 未传 initialValues——控件首帧空显（InputNumber
+// 空框、Select 无选中项），须等回填 effect 跑完才显示真实配置（一帧缺省闪变）。
+// 收敛为单个纯函数：产物同时喂 initialValues（首帧直出）与回填 effect（门控
+// 回填），增删字段/调缺省只改一处。
+const buildFormValues = (config: ConfigData) => {
+  return {
+    impl_code_review: config.verify?.impl_code_review === true,
+    // add-impl-code-review-tuning：三运行参数回填缺省（IMPL_REVIEW_DEFAULTS
+    // 单源——后端 read_config / read_effective_config 恒回显缺省，前端回填
+    // 与之一致；既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
+    impl_code_review_timeout_sec:
+      config.verify?.impl_code_review_timeout_sec ?? IMPL_REVIEW_DEFAULTS.timeoutSec,
+    // add-impl-ocr-parallel-lane（任务 1.2）：后端缺省 2→4，回填与之一致
+    impl_code_review_concurrency:
+      config.verify?.impl_code_review_concurrency ?? IMPL_REVIEW_DEFAULTS.concurrency,
+    // add-code-review-concurrency-and-429-resilience：全仓审查并发回填缺省 4
+    // （后端 read_config / read_effective_config 恒回显，前端回填与之一致）
+    repo_code_review_concurrency:
+      config.verify?.repo_code_review_concurrency ?? REPO_REVIEW_DEFAULT_CONCURRENCY,
+    impl_code_review_effort: config.verify?.impl_code_review_effort ?? IMPL_REVIEW_DEFAULTS.effort,
+    // add-impl-ocr-parallel-lane：join 双档模式回填缺省 gate（后端恒回显，
+    // 前端回填与之一致）
+    impl_code_review_mode: config.verify?.impl_code_review_mode ?? QUALITY_DEFAULTS.mode,
+    // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
+    // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
+    code_review_enabled: config.code_review?.enabled === true,
+    // add-code-review-scope-config：审查范围（admin.code_review.scope），
+    // 配置缺失回显 window（后端 get_code_review_config 缺省同源）
+    code_review_scope: config.code_review?.scope ?? QUALITY_DEFAULTS.scope,
+    // add-code-review-sharded-out 3.3：停滞告警阈值（admin.code_review.
+    // stall_alert_minutes），配置缺失回显 15（后端 get_code_review_config
+    // 缺省同源）
+    code_review_stall_alert_minutes:
+      config.code_review?.stall_alert_minutes ?? QUALITY_DEFAULTS.stallAlertMinutes,
+    // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
+    // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
+    regression_enabled: config.regression?.enabled === true,
+    // add-code-review-auto-fix：自动修复开关 + 批大小（回填缺省 false/20）
+    // add-codefix-affinity-batching 4.3：定向回归开关（缺省 true——配置
+    // 缺席或非法均视为开，与后端 get_code_review_fix_config 缺省同源）
+    code_review_fix_enabled: config.code_review_fix?.enabled === true,
+    code_review_fix_batch_size: config.code_review_fix?.batch_size ?? QUALITY_DEFAULTS.fixBatchSize,
+    code_review_fix_targeted_regression:
+      config.code_review_fix?.targeted_regression !== false,
+  };
+};
+
 interface QualityPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -95,6 +144,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // ocr 环境探测状态：null=加载中；未安装时开关置灰并给出「一键安装」
   const [ocr, setOcr] = useState<OcrStatus | null>(null);
   const [installing, setInstalling] = useState(false);
+  // 安装重入同帧加固（code-review item 7e689f7abd2d，比照本文件 savingRef
+  // b780337cdc73 / regressionDraftInFlight 口径）：setInstalling 渲染生效存在
+  // React 调度间隙，state 短路拦不住同帧双击（或确认弹窗双触发）——installOcr
+  // 是慢请求，同帧连点会发出两个并发 install 请求（后端幂等性未核实）。经 ref
+  // 写读同帧原子拦截，state 只负责按钮 loading 视觉反馈。
+  const installInFlight = useRef(false);
   // 项目作用域：verify.yaml regression 段配置状态（null=加载中/未加载）
   const [regressionCfg, setRegressionCfg] = useState<RegressionConfigStatus | null>(null);
   const [regressionCfgError, setRegressionCfgError] = useState<string | null>(null);
@@ -112,6 +167,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     projectRef.current = project;
   }, [project]);
 
+  // 首帧初值单源（code-review item 5ba46a1b4d6c，同族 ParallelSettingsPanel
+  // item 3f4e251a395c / ApprovalModePanel item 3f618ddb51cb 口径）：<Form> 传
+  // initialValues 与下方回填 effect 共用 buildFormValues 产物——控件首帧直出
+  // 真实配置，不再等回填 effect 才有值（消除一帧空显闪变）。
+  const initialValues = buildFormValues(config);
   // 回填门控（code-review item 241f4f2d452a，同 LlmProviderPanel item 5d6582ba9951 /
   // AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：无条件
   // setFieldsValue 会用外部 config 覆盖用户正在编辑、尚未保存的内容——保存后重载/
@@ -119,46 +179,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // 序列化比较，只在内容真正变化时回填。
   const lastBackfillRef = useRef('');
   useEffect(() => {
-    const next = {
-      impl_code_review: config.verify?.impl_code_review === true,
-      // add-impl-code-review-tuning：三运行参数回填缺省（IMPL_REVIEW_DEFAULTS
-      // 单源——后端 read_config / read_effective_config 恒回显缺省，前端回填
-      // 与之一致；既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
-      impl_code_review_timeout_sec:
-        config.verify?.impl_code_review_timeout_sec ?? IMPL_REVIEW_DEFAULTS.timeoutSec,
-      // add-impl-ocr-parallel-lane（任务 1.2）：后端缺省 2→4，回填与之一致
-      impl_code_review_concurrency:
-        config.verify?.impl_code_review_concurrency ?? IMPL_REVIEW_DEFAULTS.concurrency,
-      // add-code-review-concurrency-and-429-resilience：全仓审查并发回填缺省 4
-      // （后端 read_config / read_effective_config 恒回显，前端回填与之一致）
-      repo_code_review_concurrency:
-        config.verify?.repo_code_review_concurrency ?? REPO_REVIEW_DEFAULT_CONCURRENCY,
-      impl_code_review_effort: config.verify?.impl_code_review_effort ?? IMPL_REVIEW_DEFAULTS.effort,
-      // add-impl-ocr-parallel-lane：join 双档模式回填缺省 gate（后端恒回显，
-      // 前端回填与之一致）
-      impl_code_review_mode: config.verify?.impl_code_review_mode ?? QUALITY_DEFAULTS.mode,
-      // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
-      // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
-      code_review_enabled: config.code_review?.enabled === true,
-      // add-code-review-scope-config：审查范围（admin.code_review.scope），
-      // 配置缺失回显 window（后端 get_code_review_config 缺省同源）
-      code_review_scope: config.code_review?.scope ?? QUALITY_DEFAULTS.scope,
-      // add-code-review-sharded-out 3.3：停滞告警阈值（admin.code_review.
-      // stall_alert_minutes），配置缺失回显 15（后端 get_code_review_config
-      // 缺省同源）
-      code_review_stall_alert_minutes:
-        config.code_review?.stall_alert_minutes ?? QUALITY_DEFAULTS.stallAlertMinutes,
-      // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
-      // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
-      regression_enabled: config.regression?.enabled === true,
-      // add-code-review-auto-fix：自动修复开关 + 批大小（回填缺省 false/20）
-      // add-codefix-affinity-batching 4.3：定向回归开关（缺省 true——配置
-      // 缺席或非法均视为开，与后端 get_code_review_fix_config 缺省同源）
-      code_review_fix_enabled: config.code_review_fix?.enabled === true,
-      code_review_fix_batch_size: config.code_review_fix?.batch_size ?? QUALITY_DEFAULTS.fixBatchSize,
-      code_review_fix_targeted_regression:
-        config.code_review_fix?.targeted_regression !== false,
-    };
+    const next = buildFormValues(config);
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
     lastBackfillRef.current = key;
@@ -203,6 +224,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   }, [project]);
 
   const handleInstall = async () => {
+    if (installInFlight.current) return;
+    installInFlight.current = true;
     setInstalling(true);
     try {
       // 1) 安装调用（code-review item 52c15fcd9bc1）：必须先检查 res.ok——
@@ -231,6 +254,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         setOcr({ installed: true, bin: null, version: res.version ?? null });
       }
     } finally {
+      installInFlight.current = false;
       setInstalling(false);
     }
   };
@@ -408,7 +432,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           rc-field-form 的 Form.Item 只在 <form> 内注册字段——validateFields()
           不返回脱管字段，handleSave 恒提交 enabled:false（视觉开启但后端未
           持久化，api-regression-config-persisted 验证实测确证）。 */}
-      <Form form={form} layout="vertical" onValuesChange={() => setDirty(true)} style={{ marginTop: 16 }}>
+      <Form
+        form={form}
+        initialValues={initialValues}
+        layout="vertical"
+        onValuesChange={() => setDirty(true)}
+        style={{ marginTop: 16 }}
+      >
         <Card style={{ marginTop: 12 }}>
           {/* 环境状态行：已装 → 绿色提示；未装 → 橙色提示 + 一键安装按钮
               （渲染逻辑抽 renderOcrStatus，见其注释） */}

@@ -120,7 +120,15 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
                 并行<span className="label-note">（agents.max_concurrent）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入并行度' }]}
+            rules={[
+              { required: true, message: '请输入并行度' },
+              // 正整数校验（code-review item c19d483a2943，比照 MiscSettingsPanel
+              // auto_threshold / StaleCodeSelfhealPanel idle_confirm_seconds 同族
+              // 口径）：不能用 InputNumber 的 min/max 代替——blur 时会把越界值
+              // 静默钳回边界，用户永远看不到非法输入被拦截的表单错误提示；
+              // InputNumber 保留 min/max 仅作输入辅助。
+              { type: 'integer', min: 1, message: '并行度必须为不小于 1 的正整数' },
+            ]}
           >
             <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter="个" />
           </Form.Item>
@@ -133,7 +141,11 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
                 单次 Agent 运行轮次上限<span className="label-note">（agents.max_turns）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入轮次上限' }]}
+            rules={[
+              { required: true, message: '请输入轮次上限' },
+              // 同上口径（code-review item c19d483a2943）：越界拦截走 rules，min 仅作输入辅助
+              { type: 'integer', min: 1, message: '轮次上限必须为不小于 1 的正整数' },
+            ]}
             style={{ marginTop: 24 }}
           >
             <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter="轮" />
@@ -147,7 +159,11 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
                 单次 Agent 运行时长上限<span className="label-note">（agents.run_timeout_seconds）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入时长上限' }]}
+            rules={[
+              { required: true, message: '请输入时长上限' },
+              // 同上口径（code-review item c19d483a2943）：越界拦截走 rules，min 仅作输入辅助
+              { type: 'integer', min: 60, message: '时长上限须为不小于 60 的整数秒' },
+            ]}
             style={{ marginTop: 24 }}
           >
             <InputNumber min={60} step={60} style={{ width: '100%' }} addonAfter="秒" />
@@ -176,7 +192,11 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
                   同时出题 Planner 上限<span className="label-note">（verify.planner_max_concurrent）</span>
                 </>
               }
-              rules={[{ required: true, message: '请输入上限' }]}
+              rules={[
+                { required: true, message: '请输入上限' },
+                // 同上口径（code-review item c19d483a2943）：越界拦截走 rules，min/max 仅作输入辅助
+                { type: 'integer', min: 1, max: 10, message: '须为 1-10 的正整数' },
+              ]}
               style={{ marginTop: 24 }}
             >
               <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} addonAfter="个" />

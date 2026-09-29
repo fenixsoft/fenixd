@@ -310,9 +310,24 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           style={{ marginTop: 12, marginBottom: 16 }}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Button onClick={handleRegenerate} loading={loading}>
-            AI 自动生成
-          </Button>
+          {/* 比照「插入模板」口径（code-review item ebece58414b8）：简介草稿与已
+              保存值不一致时，AI 生成会覆盖未保存的手工修改并直接落盘，先弹确认；
+              草稿与已保存一致时行为不变。判脏口径与 usePanelDirty 探针一致 */}
+          {description !== (config.description || '') ? (
+            <Popconfirm
+              title="AI 生成将覆盖未保存的简介修改"
+              description="当前简介有未保存的修改，生成后将直接保存并覆盖，确定继续？"
+              okText="覆盖"
+              cancelText="取消"
+              onConfirm={handleRegenerate}
+            >
+              <Button loading={loading}>AI 自动生成</Button>
+            </Popconfirm>
+          ) : (
+            <Button onClick={handleRegenerate} loading={loading}>
+              AI 自动生成
+            </Button>
+          )}
           <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
             保存
           </Button>

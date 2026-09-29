@@ -296,7 +296,11 @@ class LivenessSupervisor:
            —— 在飞保护，权威源；
         ② mtime 停更 ≥ ``RUNTIME_SWEEP_IDLE_SECONDS`` —— 流停保护，先行短路
            免读文件（任何存活写入者都会刷新 mtime）；
-        ③ ``_file_has_terminal_event`` 为 False —— 尾部无终态事件。
+        ③ ``_file_has_terminal_event`` 为 False —— 全文件从未出现过终态事件
+           （「全文件任一行」口径：历史上任一位置出现过终态即不补写，与
+           ``_file_tail_is_terminal`` 的末行口径语义不同——如 result 之后追加
+           superseded 的原地重试悬空文件，其尾部永久非终态，但按本口径不补写，
+           读侧末行口径的在跑判定会持续把它当未终结 run，属已知的保守侧取舍）。
 
         安全性：result 终态只能由 run 线程的 finally 块写出；线程不在注册表 =
         该 run 的终态写入者已不可达，补写 interrupted 只把「框架已知的死亡」
@@ -345,7 +349,7 @@ class LivenessSupervisor:
                 continue
             if idle_seconds < RUNTIME_SWEEP_IDLE_SECONDS:
                 continue
-            # 判据 ③：尾部无终态事件（含终态 → 入缓存，后续轮次零读取）
+            # 判据 ③：全文件从未出现终态事件（出现过 → 入缓存，后续轮次零读取）
             if _file_has_terminal_event(run_file):
                 self._terminal_verified.add(stem)
                 continue
@@ -377,7 +381,7 @@ class LivenessSupervisor:
         """探测某 SPEC 是否仍有存活的 attempt 子进程（恢复一致性 D4 接口）。
         判定顺序：
           1. pgrep 进程表：cmdline 含该 spec 的 worktree 目录字面量
-             （``worktrees/{impl,verify}-<spec>-<ts>``）→ 存活；
+             （``worktrees/{impl,verify,repair}-<spec>-<ts>``）→ 存活；
           2. 进程扫描不可用/未命中时，回退 run 流文件新鲜度：
              该 spec 任一 run jsonl 的 mtime < LIVE_ATTEMPT_STREAM_WINDOW_SECONDS
              视为仍在活动（resume 孤儿进程通常持续写流）。
@@ -412,7 +416,13 @@ class LivenessSupervisor:
         ``/proc`` 读不到（进程刚退出/权限不足）的 PID 按命中保守处理——误判
         False 会把活进程的 spec 重置状态，比误判 True（多挡一轮恢复）更重。
         """
-        for prefix in ("impl", "verify"):
+        # 前缀集与 admin_monitor._pgrep_live_worktree 及 _stream_recent 对齐
+        # （repair 与 orphaned-state-probe-calibration 1.4 同款）：repair 通道
+        # worktree 目录名 repair-<spec>-<ts>（run_spec_part 经 RUN_ID_AGENT_PREFIXES
+        # 识别 repair- 前缀，下方全等守卫照常生效）。repair claude 进程长工具执行
+        # 期内可数分钟不写流，漏扫会让 has_live_attempt 误判无存活子进程，
+        # auto-recovery / 孤儿 ready 白名单对仍在修复中的 spec 重置状态。
+        for prefix in ("impl", "verify", "repair"):
             pattern = f"worktrees/{prefix}-{spec_name}-"
             try:
                 res = subprocess.run(
@@ -680,6 +690,7 @@ class LivenessSupervisor:
         except OSError:
             file_mtime = None
         try:
+            # [fenix-ignore:bdf0d3a6d878] 全量口径被下游语义依赖：background_calls 须提取远早于判定窗口的 task_started（零产出短路按「长阻塞时长」判定，尾读窗口会破坏），total_events/tool_counts 亦进 judge 提示词；增量游标须处理任意 now 实参与文件截断回退，监督判死路径改动风险大于 info 级收益
             with run_file.open(encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
@@ -901,29 +912,32 @@ class LivenessSupervisor:
 
     @staticmethod
     def _parse_verdict_json(text: str) -> dict | None:
-        """从模型输出中提取 ``{"verdict": ...}`` JSON 对象；找不到返回 None。"""
+        """从模型输出中提取 ``{"verdict": ...}`` JSON 对象；找不到返回 None。
+
+        code-review d5b753a6d878：边界定位改用 ``json.JSONDecoder.raw_decode``
+        从每个 ``{`` 起点尝试完整解析，不做裸括号深度计数——深度计数不感知
+        字符串字面量，合法 JSON 的 evidence 文本含不成对 ``{``/``}``（如
+        「Step {1 of 2」）时深度无法归零或切出非法子串，json.loads 失败被整体
+        判为「judge 输出不可解析」，触发 judge 通道减半重试后 fail-closed 返回
+        stagnant，误杀实际 advancing 的 run。raw_decode 由 JSON 词法器处理字符串
+        转义，字面量内括号不影响对象边界；起点处非合法 JSON（真残缺输出）→
+        换下一起点，全部失败返回 None（原提取语义不变）。
+        """
         if not text:
             return None
+        decoder = json.JSONDecoder()
         start = text.find("{")
         while start != -1:
-            depth = 0
-            for i in range(start, len(text)):
-                ch = text[i]
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            obj = json.loads(text[start : i + 1])
-                        except json.JSONDecodeError:
-                            break
-                        if isinstance(obj, dict) and obj.get("verdict") in (
-                            "advancing",
-                            "stagnant",
-                        ):
-                            return obj
-                        break
+            try:
+                obj, _end = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                start = text.find("{", start + 1)
+                continue
+            if isinstance(obj, dict) and obj.get("verdict") in (
+                "advancing",
+                "stagnant",
+            ):
+                return obj
             start = text.find("{", start + 1)
         return None
 

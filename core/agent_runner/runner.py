@@ -5120,13 +5120,21 @@ class AgentRunner:
                     if action["action"] == "extend":
                         extensions_used = int(action["extension_index"])
                         deadline += float(action["extension_seconds"])
-                        append_run_line(run_file, {
-                            "type": "timeout_extension",
-                            "extension": extensions_used,
-                            "extension_seconds": action["extension_seconds"],
-                            "evidence": str(action.get("evidence") or "")[:400],
-                            "new_deadline": deadline,
-                        })
+                        # 留痕写失败不改变延期决策（对齐 449ab5cb953f 既有
+                        # 守卫口径：except OSError + WARNING，不阻断）
+                        try:
+                            append_run_line(run_file, {
+                                "type": "timeout_extension",
+                                "extension": extensions_used,
+                                "extension_seconds": action["extension_seconds"],
+                                "evidence": str(action.get("evidence") or "")[:400],
+                                "new_deadline": deadline,
+                            })
+                        except OSError as e:
+                            self.logger.warning(
+                                "agent_runner",
+                                f"timeout_extension 留痕写入失败（不阻断延期决策）: {e}",
+                            )
                         if spec_name:
                             self.note_run_extension(
                                 spec_name, run_id, extensions_used, deadline)
@@ -5149,13 +5157,21 @@ class AgentRunner:
                     if action["action"] == "extend":
                         turn_extensions_used = int(action["extension_index"])
                         current_turn_cap = int(action["new_turn_cap"])
-                        append_run_line(run_file, {
-                            "type": "turn_extension",
-                            "extension": turn_extensions_used,
-                            "turn_step": int(action.get("turn_step") or 0),
-                            "evidence": str(action.get("evidence") or "")[:400],
-                            "new_turn_cap": current_turn_cap,
-                        })
+                        # 留痕写失败不改变续期决策（对齐 449ab5cb953f 既有
+                        # 守卫口径：except OSError + WARNING，不阻断）
+                        try:
+                            append_run_line(run_file, {
+                                "type": "turn_extension",
+                                "extension": turn_extensions_used,
+                                "turn_step": int(action.get("turn_step") or 0),
+                                "evidence": str(action.get("evidence") or "")[:400],
+                                "new_turn_cap": current_turn_cap,
+                            })
+                        except OSError as e:
+                            self.logger.warning(
+                                "agent_runner",
+                                f"turn_extension 留痕写入失败（不阻断续期决策）: {e}",
+                            )
                         self.logger.info(
                             "agent_runner",
                             f"Turn limit extended for '{spec_name}' "

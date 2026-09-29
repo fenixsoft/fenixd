@@ -102,6 +102,15 @@ class TokenAccountant:
                 )
                 return
             if not isinstance(entry, dict):
+                # code-review item 1cacd875677d：STATE 条目被损坏/误写为标量时
+                # 不能静默吞掉——否则本轮及后续 usage 累计永久丢失且不可察觉，
+                # 与上方读失败（67824f1f7c03）留痕口径对齐：WARNING 记录 spec
+                # 与实际类型后跳过本轮累计（行为不变，仍不累计）
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 累计读 STATE 条目类型异常 '{spec_name}'"
+                    f"（{type(entry).__name__}），跳过本轮累计",
+                )
                 return
             prev_in = _to_int(entry.get("_tokens_in", 0))
             prev_out = _to_int(entry.get("_tokens_out", 0))
@@ -169,10 +178,17 @@ class TokenAccountant:
         # update_spec 两次 state_machine 调用，锁外执行时同 spec 并发收工
         # （impl-ocr 并行车道等）双方都读到 flag=False，各自发一条 80%/100%
         # 告警并各写一次 STATE——docstring 承诺的「幂等不重复」在并发窗口内
-        # 不成立。复用 _spec_accumulate_lock 把三步并成临界区（threading.Lock
-        # 不可重入：调用点 _accumulate_token_usage 须在锁外调本方法，本方法
-        # 内不得再经持锁路径被调用）。config 读取与 ratio 计算不涉共享标志，
-        # 留在锁外保持临界区最小。
+        # 不成立。复用 _spec_accumulate_lock 把「查标志-判定-置位」并成临界区
+        # （threading.Lock 不可重入：调用点 _accumulate_token_usage 须在锁外
+        # 调本方法，本方法内不得再经持锁路径被调用）。config 读取与 ratio
+        # 计算不涉共享标志，留在锁外保持临界区最小。
+        # code-review item 9fff308e34f4：告警发射（_send_token_alert 经
+        # attach_narrative → build_narrative 同步发起一次 LLM 调用，带超时可达
+        # 数十秒）不得占住临界区——同 spec 并发收工线程会在锁入口被阻塞拖慢
+        # 收尾。锁内只完成「是否本线程发射」的判定与标志置位读改写，锁释放后
+        # 再发射；发射权由锁内置位判定唯一化，同阈值仍只发一次，语义不变。
+        fire_100 = False
+        fire_80 = False
         with _spec_accumulate_lock(spec_name):
             try:
                 entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -194,7 +210,7 @@ class TokenAccountant:
             alert_flag = bool(entry.get("_token_alert_100", False))
 
             if ratio >= 1.0 and not alert_flag:
-                self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
+                fire_100 = True
                 try:
                     # code-review item c41873e0bfa2：从 80% 以下一次性越到 100% 以上
                     # 时同步置位低档标志，否则下次累计 ratio 仍 >= 1.0 时会走下方
@@ -206,11 +222,17 @@ class TokenAccountant:
                 except Exception:
                     pass
             elif ratio >= 0.8 and not warn_flag:
-                self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 80% 提醒告警")
+                fire_80 = True
                 try:
                     self._pm.state_machine.update_spec(spec_name, {"_token_warn_80": True})
                 except Exception:
                     pass
+        # 锁外发射（9fff308e34f4）：临界区内只剩 STATE 读改写，慢速 LLM 叙事
+        # 调用不再阻塞同 spec 并发收工的锁入口。
+        if fire_100:
+            self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
+        elif fire_80:
+            self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 80% 提醒告警")
 
     def _send_token_alert(
         self, spec_name: str, tokens_in: int, budget: float, severity: str, title: str
