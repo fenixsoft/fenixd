@@ -23,6 +23,25 @@ const AGENTS_DEFAULTS = {
   scalePrecheckFull: 45,
 } as const;
 
+// ── 预算字段整数校验（code-review item 7010dc857eca，比照 QualityPanel
+// POSITIVE_INT_RULE / SystemPanel「precision={0} + 整数校验器」族内口径）──
+// 六个预算 InputNumber 语义均为整数（次数 / 百万 token），仅 min/max 拦不住
+// 小数：输入 2.5 可通过 validateFields 原样写进配置。抽两条规则复用：
+// min=1 的四个「次数」字段用正整数；token_budget_millions 与 daily_run_limit
+// 以 0 表关闭/不限，放行 0、仍拒小数。
+const POSITIVE_INT_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    v != null && Number.isInteger(v) && v > 0
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为正整数')),
+};
+const NON_NEGATIVE_INT_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    v != null && Number.isInteger(v) && v >= 0
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为不小于 0 的整数')),
+};
+
 // 九字段表单映射单源（config 取值 ?? AGENTS_DEFAULTS）：initialValues 与回填 effect
 // 共用，新增预算字段只改此处，避免两份映射漏改一处导致初值与回填值分叉
 function buildAgentsFormValues(agents: ConfigData['agents']) {
@@ -141,9 +160,9 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 Token 预算<span className="label-note">（agents.token_budget_millions，百万，0=关闭）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入 Token 预算' }]}
+            rules={[{ required: true, message: '请输入 Token 预算' }, NON_NEGATIVE_INT_RULE]}
           >
-            <InputNumber min={0} max={1000} step={1} style={{ width: '100%' }} addonAfter="百万" />
+            <InputNumber min={0} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="百万" />
           </Form.Item>
           <Text type="secondary">
             默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。单 SPEC 累计 input token 达到 80% 与 100% 均发警告级告警（100% 档标题为「预算 100% 警告」），不自动冻结，由人工决定是否处置。
@@ -156,10 +175,10 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 每日 Agent 运行限额<span className="label-note">（agents.daily_run_limit，0 = 不限）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入每日运行限额' }]}
+            rules={[{ required: true, message: '请输入每日运行限额' }, NON_NEGATIVE_INT_RULE]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={0} step={1} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。
@@ -175,6 +194,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             dependencies={['impl_run_budget_max']}
             rules={[
               { required: true, message: '请输入实现尝试预算' },
+              POSITIVE_INT_RULE,
               ({ getFieldValue }) => ({
                 validator(_, value) {
                   const budgetMax = getFieldValue('impl_run_budget_max');
@@ -187,7 +207,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 6。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1 至「实现尝试预算上限」（下方可配，缺省 100，硬天花板 1000），不可超过上限。
@@ -200,10 +220,10 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 实现尝试预算上限<span className="label-note">（agents.impl_run_budget_max，1-1000）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入实现尝试预算上限' }]}
+            rules={[{ required: true, message: '请输入实现尝试预算上限' }, POSITIVE_INT_RULE]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 100。per-spec 预算覆盖值与上面的全局实现尝试预算均按此上限夹紧；上限键自身硬天花板 1000。调大它可让长链条 SPEC 在机制摩擦后仍有修复轮次余额。
@@ -216,10 +236,10 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 重启重验预算<span className="label-note">（agents.verify_redo_budget，1-10）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入重启重验预算' }]}
+            rules={[{ required: true, message: '请输入重启重验预算' }, POSITIVE_INT_RULE]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={10} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 SPEC 借反复重启无限重验」烧 token。合法范围 1-10。
@@ -232,10 +252,10 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 同因重派熔断阈值<span className="label-note">（agents.max_same_cause_redispatches，1-100）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入同因重派熔断阈值' }]}
+            rules={[{ required: true, message: '请输入同因重派熔断阈值' }, POSITIVE_INT_RULE]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={100} step={1} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={100} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 3。同一 SPEC 连续以<b>同一归因</b>（归一化指纹：剔除 run_id / 时间戳 / worktree 路径后的失败文案）判失败重派达该阈值 → 冻结转人工处置并发人工升级告警，不再自动重派（替代「清零重试计数后照样重派」的空转）。每轮原因都在变化时计数不累积，不会误熔断真实需要多轮修复的 SPEC。
