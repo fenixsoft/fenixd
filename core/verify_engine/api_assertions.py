@@ -119,8 +119,9 @@ def _split_path_tokens(path: str) -> list[str]:
 
     分词正则支持引号键形态（``data['a.b']``），若直接 ``re.split(r"\\.", path)``
     会把含点的引号键撕裂成两段静默求值失败，故逐字符感知引号后再切分。
-    产出空段（连续点/首尾点，如 ``a..b`` / ``.name``）时抛 ValueError：
-    空段若被静默跳过，拼错的 path 会等价于另一条路径在错误节点上求值、
+    产出空段（连续点/首尾点，如 ``a..b`` / ``.name``）或引号未闭合
+    （如 ``data['a.b``）时抛 ValueError：空段若被静默跳过、未闭合引号若
+    被当普通字符求值，拼错的 path 会等价于另一条路径在错误节点上求值、
     判 pass/fail，与「未知 mode」的配置错误可见化口径相悖（fail-closed）。
     """
     parts: list[str] = []
@@ -142,6 +143,10 @@ def _split_path_tokens(path: str) -> list[str]:
     parts.append("".join(buf))
     if any(not part for part in parts):
         raise ValueError(f"路径非法（含连续点或首尾点空段）: {path!r}")
+    if quote is not None:
+        # 未闭合引号若静默流入求值，引号字符被当普通键名、按「路径不存在」
+        # 失败，场景路径笔误会被误归因为产品缺陷——与空段同口径 fail-closed
+        raise ValueError(f"路径非法（引号未闭合）: {path!r}")
     return parts
 
 
@@ -156,7 +161,7 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     求值失败（键缺失/越界）返回 ``missing``（缺省 None——与「值相等或不等」
     语义无关，断言结果通过 actual=None 与 expected 对比即可区分；
     传入哨兵可区分「路径不存在」与「显式 null」）。
-    路径非法（含空段）抛 ValueError，由调用方归一为显式 error。
+    路径非法（含空段或引号未闭合）抛 ValueError，由调用方归一为显式 error。
     """
     if not path:
         return data
