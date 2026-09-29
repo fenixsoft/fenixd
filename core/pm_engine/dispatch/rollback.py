@@ -97,7 +97,9 @@ class RRollbackMixin:
 
         - implementer 失败：implementing → ready，清空 run 字段；error 置 None 以便
           full_scan 的 spec_ready recovery 再次拾起（错误详情记入 _last_dispatch_error）。
-        - verifier 失败：testing → implemented，清 tester_run；实现保留（不重实现）。
+        - verifier 失败：testing → implemented，清 tester_run；error 置 None 以便
+          恢复拾取（错误详情记入 _last_dispatch_error，与 implementer 分支同口径）；
+          实现保留（不重实现）。
         设置 _dispatch_backoff_until（默认 5 分钟，可配
         ``pm.dispatch_rollback_backoff_seconds``）吸收 inotify 触发的即时重派振荡；
         重试由队列条目 + full_scan recovery 兜底（最长 30 分钟窗口）。
@@ -119,12 +121,17 @@ class RRollbackMixin:
                 self._dispatch_rollback_backoff_seconds()
             )
             if agent_type == "verifier" and status == "testing":
+                # error 置 None（code-review item 5d15a55cbce8，与 implementer
+                # 分支同口径）：非空 error 对 implemented 态恢复/展示路径是额外
+                # 噪声源，失败详情改记结构化字段 _last_dispatch_error，两条回滚
+                # 车道对 error 字段语义一致。
                 self._pm.state_machine.update_spec(
                     spec_name,
                     {
                         "status": "implemented",
                         "tester_run": None,
-                        "error": f"Verification infrastructure failure (retryable): {exc}",
+                        "error": None,
+                        "_last_dispatch_error": f"Verification dispatch failed (retryable): {exc}",
                         "_dispatch_backoff_until": backoff_until,
                     },
                 )

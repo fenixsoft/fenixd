@@ -80,7 +80,8 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "implemented")
         self.assertIsNone(entry["tester_run"])
-        self.assertIn("retryable", entry["error"])
+        self.assertIsNone(entry["error"])
+        self.assertIn("dispatch failed", entry["_last_dispatch_error"])
         self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._dispatcher._run_queue))
 
     def test_rollback_ignores_status_mismatch(self):
@@ -106,7 +107,8 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "implemented")
         self.assertNotIn(entry["status"], ("bug-found",))
-        self.assertIn("retryable", entry["error"])
+        self.assertIsNone(entry["error"])
+        self.assertIn("retryable", entry["_last_dispatch_error"])
 
     def test_check_blockers_implementing_rolls_back_to_ready(self):
         self.sm.add_spec("s1", {"priority": 5})
