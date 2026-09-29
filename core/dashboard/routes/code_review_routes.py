@@ -383,6 +383,7 @@ class H11CodeReviewRoutesMixin:
 
             cfg = _ConfigLoader.get_code_review_config(
                 dashboard_data.read_effective_config(str(proot)))
+            # [fenix-ignore:4e4096f96e4a] 配置源 get_code_review_config 已无条件校验该键（非 int/bool/负数回退 30）且恒以 int 返回，此 int() 不会抛 ValueError
             open_warn = int(cfg.get("manual_full_open_warn") or 0)
             if open_warn > 0:
                 open_count = sum(
