@@ -5,7 +5,8 @@
 //   请求（对齐 QualityTab/RegressionTab/ArchitectureTab 按需加载语义）。
 // - enabled 门控：GET /api/config 的 knowledge.enabled === false 时渲染禁用
 //   占位（说明 + 去设置页指引），不再发其它请求。
-// - 视图栈：总目录（index.md Markdown 渲染 + 域清单 + ADR 列表 + graph 区）
+// - 视图栈：总目录（index.md Markdown 渲染 + graph 区；ADR 清单只在
+//   adr/index.md，见总目录「决策记录」节链接，此处不重复展示）
 //   → 能力页/导航页/ADR 详情（点进拉单文件，面包屑返回总目录）。
 // - graph 区：fetch 探测 /api/knowledge/graph → 200 渲染 <iframe
 //   sandbox="allow-scripts">（同 ArchitectureTab 沙箱口径）；404 渲染
@@ -14,7 +15,7 @@
 //   经 resolveKnowledgePath 基于当前页目录归一化；外部链接走 SafeLink 白名单。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnchorHTMLAttributes, FC, ReactNode } from 'react';
-import { Breadcrumb, Button, Card, Space, Spin, Tag, Typography } from 'antd';
+import { Breadcrumb, Button, Card, Space, Spin, Typography } from 'antd';
 import Markdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -26,7 +27,7 @@ import {
   knowledgeGraphUrl,
 } from '../../../services/dashboard';
 import type { KnowledgeIndexData } from '../../../services/dashboard';
-import { SafeLink, markdownComponents } from './SpecDocModal';
+import SpecDocModal, { SafeLink, markdownComponents } from './SpecDocModal';
 
 // SafeLink 的导出类型是 Components['a']（含 undefined/string 字面量宽型），
 // 运行时恒为函数组件；此处显式收窄为锚点 FC 供 JSX 复用（实现签名兼容）。
@@ -75,13 +76,6 @@ export function resolveKnowledgePath(
   return resolved;
 }
 
-/** ADR 展示名：'ADR-001-spawn-injection.md' → 'ADR-001 spawn-injection'。 */
-export function adrDisplayName(file: string): string {
-  const stem = file.replace(/\.md$/, '');
-  const m = /^(ADR-\d{3})-(.*)$/.exec(stem);
-  return m ? `${m[1]} ${m[2]}` : stem;
-}
-
 /** 剥离 Markdown 中的 HTML 注释：marker（capability/rev/sources）是机器
  *  接口，对人类读者隐形（渲染层剥离，源文件不动）。 */
 export function stripHtmlComments(md: string): string {
@@ -91,28 +85,51 @@ export function stripHtmlComments(md: string): string {
     .trim();
 }
 
-/** 面包屑：真相源内路径 → 层级显示文本（替代裸目录路径）。
- *  'domains/<域>/<能力>.md' → ['总目录','<域>','<能力>']；
- *  'adr/ADR-001-x.md' → ['总目录','ADR','ADR-001-x']。 */
-export function knowledgeCrumbs(path: string): string[] {
-  const segs = path
-    .replace(/\.md$/, '')
-    .split('/')
-    .filter(Boolean)
-    .filter((s) => s !== '_domain'); // 域导航页：域名本身即当前层级
-  if (segs[0] === 'domains') return ['总目录', ...segs.slice(1)];
-  if (segs[0] === 'adr') return ['总目录', 'ADR', ...segs.slice(1)];
-  return ['总目录', ...segs];
+/** 面包屑项：target='index' 回总目录；字符串=真相源内页路径（域导航页）；
+ *  null=当前层纯文本（不可点击）。 */
+export interface KnowledgeCrumb {
+  title: string;
+  target: 'index' | string | null;
 }
 
-/** ADR 列表条目文本：标题字段优先（'ADR-001 <标题>'，编号取自文件名前缀），
- *  无标题回退文件名派生（adrDisplayName）。 */
-export function adrListLabel(file: string, title: string | null): string {
-  if (title) {
-    const m = /^(ADR-\d{3})-/.exec(file.replace(/\.md$/, ''));
-    return m ? `${m[1]} ${title}` : title;
+/** 面包屑：真相源内路径 → 层级项（含点击目标，替代裸目录路径）。
+ *  'domains/<域>/<能力>.md' → [总目录→index, <域>→域导航页, <能力>→null]；
+ *  'domains/<域>/_domain.md' → [总目录→index, <域>→null]（域名即当前层级）；
+ *  'adr/ADR-001-x.md' → [总目录→index, ADR→null, ADR-001-x→null]（ADR 无导航页）。 */
+export function knowledgeCrumbs(path: string): KnowledgeCrumb[] {
+  const rawSegs = path
+    .replace(/\.md$/, '')
+    .split('/')
+    .filter(Boolean);
+  const isDomainNav = rawSegs[rawSegs.length - 1] === '_domain';
+  const segs = rawSegs.filter((s) => s !== '_domain');
+  const indexCrumb: KnowledgeCrumb = { title: '总目录', target: 'index' };
+  if (segs[0] === 'adr') {
+    return [
+      indexCrumb,
+      { title: 'ADR', target: null },
+      ...segs.slice(1).map((title) => ({ title, target: null })),
+    ];
   }
-  return adrDisplayName(file);
+  return [
+    indexCrumb,
+    ...segs.slice(1).map((title, i, arr) => ({
+      title,
+      target:
+        i === 0 && arr.length > 1 && !isDomainNav
+          ? `domains/${title}/_domain.md`
+          : null,
+    })),
+  ];
+}
+
+/** 归档链接派生 spec 名：'spec/archive/<YYYY-MM-DD-<名>[/]>' → '<名>'；其余
+ *  （真相源页路径/外部 URL/锚点）返回 null。溯源行链接指向 spec/archive 目录，
+ *  SpecDocModal 经后端 resolve_spec_dir（活跃优先、归档回退）按裸名解析。 */
+export function archiveSpecName(href: string): string | null {
+  const m = /^spec\/archive\/([A-Za-z0-9._-]+)\/?$/.exec(href);
+  if (!m) return null;
+  return m[1].replace(/^\d{4}-\d{2}-\d{2}-/, '');
 }
 
 // ── 组件 ─────────────────────────────────────────────────────────────
@@ -131,6 +148,8 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // 错误消息；null = 无错误。与「尚未初始化」业务态区分，不互相伪装。
   const [loadError, setLoadError] = useState<string | null>(null);
   const [graphState, setGraphState] = useState<'unknown' | 'ready' | 'missing'>('unknown');
+  // 溯源归档链接弹出的 SPEC 文档弹窗（spec/archive/ 链接 → 剥日期 spec 名）
+  const [docSpec, setDocSpec] = useState<string | null>(null);
   // 请求序号守卫（QualityTab/RegressionTab 同款）：慢响应不覆盖新视图
   const seqRef = useRef(0);
 
@@ -189,6 +208,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     setGraphState('unknown');
     setEnabledUnknown(true);
     setLoadError(null);
+    setDocSpec(null);
   }, [project]);
 
   if (!active) return null;
@@ -252,12 +272,27 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     }
   };
 
-  // 站内相对链接拦截：真相源内路径 → 站内拉取；其余走 SafeLink 白名单
+  // 站内相对链接拦截：spec/archive 归档链接 → 弹 SPEC 文档弹窗；真相源内
+  // 路径 → 站内拉取；其余走 SafeLink 白名单
   const currentPath = view.kind === 'page' ? view.path : null;
   const linkComponents: Components = {
     ...markdownComponents,
     a: (props) => {
       const href = props.href || '';
+      const spec = archiveSpecName(href);
+      if (spec !== null) {
+        return (
+          <a
+            href={href}
+            onClick={(e) => {
+              e.preventDefault();
+              setDocSpec(spec);
+            }}
+          >
+            {props.children}
+          </a>
+        );
+      }
       const target = resolveKnowledgePath(currentPath, href);
       if (target !== null) {
         return (
@@ -276,119 +311,92 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     },
   };
 
-  const openAdrByNumber = (raw: string) => {
-    // superseded_by 形如 'ADR-002' 或 'ADR-002(新标题)'——提取编号前缀匹配
-    const m = /ADR-\d{3}/.exec(raw);
-    if (!m) return;
-    const entry = indexData?.adrs.find((a) => a.file.startsWith(`${m[0]}-`));
-    if (entry) void openPage(`adr/${entry.file}`);
-  };
-
-  const backToIndex = (
-    <Button
-      size="small"
-      data-testid="knowledge-back"
-      onClick={() => setView({ kind: 'index' })}
-    >
-      ← 返回总目录
-    </Button>
-  );
+  const docSpecModal =
+    docSpec === null ? null : (
+      <SpecDocModal
+        project={project}
+        spec={docSpec}
+        open
+        onClose={() => setDocSpec(null)}
+      />
+    );
 
   // ── 详情视图（能力页 / _domain / ADR 单文件）─────────────────────
   if (view.kind === 'page') {
+    // 面包屑导航：总目录/域导航层可点（target 见 KnowledgeCrumb），当前层纯文本。
+    // target 以局部变量捕获——闭包内 TS 不保留 map 主体对属性的 null 收窄。
+    const crumbItems = knowledgeCrumbs(view.path).map((crumb) => {
+      if (crumb.target === null) return { title: crumb.title };
+      const target = crumb.target;
+      return {
+        title: (
+          <a
+            onClick={(e) => {
+              e.preventDefault();
+              if (target === 'index') setView({ kind: 'index' });
+              else void openPage(target);
+            }}
+          >
+            {crumb.title}
+          </a>
+        ),
+      };
+    });
     return (
-      <Card variant="borderless" data-testid="knowledge-page-view">
-        <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <Space>
-            {backToIndex}
-            <Breadcrumb
-              data-testid="knowledge-page-path"
-              items={knowledgeCrumbs(view.path).map((title) => ({ title }))}
-            />
+      <>
+        <Card variant="borderless" data-testid="knowledge-page-view">
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Breadcrumb data-testid="knowledge-page-path" items={crumbItems} />
+            <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
+              {stripHtmlComments(view.content)}
+            </Markdown>
           </Space>
-          <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
-            {stripHtmlComments(view.content)}
-          </Markdown>
-        </Space>
-      </Card>
+        </Card>
+        {docSpecModal}
+      </>
     );
   }
 
   // ── 总目录视图 ────────────────────────────────────────────────────
   return (
-    <Card variant="borderless" data-testid="knowledge-index-view">
-      <Space direction="vertical" style={{ width: '100%' }} size={16}>
-        {uninitialized ? (
-          <Typography.Text type="secondary" data-testid="knowledge-uninitialized">
-            知识真相源尚未初始化：归档首个 SPEC 后，蒸馏管线会自动在
-            spec/knowledge/ 下生成总目录与能力页。
-          </Typography.Text>
-        ) : (
-          <>
-            <div data-testid="knowledge-index-md">
-              <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
-                {stripHtmlComments(indexData?.index_md || '')}
-              </Markdown>
-            </div>
-
-            {/* ADR 列表（状态标签 + superseded 跳转） */}
-            {indexData && indexData.adrs.length > 0 ? (
-              <div data-testid="knowledge-adr-list">
-                <Typography.Text strong>架构决策记录（ADR）</Typography.Text>
-                <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-                  {indexData.adrs.map((a) => {
-                    const sb = a.superseded_by;
-                    return (
-                    <li key={a.file} style={{ marginBottom: 4 }}>
-                      <a
-                        href={`#knowledge:adr/${a.file}`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          void openPage(`adr/${a.file}`);
-                        }}
-                      >
-                        {adrListLabel(a.file, a.title)}
-                      </a>{' '}
-                      <Tag color={a.status === 'superseded' ? 'orange' : 'green'}>
-                        {a.status}
-                      </Tag>
-                      {a.status === 'superseded' && sb ? (
-                        <a
-                          href={`#knowledge:adr:${sb}`}
-                          data-testid="knowledge-superseded-link"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            openAdrByNumber(sb);
-                          }}
-                        >
-                          被 {sb} 取代
-                        </a>
-                      ) : null}
-                    </li>
-                    );
-                  })}
-                </ul>
+    <>
+      <Card variant="borderless" data-testid="knowledge-index-view">
+        <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          {uninitialized ? (
+            <Typography.Text type="secondary" data-testid="knowledge-uninitialized">
+              知识真相源尚未初始化：归档首个 SPEC 后，蒸馏管线会自动在
+              spec/knowledge/ 下生成总目录与能力页。
+            </Typography.Text>
+          ) : (
+            <>
+              <div data-testid="knowledge-index-md">
+                <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
+                  {stripHtmlComments(indexData?.index_md || '')}
+                </Markdown>
               </div>
-            ) : null}
 
-            {/* graph 区：探测 200 → iframe 沙箱；404 → 占位 */}
-            <div data-testid="knowledge-graph-section">
+              {/* ADR 列表不再在此展示：adr/index.md（总目录「决策记录」节链接）
+                  已含编号/状态/摘要全量清单，避免双份维护。 */}
+
+              {/* graph 区：探测 200 → iframe 沙箱；404 → 整区不渲染
+                  （2026-09-29 用户定调：graphify 生成功能已取消
+                  （knowledge.graph_enabled=false），占位对用户是噪音）。
+                  探测逻辑保留：将来复开功能无需改前端。 */}
               {graphState === 'ready' ? (
-                <iframe
-                  src={knowledgeGraphUrl(project)}
-                  sandbox="allow-scripts"
-                  title="知识关系图"
-                  style={{ width: '100%', height: 480, border: 0, borderRadius: 8 }}
-                />
-              ) : (
-                <Typography.Text type="secondary" data-testid="knowledge-graph-placeholder">
-                  关系图尚未生成
-                </Typography.Text>
-              )}
-            </div>
-          </>
-        )}
-      </Space>
-    </Card>
+                <div data-testid="knowledge-graph-section">
+                  <iframe
+                    src={knowledgeGraphUrl(project)}
+                    sandbox="allow-scripts"
+                    title="知识关系图"
+                    style={{ width: '100%', height: 480, border: 0, borderRadius: 8 }}
+                  />
+                </div>
+              ) : null}
+            </>
+          )}
+        </Space>
+      </Card>
+      {docSpecModal}
+    </>
   );
 }
