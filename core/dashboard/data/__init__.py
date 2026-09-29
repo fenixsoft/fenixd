@@ -214,6 +214,7 @@ from .admin_alerts import (
     mark_all_alerts_handled,
     alerts_summary,
     get_admin_activities,
+    get_archived_activities,
 )
 
 # ── tasks 组 ──

@@ -46,6 +46,13 @@ MAX_RECORDS = 150
 # 保留足够近期的可回滚凭据）。
 MAX_AUDIT_RECORDS = 500
 
+# 归档（add-alerts-archive-and-overview-cache 1.1）：活跃文件裁剪时被移出的
+# 最旧记录逐行追加写入归档旁路文件（JSONL，每行一条完整 JSON 记录），不再
+# 直接丢弃——处置记录是唯一的运维审计载体，滚动出局后仍需可追溯。归档自身
+# 设滚动上限（独立于活跃上限），耗尽后最旧历史按序永久淘汰。
+ARCHIVE_NAME = "admin_alerts_archive.jsonl"
+MAX_ARCHIVE_RECORDS = 2000
+
 # 降噪分级（2026-09-01 用户决策）：只有 critical/major 默认进人工待处理
 # 队列；warning/minor 写入即自动标记已处理（仍留历史记录，不弹横幅）。
 HUMAN_SEVERITIES = ("critical", "major")
@@ -85,6 +92,7 @@ class AdminStore:
     def __init__(self, project_root, logger=None):
         self.project_root = Path(project_root)
         self.alerts_path = self.project_root / ".fenix" / "admin_alerts.json"
+        self.archive_path = self.project_root / ".fenix" / ARCHIVE_NAME
         self._lockfile = Path(str(self.alerts_path) + ".lock")
         self._thread_lock = threading.Lock()  # 进程内互斥（跨线程）
         self._logger = logger
@@ -234,11 +242,110 @@ class AdminStore:
                             )
                         return None if refuse_returns_none else result
                     if len(records) > MAX_RECORDS:
+                        trimmed = records[:-MAX_RECORDS]
                         del records[:-MAX_RECORDS]
+                        # 归档与裁剪同锁完成（spec：裁剪与归档之间不得丢记录）；
+                        # 归档失败仅记日志，活跃文件写回主路径照常执行（D2 软失败）
+                        self._archive_unlocked(trimmed)
                     self._write_unlocked(records)
                     return result
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
+
+    # ── 归档（add-alerts-archive-and-overview-cache 1.1/1.2）──────
+
+    def _archive_unlocked(self, trimmed: list):
+        """被裁记录归档（调用方须已持有文件排他锁，与裁剪同锁防丢记录）。
+
+        D1：JSONL 逐行追加（O(1)，无需读改写整文件——150 条池高频裁剪下
+        数组格式每次归档都要全文件重写会放大 IO）；写入顺序即裁剪顺序即
+        时间正序。D2 软失败：归档是审计增强不是主数据，写失败（磁盘满/
+        权限/路径被目录占位）只记日志不抛出，活跃文件写回主路径永不被
+        归档拖挂。追加成功后在同锁内执行归档自身滚动裁剪（上限独立于
+        活跃上限，防归档无界增长）。
+        """
+        if not trimmed:
+            return
+        try:
+            self.archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.archive_path.open("a", encoding="utf-8") as f:
+                for rec in trimmed:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as exc:
+            if self._logger is not None:
+                self._logger.warning(
+                    "admin_store",
+                    f"归档写入失败（不阻塞活跃写回）: {type(exc).__name__}: {exc}",
+                )
+            return
+        self._trim_archive_unlocked()
+
+    def _trim_archive_unlocked(self) -> None:
+        """归档自身滚动裁剪（调用方须已持有排他锁）：记录数超
+        MAX_ARCHIVE_RECORDS 时保留末尾 N 行（整文件重写，临时文件 + rename
+        原子替换，与 DisputeAuditStore._trim_unlocked 同模式）。裁剪幂等：
+        未超限零写动作。读取/写失败按无归档处理（不抛出）。"""
+        try:
+            lines = self.archive_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        lines = [ln for ln in lines if ln.strip()]
+        if len(lines) <= MAX_ARCHIVE_RECORDS:
+            return
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=".admin_alerts_archive.",
+            suffix=".tmp",
+            dir=str(self.archive_path.parent),
+        )
+        tmp_path = Path(tmp_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for ln in lines[-MAX_ARCHIVE_RECORDS:]:
+                    f.write(ln + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(str(tmp_path), str(self.archive_path))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+    def read_archive(self) -> list:
+        """读取归档文件全部记录（存储原序：时间正序，最新在末尾）。
+
+        供归档只读出口（dashboard 数据层 get_archived_activities）使用，
+        不与活跃文件合并、不进任何缺省读路径。与写回一致在排他锁内读取
+        （滚动裁剪经 rename 整文件替换，无锁并发读最坏读到整文件，容错
+        跳过非 JSON 行兜底）；损坏行跳过、缺失/不可读返回空列表。
+        """
+        if not self.archive_path.exists():
+            return []
+        out: list = []
+        try:
+            with self._thread_lock:
+                with self._lock() as lf:
+                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    try:
+                        with self.archive_path.open(encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    d = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                if isinstance(d, dict):
+                                    out.append(d)
+                    finally:
+                        fcntl.flock(lf, fcntl.LOCK_UN)
+        except OSError:
+            return []
+        return out
 
     # ── 公开 API ─────────────────────────────────────────────────
 
