@@ -39,3 +39,10 @@
 | api-knowledge-graph-placeholder | graph 渲染位占位语义：graph.html 未生成时探测端点 GET /api/knowledge/graph 返回 404 结构化错误且 code=knowledge_graph_not_generated（前端按 code 渲染「关系图尚未生成」占位；出处：knowledge_routes.py _api_knowledge_graph，atlas 分支实现） | pass | 0/2 | - |
 | cli-graph-product-probe-seed | graph 产物落盘探测前置态：按交付契约形态在 spec/knowledge/graph/ 种入 graph.html（内容带标记 graph-probe-fixture）、GRAPH_REPORT.md 与 graph.json，模拟生成车道执行后的产物态（graphify CLI 为人工一次性安装的外部依赖，验证实例不可假定已装；产物契约见 specs/knowledge-graph/spec.md） | pass | 0/5 | - |
 | api-knowledge-graph-served | graph 产物落盘后探测端点点亮：GET /api/knowledge/graph 返回 200，Content-Type 为 text/html、携带 CSP sandbox 头（生成物内联脚本以不透明源运行）且响应体含种入标记（出处：knowledge_routes.py _api_knowledge_graph 下发分支） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 16 个（第 1 轮）。
+
+- 首轮写入 16 个场景
+

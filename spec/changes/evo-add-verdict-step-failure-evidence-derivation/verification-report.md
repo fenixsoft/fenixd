@@ -34,3 +34,10 @@
 | prescription-section-and-guard-present | 提示词处方在场 + 守卫防漂移（spec Requirement 3 / Acceptance Scenario 4）：agents/planner-judge.md 含「步骤失败型」必填清单自申报处方小节（fe612841 处方未漂移丢失）；tests/test_agent_prompt_files.py 中存在针对该处方小节的存在性断言守卫（引用 planner-judge 模板并断言处方标记在场——缺失该小节时该测试失败）。出处：agents/planner-judge.md:85、spec.md Requirement 提示词处方防漂移守卫 | pass | 0/2 | - |
 | regression-multi-kind-triage-unchanged | 回归·检测①②语义不动：tests/test_verify_verdict_multi_kind.py 全量通过——cli/api 失败场景缺 triage 判违规、triage 合规放行、product-bug 拦截豁免、证据形态中立等既有不变量不被派生逻辑改写。出处：tests/test_verify_verdict_multi_kind.py、proposal 非目标（不改检测①②语义） | pass | 0/2 | - |
 | regression-verdict-retry-chain-unchanged | 回归·裁决重试链既有行为不动：tests/test_verdict_dedup_resynthesis.py + tests/test_judge_efficiency.py 全量通过——驳回清单落盘/清退、重合成闭环、重试 prompt 注入段渲染、轮内记账等既有链路不受 _write_verdict_violations 改动影响；重试次数与 blocked 推进逻辑不变。出处：core/pm_engine/verification/verdict_evidence.py（design D2 非目标）、tests/test_verdict_dedup_resynthesis.py、tests/test_judge_efficiency.py | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+

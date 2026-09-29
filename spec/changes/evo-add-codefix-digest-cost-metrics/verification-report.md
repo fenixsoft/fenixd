@@ -28,3 +28,10 @@
 | digest-chain-final-rollup | 消化链收尾 rollup（design D2 / spec Acceptance 3 / tasks 2.1-2.2）：3 条异目录 open 条目 + batch_size=2 → 双批链（每文件一组、异目录组批≥T 即封批），fake runner 在主树 `.fenix/runs/<run_id>.jsonl` 预置各 run 的 run_metrics 种子（run1: turns=23/tool 总 17；run2: turns=29/tool 总 19），经 CodeFixOrchestrator.checkpoint()（executor=None 内联同步，锚点 core/code_fix.py:2197 checkpoint、:1109 is_chain_last_batch、:3206 末批合回处）跑完整链后：链状态落盘（fix-progress.json 或 .fenix 下链状态文件）必须存在同时命中 {runs=2, 总轮数=52, 总 tool_use=36, 核销条数=3} 的 rollup dict（值签名发现不臆测字段名；总轮数命中两 run 之和即机械证明『链级持久 run 清单覆盖全部 run 不漏样本』，tasks 2.2）；并打出一行结构化 rollup 日志（含汇总值与 rollup/链级字样）；台账三条目全部 resolved（条目计数与台账核销一致） | pass | 0/2 | - |
 | digest-chain-midway-terminal-rollup | 链中途终局也有累计 rollup（design D2 / spec Acceptance 4）：2 条异目录 open 条目单批链，fake run_code_fix 先在主树预置已发生 run 的归档种子（turns=23/tool 总 16）再返回失败 → 批跳过（chain_skipped）链收敛终局（终局进度 phase=blocked/running=false）。链状态落盘必须输出截至当前全部 run 的累计 rollup：命中 {runs=1, 总轮数=23, 总 tool_use=16} 值签名的 dict + 一行结构化日志——跳批不免除已发生 run 的计数，自省可直接引用无需人工 grep 台账 | pass | 0/2 | - |
 | digest-delivered-tests-green | 交付测试文件全绿：tests/test_codefix_digest_metrics.py（tasks.md Deliverables new 文件）在验证树内 pytest 通过；该文件按 tasks 3.1 须覆盖工具构成指标用例（含 tool_use 与纯文本行的转录样本、直方图与文本行计数、落盘失败不阻断），按 tasks 3.2 须覆盖链 rollup 用例（多 run 链末批完成与中途终局两形态、汇总与台账核销一致） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 5 个（第 1 轮）。
+
+- 首轮写入 5 个场景
+

@@ -32,3 +32,10 @@
 | pytest-scenario-section-commit-class | 交付物测试组直跑：pytest -v 运行 tests/test_verification_report_commit.py::TestScenarioSectionCommit 三用例全绿——场景段提交入库（test_section_write_is_committed）、pathspec隔离（test_section_commit_is_pathspec_isolated）、幂等零WARNING（test_second_render_no_new_commit_no_warning），断言文案照抄实测输出行（tasks.md 2.1-2.3；pytest 9.1.1 实测 3 passed） | pass | 0/5 | - |
 | pytest-commit-file-full-green | 提交器既有降级用例回归：pytest 运行 tests/test_verification_report_commit.py 全文件 11 用例全绿——含 git add 失败/commit 失败仅WARNING（test_git_add_lock_conflict_only_warning / test_git_commit_failure_only_warning）、闸门重复放行零WARNING（test_repeated_gate_no_new_commit_no_warning）、非git静默跳过（test_gate_skips_commit_silently_without_git_repo），确认存量桩测试不受本次改动扰动（tasks.md 2.4 邻接面；实测 11 passed） | pass | 0/2 | - |
 | regression-six-files-green | 定向回归六文件全绿：tests/test_pm_verification.py、tests/test_pm_recovery.py、tests/test_verify_parallel_backoff.py、tests/test_verify_report_gate.py、tests/test_verify_scenarios.py、tests/test_facade_delegation_contract.py——tasks.md 2.4 回归自检清单原样执行，存量 MagicMock 桩与门面委托映射桩零扰动（实测摘要行 178 passed, 1 xfailed, 546 subtests passed） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+

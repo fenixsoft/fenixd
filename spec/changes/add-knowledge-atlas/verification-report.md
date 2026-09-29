@@ -46,3 +46,10 @@
 | api-config-knowledge-disable | 禁用 knowledge.enabled 并读回确认（knowledge-config「禁用后全链静默」前置 + 「设置页可见可改」持久化半边）：经既有配置 POST 链路（设置页保存同款后端、用户级作用域）写 knowledge.enabled=false，响应读回与 GET /api/config 复读均须为 false——热更新生效、无需重启 daemon。禁用态供 web 禁用占位场景消费，恢复由 api-config-knowledge-restore 承载（本场景排在全部 enabled 态场景之后，depends_on 钉死时序）。端点出处：core/dashboard/routes/settings_routes.py:92（_api_config_post，既有链路）、spec/changes/add-knowledge-atlas/tasks.md:33、specs/knowledge-config/spec.md。 | pass | 0/5 | - |
 | web-knowledge-disabled-placeholder | 禁用态页签占位（knowledge-config「禁用后全链静默」前端半边）：knowledge.enabled=false 时项目知识页签显示「知识真相源已禁用」占位而非报错（SPEC 钉死文案），页签本身仍在（proposal：禁用后页签显禁用占位）。前置 api-config-knowledge-disable 已置 false；wait 31s 兜底后端配置 30s mtime 热更新窗口（前端 GET /api/config 每次直读文件，此等待仅对「页签禁用态取自服务端缓存」的实现形态生效，对直读形态无害）。出处：SPA 路由 /projects/:name（core/dashboard/static/config/routes.ts:27-28），hash 路由（core/dashboard/static/config/config.ts:15），页签数组 core/dashboard/static/src/pages/projects/list.tsx:1317-1477（architecture=1451、session=1460 之间为 SPEC 钉死插入点）。 2026-09-27 judge 修复：antd ^6.6.0 面板 class 变更，等待/断言选择器对齐 knowledge-disabled-card testid；SPEC 钉死文案断言「知识真相源已禁用」原样保留不弱化（实现 KnowledgeTab.tsx:157 为「知识真相源未启用」，重执行预期暴露该产品文案漂移）。 | pass | 0/4 | - |
 | api-config-knowledge-restore | 恢复 knowledge.enabled=true（删除/撤销类回归点：状态操作后与操作前对比，验证实例配置复位避免跨场景污染）：同款 POST 链路写回 true，写入响应与 GET 复读均须为 true。端点出处：core/dashboard/routes/settings_routes.py:92（既有链路）、specs/knowledge-config/spec.md。 | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 21 个（第 1 轮）。
+
+- 首轮写入 21 个场景
+

@@ -33,3 +33,8 @@
 | commit-on-write-pathspec-strict-single-file | 提交范围严格单文件：其它 spec 的在途 staged 草案与已跟踪文件的未暂存修改在场时触发报告入库，提交仅含本报告文件，无关内容原样保留（staged 保持 staged、修改保持未暂存）——禁整目录 add 的防线实证（出处 tests/test_verification_report_commit.py:203-223，规格 Scenario「提交范围严格单文件」） | pass | 0/3 | - |
 | commit-on-write-idempotent-silent-skip | 重复放行幂等：报告已入库且内容未再变化时闸门再次放行（第二次 action=present）——无新增提交、全程不落 WARNING（探测式 add 后与 HEAD 比对，不解析 nothing-to-commit 文案；出处 core/verify_report.py:811-823，规格 Scenario「重复放行不重复告警」） | pass | 0/3 | - |
 | commit-on-write-non-git-silent-skip | 空态/不适用分支：被管项目无 git 仓库（git rev-parse 非工作树）时入库机制静默跳过——报告照常合成落盘、放行 ok=true、不落任何 WARNING（出处 core/verify_report.py:788-798 非 git 探测，tests/test_verification_report_commit.py:244-265） | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+

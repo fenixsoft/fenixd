@@ -34,3 +34,10 @@
 | push-closeout-engine-exception-fallback | engine 侧兜底：收口入库调用本身向外抛异常时记 push-closeout 前缀 WARNING、不阻断 pushed 落定（tests/test_push_closeout_report_commit.py::TestGitFailureDegradationOnPush::test_engine_side_exception_fallback_push_closeout_prefix；装配点 core/pm_engine/engine.py:2659-2679） | pass | 0/2 | - |
 | push-closeout-wiring-guard | 装配守卫：engine.approve_push 内存在对本 spec 报告的收口入库调用（函数内延迟导入 from core.verify_report import _commit_verification_report + push-closeout 前缀兜底），verify_report.py docstring 声明第二消费方（core/pm_engine/engine.py:2673-2679、core/verify_report.py:812-816） | pass | 0/5 | - |
 | push-closeout-regression-suite | 回归自检+全量套件：新测试与三份既有文件（test_verification_report_commit / test_verify_report_gate / test_pm_engine_dispatch_fixes）一次性全绿，验证放行出口四处调用行为不变（tasks 2.3；实测分文件 29+12 passed、合计 <3s） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+

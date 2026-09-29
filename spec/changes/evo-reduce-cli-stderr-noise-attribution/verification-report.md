@@ -33,3 +33,10 @@
 | attribution-spawn-e2e-noise-free-evidence-kept | 交互流程·spawn 失败归因端到端（多步：起 spawn → 落盘留证 → 文件断言）：default_spawn 子进程（桩化）exit 1、stderr 全噪声、stdout 含 429 真实死因时，抛出的 RuntimeError 归因消息含退出码前缀「退出码 1」与 stdout 中的 429 死因、不含噪声行；同时 .out 留档完整保留原始 stderr 噪声行（design D3 非目标「留证不过滤」——降噪只作用于归因消息）。中间落盘文件经 file_exists/file_content 断言。出处：core/knowledge_backfill.py:421-452；tests/test_knowledge_backfill.py:767-800。 | pass | 0/9 | - |
 | knowledge-backfill-attribution-regression-suite | 回归点·knowledge_backfill 归因交付测试套件全绿（tasks 3.2）：-k attribution 选中 4 条用例通过——单元级 test_failure_attribution_tail_filters_noise_lines / test_failure_attribution_tail_falls_back_to_stdout_tail 与端到端 test_spawn_failure_attribution_uses_filtered_tail / test_spawn_failure_attribution_falls_back_to_stdout 均 PASSED（用例名照抄实测 -v 输出，无 parametrize 后缀；仅 -v 不带 -q）。出处：tests/test_knowledge_backfill.py:742-800。 | pass | 0/6 | - |
 | both-deliverable-test-files-full-regression | 整卷回归·两交付测试文件合跑全绿（tasks 3.1+3.2 无回归）：tests/test_self_review_midflight.py 与 tests/test_knowledge_backfill.py 合计 45 条用例全部通过（-p no:warnings 抑制仓内既有 DeprecationWarning 刷屏以防 64KB stdout 证据截断吃掉尾部 summary；单用例 10s 硬门由 pytest.ini 全局生效）。出处：tests/test_self_review_midflight.py；tests/test_knowledge_backfill.py；pytest.ini。 | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 10 个（第 1 轮）。
+
+- 首轮写入 10 个场景
+

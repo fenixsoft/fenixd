@@ -35,3 +35,10 @@
 | config-template-safety-guidance | 配置规约落地（config.template）：targeted_regression 注释段含 MUST NOT 把 {test_targets} 直接写进参数位的警示，并补安全 cmd 写法样例（#{test_targets} 注释位或 ${FENIX_TEST_TARGETS:-…} env 缺省展开形态），纠正原 :471 引导写占位符的表述。出处 .fenix/config.template.yaml:466-476、tasks 3.1 | pass | 0/2 | - |
 | verify-yaml-convention-committed | 配置规约落地（verify.yaml 入库）：regression.cmd 采用 ${FENIX_TEST_TARGETS:-tests/} env 缺省展开 + #{test_targets} 注释位双轨写法（YAML 解析后注释位仍在场＝整体加引号入库的间接证明），文件含 MUST NOT 参数位警示的写法规约。出处 .fenix/verify.yaml:101-105（现状裸 cmd）、tasks 3.2（git diff 实测 +12/-1） | pass | 0/3 | - |
 | regression-facade-end-to-end-sanitized | 消毒 spec 端到端（交互流程 + 回归点）：安全形态 cmd 经映射空集回退消毒后，传入真实 run_regression 门面在隔离夹具执行——全量通过且收集 2 例；再以失败 nodeids 子集回归通过且只跑 1 例（消毒后 tests/ 成为可替换收集目标，mapped 态子集语义恢复）。出处 core/agent_runner/maintenance_runs.py:1685（run_regression 门面）、:1622（_apply_pytest_subset）、design「mapped 态子集语义反而恢复」 | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+

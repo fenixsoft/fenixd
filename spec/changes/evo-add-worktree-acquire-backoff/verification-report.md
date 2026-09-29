@@ -34,3 +34,10 @@
 | acquire-backoff-full-suite-aggregate | 回归点·交付测试文件全绿聚合：tests/test_worktree_acquire_backoff.py 全部 16 条用例一次通过（锁释放取得/退避耗尽/人工接管立即与等待期间让位/非锁失败保持/降级计数五组全覆盖），且无任何 FAILED | pass | 0/3 | - |
 | worktree-name-collision-regression | tasks 2.2 回归·worktree 命名冲突换名重试与锁语义不变：already exists 换名重试（evo-fix-worktree-name-collision-retry 既有签名）、并发创建只有一个赢家、give_up_decision 四参数化判定（[lock-active]/[frozen] 后缀形态）、has_active_lock 语义（tests/test_dual_dispatch_and_freeze.py::TestWorktreeLockIdempotency + TestRetryGiveUp） | pass | 0/7 | - |
 | pm-verification-pipeline-regression | tasks 2.2 回归·验证管线既有语义不变：tests/test_pm_verification.py 全量 75 通过 + 1 预期失败（uniform failure 复位、verified gate 证据竞态、降级通道等），确认本次改动未波及验证管线既有行为 | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+

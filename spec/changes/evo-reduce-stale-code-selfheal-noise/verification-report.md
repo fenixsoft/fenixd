@@ -38,3 +38,10 @@
 | web-panel-save-roundtrip-keeps-600 | 表单缺省值直存回归：不做任何改动直接保存，用户级配置写回 idle_confirm_seconds=600 而非旧缺省 120（tasks 2.5 核心回归点——防「设置页以 120 回填表单、用户保存即把 120 显式写回、静默覆盖新缺省」；出处 core/dashboard/static/src/pages/settings/index.tsx:418-424 页签唯一保存按钮 data-testid=settings-save、:169 保存成功 toast、StaleCodeSelfhealPanel.tsx:37-50 collect 恒返回该节配置） | pass | 0/4 | - |
 | web-overview-info-record-silent | 概览页对未知 kind=info 容忍：在场 info 记录不致页面渲染报错、也不出现在告警横幅（横幅仅消费 ESCALATION，空态整体不渲染；evo-reduce-stale-code-selfheal-noise 3.3；出处 core/dashboard/static/src/pages/overview/index.tsx:115 AlertBanner 挂载、overview/components/AlertBanner.tsx:64 无告警时 return null、core/dashboard/data/admin_alerts.py:21/:35-36 unhandled 仅取 ESCALATION） | pass | 0/3 | - |
 | web-activities-alert-view-tolerates-info | 运维页「人工告警」视图对未知 kind=info 容忍：注入 info 记录后切换告警视图不报错、info 记录不显示（evo-reduce-stale-code-selfheal-noise 3.3；出处 core/dashboard/static/src/pages/activities/index.tsx:481 data-testid=view-mode-switch、:483-485「人工告警」选项、core/dashboard/static/src/services/dashboard.ts:326-327 getAlerts → GET /api/alerts） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 15 个（第 1 轮）。
+
+- 新增场景 cli-fixture-reset-idle-default（重新规划，第 1 轮）
+

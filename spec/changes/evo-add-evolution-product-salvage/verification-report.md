@@ -35,3 +35,10 @@
 | read-contract-message-split | 失败归因分级（回归点）：read_contract 对文件不存在报「产物文件未写出」、JSON 非法报「产物 JSON 不可解析」，两文案互不包含、告警与日志可直接判别失败面；既有契约校验文案（缺 items 数组）不随分级改动漂移。出处 core/evolution.py:1867-1900（spec Requirement「失败归因分级」Scenario「归因可分辨」） | pass | 0/5 | - |
 | evolution-md-incremental-merge-contract | 分片增量合并契约落进提示词（静态取证）：agents/evolution.md 分片写入节含「增量合并；禁止最后一次性合并」指令、每写完一条分片立即执行并入脚本、任意中断点最大损失为单条分片的说明、结尾全量校验步保留；并入脚本与框架抢救配方同源（sorted(glob) 拼 items）且含 rm -rf 分片目录清理步。出处 agents/evolution.md:157-215（spec Requirement「分片增量合并契约」Scenario「中断点损失有界」） | pass | 0/5 | - |
 | regression-self-evolution-suite | 回归：既有 evolution 相关测试 tests/test_self_evolution.py 全绿（成功路径行为不随抢救重排漂移，tasks 2.2 回归要求）。出处 tests/test_self_evolution.py（122 例，2026-09-27 实测基线） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+

@@ -31,3 +31,10 @@
 | ft-writegate-contract-runtime-probe | 契约段注入运行时探针：_result_gate_section 对 fast-track 车道注入专属契约句（含「fast-track 车道专属」「verification 段」「verdict 属 verified/bug-found」），对 implementer（full 车道共用块）不注入且 verification 字样零出现，共用基线段（结果文件硬门/.fenix-run-result.json）仍在场（出处 core/agent_runner/prompt_builder.py:2330-2343） | pass | 0/4 | - |
 | ft-writegate-source-parity | 源码同频取证（design.md 复用与边界）：result_gate.py 在场新分支三要素（错误文案、parse_fast_track_verification 引用、mode==fast-track 守卫）；prompt_builder.py 契约句位于 if agent_type == "fast-track" 条件域之后（行号序证明未无条件进入共用文本）且含 verified/bug-found 口径句（出处 core/agent_runner/result_gate.py:33,1111-1122；core/agent_runner/prompt_builder.py:2330-2343） | pass | 0/6 | - |
 | ft-writegate-regression-existing-suites | 既有套件回归（tasks.md 2.2）：tests/test_fast_track_result.py 与 tests/test_agent_runner_gate.py 合跑 36 例全过，full 车道与 dispatch 交接点行为不变（出处 spec/changes/evo-add-fasttrack-verification-write-gate/tasks.md 2.2） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+

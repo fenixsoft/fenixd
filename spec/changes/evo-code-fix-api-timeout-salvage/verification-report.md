@@ -34,3 +34,10 @@
 | deterministic-failure-dirty-worktree-no-salvage | design D4 行为保形（Requirement 1 验收场景 2 延伸）：非 api_timeout 的确定性失败即使工作区脏也不做 salvage——立即清理（cleanup success=False）、条目入 chain_skipped、失败日志仍带 api_timeout=False 结构化签名便于追溯。出处：core/code_fix.py:3258 _run_batch_created 失败分支非 salvage 路径；交付测试 TestNonApiTimeoutFailureUnchanged::test_deterministic_failure_dirty_worktree_no_salvage | pass | 0/3 | - |
 | regression-salvage-infra-reuse-legacy-suites | 回归点：本 SPEC 改动的邻接面——salvage 提交基础设施（add-codefix-commit-first-contract 交付的 _salvage_commit 编排侧范本 tests/test_code_fix_salvage.py）、worktree 复用认领（认领白名单扩入 code-fix 后既有 agent_type 认领语义不变 tests/test_worktree_reuse.py）、recovery legacy 登记语义（tests/test_recovery_legacy.py）三套件合计 30 例全过 | pass | 0/2 | - |
 | regression-code-fix-orchestrator-suite | 回归点：code-fix 编排器既有 112 例全过——run_code_fix 信封新增可选字段（api_timeout/exit_code/stderr_summary 缺省不改变成功路径形态）与 _run_batch_created 失败分支改造不破坏既有失败/跳批/合回语义（design D4：失败=chain_skipped 跳批推进与重试预算语义不变）。出处：tests/test_code_fix.py | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+

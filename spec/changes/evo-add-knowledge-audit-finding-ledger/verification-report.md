@@ -35,3 +35,10 @@
 | ka-adr-slug-prefix-match | ADR 断链前缀匹配：按 ADR-\d{3} 前缀匹配盘上 slug 形态文件名，ADR-015 引用命中 ADR-015-<slug>.md 不再判断链（直驱 _adr_file_exists + e2e；spec「slug 形态引用不再误报」；core/knowledge_audit.py:396-401、:418 调用点实参为裸编号形态；tests/test_knowledge_audit.py:770 test_adr_broken_chain_matches_slug_filenames） | pass | 0/7 | - |
 | ka-state-merge-keeps-last-scale | 状态检查点合并回写：体检写入 last_scale 后检查点回写 state 不再被陈旧副本覆盖、次日报告出现「上次 X 行」规模趋势后缀（spec「last_scale 不再丢失」；tests/test_knowledge_audit.py:793 test_checkpoint_merge_keeps_last_scale_and_report_trend；core/knowledge_audit.py:122-160） | pass | 0/3 | - |
 | ka-full-suite-regression | 知识审计车道全量回归：tests/test_knowledge_audit.py 全部 24 例通过（含本 SPEC 台账/豁免/升级/ADR/state 合并 9 例新增与既有车道用例；实测本地 24 passed in 0.99s，断言文案取自真实输出末行「24 passed」） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
