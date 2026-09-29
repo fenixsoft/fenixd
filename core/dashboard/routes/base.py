@@ -151,8 +151,29 @@ def _sig_alerts(s, q, m):
 
 
 def _sig_admin_activities(s, q, m):
-    # 数据源与 /api/alerts 同一文件（admin_alerts.json）；?spec= 过滤发生在
-    # 读取之后，不改变签名源
+    # ?archived=1 数据源切换为归档旁路文件（admin_alerts_archive.jsonl，见
+    # _api_admin_activities），签名须与响应数据源对齐（code-review item
+    # 3da93afce0c9）：归档文件独立变化（活跃写回失败、人工/外部改动归档）
+    # 时 ETag 必须翻转，否则携带 If-None-Match 的归档页假 304。archived
+    # 判定与 _api_admin_activities 同一字面口径，两处不得分叉。
+    if (q.get("archived", [None])[0] or "").lower() in ("1", "true"):
+        from pathlib import Path
+
+        from core.dashboard.data import signature as _sig
+
+        project = _resolve_project_for_sig(s, q)
+        if project is not None:
+            return _sig.admin_alerts_archive_signature(Path(project["path"]))
+        # 跨项目聚合：与 _sig_alerts 聚合分支同口径跳过 fixture/不存在项目，
+        # 聚合集合（registry）参与哈希
+        parts = [_sig.registry_signature(s.server.registry)]
+        for p in s.server.projects():
+            if p.get("fixture") or not p.get("exists"):
+                continue
+            parts.append(_sig.admin_alerts_archive_signature(Path(p["path"])))
+        return _sig.combine(parts)
+    # 活跃路径：数据源与 /api/alerts 同一文件（admin_alerts.json）；?spec=
+    # 过滤发生在读取之后，不改变签名源
     return _sig_alerts(s, q, m)
 
 
