@@ -612,7 +612,9 @@ def record_failed_batch(
                 target = rec
                 break
         if target is not None:
-            target["fail_count"] = int(target.get("fail_count") or 0) + 1
+            # fail_count 容错解析收敛 _fail_count_int 单源（外部直改非数值/
+            # 缺失按缺省 1 递增，MUST NOT 让 ValueError 穿透炸掉批收尾入档）。
+            target["fail_count"] = _fail_count_int(target.get("fail_count")) + 1
             # 墓碑复燃（code-review item 931df4af59cc）：预算内释放只打标不删除，
             # 同条目集再次入档即清标回到在档排除态、fail_count 跨链续增——否则
             # 墓碑留存会让本递增分支不可达，每链都重新以 fail_count=1 建档，
@@ -832,7 +834,10 @@ def release_retryable_failed_batches(project_root) -> int:
         released = 0
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         for rec in records:
-            if rec.get("released") or int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX:
+            # fail_count 容错解析（_fail_count_int 单源，非数值按缺省 1）。
+            if rec.get("released") or _fail_count_int(
+                rec.get("fail_count")
+            ) >= FAIL_RETRY_MAX:
                 continue
             rec["released"] = True
             rec["released_at"] = now
@@ -1141,7 +1146,7 @@ def _pack_first_batch(groups: list, target: int) -> list:
       硬上限 H=2T。
     - 从最早文件组开启当前批；吸收候选优先级：与批内已有文件同目录的最早
       文件组优先（加入后 ≤ H 即吸收，允许浮动超 T）；无可用同目录候选时取
-      全局最早异目录组尝试吸收（仅批 < T 时；吸收后 ≥ T 即封批）。
+      最早「加入后 ≤ H」的异目录组尝试吸收（仅批 < T 时；吸收后 ≥ T 即封批）。
     - 批条数达 H 封批；单文件组自身 > H 独立成批不拆（整批可超 H）。
     """
     hard_cap = 2 * target
@@ -1161,7 +1166,8 @@ def _pack_first_batch(groups: list, target: int) -> list:
     remaining = [list(g) for g in groups[1:]]
     while remaining and len(batch) < hard_cap:
         # 候选扫描（全局最早序）：①最早一个「加入后 ≤ H」的同目录组优先；
-        # 顺带记录最早异目录组（其吸收条件 batch < T 与序号无关，首遇即最早）
+        # ②顺带记录最早一个「加入后 ≤ H」的异目录组（超额者跳过续扫更小候选，
+        # 与同目录分支同一容量口径，MUST NOT 把批推过硬上限 H）
         same_idx = -1
         cross_idx = -1
         for i, grp in enumerate(remaining):
@@ -1172,7 +1178,7 @@ def _pack_first_batch(groups: list, target: int) -> list:
                     break
                 # 该同目录组不满足吸收条件 → 继续扫更小的同目录候选
                 continue
-            if cross_idx < 0:
+            if cross_idx < 0 and len(batch) + len(grp) <= hard_cap:
                 cross_idx = i
         if same_idx >= 0:
             pick, cross_absorbed = same_idx, False

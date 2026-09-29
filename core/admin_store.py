@@ -220,9 +220,9 @@ class AdminStore:
 
         refuse_returns_none=True（code-review item 2570ca391771）：拒写时返回
         None 而非 fn 结果——fn 已在内存生效但记录未落盘，调用方（append /
-        append_if_absent）据此把返回按未落地处理，不再把拒写伪装成成功。
-        默认 False：其余调用方（merge_signal 的元组解构、mark_* 的布尔/计数
-        返回值）行为保持不变。
+        append_if_absent / merge_signal）据此把返回按未落地处理，不再把拒写
+        伪装成成功（merge_signal 把 None 转译为 (None, False) 元组）。
+        默认 False：其余调用方（mark_* 的布尔/计数返回值）行为保持不变。
         """
         with self._thread_lock:
             with self._lock() as lf:
@@ -431,6 +431,10 @@ class AdminStore:
         状态变化 / 首见时创建新记录并携带 status_hash / last_seen，
         返回 (record, is_new=True)。
 
+        文件损坏留底被下限保护拒写时返回 (None, False)——记录未落盘
+        （code-review item 27c156cb5272），不把内存记录伪装成新沉淀成功，
+        调用方须按未落地处理（record is None 即判别依据）。
+
         ONLY 作用于 kind=signal 的 per-spec 检测记录：
           - 「写入即待唤起」型记录（STORED_SIGNAL_TYPES 由 pm_engine 直接
             append 写入、按 id 摄取 mark_escalated）不参与合并——其 id 是
@@ -472,7 +476,12 @@ class AdminStore:
             records.append(rec)
             return rec, True
 
-        return self._mutate(mutate)
+        written = self._mutate(mutate, refuse_returns_none=True)
+        if written is None:
+            # 拒写（文件损坏留底）：记录未落盘，返回可判别的 (None, False)
+            # 而非把内存元组原样穿透伪装成新沉淀成功（item 27c156cb5272）
+            return None, False
+        return written
 
     def read_records(self) -> list:
         """读取全部记录（按存储原序：新记录在数组末尾，不排序）。
@@ -487,8 +496,10 @@ class AdminStore:
     def read_all(self) -> list:
         """读取全部记录（最新的在前）。损坏/缺失返回空列表。"""
         records = self._read_locked()
-        # or ""：对 "created": null（人工修补/外部写入脏形态）设防，与 latest_resolved_disposition 同口径
-        records.sort(key=lambda e: e.get("created") or "", reverse=True)
+        # str(...) or ""：对 "created" 非字符串脏形态（null/数字等，人工修补/
+        # 外部写入）设防，避免 str 与 int 等混排抛 TypeError 打挂全部读路径，
+        # 与 latest_resolved_disposition 同口径
+        records.sort(key=lambda e: str(e.get("created") or ""), reverse=True)
         return records
 
     def unhandled(self) -> list:
@@ -636,7 +647,8 @@ class AdminStore:
         """返回最近一条匹配（spec, signal_type）的记录，供节流判断。
 
         within_minutes 内存在 → 返回该记录；否则返回 None。
-        spec 为 None 时匹配所有 spec（用于 daemon 级信号）。
+        spec 为 None 时仅匹配 spec=None 的 daemon 级记录（per-spec 记录
+        一律跳过，避免污染 daemon 级冷却窗口）。
 
         窗口锚点 = max(created, last_seen)（admin-signal-consolidation D1）：
         状态沉淀后 created 停在首次触发、同状态续报只刷 last_seen——若仍按
@@ -731,7 +743,10 @@ class AdminStore:
                 continue
             if rec.get("result") not in ("resolved", "partially-resolved"):
                 continue
-            if best is None or (rec.get("created") or "") > (best.get("created") or ""):
+            # str(...) 归一与 read_all 同口径：created 非字符串脏形态不抛 TypeError
+            if best is None or str(rec.get("created") or "") > str(
+                best.get("created") or ""
+            ):
                 best = rec
         return best
 
@@ -961,6 +976,7 @@ class DisputeAuditStore:
                         fcntl.flock(lf, fcntl.LOCK_UN)
         except OSError:
             return []
-        # or ""：对 "created": null 设防，避免 None 与 str 比较抛 TypeError
-        out.sort(key=lambda e: e.get("created") or "", reverse=True)
+        # str(...) or ""：对 "created" 非字符串脏形态（null/数字等）设防，
+        # 避免 None/int 与 str 混排抛 TypeError
+        out.sort(key=lambda e: str(e.get("created") or ""), reverse=True)
         return out

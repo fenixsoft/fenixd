@@ -75,7 +75,7 @@ class FFastTrackMixin:
         scale = 0
         tier = "normal"
         try:
-            scale = int(estimate_spec_scale(spec_dir))
+            scale = int(estimate_spec_scale(spec_dir, logger=self._pm.logger))
             cfg = self._scale_precheck_config()
             tier = budget_tier_for_scale(
                 scale,

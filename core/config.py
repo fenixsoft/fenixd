@@ -1416,7 +1416,10 @@ class ConfigLoader:
         shutdown>0 且 run_drain ≤ shutdown 的可加载配置下该上界不束紧、行为不变。
         """
         raw = cls.get(config, "agents.run_drain_max_seconds", None)
-        if raw is None:
+        # bool 排除（code-review item 611268328575）：float(True)=1.0 不抛异常，
+        # 会把 restart 排水窗静默缩到 1 秒——与 _num 及 _validate 的既有 bool
+        # 护栏同口径回退缺省 60。
+        if raw is None or isinstance(raw, bool):
             value = 60.0
         else:
             try:
@@ -1498,6 +1501,14 @@ class ConfigLoader:
         # 失败，各字段既有取值语义不变（stuck_silence/shutdown_drain 的显式 0
         # 合法、drain 负数仍由 max(0, …) 夹 0），回退值与原缺省逐字一致。
         def _num(value, default, conv):
+            # bool 排除（code-review item 611268328575）：bool 是 int 子类，
+            # conv(True)=1.0 / conv(False)=0.0 不抛异常——interval_minutes: true
+            # 把巡检间隔静默缩到 1 分钟、shutdown_drain_seconds: true 变 1 秒
+            # 快速停机、stuck_silence_minutes: false 把静默期归 0（语义是
+            # 「不静默」而非缺省 120）。与上方 breaker 及 _validate 硬校验层的
+            # 既有 bool 护栏同口径：非 bool 值才参与转换，否则回缺省。
+            if isinstance(value, bool):
+                return default
             try:
                 result = conv(value)
             except (TypeError, ValueError):
@@ -2384,7 +2395,20 @@ class ConfigLoader:
             return  # 未配置显式 absolute_max（含 .nan/.inf）：由消费方按各自默认处理，不校验
         if float(configured) >= float(floor):
             return  # 一致（含自动对齐后再次校验）
-        if not sup.get("auto_align", True):
+        # 严格 bool 归一（code-review item 6fad622be56a）：引号串
+        # auto_align: "false" 真值恒为 True，not 判定不成立会让用户显式要求的
+        # fail-fast（拒绝加载、保留旧值）被静默跳过、落入自动对齐分支且无告警
+        # 留痕——与 _supervision_settings 的 enabled 同款归一（code-review item
+        # 6b032f4596e5）：非 bool 打 WARNING 并按缺省 True（自动对齐）处理。
+        auto_align = sup.get("auto_align", True)
+        if not isinstance(auto_align, bool):
+            _logger.warning(
+                "agents.timeout_supervision.auto_align 非布尔（%r），"
+                "按缺省 True（自动对齐）处理",
+                auto_align,
+            )
+            auto_align = True
+        if not auto_align:
             raise ValueError(
                 "timeout_supervision.absolute_max_seconds=%s 低于配置校验层下限 %s"
                 "（= max(生效超时) + (max_extensions + %s)×extension_seconds），且 auto_align "

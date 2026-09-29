@@ -10,6 +10,11 @@
   不回滚已成功的目录移动，归档本体不受影响；
 - 只 commit 不 push：push 仍由人工门禁（fenix-approve）与 push 流程负责；
   pm_engine push 尾部的归档收口保留为兜底（有残留才动作）。
+
+本模块的 warning 走裸 ``logging.getLogger("fenixd.archive_commit")`` 通道（经
+传播汇入全局 "fenixd" 日志器）。多项目同进程下该通道无自有 handler，记录会
+串写进最后构造 Logger 实例项目的 fenixd.log（core/logger.py item
+9ed664019b2d 的已知接受项），输出项目归属不确定，排障时按时间与上下文归属。
 """
 
 import logging
@@ -94,9 +99,10 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
 
     # pathspec 安全：spec_name / 归档目录名直接拼入 git pathspec，glob（* ? []）
     # 会被按模式匹配解释而可能误匹配计划外路径；白名单不通过时 fail-open 跳过提交。
+    # fullmatch 锚定整串（$ 会放过尾部带 \n 的名字），口径同 code_review.py 的 legit_re
     if not (
-        _SAFE_PATH_RE.match(spec_name)
-        and _SAFE_PATH_RE.match(Path(archive_dir).name)
+        _SAFE_PATH_RE.fullmatch(spec_name)
+        and _SAFE_PATH_RE.fullmatch(Path(archive_dir).name)
     ):
         return _fail(
             "spec_name 或归档目录名含 pathspec 危险字符，跳过归档提交: "

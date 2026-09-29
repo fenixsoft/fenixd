@@ -907,9 +907,9 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
                             # 每 run 恒 1 条、与死因零相关，放任占位会让连续
                             # 两个自省窗口的条目被同一噪声带偏；stderr_count
                             # 仍保留全量计数（取证现场完整），全噪声时置空。
-                            line = entry.get("line")
-                            if not (isinstance(line, str)
-                                    and is_cli_stderr_noise(line)):
+                            raw_line = entry.get("line")
+                            if not (isinstance(raw_line, str)
+                                    and is_cli_stderr_noise(raw_line)):
                                 state["first_stderr"] = (
                                     _midflight_event_summary(entry)
                                 )
@@ -1065,7 +1065,7 @@ def collect_log_errors(project_root, window_start: datetime, limit: int = 20) ->
             pass
     samples = [
         f"{e.get('timestamp', '')} [{e.get('component', '')}] " f"{str(e.get('message', ''))[:200]}"
-        for e in errors[-limit:]
+        for e in (errors[-limit:] if limit > 0 else [])
     ]
     return {"error_count": len(errors), "samples": samples}
 

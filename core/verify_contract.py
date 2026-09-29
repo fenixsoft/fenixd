@@ -354,17 +354,21 @@ def _load_verify_contract_with_raw(
     # ready 段（code-review item c2d140a513b9）：先类型校验再取值——ready: 为
     # 标量/字符串（如 ready: /health）时 .get 抛 AttributeError 从本函数直接
     # 冒出，违背文档「解析失败按无契约处理并记 warning」约定
-    # （selfcheck_contract_light 的调用不在 try 内，消费期会崩溃）。非法映射
-    # 按无契约回退；expect/timeout 非法值回退缺省并记 warning（item
-    # 97f9f0e1a56e，见下方解析处）。
+    # （selfcheck_contract_light 的调用不在 try 内，消费期会崩溃）。非法形态
+    # 按缺省就绪探针回退（code-review item 6ac42b7af735：对齐 prepare/serve/
+    # regression 段「告警＋只忽略该片段」惯例，不再整份契约作废——那会让
+    # prepare 构建与 serve 声明一并静默失效，验证退回 commands.start 旧行为）；
+    # expect/timeout 非法值回退缺省并记 warning（item 97f9f0e1a56e，见下方
+    # 解析处）。
     ready_data = data.get("ready")
     if ready_data is not None and not isinstance(ready_data, dict):
         if logger:
             logger.warning(
                 "verify_contract",
-                f"verify.yaml ready 段非法（须为映射，按无契约回退）: {ready_data!r}",
+                f"verify.yaml ready 段非法（须为映射，按缺省就绪探针处理）: "
+                f"{ready_data!r}",
             )
-        return None, None
+        ready_data = {}
     ready_data = ready_data or {}
     # expect/timeout 数值解析（code-review item 97f9f0e1a56e）：旧
     # ``int(... or 200)`` 让 bool 穿透——bool 是 int 子类，``expect: true`` 得
@@ -1551,7 +1555,15 @@ def _rewrite_origin_in_scenarios(raw, base_url: str) -> tuple[list, int]:
     prefix = base_url.rstrip("/")
 
     def _rewrite_value(value: str) -> tuple[str, int]:
-        return _URL_ORIGIN_RE.subn(prefix, value)
+        # code-review item 5ea13f017c5c：只改写字符串起点锚定的目标 origin——
+        # 全局 subn 会把 query/路径内嵌的其它绝对 URL（?redirect=、CDN 等
+        # 跨域引用）一并改成被测实例地址。与运行时 ApiRunner.rewrite_origin
+        # 同规则（只换目标自身 origin，其余原样保留）；requires_http_scheme
+        # 已保证 value 以 http(s):// 开头，正常形态必命中起点 origin。
+        m = _URL_ORIGIN_RE.match(value)
+        if not m:
+            return value, 0
+        return prefix + value[m.end():], 1
 
     return _rewrite_scenario_target_values(raw, requires_http_scheme=True,
                                            rewrite_value=_rewrite_value)
@@ -1879,7 +1891,7 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
     # b64c1ac34f79）。
     contract, raw_data = _load_verify_contract_with_raw(project_root, logger)
     if contract is None:
-        # 解析失败/顶层非映射/ready 段非法等「契约整体无效」形态：具体原因
+        # 解析失败/顶层非映射等「契约整体无效」形态：具体原因
         # 已由 _load_verify_contract_with_raw 记 warning（单次读取下 raw_data
         # 与 contract 同为 None，无法也无需二次裸读判别具体形态），自证仍
         # 大声失败（不写快照，下轮 mtime 变化自动重证），否则验证无声落入

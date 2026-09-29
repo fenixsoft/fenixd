@@ -146,7 +146,7 @@ SCALE_PRECHECK_THRESHOLD_MIN = 1
 SCALE_PRECHECK_THRESHOLD_MAX = 10000
 
 
-def estimate_spec_scale(spec_dir: Path) -> int:
+def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
     """按 tasks.md 未勾选任务条数 + 声明段交付物数加权返回规模分。
 
     算分：``未勾选任务数 × TASK_WEIGHT + 声明段交付物数 × FILE_WEIGHT``。
@@ -160,6 +160,12 @@ def estimate_spec_scale(spec_dir: Path) -> int:
 
     Args:
         spec_dir: spec 目录路径（如 spec/changes/<spec_name>）
+        logger: 可选 ``core.logger.Logger`` 实例（code-review item
+            49af374b79b7）。传入时 WARNING 经实例通道落**本项目** fenixd.log
+            （core/logger.py 明示约定：core 落盘日志统一走 Logger 实例——裸
+            ``getLogger("fenixd.*")`` 子日志器自身无 handler，多项目同进程下
+            按传播语义串写最后构造项目的日志，输出项目归属不确定）；未传时
+            （单测/独立调用）回退原裸 ``logging.getLogger`` 通道。
 
     Returns:
         规模分（int），值越大任务越重。
@@ -168,7 +174,19 @@ def estimate_spec_scale(spec_dir: Path) -> int:
     if not spec_path.is_dir():
         return 0
 
-    logger = logging.getLogger("fenixd.fast_track_scale")
+    # 日志通道单点（code-review item 49af374b79b7）：调用方注入 Logger 实例
+    # 则经实例通道落本项目日志；未注入回退裸 getLogger 通道（其项目归属
+    # 不确定的局限见 core/logger.py 明示）。
+    if logger is not None:
+
+        def _warn(message: str) -> None:
+            logger.warning("fast_track_scale", message)
+
+    else:
+        _bare_logger = logging.getLogger("fenixd.fast_track_scale")
+
+        def _warn(message: str) -> None:
+            _bare_logger.warning(message)
 
     # 1. 统计 tasks.md 未勾选任务条数
     tasks_path = spec_path / "tasks.md"
@@ -185,10 +203,10 @@ def estimate_spec_scale(spec_dir: Path) -> int:
             # 漏判方向是低估。取舍：宁可高估。
             unchecked_count = len(re.findall(r"^- \[ \] ", text, re.MULTILINE))
         except (OSError, UnicodeDecodeError) as e:
-            logger.warning(f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}")
+            _warn(f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}")
             unchecked_count = 0
     else:
-        logger.warning(f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}")
+        _warn(f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}")
 
     # 2. 统计声明段交付物数（modify/new/delete；reference 不计）
     #    add-declaration-relocation-protocol D1：声明读取经统一解析入口
@@ -232,7 +250,7 @@ def estimate_spec_scale(spec_dir: Path) -> int:
         file_count = len((declared or {}).get("deliverables") or [])
     except Exception as e:
         # 解析失败保守低档放行（与 tasks.md 缺失同语义，不阻断派发）
-        logger.warning(f"fast-track 规模预估解析交付物失败（低档放行）: {e}")
+        _warn(f"fast-track 规模预估解析交付物失败（低档放行）: {e}")
         file_count = 0
 
     # 3. 加权计算规模分

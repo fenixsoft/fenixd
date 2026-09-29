@@ -13,6 +13,14 @@ daemon/admin_monitor 层）。
 - 指纹去重：``sha1(file|category|normalize_title(title))[:12]``；
 - ``manual_full`` 全仓快照核销（D5），窗口审查只增不核销；
 - 并发写复用 evolution 的 flock + 原子替换形态（_with_lock/_atomic_write）。
+
+日志通道（code-review item 87d7bf7e7ba4）：本模块运维告警（分片目录列举
+失败、疑似错名分片点名、items.jsonl 损坏跳过、STATE 判重读取失败、
+code_review_state.json 写入失败）走裸 ``logging.getLogger("fenixd.code_review")``。
+多项目同进程下该裸子日志器无自有 handler，记录按传播语义串写进最后构造
+实例项目的 fenixd.log，生效级别随最后实例的 _level 漂移（core/logger.py
+明示的 last-wins 局限，item 9ed664019b2d）——跨项目排障时知悉这些记录
+可能落错项目的日志文件。
 """
 
 import fcntl
@@ -1088,10 +1096,12 @@ def _read_run_tail(run_file, max_lines: int = 1) -> list:
 
 
 def _terminal_status_map() -> dict:
-    """run 终态事件类型集合（result/error/interrupted/cancelled/superseded）。
+    """run 终态事件类型集合（RUN_TERMINAL_STATUS_MAP 全量）。
 
     读 runs.py 公开常量 RUN_TERMINAL_STATUS_MAP（延迟解析避免 core.dashboard
-    导入链）。
+    导入链）；终态全集以 core/dashboard/data/runs.py 的映射为单源，此处不
+    手抄枚举（含 frozen-terminated/gate-blocked 在内的全集见该映射，与
+    read_progress docstring 同口径，避免两处清单各自漂移）。
     """
     from core.dashboard.data.runs import RUN_TERMINAL_STATUS_MAP
 

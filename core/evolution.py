@@ -38,6 +38,12 @@ _logger = logging.getLogger("fenixd.evolution")
 # todo.md 小节枚举（与 core/self_review.py 渲染的三小节一一对应）
 TODO_SECTIONS = ("浪费", "失误", "可改进")
 
+# 未知小节 WARNING 去重集（进程生命周期每节一次，code-review item
+# 437681e0e485）：parse_todo_entries 在就绪巡检热路径上被高频调用，函数局部
+# 去重每次调用重建，todo.md 持续存在非法小节时会周期性刷屏；对齐
+# core/config.py:_UNKNOWN_AGENT_MODEL_KEYS_WARNED 的模块级生命周期去重范式。
+_UNKNOWN_TODO_SECTIONS_WARNED: set = set()
+
 # todo.md 结构标题正则：## YYYY-MM-DD 日期节 / ### 小节 / - **标题** 条目
 _TODO_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
 _TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
@@ -494,7 +500,8 @@ def parse_todo_entries(text: str) -> List[dict]:
     （与 core/self_review.py:_render_entry_lines 的渲染格式对齐）。
 
     - ``- （当日无）`` 占位与无法归类的行 MUST 跳过且不使解析失败；
-    - 小节名不在三值枚举内的条目 MUST 跳过并记一次 WARNING（每节一次）。
+    - 小节名不在三值枚举内的条目 MUST 跳过并记一次 WARNING（进程生命周期
+      内每节一次，见 _UNKNOWN_TODO_SECTIONS_WARNED）。
 
     Returns: [{date_section, section, title, impact, evidence, analysis,
     suggestion}]（无 project，由调用方注入）。
@@ -504,7 +511,6 @@ def parse_todo_entries(text: str) -> List[dict]:
     current_section = ""
     current_entry: Optional[dict] = None
     current_fields: Dict[str, str] = {}
-    _section_warned: set = set()
 
     def _flush_entry() -> None:
         nonlocal current_entry, current_fields
@@ -537,13 +543,13 @@ def parse_todo_entries(text: str) -> List[dict]:
             _flush_entry()
             section_name = m.group(1).strip()
             if section_name not in TODO_SECTIONS:
-                if section_name not in _section_warned:
+                if section_name not in _UNKNOWN_TODO_SECTIONS_WARNED:
                     _logger.warning(
                         "evolution: todo.md 小节 %r 不在三值枚举 %s 内，" "其下条目跳过",
                         section_name,
                         list(TODO_SECTIONS),
                     )
-                    _section_warned.add(section_name)
+                    _UNKNOWN_TODO_SECTIONS_WARNED.add(section_name)
                 current_section = ""
             else:
                 current_section = section_name
@@ -1424,10 +1430,13 @@ def accept_item(
             # 之间无锁覆盖 items.jsonl 之外的外部写入者（人工 fenix-new 立项等），
             # MUST NOT 无条件 rmtree——窗口内他方新建的同名目录会被整体删除，再被
             # 本条目草稿顶替，两个不同来源的逻辑 spec 混淆。仅当目录确为本条目
-            # 此前失败残留（rec 记录的 spec_name 即本名；草稿/副本内容不含 id，
-            # 记录级归属是唯一可靠信号）时才清理后按原名重试；其余一律置
-            # accept_failed + 告警，不删不动，重试经 resolve_spec_name 换后缀名。
-            if rec.get("spec_name") != name:
+            # 此前清理失败的残留（显式 residue 标记）时才清理后按原名重试；其余
+            # 一律置 accept_failed + 告警，不删不动，重试经 resolve_spec_name 换
+            # 后缀名。spec_name 判等不构成残留证据（code-review item
+            # afe111a45d02）：注册失败分支无论清理成败都持久化 spec_name，清理
+            # 成功后磁盘已无残留，窗口内外部新建的同名目录会被误判为本条目残留
+            # 而整体删除（未提交内容不可恢复）。
+            if rec.get("spec_name") != name or not rec.get("residue"):
                 rec["status"] = "accept_failed"
                 rec["draft_failed_reason"] = (
                     f"spec/changes/{name} 已存在且非本条目残留（名字被占用）"
@@ -1513,6 +1522,13 @@ def accept_item(
             # 残留目录与重试后缀策略。
             rel_dir = f"spec/changes/{name}"
             cleaned, clean_err = _git_remove_committed_dir(project_root, rel_dir)
+            # 残留归属显式化（code-review item afe111a45d02）：仅清理失败（副本
+            # 可能仍在盘上、git 状态不确定）才置 residue 标记，供重试时
+            # dest.exists() 分支判定归属；清理成功即复位（磁盘已无残留）。
+            if cleaned:
+                rec.pop("residue", None)
+            else:
+                rec["residue"] = True
             rec["status"] = "accept_failed"
             rec["draft_failed_reason"] = err or "STATE 注册失败"
             rec["spec_name"] = name
@@ -1542,6 +1558,7 @@ def accept_item(
         rec["decided_by"] = decided_by
         rec["decided_at"] = now
         rec["spec_name"] = name
+        rec.pop("residue", None)  # 立项成功复位残留标记（code-review item afe111a45d02）
         _persist(rec)
         write_todo_marker(rec, disposition=_disposition_from_status(rec["status"]))
         return {"ok": True, "status": rec["status"], "spec_name": name, "error": None}

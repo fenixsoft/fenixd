@@ -125,9 +125,18 @@ def _load_report_json(project_root, spec_name):
         # 故 scenarios 为空列表时要求 summary.total > 0 才可用（total>0 说明
         # 确有场景跑过，scenarios 明细缺失属截断而非占位）；total 缺失/为 0/
         # 不可解析一律按占位报告拒收（fail-closed）。
+        # 且须 summary 显式声明 failed 与 errors 键（引擎 _build_report 恒写
+        # 全套计数键，合法截断报告必满足）：仅带 total 的 summary 携带零失败
+        # 证据，_derive_status 的 summary 分支因未声明失败键落到场景计数兜底，
+        # 空场景集推不出 bug-found，最终仍推出 verified——「total>0 即放行」
+        # 的假通过漏网变体（code-review 03296ed3a49e），同按 fail-closed 拒收。
         if isinstance(scenarios, list):
             try:
-                if int(summary.get("total") or 0) > 0:
+                if (
+                    int(summary.get("total") or 0) > 0
+                    and "failed" in summary
+                    and "errors" in summary
+                ):
                     return data
             except (TypeError, ValueError):
                 pass
