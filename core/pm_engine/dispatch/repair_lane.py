@@ -693,19 +693,27 @@ class PRepairLaneMixin:
         if getattr(remerge_info, "wip_gate_blocked", False):
             self._report_mergeback_wip_overlap(spec_name, remerge_info, branch, merge_error)
             return False
-        # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard D1/D1a）──
-        # repair 后 re-merge-back 被卫检查顺延（spec_dir_inflight=True）：主树 spec
-        # 目录有未提交改动。MUST NOT 消费 _repair_awaiting_remerge 标记——原样保留
-        # 待下一轮恢复/重排再试（清除会让「仅剩合并」的分支退回 ready 全新派发）。
-        # 亦不经 fp 记账/blocked/repair 轮（顺延不是 merge 失败）。顺延的有界上限
-        # 由 dispatch 调用方承载；repair 车道是同一轮内失败即返回的有界短窗。
+        # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard D1/D1a；
+        # code-review item 4d8a36d16d39，repair 车道对齐 full/fast-track 车道
+        # _defer_merge_back）── repair 后 re-merge-back 被卫检查顺延
+        # （spec_dir_inflight=True）：主树 spec 目录有未提交改动。MUST NOT 消费
+        # _repair_awaiting_remerge 标记——原样保留（清除会让「仅剩合并」的分支
+        # 退回 ready 全新派发）。亦不经 fp 记账/blocked/repair 轮（顺延不是 merge
+        # 失败）。与 full 车道同语义：写 _merge_retry_pending 记账 + 排程
+        # merge-only 重试（_retry_merge_back_only 按 branch 锚点通用实现，天然
+        # 覆盖 repair 车道），有界顺延自动重试合并；窗口/轮数超限由
+        # _defer_merge_back 内部回落「告警 + 人工处置」通道
+        # （_report_mergeback_spec_dir_inflight_stuck）。MUST NOT 在飞顺延零重试
+        # ——原行为 spec 悬置 implementing 且无活跃 run，只能等 admin_monitor
+        # stuck 阈值唤起人工，三条车道有界性不对称。
         if getattr(remerge_info, "spec_dir_inflight", False):
             self._pm.logger.warning(
                 "pm_engine",
                 f"repair 后 re-merge-back 顺延 '{spec_name}'（branch '{branch}'）: "
-                f"{merge_error} — spec 目录在飞编辑，保留 _repair_awaiting_remerge "
-                f"待下一轮再试（不消费标记、不重派）",
+                f"{merge_error} — spec 目录在飞编辑，保留 _repair_awaiting_remerge，"
+                f"写顺延记账并排程 merge-only 重试（不消费标记、不重派）",
             )
+            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
             return False
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
@@ -783,7 +791,9 @@ class PRepairLaneMixin:
         - ``_repair_round`` 归零：fallback 后新 implementer 的 merge 失败开启新链
           （design D6）；
         - 状态置 ready + error（既有 _prev_error_section 会把它注入新 implementer
-          prompt，即「prompt 注入当次 merge 失败上下文」）；
+          prompt，即「prompt 注入当次 merge 失败上下文」）；例外：``_retry_count``
+          达 ``agents.max_retries`` 时走 freeze_for_human 冻结转人工（3.1 单一
+          入口），不再重派；
         - ``_merge_fp``/``_merge_streak`` **不清零**：repair 失败后 fallback 重派
           引发的 merge-back 失败与前序失败连续累计（熔断协同）。
         """
@@ -835,9 +845,9 @@ class PRepairLaneMixin:
             max_r = 3 if cfg_max_r is None else int(cfg_max_r)
         except (TypeError, ValueError):
             max_r = 3
+        # 收尾字段（不含 error/status）：冻结转人工路径经 freeze_for_human 的
+        # extra_updates 并入同一原子写；ready 回退路径再并上 status/error 写。
         updates: dict = {
-            "status": "ready",
-            "error": full_error,
             "_repair_round": 0,
             "_repair_merge_error": None,
             # 基准 tip 随 fallback 一并清零（fix-repair-commit-enforcement 2.2）：
@@ -855,30 +865,66 @@ class PRepairLaneMixin:
             # 并入 update_spec（避免并发 fallback 间互相覆盖丢增量）。
         }
         if retries >= max_r:
-            updates["status"] = "blocked"
-            updates["error"] = (
-                f"实现尝试连续 {max_r} 次失败（含 repair 通道）— 已 blocked，"
-                f"需人工检查。最近失败：{full_error[:400]}"
+            # fix-blocked-freeze-classification 3.1：重试耗尽收敛到 freeze_for_human
+            # 单一入口（frozen + 人工升级告警成对写入），与 budget.py /
+            # spec_integrity.py 同语义站点及 queue.py / fast_track.py 重试耗尽分支
+            # 同口径——原手工 status=blocked 既无 frozen 标记也无成对告警，
+            # admin_monitor 的 blocked_stuck 豁免判据一条不占，冷却期满会被按
+            # stuck 自动召唤 admin run，与 full 车道同场景处置机制分裂。error
+            # 内嵌「原状态 X」供 parse_orig_status 解冻还原。
+            orig_status = (self._pm.state_machine.read_one(spec_name) or {}).get(
+                "status"
+            ) or "implementing"
+            self._pm.state_machine.freeze_for_human(
+                spec_name,
+                error=(
+                    f"原状态 {orig_status} · 实现尝试连续 {max_r} 次失败"
+                    f"（含 repair 通道）— 已冻结转人工，需人工检查。"
+                    f"最近失败：{full_error[:400]}"
+                ),
+                signal_type="redispatch_loop_detected",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 实现尝试连续 {max_r} 次失败（含 repair 通道）"
+                    f"已达 agents.max_retries 上限，自动重试终止——已冻结转人工处置"
+                ),
+                evidence=(
+                    f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                    f"final_error={full_error}"
+                ),
+                recommended_action=(
+                    "检查实现/repair 失败根因；处置后解冻（unfreeze_spec 自动清零"
+                    "计数）可重新获得自动修复机会"
+                ),
+                alert_callback=self._pm._send_human_escalation_alert,
+                extra_updates=updates,
             )
-        self._pm.state_machine.update_spec(spec_name, updates)
+            self._pm.logger.error(
+                "pm_engine",
+                f"repair 链回退重试耗尽 '{spec_name}'：{full_error[:200]} — "
+                f"冻结转人工，不再重派",
+            )
+            return
+        self._pm.state_machine.update_spec(
+            spec_name, {"status": "ready", "error": full_error, **updates},
+        )
         self._pm.logger.error(
             "pm_engine",
             f"repair 链回退 fallback '{spec_name}'：{full_error[:200]}",
         )
-        if updates["status"] == "ready":
-            # 回退通道按 spec 实现模式选择（fast-track 接入 repair lane 配套）：
-            # fast-track spec 的 repair 失败回 fast-track 重派，不硬派 implementer
-            try:
-                from core.spec_mode import read_spec_mode
+        # 回退通道按 spec 实现模式选择（fast-track 接入 repair lane 配套）：
+        # fast-track spec 的 repair 失败回 fast-track 重派，不硬派 implementer
+        try:
+            from core.spec_mode import read_spec_mode
 
-                channel = (
-                    "fast-track"
-                    if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
-                    else "implementer"
-                )
-            except Exception:
-                channel = "implementer"
-            self._enqueue_front(spec_name, channel)
+            channel = (
+                "fast-track"
+                if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
+                else "implementer"
+            )
+        except Exception:
+            channel = "implementer"
+        self._enqueue_front(spec_name, channel)
 
     def _repair_conflict_summary(self, spec_name: str, merge_info) -> dict:
         """构造 repair prompt 的冲突摘要（D5：spec 身份 + 冲突清单 + 方向说明）。
