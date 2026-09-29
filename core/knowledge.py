@@ -503,7 +503,11 @@ def _git_status_paths(proot: Path):
         路径集合；``None`` = git 不可用/非 git 仓库（无从对账，调用方跳过）。
     """
     try:
-        status = _git(proot, ["status", "--porcelain"])
+        # --no-optional-locks：本快照在蒸馏 worker 线程上先于 spawn 运行，与
+        # 主线程 commit_archive_move 的 git add 并发；git status 的机会式索引
+        # 刷新会短暂持有 index.lock，撞出 EEXIST 让归档提交误报失败
+        # （tests/test_knowledge_e2e 回归）。只读快照不应写索引。
+        status = _git(proot, ["--no-optional-locks", "status", "--porcelain"])
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git status 失败，跳过越界写面对账: %s", e)
         return None
