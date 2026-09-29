@@ -219,5 +219,9 @@ class Logger:
         # 在 except 块内调用：取当前异常堆栈传入 LogRecord，JsonFormatter 的
         # exc_info 字段经实例通道真正生效（item df6de36313c9——core 代码统一
         # 走 Logger 实例落盘，traceback 不得依赖手工拼进 message）。
+        # except 块外 sys.exc_info() 返回 (None, None, None)，三元组为真值会让
+        # JsonFormatter 落盘一段「NoneType: None」伪堆栈（item 129ba2b71356），
+        # 无异常时归一为 None。
+        exc = sys.exc_info()
         self._log(logging.ERROR, component, message, context,
-                  exc_info=sys.exc_info())
+                  exc_info=exc if exc[0] is not None else None)
