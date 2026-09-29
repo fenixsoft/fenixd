@@ -747,15 +747,16 @@ class H0BaseMixin:
     def _write_304(self, etag: str) -> None:
         """写 304 空体响应（与 _json 同一写出纪律，keep-alive 不污染）。
 
-        Content-Length: 0 让客户端明裁空体；304 本身无体（不写 wfile，与
-        _json 的 HEAD 分支同口径）。Cache-Control 与 _json 一致（no-cache：
-        ETag 协商是唯一复用通道，不引入启发式缓存）。
+        304 本身无体且按 RFC 7230 §3.3.3 由头结束界定分帧（不写 wfile，与
+        _json 的 HEAD 分支同口径），不发 Content-Length：规范要求其值必须
+        等于对应 200 将发送的体长，恒写 0 属协议语义偏差
+        （code-review item 06228e8ac652）。Cache-Control 与 _json 一致
+        （no-cache：ETag 协商是唯一复用通道，不引入启发式缓存）。
         """
         self._mark_response_started()
         self.send_response(304)
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def _handle_api(self, path: str, query: dict):

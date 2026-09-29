@@ -439,9 +439,12 @@ class H6AlertRoutesMixin:
                 result = dashboard_data.execute_adjudication_choice(
                     proot, spec, choice_id, note=note, signal_type=signal_type
                 )
-            except Exception as e:  # 动作执行异常：不标记 handled，如实报告
+            except Exception:
+                # 动作执行异常：不标记 handled。不外泄裸异常文本（对齐 base.py
+                # 泛化文案策略与 regression_routes 同款）：str(e) 可能携带内部
+                # 路径/权限细节，客户端收固定文案，细节经上一行日志留痕。
                 logger.exception("alert-resolve 动作执行异常 alert=%s", alert_id)
-                self._error(500, f"动作执行异常: {e}（告警保持未处理，可重试裁决）")
+                self._error(500, "动作执行异常（告警保持未处理，可重试裁决）")
                 return
             steps = result.get("steps") or []
             if not result.get("ok"):
