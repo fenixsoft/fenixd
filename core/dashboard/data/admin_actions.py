@@ -24,10 +24,6 @@ from core.state_machine import (
 # 跨组引用（D4：叶子→中枢，直接导入无环）
 from .state import normalize_bool_flag, parse_state
 
-# set_spec_priority 的校验异常（Raises 契约；routes 侧经门面
-# dashboard_data.InvalidPriority 捕获映射 400）
-from .spec_docs import InvalidPriority
-
 # run 归属全等匹配（add-freeze-stop-inflight-agents 4.4：running_run_ids_for_spec
 # 与 daemon 消费方共用——run_spec_part 已剥 agent 前缀与 -a<n>/-r<n>/时间戳）
 from core.agent_runner.run_files import run_spec_part
@@ -292,7 +288,15 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
                             entry = json.loads(line)
                         except (json.JSONDecodeError, ValueError):
                             continue
-                        if isinstance(entry, dict) and entry.get("type"):
+                        # type 非 str（合法 JSON 的数组/对象值，手工编辑/
+                        # 异常写入）不可哈希，视为无终态行，保持保守
+                        # 「在跑」语义——否则 frozenset 成员测试抛 TypeError
+                        # 穿透调用链致 500
+                        if (
+                            isinstance(entry, dict)
+                            and isinstance(entry.get("type"), str)
+                            and entry.get("type")
+                        ):
                             last_type = entry.get("type")
             except OSError:
                 last_type = None
@@ -1442,6 +1446,13 @@ def clear_spec_error(project_root, spec: str) -> dict:
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, updates)
     return {"ok": True, "found": True}
+
+
+# set_spec_priority 的校验异常（code-review item 3b904e164982：唯一 raise 点
+# 在本模块，异常定义随抛出者走，不再寄居 spec_docs；routes 侧仍经门面
+# dashboard_data.InvalidPriority 捕获映射 400，导入路径不变）
+class InvalidPriority(ValueError):
+    """优先级非法（非 1-9 整数）。"""
 
 
 def set_spec_priority(project_root, spec: str, priority) -> dict:

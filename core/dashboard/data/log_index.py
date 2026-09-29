@@ -363,6 +363,11 @@ def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
     return _read(offsets[lo])
 
 
+# 公开访问面（code-review item 2546f200e430）：timeline.py 跨组引用改用公开名
+# （不跨组消费下划线私有名），与 _read_log_window_from 同一函数对象单源绑定。
+read_log_window_from = _read_log_window_from
+
+
 def get_recent_events(project_root, minutes=10, limit=30) -> list:
     """读取最近 N 分钟的 fenixd 结构化日志事件。
 
@@ -432,5 +437,7 @@ def record_project_event(
             # default=str 兜底：context 含 Path/datetime 等不可序列化对象时
             # 序列化为字符串而非抛 TypeError 穿透（写日志失败静默降级的承诺）
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-    except (OSError, UnicodeDecodeError):
+    # ValueError 族覆盖 UnicodeEncodeError：context/message 含 lone surrogate 时
+    # ensure_ascii=False 产物在 utf-8 落盘编码阶段抛的是编码错误而非 OSError
+    except (OSError, ValueError):
         pass

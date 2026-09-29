@@ -319,6 +319,12 @@ def _managed_key_sources(raw: dict) -> dict:
             "shutdown_drain_seconds",
             "bug_repair_mode",
             "stuck_silence_minutes",
+            # code-review item 7d53f7fb5c7a：叙事三键与 _SOURCE_KEYS /
+            # _SYNC_PAGE_KEYS（system 页）登记对齐——缺此三键时项目级显式配置后
+            # sources 仍回 "user"，设置页「继承自用户级」徽标恒错
+            "narrative_enabled",
+            "narrative_timeout_seconds",
+            "narrative_model",
         ):
             if _k in admin_raw:
                 sources[f"admin.{_k}"] = "project"
@@ -524,7 +530,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
     try:
         with config_path.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
-    except (yaml.YAMLError, OSError) as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        # UnicodeDecodeError：PyYAML 对已解码 str 流不包装异常，文件为非 UTF8
+        # 编码（如 GBK）时 stream.read() 抛出——既非 YAMLError 也非 OSError，
+        # 缺则逃出 except 直达 HTTP 层成 500（code-review item eeec7a6f3ff5）
         result["error"] = f"配置文件解析失败: {e}"
         return result
     if not isinstance(raw, dict):
@@ -776,7 +785,9 @@ def read_effective_config(project_root) -> dict:
                 result["sources"] = _managed_key_sources(loaded)
             else:
                 result["error"] = "配置文件顶层不是对象"
-        except (yaml.YAMLError, OSError) as e:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛（code-review
+            # item eeec7a6f3ff5，与五处 yaml 读取点同款口径）
             result["error"] = f"配置文件解析失败: {e}"
 
     try:
@@ -1355,7 +1366,9 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 loaded = yaml.safe_load(f)
             if isinstance(loaded, dict):
                 raw = loaded
-        except (yaml.YAMLError, OSError) as e:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛，缺则成 500
+            # （code-review item eeec7a6f3ff5）
             return fail(f"读取现有配置失败: {e}")
 
     # 非 dict 的 agents patch 直接拒绝（对齐 self_evolution 同款「must be an
@@ -1428,9 +1441,19 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 )
 
     # add-code-review-agent-and-quality-tab：前端提交的 code_review patch 后端
-    # 校验（非法直接拒绝，不静默忽略——同 self_review 模式）
+    # 校验（非法直接拒绝，不静默忽略——同 self_review 模式）。
+    # code-review item e717a52cd82e：嵌套 admin.code_review（「同步用户级设置」
+    # 经 _SYNC_PAGE_KEYS 构造）与下方 code_review_fix 同款两路同口径——合并分支
+    # 对内层脏值是静默跳过语义，缺此校验时 write_config 返回 ok、键照常计入
+    # synced 回执（synced 与实际落盘不一致的假成功，且项目级被写入空段）。
+    _cr_patches = []
     if isinstance(config_patch.get("code_review"), dict):
-        cr_patch = config_patch["code_review"]
+        _cr_patches.append(config_patch["code_review"])
+    if isinstance(config_patch.get("admin"), dict) and isinstance(
+        config_patch["admin"].get("code_review"), dict
+    ):
+        _cr_patches.append(config_patch["admin"]["code_review"])
+    for cr_patch in _cr_patches:
         if (
             "enabled" in cr_patch
             and cr_patch["enabled"] is not None
@@ -2486,7 +2509,9 @@ def sync_config_from_user(project_root, page: str) -> dict:
                 loaded = yaml.safe_load(f)
             if isinstance(loaded, dict):
                 user_raw = loaded
-        except (yaml.YAMLError, OSError) as e:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛（code-review
+            # item eeec7a6f3ff5，与五处 yaml 读取点同款口径）
             return {
                 "ok": False,
                 "error": f"读取用户级配置失败: {e}",
@@ -2580,7 +2605,9 @@ def clear_project_page_keys(project_root, page: str) -> dict:
                 loaded = yaml.safe_load(f)
             if isinstance(loaded, dict):
                 raw = loaded
-        except (yaml.YAMLError, OSError) as e:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛，缺则成 500
+            # （code-review item eeec7a6f3ff5）
             return fail(f"读取现有配置失败: {e}")
 
         cleared = {}

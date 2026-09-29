@@ -85,7 +85,10 @@ def _parse_run_metric_stream(f) -> dict:
         if not isinstance(ctx, dict) or ctx.get("metric_type") != "run_metrics":
             continue
         rid = ctx.get("run_id")
-        if rid:
+        # c3bef177adc7: run_id 为不可哈希类型（合法 JSON 但半损坏行）时
+        # index[rid] 抛 TypeError 穿透段 2 OSError-only except 致接口 500——
+        # 非 str 降级跳过，与 6fd55ebbc869 非 object 行跳过口径对齐。
+        if isinstance(rid, str) and rid:
             index[rid] = ctx
     return index
 
@@ -339,7 +342,13 @@ def classify_run(lines: list) -> str:
     last = lines[-1]
     if not isinstance(last, dict):
         return "running"
-    return _RUN_TERMINAL_STATUS_MAP.get(last.get("type"), "running")
+    # c3bef177adc7: type 值为不可哈希类型（合法 JSON 但数组/对象，手工编辑/
+    # 半损坏产物）时 dict.get 抛 TypeError，runs 读接口整体 500——非 str 降级
+    # 按 running，与本函数非 dict 行降级及 6fd55ebbc869 防护口径同族对齐。
+    t = last.get("type")
+    if not isinstance(t, str):
+        return "running"
+    return _RUN_TERMINAL_STATUS_MAP.get(t, "running")
 
 
 # run_id 白名单（code-review item 325d0b089a9d）：run 产物 stem 由
@@ -697,6 +706,9 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
 # 公开访问面（code-review item b569f5bb4a32）：跨包消费方 core.code_review
 # 引用公开名，与 _read_run_lines 同一函数对象单源绑定。
 read_run_lines = _read_run_lines
+# 公开访问面（code-review item 2546f200e430）：timeline.py 跨组引用改用公开名
+# （不跨组消费下划线私有名），与私有实现同一函数对象单源绑定。
+resolve_run_file = _resolve_run_file
 
 
 def _parse_run_lines(lines) -> list:
@@ -917,6 +929,11 @@ def _run_tail_insights(
             # summary/usage/reason（llm 留空），与首段尾窗读取防护口径一致
             pass
     return {"summary": summary, "llm": llm, "usage": usage, "reason": reason}
+
+
+# 公开访问面（code-review item 2546f200e430）：与 _run_tail_insights 同一函数
+# 对象单源绑定；置于定义之后（模块级别名引用后向符号会 NameError）。
+run_tail_insights = _run_tail_insights
 
 
 def compute_run_cost(

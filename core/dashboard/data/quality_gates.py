@@ -149,7 +149,10 @@ def current_lane_fingerprint(project_root, entry=None) -> "dict | None":
     （fail-open），MUST NOT 因指纹能力缺失隐藏真实产物。
     """
     branch = str((entry or {}).get("branch") or "").strip()
-    if not branch:
+    # 拦截形如选项的取值（code-review item a2dd5c66d44f）：branch 源自可手工
+    # 编辑的 STATE 条目，以 - 开头会被 git 当 flag 解析（ref 命名规则本就
+    # 禁止 - 开头，拦截零误伤）→ 与无 branch 同路 fail-open 返回 None
+    if not branch or branch.startswith("-"):
         return None
 
     def _git(*args) -> str:
@@ -499,8 +502,10 @@ def _gate_blocked_reason(project_root, run_id: str) -> str:
     try:
         import core.dashboard.data as _facade
 
-        path = _facade._resolve_run_file(project_root, run_id)
-        lines = _facade._read_run_lines(path, max_lines=5)
+        # runs 组公开访问面（runs.py resolve_run_file/read_run_lines 单源绑定），
+        # 不跨组消费下划线私有名（code-review item 8a5f26099241）
+        path = _facade.resolve_run_file(project_root, run_id)
+        lines = _facade.read_run_lines(path, max_lines=5)
     except Exception:  # noqa: BLE001 —— fail-open：读不到归因留空
         return ""
     for e in reversed(lines or []):

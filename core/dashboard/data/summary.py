@@ -111,9 +111,15 @@ def project_summary(name: str, path: str, specs=None) -> dict:
 
     grand_done = grand_total = 0
     problems = 0
+    # D2：runs 目录（含 archive）预扫一次按 spec 分组，task_progress 复用该
+    # 文件集，不再每 spec 各自 glob（目录 glob 次数为常数；overview 每 2s
+    # 轮询、/api/projects 共用本聚合，spec 数大时放大最明显）。
+    runs_sigs = _runs_by_spec_sigs(proot)
     for sname in specs:
         entry = specs[sname]
-        d, t = _facade.task_progress(proot, sname, entry.get("status", ""))
+        d, t = _facade.task_progress(
+            proot, sname, entry.get("status", ""), files=[Path(p) for p in (runs_sigs.get(sname) or {})]
+        )
         grand_done += d
         grand_total += t
         if entry.get("error") and entry.get("status") not in ("done", "pushed"):
@@ -844,6 +850,11 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     scenarios = (
         report.get("scenarios", []) if report.get("exists") and not report.get("error") else []
     )
+    # scenarios 为非列表标量（report.json 被手改/部分写入）时按空处理，
+    # 对齐 artifacts.parse_bugs 防护口径：否则迭代得到字符/键名，垃圾条目
+    # 原样进入响应；置空后由下方 run-result 兜底接管（fail-closed 同语义）。
+    if not isinstance(scenarios, list):
+        scenarios = []
     # 场景内截图同样归一化为文件名（report.json 存的是服务器本地绝对路径）
     scenarios = [
         (
