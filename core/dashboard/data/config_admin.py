@@ -121,9 +121,9 @@ _SOURCE_KEYS = [
     "worktree.has_build_artifacts",
     # add-knowledge-atlas：知识真相源总开关（设置页「杂项」页签可编辑）
     "knowledge.enabled",
-    # add-knowledge-atlas-maintenance：知识真相源维护车道两键（设置页「杂项」页签可编辑）
+    # add-knowledge-atlas-maintenance：知识真相源维护车道键（设置页「杂项」页签可编辑；
+    # graph_enabled 已随 graphify 功能取消下线，不再受管——存量键被静默忽略）
     "knowledge.audit_enabled",
-    "knowledge.graph_enabled",
 ]
 
 # 受管 agents 标量键（来源标注 + 回显共用；配置键新条目在此登记一次即可
@@ -447,8 +447,8 @@ def _default_echo_view(scope: str) -> dict:
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-knowledge-atlas：知识真相源总开关（缺省 true，与 ConfigLoader 缺省
-        # 同步）；add-knowledge-atlas-maintenance：维护车道两键同节缺省
-        "knowledge": {"enabled": True, "audit_enabled": True, "graph_enabled": True},
+        # 同步）；add-knowledge-atlas-maintenance：维护车道键同节缺省
+        "knowledge": {"enabled": True, "audit_enabled": True},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
@@ -666,8 +666,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
 
         result["archive"] = {"auto_threshold": _CL.effective_auto_archive_threshold(raw)}
     # add-knowledge-atlas：knowledge 段回显（段在文件中显式出现才覆盖缺省，
-    # 与 archive 同型——避免未配置段以回显形态伪装成已配置）；合并后段内三键
-    # 共存（enabled 蒸馏总开关 + audit_enabled/graph_enabled 维护车道），
+    # 与 archive 同型——避免未配置段以回显形态伪装成已配置）；合并后段内键
+    # 共存（enabled 蒸馏总开关 + audit_enabled 维护车道），
     # 各经生效助手归一（非法值回落缺省）
     if isinstance(raw.get("knowledge"), dict):
         from core.config import ConfigLoader as _CLK
@@ -903,7 +903,7 @@ def read_effective_config(project_root) -> dict:
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
     # add-knowledge-atlas：经生效助手取值（非法值回退 true，设置页回显一致）；
-    # 合并后段内三键共存（enabled 总开关 + 维护车道两键）
+    # 合并后段内键共存（enabled 总开关 + 维护车道键）
     result["knowledge"] = {
         **ConfigLoader.get_knowledge_lane_config(effective),
         **ConfigLoader.get_knowledge_config(effective),
@@ -1113,11 +1113,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["archive"]["auto_threshold"] = at
     # add-knowledge-atlas：knowledge.enabled（bool 总开关；非 bool 由 write_config
     # 前置校验拒绝，合并分支只应用合法形态——缺分支会被静默丢弃，历史同坑）；
-    # add-knowledge-atlas-maintenance：维护车道两键（audit_enabled/graph_enabled）
-    # 同型合并——设置页「杂项」页签提交它们，缺分支同样静默丢弃（历史同坑）
+    # add-knowledge-atlas-maintenance：维护车道键（audit_enabled）同型合并——
+    # 设置页「杂项」页签提交它，缺分支同样静默丢弃（历史同坑）
     if "knowledge" in patch and isinstance(patch["knowledge"], dict):
         _km = patch["knowledge"]
-        for _kkey in ("enabled", "audit_enabled", "graph_enabled"):
+        for _kkey in ("enabled", "audit_enabled"):
             _kv = _km.get(_kkey)
             if isinstance(_kv, bool):
                 if not isinstance(merged.get("knowledge"), dict):
@@ -1816,7 +1816,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     # 不静默落盘——合并分支对非 bool 是「跳过」语义，缺此校验会退回 ok:true
     # 静默丢弃，违反 D7「非法值直接拒绝」契约）
     if isinstance(config_patch.get("knowledge"), dict):
-        for _kkey in ("enabled", "audit_enabled", "graph_enabled"):
+        for _kkey in ("enabled", "audit_enabled"):
             _ke = config_patch["knowledge"].get(_kkey)
             if _ke is not None and not isinstance(_ke, bool):
                 return fail(f"knowledge.{_kkey} must be a boolean: {_ke!r}")
@@ -2126,9 +2126,9 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"archive.auto_threshold must be a non-negative integer (0=disabled): {at}"
                     )
             # add-knowledge-atlas + add-knowledge-atlas-maintenance：knowledge 段
-            # 三键必须为布尔（非法值拒绝 400，对齐 D7「非法值直接拒绝」契约）
+            # 受管键必须为布尔（非法值拒绝 400，对齐 D7「非法值直接拒绝」契约）
             knowledge_m = merged.get("knowledge") or {}
-            for _kkey in ("enabled", "audit_enabled", "graph_enabled"):
+            for _kkey in ("enabled", "audit_enabled"):
                 if _kkey in knowledge_m and knowledge_m[_kkey] is not None:
                     if not isinstance(knowledge_m[_kkey], bool):
                         raise ValueError(
@@ -2315,10 +2315,10 @@ _SYNC_PAGE_KEYS = {
     "misc": {
         "archive": ["auto_threshold"],
         # add-knowledge-atlas-maintenance（code-review item b0f9ef662810）：知识
-        # 真相源维护车道两键随杂项页签同步——缺此步时「同步用户级设置」按钮会
-        # 静默漏同步 audit_enabled / graph_enabled、「清空」也删不掉项目级覆盖
+        # 真相源维护车道键随杂项页签同步——缺此步时「同步用户级设置」按钮会
+        # 静默漏同步 audit_enabled、「清空」也删不掉项目级覆盖
         # （与 quality 页三运行参数 / join 模式的同型事故同款）
-        "knowledge": ["enabled", "audit_enabled", "graph_enabled"],
+        "knowledge": ["enabled", "audit_enabled"],
     },
     "system": {
         "admin": [

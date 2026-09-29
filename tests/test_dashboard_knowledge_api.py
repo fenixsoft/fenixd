@@ -5,8 +5,8 @@
 - GET /api/knowledge/index：未初始化占位结构 / 初始化后 index_md + 域清单
 - GET /api/knowledge/file：白名单内读取；``..`` 穿越 / 绝对路径 / 反斜杠 /
   越界前缀恒 400（先于存在性判断）；白名单内文件缺失 404
-- GET /api/knowledge/graph：缺失 404 结构化错误；存在下发 text/html
 - 未知项目 404
+（GET /api/knowledge/graph 已随 graphify 功能取消下线，对应用例移除——2026-09-29。）
 
 装配对齐 test_dashboard_architecture_api.py：_TestServer 起真实 HTTP
 实例（conftest），Registry 指向 tmp 项目；全程零写路径，不触蒸馏管线。
@@ -201,34 +201,5 @@ class TestKnowledgeFileAPI:
             )
             assert status == 404
             assert "error" in body
-        finally:
-            srv.stop()
-
-
-class TestKnowledgeGraphAPI:
-    def test_missing_structured_error(self, tmp_path):
-        proot = make_project(tmp_path)
-        srv = _server(tmp_path, proot)
-        try:
-            status, body = srv.get("/api/knowledge/graph?project=proj-a")
-            assert status == 404
-            assert body["code"] == "knowledge_graph_not_generated"
-        finally:
-            srv.stop()
-
-    def test_present_serves_html(self, tmp_path):
-        proot = make_project(tmp_path)
-        g = proot / "spec" / "knowledge" / "graph"
-        g.mkdir(parents=True)
-        (g / "graph.html").write_text(
-            "<!DOCTYPE html><html><body>knowledge graph</body></html>",
-            encoding="utf-8",
-        )
-        srv = _server(tmp_path, proot)
-        try:
-            status, ctype, raw = srv.get("/api/knowledge/graph?project=proj-a", raw=True)
-            assert status == 200
-            assert ctype.startswith("text/html")
-            assert b"knowledge graph" in raw
         finally:
             srv.stop()

@@ -1,16 +1,15 @@
 """knowledge_routes.py — 项目知识真相源只读 API（add-knowledge-atlas）。
 
-承载 3 个端点（均 GET、无副作用，project 从 query string 解析）：
+承载 2 个端点（均 GET、无副作用，project 从 query string 解析）：
 - GET /api/knowledge/index?project=<name> → 总目录：index.md 文本 + 域清单；
   未初始化（无 index.md，首个蒸馏 run 前）返回 ``initialized: False`` 占位结构。
 - GET /api/knowledge/file?project=<name>&path=<rel> → 单文件内容。path 白名单
   前缀 ``domains/`` 与 ``adr/``；含 ``..`` / 绝对路径 / 反斜杠 / 越出真相源目录
   一律 400（路径穿越恒拒，先于存在性判断）；文件缺失 → 404。
-- GET /api/knowledge/graph?project=<name> → graph/graph.html 存在性探测：
-  存在下发文件（text/html + CSP ``sandbox allow-scripts``，对齐 architecture
-  diagram 先例——生成物内联脚本以不透明源运行），缺失 404 结构化错误。
 
 蒸馏写侧在 core/knowledge.py（DistillManager），本路由层零写路径。
+（GET /api/knowledge/graph 已随 graphify 关系图生成功能取消下线——2026-09-29，
+生成车道与下发端点一并移除，前端探测代码同步删除。）
 """
 
 from __future__ import annotations
@@ -33,9 +32,8 @@ _ADR_TITLE_RE = re.compile(r"^#\s+ADR-\d{3}\s*[:：]\s*(.+?)\s*$", re.M)
 # adr/index.md 表格行：'| ADR-NNN | 标题 | ...'（标题列兜底源）
 _ADR_INDEX_ROW_RE = re.compile(r"^\|\s*(ADR-\d{3})\s*\|\s*([^|]+?)\s*\|", re.M)
 
-# 真相源目录与 graph 产物相对路径（契约见 spec/knowledge/README.md）
+# 真相源目录相对路径（契约见 spec/knowledge/README.md）
 KNOWLEDGE_DIR = "spec/knowledge"
-GRAPH_FILENAME = "graph.html"
 
 # /api/knowledge/file 白名单前缀：能力页树 + ADR（index.md 走 /index 端点）
 _ALLOWED_PREFIXES = ("domains/", "adr/")
@@ -206,31 +204,4 @@ class H14KnowledgeRoutesMixin:
                 "path": Path(rel).as_posix(),
                 "content": content,
             }
-        )
-
-    def _api_knowledge_graph(self, query):
-        """GET /api/knowledge/graph?project=<name>
-
-        graph/graph.html 存在 → 下发（text/html + CSP sandbox，同
-        architecture diagram 先例）；缺失 → 404 结构化错误（code
-        ``knowledge_graph_not_generated``，前端按 code 渲染占位）。
-        """
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        proot = Path(project["path"])
-        graph = proot / KNOWLEDGE_DIR / "graph" / GRAPH_FILENAME
-        if not graph.is_file():
-            self._json(
-                {"error": "关系图尚未生成", "code": "knowledge_graph_not_generated"},
-                404,
-            )
-            return
-        self._send_file(
-            graph,
-            "text/html; charset=utf-8",
-            extra_headers=[
-                ("Content-Security-Policy", "sandbox allow-scripts"),
-            ],
         )

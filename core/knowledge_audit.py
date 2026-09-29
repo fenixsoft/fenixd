@@ -1,4 +1,4 @@
-"""周期 audit 淘汰车道 + Graphify 关系图生成（add-knowledge-atlas-maintenance D2/D3）。
+"""周期 audit 淘汰车道（add-knowledge-atlas-maintenance D2）。
 
 每日一次（自然日语义，同自然日防重，对齐自省/回归调度先例）对真相源
 ``spec/knowledge/`` 全量体检五类病灶，分级处置：
@@ -12,13 +12,11 @@
   待人工。报告落 ``.fenix/knowledge_audit_report.md``，含规模趋势：总行数相对
   上次体检增长超 +10% 显式标「需精简」并给候选页清单。
 
-Graphify 关系图与 audit 共用每日检查点（D3：一个自然日检查点先后跑 audit 与
-graph，减少唤醒）：``shutil.which('graphify')`` 探测，缺失/执行失败 fail-open
-单行日志跳过，产物 pathspec 限定提交 ``spec/knowledge/graph/``。
-
 挂载：``fenixd.py`` 主循环 300s 周期检查点调 ``knowledge_daily_check``（与自动
-归档同款挂载）；门控 ``knowledge.audit_enabled`` / ``knowledge.graph_enabled``
+归档同款挂载）；门控 ``knowledge.audit_enabled``
 （core/config.py get_knowledge_lane_config，缺省 True）。
+（2026-09-29 graphify 关系图生成车道已取消下线：graph_enabled 键、run_graph
+车道与 /api/knowledge/graph 下发端点一并移除，存量 graph/ 产物保留不清理。）
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ import difflib
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -57,8 +54,6 @@ STATE_RELPATH = ".fenix/knowledge_audit_state.json"
 FINDINGS_RELPATH = ".fenix/knowledge_audit_findings.json"
 PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "audit.md"
 KNOWLEDGE_DIR = "spec/knowledge"
-GRAPH_RELPATH = "spec/knowledge/graph"
-GRAPH_ARTIFACTS = ("graph.html", "GRAPH_REPORT.md", "graph.json")
 
 # 单页 150 行硬顶（前置 SPEC 目录契约定稿，本车道只消费）
 LINE_CAP = 150
@@ -67,8 +62,6 @@ GROWTH_FLAG_RATIO = 0.10
 # 语义项单轮转写 run 数上限（误报进 run 由 LLM 终判，但需封顶控成本）；
 # 超出部分不静默丢弃，由 run_audit 转入体检报告待人工明细留痕
 MAX_SEMANTIC_RUNS = 10
-# graphify 单次生成硬超时（秒）
-GRAPH_TIMEOUT_SECONDS = 1800
 
 _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
@@ -194,14 +187,13 @@ def knowledge_daily_check(
     config: Optional[dict] = None,
     logger=None,
     audit_lane: Optional[Callable] = None,
-    graph_lane: Optional[Callable] = None,
 ) -> dict:
-    """daemon 主循环 300s 周期调用的每日检查点（audit → graph 先后跑）。
+    """daemon 主循环 300s 周期调用的每日检查点（audit 车道）。
 
     门控与防重语义：
-    - ``knowledge.audit_enabled`` / ``knowledge.graph_enabled`` 独立门控；
-    - 两车道各自按状态文件的自然日戳同自然日防重（只跑一次）；
-    - 双双禁用或当日均已跑 → 静默返回，零日志噪音（禁用跳过场景）；
+    - ``knowledge.audit_enabled`` 门控；
+    - 车道按状态文件的自然日戳同自然日防重（只跑一次）；
+    - 禁用或当日已跑 → 静默返回，零日志噪音（禁用跳过场景）；
     - 车道抛异常记日志不更新日戳（下一周期重试），不中断主循环（挂载侧同款
       try/except）。
     """
@@ -209,8 +201,7 @@ def knowledge_daily_check(
     log = logger or _NullLogger()
     cfg = ConfigLoader.get_knowledge_lane_config(config or {})
     audit_enabled = cfg["audit_enabled"]
-    graph_enabled = cfg["graph_enabled"]
-    if not audit_enabled and not graph_enabled:
+    if not audit_enabled:
         return {"triggered": False, "reason": "disabled"}
     state = _read_state(project_root)
     today = _today()
@@ -236,21 +227,6 @@ def knowledge_daily_check(
             # 会把它覆盖丢失（规模趋势「上次 X 行」基线随之失效）。
             state = _read_state(project_root)
             state["last_audit_date"] = today
-            _write_state(project_root, state)
-
-    if graph_enabled and state.get("last_graph_date") != today:
-        try:
-            lane = graph_lane or run_graph
-            res = lane(project_root, logger=log) or {}
-        except Exception as e:  # noqa: BLE001
-            log.error("knowledge", f"graph 生成执行失败（下周期重试）：{e}")
-            res = {"ok": False, "error": str(e)}
-        results["graph"] = res
-        # graph 的 fail-open 跳过（CLI 缺失/执行失败）同样落日戳：每周期重试
-        # 会把单行日志放大成日志噪音（违背 fail-open 初衷），当日不再重试。
-        if "error" not in res:
-            state = _read_state(project_root)  # 同上：先重读合并再落日戳
-            state["last_graph_date"] = today
             _write_state(project_root, state)
 
     return {"triggered": bool(results), "today": today, "results": results}
@@ -1104,72 +1080,4 @@ def _render_report(
     return "\n".join(lines)
 
 
-# ── Graphify 关系图生成（D3） ────────────────────────────────────────────
-
-
-def run_graph(
-    project_root,
-    config: Optional[dict] = None,
-    logger=None,
-    which: Optional[Callable] = None,
-    run_cmd: Optional[Callable] = None,
-) -> dict:
-    """每日 Graphify 生成：CLI 缺失/执行失败 fail-open 单行日志，产物入库。
-
-    which/run_cmd 为注入缝（单测假 CLI 替身）；config 门控
-    ``knowledge.graph_enabled``（false 时静默跳过，既有产物保留可渲染）。
-    """
-    project_root = Path(project_root)
-    log = logger or _NullLogger()
-    cfg = ConfigLoader.get_knowledge_lane_config(config or {})
-    if not cfg["graph_enabled"]:
-        return {"triggered": False, "reason": "disabled"}
-    which = which or shutil.which
-    cli = which("graphify")
-    if not cli:
-        # PyPI 包名确为 graphifyy（graphifyy 0.9.70，graphify.com 出品；pypi 上
-        # 不存在 graphify 包，名被平台占位），安装后的 CLI 二进制叫 graphify——
-        # 与上方 which 探测名一致，安装命令非笔误。面板侧同款安装提示见
-        # core/dashboard/static/src/pages/settings/knowledgeSettings.ts
-        # knowledgeSwitchDesc("graph")，两处文案须同步。
-        log.info(
-            "knowledge",
-            "graphify 未安装，跳过本次关系图生成（人工安装：uv tool install graphifyy）",
-        )
-        return {"triggered": False, "reason": "cli-missing"}
-    if not (project_root / KNOWLEDGE_DIR).is_dir():
-        return {"triggered": False, "reason": "no-knowledge-dir"}
-    if run_cmd is None:
-
-        def run_cmd(cmd, timeout):  # noqa: E306 - 生产实现
-            return subprocess.run(
-                cmd, cwd=str(project_root), capture_output=True, text=True, timeout=timeout
-            )
-
-    try:
-        proc = run_cmd([cli, KNOWLEDGE_DIR, "--out", GRAPH_RELPATH], GRAPH_TIMEOUT_SECONDS)
-    except Exception as e:  # noqa: BLE001 - 执行失败 fail-open
-        log.warning("knowledge", f"graphify 执行失败，跳过本次生成：{e}")
-        return {"triggered": False, "reason": "cli-failed"}
-    returncode = getattr(proc, "returncode", 1)
-    if returncode != 0:
-        stderr = (getattr(proc, "stderr", "") or "").strip()[-200:]
-        log.warning("knowledge", f"graphify 非零退出（{returncode}），跳过本次生成：{stderr}")
-        return {"triggered": False, "reason": "cli-failed"}
-    missing = [
-        name for name in GRAPH_ARTIFACTS if not (project_root / GRAPH_RELPATH / name).is_file()
-    ]
-    if missing:
-        log.warning(
-            "knowledge", f"graphify 产物缺失（{', '.join(missing)}），跳过入库"
-        )
-        return {"triggered": False, "reason": "artifacts-missing"}
-    committed = False
-    try:
-        committed = commit_pathspec(
-            project_root, [GRAPH_RELPATH], "[fenix] knowledge: graph update"
-        )
-    except Exception as e:  # noqa: BLE001 - 提交失败 fail-open
-        log.warning("knowledge", f"graph 产物提交失败（fail-open）：{e}")
-    log.info("knowledge", f"知识关系图已生成（committed={committed}）：{GRAPH_RELPATH}/")
-    return {"triggered": True, "ok": True, "committed": committed}
+# ── Graphify 关系图生成（D3）——已随功能取消整段下线（2026-09-29）─────────

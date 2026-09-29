@@ -1922,8 +1922,8 @@ class ConfigLoader:
     def get_knowledge_lane_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the ``knowledge.*`` 维护车道生效值（add-knowledge-atlas-maintenance D4）。
 
-        - audit_enabled / graph_enabled / no_conflict_exempt：bool，缺省 True
-          （纯增量：audit 车道与 graph 生成默认随每日检查点开启；
+        - audit_enabled / no_conflict_exempt：bool，缺省 True
+          （纯增量：audit 车道默认随每日检查点开启；
           no_conflict_exempt 为疑点台账的内容豁免开关，
           add-knowledge-audit-finding-ledger 4.1）。
         - escalate_after_rounds：正整数，缺省 2（同一疑点连续 N 轮复核均无
@@ -1935,12 +1935,13 @@ class ConfigLoader:
           已由助手记录），各键取缺省值。
         - ``enabled``（蒸馏总开关）归前置 SPEC add-knowledge-atlas 的解析器所有，
           本方法不触碰，合并后各键同段共存。
+        - graph_enabled 已随 graphify 关系图生成功能取消下线（2026-09-29），
+          不再解析；存量配置文件中的该键被静默忽略（未知键不告警）。
         """
         knowledge = cls._segment_or_empty(config, "knowledge")
         result = {}
         for key, default in (
             ("audit_enabled", True),
-            ("graph_enabled", True),
             ("no_conflict_exempt", True),
         ):
             val = knowledge.get(key, default)

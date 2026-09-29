@@ -11,7 +11,9 @@
 // （零依赖部分，node 原生 type-stripping 加载 .ts）。覆盖：
 // - config.knowledge 段（缺失/部分/关闭/脏形状）→ 开关状态映射；
 // - 开关状态 → 保存载荷 knowledge 段（与后端局部段合并语义对齐）；
-// - 说明文案非空且含关键信息（车道行为 / graphify 安装命令）。
+// - 说明文案非空且含关键信息（车道行为 / 报告落点）。
+// 2026-09-29 graphify 生成功能取消：graph_enabled 开关已下线，此处转而断言
+// 渲染结果不再出现 graph 开关。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'node:fs';
@@ -76,8 +78,10 @@ function renderPanel(PanelModule, config) {
 test('设置页渲染 knowledge.enabled 开关与说明文案（缺省开启）', async () => {
   const mod = await loadPanel();
   const html = renderPanel(mod, { archive: { auto_threshold: 50 } });
-  assert.ok(html.includes('知识真相源'), '应渲染「知识真相源」标题');
+  assert.ok(html.includes('真相源'), '应渲染「真相源」节标题');
+  assert.ok(html.includes('知识真相源'), '应渲染「知识真相源」开关行名称');
   assert.ok(html.includes('knowledge-enabled-switch'), '应渲染开关 testid');
+  assert.ok(html.includes('knowledge.enabled'), '开关行应带参数路径（knowledge.enabled）');
   assert.ok(html.includes('知识真相源已禁用'), '说明文案应含禁用后页签占位语义');
   assert.ok(html.includes('role="switch"'), '应渲染 antd Switch（role=switch）');
   // 缺省态：默认勾选（antd Switch checked 渲染 aria-checked="true"）
@@ -93,52 +97,56 @@ test('设置页渲染显式关闭的 knowledge.enabled', async () => {
   assert.ok(html.includes('aria-checked="false"'), '显式 false 应渲染为关闭');
 });
 
+test('audit 车道开关渲染参数路径，graph 开关已下线', async () => {
+  const mod = await loadPanel();
+  const html = renderPanel(mod, { archive: { auto_threshold: 50 } });
+  assert.ok(html.includes('knowledge-audit-switch'), '应渲染体检开关 testid');
+  assert.ok(html.includes('knowledge.audit_enabled'), '体检开关行应带参数路径');
+  assert.ok(!html.includes('knowledge-graph-switch'), 'graph 开关已取消，不应再渲染');
+  assert.ok(!html.includes('knowledge.graph_enabled'), 'graph 参数路径不应再出现');
+});
+
 // ── 段缺失/脏形状 → 缺省全开（与 core/config.py get_knowledge_lane_config 同口径） ──
 
-test('config 无 knowledge 段时两开关默认开启', () => {
+test('config 无 knowledge 段时开关默认开启', () => {
   const s = knowledgeSwitchesFromConfig(undefined);
   assert.equal(s.auditEnabled, true);
-  assert.equal(s.graphEnabled, true);
 });
 
 test('非对象段（后端降级为 null/标量）不崩且默认开启', () => {
   for (const bad of [null, 3, 'x', []]) {
     const s = knowledgeSwitchesFromConfig(bad);
     assert.equal(s.auditEnabled, true);
-    assert.equal(s.graphEnabled, true);
   }
 });
 
 test('显式 false 关闭对应开关，缺键保持开启', () => {
   const s = knowledgeSwitchesFromConfig({ audit_enabled: false });
   assert.equal(s.auditEnabled, false);
-  assert.equal(s.graphEnabled, true);
+  const t = knowledgeSwitchesFromConfig({});
+  assert.equal(t.auditEnabled, true);
 });
 
 test('非法值（字符串/数字非 false）按开启处理（与后端回退缺省同口径）', () => {
-  const s = knowledgeSwitchesFromConfig({ audit_enabled: 'yes', graph_enabled: 1 });
+  const s = knowledgeSwitchesFromConfig({ audit_enabled: 'yes' });
   assert.equal(s.auditEnabled, true);
-  assert.equal(s.graphEnabled, true);
 });
 
 // ── 保存载荷往返 ──────────────────────────────────────────────────────
 
-test('开关状态 → knowledge 段保存载荷显式落两键', () => {
-  const payload = knowledgeSectionFromSwitches({
-    auditEnabled: true,
-    graphEnabled: false,
-  });
+test('开关状态 → knowledge 段保存载荷只落 audit_enabled（graph 键不再读写）', () => {
+  const payload = knowledgeSectionFromSwitches({ auditEnabled: true });
   assert.deepEqual(payload, {
-    knowledge: { audit_enabled: true, graph_enabled: false },
+    knowledge: { audit_enabled: true },
   });
 });
 
 test('段映射 → 载荷往返保真', () => {
   const round = knowledgeSectionFromSwitches(
-    knowledgeSwitchesFromConfig({ audit_enabled: false, graph_enabled: false }),
+    knowledgeSwitchesFromConfig({ audit_enabled: false }),
   );
   assert.deepEqual(round, {
-    knowledge: { audit_enabled: false, graph_enabled: false },
+    knowledge: { audit_enabled: false },
   });
 });
 
@@ -148,12 +156,6 @@ test('audit 开关说明含体检行为与报告落点', () => {
   const desc = knowledgeSwitchDesc('audit');
   assert.ok(desc.includes('体检'));
   assert.ok(desc.includes('knowledge_audit_report.md'));
-});
-
-test('graph 开关说明含 graphify 人工安装步骤', () => {
-  const desc = knowledgeSwitchDesc('graph');
-  assert.ok(desc.includes('graphify'));
-  assert.ok(desc.includes('uv tool install graphifyy'));
 });
 
 test('收尾：清理临时产物目录', () => {

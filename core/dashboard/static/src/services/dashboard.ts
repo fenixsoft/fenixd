@@ -1477,8 +1477,8 @@ export interface ConfigData {
   /** add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50） */
   archive?: { auto_threshold: number };
   /** add-knowledge-atlas：知识真相源总开关 + add-knowledge-atlas-maintenance：
-   维护车道开关（合并后同节三键共存，缺省均 true） */
-  knowledge?: { enabled?: boolean; audit_enabled?: boolean; graph_enabled?: boolean };
+   维护车道开关（缺省均 true；graph_enabled 已随 graphify 取消下线，不再读写） */
+  knowledge?: { enabled?: boolean; audit_enabled?: boolean };
   /** add-daily-self-review：每日自省（admin.self_review 三键） */
   self_review?: SelfReviewConfig;
   /** add-settings-system-tab：系统配置（admin.* 受管键） */
@@ -2388,10 +2388,4 @@ export async function getKnowledgeFile(
   return request<{ project?: string; path: string; content: string }>(
     `/api/knowledge/file${q}`,
   );
-}
-
-/** 知识关系图下发端点 URL（iframe sandbox 加载；缺失回 404 结构化错误，
- *  前端先 fetch 探测再决定渲染 iframe 或占位）。 */
-export function knowledgeGraphUrl(project: string): string {
-  return `/api/knowledge/graph?project=${encodeURIComponent(project)}`;
 }

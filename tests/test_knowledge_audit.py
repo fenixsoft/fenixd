@@ -1,11 +1,11 @@
-"""周期 audit 车道 + graph 生成 + 每日检查点单测（任务 3.1 / 3.3 / 4.1）。
+"""周期 audit 车道 + 每日检查点单测（任务 3.1 / 3.3）。
 
 fake spawn 替身 + 注入的 core.knowledge 替身，覆盖：
 - audit 三支路：机械自修直提交 / 语义转写（含判无矛盾零改动）/ 零病灶；
 - 转写失败 → 回滚 + todo.md 登记；
 - 规模趋势超 +10% 标「需精简」；
-- graph 三支路：成功 / CLI 缺失 / 禁用（另含执行失败、产物缺失）；
 - 每日检查点：门控、自然日防重、异常不落日戳。
+（graph 生成车道已随 graphify 功能取消下线，对应用例一并移除——2026-09-29。）
 """
 
 from __future__ import annotations
@@ -423,104 +423,6 @@ def test_audit_slim_flag_when_growth_exceeds_threshold(proj, install_core):
     assert "需精简" in report
 
 
-# ── graph 生成（任务 4.1） ───────────────────────────────────────────────
-
-
-def make_graph_artifacts(root: Path):
-    gdir = root / "spec/knowledge/graph"
-    gdir.mkdir(parents=True, exist_ok=True)
-    (gdir / "graph.html").write_text("<html>g</html>\n")
-    (gdir / "GRAPH_REPORT.md").write_text("# report\n")
-    (gdir / "graph.json").write_text("{}\n")
-
-
-def test_graph_success_commits_artifacts(proj, install_core):
-    core = install_core(FakeCore(proj))
-    logger = ListLogger()
-
-    def run_cmd(cmd, timeout):
-        assert cmd[0] == "/usr/bin/graphify"
-        assert cmd[1] == "spec/knowledge"
-        make_graph_artifacts(proj)
-
-        class P:
-            returncode = 0
-            stderr = ""
-
-        return P()
-
-    result = ka.run_graph(
-        proj, logger=logger, which=lambda name: "/usr/bin/graphify", run_cmd=run_cmd
-    )
-    assert result == {"triggered": True, "ok": True, "committed": True}
-    # graph 产物 pathspec 限定提交入库（graph 车道不依赖 core.knowledge，
-    # 直接走车道内 pathspec 提交）
-    subjects = _git(proj, "log", "--format=%s")
-    assert "[fenix] knowledge: graph update" in subjects
-    assert (proj / "spec/knowledge/graph/graph.html").is_file()
-
-
-def test_graph_cli_missing_failopen_single_line(proj, install_core):
-    install_core(FakeCore(proj))
-    logger = ListLogger()
-    which_calls = []
-
-    def which(name):
-        which_calls.append(name)
-        return None
-
-    result = ka.run_graph(proj, logger=logger, which=which)
-    assert result == {"triggered": False, "reason": "cli-missing"}
-    assert which_calls == ["graphify"]
-    info_lines = [m for lvl, m in logger.lines if lvl == "info"]
-    assert len(info_lines) == 1  # 单行日志，无告警噪音
-    assert "uv tool install graphifyy" in info_lines[0]
-
-
-def test_graph_disabled_skips_silently(proj, install_core):
-    install_core(FakeCore(proj))
-    logger = ListLogger()
-
-    def which(name):  # pragma: no cover - 禁用时不应被调用
-        raise AssertionError("disabled lane must not probe CLI")
-
-    result = ka.run_graph(
-        proj,
-        config={"knowledge": {"graph_enabled": False}},
-        logger=logger,
-        which=which,
-    )
-    assert result == {"triggered": False, "reason": "disabled"}
-    assert logger.lines == []
-
-
-def test_graph_cli_failure_and_missing_artifacts(proj, install_core):
-    install_core(FakeCore(proj))
-    logger = ListLogger()
-
-    class P1:
-        returncode = 1
-        stderr = "boom"
-
-    r1 = ka.run_graph(
-        proj, logger=logger, which=lambda n: "g", run_cmd=lambda cmd, t: P1()
-    )
-    assert r1["reason"] == "cli-failed"
-    r2 = ka.run_graph(
-        proj, logger=logger, which=lambda n: "g", run_cmd=lambda cmd, t: None
-    )
-    # run_cmd 返回 None（returncode 缺省按非零）→ cli-failed
-    assert r2["reason"] == "cli-failed"
-
-    def run_ok_no_artifacts(cmd, timeout):
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    r3 = ka.run_graph(
-        proj, logger=logger, which=lambda n: "g", run_cmd=run_ok_no_artifacts
-    )
-    assert r3["reason"] == "artifacts-missing"
-
-
 # ── 每日检查点（任务 3.3 调度门控） ──────────────────────────────────────
 
 
@@ -532,20 +434,19 @@ def make_lane(recorder, key, ret=None):
     return lane
 
 
-def test_daily_check_both_disabled_silent(proj):
+def test_daily_check_disabled_silent(proj):
     calls: list = []
     result = ka.knowledge_daily_check(
         proj,
-        config={"knowledge": {"audit_enabled": False, "graph_enabled": False}},
+        config={"knowledge": {"audit_enabled": False}},
         logger=ListLogger(),
         audit_lane=make_lane(calls, "audit"),
-        graph_lane=make_lane(calls, "graph"),
     )
     assert result == {"triggered": False, "reason": "disabled"}
     assert calls == []
 
 
-def test_daily_check_runs_each_lane_once_per_day(proj):
+def test_daily_check_runs_lane_once_per_day(proj):
     calls: list = []
     cfg = {}
     logger = ListLogger()
@@ -554,31 +455,17 @@ def test_daily_check_runs_each_lane_once_per_day(proj):
         config=cfg,
         logger=logger,
         audit_lane=make_lane(calls, "audit"),
-        graph_lane=make_lane(calls, "graph"),
     )
     assert r1["triggered"] is True
-    assert sorted(calls) == ["audit", "graph"]
+    assert calls == ["audit"]
     # 同自然日第二周期：防重，不再调用
     ka.knowledge_daily_check(
         proj,
         config=cfg,
         logger=logger,
         audit_lane=make_lane(calls, "audit"),
-        graph_lane=make_lane(calls, "graph"),
     )
-    assert sorted(calls) == ["audit", "graph"]
-
-
-def test_daily_check_independent_gates(proj):
-    calls: list = []
-    ka.knowledge_daily_check(
-        proj,
-        config={"knowledge": {"audit_enabled": False, "graph_enabled": True}},
-        logger=ListLogger(),
-        audit_lane=make_lane(calls, "audit"),
-        graph_lane=make_lane(calls, "graph"),
-    )
-    assert calls == ["graph"]
+    assert calls == ["audit"]
 
 
 def test_daily_check_crash_does_not_mark_day(proj):
@@ -591,7 +478,7 @@ def test_daily_check_crash_does_not_mark_day(proj):
     logger = ListLogger()
     r1 = ka.knowledge_daily_check(
         proj,
-        config={"knowledge": {"audit_enabled": True, "graph_enabled": False}},
+        config={"knowledge": {"audit_enabled": True}},
         logger=logger,
         audit_lane=bad_lane,
     )
@@ -600,7 +487,7 @@ def test_daily_check_crash_does_not_mark_day(proj):
     # 未落日戳：下一周期重试
     ka.knowledge_daily_check(
         proj,
-        config={"knowledge": {"audit_enabled": True, "graph_enabled": False}},
+        config={"knowledge": {"audit_enabled": True}},
         logger=logger,
         audit_lane=bad_lane,
     )
@@ -807,7 +694,6 @@ def test_checkpoint_merge_keeps_last_scale_and_report_trend(proj, install_core, 
     logger = ListLogger()
     ka.knowledge_daily_check(
         proj,
-        config={"knowledge": {"graph_enabled": False}},
         logger=logger,
         audit_lane=audit_lane,
     )
@@ -822,7 +708,6 @@ def test_checkpoint_merge_keeps_last_scale_and_report_trend(proj, install_core, 
     monkeypatch.setattr(ka, "_today", lambda: monkey_today)
     ka.knowledge_daily_check(
         proj,
-        config={"knowledge": {"graph_enabled": False}},
         logger=logger,
         audit_lane=audit_lane,
     )

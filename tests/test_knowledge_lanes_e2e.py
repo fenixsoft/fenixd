@@ -1,12 +1,12 @@
-"""三车道端到端测试（任务 5.2；回填段已更新到 fix-knowledge-backfill-reconstruction
+"""车道端到端测试（任务 5.2；回填段已更新到 fix-knowledge-backfill-reconstruction
 方案 B 聚合语义：史前复原 → 聚类自举 → 能力聚合批次 → ADR 维度消化 → 收敛汇报）。
 
-真实车道实现 + fake spawn / 假 graphify 子进程替身，从配置装载到自然日检查点
+真实车道实现 + fake spawn 替身，从配置装载到自然日检查点
 全链路贯通：
 - 回填：域清单缺失 → 自举 → 能力批 → 校验提交 → 收敛汇报 → 重入幂等；
 - audit：植入机械+语义病灶 → daemon 检查点触发 → 机械修 + 定向转写 → 报告
-  与日戳断言，同自然日防重；
-- graph：假 graphify 产物落盘 → pathspec 提交 → 日戳断言。
+  与日戳断言，同自然日防重。
+（graph 生成车道已随 graphify 功能取消下线，对应用例一并移除——2026-09-29。）
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def make_config(root: Path, **overrides) -> dict:
     """写真实 config.yaml 经 ConfigLoader.load 严格装载（配置文件 → 检查点全链路）。"""
     fenix = root / ".fenix"
     fenix.mkdir(exist_ok=True)
-    knowledge = {"audit_enabled": True, "graph_enabled": True}
+    knowledge = {"audit_enabled": True}
     knowledge.update(overrides)
     lines = [
         "project:",
@@ -291,7 +291,7 @@ def test_e2e_audit_through_daily_checkpoint(e2e_root, monkeypatch):
             gamma.write_text(text, encoding="utf-8")
         return "ok"
 
-    config = make_config(root, graph_enabled=False)
+    config = make_config(root)
 
     def audit_lane(project_root, logger=None, config=None):
         # 经检查点走真 run_audit，LLM 边界（spawn）注入替身；不注入会落到
@@ -336,54 +336,3 @@ def test_e2e_audit_through_daily_checkpoint(e2e_root, monkeypatch):
 
     ka.knowledge_daily_check(root, config=config, audit_lane=counting_lane)
     assert calls == []
-
-
-# ── graph 车道端到端（假 graphify 子进程 → 产物提交 → 日戳） ─────────────
-
-
-def test_e2e_graph_through_daily_checkpoint(e2e_root, monkeypatch):
-    root = e2e_root
-    seed_knowledge_with_defects(root)
-    install_core(monkeypatch, root)
-    config = make_config(root, audit_enabled=False)
-
-    # 在 run_graph 声明的注入缝（which/run_cmd）替身假 CLI：探测到 graphify，
-    # 执行落产物。不走全局 subprocess 替身——那会连 commit_pathspec 的 git
-    # 子进程一并劫持。
-    seen_cmds: list = []
-
-    def fake_run_cmd(cmd, timeout):
-        seen_cmds.append((list(cmd), timeout))
-        gdir = root / "spec" / "knowledge" / "graph"
-        gdir.mkdir(parents=True, exist_ok=True)
-        (gdir / "graph.html").write_text("<html>atlas</html>\n", encoding="utf-8")
-        (gdir / "GRAPH_REPORT.md").write_text("# graph report\n", encoding="utf-8")
-        (gdir / "graph.json").write_text('{"nodes": []}\n', encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, "", "ok")
-
-    def graph_lane(project_root, logger=None):
-        return ka.run_graph(
-            project_root,
-            logger=logger,
-            which=lambda name: "/usr/bin/graphify",
-            run_cmd=fake_run_cmd,
-        )
-
-    result = ka.knowledge_daily_check(root, config=config, graph_lane=graph_lane)
-
-    assert result["triggered"] is True
-    assert result["results"]["graph"] == {"triggered": True, "ok": True, "committed": True}
-    # 命令形态：graphify spec/knowledge --out spec/knowledge/graph，带超时上限
-    cmd, timeout = seen_cmds[0]
-    assert cmd[0] == "/usr/bin/graphify" and cmd[1] == "spec/knowledge"
-    assert "--out" in cmd and timeout == ka.GRAPH_TIMEOUT_SECONDS
-    # 产物落盘 + pathspec 提交
-    for artifact in ("graph.html", "GRAPH_REPORT.md", "graph.json"):
-        assert (root / "spec/knowledge/graph" / artifact).is_file()
-    assert "[fenix] knowledge: graph update" in _git(root, "log", "--format=%s")
-    state = json.loads((root / ".fenix" / "knowledge_audit_state.json").read_text())
-    assert state["last_graph_date"] == ka._today()
-    # 同自然日第二周期：不再执行（fail-open 跳过也不重试）
-    seen_cmds.clear()
-    ka.knowledge_daily_check(root, config=config, graph_lane=graph_lane)
-    assert seen_cmds == []

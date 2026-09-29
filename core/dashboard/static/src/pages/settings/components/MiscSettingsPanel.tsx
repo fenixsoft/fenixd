@@ -44,7 +44,6 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
       knowledge_enabled: config.knowledge?.enabled ?? true,
       // add-knowledge-atlas-maintenance：维护车道开关回填（缺省 true，与后端缺省一致）
       audit_enabled: kb.auditEnabled,
-      graph_enabled: kb.graphEnabled,
     };
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
@@ -76,13 +75,14 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
             auto_threshold: values.auto_threshold,
           },
           // add-knowledge-atlas：知识真相源总开关（false 时归档不派发蒸馏）
-          // + add-knowledge-atlas-maintenance：维护车道开关——合并后同节三键共存，
-          // 组装为单一 knowledge 键（对象字面量出现两个同名键会被后者整体覆盖）
+          // + add-knowledge-atlas-maintenance：维护车道开关——合并后同节两键共存，
+          // 组装为单一 knowledge 键（对象字面量出现两个同名键会被后者整体覆盖；
+          // graph_enabled 已随 graphify 生成功能取消而下线，不再由本页读写，
+          // 后端逐键合并，配置文件中的存量键原样保留）
           knowledge: {
             enabled: values.knowledge_enabled,
             ...knowledgeSectionFromSwitches({
               auditEnabled: values.audit_enabled,
-              graphEnabled: values.graph_enabled,
             }).knowledge,
           },
         });
@@ -129,65 +129,54 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
             0 = 禁用。超过阈值时自动归档完成最久的 SPEC。保存后立即生效，无需重启 daemon。
           </Text>
         </Card>
-        {/* add-knowledge-atlas-maintenance 任务 1.2：知识真相源维护车道开关 */}
-        <Card style={{ marginTop: 12 }}>
-          <h3 style={{ marginTop: 0 }}>知识真相源维护</h3>
-          <Text type="secondary">
-            spec/knowledge/ 真相源的周期维护车道开关；关闭后对应车道静默跳过。
-          </Text>
-          <Form.Item
-            name="audit_enabled"
-            label={
-              <>
-                每日知识体检<span className="label-note">（knowledge.audit_enabled）</span>
-              </>
-            }
-            valuePropName="checked"
-            style={{ marginTop: 16 }}
-          >
-            <Switch data-testid="knowledge-audit-switch" />
-          </Form.Item>
-          <Text type="secondary">{knowledgeSwitchDesc('audit')}</Text>
-          <Form.Item
-            name="graph_enabled"
-            label={
-              <>
-                知识关系图生成<span className="label-note">（knowledge.graph_enabled）</span>
-              </>
-            }
-            valuePropName="checked"
-            style={{ marginTop: 16 }}
-          >
-            <Switch data-testid="knowledge-graph-switch" />
-          </Form.Item>
-          <Text type="secondary">{knowledgeSwitchDesc('graph')}</Text>
-        </Card>
-        {/* add-knowledge-atlas：知识真相源总开关（knowledge.enabled）。
-            关闭后归档照常完成、但不派发蒸馏 run，项目知识页签显示禁用占位。
-            本卡必须留在上方唯一 Form 内（code-review item 0dddde607278）：
-            rc-field-form 在 render 期无条件 setCallbacks，同一 form 实例被两个
-            <Form> 连接时后渲染者整体覆盖前者，单独再开一个 Form 会把
-            onValuesChange 置脏回调冲掉，导致整个面板脏标记失效。 */}
-        <Card style={{ marginTop: 16 }} data-testid="knowledge-settings-card">
-          <Form.Item
-            name="knowledge_enabled"
-            valuePropName="checked"
-            // SSR/首帧缺省：useEffect 回填在服务端渲染不执行，initialValue 保证
-            // 缺省（true）与后端缺省一致；挂载后 setFieldsValue 以 config 为准
-            initialValue={config.knowledge?.enabled ?? true}
-            style={{ marginBottom: 8 }}
-          >
-            <Switch data-testid="knowledge-enabled-switch" />
-          </Form.Item>
-          <Text strong>知识真相源</Text>
-          <div>
-            <Text type="secondary" data-testid="knowledge-enabled-desc">
-              归档完成后自动派发蒸馏 run，把该 SPEC 的当前业务规则蒸馏进
-              spec/knowledge/ 真相源（总目录 + 能力页 + ADR 索引）。
-              关闭后归档照常完成，但不再派发蒸馏，项目知识页签显示「知识真相源已禁用」占位。
-              保存后约 30s 配置热更新生效，无需重启 daemon。
-            </Text>
+        {/* 真相源：标题与说明置于卡片外，与上方「归档」节同构
+            （VerifyPanel「构建产物路径」节同款）。graphify 生成功能已取消
+            （2026-09-29 用户定调），graph_enabled 开关随之移除。 */}
+        <h3 style={{ marginTop: 32 }}>真相源</h3>
+        <Text type="secondary">
+          spec/knowledge/ 真相源的周期维护车道开关；关闭后对应车道静默跳过。
+        </Text>
+        {/* add-knowledge-atlas：知识真相源总开关（knowledge.enabled）+ 维护车道
+            开关（knowledge.audit_enabled）同卡共存。本卡必须留在上方唯一 Form 内
+            （code-review item 0dddde607278）：rc-field-form 在 render 期无条件
+            setCallbacks，同一 form 实例被两个 <Form> 连接时后渲染者整体覆盖前者，
+            单独再开一个 Form 会把 onValuesChange 置脏回调冲掉，导致整个面板脏
+            标记失效。 */}
+        <Card style={{ marginTop: 12 }} data-testid="knowledge-settings-card">
+          {/* 总开关居卡内首项；关闭后归档照常完成、但不派发蒸馏 run，
+              项目知识页签显示禁用占位。开关行内联样式（.switch-inline-row），
+              与全站设置页一致：开关在前、名称紧随同行。 */}
+          <div className="switch-inline-row">
+            <Form.Item
+              name="knowledge_enabled"
+              valuePropName="checked"
+              // SSR/首帧缺省：useEffect 回填在服务端渲染不执行，initialValue 保证
+              // 缺省（true）与后端缺省一致；挂载后 setFieldsValue 以 config 为准
+              initialValue={config.knowledge?.enabled ?? true}
+              noStyle
+            >
+              <Switch data-testid="knowledge-enabled-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              知识真相源<span className="label-note">（knowledge.enabled）</span>
+            </span>
           </div>
+          <Text type="secondary" data-testid="knowledge-enabled-desc">
+            归档完成后自动派发蒸馏 run，把该 SPEC 的当前业务规则蒸馏进
+            spec/knowledge/ 真相源（总目录 + 能力页 + ADR 索引）。
+            关闭后归档照常完成，但不再派发蒸馏，项目知识页签显示「知识真相源已禁用」占位。
+            保存后约 30s 配置热更新生效，无需重启 daemon。
+          </Text>
+          {/* add-knowledge-atlas-maintenance 任务 1.2：知识真相源维护车道开关 */}
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
+            <Form.Item name="audit_enabled" valuePropName="checked" noStyle>
+              <Switch data-testid="knowledge-audit-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              每日知识体检<span className="label-note">（knowledge.audit_enabled）</span>
+            </span>
+          </div>
+          <Text type="secondary">{knowledgeSwitchDesc('audit')}</Text>
         </Card>
       </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>

@@ -184,11 +184,6 @@ def _get_knowledge_index(s, p, q, m):
 def _get_knowledge_file(s, p, q, m):
     s._api_knowledge_file(q)
 
-# graph 下发是自含响应 handler（同 _get_architecture_diagram 注记：缺失自写
-# _json(404)，存在走 _send_file 自写 200，不得再包 _json 双重写响应）
-def _get_knowledge_graph(s, p, q, m):
-    s._api_knowledge_graph(q)
-
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -417,11 +412,10 @@ _API_GET_ROUTES = [
     ("exact", "/api/architecture/status", _get_architecture_status),
     # architecture：diagram.html 下发（自含响应 handler，未生成回 404 结构化错误）
     ("exact", "/api/architecture/diagram", _get_architecture_diagram),
-    # knowledge（add-knowledge-atlas）：真相源只读三端点（GET，无副作用）
+    # knowledge（add-knowledge-atlas）：真相源只读端点（GET，无副作用；
+    # graph 下发端点已随 graphify 功能取消下线）
     ("exact", "/api/knowledge/index", _get_knowledge_index),
     ("exact", "/api/knowledge/file",   _get_knowledge_file),
-    # graph：自含响应 handler（存在 _send_file 自写 200，缺失 404 结构化错误）
-    ("exact", "/api/knowledge/graph",  _get_knowledge_graph),
 ]
 
 _API_POST_ROUTES = [

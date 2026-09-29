@@ -1,6 +1,6 @@
 """add-knowledge-atlas + add-knowledge-atlas-maintenance：knowledge 配置段解析单测。
 
-合并后 ``knowledge`` 段三键共存（enabled 蒸馏总开关 + audit_enabled/graph_enabled
+合并后 ``knowledge`` 段键共存（enabled 蒸馏总开关 + audit_enabled
 维护车道），两组解析器各归其主：
 
 - ConfigLoader.get_knowledge_config（add-knowledge-atlas task 1.1）：
@@ -10,8 +10,9 @@
   config.template.yaml 登记 knowledge 段（模板与解析不脱钩）；
   设置页受管键登记（config_admin 回显 / 合并 / 校验三处 + 来源清单）。
 - ConfigLoader.get_knowledge_lane_config（add-knowledge-atlas-maintenance 1.1）：
-  audit_enabled / graph_enabled 缺省 True / 合法 bool 透传 / 非法值回退 True 并
-  WARNING 告警 / 整段非 dict 按空段降级；模板登记两键带注释。
+  audit_enabled 缺省 True / 合法 bool 透传 / 非法值回退 True 并
+  WARNING 告警 / 整段非 dict 按空段降级；模板登记键带注释。
+  （graph_enabled 已随 graphify 功能取消下线，相关断言一并移除——2026-09-29。）
 """
 import sys
 import unittest
@@ -112,14 +113,14 @@ class TestKnowledgeTemplateRegistered(unittest.TestCase):
             self.fail(f"config.template.yaml 解析失败: {e}")
         self.assertIsInstance(data, dict)
         self.assertIn("knowledge", data)
-        # 合并后单节三键共存（重复顶层 knowledge: 会被 YAML 后节覆盖静默丢键）
+        # 合并后单节键共存（重复顶层 knowledge: 会被 YAML 后节覆盖静默丢键）
         self.assertIs(data["knowledge"]["enabled"], True)
         self.assertIs(data["knowledge"]["audit_enabled"], True)
-        self.assertIs(data["knowledge"]["graph_enabled"], True)
+        self.assertNotIn("graph_enabled", data["knowledge"])
 
 
 class TestKnowledgeLaneConfig(unittest.TestCase):
-    """knowledge.audit_enabled / knowledge.graph_enabled 解析（maintenance 1.1）。"""
+    """knowledge.audit_enabled 解析（maintenance 1.1）。"""
 
     def test_missing_section_defaults_true(self):
         cfg = ConfigLoader.get_knowledge_lane_config({})
@@ -127,7 +128,6 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
             cfg,
             {
                 "audit_enabled": True,
-                "graph_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
@@ -141,7 +141,6 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
             cfg,
             {
                 "audit_enabled": False,
-                "graph_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
@@ -149,13 +148,12 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
 
     def test_valid_bools_passthrough(self):
         cfg = ConfigLoader.get_knowledge_lane_config(
-            {"knowledge": {"audit_enabled": False, "graph_enabled": False}}
+            {"knowledge": {"audit_enabled": False}}
         )
         self.assertEqual(
             cfg,
             {
                 "audit_enabled": False,
-                "graph_enabled": False,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
@@ -164,20 +162,18 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
     def test_invalid_values_fallback_true_with_warning(self):
         with self.assertLogs("fenixd.config", level="WARNING") as captured:
             cfg = ConfigLoader.get_knowledge_lane_config(
-                {"knowledge": {"audit_enabled": "yes", "graph_enabled": 1}}
+                {"knowledge": {"audit_enabled": "yes"}}
             )
         self.assertEqual(
             cfg,
             {
                 "audit_enabled": True,
-                "graph_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
         )
         joined = "\n".join(captured.output)
         self.assertIn("knowledge.audit_enabled", joined)
-        self.assertIn("knowledge.graph_enabled", joined)
 
     def test_non_dict_section_degrades_to_defaults(self):
         cfg = ConfigLoader.get_knowledge_lane_config({"knowledge": ["audit_enabled"]})
@@ -185,7 +181,6 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
             cfg,
             {
                 "audit_enabled": True,
-                "graph_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
@@ -200,19 +195,18 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
             cfg,
             {
                 "audit_enabled": True,
-                "graph_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
         )
 
-    def test_template_registers_both_keys(self):
+    def test_template_registers_keys(self):
         text = (REPO_ROOT / ".fenix" / "config.template.yaml").read_text(
             encoding="utf-8"
         )
         self.assertIn("knowledge:", text)
         self.assertIn("audit_enabled: true", text)
-        self.assertIn("graph_enabled: true", text)
+        self.assertNotIn("graph_enabled", text)
         # 模板行必须带注释语境（task 1.1：登记带注释模板行）
         knowledge_idx = text.index("knowledge:")
         self.assertIn("audit 体检", text[knowledge_idx:knowledge_idx + 400])
@@ -221,7 +215,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
 class TestKnowledgeManagedKeys(unittest.TestCase):
     """设置页受管键三处登记（读回显 / 深合并 / 写校验）。
 
-    合并后 knowledge 段三键（enabled + audit_enabled + graph_enabled）同段回显、
+    合并后 knowledge 段键（enabled + audit_enabled）同段回显、
     同型合并、同口径校验——任何一键缺分支都会被静默丢弃（历史同坑）。
     """
 
@@ -231,7 +225,7 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
         view = config_admin._default_echo_view("user")
         self.assertEqual(
             view["knowledge"],
-            {"enabled": True, "audit_enabled": True, "graph_enabled": True},
+            {"enabled": True, "audit_enabled": True},
         )
 
     def test_read_config_echoes_enabled_from_raw(self):
@@ -251,7 +245,6 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
             {
                 "enabled": False,
                 "audit_enabled": True,
-                "graph_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
             },
@@ -270,11 +263,10 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
         from core.dashboard.data.config_admin import _deep_merge_managed
 
         merged = _deep_merge_managed(
-            {"knowledge": {"audit_enabled": True, "graph_enabled": True}},
+            {"knowledge": {"audit_enabled": True}},
             {"knowledge": {"audit_enabled": False}},
         )
         self.assertEqual(merged["knowledge"]["audit_enabled"], False)
-        self.assertEqual(merged["knowledge"]["graph_enabled"], True)
 
     def test_write_config_rejects_non_bool_enabled(self):
         import tempfile
@@ -324,7 +316,7 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
             (Path(td) / ".fenix").mkdir(parents=True)
             result = config_admin.write_config(
                 td,
-                {"knowledge": {"audit_enabled": False, "graph_enabled": False}},
+                {"knowledge": {"audit_enabled": False}},
                 scope="project",
             )
             self.assertTrue(result["ok"])
@@ -332,14 +324,13 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
                 (Path(td) / ".fenix" / "config.yaml").read_text(encoding="utf-8")
             )
         self.assertEqual(on_disk["knowledge"]["audit_enabled"], False)
-        self.assertEqual(on_disk["knowledge"]["graph_enabled"], False)
 
     def test_knowledge_keys_in_source_keys(self):
         from core.dashboard.data.config_admin import _SOURCE_KEYS
 
         self.assertIn("knowledge.enabled", _SOURCE_KEYS)
         self.assertIn("knowledge.audit_enabled", _SOURCE_KEYS)
-        self.assertIn("knowledge.graph_enabled", _SOURCE_KEYS)
+        self.assertNotIn("knowledge.graph_enabled", _SOURCE_KEYS)
 
 
 if __name__ == "__main__":
