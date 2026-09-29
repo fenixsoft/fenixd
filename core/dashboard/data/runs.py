@@ -709,7 +709,6 @@ read_run_lines = _read_run_lines
 # 公开访问面（code-review item 2546f200e430）：timeline.py 跨组引用改用公开名
 # （不跨组消费下划线私有名），与私有实现同一函数对象单源绑定。
 resolve_run_file = _resolve_run_file
-run_tail_insights = _run_tail_insights
 
 
 def _parse_run_lines(lines) -> list:
@@ -930,6 +929,11 @@ def _run_tail_insights(
             # summary/usage/reason（llm 留空），与首段尾窗读取防护口径一致
             pass
     return {"summary": summary, "llm": llm, "usage": usage, "reason": reason}
+
+
+# 公开访问面（code-review item 2546f200e430）：与 _run_tail_insights 同一函数
+# 对象单源绑定；置于定义之后（模块级别名引用后向符号会 NameError）。
+run_tail_insights = _run_tail_insights
 
 
 def compute_run_cost(
