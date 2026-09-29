@@ -22,6 +22,9 @@
 - 裸 ``.fenix-run-result.json``——实现者/fast-track 自己的收工票据；
 - 未登记到归属表的侧车产物（``tokens.json``/``fail_history.json``/
   ``warning_streaks.json``/``scenario_reroute_stoploss.json`` 等）；
+- 无尾斜杠的目录指称——目录级引用要求尾斜杠（``.fenix/verify-progress/
+  <spec>/``），「写 ``.fenix/verify-progress/foo（结果目录）``」这类无尾
+  斜杠形态不判目录级、也不命中文件级（无已登记产物名），有意保守放行；
 - 「写代码让框架产出该文件」的任务（含代码文件特征）。
 
 构成本模块为纯函数、零 IO：判定函数不含文件读写，车道由调用侧传入
@@ -62,7 +65,9 @@ VERIFY_PROGRESS_DIR_OWNERS: Set[str] = {
 }
 
 # worktree 根 ``.fenix-run-result.json`` 的归属车道
-# （实现者/fast-track 自己的收工票据，合法交付，不触发违规）
+# （实现者/fast-track 自己的收工票据，合法交付，不触发违规）。
+# 仅作声明式文档记录，当前无判定逻辑消费：裸 ``.fenix-run-result.json``
+# 的放行由 _VP_ARTIFACT_RE 的路径限定前缀隐式完成，判定函数不读本表。
 IMPL_RESULT_FILE_OWNERS: Set[str] = {"implementer", "fast-track"}
 
 # ============================================================================
@@ -126,6 +131,10 @@ _VP_ARTIFACT_RE = re.compile(
 # 任务的路径引用常被反引号或引号包裹，如 ``到 `.fenix/verify-progress/<spec>/` ``）。
 # 否则是文件级引用——已登记产物走 _VP_ARTIFACT_RE，未登记侧车文件放行，
 # 均非目录级。
+# 尾斜杠是目录级判定的必要条件（有意保守，零误拦取向）：无尾斜杠的目录
+# 指称（「写 ``.fenix/verify-progress/foo（结果目录）``」）不判目录级——
+# spec 段尾斜杠是区分「目录本身」与「未登记文件名」（如 ``<spec>.json``）
+# 的唯一可靠信号，设为可选会误吞文件级引用作目录级命中。
 _VP_DIR_REF_RE = re.compile(
     r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)）】`'\"」』\]]|$)"
 )
