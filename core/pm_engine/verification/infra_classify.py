@@ -23,6 +23,11 @@ RECLASSIFY_SIGNAL_TYPE = "infra_reclassify"
 # per-spec fail_history.json 文件名
 _FAIL_HISTORY_FILENAME = "fail_history.json"
 
+# 全场景同因失败熔断阈值：连续 N 轮同因 → blocked（判定与信号文案单源引用，
+# code-review item 84ff70bd0fa9；同族冻结阈值 ENV_BLOCK_FREEZE_THRESHOLD 在
+# core.state_machine）
+_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD = 3
+
 
 def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
     """verifier 失败是否属基础设施类（不得流转 bug-found）。
@@ -39,7 +44,13 @@ def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
     if "provider circuit open" in error_text or "chain exhausted" in error_text:
         return True
     try:
-        # 严格 is True：分类器返回非布尔（如测试桩）时按非基础设施处理
+        # 门面直引豁免（code-review item 9fad470a0abe）：PipelineContext 的
+        # agent_runner 车道目前仅承载 _execute_agent（fastlane 轻量修复派发），
+        # 未承载 classify_switch_error 委托成员；此处沿用
+        # _schedule_scenario_repair_reverify / _scenario_defect_reroute_gate 的
+        # 「经 pipeline._pm 门面回引（design D3 规则 3）」同款显式豁免——车道
+        # 后续补充该委托成员时应同步改经 context 触达。严格 is True：分类器
+        # 返回非布尔（如测试桩）时按非基础设施处理。
         return pipeline._pm.agent_runner.classify_switch_error(error_text) is True
     except Exception:
         return False
@@ -189,7 +200,8 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
 def _reset_uniform_fail_streak(pipeline, spec_name: str) -> None:
     """同因失败哨连续计数回落：本轮已确定非「全场景同因失败」时归零。
 
-    docstring/推荐动作承诺的「连续 3 轮同因」按连续轮次熔断——通过轮或
+    docstring/推荐动作承诺的「连续 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD（3）
+    轮同因」按连续轮次熔断——通过轮或
     混合失败轮若不回落，_uniform_fail_attempts 按生命周期累计，非连续的
     偶发同因失败也会误触发 blocked。仅计数非零时才落一次 update_spec
     （常态验证轮零额外写）；回落失败不阻断本轮判定。
@@ -215,7 +227,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     """全场景同因失败哨：pass=0 且全部失败场景（fail/error）错误签名一致 → 疑环境/场景问题。
 
     呼叫 admin 介入判断（verify_uniform_failure 信号，major）；不判
-    bug-found、不派生 fix。连续 3 轮同因 → blocked 交人工。
+    bug-found、不派生 fix。连续同因达 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD
+    （3）轮 → blocked 交人工。
     Returns: True 表示本轮已按同因失败处理（调用方跳过后续判定）。
     """
     summary = report.get("summary") or {}
@@ -235,7 +248,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     if fail_total < 3:
         # 0 passed 但失败不足 3 的小失败轮：非「全场景同因失败」轮，
         # 同样回落连续计数（与 passed>0 / 混合签名轮处置一致，兑现
-        # 信号文案与 docstring「连续 3 轮同因」的『连续』口径）
+        # 信号文案与 docstring「连续 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD
+        # 轮同因」的『连续』口径）
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     # 仅失败态场景纳入哨（fail/failed/error，与 summary 的 failed+errors 同口径），
@@ -297,7 +311,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 "recommended_action": (
                     "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
                     "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "
-                    "缺陷 → 人工处置。连续 3 轮同因将自动 blocked。"
+                    f"缺陷 → 人工处置。连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} "
+                    "轮同因将自动 blocked。"
                 ),
             }
         )
@@ -307,7 +322,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         "error": note,
         "_uniform_fail_attempts": attempts,
     }
-    if attempts >= 3:
+    if attempts >= _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD:
         updates["status"] = "blocked"
         updates["tester_run"] = None
     pipeline._context.state_machine.update_spec(spec_name, updates)
@@ -596,7 +611,15 @@ def reclassify_infra_rounds(
     # ── 目标状态判定（复用 resolve_env_blocked_reset_path 语义）──
     if entry.get("status") == "blocked" and not entry.get("frozen"):
         reset_path = resolve_env_blocked_reset_path(entry, project_root)
-        target_status = reset_path or "ready"
+        # reset_path 原样采用（code-review item 800e1f308b9a）：None = 无合法
+        # 复位转换——预检只排除了 frozen 结构化标记，而「人工冻结」是 frozen
+        # 标记与 error 文本 FREEZE_ERROR_PREFIX 前缀的双判据（任一命中即人工
+        # 冻结），error 前缀形态下 resolve 返回 None。此前 `or "ready"` 兜底
+        # 会把该形态自动拨回 ready 重实现通道，违背 branch_guard /
+        # _escalate_env_blocked「人工处置是唯一出路」的门禁契约（branch_guard
+        # docstring：调用方不应触发任何复位转换）。None 时保持 status 不变、
+        # 仅扣减 fail_rounds，人工冻结形态原样留待人工处置。
+        target_status = reset_path
     else:
         target_status = None
 

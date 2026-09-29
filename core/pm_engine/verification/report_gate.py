@@ -127,6 +127,16 @@ def _check_verification_gate(pipeline, spec_name: str) -> str | None:
         current = vp.get("current") or ""
         tail = f"（当前：{current}）" if current else ""
         return f"验证未完成：{done}/{total}{tail}"
+    if done > total:
+        # 进度文件计数异常（场景集缩小后计数残留、半新半旧的写交叉）——
+        # 异常计数本身说明进度文件不可信，不与正常完成同走静默放行路径：
+        # WARNING 留痕 + 按未完成阻断（code-review item f146475ac4fa）。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"验证进度计数异常 '{spec_name}': done({done}) > total({total})，"
+            f"进度文件不可信——按未完成阻断",
+        )
+        return f"验证进度计数异常：done({done}) > total({total})"
     return None
 
 
@@ -343,8 +353,14 @@ def _read_shared_result(
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+    except json.JSONDecodeError as e:
         return VerdictReadResult.failure("parse", f"{path}: {e}")
+    except OSError as e:
+        # IO 失败（权限/设备错误等）≠ 产物格式损坏：独立 reason=io-error，与
+        # _read_verifier_result 主路径的分池口径对齐（code-review item
+        # 6b02308f9192）——共享回退路径上的权限/设备错误不再被误读为格式
+        # 损坏；下游按不可读 fail-closed 处置不变，仅 reason 文本分池。
+        return VerdictReadResult.failure("io-error", f"{path}: {e}")
     if require_verifier_role and not isinstance(data, dict):
         return VerdictReadResult.failure("parse", f"{path}: 顶层非对象")
     # ── role/spec 戳校验唯一实现在 _verifier_stamp_gate（evo-verifier-result-
