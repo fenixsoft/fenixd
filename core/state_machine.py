@@ -561,6 +561,12 @@ class StateParser:
                     # 可空字段——None 经 serialize 写 null、解析回退 None（否则
                     # 「null」字符串会被 prev_fp == fp 比较吞掉，跨重启熔断失效）。
                     "_redispatch_cause_fp",
+                    # 合并熔断指纹（recover_interrupted/remerge 收口四处把
+                    # _merge_fp 置 None）——None 经 serialize 写 null、解析回退
+                    # None（否则读回 "null" 字符串是 truthy，会被误当真实指纹
+                    # 参与比较与 merge_streak 告警文案，与 _redispatch_cause_fp
+                    # 同型登记）。
+                    "_merge_fp",
                 ):
                     if value.lower() in ("null", "none", ""):
                         value = None
@@ -1429,9 +1435,16 @@ class StateMachine:
             "error": error,
         }
         if extra_updates:
-            # 防误用：extra_updates 不得覆盖冻结 error（评审收口若传入 error
-            # 键会用非冻结前缀文案覆盖冻结 error → parse_orig_status 失效）
-            safe_extra = {k: v for k, v in extra_updates.items() if k != "error"}
+            # 防误用：error/status/frozen 三键只应由本方法自身设定——携带
+            # error 会用非冻结前缀文案覆盖冻结 error（parse_orig_status 失效）；
+            # 携带 status/frozen 会覆盖已置的 blocked/True，且 updates 自带
+            # FROZEN_FIELD 使 _apply_updates_entry 的冻结剥离分支不触发，
+            # 落盘 frozen=True 而 status≠blocked 的自相矛盾条目。
+            safe_extra = {
+                k: v
+                for k, v in extra_updates.items()
+                if k not in ("error", "status", FROZEN_FIELD)
+            }
             updates.update(safe_extra)
         ok = self.update_spec(spec_name, updates)
         if alert_callback is None:

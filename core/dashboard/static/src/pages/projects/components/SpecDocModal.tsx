@@ -56,6 +56,11 @@ interface SpecDocModalProps {
 // 允许的链接协议白名单
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
+// 纯页内锚点判定（#xxx，排除 SPA 路由 #/ 与裸 #）：SafeLink 与帮助中心（help 页，
+// 自建 a 组件做页内滚动）共用的条件口径，单一来源避免双处判定各自漂移
+export const isPageAnchor = (href: string): boolean =>
+  href.startsWith('#') && !href.startsWith('#/') && href.length > 1;
+
 // 自定义链接组件：非白名单协议不输出可点击链接
 // （导出供帮助中心等其它 markdown 场景的链接兜底复用，保持协议白名单口径一致）
 export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
@@ -69,7 +74,7 @@ export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
   // slug id，不经过本组件。
   // 仍须 preventDefault：本应用基于 hash 路由，原生跳转会把 location.hash 从 #/... 改写成
   // #xxx，被路由当作路径变更导致当前页面被切走
-  if (href.startsWith('#') && !href.startsWith('#/') && href.length > 1) {
+  if (isPageAnchor(href)) {
     return (
       <a href={href} onClick={(e) => e.preventDefault()} {...props}>
         {children}

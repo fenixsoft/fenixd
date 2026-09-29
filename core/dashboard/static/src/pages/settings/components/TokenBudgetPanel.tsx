@@ -1,9 +1,9 @@
-import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
@@ -72,79 +72,43 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  // 保存重入守卫（code-review item 53b14fb31196，比照 ApprovalModePanel
-  // 589c1c98c5a4）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
-  // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
-  // loading/disabled 并在入口短路；setSaving 渲染生效存在 React 调度间隙
-  // （同帧双击读到的闭包 saving 仍为 false，比照 SystemPanel 8ccf20511320 /
-  // index d64feaab59a4 的 savingRef 口径），经 savingRef 写读同帧原子拦住
-  // 连点，state 只负责按钮视觉反馈。
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
-  // 规模预检开关（agents.scale_precheck.enabled）：关闭时隐藏两阈值输入
-  const scalePrecheckOn = Form.useWatch('scale_precheck_enabled', form);
-
-  const initialValues = buildAgentsFormValues(config.agents);
-
-  // 回填门控（code-review item cbec8303669f，比照 MiscSettingsPanel 0a2bd3f20fcd /
-  // AgentModelPanel 9f98edec21fa）：无条件 setFieldsValue 会在保存往返或「同步用户级
-  // 设置」刷新 config 时，用外部值覆盖用户在保存请求在飞期间继续输入、尚未保存的
-  // 内容。改为序列化比较，只在内容真变化时回填。
-  const lastBackfillRef = useRef('');
-  useEffect(() => {
-    const next = buildAgentsFormValues(config.agents);
-    const key = JSON.stringify(next);
-    if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
-    form.setFieldsValue(next);
-  }, [config.agents, form]);
-
-  const handleSave = async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      const values = await form.validateFields();
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443）：
+  // savingRef 重入守卫（原 item 53b14fb31196）、序列化比较回填门控（原 item
+  // cbec8303669f）、校验/持久化分离的 handleSave（原 item def003cd8cff /
+  // 0abd04f38c76 的「父级兜底 toast、子层不重复报错」口径——hook 在 onSave
+  // resolve(false) 时不重复提示）由 hook 承载；本面板保留字段映射
+  // （buildAgentsFormValues）与保存载荷组装。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => buildAgentsFormValues(config.agents),
+    backfillDeps: [config.agents],
+    onSave,
+    buildPayload: (values): Partial<ConfigData> => {
       // 规模预检开关关闭时两阈值输入被条件卸载，validateFields 只返回已注册
       // 字段（两键为 undefined，序列化后 scale_precheck 只剩 {"enabled": false}，
       // 后端整体替换会把自定义阈值抹成缺省——code-review item 98ad925ee64a）。
       // 经 getFieldsValue(true) 取含已卸载字段在内的 store 值兜底：开关开启时
       // 与 values 同值，关闭时为最近一次已知阈值。
       const store = form.getFieldsValue(true);
-      // 分离「表单校验」与「保存持久化」（code-review item def003cd8cff，比照
-      // ApprovalModePanel 568b0ff8cce2 口径）：校验失败 antd 已在表单内渲染提示，
-      // 静默返回；onSave 持久化失败（网络/500）拆独立 try/catch 显式反馈，避免
-      // 用户误以为配置已保存。
-      try {
-        // onSave 契约即 index.handleSave 的 Promise<boolean>（false=保存失败，
-        // 成功/失败 toast 均由父级兜底），此处不重复报错、也不提示成功
-        //（code-review item 0abd04f38c76，比照 SelfReviewPanel 按返回值门控的范式）。
-        await onSave({
-          agents: {
-            token_budget_millions: values.token_budget_millions,
-            daily_run_limit: values.daily_run_limit,
-            impl_run_budget: values.impl_run_budget,
-            impl_run_budget_max: values.impl_run_budget_max,
-            verify_redo_budget: values.verify_redo_budget,
-            max_same_cause_redispatches: values.max_same_cause_redispatches,
-            scale_precheck: {
-              enabled: values.scale_precheck_enabled,
-              higher_threshold: values.scale_precheck_higher ?? store.scale_precheck_higher,
-              full_threshold: values.scale_precheck_full ?? store.scale_precheck_full,
-            },
+      return {
+        agents: {
+          token_budget_millions: values.token_budget_millions,
+          daily_run_limit: values.daily_run_limit,
+          impl_run_budget: values.impl_run_budget,
+          impl_run_budget_max: values.impl_run_budget_max,
+          verify_redo_budget: values.verify_redo_budget,
+          max_same_cause_redispatches: values.max_same_cause_redispatches,
+          scale_precheck: {
+            enabled: values.scale_precheck_enabled,
+            higher_threshold: values.scale_precheck_higher ?? store.scale_precheck_higher,
+            full_threshold: values.scale_precheck_full ?? store.scale_precheck_full,
           },
-        });
-      } catch (error) {
-        // 保存持久化失败（网络/500）：给用户显式反馈而非静默
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-      }
-    } catch {
-      // 校验失败：antd 已在表单内渲染提示，不落 console
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
+        },
+      };
+    },
+  });
+  // 规模预检开关（agents.scale_precheck.enabled）：关闭时隐藏两阈值输入
+  const scalePrecheckOn = Form.useWatch('scale_precheck_enabled', form);
 
   return (
     <div>

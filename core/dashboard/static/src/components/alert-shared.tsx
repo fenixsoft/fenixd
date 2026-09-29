@@ -95,56 +95,47 @@ function AlertNarrative({ text }: { text: string }) {
   );
 }
 
-/** 告警明细字段区（证据/处置/建议/解决依据），布局差异按 variant 保留 */
+/**
+ * 告警明细字段区（描述/叙事/证据/处置/建议/解决依据），六段行单源只写一份，
+ * 布局差异按 variant 保留、isPage 仅在真实差异点分支（两变体渲染输出逐字等价）：
+ * - 描述行：page 有描述才独占一行渲染，banner 恒渲染并入 📌 spec 前缀；
+ * - 证据行：page 外包一层 div，banner 直接内联；
+ * - 处置/建议：page 文案在 Typography 外作同级文本节点，banner 并入 Typography 内。
+ */
 export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertSurfaceVariant }) {
+  const isPage = variant === 'page';
   const evidenceText = fmtEvidence(item.evidence);
   const resolveNote = item.resolve_note ? (
     <div>
       <Typography.Text type="secondary">解决依据：{item.resolve_note}</Typography.Text>
     </div>
   ) : null;
-  if (variant === 'page') {
-    return (
-      <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
-        {item.description ? <div>{item.description}</div> : null}
-        {item.narrative?.text ? <AlertNarrative text={item.narrative.text} /> : null}
-        {evidenceText ? (
-          <div>
-            <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
-          </div>
-        ) : null}
-        {item.action_taken ? (
-          <div>
-            <Typography.Text type="secondary">处置：</Typography.Text>
-            {item.action_taken}
-          </div>
-        ) : null}
-        {item.recommended_action ? (
-          <div>
-            <Typography.Text type="secondary">建议：</Typography.Text>
-            {item.recommended_action}
-          </div>
-        ) : null}
-        {resolveNote}
-      </div>
-    );
-  }
+  const descriptionLine = isPage ? (
+    item.description ? (
+      <div>{item.description}</div>
+    ) : null
+  ) : (
+    <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
+  );
+  const evidenceLine = evidenceText ? (
+    <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
+  ) : null;
   return (
     // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
     <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
-      <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
+      {descriptionLine}
       {item.narrative?.text ? <AlertNarrative text={item.narrative.text} /> : null}
-      {evidenceText ? (
-        <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
-      ) : null}
+      {isPage ? (evidenceLine ? <div>{evidenceLine}</div> : null) : evidenceLine}
       {item.action_taken ? (
         <div>
-          <Typography.Text type="secondary">处置：{item.action_taken}</Typography.Text>
+          <Typography.Text type="secondary">处置：{!isPage && item.action_taken}</Typography.Text>
+          {isPage && item.action_taken}
         </div>
       ) : null}
       {item.recommended_action ? (
         <div>
-          <Typography.Text type="secondary">建议：{item.recommended_action}</Typography.Text>
+          <Typography.Text type="secondary">建议：{!isPage && item.recommended_action}</Typography.Text>
+          {isPage && item.recommended_action}
         </div>
       ) : null}
       {resolveNote}

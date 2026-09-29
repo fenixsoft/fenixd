@@ -50,6 +50,15 @@ from core.pm_engine.verification import (
 # 消费者（queue.py）共用同一常量——超限即「降级人工 + 豁免自动失效」单源。
 from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
 
+# code-review item a10425b71546：run 终态判定的尾读窗口与
+# core.agent_runner.liveness._TAIL_READ_WINDOW 单源对齐（64KB，覆盖携带长
+# stderr 摘录的终态行），不再各写一份窗口常量继续漂移。import 失败（模块
+# 加载顺序等异常态）兜底同值，不因窗口常量缺失中断本模块加载。
+try:
+    from core.agent_runner.liveness import _TAIL_READ_WINDOW as _RUN_TAIL_READ_WINDOW
+except Exception:  # pragma: no cover - 兜底同值，仅防加载顺序异常
+    _RUN_TAIL_READ_WINDOW = 64 * 1024
+
 # frozen-scenario-schema-migration D3：处置后自动复位集合。
 # blocked_stuck 与 env 阻塞族同语义加入自动复位：admin 处置成功
 # （result=resolved/partially-resolved）且根因已修复 → 复用
@@ -833,6 +842,30 @@ def _queued_for_dispatch(pm_engine, spec_name: str) -> bool:
         return False
 
 
+def _is_intentionally_paused(entry: dict) -> bool:
+    """人工冻结/暂停「有意等待态」三重判据（单点判定，code-review item a1cab4f7bb6c）。
+
+    判据与 _detect_blocked_stuck 既有实现逐字一致（fix-restart-dual-dispatch S4）：
+      ① 结构化 ``frozen`` 字段——freeze_spec() 统一入口写入，首要判定，不依赖文案；
+      ② error 前缀 ``'frozen:'``——Administrator 为去重/家族收敛人为冻结的
+        历史 error 文案（其 blocked/悬置是有意保持的等待态，updated 不会推进）；
+      ③ error 含「用户指令」子串——人工写入的「用户指令暂停/冻结：…」等价于
+        frozen（2026-08-30 v2-acceptance-suite 误报），用词在暂停/冻结间漂移，
+        按子串识别双保险。
+
+    存量 spec 可能仅以历史 error 文本表达冻结（结构化字段未迁移），全部自动
+    检测/唤起路径（blocked_stuck / stuck / orphaned_state / _handle_signal 唤起前
+    复查 / _force_escalate_stalled）MUST 共用本判定，消除文本回退判据的族内
+    漂移——「人工冻结是有意等待态、不自动唤起」的语义在任一路径不得只认
+    结构化字段。
+    """
+    if entry.get("frozen"):
+        return True
+    err = str(entry.get("error") or "")
+    return err.startswith("frozen:") or "用户指令" in err
+
+
+# [fenix-ignore:a132ca295b06] 多域拆分属架构级重构（需独立设计评审与分域迁移），超出 code-fix 单条最小修复边界，擅自拆分风险大于收益
 class AdminMonitor:
     """困境信号检测 + 节流 + 唤起调度。run_once() 为单次检测入口。"""
 
@@ -1268,9 +1301,17 @@ class AdminMonitor:
                     _worker()
                 return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
             except Exception as e:
-                with self._code_review_lock:
-                    self._code_review_in_flight = False
-                self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
+                # code-review item 9803d23b31dc：投递失败（executor 已 shutdown 等）
+                # 回退同步执行，对齐 _invoke_administrator 的既有投递失败回退口径
+                # （保逃生门）——save_code_review_state 防重已在投递前写入，此前
+                # 仅复位单飞返回，当日周期审查即静默丢失（次日才重试）。_worker
+                # 自身 finally 复位单飞标志；同步执行仍抛异常时由外层 except
+                # 沿用既有「复位单飞+日志」口径兜底。
+                self.logger.error(
+                    "admin_monitor",
+                    f"code-review 周期审查后台投递失败，回退同步执行: {e}",
+                )
+                _worker()
                 return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
         except Exception as e:
             with self._code_review_lock:
@@ -1787,9 +1828,17 @@ class AdminMonitor:
                     _worker()
                 return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
             except Exception as e:
-                with self._regression_lock:
-                    self._regression_in_flight = False
-                self.logger.error("admin_monitor", f"regression 周期回归派发失败: {e}")
+                # code-review item 9803d23b31dc：投递失败（executor 已 shutdown 等）
+                # 回退同步执行，对齐 _invoke_administrator 的既有投递失败回退口径
+                # （保逃生门）——save_state 防重已在投递前写入，此前仅复位单飞
+                # 返回，当日周期回归即静默丢失（次日才重试）。_worker 自身
+                # finally 复位单飞标志；同步执行仍抛异常时由外层 except 沿用
+                # 既有「复位单飞+日志」口径兜底。
+                self.logger.error(
+                    "admin_monitor",
+                    f"regression 周期回归后台投递失败，回退同步执行: {e}",
+                )
+                _worker()
                 return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
         except Exception as e:
             with self._regression_lock:
@@ -1864,19 +1913,18 @@ class AdminMonitor:
         for name, entry in specs.items():
             if entry.get("status") != "blocked":
                 continue
-            # 人工冻结豁免（fix-restart-dual-dispatch S4）：结构化 frozen 字段是
-            # 首要判定——freeze_spec() 统一入口写入，不依赖文案。文本匹配保留为
-            # 存量 spec 的兼容回退（历史 error 未迁移）。
-            # 冻结豁免：Administrator 为去重/家族收敛而人为冻结的 spec（error 前缀
-            # 'frozen:'），其 blocked 是有意保持的等待态，updated 不会推进——按超时
-            # 唤起只会形成每轮重复误报。真实停滞仍由 stuck/repeated_failures/
-            # family_explosion 等规则覆盖。
+            # 人工冻结豁免（fix-restart-dual-dispatch S4）：三重判据单点化在
+            # 模块级 _is_intentionally_paused（code-review item a1cab4f7bb6c）——
+            # 结构化 frozen 字段是首要判定（freeze_spec() 统一入口写入，不依赖
+            # 文案）；文本匹配保留为存量 spec 的兼容回退（历史 error 未迁移）。
+            # 冻结豁免：Administrator 为去重/家族收敛而人为冻结的 spec（error
+            # 前缀 'frozen:'），其 blocked 是有意保持的等待态，updated 不会推进
+            # ——按超时唤起只会形成每轮重复误报。真实停滞仍由 stuck/
+            # repeated_failures/family_explosion 等规则覆盖。
             # 用户指令暂停/冻结（2026-08-30 v2-acceptance-suite 误报）：人工直接
-            # 写入的「用户指令暂停：…」「用户指令冻结：…」同样是有意等待态，等价
-            # 于 frozen——人工历史文案未必带 frozen: 前缀，且用词在暂停/冻结间
-            # 漂移，故按「用户指令」子串识别，双保险。
-            err = str(entry.get("error") or "")
-            if entry.get("frozen") or err.startswith("frozen:") or "用户指令" in err:
+            # 写入的「用户指令暂停：…」「用户指令冻结：…」同样是有意等待态，
+            # 等价于 frozen——按「用户指令」子串识别，双保险。
+            if _is_intentionally_paused(entry):
                 self.logger.debug(
                     "admin_monitor",
                     f"Skipping blocked_stuck for intentionally-paused SPEC '{name}'",
@@ -2004,6 +2052,65 @@ class AdminMonitor:
                     if satisfied:
                         self._close_signal_preprobed(rec, stype, spec)
                         continue
+            # fix-recovery-path-blockers D2b 在飞互斥守卫（code-review item
+            # 82e05894a9b0）：本方法直接 _invoke_administrator，不经 _handle_signal
+            # 的「已有在飞 admin run 即跳过」守卫（同 _retry_due_dispatch_failures /
+            # _recover_orphaned_dispositions 重派分支的既有豁免形态）。同 spec 同
+            # signal_type 已有在飞/待派发的 admin run（如 env 阻塞处置正在写
+            # STATE/test_scenarios.json）时再唤起，会产生与在飞处置**并行**的
+            # 第二个 Administrator run 写同一批状态。为真 → 跳过本次唤起。
+            # 与上方终态守卫/前提复核守卫的 mark_escalated+continue 核销范式不同，
+            # 本守卫 MUST NOT mark_escalated——源记录保持未消费（写入即待唤起
+            # 语义保留），在飞 run 结束后的下一巡检周期由本摄取循环自然重评
+            # （再武装路径）；落点必须在 mark_escalated 之前。
+            if spec and self._has_active_admin_run_for(spec, stype):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"{stype}: 已有在飞处置，跳过本次摄取唤起 '{spec}'"
+                    f"— fix-recovery-path-blockers D2b"
+                    f"（记录未消费，在飞 run 结束后自然重评）",
+                    {"record_id": rec.get("id"), "spec": spec},
+                )
+                # 比照 _handle_signal D2b 路径（code-review item 64cd854cebbb）
+                # 补写 result="skipped" 说明性处置留痕：无 admin_run_id，
+                # _merge_admin_runs 对无 admin_run_id 的记录跳过归并，不会伪造
+                # 「在飞 run」；DISPOSITION 不参与 unhandled_for 节流，不阻断
+                # 重评。本路径无 _handle_signal 的冷却锚点兜重复，逐巡检周期都会
+                # 重捞未 escalated 的源记录——同一源记录只补痕一次（记忆集按
+                # store 记录 id 去重，getattr 惰性初始化同 _fixture_project_memo
+                # 先例，兼容 __new__ 半初始化实例），后续命中仅留日志。
+                memo = getattr(self, "_family_intake_mutex_skip_memo", None)
+                if memo is None:
+                    memo = self._family_intake_mutex_skip_memo = set()
+                if rec.get("id") not in memo:
+                    memo.add(rec.get("id"))
+                    try:
+                        self.store.append(
+                            {
+                                "kind": DISPOSITION,
+                                "signal_type": stype,
+                                "spec": spec,
+                                "severity": rec.get("severity")
+                                or SIGNAL_SEVERITY.get(stype, "major"),
+                                "description": rec.get("description")
+                                or SIGNAL_RECOMMENDATION.get(stype, ""),
+                                "action_taken": (
+                                    "已有在飞 admin run，跳过本次摄取唤起"
+                                    "（fix-recovery-path-blockers D2b 互斥守卫）——"
+                                    "实际未派发，源记录未消费，在飞处置完成后"
+                                    "由摄取循环自然重评"
+                                ),
+                                "result": "skipped",
+                            }
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "admin_monitor",
+                            f"Failed to persist mutex-skip disposition for "
+                            f"'{spec}': {e}",
+                            {"record_id": rec.get("id"), "spec": spec},
+                        )
+                continue
             # code-review 9e031d3e7c7f：缺 description 的兜底文案不再用三元链
             # 硬编码——三元链仅覆盖 family_explosion/dispatch_stalled/
             # inconclusive_loop，其余存储型信号（mergeback_wip_overlap/
@@ -2280,6 +2387,18 @@ class AdminMonitor:
             status = entry.get("status")
             if status not in ("implementing", "testing"):
                 continue
+            # 人工冻结/暂停豁免（code-review item a1cab4f7bb6c）：有意等待态
+            # （结构化 frozen 字段 / 历史 error 文本 'frozen:' 前缀 / 「用户指令」
+            # 子串，三重判据单点 _is_intentionally_paused）不产生 stuck 信号、
+            # 不自动升级 Administrator，与 _detect_blocked_stuck 同判据——此前本
+            # 路径完全不检查冻结，legacy 文本冻结的 implementing/testing spec 会
+            # 被持续判 stuck 并自动唤起。
+            if _is_intentionally_paused(entry):
+                self.logger.debug(
+                    "admin_monitor",
+                    f"Skipping stuck for intentionally-paused SPEC '{name}'",
+                )
+                continue
             # 取消保持豁免（fix-cancel-holdstate-recovery D5）：人工取消的
             # hold spec 是有意等待态，不产生 stuck 信号、不自动升级
             # Administrator（自动升级可能自行复位，破坏「我来决定何时重派」
@@ -2398,8 +2517,11 @@ class AdminMonitor:
             status = entry.get("status")
             if status not in ("implementing", "testing"):
                 continue
-            # 人工冻结豁免：冻结即「等待人工」的显式表达（与 blocked_stuck 同款）
-            if entry.get("frozen"):
+            # 人工冻结豁免：冻结即「等待人工」的显式表达（与 blocked_stuck 同款
+            # 三重判据，单点 _is_intentionally_paused，code-review item
+            # a1cab4f7bb6c——存量 spec 可能仅以历史 error 文本表达冻结，
+            # 结构化字段未迁移时同样豁免）
+            if _is_intentionally_paused(entry):
                 continue
             # 待 re-merge 载体的豁免（2026-09-17 事故，铁律 4 同款「误判以 ctx 声明
             # 为准」）：``_repair_awaiting_remerge=True`` 的 implementing spec 是
@@ -2845,17 +2967,21 @@ class AdminMonitor:
         # 唤起、不落冷却锚点记录——自动巡检对人工决策的每一次探查都是纯 token
         # 浪费，冻结本身即是「等待人工」的显式表达。手动呼叫（invoke_manual）
         # 不经此处，始终响应。
+        # code-review item a1cab4f7bb6c：复查判据从仅认 frozen 字段对齐为与
+        # _detect_blocked_stuck 同款三重判据（单点 _is_intentionally_paused）——
+        # 存量 spec 可能仅以历史 error 文本（'frozen:' 前缀/「用户指令」子串）
+        # 表达冻结，结构化字段未迁移时同样是有意等待态，不得自动唤起。
         if spec:
             try:
                 _entry = self.state_machine.read_one(spec) or {}
             except Exception:
                 _entry = {}
-            if _entry.get("frozen"):
+            if _is_intentionally_paused(_entry):
                 self.logger.info(
                     "admin_monitor",
-                    f"Skipping auto-invocation for manually-frozen SPEC "
-                    f"'{spec}' (frozen field set) — signal '{signal_type}' "
-                    f"dropped, not anchored",
+                    f"Skipping auto-invocation for intentionally-paused SPEC "
+                    f"'{spec}' (frozen field / frozen: prefix / 用户指令) — "
+                    f"signal '{signal_type}' dropped, not anchored",
                 )
                 return
 
@@ -2962,8 +3088,10 @@ class AdminMonitor:
         for name, entry in specs.items():
             if entry.get("status") != "blocked":
                 continue
-            err = str(entry.get("error") or "")
-            if entry.get("frozen") or err.startswith("frozen:") or "用户指令" in err:
+            # 冻结/用户指令暂停豁免与 _detect_blocked_stuck 同判据（有意等待态
+            # 不反复催办；三重判据单点 _is_intentionally_paused，code-review
+            # item a1cab4f7bb6c）
+            if _is_intentionally_paused(entry):
                 continue
             updated_str = entry.get("updated") or entry.get("created") or ""
             try:
@@ -4699,11 +4827,19 @@ class AdminMonitor:
 
         与 dashboard.data.classify_run 同语义，避免跨层 import dashboard。
         """
+        # code-review item a10425b71546：尾读窗口对齐 liveness._TAIL_READ_WINDOW
+        # （模块顶部单源 import 的 _RUN_TAIL_READ_WINDOW，64KB）——旧值 4096 下，
+        # 末条 JSON 事件（如携带长 stderr 摘录的 error 终态行）自身超窗时 seek
+        # 落点在该行内部，该行被当截断首行丢弃/解析失败，last 退化为更早的完整
+        # 事件，已失败 run 被误判 running/empty，_detect_repeated_failures 漏计
+        # 失败次数（repeated_failures 信号在该形态下失明）。不复用
+        # _file_tail_is_terminal：其只返回「末行是否终态」的 bool，区分不了
+        # error/done（本方法的返回值语义），故只对齐窗口口径。
         try:
             size = run_file.stat().st_size
             with run_file.open("rb") as f:
-                if size > 4096:
-                    f.seek(size - 4096)
+                if size > _RUN_TAIL_READ_WINDOW:
+                    f.seek(size - _RUN_TAIL_READ_WINDOW)
                 tail = f.read().decode("utf-8", "replace")
         except OSError:
             return "empty"
@@ -4712,7 +4848,7 @@ class AdminMonitor:
         # _file_tail_is_terminal 与 dashboard _read_run_lines 读取范式）；
         # 仅 seek 分支丢弃——size <= 窗口时为全量读，首行完整。
         lines = tail.split("\n")
-        if size > 4096:
+        if size > _RUN_TAIL_READ_WINDOW:
             lines = lines[1:]
         for line in lines:
             line = line.strip()

@@ -20,7 +20,7 @@ import type { AnchorHTMLAttributes, ComponentType } from 'react';
 
 import { getHelpDocs, getHelpDoc } from '@/services/dashboard';
 import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
-import { markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
+import { isPageAnchor, markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import './help.css';
 
@@ -199,8 +199,11 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
     h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }, slugCounts),
     h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }, slugCounts),
     a({ href, children, ...rest }: any) {
-      // 纯锚点（#xxx，排除 SPA 路由 #/）：当前文档页内滚动
-      if (href && href.startsWith('#') && !href.startsWith('#/') && href.length > 1) {
+      // 纯锚点（#xxx，排除 SPA 路由 #/）：当前文档页内滚动。判定条件复用 SafeLink
+      // 的 isPageAnchor 单一口径源；分支不删、不能交由兜底 SafeLinkComp 承接——
+      // 其管线不给标题生成 id，锚点分支仅拦截原生跳转不做滚动定位（见 SpecDocModal
+      // 注释），本管线已注入 heading slug id，须做真实平滑滚动
+      if (href && isPageAnchor(href)) {
         return (
           <a
             href={href}

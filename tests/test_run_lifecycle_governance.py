@@ -1033,41 +1033,51 @@ class TestJudgeLiveness(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_parseable_output_returns_verdict(self):
-        class FakeCompleted:
-            returncode = 0
-            stdout = json.dumps({"result":
-                                 '{"verdict": "advancing", "evidence": "files edited"}'})
-            stderr = ""
+        # judge 子进程原语已由 subprocess.run 换为 Popen+communicate
+        # （item d916fd3aa78b：进程组启动防超时孤儿），打桩点同步换到
+        # subprocess.Popen——仍打桩 run 会放行真实 claude -p 致用例挂死。
+        class FakeProc:
+            def __init__(self, stdout):
+                self._stdout = stdout
+                self.returncode = 0
+                self.pid = 2 ** 24  # 假 pid：killpg 清场路径（仅超时分支）不可达
+
+            def communicate(self, input=None, timeout=None):
+                return self._stdout, ""
 
         calls = []
 
-        def fake_run(cmd, **kwargs):
+        def fake_popen(cmd, **kwargs):
             calls.append(cmd)
-            return FakeCompleted()
+            return FakeProc(json.dumps({"result":
+                             '{"verdict": "advancing", "evidence": "files edited"}'}))
 
-        original = agent_runner_module.subprocess.run
-        agent_runner_module.subprocess.run = fake_run
+        original = agent_runner_module.subprocess.Popen
+        agent_runner_module.subprocess.Popen = fake_popen
         try:
             verdict = self.runner._liveness._judge_liveness({}, "s1", "impl-s1-1-a1")
         finally:
-            agent_runner_module.subprocess.run = original
+            agent_runner_module.subprocess.Popen = original
         self.assertEqual(verdict["verdict"], "advancing")
         self.assertEqual(verdict["evidence"], "files edited")
         self.assertEqual(calls[0][0], "claude")
         self.assertEqual(calls[0][1], "-p")
 
     def test_unparseable_output_is_stagnant_with_marker(self):
-        class FakeCompleted:
-            returncode = 0
-            stdout = "完全无关的自然语言输出，没有 JSON"
-            stderr = ""
+        class FakeProc:
+            def __init__(self):
+                self.returncode = 0
+                self.pid = 2 ** 24
 
-        original = agent_runner_module.subprocess.run
-        agent_runner_module.subprocess.run = lambda cmd, **kw: FakeCompleted()
+            def communicate(self, input=None, timeout=None):
+                return "完全无关的自然语言输出，没有 JSON", ""
+
+        original = agent_runner_module.subprocess.Popen
+        agent_runner_module.subprocess.Popen = lambda cmd, **kw: FakeProc()
         try:
             verdict = self.runner._judge_liveness({}, "s1", "r1")
         finally:
-            agent_runner_module.subprocess.run = original
+            agent_runner_module.subprocess.Popen = original
         self.assertEqual(verdict["verdict"], "stagnant")
         self.assertIn("liveness judge unavailable", verdict["evidence"])
 
@@ -1075,12 +1085,12 @@ class TestJudgeLiveness(unittest.TestCase):
         def _boom(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, 120)
 
-        original = agent_runner_module.subprocess.run
-        agent_runner_module.subprocess.run = _boom
+        original = agent_runner_module.subprocess.Popen
+        agent_runner_module.subprocess.Popen = _boom
         try:
             verdict = self.runner._judge_liveness({}, "s1", "r1")
         finally:
-            agent_runner_module.subprocess.run = original
+            agent_runner_module.subprocess.Popen = original
         self.assertEqual(verdict["verdict"], "stagnant")
         self.assertIn("liveness judge unavailable", verdict["evidence"])
 

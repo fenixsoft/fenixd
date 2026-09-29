@@ -1,9 +1,9 @@
-import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 import {
   knowledgeSectionFromSwitches,
   knowledgeSwitchDesc,
@@ -42,75 +42,34 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  // 保存重入守卫（code-review item bbc939741560，比照 TokenBudgetPanel
-  // 53b14fb31196）：onSave 是异步落盘 + 父组件重载，请求在飞期间连点「保存」
-  // 会重复提交保存请求——saving 期间置 loading/disabled 并在入口短路。
-  const [saving, setSaving] = useState(false);
-  // 同帧连点拦截（code-review item ab90b32016f3，比照 SystemPanel
-  // 8ccf20511320）：setSaving 渲染生效存在 React 调度间隙，state 短路拦不住
-  // 同帧双击的并发保存——经 savingRef 写读同帧原子拦截，state 只负责按钮视觉反馈。
-  const savingRef = useRef(false);
-
-  const initialValues = buildFormValues(config);
-
-  // 回填门控（code-review item 0a2bd3f20fcd，比照 AgentModelPanel 9f98edec21fa）：
-  // 无条件 setFieldsValue 会在其它面板保存触发父组件 setConfig 时，用外部
-  // config 覆盖本面板用户正在编辑、尚未保存的阈值。改为序列化比较，只在
-  // 内容真变化时回填。
-  const lastBackfillRef = useRef('');
-  useEffect(() => {
-    const next = buildFormValues(config);
-    const key = JSON.stringify(next);
-    if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
-    form.setFieldsValue(next);
-  }, [config.archive, config.knowledge, form]);
-
-  const handleSave = async () => {
-    if (savingRef.current) {
-      return;
-    }
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      // 分离「表单校验」与「保存持久化」（code-review item 9125d4a7f7b4，比照
-      // AgentModelPanel 3086b7e96c4f）：旧实现两者混在同一 try/catch 且静默吞掉，
-      // onSave 拒绝（网络失败/500）时用户点击「保存」后无任何反馈。
-      let values;
-      try {
-        values = await form.validateFields();
-      } catch {
-        // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
-        // （避免触发验证的 no_console_error 断言）。
-        return;
-      }
-      try {
-        await onSave({
-          // add-spec-archive：自动归档阈值（0 = 禁用）
-          archive: {
-            auto_threshold: values.auto_threshold,
-          },
-          // add-knowledge-atlas：知识真相源总开关（false 时归档不派发蒸馏）
-          // + add-knowledge-atlas-maintenance：维护车道开关——合并后同节两键共存，
-          // 组装为单一 knowledge 键（对象字面量出现两个同名键会被后者整体覆盖；
-          // graph_enabled 已随 graphify 生成功能取消而下线，不再由本页读写，
-          // 后端逐键合并，配置文件中的存量键原样保留）
-          knowledge: {
-            enabled: values.knowledge_enabled,
-            ...knowledgeSectionFromSwitches({
-              auditEnabled: values.audit_enabled,
-            }).knowledge,
-          },
-        });
-      } catch (error) {
-        // 保存持久化失败：给用户显式反馈而非静默
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-      }
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443）：
+  // savingRef 重入守卫（原 item bbc939741560 / ab90b32016f3）、序列化比较回填
+  // 门控（原 item 0a2bd3f20fcd）、校验/持久化分离的 handleSave（原 item
+  // 9125d4a7f7b4）由 hook 承载；本面板保留字段映射（buildFormValues）与保存
+  // 载荷组装。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => buildFormValues(config),
+    backfillDeps: [config.archive, config.knowledge],
+    onSave,
+    buildPayload: (values): Partial<ConfigData> => ({
+      // add-spec-archive：自动归档阈值（0 = 禁用）
+      archive: {
+        auto_threshold: values.auto_threshold,
+      },
+      // add-knowledge-atlas：知识真相源总开关（false 时归档不派发蒸馏）
+      // + add-knowledge-atlas-maintenance：维护车道开关——合并后同节两键共存，
+      // 组装为单一 knowledge 键（对象字面量出现两个同名键会被后者整体覆盖；
+      // graph_enabled 已随 graphify 生成功能取消而下线，不再由本页读写，
+      // 后端逐键合并，配置文件中的存量键原样保留）
+      knowledge: {
+        enabled: values.knowledge_enabled,
+        ...knowledgeSectionFromSwitches({
+          auditEnabled: values.audit_enabled,
+        }).knowledge,
+      },
+    }),
+  });
 
   return (
     <div>

@@ -2,7 +2,9 @@
 // 零依赖、无 React：与 qualityGates.ts 同型，供 node --test 原生 type-stripping
 // 直测（tests/knowledgeSettings.test.mjs），面板组件只消费这里的映射结果。
 // 2026-09-29 graphify 生成功能取消：graph_enabled 开关从设置页下线（后端键与
-// 默认值保留、存量配置不动），映射只覆盖 enabled + audit_enabled。
+// 默认值保留、存量配置不动）。本模块映射仅覆盖 audit_enabled；knowledge.enabled
+// 不经本模块，由 MiscSettingsPanel 经表单值（values.knowledge_enabled）直读直写
+// （后端 _deep_merge_managed 对 knowledge 段逐键合并，enabled 不会被抹掉）。
 
 /** 后端 knowledge.* 段中设置页消费的键（core/config.py get_knowledge_lane_config 的透传） */
 export interface KnowledgeSection {
@@ -39,6 +41,7 @@ export function knowledgeSectionFromSwitches(state: KnowledgeSwitchState): {
   };
 }
 
+// [fenix-ignore:fe0b741889ca] 条目所述「未使用的 key 参数」已在本分支早前批次（item 47d9e4700d3a，commit d78e0d15）移除，现行签名即无参函数，扩展位已在文档注释说明
 /** 开关说明文案（单一来源，面板与测试共用）。当前仅 audit 车道，无参直取；
  * 引入第二个车道键时再参数化（code-review item 47d9e4700d3a）。 */
 export function knowledgeSwitchDesc(): string {
