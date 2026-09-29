@@ -180,7 +180,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               每日知识体检<span className="label-note">（knowledge.audit_enabled）</span>
             </span>
           </div>
-          <Text type="secondary">{knowledgeSwitchDesc('audit')}</Text>
+          <Text type="secondary">{knowledgeSwitchDesc()}</Text>
         </Card>
       </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>

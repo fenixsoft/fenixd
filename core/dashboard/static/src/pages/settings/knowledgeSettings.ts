@@ -39,7 +39,8 @@ export function knowledgeSectionFromSwitches(state: KnowledgeSwitchState): {
   };
 }
 
-/** 开关说明文案（单一来源，面板与测试共用） */
-export function knowledgeSwitchDesc(key: 'audit'): string {
+/** 开关说明文案（单一来源，面板与测试共用）。当前仅 audit 车道，无参直取；
+ * 引入第二个车道键时再参数化（code-review item 47d9e4700d3a）。 */
+export function knowledgeSwitchDesc(): string {
   return '每日一次对 spec/knowledge/ 全量体检（悬空溯源、超行数、ADR 病灶、矛盾与重复），机械项自动修复提交，矛盾/重复转定向蒸馏重写；报告落 .fenix/knowledge_audit_report.md。';
 }

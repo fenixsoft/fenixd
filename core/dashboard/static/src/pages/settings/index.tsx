@@ -217,10 +217,19 @@ export default function SettingsPage() {
     savingRef.current = true;
     setSaving(true);
     try {
+      // collect 契约是校验失败返回 null 而非 reject，但未禁止内部意外异常
+      // （config 缺段、ref 转发链断裂）——异常穿透会逃逸为 onClick 的未处理
+      // Promise 拒绝：saving 被 finally 复位，用户却零反馈，点击如同失效
+      // （code-review item e15f483ca1ed）。对齐 handleSave 的 error 口径后中止。
       const parts = await Promise.all([
         staleSelfhealRef.current?.collect(),
         suggestionsRef.current?.collect(),
-      ]);
+      ]).catch((error) => {
+        console.error('Failed to collect self-evolution sections:', error);
+        message.error('收集自进化配置失败，保存已中止，请稍后重试');
+        return null;
+      });
+      if (parts === null) return;
       // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
       // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——旧空检查只拒 null
       // 哨兵，undefined 落入 ``?? {}`` 被当空数据合并：(a) 两 ref 都未挂时

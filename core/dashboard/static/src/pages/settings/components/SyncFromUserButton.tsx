@@ -9,6 +9,7 @@ import type { ConfigData } from '@/services/dashboard';
 // 而非裸 key。（code-review item 6df16f377728：改从共享模块导入——旧
 // `from '../index'` 是 index → panels → button → index 模块循环的一环。）
 import { PAGE_LABELS } from '../pageLabels';
+import type { PageKey } from '../pageLabels';
 
 interface SyncFromUserButtonProps {
   /** 当前项目名（项目级作用域才渲染本按钮） */
@@ -32,8 +33,10 @@ interface SyncFromUserButtonProps {
  */
 export default function SyncFromUserButton({ project, page, onSynced }: SyncFromUserButtonProps) {
   const { message } = App.useApp();
-  // 回退不再直接暴露内部 key（code-review item e0b8f3aefec7）
-  const pageLabel = PAGE_LABELS[page] ?? '当前页签';
+  // 回退不再直接暴露内部 key（code-review item e0b8f3aefec7）。page 是运行时
+  // 字符串，按 Partial<Record<PageKey, string>> 收窄后索引（code-review item
+  // 32ab875ddc2e），未知 key 仍走「当前页签」回退。
+  const pageLabel = (PAGE_LABELS as Partial<Record<PageKey, string>>)[page] ?? '当前页签';
   const [open, setOpen] = useState(false);
   // 当前进行中的操作（互斥 loading；null = 空闲）
   const [busy, setBusy] = useState<null | 'sync' | 'clear'>(null);
