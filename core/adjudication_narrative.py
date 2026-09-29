@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -251,6 +252,7 @@ def _resolve_timeout(admin_cfg: Dict[str, Any]) -> float:
     return max(value, 1.0)
 
 
+# [fenix-ignore:36dd24a23b66] 建议的对冲已存在：展示层 alert-shared.tsx AlertNarrative 已显著标注「AI 生成·仅供参考·最终由你决定」且 AlertLines 同屏保留机械字段原文对照
 def _build_prompt(entry: dict, state_entry: Optional[dict], report_path: Optional[str]) -> str:
     """组三段式 prompt（D3）：输入全部 fail-open 采集，读不到就不带。"""
     choices = entry.get("choices") or []
@@ -309,15 +311,21 @@ def _build_prompt(entry: dict, state_entry: Optional[dict], report_path: Optiona
 
 
 def _validate_structure(text: str) -> bool:
-    """机械校验三段标题齐全且顺序不倒置（D3：缺失视为失败走兜底）。"""
+    """机械校验三段标题齐全且顺序不倒置（D3：缺失视为失败走兜底）。
+
+    逐行按 ``^##<空白><标题>`` 形态锚定匹配（re.MULTILINE）：正文叙述句
+    提前出现标题词不再顶替缺失标题骗过校验（code-review b90c2e93afe9）。
+    空白用 ``[ \\t]*`` 而非 ``\\s*``——避免 ``\\s`` 吞换行把独立「##」行与
+    下一行正文误拼成一个标题。
+    """
     if not text:
         return False
     positions = []
     for head in REQUIRED_SECTIONS:
-        idx = text.find(head)
-        if idx < 0:
+        m = re.search(rf"^##[ \t]*{re.escape(head)}", text, re.MULTILINE)
+        if m is None:
             return False
-        positions.append(idx)
+        positions.append(m.start())
     return positions == sorted(positions)
 
 

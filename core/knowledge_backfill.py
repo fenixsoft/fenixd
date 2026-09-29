@@ -137,7 +137,9 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
         text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
-        if line in text:
+        # 幂等判定逐行精确比较（落盘形态为 "- {line}"）：子串包含会把前缀重叠
+        # 的不同待办（动态尾串差异）误判为已存在而吞掉（code-review 599700eee421）
+        if f"- {line}" in text.splitlines():
             return False
         subsection = "### 知识真相源"
         lines = text.splitlines()
@@ -925,7 +927,18 @@ def run_backfill(
         return {"triggered": False, "reason": "no-archives"}
 
     chain_index = build_chain_index(project_root)
-    ledger = BackfillLedger.load(project_root / LEDGER_RELPATH)
+    try:
+        ledger = BackfillLedger.load(project_root / LEDGER_RELPATH)
+    except (OSError, ValueError):
+        # 台账在盘但不可读时 fail-open 零动作退出，不以未处理异常掀翻车道
+        # （对齐 ledger_has_pending 的防护，code-review 1b907a3d581e）
+        log.warning(
+            "knowledge", f"回填台账 {LEDGER_RELPATH} 读取失败，本车道跳过待人工检查"
+        )
+        append_todo_line(
+            project_root, f"回填台账 {LEDGER_RELPATH} 读取失败，请人工检查后重跑回填"
+        )
+        return {"triggered": False, "reason": "ledger-unreadable"}
     ledger.reconcile(chain_index, archives)
     ledger.save()
     todo_caps = ledger.pending_capabilities()
