@@ -382,7 +382,12 @@ class TestParallelPlanConsume(_EngineCase):
         for st in ("ready", "implementing", "implemented", "testing"):
             self.sm.transition("my-spec", st)
         self.pipeline = self.engine._verification
-        self.engine.agent_runner._running_agents = {}
+        # 判活已改走 AgentRunner 公开接口 is_run_alive（code-review item
+        # 305dcbb105c3）：MagicMock 自动属性恒真值会让「run 已死」分支永不
+        # 命中，在飞等待轮询到 900s 超时上限（pytest-timeout 假死）。替身
+        # 须显式对齐新接口，False = 无存活 run（与旧 `_running_agents = {}`
+        # 同语义）。
+        self.engine.agent_runner.is_run_alive = MagicMock(return_value=False)
 
     def _marker(self, status):
         self.engine._write_parallel_plan_marker("my-spec", {"status": status})
