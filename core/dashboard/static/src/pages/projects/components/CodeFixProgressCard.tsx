@@ -229,7 +229,7 @@ export default function CodeFixProgressCard(
   let itemProgressText = '';
   if (itemDone !== null) {
     itemProgressText =
-      batchTotal != null
+      batchTotal !== null
         ? `本批已处置 ${itemDone}/${batchTotal} 条`
         : `本批已处置 ${itemDone} 条`;
     // status/file 由后端从 agent 产物行拷贝（仅校验 item_id），可合法为空——
