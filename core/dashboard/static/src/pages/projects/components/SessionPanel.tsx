@@ -568,9 +568,17 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       message.error('会话尚未启动');
       throw new Error('会话尚未启动');
     }
+    // 跨项目切换守卫（code-review item 8984465fd469，同 handleStart 口径）：
+    // 分面保持激活的跨项目切换（list.tsx 的 project 来自 useParams、组件
+    // 不重挂载）不触发任何清理——await 往返期间切到另一项目，闭包 project
+    // 停留发起帧，resolve 会让 composer 清空草稿（消息已落旧项目会话，新
+    // 项目面板却无任何反馈）。发起帧捕获项目名，返回后失配即 reject：
+    // composer 还原草稿（reject 经其调用方吞掉，不弹「发送失败」——消息
+    // 实际已送达旧项目）。
+    const startProject = projectRef.current;
     setSending(true);
     try {
-      await sendSessionMessage(project, t);
+      await sendSessionMessage(startProject, t);
     } catch (e) {
       // 瞬态发送失败经 message.error 呈现（同 handleStop 口径），不落 error
       // state——error 分支会替换整块对话视图+输入区（转录被隐藏、无法就地
@@ -581,13 +589,24 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     } finally {
       setSending(false);
     }
+    // await 返回后已切离/已切换项目：不 resolve（见上方守卫说明，resolve
+    // 会清空 composer 草稿），以 reject 终止、不落任何本地状态
+    if (!activeRef.current || projectRef.current !== startProject) {
+      throw new Error('会话面板已切换项目');
+    }
   };
 
   const handleStop = async () => {
     if (stopping || ended) return;
+    // 跨项目切换守卫（code-review item 8984465fd469，同 handleStart 口径）：
+    // await 往返期间切换项目后回写 ended 会把新项目面板短暂打入终态
+    // （输入区禁用），摘 watchRegisteredRef 标记还会让新项目会话的 watch
+    // 切离时漏注销——失配即不回写任何本地状态。
+    const startProject = projectRef.current;
     setStopping(true);
     try {
-      await stopSession(project);
+      await stopSession(startProject);
+      if (!activeRef.current || projectRef.current !== startProject) return;
       setEnded(true);
       // 会话已终止：服务端会话已移除，后续注销 watch 必 404——
       // 标记未注册，切离分面不再发 DELETE（避免污染 no_console_error 断言）
