@@ -3482,8 +3482,9 @@ class AgentRunner:
         # fix-retry-orphan-active-runs D1：superseded
         # 终态补写——本文件末行恒为终态，恢复「终态后置」
         # 不变量。写侧紧跟 transient_retry = 本文件终态，
-        # 重试在新 sub_run_id 文件继续（runner.py:1922
-        # 换新注释处交叉引用）；daemon 退避窗口内死亡
+        # 重试在新 sub_run_id 文件继续（见 _execute_agent_inner
+        # 原地重试子循环 while 顶部 sub_run_id 换新注释处
+        # 交叉引用）；daemon 退避窗口内死亡
         # 由 interrupted 补写接续（末行仍终态）。
         try:
             append_run_line(
@@ -3518,59 +3519,26 @@ class AgentRunner:
         # transient_retry 重派，token 消耗不再发生）。
         if self._should_give_up_before_retry(
                 spec_name, agent_type, check_lock=False):
-            self.logger.warning(
-                "agent_runner",
-                f"Provider-transient retry for '{spec_name}' "
-                f"({agent_type}) yields: spec 已被接管，"
-                f"放弃重派（fix-verdict-dedup-resynthesis D4）",
-            )
-            self._log_run_metrics(
-                run_id=run_id, spec_name=spec_name,
-                agent_type=agent_type,
-                duration_seconds=time.time() - start_time,
-                turns=turns, usage_info=usage_info,
-                terminal="failure", provider=provider_name,
-                model=model,
-            )
-            return transient_retries, AgentRunResult(
-                attempt_run_id, spec_name, agent_type,
-                success=False,
-                duration_seconds=time.time() - start_time,
-                error=(
-                    f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
-                    f"（status 迁出预期态或 frozen/hold），"
-                    f"重试让位（fix-verdict-dedup-resynthesis D4）"),
-                provider_used=provider_name, model_used=model,
+            return transient_retries, self._yielded_in_place_retry_result(
+                spec_name, agent_type, run_id, attempt_run_id,
+                provider_name, model, start_time, turns, usage_info,
+                retry_channel="Provider-transient retry",
+                yields_reason="spec 已被接管",
+                error_reason="spec 已被接管（status 迁出预期态或 frozen/hold）",
+                design_ref="fix-verdict-dedup-resynthesis D4",
             ), False
         # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
         # 消费侧已把标记翻成 discarded（产物隔离/转串行收尾伴生写入）时，
         # 重派只会与已转道的串行出题竞跑；在途（dispatched）或无标记
         # （未注入/读取失败）不命中，重试照常。
         if self._parallel_plan_marker_discarded(spec_name, agent_type):
-            self.logger.warning(
-                "agent_runner",
-                f"Provider-transient retry for '{spec_name}' "
-                f"({agent_type}) yields: 并行出题标记已 discarded"
-                f"（产物已隔离/转串行），放弃重派"
-                f"（evo-add-run-stop-loss 1.2）",
-            )
-            self._log_run_metrics(
-                run_id=run_id, spec_name=spec_name,
-                agent_type=agent_type,
-                duration_seconds=time.time() - start_time,
-                turns=turns, usage_info=usage_info,
-                terminal="failure", provider=provider_name,
-                model=model,
-            )
-            return transient_retries, AgentRunResult(
-                attempt_run_id, spec_name, agent_type,
-                success=False,
-                duration_seconds=time.time() - start_time,
-                error=(
-                    f"{RETRY_YIELDED_ERROR_PREFIX} 并行出题标记已 discarded"
-                    f"（产物已隔离/转串行出题），"
-                    f"重试让位（evo-add-run-stop-loss 1.2）"),
-                provider_used=provider_name, model_used=model,
+            return transient_retries, self._yielded_in_place_retry_result(
+                spec_name, agent_type, run_id, attempt_run_id,
+                provider_name, model, start_time, turns, usage_info,
+                retry_channel="Provider-transient retry",
+                yields_reason="并行出题标记已 discarded（产物已隔离/转串行）",
+                error_reason="并行出题标记已 discarded（产物已隔离/转串行出题）",
+                design_ref="evo-add-run-stop-loss 1.2",
             ), False
         return transient_retries, None, True
 
@@ -3614,6 +3582,51 @@ class AgentRunner:
             "agent_runner",
             f"Artifact gate for '{spec_name}' ({agent_type}) terminal: "
             f"gate-blocked (reason={reason}) for {sub_run_id}",
+        )
+
+    # ── code-review item b17006b33827：退避后让位收口单点化 ─────────────
+    # 两条原地重试通道（_maybe_in_place_retry / _handle_artifact_gate_retry）
+    # 在 sleep(backoff) 之后的让位处置——「_should_give_up_before_retry 接管
+    # 让位」与「_parallel_plan_marker_discarded 让位」——原本各自内联一份完整
+    # 样板（warning 日志 + _log_run_metrics + RETRY_YIELDED_ERROR_PREFIX 结果
+    # 构造逐字重复，共四份），单改一处极易漂移。收敛为单点后调用点只传通道
+    # 标签与让位原因文案，日志文案、metrics 记账与结果构造保持逐字等价。
+    def _yielded_in_place_retry_result(
+            self, spec_name: str, agent_type: str, run_id: str,
+            attempt_run_id: str, provider_name, model, start_time: float,
+            turns: int, usage_info: dict, retry_channel: str,
+            yields_reason: str, error_reason: str, design_ref: str):
+        """构造退避后让位的语义化失败结果（含 warning 日志与 run metrics 记账）。
+
+        - retry_channel：调用通道标签（"Provider-transient retry" /
+          "Artifact-gate retry"），进 warning 日志前缀；
+        - yields_reason：让位原因（进日志）；
+        - error_reason：让位原因完整表述（带 RETRY_YIELDED_ERROR_PREFIX 进
+          AgentRunResult.error）；
+        - design_ref：处置依据设计编号，日志与 error 共用。
+        """
+        self.logger.warning(
+            "agent_runner",
+            f"{retry_channel} for '{spec_name}' "
+            f"({agent_type}) yields: {yields_reason}"
+            f"，放弃重派（{design_ref}）",
+        )
+        self._log_run_metrics(
+            run_id=run_id, spec_name=spec_name,
+            agent_type=agent_type,
+            duration_seconds=time.time() - start_time,
+            turns=turns, usage_info=usage_info,
+            terminal="failure", provider=provider_name,
+            model=model,
+        )
+        return AgentRunResult(
+            attempt_run_id, spec_name, agent_type,
+            success=False,
+            duration_seconds=time.time() - start_time,
+            error=(
+                f"{RETRY_YIELDED_ERROR_PREFIX} {error_reason}"
+                f"，重试让位（{design_ref}）"),
+            provider_used=provider_name, model_used=model,
         )
 
     # ── R5: except 产物门（等价搬移，D1 R5 表，Task 5.3）────────────
@@ -3729,7 +3742,8 @@ class AgentRunner:
         # fix-retry-orphan-active-runs D1：superseded 终态补写
         # ——与 provider 瞬断通道同语义：superseded 紧跟
         # transient_retry = 本文件终态，重试在新 sub_run_id 文件
-        # 继续（runner.py:1922 换新注释处交叉引用）。
+        # 继续（见 _execute_agent_inner 原地重试子循环 while 顶部
+        # sub_run_id 换新注释处交叉引用）。
         # add-timeline-gate-failure-display D1：本文件被弃置后读侧只能从事件取
         # 原因，门禁归因 MUST 一并带上（否则时间轴该节点 reason 为空 =
         # 「无原因绿点」误导）。
@@ -3770,59 +3784,26 @@ class AgentRunner:
         # 「门禁拒绝」，且同一次失败在时间轴出现两个失败节点。
         if self._should_give_up_before_retry(
                 spec_name, agent_type, check_lock=False):
-            self.logger.warning(
-                "agent_runner",
-                f"Artifact-gate retry for '{spec_name}' "
-                f"({agent_type}) yields: spec 已被接管，"
-                f"放弃重派（fix-verdict-dedup-resynthesis D4）",
-            )
-            self._log_run_metrics(
-                run_id=run_id, spec_name=spec_name,
-                agent_type=agent_type,
-                duration_seconds=time.time() - start_time,
-                turns=turns, usage_info=usage_info,
-                terminal="failure", provider=provider_name,
-                model=model,
-            )
-            return error, transient_retries, AgentRunResult(
-                attempt_run_id, spec_name, agent_type,
-                success=False,
-                duration_seconds=time.time() - start_time,
-                error=(
-                    f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
-                    f"（status 迁出预期态或 frozen/hold），"
-                    f"重试让位（fix-verdict-dedup-resynthesis D4）"),
-                provider_used=provider_name, model_used=model,
+            return error, transient_retries, self._yielded_in_place_retry_result(
+                spec_name, agent_type, run_id, attempt_run_id,
+                provider_name, model, start_time, turns, usage_info,
+                retry_channel="Artifact-gate retry",
+                yields_reason="spec 已被接管",
+                error_reason="spec 已被接管（status 迁出预期态或 frozen/hold）",
+                design_ref="fix-verdict-dedup-resynthesis D4",
             ), False, False
         # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
         # discarded（产物隔离/转串行收尾伴生写入）即放弃重派：本次事故的
         # 复活正是产物硬门通道（exit 0 但 test_scenarios.json 缺失被拦）。
         # 在途（dispatched）或无标记（未注入/读取失败）不命中，重试照常。
         if self._parallel_plan_marker_discarded(spec_name, agent_type):
-            self.logger.warning(
-                "agent_runner",
-                f"Artifact-gate retry for '{spec_name}' "
-                f"({agent_type}) yields: 并行出题标记已 discarded"
-                f"（产物已隔离/转串行），放弃重派"
-                f"（evo-add-run-stop-loss 1.2）",
-            )
-            self._log_run_metrics(
-                run_id=run_id, spec_name=spec_name,
-                agent_type=agent_type,
-                duration_seconds=time.time() - start_time,
-                turns=turns, usage_info=usage_info,
-                terminal="failure", provider=provider_name,
-                model=model,
-            )
-            return error, transient_retries, AgentRunResult(
-                attempt_run_id, spec_name, agent_type,
-                success=False,
-                duration_seconds=time.time() - start_time,
-                error=(
-                    f"{RETRY_YIELDED_ERROR_PREFIX} 并行出题标记已 discarded"
-                    f"（产物已隔离/转串行出题），"
-                    f"重试让位（evo-add-run-stop-loss 1.2）"),
-                provider_used=provider_name, model_used=model,
+            return error, transient_retries, self._yielded_in_place_retry_result(
+                spec_name, agent_type, run_id, attempt_run_id,
+                provider_name, model, start_time, turns, usage_info,
+                retry_channel="Artifact-gate retry",
+                yields_reason="并行出题标记已 discarded（产物已隔离/转串行）",
+                error_reason="并行出题标记已 discarded（产物已隔离/转串行出题）",
+                design_ref="evo-add-run-stop-loss 1.2",
             ), False, False
         return error, transient_retries, None, True, False
 
@@ -4513,6 +4494,27 @@ class AgentRunner:
                         pass
 
         if wt_result.exists():
+            # fix-code-review 21a9e198cdb8：mtime 守卫（与 _copyback_verify_progress
+            # 同口径，对齐调用点 mtime 守卫注释语义）——主树共享文件缺失或
+            # worktree 版本 st_mtime_ns 较新才拷回；否则（worktree 复用
+            # kept_for_reuse/跨 attempt 续跑继承的陈旧产物）跳过并 debug 留痕，
+            # 防止上一轮旧结果回灌覆盖主树较新内容（如 verifier 刚拷回的
+            # role=verifier 裁决被 implementer 回灌抹掉）。stat 失败按拷回环节
+            # 既有 OSError 契约静默跳过（宁缺勿错，不拷回）。
+            try:
+                _root_not_older = root_result.exists() and (
+                    wt_result.stat().st_mtime_ns
+                    <= root_result.stat().st_mtime_ns)
+            except OSError:
+                _root_not_older = True
+            if _root_not_older:
+                self.logger.debug(
+                    "agent_runner",
+                    f"run-result copyback skipped for '{spec_name}' "
+                    f"({agent_type}): worktree copy not newer than "
+                    f"main-tree shared file (mtime guard)",
+                )
+                return
             try:
                 raw_bytes = wt_result.read_bytes()
                 try:
@@ -4967,6 +4969,10 @@ class AgentRunner:
         # 每个 run 至多触发一次（耗尽预算的最后一个 extension 内），防止
         # remaining < 窗口的每轮轮询重复触发。
         extension_tail_triggered = False
+        # fix-code-review 4782bd380bdd：轮询环 except 落 error 终态行后置位，
+        # finally 据此跳过 run_metrics 追加——保证 error 行仍是文件末行
+        #（「末行恒为终态」不变量；见下方 except 分支注释）。
+        _crash_recorded = False
         try:
             while True:
                 # ── 自然收工探测（code-review item 68d36b0b6942）──────────
@@ -5199,10 +5205,15 @@ class AgentRunner:
             # add-runtime-run-sweeper D4（源头修复）：轮询环未预期异常即刻落显式
             # error 终态（含 repr 归因），不再依赖运行期清扫器 30 分钟后兜底——
             # 线程级死亡与进程级死亡（清扫器负责）分层收口。except 先于 finally
-            # 执行，崩溃场景 last_result/cancel_error 均为空，error 行即文件末行
-            # （finally 内无 result/cancelled 可写）。原样 re-raise 保持 attempt
-            # 循环既有失败处理（预算计数/STATE 转换/异常通道）语义不变。
+            # 执行，崩溃场景 last_result/cancel_error 等终态均为空，error 行即
+            # 文件末行（finally 内无 result/cancelled 可写；finally 仍会执行的
+            # run_metrics 落盘由 _crash_recorded 守卫跳过——若照写会把
+            # run_metrics 行垫到 error 行之后，classify_run 按末行判状态会把
+            # 崩溃 run 误判成进行中，fix-code-review 4782bd380bdd）。
+            # 原样 re-raise 保持 attempt 循环既有失败处理（预算计数/STATE
+            # 转换/异常通道）语义不变。
             append_run_error(run_file, f"run thread crashed: {e!r}", returncode)
+            _crash_recorded = True
             raise
         finally:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
@@ -5267,19 +5278,24 @@ class AgentRunner:
                 _tool_hist = dict(sorted(tool_metrics["tool_uses"].items()))
                 _text_turns = tool_metrics["text_turns"]
                 _tools_total = sum(_tool_hist.values())
-                # 指标行落盘（先于终态行，type 为 run_metrics）
-                append_run_line(run_file, {
-                    "type": "run_metrics",
-                    "run_id": run_id,
-                    "turns": _turns,
-                    "input_tokens": _inp,
-                    "cache_read_input_tokens": _cr,
-                    "context_peak_tokens": _peak,
-                    "per_turn_input_tokens": _per_turn,
-                    "text_turns": _text_turns,
-                    "tool_uses_total": _tools_total,
-                    "tool_uses": _tool_hist,
-                })
+                # 指标行落盘（先于终态行，type 为 run_metrics）。
+                # fix-code-review 4782bd380bdd：崩溃路径 except 已写 error 终态行，
+                # 此时跳过追加——run_metrics 行若落在 error 行之后会破坏「文件
+                # 末行恒为终态」不变量（classify_run 按末行判状态会把崩溃 run
+                # 误判成进行中）。日志侧指标照走，不影响产物文件。
+                if not _crash_recorded:
+                    append_run_line(run_file, {
+                        "type": "run_metrics",
+                        "run_id": run_id,
+                        "turns": _turns,
+                        "input_tokens": _inp,
+                        "cache_read_input_tokens": _cr,
+                        "context_peak_tokens": _peak,
+                        "per_turn_input_tokens": _per_turn,
+                        "text_turns": _text_turns,
+                        "tool_uses_total": _tools_total,
+                        "tool_uses": _tool_hist,
+                    })
                 # 日志侧也落一份（与既有的 _log_run_metrics 同源，
                 # dashboard 读侧按 metric_type==run_metrics 增量索引）
                 self.logger.info(
