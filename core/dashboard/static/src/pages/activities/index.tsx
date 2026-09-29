@@ -35,7 +35,8 @@ import { AlertLines, AlertTitle, fmtDate } from '@/components/alert-shared';
 
 const REFRESH_THROTTLE_MS = 500;
 
-// 前端分页：每页 15 条，翻页时再渲染其余记录（design D2）
+// 服务端分页页大小：每页 15 条（add-dashboard-paging-and-etag 3.2，design D2
+// 的前端切片改为服务端切片——排序与翻页单点在后端，前端只渲染当前页）
 const PAGE_SIZE = 15;
 
 // 标签原始值 → 显示值（对齐 v1 RESULT_META / sevLabel；未收录值原样显示）
@@ -180,12 +181,15 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
 
 function ActivityTimeline({
   activities,
+  total,
   current,
   onPageChange,
   onViewRun,
   isMobile,
 }: {
   activities: ActivityItem[];
+  /** 服务端过滤后总条数（add-dashboard-paging-and-etag 3.2：分页计数单源） */
+  total: number;
   current: number;
   onPageChange: (page: number) => void;
   onViewRun?: (a: ActivityItem) => void;
@@ -195,25 +199,22 @@ function ActivityTimeline({
     return <Empty description="暂无运维记录" />;
   }
 
-  // 前端分页：仅渲染当前页对应的记录（未翻到的页不渲染）
-  const start = (current - 1) * PAGE_SIZE;
-  const pageItems = activities.slice(start, start + PAGE_SIZE);
-
+  // 服务端分页：activities 已是当前页切片（跨项目全局序），前端不再二次切片
   return (
     <div>
       <Timeline
-        items={pageItems.map((a) => ({
+        items={activities.map((a) => ({
           key: a.id,
           color: a.handled === false ? 'red' : 'gray',
           children: <ActivityCard a={a} onViewRun={onViewRun} isMobile={isMobile} />,
         }))}
       />
-      {activities.length > PAGE_SIZE ? (
+      {total > PAGE_SIZE ? (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <Pagination
             current={current}
             pageSize={PAGE_SIZE}
-            total={activities.length}
+            total={total}
             onChange={onPageChange}
             showSizeChanger={false}
           />
@@ -309,12 +310,25 @@ export default function ActivitiesPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const lastRefreshRef = useRef(0);
+  // add-dashboard-paging-and-etag 3.2：服务端分页当前页（ref 供 SSE 刷新路径
+  // 读取最新页码，不经 setState 闭包；与 current state 同步变更）
+  const pageRef = useRef(1);
   // fix 4ffc804c77cd: 节流尾沿补拉定时器句柄（useRef 保存防闭包失效，卸载时统一清理）
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [d, alerts] = await Promise.all([getAdminActivities(), getAlerts()]);
+      const fetchPage = (page: number) => getAdminActivities(undefined, undefined, page, PAGE_SIZE);
+      const [first, alerts] = await Promise.all([fetchPage(pageRef.current), getAlerts()]);
+      let d = first;
+      // 总条数收缩导致当前页越界时回退第 1 页重拉一次（design D5 语义保留：
+      // SSE 刷新保持页码，仅越界回退；第 1 页恒 ≤ 总页数，不会循环）
+      const totalPages = d.total != null ? Math.max(1, Math.ceil(d.total / PAGE_SIZE)) : null;
+      if (totalPages != null && pageRef.current > totalPages) {
+        pageRef.current = 1;
+        setCurrent(1);
+        d = await fetchPage(1);
+      }
       setData(d);
       if (!alerts.error) {
         setAlertsData(alerts);
@@ -394,7 +408,10 @@ export default function ActivitiesPage() {
 
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
 
-  // 跨项目合并为全局单数组：handled===false 置顶优先，组内按 created 倒序（design D2）
+  // 分页响应的 projects[] 平铺回全局单数组（服务端已按组内全局相对顺序下发，
+  // 平铺即当前页全局序）。客户端排序保留为幂等防御（handled===false 置顶 →
+  // created 倒序，与后端 _sort_activities_frontend 同语义）：服务端语义漂移
+  // 时显示仍正确，排序单点在服务端（add-dashboard-paging-and-etag 3.2）。
   const allActivities = useMemo(() => {
     const flattened: ActivityItem[] = [];
     for (const p of projects) {
@@ -412,15 +429,15 @@ export default function ActivitiesPage() {
     });
   }, [projects]);
 
-  const totalPages = Math.max(1, Math.ceil(allActivities.length / PAGE_SIZE));
-
-  // SSE 刷新重拉后保持当前页码；总页数小于当前页时回退第 1 页（design D5）
-  useEffect(() => {
-    setCurrent((prev) => {
-      if (prev > totalPages) return 1;
-      return prev;
-    });
-  }, [totalPages]);
+  // 服务端翻页：更新页引用并重拉当前页（新页数据到达前保留旧页内容，不闪空态）
+  const handlePageChange = useCallback(
+    (page: number) => {
+      pageRef.current = page;
+      setCurrent(page);
+      void load();
+    },
+    [load],
+  );
 
   const handleViewRun = useCallback(
     (a: ActivityItem) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' }),
@@ -449,12 +466,13 @@ export default function ActivitiesPage() {
       );
     }
 
-    // 自动运维视图：跨项目合并全局时间线
+    // 自动运维视图：服务端分页的当前页时间线（total 为服务端过滤后总条数）
     return (
       <ActivityTimeline
         activities={allActivities}
+        total={data?.total ?? allActivities.length}
         current={current}
-        onPageChange={setCurrent}
+        onPageChange={handlePageChange}
         onViewRun={handleViewRun}
         isMobile={isMobile}
       />

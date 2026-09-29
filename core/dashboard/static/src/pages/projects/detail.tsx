@@ -623,6 +623,11 @@ export default function SpecDetailPage() {
     // fetchProposalWhy/getSpecs effect 同模式）
     let cancelled = false;
 
+    // 详情轮询/确认心跳（SSE 触发的 throttledLoad → 本函数）统一经
+    // getSpecDetail → request() 封装发出——本文件不直连 fetch。request() 的
+    // ETag 条件请求通道（add-dashboard-paging-and-etag 3.1）对详情端点透明
+    // 生效：数据源未变时服务端回 304，request() 原样返回缓存 JSON，
+    // applyDetail 的内容判等照常短路 setState——心跳空转零 body 传输、零重渲染。
     const load = async (initial = false) => {
       try {
         if (initial) setLoading(true);
