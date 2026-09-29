@@ -47,6 +47,10 @@ class TestSystemAdminReadBack(unittest.TestCase):
                 "bug_repair_mode": "inplace",
                 # evo-stuck-signal-hygiene D4：stuck 处置后静默期默认 120 分钟
                 "stuck_silence_minutes": 120,
+                # add-adjudication-alert-narrative：叙事三键缺省（回显白名单）
+                "narrative_enabled": True,
+                "narrative_timeout_seconds": 60,
+                "narrative_model": "",
             },
         )
         # 缺省来源标注为 user（未在本文件定义）
@@ -108,7 +112,9 @@ class TestSystemAdminReadBack(unittest.TestCase):
             set(echoed["admin"].keys()),
             {"enabled", "interval_minutes", "escalation_cooldown_minutes",
              "merge_breaker_threshold", "shutdown_drain_seconds", "bug_repair_mode",
-             "stuck_silence_minutes"},
+             "stuck_silence_minutes",
+             # add-adjudication-alert-narrative：叙事三键（受管回显白名单）
+             "narrative_enabled", "narrative_timeout_seconds", "narrative_model"},
         )
         self.assertNotIn("self_review", echoed["admin"])
 

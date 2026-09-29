@@ -88,6 +88,28 @@ const ADMIN_ANNOTATIONS: {
     label: '验证失败修复方式',
     note: '验证裁决 bug-found 后的修复方式：原地打回（inplace，缺省）对父 SPEC 直接注入「验证修复」任务段重修；派生 fix SPEC（derive）创建/复用 fix-* 子 SPEC 并自动闭环重验。',
   },
+  {
+    key: 'narrative_enabled',
+    label: '告警叙事',
+    note: '转人工裁决告警的三段式叙事开关：开启后告警落盘时同步生成「发生了什么/为什么需要你决策/决策选项」人类可读说明（缺省开启）。关闭后零 LLM 调用、零额外延迟；生成失败自动兜底为既有机械文案，告警照常落盘。',
+  },
+  {
+    key: 'narrative_timeout_seconds',
+    label: '叙事超时',
+    unit: '秒',
+    note: '告警叙事同步调用的硬超时（秒）：超时上限内告警保证落盘（超时按生成失败兜底）。转人工是低频事件，缺省 60 秒。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        Number.isInteger(v) && (v as number) > 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为正整数')),
+    }],
+  },
+  {
+    key: 'narrative_model',
+    label: '叙事模型',
+    note: '告警叙事使用的模型名：留空按回退链复用 admin.agent_model，仍为空时复用框架默认网关模型。',
+  },
 ];
 
 // 瞬断治理（fix-provider-transient-backoff D6）：键名 = agents.transient_*，
@@ -183,6 +205,11 @@ function buildSystemFormValues(config: ConfigData) {
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
     bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
     stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
+    // add-adjudication-alert-narrative：告警叙事三键（缺省与后端
+    // _ADMIN_DEFAULTS / config.template.yaml 同源）
+    narrative_enabled: admin.narrative_enabled ?? true,
+    narrative_timeout_seconds: admin.narrative_timeout_seconds ?? 60,
+    narrative_model: admin.narrative_model ?? '',
     transient_backoff_schedule: agentsSection.transient_backoff_schedule ?? '30,60,120',
     transient_redispatch_delay_seconds: agentsSection.transient_redispatch_delay_seconds ?? 600,
     transient_break_threshold: agentsSection.transient_break_threshold ?? 3,
@@ -278,6 +305,14 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
             shutdown_drain_seconds: values.shutdown_drain_seconds,
             bug_repair_mode: values.bug_repair_mode,
             stuck_silence_minutes: values.stuck_silence_minutes,
+            // add-adjudication-alert-narrative：叙事三键走既有保存通道
+            // （后端 config_admin 受管键白名单：回显/合并/校验三处已同步）
+            narrative_enabled: values.narrative_enabled,
+            narrative_timeout_seconds: values.narrative_timeout_seconds,
+            narrative_model:
+              typeof values.narrative_model === 'string'
+                ? values.narrative_model.trim()
+                : String(values.narrative_model ?? ''),
           },
           agents: {
             transient_backoff_schedule:
@@ -318,7 +353,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
             // margin——否则末行会在卡底残留（global.less 的 :last-child 清零压不过
             // inline style）
             <div key={key}>
-              {key === 'enabled' ? (
+              {key === 'enabled' || key === 'narrative_enabled' ? (
                 <div className="switch-inline-row" data-testid={`system-field-${key}`}>
                   <Form.Item name={key} valuePropName="checked" noStyle>
                     <Switch data-testid={`system-control-${key}`} />
@@ -328,6 +363,26 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                     <span className="label-note">（admin.{key}）</span>
                   </span>
                 </div>
+              ) : key === 'narrative_model' ? (
+                <Form.Item
+                  name={key}
+                  label={
+                    <>
+                      {label}
+                      <span className="label-note">（admin.{key}）</span>
+                    </>
+                  }
+                  data-testid={`system-field-${key}`}
+                >
+                  {/* 模型名是自由文本（官方 Claude / 网关模型名）：文本框而非
+                      InputNumber；空串=清除覆盖、按回退链取模型（与后端回显
+                      语义一致） */}
+                  <Input
+                    data-testid={`system-control-${key}`}
+                    style={{ width: '100%' }}
+                    placeholder="留空 = 复用 admin.agent_model → 框架默认"
+                  />
+                </Form.Item>
               ) : key === 'bug_repair_mode' ? (
                 <Form.Item
                   name={key}

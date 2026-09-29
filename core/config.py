@@ -1453,6 +1453,10 @@ class ConfigLoader:
         - bug_repair_mode: "inplace"（原地打回；derive = 派生 fix-* 子 SPEC）
         - stuck_silence_minutes: 120（stuck 处置后静默期：result=resolved/
           partially-resolved 处置后同 (spec, signal_type) 在窗口内不产信号）
+        - narrative_enabled: True（转人工裁决告警三段式叙事开关）
+        - narrative_timeout_seconds: 60（叙事同步调用硬超时，秒）
+        - narrative_model: None（叙事模型，None=回退链 admin.agent_model →
+          框架默认）
         """
         admin = cls._segment_or_empty(config, "admin")
         # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
@@ -1504,6 +1508,21 @@ class ConfigLoader:
         if not isinstance(enabled, bool):
             enabled = True
 
+        # add-adjudication-alert-narrative：告警叙事三键（enabled 严格 bool
+        # 缺省 True；timeout 正整数缺省 60，bool/非数值/≤0 回缺省；model 空值
+        # 归一 None=回退链 admin.agent_model → 框架默认）。类型非法 fail-open
+        # 回缺省，与上方 breaker/_num 同哲学。
+        narrative_enabled = admin.get("narrative_enabled", True)
+        if not isinstance(narrative_enabled, bool):
+            narrative_enabled = True
+        narrative_timeout_raw = admin.get("narrative_timeout_seconds")
+        if isinstance(narrative_timeout_raw, bool):
+            narrative_timeout = 60
+        else:
+            narrative_timeout = _num(narrative_timeout_raw, 60, int)
+            if narrative_timeout is None or narrative_timeout <= 0:
+                narrative_timeout = 60
+
         return {
             "enabled": enabled,
             "interval_minutes": _num(admin.get("interval_minutes"), 5.0, float),
@@ -1551,6 +1570,12 @@ class ConfigLoader:
             # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置
             # 段（阈值/冷却分钟，缺省 3/30）
             "run_infra_breaker": cls.get_run_infra_breaker_config(config),
+            # add-adjudication-alert-narrative：转人工裁决告警三段式叙事三键
+            # （叙事开关缺省 true；同步调用硬超时缺省 60s；模型缺省 None=
+            # 回退链 admin.agent_model → 框架默认）
+            "narrative_enabled": narrative_enabled,
+            "narrative_timeout_seconds": narrative_timeout,
+            "narrative_model": admin.get("narrative_model") or None,
         }
 
     # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────

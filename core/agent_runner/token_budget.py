@@ -257,6 +257,13 @@ class TokenAccountant:
             choices = choices_for("token_budget")
             if choices:
                 payload["choices"] = list(choices)
+                # add-adjudication-alert-narrative 2.2：旁路 choices 附带点复用
+                # 同一叙事辅助模块（本路径直写 AdminStore、不经
+                # _send_human_escalation_alert，禁止第二套 prompt/生成逻辑）；
+                # fail-open：失败不写 narrative、不影响下方既有落盘。
+                from core.adjudication_narrative import attach_narrative
+
+                attach_narrative(payload, self._pm)
             rec = store.append(payload)
             # 注册表覆盖（choices 已快照）→ 保持未处理进待办队列，选项才有人可
             # 执行（item ded34cd04dc5）；无 choices 的警告级仍按 2026-09-01 降噪
