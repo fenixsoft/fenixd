@@ -19,6 +19,7 @@ env_gate.py — 验证环境健全性门（verify-environment-sanity-gate）。
 from __future__ import annotations
 
 import logging
+import urllib.error
 import urllib.request
 
 _logger = logging.getLogger("fenixd.verify.env_gate")
@@ -172,15 +173,18 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
     """对被测实例发起连通性探测（含等价数据端点检查）。
 
     顺序探测: 根路径 → /api/state（dashboard 实时数据源）→ /api/overview
-    （dashboard 等价端点）。任一返回 2xx/3xx 视为连通。争议端点不可探测时
-    仅凭根路径结果判定（非 dashboard 应用不误降级）。
+    （dashboard 等价端点）。收到任意 HTTP 状态码（2xx/3xx 经响应对象、
+    4xx/5xx 以 HTTPError 形态抛出）即视为连通——TCP+HTTP 可达证明实例在线，
+    受限（401/403）/路径迁移（404）形态不误判失联；仅连接类异常（拒绝/
+    超时/DNS）判失联。争议端点不可探测时仅凭根路径结果判定（非 dashboard
+    应用不误降级）。
 
     Args:
         base_url: 实例入口 URL（应含 scheme://host[:port]）。
         timeout: 单次探测超时（秒）。
 
     Returns:
-        True 表示任一探测端点连通即成立（根路径 2xx 即满足，
+        True 表示任一探测端点连通即成立（根路径返回任意 HTTP 状态码即满足，
         不强制数据端点可达）；False 表示全部探测端点均失联。
     """
     candidates: list[str] = []
@@ -202,6 +206,12 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status < 400:
                     return True
+        except urllib.error.HTTPError:
+            # 收到任意 HTTP 状态码（含 401/403/404/5xx，urllib 以 HTTPError
+            # 形态抛出）即 TCP+HTTP 可达：实例在线，受限/路径迁移形态的真失败
+            # 不再被误降级 blocked-env（code-review 42a28727427f）；
+            # 仅连接类异常（拒绝/超时/DNS）判失联。
+            return True
         except Exception:
             continue
     _logger.debug("env_probe 失联: %s", base)
