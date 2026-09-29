@@ -630,6 +630,39 @@ def test_takeover_rejected_for_tmux_pane_shell_occupant(monkeypatch, tmp_path, c
     assert "--port" in err
 
 
+def test_takeover_waits_for_slow_graceful_exit(monkeypatch, tmp_path):
+    """旧实例 graceful 退出慢于初版等待窗（实测 ≈4.3s > 3s）也不破接管：
+    SIGTERM 后轮询等待占用者进程消失（≤9s），死亡后才重绑——窗口内重绑
+    必再撞 EADDRINUSE、新实例报错退出（2026-09-30 真实环境场景验证实证，
+    「非 tmux 旧实例仍接管」Scenario 的 THEN 时序破裂）。"""
+    stat = _write_occupant_stat(tmp_path, ppid=777)
+    comm = tmp_path / "comm"
+    comm.write_text("bash\n")  # 父进程非 tmux
+    _patch_proc_files(
+        monkeypatch,
+        {f"/proc/{_OCCUPANT_PID}/stat": stat, "/proc/777/comm": comm},
+    )
+    httpd = _FakeHttpd(("127.0.0.1", 8787), None, None)
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE, httpd], _occupant()
+    )
+    import core.dashboard.server as server_mod
+
+    # 占用者 SIGTERM 后「慢慢死」：前 5 次探活仍活着，第 6 次起消失
+    alive_polls = {"n": 0}
+
+    def slowly_dying(pid):
+        alive_polls["n"] += 1
+        return alive_polls["n"] <= 5
+
+    monkeypatch.setattr(server_mod, "_is_process_alive", slowly_dying)
+    monkeypatch.setattr(server_mod.time, "sleep", lambda _s: None)
+    server_mod.serve(None, port=8787)
+    assert signals == [(_OCCUPANT_PID, signal.SIGTERM)]
+    assert created == [httpd]  # 等到占用者进程消失后才重绑成功
+    assert alive_polls["n"] >= 5  # 轮询等待而非一次定生死
+
+
 def test_takeover_proceeds_when_parent_identity_unreadable(monkeypatch, tmp_path):
     """父进程身份读取失败（两层）→ 按非 tmux 承载走既有接管，不产生新报错分支。"""
     import core.dashboard.server as server_mod
