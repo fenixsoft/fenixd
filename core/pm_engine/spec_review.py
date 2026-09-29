@@ -510,6 +510,10 @@ class SpecReviewManager:
                     {
                         "reviewer_run": None,
                         "_review_attempts": 0,
+                        # 本分支消费的同样是 approved/repaired 结果，与其他收口
+                        # 分支对齐清零否决计数（code-review item 33fff9e737b3），
+                        # 防陈旧计数使下轮 rejected 提前达上限冻结转人工。
+                        "_review_rejections": 0,
                         "_review_skipped_result": f"{status}@result-path={result_path}",
                     },
                 )
