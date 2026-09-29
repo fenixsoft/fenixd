@@ -69,6 +69,19 @@ const VERDICT_COUNTS: Array<[keyof NonNullable<SpecDetail['verdict']>['summary']
   ['env_issues', '环境问题'],
 ];
 
+// 头部状态 Tag 的 tone→antd 预设色映射（code-review item 7d6e6be9876c：原先只
+// 区分 good/critical，implementing(warning)/implemented·reviewing(aqua) 等一律
+// 误染蓝色 processing）。键覆盖 services/dashboard STATUS_META 全部 6 种 tone，
+// 色相与列表页 TONE_DOT / OutlinedTag 同语义（warning 橙、aqua 青、info 蓝）。
+const TONE_TAG_COLOR: Record<string, string> = {
+  muted: 'default',
+  info: 'processing',
+  warning: 'warning',
+  critical: 'error',
+  good: 'success',
+  aqua: 'cyan',
+};
+
 // 断言类型中文标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）
 const ASSERTION_LABELS: Record<string, string> = {
   // web（18 种）
@@ -639,7 +652,10 @@ export default function SpecDetailPage() {
         const data = await getSpecDetail(name, spec);
         if (cancelled) return;
         applyDetail(data);
-        if (initial) setError('');
+        // 拉取成功即复位错误，不限首载：首载失败进入整页错误 Alert 后 SSE
+        // 心跳触发的后台 load 仍在跑，若只在首载清错页面将永远停在错误页、
+        // 无法随数据恢复自愈（code-review item f11b7ed7d05a）
+        setError('');
       } catch (e) {
         // 后台刷新失败静默保留旧视图，只有首次加载才呈现错误页
         if (initial && !cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -824,9 +840,7 @@ export default function SpecDetailPage() {
           {detail?.mode === 'fast-track' ? '快速模式' : '完整模式'}
         </Tag>
         {detail?.status && (
-          <Tag color={statusInfo.tone === 'good' ? 'success' : statusInfo.tone === 'critical' ? 'error' : 'processing'}>
-            {statusInfo.label}
-          </Tag>
+          <Tag color={TONE_TAG_COLOR[statusInfo.tone] || 'default'}>{statusInfo.label}</Tag>
         )}
         {otherSpecs.length > 0 && (
           <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
@@ -1331,7 +1345,10 @@ export default function SpecDetailPage() {
                 const assertions = scenario.assertion_results || [];
                 return (
                   <Card
-                    key={idx}
+                    // SSE 增量刷新可能在既有条目之间增删（场景重跑），索引 key 会
+                    // 按位置错位复用节点；kind 缺省按 web 拼前缀保证跨 kind 唯一
+                    // （code-review item 92d9f4c54ba9）
+                    key={`${scenario.kind || 'web'}-${scenario.scenario_id}`}
                     size="small"
                     style={{ marginBottom: 12 }}
                     title={
