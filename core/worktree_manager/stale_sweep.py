@@ -37,7 +37,12 @@ class G7StaleSweepMixin:
         if not self.base_dir.exists():
             return
         # 在册遗产 worktree 名集合（宽限期内豁免）；实时监控避免与 _reclaim 竞争。
-        legacy_names = {rec.get("worktree_name") for rec in self._legacy.values()}
+        # 迭代前物化快照（code-review item 19fc3ac92552）：register_legacy /
+        # consume_legacy / keep_for_reuse 可在本清扫期间并发增删 _legacy，
+        # 直接迭代 values() 会触发 "dictionary changed size during iteration"。
+        legacy_names = {
+            rec.get("worktree_name") for rec in list(self._legacy.values())
+        }
         # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
         # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
         # 物化后删除不再作用于正在扫描的目录流。

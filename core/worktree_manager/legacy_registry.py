@@ -384,9 +384,15 @@ class G2LegacyRegistryMixin:
         if not self._legacy:
             return []
         now = time.time() if now is None else now
+        # 迭代前物化快照（code-review item 19fc3ac92552）：register_legacy
+        # （runner 终态线程）/consume_legacy（merge-back 线程）/keep_for_reuse
+        # 会在本回收运行期间增删 _legacy 同键，直接迭代 items() 会触发
+        # "dictionary changed size during iteration" 并中断整轮回收；物化后
+        # 迭代期间的增删不再作用于正在迭代的字典流（与 _release_spec_locks_of
+        # 对 _spec_locks 的 sorted 快照同纪律）。
         expired = [
             spec
-            for spec, rec in self._legacy.items()
+            for spec, rec in list(self._legacy.items())
             if now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
         ]
         reclaimed: list = []
@@ -453,28 +459,45 @@ class G2LegacyRegistryMixin:
                     f"'{spec_name}': {e}",
                 )
         if branch and branch != "HEAD":
-            try:
-                res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
+            # ── 分支在飞引用保护（code-review item 77071d383b94）──
+            # 删分支前复核该分支是否被 STATE 在飞/待收口 spec 引用
+            # （implementing/implemented/testing/带 _recovery_resume 的 ready、
+            # blocked+frozen+_frozen_hold 冻结保持），与 stale_sweep 孤儿清扫
+            # 删分支同口径：命中则保留分支、仅回收 worktree 目录——否则冻结
+            # 保持 spec 的分支被登记为遗产且宽限期耗尽时会被删，解冻后续做
+            # 降级为从零重派。STATE 不可解析时 _branch_protected_by_state
+            # 保守返回保留，不按「无引用」放行删除。
+            kept, reason = self._branch_protected_by_state(branch)
+            if kept:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} branch-delete skipped for "
+                    f"'{spec_name}': 分支在飞引用保护保留 '{branch}'（{reason}）"
+                    f"— worktree 目录已回收，分支留待恢复/后继 run 收编",
                 )
-                if res.returncode != 0:
-                    # 非零（如分支仍被其他 worktree checkout、引用锁定）时
-                    # 分支会静默残留，记 WARNING 留痕（code-review item 20c7ad71a648）。
+            else:
+                try:
+                    res = subprocess.run(
+                        ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if res.returncode != 0:
+                        # 非零（如分支仍被其他 worktree checkout、引用锁定）时
+                        # 分支会静默残留，记 WARNING 留痕（code-review item 20c7ad71a648）。
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Legacy {failure_label} branch-delete failed for "
+                            f"'{spec_name}': "
+                            f"{(res.stderr or '').strip()[:200]}",
+                        )
+                except Exception as e:
                     self.logger.warning(
                         "worktree_manager",
                         f"Legacy {failure_label} branch-delete failed for "
-                        f"'{spec_name}': "
-                        f"{(res.stderr or '').strip()[:200]}",
+                        f"'{spec_name}': {e}",
                     )
-            except Exception as e:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Legacy {failure_label} branch-delete failed for "
-                    f"'{spec_name}': {e}",
-                )
         try:
             res = subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
