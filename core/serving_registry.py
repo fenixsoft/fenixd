@@ -248,6 +248,9 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
 def kill_process_group(pid: int) -> bool:
     """进程组 SIGTERM → 短等待 → SIGKILL 兜底（同 CommandVerifyServer.stop 语义）。
 
+    就绪等待以「进程组非空」（killpg(pgid, 0)）为判据而非组长存活，避免
+    shell 形态命令后台化实例后组长先退、组内存活成员逃过 SIGKILL 兜底。
+
     Returns: 是否向进程组发出过信号。
     """
     sent = False
@@ -263,8 +266,21 @@ def kill_process_group(pid: int) -> bool:
             pass
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
-        if not pid_alive(pid):
-            return sent
+        # 就绪判据针对进程组而非组长：shell 形态命令后台化实例后组长可先于
+        # 组内成员退出，只探组长会让存活成员跳过等待与 SIGKILL 兜底。
+        # sig=0 只做存在性检查、不投递信号，孤儿组（组长已死）语义不受影响；
+        # EPERM 等其他 OSError 说明组仍非空，同样按存活继续等待并按期升级。
+        if pgid is None:
+            # getpgid 失败（组长已亡且未向组发过信号）：无从探组，退回组长探针
+            if not pid_alive(pid):
+                return sent
+        else:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return sent  # 组空（组长已死且无存活成员）
+            except OSError:
+                pass  # 组非空但无权探测 → 按存活继续等待
         time.sleep(0.2)
     if pgid is not None:
         try:
