@@ -439,9 +439,10 @@ async function launchChromeExtension(distPath, opts = {}) {
 // 网络日志设置
 // ============================================================================
 
-// 敏感键名词表：认证/Cookie/令牌/密钥/凭据类，请求头与 URL 查询串脱敏共用同一口径
-// （key 子串已覆盖 apikey/access_key，token 已覆盖 access_token）
-const SENSITIVE_KEY_PATTERN = /auth|cookie|token|key|secret|credential/;
+// 敏感键名词表：认证/Cookie/令牌/密钥/凭据/口令/会话类，请求头与 URL 查询串脱敏共用同一口径
+// （key 子串已覆盖 apikey/access_key，token 已覆盖 access_token；
+//   pwd 用字符类边界避免误伤内嵌 pwd 的普通词形）
+const SENSITIVE_KEY_PATTERN = /auth|cookie|token|key|secret|credential|password|passwd|session|(?:^|[^a-z0-9])pwd(?:[^a-z0-9]|$)/;
 
 /**
  * 脱敏请求/响应头：保留键名，敏感键（认证/Cookie/密钥类）的值替换为固定占位符
