@@ -136,6 +136,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     Record<number, { loading: boolean; display?: HealthCheckDisplay }>
   >({});
 
+  // 各角色「rows」Form.List 的 fields 快照（render 期捕获）：handlePaste 是
+  // 事件回调、拿不到内层 List 的稳定 field.key，粘贴覆盖后清理 healthRows 须
+  // 按「行位置 → key」映射定位条目（code-review item 46bf16b0f8df）。
+  const rowFieldsRef = useRef<Record<number, Array<{ key: number }>>>({});
+
   const initialValues = buildFormValues(config.agents);
 
   // 回填门控（code-review item 9f98edec21fa）：effect 读取的字段不止
@@ -241,10 +246,41 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // 本卡（B 角色）的分配经 roleKey 直写进源角色（A）的后端键。
   const handlePaste = (index: number) => {
     if (!clipboard) return;
-    form.setFieldValue(['roleList', index], {
+    const before = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
+    const pasted = {
       ...cloneRoleValue(clipboard.value),
       roleKey: AGENT_ROLES[index]?.key,
-    });
+    };
+    form.setFieldValue(['roleList', index], pasted);
+    // 粘贴整值替换时 rc-field-form 的 keyManager 按位置复用行 key（keys 只在
+    // add/remove/move 时更新，外部 setFieldValue 不重建），而 healthRows 按
+    // field.key 缓存「该 key 上一次检测的 provider+model」结论——被覆盖行的旧
+    // 徽标（可能是绿色「已验证」）会错配到粘贴后的新组合上。与删除行口径一致：
+    // 替换前后 provider 与生效模型（行内 model → 角色级缺省）不一致、或被裁剪
+    // 掉的旧行，清除该 key 的条目（code-review item 46bf16b0f8df）。
+    const oldRows = before?.rows || [];
+    const newRows = pasted.rows || [];
+    const oldRoleModel = (before?.roleModel || '').trim();
+    const newRoleModel = (pasted.roleModel || '').trim();
+    const staleKeys = (rowFieldsRef.current[index] || [])
+      .map((f, rIdx) => ({ key: f.key, oldRow: oldRows[rIdx], newRow: newRows[rIdx] }))
+      .filter(
+        ({ oldRow, newRow }) =>
+          (oldRow?.provider || '').trim() !== (newRow?.provider || '').trim() ||
+          ((oldRow?.model || '').trim() || oldRoleModel) !==
+            ((newRow?.model || '').trim() || newRoleModel),
+      )
+      .map(({ key }) => key);
+    if (staleKeys.length > 0) {
+      setHealthRows((m) => {
+        if (!staleKeys.some((k) => k in m)) return m;
+        const next = { ...m };
+        staleKeys.forEach((k) => {
+          delete next[k];
+        });
+        return next;
+      });
+    }
     // setFieldValue 不触发 onValuesChange，判脏不置位会导致粘贴内容切页签时
     // 被静默丢弃（无丢弃确认），写值后显式置脏（code-review item ad4ec63bd751）
     setDirty(true);
@@ -387,7 +423,12 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                       <Input placeholder="模型名（如 deepseek-v4-flash），可选" />
                     </Form.Item>
                     <Form.List name={[field.name, 'rows']}>
-                      {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => (
+                      {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => {
+                        // render 期捕获本角色行 fields（含稳定 field.key）：handlePaste
+                        // 事件回调拿不到内层 List fields，清理 healthRows 须按
+                        // 「行位置 → key」映射（code-review item 46bf16b0f8df）
+                        rowFieldsRef.current[index] = rowFields;
+                        return (
                         <>
                           {rowFields.map((rowField, rIdx) => {
                             const curProvider = ((watchList[index]?.rows || [])[rIdx]?.provider || '').trim();
@@ -548,7 +589,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                             添加 Provider 行
                           </Button>
                         </>
-                      )}
+                        );
+                      }}
                     </Form.List>
                   </Card>
                 );
