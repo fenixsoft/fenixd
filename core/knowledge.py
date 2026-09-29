@@ -481,9 +481,23 @@ def _discard_output(proot: Path, before=None) -> bool:
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git restore 失败: %s", e)
     try:
-        _git(proot, ["clean", "-f", "--", KNOWLEDGE_DIR])
+        # -d（code-review e2029f25ad5b）：clean 缺省不进未跟踪目录，run 新建的
+        # 域目录（spec/knowledge/domains/<新域>/ 等）乃至整个 spec/knowledge/
+        # 会整体滞留工作区，滞留半成品会被下批 _commit_output 的全目录
+        # git add 一并提交进知识库真相源
+        _git(proot, ["clean", "-fd", "--", KNOWLEDGE_DIR])
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git clean 失败: %s", e)
+    # 残留复查（code-review e2029f25ad5b）：restore/clean 未覆盖的路径（如被
+    # ignore 的文件）滞留即告警留痕，不让「不留半成品」静默失约
+    residue = _git_status_paths(proot)
+    left = sorted(p for p in (residue or ()) if p.startswith(KNOWLEDGE_DIR + "/"))
+    if left:
+        logger.warning(
+            "knowledge-distill 放弃产出：回滚后 spec/knowledge/ 仍有残留半成品，"
+            "请人工核查: %s",
+            ", ".join(left),
+        )
     return True
 
 
@@ -497,7 +511,7 @@ _STRAY_AUDIT_IGNORE_PREFIXES = (KNOWLEDGE_DIR + "/", ".fenix/")
 
 
 def _git_status_paths(proot: Path):
-    """主树 ``git status --porcelain`` 路径快照（含未跟踪文件）。
+    """主树 ``git status --porcelain -z`` 路径快照（含未跟踪文件）。
 
     Returns:
         路径集合；``None`` = git 不可用/非 git 仓库（无从对账，调用方跳过）。
@@ -507,20 +521,33 @@ def _git_status_paths(proot: Path):
         # 主线程 commit_archive_move 的 git add 并发；git status 的机会式索引
         # 刷新会短暂持有 index.lock，撞出 EEXIST 让归档提交误报失败
         # （tests/test_knowledge_e2e 回归）。只读快照不应写索引。
-        status = _git(proot, ["--no-optional-locks", "status", "--porcelain"])
+        # -z（code-review 3835ca8b25cd）：文本 porcelain 对非 ASCII/特殊路径
+        # 默认按 core.quotePath 输出 C 风格引号（形如 "spec/knowledge/\346..."），
+        # 前缀 startswith 判定失配——overlap 保护漏识别 spec/knowledge/ 下用户
+        # 中文命名文件、越界对账误报。-z 格式不引号不转义；rename/copy 条目为
+        # NUL 分隔两段（新路径带 XY 前缀在前，旧路径裸路径在后）。
+        status = _git(
+            proot, ["--no-optional-locks", "status", "--porcelain", "-z"]
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git status 失败，跳过越界写面对账: %s", e)
         return None
     if status.returncode != 0:
         return None
     paths = set()
-    for line in status.stdout.splitlines():
-        if len(line) <= 3:
+    skip_from = False
+    for tok in status.stdout.split("\0"):
+        if not tok:
             continue
-        path = line[3:]
-        if " -> " in path:  # rename 条目取新路径侧
-            path = path.split(" -> ", 1)[1]
-        paths.add(path)
+        if skip_from:
+            # rename/copy 的旧路径段（无 XY 前缀）：与文本模式一致只取新路径侧
+            skip_from = False
+            continue
+        if len(tok) <= 3 or tok[2] != " ":
+            continue
+        if tok[0] in "RC":  # rename/copy 条目：下一段是旧路径
+            skip_from = True
+        paths.add(tok[3:])
     return paths
 
 
@@ -657,7 +684,13 @@ class DistillManager:
         lock_dir = proot / ".fenix"
         lock_dir.mkdir(parents=True, exist_ok=True)
         fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except BaseException:
+            # flock 失败（EINTR 信号处理器抛出/文件系统不支持等）必须先关句柄
+            # 再抛，否则常驻 daemon 每次失败泄漏一个 fd（code-review 6302dcf20837）
+            fh.close()
+            raise
         return fh
 
     def _run_with_lock(self, proot: Path, batch: list) -> None:
