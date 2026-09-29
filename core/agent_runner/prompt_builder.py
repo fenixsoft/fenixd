@@ -1501,6 +1501,9 @@ class PromptBuilder:
         加载 agents/evolution.md（文件化体系，缺失 fail-fast），经
         _single_pass_replace 单趟填充占位符（不用 str.format——正文含大量
         {} JSON 示例）：
+        - {run_id}: run 标识（首参 spec_name 槽位传入 run_evolution 生成的
+          真实 run_id，契约 run_id 字段照抄该值——与 code-review 车道
+          2026-09-24 事故后口径一致，标识符禁由 LLM 自行推导）
         - {todo_sections}: 就绪项目清单，每项目含项目名、项目根与 todo.md 全文
         - {pending_entries}: 待分析条目清单（含 id、日期节、小节、标题）
         - {out_path}: 契约产物路径（.fenix/evolution/out-<run_id>.json）
@@ -1548,6 +1551,11 @@ class PromptBuilder:
         prompt = _fill_and_scan_placeholders(
             template,
             {
+                # {run_id} 注入（code-review 车道 2026-09-24 事故后同款口径）：
+                # 首参 spec_name 槽位即 run_evolution 生成的真实 run_id，契约
+                # run_id 字段照抄注入值。此前模板示例是字面 {epoch} 且无任何
+                # 填充点，每次派发触发模板漂移 WARNING 并让 LLM 自行推导。
+                "{run_id}": str(spec_name),
                 "{todo_sections}": todo_sections,
                 "{pending_entries}": entries_txt,
                 "{out_path}": str(out_path),

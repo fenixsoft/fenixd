@@ -148,7 +148,7 @@ tasks_md 骨架（照此形状改写内容，两个 `## ` 段都要有）：
 
 ```json
 {
-  "run_id": "evo-{epoch}",
+  "run_id": "{run_id}",
   "degraded": null 或 "no-task-tool",
   "items": [ {条目判定对象列表} ]
 }
@@ -188,7 +188,7 @@ PY
 
 违规消息即处方：`## <编号>. 标题` 分组缺失 → 按上文结构补编号分组；声明段报错 → 按消息修正 path / kind。**未打印 `SPEC_OK` 就合并 = 明知故犯空跑一轮**。
 
-3. **并入脚本（每写完一条分片立即执行一次，非最后一次性）**：把 `{out_path}` 重写为当前全部分片按 `sorted(glob)` 合并的结果（照抄、顶格，仅把 `<RUN_ID>` 换成 `evo-<你启动时刻的 epoch>`、`<DEGRADED>` 换成 `null` 或   `"no-task-tool"`）：
+3. **并入脚本（每写完一条分片立即执行一次，非最后一次性）**：把 `{out_path}` 重写为当前全部分片按 `sorted(glob)` 合并的结果（照抄、顶格，仅把 `<RUN_ID>` 换成上文契约结构示例 `run_id` 字段的实际值——框架注入的 `{run_id}`，照抄即可，MUST NOT 自行推导、`<DEGRADED>` 换成 `null` 或   `"no-task-tool"`）：
 
 ```bash
 python3 - <<'PY'
