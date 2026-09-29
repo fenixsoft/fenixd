@@ -307,6 +307,10 @@ export interface AlertItem {
   resolve_note?: string;
   /** add-human-adjudication-choices：裁决选项集（发射点快照；无该字段=非裁决类，只出「知道了」） */
   choices?: AlertChoice[];
+  /** add-adjudication-alert-narrative：三段式人类可读叙事（告警落盘时同步经一次
+   * 轻量 LLM 调用生成；无该字段=开关关闭/生成失败/桶 0，渲染保持现状）。
+   * 纯增强字段，不承载任何机器语义。 */
+  narrative?: { text: string; model: string; at: string };
 }
 
 export interface AlertChoice {

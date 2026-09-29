@@ -74,6 +74,10 @@ _SOURCE_KEYS = [
     "admin.bug_repair_mode",
     # stuck-signal-hygiene D4：stuck 处置后静默期（分钟）
     "admin.stuck_silence_minutes",
+    # add-adjudication-alert-narrative：转人工裁决告警三段式叙事三键
+    "admin.narrative_enabled",
+    "admin.narrative_timeout_seconds",
+    "admin.narrative_model",
     "verify.static_scope",
     "verify.deps_mode",
     # add-impl-code-review-gate：实现阶段末尾代码质量审查开关
@@ -359,6 +363,11 @@ _ADMIN_DEFAULTS = {
     # stuck-signal-hygiene D4：stuck 处置后静默期（分钟，缺省 120，
     # 与 ConfigLoader.get_admin_config 缺省一致）
     "stuck_silence_minutes": 120,
+    # add-adjudication-alert-narrative：叙事三键缺省（与
+    # ConfigLoader.get_admin_config / config.template.yaml 同源）
+    "narrative_enabled": True,
+    "narrative_timeout_seconds": 60,
+    "narrative_model": "",
 }
 
 def _managed_admin_keys(config: dict) -> dict:
@@ -380,11 +389,16 @@ def _managed_admin_keys(config: dict) -> dict:
     out = {"merge_breaker_threshold": breaker}
     for key, default in _ADMIN_DEFAULTS.items():
         val = admin.get(key, default)
-        if key == "enabled":
+        if key in ("enabled", "narrative_enabled"):
+            # 严格 bool 回显：非 bool 回退缺省（narrative_enabled 缺省 True）
             out[key] = val if isinstance(val, bool) else default
         elif key == "bug_repair_mode":
             # 字符串枚举：仅 inplace/derive 回显，非法/非字符串回退缺省
             out[key] = val if val in ("inplace", "derive") else default
+        elif key == "narrative_model":
+            # add-adjudication-alert-narrative：字符串键回显（空串=回退链，
+            # 合法值照原样回显），非字符串回退缺省 ""
+            out[key] = val if isinstance(val, str) else default
         else:
             # 数值键：非数值/布尔一律回退缺省（写路径校验保证合法值才能落盘）
             if not isinstance(val, (int, float)) or isinstance(val, bool):
@@ -1190,6 +1204,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             "shutdown_drain_seconds",
             "bug_repair_mode",
             "stuck_silence_minutes",
+            # add-adjudication-alert-narrative：叙事三键合并分支（缺此步「界面
+            # 可填、保存被静默吞掉」——本函数 docstring 的同款事故）
+            "narrative_enabled",
+            "narrative_timeout_seconds",
+            "narrative_model",
         ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
@@ -1645,6 +1664,33 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             brm = adm["bug_repair_mode"]
             if brm not in ("inplace", "derive"):
                 return fail(f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}")
+        # add-adjudication-alert-narrative：叙事三键前置校验（enabled 严格 bool、
+        # timeout 正整数、model 字符串；非法值直接拒绝不落盘，同其它 admin 键）。
+        if (
+            "narrative_enabled" in adm
+            and adm["narrative_enabled"] is not None
+            and not isinstance(adm["narrative_enabled"], bool)
+        ):
+            return fail(
+                f"admin.narrative_enabled must be a boolean: {adm['narrative_enabled']!r}"
+            )
+        if (
+            "narrative_timeout_seconds" in adm
+            and adm["narrative_timeout_seconds"] is not None
+        ):
+            nt = adm["narrative_timeout_seconds"]
+            if not isinstance(nt, int) or isinstance(nt, bool) or nt <= 0:
+                return fail(
+                    f"admin.narrative_timeout_seconds must be a positive integer: {nt!r}"
+                )
+        if (
+            "narrative_model" in adm
+            and adm["narrative_model"] is not None
+            and not isinstance(adm["narrative_model"], str)
+        ):
+            return fail(
+                f"admin.narrative_model must be a string: {adm['narrative_model']!r}"
+            )
 
     # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode）
     if isinstance(config_patch.get("gates"), dict):
@@ -2147,6 +2193,20 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     "stuck_silence_minutes",
                     lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
                 ),
+                # add-adjudication-alert-narrative：叙事三键合并视图校验
+                # （兜底防绕过前置校验的直连调用，规则同前置）
+                (
+                    "narrative_enabled",
+                    lambda v: isinstance(v, bool),
+                ),
+                (
+                    "narrative_timeout_seconds",
+                    lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+                ),
+                (
+                    "narrative_model",
+                    lambda v: isinstance(v, str),
+                ),
             ):
                 if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
                     raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
@@ -2290,6 +2350,11 @@ _SYNC_PAGE_KEYS = {
             "shutdown_drain_seconds",
             "bug_repair_mode",
             "stuck_silence_minutes",
+            # add-adjudication-alert-narrative：叙事三键随系统页签同步（缺此步
+            # 「同步用户级设置」按钮会静默漏同步三键——功能对用户不可见）
+            "narrative_enabled",
+            "narrative_timeout_seconds",
+            "narrative_model",
         ],
         "agents": [
             "transient_backoff_schedule",

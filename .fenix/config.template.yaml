@@ -395,6 +395,21 @@ admin:
   interval_minutes: 5
   # Administrator Agent 使用的模型名（官方 Claude 模型名；未配置时复用框架默认 cc-switch 网关模型）
   agent_model: "claude-sonnet-5"
+  # ---- 转人工裁决告警三段式叙事（add-adjudication-alert-narrative）----
+  # 告警落盘时同步经一次轻量 LLM 调用生成「发生了什么/为什么需要你决策/决策选项」
+  # 三段式人类可读叙事，以 narrative 字段并入告警记录（纯增强：既有结构化字段
+  # 与裁决执行链零感知）。覆盖全部转人工裁决告警发射点（含 token_budget 与
+  # merge-back 产物路径缺失两个旁路点）。
+  # 叙事开关（缺省 true）：关闭后写告警零 LLM 调用、零额外延迟，行为与本功能
+  # 落地前完全一致。生成失败（异常/超时/结构校验不过）时自动兜底：告警照常以
+  # 机械文案落盘（不写 narrative 字段），发射链路零阻塞。
+  narrative_enabled: true
+  # 叙事同步调用硬超时（秒，缺省 60）：转人工是低频事件，超时上限内告警保证
+  # 落盘；非法值回退缺省。
+  narrative_timeout_seconds: 60
+  # 叙事使用的模型名（缺省空=回退链 admin.agent_model，仍为空时复用框架默认
+  # cc-switch 网关模型）。
+  narrative_model: ""
   # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
   escalation_cooldown_minutes: 60
   # 合回 WIP overlap 无主宽限（分钟，add-mergeback-wip-active-coordination 2.3）：
