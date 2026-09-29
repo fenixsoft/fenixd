@@ -1021,6 +1021,12 @@ class FamilyGovernor:
             choices = choices_for(signal_type)
             if choices:
                 entry["choices"] = list(choices)
+            # add-adjudication-alert-narrative 2.1：桶 2 告警落盘前附加三段式
+            # 叙事（纯增强、fail-open：LLM 失败不写 narrative 字段、不影响下方
+            # 既有落盘与 severity 降噪分支；choices 非空才发起，桶 0 零调用）。
+            from core.adjudication_narrative import attach_narrative
+
+            attach_narrative(entry, self._pm)
             rec = store.append(entry)
             if not severity_needs_human(severity):
                 store.mark_handled(rec["id"])

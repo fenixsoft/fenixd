@@ -469,31 +469,38 @@ class G4MergebackMixin:
             # 处置契约 / alert-resolve 端点消费。局部导入避免模块级环依赖。
             from core.dashboard.data.adjudication_choices import choices_for
 
-            store.append(
-                {
-                    "kind": SIGNAL,
-                    "signal_type": "build_artifact_paths_missing",
-                    "choices": list(choices_for("build_artifact_paths_missing")),
-                    "spec": spec or "",
-                    "severity": "major",
-                    "description": (
-                        f"项目 {project_name} 未声明构建产物配置"
-                        f"（worktree.has_build_artifacts / build_artifact_paths "
-                        f"未裁决）——merge-back WIP 重叠闸门无法区分产物与语义内容，"
-                        f"产物会被当语义内容处理。请探测并填写产物路径；确无产物时"
-                        f"写 has_build_artifacts=false 结案。"
-                    ),
-                    "evidence": evidence,
-                    "recommended_action": (
-                        "Administrator 起草 .fenix/config.yaml 的产物路径配置："
-                        "bin/fenix_detect_artifacts.py 探测候选路径（输入源："
-                        "package.json scripts / pyproject.toml / 目录结构 / "
-                        "project.type）；路径合法性经 validate_build_artifact_paths "
-                        "同口径校验；确无产物写 has_build_artifacts=false 结案，"
-                        "不得用「路径留空」冒充已裁决"
-                    ),
-                }
-            )
+            signal_entry = {
+                "kind": SIGNAL,
+                "signal_type": "build_artifact_paths_missing",
+                "choices": list(choices_for("build_artifact_paths_missing")),
+                "spec": spec or "",
+                "severity": "major",
+                "description": (
+                    f"项目 {project_name} 未声明构建产物配置"
+                    f"（worktree.has_build_artifacts / build_artifact_paths "
+                    f"未裁决）——merge-back WIP 重叠闸门无法区分产物与语义内容，"
+                    f"产物会被当语义内容处理。请探测并填写产物路径；确无产物时"
+                    f"写 has_build_artifacts=false 结案。"
+                ),
+                "evidence": evidence,
+                "recommended_action": (
+                    "Administrator 起草 .fenix/config.yaml 的产物路径配置："
+                    "bin/fenix_detect_artifacts.py 探测候选路径（输入源："
+                    "package.json scripts / pyproject.toml / 目录结构 / "
+                    "project.type）；路径合法性经 validate_build_artifact_paths "
+                    "同口径校验；确无产物写 has_build_artifacts=false 结案，"
+                    "不得用「路径留空」冒充已裁决"
+                ),
+            }
+            # add-adjudication-alert-narrative 2.2：旁路 choices 附带点复用同一
+            # 叙事辅助模块（禁第二套 prompt/生成逻辑）。kind=SIGNAL 记录不进
+            # 前端告警区，narrative 仅要求字段落盘供消费侧读取（覆盖面口径
+            # spec-review 2026-09-29）；fail-open 不影响下方落盘。本宿主
+            # （WorktreeManager）无 config 属性——模块按 project_root 现读。
+            from core.adjudication_narrative import attach_narrative
+
+            attach_narrative(signal_entry, self)
+            store.append(signal_entry)
             self.logger.warning(
                 "worktree_manager",
                 f"build_artifact_paths_missing 信号已写入 "
