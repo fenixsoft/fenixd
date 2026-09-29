@@ -11,12 +11,9 @@ _clear_degrade_context）。纯结构搬移，零行为变化。
 
 import json
 import os
-import re
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from core.agent_runner.run_files import run_spec_part
 
@@ -603,14 +600,14 @@ def _write_degrade_context(
         / "degrade_context.json"
     )
     cost_usd = pipeline._last_planner_cost_usd(spec_name)
-    payload = {
-        "reason": str(reason or ""),
-        "run_id": str(run_id or ""),
-        "duration_seconds": (float(duration_seconds or 0) if duration_seconds else 0.0),
-        "cost_usd": (float(cost_usd) if cost_usd is not None else None),
-        "degraded_at": datetime.now(timezone.utc).isoformat(),
-    }
     try:
+        payload = {
+            "reason": str(reason or ""),
+            "run_id": str(run_id or ""),
+            "duration_seconds": (float(duration_seconds or 0) if duration_seconds else 0.0),
+            "cost_usd": (float(cost_usd) if cost_usd is not None else None),
+            "degraded_at": datetime.now(timezone.utc).isoformat(),
+        }
         ctx_path.parent.mkdir(parents=True, exist_ok=True)
         ctx_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
