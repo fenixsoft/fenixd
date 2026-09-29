@@ -695,10 +695,6 @@ def run_audit(
     if not (project_root / KNOWLEDGE_DIR).is_dir():
         return {"triggered": False, "ok": True, "reason": "no-knowledge-dir"}
 
-    scan = _scan_pages(project_root)
-    scan["adr"] = _scan_adrs(project_root)
-    semantic_all = _scan_semantic(scan["pages"])
-
     counts = {
         "passed": 0,
         "fixed": 0,
@@ -716,17 +712,6 @@ def run_audit(
         "superseded": [],
     }
 
-    # 语义初筛截断显式留痕：溢出候选不静默丢弃，超出单轮转写上限的部分转入
-    # 待人工明细（报告呈现为「共 N 条、本轮仅转写前 10 条、其余人工核查」），
-    # 体检报告不再对被截断的矛盾/重复候选呈现为「无更多语义发现」。
-    semantic = semantic_all[:MAX_SEMANTIC_RUNS]
-    if len(semantic_all) > MAX_SEMANTIC_RUNS:
-        counts["pending_manual"] += 1
-        details["manual"].append(
-            f"语义初筛候选共 {len(semantic_all)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
-            f"其余 {len(semantic_all) - MAX_SEMANTIC_RUNS} 条请人工核查"
-        )
-
     # 本批已纠偏页集合（2.3）：机械段提交涉及的页 + 语义段转写提交涉及的页。
     # 疑点规则行来自扫描开始快照，涉及页被纠偏后规则行已不代表盘上现状。
     remediated_pages: set[str] = set()
@@ -739,6 +724,25 @@ def run_audit(
     # 写入且未提交的产出；写段内不经 DistillManager 任何加锁路径（validate 与
     # 提交工具均无锁），无自阻塞风险。
     with knowledge_distill_lock(project_root):
+        # 病灶快照入锁后采集：「决定改什么的读」与「写」必须同处一个互斥区——
+        # 扫描在锁外完成时，并发蒸馏 run 持锁重写页面会使 drop_lines / ADR
+        # index 行号相对盘上现文错位，机械修复删错行/改错行。语义初筛与体检
+        # 报告同以本快照为准（转写前另有 _page_text_by_rel 现读盘上正文兜底）。
+        scan = _scan_pages(project_root)
+        scan["adr"] = _scan_adrs(project_root)
+        semantic_all = _scan_semantic(scan["pages"])
+
+        # 语义初筛截断显式留痕：溢出候选不静默丢弃，超出单轮转写上限的部分转入
+        # 待人工明细（报告呈现为「共 N 条、本轮仅转写前 10 条、其余人工核查」），
+        # 体检报告不再对被截断的矛盾/重复候选呈现为「无更多语义发现」。
+        semantic = semantic_all[:MAX_SEMANTIC_RUNS]
+        if len(semantic_all) > MAX_SEMANTIC_RUNS:
+            counts["pending_manual"] += 1
+            details["manual"].append(
+                f"语义初筛候选共 {len(semantic_all)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
+                f"其余 {len(semantic_all) - MAX_SEMANTIC_RUNS} 条请人工核查"
+            )
+
         # 修复前违规快照：提交闸门只否决「本轮修复新引入的违规」。机械项只修
         # 悬空溯源/格式/ADR index 三类，真相源里脚本修不了的既有违规（marker
         # 缺失等报告项、kebab 名、链接失配、ADR 正文改写……）若一并否决，单个

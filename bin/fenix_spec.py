@@ -74,11 +74,15 @@ def main():
     )
 
     def _run(payload_fn, error_base):
-        # 三个命令分支共用：调用抛 ValueError/OSError 时统一转 {ok: False, error: ...} 输出
+        # 三个命令分支共用：调用抛 ValueError/OSError 时统一转 {ok: False, error: ...} 输出；
+        # 其余异常类型（如 schema.yaml 损坏抛 yaml.YAMLError）兜底转同类载荷（附异常类型名），
+        # 保证 stdout 恒有 JSON，消费方不会拿到空输出而无法区分命令失败与输出损坏。
         try:
             _emit(payload_fn())
         except (ValueError, OSError) as e:
             _emit({**error_base, "error": str(e) + root_hint}, ok=False)
+        except Exception as e:
+            _emit({**error_base, "error": f"{type(e).__name__}: {e}"}, ok=False)
 
     if args.command == "new":
         # 与 fenix_archive.py 的 spec/ 缺失防线对齐：new 未经 .fenix 软链接且未显式

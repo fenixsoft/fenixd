@@ -100,7 +100,11 @@ class ScenarioEntry:
         covers: Optional[list] = None,
         kind: str = "web",
     ):
-        self.id = id
+        # id 统一 str 归一（a17eb298933c，与 covers/kind 同款）：scenarios.json
+        # 数字 id 原样保留 int 会与 diff 侧 str(s["id"])（_parse_reasons 同款
+        # 口径）错位——恒判「无理由缺失」补齐 + planner 同名场景按新增并入，
+        # 场景集出现重复条目。
+        self.id = str(id or "")
         self.description = description
         self.added_in_round = added_in_round
         self.covers = [str(c) for c in (covers or [])]

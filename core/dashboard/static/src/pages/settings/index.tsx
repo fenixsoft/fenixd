@@ -7,6 +7,7 @@ import type { ConfigData, OverviewData } from '@/services/dashboard';
 // PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
 // 子组件不再从本文件反向导入，消除 index → panels → button → index 模块循环。
 import { PAGE_LABELS } from './pageLabels';
+import type { PageKey } from './pageLabels';
 // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：活跃面板判脏
 import { anyPanelDirty, resetPanelDirty } from './panelDirty';
 import LlmProviderPanel from './components/LlmProviderPanel';
@@ -32,7 +33,10 @@ const { Text } = Typography;
 // 标签字面在 BASE_MENU_ITEMS 与下方项目级 menuItems.push 各写一份，本文件
 // 从不读取 PAGE_LABELS——标签编辑会在菜单与 SyncFromUserButton 等消费方
 // 之间漂移。现标签单点取自共享模块，本数组只声明页签顺序与键。
-const BASE_MENU_ITEMS = [
+// label 显式放宽为 string：下方项目级 push 的三个页签标签（自省/项目/Hook）
+// 同取自 PAGE_LABELS，as const 后若沿用值字面量联合会把合法 push 误判为错
+// （code-review item 32ab875ddc2e）；key 仍保持 PageKey 拼写检查。
+const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'llm', label: PAGE_LABELS.llm },
   { key: 'agents', label: PAGE_LABELS.agents },
   { key: 'prompts', label: PAGE_LABELS.prompts },
@@ -217,10 +221,19 @@ export default function SettingsPage() {
     savingRef.current = true;
     setSaving(true);
     try {
+      // collect 契约是校验失败返回 null 而非 reject，但未禁止内部意外异常
+      // （config 缺段、ref 转发链断裂）——异常穿透会逃逸为 onClick 的未处理
+      // Promise 拒绝：saving 被 finally 复位，用户却零反馈，点击如同失效
+      // （code-review item e15f483ca1ed）。对齐 handleSave 的 error 口径后中止。
       const parts = await Promise.all([
         staleSelfhealRef.current?.collect(),
         suggestionsRef.current?.collect(),
-      ]);
+      ]).catch((error) => {
+        console.error('Failed to collect self-evolution sections:', error);
+        message.error('收集自进化配置失败，保存已中止，请稍后重试');
+        return null;
+      });
+      if (parts === null) return;
       // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
       // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——旧空检查只拒 null
       // 哨兵，undefined 落入 ``?? {}`` 被当空数据合并：(a) 两 ref 都未挂时

@@ -153,7 +153,7 @@ test('段映射 → 载荷往返保真', () => {
 // ── 说明文案（交互契约：设置页控件必须带说明） ────────────────────────
 
 test('audit 开关说明含体检行为与报告落点', () => {
-  const desc = knowledgeSwitchDesc('audit');
+  const desc = knowledgeSwitchDesc();
   assert.ok(desc.includes('体检'));
   assert.ok(desc.includes('knowledge_audit_report.md'));
 });

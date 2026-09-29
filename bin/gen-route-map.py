@@ -261,7 +261,9 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("用法: gen-route-map.py <worktree-root>", file=sys.stderr)
         return 2
-    root = Path(sys.argv[1]).resolve()
+    # expanduser（code-review item e1db212ea3fe）：引号包裹传入的 ~ 开头路径
+    # 按字面解析会误报「worktree 根不存在」，对齐仓库其他 CLI 的路径解析口径
+    root = Path(sys.argv[1]).expanduser().resolve()
     if not root.is_dir():
         print(f"worktree 根不存在: {root}", file=sys.stderr)
         return 1

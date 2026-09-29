@@ -65,7 +65,9 @@ export default function ProjectCards({
   onProjectSettle?: (name: string) => void;
 }) {
   const { message, modal } = App.useApp();
-  const [pendingName, setPendingName] = useState('');
+  // 在飞操作按项目名记账（Set 而非单槽字符串）：并发操作标记互不覆盖，
+  // 各自 settle 只摘除自己；菜单项据此禁用，防 pending 期间重复下发
+  const [pending, setPending] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [query, setQuery] = useState('');
 
@@ -101,7 +103,7 @@ export default function ProjectCards({
       }
       return;
     }
-    setPendingName(name);
+    setPending((prev) => new Set(prev).add(name));
     try {
       if (action === 'start') {
         await startProject(name);
@@ -117,7 +119,11 @@ export default function ProjectCards({
     } catch (err) {
       message.error(`项目「${name}」操作失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setPendingName('');
+      setPending((prev) => {
+        const next = new Set(prev);
+        next.delete(name);
+        return next;
+      });
     }
   };
 
@@ -149,14 +155,15 @@ export default function ProjectCards({
       return [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }];
     }
     const running = project.daemon === 'running';
+    const busy = pending.has(project.name);
     const items = project.exists
       ? [
-          { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running },
-          { key: 'stop', icon: <PauseCircleOutlined />, label: '停止', disabled: !running },
+          { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running || busy },
+          { key: 'stop', icon: <PauseCircleOutlined />, label: '停止', disabled: !running || busy },
           // fix-supervisor-hosting-chain 5.3：unmanaged 项目提供「安装托管」
           // 一次性修复路径（停止裸 daemon → 经 supervisor 重启）
           ...(project.hosting === 'unmanaged'
-            ? [{ key: 'install', icon: <ToolOutlined />, label: '安装托管' }]
+            ? [{ key: 'install', icon: <ToolOutlined />, label: '安装托管', disabled: busy }]
             : []),
           { type: 'divider' as const },
         ]
@@ -323,7 +330,7 @@ export default function ProjectCards({
                     </Typography.Text>
                     <DaemonBadge daemon={project.daemon} hosting={project.hosting} />
                     {project.discovered ? <OutlinedTag tone="muted" filled>自动发现</OutlinedTag> : null}
-                    {pendingName === project.name ? (
+                    {pending.has(project.name) ? (
                       <Tag color="processing" style={{ marginInlineEnd: 0 }}>
                         处理中…
                       </Tag>

@@ -30,6 +30,16 @@ if PROJECT_ROOT_FALLBACK:
 _SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
+def ensure_framework_path() -> None:
+    """把 FRAMEWORK_ROOT 注入 sys.path（幂等），供各处延迟导入 core/ 复用。
+
+    core 从框架根导入：自举仓库下即 project_root，第三方项目下跟随
+    .fenix 软链接定位安装位置。
+    """
+    if str(FRAMEWORK_ROOT) not in sys.path:
+        sys.path.insert(0, str(FRAMEWORK_ROOT))
+
+
 def archive_change(project_root: Path, name: str) -> dict:
     """将 `spec/changes/<name>/` 移动到 `spec/archive/YYYY-MM-DD-<name>`。
 
@@ -61,8 +71,16 @@ def archive_change(project_root: Path, name: str) -> dict:
     if moved != target:
         # TOCTOU：exists 检查与 move 之间 target 若被并发创建为目录，
         # shutil.move 会把 change 目录嵌套移入 target 内部（target/<name>）
-        # 造成归档层级漂移。移回原位并报错（不覆盖既有目录）；不用 os.rename
+        # 造成归档层级漂移。原位空闲则移回原位并报错（不覆盖既有目录）；
+        # 原位若已被并发者重建为同名目录则放弃回滚直接报错。不用 os.rename
         # 替代是因为归档可能跨设备（rename 会 EXDEV 失败）。
+        if change_dir.is_dir():
+            # 此时再移回原位会被 shutil.move 嵌套进 change_dir/<name> 内部
+            # （层级二次漂移），报错须带上 moved 实际路径供排障者直接定位。
+            raise ValueError(
+                f"Archive target already exists: {target} — 原位 {change_dir} "
+                f"已被并发重建，误移内容保留在 {moved}，请手工核对处置"
+            )
         shutil.move(str(moved), str(change_dir))
         raise ValueError(
             f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
@@ -75,8 +93,7 @@ def archive_change(project_root: Path, name: str) -> dict:
     # 输出说明性字段不报错；迁出异常 fail-open 为告警字段，不回滚目录移动、
     # 不改变归档成功语义（与下方 commit_archive_move 同风格）。core 从框架根
     # 导入（对齐上方 runs 归档的 FRAMEWORK_ROOT 先例）。
-    if str(FRAMEWORK_ROOT) not in sys.path:
-        sys.path.insert(0, str(FRAMEWORK_ROOT))
+    ensure_framework_path()
     state_md = Path(project_root) / ".fenix" / "STATE.md"
     if not state_md.exists():
         result["state_evicted"] = False
@@ -105,8 +122,7 @@ def archive_change(project_root: Path, name: str) -> dict:
     # 清理失败仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
     # core 从框架根导入（对齐 fenix_spec.py FRAMEWORK_ROOT 先例）：自举仓库
     # 下即 project_root，第三方项目下跟随 .fenix 软链接定位安装位置。
-    if str(FRAMEWORK_ROOT) not in sys.path:
-        sys.path.insert(0, str(FRAMEWORK_ROOT))
+    ensure_framework_path()
     try:
         from core.agent_runner.run_files import archive_spec_runs
 

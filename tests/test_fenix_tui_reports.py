@@ -363,12 +363,12 @@ class TestFenixProcessReport(TuiReportTestBase):
         self.assertIn("冻结", report)
         self.assertIn("start_after", report.replace("⏰", ""))
 
-    def test_unknown_spec_exits(self):
-        """未知 SPEC：非零退出 + 明确报错。"""
+    def test_unknown_spec_raises(self):
+        """未知 SPEC：render_report 抛 ValueError，退出语义由 main 决定。"""
         self.write_state({})
-        with self.assertRaises(SystemExit) as ctx:
+        with self.assertRaises(ValueError) as ctx:
             self.mod.render_report(self.proot, "no-such-spec")
-        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("no-such-spec", str(ctx.exception))
 
 
 if __name__ == "__main__":

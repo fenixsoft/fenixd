@@ -551,6 +551,24 @@ def _fail_count_int(value) -> int:
         return 1
 
 
+def _open_ids_for_archive(root, item_ids) -> list:
+    """失败档案入档前的未终态条目过滤（code-review item be772fa66cb7，收口
+    c94a1770a477 在各失败收尾路径的同口径要求）：只收 ``status=="open"``
+    条目——选批到失败收尾之间被人工置终态（resolved/in_spec/ignored）的
+    条目不随批入档、不进一次性告警名录，``fail_count`` 预算与真实失败条目
+    一致；台账读失败按空集（不入档）。``record_failed_batch`` 的
+    reason/detail_ref 等差异留在各调用点。
+    """
+    try:
+        ledger = read_items(root)
+    except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
+        ledger = {}
+    return [
+        i for i in item_ids
+        if (ledger.get(i) or {}).get("status") == "open"
+    ]
+
+
 def record_failed_batch(
     project_root, item_ids, worktree, reason="", branch="", tip_sha="",
     detail_ref="", logger=None,
@@ -3319,14 +3337,7 @@ class CodeFixOrchestrator:
         # 失败档案只收未终态条目（code-review item c94a1770a477，与主路径
         # pending_ids / 65f65b784f2a 核销前过滤同口径）：defer 窗口内被人工
         # 置终态的条目不随批入档。
-        try:
-            ledger = read_items(root)
-        except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
-            ledger = {}
-        open_ids = [
-            i for i in item_ids
-            if (ledger.get(i) or {}).get("status") == "open"
-        ]
+        open_ids = _open_ids_for_archive(root, item_ids)
         if open_ids:
             record_failed_batch(
                 root, open_ids, wt,
@@ -3356,14 +3367,7 @@ class CodeFixOrchestrator:
         # 失败档案只收未终态条目（code-review item c94a1770a477，与主路径
         # pending_ids / 65f65b784f2a 核销前过滤同口径）：defer 窗口内被人工
         # 置终态的条目不随批入档、不进一次性告警名录。
-        try:
-            ledger = read_items(root)
-        except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
-            ledger = {}
-        open_ids = [
-            i for i in item_ids
-            if (ledger.get(i) or {}).get("status") == "open"
-        ]
+        open_ids = _open_ids_for_archive(root, item_ids)
         first_expire = bool(open_ids) and not _has_expired_archive(root, open_ids)
         if open_ids:
             record_failed_batch(
@@ -3852,14 +3856,7 @@ class CodeFixOrchestrator:
                 # 耗尽之间被人工置终态（resolved/in_spec/ignored）的条目不随
                 # 批入档、不进回归失败告警名录——fail_count 预算与达上限一次
                 # 性告警的名录须与真实失败条目一致；子集为空则跳过入档与告警。
-                try:
-                    ledger = read_items(root)
-                except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
-                    ledger = {}
-                open_ids = [
-                    i for i in item_ids
-                    if (ledger.get(i) or {}).get("status") == "open"
-                ]
+                open_ids = _open_ids_for_archive(root, item_ids)
                 if open_ids:
                     record_failed_batch(
                         root, open_ids, wt,
@@ -4011,14 +4008,7 @@ class CodeFixOrchestrator:
             # 选批到合回之间被并发置 in_spec/resolved 的条目不随批入档——
             # fail_count 预算与达上限一次性告警的名录须与真实失败条目一致；
             # 子集为空则跳过入档（ignored 已在 pending_ids 构造处排除）。
-            try:
-                ledger = read_items(root)
-            except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
-                ledger = {}
-            open_ids = [
-                i for i in pending_ids
-                if (ledger.get(i) or {}).get("status") == "open"
-            ]
+            open_ids = _open_ids_for_archive(root, pending_ids)
             if open_ids:
                 record_failed_batch(
                     root, open_ids, wt,

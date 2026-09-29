@@ -178,7 +178,7 @@ class TestHasLiveAttempt:
         assert runner.has_live_attempt("s1") is expected
 
     def test_pgrep_matches_worktree_literal(self, tmp_path):
-        """pgrep 匹配串锚定 worktree 目录字面量（impl/verify 两前缀）。"""
+        """pgrep 匹配串锚定 worktree 目录字面量（impl/verify/repair 三前缀）。"""
         seen = []
 
         class FakeCompleted:
@@ -199,7 +199,11 @@ class TestHasLiveAttempt:
             assert runner._liveness._pgrep_live_attempt("s1") is False
         finally:
             ar.subprocess.run = original
-        assert seen == ["worktrees/impl-s1-", "worktrees/verify-s1-"]
+        assert seen == [
+            "worktrees/impl-s1-",
+            "worktrees/verify-s1-",
+            "worktrees/repair-s1-",
+        ]
 
     # ── fix-orphan-ready-recovery-liveness 3.1/3.2/3.3 ──────────────
 

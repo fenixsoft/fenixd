@@ -6,7 +6,7 @@
 // with keys {conflict_files, stash_kept, ...})"。任何证据渲染前都过这道归一，
 // 保证拿到的是可渲染字符串。
 export function fmtEvidence(value: unknown): string {
-  if (value == null) return '';
+  if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {

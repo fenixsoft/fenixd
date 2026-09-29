@@ -118,6 +118,20 @@ def _load_report_json(project_root, spec_name):
     if isinstance(summary, dict) and any(
         key in summary for key in ("total", "passed", "failed", "errors")
     ):
+        # summary-present 变体同样要防：引擎验收失败/Runner 初始化失败路径写下
+        # 的占位报告（_build_report([])）正是「scenarios=[] + summary 带全套
+        # 计数键（total=0/failed=0）」形态，采信它会经「failed=0 且声明了
+        # failed 键」推出 verified——即上面注释防住的假通过形态换了变体。
+        # 故 scenarios 为空列表时要求 summary.total > 0 才可用（total>0 说明
+        # 确有场景跑过，scenarios 明细缺失属截断而非占位）；total 缺失/为 0/
+        # 不可解析一律按占位报告拒收（fail-closed）。
+        if isinstance(scenarios, list):
+            try:
+                if int(summary.get("total") or 0) > 0:
+                    return data
+            except (TypeError, ValueError):
+                pass
+            return None
         return data
     return None
 
@@ -319,10 +333,12 @@ def current_round_fingerprint(project_root, spec_name):
     report.json 会保持不变，上一轮残留报告被以 present 放行（2026-09-12
     事故同型）——不再单点依赖「引擎每轮重写 report.json」的跨模块契约。
 
-    run-result 成分与 ``_load_run_result`` 同一候选序（verify-progress 专属
-    副本优先，主树共享文件回退）：采信谁就盯谁——共享文件被其它 spec 重写
-    不应改变本 spec 的轮次身份（否则触发无谓重合成）。全部成分皆不可得返回
-    None——此时无从判定新旧，闸门维持「既有报告不改动」的保守行为。
+    run-result 成分与 ``_load_run_result`` 同一候选序与同一归属口径
+    （verify-progress 专属副本优先，主树共享文件回退）：采信谁就盯谁——共享
+    文件仅在 spec 戳显式归属本 spec 时才纳入指纹，非本 spec 内容不参与本
+    spec 的轮次身份（否则其它 spec 每轮重写共享文件都翻转本 spec 指纹，触发
+    无谓重合成）。全部成分皆不可得返回 None——此时无从判定新旧，闸门维持
+    「既有报告不改动」的保守行为。
     """
     parts: list[str] = []
     report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
@@ -336,14 +352,32 @@ def current_round_fingerprint(project_root, spec_name):
                 parts.append(f"report.json@mtime{report_path.stat().st_mtime_ns}")
             except OSError:
                 pass
-    for run_result_path in (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
-        Path(project_root) / ".fenix" / ".fenix-run-result.json",
+    for run_result_path, shared in (
+        (
+            Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
+            False,
+        ),
+        (Path(project_root) / ".fenix" / ".fenix-run-result.json", True),
     ):
         try:
-            if run_result_path.is_file():
-                parts.append(f"run-result@mtime{run_result_path.stat().st_mtime_ns}")
-                break
+            if not run_result_path.is_file():
+                continue
+            if shared:
+                # 共享文件须 spec 戳显式归属本 spec 才纳入指纹——与
+                # _load_run_result 的严格口径一致（采信谁就盯谁）：非本 spec
+                # 内容（其它 spec 重写后的共享文件，含损坏/无戳残留）不参与
+                # 本 spec 的轮次身份，否则其它 spec 每轮重写共享文件都会翻转
+                # 本 spec 指纹，把仍是本回合结论的报告误判为上一轮残留而重合成
+                # （专属副本缺失形态下与归属声明相悖，code-review ad0ebe488d64）。
+                try:
+                    data = json.loads(run_result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                stamped = data.get("spec") if isinstance(data, dict) else None
+                if not (isinstance(stamped, str) and stamped == spec_name):
+                    continue
+            parts.append(f"run-result@mtime{run_result_path.stat().st_mtime_ns}")
+            break
         except OSError:
             pass
     if not parts:

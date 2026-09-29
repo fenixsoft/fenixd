@@ -546,6 +546,19 @@ def run_serve(port_override=None):
 # ── 入口 ────────────────────────────────────────────────────────
 
 
+def _port_type(value):
+    """--port 取值校验：仅接受 1-65535；0 不支持（会因 falsy 判断静默回退配置端口）。"""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"无效端口: {value!r}")
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"端口 {port} 超出有效范围 1-65535（0 不支持；省略 --port 则自动取配置端口）"
+        )
+    return port
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fenix Dashboard — Web / TUI / 项目注册",
@@ -560,7 +573,9 @@ def main():
     )
     parser.add_argument("--list-projects", action="store_true", help="列出已注册监控项目")
     parser.add_argument(
-        "--port", type=int, help="Web 端口（默认取配置，或 8787；被占用时按端口接管语义处理）"
+        "--port",
+        type=_port_type,
+        help="Web 端口（默认取配置，或 8787；被占用时按端口接管语义处理）",
     )
     parser.add_argument("--interval", type=int, default=3, help="TUI 刷新间隔（秒）")
     args = parser.parse_args()
