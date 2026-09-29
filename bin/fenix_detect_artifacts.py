@@ -126,12 +126,8 @@ def detect_build_artifacts(project_root: Path) -> dict:
                 for d in ["dist", "_build"]:
                     candidate = project_root / d
                     if candidate.is_dir() and any(candidate.iterdir()):
-                        if d == "dist":
-                            paths_found.add("dist/")
-                            sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
-                        elif d == "_build":
-                            paths_found.add(f"{d}/")
-                            sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
+                        paths_found.add(f"{d}/")
+                        sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
         except OSError:
             pass
 
