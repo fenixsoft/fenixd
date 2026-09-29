@@ -350,6 +350,45 @@ def _is_tmux_hosted(ppid: int | None = None) -> bool:
     return base == "tmux" or base.startswith("tmux:")
 
 
+def _parent_is_tmux_server(pid: int) -> bool:
+    """给定占用者 pid，判定其是否 tmux 承载（祖先链上存在 tmux server）。
+
+    2026-09-29 事故：agent 自测实例启动时，接管逻辑识别占用者为旧 --serve
+    实例后无差别 SIGTERM，杀掉 tmux 承载的人工常驻 dashboard（pane 进程死 →
+    单窗口 tmux 会话消失），接管者自身带 watchdog 自杀——用户可访问实例静默
+    死亡。本判据在 kill 前对占用者做与 _is_tmux_hosted 同源的长驻判定：
+    读 /proc/<pid>/stat 取 ppid（解析纪律同 _proc_starttime——comm 可能含
+    空格，从最后一个 ')' 之后切片取字段），沿祖先链上溯逐层调
+    _is_tmux_hosted(祖先 pid)。
+
+    必须上溯而非只查一层：`tmux new-session -d "... --serve"`（sh -c exec）
+    形态下占用者父进程恰为 tmux server，但人工常驻的主流形态是 pane 交互
+    shell 里手动启动——占用者的直接父进程是 pane shell（bash/zsh），
+    tmux server 是祖父。只查一层会把 pane shell 的 comm 当判定对象，
+    豁免永不命中、SIGTERM 照发（2026-09-30 真实环境场景验证实证）。
+    上溯深度取 4：tmux 承载最多 2 跳，余量给包装脚本层。
+
+    读取/解析失败（/proc 不可用、祖先已退出、占用者已退出成孤儿等）→
+    False：接管路径按非 tmux 承载放行既有接管。方向与 _is_tmux_hosted 的
+    「读取失败 → False」纪律一致，但语义不同：此处 fail-safe 偏向放行——
+    孤儿化实例已无 tmux 会话可依归，收割它不破坏任何常驻形态。
+    """
+    current = pid
+    for _ in range(4):
+        try:
+            data = Path(f"/proc/{current}/stat").read_text()
+            # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
+            fields = data[data.rindex(")") + 2 :].split()
+            current = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if current <= 1:
+            return False
+        if _is_tmux_hosted(current):
+            return True
+    return False
+
+
 def _start_claude_watchdog(env=None) -> bool:
     """CLAUDE_PID 生命周期绑定（agent 豁免通道的防泄漏阀，2026-09-04 8790 泄漏）。
 
@@ -446,7 +485,9 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
 
     端口独占语义（dashboard-instance-lifecycle）：目标端口被占用时，
     - 占用者为旧的 `fenix_dashboard.py --serve` 实例 → SIGTERM 终止旧实例，
-      等待其退出（≤3s）后重新绑定一次；
+      等待其退出（≤9s）后重新绑定一次；但占用者为 tmux 承载的常驻实例
+      （父进程为 tmux server，见 _parent_is_tmux_server）→ 不发任何信号，
+      打印含 PID 与 --port 换端口指引的错误后非 0 退出（2026-09-29 事故）；
     - 占用者为其它进程（非 dashboard 实例）→ 打印占用信息后非 0 退出；
     - 任何启动失败 MUST 在 5 秒内退出，不留僵尸实例。
     仅对最终确定的单一端口做上述占用检测（不再自动上探）。
@@ -484,6 +525,19 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
                     f"跳过接管信号（防 PID 复用误杀）。\n"
                 )
                 sys.exit(1)
+            # 常驻豁免（2026-09-29 事故）：占用者父进程为 tmux server → 人工
+            # 常驻实例，MUST NOT 发送任何信号（pane 进程死 → 单窗口 tmux 会话
+            # 消失、用户可访问实例静默死亡）。打印可操作错误后非 0 退出；
+            # agent 自适应换端口，非 tmux 旧实例（agent 自测/nohup 遗留）接管
+            # 语义不变。
+            if _parent_is_tmux_server(occupant["pid"]):
+                sys.stderr.write(
+                    f"端口 {actual} 已被 tmux 承载的常驻 dashboard 实例占用"
+                    f"（占用者 PID {occupant['pid']}）——常驻实例不可被接管，"
+                    f"未向其发送任何信号。\n"
+                    f"请用 --port 指定其它端口，或直接复用常驻实例。\n"
+                )
+                sys.exit(1)
             try:
                 os.kill(occupant["pid"], signal.SIGTERM)
             except OSError as e:
@@ -493,8 +547,13 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
                     f"端口 {actual} 接管：向 PID {occupant['pid']} 发 SIGTERM 失败"
                     f"（目标可能已退出）: {e}\n"
                 )
-            # 等待旧实例退出（≤3s）
-            deadline = time.monotonic() + 3.0
+            # 等待旧实例退出（≤9s）。SIGTERM 在本模块内是 graceful 退出
+            # （_graceful_term → httpd.shutdown → finally 清理链：watcher/
+            # SSE/session_manager 收尾），实测空闲实例 ≈4.3s 进程才消失——
+            # 初版 3s 窗口不等旧实例死透就重绑，必然再撞 EADDRINUSE、新实例
+            # 报错退出（2026-09-30 真实环境场景验证实证：「非 tmux 旧实例仍
+            # 接管」的「终止旧实例并成功绑定」时序破裂）。
+            deadline = time.monotonic() + 9.0
             while time.monotonic() < deadline:
                 if not _is_process_alive(occupant["pid"]):
                     break

@@ -10,6 +10,7 @@ claude 进程生命周期——claude 死则实例自杀；纯人 CLI（无 CLAU
 """
 import ctypes
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -377,3 +378,323 @@ def test_is_tmux_hosted_with_real_fixture():
         if plain.poll() is None:
             plain.kill()
             plain.wait()
+
+
+# ── 端口接管常驻豁免：serve() 接管分支（2026-09-29 事故）────────────────
+# 占用者为 tmux 承载的常驻 --serve 实例时不可被接管（杀 pane 进程 → tmux
+# 单窗口会话消失、用户可访问实例静默死亡）；非 tmux 旧实例接管语义不变；
+# 父进程身份读取失败按非 tmux 承载放行（fail-safe 偏向放行）。
+
+_OCCUPANT_PID = 4242
+_OCCUPANT_STARTTIME = 123456
+
+
+class _FakeHttpd:
+    """serve() 成功绑定路径的最小 httpd 替身：serve_forever 立即返回
+    （KeyboardInterrupt → except → finally 清理 → serve() 正常返回），
+    不落真端口、不起真线程。"""
+
+    def __init__(self, addr, registry, static_dir):
+        self.addr = addr
+        self.watcher = None
+        self.session_manager = None
+        self.sse_hub = object()
+        self.summary_index = None
+
+    def projects(self):
+        return []
+
+    def serve_forever(self):
+        raise KeyboardInterrupt()
+
+    def shutdown(self):
+        pass
+
+    def server_close(self):
+        pass
+
+
+class _FakeWatcher:
+    def __init__(self, *a, **k):
+        pass
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+class _FakeSessionManager:
+    def __init__(self, hub):
+        self.hub = hub
+
+    def shutdown(self):
+        pass
+
+
+def _occupant():
+    return {
+        "pid": _OCCUPANT_PID,
+        "cmdline": "python3 fenix_dashboard.py --serve",
+        "starttime": _OCCUPANT_STARTTIME,
+    }
+
+
+def _install_serve_harness(monkeypatch, bind_outcomes, occupant):
+    """装配 serve() 接管分支测试夹具，返回 (created_httpd, signals)。
+
+    bind_outcomes 按构造次序消费：OSError 实例 = 该次绑定抛 EADDRINUSE，
+    其余为成功返回的 httpd 替身。signals 记录 os.kill 调用 (pid, sig)。
+    占用者 starttime 复核恒通过（防 PID 复用分支不在本组用例覆盖面），
+    占用者 kill 后视为立即退出（跳过等待轮询）。
+    """
+    import core.dashboard.server as server_mod
+
+    created = []
+    signals = []
+
+    def fake_server_cls(addr, registry, static_dir):
+        outcome = bind_outcomes.pop(0)
+        if isinstance(outcome, OSError):
+            raise outcome
+        created.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(server_mod, "DashboardHTTPServer", fake_server_cls)
+    monkeypatch.setattr(server_mod, "FileWatcher", _FakeWatcher)
+    monkeypatch.setattr(
+        "core.dashboard.session_manager.SessionManager", _FakeSessionManager
+    )
+    monkeypatch.setattr(server_mod, "_bind_parent_lifecycle", lambda: None)
+    monkeypatch.setattr(server_mod, "_find_dashboard_occupant", lambda port: occupant)
+    monkeypatch.setattr(server_mod, "_proc_starttime", lambda pid: _OCCUPANT_STARTTIME)
+    monkeypatch.setattr(server_mod, "_is_process_alive", lambda pid: False)
+    monkeypatch.setattr(server_mod.signal, "signal", lambda *a, **k: None)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    return created, signals
+
+
+_EADDRINUSE = OSError(98, "Address already in use")
+
+
+def _write_occupant_stat(tmp_path, ppid):
+    """写 fake 占用者 /proc/<pid>/stat：')' 后首字段=state、次字段=ppid。"""
+    stat = tmp_path / "stat"
+    stat.write_text(f"{_OCCUPANT_PID} (python3) S {ppid} {_OCCUPANT_PID} 1 0\n")
+    return stat
+
+
+def test_takeover_rejected_for_tmux_resident_occupant(monkeypatch, tmp_path, capsys):
+    """tmux 常驻占用者：不发任何信号、非 0 退出、错误含 PID 与 --port 指引。"""
+    stat = _write_occupant_stat(tmp_path, ppid=777)
+    comm = tmp_path / "comm"
+    comm.write_text("tmux: server\n")
+    _patch_proc_files(
+        monkeypatch,
+        {f"/proc/{_OCCUPANT_PID}/stat": stat, "/proc/777/comm": comm},
+    )
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE], _occupant()
+    )
+    with pytest.raises(SystemExit) as ei:
+        import core.dashboard.server as server_mod
+
+        server_mod.serve(None, port=8787)
+    assert ei.value.code == 1
+    assert signals == []  # 未向占用者发送任何信号（tmux 会话不受影响）
+    assert created == []  # 未完成绑定（拒绝启动而非自动换端口）
+    err = capsys.readouterr().err
+    assert str(_OCCUPANT_PID) in err  # 含占用者 PID
+    assert "常驻" in err  # tmux 常驻说明
+    assert "--port" in err  # 换端口指引
+
+
+def test_takeover_proceeds_for_non_tmux_occupant(monkeypatch, tmp_path):
+    """非 tmux 旧实例：既有接管语义不变——占用者收 SIGTERM、新实例完成绑定。"""
+    stat = _write_occupant_stat(tmp_path, ppid=777)
+    comm = tmp_path / "comm"
+    comm.write_text("bash\n")  # 父进程非 tmux server
+    _patch_proc_files(
+        monkeypatch,
+        {f"/proc/{_OCCUPANT_PID}/stat": stat, "/proc/777/comm": comm},
+    )
+    httpd = _FakeHttpd(("127.0.0.1", 8787), None, None)
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE, httpd], _occupant()
+    )
+    import core.dashboard.server as server_mod
+
+    server_mod.serve(None, port=8787)  # 替身 serve_forever 立即返回 → 正常收尾
+    assert signals == [(_OCCUPANT_PID, signal.SIGTERM)]
+    assert created == [httpd]  # 新实例完成绑定
+
+
+def test_parent_is_tmux_server_read_failures_return_false(monkeypatch, tmp_path):
+    """两层读取失败均 → False：(a) 占用者 stat 不可读；(b) 父进程 comm/cmdline
+    均不可读；孤儿化占用者（ppid=1，init 非 tmux）经正常判定亦 False。"""
+    import core.dashboard.server as server_mod
+
+    # (a) 占用者 /proc/<pid>/stat 不可读 → ppid 提取失败 → False
+    _patch_proc_files(
+        monkeypatch, {f"/proc/{_OCCUPANT_PID}/stat": tmp_path / "gone" / "stat"}
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is False
+
+    # (b) stat 可得 ppid=777，但父进程 comm 与 cmdline 均不可读 → False
+    stat = _write_occupant_stat(tmp_path, ppid=777)
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": stat,
+            "/proc/777/comm": tmp_path / "gone" / "comm",
+            "/proc/777/cmdline": tmp_path / "gone" / "cmdline",
+        },
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is False
+
+    # 孤儿化占用者：ppid 归 1，init（comm 可读非 tmux、cmdline 回退失败）→ False
+    orphan_stat = _write_occupant_stat(tmp_path, ppid=1)
+    init_comm = tmp_path / "init_comm"
+    init_comm.write_text("init\n")
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": orphan_stat,
+            "/proc/1/comm": init_comm,
+            "/proc/1/cmdline": tmp_path / "gone" / "cmdline",
+        },
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is False
+
+
+def test_parent_is_tmux_server_walks_ancestor_chain(monkeypatch, tmp_path):
+    """真实 tmux pane 交互形态：占用者父是 pane shell（bash/zsh），祖父才是
+    tmux server——须沿祖先链上溯判定。只查一层会把 pane shell 的 comm
+    （zsh/bash）当判定对象、豁免永不命中、SIGTERM 照发（2026-09-30 真实
+    环境场景验证实证）。链上祖先 stat 不可读 → False（放行既有接管）。"""
+    import core.dashboard.server as server_mod
+
+    occupant_stat = _write_occupant_stat(tmp_path, ppid=2001)
+    shell_stat = tmp_path / "shell_stat"
+    # pane shell 2001 → tmux server 7541（pid 字段对解析无影响，只取 ppid）
+    shell_stat.write_text("2001 (zsh) S 7541 2001 1 0\n")
+    tmux_comm = tmp_path / "tmux_comm"
+    tmux_comm.write_text("tmux: server\n")
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": occupant_stat,
+            "/proc/2001/stat": shell_stat,
+            "/proc/7541/comm": tmux_comm,
+        },
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is True
+
+    # 祖先链断裂：pane shell 已退出（stat 不可读）→ False，放行既有接管
+    _patch_proc_files(
+        monkeypatch, {f"/proc/{_OCCUPANT_PID}/stat": occupant_stat}
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is False
+
+
+def test_takeover_rejected_for_tmux_pane_shell_occupant(monkeypatch, tmp_path, capsys):
+    """pane 交互 shell 形态的 tmux 常驻（父=pane shell、祖父=tmux server）：
+    豁免同样命中——不发任何信号、非 0 退出、错误含 PID 与 --port 指引。"""
+    occupant_stat = _write_occupant_stat(tmp_path, ppid=2001)
+    shell_stat = tmp_path / "shell_stat"
+    shell_stat.write_text("2001 (zsh) S 7541 2001 1 0\n")
+    tmux_comm = tmp_path / "tmux_comm"
+    tmux_comm.write_text("tmux: server\n")
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": occupant_stat,
+            "/proc/2001/stat": shell_stat,
+            "/proc/7541/comm": tmux_comm,
+        },
+    )
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE], _occupant()
+    )
+    with pytest.raises(SystemExit) as ei:
+        import core.dashboard.server as server_mod
+
+        server_mod.serve(None, port=8787)
+    assert ei.value.code == 1
+    assert signals == []  # pane 交互形态的常驻实例同样不受信号
+    assert created == []
+    err = capsys.readouterr().err
+    assert str(_OCCUPANT_PID) in err
+    assert "常驻" in err
+    assert "--port" in err
+
+
+def test_takeover_waits_for_slow_graceful_exit(monkeypatch, tmp_path):
+    """旧实例 graceful 退出慢于初版等待窗（实测 ≈4.3s > 3s）也不破接管：
+    SIGTERM 后轮询等待占用者进程消失（≤9s），死亡后才重绑——窗口内重绑
+    必再撞 EADDRINUSE、新实例报错退出（2026-09-30 真实环境场景验证实证，
+    「非 tmux 旧实例仍接管」Scenario 的 THEN 时序破裂）。"""
+    stat = _write_occupant_stat(tmp_path, ppid=777)
+    comm = tmp_path / "comm"
+    comm.write_text("bash\n")  # 父进程非 tmux
+    _patch_proc_files(
+        monkeypatch,
+        {f"/proc/{_OCCUPANT_PID}/stat": stat, "/proc/777/comm": comm},
+    )
+    httpd = _FakeHttpd(("127.0.0.1", 8787), None, None)
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE, httpd], _occupant()
+    )
+    import core.dashboard.server as server_mod
+
+    # 占用者 SIGTERM 后「慢慢死」：前 5 次探活仍活着，第 6 次起消失
+    alive_polls = {"n": 0}
+
+    def slowly_dying(pid):
+        alive_polls["n"] += 1
+        return alive_polls["n"] <= 5
+
+    monkeypatch.setattr(server_mod, "_is_process_alive", slowly_dying)
+    monkeypatch.setattr(server_mod.time, "sleep", lambda _s: None)
+    server_mod.serve(None, port=8787)
+    assert signals == [(_OCCUPANT_PID, signal.SIGTERM)]
+    assert created == [httpd]  # 等到占用者进程消失后才重绑成功
+    assert alive_polls["n"] >= 5  # 轮询等待而非一次定生死
+
+
+def test_takeover_proceeds_when_parent_identity_unreadable(monkeypatch, tmp_path):
+    """父进程身份读取失败（两层）→ 按非 tmux 承载走既有接管，不产生新报错分支。"""
+    import core.dashboard.server as server_mod
+
+    occupant = _occupant()
+
+    # (a) 占用者 stat 不可读（ppid 提取失败）→ 放行接管
+    _patch_proc_files(
+        monkeypatch, {f"/proc/{_OCCUPANT_PID}/stat": tmp_path / "gone" / "stat"}
+    )
+    httpd_a = _FakeHttpd(("127.0.0.1", 8787), None, None)
+    created_a, signals_a = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE, httpd_a], occupant
+    )
+    server_mod.serve(None, port=8787)
+    assert signals_a == [(_OCCUPANT_PID, signal.SIGTERM)]
+    assert created_a == [httpd_a]
+
+    # (b) ppid 可得但父进程 comm/cmdline 均不可读 → 亦放行接管
+    stat = _write_occupant_stat(tmp_path, ppid=777)
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": stat,
+            "/proc/777/comm": tmp_path / "gone" / "comm",
+            "/proc/777/cmdline": tmp_path / "gone" / "cmdline",
+        },
+    )
+    httpd_b = _FakeHttpd(("127.0.0.1", 8787), None, None)
+    created_b, signals_b = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE, httpd_b], occupant
+    )
+    server_mod.serve(None, port=8787)
+    assert signals_b == [(_OCCUPANT_PID, signal.SIGTERM)]
+    assert created_b == [httpd_b]
