@@ -217,20 +217,31 @@ class RRollbackMixin:
                 # （fix-fasttrack-recovery-resume D5 区分注释）本处清锚点属**有意回滚**
                 # ——run **从未启动**（dispatch 异常），`_recovery_resume` 尚未被消费、
                 # 锚点亦非本轮产出。MUST NOT 消费该标记（保持原值），使其在原样重派
-                # 时仍可被 dispatch 入口消费；清 branch/implementer_run 只是剥除
-                # 从未启动的 run 留下的空壳字段，恢复续做锚点不在其列。
-                self._pm.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "status": "ready",
-                        "implementer_run": None,
-                        "tester_run": None,
-                        "branch": None,
-                        "error": None,
-                        "_last_dispatch_error": f"Implementation dispatch failed (retryable): {exc}",
-                        "_dispatch_backoff_until": backoff_until,
-                    },
-                )
+                # 时仍可被 dispatch 入口消费；清 implementer_run 只是剥除从未启动的
+                # run 留下的空壳字段。
+                # branch 条件清空（code-review item 95108482c6c5）：branch 是续做
+                # 锚点链的一环——queue.py 两条派发分支（implementer/fast-track）
+                # 均按 `branch if _recovery_resume else None` 解析续做载体 pre_wt。
+                # 本轮若是 recovery 续做重派（标记待消费 + branch 指向上一轮保留
+                # 分支），且异常发生在标记消费之前（ensure_spec_committed/预算
+                # 计数/载体解析均在续做判定前执行，抛错即入本回滚），无条件清
+                # branch 会让下轮消费侧取到 pre_wt=None，静默退化成全新 worktree
+                # 派发、保留分支脱锚。故与 fast_track._downgrade_fast_track_scale
+                # 的 D4 口径一致：标记在位时 MUST NOT 清空 branch（载体缺失/不可用
+                # 时消费侧 resolve_resume_site 自会降级为全新派发，保留无副作用）；
+                # 无标记时 branch 属上一轮空壳/陈旧锚点，照常清除。
+                resume_pending = bool(spec_entry.get("_recovery_resume"))
+                rollback_updates = {
+                    "status": "ready",
+                    "implementer_run": None,
+                    "tester_run": None,
+                    "error": None,
+                    "_last_dispatch_error": f"Implementation dispatch failed (retryable): {exc}",
+                    "_dispatch_backoff_until": backoff_until,
+                }
+                if not resume_pending:
+                    rollback_updates["branch"] = None
+                self._pm.state_machine.update_spec(spec_name, rollback_updates)
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Rolled back '{spec_name}' implementing → ready "
