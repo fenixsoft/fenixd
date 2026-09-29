@@ -34,6 +34,7 @@
 
 import argparse
 import sys
+import uuid
 from pathlib import Path
 
 # 确保项目根在 sys.path 中（运行脚本时可能不在工作目录）
@@ -102,17 +103,24 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
             f"regression.output 不得指向契约/配置键文件（verify.yaml/config.yaml），"
             f"拒绝清理: {output_rel}"
         )
-    # 清理旧产物，确保解析的是本次执行产出
+    # 清理旧产物——不直接 unlink（code-review item b44a846dc7b4）：.xml 后缀 +
+    # 保护集挡不住误填项目内其他合法 XML 文档/测试夹具，先 unlink 而回归命令
+    # 不会重写它时，配置笔误升级为不可逆丢失。改为先在原目录改名暂存（同 fs
+    # 原子、不新建目录），自证成功后才删暂存；失败路径保留暂存文件，误删可
+    # 从暂存名手动找回。
+    stale_stage = None
     if output_abs.is_file():
+        stale_stage = output_abs.with_name(
+            f"{output_abs.name}.stale-{uuid.uuid4().hex[:8]}"
+        )
         try:
-            output_abs.unlink()
+            output_abs.rename(stale_stage)
         except OSError as e:
-            # 清理失败 MUST NOT 静默（code-review item e0100af58b0f）：unlink
-            # 的全部意义是「确保解析的是本次执行产出」——删除失败（EACCES/
-            # EBUSY/只读 fs）且后续回归命令失败未重写文件时，陈旧 XML 会被
+            # 移开失败与旧 unlink 失败同语义（code-review item e0100af58b0f）：
+            # 陈旧 XML 留在 output 路径且后续回归命令失败未重写文件时，会被
             # 解析并报成功（假通过）。显式失败退出自证，交人工处置。
             return False, (
-                f"陈旧 JUnit XML 清理失败（{e}），无法确保解析的是本次执行"
+                f"陈旧 JUnit XML 暂存失败（{e}），无法确保解析的是本次执行"
                 f"产出，拒绝自证: {output_rel}"
             )
     use_shell = isinstance(cmd, str)
@@ -161,15 +169,28 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
             pass
         return False, f"回归命令超时（>{spec.timeout_seconds}s），未能确认产出 JUnit XML"
     if not output_abs.is_file():
-        return False, f"回归命令退出码 {proc.returncode}，但 JUnit XML 产物不存在: {output_rel}"
+        staged_hint = (
+            f"（旧产物已暂存为 {stale_stage.name}，如系误指非产物路径可手动找回）"
+            if stale_stage is not None
+            else ""
+        )
+        return False, (
+            f"回归命令退出码 {proc.returncode}，但 JUnit XML 产物不存在: "
+            f"{output_rel}{staged_hint}"
+        )
     try:
         parsed = parse_junit_xml(output_abs)
     except Exception as e:
         return False, f"JUnit XML 不可解析: {e}"
-    return (
-        True,
-        f"回归自证通过（{parsed['total']} 用例，产出 {output_rel}）",
-    )
+    note = f"回归自证通过（{parsed['total']} 用例，产出 {output_rel}）"
+    if stale_stage is not None:
+        try:
+            stale_stage.unlink()
+        except OSError as e:
+            # 暂存清理失败不影响自证结论（新产物已在 output 路径并通过解析），
+            # 但残留不得静默——附记暂存名交人工处置。
+            note += f"（注意: 陈旧产物暂存清理失败（{e}），残留于 {stale_stage.name}）"
+    return True, note
 
 
 def main():
@@ -294,7 +315,9 @@ def main():
 
     # 输出摘要
     print()
-    if result.valid and result.prepare_ok and result.serve_ok and result.ready_ok:
+    # 复用上方 contract_failed（code-review item 5c645f296fcc）：成功判定即其
+    # 取反，避免同一组四元条件两处重写、日后增删判定段时只改一处致分支不一致
+    if not contract_failed:
         print("校验通过（exit 0）: 三段契约全部通过，可作为有效验证契约生效")
         sys.exit(0)
     else:
