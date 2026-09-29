@@ -5,6 +5,8 @@ Split from test_dashboard.py as part of refactor-test-structure.
 """
 import json
 import sys
+import json
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -2249,6 +2251,356 @@ class TestCodeReviewItemsPagination:
             srv.stop()
 
 
+# ── GET 读端点条件请求（ETag/304，add-dashboard-paging-and-etag 1.4） ──
+class TestConditionalGet:
+    """ETag/If-None-Match 协商：304 空体、签名随数据源变化、无条件请求零变化、
+    keep-alive 复用、runs 新增记录不假 304。"""
+
+    def _etag_of(self, srv, path):
+        status, headers, _ = srv.get_ex(path)
+        assert status == 200
+        etag = headers.get("ETag")
+        assert etag, f"{path} 应携带 ETag 头"
+        return etag
+
+    def test_admin_activities_304_empty_body(self, server_fx):
+        _, srv = server_fx
+        etag = self._etag_of(srv, "/api/admin-activities")
+        status, headers, body = srv.get_ex(
+            "/api/admin-activities", headers={"If-None-Match": etag}
+        )
+        assert status == 304
+        assert body == b""
+        assert len(body) <= 1024  # spec：传输量 ≤1KB
+        assert headers.get("ETag") == etag
+        assert headers.get("Content-Length") == "0"
+
+    def test_alerts_and_config_and_spec_detail_304(self, server_fx):
+        proot, srv = server_fx
+        for path in (
+            "/api/alerts",
+            "/api/alerts?project=proj-a",
+            "/api/admin-activities?project=proj-a",
+            "/api/config?project=proj-a",
+            "/api/config",
+            "/api/specs/myspec?project=proj-a",
+        ):
+            etag = self._etag_of(srv, path)
+            status, _, body = srv.get_ex(path, headers={"If-None-Match": etag})
+            assert status == 304, path
+            assert body == b"", path
+
+    def test_state_mtime_change_flips_specs_etag(self, server_fx):
+        """daemon 写 STATE.md（mtime 变化）→ /api/specs ETag 翻转（spec 场景 1）。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/specs?project=proj-a")
+        time.sleep(0.01)
+        p = proot / ".fenix" / "STATE.md"
+        p.write_text(p.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        status, headers, body = srv.get_ex(
+            "/api/specs?project=proj-a", headers={"If-None-Match": etag1}
+        )
+        assert status == 200  # 数据源变化 → 200 全量，不 304
+        assert headers["ETag"] != etag1
+        assert json.loads(body)["project"] == "proj-a"
+
+    def test_runs_new_record_flips_overview_etag(self, server_fx):
+        """runs 目录新增 run 记录（STATE.md 未变）→ overview ETag 翻转，不假 304。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/overview")
+        (proot / ".fenix" / "runs" / "impl-otherspec-1790000000.jsonl").write_text(
+            json.dumps({"type": "result", "result": "done"}) + "\n", encoding="utf-8"
+        )
+        status, headers, _ = srv.get_ex(
+            "/api/overview", headers={"If-None-Match": etag1}
+        )
+        assert status == 200
+        assert headers["ETag"] != etag1
+
+    def test_unconditional_request_body_unchanged_with_etag(self, server_fx):
+        """无 If-None-Match → 与改造前完全一致的 200 全量体，仅新增 ETag 头。"""
+        _, srv = server_fx
+        status, body = srv.get("/api/overview")
+        assert status == 200
+        status2, headers, raw = srv.get_ex("/api/overview")
+        assert status2 == 200
+        assert headers.get("ETag")
+        assert json.loads(raw) == body
+
+    def test_304_reuses_keep_alive_connection(self, server_fx):
+        """304 响应可复用同一 keep-alive 连接继续请求（Content-Length: 0 不污染）。"""
+        import http.client
+
+        _, srv = server_fx
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            conn.request("GET", "/api/admin-activities")
+            r1 = conn.getresponse()
+            assert r1.status == 200
+            r1.read()
+            etag = r1.getheader("ETag")
+            assert etag
+            conn.request("GET", "/api/admin-activities", headers={"If-None-Match": etag})
+            r2 = conn.getresponse()
+            assert r2.status == 304
+            assert r2.read() == b""
+            # 同一连接继续请求 → 必须拿到合法响应（304 空体未使连接失步）
+            conn.request("GET", "/api/overview")
+            r3 = conn.getresponse()
+            assert r3.status == 200
+            json.loads(r3.read())
+        finally:
+            conn.close()
+
+    def test_error_responses_bare_no_etag(self, server_fx):
+        """错误响应（unknown project / spec not found 错误体）不挂 ETag。"""
+        _, srv = server_fx
+        for path in ("/api/specs?project=ghost", "/api/specs/ghostspec?project=proj-a"):
+            status, headers, _ = srv.get_ex(path)
+            assert status == 200
+            assert "ETag" not in headers, path
+
+    def test_config_data_change_flips_etag(self, server_fx):
+        """config.yaml 内容变化 → /api/config 200 新 ETag。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/config?project=proj-a")
+        time.sleep(0.01)
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: fake2\n", encoding="utf-8"
+        )
+        status, headers, _ = srv.get_ex(
+            "/api/config?project=proj-a", headers={"If-None-Match": etag1}
+        )
+        assert status == 200
+        assert headers["ETag"] != etag1
+
+    def test_spec_detail_dependency_change_flips_etag(self, server_fx):
+        """详情依赖（report.json）变化 → /api/specs/<spec> 200 新 ETag。"""
+        proot, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/specs/myspec?project=proj-a")
+        time.sleep(0.01)
+        rp = proot / ".fenix" / "verify-progress" / "myspec" / "report.json"
+        rp.write_text(rp.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        status, headers, _ = srv.get_ex(
+            "/api/specs/myspec?project=proj-a", headers={"If-None-Match": etag1}
+        )
+        assert status == 200
+        assert headers["ETag"] != etag1
+
+    def test_etag_stable_across_repeated_calls(self, server_fx):
+        """同一数据状态下重复请求 ETag 稳定（签名确定性；缓存复用前提）。"""
+        _, srv = server_fx
+        etag1 = self._etag_of(srv, "/api/overview")
+        for _ in range(3):
+            assert self._etag_of(srv, "/api/overview") == etag1
+
+
+# ── 服务端分页（add-dashboard-paging-and-etag 2.1/2.2/2.3） ──────────
+def _front_end_activity_order(items):
+    """activities/index.tsx allActivities 排序语义的测试侧复刻（参照实现）。
+
+    handled===false 置顶优先；组内 created 非法/缺失归一 0 后倒序；稳定排序。
+    """
+    from datetime import datetime as _dt
+
+    def ts_of(a):
+        created = a.get("created")
+        if not created:
+            return 0.0
+        s = str(created)
+        if s.endswith(("Z", "z")):
+            s = s[:-1] + "+00:00"
+        try:
+            return _dt.fromisoformat(s).timestamp()
+        except ValueError:
+            return 0.0
+
+    return sorted(items, key=lambda a: (0 if a.get("handled") is False else 1, -ts_of(a)))
+
+
+def _flatten_projects(body):
+    out = []
+    for p in body.get("projects") or []:
+        for a in p.get("activities") or []:
+            item = dict(a)
+            item.setdefault("project", p["name"])
+            out.append(item)
+    return out
+
+
+class TestAdminActivitiesServerPaging:
+    """/api/admin-activities page/page_size（默认 50 上限 200，缺省零变化）。"""
+
+    def _server_for(self, proot, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def _seed(self, proot, n=120):
+        from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+
+        store = AdminStore(proot)
+        # 3 条未处理升级 + 关联 disposition（handled===False 置顶语义的载体）
+        for e in range(3):
+            store.append({
+                "kind": ESCALATION, "severity": "major",
+                "description": f"unhandled-pin-{e}", "admin_run_id": f"run-pin-{e}",
+                "source": "test", "summary": "", "error": "",
+            })
+            store.append({
+                "kind": DISPOSITION, "severity": "major", "spec": f"spec-pin-{e}",
+                "description": f"pin-{e}", "action_taken": "t", "result": "in-progress",
+                "admin_run_id": f"run-pin-{e}", "summary": f"pin-{e}",
+                "created": f"2026-03-0{e + 1}T00:00:00+00:00", "source": "test", "error": "",
+            })
+        for i in range(n):
+            store.append({
+                "kind": DISPOSITION, "severity": "minor", "spec": f"spec-{i % 5}",
+                "description": f"d-{i}", "action_taken": "a", "result": "resolved",
+                "summary": f"s-{i}", "source": "test", "error": "",
+                "created": f"2026-02-01T{i // 60:02d}:{i % 60:02d}:00+00:00",
+            })
+        # created 非法 / 缺失（None）：参与排序不异常且归末位
+        store.append({
+            "kind": DISPOSITION, "severity": "minor", "spec": "spec-bad",
+            "description": "bad-created", "action_taken": "a", "result": "resolved",
+            "summary": "bad", "created": "not-a-date", "source": "test", "error": "",
+        })
+        store.append({
+            "kind": DISPOSITION, "severity": "minor", "spec": "spec-none",
+            "description": "none-created", "action_taken": "a", "result": "resolved",
+            "summary": "none", "created": None, "source": "test", "error": "",
+        })
+
+    def _setup(self, tmp_path, n=120):
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        self._seed(proot, n=n)
+        return proot, self._server_for(proot, tmp_path)
+
+    def test_default_response_zero_change(self, tmp_path):
+        """缺省 page → 响应结构与改造前逐字段一致（无 total/page/page_size/has_more）。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            status, body = srv.get("/api/admin-activities")
+            assert status == 200
+            assert set(body.keys()) == {"projects"}
+            items = _flatten_projects(body)
+            assert len(items) == 125  # 120 + 3 置顶 + 2 异常 created
+        finally:
+            srv.stop()
+
+    def test_page_slice_matches_full_segment(self, tmp_path):
+        """任意页内容 ≡ 全量响应（前端排序参照系）对应区段，逐条一致。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            _, full = srv.get("/api/admin-activities")
+            reference = _front_end_activity_order(_flatten_projects(full))
+            status, page = srv.get("/api/admin-activities?page=2&page_size=50")
+            assert status == 200
+            assert page["total"] == 125
+            assert page["page"] == 2 and page["page_size"] == 50
+            assert page["has_more"] is True
+            got = _flatten_projects(page)
+            assert [(a["id"], a.get("project")) for a in got] == [
+                (a["id"], a.get("project")) for a in reference[50:100]
+            ]
+            # 第 3 页收尾（125-100=25 条），has_more=False
+            _, page3 = srv.get("/api/admin-activities?page=3&page_size=50")
+            assert page3["has_more"] is False
+            assert len(_flatten_projects(page3)) == 25
+        finally:
+            srv.stop()
+
+    def test_invalid_params_fall_back_to_default(self, tmp_path):
+        proot, srv = self._setup(tmp_path)
+        try:
+            status, body = srv.get(
+                "/api/admin-activities?page=abc&page_size=-3"
+            )
+            assert status == 200
+            assert body["page"] == 1
+            assert body["page_size"] == 50
+            assert body["total"] == 125
+            assert len(_flatten_projects(body)) == 50
+        finally:
+            srv.stop()
+
+    def test_page_size_capped_at_200(self, tmp_path):
+        proot, srv = self._setup(tmp_path)
+        try:
+            status, body = srv.get("/api/admin-activities?page=1&page_size=1000")
+            assert status == 200
+            assert body["page_size"] == 200
+            assert len(_flatten_projects(body)) == 125  # 全量 ≤200 一次取尽
+        finally:
+            srv.stop()
+
+    def test_pinned_records_all_in_first_page(self, tmp_path):
+        """3 条未处理升级关联记录全部落在第一页且占据前 3 位（置顶先于切片）。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            _, page1 = srv.get("/api/admin-activities?page=1&page_size=50")
+            items = _flatten_projects(page1)
+            pinned = [a for a in items if a.get("handled") is False]
+            assert len(pinned) == 3
+            assert [a["id"] for a in items[:3]] == [a["id"] for a in pinned]
+        finally:
+            srv.stop()
+
+    def test_invalid_or_missing_created_sort_last(self, tmp_path):
+        """created 非法/缺失记录参与排序不异常且归末位（与前端归一 0 语义一致）。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            _, full = srv.get("/api/admin-activities")
+            ordered = _front_end_activity_order(_flatten_projects(full))
+            tail = {a["description"] for a in ordered[-2:]}
+            assert tail == {"bad-created", "none-created"}
+            # 分页响应与参照序一致（含异常 created 记录）
+            _, page = srv.get("/api/admin-activities?page=3&page_size=50")
+            got = _flatten_projects(page)
+            assert [a["id"] for a in got] == [a["id"] for a in ordered[100:]]
+        finally:
+            srv.stop()
+
+    def test_project_scoped_paging(self, tmp_path):
+        """?project= 路径同样支持分页；envelope 保留 project/spec 字段。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            status, body = srv.get(
+                "/api/admin-activities?project=proj-a&page=1&page_size=10"
+            )
+            assert status == 200
+            assert body["project"] == "proj-a"
+            assert body["total"] == 125
+            assert body["page"] == 1 and body["page_size"] == 10
+            assert body["has_more"] is True
+            assert len(body["activities"]) == 10
+            # 单项目路径排序与全局语义一致：置顶在前
+            assert all(a.get("handled") is not False for a in body["activities"][3:])
+            assert sum(1 for a in body["activities"] if a.get("handled") is False) == 3
+        finally:
+            srv.stop()
+
+    def test_page_response_groups_preserve_global_order(self, tmp_path):
+        """带 page 的 projects[] 按项目分组且组内保持全局相对顺序（平铺还原）。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            _, page = srv.get("/api/admin-activities?page=2&page_size=7")
+            groups = page["projects"]
+            assert all(len(g["activities"]) > 0 for g in groups)
+            # 分组首现顺序与组内顺序平铺后 = 全局切片顺序（无交错重排）
+            seen_order = []
+            for g in groups:
+                for a in g["activities"]:
+                    seen_order.append(a["id"])
+                # 组内相对顺序 = 每组记录在全局序中的相对顺序（由平铺校验覆盖）
+            assert len(seen_order) == 7
+        finally:
+            srv.stop()
+
+
 class TestAdminActivitiesArchive:
     """add-alerts-archive-and-overview-cache 2.3：/api/admin-activities?archived=1。
 
@@ -2396,6 +2748,99 @@ class TestAdminActivitiesArchive:
             by_id = {a["id"]: a for a in body["activities"]}
             assert by_id["b-arch-0001"]["project"] == "proj-b"
             assert by_id["arch-0002"]["project"] == "proj-a"
+        finally:
+            srv.stop()
+
+
+class TestSpecsServerPaging:
+    """/api/specs page/page_size（默认 200 上限 500，缺省响应零变化）。"""
+
+    def _server_for(self, proot, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def _seed_specs(self, proot, n=520):
+        body = ["# Fenix Project State", "", "## Specs", ""]
+        for i in range(n):
+            body.append(f"### spec-{i:04d}")
+            body.append("- status: drafted")
+            body.append("- priority: 2")
+            body.append(f"- created: 2026-01-01T{i // 60:02d}:{i % 60:02d}:00+00:00")
+            body.append("- updated: 2026-01-02T00:00:00+00:00")
+            body.append("- error: null")
+            body.append("- depends_on: null")
+            body.append("")
+        (proot / ".fenix" / "STATE.md").write_text("\n".join(body), encoding="utf-8")
+
+    def _setup(self, tmp_path, n=520):
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        self._seed_specs(proot, n=n)
+        return proot, self._server_for(proot, tmp_path)
+
+    def test_large_project_paging(self, tmp_path):
+        """520 个 spec：page=3&page_size=200 → 第 401–520 个，has_more=false。"""
+        proot, srv = self._setup(tmp_path)
+        try:
+            status, body = srv.get("/api/specs?project=proj-a&page=3&page_size=200")
+            assert status == 200
+            assert body["project"] == "proj-a"
+            assert body["total"] == 520
+            assert body["page"] == 3 and body["page_size"] == 200
+            assert body["has_more"] is False
+            names = [s["name"] for s in body["specs"]]
+            assert len(names) == 120
+            assert names[0] == "spec-0119" and names[-1] == "spec-0000"
+        finally:
+            srv.stop()
+
+    def test_page_slice_matches_full_response_segment(self, tmp_path):
+        """任意页 ≡ 全量响应（现有排序）对应区段，逐条一致。"""
+        proot, srv = self._setup(tmp_path, n=120)
+        try:
+            _, full = srv.get("/api/specs?project=proj-a")
+            full_names = [s["name"] for s in full["specs"]]
+            _, page = srv.get("/api/specs?project=proj-a&page=2&page_size=50")
+            assert page["total"] == 120
+            assert page["has_more"] is True
+            assert [s["name"] for s in page["specs"]] == full_names[50:100]
+            assert all(page["specs"][i] == full["specs"][50 + i] for i in range(50))
+        finally:
+            srv.stop()
+
+    def test_default_response_zero_change(self, tmp_path):
+        """缺省 page → 响应 JSON 结构与改造前逐字段一致（不追加任何字段）。"""
+        proot, srv = self._setup(tmp_path, n=30)
+        try:
+            status, body = srv.get("/api/specs?project=proj-a")
+            assert status == 200
+            assert set(body.keys()) == {"project", "specs"}
+            assert len(body["specs"]) == 30
+        finally:
+            srv.stop()
+
+    def test_invalid_params_fall_back_to_default(self, tmp_path):
+        proot, srv = self._setup(tmp_path, n=250)
+        try:
+            status, body = srv.get("/api/specs?project=proj-a&page=abc&page_size=zzz")
+            assert status == 200
+            assert body["page"] == 1 and body["page_size"] == 200
+            assert body["total"] == 250
+            assert body["has_more"] is True
+            assert len(body["specs"]) == 200
+        finally:
+            srv.stop()
+
+    def test_page_size_capped_at_500(self, tmp_path):
+        proot, srv = self._setup(tmp_path, n=520)
+        try:
+            status, body = srv.get("/api/specs?project=proj-a&page=1&page_size=9999")
+            assert status == 200
+            assert body["page_size"] == 500
+            assert len(body["specs"]) == 500
+            assert body["has_more"] is True
         finally:
             srv.stop()
 

@@ -753,6 +753,70 @@ class SummaryIndex:
                     self._state_snapshot[key] = active_specs
             return out
 
+    def state_snapshot(self, proot) -> dict:
+        """复用索引的 STATE.md 解析快照（签名未变免重解析，变化即刷新）。
+
+        ETag 签名函数（如 /api/specs/<spec> 的条目存在性判定）廉价消费：
+        与 get() 同一失效键（STATE.md 签名）与同一快照缓存，不引入第二套
+        解析。返回活跃侧 {spec_name: entry}（与 _state_snapshot 同源）。
+        """
+        import core.dashboard.data as _facade
+
+        key = str(Path(proot).resolve())
+        with self._lock:
+            state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
+            state_changed = (
+                state_sig is not None and self._state_sigs.get(key) != state_sig
+            ) or (state_sig is None and key in self._state_sigs)
+            specs = self._state_snapshot.get(key)
+            if state_changed or specs is None:
+                specs = _facade.parse_state(proot)
+                self._state_snapshot[key] = specs
+                if state_sig is not None:
+                    self._state_sigs[key] = state_sig
+            return specs
+
+    def invalidation_signature(self, proot) -> str:
+        """摘要失效键组合哈希（/api/specs ETag 单源，add-dashboard-paging-and-etag 1.3）。
+
+        与 get() 逐 spec 失效键**完全同源**（_spec_dep_sigs + STATE/归档/runs
+        签名）：响应中任一摘要将被重算 ⇔ 此哈希翻转——签名完整性由复用同一
+        失效键集保证，不另建第二套扫描。复用 state/arch 解析快照（签名未变
+        不重解析），只 stat 不读内容；成本 ≈ get() 每请求本就支付的失效键
+        计算（per-spec sig 本就每次现算比对）。
+        """
+        from . import signature as _sigmod
+
+        # 经门面延迟解析（D8：tests 以 dash_data.parse_archived_state=… 替换生效）
+        import core.dashboard.data as _facade
+
+        proot = Path(proot)
+        key = str(proot.resolve())
+        with self._lock:
+            state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
+            # RLock 可重入：state_snapshot 复用同一把锁与同一失效键
+            specs = self.state_snapshot(proot)
+            arch_sig = _stat_sig(proot / ".fenix" / "STATE.archive.md")
+            if arch_sig != self._arch_sigs.get(key) or key not in self._arch_snapshot:
+                self._arch_snapshot[key] = _facade.parse_archived_state(proot)
+                self._arch_sigs[key] = arch_sig
+            runs_sigs = _runs_by_spec_sigs(proot)
+            per_spec = []
+            for spec_name, entry in specs.items():
+                sigs = _spec_dep_sigs(proot, spec_name, entry or {}, runs_sigs)
+                # 值含 (mtime_ns, size) 元组与 __entry__ 指纹串；键唯一，
+                # 排序只比键不比值（跨类型值不参与比较）
+                per_spec.append((spec_name, sorted((k, v) for k, v in sigs.items())))
+            per_spec.sort()
+            all_runs = sorted(
+                (str(p), s[0], s[1])
+                for d in runs_sigs.values()
+                for p, s in d.items()
+            )
+            return _sigmod.combine(
+                [("state", state_sig), ("arch", arch_sig), ("runs", all_runs), ("specs", per_spec)]
+            )
+
 
 # ── SPEC 生命周期时间轴 ──────────────────────────────────────────
 

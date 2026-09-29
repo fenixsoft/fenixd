@@ -94,6 +94,20 @@ function classifyHttpKind(status: number): ApiError['kind'] {
   return 'unknown';
 }
 
+// ── ETag 条件请求缓存（add-dashboard-paging-and-etag 3.1）──────────────
+// 模块级 Map<完整 URL（含 query）, {etag, data}>：GET 命中缓存时随请求携带
+// If-None-Match，服务端数据源未变回 304（空 body）时直接返回缓存数据——
+// 对调用方完全透明（仍拿到完整 T），省掉响应体传输与 JSON 解析。仅 200 且
+// 响应带 ETag 头时写缓存；304 判定先于 !res.ok（304 非 ok，误入错误分支会
+// 把「数据未变」报成失败）。生命周期 = 页面会话（刷新即清），数据源变更由
+// 服务端签名翻转兜底，无需手动失效。
+const etagCache = new Map<string, { etag: string; data: unknown }>();
+
+/** 测试钩子：清空 ETag 缓存（单测隔离用；生产代码勿调用）。 */
+export function _clearEtagCache(): void {
+  etagCache.clear();
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
@@ -135,10 +149,17 @@ async function request<T>(
   // 下方三处 catch 统一走本谓词；非 abort 异常仍归 'network' 不变。
   const isAbort = (e: unknown) =>
     (e as { name?: string })?.name === 'AbortError' || controller.signal.aborted;
+  // ETag 条件请求（add-dashboard-paging-and-etag 3.1）：仅无副作用的 GET 走
+  // 缓存通道——缓存命中时带 If-None-Match，304 在 !res.ok 判定**之前**短路
+  // 返回缓存数据（304 非 ok，落入错误分支会把「数据未变」误报失败）。
+  const isGet = (init?.method ?? 'GET').toUpperCase() === 'GET';
+  const cachedEntry = isGet ? etagCache.get(path) : undefined;
+  const reqHeaders = new Headers(init?.headers);
+  if (cachedEntry) reqHeaders.set('If-None-Match', cachedEntry.etag);
   try {
     let res: Response;
     try {
-      res = await fetch(path, { ...init, signal: controller.signal });
+      res = await fetch(path, { ...init, headers: reqHeaders, signal: controller.signal });
     } catch (e) {
       // 网络失败 / 超时区分（e49991904b1f）
       if (isAbort(e)) throw classifyAbort();
@@ -147,6 +168,9 @@ async function request<T>(
         0,
         'network',
       );
+    }
+    if (cachedEntry && res.status === 304) {
+      return cachedEntry.data as T;
     }
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
@@ -189,14 +213,22 @@ async function request<T>(
     if (!text) {
       throw new ApiError(`响应为空 body（HTTP ${res.status}）`, res.status, 'server');
     }
+    let data: T;
     try {
-      return JSON.parse(text) as T;
+      data = JSON.parse(text) as T;
     } catch {
       // 契约：本文件对外恒抛 ApiError（code-review item 29fcb06957b6）——
       // 裸 Error 会让按 e.kind/e.status 分支的调用方静默落空。200 但体非法
       // JSON 属服务端异常形态，归 'server'。
       throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）`, res.status, 'server');
     }
+    // 仅 200 且响应携带 ETag 头时写缓存（错误响应服务端本就不挂 ETag；
+    // 无 ETag 头的 GET 保持原行为，零副作用）。
+    if (isGet && res.status === 200) {
+      const etag = res.headers.get('ETag');
+      if (etag) etagCache.set(path, { etag, data });
+    }
+    return data;
   } finally {
     clearTimeout(timer);
     if (externalSignal) externalSignal.removeEventListener('abort', forwardExternalAbort);
@@ -279,12 +311,33 @@ export interface AdminActivitiesData {
   projects?: ProjectActivities[];
   project?: string;
   activities?: ActivityItem[];
+  spec?: string;
+  /** add-dashboard-paging-and-etag 2.1：带 page 请求时的服务端分页元数据
+      （total=过滤后总条数；projects[] 仅含当前页记录，按项目分组、组内保持
+      全局相对顺序）。缺省 page 请求不下发这些字段（向后兼容）。 */
+  total?: number;
+  page?: number;
+  page_size?: number;
+  has_more?: boolean;
+  /** ?project 不存在/未就绪时的**有意 200** 错误体（调用方按 error 分支） */
+  error?: string;
 }
 
-export async function getAdminActivities(project?: string, spec?: string): Promise<AdminActivitiesData> {
+/** 读取运维记录。page/pageSize 成对下发时走服务端分页（默认 50、上限 200，
+ *  跨项目全局排序后切片）；缺省时响应结构与改造前一致。 */
+export async function getAdminActivities(
+  project?: string,
+  spec?: string,
+  page?: number,
+  pageSize?: number,
+): Promise<AdminActivitiesData> {
   const q = new URLSearchParams();
   if (project) q.set('project', project);
   if (spec) q.set('spec', spec);
+  if (page != null && pageSize != null) {
+    q.set('page', String(page));
+    q.set('page_size', String(pageSize));
+  }
   const qs = q.toString();
   return request<AdminActivitiesData>(`/api/admin-activities${qs ? `?${qs}` : ''}`);
 }
