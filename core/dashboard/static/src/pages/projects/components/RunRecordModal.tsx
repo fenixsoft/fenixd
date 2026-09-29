@@ -16,6 +16,7 @@ export default function RunRecordModal({ runId, project, onClose }: RunRecordMod
       title={`运行记录 · ${runId ?? ''}`}
       open={!!runId}
       onCancel={onClose}
+      destroyOnHidden
       footer={null}
       width={MAXIMIZED_WIDTH}
       style={MAXIMIZED_MODAL_STYLE}
