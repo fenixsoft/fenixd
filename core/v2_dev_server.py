@@ -193,17 +193,18 @@ def start(
         raise V2DevServerError(f"failed to spawn dev-server: {e}")
 
     # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
-    # 连通成功后仍须确认本进程存活：allocate_port 的 bind 探测与 node 实际 bind
-    # 之间存在窗口，端口可能被他方进程抢注——node bind 失败已退出而 connect 握手
-    # 到的是他方 listener，误判就绪会把验证流量打到异码服务上。就绪后再延迟复查
-    # 一次存活：外部 listener 抢先应答时 node 往往尚未退出，瞬时快照 poll() 为
-    # None 仍会漏判，延迟数百毫秒可覆盖 node 启动/bind 失败退出的典型时长。
-    ready = _wait_ready(port, timeout=5.0, logger=logger)
-    if ready:
-        time.sleep(0.3)
-    if not ready or proc.poll() is not None:
-        # 启动但端口未就绪：视为失败，回收子进程，按端口冲突重试语义上抛。
-        _log("error", f"dev-server on port {port} not ready in 5s, killing")
+    # 连通成功后还须做实例身份收口：allocate_port 的 bind 探测与 node 实际 bind
+    # 之间存在窗口，端口可能被他方进程抢注——node bind 失败（已退出或僵而未死）
+    # 时 connect 握手由他方 listener 应答，仅凭连通会误判就绪、把验证流量打到
+    # 异码服务上。同一 addr:port 的 LISTEN socket 唯一（node 未用 SO_REUSEPORT），
+    # 核对端口 LISTEN inode 是否归属本进程 /proc/<pid>/fd 即可确定性判定应答者
+    # 身份，取代「延迟数百毫秒再看存活」的时长启发式（进程存活≠端口归它）。
+    ready = _wait_ready(port, timeout=5.0, logger=logger) and _port_listened_by(
+        port, proc
+    )
+    if not ready:
+        # 启动但端口未就绪/端口非本进程持有：视为失败，回收子进程，按端口冲突重试语义上抛。
+        _log("error", f"dev-server on port {port} not ready or port not served by it, killing")
         _kill(proc)
         raise V2DevServerError(f"dev-server on port {port} failed to become ready")
 
@@ -229,6 +230,54 @@ def _wait_ready(port: int, timeout: float = 5.0, logger=None) -> bool:
         finally:
             s.close()
     return False
+
+
+def _listen_inode(port: int) -> Optional[str]:
+    """取 port 当前 LISTEN socket 的 inode（/proc/net/tcp[6]；无监听返回 None）。
+
+    /proc/net/tcp 固定布局：local_address 形如 0100007F:4A38（IP:十六进制
+    端口）、第 4 列 st=0A 即 LISTEN、第 10 列为 socket inode。
+    """
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            try:
+                if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                    return fields[9]
+            except (IndexError, ValueError):
+                continue
+    return None
+
+
+def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -> bool:
+    """核对 port 上的 LISTEN socket 是否归属 proc（就绪判定的实例身份收口）。
+
+    _wait_ready 只证明「有 listener 应答」；若 allocate_port 的 bind 探测与
+    node 实际 bind 之间端口被抢注，应答者是他方进程、验证流量会打到异码服务。
+    同一 addr:port 不可能存在两个 LISTEN（node 未用 SO_REUSEPORT），故端口
+    LISTEN inode 出现在 proc 的 /proc/<pid>/fd 即证明应答者就是本实例，判定
+    与进程退出时机无关。就绪即命中通常首轮通过；短暂重试仅覆盖 node 尚在
+    bind 的窗口与 procfs 瞬时读失败，proc 已退出（bind 失败自灭）则立即判负。
+    """
+    deadline = time.time() + timeout
+    while True:
+        if proc.poll() is not None:
+            return False
+        inode = _listen_inode(port)
+        if inode is not None:
+            try:
+                fds = Path(f"/proc/{proc.pid}/fd").iterdir()
+                if any(os.readlink(fd) == f"socket:[{inode}]" for fd in fds):
+                    return True
+            except OSError:
+                pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.1)
 
 
 def _kill(proc: subprocess.Popen) -> None:
