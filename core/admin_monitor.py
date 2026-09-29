@@ -2262,7 +2262,6 @@ class AdminMonitor:
         )
         grace_minutes = max(STUCK_GRACE_MINUTES, self.interval_minutes * 2)
         silence_minutes = self._cfg_float("stuck_silence_minutes", 120)
-        runs_dir = self.project_root / ".fenix" / "runs"
         # D1：进程存活反证数据源——agent_runner 存在时取「进程仍存活」的
         # run_id 集（_running_agents 进程表为真相）；None（CLI/测试态）→
         # 跳过本检查、退回文件活跃度判据。延迟获取：轮内只算一次。
@@ -2295,11 +2294,13 @@ class AdminMonitor:
             elapsed_minutes = (now - updated.timestamp()) / 60
             if elapsed_minutes <= threshold_minutes:
                 continue
-            # D1 进程存活反证：run_id → spec 归属必须用 _spec_from_run_id
+            # D1 进程存活反证：run_id → spec 归属用 _spec_from_run_id
             # （本模块既有方法，正则 -(?:a|r)\d+ 同时覆盖 attempt 与 -r<n> 瞬态
-            # 重试后缀）。禁止 run_spec_part（run_files.py:66）：它只剥离 -a\d+，
-            # 对 <base>-a1-r1 返回 <base>-a1-r1 归属失败——正是 8e510a87 修复的
-            # -r<n> 根因形态，沿用会让「进程存活反证」在瞬态重试期间重新失效。
+            # 重试后缀）。run_spec_part（run_files.py）现已经
+            # strip_run_id_suffixes（RUN_ID_SUFFIX_RE = (-(?:a|r)\d+)+$）与本方法
+            # 同口径剥除 -a<n>/-r<n>（fix-robustness-edge-cases 1.0/1.2），两者
+            # 可互换；本处沿用 _spec_from_run_id 仅因其是既有实现且被测试直接
+            # 覆盖，非因 run_spec_part 缺陷（旧注释「只剥离 -a\d+」已失效）。
             if running_ids is not None and any(
                 self._spec_from_run_id(rid) == name for rid in running_ids
             ):
@@ -2308,7 +2309,7 @@ class AdminMonitor:
                     f"Skipping stuck for '{name}': alive run process(es) registered",
                 )
                 continue
-            if self._has_recent_progress(name, runs_dir, now, grace_minutes * 60):
+            if self._has_recent_progress(name, now, grace_minutes * 60):
                 continue
             # D3 处置后静默期：最近一条成功处置距 now < silence 窗口 → 跳过。
             # result=escalated（升级人工）不匹配 resolved/partially-resolved，
@@ -4703,7 +4704,13 @@ class AdminMonitor:
         except OSError:
             return "empty"
         last = None
-        for line in tail.splitlines():
+        # 窗口首行是从字节窗口切入的上一行残段，必须丢弃（对齐 liveness
+        # _file_tail_is_terminal 与 dashboard _read_run_lines 读取范式）；
+        # 仅 seek 分支丢弃——size <= 窗口时为全量读，首行完整。
+        lines = tail.split("\n")
+        if size > 4096:
+            lines = lines[1:]
+        for line in lines:
             line = line.strip()
             if not line:
                 continue
@@ -4722,7 +4729,7 @@ class AdminMonitor:
             return "error"
         return "running"
 
-    def _has_recent_progress(self, spec: str, runs_dir: Path, now: float, window: float) -> bool:
+    def _has_recent_progress(self, spec: str, now: float, window: float) -> bool:
         """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
 
         fix-recovery-path-blockers D1：与模块级 `_has_recent_spec_run` 同语义，
@@ -4730,11 +4737,10 @@ class AdminMonitor:
         处置 run 是处置者的活动，不是被处置 SPEC 的驱动证据。
 
         code-review item 43b4ca8a059e：扫描本体已并入模块级
-        `_has_recent_spec_run` 单一实现，本方法仅做参数适配
-        （runs_dir=<project_root>/.fenix/runs → project_root），勿再复制
-        第二份扫描体。
+        `_has_recent_spec_run` 单一实现，本方法仅做参数适配（直接传
+        project_root，勿从 runs_dir 路径组件反推），勿再复制第二份扫描体。
         """
-        return _has_recent_spec_run(runs_dir.parent.parent, spec, now, window)
+        return _has_recent_spec_run(self.project_root, spec, now, window)
 
     # ── 状态变更历史（抖动检测） ────────────────────────────────
 
