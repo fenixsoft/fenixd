@@ -56,7 +56,17 @@ class BBackoffMixin:
         - 序列耗尽仍持锁 → 发 dispatch_stalled 信号（severity major）上报，spec
           保持 ready 等待处置，不再自旋重试。
         """
-        spec = self._pm.state_machine.read_one(spec_name) or {}
+        spec = self._pm.state_machine.read_one(spec_name)
+        if not spec:
+            # 条目缺失/读取为空（并发删除场景，code-review item 978b9c796502）：
+            # 仿 _rollback_failed_dispatch 的同款守卫——仅 INFO 留痕后直接返回，
+            # 不再写退避元数据，也不对不存在的 spec 排程重试定时器。
+            self._pm.logger.info(
+                "pm_engine",
+                f"Dispatch lock conflict for '{spec_name}' — spec entry missing/"
+                f"empty, skipping backoff write and retry scheduling",
+            )
+            return
         try:
             count = int(spec.get("_lock_conflict_count", 0) or 0)
         except (TypeError, ValueError):
@@ -83,6 +93,12 @@ class BBackoffMixin:
         )
 
         if exhausted:
+            # 序列耗尽后不再排程任何恢复定时器——此处语义是等待人工处置而非
+            # 自动恢复（code-review item debc02bc8d43）。上方 update_spec 已写入
+            # 的 _dispatch_backoff_until 未来时刻在本分支不再对应任何重试，该
+            # 窗口同时有意承担探测器静默职责：_dispatch_backoffed/
+            # _dispatch_lock_conflict_pending 在窗内判「退避中」而早退，
+            # orphaned_state 等滞留探测随之静默；error 文案亦按等待人工口径记录。
             evidence = (
                 f"lock conflicts={count + 1} (backoff schedule {list(schedule)}s exhausted), "
                 f"last conflict at {spec.get('_last_lock_conflict_at') or 'n/a'}, "
