@@ -73,7 +73,16 @@ class FamilyGovernor:
         缺失会导致 SPEC 卡在 implementing 状态。此处生成最小可执行的 SPEC 文档。
         """
         spec_dir = self._pm.project_root / "spec" / "changes" / fix_spec_name
-        spec_dir.mkdir(parents=True, exist_ok=True)
+        # 目录创建纳入「写盘失败不抛穿」（与下方模板写入同口径）：磁盘满/
+        # 权限/非法路径的 OSError 不得穿透 _do_legacy_fix_spec_bug_found。
+        try:
+            spec_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fix SPEC 目录创建失败 '{fix_spec_name}'（非阻断，派生主链继续）: {e}",
+            )
+            return
 
         proposal = (
             f"# Proposal: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
