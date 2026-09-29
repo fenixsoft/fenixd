@@ -147,21 +147,14 @@ def items_path(project_root) -> Path:
     return evolution_dir(project_root) / "items.jsonl"
 
 
-def read_items(project_root) -> Dict[str, dict]:
-    """读取 ``.fenix/evolution/items.jsonl``，按 id 建索引返回 dict。
+def _parse_items_text(text: str) -> Dict[str, dict]:
+    """解析 items.jsonl 文本为 ``{id: record}``（read_items / _read_items_unlocked 共用）。
 
-    文件不存在按空集合处理；单行 JSON 损坏记 WARNING 后跳过（MUST NOT 让
-    整个读取失败——dashboard 列表端点依赖此容错）。TODO 2.2。
+    纯解析、无 IO 无锁（锁语义由各自外层读取函数表达）；单行 JSON 损坏记
+    WARNING 后跳过，非 dict / 缺 id 字段的行跳过。锁内/锁外两条读取路径的
+    解析口径由此唯一定义，避免两份实现改一漏一。
     """
-    path = items_path(project_root)
     out: Dict[str, dict] = {}
-    if not path.is_file():
-        return out
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        _logger.warning("evolution: 读取 items.jsonl 失败: %s", e)
-        return out
     for lineno, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
         if not line:
@@ -177,6 +170,23 @@ def read_items(project_root) -> Dict[str, dict]:
     return out
 
 
+def read_items(project_root) -> Dict[str, dict]:
+    """读取 ``.fenix/evolution/items.jsonl``，按 id 建索引返回 dict。
+
+    文件不存在按空集合处理；单行 JSON 损坏记 WARNING 后跳过（MUST NOT 让
+    整个读取失败——dashboard 列表端点依赖此容错）。TODO 2.2。
+    """
+    path = items_path(project_root)
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        _logger.warning("evolution: 读取 items.jsonl 失败: %s", e)
+        return {}
+    return _parse_items_text(text)
+
+
 def write_items(project_root, records: Iterable[dict]) -> None:
     """全量写回 items.jsonl（读-改-写 + flock + 原子替换展开见 upsert_items）。
 
@@ -185,6 +195,14 @@ def write_items(project_root, records: Iterable[dict]) -> None:
     当记录全部丢弃、全量写回空文件（既有条目全部丢失）。同一 id 只保留
     一条（后写覆盖先写）。
     """
+    # code-review item 0f1a54886379：把 docstring 契约变成运行期保证——
+    # 误传 id→记录 dict 时快速失败（TypeError），不留「静默清空全量条目、
+    # 既有条目全部丢失」的无告警数据丢失通道。
+    if isinstance(records, dict):
+        raise TypeError(
+            "write_items 期望记录的可迭代对象（逐条为含 id 字段的 dict），"
+            "不应传 id→记录 dict；如需全量写回请传 records.values()"
+        )
     recs: Dict[str, dict] = {}
     for rec in records:
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str):
@@ -226,26 +244,18 @@ def known_ids(project_root) -> set:
 
 
 def _read_items_unlocked(path: Path) -> Dict[str, dict]:
-    """锁内使用的 items.jsonl 读取（等价 read_items 但路径直传、不加锁）。"""
-    out: Dict[str, dict] = {}
+    """锁内使用的 items.jsonl 读取（等价 read_items 但路径直传、不加锁）。
+
+    行级解析与 read_items 共用 _parse_items_text（锁内/锁外读取口径不分叉），
+    锁语义仍由调用方的外层 _with_lock 表达——本函数 MUST NOT 加锁。
+    """
     if not path.is_file():
-        return out
+        return {}
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return out
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            _logger.warning("evolution: items.jsonl 第 %s 行 JSON 损坏已跳过", lineno)
-            continue
-        if isinstance(rec, dict) and isinstance(rec.get("id"), str):
-            out[rec["id"]] = rec
-    return out
+        return {}
+    return _parse_items_text(text)
 
 
 # ── 任务 2.3：水位 state.json 读写 ──────────────────────────────────
@@ -1130,7 +1140,11 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
             if state_machine is not None and candidate in state_machine.read_all():
                 return True
         except Exception as e:
-            _logger.warning("evolution: 读取 STATE 判定重名失败: %s", e)
+            # STATE 读取故障保守判冲突（fail-closed，code-review item
+            # bc6af1b9fe13）：视为已占用，走加后缀重试 / 返回 None 立项失败的
+            # 路径，而非放行后 add_spec 覆盖既有同名 STATE 条目的状态。
+            _logger.warning("evolution: 读取 STATE 判定重名失败，保守按冲突处理: %s", e)
+            return True
         # 归档清单并入撞名检查（add-archive-state-migration 3.3）：条目已迁出
         # 的 SPEC 名同样不可复用——复用会与 spec/archive/ 下既有归档目录产生
         # 归属歧义（resolve_spec_dir 归档回退按名解析）。
