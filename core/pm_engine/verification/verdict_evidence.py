@@ -9,14 +9,11 @@ verified 结果持久化门禁。纯结构搬移，零行为变化。
 
 import json
 import os
-import re
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
-from core.verify_engine.judge_files import ATTRIBUTION_STATUS_ACCEPT, ATTRIBUTION_STATUS_REQUEUE
 
 from typing import Optional
 
@@ -58,6 +55,13 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
                 old_cls = sc.get("classification")
                 sc["classification"] = new_cls
                 sc["blank_direction_forced"] = True
+                # 门禁改写哨兵（code-review item 30bb5f1fcd28）：标记 report
+                # 已被门禁原地改写，供 _adopt_report 把「发生改写」纳入写回
+                # 条件——首轮合规路径 save_on_corrected_only=True 只认
+                # mapping["corrected"]，而 env 方向不触发任何 status 映射改写，
+                # 缺此哨兵时改写只留内存/日志，report.json 保留原分类，本轮
+                # 后续处置链（_read_verdict / 报告渲染 / env 校验）全部看不到。
+                report["_gate_mutated"] = True
                 pipeline._context.logger.info(
                     "pm_engine",
                     f"白屏方向约束{lane_label}'{spec_name}' 场景 "
@@ -237,12 +241,18 @@ def _adopt_report(
     首轮合规路径传入既有「裁决映射强制重写 …（含 classification）」文案，
     保持首轮日志逐字不变（code-review 5c68aa4d6b82：采纳收口三处单源）。
 
-    ``save_on_corrected_only`` 为真时仅映射确有改写才写回 report.json
-    （首轮既有行为：无改写零写入）；缺省 False 恒写回（重试轮/重合成轮
-    既有行为：回灌产物连同分级门改写一并落盘）。
+    ``save_on_corrected_only`` 为真时仅「映射确有改写或归因分级门发生改写
+    （_gate_mutated 哨兵，如白屏方向约束强制 env）」才写回 report.json
+    （首轮既有行为「无改写零写入」的扩展，code-review item 30bb5f1fcd28：
+    门禁改写 MUST 落盘，否则磁盘态与采纳分类不一致）；缺省 False 恒写回
+    （重试轮/重合成轮既有行为：回灌产物连同分级门改写一并落盘）。
     """
     from core.verdict_check import enforce_status_mapping, save_report
 
+    # 摘除门禁改写哨兵（30bb5f1fcd28）：哨兵只作本轮写回判定用，MUST NOT
+    # 随 report 落进裁决缓存/磁盘——摘除先于 _persist_verdict_cache 与
+    # save_report。
+    gate_mutated = bool(report.pop("_gate_mutated", False))
     pipeline._clear_verdict_violations(spec_name)
     pipeline._clear_resynthesis_directive(spec_name)
     pipeline._clear_requeue_manifest(spec_name)
@@ -252,7 +262,7 @@ def _adopt_report(
     # 的矛盾场景须以改写后的 failed 入缓存，不得先以 PASS 条目（四元组齐全）
     # 落进缓存、靠读侧上轮 report 复核兜底。
     pipeline._persist_verdict_cache(spec_name, report)
-    if mapping["corrected"] or not save_on_corrected_only:
+    if mapping["corrected"] or gate_mutated or not save_on_corrected_only:
         try:
             save_report(pipeline._context.project_root, spec_name, report)
         except OSError as e:
@@ -810,8 +820,34 @@ def _handle_attr_dedup_rejection(
     )
 
     prior = pipeline._read_resynthesis_directive(spec_name)
-    prior_attempts = int(prior.get("resynthesis_attempts") or 0) if isinstance(prior, dict) else 0
-    rejection_round = int(prior.get("rejection_round") or 0) if isinstance(prior, dict) else 0
+    # 计数字段就地兜 0（code-review item 49821e0ef973）：directive 文件被人工
+    # 编辑/外部工具写坏（非数值串）时 int() 抛错，沿拒绝闭环折算成
+    # cause=requeue_error；而该文件仅在被采纳或预算耗尽升级时清除，升级又
+    # 位于解析之后——损坏条目会让每一轮都在同一处失败，spec 反复
+    # requeue_error 停滞直到 stuck 兜底。就地按 0 兜底并 warning 留痕，
+    # 计数自本轮重新累计，闭环保持自愈。
+    if isinstance(prior, dict):
+        try:
+            prior_attempts = int(prior.get("resynthesis_attempts") or 0)
+        except (TypeError, ValueError):
+            prior_attempts = 0
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
+                f"resynthesis_attempts={prior.get('resynthesis_attempts')!r}",
+            )
+        try:
+            rejection_round = int(prior.get("rejection_round") or 0)
+        except (TypeError, ValueError):
+            rejection_round = 0
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
+                f"rejection_round={prior.get('rejection_round')!r}",
+            )
+    else:
+        prior_attempts = 0
+        rejection_round = 0
     rejection_round += 1
 
     # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）

@@ -55,8 +55,6 @@ def _judge_verify_round(pipeline, spec_name: str) -> int:
 
 def _judge_report_mtime_ns(pipeline, spec_name: str):
     """当前 report.json mtime_ns（判定上下文指纹）；缺失返回 None。"""
-    from pathlib import Path
-
     p = (
         Path(pipeline._context.project_root)
         / ".fenix"
@@ -289,6 +287,17 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
     """
     from core.verify_report import is_verdict_stable, read_verdict_stability
 
+    # 轮内停派已生效的判定不再计入全局重跑数（code-review item 5cb6790efc98）：
+    # _judge_round_escalated 置位后，每次 stuck 兜底/重试重入本 gate 都不会再
+    # 实际派发；若仍无条件 delta=1，judge_rerun_count 很快越过 _MAX_JUDGE_RERUNS
+    # 触发 _judge_hard_cap_freeze——与轮内停派「spec 保持 testing 可重试、
+    # MUST NOT 冻结」的承诺直接冲突（人工面对的是需 unfreeze 的冻结态而非
+    # 可重试 testing）。经 _judge_round_state 读旗标：轮次/判定上下文变化时
+    # 它自动重置 escalated=False，合法新执行轮照常恢复计数与派发；已停派则
+    # 直接让位返回，计数停增（首次升级告警已由置位时的 _judge_round_escalate
+    # 发出，此处不复读避免逐次重复告警）。
+    if _judge_round_state(pipeline, spec_name)["escalated"]:
+        return False
     count = pipeline._judge_rerun_count(spec_name, delta=1)
     if count > _MAX_JUDGE_RERUNS:
         pipeline._judge_hard_cap_freeze(spec_name, count)
