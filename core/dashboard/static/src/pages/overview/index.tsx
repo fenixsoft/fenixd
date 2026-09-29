@@ -2,7 +2,7 @@ import { PageContainer } from '@ant-design/pro-components';
 import { Alert, Button, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useModel } from '@umijs/max';
-import { getOverview } from '@/services/dashboard';
+import { getOverview, STREAM_URL } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
 import AlertBanner from './components/AlertBanner';
 import IntroduceRow from './components/IntroduceRow';
@@ -85,7 +85,7 @@ export default function OverviewPage() {
       if (document.visibilityState === 'visible') void load();
     };
     document.addEventListener('visibilitychange', onVisible);
-    const es = new EventSource('/api/stream');
+    const es = new EventSource(STREAM_URL);
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
       try {
