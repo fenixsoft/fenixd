@@ -265,7 +265,16 @@ function HelpMenu({ docs, currentDoc, onDocChange }: {
           key={d.name}
           className={`help-menu-item${d.name === currentDoc ? ' active' : ''}`}
           aria-current={d.name === currentDoc ? 'page' : undefined}
+          role="button"
+          tabIndex={0}
           onClick={() => onDocChange(d.name)}
+          onKeyDown={(e) => {
+            // 键盘可达：Enter/Space 等价点击；Space 需阻止默认滚动页面
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onDocChange(d.name);
+            }
+          }}
         >
           {d.title}
         </li>

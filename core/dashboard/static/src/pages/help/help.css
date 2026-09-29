@@ -25,6 +25,11 @@
   background: rgba(0, 0, 0, 0.06);
 }
 
+.help-menu-item:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+}
+
 .help-menu-item.active {
   background: #e6f4ff;
   color: #1677ff;
