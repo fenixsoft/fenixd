@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- 2026-09-15 fix-verify-contract-signal-semantics — 新增服务端在途信号去重与前端同步防重入锁（此前竞态窗口内双击产生双信号、双串行 admin run）
+- [2026-09-15 fix-verify-contract-signal-semantics](spec/archive/2026-09-15-fix-verify-contract-signal-semantics/) — 新增服务端在途信号去重与前端同步防重入锁（此前竞态窗口内双击产生双信号、双串行 admin run）

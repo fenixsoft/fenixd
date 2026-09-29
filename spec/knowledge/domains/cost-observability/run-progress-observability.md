@@ -11,4 +11,4 @@
 
 ## 溯源
 
-- 2026-09-09 2026-09-09-fix-implementer-task-progress — 新增 `run_progress` 实时进度字段与「快照主刻度 + run 完成线索」并行展示，解决 TaskCreate 归并无编号时进度全盲。
+- [2026-09-09 2026-09-09-fix-implementer-task-progress](spec/archive/2026-09-09-fix-implementer-task-progress/) — 新增 `run_progress` 实时进度字段与「快照主刻度 + run 完成线索」并行展示，解决 TaskCreate 归并无编号时进度全盲。

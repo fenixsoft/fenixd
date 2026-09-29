@@ -24,5 +24,5 @@
 
 ## 溯源
 
-- 2026-09-19 2026-09-19-add-spec-review-gate — 新增结论消费与恢复：机械收口三分支、未完成重试与 3 次上限、两类 blocked 前缀、人工恢复双路径与开放条件、Dashboard/CLI 入口
-- 2026-09-24 2026-09-24-fix-spec-review-blocking-dispatch — 评审异步化：派发队列 worker 执行与四步链同栈闭合、重试经队列且先清锚点、worker 异常统一回滚、评审不占实现并发槽位且无并发上限
+- [2026-09-19 2026-09-19-add-spec-review-gate](spec/archive/2026-09-19-add-spec-review-gate/) — 新增结论消费与恢复：机械收口三分支、未完成重试与 3 次上限、两类 blocked 前缀、人工恢复双路径与开放条件、Dashboard/CLI 入口
+- [2026-09-24 2026-09-24-fix-spec-review-blocking-dispatch](spec/archive/2026-09-24-fix-spec-review-blocking-dispatch/) — 评审异步化：派发队列 worker 执行与四步链同栈闭合、重试经队列且先清锚点、worker 异常统一回滚、评审不占实现并发槽位且无并发上限

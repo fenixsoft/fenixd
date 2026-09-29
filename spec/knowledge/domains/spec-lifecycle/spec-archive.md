@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-02 2026-09-02-integrate-openspec-native — 新增原生归档命令与 fenix-archive skill：目录移动与防覆盖、未完成任务提示不阻塞
+- [2026-09-02 2026-09-02-integrate-openspec-native](spec/archive/2026-09-02-integrate-openspec-native/) — 新增原生归档命令与 fenix-archive skill：目录移动与防覆盖、未完成任务提示不阻塞

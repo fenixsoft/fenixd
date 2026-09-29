@@ -15,4 +15,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：配置页页签化：Provider/Agent 分配/审批模式/Administrator 分页签管理；重进页签重新绑定不串数据
-- 2026-09-02 improve-config-ui-tabs — 固化 4 页签划分与段对应关系、跨页签表单状态保留、全页签序列化保存、横幅常驻可见与页签纯前端态语义
+- [2026-09-02 improve-config-ui-tabs](spec/archive/2026-09-02-improve-config-ui-tabs/) — 固化 4 页签划分与段对应关系、跨页签表单状态保留、全页签序列化保存、横幅常驻可见与页签纯前端态语义

@@ -14,4 +14,4 @@ thinking 折叠头带时长与内容预览、全局思考显示开关（含无�
 
 ## 溯源
 
-- 2026-09-27 2026-09-27-add-run-record-readability — 新增 thinking 折叠头时长/预览、全局思考开关与无正文兜底、运行记录「加载更早事件」向前分页与总量计数、后端窗口化读取参数。
+- [2026-09-27 2026-09-27-add-run-record-readability](spec/archive/2026-09-27-add-run-record-readability/) — 新增 thinking 折叠头时长/预览、全局思考开关与无正文兜底、运行记录「加载更早事件」向前分页与总量计数、后端窗口化读取参数。

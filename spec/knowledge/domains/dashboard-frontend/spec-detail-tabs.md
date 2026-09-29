@@ -13,4 +13,4 @@ SPEC 详情页长区块的页签化组织与顶部常驻区块布局。
 
 ## 溯源
 
-- 2026-09-02 improve-dashboard-sections — 详情页四长区块页签化（默认时间轴、纯前端选中态刷新保持、空数据页签占位）与顶部三区块常驻契约
+- [2026-09-02 improve-dashboard-sections](spec/archive/2026-09-02-improve-dashboard-sections/) — 详情页四长区块页签化（默认时间轴、纯前端选中态刷新保持、空数据页签占位）与顶部三区块常驻契约

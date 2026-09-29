@@ -15,4 +15,4 @@ merge-back 冲突 repair 的完成判定以分支 git 事实为准，「提交�
 
 ## 溯源
 
-- 2026-09-21 2026-09-21-fix-repair-commit-enforcement — 新建本页：repair 成功以分支 git 事实三复核为准、回退上下文注入具体未完成事实、提交先于测试的强制终点、测试范围收敛定向回归、开场清理残留 merge 现场。
+- [2026-09-21 2026-09-21-fix-repair-commit-enforcement](spec/archive/2026-09-21-fix-repair-commit-enforcement/) — 新建本页：repair 成功以分支 git 事实三复核为准、回退上下文注入具体未完成事实、提交先于测试的强制终点、测试范围收敛定向回归、开场清理残留 merge 现场。

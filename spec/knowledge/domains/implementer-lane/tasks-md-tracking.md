@@ -17,4 +17,4 @@ tasks.md 任务清单可跟踪性的三层治理：写入端分组标题格式�
 
 ## 溯源
 
-- 2026-09-10 2026-09-10-task-track — 分组标题 `## <编号>. <标题>` MUST 契约写入生成指引；drafted→ready 可解析性 lint（0 分组拒晋升、fail-open）；CLI 警告行、dashboard `tasks_note` 字段与前端 warning 空态提示落地
+- [2026-09-10 2026-09-10-task-track](spec/archive/2026-09-10-task-track/) — 分组标题 `## <编号>. <标题>` MUST 契约写入生成指引；drafted→ready 可解析性 lint（0 分组拒晋升、fail-open）；CLI 警告行、dashboard `tasks_note` 字段与前端 warning 空态提示落地

@@ -17,4 +17,4 @@
 
 ## 溯源
 
-- 2026-09-14 2026-09-14-add-draft-promotion-gate — 新增草稿晋升门控：`gates.promote_mode` 配置、manual 闸口全路径覆盖与零副作用语义、切回 auto 的存量恢复、设置页单选
+- [2026-09-14 2026-09-14-add-draft-promotion-gate](spec/archive/2026-09-14-add-draft-promotion-gate/) — 新增草稿晋升门控：`gates.promote_mode` 配置、manual 闸口全路径覆盖与零副作用语义、切回 auto 的存量恢复、设置页单选

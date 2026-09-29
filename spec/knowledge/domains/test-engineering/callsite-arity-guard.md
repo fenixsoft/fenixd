@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-20 add-control-plane-silent-failure-guards — 新增静态 arity 守卫：唯一签名保守判定、变长/关键字补足不误报、最小粒度白名单与候选集自检；落地实证白名单外违规数为 0
+- [2026-09-20 add-control-plane-silent-failure-guards](spec/archive/2026-09-20-add-control-plane-silent-failure-guards/) — 新增静态 arity 守卫：唯一签名保守判定、变长/关键字补足不误报、最小粒度白名单与候选集自检；落地实证白名单外违规数为 0

@@ -11,4 +11,4 @@
 
 ## 溯源
 
-- 2026-09-15 fix-frozen-scenario-orphan-reservoir — 新增三文件写端结构校验门、补齐占位改弃场景、持久化集加载净化（此前写端零校验，补齐路径自己写入结构性非法占位条目、持久化集成为孤儿跨轮复活的感染储库）
+- [2026-09-15 fix-frozen-scenario-orphan-reservoir](spec/archive/2026-09-15-fix-frozen-scenario-orphan-reservoir/) — 新增三文件写端结构校验门、补齐占位改弃场景、持久化集加载净化（此前写端零校验，补齐路径自己写入结构性非法占位条目、持久化集成为孤儿跨轮复活的感染储库）

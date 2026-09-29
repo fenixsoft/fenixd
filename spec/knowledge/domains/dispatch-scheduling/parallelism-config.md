@@ -16,4 +16,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：max_concurrent 并行度经 Dashboard 配置并热更新生效；可选字段不强制存在
-- 2026-09-02 2026-09-02-add-parallelism — 明确 `agents.max_concurrent` 的并行度语义、正整数校验与模板注释说明；Dashboard 配置页接入可视化编辑（复用 GET/POST /api/config，保存保留其余子键、非法值 400 不写盘）。
+- [2026-09-02 2026-09-02-add-parallelism](spec/archive/2026-09-02-add-parallelism/) — 明确 `agents.max_concurrent` 的并行度语义、正整数校验与模板注释说明；Dashboard 配置页接入可视化编辑（复用 GET/POST /api/config，保存保留其余子键、非法值 400 不写盘）。

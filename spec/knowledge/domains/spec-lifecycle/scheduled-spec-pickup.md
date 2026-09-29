@@ -21,8 +21,8 @@ SPEC 携带 `start_after` 锚点，在指定时间前不被自动推进调度；
 
 ## 溯源
 
-- 2026-09-12 2026-09-12-add-spec-scheduling-controls — 新增定时拾取：fenix-new 时间参数、调度器跳过与到期恢复、Dashboard 倒计时与修改、字段格式与边界语义
-- 2026-09-23 2026-09-23-add-spec-manual-activation — 哨兵值 `manual` 接入取值域：待激活展示与写侧、读侧不折叠 null、终态字段保护
-- 2026-09-24 2026-09-24-add-start-after-scope-config — 门控入口分两类：实现派发口无条件覆盖，晋升/评审入口受 scope 条件覆盖；恢复与扫描统一受门约束
-- 2026-09-24 2026-09-24-fix-start-after-premature-pickup — 增补人工放行不受门拦截、内部直调通道覆盖边界（以 handler 入口为界）、实时评估与到期接力延迟口径
-- 2026-09-25 2026-09-25-fix-scheduling-kick-single-slot — 到期接力改经即时唤醒信号并区分成败口径：成功秒级唤起，失败退扫描兜底且必须如实回报
+- [2026-09-12 2026-09-12-add-spec-scheduling-controls](spec/archive/2026-09-12-add-spec-scheduling-controls/) — 新增定时拾取：fenix-new 时间参数、调度器跳过与到期恢复、Dashboard 倒计时与修改、字段格式与边界语义
+- [2026-09-23 2026-09-23-add-spec-manual-activation](spec/archive/2026-09-23-add-spec-manual-activation/) — 哨兵值 `manual` 接入取值域：待激活展示与写侧、读侧不折叠 null、终态字段保护
+- [2026-09-24 2026-09-24-add-start-after-scope-config](spec/archive/2026-09-24-add-start-after-scope-config/) — 门控入口分两类：实现派发口无条件覆盖，晋升/评审入口受 scope 条件覆盖；恢复与扫描统一受门约束
+- [2026-09-24 2026-09-24-fix-start-after-premature-pickup](spec/archive/2026-09-24-fix-start-after-premature-pickup/) — 增补人工放行不受门拦截、内部直调通道覆盖边界（以 handler 入口为界）、实时评估与到期接力延迟口径
+- [2026-09-25 2026-09-25-fix-scheduling-kick-single-slot](spec/archive/2026-09-25-fix-scheduling-kick-single-slot/) — 到期接力改经即时唤醒信号并区分成败口径：成功秒级唤起，失败退扫描兜底且必须如实回报

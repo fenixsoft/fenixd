@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-13 fix-mobile-touch-disclosure — 建立移动端长摘要折叠/展开契约（>300 字符阈值、安全信息豁免折叠）并为 Timeline items 补稳定 key
+- [2026-09-13 fix-mobile-touch-disclosure](spec/archive/2026-09-13-fix-mobile-touch-disclosure/) — 建立移动端长摘要折叠/展开契约（>300 字符阈值、安全信息豁免折叠）并为 Timeline items 补稳定 key

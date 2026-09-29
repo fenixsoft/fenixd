@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-14 2026-09-14-add-draft-promotion-gate — 新增人工放行通道：共享晋升函数与幂等防御、Dashboard API 与按钮、CLI promote 命令、晋升后 daemon 感知派发
+- [2026-09-14 2026-09-14-add-draft-promotion-gate](spec/archive/2026-09-14-add-draft-promotion-gate/) — 新增人工放行通道：共享晋升函数与幂等防御、Dashboard API 与按钮、CLI promote 命令、晋升后 daemon 感知派发

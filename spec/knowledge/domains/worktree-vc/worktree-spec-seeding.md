@@ -13,4 +13,4 @@ worktree 创建时把 SPEC 上下文（spec 目录与任务清单）播种进隔
 ## 溯源
 
 - 史前复原（存量基线） — worktree 创建时播种 SPEC 上下文（spec 目录与任务清单），implementer 在 worktree 内直接可做；Popen 须显式传 worktree cwd
-- 2026-09-02 fix-worktree-spec-seeding — 固化条件播种语义（分支未含才播、`[fenix] spec:` 提交）、播种失败不阻塞创建、实现变更归属隔离分支不污染主工作树
+- [2026-09-02 fix-worktree-spec-seeding](spec/archive/2026-09-02-fix-worktree-spec-seeding/) — 固化条件播种语义（分支未含才播、`[fenix] spec:` 提交）、播种失败不阻塞创建、实现变更归属隔离分支不污染主工作树

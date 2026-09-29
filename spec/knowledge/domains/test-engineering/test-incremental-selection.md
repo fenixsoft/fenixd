@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-08 refactor-test-structure — 新建 AST 推导的增量选择入口与 test_map.yaml 显式映射，完成巨型测试文件按主题拆分（依赖 refactor-core-packages、refactor-test-callsites）
+- [2026-09-08 refactor-test-structure](spec/archive/2026-09-08-refactor-test-structure/) — 新建 AST 推导的增量选择入口与 test_map.yaml 显式映射，完成巨型测试文件按主题拆分（依赖 refactor-core-packages、refactor-test-callsites）

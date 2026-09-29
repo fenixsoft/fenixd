@@ -17,5 +17,5 @@ Dashboard 以自动扫描为主、显式注册为辅发现被监控项目，支�
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：watcher 周期扫描注册表发现项目并接入监控；移除后缓存须失效防写后读盲区
-- 2026-09-02 add-multi-project-monitoring — 确立自动扫描为主（默认扫描主目录一级子目录，当时判据为 STATE.md+config.yaml 双文件）、显式注册为辅、`--remove-project` 移除与去重
-- 2026-09-18 fix-dashboard-fault-isolation — 识别判据收窄为仅 `.fenix/STATE.md`；逐子目录/逐扫描根异常隔离；`ignored` 过滤前置于探测（软删除对不可读路径生效）；跳过落 WARNING、UI 静默；发现缓存异常保留上次结果不逐请求重炸
+- [2026-09-02 add-multi-project-monitoring](spec/archive/2026-09-02-add-multi-project-monitoring/) — 确立自动扫描为主（默认扫描主目录一级子目录，当时判据为 STATE.md+config.yaml 双文件）、显式注册为辅、`--remove-project` 移除与去重
+- [2026-09-18 fix-dashboard-fault-isolation](spec/archive/2026-09-18-fix-dashboard-fault-isolation/) — 识别判据收窄为仅 `.fenix/STATE.md`；逐子目录/逐扫描根异常隔离；`ignored` 过滤前置于探测（软删除对不可读路径生效）；跳过落 WARNING、UI 静默；发现缓存异常保留上次结果不逐请求重炸

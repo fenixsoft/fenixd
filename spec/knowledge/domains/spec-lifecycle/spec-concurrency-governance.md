@@ -18,5 +18,5 @@
 
 ## 溯源
 
-- 2026-09-24 2026-09-24-evo-spec-concurrency-flight-guard — 新增并发治理：审核收尾回退守卫、派发前在飞评审校验（双入口）、合并收尾 ready 态补记兜底与非实现合并不触发
-- 2026-09-24 2026-09-24-fix-spec-review-blocking-dispatch — 评审异步化后的单飞守卫补全：`_active_reviews` + `reviewer_run` 双判据、在飞判据前置覆盖入队窗口、陈旧锚点语义收窄
+- [2026-09-24 2026-09-24-evo-spec-concurrency-flight-guard](spec/archive/2026-09-24-evo-spec-concurrency-flight-guard/) — 新增并发治理：审核收尾回退守卫、派发前在飞评审校验（双入口）、合并收尾 ready 态补记兜底与非实现合并不触发
+- [2026-09-24 2026-09-24-fix-spec-review-blocking-dispatch](spec/archive/2026-09-24-fix-spec-review-blocking-dispatch/) — 评审异步化后的单飞守卫补全：`_active_reviews` + `reviewer_run` 双判据、在飞判据前置覆盖入队窗口、陈旧锚点语义收窄

@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-15 fix-verdict-retry-misattribution — 确立 violations 明细入告警、STATE error 按 cause 生成、fail_history.json 失败历史侧车、升级告警失败分型与轮间 diff、双轮次口径限定词
+- [2026-09-15 fix-verdict-retry-misattribution](spec/archive/2026-09-15-fix-verdict-retry-misattribution/) — 确立 violations 明细入告警、STATE error 按 cause 生成、fail_history.json 失败历史侧车、升级告警失败分型与轮间 diff、双轮次口径限定词

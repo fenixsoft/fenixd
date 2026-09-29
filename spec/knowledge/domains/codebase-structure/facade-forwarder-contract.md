@@ -25,5 +25,5 @@
 
 ## 溯源
 
-- 2026-09-22 2026-09-22-refactor-facade-delegation — 确立三大门面纯转发方法收敛契约：纯转发判据与 stdlib 例外、静态式转发的类级别名保留边界、调用点与 patch 语义兼容、双份签名消除的验收口径
-- 2026-09-29 2026-09-29-evo-fix-pm-facade-drift-forwarder-contract — 登记漂移预分类转发条目（`_preclassify_drift → ("_dispatcher", "_preclassify_drift")`，修复该调用点运行时 AttributeError 整轮回滚）；新增门面调用点覆盖性契约硬门（AST 正扫 + 目录分桶 + 悬空反向断言 + 显式豁免），三张同构注册表同门守护
+- [2026-09-22 2026-09-22-refactor-facade-delegation](spec/archive/2026-09-22-refactor-facade-delegation/) — 确立三大门面纯转发方法收敛契约：纯转发判据与 stdlib 例外、静态式转发的类级别名保留边界、调用点与 patch 语义兼容、双份签名消除的验收口径
+- [2026-09-29 2026-09-29-evo-fix-pm-facade-drift-forwarder-contract](spec/archive/2026-09-29-evo-fix-pm-facade-drift-forwarder-contract/) — 登记漂移预分类转发条目（`_preclassify_drift → ("_dispatcher", "_preclassify_drift")`，修复该调用点运行时 AttributeError 整轮回滚）；新增门面调用点覆盖性契约硬门（AST 正扫 + 目录分桶 + 悬空反向断言 + 显式豁免），三张同构注册表同门守护

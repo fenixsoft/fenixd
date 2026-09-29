@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- 2026-09-21 2026-09-21-evo-infra-failure-budget-exempt — 新增 infra/product/unknown 三态失败归因、infra 预算事后补偿、闸门按分类记账与历史误计轮次回拨。
+- [2026-09-21 2026-09-21-evo-infra-failure-budget-exempt](spec/archive/2026-09-21-evo-infra-failure-budget-exempt/) — 新增 infra/product/unknown 三态失败归因、infra 预算事后补偿、闸门按分类记账与历史误计轮次回拨。

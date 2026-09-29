@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-13 fix-mobile-overview-tiles — 建立统计卡移动端单标题/收紧内边距/数字换行与项目清单卡头两行、搜索框全宽的密度契约
+- [2026-09-13 fix-mobile-overview-tiles](spec/archive/2026-09-13-fix-mobile-overview-tiles/) — 建立统计卡移动端单标题/收紧内边距/数字换行与项目清单卡头两行、搜索框全宽的密度契约

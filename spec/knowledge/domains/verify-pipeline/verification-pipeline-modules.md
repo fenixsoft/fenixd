@@ -16,4 +16,4 @@
 ## 溯源
 
 - 史前复原（存量基线） — 验证管线按 engine/browser/assertions/scenarios/visual_diff 分模块组织，模块边界即能力边界，改动不跨层直插
-- 2026-09-21 refactor-verification-module — 将 6304 行单文件 verification.py 拆为职责子包并引入 PipelineContext 显式注入，固化门面兼容、patch 语义保持与两阶段重构纪律
+- [2026-09-21 refactor-verification-module](spec/archive/2026-09-21-refactor-verification-module/) — 将 6304 行单文件 verification.py 拆为职责子包并引入 PipelineContext 显式注入，固化门面兼容、patch 语义保持与两阶段重构纪律

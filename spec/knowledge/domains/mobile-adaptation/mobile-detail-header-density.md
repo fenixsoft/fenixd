@@ -12,4 +12,4 @@ spec 详情页头部在移动端的层级压缩契约：隐藏顶栏全局面包
 
 ## 溯源
 
-- 2026-09-13 fix-mobile-touch-disclosure — 建立顶栏全局面包屑移动端隐藏（`global-header-crumb` 锚点）与详情标题 Space `wrap` 防溢出契约
+- [2026-09-13 fix-mobile-touch-disclosure](spec/archive/2026-09-13-fix-mobile-touch-disclosure/) — 建立顶栏全局面包屑移动端隐藏（`global-header-crumb` 锚点）与详情标题 Space `wrap` 防溢出契约

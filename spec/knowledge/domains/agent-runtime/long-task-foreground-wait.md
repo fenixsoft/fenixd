@@ -17,4 +17,4 @@
 
 ## 溯源
 
-- 2026-09-25 fix-agent-lane-efficiency — 新增长任务前台有界等待契约（一次后台启动、等待/并行独立工作、有界入口优先），区分后台 Bash 完成通知与 ScheduleWakeup 两类后台能力
+- [2026-09-25 fix-agent-lane-efficiency](spec/archive/2026-09-25-fix-agent-lane-efficiency/) — 新增长任务前台有界等待契约（一次后台启动、等待/并行独立工作、有界入口优先），区分后台 Bash 完成通知与 ScheduleWakeup 两类后台能力

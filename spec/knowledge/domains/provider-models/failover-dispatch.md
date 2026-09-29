@@ -15,4 +15,4 @@ attempt 失败后的链推进决策与留痕：切换类错误驱动候选链前
 
 ## 溯源
 
-- 2026-09-02 add-provider-failover — 建立切换类错误分类、链推进与全链冷却失败语义，以及 provider_marker / provider switched / 高频告警三件可观测契约
+- [2026-09-02 add-provider-failover](spec/archive/2026-09-02-add-provider-failover/) — 建立切换类错误分类、链推进与全链冷却失败语义，以及 provider_marker / provider switched / 高频告警三件可观测契约

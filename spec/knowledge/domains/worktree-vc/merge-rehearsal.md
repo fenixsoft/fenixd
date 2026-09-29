@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-11 add-merge-tree-rehearsal — 新增真合并前只读预演闸、语义冲突零污染直通 repair（不记指纹不降级）、产物冲突放行自愈与旧版 git 一次性探测回退
+- [2026-09-11 add-merge-tree-rehearsal](spec/archive/2026-09-11-add-merge-tree-rehearsal/) — 新增真合并前只读预演闸、语义冲突零污染直通 repair（不记指纹不降级）、产物冲突放行自愈与旧版 git 一次性探测回退

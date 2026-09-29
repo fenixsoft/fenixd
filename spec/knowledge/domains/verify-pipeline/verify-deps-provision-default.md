@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- 2026-09-23 fix-verify-serving-disk-reclaim — 依赖供给默认模式定为 hardlink（`prefer-offline` 默认使每个 serving worktree 实装一份 1.6G node_modules，verify-serving 实测占 30G），确立降级链与模板/界面默认标注一致性
+- [2026-09-23 fix-verify-serving-disk-reclaim](spec/archive/2026-09-23-fix-verify-serving-disk-reclaim/) — 依赖供给默认模式定为 hardlink（`prefer-offline` 默认使每个 serving worktree 实装一份 1.6G node_modules，verify-serving 实测占 30G），确立降级链与模板/界面默认标注一致性

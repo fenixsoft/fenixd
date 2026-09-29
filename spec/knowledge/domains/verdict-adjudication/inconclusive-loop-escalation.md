@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-15 add-verdict-credibility-gate — 确立连续 blocked-env 达阈值（默认 4）写 SIGNAL 唤起 Administrator、阈值内静默、环境核查处置建议与人工处置后计数清零
+- [2026-09-15 add-verdict-credibility-gate](spec/archive/2026-09-15-add-verdict-credibility-gate/) — 确立连续 blocked-env 达阈值（默认 4）写 SIGNAL 唤起 Administrator、阈值内静默、环境核查处置建议与人工处置后计数清零

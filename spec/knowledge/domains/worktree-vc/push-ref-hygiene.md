@@ -14,4 +14,4 @@ done→pushed 自动推送的引用纪律：main 为主交付物、分支尽力�
 ## 溯源
 
 - 史前复原（存量基线） — 推送核心为 main 优先、分支尽力、远端 SHA 去重；推送失败按指数退避收敛并回填执行残痕
-- 2026-09-02 fix-push-ref-lifecycle — 固化 main 成功判据与非 fast-forward 拒绝 force、ls-remote 去重与本地分支缺席跳过、指数退避与 push_failed 困境信号、终态残痕幂等回填清理
+- [2026-09-02 fix-push-ref-lifecycle](spec/archive/2026-09-02-fix-push-ref-lifecycle/) — 固化 main 成功判据与非 fast-forward 拒绝 force、ls-remote 去重与本地分支缺席跳过、指数退避与 push_failed 困境信号、终态残痕幂等回填清理

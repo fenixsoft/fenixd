@@ -19,4 +19,4 @@
 
 ## 溯源
 
-- 2026-09-26 add-impl-ocr-parallel-lane — 新建 join 门：testing 出口完成判据与 tester 停等唤醒、产物缺失时幂等触发车道、gate 档 bug_found 打回（修复轮上限 1 次、溢出 findings 转台账放行）与 advisory 档入台账、mode 读取器与设置页键、并发缺省 2→4。
+- [2026-09-26 add-impl-ocr-parallel-lane](spec/archive/2026-09-26-add-impl-ocr-parallel-lane/) — 新建 join 门：testing 出口完成判据与 tester 停等唤醒、产物缺失时幂等触发车道、gate 档 bug_found 打回（修复轮上限 1 次、溢出 findings 转台账放行）与 advisory 档入台账、mode 读取器与设置页键、并发缺省 2→4。

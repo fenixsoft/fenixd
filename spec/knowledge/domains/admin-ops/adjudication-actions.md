@@ -12,4 +12,4 @@ dashboard 侧的三个裁决动词（`core/dashboard/data/admin_actions.py`）�
 
 ## 溯源
 
-- 2026-09-27 add-human-adjudication-choices — 建立三个裁决动词的前置校验、执行序列、留痕格式与豁免通道约束
+- [2026-09-27 add-human-adjudication-choices](spec/archive/2026-09-27-add-human-adjudication-choices/) — 建立三个裁决动词的前置校验、执行序列、留痕格式与豁免通道约束

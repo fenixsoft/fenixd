@@ -19,4 +19,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原 — 迁移期已存在的基线：core/agent_runner.py 以非交互式 Claude 会话驱动 agent 执行，run 转录流式落盘供回读取证
-- 2026-09-22 evo-sigterm-source-tracking-cooldown — 固化信号死法三源归属闭集与 signal-kill 标签、同 spec 信号熔断冷却（覆盖处置 run 路由）、产物硬门两类失败与全局瞬断指纹的通道隔离
+- [2026-09-22 evo-sigterm-source-tracking-cooldown](spec/archive/2026-09-22-evo-sigterm-source-tracking-cooldown/) — 固化信号死法三源归属闭集与 signal-kill 标签、同 spec 信号熔断冷却（覆盖处置 run 路由）、产物硬门两类失败与全局瞬断指纹的通道隔离

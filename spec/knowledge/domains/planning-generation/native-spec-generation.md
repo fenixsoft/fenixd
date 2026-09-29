@@ -18,4 +18,4 @@
 ## 溯源
 
 - 史前基线（归档前已生效）：spec 骨架与 tasks.md 由 core/spec_gen.py 原生生成，经 bin/fenix_spec.py CLI 驱动；fenix-new skill 自包含调用该链路。
-- 2026-09-02 2026-09-02-integrate-openspec-native — 确立原生 change 脚手架、artifact 状态计算、instructions 解析、CLI 契约与 fenix-new 自包含文案约束，移除外部 openspec CLI 与 openspec-propose 依赖。
+- [2026-09-02 2026-09-02-integrate-openspec-native](spec/archive/2026-09-02-integrate-openspec-native/) — 确立原生 change 脚手架、artifact 状态计算、instructions 解析、CLI 契约与 fenix-new 自包含文案约束，移除外部 openspec CLI 与 openspec-propose 依赖。

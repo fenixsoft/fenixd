@@ -48,6 +48,15 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     except OSError:
         # 遍历失败（IO/权限等）等价无归档命中，与 _read_spec_scenarios 兜底口径一致
         matches = []
+    # 软删除墓碑形态（soft_delete_spec 的 ``<spec>-<Unix秒>`` 命名同样落
+    # archive/）：目录名与 spec 名**全等**即命中——知识溯源链接以归档目录名
+    # 剥日期前缀引用软删除 SPEC（无日期可剥，名字原样传入）。spec 已过
+    # kebab-case 白名单（无 ``/``/``..``），路径拼接安全；全等比较无前缀
+    # 歧义（``evo-foo`` 不会误命中 ``evo-foo-<ts>``）。与日期 pattern 命中
+    # 合并后仍走下方 exact 优先 + sorted 兜底。
+    tombstone = archive_root / spec
+    if tombstone.is_dir():
+        matches.append(tombstone)
     if not matches:
         return None
     # 全等目录名（剥日期前缀后与 spec 全等）优先（对齐

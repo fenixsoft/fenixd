@@ -16,4 +16,4 @@
 ## 溯源
 
 - 史前复原 — done 后按审批模式配置自动 push 并标记 pushed，或转人工 /fenix-approve 审批；push 审批是唯一人工门
-- 2026-09-02 2026-09-02-add-fenix-config — 审批模式配置化：`gates.approve_mode` 枚举与校验、auto 自动推送链与失败兜底、Dashboard 可视化编辑与风险提示
+- [2026-09-02 2026-09-02-add-fenix-config](spec/archive/2026-09-02-add-fenix-config/) — 审批模式配置化：`gates.approve_mode` 枚举与校验、auto 自动推送链与失败兜底、Dashboard 可视化编辑与风险提示

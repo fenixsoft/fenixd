@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- 2026-09-27 add-timeline-ocr-lane-visibility — 新建车道时间轴可见性：run 节点「代码审查 Agent」身份双路识别（长前缀优先）、start message 审查区间摘要与缺省容错、testing 停等节点的 ocr 门当前态注记（与质量门禁 Card 同源、非历史时刻语义）。
+- [2026-09-27 add-timeline-ocr-lane-visibility](spec/archive/2026-09-27-add-timeline-ocr-lane-visibility/) — 新建车道时间轴可见性：run 节点「代码审查 Agent」身份双路识别（长前缀优先）、start message 审查区间摘要与缺省容错、testing 停等节点的 ocr 门当前态注记（与质量门禁 Card 同源、非历史时刻语义）。

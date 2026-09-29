@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-13 add-verify-contract-autodraft-ui — 新增设置页 AI 自动生成按钮、派发端点与覆盖授权语义：契约起草获得主动触发通道（原仅验证撞墙后的被动信号），覆盖有效契约由人类显式授权把守
+- [2026-09-13 add-verify-contract-autodraft-ui](spec/archive/2026-09-13-add-verify-contract-autodraft-ui/) — 新增设置页 AI 自动生成按钮、派发端点与覆盖授权语义：契约起草获得主动触发通道（原仅验证撞墙后的被动信号），覆盖有效契约由人类显式授权把守

@@ -15,4 +15,4 @@ dashboard 读路径的增量失效与有界读取：缓存按 spec 增量重算�
 
 ## 溯源
 
-- 2026-09-21 2026-09-21-fix-dashboard-read-path-performance — SummaryIndex 缓存由「STATE 变化即全丢」改为按 spec 增量失效；runs 目录取消 per-spec 全目录 glob；run 尾读改字节窗口 seek；`runs.keep` 由死键落地为真实归档清理消费点
+- [2026-09-21 2026-09-21-fix-dashboard-read-path-performance](spec/archive/2026-09-21-fix-dashboard-read-path-performance/) — SummaryIndex 缓存由「STATE 变化即全丢」改为按 spec 增量失效；runs 目录取消 per-spec 全目录 glob；run 尾读改字节窗口 seek；`runs.keep` 由死键落地为真实归档清理消费点

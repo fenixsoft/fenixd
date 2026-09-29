@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-27 add-verify-lane-throughput — 确立（spec, 验证轮）重裁决计数与阈值 2 停派升级、低置信证据扩充优先（每轮至多 1 次）与 judge fast-track 命中率 summary 字段
+- [2026-09-27 add-verify-lane-throughput](spec/archive/2026-09-27-add-verify-lane-throughput/) — 确立（spec, 验证轮）重裁决计数与阈值 2 停派升级、低置信证据扩充优先（每轮至多 1 次）与 judge fast-track 命中率 summary 字段

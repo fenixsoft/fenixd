@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-13 add-lost-semantics-regression-tests — 新增四组语义回归测试，锚定 replan 上限退回、熔断期状态保持、失败形态归一计数与断言绑定截图门禁
+- [2026-09-13 add-lost-semantics-regression-tests](spec/archive/2026-09-13-add-lost-semantics-regression-tests/) — 新增四组语义回归测试，锚定 replan 上限退回、熔断期状态保持、失败形态归一计数与断言绑定截图门禁

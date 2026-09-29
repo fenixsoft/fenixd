@@ -15,4 +15,4 @@ verifier / planner-judge 结果文件的新鲜度、归属与在飞一致性护�
 ## 溯源
 
 - 史前复原 — 迁移期基线：verifier 结果文件做新鲜度与归属护栏，陈旧判定重放被拒，迟到结果不覆写更新的终态
-- 2026-09-12 fix-daemon-lifecycle-races — 结果处理入口增加在飞状态前置判据（非 testing 按 DEBUG 丢弃），拆除失败迁移 fallback 重派路径，收编 stale-result 重置与在飞 verify run 完成的竞态
+- [2026-09-12 fix-daemon-lifecycle-races](spec/archive/2026-09-12-fix-daemon-lifecycle-races/) — 结果处理入口增加在飞状态前置判据（非 testing 按 DEBUG 丢弃），拆除失败迁移 fallback 重派路径，收编 stale-result 重置与在飞 verify run 完成的竞态

@@ -15,4 +15,4 @@ Administrator 每次处置产出人类可读的叙述总结，随处置记录落
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：admin 处置产出叙述总结并按 admin_run_id 归并运维记录时间线
-- 2026-09-02 add-admin-activity-view — 固化 summary 字段契约：诊断结论/处置时间线/结果/人工建议四要素、escalate 场景的明确建议与旧记录降级兼容
+- [2026-09-02 add-admin-activity-view](spec/archive/2026-09-02-add-admin-activity-view/) — 固化 summary 字段契约：诊断结论/处置时间线/结果/人工建议四要素、escalate 场景的明确建议与旧记录降级兼容

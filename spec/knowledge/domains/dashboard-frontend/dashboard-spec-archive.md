@@ -15,5 +15,5 @@ SPEC 的界面归档操作与已归档视图：归档 API 语义、archived 判�
 
 ## 溯源
 
-- 2026-09-09 add-spec-archive — 建立归档 API 语义（终态限定、目录移动命名、目标不覆盖）、archived 目录存在性判定、归档确认反馈与已归档视图切换控件
-- 2026-09-12 fix-archived-spec-doc-readback — 补齐归档 SPEC 读侧回访：五类文档与任务清单从归档目录读取、多归档取最新、防穿越保持
+- [2026-09-09 add-spec-archive](spec/archive/2026-09-09-add-spec-archive/) — 建立归档 API 语义（终态限定、目录移动命名、目标不覆盖）、archived 目录存在性判定、归档确认反馈与已归档视图切换控件
+- [2026-09-12 fix-archived-spec-doc-readback](spec/archive/2026-09-12-fix-archived-spec-doc-readback/) — 补齐归档 SPEC 读侧回访：五类文档与任务清单从归档目录读取、多归档取最新、防穿越保持

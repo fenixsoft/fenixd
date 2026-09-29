@@ -15,6 +15,6 @@ v3 的跨项目运维记录：全局合并时间线 + 自动运维/人工告警�
 
 ## 溯源
 
-- 2026-09-08 add-v3-activities-page — 建立 /activities 跨项目聚合视图（初版：项目页签 + 条数徽标 + 分段展示）与处置记录时间线、未处理置顶语义
-- 2026-09-10 add-activities-pagination — 改为全局合并时间线（每卡保留项目 Tag），新增自动运维/人工告警 Radio 双视图与每页 15 条前端分页
+- [2026-09-08 add-v3-activities-page](spec/archive/2026-09-08-add-v3-activities-page/) — 建立 /activities 跨项目聚合视图（初版：项目页签 + 条数徽标 + 分段展示）与处置记录时间线、未处理置顶语义
+- [2026-09-10 add-activities-pagination](spec/archive/2026-09-10-add-activities-pagination/) — 改为全局合并时间线（每卡保留项目 Tag），新增自动运维/人工告警 Radio 双视图与每页 15 条前端分页
 - 已随 2026-09-10-add-activities-pagination 废除：项目维度页签切换（含「全部」页签与各处条数徽标）

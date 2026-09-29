@@ -17,4 +17,4 @@ planner 出题前的入口索引注入机制：把逐轮 grep 源码取证压缩
 
 ## 溯源
 
-- 2026-09-11 2026-09-11-add-planner-efficiency — 新增路由地图生成协议（impl worktree 为源、HEAD 键控复用、fail-open、静态地图兼容、生成器自检）与 prompt 注入「索引非穷尽」措辞契约。
+- [2026-09-11 2026-09-11-add-planner-efficiency](spec/archive/2026-09-11-add-planner-efficiency/) — 新增路由地图生成协议（impl worktree 为源、HEAD 键控复用、fail-open、静态地图兼容、生成器自检）与 prompt 注入「索引非穷尽」措辞契约。

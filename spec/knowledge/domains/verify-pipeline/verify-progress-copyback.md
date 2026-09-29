@@ -12,4 +12,4 @@ worktree 内 per-spec 验证产物在 run 成功收尾时拷回主树：worktree
 
 ## 溯源
 
-- 2026-09-14 add-worktree-verify-progress-copyback — 新增成功收尾时 per-spec 验证产物 worktree→主树拷回（agent 写在 worktree 真实 `.fenix/` 的产物此前随 worktree 清理丢失，Dashboard 读侧全盲）
+- [2026-09-14 add-worktree-verify-progress-copyback](spec/archive/2026-09-14-add-worktree-verify-progress-copyback/) — 新增成功收尾时 per-spec 验证产物 worktree→主树拷回（agent 写在 worktree 真实 `.fenix/` 的产物此前随 worktree 清理丢失，Dashboard 读侧全盲）

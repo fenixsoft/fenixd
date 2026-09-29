@@ -13,4 +13,4 @@ planner-judge 归因的逐场景增量写盘与查重拒绝的场景级回炉：
 
 ## 溯源
 
-- 2026-09-18 evo-add-judge-incremental-attribution — 确立归因逐场景独立条目落盘、旧整块结构回退兼容与查重拒绝场景级回炉（子集回炉/全量重复整批回炉）
+- [2026-09-18 evo-add-judge-incremental-attribution](spec/archive/2026-09-18-evo-add-judge-incremental-attribution/) — 确立归因逐场景独立条目落盘、旧整块结构回退兼容与查重拒绝场景级回炉（子集回炉/全量重复整批回炉）

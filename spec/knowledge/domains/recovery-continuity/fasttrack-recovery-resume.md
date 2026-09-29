@@ -26,4 +26,4 @@ fast-track 派发入口与 implementer 分支同源消费 `_recovery_resume` 恢
 
 ## 溯源
 
-- 2026-09-24 fix-fasttrack-recovery-resume-lane — 新增 fast-track 恢复续做：入口同源消费标记、`pre_wt_path` 载体贯通、恢复来源判据注记择一注入、出口锚点处置矩阵与可观测留痕
+- [2026-09-24 fix-fasttrack-recovery-resume-lane](spec/archive/2026-09-24-fix-fasttrack-recovery-resume-lane/) — 新增 fast-track 恢复续做：入口同源消费标记、`pre_wt_path` 载体贯通、恢复来源判据注记择一注入、出口锚点处置矩阵与可观测留痕

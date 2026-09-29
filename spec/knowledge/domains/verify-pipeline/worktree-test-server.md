@@ -15,4 +15,4 @@ per-run 隔离测试服务：implementer/verifier 的测试请求落在其 workt
 ## 溯源
 
 - 史前复原（存量基线） — worktree 内 dev-server 生命周期由框架托管，孤儿清扫按存活归属判定，防 spec 锁误判
-- 2026-09-05 add-worktree-test-server — 新增 per-run 隔离测试服务与 baseURL 环境变量注入（测试 baseURL 曾固定指向主仓 8787，implementer 为让测试通过直改主仓工作区文件，主树反复被污染且 merge-back 被「local changes would be overwritten」熔断）
+- [2026-09-05 add-worktree-test-server](spec/archive/2026-09-05-add-worktree-test-server/) — 新增 per-run 隔离测试服务与 baseURL 环境变量注入（测试 baseURL 曾固定指向主仓 8787，implementer 为让测试通过直改主仓工作区文件，主树反复被污染且 merge-back 被「local changes would be overwritten」熔断）

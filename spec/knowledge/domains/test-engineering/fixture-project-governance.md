@@ -17,4 +17,4 @@ dashboard 全局监控中「验证夹具项目」的标记、读写与跨项目�
 
 ## 溯源
 
-- 2026-09-24 fix-fixture-project-alert-noise — 新增 fixture 标记读写与透出、跨项目告警/运维记录聚合过滤、供给脚本复位告警基线并登记标记
+- [2026-09-24 fix-fixture-project-alert-noise](spec/archive/2026-09-24-fix-fixture-project-alert-noise/) — 新增 fixture 标记读写与透出、跨项目告警/运维记录聚合过滤、供给脚本复位告警基线并登记标记

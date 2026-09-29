@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-18 add-verify-preflight-gate — 新增 spawn 前入口存在性预检、契约 mtime 变化后的消费期轻量自证与 boot.log 证据链（「Cannot find module」类启动即死错误此前对 admin 不可读，浪费整轮探活超时）
+- [2026-09-18 add-verify-preflight-gate](spec/archive/2026-09-18-add-verify-preflight-gate/) — 新增 spawn 前入口存在性预检、契约 mtime 变化后的消费期轻量自证与 boot.log 证据链（「Cannot find module」类启动即死错误此前对 admin 不可读，浪费整轮探活超时）

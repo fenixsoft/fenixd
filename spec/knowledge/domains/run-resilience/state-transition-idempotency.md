@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- 2026-09-12 fix-daemon-lifecycle-races — 确立幂等自迁移 INFO 降级：pushed→pushed 双路径并发不再产生假 ERROR 告警，ERROR 保留给真实非法迁移
+- [2026-09-12 fix-daemon-lifecycle-races](spec/archive/2026-09-12-fix-daemon-lifecycle-races/) — 确立幂等自迁移 INFO 降级：pushed→pushed 双路径并发不再产生假 ERROR 告警，ERROR 保留给真实非法迁移

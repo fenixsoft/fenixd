@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-27 fix-manual-invoke-signal-type-passthrough — 落地底层 signal_type 反查透传与自动复位判定门「或」命中扩展，顶层类型保持 manual-intervention 保证 store/节流/展示零回归
+- [2026-09-27 fix-manual-invoke-signal-type-passthrough](spec/archive/2026-09-27-fix-manual-invoke-signal-type-passthrough/) — 落地底层 signal_type 反查透传与自动复位判定门「或」命中扩展，顶层类型保持 manual-intervention 保证 store/节流/展示零回归

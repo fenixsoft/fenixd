@@ -13,4 +13,4 @@ agent 角色被指派直连 Provider 时的运行时隔离机制：让 Provider 
 
 ## 溯源
 
-- 2026-09-02 add-agent-llm-isolation — 固化 Provider 隔离与幂等目录、插件/技能 symlink 保留、未配置透传现状、凭据仅存进程环境四条契约
+- [2026-09-02 add-agent-llm-isolation](spec/archive/2026-09-02-add-agent-llm-isolation/) — 固化 Provider 隔离与幂等目录、插件/技能 symlink 保留、未配置透传现状、凭据仅存进程环境四条契约

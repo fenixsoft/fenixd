@@ -21,4 +21,4 @@
 
 ## 溯源
 
-- 2026-09-29 evo-fix-transient-break-unseal-backoff — 新建：解封次数记忆 + post-unseal hold + 单条探针 + 错峰放行状态机与配置五键；既有测试的「到期即清零重计」语义保留、「解封立即全量唤醒」改写为 hold+探针
+- [2026-09-29 evo-fix-transient-break-unseal-backoff](spec/archive/2026-09-29-evo-fix-transient-break-unseal-backoff/) — 新建：解封次数记忆 + post-unseal hold + 单条探针 + 错峰放行状态机与配置五键；既有测试的「到期即清零重计」语义保留、「解封立即全量唤醒」改写为 hold+探针

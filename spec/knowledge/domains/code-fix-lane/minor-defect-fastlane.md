@@ -20,4 +20,4 @@ bug-found 小缺陷的轻量通道：三条件全满足时走 code-fix 轻量修
 
 ## 溯源
 
-- 2026-09-27 2026-09-27-add-pipeline-throughput-governance — 新建本页：三条件阈值判定、子集重验场景集口径（前置链 + 下游递归）、连续两次失败强制回落与审查门不豁免。
+- [2026-09-27 2026-09-27-add-pipeline-throughput-governance](spec/archive/2026-09-27-add-pipeline-throughput-governance/) — 新建本页：三条件阈值判定、子集重验场景集口径（前置链 + 下游递归）、连续两次失败强制回落与审查门不豁免。

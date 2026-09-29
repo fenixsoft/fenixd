@@ -18,4 +18,4 @@ judge 归因与证据绑定的确定性分级门：归因级别由证据构成�
 
 ## 溯源
 
-- 2026-09-15 add-verdict-credibility-gate — 确立归因三级分级（evidence-backed/speculative/pending-visual）、推测级打回抑制与环境存疑处置、白屏标签约束归因方向与模型能力无关分级
+- [2026-09-15 add-verdict-credibility-gate](spec/archive/2026-09-15-add-verdict-credibility-gate/) — 确立归因三级分级（evidence-backed/speculative/pending-visual）、推测级打回抑制与环境存疑处置、白屏标签约束归因方向与模型能力无关分级

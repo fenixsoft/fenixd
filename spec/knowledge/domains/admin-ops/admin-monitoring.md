@@ -16,4 +16,4 @@ admin_monitor 对同一 spec 同类型信号的「状态沉淀」取代逐轮新
 
 ## 溯源
 
-- 2026-09-19 evo-admin-signal-consolidation — 同 spec 同类型信号由逐轮新增改为状态沉淀（first_seen/last_seen/status_hash），blocked 悬置 ≥2h 突破节流强制升级
+- [2026-09-19 evo-admin-signal-consolidation](spec/archive/2026-09-19-evo-admin-signal-consolidation/) — 同 spec 同类型信号由逐轮新增改为状态沉淀（first_seen/last_seen/status_hash），blocked 悬置 ≥2h 突破节流强制升级

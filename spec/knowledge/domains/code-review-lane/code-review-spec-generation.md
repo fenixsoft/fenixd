@@ -21,4 +21,4 @@
 
 ## 溯源
 
-- 2026-09-24 add-code-review-agent-and-quality-tab — 新建生成能力：复用既有链路机械合成与失败不半写、fix-cr 命名三处判重与短指纹后缀消解、幂等返回与 skipped 语义。
+- [2026-09-24 add-code-review-agent-and-quality-tab](spec/archive/2026-09-24-add-code-review-agent-and-quality-tab/) — 新建生成能力：复用既有链路机械合成与失败不半写、fix-cr 命名三处判重与短指纹后缀消解、幂等返回与 skipped 语义。

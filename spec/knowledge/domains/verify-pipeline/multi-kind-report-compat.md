@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- 2026-09-12 add-verify-multi-kind-runner — 新增 report.json kind 透传与空证据列表 schema 兼容、dashboard 字段驱动渲染契约、verdict 链对 CLI/API 的零改动回归不变量、冻结条目可选 kind 零迁移
+- [2026-09-12 add-verify-multi-kind-runner](spec/archive/2026-09-12-add-verify-multi-kind-runner/) — 新增 report.json kind 透传与空证据列表 schema 兼容、dashboard 字段驱动渲染契约、verdict 链对 CLI/API 的零改动回归不变量、冻结条目可选 kind 零迁移

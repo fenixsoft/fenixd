@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-22 2026-09-22-fix-impl-resultfile-contract-gap — 补齐实现者双车道契约段注入、路径按车道分派、重试轮真实死因继承（两源可达 + 字段级去重）、正文 JSON 捞回与缺失归因二分
+- [2026-09-22 2026-09-22-fix-impl-resultfile-contract-gap](spec/archive/2026-09-22-fix-impl-resultfile-contract-gap/) — 补齐实现者双车道契约段注入、路径按车道分派、重试轮真实死因继承（两源可达 + 字段级去重）、正文 JSON 捞回与缺失归因二分

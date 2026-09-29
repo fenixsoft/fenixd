@@ -17,4 +17,4 @@
 
 ## 溯源
 
-- 2026-09-15 fix-verdict-retry-misattribution — 确立 `_verify_verdict_evidence` 六 cause 语义化返回、frozen/cancelled 让位零写入、首轮 frozen 对称分支、派发失败与真违规分离及 frozen 常量同源匹配
+- [2026-09-15 fix-verdict-retry-misattribution](spec/archive/2026-09-15-fix-verdict-retry-misattribution/) — 确立 `_verify_verdict_evidence` 六 cause 语义化返回、frozen/cancelled 让位零写入、首轮 frozen 对称分支、派发失败与真违规分离及 frozen 常量同源匹配

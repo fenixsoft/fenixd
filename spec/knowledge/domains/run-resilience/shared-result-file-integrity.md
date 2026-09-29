@@ -13,4 +13,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期基线：共享结果文件与 spec 不符视为残留；残留不作为失败证据，成功 run 不因残留误判失败
-- 2026-09-18 fix-fasttrack-resultfile-missing-redispatch — 固化 stamp 严格匹配契约（关闭无 stamp 的 fail-open 洞）与消费落盘快照后的即时删除
+- [2026-09-18 fix-fasttrack-resultfile-missing-redispatch](spec/archive/2026-09-18-fix-fasttrack-resultfile-missing-redispatch/) — 固化 stamp 严格匹配契约（关闭无 stamp 的 fail-open 洞）与消费落盘快照后的即时删除

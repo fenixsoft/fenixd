@@ -15,4 +15,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：告警写入时埋点结构化 trigger 字段，周期扫描按闭环判定自动解决；已解决告警折叠展示
-- 2026-09-06 add-alert-auto-resolve — 固化闭环契约：trigger 结构化埋点、auto-resolve 标注与人工记录保护、巡检内联零开销扫描、启动回填与视图三分组
+- [2026-09-06 add-alert-auto-resolve](spec/archive/2026-09-06-add-alert-auto-resolve/) — 固化闭环契约：trigger 结构化埋点、auto-resolve 标注与人工记录保护、巡检内联零开销扫描、启动回填与视图三分组

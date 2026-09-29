@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- 2026-09-25 add-test-regression-tab — 新增 verify.yaml regression 段声明契约（字段与缺省、无效段回退、自动起草与独立可选自证、JUnit XML 单一解析口径）
+- [2026-09-25 add-test-regression-tab](spec/archive/2026-09-25-add-test-regression-tab/) — 新增 verify.yaml regression 段声明契约（字段与缺省、无效段回退、自动起草与独立可选自证、JUnit XML 单一解析口径）

@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-13 fix-mobile-touch-disclosure — 建立 `.touch-expand` 工具类（padding 8px + 负 margin 抵消，命中区 ≥32px）及其四处落地，并定案移动端卡片已完成态进度「已完成」单一表达
+- [2026-09-13 fix-mobile-touch-disclosure](spec/archive/2026-09-13-fix-mobile-touch-disclosure/) — 建立 `.touch-expand` 工具类（padding 8px + 负 margin 抵消，命中区 ≥32px）及其四处落地，并定案移动端卡片已完成态进度「已完成」单一表达

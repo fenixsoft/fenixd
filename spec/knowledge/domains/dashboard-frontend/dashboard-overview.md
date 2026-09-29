@@ -16,5 +16,5 @@ Dashboard 首页的跨项目概览：统计卡 + 项目卡片墙，2 秒自动�
 ## 溯源
 
 - 史前复原 — 概览页统计卡与项目清单布局基线（四卡、卡片等高、数值与说明两端对齐）
-- 2026-09-02 add-multi-project-monitoring — 新增 daemon 健康徽标、「自动」标记保留与多项目状态自动跟随（发现/健康缓存过期自愈）
-- 2026-09-18 fix-dashboard-fault-isolation — 新增项目级错误态展示与错误卡片不静默过滤，建立概览加载失败降级（重试入口 + 保留上次成功数据）
+- [2026-09-02 add-multi-project-monitoring](spec/archive/2026-09-02-add-multi-project-monitoring/) — 新增 daemon 健康徽标、「自动」标记保留与多项目状态自动跟随（发现/健康缓存过期自愈）
+- [2026-09-18 fix-dashboard-fault-isolation](spec/archive/2026-09-18-fix-dashboard-fault-isolation/) — 新增项目级错误态展示与错误卡片不静默过滤，建立概览加载失败降级（重试入口 + 保留上次成功数据）

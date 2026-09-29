@@ -19,4 +19,4 @@ daemon 由 supervisor 托管运行：tmux 仅作脱离终端的承载手段，�
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：daemon 由 tmux/supervisor 托管：重启走 env -u CLAUDE_PID 协议，杀 tmux server 会连带杀 daemon，须重建托管链
-- 2026-09-18 fix-supervisor-hosting-chain — 固化项目根解析守卫与五键运行时自报、托管态三态判定、唯一托管启动/停止语义、supervisor_missing 告警、restart-daemon 与审批推送的消费方校验、install-hosting 端点
+- [2026-09-18 fix-supervisor-hosting-chain](spec/archive/2026-09-18-fix-supervisor-hosting-chain/) — 固化项目根解析守卫与五键运行时自报、托管态三态判定、唯一托管启动/停止语义、supervisor_missing 告警、restart-daemon 与审批推送的消费方校验、install-hosting 端点

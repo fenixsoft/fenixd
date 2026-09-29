@@ -16,4 +16,4 @@ v2 的项目内 SPEC 列表：8 列渲染、三维过滤、fix 树分组与行�
 ## 溯源
 
 - 史前复原 — v2 SPEC 列表页 8 列 + 类型过滤 + fix 树 + 行内操作；crud 同步位置时保留过滤状态
-- 2026-09-06 v2-project-list-page — 落地 8 列渲染与三维过滤、fix 树 children 分组、行内操作（调优先级 / 删除）与 error 详情懒加载清除闭环
+- [2026-09-06 v2-project-list-page](spec/archive/2026-09-06-v2-project-list-page/) — 落地 8 列渲染与三维过滤、fix 树 children 分组、行内操作（调优先级 / 删除）与 error 详情懒加载清除闭环

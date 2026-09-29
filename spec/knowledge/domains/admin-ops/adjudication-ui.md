@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-27 add-human-adjudication-choices — 建立告警选择题交互契约：下拉+执行渲染、三态反馈、知情类无下拉、不可逆动作二次确认与留痕提示
+- [2026-09-27 add-human-adjudication-choices](spec/archive/2026-09-27-add-human-adjudication-choices/) — 建立告警选择题交互契约：下拉+执行渲染、三态反馈、知情类无下拉、不可逆动作二次确认与留痕提示

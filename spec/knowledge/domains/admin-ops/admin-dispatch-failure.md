@@ -15,4 +15,4 @@ Administrator 派发期失败的专用升级信号、编程错误/运维失败�
 
 ## 溯源
 
-- 2026-09-21 evo-admin-dispatch-failure-escalation — 建立派发失败专用信号 admin_dispatch_programming_error、编程/运维异常分层、单次冷却重试与 _str_field 序列化防回退
+- [2026-09-21 evo-admin-dispatch-failure-escalation](spec/archive/2026-09-21-evo-admin-dispatch-failure-escalation/) — 建立派发失败专用信号 admin_dispatch_programming_error、编程/运维异常分层、单次冷却重试与 _str_field 序列化防回退

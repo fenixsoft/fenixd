@@ -20,4 +20,4 @@ HookManager 三张表格（生效合并表、Hook CRUD 表、最近执行审计�
 
 ## 溯源
 
-- 2026-09-13 fix-mobile-breakpoint-hook-tables — 建立三表容器内横滚兜底（`scroll.x: max-content`）与 <768px 卡片化渲染分支（PC 端 Table 路径不变）
+- [2026-09-13 fix-mobile-breakpoint-hook-tables](spec/archive/2026-09-13-fix-mobile-breakpoint-hook-tables/) — 建立三表容器内横滚兜底（`scroll.x: max-content`）与 <768px 卡片化渲染分支（PC 端 Table 路径不变）

@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-18 add-main-tree-deps-provision — 新增主树 prepare 前依赖预检与预装，覆盖三处主树裸跑点（此前依赖供给只覆盖 worktree 路径，主树路径零供给、首次验证必踩 exit 127 环境阻塞）
+- [2026-09-18 add-main-tree-deps-provision](spec/archive/2026-09-18-add-main-tree-deps-provision/) — 新增主树 prepare 前依赖预检与预装，覆盖三处主树裸跑点（此前依赖供给只覆盖 worktree 路径，主树路径零供给、首次验证必踩 exit 127 环境阻塞）

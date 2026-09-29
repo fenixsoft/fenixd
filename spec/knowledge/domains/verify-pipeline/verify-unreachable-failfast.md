@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-18 add-verify-unreachable-failfast — 新增不可达即整轮短路 fail-fast（此前不可达仍走场景执行与判定链，空跑整轮验证后才得结论），升级证据内嵌 boot.log 尾部直达 admin
+- [2026-09-18 add-verify-unreachable-failfast](spec/archive/2026-09-18-add-verify-unreachable-failfast/) — 新增不可达即整轮短路 fail-fast（此前不可达仍走场景执行与判定链，空跑整轮验证后才得结论），升级证据内嵌 boot.log 尾部直达 admin

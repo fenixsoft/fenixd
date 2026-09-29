@@ -13,4 +13,4 @@ Administrator agent 的自动处置与人工下拉选择收敛为同一裁决空
 
 ## 溯源
 
-- 2026-09-27 add-human-adjudication-choices — 建立 Administrator 处置优先消费注册表、choice_id 结构化表达、超出裁决空间回填建议的契约
+- [2026-09-27 add-human-adjudication-choices](spec/archive/2026-09-27-add-human-adjudication-choices/) — 建立 Administrator 处置优先消费注册表、choice_id 结构化表达、超出裁决空间回填建议的契约

@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-27 2026-09-27-add-pipeline-throughput-governance — 并发缺省值与模板推荐值由 2 统一上调至 5（实现排队为全历史最大时间池），固化互斥前提（full-suite.lock 主机级回归锁）与可回退性；运行时调整定位为人工运维步骤。
+- [2026-09-27 2026-09-27-add-pipeline-throughput-governance](spec/archive/2026-09-27-add-pipeline-throughput-governance/) — 并发缺省值与模板推荐值由 2 统一上调至 5（实现排队为全历史最大时间池），固化互斥前提（full-suite.lock 主机级回归锁）与可回退性；运行时调整定位为人工运维步骤。

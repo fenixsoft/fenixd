@@ -21,5 +21,5 @@
 
 ## 溯源
 
-- 2026-09-24 add-impl-code-review-tuning — 新建三调优参数：独立读取器与回退语义、run 级 timeout 注入（原子写、失败降级）、命令承载 `--concurrency`/`--effort`（禁 `--max-tokens-budget`）、质量页签编辑与模板/帮助文档登记。
-- 2026-09-26 add-impl-ocr-parallel-lane — `impl_code_review_concurrency` 缺省值由 2 调整为 4（显式配置不受影响）；内联提示词段随车道化摘除后，并发与力度由审查车道命令承载。
+- [2026-09-24 add-impl-code-review-tuning](spec/archive/2026-09-24-add-impl-code-review-tuning/) — 新建三调优参数：独立读取器与回退语义、run 级 timeout 注入（原子写、失败降级）、命令承载 `--concurrency`/`--effort`（禁 `--max-tokens-budget`）、质量页签编辑与模板/帮助文档登记。
+- [2026-09-26 add-impl-ocr-parallel-lane](spec/archive/2026-09-26-add-impl-ocr-parallel-lane/) — `impl_code_review_concurrency` 缺省值由 2 调整为 4（显式配置不受影响）；内联提示词段随车道化摘除后，并发与力度由审查车道命令承载。

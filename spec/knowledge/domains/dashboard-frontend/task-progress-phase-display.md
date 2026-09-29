@@ -16,5 +16,5 @@ SPEC 列表「任务进度」列的阶段感知展示：impl（蓝）/ verify（
 
 ## 溯源
 
-- 2026-09-11 add-task-progress-verify-phase — 建立阶段感知任务进度列：后端单点 `progress_phase`（testing→verify 绿色验证进度，其余 impl 蓝色零回归）与排序键同源
-- 2026-09-26 add-quality-gates-visibility — 新增 gates（橙）阶段两窗口：testing 且 ocr 车道 running 优先于 verify、implementing 任务全勾且门禁进行中；门禁数据损坏容错
+- [2026-09-11 add-task-progress-verify-phase](spec/archive/2026-09-11-add-task-progress-verify-phase/) — 建立阶段感知任务进度列：后端单点 `progress_phase`（testing→verify 绿色验证进度，其余 impl 蓝色零回归）与排序键同源
+- [2026-09-26 add-quality-gates-visibility](spec/archive/2026-09-26-add-quality-gates-visibility/) — 新增 gates（橙）阶段两窗口：testing 且 ocr 车道 running 优先于 verify、implementing 任务全勾且门禁进行中；门禁数据损坏容错

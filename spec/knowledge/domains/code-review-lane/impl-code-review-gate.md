@@ -25,5 +25,5 @@
 
 ## 溯源
 
-- 2026-09-23 add-impl-code-review-gate — 新建实现收尾代码审查：内联审查段注入、run 级 ocr provider 注入（专属 HOME 隔离）、报告落盘契约与原生报告规整、同 run 产物硬门、环境不可用降级。
-- 2026-09-26 add-impl-ocr-parallel-lane — 内联收尾审查义务与同 run 产物硬门废除（`code_review` 段/dispositions 不再是硬门校验项），审查改由框架侧 ocr 车道并行执行、报告由框架写入、消费移至 testing 出口 join 门；run 级 provider 注入与降级语义由车道沿用。
+- [2026-09-23 add-impl-code-review-gate](spec/archive/2026-09-23-add-impl-code-review-gate/) — 新建实现收尾代码审查：内联审查段注入、run 级 ocr provider 注入（专属 HOME 隔离）、报告落盘契约与原生报告规整、同 run 产物硬门、环境不可用降级。
+- [2026-09-26 add-impl-ocr-parallel-lane](spec/archive/2026-09-26-add-impl-ocr-parallel-lane/) — 内联收尾审查义务与同 run 产物硬门废除（`code_review` 段/dispositions 不再是硬门校验项），审查改由框架侧 ocr 车道并行执行、报告由框架写入、消费移至 testing 出口 join 门；run 级 provider 注入与降级语义由车道沿用。

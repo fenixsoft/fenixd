@@ -14,5 +14,5 @@
 
 ## 溯源
 
-- 2026-09-23 2026-09-23-add-declaration-relocation-protocol — 建立统一解析入口、分支优先分层回退、派发时可信基线快照与零成本契约
-- 2026-09-26 2026-09-26-fix-relocation-writeback-layer — 解析结果增加 `source`/`spec_dir` 写回层标注：写入落点须为命中层，`branch` 来源不可就地写入、`main` 来源同源允许
+- [2026-09-23 2026-09-23-add-declaration-relocation-protocol](spec/archive/2026-09-23-add-declaration-relocation-protocol/) — 建立统一解析入口、分支优先分层回退、派发时可信基线快照与零成本契约
+- [2026-09-26 2026-09-26-fix-relocation-writeback-layer](spec/archive/2026-09-26-fix-relocation-writeback-layer/) — 解析结果增加 `source`/`spec_dir` 写回层标注：写入落点须为命中层，`branch` 来源不可就地写入、`main` 来源同源允许

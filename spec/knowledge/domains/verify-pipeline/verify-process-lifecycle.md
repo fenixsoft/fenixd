@@ -16,4 +16,4 @@ dev-server 与被测实例的进程组、登记与清扫契约：run 终态必�
 
 ## 溯源
 
-- 2026-09-11 fix-verify-process-lifecycle — 新增 run 终态收割义务、进程组杀树、父绑定自杀、实例登记制与端口耗尽兜底（治理 dev-server 孙进程残留、双孤儿互引豁免失效、端口语义污染主树与 repair 轮打主树 8787）
+- [2026-09-11 fix-verify-process-lifecycle](spec/archive/2026-09-11-fix-verify-process-lifecycle/) — 新增 run 终态收割义务、进程组杀树、父绑定自杀、实例登记制与端口耗尽兜底（治理 dev-server 孙进程残留、双孤儿互引豁免失效、端口语义污染主树与 repair 轮打主树 8787）

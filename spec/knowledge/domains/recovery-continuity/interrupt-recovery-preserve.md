@@ -39,6 +39,6 @@ daemon 计划性重启时保全在飞 run 现场（sidecar 条目 + worktree 保
 
 ## 溯源
 
-- 2026-09-11 add-interrupt-recovery-preserve — 新增规划性排水、终止前保全、保留分支续做、清理协调与 worktree 可用性单源
-- 2026-09-18 fix-preserve-chain-first-round-gap — 保全与保留判定的分支取值补 worktree 事实查询回落（首轮在飞 run 的保全条目不再空 branch）；orphan 清理硬删前快照留档扩展到强制删除成功路径
-- 2026-09-19 fix-recovery-branch-anchor-without-worktree — 保留判定回落链延伸至 git 分支命名空间；保护集增加来源 (c)；sidecar 写入扩展到排水内自行收口但收口未完成的 spec；新增恢复期消费待 re-merge-back 标记
+- [2026-09-11 add-interrupt-recovery-preserve](spec/archive/2026-09-11-add-interrupt-recovery-preserve/) — 新增规划性排水、终止前保全、保留分支续做、清理协调与 worktree 可用性单源
+- [2026-09-18 fix-preserve-chain-first-round-gap](spec/archive/2026-09-18-fix-preserve-chain-first-round-gap/) — 保全与保留判定的分支取值补 worktree 事实查询回落（首轮在飞 run 的保全条目不再空 branch）；orphan 清理硬删前快照留档扩展到强制删除成功路径
+- [2026-09-19 fix-recovery-branch-anchor-without-worktree](spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree/) — 保留判定回落链延伸至 git 分支命名空间；保护集增加来源 (c)；sidecar 写入扩展到排水内自行收口但收口未完成的 spec；新增恢复期消费待 re-merge-back 标记

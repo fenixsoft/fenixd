@@ -15,4 +15,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：provider 候选链元素为对象形态并支持元素级模型解析；Dashboard 链编辑器可排序保存，非法链 400 拒绝
-- 2026-09-02 add-provider-failover — 固化 str/list 双形态链解析、未知名字告警不阻塞、切换后三件套与隔离目录按链元素整体切换的契约
+- [2026-09-02 add-provider-failover](spec/archive/2026-09-02-add-provider-failover/) — 固化 str/list 双形态链解析、未知名字告警不阻塞、切换后三件套与隔离目录按链元素整体切换的契约

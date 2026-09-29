@@ -15,6 +15,6 @@ AMIS SDK 的静态产物 vendored 落盘契约：不依赖运行时安装与 CDN
 ## 溯源
 
 - 史前复原 — AMIS SDK 静态产物 vendor 到 static/v2/，不依赖运行时安装；构建产物随库分发
-- 2026-09-04 2026-09-04-v2-vendor-amis-sdk — 固化 5 文件清单与「静态产物落盘 + 既有静态 fallback 可达」契约
+- [2026-09-04 2026-09-04-v2-vendor-amis-sdk](spec/archive/2026-09-04-v2-vendor-amis-sdk/) — 固化 5 文件清单与「静态产物落盘 + 既有静态 fallback 可达」契约
 - 2026-09-02 git:ea88dd5a — v1/v2 dashboard 壳整体移除（`core/dashboard/static/v2/` 目录删除，根路由 302 到 v3），本能力随壳层退役
 - 2026-09-28 audit git:25bd6751 — 根路由改直服 v3 SPA（`/` 直接返回 `dist/index.html`，302 跳转取消），退役注记根路由表述纠偏

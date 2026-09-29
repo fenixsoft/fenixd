@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-11 add-model-billing-cost-display — 引入按 provider+model 的四项单价价格行模型与完整性校验，确立「全部填写才合法、重复组合拒绝」的口径（存储结构其后收敛进 provider 对象内嵌，见 provider-billing-config 页）
+- [2026-09-11 add-model-billing-cost-display](spec/archive/2026-09-11-add-model-billing-cost-display/) — 引入按 provider+model 的四项单价价格行模型与完整性校验，确立「全部填写才合法、重复组合拒绝」的口径（存储结构其后收敛进 provider 对象内嵌，见 provider-billing-config 页）

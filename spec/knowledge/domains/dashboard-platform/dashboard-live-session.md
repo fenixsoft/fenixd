@@ -20,5 +20,5 @@ dashboard 内的项目级自由 Claude 会话：会话进程管理、事件流�
 
 ## 溯源
 
-- 2026-09-23 2026-09-23-add-dashboard-live-session — 建立会话进程管理（创建/复用/输入/订阅/终止/空闲回收）、SSE 定向订阅、与 fenixd 产物隔离契约及前端会话界面
-- 2026-09-23 2026-09-23-add-project-detail-tabs — 会话界面承载形态由标题栏按钮 + 全屏 Modal 改为项目页「会话」分面内联面板，并加按需激活门控（会话进程与 REST/SSE 契约不变）
+- [2026-09-23 2026-09-23-add-dashboard-live-session](spec/archive/2026-09-23-add-dashboard-live-session/) — 建立会话进程管理（创建/复用/输入/订阅/终止/空闲回收）、SSE 定向订阅、与 fenixd 产物隔离契约及前端会话界面
+- [2026-09-23 2026-09-23-add-project-detail-tabs](spec/archive/2026-09-23-add-project-detail-tabs/) — 会话界面承载形态由标题栏按钮 + 全屏 Modal 改为项目页「会话」分面内联面板，并加按需激活门控（会话进程与 REST/SSE 契约不变）

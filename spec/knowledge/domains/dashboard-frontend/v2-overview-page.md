@@ -14,4 +14,4 @@ v2 的项目总览：统计块 + 项目卡片网格，项目级生命周期操�
 ## 溯源
 
 - 史前复原 — v2 概览页统计块 + 项目卡片 + 启停删操作 + SSE 重拉骨架；项目卡片点击跳转项目页
-- 2026-09-05 v2-overview-page — 落地统计块 / 卡片数据适配（adaptOverview / adaptProjects）、生命周期操作 confirm 闭环与 sse:state / sse:refresh 定向重拉
+- [2026-09-05 v2-overview-page](spec/archive/2026-09-05-v2-overview-page/) — 落地统计块 / 卡片数据适配（adaptOverview / adaptProjects）、生命周期操作 confirm 闭环与 sse:state / sse:refresh 定向重拉

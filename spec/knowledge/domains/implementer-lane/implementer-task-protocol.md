@@ -14,5 +14,5 @@ implementer 按 tasks.md 逐任务实现并以结果文件登记进度的协议�
 ## 溯源
 
 - 史前复原（早于 2026-09-09） — 基线形态：implementer 按 tasks.md 逐任务实现、完成即勾选，并按交付物声明收口；tasks.md 勾选是任务完成的事实记录
-- 2026-09-09 2026-09-09-fix-implementer-task-progress — 确立 TaskCreate 任务编号契约（subject 前缀、逐任务完成汇报）与 full/fast-track 双分支注入
-- 2026-09-19 2026-09-19-fix-impl-tasks-completion-gate — 契约载体改为 `completed_tasks`/`unfinished` 结果文件清单（与工具可用性解耦），TaskCreate 契约降为条件生效
+- [2026-09-09 2026-09-09-fix-implementer-task-progress](spec/archive/2026-09-09-fix-implementer-task-progress/) — 确立 TaskCreate 任务编号契约（subject 前缀、逐任务完成汇报）与 full/fast-track 双分支注入
+- [2026-09-19 2026-09-19-fix-impl-tasks-completion-gate](spec/archive/2026-09-19-fix-impl-tasks-completion-gate/) — 契约载体改为 `completed_tasks`/`unfinished` 结果文件清单（与工具可用性解耦），TaskCreate 契约降为条件生效

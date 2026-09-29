@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-22 fix-redispatch-loop-governance — 确立同因重派熔断（机械同因判据 + 可配阈值 + 原状态还原解冻）、重派 worktree/分支成果继承、与预算豁免的正交记账
+- [2026-09-22 fix-redispatch-loop-governance](spec/archive/2026-09-22-fix-redispatch-loop-governance/) — 确立同因重派熔断（机械同因判据 + 可配阈值 + 原状态还原解冻）、重派 worktree/分支成果继承、与预算豁免的正交记账

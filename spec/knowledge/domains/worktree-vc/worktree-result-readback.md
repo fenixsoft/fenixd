@@ -12,4 +12,4 @@
 ## 溯源
 
 - 史前复原（存量基线） — 实现结果（勾选、结果文件、交付物）从 worktree 读回主树侧消费，读回路径与 worktree 归属绑定
-- 2026-09-02 fix-worktree-spec-seeding — 固化 implementer 结果文件 worktree 优先（impl-<spec>-* 最新匹配）回退项目根、verifier/planner 读取位置不变、任务进度展示按 implementing 状态分流读取
+- [2026-09-02 fix-worktree-spec-seeding](spec/archive/2026-09-02-fix-worktree-spec-seeding/) — 固化 implementer 结果文件 worktree 优先（impl-<spec>-* 最新匹配）回退项目根、verifier/planner 读取位置不变、任务进度展示按 implementing 状态分流读取

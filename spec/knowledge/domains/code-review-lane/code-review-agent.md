@@ -32,6 +32,6 @@
 
 ## 溯源
 
-- 2026-09-24 add-code-review-agent-and-quality-tab — 新建周期代码审查 agent：类型四处注册与模型回退链、自省同源周期调度、manifest 驱动逐文件增量落盘、真实进度与取消。
-- 2026-09-27 add-code-review-scope-config — 审查范围经 `admin.code_review.scope` 扩为 window/full 两档（共用调度守卫），设置页「质量」页签新增「审查范围」下拉（当期审查/全库审查，非法回退 window）。
-- 2026-09-29 add-code-review-sharded-out — 产物落盘契约扩为主产物+分片双轨直写（落盘义务「谁审谁写」），追加禁 async 等待收工条款与产物硬门聚合口径；进度/台账/硬门三侧改聚合消费（读侧口径另立 code-review-progress-visibility 页）。
+- [2026-09-24 add-code-review-agent-and-quality-tab](spec/archive/2026-09-24-add-code-review-agent-and-quality-tab/) — 新建周期代码审查 agent：类型四处注册与模型回退链、自省同源周期调度、manifest 驱动逐文件增量落盘、真实进度与取消。
+- [2026-09-27 add-code-review-scope-config](spec/archive/2026-09-27-add-code-review-scope-config/) — 审查范围经 `admin.code_review.scope` 扩为 window/full 两档（共用调度守卫），设置页「质量」页签新增「审查范围」下拉（当期审查/全库审查，非法回退 window）。
+- [2026-09-29 add-code-review-sharded-out](spec/archive/2026-09-29-add-code-review-sharded-out/) — 产物落盘契约扩为主产物+分片双轨直写（落盘义务「谁审谁写」），追加禁 async 等待收工条款与产物硬门聚合口径；进度/台账/硬门三侧改聚合消费（读侧口径另立 code-review-progress-visibility 页）。

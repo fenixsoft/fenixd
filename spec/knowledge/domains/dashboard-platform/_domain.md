@@ -4,19 +4,21 @@
 
 ## 能力页
 
-- [dashboard-server](dashboard-server.md) — dashboard 服务端
-- [fenix-dashboard-skill](fenix-dashboard-skill.md) — dashboard 技能入口
-- [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) — dashboard 实例生命周期（看门狗）
-- [dashboard-sse-refresh](dashboard-sse-refresh.md) — SSE 增量刷新
-- [v2-sse-bridge](v2-sse-bridge.md) — v2 SSE 桥（已随壳层退役）
-- [dashboard-incremental-watcher](dashboard-incremental-watcher.md) — 增量数据 watcher
-- [dashboard-log-offset-index](dashboard-log-offset-index.md) — 日志偏移索引
-- [dashboard-spec-summary-index](dashboard-spec-summary-index.md) — SPEC 摘要索引
-- [dashboard-data-modules](dashboard-data-modules.md) — 数据读取模块化
-- [dashboard-read-path-performance](dashboard-read-path-performance.md) — 读路径性能优化
-- [dashboard-connection-limit](dashboard-connection-limit.md) — 连接数上限
-- [dashboard-live-session](dashboard-live-session.md) — 实时会话视图
-- [v2-data-adapters](v2-data-adapters.md) — v2 数据适配层（已随壳层退役）
-- [v2-sdk-vendor](v2-sdk-vendor.md) — v2 vendored SDK（已随壳层退役）
-- [v2-shell-router](v2-shell-router.md) — v2 shell 与 hash 路由（已随壳层退役）
-- [v2-legacy-coexist](v2-legacy-coexist.md) — v2 与旧版并存机制（已随壳层退役）
+| 能力页 | 简介 |
+| --- | --- |
+| [dashboard-server](dashboard-server.md) | dashboard 服务端 |
+| [fenix-dashboard-skill](fenix-dashboard-skill.md) | dashboard 技能入口 |
+| [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（看门狗） |
+| [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 |
+| [v2-sse-bridge](v2-sse-bridge.md) | v2 SSE 桥（已随壳层退役） |
+| [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher |
+| [dashboard-log-offset-index](dashboard-log-offset-index.md) | 日志偏移索引 |
+| [dashboard-spec-summary-index](dashboard-spec-summary-index.md) | SPEC 摘要索引 |
+| [dashboard-data-modules](dashboard-data-modules.md) | 数据读取模块化 |
+| [dashboard-read-path-performance](dashboard-read-path-performance.md) | 读路径性能优化 |
+| [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 |
+| [dashboard-live-session](dashboard-live-session.md) | 实时会话视图 |
+| [v2-data-adapters](v2-data-adapters.md) | v2 数据适配层（已随壳层退役） |
+| [v2-sdk-vendor](v2-sdk-vendor.md) | v2 vendored SDK（已随壳层退役） |
+| [v2-shell-router](v2-shell-router.md) | v2 shell 与 hash 路由（已随壳层退役） |
+| [v2-legacy-coexist](v2-legacy-coexist.md) | v2 与旧版并存机制（已随壳层退役） |

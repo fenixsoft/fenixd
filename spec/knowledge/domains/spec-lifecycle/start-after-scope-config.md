@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- 2026-09-24 2026-09-24-add-start-after-scope-config — 新增 scope 配置键：dispatch/full 两档语义、作用于定时值与哨兵全阻塞态、实现派发口不受 scope 影响、文档同步
+- [2026-09-24 2026-09-24-add-start-after-scope-config](spec/archive/2026-09-24-add-start-after-scope-config/) — 新增 scope 配置键：dispatch/full 两档语义、作用于定时值与哨兵全阻塞态、实现派发口不受 scope 影响、文档同步

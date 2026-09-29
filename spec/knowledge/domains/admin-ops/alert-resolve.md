@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-27 add-human-adjudication-choices — 建立 alert-resolve 端点：选择即完整闭环、ESCALATION/SIGNAL 双 handled 通道、失败不虚假标记与结构化 disposition 留痕
+- [2026-09-27 add-human-adjudication-choices](spec/archive/2026-09-27-add-human-adjudication-choices/) — 建立 alert-resolve 端点：选择即完整闭环、ESCALATION/SIGNAL 双 handled 通道、失败不虚假标记与结构化 disposition 留痕

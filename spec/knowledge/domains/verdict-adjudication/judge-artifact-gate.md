@@ -15,5 +15,5 @@ agent run 成功判定的结果文件存在性硬门：exit 0 不等价于成功
 
 ## 溯源
 
-- 2026-09-14 add-judge-artifact-gate — 确立 planner-judge / planner-plan 结果文件存在性硬门（exit 0+产物双条件、缺失走瞬态退避重试）与硬门/裁决双预算分离
-- 2026-09-22 fix-impl-resultfile-contract-gap — 硬门契约段注入车道扩展至五车道（补齐 implementer / fast-track 缺口），路径计算按 agent_type 分派并与 runner 侧同源
+- [2026-09-14 add-judge-artifact-gate](spec/archive/2026-09-14-add-judge-artifact-gate/) — 确立 planner-judge / planner-plan 结果文件存在性硬门（exit 0+产物双条件、缺失走瞬态退避重试）与硬门/裁决双预算分离
+- [2026-09-22 fix-impl-resultfile-contract-gap](spec/archive/2026-09-22-fix-impl-resultfile-contract-gap/) — 硬门契约段注入车道扩展至五车道（补齐 implementer / fast-track 缺口），路径计算按 agent_type 分派并与 runner 侧同源

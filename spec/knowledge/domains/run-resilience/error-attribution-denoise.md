@@ -12,4 +12,4 @@ run 终态 error 消息拼装时的 CLI 诊断噪音过滤：让死因字段不�
 
 ## 溯源
 
-- 2026-09-13 fix-provider-transient-backoff — 确立 error 拼装的 CLI 诊断行过滤、全噪音时退出码回退形态，以及「分类不得反推降噪文本」的口径
+- [2026-09-13 fix-provider-transient-backoff](spec/archive/2026-09-13-fix-provider-transient-backoff/) — 确立 error 拼装的 CLI 诊断行过滤、全噪音时退出码回退形态，以及「分类不得反推降噪文本」的口径

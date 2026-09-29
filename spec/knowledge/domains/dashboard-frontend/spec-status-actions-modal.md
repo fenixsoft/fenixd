@@ -17,5 +17,5 @@ SPEC 行「更多」菜单收敛与「修改状态」弹窗：按当前状态条
 
 ## 溯源
 
-- 2026-09-15 add-spec-status-modal-budget — 更多菜单收敛为六项；建立修改状态弹窗按状态渲染归档/冻结/晋升区块，冻结区块吸收原「冻结管理」弹窗全部能力
-- 2026-09-19 fix-impl-tasks-completion-gate — 新增 verified + task-gap 前缀的回炉区块：缺口任务清单、复位 ready 重新派发的危险确认与拒绝原因透出
+- [2026-09-15 add-spec-status-modal-budget](spec/archive/2026-09-15-add-spec-status-modal-budget/) — 更多菜单收敛为六项；建立修改状态弹窗按状态渲染归档/冻结/晋升区块，冻结区块吸收原「冻结管理」弹窗全部能力
+- [2026-09-19 fix-impl-tasks-completion-gate](spec/archive/2026-09-19-fix-impl-tasks-completion-gate/) — 新增 verified + task-gap 前缀的回炉区块：缺口任务清单、复位 ready 重新派发的危险确认与拒绝原因透出

@@ -16,5 +16,5 @@
 ## 溯源
 
 - 史前复原（存量基线） — 验证引擎按场景步骤驱动浏览器执行动作与断言，产出结构化逐步骤判定结果供裁决消费
-- 2026-09-12 add-verify-multi-kind-runner — Runner 插件化重构：web 单形态假设退役，新增 api/cli 双 Runner、调度无 kind 分支、lazy setup、契约形态按场景集反推、BASE_URL 注入扩展与 base_url 契约统一供给
-- 2026-09-14 fix-verify-cli-cwd-isolation — cli 步骤缺省 cwd 收敛为本轮 serving worktree 根（执行根曾错为主树根，seed 型场景把测试夹具写进主树 `.fenix/STATE.md` 与 `spec/changes/`，被 daemon 当真需求收编自动派发、反复烧钱），引擎簿记路径不变
+- [2026-09-12 add-verify-multi-kind-runner](spec/archive/2026-09-12-add-verify-multi-kind-runner/) — Runner 插件化重构：web 单形态假设退役，新增 api/cli 双 Runner、调度无 kind 分支、lazy setup、契约形态按场景集反推、BASE_URL 注入扩展与 base_url 契约统一供给
+- [2026-09-14 fix-verify-cli-cwd-isolation](spec/archive/2026-09-14-fix-verify-cli-cwd-isolation/) — cli 步骤缺省 cwd 收敛为本轮 serving worktree 根（执行根曾错为主树根，seed 型场景把测试夹具写进主树 `.fenix/STATE.md` 与 `spec/changes/`，被 daemon 当真需求收编自动派发、反复烧钱），引擎簿记路径不变

@@ -26,6 +26,6 @@
 
 ## 溯源
 
-- 2026-09-09 2026-09-09-add-fast-track-mode — 新增快车道：单 run 全包执行、统一结果文件驱动状态推进、护栏与硬校验适配单 run、run 内修复与超预算升级、worktree 复用与合并语义
-- 2026-09-18 2026-09-18-fix-fasttrack-resultfile-missing-redispatch — 结果文件缺失不再一律判死重派：分支有提交时 merge 后升级 full 补验证，零提交/无分支才判死亡重派
-- 2026-09-28 2026-09-28-fix-fasttrack-implemented-deadstate — 新增 implemented 死态恢复出口：短路基前置恢复三条件判据、恢复重入与正常收尾共用收尾段、重入不读结果文件、重入可观测（testing 搁浅态双形态系归档后 code-review 项扩展，并入本页现行规则）
+- [2026-09-09 2026-09-09-add-fast-track-mode](spec/archive/2026-09-09-add-fast-track-mode/) — 新增快车道：单 run 全包执行、统一结果文件驱动状态推进、护栏与硬校验适配单 run、run 内修复与超预算升级、worktree 复用与合并语义
+- [2026-09-18 2026-09-18-fix-fasttrack-resultfile-missing-redispatch](spec/archive/2026-09-18-fix-fasttrack-resultfile-missing-redispatch/) — 结果文件缺失不再一律判死重派：分支有提交时 merge 后升级 full 补验证，零提交/无分支才判死亡重派
+- [2026-09-28 2026-09-28-fix-fasttrack-implemented-deadstate](spec/archive/2026-09-28-fix-fasttrack-implemented-deadstate/) — 新增 implemented 死态恢复出口：短路基前置恢复三条件判据、恢复重入与正常收尾共用收尾段、重入不读结果文件、重入可观测（testing 搁浅态双形态系归档后 code-review 项扩展，并入本页现行规则）

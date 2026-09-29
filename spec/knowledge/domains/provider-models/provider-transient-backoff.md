@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-13 fix-provider-transient-backoff — 建立原地退避优先于换链的重试序、resume 死 session 兜底、全 agent_type 的 attempt 间现场保留与瞬断终态 keep_for_reuse 遗产登记
+- [2026-09-13 fix-provider-transient-backoff](spec/archive/2026-09-13-fix-provider-transient-backoff/) — 建立原地退避优先于换链的重试序、resume 死 session 兜底、全 agent_type 的 attempt 间现场保留与瞬断终态 keep_for_reuse 遗产登记

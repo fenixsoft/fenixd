@@ -13,4 +13,4 @@ dashboard 服务对 SSE 连接与 HTTP 并发线程的双上限保护，防标�
 
 ## 溯源
 
-- 2026-09-09 2026-09-09-add-dashboard-incremental-data — 建立 SSE 连接上限与 HTTP 线程上限，超限拒绝（503）而非排队堆积，常量可 monkeypatch 降值测试
+- [2026-09-09 2026-09-09-add-dashboard-incremental-data](spec/archive/2026-09-09-add-dashboard-incremental-data/) — 建立 SSE 连接上限与 HTTP 线程上限，超限拒绝（503）而非排队堆积，常量可 monkeypatch 降值测试

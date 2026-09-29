@@ -13,4 +13,4 @@ stash pop 冲突自愈后的可见性与善后契约：admin 直发告警、被�
 ## 溯源
 
 - 史前复原（存量基线） — stash pop 冲突按三方合并自愈重建工作区改动，冲突处置不丢已实现内容
-- 2026-09-14 fix-mergeback-stashpop-silent-loss — 固化 stash_pop_conflict 直发告警契约（白名单收录/description 内容清单）、被取代条目树级一致性自动 drop（栈顶钉住防线）与 merge 前 WIP 重叠预警（该预警后升级为执行级重叠闸门，现行语义见 merge-back 能力页）
+- [2026-09-14 fix-mergeback-stashpop-silent-loss](spec/archive/2026-09-14-fix-mergeback-stashpop-silent-loss/) — 固化 stash_pop_conflict 直发告警契约（白名单收录/description 内容清单）、被取代条目树级一致性自动 drop（栈顶钉住防线）与 merge 前 WIP 重叠预警（该预警后升级为执行级重叠闸门，现行语义见 merge-back 能力页）

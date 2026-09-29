@@ -18,4 +18,4 @@
 
 ## 溯源
 
-- 2026-09-22 2026-09-22-refactor-giant-classes — 确立三大巨型类按职责拆分格局与兼容不变式：子模块职责单一、门面 re-export、import 与测试引用零改动、端点集合不变、patch 语义保持、纯结构搬移与符号名锚定
+- [2026-09-22 2026-09-22-refactor-giant-classes](spec/archive/2026-09-22-refactor-giant-classes/) — 确立三大巨型类按职责拆分格局与兼容不变式：子模块职责单一、门面 re-export、import 与测试引用零改动、端点集合不变、patch 语义保持、纯结构搬移与符号名锚定

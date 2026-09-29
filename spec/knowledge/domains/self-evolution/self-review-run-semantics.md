@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-19 evo-add-self-review-run-semantics — 自省成功判据纳入业务失败语义（盲派空 spec run 自述「SPEC 内容缺失」曾被计成功、浪费规模被系统性低估）
+- [2026-09-19 evo-add-self-review-run-semantics](spec/archive/2026-09-19-evo-add-self-review-run-semantics/) — 自省成功判据纳入业务失败语义（盲派空 spec run 自述「SPEC 内容缺失」曾被计成功、浪费规模被系统性低估）

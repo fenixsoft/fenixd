@@ -14,4 +14,4 @@ agent 收工前对结果文件的自证通道：与 daemon 侧硬门同源的零
 
 ## 溯源
 
-- 2026-09-27 2026-09-27-add-impl-selfcheck-model-probe — 建立 `--selfcheck` 零网络 CLI（复用生产校验体）与收尾 prompt 注入契约（命令、正反例、枚举说明）
+- [2026-09-27 2026-09-27-add-impl-selfcheck-model-probe](spec/archive/2026-09-27-add-impl-selfcheck-model-probe/) — 建立 `--selfcheck` 零网络 CLI（复用生产校验体）与收尾 prompt 注入契约（命令、正反例、枚举说明）

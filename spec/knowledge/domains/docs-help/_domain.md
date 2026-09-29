@@ -4,6 +4,8 @@
 
 ## 能力页
 
-- [help-docs](help-docs.md) — 帮助文档集（docs/help/ 内容契约）
-- [help-center](help-center.md) — Dashboard 帮助中心
-- [docs-safeguards-chapter](docs-safeguards-chapter.md) — 保障机制文档专章
+| 能力页 | 简介 |
+| --- | --- |
+| [help-docs](help-docs.md) | 帮助文档集（docs/help/ 内容契约） |
+| [help-center](help-center.md) | Dashboard 帮助中心 |
+| [docs-safeguards-chapter](docs-safeguards-chapter.md) | 保障机制文档专章 |

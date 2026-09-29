@@ -14,4 +14,4 @@ AdminMonitor 复位路径（`_reset_env_blocked_after_disposition` 及同类）�
 
 ## 溯源
 
-- 2026-09-20 add-control-plane-silent-failure-guards — 复位路径异常分层（编程错误升级/运维异常静默）、调用点可定位证据、不重抛与未处理去重
+- [2026-09-20 add-control-plane-silent-failure-guards](spec/archive/2026-09-20-add-control-plane-silent-failure-guards/) — 复位路径异常分层（编程错误升级/运维异常静默）、调用点可定位证据、不重抛与未处理去重

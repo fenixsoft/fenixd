@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-09 2026-09-09-add-fast-track-mode — 新增选道判定：复杂度评估与明确建议、用户显式指定优先、mode 元数据落盘与缺省 full、Dashboard 模式标记
+- [2026-09-09 2026-09-09-add-fast-track-mode](spec/archive/2026-09-09-add-fast-track-mode/) — 新增选道判定：复杂度评估与明确建议、用户显式指定优先、mode 元数据落盘与缺省 full、Dashboard 模式标记

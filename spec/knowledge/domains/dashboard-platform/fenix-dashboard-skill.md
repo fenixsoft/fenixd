@@ -16,4 +16,4 @@
 ## 溯源
 
 - 史前复原 — /fenix-dashboard skill 启动并注册跨项目 dashboard 服务，验证以页面可达为准
-- 2026-09-02 2026-09-02-add-fenix-dashboard — 建立「探测→启动→注册→输出 URL」流程与 install.sh 软链接入
+- [2026-09-02 2026-09-02-add-fenix-dashboard](spec/archive/2026-09-02-add-fenix-dashboard/) — 建立「探测→启动→注册→输出 URL」流程与 install.sh 软链接入

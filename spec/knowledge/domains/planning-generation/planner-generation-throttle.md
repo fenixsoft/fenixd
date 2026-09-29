@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- 2026-09-11 2026-09-11-add-planner-efficiency — 新增阶段级信号量与 `verify.planner_max_concurrent` 配置键、设置页开关与三点注解、排队不误判契约与取消释放信号量契约。
+- [2026-09-11 2026-09-11-add-planner-efficiency](spec/archive/2026-09-11-add-planner-efficiency/) — 新增阶段级信号量与 `verify.planner_max_concurrent` 配置键、设置页开关与三点注解、排队不误判契约与取消释放信号量契约。

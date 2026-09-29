@@ -18,4 +18,4 @@ run 事件转聊天气泡时按事件类别分流：心跳类静默、信息类�
 
 ## 溯源
 
-- 2026-09-27 2026-09-27-add-run-record-readability — 新增心跳类静默名单与 kind 归一化判定、信息类事件语义化中文系统条、task 生命周期回填工具卡片，废止无字符串 content 一律落 `[label]` 裸行的兜底渲染。
+- [2026-09-27 2026-09-27-add-run-record-readability](spec/archive/2026-09-27-add-run-record-readability/) — 新增心跳类静默名单与 kind 归一化判定、信息类事件语义化中文系统条、task 生命周期回填工具卡片，废止无字符串 content 一律落 `[label]` 裸行的兜底渲染。

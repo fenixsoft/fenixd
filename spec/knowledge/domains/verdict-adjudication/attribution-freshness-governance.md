@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-15 add-verdict-credibility-gate — 确立跨轮缓存归因强制打标与缓存归因打回抑制、批量同文案归因（≥3 场景同文）拒绝落盘、视觉基线健全性防污染三件套
+- [2026-09-15 add-verdict-credibility-gate](spec/archive/2026-09-15-add-verdict-credibility-gate/) — 确立跨轮缓存归因强制打标与缓存归因打回抑制、批量同文案归因（≥3 场景同文）拒绝落盘、视觉基线健全性防污染三件套

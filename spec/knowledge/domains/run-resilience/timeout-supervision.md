@@ -14,4 +14,4 @@ supervision `absolute_max_seconds` 下限的单一派生口径与启动/热更�
 
 ## 溯源
 
-- 2026-09-22 evo-supervision-timeout-config-consistency — 两处手写下限口径收编为单一派生函数；配置校验层改按部署最大下限；不一致处置由「告警+兜底」改为默认自动对齐（可显式关闭转 fail-fast）
+- [2026-09-22 evo-supervision-timeout-config-consistency](spec/archive/2026-09-22-evo-supervision-timeout-config-consistency/) — 两处手写下限口径收编为单一派生函数；配置校验层改按部署最大下限；不一致处置由「告警+兜底」改为默认自动对齐（可显式关闭转 fail-fast）

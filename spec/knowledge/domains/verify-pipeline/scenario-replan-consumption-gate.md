@@ -11,4 +11,4 @@
 
 ## 溯源
 
-- 2026-09-15 fix-frozen-scenario-orphan-reservoir — 新增重跑前反馈消费硬门、分级升级通道（拒绝派发 → admin 自动处置 → 人工裁决重出题）与 admin 修复过写端门/双文件一致约束（此前 planner 坏产物原样复发，重复成本全数支付且每轮外溢为 admin/人工往返）
+- [2026-09-15 fix-frozen-scenario-orphan-reservoir](spec/archive/2026-09-15-fix-frozen-scenario-orphan-reservoir/) — 新增重跑前反馈消费硬门、分级升级通道（拒绝派发 → admin 自动处置 → 人工裁决重出题）与 admin 修复过写端门/双文件一致约束（此前 planner 坏产物原样复发，重复成本全数支付且每轮外溢为 admin/人工往返）

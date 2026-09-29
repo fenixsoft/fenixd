@@ -16,4 +16,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：运维记录时间线按 admin_run_id 归并展示（API/页面/测试），处置过程实时可见
-- 2026-09-02 add-admin-activity-view — 固化运维记录 API 字段契约（倒序/未处理置顶/跨项目分组）与独立页面交互（时间线、高亮、mark-handled、降级兼容）
+- [2026-09-02 add-admin-activity-view](spec/archive/2026-09-02-add-admin-activity-view/) — 固化运维记录 API 字段契约（倒序/未处理置顶/跨项目分组）与独立页面交互（时间线、高亮、mark-handled、降级兼容）

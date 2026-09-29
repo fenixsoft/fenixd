@@ -17,5 +17,5 @@
 
 ## 溯源
 
-- 2026-09-09 add-agent-prompt-files — 固化通用层文件化唯一真相与占位符替换、项目附加层与写保护、死知识清理迁移、设置页提示词页签
-- 2026-09-25 fix-agent-lane-efficiency — 固化动态契约段注入顺序不变式与零注入语义；result gate 段保留 ScheduleWakeup 事实、行为约束改为禁自旋并明示后台 Bash 通知可用
+- [2026-09-09 add-agent-prompt-files](spec/archive/2026-09-09-add-agent-prompt-files/) — 固化通用层文件化唯一真相与占位符替换、项目附加层与写保护、死知识清理迁移、设置页提示词页签
+- [2026-09-25 fix-agent-lane-efficiency](spec/archive/2026-09-25-fix-agent-lane-efficiency/) — 固化动态契约段注入顺序不变式与零注入语义；result gate 段保留 ScheduleWakeup 事实、行为约束改为禁自旋并明示后台 Bash 通知可用

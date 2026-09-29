@@ -18,5 +18,5 @@
 
 ## 溯源
 
-- 2026-09-17 2026-09-17-add-spec-content-integrity-gate — 新增内容完整性门：派发前空 spec 判定、冻结处置与 spec_content_missing 告警、告警自动闭环、IO 异常保守放行
-- 2026-09-29 2026-09-29-evo-alert-noise-governance — 新增终态豁免（done/pushed/archived 短路：不冻结不告警）与「已交付未落盘」独立分类（spec_delivered_no_content 引导裁决、自带查重幂等、派发拦截不变），并注册独立闭环条件 spec_delivered_adjudicated（仅终态自动闭环，不复用 spec_terminal_or_unblocked）
+- [2026-09-17 2026-09-17-add-spec-content-integrity-gate](spec/archive/2026-09-17-add-spec-content-integrity-gate/) — 新增内容完整性门：派发前空 spec 判定、冻结处置与 spec_content_missing 告警、告警自动闭环、IO 异常保守放行
+- [2026-09-29 2026-09-29-evo-alert-noise-governance](spec/archive/2026-09-29-evo-alert-noise-governance/) — 新增终态豁免（done/pushed/archived 短路：不冻结不告警）与「已交付未落盘」独立分类（spec_delivered_no_content 引导裁决、自带查重幂等、派发拦截不变），并注册独立闭环条件 spec_delivered_adjudicated（仅终态自动闭环，不复用 spec_terminal_or_unblocked）

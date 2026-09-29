@@ -16,5 +16,5 @@ merge-back 反复以相同原因失败时的熔断器：按稳定失败指纹计
 
 ## 溯源
 
-- 2026-09-02 fix-fenix-token-waste — 新增 merge 失败指纹熔断（同指纹连续 2 次 blocked、人工重置恢复）与派发前主树 autostash 健康检查（该检查现行语义已并入 merge-back 闸门链）
-- 2026-09-09 add-merge-back-repair-lane — 熔断与 repair 通道记账打通：repair 轮不重置连续计数、blocked 后 repair 一并停止
+- [2026-09-02 fix-fenix-token-waste](spec/archive/2026-09-02-fix-fenix-token-waste/) — 新增 merge 失败指纹熔断（同指纹连续 2 次 blocked、人工重置恢复）与派发前主树 autostash 健康检查（该检查现行语义已并入 merge-back 闸门链）
+- [2026-09-09 add-merge-back-repair-lane](spec/archive/2026-09-09-add-merge-back-repair-lane/) — 熔断与 repair 通道记账打通：repair 轮不重置连续计数、blocked 后 repair 一并停止

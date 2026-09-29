@@ -13,4 +13,4 @@ dashboard 前端移动端 CSS 与 JS 两轨断点的统一约定：全部移动�
 
 ## 溯源
 
-- 2026-09-13 fix-mobile-breakpoint-hook-tables — 确立 `:is(.screen-xs, .screen-sm)` 统一作用域约定（覆盖既有全部移动端规则），并追加全站 Modal 移动端宽度上限
+- [2026-09-13 fix-mobile-breakpoint-hook-tables](spec/archive/2026-09-13-fix-mobile-breakpoint-hook-tables/) — 确立 `:is(.screen-xs, .screen-sm)` 统一作用域约定（覆盖既有全部移动端规则），并追加全站 Modal 移动端宽度上限

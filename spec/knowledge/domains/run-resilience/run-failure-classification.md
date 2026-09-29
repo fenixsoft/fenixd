@@ -16,4 +16,4 @@ run 执行失败按 infra / 内容 / 判别三级分流处置：基础设施故�
 ## 溯源
 
 - 史前复原 — 迁移期基线：verifier/judge 的基础设施类失败不流转 bug-found，守护原状态等待重排；伪失败与产品失败分流处置
-- 2026-09-21 evo-run-failure-classification-circuitbreaker — 确立 infra 指纹识别、连续失败链路熔断与 30 分钟冷却、infra 失败清锚点不计内容重试的 STATE 副作用
+- [2026-09-21 evo-run-failure-classification-circuitbreaker](spec/archive/2026-09-21-evo-run-failure-classification-circuitbreaker/) — 确立 infra 指纹识别、连续失败链路熔断与 30 分钟冷却、infra 失败清锚点不计内容重试的 STATE 副作用

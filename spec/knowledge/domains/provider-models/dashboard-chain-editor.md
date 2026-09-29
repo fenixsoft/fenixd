@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-03 improve-failover-model-mapping-ui — 建立链编辑器的行级交互、三形态规范化回显、单行退化字符串的序列化规则与后端校验防覆写契约
+- [2026-09-03 improve-failover-model-mapping-ui](spec/archive/2026-09-03-improve-failover-model-mapping-ui/) — 建立链编辑器的行级交互、三形态规范化回显、单行退化字符串的序列化规则与后端校验防覆写契约

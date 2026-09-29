@@ -14,4 +14,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：死亡 run 的遗产（保留分支、worktree）先做遗留检查再决定保留或自主收编，防误清仍在消费的产物
-- 2026-09-06 add-recovery-legacy-check — 机制化遗产保留与清扫豁免、遗产上下文注入、agent 自主收编决策权与只读边界
+- [2026-09-06 add-recovery-legacy-check](spec/archive/2026-09-06-add-recovery-legacy-check/) — 机制化遗产保留与清扫豁免、遗产上下文注入、agent 自主收编决策权与只读边界

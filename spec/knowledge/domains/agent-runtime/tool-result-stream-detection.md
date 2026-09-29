@@ -13,4 +13,4 @@ stream-json 流转录中 tool_result 事件的统一判定：三处消费点共�
 
 ## 溯源
 
-- 2026-09-18 fix-run-latency-toolresult-parser — 固化 tool_result 事件统一识别判定（user 包裹 block + 顶层兼容路径）、排除文本类 user 事件，并收敛为延迟采样与流量活性三处消费点的单一真源
+- [2026-09-18 fix-run-latency-toolresult-parser](spec/archive/2026-09-18-fix-run-latency-toolresult-parser/) — 固化 tool_result 事件统一识别判定（user 包裹 block + 顶层兼容路径）、排除文本类 user 事件，并收敛为延迟采样与流量活性三处消费点的单一真源

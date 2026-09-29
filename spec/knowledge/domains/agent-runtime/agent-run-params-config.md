@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- 2026-09-02 improve-agent-config-and-verify-resume — 固化 max_turns 默认 300（配置与代码 fallback 单源）、运行时按 assistant 事件数强制、配置页可视化编辑与保存保留其它受管键
+- [2026-09-02 improve-agent-config-and-verify-resume](spec/archive/2026-09-02-improve-agent-config-and-verify-resume/) — 固化 max_turns 默认 300（配置与代码 fallback 单源）、运行时按 assistant 事件数强制、配置页可视化编辑与保存保留其它受管键

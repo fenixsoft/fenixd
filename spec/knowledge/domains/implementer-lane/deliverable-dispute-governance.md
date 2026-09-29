@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-23 2026-09-23-evo-deliverable-dispute-orphan-preclassify — 确立孤儿判定口径（负向 pathspec 引用面、kind 分化历史判据、basename 比对）、机械删除续走范式与晋升期 lint 孤儿检查
+- [2026-09-23 2026-09-23-evo-deliverable-dispute-orphan-preclassify](spec/archive/2026-09-23-evo-deliverable-dispute-orphan-preclassify/) — 确立孤儿判定口径（负向 pathspec 引用面、kind 分化历史判据、basename 比对）、机械删除续走范式与晋升期 lint 孤儿检查

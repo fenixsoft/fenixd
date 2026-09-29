@@ -5,12 +5,11 @@
 //   请求（对齐 QualityTab/RegressionTab/ArchitectureTab 按需加载语义）。
 // - enabled 门控：GET /api/config 的 knowledge.enabled === false 时渲染禁用
 //   占位（说明 + 去设置页指引），不再发其它请求。
-// - 视图栈：总目录（index.md Markdown 渲染 + graph 区；ADR 清单只在
+// - 视图栈：总目录（index.md Markdown 渲染；ADR 清单只在
 //   adr/index.md，见总目录「决策记录」节链接，此处不重复展示）
 //   → 能力页/导航页/ADR 详情（点进拉单文件，面包屑返回总目录）。
-// - graph 区：fetch 探测 /api/knowledge/graph → 200 渲染 <iframe
-//   sandbox="allow-scripts">（同 ArchitectureTab 沙箱口径）；404 渲染
-//   「关系图尚未生成」占位。
+//   （graph 关系图区已随 graphify 功能取消整段下线——2026-09-29，探测、
+//   iframe 与后端 /api/knowledge/graph 下发端点一并移除。）
 // - 链接导航：Markdown 相对链接（truth-source 内部路径）拦截为站内拉取，
 //   经 resolveKnowledgePath 基于当前页目录归一化；外部链接走 SafeLink 白名单。
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -24,7 +23,6 @@ import {
   getConfig,
   getKnowledgeFile,
   getKnowledgeIndex,
-  knowledgeGraphUrl,
 } from '../../../services/dashboard';
 import type { KnowledgeIndexData } from '../../../services/dashboard';
 import SpecDocModal, { SafeLink, markdownComponents } from './SpecDocModal';
@@ -95,7 +93,8 @@ export interface KnowledgeCrumb {
 /** 面包屑：真相源内路径 → 层级项（含点击目标，替代裸目录路径）。
  *  'domains/<域>/<能力>.md' → [总目录→index, <域>→域导航页, <能力>→null]；
  *  'domains/<域>/_domain.md' → [总目录→index, <域>→null]（域名即当前层级）；
- *  'adr/ADR-001-x.md' → [总目录→index, ADR→null, ADR-001-x→null]（ADR 无导航页）。 */
+ *  'adr/ADR-001-x.md' → [总目录→index, ADR→adr/index.md, ADR-001-x→null]；
+ *  'adr/index.md' → [总目录→index, ADR→null]（索引自身，ADR 即当前层级）。 */
 export function knowledgeCrumbs(path: string): KnowledgeCrumb[] {
   const rawSegs = path
     .replace(/\.md$/, '')
@@ -105,9 +104,12 @@ export function knowledgeCrumbs(path: string): KnowledgeCrumb[] {
   const segs = rawSegs.filter((s) => s !== '_domain');
   const indexCrumb: KnowledgeCrumb = { title: '总目录', target: 'index' };
   if (segs[0] === 'adr') {
+    if (segs.length === 2 && segs[1] === 'index') {
+      return [indexCrumb, { title: 'ADR', target: null }];
+    }
     return [
       indexCrumb,
-      { title: 'ADR', target: null },
+      { title: 'ADR', target: 'adr/index.md' },
       ...segs.slice(1).map((title) => ({ title, target: null })),
     ];
   }
@@ -147,13 +149,12 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // 加载失败态（code-review item 61d229fbd494）：config/index 请求失败的
   // 错误消息；null = 无错误。与「尚未初始化」业务态区分，不互相伪装。
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [graphState, setGraphState] = useState<'unknown' | 'ready' | 'missing'>('unknown');
   // 溯源归档链接弹出的 SPEC 文档弹窗（spec/archive/ 链接 → 剥日期 spec 名）
   const [docSpec, setDocSpec] = useState<string | null>(null);
   // 请求序号守卫（QualityTab/RegressionTab 同款）：慢响应不覆盖新视图
   const seqRef = useRef(0);
 
-  // active 门控拉取：先 config 判 enabled，再 index + graph 探测
+  // active 门控拉取：先 config 判 enabled，再拉 index
   const load = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++seqRef.current;
@@ -169,19 +170,6 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
       if (seq !== seqRef.current) return;
       setIndexData(data);
       setLoadError(null);
-      // graph 探测：404 = 未生成（占位）；200 = 下发 URL 交 iframe。
-      // HEAD 探测（code-review item 6e3bcfab6887）：后端 /api/knowledge/graph
-      // 的 GET 路由对 HEAD 同表分派（_handle_api），且 _send_file/_json/_error
-      // 均在 command==HEAD 时抑制响应体——探测只收响应头，不再整份下载
-      // graph.html；iframe 渲染仍走 GET 的 knowledgeGraphUrl。
-      try {
-        const res = await fetch(knowledgeGraphUrl(project), { method: 'HEAD' });
-        if (seq !== seqRef.current) return;
-        setGraphState(res.ok ? 'ready' : 'missing');
-      } catch {
-        if (seq !== seqRef.current) return;
-        setGraphState('missing');
-      }
     } catch (e) {
       if (seq !== seqRef.current) return;
       setEnabled(true);
@@ -205,7 +193,6 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   useEffect(() => {
     setView({ kind: 'index' });
     setIndexData(null);
-    setGraphState('unknown');
     setEnabledUnknown(true);
     setLoadError(null);
     setDocSpec(null);
@@ -377,21 +364,6 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
 
               {/* ADR 列表不再在此展示：adr/index.md（总目录「决策记录」节链接）
                   已含编号/状态/摘要全量清单，避免双份维护。 */}
-
-              {/* graph 区：探测 200 → iframe 沙箱；404 → 整区不渲染
-                  （2026-09-29 用户定调：graphify 生成功能已取消
-                  （knowledge.graph_enabled=false），占位对用户是噪音）。
-                  探测逻辑保留：将来复开功能无需改前端。 */}
-              {graphState === 'ready' ? (
-                <div data-testid="knowledge-graph-section">
-                  <iframe
-                    src={knowledgeGraphUrl(project)}
-                    sandbox="allow-scripts"
-                    title="知识关系图"
-                    style={{ width: '100%', height: 480, border: 0, borderRadius: 8 }}
-                  />
-                </div>
-              ) : null}
             </>
           )}
         </Space>

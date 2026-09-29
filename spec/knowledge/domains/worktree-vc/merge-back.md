@@ -20,6 +20,6 @@
 
 ## 溯源
 
-- 2026-09-22 evo-merge-back-wip-overlap-gate-575976 — WIP 重叠处置从仅预警升级为执行级闸门（自动收纳/阻塞策略、`spec/changes/**` 排除、闸门不记账）、stash 保留判据与 stash 前缀隔离、`mergeback_wip_overlap` 直发告警通路（其缺省策略后经 merge-back-precheck 改为升级拦截，见该能力页）
-- 2026-09-25 evo-merge-back-spec-dir-inflight-guard — 新增 spec 目录在飞编辑卫检查与顺延有界性（30 分钟/3 轮双上限、fail-open 边界）、可重试失败仅重试合并的分类语义与预算记账口径
-- 2026-09-25 evo-stash-pop-conflict-triage — stash pop 冲突自愈升级为三态重试（双版本落盘/路径作用域恢复 commit/兜底登记），主树未提交改动不再因自愈静默丢失，处置路径结构化日志可观测
+- [2026-09-22 evo-merge-back-wip-overlap-gate-575976](spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976/) — WIP 重叠处置从仅预警升级为执行级闸门（自动收纳/阻塞策略、`spec/changes/**` 排除、闸门不记账）、stash 保留判据与 stash 前缀隔离、`mergeback_wip_overlap` 直发告警通路（其缺省策略后经 merge-back-precheck 改为升级拦截，见该能力页）
+- [2026-09-25 evo-merge-back-spec-dir-inflight-guard](spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard/) — 新增 spec 目录在飞编辑卫检查与顺延有界性（30 分钟/3 轮双上限、fail-open 边界）、可重试失败仅重试合并的分类语义与预算记账口径
+- [2026-09-25 evo-stash-pop-conflict-triage](spec/archive/2026-09-25-evo-stash-pop-conflict-triage/) — stash pop 冲突自愈升级为三态重试（双版本落盘/路径作用域恢复 commit/兜底登记），主树未提交改动不再因自愈静默丢失，处置路径结构化日志可观测

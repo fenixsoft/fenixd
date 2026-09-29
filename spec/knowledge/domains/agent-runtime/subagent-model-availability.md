@@ -15,4 +15,4 @@ Provider 隔离配置中的子代理模型映射与启动失败可见化：子�
 
 ## 溯源
 
-- 2026-09-25 fix-agent-lane-efficiency — 固化 provider 模型映射注入（subagent_model_override 优先级、tier 兜底重算）、既有隔离目录幂等重建与子代理启动失败可见化
+- [2026-09-25 fix-agent-lane-efficiency](spec/archive/2026-09-25-fix-agent-lane-efficiency/) — 固化 provider 模型映射注入（subagent_model_override 优先级、tier 兜底重算）、既有隔离目录幂等重建与子代理启动失败可见化

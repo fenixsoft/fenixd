@@ -14,4 +14,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期基线：孤儿状态经事件补发、周期扫描与白名单恢复收敛；孤儿恢复对 error 的清空必须持久化，不得只改内存
-- 2026-09-20 add-control-plane-silent-failure-guards — 确立 `orphaned_state` 三条件探测口径、独立于 stuck 的分钟级短阈值、testing 态运行期恢复出口与信号登记节流
+- [2026-09-20 add-control-plane-silent-failure-guards](spec/archive/2026-09-20-add-control-plane-silent-failure-guards/) — 确立 `orphaned_state` 三条件探测口径、独立于 stuck 的分钟级短阈值、testing 态运行期恢复出口与信号登记节流

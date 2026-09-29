@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-15 fix-verdict-read-failclosed — 确立硬门时序（拷回后校验）与 mtime 新鲜度、status 白名单、读侧三态 fail-closed（重派一次后 blocked+告警）、legacy 路径同门与 judge 写入契约加固
+- [2026-09-15 fix-verdict-read-failclosed](spec/archive/2026-09-15-fix-verdict-read-failclosed/) — 确立硬门时序（拷回后校验）与 mtime 新鲜度、status 白名单、读侧三态 fail-closed（重派一次后 blocked+告警）、legacy 路径同门与 judge 写入契约加固

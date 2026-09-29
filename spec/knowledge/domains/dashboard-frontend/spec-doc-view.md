@@ -16,5 +16,5 @@ SPEC 文档端点与文档弹窗：proposal/design/tasks 原文读取、Markdown
 ## 溯源
 
 - 史前复原 — 背景/设计文档按钮与 /api/spec-doc 端点基线（文档三页签弹窗展示、Escape 关闭不误伤其他弹窗）
-- 2026-09-02 add-dashboard-spec-doc-tabs-and-info-clear — 文档端点 `doc` 白名单由 {proposal, design} 扩展为 {proposal, design, tasks}（tasks.md 读取路径构造、缺失空态语义与既有行为一致）
-- 2026-09-02 add-spec-doc-buttons — 固化文档按钮/弹窗契约：入口始终可见不要求文档存在、Markdown 渲染管线复用、加载占位与错误提示、缺失空态、关闭交互不阻塞列表页
+- [2026-09-02 add-dashboard-spec-doc-tabs-and-info-clear](spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear/) — 文档端点 `doc` 白名单由 {proposal, design} 扩展为 {proposal, design, tasks}（tasks.md 读取路径构造、缺失空态语义与既有行为一致）
+- [2026-09-02 add-spec-doc-buttons](spec/archive/2026-09-02-add-spec-doc-buttons/) — 固化文档按钮/弹窗契约：入口始终可见不要求文档存在、Markdown 渲染管线复用、加载占位与错误提示、缺失空态、关闭交互不阻塞列表页

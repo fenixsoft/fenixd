@@ -17,4 +17,4 @@
 
 ## 溯源
 
-- 2026-09-25 add-test-regression-tab — 新增回归触发文件信号与单飞守卫、JUnit XML 解析与状态判定、last-run.json 快照契约、周期调度防重与主机级全量套件互斥
+- [2026-09-25 add-test-regression-tab](spec/archive/2026-09-25-add-test-regression-tab/) — 新增回归触发文件信号与单飞守卫、JUnit XML 解析与状态判定、last-run.json 快照契约、周期调度防重与主机级全量套件互斥

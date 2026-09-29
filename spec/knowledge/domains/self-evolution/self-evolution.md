@@ -25,5 +25,5 @@
 
 ## 溯源
 
-- 2026-09-18 2026-09-18-add-framework-self-evolution — 新增自进化链路全部规则（就绪扫描与单飞、evolution 角色与主树直跑、逐条子代理复核与降级、产物契约、水位幂等、草稿同源 lint、接受/拒绝/删除路径、自动接受、配置节、失败可观测）
-- 2026-09-19 2026-09-19-evo-item-retention-doc-tracking — 新增条目保留与自动清理（7 天 ∪ 最近 100 条并集硬删、清理独立于分析 run 在途与成败、单条失败隔离）
+- [2026-09-18 2026-09-18-add-framework-self-evolution](spec/archive/2026-09-18-add-framework-self-evolution/) — 新增自进化链路全部规则（就绪扫描与单飞、evolution 角色与主树直跑、逐条子代理复核与降级、产物契约、水位幂等、草稿同源 lint、接受/拒绝/删除路径、自动接受、配置节、失败可观测）
+- [2026-09-19 2026-09-19-evo-item-retention-doc-tracking](spec/archive/2026-09-19-evo-item-retention-doc-tracking/) — 新增条目保留与自动清理（7 天 ∪ 最近 100 条并集硬删、清理独立于分析 run 在途与成败、单条失败隔离）

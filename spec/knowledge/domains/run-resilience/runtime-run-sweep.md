@@ -15,4 +15,4 @@ daemon 存活期间周期性为悬空 run 补写 interrupted 终态，并在源�
 
 ## 溯源
 
-- 2026-09-14 add-runtime-run-sweeper — 确立运行期三重判据清扫与补写产物格式、终态缓存、event_bus 挂载与异常降级、run 线程崩溃源头终态、与启动清扫共用终态口径
+- [2026-09-14 add-runtime-run-sweeper](spec/archive/2026-09-14-add-runtime-run-sweeper/) — 确立运行期三重判据清扫与补写产物格式、终态缓存、event_bus 挂载与异常降级、run 线程崩溃源头终态、与启动清扫共用终态口径

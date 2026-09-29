@@ -18,5 +18,5 @@
 
 ## 溯源
 
-- 2026-09-22 evo-self-review-result-based-classification — 失败判定定为以 run 终态为准，废除聚合层对成功终态的全文件信号词降级；信号扫描限非成功终态且仅作归因摘要（治「失败 7 中 5 个误报」）
-- 2026-09-25 evo-self-review-runs-archive-stats — 统计源扩为当前目录 ∪ 归档目录并集，窗口归属按 run_id 内嵌时间戳，失败样本通道同源对齐（治「窗口内完成 run 归档即消失、摘要总 run 数失真」）
+- [2026-09-22 evo-self-review-result-based-classification](spec/archive/2026-09-22-evo-self-review-result-based-classification/) — 失败判定定为以 run 终态为准，废除聚合层对成功终态的全文件信号词降级；信号扫描限非成功终态且仅作归因摘要（治「失败 7 中 5 个误报」）
+- [2026-09-25 evo-self-review-runs-archive-stats](spec/archive/2026-09-25-evo-self-review-runs-archive-stats/) — 统计源扩为当前目录 ∪ 归档目录并集，窗口归属按 run_id 内嵌时间戳，失败样本通道同源对齐（治「窗口内完成 run 归档即消失、摘要总 run 数失真」）

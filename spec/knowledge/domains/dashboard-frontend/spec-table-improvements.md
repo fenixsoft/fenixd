@@ -14,4 +14,4 @@ SPEC 表格的表头排序、耗时列与 fix-* 规格树状挂载。
 
 ## 溯源
 
-- 2026-09-02 improve-dashboard-sections — 新增表头点击排序（列语义 + 三态轮换 + 缺失值排末尾）、「耗时」列（total_duration 全 run 聚合）与 fix-* 树状挂载（递归去前缀、整体排序、孤立 fix 无父级分组）
+- [2026-09-02 improve-dashboard-sections](spec/archive/2026-09-02-improve-dashboard-sections/) — 新增表头点击排序（列语义 + 三态轮换 + 缺失值排末尾）、「耗时」列（total_duration 全 run 聚合）与 fix-* 树状挂载（递归去前缀、整体排序、孤立 fix 无父级分组）

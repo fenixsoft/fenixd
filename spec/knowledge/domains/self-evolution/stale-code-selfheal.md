@@ -21,7 +21,7 @@ daemon 进程持旧代码的持续状态检测与告警、空闲感知的优雅�
 
 ## 溯源
 
-- 2026-09-18 2026-09-18-add-framework-self-evolution — 自愈设置界面迁入「自进化」页签第一张卡片、保存按钮上提合并为页签唯一保存按钮（配置键、缺省值与面板控件语义不变）
-- 2026-09-18 2026-09-18-add-stale-code-selfheal — 新增陈旧持续状态与 stale_code 边沿告警、空闲感知自愈触发（restart_request 协议复用、空闲判定与托管前置）、配置节与设置界面、supervisor 启动失败熔断
-- 2026-09-25 2026-09-25-fix-state-atomicity-and-selfheal-restart — 空闲判定纳入在飞评审 run 全形态（停滞/API 重试中的 run 不算空闲、不得被自愈重启打断），并防陈旧锚点永久占据非空闲
-- 2026-09-28 2026-09-28-fix-fasttrack-implemented-deadstate — 空闲判定纳入在飞 impl-ocr 车道第四源（在飞全程不触发重启、收尾后重新累计、异常宁紧勿松），在飞登记经公开方法 `ocr_lane_busy` 封装、禁跨层直读
+- [2026-09-18 2026-09-18-add-framework-self-evolution](spec/archive/2026-09-18-add-framework-self-evolution/) — 自愈设置界面迁入「自进化」页签第一张卡片、保存按钮上提合并为页签唯一保存按钮（配置键、缺省值与面板控件语义不变）
+- [2026-09-18 2026-09-18-add-stale-code-selfheal](spec/archive/2026-09-18-add-stale-code-selfheal/) — 新增陈旧持续状态与 stale_code 边沿告警、空闲感知自愈触发（restart_request 协议复用、空闲判定与托管前置）、配置节与设置界面、supervisor 启动失败熔断
+- [2026-09-25 2026-09-25-fix-state-atomicity-and-selfheal-restart](spec/archive/2026-09-25-fix-state-atomicity-and-selfheal-restart/) — 空闲判定纳入在飞评审 run 全形态（停滞/API 重试中的 run 不算空闲、不得被自愈重启打断），并防陈旧锚点永久占据非空闲
+- [2026-09-28 2026-09-28-fix-fasttrack-implemented-deadstate](spec/archive/2026-09-28-fix-fasttrack-implemented-deadstate/) — 空闲判定纳入在飞 impl-ocr 车道第四源（在飞全程不触发重启、收尾后重新累计、异常宁紧勿松），在飞登记经公开方法 `ocr_lane_busy` 封装、禁跨层直读

@@ -16,4 +16,4 @@ blocked 停摆的分类契约：「冻结转人工」与「阻塞待 admin」二
 
 ## 溯源
 
-- 2026-09-19 fix-blocked-freeze-classification — 确立 frozen/阻塞二分类契约：评审路径改冻结转人工、静默冻结补告警、freeze_for_human 成对写入 helper 与文档判据
+- [2026-09-19 fix-blocked-freeze-classification](spec/archive/2026-09-19-fix-blocked-freeze-classification/) — 确立 frozen/阻塞二分类契约：评审路径改冻结转人工、静默冻结补告警、freeze_for_human 成对写入 helper 与文档判据

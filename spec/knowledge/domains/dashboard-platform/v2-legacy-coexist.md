@@ -14,6 +14,6 @@
 
 ## 溯源
 
-- 2026-09-05 2026-09-05-fix-fix-v2-shell-hash-router — 将「老版并存不受影响」残留验证场景硬化为确定性回归（显式等待 + 零 404/零 console error 断言），补齐父变更（children 分组侧边栏、fixNavHrefs hash 改写、webfont 补齐）的验证确定性
+- [2026-09-05 2026-09-05-fix-fix-v2-shell-hash-router](spec/archive/2026-09-05-fix-fix-v2-shell-hash-router/) — 将「老版并存不受影响」残留验证场景硬化为确定性回归（显式等待 + 零 404/零 console error 断言），补齐父变更（children 分组侧边栏、fixNavHrefs hash 改写、webfont 补齐）的验证确定性
 - 2026-09-02 git:ea88dd5a — v1/v2 dashboard 壳整体移除（根路由 302 到 v3），并存语义退役
 - 2026-09-28 audit git:25bd6751 — 根路由改直服 v3 SPA（`/` 直接返回 `dist/index.html`，302 跳转取消），退役注记根路由表述纠偏

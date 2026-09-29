@@ -18,5 +18,5 @@
 ## 溯源
 
 - 史前基线 — token 成本按 run 采集、按项目与 agent 累计，Dashboard 展示并接预算控制。
-- 2026-09-06 2026-09-06-add-cost-observability — 改立 per-spec usage 累计与 STATE.md 持久字段，新增 Dashboard/报告展示、预算阈值告警与降噪分级，确立「不伪造金额」口径。
-- 2026-09-11 2026-09-11-add-model-billing-cost-display — 金额口径改为本地单价计算为唯一依据（网关回传展示口径已随该归档废止），新增 run 级本地计价、SPEC 详情成本展示与时间轴节点成本标注。
+- [2026-09-06 2026-09-06-add-cost-observability](spec/archive/2026-09-06-add-cost-observability/) — 改立 per-spec usage 累计与 STATE.md 持久字段，新增 Dashboard/报告展示、预算阈值告警与降噪分级，确立「不伪造金额」口径。
+- [2026-09-11 2026-09-11-add-model-billing-cost-display](spec/archive/2026-09-11-add-model-billing-cost-display/) — 金额口径改为本地单价计算为唯一依据（网关回传展示口径已随该归档废止），新增 run 级本地计价、SPEC 详情成本展示与时间轴节点成本标注。

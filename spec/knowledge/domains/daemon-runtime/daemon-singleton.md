@@ -13,4 +13,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：启动前探测既有实例，双实例被拒；单例互斥覆盖 supervisor 托管场景
-- 2026-09-02 fix-fenix-token-waste — 固化为 `.fenix/daemon.lock` 上的 flock 排他锁：锁被持有即打印提示并以非零码退出
+- [2026-09-02 fix-fenix-token-waste](spec/archive/2026-09-02-fix-fenix-token-waste/) — 固化为 `.fenix/daemon.lock` 上的 flock 排他锁：锁被持有即打印提示并以非零码退出

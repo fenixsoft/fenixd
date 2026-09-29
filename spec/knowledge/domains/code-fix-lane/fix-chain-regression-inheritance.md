@@ -14,4 +14,4 @@ fix 链各轮必须背负其来源场景：父 SPEC 的失败/未执行回归场
 
 ## 溯源
 
-- 2026-09-02 2026-09-02-improve-verify-adjudication — 新建本页：父 SPEC 回归场景注入、多级并集继承、done/pushed 前回归闭环闸门与 administrator 显式豁免留痕。
+- [2026-09-02 2026-09-02-improve-verify-adjudication](spec/archive/2026-09-02-improve-verify-adjudication/) — 新建本页：父 SPEC 回归场景注入、多级并集继承、done/pushed 前回归闭环闸门与 administrator 显式豁免留痕。

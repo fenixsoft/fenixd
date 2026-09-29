@@ -16,4 +16,4 @@ verifier 重验时从已完成场景之后继续，不重复消耗已通过场�
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：verifier 支持断点续跑，重验从已完成场景之后继续，不重复消耗已通过场景
-- 2026-09-02 improve-agent-config-and-verify-resume — 机制化断点注入、损坏安全降级与进度文件起点/单调语义
+- [2026-09-02 improve-agent-config-and-verify-resume](spec/archive/2026-09-02-improve-agent-config-and-verify-resume/) — 机制化断点注入、损坏安全降级与进度文件起点/单调语义

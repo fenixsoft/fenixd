@@ -36,4 +36,4 @@ code-fix 车道在批内实时呈现条级处置明细：读侧经 agent 增量�
 
 ## 溯源
 
-- 2026-09-28 2026-09-28-add-code-fix-item-level-progress — 新建本页：批上下文三键落盘与清除纪律、读侧经 out 文件实时合成 item_done/current_item、null 三态容错、进度卡片条级文案。
+- [2026-09-28 2026-09-28-add-code-fix-item-level-progress](spec/archive/2026-09-28-add-code-fix-item-level-progress/) — 新建本页：批上下文三键落盘与清除纪律、读侧经 out 文件实时合成 item_done/current_item、null 三态容错、进度卡片条级文案。

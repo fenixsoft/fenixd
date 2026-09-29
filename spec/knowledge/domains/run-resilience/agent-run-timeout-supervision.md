@@ -17,5 +17,5 @@ agent run 到达墙钟时限后的活性评估、续期与确定性停滞判定�
 ## 溯源
 
 - 史前复原 — 迁移期基线：agent 运行超时缺省 1 小时，Dashboard 配置页可调；超时由监督线程强杀并记 interrupted 语义
-- 2026-09-02 improve-run-lifecycle-governance — 确立到限先活性评估再终止的流程：证据驱动 LLM 判定、advancing 续期与续期双重封顶、enabled 开关与失败安全回退
-- 2026-09-19 fix-run-hang-amplification — 判定口径改为实质事件/心跳分离，心跳不构成推进证据；新增可观测零产出确定性短路；排除重复调用形态判据
+- [2026-09-02 improve-run-lifecycle-governance](spec/archive/2026-09-02-improve-run-lifecycle-governance/) — 确立到限先活性评估再终止的流程：证据驱动 LLM 判定、advancing 续期与续期双重封顶、enabled 开关与失败安全回退
+- [2026-09-19 fix-run-hang-amplification](spec/archive/2026-09-19-fix-run-hang-amplification/) — 判定口径改为实质事件/心跳分离，心跳不构成推进证据；新增可观测零产出确定性短路；排除重复调用形态判据

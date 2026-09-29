@@ -28,4 +28,4 @@
 
 ## 溯源
 
-- 2026-09-27 add-human-adjudication-choices — 建立静态注册表、告警 choices 字段契约与桶 0/桶 2 携带边界
+- [2026-09-27 add-human-adjudication-choices](spec/archive/2026-09-27-add-human-adjudication-choices/) — 建立静态注册表、告警 choices 字段契约与桶 0/桶 2 携带边界

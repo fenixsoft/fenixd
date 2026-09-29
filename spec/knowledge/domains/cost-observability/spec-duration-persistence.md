@@ -13,4 +13,4 @@ SPEC 落定 done 的时刻把总耗时固化进 STATE.md，使已完成 SPEC 的
 
 ## 溯源
 
-- 2026-09-09 2026-09-09-add-done-duration-persist — 新增 verified→done 时刻固化 `total_duration` 到 STATE.md、序列化白名单持久化与 dashboard 对已完成 SPEC 的持久值优先读取。
+- [2026-09-09 2026-09-09-add-done-duration-persist](spec/archive/2026-09-09-add-done-duration-persist/) — 新增 verified→done 时刻固化 `total_duration` 到 STATE.md、序列化白名单持久化与 dashboard 对已完成 SPEC 的持久值优先读取。

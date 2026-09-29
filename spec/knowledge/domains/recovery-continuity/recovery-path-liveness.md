@@ -18,4 +18,4 @@
 
 ## 溯源
 
-- 2026-09-23 fix-recovery-path-blockers — 新增驱动证据排除 admin 前缀、verifier 重验与在飞处置互斥（含重复唤起抑制与 fail-open）与场景修复预算耗尽的两态重验日程
+- [2026-09-23 fix-recovery-path-blockers](spec/archive/2026-09-23-fix-recovery-path-blockers/) — 新增驱动证据排除 admin 前缀、verifier 重验与在飞处置互斥（含重复唤起抑制与 fail-open）与场景修复预算耗尽的两态重验日程

@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-24 evo-frozen-scenario-contract-versioning — 新增条目级 `contract_version` 字段、读端验收前自动迁移、全场景过时自动重出题与多版本迁移链（此前验收契约每次演化都会把旧冻结集判 corrupt、整轮验证报废并转人工裁决）
+- [2026-09-24 evo-frozen-scenario-contract-versioning](spec/archive/2026-09-24-evo-frozen-scenario-contract-versioning/) — 新增条目级 `contract_version` 字段、读端验收前自动迁移、全场景过时自动重出题与多版本迁移链（此前验收契约每次演化都会把旧冻结集判 corrupt、整轮验证报废并转人工裁决）

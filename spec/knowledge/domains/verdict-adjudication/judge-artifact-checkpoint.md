@@ -13,4 +13,4 @@ planner-judge 对 report.json 的逐场景增量写盘纪律：流截断时已�
 
 ## 溯源
 
-- 2026-09-14 add-judge-artifact-gate — 确立 judge 逐场景原子写回 checkpoint、「先落盘再深入」步骤顺序与重试沿用已有增强的注入契约
+- [2026-09-14 add-judge-artifact-gate](spec/archive/2026-09-14-add-judge-artifact-gate/) — 确立 judge 逐场景原子写回 checkpoint、「先落盘再深入」步骤顺序与重试沿用已有增强的注入契约

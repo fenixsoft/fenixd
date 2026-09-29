@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-24 evo-transient-storm-alert-context — 补齐风暴告警的失败 attempt 聚合上下文，并建立熔断自然过期的自动核销通道（含未处理候选显式判定与幂等语义）
+- [2026-09-24 evo-transient-storm-alert-context](spec/archive/2026-09-24-evo-transient-storm-alert-context/) — 补齐风暴告警的失败 attempt 聚合上下文，并建立熔断自然过期的自动核销通道（含未处理候选显式判定与幂等语义）

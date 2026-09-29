@@ -15,4 +15,4 @@ merge-back 发起前的交集预检：主树 WIP 与实现分支触碰文件重�
 
 ## 溯源
 
-- 2026-09-27 add-pipeline-throughput-governance — 新增 merge 前置交集预检：交集非空缺省处置从自动收纳改为升级人工拦截，保留 `mergeback_wip_overlap_policy` 读侧兼容（block 并入升级出口）与 `merge_precheck_bypass` 逃生门
+- [2026-09-27 add-pipeline-throughput-governance](spec/archive/2026-09-27-add-pipeline-throughput-governance/) — 新增 merge 前置交集预检：交集非空缺省处置从自动收纳改为升级人工拦截，保留 `mergeback_wip_overlap_policy` 读侧兼容（block 并入升级出口）与 `merge_precheck_bypass` 逃生门

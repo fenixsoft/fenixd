@@ -17,4 +17,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期基线：父级 run 失败按伪失败裁决，不据此派生 fix 链；派生判定须基于合入后的真实验证报告
-- 2026-09-21 evo-run-failure-artifact-first — 确立评审失败的产物优先消费与合法性五条件、infra 指纹识别标记、内容失败既有通道不变
+- [2026-09-21 evo-run-failure-artifact-first](spec/archive/2026-09-21-evo-run-failure-artifact-first/) — 确立评审失败的产物优先消费与合法性五条件、infra 指纹识别标记、内容失败既有通道不变

@@ -20,5 +20,5 @@
 
 ## 溯源
 
-- 2026-09-18 2026-09-18-add-framework-self-evolution — 新增「自进化」页签与「建议改进项」面板全部规则（卡片布局与唯一保存按钮、开关与上限、全局清理动作、表格/过滤/批量/操作列、查看与前端交互、API 契约六端点）
-- 2026-09-19 2026-09-19-evo-item-retention-doc-tracking — 「查看 SPEC 草稿」的读取来源定为草稿优先、SPEC 位置回退（治已立项条目「查看」恒空态）；API 契约补 doc_source 字段与归档名全等归属规则
+- [2026-09-18 2026-09-18-add-framework-self-evolution](spec/archive/2026-09-18-add-framework-self-evolution/) — 新增「自进化」页签与「建议改进项」面板全部规则（卡片布局与唯一保存按钮、开关与上限、全局清理动作、表格/过滤/批量/操作列、查看与前端交互、API 契约六端点）
+- [2026-09-19 2026-09-19-evo-item-retention-doc-tracking](spec/archive/2026-09-19-evo-item-retention-doc-tracking/) — 「查看 SPEC 草稿」的读取来源定为草稿优先、SPEC 位置回退（治已立项条目「查看」恒空态）；API 契约补 doc_source 字段与归档名全等归属规则

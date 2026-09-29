@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-19 fix-run-hang-amplification — 确立实质事件/心跳二分与分离计数口径、可观测零产出确定性短路三条件，并明确排除重复调用形态判据
+- [2026-09-19 fix-run-hang-amplification](spec/archive/2026-09-19-fix-run-hang-amplification/) — 确立实质事件/心跳二分与分离计数口径、可观测零产出确定性短路三条件，并明确排除重复调用形态判据

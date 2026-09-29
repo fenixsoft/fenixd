@@ -13,5 +13,5 @@ run 触及 `agents.max_turns` 轮次上限时的续期判定、终止收口与 W
 
 ## 溯源
 
-- 2026-09-17 add-turn-limit-anchor-c — 新增锚点 C 轮次上限收口 WIP 保全、活性感知续期封闭矩阵与强杀消耗 unobserved 观测口径
-- 2026-09-18 fix-run-latency-toolresult-parser — 活性证据中的 tool_result 流量改按统一识别判定（user 包裹 block 或顶层兼容形态），修复事件类型假设错误导致流量活性恒判无活性
+- [2026-09-17 add-turn-limit-anchor-c](spec/archive/2026-09-17-add-turn-limit-anchor-c/) — 新增锚点 C 轮次上限收口 WIP 保全、活性感知续期封闭矩阵与强杀消耗 unobserved 观测口径
+- [2026-09-18 fix-run-latency-toolresult-parser](spec/archive/2026-09-18-fix-run-latency-toolresult-parser/) — 活性证据中的 tool_result 流量改按统一识别判定（user 包裹 block 或顶层兼容形态），修复事件类型假设错误导致流量活性恒判无活性

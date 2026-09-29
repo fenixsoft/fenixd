@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-04 add-admin-invoke-dialog — 呼叫后弹窗从「处置记录卡片」定为「处置过程实时输出」：run 定位、等待态自动切换、SSE 增量渲染与关闭不中断后台处置
+- [2026-09-04 add-admin-invoke-dialog](spec/archive/2026-09-04-add-admin-invoke-dialog/) — 呼叫后弹窗从「处置记录卡片」定为「处置过程实时输出」：run 定位、等待态自动切换、SSE 增量渲染与关闭不中断后台处置

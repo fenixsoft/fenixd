@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-02 2026-09-02-fix-dispatch-orphan — 新增同状态行动性更新的事件补发契约（同状态重置不再静默丢派发）、bug_found 重发的幂等无害化（连续扫描不降级 implemented 子 SPEC、不清空跟踪字段）与状态机半写读取防御。
+- [2026-09-02 2026-09-02-fix-dispatch-orphan](spec/archive/2026-09-02-fix-dispatch-orphan/) — 新增同状态行动性更新的事件补发契约（同状态重置不再静默丢派发）、bug_found 重发的幂等无害化（连续扫描不降级 implemented 子 SPEC、不清空跟踪字段）与状态机半写读取防御。

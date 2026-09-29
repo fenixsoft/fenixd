@@ -4,7 +4,10 @@
 // react-dom/antd/dayjs 保持 external），react-dom/server SSR 渲染断言：
 // - resolveKnowledgePath：相对链接归一化（../、./、白名单外、越出真相源根、
 //   外部协议/锚点）→ 白名单路径或 null；
-// - adrDisplayName：'ADR-001-x.md' → 'ADR-001 x'；
+// - knowledgeCrumbs：面包屑层级项（target='index' 回总目录 / 域导航页路径 /
+//   null 当前层纯文本）；
+// - archiveSpecName：spec/archive 归档链接 → 剥日期前缀的 spec 名（供
+//   SpecDocModal 经后端归档回退解析），非归档链接 null；
 // - active=false → 不渲染任何内容（未选中零渲染，按需加载门控）；
 // - active=true 初挂（SSR 不跑 effect）→ loading 占位，不发请求即无异常。
 import { test } from 'node:test';
@@ -39,7 +42,7 @@ async function loadTab() {
       format: 'esm',
       jsx: 'automatic',
       platform: 'node',
-      external: ['react', 'react-dom', 'antd', 'dayjs'],
+      external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons'],
       alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
       logLevel: 'silent',
     });
@@ -94,17 +97,62 @@ test('resolveKnowledgePath：越界/非法一律 null', async (t) => {
   assert.equal(resolve(null, 'index.md'), null, '根下 index 不在白名单');
 });
 
-test('adrDisplayName：文件名转展示名', async (t) => {
+test('knowledgeCrumbs：能力页 → 总目录/域导航可点，当前页纯文本', async (t) => {
   const mod = await loadTab();
-  assert.equal(mod.adrDisplayName('ADR-001-spawn-injection.md'), 'ADR-001 spawn-injection');
-  assert.equal(mod.adrDisplayName('index.md'), 'index');
+  assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/scheduled-spec-pickup.md'), [
+    { title: '总目录', target: 'index' },
+    { title: 'pickup', target: 'domains/pickup/_domain.md' },
+    { title: 'scheduled-spec-pickup', target: null },
+  ]);
 });
 
-test('adrListLabel：标题字段优先，编号取自文件名前缀；无标题回退文件名派生', async (t) => {
+test('knowledgeCrumbs：域导航页域名即当前层，纯文本', async (t) => {
   const mod = await loadTab();
-  assert.equal(mod.adrListLabel('ADR-001-zn-one.md', 'zn-adr-one-title'), 'ADR-001 zn-adr-one-title');
-  assert.equal(mod.adrListLabel('ADR-001-zn-one.md', null), 'ADR-001 zn-one', '无标题回退 adrDisplayName');
-  assert.equal(mod.adrListLabel('index.md', '某标题'), '某标题', '非 ADR-NNN 文件名仅回标题');
+  assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/_domain.md'), [
+    { title: '总目录', target: 'index' },
+    { title: 'pickup', target: null },
+  ]);
+});
+
+test('knowledgeCrumbs：ADR 页 ADR 层回索引页 adr/index.md', async (t) => {
+  const mod = await loadTab();
+  assert.deepEqual(mod.knowledgeCrumbs('adr/ADR-001-spawn-injection.md'), [
+    { title: '总目录', target: 'index' },
+    { title: 'ADR', target: 'adr/index.md' },
+    { title: 'ADR-001-spawn-injection', target: null },
+  ]);
+});
+
+test('knowledgeCrumbs：adr/index.md 索引自身，ADR 层即当前层', async (t) => {
+  const mod = await loadTab();
+  assert.deepEqual(mod.knowledgeCrumbs('adr/index.md'), [
+    { title: '总目录', target: 'index' },
+    { title: 'ADR', target: null },
+  ]);
+});
+
+test('archiveSpecName：归档链接剥日期前缀得 spec 名，非归档链接 null', async (t) => {
+  const mod = await loadTab();
+  const fn = mod.archiveSpecName;
+  assert.equal(
+    fn('spec/archive/2026-09-02-add-multi-project-monitoring/'),
+    'add-multi-project-monitoring',
+    '带尾斜杠',
+  );
+  assert.equal(
+    fn('spec/archive/2026-09-02-add-multi-project-monitoring'),
+    'add-multi-project-monitoring',
+    '不带尾斜杠',
+  );
+  assert.equal(
+    fn('spec/archive/2026-09-29-evo-foo-a1b2c3/'),
+    'evo-foo-a1b2c3',
+    '非日期的撞名后缀不剥',
+  );
+  assert.equal(fn('domains/pickup/_domain.md'), null, '真相源页路径');
+  assert.equal(fn('https://example.com/spec/archive/x/'), null, '外部 URL');
+  assert.equal(fn('#锚点'), null, '页内锚点');
+  assert.equal(fn('spec/archive/'), null, '空目录名');
 });
 
 test('active=false 不渲染（未选中零请求零渲染）', async (t) => {

@@ -14,5 +14,5 @@ auto-recovery 之后安排闭环复查并前置就地重新派发，周期巡检
 
 ## 溯源
 
-- 2026-09-02 improve-run-lifecycle-governance — 新增闭环复查、假就绪滞留巡检覆盖与指纹限频
-- 2026-09-18 fix-dispatch-wakeup-gap — 复查判据改语义口径并前置就地重新派发，覆盖「窗口内回退 ready」形态且闸门拦截不静默关单
+- [2026-09-02 improve-run-lifecycle-governance](spec/archive/2026-09-02-improve-run-lifecycle-governance/) — 新增闭环复查、假就绪滞留巡检覆盖与指纹限频
+- [2026-09-18 fix-dispatch-wakeup-gap](spec/archive/2026-09-18-fix-dispatch-wakeup-gap/) — 复查判据改语义口径并前置就地重新派发，覆盖「窗口内回退 ready」形态且闸门拦截不静默关单

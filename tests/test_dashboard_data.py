@@ -1799,14 +1799,25 @@ class TestArchivedSpecDocReadback(unittest.TestCase):
         self.assertNotEqual(resolve_spec_dir(self.tmpdir, self.SPEC), suffixed)
 
     def test_resolve_soft_delete_variant_not_matched(self):
-        """软删除命名（<name>-<Unix秒>，无日期前缀）不匹配——此类条目已从
-        STATE.md 移除，dashboard 无入口，读侧不得误命中。"""
+        """软删除命名（<name>-<Unix秒>，无日期前缀）不得被裸 spec 名**前缀**
+        误命中——墓碑只允许目录名与 spec 名**全等**时命中（知识溯源链接以
+        归档目录名原样引用，见 test_resolve_soft_delete_tombstone_exact）。"""
         from core.dashboard.data import resolve_spec_dir
         self._active_layout()
         self._write(self.spec_dir, "tasks.md", "# T\n")
         soft = self.archive_root / f"{self.SPEC}-1788260731"
         shutil.move(str(self.spec_dir), str(soft))
         self.assertIsNone(resolve_spec_dir(self.tmpdir, self.SPEC))
+
+    def test_resolve_soft_delete_tombstone_exact(self):
+        """软删除墓碑目录名与 spec 名**全等**时命中——soft_delete_spec 的
+        ``<spec>-<Unix秒>`` 命名被知识溯源以目录名原样引用（无日期前缀可剥），
+        spec-doc 读侧须可读；前缀歧义由上一用例钉死。"""
+        from core.dashboard.data import resolve_spec_dir
+        self._active_layout()
+        soft = self.archive_root / f"{self.SPEC}-1788260731"
+        shutil.move(str(self.spec_dir), str(soft))
+        self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC + "-1788260731"), soft)
 
     def test_resolve_no_dir_returns_none(self):
         from core.dashboard.data import resolve_spec_dir

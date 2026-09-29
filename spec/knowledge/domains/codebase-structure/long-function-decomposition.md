@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- 2026-09-22 2026-09-22-refactor-long-functions — 确立两超长函数拆分纪律：编排骨架收敛口径（保留循环体计入长度）、等价搬移边界、attempt 级显式状态对象约定、characterization 先行与符号名锚定
+- [2026-09-22 2026-09-22-refactor-long-functions](spec/archive/2026-09-22-refactor-long-functions/) — 确立两超长函数拆分纪律：编排骨架收敛口径（保留循环体计入长度）、等价搬移边界、attempt 级显式状态对象约定、characterization 先行与符号名锚定

@@ -14,4 +14,4 @@ orphaned_state 无驱动探测的可见性口径：run 前缀归一、进程存�
 
 ## 溯源
 
-- 2026-09-22 evo-orphaned-state-probe-calibration — 修复活跃 repair run 双探测失明的误报：前缀归一全量化、存活探测覆盖 repair、admin 失败 run 证据补全与信号生命周期语义文档化
+- [2026-09-22 evo-orphaned-state-probe-calibration](spec/archive/2026-09-22-evo-orphaned-state-probe-calibration/) — 修复活跃 repair run 双探测失明的误报：前缀归一全量化、存活探测覆盖 repair、admin 失败 run 证据补全与信号生命周期语义文档化

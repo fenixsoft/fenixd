@@ -13,4 +13,4 @@ merge-back 成功后恢复主树 WIP 时 stash pop 冲突的自愈底座：自�
 
 ## 溯源
 
-- 2026-09-02 fix-stashpop-deadlock-and-provider-fuse — 新增 stash pop 冲突自动检测与 UU 半合并状态自愈（index 清理恢复可写、冲突清单上报 error/admin、stash 条目保留），解除 pop 冲突导致的写命令死锁（自愈中对 UU 文件的处置后经 2026-09-25 evo-stash-pop-conflict-triage 升级为三态重试）
+- [2026-09-02 fix-stashpop-deadlock-and-provider-fuse](spec/archive/2026-09-02-fix-stashpop-deadlock-and-provider-fuse/) — 新增 stash pop 冲突自动检测与 UU 半合并状态自愈（index 清理恢复可写、冲突清单上报 error/admin、stash 条目保留），解除 pop 冲突导致的写命令死锁（自愈中对 UU 文件的处置后经 2026-09-25 evo-stash-pop-conflict-triage 升级为三态重试）

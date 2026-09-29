@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-11 add-settings-system-tab — 新增设置页系统页签与 admin 段读写白名单闭环、写入校验、模板 shutdown_drain_seconds 默认值改 0 与文档同步
+- [2026-09-11 add-settings-system-tab](spec/archive/2026-09-11-add-settings-system-tab/) — 新增设置页系统页签与 admin 段读写白名单闭环、写入校验、模板 shutdown_drain_seconds 默认值改 0 与文档同步

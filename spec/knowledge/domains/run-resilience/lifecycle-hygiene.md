@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- 2026-09-10 run-lifecycle-hardening — 确立 verifier 重试链的冻结检查门、STATE 路径唯一化与预算对账偏差以 runs 实际计数为准的自动校正
+- [2026-09-10 run-lifecycle-hardening](spec/archive/2026-09-10-run-lifecycle-hardening/) — 确立 verifier 重试链的冻结检查门、STATE 路径唯一化与预算对账偏差以 runs 实际计数为准的自动校正

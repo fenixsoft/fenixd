@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-18 evo-add-self-review-window-snapshot — 窗口上界由聚合中实时取 now 改为启动时固定快照（治「摘要总 run 数 1 而磁盘实存 2」的并行漏计）
+- [2026-09-18 evo-add-self-review-window-snapshot](spec/archive/2026-09-18-evo-add-self-review-window-snapshot/) — 窗口上界由聚合中实时取 now 改为启动时固定快照（治「摘要总 run 数 1 而磁盘实存 2」的并行漏计）

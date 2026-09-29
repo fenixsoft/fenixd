@@ -17,4 +17,4 @@ dashboard 数据聚合层的模块组织契约：职责子模块 + 门面 re-exp
 
 ## 溯源
 
-- 2026-09-21 2026-09-21-refactor-dashboard-data-module — 5297 行 data.py（150 个顶层名、9 类混杂职责、全仓被 import 最多）拆为职责子模块 + 薄门面，固化门面 re-export、patch 延迟解析、先改名入包与分层分阶段提交契约
+- [2026-09-21 2026-09-21-refactor-dashboard-data-module](spec/archive/2026-09-21-refactor-dashboard-data-module/) — 5297 行 data.py（150 个顶层名、9 类混杂职责、全仓被 import 最多）拆为职责子模块 + 薄门面，固化门面 re-export、patch 延迟解析、先改名入包与分层分阶段提交契约

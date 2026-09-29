@@ -87,6 +87,51 @@ class TestServerAPI:
         status, _ = srv.get("/api/spec-doc?project=ghost&spec=myspec&doc=proposal")
         assert status == 404
 
+    def test_api_spec_doc_archived_readback(self, server_fx):
+        """归档 SPEC（已从 STATE.md 移除）经归档回退可读——知识溯源链接场景。
+
+        溯源链接剥日期后的 spec 名不在 STATE.md，API 层 D2 门禁曾一律 404，
+        前端 SpecDocModal 显示「文档加载失败」；ghost/路径穿越仍须 404。
+        """
+        proot, srv = server_fx
+        arch = proot / "spec" / "archive" / "2026-09-18-add-framework-self-evolution"
+        arch.mkdir(parents=True)
+        (arch / "proposal.md").write_text("# 归档背景\n", encoding="utf-8")
+        status, data = srv.get(
+            "/api/spec-doc?project=proj-a&spec=add-framework-self-evolution&doc=proposal"
+        )
+        assert status == 200
+        assert data["found"] is True
+        assert "归档背景" in data["content"]
+        # 归档目录无此文档 → 仍是 200 + found=False（非 404）
+        status, data = srv.get(
+            "/api/spec-doc?project=proj-a&spec=add-framework-self-evolution&doc=design"
+        )
+        assert status == 200
+        assert data["found"] is False
+
+    def test_api_spec_doc_soft_deleted_tombstone(self, server_fx):
+        """软删除墓碑（spec/archive/<spec>-<Unix秒> 无日期前缀）溯源可读。
+
+        soft_delete_spec 把目录移成 ``<spec>-<Unix秒>`` 并从 STATE.md 移除；
+        知识溯源链接以目录名原样引用（无日期前缀可剥）。
+        """
+        proot, srv = server_fx
+        arch = proot / "spec" / "archive" / "fix-cr-correctness-1789899983"
+        arch.mkdir(parents=True)
+        (arch / "proposal.md").write_text("# 软删除背景\n", encoding="utf-8")
+        status, data = srv.get(
+            "/api/spec-doc?project=proj-a&spec=fix-cr-correctness-1789899983&doc=proposal"
+        )
+        assert status == 200
+        assert data["found"] is True
+        assert "软删除背景" in data["content"]
+        # 前缀歧义防御：墓碑 spec 名不得被别的 spec 名前缀误命中
+        status, _ = srv.get(
+            "/api/spec-doc?project=proj-a&spec=fix-cr-correctness&doc=proposal"
+        )
+        assert status == 404
+
     def test_api_run(self, server_fx):
         _, srv = server_fx
         status, data = srv.get("/api/runs/impl-myspec-1780000000?project=proj-a")

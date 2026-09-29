@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- 2026-09-13 fix-provider-transient-backoff — 新增瞬断治理配置分组，覆盖退避表、重派延迟与全局熔断窗口/阈值/冷却 5 键的展示、校验与热更新生效契约
+- [2026-09-13 fix-provider-transient-backoff](spec/archive/2026-09-13-fix-provider-transient-backoff/) — 新增瞬断治理配置分组，覆盖退避表、重派延迟与全局熔断窗口/阈值/冷却 5 键的展示、校验与热更新生效契约

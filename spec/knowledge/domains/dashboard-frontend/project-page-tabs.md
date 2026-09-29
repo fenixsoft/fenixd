@@ -16,6 +16,6 @@
 
 ## 溯源
 
-- 2026-09-23 add-project-detail-tabs — 建立项目页分面导航（开发/质量/会话三分面、默认开发、选中态不持久化）、开发分面零回归承载、质量空态占位与会话分面内联契约（含按需加载门控）
-- 2026-09-24 add-code-review-agent-and-quality-tab — 「质量」分面由空态占位改为承载 code-review 质量视图（QualityTab、按需拉取、桌面与移动端可用）
-- 2026-09-26 add-spec-list-filter-stickiness — 页签选中态改为 URL `tab` 参数持久化（replace 语义、刷新恢复、缺省不写参），分面扩为含「回归」的四分面
+- [2026-09-23 add-project-detail-tabs](spec/archive/2026-09-23-add-project-detail-tabs/) — 建立项目页分面导航（开发/质量/会话三分面、默认开发、选中态不持久化）、开发分面零回归承载、质量空态占位与会话分面内联契约（含按需加载门控）
+- [2026-09-24 add-code-review-agent-and-quality-tab](spec/archive/2026-09-24-add-code-review-agent-and-quality-tab/) — 「质量」分面由空态占位改为承载 code-review 质量视图（QualityTab、按需拉取、桌面与移动端可用）
+- [2026-09-26 add-spec-list-filter-stickiness](spec/archive/2026-09-26-add-spec-list-filter-stickiness/) — 页签选中态改为 URL `tab` 参数持久化（replace 语义、刷新恢复、缺省不写参），分面扩为含「回归」的四分面

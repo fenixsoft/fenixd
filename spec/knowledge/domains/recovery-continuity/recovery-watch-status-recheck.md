@@ -18,4 +18,4 @@ recovery watch 判 stale 并升级 dispatch_stalled 之前重读 spec 当前状�
 
 ## 溯源
 
-- 2026-09-24 evo-recovery-watch-status-recheck — 新增升级前状态与运行痕迹复查（blocked 关闭、过渡与重试在途顺延）与顺延有界性、保守失败
+- [2026-09-24 evo-recovery-watch-status-recheck](spec/archive/2026-09-24-evo-recovery-watch-status-recheck/) — 新增升级前状态与运行痕迹复查（blocked 关闭、过渡与重试在途顺延）与顺延有界性、保守失败

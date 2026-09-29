@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-26 2026-09-26-fix-relocation-writeback-layer — 确立写回层与读取基准同源铁律（覆盖全部写入点）、修正后读取一致性复检、跨轮残留凭据核销与独立计数复发熔断
+- [2026-09-26 2026-09-26-fix-relocation-writeback-layer](spec/archive/2026-09-26-fix-relocation-writeback-layer/) — 确立写回层与读取基准同源铁律（覆盖全部写入点）、修正后读取一致性复检、跨轮残留凭据核销与独立计数复发熔断

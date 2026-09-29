@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- 2026-09-19 fix-run-hang-amplification — 确立端口分配无抢占窗口、环境变量覆盖与同主机并发全量套件的隔离/串行及可观测要求
+- [2026-09-19 fix-run-hang-amplification](spec/archive/2026-09-19-fix-run-hang-amplification/) — 确立端口分配无抢占窗口、环境变量覆盖与同主机并发全量套件的隔离/串行及可观测要求

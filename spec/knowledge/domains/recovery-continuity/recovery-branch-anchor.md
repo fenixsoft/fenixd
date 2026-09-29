@@ -19,4 +19,4 @@
 
 ## 溯源
 
-- 2026-09-19 fix-recovery-branch-anchor-without-worktree — 新增成功即落锚点与新轮次失效旧锚点、三层回落解析（含命名空间枚举、创建端同源前缀与全等边界）、零提交闸门先于排序与锚点不可得强制留痕
+- [2026-09-19 fix-recovery-branch-anchor-without-worktree](spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree/) — 新增成功即落锚点与新轮次失效旧锚点、三层回落解析（含命名空间枚举、创建端同源前缀与全等边界）、零提交闸门先于排序与锚点不可得强制留痕

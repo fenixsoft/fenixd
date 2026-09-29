@@ -15,4 +15,4 @@ v3 的 SPEC 详情：常驻信息区 + 四页签（运行时间轴 / 场景结�
 
 ## 溯源
 
-- 2026-09-08 add-v3-spec-detail-page — 建立 /projects/:name/:spec 路由与常驻信息区（error 横幅 / verdict / 进度 / Token / 任务清单）、四页签内容契约（时间轴按需加载对话流、场景双空态语义、Bug 卡片与截图 lightbox）
+- [2026-09-08 add-v3-spec-detail-page](spec/archive/2026-09-08-add-v3-spec-detail-page/) — 建立 /projects/:name/:spec 路由与常驻信息区（error 横幅 / verdict / 进度 / Token / 任务清单）、四页签内容契约（时间轴按需加载对话流、场景双空态语义、Bug 卡片与截图 lightbox）

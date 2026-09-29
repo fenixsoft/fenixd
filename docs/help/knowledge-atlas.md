@@ -1,6 +1,6 @@
-# 知识真相源（Knowledge Atlas）
+# 知识真相源
 
-知识真相源是 Fenix 的长期记忆层：把已归档 SPEC 里仍然现行的规则、决策与约束蒸馏成一组人可读、可校验、可追溯的 Markdown 页面，放在 `spec/knowledge/` 下随仓库提交。回填（backfill）、体检（audit）与关系图（graph）三条车道负责让这组页面保持新鲜、自洽、可导航。本文说明目录结构、如何在 Dashboard 里操作、三条车道各自的行为，以及 graphify 的安装方式。
+知识真相源是 Fenix 的长期记忆层：把已归档 SPEC 里仍然现行的规则、决策与约束蒸馏成一组人可读、可校验、可追溯的 Markdown 页面，放在 `spec/knowledge/` 下随仓库提交。回填（backfill）与体检（audit）两条车道负责让这组页面保持新鲜、自洽、可导航。本文说明目录结构、如何在 Dashboard 里操作、两条车道各自的行为。（关系图（graph）车道已随 graphify 功能取消下线：开关、生成与下发代码均已移除，存量 `graph/` 产物保留但不再更新。）
 
 ## 目录结构
 
@@ -14,13 +14,9 @@ spec/knowledge/
 │   │   ├── _domain.md          # 域说明（该域的边界与归属口径）
 │   │   └── <能力>.md           # 能力页：现行规则的唯一事实来源
 │   └── ...
-├── adr/
-│   ├── index.md                # ADR 索引（编号、标题、状态）
-│   └── ADR-NNN-*.md            # 架构决策记录（accepted / superseded）
-└── graph/                      # graphify 生成的关系图产物（自动提交）
-    ├── graph.html
-    ├── GRAPH_REPORT.md
-    └── graph.json
+└── adr/
+    ├── index.md                # ADR 索引（编号、标题、状态）
+    └── ADR-NNN-*.md            # 架构决策记录（accepted / superseded）
 ```
 
 每个能力页头部有一行知识 marker，记录能力名、修订号与来源归档，溯源段逐条指向 `spec/archive/` 里的出处；audit 车道据此清理悬空溯源：
@@ -42,12 +38,12 @@ spec/knowledge/
 
 ## 页签导航
 
-Dashboard 设置页（设置 → 杂项设置）的「知识真相源」卡片提供两个开关：
+Dashboard 设置页（设置 → 杂项设置）的「真相源」卡片提供开关：
 
+- **知识真相源（总开关）**：`knowledge.enabled`，默认开启。关闭后归档照常完成，但不再派发蒸馏 run。
 - **周期体检（audit）**：`knowledge.audit_enabled`，默认开启。关闭后 daemon 不再执行每日体检。
-- **关系图生成（graph）**：`knowledge.graph_enabled`，默认开启。关闭后 daemon 不再探测/执行 graphify。
 
-两个开关随设置页统一保存（写入 `.fenix/config.yaml` 的 `knowledge:` 段），**daemon 重启后生效**——daemon 只在启动时读取配置。
+开关随设置页统一保存（写入 `.fenix/config.yaml` 的 `knowledge:` 段），保存后由 daemon 的配置热更新（约 30s）生效，无需重启。
 
 ## audit 体检行为
 
@@ -59,22 +55,6 @@ daemon 主循环每 300 秒醒一次，到达新的自然日且开关开启时�
 体检报告落在 `.fenix/knowledge_audit_report.md`：过/修/转写/待人工四类计数与明细，外加规模趋势——真相源总行数相对上次增长超过 +10% 时整份报告标「需精简」并附候选页清单。
 
 前置依赖：audit 车道复用 `core.knowledge` 的校验器与提交工具。前置 SPEC（add-knowledge-atlas）未合并时车道静默跳过且不消耗当日窗口，合并后当日即补跑。
-
-## graph 关系图行为
-
-graph 车道在 audit 之后同窗口执行：探测 PATH 上的 `graphify` CLI，对 `spec/knowledge/` 生成能力页关系图，产物（`graph.html` / `GRAPH_REPORT.md` / `graph.json`）落 `spec/knowledge/graph/` 并以 pathspec 限定提交。三类失败都是单行日志的 fail-open，不产生告警噪音：CLI 未安装、执行非零退出、产物缺失。
-
-graphify 是可选工具，框架不会自动安装，需要人工安装一次：
-
-```bash
-uv tool install graphifyy
-```
-
-安装后在下一自然日的体检窗口自动生效；也可手动触发：
-
-```bash
-graphify spec/knowledge --out spec/knowledge/graph
-```
 
 ## 回填车道（存量归档蒸馏）
 

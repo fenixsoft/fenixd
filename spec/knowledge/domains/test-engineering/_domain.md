@@ -4,14 +4,16 @@
 
 ## 能力页
 
-- [test-import-isolation](test-import-isolation.md) — 测试导入隔离
-- [test-incremental-selection](test-incremental-selection.md) — 测试增量选择
-- [test-callsite-migration](test-callsite-migration.md) — 测试调用点迁移
-- [test-double-fidelity](test-double-fidelity.md) — 测试替身保真度
-- [concurrent-suite-isolation](concurrent-suite-isolation.md) — 并发套件隔离
-- [fixture-project-governance](fixture-project-governance.md) — fixture 项目治理
-- [regression-coverage](regression-coverage.md) — 语义回归覆盖
-- [test-regression-declaration](test-regression-declaration.md) — 回归声明
-- [test-regression-execution](test-regression-execution.md) — 回归执行
-- [test-regression-view](test-regression-view.md) — 回归视图页签
-- [callsite-arity-guard](callsite-arity-guard.md) — 校验函数调用点参数守卫
+| 能力页 | 简介 |
+| --- | --- |
+| [test-import-isolation](test-import-isolation.md) | 测试导入隔离 |
+| [test-incremental-selection](test-incremental-selection.md) | 测试增量选择 |
+| [test-callsite-migration](test-callsite-migration.md) | 测试调用点迁移 |
+| [test-double-fidelity](test-double-fidelity.md) | 测试替身保真度 |
+| [concurrent-suite-isolation](concurrent-suite-isolation.md) | 并发套件隔离 |
+| [fixture-project-governance](fixture-project-governance.md) | fixture 项目治理 |
+| [regression-coverage](regression-coverage.md) | 语义回归覆盖 |
+| [test-regression-declaration](test-regression-declaration.md) | 回归声明 |
+| [test-regression-execution](test-regression-execution.md) | 回归执行 |
+| [test-regression-view](test-regression-view.md) | 回归视图页签 |
+| [callsite-arity-guard](callsite-arity-guard.md) | 校验函数调用点参数守卫 |

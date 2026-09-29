@@ -13,4 +13,4 @@ verify.yaml 起草信号按场景二分的派发契约：`missing` 只代表真�
 
 ## 溯源
 
-- 2026-09-15 fix-verify-contract-signal-semantics — 将「覆盖重起草」语义从 missing 信号中拆出为 redraft 专用信号并补消费端注册与专用指引（此前信号双载两种语义，契约有效时发出的 missing 信号为假信号，实测烧 3 个 admin 自证 run）
+- [2026-09-15 fix-verify-contract-signal-semantics](spec/archive/2026-09-15-fix-verify-contract-signal-semantics/) — 将「覆盖重起草」语义从 missing 信号中拆出为 redraft 专用信号并补消费端注册与专用指引（此前信号双载两种语义，契约有效时发出的 missing 信号为假信号，实测烧 3 个 admin 自证 run）

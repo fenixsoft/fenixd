@@ -14,4 +14,4 @@ run 耗时由 run_id 内的开始时间戳与产物文件 mtime 推出，口径�
 ## 溯源
 
 - 史前基线 — 运行耗时由 run 起止时间解析，started 不取文件 mtime；耗时口径单源供表格与统计共用。
-- 2026-09-02 2026-09-02-fix-dashboard-duration-and-verify-gate — start_ts 正则适配 attempt 后缀（run_id 带 `-a<n>` 后缀曾被漏解析致耗时恒 0），确立 total_duration 真实求和、耗时列非零展示与验证器真实性断言口径。
+- [2026-09-02 2026-09-02-fix-dashboard-duration-and-verify-gate](spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate/) — start_ts 正则适配 attempt 后缀（run_id 带 `-a<n>` 后缀曾被漏解析致耗时恒 0），确立 total_duration 真实求和、耗时列非零展示与验证器真实性断言口径。

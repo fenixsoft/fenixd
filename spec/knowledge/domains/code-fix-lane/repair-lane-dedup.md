@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- 2026-09-02 2026-09-02-fix-repair-lane-dedup — 新建本页：reset 路径抑制、spawn 路径跳过、派发级同根互斥三守卫与零行为差异回退保证。
+- [2026-09-02 2026-09-02-fix-repair-lane-dedup](spec/archive/2026-09-02-fix-repair-lane-dedup/) — 新建本页：reset 路径抑制、spawn 路径跳过、派发级同根互斥三守卫与零行为差异回退保证。
