@@ -945,11 +945,19 @@ class EventBus:
 
         「读快照 → diff → 重写快照」整段持 ``_state_lock``（RLock 允许重入：
         收尾阶段的 ``pm_engine`` 回调若再读 ``_known_specs`` 不会自锁）。
-        PM Engine 处理与依赖唤醒放在锁外执行——它们可能耗时且会回调状态机，
-        不应阻塞 watch/scan 的另一条线程超过必要时间。
+        PM Engine 处理、hook 分发与依赖唤醒放在锁外执行——它们可能耗时且会
+        回调状态机，不应阻塞 watch/scan 的另一条线程超过必要时间。hook 分发
+        同属此类回调（code-review item 592f948a8b25）：HookEngine.dispatch 的
+        all-done 评估会同步读盘解析 STATE.md，留在临界区内会拉长锁持有时长。
         """
         with self._state_lock:
-            events, accepted_names = self._diff_specs(current_specs)
+            events, accepted_names, hook_events = self._diff_specs(current_specs)
+
+        # Hook 分发（锁外，code-review item 592f948a8b25）：锁内只采集事件，
+        # 此处按采集顺序逐条派发。保持原相对顺序——diff 循环内 hook 原本即
+        # 先于全部 PM Engine 事件执行。
+        for hook_spec, hook_old, hook_new, hook_entry in hook_events:
+            self._dispatch_hook(hook_spec, hook_old, hook_new, hook_entry)
 
         # Dispatch events to PM Engine
         for event_kind, spec_name, spec_entry in events:
@@ -986,12 +994,17 @@ class EventBus:
         """纯函数段：与已知快照 diff 出事件与依赖唤醒候选，并原子重写快照。
 
         MUST 在 ``_state_lock`` 内调用（调用方 ``_dispatch_changes`` 已持锁）。
-        Returns: ``(events, accepted_names)``。
+        Returns: ``(events, accepted_names, hook_events)``；``hook_events`` 为
+        待派发的 hook 事件 (spec, old, new, entry) 列表，由调用方在锁外派发
+        （code-review item 592f948a8b25：hook 分发可能同步读盘做 all-done
+        评估，不留在临界区内）。
         """
         events = []
         # 依赖唤醒候选（dispatch-dependency-wakeup 1.1/1.2）：本轮转入依赖闸门
         # 接受态的 SPEC 名列表（old → new 变化者，且 new ∈ 接受态集合）。
         accepted_names = []
+        # hook 事件采集（add-spec-hooks D1）：锁内只记录不派发，见 docstring。
+        hook_events = []
 
         # Check for new or changed SPECs
         for name, entry in current_specs.items():
@@ -1005,8 +1018,9 @@ class EventBus:
 
             if old_status is None:
                 # New SPEC appeared — dispatch event based on its current status
-                # （add-spec-hooks D1：新 spec 进入状态同样产生 hook 事件，from=None）
-                self._dispatch_hook(name, None, new_status, entry)
+                # （add-spec-hooks D1：新 spec 进入状态同样产生 hook 事件，from=None；
+                # 锁内只采集，派发在调用方锁外，code-review item 592f948a8b25）
+                hook_events.append((name, None, new_status, entry))
                 event_kind = EventBus._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
@@ -1016,7 +1030,8 @@ class EventBus:
                     accepted_names.append(name)
             elif old_status != new_status:
                 # Status changed
-                self._dispatch_hook(name, old_status, new_status, entry)
+                # （hook 锁内只采集，派发在调用方锁外，code-review item 592f948a8b25）
+                hook_events.append((name, old_status, new_status, entry))
                 event_kind = self._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
@@ -1034,7 +1049,7 @@ class EventBus:
             elif name in self._known_specs:
                 next_known[name] = self._known_specs[name]
         self._known_specs = next_known
-        return events, accepted_names
+        return events, accepted_names, hook_events
 
     @staticmethod
     def _find_dependents(current_specs: dict, dep_name: str) -> list:
