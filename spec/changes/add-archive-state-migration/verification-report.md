@@ -79,3 +79,10 @@
 | backfill-batch-idempotent-keeps-nonterminal | file_content t8/.fenix/STATE.archive.md 期望存在 | test-defect | 测试用例自身缺陷（非产品缺陷） | 清单不存在系回填未执行（夹具中断在 import backfill 之前），非实现缺陷 |
 | backfill-batch-idempotent-keeps-nonterminal | file_content t8/.fenix/STATE.md negate（### t8-bf1 不应存在） | test-defect | 测试用例自身缺陷（非产品缺陷） | actual_snippet 显示 t8-bf1 原样保留 = 回填未跑（夹具炸死），伴生失败；backfill 实现经复现验证迁出正常 |
 | web-evicted-detail-docs-readable | no_click_interception a.touch-expand 文档入口可交互 | test-defect | 测试用例自身缺陷（非产品缺陷） | 断言时序设计缺陷：引擎断言统一在全部步骤后执行，步骤 7 点击入口已成功打开文档弹窗，断言再对同一入口重试点击必被 modal 遮罩拦截（判定规则明确的弹窗遮挡形态）；『入口可交互』意图已由步骤 7 click 成功覆盖，antd modal 遮罩全屏背景下弹窗开启期间不存在可断言的背景元素 |
+
+## 本轮场景集变更
+
+当前稳定场景集共 20 个（第 1 轮）。
+
+- 首轮写入 20 个场景
+
