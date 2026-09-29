@@ -141,11 +141,25 @@ class ImplBudget:
         fix-budget-counting-semantics D2：读改写收敛到
         state_machine.bump_impl_budget（文件锁内读改写 + 回读校验），
         消除恢复扫描并发派发时的增量丢失（used=2/4 连现事故）。
+        code-review 0b7fddb94aad：闸门判定（``_check_impl_budget_exhausted``
+        的 used < budget 读）与本次启动计数递增分处两个临界区，恢复扫描与
+        派发队列两条过闸通道在窗口内可各读旧 used 各自过闸，递增后 used 可
+        越过有效预算一轮。此处对递增结果复核兜底（budget 与闸门同源读法）：
+        越限即 WARNING 并补触发既有冻结闸门（幂等：已 blocked 不重复告警；
+        刚启动的 run 照常跑完，闸门只阻止「新一轮」自动重派）。
         """
         used = self._pm.state_machine.bump_impl_budget(spec_name, 1)
+        budget = self._impl_run_budget(spec_name)
+        if used > budget:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"实现尝试预算越过上限（并发派发过闸复核）: '{spec_name}' "
+                f"used={used}/{budget}，补触发冻结闸门",
+            )
+            self._check_impl_budget_exhausted(spec_name)
         self._pm.logger.info(
             "pm_engine",
-            f"实现尝试预算计数 +1: '{spec_name}' used={used}/{self._impl_run_budget(spec_name)}",
+            f"实现尝试预算计数 +1: '{spec_name}' used={used}/{budget}",
         )
         return used
 
