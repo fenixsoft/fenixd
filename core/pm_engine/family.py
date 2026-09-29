@@ -47,6 +47,7 @@ class FamilyGovernor:
           → 递归加 fix- 前缀（fix-fix-{spec}、fix-fix-fix-{spec}...），生成新一轮修复
         - fix-{spec} 处于进行中（testing/implementing）
           → 返回 None（重复派发竞态，跳过）
+        - 其余任意状态（含 blocked 等）同样复用名称，由调用方幂等守卫决定是否重置
         """
         candidate = f"fix-{spec_name}"
         while True:
@@ -123,24 +124,34 @@ class FamilyGovernor:
         # parse_tasks_md 读取）的关键输入，proposal.md 承载修复动机与边界，
         # 中途崩溃/磁盘满不得留截断文件；临时文件建在 spec_dir 同目录保证
         # os.replace 原子性）
-        for filename, content in (("proposal.md", proposal), ("tasks.md", tasks)):
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{fix_spec_name}.{filename}.",
-                suffix=".tmp",
-                dir=str(spec_dir),
+        # 写盘失败不抛穿（code-fix 313e34f89f8c，与 _inject_verify_fix_task 同
+        # 口径）：磁盘满/权限等 OSError 若裸抛会穿透 _do_legacy_fix_spec_bug_found
+        # 中断本轮状态重置与 _enqueue 主链——WARNING 留痕后返回，派生主链继续。
+        try:
+            for filename, content in (("proposal.md", proposal), ("tasks.md", tasks)):
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=f".{fix_spec_name}.{filename}.",
+                    suffix=".tmp",
+                    dir=str(spec_dir),
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(content)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_name, str(spec_dir / filename))
+                finally:
+                    if os.path.exists(tmp_name):
+                        try:
+                            os.unlink(tmp_name)
+                        except OSError:
+                            pass
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fix SPEC 模板文件写入失败 '{fix_spec_name}'（非阻断，派生主链继续）: {e}",
             )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_name, str(spec_dir / filename))
-            finally:
-                if os.path.exists(tmp_name):
-                    try:
-                        os.unlink(tmp_name)
-                    except OSError:
-                        pass
+            return
         self._pm.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
 
     @staticmethod
@@ -735,8 +746,9 @@ class FamilyGovernor:
                     )
                     self._signal_family_explosion(spec_name, fix_spec_name, detail)
                     return
-            elif self._family_waiver_set(spec_name):
-                self._consume_family_waiver(spec_name)
+            # 未拦截（本就可创建）不消费豁免位（code-fix 33388af2a264）：waiver
+            # 是管理员为后续将被深度/宽度拦截的派生预留的一次性放行额度，在
+            # 不需要豁免的平凡创建上白白吃掉，真正被拦的那轮反而无豁免可用。
 
         existing_fix = self._pm.state_machine.read_one(fix_spec_name)
         guard_status = (existing_fix or {}).get("status", "")
