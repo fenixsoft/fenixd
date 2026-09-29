@@ -351,28 +351,42 @@ def _is_tmux_hosted(ppid: int | None = None) -> bool:
 
 
 def _parent_is_tmux_server(pid: int) -> bool:
-    """给定占用者 pid，判定其父进程是否 tmux server（端口接管常驻豁免判据）。
+    """给定占用者 pid，判定其是否 tmux 承载（祖先链上存在 tmux server）。
 
     2026-09-29 事故：agent 自测实例启动时，接管逻辑识别占用者为旧 --serve
     实例后无差别 SIGTERM，杀掉 tmux 承载的人工常驻 dashboard（pane 进程死 →
     单窗口 tmux 会话消失），接管者自身带 watchdog 自杀——用户可访问实例静默
     死亡。本判据在 kill 前对占用者做与 _is_tmux_hosted 同源的长驻判定：
-    读 /proc/<pid>/stat 取占用者 ppid（解析纪律同 _proc_starttime——comm 可能
-    含空格，从最后一个 ')' 之后切片取字段），再复用 _is_tmux_hosted(ppid)。
+    读 /proc/<pid>/stat 取 ppid（解析纪律同 _proc_starttime——comm 可能含
+    空格，从最后一个 ')' 之后切片取字段），沿祖先链上溯逐层调
+    _is_tmux_hosted(祖先 pid)。
 
-    读取/解析失败（/proc 不可用、占用者已退出成孤儿等）→ False：接管路径
-    按非 tmux 承载放行既有接管。方向与 _is_tmux_hosted 的「读取失败 → False」
-    纪律一致，但语义不同：此处 fail-safe 偏向放行——孤儿化实例已无 tmux
-    会话可依归，收割它不破坏任何常驻形态。
+    必须上溯而非只查一层：`tmux new-session -d "... --serve"`（sh -c exec）
+    形态下占用者父进程恰为 tmux server，但人工常驻的主流形态是 pane 交互
+    shell 里手动启动——占用者的直接父进程是 pane shell（bash/zsh），
+    tmux server 是祖父。只查一层会把 pane shell 的 comm 当判定对象，
+    豁免永不命中、SIGTERM 照发（2026-09-30 真实环境场景验证实证）。
+    上溯深度取 4：tmux 承载最多 2 跳，余量给包装脚本层。
+
+    读取/解析失败（/proc 不可用、祖先已退出、占用者已退出成孤儿等）→
+    False：接管路径按非 tmux 承载放行既有接管。方向与 _is_tmux_hosted 的
+    「读取失败 → False」纪律一致，但语义不同：此处 fail-safe 偏向放行——
+    孤儿化实例已无 tmux 会话可依归，收割它不破坏任何常驻形态。
     """
-    try:
-        data = Path(f"/proc/{pid}/stat").read_text()
-        # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
-        fields = data[data.rindex(")") + 2 :].split()
-        ppid = int(fields[1])
-    except (OSError, ValueError, IndexError):
-        return False
-    return _is_tmux_hosted(ppid)
+    current = pid
+    for _ in range(4):
+        try:
+            data = Path(f"/proc/{current}/stat").read_text()
+            # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
+            fields = data[data.rindex(")") + 2 :].split()
+            current = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if current <= 1:
+            return False
+        if _is_tmux_hosted(current):
+            return True
+    return False
 
 
 def _start_claude_watchdog(env=None) -> bool:

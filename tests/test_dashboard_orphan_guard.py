@@ -568,6 +568,68 @@ def test_parent_is_tmux_server_read_failures_return_false(monkeypatch, tmp_path)
     assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is False
 
 
+def test_parent_is_tmux_server_walks_ancestor_chain(monkeypatch, tmp_path):
+    """真实 tmux pane 交互形态：占用者父是 pane shell（bash/zsh），祖父才是
+    tmux server——须沿祖先链上溯判定。只查一层会把 pane shell 的 comm
+    （zsh/bash）当判定对象、豁免永不命中、SIGTERM 照发（2026-09-30 真实
+    环境场景验证实证）。链上祖先 stat 不可读 → False（放行既有接管）。"""
+    import core.dashboard.server as server_mod
+
+    occupant_stat = _write_occupant_stat(tmp_path, ppid=2001)
+    shell_stat = tmp_path / "shell_stat"
+    # pane shell 2001 → tmux server 7541（pid 字段对解析无影响，只取 ppid）
+    shell_stat.write_text("2001 (zsh) S 7541 2001 1 0\n")
+    tmux_comm = tmp_path / "tmux_comm"
+    tmux_comm.write_text("tmux: server\n")
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": occupant_stat,
+            "/proc/2001/stat": shell_stat,
+            "/proc/7541/comm": tmux_comm,
+        },
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is True
+
+    # 祖先链断裂：pane shell 已退出（stat 不可读）→ False，放行既有接管
+    _patch_proc_files(
+        monkeypatch, {f"/proc/{_OCCUPANT_PID}/stat": occupant_stat}
+    )
+    assert server_mod._parent_is_tmux_server(_OCCUPANT_PID) is False
+
+
+def test_takeover_rejected_for_tmux_pane_shell_occupant(monkeypatch, tmp_path, capsys):
+    """pane 交互 shell 形态的 tmux 常驻（父=pane shell、祖父=tmux server）：
+    豁免同样命中——不发任何信号、非 0 退出、错误含 PID 与 --port 指引。"""
+    occupant_stat = _write_occupant_stat(tmp_path, ppid=2001)
+    shell_stat = tmp_path / "shell_stat"
+    shell_stat.write_text("2001 (zsh) S 7541 2001 1 0\n")
+    tmux_comm = tmp_path / "tmux_comm"
+    tmux_comm.write_text("tmux: server\n")
+    _patch_proc_files(
+        monkeypatch,
+        {
+            f"/proc/{_OCCUPANT_PID}/stat": occupant_stat,
+            "/proc/2001/stat": shell_stat,
+            "/proc/7541/comm": tmux_comm,
+        },
+    )
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE], _occupant()
+    )
+    with pytest.raises(SystemExit) as ei:
+        import core.dashboard.server as server_mod
+
+        server_mod.serve(None, port=8787)
+    assert ei.value.code == 1
+    assert signals == []  # pane 交互形态的常驻实例同样不受信号
+    assert created == []
+    err = capsys.readouterr().err
+    assert str(_OCCUPANT_PID) in err
+    assert "常驻" in err
+    assert "--port" in err
+
+
 def test_takeover_proceeds_when_parent_identity_unreadable(monkeypatch, tmp_path):
     """父进程身份读取失败（两层）→ 按非 tmux 承载走既有接管，不产生新报错分支。"""
     import core.dashboard.server as server_mod
