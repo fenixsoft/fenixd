@@ -40,6 +40,15 @@ from typing import Optional
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION, evidence_project
 from .alert_lifecycle import attach_trigger, find_resolvable
 
+# code-review a132ca295b06：family_explosion 放行 / infra 回拨的处置文本豁免
+# 解析（_WAIVER_* / _RECLASSIFY_* 常量 + 纯判定）单源在 admin_monitor_text_rules，
+# 本类 _apply_family_waiver / _apply_infra_reclassification 薄委托调用。
+from .admin_monitor_text_rules import (
+    family_waiver_granted,
+    infra_reclassify_rounds,
+    is_reclassify_negated,
+)
+
 # add-blocked-reverify-lane D2：env 阻塞复位判定与复位路径常量
 from core.pm_engine.verification import (
     ENV_BLOCK_SIGNAL_TYPES,
@@ -161,79 +170,11 @@ DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES = 15
 # 的 stuck 交接（stuck_threshold > 0 分支）静默失效、长悬置 spec 双信号双召唤。
 DEFAULT_STUCK_THRESHOLD_MINUTES = 160.0
 
-# family_explosion 放行文本兜底：仅当处置文本表达「显式放行」语义时才写豁免位。
-# 2026-08-28 实证（fix-fix-fix-add-spec-context-menu）：旧的「包含 _family_waiver/
-# 放行/waive 令牌即放行」宽松匹配，把处置叙述中否定句里的字面令牌（如
-# 「明确不发放 _family_waiver」）误判为放行动作，给未放行的父 SPEC 错误写入
-# _family_waiver=true。改为：命中否定短语即不放行；否则须命中赋值型/明确动词型
-# 放行模式才写位。
-# 2026-08-28 二次实证（fix-fix-fix-improve-failover-model-mapping-ui，admin run
-# 1787945929）：否定清单缺「未发放/未放行」等完成时否定，且赋值型模式命中了处置
-# 叙述里对【另一族谱】豁免位的提及（「全库唯一的 _family_waiver=true 在另一族谱」
-# ——与本困境无关），双重误判给已终态父 SPEC 错误写入 _family_waiver=true。
-# 修正：a) 否定清单补完成时/委婉否定；b) 赋值型/动词型模式须与「放行」动词在同句
-# 才算放行（单纯提及字段名/他族谱状态不构成放行）。
-# code-review 4dd652206902 补修：b) 的分句判定当时只落到赋值型兜底 _WAIVER_ASSIGN_RE，
-# 动词型模式（同意放行/放行一次/经评估放行）仍在拼接全文上匹配且无同句限定——
-# 处置叙述提及其他族谱/历史放行（「另一族谱已同意放行」「父 SPEC 此前已放行过
-# 一次」且不含任何否定短语）会给未放行的本族父 SPEC 误写 _family_waiver=true。
-# 现动词型模式同样分句判定，且命中句须含「本次处置」限定（_WAIVER_CURRENT_
-# MARKERS 限定词或本 spec 名同现）；否定清单补「不再放行」（非「不放行」的连续
-# 子串，此前漏检）「暂不发放」等变体。
-_WAIVER_NEGATION_PHRASES = (
-    "未放行",
-    "不放行",
-    "不再放行",
-    "拒绝放行",
-    "不予放行",
-    "不发放",
-    "未发放",
-    "暂不发放",
-    "不启用豁免",
-    "未启用豁免",
-    "不予豁免",
-    "无须放行",
-    "无需放行",
-    "不必放行",
-)
-_WAIVER_GRANT_PATTERNS = (
-    r"同意放行",
-    r"放行一次",
-    r"经评估放行",
-    r"设置\s*_family_waiver\s*为?\s*true",  # 设置 _family_waiver 为 true
-)
-# 动词型放行模式命中句的「本次处置」限定词：命中句须含其一（或与本次父 SPEC 名
-# 同现）才算本次放行——他族谱/历史放行的叙述提及不构成对本次对象的放行。
-_WAIVER_CURRENT_MARKERS = ("本次", "该族", "本族")
-# 赋值型 _family_waiver=true 必须与放行动词同句（。！？\n 分句）才算显式放行，
-# 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
-_WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
-
-# ── infra 回拨文本识别（evo-infra-failure-budget-exempt R3）──────────
-# Administrator 处置文本显式声明「回拨 N 轮」（实为 infra 却计入 _verify_fail_rounds
-# 的历史轮次减回 + 解冻）。与 _apply_family_waiver 同范式：结构字段
-# disp.infra_reclassify_rounds 优先级最高，文本模式兜底。
-# 匹配组 (?P<n>\d+) 给出减回轮次。
-_RECLASSIFY_GRANT_PATTERNS = (
-    r"回拨\s*(?P<n>\d+)\s*轮",
-    r"reclassify\s*(?P<n>\d+)\s*(?:infra)?\s*rounds?",
-    r"infra\s*回拨\s*(?P<n>\d+)\s*轮",
-)
-# 否定短语（保守方向：命中即不触发回拨，宁可漏回拨不可误扣 fail_rounds）。
-# 「无需/无须/不必回拨」变体与 _WAIVER_NEGATION_PHRASES 的既有修正对称补齐
-# （code-review ce4fad2d751e：处置文本「无需回拨 3 轮」曾因否定检查不命中、
-# 反被 _RECLASSIFY_GRANT_PATTERNS 的「回拨 N 轮」当成放行，误减 fail_rounds）。
-_RECLASSIFY_NEGATION_PHRASES = (
-    "不回拨",
-    "不应回拨",
-    "不能回拨",
-    "不予回拨",
-    "无需回拨",
-    "无须回拨",
-    "不必回拨",
-    "not reclassify",
-    "不适用回拨",
-)
+# family_explosion 放行 / infra 回拨的处置文本豁免解析（_WAIVER_* /
+# _RECLASSIFY_* 常量与纯文本判定）已抽至 core/admin_monitor_text_rules.py
+# （code-review a132ca295b06）：纯函数模块，零副作用、零状态；本模块
+# _apply_family_waiver / _apply_infra_reclassification 保留薄委托，
+# 落位/日志/pm_engine 回拨等副作用仍在此处。
 
 # 「写入即待唤起」信号的终态守卫：spec 已达这些状态时不再唤起 Administrator
 # （done/pushed 之后族谱不可能再派生，困境实质已消失）。
@@ -4665,31 +4606,13 @@ class AdminMonitor:
         )
         # 否定语义优先：任何位置出现否定短语即不放行（保守方向：宁可漏放行、
         # 不可给未放行的父 SPEC 错开派生口子）。结构字段 family_waiver=True
-        # 优先级最高（Administrator 结构化回填不受文本兜底影响）。
+        # 优先级最高（Administrator 结构化回填不受文本兜底影响）；文本兜底
+        # 判定（否定拦截 + 分句放行模式 + 赋值型同句兜底）单源在
+        # admin_monitor_text_rules.family_waiver_granted。
         if bool(getattr(disp, "family_waiver", False)):
             waived = True
         else:
-            negated = any(n in text for n in _WAIVER_NEGATION_PHRASES)
-            if negated:
-                waived = False
-            else:
-                # 动词型/赋值型模式同样按句（。！？\n）判定，且命中句须为本次
-                # 处置的显式放行表述：含「本次/该族」限定词或与本次父 SPEC 名
-                # 同现——叙述提及其他族谱/历史放行（「另一族谱已同意放行」
-                # 「父 SPEC 此前已放行过一次」且不含否定短语）不构成对本次对象
-                # 的放行（code-review 4dd652206902）。
-                waived = any(
-                    any(m in sent for m in _WAIVER_CURRENT_MARKERS) or spec in sent
-                    for sent in re.split(r"[。！？\n]", text)
-                    if any(re.search(p, sent) for p in _WAIVER_GRANT_PATTERNS)
-                )
-                if not waived:
-                    # 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算
-                    # 显式放行——叙述中对他族谱豁免状态的提及不构成放行。
-                    waived = any(
-                        _WAIVER_ASSIGN_RE.search(sent) and "放行" in sent
-                        for sent in re.split(r"[。！？\n]", text)
-                    )
+            waived = family_waiver_granted(text, spec)
         if not waived:
             return
         sm = self.state_machine
@@ -4739,26 +4662,19 @@ class AdminMonitor:
         except (TypeError, ValueError):
             n = 0
         if n <= 0:
-            # ── 文本模式兜底 ──
+            # ── 文本模式兜底（否定拦截 + 模式匹配判定单源在
+            # admin_monitor_text_rules，本处只承载拦截日志）──
             text = (
                 f"{(disp.actions_taken or '')}\n{(getattr(disp, 'summary', '') or '')}\n"
                 f"{(disp.recommended_action or '')}\n{(getattr(disp, 'problem', '') or '')}"
             )
-            if any(neg in text for neg in _RECLASSIFY_NEGATION_PHRASES):
+            if is_reclassify_negated(text):
                 self.logger.info(
                     "admin_monitor",
                     f"infra 回拨被否定短语拦截 '{spec}'（保守不触发回拨）",
                 )
                 return
-            for pattern in _RECLASSIFY_GRANT_PATTERNS:
-                m = re.search(pattern, text)
-                if m:
-                    try:
-                        n = int(m.groupdict().get("n") or 0)
-                    except (TypeError, ValueError):
-                        n = 0
-                    if n > 0:
-                        break
+            n = infra_reclassify_rounds(text)
         if n <= 0:
             return
 
