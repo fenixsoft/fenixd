@@ -47,7 +47,9 @@ export function resolveKnowledgePath(
   currentPath: string | null,
   href: string,
 ): string | null {
-  if (!href || href.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) {
+  // 站点根相对链接（'/…'，含 '//…'）不属于真相源相对路径语义：'/adr/index.md'
+  // 经空段跳过会被归一化成白名单内路径误拦截为站内拉取，应交 SafeLink 导航。
+  if (!href || href.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('/')) {
     return null;
   }
   const stripped = href.split('#', 1)[0];
@@ -153,6 +155,10 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   const [docSpec, setDocSpec] = useState<string | null>(null);
   // 请求序号守卫（QualityTab/RegressionTab 同款）：慢响应不覆盖新视图
   const seqRef = useRef(0);
+  // openPage 在途守卫：记录在途请求的路径，响应返回前忽略同路径重复点击
+  // （后端只读幂等、无数据风险，纯防慢网连点重复发起）；不同路径点击仍接管
+  // 守卫槽并经 seqRef 作废前一响应，以最后一次点击为准。
+  const pageLoadingRef = useRef<string | null>(null);
 
   // active 门控拉取：先 config 判 enabled，再拉 index
   const load = useCallback(async () => {
@@ -245,6 +251,8 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   const uninitialized = !indexData?.initialized;
 
   const openPage = async (path: string) => {
+    if (pageLoadingRef.current === path) return; // 同路径在途，忽略重复发起
+    pageLoadingRef.current = path;
     const seq = ++seqRef.current;
     try {
       const data = await getKnowledgeFile(project, path);
@@ -256,6 +264,9 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
       // 块形式提示错误（原视图被替换，可经「返回总目录」回退）
       const msg = e instanceof ApiError ? e.message : String(e);
       setView({ kind: 'page', path, content: `> 加载失败：${msg}\n` });
+    } finally {
+      // 守卫槽仍归属本次请求时才清空（已被更新的路径接管则不动）
+      if (pageLoadingRef.current === path) pageLoadingRef.current = null;
     }
   };
 
