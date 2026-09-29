@@ -3508,7 +3508,9 @@ class AdminMonitor:
 
         run 收工后被「runs 保留」清理移入 `archive/`（见 fenixd 主循环
         runs_retention_check），届时顶层已不存在——只 glob 顶层会让所有依赖
-        run 文件的死亡判定突然失明（文件缺失）。两处均无 → None。
+        run 文件的死亡判定突然失明（文件缺失）。归档副本也不再永久保留（SPEC
+        归档即清理、无主产物天龄兜底，fix-run-cleanup-attach-spec-archive D1/D2），
+        两处均无 → None。
 
         Args:
             admin_run_id: admin disposition 的 admin_run_id。

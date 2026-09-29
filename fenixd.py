@@ -747,7 +747,8 @@ class FenixDaemon:
         # add-spec-archive D4：自动归档独立计时（300s，对齐配置热更新/恢复复查模式）
         archive_check_ts = time.time()
         # fix-dashboard-read-path-performance D4：runs 保留清理独立计时（300s，
-        # 对齐自动归档模式）：终态 run 移入归档 + 按 runs.keep 上限清理归档。
+        # 对齐自动归档模式）：终态 run 移入归档 + 无主归档产物天龄兜底
+        # （fix-run-cleanup-attach-spec-archive D2）。
         runs_retention_ts = time.time()
         # verify-process-lifecycle（D4/D6 周期清扫）：dev-server 孤儿 + 登记制
         # command 实例回收的独立计时（600s ≤ 规格 10 分钟上限）
@@ -892,9 +893,11 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error("fenixd", f"Auto-archive check failed: {e}")
                 # runs 保留周期清理（fix-dashboard-read-path-performance D4）：
-                # 每 300s 终态 run 移入归档 + 按 runs.keep 上限清理归档（参照
-                # 既有 archive_check 段的挂载方式，不新建独立线程）；异常捕获
-                # 记日志不中断主循环。keep 经配置热更新每轮重读，改配置即生效。
+                # 每 300s 终态 run 移入归档 + 无主归档产物天龄兜底（参照既有
+                # archive_check 段的挂载方式，不新建独立线程）；异常捕获记日志
+                # 不中断主循环。（runs.keep 已随 fix-run-cleanup-attach-spec-
+                # archive 取消，本调用不再消费配置。）
+
                 if time.time() - runs_retention_ts >= 300:
                     runs_retention_ts = time.time()
                     try:

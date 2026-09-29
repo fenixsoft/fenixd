@@ -337,7 +337,8 @@ def get_spec_timeline(
                     # 与每轮覆盖的 report.json 配对）
                     verify_start_ts = ts
 
-    # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）。
+    # 运行节点（含归档：SPEC 归档后运行节点随产物清理消失，归档前全程可回看
+    # ——fix-run-cleanup-attach-spec-archive D5）。
     # improve-provider-billing-config（D2）：计价表非空（有任一声明 billing 的
     # 卡片）时进入计价分支，逐 run 按「实际网关卡片开关 + 行 model 匹配」现算
     # cost_usd（None 不下发）；表空时整条时间轴无成本字段（前端不渲染）。
