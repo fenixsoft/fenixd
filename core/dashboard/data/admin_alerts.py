@@ -113,6 +113,8 @@ def get_admin_activities(project_root, spec=None) -> list:
         if rec.get("kind") != DISPOSITION:
             continue
         rid = rec.get("admin_run_id") or f"run-{id(rec)}"
+        # status 优先与单源 _merge_admin_runs（core/admin_monitor.py，勿二次漂移）一致；
+        # timeline.py 的同款归并副本同此约定。
         status = rec.get("status") or rec.get("result")
         is_pending = status == "pending"
         existing = best_by_run.get(rid)

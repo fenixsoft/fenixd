@@ -113,7 +113,7 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
         if rec.get("kind") != DISPOSITION:
             continue
         rid = rec.get("admin_run_id") or f"run-{id(rec)}"
-        status = rec.get("result") or rec.get("status")
+        status = rec.get("status") or rec.get("result")  # 与单源 _merge_admin_runs（core/admin_monitor.py）同款 status 优先，勿二次漂移
         is_pending = status == "pending"
         existing = best_by_run.get(rid)
         if existing is None:
