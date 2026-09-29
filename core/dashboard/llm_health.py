@@ -1,7 +1,7 @@
 """llm_health.py — LLM Provider 健康检测（add-provider-health-check，纯探测无副作用）。
 
 对 ``{baseurl}/v1/messages`` 发一条最小消息请求（role=user / content="hello" /
-max_tokens=64），回答「这个 Provider+模型组合当前能不能回复 + 多快」。
+max_tokens=256），回答「这个 Provider+模型组合当前能不能回复 + 多快」。
 
 请求构造照抄 ``bin/probe_prompt_cache.py`` 先例：stdlib urllib（不引入 requests
 依赖）、``x-api-key`` + ``anthropic-version: 2023-06-01``、apikey 非空时附加
@@ -32,8 +32,16 @@ HEALTH_CHECK_TIMEOUT_SECONDS = 15
 # 非成功响应体回传片段的截断上限（spec「上游返回 HTTP 错误」：≤200 字符）
 _ERROR_SNIPPET_MAX_CHARS = 200
 
-# 最小探测请求的 max_tokens（proposal：成本可忽略，不自动重试）
-_PROBE_MAX_TOKENS = 64
+# 最小探测请求的 max_tokens。曾为 64：思考型模型（GLM/DeepSeek 系）网关侧默认
+# 开思考，64 全花在 thinking 块上没有正文，被误报 empty_reply（09-29 实测
+# bigmodel.cn / maomaoai 双双误报，max_tokens=256 实测均 end_turn 正常回文）。
+# 探测消息固定 "hello"，思考长度可预期很短，256 已留足正文余量且成本可忽略。
+_PROBE_MAX_TOKENS = 256
+
+# 探测 UA 与运行期 claude CLI 同签名。urllib 默认 UA（Python-urllib/3.x）会被
+# Cloudflare 等反爬规则按签名拦截（error code: 1010，09-29 实测 corealgos.com
+# 403 误拦，掩盖真实业务错误）——同机 CLI 能过的签名探测也应当能过。
+_PROBE_USER_AGENT = "claude-cli/2.1.277 (external, cli)"
 
 
 def _build_probe_request(baseurl: str, apikey: str, model: str) -> urllib.request.Request:
@@ -43,6 +51,7 @@ def _build_probe_request(baseurl: str, apikey: str, model: str) -> urllib.reques
         "Content-Type": "application/json",
         "x-api-key": apikey or "",
         "anthropic-version": "2023-06-01",
+        "User-Agent": _PROBE_USER_AGENT,
     }
     if apikey:
         headers["Authorization"] = f"Bearer {apikey}"
@@ -87,6 +96,26 @@ def _reply_text(data: object) -> str:
     return "".join(parts).strip()
 
 
+def _thinking_text(data: object) -> str:
+    """从 200 响应体解析非空 thinking 块拼接（找不到返回空串）。
+
+    兜底判据：即使正文被 max_tokens 截断，模型能产出思考内容也证明该
+    Provider+模型组合存活可用——据此免疫思考型模型的 empty_reply 误报。
+    """
+    if not isinstance(data, dict):
+        return ""
+    content = data.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            text = block.get("thinking")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts).strip()
+
+
 def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     """对 {baseurl}/v1/messages 发最小消息请求，返回检测结果 dict。
 
@@ -99,6 +128,7 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     - http_error：非 200，status 透传、error 为截断 ≤200 字符的响应片段。
     - connection_error / timeout：error 为简要原因，latency_ms 为实测耗时。
     - empty_reply：200 但解析不到非空文本 content（含响应非合法 JSON）。
+      例外：正文缺失但 thinking 块非空（思考型模型预算被思考吃尽）按成功处理。
 
     失败四分类中 latency_ms 恒为实测耗时（毫秒，连接类瞬时失败可能小到取整
     为 0，与 spec「实测耗时或 0」口径一致）。不落盘 apikey 与完整响应。
@@ -145,6 +175,17 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     except (json.JSONDecodeError, ValueError) as e:
         return _fail(started, "empty_reply", error=f"响应非合法 JSON: {e}")
     text = _reply_text(data)
+    if not text and _thinking_text(data):
+        # 正文缺失但思考内容非空（思考型模型预算被 thinking 吃尽的兜底）：
+        # 模型确实在产出，provider 存活——按成功处理
+        return {
+            "ok": True,
+            "latency_ms": latency_ms,
+            "error_kind": None,
+            "status": None,
+            "error": None,
+            "model": model,
+        }
     if not text:
         # 200 但空 content / 非 text 块 / 上游错误体——按「无文本回复」归类
         return _fail(started, "empty_reply", error="响应解析不到非空文本 content")

@@ -69,9 +69,14 @@ def test_200_normal_reply(monkeypatch):
     assert req.get_header("Anthropic-version") == "2023-06-01"
     assert req.get_header("Authorization") == "Bearer sk-test"
     body = json.loads(req.data.decode("utf-8"))
-    assert body["max_tokens"] == llm_health._PROBE_MAX_TOKENS == 64
+    assert body["max_tokens"] == llm_health._PROBE_MAX_TOKENS == 256
     assert body["messages"] == [{"role": "user", "content": "hello"}]
     assert body["model"] == "mdl-1"
+    # UA 契约：不得以 urllib 默认签名发探测（Cloudflare error 1010 按 UA 拦
+    # Python-urllib——09-29 实测 corealgos.com 被误拦掩盖真实业务错误）
+    ua = req.get_header("User-agent") or ""
+    assert "python-urllib" not in ua.lower()
+    assert ua.startswith("claude-cli/")
 
 
 def test_http_error_status_and_snippet(monkeypatch):
@@ -171,6 +176,34 @@ def test_200_non_json_body(monkeypatch):
         monkeypatch, lambda req, timeout=None: _FakeResponse(b"<html>gateway error</html>")
     )
     result = llm_health.run_llm_health_check("https://gw.example.com", "sk", "m")
+    assert result["error_kind"] == "empty_reply"
+
+
+def test_200_thinking_only_counts_as_reply(monkeypatch):
+    """200 只有非空 thinking 块（思考型模型正文被 max_tokens 吃尽的兜底）→ ok=True。
+
+    09-29 实测：GLM/DeepSeek 思考模型默认开思考，探测预算可能全花在 thinking
+    块上没有 text——模型能产出内容即证明 provider 存活，不再误报 empty_reply。
+    """
+    body = json.dumps(
+        {
+            "content": [{"type": "thinking", "thinking": "Let me think about hello."}],
+            "stop_reason": "max_tokens",
+        }
+    ).encode("utf-8")
+    _install_urlopen(monkeypatch, lambda req, timeout=None: _FakeResponse(body))
+    result = llm_health.run_llm_health_check("https://gw.example.com", "sk", "m")
+    assert result["ok"] is True
+    assert result["model"] == "m"
+    assert result["error_kind"] is None
+
+
+def test_200_empty_thinking_block_still_empty_reply(monkeypatch):
+    """空 thinking 块不构成回复：仍按 empty_reply 归类。"""
+    body = json.dumps({"content": [{"type": "thinking", "thinking": ""}]}).encode("utf-8")
+    _install_urlopen(monkeypatch, lambda req, timeout=None: _FakeResponse(body))
+    result = llm_health.run_llm_health_check("https://gw.example.com", "sk", "m")
+    assert result["ok"] is False
     assert result["error_kind"] == "empty_reply"
 
 

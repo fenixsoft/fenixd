@@ -1,5 +1,5 @@
 import { Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Space, Switch, Tooltip, Typography, message } from 'antd';
-import { DownOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
+import { DownOutlined, HeartOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
@@ -369,16 +369,18 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                           </Text>
                         </Tooltip>
                       )}
+                      {/* 健康检测图标按钮：与模型分配页签行内按钮同款（心形+tooltip） */}
                       <Button
                         size="small"
                         type="text"
+                        icon={<HeartOutlined />}
                         data-testid={`health-check-btn-${index}`}
+                        title="健康检测"
+                        aria-label="健康检测"
                         loading={!!health?.loading}
                         disabled={!!health?.loading}
                         onClick={() => runHealthCheck(field)}
-                      >
-                        健康检测
-                      </Button>
+                      />
                       <Popconfirm
                         title="确定删除此 Provider？"
                         onConfirm={() => remove(field.name)}
