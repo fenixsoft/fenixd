@@ -65,7 +65,27 @@ class H3SpecRoutesMixin:
         # archived_at/archived_by 溯源字段，「已归档」视图对迁出条目继续可见。
         items = self.server.summary_index.get(proot)
         items.sort(key=lambda s: s.get("created") or "", reverse=True)
-        return {"project": project["name"], "specs": items}
+        # 服务端分页（add-dashboard-paging-and-etag 2.2）：现有排序后切片；
+        # 带 page 追加 total/page/page_size/has_more；缺省 page 响应零变化
+        #（不追加任何字段，增量 patch 前端零改动可用）。
+        page, page_size = self._parse_page_params(
+            query.get("page", [None])[0],
+            query.get("page_size", [None])[0],
+            default_size=200,
+            max_size=500,
+        )
+        if page is None:
+            return {"project": project["name"], "specs": items}
+        total = len(items)
+        start = (page - 1) * page_size
+        return {
+            "project": project["name"],
+            "specs": items[start : start + page_size],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": start + page_size < total,
+        }
 
 
     def _api_spec_detail(self, spec: str, query) -> dict:
