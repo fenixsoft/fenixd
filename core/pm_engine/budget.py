@@ -195,6 +195,12 @@ class ImplBudget:
         ``_exempt_infra_run_budget`` 的锚点回退同范式）。无锚点时仍退款、
         不登记（幂等不保证，由调用方保证单轮单次）。
 
+        **容错**（item 3b6448c3a22b）：记账段整体包裹 try/except（与
+        ``_exempt_infra_run_budget``「不阻断主流程」同姿态）——read_one /
+        refund_dead_run_once / bump_budget_exempt_runs 均读写状态文件（可抛
+        OSError），STATE.md 瞬态 IO 异常记 WARNING 返回、不抛穿，豁免失败
+        不得中止调用方的 run 死亡处置（requeue/error 落盘与审计日志）。
+
         Args:
             run_reason: 终态 reason 文本（run的 error/reason 字段），供豁免判定
                         关键词检查；None/空时按旧语义豁免。
@@ -209,27 +215,35 @@ class ImplBudget:
                 f"run_reason={run_reason[:80] if run_reason else ''}",
             )
             return
-        entry0 = self._pm.state_machine.read_one(spec_name) or {}
-        anchor = run_id or str(entry0.get("implementer_run") or "")
-        refunded_flag, used = self._pm.state_machine.refund_dead_run_once(
-            spec_name, anchor
-        )
-        if not refunded_flag:
-            # 同一死亡 run 已退款——幂等跳过（不重复回退 used、不递增豁免侧车）
-            self._pm.logger.info(
-                "pm_engine",
-                f"死亡 run 预算豁免幂等跳过 '{spec_name}' run={anchor}（该 run 已退款）",
+        # 容错（item 3b6448c3a22b）：记账失败记 WARNING 返回、不抛穿（姿态与
+        # _exempt_infra_run_budget 同，理由见 docstring「容错」段）。
+        try:
+            entry0 = self._pm.state_machine.read_one(spec_name) or {}
+            anchor = run_id or str(entry0.get("implementer_run") or "")
+            refunded_flag, used = self._pm.state_machine.refund_dead_run_once(
+                spec_name, anchor
             )
-            return
-        exempt = self._pm.state_machine.bump_budget_exempt_runs(spec_name)
-        self._pm.logger.warning(
-            "pm_engine",
-            f"预算豁免（死亡 run）: '{spec_name}' used 回退至 "
-            f"{used}/{self._impl_run_budget(spec_name)}，_budget_exempt_runs={exempt}，"
-            f"run_id={anchor or '(无锚点)'}，reason={reason}",
-        )
-        if exempt >= self._budget_exempt_alert_threshold():
-            self._alert_budget_exempt_loop(spec_name, exempt)
+            if not refunded_flag:
+                # 同一死亡 run 已退款——幂等跳过（不重复回退 used、不递增豁免侧车）
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"死亡 run 预算豁免幂等跳过 '{spec_name}' run={anchor}（该 run 已退款）",
+                )
+                return
+            exempt = self._pm.state_machine.bump_budget_exempt_runs(spec_name)
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算豁免（死亡 run）: '{spec_name}' used 回退至 "
+                f"{used}/{self._impl_run_budget(spec_name)}，_budget_exempt_runs={exempt}，"
+                f"run_id={anchor or '(无锚点)'}，reason={reason}",
+            )
+            if exempt >= self._budget_exempt_alert_threshold():
+                self._alert_budget_exempt_loop(spec_name, exempt)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"死亡 run 预算豁免异常跳过 '{spec_name}'（不阻断主流程）: {e}",
+            )
 
     def _exempt_infra_run_budget(self, spec_name: str, reason: str, refund_key: str = "") -> bool:
         """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
@@ -394,7 +408,18 @@ class ImplBudget:
                 f"不自动改数）",
             )
             return
-        if self._budget_reconcile_has_exemption(spec_name):
+        exemption = self._budget_reconcile_has_exemption(spec_name)
+        if exemption is None:
+            # 归档扫描失败、豁免因素不可知（item efb5917745cb）：与上方
+            # completed is None 同口径——本轮不改数（按无豁免继续会走纯漂移
+            # 分支把 used 改写为更小值，已归档 run 的消耗被抹掉）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算计数对账跳过: '{spec_name}' used={used}"
+                f"（归档目录扫描失败，豁免因素不可知，本轮不改数）",
+            )
+            return
+        if exemption:
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算计数对账偏差: '{spec_name}' used={used} vs "
@@ -497,7 +522,7 @@ class ImplBudget:
                 return True
         return True
 
-    def _budget_reconcile_has_exemption(self, spec_name: str) -> bool:
+    def _budget_reconcile_has_exemption(self, spec_name: str) -> bool | None:
         """对账校正的豁免因素判定（lifecycle-hygiene 4.3 / design D5 + R2）。
 
         任一命中即有豁免因素，不自动改数：
@@ -506,6 +531,14 @@ class ImplBudget:
           （evo-infra-failure-budget-exempt R2），改数会把退款冲掉，豁免失效；
         - runs 产物被归档/保留上限（.fenix/runs/archive/ 下存在该 spec 的 impl 产物）：
           顶层计数不完整，改数会把 used 错误压到已归档前的值。
+
+        返回 None（item efb5917745cb）：archive 归档目录扫描失败（OSError）——
+        豁免因素**不可知** ≠ 无豁免，与同文件 _count_normal_completed_impl_runs
+        （扫描失败返回 None 跳过对账）/ _impl_run_unmaterialized（扫描失败按
+        未落盘保守处理）的「扫描失败＝不可知、本轮不改数」口径对齐：按 False
+        返回会把已归档 run 当作不存在，纯漂移分支把 used 改写为更小值，已归档
+        消耗被静默抹掉、spec 意外重获预算。调用方（_reconcile_impl_budget）
+        据此与 completed is None 同样跳过本轮对账不改数。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         try:
@@ -533,7 +566,9 @@ class ImplBudget:
                             continue
                         return True
             except OSError:
-                pass
+                # 归档扫描失败＝豁免因素不可知（item efb5917745cb，三态口径见
+                # docstring）：返回 None，调用方跳过本轮对账不改数。
+                return None
         return False
 
     def _count_normal_completed_impl_runs(self, spec_name: str) -> int | None:
