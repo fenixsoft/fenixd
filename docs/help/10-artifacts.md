@@ -124,6 +124,8 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 
 每条 run 对应一个 `<agent>-<spec>-<timestamp>.jsonl` 文件：`impl-` 前缀是实现者（含 fast-track），记录每次 tool_use、消息与结果；`verify-` 前缀是验证者。排查「最近一次 run 在做什么」时，按文件 mtime 排序找到最新的 jsonl，看最后几条事件即可。
 
+保留语义（fix-run-cleanup-attach-spec-archive）：run 产物生命周期绑定 SPEC 生命周期——SPEC 未归档，产物可回看（活跃目录的终态 run 由守护进程周期移入 `archive/`，时间轴与运行历史含归档条目）；SPEC 归档即清理（该 SPEC 的顶层与归档副本一并删除，时间轴运行节点随之消失，状态节点与终态耗时/成本汇总不受影响）；无显性 SPEC 的车道产物（code-fix / admin-global / code-review 等）在归档目录超过 14 天后由守护进程兜底清理。无按数量保留的 `runs.keep` 配置项（已取消，存量配置中的该键为死键）。
+
 ## .fenix/evolution/ 自进化产物（gitignored，非交付物）
 
 框架自托管（`PROJECT_ROOT == FRAMEWORK_ROOT`）时，自进化链路（见[配置参考](09-config.md#self_evolution框架自进化)）在 `.fenix/evolution/` 暂存全部中间产物：

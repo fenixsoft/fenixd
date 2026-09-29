@@ -987,20 +987,26 @@ def run_activity(project_root, spec_name, *, now: float | None = None, files=Non
     return {"active": active, "last_event_seconds_ago": age}
 
 
-# ── runs 保留周期清理（fix-dashboard-read-path-performance D4） ────────────
+# ── runs 保留周期清理（fix-dashboard-read-path-performance D4，语义随
+# fix-run-cleanup-attach-spec-archive 更新） ────────────────────────────────
 # daemon 周期任务挂载点（fenixd.py 主循环，300s 节拍对齐 auto_archive_check）：
-# 终态 run 移入归档 + 按 runs.keep 上限清理归档。
-# 上限语义（5.1a）：runs.keep 约束的是**归档目录条目数**；活跃 runs 目录的
-# 有界性由「终态即移出」保证。清理 MUST 记录日志（删除数量 + 文件名可追溯）、
-# MUST NOT 静默大批量删除——缺省上限 50、归档实测 343 条目时首次执行会一次
-# 删除约 293 个文件，属需可观测的破坏性动作，故每周期删除量设批次上限。
-# 被删除的归档 run 会影响 spec_summary 耗时回退 / spec 时间轴 / 运行历史
-# （data.py 原 2824/3416/3686、engine.py:621 的 done 时刻耗时快照）；终态 spec
-# 有 STATE 固化 total_duration 不受影响，非终态 spec 的历史视图会缩水——
-# proposal Non-Goals 只保证响应契约不变、内容会变，此取舍经 5.1b 确认接受。
+# ① 终态 run 移入归档（活跃目录有界性）；② 无主车道归档产物天龄兜底
+# （归档目录有界性）。SPEC 归档产物的清理不在这里——archive_spec_runs
+# 在 SPEC 归档时把该 SPEC 的顶层与归档副本一并删除（run_files.py），产物
+# 生命周期绑定 SPEC 生命周期：归档前可回看、归档即清理。
+# ② 兜底语义（fix-run-cleanup-attach-spec-archive D2/D3）：code-fix /
+# admin-global / code-review 等无显性 SPEC 的车道产物永不触发 SPEC 归档
+# 清理，按「run_spec_part 不属于活跃 SPEC 集（spec/changes/ 目录名集合）
+# 且 mtime 超保留天数」删除，保证归档目录有界。活跃集每周期现算（不缓存），
+# SPEC 归档后其残留产物自动落入无主集，14 天内由本兜底或归档清理删除，
+# 双保险。删除 MUST 记录日志（文件名可追溯）、每周期删除量有批次上限，
+# MUST NOT 静默大批量删除；活跃集扫描失败 fail-closed 跳过本轮兜底
+# （防把活跃 SPEC 误判无主大规模误删）。
 _RETENTION_MOVE_PER_CYCLE_MAX = 100  # 每周期最多移入归档数（单轮 I/O 尖峰抑制）
 _RETENTION_DELETE_PER_CYCLE_MAX = 100  # 每周期最多删除数（5.1a：分批清理）
-_RETENTION_KEEP_DEFAULT = 50  # 缺省上限（与 Dashboard 设置页 runs.keep 缺省同源）
+# 无主归档产物保留天数（模块常量；非配置项——按「配置项必须带 Dashboard 界面」
+# 约定，将来如需可调再另行立项）。
+_LANE_RUN_RETENTION_DAYS = 14
 # 可归档状态：终态（result/error/interrupted/cancelled/superseded/gate-blocked）
 # + stale 断尾尸体（末行非终态且 mtime 停更超 _RUN_STALE_SECONDS——进程被杀
 # 无终态补写，不可复活，留活跃目录只会让有界性落空）。
@@ -1010,20 +1016,15 @@ _RETENTION_KEEP_DEFAULT = 50  # 缺省上限（与 Dashboard 设置页 runs.keep
 _RETENTION_ARCHIVABLE_STATUSES = frozenset(_RUN_TERMINAL_STATUS_MAP.values()) | {"stale"}
 
 
-def _resolve_runs_keep(proot: Path, config: dict | None = None) -> int:
-    """解析 runs.keep 有效值（缺省 50；缺失/非法回退缺省，与设置页回显同源）。"""
-    from core.config import ConfigLoader
+def _active_spec_names(proot: Path) -> set:
+    """活跃 SPEC 集合 = ``spec/changes/`` 下的一级目录名集合（每周期现算，不缓存）。
 
-    if config is None:
-        config = ConfigLoader.resolve_config(proot)
-    raw = ConfigLoader.get(config, "runs.keep", _RETENTION_KEEP_DEFAULT)
-    try:
-        keep = int(raw)
-    except (TypeError, ValueError):
-        keep = _RETENTION_KEEP_DEFAULT
-    if keep < 1:
-        keep = _RETENTION_KEEP_DEFAULT
-    return keep
+    ``spec/archive/`` 已归档 SPEC 不计入——归档 SPEC 的残留产物按无主天龄
+    清理正是期望行为（fix-run-cleanup-attach-spec-archive D3）。目录读取
+    失败抛 OSError 由调用方 fail-closed 处理（跳过本轮兜底，防误删）。
+    """
+    changes_dir = proot / "spec" / "changes"
+    return {p.name for p in changes_dir.iterdir() if p.is_dir()}
 
 
 def _is_run_archivable(p: Path) -> bool:
@@ -1056,8 +1057,8 @@ def _retention_log(logger, level: str, msg: str) -> None:
 def _retention_files_differ(a: Path, b: Path) -> bool:
     """轻量判等：size 或 mtime 不同即视为分歧；探测失败保守返回 True。
 
-    对齐 archive_spec_runs 的 _files_differ（code-review item ca47fc88588f），
-    不做逐字节比对（产物可能较大，此处只需发现明显分歧）。
+    用于第 1 步「归档副本已存在时删除顶层副本」的分歧检测（code-review
+    item 750bb741c8fd），不做逐字节比对（产物可能较大，此处只需发现明显分歧）。
     """
     try:
         sa, sb = a.stat(), b.stat()
@@ -1074,28 +1075,31 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
        断尾）run 从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
        同 run_id 归档副本已存在时删除顶层副本（轻量判等后仍以归档为准，分歧记
        WARNING），删除不计入 moved、单独记日志。
-    2. 归档目录按 ``runs.keep`` 上限清理：超过上限时按 mtime 升序（最旧优先）
-       删除直至 ≤ 上限；逐条记日志（文件名可追溯）、每周期删除量有批次上限
-       （_RETENTION_DELETE_PER_CYCLE_MAX），不静默大批量删除（5.1a）。
+    2. 无主车道归档产物天龄兜底（fix-run-cleanup-attach-spec-archive D2）：
+       ``archive/*.jsonl`` 中 run_spec_part 不属于活跃 SPEC 集（``spec/changes/``
+       目录名集合，每周期现算）且 mtime 超过 ``_LANE_RUN_RETENTION_DAYS`` 天者
+       删除；逐条记日志（文件名可追溯）、每周期删除量有批次上限
+       （_RETENTION_DELETE_PER_CYCLE_MAX），不静默大批量删除。活跃 SPEC 集扫描
+       失败 fail-closed：跳过本轮兜底仅记 WARNING（防误删活跃 SPEC 产物）。
+       归属活跃 SPEC 的归档产物不被本步删除——SPEC 归档时由 archive_spec_runs
+       统一清理，产物生命周期绑定 SPEC 生命周期。
 
     Args:
         project_root: 项目根目录
-        config: 有效配置 dict（ConfigLoader.resolve_config 产物）；缺省 None
-            时内部解析一次（独立调用/测试友好）。
+        config: 兼容保留参数（runs.keep 消费点已随 fix-run-cleanup-attach-spec-archive
+            移除，本参数不再被消费；daemon 调用方签名稳定优先）。
         logger: Logger 实例（可选；缺省经 logging 模块 stderr 记录）
 
     Returns:
-        {"moved": int, "deleted": int, "keep": int, "archive_total": int,
+        {"moved": int, "deleted": int, "archive_total": int,
          "deleted_names": [str, ...], "error": str | None}
     """
     proot = Path(project_root)
-    keep = _resolve_runs_keep(proot, config)
     runs_dir = proot / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return {
             "moved": 0,
             "deleted": 0,
-            "keep": keep,
             "archive_total": 0,
             "deleted_names": [],
             "error": None,
@@ -1143,30 +1147,40 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     except OSError as e:
         _retention_log(logger, "warning", f"runs 保留: 活跃目录扫描失败: {e}")
 
-    # 2. 归档目录按 runs.keep 上限清理
+    # 2. 无主车道归档产物天龄兜底（fix-run-cleanup-attach-spec-archive D2/D3）
     deleted = 0
     deleted_names: list = []
     archive_total = 0
     archive_dir = runs_dir / "archive"
     try:
-        if archive_dir.is_dir():
-            def _mtime_asc_key(p):
-                # 单文件 stat 失败（并发删除/移动等 OSError 子类）只回退 mtime 0
-                # （升序排到最前＝最旧优先删除方向，unlink 失败由逐条 OSError 承
-                # 接），不放大为放弃本周期整轮归档清理。
-                try:
-                    return p.stat().st_mtime
-                except OSError:
-                    return 0.0
-
-            archive_files = sorted(
-                (p for p in archive_dir.glob("*.jsonl")),
-                key=_mtime_asc_key,
-            )
-            archive_total = len(archive_files)
-            excess = archive_total - keep
-            if excess > 0:
-                victims = archive_files[: min(excess, _RETENTION_DELETE_PER_CYCLE_MAX)]
+        active_specs = _active_spec_names(proot)
+    except OSError as e:
+        # fail-closed：活跃 SPEC 集扫描失败（含 spec/changes 不存在）时无法区分
+        # 无主/有主，跳过本轮兜底防把活跃 SPEC 产物大规模误删，仅记 WARNING。
+        _retention_log(
+            logger, "warning", f"runs 保留: spec/changes 扫描失败，本轮跳过无主产物兜底: {e}"
+        )
+        active_specs = None
+    if active_specs is not None:
+        try:
+            if archive_dir.is_dir():
+                cutoff = time.time() - _LANE_RUN_RETENTION_DAYS * 86400
+                archive_files = list(archive_dir.glob("*.jsonl"))
+                archive_total = len(archive_files)
+                victims = []
+                for p in archive_files:
+                    if len(victims) >= _RETENTION_DELETE_PER_CYCLE_MAX:
+                        break
+                    if run_spec_part(p.stem) in active_specs:
+                        continue
+                    # 单文件 stat 失败（并发删除/移动等 OSError 子类）保守跳过
+                    # （视为有主不删），不放大为放弃本周期整轮兜底。
+                    try:
+                        mtime = p.stat().st_mtime
+                    except OSError:
+                        continue
+                    if mtime < cutoff:
+                        victims.append(p)
                 for victim in victims:
                     try:
                         victim.unlink()
@@ -1174,20 +1188,20 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                         deleted_names.append(victim.name)
                         _retention_log(
                             logger,
-                            "warning",
-                            f"runs 保留: 删除归档产物 {victim.name}（runs.keep={keep}）",
+                            "info",
+                            f"runs 保留: 删除无主归档产物 {victim.name}"
+                            f"（归属无活跃 SPEC 且超 {_LANE_RUN_RETENTION_DAYS} 天）",
                         )
                     except OSError as e:
                         _retention_log(
                             logger, "warning", f"runs 保留: 删除失败 {victim.name}: {e}"
                         )
-    except OSError as e:
-        _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
+        except OSError as e:
+            _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
 
     return {
         "moved": moved,
         "deleted": deleted,
-        "keep": keep,
         "archive_total": archive_total,
         "deleted_names": deleted_names,
         "error": None,

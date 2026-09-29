@@ -15,7 +15,7 @@ import yaml
 
 from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
 
-# ── 配置读写（受管键：llm / agents.* / gates.approve_mode / runs / verify.*） ──
+# ── 配置读写（受管键：llm / agents.* / gates.approve_mode / verify.*） ──
 
 # Dashboard 受管键的历史门面常量（code-review item f37ddee25a11 更正注释）：
 # 下行「写回时只更新这些键」描述的是旧写回机制；现行 write_config 经
@@ -24,7 +24,7 @@ from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
 # stale_code_selfheal / self_evolution 等后增受管段均不在本列表内。
 # 本常量如今仅作 data/__init__ 再导出与契约测试锚点保留，改此列表
 # 并不会放开写回（勿据其判断写回范围）。
-_MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify", "hooks"]
+_MANAGED_KEYS = ["llm", "agents", "gates", "verify", "hooks"]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 
@@ -423,7 +423,6 @@ def _default_echo_view(scope: str) -> dict:
             "subagent_model_override": "",
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
-        "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
                    # add-impl-code-review-tuning：三运行参数恒回显缺省（与
                    # impl_code_review「缺省不回显」语义相反，spec「缺省回显」
@@ -650,16 +649,6 @@ def read_config(scope_root, scope: str = "project") -> dict:
         sr_raw = verify_raw.get("serving_reclaim")
         if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
-    runs_raw = raw.get("runs")
-    # code-review item 6170a050fadd：keep 仅接受真 int（bool 是 int 子类，
-    # isinstance(True, int) 为 True——回显 true 与消费侧 int(True)=1 同源，
-    # 归档保留上限会被静默压成 1），与 _is_int_not_bool 防护约定同款
-    if (
-        isinstance(runs_raw, dict)
-        and _is_int_not_bool(runs_raw.get("keep"))
-        and runs_raw["keep"] >= 1
-    ):
-        result["runs"] = {"keep": runs_raw["keep"]}
     archive_raw = raw.get("archive")
     if isinstance(archive_raw, dict):
         from core.config import ConfigLoader as _CL
@@ -891,15 +880,6 @@ def read_effective_config(project_root) -> dict:
         sr_eff = verify_eff.get("serving_reclaim")
         if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_eff["enabled"]
-    runs_eff = effective.get("runs")
-    # code-review item 6170a050fadd：keep 仅接受真 int（排除 bool，同 read_config
-    # 回显分支——int(True)=1 会把归档保留上限静默压成 1）
-    if (
-        isinstance(runs_eff, dict)
-        and _is_int_not_bool(runs_eff.get("keep"))
-        and runs_eff["keep"] >= 1
-    ):
-        result["runs"] = {"keep": runs_eff["keep"]}
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
     # add-knowledge-atlas：经生效助手取值（非法值回退 true，设置页回显一致）；
@@ -1036,15 +1016,6 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if "start_after_scope" in patch["gates"]:
             merged["gates"]["start_after_scope"] = patch["gates"]["start_after_scope"]
 
-    if "runs" in patch and isinstance(patch["runs"], dict):
-        keep = patch["runs"].get("keep")
-        # 仅接受正整数（code-review item 6170a050fadd：排除 bool——True 是 int
-        # 子类，落盘后消费侧 runs._resolve_runs_keep 的 int(True)=1 会把归档保留
-        # 上限静默压成 1），非法值静默忽略（保留原配置）
-        if _is_int_not_bool(keep) and keep >= 1:
-            if not isinstance(merged.get("runs"), dict):
-                merged["runs"] = {}
-            merged["runs"]["keep"] = keep
     # verify.*：static_scope 服务范围 / deps_mode 依赖供给模式
     # （非法值由 write_config 前置校验拒绝，此处只应用合法值）
     if "verify" in patch and isinstance(patch["verify"], dict):
@@ -1106,7 +1077,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
         # code-review item 57914bc4b28c：排除 bool（True 是 int 子类且 True >= 0
-        # 成立），与 runs.keep 及 verify 数值键合并分支防御口径对齐
+        # 成立），与 verify 数值键合并分支防御口径对齐
         if isinstance(at, int) and not isinstance(at, bool) and at >= 0:
             if not isinstance(merged.get("archive"), dict):
                 merged["archive"] = {}
@@ -1798,7 +1769,6 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     for _ck in (
         "gates",
         "verify",
-        "runs",
         "archive",
         "admin",
         "self_review",
@@ -2108,15 +2078,6 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
                         f"{verify_m['deps_mode']}"
                     )
-            # code-review item 6170a050fadd：runs.keep 兜底校验（write_config 前置
-            # 校验只查 runs 为 dict，keep 类型此前无校验；口径与 _deep_merge_managed
-            # 合并分支一致——正整数且排除 bool，True 落盘后会被消费侧
-            # runs._resolve_runs_keep 的 int(True)=1 静默压成保留上限 1）
-            runs_m = merged.get("runs") or {}
-            if isinstance(runs_m, dict) and runs_m.get("keep") is not None:
-                _rk = runs_m["keep"]
-                if not _is_int_not_bool(_rk) or _rk < 1:
-                    raise ValueError(f"runs.keep must be a positive integer: {_rk!r}")
             # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
             archive_m = merged.get("archive") or {}
             if "auto_threshold" in archive_m and archive_m["auto_threshold"] is not None:

@@ -96,7 +96,7 @@ Fenix 是一个基于日志运作的框架：daemon 的每次决策、Agent 的�
 ### 写入与保留
 
 - **写入**：统一走 `run_files.py` 的 `append_run_line`，每行独立 `open("a")` + flush，依赖 O_APPEND 原子性，无跨进程锁；运行期间 Dashboard 即可实时轮询该文件画时间轴。
-- **归档**：终态 run 由 daemon 每 300 秒的保留检查（`core/dashboard/data/runs.py`）移入 `runs/archive/`；归档目录按 `runs.keep`（缺省 50）上限以 mtime 最旧优先删除。SPEC 归档时其全部 run 流一并移入 archive。
+- **保留**（fix-run-cleanup-attach-spec-archive）：终态 run 由 daemon 每 300 秒的保留检查（`core/dashboard/data/runs.py`）移入 `runs/archive/`；归档目录由两条路径保持有界——SPEC 归档时该 SPEC 的全部 run 流（顶层与归档副本）一并删除，无显性 SPEC 的车道产物（code-fix / admin-global / code-review 等）在归档目录超过 14 天后由守护进程兜底删除。无按数量保留的 `runs.keep` 配置项（已取消，存量配置中的该键为死键）。
 - **取证夹具**：`stream_cut.py`、`gwcut.log`、`errcut.log` 是某次网关流中断事故的手工复现脚本与取样，非框架产物，代码零引用。
 
 ## 审计日志
@@ -183,7 +183,7 @@ Administrator agent 与 daemon 之间的一次性交接文件：agent 按提示�
 |------|---------|-----------------|
 | fenixd.log | 追加（JSON 行） | RotatingFileHandler 10MB×5；dashboard 跨进程 O_APPEND |
 | supervisor.log | 追加（文本行） | 无轮转 |
-| runs/*.jsonl | 逐行 open+flush 追加 | O_APPEND 原子性；终态移 archive + `runs.keep`（缺省 50）上限 |
+| runs/*.jsonl | 逐行 open+flush 追加 | O_APPEND 原子性；终态移 archive；SPEC 归档即清理 + 无主产物 14 天兜底 |
 | hook_audit.jsonl / dispute_audits.jsonl | append-only | flock（`.lock` 文件），无轮转 |
 | admin_alerts.json | 整体读-改-写（原子替换） | flock + 裁剪最近 150 条 + 损坏留底 |
 | STATE.md 及各 *.json 状态 | tempfile + rename 原子重写 | 各自 flock；`.tmp` 残留即崩溃痕迹 |

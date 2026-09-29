@@ -133,8 +133,8 @@ class TestArchiveSpec(unittest.TestCase):
             (runs_dir / name).write_text('{"type":"x"}\n', encoding="utf-8")
         return runs_dir
 
-    def test_archive_also_archives_spec_runs(self):
-        """归档 SPEC 时其 run 产物同批移入 runs/archive/（与 CLI 归档路径同源）。
+    def test_archive_cleans_spec_runs(self):
+        """归档 SPEC 时其 run 产物同批清理（与 CLI 归档路径同源）。
 
         回归（remove-auto-run-cleanup 漏挂）：archive_spec 是 daemon 自动归档
         （auto_archive_check）与 Dashboard 界面归档（POST /api/spec-archive）
@@ -142,6 +142,9 @@ class TestArchiveSpec(unittest.TestCase):
         只接在 bin/fenix_archive.py::archive_change 一条路上，导致 SPEC 早已
         归档而产物永久滞留 runs 顶层（实证：138 个已归档 SPEC 中 127 个的产物
         仍留在顶层）。
+
+        fix-run-cleanup-attach-spec-archive D1：archive_spec_runs 语义升级为
+        清理——产物从顶层与 archive/ 归档副本一并删除，不再移入归档。
         """
         _make_project(self.root, {"spec-r": {"status": "pushed"}})
         runs_dir = self._make_runs(self.root, "spec-r")
@@ -154,13 +157,13 @@ class TestArchiveSpec(unittest.TestCase):
             "planner-plan-spec-r-1788424595-a1.jsonl",
             "admin-spec-r-1788424595.jsonl",
         ):
-            self.assertTrue((arc / name).is_file(), f"{name} 未归档")
             self.assertFalse((runs_dir / name).exists(), f"{name} 仍滞留顶层")
+            self.assertFalse((arc / name).exists(), f"{name} 清理语义下不应产生归档副本")
         # 他 spec 产物不受影响
         self.assertTrue((runs_dir / "impl-otherspec-1788424595-a1.jsonl").is_file())
 
     def test_archive_spec_runs_failure_fail_open(self):
-        """runs 归档失败不阻断 change 归档主流程（fail-open，告警字段留痕）。"""
+        """runs 清理失败不阻断 change 归档主流程（fail-open，告警字段留痕）。"""
         from unittest import mock
         _make_project(self.root, {"spec-f": {"status": "done"}})
         runs_dir = self._make_runs(self.root, "spec-f")
