@@ -23,7 +23,7 @@
 
 ### D1. 默认行为进代码：`hook_config()` 注入内置条目
 
-`hook_config()` 在返回前向 global 段头部注入 `{"id": "builtin-push-restart-dashboard", "enabled": True, "events": ["pushed"], "action": "restart-dashboard"}`（读侧注入，不改 config 文件）。逃生键 `hooks.push_restart_dashboard: false` 时跳过注入。选注入而非用户配置：`.fenix/config.yaml` 不可作为交付物（gitignored），且「新项目零配置即生效」符合开箱即用。
+`hook_config()` 在返回前向 global 段头部注入 `{"id": "builtin-push-restart-dashboard", "enabled": True, "events": ["pushed"], "action": "restart-dashboard"}`（读侧注入，不改 config 文件）。逃生键 `hooks.push_restart_dashboard: false` 时跳过注入。**注入作用于返回副本（重建 hooks 段或 deep-copy），MUST NOT 原地 mutate 入参 config dict**：`hook_config` 现为纯读函数（「不修改入参」），且 `match_hooks`/`_find_live_hook` 每次事件都重复调用它——原地注入会逐次堆叠重复条目；入参引用若被任何 config 写链路序列化，内置条目会被持久化进 `.fenix/config.yaml`，此后逃生键置 false 也无法阻止重启（文件里已有实体条目），直接违背「读侧注入，不改 config 文件」。注入后条目须通过执行链 `validate_hook_entry` 校验（`pushed ∈ VALID_EVENTS`、`restart-dashboard ∈ HOOK_ACTIONS`，天然合法），`_find_live_hook` 经同一 `hook_config` 即可按 id 找回内置条目执行，无需旁路。选注入而非用户配置：`.fenix/config.yaml` 不可作为交付物（gitignored），且「新项目零配置即生效」符合开箱即用。
 
 *放弃的替代*：config.yaml 挂人工步骤——违背本 SPEC「消灭人工重启」的目标。
 

@@ -21,7 +21,7 @@
 
 ## Impact
 
-- 后端：`core/hook_engine.py`（`hook_config` 注入 + `_action_restart_dashboard` 去抖与静默跳过 + `validate_hook_entry` 逃生键容忍）。
+- 后端：`core/hook_engine.py`（`hook_config` 注入 + `_action_restart_dashboard` 去抖与静默跳过及返回通道三态化；`validate_hook_entry` 无需改动——逃生键是 hooks 段 bool 键不经条目校验，注入条目本身合法可通过执行链校验）。
 - 前端：`core/dashboard/static/src/pages/settings/components/HooksPanel.tsx`（逃生键开关）。
 - 运行时数据：`/api/config` 读写链路自然携带新键（无 schema 迁移；gitignored 的 `.fenix/config.yaml` 由运行时写入，非交付物）。
 - 兼容性：无 BREAKING——缺省行为新增（pushed 后重启 dashboard），既有 hook 配置与动作语义不变。
