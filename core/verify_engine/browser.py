@@ -75,6 +75,46 @@ def _capped_append(bucket: list[str], entry: str) -> None:
         bucket.append(f"[truncated] 错误条数达到上限 {_MAX_COLLECTED_ERRORS}，后续已截断")
 
 
+# window/body type 步骤键盘按键的命名键词表（code-review item 9d40ace9827c）：
+# 启发式（仅排除引号/#/./[/空格）会放行普通文本（如 "hello"），press 抛错
+# 被顶层 except 归为 unknown——多字符 value 须命中本表（单字符按键如
+# "a"/"1" 直接放行），否则走 invalid_type_target 结构化失败
+_KEYBOARD_NAMED_KEYS = frozenset(
+    {
+        "Enter", "Tab", "Backspace", "Delete", "Insert", "Escape",
+        "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+        "Home", "End", "PageUp", "PageDown",
+        "Space", "Control", "Alt", "Shift", "Meta", "ControlOrMeta",
+        "CapsLock", "NumLock", "ScrollLock", "Pause", "PrintScreen",
+        "ContextMenu", "Clear", "Select",
+    }
+    | {f"F{n}" for n in range(1, 13)}
+)
+# 组合键修饰键（Control+a、Shift+Tab 等 press 合法形态）
+_KEYBOARD_MODIFIER_KEYS = frozenset({"Control", "Alt", "Shift", "Meta", "ControlOrMeta"})
+
+
+def _is_valid_press_key(value: str) -> bool:
+    """判断 window/body type 步骤的 value 是否为合法键盘按键名。
+
+    允许：单字符按键（"a"/"1"）、命名键（Escape/ArrowDown/...）、
+    「修饰键+键」组合（Control+a / Shift+Tab）。其余（普通文本如
+    "hello"）返回 False——避免 press 抛错被顶层 except 归为 unknown
+    （code-review item 9d40ace9827c）。
+    """
+    if not value:
+        return False
+    if len(value) == 1:
+        return True
+    parts = value.split("+")
+    if len(parts) > 1:
+        if not all(m in _KEYBOARD_MODIFIER_KEYS for m in parts[:-1]):
+            return False
+        parts = parts[-1:]
+    # 末段：单字符按键或命名键
+    return len(parts[0]) == 1 or parts[0] in _KEYBOARD_NAMED_KEYS
+
+
 # mock 路由 glob → 正则编译缓存（code-review item 9af293ddcb49）：response
 # 监听对每条 4xx/5xx 都要查 mock 命中，避免逐条重复编译。
 _GLOB_RE_CACHE: dict = {}
@@ -620,7 +660,12 @@ class BrowserManager:
         try:
             if action == "navigate":
                 # 扩展项目：将 about:blank 重定向到验证 HTML
-                actual_url = value
+                # 统一去首尾空白（code-review item 5a0c89e01388）：下方
+                # ^https?:// 校验对 strip 后的值判定（带空白的合法地址会
+                # 通过），而 goto 用原始值会被 Playwright 以 invalid URL
+                # 拒绝并归为 unknown——与 _find_step_url_candidate 的
+                # 去空白口径对齐（code-review item 48320e6f6abb）
+                actual_url = value.strip()
                 # web 项目：相对/非法 navigate URL 直接显式失败（2026-08-28：
                 # 相对路径导致 about:blank 白屏、整轮断言全灭的假失败）。
                 # 不注入任何默认 base/端口——被测实例地址只有运行环境自己知道，
@@ -855,6 +900,22 @@ class BrowserManager:
                     }
                 # type：值为按键名（如 Escape/Enter）而非文本输入 → 键盘按键
                 if value and not any(ch in value for ch in ("'", '"', "#", ".", "[", " ")):
+                    # 按键名合法性预判（code-review item 9d40ace9827c）：启发式
+                    # 会放行普通文本（如 "hello"），press 抛错被顶层 except 归为
+                    # unknown——此处先校验，未命中走下方 invalid_type_target
+                    # 同款结构化失败
+                    if not _is_valid_press_key(value):
+                        return {
+                            "success": False,
+                            "action": action,
+                            "target": target,
+                            "error_type": "invalid_type_target",
+                            "error": (
+                                f"window/body 目标的键盘按键名非法: {value!r}"
+                                f"（仅支持单字符按键、命名键（如 Escape/Enter/"
+                                f"Tab/ArrowDown）或修饰键组合（如 Control+a））"
+                            ),
+                        }
                     await page.keyboard.press(value)
                     return {
                         "success": True,
@@ -961,10 +1022,28 @@ class BrowserManager:
                         "action": action,
                         "error": "drag 缺少目标选择器（value 或 value.to）",
                     }
-                hold = int(cfg.get("hold", 450))
-                dwell = int(cfg.get("dwell", 600))
                 via_sel = cfg.get("via", "")
-                via_wait = int(cfg.get("via_wait", 300))
+                # hold/dwell/via_wait 的 int 转换单独捕获（code-review item
+                # 44b3d43812ab）：脏值（如 "450ms"、null）此前落入顶层 except
+                # 归为 unknown——与 invalid_wait_value / invalid_scroll_value /
+                # invalid_mock_status 同口径，结构化失败并附原始值。
+                # 转换点位于 mouse.down 之前，提前 return 无按压状态泄漏
+                try:
+                    hold = int(cfg.get("hold", 450))
+                    dwell = int(cfg.get("dwell", 600))
+                    via_wait = int(cfg.get("via_wait", 300))
+                except (TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "invalid_drag_config",
+                        "error": (
+                            f"drag 配置 hold/dwell/via_wait 必须为数值（毫秒）: "
+                            f"hold={cfg.get('hold')!r} dwell={cfg.get('dwell')!r} "
+                            f"via_wait={cfg.get('via_wait')!r}"
+                        ),
+                    }
 
                 src_box = await locator.bounding_box()
                 if not src_box:
@@ -1132,7 +1211,13 @@ class BrowserManager:
             }
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / f"{name}.png"
+        # 路径成分净化（code-review item 8c2bad0d3932）：name 拼自 scenario.id
+        # （validate_scenario 只查非空、不查字符集），含 ../ 或分隔符的 id 经
+        # f-string 拼接可把截图写出 screenshots 目录——与 visual_diff 的
+        # _safe_component 同款净化（browser 不能反向导入 visual_diff，会循环
+        # 导入），正常 kebab-case 命名不受影响
+        safe_name = re.sub(r"[\\/\x00]", "_", str(name))
+        path = output_dir / f"{safe_name}.png"
         await page.screenshot(path=str(path), full_page=False)
         from .screenshot_lab import classify_screenshot
 

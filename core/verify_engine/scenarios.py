@@ -783,14 +783,18 @@ def _str_field(d: dict, key: str) -> str:
     return str(raw) if raw else ""
 
 
-def _num_field(d: dict, key: str) -> float:
+def _num_field(d: dict, key: str) -> Optional[float]:
     """步骤数值字段读入守卫（code-review item a0ba40d463e1）：timeout/duration
     写出 "30s" 等非数值串时 float() 强转抛 ValueError，被外层包成不含场景 id
     的笼统「解析失败」，与 _str_field 的字段级差异报错设计目标漂移。此处先做
     可转性守卫：非数值形态报字段级错误（字段名 + 原值，场景 id 由
-    _parse_and_validate_scenario_dicts 的 except 分支补齐）；数值 0 / 合法
-    数字串与既有 float() 归一行为不变，不静默吞。"""
-    raw = d.get(key) or 0
+    _parse_and_validate_scenario_dicts 的 except 分支补齐）；键缺失/null 返回
+    None 作 has-value 标记（code-review item b52d4d781214：显式 0 须与缺省
+    可区分才能穿过 to_dict 序列化，null 归一缺省与 depends_on 的 or [] 同款），
+    数值 0 / 合法数字串照常 float() 归一，不静默吞。"""
+    raw = d.get(key)
+    if raw is None:
+        return None
     try:
         return float(raw)
     except (TypeError, ValueError):
@@ -845,14 +849,17 @@ class TestStep:
     cwd: str = ""
     env: dict = field(default_factory=dict)
     stdin: str = ""
-    timeout: float = 0.0
+    # 缺省 None 而非 0.0（code-review item b52d4d781214）：0.0 缺省与显式 0
+    # 不可区分，to_dict 真值过滤会把显式 0（立即超时）静默丢成键缺失，runner
+    # 回退 60s/30s 缺省——「runner 尊重 0、序列化丢 0」的单点矛盾在此消除
+    timeout: Optional[float] = None
     as_: str = ""
     method: str = ""
     url: str = ""
     headers: dict = field(default_factory=dict)
     body: str = ""
     body_type: str = ""
-    duration: float = 0.0
+    duration: Optional[float] = None  # has-value 标记，口径同上方 timeout
 
     def to_dict(self) -> dict:
         d: dict = {"action": self.action}
@@ -878,7 +885,10 @@ class TestStep:
             d["env"] = self.env
         if self.stdin:
             d["stdin"] = self.stdin
-        if self.timeout:
+        # 非 None 即写（code-review item b52d4d781214）：真值过滤会把显式 0
+        # 丢成键缺失，cli/api runner「缺省仅在键缺失时生效」的立即超时语义
+        # 被静默改写成 60s/30s 缺省
+        if self.timeout is not None:
             d["timeout"] = self.timeout
         if self.as_:
             d["as"] = self.as_
@@ -892,7 +902,8 @@ class TestStep:
             d["body"] = self.body
         if self.body_type:
             d["body_type"] = self.body_type
-        if self.duration:
+        # 非 None 即写（口径同上方 timeout，code-review item b52d4d781214）
+        if self.duration is not None:
             d["duration"] = self.duration
         return d
 
@@ -1088,11 +1099,19 @@ class TestScenario:
         steps = d.get("steps", [])
         if not isinstance(steps, list):
             steps = []
+        # 损坏 assertions 归一（code-review item 26e726d6b099）：口径对齐上方
+        # steps——非列表形态（null/dict/标量）原样迭代会让 None 抛 TypeError、
+        # dict 迭代出键后喂给 Assertion.from_dict 抛错，均被外层包成笼统
+        # 「[i]解析失败」，与 steps/depends_on 的显式归一漂移。置空交词表
+        # 校验断言循环逐条走字段级报错路径，错误带场景 id 定位。
+        assertions = d.get("assertions", [])
+        if not isinstance(assertions, list):
+            assertions = []
         return cls(
             id=d["id"],
             description=d.get("description", ""),
             steps=[TestStep.from_dict(s) for s in steps],
-            assertions=[Assertion.from_dict(a) for a in d.get("assertions", [])],
+            assertions=[Assertion.from_dict(a) for a in assertions],
             visual_baseline=d.get("visual_baseline", ""),
             # 显式 null 归一空列表（与 env/headers 的 or {} 同款，code-review
             # item 301443cb108c）：None 会存活到 engine 编排期迭代才 TypeError。
