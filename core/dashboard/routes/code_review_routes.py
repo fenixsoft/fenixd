@@ -377,7 +377,8 @@ class H11CodeReviewRoutesMixin:
         # code_review_ack_pending 同族，code 由 ApiError.code 承载）。阈值入
         # 配置（admin.code_review.manual_full_open_warn，缺省 30；显式 0 =
         # 关闭守卫）。未确认不派发：body 携带 confirm=true 的二次请求才放行。
-        if scope == "full" and not bool(body.get("confirm")):
+        # 严格只认布尔 true：任意非空字符串（如 "false"）真值为真会绕过确认闸门
+        if scope == "full" and body.get("confirm") is not True:
             from core.code_review import read_items as _cr_read_items
             from core.config import ConfigLoader as _ConfigLoader
 
