@@ -28,11 +28,11 @@
 
 ### D2. 304 在 route 适配层实现，helper 注入而非改签名
 
-base.py 的 JSON 适配函数增加 ETag 分派：route 返回值不变；适配层按 route 注册表附带的签名函数（或 route 返回 `(payload, sig)` 二元组——取侵入更小的前者）计算 ETag，与请求 `If-None-Match` 比对，命中则写 304 + `ETag` 头 + 空体并结束。304 响应必须与 `_json` 同一写出路径（Content-Length: 0），防 keep-alive 污染。
+base.py 的 JSON 适配函数增加 ETag 分派：route 返回值不变；适配层按 route 注册表附带的签名函数（或 route 返回 `(payload, sig)` 二元组——取侵入更小的前者）计算 ETag，与请求 `If-None-Match` 比对，命中则写 304 + `ETag` 头 + 空体并结束。304 响应必须与 `_json` 同一写出路径（Content-Length: 0），防 keep-alive 污染。304 短路必须发生在 `_dispatch_table` 调用 route handler **之前**——`/api/config`（`_api_config_get`）是自含响应 handler（自写 `_json`/`_error`、不返回 payload，见 base.py `_get_config` 注记），不能等返回值再拦截；协商仅对 200 成功路径生效，404/错误响应不挂 ETag。
 
 ### D3. 分页在合并排序后切片，置顶先于分页
 
-`admin-activities` 现有「未处理置顶 → created 倒序」在 `get_admin_activities` 归并层完成；分页切片必须发生在**合并排序之后**，保证任意页内容 ≡ 全量响应的对应区段（Scenario 可断言逐条一致）。specs 路由同理在现有排序输出上切片。
+澄清数据源事实：跨项目全局「未处理置顶 → 组内 created 倒序」现状在**前端**完成（`activities/index.tsx` `allActivities` useMemo，含 created 非法值归一 0 的修正；archive `2026-09-10-add-activities-pagination` design D2「跨项目合并与排序在前端做」即此来源），`get_admin_activities` 仅做项目内归并（run_id 去重、项目内置顶/倒序），响应为按项目分组 envelope。服务端分页因此需**新建**跨项目全局归并排序，且 MUST 逐条复刻前端语义（`handled === false` 置顶、created 非法/缺失归一 0、组内 created 倒序），否则「任意页内容 ≡ 全量响应的对应区段」不成立。带 `page` 的响应约定：`projects[]` 仅含当前页记录（按项目分组、组内保持全局相对顺序），前端按同语义重排平铺后与全局序一致（排序成为恒等操作）；`total` 为全量合并后总条数。specs 路由同理在现有排序输出上切片。
 
 ### D4. 前端请求层 ETag 缓存 + 304 透传复用
 

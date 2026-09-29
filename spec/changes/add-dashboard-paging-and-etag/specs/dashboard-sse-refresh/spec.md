@@ -7,7 +7,7 @@
 #### Scenario: 心跳命中 304 不重拉
 
 - **WHEN** 项目详情页可见且无任何项目数据变化，10 个 refresh 心跳周期（~20s）内
-- **THEN** 该页发出的 specs 条件请求全部命中 304，无全量响应体传输，页面无重渲染
+- **THEN** 该页心跳触发的条件请求（`getSpecDetail` → `/api/specs/<spec>?project=…`，已纳入 ETag 覆盖）全部命中 304，无全量响应体传输，页面无重渲染
 
 #### Scenario: 数据变化时心跳照常反映
 

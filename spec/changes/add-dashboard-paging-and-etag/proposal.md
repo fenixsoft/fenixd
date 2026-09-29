@@ -9,7 +9,7 @@ Dashboard 读路径存在「无差别心跳 × 无上限全量载荷」叠加的
 
 ## What Changes
 
-- **新增条件请求通道**：GET 读端点（`/api/overview`、`/api/specs`、`/api/admin-activities`、`/api/alerts`、`/api/config`）支持 ETag/If-None-Match 协商——ETag 由各项目数据源签名（mtime/size 组合）廉价计算，数据未变返回 304 空体。SSE 心跳照发，前端照常重拉，但未变数据的传输归零（350KB → ~200B header）。
+- **新增条件请求通道**：GET 读端点（`/api/overview`、`/api/specs`、`/api/specs/<spec>` 详情、`/api/admin-activities`、`/api/alerts`、`/api/config`）支持 ETag/If-None-Match 协商——ETag 由各项目数据源签名（mtime/size 组合）廉价计算，数据未变返回 304 空体。SSE 心跳照发，前端照常重拉，但未变数据的传输归零（350KB → ~200B header）。
 - **新增服务端分页**：`/api/admin-activities` 与 `/api/specs` 支持 `page`/`page_size` 参数，响应带 `total`/`has_more`；缺省参数时保持现有全量行为（向后兼容，老调用方零改动）。前端运维页翻页改走 API 分页（替代前端全量分页），项目页 spec 表格维持全量摘要（分页能力供大项目使用，前端本次不改表格交互）。
 - **SSE refresh 心跳语义收窄**（MODIFIED `dashboard-sse-refresh`）：带 `project` 字段的数据事件（state/detail/admin_activities）保持精确驱动；无 project 的 `refresh` 心跳对项目详情页降级为「仅触发条件请求校准」（304 未命中才真正重拉），跨项目聚合页（概览/运维）行为不变。
 
