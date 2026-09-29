@@ -381,6 +381,11 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         "name": spec_name,
         "status": entry.get("status"),
         "archived": _facade.is_spec_archived(project_root, spec_name),
+        # add-archive-state-migration D4：迁出溯源字段透传（清单条目自带，
+        # 活跃条目无该键 → None）。条目来自合并快照（SummaryIndex 活跃 ∪ 清单），
+        # 迁出条目的字段即清单小节原值。
+        "archived_at": entry.get("archived_at"),
+        "archived_by": entry.get("archived_by"),
         "mode": mode,
         "priority": entry.get("priority"),
         "created": entry.get("created"),
@@ -650,6 +655,9 @@ class SummaryIndex:
         self._idx: dict = {}
         self._state_sigs: dict = {}
         self._state_snapshot: dict = {}
+        # 归档清单快照（add-archive-state-migration D4）：签名变化才重新解析
+        self._arch_sigs: dict = {}
+        self._arch_snapshot: dict = {}
 
     def get(self, proot, specs: dict | None = None, state_sig=None) -> list:
         """返回该项目的全部 spec_summary 列表（顺序与 specs dict 一致）。
@@ -693,6 +701,22 @@ class SummaryIndex:
             if idx is None:
                 idx = {}
 
+            # 合并归档清单条目（add-archive-state-migration D4）：活跃 ∪ 清单，
+            # 同名单活跃侧优先。合并单点在本索引——/api/specs 与 watcher SSE
+            # 推送同源消费，迁出条目在两侧都保持可见（watcher 的 diff 基线
+            # 不再把迁出误判为删除行）。快照仅存活跃侧（下方回写
+            # active_specs），清单文件删除/清空时不会经快照泄漏幽灵条目。
+            active_specs = specs
+            arch_sig = _stat_sig(proot / ".fenix" / "STATE.archive.md")
+            if arch_sig != self._arch_sigs.get(key) or key not in self._arch_snapshot:
+                self._arch_snapshot[key] = _facade.parse_archived_state(proot)
+                self._arch_sigs[key] = arch_sig
+            archived_entries = self._arch_snapshot.get(key) or {}
+            if archived_entries:
+                merged = dict(archived_entries)
+                merged.update(specs or {})
+                specs = merged
+
             runs_sigs = _runs_by_spec_sigs(proot)
             out = []
             for spec_name, entry in specs.items():
@@ -717,8 +741,10 @@ class SummaryIndex:
             self._idx[key] = idx
             if state_sig is not None:
                 self._state_sigs[key] = state_sig
-                if specs is not None:
-                    self._state_snapshot[key] = specs
+                # 快照只回写活跃侧（合并前的 specs）：清单快照独立维护（见上
+                # _arch_sigs/_arch_snapshot），两侧失效互不牵连
+                if active_specs is not None:
+                    self._state_snapshot[key] = active_specs
             return out
 
 

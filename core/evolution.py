@@ -1131,6 +1131,16 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
                 return True
         except Exception as e:
             _logger.warning("evolution: 读取 STATE 判定重名失败: %s", e)
+        # 归档清单并入撞名检查（add-archive-state-migration 3.3）：条目已迁出
+        # 的 SPEC 名同样不可复用——复用会与 spec/archive/ 下既有归档目录产生
+        # 归属歧义（resolve_spec_dir 归档回退按名解析）。
+        try:
+            from core.dashboard.data.state import parse_archived_state
+
+            if candidate in parse_archived_state(proot):
+                return True
+        except Exception as e:
+            _logger.warning("evolution: 读取归档清单判定重名失败: %s", e)
         arch_root = proot / "spec" / "archive"
         if arch_root.is_dir():
             try:

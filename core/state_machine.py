@@ -363,6 +363,28 @@ def _unescape_state_value(val: str) -> str:
     )
 
 
+# ── 归档清单（add-archive-state-migration D1/D2）─────────────────────
+
+# 已迁出 STATE.md 条目的归档清单，与 STATE.md 同级同生命周期（.fenix/ 内、
+# gitignored 运行时目录），格式与 STATE.md 完全相同（### <name> + - key: value）。
+ARCHIVE_MANIFEST_FILENAME = "STATE.archive.md"
+
+# 迁出路径白名单（archived_by 溯源字段合法取值）：daemon 自动归档 / Dashboard
+# 界面归档 / fenix-archive CLI / daemon 存量回填。
+ARCHIVED_BY_PATHS = ("auto", "ui", "cli", "backfill")
+
+# 终态集合：迁出原语只迁终态条目（与 archive_spec/auto_archive_check 的
+# done/pushed 口径一致；非终态孤儿条目留人工排查，不做自动迁出）。
+TERMINAL_SPEC_STATUSES = (SpecStatus.DONE, SpecStatus.PUSHED)
+
+_ARCHIVE_MANIFEST_HEADER = (
+    "# Fenix Archived Spec State\n"
+    "# ==========================\n"
+    "# 已从 STATE.md 迁出的归档条目（add-archive-state-migration D1）。\n"
+    "# 格式与 STATE.md 相同；由迁出原语（StateMachine.evict_spec）维护，请勿手工编辑。\n\n"
+)
+
+
 class StateParser:
     """Parse and serialize STATE.md entries."""
 
@@ -665,6 +687,10 @@ class StateMachine:
         # .STATE.md.lock——两套路径并存会诱导后续维护者据 _lockfile 协调而锁形
         # 同虚设。
         self._lockfile = self.state_path.parent / ".STATE.md.lock"
+        # 归档清单路径（add-archive-state-migration D1）：与 STATE.md 同级
+        # （.fenix/STATE.archive.md），迁出原语与清单小节移除共用同一把
+        # .STATE.md.lock 串行化两文件的写序。
+        self._archive_path = self.state_path.parent / ARCHIVE_MANIFEST_FILENAME
         # 状态文件与 .STATE.md.lock 均在 state_path.parent 下打开；状态文件迁入
         # .fenix/ 后父目录不再恒存在（项目根），构造时确保之（新项目首写路径）
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1655,6 +1681,213 @@ class StateMachine:
             return False
         self.logger.info("state_machine", f"Removed SPEC '{spec_name}'")
         return True
+
+    # ── 归档清单迁出原语（add-archive-state-migration D2）──────────────
+
+    def _render_archive_entry(self, spec_name: str, entry: dict) -> str:
+        """把单个条目渲染为清单小节文本（``### name`` + 字段行，含结尾空行）。"""
+        lines = [f"### {spec_name}"]
+        for key, val in entry.items():
+            if val is None:
+                val = "null"
+            lines.append(f"- {key}: {_escape_state_value(val)}")
+        lines.append("")
+        return "\n".join(lines) + "\n"
+
+    def _render_archive_manifest(self, entries: Dict[str, dict]) -> str:
+        """把整个清单渲染为完整文件文本（固定头 + 按名排序的小节）。"""
+        parts = [_ARCHIVE_MANIFEST_HEADER]
+        for name in sorted(entries):
+            parts.append(self._render_archive_entry(name, entries[name]))
+        return "".join(parts)
+
+    def _atomic_write_text(self, path: Path, content: str):
+        """temp 写盘 + fsync + rename 的原子文本替换（与 _write_all_locked 同式）。"""
+        parent = path.parent
+        tid = threading.get_ident()
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            prefix=f".{path.name}.{os.getpid()}.{tid}.",
+            suffix=".tmp",
+            dir=str(parent),
+        )
+        tmp_path = Path(tmp_path_str)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(str(tmp_path), str(path))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+    def _upsert_archive_entry_locked(self, spec_name: str, entry: dict):
+        """清单条目幂等写入（调用方 MUST 已持有 .STATE.md.lock）。
+
+        - 同名小节不存在 → 追加写入（单次 write + fsync；文件缺失时先写固定头）；
+        - 同名小节已存在 → 解析既有清单后整体重写覆盖（消除重复小节，
+          add-archive-state-migration design D2 幂等语义）。
+
+        写失败（OSError）向上抛出，由 ``evict_spec`` 捕获后保持 STATE.md 不动。
+        """
+        path = self._archive_path
+        if path.exists():
+            existing = StateParser.parse(path, self.logger)
+            if spec_name in existing:
+                existing[spec_name] = entry
+                self._atomic_write_text(path, self._render_archive_manifest(existing))
+                return
+        header = _ARCHIVE_MANIFEST_HEADER if not path.exists() else ""
+        with open(path, "a", encoding="utf-8") as f:
+            if header:
+                f.write(header)
+            elif path.stat().st_size > 0:
+                # 既有内容未以换行收尾（外部手改）时补分隔，防止小节粘连
+                with open(path, "rb") as rf:
+                    rf.seek(-1, os.SEEK_END)
+                    if rf.read(1) != b"\n":
+                        f.write("\n")
+            f.write(self._render_archive_entry(spec_name, entry))
+            f.flush()
+            os.fsync(f.fileno())
+
+    def evict_spec(self, spec_name: str, archived_by: str = "ui") -> dict:
+        """把 STATE.md 中该 SPEC 的条目迁出至归档清单 ``.fenix/STATE.archive.md``。
+
+        迁出原语（add-archive-state-migration design D2）：在 ``.STATE.md.lock``
+        的 flock 内原子完成「先清单、后活跃」两步——
+
+        1. 锁内 ``read_all`` 重读校验：条目不在 → ``found: False`` 幂等返回
+           （已迁出/从未存在，不报错、不改清单）；非终态（非 done/pushed）→
+           拒绝迁出；
+        2. 先把条目（+ ``archived_at`` UTC ISO 与 ``archived_by``）写入清单
+           （同名幂等覆盖，写入含 fsync）；
+        3. 再经 ``_write_all_locked`` 重写 STATE.md 移除该条目。
+
+        顺序理由：崩溃/异常窗口只允许出现「清单已有 + 活跃仍有」的双源中间态
+        （读侧活跃优先、存量回填下一轮收敛），绝不允许「活跃已删 + 清单没有」
+        的丢条目态。清单写入失败（OSError）→ 返回失败且 STATE.md 不动；
+        STATE.md 重写失败（OSError）→ 条目留活跃、清单已有副本（无害中间态，
+        存量回填收敛）。
+
+        Args:
+            spec_name: 要迁出的 SPEC 名。
+            archived_by: 迁出路径溯源，取值 ``auto``/``ui``/``cli``/``backfill``
+                之一（编程错误直接 ValueError，不落失败 dict）。
+
+        Returns:
+            {"found": bool, "ok": bool, "archived_at": str|null,
+             "archived_by": str|null, "error": str|null}
+        """
+        if archived_by not in ARCHIVED_BY_PATHS:
+            raise ValueError(
+                f"archived_by 仅允许 {ARCHIVED_BY_PATHS}，得到: {archived_by!r}"
+            )
+        not_found = {
+            "found": False,
+            "ok": False,
+            "archived_at": None,
+            "archived_by": None,
+            "error": f"spec not in STATE.md (already evicted or unknown): {spec_name}",
+        }
+        lock_path = self._lockfile
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                specs = self.read_all()
+                if spec_name not in specs:
+                    # 幂等：迁出已迁出/未知 SPEC 不报错、不改清单
+                    return not_found
+                entry = specs[spec_name]
+                status = entry.get("status")
+                if status not in TERMINAL_SPEC_STATUSES:
+                    return {
+                        "found": True,
+                        "ok": False,
+                        "archived_at": None,
+                        "archived_by": None,
+                        "error": f"仅终态 spec（done/pushed）可迁出，当前状态: {status}",
+                    }
+                evicted = dict(entry)
+                archived_at = datetime.now(timezone.utc).isoformat()
+                evicted["archived_at"] = archived_at
+                evicted["archived_by"] = archived_by
+                try:
+                    self._upsert_archive_entry_locked(spec_name, evicted)
+                except OSError as e:
+                    # 清单写入失败 → 条目留在 STATE.md（D2 顺序天然保证不丢）
+                    self.logger.error(
+                        "state_machine",
+                        f"归档清单写入失败，条目保留在 STATE.md: {spec_name}: {e}",
+                    )
+                    return {
+                        "found": True,
+                        "ok": False,
+                        "archived_at": None,
+                        "archived_by": None,
+                        "error": f"归档清单写入失败: {e}",
+                    }
+                specs.pop(spec_name)
+                try:
+                    self._write_all_locked(specs)
+                except OSError as e:
+                    # STATE.md 重写失败 → 条目留活跃、清单已有副本
+                    #（无害双源中间态，存量回填下一轮收敛）
+                    self.logger.error(
+                        "state_machine",
+                        f"STATE.md 重写失败，条目保留待回填收敛: {spec_name}: {e}",
+                    )
+                    return {
+                        "found": True,
+                        "ok": False,
+                        "archived_at": archived_at,
+                        "archived_by": archived_by,
+                        "error": f"STATE.md 重写失败（条目保留，待回填收敛）: {e}",
+                    }
+                self.logger.info(
+                    "state_machine",
+                    f"Evicted SPEC '{spec_name}' to archive manifest",
+                    {"archived_by": archived_by, "archived_at": archived_at},
+                )
+                return {
+                    "found": True,
+                    "ok": True,
+                    "archived_at": archived_at,
+                    "archived_by": archived_by,
+                    "error": None,
+                }
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+    def remove_archived_entry(self, spec_name: str) -> bool:
+        """从归档清单移除该 SPEC 的小节（软删除专用）。返回是否确有移除。
+
+        在 ``.STATE.md.lock`` 的 flock 内执行（与迁出/回填的清单写入同锁，
+        避免并发竞态，add-archive-state-migration design D6）。清单不存在或
+        无该小节时返回 False（幂等，不动文件）。
+        """
+        lock_path = self._lockfile
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                path = self._archive_path
+                if not path.exists():
+                    return False
+                entries = StateParser.parse(path, self.logger)
+                if spec_name not in entries:
+                    return False
+                entries.pop(spec_name)
+                self._atomic_write_text(path, self._render_archive_manifest(entries))
+                self.logger.info(
+                    "state_machine",
+                    f"Removed archived entry '{spec_name}' from manifest",
+                )
+                return True
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     # ── State Transitions ──────────────────────────────────────────
 
