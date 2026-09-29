@@ -133,6 +133,15 @@ def probe(provider_name: str, config_path: Path) -> dict:
             "cache_supported": None,
             "error": f"配置文件解析失败: {e}",
         }
+    except ValueError as e:
+        # 顶层非映射的结构漂移同口径走 JSON 判据输出（code-review item
+        # fa9052277343）：与 _build_request 的 ValueError 同通道，归为
+        # cache_supported=None，main() 据此 exit 1（参数类硬错误同口径）。
+        return {
+            "provider": provider_name,
+            "cache_supported": None,
+            "error": str(e),
+        }
     if provider is None:
         return {
             "provider": provider_name,
@@ -228,6 +237,13 @@ def _load_provider(config_path: Path, provider_name: str):
         return None
     with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
+    # 顶层非映射归一（code-review item fa9052277343）：config.yaml 顶层是
+    # 列表/标量（合法 YAML 但结构漂移）时 raw.get 抛 AttributeError 逃过
+    # probe() 的判据转换，转 ValueError 由调用方转确定性 JSON 判据。
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"配置文件顶层不是映射（{type(raw).__name__}）: {config_path}"
+        )
     llm = raw.get("llm") or {}
     providers = llm.get("providers") or []
     for p in providers:
