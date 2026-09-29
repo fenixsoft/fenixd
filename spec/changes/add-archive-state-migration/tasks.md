@@ -52,6 +52,6 @@
 
 ## 验证修复（原地打回第 2 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-archive-state-migration/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-archive-state-migration/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：web-ui-archive-evict-archived-view 三条断言与新 SPEC 语义一致，失败根因是产品 Bug 而非场景缺陷；报告同此定性）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（core/dashboard/watcher.py：deleted 集合中目录级 removed 信号改为仅在 SummaryIndex D4 合并基线不含该 spec 时才并入，迁出 spec 经变更循环以 archived 摘要推送，不再推 summary:null 覆盖刚合并的行）
+- [x] 修复后重跑验证确认通过（定向测试 44 项 + dashboard 相关测试簇 621 项全绿；20 场景冻结验证集由框架验证链在 run 后重跑）
