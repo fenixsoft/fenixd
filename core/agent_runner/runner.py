@@ -700,6 +700,23 @@ class AgentRunner:
         # 整键 pop 消费（单键原子，对齐 _running_agents 不加锁）。
         self._run_terminal_callbacks: Dict[str, Dict[str, object]] = {}
 
+    # ── 公开存活查询（code-review item 305dcbb105c3）─────────────────
+    # 跨组件判活（verification pipeline 并行出题等待）改查本公开接口，不再
+    # 直读 _running_agents 私有登记表——内部重构改名时类型检查可捕获。
+    def is_run_alive(self, run_id_prefix: str) -> bool:
+        """在飞登记表中存在以 ``run_id_prefix`` 开头的 run_id 即存活。
+
+        前缀匹配而非整键相等：run_id 带 ``-a<n>`` attempt 后缀，调用方
+        （并行出题等待）只持有 ``planner-plan-<spec>-`` 基础前缀。登记表经
+        ``__dict__`` 取（``AgentRunner.__new__`` 绕过 __init__ 的测试构造
+        同样安全，对齐 _turn_branch_state 的惰性回退惯例）。
+        """
+        registry = self.__dict__.get("_running_agents") or {}
+        return any(
+            isinstance(aid, str) and aid.startswith(run_id_prefix)
+            for aid in registry
+        )
+
     # ── 取消旗标惰性 property（add-run-cancel）────────────────────
     # 测试普遍以 ``AgentRunner.__new__`` 绕过 ``__init__`` 构造，沿用
     # _instant_fail 的惰性初始化模式：首次访问即时建态。
