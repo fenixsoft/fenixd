@@ -190,9 +190,30 @@ const TRANSIENT_ANNOTATIONS: {
   },
 ];
 
+// 系统页签表单值类型（code-review item 776c2c624d2c）：字段名与 ADMIN_ANNOTATIONS /
+// TRANSIENT_ANNOTATIONS 的 key 一一对应，数值字段经 InputNumber + 校验器保证非空，
+// 文本字段恒为 string。validateFields 泛型化后字段名拼错进入编译期检查。
+interface SystemFormValues {
+  enabled: boolean;
+  interval_minutes: number;
+  escalation_cooldown_minutes: number;
+  merge_breaker_threshold: number;
+  shutdown_drain_seconds: number;
+  bug_repair_mode: 'inplace' | 'derive';
+  stuck_silence_minutes: number;
+  narrative_enabled: boolean;
+  narrative_timeout_seconds: number;
+  narrative_model: string;
+  transient_backoff_schedule: string;
+  transient_redispatch_delay_seconds: number;
+  transient_break_threshold: number;
+  transient_break_window_seconds: number;
+  transient_break_cooldown_seconds: number;
+}
+
 // admin.* + agents.transient_* 十二字段表单映射单源（config 取值 ?? 缺省）：
 // initialValues 与回填 effect 共用，避免两份映射漏改一处导致初值与回填值分叉
-function buildSystemFormValues(config: ConfigData) {
+function buildSystemFormValues(config: ConfigData): SystemFormValues {
   const admin = config.admin ?? {};
   // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
   const agentsSection = config.agents ?? {};
@@ -219,7 +240,7 @@ function buildSystemFormValues(config: ConfigData) {
 }
 
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<SystemFormValues>();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
@@ -288,9 +309,9 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
       // 分离「表单校验」与「保存持久化」（code-review item 834f22222a24）：与
       // AgentModelPanel.handleSave 对齐——两段混在同一静默 catch 会把校验失败
       // 与持久化失败混为一谈，且丢弃 onSave 的 Promise<boolean> 结果。
-      let values;
+      let values: SystemFormValues;
       try {
-        values = await form.validateFields();
+        values = await form.validateFields<SystemFormValues>();
       } catch {
         // 校验失败：antd 已在表单内渲染 explain-error 提示，不落 console
         return;
