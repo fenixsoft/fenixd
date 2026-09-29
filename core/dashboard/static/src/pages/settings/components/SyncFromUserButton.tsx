@@ -34,9 +34,9 @@ interface SyncFromUserButtonProps {
 export default function SyncFromUserButton({ project, page, onSynced }: SyncFromUserButtonProps) {
   const { message } = App.useApp();
   // 回退不再直接暴露内部 key（code-review item e0b8f3aefec7）。page 是运行时
-  // 字符串，按 Partial<Record<PageKey, string>> 收窄后索引（code-review item
-  // 32ab875ddc2e），未知 key 仍走「当前页签」回退。
-  const pageLabel = (PAGE_LABELS as Partial<Record<PageKey, string>>)[page] ?? '当前页签';
+  // 字符串，as PageKey 收窄后索引（code-review item 32ab875ddc2e）：未知 key
+  // 索引结果为 undefined，仍走「当前页签」回退，运行时语义与直索引一致。
+  const pageLabel = PAGE_LABELS[page as PageKey] ?? '当前页签';
   const [open, setOpen] = useState(false);
   // 当前进行中的操作（互斥 loading；null = 空闲）
   const [busy, setBusy] = useState<null | 'sync' | 'clear'>(null);
