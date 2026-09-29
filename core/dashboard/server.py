@@ -350,6 +350,31 @@ def _is_tmux_hosted(ppid: int | None = None) -> bool:
     return base == "tmux" or base.startswith("tmux:")
 
 
+def _parent_is_tmux_server(pid: int) -> bool:
+    """给定占用者 pid，判定其父进程是否 tmux server（端口接管常驻豁免判据）。
+
+    2026-09-29 事故：agent 自测实例启动时，接管逻辑识别占用者为旧 --serve
+    实例后无差别 SIGTERM，杀掉 tmux 承载的人工常驻 dashboard（pane 进程死 →
+    单窗口 tmux 会话消失），接管者自身带 watchdog 自杀——用户可访问实例静默
+    死亡。本判据在 kill 前对占用者做与 _is_tmux_hosted 同源的长驻判定：
+    读 /proc/<pid>/stat 取占用者 ppid（解析纪律同 _proc_starttime——comm 可能
+    含空格，从最后一个 ')' 之后切片取字段），再复用 _is_tmux_hosted(ppid)。
+
+    读取/解析失败（/proc 不可用、占用者已退出成孤儿等）→ False：接管路径
+    按非 tmux 承载放行既有接管。方向与 _is_tmux_hosted 的「读取失败 → False」
+    纪律一致，但语义不同：此处 fail-safe 偏向放行——孤儿化实例已无 tmux
+    会话可依归，收割它不破坏任何常驻形态。
+    """
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+        # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
+        fields = data[data.rindex(")") + 2 :].split()
+        ppid = int(fields[1])
+    except (OSError, ValueError, IndexError):
+        return False
+    return _is_tmux_hosted(ppid)
+
+
 def _start_claude_watchdog(env=None) -> bool:
     """CLAUDE_PID 生命周期绑定（agent 豁免通道的防泄漏阀，2026-09-04 8790 泄漏）。
 
@@ -446,7 +471,9 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
 
     端口独占语义（dashboard-instance-lifecycle）：目标端口被占用时，
     - 占用者为旧的 `fenix_dashboard.py --serve` 实例 → SIGTERM 终止旧实例，
-      等待其退出（≤3s）后重新绑定一次；
+      等待其退出（≤3s）后重新绑定一次；但占用者为 tmux 承载的常驻实例
+      （父进程为 tmux server，见 _parent_is_tmux_server）→ 不发任何信号，
+      打印含 PID 与 --port 换端口指引的错误后非 0 退出（2026-09-29 事故）；
     - 占用者为其它进程（非 dashboard 实例）→ 打印占用信息后非 0 退出；
     - 任何启动失败 MUST 在 5 秒内退出，不留僵尸实例。
     仅对最终确定的单一端口做上述占用检测（不再自动上探）。
@@ -482,6 +509,19 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
                 sys.stderr.write(
                     f"端口 {actual} 占用者 PID {occupant['pid']} 身份已变化/已退出，"
                     f"跳过接管信号（防 PID 复用误杀）。\n"
+                )
+                sys.exit(1)
+            # 常驻豁免（2026-09-29 事故）：占用者父进程为 tmux server → 人工
+            # 常驻实例，MUST NOT 发送任何信号（pane 进程死 → 单窗口 tmux 会话
+            # 消失、用户可访问实例静默死亡）。打印可操作错误后非 0 退出；
+            # agent 自适应换端口，非 tmux 旧实例（agent 自测/nohup 遗留）接管
+            # 语义不变。
+            if _parent_is_tmux_server(occupant["pid"]):
+                sys.stderr.write(
+                    f"端口 {actual} 已被 tmux 承载的常驻 dashboard 实例占用"
+                    f"（占用者 PID {occupant['pid']}）——常驻实例不可被接管，"
+                    f"未向其发送任何信号。\n"
+                    f"请用 --port 指定其它端口，或直接复用常驻实例。\n"
                 )
                 sys.exit(1)
             try:
