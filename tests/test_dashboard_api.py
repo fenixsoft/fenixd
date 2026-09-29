@@ -3,6 +3,7 @@ Tests for Dashboard server API functionality.
 
 Split from test_dashboard.py as part of refactor-test-structure.
 """
+import json
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -2246,3 +2247,258 @@ class TestCodeReviewItemsPagination:
             assert len(body["items"]) == 30
         finally:
             srv.stop()
+
+
+class TestAdminActivitiesArchive:
+    """add-alerts-archive-and-overview-cache 2.3：/api/admin-activities?archived=1。
+
+    归档只读出口四场景：分页切片语义、spec 组合过滤、损坏 JSONL 行跳过、
+    缺省请求响应与归档功能上线前一致；另覆盖缺省跨项目聚合注入 project。
+    """
+
+    def _server_for(self, tmp_path, projects):
+        import json as _json
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": projects,
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    @staticmethod
+    def _archived_rec(i: int, spec: str = "myspec") -> dict:
+        return {
+            "id": f"arch-{i:04d}",
+            "kind": "disposition",
+            "created": f"2026-03-01T00:{i // 60:02d}:{i % 60:02d}+00:00",
+            "spec": spec,
+            "summary": f"归档记录 {i}",
+        }
+
+    @staticmethod
+    def _seed_archive(proot: Path, records: list):
+        arch_dir = proot / ".fenix"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        lines = [json.dumps(r, ensure_ascii=False) for r in records]
+        (arch_dir / "admin_alerts_archive.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_archived_pagination_slice(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._seed_archive(proot, [self._archived_rec(i) for i in range(120)])
+        srv = self._server_for(tmp_path, [{"name": "proj-a", "path": str(proot)}])
+        try:
+            status, body = srv.get(
+                "/api/admin-activities?archived=1&page=2&page_size=50")
+            assert status == 200
+            assert body["archived"] is True
+            assert body["total"] == 120
+            assert body["page"] == 2 and body["page_size"] == 50
+            assert body["has_more"] is True
+            # 时间倒序的第 51–100 条：最新 arch-0119 打头，第 51 条是 arch-0069
+            ids = [a["id"] for a in body["activities"]]
+            assert ids[0] == "arch-0069" and ids[-1] == "arch-0020"
+            created = [a["created"] for a in body["activities"]]
+            assert created == sorted(created, reverse=True)
+            # 首页打头是最新一条；末页只有 20 条、无更多
+            _, first = srv.get("/api/admin-activities?archived=1&page=1&page_size=50")
+            assert first["activities"][0]["id"] == "arch-0119"
+            assert first["has_more"] is True
+            _, last = srv.get("/api/admin-activities?archived=1&page=3&page_size=50")
+            assert len(last["activities"]) == 20 and last["has_more"] is False
+        finally:
+            srv.stop()
+
+    def test_archived_spec_filter_combined(self, tmp_path):
+        proot = make_project(tmp_path)
+        records = [
+            self._archived_rec(i, spec=("myspec" if i % 2 == 0 else "otherspec"))
+            for i in range(40)
+        ]
+        self._seed_archive(proot, records)
+        srv = self._server_for(tmp_path, [{"name": "proj-a", "path": str(proot)}])
+        try:
+            status, body = srv.get(
+                "/api/admin-activities?archived=1&spec=myspec&project=proj-a"
+                "&page=1&page_size=50")
+            assert status == 200
+            assert body["archived"] is True
+            assert body["total"] == 20, "先 spec 过滤后分页"
+            assert all(a["spec"] == "myspec" for a in body["activities"])
+            assert body["has_more"] is False
+        finally:
+            srv.stop()
+
+    def test_archived_corrupt_lines_skipped(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._seed_archive(proot, [self._archived_rec(i) for i in range(5)])
+        with (proot / ".fenix" / "admin_alerts_archive.jsonl").open("a", encoding="utf-8") as f:
+            f.write("{not-valid-json!!!\n\n")
+        srv = self._server_for(tmp_path, [{"name": "proj-a", "path": str(proot)}])
+        try:
+            status, body = srv.get("/api/admin-activities?archived=1")
+            assert status == 200
+            assert body["total"] == 5, "损坏行/空行被容错跳过"
+            ids = [a["id"] for a in body["activities"]]
+            assert ids == [f"arch-{i:04d}" for i in range(4, -1, -1)]
+        finally:
+            srv.stop()
+
+    def test_default_response_ignores_archive(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._seed_archive(proot, [self._archived_rec(i) for i in range(500)])
+        # 活跃文件经 AdminStore 正常写入路径落 1 条 disposition
+        from core.admin_store import AdminStore
+        AdminStore(proot).append({"id": "live-1", "kind": "disposition",
+                                  "created": "2026-03-02T00:00:00+00:00",
+                                  "spec": "myspec"})
+        srv = self._server_for(tmp_path, [{"name": "proj-a", "path": str(proot)}])
+        try:
+            status, body = srv.get("/api/admin-activities?project=proj-a")
+            assert status == 200
+            assert body["project"] == "proj-a"
+            assert "archived" not in body
+            ids = [a["id"] for a in body["activities"]]
+            assert ids == ["live-1"], "缺省只读活跃文件，归档 500 条不进时间线"
+            # 缺省跨项目聚合同样与归档无关
+            status, body = srv.get("/api/admin-activities")
+            assert status == 200
+            assert "archived" not in body
+            assert all(
+                not a["id"].startswith("arch-")
+                for p in body["projects"] for a in p["activities"]
+            )
+        finally:
+            srv.stop()
+
+    def test_archived_aggregate_injects_project(self, tmp_path):
+        proot_a = make_project(tmp_path, name="proj-a")
+        proot_b = make_project(tmp_path, name="proj-b")
+        self._seed_archive(proot_a, [self._archived_rec(i) for i in range(3)])
+        recs_b = []
+        for i in range(2):
+            r = self._archived_rec(i, spec="myspec")
+            r["id"] = f"b-arch-{i:04d}"
+            r["created"] = r["created"].replace("T00:", "T01:")  # 比 a 的新
+            recs_b.append(r)
+        self._seed_archive(proot_b, recs_b)
+        srv = self._server_for(tmp_path, [
+            {"name": "proj-a", "path": str(proot_a)},
+            {"name": "proj-b", "path": str(proot_b)}])
+        try:
+            status, body = srv.get("/api/admin-activities?archived=1&page_size=50")
+            assert status == 200
+            assert body["total"] == 5
+            assert all(a.get("project") in ("proj-a", "proj-b")
+                       for a in body["activities"]), "逐条注入 project 字段"
+            created = [a["created"] for a in body["activities"]]
+            assert created == sorted(created, reverse=True), "合并后统一时间倒序"
+            by_id = {a["id"]: a for a in body["activities"]}
+            assert by_id["b-arch-0001"]["project"] == "proj-b"
+            assert by_id["arch-0002"]["project"] == "proj-a"
+        finally:
+            srv.stop()
+
+
+class TestOverviewResultCache:
+    """add-alerts-archive-and-overview-cache 3.2：/api/overview 结果缓存。
+
+    四场景：TTL 内 3 连请求仅首次聚合、超 TTL 签名未变复用、STATE.md 变化
+    后重算、项目注册/移除后缓存失效。
+    """
+
+    def _server_for(self, tmp_path, projects):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": projects,
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    @pytest.fixture()
+    def cache_fx(self, tmp_path, monkeypatch):
+        import time as _time
+
+        from core.dashboard.routes import project_routes as pr
+
+        proot = make_project(tmp_path)
+        pr._OVERVIEW_CACHE.clear()  # 模块级单槽：跨用例隔离
+        calls = []
+        real_overview = dash_data.overview
+
+        def counting_overview(registry_projects):
+            calls.append(1)
+            _time.sleep(0.03)  # 放大聚合耗时：命中路径的「快」不依赖绝对时钟
+            return real_overview(registry_projects)
+
+        monkeypatch.setattr(dash_data, "overview", counting_overview)
+        srv = self._server_for(tmp_path, [{"name": "proj-a", "path": str(proot)}])
+        try:
+            yield proot, srv, calls, pr, _time
+        finally:
+            srv.stop()
+            pr._OVERVIEW_CACHE.clear()
+
+    def test_ttl_window_hits_cache(self, cache_fx):
+        proot, srv, calls, pr, time_mod = cache_fx
+        t0 = time_mod.perf_counter()
+        s1, d1 = srv.get("/api/overview")
+        first_elapsed = time_mod.perf_counter() - t0
+        assert s1 == 200
+        assert len(calls) == 1
+        elapsed = []
+        for _ in range(2):
+            t = time_mod.perf_counter()
+            s, d = srv.get("/api/overview")
+            elapsed.append(time_mod.perf_counter() - t)
+            assert s == 200
+            assert d == d1, "TTL 窗口内响应内容一致"
+        assert len(calls) == 1, "TTL 内仅首次执行聚合"
+        assert max(elapsed) < first_elapsed, "命中路径显著快于聚合路径"
+        assert max(elapsed) < 0.03, "命中请求不做聚合（聚合自身耗时 ≥30ms）"
+
+    def test_expired_ttl_same_sig_reuses(self, cache_fx):
+        proot, srv, calls, pr, time_mod = cache_fx
+        _, d1 = srv.get("/api/overview")
+        assert len(calls) == 1
+        pr._OVERVIEW_CACHE["computed_at"] -= 5.0  # 白盒拨快时钟：缓存已过 TTL
+        _, d2 = srv.get("/api/overview")
+        assert len(calls) == 1, "签名未变超 TTL 直接复用，不重算聚合"
+        assert d2 == d1
+
+    def test_state_change_recomputes_after_ttl(self, cache_fx):
+        proot, srv, calls, pr, time_mod = cache_fx
+        _, d1 = srv.get("/api/overview")
+        body = (proot / ".fenix" / "STATE.md").read_text(encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text(
+            body + "\n### newspec\n- status: implementing\n- priority: 2\n"
+            "- created: 2026-03-01T00:00:00+00:00\n"
+            "- updated: 2026-03-01T00:00:00+00:00\n- error: null\n- depends_on: null\n",
+            encoding="utf-8",
+        )
+        pr._OVERVIEW_CACHE["computed_at"] -= 5.0
+        _, d2 = srv.get("/api/overview")
+        assert len(calls) == 2, "STATE.md 变化（签名改变）后重算"
+        assert d2["totals"]["spec_count"] == d1["totals"]["spec_count"] + 1
+
+    def test_project_set_change_invalidates(self, cache_fx, tmp_path):
+        proot, srv, calls, pr, time_mod = cache_fx
+        _, d1 = srv.get("/api/overview")
+        assert [p["name"] for p in d1["projects"]] == ["proj-a"]
+        # 注册第二个项目：缓存按项目集合变化失效
+        proot_b = make_project(tmp_path, name="proj-b")
+        reg = srv.httpd.registry
+        reg.save({"port": 8787, "projects": [
+            {"name": "proj-a", "path": str(proot)},
+            {"name": "proj-b", "path": str(proot_b)}],
+            "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv.httpd.invalidate_projects_cache()
+        _, d2 = srv.get("/api/overview")
+        assert len(calls) == 2, "项目注册后缓存失效"
+        assert {p["name"] for p in d2["projects"]} == {"proj-a", "proj-b"}
+        # 移除后同样失效
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv.httpd.invalidate_projects_cache()
+        _, d3 = srv.get("/api/overview")
+        assert len(calls) == 3, "项目移除后缓存失效"
+        assert {p["name"] for p in d3["projects"]} == {"proj-a"}

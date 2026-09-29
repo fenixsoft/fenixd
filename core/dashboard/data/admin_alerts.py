@@ -146,3 +146,22 @@ def get_admin_activities(project_root, spec=None) -> list:
         activities = [a for a in activities if a.get("spec") == spec]
 
     return activities
+
+
+def get_archived_activities(project_root, spec=None) -> list:
+    """读取归档的处置/告警记录（add-alerts-archive-and-overview-cache 2.1）。
+
+    逐行读 `.fenix/admin_alerts_archive.jsonl`（JSONL，每行一条完整记录；
+    存储原序即时间正序），损坏行容错跳过；按 created 时间倒序返回。spec
+    非空时仅返回该 SPEC 相关记录。不与活跃 admin_alerts.json 合并——归档
+    数据不进入任何缺省读路径（读侧时间线语义不变），仅经 `archived=1`
+    出口消费。缺失/不可读返回 []。
+    """
+    from core.admin_store import AdminStore
+
+    records = AdminStore(project_root).read_archive()
+    if spec is not None:
+        records = [r for r in records if r.get("spec") == spec]
+    # or ""：对 "created": null 设防，避免 None 与 str 比较抛 TypeError
+    records.sort(key=lambda r: r.get("created") or "", reverse=True)
+    return records
