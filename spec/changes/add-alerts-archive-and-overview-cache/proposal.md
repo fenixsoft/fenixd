@@ -25,7 +25,7 @@ Dashboard 数据侧两处规模隐患（2026-09-29 实测）：
 ## Impact
 
 - 后端存储层：`core/admin_store.py`（裁剪路径追加归档写入，须持锁内完成）。
-- 后端数据层：`core/dashboard/data/admin_alerts.py`（归档读取函数）；`core/dashboard/routes/alert_routes.py`（`?archived=1` 参数）。
-- 后端路由：overview handler（`core/dashboard/routes/base.py`）加结果缓存。
+- 后端数据层：`core/dashboard/data/admin_alerts.py`（归档读取函数）；`core/dashboard/data/__init__.py`（门面导出 `get_archived_activities`，路由层经 `dashboard_data.` 访问的既有惯例）；`core/dashboard/routes/alert_routes.py`（`?archived=1` 参数）。
+- 后端路由：overview handler（`core/dashboard/routes/project_routes.py` 的 `_api_overview`；`routes/base.py` 仅 `_get_overview` JSON 包裹，无需改动）加结果缓存。
 - 兼容性：无 BREAKING——活跃文件格式不变（仍是 JSON 数组）；归档文件为新增旁路；overview 响应结构不变（纯缓存加速）。
 - 既有回归面：`fix-run-cleanup-attach-spec-archive` 的产物清理机制（归档文件属运行时数据不参与）；`add-dashboard-incremental-data` 的配置/签名缓存模式（复用不重造）。

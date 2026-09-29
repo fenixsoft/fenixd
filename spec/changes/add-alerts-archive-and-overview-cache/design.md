@@ -1,11 +1,11 @@
 ## Context
 
-`core/admin_store.py` 的 `MAX_RECORDS=150` 裁剪（`_write_unlocked` 内 `del records[:-150]`）自 2026-09-01 起生效，设计意图是控活跃文件体积——但被裁记录直接丢弃，运维审计链断裂。`/api/overview` 是全 dashboard 最慢读端点（稳定 ~200ms），其调用方（概览页）被 2s SSE 心跳驱动，重复计算密集。
+`core/admin_store.py` 的 `MAX_RECORDS=150` 裁剪（mutate 持锁段内 `del records[:-150]`，紧邻 `_write_unlocked` 调用）自 2026-09-01 起生效，设计意图是控活跃文件体积——但被裁记录直接丢弃，运维审计链断裂。`/api/overview` 是全 dashboard 最慢读端点（稳定 ~200ms），其调用方（概览页）被 2s SSE 心跳驱动，重复计算密集。
 
 约束：
 - `AdminStore` 全部写回路径经排他锁（`_trim_unlocked` 注释约定调用方持锁），归档追加必须同锁完成，避免裁剪与归档之间丢记录。
 - dashboard 数据层读 `admin_alerts.json` 经 `core/dashboard/data/admin_alerts.py` → `AdminStore(project_root).read_all()`；归档读取走独立函数，不复用 `read_all`（避免污染既有调用方）。
-- overview 聚合入口 `core/dashboard/data/summary.py` `overview(registry_projects)`；handler 在 `routes/base.py`。
+- overview 聚合入口 `core/dashboard/data/summary.py` `overview(registry_projects)`；handler 为 `routes/project_routes.py` `_api_overview`（`routes/base.py` 仅 `_get_overview` JSON 包裹）。
 
 ## Goals / Non-Goals
 

@@ -5,9 +5,11 @@
   kind: modify
 - path: core/dashboard/data/admin_alerts.py
   kind: modify
+- path: core/dashboard/data/__init__.py
+  kind: modify
 - path: core/dashboard/routes/alert_routes.py
   kind: modify
-- path: core/dashboard/routes/base.py
+- path: core/dashboard/routes/project_routes.py
   kind: modify
 - path: tests/test_admin_store_archive.py
   kind: new
@@ -23,16 +25,16 @@
 
 ## 2. 归档读出口（数据层 + 路由）
 
-- [ ] 2.1 `core/dashboard/data/admin_alerts.py` 新增 `get_archived_activities(project_root, spec=None) -> list`：逐行读归档 JSONL（容错跳过损坏行），可选 spec 过滤，返回时间倒序列表（不与活跃文件合并）
-- [ ] 2.2 `routes/alert_routes.py` `_api_admin_activities` 支持 `archived=1`：响应体 `{"archived": true, "total", "page", "page_size", "has_more", "activities"}`，支持 `page`/`page_size` 分页（默认 50 上限 200）与 `?spec=`/`?project=` 组合；缺省（不带 archived）响应零变化
+- [ ] 2.1 `core/dashboard/data/admin_alerts.py` 新增 `get_archived_activities(project_root, spec=None) -> list`：逐行读归档 JSONL（容错跳过损坏行），可选 spec 过滤，返回时间倒序列表（不与活跃文件合并）；经 `core/dashboard/data/__init__.py` 门面导出（路由层经 `dashboard_data.` 访问，同 `get_admin_activities` 惯例）
+- [ ] 2.2 `routes/alert_routes.py` `_api_admin_activities` 支持 `archived=1`：响应体 `{"archived": true, "total", "page", "page_size", "has_more", "activities"}`，支持 `page`/`page_size` 分页（默认 50 上限 200）与 `?spec=`/`?project=` 组合；`archived=1` 缺省（无 `?project=`）时跨项目聚合各项目归档——跳过 fixture 项目、逐条注入 `project` 字段（与缺省活跃聚合同口径），合并后按时间倒序统一排序再分页，带 `?project=` 时只读该项目归档；缺省（不带 archived）响应零变化
 - [ ] 2.3 `tests/test_dashboard_api.py` 新增用例：`archived=1` 分页切片语义、`archived=1&spec=X` 组合过滤、损坏 JSONL 行被跳过、缺省请求响应与归档功能上线前一致
 
 ## 3. overview 结果缓存（路由层）
 
-- [ ] 3.1 `routes/base.py` overview handler 加单槽缓存 `{sig, projects_key, computed_at, payload}` + `threading.Lock`：TTL 2s 内直接命中；超 TTL 但「项目集合 + 全部项目数据源签名」未变时复用；任一键变化重算聚合并更新缓存；签名用 `(path, mtime_ns, size)` 失效键模式（若 `add-dashboard-paging-and-etag` 已落地 `core/dashboard/data/signature.py` 则复用其函数，否则本任务内联最小实现并留注释待归一）
+- [ ] 3.1 `routes/project_routes.py` `_api_overview` 加单槽缓存 `{sig, projects_key, computed_at, payload}` + `threading.Lock`：TTL 2s 内直接命中；超 TTL 但「项目集合 + 全部项目数据源签名」未变时复用；任一键变化重算聚合并更新缓存；签名用 `(path, mtime_ns, size)` 失效键模式（若 `add-dashboard-paging-and-etag` 已落地 `core/dashboard/data/signature.py` 则复用其函数，否则本任务内联最小实现并留注释待归一）；命中返回的缓存 payload 不得被下游原地修改（直接序列化或返回前拷贝）
 - [ ] 3.2 `tests/test_dashboard_api.py` 新增用例：2s 内 3 连请求仅首次聚合（第 2/3 次 ≤5ms 且内容一致）、超 TTL 签名未变复用、STATE.md 变化后重算反映新状态、项目注册/移除后缓存失效
 
 ## 4. 回归
 
-- [ ] 4.1 后端全量测试通过：`python3 -m pytest tests/test_admin_store_archive.py tests/test_admin_store_corruption.py tests/test_dashboard_api.py tests/test_dashboard_index.py -x -q`
+- [ ] 4.1 后端全量测试通过：`python3 -m pytest tests/test_admin_store_archive.py tests/test_admin_store_corruption.py tests/test_dashboard_api.py tests/test_dashboard_data_modules_contract.py tests/test_dashboard_index.py -x -q`
 - [ ] 4.2 存量回归确认：运维页时间线展示内容与改造前一致（同 fixture 数据逐条对比）、`get_admin_activities` 全部既有调用方（横幅/弹窗）无行为变化

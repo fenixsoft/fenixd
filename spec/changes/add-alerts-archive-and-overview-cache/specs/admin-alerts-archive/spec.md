@@ -34,7 +34,7 @@
 
 ### Requirement: 归档只读出口
 
-`/api/admin-activities` 支持 `archived=1` 参数：返回归档记录（支持与活跃路径一致的 `page`/`page_size` 分页语义，按时间倒序），响应体为 `{"archived": true, "total": N, "page": P, "page_size": M, "activities": [...]}`。`archived=1` 与 `?spec=` 可组合（先 spec 过滤后分页）。
+`/api/admin-activities` 支持 `archived=1` 参数：返回归档记录（支持与活跃路径一致的 `page`/`page_size` 分页语义，按时间倒序），响应体为 `{"archived": true, "total": N, "page": P, "page_size": M, "has_more": B, "activities": [...]}`。缺省（无 `?project=`）聚合全部非 fixture 项目的归档并逐条注入 `project` 字段（与活跃缺省聚合同口径），带 `?project=` 时仅该项目。`archived=1` 与 `?spec=` 可组合（先 spec 过滤后分页）。
 
 #### Scenario: 归档分页读取
 
