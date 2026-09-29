@@ -17,6 +17,10 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     parse_quality_gates (quality_gates.py，summary.py 经门面消费),
     find_implementer_worktree (tasks.py，quality_gates.py 经门面解析),
     _resolve_run_file, _read_run_lines (runs.py，quality_gates.py 经门面解析),
+    resolve_run_file, run_tail_insights (runs.py 公开别名，timeline.py 经门面解析；
+                                        code-review 2546f200e430),
+    read_log_window_from (log_index.py 公开别名，timeline.py 经门面解析；
+                          code-review 2546f200e430),
     read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
@@ -104,6 +108,7 @@ from .timeline import (
 from .runs import (
     classify_run,
     _resolve_run_file,
+    resolve_run_file,
     _first_run_event_ts,
     get_runs,
     _read_run_lines,
@@ -113,6 +118,7 @@ from .runs import (
     read_run_events_between,
     active_run_count,
     _run_tail_insights,
+    run_tail_insights,
     compute_run_cost,
     _split_llm_marker,
     _RUN_TERMINAL_STATUS_MAP,
@@ -166,6 +172,7 @@ from .admin_actions import (
     request_spec_approve_push,
     clear_spec_error,
     set_spec_priority,
+    InvalidPriority,
     # 裁决动词与 choice 映射执行器（add-human-adjudication-choices 3.x/4.x）
     reset_verification,
     force_advance,
@@ -198,7 +205,6 @@ from .spec_docs import (
     resolve_spec_dir,
     InvalidSpecName,
     InvalidSpecDoc,
-    InvalidPriority,
     get_spec_doc,
     _read_spec_scenarios,
     count_scenarios,
@@ -248,6 +254,7 @@ from .log_index import (
     _iter_tail_log_entries,
     _norm_utc_iso,
     _read_log_window_from,
+    read_log_window_from,
     get_recent_events,
     record_project_event,
 )

@@ -159,7 +159,7 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
     try:
         import core.dashboard.data as _facade
 
-        path = _facade._resolve_run_file(project_root, run_id)
+        path = _facade.resolve_run_file(project_root, run_id)
         with path.open("rb") as f:
             for _ in range(20):
                 raw = f.readline()
@@ -262,10 +262,10 @@ def get_spec_timeline(
             try:
                 # created 锚定窗口（原尾部 1MB 尾窗对早期事件静默截断）；
                 # 锚点早于文件首行 → 整文件，锚点晚于文件尾 → 仅尾块，量均有限
-                # 跨组引用（log_index 组的 _read_log_window_from）经门面延迟解析（D4）
+                # 跨组引用（log_index 组的 read_log_window_from）经门面延迟解析（D4）
                 import core.dashboard.data as _facade
 
-                content = _facade._read_log_window_from(Path(project_root), lf, created).decode(
+                content = _facade.read_log_window_from(Path(project_root), lf, created).decode(
                     "utf-8", errors="replace"
                 )
             except OSError:
@@ -348,7 +348,7 @@ def get_spec_timeline(
 
     runs = _facade.get_runs(project_root, spec_name, include_archive=True)
     for r in runs:
-        insights = _facade._run_tail_insights(_facade._resolve_run_file(project_root, r["run_id"]))
+        insights = _facade.run_tail_insights(_facade.resolve_run_file(project_root, r["run_id"]))
         node = {
             "time": r["started"],
             "kind": "run",

@@ -706,6 +706,10 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
 # 公开访问面（code-review item b569f5bb4a32）：跨包消费方 core.code_review
 # 引用公开名，与 _read_run_lines 同一函数对象单源绑定。
 read_run_lines = _read_run_lines
+# 公开访问面（code-review item 2546f200e430）：timeline.py 跨组引用改用公开名
+# （不跨组消费下划线私有名），与私有实现同一函数对象单源绑定。
+resolve_run_file = _resolve_run_file
+run_tail_insights = _run_tail_insights
 
 
 def _parse_run_lines(lines) -> list:
