@@ -127,6 +127,7 @@ def evaluate_alert(alert: dict, specs: dict, backfill: bool = False):
         BACKFILL_SIGNAL_TYPES 中同理）
       - 关联 spec 仍处于 blocked（条件未解除）
     """
+    specs = specs if isinstance(specs, dict) else {}  # 非 dict（如 STATE.md 扫描失败传 None）按空表处理
     if not isinstance(alert, dict):
         return None
     if alert.get("kind") != "escalation":
