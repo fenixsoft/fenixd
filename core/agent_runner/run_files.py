@@ -17,6 +17,7 @@ _LANE_RUN_RETENTION_DAYS 的归档产物删除）。
 from pathlib import Path
 import json
 import logging
+import os
 import re
 
 _logger = logging.getLogger("fenixd.agent_runner.run_files")
@@ -63,26 +64,61 @@ def infer_run_agent_type(run_id: str) -> tuple[str, str]:
     return "agent", run_id
 
 
+# 大行原子追加阈值（字节；code-review item 29df176ff441）：行 UTF-8 字节长
+# 超过它时不再走 TextIOWrapper 文本路径——超其内部缓冲（默认约 8 KiB）的行会
+# 被分发为多次 raw write，与并发写者（监督 liveness_shortcut、清扫补写
+# interrupted、crosscheck 审计事件等）交错产生半行 JSON，终态行被读侧解析
+# 跳过后 run 在判活窗口内被误判存活。改走二进制单次 os.write：O_APPEND 下
+# 单次 write() 调用由内核对并发写者串行化，整行原子落盘（与 runner.py 转录
+# 事件透传 item c6a2b45a214d 同口径）。不超阈值的行仍走既有文本路径。
+_ATOMIC_APPEND_LINE_BYTES = 4096
+
+# error 终态文本长度上限（字符）：append_run_error 的 error 常由 stderr 环形
+# 缓冲拼接、可超长；超限截断保终态行紧凑。字符口径与 runner.py
+# _GATE_ERROR_TRUNCATE 一致（1024 字符 UTF-8 编码后最坏 ≤4 KiB）。
+_MAX_RUN_ERROR_CHARS = 1024
+
+
 def append_run_line(run_file: Path, entry: dict) -> None:
     """向运行产物文件追加一行 JSON 并立即 flush，保证运行期间 Dashboard 可读。
 
-    每行独立 open("a") + flush。写入端**多线程并发**（同一 run 的不同事件
-    由 daemon 主循环/worker/子进程收尾等多个写线程追加）时，短行依赖内核
-    O_APPEND 的原子性避免交错；但该保证有边界（code-review item 12723ef0e4df）：
-    Python 的 TextIOWrapper/BufferedWriter 只在单次行数据不超过内部缓冲
-    （默认约 8 KiB）时才走缓冲一次 write；**超缓冲的大行**（超长 error/result）
-    会绕过缓冲分发为多次 raw write，仍可能与并发 writer 交错产生半行 JSON。
-    调用方若需保证大行完整性，须在进程内自行串行化（本函数不持有跨调用锁，
-    以维持既有「每行独立 open」的零共享语义）。实测常见行（事件/终态）远小于
-    该阈值，故此处只显式记录该限制，不改变实现。
+    每行独立 open("a")。写入端**多线程并发**（同一 run 的不同事件由 daemon
+    主循环/worker/子进程收尾等多个写线程追加）时依赖内核 O_APPEND 原子性避免
+    交错；该保证在文本路径上有边界（code-review item 12723ef0e4df）：
+    TextIOWrapper/BufferedWriter 只在单次行数据不超过内部缓冲（默认约 8 KiB）
+    时才走缓冲一次 write，超缓冲大行会绕过缓冲分发为多次 raw write。
+
+    收口（code-review item 29df176ff441）：行 UTF-8 字节长超过
+    ``_ATOMIC_APPEND_LINE_BYTES`` 时改走二进制单次 os.write（O_APPEND 下单次
+    write 调用对 regular file 原子，与 runner.py 转录事件透传同口径；
+    short-write 循环仅为兜底，regular file 实际恒单次全写）；不超阈值的行
+    仍走既有文本路径（行为/编码不变）。加上 ``append_run_error`` 对 error
+    文本的截断，终态行不再可能被并发追加撕裂成读侧跳过的半行 JSON。
     """
-    with run_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        f.flush()
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    data = line.encode("utf-8")
+    if len(data) <= _ATOMIC_APPEND_LINE_BYTES:
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+        return
+    _fd = os.open(run_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+    try:
+        while data:
+            data = data[os.write(_fd, data):]
+    finally:
+        os.close(_fd)
 
 
 def append_run_error(run_file: Path, error: str, exit_code: int) -> None:
-    """异常/超时/kill 终止时向产物文件追加 error 终态行。"""
+    """异常/超时/kill 终止时向产物文件追加 error 终态行。
+
+    error 常由 stderr 环形缓冲拼接、可超长：超 ``_MAX_RUN_ERROR_CHARS``
+    （字符，与 runner.py _GATE_ERROR_TRUNCATE 同口径）截断保留头部，保
+    终态行紧凑且不依赖超长文本即可判定终结。
+    """
+    if len(error) > _MAX_RUN_ERROR_CHARS:
+        error = error[:_MAX_RUN_ERROR_CHARS]
     append_run_line(run_file, {"type": "error", "error": error, "exit_code": exit_code})
 
 
