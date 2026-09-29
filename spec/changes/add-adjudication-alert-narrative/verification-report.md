@@ -35,3 +35,10 @@
 | governance-doc-narrative-section | 帮助文档补充叙事说明（tasks 5.2）：docs/help/06-governance.md 含 narrative 字段说明（三段结构、生成时机、失败兜底为机械文案）与三个 admin.narrative_* 配置项及设置页入口。（出处：spec/changes/add-adjudication-alert-narrative/tasks.md 交付物 docs/help/06-governance.md） | pass | 0/4 | - |
 | dist-build-contains-narrative-code | 前端构建出库验证（tasks 4.2）：core/dashboard/static/dist 构建产物中包含 narrative 渲染新代码（标识符入库），证明 npm 构建已完成且产物含本 spec 前端改动。（出处：spec/changes/add-adjudication-alert-narrative/tasks.md 交付物 core/dashboard/static/dist/index.html reference） | pass | 0/2 | - |
 | alerts-endpoint-contract-regression | GET /api/alerts 端点契约回归（api）：200 且响应含 alerts 数组——叙事为纯增强字段，告警端点行为不回归。（出处：core/dashboard/routes/base.py:376 路由注册；core/dashboard/routes/alert_routes.py:43 _api_alerts 响应形状 {alerts, resolved, total_unhandled}） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
