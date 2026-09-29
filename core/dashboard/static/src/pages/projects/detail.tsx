@@ -1543,7 +1543,7 @@ export default function SpecDetailPage() {
       key: 'screenshots',
       label: (
         <span>
-          失败截图
+          测试截图
           <Badge count={detail?.screenshots?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
         </span>
       ),
