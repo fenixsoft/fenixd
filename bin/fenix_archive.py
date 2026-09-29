@@ -99,9 +99,10 @@ def archive_change(project_root: Path, name: str) -> dict:
             result["evict_warning"] = str(e)
 
     # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。
-    # change 目录移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入
-    # archive/（不删除任何文件）。fail-open（design D4）：runs 归档失败
-    # 仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
+    # change 目录移动成功后，清理 .fenix/runs/ 中属于该 spec 的产物
+    # （fix-run-cleanup-attach-spec-archive D1：顶层与 archive/ 归档副本
+    # 一并删除，产物生命周期绑定 SPEC 生命周期）。fail-open（design D4）：
+    # 清理失败仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
     # core 从框架根导入（对齐 fenix_spec.py FRAMEWORK_ROOT 先例）：自举仓库
     # 下即 project_root，第三方项目下跟随 .fenix 软链接定位安装位置。
     if str(FRAMEWORK_ROOT) not in sys.path:

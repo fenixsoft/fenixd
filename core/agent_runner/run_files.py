@@ -4,11 +4,14 @@
 archive_spec_runs。门面 runner.py 转导这些名字，`from core.agent_runner
 import run_spec_part` 等外部 import 路径保持可用。
 
-产物保留语义（fix-dashboard-read-path-performance D4）：活跃 runs 目录的
-有界性由「终态即移出」保证——daemon 周期保留清理（core/dashboard/data/runs.py
-runs_retention_check）把终态 run 移入 archive/，归档目录再按 runs.keep 上限
-清理。file 从顶层移入 archive/ 的另一入口是所属 SPEC 被归档
-（archive_spec_runs，由 bin/fenix_archive.py 与 SPEC 归档路径调用）。
+产物保留语义（fix-run-cleanup-attach-spec-archive D1/D2）：run 产物生命
+周期绑定 SPEC 生命周期——SPEC 未归档，产物可回看；SPEC 归档即清理
+（archive_spec_runs 把该 SPEC 的顶层与 archive/ 归档副本一并删除，由
+bin/fenix_archive.py 与 SPEC 归档路径调用）。活跃 runs 目录的有界性由
+「终态即移出」保证——daemon 周期保留清理（core/dashboard/data/runs.py
+runs_retention_check）把终态 run 移入 archive/；归档目录的有界性由同函数
+的「无主产物天龄兜底」保证（归属不匹配任何活跃 SPEC 且 mtime 超过
+_LANE_RUN_RETENTION_DAYS 的归档产物删除）。
 """
 
 from pathlib import Path
@@ -128,66 +131,42 @@ def run_spec_part(run_id: str) -> str:
 
 
 def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
-    """把 runs_dir 顶层中属于 spec_name 的运行产物移入 runs_dir/archive/。
+    """删除 runs_dir 中属于 spec_name 的全部运行产物（顶层与 archive/ 两处）。
 
-    产物归档的唯一入口（remove-auto-run-cleanup）：SPEC 归档时由
-    bin/fenix_archive.py 调用，将数据生命周期绑定到 SPEC 生命周期。
+    SPEC 归档 → run 产物清理的唯一入口（remove-auto-run-cleanup 确立入口
+    收敛；fix-run-cleanup-attach-spec-archive D1 把语义从「顶层移入
+    archive/」升级为两处一并删除）：bin/fenix_archive.py 与 spec_archive.py
+    两条归档路径、Dashboard 手工归档路由都收敛到这里。产物生命周期从此
+    绑定 SPEC 生命周期——SPEC 未归档产物可回看，SPEC 归档即清理。
 
-    仅扫描顶层 `*.jsonl`（不递归 archive/）；run_spec_part 与 spec_name
-    精确匹配的文件移入 archive/。同 run_id 的归档副本已存在时仅删除顶层
-    副本（内容同源，以归档为准）。单文件 OSError 记 warning 继续处理
-    其余文件。不删除任何其他文件，不修改文件内容。
+    扫描顶层与 archive/ 两处 `*.jsonl`（均不递归）；run_spec_part 与
+    spec_name 精确匹配的文件删除。单文件 OSError 记 warning 继续处理
+    其余文件，不阻断归档主流程。不删除任何其他文件，不修改文件内容。
 
-    Returns: 成功归档（含去重删除）的文件数；runs_dir 不存在返回 0。
+    Returns: 成功清理的文件数；runs_dir 不存在返回 0。
     """
     if not runs_dir.is_dir():
         return 0
     try:
-        candidates = [p for p in runs_dir.glob("*.jsonl") if run_spec_part(p.stem) == spec_name]
+        candidates = [
+            p
+            for p in list(runs_dir.glob("*.jsonl")) + list((runs_dir / "archive").glob("*.jsonl"))
+            if run_spec_part(p.stem) == spec_name
+        ]
     except OSError as e:
         # 扫描失败与「runs_dir 不存在」旧实现同返回 0 且无日志（code-review
         # item 23e672c8f873）：上游 bin/fenix_archive.py / spec_archive.py 是
-        # fail-open 调用方，会把「扫描失败、零归档」当正常结果，导致已归档 SPEC
+        # fail-open 调用方，会把「扫描失败、零清理」当正常结果，导致已归档 SPEC
         # 的产物残留无人察觉。记 WARNING 使该形态可观测。
-        _logger.warning("archive_spec_runs: 扫描 %s 失败（本 SPEC 零归档）: %s", runs_dir, e)
+        _logger.warning("archive_spec_runs: 扫描 %s 失败（本 SPEC 零清理）: %s", runs_dir, e)
         return 0
-    moved = 0
-    archive_dir = runs_dir / "archive"
+    cleaned = 0
     for victim in candidates:
         try:
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            dest = archive_dir / victim.name
-            if dest.exists():
-                # 去重删除前做轻量判等（code-review item ca47fc88588f）：旧实现
-                # 无条件 unlink 且不留日志，仅在「归档副本与顶层副本同源」假设下
-                # 安全。一旦顶层副本因 retention 移档后又按原路径追加终态行而与
-                # 归档副本分歧，较新的顶层产物会被静默销毁、排障无迹。分歧时记
-                # WARNING 再删（仍以归档为准，保持既有去重语义）。
-                if _files_differ(victim, dest):
-                    _logger.warning(
-                        "archive_spec_runs: 顶层副本与归档副本内容分歧，仍按归档为准删除顶层: %s",
-                        victim,
-                    )
-                else:
-                    _logger.debug("archive_spec_runs: 去重删除同源顶层副本 %s", victim)
-                victim.unlink()
-            else:
-                victim.replace(dest)
-            moved += 1
+            victim.unlink()
+            cleaned += 1
+            _logger.info("archive_spec_runs: SPEC 归档清理 run 产物 %s", victim.name)
         except OSError as e:
-            _logger.warning("archive_spec_runs: 无法归档 %s: %s", victim, e)
+            _logger.warning("archive_spec_runs: 无法删除 %s: %s", victim, e)
             continue
-    return moved
-
-
-def _files_differ(a: Path, b: Path) -> bool:
-    """轻量判等：size 或 mtime 不同即视为分歧；探测失败保守返回 True。
-
-    用于 archive_spec_runs 去重删除前的分歧检测（code-review item
-    ca47fc88588f），不做逐字节比对（产物可能较大，且此处只需发现明显分歧）。
-    """
-    try:
-        sa, sb = a.stat(), b.stat()
-    except OSError:
-        return True
-    return sa.st_size != sb.st_size or int(sa.st_mtime) != int(sb.st_mtime)
+    return cleaned

@@ -1,13 +1,15 @@
-"""run-artifact-retention 能力测试（remove-auto-run-cleanup）。
+"""run-artifact-retention 能力测试（remove-auto-run-cleanup + fix-run-cleanup-attach-spec-archive）。
 
 覆盖：
 1. run_spec_part：run_id → spec 名还原（impl/planner/admin 等前缀格式）。
-2. archive_spec_runs：只移匹配文件、不匹配留顶层、返回移动数、目录缺失返回 0、
-   同名去重以归档侧为准、单文件 OSError 记 warning 继续。
-3. archive_change 集成：spec 归档联动 run 产物归档；runs 归档失败不阻断 change
+2. archive_spec_runs（fix-run-cleanup-attach-spec-archive D1：升级为清理）：
+   只删匹配文件（顶层与 archive/ 归档副本两处）、其他 SPEC 产物零影响、
+   返回清理数、目录缺失返回 0、逐文件删日志可查、单文件 OSError 记 warning 继续。
+3. archive_change 集成：spec 归档联动 run 产物清理；runs 清理失败不阻断 change
    归档（fail-open，design D4）。
 """
 
+import logging
 import sys
 from datetime import date
 from pathlib import Path
@@ -52,57 +54,75 @@ class TestArchiveSpecRuns:
         ):
             (runs_dir / name).write_text('{"type":"x"}\n', encoding="utf-8")
 
-    def test_moves_only_matching_files(self, tmp_path):
+    def test_removes_only_matching_files(self, tmp_path):
         runs_dir = tmp_path / ".fenix" / "runs"
         self._make_runs(runs_dir)
-        moved = archive_spec_runs(runs_dir, "myspec")
-        assert moved == 3
+        cleaned = archive_spec_runs(runs_dir, "myspec")
+        assert cleaned == 3
         arc = runs_dir / "archive"
         for name in (
             "impl-myspec-1788424595-a1.jsonl",
             "planner-plan-myspec-1788424595-a1.jsonl",
             "admin-myspec-1788424595.jsonl",
         ):
-            assert (arc / name).is_file()
+            # 清理语义：顶层删除且不产生归档副本（fix-run-cleanup-attach-spec-archive）
             assert not (runs_dir / name).exists()
+            assert not (arc / name).exists()
         # 不匹配的产物留在顶层
         assert (runs_dir / "impl-otherspec-1788424595-a1.jsonl").is_file()
+
+    def test_top_and_archive_copies_both_removed(self, tmp_path):
+        runs_dir = tmp_path / ".fenix" / "runs"
+        self._make_runs(runs_dir)
+        arc = runs_dir / "archive"
+        arc.mkdir()
+        # 同 SPEC 的归档副本（含异 run_id 的历史归档）一并删除
+        (arc / "verify-myspec-1788424595-a1.jsonl").write_text('{"type":"archived"}\n', encoding="utf-8")
+        (arc / "impl-myspec-1788424595-a1.jsonl").write_text('{"type":"archived"}\n', encoding="utf-8")
+        # 其他 SPEC 的归档副本保持原样
+        (arc / "impl-bar-1788424595-a1.jsonl").write_text('{"type":"bar"}\n', encoding="utf-8")
+        cleaned = archive_spec_runs(runs_dir, "myspec")
+        assert cleaned == 5  # 顶层 3 + 归档副本 2
+        assert not (arc / "verify-myspec-1788424595-a1.jsonl").exists()
+        assert not (arc / "impl-myspec-1788424595-a1.jsonl").exists()
+        assert (arc / "impl-bar-1788424595-a1.jsonl").is_file(), "其他 SPEC 产物零影响"
+        assert not (runs_dir / "impl-myspec-1788424595-a1.jsonl").exists()
 
     def test_missing_runs_dir_returns_zero(self, tmp_path):
         assert archive_spec_runs(tmp_path / ".fenix" / "runs", "myspec") == 0
 
-    def test_duplicate_prefers_archive_copy(self, tmp_path):
+    def test_deletion_logged_per_file(self, tmp_path, caplog):
+        """spec.md Scenario：清理逐文件记日志（两处各一条删除记录可审计）。"""
         runs_dir = tmp_path / ".fenix" / "runs"
         self._make_runs(runs_dir)
         arc = runs_dir / "archive"
         arc.mkdir()
-        # 归档副本已存在且内容不同 → 删除顶层副本，保留归档侧
-        (arc / "impl-myspec-1788424595-a1.jsonl").write_text(
-            '{"type":"archived"}\n', encoding="utf-8"
-        )
-        moved = archive_spec_runs(runs_dir, "myspec")
-        assert moved == 3
-        assert (
-            arc / "impl-myspec-1788424595-a1.jsonl"
-        ).read_text(encoding="utf-8") == '{"type":"archived"}\n'
-        assert not (runs_dir / "impl-myspec-1788424595-a1.jsonl").exists()
+        (arc / "verify-myspec-1788424595-a1.jsonl").write_text("x", encoding="utf-8")
+        with caplog.at_level("INFO", logger="fenixd.agent_runner.run_files"):
+            cleaned = archive_spec_runs(runs_dir, "myspec")
+        assert cleaned == 4
+        del_msgs = [
+            r.message
+            for r in caplog.records
+            if r.levelno == logging.INFO and "归档清理" in r.message
+        ]
+        assert len(del_msgs) == 4
+        assert any("impl-myspec-1788424595-a1.jsonl" in m for m in del_msgs)
+        assert any("verify-myspec-1788424595-a1.jsonl" in m for m in del_msgs)
 
     def test_single_file_oserror_warns_and_continues(self, tmp_path, caplog):
         runs_dir = tmp_path / ".fenix" / "runs"
         self._make_runs(runs_dir)
-        # 制造单文件归档失败：顶层同名项是目录、archive/ 同名是文件，
-        # rename(dir → file) 在 POSIX 上必然抛 OSError（与运行用户无关）。
+        # 制造单文件删除失败：顶层同名项是目录，unlink(dir) 在 POSIX 上必然抛
+        # OSError（与运行用户无关）。
         victim = runs_dir / "planner-plan-myspec-1788424595-a1.jsonl"
         victim.unlink()
         victim.mkdir()
-        arc = runs_dir / "archive"
-        arc.mkdir()
-        (arc / "planner-plan-myspec-1788424595-a1.jsonl").write_text("x", encoding="utf-8")
         with caplog.at_level("WARNING", logger="fenixd.agent_runner.run_files"):
-            moved = archive_spec_runs(runs_dir, "myspec")
-        assert moved == 2
+            cleaned = archive_spec_runs(runs_dir, "myspec")
+        assert cleaned == 2
         assert any("archive_spec_runs" in r.message for r in caplog.records)
-        # 失败项留在顶层，其余正常归档
+        # 失败项留在原处，其余正常清理
         assert victim.is_dir()
 
 
@@ -121,7 +141,7 @@ class TestArchiveChangeIntegration:
             (runs_dir / name).write_text('{"type":"x"}\n', encoding="utf-8")
         return root
 
-    def test_archive_moves_spec_runs_into_archive(self, tmp_path):
+    def test_archive_cleans_spec_runs(self, tmp_path):
         root = self._make_project(tmp_path / "proj")
         result = archive_change(root, "myspec")
         archived_change = (
@@ -130,11 +150,16 @@ class TestArchiveChangeIntegration:
         )
         assert archived_change.is_dir()
         assert (archived_change / "proposal.md").is_file()
+        # runs_archived 键沿用（调用方 fail-open 记数，键名兼容），值为清理数
         assert result["runs_archived"] == 3
         arc = root / ".fenix" / "runs" / "archive"
-        assert (arc / "impl-myspec-1788424595-a1.jsonl").is_file()
-        assert (arc / "planner-plan-myspec-1788424595-a1.jsonl").is_file()
-        assert (arc / "admin-myspec-1788424595.jsonl").is_file()
+        for name in (
+            "impl-myspec-1788424595-a1.jsonl",
+            "planner-plan-myspec-1788424595-a1.jsonl",
+            "admin-myspec-1788424595.jsonl",
+        ):
+            assert not (root / ".fenix" / "runs" / name).exists()
+            assert not (arc / name).exists(), "清理语义：不再产生归档副本"
         assert (root / ".fenix" / "runs" / "impl-otherspec-1788424595-a1.jsonl").is_file()
 
     def test_runs_archive_failure_fail_open(self, tmp_path, monkeypatch):
