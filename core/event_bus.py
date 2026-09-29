@@ -140,8 +140,19 @@ class EventBus:
         commit-push hook 连环触发）。``event_bus.start()`` 本身已同步调用
         ``_update_known_state()``，本方法属**显式化该不变量**的
         冗余加固（design D5），不是唯一保障。
+
+        仅快照缺失时重建（code-review item c29817a6d528）：稳态下快照恒由
+        watcher（2 秒轮询）维护，周期全扫若在此整体重置 ``_known_specs``，恰落
+        在基线读盘之后、watcher diff 之前的状态写入会两边都不派发（old==new、
+        hook 回调同样缺失），该次迁移只能等下一轮全扫 recovery 兜底——hook
+        消费方丢一次通知。基线的唯一必要场景是快照缺失（空 dict），与
+        ``start_initial_scan`` 刻意不做二次 baseline 同理；判空与重建同持
+        ``_state_lock``，消除「判空后快照被并发清空」的检查-执行缝隙。
         """
-        self._update_known_state()
+        with self._state_lock:
+            if self._known_specs:
+                return
+            self._update_known_state()
 
     def start_initial_scan(self):
         """把初扫主体提交到后台线程（fix-spec-review-blocking-dispatch 4.2/4.3）。
@@ -305,6 +316,12 @@ class EventBus:
             elif status == "testing":
                 self._recover_testing(name, entry)
             elif status == "ready":
+                # 取消保持 / 派发退避两道有意等待早退（code-review item
+                # 8bfa3244d4ec，与 recover_orphan_ready 入口共用单点判定）：
+                # 缺此闸时 ready+_cancelled_hold 组合经本 30 分钟兜底清 error
+                # 并重派，打穿精触发的取消语义。有意跳过计入 handled（既有口径）。
+                if self._ready_hold_blocks(name, entry):
+                    return True
                 self._recover_ready(name, entry)
             elif status == "bug-found":
                 self.logger.info("event_bus", f"Recovery: re-triggering bug_found for '{name}'")
@@ -556,6 +573,40 @@ class EventBus:
         )
         self.pm_engine.handle_event("spec_ready", name, updated)
 
+    def _ready_hold_blocks(self, name: str, entry: dict) -> bool:
+        """ready 恢复入口两道「有意等待」早退闸（取消保持 / 派发退避）单点共用。
+
+        code-review item 8bfa3244d4ec：两道闸原只加在 ``recover_orphan_ready``
+        入口，full_scan 恢复链的 ``_recover_one`` ready 分支直达
+        ``_recover_ready``——ready + ``_cancelled_hold`` 组合一经出现（外部直改
+        STATE.md、不带 status 的 update_spec 等路径），30 分钟兜底全扫会清
+        error 并重派，绕过 60 秒精触发的取消语义；取消动作只写
+        ``_cancelled_hold`` + error、不写 ``_dispatch_backoff_until``，派发侧
+        退避闸同样拦不住。两道闸下沉为单点，两入口共用、防判据漂移。
+
+        - ``_cancelled_hold`` 为真（人工取消保持）→ 须早退；
+        - ``self.pm_engine._dispatch_backoffed(entry)`` 为真
+          （``_dispatch_backoff_until`` 未到期）→ 须早退。
+
+        判定异常按「不早退」fail-open（保底恢复不被闸门吞掉），记日志后返回
+        False。返回 True 表示「须早退」。
+        """
+        try:
+            # 有意等待早退 ①：人工取消保持（_cancelled_hold）
+            if entry.get("_cancelled_hold"):
+                return True
+            # 有意等待早退 ②：派发退避期（_dispatch_backoff_until 未到期）。
+            # 读既有判据 _dispatch_backoffed，异常 fail-open 到「不早退」。
+            if self.pm_engine._dispatch_backoffed(entry):
+                return True
+        except Exception as e:
+            self.logger.error(
+                "event_bus",
+                f"Ready recovery early-exit gate failed for '{name}' "
+                f"(fail-open, proceeding with recovery): {e}",
+            )
+        return False
+
     def recover_orphan_ready(self):
         """孤儿 ready 短周期精触发（fix-orphan-ready-recovery-liveness D3/D4）。
 
@@ -589,6 +640,11 @@ class EventBus:
         同样生效，判定为「未被绕过」。另须纠正的原表述：``_recover_ready`` 与
         ``_on_spec_ready`` 均**不读** ``_cancelled_hold``，故该守卫即本入口的
         早退闸门（复用既有标记，非新判据）。
+
+        单点化（code-review item 8bfa3244d4ec）：两道有意等待早退下沉为
+        ``_ready_hold_blocks``，由本入口与 full_scan 恢复链（``_recover_one``
+        ready 分支）共用——full_scan 侧同样尊重取消保持/派发退避，30 分钟
+        兜底不再打穿取消语义。命中早退不计数（``handled`` 口径不变）。
 
         **有界性核对（design D4，真实吸收点是队列去重而非冷却窗口）**：重复
         恢复尝试由 ``_enqueue`` 按 ``(spec_name, agent_type)`` 去重吸收——已入队等待并发槽的 SPEC
@@ -624,20 +680,11 @@ class EventBus:
                 continue
             if entry.get("status") != "ready":
                 continue
-            try:
-                # 有意等待早退 ①：人工取消保持（_cancelled_hold）
-                if entry.get("_cancelled_hold"):
-                    continue
-                # 有意等待早退 ②：派发退避期（_dispatch_backoff_until 未到期）。
-                # 读既有判据 _dispatch_backoffed，异常 fail-open 到「不早退」。
-                if self.pm_engine._dispatch_backoffed(entry):
-                    continue
-            except Exception as e:
-                self.logger.error(
-                    "event_bus",
-                    f"Orphan ready early-exit gate failed for '{name}' "
-                    f"(fail-open, proceeding with recovery): {e}",
-                )
+            # 入口两道「有意等待」早退（code-review item 8bfa3244d4ec）：单点
+            # 判定 _ready_hold_blocks 与 full_scan 恢复链（_recover_one ready
+            # 分支）共用，异常 fail-open 在 helper 内处理；命中不计数。
+            if self._ready_hold_blocks(name, entry):
+                continue
             try:
                 self._recover_ready(name, entry)
                 handled += 1
@@ -827,7 +874,19 @@ class EventBus:
                 # （下轮自动重试，当轮扫描不受影响）；full_scan 失败则整轮恢复
                 # 链失效，故取 error。
                 try:
-                    self.pm_engine.agent_runner.sweep_dangling_runs()
+                    # 与 _admin_inflight_guard / _ready_has_live_child 同口径
+                    # （code-review item d6bd0da27b69）：agent_runner 未装配时
+                    # 属性链直访每周期抛 AttributeError 刷 warning 噪音、清扫
+                    # 静默失效——debug 留痕跳过。
+                    agent_runner = getattr(self.pm_engine, "agent_runner", None)
+                    if agent_runner is None:
+                        self.logger.debug(
+                            "event_bus",
+                            "Runtime dangling-run sweep skipped: "
+                            "agent_runner not available",
+                        )
+                    else:
+                        agent_runner.sweep_dangling_runs()
                 except Exception as e:
                     self.logger.warning(
                         "event_bus",
