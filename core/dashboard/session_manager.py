@@ -432,6 +432,7 @@ class SessionManager:
                 if "ts" not in ev:
                     ev["ts"] = time.time()
 
+                # [fenix-ignore:232cecb1ea26] 四处 events.append 均已持 session.lock（item 79d40459a39e 既有修复覆盖），本条所述未持锁状态不成立
                 # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
                 with session.lock:
                     session.events.append(ev)
