@@ -241,8 +241,9 @@ class FileWatcher:
 
         # 汇总分发
         #   spec 内容/存在相关信号 → SummaryIndex 文件级 diff（新增/变更/删除）
+        cur = None
         if state_changed or vp_changed or spec_dir_changed or spec_removed:
-            self._handle_state_change(name, proot, removed=spec_removed)
+            cur = self._handle_state_change(name, proot, removed=spec_removed)
         #   仅日志变化 → 轻量空增量（前端不刷新列表；跑马灯等靠心跳校准）
         elif logs_changed:
             self.hub.broadcast(
@@ -254,9 +255,11 @@ class FileWatcher:
                     "overview": None,
                 }
             )
-        # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）
+        # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）；
+        # 传入本轮 _handle_state_change 已解析的 cur 复用（spec_dir_changed 非空
+        # 时该 handler 必已执行，cur 非 None），避免 O(N) 次全量重解析
         for spec in spec_dir_changed:
-            self._handle_spec_change(name, proot, spec)
+            self._handle_spec_change(name, proot, spec, cur=cur)
         for run_id in run_changed:
             self._handle_run_change(name, proot, run_id)
         if admin_changed:
@@ -366,6 +369,8 @@ class FileWatcher:
         变化发生后经 SummaryIndex.get() 做文件级签名比对（未变直返缓存、变化只
         重算），再把新摘要与上次广播基线 diff——specs 只列新增/变更/删除。
         overview 不再由 watcher 计算下发（D3：前端本地归并统计，30s 心跳校准）。
+        返回本次解析的 parse_state 结果，供同轮 _handle_spec_change 复用，
+        避免每个变更 spec 各自重跑一次全量解析（item fd29e3eecc0d）。
         """
         removed = removed or set()
         cur = dashboard_data.parse_state(proot)
@@ -392,8 +397,17 @@ class FileWatcher:
                     d = dashboard_data.spec_detail(proot, spec, entry)
                     d["project"] = name
                     details[spec] = d
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 详情组装失败不再静默（code-review item 74be430c66cb）：
+                    # 按空 detail 降级继续的语义保留，但「解析失败」与「确实无
+                    # 详情」必须可区分（口径同 event_bus.py item 586896a04cd5），
+                    # 否则仪表盘数据异常无从从日志反推原因。
+                    logger.warning(
+                        "dashboard watcher 组装 spec %s 详情失败（详情缺省继续）: %s: %s",
+                        spec,
+                        type(e).__name__,
+                        e,
+                    )
         # 删除：上次基线有、合并基线（SummaryIndex D4 活跃 ∪ 清单）无的 spec
         # → summary:null 标记。目录级 removed 信号（spec/changes/<name>/ 被移入
         # 归档目录）只在合并基线不含该 spec 时才算删除——迁出后基线已含归档
@@ -415,10 +429,18 @@ class FileWatcher:
                 "overview": None,
             }
         )
+        return cur
 
-    def _handle_spec_change(self, name: str, proot: Path, spec: str):
-        """单个 SPEC 自己的文件变化：推送该 SPEC 详情（detail 事件）。"""
-        entry = dashboard_data.parse_state(proot).get(spec)
+    def _handle_spec_change(self, name: str, proot: Path, spec: str, cur: dict | None = None):
+        """单个 SPEC 自己的文件变化：推送该 SPEC 详情（detail 事件）。
+
+        cur: 同轮 _handle_state_change 已解析的 parse_state 结果（复用避免每个
+        变更 spec 各自重跑一次 O(全树) 全量解析，item fd29e3eecc0d）；None
+        （无基线可复用）时才兜底自解析一次。
+        """
+        if cur is None:
+            cur = dashboard_data.parse_state(proot)
+        entry = cur.get(spec)
         if entry is None:
             return
         try:
