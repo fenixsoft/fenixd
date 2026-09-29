@@ -330,15 +330,15 @@ def _covers_list(scenario: Any) -> List[str]:
     return [normalize_token(str(c)) for c in covers if c]
 
 
-def scenario_covers(scenario: Any, candidate: InteractiveCandidate) -> bool:
-    """场景是否覆盖该候选（三通道，见模块 docstring）。"""
+def scenario_cover_channel(scenario: Any, candidate: InteractiveCandidate) -> int:
+    """场景覆盖候选所用的通道号（0=未覆盖，1/2/3 见模块 docstring 三通道）。"""
     blob = scenario_text_blob(scenario)
     if not blob:
-        return False
+        return 0
     # 通道 1：planner 显式登记 covers
     covers = _covers_list(scenario)
     if candidate.key in covers or normalize_token(candidate.raw) in covers:
-        return True
+        return 1
     # 通道 2：候选标识（原文/归一化）作为独立 token 出现在场景文本。
     # 边界排除字母/数字而非裸子串：card 不得命中 discard、link 不得命中
     # hyperlink 这类嵌入式假覆盖；连字符/下划线是词内连接符（dark-card--link、
@@ -347,14 +347,19 @@ def scenario_covers(scenario: Any, candidate: InteractiveCandidate) -> bool:
         if term and re.search(
             r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", blob
         ):
-            return True
+            return 2
     # 通道 3：主语义关键词别名（中文表述同一元素）
     primary = _primary_keyword(candidate.key)
     if primary:
         for alias in KEYWORD_ALIASES.get(primary, ()):
             if alias in blob:
-                return True
-    return False
+                return 3
+    return 0
+
+
+def scenario_covers(scenario: Any, candidate: InteractiveCandidate) -> bool:
+    """场景是否覆盖该候选（三通道，见模块 docstring）。"""
+    return scenario_cover_channel(scenario, candidate) != 0
 
 
 def collect_display_declarations(planner_scenarios: Any) -> List[str]:
@@ -438,10 +443,21 @@ def validate_interaction_coverage(
                 f"- 元素 {cand.key}（{cand.source}:{cand.line}）声明纯展示，" f"豁免交互场景"
             )
             continue
-        covering = [str(s.get("id") or "?") for s in scenarios if scenario_covers(s, cand)]
+        covering = []
+        for s in scenarios:
+            ch = scenario_cover_channel(s, cand)
+            if ch:
+                covering.append((str(s.get("id") or "?"), ch))
         if covering:
-            result.covered.append((cand.key, covering))
-            result.change_lines.append(f"- 元素 {cand.key} 由场景 {'、'.join(covering)} 覆盖")
+            ids = [cid for cid, _ in covering]
+            result.covered.append((cand.key, ids))
+            line = f"- 元素 {cand.key} 由场景 {'、'.join(ids)} 覆盖"
+            # code-review 9394c470cf26：通道三为裸子串别名匹配（场景文本任意
+            # 位置出现「点击/卡片」等中文词即命中），属有意的宽松通道；仅靠
+            # 它判覆盖时在留痕行标注弱证据供人工复核（不改变放行结果）。
+            if all(ch == 3 for _, ch in covering):
+                line += "（弱证据：仅靠关键词别名命中，无 covers 登记或元素标识原文）"
+            result.change_lines.append(line)
         else:
             result.uncovered.append(cand.key)
             result.change_lines.append(
