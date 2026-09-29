@@ -142,21 +142,35 @@ def _argv_script_token(argv):
     否则 `python3 -c "...; time.sleep(30)" fenixd_supervisor` 这种「命令行里
     提到脚本名」的进程会被误判成正在执行该脚本（子串假阳性事故）。
     合并短选项写法（-uc / -im / 附着参数的 -c"<code>"）同样按 -c/-m 调用
-    处理返回 None，堵住经合并写法绕过检测的旁路。
+    处理返回 None，堵住经合并写法绕过检测的旁路。分离式取参旗标的参数
+    （`python3 -X faulthandler <script>` / `python3 -W ignore <script>` 中的
+    faulthandler / ignore）按 Python 选项语义消费、不当作脚本 token。
     """
-    for token in argv[1:]:
+    rest = argv[1:]
+    i = 0
+    while i < len(rest):
+        token = rest[i]
         if token in ("-c", "-m"):
             return None
         if token.startswith("-"):
-            # 短选项簇内可能藏着 -c/-m（如 -uc / -im / -c"<code>"）：按 Python
-            # 选项解析语义逐字符扫旗标，见 c/m 即代码串/模块调用；遇取参旗标
-            # （W/x/X）即止——其余字符是它的参数（如 -Ximporttime），不算旗标。
             if not token.startswith("--"):
+                # 分离式取参旗标（token 恰为 -W/-X 单字符）的参数是下一个 argv
+                # token，一并跳过：否则真正的脚本 token 永远不被考察，判活原语
+                # （_is_daemon_proc/_is_supervisor_proc → is_running /
+                # supervisor_running/_fenix_pids_under）漏检该形态 daemon
+                # （code-review item 35d975aaafb2）。合并写法（-Ximporttime /
+                # -Wignore）参数附着在旗标后，无需跳过。
+                if token in ("-W", "-X") and i + 1 < len(rest):
+                    i += 1
+                # 短选项簇内可能藏着 -c/-m（如 -uc / -im / -c"<code>"）：按 Python
+                # 选项解析语义逐字符扫旗标，见 c/m 即代码串/模块调用；遇取参旗标
+                # （W/x/X）即止——其余字符是它的参数（如 -Ximporttime），不算旗标。
                 for ch in token[1:]:
                     if ch in ("c", "m"):
                         return None
                     if ch in ("W", "x", "X"):
                         break
+            i += 1
             continue
         return token
     return None
@@ -297,23 +311,30 @@ def _is_daemon_cmdline(pid) -> bool:
 
     fix-supervisor-hosting-chain 3.2：stop_daemon 的 SIGTERM 只发给 daemon
     （supervisor 见 stop flag 后自行退出，无需也不应杀它）。子串假阳性事故
-    （2026-09-13）后判据同 _is_daemon_proc：Python 解释器 + 脚本 token 解析
-    到该进程自己 cwd 下的 .fenix/fenixd.py——仅「命令行里提到该路径」的
-    进程（grep/cat/sha256sum）不再满足。读取失败（进程已退出）返回 False。
+    （2026-09-13）后判据同快照侧 _is_daemon_proc：Python 解释器 + 脚本 token
+    解析——仅「命令行里提到该路径」的进程（grep/cat/sha256sum）不再满足。
+    项目根锚定比较由快照侧统一承担：本函数只对 _fenix_pids_under 快照中的
+    pid 调用（stop_daemon 做 daemon/supervisor 区分），入选者已被
+    root/.fenix/fenixd.py 锚定本项目，此处复核对脚本 token 的结构判据
+    （.fenix/ 下的 fenixd.py）；supervisor 脚本名是 fenixd_supervisor.py，
+    不会误中。此前在此重复 cwd 锚定比较，daemon 以非项目根 cwd + 绝对脚本
+    路径启动时能进快照却过不了本函数，SIGTERM 被跳过、优雅停机降级为
+    30 秒空等 + 强杀（code-review item 9f0426156676）。读取失败（进程已
+    退出）返回 False。
     """
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             raw = f.read().decode("utf-8", errors="replace")
-        cwd = Path(os.readlink(f"/proc/{pid}/cwd")).expanduser().resolve()
     except (OSError, ValueError):
         return False
     argv = [token for token in raw.split("\x00") if token]
     if not _is_python_argv(argv):
         return False
     script = _argv_script_token(argv)
-    if script is None or Path(script).name != "fenixd.py":
+    if script is None:
         return False
-    return _normalize(cwd / script) == _normalize(cwd / ".fenix" / "fenixd.py")
+    script_path = Path(script)
+    return script_path.name == "fenixd.py" and script_path.parent.name == ".fenix"
 
 
 def hosting_state(root: str | None = None) -> str:
