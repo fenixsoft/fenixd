@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from conftest import _TestServer  # noqa: E402
 
 from core.dashboard.data import (  # noqa: E402
+    SummaryIndex,
     archive_spec,
     auto_archive_check,
     backfill_archived_entries,
@@ -319,6 +320,52 @@ class TestReadSideDualSource(unittest.TestCase):
         _sm(self.root).evict_spec("evo-other", archived_by="backfill")
         got = resolve_spec_name("other", "abc123", self.root, None)
         self.assertEqual(got, "evo-other-abc123")
+
+
+class TestSummaryCacheDirExistence(unittest.TestCase):
+    """BUG-01 回归：SummaryIndex 缓存签名须含活跃目录存在性。
+
+    夹具先写 STATE.md、后建目录（仅含不入签名文件 proposal.md）的窗口里
+    首建索引，archived 以「目录缺失+条目在活跃」算成 True 入缓存；目录重建
+    后若其余签名零变化，陈旧 True 永不重算 → 前端未归档视图丢行/已归档视图
+    反向多行（web-ui-archive-evict-archived-view 实证）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _by_name(items):
+        return {s["name"]: s for s in items}
+
+    def test_dir_late_creation_invalidates_archived_cache(self):
+        # 目录缺失窗口：条目在活跃 STATE → archived=True 入缓存
+        _write_state(self.root, {"late-dir": {"status": "pushed", "_dir": False}})
+        idx = SummaryIndex()
+        first = self._by_name(idx.get(self.root))
+        self.assertTrue(first["late-dir"]["archived"])
+
+        # 目录重建且仅含不入签名文件（proposal.md）——BUG-01 触发时序
+        late = self.root / "spec" / "changes" / "late-dir"
+        late.mkdir(parents=True)
+        (late / "proposal.md").write_text("# 探针\n", encoding="utf-8")
+        second = self._by_name(idx.get(self.root))
+        self.assertFalse(second["late-dir"]["archived"])
+
+    def test_dir_removal_invalidates_archived_cache(self):
+        # 反向：目录存在 archived=False，目录移除后须重算为 True（中间态幽灵）
+        _write_state(self.root, {"gone-dir": {"status": "done"}})
+        idx = SummaryIndex()
+        first = self._by_name(idx.get(self.root))
+        self.assertFalse(first["gone-dir"]["archived"])
+
+        shutil.rmtree(self.root / "spec" / "changes" / "gone-dir")
+        second = self._by_name(idx.get(self.root))
+        self.assertTrue(second["gone-dir"]["archived"])
 
 
 # ── 3.2/3.4 API 合并清单条目 ─────────────────────────────────────────
