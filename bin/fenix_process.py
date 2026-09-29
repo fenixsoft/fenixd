@@ -264,8 +264,9 @@ def render_report(project_root, spec_name: str) -> str:
     entries = data.parse_state(proot)
     entry = entries.get(spec_name)
     if not entry:
-        print(f"❌ SPEC '{spec_name}' 未找到（/fenix-status 查看全部 SPEC 名称）")
-        raise SystemExit(1)
+        # code-review item 9ec5f36af2a0：渲染函数不做输入校验副作用，
+        # SPEC 缺失抛 ValueError，打印与退出由 main 决定。
+        raise ValueError(f"SPEC '{spec_name}' 未找到（/fenix-status 查看全部 SPEC 名称）")
 
     lines = []
 
@@ -433,7 +434,12 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("用法: python3 fenix_process.py <spec-name>")
         return 1
-    sys.stdout.write(render_report(PROJECT_ROOT, sys.argv[1]))
+    try:
+        report = render_report(PROJECT_ROOT, sys.argv[1])
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        return 1
+    sys.stdout.write(report)
     return 0
 
 
