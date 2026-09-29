@@ -417,6 +417,21 @@ class G5DistConflictsMixin:
                 for p in changed
             )
             if not src_touched:
+                # 口径漂移留痕（code-review item 46163c06eb90）：自愈/产物判定
+                # 面由配置驱动（全树），重建触发面限静态根——changed 命中配置
+                # 产物路径但重建未触发时告警，不让工作区产物静默停留陈旧/缺失
+                # 态（触发面行为不变，仅补可见性）。
+                artifact_hits = self._artifacts.paths_in(changed)
+                if artifact_hits:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge changed configured artifact path(s) "
+                        f"{artifact_hits[:10]} but static-root rebuild not "
+                        f"triggered (no non-artifact src under "
+                        f"{DASHBOARD_STATIC_ROOT}) — working-tree artifacts may "
+                        f"lag merged src; rebuild manually per the "
+                        f".fenix/verify.yaml prepare contract if needed",
+                    )
                 return
             if not self._run_dist_build():
                 self.logger.error(

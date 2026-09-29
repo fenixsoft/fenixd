@@ -136,10 +136,22 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
             if isinstance(stamp, str) and stamp and stamp != spec_name:
                 continue
         hits = disputed_findings(data)
+        # 命中首个可读候选即返回前，把先前候选「存在但不可读」的留痕拼进
+        # evidence：不带说明则审计面丢失本轮曾不可读这一事实（docstring
+        # 「留痕供判定记录说明证据来源与缺失方向」）
+        note = (
+            f"（另有 {len(unreadable)} 个候选不可读: "
+            f"{', '.join(str(p) for p in unreadable)}）"
+            if unreadable
+            else ""
+        )
         if hits:
             types = sorted({str(h.get("type")) for h in hits})
-            return True, f"{path.name} findings 含争议条目: {types}"
-        return False, f"{path.name} findings 无 dispute/adjudication 条目（fail-open 无争议）"
+            return True, f"{path.name} findings 含争议条目: {types}{note}"
+        return False, (
+            f"{path.name} findings 无 dispute/adjudication 条目"
+            f"（fail-open 无争议）{note}"
+        )
     if unreadable:
         # 存在但损坏/不可读：留痕区分于「缺失」，避免审计者朝文件缺失方向排障
         return False, (
@@ -444,8 +456,11 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
         return {"ok": False, "report": None, "reason": "场景文件缺失，子集重验无法执行"}
     try:
         scenarios = load_scenarios(scenarios_path)
-    except ValueError as e:
-        return {"ok": False, "report": None, "reason": f"场景文件验收失败: {e}"}
+    except (ValueError, OSError) as e:
+        # OSError（权限/exists 检查与 open 之间文件被清的 TOCTOU）与
+        # ValueError 同按失败回落整轮，免异常沿裁决路径上抛——口径对齐
+        # evaluate_fastlane 同调用点的 except Exception 兜底
+        return {"ok": False, "report": None, "reason": f"场景文件不可读或验收失败: {e}"}
 
     want = {str(s) for s in subset_ids or []}
     subset = [s for s in scenarios if _scenario_view(s)[0] in want]

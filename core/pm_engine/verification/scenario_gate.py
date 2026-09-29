@@ -46,6 +46,11 @@ def _atomic_write_text(path: Path, content: str) -> None:
                 pass
 
 
+# 公开别名（跨模块消费走公开名，不 import 私有符号；同 commit_verification_report
+# 先例，code-review item 157daf7507c0）
+atomic_write_text = _atomic_write_text
+
+
 def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     """应用场景集冻结：planner 产出 vs 持久化集 diff，写回 scenarios.json。
 

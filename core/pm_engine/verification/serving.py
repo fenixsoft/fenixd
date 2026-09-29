@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.proc_utils import find_free_port
-from core.serving_registry import ServingRegistry
+from core.serving_registry import ServingRegistry, pid_alive
 from core.verify_contract import (
     CommandVerifyServer,
     StaticVerifyServer,
@@ -307,6 +307,22 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             False,
             ((srv.failure_note or "验证命令实例未就绪（注入端口未被消费）") + boot_tail),
         )
+    if old is not None:
+        # code-review 73a34755ac94：重启分支（复用门不满足，如实例中途死亡
+        # ok=False）覆盖缓存前对旧 server 补一次 unregister + stop——与
+        # _ensure_serving_worktree 重建路径 / _evict_spec_serving 同口径，
+        # 半死实例的进程组清理不拖延到 serving_registry 周期清扫、boot.log
+        # 句柄不靠 GC 兜底（stop 对已死进程安全）。
+        old_server = old.get("server")
+        if isinstance(old_server, CommandVerifyServer):
+            pipeline._unregister_serving_instance(spec_name, old_server)
+        try:
+            old_server.stop()
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"停止旧 serving 实例 '{spec_name}' 失败（不影响重启）: {e}",
+            )
     cache[spec_name] = {
         "server": srv,
         "wt_path": wt,
@@ -588,12 +604,28 @@ def _current_instance_base_url(pipeline, spec_name: str) -> str:
             if not getattr(srv, "ok", True):
                 continue
             return srv.base_url
-    # 兜底 spawn（commands.start，无契约）：serving 登记里的端口
+    # 兜底 spawn（commands.start，无契约）：serving 登记里的端口。
+    # code-review a2acf612103e：登记按追加序落盘（entries() 最老在前），
+    # 实例死亡后重 spawn 的场景下同 spec 会同时存在旧死条目与新活条目，
+    # 命中首个（最老）匹配会把整轮请求打向死端口——按 /proc 存活过滤
+    # （复用 serving_registry.pid_alive，pid 非法/非正按死亡剔除，口径同
+    # sweep），多匹配时取 registered_at 最新；与上方缓存路径的死亡实例
+    # 守卫（ok 门）同口径。
     try:
         reg = ServingRegistry(pipeline._context.project_root, pipeline._context.logger).entries()
-        for e in reg or []:
-            if isinstance(e, dict) and e.get("spec") == spec_name and e.get("port"):
-                return f"http://127.0.0.1:{e['port']}"
+        candidates = [
+            e
+            for e in reg or []
+            if isinstance(e, dict)
+            and e.get("spec") == spec_name
+            and e.get("port")
+            and isinstance(e.get("pid"), int)
+            and e["pid"] > 0
+            and pid_alive(e["pid"])
+        ]
+        if candidates:
+            newest = max(candidates, key=lambda e: e.get("registered_at") or 0)
+            return f"http://127.0.0.1:{newest['port']}"
     except Exception:
         pass
     return ""
@@ -787,7 +819,15 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         return True, False, ""
     try:
         data = json.loads(scenarios_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        # code-review 82db4da2af52：解析失败与下方根非数组同属「场景集损坏」
+        # 形态，同级 WARNING 留痕（附异常类型摘要）后再按既有放行语义返回，
+        # 不静默放行断排障线索。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"验证场景文件解析失败（场景集损坏），可达性门禁跳过: "
+            f"{scenarios_path} ({type(e).__name__}: {e})",
+        )
         return True, False, ""
     # code-review bbf71fc97695：根非数组＝场景集损坏——直接迭代会产出字符串
     # 键、全被 isinstance 过滤，kinds 恒空而提前判可达（serve/ready 门禁整段
@@ -1064,8 +1104,6 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             if m and int(m.group(1)) != base_port
         }
         if foreign_ports:
-            for p in sorted(foreign_ports, key=int):
-                pipeline._rewrite_scenario_port(scenarios_path, int(p), base_port)
             urls_new = []
             for u in urls:
                 v = u
@@ -1074,7 +1112,13 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 urls_new.append(v)
             # 复核探针与同函数其余探活点语义统一：4xx/5xx 同样证明 HTTP
             # 服务在应答（API-only 应用根路径 404/405 不判不可达）
+            # code-review a736820044fb：先复核后改写（对齐下方邻近扫描块
+            # 「探针全部通过后才改写」纪律）——改写经 _atomic_write_text
+            # 持久落盘且无回滚，复核失败时残留的「外来端口→base_port」改写
+            # 会让场景文件从此指向不被服务的端口、影响后续轮次。
             if all(_probe(u, http_error_ok=True) for u in urls_new):
+                for p in sorted(foreign_ports, key=int):
+                    pipeline._rewrite_scenario_port(scenarios_path, int(p), base_port)
                 boot_log.close()
                 return (
                     True,
@@ -1267,6 +1311,11 @@ def _probe_ports_responding(ports, probe=None) -> set:
     并保持 _probe(http_error_ok=True) 的 4xx/5xx 亦算应答口径）。
     """
     from concurrent.futures import ThreadPoolExecutor
+
+    # code-review 3efbae4631cf：入口归一为 list——pool.map 调用时即耗尽传入
+    # 可迭代对象建 futures，zip 再迭代同一对象时，生成器/一次性迭代器会恒空、
+    # 本函数静默返回空集；归一后不再隐式依赖可重复迭代性。
+    ports = list(ports)
 
     if probe is None:
         probe = _port_responds

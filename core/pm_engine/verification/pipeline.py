@@ -82,6 +82,7 @@ from core.pm_engine.verification.scenario_gate import (
     _run_contract_static_check,
     _run_scenario_static_check,
     _write_verify_contract_missing,
+    atomic_write_text,
 )
 
 # add-pipeline-throughput-governance 4.x：bug-found 小缺陷 fastlane（三条件判定
@@ -1420,9 +1421,12 @@ class VerificationPipeline:
             write_back = None
             try:
                 write_back = prepare_scenarios_for_write(result["migrated"])
-                path.write_text(
+                # tmp+replace 原子写（共用 scenario_gate 助手）：裸写中途中断
+                # 会留截断 JSON，下轮 _load_frozen_or_escalate 按「解析失败 →
+                # 人工通道」误处置（code-review item 157daf7507c0）。
+                atomic_write_text(
+                    path,
                     json.dumps(write_back, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
                 )
             except Exception as e:  # noqa: BLE001 — D4：写回失败不改变本轮内存结果
                 # prepare 已产出内存结果、仅写盘失败 → 以内存结果验收；
@@ -1852,10 +1856,11 @@ class VerificationPipeline:
         }
         try:
             save_report(self._context.project_root, spec_name, report)
-        except OSError as e:
+        except Exception as e:  # noqa: BLE001 — save_report 的序列化异常同样 fail-open
             self._context.logger.warning(
                 "pm_engine",
-                f"裁剪合成全量报告写盘失败 '{spec_name}'（沿用子集报告）: {e}",
+                f"裁剪合成全量报告写盘失败 '{spec_name}'（沿用子集报告）: "
+                f"{type(e).__name__}: {e}",
             )
         self._context.logger.info(
             "pm_engine",
@@ -2316,36 +2321,32 @@ class VerificationPipeline:
                         return False
                     # run 已死（daemon 重启丢队列/attempt 收尾未写标记）→ 停等。
                     # 停等前重读一次标记：run 写出 completed 标记与从
-                    # _running_agents 移除之间存在竞窗，沿用上一轮轮询读到的
+                    # 在飞登记表移除之间存在竞窗，沿用上一轮轮询读到的
                     # 陈旧 dispatched 会走超时分支，对刚完成的有效产物执行
                     # stop+quarantine 并触发一次不必要的串行重出。重读后按最新
                     # 状态分流：completed 落下方产物消费分支，仅确仍 dispatched
                     # 才取消并隔离。
                     # code-review item f0aa2cd44923：存活探测落空（runner 桩/
-                    # 代差未暴露 _running_agents）≠ run 已死。旧代码 None or {}
+                    # 代差未暴露 is_run_alive）≠ run 已死。旧代码 None or {}
                     # 落空即按存活集为空 break 停等 → 取消在飞 run + 隔离半成品，
                     # 把接线故障误判成 run 死亡。ERROR 留痕（每次等待至多一条）
                     # 后跳过存活分支继续轮询：真 run 正常写出 completed 标记
                     # 仍按产物就绪消费；真死亡/超时由下方超时出口按既有语义
                     # 兜底（取消转串行）。
-                    runners = getattr(self._pm.agent_runner, "_running_agents", None)
-                    if runners is None and not hasattr(
-                        self._pm.agent_runner, "_running_agents"
-                    ):
+                    # code-review item 305dcbb105c3：判活改查 AgentRunner 公开
+                    # 接口 is_run_alive，不读 _running_agents 私有登记表。
+                    if not hasattr(self._pm.agent_runner, "is_run_alive"):
                         if not _liveness_gap_logged:
                             _liveness_gap_logged = True
                             self._context.logger.error(
                                 "pm_engine",
                                 f"并行出题在飞等待存活探测不可用 '{spec_name}' — "
-                                f"agent_runner 未暴露 _running_agents（接线缺口/桩），"
+                                f"agent_runner 未暴露 is_run_alive（接线缺口/桩），"
                                 f"跳过「run 已死」判定继续轮询，不取消在飞 run",
                             )
                         time.sleep(self._PARALLEL_PLAN_WAIT_POLL_SECONDS)
                         continue
-                    runners = runners or {}
-                    if not any(
-                        isinstance(aid, str) and aid.startswith(prefix) for aid in runners
-                    ):
+                    if not self._pm.agent_runner.is_run_alive(prefix):
                         marker = lane.read_marker(spec_name) or {}
                         break
                     marker = lane.read_marker(spec_name) or {}

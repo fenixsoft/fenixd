@@ -66,13 +66,27 @@ class TestReclaimStaleAutostash:
         assert git(tmp_path, "stash", "list").stdout.strip() == ""
 
     def test_dirty_tree_skips_reclaim(self, tmp_path):
-        """主树脏（用户工作中）不抢：条目原样保留。"""
+        """主树 tracked 脏（用户工作中）不抢：条目原样保留。"""
+        make_conflicting_autostash(tmp_path)
+        # 「脏」按 tracked-only 口径判定（autostash 只装 tracked 修改），
+        # 须改动已跟踪文件才构成用户工作中的现场
+        (tmp_path / "f.txt").write_text("USER WIP\n", encoding="utf-8")
+        wm = make_wm(tmp_path)
+        assert wm.reclaim_stale_autostash() is False
+        assert AUTOSTASH_MSG_PREFIX in git(tmp_path, "stash", "list").stdout
+        assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "USER WIP\n"
+
+    def test_untracked_only_tree_no_longer_blocks_reclaim(self, tmp_path):
+        """纯 untracked 文件不算脏（fix 口径）：不再卡死巡检，冲突条目照常自愈消费。"""
         make_conflicting_autostash(tmp_path)
         (tmp_path / "other.txt").write_text("wip\n", encoding="utf-8")
         wm = make_wm(tmp_path)
         assert wm.reclaim_stale_autostash() is False
-        assert AUTOSTASH_MSG_PREFIX in git(tmp_path, "stash", "list").stdout
+        # pop 冲突自愈保 HEAD 后条目被 drop，下一 tick 不再重试
+        assert AUTOSTASH_MSG_PREFIX not in git(tmp_path, "stash", "list").stdout
+        assert git(tmp_path, "status", "--porcelain").stdout.strip() == "?? other.txt"
         assert (tmp_path / "other.txt").read_text(encoding="utf-8") == "wip\n"
+        assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "MERGED"
 
     def test_non_fenix_stash_never_touched(self, tmp_path):
         """人工手工 stash（无 fenix 前缀）永不自动回收。"""

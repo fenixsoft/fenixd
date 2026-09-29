@@ -153,8 +153,9 @@ class TestBadTokenBaselineWarns(unittest.TestCase):
         # state_machine.read_one 返回坏 baseline
         pipeline._context.state_machine.read_one_data = sm_read_one_data
         pipeline._context.state_machine.read_one = lambda name: sm_read_one_data
-        # token 合计返回非空（触发差量记账路径）
-        with patch.object(vr, "_sum_verify_chain_tokens", return_value={"input": 10, "output": 5}), \
+        # token 合计返回非空（触发差量记账路径）；patch 公开别名——
+        # _record_verdict_adoption 按模块边界约定消费公开名而非私有符号
+        with patch.object(vr, "sum_verify_chain_tokens", return_value={"input": 10, "output": 5}), \
              patch.object(vr, "record_verdict_round", return_value=None), \
              patch.object(vr, "verdict_failed_ids", return_value=[]):
             from core.pm_engine.verification.verdict_evidence import _record_verdict_adoption

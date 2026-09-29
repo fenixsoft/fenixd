@@ -182,8 +182,19 @@ class G1LifecycleMixin:
                     # node_modules——与下方全新建树出口共用同一段幂等供给。
                     self._provision_worktree_deps(wt_path)
                     return wt_path
-                # 无可复用遗产 → 清除上一轮的认领痕迹（prompt 注入以实际为准）
-                self._active_reuse.pop(spec_name, None)
+                # 无可复用遗产 → 清除上一轮的认领痕迹（prompt 注入以实际为准）。
+                # 仅清不再指向活动集成员的残留（code-review item 097d73d377dd）：
+                # _active_reuse 以 spec 为键、无 agent_type 维度，同 spec 他
+                # agent_type 并发 create 刚认领成功的记录（path 仍在
+                # _active_worktrees，其 run 在飞）不得在此抹掉——否则后续
+                # get_reuse_record 读到 None，prompt 继承说明注入丢失。收工路径
+                # （cleanup / keep_for_reuse）已把 path 摘出活动集，残留痕迹照旧清除。
+                stale_rec = self._active_reuse.get(spec_name)
+                if (
+                    stale_rec is not None
+                    and str(stale_rec.get("path") or "") not in self._active_worktrees
+                ):
+                    self._active_reuse.pop(spec_name, None)
 
             # Determine branch name — include timestamp to avoid collisions on re-verification
             # （evo-fix-worktree-name-collision-retry：跨 agent_type 同秒 create 会按
@@ -909,8 +920,33 @@ class G1LifecycleMixin:
                         )
                         if wt_dir.exists():
                             shutil.rmtree(str(wt_dir), ignore_errors=True)
-                except Exception:
+                except Exception as e:
+                    # subprocess 直接抛异常（如 git 挂起 TimeoutExpired / OSError）
+                    # 不静默吞掉：先记 WARNING 留痕（异常类型 + stderr 现场），对齐
+                    # cleanup() 与上方 returncode 分支「remove 失败必记 WARNING」
+                    # 的口径（code-review item 67b788923b6e）；rmtree 兜底后复核
+                    # 残留，目录仍在（如被占用删不掉）时追加留痕——否则下游存活
+                    # 探测/孤儿清扫判定继续受骗且无任何日志可查。
+                    stderr = getattr(e, "stderr", None) or ""
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", "replace")
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Orphan worktree remove failed for {wt_dir}: "
+                        f"{type(e).__name__}: {e}"
+                        + (
+                            f"; stderr: {str(stderr).strip()[:200]}"
+                            if str(stderr).strip()
+                            else ""
+                        ),
+                    )
                     shutil.rmtree(str(wt_dir), ignore_errors=True)
+                    if wt_dir.exists():
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Orphan worktree dir still present after rmtree "
+                            f"fallback: {wt_dir}",
+                        )
 
         # Prune stale worktree references
         # （code-review item 506b30212499）收尾 prune 与循环体同款保护：git 挂起
@@ -1027,6 +1063,7 @@ class G1LifecycleMixin:
             return released
         for lock_key in snapshot:
             spec = self._lock_spec_name(lock_key)
+            # [fenix-ignore:216784713669] info 项按家族过滤须改 _process_scanner 注入契约与按 spec 键的扫描缓存/流 mtime 判定，且与 has_active_worktree 同粒度同链须同改（彼处不属本组条目），成本高风险大；方向保守（只延后派发不会双派发）且有 STALE_LOCK_IDLE_SECONDS 上界，维持 spec 粒度判活
             if self._spec_process_alive(spec):
                 continue
             mtime = self._latest_stream_mtime(spec)

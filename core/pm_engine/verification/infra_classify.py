@@ -15,6 +15,11 @@ import tempfile
 from pathlib import Path
 
 from core.admin_store import AdminStore, DISPOSITION, SIGNAL
+
+# code-review item f882b509b227：provider 熔断判定文案与生产源（provider_circuit）
+# 共用同一导出常量（同 pipeline.py item 17e5cb41806e 惯例，防措辞漂移静默失配）。
+from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
+
 from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
 
 # 回拨审计留痕信号类型（幂等键前缀，admin_store DISPOSITION 按 reclassify_key 去重）
@@ -41,7 +46,8 @@ def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
     """
     if not error_text:
         return False
-    if "provider circuit open" in error_text or "chain exhausted" in error_text:
+    # "chain exhausted" 生产源为 core/agent_runner/runner.py 熔断文案（该侧暂无导出常量，保留字面量）。
+    if PROVIDER_CIRCUIT_ERROR_MARKER in error_text or "chain exhausted" in error_text:
         return True
     try:
         # 门面直引豁免（code-review item 9fad470a0abe）：PipelineContext 的

@@ -181,6 +181,12 @@ def _sum_verify_chain_tokens(project_root, spec_name):
     return {"input": total_in, "output": total_out}
 
 
+# code-review 6c9af9ec3805：跨模块（pm_engine.verification.verdict_evidence 等）复用
+# 统一走公开名，模块边界不依赖下划线私有符号；私有名保留给模块内既有调用点。
+# 别名直引同一实现，签名与行为随本体，无任何包装差异。
+sum_verify_chain_tokens = _sum_verify_chain_tokens
+
+
 def _load_run_result(project_root, spec_name):
     """读取裁决 .fenix-run-result.json（verify-progress 优先，主树 .fenix/ 回退）。
 

@@ -27,6 +27,13 @@ from core.state_machine import (
     _SCENARIO_REPAIR_MAX_ROUNDS,
 )
 
+# tmp+replace 原子写助手（scenario_gate 公开别名，与 fastlane.py 写盘惯例同源）：
+# 本模块会被回读的状态侧车 JSON 落盘点（triage_recheck 追加与剪枝 /
+# scenario_reroute_stoploss / scenario_reroute_directive）统一原子写——裸写
+# 中途被杀会留截断文件，已积累的复核清单/止损留存静默丢失
+# （code-review ef9941a3a42b）。
+from core.pm_engine.verification.scenario_gate import atomic_write_text
+
 # fix-recovery-path-blockers D3：预算耗尽重验延时常量（30 分钟，
 # 与 schedule.poll_interval_minutes 缺省对齐）。定时器管准点、周期扫描管兜底
 # ——daemon 重启后定时器丢失，靠 `_dispatch_backoff_until` 兜底
@@ -198,6 +205,11 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         pipeline._context.state_machine.update_spec(spec_name, updates)
         pipeline._context.enqueue(spec_name, "verifier")
         return True
+
+    # 显式兜底：升级分支已覆盖 attempts >= max_attempts，到达此处条件恒真
+    # ——恒按 inconclusive 处理、恒返回 True。显式写出避免隐式 None 出口
+    # 被调用方按真值消费时静默传播。
+    return True
 
 
 def _env_whitewash_gate(pipeline, spec_name: str) -> bool:
@@ -552,9 +564,11 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
             ]
             if len(pruned) != len(data):  # 无变化不写盘（避免每轮无谓写）
                 try:
-                    recheck_path.write_text(
+                    # 原子写（共用 scenario_gate.atomic_write_text 助手）：剪枝
+                    # 结果会被回读，裸写中途被杀留截断文件丢已积累复核清单。
+                    atomic_write_text(
+                        recheck_path,
                         json.dumps(pruned, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
                     )
                 except OSError as e:
                     pipeline._context.logger.warning(
@@ -655,9 +669,11 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             except (json.JSONDecodeError, OSError):
                 existing = []
         merged = list(dict.fromkeys(existing + sids))
-        recheck_path.write_text(
+        # 原子写（共用 scenario_gate.atomic_write_text 助手）：优先复核清单会被
+        # planner prompt 回读，裸写中途被杀留截断文件会静默丢失已积累清单。
+        atomic_write_text(
+            recheck_path,
             json.dumps(merged, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
     except OSError as e:
         pipeline._context.logger.warning(
@@ -708,7 +724,10 @@ def _write_scenario_reroute_stoploss(
     path = _scenario_reroute_stoploss_path(pipeline, spec_name)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        # 原子写（共用 scenario_gate.atomic_write_text 助手）：改道止损留存会被
+        # 回读，裸写中途被杀留截断文件会让失败集留存静默丢失。
+        atomic_write_text(
+            path,
             json.dumps(
                 {
                     "round": round_,
@@ -718,7 +737,6 @@ def _write_scenario_reroute_stoploss(
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
     except OSError as e:
         pipeline._context.logger.warning(
@@ -814,9 +832,11 @@ def _scenario_defect_reroute_gate(
     )
     try:
         directive_path.parent.mkdir(parents=True, exist_ok=True)
-        directive_path.write_text(
+        # 原子写（共用 scenario_gate.atomic_write_text 助手）：改道指令会被
+        # prompt_builder 回读，裸写中途被杀留截断文件会让指令静默丢失。
+        atomic_write_text(
+            directive_path,
             json.dumps(dist, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
     except OSError as e:
         pipeline._context.logger.warning(
@@ -1175,6 +1195,11 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
         pipeline._context.enqueue(spec_name, "verifier")
         return True
 
+    # 显式兜底：升级分支已覆盖 attempts >= max_attempts，到达此处条件恒真
+    # ——恒按 inconclusive 处理、恒返回 True。显式写出避免隐式 None 出口
+    # 被调用方按真值消费时静默传播。
+    return True
+
 
 def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
     """judge 判 bug-found 但其自述根因全部为环境/基础设施问题时返回 True。
@@ -1263,7 +1288,20 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
             pipeline, "verify_engine.credibility_gate_max_retries", 1
         )
         spec = pipeline._context.state_machine.read_one(spec_name) or {}
-        gate_attempts = int(spec.get("_credibility_gate_attempts", 0) or 0)
+        try:
+            gate_attempts = int(spec.get("_credibility_gate_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            # 字段被外部工具写坏为非数字串时，int() 抛 ValueError 会被函数级
+            # except 吞成「门禁校验异常跳过」return False，调用方继续
+            # bug-found 打回——归因分级门禁整体失效。比照 _inconclusive_attempts
+            # / ENV_BLOCK_ROUNDS_FIELD 同款防御：脏值回退 0，不让记账字段
+            # 脏值瘫痪升级通道。
+            gate_attempts = 0
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' _credibility_gate_attempts 字段脏值（非数字），"
+                f"已按 0 兜底继续门禁判定",
+            )
         if gate_attempts < max_retries:
             pipeline._context.logger.warning(
                 "pm_engine",
@@ -1598,6 +1636,11 @@ def _handle_verdict_env_exemption_inconclusive(
         pipeline._context.state_machine.update_spec(spec_name, updates)
         pipeline._context.enqueue(spec_name, "verifier")
         return True
+
+    # 显式兜底：升级分支已覆盖 attempts >= max_attempts，到达此处条件恒真
+    # ——恒按 inconclusive 处理、恒返回 True。显式写出避免隐式 None 出口
+    # 被调用方按真值消费时静默传播。
+    return True
 
 
 def _env_exempt_disposition_is_stale(

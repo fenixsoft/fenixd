@@ -1080,6 +1080,12 @@ def _extract_step_number(ffs_text) -> str:
     return m.group(1) if m else ""
 
 
+# code-review 6c9af9ec3805：跨模块（pm_engine.verification.verdict_evidence 等）复用
+# 统一走公开名，模块边界不依赖下划线私有符号；私有名保留给模块内既有调用点。
+# 别名直引同一实现，签名与行为随本体，无任何包装差异。
+extract_step_number = _extract_step_number
+
+
 def _first_failed_step_desc(ffs_text) -> str:
     """去除步骤序号前缀后的描述体（归一化空白后哈希进指纹）。"""
     if not isinstance(ffs_text, str):

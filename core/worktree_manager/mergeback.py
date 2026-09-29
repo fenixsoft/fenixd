@@ -24,6 +24,18 @@ from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager import WIP_GATE_STASH_PREFIX  # noqa: E402
 
+# git quotePath 的字母短转义表（quote.c sq_lookup）：a/b/f/n/r/t/v 七个控制
+# 字符输出两字符字母转义（如 \n、\t），值为其单字节控制字符。
+_LETTER_ESCAPES = {
+    "a": 0x07,
+    "b": 0x08,
+    "f": 0x0C,
+    "n": 0x0A,
+    "r": 0x0D,
+    "t": 0x09,
+    "v": 0x0B,
+}
+
 
 def _unquote_git_path(p: str) -> str:
     """反转义 git 文本输出中 core.quotePath 的 C 风格带引号路径。
@@ -32,8 +44,10 @@ def _unquote_git_path(p: str) -> str:
     引号八进制转义形（如 "docs/\\346\\226\\207.txt"）。不反转义则 `Path.exists()`
     恒 False（untracked 备份移开失效）、路径集合交集比对失真。带引号行按 C
     规则解码：反斜杠 + 3 位八进制数字还原为一个字节，反斜杠 + 引号/反斜杠
-    还原字面字符，字节流按 UTF-8 解码（失败退回 latin-1）；无引号行原样返回
-    （对 ASCII 路径幂等零开销）。
+    还原字面字符，a b f n r t v 七个控制字符按两字符字母转义还原单字节
+    （git quote.c sq_lookup 表，仅其余控制/高位字节才用八进制），字节流按
+    UTF-8 解码（失败退回 latin-1）；无引号行原样返回（对 ASCII 路径幂等
+    零开销）。
     """
     if len(p) < 2 or not p.startswith('"') or not p.endswith('"'):
         return p
@@ -47,6 +61,11 @@ def _unquote_git_path(p: str) -> str:
             nxt = body[i + 1]
             if nxt in ('"', "\\"):
                 raw += nxt.encode("ascii")
+                i += 2
+                continue
+            letter = _LETTER_ESCAPES.get(nxt)
+            if letter is not None:
+                raw.append(letter)
                 i += 2
                 continue
             octal = body[i + 1 : i + 4]
@@ -111,6 +130,12 @@ class G4MergebackMixin:
             return MergeConflictInfo(False, "Empty branch name")
 
         with self._main_tree_lock:
+            # stash 状态重置放在所有早退闸门之前：rehearsed / wip_gate_blocked /
+            # spec_dir_inflight 任一早退后属性都处于「本轮无 stash 活动」确定态，
+            # 不残留上一轮 merge-back 的值（消费方 queue/rollback 每次 merge 返回
+            # 后无条件读取；成功路径随后由 guard 段写入真实值，先重置后赋值）。
+            self.last_stash_pop_conflicts = []
+            self.last_stash_entry_fate = {"kept": True, "sha": ""}
             # 预演闸（add-merge-tree-rehearsal D1/D2）：guard 锁内、stash 之前只读
             # 预演。语义冲突 → 直接返回 rehearsed 标记（主树零污染，调度层直通
             # repair）；None = 放行（零冲突或产物/ignored-DU 冲突）→ 走现行流程。
@@ -118,8 +143,6 @@ class G4MergebackMixin:
             if rehearsed_info is not None:
                 return rehearsed_info
 
-            self.last_stash_pop_conflicts = []
-            self.last_stash_entry_fate = {"kept": True, "sha": ""}
             # WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2；缺省处置已由
             # add-pipeline-throughput-governance D2/merge-back-precheck 从 auto
             # 收纳改为升级拦截，策略解析与变更依据见 _wip_gate_policy）：预演闸

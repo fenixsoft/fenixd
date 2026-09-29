@@ -156,7 +156,9 @@ class G6StashGuardMixin:
           未消解 unmerged 条目）——主树仍半合并，交人工处置（与
           ``reclaim_stale_autostash`` 的复查口径一致）。
         - ``(False, [])``：pop 失败且非冲突类（如其它 git 错误），stash 保留；调用方按
-          旧版 False 语义处理（主树可能仍半合并，需人工处置）。
+          旧版 False 语义处理（主树可能仍半合并，需人工处置）。pop 前钉 sha
+          超时/不可用同口径放弃本轮也返回此值——主树已合并完、仅本方条目
+          滞留栈顶，交 reclaim_stale_autostash 巡检兜底。
 
         **三态自愈（evo-stash-pop-conflict-triage D1/D2）**：当 pop 返回非 0 且输出
         含 ``CONFLICT`` 时，主树会陷入 UU 半合并状态、index.lock 满，导致后续所有
@@ -184,10 +186,16 @@ class G6StashGuardMixin:
                 text=True,
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError):
-            # git 超时/不可用：钉不住 sha，按空 sha 继续（后续 pop 自行降级）
-            rev = None
-        if rev is not None and rev.returncode == 0:
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # git 超时/不可用：钉不住 sha = 无法证明栈顶未动，与下方复核阶段
+            # 同口径放弃本轮绝不弹（条目保留交 reclaim_stale_autostash 巡检兜底）
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop skipped, top-of-stack pin unavailable "
+                f"(stash preserved): {e}",
+            )
+            return False, []
+        if rev.returncode == 0:
             pinned_sha = rev.stdout.strip()
 
         # pop 前复核栈顶仍为钉住条目（code-review item c6d22fdac25f，对齐
@@ -548,7 +556,8 @@ class G6StashGuardMixin:
         （方案 1）后新条目不再滞留，本方法负责回收存量与各类历史遗留。
 
         仅在「主树干净」且「栈顶条目带 AUTOSTASH_MSG_PREFIX」时 pop 恢复：
-          - 主树脏说明用户正在工作，不抢；
+          - 主树 tracked 脏说明用户正在工作，不抢（untracked 文件不计入，
+            同 ensure_clean_tree 的 tracked-only 口径）；
           - 人工手工 stash 的条目无此前缀，永不触碰。
 
         pop 冲突时按「丢弃 stash 版保 HEAD」的旧策略自愈（checkout -f HEAD 覆盖
@@ -611,7 +620,11 @@ class G6StashGuardMixin:
                 f"Stale autostash reclaim skipped (git unavailable): {e}",
             )
             return False
-        if status.returncode != 0 or status.stdout.strip():
+        # 干净判定复用 _list_dirty_tracked_files 的 tracked-only 口径（与
+        # ensure_clean_tree 一致）：本模块的 autostash 只 stash tracked 修改，
+        # 存在普通 untracked 文件不应让巡检无限期跳过回收；status 命令失败
+        # （rc!=0）仍按「脏」保守放弃本轮。
+        if status.returncode != 0 or self._list_dirty_tracked_files():
             return False
         try:
             lst = subprocess.run(

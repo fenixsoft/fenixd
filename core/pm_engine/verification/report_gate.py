@@ -70,7 +70,15 @@ def _read_verify_report(pipeline, spec_name: str) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except Exception as e:
+        # 哨兵语义不变（仍返回空 dict），但失败留 WARNING 痕，与同文件其余
+        # 读取器（_read_verifier_result/_read_shared_result）的可观测口径
+        # 一致——瞬时读错误时消费方拿到空分布/空失败清单仍有排障线索
+        # （code-review item 248a9afad6af）。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"Failed to read verify report (best-effort): path={path}, err={e}",
+        )
         return {}
 
 
