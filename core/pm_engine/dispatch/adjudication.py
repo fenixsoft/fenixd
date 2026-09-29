@@ -2607,5 +2607,3 @@ class VAdjudicationMixin:
             branch=branch,
             legacy_warn_prefix="relint 遗产登记失败",
         )
-
-    # ── fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）──

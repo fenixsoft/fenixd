@@ -1185,12 +1185,25 @@ class FFastTrackMixin:
                 # 两条车道预算记账口径不一致，被击杀 run 可无限重派烧预算。
                 run_reason=str(exempt_reason) if exempt_reason else None,
             )
+        # ── MUST 同步（code-review item 0caca76e37b1）──────────────────
+        # 本方法以下四段「终态错误分类→处置动作」（provider 熔断
+        # "provider circuit open" 保持原状 / [provider-transient] 延迟重派 /
+        # MODEL_CHAIN_UNAVAILABLE_MARKER 保持原状 / _retry_count 递增与
+        # max_r 封顶冻结转人工）与 queue.py `_run_agent_worker` 内
+        # agent_type == "implementer" 的失败处置链（死亡 run 豁免之后的
+        # provider 熔断 → [provider-transient] → 模型链不可用 → else 重试/
+        # 冻结段）逐段同构、手工双维护。fast-track 侧历史上曾多次缺失、
+        # 事后补齐对齐（code-review item 498a7c7432f1、867125061b61、
+        # 6e6259821f64）。任一车道新增/修改终态失败分支时 MUST 同步另一
+        # 车道的对应段，禁止只改一处；对照定位用方法名/分支语义，勿写
+        # 裸行号（行号会漂移）。
         # provider 熔断拦截
         if final_error and "provider circuit open" in final_error:
             self._pm.state_machine.update_spec(spec_name, {"error": final_error})
             return
         # provider 瞬断终态延迟重派（code-review item 498a7c7432f1）：与 full 车道
-        # 的 [provider-transient] 分支同语义（queue.py:1554）——瞬断终态不走
+        # 的 [provider-transient] 分支同语义（queue.py `_run_agent_worker`
+        # implementer 失败处置链的 [provider-transient] elif 段）——瞬断终态不走
         # _retry_count 递增/清零路径，改按 transient_redispatch_delay_seconds
         # 排程等待后重派，避免把网关瞬断计入重试并快速重派。缺此分支会使
         # fast-track 车道与全车道语义不一致。

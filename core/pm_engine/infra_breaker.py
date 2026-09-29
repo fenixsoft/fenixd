@@ -287,11 +287,16 @@ class InfraCircuitBreaker:
 
     # ── 写入 ────────────────────────────────────────────────────────
 
-    def record_failure(self, link: str, now: float | None = None) -> bool:
+    def record_failure(self, link: str, now: float | None = None) -> bool | str:
         """记录一次 infra 失败。返回是否刚触发熔断（首次达到阈值）。
 
         - 计数递增；未熔断且达到阈值 → 触发熔断（until=now+cooldown）
         - 已处于熔断（半开探测失败）→ 重置冷却窗口（窗口滑动）
+        - 冷却已到期但期间无人调用 condition() → 先按 recovered 口径翻转
+          closed（与 condition() 的半开语义一致），再继续本次失败累计与触发；
+          若随即再熔断返回 "recovered_then_triggered"（truthy，告警侧
+          ``if triggered:`` 门控不受影响，同时得以先补一条 recovered 记录
+          再记新触发）
         - 仅首次触发熔断返回 True（告警恰好落一条）
         """
         with self._lock:
@@ -300,6 +305,17 @@ class InfraCircuitBreaker:
             if now is None:
                 now = time.time()
             triggered = False
+            recovered_expired = False
+
+            # 冷却已到期但期间无人调用 condition()（如冷却窗内无任何 spec 进入
+            # reviewing）：先按 condition() 的 recovered 口径把 broken 翻转为
+            # closed（count 保留，半开探测语义一致）——否则直接落入下方 elif
+            # 再熔断，告警流出现两条 triggered 之间无 recovered（code-review
+            # item 899630a8897c）。先翻转也保证后续 condition() 看到的不是
+            # 已到期 broken，不会重复返回 "recovered" 落第二条恢复记录。
+            if st["state"] == "broken" and now >= st["until"]:
+                st["state"] = "closed"
+                recovered_expired = True
 
             st["count"] += 1
 
@@ -313,6 +329,9 @@ class InfraCircuitBreaker:
                 triggered = True
 
             self._save_state()
+            if recovered_expired and triggered:
+                # 区分「冷却到期未消费即再熔断」的标记（truthy）
+                return "recovered_then_triggered"
             return triggered
 
     def record_success(self, link: str):

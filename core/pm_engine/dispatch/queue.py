@@ -848,6 +848,11 @@ class QQQueueMixin:
                             # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
                             self._pm._transient_unseal_recredit()
                             self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        # 命中即本调用抑制该条目重选（守卫三同款，抑制自己 ≠
+                        # 阻塞他人）。「已交付未落盘」形态不冻结 spec（仍 ready），
+                        # 无抑制时同一调用内 pop→命中→回滚入队→再 pop 无限热旋，
+                        # 调用方线程挂死（code-review item ff79ebdb12d6）。
+                        suppressed.add((spec_name, agent_type))
                         continue
                     # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
                     cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
@@ -878,6 +883,11 @@ class QQQueueMixin:
                             # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
                             self._pm._transient_unseal_recredit()
                             self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        # 命中即本调用抑制该条目重选（守卫三同款，抑制自己 ≠
+                        # 阻塞他人）。「已交付未落盘」形态不冻结 spec（仍 ready），
+                        # 无抑制时同一调用内 pop→命中→回滚入队→再 pop 无限热旋，
+                        # 调用方线程挂死（code-review item ff79ebdb12d6）。
+                        suppressed.add((spec_name, agent_type))
                         continue
                     cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                     if cur_status != "implementing":
@@ -1144,9 +1154,14 @@ class QQQueueMixin:
                         f"Resume dispatch for '{spec_name}' on preserved branch "
                         f"'{resume_branch}' (worktree {resume_wt})",
                     )
-                    # 继承痕迹登记（prompt 注入恢复续做说明，interrupt-recovery-preserve 2.3）
+                    # 继承痕迹登记（prompt 注入恢复续做说明，interrupt-recovery-preserve
+                    # 2.3 / fix-fasttrack-recovery-resume 3.2c）。recovery=True 携带
+                    # 恢复来源标记，与 fast-track 分支同源段对齐——_active_reuse
+                    # 同时被 _take_reusable_worktree / 跨 attempt 复用写入，无来源
+                    # 判据会把「曾因 daemon 重启被中断」的错误归因注入每次普通重派轮
+                    # （design D6）。
                     try:
-                        wm.mark_reused(spec_name, resume_wt, resume_branch or "")
+                        wm.mark_reused(spec_name, resume_wt, resume_branch or "", recovery=True)
                     except Exception as e:
                         self._pm.logger.warning(
                             "pm_engine",
@@ -1751,6 +1766,15 @@ class QQQueueMixin:
                             f"run_reason={str(final_error)[:80] if final_error else ''}",
                         )
                     # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+                    # MUST 同步（code-review item 0caca76e37b1）：本 implementer
+                    # 失败处置链以下四段「终态错误分类→处置动作」（provider 熔断
+                    # "provider circuit open" 保持原状 / [provider-transient]
+                    # 延迟重派 / MODEL_CHAIN_UNAVAILABLE_MARKER 保持原状 / else
+                    # 重试计数与 max_r 封顶冻结转人工）与
+                    # fast_track.py `_handle_fast_track_failure` 的同名四段逐段
+                    # 同构、手工双维护，fast-track 侧历史上曾多次缺失、事后补齐
+                    # 对齐。任一车道新增/修改终态失败分支时 MUST 同步该方法对应
+                    # 段，禁止只改一处；对照定位用方法名/分支语义，勿写裸行号。
                     # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
                     # 不是 spec 自身问题：不计入 _retry_count / _merge_streak、不翻转状态机、
                     # 不创建新 worktree/autostash（design D5）。spec 保持 implementing 原状，
