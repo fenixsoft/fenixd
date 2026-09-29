@@ -56,8 +56,12 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   // 保存重入守卫（code-review item 53b14fb31196，比照 ApprovalModePanel
   // 589c1c98c5a4）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
   // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
-  // loading/disabled 并在入口短路。
+  // loading/disabled 并在入口短路；setSaving 渲染生效存在 React 调度间隙
+  // （同帧双击读到的闭包 saving 仍为 false，比照 SystemPanel 8ccf20511320 /
+  // index d64feaab59a4 的 savingRef 口径），经 savingRef 写读同帧原子拦住
+  // 连点，state 只负责按钮视觉反馈。
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   // 规模预检开关（agents.scale_precheck.enabled）：关闭时隐藏两阈值输入
   const scalePrecheckOn = Form.useWatch('scale_precheck_enabled', form);
 
@@ -77,9 +81,8 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   }, [config.agents, form]);
 
   const handleSave = async () => {
-    if (saving) {
-      return;
-    }
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const values = await form.validateFields();
@@ -119,6 +122,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     } catch {
       // 校验失败：antd 已在表单内渲染提示，不落 console
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
