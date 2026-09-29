@@ -43,3 +43,8 @@
 | web-evicted-detail-docs-readable | 迁出后详情与文档归档回退可读（archive-state-relocation「迁出后详情仍可读」/dashboard-spec-table「可点击进入详情并查看文档」）：从已归档视图点击 arc-mig-ui2 行名进入详情页（routes.ts:20 /projects/:name/:spec；SpecNameCell list.tsx:239-242 history.push），详情加载后打开「文档」弹窗可见夹具 proposal.md 探针文本（文档读取经 /api/spec-doc 归档目录回退，spec_routes.py:70） | pass | 0/3 | - |
 | web-double-source-single-row | 双源同名单不重复+未归档视图不含清单条目（dashboard-spec-table「双源同名单不重复」「未归档视图不含清单条目」）：默认「未归档」视图无 arc-mig-ghost 行；切「已归档」视图该行恰好一行（element_count=1）且状态透传渲染「完成」（STATUS_META done→完成，services/dashboard.ts:1064） | pass | 0/5 | - |
 | web-unarchived-view-excludes-list-entries | 未归档视图不含清单条目（dashboard-spec-table「未归档视图不含清单条目」）：默认「未归档」视图仅含活跃 SPEC，双源中间态条目 arc-mig-ghost（活跃+清单同名、目录缺失）不得出现（routes.ts:21；list.tsx:847-852 archived 过滤） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
