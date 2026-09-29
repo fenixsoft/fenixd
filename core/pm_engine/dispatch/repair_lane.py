@@ -235,7 +235,22 @@ class PRepairLaneMixin:
         # repair 派发前记录分支 tip，repair 后 worker 复核「tip 是否前进」。
         # 与 _repair_round/_repair_merge_fp 同处一次 update_spec 落盘，
         # 语义一致（统一 repair 轮次元数据）。
-        base_tip = wm.branch_tip(resolved_branch)
+        # code-review item 5859406dd4b6：此处已认领现场（{spec}:repair 锁 +
+        # legacy 摘除）而 _repair_round 尚未持久化，裸调一旦抛错会越过后方
+        # 线程启动失败的局部回滚逃逸到调用方，认领残留无任何回滚。对齐同
+        # 文件 _check_repair_commit_facts 的 branch_tip 既有守卫形态：失败
+        # 降级 base_tip=None（复核对基准缺失本就跳过 tip 前进校验，保守
+        # 放行）——不做认领回滚再 fallback（改动面更大，且降级语义即既有
+        # 设计），仅消除逃逸窗口。
+        try:
+            base_tip = wm.branch_tip(resolved_branch)
+        except Exception as e:
+            base_tip = None
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 基准 tip 查询失败 '{spec_name}'"
+                f"（按基准缺失降级，跳过 tip 前进校验）: {e}",
+            )
         try:
             self._pm.state_machine.update_spec(
                 spec_name,
