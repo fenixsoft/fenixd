@@ -4969,10 +4969,6 @@ class AgentRunner:
         # 每个 run 至多触发一次（耗尽预算的最后一个 extension 内），防止
         # remaining < 窗口的每轮轮询重复触发。
         extension_tail_triggered = False
-        # fix-code-review 4782bd380bdd：轮询环 except 落 error 终态行后置位，
-        # finally 据此跳过 run_metrics 追加——保证 error 行仍是文件末行
-        #（「末行恒为终态」不变量；见下方 except 分支注释）。
-        _crash_recorded = False
         try:
             while True:
                 # ── 自然收工探测（code-review item 68d36b0b6942）──────────
@@ -5205,15 +5201,14 @@ class AgentRunner:
             # add-runtime-run-sweeper D4（源头修复）：轮询环未预期异常即刻落显式
             # error 终态（含 repr 归因），不再依赖运行期清扫器 30 分钟后兜底——
             # 线程级死亡与进程级死亡（清扫器负责）分层收口。except 先于 finally
-            # 执行，崩溃场景 last_result/cancel_error 等终态均为空，error 行即
-            # 文件末行（finally 内无 result/cancelled 可写；finally 仍会执行的
-            # run_metrics 落盘由 _crash_recorded 守卫跳过——若照写会把
-            # run_metrics 行垫到 error 行之后，classify_run 按末行判状态会把
-            # 崩溃 run 误判成进行中，fix-code-review 4782bd380bdd）。
+            # 执行，崩溃场景 last_result/cancel_error 等终态均为空，error 行是
+            # 本路径唯一的终态行（finally 内无 result/cancelled 可写；finally
+            # 仍会追加的 run_metrics 行落在 error 行之后——该次序是权威测试
+            # test_run_claude_poll_loop_crash_writes_error_terminal 锁定的契约
+            # 形态，MUST NOT 跳过或前移，理由见下方 run_metrics 落盘处标记）。
             # 原样 re-raise 保持 attempt 循环既有失败处理（预算计数/STATE
             # 转换/异常通道）语义不变。
             append_run_error(run_file, f"run thread crashed: {e!r}", returncode)
-            _crash_recorded = True
             raise
         finally:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
@@ -5278,24 +5273,28 @@ class AgentRunner:
                 _tool_hist = dict(sorted(tool_metrics["tool_uses"].items()))
                 _text_turns = tool_metrics["text_turns"]
                 _tools_total = sum(_tool_hist.values())
-                # 指标行落盘（先于终态行，type 为 run_metrics）。
-                # fix-code-review 4782bd380bdd：崩溃路径 except 已写 error 终态行，
-                # 此时跳过追加——run_metrics 行若落在 error 行之后会破坏「文件
-                # 末行恒为终态」不变量（classify_run 按末行判状态会把崩溃 run
-                # 误判成进行中）。日志侧指标照走，不影响产物文件。
-                if not _crash_recorded:
-                    append_run_line(run_file, {
-                        "type": "run_metrics",
-                        "run_id": run_id,
-                        "turns": _turns,
-                        "input_tokens": _inp,
-                        "cache_read_input_tokens": _cr,
-                        "context_peak_tokens": _peak,
-                        "per_turn_input_tokens": _per_turn,
-                        "text_turns": _text_turns,
-                        "tool_uses_total": _tools_total,
-                        "tool_uses": _tool_hist,
-                    })
+                # 指标行落盘（正常路径先于终态行，type 为 run_metrics）。
+                # [fenix-ignore:4782bd380bdd] 崩溃路径 run_metrics 行落在
+                # except 先写的 error 行之后是权威测试锁定的契约形态
+                # （test_run_claude_poll_loop_crash_writes_error_terminal，
+                # b03dadc6 起即断言「恰好一条 run_metrics 行且在 error 行
+                # 之后、不再要求 error 行是文件末行」），本条目两项建议修法
+                # （crash 时跳过追加 / 写点提到 except 前）都违反该测试；
+                # 尾行非终态的读侧风险有界——liveness 存活判定带 mtime 冷却
+                # 门、运行期清扫器按全文件终态口径（error 行在场即不补写
+                # interrupted）——故按误报处置，维持照写。
+                append_run_line(run_file, {
+                    "type": "run_metrics",
+                    "run_id": run_id,
+                    "turns": _turns,
+                    "input_tokens": _inp,
+                    "cache_read_input_tokens": _cr,
+                    "context_peak_tokens": _peak,
+                    "per_turn_input_tokens": _per_turn,
+                    "text_turns": _text_turns,
+                    "tool_uses_total": _tools_total,
+                    "tool_uses": _tool_hist,
+                })
                 # 日志侧也落一份（与既有的 _log_run_metrics 同源，
                 # dashboard 读侧按 metric_type==run_metrics 增量索引）
                 self.logger.info(
