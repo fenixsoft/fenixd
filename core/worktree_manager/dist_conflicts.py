@@ -427,17 +427,32 @@ class G5DistConflictsMixin:
                     f"{DASHBOARD_STATIC_ROOT})",
                 )
                 return
-            subprocess.run(
+            add = subprocess.run(
                 ["git", "-C", str(self.project_root), "add", "-A", "--", DASHBOARD_STATIC_ROOT],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
+            if add.returncode != 0:
+                # add 失败可见性（code-review item 53677e0b5ef7）：非零原本静默
+                # 落入下方 staged 为空早退；显式降级——保留工作区重建，不 amend。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"dist rebuild git add failed: "
+                    f"{(add.stderr or '').strip()[:200]} — keeping rebuilt "
+                    f"dist in working tree only",
+                )
+                return
             staged = subprocess.run(
                 [
                     "git",
                     "-C",
                     str(self.project_root),
+                    # -c core.quotePath=false：与本文件其余采集点同口径（同
+                    # 上方 diff），非 ASCII 路径不做 C 转义引号形，下方与
+                    # changed 的子集比对才能命中
+                    "-c",
+                    "core.quotePath=false",
                     "status",
                     "--porcelain",
                     "--",
@@ -449,6 +464,37 @@ class G5DistConflictsMixin:
             )
             if not staged.stdout.strip():
                 return  # 重建结果与提交版一致，无需 amend
+            # 暂存范围守卫（code-review item 53677e0b5ef7）：add -A 面向整个
+            # static 根，会把与本次 merge 无关的文件一并暂存（static 根下
+            # untracked 非忽略文件；ensure_clean_tree stash 失败降级时残留的
+            # tracked 脏改动），随 amend 写进合并提交后难以剥离。amend 前校验
+            # staged 条目须全部落在「本次 merge 触碰路径（changed）∪ 产物路径」
+            # 内（产物判定与上方 src_touched 同一实例判定器；重建生成的内容
+            # 哈希新产物名不在 changed，靠 is_artifact 放行）——越界即 unstage、
+            # 跳过 amend，仅保留工作区重建，合并提交内容不偏离「分支并入」语义。
+            staged_paths = [
+                ln[3:].split(" -> ", 1)[-1]
+                for ln in staged.stdout.splitlines()
+                if len(ln) > 3
+            ]
+            foreign = [
+                p for p in staged_paths
+                if p not in changed and not self._artifacts.is_artifact(p)
+            ]
+            if foreign:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"dist rebuild staged path(s) unrelated to this merge "
+                    f"({foreign[:10]}) — amend skipped, rebuilt dist kept in "
+                    f"working tree only",
+                )
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "reset", "-q"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                return
             # merge 提交已在 upstream 上（已被外部推送）时，amend 会改写已发布
             # 历史——跳过 amend，unstage 后仅保留工作区重建。
             if self._head_on_upstream():

@@ -870,11 +870,14 @@ class VAdjudicationMixin:
         except Exception as e:
             self._pm.logger.error(
                 "pm_engine",
-                f"预分类后守卫重跑异常 '{spec_name}'（回退 judge）: {e}",
+                f"预分类后守卫重跑异常 '{spec_name}'（软化已落盘，剩余项带 judge）: {e}",
             )
-            # 异常回退：把已软化条目放回 remaining（soften 已写盘，无法回滚）
-            remaining.extend(deterministic)
-            return {"action": "fallback"}
+            # code-review item e3ea5719971e：soften 已写盘无法回滚，已软化条目
+            # （deterministic）已不再缺失——MUST NOT 放回 remaining 送 judge
+            # （旧 fallback 形态调用方忽略 remaining、恒回退原始 missing，已
+            # 软化条目白耗一轮终审裁决）。按「软化已落盘、剩余项带 judge」续走，
+            # 交由后续守卫重跑收敛。
+            return {"action": "continue", "remaining": remaining}
 
         if not gate_result:
             # 全清 → 走「裁决执行后守卫重跑通过」放行分支
@@ -1570,6 +1573,33 @@ class VAdjudicationMixin:
             return {"action": "proceed"}
         return {"action": "continue", "remaining": gate}
 
+    def _text_rewrite_applicable(self, resolved: dict, old_path: str) -> bool:
+        """「条目仍在生效声明 + 声明命中层可写」判据单一落点。
+
+        code-review item 1ffba1bbf0da：``_relocate_or_register`` 的改写/登记
+        分流判据与陈日裁决执行处的凭据登记判别（``cred_only``，ca3447e2d676）
+        原为手工镜像双写，任一侧调整（新增 source 取值、spec_dir 判空口径）
+        即令「审计形态判定」与「实际改写/登记路径」分裂。收编为单一谓词：
+
+        - 条目仍在生效声明（entries 含 old_path）；
+        - 声明命中层可写（fix-relocation-writeback-layer Task 2.3，与 1.1
+          判据对齐去重）：source ∈ {worktree, main} 且有落盘位置 spec_dir。
+          source == "branch"（spec_dir is None）MUST NOT 写主树——判据与
+          resolve_writeback_target 同源，防「spec_dir or 主树」型回退再次
+          漂移进来。
+
+        True → 文本改写路径（3.2/3.3）；False → 凭据登记路径（3.6，未发生
+        tasks.md 文本改写，审计 MUST NOT 记文件级 before/after diff）。
+        """
+        entries = resolved.get("entries") or []
+        entry_still_present = any(
+            isinstance(e, dict) and e.get("path") == old_path for e in entries
+        )
+        wb_writable = resolved.get("source") in ("worktree", "main") and bool(
+            resolved.get("spec_dir")
+        )
+        return entry_still_present and wb_writable
+
     def _relocate_or_register(
         self,
         spec_name: str,
@@ -1608,22 +1638,17 @@ class VAdjudicationMixin:
         )
 
         spec_dir = resolved.get("spec_dir")
-        entries = resolved.get("entries") or []
-        entry_still_present = any(
-            isinstance(e, dict) and e.get("path") == old_path for e in entries
-        )
-        # fix-relocation-writeback-layer Task 2.3（与 1.1 判据对齐去重）：文本
-        # 改写落点 MUST 是生效声明**命中层**（source ∈ {worktree, main} 且有
-        # 落盘位置）。source == "branch"（spec_dir is None）走下方凭据登记分支
-        # （3.6，MUST NOT 写主树）——判据与 resolve_writeback_target 同源，
-        # 防「spec_dir or 主树」型回退再次漂移进来。
-        wb_writable = resolved.get("source") in ("worktree", "main") and bool(spec_dir)
+        # 改写/登记分流判据单一落点（code-review item 1ffba1bbf0da）：原
+        # entry_still_present/wb_writable 手工镜像收编进
+        # _text_rewrite_applicable——陈日裁决执行处的 cred_only 判别
+        # （ca3447e2d676）由同一谓词推导，消除双写漂移。
+        text_rewrite = self._text_rewrite_applicable(resolved, old_path)
         # code-review item 2f920214d8d1：仅文本改写路径动了 tasks.md，才存在
         # 可固化的提交；凭据登记路径（3.6）跳过提交——对未改动的 tasks.md
         # add+commit 恒 nothing-to-commit，只会打出误导性「未落分支」WARNING。
         tasks_md_rewrote = False
         try:
-            if entry_still_present and wb_writable:
+            if text_rewrite:
                 # 3.2/3.3：文本改写（生效声明所在位置）——kind 保持、同名去重
                 diff = relocate_declared_path(spec_dir, old_path, new_path)
                 tasks_md_rewrote = True
@@ -2000,21 +2025,17 @@ class VAdjudicationMixin:
                     # （实现方先行对齐）走 3.6 凭据登记。非陈日走既有 typo 修正。
                     if is_stale_declaration(entry, self._pm.project_root):
                         # 凭据登记路径判别（code-review item ca3447e2d676）：与
-                        # _relocate_or_register 内判据同源（fix-relocation-
-                        # writeback-layer Task 2.3）——生效声明已无该条目、或
+                        # _relocate_or_register 共用单一谓词
+                        # _text_rewrite_applicable（1ffba1bbf0da 去镜像双写，
+                        # fix-relocation-writeback-layer Task 2.3 判据）——生效
+                        # 声明已无该条目、或
                         # 声明来源为分支版本无落盘位置（source == "branch"，
                         # spec_dir=None，eff_spec_dir 此时只是主树回退目录）时
                         # 走 3.6 凭据登记，不改任何 tasks.md。此路径下文件级
                         # before/after 恒相等，落 dispute 审计会呈现「声明已
                         # 改写」假象——diff 改记凭据回执形态，不做文件快照。
-                        cred_only = not (
-                            any(
-                                isinstance(e, dict) and e.get("path") == m
-                                for e in eff_entries
-                            )
-                            and effective_resolved.get("source")
-                            in ("worktree", "main")
-                            and bool(effective_resolved.get("spec_dir"))
+                        cred_only = not self._text_rewrite_applicable(
+                            effective_resolved, m
                         )
                         if not cred_only:
                             # 改写前快照 tasks.md 全文（code-review item

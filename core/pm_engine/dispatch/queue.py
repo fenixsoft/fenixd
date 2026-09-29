@@ -606,53 +606,26 @@ class QQQueueMixin:
                 # 槽位闸门（fix-spec-review-blocking-dispatch 1.5b / design D2
                 # 第二处）：实现车道槽位占满时不得无条件提前返回——队列中可能
                 # 存在评审条目，评审是晋升前置门、不占实现槽位（评审并发无上限），
-                # 必须照常被扫描并派发。放行只针对评审条目本身：下方两条扫描
-                # 循环在 slots_full 时对非评审条目 continue，故实现条目不因该
-                # 放行而被派发（``max_concurrent`` 对实现车道仍生效）。无合法
-                # 评审条目时 best_valid_prio 扫描自然产出 None 并 return（等价
-                # 于旧早退，不做独立预扫描防双倍读盘）。
+                # 必须照常被扫描并派发。放行只针对评审条目本身：下方扫描循环在
+                # slots_full 时对非评审条目 continue，故实现条目不因该放行而被
+                # 派发（``max_concurrent`` 对实现车道仍生效）。
                 slots_full = self._active_runs >= max_concurrent
-                if slots_full:
-                    # 槽位占满时仅豁免车道可派发（评审 + 并行出题，2.1）：
-                    # 实现条目照旧滞留，评审/出题条目照常扫描派发。
-                    has_review = any(
-                        e[2] == "spec-review"
-                        and (e[1], e[2]) not in suppressed
-                        and self._review_entry_ready(
-                            self._pm.state_machine.read_one(e[1]) or {}, e[1]
-                        )
-                        for e in self._run_queue
-                    )
-                    # 并行出题条目（add-verify-lane-throughput 2.1）：实现槽满
-                    # 不滞留出题（出题与实现并行、不占实现槽位），上限内可派发。
-                    has_parallel_plan = any(
-                        e[2] == "planner-plan"
-                        and (e[1], e[2]) not in suppressed
-                        and self._parallel_plan_entry_ready(
-                            self._pm.state_machine.read_one(e[1]) or {}
-                        )
-                        for e in self._run_queue
-                    )
-                    if not (has_review or has_parallel_plan):
-                        return
-                if not self._run_queue:
-                    # 队列已空：若错峰放行态仍在（积压已放完），通知退出错峰态
-                    # （evo-fix-transient-break-unseal-backoff 1.2；非错峰态零操作）
-                    self._pm._transient_unseal_note_drained()
-                    return
-
-                # 找队列中所有状态合法条目的最高 effective 档位
-                # （先不 pop，只扫描以确定 queued_best）
                 # code-review item 806ba20de85f：同轮判据缓存 (sname, atype) →
                 # (spec, ready)。best_valid_prio 扫描与 dispatch_idx 扫描在同一
                 # 锁持有窗口内连续执行，过滤条件一致、队列与 suppressed 均不变
                 # （_queue_entry_ready 链上仅幂等恢复定时器排程与日志，无队列
                 # mutation），第二轮直接复用首轮判定，消除同轮对同一批 spec 的
                 # 重复 read_one 读盘与闸门链（含 reviewer_in_flight 进程表/流
-                # 文件探测）——否则队列越大持锁 I/O 临界区越长，放大 dashboard
-                # 只读路径在 _queue_lock 上的等待。缓存每轮 while 重建，不跨轮。
+                # 文件探测）。缓存每轮 while 重建，不跨轮。
+                # code-review item eb63419bbfd6：槽满豁免车道存在性判定
+                # （has_review/has_parallel_plan）并入同一轮扫描由缓存推导——
+                # 旧实现单独预扫描对同批评审/出题条目重复 read_one 与闸门链
+                # 判定，队列越大持锁 I/O 临界区越长，放大 dashboard 只读路径
+                # 在 _queue_lock 上的等待（与 806ba20de85f 同型关切）。
                 scan_verdicts = {}
                 best_valid_prio = None
+                has_review = False
+                has_parallel_plan = False
                 for entry in self._run_queue:
                     prio, sname, atype, enqueued_at = entry
                     if (sname, atype) in suppressed:
@@ -674,8 +647,22 @@ class QQQueueMixin:
                     scan_verdicts[(sname, atype)] = (spec, ready)
                     if not ready:
                         continue
+                    # 槽满豁免车道存在性（评审 + 并行出题，2.1；旧独立预扫描
+                    # 判定并入此处，eb63419bbfd6）：就绪的评审/出题条目照常
+                    # 放行派发，实现条目照旧滞留。
+                    if atype == "spec-review":
+                        has_review = True
+                    elif atype == "planner-plan":
+                        has_parallel_plan = True
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
+                if slots_full and not (has_review or has_parallel_plan):
+                    return
+                if not self._run_queue:
+                    # 队列已空：若错峰放行态仍在（积压已放完），通知退出错峰态
+                    # （evo-fix-transient-break-unseal-backoff 1.2；非错峰态零操作）
+                    self._pm._transient_unseal_note_drained()
+                    return
                 if best_valid_prio is None:
                     return  # 无就绪条目
 
@@ -1402,6 +1389,9 @@ class QQQueueMixin:
                         # （误判场景重派必然同因失败，纯烧钱），blocked 交人工裁决。
                         # 质疑不得自动放行（防 agent 绕守卫），必须第三方裁决。
                         disputed = self._pm._disputed_deliverables(impl_result, missing)
+                        # 机械预分类是否已全清放行（proceed）——True 时下方
+                        # 短路 LLM 终审（code-review item 98b789430350）。
+                        preclassified_proceed = False
                         if disputed:
                             # ── 争议分支漂移笔误机械对齐（evo-deliverable-declaration-drift-align）──
                             # 实现 run 已对缺件提出 deliverable-dispute 异议时，先试
@@ -1437,6 +1427,17 @@ class QQQueueMixin:
                                     f"交付物守卫缺件争议机械预分类全清 '{spec_name}' — "
                                     f"声明已机械处置，放行 merge run={result.run_id}",
                                 )
+                                # code-review item 98b789430350：预分类 proceed 即
+                                # 守卫重跑全清、声明已机械处置（预分类器已置
+                                # implementing/error=None），契约是「放行 merge
+                                # （不 blocked）/不派 judge run」——须短路下方 LLM
+                                # 终审：继续派 dispute-judge 会让 spec 先被置
+                                # blocked「LLM 终审进行中」再白烧一轮 judge run，
+                                # 与放行日志自相矛盾（adjudication.py 对 proceed
+                                # 均立即 return 短路）。此处不直接 return：后续
+                                # relint 复检/impl-result 快照/merge 收尾仍须照常
+                                # 执行，仅跳过终审调用。
+                                preclassified_proceed = True
                             elif orphan_result.get("action") == "continue":
                                 # 仍有缺件 → 以重跑后的 remaining 续走既有后续（design
                                 # 续走契约第 4 点）：剩余项仍带 dispute 异议 → blocked 待
@@ -1499,11 +1500,16 @@ class QQQueueMixin:
                         #   reference → 声明软化（转软校验）；
                         #   missing → 既有打回/重派路径（带精准缺件清单）；
                         #   unclear → 既有 deliverable-dispute blocked 人工裁决话术。
-                        adjudication = self._pm._adjudicate_deliverable_missing(
-                            spec_name, result, impl_result, missing
-                        )
-                        if adjudication.get("action") != "proceed":
-                            return
+                        if not preclassified_proceed:
+                            # 机械预分类 proceed（守卫重跑全清放行）短路终审
+                            # （code-review item 98b789430350）：不再派 judge
+                            # run，直接续走下方 merge 收尾；其余形态照常派
+                            # 单轮 dispute-judge run 消费裁决。
+                            adjudication = self._pm._adjudicate_deliverable_missing(
+                                spec_name, result, impl_result, missing
+                            )
+                            if adjudication.get("action") != "proceed":
+                                return
 
                 # ── tasks.md 收口复检门禁（add-tasksmd-relint-gate）──────────────
                 # 2026-09-11 add-impl-terminal-nocommit-gate 事故：implementer 用 sed
@@ -1800,7 +1806,12 @@ class QQQueueMixin:
                         )
                     else:
                         # Retry or mark error
-                        spec_entry = self._pm.state_machine.read_one(spec_name)
+                        # code-review item f8c5c67e7eb4：run 在飞期间 spec 可能
+                        # 被删——read_one 返回 None 时下方 spec_entry.get /
+                        # _parse_int_field 抛 AttributeError，整条失败处置链
+                        # 被外层异常兜底接管（同因熔断/重试耗尽逻辑被跳过）。
+                        # 与本文件其余调用点（1346/2549 行）对齐 or {} 兜底。
+                        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                         prev_retries = self._parse_int_field(
                             spec_entry, "_retry_count", 0
                         )

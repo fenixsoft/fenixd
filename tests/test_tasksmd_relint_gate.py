@@ -519,8 +519,9 @@ class TestFastTrackLaneRelintGate(_Base):
         self.engine._run_fast_track_worker("demo")
 
         wm = self.engine.agent_runner.worktree_manager
-        # 现场保留机制照旧（worktree 模式遗产 + reuse，经 keep_for_reuse）
-        wm.keep_for_reuse.assert_called_once_with("demo", wt)
+        # 现场保留机制照旧（worktree 模式遗产 + reuse，经 keep_for_reuse）；
+        # agent_type 传参（code-review item 1c6d47a74461）供摘锁按家族限定
+        wm.keep_for_reuse.assert_called_once_with("demo", wt, agent_type="fast-track")
         # fast-track 调用点不传 branch → 处置函数跳过仅分支登记（不覆盖现场）
         wm.register_legacy.assert_not_called()
         entry = self.sm.read_one("demo")

@@ -494,9 +494,13 @@ class G6StashGuardMixin:
                     f"{(cmt.stderr or cmt.stdout).strip()}"
                 )
             return 2, f"recovery commit: {cmt.stdout.splitlines()[0] if cmt.stdout else ''}"
-        except (subprocess.TimeoutExpired, RuntimeError) as exc:
+        except (subprocess.TimeoutExpired, RuntimeError, OSError) as exc:
             # ── 态 3 兜底：stash 版内容已在工作区（--theirs 落盘），显式登记
-            # disposition，绝不静默丢弃（条目保留、信号照发）
+            # disposition，绝不静默丢弃（条目保留、信号照发）。OSError 同归
+            # 态 3（code-review item 6234a624bb5d）：subprocess.run 自身的
+            # spawn 失败（临时性 fork 失败、EMFILE、磁盘满等）原先会穿出本
+            # 方法、违反 restore_after_merge「绝不能外抛」契约——与上方态 1
+            # add / 态 2 checkout 的 (TimeoutExpired, OSError) 容错口径对齐。
             self.logger.warning(
                 "worktree_manager",
                 f"State-2 recovery commit failed ({exc}); stash content "

@@ -221,6 +221,12 @@ class PRepairLaneMixin:
             )
             return False
         # 认领现场（D4）：_legacy take 摘出 + _spec_locks 注册，防 sweeper 宽限期回收
+        # code-review item 94d6ad914d0b：认领先于线程启动，先留存认领前 legacy
+        # 记录——Thread 启动失败回滚时按原记录恢复（claim_legacy_for_repair
+        # 摘出即不还）。
+        legacy_rec = None
+        if hasattr(wm, "_legacy"):
+            legacy_rec = wm._legacy.get(spec_name)
         self._pm._claim_repair_site(spec_name, wt_path, resolved_branch)
         # 轮次递增（D5/D6）：repair 轮计入该 spec 的实现预算（token 记名下）；
         # 连续计数 _merge_fp/_merge_streak 不被 repair 轮清零（熔断协同）。
@@ -253,13 +259,43 @@ class PRepairLaneMixin:
             f"进入 repair 通道 '{spec_name}'（第 {round_no}/{MAX_REPAIR_ROUNDS_PER_FAILURE} 轮，"
             f"merge 失败 streak={streak}） worktree={wt_path} branch={resolved_branch}",
         )
-        t = threading.Thread(
-            target=self._pm._run_repair_worker,
-            args=(spec_name, wt_path, resolved_branch, merge_info),
-            daemon=True,
-            name=f"fenix-repair-{spec_name}",
-        )
-        t.start()
+        # code-review item 94d6ad914d0b：认领（{spec}:repair 锁 + legacy 认领
+        # 摘除 + _repair_round 递增）已先于线程启动落位，Thread 构造/start 失败
+        # （如环境性 RuntimeError can't start new thread）时 worker 的 finally
+        # 永不执行，认领即悬置——对齐 ocr 车道守卫形态（queue.py，code-review
+        # item b52d9c1760b6）：捕获失败、回滚本轮认领后按未派发语义返回 False。
+        try:
+            t = threading.Thread(
+                target=self._pm._run_repair_worker,
+                args=(spec_name, wt_path, resolved_branch, merge_info),
+                daemon=True,
+                name=f"fenix-repair-{spec_name}",
+            )
+            t.start()
+        except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未派发」处置
+            # 回滚顺序对齐 _claim_repair_site 的登记项：{spec}:repair 锁
+            # discard → legacy 认领恢复 → _repair_round 记账回退。
+            # _wt_branches 无需回退——该映射在三态解析（resolve_repair_site）
+            # 时已登记，认领处为幂等重写。
+            if hasattr(wm, "_spec_locks"):
+                wm._spec_locks.discard(f"{spec_name}:repair")
+            if legacy_rec is not None and hasattr(wm, "_legacy"):
+                wm._legacy[spec_name] = legacy_rec
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, {"_repair_round": repair_round}
+                )
+            except Exception as e2:  # noqa: BLE001 — 记账回退失败仅留痕
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair 轮次记账回退失败 '{spec_name}'（非阻塞）: {e2}",
+                )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 线程启动失败 '{spec_name}'（已回滚本轮认领，"
+                f"按未派发处置）: {type(e).__name__}: {e}",
+            )
+            return False
         # 锁已移交给新 worker（code-review item ec22643fa99a）：此后调用方的
         # finally 不得再 discard 同名锁。
         return True

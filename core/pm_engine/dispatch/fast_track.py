@@ -31,6 +31,24 @@ from core.state_machine import ENV_BLOCK_ROUNDS_FIELD
 from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
 
 
+def _normalize_int_config(value, default: int) -> int:
+    """整型配置归一单点工具（code-review item c832188fbbac）。
+
+    「try int + except (TypeError, ValueError) 回退缺省 + None 判空防 or
+    吞 0」归一化的单一落点：字符串配置裸用于比较会抛 TypeError，非法值
+    回退缺省（code-review item 74317ab4a77a）；``None`` 判空而非 ``or``
+    兜底，合法配置 0 不被吞成缺省（code-review item c54ffbef69c5）。
+    供 merge_breaker_threshold / max_retries 等整型配置键共用，新副本
+    不再复制 try/except 形态。
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class FFastTrackMixin:
     """F fast-track 车道（design D1 表 B F 组）。"""
 
@@ -518,7 +536,10 @@ class FFastTrackMixin:
             return
         try:
             self._pm.agent_runner._v2_stop_for_worktree(wt)
-            self._pm.agent_runner.worktree_manager.keep_for_reuse(spec_name, wt)
+            # agent_type 传参（code-review item 1c6d47a74461）：供 keep_for_reuse
+            # 摘锁时按家族限定（fast-track 属非 verifier 家族，不误摘 :verifier）
+            self._pm.agent_runner.worktree_manager.keep_for_reuse(
+                spec_name, wt, agent_type="fast-track")
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -622,14 +643,13 @@ class FFastTrackMixin:
                 streak = prev_streak + 1 if prev_fp == fp else 1
                 # 配置侧 int() 归一（code-review item 74317ab4a77a，与 budget.py
                 # _budget_exempt_alert_threshold 同款）：字符串配置裸用于比较抛
-                # TypeError 中断 merge 失败处置，非法值回退缺省。
-                try:
-                    # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法
-                    # 配置 0（每次 merge 失败立即熔断）不被 or 吞成缺省 2。
-                    cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
-                    breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
-                except (TypeError, ValueError):
-                    breaker_threshold = 2
+                # TypeError 中断 merge 失败处置，非法值回退缺省；None 判空而非
+                # or 兜底（code-review item c54ffbef69c5）：合法配置 0（每次
+                # merge 失败立即熔断）不被 or 吞成缺省 2。归一化单点工具
+                # （code-review item c832188fbbac）。
+                breaker_threshold = _normalize_int_config(
+                    self._pm._get_config("agents.merge_breaker_threshold", 2), 2
+                )
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                 if streak >= breaker_threshold:
                     # fix-observability-gaps 2.2：repair/fast-track merge 熔断 blocked
@@ -1203,14 +1223,11 @@ class FFastTrackMixin:
             prev_retries = 0
         retries = prev_retries + 1
         # 配置侧 int() 归一（code-review item 74317ab4a77a）：字符串配置裸用于
-        # `retries >= max_r` 比较抛 TypeError 中断失败重派，非法值回退缺省。
-        try:
-            # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
-            # 0（不自动重试）不被 or 吞成缺省 3。
-            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-        except (TypeError, ValueError):
-            max_r = 3
+        # `retries >= max_r` 比较抛 TypeError 中断失败重派，非法值回退缺省；
+        # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
+        # 0（不自动重试）不被 or 吞成缺省 3。归一化单点工具
+        # （code-review item c832188fbbac）。
+        max_r = _normalize_int_config(self._pm._get_config("agents.max_retries", 3), 3)
         # fix-redispatch-loop-governance 3.4（fast-track 车道对等）：retries 达
         # max_r 时真正终止自动重试——冻结转人工（freeze_for_human，error 内嵌
         # 「原状态 X」供 parse_orig_status 解冻还原）。原实现「清零 _retry_count

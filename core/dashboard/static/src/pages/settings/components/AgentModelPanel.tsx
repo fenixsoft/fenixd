@@ -1,4 +1,4 @@
-import { App, Button, Card, Col, Form, Input, Row, Select, Space, Tooltip, Typography } from 'antd';
+import { Button, Card, Col, Form, Input, message, Row, Select, Space, Tooltip, Typography } from 'antd';
 import {
   CopyOutlined,
   HeartOutlined,
@@ -109,7 +109,6 @@ interface AgentModelPanelProps {
 }
 
 export default function AgentModelPanel({ config, onSave, project, onConfigSynced }: AgentModelPanelProps) {
-  const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）

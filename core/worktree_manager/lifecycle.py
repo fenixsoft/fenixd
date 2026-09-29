@@ -176,6 +176,11 @@ class G1LifecycleMixin:
                         f"Reusing inherited worktree for '{spec_name}': "
                         f"{wt_path} (branch {branch})",
                     )
+                    # 认领出口同样供给构建环境（code-review item 1e3f877e379b）：
+                    # 仅分支模式经 create_worktree_on_branch 全新 checkout（queries
+                    # 层明示「仅登记活动集与分支映射，不 seed」），新目录必无
+                    # node_modules——与下方全新建树出口共用同一段幂等供给。
+                    self._provision_worktree_deps(wt_path)
                     return wt_path
                 # 无可复用遗产 → 清除上一轮的认领痕迹（prompt 注入以实际为准）
                 self._active_reuse.pop(spec_name, None)
@@ -275,28 +280,7 @@ class G1LifecycleMixin:
             if agent_type in ("implementer", "fast-track"):
                 self._seed_spec(spec_name, wt_path)
 
-            # worktree 构建环境供给（deps_mode 双模式，best-effort 不阻塞派发）：
-            # git 不携带 node_modules，实现者每轮手工安装是既有摩擦源（fast-track 复盘）
-            try:
-                from core.verify_contract import (
-                    load_verify_contract,
-                    provision_worktree_node_modules,
-                    read_config_deps_mode,
-                    resolve_deps_mode,
-                )
-
-                contract = load_verify_contract(self.project_root)
-                sub_dirs = sorted({(s.cwd or ".") for s in contract.prepare}) if contract else []
-                if sub_dirs:
-                    provision_worktree_node_modules(
-                        wt_path,
-                        self.project_root,
-                        sub_dirs,
-                        mode=resolve_deps_mode(contract, read_config_deps_mode(self.project_root)),
-                        logger=self.logger,
-                    )
-            except Exception as e:
-                self.logger.warning("worktree_manager", f"worktree node_modules 供给跳过: {e}")
+            self._provision_worktree_deps(wt_path)
 
             self.logger.info("worktree_manager", f"Worktree created: {wt_path}")
             return wt_path
@@ -313,6 +297,36 @@ class G1LifecycleMixin:
                 self._spec_locks.discard(lock_key)
                 self._lock_since.pop(lock_key, None)
             return None
+
+    def _provision_worktree_deps(self, wt_path: Path) -> None:
+        """worktree 构建环境供给（deps_mode 双模式，best-effort 不阻塞派发）。
+
+        git 不携带 node_modules，实现者每轮手工安装是既有摩擦源（fast-track
+        复盘）。create() 的两条建树出口共用（全新 checkout / reuse 认领，含
+        legacy_registry._take_reusable_worktree 的仅分支模式重建，code-review
+        item 1e3f877e379b）：供给按 deps_mode 幂等，旧目录已带依赖时无副作用；
+        失败仅 WARNING 降级，不阻塞派发。
+        """
+        try:
+            from core.verify_contract import (
+                load_verify_contract,
+                provision_worktree_node_modules,
+                read_config_deps_mode,
+                resolve_deps_mode,
+            )
+
+            contract = load_verify_contract(self.project_root)
+            sub_dirs = sorted({(s.cwd or ".") for s in contract.prepare}) if contract else []
+            if sub_dirs:
+                provision_worktree_node_modules(
+                    wt_path,
+                    self.project_root,
+                    sub_dirs,
+                    mode=resolve_deps_mode(contract, read_config_deps_mode(self.project_root)),
+                    logger=self.logger,
+                )
+        except Exception as e:
+            self.logger.warning("worktree_manager", f"worktree node_modules 供给跳过: {e}")
 
     def has_active_lock(self, spec_name: str, agent_type: str = "implementer") -> bool:
         """查询该 spec+agent_type 是否有活跃的 worktree 锁（fix-restart-dual-dispatch）。
