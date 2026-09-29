@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
@@ -72,9 +72,15 @@ def _activity_created_ts(raw) -> float:
         # 外部写入可能带 Z）：dayjs 认 Z，这里同口径处理
         s = s[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(s).timestamp()
+        parsed = datetime.fromisoformat(s)
     except ValueError:
         return 0.0
+    if parsed.tzinfo is None:
+        # naive 值按 UTC 解释（全链约定 UTC，与 code_review_routes._parse_iso_utc
+        # 同口径，code-review item e8c240200640）：.timestamp() 对 naive 值按进程
+        # 本地时区折算，排序基准会随部署机时区漂移
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _sort_activities_frontend(items: list) -> None:
@@ -140,8 +146,16 @@ class H6AlertRoutesMixin:
                 item = dict(a)
                 item["project"] = p["name"]
                 all_resolved.append(item)
-        all_unhandled.sort(key=lambda a: a.get("created", ""), reverse=True)
-        all_resolved.sort(key=lambda a: a.get("handled_at") or a.get("created") or "", reverse=True)
+        # 排序复用 _activity_created_ts 时间戳归一键（同 _sort_activities_frontend
+        # 口径，code-review item 05340542c3fb）：字符串倒序在 Z/+00:00 后缀混排时
+        # 会排错；非法/缺失归 0，倒序下落末位
+        all_unhandled.sort(
+            key=lambda a: _activity_created_ts(a.get("created")), reverse=True
+        )
+        all_resolved.sort(
+            key=lambda a: _activity_created_ts(a.get("handled_at") or a.get("created")),
+            reverse=True,
+        )
         return {
             "total_unhandled": total,
             "projects": projects_out,
@@ -292,7 +306,8 @@ class H6AlertRoutesMixin:
                     item["project"] = p["name"]
                     records.append(item)
             # get_archived_activities 单项目内已倒序；跨项目合并后统一倒序
-            records.sort(key=lambda r: r.get("created") or "", reverse=True)
+            # （时间戳归一键同活跃口径，code-review item 05340542c3fb）
+            records.sort(key=lambda r: _activity_created_ts(r.get("created")), reverse=True)
 
         total = len(records)
         start = (page - 1) * page_size
