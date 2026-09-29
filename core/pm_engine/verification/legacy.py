@@ -122,20 +122,32 @@ def _block_legacy_verdict(
             ),
         },
     )
-    pipeline._context.escalation_notifier(
-        spec_name=spec_name,
-        signal_type="verdict_result_unreadable",
-        severity="critical",
-        description=(
-            f"'{spec_name}' legacy 验证裁决结果文件{reason_label}，已 blocked "
-            f"等待人工裁决（reason={verifier_result.reason}）"
-        ),
-        evidence=(
-            f"spec={spec_name}; result_file={run_result_path}; "
-            f"parse_error={verifier_result.detail}"
-        ),
-        recommended_action=recommended_action,
-    )
+    # 升级通道自身失败不得抛穿裁决流程（code-review item c0d75398fc9a，与
+    # escalation.py 7e0509f14fdd 包裹模式同款）：上方 blocked 已落盘为
+    # fail-closed 终态，notifier 异常若沿 engine except e2 上抛会被
+    # _rollback_failed_dispatch 洗回 implemented——把结构性异常的人工处置
+    # 窗口覆写成自动重试通道。WARNING 留痕不改变本轮收口结论。
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="verdict_result_unreadable",
+            severity="critical",
+            description=(
+                f"'{spec_name}' legacy 验证裁决结果文件{reason_label}，已 blocked "
+                f"等待人工裁决（reason={verifier_result.reason}）"
+            ),
+            evidence=(
+                f"spec={spec_name}; result_file={run_result_path}; "
+                f"parse_error={verifier_result.detail}"
+            ),
+            recommended_action=recommended_action,
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"legacy blocked 升级告警发送失败（非阻塞，blocked 处置已落盘）"
+            f"'{spec_name}': {type(e).__name__}: {e}",
+        )
 
 
 def _run_legacy_verification(pipeline, spec_name: str):
@@ -520,6 +532,19 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     "pm_engine",
                     f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
                 )
+                return
+
+            # 裁决 env 豁免握手（code-review item 9c0a88e8a705，与主路径
+            # _apply_verified 同一道拦截点）：级二命中（裁决后失败全部为
+            # 环境性）时 MUST NOT 落 verified——无 admin 放行处置记录转
+            # inconclusive 重验（命中即 return，本轮不再到达洗白门禁，
+            # 同一轮两道裁决后防线不叠加动作）；查得放行记录保留处置回链
+            # 后放行；级二不命中零改动直通。legacy 分支此前缺此防线，
+            # 环境性全败可经 legacy 车道自我批准落 verified。
+            # ocr join 门禁不在此复刻：该门禁约束 impl-ocr 并行车道的
+            # join（defer → 车道回调唤醒重评），legacy 车道为降级兼容
+            # 路径、不消费并行车道产物，无 join 可等——豁免。
+            if pipeline._handle_env_exemption_handshake(spec_name, report):
                 return
 
             # verified 洗白门禁（help-center 0/15 verified 事故防线）：
