@@ -145,6 +145,12 @@ class FakePM:
     def _on_spec_bug_found(self, spec_name, failure_class="product", run_id=""):
         self.bug_found_calls.append((spec_name, failure_class, run_id))
 
+    @property
+    def _apply_verified(self):
+        # 镜像 PMEngine.__getattr__ 门面转发（design D3 规则 3）：惰性解析到
+        # 当前 _verification 组件，测试替换 pm._verification 后仍被命中。
+        return self._verification._apply_verified
+
 
 def _git(repo: Path, *args: str) -> str:
     r = subprocess.run(

@@ -2156,10 +2156,11 @@ class FenixDaemon:
             if self_triggered_now:
                 # FR-3 语义守卫（code-review item 74da2c8c7864）：max_dangling_seconds
                 # 允许配成小于 self_triggered_window_seconds，悬空超时可能在
-                # 自触发窗口内到期——窗口内仍不写 restart_request（避免延长
-                # 重启循环），自触发告警由上方标记分支已落过一次；窗口过期后
-                # 由后续 tick 在此收尾触发（dangling_seconds 只增不减，无需
-                # 重新起算）。
+                # 自触发窗口内到期——窗口内仅落升级告警不写 restart_request
+                # （告警自带 60 分钟窗口去重，窗口内重复 tick 不重复成条；
+                # 避免延长重启循环），窗口过期后由后续 tick 在此收尾触发
+                # （dangling_seconds 只增不减，无需重新起算）。
+                self._alert_dangling_timeout(dangling_seconds, max_dangling)
                 return
             if getattr(self, "_dangling_timeout_fired", False):
                 # 防重复写（2.3）：本悬空周期已成功触发过，1s tick 直接跳过。
