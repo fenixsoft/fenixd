@@ -651,6 +651,40 @@ class H0BaseMixin:
     _GZIP_EXT = {".js", ".css", ".html", ".htm", ".svg", ".json", ".md", ".txt", ".map"}
     _GZIP_MIN = 860  # 小于阈值的响应不值得压缩
 
+    # ── 服务端分页参数解析单源（add-dashboard-paging-and-etag 2.1/2.2）──
+
+    @staticmethod
+    def _parse_page_params(page_raw, size_raw, default_size: int, max_size: int):
+        """解析 page/page_size 查询参数，返回 (page | None, page_size)。
+
+        - page **缺席** → page=None：全量兼容路径（响应不带任何分页字段，
+          与改造前逐字段一致）。
+        - page 在场但非法（非整数/<1）→ 回退 1（分页响应形态保留）。
+        - page_size 缺席 → default_size；非法（非整数/<1）→ 回退 default_size；
+          超过 max_size → 截到 max_size。
+        """
+        default_size = min(default_size, max_size)
+        page = None
+        if page_raw is not None:
+            try:
+                page = int(str(page_raw).strip())
+            except (TypeError, ValueError):
+                page = 1
+            if page < 1:
+                page = 1
+        size = default_size
+        if size_raw is not None:
+            try:
+                size = int(str(size_raw).strip())
+            except (TypeError, ValueError):
+                size = default_size
+            else:
+                if size < 1:
+                    size = default_size
+                elif size > max_size:
+                    size = max_size
+        return page, size
+
     def _mark_response_started(self):
         """标记本请求已开始写响应（供 _handle 的 500 兜底判断是否可再写）。
 

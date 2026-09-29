@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
@@ -35,6 +36,42 @@ def _adjudication_lock(alert_id: str) -> threading.Lock:
             lock = threading.Lock()
             _ADJUDICATION_LOCKS[alert_id] = lock
         return lock
+
+
+# ── 跨项目全局排序（add-dashboard-paging-and-etag 2.1，design D3）────────
+# 现状「未处理置顶 → created 倒序」的全局合并排序在前端 allActivities useMemo
+# （activities/index.tsx）完成；服务端分页必须把该语义搬到切片之前，否则
+# 「任意页 ≡ 全量响应对应区段」不成立。逐条复刻前端比较器：
+#   1. handled === false 置顶优先（严格 False；undefined/null 不置顶）；
+#   2. created 经 dayjs 解析为毫秒时间戳倒序——非法/缺失归一 0（fix
+#      f6adbe97c806 同款，valueOf() NaN 修正的 Python 对偶）；
+#   3. 平局保持既有序（Python sorted 与 ES2019+ Array.sort 同为稳定排序，
+#      前端对服务端已排序页的再次排序为恒等操作）。
+
+
+def _activity_created_ts(raw) -> float:
+    """created 字段 → 秒级时间戳；非法/缺失归一 0（与前端归一语义一致）。"""
+    if not raw:
+        return 0.0
+    s = str(raw).strip()
+    if s.endswith(("Z", "z")):
+        # Python 3.10 fromisoformat 不认 'Z'（AdminStore 产 ISO 含 +00:00，
+        # 外部写入可能带 Z）：dayjs 认 Z，这里同口径处理
+        s = s[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _sort_activities_frontend(items: list) -> None:
+    """按前端 allActivities 语义原地全局排序（置顶 → created 倒序，稳定）。"""
+    items.sort(
+        key=lambda a: (
+            0 if a.get("handled") is False else 1,
+            -_activity_created_ts(a.get("created")),
+        )
+    )
 
 
 class H6AlertRoutesMixin:
@@ -107,6 +144,14 @@ class H6AlertRoutesMixin:
         带 ?spec=<name> → 仅返回该 SPEC 相关记录（add-admin-invoke-dialog，
         服务端过滤）；缺省 → 跨项目聚合，按项目分组返回。
 
+        分页（add-dashboard-paging-and-etag 2.1，design D3）：``page``（1 起）
+        与 ``page_size``（默认 50，上限 200，非法回退默认）在**合并排序之后**
+        切片；带 ``page`` 时响应追加 ``total``/``page``/``page_size``/``has_more``，
+        ``projects[]`` 仅含当前页记录（按项目分组、组内保持全局相对顺序，
+        平铺后即全局序）；跨项目全局排序（未处理置顶 → created 非法/缺失
+        归一 0 后倒序）逐条复刻前端 allActivities 语义，置顶先于切片。缺省
+        ``page`` 时响应结构与改造前逐字段一致（向后兼容，老调用方零改动）。
+
         错误契约同 _api_alerts（**有意 200**）：?project 不存在/未就绪时返回
         ``{"error": "project not found"}`` 字典——适配函数
         ``_get_admin_activities`` 为 _json 包裹式，不能改 self._error 直写
@@ -114,15 +159,71 @@ class H6AlertRoutesMixin:
         """
         project_name = query.get("project", [None])[0]
         spec_name = query.get("spec", [None])[0]
+        page, page_size = self._parse_page_params(
+            query.get("page", [None])[0],
+            query.get("page_size", [None])[0],
+            default_size=50,
+            max_size=200,
+        )
         if project_name:
             project = self.server.project_by_name(project_name)
             if project is None or not project.get("exists"):
                 return {"error": "project not found"}
             proot = Path(project["path"])
+            activities = dashboard_data.get_admin_activities(proot, spec=spec_name)
+            if page is None:
+                return {
+                    "project": project["name"],
+                    "spec": spec_name or "",
+                    "activities": activities,
+                }
+            # 单项目路径同样按前端语义排序后切片（对 get_admin_activities 的
+            # 「字符串 created 倒序」做时间戳归一校正，非法值归末位）
+            _sort_activities_frontend(activities)
+            total = len(activities)
+            start = (page - 1) * page_size
             return {
                 "project": project["name"],
                 "spec": spec_name or "",
-                "activities": dashboard_data.get_admin_activities(proot, spec=spec_name),
+                "activities": activities[start : start + page_size],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "has_more": start + page_size < total,
+            }
+
+        if page is not None:
+            # 分页路径：跨项目合并 → 全局排序（前端语义）→ 切片 → 按项目
+            # 分组（首现顺序 = 全局相对顺序，平铺还原全局序）
+            merged: list = []
+            for p in self.server.projects():
+                if p.get("fixture"):
+                    continue  # fixture-project-governance：夹具项目处置记录不进人工聚合视图
+                if not p.get("exists"):
+                    continue
+                acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
+                for a in acts:
+                    a["project"] = p["name"]
+                merged.extend(acts)
+            _sort_activities_frontend(merged)
+            total = len(merged)
+            start = (page - 1) * page_size
+            chunk = merged[start : start + page_size]
+            projects_out: list = []
+            by_name: dict = {}
+            for a in chunk:
+                bucket = by_name.get(a["project"])
+                if bucket is None:
+                    bucket = {"name": a["project"], "activities": []}
+                    by_name[a["project"]] = bucket
+                    projects_out.append(bucket)
+                bucket["activities"].append(a)
+            return {
+                "projects": projects_out,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "has_more": start + page_size < total,
             }
 
         projects_out = []
