@@ -1214,6 +1214,64 @@ def _cleanup_partial_node_modules(target: Path, logger=None) -> None:
             )
 
 
+# npm 依赖供给命令上限（秒）：provision_worktree_node_modules /
+# ensure_main_tree_deps 既有 timeout=900 语义收拢为常量（与 run_prepare_steps
+# 的 PREPARE_STEP_TIMEOUT 分立——依赖安装与构建是两类步骤，口径不强行合并）。
+NPM_PROVISION_TIMEOUT = 900
+
+
+def _run_npm_provision(argv: list, cwd: Path) -> subprocess.CompletedProcess:
+    """npm 供给命令执行（start_new_session + 超时进程组清扫）。
+
+    subprocess.run 超时只 kill 直接子进程，npm 派生的 node 孙进程未经收组
+    残留，可继续写 node_modules，与紧随的 ``_cleanup_partial_node_modules``
+    的 rmtree 竞态（code-review item 79741f3caf63）——按
+    ``run_prepare_steps`` 同款组清扫纪律（item 2fa170366d6b/7168a8391e06）：
+    start_new_session 使 leader 即进程组长（pgid == p.pid），提前取定句柄
+    防 wait 回收 leader 后 getpgid 失效；超时 SIGTERM 组 → wait(5) →
+    SIGKILL 组补刀 → 补 communicate 排空管道收尸，随后按 subprocess.run 同
+    约定向调用方抛 TimeoutExpired（由既有 ``except (SubprocessError,
+    OSError)`` 清理路径接管）。Popen 的 OSError 同样交由调用方捕获。
+    """
+    p = subprocess.Popen(
+        argv,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        out, err = p.communicate(timeout=NPM_PROVISION_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            pgid = os.getpgid(p.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = p.pid
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            pass
+        # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
+        # （npm 派生的 node）会残留继续写 node_modules，无论 wait 成败都
+        # 补一次 SIGKILL；ProcessLookupError＝组已清空，静默即可。
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
+        try:
+            p.communicate(timeout=5)
+        except Exception:
+            pass
+        raise
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
 def provision_worktree_node_modules(
     worktree_root: Path,
     project_root: Path,
@@ -1275,20 +1333,14 @@ def provision_worktree_node_modules(
                     _cleanup_partial_node_modules(wt_dir / "node_modules", logger)
         if not provisioned:
             try:
-                r = subprocess.run(
+                r = _run_npm_provision(
                     ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
-                    cwd=str(wt_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=900,
+                    wt_dir,
                 )
                 if r.returncode != 0:
-                    r = subprocess.run(
+                    r = _run_npm_provision(
                         ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
-                        cwd=str(wt_dir),
-                        capture_output=True,
-                        text=True,
-                        timeout=900,
+                        wt_dir,
                     )
                 if r.returncode == 0:
                     done.append(str(sub))
@@ -1348,21 +1400,15 @@ def ensure_main_tree_deps(
         if (target / "node_modules").exists():
             continue
         try:
-            r = subprocess.run(
+            r = _run_npm_provision(
                 ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
-                cwd=str(target),
-                capture_output=True,
-                text=True,
-                timeout=900,
+                target,
             )
             cmd = "npm ci --prefer-offline"
             if r.returncode != 0:
-                r = subprocess.run(
+                r = _run_npm_provision(
                     ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
-                    cwd=str(target),
-                    capture_output=True,
-                    text=True,
-                    timeout=900,
+                    target,
                 )
                 cmd = "npm install --prefer-offline"
             if r.returncode == 0:
@@ -1563,7 +1609,7 @@ def _rewrite_scenario_target_values(raw, *, requires_http_scheme: bool,
     return out, n
 
 
-def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
+def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -> int:
     """把场景**目标地址**的 origin 改写为本次被测实例（BASE_URL 注入）。
 
     BASE_URL 铁律的执行点：无论 planner 生成什么地址，`navigate` /
@@ -1572,7 +1618,19 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
     mock 模式、断言期望）MUST NOT 触碰——详见 ``_rewrite_origin_in_scenarios``
     上方的作用域说明（2026-09-17 属性选择器毒化事故）。
 
-    返回改写处数（0 = 文件缺失/非场景数组/无候选目标）。
+    Args:
+        scenarios_path: 场景文件路径
+        base_url: 本次被测实例地址（空串按无需改写处理）
+        logger: 可选日志记录器（写失败时记 WARNING 留痕）
+
+    Returns:
+        改写处数；0 = 文件缺失/非场景数组/无候选目标（本无需改写）；
+        -1 = 已解析出候选目标但写盘失败——BASE_URL 铁律未落盘，与 0 可判别
+        （code-review item 90ca963ad6e7：写失败与「本无需改写」同返 0 时，
+        冻结场景集静默携带 planner 原地址且不可观测）。写失败经 logger 记
+        WARNING（对齐模块「解析失败大声告警」哲学）但不抛异常——api 场景
+        另有 ApiRunner 运行时 rewrite_origin 双通道兜底，文件级写失败不升级
+        为整轮验证崩溃。
     """
     try:
         raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
@@ -1610,8 +1668,17 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
             except OSError:
                 pass
             raise
-    except OSError:
-        return 0
+    except OSError as e:
+        # 写失败 ≠ 本无需改写：解析已完成、候选目标存在，BASE_URL 铁律静默
+        # 未执行须可判别（code-review item 90ca963ad6e7）——返回可区分哨兵
+        # -1 并记 WARNING 留痕（0 保留给「文件缺失/非场景数组/无候选目标」）。
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"场景 origin 改写写盘失败（BASE_URL 注入未落盘，场景集仍携带"
+                f"原地址）: {scenarios_path}: {e}",
+            )
+        return -1
     return n
 
 
@@ -1626,11 +1693,26 @@ _SHELL_METACHARS = ("&&", "||", "|", ";", ">", "<", "$(", "`")
 # 内联代码 / REPL 形态：无文件入口，跳过预检（防把代码片段当路径误杀）
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive"})
 
-# 入口候选的脚本扩展名白名单：带独立取值的 flag（如 node -r ts-node/register）
-# 其取值同样以非 flag 形态出现，机械上无法与入口区分；仅当候选以脚本扩展名
-# 结尾才判为入口，否则跳过预检（零误杀优先，漏检交给既有探活兜底）。
+# 入口候选的脚本扩展名白名单：仅当候选以脚本扩展名结尾才判为入口，否则
+# 跳过预检（零误杀优先，漏检交给既有探活兜底）。常见带独立取值的 flag 经
+# 下方 _FLAGS_WITH_VALUE 连同紧随取值一并跳过；名单之外的未知取值 flag
+# 由本后缀规则兜底。
 _SCRIPT_ENTRY_SUFFIXES = frozenset(
     {".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx"}
+)
+
+# 带独立取值的 flag 名单（code-review item 30c2a89fa2a1）：预加载/加载器类
+# flag 的取值同样以非 flag 形态出现且常以脚本扩展名结尾（`node -r
+# ./polyfill.js dist/server.js` 的 polyfill.js 不是入口）——旧循环把首个非
+# flag 参数当入口，取值文件不存在而真实入口存在时预检误报「入口不存在」
+# 拦截本可正常启动的服务。命中名单连同紧随取值一并跳过后再找入口。
+_FLAGS_WITH_VALUE = frozenset(
+    {
+        "-r", "--require",  # node -r ts-node/register
+        "--import",  # node --import tsx
+        "--loader", "--experimental-loader",  # node --loader tsx/esm
+        "--preload",  # bun --preload ./preload.ts
+    }
 )
 
 
@@ -1648,7 +1730,11 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     PosixPath('/prj/dist/server.js')
     >>> resolve_entry_path("npm run build && node x.js", Path("/prj")) is None
     True
-    >>> resolve_entry_path("node -r ts-node/register dist/server.js", Path("/prj")) is None
+    >>> resolve_entry_path("node -r ts-node/register dist/server.js", Path("/prj"))
+    PosixPath('/prj/dist/server.js')
+    >>> resolve_entry_path("node -r ./polyfill.js dist/server.js", Path("/prj"))
+    PosixPath('/prj/dist/server.js')
+    >>> resolve_entry_path("node -r ./missing.js", Path("/prj")) is None
     True
     """
     if not cmd or not isinstance(cmd, str):
@@ -1674,11 +1760,19 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
         rest = rest[1:]
     elif exe == "bun" and rest and rest[0] == "run":
         return None
-    for arg in rest:
-        if arg.startswith("-"):
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        # 带独立取值的已知 flag（node -r ./polyfill.js 等）：连同紧随取值
+        # 一并跳过——取值不是入口（code-review item 30c2a89fa2a1）
+        if arg in _FLAGS_WITH_VALUE:
+            i += 2
             continue
-        # flag 的独立取值参数（node -r ts-node/register 等）不是入口：
-        # 非脚本扩展名结尾的候选无法机械判定为入口 → 跳过预检（零误杀）
+        if arg.startswith("-"):
+            i += 1  # --flag=value 形态或无独立取值的 flag
+            continue
+        # 名单之外的未知取值 flag 兜底：非脚本扩展名结尾的候选无法机械判定
+        # 为入口 → 跳过预检（零误杀）
         if Path(arg).suffix.lower() not in _SCRIPT_ENTRY_SUFFIXES:
             return None
         return (Path(cwd) / arg).resolve()
@@ -1777,60 +1871,36 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
     except Exception:
         pass  # 快照缺失/损坏 → 本次照常自证
 
-    # 2. serve 段合法性（静态，同 validate_contract 第 2 步）
-    contract = load_verify_contract(project_root, logger)
+    # 2. serve 段合法性（静态，同 validate_contract 第 2 步）。单次读取同时
+    # 取得契约对象与原始 YAML dict（_load_verify_contract_with_raw，对齐
+    # validate_contract 第 1 步口径，item f078ddc52b6b）：旧实现 load 后再对
+    # verify.yaml 二次裸读复检 serve/ready 段，两次读取之间契约被改写时静态
+    # 检查结论与已加载 contract 对象可能出自不同版本（code-review item
+    # b64c1ac34f79）。
+    contract, raw_data = _load_verify_contract_with_raw(project_root, logger)
     if contract is None:
-        errors = []
-        try:
-            raw = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                # serve 段校验走共享的 _raw_serve_section_errors（与
-                # validate_contract 第 2 步单点同源，item 13d93a1f9a25）。
-                errors.extend(_raw_serve_section_errors(raw.get("serve")))
-                # ready 段形态校验（code-review item 11d679872896）：ready 为标量
-                # （如 ready: /health）时 load_verify_contract 返回 None——整份契约
-                # 按无契约回退（prepare/serve 一并失效，走 commands.start 旧行为），
-                # 此处裸读仅校验 serve 段会把「契约整体失效」误当「纯 cli 形态」
-                # 放行，违背消费期大声暴露契约错误的目标。ready 缺失/映射视为
-                # 合法（其余情形记入 errors 自证失败，与 serve 段同口径）。
-                raw_ready = raw.get("ready")
-                if raw_ready is not None and not isinstance(raw_ready, dict):
-                    errors.append(
-                        f"ready 段非法（须为映射，契约整体按无契约回退）: {raw_ready!r}"
-                    )
-            else:
-                # 顶层非映射（列表/标量/空文档）＝契约整体失效而非「纯 cli 形态」：
-                # load_verify_contract 对该形态按无契约回退并记 warning，
-                # validate_contract 对同一输入判 valid=False
-                # （FAIL_CONTRACT_PARSE）——自证同样大声失败，否则验证无声落入
-                # 无契约回退（commands.start）。ready 标量的同类缺口已由
-                # item 11d679872896 修复，顶层非映射这一形态由本补丁补上
-                # （code-review item 5a443263ffe2）。
-                errors.append(
-                    f"契约顶层须为映射（整份契约按无契约回退）: {repr(raw)[:200]}"
-                )
-        except Exception as e:
-            errors.append(f"契约 YAML 解析失败: {e}")
-        if errors:
-            return "轻量自证失败（serve/ready 段）: " + "；".join(errors)
-        return None  # 契约结构合法且无 serve 段（纯 cli 形态）不在消费期自证范围
+        # 解析失败/顶层非映射/ready 段非法等「契约整体无效」形态：具体原因
+        # 已由 _load_verify_contract_with_raw 记 warning（单次读取下 raw_data
+        # 与 contract 同为 None，无法也无需二次裸读判别具体形态），自证仍
+        # 大声失败（不写快照，下轮 mtime 变化自动重证），否则验证无声落入
+        # 无契约回退（commands.start）。
+        return (
+            "轻量自证失败（serve/ready 段）: 契约解析失败（按无契约回退）"
+            "——详见 verify_contract 告警"
+        )
 
     serve = contract.serve
     if serve is None:
         # serve 段解析为 None 有两种形态：真无 serve 段（纯 cli，放行）与
         # serve 段声明了但形态非法被「告警＋忽略」（code-review item
-        # 48713cc5a8cb）——后者裸读原始 YAML 复检 serve 段，否则用户声明了
-        # serve 段却在此按「纯 cli 形态」静默放行、验证退回 commands.start
-        # 旧行为。复检口径与 validate_contract 第 2 步单点同源
-        # （_raw_serve_section_errors）。
-        try:
-            raw = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and raw.get("serve") is not None:
-                errs = _raw_serve_section_errors(raw.get("serve"))
-                if errs:
-                    return "轻量自证失败（serve 段）: " + "；".join(errs)
-        except Exception:
-            pass  # 复检读取失败不阻塞——load 已对解析失败按无契约回退并记 warning
+        # 48713cc5a8cb）——后者按同一次读取的 raw_data 复检 serve 段，否则
+        # 用户声明了 serve 段却在此按「纯 cli 形态」静默放行、验证退回
+        # commands.start 旧行为。复检口径与 validate_contract 第 2 步单点
+        # 同源（_raw_serve_section_errors）。
+        if isinstance(raw_data, dict) and raw_data.get("serve") is not None:
+            errs = _raw_serve_section_errors(raw_data.get("serve"))
+            if errs:
+                return "轻量自证失败（serve 段）: " + "；".join(errs)
         return None  # 无 serve 段：纯 cli 场景集，serve/ready 不相关
     if serve.kind == "static":
         if not serve.root:
