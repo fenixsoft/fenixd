@@ -2273,7 +2273,9 @@ class TestConditionalGet:
         assert body == b""
         assert len(body) <= 1024  # spec：传输量 ≤1KB
         assert headers.get("ETag") == etag
-        assert headers.get("Content-Length") == "0"
+        # 304 无体：不再发送 Content-Length（恒写 0 与 RFC 7230 §3.3.2 的
+        # 「值须等于对应 200 体长」语义不符；无该头时客户端按无体处理）
+        assert "Content-Length" not in headers
 
     def test_alerts_and_config_and_spec_detail_304(self, server_fx):
         proot, srv = server_fx
