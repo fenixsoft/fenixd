@@ -288,7 +288,7 @@ def parse_verify_progress(project_root, spec_name) -> dict:
         if not status:
             continue
         done += 1
-        if status == "pass":
+        if status in ("pass", "passed"):
             passed += 1
         elif status in ("fail", "failed"):
             failed += 1
