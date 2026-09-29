@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.dashboard import data as dash_data
 from core.dashboard.data import (
-    archive_spec, parse_state, record_project_event,
+    archive_spec, parse_archived_state, parse_state, record_project_event,
     spec_summary,
 )
 
@@ -68,14 +68,19 @@ class TestArchiveSpec(unittest.TestCase):
         archived = next(archive_dir.iterdir())
         self.assertTrue(archived.is_dir())
         self.assertTrue((archived / "tasks.md").exists())
-        # STATE.md 条目原样保留
-        self.assertIn("spec-a", parse_state(self.root))
+        # 条目已迁出至归档清单（add-archive-state-migration 2.1）
+        self.assertNotIn("spec-a", parse_state(self.root))
+        manifest = parse_archived_state(self.root)
+        self.assertIn("spec-a", manifest)
+        self.assertEqual(manifest["spec-a"].get("archived_by"), "ui")
+        self.assertTrue(manifest["spec-a"].get("archived_at"))
 
     def test_archive_pushed_success(self):
         _make_project(self.root, {"spec-b": {"status": "pushed"}})
         result = archive_spec(self.root, "spec-b")
         self.assertTrue(result["ok"])
-        self.assertIn("spec-b", parse_state(self.root))
+        self.assertNotIn("spec-b", parse_state(self.root))
+        self.assertIn("spec-b", parse_archived_state(self.root))
 
     def test_archive_non_terminal_rejected(self):
         _make_project(self.root, {"spec-x": {"status": "implementing"}})
@@ -200,10 +205,14 @@ class TestArchivedFlag(unittest.TestCase):
 
     def test_after_archive_api_flag(self):
         archive_spec(self.root, "active-spec")
+        # 条目已迁出活跃口径；归档判定与溯源字段经归档清单双源成立
         specs = parse_state(self.root)
-        self.assertTrue(spec_summary(self.root, "active-spec", specs["active-spec"])["archived"])
-        # 条目仍在 STATE.md
-        self.assertIn("active-spec", specs)
+        self.assertNotIn("active-spec", specs)
+        manifest = parse_archived_state(self.root)
+        self.assertIn("active-spec", manifest)
+        summary = spec_summary(self.root, "active-spec", manifest["active-spec"])
+        self.assertTrue(summary["archived"])
+        self.assertEqual(summary.get("archived_by"), "ui")
 
 
 class TestRecordProjectEvent(unittest.TestCase):
@@ -337,7 +346,13 @@ class TestAutoArchiveCheck(unittest.TestCase):
         self.assertFalse((self.root / "spec" / "changes" / "b").is_dir())
         self.assertTrue((self.root / "spec" / "changes" / "c").is_dir())
         self.assertTrue((self.root / "spec" / "changes" / "d").is_dir())
-        self.assertIn("a", parse_state(self.root))  # STATE.md preserved
+        # 条目已迁出至归档清单（archived_by=auto），不再滞留 STATE.md
+        active = parse_state(self.root)
+        self.assertNotIn("a", active)
+        self.assertNotIn("b", active)
+        manifest = parse_archived_state(self.root)
+        self.assertEqual(manifest["a"].get("archived_by"), "auto")
+        self.assertEqual(manifest["b"].get("archived_by"), "auto")
 
     def test_no_action_under_threshold(self):
         self._write_project({
@@ -475,9 +490,11 @@ class TestSpecArchiveAPI:
         assert body["ok"] is True
         assert body["to"].endswith("done-spec")
         assert "archive" in body["to"]
-        # 目录移动 + STATE.md 保留
+        # 目录移动 + 条目迁出至归档清单（迁出结果经 state_evicted 字段透出）
         assert not (proot / "spec" / "changes" / "done-spec").is_dir()
-        assert "done-spec" in parse_state(proot)
+        assert "done-spec" not in parse_state(proot)
+        assert "done-spec" in parse_archived_state(proot)
+        assert body["state_evicted"] is True
         # 活动事件已写日志
         events = dash_data.get_recent_events(proot, minutes=10)
         assert any("done-spec" in e.get("message", "") and "归档" in e.get("message", "")

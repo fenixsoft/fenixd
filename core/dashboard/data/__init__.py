@@ -185,6 +185,7 @@ from .spec_archive import (
     archive_spec,
     is_spec_archived,
     auto_archive_check,
+    backfill_archived_entries,
 )
 
 # ── spec_docs 组 ──
@@ -293,7 +294,7 @@ from .adjudication_choices import (
 )
 
 # ── state 组 ──
-from .state import parse_state
+from .state import parse_state, parse_archived_state, STATE_ARCHIVE_BASENAME
 
 # ── config_admin 组 ──
 from .config_admin import (

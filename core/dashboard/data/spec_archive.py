@@ -13,7 +13,7 @@ from pathlib import Path
 from core.archive_commit import commit_archive_move
 
 # state 组（叶子组已搬移，直接导入无环）
-from .state import parse_state
+from .state import parse_state, parse_archived_state
 
 # 删除先停后删的等待总上限（add-freeze-stop-inflight-agents 5.3：admin_actions
 # 与 spec_archive 共用同一常量；顶层导入使测试可 patch 覆盖窗口时长）
@@ -26,7 +26,8 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     两步任一失败则尽量回滚以保持两端数据一致（第 1 步移动目录失败时 STATE.md
     尚未改动、天然一致；第 2 步剔除 STATE 失败时尽力把已归档目录移回原位），
     由调用方依据返回码处理：
-    - STATE.md 不含该 spec → {found: False}（幂等，不发任何文件操作）
+    - 活跃 STATE.md 与归档清单均不含该 spec → {found: False}（幂等，
+      不发任何文件操作；add-archive-state-migration D6：found 判定含清单）
     - 运行中保护：扫描 ``.fenix/runs/*.jsonl`` 顶层（活跃目录），用末行
       非终态判定在跑（终态口径 = ``RUN_TERMINAL_EVENT_TYPES`` 并集，含
       frozen-terminated，不复用 ``classify_run``：superseded 不在终态集合内）。
@@ -57,7 +58,10 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 初始在跑计数（stopped 字段：有在跑 agent 时记录回调前计数，无在跑为 None）
     initial_running_count = 0
     specs = parse_state(proot)
-    if spec not in specs:
+    # found 判定含清单（add-archive-state-migration D6）：条目已迁出（仅清单
+    # 有）的已归档 SPEC 同样可软删除，清理动作 = 移除清单小节 + 归档目录移除。
+    in_manifest = spec in parse_archived_state(proot)
+    if spec not in specs and not in_manifest:
         return {"found": False}
 
     # ── 运行中保护：末行非终态判定（add-freeze-stop-inflight-agents 4.1/4.2）──
@@ -182,8 +186,15 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 否则 spec 永久卡在「STATE 有条目 + 活跃目录不存在」的不一致态
     # （archive_spec 报「活跃目录已不存在」、auto_archive_check 不再纳入，
     # 只能手工修复），并以返回码而非裸异常告知调用方。
+    # 条目仅在清单（已迁出）时 remove_spec 无条目可剔（返回 False 幂等），
+    # 改为移除清单小节；双源并存（迁出中间态）时两处都清。
     try:
-        sm.remove_spec(spec)
+        if spec in specs:
+            sm.remove_spec(spec)
+        if in_manifest:
+            # 清单小节移除在 .STATE.md.lock 的 flock 内执行（与迁出/回填的
+            # 清单写入同锁，避免并发竞态，design D6）
+            sm.remove_archived_entry(spec)
     # 非 OSError 异常（STATE.md 解析/flock 等环节，异常面同 auto_archive_check
     # 兜底注释的确认）同样不能裸抛：目录此时可能已移入 archive，任何异常路径
     # 都先尽力回滚目录，再以结构化 error dict 告知调用方（code-review item
@@ -230,28 +241,40 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
 
 
 def is_spec_archived(project_root, spec_name: str) -> bool:
-    """归档判定：STATE.md 有条目且活跃目录 `spec/changes/<name>/` 不存在。
+    """归档判定：活跃目录 `spec/changes/<name>/` 不存在，且活跃 STATE.md 或
+    归档清单 `.fenix/STATE.archive.md` 有该条目（双源合取，D4）。
 
     D1：归档可见性以活跃目录存在性为准——不检测 archive/ 下具体路径
     形态（删除路径命名 `<name>-<Unix秒>` 不同、手动移动命名不可控），也不写
     STATE.md 标志。三条归档路径（界面 API / CLI skill / 手动 mv）产出相同可见性。
-    STATE.md 无该条目（从未创建/已软删除/名字拼错）返回 False 而非 True——
+    条目已迁出（仅清单有，add-archive-state-migration 3.1）仍判已归档；
+    双源均无该条目（从未创建/已软删除/名字拼错）返回 False 而非 True——
     合取校验防未注册名误判已归档（fix 3505adf6b20e）。
     """
     # 先查目录：未归档 spec 短路返回 False，不额外读 STATE.md（性能敏感路径，
-    # /api/specs 对全部 spec 逐个调用）；目录缺席再合取 STATE 条目校验
+    # /api/specs 对全部 spec 逐个调用）；目录缺席再合取双源条目校验
     return not (Path(project_root) / "spec" / "changes" / spec_name).is_dir() and (
         spec_name in parse_state(project_root)
+        or spec_name in parse_archived_state(project_root)
     )
 
 
-def archive_spec(project_root, spec_name: str) -> dict:
+def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
     """归档 SPEC：把 `spec/changes/<name>/` 移到 `spec/archive/YYYY-MM-DD-<name>/`。
 
     与 `bin/fenix_archive.py::archive_change` 相同的移动逻辑与命名规则
-    （D2：不 import 脚本，函数级复用核心逻辑）；STATE.md 条目**原样保留**。
+    （D2：不 import 脚本，函数级复用核心逻辑）。归档移动成功后即迁出
+    STATE.md 条目至归档清单（add-archive-state-migration D3：归档成功即迁出；
+    ``archived_by`` 以本参数区分 ui/auto 两条共用路径），迁出失败降级为
+    结果 dict 的 ``evict_warning`` 字段——不回滚目录移动、不改 ok 语义，
+    条目留待存量回填下一轮迁出。
     终态校验在 API 层做（仅 done/pushed 可归档），本函数仍做防御性校验，
     供 daemon 自动归档（D4）与手动 API 两条路径复用同一入口。
+
+    Args:
+        project_root: 项目根目录。
+        spec_name: 要归档的 SPEC 名。
+        archived_by: 迁出路径溯源（缺省 ``ui``；daemon 自动归档传 ``auto``）。
 
     Returns:
         {"ok": bool, "found": bool, "from": str|null, "to": str|null, "error": str|null}
@@ -260,6 +283,7 @@ def archive_spec(project_root, spec_name: str) -> dict:
         - 活跃目录缺失（已归档）→ {"ok": False, "found": True, "archived_already": True}
         - 目标已存在 → {"ok": False, "found": True, "conflict": True}（不覆盖）
         - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径}
+          附 ``state_evicted``（迁出成功）或 ``evict_warning``（迁出失败降级）
 
         结构化标志（archived_already/conflict）供 HTTP 层按标志选状态码，
         与 error 展示文案无耦合。
@@ -320,6 +344,20 @@ def archive_spec(project_root, spec_name: str) -> dict:
             "error": f"归档移动失败: {e}",
         }
     result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved), "error": None}
+    # 归档成功即迁出（add-archive-state-migration D3）：目录已移入 archive/，
+    # 立即把 STATE.md 条目迁出至归档清单。迁出失败降级为 evict_warning——
+    # 不回滚目录移动、不改 ok 语义；条目留在 STATE.md 等待存量回填下一轮迁出。
+    from core.state_machine import StateMachine, project_state_logger
+
+    try:
+        sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+        ev = sm.evict_spec(spec_name, archived_by=archived_by)
+        if ev.get("ok"):
+            result["state_evicted"] = True
+        else:
+            result["evict_warning"] = ev.get("error")
+    except Exception as e:  # noqa: BLE001 fail-open：move 已成功，迁出异常只降级为告警
+        result["evict_warning"] = str(e)
     # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。change 目录
     # 移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入 archive/（不删除
     # 任何文件）。与 bin/fenix_archive.py::archive_change 同源同步——本函数是
@@ -342,13 +380,88 @@ def archive_spec(project_root, spec_name: str) -> dict:
     return result
 
 
+def _archive_log(logger, level: str, msg: str):
+    """auto_archive_check/backfill 共用的日志出口（logger 缺省 print 到 stderr）。"""
+    if logger is not None:
+        try:
+            getattr(logger, level)("fenixd", msg)
+        except Exception:
+            pass
+    else:
+        print(f"[fenixd] {msg}", file=sys.stderr)
+
+
+def backfill_archived_entries(project_root, logger=None) -> dict:
+    """幂等存量回填（add-archive-state-migration D5）：把「已归档但条目未迁出」
+    的存量条目批量迁出至归档清单。
+
+    扫描活跃 STATE.md 中「终态 + 活跃目录 `spec/changes/<name>/` 已不存在」
+    的条目，逐个 ``evict_spec(name, "backfill")``。单条失败跳过并记日志，
+    不中断回填；非终态孤儿条目（活跃目录缺失的异常态）不迁出，记日志留
+    人工排查。回填可安全重复执行——已迁出条目自然不在扫描集内。
+
+    调用点挂在 ``auto_archive_check`` 的同一周期触发处（先回填后阈值归档），
+    但不受 ``archive.auto_threshold`` 开关约束（阈值 0 仍回填）。
+
+    Args:
+        project_root: 项目根目录。
+        logger: Logger 实例（可选；缺省 print 到 stderr）。
+
+    Returns:
+        {"scanned": int, "evicted": int, "skipped": int, "nonterminal_skipped": int}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    changes_root = proot / "spec" / "changes"
+    orphans = [n for n, e in specs.items() if not (changes_root / n).is_dir()]
+    if not orphans:
+        return {"scanned": 0, "evicted": 0, "skipped": 0, "nonterminal_skipped": 0}
+
+    from core.state_machine import StateMachine, project_state_logger
+
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    evicted = skipped = nonterminal = 0
+    for name in orphans:
+        if specs[name].get("status") not in ("done", "pushed"):
+            nonterminal += 1
+            _archive_log(
+                logger,
+                "warning",
+                f"存量回填跳过非终态孤儿条目（活跃目录缺失，留人工排查）: {name}",
+            )
+            continue
+        try:
+            r = sm.evict_spec(name, archived_by="backfill")
+        except Exception as e:  # noqa: BLE001 单条失败不中断回填
+            skipped += 1
+            _archive_log(logger, "warning", f"存量回填迁出异常，跳过: {name}: {e}")
+            continue
+        if r.get("ok"):
+            evicted += 1
+            _archive_log(logger, "info", f"存量回填迁出: {name}（archived_by=backfill）")
+        else:
+            skipped += 1
+            _archive_log(
+                logger, "warning", f"存量回填迁出未成功，跳过: {name}: {r.get('error')}"
+            )
+    return {
+        "scanned": len(orphans),
+        "evicted": evicted,
+        "skipped": skipped,
+        "nonterminal_skipped": nonterminal,
+    }
+
+
 def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     """daemon 周期自动归档检查（D4）：遍历终态未归档 SPEC，超阈值按 updated 升序归档。
 
-    设计 D4/D5：主循环每 300s 调用一次；threshold=0 或缺失时跳过。
-    统计完成（done/pushed）且**活跃目录仍存在**（未归档）的 SPEC 数量，
+    设计 D4/D5：主循环每 300s 调用一次；threshold=0 或缺失时跳过**阈值归档**
+    （存量回填不受此开关约束，先回填后阈值归档，add-archive-state-migration
+    4.2）。统计完成（done/pushed）且**活跃目录仍存在**（未归档）的 SPEC 数量，
     超过阈值时按 STATE.md `updated` 字段升序逐个归档（最久完成的先），
-    直到数量 ≤ 阈值。单条失败（目标已存在等）跳过并记日志，不中断循环。
+    直到数量 ≤ 阈值；每条归档成功后同步迁出 STATE.md 条目（archived_by=auto，
+    迁出失败降级告警、条目留待回填）。单条失败（目标已存在等）跳过并记日志，
+    不中断循环。
 
     Args:
         project_root: 项目根目录
@@ -357,11 +470,16 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
 
     Returns:
         {"archived": int, "skipped": int, "target_count": int,
-         "threshold": int, "total_terminal_unarchived": int}
+         "threshold": int, "total_terminal_unarchived": int, "backfill": dict}
         target_count 为本轮拟归档数 = max(total_terminal_unarchived -
-        threshold, 0)（code-review item 1c9a574c5356：统一三处返回口径）。
+        threshold, 0)（code-review item 1c9a574c5356：统一三处返回口径）；
+        backfill 为本轮存量回填计数（add-archive-state-migration 4.2）。
     """
     from core.config import ConfigLoader
+
+    # 先回填后阈值归档（D5）：存量「终态 + 目录已归档」条目迁出不受
+    # auto_threshold 开关约束，阈值 0 仍执行。
+    backfill = backfill_archived_entries(project_root, logger)
 
     threshold = ConfigLoader.effective_auto_archive_threshold(config)
     if threshold <= 0:
@@ -371,9 +489,11 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
             "target_count": 0,
             "threshold": threshold,
             "total_terminal_unarchived": 0,
+            "backfill": backfill,
         }
 
     proot = Path(project_root)
+    # 回填后重读活跃 STATE：刚迁出的条目不再进入本轮阈值统计
     specs = parse_state(proot)
     TERMINAL = ("done", "pushed")
 
@@ -394,6 +514,7 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
             "target_count": 0,
             "threshold": threshold,
             "total_terminal_unarchived": total,
+            "backfill": backfill,
         }
 
     # 按 updated 升序（最久完成的先归档）；缺 updated 归队尾——哨兵取
@@ -416,7 +537,7 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
         # 记日志，不中断循环」承诺（code-review item 7b8b81ef3a8e）。兜底转成
         # 既有 error dict 形态走统一 skip 日志路径。
         try:
-            result = archive_spec(proot, name)
+            result = archive_spec(proot, name, archived_by="auto")
         except Exception as e:
             result = {
                 "ok": False,
@@ -428,23 +549,15 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
         if result.get("ok"):
             archived_count += 1
             msg = f"自动归档: {name} → {result['to']}"
-            if logger is not None:
-                try:
-                    logger.info("fenixd", msg)
-                except Exception:
-                    pass
-            else:
-                print(f"[fenixd] {msg}", file=sys.stderr)
+            if result.get("evict_warning"):
+                msg += f"（迁出告警，条目留待回填: {result['evict_warning']}）"
+            _archive_log(logger, "info", msg)
         else:
             skipped_count += 1
             msg = f"自动归档跳过 {name}: {result.get('error')}"
-            if logger is not None:
-                try:
-                    logger.warning("fenixd", msg)
-                except Exception:
-                    pass
-            else:
-                print(f"[fenixd] {msg}", file=sys.stderr)
+            if result.get("evict_warning"):
+                msg += f"（迁出告警: {result['evict_warning']}）"
+            _archive_log(logger, "warning", msg)
 
     return {
         "archived": archived_count,
@@ -452,4 +565,5 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
         "target_count": to_archive,
         "threshold": threshold,
         "total_terminal_unarchived": total,
+        "backfill": backfill,
     }

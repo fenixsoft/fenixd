@@ -69,6 +69,35 @@ def archive_change(project_root: Path, name: str) -> dict:
         )
     result = {"from": str(change_dir), "to": str(moved)}
 
+    # 归档成功即迁出 STATE.md 条目（add-archive-state-migration 2.3/D3）：
+    # 目录已移入 archive/ 后，把该 change 的 STATE.md 条目迁出至归档清单
+    # .fenix/STATE.archive.md（archived_by=cli）。STATE 无条目（手工创建目录等）
+    # 输出说明性字段不报错；迁出异常 fail-open 为告警字段，不回滚目录移动、
+    # 不改变归档成功语义（与下方 commit_archive_move 同风格）。core 从框架根
+    # 导入（对齐上方 runs 归档的 FRAMEWORK_ROOT 先例）。
+    if str(FRAMEWORK_ROOT) not in sys.path:
+        sys.path.insert(0, str(FRAMEWORK_ROOT))
+    state_md = Path(project_root) / ".fenix" / "STATE.md"
+    if not state_md.exists():
+        result["state_evicted"] = False
+        result["state_evict_note"] = "项目无 STATE.md，无条目可迁出"
+    else:
+        try:
+            from core.state_machine import StateMachine, project_state_logger
+
+            sm = StateMachine(state_md, project_state_logger(project_root))
+            ev = sm.evict_spec(name, archived_by="cli")
+            result["state_evicted"] = bool(ev.get("ok"))
+            if ev.get("found") is False:
+                result["state_evict_note"] = (
+                    "STATE.md 无该 change 条目（从未注册或已迁出）"
+                )
+            elif not ev.get("ok"):
+                result["evict_warning"] = ev.get("error")
+        except Exception as e:  # fail-open：move 已成功，迁出失败只降级为告警
+            result["state_evicted"] = False
+            result["evict_warning"] = str(e)
+
     # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。
     # change 目录移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入
     # archive/（不删除任何文件）。fail-open（design D4）：runs 归档失败
@@ -116,7 +145,15 @@ def main():
     try:
         result = archive_change(project_root, args.name)
         payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
-        for key in ("runs_archived", "runs_archive_warning", "committed", "commit_warning"):
+        for key in (
+            "state_evicted",
+            "state_evict_note",
+            "evict_warning",
+            "runs_archived",
+            "runs_archive_warning",
+            "committed",
+            "commit_warning",
+        ):
             if key in result:
                 payload[key] = result[key]
     except (ValueError, OSError) as e:

@@ -19,6 +19,19 @@ from core.dashboard.registry import Registry
 logger = logging.getLogger("fenixd.dashboard.routes.spec_routes")
 
 
+def _spec_entry_with_archive_fallback(proot, spec: str) -> dict | None:
+    """取 SPEC 条目：活跃 STATE.md 优先，归档清单回退（add-archive-state-migration D4）。
+
+    条目已迁出（仅清单有）的已归档 SPEC 继续可进详情/读文档——文档与进度
+    读取经既有 ``resolve_spec_dir`` 归档回退，不依赖活跃 STATE.md 条目。
+    双源均无 → None（调用方维持 404 语义）。
+    """
+    entry = dashboard_data.parse_state(proot).get(spec)
+    if entry is not None:
+        return entry
+    return dashboard_data.parse_archived_state(proot).get(spec)
+
+
 def _internal_error(handler, msg: str, exc: BaseException) -> None:
     """端点级兜底 500 统一收口（code-review item 12bae0b2286c）。
 
@@ -46,6 +59,10 @@ class H3SpecRoutesMixin:
         if not project.get("exists"):
             return {"error": "project not found", "specs": []}
         proot = Path(project["path"])
+        # 列表数据源 = 活跃 ∪ 归档清单（add-archive-state-migration 3.2/D4）：
+        # 合并单点在 SummaryIndex.get()（活跃侧优先），本端点与 watcher SSE
+        # 推送同源消费——清单条目 archived=true 并经 spec_summary 透传
+        # archived_at/archived_by 溯源字段，「已归档」视图对迁出条目继续可见。
         items = self.server.summary_index.get(proot)
         items.sort(key=lambda s: s.get("created") or "", reverse=True)
         return {"project": project["name"], "specs": items}
@@ -58,8 +75,9 @@ class H3SpecRoutesMixin:
         if not project.get("exists"):
             return {"error": "project not found"}
         proot = Path(project["path"])
-        specs = dashboard_data.parse_state(proot)
-        entry = specs.get(spec)
+        # 条目已迁出（仅清单有）的已归档 SPEC 继续可进详情（清单回退，
+        # add-archive-state-migration 3.2）
+        entry = _spec_entry_with_archive_fallback(proot, spec)
         if entry is None:
             return {"error": f"spec not found: {spec}", "project": project["name"]}
         detail = dashboard_data.spec_detail(proot, spec, entry)
@@ -87,10 +105,11 @@ class H3SpecRoutesMixin:
         if not spec:
             self._error(404, "spec required")
             return
-        # 文件缺失是常态分支，但 spec 必须真在项目 STATE.md 中（D2：仅未知 spec 才 404）
+        # 文件缺失是常态分支，但 spec 必须真在项目 STATE.md 或归档清单中
+        # （D2：仅未知 spec 才 404；清单回退使已迁出 SPEC 的文档继续可读，
+        # add-archive-state-migration 3.2）
         proot = Path(project["path"])
-        specs = dashboard_data.parse_state(proot)
-        if spec not in specs:
+        if _spec_entry_with_archive_fallback(proot, spec) is None:
             self._error(404, f"spec not found: {spec}")
             return
         try:
@@ -562,13 +581,16 @@ class H3SpecRoutesMixin:
         """POST /api/spec-archive?project=<name>&spec=<name>
 
         归档终态 SPEC：把 spec/changes/<name>/ 移到 archive/YYYY-MM-DD-<name>/，
-        STATE.md 条目原样保留（与 fenix_archive.py / fenix-archive skill 同语义）。
+        归档成功后 STATE.md 条目即迁出至归档清单（archived_by=ui，与
+        fenix_archive.py / fenix-archive skill 同语义）；迁出失败降级为响应中
+        的 evict_warning 告警字段，不回滚目录移动。
         - project 不存在 → 404
         - spec 不在 STATE.md → 404
         - 非终态（非 done/pushed）→ 403「仅终态可归档」
         - 目标已存在 → 409（不覆盖）
         - 已归档（活跃目录缺失）→ 409「已归档」
-        - 成功 → 200 + {ok: true, from, to} + 记录项目活动事件（from→to）
+        - 成功 → 200 + {ok: true, from, to, state_evicted[, evict_warning]}
+          + 记录项目活动事件（from→to）
         """
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)
@@ -610,6 +632,15 @@ class H3SpecRoutesMixin:
             )
         except Exception:
             pass  # 写日志失败不阻断归档响应
+        # 归档成功日志含迁出结果（add-archive-state-migration 2.2）
+        logger.info(
+            "spec archive: project=%s spec=%s to=%s evicted=%s evict_warning=%s",
+            project["name"],
+            spec,
+            result["to"],
+            result.get("state_evicted", False),
+            result.get("evict_warning"),
+        )
         resp = {
             "ok": True,
             "project": project["name"],
@@ -617,7 +648,11 @@ class H3SpecRoutesMixin:
             "from": result["from"],
             "to": result["to"],
             "committed": result.get("committed", False),
+            # 迁出结果透传（2.2）：迁出成功为 True，失败降级为 evict_warning
+            "state_evicted": result.get("state_evicted", False),
         }
+        if result.get("evict_warning"):
+            resp["evict_warning"] = result["evict_warning"]
         if result.get("commit_warning"):
             resp["commit_warning"] = result["commit_warning"]
         self._json(resp)
