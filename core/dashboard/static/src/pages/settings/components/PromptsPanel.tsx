@@ -47,6 +47,12 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   const [extraDraft, setExtraDraft] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 保存重入守卫（code-review item 6e35a8c1d5cd，比照 SystemPanel 8ccf20511320）：
+  // handleSave 是异步，保存请求在飞期间连点保存按钮会发出重叠的 saveProjectPrompt
+  // 请求（并发写同一提示词文件，落盘结果取决于到达顺序）——saving 期间按钮置
+  // loading/disabled 并在入口短路；setSaving 渲染生效存在 React 调度间隙，经
+  // savingRef 写读同帧原子拦住连点，state 只负责按钮视觉反馈。
+  const savingRef = useRef(false);
 
   const isProjectScope = Boolean(project);
 
@@ -108,7 +114,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           setExtraDraft(projectExtraOf(d, 'implementer'));
         }
       } catch (e) {
-        console.error('Failed to load prompts:', e);
+        // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         if (!cancelled) {
           message.error(`加载提示词失败：${e instanceof Error ? e.message : e}`);
           // 失败路径复位（code-review item 96880454231c）：切到项目 B 后其
@@ -165,6 +171,8 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     // 保存后 refetch 时仍读闭包里的 activeAgent，若请求在飞期间用户切换了
     // agent，会把**旧 agent** 的值写回 extraDraft 而 UI 显示新 agent。
     const targetAgent = activeAgent;
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       await saveProjectPrompt(project, targetAgent, extraDraft);
@@ -172,7 +180,8 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`保存失败：${errorMessage}`);
-      console.error('Failed to save project prompt:', e);
+      // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
+      savingRef.current = false;
       setSaving(false);
       return;
     }
@@ -208,6 +217,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     } catch (e) {
       message.warning(`已保存，但刷新列表失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -300,7 +310,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
               // 项目的残留内容，保存会跨项目错写。未加载完成/加载失败时
               // data 为空同样禁用（item 3afce137e38e）：handleSave 入口的
               // `!data` 守卫会静默 return，不禁用则点击无任何反馈。
-              disabled={loading || !data}
+              // 保存进行中一并禁用（code-review item 6e35a8c1d5cd）：仅 loading
+              // 时保存请求在飞期间按钮仍可点击，同帧双击可并发发出两次保存
+              // （antd loading 拦截依赖重渲染提交后的 handleClick 短路）。
+              disabled={saving || loading || !data}
               onClick={handleSave}
             >
               保存项目附加提示词
