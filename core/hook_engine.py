@@ -114,6 +114,15 @@ STATUS_FAILURE = "failure"
 STATUS_NOOP = "noop"
 STATUS_SKIPPED = "skipped"
 
+# 内置默认 hook 条目 id（dashboard-push-restart D1）：SPEC pushed 终态自动重启
+# dashboard。由 hook_config() 读侧注入返回副本（零配置生效），不落 config 文件。
+BUILTIN_PUSH_RESTART_DASHBOARD_ID = "builtin-push-restart-dashboard"
+
+# restart-dashboard 动作去抖窗口（dashboard-push-restart D2）：push 批次常见
+# 同窗口多笔 pushed（如同日多个 verification-report 入库），窗口内重复触发
+# 幂等跳过。取值依据：dashboard 重启+端口就绪 ~3-5s，窗口远大于单次重启耗时。
+DASHBOARD_RESTART_DEBOUNCE_SECONDS = 60.0
+
 # 审计尾读参数（read_hook_audit）：审计文件 append-only 且无轮转，读取端
 # 按块（64KB）从文件尾倒序回退，行数按 limit 的 8 倍超采样——过滤后仍可能
 # 凑满 limit，避免全量读入随文件增长而开销失控。
@@ -181,12 +190,52 @@ def render_message_template(template: str, spec: str, event: str) -> str:
     return out
 
 
+def _builtin_push_restart_entry() -> dict:
+    """内置默认条目（dashboard-push-restart D1）：pushed → restart-dashboard。
+
+    global 作用域（对任意 SPEC 生效）；形态与用户手写条目一致，注入后经执行链
+    validate_hook_entry 校验天然合法，_find_live_hook 经同一 hook_config 按 id
+    找回执行，无需旁路。
+    """
+    return {
+        "id": BUILTIN_PUSH_RESTART_DASHBOARD_ID,
+        "enabled": True,
+        "events": ["pushed"],
+        "action": "restart-dashboard",
+    }
+
+
 def hook_config(config: dict) -> dict:
-    """返回配置中的 hooks 段（缺省空结构，不修改入参）。"""
+    """返回配置中的 hooks 段（缺省空结构，不修改入参）。
+
+    dashboard-push-restart D1：返回视图在 global 段头部注入内置默认条目
+    ``builtin-push-restart-dashboard``（pushed → restart-dashboard），新项目
+    零配置即生效；逃生键 ``hooks.push_restart_dashboard: false`` 时跳过注入；
+    用户 global 列表已有同 id 条目时用户条目优先（不重复注入）。
+
+    注入作用于返回副本（重建 global 列表，条目引用原样共享），MUST NOT 原地
+    mutate 入参：match_hooks/_find_live_hook 每次事件都重复调用本函数，原地
+    注入会逐次堆叠重复条目；且入参引用若被任何 config 写链路序列化，内置条目
+    会被持久化进 .fenix/config.yaml，此后逃生键置 false 也无法阻止重启（文件
+    里已有实体条目），直接违背「读侧注入，不改 config 文件」。
+    """
     hooks = config.get("hooks") if isinstance(config, dict) else None
     if not isinstance(hooks, dict):
-        return {"global": [], "specs": {}}
-    return hooks
+        # 无 hooks 段：零配置默认也生效——返回含内置条目的新结构（不写回入参）
+        return {"global": [_builtin_push_restart_entry()], "specs": {}}
+    user_global = hooks.get("global")
+    if not isinstance(user_global, list):
+        user_global = []
+    # 逃生键：bool 键缺省 true，仅显式 false 关闭（非法值按缺省开启，对齐
+    # knowledge.enabled 等既有 bool 键口径）
+    if hooks.get("push_restart_dashboard") is False:
+        return hooks
+    if any(
+        isinstance(h, dict) and h.get("id") == BUILTIN_PUSH_RESTART_DASHBOARD_ID
+        for h in user_global
+    ):
+        return hooks  # 用户已有同 id 条目：用户条目优先，不重复注入
+    return {**hooks, "global": [_builtin_push_restart_entry(), *user_global]}
 
 
 def validate_hook_entry(entry: Any) -> Optional[str]:
@@ -395,6 +444,12 @@ class HookEngine:
         # 框架目录：core/hook_engine.py → 框架根（bin/fenix_dashboard.py 所在）
         self._framework_root = Path(__file__).resolve().parent.parent
         self._project_name = None
+        # restart-dashboard 去抖（dashboard-push-restart D2）：进程内最近一次
+        # 成功重启的 monotonic 时间戳（0 = 从未成功）；失败不写、窗口内可重试。
+        # 仅进程内存态（设计明确不做跨进程持久化：daemon 重启后首个 pushed
+        # 多重启一次，无害）。动作在并发 hook 线程执行，读写以锁保护。
+        self._dashboard_restart_ok_monotonic = 0.0
+        self._dashboard_restart_lock = threading.Lock()
         # one-shot 清扫（hook-restart-once）：消费上次 all-done → restart-daemon
         # 触发遗留的清理标记，摘除对应 hook；失败仅告警不阻断 daemon 启动。
         try:
@@ -654,8 +709,10 @@ class HookEngine:
         elif action == "commit-push":
             status, detail = self._action_commit_push(cfg, spec, to_status)
         elif action == "restart-dashboard":
-            ok, detail = self._action_restart_dashboard(cfg)
-            status = STATUS_SUCCESS if ok else STATUS_FAILURE
+            # dashboard-push-restart 1.2：动作改三态返回（success/failure/
+            # skipped），去抖/无会话的 skipped 直接映射 skipped 审计，
+            # 不再以 (True, "skipped: ...") 冒充 success
+            status, detail = self._action_restart_dashboard(cfg)
         elif action == "webhook":
             status, detail = self._action_webhook(cfg, spec, from_status, to_status, entry)
         elif action == "shell":
@@ -976,26 +1033,50 @@ class HookEngine:
             return STATUS_SUCCESS, f"commit noop（无变更）；{pdetail}"
         return STATUS_SUCCESS, f"{cdetail}；{pdetail}"
 
-    def _action_restart_dashboard(self, cfg: dict) -> Tuple[bool, str]:
-        """tmux respawn-window -k -t <target> 重启 dashboard 会话。
+    def _action_restart_dashboard(self, cfg: dict) -> Tuple[str, str]:
+        """tmux respawn-window -k -t <target> 重启 dashboard 会话（三态返回）。
 
         固化启动命令（2026-09-06 从存活会话提取固化）：``env -u CLAUDE_PID
         python3 <framework>/bin/fenix_dashboard.py --serve``——env -u CLAUDE_PID
         防 claude-watchdog 绑会话自杀；保持 8787 端口（serve() 内部解析配置
         端口，缺省 8787）与原工作目录。重启后以端口重新可服务为成功判据。
+
+        dashboard-push-restart D2/D3 健壮化：
+        - 去抖（D2）：入口检查进程内最近成功重启时间戳，60s 窗口内幂等跳过
+          （skipped 审计留痕）；失败不写时间戳，窗口内可重试。
+        - 无会话静默跳过（D3）：tmux 会话不存在是环境态而非操作失败（CI/容器
+          本就无 dashboard），返回 skipped + debug 日志，不产 failure 审计与
+          告警噪音；会话存在但 respawn/端口探测失败仍记 failure（真故障）。
+
+        Returns: (status, detail)，status ∈ success/failure/skipped。
         """
         target = (cfg.get("target") or "").strip() or DEFAULT_DASHBOARD_SESSION
+        now = time.monotonic()
+        with self._dashboard_restart_lock:
+            last_ok = self._dashboard_restart_ok_monotonic
+        if last_ok and (now - last_ok) < DASHBOARD_RESTART_DEBOUNCE_SECONDS:
+            return (
+                STATUS_SKIPPED,
+                f"距上次成功重启 {now - last_ok:.0f}s，处于 "
+                f"{DASHBOARD_RESTART_DEBOUNCE_SECONDS:.0f}s 去抖窗口内，跳过重复重启",
+            )
         try:
             has = subprocess.run(
                 ["tmux", "has-session", "-t", target], capture_output=True, text=True, timeout=10
             )
         except (subprocess.SubprocessError, OSError) as e:
-            return False, f"tmux has-session 失败: {e}"
+            # tmux 二进制缺失/不可执行同为「无 dashboard 环境」环境态：静默跳过
+            self._log_debug(f"tmux has-session 失败（按无 dashboard 环境跳过）: {e}")
+            return STATUS_SKIPPED, f"tmux has-session 失败（按无 dashboard 环境静默跳过）: {e}"
         if has.returncode != 0:
-            return False, f"tmux 会话 {target} 不存在，无法重启"
+            self._log_debug(f"tmux 会话 {target} 不存在，restart-dashboard 静默跳过")
+            return (
+                STATUS_SKIPPED,
+                f"tmux 会话 {target} 不存在（dashboard 未运行环境），静默跳过",
+            )
         dash = self._framework_root / "bin" / "fenix_dashboard.py"
         if not dash.is_file():
-            return False, f"dashboard 启动脚本不存在: {dash}"
+            return STATUS_FAILURE, f"dashboard 启动脚本不存在: {dash}"
         shell_cmd = (
             f"cd {shlex.quote(str(self.project_root))} && "
             f"env -u CLAUDE_PID python3 {shlex.quote(str(dash))} --serve"
@@ -1008,20 +1089,22 @@ class HookEngine:
                 timeout=15,
             )
         except (subprocess.SubprocessError, OSError) as e:
-            return False, f"tmux respawn-window 失败: {e}"
+            return STATUS_FAILURE, f"tmux respawn-window 失败: {e}"
         if respawn.returncode != 0:
             return (
-                False,
+                STATUS_FAILURE,
                 f"tmux respawn-window 失败: {_tail_combined(respawn.stdout, respawn.stderr)}",
             )
         port = self._dashboard_port()
         if not self._probe_dashboard(port):
             # 上限按每轮 urlopen timeout=2s + 间隔 DASHBOARD_PROBE_INTERVAL 估算（对应 _probe_dashboard）
             return (
-                False,
+                STATUS_FAILURE,
                 f"dashboard 已 respawn，但 {port} 端口最坏 {DASHBOARD_PROBE_ATTEMPTS * (2 + DASHBOARD_PROBE_INTERVAL):.0f}s 内未恢复 HTTP 可服务",
             )
-        return True, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
+        with self._dashboard_restart_lock:
+            self._dashboard_restart_ok_monotonic = time.monotonic()
+        return STATUS_SUCCESS, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
 
     def _dashboard_port(self) -> int:
         """dashboard 服务端口：config dashboard.port 合法则用之，否则 8787。"""
@@ -1272,3 +1355,15 @@ class HookEngine:
             except Exception:
                 pass
         print(f"[hook_engine] WARNING {message}", flush=True)
+
+    def _log_debug(self, message: str) -> None:
+        """debug 级日志（dashboard-push-restart D3 静默跳过用，不产审计/告警）。
+
+        无 logger（单元测试/裸进程）时 debug 级别保持静默（对齐降噪口径，
+        与 error/warning 的 print 兜底不同）。
+        """
+        if self.logger is not None:
+            try:
+                self.logger.debug("hook_engine", message)
+            except Exception:
+                pass
