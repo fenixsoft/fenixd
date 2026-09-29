@@ -43,3 +43,8 @@
 | etag-overview-runs-source-no-stale | 向夹具项目 runs 目录写入新文件（运行态数据源变化、STATE.md 未变）后 /api/overview 的 ETag 与写入前不同，旧 ETag 条件请求返回 200 不假 304——runs 依赖纳入概览签名（specs/dashboard-conditional-get/spec.md「运行态数据源变化不假 304」） | pass | 0/3 | - |
 | sse-detail-reflects-state-change | STATE.md 变化后打开项目详情页 /projects/scheduling-showcase/c-sched-set：条件请求 304 未命中返回 200 全量，页面渲染新状态「实现中」（specs/dashboard-sse-refresh/spec.md「数据变化时心跳照常反映」THEN 侧；STATUS_META implementing→实现中 services/dashboard.ts:1065、detail 状态标签渲染 projects/detail.tsx:816-817） | pass | 0/4 | - |
 | etag-signature-stability-bulk-requests | 同一窗口内连续 10 次无条件 GET /api/specs?project=scheduling-showcase：全部 200、10 个 ETag 互相一致（签名确定性）、总耗时与单次同量级（签名 memo 复用失效键，不重扫 spec 目录）（specs/dashboard-conditional-get/spec.md「签名计算不触发全量扫描」；失效键模式 design.md D1） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
