@@ -128,7 +128,15 @@ class H14KnowledgeRoutesMixin:
                 return
         domains_dir = kroot / "domains"
         if domains_dir.is_dir():
-            for d in sorted(p for p in domains_dir.iterdir() if p.is_dir()):
+            # 枚举本身失败（权限/IO）时按空清单降级，对齐 help_routes 双层容错口径
+            try:
+                domain_dirs = sorted(p for p in domains_dir.iterdir() if p.is_dir())
+            except OSError as exc:
+                logger.warning(
+                    "knowledge domains 目录枚举失败（%s）: %s", project["name"], exc
+                )
+                domain_dirs = []
+            for d in domain_dirs:
                 pages = sorted(
                     p.name for p in d.glob("*.md") if p.name != "_domain.md"
                 )
@@ -151,7 +159,14 @@ class H14KnowledgeRoutesMixin:
                     )
                 except (OSError, UnicodeDecodeError):
                     index_titles = {}
-            for adr in sorted(adr_dir.glob("ADR-*.md")):
+            try:
+                adr_files = sorted(adr_dir.glob("ADR-*.md"))
+            except OSError as exc:
+                logger.warning(
+                    "knowledge adr 目录枚举失败（%s）: %s", project["name"], exc
+                )
+                adr_files = []
+            for adr in adr_files:
                 try:
                     status, superseded_by, title = _parse_adr_head(
                         adr.read_text(encoding="utf-8")

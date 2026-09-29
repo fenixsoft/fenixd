@@ -310,10 +310,15 @@ class VerifyEngine:
         """按依赖关系分层，同层场景通过信号量控制的并发池并行执行。
 
         每个场景按 kind 分派给对应 Runner.execute（调度器零 kind 分支）。
+        依赖失败传播（code-review c240f974ba21）：依赖场景终态为 fail/error
+        时下游不再照常执行——合成 blocked-env 跳过结果（非产品归因），避免
+        夹具链断裂在缺失夹具状态下级联出连锁伪失败。
         """
         semaphore = asyncio.Semaphore(self.max_parallel)
         results: list[dict] = []
         completed_ids: set[str] = set()
+        # 终态为 fail/error 的场景 id（含被级联跳过者）：依赖失败传播判定源
+        failed_ids: set[str] = set()
         remaining = list(scenarios)
         batch_num = 0
         done_count = 0  # 逐场景完成计数（fix-verify-progress-granularity）
@@ -323,7 +328,63 @@ class VerifyEngine:
             # 找出所有依赖已满足的场景
             ready = [s for s in remaining if all(dep in completed_ids for dep in s.depends_on)]
 
-            if not ready:
+            # ── 依赖失败传播（code-review c240f974ba21）──────────────
+            # completed_ids 只表达「已执行完」不区分成败：依赖场景（多为
+            # seed/mock 夹具提供方）失败后，下游若照常执行会在夹具缺失
+            # 状态下连锁失败，judge 易把连锁失败误归因为产品缺陷。此处把
+            # 依赖失败的下游从本批摘出：不执行、直接合成 blocked-env 结果
+            # （复用既有非产品归因状态——计入 warnings、judge 免失败分类
+            # 强检、escalation 仅在全批无真实失败时才触发 inconclusive），
+            # 并以 dependency_skipped/skipped_depends_on 标注级联来源；
+            # 被跳过场景同样记入 failed_ids，使跨层级联（C→B→A）逐层传播。
+            dep_skipped: list[tuple[TestScenario, list[str]]] = []
+            runnable: list[TestScenario] = []
+            for s in ready:
+                broken = [dep for dep in s.depends_on if dep in failed_ids]
+                if broken:
+                    dep_skipped.append((s, broken))
+                else:
+                    runnable.append(s)
+
+            for s, broken in dep_skipped:
+                completed_ids.add(s.id)
+                failed_ids.add(s.id)
+                done_count += 1
+                self._write_progress(
+                    done_count, total, f"已完成 {done_count}/{total}（{s.id}，依赖失败跳过）"
+                )
+                self.logger.warning(
+                    "verify_engine",
+                    f"场景'{s.id}'依赖的场景失败（{', '.join(broken)}），"
+                    f"跳过执行（依赖失败传播，非产品归因）",
+                )
+                results.append(
+                    {
+                        "scenario_id": s.id,
+                        "description": s.description,
+                        "kind": s.kind,
+                        "status": "blocked-env",
+                        "error": (
+                            f"依赖场景失败，未执行: {', '.join(broken)}"
+                            f"（依赖失败传播，非本场景产品缺陷）"
+                        ),
+                        "step_results": [],
+                        "assertion_results": [],
+                        "visual_results": [],
+                        "screenshots": [],
+                        "dependency_skipped": True,
+                        "skipped_depends_on": broken,
+                    }
+                )
+
+            if runnable:
+                ready = runnable
+            elif dep_skipped:
+                # 本批全部为依赖失败跳过（进度与 completed_ids 均已推进），
+                # 收紧 remaining 后回循环头重判下一批，不空烧批次号
+                remaining = [s for s in remaining if s.id not in completed_ids]
+                continue
+            else:
                 # 悬空依赖已在验收门打回，走到这里只剩真实循环依赖，
                 # 直接全部执行兜底
                 ready = remaining
@@ -358,6 +419,7 @@ class VerifyEngine:
                 sid = ready[i].id
                 completed_ids.add(sid)
                 if isinstance(r, BaseException):  # 含 CancelledError，防异常对象漏进结果集
+                    failed_ids.add(sid)
                     self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
                     results.append(
                         {
@@ -373,6 +435,10 @@ class VerifyEngine:
                         }
                     )
                 else:
+                    # 依赖失败传播判定源：终态 fail/error 的 id 记入 failed_ids
+                    # （warning 属非失败档，不阻断下游，与验收门语义一致）
+                    if r.get("status") in ("fail", "error"):
+                        failed_ids.add(sid)
                     results.append(r)
 
             # 批次收尾不再重复写进度：批次内每个场景的逐场景写点已覆盖

@@ -309,7 +309,11 @@ class CliAssertionRunner:
         expected = a.get("expected")
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
-        if not expected:
+        # exact 空串放行（expected is None 才算缺参）：「命令输出恰为空」与
+        # _assert_file_content 的「文件恰为空」是同类合法期望，判空口径对齐；
+        # 不能简单豁免整个 exact 模式——exact 缺参（expected=None）仍须按缺参
+        # 失败，否则会滑进 _match 与 str(None)="None" 比对
+        if not expected and not (mode == "exact" and expected == ""):
             # 显式失败而非静默恒真：缺参时 contains 的 `"" in actual` 对任意
             # 输出恒真、regex 空串恒匹配，会产出假通过；与 web 侧
             # text_contains 缺参口径对齐
@@ -444,6 +448,20 @@ class CliAssertionRunner:
                     "path": a.get("path"),
                     "pass": False,
                     "error": f"stdout 非合法 JSON: {stdout[:120]}",
+                }
+            if "json" not in step:
+                # 读取键与哨兵键配对：json_parsed=True 但缺 json 键属直接构造
+                # step 的调用方缺陷，显式失败而非 data=None 参与比对（path 为
+                # 空时 None 与 expected 静默对照，可假通过或产生无从解释的
+                # 失败）。按键存在性校验：合法的字面量 null 走 json=None 值，
+                # 不在此误伤
+                return {
+                    "type": "json_output",
+                    "layer": 3,
+                    "step": a.get("step"),
+                    "path": a.get("path"),
+                    "pass": False,
+                    "error": "step 含 json_parsed=True 但缺 json 字段（两者由 cli_runner 成对写入，直接构造 step 时须同时提供）",
                 }
             data = step.get("json")
         else:

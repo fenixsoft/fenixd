@@ -19,11 +19,14 @@ judge_files.py — judge 归因产物按场景逐条目读写（add-judge-increm
 """
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("fenixd.verify_engine.judge_files")
 
 # 归因条目状态常量
 ATTRIBUTION_STATUS_ACCEPT = "accept"
@@ -192,8 +195,18 @@ def get_requeue_scenarios(project_root: Path, spec_name: str) -> List[Dict[str, 
     Returns:
         requeue 场景列表；无 requeue 场景返回空列表。
     """
+    attr_path = _attribution_path(project_root, spec_name)
     attr_data = load_attribution(project_root, spec_name)
     if attr_data is None:
+        # 文件存在但 JSON 损坏/结构非法 ≠ 文件缺失：静默按空表处理会让上一轮
+        # requeue 子集无留痕丢失（下轮误走全量重做或漏重验），故留痕告警
+        # （带路径）；行为仍降级为空列表，不阻断主流程。
+        if attr_path.exists():
+            logger.warning(
+                "judge 归因产物存在但损坏/结构非法，requeue 子集按空处理"
+                "（回炉信息可能丢失）: %s",
+                attr_path,
+            )
         return []
 
     return [

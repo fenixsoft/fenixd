@@ -197,6 +197,11 @@ class H_SessionRoutesMixin:
                 cwd=str(project_path),
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8：text=True 缺省按 locale 解码，非 UTF-8 locale
+                # 下读非 ASCII 文件名抛 UnicodeDecodeError（ValueError 子类，
+                # 逃逸下方 except 致 500，对齐 regression_routes 同款惯例）
+                encoding="utf-8",
+                errors="replace",
                 timeout=GIT_LS_FILES_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:

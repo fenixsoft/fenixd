@@ -65,7 +65,11 @@ class WebRunner(VerifyRunner):
         # 契约统一供给的 base_url（引擎注入；优先级高于 navigate 文本考古）。
         # 无实例形态（纯 CLI 轮次）下为空字符串，改写/探针为无害空操作。
         self.base_url = ""
-        verify_cfg = (config or {}).get("verify_engine", {})
+        # 容错口径对齐 engine.__init__：段非 dict（str/list 等）时回退空段，
+        # 避免 AttributeError 在验收门 _runner_for 构造点穿出整轮 run()。
+        verify_cfg = (config or {}).get("verify_engine") or {}
+        if not isinstance(verify_cfg, dict):
+            verify_cfg = {}
         self.headless = verify_cfg.get("headless", True)
         self._setup_health_ok = True
 

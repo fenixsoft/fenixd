@@ -206,11 +206,15 @@ class VisualDiffer:
                         scenario_id,
                         diff_path=diff_file,
                     )
-            except (OSError, ValueError) as e:
-                # ImportError 兜底接不住解码异常（PIL 的 UnidentifiedImageError
-                # 属 OSError 子系，skimage 对损坏文件多抛 ValueError）——落盘
-                # 中断等导致的坏图返回结构化 error 结果（与 size_mismatch/
-                # skipped 同型），不击穿整场验证。
+            except Exception as e:
+                # 兜底其余异常（ImportError 已在内层先行分流到像素降级）：
+                # PIL 的 UnidentifiedImageError 属 OSError 子系、skimage 对
+                # 损坏文件多抛 ValueError，但特殊位深/超大图内存峰值等输入
+                # 下 skimage/numpy 可能抛 RuntimeError/MemoryError 等其他
+                # 类型——统一返回结构化 error 结果（与 size_mismatch/
+                # skipped 同型），不击穿整场验证、不丢后续
+                # _update_baseline_streaks 侧车记账。KeyboardInterrupt/
+                # SystemExit 等 BaseException 不在此列，照常上抛。
                 return [
                     {
                         "baseline": baseline_name,
