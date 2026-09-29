@@ -268,6 +268,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
           seen.add(model);
         }
       }
+      return undefined; // 通过：显式收口（noImplicitReturns）
     },
     // 校验失败：展开全部折叠区，让藏在折叠区的错误（如价格行必填）可见
     // （antd 已在表单内渲染提示）

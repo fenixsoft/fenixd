@@ -336,6 +336,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
       if (missing.length > 0) {
         return `保存失败：${missing.join('、')} 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）`;
       }
+      return undefined; // 通过：显式收口（noImplicitReturns）
     },
   });
 
