@@ -8,6 +8,7 @@ import { toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
@@ -177,43 +178,6 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   // 让藏在折叠区的错误可见（折叠用 display 切换，字段恒注册，值与校验不受折叠影响）
   const activeKeysRef = useRef<number[]>([]);
 
-  // 初始化表单数据（与回填 effect 共用 buildProvidersFormValues 单源）
-  const initialValues = buildProvidersFormValues(config.llm.providers);
-
-  // 监听 config 变化，更新表单值。回填门控（code-review item 5d6582ba9951，
-  // 同 AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：
-  // 无条件 setFieldsValue 会用外部 config 覆盖用户正在编辑、尚未保存的内容
-  // （保存后重载/其它面板保存/同步用户级设置触发的刷新）。对回填产物做
-  // 序列化比较，只在内容真正变化时回填。
-  const lastProvidersBackfillRef = useRef('');
-  useEffect(() => {
-    const next = buildProvidersFormValues(config.llm.providers);
-    const key = JSON.stringify(next);
-    if (key === lastProvidersBackfillRef.current) return;
-    lastProvidersBackfillRef.current = key;
-    // 等长整值替换时 rc-field-form 按位置复用行 key（field.key 不变），而
-    // healthMap 以 field.key 为键——载荷内容变化（如「同步用户级设置」拉平后
-    // providers 数量不变但 provider/model 已换）会让换掉的新行原样继承旧行的
-    // 健康徽标（旧配置的检测结果，item 728382baa797）。回填前先取当前各行
-    // 身份串（runHealthCheck 实测的 baseurl/apikey/model），逐 index 与回填
-    // 载荷比对，身份变化的行清掉对应 key 的缓存条目。envOpenMap/billingOpenMap
-    // 是纯界面展开偏好（非数据派生），保留不动：回填刷新后折叠区维持用户
-    // 原有的展开视野。
-    const prevRows = (form.getFieldsValue(true)?.providers || []) as ProviderRowValues[];
-    form.setFieldsValue(next);
-    setHealthMap((m) => {
-      let touched = false;
-      const cleared = { ...m };
-      activeKeysRef.current.forEach((k, i) => {
-        if (cleared[k] === undefined) return;
-        if (healthRowIdentity(prevRows[i]) === healthRowIdentity(next.providers[i])) return;
-        delete cleared[k];
-        touched = true;
-      });
-      return touched ? cleared : m;
-    });
-  }, [config.llm.providers, form]);
-
   // 校验/拦截失败时展开全部折叠区——错误行（价格必填、重复 model）可能藏在
   // 折叠区内，不展开会让保存看起来「静默失败」
   const expandAllSections = () => {
@@ -230,53 +194,21 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   const [healthMap, setHealthMap] = useState<
     Record<number, { loading: boolean; display?: HealthCheckDisplay }>
   >({});
-  // 保存重入守卫（code-review item fe84991f84a0）：onSave 是异步，提交期间
-  // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
-  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。setSaving 渲染
-  // 生效存在 React 调度间隙，state 短路拦不住同帧连点（code-review item
-  // 41641b9b90a5，比照 SystemPanel 8ccf20511320），经 savingRef 写读同帧原子
-  // 拦住连点，state 只负责按钮视觉反馈。
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
 
-  // 表单当前值直传（未保存修改即测）；Base URL / API Key / 默认模型名任一为空
-  // 直接提示补齐、不发请求（spec「表单值不完整不发请求」）
-  const runHealthCheck = async (field: { key: number; name: number }) => {
-    const baseurl = (form.getFieldValue(['providers', field.name, 'baseurl']) || '').trim();
-    const apikey = (form.getFieldValue(['providers', field.name, 'apikey']) || '').trim();
-    const model = (form.getFieldValue(['providers', field.name, 'model']) || '').trim();
-    const missing = [!baseurl && 'Base URL', !apikey && 'API Key', !model && '默认模型名'].filter(
-      Boolean,
-    );
-    if (missing.length > 0) {
-      message.warning(`健康检测前请先补齐该卡片的 ${missing.join('、')}`);
-      return;
-    }
-    setHealthMap((m) => ({ ...m, [field.key]: { loading: true } }));
-    try {
-      const r = await checkLlmHealth({ baseurl, apikey, model });
-      const display = toHealthDisplay(r);
-      setHealthMap((m) => ({ ...m, [field.key]: { loading: false, display } }));
-      if (r.ok) {
-        message.success(`健康检测通过：${model} ${display.short}`);
-      } else {
-        message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setHealthMap((m) => ({
-        ...m,
-        [field.key]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
-      }));
-      message.error(`健康检测请求失败：${msg}`);
-    }
-  };
-
-  const handleSave = async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443）：
+  // 序列化比较回填门控（原 item 5d6582ba9951）、savingRef 重入守卫（原 item
+  // fe84991f84a0 / 41641b9b90a5）、校验/持久化分离（原 item 25f889b81633）由
+  // hook 承载；本面板保留价格行/环境变量字段映射（buildProvidersFormValues /
+  // toProviders）与保存前拦截规则（beforeValidate）。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => buildProvidersFormValues(config.llm.providers),
+    backfillDeps: [config.llm.providers],
+    onSave,
+    buildPayload: (values: FormValues) => ({ llm: { providers: toProviders(values) } }),
+    // 保存入口、校验前的面板专属拦截：先剔除完全空的价格行（占位行），再做
+    // 重复键/重复模型名检查；返回 false = 已提示并中止本次保存
+    beforeValidate: () => {
       // 先剔除完全空的价格行（占位行），避免其阻塞整体校验
       const snapshot = form.getFieldsValue(true);
       let pruned = false;
@@ -311,7 +243,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
               `环境变量键重复：Provider「${p?.name || i + 1}」内存在重复的 ${k}，请合并或删除重复行后重试`
             );
             expandAllSections(); // 重复行可能在折叠区内，展开让用户可见可改
-            return;
+            return false;
           }
           seenEnvKeys.add(k);
         }
@@ -331,29 +263,69 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
               `价格行重复：Provider「${p?.name || i + 1}」内存在重复模型名 ${model}，请修改后重试`
             );
             expandAllSections(); // 重复行可能在折叠区内，展开让用户可见可改
-            return;
+            return false;
           }
           seen.add(model);
         }
       }
-      const values: FormValues = await form.validateFields();
-      const providers = toProviders(values);
-      // 分离「表单校验」与「保存持久化」（code-review item 25f889b81633，
-      // 比照 AgentModelPanel 3086b7e96c4f）：onSave 拒绝（网络/500）此前被
-      // 当作校验失败只落 console.error，用户点击保存毫无反应。持久化失败
-      // 给显式 message.error 反馈。
-      try {
-        await onSave({ llm: { providers } });
-      } catch (error) {
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+    },
+    // 校验失败：展开全部折叠区，让藏在折叠区的错误（如价格行必填）可见
+    // （antd 已在表单内渲染提示）
+    onValidateError: expandAllSections,
+    // 等长整值替换时 rc-field-form 按位置复用行 key（field.key 不变），而
+    // healthMap 以 field.key 为键——载荷内容变化（如「同步用户级设置」拉平后
+    // providers 数量不变但 provider/model 已换）会让换掉的新行原样继承旧行的
+    // 健康徽标（旧配置的检测结果，item 728382baa797）。回填写入（apply）前先取
+    // 当前各行身份串（runHealthCheck 实测的 baseurl/apikey/model），逐 index 与
+    // 回填载荷比对，身份变化的行清掉对应 key 的缓存条目。envOpenMap/billingOpenMap
+    // 是纯界面展开偏好（非数据派生），保留不动：回填刷新后折叠区维持用户
+    // 原有的展开视野。
+    onBackfill: (next, apply) => {
+      const prevRows = (form.getFieldsValue(true)?.providers || []) as ProviderRowValues[];
+      apply();
+      setHealthMap((m) => {
+        let touched = false;
+        const cleared = { ...m };
+        activeKeysRef.current.forEach((k, i) => {
+          if (cleared[k] === undefined) return;
+          if (healthRowIdentity(prevRows[i]) === healthRowIdentity(next.providers[i])) return;
+          delete cleared[k];
+          touched = true;
+        });
+        return touched ? cleared : m;
+      });
+    },
+  });
+  // 表单当前值直传（未保存修改即测）；Base URL / API Key / 默认模型名任一为空
+  // 直接提示补齐、不发请求（spec「表单值不完整不发请求」）
+  const runHealthCheck = async (field: { key: number; name: number }) => {
+    const baseurl = (form.getFieldValue(['providers', field.name, 'baseurl']) || '').trim();
+    const apikey = (form.getFieldValue(['providers', field.name, 'apikey']) || '').trim();
+    const model = (form.getFieldValue(['providers', field.name, 'model']) || '').trim();
+    const missing = [!baseurl && 'Base URL', !apikey && 'API Key', !model && '默认模型名'].filter(
+      Boolean,
+    );
+    if (missing.length > 0) {
+      message.warning(`健康检测前请先补齐该卡片的 ${missing.join('、')}`);
+      return;
+    }
+    setHealthMap((m) => ({ ...m, [field.key]: { loading: true } }));
+    try {
+      const r = await checkLlmHealth({ baseurl, apikey, model });
+      const display = toHealthDisplay(r);
+      setHealthMap((m) => ({ ...m, [field.key]: { loading: false, display } }));
+      if (r.ok) {
+        message.success(`健康检测通过：${model} ${display.short}`);
+      } else {
+        message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
       }
-    } catch {
-      // 校验失败：展开全部折叠区，让藏在折叠区的错误（如价格行必填）可见
-      // （antd 已在表单内渲染提示；不落 console，避免触发 no_console_error 断言）
-      expandAllSections();
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setHealthMap((m) => ({
+        ...m,
+        [field.key]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
+      }));
+      message.error(`健康检测请求失败：${msg}`);
     }
   };
 

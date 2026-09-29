@@ -6,6 +6,7 @@ import type { OcrStatus, RegressionConfigStatus } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
@@ -127,16 +128,61 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  // 保存重入守卫（code-review item 66e48a34144b，比照 TokenBudgetPanel
-  // 53b14fb31196）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
-  //（四段配置重复提交 + 重复 toast，且在飞期间二次编辑被保存往返回填覆盖）
-  // ——saving 期间置 loading/disabled 并在入口短路。
-  const [saving, setSaving] = useState(false);
-  // 保存重入同帧加固（code-review item b780337cdc73，比照 SystemPanel
-  // 8ccf20511320 的 savingRef 口径）：setSaving 渲染生效存在 React 调度间隙，
-  // state 短路拦不住同帧连点——经 savingRef 写读同帧原子拦截，state 只负责
-  // 按钮视觉反馈。
-  const savingRef = useRef(false);
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443）：
+  // savingRef 重入守卫（原 item 66e48a34144b / b780337cdc73，「先置位再校验」
+  // 口径见原 item 2a72f9839b69，hook 入口先置位后 await）、序列化比较回填门控
+  // （原 item 241f4f2d452a）、校验/持久化分离的 handleSave 由 hook 承载（持久化
+  // 异常兜底 catch 的可达性分析见原 item 330164f11711，已并入 hook 注释）；
+  // 本面板保留字段映射（buildFormValues）与四段配置的保存载荷组装。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => buildFormValues(config),
+    backfillDeps: [config.verify, config.code_review, config.code_review_fix, config.regression],
+    onSave,
+    buildPayload: (values): Partial<ConfigData> => ({
+      // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）
+      verify: {
+        impl_code_review: values.impl_code_review === true,
+        // add-impl-code-review-tuning：三运行参数序列化（表单回填后恒有值；
+        // 正整数/枚举由表单校验先行把关，后端 write_config 再权威兜底）
+        impl_code_review_timeout_sec: values.impl_code_review_timeout_sec,
+        impl_code_review_concurrency: values.impl_code_review_concurrency,
+        // add-code-review-concurrency-and-429-resilience：全仓审查并发序列化
+        // （与 impl 键并列、分别保存，后端 write_config 权威兜底正整数）
+        repo_code_review_concurrency: values.repo_code_review_concurrency,
+        impl_code_review_effort: values.impl_code_review_effort,
+        // add-impl-ocr-parallel-lane：join 双档模式序列化（表单回填后恒有值，
+        // 白名单枚举由表单校验先行把关，后端 write_config 再权威兜底）
+        impl_code_review_mode: values.impl_code_review_mode,
+      },
+      // add-code-review-agent-and-quality-tab：周期性代码审查开关
+      // （2026-09-19 从项目页「代码审查」分面迁到设置页「质量」页签）
+      // add-code-review-scope-config：审查范围并入同段写回（表单回填后
+      // 恒有值，枚举由 Select 选项约束，后端 get_code_review_config 权威兜底）
+      code_review: {
+        enabled: values.code_review_enabled === true,
+        scope: values.code_review_scope,
+        // add-code-review-sharded-out 3.3：停滞告警阈值（表单回填后恒有值，
+        // 正整数由表单校验把关，后端 write_config 权威兜底）
+        stall_alert_minutes: values.code_review_stall_alert_minutes,
+      },
+      // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled，
+      // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
+      regression: {
+        enabled: values.regression_enabled === true,
+      },
+      // add-code-review-auto-fix：自动修复开关 + 批大小（与开关同处一个
+      // <Form> 实例内，validateFields 恒返回两字段；1–1000 由表单校验把关，
+      // 后端 write_config 权威兜底）
+      // add-codefix-affinity-batching 4.3：定向回归开关并入同段写回
+      // （Switch 恒有 bool 值；后端 write_config 权威兜底严格 bool）
+      code_review_fix: {
+        enabled: values.code_review_fix_enabled === true,
+        batch_size: values.code_review_fix_batch_size,
+        targeted_regression: values.code_review_fix_targeted_regression === true,
+      },
+    }),
+  });
   // 环境门只拦「开启」不拦「关闭」（code-review item 1bcde4921884）：ocr 未
   // 就绪时若把开关一律禁用，已配 verify.impl_code_review:true 的项目从此无法
   // 在 UI 关掉该 gate（禁用开关不可切换，handleSave 还会原样重提 true）。
@@ -144,8 +190,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // ocr 环境探测状态：null=加载中；未安装时开关置灰并给出「一键安装」
   const [ocr, setOcr] = useState<OcrStatus | null>(null);
   const [installing, setInstalling] = useState(false);
-  // 安装重入同帧加固（code-review item 7e689f7abd2d，比照本文件 savingRef
-  // b780337cdc73 / regressionDraftInFlight 口径）：setInstalling 渲染生效存在
+  // 安装重入同帧加固（code-review item 7e689f7abd2d，比照 useGatedFormPanel 的
+  // savingRef（原 item b780337cdc73）/ regressionDraftInFlight 口径）：setInstalling 渲染生效存在
   // React 调度间隙，state 短路拦不住同帧双击（或确认弹窗双触发）——installOcr
   // 是慢请求，同帧连点会发出两个并发 install 请求（后端幂等性未核实）。经 ref
   // 写读同帧原子拦截，state 只负责按钮 loading 视觉反馈。
@@ -166,25 +212,6 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
-
-  // 首帧初值单源（code-review item 5ba46a1b4d6c，同族 ParallelSettingsPanel
-  // item 3f4e251a395c / ApprovalModePanel item 3f618ddb51cb 口径）：<Form> 传
-  // initialValues 与下方回填 effect 共用 buildFormValues 产物——控件首帧直出
-  // 真实配置，不再等回填 effect 才有值（消除一帧空显闪变）。
-  const initialValues = buildFormValues(config);
-  // 回填门控（code-review item 241f4f2d452a，同 LlmProviderPanel item 5d6582ba9951 /
-  // AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：无条件
-  // setFieldsValue 会用外部 config 覆盖用户正在编辑、尚未保存的内容——保存后重载/
-  // 其它页签保存/同步用户级设置触发的父级 setConfig 都会重置本表单。对回填产物做
-  // 序列化比较，只在内容真正变化时回填。
-  const lastBackfillRef = useRef('');
-  useEffect(() => {
-    const next = buildFormValues(config);
-    const key = JSON.stringify(next);
-    if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
-    form.setFieldsValue(next);
-  }, [config.verify, config.code_review, config.code_review_fix, config.regression, form]);
 
   useEffect(() => {
     let alive = true;
@@ -299,80 +326,6 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     } finally {
       regressionDraftInFlight.current = false;
       setRegressionDrafting(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (savingRef.current) return;
-    // 先置位再校验（code-review item 2a72f9839b69，对齐同族面板顺序）：
-    // validateFields 是异步微任务，置位晚于校验时快速双击可双双通过入口
-    // 短路检查、发出重叠保存请求；校验失败在 return 前复位 saving。
-    savingRef.current = true;
-    setSaving(true);
-    let values;
-    try {
-      values = await form.validateFields();
-    } catch {
-      // 校验失败：antd 已在表单内渲染提示，无需额外日志
-      // （避免触发验证的 no_console_error 断言）。
-      savingRef.current = false;
-      setSaving(false);
-      return;
-    }
-    try {
-      await onSave({
-        // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）
-        verify: {
-          impl_code_review: values.impl_code_review === true,
-          // add-impl-code-review-tuning：三运行参数序列化（表单回填后恒有值；
-          // 正整数/枚举由表单校验先行把关，后端 write_config 再权威兜底）
-          impl_code_review_timeout_sec: values.impl_code_review_timeout_sec,
-          impl_code_review_concurrency: values.impl_code_review_concurrency,
-          // add-code-review-concurrency-and-429-resilience：全仓审查并发序列化
-          // （与 impl 键并列、分别保存，后端 write_config 权威兜底正整数）
-          repo_code_review_concurrency: values.repo_code_review_concurrency,
-          impl_code_review_effort: values.impl_code_review_effort,
-          // add-impl-ocr-parallel-lane：join 双档模式序列化（表单回填后恒有值，
-          // 白名单枚举由表单校验先行把关，后端 write_config 再权威兜底）
-          impl_code_review_mode: values.impl_code_review_mode,
-        },
-        // add-code-review-agent-and-quality-tab：周期性代码审查开关
-        // （2026-09-19 从项目页「代码审查」分面迁到设置页「质量」页签）
-        // add-code-review-scope-config：审查范围并入同段写回（表单回填后
-        // 恒有值，枚举由 Select 选项约束，后端 get_code_review_config 权威兜底）
-        code_review: {
-          enabled: values.code_review_enabled === true,
-          scope: values.code_review_scope,
-          // add-code-review-sharded-out 3.3：停滞告警阈值（表单回填后恒有值，
-          // 正整数由表单校验把关，后端 write_config 权威兜底）
-          stall_alert_minutes: values.code_review_stall_alert_minutes,
-        },
-        // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled，
-        // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
-        regression: {
-          enabled: values.regression_enabled === true,
-        },
-        // add-code-review-auto-fix：自动修复开关 + 批大小（与开关同处一个
-        // <Form> 实例内，validateFields 恒返回两字段；1–1000 由表单校验把关，
-        // 后端 write_config 权威兜底）
-        // add-codefix-affinity-batching 4.3：定向回归开关并入同段写回
-        // （Switch 恒有 bool 值；后端 write_config 权威兜底严格 bool）
-        code_review_fix: {
-          enabled: values.code_review_fix_enabled === true,
-          batch_size: values.code_review_fix_batch_size,
-          targeted_regression: values.code_review_fix_targeted_regression === true,
-        },
-      });
-    } catch (err) {
-      // 当前接线下此 catch 实际不可达（code-review item 330164f11711）：父级
-      // handleSave（settings/index.tsx）已把 saveConfig 包 try/catch、自显
-      // 「保存失败」提示并以 resolve(false) 结束——子层观察不到保存失败，
-      // 上方「校验失败」与「保存失败」的区分并不成立。保留兜底捕获：未来
-      // 父组件改为透传失败时，保存失败不致被静默吞掉。
-      message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
     }
   };
 
