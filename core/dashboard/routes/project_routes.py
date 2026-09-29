@@ -596,7 +596,15 @@ class H2ProjectRoutesMixin:
                 proot, {"description": description}, scope="project"
             )
             if not write_result["ok"]:
-                self._json({"error": f"配置写入失败: {write_result.get('error', '未知错误')}"})
+                # 不外泄裸异常文本：write_result['error'] 可能内嵌 OSError/
+                # YAMLError 原文（含服务端绝对路径/errno 细节），与同文件其余
+                # 异常分支的泛化文案策略同款——细节降级经服务端日志留痕。
+                logger.warning(
+                    "配置写入失败（project=%s）: %s",
+                    project["name"],
+                    write_result.get("error", "未知错误"),
+                )
+                self._json({"error": "配置写入失败（详见服务端日志）"})
                 return
 
             self._json({"ok": True, "description": description})

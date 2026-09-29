@@ -168,6 +168,12 @@ def admin_alerts_signature(proot) -> str:
     return data_signature(proot, [proot / ".fenix" / "admin_alerts.json"])
 
 
+def admin_alerts_archive_signature(proot) -> str:
+    """项目 admin_alerts_archive.jsonl 签名（/api/admin-activities?archived=1 数据源）。"""
+    proot = Path(proot)
+    return data_signature(proot, [proot / ".fenix" / "admin_alerts_archive.jsonl"])
+
+
 def config_signature(project_root=None) -> str:
     """config 读端点签名：用户级 config.yaml（+ 项目级，?project= 变体时）。"""
     import core.dashboard.data as _facade

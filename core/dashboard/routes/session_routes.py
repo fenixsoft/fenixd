@@ -197,7 +197,10 @@ class H_SessionRoutesMixin:
         """
         try:
             completed = subprocess.run(
-                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                # -z：以 \0 结尾且不做路径引用（core.quotePath），非 ASCII
+                # 文件名（如中文）不会被八进制转义成 "\344\270\255..." 形态，
+                # 候选与磁盘真实文件名一致（code-review item dc821f2f58b6）
+                ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                 cwd=str(project_path),
                 capture_output=True,
                 text=True,
@@ -225,7 +228,8 @@ class H_SessionRoutesMixin:
             # 非 git 仓库（exit 128 "not a git repository"）等：200 + 空数组
             return []
         return [
-            ln for ln in completed.stdout.splitlines() if ln
+            # -z 输出按 \0 切分（含换行文件名不再歧义），末尾空串过滤
+            ln for ln in completed.stdout.split("\0") if ln
         ][:SESSION_FILES_LIMIT]
 
     def _api_session_files(self, query):

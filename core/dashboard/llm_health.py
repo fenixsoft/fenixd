@@ -23,6 +23,7 @@ import http.client
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # 超时单源常量（design D4）：同步 urlopen(timeout=) 直传；检测是用户点击后的
@@ -44,9 +45,31 @@ _PROBE_MAX_TOKENS = 256
 _PROBE_USER_AGENT = "claude-cli/2.1.277 (external, cli)"
 
 
+class _NoCrossHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """拒绝跟随跨主机重定向（redirect_request 返回 None → urllib 抛 HTTPError，
+    由 run_llm_health_check 的既有 http_error 分类接住）。
+
+    urllib 默认跟随 301/302 且除 content-length/content-type 外原样转发请求头，
+    x-api-key / Authorization: Bearer 会发往 Location 指向的新主机——baseurl/apikey
+    由表单直传，跨主机重定向（误配 http→https、开放重定向等）会把探测密钥泄漏
+    给第三方。同主机重定向照常放行。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        origin = urllib.parse.urlsplit(req.full_url).netloc.lower()
+        target = urllib.parse.urlsplit(newurl).netloc.lower()
+        if origin != target:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _build_probe_request(baseurl: str, apikey: str, model: str) -> urllib.request.Request:
     """构造 urllib Request——与 bin/probe_prompt_cache.py::_post_once 同构。"""
-    url = baseurl.rstrip("/") + "/v1/messages"
+    # 归一尾部 /v1（含 /v1/）：整段「https://host/v1」粘进表单时不剥离会拼出 /v1/v1/messages 的误导性 404
+    root = baseurl.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    url = root + "/v1/messages"
     headers = {
         "Content-Type": "application/json",
         "x-api-key": apikey or "",
@@ -130,17 +153,17 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     - empty_reply：200 但解析不到非空文本 content（含响应非合法 JSON）。
       例外：正文缺失但 thinking 块非空（思考型模型预算被思考吃尽）按成功处理。
 
-    失败四分类中 latency_ms 恒为实测耗时（毫秒，连接类瞬时失败可能小到取整
-    为 0，与 spec「实测耗时或 0」口径一致）。不落盘 apikey 与完整响应。
+    失败四分类中 latency_ms 恒为实测耗时（毫秒，下限钳到 1，见 _latency_ms）。
+    不落盘 apikey 与完整响应。
     """
     started = time.monotonic()
     try:
         # 构造也在守卫内：baseurl 非法（unknown url type）在 Request 构造期
         # 即抛 ValueError，须与 urlopen 阶段的同类失败同口径归类
         req = _build_probe_request(baseurl, apikey, model)
-        with urllib.request.urlopen(
-            req, timeout=HEALTH_CHECK_TIMEOUT_SECONDS
-        ) as resp:
+        # 挂跨主机重定向拦截 handler 的局部 opener（勿 install_opener，避免改全局状态）
+        opener = urllib.request.build_opener(_NoCrossHostRedirectHandler)
+        with opener.open(req, timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         # 非 200：读错误体片段供排障（401 密钥无效 / 404 路径不对 / 429 限流等）
@@ -164,6 +187,10 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         # 响应头已到但体未收齐（上游网关提前断流）——同属连接类失败，
         # 维持「探测失败也是业务数据（恒 200 自含返回）」契约
         return _fail(started, "connection_error", error=f"上游连接提前关闭: {e}")
+    except http.client.HTTPException as e:
+        # 其余 HTTP 协议层异常（垃圾状态行 BadStatusLine / LineTooLong 等）既非
+        # URLError 也非 OSError，不接住会以 500 穿透路由层——归连接类失败
+        return _fail(started, "connection_error", error=f"上游 HTTP 协议异常: {e}")
     except (OSError, ValueError) as e:
         # OSError：连接被拒 / DNS 失败 / 远端断开；ValueError：baseurl 非法
         # （urllib 对 unknown url type 抛 ValueError，spec 归 connection_error）

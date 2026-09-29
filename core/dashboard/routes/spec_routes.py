@@ -47,6 +47,30 @@ def _internal_error(handler, msg: str, exc: BaseException) -> None:
 class H3SpecRoutesMixin:
     """H3 spec management。"""
 
+    def _spec_query_or_error(self, query):
+        """本文件 spec 端点共用参数校验（code-review item de2b8b27864c）：
+        「取 spec → _project_from_query → 未知项目 404 → 项目不存在 404 →
+        缺 spec 404」原先在各端点内联逐字重复（16 个状态操作端点 +
+        _api_spec_doc 共 17 处），收敛为单源防漂移。
+
+        形态对照 project_routes._project_query_or_error：校验通过返回
+        (project, spec)；任一失败已发送对应 404 响应并返回 None。缺参
+        状态码口径与该助手（缺 project 400）不同——本文件全部端点对缺
+        project/spec 均维持 404 既有契约（tests 按 404 语义消费），保持不变。
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return None
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return None
+        if not spec:
+            self._error(404, "spec required")
+            return None
+        return project, spec
+
     def _api_specs(self, query) -> dict:
         # 未知/不存在项目维持 200 + {"error": ..., "specs": []}，不走本文件
         # 其余端点的 _error(404) 家族——这是有意的 v1 兼容契约，非遗漏：
@@ -115,17 +139,10 @@ class H3SpecRoutesMixin:
         - 文件不存在 → 200 + {found: false, content: ""}
         """
         doc = query.get("doc", [None])[0]
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         # 文件缺失是常态分支，但 spec 必须真在项目 STATE.md 或归档清单中
         # （D2：仅未知 spec 才 404；清单回退使已迁出 SPEC 的文档继续可读，
         # add-archive-state-migration 3.2）。双源均无时再以归档目录命中兜底：
@@ -163,17 +180,10 @@ class H3SpecRoutesMixin:
         - 成功 → 200 + {ok: true}；其余字段不受影响
         - 写回异常 → 500
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.clear_spec_error(proot, spec)
@@ -199,17 +209,10 @@ class H3SpecRoutesMixin:
         - body 缺 priority / 非法值（0、10、非整数）→ 400
         - 成功 → 200 + {ok: true, priority: N}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         body = self._read_json_body()
         if body is None:
             return
@@ -249,17 +252,10 @@ class H3SpecRoutesMixin:
           冻结时刻在跑 agent 计数，add-freeze-stop-inflight-agents BUG-01
           修复；前端据 >0 展示「已停止 N 个在跑 agent」提示）
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         try:
             result = dashboard_data.freeze_spec(Path(project["path"]), spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
@@ -276,17 +272,10 @@ class H3SpecRoutesMixin:
 
         解冻 SPEC：恢复冻结前状态并清空 error；未冻结为幂等 no-op。
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         try:
             result = dashboard_data.unfreeze_spec(Path(project["path"]), spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
@@ -314,17 +303,10 @@ class H3SpecRoutesMixin:
           清空时（start_after null）若即时唤醒信号写出失败，响应携带 warning
           （ok 仍为 true——start_after 已成功置 null，附告警供前端分支文案）
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         body = self._read_json_body()
         if body is None:
             return
@@ -378,17 +360,10 @@ class H3SpecRoutesMixin:
           若即时唤醒信号写出失败，响应携带 warning（ok 仍为 true——start_after
           已成功置 null，附告警供前端分支文案）
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.activate_spec(proot, spec)
@@ -443,17 +418,10 @@ class H3SpecRoutesMixin:
           degraded=true 表示无可保留分支、已降级全新重派；warning 表示即时
           唤醒信号写出失败（STATE 已复位，将由下次扫描派发）
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.resume_cancelled_spec(proot, spec)
@@ -501,17 +469,10 @@ class H3SpecRoutesMixin:
         - mode 非法 / scheduled 的 until 非法 ISO8601 → 400
         - 成功 → 200 + {ok: true, mode, frozen_until, unfrozen?}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         body = self._read_json_body()
         if body is None:
             return
@@ -562,17 +523,10 @@ class H3SpecRoutesMixin:
         open-impl-budget-ceiling：上限改由 agents.impl_run_budget_max 决定
         （缺省 100），不再硬编码 10；set_spec_budget 内部做同源权威校验。
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         body = self._read_json_body()
         if body is None:
             return
@@ -619,17 +573,10 @@ class H3SpecRoutesMixin:
         - 成功 → 200 + {ok: true, from, to, state_evicted[, evict_warning]}
           + 记录项目活动事件（from→to）
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.archive_spec(proot, spec)
@@ -694,17 +641,10 @@ class H3SpecRoutesMixin:
         - lint 违规 → 200 + {ok: false, violations: [...]}
         - 成功 → 200 + {ok: true}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.promote_spec(proot, spec)
@@ -733,17 +673,10 @@ class H3SpecRoutesMixin:
           → 200 + {ok: false, reason: <明确拒绝原因>}
         - 成功 → 200 + {ok: true, spec, status: "ready"}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.reflow_spec(proot, spec)
@@ -767,17 +700,10 @@ class H3SpecRoutesMixin:
           + {ok: false, error: 明确原因}
         - 成功 → 200 + {ok: true, project, spec}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.re_review_spec(proot, spec)
@@ -804,17 +730,10 @@ class H3SpecRoutesMixin:
         - spec 非 done → 403（pushed 幂等无操作、其他状态非法，error 区分）
         - 成功 → 200 + {ok: true, project, spec, created}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         try:
             result = dashboard_data.request_spec_approve_push(proot, spec)
@@ -856,17 +775,10 @@ class H3SpecRoutesMixin:
         - 托管态非 managed / 已有未消费信号 → 409（信号无人消费/重复受理）
         - 成功 → 200 + {ok: true, archived, archive_path}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         proot = Path(project["path"])
         # ── 异步受理分支（add-freeze-stop-inflight-agents 5.1）──
         # 先取该 spec 的在跑 run：无在跑 → 既有同步软删除；有在跑 →
@@ -940,17 +852,10 @@ class H3SpecRoutesMixin:
         - 已有未消费请求（进行中处置）→ 409「已有进行中的 Admin 处置」
         - 成功 → 200 + {ok: true, created}
         """
-        spec = query.get("spec", [None])[0]
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(404, "unknown project")
+        resolved = self._spec_query_or_error(query)
+        if resolved is None:
             return
-        if not project.get("exists"):
-            self._error(404, "project not found")
-            return
-        if not spec:
-            self._error(404, "spec required")
-            return
+        project, spec = resolved
         # 用户提示词（可选，POST JSON body {prompt}）：v1 客户端不带 body 仍兼容
         prompt = None
         try:

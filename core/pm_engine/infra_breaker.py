@@ -61,6 +61,12 @@ class InfraCircuitBreaker:
     重置熔断）；文件损坏/不可读按熔断复位 fail-open，不阻塞派发。
 
     链路标识（link）：v1 仅 "spec-review"；后续 SPEC 扩展 verify/impl。
+
+    并发约束：仅同进程单实例使用（生产路径仅 engine 构造一例）。互斥只靠
+    实例级 threading.Lock + 落盘原子替换；不做跨实例 flock——状态落盘为
+    实例 cache 的整文件覆写，多实例并存时各自 cache 互不知晓，后写者会
+    覆盖前者的计数与熔断窗口（flock 防不了 lost update，须锁内重读磁盘
+    合并，见 _save_state 注释）。
     """
 
     def __init__(self, project_root, config: dict, logger=None):
@@ -74,6 +80,11 @@ class InfraCircuitBreaker:
         # 模式）。派发路径（engine.condition）与评审 worker（record_failure/
         # record_success）跨线程并发触碰同一实例，无锁会丢计数或重复落恢复事件。
         self._lock = threading.Lock()
+        # 「record_failure 内部刚发生冷却到期恢复」一次性标志（per-link）：
+        # 该路径返回值只暴露 triggered，恢复事实须经 take_recovery_flag 补给
+        # 调用方（code-review item c3dfbbd563f5）。condition() 直接返回
+        # "recovered"（调用方可见并由其落记录），不置本标志以免重复落。
+        self._recovered_links: set[str] = set()
         self._load_state()
 
     # ── 日志（兼容 fenixd Logger 双参与标准 logging 单参）──────────────
@@ -208,8 +219,13 @@ class InfraCircuitBreaker:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             # 原子替换（code-review item b5580085c3bb：write_text 覆盖写中途
             # 崩溃会留下截断 JSON，下次 _load_state 解析失败 fail-open 复位，
-            # 恰在 infra 持续故障时把熔断保护拆掉）：对齐 tokens.json 写法，
-            # 同目录 mkstemp + fsync + os.replace。
+            # 恰在 infra 持续故障时把熔断保护拆掉）：对齐 tokens.json 写法
+            # （_append_token_run）的原子落盘半段——同目录 mkstemp + fsync +
+            # os.replace；其 fcntl.flock 互斥半段不照搬：本类仅同进程单实例
+            # 使用（生产路径仅 engine 构造一例），实例内 threading.Lock 已
+            # 覆盖读-改-写窗口；跨实例 flock 也防不了各自 cache 整文件覆写
+            # 的 lost update（须锁内重读磁盘合并，多实例不安全，见类
+            # docstring 并发约束）。
             fd, tmp_str = tempfile.mkstemp(
                 prefix=f".{self._state_path.name}.",
                 suffix=".tmp",
@@ -296,7 +312,8 @@ class InfraCircuitBreaker:
           closed（与 condition() 的半开语义一致），再继续本次失败累计与触发；
           若随即再熔断返回 "recovered_then_triggered"（truthy，告警侧
           ``if triggered:`` 门控不受影响，同时得以先补一条 recovered 记录
-          再记新触发）
+          再记新触发）；恢复事实本身经 take_recovery_flag() 一次性标志补给
+          调用方（本次失败未达阈值返回 False 时恢复记录也不丢）
         - 仅首次触发熔断返回 True（告警恰好落一条）
         """
         with self._lock:
@@ -316,6 +333,10 @@ class InfraCircuitBreaker:
             if st["state"] == "broken" and now >= st["until"]:
                 st["state"] = "closed"
                 recovered_expired = True
+                # 恢复事实对 ``if triggered:`` 门控不可见于返回值（本次未达
+                # 阈值时连 truthy 都没有）→ 置一次性标志供调用方经
+                # take_recovery_flag 补落 recovered 记录
+                self._recovered_links.add(link)
 
             st["count"] += 1
 
@@ -333,6 +354,22 @@ class InfraCircuitBreaker:
                 # 区分「冷却到期未消费即再熔断」的标记（truthy）
                 return "recovered_then_triggered"
             return triggered
+
+    def take_recovery_flag(self, link: str) -> bool:
+        """取走「record_failure 内部刚发生冷却到期恢复」标志（消费即清除）。
+
+        record_failure 把到期 broken 翻转为 closed 时置位——该路径返回值只
+        暴露 triggered，本次失败未达阈值时连 truthy 都没有，恢复记录会被
+        告警侧 ``if triggered:`` 门控静默吞掉（code-review item
+        c3dfbbd563f5）；调用方在 record_failure 之后取走标志补落 recovered
+        记录。仅首次取用返回 True，重复取返回 False。condition() 的翻转不置
+        本标志（其返回 "recovered" 调用方可见，已由调用点落记录）。
+        """
+        with self._lock:
+            if link in self._recovered_links:
+                self._recovered_links.discard(link)
+                return True
+            return False
 
     def record_success(self, link: str):
         """成功 run：清零计数，重置为正常状态。

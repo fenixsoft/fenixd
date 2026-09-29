@@ -80,8 +80,9 @@ def _safe_knowledge_file(proot: Path, rel: str) -> Path | None:
     if not posix_rel.startswith(_ALLOWED_PREFIXES):
         return None
     kroot = (proot / KNOWLEDGE_DIR).resolve()
-    resolved = (kroot / rel).resolve()
     try:
+        # resolve 自身对含 NUL 字节的 rel 抛 ValueError，与越界共用同一拒绝分支（恒 400）
+        resolved = (kroot / rel).resolve()
         resolved.relative_to(kroot)
     except ValueError:
         return None
@@ -124,7 +125,7 @@ class H14KnowledgeRoutesMixin:
                 payload["index_md"] = index_md.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 logger.warning("knowledge index.md 读取失败（%s）: %s", project["name"], exc)
-                self._json({"error": "index.md 读取失败"}, 500)
+                self._error(500, "index.md 读取失败")
                 return
         domains_dir = kroot / "domains"
         if domains_dir.is_dir():
@@ -202,16 +203,16 @@ class H14KnowledgeRoutesMixin:
         proot = Path(project["path"])
         target = _safe_knowledge_file(proot, rel or "")
         if target is None:
-            self._json({"error": "非法路径（仅允许 domains/ 与 adr/ 前缀）"}, 400)
+            self._error(400, "非法路径（仅允许 domains/ 与 adr/ 前缀）")
             return
         if not target.is_file():
-            self._json({"error": "文件不存在"}, 404)
+            self._error(404, "文件不存在")
             return
         try:
             content = target.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             logger.warning("knowledge 文件读取失败（%s）: %s", rel, exc)
-            self._json({"error": "文件读取失败"}, 500)
+            self._error(500, "文件读取失败")
             return
         self._json(
             {

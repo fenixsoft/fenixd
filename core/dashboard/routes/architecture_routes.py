@@ -642,6 +642,23 @@ class ArchitectureManager:
                 f"{stage_label}超时（>{timeout}s 未完成），已终止生成进程",
             )
         except Exception as exc:  # noqa: BLE001 — communicate 其它异常
+            # 兜底清场复用超时分支的序列（code-review item 7ab006a03686）：
+            # 管道 OSError 等异常路径同样不得在 finally 摘除句柄并释放单飞
+            # 锁后留下仍在飞的生成进程组——残留进程稍后自行写 evidence.md /
+            # diagram.html 会造成「已报 failed 但产物事后出现」，并与用户
+            # 重试的新生成进程并发写同一产物（正是单飞锁要防的踩踏）
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                proc.communicate()  # 回收已杀进程、排干管道
+            except Exception:  # noqa: BLE001
+                pass
             if logger is not None:
                 logger.warning(
                     f"claude 进程通信异常（project={project_name}，"

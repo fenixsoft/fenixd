@@ -389,7 +389,6 @@ class PMEngine:
         self.shutting_down = False
 
         # Blocker detection state
-        self._last_blocker_check = None
         self._last_blocker_report_time = None
 
         # 派发单飞守卫（fix-startup-double-dispatch）：跟踪正在派发中的 spec，
@@ -1675,14 +1674,16 @@ class PMEngine:
                     for r in get_runs(self.project_root, spec_name, include_archive=True)
                 )
                 self.state_machine.update_spec(spec_name, {"total_duration": total_duration})
-            # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
-            # 背景：daemon 启动时 full_scan 在 EventBus watcher 启动前同步调度，
-            # 阻塞完成整个 fix 生命周期，使 verified→done 变化在快照初始化前发生，
-            # spec_done 事件被吞掉，父 SPEC 永远不被重新验证。这里提供同步直接
-            # 调用路径（框架原则：状态转换不能只依赖异步事件轮询）。
-            # 幂等：父 SPEC 若已非 implementing，transition 校验失败自动跳过；
-            # _enqueue 亦有去重。事件总线后续若重复发出 spec_done 亦无害。
-            self._on_spec_done(spec_name)
+                # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
+                # 背景：daemon 启动时 full_scan 在 EventBus watcher 启动前同步调度，
+                # 阻塞完成整个 fix 生命周期，使 verified→done 变化在快照初始化前发生，
+                # spec_done 事件被吞掉，父 SPEC 永远不被重新验证。这里提供同步直接
+                # 调用路径（框架原则：状态转换不能只依赖异步事件轮询）。
+                # 幂等：父 SPEC 若已非 implementing，transition 校验失败自动跳过；
+                # _enqueue 亦有去重。事件总线后续若重复发出 spec_done 亦无害。
+                # 置于 transition 成功分支内：转移被拒（如外部冻结/改判 blocked）
+                # 时 spec 并非 done，不得落完成日志或提前触发父 SPEC 重验。
+                self._on_spec_done(spec_name)
         finally:
             self._handling_events.discard(event_key)
 
@@ -3483,7 +3484,6 @@ class PMEngine:
 
         Returns a dict with blocker details if any found.
         """
-        self._last_blocker_check = datetime.now(timezone.utc)
         all_specs = self.state_machine.read_all()
 
         from core.config import ConfigLoader

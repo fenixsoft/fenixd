@@ -142,6 +142,12 @@ def _write_trigger_signal(req_path: Path, payload: dict, label: str) -> str:
 # 15 分钟；前端 timeoutMs 另加余量（dashboard.ts REGRESSION_AUTODRAFT_TIMEOUT_MS）。
 AUTODRAFT_TIMEOUT_SECONDS = 900
 
+# 清场击杀后回收管道的有限超时（秒）：SIGKILL 后直接子进程已死，但孙进程若
+# 经 setsid/nohup 逃出进程组仍持 stdout/stderr 管道写端，无超时的 communicate
+# 会把 HTTP 线程（连带 finally 的单飞锁释放）无限期挂起，此后该项目 autodraft
+# 恒 409。超时后直接子进程已被击杀，wait(0) 即刻收尸。
+_AUTODRAFT_REAP_TIMEOUT_SECONDS = 5
+
 # 同步起草单飞锁（per-project）：ThreadingHTTPServer 并发线程下两个同项目
 # 请求会各起一个 claude 起草进程，互相踩 verify.yaml / git index。同项目
 # 在途时第二个请求直接 409。
@@ -640,7 +646,19 @@ class H12RegressionRoutesMixin:
                     except Exception:
                         pass
                 try:
-                    proc.communicate()  # 回收已杀进程、排干管道
+                    proc.communicate(  # 回收已杀进程、排干管道
+                        timeout=_AUTODRAFT_REAP_TIMEOUT_SECONDS
+                    )
+                except subprocess.TimeoutExpired:
+                    # killpg 只约束同组进程：若孙进程经 setsid/nohup 逃出进程组
+                    # 仍持管道写端，上面的有限超时到期即到此兜底——直接子进程
+                    # 已被 SIGKILL，wait(0) 即刻收尸，保证 finally 的单飞锁不
+                    # 被在途写者挂起（否则 HTTP 线程永久阻塞、该项目 autodraft
+                    # 恒 409）。
+                    try:
+                        proc.wait(timeout=0)
+                    except Exception:  # noqa: BLE001
+                        pass
                 except Exception:
                     pass
                 logger.warning(
@@ -666,7 +684,16 @@ class H12RegressionRoutesMixin:
                         except Exception:
                             pass
                     try:
-                        proc.communicate()  # 回收已杀进程、排干管道
+                        proc.communicate(  # 回收已杀进程、排干管道
+                            timeout=_AUTODRAFT_REAP_TIMEOUT_SECONDS
+                        )
+                    except subprocess.TimeoutExpired:
+                        # 同超时分支：清场后回收管道也须有限超时，防逃出进程
+                        # 组的孙进程持管道写端把本线程与单飞锁一并挂起
+                        try:
+                            proc.wait(timeout=0)
+                        except Exception:  # noqa: BLE001
+                            pass
                     except Exception:
                         pass
                 # 不外泄裸异常文本（describe 同款）：str(exc) 可能携带内部路径/
