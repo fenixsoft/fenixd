@@ -603,6 +603,18 @@ def stop_daemon(root: str | None = None) -> dict:
                 kill_errors.append(
                     f"SIGKILL pid {pid} 后仍存活（疑似不可中断态），daemon 可能未退出"
                 )
+            # 快照为空的退化路径（/proc 不可用、靠 tmux 判定运行中）无快照 pid
+            # 可补杀/复核，只能依赖上面的 kill-session——其异常被吞且返回码
+            # 不可靠，须同样短轮询复核 is_running，仍存活时计入 error，
+            # 不谎报 ok=True。
+            if not target_pids:
+                session_recheck_deadline = time.time() + 2
+                while is_running(proot) and time.time() < session_recheck_deadline:
+                    time.sleep(0.2)
+                if is_running(proot):
+                    kill_errors.append(
+                        "kill-session 后项目仍判定为运行中，daemon 可能未退出"
+                    )
         # ⑤ finally 清除 stop（无论成败）
         try:
             stop_flag.unlink()
