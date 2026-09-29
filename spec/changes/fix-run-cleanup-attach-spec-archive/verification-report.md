@@ -37,3 +37,10 @@
 | grep-no-stale-keep-residue | 全仓旧键残留清扫：代码面 core/tests/bin 中 _resolve_runs_keep/_RETENTION_KEEP_DEFAULT 符号零残留（tasks 5.1 测试替身旧键清理；spec/ 下 SPEC 文档与已归档历史报告提及符号属正常描述不在范围）、docs/help 全域 runs.keep 记载零残留（tasks 4.2；docs/help/11-logs.md:99/186 两处既有记载属清扫范围） | pass | 0/4 | - |
 | api-config-post-ignores-runs-key | 配置管理 HTTP 契约：POST /api/config 提交含 runs 死键的补丁不再报错或 500，runs 键被忽略、其余受管键（gates.approve_mode=manual，与缺省同值零行为扰动）正常应用并读回确认（spec「配置 API 不再接受 runs 键」；路由出处 core/dashboard/routes/base.py:423 → settings_routes.py:92 _api_config_post → config_admin.write_config:1326） | pass | 0/5 | - |
 | web-help-artifacts-doc-runs-section | 帮助中心呈现文件与数据地图文档：/help 页打开 10-artifacts.md，「.fenix/runs/ 运行记录」章节与 run 产物 jsonl 说明正常渲染、页面无控制台错误（docs/help/10-artifacts.md 交付物的 UI 呈现验收；出处 core/dashboard/static/src/app.tsx:135 /help 路由、core/dashboard/static/src/pages/help/index.tsx:32-45 hash query 读 doc 参数、docs/help/10-artifacts.md:123 章节标题） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 1 轮）。
+
+- 首轮写入 14 个场景
+
