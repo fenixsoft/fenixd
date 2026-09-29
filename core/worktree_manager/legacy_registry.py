@@ -400,6 +400,14 @@ class G2LegacyRegistryMixin:
             rec = self._legacy.pop(spec, None)
             if rec is None:
                 continue
+            # pop 后复核宽限期（code-review item 0d5c6c7e148e）：快照与 pop
+            # 之间该 spec 可能被 register_legacy 覆盖登记（再次死亡，
+            # registered_at=now），pop 取出的是当前新记录；仍在宽限期内则
+            # 放回出册位并跳过本条，不提前回收新遗产。setdefault 而非直接
+            # 赋值，避免覆盖此间隙内更新的登记。
+            if now - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS:
+                self._legacy.setdefault(spec, rec)
+                continue
             path = rec.get("path", "")
             branch = rec.get("branch", "")
             self.logger.warning(
@@ -451,7 +459,18 @@ class G2LegacyRegistryMixin:
                     timeout=30,
                 )
                 if res.returncode != 0 and wt.exists():
-                    shutil.rmtree(str(wt), ignore_errors=True)
+                    # rmtree 兜底失败留痕（code-review item 8775e28ca392）：
+                    # ignore_errors=True 会把权限不足/文件被占用等部分或全部
+                    # 删除失败静默吞掉，目录残留无任何日志。失败仅记 WARNING
+                    # （含未删残留说明），不向上抛——与 branch -D / prune 同口径。
+                    try:
+                        shutil.rmtree(str(wt))
+                    except OSError as e:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Legacy {failure_label} rmtree fallback failed for "
+                            f"'{spec_name}': {e} — residual dir may remain at {wt}",
+                        )
             except Exception as e:
                 self.logger.warning(
                     "worktree_manager",
