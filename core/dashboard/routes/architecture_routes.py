@@ -468,6 +468,31 @@ class ArchitectureManager:
             proc = self._procs.get(self._key(proot))
         return proc is not None and proc.poll() is None
 
+    def reap_all(self) -> None:
+        """收割全部在飞生成进程（dashboard 退出链，serve() finally 调用）。
+
+        _procs 登记的 claude 处于独立会话组（start_new_session=True），不随
+        dashboard 进程退出而终止；退出后孤儿仍以 bypassPermissions 继续写
+        diagram.html/evidence.md，并与用户重启后重新触发的下一轮生成并发写
+        同一文件（code-review item dffc01af10fa）。退出链对每个登记句柄
+        killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
+        _kill_process_group）；目标已退出属可预期竞态（ProcessLookupError/
+        OSError 降级 proc.kill）。不在此排干管道/清理 _procs：SIGKILL 后
+        communicate 可能被逃出进程组的孙进程无限阻塞（knowledge.py 同款已知
+        形态），收尾交由仍在飞的生成线程自身 finally 完成。
+        """
+        with self._guard:
+            procs = list(self._procs.values())
+        for proc in procs:
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+
     def refresh(
         self, proot: Path, project_name: str, logger=None
     ) -> tuple[bool, bool, str | None]:
