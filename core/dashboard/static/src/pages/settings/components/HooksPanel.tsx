@@ -4,11 +4,14 @@
  * 管理全局 hooks（config.hooks.global 增删改/启停）+ 跨 spec 最近执行记录。
  * 结构复用共享组件 HookManager；保存经设置页 onSave 统一走 /api/config。
  *
+ * dashboard-push-restart 2.1：逃生键 hooks.push_restart_dashboard 开关
+ * （SPEC pushed 终态自动重启 dashboard 的总开关，缺省 true）。
+ *
  * 作用域说明：hook 配置仅项目级（.fenix/config.yaml），设置页菜单仅在
  * 项目级作用域下展示本页签（见 settings/index.tsx），故 project 必传。
  */
 
-import { App, Typography } from 'antd';
+import { App, Card, Checkbox, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import HookManager from '@/components/HookManager';
 import { getHookAudit } from '@/services/dashboard';
@@ -24,6 +27,27 @@ interface HooksPanelProps {
   project: string;
 }
 
+/** 逃生键读取：hooks.push_restart_dashboard 缺省 true，仅显式 false 关闭
+ * （与后端 hook_config 注入门同口径：非法值按缺省开启）。 */
+export function pushRestartEnabledFromConfig(hooksCfg: unknown): boolean {
+  if (hooksCfg && typeof hooksCfg === 'object' && !Array.isArray(hooksCfg)) {
+    return (hooksCfg as Record<string, unknown>).push_restart_dashboard !== false;
+  }
+  return true;
+}
+
+/** 逃生键写回参数：保留 hooks 段其余键（global/specs 等）整体替换落盘。 */
+export function pushRestartSavePayload(
+  hooksCfg: unknown,
+  on: boolean,
+): { hooks: Record<string, unknown> } {
+  const base =
+    hooksCfg && typeof hooksCfg === 'object' && !Array.isArray(hooksCfg)
+      ? (hooksCfg as Record<string, unknown>)
+      : {};
+  return { hooks: { ...base, push_restart_dashboard: on } };
+}
+
 export default function HooksPanel({ config, onSave, project }: HooksPanelProps) {
   const { message } = App.useApp();
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
@@ -32,6 +56,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
 
   const hooksCfg = config.hooks ?? {};
   const globalHooks: HookConfig[] = Array.isArray(hooksCfg.global) ? hooksCfg.global : [];
+  const pushRestartOn = pushRestartEnabledFromConfig(config.hooks);
 
   // 加载跨 spec 最近执行记录
   useEffect(() => {
@@ -72,6 +97,19 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     }
   };
 
+  // dashboard-push-restart 2.1：逃生键切换即写回（checkbox 切换触发配置写回
+  // 调用，经设置页 onSave 统一走 /api/config）
+  const handleTogglePushRestart = async (on: boolean) => {
+    setSaving(true);
+    try {
+      await onSave(pushRestartSavePayload(config.hooks, on));
+    } catch (e) {
+      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div>
       {/* 与其他设置页签统一的家规标题模式（h3 默认顶距），勿改 Typography.Title+marginTop:0 */}
@@ -91,6 +129,28 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         hideEffective
         allowProjectEvent
       />
+      {/* dashboard-push-restart 2.1：推送自动重启逃生键 */}
+      <h3 style={{ marginTop: 24 }}>推送自动重启</h3>
+      <Card style={{ marginTop: 12 }} data-testid="push-restart-dashboard-card">
+        <Checkbox
+          data-testid="push-restart-dashboard-switch"
+          checked={pushRestartOn}
+          disabled={saving}
+          onChange={(e) => handleTogglePushRestart(e.target.checked)}
+        >
+          <span className="switch-inline-label">
+            SPEC push 后自动重启 dashboard
+            <span className="label-note">（hooks.push_restart_dashboard）</span>
+          </span>
+        </Checkbox>
+        <div>
+          <Text type="secondary" data-testid="push-restart-dashboard-desc">
+            SPEC push 后自动重启 dashboard 以加载最新代码；重启走 tmux 会话原窗格，
+            60s 内重复 push 自动去抖，未运行 dashboard 的环境静默跳过。
+            关闭后 pushed 不再触发重启，既有 hook 配置不受影响。约 30s 配置热更新生效。
+          </Text>
+        </div>
+      </Card>
     </div>
   );
 }
