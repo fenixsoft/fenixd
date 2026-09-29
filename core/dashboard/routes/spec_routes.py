@@ -90,7 +90,8 @@ class H3SpecRoutesMixin:
 
         读取 SPEC 的 proposal.md / design.md / tasks.md 原文返回 {found, content}。
         - doc 非法 → 400
-        - spec 非法 / 不在项目 STATE.md → 404（且不读取任何 changes 目录外文件）
+        - spec 非法 / STATE、归档清单、归档目录均无命中 → 404（且不读取任何
+          changes 目录外文件）
         - 文件不存在 → 200 + {found: false, content: ""}
         """
         doc = query.get("doc", [None])[0]
@@ -107,9 +108,15 @@ class H3SpecRoutesMixin:
             return
         # 文件缺失是常态分支，但 spec 必须真在项目 STATE.md 或归档清单中
         # （D2：仅未知 spec 才 404；清单回退使已迁出 SPEC 的文档继续可读，
-        # add-archive-state-migration 3.2）
+        # add-archive-state-migration 3.2）。双源均无时再以归档目录命中兜底：
+        # 日期前缀旧归档与软删除墓碑（<spec>-<Unix秒>）本就无 STATE/清单条目，
+        # 知识溯源链接以目录名原样引用（fix-archived-spec-doc-readback 契约，
+        # tests test_api_spec_doc_archived_readback/_soft_deleted_tombstone）；
+        # 越界防护由 _SPEC_NAME_RE + get_spec_doc 的目录内 containment 校验承担。
         proot = Path(project["path"])
-        if _spec_entry_with_archive_fallback(proot, spec) is None:
+        if _spec_entry_with_archive_fallback(proot, spec) is None and (
+            dashboard_data.resolve_spec_dir(proot, spec) is None
+        ):
             self._error(404, f"spec not found: {spec}")
             return
         try:

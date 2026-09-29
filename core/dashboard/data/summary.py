@@ -594,6 +594,12 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
         if sig is not None:
             sigs[str(p)] = sig
 
+    # add-archive-state-migration BUG-01：活跃目录存在性本身入签名。archived
+    # 标记以活跃目录存在性为可见性单源之一（is_spec_archived），而目录可能仅含
+    # 不入签名的文件（如 proposal.md）——目录在首建索引后重建/删除时其余签名
+    # 零变化，陈旧 archived 标记永不重算。目录 sig（mtime_ns, size）同时覆盖
+    # 直接子项增删，宁多勿漏。
+    add(changes)
     add(changes / "tasks.md")
     add(changes / ".spec.yaml")
     add(changes / "verification-report.md")
