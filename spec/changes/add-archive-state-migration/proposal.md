@@ -41,5 +41,5 @@
 - `core/evolution.py`：候选名去重双源口径。
 - `bin/fenix_archive.py`：skill 归档后迁出。
 - 前端 `pages/projects`（如需）：「已归档」视图对迁出条目的既有渲染复用，预计零改或最小改（服务端合并后前端无感知）。
-- 配置：**无新增配置键**（复用既有 `auto_archive_threshold`），无需 Dashboard 设置页改动。
+- 配置：**无新增配置键**（复用既有 `archive.auto_threshold`，经 `ConfigLoader.effective_auto_archive_threshold` 读取，缺省 50），无需 Dashboard 设置页改动。
 - 回归面：pm_engine 调度扫描（活跃口径不变）、self_review、dashboard watcher/SummaryIndex（活跃口径不变）；统计数字下降属预期。

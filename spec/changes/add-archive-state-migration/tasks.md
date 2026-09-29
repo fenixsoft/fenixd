@@ -41,7 +41,7 @@
 
 - [ ] 4.1 `core/dashboard/data/spec_archive.py` 新增 `backfill_archived_entries(project_root, logger) -> dict`：扫描活跃 STATE 中「终态 + 活跃目录不存在」条目逐个 `evict_spec(name, "backfill")`，单条失败跳过记日志返回计数；非终态孤儿条目跳过并记日志
 - [ ] 4.2 把回填挂到 `auto_archive_check` 的既有周期触发处（先回填后阈值归档），不受 `auto_threshold` 开关约束（阈值 0 仍回填）
-- [ ] 4.3 `soft_delete_spec` 的 `found` 判定改为活跃 STATE 或清单有条目；条目仅在清单时清理清单小节，双源并存时两处都清，归档目录移除逻辑不变
+- [ ] 4.3 `soft_delete_spec` 的 `found` 判定改为活跃 STATE 或清单有条目；条目仅在清单时清理清单小节，双源并存时两处都清，归档目录移除逻辑不变；清单小节移除在 `.STATE.md.lock` 的 flock 内执行（与迁出/回填写侧同锁，避免并发竞态）
 - [ ] 4.4 单测：回填批量迁出 archived_by=backfill、重复执行第二轮零迁出、非终态孤儿保留；阈值 0 时回填仍执行；软删除对仅清单条目与双源条目的清理行为
 
 ## 5. 既有用例修订与全量验证

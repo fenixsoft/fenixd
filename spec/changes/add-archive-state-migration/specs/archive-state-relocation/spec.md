@@ -2,7 +2,7 @@
 
 ### Requirement: 归档清单文件
 
-系统 SHALL 使用 `.fenix/STATE.archive.md` 作为已迁出 SPEC 条目的归档清单：文件格式与 STATE.md 相同（`### <spec名>` 小节 + `- key: value` 字段行），可被同一解析逻辑读取。条目迁出时系统 SHALL 在该条目追加两个溯源字段：`archived_at`（迁出时刻，UTC ISO 8601 字符串）与 `archived_by`（迁出路径，取值 `auto`/`ui`/`cli`/`backfill` 之一）。清单文件 SHALL 只追加和移除（软删除），SHALL NOT 因活跃 STATE.md 的任何状态流转被重写。清单文件不存在时 SHALL 视为空清单（读侧与迁出侧均不报错）。
+系统 SHALL 使用 `.fenix/STATE.archive.md` 作为已迁出 SPEC 条目的归档清单：文件格式与 STATE.md 相同（`### <spec名>` 小节 + `- key: value` 字段行），可被同一解析逻辑读取。条目迁出时系统 SHALL 在该条目追加两个溯源字段：`archived_at`（迁出时刻，UTC ISO 8601 字符串）与 `archived_by`（迁出路径，取值 `auto`/`ui`/`cli`/`backfill` 之一）。清单文件 SHALL 只经三类写操作变更：追加（迁出）、同名条目幂等覆盖（迁出原语去重，以整体重写消除重复小节）与移除（软删除），SHALL NOT 因活跃 STATE.md 的任何状态流转被重写。清单文件不存在时 SHALL 视为空清单（读侧与迁出侧均不报错）。
 
 #### Scenario: 迁出条目落入清单并带溯源字段
 

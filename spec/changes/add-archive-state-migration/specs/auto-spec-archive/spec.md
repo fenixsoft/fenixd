@@ -2,7 +2,7 @@
 
 ### Requirement: daemon 周期检查并执行自动归档
 
-daemon 主循环 SHALL 周期性（独立低频计时，量级为分钟级）对每个项目执行自动归档检查：统计状态为 done/pushed 且未归档（`spec/changes/<name>/` 目录仍存在）的 SPEC 数量；超过有效阈值时，按完成时间从最久到最新依次归档（调用与手动归档相同的移动逻辑：目录移入 `spec/archive/YYYY-MM-DD-<name>/`），且每条归档成功后 SHALL 迁出该 SPEC 的 STATE.md 条目至归档清单（`archived_by=auto`；迁出失败降级告警，条目留待存量回填），直到未归档终态数量降至阈值以内。阈值有效值为 0 或配置缺失时 SHALL 跳过检查（存量回填不受此开关约束）。完成时间 SHALL 取 STATE.md 条目的 updated 字段（终态 SPEC 不再更新，updated 即完成时间）。单个 SPEC 归档失败（如目标目录已存在）SHALL 跳过该条并继续处理其余，且记录日志，不中断检查循环。
+daemon 主循环 SHALL 周期性（独立低频计时，量级为分钟级）对每个项目执行自动归档检查：统计状态为 done/pushed 且未归档（`spec/changes/<name>/` 目录仍存在）的 SPEC 数量；超过有效阈值时，按完成时间从最久到最新依次归档（调用与手动归档相同的移动逻辑：目录移入 `spec/archive/YYYY-MM-DD-<name>/`），且每条归档成功后 SHALL 迁出该 SPEC 的 STATE.md 条目至归档清单（`archived_by=auto`；迁出失败降级告警，条目留待存量回填），直到未归档终态数量降至阈值以内。有效阈值（`ConfigLoader.effective_auto_archive_threshold`，缺省 50）为 0 时 SHALL 跳过检查（存量回填不受此开关约束，先回填后阈值归档）。完成时间 SHALL 取 STATE.md 条目的 updated 字段（终态 SPEC 不再更新，updated 即完成时间）。单个 SPEC 归档失败（如目标目录已存在）SHALL 跳过该条并继续处理其余，且记录日志，不中断检查循环。
 
 #### Scenario: 超阈值自动归档最久完成的
 
@@ -22,9 +22,9 @@ daemon 主循环 SHALL 周期性（独立低频计时，量级为分钟级）对
 - **WHEN** daemon 执行自动归档检查
 - **THEN** 不移动任何目录、不迁出条目，日志无归档动作
 
-#### Scenario: 阈值为 0 或缺失时禁用
+#### Scenario: 阈值为 0 时禁用
 
-- **GIVEN** 某项目 archive.auto_threshold=0（或未配置且无默认值生效路径之外显式设 0）
+- **GIVEN** 某项目 archive.auto_threshold=0
 - **WHEN** daemon 执行检查
 - **THEN** 跳过该项目，不做任何归档迁出（存量回填仍独立执行）
 
