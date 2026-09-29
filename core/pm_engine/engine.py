@@ -486,7 +486,7 @@ class PMEngine:
         # _on_spec_ready 既有守卫，engine.py:552）——本入口受
         # gates.start_after_scope 条件门控：full 时行为同 fix-start-after-premature-pickup
         # （drafted + 未到期/哨兵的 SPEC 不得被任何自动通道晋升——扫描
-        # （_dispatch_changes）、恢复（_recover_one）、以及本文件 :392 的
+        # （_dispatch_changes）、恢复（_recover_one）、以及本文件的
         # _on_spec_drafted → _on_spec_reviewing 同 handler 直调均汇聚于此，覆盖面以
         # handler 入口为界）；dispatch 时回到 fix-start-after-premature-pickup 之前的
         # 旧行为（立即晋升，仅实现派发等到期）。守卫置于 promote_mode 闸口之外：
@@ -1978,18 +1978,53 @@ class PMEngine:
         不阻塞主流程（fail-open，残留由 stamp 严格校验在后续读取时拒绝）。
         """
         shared = self.project_root / ".fenix" / ".fenix-run-result.json"
+        tmp: Optional[Path] = None
         try:
             if not shared.exists():
                 return
             data = json.loads(shared.read_text(encoding="utf-8"))
             if not isinstance(data, dict) or data.get("spec") != spec_name:
                 return  # 非本 spec 的文件（其它 spec 在途残留）→ 不动
-            shared.unlink()
+            # TOCTOU 消除（code-review item c1cfce1c1c75）：校验通过后不经
+            # unlink 直删——read 与 unlink 两步之间并发实现 run 可能已把共享
+            # 路径覆写为其它 spec 的在途结果，unlink 会误删他 spec 文件。改为
+            # 先同目录 rename 到唯一临时名（原子摘除共享路径），再复核临时名
+            # 内容 stamp 仍为本 spec 才删除；复核不符说明摘到的已是覆写后的
+            # 他 spec 文件，原样还回共享路径不动。
+            tmp = shared.with_name(
+                f"{shared.name}.cleanup-{os.getpid()}-{time.time_ns()}"
+            )
+            try:
+                os.rename(str(shared), str(tmp))
+            except OSError:
+                tmp = None  # 摘除失败 = 未动任何文件，无需清理临时名
+                raise
+            check = json.loads(tmp.read_text(encoding="utf-8"))
+            if not isinstance(check, dict) or check.get("spec") != spec_name:
+                # 共享路径在校验后被覆写为其它 spec 的在途结果 → 还回不动
+                if not shared.exists():
+                    os.replace(str(tmp), str(shared))
+                else:  # 已有更新的在途文件在位 → 仅丢弃陈旧副本
+                    tmp.unlink()
+                tmp = None
+                return  # 其它 spec 的文件 → 不动
+            tmp.unlink()
+            tmp = None
             self.logger.info(
                 "pm_engine",
                 f"已消费共享结果文件已清理 '{spec_name}'：{shared}",
             )
         except (json.JSONDecodeError, OSError) as e:
+            # 摘除后中途失败：尽量把临时名还回共享路径，避免本 spec 结果蒸发
+            # 且不留垃圾临时文件（还回失败时 WARNING 文案携带残留路径供排查）
+            if tmp is not None and tmp.exists():
+                try:
+                    if not shared.exists():
+                        os.replace(str(tmp), str(shared))
+                    else:
+                        tmp.unlink()
+                except OSError:
+                    pass
             if isinstance(e, json.JSONDecodeError):
                 return  # 损坏/无 stamp 文件由读取侧 fail-closed 拒绝，此处不动
             self.logger.warning(
@@ -2691,10 +2726,21 @@ class PMEngine:
 
             # ── 推送成功 → 推进 pushed，清 error + 退避标记 ──
             # fix-observability-gaps 2.2：推送收口自动来源
-            self.state_machine.transition(
+            # transition 返回值必须接收（code-review item f3173b3164ee）：
+            # 状态已被外部改动（人工冻结/清除错误后回非 done 态）致
+            # done→pushed 被拒时，不得清退避记账、不得写成功日志。
+            moved = self.state_machine.transition(
                 spec_name, "pushed",
                 trigger_run_id=None, agent_type=None, channel="auto",
             )
+            if not moved:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Push transition done→pushed rejected for '{spec_name}' "
+                    f"(state changed externally) — skip backoff reset, "
+                    f"wait next re-evaluation",
+                )
+                return False
             # push 成功 = 退避/重试计数的唯一清零点（code-review item
             # bbba88d8e6af）：字段化后与 error 文本标记同清，避免 spec 复回
             # done 时带陈旧退避期与计数。
