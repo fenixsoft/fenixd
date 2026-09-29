@@ -1792,7 +1792,7 @@ class QQQueueMixin:
                         # 全链模型不可用终态。同因重派必然撞同一拒模型链（确定性
                         # 失败，非瞬态），不排程、不增 retry、不翻转状态机；spec
                         # 原状保持，error 落盘供 dashboard/admin 可见。摘除拒模型
-                        # 条目后恢复属人工运维（docs/help/13-model-chain-ops.md）。
+                        # 条目后恢复属人工运维（docs/help/12-faq.md）。
                         self._pm.logger.warning(
                             "pm_engine",
                             f"Model chain unavailable for '{spec_name}' — holding "

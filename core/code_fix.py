@@ -15,8 +15,8 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
 调度解耦不变量（decouple-codefix-review-lanes Requirement 1）：批派发与
 链推进的判据集合**不含**「周期审查 run 在飞」——checkpoint 守卫链
 （enabled/单飞/无 open 条目/WIP 预检/回归契约）没有审查在飞否决或等待
-条件（09-24 取证定案，证据见
-`docs/help/codefix-review-lane-decoupling.md`）；与审查的真实资源冲突点
+条件（09-24 取证定案，运维口径见
+`docs/help/12-faq.md`）；与审查的真实资源冲突点
 （回归主机级套件锁）由既有锁自然串行。链自驱动推进语义对所有批收尾路径
 成立，含延迟批（defer）合回路径——批收尾 wip_gate_blocked 走
 `_defer_merge_back` 返回 `consumed` 照常 `_resubmit`；延迟台账合回成功在

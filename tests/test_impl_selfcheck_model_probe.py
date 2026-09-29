@@ -166,7 +166,7 @@ class TestConfigTemplateHygiene:
         text = (REPO_ROOT / ".fenix" / "config.template.yaml").read_text(
             encoding="utf-8")
         assert "拒模型" in text
-        assert "13-model-chain-ops.md" in text
+        assert "12-faq.md" in text
 
     def test_template_still_parses_as_yaml(self):
         import yaml

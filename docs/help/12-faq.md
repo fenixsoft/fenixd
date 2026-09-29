@@ -112,6 +112,38 @@
 
 **处置**：先在 SPEC 详情时间轴看该 run 实际驱动的 `model@provider` 确认通道；再逐字符核对 `agents.models.<角色>.provider` 与 `llm.providers[].name` 是否一致。注意 Agent 通道与用户会话是隔离的（[LLM Provider 隔离](02-concepts.md#llm-provider-隔离)）：Agent 是否走 Provider 只由 `agents.models` 分配决定，改用户 `~/.claude/settings.json` 不会影响已分配的 Agent。
 
+## 14. 模型链上有被拒模型（unrecognized_model / model-chain-unavailable）
+
+**现象**：日志反复出现 WARNING `Unrecognized model rejected by provider ... provider='<名>' model='<模型名>'`；或 spec error / Dashboard 告警含 `[model-chain-unavailable] 全链模型不可用：provider '<名>' 拒绝模型 '<模型名>'`——文本直接点名了要摘的 provider 与模型名。
+
+**根因**：`agents.models.<角色>.provider` 候选链上存在 provider 明确拒绝的模型名，属确定性失败，与网关负载无关——重试、等待、重派都不会自愈。框架只做 run 内沿链 failover（每个被拒条目仍会让当次 run 白烧一次进程启动 + 一条失败告警），**不会**自动修改配置；链尾无更多候选时 run 以 `[model-chain-unavailable]` 归因收场，派发器不重派、不增 retry、不翻转状态机，spec 原状等人工摘除。
+
+**处置**：模型链定义在**运行时** `.fenix/config.yaml` 的 `agents.models`（模板只有注释示例，不含活动链）。人工删除被拒条目（daemon 无需重启，每次派发都重新解析链）：多角色共享同一条目时每个引用处都要摘；摘后核对各链剩余条目 ≥3（不足时先补入其它可用组合再摘）。随后清除 spec 的 `error` 字段触发重派，并在 `.fenix/todo.md` 登记摘除跟进提醒，避免数周后链纵深缩水无人知晓。摘除条目的恢复条件（全部满足才加回）：provider 侧确认支持该模型名 + 手工探针调用成功无 `unrecognized_model` + 加回后首个 run 不再出现该 WARNING；模型名变更（升级到新版本名）不算「同一模型恢复」，按新条目重新探针。
+
+相关：[配置参考](09-config.md#agents)
+
+## 15. 吞吐与排水调优（并发槽位 / merge-back 预检 / 重启排水）
+
+以下三项都只改运行时 `.fenix/config.yaml`，约 30 秒热更新生效，无需重启 daemon。
+
+**想调派发并发**：`agents.max_concurrent`，代码缺省 5；未写该键即用缺省。上调前自查两件事：`worktree.base_dir` 所在盘剩余空间（每个并发实现 run 一个独立 worktree，约占 N × 仓库大小）与模型网关的并发配额。多个 run 同时到收尾回归检查点时由 full-suite.lock 主机级互斥锁串行，上调并发只增加锁排队时长、不改变互斥语义。回退即改回原值或删除该键，正在飞的 run 不受影响。
+
+**merge-back 被拦截升级**：merge-back 发起前预检「主树 WIP 脏文件集 ∩ 分支触碰文件集」，交集非空时不发起 merge，发人工升级告警（含交集文件清单与两侧来源）。处置：人工清理主树 WIP（`git add/commit` 或 `git stash push`）后 ready 重派该 spec。判据是保守的（不同 hunk 本可自动合并的重叠也会拦），确认无真实冲突时可临时开逃生门 `worktree.merge_precheck_bypass: true` 直接 merge，用完改回 false。策略键 `worktree.mergeback_wip_overlap_policy`：缺省 `escalate`（拦截升级人工）；`auto` 保留旧自动收纳语义（重叠改动 stash 收纳、merge 后恢复）；`block` 与 escalate 同为拦截。
+
+**规划性重启把在飞 run 直接杀了 / 排水为 0**：restart（`.fenix/restart_request` 触发）的排水窗口由 `agents.run_drain_max_seconds` 管（代码缺省 60 秒），且须 ≤ `admin.shutdown_drain_seconds`（shutdown>0 时；两者均显式配置且违反时配置加载直接报错）。restart 流程：停新派发 → 向每个在飞 run 广播一次 checkpoint 旗标（促使实现侧尽快落盘收尾）→ 等至多排水窗口 → 超窗 run 强杀并保全分支续做（排水集合还覆盖 ocr 等登记车道进程）。排水起止看 daemon 日志 `Drain: planned restart ...` / `Drain finished after ...` 两行；出现 WARNING `Drain: planned restart but drain window is 0s` 说明 run_drain 被显式置 0，属配置误置（在飞工作将不经排水直接终止），调回正值即可。存量部署若 `admin.shutdown_drain_seconds: 0`（旧版本会把重启排水清零、直接 SIGTERM 在飞 run），人工调为正值即可先行恢复排水。
+
+相关：[配置参考](09-config.md)、[调度与治理规则](06-governance.md)
+
+## 16. code-fix 不派批 / 周期审查 run 僵死
+
+**现象**：周期审查 run 长时间不收尾（典型形态：ocr scan 阶段网络僵死，数小时仅几十秒 CPU）；或 code-fix 台账迟迟不派新批。
+
+**根因**：两者相互独立。code-fix 批派发的守卫链（enabled / 自身单飞 / 无 open 条目 / WIP 预检 / 回归契约）**不含**「审查 run 在飞」——审查在飞不挡派批，这是结构性解耦并有回归测试钉住（`tests/test_codefix_review_decoupling.py`）；不派批最常见的原因就是台账没有 open 条目（checkpoint 如实空转）或被 WIP/回归守卫拦截。审查 run 侧的问题是没有自动收走机制时，僵死占道上界无限制，产物滞留在 `out-<run_id>.jsonl` 不入台账。
+
+**处置**：审查 run 疑似僵死时，admin monitor 看门狗按「产物 mtime（含分片）+ 进程 CPU 时间」双判据判定——任一有进展即重置计时，双停持续 `admin.review_stall_minutes`（缺省 30，正整数）自动取消该 run，run 收尾后既有急救落账路径自动把滞留 findings 转正入台账，`review_stall_watchdog` 告警留痕；人工取消同样触发急救落账。看门狗误杀代价 = 急救落账后下轮重审（upsert 按指纹幂等，已完整落盘的产物不丢），项目页「代码审查」分面手动再触发一次即可；判别误杀对照告警 evidence 里的 mtime/cpu_seconds 与实际值，读数与事实不符先怀疑巡检粒度再调大阈值。阈值权衡：调小（如 15）僵死收走更快，但慢 IO/长网络等待的正常 run 误杀率上升；调大（如 60）接近零误杀，占道上界随之放大。
+
+相关：[日志体系](11-logs.md)
+
 ## 相关文档
 
 - [核心概念与架构](02-concepts.md)、[SPEC 生命周期与状态机](03-lifecycle.md)

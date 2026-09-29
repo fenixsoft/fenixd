@@ -212,7 +212,7 @@ agents:
   # 撞同一拒绝。runner 会记 WARNING（Unrecognized model rejected by provider），
   # 全链候选均被拒时失败归因带 [model-chain-unavailable] 标记且不自动重派。
   # 应人工从运行时 .fenix/config.yaml 各链摘除该条目（摘除/恢复步骤见
-  # docs/help/13-model-chain-ops.md），并在 .fenix/todo.md 登记提醒。
+  # docs/help/12-faq.md），并在 .fenix/todo.md 登记提醒。
   # models:
   #   implementer:
   #     provider: "volc-engine"

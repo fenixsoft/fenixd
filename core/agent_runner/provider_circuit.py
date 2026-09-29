@@ -103,7 +103,7 @@ CLI_STDERR_NOISE_TEXT_PATTERNS = (
 # 全链模型不可用语义标记（add-impl-selfcheck-model-probe 2.2）：链尾模型仍被拒
 # 时注入失败归因，派发器读侧据此**跳过同因重派**（阻断「switch 冷却到期复位 →
 # 重派再撞同一拒模型链」的 2-5 分钟循环）。摘除拒模型条目为人工运维步骤
-# （docs/help/13-model-chain-ops.md）。
+# （docs/help/12-faq.md）。
 MODEL_CHAIN_UNAVAILABLE_MARKER = "[model-chain-unavailable]"
 # 连接类异常关键字（网络错误 / DNS / 超时 / 连接拒绝）——属瞬态，驱动链前进
 SWITCH_ERROR_CONN_PATTERNS = (
@@ -188,7 +188,7 @@ def annotate_model_chain_unavailable(error_text: str, provider_name, model,
         f"全链模型不可用：provider {provider_name!r} 拒绝模型 {model!r}"
         f"（unrecognized_model，链尾无更多候选；本 run 已有 {rejected_count} 个"
         f"链上候选被拒）——同因重派必然再撞同一拒模型链，摘除拒模型条目为"
-        f"人工运维步骤（docs/help/13-model-chain-ops.md）"
+        f"人工运维步骤（docs/help/12-faq.md）"
     )
     if error_text:
         return f"{MODEL_CHAIN_UNAVAILABLE_MARKER} {detail} ｜ {error_text}"
@@ -467,7 +467,7 @@ class ProviderCircuit:
 
         含 provider / model / run_id（设计 D3 ①），供链摘除决策：同一
         (provider, model) 反复出现本告警即应人工摘除该链条目
-        （docs/help/13-model-chain-ops.md）。仅告警留痕，不改变任何计数。
+        （docs/help/12-faq.md）。仅告警留痕，不改变任何计数。
         """
         self._pm.logger.warning(
             "agent_runner",
@@ -476,7 +476,7 @@ class ProviderCircuit:
             f"model={model!r} run_id={run_id!r} spec={spec_name!r}: "
             f"deterministic model failure, advancing chain without "
             f"transient/same-cause counting; consider removing this chain entry "
-            f"(see docs/help/13-model-chain-ops.md)",
+            f"(see docs/help/12-faq.md)",
         )
 
     @staticmethod
