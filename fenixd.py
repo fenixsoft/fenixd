@@ -236,6 +236,15 @@ def _clear_preserve_sidecar() -> None:
         pass
 
 
+def _strict_bool(value, default: bool) -> bool:
+    """严格 bool 读取（对齐 core.config get_admin_config 的严格 bool 范式，
+    code-review item 2f257c49fa5c）：bool() 直转会把任何 truthy 非 bool 值
+    （如 YAML 引号串 "false"）静默翻成 True——破坏性开关（merge 前预检
+    旁路 / serving 目录强回收等）须只认真 bool，非 bool 值一律回退文档缺省。
+    """
+    return value if isinstance(value, bool) else default
+
+
 # 无 spec 绑定车道的 run_id 前缀（code-review item 67c551e85f1c）：这些车道
 # 的 run 不绑 SPEC（run_id 均为 <prefix>-<epoch/date> 形态），排水保全路径
 # （_preserve_interrupted_runs）解析不出 spec 属预期形态，降级 info 留痕跳过。
@@ -476,7 +485,9 @@ class FenixDaemon:
             # 检查在飞/待收口 spec 的分支引用（宁可多留分支不可误删成果）。
             state_reader=self.state_machine.read_all,
             mergeback_wip_overlap_policy=str(_wip_policy) if _wip_policy else None,
-            merge_precheck_bypass=bool(_precheck_bypass),
+            # 严格 bool（code-review item 2f257c49fa5c）：引号串 "false" 经
+            # bool() 直转会静默打开 merge 前 WIP 重叠预检旁路
+            merge_precheck_bypass=_strict_bool(_precheck_bypass, False),
             build_artifact_paths=_artifact_paths,
             has_build_artifacts=_has_build_artifacts,
         )
@@ -1040,7 +1051,13 @@ class FenixDaemon:
         周期清扫（use_in_flight=True：testing 中的 spec 视为在飞保留）共用。
         开关 `verify.serving_reclaim.enabled` 为 false 时早退（不调 git、不删文件）。
         """
-        enabled = bool(ConfigLoader.get(self.config, "verify.serving_reclaim.enabled", True))
+        # 严格 bool（code-review item 2f257c49fa5c）：引号串 "false" 经 bool()
+        # 直转会静默打开 .fenix/verify-serving/ 的强制回收，非 bool 值回退
+        # 文档缺省 True
+        enabled = _strict_bool(
+            ConfigLoader.get(self.config, "verify.serving_reclaim.enabled", True),
+            True,
+        )
         if not enabled:
             self.logger.info(
                 "fenixd", "verify.serving_reclaim.enabled=false，跳过 serving 目录回收"
@@ -2115,10 +2132,14 @@ class FenixDaemon:
         # 停摆）。本分支位于冷却/自触发闸门之后（冷却窗口/锁存期内到不了
         # 这里，仍受闸门约束）、_is_idle 之前——忙时也直接写 restart_request，
         # 在飞 run 由 supervisor planned_restart 排水兜底（60s 宽限 + checkpoint
-        # 保全 + 断点续做）。悬空超时触发时距上次自愈重启必然已超
+        # 保全 + 断点续做）。缺省配置下悬空超时触发时距上次自愈重启必然已超
         # self_triggered_window_seconds（重启即刷新 baseline，_code_stale 归零
-        # 重新起算），故不触碰 _self_triggered_cycle（不强制置真），
-        # _record_selfheal_restart 按既有语义如实记录。
+        # 重新起算）；但 max_dangling_seconds 是独立可配的非负整数、允许配成
+        # 小于自触发窗口，此时悬空时限可能在窗口内到期——由下方
+        # self_triggered_now 守卫拦下不写请求（code-review item 74da2c8c7864，
+        # FR-3「窗口内不写请求」语义优先于悬空升级）。本分支不触碰
+        # _self_triggered_cycle（不强制置真），_record_selfheal_restart 按既有
+        # 语义如实记录。
         max_dangling = cfg.get("max_dangling_seconds", 14400)
         stale_since = getattr(self, "_code_stale_since", None)
         dangling_seconds = (
@@ -2132,6 +2153,15 @@ class FenixDaemon:
             and dangling_seconds is not None
             and dangling_seconds > max_dangling
         ):
+            if self_triggered_now:
+                # FR-3 语义守卫（code-review item 74da2c8c7864）：max_dangling_seconds
+                # 允许配成小于 self_triggered_window_seconds，悬空超时可能在
+                # 自触发窗口内到期——窗口内仅落升级告警不写 restart_request
+                # （告警自带 60 分钟窗口去重，窗口内重复 tick 不重复成条；
+                # 避免延长重启循环），窗口过期后由后续 tick 在此收尾触发
+                # （dangling_seconds 只增不减，无需重新起算）。
+                self._alert_dangling_timeout(dangling_seconds, max_dangling)
+                return
             if getattr(self, "_dangling_timeout_fired", False):
                 # 防重复写（2.3）：本悬空周期已成功触发过，1s tick 直接跳过。
                 # req 已在场的情形由上方 in-flight 阻断覆盖（req.exists() →
@@ -2479,6 +2509,13 @@ class FenixDaemon:
                 f"cancel_run 调用失败 run_id={run_id}: {e}",
             )
 
+    # 唤起失败退避（code-review item aeb6d238b51d）：同一信号连续唤起失败按
+    # 次数指数退避（1s 起步、封顶 60s），达放弃阈值改为删信号并落一条
+    # ESCALATION 告警收敛——handler 确定性异常时不再以主循环 1s 粒度每秒
+    # 重试并各落一条 ERROR（丢弃的唤起交 full_scan 周期兜底）。
+    _SCHED_KICK_FAIL_BACKOFF_CAP_SECONDS = 60
+    _SCHED_KICK_FAIL_GIVEUP_COUNT = 10
+
     def _check_scheduling_kick_requests(self):
         """主循环每轮扫描「清空定时拾取即派发」的目录形态信号并消费。
 
@@ -2504,21 +2541,26 @@ class FenixDaemon:
         if kick_dir.is_dir():
             for path in sorted(kick_dir.glob("*.json")):
                 try:
+                    if self._sched_kick_backoff_active(path):
+                        # 连续失败退避期内：本轮跳过，推迟重试（item aeb6d238b51d）
+                        continue
                     self._consume_scheduling_kick_file(path)
                 except Exception as e:  # noqa: BLE001 逐条隔离：继续下一条
                     self.logger.error(
                         "fenixd",
                         f"scheduling_kick 条目消费异常（继续下一条）: {path.name}: {e}",
                     )
+                    self._record_sched_kick_failure(path)
         # 旧单文件路径兼容消费（D5：与目录扫描同轮、互不阻塞）。
         # 常量定义在 core/dashboard/data/admin_actions.SCHEDULING_KICK_REQUEST，
         # 本文件按既有风格用字面路径（旧路径只读兼容、无共享常量义务）。
         legacy = PROJECT_ROOT / ".fenix" / "scheduling_kick_request.json"
-        if legacy.exists():
+        if legacy.exists() and not self._sched_kick_backoff_active(legacy):
             try:
                 self._consume_scheduling_kick_file(legacy)
             except Exception as e:  # noqa: BLE001
                 self.logger.error("fenixd", f"scheduling_kick 旧文件消费异常: {e}")
+                self._record_sched_kick_failure(legacy)
 
     def _consume_scheduling_kick_file(self, path: Path) -> None:
         """消费/清理单个 scheduling kick 信号文件（目录条目与旧单文件共用）。
@@ -2614,12 +2656,18 @@ class FenixDaemon:
             # 唤起后立即处理派发队列，对齐 check_scheduling_deadlines 的到期拾取
             self.pm_engine._process_queue()
         except Exception as e:
-            # 唤起异常：信号保留留待下轮重试（对齐「异常者留待下轮重试」语义）
+            # 唤起异常：信号保留留待下轮重试（对齐「异常者留待下轮重试」语义；
+            # item aeb6d238b51d：连续失败按次数退避，超阈值删信号收敛）
             self.logger.error(
                 "fenixd",
                 f"scheduling_kick 唤起 '{spec}' 失败（full_scan 兜底）: {e}",
             )
+            self._record_sched_kick_failure(path, spec=spec)
             return
+        # 唤起成功：清空该信号的连续失败退避记录（item aeb6d238b51d）
+        fails = getattr(self, "_sched_kick_fail", None)
+        if fails:
+            fails.pop(str(path), None)
         # 唤起成功后删除；删除失败亦留待下轮。删除前重读 path 校验「仍是本次
         # 已消费的同一代 payload（created 一致）才删」（item 6888607ae472）：
         # 旧占位块（item 690e48370279）先 mkstemp 再 os.replace(path, tmp) 后
@@ -2669,6 +2717,62 @@ class FenixDaemon:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+    def _sched_kick_backoff_active(self, path: Path) -> bool:
+        """该信号文件处于唤起失败退避期内（code-review item aeb6d238b51d）。"""
+        state = getattr(self, "_sched_kick_fail", {}).get(str(path))
+        return state is not None and time.monotonic() < state[0]
+
+    def _record_sched_kick_failure(self, path: Path, spec=None) -> None:
+        """记录 scheduling_kick 唤起连续失败并按次数退避（code-review item
+        aeb6d238b51d）。
+
+        信号在唤起异常时仍保留留待下轮重试（D4/D5 语义不变），但同一信号
+        的连续失败按次数指数退避（1s 起步、封顶 60s）——handler 确定性异常
+        时不再以主循环 1s 粒度每秒重试并各落一条 ERROR；连续失败达放弃阈值
+        改为删信号 + 落一条 ESCALATION 告警收敛，唤起交 full_scan 周期兜底。
+        唤起成功由消费方清空记录、计数归零。
+        """
+        now = time.monotonic()
+        fails = getattr(self, "_sched_kick_fail", None)
+        if fails is None:
+            fails = self._sched_kick_fail = {}
+        count = fails.get(str(path), (now, 0))[1] + 1
+        if count < self._SCHED_KICK_FAIL_GIVEUP_COUNT:
+            delay = min(2 ** (count - 1), self._SCHED_KICK_FAIL_BACKOFF_CAP_SECONDS)
+            fails[str(path)] = (now + delay, count)
+            return
+        # 达放弃阈值：删信号防无限重试；告警一次即可——信号删除后不再有
+        # 重试来源，不构成刷屏源
+        fails.pop(str(path), None)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.logger.error(
+            "fenixd",
+            f"scheduling_kick 信号连续 {count} 次唤起失败，已删除信号改由 "
+            f"full_scan 周期兜底: {path.name}",
+        )
+        try:
+            admin_store = getattr(self, "admin_store", None)
+            if admin_store is not None:
+                admin_store.append(
+                    {
+                        "kind": ESCALATION,
+                        "severity": "major",
+                        "signal_type": "scheduling_kick",
+                        "spec": spec,
+                        "description": (
+                            f"scheduling_kick 信号连续 {count} 次唤起失败"
+                            f"（{path.name}），已删除信号并退避收敛，该 spec "
+                            "的唤起交由 full_scan 周期兜底；若反复出现请核查 "
+                            "handler 侧确定性异常"
+                        ),
+                    }
+                )
+        except Exception as e:  # noqa: BLE001 — 告警失败不阻断主循环
+            self.logger.warning("fenixd", f"scheduling_kick 放弃告警写入失败: {e}")
 
     def _reclaim_stale_scheduling_kicks(self) -> None:
         """陈旧 scheduling kick 信号回收（启动清扫 + 周期计时段，600s 对齐孤儿清扫）。
@@ -3047,6 +3151,8 @@ class FenixDaemon:
         "manifest_empty": "没有可审查的文件（manifest 为空），本次审查未执行",
         "manifest_error": "审查文件清单收集失败，本次审查未执行（详见 daemon 日志）",
         "submit_error": "审查任务投递失败，本次审查未执行（详见 daemon 日志）",
+        # item 3213135bc86f：停机积压旧信号（requested_at 超时效阈值）仅消费不执行
+        "stale_created": "审查触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需审查请重新发起",
     }
 
     def _write_code_review_request_result(self, requested_at, status, reason,
@@ -3096,6 +3202,12 @@ class FenixDaemon:
         二次校验防御性兜底（如信号文件被绕过写入）。
 
         单飞：已有 code-review run 在跑 → 忽略请求并记录。
+
+        时效分档（code-review item 3213135bc86f）：requested_at 与 admin_invoke /
+        code_fix / regression_fix 等兄弟车道同判据同阈值（经
+        _signal_created_is_stale）——daemon 停机期间积压的旧审查请求重启后仅
+        消费、落 stale_created 结果，不投递 full/window LLM 审查（昂贵动作
+        不对旧请求重放）；requested_at 缺失/非法保守按陈旧处理。
 
         消费走 _consume_request_file 原子模式（code-review item
         0e1eafada5d6）：先 rename 占位再读（payload 非法/损坏一律已消费返回
@@ -3170,6 +3282,22 @@ class FenixDaemon:
         scope = str(payload.get("scope") or "window")
         if scope not in ("full", "window"):
             scope = "window"
+
+        # 时效分档（code-review item 3213135bc86f）：与 admin_invoke / code_fix /
+        # regression_fix 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
+        # daemon 停机期间积压的旧审查请求重启后仅消费、落 stale_created 结果，
+        # 不投递 full/window LLM 审查（昂贵动作不对旧请求重放）；requested_at
+        # 缺失/非法保守按陈旧处理
+        if self._signal_created_is_stale(requested_at):
+            self.logger.warning(
+                "fenixd",
+                f"code_review 陈旧信号（requested_at={requested_at}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不投递"
+                f"（停机积压旧请求，如仍需审查请在 dashboard 重新发起）",
+            )
+            self._write_code_review_request_result(
+                requested_at, "dropped", "stale_created")
+            return
 
         # 守卫：daemon 未运行或 unmanaged 时信号无人消费
         hs = "stopped"
@@ -3522,7 +3650,8 @@ class FenixDaemon:
 
     def _write_code_fix_request_result(self, result_path, request_created, triggered,
                                        reason, message=None):
-        """原子写回手动触发判定结果文件（tmp + os.replace，防半写被前端读到）。
+        """原子写回手动触发判定结果文件（同目录 mkstemp + fsync + os.replace，
+        防半写被前端读到）。
 
         无论 triggered 与否都落盘（task 3.1）；写失败仅记日志——结果文件写不进
         属基础设施异常，无更好的用户反馈通道。
@@ -3537,24 +3666,34 @@ class FenixDaemon:
             "message": message,
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
-        tmp_path = result_path.with_name(result_path.name + ".tmp")
+        # mkstemp 原子写（code-review item 660dcac62fd3，对齐 _write_preserve_sidecar
+        # / _write_restart_history 惯例）：固定名 .tmp 中转在写入中途 SIGKILL 时
+        # 会在 .fenix 残留零字节 tmp（直至下次成功写才被清理），改用同目录
+        # mkstemp 随机名消除固定名残留窗口（亦免未来第二写者同名互踩）。
+        tmp_path = None
         try:
             result_path.parent.mkdir(parents=True, exist_ok=True)
-            with tmp_path.open("w", encoding="utf-8") as f:
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{result_path.name}.", suffix=".tmp",
+                dir=str(result_path.parent),
+            )
+            tmp_path = Path(tmp_str)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(str(tmp_path), str(result_path))
+            os.replace(tmp_str, str(result_path))
         except OSError as e:
             self.logger.error("fenixd", f"code_fix 手动触发结果写入失败: {e}")
-        finally:
-            # replace 成功后 tmp 已不存在；失败路径清掉残留，防 .fenix 堆积零字节
-            # tmp（code-review item e61c4efcdbc4，对齐 core/code_review
-            # .write_request_result 同型写路径的清理口径）。
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+            # 失败路径清掉残留 tmp，防 .fenix 堆积零字节临时文件（replace 成功
+            # 后 tmp 已不存在，无需清理；对齐 core/code_review
+            # .write_request_result 同型写路径的清理口径，item e61c4efcdbc4）。
+            if tmp_path is not None:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
 
     def _check_code_fix_requests(self):
         """主循环每轮扫描手动「立即自动修复」文件信号并消费（task 3.1）。
@@ -3919,7 +4058,7 @@ class FenixDaemon:
             if self.admin_store is not None:
                 self.admin_store.append(
                     {
-                        "kind": "escalation",
+                        "kind": ESCALATION,
                         "severity": "major",
                         "signal_type": "self-evolution",
                         "spec": None,

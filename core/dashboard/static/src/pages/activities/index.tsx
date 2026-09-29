@@ -226,6 +226,11 @@ function ActivityTimeline({
 
 type ViewMode = 'auto' | 'alert';
 
+// 加载失败来源（fix 2ca9c5ff7be6）：alerts=人工告警接口，activities=运维记录接口。
+// 两路失败共用一个 error state，但横幅按来源区分文案，避免仅告警失败时
+// 运维时间线照常渲染却误报「运维记录加载失败」
+type LoadError = { source: 'alerts' | 'activities'; message: string };
+
 interface ViewingRun {
   project: string;
   spec?: string;
@@ -307,7 +312,7 @@ export default function ActivitiesPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('auto');
   const [current, setCurrent] = useState(1);
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<LoadError | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshRef = useRef(0);
   // add-dashboard-paging-and-etag 3.2：服务端分页当前页（ref 供 SSE 刷新路径
@@ -324,7 +329,15 @@ export default function ActivitiesPage() {
     try {
       const fetchPage = (page: number) => getAdminActivities(undefined, undefined, page, PAGE_SIZE);
       const pageAtStart = pageRef.current;
-      const [first, alerts] = await Promise.all([fetchPage(pageAtStart), getAlerts()]);
+      // fix 2ca9c5ff7be6: 告警接口的请求级失败（reject）归一到 alerts.error 通道，
+      // 与响应级 error 同路径处理——只阻断告警数据上屏，不拖垮运维记录渲染
+      const [first, alerts] = await Promise.all([
+        fetchPage(pageAtStart),
+        getAlerts().catch((e: unknown): AlertsData => ({
+          alerts: [],
+          error: e instanceof Error ? e.message : String(e),
+        })),
+      ]);
       let d = first;
       // 总条数收缩导致当前页越界时回退第 1 页重拉一次（design D5 语义保留：
       // SSE 刷新保持页码，仅越界回退；第 1 页恒 ≤ 总页数，不会循环）。
@@ -339,15 +352,17 @@ export default function ActivitiesPage() {
       setData(d);
       if (!alerts.error) {
         setAlertsData(alerts);
-        setError('');
+        setError(null);
       } else {
         // fix df39d8bbc138: 告警加载失败必须提示，不能静默——否则首载失败显示误导性空态
-        setError(alerts.error);
+        // fix 2ca9c5ff7be6: 标注来源为告警接口，横幅不再误称「运维记录加载失败」
+        setError({ source: 'alerts', message: alerts.error });
       }
     } catch (e) {
       // 过期请求的失败同样不落状态，避免旧请求错误覆盖新请求结果
       if (seq !== loadSeqRef.current) return;
-      setError(e instanceof Error ? e.message : String(e));
+      // 告警失败已归一到 alerts.error 通道，走到这里只剩运维记录接口失败
+      setError({ source: 'activities', message: e instanceof Error ? e.message : String(e) });
     } finally {
       setLoading(false);
     }
@@ -499,7 +514,10 @@ export default function ActivitiesPage() {
       {error ? (
         <div style={{ marginBottom: 16 }}>
           <Card>
-            <div style={{ color: '#ff4d4f' }}>运维记录加载失败：{error}</div>
+            {/* fix 2ca9c5ff7be6: 按失败来源区分文案（运维记录 / 人工告警），避免误导失败范围 */}
+            <div style={{ color: '#ff4d4f' }}>
+              {error.source === 'alerts' ? '人工告警加载失败' : '运维记录加载失败'}：{error.message}
+            </div>
           </Card>
         </div>
       ) : null}

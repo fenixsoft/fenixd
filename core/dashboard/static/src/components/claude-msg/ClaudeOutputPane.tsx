@@ -109,11 +109,19 @@ const TERMINAL_EVENT_STATUS: Record<string, string> = {
   'stall-budget-terminated': 'interrupted',
 };
 
-// REST 拉取返回的 run status 终态集合（空态分支判定用；onRunStatus 契约
-// 另含 frozen-terminated——item ce8a84164320 的扩展仅及外层回调，空态分支
-// 词表未纳入）：
+// REST 拉取返回的 run status 终态集合（空态分支判定用），与 onRunStatus 契约
+// 词表对齐：frozen-terminated（item ce8a84164320 扩展）REST 初载/重同步直报原
+// 始串——不入集则零事件冻结终止 run 恒停在「等待输出」转圈（外层
+// AdminInvokeModal 已按同一串解锁按钮，两处口径须一致）：
 // 空态分支据其区分「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）
-const TERMINAL_RUN_STATUSES = new Set(['done', 'error', 'interrupted', 'cancelled', 'missing']);
+const TERMINAL_RUN_STATUSES = new Set([
+  'done',
+  'error',
+  'interrupted',
+  'cancelled',
+  'missing',
+  'frozen-terminated',
+]);
 
 export default function ClaudeOutputPane({
   runId,
@@ -430,8 +438,9 @@ export default function ClaudeOutputPane({
   }
 
   // run 定位成功但尚未产出事件：未终态时明确提示 loading；已终态（done/error/
-  // interrupted/cancelled/missing，含事件产物被轮转/清理的零事件历史 run）
-  // 改静态提示，不再永久停在「等待输出」转圈（code-review item 97dcdc581245）
+  // interrupted/cancelled/missing/frozen-terminated，含事件产物被轮转/清理的
+  // 零事件历史 run）改静态提示，不再永久停在「等待输出」转圈
+  // （code-review item 97dcdc581245）
   if (events.length === 0) {
     const isTerminalStatus = TERMINAL_RUN_STATUSES.has(runStatus);
     return (

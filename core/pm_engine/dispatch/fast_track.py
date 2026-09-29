@@ -724,6 +724,43 @@ class FFastTrackMixin:
                 retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
             except (TypeError, ValueError):
                 retries = 1
+            # （code-review item a7395837fcbb）本出口重派同样受 agents.max_retries
+            # 封顶：派发入口不读 _retry_count 设闸，持续性「success 但 branch 为空」
+            # 若只递增重派会无限烧 fast-track run 预算——封顶判据与
+            # _handle_fast_track_failure 同源，达阈冻结转人工、不再自动重派。
+            max_r = _normalize_int_config(self._pm._get_config("agents.max_retries", 3), 3)
+            if retries >= max_r:
+                fp = self._pm._redispatch_cause_fingerprint(contract_err)
+                orig_status = spec_entry.get("status") or "implementing"
+                self._pm.state_machine.freeze_for_human(
+                    spec_name,
+                    error=(
+                        f"原状态 {orig_status} · fast-track 重试耗尽"
+                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
+                    ),
+                    signal_type="redispatch_loop_detected",
+                    severity="major",
+                    description=(
+                        f"'{spec_name}' fast-track 契约违反（success 但 branch 为空）"
+                        f"连续重试 {max_r} 轮已达上限（max_retries），自动重试终止"
+                        f"——已冻结转人工处置"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                        f"fp={fp}; final_error={contract_err}"
+                    ),
+                    recommended_action=(
+                        "检查 runner 成功但分支名缺失的根因；处置后解冻"
+                        "（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
+                    ),
+                    alert_callback=self._pm._send_human_escalation_alert,
+                )
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track all retries exhausted '{spec_name}' — 冻结转人工，"
+                    f"不再重派（{retries}/{max_r}，fp={fp}）",
+                )
+                return False
             self._pm.state_machine.update_spec(
                 spec_name,
                 {

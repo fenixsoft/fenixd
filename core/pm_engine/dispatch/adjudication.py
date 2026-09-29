@@ -1559,7 +1559,13 @@ class VAdjudicationMixin:
                 "pm_engine",
                 f"陈日重定位后守卫复检异常 '{spec_name}'（回退缺件处置）: {e}",
             )
-            return {"action": "continue", "remaining": missing}
+            # code-review item b543b7fa73f6：重定位已写盘无法回滚，已重定位
+            # 旧路径在生效声明中已不存在——MUST NOT 回送原始 missing 送 judge
+            # （对已不存在的声明路径终审大概率 unclear → 白耗一轮 LLM 终审并
+            # 误升级人工）。剔除已重定位条目续走（remaining 即 missing_paths
+            # 去除 relocated_old），对齐 _preclassify_missing 的 e3ea5719971e
+            # 修复口径。
+            return {"action": "continue", "remaining": remaining}
         if not gate:
             self._pm.logger.warning(
                 "pm_engine",
@@ -2438,8 +2444,8 @@ class VAdjudicationMixin:
         item 462dd0549885）。
 
         两处置路径原本各持一份同构流水线，计数与封顶逻辑双写易漂移，现收口
-        单点维护：读 spec entry → ``_retry_count`` int 强转递增（异常回退 0）→
-        ``agents.max_retries`` 封顶 → 组装 ready/blocked updates（封顶时置
+        单点维护：``bump_counters`` 锁内原子递增 ``_retry_count``（返回写后
+        值）→ ``agents.max_retries`` 封顶 → 组装 ready/blocked updates（封顶时置
         ``tester_run=None`` 并换 blocked 文案）→ update_spec → error 日志 →
         未封顶时按车道 ``_enqueue_front`` 前置入队。分支遗产登记（fail-open，
         异常捕获降级 WARNING 不阻断处置）在状态写回与入队**之前**执行
@@ -2459,7 +2465,6 @@ class VAdjudicationMixin:
             legacy_warn_prefix: 登记失败 WARNING 文案前缀（调用点各自保留原文案，
                 如 ``缺件打回遗产登记失败`` / ``relint 遗产登记失败``）。
         """
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         _wm = self._pm.agent_runner.worktree_manager
         if branch and hasattr(_wm, "register_legacy"):
             try:
@@ -2476,11 +2481,16 @@ class VAdjudicationMixin:
                     "pm_engine",
                     f"{legacy_warn_prefix}（非阻塞）'{spec_name}': {e}",
                 )
-        try:
-            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            prev_retries = 0
-        retries = prev_retries + 1
+        # _retry_count 走锁内原子递增（bump_counters 返回写后值，code-review
+        # item 3dae7ab671a1）：原先「read_one 读 → 算 +1 → 并进 update_spec
+        # 写回」读与写分处两次 STATE 锁临界区，与并发失败链（queue.py
+        # merge-only 重试 / WIP 周期消费者）交错时各持相同旧值写回同一
+        # _retry_count，丢一次递增、agents.max_retries 封顶晚一轮触发。对齐
+        # repair_lane.py _fallback_after_repair 同型修复：_retry_count 不再
+        # 并入下方 update_spec（避免并发覆盖丢增量）。
+        retries = self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1}).get(
+            "_retry_count", 0
+        )
         # 解析口径收敛进 _resolve_max_retries（code-review item
         # f68ba79c3e07，三处共用；此处原缺 max(..., 1) 下限，统一到同口径）。
         max_r = _resolve_max_retries(self._pm._get_config("agents.max_retries", 3))
@@ -2488,7 +2498,6 @@ class VAdjudicationMixin:
         updates: dict = {
             "status": "ready",
             "error": err_ready,
-            "_retry_count": retries,
         }
         if retries >= max_r:
             updates["status"] = "blocked"

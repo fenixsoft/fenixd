@@ -63,7 +63,6 @@ import {
   strokeColorFor,
   trailColorFor,
   GATES_STROKE,
-  TRACK_LIGHT,
 } from './progressPhase';
 // add-spec-list-filter-stickiness：过滤状态 ↔ URL 查询参数白名单与 fail-safe
 // 解析（纯函数单测见 tests/listFilters.test.mjs）

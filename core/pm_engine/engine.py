@@ -258,6 +258,9 @@ class PMEngine:
         "_apply_interaction_contract": ("_verification", "_apply_interaction_contract"),
         "_render_scenario_change_section_to_report": ("_verification", "_render_scenario_change_section_to_report"),
         "_run_three_stage_verification": ("_verification", "_run_three_stage_verification"),
+        # verified 应用收口（ocr join 停等唤醒续做 queue._resume_verified_after_ocr
+        # 调用）：经门面单跳（design D3 规则 3），组件不直引 _verification 私有链。
+        "_apply_verified": ("_verification", "_apply_verified"),
         "_verifier_error_is_infra": ("_verification", "_verifier_error_is_infra"),
         "enrich_failure_class": ("_verification", "enrich_failure_class"),
         "_verifier_result_is_stale": ("_verification", "_verifier_result_is_stale"),

@@ -100,8 +100,13 @@ function classifyHttpKind(status: number): ApiError['kind'] {
 // 对调用方完全透明（仍拿到完整 T），省掉响应体传输与 JSON 解析。仅 200 且
 // 响应带 ETag 头时写缓存；304 判定先于 !res.ok（304 非 ok，误入错误分支会
 // 把「数据未变」报成失败）。生命周期 = 页面会话（刷新即清），数据源变更由
-// 服务端签名翻转兜底，无需手动失效。
+// 服务端签名翻转兜底，无需手动失效；容量有上限（ETAG_CACHE_MAX，写满淘汰
+// 最旧键），超长驻留会话内存占用有界。
 const etagCache = new Map<string, { etag: string; data: unknown }>();
+// 容量上限（code-review item 7e546940fab6）：run-tail 翻页（offset_from_end
+// 递增）/跨项目跨 spec 文档浏览会持续新增缓存键（单键值含整页 run 事件的
+// 完整解析体），无上限则超长驻留会话内存无界增长；写满按插入序淘汰最旧。
+const ETAG_CACHE_MAX = 100;
 
 /** 测试钩子：清空 ETag 缓存（单测隔离用；生产代码勿调用）。 */
 export function _clearEtagCache(): void {
@@ -226,7 +231,15 @@ async function request<T>(
     // 无 ETag 头的 GET 保持原行为，零副作用）。
     if (isGet && res.status === 200) {
       const etag = res.headers.get('ETag');
-      if (etag) etagCache.set(path, { etag, data });
+      if (etag) {
+        // 写满先淘汰最旧键（Map 保持插入序，首键即最旧）；已存在键覆盖写
+        // 不增条数，跳过淘汰以免误伤。
+        if (!etagCache.has(path) && etagCache.size >= ETAG_CACHE_MAX) {
+          const oldest = etagCache.keys().next().value;
+          if (oldest !== undefined) etagCache.delete(oldest);
+        }
+        etagCache.set(path, { etag, data });
+      }
     }
     return data;
   } finally {
@@ -1781,6 +1794,8 @@ export interface CodeFixRunResult {
 /** add-code-fix-manual-trigger：手动触发自动修复（写文件信号，daemon 消费）。
  *  受理返回 200 {ok, requested_at}；409（并发/残留未消费信号）抛错带后端文案。 */
 export function triggerCodeFixRun(project: string) {
+  // [fenix-ignore:468d69c4a34a] 问题已不存在：本封装已带空对象 body（与同族
+  // triggerCodeReview/triggerRegression 同口径），Content-Type 声明名副其实。
   return request<{ ok: boolean; requested_at: string }>(
     `/api/code-review/fix-run?project=${encodeURIComponent(project)}`,
     {
