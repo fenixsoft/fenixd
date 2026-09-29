@@ -36,6 +36,21 @@ class G3LockMixin:
         """锁 key（``<spec>:<agent_type>``）→ spec 名。"""
         return lock_key.split(":")[0]
 
+    @staticmethod
+    def _lock_family_prefix(lock_key: str) -> str | None:
+        """锁 key（``<spec>:<agent_type>``）→ 该族 worktree/run 流的目录前缀。
+
+        create() 的前缀裁定只有两族形状（lifecycle.create：verifier → "verify"，
+        其余 agent_type → "impl"，与 cleanup finally / keep_for_reuse 的
+        verifier/non-verifier 家族口径同源）。解析不出 agent_type（无 ":" 或空
+        后缀）返回 None：调用方（refresh_locks 陈锁回收）退回 spec 粒度保守
+        判活，宁多留不误放。
+        """
+        agent_type = lock_key.partition(":")[2]
+        if not agent_type:
+            return None
+        return "verify" if agent_type == "verifier" else "impl"
+
     def _register_spec_locks(self, spec_name: str) -> None:
         """按 spec 名重建两把锁（impl + verify），与 create() 的 key 形态一致。
 
@@ -61,8 +76,16 @@ class G3LockMixin:
             self._spec_locks.add(f"{spec_name}:verifier")
             self._lock_since[f"{spec_name}:verifier"] = time.time()
 
-    def _release_spec_locks(self, spec_name: str, reason: str, not_after: float | None = None) -> list:
+    def _release_spec_locks(
+        self, spec_name: str, reason: str, not_after: float | None = None,
+        lock_key: str | None = None,
+    ) -> list:
         """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。
+
+        lock_key（code-review item 216784713669，refresh_locks 家族过滤回收
+        专用）：传入时只摘这一把锁键——家族过滤判活只证明了本族已死，同 spec
+        在飞他族锁的生死未判定，全摘会让其失去锁保护（重开双派发窗口）；None
+        保持既有「按 spec 名全摘」语义（has_active_worktree 调用方不变）。
 
         to_remove 计算与摘除全程持 _spec_lock_th（code-review item
         776cffc0a278）：无锁迭代 _spec_locks 时并发 create/cleanup 增删
@@ -82,7 +105,11 @@ class G3LockMixin:
             to_remove = [
                 k
                 for k in self._spec_locks
-                if self._lock_spec_name(k) == spec_name
+                if (
+                    (k == lock_key)
+                    if lock_key is not None
+                    else (self._lock_spec_name(k) == spec_name)
+                )
                 and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
             ]
             for k in to_remove:
@@ -110,29 +137,52 @@ class G3LockMixin:
                     return True
             return False
 
-    def _spec_process_alive(self, spec_name: str) -> bool:
+    def _spec_process_alive(
+        self, spec_name: str, prefixes: tuple[str, ...] | None = None,
+    ) -> bool:
         """进程表中是否存在指向该 spec worktree 的进程（带短缓存）。
 
         进程消失/出现以缓存窗口（PROCESS_SCAN_CACHE_SECONDS）为粒度生效，
         避免派发热路径上的 pgrep 风暴。
+
+        prefixes（code-review item 216784713669，refresh_locks 陈锁回收专用）：
+        家族限定扫描——只匹配指定 worktree 前缀族（如 ("verify",)）的进程，使
+        死家族的锁不被同 spec 他族活进程庇护。默认 None 保持 spec 粒度（
+        has_active_worktree 派发闸门语义不变）。注入替身扫描器的契约只收
+        spec 名（无家族维度），家族限定调用遇 TypeError 即退回 spec 粒度
+        （方向保守：只延后回收，不会误回收）。缓存键按扫描口径区分（spec
+        粒度用裸 spec 名、家族限定用 (spec, prefixes) 二元组），互不串味。
         """
         now = time.monotonic()
-        cached = self._proc_scan_cache.get(spec_name)
+        cache_key = spec_name if prefixes is None else (spec_name, prefixes)
+        cached = self._proc_scan_cache.get(cache_key)
         if cached is not None and cached[0] > now:
             return cached[1]
         try:
-            alive = bool(self._process_scanner(spec_name))
+            if prefixes is None:
+                alive = bool(self._process_scanner(spec_name))
+            else:
+                try:
+                    alive = bool(self._process_scanner(spec_name, prefixes=prefixes))
+                except TypeError:
+                    alive = bool(self._process_scanner(spec_name))
         except Exception as e:  # 扫描异常视为不可用：保守按无进程处理并记日志
             self.logger.warning(
                 "worktree_manager",
                 f"Process scan failed for '{spec_name}' (treated as absent): {e}",
             )
             alive = False
-        self._proc_scan_cache[spec_name] = (now + PROCESS_SCAN_CACHE_SECONDS, alive)
+        self._proc_scan_cache[cache_key] = (now + PROCESS_SCAN_CACHE_SECONDS, alive)
         return alive
 
-    def _pgrep_spec_process(self, spec_name: str) -> bool:
+    def _pgrep_spec_process(
+        self, spec_name: str, prefixes: tuple[str, ...] = ("impl", "verify"),
+    ) -> bool:
         """pgrep 匹配 cmdline 含 ``worktrees/{impl,verify}-<spec>-`` 的 agent 进程。
+
+        prefixes（code-review item 216784713669）：家族限定扫描——refresh_locks
+        陈锁回收按锁键的 agent_type 家族只扫本族前缀，使死家族的锁不被他族活
+        进程庇护；缺省双族，行为同旧版。
 
         匹配串锚定 worktree 目录字面量（<prefix>-<spec>-<ts>），不匹配裸 spec 名，
         防止把无关进程当成持锁者；命中后还须经 ``_is_claude_process`` 确认程序为
@@ -153,7 +203,7 @@ class G3LockMixin:
         解析（``{prefix}-{spec}-<纯数字>`` 同一尾部形状）；收紧只少误报，
         真实 agent cmdline 引用的目录名恒接时间戳，不引入漏报。
         """
-        for prefix in ("impl", "verify"):
+        for prefix in prefixes:
             pattern = (
                 f"worktrees/{prefix}-{re.escape(spec_name)}"
                 f"-[[:digit:]]+([/[:space:]\"']|$)"
@@ -205,8 +255,13 @@ class G3LockMixin:
             return False
         return cwd_real == base_real or cwd_real.startswith(base_real + os.sep)
 
-    def _latest_stream_mtime(self, spec_name: str) -> float | None:
+    def _latest_stream_mtime(
+        self, spec_name: str, prefixes: tuple[str, ...] = ("impl", "verify"),
+    ) -> float | None:
         """该 spec 全部 run 流文件（.fenix/runs/{impl,verify}-<spec>-*.jsonl）的最新 mtime。
+
+        prefixes（code-review item 216784713669）：家族限定——refresh_locks 只看
+        本族流文件，他族流仍在增长不再庇护本族死锁；缺省双族，行为同旧版。
 
         无任何流文件返回 None。
         """
@@ -215,7 +270,7 @@ class G3LockMixin:
             return None
         newest: float | None = None
         try:
-            for prefix in ("impl", "verify"):
+            for prefix in prefixes:
                 for p in runs_dir.glob(f"{prefix}-{glob.escape(spec_name)}-*.jsonl"):
                     # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
                     # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的流判为残留
