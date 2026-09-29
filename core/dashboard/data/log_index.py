@@ -432,5 +432,7 @@ def record_project_event(
             # default=str 兜底：context 含 Path/datetime 等不可序列化对象时
             # 序列化为字符串而非抛 TypeError 穿透（写日志失败静默降级的承诺）
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-    except (OSError, UnicodeDecodeError):
+    # ValueError 族覆盖 UnicodeEncodeError：context/message 含 lone surrogate 时
+    # ensure_ascii=False 产物在 utf-8 落盘编码阶段抛的是编码错误而非 OSError
+    except (OSError, ValueError):
         pass
