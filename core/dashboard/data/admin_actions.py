@@ -292,7 +292,15 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
                             entry = json.loads(line)
                         except (json.JSONDecodeError, ValueError):
                             continue
-                        if isinstance(entry, dict) and entry.get("type"):
+                        # type 非 str（合法 JSON 的数组/对象值，手工编辑/
+                        # 异常写入）不可哈希，视为无终态行，保持保守
+                        # 「在跑」语义——否则 frozenset 成员测试抛 TypeError
+                        # 穿透调用链致 500
+                        if (
+                            isinstance(entry, dict)
+                            and isinstance(entry.get("type"), str)
+                            and entry.get("type")
+                        ):
                             last_type = entry.get("type")
             except OSError:
                 last_type = None
