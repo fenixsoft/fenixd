@@ -254,7 +254,13 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         if existing and "has_build_artifacts" in existing:
             return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
 
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # docstring 承诺本函数不抛异常（写入失败返回 {"wrote": False, ...}）：
+        # .fenix 被同名普通文件占用/父目录不可写时 mkdir 的 OSError 也须落契约，
+        # 否则按 stdout JSON 消费的上游拿到的是 traceback 而非错误载荷
+        return {"wrote": False, "reason": f"无法创建配置目录: {e}"}
     # 写入前经 validate_build_artifact_paths 同口径校验（task 7.1：与 Dashboard
     # write_config 同一判定权威——非法项拒绝而非静默丢弃，防探测误判误写）
     try:
@@ -319,8 +325,13 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     if cfg_path.is_file():
         try:
             old_lines = cfg_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            pass
+        except OSError as e:
+            # 读取失败即中止写入：以空列表起步组装新内容会把用户既有配置整份
+            # 清成仅含 worktree 两键，与 PyYAML 路径「无法解析即中止写入」对齐
+            return {
+                "wrote": False,
+                "reason": f"config.yaml 无法读取，中止写入以免清空既有配置: {e}",
+            }
 
     def _is_block_item(s: str) -> bool:
         return s == "-" or s.startswith("- ")
