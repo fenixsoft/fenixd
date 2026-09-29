@@ -85,7 +85,10 @@ def _parse_run_metric_stream(f) -> dict:
         if not isinstance(ctx, dict) or ctx.get("metric_type") != "run_metrics":
             continue
         rid = ctx.get("run_id")
-        if rid:
+        # c3bef177adc7: run_id 为不可哈希类型（合法 JSON 但半损坏行）时
+        # index[rid] 抛 TypeError 穿透段 2 OSError-only except 致接口 500——
+        # 非 str 降级跳过，与 6fd55ebbc869 非 object 行跳过口径对齐。
+        if isinstance(rid, str) and rid:
             index[rid] = ctx
     return index
 
@@ -339,7 +342,13 @@ def classify_run(lines: list) -> str:
     last = lines[-1]
     if not isinstance(last, dict):
         return "running"
-    return _RUN_TERMINAL_STATUS_MAP.get(last.get("type"), "running")
+    # c3bef177adc7: type 值为不可哈希类型（合法 JSON 但数组/对象，手工编辑/
+    # 半损坏产物）时 dict.get 抛 TypeError，runs 读接口整体 500——非 str 降级
+    # 按 running，与本函数非 dict 行降级及 6fd55ebbc869 防护口径同族对齐。
+    t = last.get("type")
+    if not isinstance(t, str):
+        return "running"
+    return _RUN_TERMINAL_STATUS_MAP.get(t, "running")
 
 
 # run_id 白名单（code-review item 325d0b089a9d）：run 产物 stem 由
