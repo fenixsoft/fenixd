@@ -49,21 +49,13 @@ import type {
   RegressionResult,
 } from '../../../services/dashboard';
 import { useIsMobile } from '../../../hooks/useIsMobile';
+// 时长格式化单源（utils/duration.ts，对齐 list.tsx/detail.tsx 既有口径）；
+// 该单源空值回退为 ''，本页展示用 '—'，在调用处以 `|| '—'` 表达
+import { fmtDuration } from '@/utils/duration';
 
 interface RegressionTabProps {
   project: string;
   active: boolean;
-}
-
-function fmtDuration(sec?: number | null) {
-  // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等
-  if (sec === null || sec === undefined || Number.isNaN(sec)) return '—';
-  const s = Math.max(0, Math.round(sec));
-  if (s < 60) return `${s}秒`;
-  const m = Math.floor(s / 60);
-  const rest = s % 60;
-  if (m < 60) return rest ? `${m}分${rest}秒` : `${m}分`;
-  return `${Math.floor(m / 60)}时${m % 60}分${rest ? `${rest}秒` : ''}`;
 }
 
 /** 执行时间显示（本地时区；快照为 UTC ISO；dayjs 统一格式——code-review
@@ -144,7 +136,7 @@ function RunningProgressView({
     sub.push('按上次总耗时估算');
   }
   if (!waiting && progress?.elapsed_seconds !== null && progress?.elapsed_seconds !== undefined) {
-    sub.push(`已耗时 ${fmtDuration(progress.elapsed_seconds)}`);
+    sub.push(`已耗时 ${fmtDuration(progress.elapsed_seconds) || '—'}`);
   }
   return (
     <div>
@@ -689,7 +681,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               {
                 key: 'duration',
                 label: '总耗时',
-                children: fmtDuration(snapshot?.duration_seconds),
+                children: fmtDuration(snapshot?.duration_seconds) || '—',
               },
               {
                 key: 'threshold',
