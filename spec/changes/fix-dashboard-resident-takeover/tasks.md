@@ -16,7 +16,7 @@
 
 - [ ] 2.1 tmux 常驻占用者拒绝接管：fake 占用者（cmdline 匹配 `fenix_dashboard.py --serve`、starttime 复核通过、父进程判定为 tmux server）下启动 serve，断言未向占用者发信号（SIGTERM/SIGKILL 计数为 0）、serve 以非 0 退出、错误输出含 PID 与 `--port` 指引
 - [ ] 2.2 非 tmux 旧实例仍接管：父进程非 tmux server 的 fake 占用者下，断言既有接管语义不变（收到 SIGTERM、新实例完成绑定）
-- [ ] 2.3 父进程身份读取失败放行：`/proc/<ppid>` 不可读（孤儿化占用者）时按非 tmux 承载处理，走既有接管路径，不产生新报错分支
+- [ ] 2.3 父进程身份读取失败放行：覆盖两层读取失败——(a) 占用者 `/proc/<pid>/stat` 不可读致 ppid 提取失败（`_parent_is_tmux_server` 返回 False）；(b) 占用者 ppid 可得但其 `/proc/<ppid>/comm` 与 cmdline 均不可读（`_is_tmux_hosted` 返回 False，即 spec「占用者父进程判定失败时保持放行」Scenario）。两层均按非 tmux 承载处理、走既有接管路径，不产生新报错分支；孤儿化占用者（ppid 归 1，init 非 tmux）经正常判定即放行，可作补充断言
 
 ## 3. 回归
 

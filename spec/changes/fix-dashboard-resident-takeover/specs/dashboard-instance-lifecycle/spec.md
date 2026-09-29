@@ -34,3 +34,25 @@ claude 生命周期 watchdog（`_start_claude_watchdog`）与父子生命周期�
 
 - **WHEN** 端口 8787 被无关进程（如 nginx、其它服务）占用
 - **THEN** 新实例打印包含占用进程信息的错误后退出，退出前不终止任何进程，状态码非 0（既有行为不变）
+
+#### Scenario: 端口解析链保持现有语义
+
+（顺承自现行基线 2026-09-26-fix-dashboard-watchdog-misfire，语义不变，防止归档时覆盖丢失）
+
+- **WHEN** 未传 `--port` 且 `dashboard.yaml` 与 config 均指定了端口
+- **THEN** 采用的端口序仍为 `--port > dashboard.yaml port > config port > 8787`（仅对最终确定的单一端口做上述占用检测）
+
+#### Scenario: tmux 承载的常驻实例不装配 watchdog
+
+- **WHEN** 经 `tmux new-session -d -s fenix-dashboard "python3 .../fenix_dashboard.py --serve"` 启动的实例，其父进程为 tmux server，且其环境继承了 `CLAUDE_PID`（指向某个 claude 会话）
+- **THEN** `_start_claude_watchdog` 判定为显式长驻，MUST NOT 装配 `claude-watchdog` 线程；该 `CLAUDE_PID` 会话日后续接/分叉/退出时，dashboard 进程 MUST 继续存活并继续监听端口
+
+#### Scenario: agent 无 tmux 的自测实例仍受 watchdog 保护
+
+- **WHEN** agent 经 CLI（`nohup python3 .../fenix_dashboard.py --serve`）拉起实例，父进程非 tmux（Bash shell 退出后 reparent），环境含指向存活 claude 进程的 `CLAUDE_PID`
+- **THEN** 仍装配 `claude-watchdog` 线程；该 claude 进程退出后，实例 MUST 自杀以避免孤儿泄漏（既有行为不变）
+
+#### Scenario: 父进程判据不受 TMUX 环境变量继承污染
+
+- **WHEN** 实例自身环境含 `TMUX` 变量（沿袭自 tmux 下启动的 daemon 透传）但父进程并非 tmux server
+- **THEN** MUST NOT 仅凭 `TMUX` 变量判定为显式长驻，仍按非长驻处理（是否装配 watchdog 取决于 `CLAUDE_PID`）

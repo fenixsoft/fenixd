@@ -12,14 +12,14 @@
 
 ## Decisions
 
-1. **复用 `_is_tmux_hosted` 判据而非新写判定**：同源纪律（comm 精确匹配 → cmdline argv[0] 回退 → 读取失败 False），避免两套判据漂移。新增一小步辅助函数 `_parent_is_tmux_server(pid)`：读 `/proc/<pid>/stat` 取占用者 ppid（解析纪律同 `_proc_starttime`：`rpartition(")")` 后取字段），再调 `_is_tmux_hosted(ppid)`。
+1. **复用 `_is_tmux_hosted` 判据而非新写判定**：同源纪律（comm 精确匹配 → cmdline argv[0] 回退 → 读取失败 False），避免两套判据漂移。新增一小步辅助函数 `_parent_is_tmux_server(pid)`：读 `/proc/<pid>/stat` 取占用者 ppid（解析纪律同 `_proc_starttime`（server.py:305：`data.rindex(")")` 后切片取字段，注意是 `rindex` 而非 `rpartition`）），再调 `_is_tmux_hosted(ppid)`。
 2. **判定时机**：身份复核（starttime 锚定）通过后、`os.kill(SIGTERM)` 前执行。父进程读取失败（占用者已成孤儿、ppid 变 1 等）→ 视为非 tmux 承载，走既有接管——孤儿化的 dashboard 实例已无 tmux 会话可依归，接管它不破坏任何常驻形态；这与「读取失败按防泄漏处理」方向相反，但场景语义不同：`_is_tmux_hosted` 读不到父进程时该实例自身要装配 watchdog（防泄漏优先），而接管路径读不到时放行接管（不误伤常驻优先，孤儿实例本就可收割）。
 3. **拒绝方式为报错退出而非自动换端口**：serve() 已收敛「仅对最终确定的单一端口做占用检测（不再自动上探）」；自动上探会让场景 URL 写死 8787 的验证流量打到常驻实例而非被测实例。错误信息含 PID + 指引，agent 自适应换端口。
 4. **不扩大 watchdog/`_bind_parent_lifecycle` 改动面**：两者语义已在 2026-09-26 SPEC 固化且行为正确，本次只堵接管这一个洞。
 
 ## Risks
 
-- **接管语义收窄的回归**：现有单测若构造「占用者父进程恰好是 tmux server」的假占用者会翻转期望——实施时须检查 `test_dashboard_server*` 中接管用例的 fixture（fake /proc 或 monkeypatch 路径），为 tmux 常驻形态补独立用例而非改旧用例语义。
+- **接管语义收窄的回归**：经评审实测（2026-09-30），serve() 接管分支（EADDRINUSE 路径）当前**无任何既有单测**——tests/ 下不存在 `test_dashboard_server*`，test_dashboard_*.py 中亦无 EADDRINUSE/占用者类用例，故不存在旧用例翻转风险；tasks 2.1-2.3 三形态用例为净新增，落 tests/test_dashboard_orphan_guard.py（`_is_tmux_hosted` 判据用例已在该文件，其 fake /proc 手法——monkeypatch `server_mod.Path`——可复用）。`tests/test_verify_command_port.py` 的端口用例走真实绑定、不构造 tmux 常驻占用者，不受收窄影响。
 - **ppid 读取竞态**：占用者在判定与 kill 之间退出由既有 starttime 复核覆盖；判定本身读的是快照时刻的 ppid，无新竞态窗口。
 - **容器/CI 无 /proc**：`_parent_is_tmux_server` 读取失败返回 False → 走既有接管，CI 行为不变。
 
