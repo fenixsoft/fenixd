@@ -499,10 +499,19 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 回写 sessionIdRef/started、注册 watch 或应用快照（提前 return 仍走 finally
   // 复位 loading，不悬置加载态）。
   const handleStart = async () => {
+    // 跨项目切换守卫（code-review item 794f1b8ac9be）：activeRef 只覆盖切离/
+    // 卸载，分面保持激活的跨项目切换（list.tsx 的 project 来自 useParams、
+    // 组件不重挂载）不拦——各 await 之间闭包 project 停留发起帧，会以旧项目
+    // 名注册 watch（切离注销按 projectRef.current 新项目名必 404，服务端订阅
+    // 残留）、拉旧项目快照写入已显示新项目的面板（短暂串显）。发起帧捕获
+    // 项目名，各 await 后失配即中止（同切离守卫口径：提前 return 仍走
+    // finally 复位 loading）。
+    const startProject = projectRef.current;
+    const projectStale = () => projectRef.current !== startProject;
     try {
       setLoading(true);
-      const res = await startSession(project);
-      if (!activeRef.current) return;
+      const res = await startSession(startProject);
+      if (!activeRef.current || projectStale()) return;
       sessionIdRef.current = res.session.id;
       setStarted(true);
       setEnded(false);
@@ -513,9 +522,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 以新 cid 兜底注册（会话已存在分支），二者不冲突。
       if (!watchRegisteredRef.current && cidRef.current && sessionIdRef.current) {
         try {
-          await registerSessionWatch(project, cidRef.current);
-          // 注册返回前已切离：不置注册标记（非激活面板不得标记持有订阅）
-          if (!activeRef.current) return;
+          await registerSessionWatch(projectRef.current, cidRef.current);
+          // 注册返回前已切离/已切换项目：不置注册标记（非激活面板不得标记
+          // 持有订阅；旧项目名注册的 watch 切离时按新项目名注销必 404）
+          if (!activeRef.current || projectStale()) return;
           watchRegisteredRef.current = true;
         } catch (e) {
           console.error('Failed to register session watch:', e);
@@ -529,15 +539,18 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 排队在途的 afterHello 旧快照之后落盘，避免其晚到时整表替换把面板翻回
       // 空态（后应用的必然是更晚发起的加载）。
       await enqueueSnapshotLoad(async () => {
-        const data = await getSession(project);
-        // 快照返回前已切离：不应用快照（避免非激活面板重新持有一份活跃状态）
-        if (!activeRef.current) return;
+        // 任务可能排队在 afterHello 旧快照之后延后执行：发起前再校验一次
+        if (!activeRef.current || projectStale()) return;
+        const data = await getSession(projectRef.current);
+        // 快照返回前已切离/已切换项目：不应用快照（避免非激活面板重新持有
+        // 一份活跃状态、旧项目快照串显到新项目面板）
+        if (!activeRef.current || projectStale()) return;
         if (data.session) {
           applySnapshotCarried(data);
         }
       });
-      // 快照落定前已切离：不回写状态（同上）；正常路径清 error
-      if (!activeRef.current) return;
+      // 快照落定前已切离/已切换项目：不回写状态（同上）；正常路径清 error
+      if (!activeRef.current || projectStale()) return;
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
