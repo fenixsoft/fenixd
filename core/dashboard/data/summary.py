@@ -555,6 +555,12 @@ _ENTRY_SIG_KEYS = (
     # fast-track 命中不产生签名集内任何文件变化，须靠字段指纹失效缓存
     "_judge_fasttrack_hits",
     "_judge_real_dispatches",
+    # done/pushed 态经 _spec_total_duration 读取的固化耗时（state_machine
+    # done→done 幂等覆盖时会重算），与迁出溯源透传字段 archived_at/archived_by
+    # （evict_spec 写入清单条目）：仅这些字段变化时也须失效缓存
+    "total_duration",
+    "archived_at",
+    "archived_by",
 )
 
 

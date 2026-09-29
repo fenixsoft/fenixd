@@ -32,6 +32,30 @@ from __future__ import annotations
 #                决定执行前二次确认——确认门由注册表单源驱动，前端不再
 #                硬编码业务 id（code-review item 19f72b875e8f；历史告警
 #                快照缺该字段时前端按已知不可逆 id 回退）
+# 跨信号逐字共享的选项提为模块级单源（code-review item 7542b25da792），
+# 各信号元组按引用复用：字段演进只改一处，不再多点同步。desc 带信号特定
+# 文案的同名选项（judge/verify 链的 manual_fixed_reverify、评审族的
+# force_advance）语义有差异，保持就地声明不强行合并。
+_ABANDON = {
+    "id": "abandon",
+    "label": "撤销丢弃",
+    "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+    "action": "abandon",
+    "destructive": True,
+}
+_FORCE_ADVANCE = {
+    "id": "force_advance",
+    "label": "接受现状推进",
+    "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+    "action": "force_advance",
+}
+_MANUAL_FIXED_REVERIFY = {
+    "id": "manual_fixed_reverify",
+    "label": "人工已修复·重置验证重跑",
+    "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+    "action": "reset_verification",
+}
+
 ADJUDICATION_CHOICES: dict = {
     # ── 验证循环耗尽族 ────────────────────────────────────────────
     "impl_budget_exhausted": (
@@ -41,25 +65,9 @@ ADJUDICATION_CHOICES: dict = {
             "desc": "解冻并重置实现预算计数（重新获得完整实现预算），继续自动修复",
             "action": "continue_auto_fix",
         },
-        {
-            "id": "manual_fixed_reverify",
-            "label": "人工已修复·重置验证重跑",
-            "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
-            "action": "reset_verification",
-        },
-        {
-            "id": "force_advance",
-            "label": "接受现状推进",
-            "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
-            "action": "force_advance",
-        },
-        {
-            "id": "abandon",
-            "label": "撤销丢弃",
-            "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
-            "action": "abandon",
-            "destructive": True,
-        },
+        _MANUAL_FIXED_REVERIFY,
+        _FORCE_ADVANCE,
+        _ABANDON,
     ),
     "judge_rerun_cap": (
         {
@@ -68,19 +76,8 @@ ADJUDICATION_CHOICES: dict = {
             "desc": "人工已修复验证链问题：清场景文件与 judge/验证计数器后重置重验",
             "action": "reset_verification",
         },
-        {
-            "id": "force_advance",
-            "label": "接受现状推进",
-            "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
-            "action": "force_advance",
-        },
-        {
-            "id": "abandon",
-            "label": "撤销丢弃",
-            "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
-            "action": "abandon",
-            "destructive": True,
-        },
+        _FORCE_ADVANCE,
+        _ABANDON,
     ),
     "verify_fail_escalation": (
         {
@@ -95,19 +92,8 @@ ADJUDICATION_CHOICES: dict = {
             "desc": "人工已修复问题：清场景与验证失败轮计数后重置验证重跑",
             "action": "reset_verification",
         },
-        {
-            "id": "force_advance",
-            "label": "接受现状推进",
-            "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
-            "action": "force_advance",
-        },
-        {
-            "id": "abandon",
-            "label": "撤销丢弃",
-            "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
-            "action": "abandon",
-            "destructive": True,
-        },
+        _FORCE_ADVANCE,
+        _ABANDON,
     ),
     "redispatch_loop_detected": (
         {
@@ -116,25 +102,9 @@ ADJUDICATION_CHOICES: dict = {
             "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
             "action": "continue_auto_fix",
         },
-        {
-            "id": "manual_fixed_reverify",
-            "label": "人工已修复·重置验证重跑",
-            "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
-            "action": "reset_verification",
-        },
-        {
-            "id": "force_advance",
-            "label": "接受现状推进",
-            "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
-            "action": "force_advance",
-        },
-        {
-            "id": "abandon",
-            "label": "撤销丢弃",
-            "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
-            "action": "abandon",
-            "destructive": True,
-        },
+        _MANUAL_FIXED_REVERIFY,
+        _FORCE_ADVANCE,
+        _ABANDON,
     ),
     # ── 评审族 ───────────────────────────────────────────────────
     "spec-review-rejected": (
@@ -151,13 +121,7 @@ ADJUDICATION_CHOICES: dict = {
             "desc": "人工裁定方向仍成立，豁免评审门推进到 done（留豁免痕）",
             "action": "force_advance",
         },
-        {
-            "id": "abandon",
-            "label": "撤销丢弃",
-            "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
-            "action": "abandon",
-            "destructive": True,
-        },
+        _ABANDON,
     ),
     "spec-review-incomplete": (
         {
@@ -174,13 +138,7 @@ ADJUDICATION_CHOICES: dict = {
             "action": "skip_review_gate",
             "destructive": True,
         },
-        {
-            "id": "abandon",
-            "label": "撤销丢弃",
-            "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
-            "action": "abandon",
-            "destructive": True,
-        },
+        _ABANDON,
     ),
     # ── token 预算 ───────────────────────────────────────────────
     "token_budget": (

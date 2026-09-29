@@ -166,10 +166,18 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
                     continue
                 pending_start = -1
                 # 新增首块起点恰为旧 size（JSONL 行边界）：直接指到 boundary，
-                # 避免 seek-forward 把新增首行整行跳过。
+                # 避免 seek-forward 把新增首行整行跳过。回扫一字节确认行首：
+                # 上一轮写入若因进程中断留下无换行半行，old_size 落在行中而非
+                # 行首，直接入索引会让读窗首行为残缺 JSON 被静默丢弃、_first_ts
+                # 探测退化全文件读；非行首沿用下方常规 seek-forward 路径定位真实行首。
                 if boundary == old_size:
-                    offsets.append(boundary)
-                    continue
+                    at_line_start = boundary == 0
+                    if not at_line_start:
+                        f.seek(boundary - 1)
+                        at_line_start = f.read(1) == b"\n"
+                    if at_line_start:
+                        offsets.append(boundary)
+                        continue
                 f.seek(boundary)
                 chunk = f.read(LOG_INDEX_BLOCK)
                 nl = chunk.find(b"\n")
@@ -280,7 +288,11 @@ def _iter_tail_log_entries(proot: Path, lf: Path, cutoff: str = "") -> list:
             continue
         if not isinstance(entry, dict):
             continue
-        if cutoff and entry.get("timestamp", "") < cutoff:
+        # timestamp 非字符串（手改日志/异常写入方/损坏行恰为合法 JSON）时与 str
+        # 比较会抛 TypeError 穿透 get_recent_events 的异常捕获成端点 500；非 str
+        # 按无时间戳处理（同缺失 timestamp 一致被 cutoff 过滤）。
+        ts = entry.get("timestamp")
+        if cutoff and (not isinstance(ts, str) or ts < cutoff):
             continue
         out.append(entry)
     return out

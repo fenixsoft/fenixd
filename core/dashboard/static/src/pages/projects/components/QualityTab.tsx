@@ -438,6 +438,19 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   }, [active, project]);
 
+  // project 变化清态（code-review item 1189a998e8c1）：组件随 Tabs 常驻挂载、
+  // project 变化不卸载，loadItems 又仅首载置 loading（loadedOnceRef 已为 true），
+  // 新项目首帧响应返回前表格仍渲染上一项目条目，此窗口内勾选/忽略会拿旧项目
+  // item_id 配新 project 发请求（后端找不到该条目报错）。project 变化即清空
+  // 条目与选中并复位首载标记，分面回落加载态直至新项目数据到达（口径对齐
+  // CodeFixProgressCard 1d0b747da6b2 先例）。声明序在下方数据加载 effect 之前：
+  // project 变化时先清态再触发重查。
+  useEffect(() => {
+    setItems([]);
+    setSelectedKeys([]);
+    loadedOnceRef.current = false;
+  }, [project]);
+
   // 数据加载 effect（仅依赖 active/project/过滤条件）——与 SSE 订阅分离
   // （code-review item 797015d4ba47）：旧实现把 SSE/心跳与数据拉取放在同一
   // effect 且依赖 loadItems/loadProgress（二者又依赖 statusFilter），切换状态
@@ -828,7 +841,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       content: (
         <>
           <div style={{ marginBottom: 12 }}>
-            将为选中的 {count} 条问题创建一个修复 SPEC 并进入流水线。
+            将为当前页选中的 {count} 条问题创建一个修复 SPEC 并进入流水线。
           </div>
           <ScheduleFields holder={holder} initial={initial} hint="该 SPEC 执行时间：" />
         </>
@@ -1016,8 +1029,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             // Tag 仍走 STATUS_TEXT 英文短标签
             options={STATUS_FILTER_OPTIONS}
           />
+          {/* server-side 分页下幽灵选中清理与当页行求交（见下方 effect），批量
+              操作作用域即当前页——计数口径与按钮 title 同步标注「本页」，
+              与实际作用范围一致（code-review item ae38a1a29bd8） */}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            已选 {openSelectedCount} 条
+            本页已选 {openSelectedCount} 条
           </Typography.Text>
         </Space>
         <Space wrap>
@@ -1060,6 +1076,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           </Button>
           <Button
             type="primary"
+            title="仅作用于当前页勾选的 open 条目（server-side 分页，翻页即清选）"
             disabled={selectedKeys.length === 0}
             loading={generating}
             onClick={() => void handleGenerate()}
@@ -1072,6 +1089,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           <Button
             type="primary"
             danger
+            title="仅作用于当前页勾选的 open 条目（server-side 分页，翻页即清选）"
             disabled={selectedKeys.length === 0}
             loading={ignorePending}
             onClick={() => void handleIgnoreAll()}
