@@ -232,8 +232,12 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   >({});
   // 保存重入守卫（code-review item fe84991f84a0）：onSave 是异步，提交期间
   // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
-  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。setSaving 渲染
+  // 生效存在 React 调度间隙，state 短路拦不住同帧连点（code-review item
+  // 41641b9b90a5，比照 SystemPanel 8ccf20511320），经 savingRef 写读同帧原子
+  // 拦住连点，state 只负责按钮视觉反馈。
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   // 表单当前值直传（未保存修改即测）；Base URL / API Key / 默认模型名任一为空
   // 直接提示补齐、不发请求（spec「表单值不完整不发请求」）
@@ -269,9 +273,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   };
 
   const handleSave = async () => {
-    if (saving) {
-      return;
-    }
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       // 先剔除完全空的价格行（占位行），避免其阻塞整体校验
@@ -349,6 +352,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       // （antd 已在表单内渲染提示；不落 console，避免触发 no_console_error 断言）
       expandAllSections();
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };

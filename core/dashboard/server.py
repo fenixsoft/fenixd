@@ -646,6 +646,27 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     except KeyboardInterrupt:
         print("\nDashboard 已退出")
     finally:
+        # 收割路由侧在飞 claude 起草子进程（code-review item dffc01af10fa）：
+        # architecture/refresh 与 regression/autodraft 在 HTTP 线程内以
+        # start_new_session=True 拉起的 claude 处于独立会话组，不随本进程
+        # 退出而终止；daemon_threads 丢弃阻塞在 communicate() 的线程后，孤儿
+        # 仍以 bypassPermissions 写目标项目文件（diagram.html/evidence.md/
+        # verify.yaml），并与用户重启后重新触发的下一轮起草并发写同一文件。
+        # 退出链显式 killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
+        # _kill_process_group）。惰性导入 + 吞异常：收割失败不得阻断下方
+        # session/watcher/socket 收尾。
+        try:
+            from .routes.architecture_routes import _MANAGER as _arch_manager
+
+            _arch_manager.reap_all()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .routes.regression_routes import reap_all_autodraft
+
+            reap_all_autodraft()
+        except Exception:  # noqa: BLE001
+            pass
         # dashboard-live-session 3.3：先终止会话子进程，再停 watcher
         if httpd.session_manager is not None:
             httpd.session_manager.shutdown()

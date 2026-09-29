@@ -159,6 +159,47 @@ def _autodraft_lock(proot: Path) -> threading.Lock:
         return lock
 
 
+# 在飞起草进程登记（code-review item dffc01af10fa）：同步 autodraft 在 HTTP
+# 线程内 spawn 独立会话组（start_new_session=True）的 claude，句柄原本只存在
+# 于路由局部变量——dashboard 退出链无从收割，退出后孤儿仍以 bypassPermissions
+# 继续写目标项目 verify.yaml。带锁集合最小登记句柄，供退出链
+# reap_all_autodraft() 整组终止。
+_AUTODRAFT_PROCS_GUARD = threading.Lock()
+_AUTODRAFT_PROCS: set[subprocess.Popen] = set()
+
+
+def _register_autodraft_proc(proc: subprocess.Popen) -> None:
+    with _AUTODRAFT_PROCS_GUARD:
+        _AUTODRAFT_PROCS.add(proc)
+
+
+def _unregister_autodraft_proc(proc: subprocess.Popen) -> None:
+    with _AUTODRAFT_PROCS_GUARD:
+        _AUTODRAFT_PROCS.discard(proc)
+
+
+def reap_all_autodraft() -> None:
+    """收割全部在飞 regression 起草进程组（dashboard serve() 退出链调用）。
+
+    killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
+    _kill_process_group）；目标已退出属可预期竞态（ProcessLookupError/
+    OSError 降级 proc.kill）。不在此排干管道：SIGKILL 后 communicate 可能
+    被逃出进程组的孙进程无限阻塞（knowledge.py 同款已知形态），收尾交由
+    持有句柄的请求线程自身超时/兜底分支完成。
+    """
+    with _AUTODRAFT_PROCS_GUARD:
+        procs = list(_AUTODRAFT_PROCS)
+    for proc in procs:
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _self_cert_script() -> str:
     """fenixd 自证 CLI 绝对路径（本仓 bin/fenix_verify_contract.py）。
 
@@ -580,6 +621,8 @@ class H12RegressionRoutesMixin:
                     # 起草与 agent-run 无关，MUST NOT 注入 agent-run 上下文
                     env=_build_spawn_env(),
                 )
+                # 登记（item dffc01af10fa）：句柄供 dashboard 退出链收割
+                _register_autodraft_proc(proc)
                 stdout, stderr = proc.communicate(timeout=AUTODRAFT_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 # 只杀直接子进程 claude 不够：它派生的 bash/写文件孙进程会沦为
@@ -634,6 +677,12 @@ class H12RegressionRoutesMixin:
                 )
                 self._json({"ok": False, "error": "调用 claude CLI 失败"})
                 return
+            finally:
+                # 注销登记（item dffc01af10fa）：走到此处进程已终局（正常退出/
+                # 超时击杀/异常兜底击杀），句柄无需再供退出链收割；Popen 自身
+                # 失败（proc=None）无登记可注。
+                if proc is not None:
+                    _unregister_autodraft_proc(proc)
 
             if proc.returncode != 0:
                 logger.warning(

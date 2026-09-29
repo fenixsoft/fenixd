@@ -46,6 +46,10 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   // 53b14fb31196）：onSave 是异步落盘 + 父组件重载，请求在飞期间连点「保存」
   // 会重复提交保存请求——saving 期间置 loading/disabled 并在入口短路。
   const [saving, setSaving] = useState(false);
+  // 同帧连点拦截（code-review item ab90b32016f3，比照 SystemPanel
+  // 8ccf20511320）：setSaving 渲染生效存在 React 调度间隙，state 短路拦不住
+  // 同帧双击的并发保存——经 savingRef 写读同帧原子拦截，state 只负责按钮视觉反馈。
+  const savingRef = useRef(false);
 
   const initialValues = buildFormValues(config);
 
@@ -63,9 +67,10 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   }, [config.archive, config.knowledge, form]);
 
   const handleSave = async () => {
-    if (saving) {
+    if (savingRef.current) {
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       // 分离「表单校验」与「保存持久化」（code-review item 9125d4a7f7b4，比照
@@ -102,6 +107,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
         message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };

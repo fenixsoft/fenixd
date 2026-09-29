@@ -106,6 +106,18 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     loadStatusRef.current = loadStatus;
   }, [loadStatus]);
 
+  // 跨项目切换清态（code-review item b015dc9cde42，口径同 RegressionTab
+  // 0efd50f9753f / CodeFixProgressCard 1d0b747da6b2）：本组件随 Tab 常驻挂载，
+  // project 变化只重启 active 门控的加载 effect、不卸载组件，组件级 status 会
+  // 保留上一项目最后一次快照——新项目首个响应返回前仍渲染旧项目的生成时间/
+  // 组件数与 iframe 架构图，而此刻「刷新架构图」按钮实际作用于新项目，所见与
+  // 所指不一致；新项目请求失败时旧状态会持续滞留。对 project 专门 effect 清空
+  // status，回落 none 引导态直至新项目数据到达。声明序在加载 effect 之前：
+  // project 变化时清空先于新请求响应执行，不会误清新项目刚取到的数据。
+  useEffect(() => {
+    setStatus(null);
+  }, [project]);
+
   // active 门控：进入分面加载，离开分面停止轮询（未选中零请求）
   useEffect(() => {
     if (!active || !project) return;

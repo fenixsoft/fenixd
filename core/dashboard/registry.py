@@ -286,6 +286,10 @@ class Registry:
         ignored = {self._norm(x) for x in data.get("ignored", []) if x}
         projects = []
         seen = set()
+        # 项目别名 → 首个注册路径（code-review item 4e59d5393147）：下游 HTTP
+        # 以 project=<name> 寻址、SessionManager 以 name 为会话主键，name 须
+        # 单值；守卫逻辑见下方显式分支与扫描分支。
+        seen_names = {}
 
         for p in data.get("projects", []):
             if not isinstance(p, dict):
@@ -321,6 +325,22 @@ class Registry:
             name = p.get("name")
             if not isinstance(name, str) or not name.strip():
                 name = rp.name or key
+            # name 唯一性守卫（code-review item 4e59d5393147）：discover 原本
+            # 只按规范化路径去重，多个 scan_dirs 下同名子目录、或显式注册与
+            # 扫描发现同名并存时，返回列表会出现两个同名条目——下游按 name
+            # 寻址取首个匹配，后者被前者遮蔽，自由会话可能落到错误项目目录。
+            # 对重复 name 写 WARNING（含冲突双方路径）并跳过后到条目——与
+            # 下游「首个匹配胜出」的实际行为一致，仅显式化+可观测；不改名
+            # 生成唯一化别名（会改变下游可见项目名，影响面超本条目）。
+            if name in seen_names:
+                logger.warning(
+                    "项目别名 %r 重复，跳过后到条目 %s（已注册于 %s）",
+                    name,
+                    key,
+                    seen_names[name],
+                )
+                continue
+            seen_names[name] = key
             projects.append(
                 {
                     "name": name,
@@ -370,10 +390,22 @@ class Registry:
                 # unreadable（写 WARNING 日志后跳过），均不中断整体发现。
                 if self.probe_child(child) != self._PROBE_PRESENT:
                     continue
+                # name 唯一性守卫（item 4e59d5393147，口径与告警文案见显式
+                # 分支）：不同扫描根下同名子目录同样只保留首个。
+                name = child.name or key
+                if name in seen_names:
+                    logger.warning(
+                        "项目别名 %r 重复，跳过后到条目 %s（已注册于 %s）",
+                        name,
+                        key,
+                        seen_names[name],
+                    )
+                    continue
+                seen_names[name] = key
                 seen.add(key)
                 projects.append(
                     {
-                        "name": child.name or key,
+                        "name": name,
                         "path": key,
                         "discovered": True,
                         "exists": True,
@@ -429,9 +461,16 @@ class Registry:
             if not Registry._state_md_is_file(rp / ".fenix" / "STATE.md"):
                 return False, f"目录不是 Fenixd 项目（缺少 STATE.md）: {key}"
 
+            # 类型守卫（code-review item 55046250b5b4）：与 discover 同式——
+            # 旧 `name or (rp.name or key)` 只挡 falsy，非字符串真值 name
+            # （HTTP/脚本传入 int）会被原样落盘，破坏下游按字符串处理 name
+            # 的契约；非字符串/空白一律回退 rp.name or key，保证落盘 name
+            # 恒为字符串。
+            if not isinstance(name, str) or not name.strip():
+                name = rp.name or key
             data.setdefault("projects", []).append(
                 {
-                    "name": name or (rp.name or key),
+                    "name": name,
                     "path": key,
                     # code-review item 4346360f4dd6：与 mark_fixture 的
                     # bool(fixture) 口径对齐——非布尔真值（如 "yes"）若原样
@@ -579,15 +618,34 @@ class Registry:
         return key in {self._norm(x) for x in data.get("ignored", []) if x}
 
     def list_projects(self) -> list:
-        """仅返回配置中显式注册的项目（供 --list-projects）。"""
+        """仅返回配置中显式注册的项目（供 --list-projects）。
+
+        类型守卫与 discover 同式（code-review item 55046250b5b4）：path
+        缺失/为空/非字符串、路径解析失败的条目一律跳过并告警；name 非字符串
+        /空白回退 ``rp.name or key``——下游 cmd_list_projects 直接消费该输出，
+        手改 YAML 的畸形值（name: 123、path: [a]）原样透出会使展示/拼接
+        逻辑出错。
+        """
         data = self.load()
         out = []
         for p in data.get("projects", []):
             if not isinstance(p, dict):
                 continue
+            raw = p.get("path", "")
+            if not isinstance(raw, str) or not raw.strip():
+                logger.warning("显式项目条目 path 缺失/为空/非字符串，跳过: %r", p)
+                continue
+            try:
+                rp = Path(raw).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("显式项目条目路径解析失败，跳过: %r: %s", p, exc)
+                continue
+            name = p.get("name")
+            if not isinstance(name, str) or not name.strip():
+                name = rp.name or str(rp)
             out.append(
                 {
-                    "name": p.get("name"),
+                    "name": name,
                     "path": p.get("path"),
                 }
             )

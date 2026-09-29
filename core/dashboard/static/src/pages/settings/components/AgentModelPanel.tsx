@@ -99,6 +99,27 @@ function buildFormValues(agents: AgentsConfig) {
   };
 }
 
+// 渲染后把各角色「rows」Form.List 的 fields 快照写进 ref（比照 LlmProviderPanel
+// 的 ActiveKeysSync：写 ref 必须落在 effect 内、渲染保持纯净——渲染期写 ref 在
+// 并发渲染下可能带上被丢弃渲染的值，handlePaste 会按陈旧快照清理 healthRows、
+// 把健康徽标条目清错行）。fields 含稳定 field.key：handlePaste 是事件回调、拿
+// 不到内层 List 的 fields，清理条目须按「行位置 → key」映射
+// （code-review item 46bf16b0f8df）
+function RowFieldsSync({
+  index,
+  fields,
+  target,
+}: {
+  index: number;
+  fields: Array<{ key: number }>;
+  target: { current: Record<number, Array<{ key: number }>> };
+}) {
+  useEffect(() => {
+    target.current[index] = fields;
+  }, [target, index, fields]);
+  return null;
+}
+
 interface AgentModelPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -292,13 +313,18 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // 保存重入守卫（code-review item d0faa2345d54）：onSave 是异步（validateFields +
   // 持久化），提交期间连点会发出重叠保存请求并发写同一配置文件——落盘结果取决于
   // 响应到达顺序。saving 期间入口短路、finally 复位，按钮置 loading 且 disabled
-  // （范式同 ApprovalModePanel item 589c1c98c5a4）。
+  // （范式同 ApprovalModePanel item 589c1c98c5a4）；setSaving 渲染生效存在 React
+  // 调度间隙、state 短路拦不住同帧连点（code-review item 38bd12fc895c，比照
+  // SystemPanel 8ccf20511320），入口经 savingRef 写读同帧原子拦截，state 只负责
+  // 按钮视觉反馈。
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   const handleSave = async () => {
-    if (saving) {
+    if (savingRef.current) {
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       // 分离「表单校验」与「保存持久化」（code-review item 3086b7e96c4f）：旧实现
@@ -351,6 +377,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -423,13 +450,12 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                       <Input placeholder="模型名（如 deepseek-v4-flash），可选" />
                     </Form.Item>
                     <Form.List name={[field.name, 'rows']}>
-                      {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => {
-                        // render 期捕获本角色行 fields（含稳定 field.key）：handlePaste
-                        // 事件回调拿不到内层 List fields，清理 healthRows 须按
-                        // 「行位置 → key」映射（code-review item 46bf16b0f8df）
-                        rowFieldsRef.current[index] = rowFields;
-                        return (
+                      {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => (
                         <>
+                          {/* 行 fields 快照经 RowFieldsSync 在 effect 内写入 rowFieldsRef
+                              （渲染保持纯净，见 RowFieldsSync 注释）；清理 healthRows 仍按
+                              「行位置 → key」映射（code-review item 46bf16b0f8df） */}
+                          <RowFieldsSync index={index} fields={rowFields} target={rowFieldsRef} />
                           {rowFields.map((rowField, rIdx) => {
                             const curProvider = ((watchList[index]?.rows || [])[rIdx]?.provider || '').trim();
                             const rowId = `${index}-${rIdx}`;
@@ -589,8 +615,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                             添加 Provider 行
                           </Button>
                         </>
-                        );
-                      }}
+                      )}
                     </Form.List>
                   </Card>
                 );

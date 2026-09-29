@@ -443,11 +443,15 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 新项目首帧响应返回前表格仍渲染上一项目条目，此窗口内勾选/忽略会拿旧项目
   // item_id 配新 project 发请求（后端找不到该条目报错）。project 变化即清空
   // 条目与选中并复位首载标记，分面回落加载态直至新项目数据到达（口径对齐
-  // CodeFixProgressCard 1d0b747da6b2 先例）。声明序在下方数据加载 effect 之前：
+  // CodeFixProgressCard 1d0b747da6b2 先例）。progress 同点复位（code-review
+  // item 1699f5c3678b）：否则新项目 progress 响应返回前「审查进行中」卡片
+  // 仍渲染上一项目 running 态与 review_id，此时点取消会以新 project 携带旧
+  // 项目的 review_id 调 cancelRun。声明序在下方数据加载 effect 之前：
   // project 变化时先清态再触发重查。
   useEffect(() => {
     setItems([]);
     setSelectedKeys([]);
+    setProgress(null);
     loadedOnceRef.current = false;
   }, [project]);
 
@@ -799,6 +803,18 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 弹窗打开期间门不释放，与「弹窗开着」一致）。
   const generateModalOpenRef = useRef(false);
 
+  // items/selectedKeys 的 ref 镜像（code-review item 26608e9a5426）：modal.confirm
+  // 的 onOk 闭包捕获的是渲染期旧 state，弹窗停留期间 SSE state/run_meta 帧、
+  // 30s 心跳与幽灵选中清理仍在刷新台账与选中——onOk 须经 ref 读最新值复核
+  // open 过滤，不把停留期间已流转为 in_spec/resolved/ignored 的 item_id 提交
+  // 给 generateFixSpec。写 ref 落 effect（与 loadItemsRef 同款纪律）。
+  const itemsRef = useRef(items);
+  const selectedKeysRef = useRef(selectedKeys);
+  useEffect(() => {
+    itemsRef.current = items;
+    selectedKeysRef.current = selectedKeys;
+  }, [items, selectedKeys]);
+
   // 勾选中 status==='open' 的条目数（code-review item 7530070b52fe +
   // b6fe254b5962）：「生成修复 SPEC」「全部忽略」按钮标签计数与弹窗内 count
   // （剔除非 open 后的 openKeys.length）、工具栏「已选 N 条」统一用本口径——
@@ -855,9 +871,21 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           message.error('执行时间必须晚于当前时间');
           return Promise.reject(new Error('invalid start time'));
         }
+        // 提交前按最新 items/selectedKeys 复核 open 过滤（code-review item
+        // 26608e9a5426）：弹窗停留期间条目可能已被自动修复/其他会话流转为
+        // 非 open，打开前的快照 openKeys 不再可信——剔除非 open 条目后再
+        // 提交；复核为 0 则提示且不提交（reject 保持弹窗打开，与上方时刻
+        // 校验失败同口径）。
+        const latestOpenKeys = itemsRef.current
+          .filter((it) => selectedKeysRef.current.includes(it.item_id) && it.status === 'open')
+          .map((it) => String(it.item_id));
+        if (latestOpenKeys.length === 0) {
+          message.warning('选中条目已无可生成修复 SPEC 的 open 问题');
+          return Promise.reject(new Error('no open items left'));
+        }
         setGenerating(true);
         try {
-          const result = await generateFixSpec(project, openKeys, holder.startAfter);
+          const result = await generateFixSpec(project, latestOpenKeys, holder.startAfter);
           if (result.ok) {
             message.success(
               `已生成修复 SPEC：${result.spec_name}${describeStartAfter(holder.startAfter)}`,

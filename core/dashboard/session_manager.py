@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -130,6 +131,11 @@ class SessionManager:
             env = self._build_env()
             session_id = uuid.uuid4().hex
 
+            # code-review item 46ca71736389：独立进程组（setsid），_terminate 宽限
+            # 超时改 killpg 整组收割——claude 以 bypassPermissions 运行可再派生
+            # 工具子进程，仅 kill 直接子进程会留孤儿孙进程（与 core.knowledge
+            # ._default_spawn / core.v2_dev_server 的清场范式对齐）。会话管道
+            # 全为 PIPE 由读线程消费，独立进程组不影响 IO。
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -139,6 +145,7 @@ class SessionManager:
                 bufsize=1,
                 cwd=str(project_path),
                 env=env,
+                start_new_session=True,
             )
 
             session = Session(
@@ -257,18 +264,32 @@ class SessionManager:
         # 同 shutdown：串行为有意选择（item da1eacbbbe78）——本循环在后台
         # daemon 线程内，不在关闭链上，僵死会话至多拖慢下一轮扫描，无需并行。
         for s in candidates:
-            self._terminate(s, "idle")
+            self._terminate(s, "idle", idle_only=True)
 
     # ── 内部：进程终止 ─────────────────────────────────────────────────────
 
-    def _terminate(self, session: Session, reason: str) -> None:
-        """关 stdin → 等宽限 → kill → 广播 session_ended → 移除。"""
+    def _terminate(
+        self, session: Session, reason: str, idle_only: bool = False
+    ) -> None:
+        """关 stdin → 等宽限 → kill → 广播 session_ended → 移除。
+
+        idle_only：空闲回收专用——认领与活跃复核合并进同一临界区，复核不过
+        直接放弃本次回收（仅 _scan_idle 传 True）。
+        """
         # 幂等守卫（与 _stdout_reader 的 still_registered 同式）：并发 stop/idle/
         # shutdown 或会话已被替换/移除时，只允许一个线程走完整终止流程，
         # 避免同会话广播两条 session_ended 终态事件。短临界区，锁内不做等待/广播。
         with self._lock:
             if session.terminating or self._sessions.get(session.project) is not session:
                 return  # 已被其他路径认领或移除
+            # code-review item db06105b6496：_scan_idle 快照候选后已释放锁，与
+            # _terminate 之间 send/start 可能已刷新 last_activity——idle 回收在
+            # 认领前锁内重查空闲阈值，刚恢复活跃的会话放弃回收，防进行中的
+            # send 以 SessionNotRunningError 失败（TOCTOU 闭环）。
+            if idle_only and (
+                time.time() - session.last_activity
+            ) <= SESSION_IDLE_TIMEOUT_SECONDS:
+                return
             session.terminating = True
 
         sid = session.session_id
@@ -286,10 +307,17 @@ class SessionManager:
         try:
             session.proc.wait(timeout=SESSION_TERMINATE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
+            # code-review item 46ca71736389：killpg 收割整个进程组，与
+            # core.knowledge._kill_process_group 同式（getpgid 失败/进程已消失
+            # 时回退单进程 kill，ProcessLookupError 容错）。
             try:
-                session.proc.kill()
-            except Exception:
-                pass
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                try:
+                    session.proc.kill()
+                except Exception:
+                    pass
             try:
                 session.proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -404,6 +432,7 @@ class SessionManager:
                 if "ts" not in ev:
                     ev["ts"] = time.time()
 
+                # [fenix-ignore:232cecb1ea26] 四处 events.append 均已持 session.lock（item 79d40459a39e 既有修复覆盖），本条所述未持锁状态不成立
                 # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
                 with session.lock:
                     session.events.append(ev)
