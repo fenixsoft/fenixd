@@ -76,8 +76,11 @@ class G1LifecycleMixin:
         self._lock_since: Dict[str, float] = {}
         # 锁治理（D4）：进程表扫描函数，默认 pgrep 实现；测试可注入替身。
         # 签名 (spec_name) -> bool，表示进程表中是否存在指向该 spec worktree 的进程。
+        # （家族限定扫描会附带 prefixes= 关键字，替身不支持时按 TypeError 退回
+        # spec 粒度——见 locks._spec_process_alive，code-review item 216784713669。）
         self._process_scanner = process_scanner or self._pgrep_spec_process
-        self._proc_scan_cache: Dict[str, tuple] = {}  # spec -> (expires_at, alive)
+        # 键为裸 spec 名（spec 粒度扫描）或 (spec, prefixes) 二元组（家族限定扫描）
+        self._proc_scan_cache: Dict[str, tuple] = {}  # spec/(spec,prefixes) -> (expires_at, alive)
         # 恢复重派遗产（add-recovery-legacy-check D1）：死亡 run 的 worktree 与分支
         # 注册为 spec 的遗产，保留至「后继 run 成功 merge」或「宽限期超时」二者先到。
         # 内存态，不持久化（与锁同策略，daemon 重启后遗产按孤儿清扫兜底）。覆盖式
@@ -1040,7 +1043,11 @@ class G1LifecycleMixin:
     def refresh_locks(self) -> list:
         """以真实进程表重建/校验在册锁，回收陈锁（daemon 启动首扫 + 周期调用）。
 
-        对每个在册锁：
+        对每个在册锁（code-review item 216784713669：锁键为 <spec>:<agent_type>，
+        进程扫描与流 mtime 判定按本族前缀 verify/impl 限定——同 spec 他族活进程/
+        新鲜流不再庇护本族死锁，如 implementer 在飞时死 verifier 的锁可按时回收；
+        解析不出 agent_type 的键维持 spec 粒度保守判活。回收只摘本族锁键，在飞
+        他族锁不受牵连）：
           - 进程表存在指向该 spec worktree 的进程 → 保留（孤儿 resume 存活的情形）
           - 无匹配进程且对应 run 流文件 mtime 距今超过 STALE_LOCK_IDLE_SECONDS
             （或根本没有流文件）→ 陈锁，释放放行后续派发
@@ -1063,10 +1070,19 @@ class G1LifecycleMixin:
             return released
         for lock_key in snapshot:
             spec = self._lock_spec_name(lock_key)
-            # [fenix-ignore:216784713669] info 项按家族过滤须改 _process_scanner 注入契约与按 spec 键的扫描缓存/流 mtime 判定，且与 has_active_worktree 同粒度同链须同改（彼处不属本组条目），成本高风险大；方向保守（只延后派发不会双派发）且有 STALE_LOCK_IDLE_SECONDS 上界，维持 spec 粒度判活
-            if self._spec_process_alive(spec):
+            # 家族过滤判活（code-review item 216784713669）：进程扫描与流 mtime
+            # 按锁键 agent_type 的家族前缀（create() 两族形状：verifier → verify、
+            # 其余 → impl）限定，死家族的锁不再被同 spec 他族活进程/新鲜流庇护；
+            # 解析不出 agent_type 时退回 spec 粒度保守判活。
+            family = self._lock_family_prefix(lock_key)
+            if family is not None:
+                alive = self._spec_process_alive(spec, prefixes=(family,))
+                mtime = self._latest_stream_mtime(spec, prefixes=(family,))
+            else:
+                alive = self._spec_process_alive(spec)
+                mtime = self._latest_stream_mtime(spec)
+            if alive:
                 continue
-            mtime = self._latest_stream_mtime(spec)
             if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
                 continue
             if mtime is None and self._lock_young(spec):
@@ -1082,6 +1098,9 @@ class G1LifecycleMixin:
                     spec,
                     f"stale lock: no live process, stream idle " f">{STALE_LOCK_IDLE_SECONDS}s",
                     not_after=entry_ts,
+                    # 家族已知时只摘本锁键：同 spec 在飞他族锁的生死未判定，
+                    # 全摘会让其失去锁保护（code-review item 216784713669）
+                    lock_key=lock_key if family is not None else None,
                 )
             )
         if released:
