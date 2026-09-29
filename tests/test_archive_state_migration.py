@@ -587,5 +587,59 @@ class TestSoftDeleteManifestCompat(unittest.TestCase):
         self.assertEqual(r, {"found": False})
 
 
+# ── 验证轮 BUG-01 回归：watcher 不得把迁出推成删行 ───────────────────
+
+
+class TestWatcherEvictNotDeletedRow(unittest.TestCase):
+    """界面归档 → archive_spec 移走 spec/changes/<name>/ 并迁出条目后，watcher
+    的目录级 removed 信号不得覆盖 SummaryIndex D4 合并基线：事件应以 archived
+    行推送该 spec，而非 summary:null（旧实现推 null 使前端把刚归档的行从本地
+    表删到下次全量加载，web-ui-archive-evict-archived-view 实证）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        _write_state(self.root, {"evict-me": {"status": "pushed"}})
+        (self.root / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: fake\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_evicted_spec_pushed_as_archived_row_not_null(self):
+        from core.dashboard.watcher import FileWatcher
+
+        events = []
+
+        class _Hub:
+            def broadcast(self, event, run_id=None):
+                events.append(event)
+
+        watcher = FileWatcher(
+            lambda: [{"name": "p", "path": str(self.root), "exists": True}],
+            _Hub(), summary_index=SummaryIndex(),
+        )
+        watcher.scan_once()
+        events.clear()
+
+        # 真实界面归档路径：目录移入 spec/archive/ + STATE 条目迁出清单
+        r = archive_spec(self.root, "evict-me", archived_by="ui")
+        self.assertTrue(r.get("ok"), f"归档应成功: {r}")
+        watcher.scan_once()
+
+        state_events = [e for e in events if e["type"] == "state"]
+        self.assertTrue(state_events, "迁出应触发一次 state 广播")
+        specs = state_events[0]["specs"]
+        rows = [s for s in specs if s["spec"] == "evict-me"]
+        self.assertEqual(len(rows), 1, f"evict-me 应恰好一条事件: {specs}")
+        self.assertIsNotNone(
+            rows[0]["summary"], f"迁出 spec 不得推 null 删行: {specs}")
+        self.assertTrue(
+            rows[0]["summary"].get("archived"), f"迁出行应为归档态: {rows[0]}")
+        self.assertNotIn(
+            None, [s["summary"] for s in specs], f"不得有 summary:null 标记: {specs}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -394,10 +394,14 @@ class FileWatcher:
                     details[spec] = d
                 except Exception:
                     pass
-        # 删除：STATE.md 移除或 spec 目录删除 → summary:null 标记。
-        # 目录删除但 STATE.md 仍保留条目时，索引仍返回 archived 摘要——按目录级
-        # 信号优先，推 null 让前端本地表删除该行。
-        deleted = (set(prev_map) - set(new_map)) | removed
+        # 删除：上次基线有、合并基线（SummaryIndex D4 活跃 ∪ 清单）无的 spec
+        # → summary:null 标记。目录级 removed 信号（spec/changes/<name>/ 被移入
+        # 归档目录）只在合并基线不含该 spec 时才算删除——迁出后基线已含归档
+        # 摘要，上方变更循环会以 archived 行推送，目录级信号再推 null 会覆盖
+        # 刚合并的行、前端本地表把它删到下次全量加载才恢复（验证轮 BUG-01：
+        # web-ui-archive-evict-archived-view；与 summary.py 合并单点注释的约定
+        # 「watcher 的 diff 基线不再把迁出误判为删除行」对齐）。
+        deleted = (set(prev_map) - set(new_map)) | {s for s in removed if s not in new_map}
         for spec in sorted(deleted):
             specs_out.append({"spec": spec, "summary": None})
 

@@ -141,10 +141,29 @@ class TestIncrementalWatcher:
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()
         hub.events.clear()
-        # otherspec 目录删除 → changes/ 目录签名变化 → _scan_spec_dirs 返回 removed
+        # otherspec 目录删除但 STATE.md 条目保留（迁出/回填待跑的中间态）：
+        # SummaryIndex D4 合并基线仍含该 spec（archived 摘要）→ 应以归档行
+        # 推送而非 summary:null（add-archive-state-migration 验证轮 BUG-01：
+        # 旧「目录级信号优先」把刚归档的行从本地表删到下次全量加载）
         otherspec = proot / "spec" / "changes" / "otherspec"
         import shutil
         shutil.rmtree(str(otherspec))
+        self._bump_dir_mtime(proot / "spec" / "changes")
+        w.scan_once()
+        state_events = [e for e, _ in hub.events if e["type"] == "state"]
+        assert state_events
+        specs = state_events[0]["specs"]
+        others = [s for s in specs if s["spec"] == "otherspec"]
+        assert len(others) == 1, f"otherspec 应恰好一条事件: {specs}"
+        assert others[0]["summary"] is not None, \
+            f"目录移走、条目仍在的迁出中间态不得推 null 删行: {specs}"
+        assert others[0]["summary"].get("archived") is True, \
+            f"迁出中间态应以归档行推送: {others[0]['summary']}"
+
+        # 真删除（条目同步移出 STATE.md，活跃/清单双源皆无）→ summary:null 标记
+        hub.events.clear()
+        st = proot / ".fenix" / "STATE.md"
+        self._atomic_write(st, st.read_text(encoding="utf-8").split("### otherspec")[0])
         self._bump_dir_mtime(proot / "spec" / "changes")
         w.scan_once()
         state_events = [e for e, _ in hub.events if e["type"] == "state"]
