@@ -55,6 +55,11 @@ class ReportBuilder:
         if not all_specs:
             return "📋 No SPECs yet. Create one with /fenix:new"
 
+        # 与 get_health_summary 同款防御（code-review item c924a12cde3d）：
+        # STATE 解析异常产出的非 dict 条目直接过滤，不让 entry.get 抛
+        # AttributeError 使报告整体不可用。
+        all_specs = {k: v for k, v in all_specs.items() if isinstance(v, dict)}
+
         # Count by status
         counts = {}
         for entry in all_specs.values():
@@ -79,7 +84,14 @@ class ReportBuilder:
             "pushed": "🚀",
         }
 
-        for name, entry in sorted(all_specs.items(), key=lambda x: x[1].get("priority", 999)):
+        # priority 经 STATE 往返可为字符串，sorted key 混合 int/str 会抛
+        # TypeError；_coerce_int 归一，缺失/非法回 999 排末尾
+        # （code-review item c924a12cde3d）。
+        def _priority_key(item):
+            p = _coerce_int(item[1].get("priority"))
+            return 999 if p is None else p
+
+        for name, entry in sorted(all_specs.items(), key=_priority_key):
             status = entry.get("status", "unknown")
             icon = status_icons.get(status, "❓")
             priority = entry.get("priority", "?")
@@ -99,8 +111,19 @@ class ReportBuilder:
         report = self._pm.generate_report()
 
         log_path = self._pm.project_root / ".fenix" / "PROJECT_LOG.md"
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"\n\n---\n\n{report}\n")
+        # （b21d8f2d8247）报告可丢，主链不可断：.fenix 不可写/磁盘满时写
+        # PROJECT_LOG 失败降级 WARNING 不外抛，与 engine._write_blocker_report
+        # 同口径（code-review item 73c715f2be3a）。
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n\n---\n\n{report}\n")
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Daily report write to PROJECT_LOG.md failed "
+                f"(daily report droppable): {e}",
+            )
+            return
 
         self._pm.logger.info("pm_engine", "Daily report generated")
 
