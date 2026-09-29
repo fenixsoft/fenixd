@@ -212,8 +212,12 @@ def discard_knowledge_changes(project_root: Path) -> None:
 
 
 def resolve_commit(core) -> Callable[[Path, list[str], str], bool]:
-    """提交工具接线（任务 2.3）：优先复用 core.knowledge 的提交工具函数，
-    缺失时回退车道内 pathspec 提交实现（两者均为 pathspec 限定语义）。"""
+    """提交工具接线（任务 2.3）：优先取 ``core.commit_knowledge``——该属性
+    仅由单测经 sys.modules 注入替身时存在（测试接缝），core.knowledge 本体
+    只提供私有 ``_commit_output``（签名与语义均不同），生产路径恒走回退的
+    车道内 pathspec 提交实现。若未来 core.knowledge 落地同名公开函数，须先
+    对齐本车道语义（返回值 bool 化：True=已提交 / False=无改动；失败显式
+    抛错而非静默返回 None），否则会静默切换提交行为。"""
     fn = getattr(core, "commit_knowledge", None)
     if callable(fn):
 
