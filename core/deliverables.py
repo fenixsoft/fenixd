@@ -52,6 +52,7 @@ import os
 import re
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, List
 
@@ -469,8 +470,13 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
     block: List[str] = []
     fence_char = ""  # 当前围栏的开栏标记（``` / ~~~）；空串 = 尚未进入围栏
     for line in lines[start:]:
-        if _H2_RE.match(line):
-            break
+        # 围栏开/关判定先于 _H2_RE 标题截断（fence-first，对齐同文件
+        # extract_paths_typed 的同型修复 code-review item fedc3744144a，本次
+        # item b2f75d10dde8）：开栏中以 ## 开头的行（yaml 注释、粘贴进来的
+        # 小节标题）是块内容而非节边界——标题判定先行会在此提前截断声明块、
+        # 块内后续条目被静默丢弃（守卫按缺件对账或收缩防护把仍在的条目误判
+        # removed）；未开栏时 ## 行才终止段，闭栏仍只认同字符（「闭栏即取完」
+        # 语义不变）。
         m = _FENCE_RE.match(line)
         if m:
             if not fence_char:
@@ -482,6 +488,8 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
             continue
         if fence_char:
             block.append(line)
+        elif _H2_RE.match(line):
+            break
     if not block:
         return None, (
             "Deliverables 声明段存在但未解析出 fenced yaml 块——声明条目必须写在"
@@ -1387,6 +1395,40 @@ def _declared_kind_line(lines, path_idx, end):
     return None, None
 
 
+@contextmanager
+def _declaration_write_lock(spec_dir):
+    """tasks.md 声明段读改写窗口的进程间互斥（flock，``.fenix/declaration-<spec>.lock``）。
+
+    声明段三处文本改写（replace_declared_path / soften_declared_kind /
+    remove_declared_entry）同为「读全文→行级改写→_atomic_write_text 整文件替换」：
+    _atomic_write_text 只保证单次写不截断，不串行化读改写窗口——两个进程（daemon
+    晋升期 soften 与守卫裁决链 relocation/judge 改写）各读到旧全文后先后
+    os.replace，后写者把先写者的条目改写静默回滚（与 knowledge.py
+    _register_todo_retry 裸 write_text 并发覆盖同型，code-review 1bb1eacf2463
+    最终以 flock+原子写修复）。比照 knowledge_backfill.append_todo_line 的
+    _todo_write_lock 先例：LOCK_EX 包住读改写全过程、原子替换保持不变；锁文件
+    在项目 ``.fenix/`` 下按 spec 名派生（项目根推导沿用本模块既有惯例
+    ``spec_dir.parent.parent.parent``）。三入口互不嵌套调用（adjudication 逐条
+    串行 apply、relocate_declared_path 仅薄委托 replace），同进程直接阻塞取锁
+    不自锁。锁文件自身无内容语义。
+    """
+    import fcntl
+
+    fenix_dir = Path(spec_dir).parent.parent.parent / ".fenix"
+    fenix_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(
+        fenix_dir / f"declaration-{Path(spec_dir).name}.lock", "w"
+    )  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
     """机械替换 tasks.md 声明段条目的 path（add-deliverable-declaration-triage D4）。
 
@@ -1401,73 +1443,76 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
         供审计流落 diff（4.5）。
     """
     tasks = Path(spec_dir) / "tasks.md"
-    text = tasks.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if _DECLARED_HEADING_RE.match(line):
-            start = i + 1
-            break
-    if start is None:
-        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法修正 {element}）")
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if _H2_RE.match(lines[i]):
-            end = i
-            break
+    # 读改写窗口进程间互斥（code-review item 90bcfcc0eaf5，先例与语义详见
+    # _declaration_write_lock）：LOCK_EX 包住读全文→行级改写→原子替换全过程
+    with _declaration_write_lock(spec_dir):
+        text = tasks.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = None
+        for i, line in enumerate(lines):
+            if _DECLARED_HEADING_RE.match(line):
+                start = i + 1
+                break
+        if start is None:
+            raise ValueError(f"tasks.md 无 Deliverables 声明段（无法修正 {element}）")
+        end = len(lines)
+        for i in range(start, len(lines)):
+            if _H2_RE.match(lines[i]):
+                end = i
+                break
 
-    def _path_line_re(p: str):
-        return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
+        def _path_line_re(p: str):
+            return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
 
-    elem_idx = None
-    for i in range(start, end):
-        if _path_line_re(element).match(lines[i]):
-            elem_idx = i
-            break
-    if elem_idx is None:
-        raise ValueError(f"声明段无条目匹配 {element}（无法修正）")
+        elem_idx = None
+        for i in range(start, end):
+            if _path_line_re(element).match(lines[i]):
+                elem_idx = i
+                break
+        if elem_idx is None:
+            raise ValueError(f"声明段无条目匹配 {element}（无法修正）")
 
-    before = "\n".join(lines[start:end])
-    # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 +
-    # 窗口内的 kind 行，含中间间隔行），而不是制造两份同名声明
-    dup_idx = None
-    for i in range(start, end):
-        if i != elem_idx and _path_line_re(actual_path).match(lines[i]):
-            dup_idx = i
-            break
-    if dup_idx is not None:
-        # 去重契约是「同 kind」才删（docstring）：解析两条目的 kind 行比对，
-        # 不一致（含任一条目无 kind 行无法判定）上抛转人工——否则硬交付
-        # 条目（new/modify）会被静默删除、只留软审计 reference，硬校验降级
-        # 为软校验（code-review item 1a98aed80b98）
-        elem_kind_idx, elem_kind_m = _declared_kind_line(lines, elem_idx, end)
-        dup_kind_m = _declared_kind_line(lines, dup_idx, end)[1]
-        if (
-            elem_kind_m is None
-            or dup_kind_m is None
-            or elem_kind_m.group(2) != dup_kind_m.group(2)
-        ):
-            raise ValueError(
-                f"声明段已存在 {actual_path} 但 kind 不一致"
-                f"（element: "
-                f"{elem_kind_m.group(2) if elem_kind_m else '（无 kind 行）'}，"
-                f"existing: "
-                f"{dup_kind_m.group(2) if dup_kind_m else '（无 kind 行）'}）"
-                f"——去重要求同 kind，请人工核对声明段"
-            )
-        remove_end = elem_kind_idx + 1
-        del lines[elem_idx:remove_end]
-        # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
-        # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
-        end -= remove_end - elem_idx
-    else:
-        m = _path_line_re(element).match(lines[elem_idx])
-        lines[elem_idx] = f"{m.group(1)}{actual_path}{m.group(2)}"
-    after = "\n".join(lines[start:end])
+        before = "\n".join(lines[start:end])
+        # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 +
+        # 窗口内的 kind 行，含中间间隔行），而不是制造两份同名声明
+        dup_idx = None
+        for i in range(start, end):
+            if i != elem_idx and _path_line_re(actual_path).match(lines[i]):
+                dup_idx = i
+                break
+        if dup_idx is not None:
+            # 去重契约是「同 kind」才删（docstring）：解析两条目的 kind 行比对，
+            # 不一致（含任一条目无 kind 行无法判定）上抛转人工——否则硬交付
+            # 条目（new/modify）会被静默删除、只留软审计 reference，硬校验降级
+            # 为软校验（code-review item 1a98aed80b98）
+            elem_kind_idx, elem_kind_m = _declared_kind_line(lines, elem_idx, end)
+            dup_kind_m = _declared_kind_line(lines, dup_idx, end)[1]
+            if (
+                elem_kind_m is None
+                or dup_kind_m is None
+                or elem_kind_m.group(2) != dup_kind_m.group(2)
+            ):
+                raise ValueError(
+                    f"声明段已存在 {actual_path} 但 kind 不一致"
+                    f"（element: "
+                    f"{elem_kind_m.group(2) if elem_kind_m else '（无 kind 行）'}，"
+                    f"existing: "
+                    f"{dup_kind_m.group(2) if dup_kind_m else '（无 kind 行）'}）"
+                    f"——去重要求同 kind，请人工核对声明段"
+                )
+            remove_end = elem_kind_idx + 1
+            del lines[elem_idx:remove_end]
+            # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
+            # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
+            end -= remove_end - elem_idx
+        else:
+            m = _path_line_re(element).match(lines[elem_idx])
+            lines[elem_idx] = f"{m.group(1)}{actual_path}{m.group(2)}"
+        after = "\n".join(lines[start:end])
 
-    # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
-    # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
-    _atomic_write_text(tasks, "\n".join(lines) + "\n")
+        # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
+        # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
+        _atomic_write_text(tasks, "\n".join(lines) + "\n")
     return {"element": element, "actual_path": actual_path, "before": before, "after": after}
 
 
@@ -1487,48 +1532,51 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
         {"element", "before": <声明段原文>, "after": <声明段新文>}。
     """
     tasks = Path(spec_dir) / "tasks.md"
-    text = tasks.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if _DECLARED_HEADING_RE.match(line):
-            start = i + 1
-            break
-    if start is None:
-        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法软化 {element}）")
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if _H2_RE.match(lines[i]):
-            end = i
-            break
+    # 读改写窗口进程间互斥（code-review item 90bcfcc0eaf5，先例与语义详见
+    # _declaration_write_lock）：LOCK_EX 包住读全文→行级改写→原子替换全过程
+    with _declaration_write_lock(spec_dir):
+        text = tasks.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = None
+        for i, line in enumerate(lines):
+            if _DECLARED_HEADING_RE.match(line):
+                start = i + 1
+                break
+        if start is None:
+            raise ValueError(f"tasks.md 无 Deliverables 声明段（无法软化 {element}）")
+        end = len(lines)
+        for i in range(start, len(lines)):
+            if _H2_RE.match(lines[i]):
+                end = i
+                break
 
-    path_idx = None
-    for i in range(start, end):
-        if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$", lines[i]):
-            path_idx = i
-            break
-    if path_idx is None:
-        raise ValueError(f"声明段无条目匹配 {element}（无法软化）")
+        path_idx = None
+        for i in range(start, end):
+            if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$", lines[i]):
+                path_idx = i
+                break
+        if path_idx is None:
+            raise ValueError(f"声明段无条目匹配 {element}（无法软化）")
 
-    before = "\n".join(lines[start:end])
-    kind_idx, kind_match = _declared_kind_line(lines, path_idx, end)
-    if kind_idx is None or kind_match is None:
-        raise ValueError(f"条目 {element} 无 kind 行可软化")
-    if kind_match.group(2) == "delete":
-        # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求静默
-        # 消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性拒绝并上抛
-        # （调用方等价 unclear 转人工，不静默改写声明段）。
-        raise ValueError(
-            f"条目 {element} 是 kind: delete——delete 不参与软化（防洗白，"
-            f"add-deliverable-delete-kind D4），请人工处置"
-        )
+        before = "\n".join(lines[start:end])
+        kind_idx, kind_match = _declared_kind_line(lines, path_idx, end)
+        if kind_idx is None or kind_match is None:
+            raise ValueError(f"条目 {element} 无 kind 行可软化")
+        if kind_match.group(2) == "delete":
+            # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求静默
+            # 消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性拒绝并上抛
+            # （调用方等价 unclear 转人工，不静默改写声明段）。
+            raise ValueError(
+                f"条目 {element} 是 kind: delete——delete 不参与软化（防洗白，"
+                f"add-deliverable-delete-kind D4），请人工处置"
+            )
 
-    lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
-    after = "\n".join(lines[start:end])
+        lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
+        after = "\n".join(lines[start:end])
 
-    # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
-    # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
-    _atomic_write_text(tasks, "\n".join(lines) + "\n")
+        # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
+        # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
+        _atomic_write_text(tasks, "\n".join(lines) + "\n")
     return {"element": element, "before": before, "after": after}
 
 
@@ -2176,47 +2224,50 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
         供审计流落 diff（design「审计」节：diff 记删除声明前后文本）。
     """
     tasks = Path(spec_dir) / "tasks.md"
-    text = tasks.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if _DECLARED_HEADING_RE.match(line):
-            start = i + 1
-            break
-    if start is None:
-        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法删除 {element}）")
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if _H2_RE.match(lines[i]):
-            end = i
-            break
+    # 读改写窗口进程间互斥（code-review item 90bcfcc0eaf5，先例与语义详见
+    # _declaration_write_lock）：LOCK_EX 包住读全文→行级改写→原子替换全过程
+    with _declaration_write_lock(spec_dir):
+        text = tasks.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = None
+        for i, line in enumerate(lines):
+            if _DECLARED_HEADING_RE.match(line):
+                start = i + 1
+                break
+        if start is None:
+            raise ValueError(f"tasks.md 无 Deliverables 声明段（无法删除 {element}）")
+        end = len(lines)
+        for i in range(start, len(lines)):
+            if _H2_RE.match(lines[i]):
+                end = i
+                break
 
-    def _path_line_re(p: str):
-        return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
+        def _path_line_re(p: str):
+            return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
 
-    elem_idx = None
-    for i in range(start, end):
-        if _path_line_re(element).match(lines[i]):
-            elem_idx = i
-            break
-    if elem_idx is None:
-        raise ValueError(f"声明段无条目匹配 {element}（无法删除）")
+        elem_idx = None
+        for i in range(start, end):
+            if _path_line_re(element).match(lines[i]):
+                elem_idx = i
+                break
+        if elem_idx is None:
+            raise ValueError(f"声明段无条目匹配 {element}（无法删除）")
 
-    before = "\n".join(lines[start:end])
-    # kind 行定位走单点助手（+1..+2 两行窗口，容忍 path 与 kind 间隔一行）：
-    # 只认紧邻一行会在 kind 于 +2 时把孤立 kind 行留在段内，声明段 yaml
-    # 解析失败、守卫静默回退正则语境猜测（code-review item 4fc4ed9e05a9）
-    kind_idx, _kind_match = _declared_kind_line(lines, elem_idx, end)
-    remove_end = kind_idx + 1 if kind_idx is not None else elem_idx + 1
-    del lines[elem_idx:remove_end]
-    # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
-    # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
-    end -= remove_end - elem_idx
-    after = "\n".join(lines[start:end])
+        before = "\n".join(lines[start:end])
+        # kind 行定位走单点助手（+1..+2 两行窗口，容忍 path 与 kind 间隔一行）：
+        # 只认紧邻一行会在 kind 于 +2 时把孤立 kind 行留在段内，声明段 yaml
+        # 解析失败、守卫静默回退正则语境猜测（code-review item 4fc4ed9e05a9）
+        kind_idx, _kind_match = _declared_kind_line(lines, elem_idx, end)
+        remove_end = kind_idx + 1 if kind_idx is not None else elem_idx + 1
+        del lines[elem_idx:remove_end]
+        # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
+        # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
+        end -= remove_end - elem_idx
+        after = "\n".join(lines[start:end])
 
-    # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
-    # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
-    _atomic_write_text(tasks, "\n".join(lines) + "\n")
+        # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
+        # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
+        _atomic_write_text(tasks, "\n".join(lines) + "\n")
     return {"element": element, "before": before, "after": after}
 
 
