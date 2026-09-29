@@ -29,6 +29,8 @@ narrative 为纯增强字段，MUST NOT 改写 description/evidence/recommended_
 
 叙事接线 SHALL 覆盖全部桶 2 转人工裁决告警发射点：汇聚写入口（pm_engine._send_human_escalation_alert，覆盖预算耗尽/升级闸门/评审两族/judge 重跑上限/同因重派熔断/恢复期回调）以及两个旁路 choices 附带点（core/worktree_manager/mergeback.py 的 build_artifact_paths_missing、core/agent_runner/token_budget.py 的 token_budget）。旁路点 SHALL 复用同一叙事辅助模块，MUST NOT 各自内联第二套生成逻辑。
 
+覆盖面口径说明（评审补注 spec-review 2026-09-29）：三处发射点的记录 kind 并不同质——汇聚点与 token_budget 记录为 kind=ESCALATION（进前端告警区，token_budget.py:236），build_artifact_paths_missing 记录为 kind=SIGNAL（不进前端告警区，choices 由 alert-resolve 与 Administrator 处置消费，mergeback.py:465 注释）。「前端告警区渲染叙事」的渲染约束仅适用于进入告警区的 ESCALATION 记录；SIGNAL 记录的 narrative 仅要求字段落盘（供消费侧读取），零渲染要求。
+
 #### Scenario: 旁路发射点同样携带叙事
 
 - **WHEN** merge-back 产物路径缺失信号（build_artifact_paths_missing）经 worktree_manager/mergeback.py 写告警（叙事开关开启、LLM 通道正常）

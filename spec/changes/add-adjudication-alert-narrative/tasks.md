@@ -27,7 +27,7 @@
 
 ## 1. 叙事辅助模块
 
-- [ ] 1.1 新建 `core/adjudication_narrative.py`：`attach_narrative(entry, ctx)`（choices 非空才发起；成功写 `entry["narrative"]={"text","model","at"}`，at 为 UTC ISO）与内部 `build_narrative`（fail-open 采集 STATE 条目/报告路径，组三段式 prompt，单次 LLM 调用，机械校验「发生了什么/为什么需要你决策/决策选项」三段标题齐全）；LLM 通道经模块级注入点接入（生产=既有 claude -p spawn 通道单发，禁传 `--max-tokens-budget` 类危险旗标；测试=假通道）；模型回退链 `admin.narrative_model`→`admin.agent_model`→框架默认；硬超时 `admin.narrative_timeout_seconds`；任何失败不抛出、至多一次尝试、logger.warning 留痕、不写 narrative 字段；配置读取走 `_cached_config_value` 口径
+- [ ] 1.1 新建 `core/adjudication_narrative.py`：`attach_narrative(entry, ctx)`（choices 非空才发起；成功写 `entry["narrative"]={"text","model","at"}`，at 为 UTC ISO）与内部 `build_narrative`（fail-open 采集 STATE 条目/报告路径，组三段式 prompt，单次 LLM 调用，机械校验「发生了什么/为什么需要你决策/决策选项」三段标题齐全）；LLM 通道经模块级注入点接入（生产=既有 claude -p spawn 通道单发，禁传 `--max-tokens-budget` 类危险旗标；测试=假通道）；模型回退链 `admin.narrative_model`→`admin.agent_model`→框架默认；硬超时 `admin.narrative_timeout_seconds`；任何失败不抛出、至多一次尝试、logger.warning 留痕、不写 narrative 字段；配置读取走 pm_engine 既有口径 `ConfigLoader.get_admin_config(self._pm.config).get(...)`（先例 family.py:563；MUST NOT 反向导入 dashboard data 层私有助手 `_cached_config_value`；热更新经 daemon `_maybe_reload_config` 每轮生效，fenixd.py:865）
 - [ ] 1.2 新建 `tests/test_adjudication_narrative.py`（假通道注入，配置源 patch 不落 HOME，MUST NOT 真调网关）：三段契约与 narrative 字段形态、LLM 超时回退（告警照常落盘无 narrative）、LLM 异常回退、三段结构校验失败回退、`narrative_enabled=false` 零调用零延迟、桶 0（choices 空）零调用、模型回退链三档
 
 ## 2. 发射点接线

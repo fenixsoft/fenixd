@@ -44,7 +44,9 @@ alert-shared.tsx 在 evidence 区块之前渲染 narrative.text（复用既有 M
 
 ### D6 配置三键 + SystemPanel UI
 
-`admin.narrative_enabled`（true）/ `admin.narrative_timeout_seconds`（60）/ `admin.narrative_model`（空=回退链）入 config.template.yaml admin 段（带中文注释，tracked 文件有交付先例）；SystemPanel 出三控件走既有保存通道；读取统一走 `_cached_config_value` 口径（30s mtime 热更新既有机制生效）。
+`admin.narrative_enabled`（true）/ `admin.narrative_timeout_seconds`（60）/ `admin.narrative_model`（空=回退链）入 config.template.yaml admin 段（带中文注释，tracked 文件有交付先例）；SystemPanel 出三控件走既有保存通道。
+
+读取口径分侧约定（评审补注 spec-review 2026-09-29）：dashboard 设置页侧沿用 `_cached_config_value` 口径（30s mtime 缓存热更新）不受影响；但 `_cached_config_value` 是 dashboard data 层私有函数（core/dashboard/data/summary.py:189），`core/adjudication_narrative.py` 属 pm_engine 侧新模块，MUST NOT 反向导入——统一走 pm_engine 既有口径 `ConfigLoader.get_admin_config(self._pm.config).get("narrative_*", 缺省)`（先例 family.py:563、recovery.py:1081），热更新经 daemon 主循环 `_maybe_reload_config` 每轮刷新 `self.config` 生效（fenixd.py:865），与 spec「设置页可编辑叙事配置」场景的热更新断言一致。
 
 ## Risks / Trade-offs
 
