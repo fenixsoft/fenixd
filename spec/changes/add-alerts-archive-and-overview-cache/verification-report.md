@@ -41,3 +41,8 @@
 | arch-api-default-aggregation-injects-project | 归档缺省聚合（无 ?project=）：跨全部非 fixture 项目聚合归档并逐条注入 project 字段、按 created 跨项目统一倒序——期望值由脚本按注册表+归档文件实时计算（并发环境下自洽）：夹具项目 120 条归档必须被跳过（scheduling-showcase 不出现在结果内，而 arch-scratch-verify 的 3 条在），total 与非 fixture 归档行数之和要求一致，activities[0]=arch-scratch-arch-02 置顶（created 2026-12-03 最晚）。cli 承载因期望值依赖实时注册表计算；端点核心契约由 5 个 api 场景钉住。出处 core/dashboard/routes/alert_routes.py:185-196（跳过 fixture、注入 project、合并倒序） | pass | 0/7 | - |
 | web-activities-timeline-excludes-archive | 运维时间线页面端到端：导航 #/activities（运维页，HashRouter）——页面经 getAdminActivities() 缺省聚合渲染时间线卡片：探针项目活跃锚点卡（summary 含 arch-scratch-timeline-probe）可见，归档独有锚点（arch-scratch-archived-probe-02）不出现在时间线内（归档数据不进缺省读路径的 UI 半边），时间线卡片容器渲染，控制台无错误。出处 core/dashboard/static/src/app.tsx:134（/activities 路由）、activities/index.tsx:121-125（activity-card）、:137（project Tag）、:317（getAdminActivities 调用） | pass | 0/4 | - |
 | ovr-cache-project-set-change-invalidates | overview 缓存按项目集合变化失效：移除前 /api/overview 载荷包含 arch-scratch-verify（轮询等待 ≤30s，容忍 projects 10s TTL 与 overview 缓存 TTL）；经 Registry().remove_project 移除后轮询至载荷不再包含该项目（≤35s）——项目集合（projects_key）变化使缓存失效并反映新集合。收尾兜底再移除一次保证注册表干净。出处 core/dashboard/routes/project_routes.py:121-123,135-138（projects_key 参与命中判定）、core/dashboard/registry.py:493（remove_project）、dashboard-overview-cache spec.md「项目集合变化」 | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
