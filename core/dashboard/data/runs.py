@@ -717,12 +717,18 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     events 为窗口 [len-tail-offset_from_end, len-offset_from_end) 的逐行解析结果
     （add-run-record-readability 4.1 向前分页；offset_from_end 为负时按 0 钳制，
     窗口越出流首时按流首截断）；offset_from_end=0 时与既有尾部截取 events[-tail:]
-    逐字段一致。status/error 仍由全文件判定（终态行 result/error 决定），
-    total_events 为实际总事件数（不受窗口影响）。
+    逐字段一致。total_events 为实际总事件数（不受窗口影响）；status/error 由
+    _read_run_lines 尾读末行终态判定（终态后置不变量，与 get_runs 的
+    classify_run 读取范式同口径）。
 
     tail 下限归一为 ≥1（code-review item 590aa3c551db）：路由层只做上限钳制，
     tail=0/负值会到达本函数——events[-0:] 即 events[0:] 使 offset=0 分支返回
     全量流、offset>0 分支返回空窗，同一参数两侧语义相悖；统一钳到 1 消除分歧。
+
+    流式扫描（code-review item cba668786b37）：本函数是前端轮询热路径，长 run
+    产物（数万行）不再全文件逐行 json.loads + 全量列表驻留——单遍逐行只做非空
+    行计数（total_events 无需解析 JSON），仅驻留尾部窗口的原始行文本；窗口
+    边界在计数完成后才确定，窗口内行再逐行解析。
     """
     run_file = _resolve_run_file(project_root, run_id)
     if not run_file.exists():
@@ -734,14 +740,18 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
             "total_events": 0,
             "error": None,
         }
-    events = []
-    error = None
+    offset = max(int(offset_from_end or 0), 0)
+    tail = max(int(tail), 1)  # 下限归一：防 tail=0 走 events[-0:]=全量（见 docstring）
+    total = 0
+    suffix = deque(maxlen=tail + offset)  # 仅驻留窗口原始行文本，不解析
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for entry in _parse_run_lines(f):
-                events.append(entry)
-                if entry.get("type") == "error":
-                    error = entry
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                total += 1
+                suffix.append(line)
     except OSError:
         return {
             "run_id": run_id,
@@ -751,19 +761,28 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
             "total_events": 0,
             "error": {"error": "unreadable"},
         }
-    total = len(events)
-    offset = max(int(offset_from_end or 0), 0)
-    tail = max(int(tail), 1)  # 下限归一：防 tail=0 走 events[-0:]=全量（见 docstring）
-    if offset > 0:
-        end = max(total - offset, 0)
-        start = max(end - tail, 0)
-        window = events[start:end]
-    else:
-        window = events[-tail:]
+    # 窗口 [total-offset-tail, total-offset) 折算进驻留后缀坐标（base = 后缀首行
+    # 的全局行号；请求窗越出后缀覆盖范围时按流首截断，与全量列表切片语义一致）
+    kept = list(suffix)
+    base = total - len(kept)
+    end = max(total - offset, 0)
+    start = max(end - tail, 0)
+    window = [
+        _parse_line_event(line)
+        for line in kept[max(start - base, 0):max(end - base, 0)]
+    ]
+    # status/error 沿用 64KB 尾读（终态后置不变量：任一终态事件即文件末行，
+    # error 即末行终态事件；与 _run_meta_cached/run_activity 同一读取范式）
+    tail_events = _read_run_lines(run_file, max_lines=3)
+    error = None
+    for entry in reversed(tail_events):
+        if entry.get("type") == "error":
+            error = entry
+            break
     return {
         "run_id": run_id,
         "exists": True,
-        "status": classify_run(events),
+        "status": classify_run(tail_events),
         "events": window,
         "total_events": total,
         "error": error,

@@ -303,6 +303,20 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     projectRef.current = project;
   }, [project]);
 
+  // 跨项目切换清态（code-review item 0efd50f9753f，口径同 CodeFixProgressCard
+  // 1d0b747da6b2）：本组件随 Tab 常驻挂载，project 变化只重启 active 门控的
+  // 加载 effect、不卸载组件，组件级 snapshot 会保留上一项目最后一次快照——
+  // 新项目首个响应返回前（约一次请求往返），概览卡与结果表仍按旧项目渲染，
+  // 「自动修复回归问题」按钮也按旧快照判定可用性，而此刻点击 handleFix 实际
+  // 作用于新项目，提示与所见内容不一致。对 project 专门 effect 清空 snapshot
+  // 与 awaitingStart，分面回落引导/加载态直至新项目数据到达。声明序在加载
+  // effect 之前：project 变化时清空先于新请求响应执行，不会误清新项目刚取到
+  // 的数据。
+  useEffect(() => {
+    setSnapshot(null);
+    setAwaitingStart(false);
+  }, [project]);
+
   // active 门控：进入分面加载，离开分面停止轮询（未选中零请求）
   useEffect(() => {
     if (!active || !project) return;

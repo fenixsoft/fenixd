@@ -176,8 +176,9 @@ def _load_run_result(project_root, spec_name) -> dict | None:
     """读取裁决 .fenix-run-result.json（两路候选，不可得返回 None）。
 
     专属副本（.fenix/verify-progress/<spec>/.fenix-run-result.json）优先；
-    项目根 .fenix/.fenix-run-result.json 为共享文件，携带的 spec 与当前 spec
-    不符时视为其它 spec 残留忽略。损坏/非对象同样返回 None（fail-closed）。
+    项目根 .fenix/.fenix-run-result.json 为共享文件，须显式携带与当前 spec
+    一致的 spec 字段，缺失或不符均视为其它 spec 残留忽略（fail-closed）。
+    损坏/非对象同样返回 None（fail-closed）。
     """
     candidates = [
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
@@ -192,12 +193,10 @@ def _load_run_result(project_root, spec_name) -> dict | None:
             continue
         if not isinstance(data, dict):
             continue
-        if (
-            idx == 1
-            and isinstance(data.get("spec"), str)
-            and data["spec"]
-            and data["spec"] != spec_name
-        ):
+        # 共享候选必须显式携带匹配的 spec 字段：缺字段（旧格式/写侧异常）时
+        # 无法证明归属，直接放弃该候选（当前处拿不到场景 ID 集做归属推断，
+        # 不为弱校验重排调用方签名），避免他 spec 残留被误合成进当前 spec 详情页
+        if idx == 1 and data.get("spec") != spec_name:
             continue
         return data
     return None
@@ -305,10 +304,13 @@ def parse_verdict(project_root, spec_name) -> dict:
 
     for raw in content.split("\n"):
         s = raw.strip()
-        # 结论标题：## 结论[: 内联] / ## 结论摘要 / ## 判定结论[: 内联]
-        m = re.match(r"^#{2,4}\s*(?:判定)?结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", s)
+        # 结论标题：## 结论[: 内联] / ## 结论摘要 / ## 判定结论[: 内联]。
+        # 收紧为「结论(摘要)?」后仅接受冒号内联或行尾：尾随无冒号文本的变体
+        # 标题（如「结论与建议」「结论说明」）不命中，避免尾文本被误并入
+        # status 且后续正文被持续折进 conclusion
+        m = re.match(r"^#{2,4}\s*(?:判定)?结论(摘要)?\s*(?:[：:]\s*(.*))?$", s)
         if m:
-            status = m.group(1).strip() or status
+            status = (m.group(2) or "").strip() or status
             conclusion_mode = True
             continue
         if conclusion_mode:
@@ -447,7 +449,11 @@ def parse_bugs(project_root, spec_name) -> list:
                 }
             )
         return bugs
-    for sc in report.get("scenarios", []):
+    scenarios = report.get("scenarios")
+    # scenarios 为非可迭代标量（部分写入/手改）时按空处理，对齐 parse_run_result_scenarios 防护口径
+    if not isinstance(scenarios, list):
+        scenarios = []
+    for sc in scenarios:
         if not isinstance(sc, dict):
             continue
         status = sc.get("status")
@@ -528,7 +534,11 @@ def parse_filtered_failures(project_root, spec_name) -> list:
     report = parse_report(project_root, spec_name)
     if not report.get("exists") or report.get("error"):
         return out
-    for sc in report.get("scenarios", []):
+    scenarios = report.get("scenarios")
+    # scenarios 为非可迭代标量（部分写入/手改）时按空处理，对齐 parse_run_result_scenarios 防护口径
+    if not isinstance(scenarios, list):
+        scenarios = []
+    for sc in scenarios:
         if not isinstance(sc, dict):
             continue
         status = sc.get("status")

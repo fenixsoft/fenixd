@@ -1,4 +1,4 @@
-import { AutoComplete, Button, Modal, Spin, Typography, message } from 'antd';
+import { App, AutoComplete, Button, Modal, Spin, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
 import { ClaudeOutputPane } from '@/components/claude-msg';
@@ -20,6 +20,7 @@ const POLL_INTERVAL_MS = 3000;
 const REVEAL_EVENT_THRESHOLD = 8;
 
 export default function AdminInvokeModal({ project, spec, open, onClose }: AdminInvokeModalProps) {
+  const { message } = App.useApp();
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
   const [invoked, setInvoked] = useState(false);

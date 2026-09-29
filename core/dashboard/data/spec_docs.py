@@ -72,6 +72,14 @@ class InvalidSpecName(ValueError):
     """spec 名称非法（非 kebab-case 或含路径穿越）。"""
 
 
+class SpecDocPathEscape(InvalidSpecName):
+    """解析后文档路径越出 SPEC 目录（目录内容被符号链接替换等）。
+
+    spec 名本身已过 kebab-case 白名单，与「名字非法」语义不同故单列类型；
+    仍继承 InvalidSpecName 保持既有捕获面（路由 404 映射）不变。
+    """
+
+
 class InvalidSpecDoc(ValueError):
     """doc 参数非法（不在 _SPEC_DOC_WHITELIST 白名单——单一来源，防注释漂移）。"""
 
@@ -95,6 +103,8 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
 
     Raises:
         InvalidSpecName: spec 非 kebab-case（含可能的路径穿越片段）
+        SpecDocPathEscape: 解析后路径越出 SPEC 目录（符号链接指外等；
+            InvalidSpecName 子类）
         InvalidSpecDoc: doc 不在白名单
     """
     if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
@@ -115,9 +125,10 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
     else:
         target = (spec_dir / f"{doc}.md").resolve()
     # 防御性校验：解析后必须仍位于该 SPEC 目录内（活跃/归档回退同样生效），
-    # 杜绝任何 `..` 拼接越界
+    # 杜绝任何 `..` 拼接越界。spec 名已过白名单，此处触发只可能是目录内容
+    # 被符号链接替换等越界形态（非名字非法），故用 SpecDocPathEscape 单列
     if not target.is_relative_to(spec_dir.resolve()):
-        raise InvalidSpecName(spec)
+        raise SpecDocPathEscape(f"{spec}: 解析后文档路径越出 SPEC 目录")
     if not target.is_file():
         return {"found": False, "content": ""}
     try:

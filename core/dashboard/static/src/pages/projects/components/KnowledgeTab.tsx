@@ -318,6 +318,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
       return {
         title: (
           <a
+            href={`#knowledge:${target}`}
             onClick={(e) => {
               e.preventDefault();
               if (target === 'index') setView({ kind: 'index' });

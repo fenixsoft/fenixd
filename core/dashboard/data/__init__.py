@@ -16,7 +16,8 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     classify_run        (tasks.py:206),
     parse_quality_gates (quality_gates.py，summary.py 经门面消费),
     find_implementer_worktree (tasks.py，quality_gates.py 经门面解析),
-    _resolve_run_file, _read_run_lines (runs.py，quality_gates.py 经门面解析)
+    _resolve_run_file, _read_run_lines (runs.py，quality_gates.py 经门面解析),
+    read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
@@ -41,7 +42,7 @@ from pathlib import Path  # noqa: F401
 
 import yaml  # noqa: F401
 
-from core.agent_runner.run_files import archive_spec_runs, infer_run_agent_type, run_spec_part
+from core.agent_runner.run_files import archive_spec_runs
 from core.archive_commit import commit_archive_move
 from core.fenix_session import is_running as _is_running
 from core.state_machine import (
@@ -106,6 +107,7 @@ from .runs import (
     _first_run_event_ts,
     get_runs,
     _read_run_lines,
+    read_run_lines,
     _parse_run_lines,
     get_run_events,
     read_run_events_between,

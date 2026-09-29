@@ -855,11 +855,9 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
         # 命中 → 保留分支续做（收口字段集与 state_machine _recovery_preserve_spec
         # 续做先例同集：tester_run 清空防误读为在飞验证锚点，_merge_*/重派
         # 计数归零防陈旧计数触发误熔断/误告警）。
-        sm.update_spec(spec, {
+        updates = {
             "status": "ready",
             "error": f"Recovered from cancelled hold (resume preserved branch)：原状态 {status}",
-            "branch": resolved_branch,
-            "implementer_run": entry.get("implementer_run"),
             "_recovery_resume": True,
             "tester_run": None,
             "_retry_count": 0,
@@ -867,7 +865,55 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             "_merge_streak": 0,
             "_redispatch_same_cause_streak": 0,
             "_redispatch_cause_fp": None,
-        })
+        }
+        # 锚点不进 updates（fenix-fix dbc51407f377，与 unfreeze_spec 的
+        # f5a17d596717 同一口径）：上方 parse_state 快照与落盘之间隔着
+        # _resolve_preserved_branch 的 git 子进程（窗口可达秒级），期间并发
+        # 写者若已改写/清空锚点，锁外旧值会在本写中复活，派发侧据此误判
+        # 在飞实现锚点。branch 载荷是 git 解析值（快照 branch 缺失时来自
+        # 命名空间枚举），不能改写成锁内最新值，故收进 _mutate_locked 的
+        # 锁内回调：以最新条目复核快照锚点未变才并入（unfreeze_spec 同款
+        # 展开：单条目写语义复用 _apply_updates_entry，无第二份实现），
+        # git 子进程保持在锁外。
+        resume_anchors = {
+            "branch": resolved_branch,
+            "implementer_run": entry.get("implementer_run"),
+        }
+        applied: dict = {}
+        anchor_recheck: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(spec) or {}
+            if (
+                fresh.get("branch") == entry.get("branch")
+                and fresh.get("implementer_run") == entry.get("implementer_run")
+            ):
+                updates.update(resume_anchors)
+            else:
+                anchor_recheck["snapshot"] = entry
+                anchor_recheck["fresh"] = fresh
+            found = sm._apply_updates_entry(specs, spec, updates, applied)
+            return found, found
+
+        if not sm._mutate_locked(_mutate):
+            # 与旧 update_spec 盲写同契约（spec 已并发删除不改变返回结构），
+            # 仅按「写入必留痕」补锁外 WARNING。
+            sm.logger.warning("state_machine", f"SPEC not found: {spec}")
+        else:
+            sm._log_update_applied(spec, applied)
+            if anchor_recheck:
+                _snap = anchor_recheck["snapshot"]
+                _fresh = anchor_recheck["fresh"]
+                sm.logger.warning(
+                    "state_machine",
+                    f"Cancel-hold anchor recheck: spec '{spec}' 的 branch/"
+                    f"implementer_run 锚点在续做判定后被并发改写（快照 branch="
+                    f"{_snap.get('branch')!r}/implementer_run="
+                    f"{_snap.get('implementer_run')!r} → 最新 branch="
+                    f"{_fresh.get('branch')!r}/implementer_run="
+                    f"{_fresh.get('implementer_run')!r}）——放弃锚点回写，"
+                    f"防陈旧锚点复活",
+                )
         result = {"ok": True, "found": True, "spec": spec, "degraded": False}
     else:
         # 降级：共享判定已实际运行且给出「不可保留」结论 → 普通全新重派。

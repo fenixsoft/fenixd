@@ -1,4 +1,4 @@
-import { Button, Input, Modal, Typography, message } from 'antd';
+import { App, Button, Input, Modal, Typography } from 'antd';
 import { useState } from 'react';
 import { ApiError, cancelRun } from '@/services/dashboard';
 
@@ -13,6 +13,7 @@ interface RunCancelModalProps {
 }
 
 export default function RunCancelModal({ project, runId, onClose, onAccepted }: RunCancelModalProps) {
+  const { message } = App.useApp();
   const [reason, setReason] = useState('');
   const [sending, setSending] = useState(false);
   const open = !!runId;

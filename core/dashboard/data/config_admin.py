@@ -1254,6 +1254,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
                 merged_crf["targeted_regression"] = crf_sync["targeted_regression"]
             merged["admin"]["code_review_fix"] = merged_crf
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
+    # （非 str 非 None 由 write_config 前置校验拒绝，此处只应用合法值）
     if "description" in patch and isinstance(patch["description"], str):
         if not isinstance(merged.get("project"), dict):
             merged["project"] = {}
@@ -1812,7 +1813,13 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     # _deep_merge_managed 中均带 isinstance(..., dict) 前置条件，非 dict 值走
     # 静默跳过路径，write_config 仍返回 ok:true，提交被丢弃而调用方无感知；
     # 各键的非法「值」校验段同样以 isinstance(..., dict) 为前提，非 dict 一律绕过）
+    # code-review item bfcfdb155695：llm 同款纳入前置守卫——其合并分支无
+    # isinstance dict 前置条件（整体替换），非 dict patch 原样置入 merged，最终
+    # 由 merged-view 容器守卫以「存量非法段」文案拒绝：结果 400 正确，但文案把
+    # 本次提交的问题误归因为存量 config.yaml（基线归因对不上时仍返回带误导括注
+    # 的原文案），故前移至此以同款「must be an object」口径拒绝
     for _ck in (
+        "llm",
         "gates",
         "verify",
         "archive",
@@ -1827,6 +1834,17 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     ):
         if _ck in config_patch and not isinstance(config_patch[_ck], dict):
             return fail(f"{_ck} must be an object: {config_patch[_ck]!r}")
+
+    # description 前置校验（受管回显键：read_effective_config 提取顶层
+    # project.description 回显）：merge 分支只应用 str，非 str 非 None 值走静默
+    # 跳过路径、write_config 仍返回 ok:true——UI 填写的描述被无声吞掉且回显退回
+    # 空串，违反 D7「非法值直接拒绝」契约（None 沿用本文件「视为未提交」口径）
+    if (
+        "description" in config_patch
+        and config_patch["description"] is not None
+        and not isinstance(config_patch["description"], str)
+    ):
+        return fail(f"description must be a string: {config_patch['description']!r}")
 
     # add-knowledge-atlas：knowledge.enabled 前置校验（布尔；非法直接拒绝 400，
     # 不静默落盘——合并分支对非 bool 是「跳过」语义，缺此校验会退回 ok:true
@@ -2366,16 +2384,80 @@ _SYNC_PAGE_KEYS = {
     },
 }
 
-# 「同步用户级设置」段内复合值键白名单（code-review item fd7178c8666c）：sync
-# 以用户级文件原值构造 patch，手工脏形态（如 verify.serving_reclaim: true，应为
-# {enabled: bool}）在 write_config 前置校验（isinstance dict 前置条件）与
-# _deep_merge_managed 的 dict 守卫处被双双静默跳过，write_config 仍返回 ok:true——
-# sync 把该键上报进 synced 而项目级实际未落盘。此表内的键在拾取时先验
-# isinstance dict，形态不符直接报错拒绝（不剔除、不假成功）。agents.models 与
-# admin.code_review / admin.code_review_fix 不在表内：非 dict 已由 write_config
-# 的「must be an object」前置守卫直接拒绝，无需本函数重复预检。
-_SYNC_PAGE_DICT_VALUE_KEYS = {
-    "verify": {"serving_reclaim"},
+# 「同步用户级设置」逐键形态谓词（code-review item b4686d41625c，前身是
+# fd7178c8666c 的段内复合值键白名单）：sync 以用户级文件原值构造 patch，部分
+# 形态（枚举/布尔键显式 null、serving_reclaim 为 dict 但缺 enabled 布尔）能通过
+# write_config 前置校验（None 视为「未提交」放行），却在 _deep_merge_managed
+# 对应合并分支的形态条件处被静默跳过不落盘，键仍照常计入 synced 回执——
+# fd7178c8666c / 46a887dedf6a 同款「synced 与实际落盘不一致」假成功的残余面
+# （触发条件为手工编辑的用户级配置）。本表列出合并分支带形态条件的键，谓词与
+# 对应 _deep_merge_managed 分支同口径（逐键核对），拾取后预检不命中直接报错
+# 拒绝（不剔除、不假成功）。agents.models 与 admin.code_review /
+# admin.code_review_fix 不在表内：非 dict 已由 write_config 的「must be an
+# object」前置守卫直接拒绝，无需本函数重复预检。
+_SYNC_PAGE_APPLY_PREDICATES = {
+    "verify": {
+        "static_scope": (
+            lambda v: v in ("main", "worktree"),
+            "must be one of ['main', 'worktree']",
+        ),
+        "deps_mode": (
+            lambda v: v in ("prefer-offline", "hardlink"),
+            "must be one of ['prefer-offline', 'hardlink']",
+        ),
+        "serving_reclaim": (
+            lambda v: isinstance(v, dict) and isinstance(v.get("enabled"), bool),
+            "must be an object with boolean enabled",
+        ),
+        "planner_max_concurrent": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative integer",
+        ),
+        "impl_code_review": (
+            lambda v: isinstance(v, bool),
+            "must be a boolean",
+        ),
+        "impl_code_review_timeout_sec": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+            "must be a positive integer",
+        ),
+        "impl_code_review_concurrency": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+            "must be a positive integer",
+        ),
+        "repo_code_review_concurrency": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+            "must be a positive integer",
+        ),
+        "impl_code_review_effort": (
+            lambda v: v in ("low", "medium", "high"),
+            "must be one of ['low', 'medium', 'high']",
+        ),
+        "impl_code_review_mode": (
+            lambda v: v in ("gate", "advisory"),
+            "must be one of ['gate', 'advisory']",
+        ),
+        "impl_code_review_lane_timeout_sec": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+            "must be a positive integer",
+        ),
+    },
+    "archive": {
+        "auto_threshold": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative integer",
+        ),
+    },
+    "knowledge": {
+        "enabled": (
+            lambda v: isinstance(v, bool),
+            "must be a boolean",
+        ),
+        "audit_enabled": (
+            lambda v: isinstance(v, bool),
+            "must be a boolean",
+        ),
+    },
 }
 
 def sync_config_from_user(project_root, page: str) -> dict:
@@ -2429,11 +2511,14 @@ def sync_config_from_user(project_root, page: str) -> dict:
                 "path": str(_facade.USER_CONFIG_PATH),
             }
         picked = {k: sec_raw[k] for k in keys if k in sec_raw}
-        for _dk in _SYNC_PAGE_DICT_VALUE_KEYS.get(section, ()):
-            if _dk in picked and not isinstance(picked[_dk], dict):
+        # 逐键可应用性预检（口径见 _SYNC_PAGE_APPLY_PREDICATES 表注释）：形态
+        # 不符直接报错拒绝，而非照常计入 synced 回执虚报已同步
+        for _pk, _pv in picked.items():
+            _pred = _SYNC_PAGE_APPLY_PREDICATES.get(section, {}).get(_pk)
+            if _pred is not None and not _pred[0](_pv):
                 return {
                     "ok": False,
-                    "error": f"{section}.{_dk} must be an object: {picked[_dk]!r}",
+                    "error": f"{section}.{_pk} {_pred[1]}: {_pv!r}",
                     "synced": None,
                     "path": str(_facade.USER_CONFIG_PATH),
                 }

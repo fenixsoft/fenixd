@@ -11,8 +11,9 @@ stat 不读文件内容，成本显著低于响应体序列化。
 
 1. ``file_sig`` 的可选 memo：单次签名计算内的路径去重（同一轮里重复引用
    的路径只 stat 一次），缓存随本轮计算即弃；
-2. ``combine`` 的树哈希 memo：键含根路径 + 完整签名集——命中校验本身仍需
-   全量 stat，memo 只省去对同一签名集的重复哈希，有界（LRU 式清空）。
+2. ``combine`` 的树哈希 memo：键即完整签名集的 repr（部件内已含路径）——
+   命中校验本身仍需全量 stat，memo 只省去对同一签名集的重复哈希，有界
+   （LRU 式清空）。
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import os
 import threading
 from pathlib import Path
 
-# ── 树哈希 memo（键含 path + 完整签名集，安全缓存见模块 docstring） ──
+# ── 树哈希 memo（键即完整签名集的 repr，安全缓存见模块 docstring） ──
 
 _HASH_MEMO_CAP = 512
 _HASH_MEMO: dict = {}
@@ -98,8 +99,8 @@ def _combine_uncached(parts) -> str:
 def combine(parts) -> str:
     """把签名部件（str/int/tuple/None 的稳定嵌套结构）组合为 sha256 十六进制串。
 
-    树哈希结果 memo：键含 ``(path 前缀, 完整部件集)``——命中校验本身仍需
-    上游全量 stat，memo 只省重复哈希；超界整体清空（有界，量级 KB）。
+    树哈希结果 memo：键即完整部件集的 repr（部件内已含路径）——命中校验
+    本身仍需上游全量 stat，memo 只省重复哈希；超界整体清空（有界，量级 KB）。
     """
     key = repr(list(parts))
     with _HASH_MEMO_LOCK:
