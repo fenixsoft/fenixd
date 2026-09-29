@@ -42,6 +42,16 @@ class G3LockMixin:
         孤儿进程可能来自任一 agent 类型，进程表只能证明「该 spec 仍有活跃
         worktree」而无法可靠区分前缀，因此两把一起登记，宁可多拦不漏放。
 
+        cc3fc088a7db 依赖边界声明：create() 的锁键词表覆盖 fast-track /
+        implementer / planner-plan / planner-judge / verifier / code-fix 六种
+        agent_type，而本进程判活重建只登记 implementer / verifier 两族。后果
+        有界：spec 级探针 has_active_worktree(spec) 仍按 ``<spec>:`` 前缀匹配
+        拦截（宁可多拦），仅 runner 侧按 agent_type 精确键的
+        has_active_lock(spec, "<agent_type>") 对未登记族（fast-track、code-fix
+        等）恒 False——attempt 级并行保护对该族失效，失效方向保守（放行而非
+        误拦）。调用方依赖该族探针做 attempt 级互斥前，须先扩展此处的登记
+        词表（或为进程 cmdline→agent_type 建立可靠解析）。
+
         add 与 _lock_since 写入全程持 _spec_lock_th（code-review item
         776cffc0a278），与 create / release_spec_lock 的加锁纪律对齐。
         """

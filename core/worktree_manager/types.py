@@ -7,6 +7,7 @@
 1.1/D1），随 defer 批进度/日志/台账留痕。
 """
 
+import copy
 import time
 
 
@@ -75,10 +76,15 @@ class WipOccupantInfo:
         )
 
     def to_dict(self) -> dict:
-        """结构化留痕形态（随 defer 台账 owner_* 字段落盘）。"""
+        """结构化留痕形态（随 defer 台账 owner_* 字段落盘）。
+
+        快照不可变（code-review item 2d8edcef77ce）：holders 逐条深拷贝，嵌套
+        run_ids/files 列表与原对象断开引用——调用方落盘前后对 holders 做去重/
+        裁剪，不再连带改动已产出的台账结构。
+        """
         return {
             "holder": self.holder,
-            "holders": [dict(h) for h in self.holders],
+            "holders": copy.deepcopy(self.holders),
             "overlap": list(self.overlap),
             "identified_at": self.identified_at,
             "source": self.source,

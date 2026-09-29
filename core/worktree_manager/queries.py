@@ -31,12 +31,17 @@ class G8QueryMixin:
 
     @staticmethod
     def _spec_from_worktree_name(wt_name: str) -> Optional[str]:
-        """worktree 目录名（``{impl,verify,repair}-<spec>-<ts>``）→ spec 名。
+        """worktree 目录名（``{impl,verify,repair,judge}-<spec>-<ts>``）→ spec 名。
 
         spec 名自身可含连字符，因此取前缀之后、末段时间戳之前的部分；
         段数不足（非本框架产物）返回 None。
+
+        前缀词表须与 create_worktree_on_branch 的 prefix 取值对齐
+        （code-review item a800466bdff4）：adjudication 以 prefix="judge" 建
+        载体，词表缺 judge 会让 judge 载体无法归属 spec——boot 保全集/恢复
+        保留判定漏收，清扫侧又因命名不识别保守永不清删，目录只增不减。
         """
-        for prefix in ("impl", "verify", "repair"):
+        for prefix in ("impl", "verify", "repair", "judge"):
             if wt_name.startswith(f"{prefix}-"):
                 rest = wt_name[len(prefix) + 1 :]
                 parts = rest.rsplit("-", 1)
@@ -595,15 +600,16 @@ class G8QueryMixin:
 
     @staticmethod
     def _wt_name_matches_spec(wt_name: str, spec_name: str) -> bool:
-        """worktree 目录名是否精确对应 spec（``{impl,verify,repair}-<spec>-<ts>``）。
+        """worktree 目录名是否精确对应 spec（``{impl,verify,repair,judge}-<spec>-<ts>``）。
 
         从目录名解析出完整 spec 再与目标精确比较（分隔符边界锚定，禁止子串
         包含）：``impl-fix-x-1`` 对 spec ``fix-x`` 命中、对 ``fix`` 不命中。
-        非本框架命名（前缀不识别/缺时间戳段）返回 False。
+        非本框架命名（前缀不识别/缺时间戳段）返回 False。前缀词表与
+        _spec_from_worktree_name 同源（含 judge，a800466bdff4）。
         """
         if not wt_name or not spec_name:
             return False
-        for prefix in ("impl", "verify", "repair"):
+        for prefix in ("impl", "verify", "repair", "judge"):
             if wt_name.startswith(f"{prefix}-"):
                 rest = wt_name[len(prefix) + 1 :]
                 parts = rest.rsplit("-", 1)
