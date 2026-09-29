@@ -114,7 +114,7 @@
 | `_judge_rerun_count` | judge 重裁决累计次数（spec 级上限 5） |
 | `_impl_gate_task_rejections` | 收工守卫对任务书声明形态的拦截计数 |
 
-> 状态取值与转移规则见 [SPEC 生命周期与状态机](03-lifecycle.md)。
+> 状态取值与转移规则见 [生命周期与状态机](03-lifecycle.md)。
 
 ## SPEC artifacts 与 Deliverables 声明段
 
@@ -189,7 +189,7 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 
 ## 相关文档
 
-- [Dashboard 使用指南](08-dashboard.md) — 图形界面看同一份数据
+- [Dashboard 操作手册](08-dashboard.md) — 图形界面看同一份数据
 - [日志体系](11-logs.md) — 各日志文件的用途、格式、轮转与归档
 - [验证体系](05-verification.md) — 验证产物语义
 - [FAQ 与故障排查](12-faq.md) — 按现象直连处置
