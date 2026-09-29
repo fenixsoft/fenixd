@@ -32,6 +32,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -68,6 +70,39 @@ def reset_channel() -> None:
     set_channel(None)
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """超时清扫：先对整组 SIGTERM 给短暂优雅窗口，未退再 SIGKILL 整组。
+
+    子进程经 ``start_new_session=True`` 独立成组（pgid==pid），超时只杀直接
+    子进程会留下派生的孙进程孤儿继续占端口/内存（同仓库有界 spawn 惯例：
+    knowledge._kill_process_group、bin/test_for.py run_bounded、hook_engine、
+    verify_contract）。killpg 失败（进程组已退出）静默吞掉；末尾弃管道收割
+    直接子进程，不留僵尸、不让逃出进程组的孙进程悬挂管道
+    （knowledge.py code-review 44d833e20470 教训）。
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except OSError:
+        pass  # 进程组已不存在
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass  # 进程组已不存在
+    try:
+        proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
+    except subprocess.TimeoutExpired:
+        pass
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
+            pass
+
+
 def default_channel(prompt: str, model: Optional[str], timeout: float) -> Optional[str]:
     """生产 LLM 通道：既有 claude -p spawn 通道做一次非交互单发（D2）。
 
@@ -78,25 +113,33 @@ def default_channel(prompt: str, model: Optional[str], timeout: float) -> Option
     - MUST NOT 传 ``--max-tokens-budget`` 类危险旗标（fenixd 实测 7/8 failed
       禁传项）；
     - 超时/子进程缺失/非零退出/空输出一律返回 None，失败语义由调用方统一
-      fail-open 兜底（本函数不重试——「至多一次尝试」由调用方单次调用保证）。
+      fail-open 兜底（本函数不重试——「至多一次尝试」由调用方单次调用保证）；
+    - 超时经独立进程组（``start_new_session=True``）先 SIGTERM 后 SIGKILL
+      收整组（:func:`_kill_process_group`，同 knowledge.py 范式），不留派生
+      孙进程孤儿。
     """
     cmd = ["claude", "-p"]
     if model:
         cmd += ["--model", model]
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=max(float(timeout), 1.0),
+            start_new_session=True,
         )
+    except OSError:
+        return None
+    try:
+        out, _ = proc.communicate(prompt, timeout=max(float(timeout), 1.0))
     except (subprocess.TimeoutExpired, OSError):
+        _kill_process_group(proc)
         return None
     if proc.returncode != 0:
         return None
-    out = (proc.stdout or "").strip()
-    return out or None
+    return (out or "").strip() or None
 
 
 def _get_channel() -> Optional[Callable[[str, Optional[str], float], Optional[str]]]:
