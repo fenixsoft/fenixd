@@ -1766,6 +1766,15 @@ class QQQueueMixin:
                             f"run_reason={str(final_error)[:80] if final_error else ''}",
                         )
                     # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+                    # MUST 同步（code-review item 0caca76e37b1）：本 implementer
+                    # 失败处置链以下四段「终态错误分类→处置动作」（provider 熔断
+                    # "provider circuit open" 保持原状 / [provider-transient]
+                    # 延迟重派 / MODEL_CHAIN_UNAVAILABLE_MARKER 保持原状 / else
+                    # 重试计数与 max_r 封顶冻结转人工）与
+                    # fast_track.py `_handle_fast_track_failure` 的同名四段逐段
+                    # 同构、手工双维护，fast-track 侧历史上曾多次缺失、事后补齐
+                    # 对齐。任一车道新增/修改终态失败分支时 MUST 同步该方法对应
+                    # 段，禁止只改一处；对照定位用方法名/分支语义，勿写裸行号。
                     # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
                     # 不是 spec 自身问题：不计入 _retry_count / _merge_streak、不翻转状态机、
                     # 不创建新 worktree/autostash（design D5）。spec 保持 implementing 原状，
