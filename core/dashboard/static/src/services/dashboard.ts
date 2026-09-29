@@ -2340,9 +2340,13 @@ export function refreshArchitecture(project: string) {
 }
 
 /** 架构图产物下发端点 URL（iframe sandbox 加载；未生成时端点回 404
- *  结构化错误，前端仅在 state==='ready' 时渲染 iframe）。 */
+ *  结构化错误，前端仅在 state==='ready' 时渲染 iframe）。
+ *  追加 present=1：archify 模板原生参数（首屏脚本读 iframe 自身
+ *  location.search → data-present，渲染前生效无闪烁，与图内右上角
+ *  「演示」按钮同一状态、按钮态同步为「退出演示模式」），页签内架构图
+ *  默认以演示模式展示；后端忽略多余 query，仅前端语义。 */
 export function architectureDiagramUrl(project: string): string {
-  return `/api/architecture/diagram?project=${encodeURIComponent(project)}`;
+  return `/api/architecture/diagram?project=${encodeURIComponent(project)}&present=1`;
 }
 
 // ── add-knowledge-atlas：项目知识真相源（只读视图）──────────────────

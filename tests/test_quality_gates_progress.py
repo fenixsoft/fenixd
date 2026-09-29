@@ -7,6 +7,8 @@
   无 error 字段）；
 - 框架 3 项合成（result-artifact-gate 按 run 终态、deliverable-guard 按 STATE、
   code-review 按 ocr 车道产物三态 + 指纹校验）；
+- 车道总开关关闭（verify.impl_code_review）→ code-review 门合成 skipped 归因
+  设置（TestOcrDisabledBySetting，fix-quality-gates-ocr-disabled-na）；
 - worktree 优先读取策略（implementing 时 worktree 内文件优先、主树兜底）。
 
 fix-quality-gates-flat-form-and-explainability 扩展覆盖：
@@ -75,9 +77,24 @@ class QualityGatesTestBase:
         d.mkdir(parents=True, exist_ok=True)
         (d / ".spec.yaml").write_text(
             "schema: spec-driven\ncreated: 2026-09-05\n", encoding="utf-8")
+        # 车道总开关统一置开：既有用例全部在「开关开启」语境断言 ocr 三态
+        # 合成；该开关缺省即关（严格 bool，verify.impl_code_review 缺席=False），
+        # 不 patch 则 code-review 门全部翻转为「设置不适用 skipped」。关闭
+        # 场景（含真实读配置路径）由 TestOcrDisabledBySetting 单独覆盖。
+        self._ocr_switch = patch(
+            "core.config.ConfigLoader.get_impl_code_review_enabled",
+            return_value=True)
+        self._ocr_switch.start()
 
     def teardown_method(self):
+        if self._ocr_switch is not None:
+            self._ocr_switch.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _use_real_config_reader(self):
+        """停用基类统一 patch，走真实 ConfigLoader 读路径（真实接线用例）。"""
+        self._ocr_switch.stop()
+        self._ocr_switch = None
 
     def _gates_path(self, proot: Path | None = None) -> Path:
         base = proot or self.root
@@ -666,6 +683,69 @@ class TestOcrLaneInflight(QualityGatesTestBase):
 
     def test_runs_none_keeps_original_tri_state(self):
         # runs 缺省（None，不判在飞）：completed/unavailable/缺失 → 原三态不回归
+        self._write_lane({"status": "completed", "findings": []})
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"})
+        assert self._item(out, "code-review")["status"] == "passed"
+
+
+class TestOcrDisabledBySetting(QualityGatesTestBase):
+    """车道总开关关闭（verify.impl_code_review）→ code-review 门合成 skipped。
+
+    fix-quality-gates-ocr-disabled-na：设置关闭后车道不再启动、code-review.json
+    永不产生，此前合成 pending 落兜底文案「该门未了结（run 在飞或自查结果未
+    落盘）」——归因错误（是设置关闭而非未了结）。关闭时合成 skipped（计入
+    done，与 unavailable 同口径），detail 固定归因设置；开关优先级最高，先于
+    在飞判据与磁盘产物（关闭后存量产物不再代表当前口径）。
+    """
+
+    _switch = "core.config.ConfigLoader.get_impl_code_review_enabled"
+
+    def test_gate_skipped_with_setting_attribution(self):
+        p = patch(self._switch, return_value=False)
+        p.start()
+        try:
+            out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"})
+        finally:
+            p.stop()
+        item = self._item(out, "code-review")
+        assert item["status"] == "skipped"
+        # detail 归因设置（含键路径，UI 灰色辅助文案透传）
+        assert "设置" in item["detail"]
+        assert "verify.impl_code_review" in item["detail"]
+        # skipped 计入 done（设置性不适用=已了结口径）；testing 态框架守卫
+        # 2 项 passed 同 unavailable 用例口径 → done == 3
+        assert out["done"] == 3
+        # 兜底文案不再出现（归因不再误导）
+        assert item["detail"] != "该门未了结（run 在飞或自查结果未落盘）"
+
+    def test_disabled_overrides_inflight_and_product(self):
+        # 开关最优先：在飞 impl-ocr run 与历史 completed 产物在场仍 skipped
+        self._write_lane({"status": "completed", "findings": [{"path": "a.py"}]})
+        p = patch(self._switch, return_value=False)
+        p.start()
+        try:
+            out = parse_quality_gates(
+                self.root, self.SPEC, {"status": "testing"},
+                runs=[{"run_id": "impl-ocr-demo-1770000000",
+                       "status": "running", "agent_type": "impl-ocr"}],
+            )
+        finally:
+            p.stop()
+        assert self._item(out, "code-review")["status"] == "skipped"
+
+    def test_explicit_false_via_project_config(self):
+        # 真实读配置路径：项目级 config.yaml 显式 false（不 patch 读侧）→ skipped
+        self._use_real_config_reader()
+        (self.root / ".fenix" / "config.yaml").write_text(
+            "verify:\n  impl_code_review: false\n", encoding="utf-8")
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"})
+        assert self._item(out, "code-review")["status"] == "skipped"
+
+    def test_enabled_true_via_project_config_keeps_tri_state(self):
+        # 正向接线：项目级显式 true（真实读配置）+ completed 产物 → 既有三态
+        self._use_real_config_reader()
+        (self.root / ".fenix" / "config.yaml").write_text(
+            "verify:\n  impl_code_review: true\n", encoding="utf-8")
         self._write_lane({"status": "completed", "findings": []})
         out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"})
         assert self._item(out, "code-review")["status"] == "passed"

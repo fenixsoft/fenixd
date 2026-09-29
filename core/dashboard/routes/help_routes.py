@@ -56,7 +56,8 @@ class H8HelpRoutesMixin:
         """GET /api/help/docs
 
         列出框架仓库 docs/help/ 下全部合法 .md 文档，返回 [{name, title}]。
-        - README.md 置顶（默认文档），其余按文件名字典序（NN- 编号天然有序）
+        - 按 HELP_DOC_ORDER 显式顺序（阅读动线，与文件名字典序无关）；
+          未列入清单的文档按文件名字典序追加在末尾（README.md 在顺序表首位）
         - 目录缺失 / 为空 → 空列表（前端空态）
         - 非 .md 文件跳过不计入清单
         """
@@ -81,8 +82,8 @@ class H8HelpRoutesMixin:
                 docs.append({"name": f.name, "title": title or f.name[:-3]})
         except OSError:
             return {"docs": []}
-        # README 置顶（设计 D5：文件名即路由参数，README 为默认文档）
-        docs.sort(key=lambda d: (d["name"] != "README.md", d["name"]))
+        order = {name: i for i, name in enumerate(_server_mod.HELP_DOC_ORDER)}
+        docs.sort(key=lambda d: (order.get(d["name"], len(order)), d["name"]))
         return {"docs": docs}
 
 

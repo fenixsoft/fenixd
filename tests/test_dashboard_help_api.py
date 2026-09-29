@@ -101,6 +101,18 @@ class TestHelpDocsList:
         assert by_name["02-concepts.md"] == "核心概念"
         assert by_name["03-lifecycle.md"] == "SPEC 生命周期"
 
+    def test_list_explicit_order_and_unknown_append(self, server_fx, help_dir, monkeypatch):
+        # 显式顺序表（HELP_DOC_ORDER）优先于文件名字典序；未列入的文档
+        # 按文件名字典序追加在有序文档之后
+        monkeypatch.setattr(server_mod, "HELP_DOCS_DIR", help_dir)
+        monkeypatch.setattr(server_mod, "HELP_DOC_ORDER", ["03-lifecycle.md", "README.md", "01-quick-start.md"])
+        _, srv = server_fx
+        status, data = srv.get("/api/help/docs")
+        assert status == 200
+        names = [d["name"] for d in data["docs"]]
+        # 顺序表内按表序；02-concepts.md 不在表内 → 追加在末尾（字典序）
+        assert names == ["03-lifecycle.md", "README.md", "01-quick-start.md", "02-concepts.md"]
+
     def test_list_missing_dir_empty(self, server_fx, tmp_path, monkeypatch):
         missing = tmp_path / "no-such-help"
         assert not missing.exists()

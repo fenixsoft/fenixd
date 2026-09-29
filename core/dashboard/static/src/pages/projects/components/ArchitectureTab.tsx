@@ -9,7 +9,9 @@
 //   2) generating：生成中提示 + 按钮置灰 + 3s 轮询状态；
 //   3) ready：生成时间/组件数元信息 + <iframe sandbox="allow-scripts">（不带
 //      allow-same-origin，产物脚本与主站 cookie/DOM 隔离，design D6）+
-//      可再次点击的「刷新架构图」按钮；
+//      可再次点击的「刷新架构图」按钮。iframe URL 恒带 present=1（archify
+//      原生参数，见 architectureDiagramUrl 注释），架构图默认以演示模式
+//      充满视口展示；用户仍可在图内工具栏退出/再进演示模式；
 //   4) failed：错误信息展示 + 按钮恢复可点（重试覆盖旧错误）。
 // - 容器显式 flex 定高（design D6）：桌面/移动两档高度常数（对齐 SessionPanel
 //   实测偏移 222/234），useIsMobile 切换，minHeight 兜底，避免移动端越界。

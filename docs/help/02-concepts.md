@@ -166,6 +166,6 @@ Dashboard 支持同时监控多个 Fenixd 项目。每个项目拥有自己的 `
 ## 相关文档
 
 - [快速上手](01-quick-start.md) — 端到端流程实操
-- [SPEC 生命周期与状态机](03-lifecycle.md) — 11 状态详细转移规则
+- [生命周期与状态机](03-lifecycle.md) — 11 状态详细转移规则
 - [验证体系](05-verification.md) — 三步流水线与 verify.yaml 契约
 - [调度与治理规则](06-governance.md) — 预算、熔断、告警分级

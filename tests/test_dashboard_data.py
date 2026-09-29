@@ -363,11 +363,15 @@ class TestTimelineOcrLaneVisibility(unittest.TestCase):
     def test_latest_testing_node_carries_ocr_gate_running(self):
         from core.dashboard.data import get_spec_timeline
         # 仅 start 无终态 → get_runs 判 running → 在飞 → ocr 门 running
-        self._write_ocr_run(
-            '{"type": "start", "message": "ocr 车道启动: fenix/demo 8f17a0b..a917c3d"}\n'
-        )
-        entry = {"status": "testing", "created": "2026-09-07T03:00:00Z"}
-        timeline = get_spec_timeline(self.tmpdir, "demo-spec", entry=entry)
+        # （车道总开关统一置开：本用例测在飞注记，开关缺省即关会先路短路成
+        # skipped；关闭场景由 TestOcrDisabledBySetting 覆盖）
+        with patch("core.config.ConfigLoader.get_impl_code_review_enabled",
+                   return_value=True):
+            self._write_ocr_run(
+                '{"type": "start", "message": "ocr 车道启动: fenix/demo 8f17a0b..a917c3d"}\n'
+            )
+            entry = {"status": "testing", "created": "2026-09-07T03:00:00Z"}
+            timeline = get_spec_timeline(self.tmpdir, "demo-spec", entry=entry)
         states = [e for e in timeline if e["kind"] == "state"]
         self.assertEqual(len(states), 1)
         self.assertEqual(states[0]["to"], "testing")
@@ -2776,8 +2780,17 @@ class TestSpecSummaryGatesPhase(unittest.TestCase):
         # 缺省任务全勾（gates 第一支前提）
         (d / "tasks.md").write_text(
             "# Tasks\n\n## 1. x\n\n- [x] 1.1 do\n", encoding="utf-8")
+        # 车道总开关统一置开：本类测 gates 阶段判定与字段透传，非开关逻辑；
+        # 开关缺省即关（严格 bool），不 patch 则 code-review 门恒 skipped
+        # （gates_done +1、lane_running 恒 False），⑥ 在飞场景不可达。关闭
+        # 场景由 tests/test_quality_gates_progress.py::TestOcrDisabledBySetting 覆盖。
+        self._ocr_switch = patch(
+            "core.config.ConfigLoader.get_impl_code_review_enabled",
+            return_value=True)
+        self._ocr_switch.start()
 
     def tearDown(self):
+        self._ocr_switch.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _qg(self, gates):

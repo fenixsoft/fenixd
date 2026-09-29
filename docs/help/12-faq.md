@@ -10,7 +10,7 @@
 
 **处置**：先用 `/fenix-status` 与 Dashboard 概览页确认 daemon 健康；再查 `.fenix/logs/fenixd.log` 的 dispatch 相关记录，以及 STATE.md 中该 spec 的 `error` 与 `_impl_run_budget_used` 字段。若确认是预算耗尽，人工评估后调整 `agents.impl_run_budget`（约 30 秒热更新）并 reset spec。
 
-相关：[调度与治理规则](06-governance.md#三类预算)、[SPEC 生命周期与状态机](03-lifecycle.md#blocked阻塞)
+相关：[调度与治理规则](06-governance.md#三类预算)、[生命周期与状态机](03-lifecycle.md#blocked阻塞)
 
 ## 2. SPEC 反复打回（ready↔implementing 空转）
 
@@ -72,7 +72,7 @@
 
 **处置**：经 Dashboard 项目卡片「更多」→「安装托管」一键执行「停止裸 daemon → 经 supervisor 启动」；或重新运行 `/fenix-setup`。安装托管后 supervisor 启动即会看到并消费残留的 restart_request，daemon 换上新代码，restart_failed 告警也可关闭。
 
-相关：[调度与治理规则](06-governance.md#重启协议)、[Dashboard 使用指南](08-dashboard.md#托管态徽标与安装托管)
+相关：[调度与治理规则](06-governance.md#重启协议)、[Dashboard 操作手册](08-dashboard.md#托管态徽标与安装托管)
 
 ## 9. 希望人工接管某个 SPEC
 
@@ -80,7 +80,7 @@
 
 **处置**：冻结用 Dashboard SPEC 行「冻结」或 `/fenix-freeze`，SPEC 进入 blocked + frozen 标记，自动链全部剥离；处理完后用「解冻」恢复原状态。若只想让 Administrator 诊断一次，用 SPEC 行「呼叫 Admin」，它会写 admin_invoke_request.json，daemon 下一轮拾取后唤起。
 
-相关：[SPEC 生命周期与状态机](03-lifecycle.md#冻结与解冻)、[Dashboard 使用指南](08-dashboard.md)
+相关：[生命周期与状态机](03-lifecycle.md#冻结与解冻)、[Dashboard 操作手册](08-dashboard.md)
 
 ## 10. 配置改了不生效
 
@@ -146,6 +146,6 @@
 
 ## 相关文档
 
-- [核心概念与架构](02-concepts.md)、[SPEC 生命周期与状态机](03-lifecycle.md)
+- [核心概念与架构](02-concepts.md)、[生命周期与状态机](03-lifecycle.md)
 - [验证体系](05-verification.md)、[调度与治理规则](06-governance.md)
 - [配置参考](09-config.md)、[文件与数据地图](10-artifacts.md)

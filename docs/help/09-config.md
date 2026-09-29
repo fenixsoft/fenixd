@@ -563,5 +563,5 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 ## 相关文档
 
 - [调度与治理规则](06-governance.md) — 各预算键的运行时行为
-- [Dashboard 使用指南](08-dashboard.md) — 设置页操作
+- [Dashboard 操作手册](08-dashboard.md) — 设置页操作
 - [FAQ 与故障排查](12-faq.md) — 配置改不动/不生效排查

@@ -1,4 +1,4 @@
-# SPEC 生命周期与状态机
+# 生命周期与状态机
 
 Fenix 将 SPEC 从提出到发布的完整生命周期建模为**11 个状态**的有限状态机。本章覆盖全部状态、合法转移、打回与修复循环、冻结机制与门禁逃生门。
 
@@ -138,7 +138,7 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 - **有意等待，不是故障**：恢复链路（daemon 重启回退、孤儿清理、重派扫描）对保持态 SPEC 一律跳过——不复位、不重派、不递增重验计数；
 - **与冻结并列**：`_cancelled_hold` 与 `_frozen_hold` 是两个互不读写的独立标记；对冻结中的 SPEC 执行终止时，会先清掉取消保持标记；
-- **唯一出路是显式复位**：Dashboard SPEC 详情行的「恢复运行」动作（见 [Dashboard 使用指南](08-dashboard.md)）是保持态的正规出口——先判定能否保留实现分支：命中则保留分支续做（打 `_recovery_resume` 标记、清零相关计数）并即时唤醒派发；未命中则降级为普通重派。终态（done/pushed）、冻结或非保持态的 SPEC 调用它会被幂等拒绝。
+- **唯一出路是显式复位**：Dashboard SPEC 详情行的「恢复运行」动作（见 [Dashboard 操作手册](08-dashboard.md)）是保持态的正规出口——先判定能否保留实现分支：命中则保留分支续做（打 `_recovery_resume` 标记、清零相关计数）并即时唤醒派发；未命中则降级为普通重派。终态（done/pushed）、冻结或非保持态的 SPEC 调用它会被幂等拒绝。
 
 ## blocked 的两种语义：冻结 vs 阻塞
 
@@ -189,7 +189,7 @@ SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自
 
 ## 状态变化事件与 Hook
 
-SPEC 每次状态转换（包括 Dashboard 处置、人工冻结这类不经状态机 `transition()` 的跨进程写入）都会在 ≤5 秒内发布一条状态变化事件，事件类型即目标状态（11 状态枚举，另含项目级伪事件 `all-done`——全部 SPEC 到达终态时发布的项目级事件）。你可以用 hook 订阅这些事件，在 SPEC 进入指定状态时自动执行动作：重启 daemon / dashboard、git 提交与推送、webhook 通知、任意 shell 命令。订阅分全局与 SPEC 级两级，配置存于 `.fenix/config.yaml` 的 `hooks` 段（30 秒热更新生效），完整配置参考见[配置参考](09-config.md#hooks)，Dashboard 操作入口见[Dashboard 使用指南](08-dashboard.md)，执行审计见[文件与数据地图](10-artifacts.md)。
+SPEC 每次状态转换（包括 Dashboard 处置、人工冻结这类不经状态机 `transition()` 的跨进程写入）都会在 ≤5 秒内发布一条状态变化事件，事件类型即目标状态（11 状态枚举，另含项目级伪事件 `all-done`——全部 SPEC 到达终态时发布的项目级事件）。你可以用 hook 订阅这些事件，在 SPEC 进入指定状态时自动执行动作：重启 daemon / dashboard、git 提交与推送、webhook 通知、任意 shell 命令。订阅分全局与 SPEC 级两级，配置存于 `.fenix/config.yaml` 的 `hooks` 段（30 秒热更新生效），完整配置参考见[配置参考](09-config.md#hooks)，Dashboard 操作入口见[Dashboard 操作手册](08-dashboard.md)，执行审计见[文件与数据地图](10-artifacts.md)。
 
 > 不要在 hook 动作里修改 SPEC 状态，状态变化会再次发布事件形成自激循环；框架不对 hook 做熔断，只能靠审计与告警事后暴露。
 

@@ -77,6 +77,24 @@ HELP_DOCS_DIR = FRAMEWORK_ROOT / "docs" / "help"
 # 文档名白名单（add-dashboard-help-center D2）：限定字母/数字/._- + .md，
 # 从根上拒绝路径穿越片段；配合 real path 归属校验双保险
 HELP_DOC_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.md$")
+# 帮助中心菜单显式顺序（阅读动线，不再依赖文件名字典序）；未列入的文档
+# 按文件名字典序追加在有序文档之后（新增文档不登记也会出现在清单末尾）
+HELP_DOC_ORDER = [
+    "README.md",            # 一、Fenix 帮助中心（默认文档）
+    "01-quick-start.md",    # 快速上手
+    "02-concepts.md",       # 核心概念与架构
+    "03-lifecycle.md",      # 生命周期与状态机
+    "06-governance.md",     # 调度与治理规则
+    "05-verification.md",   # 验证体系
+    "07-safeguards.md",     # 保障机制
+    "09-config.md",         # 配置参考
+    "11-logs.md",           # 日志体系
+    "knowledge-atlas.md",   # 知识真相源
+    "10-artifacts.md",      # 文件与数据地图
+    "04-cli.md",            # CLI 操作手册
+    "08-dashboard.md",      # Dashboard 操作手册
+    "12-faq.md",            # FAQ 与故障排查
+]
 
 # 连接上限（dashboard-connection-limit D6，模块常量供测试 monkeypatch）
 MAX_SSE_CONNECTIONS = 32  # SSE 活跃连接上限，超出拒绝新连接（客户端退化为轮询）

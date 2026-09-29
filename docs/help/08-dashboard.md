@@ -1,4 +1,4 @@
-# Dashboard 使用指南
+# Dashboard 操作手册
 
 Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控与运维入口。日常查看进度、处理告警、调整配置都可以在这里完成，本章按五个页面逐一讲解。
 

@@ -283,5 +283,5 @@ daemon 由 supervisor（`fenixd_supervisor.py`）托管，异常退出会被自�
 ## 相关文档
 
 - [配置参考](09-config.md) — 上述全部键的默认值/范围/生效方式
-- [Dashboard 使用指南](08-dashboard.md) — 告警横幅处置入口
+- [Dashboard 操作手册](08-dashboard.md) — 告警横幅处置入口
 - [文件与数据地图](10-artifacts.md) — admin_alerts.json 告警记录位置

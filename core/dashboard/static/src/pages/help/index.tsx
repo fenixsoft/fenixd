@@ -8,7 +8,7 @@
  * 纯文档名 → 切换文档；`doc.md#锚点` → 切换文档后滚动到小节；
  * `#锚点` → 当前文档页内滚动（heading 按 GitHub slug 规则注入 id）。
  */
-import { Empty, Menu, Skeleton, Alert, Drawer, Button, Card } from 'antd';
+import { Empty, Skeleton, Alert, Drawer, Button, Card } from 'antd';
 import { MenuOutlined } from '@ant-design/icons';
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -22,6 +22,7 @@ import { getHelpDocs, getHelpDoc } from '@/services/dashboard';
 import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
 import { markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import './help.css';
 
 // SafeLink 声明为 react-markdown 的宽联合类型 Components['a']，兜底分支直接作 JSX
 // 元素会触发 TS2604/TS2786，此处断言为具体锚点组件类型
@@ -250,6 +251,29 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
 
 // ── 主组件 ──────────────────────────────────────────────────────────
 
+/** 目录菜单：语义 <ol>，序号由 help.css 的 CSS 计数器生成（cjk-ideographic
+ * 出「一、二、…」，不写入标题文字）；选中态高亮，桌面侧栏与移动抽屉共用。 */
+function HelpMenu({ docs, currentDoc, onDocChange }: {
+  docs: HelpDocMeta[];
+  currentDoc: string;
+  onDocChange: (name: string) => void;
+}) {
+  return (
+    <ol className="help-menu">
+      {docs.map((d) => (
+        <li
+          key={d.name}
+          className={`help-menu-item${d.name === currentDoc ? ' active' : ''}`}
+          aria-current={d.name === currentDoc ? 'page' : undefined}
+          onClick={() => onDocChange(d.name)}
+        >
+          {d.title}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export default function HelpPage() {
   const isMobile = useIsMobile();
   const [docs, setDocs] = useState<HelpDocMeta[]>([]);
@@ -357,12 +381,6 @@ export default function HelpPage() {
   // 依赖 docData：文档内容轮次变化时重建 components（同步重置 slug 去重计数）
   const helpComponents = useMemo(() => buildHelpComponents(onNavigate, docs), [onNavigate, docs, docData]);
 
-  // 菜单项
-  const menuItems = useMemo(() => docs.map((d) => ({
-    key: d.name,
-    label: d.title,
-  })), [docs]);
-
   const renderContent = () => {
     if (loading) return <Skeleton active paragraph={{ rows: 6 }} />;
     if (!docs.length) return <Empty description="暂无帮助文档" />;
@@ -399,13 +417,7 @@ export default function HelpPage() {
           onClose={() => setDrawerOpen(false)}
           styles={{ body: { padding: 0 } }}
         >
-          <Menu
-            mode="inline"
-            selectedKeys={[currentDoc]}
-            items={menuItems}
-            onClick={({ key }) => handleDocChange(key)}
-            style={{ borderRight: 'none' }}
-          />
+          <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
         </Drawer>
         <Card style={{ fontSize: 14, lineHeight: 1.65 }} styles={{ body: { padding: '12px 16px' } }}>
           {renderContent()}
@@ -431,13 +443,7 @@ export default function HelpPage() {
             <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: '#595959' }}>
               文档目录
             </div>
-            <Menu
-              mode="inline"
-              selectedKeys={[currentDoc]}
-              items={menuItems}
-              onClick={({ key }) => handleDocChange(key)}
-              style={{ borderRight: 'none' }}
-            />
+            <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
           </div>
           {/* 右侧正文 */}
           <div style={{ flex: 1, minWidth: 0, padding: '24px 32px', fontSize: 14, lineHeight: 1.65 }}>

@@ -62,6 +62,13 @@ DELIVERABLE_BLOCKED_KEYWORDS = ("交付物", "deliverable", "dispute", "格式�
 PENDING_FALLBACK_DETAIL = "该门未了结（run 在飞或自查结果未落盘）"
 UNKNOWN_FALLBACK_DETAIL = "门禁记录缺失或损坏"
 
+# ocr 车道总开关关闭归因文案（fix-quality-gates-ocr-disabled-na）：设置关闭
+# （verify.impl_code_review，用户级+项目级合并）后车道不再启动、code-review.json
+# 永不产生，此前合成 pending 落兜底文案「该门未了结」归因错误——关闭时合成
+# skipped（计入 done，与 unavailable 同口径），detail 固定归因设置。键名入
+# 文案（契约固化，禁止同义改写）。
+_OCR_DISABLED_BY_SETTING_REASON = "已在设置中关闭收尾代码质量审查（verify.impl_code_review）"
+
 # STATE 状态进入该集合 → 框架守卫 2 项（result-artifact-gate / deliverable-guard）
 # 合成 passed（run 已过产物硬门进入 implemented 及之后状态）
 _FRAMEWORK_PASSED_STATUSES = ("implemented", "testing", "verified", "done", "pushed")
@@ -308,6 +315,24 @@ def _ocr_lane_inflight(runs: list) -> bool:
     return False
 
 
+# 车道总开关读侧缓存（fix-quality-gates-ocr-disabled-na）：parse_quality_gates
+# 热路径（每 spec 每次刷新各一次），resolve_config 是 O(YAML)——经
+# summary._cached_config_value 公共流程（（用户级+项目级）config.yaml 双签名
+# 键，写后自然失效），parse 只取 verify.impl_code_review 一个 bool。
+_OCR_SWITCH_CACHE: dict = {}
+_OCR_SWITCH_CACHE_MAX = 64
+
+
+def _impl_ocr_enabled_cached(project_root) -> bool:
+    """``verify.impl_code_review`` 有效开关（D8 经门面引用公共缓存流程）。"""
+    import core.dashboard.data as _facade
+    from core.config import ConfigLoader
+
+    return _facade._cached_config_value(
+        project_root, _OCR_SWITCH_CACHE, _OCR_SWITCH_CACHE_MAX,
+        ConfigLoader.get_impl_code_review_enabled)
+
+
 # 框架侧回归产物（.fenix/regression/last-run.json）status → 门状态映射
 # （add-impl-selfcheck-model-probe 3.2）。映射外状态（parse_error 等）视为
 # 本源异常 → fail-open 逐级回落，MUST NOT 硬译成 unknown。
@@ -425,12 +450,17 @@ def _code_review_status(
 ) -> tuple:
     """ocr 门：按 ocr 异步车道产物三态合成（与车道降级不阻塞语义一致）。
 
+    车道总开关关闭（verify.impl_code_review，fix-quality-gates-ocr-disabled-na）
+    → skipped（detail 归因设置，计入 done——设置性不适用而非未了结），优先级
+    最高：关闭后车道不再启动、产物不再产生，在飞判据与三态合成整体跳过。
     车道在飞（活跃 impl-ocr run 无终态事件）/产物 running → running；
     completed → passed（detail 附 findings 与处置计数摘要）；unavailable →
     skipped（detail 附 reason，计入 done——已了结而非未做）；产物不可见
     （含损坏/指纹陈旧）→ pending。在飞判据优先于磁盘产物状态（重审轮
     head 前移后上一轮产物指纹陈旧，本就不可采信）。
     """
+    if not _impl_ocr_enabled_cached(project_root):
+        return ("skipped", _OCR_DISABLED_BY_SETTING_REASON)
     if _ocr_lane_inflight(runs):
         return ("running", "ocr 并行审查进行中")
     product = _load_lane_product(project_root, spec_name, spec_status, entry)
