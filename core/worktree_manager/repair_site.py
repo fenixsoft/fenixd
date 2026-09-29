@@ -1,8 +1,10 @@
 """repair_site.py — G9 repair/resume 站点认领（refactor-giant-classes D1/D5）。
 
 原为 WorktreeManager 的 4 个方法，原样搬移为 mixin（方法体零改动）。
-repair_site_facts/resolve_repair_site/resolve_resume_site 为只读查询，
-claim_legacy_for_repair 为唯一有副作用的方法（修改 self._legacy）。
+仅 repair_site_facts 是纯只读查询；resolve_repair_site/resolve_resume_site
+属「查询 + 登记/重建」副作用方法（WT_AVAILABLE 时向 _active_worktrees/
+_wt_branches 写入登记，WT_REBUILDABLE 时经 create_worktree_on_branch
+新建 worktree）；claim_legacy_for_repair 有副作用（修改 self._legacy）。
 """
 
 from __future__ import annotations

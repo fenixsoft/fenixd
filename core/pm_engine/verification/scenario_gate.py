@@ -208,6 +208,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     # 故空集 MUST NOT 以 0 场景继续进入阶段2。空集判定先于 save_scenario_set
     # （3.8）：持久化集保持不变，下一轮 diff 维持首轮全量口径。
     if not valid_planner:
+        all_removals = 0
         if rejected:
             reject_note = "、".join(rejected)
             pipeline._context.logger.error(
@@ -216,9 +217,31 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 f"{len(planner_scenarios)} 条全部非法），无合法场景可执行 "
                 f"— 不写空文件/不持久化，退回 plan 重排: {reject_note}",
             )
+        else:
+            # code-review item fcc8527b798a：rejected 为空的空集=全部条目均为
+            # 3.3 移除声明（或输入本就为空列表）——移除声明走 diff_input 豁免、
+            # 既不进 rejected 也不进 valid_planner，原先此处零留痕 abort，排障
+            # 无法区分「整批校验拒绝」与「全量移除声明」。ERROR 留痕 + 返回值
+            # 附 all_removals 结构化说明（消费方只读 aborted 键，新增键向后
+            # 兼容）。
+            all_removals = sum(
+                1
+                for it in planner_scenarios
+                if isinstance(it, dict)
+                and isinstance(it.get("remove_reason"), str)
+                and it["remove_reason"]
+            )
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"场景写前预校验空集 '{spec_name}'（输入 {len(planner_scenarios)} "
+                f"条、其中移除声明 {all_removals} 条，无可执行场景）— "
+                f"不写空文件/不持久化，退回 plan 重排",
+            )
         return {
             "aborted": "no_valid_scenarios",
             "rejected": rejected,
+            # fcc8527b798a：仅 rejected 空的空集附移除声明构成说明。
+            **({"all_removals": all_removals} if not rejected else {}),
             "total": len(planner_scenarios),
             "path": str(scenarios_path),
         }

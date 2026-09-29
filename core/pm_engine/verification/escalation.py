@@ -397,7 +397,10 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     采纳 report.json 后调用：扫描非 PASS 场景——
       - status == warning 且 classification ∈ {flaky, env} 的场景：连续计数 +1；
       - status 为 pass/failed（含被强制重写的 failed）或 classification 为
-        product-bug/test-defect 的场景：计数清零。
+        product-bug/test-defect 的场景：计数清零；
+      - 其余（warning 且 classification 缺失/未知值、blocked-env 等）：既不
+        计数也不清零，保持原 streak（未知保守处理口径与
+        _verdict_env_exemption_level2 一致，code-review 722c909338ce）。
 
     返回本轮回填后「连续计数 >= 2 且尚未列入优先复核清单」的候选列表
     [(scenario_id, 连续轮数), ...]（调用方据此发告警，文案轮次取实际连续
@@ -422,10 +425,20 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     if streaks_path.exists():
         try:
             loaded = json.loads(streaks_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                streaks = {k: int(v) for k, v in loaded.items() if isinstance(k, str)}
-        except (json.JSONDecodeError, OSError, TypeError, ValueError):
-            streaks = {}
+        except (json.JSONDecodeError, OSError):
+            # 仅整个文件不可解析（JSONDecodeError/OSError）才整体置空
+            loaded = None
+        if isinstance(loaded, dict):
+            # 逐条转换并跳过不可解析条目（code-review 9d6ee3c303a6）：单条
+            # 脏值只丢弃自身，不清空其余场景的连续悬置计数——否则 except
+            # 整体重置会把 >=2 轮的 triage 升级推迟甚至漏发。
+            for k, v in loaded.items():
+                if not isinstance(k, str):
+                    continue
+                try:
+                    streaks[k] = int(v)
+                except (TypeError, ValueError):
+                    continue
 
     report = load_report(pipeline._context.project_root, spec_name)
     if report is None:
@@ -471,13 +484,22 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
         status = sc.get("status")
         classification = sc.get("classification")
         # 仅 flaky/env 的 warning 计入连续悬置；product-bug/test-defect 已强制
-        # failed（D3），不悬置；pass/failed 清零（D4）。
+        # failed（D3），不悬置；pass/failed 及显式 product-bug/test-defect
+        # 归类清零（D4）。classification 缺失/未知值的 warning 场景既不计数
+        # 也不清零、保持原 streak（code-review 722c909338ce：与
+        # _verdict_env_exemption_level2「triage 与 classification 皆缺按未知
+        # 保守处理」同口径——报告字段缺失不得把连续悬置的升级信号反复清零
+        # 而永不触发）。
         if status == "warning" and classification in ("flaky", "env"):
             streaks[sid] = streaks.get(sid, 0) + 1
             if streaks[sid] >= 2 and sid not in already_recheck:
                 triage_candidates.append((sid, streaks[sid]))
-        else:
+        elif status in ("pass", "passed", "failed") or classification in (
+            "product-bug",
+            "test-defect",
+        ):
             streaks[sid] = 0
+        # 其余（warning + 未知归类、blocked-env 等）：保持原 streak，不动
 
     # 陈旧 id 剪枝：不在本轮场景集中的 id（planner 重排出题被替换）连同
     # 残留计数一并移除——否则残留 streak 会让新集复用旧 id 时立即凑满
@@ -808,6 +830,11 @@ def _scenario_defect_reroute_gate(
     # 阈值。空 violations 必然落入 "real" 分支（记轮内 +1 与生命周期
     # _judge_real_dispatches，并刷新判定上下文键）。
     pipeline._judge_charge_verdict_retry(spec_name, [])
+    # 改道重派 judge：经 pipeline._pm 门面回引（design D3 规则 3）——
+    # context 的 agent_runner 车道仅包装 _execute_agent（fastlane 轻量修复
+    # 派发），未承载 run_planner 委托成员，故此处为车道外的显式豁免，
+    # MUST NOT 从 _context 取；agent_runner 接线方式变化时须与
+    # _schedule_scenario_repair_reverify 的门面回引豁免双处同步。
     try:
         reroute_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
     except Exception as e:

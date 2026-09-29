@@ -165,25 +165,19 @@ class PipelineContext:
         ) -> None:
             # 与既有调用点/测试断言逐字节一致：关键字转发；trigger 缺省时
             # 不显式下传（原调用点未传 trigger 时 mock 断言不含该键）。
-            if trigger is None:
-                pm._send_human_escalation_alert(
-                    spec_name=spec_name,
-                    signal_type=signal_type,
-                    severity=severity,
-                    description=description,
-                    evidence=evidence,
-                    recommended_action=recommended_action,
-                )
-            else:
-                pm._send_human_escalation_alert(
-                    spec_name=spec_name,
-                    signal_type=signal_type,
-                    severity=severity,
-                    description=description,
-                    evidence=evidence,
-                    recommended_action=recommended_action,
-                    trigger=trigger,
-                )
+            # kwargs 组装后单点转发（code-review item 2b17c6a6d9dc）：新增
+            # 参数只改签名与 kwargs 一处，两分支不再各自复制六个实参。
+            kwargs = dict(
+                spec_name=spec_name,
+                signal_type=signal_type,
+                severity=severity,
+                description=description,
+                evidence=evidence,
+                recommended_action=recommended_action,
+            )
+            if trigger is not None:
+                kwargs["trigger"] = trigger
+            pm._send_human_escalation_alert(**kwargs)
 
         def _enqueue(spec_name: str, agent_type: str) -> None:
             return pm._enqueue(spec_name, agent_type)

@@ -510,7 +510,19 @@ class G1LifecycleMixin:
         """
         wt_str = str(wt_path)
         if wt_str not in self._active_worktrees:
-            self.logger.warning("worktree_manager", f"Unknown worktree: {wt_path}")
+            # d178acca8fe4：此处提前返回不经过 finally 摘锁段——若该 worktree
+            # 的 spec 锁仍在 _spec_locks（登记表被 cleanup_orphans 清空后迟到的
+            # cleanup、或调用方传入错误路径），锁由 refresh_locks 按陈锁空闲
+            # 兜底回收（STALE_LOCK_IDLE_SECONDS，约 120s），期间 has_active_worktree
+            # 持续 True、该 spec 派发短暂停顿（方向保守，不会双派发）。不在此处
+            # 反推 spec 摘锁：spec 级锁可能属于同 spec 其他活跃 worktree，误摘
+            # 会开双派发窗口。
+            self.logger.warning(
+                "worktree_manager",
+                f"Unknown worktree: {wt_path} — 不在活动登记表，跳过收尾"
+                f"（strays 清杀与快照留档一并跳过）；其 spec 锁若仍在册将由"
+                f"陈锁清扫（约 120s）兜底回收，期间该 spec 派发可能短暂停顿",
+            )
             return
 
         # ── 恢复重派遗产（add-recovery-legacy-check D1）─────────────────────────
@@ -739,8 +751,13 @@ class G1LifecycleMixin:
             # 未跟踪文件，先把它逐个 hash-object -w 写入对象库并打日志；失败仅
             # WARNING，不阻断 stash create 与删除主流程。
             try:
+                # -z 双侧启用（code-review item a515d30d7e9d）：默认
+                # core.quotePath=true 下非 ASCII/特殊字符路径会被 ls-files 输出
+                # 成 C 转义引号形，而 --stdin-paths 按原始行取路径、不反转义，
+                # hash-object 打不开该字面路径即 fatal、拖垮整批留档。改 NUL
+                # 分隔后两侧均拿字面路径，非 ASCII 未跟踪文件留档不再失效。
                 others = subprocess.run(
-                    ["git", "-C", str(wt_path), "ls-files", "--others",
+                    ["git", "-C", str(wt_path), "ls-files", "-z", "--others",
                      "--exclude-standard"],
                     capture_output=True,
                     text=True,
@@ -750,13 +767,12 @@ class G1LifecycleMixin:
                     raise OSError(
                         (others.stderr or "").strip() or "ls-files failed"
                     )
-                ut_paths = [ln for ln in others.stdout.splitlines() if ln.strip()]
+                ut_paths = [ln for ln in others.stdout.split("\0") if ln.strip()]
                 if ut_paths:
-                    # --stdin-paths 按行读路径且支持 ls-files 的 C 风格引号路径
                     hashed = subprocess.run(
                         ["git", "-C", str(wt_path), "hash-object", "-w",
-                         "--stdin-paths"],
-                        input="\n".join(ut_paths) + "\n",
+                         "--stdin-paths", "-z"],
+                        input="\0".join(ut_paths) + "\0",
                         capture_output=True,
                         text=True,
                         timeout=30,

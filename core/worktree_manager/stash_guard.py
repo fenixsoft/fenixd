@@ -190,6 +190,38 @@ class G6StashGuardMixin:
         if rev is not None and rev.returncode == 0:
             pinned_sha = rev.stdout.strip()
 
+        # pop 前复核栈顶仍为钉住条目（code-review item c6d22fdac25f，对齐
+        # _reclaim_stale_autostash_locked 的防插队口径）：pop 弹的是栈顶而非
+        # pinned_sha——_main_tree_lock 只串行化本进程，dashboard 侧独立
+        # WorktreeManager（admin_actions 等以 logger=None 构造）或人工在此
+        # 窗口 push 新条目时，不复核会把他人条目弹到刚合并完的主树上、自家
+        # guard 条目反滞留栈顶（LIFO 错配）。
+        if pinned_sha:
+            try:
+                guard = subprocess.run(
+                    ["git", "-C", str(self.project_root), "rev-parse",
+                     "--verify", "stash@{0}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                # 复核不可用 = 无法证明栈顶未动：放弃本轮绝不弹（条目保留）
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stash pop skipped, top-of-stack guard unavailable "
+                    f"(stash preserved): {e}",
+                )
+                return False, []
+            if guard.returncode != 0 or guard.stdout.strip() != pinned_sha:
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stash pop aborted: stash top moved since pin "
+                    f"(expected {pinned_sha[:12] or 'n/a'}) — stash preserved, "
+                    f"防跨进程插队误弹他人条目",
+                )
+                return False, []
+
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.project_root), "stash", "pop"],

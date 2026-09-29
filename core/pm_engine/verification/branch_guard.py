@@ -15,8 +15,15 @@ from typing import Optional
 
 from core.state_machine import FREEZE_ERROR_PREFIX
 
+# git 子进程统一超时（rev-list/status/show 等本地只读查询共用单一来源，
+# 异常/超时由各调用方按既有 fail-open/fail-safe 语义自行回退）。
+GIT_SUBPROCESS_TIMEOUT_SECONDS = 15
+
 # git 合并判定超时（subprocess timeout；异常/超时按「未合并」fail-safe 回退
-# ready 通道——宁可多重实现不可错误直达 testing）。
+# ready 通道——宁可多重实现不可错误直达 testing）。与上方通用
+# GIT_SUBPROCESS_TIMEOUT_SECONDS 相互独立：合并判定有独立调参需求
+# （误判代价不对称——误判「未合并」只多一轮重实现，误判「已合并」则
+# 跳过验证前置），不随通用口径联动调整。
 ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS = 10
 
 
@@ -74,7 +81,7 @@ def _branch_merged_into_tree(branch: str, project_root) -> bool:
 
 
 def _implementation_branch_has_commits(pipeline, result) -> bool:
-    """实现分支相对 main 是否已有提交（`git rev-list --count main..<branch>` > 0）。
+    """实现分支相对基线分支是否已有提交（`git rev-list --count <基线>..<branch>` > 0）。
 
     Conservative fail-open：``result.branch`` 为空或 rev-list 失败/超时一律
     返回 False（→ 调用方走重派，不吞风险）。供 fast-track 死亡路径分流
@@ -85,29 +92,58 @@ def _implementation_branch_has_commits(pipeline, result) -> bool:
 
 
 def _branch_commit_count(pipeline, result) -> Optional[int]:
-    """实现分支相对 main 的提交数（`git rev-list --count main..<branch>`）。
+    """实现分支相对基线分支的提交数（`git rev-list --count <基线>..<branch>`）。
 
     单一来源（fix-fasttrack-resultfile-missing-redispatch D1）：供
     ``_implementation_branch_has_commits`` 与 ``_implementer_zero_change``
-    共用。``result.branch`` 为空或 rev-list 失败/超时返回 None
-    （调用方各自按 conservative fail-open 处置，不吞风险）。
+    共用。基线优先 ``main``（既有口径，main 分支仓库计数不变）；main 引用
+    缺失（仓库默认分支为 master 等）时回落 origin/HEAD 指向的默认分支再试
+    一次——避免 rev-list 因基线引用缺失非零退出被调用方 fail-open 误判零
+    提交、触发无谓重派。``result.branch`` 为空或 rev-list 失败/超时返回
+    None（调用方各自按 conservative fail-open 处置，不吞风险；回落仅发生在
+    首候选非零退出后，失败方向与既有口径一致——分支不存在时回落候选同样
+    非零退出 → 仍返回 None）。
     """
     branch = getattr(result, "branch", None)
     if not branch:
         return None
-    try:
-        r = subprocess.run(
-            ["git", "rev-list", "--count", f"main..{branch}"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=str(pipeline._context.project_root),
-        )
-        if r.returncode != 0:
+    root = str(pipeline._context.project_root)
+    baselines = ["main"]
+    while baselines:
+        base = baselines.pop(0)
+        try:
+            r = subprocess.run(
+                ["git", "rev-list", "--count", f"{base}..{branch}"],
+                capture_output=True,
+                text=True,
+                timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
+                cwd=root,
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
-        return int(r.stdout.strip() or "0")
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return None
+        if r.returncode == 0:
+            return int(r.stdout.strip() or "0")
+        # 首候选非零退出（基线引用缺失或分支不存在）：回落探测 origin/HEAD
+        # 指向的默认分支再试一次；探测失败/与 main 同名则维持单候选
+        # （等价既有口径）。
+        if base == "main":
+            try:
+                d = subprocess.run(
+                    [
+                        "git", "symbolic-ref", "-q", "--short",
+                        "refs/remotes/origin/HEAD",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
+                    cwd=root,
+                )
+                ref = (d.stdout or "").strip()
+                if d.returncode == 0 and ref and ref != "main":
+                    baselines.append(ref)
+            except Exception:
+                pass  # 探测不可用 → 维持单候选，等价既有口径
+    return None
 
 
 def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
@@ -146,7 +182,12 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
                 # 防 AttributeError 逸出零变更判定的 fail-open 口径。
                 msg = d.get("message")
                 content = msg.get("content") if isinstance(msg, dict) else None
-                for c in content or []:
+                # content 为非列表载荷（JSON 数字/字符串等标量）时不迭代，
+                # 防 TypeError 逸出零变更判定的 fail-open 口径（与上方 msg
+                # 防御同构）；非列表按无编辑工具调用处理。
+                if not isinstance(content, list):
+                    continue
+                for c in content:
                     if (
                         isinstance(c, dict)
                         and c.get("type") == "tool_use"
@@ -167,7 +208,7 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
                 ["git", "-C", str(worktree), "status", "--porcelain"],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
             )
             if r.returncode != 0:
                 return False
@@ -392,7 +433,7 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
             ],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         pipeline._context.logger.warning(

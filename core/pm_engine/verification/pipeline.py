@@ -90,6 +90,7 @@ from core.pm_engine.verification.fastlane import (
     evaluate_fastlane,
     dispatch_minor_defect_fastlane,
     fastlane_decision_path,
+    FASTLANE_STREAK_FIELD,
 )
 
 # refactor-verification-module 阶段3.6：judge 派发门/重跑上限/降级上下文组已迁 judge_gate.py，
@@ -630,23 +631,34 @@ class VerificationPipeline:
                     ),
                 },
             )
-            self._context.escalation_notifier(
-                spec_name=spec_name,
-                signal_type="verdict_result_unreadable",
-                severity="critical",
-                description=(
-                    f"'{spec_name}' 裁决重试后 report.json 不可读，已 blocked "
-                    f"等待人工裁决（非证据不合规）"
-                ),
-                evidence=(
-                    f"spec={spec_name}; cause=report_missing; report="
-                    f".fenix/verify-progress/{spec_name}/report.json"
-                ),
-                recommended_action=(
-                    "检查 judge 重试轮是否覆写/破坏了 report.json（产物门禁外的"
-                    "缺失路径）；修复产物后重置验证或重跑"
-                ),
-            )
+            # 告警通道自身失败不得抛穿 blocked 收口（code-review item
+            # ccd3ffdf1a59）：上方 update_spec blocked 已落盘为 fail-closed
+            # 终态，notifier 异常若上抛会沿 engine except e2 回滚整轮——
+            # ERROR 留痕后继续原控制流（return）。
+            try:
+                self._context.escalation_notifier(
+                    spec_name=spec_name,
+                    signal_type="verdict_result_unreadable",
+                    severity="critical",
+                    description=(
+                        f"'{spec_name}' 裁决重试后 report.json 不可读，已 blocked "
+                        f"等待人工裁决（非证据不合规）"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; cause=report_missing; report="
+                        f".fenix/verify-progress/{spec_name}/report.json"
+                    ),
+                    recommended_action=(
+                        "检查 judge 重试轮是否覆写/破坏了 report.json（产物门禁外的"
+                        "缺失路径）；修复产物后重置验证或重跑"
+                    ),
+                )
+            except Exception as e:
+                self._context.logger.error(
+                    "pm_engine",
+                    f"blocked 升级告警发送失败（非阻塞，blocked 已落盘）"
+                    f"'{spec_name}': {type(e).__name__}: {e}",
+                )
             return
         if cause != "violations":
             # ── 未知 cause 保守处置（design risk：fail-closed）──
@@ -703,20 +715,30 @@ class VerificationPipeline:
                 ),
             },
         )
-        self._context.escalation_notifier(
-            spec_name=spec_name,
-            signal_type="verdict_evidence_invalid",
-            severity="critical",
-            description=(
-                f"'{spec_name}' 验证裁决证据分类校验连续失败"
-                f"（{len(dict_violations)} 项违规），已 blocked 等待人工裁决"
-            ),
-            evidence=self._verdict_violations_evidence(spec_name, violations),
-            recommended_action=(
-                "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
-                "classification/evidence）；人工重置后重跑验证"
-            ),
-        )
+        # 告警通道自身失败不得抛穿 blocked 收口（code-review item
+        # ccd3ffdf1a59）：update_spec blocked 已落盘，notifier 异常若上抛
+        # 会沿 engine except e2 回滚整轮——ERROR 留痕后继续原控制流。
+        try:
+            self._context.escalation_notifier(
+                spec_name=spec_name,
+                signal_type="verdict_evidence_invalid",
+                severity="critical",
+                description=(
+                    f"'{spec_name}' 验证裁决证据分类校验连续失败"
+                    f"（{len(dict_violations)} 项违规），已 blocked 等待人工裁决"
+                ),
+                evidence=self._verdict_violations_evidence(spec_name, violations),
+                recommended_action=(
+                    "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
+                    "classification/evidence）；人工重置后重跑验证"
+                ),
+            )
+        except Exception as e:
+            self._context.logger.error(
+                "pm_engine",
+                f"blocked 升级告警发送失败（非阻塞，blocked 已落盘）"
+                f"'{spec_name}': {type(e).__name__}: {e}",
+            )
         return
 
     def _read_verdict_failclosed(self, spec_name: str):
@@ -917,25 +939,36 @@ class VerificationPipeline:
                         ),
                     },
                 )
-                self._context.escalation_notifier(
-                    spec_name=spec_name,
-                    signal_type="verdict_result_unreadable",
-                    severity="critical",
-                    description=(
-                        f"'{spec_name}' 验证裁决结果文件不可读，已 blocked 等待人工裁决"
-                        f"（reason={verifier_result.reason}）"
-                    ),
-                    evidence=(
-                        f"spec={spec_name}; result_file={verdict_result_path}; "
-                        f"parse_error={verifier_result.detail}"
-                        + (f"; retry_failure={retry_failure}" if retry_failure else "")
-                    ),
-                    recommended_action=(
-                        "检查 planner-judge 是否以合法 JSON 写入结果文件（字符串内换行/"
-                        "引号/控制字符须转义，建议以代码 json.dump 生成而非手工拼接）；"
-                        "修复文件后重置验证或重跑"
-                    ),
-                )
+                # 告警通道自身失败不得抛穿 blocked 收口（code-review item
+                # ccd3ffdf1a59）：update_spec blocked 已落盘，notifier 异常
+                # 若上抛会沿 engine except e2 回滚整轮——ERROR 留痕后继续
+                # 原控制流（return None）。
+                try:
+                    self._context.escalation_notifier(
+                        spec_name=spec_name,
+                        signal_type="verdict_result_unreadable",
+                        severity="critical",
+                        description=(
+                            f"'{spec_name}' 验证裁决结果文件不可读，已 blocked 等待人工裁决"
+                            f"（reason={verifier_result.reason}）"
+                        ),
+                        evidence=(
+                            f"spec={spec_name}; result_file={verdict_result_path}; "
+                            f"parse_error={verifier_result.detail}"
+                            + (f"; retry_failure={retry_failure}" if retry_failure else "")
+                        ),
+                        recommended_action=(
+                            "检查 planner-judge 是否以合法 JSON 写入结果文件（字符串内换行/"
+                            "引号/控制字符须转义，建议以代码 json.dump 生成而非手工拼接）；"
+                            "修复文件后重置验证或重跑"
+                        ),
+                    )
+                except Exception as e:
+                    self._context.logger.error(
+                        "pm_engine",
+                        f"blocked 升级告警发送失败（非阻塞，blocked 已落盘）"
+                        f"'{spec_name}': {type(e).__name__}: {e}",
+                    )
                 return None
         return verifier_result, verifier_status
 
@@ -1215,6 +1248,13 @@ class VerificationPipeline:
                 # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
                 # 恢复/fix 链等中间转换不清零。
                 ENV_BLOCK_ROUNDS_FIELD: 0,
+                # minor-defect-fastlane：verified 收口同步清零 fastlane 连败计数
+                # （code-review item efbdab0801f3）。streak 此前仅在 fastlane
+                # 收敛点清零（fastlane.py：transition 与 _apply_verified 全部
+                # 成功后）——正常整轮 verified 不经该点，跨验证周期残留的旧
+                # 连击会让后续 fastlane 首败即被误判逼近熔断阈值、提前回落
+                # 整轮。与收敛点清零并存幂等（fastlane 收敛亦经本函数）。
+                FASTLANE_STREAK_FIELD: 0,
             },
         )
         # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
@@ -2260,6 +2300,7 @@ class VerificationPipeline:
                 # ── 在飞：有界等待（spec Scenario「testing 进入时并行出题仍在飞」）──
                 deadline = time.monotonic() + self._parallel_plan_wait_timeout()
                 prefix = f"planner-plan-{spec_name}-"
+                _liveness_gap_logged = False
                 while time.monotonic() < deadline:
                     # 等待期间状态迁移（人工接管）→ 丢弃本流水线（D6 同语义）
                     _wait_status = (
@@ -2280,7 +2321,28 @@ class VerificationPipeline:
                     # stop+quarantine 并触发一次不必要的串行重出。重读后按最新
                     # 状态分流：completed 落下方产物消费分支，仅确仍 dispatched
                     # 才取消并隔离。
-                    runners = getattr(self._pm.agent_runner, "_running_agents", None) or {}
+                    # code-review item f0aa2cd44923：存活探测落空（runner 桩/
+                    # 代差未暴露 _running_agents）≠ run 已死。旧代码 None or {}
+                    # 落空即按存活集为空 break 停等 → 取消在飞 run + 隔离半成品，
+                    # 把接线故障误判成 run 死亡。ERROR 留痕（每次等待至多一条）
+                    # 后跳过存活分支继续轮询：真 run 正常写出 completed 标记
+                    # 仍按产物就绪消费；真死亡/超时由下方超时出口按既有语义
+                    # 兜底（取消转串行）。
+                    runners = getattr(self._pm.agent_runner, "_running_agents", None)
+                    if runners is None and not hasattr(
+                        self._pm.agent_runner, "_running_agents"
+                    ):
+                        if not _liveness_gap_logged:
+                            _liveness_gap_logged = True
+                            self._context.logger.error(
+                                "pm_engine",
+                                f"并行出题在飞等待存活探测不可用 '{spec_name}' — "
+                                f"agent_runner 未暴露 _running_agents（接线缺口/桩），"
+                                f"跳过「run 已死」判定继续轮询，不取消在飞 run",
+                            )
+                        time.sleep(self._PARALLEL_PLAN_WAIT_POLL_SECONDS)
+                        continue
+                    runners = runners or {}
                     if not any(
                         isinstance(aid, str) and aid.startswith(prefix) for aid in runners
                     ):

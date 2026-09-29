@@ -320,6 +320,9 @@ class G4MergebackMixin:
         # 只作用于重叠子集——主树独有、分支未触碰的产物改动 MUST NOT 被对齐
         # （仍走既有 stash/pop 往返），若一并丢弃等于把「用户本地刚构建、分支
         # 根本没碰」的产物静默抹掉，属净回归。
+        # aligned_ok 预置空表（code-review item e9a558db29e6）：下方 escalate
+        # 拦截文案须可见「产物重叠已对齐 HEAD」的事实，无产物重叠时也不得名未定义。
+        aligned_ok: list = []
         if artifact_overlap:
             aligned_ok, aligned_fail = [], []
             # 先单次批量对齐（checkout 支持多条 pathspec 原子完成）：路径多时
@@ -395,6 +398,16 @@ class G4MergebackMixin:
                 f"去向、git show <sha>:<file> 按文件找回；紧急情况可配置 "
                 f"worktree.merge_precheck_bypass=true 豁免预检"
             )
+            if aligned_ok:
+                # e9a558db29e6：D3b 产物对齐发生在闸门判定之前，escalate 拦截
+                # 路径上用户本地未提交构建产物已被对齐丢弃（符合「产物是可再生
+                # 投影」设计，但「零污染」承诺字面上不含此步）——文案补记该
+                # 事实，人工排查「拦截后产物为何变了」有线索可循。
+                error += (
+                    f" 注：另有 {len(aligned_ok)} 个产物重叠文件在闸门判定前已"
+                    f"按 D3b 对齐 HEAD（本地未提交构建产物已丢弃，merge 后由 "
+                    f"src 重建）：{aligned_ok}"
+                )
             self.logger.error("worktree_manager", error)
             return (
                 MergeConflictInfo(False, error, wip_overlap=overlap, wip_gate_blocked=True),
@@ -1085,7 +1098,8 @@ class G4MergebackMixin:
                 self.logger.info(
                     "worktree_manager",
                     f"Merge conflict self-healed (build artifacts aligned to "
-                    f"branch) for branch '{branch}'",
+                    f"HEAD, rebuilt from merged src afterwards) for branch "
+                    f"'{branch}'",
                 )
                 return MergeConflictInfo(
                     True,

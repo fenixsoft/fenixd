@@ -103,6 +103,11 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     # 清理失败目录残留 + 本轮同秒重建」时与新路径撞名，git worktree add 因
     # 路径已存在直接失败（本轮以难懂的「worktree 创建失败」告终，下一轮才
     # 因时间戳变化自愈）
+    # code-review 78057677e669/f7d8c757c7e8：目录命名契约 {spec}-{时间戳后缀}
+    # （≥10 位数字：秒级 10 位 / 纳秒 19 位均合法）。回收侧
+    # serving_reclaim.parse_spec_from_worktree_name 以 \d{10,} 解析同一契约
+    # （解析函数不反向共享，避免 serving_reclaim → serving 依赖）——后缀
+    # 形态变更须两侧联动，否则回收对新增命名整段空转（fail-safe 保留）。
     wt = serve_root / f"{spec_name}-{time.time_ns()}"
     # code-review a02f05cbf835：与上方 rev-parse 同口径兜底——git 缺失/权限/
     # 60s 超时抛出的 OSError/subprocess.SubprocessError 不再炸穿验证主流程，
@@ -147,11 +152,21 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     return str(wt), head, None
 
 
-def _serve_static_in_main(pipeline, contract, scenarios_path) -> tuple:
-    """方案 1（默认）：主树构建 + 主树起服务。同 root 复用已启动实例。"""
+def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tuple:
+    """方案 1（默认）：主树构建 + 主树起服务。同 root 复用已启动实例。
+
+    code-review a6337eba0acb：本路径只写共享键 ``"main"``、从不清 spec 键
+    条目——上一轮以 worktree 作用域运行遗留的 spec 键条目（server/wt_path）
+    会滞留：旧实例不 stop、旧 serving worktree 不清理，且
+    ``_current_instance_base_url`` 对 spec 键优先，滞留旧实例的 base_url
+    会被当作本轮实例供给引擎（与本轮新主树实例 split-brain）。供给前先按
+    单一 ``_evict_spec_serving`` 清退样板驱逐 spec 键旧条目（幂等，无旧
+    条目安全空转；共享键 ``"main"`` 不受影响）。
+    """
     root_dir = Path(pipeline._context.project_root) / contract.serve.root
     if not root_dir.is_dir():
         return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
+    pipeline._evict_spec_serving(spec_name)
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
     srv = cache.get("main")
     if srv is None or srv.root != root_dir.resolve():
@@ -318,8 +333,10 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     违 BASE_URL 新鲜性铁律。但仍以 ``spec_name`` 为键写入
     ``_contract_static_servers``（server/mode 元数据），供
     ``_evict_spec_serving`` 终局回收——禁用键 ``"main"``（该键为 static
-    主树共享实例专属、多 spec 共享、终局豁免）。实例累积由既有
-    servers.json 登记 + daemon 周期清扫兜底（verify-process-lifecycle D6）。
+    主树共享实例专属、多 spec 共享、终局豁免）。code-review a6337eba0acb：
+    覆写条目前先经 ``_evict_spec_serving`` 清退上一轮旧条目（unregister →
+    stop → worktree 清理，对作用域翻转遗留的 worktree 形态条目同样兼容），
+    同 spec 连轮不再滞留旧实例与其 servers.json 登记。
     """
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
     port = find_free_port()
@@ -382,6 +399,14 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
             False,
             ((srv.failure_note or "验证命令实例未就绪（注入端口未被消费）") + boot_tail),
         )
+    # code-review a6337eba0acb：覆写条目前先按单一清退样板驱逐旧条目——
+    # 上一轮可能以 static_scope=worktree 运行（旧条目含 server/wt_path 与
+    # servers.json 登记），直接覆写会让旧实例不 stop、登记不 unregister、
+    # 旧 serving worktree 不 _remove_serving_worktree（旧 pid 登记永久
+    # 残留到 daemon 周期清扫）。_evict_spec_serving 幂等（无旧条目安全
+    # 空转），对缺 wt_path 的 command-主树旧条目同型兼容；主树 static
+    # 共享键 "main" 不受影响。
+    pipeline._evict_spec_serving(spec_name)
     cache[spec_name] = {
         "server": srv,
         "mode": "command",
@@ -868,7 +893,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         if serve and serve.kind == "static":
             if wt_scope:
                 return pipeline._serve_static_in_worktree(spec_name, contract, scenarios_path)
-            return pipeline._serve_static_in_main(contract, scenarios_path)
+            return pipeline._serve_static_in_main(spec_name, contract, scenarios_path)
         if serve and serve.kind == "command" and serve.cmd:
             if wt_scope:
                 return pipeline._serve_command_in_worktree(spec_name, contract, scenarios_path)
