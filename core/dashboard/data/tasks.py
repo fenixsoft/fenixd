@@ -22,7 +22,14 @@ def find_implementer_worktree(project_root, spec_name):
         return None
     prefix = f"impl-{spec_name}-"
     candidates = []
-    for d in wt_dir.iterdir():
+    try:
+        wt_entries = list(wt_dir.iterdir())
+    except OSError:
+        # 遍历失败（权限不足/目录并发删除等）按无候选处理，不放大为
+        # parse_tasks → 摘要组装 → HTTP 链路 500（与 spec_docs.resolve_spec_dir
+        # 对 iterdir 的 OSError 兜底同口径）
+        wt_entries = []
+    for d in wt_entries:
         if d.is_dir() and d.name.startswith(prefix):
             # 归属精确化（与 worktree_manager.queries.find_implementer_worktree
             # 同口径）：前缀后的余段 MUST 为纯数字时间戳（创建端恒为
@@ -208,10 +215,12 @@ def run_task_progress(project_root, spec_name, files=None) -> dict:
     # 「进行中 1.2」事故：清扫追加终态行抬高 mtime 使 find_impl_run_file 选中
     # 僵尸文件，残留 in_progress 外显到已推送 SPEC）。
     current = list(rd.get("in_progress_ids") or [])
-    # 跨组引用（runs 组的 classify_run/_read_run_lines）经门面解析（D4）
+    # 跨组引用（runs 组的 classify_run/read_run_lines）经门面解析（D4）。
+    # read_run_lines 是 runs 组公开访问面（runs.py read_run_lines = _read_run_lines
+    # 单源绑定），不跨组消费下划线私有名（code-review item 09c363a0b1b9）
     import core.dashboard.data as _facade
 
-    if current and _facade.classify_run(_facade._read_run_lines(run_file, max_lines=3)) not in (
+    if current and _facade.classify_run(_facade.read_run_lines(run_file, max_lines=3)) not in (
         "running",
         "empty",
     ):
