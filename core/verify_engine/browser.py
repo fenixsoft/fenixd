@@ -18,6 +18,7 @@ browser.py — Playwright 浏览器管理器
 
 import asyncio
 import http.server
+import inspect
 import json
 import os
 import re
@@ -26,6 +27,30 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
+
+# playwright 类型化异常（code-review item ea1ef016ced3）：顶层 error_type
+# 分类优先按异常类型分流，不依赖随版本漂移的错误文案；playwright 未安装的
+# 环境（本模块由 web_runner 间接导入，启动路径才真正触达 playwright）回退
+# 空元组——isinstance(x, ()) 恒 False，分类退回纯文案兜底，行为不劣化。
+try:
+    from playwright.async_api import TimeoutError as _PlaywrightTimeoutError
+except ImportError:  # pragma: no cover - 无 playwright 环境仅走文案兜底
+    _PlaywrightTimeoutError = ()
+
+# 顶层异常分类的文案子串兜底表（code-review item ea1ef016ced3）：从
+# execute_action 内联字面量收敛为模块级常量，便于随 playwright 版本维护。
+# 注意命中顺序敏感：click_intercepted 必须最先判（点击超时的错误日志体常含
+# 「intercepts pointer events」重试原因，既有口径归为 click_intercepted）。
+_CLICK_INTERCEPTED_MARKER = "intercepts pointer events"
+_TIMEOUT_MARKER = "timeout"
+_NOT_VISIBLE_MARKER = "not visible"
+
+# 页面内 Promise 型 evaluate 的外层超时秒数（code-review item c8c04ed298b8）：
+# page.evaluate 无超时语义，页面主线程挂起/死循环时页内 setTimeout/
+# requestAnimationFrame 兜底定时器永不触发、await 永久挂起。对依赖页内定时
+# 器 resolve 的两处 evaluate 显式包 asyncio.wait_for，超时按「注入失败」
+# 既有容错路径处理。
+_IN_PAGE_EVALUATE_TIMEOUT_S = 10
 
 
 class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -162,6 +187,11 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
     断言通过而截图拍到动画早段画面）。注入失败（老内核/异常页面）按超时
     退化返回 False，不抛出——与 CLS 检测同容错模式，不放大失败。
 
+    页内 Promise 靠 requestAnimationFrame 兜底 resolve，而 page.evaluate 无
+    超时语义：页面主线程挂起/死循环时兜底定时器永不触发、await 永久挂起，
+    故外层再包 asyncio.wait_for（_IN_PAGE_EVALUATE_TIMEOUT_S，code-review
+    item c8c04ed298b8），超时同按注入失败路径返回 False。
+
     Args:
         page: Playwright Page 对象。
         timeout_ms: 等待上限（毫秒）；0/负值跳过等待。
@@ -172,38 +202,42 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
     if not timeout_ms or timeout_ms <= 0:
         return True
     try:
-        settled = await page.evaluate(
-            """(timeoutMs) => {
-            if (!timeoutMs || timeoutMs <= 0) return true;
-            const deadline = performance.now() + timeoutMs;
-            return new Promise((resolve) => {
-                const tick = () => {
-                    let running = 0;
-                    try {
-                        if (document.getAnimations) {
-                            running = document.getAnimations().filter(
-                                (a) => a && a.playState === 'running'
-                            ).length;
+        settled = await asyncio.wait_for(
+            page.evaluate(
+                """(timeoutMs) => {
+                if (!timeoutMs || timeoutMs <= 0) return true;
+                const deadline = performance.now() + timeoutMs;
+                return new Promise((resolve) => {
+                    const tick = () => {
+                        let running = 0;
+                        try {
+                            if (document.getAnimations) {
+                                running = document.getAnimations().filter(
+                                    (a) => a && a.playState === 'running'
+                                ).length;
+                            }
+                        } catch (e) {
+                            running = 0;  // getAnimations 异常按无动画处理
                         }
-                    } catch (e) {
-                        running = 0;  // getAnimations 异常按无动画处理
-                    }
-                    if (running === 0) {
-                        resolve(true);
-                    } else if (performance.now() >= deadline) {
-                        resolve(false);
-                    } else {
-                        requestAnimationFrame(tick);
-                    }
-                };
-                tick();
-            });
-        }""",
-            timeout_ms,
+                        if (running === 0) {
+                            resolve(true);
+                        } else if (performance.now() >= deadline) {
+                            resolve(false);
+                        } else {
+                            requestAnimationFrame(tick);
+                        }
+                    };
+                    tick();
+                });
+            }""",
+                timeout_ms,
+            ),
+            timeout=_IN_PAGE_EVALUATE_TIMEOUT_S,
         )
         return bool(settled)
     except Exception:
         # 注入失败（老内核/异常页面）按超时退化处理，不放大失败
+        # （含上方 wait_for 超时：页面主线程挂起时页内 rAF 兜底不触发）
         return False
 
 
@@ -220,6 +254,13 @@ class BrowserManager:
         self._started = False
         self._project_root = project_root
         self._logger = logger
+        # 日志接口形态（code-review item 132b2d2776ab）：构造期探测一次
+        # fenixd Logger 的 (component, message) 双参 / 标准 logging 单参接口
+        # 并缓存，运行期直接按形态调用——不再每条日志先吃一次 TypeError 再
+        # 回退（异常控制流有开销，且会把 log_fn 实现内部的真实 TypeError 误
+        # 吞改走回退分支）。None=签名不可内省（Mock/异构 callable），_log
+        # 运行期保留旧的逐次探测兜底。
+        self._log_two_arg = self._detect_two_arg_logger()
 
         # 扩展项目 HTTP 服务器
         self._dev_server: Optional[http.server.HTTPServer] = None
@@ -382,25 +423,53 @@ class BrowserManager:
         self._use_verify_html = True
         self._log("info", f"已生成独立 HTML 入口: verify.html (JS={js_path}, CSS={css_path})")
 
+    def _detect_two_arg_logger(self) -> Optional[bool]:
+        """探测 logger 是否为 fenixd 双参 (component, message) 日志接口。
+
+        fenixd Logger.info(component, message, context=None) 有 >=2 个位置
+        形参 → 双参；标准 logging.Logger.info(msg, *args, **kwargs) 与
+        _NullLogger.info(*_args) 位置形参 <2 → 单参。签名不可内省（Mock/
+        异构 callable）返回 None，由 _log 运行期按旧探测兜底。
+        """
+        log_fn = getattr(self._logger, "info", None)
+        if log_fn is None:
+            return False
+        try:
+            parameters = list(inspect.signature(log_fn).parameters.values())
+        except (TypeError, ValueError):
+            return None
+        return (
+            sum(
+                1
+                for p in parameters
+                if p.kind
+                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            )
+            >= 2
+        )
+
     def _log(self, level: str, message: str):
         """内部日志辅助方法。
 
-        兼容两种 logger 接口：
+        兼容两种 logger 接口（形态在构造期探测并缓存，
+        code-review item 132b2d2776ab——不再每条日志靠 TypeError 回退）：
         - 标准 logging.Logger / _NullLogger: info(msg) → 单参数消息
         - fenixd Logger: info(component, message) → 双参数（component 作为第一参数）
-
-        先尝试标准单参数调用，失败再回退到 fenixd 双参数调用，
-        避免标准 logging 的 %-格式化 TypeError 噪音。
         """
         if self._logger:
             log_fn = getattr(self._logger, level, None)
             if log_fn:
-                try:
-                    # 先尝试标准单参数调用（兼容 logging.Logger / _NullLogger）
-                    log_fn(f"[browser] {message}")
-                except TypeError:
-                    # 回退到 fenixd Logger 的 (component, message) 调用
+                if self._log_two_arg is None:
+                    # 构造期内省失败的异构 logger：保留旧的逐次探测兜底
+                    try:
+                        log_fn(f"[browser] {message}")
+                    except TypeError:
+                        # 回退到 fenixd Logger 的 (component, message) 调用
+                        log_fn("browser", message)
+                elif self._log_two_arg:
                     log_fn("browser", message)
+                else:
+                    log_fn(f"[browser] {message}")
 
     # ── 生命周期 ───────────────────────────────────────────────
 
@@ -418,6 +487,20 @@ class BrowserManager:
             self._start_dev_server()
 
         from playwright.async_api import async_playwright
+
+        # 半初始化残留释放（code-review item 00cdf0b6ee65）：上次 start() 在
+        # async_playwright().start() 成功后 chromium.launch 抛错时，_playwright
+        # 已驻留而 _started 仍为 False；不经 stop() 重入 start() 会直接覆盖
+        # self._playwright 引用，前一个 playwright driver 进程无人释放直至
+        # 宿主进程退出。此处 best-effort 释放旧实例后再继续。
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                self._log(
+                    "warning", f"释放残留 playwright 实例失败: {type(e).__name__}: {e}"
+                )
+            self._playwright = None
 
         self._playwright = await async_playwright().start()
         launch_args = [
@@ -574,7 +657,14 @@ class BrowserManager:
                 wait_until="domcontentloaded",
                 timeout=15000,
             )
-            await self._wait_stable(page)
+            # 首帧等待结果落页面对象属性（code-review item c109de7ea35b）：
+            # 本方法返回值只表达导航成败，_wait_stable 的首帧 8s 超时此前被
+            # 丢弃，扩展项目场景入口（web_runner.execute）的瞬态白屏无法进
+            # env_gate 白屏降级。调用侧读取 _fenix_nav_first_frame_ok 写入与
+            # execute_action navigate 分支同款的结构化标记；每场景独立
+            # context/page（execute 内 new_page），无跨场景残留。
+            first_frame_ok = await self._wait_stable(page)
+            page._fenix_nav_first_frame_ok = first_frame_ok
             return True
         except Exception as e:
             self._log("warning", f"navigate_to_app 失败 ({target}): {type(e).__name__}: {e}")
@@ -686,7 +776,11 @@ class BrowserManager:
                 # chrome-extension:// URL 在当前验证浏览器（未加载扩展）中不可达
                 # （Planner 可能生成 chrome-extension://__MSG_@@extension_id__/ 之类目标），
                 # 统一回退到本地 HTTP 服务器（navigate_to_app 同款入口），避免场景判 fail。
-                if self._is_extension_project and value.startswith("chrome-extension://"):
+                # 重定向判定统一用 strip 后的 actual_url（code-review item
+                # 4ce84c27a018）：与上方归一及 ^https?:// 校验同口径——带首尾
+                # 空白的目标（如 " about:blank "）此前三个重定向分支全不命中，
+                # goto 落在字面空白页，后续步骤连锁失败
+                if self._is_extension_project and actual_url.startswith("chrome-extension://"):
                     self._log(
                         "warning",
                         f"navigate 目标 {value} 为 chrome-extension:// URL"
@@ -695,7 +789,9 @@ class BrowserManager:
                     entry_html = "verify.html" if self._use_verify_html else "index.html"
                     actual_url = f"{self._base_url}/{entry_html}"
                 elif self._is_extension_project and (
-                    value == "about:blank" or value == "" or value.startswith("about:")
+                    actual_url == "about:blank"
+                    or actual_url == ""
+                    or actual_url.startswith("about:")
                 ):
                     entry_html = "verify.html" if self._use_verify_html else "index.html"
                     actual_url = f"{self._base_url}/{entry_html}"
@@ -1099,12 +1195,17 @@ class BrowserManager:
 
         except Exception as e:
             error_msg = str(e)
-            # 错误分类
-            if "intercepts pointer events" in error_msg:
+            # 错误分类：类型化异常优先（code-review item ea1ef016ced3）——
+            # playwright TimeoutError 不依赖错误文案（playwright 版本升级
+            # 文案漂移会致 error_type 误判），文案子串仅作兜底（子串表见
+            # 模块级常量）。click_intercepted 判定保持在最前：点击超时的
+            # 错误日志体常含「intercepts pointer events」重试原因，既有
+            # 口径归为 click_intercepted，error_type 取值保持不变。
+            if _CLICK_INTERCEPTED_MARKER in error_msg:
                 error_type = "click_intercepted"
-            elif "timeout" in error_msg.lower():
+            elif isinstance(e, _PlaywrightTimeoutError) or _TIMEOUT_MARKER in error_msg.lower():
                 error_type = "element_not_found_or_not_actionable"
-            elif "not visible" in error_msg.lower():
+            elif _NOT_VISIBLE_MARKER in error_msg.lower():
                 error_type = "element_not_visible"
             else:
                 error_type = "unknown"
@@ -1161,36 +1262,43 @@ class BrowserManager:
 
         # CLS 稳定
         try:
-            await page.evaluate("""() => {
-                return new Promise((resolve) => {
-                    let lastScore = 0;
-                    let stableCount = 0;
-                    const observer = new PerformanceObserver((list) => {
-                        for (const entry of list.getEntries()) {
-                            if (entry.hadRecentInput) continue;
-                            const currentScore = entry.value;
-                            if (Math.abs(currentScore - lastScore) < 0.001) {
-                                stableCount++;
-                                if (stableCount >= 3) {
-                                    observer.disconnect();
-                                    resolve(true);
+            # 页内 Promise 靠 setTimeout 兜底 resolve，page.evaluate 无超时
+            # 语义：页面主线程挂起时兜底定时器永不触发、await 永久挂起，
+            # 外层包 asyncio.wait_for 显式兜底（code-review item
+            # c8c04ed298b8），超时与下方异常同路——跳过 CLS 段不放大失败
+            await asyncio.wait_for(
+                page.evaluate("""() => {
+                    return new Promise((resolve) => {
+                        let lastScore = 0;
+                        let stableCount = 0;
+                        const observer = new PerformanceObserver((list) => {
+                            for (const entry of list.getEntries()) {
+                                if (entry.hadRecentInput) continue;
+                                const currentScore = entry.value;
+                                if (Math.abs(currentScore - lastScore) < 0.001) {
+                                    stableCount++;
+                                    if (stableCount >= 3) {
+                                        observer.disconnect();
+                                        resolve(true);
+                                    }
+                                } else {
+                                    stableCount = 0;
+                                    lastScore = currentScore;
                                 }
-                            } else {
-                                stableCount = 0;
-                                lastScore = currentScore;
                             }
-                        }
+                        });
+                        observer.observe({type: 'layout-shift', buffered: true});
+                        // 最多等 500ms 即视为稳定（不要求零偏移）
+                        setTimeout(() => {
+                            observer.disconnect();
+                            resolve(true);
+                        }, 500);
                     });
-                    observer.observe({type: 'layout-shift', buffered: true});
-                    // 最多等 500ms 即视为稳定（不要求零偏移）
-                    setTimeout(() => {
-                        observer.disconnect();
-                        resolve(true);
-                    }, 500);
-                });
-            }""")
+                }"""),
+                timeout=_IN_PAGE_EVALUATE_TIMEOUT_S,
+            )
         except Exception:
-            pass  # 浏览器不支持 CLS API 时跳过
+            pass  # 浏览器不支持 CLS API 时跳过（含上方 wait_for 超时）
 
         return True
 
