@@ -968,6 +968,61 @@ class StateMachine:
         """
         return self._bump_counter(spec_name, IMPL_RUN_BUDGET_USED_FIELD, delta)
 
+    def set_impl_budget_used_if_unchanged(
+        self, spec_name: str, used_value: int, observed_used: int, observed_run: str
+    ) -> bool:
+        """预算对账 used 改写的锁内条件写（CAS，code-review item 0cfbe1852825）。
+
+        对账方（``_reconcile_impl_budget``）的守卫读（``implementer_run`` 快照
+        + used 起点读）与 used 改写分处多次独立临界区：窗口内并发派发经
+        ``bump_impl_budget(+1)`` 落下的启动计数会被陈旧 expected 盲写覆盖
+        （丢失更新形态——新 run 计数永久丢失、spec 意外多获预算）。本原语把
+        「复核 → 改写」收进单把 ``.STATE.md.lock`` 临界区（与 ``_bump_counter``
+        / ``_refund_run_once`` 同范式）：used 与 ``implementer_run`` 均仍等于
+        对账侧观测值才写入 ``used_value``——任一已变化（并发派发 bump、退款、
+        锚点改写发生过）即不改写返回 False，调用方保守跳过本轮、待下一轮
+        对账收敛。仅复核 run 锚不足以挡住 bump：派发的启动计数与锚点改写
+        分处两个临界区，bump 先行落地时 run 锚尚未变化，故 used 一并入条件。
+
+        锁内不落日志（持锁窗口不含 I/O），SPEC-not-found 告警带出锁外再记
+        （同 ``_refund_run_once`` 约定）。
+
+        Returns: True 表示复核通过且已落盘；False 表示条件失配或 spec 不存在
+        （两种情况均未写任何字段）。
+        """
+        lock_path = self._lockfile
+        missing = False
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                specs = self.read_all()
+                if spec_name not in specs:
+                    # 锁内不落日志（持锁窗口不含 I/O），告警带出锁外再记
+                    missing = True
+                else:
+                    entry = specs[spec_name]
+                    current_run = str(entry.get("implementer_run") or "")
+                    try:
+                        current_used = int(
+                            entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0
+                        )
+                    except (TypeError, ValueError):
+                        current_used = 0
+                    if current_used != observed_used or current_run != observed_run:
+                        return False
+                    entry[IMPL_RUN_BUDGET_USED_FIELD] = used_value
+                    entry["updated"] = datetime.now(timezone.utc).isoformat()
+                    self._write_all_locked(specs)
+                    return True
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+        # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
+        self.logger.warning(
+            "state_machine",
+            f"set impl budget used (guarded) failed: SPEC not found: {spec_name}",
+        )
+        return False
+
     def refund_impl_budget_once(self, spec_name: str, anchor: str) -> tuple:
         """infra 预算退款的锁内原子「查锚点 → 退款 → 记锚点」（item 40f7a931dc4c）。
 

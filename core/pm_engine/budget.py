@@ -399,15 +399,21 @@ class ImplBudget:
         # 新 run 已派发（启动计数已 +1）而产物尚未落盘时，completed 比 used
         # 少 1 是对账窗口假象，自动下调会把该 run 的计数永久吞掉（run 收工
         # 不再补 +1，预算少计）——保守不改数。
-        if expected < used and self._impl_run_unmaterialized(spec_name):
-            self._pm.logger.warning(
-                "pm_engine",
-                f"预算计数对账偏差（在飞实现 run）: '{spec_name}' used={used} vs "
-                f"{target_basis}"
-                f"（implementer_run 产物尚未可见，疑似启动计数已加、产物未落盘，"
-                f"不自动改数）",
-            )
-            return
+        # 守卫读观测到的 implementer_run 快照同步留作 CAS 锚（item
+        # 0cfbe1852825）：守卫读与下方 used 改写非同一临界区，下调改写须
+        # 锁内复核该快照未变才落盘。
+        observed_run = ""
+        if expected < used:
+            unmaterialized, observed_run = self._impl_run_unmaterialized(spec_name)
+            if unmaterialized:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"预算计数对账偏差（在飞实现 run）: '{spec_name}' used={used} vs "
+                    f"{target_basis}"
+                    f"（implementer_run 产物尚未可见，疑似启动计数已加、产物未落盘，"
+                    f"不自动改数）",
+                )
+                return
         exemption = self._budget_reconcile_has_exemption(spec_name)
         if exemption is None:
             # 归档扫描失败、豁免因素不可知（item efb5917745cb）：与上方
@@ -456,9 +462,29 @@ class ImplBudget:
                 f"对账目标归位为重置后新增）",
             )
             return
-        # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）
+        # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）。
+        # 下调方向改写经锁内条件写收敛（item 0cfbe1852825）：守卫读与写之间
+        # 的窗口内，并发派发经 bump_impl_budget 完成 +1（启动计数与锚点改写
+        # 分处两个临界区，run 锚未必先行变化）——仅复核 run 锚挡不住，故锁内
+        # 同时复核 used 与 implementer_run 均未变化才落盘；任一已变即保守
+        # 跳过本轮（与上方在飞守卫同口径），待下一轮对账收敛，启动计数不丢。
         try:
-            self._pm.state_machine.update_spec(spec_name, {IMPL_RUN_BUDGET_USED_FIELD: expected})
+            if expected < used:
+                corrected = self._pm.state_machine.set_impl_budget_used_if_unchanged(
+                    spec_name, expected, used, observed_run
+                )
+                if not corrected:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"预算对账自动校正跳过: '{spec_name}' used={used} → {expected}"
+                        f"（对账窗口内 used/implementer_run 已被并发改写，"
+                        f"疑似新派发启动计数已加，保守不改数）",
+                    )
+                    return
+            else:
+                self._pm.state_machine.update_spec(
+                    spec_name, {IMPL_RUN_BUDGET_USED_FIELD: expected}
+                )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -496,31 +522,36 @@ class ImplBudget:
         except (TypeError, ValueError):
             return None
 
-    def _impl_run_unmaterialized(self, spec_name: str) -> bool:
+    def _impl_run_unmaterialized(self, spec_name: str) -> tuple[bool, str]:
         """最近派发的实现 run 产物在 runs 目录不可见（item 425736ecfd76）。
 
         STATE ``implementer_run`` 指向的产物既不在顶层 runs/ 也不在 archive/
         （按 run_id 前缀匹配，含 attempt/瞬态重试后缀）→ 视为「已派发未落盘」
         的在飞 run。产物已归档/可见时返回 False（归档场景由
         _budget_reconcile_has_exemption 兜底），无锚点返回 False。
+
+        Returns: ``(unmaterialized, observed_run)``——``observed_run`` 为本次
+        守卫读观测到的 ``implementer_run`` 快照（含空串），供调用方
+        （_reconcile_impl_budget）作为锁内条件写（CAS）的复核锚（item
+        0cfbe1852825）：锚与判定必须出自同一次读，分次读会放大而非消除窗口。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         current_run = str(entry.get("implementer_run") or "")
         if not current_run:
-            return False
+            return False, current_run
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         for base in (runs_dir, runs_dir / "archive"):
             try:
                 if base.is_dir() and any(base.glob(f"{current_run}*.jsonl")):
-                    return False
+                    return False, current_run
             except OSError:
                 # 扫描失败 ≠ 产物已可见（item dbcbc1495dc2）：按 False 处理会
                 # 绕过 _reconcile_impl_budget 的在飞 run 守卫，纯漂移分支把
                 # used 下调改写、在飞 run 的启动计数被永久吞掉——与同文件
                 # _count_normal_completed_impl_runs 的保守口径（失败＝不可知、
                 # 跳过本轮对账不改数）对齐，返回 True 视为未落盘、本轮不下调。
-                return True
-        return True
+                return True, current_run
+        return True, current_run
 
     def _budget_reconcile_has_exemption(self, spec_name: str) -> bool | None:
         """对账校正的豁免因素判定（lifecycle-hygiene 4.3 / design D5 + R2）。
