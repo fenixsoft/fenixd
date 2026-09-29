@@ -35,6 +35,7 @@ class H4RunRoutesMixin:
         - project 不存在 → 404
         - run_id 缺失 → 400
         - 已有未消费请求 → 409（code=cancel_run_request_pending）
+        - daemon 未受托管（unmanaged）→ 409；未运行（daemon_down）→ 400
         - 受理 → 200 + {"requested": true}
         """
         project = self._project_from_query(query)
@@ -88,6 +89,24 @@ class H4RunRoutesMixin:
             self._coded_error(
                 409, result.get("error") or "已有进行中的取消请求", "cancel_run_request_pending"
             )
+            return
+        # unmanaged/daemon_down 前置拒绝（code-review item 9f60357d2f7e）：
+        # 数据层此时不写信号直接拒绝（宁拒勿假受理），若落进末尾无条件 200
+        # 用户会误以为取消已受理而信号永不消费；口径对齐 regression_routes
+        # 同类守卫（unmanaged → 409、stopped → 400），error 文案透传数据层
+        if result.get("unmanaged"):
+            self._error(
+                409,
+                result.get("error")
+                or "本项目 daemon 未受 supervisor 托管，取消信号不会被消费",
+            )
+            return
+        if result.get("daemon_down"):
+            self._error(400, result.get("error") or "daemon 未运行，请先启动 daemon")
+            return
+        if not result.get("ok"):
+            # 兜底：数据层其余拒绝态一律不假受理（仅 ok:True 才回 requested）
+            self._error(500, result.get("error") or "写入取消请求失败")
             return
         self._json(
             {
@@ -152,7 +171,7 @@ class H4RunRoutesMixin:
             return {"project": None, "events": []}
         try:
             minutes = int(query.get("minutes", ["10"])[0])
-        except ValueError:
+        except (TypeError, ValueError):
             minutes = 10
         # 边界夹取与 _api_run tail / _api_hooks_audit limit 的防御口径对齐
         # （code-review item d02a01a1dfcc）：负值会让 cutoff 落到未来、
