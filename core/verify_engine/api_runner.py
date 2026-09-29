@@ -33,6 +33,9 @@ _SSE_MAX_EVENTS = 100  # sse_connect 单窗口事件收集上限（触顶截断�
 # 响应体 JSON 解析体积上限（与 evidence 侧 64KB 截断纪律同旨）：异常端点返回
 # 超大响应时 resp.text 与解析对象树会同时驻留内存，超限跳过解析置 resp_json=None
 _JSON_PARSE_LIMIT = 1024 * 1024
+# 响应体读入硬上限（读入侧，独立于解析侧 _JSON_PARSE_LIMIT 与证据侧 64KB 截断）：
+# http_request 按块累积、触顶即停，防异常端点数百 MB 级响应整体驻留内存放大 OOM 风险
+_RESPONSE_READ_LIMIT = 8 * 1024 * 1024
 
 
 def rewrite_origin(url: str, base_url: str) -> str:
@@ -237,7 +240,7 @@ class ApiRunner(VerifyRunner):
 
         try:
             t0 = time.monotonic()
-            resp = await client.request(
+            async with client.stream(
                 method,
                 url,
                 headers=headers,
@@ -245,8 +248,21 @@ class ApiRunner(VerifyRunner):
                 json=json_body,
                 timeout=timeout,
                 follow_redirects=True,
-            )
-            latency_ms = int((time.monotonic() - t0) * 1000)
+            ) as resp:
+                # 读入侧硬上限：按块累积、触顶即停（提前退出由上下文关闭连接），
+                # 防超大响应整体驻留内存——解析/证据侧上限只约束后续消费，不约束
+                # 读入本身。触顶置 read_truncated 标注供 judge 归因。
+                chunks = []
+                read_bytes = 0
+                read_truncated = False
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    read_bytes += len(chunk)
+                    if read_bytes >= _RESPONSE_READ_LIMIT:
+                        read_truncated = True
+                        break
+                resp_encoding = resp.charset_encoding or "utf-8"
+                latency_ms = int((time.monotonic() - t0) * 1000)
         except httpx.ConnectError as e:
             return {
                 "success": False,
@@ -292,7 +308,12 @@ class ApiRunner(VerifyRunner):
         # 响应体，先解析后截断。若先截断再 json.loads，>64KB 的合法 JSON 会
         # 被截成非法文本 → resp_json=None → json_schema/json_path 断言必然
         # 假失败（harness 缺陷，非产品缺陷、非场景缺陷）。
-        resp_text = resp.text or ""
+        raw_body = b"".join(chunks)
+        try:
+            resp_text = raw_body.decode(resp_encoding, errors="replace")
+        except LookupError:
+            # 响应头声明了未知字符集时按 UTF-8 宽松解码兜底
+            resp_text = raw_body.decode("utf-8", errors="replace")
         # JSON 解析必须用完整响应体（防截断破坏合法 JSON），但解析侧设体积
         # 上限：超限响应跳过解析置 resp_json=None（json_path/json_schema 断言
         # 按「路径不存在/非 JSON」口径失败），capture 标注便于 judge 归因。
@@ -322,6 +343,10 @@ class ApiRunner(VerifyRunner):
             capture["json_parse_skipped"] = (
                 f"响应体超大未解析（{resp_text_bytes} 字节 > 上限 {_JSON_PARSE_LIMIT}）"
             )
+        if read_truncated:
+            capture["read_truncated"] = (
+                f"响应体超过读入上限（{_RESPONSE_READ_LIMIT} 字节），仅保留前缀参与解析与证据"
+            )
         name = step.get("as") or ""
         if name:
             captures[name] = capture
@@ -337,7 +362,8 @@ class ApiRunner(VerifyRunner):
             "detail": f"{method} {url} → {resp.status_code}"
             + ("（JSON 嗅探失败已按原文发送）" if sniff_fallback_text else "")
             + ("（响应体已截断 64KB）" if truncated else "")
-            + ("（响应体超大未解析）" if json_parse_skipped else ""),
+            + ("（响应体超大未解析）" if json_parse_skipped else "")
+            + ("（响应体超读入上限已截断）" if read_truncated else ""),
         }
 
     async def _execute_sse_connect(self, client, step: dict, captures: dict) -> dict:
