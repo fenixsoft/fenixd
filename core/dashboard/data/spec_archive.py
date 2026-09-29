@@ -188,9 +188,11 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 只能手工修复），并以返回码而非裸异常告知调用方。
     # 条目仅在清单（已迁出）时 remove_spec 无条目可剔（返回 False 幂等），
     # 改为移除清单小节；双源并存（迁出中间态）时两处都清。
+    state_entry_removed = False
     try:
         if spec in specs:
             sm.remove_spec(spec)
+            state_entry_removed = True
         if in_manifest:
             # 清单小节移除在 .STATE.md.lock 的 flock 内执行（与迁出/回填的
             # 清单写入同锁，避免并发竞态，design D6）
@@ -209,6 +211,11 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             except Exception as re_:
                 rollback_err = str(re_)
         error = f"移除 STATE.md 条目失败: {e}"
+        if state_entry_removed and in_manifest:
+            # 双源两步非原子的部分完成事实：STATE 条目已删而清单小节残留、
+            # 第一步不可回滚，error 明示半态并给出重试自愈路径
+            # （code-review item e7d9f9c7e861）
+            error += "；STATE.md 条目已删除但归档清单小节未移除，可重试以完成清理"
         if rollback_err is not None:
             error += f"；归档目录回滚失败（滞留于 {archive_path}）: {rollback_err}"
         return {
