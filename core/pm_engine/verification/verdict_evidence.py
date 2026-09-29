@@ -31,10 +31,14 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
 
     Returns:
         ``check_batch_attribution_dedup_scenario`` 的查重结果；分级计算自身
-        异常时返回 None（→ 调用方走既有「跳过分级照常采纳」语义）；跨轮缓存
-        打标（load_verdict_cache/tag_cached_attributions）失败仅记 warning，
-        dedup 照常返回。查重拒绝收口 MUST 由调用方在分级 try 之外执行
-        （code-review ab428d7a4e07）。
+        异常时返回 None（→ 调用方走既有「跳过分级照常采纳」语义）。查重门
+        本体与分级共用同一 try、同一 fail-open 出口（code-review
+        db86e983a4fa）：查重门自身抛异常同样返回 None 按「跳过照常采纳」
+        放行——与下方缓存打标的单独兜底不同，不折算独立失败；「宁可不推进
+        也不带病采纳」仅约束拒绝收口自身异常，不适用于查重门计算异常。跨轮
+        缓存打标（load_verdict_cache/tag_cached_attributions）失败仅记
+        warning，dedup 照常返回。查重拒绝收口 MUST 由调用方在分级 try 之外
+        执行（code-review ab428d7a4e07）。
     """
     try:
         from core.verdict_check import (
@@ -566,10 +570,14 @@ def _write_verdict_violations(
                 f.flush()
             os.replace(tmp_path, path)
         except OSError:
+            # 清理临时文件后上抛：写盘/替换失败与 mkdir/mkstemp 失败统一由
+            # 外层 WARNING 留痕（本清单是重试 prompt 的违规明细注入源，读侧
+            # fail-open 会丢违规明细，写失败零留痕无法归因）。
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+            raise
     except OSError as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -631,7 +639,7 @@ def _resynthesis_directive_scenarios(pipeline, report: dict, violations: list) -
     first_failed_step 原文、失败步骤序号、断言 label 清单——judge 改写
     归因文本时必须引用本场景局部数据（MUST NOT 套用共享模板串）。
     """
-    from core.verdict_check import _extract_step_number
+    from core.verdict_check import extract_step_number
 
     involved = set()
     for v in violations or []:
@@ -667,7 +675,7 @@ def _resynthesis_directive_scenarios(pipeline, report: dict, violations: list) -
                 "classification": str(sc.get("classification") or ""),
                 "status": str(sc.get("status") or ""),
                 "first_failed_step": ffs_text,
-                "failed_step_number": _extract_step_number(ffs_text),
+                "failed_step_number": extract_step_number(ffs_text),
                 "assertion_labels": labels,
             }
         )
@@ -1118,7 +1126,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     from core.verify_report import (
         record_verdict_round,
         verdict_failed_ids,
-        _sum_verify_chain_tokens,
+        sum_verify_chain_tokens,
     )
 
     failed_ids = verdict_failed_ids(report) if isinstance(report, dict) else []
@@ -1137,7 +1145,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
             "回退按当前累计全额记账",
         )
         prev = None
-    cur = _sum_verify_chain_tokens(pipeline._context.project_root, spec_name)
+    cur = sum_verify_chain_tokens(pipeline._context.project_root, spec_name)
     if cur:
         delta = {
             "input": max(0, cur["input"] - int((prev or {}).get("input", 0) or 0)),
