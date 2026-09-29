@@ -713,7 +713,7 @@ class PRepairLaneMixin:
                 f"{merge_error} — spec 目录在飞编辑，保留 _repair_awaiting_remerge，"
                 f"写顺延记账并排程 merge-only 重试（不消费标记、不重派）",
             )
-            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            self._defer_merge_back(spec_name, remerge_info, branch, merge_error)
             return False
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
