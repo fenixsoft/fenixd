@@ -234,8 +234,28 @@ def build_requeue_manifest(
     写失败静默降级（不影响既有流程）。
     """
     requeue_list = get_requeue_scenarios(project_root, spec_name)
-    # 条目缺 id（judge 输出漂移/手工编辑）时跳过，避免 KeyError 中断清单构建。
+    # 条目缺 id（judge 输出漂移/手工编辑）时跳过，避免 KeyError 中断清单构建；
+    # 但静默缩水会让下轮按失真清单回炉（漏重验或误全量），故按产物损坏同款
+    # 口径留痕告警（带路径），全部丢失时标出严重形态。
     requeue_ids = [sc.get("id") for sc in requeue_list if isinstance(sc, dict) and sc.get("id")]
+    dropped_count = len(requeue_list) - len(requeue_ids)
+    path = _requeue_manifest_path(project_root, spec_name)
+    if dropped_count:
+        if not requeue_ids:
+            logger.warning(
+                "requeue 条目 %d 条全部缺 id，回炉清单将写为空集"
+                "（回炉子集全部丢失，可能误走全量重做或漏重验）: %s",
+                dropped_count,
+                path,
+            )
+        else:
+            logger.warning(
+                "requeue 条目 %d 条中 %d 条缺 id，已从回炉清单剔除"
+                "（回炉子集部分丢失）: %s",
+                len(requeue_list),
+                dropped_count,
+                path,
+            )
 
     manifest = {
         "spec": spec_name,
@@ -244,7 +264,6 @@ def build_requeue_manifest(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    path = _requeue_manifest_path(project_root, spec_name)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
 
