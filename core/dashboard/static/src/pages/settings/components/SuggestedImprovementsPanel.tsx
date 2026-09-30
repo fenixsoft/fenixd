@@ -357,6 +357,12 @@ const SuggestedImprovementsPanel = forwardRef<
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // items 归属标记（code-review item 22ce653d70d5）：切换作用域后新请求返回前，
+  // items 仍持有上一作用域的数据，复位 effect 与缺省过滤 effect 在同一轮提交内
+  // 先后执行，旧数据非空即把一次性门置 true 并按旧条目落定 filterStatus——
+  // 新数据到达后门已闭不再重推，新作用域会恒带着按旧数据算出的过滤。回填时
+  // 记录归属键，落默认前先核对归属，归属不匹配（旧作用域数据）不落定。
+  const itemsScopeRef = useRef('');
 
   // 返回本次加载到的条目数组：动作成功后的「转到下一条」要在刷新后的数据里按
   // id 找回目标——旧 items 里目标仍带着动作前的状态，直接复用会渲染出陈旧禁用态。
@@ -365,7 +371,12 @@ const SuggestedImprovementsPanel = forwardRef<
     setError(null);
     try {
       const next = (await getEvolutionItems(project)).items || [];
-      if (mountedRef.current) setItems(next);
+      if (mountedRef.current) {
+        // 回填时记录数据归属的作用域键（code-review item 22ce653d70d5）：
+        // 供缺省过滤落定前核对归属，见下方 itemsScopeRef 注释
+        itemsScopeRef.current = project ?? '';
+        setItems(next);
+      }
       return next;
     } catch (e) {
       if (mountedRef.current) {
@@ -408,9 +419,11 @@ const SuggestedImprovementsPanel = forwardRef<
   useEffect(() => {
     if (hasAppliedDefaultFilter.current) return;
     if (items.length === 0) return; // 空数据（加载中/无数据）不落默认
+    // 归属核对：items 还是上一作用域回填的旧数据（本作用域请求未返回）时不落定
+    if (itemsScopeRef.current !== (project ?? '')) return;
     hasAppliedDefaultFilter.current = true;
     setFilterStatus(items.some((i) => i.status === 'pending') ? 'pending' : undefined);
-  }, [items]);
+  }, [items, project]);
 
   const projectOptions = useMemo(() => distinctOptions(items, (i) => i.project), [items]);
   const statusOptions = useMemo(() => {
