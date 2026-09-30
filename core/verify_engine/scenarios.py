@@ -566,7 +566,9 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "short": "expected",
             "help": "",
             "example": '"期望的输出内容"',
-            "mode": "post",
+            # include_zero：数值 expected（如 0）按 str() 归一参与匹配，非缺参
+            # （code-review item 01754605c87c）
+            "mode": "include_zero",
         },
     ),
     "file_content": (
@@ -582,7 +584,9 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "short": "expected",
             "help": "",
             "example": '"期望的文件内容"',
-            "mode": "post",
+            # include_zero：数值 expected（如 0）按 str() 归一参与匹配，非缺参
+            # （code-review item 01754605c87c）
+            "mode": "include_zero",
         },
     ),
     "json_output": (
@@ -599,6 +603,16 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "help": "",
             "example": '"data.items.0.name"',
             "mode": "post",
+        },
+        # expected 必填（include_zero：数值 0 是合法 JSON 期望，与 status_code
+        # 同款判空）——缺参时运行期 exact 的 None==None 会产出假通过
+        # （code-review item baaae8c599ae）
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"期望的 JSON 值"',
+            "mode": "include_zero",
         },
     ),
     # ── api 断言 ──
@@ -627,6 +641,17 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "help": "",
             "example": '"data.items.0"',
             "mode": "post",
+        },
+        # expected 必填（code-review item 2cab94c9b2df）：缺 expected 的场景
+        # 须在验收期与其他 api 断言同口径打回，而非耗一轮验证执行后靠运行期
+        # fail-closed 才暴露。mode 用 include_zero——exact 比对下 0/False 是
+        # 合法期望（如 data.code=0），不能按 post 误杀
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"data.items.0 的期望值"',
+            "mode": "include_zero",
         },
     ),
     "response_header": (
