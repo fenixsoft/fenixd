@@ -89,8 +89,12 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
     """条件③：judge/实现/验证结果文件 findings 是否含争议条目。
 
     读取先例 ``branch_guard._disputed_deliverables``：从 run 结果文件的
-    findings 读 dispute/adjudication 类条目。信号机制缺失（结果文件不存在/
-    不可读/无 findings）按「无争议」fail-open，返回 ``(False, 留痕)``
+    findings 读 dispute/adjudication 类条目。对全部存在且可读、归属本
+    spec 的候选做条目**并集**判定（命中任一即有争议）——judge 专属结果
+    文件无争议时，实现侧写在共享根文件的 deliverable-dispute 仍须被看到，
+    不得按「首个可读候选」短路（docstring 条件③口径是 judge/实现/验证
+    结果文件 findings 的并集）。信号机制缺失（候选均不存在/不可读/无
+    findings）按「无争议」fail-open，返回 ``(False, 留痕)``
     ——留痕供判定记录说明证据来源与缺失方向。
 
     Returns:
@@ -98,12 +102,11 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
         fastlane）；evidence 为判定依据的简短描述。
     """
     root = pipeline._context.project_root
-    # 结果文件候选（按具体度降序，首个存在且可读者生效）：
+    # 结果文件候选（按具体度降序；排序仅影响 evidence 罗列顺序，并集
+    # 判定不因先后短路）：
     # 1. judge 结果文件 .fenix/verify-progress/<spec>/.fenix-run-result.json
     #    （本轮裁决落点，与 escalation._judge_bugs_declare_env 的 primary
-    #    同源；路径自带 spec 隔离，免跨 spec 戳校验）——置前：fastlane 评估
-    #    发生在 judge 之后，共享根文件此时多为实现/验证轮残留，先查最具体
-    #    落点才不漏 judge 侧 dispute/adjudication 条目；
+    #    同源；路径自带 spec 隔离，免跨 spec 戳校验）；
     # 2. 项目根共享 .fenix/.fenix-run-result.json（跨 spec 单例，实现/验证
     #    agent 收尾契约的唯一落点）；
     # 3. spec-review 副本。
@@ -117,6 +120,7 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
         Path(root) / ".fenix" / "spec-review" / spec_name / ".fenix-run-result.json",
     ]
     unreadable: list = []
+    checked: list = []  # (path, 该候选命中的争议条目)
     for path in candidates:
         if not path.exists():
             continue
@@ -128,28 +132,30 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
             continue
         # 跨 spec 归属校验：共享文件残留的可能是其它 spec 实现轮的结果——
         # spec 戳为非空字符串且与当前 spec 不符时不据此判定（既防误挡本
-        # spec，也防本 spec 争议被其它 spec 后写覆写后误放行），回落检查
-        # 下一候选。口径对齐 dashboard.data.artifacts._load_run_result：
-        # 缺 spec 戳的旧格式文件仍采信；spec 专属副本路径自带隔离，不校验。
+        # spec，也防本 spec 争议被其它 spec 后写覆写后误放行）。口径对齐
+        # dashboard.data.artifacts._load_run_result：缺 spec 戳的旧格式
+        # 文件仍采信；spec 专属副本路径自带隔离，不校验。
         if path == shared_root_result and isinstance(data, dict):
             stamp = data.get("spec")
             if isinstance(stamp, str) and stamp and stamp != spec_name:
                 continue
-        hits = disputed_findings(data)
-        # 命中首个可读候选即返回前，把先前候选「存在但不可读」的留痕拼进
-        # evidence：不带说明则审计面丢失本轮曾不可读这一事实（docstring
-        # 「留痕供判定记录说明证据来源与缺失方向」）
-        note = (
-            f"（另有 {len(unreadable)} 个候选不可读: "
-            f"{', '.join(str(p) for p in unreadable)}）"
-            if unreadable
-            else ""
-        )
+        checked.append((path, disputed_findings(data)))
+    # 「存在但不可读」的留痕拼进 evidence：不带说明则审计面丢失本轮曾
+    # 不可读这一事实（docstring「留痕供判定记录说明证据来源与缺失方向」）
+    note = (
+        f"（另有 {len(unreadable)} 个候选不可读: "
+        f"{', '.join(str(p) for p in unreadable)}）"
+        if unreadable
+        else ""
+    )
+    if checked:
+        hits = [h for _p, path_hits in checked for h in path_hits]
+        names = ", ".join(str(p.name) for p, _h in checked)
         if hits:
             types = sorted({str(h.get("type")) for h in hits})
-            return True, f"{path.name} findings 含争议条目: {types}{note}"
+            return True, f"{names} findings 含争议条目: {types}{note}"
         return False, (
-            f"{path.name} findings 无 dispute/adjudication 条目"
+            f"{names} findings 无 dispute/adjudication 条目"
             f"（fail-open 无争议）{note}"
         )
     if unreadable:
@@ -274,7 +280,7 @@ def subset_scenario_ids(scenarios, failed_id: str) -> list:
 def merge_subset_report(prev_report, subset_report) -> dict:
     """合并子集重验报告与上一轮报告：未实跑场景沿用上一轮原判定并标注来源。
 
-    重验报告 MUST 含全量场景判定（minor-defect-fashlane spec 子集重验条款）：
+    重验报告 MUST 含全量场景判定（minor-defect-fastlane spec 子集重验条款）：
     实跑场景取子集报告最新判定；其余场景全量回填上一轮原判定（pass 沿用
     通过结论，warning/blocked-env 等原样保留 classification 等侧车消费字段）
     并附 ``source: "carried-over: fastlane subset reverify"`` 标注——非 pass
@@ -518,14 +524,33 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
             "report": None,
             "reason": "子集重验报告场景覆盖不全",
         }
-    remaining = int(summary.get("failed", 0) or 0) + int(summary.get("errors", 0) or 0)
+    # 通过判定口径与整轮一致：blocked-env 是环境性失败（引擎单列
+    # summary.blocked_env、并入 warnings 总数，engine._build_report 与
+    # pipeline._merge_cached_scenario_results 同口径；整轮对 blocked_env>0
+    # 判 inconclusive 不落 verified），只按 failed+errors 判会把环境阻塞
+    # 误当「子集全部通过」送入收敛路径。warning 结局（带告诫通过）不阻断
+    # 收敛，故显式计 blocked_env 而非整个 warnings 计数（后者已含 blocked-env，
+    # 直接累加会双计）。
+    _blocked_env = int(summary.get("blocked_env", 0) or 0)
+    remaining = (
+        int(summary.get("failed", 0) or 0)
+        + int(summary.get("errors", 0) or 0)
+        + _blocked_env
+    )
     return {
         "ok": remaining == 0,
         "report": report,
         "reason": (
             f"子集重验通过（{summary.get('passed', 0)} 场景）"
             if remaining == 0
-            else f"子集重验仍有 {remaining} 个非 PASS"
+            else (
+                f"子集重验仍有 {remaining} 个非 PASS"
+                + (
+                    f"（含 {_blocked_env} 个 blocked-env，环境阻塞未完成验证）"
+                    if _blocked_env
+                    else ""
+                )
+            )
         ),
     }
 
@@ -700,6 +725,25 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     pipeline._apply_verified(
         spec_name, SimpleNamespace(run_id=run_id), merged
     )
+    # _apply_verified 内部六处门禁静默 early-return（env 豁免握手/进度核对/
+    # 报告闸门/洗白门禁/ocr join 门禁/verified transition 被拒），返回值恒为
+    # None、成败不可观测——回读状态机实况判定收敛是否真落定：仅 status 确为
+    # verified 才清零 streak 并落盘 fastlane-converged。门禁拒绝时 spec 实际
+    # 滞留 testing 未收口，若照旧清零连败计数并上报 converged=True，调用方
+    # （pipeline._do_spec_bug_found）见 dispatched=True 即 return，不派生修复、
+    # 不计失败轮，FASTLANE_MAX_CONSECUTIVE_FAILURES 熔断在该路径永久失效。
+    # 故非 verified 按 fastlane 本轮失败回落整轮（_bump_fail_streak 留痕）：
+    # 返回 dispatched=False，调用方随即走 on_spec_bug_found 既有整轮处置
+    # （inplace 原地打回直写 status / derive 派生 fix SPEC，均不经 transition
+    # 合法性校验，对滞留 testing 无副作用矛盾）。
+    # status 缺失（不可观测，如无 status 字段的桩 store）按既有收敛行为放行：
+    # 生产 STATE 记录恒带 status，「缺失」不构成门禁拒绝的证据，不据此误回落。
+    _applied_status = str((sm.read_one(spec_name) or {}).get("status", "") or "")
+    if _applied_status and _applied_status != "verified":
+        return _bump_fail_streak(
+            f"fastlane 收敛门禁未通过（_apply_verified 后 status={_applied_status}"
+            f"≠verified，spec 未收口），回落整轮"
+        )
     # 真正收敛点（两次 transition 与 _apply_verified 全部成功之后）才清零
     # 连续失败计数：清零若前置到状态转换前，transition 被拒走
     # _bump_fail_streak 时计数恒从 0 加回 1、在 0/1 间震荡，确定性转换失败
