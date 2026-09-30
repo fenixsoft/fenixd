@@ -1067,16 +1067,18 @@ class RecoveryWatch:
                 fp = "unreadable"
         # 取值容错（code-review item c31eb4352989）：裸 float 在畸形
         # pm.recovery.signal_cooldown_minutes（非数值字符串）时抛 ValueError
-        # 逃出 check_recovery_watch 循环，静默跳过其余到期观察项的升级；
-        # `or DEFAULT_` 只兜 None/0，兜不住非法字符串。与本文件下方
-        # get_admin_config 取值同款 try/except 回落权威缺省。
+        # 逃出 check_recovery_watch 循环，静默跳过其余到期观察项的升级。
+        # 与本文件 _followup_check_minutes / 下方 get_admin_config 取值同款
+        # try/except 回落权威缺省。0 值口径（code-review item 090362c006d8）：
+        # 不用 ``or DEFAULT`` 兜底——合法配置值 0（关闭指纹冷却、允许同指纹
+        # 信号立即重复升级）会被当缺失回落成 30 分钟；缺省/None 分别由
+        # _get_config 的 default 入参与下方 except 兜住。
         try:
             cooldown = (
                 float(
                     self._pm._get_config(
                         "pm.recovery.signal_cooldown_minutes", DEFAULT_SIGNAL_COOLDOWN_MINUTES
                     )
-                    or DEFAULT_SIGNAL_COOLDOWN_MINUTES
                 )
                 * 60
             )
