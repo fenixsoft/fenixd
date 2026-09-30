@@ -96,13 +96,16 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return ""
-    # 尾部块正好从行首开始（start == 0）或块内存在位于末行**之前**的换行
-    # （去掉尾换行后仍含 \n）→ 末行为完整行。超长末行（> chunk_size）独占
-    # 整块时块内唯一的 \n 是其自身结尾符，判据不成立 → 回退全量读
-    # （code-review item c731923c9b36：旧判据「块内含任意 \n」把超长末行
-    # 自身的结尾符误当完整行证据，返回首部被截断的半行、json 解析必败，
-    # 在途重试豁免对大输出 run 静默失效）。
-    if start == 0 or b"\n" in raw.rstrip(b"\n"):
+    # 末行完整判据：尾部块正好从行首开始（start == 0，整文件已读）→ 末行必
+    # 完整；否则须同时满足「文件末字节为 \n」（末行已收尾）且块内存在位于末行
+    # **之前**的换行（去掉尾换行后仍含 \n）。超长末行（> chunk_size）独占整块
+    # 时块内唯一的 \n 是其自身结尾符，判据不成立 → 回退全量读（code-review
+    # item c731923c9b36：旧判据「块内含任意 \n」把超长末行自身的结尾符误当
+    # 完整行证据，返回首部被截断的半行、json 解析必败，在途重试豁免对大输出
+    # run 静默失效）；末行尚在写入（无结尾 \n）且跨过块边界时，块内的 \n 属于
+    # 更早的完整行，同样不构成末行完整证据 → 回退全量读（code-review item
+    # 6c9681da1cfe）。
+    if start == 0 or (raw.endswith(b"\n") and b"\n" in raw.rstrip(b"\n")):
         return lines[-1]
     # 整个块是被截断的单行 → 回退全量读
     full = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -144,7 +147,9 @@ class RecoveryWatch:
         # 旧实现「pop + 整文件重写」非原子，两次交错的巡检会丢失或复活观察项。
         # 用可重入锁保护 dict 读改写 + 落盘（_save 内部亦加锁，见其实现）。
         self._watch_lock = threading.RLock()
-        # 巡检信号指纹去重（D6）：{spec: (fingerprint, raised_at_monotonic)}
+        # 巡检信号指纹去重（D6）：{spec: (fingerprint, raised_at_wall)}——元组
+        # 第二位实存 time.time() 墙钟秒（code-review item fdc1359e7029：原命名
+        # raised_at_monotonic 与实现不符，改名使命名对齐实现）。
         self._signal_fingerprints: dict = {}
 
     def _recovery_watch_path(self) -> Path:
@@ -425,7 +430,11 @@ class RecoveryWatch:
                         f"last_read_error={type(e).__name__}: {str(e)[:120]}"
                     )
                     try:
-                        self._pm._signal_dispatch_stalled(spec_name, evidence)
+                        signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
+                        if not signaled:
+                            # 写盘失败不抛出而是返回 False（code-review item
+                            # befe1e6861fa）：并入下方守卫，保留观察项下轮重试。
+                            raise RuntimeError("dispatch_stalled signal write failed")
                     except Exception as signal_exc:
                         self._pm.logger.warning(
                             "pm_engine",
@@ -549,7 +558,12 @@ class RecoveryWatch:
                 f"escalating dispatch_stalled",
             )
             try:
-                self._pm._signal_dispatch_stalled(spec_name, evidence)
+                signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
+                if not signaled:
+                    # append 写盘失败（磁盘满/IO 错误）不抛出而是返回 False
+                    # （code-review item befe1e6861fa）：并入下方守卫——本观察项
+                    # 已在上方 pop 落盘，失败路径须恢复观察项下轮重试，不静默丢弃。
+                    raise RuntimeError("dispatch_stalled signal write failed")
             except Exception as signal_exc:
                 # 与读取失败分支（上方升级调用）同款守卫（code-review item
                 # 96b3b5771561）：本观察项已在上方 pop 落盘，而
@@ -855,6 +869,11 @@ class RecoveryWatch:
             last = json.loads(last_line)
         except (json.JSONDecodeError, ValueError):
             return None
+        # 合法 JSON 但非对象（损坏行恰为标量/数组，如 ``123``）时 .get 会抛
+        # AttributeError 逃逸、中止整轮复查（code-review item fcc739c572b6）：
+        # 与 docstring「异常/损坏/不可读一律返回 None」口径对齐。
+        if not isinstance(last, dict):
+            return None
         etype = last.get("type")
         ts = last.get("timestamp")
         if not etype or not ts:
@@ -1015,7 +1034,7 @@ class RecoveryWatch:
 
     def _signal_dispatch_stalled(
         self, spec_name: str, evidence: str, fingerprint: str | None = None
-    ) -> None:
+    ) -> bool:
         """退避耗尽仍持锁 / 恢复复查未通过 / 假就绪滞留 → dispatch_stalled 信号（D5/D6）。
 
         写入 admin store（kind=SIGNAL, severity major），由 AdminMonitor 摄取唤起
@@ -1024,11 +1043,28 @@ class RecoveryWatch:
             ``pm.recovery.signal_cooldown_minutes``（默认 30）内只记日志；
             指纹变化或冷却结束方可再次写入。
           - admin_alerts 去重：store 内冷却期内已有同类信号时同样抑制。
+
+        Returns: 信号成功落盘，或冷却期内已有同类在案（双重去重抑制，升级已
+          在案）时返回 True；admin store 写入失败返回 False（不抛出）——
+          check_recovery_watch 据此走恢复观察项守卫下轮重试，不静默丢弃
+          （code-review item befe1e6861fa）。
         """
         from core.admin_store import AdminStore, SIGNAL
 
-        entry = self._pm.state_machine.read_one(spec_name) or {}
-        fp = fingerprint or self._pm._spec_fingerprint(entry)
+        # 指纹计算不让 STATE 读取失败逃逸（code-review item ae5df37cfdce）：
+        # 读取失败升级分支（check_recovery_watch）的前提正是 read_one 持续失败，
+        # 此处的内部重读若不纳入 try 会在写信号前再抛——升级信号永不落盘（每轮
+        # 重试同样失败，admin 侧收不到「STATE 不可读」升级）。失败回退常量指纹；
+        # 显式传入 fingerprint 时完全跳过内部读取（参数本意）。
+        if fingerprint is not None:
+            fp = fingerprint
+        else:
+            try:
+                fp = self._pm._spec_fingerprint(
+                    self._pm.state_machine.read_one(spec_name) or {}
+                )
+            except Exception:
+                fp = "unreadable"
         # 取值容错（code-review item c31eb4352989）：裸 float 在畸形
         # pm.recovery.signal_cooldown_minutes（非数值字符串）时抛 ValueError
         # 逃出 check_recovery_watch 循环，静默跳过其余到期观察项的升级；
@@ -1062,7 +1098,7 @@ class RecoveryWatch:
                 f"dispatch_stalled for '{spec_name}' suppressed (same fingerprint "
                 f"{fp} within {int(cooldown / 60)}m cooldown) — logged only",
             )
-            return
+            return True
 
         # 同源路径（family.py bug_repair_mode 先例）：get_admin_config 缺省填充，
         # 旁路 _get_config + 硬编码 fallback 会与权威缺省漂移（缺省现为 60 分钟）。
@@ -1090,7 +1126,7 @@ class RecoveryWatch:
                     f"dispatch_stalled for '{spec_name}' suppressed "
                     f"(cooldown {store_cooldown:.0f}m)",
                 )
-                return
+                return True
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -1119,6 +1155,7 @@ class RecoveryWatch:
                 "pm_engine",
                 f"dispatch_stalled signal recorded for '{spec_name}'",
             )
+            return True
         except Exception as e:
             # 回滚指纹登记（code-review item f96c11623564）：上方持锁段的
             # 指纹登记先于 admin store 写入，append 失败若保留指纹，defer_limit
@@ -1130,6 +1167,11 @@ class RecoveryWatch:
                 "pm_engine",
                 f"Failed to record dispatch_stalled for '{spec_name}': {e}",
             )
+            # 写盘失败返回 False 而非吞掉（code-review item befe1e6861fa）：
+            # check_recovery_watch 主升级分支已先 pop 落盘观察项，调用方须凭
+            # 返回值走「恢复观察项下轮重试」守卫，否则观察项永久丢失且升级
+            # 未落盘，滞留 spec 从此无人告警。
+            return False
 
     def _clear_dispatch_conflict(self, spec_name: str) -> dict:
         """派发成功后清零锁冲突计数与退避窗口（返回 update 字段供合并写入）。"""
