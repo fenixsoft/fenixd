@@ -65,6 +65,14 @@ const SECTION_TAG_COLORS: Record<string, string> = {
 
 type BatchAction = 'accept' | 'reject' | 'delete';
 
+// 批量动作动词映射（code-review item 8694f259d40f：旧实现嵌套三元链，
+// 项目前端规则禁止，改为模块级映射常量取值）。
+const BATCH_VERB: Record<BatchAction, string> = {
+  accept: '同意',
+  reject: '拒绝',
+  delete: '删除',
+};
+
 /** 条目在当前状态下被禁用的原因（无禁用返回 null），供批量跳过汇报使用。 */
 function actionDisabledReason(status: string, action: BatchAction): string | null {
   if (action === 'delete') return null; // 删除不设状态门：任意状态可删
@@ -364,14 +372,23 @@ const SuggestedImprovementsPanel = forwardRef<
   // 记录归属键，落默认前先核对归属，归属不匹配（旧作用域数据）不落定。
   const itemsScopeRef = useRef('');
 
+  // 过期响应守卫（code-review item 3383961be73c）：作用域/项目切换走的是同一
+  // 组件实例的 effect 重跑，cleanup 后 mountedRef 复回 true，仅凭 mountedRef
+  // 判活挡不住「旧作用域请求后到」——旧项目条目会短暂写进新作用域视图（比照
+  // loadView 的 viewReqSeqRef 口径）。每次发起自增请求序号，响应时序号已落后
+  // 即整体丢弃（不写 items/itemsScopeRef/loading）。
+  const itemsReqSeqRef = useRef(0);
+
   // 返回本次加载到的条目数组：动作成功后的「转到下一条」要在刷新后的数据里按
   // id 找回目标——旧 items 里目标仍带着动作前的状态，直接复用会渲染出陈旧禁用态。
   const loadItems = useCallback(async (): Promise<EvolutionItem[]> => {
+    const reqSeq = ++itemsReqSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const next = (await getEvolutionItems(project)).items || [];
-      if (mountedRef.current) {
+      // 序号落后 = 已有更新的请求（新作用域）接管列表，本响应过期整体丢弃
+      if (mountedRef.current && reqSeq === itemsReqSeqRef.current) {
         // 回填时记录数据归属的作用域键（code-review item 22ce653d70d5）：
         // 供缺省过滤落定前核对归属，见下方 itemsScopeRef 注释
         itemsScopeRef.current = project ?? '';
@@ -379,14 +396,15 @@ const SuggestedImprovementsPanel = forwardRef<
       }
       return next;
     } catch (e) {
-      if (mountedRef.current) {
+      if (mountedRef.current && reqSeq === itemsReqSeqRef.current) {
         const msg = errText(e, '加载失败');
         setError(msg);
         setItems([]);
       }
       return [];
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // 过期请求不复位 loading：新请求仍在飞，由它自己的 finally 收口
+      if (mountedRef.current && reqSeq === itemsReqSeqRef.current) setLoading(false);
     }
   }, [project]);
 
@@ -697,7 +715,7 @@ const SuggestedImprovementsPanel = forwardRef<
       return;
     }
 
-    const verb = action === 'accept' ? '同意' : action === 'reject' ? '拒绝' : '删除';
+    const verb = BATCH_VERB[action];
     const isDestructive = action !== 'accept';
     // 批量同意无逐条弹窗，执行时刻直接取配置（spec_run_at），并在确认弹窗里
     // 明示——否则「配了定时却被批量绕开」会让人以为设置没生效

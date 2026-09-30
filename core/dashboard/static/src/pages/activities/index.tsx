@@ -115,7 +115,9 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
         WebkitMaskImage: shouldFold && !expanded ? 'linear-gradient(to bottom, black 60%, transparent 100%)' : undefined,
       }}
     >
-      <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {/* fix 17c024ffff30: summary 与 actions_taken/recommended_action 统一插件集，
+          叙述文本单换行折行口径一致 */}
+      <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
         {a.summary}
       </Markdown>
     </div>
@@ -347,6 +349,10 @@ export default function ActivitiesPage() {
           error: e instanceof Error ? e.message : String(e),
         })),
       ]);
+      // fix 7d23b9e8d1bc: 过期检查提前到所有 await 之后、越界回退之前——过期请求
+      // 直接丢弃，不改写 pageRef/setCurrent、不触发补拉，避免旧响应把页码改成 1
+      // 而破坏新请求的 `pageRef.current === pageAtStart` 守卫，致越界页被直接上屏
+      if (seq !== loadSeqRef.current) return;
       let d = first;
       // 总条数收缩导致当前页越界时回退第 1 页重拉一次（design D5 语义保留：
       // SSE 刷新保持页码，仅越界回退；第 1 页恒 ≤ 总页数，不会循环）。
@@ -357,6 +363,8 @@ export default function ActivitiesPage() {
         setCurrent(1);
         d = await fetchPage(1);
       }
+      // 二次检查保留：越界补拉第 1 页是第二个 await，期间可能有新请求启动，
+      // 状态写入前仍需复核序号（非越界路径为幂等复查，无窗口）
       if (seq !== loadSeqRef.current) return;
       setData(d);
       if (!alerts.error) {

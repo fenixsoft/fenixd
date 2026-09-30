@@ -367,11 +367,13 @@ def record_decision(pipeline, spec_name: str, decision: dict) -> None:
     )
 
 
-def evaluate_fastlane(pipeline, spec_name: str, report=None) -> dict:
+def evaluate_fastlane(pipeline, spec_name: str) -> dict:
     """fastlane 三条件判定（minor-defect-fastlane spec 判定阈值条款）。
 
     评估 ①失败场景数=1 ②影响面≤3 文件 ③无争议，全程条件细节随判定落盘
     （record_decision），所选路径可追溯。不产生任何状态变更。
+    条件①的数据来源是盘上 report.json（pipeline._failed_scenario_ids 重新
+    读取），不消费调用方内存中的报告对象。
 
     Returns:
         {"eligible", "path", "failed_id", "subset_ids", "affected_files",
@@ -531,7 +533,18 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
     # 误当「子集全部通过」送入收敛路径。warning 结局（带告诫通过）不阻断
     # 收敛，故显式计 blocked_env 而非整个 warnings 计数（后者已含 blocked-env，
     # 直接累加会双计）。
-    _blocked_env = int(summary.get("blocked_env", 0) or 0)
+    # blocked_env 容错与紧邻守卫同口径：旧 report 无该字段（引擎读为 0）
+    # 故不纳入严格 isinstance 校验，但非数值脏值经 int() 抛 ValueError 会沿
+    # 裁决路径上抛跳过记账与报告回写——按重验失败回落整轮（走既有失败返回
+    # 路径，不新增异常上抛）。
+    try:
+        _blocked_env = int(summary.get("blocked_env", 0) or 0)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "report": None,
+            "reason": "子集重验报告 summary.blocked_env 计数非法",
+        }
     remaining = (
         int(summary.get("failed", 0) or 0)
         + int(summary.get("errors", 0) or 0)

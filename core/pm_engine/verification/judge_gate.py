@@ -37,7 +37,7 @@ _JUDGE_ROUND_ID_FIELD = "_judge_round_id"
 _JUDGE_ROUND_REAL_FIELD = "_judge_round_real"
 _JUDGE_ROUND_EXPANDED_FIELD = "_judge_round_expanded"
 _JUDGE_ROUND_ESCALATED_FIELD = "_judge_round_escalated"
-_JUDGE_ROUND_REPORT_MTIME_FIELD = "_judge_round_report_mtime"
+_JUDGE_ROUND_REPORT_KEY_FIELD = "_judge_round_report_key"
 _JUDGE_FASTTRACK_HITS_FIELD = "_judge_fasttrack_hits"
 _JUDGE_REAL_DISPATCHES_FIELD = "_judge_real_dispatches"
 
@@ -51,8 +51,19 @@ def _judge_verify_round(pipeline, spec_name: str) -> int:
         return 0
 
 
-def _judge_report_mtime_ns(pipeline, spec_name: str):
-    """当前 report.json mtime_ns（判定上下文指纹）；缺失返回 None。"""
+def _judge_report_context_key(pipeline, spec_name: str):
+    """当前 report.json 的判定上下文键（引擎执行轮指纹）；缺失返回 None。
+
+    键来源 = report.json 顶层 ``timestamp``——引擎每轮执行 ``_build_report``
+    重写（core/verify_engine/engine.py），是轮次身份的第一来源（与
+    ``verify_report.current_round_fingerprint`` 同源取序）。judge 重裁决只
+    增强场景级 classification/evidence/assertion_triage、不碰该顶层字段，
+    故「同一执行轮内 judge 反复重裁决改写 report.json」不再翻转键值（旧
+    mtime 键会被 judge 每次落盘改写触发误重置，轮内上限失效，code-review
+    c53340d4d1ac）；合法新执行轮（scenario-repaired 重执行）timestamp 必变
+    → 仍识别为新判定上下文。字段缺失/报告不可读时退化为文件 mtime_ns
+    （与 current_round_fingerprint 同款降级序），保持旧键可比形态。
+    """
     p = (
         Path(pipeline._context.project_root)
         / ".fenix"
@@ -61,7 +72,15 @@ def _judge_report_mtime_ns(pipeline, spec_name: str):
         / "report.json"
     )
     try:
-        return p.stat().st_mtime_ns
+        report = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = None
+    if isinstance(report, dict):
+        ts = report.get("timestamp")
+        if isinstance(ts, str) and ts.strip():
+            return ts.strip()
+    try:
+        return str(p.stat().st_mtime_ns)
     except OSError:
         return None
 
@@ -70,13 +89,17 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
     """读 (spec, 验证轮, 判定上下文) 维度计数器；上下文变化即重置（3.1）。
 
     轮次键 = ``_verify_fail_rounds``（bug-found 修复递增）；同轮判定上下文
-    键 = report.json mtime——**场景修复重入（scenario-repaired）每轮合法
-    重执行并重派 judge**，report 已重写即视为新判定上下文，计数从零计
-    （治理目标只是「同一份报告反复重裁决」，不拦合法的新执行轮）。
+    键 = report.json 顶层 ``timestamp``（引擎执行轮指纹，
+    ``_judge_report_context_key``）——**场景修复重入（scenario-repaired）每轮
+    合法重执行并重派 judge**，引擎重写报告必换 timestamp 即视为新判定上
+    下文，计数从零计（治理目标只是「同一执行轮内同一份报告反复重裁决」，
+    不拦合法的新执行轮）。MUST NOT 退回文件 mtime 键：judge 重裁决每次落
+    盘增强场景级 classification/evidence 都会翻转 mtime，使轮内计数被
+    judge 自改写反复清零、轮内上限失效（code-review c53340d4d1ac）。
     """
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
     current_round = _judge_verify_round(pipeline, spec_name)
-    current_mtime = _judge_report_mtime_ns(pipeline, spec_name)
+    current_key = _judge_report_context_key(pipeline, spec_name)
 
     def _int_or(v, d=0):
         try:
@@ -90,17 +113,16 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
     except (TypeError, ValueError):
         same_round = False
     if same_round:
-        stored_mtime = entry.get(_JUDGE_ROUND_REPORT_MTIME_FIELD)
-        try:
-            stored_mtime = int(stored_mtime) if stored_mtime is not None else None
-        except (TypeError, ValueError):
-            stored_mtime = None
+        # STATE 属性以字符串持久化：stored 统一 str 归一后与当前键比对
+        # （当前键可能为 timestamp 串或 mtime 回退串）。
+        stored_key = entry.get(_JUDGE_ROUND_REPORT_KEY_FIELD)
+        stored_key = str(stored_key).strip() if stored_key is not None else None
         if (
-            stored_mtime is not None
-            and current_mtime is not None
-            and stored_mtime != current_mtime
+            stored_key is not None
+            and current_key is not None
+            and stored_key != current_key
         ):
-            same_round = False  # report 重执行 → 新判定上下文
+            same_round = False  # 引擎新执行轮（timestamp 变化）→ 新判定上下文
     if not same_round:
         reset = {
             _JUDGE_ROUND_ID_FIELD: current_round,
@@ -108,8 +130,8 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
             _JUDGE_ROUND_EXPANDED_FIELD: 0,
             _JUDGE_ROUND_ESCALATED_FIELD: False,
         }
-        if current_mtime is not None:
-            reset[_JUDGE_ROUND_REPORT_MTIME_FIELD] = current_mtime
+        if current_key is not None:
+            reset[_JUDGE_ROUND_REPORT_KEY_FIELD] = current_key
         # [fenix-ignore:77163ea07645] update_spec 与 bump_counters 同锁域（各自都在 .STATE.md.lock 的 flock(LOCK_EX) 内读改写），且本重置写的是常量 0 而非锁外快照计算值，无丢增量窗口。
         pipeline._context.state_machine.update_spec(spec_name, reset)
         return {"round": current_round, "real": 0, "expanded": 0, "escalated": False}
@@ -139,14 +161,17 @@ def _judge_round_bump(pipeline, spec_name: str, field: str) -> int:
 def _judge_charge_real_dispatch(pipeline, spec_name: str) -> int:
     """记一次真实派发：轮内计数 +1、生命周期 ``_judge_real_dispatches`` +1。
 
-    同时刷新判定上下文键（当前 report.json mtime）——后续 gate 以此识别
+    同时刷新判定上下文键（当前引擎执行轮指纹）——后续 gate 以此识别
     「同轮 report 重执行」并重置轮内计数（合法新执行轮不受阈值约束）。
+    键取 report.json 顶层 timestamp 而非 mtime：judge 重裁决落盘只改 mtime
+    不改 timestamp，键稳定则轮内计数不被 judge 自改写清零
+    （code-review c53340d4d1ac）。
     """
     _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_REAL_FIELD)
-    mtime = _judge_report_mtime_ns(pipeline, spec_name)
-    if mtime is not None:
+    key = _judge_report_context_key(pipeline, spec_name)
+    if key is not None:
         pipeline._context.state_machine.update_spec(
-            spec_name, {_JUDGE_ROUND_REPORT_MTIME_FIELD: mtime}
+            spec_name, {_JUDGE_ROUND_REPORT_KEY_FIELD: key}
         )
     return _judge_round_bump(pipeline, spec_name, _JUDGE_REAL_DISPATCHES_FIELD)
 
@@ -305,7 +330,7 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         # 治理对象是「同一份已落盘报告的反复重裁决」：report.json 缺失
         # （内存/合成执行环境、judge 前置产物未落盘）即无可治理的判定
         # 上下文，放行且不计数（spec 级硬上限仍然兜底）。
-        if _judge_report_mtime_ns(pipeline, spec_name) is None:
+        if _judge_report_context_key(pipeline, spec_name) is None:
             return None
         state = _judge_round_state(pipeline, spec_name)
         if state["real"] >= _JUDGE_ROUND_MAX_REAL_DISPATCHES:

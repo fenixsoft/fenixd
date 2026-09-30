@@ -526,7 +526,7 @@ def _remove_serving_worktree(pipeline, wt_path) -> None:
     # 主流程异常——对齐本文件其余 subprocess 写点的异常兜底与
     # _evict_spec_serving 的非阻塞语义
     try:
-        subprocess.run(
+        r = subprocess.run(
             [
                 "git",
                 "-C",
@@ -540,11 +540,28 @@ def _remove_serving_worktree(pipeline, wt_path) -> None:
             text=True,
             timeout=30,
         )
-        subprocess.run(
+        # code-review 40d00d0ca687：非零返回码（目录被进程占用/权限等）不抛
+        # 异常但目录滞留，只能靠 serving_reclaim 600s 周期兜底回收——不留痕
+        # 则排障时无法从日志区分「未清理」与「已清理」（对齐本文件其余
+        # subprocess 写点的失败留痕口径；重试/rmtree 降级归 serving_reclaim）
+        if r.returncode != 0:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"serving worktree 清理失败 '{wt_path}'（非阻塞，rc={r.returncode}）: "
+                f"{(r.stderr or r.stdout).strip()[-200:]}",
+            )
+        prune = subprocess.run(
             ["git", "-C", str(pipeline._context.project_root), "worktree", "prune"],
             capture_output=True,
+            text=True,
             timeout=15,
         )
+        if prune.returncode != 0:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"serving worktree prune 失败 '{wt_path}'（非阻塞，rc={prune.returncode}）: "
+                f"{(prune.stderr or prune.stdout).strip()[-200:]}",
+            )
     except (OSError, subprocess.SubprocessError) as e:
         pipeline._context.logger.warning(
             "pm_engine", f"serving worktree 清理失败 '{wt_path}'（非阻塞）: {e}"

@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from core.state_machine import FREEZE_ERROR_PREFIX
+from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
 
 # git 子进程统一超时（rev-list/status/show 等本地只读查询共用单一来源，
 # 异常/超时由各调用方按既有 fail-open/fail-safe 语义自行回退）。
@@ -47,7 +47,7 @@ def resolve_env_blocked_reset_path(spec: dict, project_root) -> str | None:
         return None
     # 人工冻结：frozen 结构化标记或 error 文本契约（FREEZE_ERROR_PREFIX）任一
     # 命中即视为人工冻结，不走自动复位（人工处置是唯一出路）。
-    if spec.get("frozen"):
+    if spec.get(FROZEN_FIELD):
         return None
     error = str(spec.get("error") or "")
     if error.startswith(FREEZE_ERROR_PREFIX):
@@ -202,6 +202,10 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
     # 会把真实改动误判空转触发重派（未提交改动随后随 worktree 复位丢失）。
     # 存在未提交改动 → 非零变更（return False）；查询失败（无 worktree/子进程
     # 异常）跳过本检查，维持既有「仅按工具名判定」语义。
+    # worktree 路径查询经 pipeline._pm 门面回引——context 的 agent_runner
+    # 车道仅包装 _execute_agent，未承载 worktree_manager，故此处为车道外的
+    # 显式豁免，MUST NOT 从 _context 取；worktree_manager 接线变化时须与
+    # _deliverable_gate_missing 的门面回引豁免双处同步。
     try:
         worktree = pipeline._pm.agent_runner.worktree_manager.find_worktree_path(branch)
         if worktree:
@@ -262,6 +266,11 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     # 静默跳过（fail-safe，回退分支/主树读取）。
     worktree_path = None
     if branch:
+        # worktree 查询经 pipeline._pm 门面回引——context 的 agent_runner
+        # 车道仅包装 _execute_agent，未承载 worktree_manager，故此处为车道外
+        # 的显式豁免，MUST NOT 从 _context 取；worktree_manager 接线变化时须
+        # 与 _implementer_zero_change 的门面回引豁免双处同步（同函数
+        # _exists_on_branch 的 file_exists_on_branch 同属本豁免）。
         try:
             worktree_path = pipeline._pm.agent_runner.worktree_manager.find_worktree_path(branch)
         except Exception:

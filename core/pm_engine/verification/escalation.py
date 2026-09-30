@@ -1428,6 +1428,11 @@ def _write_inconclusive_loop_signal(
         probe_detail = str(sc.get("env_probe_detail") or "").strip()
         if probe_detail:
             break
+    # 截断上界与同文件 evidence 先例对齐（code-review item c5cb1544b937）：
+    # env 探针输出（诊断命令输出/异常栈）可达 KB 级，无界拼入会使 admin
+    # store 单条记录无界膨胀。
+    if len(probe_detail) > 500:
+        probe_detail = probe_detail[:500] + "..."
     from core.admin_store import AdminStore, SIGNAL
 
     store = AdminStore(pipeline._context.project_root, pipeline._context.logger)

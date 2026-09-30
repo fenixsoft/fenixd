@@ -285,7 +285,7 @@ def _read_verifier_result(
             # fail-closed 返回 ok=False，绝不放行。
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"Failed to read verifier result (fail-closed): {e}",
+                f"Failed to read {role_label} result (fail-closed): {e}",
             )
             return VerdictReadResult.failure("parse", f"{e}")
         except OSError as e:
@@ -294,7 +294,7 @@ def _read_verifier_result(
             # 格式损坏（调用方统一按不可读处置，不受新 reason 影响）。
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"Failed to read verifier result (fail-closed): {e}",
+                f"Failed to read {role_label} result (fail-closed): {e}",
             )
             return VerdictReadResult.failure("io-error", f"{e}")
     if not isinstance(data, dict):
@@ -310,7 +310,7 @@ def _read_verifier_result(
         # "Unknown verifier status: 'success', treating as verified"）。
         pipeline._context.logger.warning(
             "pm_engine",
-            f"Unknown verifier status: '{status}' (fail-closed, not treating " "as verified)",
+            f"Unknown {role_label} status: '{status}' (fail-closed, not treating " "as verified)",
         )
         return VerdictReadResult.failure("unknown-status", f"status='{status}'")
     bugs = data.get("bugs", [])
