@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import dayjs from 'dayjs';
-import { App, Button, Card, Space, Spin, Typography } from 'antd';
+import { Alert, App, Button, Card, Space, Spin, Typography } from 'antd';
 import {
   ApiError,
   architectureDiagramUrl,
@@ -53,6 +53,13 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<ArchitectureStatus | null>(null);
   const [triggering, setTriggering] = useState(false);
+  // 最近一次状态读取失败的可见错误态（code-review item 55aea63bbe02）：轮询
+  // 止损只停定时器的话，本地 status 停在最后一次成功快照，generating 态会
+  // 一直渲染「生成中」且按钮置灰，toast 消失后无任何错误展示与恢复入口。
+  // 这里把失败暴露为常驻错误条 + 重试读取按钮；仅记录「进度读取失败」，
+  // 不改写 status，与后端 failed 态（生成失败）语义不混淆。下一次成功读取
+  // 或切换项目即清除，不恢复自动重试。
+  const [readError, setReadError] = useState<string | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   // 请求序号守卫（对齐 QualityTab/RegressionTab）：轮询与手动刷新并发时
   // 较慢的早期响应不得覆盖较新数据。
@@ -75,6 +82,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       // 「离开分面停止轮询」语义）。
       if (seq !== seqRef.current || !activeRef.current) return;
       setStatus(data);
+      setReadError(null);
       // generating → 3s 轮询；其余态停轮询
       if (data.state === 'generating') {
         if (pollTimerRef.current === null) {
@@ -94,7 +102,11 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
-      message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
+      // 止损之外同步落地可见错误条（55aea63bbe02）：自动刷新已停，但生成
+      // 不因此中断，需给用户持续的错误展示与手动重试读取入口
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setReadError(errMsg);
+      message.error(`加载失败: ${errMsg}`);
     }
   }, [active, project, message]);
 
@@ -116,6 +128,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // project 变化时清空先于新请求响应执行，不会误清新项目刚取到的数据。
   useEffect(() => {
     setStatus(null);
+    setReadError(null);
   }, [project]);
 
   // active 门控：进入分面加载，离开分面停止轮询（未选中零请求）
@@ -183,11 +196,30 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     </Button>
   );
 
+  // ── 读取失败错误条（code-review item 55aea63bbe02）──────────────
+  // 四态之上叠加展示：仅标注「进度读取失败」，不改写四态语义（尤其不复用
+  // failed 态，避免与真实生成失败混淆）；「重试读取」只重新拉状态，不触
+  // 发新的生成。
+  const readErrorBanner = readError ? (
+    <Alert
+      type="error"
+      showIcon
+      message="进度读取失败，已停止自动刷新"
+      description={`${readError}（可点击「重试读取」，或切出本分面再切回触发重新读取）`}
+      action={
+        <Button size="small" onClick={() => void loadStatus()}>
+          重试读取
+        </Button>
+      }
+    />
+  ) : null;
+
   // ── 四态渲染 ────────────────────────────────────────────────────
   if (state === 'none') {
     return (
       <Card variant="borderless">
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          {readErrorBanner}
           <Typography.Text strong>尚未生成架构图</Typography.Text>
           <Typography.Text type="secondary">
             点击「刷新架构图」后，系统将启动一次 headless claude（挂 archify skill）
@@ -205,6 +237,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     return (
       <Card variant="borderless">
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          {readErrorBanner}
           <Space>
             <Spin size="small" />
             <Typography.Text strong>架构图生成中…</Typography.Text>
@@ -223,6 +256,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     return (
       <Card variant="borderless">
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          {readErrorBanner}
           <Typography.Text strong>架构图生成失败</Typography.Text>
           <Typography.Text type="secondary">
             {status?.error || '原因未知，可重试或查看服务端日志'}
@@ -246,6 +280,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   return (
     <Card variant="borderless">
       <Space direction="vertical" style={{ width: '100%' }} size={12}>
+        {readErrorBanner}
         <div
           style={{
             display: 'flex',

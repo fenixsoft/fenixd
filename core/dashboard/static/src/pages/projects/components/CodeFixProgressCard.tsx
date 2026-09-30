@@ -284,11 +284,13 @@ export default function CodeFixProgressCard(
   if (alarm && readFailed) sub.push('进度读取失败，已停止轮询');
 
   // 次级文案段的 testid（嵌套三元被审查规则禁止，抽为 if/else 局部计算）：
-  // 准备段 → startup-stage；fixing 阶段条级进度 → item-progress；其余不挂。
+  // 准备段 → startup-stage；fixing 阶段且条级进度文案确已进本行
+  // （itemProgressText 非空）→ item-progress；其余不挂——item_done=null 时
+  // 条级进度整段不渲染，testid 不得漂移到仅含 current/reason 的行上。
   let subTestId: string | undefined;
   if (showStartupStage) {
     subTestId = 'code-fix-startup-stage';
-  } else if (phase === 'fixing') {
+  } else if (phase === 'fixing' && itemProgressText) {
     subTestId = 'code-fix-item-progress';
   }
 

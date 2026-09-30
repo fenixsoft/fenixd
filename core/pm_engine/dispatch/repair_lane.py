@@ -21,7 +21,7 @@ import json
 import threading
 from pathlib import Path
 
-from core.pm_engine.dispatch import (  # noqa: E402
+from core.pm_engine.dispatch import (
     MAX_REPAIR_ROUNDS_PER_FAILURE,
 )
 

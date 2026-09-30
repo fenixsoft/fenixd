@@ -326,7 +326,11 @@ class FFastTrackMixin:
                     )
             else:
                 final_error = ft_result.get("error") or result.error or "fast-track run failed"
-            self._handle_fast_track_failure(spec_name, result, final_error)
+            # 传入 flow 层已解析结果（非 None），豁免判定不再二次读盘
+            # （code-review item 417ec4668570）。
+            self._handle_fast_track_failure(
+                spec_name, result, final_error, ft_result=ft_result
+            )
             return
 
         if honest_exit_gap:
@@ -931,12 +935,19 @@ class FFastTrackMixin:
         )
         designed_ids: list = []
         if scenarios_path.exists():
+            degrade_reason = ""
             try:
                 sc_data = json.loads(scenarios_path.read_text(encoding="utf-8"))
                 if isinstance(sc_data, list):
                     designed_ids = [
                         s.get("id") for s in sc_data if isinstance(s, dict) and s.get("id")
                     ]
+                    if not designed_ids:
+                        degrade_reason = f"数组内 {len(sc_data)} 条条目均无可取 id"
+                else:
+                    # 写侧（planner-plan/fast-track 车道按注入 schema）仅产出
+                    # 顶层数组形态，dict 包裹等漂移形态不做隐式解包，拒绝采信。
+                    degrade_reason = f"顶层载荷为 {type(sc_data).__name__} 非数组"
             except (OSError, json.JSONDecodeError) as e:
                 # 覆盖门降级 MUST 留痕（code-review item 75770d2d2cc6）：静默
                 # 吞掉会使 designed_ids 保持空 → validate 按 None 跳过全量执行
@@ -945,6 +956,16 @@ class FFastTrackMixin:
                     "pm_engine",
                     f"fast-track 读取 test_scenarios.json 失败 '{spec_name}'"
                     f"（按无设计集降级，仅做结构与证据校验）: {type(e).__name__}: {e}",
+                )
+            if degrade_reason:
+                # 覆盖门降级 MUST 留痕（code-review item 58efa16245ef，同上方
+                # 75770d2d2cc6 口径）：合法 JSON 但解析不出设计集（顶层非数组/
+                # 条目均无可取 id）同样使 designed_ids 保持空 → validate 按
+                # None 跳过全量执行比对，静默遗漏场景会逃过拦截。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 读取 test_scenarios.json 失败 '{spec_name}'"
+                    f"（按无设计集降级，仅做结构与证据校验）: {degrade_reason}",
                 )
 
         check = validate_fast_track_result(ft_result, designed_ids or None)
@@ -968,10 +989,11 @@ class FFastTrackMixin:
 
     def _fast_track_advance_to_verified(self, spec_name: str, result) -> None:
         """fast-track 硬校验通过 + verdict=verified：implemented → testing → verified。"""
-        # verified 洗白门禁（help-center 0/15 verified 事故防线）：fast-track
-        # 结果文件 0 通过或 env 失败不得放行，升级 admin 处置
-        if not self._pm._env_whitewash_gate(spec_name):
-            return
+        # verified 洗白门禁（help-center 0/15 verified 事故防线）已下沉到
+        # _fast_track_finalize_after_testing 开头（code-review item
+        # 35dfeabfd01d）：重启恢复重入路径（_resume_fast_track_after_restart）
+        # 不经本方法直连收尾段，门禁只挂在本方法 transition testing 之前时
+        # 该路径绕过门禁——下沉到两路径共用的收尾段入口使门禁位点唯一。
         # fix-observability-gaps 2.2：fast-track 自动连跳（同一 run 触发两次转换）
         self._pm.state_machine.transition(
             spec_name, "testing",
@@ -987,8 +1009,9 @@ class FFastTrackMixin:
         self._fast_track_finalize_after_testing(spec_name, result)
 
     def _fast_track_finalize_after_testing(self, spec_name: str, result) -> None:
-        """testing 出口收尾段：join 门禁 → verified 转移 → 清零点 update →
-        ``_on_spec_verified``（fix-fasttrack-implemented-deadstate 1.1）。
+        """testing 出口收尾段：洗白门禁 → join 门禁 → verified 转移 →
+        清零点 update → ``_on_spec_verified``（fix-fasttrack-implemented-deadstate
+        1.1）。
 
         自 ``_fast_track_advance_to_verified`` 抽取的私有方法，正常收尾流与
         重启恢复重入（``_resume_fast_track_after_restart``）两处复用——
@@ -996,6 +1019,15 @@ class FFastTrackMixin:
         spec 停留 testing（车道完成回调既有唤醒路径接手）；reject 已在
         门禁内完成。
         """
+        # verified 洗白门禁（help-center 0/15 verified 事故防线）：fast-track
+        # 结果文件 0 通过或 env 失败不得放行，升级 admin 处置（升级在门禁内
+        # 完成，返回 False 直接终止推进）。原挂 _fast_track_advance_to_verified
+        # 的 transition testing 之前；下沉到本收尾段入口（code-review item
+        # 35dfeabfd01d）——重启恢复重入不经 advance 方法直连本段，门禁挂原
+        # 位点时该路径绕过防线。两条路径共用唯一位点；门禁通过时纯读无副
+        # 作用，defer 后回调重入时幂等重跑（与既有 join 门禁同性质）。
+        if not self._pm._env_whitewash_gate(spec_name):
+            return
         ocr_decision = self._ocr_join_gate(spec_name, "fast-track")
         if ocr_decision != "pass":
             return
@@ -1037,8 +1069,8 @@ class FFastTrackMixin:
 
         - transition ``implemented → testing``（channel=auto，
           trigger_run_id=implementer_run）；
-        - 随后复用 ``_fast_track_finalize_after_testing`` 收尾段（join 门禁 →
-          verified → 清零点 → ``_on_spec_verified``）；defer 时车道完成回调
+        - 随后复用 ``_fast_track_finalize_after_testing`` 收尾段（洗白门禁 →
+          join 门禁 → verified → 清零点 → ``_on_spec_verified``）；defer 时车道完成回调
           ``_on_impl_ocr_lane_finished`` 既有唤醒路径接手（回调前置
           status==testing，重入后恰好满足，闭环）。
 
@@ -1185,17 +1217,24 @@ class FFastTrackMixin:
         result,
         final_error: str,
         run_reason: str | None = None,
+        ft_result: dict | None = None,
     ) -> None:
         """fast-track run 失败处理：与 implementer 同语义（重派/重试计数/blocked）。
 
         run_reason：预算豁免判据（run 真实终态归因，供 _is_exemptable_reason
         关键词检查）；None 时回退 final_error（既有行为）。展示文案与豁免
         判据分离（code-review item 2d2da33c5b15）。
+
+        ft_result：调用方已解析的实现结果 dict（``_run_fast_track_flow`` 在
+        读取结果文件后传入，code-review item 417ec4668570），豁免判定直接
+        采信——消除「flow 判文件存在/缺失」与「本方法重读」之间的竞态分裂
+        与重复 IO；缺省 None 时保留既有重读行为（兼容其它调用点）。
         """
         # 死亡 run 豁免（无收工结果 = run 异常死亡）
         impl_status = None
         try:
-            ft_result = self._pm._read_implementer_result(spec_name)
+            if ft_result is None:
+                ft_result = self._pm._read_implementer_result(spec_name)
             impl_status = ft_result.get("status") if ft_result else None
         except Exception as e:
             # 读失败不阻断失败处置，但 MUST 留痕（code-review item
@@ -1362,6 +1401,10 @@ class FFastTrackMixin:
         }
         if attempts >= 3:
             updates["status"] = "blocked"
+            # 与 full 车道零变更哨 twin 分支（queue.py）对齐：blocked 终态清掉
+            # 旧 tester_run 指针，避免跨模式复用/此前走过完整模式验证的 spec
+            # 残留与本轮无关的历史验证 run 引用（code-review item 14a6755b9728）。
+            updates["tester_run"] = None
             updates["error"] = "fast-track 连续 3 次零变更报成功 — blocked，需人工检查"
         self._pm.state_machine.update_spec(spec_name, updates)
         if attempts < 3:

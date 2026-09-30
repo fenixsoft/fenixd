@@ -135,6 +135,111 @@ class BBackoffMixin:
             self._backoff_timers.append(timer)
         timer.start()
 
+    # ── 冷却恢复排程参数化共用实现（code-review item 71e4594e6d49）─────────
+    # 三条冷却恢复通道（秒挂 / 信号死法 / 瞬断）的排程与到期回调收敛为以下
+    # helper，通道差异全部显式成参数而非隐身拷贝：
+    # - ``timers``：通道判重集合（幂等排程）；
+    # - ``resolve_delay``：``(spec_name) -> float | None``，返回原始等待秒数，
+    #   None 表示本此不排程（秒挂/信号死法：未设冷却截止；瞬断恒返回配置值）；
+    # - ``min_delay``：排程下限（秒挂/信号死法 0.5s、瞬断 10s，有意差异）；
+    # - ``callback`` / ``scheduled_log``：到期回调与可选排程 INFO 文案模板。
+
+    def _cooldown_remaining(self, spec_name: str, cooldown_until_fn) -> float | None:
+        """读冷却截止（``time.monotonic`` 秒，runner._now 口径）的剩余秒数。
+
+        未设冷却截止（``<= 0``）返回 None——调用方据此跳过本次排程。
+        """
+        until = cooldown_until_fn(spec_name)
+        if until <= 0:
+            return None
+        return float(until) - time.monotonic()
+
+    def _transient_redispatch_delay(self, spec_name: str) -> float:
+        """瞬断重派等待秒数（``agents.transient_redispatch_delay_seconds``）。
+
+        配置容错（与 _dispatch_backoff_schedule 同口径）：非法配置值回退
+        缺省 600s，不得中断瞬断恢复排程。``spec_name`` 仅用于对齐
+        ``resolve_delay`` 签名（该通道等待时长与 spec 无关）。
+        """
+        try:
+            return float(
+                self._pm._get_config("agents.transient_redispatch_delay_seconds", 600)
+            )
+        except (TypeError, ValueError):
+            return 600.0
+
+    def _schedule_recovery_timer(
+        self,
+        spec_name: str,
+        timers: set,
+        resolve_delay,
+        min_delay: float,
+        callback,
+        scheduled_log: str | None = None,
+        lock_held: bool = False,
+    ) -> None:
+        """统一排程入口：按 ``lock_held`` 决定是否自取 ``_queue_lock``。
+
+        ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
+        跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        """
+
+        def _locked(spec: str) -> None:
+            self._schedule_recovery_timer_locked(
+                spec, timers, resolve_delay, min_delay, callback, scheduled_log,
+            )
+
+        if lock_held:
+            _locked(spec_name)
+            return
+        with self._queue_lock:
+            _locked(spec_name)
+
+    def _schedule_recovery_timer_locked(
+        self,
+        spec_name: str,
+        timers: set,
+        resolve_delay,
+        min_delay: float,
+        callback,
+        scheduled_log: str | None = None,
+    ) -> None:
+        """锁内实现（调用方已持 _queue_lock）：判重 → 计算延迟 → 排程定时器。
+
+        - 已在 ``timers`` 中则幂等早退；
+        - ``resolve_delay`` 返回 None 则本此不排程；
+        - 延迟下限 ``min_delay``；
+        - ``scheduled_log`` 非空时于定时器启动后记 INFO，模板可用
+          ``{spec_name}`` / ``{delay}``（后者已取 int）占位。
+        """
+        if spec_name in timers:
+            return
+        raw_delay = resolve_delay(spec_name)
+        if raw_delay is None:
+            return
+        delay = max(min_delay, float(raw_delay))
+        timer = threading.Timer(delay, callback, args=(spec_name,))
+        timer.daemon = True
+        timers.add(spec_name)
+        timer.start()
+        if scheduled_log is not None:
+            self._pm.logger.info(
+                "pm_engine",
+                scheduled_log.format(spec_name=spec_name, delay=int(delay)),
+            )
+
+    def _fire_recovery_callback(
+        self, spec_name: str, timers: set, fired_log: str,
+    ) -> None:
+        """冷却到期回调共用体：摘判重标记 → 记日志 → 重入派发 + process_queue。"""
+        with self._queue_lock:
+            timers.discard(spec_name)
+        self._pm.logger.info("pm_engine", fired_log)
+        try:
+            self._pm._on_spec_ready(spec_name)
+        finally:
+            self._pm._process_queue()
+
     def _schedule_instant_fail_recovery(self, spec_name: str, lock_held: bool = False) -> None:
         """冷却到期后重入 ``_on_spec_ready``（cli-retry-backoff 2.2）。
 
@@ -145,41 +250,27 @@ class BBackoffMixin:
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
         跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
         """
-        if lock_held:
-            self._schedule_instant_fail_recovery_locked(spec_name)
-            return
-        with self._queue_lock:
-            self._schedule_instant_fail_recovery_locked(spec_name)
+        self._schedule_recovery_timer(
+            spec_name,
+            timers=self._instant_fail_timers,
+            resolve_delay=lambda spec: self._cooldown_remaining(
+                spec, self._pm._instant_fail_cooldown_until),
+            min_delay=0.5,
+            callback=self._on_instant_fail_recovery,
+            lock_held=lock_held,
+        )
 
     def _schedule_instant_fail_recovery_locked(self, spec_name: str) -> None:
         """锁内实现（调用方已持 _queue_lock）排程冷却恢复定时器。"""
-        if spec_name in self._instant_fail_timers:
-            return
-        until = self._pm._instant_fail_cooldown_until(spec_name)
-        if until <= 0:
-            return
-        delay = max(0.5, float(until) - time.monotonic())
-        timer = threading.Timer(
-            delay,
-            self._on_instant_fail_recovery,
-            args=(spec_name,),
-        )
-        timer.daemon = True
-        self._instant_fail_timers.add(spec_name)
-        timer.start()
+        self._schedule_instant_fail_recovery(spec_name, lock_held=True)
 
     def _on_instant_fail_recovery(self, spec_name: str) -> None:
         """秒挂冷却到期回调：重新唤起派发（幂等，多定时器并发安全）。"""
-        with self._queue_lock:
-            self._instant_fail_timers.discard(spec_name)
-        self._pm.logger.info(
-            "pm_engine",
+        self._fire_recovery_callback(
+            spec_name,
+            self._instant_fail_timers,
             f"秒挂冷却到期，恢复调度 '{spec_name}'（cli-retry-backoff 自动恢复）",
         )
-        try:
-            self._pm._on_spec_ready(spec_name)
-        finally:
-            self._pm._process_queue()
 
     # ── evo-sigterm-source-tracking-cooldown：信号死法冷却恢复排程 ─────────
     # 仿秒挂冷却（instant_fail_recovery）定时器模式：信号死法冷却到期后重入
@@ -197,42 +288,28 @@ class BBackoffMixin:
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
         跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
         """
-        if lock_held:
-            self._schedule_signal_kill_recovery_locked(spec_name)
-            return
-        with self._queue_lock:
-            self._schedule_signal_kill_recovery_locked(spec_name)
+        self._schedule_recovery_timer(
+            spec_name,
+            timers=self._signal_kill_timers,
+            resolve_delay=lambda spec: self._cooldown_remaining(
+                spec, self._pm._signal_kill_cooldown_until),
+            min_delay=0.5,
+            callback=self._on_signal_kill_recovery,
+            lock_held=lock_held,
+        )
 
     def _schedule_signal_kill_recovery_locked(self, spec_name: str) -> None:
         """锁内实现（调用方已持 _queue_lock）排程信号冷却恢复定时器。"""
-        if spec_name in self._signal_kill_timers:
-            return
-        until = self._pm._signal_kill_cooldown_until(spec_name)
-        if until <= 0:
-            return
-        delay = max(0.5, float(until) - time.monotonic())
-        timer = threading.Timer(
-            delay,
-            self._on_signal_kill_recovery,
-            args=(spec_name,),
-        )
-        timer.daemon = True
-        self._signal_kill_timers.add(spec_name)
-        timer.start()
+        self._schedule_signal_kill_recovery(spec_name, lock_held=True)
 
     def _on_signal_kill_recovery(self, spec_name: str) -> None:
         """信号死法冷却到期回调：重新唤起派发（幂等，多定时器并发安全）。"""
-        with self._queue_lock:
-            self._signal_kill_timers.discard(spec_name)
-        self._pm.logger.info(
-            "pm_engine",
+        self._fire_recovery_callback(
+            spec_name,
+            self._signal_kill_timers,
             f"信号死法冷却到期，恢复调度 '{spec_name}'"
             f"（evo-sigterm-source-tracking-cooldown 自动恢复）",
         )
-        try:
-            self._pm._on_spec_ready(spec_name)
-        finally:
-            self._pm._process_queue()
 
     # ── fix-provider-transient-backoff（D4）：transient 恢复排程 ──────────
     # 仿秒挂冷却（instant_fail_recovery）定时器模式：瞬断终态后按
@@ -248,49 +325,28 @@ class BBackoffMixin:
 
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True，跳过内部再取锁。
         """
-        if lock_held:
-            self._schedule_transient_recovery_locked(spec_name)
-            return
-        with self._queue_lock:
-            self._schedule_transient_recovery_locked(spec_name)
+        self._schedule_recovery_timer(
+            spec_name,
+            timers=self._transient_timers,
+            resolve_delay=self._transient_redispatch_delay,
+            min_delay=10.0,  # 最小等待 10s，避免零值/负值
+            callback=self._on_transient_recovery,
+            scheduled_log=(
+                "Transient recovery scheduled for '{spec_name}' in {delay}s "
+                "(fix-provider-transient-backoff)"
+            ),
+            lock_held=lock_held,
+        )
 
     def _schedule_transient_recovery_locked(self, spec_name: str) -> None:
         """锁内实现（fix-provider-transient-backoff）排程 transient 恢复定时器。"""
-        if spec_name in self._transient_timers:
-            return
-        # 配置容错（与 _dispatch_backoff_schedule 同口径）：非法配置值回退
-        # 缺省 600s，不得中断瞬断恢复排程。
-        try:
-            delay = float(
-                self._pm._get_config("agents.transient_redispatch_delay_seconds", 600)
-            )
-        except (TypeError, ValueError):
-            delay = 600.0
-        delay = max(10.0, delay)  # 最小等待 10s，避免零值/负值
-        timer = threading.Timer(
-            delay,
-            self._on_transient_recovery,
-            args=(spec_name,),
-        )
-        timer.daemon = True
-        self._transient_timers.add(spec_name)
-        timer.start()
-        self._pm.logger.info(
-            "pm_engine",
-            f"Transient recovery scheduled for '{spec_name}' in {int(delay)}s "
-            f"(fix-provider-transient-backoff)",
-        )
+        self._schedule_transient_recovery(spec_name, lock_held=True)
 
     def _on_transient_recovery(self, spec_name: str) -> None:
         """瞬断冷却到期回调：重新唤起派发（幂等，多定时器并发安全）。"""
-        with self._queue_lock:
-            self._transient_timers.discard(spec_name)
-        self._pm.logger.info(
-            "pm_engine",
+        self._fire_recovery_callback(
+            spec_name,
+            self._transient_timers,
             f"Transient recovery fired for '{spec_name}' — resuming dispatch "
             f"(fix-provider-transient-backoff)",
         )
-        try:
-            self._pm._on_spec_ready(spec_name)
-        finally:
-            self._pm._process_queue()

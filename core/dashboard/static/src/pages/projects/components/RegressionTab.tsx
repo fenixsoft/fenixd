@@ -232,6 +232,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 置位之间有主循环消费时延，此窗口内以「等待启动」动画条给即时反馈，
   // 按钮（及重复触发）同步禁用；running 置位或 120s 超时自动退出。
   const [awaitingStart, setAwaitingStart] = useState(false);
+  // 轮询止损后的可见错误态（code-review item 11f99f1d80c5）：running 轮询
+  // 失败即永久停轮询（e419d82ceb2b 对请求风暴的合理止损），但本地快照仍是
+  // running=true 的旧帧——主视图按 running 渲染「正在执行」、触发/修复按钮
+  // 禁用，一次性 toast 消失后页面无错误痕迹也无恢复入口。止损时置位，在
+  // running 渲染分支显示提示条；下一次成功快照（重进分面/切项目后的加载）
+  // 即清除。
+  const [pollFailed, setPollFailed] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   // 自动修复（add-regression-auto-fix）：触发在途 loading 态 + 回链轮询哨
   const [fixPending, setFixPending] = useState(false);
@@ -247,6 +254,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       const data = await getRegressionResult(project);
       if (seq !== seqRef.current) return;
       setSnapshot(data);
+      setPollFailed(false);
       // 运行中 → 轮询快照（2s）；回落即停止（task 5.6：以服务端 running 为准）
       if (data.running) {
         if (pollTimerRef.current === null) {
@@ -270,6 +278,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         pollTimerRef.current = null;
       }
       setAwaitingStart(false);
+      // 止损同时置页面内可见错误态（11f99f1d80c5）：running 旧帧仍按「正在
+      // 执行」渲染且按钮禁用，提示条是 toast 之外唯一的失败痕迹与恢复指引
+      setPollFailed(true);
       message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [active, project, message]);
@@ -371,8 +382,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 真实进度接管；见 awaitingStart 注释）
       setAwaitingStart(true);
       // 触发成功立即刷新：新一轮运行中态（running=true）由服务端 marker 提供，
-      // 轮询接管（task 5.6）
-      void loadResult();
+      // 轮询接管（task 5.6）。经 ref 调最新闭包（code-review item 7a7ce4f87987）：
+      // POST 往返期间切换项目时，渲染期捕获的 loadResult 仍绑定旧 project，
+      // seq 守卫拦不住「旧闭包后发先至」，旧项目快照会写进新项目视图——经
+      // loadResultRef 取最新闭包，刷新目标始终跟随当前 active/project。
+      void loadResultRef.current();
     } catch (e) {
       // 业务拒绝按稳定错误码分支（code-review item 934af264345f）：旧实现
       // 对后端中文消息做子串匹配，措辞/locale 改动静默落入通用错误分支。
@@ -466,6 +480,16 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
 
   const status = snapshot?.status ?? 'never_run';
 
+  // 轮询止损提示条（code-review item 11f99f1d80c5）：仅在 running 渲染分支
+  // 显示——快照是 running 旧帧时触发/修复按钮均被禁用，此条是页面内唯一的
+  // 失败痕迹与恢复指引；下一次成功快照使 running 回落后随之消失。
+  const pollFailBanner =
+    running && pollFailed ? (
+      <Typography.Text type="danger" style={{ fontSize: 12 }}>
+        进度读取失败，已停止自动刷新，可切出重进刷新
+      </Typography.Text>
+    ) : null;
+
   // ── 三态渲染（spec Requirement 1）─────────────────────────────
   // 状态机：
   //   never_run / parse_error（无有效结果）→ 引导态；
@@ -478,6 +502,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             <>
               <Typography.Text strong>全量回归正在执行中…</Typography.Text>
               <RunningProgressView progress={snapshot?.progress} />
+              {pollFailBanner}
               <Typography.Text type="secondary">
                 回归完成后此分面将展示结果。回归可运行较长时间，请稍候。
               </Typography.Text>
@@ -517,6 +542,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             {snapshot?.reason || 'JUnit XML 缺失或不可解析'}
           </Typography.Text>
           {running ? <RunningProgressView progress={snapshot?.progress} /> : null}
+          {pollFailBanner}
           {awaitingStart ? <RunningProgressView waiting /> : null}
           <div style={{ textAlign: 'right' }}>
             <Button
@@ -633,6 +659,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
                 <Typography.Text strong>全量回归正在执行…</Typography.Text>
               </Space>
               <RunningProgressView progress={snapshot?.progress} />
+              {pollFailBanner}
             </Space>
           ) : (
             <Tag color={STATUS_TAG_COLOR[status] ?? 'red'}>

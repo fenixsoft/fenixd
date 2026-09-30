@@ -71,6 +71,10 @@ const isTerminal = (summary: SpecSummary | null) =>
 /** task-gap 缺口结论前缀（fix-impl-tasks-completion-gate P1′：回炉区块的渲染判据）。 */
 const TASK_GAP_ERROR_PREFIX = 'task-gap:';
 
+/** 预算兜底默认值（summary 字段缺席时的回退，与后端默认一致）。 */
+const BUDGET_EFFECTIVE_FALLBACK = 6;
+const BUDGET_MAX_FALLBACK = 100;
+
 /** task-gap 拦截滞留判定：status=verified 且 error 以 task-gap: 开头。 */
 const isTaskGapStuck = (summary: SpecSummary | null) =>
   summary?.status === 'verified' &&
@@ -215,6 +219,11 @@ export default function SpecStatusModal({
       if (freezeMode === 'scheduled') {
         if (!freezeUntil) {
           message.error('请选择定时解冻时间');
+          setLoading(false);
+          return;
+        }
+        if (freezeUntil.isBefore(dayjs())) {
+          message.error('解冻时间不能早于当前时刻，请重新选择');
           setLoading(false);
           return;
         }
@@ -740,17 +749,17 @@ export default function SpecStatusModal({
               <Typography.Text>
                 已用 <Typography.Text strong>{summary.budget_used ?? 0}</Typography.Text>
                 {' / 有效预算 '}
-                <Typography.Text strong>{summary.budget_effective ?? 6}</Typography.Text>
+                <Typography.Text strong>{summary.budget_effective ?? BUDGET_EFFECTIVE_FALLBACK}</Typography.Text>
               </Typography.Text>
             </div>
             <Space direction="vertical" style={{ width: '100%' }} size={8}>
               <div>
                 <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>
-                  覆盖值（1-{summary.budget_max ?? 100}，null=跟随全局当前 {summary.budget_effective ?? 6}）
+                  覆盖值（1-{summary.budget_max ?? BUDGET_MAX_FALLBACK}，null=跟随全局当前 {summary.budget_effective ?? BUDGET_EFFECTIVE_FALLBACK}）
                 </Typography.Text>
                 <InputNumber
                   min={1}
-                  max={summary.budget_max ?? 100}
+                  max={summary.budget_max ?? BUDGET_MAX_FALLBACK}
                   step={1}
                   style={{ width: 120 }}
                   value={budgetOverride}

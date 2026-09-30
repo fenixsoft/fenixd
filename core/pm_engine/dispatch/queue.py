@@ -948,13 +948,41 @@ class QQQueueMixin:
                 {"active_runs": active_count},
             )
 
-            t = threading.Thread(
-                target=self._pm._run_agent_worker,
-                args=(spec_name, agent_type, priority),
-                daemon=True,
-                name=f"fenix-{agent_type}-{spec_name}",
-            )
-            t.start()
+            # code-review item 186ea8df1cb1：条目 pop、槽位/在飞登记与准入消费
+            # 均已在锁内完成，而释放只在线程体 finally——Thread 构造/start 失败
+            # （如环境性 RuntimeError can't start new thread）时 finally 永不执行：
+            # 实现车道槽位只增不减、max_concurrent 逐次侵蚀至派发停摆（出锁段
+            # 闸门异常兜底注释描述的同型故障），评审/出题车道在飞登记残留使
+            # reviewer_in_flight / 豁免上限判据恒真、该 spec 条目被永久顺延。
+            # 对齐 repair_lane._dispatch_repair_lane（code-review item
+            # 94d6ad914d0b）与本文件 _start_impl_ocr_lane（b52d9c1760b6）的守卫
+            # 形态：捕获失败、锁内退还准入并按 agent_type 分流回滚（与出锁段
+            # 异常兜底同一分流口径，回滚与前置登记严格互逆），suppressed 抑制
+            # 本调用内重选防热旋，条目重新入队待下轮重派。
+            try:
+                t = threading.Thread(
+                    target=self._pm._run_agent_worker,
+                    args=(spec_name, agent_type, priority),
+                    daemon=True,
+                    name=f"fenix-{agent_type}-{spec_name}",
+                )
+                t.start()
+            except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未派发」处置
+                with self._queue_lock:
+                    self._pm._transient_unseal_recredit()
+                    if agent_type in ("implementer", "fast-track", "verifier"):
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                    elif agent_type == "spec-review":
+                        self._active_reviews.discard(spec_name)
+                    elif agent_type == "planner-plan":
+                        self._active_parallel_plans.discard(spec_name)
+                suppressed.add((spec_name, agent_type))
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"worker 线程启动失败 '{spec_name}' ({agent_type}) — 已回滚"
+                    f"槽位记账并保留条目: {type(e).__name__}: {e}",
+                )
+                continue
 
     def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
         """Worker thread body: run the agent and handle result.
@@ -1374,13 +1402,46 @@ class QQQueueMixin:
                         "_zero_change_attempts": attempts,
                     }
                     if attempts >= 3:
-                        updates["status"] = "blocked"
-                        updates["tester_run"] = None
-                        updates["error"] = (
-                            "实现器连续 3 次零变更报成功 — 已 blocked，"
-                            "需人工检查任务书/上下文/网关稳定性"
+                        # fix-blocked-freeze-classification 3.1 同型收敛（code-review
+                        # item 912ea4592630）：连续失败交人工收敛到 freeze_for_human
+                        # 单一入口（frozen + 人工升级告警成对写入），与本文件同因
+                        # 熔断 / 重试耗尽分支及 repair_lane._fallback_after_repair
+                        # 同口径——原裸 status=blocked 既无 frozen 标记也无成对
+                        # 告警，admin_monitor 的 blocked_stuck 豁免判据一条不占，
+                        # 冷却期满会被按 stuck 自动召唤 admin run。error 内嵌
+                        # 「原状态 X」供 parse_orig_status 解冻还原。
+                        orig_status = spec_entry.get("status") or "implementing"
+                        self._pm.state_machine.freeze_for_human(
+                            spec_name,
+                            error=(
+                                f"原状态 {orig_status} · 实现器连续 {attempts} 次"
+                                f"零变更报成功 — 已冻结转人工，需人工检查任务书/"
+                                f"上下文/网关稳定性"
+                            ),
+                            signal_type="redispatch_loop_detected",
+                            severity="major",
+                            description=(
+                                f"'{spec_name}' 连续 {attempts} 次零变更报成功"
+                                f"（疑似输出截断/空转），自动重派终止——已冻结"
+                                f"转人工处置"
+                            ),
+                            evidence=(
+                                f"spec={spec_name}; zero_change_attempts={attempts}; "
+                                f"run={result.run_id}"
+                            ),
+                            recommended_action=(
+                                "检查任务书/上下文/网关稳定性；处置后解冻"
+                                "（unfreeze_spec 自动清零计数）可重新获得自动"
+                                "修复机会"
+                            ),
+                            alert_callback=self._pm._send_human_escalation_alert,
+                            extra_updates={
+                                "_zero_change_attempts": attempts,
+                                "tester_run": None,
+                            },
                         )
-                    self._pm.state_machine.update_spec(spec_name, updates)
+                    else:
+                        self._pm.state_machine.update_spec(spec_name, updates)
                     self._pm.logger.error(
                         "pm_engine",
                         f"零变更成功哨触发 '{spec_name}'（第 {attempts} 次）— "
@@ -1834,7 +1895,9 @@ class QQQueueMixin:
                         # 被删——read_one 返回 None 时下方 spec_entry.get /
                         # _parse_int_field 抛 AttributeError，整条失败处置链
                         # 被外层异常兜底接管（同因熔断/重试耗尽逻辑被跳过）。
-                        # 与本文件其余调用点（1346/2549 行）对齐 or {} 兜底。
+                        # 与零变更哨 spec_entry 及 _handle_merge_back_real_failure
+                        # 的 read_one or {} 站点对齐（对照定位用方法名/分支语义，
+                        # 勿写裸行号——本文件自定约定）。
                         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                         prev_retries = self._parse_int_field(
                             spec_entry, "_retry_count", 0
@@ -2151,14 +2214,24 @@ class QQQueueMixin:
         now = time.time()
         grace_minutes = self._merge_retry_grace_minutes()
         max_rounds = self._merge_retry_max_rounds()
-        count, first_f = self._parse_defer_accounting(entry, now)  # 首阻缺省=now，自首次顺延起算窗口
-        count += 1
+        # first_at 非计数字段，沿用单一落点解析值（首阻缺省=now，自首次顺延
+        # 起算窗口）；count 改走锁内原子递增（bump_counters 返回写后值，
+        # code-review item 92e18d381825）：原先「read_one 读 → 算 +1 →
+        # update_spec 写回」两段式，merge-only 重试定时器链与实现 worker 失败
+        # 链并发进入同一 spec 时各持相同旧值写回、丢一次递增、
+        # spec_dir_inflight_max_rounds 上限与窗口降级晚触发（同型修复见
+        # _record_wip_defer_retry_failure / _handle_merge_back_real_failure）。
+        _, first_f = self._parse_defer_accounting(entry, now)
+        count = self._pm.state_machine.bump_counters(
+            spec_name, {"_merge_retry_count": 1}
+        ).get("_merge_retry_count", 0)
         try:
             self._pm.state_machine.update_spec(
                 spec_name,
                 {
                     "_merge_retry_pending": True,
-                    "_merge_retry_count": count,
+                    # _merge_retry_count 已由上方 bump_counters 原子递增落盘，
+                    # 此处不再并写（防并发写回互相覆盖丢增量）
                     "_merge_retry_first_at": int(first_f),
                     "error": (
                         f"merge-back 顺延等待 spec 目录提交动作解除"

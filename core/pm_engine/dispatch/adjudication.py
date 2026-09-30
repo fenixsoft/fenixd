@@ -37,6 +37,35 @@ def _resolve_max_retries(cfg) -> int:
     return max(max_r, 1)
 
 
+def _entry_by_path(entries) -> dict:
+    """声明条目列表 → path 条目映射（四预分类器共用，防复制漂移）。
+
+    code-review item f9e0fc21eff6：四个预分类器 impl 各持一份同构构建
+    （missing/orphan 为循环版、drift/stale 为推导式版），判据一致
+    （code-review item f204e70e4aa8：非 dict / 缺 path 的畸形条目过滤）
+    ——收敛单点后，同类修复不再逐点扫齐。路径重复时后写覆盖先写，与提取
+    前各处行为逐字一致。
+    """
+    return {
+        e["path"]: e
+        for e in entries
+        if isinstance(e, dict) and e.get("path")
+    }
+
+
+def _diff_by_element_projection(diff_by_element: dict) -> dict:
+    """逐元素 diff 投影（审计落册 by_element 段共用，防复制漂移）。
+
+    仅保留 ``before``/``after`` 两键、非 dict 的 diff 值丢弃——与
+    _preclassify_missing/_preclassify_orphan 审计段的既有投影逐字一致。
+    """
+    return {
+        k: {"before": d.get("before"), "after": d.get("after")}
+        for k, d in diff_by_element.items()
+        if isinstance(d, dict)
+    }
+
+
 class VAdjudicationMixin:
     """V 交付物裁定/dispute（design D1 表 B V 组）。"""
 
@@ -146,14 +175,24 @@ class VAdjudicationMixin:
                 "tasks_checked": tasks_checked,
             },
         }
-        self._pm.state_machine.update_spec(
-            spec_name, {"_impl_diagnosis": json.dumps(diagnosis, ensure_ascii=False)}
-        )
-        self._pm.logger.info(
-            "pm_engine",
-            f"实现诊断已记录 '{spec_name}': terminal={terminal}, "
-            f"branch={branch}, tasks_checked={tasks_checked}",
-        )
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {"_impl_diagnosis": json.dumps(diagnosis, ensure_ascii=False)},
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"实现诊断已记录 '{spec_name}': terminal={terminal}, "
+                f"branch={branch}, tasks_checked={tasks_checked}",
+            )
+        except Exception as e:
+            # 诊断是附加物（本方法 docstring 契约：不抛异常）：STATE.md 瞬态
+            # IO 异常 MUST NOT 抛穿 run 终结处置流程（code-review item
+            # ac84e8dc1873，对齐同文件备份/审计等附加性写盘的容错姿态）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"实现诊断写盘失败 '{spec_name}'（非阻塞）: {e}",
+            )
 
     # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage D3/D4）──
 
@@ -614,24 +653,36 @@ class VAdjudicationMixin:
             True 表示已达 ``agents.max_retries`` 上限（调用方置 blocked，
             不再自动重派）。
         """
+        # 换路径判定读侧保留（同路径延续 streak、换路径重置）；递增本体收进
+        # bump_counters 锁内原子读改写（code-review item 3fd0da2d3385，对齐
+        # _redispatch_with_retry 的 _retry_count 同型修复 3dae7ab671a1）：原
+        # 「read_one 读 → 算 +1 → update_spec 写回」读与写分处两次 STATE 锁
+        # 临界区，与并发 _writeback_recur_reset 交错时可丢一次递增或把递增
+        # 清零，复发熔断晚一轮触发。
         entry = self._pm.state_machine.read_one(spec_name) or {}
         # STATE.md 行式存储读回值可能为任意字符串，裸 int() 遇非数字文本抛
-        # ValueError 会穿透裁决流程（code-review item 9a6271490cdd）：仿
-        # _redispatch_for_missing 的 _retry_count 读侧防护，异常回退 0。
+        # ValueError（code-review item 9a6271490cdd）：异常回退 0。
         try:
-            streak = int(entry.get("_writeback_recur_streak") or 0)
+            old_streak = int(entry.get("_writeback_recur_streak") or 0)
         except (TypeError, ValueError):
-            streak = 0
-        if entry.get("_writeback_recur_path") != path:
-            streak = 0
-        streak += 1
+            old_streak = 0
+        same_path = entry.get("_writeback_recur_path") == path
+        # 换路径清零经「负 delta 补差」（delta = 1 - 旧值）与递增落在同一
+        # 临界区——bump_counters 负 delta 结果下限 0，串行下恒得 1（等价原
+        # 「先清零再 +1」），且不引入「清零被旧值覆盖」的窗口。
+        delta = 1 if same_path else 1 - old_streak
+        streak = self._pm.state_machine.bump_counters(
+            spec_name, {"_writeback_recur_streak": delta}
+        ).get("_writeback_recur_streak", 0)
+        if not same_path:
+            # 路径字段与递增分写（bump_counters 只收 int delta）：置后写，
+            # 写失败时下轮按「换路径」从 1 重计，不带旧路径 streak 误续。
+            self._pm.state_machine.update_spec(
+                spec_name, {"_writeback_recur_path": path}
+            )
         # 解析口径收敛进 _resolve_max_retries（code-review item
         # f68ba79c3e07，三处共用防「文案轮数与实际熔断阈值一致」双写漂移）。
         max_r = _resolve_max_retries(self._pm._get_config("agents.max_retries", 3))
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {"_writeback_recur_streak": streak, "_writeback_recur_path": path},
-        )
         self._pm.logger.warning(
             "pm_engine",
             f"声明修正复发计数 '{spec_name}': {path} 第 {streak}/{max_r} 轮"
@@ -663,6 +714,23 @@ class VAdjudicationMixin:
                 {"_writeback_recur_streak": 0, "_writeback_recur_path": None},
             )
 
+    def _all_clear_proceed(self, spec_name: str, message: str) -> dict:
+        """守卫重跑全清放行块（四预分类器共用样板）。
+
+        code-review item f9e0fc21eff6：四 impl 的「重跑全清 → WARNING 告警 +
+        ``status=implementing`` + ``error=None`` + ``{"action": "proceed"}``」
+        放行块各自拷贝（仅告警文案不同），收敛单点后放行语义调整不再逐点
+        扫齐。告警文案由调用方传入（保留各通道原文案，含已对齐清单插值）。
+        """
+        self._pm.logger.warning("pm_engine", message)
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "implementing",
+                "error": None,
+            },
+        )
+        return {"action": "proceed"}
 
     def _preclassify_missing(self, spec_name: str, result, missing: list) -> dict:
         """守卫缺件确定性预分类（add-declaration-premechanize D4，Task 4.1-4.3）。
@@ -729,11 +797,9 @@ class VAdjudicationMixin:
             except (OSError, UnicodeDecodeError):
                 before_text = ""
 
-        # 将条目列表转为 path → entry 映射（按 path 查找）
-        entry_by_path: dict = {}
-        for e in entries:
-            if isinstance(e, dict) and e.get("path"):
-                entry_by_path[e["path"]] = e
+        # 将条目列表转为 path → entry 映射（按 path 查找；构建收进共用
+        # helper，四预分类器同判据防复制漂移，code-review item f9e0fc21eff6）
+        entry_by_path = _entry_by_path(entries)
 
         # 缺件入参兼容两种形态：守卫返回 list[dict]（path/kind/violation）与
         # 既有调用/测试的 list[str]。统一规范化为路径列表（匹配逻辑只认路径）。
@@ -850,11 +916,9 @@ class VAdjudicationMixin:
                     "diff": {
                         "before": before_text,
                         "after": after_text,
-                        "by_element": {
-                            k: {"before": d.get("before"), "after": d.get("after")}
-                            for k, d in diff_by_element.items()
-                            if isinstance(d, dict)
-                        },
+                        # by_element 投影收进共用 helper（两处同构防复制漂移，
+                        # code-review item f9e0fc21eff6）
+                        "by_element": _diff_by_element_projection(diff_by_element),
                     },
                 }
             )
@@ -880,19 +944,12 @@ class VAdjudicationMixin:
             return {"action": "continue", "remaining": remaining}
 
         if not gate_result:
-            # 全清 → 走「裁决执行后守卫重跑通过」放行分支
-            self._pm.logger.warning(
-                "pm_engine",
+            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（放行块收进共用
+            # helper，四预分类器同语义，code-review item f9e0fc21eff6）
+            return self._all_clear_proceed(
+                spec_name,
                 f"预分类缺件全清 '{spec_name}' — 守卫重跑通过，放行 merge",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "implementing",
-                    "error": None,
-                },
-            )
-            return {"action": "proceed"}
 
         # 仍有剩余 → remaining 带入 judge
         return {"action": "continue", "remaining": remaining}
@@ -987,10 +1044,7 @@ class VAdjudicationMixin:
             self._pm.project_root / "spec" / "changes" / spec_name
         )
 
-        entry_by_path: dict = {}
-        for e in entries:
-            if isinstance(e, dict) and e.get("path"):
-                entry_by_path[e["path"]] = e
+        entry_by_path = _entry_by_path(entries)
 
         # 逐条孤儿判定（单条判定异常 → 保留 disputed 走人工，不整段跳过）
         orphans: list = []
@@ -1115,11 +1169,9 @@ class VAdjudicationMixin:
                         # _preclassify_missing 先例 7d3b13d266dc）：文件级
                         # before/after 之外补逐条删除 diff，孤儿删除审计可溯源
                         # 到条目——此前逐元素收集后从未被读。
-                        "by_element": {
-                            k: {"before": d.get("before"), "after": d.get("after")}
-                            for k, d in diff_by_element.items()
-                            if isinstance(d, dict)
-                        },
+                        # by_element 投影收进共用 helper（两处同构防复制漂移，
+                        # code-review item f9e0fc21eff6）
+                        "by_element": _diff_by_element_projection(diff_by_element),
                     },
                 }
             )
@@ -1142,19 +1194,12 @@ class VAdjudicationMixin:
             return {"action": "fallback"}
 
         if not gate_result:
-            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐 _preclassify_missing）
-            self._pm.logger.warning(
-                "pm_engine",
+            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐
+            # _preclassify_missing，放行块收进共用 helper）
+            return self._all_clear_proceed(
+                spec_name,
                 f"孤儿声明删除全清 '{spec_name}' — 守卫重跑通过，放行 merge",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "implementing",
-                    "error": None,
-                },
-            )
-            return {"action": "proceed"}
 
         # 仍有缺件 → 以重跑后的 remaining 续走既有后续（remaining_disputed 供
         # 调用方判断 blocked vs LLM 终审；非孤儿 disputed 项同样计入）
@@ -1220,10 +1265,9 @@ class VAdjudicationMixin:
         self, spec_name: str, result, impl_result, disputed: list, missing: list
     ) -> dict:
         """_preclassify_drift 主体（fail-open 兜底在其入口，见上）。"""
-        from core.deliverables import (
-            _git_branch_merge_base,
-            is_drift_candidate,
-        )
+        # merge-base 经公开薄包装导入（code-review item 2fe1cd927997）：私有
+        # 本体 _git_branch_merge_base 仍是 deliverables 内部实现细节。
+        from core.deliverables import branch_merge_base, is_drift_candidate
 
         branch = getattr(result, "branch", None)
         if not branch:
@@ -1234,19 +1278,13 @@ class VAdjudicationMixin:
         resolved = self._effective_declaration(spec_name, result)
         entries = resolved.get("entries") or []
         # 非 dict / 缺 path 的畸形条目过滤（code-review item f204e70e4aa8）：
-        # entries 来自 resolve_effective_declaration，本文件其它消费点均以
-        # isinstance(e, dict)/.get("path") 守卫；裸 e["path"] 遇畸形条目会抛
-        # KeyError 而非 fail-open。统一过滤。
-        by_path = {
-            e["path"]: e
-            for e in entries
-            if isinstance(e, dict) and e.get("path")
-        }
+        # 判据收进共用 helper _entry_by_path（四预分类器同构，防复制漂移）。
+        by_path = _entry_by_path(entries)
         if not entries:
             return {"action": "fallback"}
 
         try:
-            merge_base = _git_branch_merge_base(self._pm.project_root, branch)
+            merge_base = branch_merge_base(self._pm.project_root, branch)
         except Exception:
             merge_base = None
         if not merge_base:
@@ -1347,20 +1385,13 @@ class VAdjudicationMixin:
             return {"action": "fallback"}
 
         if not gate_result:
-            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐 _preclassify_orphan）
-            self._pm.logger.warning(
-                "pm_engine",
+            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐
+            # _preclassify_orphan，放行块收进共用 helper）
+            return self._all_clear_proceed(
+                spec_name,
                 f"漂移声明对齐全清 '{spec_name}'（{aligned_old}）— 守卫重跑通过，"
                 f"放行 merge",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "implementing",
-                    "error": None,
-                },
-            )
-            return {"action": "proceed"}
 
         # 仍有缺件 → 以重跑后的 remaining 续走既有后续（remaining_disputed 供
         # 调用方判断 blocked vs LLM 终审）
@@ -1480,14 +1511,8 @@ class VAdjudicationMixin:
         resolved = self._effective_declaration(spec_name, result)
         entries = resolved.get("entries") or []
         # 非 dict / 缺 path 的畸形条目过滤（code-review item f204e70e4aa8）：
-        # entries 来自 resolve_effective_declaration，本文件其它消费点均以
-        # isinstance(e, dict)/.get("path") 守卫；裸 e["path"] 遇畸形条目会抛
-        # KeyError 而非 fail-open。统一过滤。
-        by_path = {
-            e["path"]: e
-            for e in entries
-            if isinstance(e, dict) and e.get("path")
-        }
+        # 判据收进共用 helper _entry_by_path（四预分类器同构，防复制漂移）。
+        by_path = _entry_by_path(entries)
 
         relocated_any = False
         relocated_old: list = []  # 已走重定位的旧路径（复检时不再计入缺件）
@@ -1567,16 +1592,13 @@ class VAdjudicationMixin:
             # 修复口径。
             return {"action": "continue", "remaining": remaining}
         if not gate:
-            self._pm.logger.warning(
-                "pm_engine",
+            # 全清放行块收进共用 helper（对齐其余三预分类器，code-review item
+            # f9e0fc21eff6）
+            return self._all_clear_proceed(
+                spec_name,
                 f"陈日声明重定位全清 '{spec_name}'（{relocated_old}）— "
                 f"守卫复检通过，放行 merge",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {"status": "implementing", "error": None},
-            )
-            return {"action": "proceed"}
         return {"action": "continue", "remaining": gate}
 
     def _text_rewrite_applicable(self, resolved: dict, old_path: str) -> bool:
