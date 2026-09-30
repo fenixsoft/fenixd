@@ -127,7 +127,7 @@ function nodeText(node: MdNodeLike): string {
   if (node == null || node === false || node === true) return '';
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(nodeText).join('');
-  if (typeof node === 'object' && node.props) return nodeText(node.props.children);
+  if (typeof node === 'object' && 'props' in node && node.props) return nodeText(node.props.children);
   return '';
 }
 
