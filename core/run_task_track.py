@@ -418,41 +418,6 @@ def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool
     return created_ordered, completed_idx, last_update_status, session_id, ended_abnormally
 
 
-def _run_session_id(run_file: Path) -> "str | None":
-    """读 run 产物 init 事件的 ``session_id``（Task 计数器 taskId 的归属会话）。
-
-    Task 工具的 ``taskId`` 是**会话级**计数（每个新会话从 1 起）。``--resume``
-    续做共享同一 ``session_id``、taskId 连续；而 daemon 因超时/瞬断/跨 provider
-    **新建会话**重派时 ``session_id`` 变化、taskId 复位。故跨轮累积 Task 记录
-    MUST 按 ``session_id`` 分族——按派发 epoch 分族会把不同会话的独立 taskId
-    序错误拼成一条全局序，导致映射错位（2026-09-16 refactor-verification-module
-    事故：a1-r1 的 2 个 create 把 a1-r2 的 15 个 create 整体后移，使 a1-r2 真实
-    完成的 4.7/4.8 被映射到 4.5/4.6）。
-
-    无 init 事件 / 无 session_id → ``None``（调用方回退 epoch 家族）。
-    循环实体已收口于 _scan_run_events，本函数为其 session_id 投影。
-    """
-    return _scan_run_events(run_file)[3]
-
-
-def _run_ended_abnormally(run_file: Path) -> bool:
-    """run 产物是否以异常终态收尾（超时/kill/非 0 退出写入 ``type=="error"``）。
-
-    正常收尾为 ``result`` / ``superseded`` 事件，无 ``error`` 行；``append_run_error``
-    只在超时/信号杀/非 0 退出时追加 ``type=="error"`` 终态行。被硬超时或信号
-    杀死的 run，其 Task 记账**被截断**——「建了 Task 但没来得及 TaskUpdate」
-    不构成实现者漏做的证据，故其 ``TaskCreate`` 不产生完成度义务（2026-09-16
-    refactor-verification-module 事故：a1-r2 撞 18600s 上限被杀，4.9/4.10/4.11
-    只创建未完成，后续轮次从不使用 Task 工具 → 硬门永久拒绝、原地重试死循环）。
-
-    完成记录（``done_ids``）仍取全部 run——已 ``completed`` 是正向证据，不受
-    创建轮死法影响；只对「缺失」这一负向结论要求来源可信。
-
-    循环实体已收口于 _scan_run_events，本函数为其异常终态投影。
-    """
-    return _scan_run_events(run_file)[4]
-
-
 def _scan_task_create_update(run_file: Path) -> "tuple[list, set, dict]":
     """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（解析循环单点实现）。
 
