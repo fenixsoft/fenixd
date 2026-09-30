@@ -179,7 +179,9 @@ class VisualDiffer:
             merged["scenario_id"] = scenario_id
             return merged
 
-        def _compare_once(current_file: Path = None, diff_file: Path = None) -> list[dict]:
+        def _compare_once(
+            current_file: Optional[Path] = None, diff_file: Optional[Path] = None
+        ) -> list[dict]:
             """单次对比（SSIM，skimage 不可用时降级像素对比）。
 
             解码失败（基线/当前截图损坏或非图像文件）不向上抛：返回
@@ -424,11 +426,12 @@ class VisualDiffer:
                     json.dump(streaks, f, ensure_ascii=False, indent=2)
                     f.flush()
                 os.replace(tmp_path, path)
-            except OSError:
+            except OSError as e:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+                self._log_warning(f"baseline_streaks 写回失败: {e}")
         except OSError as e:
             self._log_warning(f"baseline_streaks 写回失败: {e}")
 
@@ -461,11 +464,12 @@ class VisualDiffer:
                     )
                     f.flush()
                 os.replace(tmp_path, marker)
-            except OSError:
+            except OSError as e:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+                self._log_warning(f"suspicious 标记写失败: {e}")
         except OSError as e:
             self._log_warning(f"suspicious 标记写失败: {e}")
 
