@@ -1,4 +1,4 @@
-import { Button, Card, Form, Radio, Typography, message } from 'antd';
+import { App, Button, Card, Form, Radio, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -45,6 +45,7 @@ interface ApprovalModePanelProps {
 }
 
 export default function ApprovalModePanel({ config, onSave, project, onConfigSynced }: ApprovalModePanelProps) {
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）

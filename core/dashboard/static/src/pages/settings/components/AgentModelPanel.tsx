@@ -1,4 +1,4 @@
-import { Button, Card, Col, Form, Input, message, Row, Select, Space, Tooltip, Typography } from 'antd';
+import { App, Button, Card, Col, Form, Input, Row, Select, Space, Tooltip, Typography } from 'antd';
 import {
   CopyOutlined,
   HeartOutlined,
@@ -131,6 +131,7 @@ interface AgentModelPanelProps {
 }
 
 export default function AgentModelPanel({ config, onSave, project, onConfigSynced }: AgentModelPanelProps) {
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -149,13 +150,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   const [dragOver, setDragOver] = useState<string | null>(null);
 
   // 行内健康检测（add-provider-health-check 4.2）：每行独立状态，loading 防行内
-  // 并发重复、行间互不影响。键用 Form.List 稳定 field.key（code-review item
-  // 0f5501b57f78）：旧键 `${roleIndex}-${rowIndex}` 是位置串，行删除/拖拽换序后
-  // 行的 provider/model 发生位置迁移，检测结论会按位置错配到从未检测过的
-  // provider+model 组合上；口径对齐 LlmProviderPanel 的 healthMap（field.key 键
-  // 控）。删除行时同步清除条目，换序时 key 随行走、天然不错配。
+  // 并发重复、行间互不影响。键用 `${index}-${rowField.key}` 组合串（code-review
+  // item 0f5501b57f78）：纯位置串会随行删除/拖拽换序把检测结论按位置错配；但裸
+  // field.key 也不够——12 个角色 Card 的内层 Form.List 是独立实例、各自 keyRef
+  // 从 0 递增，角色间同位置的 field.key 相同，检测状态会错配到其他角色卡的同
+  // 位置行（item d4d61f25f4d4）。角色前缀保证跨实例唯一；field.key 部分保证
+  // 同卡内删除行时同步清除条目、换序时键随行走、不随位置迁移错配。
   const [healthRows, setHealthRows] = useState<
-    Record<number, { loading: boolean; display?: HealthCheckDisplay }>
+    Record<string, { loading: boolean; display?: HealthCheckDisplay }>
   >({});
 
   // 各角色「rows」Form.List 的 fields 快照（render 期捕获）：handlePaste 是
@@ -201,7 +203,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // apikey 按行内所选 Provider 名解析。config.llm.providers（props，当前作用域
   // 已保存配置）同时充当表单当前值与回退源：本页签只编辑角色分配、不编辑
   // Provider 本体，两者同源；解析失败提示原因、不发请求。
-  const runRowHealthCheck = async (index: number, rIdx: number, rowKey: number) => {
+  const runRowHealthCheck = async (index: number, rIdx: number, rowKey: string) => {
     const rv = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
     const row = (rv?.rows || [])[rIdx];
     const resolved = resolveHealthCheckParams({
@@ -259,7 +261,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     form.setFieldValue(['roleList', index], pasted);
     // 粘贴整值替换时 rc-field-form 的 keyManager 按位置复用行 key（keys 只在
     // add/remove/move 时更新，外部 setFieldValue 不重建），而 healthRows 按
-    // field.key 缓存「该 key 上一次检测的 provider+model」结论——被覆盖行的旧
+    // 组合键缓存「该 key 上一次检测的 provider+model」结论——被覆盖行的旧
     // 徽标（可能是绿色「已验证」）会错配到粘贴后的新组合上。与删除行口径一致：
     // 替换前后 provider 与生效模型（行内 model → 角色级缺省）不一致、或被裁剪
     // 掉的旧行，清除该 key 的条目（code-review item 46bf16b0f8df）。
@@ -275,7 +277,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           ((oldRow?.model || '').trim() || oldRoleModel) !==
             ((newRow?.model || '').trim() || newRoleModel),
       )
-      .map(({ key }) => key);
+      // rowFieldsRef 存裸 field.key，healthRows 键带角色前缀（见 healthRows 注释）
+      .map(({ key }) => `${index}-${key}`);
     if (staleKeys.length > 0) {
       setHealthRows((m) => {
         if (!staleKeys.some((k) => k in m)) return m;
@@ -424,8 +427,9 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                             const dragFromRole = dragReady === null ? null : Number(dragReady.split('-')[0]);
                             const isOverTarget =
                               dragOver === rowId && dragReady !== null && dragReady !== rowId && dragFromRole === index;
-                            // 健康状态按稳定 field.key 取（不随删除/换序的位置迁移错配）
-                            const health = healthRows[rowField.key];
+                            // 健康状态按「角色前缀 + 稳定 field.key」组合键取
+                            // （跨角色卡唯一；同卡内不随删除/换序的位置迁移错配）
+                            const health = healthRows[`${index}-${rowField.key}`];
                             return (
                               <Row
                                 key={rowField.key}
@@ -538,7 +542,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     aria-label="健康检测"
                                     loading={!!health?.loading}
                                     disabled={!!health?.loading}
-                                    onClick={() => runRowHealthCheck(index, rIdx, rowField.key)}
+                                    onClick={() => runRowHealthCheck(index, rIdx, `${index}-${rowField.key}`)}
                                   />
                                 </Col>
                                 <Col flex="32px" style={{ textAlign: 'right' }}>
@@ -550,12 +554,13 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     onClick={() => {
                                       removeRow(rIdx);
                                       // 清除被删行的健康检测条目（code-review item
-                                      // 0f5501b57f78）：键是稳定 field.key，不会随
-                                      // 位置迁移被覆盖，须显式清除
+                                      // 0f5501b57f78）：组合键不随位置迁移被覆盖，
+                                      // 须显式清除
+                                      const rowKey = `${index}-${rowField.key}`;
                                       setHealthRows((m) => {
-                                        if (!(rowField.key in m)) return m;
+                                        if (!(rowKey in m)) return m;
                                         const next = { ...m };
-                                        delete next[rowField.key];
+                                        delete next[rowKey];
                                         return next;
                                       });
                                     }}

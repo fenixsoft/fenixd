@@ -1,4 +1,4 @@
-import { Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Space, Switch, Tooltip, Typography, message } from 'antd';
+import { App, Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Space, Switch, Tooltip, Typography } from 'antd';
 import { DownOutlined, HeartOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
@@ -164,6 +164,7 @@ interface LlmProviderPanelProps {
 }
 
 export default function LlmProviderPanel({ config, onSave, project, onConfigSynced }: LlmProviderPanelProps) {
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
