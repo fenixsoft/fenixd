@@ -91,8 +91,10 @@ def _capped_append(bucket: list[str], entry: str) -> None:
     """向错误收集列表追加一条，达到 _MAX_COLLECTED_ERRORS 后截断。
 
     触顶时仅追加一次 [truncated] 标记保留「后续还有错误」信号；断言侧
-    （_assert_no_console_error）会把该标记从 pass 计算中剔除，避免在
-    external_net_errors_ok 豁免路径上把标记本身误计为控制台错误。
+    （_assert_no_console_error / _assert_no_network_error）会把该标记从
+    errors/pass 计算中剔除并以 truncated 标志透出，避免在
+    external_net_errors_ok 豁免路径上把标记本身误计为控制台错误，或 judge
+    读网络错误清单时混入非错误记录。
     """
     if len(bucket) < _MAX_COLLECTED_ERRORS:
         bucket.append(entry)
@@ -189,8 +191,9 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
 
     页内 Promise 靠 requestAnimationFrame 兜底 resolve，而 page.evaluate 无
     超时语义：页面主线程挂起/死循环时兜底定时器永不触发、await 永久挂起，
-    故外层再包 asyncio.wait_for（_IN_PAGE_EVALUATE_TIMEOUT_S，code-review
-    item c8c04ed298b8），超时同按注入失败路径返回 False。
+    故外层再包 asyncio.wait_for（下限 _IN_PAGE_EVALUATE_TIMEOUT_S，并随
+    timeout_ms 抬升以免截短配置的长等待，code-review item c8c04ed298b8 /
+    89577553b196），超时同按注入失败路径返回 False。
 
     Args:
         page: Playwright Page 对象。
@@ -232,7 +235,11 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
             }""",
                 timeout_ms,
             ),
-            timeout=_IN_PAGE_EVALUATE_TIMEOUT_S,
+            # 外层兜底取 max(固定下限, 页内 deadline + 余量)（code-review item
+            # 89577553b196）：固定 _IN_PAGE_EVALUATE_TIMEOUT_S 会把 >10s 的
+            # timeout_ms 在页内 deadline 未到时静默截短、走 except 按注入失败
+            # 返回 False；下限仍保留页面主线程挂起时的逃逸通道
+            timeout=max(_IN_PAGE_EVALUATE_TIMEOUT_S, timeout_ms / 1000 + 1),
         )
         return bool(settled)
     except Exception:
@@ -756,12 +763,23 @@ class BrowserManager:
                 # 拒绝并归为 unknown——与 _find_step_url_candidate 的
                 # 去空白口径对齐（code-review item 48320e6f6abb）
                 actual_url = value.strip()
-                # web 项目：相对/非法 navigate URL 直接显式失败（2026-08-28：
-                # 相对路径导致 about:blank 白屏、整轮断言全灭的假失败）。
-                # 不注入任何默认 base/端口——被测实例地址只有运行环境自己知道，
-                # 此类失败应退回 plan 阶段重新生成绝对 URL 场景。
-                if not self._is_extension_project and not re.match(
-                    r"^https?://", str(value).strip()
+                # 相对/非法 navigate URL 直接显式失败（2026-08-28：相对路径
+                # 导致 about:blank 白屏、整轮断言全灭的假失败）。不注入任何
+                # 默认 base/端口——被测实例地址只有运行环境自己知道，此类
+                # 失败应退回 plan 阶段重新生成绝对 URL 场景。
+                # 校验先于项目类型分支生效（code-review item 3e0e5251e751）：
+                # extension 项目对 ftp:// 等非 http(s) 目标此前直达 page.goto
+                # 抛 Playwright 异常被顶层 except 归为 unknown，与 web 项目
+                # 同类输入的归因口径不对称。extension 的合法例外：空/about:*
+                # （下方重定向到本地 HTTP 服务）与 chrome-extension://（同款
+                # 回退），不视为非法 URL。
+                if not re.match(r"^https?://", str(value).strip()) and not (
+                    self._is_extension_project
+                    and (
+                        actual_url == ""
+                        or actual_url.startswith("about:")
+                        or actual_url.startswith("chrome-extension://")
+                    )
                 ):
                     return {
                         "success": False,
@@ -769,7 +787,7 @@ class BrowserManager:
                         "error_type": "invalid_navigate_url",
                         "error": (
                             f"navigate URL 必须为绝对地址（http/https），"
-                            f"环境未提供 base_url 且禁止猜测默认端口: {value!r}"
+                            f"不注入默认 base/端口: {value!r}"
                         ),
                         "detail": f"非法 navigate 目标 {value!r}",
                     }
@@ -963,10 +981,12 @@ class BrowserManager:
                     }
 
             # 窗口级操作（admin 修 2026-08-29：族谱爆炸根因之一）：
-            # target=window/空 不是 DOM 元素，通用 locator.wait_for 必然超时；
+            # target=window 不是 DOM 元素，通用 locator.wait_for 必然超时；
             # target=body 可定位但非表单元素，fill 同样必然报错——键盘按键类
-            # 步骤必须在任何 DOM 定位/填充之前分流处理。
-            if target in ("window", "", "body") and action in ("scroll", "type"):
+            # 步骤必须在任何 DOM 定位/填充之前分流处理。（空 target 已被
+            # 上方「缺少 target 选择器」分支提前返回，不再列入条件——
+            # code-review item 6a5e642fd04d）
+            if target in ("window", "body") and action in ("scroll", "type"):
                 if action == "scroll":
                     # value 为 "dx,dy" 像素位移（默认 0,300），经鼠标滚轮触发真实 scroll 事件
                     try:
@@ -1061,7 +1081,7 @@ class BrowserManager:
                 return {"success": True, "action": action, "target": target}
 
             elif action == "type":
-                await locator.fill(value)
+                await locator.fill(value, timeout=5000)
                 return {
                     "success": True,
                     "action": action,
@@ -1070,11 +1090,11 @@ class BrowserManager:
                 }
 
             elif action == "clear":
-                await locator.fill("")
+                await locator.fill("", timeout=5000)
                 return {"success": True, "action": action, "target": target}
 
             elif action == "select":
-                await locator.select_option(value)
+                await locator.select_option(value, timeout=5000)
                 return {
                     "success": True,
                     "action": action,
@@ -1083,11 +1103,11 @@ class BrowserManager:
                 }
 
             elif action == "scroll":
-                await locator.scroll_into_view_if_needed()
+                await locator.scroll_into_view_if_needed(timeout=5000)
                 return {"success": True, "action": action, "target": target}
 
             elif action == "hover":
-                await locator.hover()
+                await locator.hover(timeout=5000)
                 await self._wait_stable(page)
                 return {"success": True, "action": action, "target": target}
 
