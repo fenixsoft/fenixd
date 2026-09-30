@@ -233,6 +233,26 @@ class CliAssertionRunner:
                 m = str(expected) in text
         return (not m) if negate else m
 
+    def _normalize_negate(self, a: dict) -> bool:
+        """negate 显式归一（output_match / file_content / json_output 共用）。
+
+        与 _assert_file_exists 对 exists 的归一口径对齐：bool 原样收；字符串
+        按 "true"/"false"/"1"/"0" 解析；其余脏值显式失败——bool("false") 类
+        非空字符串恒真会静默反转断言裁决方向（contains 命中判 fail、negate
+        场景假绿），且结果 negate 字段无从察觉写的是 "false"。
+        """
+        raw = a.get("negate", False)
+        if isinstance(raw, bool):
+            return raw
+        normalized = raw.strip().lower() if isinstance(raw, str) else raw
+        if normalized in ("true", "1"):
+            return True
+        if normalized in ("false", "0"):
+            return False
+        raise ValueError(
+            f"negate 非法，须为布尔或 'true'/'false'/'1'/'0': {raw!r}"
+        )
+
     def _resolve_under_root(self, raw) -> "Path | None":
         """文件类断言 path/glob 的统一解析护栏：限定在验证树根内。
 
@@ -415,7 +435,7 @@ class CliAssertionRunner:
             actual = stdout + "\n" + stderr
         expected = a.get("expected")
         mode = a.get("mode", "contains")
-        negate = bool(a.get("negate", False))
+        negate = self._normalize_negate(a)
         # 判空口径（expected is None 才算缺参）：None 恒拦——exact 缺参仍须按
         # 缺参失败，否则会滑进 _match 与 str(None)="None" 比对；空串仅拦
         # contains/regex（`"" in actual` 恒真、空正则恒匹配），exact 空串是
@@ -484,7 +504,7 @@ class CliAssertionRunner:
         # _assert_output_match 判空注释防住的失效形态
         expected = a.get("expected", _MISSING)
         mode = a.get("mode", "contains")
-        negate = bool(a.get("negate", False))
+        negate = self._normalize_negate(a)
         missing = expected is _MISSING or expected is None
         if missing or (expected == "" and mode != "exact"):
             # 显式失败而非静默恒真：缺 expected 时 contains 的 `"" in 内容`
@@ -603,7 +623,7 @@ class CliAssertionRunner:
             # 哨兵仅内部判定，不外泄（actual 归一为 None）
             actual = None
         mode = a.get("mode", "exact")
-        negate = bool(a.get("negate", False))
+        negate = self._normalize_negate(a)
         if path_missing:
             # fail-closed：路径缺失对任何比对 mode 都显式报错（negate 下也不
             # 放行——缺失属场景/产品缺陷，须可定位），不做内容比对
