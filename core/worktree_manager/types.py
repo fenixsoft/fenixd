@@ -70,6 +70,10 @@ class WipOccupantInfo:
                     f" run={','.join(h.get('run_ids') or []) or '?'}"
                     f" 命中{len(h.get('files') or [])}文件"
                 )
+            # 兜底：holder=True 语义上应伴随非空 holders，构造不当（holders
+            # 为空）时显式标注，避免产出带空分隔符的畸形摘要。
+            if not parts:
+                parts.append("无命中明细")
             return f"占用者=在飞车道（{'；'.join(parts)}；{self.BLIND_SPOT_NOTE}）"
         return (
             f"占用者=无主陈旧 WIP（数据源={self.source}；{self.BLIND_SPOT_NOTE}）"
