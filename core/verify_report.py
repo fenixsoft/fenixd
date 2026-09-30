@@ -141,6 +141,15 @@ def _load_report_json(project_root, spec_name):
             except (TypeError, ValueError):
                 pass
             return None
+        # scenarios 为非列表形态（dict/str/int 等写坏形态）同按 fail-closed
+        # 拒收：此处无条件放行会绕过上面 total>0 与 failed/errors 键门，
+        # 采信「scenarios=0 + summary 全 0」这类损坏形态后 _derive_status 经
+        # summary 分支推出 verified、verdict_failed_ids 对非列表 scenarios
+        # 迭代得空失败集，合成「全部场景通过」的假通过报告
+        # （code-review cbea2bb63e40）。仅 scenarios 键缺失（None，合法旧
+        # 形态）保持放行。
+        if scenarios is not None:
+            return None
         return data
     return None
 
