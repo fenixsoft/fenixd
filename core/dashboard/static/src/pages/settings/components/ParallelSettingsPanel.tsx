@@ -1,9 +1,9 @@
-import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
@@ -41,67 +41,29 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  // 保存重入守卫（code-review item 25f88bae6330，比照 TokenBudgetPanel
-  // 53b14fb31196）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
-  // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
-  // loading/disabled 并在入口短路。
-  const [saving, setSaving] = useState(false);
-
-  const initialValues = buildFormValues(config);
-
-  // 回填门控（code-review item b97e73ffcda4，比照 MiscSettingsPanel 0a2bd3f20fcd /
-  // AgentModelPanel 9f98edec21fa）：无条件 setFieldsValue 会在保存往返、同步按钮
-  // onConfigSynced 触发父组件 setConfig 时，用外部 config 覆盖本面板用户正在编辑、
-  // 尚未保存的输入。改为序列化比较，只在内容真变化时回填。
-  const lastBackfillRef = useRef('');
-  useEffect(() => {
-    const next = buildFormValues(config);
-    const key = JSON.stringify(next);
-    if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
-    form.setFieldsValue(next);
-  }, [config, form]);
-
-  const handleSave = async () => {
-    if (saving) {
-      return;
-    }
-    setSaving(true);
-    try {
-      // 分离「表单校验」与「保存持久化」（code-review item 3243afb1df4e，比照
-      // MiscSettingsPanel 9125d4a7f7b4 / AgentModelPanel 3086b7e96c4f）：旧实现
-      // 两者混在同一 try/catch 且静默吞掉，onSave 拒绝（网络失败/500）时用户
-      // 点击「保存」后无任何反馈，与同族已修复面板口径漂移。
-      let values;
-      try {
-        values = await form.validateFields();
-      } catch {
-        // 校验失败：antd 已在表单内渲染行内错误提示，无需额外日志（避免触发
-        // 验证场景的 no_console_error 断言，比照 MiscSettingsPanel 口径）。
-        return;
-      }
-      try {
-        await onSave({
-          agents: {
-            max_concurrent: values.max_concurrent,
-            max_turns: values.max_turns,
-            run_timeout_seconds: values.run_timeout_seconds,
-          },
-          verify: {
-            ...(config.verify || {}),
-            planner_max_concurrent: values.planner_throttle
-              ? values.planner_max_concurrent
-              : 0,
-          },
-        });
-      } catch (error) {
-        // 保存持久化失败：给用户显式反馈而非静默
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443）：
+  // saving 重入守卫（原 item 25f88bae6330）、序列化比较回填门控（原 item
+  // b97e73ffcda4）、校验/持久化分离的 handleSave（原 item 3243afb1df4e）由
+  // hook 承载；本面板保留字段映射（buildFormValues）与保存载荷组装。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => buildFormValues(config),
+    backfillDeps: [config.agents, config.verify],
+    onSave,
+    buildPayload: (values): Partial<ConfigData> => ({
+      agents: {
+        max_concurrent: values.max_concurrent,
+        max_turns: values.max_turns,
+        run_timeout_seconds: values.run_timeout_seconds,
+      },
+      verify: {
+        ...(config.verify || {}),
+        planner_max_concurrent: values.planner_throttle
+          ? values.planner_max_concurrent
+          : 0,
+      },
+    }),
+  });
 
   const plannerThrottleOn = Form.useWatch('planner_throttle', form);
 
