@@ -89,4 +89,4 @@
 
 - [x] 5.1 `bin/fenix_process.py`/`fenix_dashboard.py` 私有 `_local_ts` 退役改走 `timelib.fmt_display`，三形态输入（`Z`/`+00:00`/无后缀）输出与迁移前逐字一致（对照测试锁定）；`bin/fenix_dashboard.py`/`fenix_status.py` 裸 `fromisoformat`/`now()` 改走 timelib
 - [x] 5.2 守卫白名单清零为空列表，僵尸条目检测全绿，棘轮零豁免稳态确认
-- [ ] 5.3 全量单测回归（`python3 -m pytest tests/ -x -q`）通过；`.fenix/todo.md` 登记 `.fenix/bin` 部署副本刷新人工步骤（未跟踪文件不随 merge-back 落地，主树手工同步或重启部署机制）
+- [x] 5.3 全量单测回归（`python3 -m pytest tests/ -x -q`）通过；`.fenix/todo.md` 登记 `.fenix/bin` 部署副本刷新人工步骤（未跟踪文件不随 merge-back 落地，主树手工同步或重启部署机制）
