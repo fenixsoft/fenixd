@@ -428,6 +428,16 @@ class _AttemptState:
     ⚠️ usage_info 暂不回写：真实源在 _execute_agent_inner 的同名局部变量
     （见字段处标注，code-review item 41e028ab3b35）——后续方法提取把读写点
     迁到 st 侧前 MUST 先补齐回写点，否则会拿到初始 dict 的陈旧值。
+
+    已知豁免（code-review item f5aa32e39316）：产物门失败路径有意保留
+    _run_claude 实测 usage（区别于早期抛错按 0 计），若下一 attempt 经顶部
+    守卫（frozen/取消/chain_exhausted/熔断等）早退 return，该实测 usage 因
+    无回写点在 attempt 顶 reload 时仍取建态初值、未入账即丢弃
+    （_accumulate_token_usage 仅在 _finalize_success / _exhausted_result
+    两收口调用）——此窄路径漏账登记为已知豁免，不做回写+终态外口补累加：
+    回写会改变取消/冻结路径「usage 按 0 不入账」的既定观测语义，且成功/
+    失败两收口同经 finally 需另引入「已入账」旗标防双计，风险大于收益。
+
     session_id / session_provider / transient_retries / resume_failures
     死字段已删除（code-review item 41e028ab3b35 / 5bea5c21acee）：建态后
     无回写点也从不读取，真实状态只活在同名局部变量里。
@@ -589,7 +599,8 @@ class AgentRunner:
         "_check_quality_gates_soft": _check_quality_gates_soft,
         "_check_success_completion": _check_success_completion,
         "_check_partial_consistency": _check_partial_consistency,
-        "_check_taskupdate_crosscheck": _check_taskupdate_crosscheck,    }
+        "_check_taskupdate_crosscheck": _check_taskupdate_crosscheck,
+    }
 
     def __getattr__(self, name: str):
         """门面转发统一委托（refactor-facade-delegation D1/D2）。
@@ -675,6 +686,12 @@ class AgentRunner:
         # 日计数自增互斥锁（code-review item 152ca97a293a）：worker 池多 run
         # 并发收工自增 _daily_run_count（+= 读改写需互斥，协议见 613 行注释）。
         self._daily_count_lock = threading.Lock()
+        # 秒挂计数表互斥锁（code-review item 557ef1ce8559）：worker 线程
+        # （_record_instant_fail 自增 / _finalize_success 成功重置）与派发侧
+        # 线程（is_instant_fail_cooldown 到期清零）并发进出 _instant_fail，
+        # setdefault+自增读改写需互斥（协议见 _instant_fail_lock property
+        # 注释）。
+        self._instant_fail_lock = threading.Lock()
         # 判停状态表互斥锁（code-review item 54ee68cac30b）：reader 线程
         # （stdout/stderr 各一，经 _stall_budget_record_sample）与各 run 轮询
         # 环线程（经 _stall_budget_state_for）并发建态/清理/摘除
@@ -688,6 +705,10 @@ class AgentRunner:
         # 测试以 ``AgentRunner.__new__`` 绕过 __init__ 的实例仍由
         # _turn_limit_action 的原子惰性回退兜底。
         self._turn_branch_state: Dict[str, dict] = {}
+        # 轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_limit_action
+        # 建态侧的 24h 过期清理迭代与 _execute_agent 终态外口 forget 的摘除迭代
+        # 并发互斥（协议见 _turn_branch_state_lock property 注释）。
+        self._turn_branch_state_lock = threading.Lock()
         # 车道登记表（design D2）：__init__ 即建态——车道线程（queue
         # _start_impl_ocr_lane 每 spec 一线程）并发首次 register 时不得走
         # _lane_registry 的建态分支（两线程同见 None 会各建一个 dict、后一次
@@ -820,6 +841,26 @@ class AgentRunner:
         self.__dict__["_daily_count_lock_state"] = value
 
     @property
+    def _instant_fail_lock(self) -> threading.Lock:
+        """秒挂计数表互斥锁（code-review item 557ef1ce8559）：_instant_fail 的
+        setdefault/自增/重置/到期清零触点互斥——worker 线程（_record_instant_
+        fail 自增、_finalize_success 成功重置）与派发侧线程（is_instant_fail_
+        cooldown 到期清零）并发访问同一 spec 条目时，无锁读改写会互相丢失更新、
+        放宽秒挂冷却软护栏（对齐 _daily_run_count 先例，code-review item
+        152ca97a293a）。惰性 property（测试 __new__ 绕过 __init__，对齐
+        _daily_count_lock 模式）。
+        """
+        inst = self.__dict__.get("_instant_fail_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_instant_fail_lock_state"] = inst
+        return inst
+
+    @_instant_fail_lock.setter
+    def _instant_fail_lock(self, value):
+        self.__dict__["_instant_fail_lock_state"] = value
+
+    @property
     def _stall_budget_lock(self) -> threading.Lock:
         """判停状态表互斥锁（code-review item 54ee68cac30b）：
         _stall_budget_states 建态/清理/摘除/读取的互斥点——reader 线程
@@ -838,6 +879,25 @@ class AgentRunner:
     @_stall_budget_lock.setter
     def _stall_budget_lock(self, value):
         self.__dict__["_stall_budget_lock_state"] = value
+
+    @property
+    def _turn_branch_state_lock(self) -> threading.Lock:
+        """轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_branch_state
+        建态/24h 清理迭代（_turn_limit_action）与摘除迭代（_turn_branch_state_
+        forget）的互斥点——无锁时清理迭代撞并发建键/摘除会抛 RuntimeError 沿
+        _run_claude 外层 except 把在飞 run 误判成 run thread crashed（对齐
+        _stall_budget_lock 先例，code-review item 54ee68cac30b）。惰性 property
+        （测试 __new__ 绕过 __init__）。
+        """
+        inst = self.__dict__.get("_turn_branch_state_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_turn_branch_state_lock_state"] = inst
+        return inst
+
+    @_turn_branch_state_lock.setter
+    def _turn_branch_state_lock(self, value):
+        self.__dict__["_turn_branch_state_lock_state"] = value
 
     # ── run_id 归一化助手（add-run-cancel D1/D3）──────────────────
 
@@ -961,7 +1021,10 @@ class AgentRunner:
                 ),
                 "recommended_action": (
                     "run 已登记取消旗标，由持有线程完成 terminate/kill 与 cancelled "
-                    "终态落盘；spec 保持原状态，由 stuck 检测/恢复扫描按既有节奏接管"
+                    "终态落盘；spec 保持原状态，由 stuck 检测/恢复扫描按既有节奏接管。"
+                    "注意：取消路径不做 WIP checkpoint（与 freeze/超时/turn-limit "
+                    "强杀路径不同），attempt 的未提交工作将随 cleanup(success=False) "
+                    "丢弃——需保全现场请先在 worktree 提交或改用 freeze"
                 ),
             })
         except Exception as e:
@@ -1671,10 +1734,25 @@ class AgentRunner:
                     except OSError:
                         pass
 
+        # code-review item 41cd6584f63f：symlink 补建提取为小函数，marker 已
+        # 存在的两条早退 return 路径同样执行——首次创建时建链失败（OSError
+        # 被吞）或事后被清理的隔离目录借此自愈，子代理能力不再静默降级。
+        def _ensure_symlinks() -> None:
+            # 幂等：源目录不存在则跳过（优雅降级）；链接已在则不重建
+            for name in ("skills", "plugins"):
+                src = Path.home() / ".claude" / name
+                dst = cfg_dir / name
+                try:
+                    if src.is_dir() and not dst.exists():
+                        dst.symlink_to(src, target_is_directory=True)
+                except OSError:
+                    pass
+
         if marker.is_file():
             try:
                 existing = json.loads(marker.read_text(encoding="utf-8"))
                 if isinstance(existing, dict) and existing == settings:
+                    _ensure_symlinks()
                     return cfg_dir
             except (OSError, json.JSONDecodeError):
                 pass
@@ -1683,6 +1761,7 @@ class AgentRunner:
                 _write_atomic()
             except OSError:
                 pass
+            _ensure_symlinks()
             return cfg_dir
 
         try:
@@ -1690,14 +1769,7 @@ class AgentRunner:
         except OSError:
             pass
 
-        for name in ("skills", "plugins"):
-            src = Path.home() / ".claude" / name
-            dst = cfg_dir / name
-            try:
-                if src.is_dir() and not dst.exists():
-                    dst.symlink_to(src, target_is_directory=True)
-            except OSError:
-                pass
+        _ensure_symlinks()
         return cfg_dir
 
     # ── add-impl-code-review-gate：run 级 ocr 配置写入 ─────────────────────
@@ -2104,10 +2176,14 @@ class AgentRunner:
         state = getattr(self, "_turn_branch_state", None)
         if state:
             try:
-                prefix = f"{run_id}-"
-                for key in [k for k in state
-                            if k == run_id or k.startswith(prefix)]:
-                    state.pop(key, None)
+                # 持 _turn_branch_state_lock：与 _turn_limit_action 建态侧的
+                # 24h 清理迭代互斥（code-review item 339b589c0bee，对齐
+                # _stall_budget_forget 摘除持锁惯例），防摘除撞迭代。
+                with self._turn_branch_state_lock:
+                    prefix = f"{run_id}-"
+                    for key in [k for k in state
+                                if k == run_id or k.startswith(prefix)]:
+                        state.pop(key, None)
             except Exception:  # noqa: BLE001 — 清理失败绝不影响 run 收尾
                 pass
 
@@ -2196,14 +2272,31 @@ class AgentRunner:
                     f"'{spec_name}' ({run_id}): {e} — fail-open as alive",
                 )
             else:
-                state = self._turn_branch_state.setdefault(run_id, {})
-                prev = state.get("commit_count")
-                if prev is None:
-                    # 首次判定：以 run 起点（主树 HEAD 基线）计分支新提交
-                    branch_alive = count > 0
-                else:
-                    branch_alive = count > prev  # 较上次判定有增量
-                state["commit_count"] = count
+                # code-review item 339b589c0bee：查-建-清理迭代持
+                # _turn_branch_state_lock——键缺失时顺带淘汰 created_ts 超
+                # 24h 的陈旧条目，兜底 dispute-judge / spec-review / 维护型
+                # 等直调 _run_claude 车道（不经 _execute_agent 终态外口
+                # forget）触达轮次上限后的条目泄漏（对齐 _stall_budget_state_for
+                # 同款过期淘汰；无锁清理迭代撞并发建键/摘除会抛 RuntimeError
+                # 误判 run crashed）。临界区内仅纯内存 dict 操作，无阻塞调用。
+                with self._turn_branch_state_lock:
+                    states = self._turn_branch_state
+                    state = states.get(run_id)
+                    if state is None:
+                        _now = time.time()
+                        for k in [k for k, v in states.items()
+                                  if _now - float(v.get("created_ts") or _now)
+                                  > 86400.0]:
+                            states.pop(k, None)
+                        state = states.setdefault(run_id, {})
+                        state.setdefault("created_ts", _now)
+                    prev = state.get("commit_count")
+                    if prev is None:
+                        # 首次判定：以 run 起点（主树 HEAD 基线）计分支新提交
+                        branch_alive = count > 0
+                    else:
+                        branch_alive = count > prev  # 较上次判定有增量
+                    state["commit_count"] = count
                 if branch_alive:
                     branch_evidence = f"branch commits {prev or 0}→{count}"
 
@@ -2562,12 +2655,18 @@ class AgentRunner:
                         try:
                             if _CLOCR.get_impl_code_review_enabled(self.config):
                                 ocr_home = self._write_run_ocr_config(provider, model_override)
+                                # code-review item 4be9e75d983a：写入失败时三项
+                                # 一并跳过（对齐注释声明的「写入失败时跳过」语义）
+                                # ——仍注入 BIN 会让 ocr 车道失去 run 级 provider
+                                # 隔离、回落全局/陈旧配置，审查流量打到与本次 run
+                                # 记账不同的 provider 致 token 归因失真（留痕见
+                                # _write_run_ocr_config 内的 WARNING）。
                                 if ocr_home is not None:
                                     env_overrides["FENIX_OCR_HOME"] = str(ocr_home)
-                                env_overrides["FENIX_OCR_BIN"] = DEFAULT_OCR_BIN
-                                # ocr node 启动器的版本检查开关——HOME 重定向到 run 级
-                                # 目录后避免 detached 拉起联网 update.js 的游离请求
-                                env_overrides["OCR_NO_UPDATE"] = "1"
+                                    env_overrides["FENIX_OCR_BIN"] = DEFAULT_OCR_BIN
+                                    # ocr node 启动器的版本检查开关——HOME 重定向到 run 级
+                                    # 目录后避免 detached 拉起联网 update.js 的游离请求
+                                    env_overrides["OCR_NO_UPDATE"] = "1"
                         except Exception as e:
                             self.logger.warning(
                                 "agent_runner",
@@ -3458,6 +3557,125 @@ class AgentRunner:
     #   - 否则（非瞬断或预算耗尽）→ 调用者继续走现行 switch 冷却逻辑
     # 模块级名（append_run_line / datetime / timezone / time / RETRY_YIELDED_...
     # AgentRunResult）均保持从 runner.py 模块全局访问（D7 patch 缝隙）。
+    # ── code-review item 1775ec625193：原地重试落盘退避样板单点化 ────────
+    # _maybe_in_place_retry（provider 瞬断）与 _handle_artifact_gate_retry
+    # （artifact-gate）原各自内联同一序列：transient_retry 事件落盘 +
+    # superseded 终态补写 + WARNING 日志 + 锚点 B WIP 提交 + time.sleep
+    # (backoff) + _should_give_up_before_retry / _parallel_plan_marker_
+    # discarded 双让位复查。两份逐字近似副本历史上已漂移（gate 通道事件带
+    # reason/error 字段而 provider 通道未同步），收敛为单点后差异点全部
+    # 参数化（事件附加字段 / 日志文案三段 / 通道标签），落盘与让位处置行为
+    # 与两通道原实现逐字等价（与 _yielded_in_place_retry_result 收敛方向
+    # 一致）。
+    def _in_place_retry_backoff_yield(
+            self, spec_name: str, agent_type: str, run_id: str,
+            attempt: int, attempt_run_id: str, sub_run_id: str,
+            provider_name, model, wt_path,
+            transient_retries: int, transient_budget: list,
+            start_time: float, turns: int, usage_info: dict,
+            retry_channel: str, log_prefix: str, log_scope: str,
+            design_tag: str, retry_event_extra: dict,
+            superseded_event_extra: dict) -> tuple:
+        """原地重试共用内核：transient_retry + superseded 落盘 + 锚点 B WIP
+        + sleep(backoff) + 双让位复查（两通道差异点经参数注入）。
+
+        - retry_channel：让位结果构造的通道标签（进 warning 日志前缀）；
+        - log_prefix / log_scope / design_tag：退避 WARNING 日志三段式文案
+          （f"{prefix} for '{spec}' (attempt {n}, {scope}) — in-place retry
+          {i}/{total} after {backoff}s backoff ({tag})"）；
+        - retry_event_extra / superseded_event_extra：两事件各自附加字段
+          （provider 通道为空 dict；gate 通道带门禁归因 reason / error，
+          截断口径见 _GATE_ERROR_TRUNCATE）。
+
+        返回三元组 (transient_retries, yielded, do_retry)：
+        - yielded 非 None → 调用者 MUST return yielded（重派前复查命中让位）
+        - do_retry=True   → 调用者 MUST continue（回到子循环顶部重跑同一 attempt）
+        """
+        backoff = transient_budget[transient_retries]
+        transient_retries += 1
+        # 留痕写失败不改变重试决策（code-review item 449ab5cb953f：对齐
+        # _planner_throttle_acquire/_ratelimit_redispatch_on_terminal 口径）
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs"
+                / f"{sub_run_id}.jsonl", {
+                    "type": "transient_retry",
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    "backoff_seconds": backoff,
+                    "retry_number": transient_retries,
+                    **retry_event_extra,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"transient_retry 留痕写入失败（不阻断退避重试）: {e}",
+            )
+        # fix-retry-orphan-active-runs D1：superseded 终态补写——本文件末行
+        # 恒为终态，恢复「终态后置」不变量。写侧紧跟 transient_retry = 本文件
+        # 终态，重试在新 sub_run_id 文件继续（见 _execute_agent_inner 原地
+        # 重试子循环 while 顶部 sub_run_id 换新注释处交叉引用）；daemon 退避
+        # 窗口内死亡由 interrupted 补写接续（末行仍终态）。
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs"
+                / f"{sub_run_id}.jsonl", {
+                    "type": "superseded",
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    **superseded_event_extra,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"superseded 留痕写入失败（不阻断退避重试）: {e}",
+            )
+        self.logger.warning(
+            "agent_runner",
+            f"{log_prefix} for '{spec_name}' (attempt {attempt}, "
+            f"{log_scope}) — in-place retry "
+            f"{transient_retries}/{len(transient_budget)} "
+            f"after {backoff}s backoff ({design_tag})",
+        )
+        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
+        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
+        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
+        self._wip_checkpoint_before_backoff(spec_name, wt_path)
+        time.sleep(backoff)
+        # fix-verdict-dedup-resynthesis D4：退避期间 spec 可能被
+        # 人工/其它链路接管（status 迁出预期态/frozen/hold）——重派前复查，
+        # 命中即让位（返回语义化失败，不再产生新的 transient_retry 重派，
+        # 19:48 事故 $4.77 白烧根因）。gate 通道让位分支 MUST NOT 追加
+        # gate-blocked——弃置原因是「spec 已被接管」而非门禁判定，本文件
+        # 终态已由上方 superseded（带 error）承担（_append_gate_blocked
+        # docstring 同款约束）。
+        if self._should_give_up_before_retry(
+                spec_name, agent_type, check_lock=False):
+            return transient_retries, self._yielded_in_place_retry_result(
+                spec_name, agent_type, run_id, attempt_run_id,
+                provider_name, model, start_time, turns, usage_info,
+                retry_channel=retry_channel,
+                yields_reason="spec 已被接管",
+                error_reason="spec 已被接管（status 迁出预期态或 frozen/hold）",
+                design_ref="fix-verdict-dedup-resynthesis D4",
+            ), False
+        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
+        # discarded（产物隔离/转串行收尾伴生写入）即放弃重派（本次事故的
+        # 复活正是产物硬门通道）；在途（dispatched）或无标记（未注入/读取
+        # 失败）不命中，重试照常。
+        if self._parallel_plan_marker_discarded(spec_name, agent_type):
+            return transient_retries, self._yielded_in_place_retry_result(
+                spec_name, agent_type, run_id, attempt_run_id,
+                provider_name, model, start_time, turns, usage_info,
+                retry_channel=retry_channel,
+                yields_reason="并行出题标记已 discarded（产物已隔离/转串行）",
+                error_reason="并行出题标记已 discarded（产物已隔离/转串行出题）",
+                design_ref="evo-add-run-stop-loss 1.2",
+            ), False
+        return transient_retries, None, True
+
     def _maybe_in_place_retry(self, spec_name: str, agent_type: str, run_id: str,
                               attempt: int, attempt_run_id: str, sub_run_id: str,
                               provider_name, model, wt_path, is_transient: bool,
@@ -3475,88 +3693,22 @@ class AgentRunner:
         # 原地退避重试：写 transient_retry 事件留痕，按退避序列
         # 下一档 sleep，然后 while 循环顶部以同 provider 重跑该
         # attempt（不递增 attempt、不触发 switch 冷却、不改 chain_cursor）。
-        backoff = transient_budget[transient_retries]
-        transient_retries += 1
-        # 留痕写失败不改变重试决策（code-review item 449ab5cb953f：对齐
-        # _planner_throttle_acquire/_ratelimit_redispatch_on_terminal 口径）
-        try:
-            append_run_line(
-                self.project_root / ".fenix" / "runs"
-                / f"{sub_run_id}.jsonl", {
-                    "type": "transient_retry",
-                    "spec": spec_name,
-                    "provider": provider_name,
-                    "backoff_seconds": backoff,
-                    "retry_number": transient_retries,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-        except OSError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"transient_retry 留痕写入失败（不阻断退避重试）: {e}",
-            )
-        # fix-retry-orphan-active-runs D1：superseded
-        # 终态补写——本文件末行恒为终态，恢复「终态后置」
-        # 不变量。写侧紧跟 transient_retry = 本文件终态，
-        # 重试在新 sub_run_id 文件继续（见 _execute_agent_inner
-        # 原地重试子循环 while 顶部 sub_run_id 换新注释处
-        # 交叉引用）；daemon 退避窗口内死亡
-        # 由 interrupted 补写接续（末行仍终态）。
-        try:
-            append_run_line(
-                self.project_root / ".fenix" / "runs"
-                / f"{sub_run_id}.jsonl", {
-                    "type": "superseded",
-                    "spec": spec_name,
-                    "provider": provider_name,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-        except OSError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"superseded 留痕写入失败（不阻断退避重试）: {e}",
-            )
-        self.logger.warning(
-            "agent_runner",
-            f"Transient error for '{spec_name}' (attempt {attempt}, "
-            f"provider {provider_name}) — in-place retry "
-            f"{transient_retries}/{len(transient_budget)} "
-            f"after {backoff}s backoff (fix-provider-transient-backoff)",
+        # 落盘/WIP/sleep/双让位复查序列与 gate 通道共用内核
+        #（code-review item 1775ec625193）；本通道事件无附加字段。
+        return self._in_place_retry_backoff_yield(
+            spec_name=spec_name, agent_type=agent_type, run_id=run_id,
+            attempt=attempt, attempt_run_id=attempt_run_id,
+            sub_run_id=sub_run_id, provider_name=provider_name,
+            model=model, wt_path=wt_path,
+            transient_retries=transient_retries,
+            transient_budget=transient_budget,
+            start_time=start_time, turns=turns, usage_info=usage_info,
+            retry_channel="Provider-transient retry",
+            log_prefix="Transient error",
+            log_scope=f"provider {provider_name}",
+            design_tag="fix-provider-transient-backoff",
+            retry_event_extra={}, superseded_event_extra={},
         )
-        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
-        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
-        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
-        self._wip_checkpoint_before_backoff(spec_name, wt_path)
-        time.sleep(backoff)
-        # fix-verdict-dedup-resynthesis D4：退避期间 spec
-        # 可能被人工/其它链路接管（admin SIGKILL 后 30s 内
-        # 置 blocked 即 19:48 事故形态）——重派前复查，
-        # 命中即让位（返回语义化失败，不再产生新的
-        # transient_retry 重派，token 消耗不再发生）。
-        if self._should_give_up_before_retry(
-                spec_name, agent_type, check_lock=False):
-            return transient_retries, self._yielded_in_place_retry_result(
-                spec_name, agent_type, run_id, attempt_run_id,
-                provider_name, model, start_time, turns, usage_info,
-                retry_channel="Provider-transient retry",
-                yields_reason="spec 已被接管",
-                error_reason="spec 已被接管（status 迁出预期态或 frozen/hold）",
-                design_ref="fix-verdict-dedup-resynthesis D4",
-            ), False
-        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
-        # 消费侧已把标记翻成 discarded（产物隔离/转串行收尾伴生写入）时，
-        # 重派只会与已转道的串行出题竞跑；在途（dispatched）或无标记
-        # （未注入/读取失败）不命中，重试照常。
-        if self._parallel_plan_marker_discarded(spec_name, agent_type):
-            return transient_retries, self._yielded_in_place_retry_result(
-                spec_name, agent_type, run_id, attempt_run_id,
-                provider_name, model, start_time, turns, usage_info,
-                retry_channel="Provider-transient retry",
-                yields_reason="并行出题标记已 discarded（产物已隔离/转串行）",
-                error_reason="并行出题标记已 discarded（产物已隔离/转串行出题）",
-                design_ref="evo-add-run-stop-loss 1.2",
-            ), False
-        return transient_retries, None, True
 
     def _append_gate_blocked(self, *, sub_run_id: str, spec_name: str,
                              provider_name, error: str, reason: str,
@@ -3731,97 +3883,32 @@ class AgentRunner:
                 reason="artifact_gate", agent_type=agent_type,
             )
             return error, transient_retries, None, False, True
-        backoff = transient_budget[transient_retries]
-        transient_retries += 1
-        # add-timeline-gate-failure-display D1：门禁归因随事件落盘
-        #（原先只进 daemon log），截断口径见 _GATE_ERROR_TRUNCATE。
-        # 留痕写失败不改变重试决策（code-review item 449ab5cb953f：对齐
-        # _planner_throttle_acquire/_ratelimit_redispatch_on_terminal 口径）
-        try:
-            append_run_line(
-                self.project_root / ".fenix" / "runs"
-                / f"{sub_run_id}.jsonl", {
-                    "type": "transient_retry",
-                    "spec": spec_name,
-                    "provider": provider_name,
-                    "backoff_seconds": backoff,
-                    "retry_number": transient_retries,
+        # 原地退避重试：落盘/WIP/sleep/双让位复查与 provider 瞬断通道共用
+        # 内核（code-review item 1775ec625193）。差异点经参数注入：事件带
+        # 门禁归因 reason/error 附加字段（add-timeline-gate-failure-display
+        # D1：本文件被弃置后读侧只能从事件取原因，归因 MUST 一并带上，
+        # 截断口径见 _GATE_ERROR_TRUNCATE），日志文案与通道标签取 gate 值。
+        _gate_error_trunc = error[:_GATE_ERROR_TRUNCATE]
+        transient_retries, _gate_yielded, _gate_retry = (
+            self._in_place_retry_backoff_yield(
+                spec_name=spec_name, agent_type=agent_type, run_id=run_id,
+                attempt=attempt, attempt_run_id=attempt_run_id,
+                sub_run_id=sub_run_id, provider_name=provider_name,
+                model=model, wt_path=wt_path,
+                transient_retries=transient_retries,
+                transient_budget=transient_budget,
+                start_time=start_time, turns=turns, usage_info=usage_info,
+                retry_channel="Artifact-gate retry",
+                log_prefix="Artifact gate",
+                log_scope=agent_type,
+                design_tag="add-judge-artifact-gate",
+                retry_event_extra={
                     "reason": "artifact_gate",
-                    "error": error[:_GATE_ERROR_TRUNCATE],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-        except OSError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"transient_retry 留痕写入失败（不阻断退避重试）: {e}",
-            )
-        # fix-retry-orphan-active-runs D1：superseded 终态补写
-        # ——与 provider 瞬断通道同语义：superseded 紧跟
-        # transient_retry = 本文件终态，重试在新 sub_run_id 文件
-        # 继续（见 _execute_agent_inner 原地重试子循环 while 顶部
-        # sub_run_id 换新注释处交叉引用）。
-        # add-timeline-gate-failure-display D1：本文件被弃置后读侧只能从事件取
-        # 原因，门禁归因 MUST 一并带上（否则时间轴该节点 reason 为空 =
-        # 「无原因绿点」误导）。
-        try:
-            append_run_line(
-                self.project_root / ".fenix" / "runs"
-                / f"{sub_run_id}.jsonl", {
-                    "type": "superseded",
-                    "spec": spec_name,
-                    "provider": provider_name,
-                    "error": error[:_GATE_ERROR_TRUNCATE],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-        except OSError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"superseded 留痕写入失败（不阻断退避重试）: {e}",
-            )
-        self.logger.warning(
-            "agent_runner",
-            f"Artifact gate for '{spec_name}' (attempt {attempt}, "
-            f"{agent_type}) — in-place retry "
-            f"{transient_retries}/{len(transient_budget)} "
-            f"after {backoff}s backoff (add-judge-artifact-gate)",
-        )
-        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
-        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
-        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
-        self._wip_checkpoint_before_backoff(spec_name, wt_path)
-        time.sleep(backoff)
-        # fix-verdict-dedup-resynthesis D4：退避期间 spec 可能被
-        # 人工/其它链路接管（status 迁出预期态/frozen/hold）——
-        # 重派前复查，命中即让位（返回语义化失败，不再产生新的
-        # transient_retry 重派，19:48 事故 $4.77 白烧根因）。
-        # add-timeline-gate-failure-display D2：让位分支 MUST NOT 追加
-        # gate-blocked —— 弃置原因是「spec 已被接管」而非门禁判定，本文件
-        # 终态已由上方 superseded（带 error）承担；再写会把「被接管」误标成
-        # 「门禁拒绝」，且同一次失败在时间轴出现两个失败节点。
-        if self._should_give_up_before_retry(
-                spec_name, agent_type, check_lock=False):
-            return error, transient_retries, self._yielded_in_place_retry_result(
-                spec_name, agent_type, run_id, attempt_run_id,
-                provider_name, model, start_time, turns, usage_info,
-                retry_channel="Artifact-gate retry",
-                yields_reason="spec 已被接管",
-                error_reason="spec 已被接管（status 迁出预期态或 frozen/hold）",
-                design_ref="fix-verdict-dedup-resynthesis D4",
-            ), False, False
-        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
-        # discarded（产物隔离/转串行收尾伴生写入）即放弃重派：本次事故的
-        # 复活正是产物硬门通道（exit 0 但 test_scenarios.json 缺失被拦）。
-        # 在途（dispatched）或无标记（未注入/读取失败）不命中，重试照常。
-        if self._parallel_plan_marker_discarded(spec_name, agent_type):
-            return error, transient_retries, self._yielded_in_place_retry_result(
-                spec_name, agent_type, run_id, attempt_run_id,
-                provider_name, model, start_time, turns, usage_info,
-                retry_channel="Artifact-gate retry",
-                yields_reason="并行出题标记已 discarded（产物已隔离/转串行）",
-                error_reason="并行出题标记已 discarded（产物已隔离/转串行出题）",
-                design_ref="evo-add-run-stop-loss 1.2",
-            ), False, False
-        return error, transient_retries, None, True, False
+                    "error": _gate_error_trunc,
+                },
+                superseded_event_extra={"error": _gate_error_trunc},
+            ))
+        return error, transient_retries, _gate_yielded, _gate_retry, False
 
     # ── R1: attempt 顶守卫（等价搬移，D1 R1 表，部分可提取）──────────
     # frozen 终止 / 取消旗标（worktree 三型处置）。写回变量（cancel_reason /
@@ -4990,7 +5077,7 @@ class AgentRunner:
         # error 上下文（卡死 vs 慢可判）。
         latency_summary_text = ""
         # add-fast-track-scale-precheck D3：extension 末位自动保全幂等标记。
-        # 每个 run 至多触发一次（耗尽预算的最后一个 extension 内），防止
+        # 每个 run 至多触发一次（已获超时续期后的末位窗口内），防止
         # remaining < 窗口的每轮轮询重复触发。
         extension_tail_triggered = False
         try:
@@ -5131,9 +5218,14 @@ class AgentRunner:
                 #（fenix(wip): checkpoint extension-tail <spec>），保全已完成
                 # 轮次工作；随后继续轮询——超时到点仍走既有 _supervision
                 # deadline_action 收口。幂等：extension_tail_triggered 标记保证
-                # 每 run 至多一次。fast-track 专有行为（非 fast-track 零影响）。
+                # 每 run 至多一次。仅在有超时续期后（extensions_used > 0）触发
+                #（code-review item 694feaa7c632）：一次性保全落在续期窗口的
+                # 收尾段，不再于基础超时窗过半即提前消耗标记（生效超时 >
+                # EXTENSION_TAIL_WINDOW_SECONDS 的常见配置下原条件会提前成立）。
+                # fast-track 专有行为（非 fast-track 零影响）。
                 if (not extension_tail_triggered
                         and agent_type == "fast-track"
+                        and extensions_used > 0
                         and 0 < remaining < EXTENSION_TAIL_WINDOW_SECONDS):
                     extension_tail_triggered = True
                     self._wip_checkpoint_on_extension_tail(spec_name, cwd)
@@ -5238,6 +5330,20 @@ class AgentRunner:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
             t_out.join(timeout=5)
             t_err.join(timeout=5)
+            # code-review item 48b02c8e1746：join 超时不等价于读线程已退出——
+            # stdout 读线程若因 os.write 落盘阻塞（如磁盘满）仍存活，「join 后
+            # 读取天然 happens-before」的前提不成立，主线程继续读共享
+            # last_result 会与其 clear+update 非原子序列并发，读到清空后的
+            # 中间态（空 output/turns 或误按「无 result」归因）。仍存活时按
+            # 「终态不可靠」口径收口：后续跳过 last_result 消费（unobserved，
+            # 产物硬门对结果缺失有兜底）。
+            reader_stuck = t_out.is_alive()
+            if reader_stuck:
+                self.logger.warning(
+                    "agent_runner",
+                    f"run {run_id}: stdout 读线程 join 5s 超时仍存活——终态观测"
+                    f"不可靠，跳过 last_result 消费（unobserved）",
+                )
             # code-review item 183ded7b526a：pop 持 _run_finalize_lock，与
             # wait_for_running_agents 停机写 interrupted 标记的「成员复核 +
             # 末行复核 + 追加」临界区互斥（其后同线程的 result 等终态落盘
@@ -5364,8 +5470,10 @@ class AgentRunner:
                     "agent_runner",
                     f"context metrics落盘失败（不阻断 run 终态）: {e}",
                 )
-            # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行
-            if last_result:
+            # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行。
+            # 读线程残留存活时不落（dict(last_result) 快照同样可能采到
+            # clear+update 中间态，code-review item 48b02c8e1746）。
+            if last_result and not reader_stuck:
                 append_run_line(run_file, dict(last_result))
             # add-run-cancel D2：cancelled 终态行在 join 之后落盘（result 行后），
             # 保证 cancelled 行是文件最后一行（终态后置既有次序）。
@@ -5441,9 +5549,13 @@ class AgentRunner:
                 f"claude CLI {turn_limit_error}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
-        output = last_result.get("result", "") if last_result else ""
-        turns = last_result.get("num_turns", 0)
-        session_id = last_result.get("session_id") if last_result else None
+        # code-review item 48b02c8e1746：读线程残留存活时统一以 unobserved
+        # 口径收口——不消费共享 last_result（None 占位，与「无 result 事件」
+        # 路径同形）。
+        observed_result = None if reader_stuck else last_result
+        output = observed_result.get("result", "") if observed_result else ""
+        turns = observed_result.get("num_turns", 0)
+        session_id = observed_result.get("session_id") if observed_result else None
 
         if returncode != 0:
             # error-attribution-denoise（D5）：拼装 error 前过滤 CLI stderr 诊断
@@ -5461,12 +5573,12 @@ class AgentRunner:
             # 超时/强杀路径（timeout_error/turn_limit_error）不携带（空列表），
             # 保证超时卡死不被误判为瞬断。
             exc.stderr_lines = list(stderr_lines)
-            exc.has_result = bool(last_result)
+            exc.has_result = bool(observed_result)
             exc.exit_code = returncode
             # evo-code-fix-api-timeout-salvage 1.1：api_timeout 布尔标记挂异常
             # （判别在 runner 层一次完成，车道层只读标记，design D1）；
             # 不改变既有异常消息文本。
-            exc.api_timeout = is_api_timeout_signature(last_result)
+            exc.api_timeout = is_api_timeout_signature(observed_result)
             # evo-add-code-review-ratelimit-resume 1.1：429 归因双源（design
             # 归因双源）——result 事件的限流信号随异常下发（对齐 exc.api_timeout
             # 先例：归因素材在 runner 层一次挂载，车道层只读不重复解析）。
@@ -5475,20 +5587,22 @@ class AgentRunner:
             # False——意图登记以此双字段回退判 429。last_result 缺失（崩溃/
             # 强杀路径无 result 事件）None/"" 占位，回退判定自然不命中。
             exc.api_error_status = (
-                last_result.get("api_error_status") if last_result else None
+                observed_result.get("api_error_status")
+                if observed_result else None
             )
             exc.result_text = (
-                str(last_result.get("result") or "") if last_result else ""
+                str(observed_result.get("result") or "")
+                if observed_result else ""
             )
             raise exc
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败
         # （Claude CLI 可能把 API 错误包装成 result/success 终止事件且 exit 0）
-        if last_result:
-            result_is_error = last_result.get("is_error", False)
-            result_subtype = last_result.get("subtype", "success")
+        if observed_result:
+            result_is_error = observed_result.get("is_error", False)
+            result_subtype = observed_result.get("subtype", "success")
             if result_is_error or result_subtype in ("error", "error_during_execution"):
-                err_text = last_result.get("result", "") or f"is_error={result_is_error}, subtype={result_subtype}"
+                err_text = observed_result.get("result", "") or f"is_error={result_is_error}, subtype={result_subtype}"
                 append_run_error(run_file, f"API error disguised as success: {err_text}", returncode)
                 raise RuntimeError(
                     f"claude CLI rc==0 but result indicates error: {err_text}"
@@ -5496,7 +5610,7 @@ class AgentRunner:
 
         # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
         # 成本字段；失败/异常路径上 _run_claude 已抛错，此处仅成功终态能拿到 usage。
-        return output, turns, session_id, self._extract_usage_info(last_result)
+        return output, turns, session_id, self._extract_usage_info(observed_result)
 
 
     @staticmethod
@@ -6011,9 +6125,13 @@ class AgentRunner:
             self._reset_instant_fail(spec_name)
             return
 
-        st = self._instant_fail.setdefault(
-            spec_name, {"count": 0, "cooldown_until": 0.0})
-        st["count"] = st.get("count", 0) + 1
+        # setdefault+自增持锁（code-review item 557ef1ce8559）：与成功重置
+        #（_reset_instant_fail）及派发侧到期清零并发时，无锁读改写互相丢失
+        # 更新（对齐 _daily_run_count 先例）。
+        with self._instant_fail_lock:
+            st = self._instant_fail.setdefault(
+                spec_name, {"count": 0, "cooldown_until": 0.0})
+            st["count"] = st.get("count", 0) + 1
         cooldown_after = self._instant_fail_cooldown_after()
         if st["count"] < cooldown_after:
             self.logger.warning(
@@ -6078,7 +6196,10 @@ class AgentRunner:
 
     def _reset_instant_fail(self, spec_name: str) -> None:
         """成功 / 存活超阈值失败：清除该 spec 的秒挂连续计数与冷却态。"""
-        self._instant_fail.pop(spec_name, None)
+        # 持锁 pop（code-review item 557ef1ce8559）：与 _record_instant_fail
+        # 的 setdefault+自增临界区互斥，防计数读改写进行中条目被摘丢更新。
+        with self._instant_fail_lock:
+            self._instant_fail.pop(spec_name, None)
 
     def _instant_fail_counts(self, spec_name: str) -> int:
         """当前连续秒挂次数（测试/观测辅助）。"""
