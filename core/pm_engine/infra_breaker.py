@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -45,11 +46,17 @@ def _is_valid_state_number(val, nonneg: bool) -> bool:
     d0a328355581 同构问题，code-review item 004678944eab）：json.loads 默认
     接受 NaN/Infinity 字面量，非有限 until 使 condition() 的 now >= until
     恒 False（熔断永续不恢复）。巨大 int 不送 math.isfinite（其内部转
-    float 会 OverflowError），int 任意精度恒有限。
+    float 会 OverflowError），改用 abs(val) > sys.float_info.max 拦截：
+    超出 float 表示范围的 int 虽任意精度恒有限，却会在 _load_state 的
+    float(until) 处抛 OverflowError 逃出逐链路守卫、落入外层 except 致
+    _cache 整体清空（code-review item 8783900adf96），须在校验期拦截。
     """
     if isinstance(val, bool) or not isinstance(val, (int, float)):
         return False
     if isinstance(val, float) and not math.isfinite(val):
+        return False
+    if abs(val) > sys.float_info.max:
+        # 仅巨大 int 会命中（有限 float 恒 <= max，inf 已被上方 isfinite 拒绝）
         return False
     return not (nonneg and val < 0)
 

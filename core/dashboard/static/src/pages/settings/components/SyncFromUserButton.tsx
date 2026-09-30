@@ -1,5 +1,5 @@
 import { App, Button, Modal } from 'antd';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { syncConfigFromUser } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 
@@ -40,8 +40,15 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
   const [open, setOpen] = useState(false);
   // 当前进行中的操作（互斥 loading；null = 空闲）
   const [busy, setBusy] = useState<null | 'sync' | 'clear'>(null);
+  // 重入守卫（比照 useGatedFormPanel savingRef 口径，code-review item
+  // 6fdb239a6d85）：setBusy 渲染生效存在 React 调度间隙，同帧内双击同一
+  // 按钮、或先点「覆盖」再点「清空」可让写值与删键两个互斥动作并发在飞，
+  // 落盘结果取决于到达顺序——经 ref 写读同帧原子短路，state 只负责视觉态。
+  const inFlight = useRef(false);
 
   const runAction = async (action: 'sync' | 'clear') => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(action);
     try {
       const config = await syncConfigFromUser(project, page, action);
@@ -69,6 +76,7 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
       console.error('[sync-from-user] 操作失败:', err);
       message.error(`${action === 'sync' ? '同步' : '清空'}失败，请稍后重试（详情见浏览器控制台）`);
     } finally {
+      inFlight.current = false;
       setBusy(null);
     }
   };

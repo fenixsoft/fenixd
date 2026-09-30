@@ -63,6 +63,16 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // 不再盖回新项目视图、也不会被写进新项目。
   const loadedForRef = useRef<string | undefined>(undefined);
 
+  // activeAgent 镜像 ref（code-review item cd7f269ddd5f）：handleSave 闭包里的
+  // activeAgent 是保存发起时的快照，refetch 回填守卫 `targetAgent === activeAgent`
+  // 两边同源恒相等，拦不住「保存请求刚发起的同一帧内切换 agent」——Select 的
+  // disabled={saving} 是 state 口径、setSaving 渲染生效有调度间隙（同上方
+  // savingRef 条目结论），切换事件已把草稿置为新 agent 的服务端值，此后回填
+  // 却把旧 agent 的服务端 extra 写进草稿而选择器显示新 agent，再点保存即把
+  // 旧 agent 内容写进 .fenix/agents/<新agent>.md（跨 agent 错写）。比照
+  // loadedForRef 口径以 ref 同帧记录当前 agent，回填前对账。
+  const activeAgentRef = useRef<string>('implementer');
+
   // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持草稿
   // 而非 antd Form，按既有判脏口径（同下方项目切换确认）向 index 注册探针，
   // 切页签前由 index 统一弹确认；切项目确认（f2830281595d）保持原位不动。
@@ -110,6 +120,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // 选择器，用户若先切到 verifier 再切项目，textarea 装的是 implementer
           // 内容而选择器显示 verifier——点保存会把 implementer 内容写进
           // .fenix/agents/verifier.md（静默错写文件）。复位后二者一致。
+          // 镜像 ref 同步前移（code-review item cd7f269ddd5f）：activeAgentRef
+          // 是回填对账的权威口径，所有 setActiveAgent 处都必须同帧更新。
+          activeAgentRef.current = 'implementer';
           setActiveAgent('implementer');
           setExtraDraft(projectExtraOf(d, 'implementer'));
         }
@@ -143,6 +156,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     if (extraDraft !== serverDraftFor(activeAgent) && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
       return;
     }
+    // 镜像 ref 在切换事件里同步更新（code-review item cd7f269ddd5f）：保存
+    // 在飞期间 refetch 回填以 activeAgentRef 对账，若只靠渲染后 effect 滞后
+    // 补写，同一帧内发起的回填仍会读到旧 agent、守卫失效。
+    activeAgentRef.current = atype;
     setActiveAgent(atype);
     setExtraDraft(serverDraftFor(atype));
   };
@@ -206,10 +223,13 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         } else {
           setData(d);
           // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）。
+          // 对账读 activeAgentRef 而非闭包 activeAgent（code-review item
+          // cd7f269ddd5f）：闭包值与 targetAgent 同源恒相等，拦不住保存请求
+          // 刚发起同帧内发生的切换（saving 的 disabled 尚未渲染生效）。
           // 同 agent 上保存后继续键入的分支由 TextArea 的 disabled={saving}
           // 兜底（code-review item cbd7e62160ec）：保存请求在飞期间输入框
           // 已禁用，此处回填不会覆盖用户保存后键入的未保存内容。
-          if (targetAgent === activeAgent) {
+          if (targetAgent === activeAgentRef.current) {
             setExtraDraft(projectExtraOf(d, targetAgent));
           }
         }

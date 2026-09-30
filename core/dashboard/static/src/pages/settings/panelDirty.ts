@@ -43,7 +43,9 @@ export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolea
   // probe 经 ref 间接引用（镜像 index.tsx 的 scopeRef 模式）：内联箭头每次
   // 渲染都是新引用，注册效果只跑一次、探针读到的始终是最新闭包
   const probeRef = useRef(probe);
-  probeRef.current = probe;
+  useEffect(() => {
+    probeRef.current = probe;
+  }, [probe]);
   useEffect(() => {
     const entry: PanelDirtyEntry = {
       isDirty: () => (probeRef.current ? probeRef.current() : dirtyRef.current),

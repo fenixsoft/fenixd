@@ -257,10 +257,10 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                     higher 档阈值<span className="label-note">（agents.scale_precheck.higher_threshold）</span>
                   </>
                 }
-                rules={[{ required: true, message: '请输入 higher 档阈值' }]}
+                rules={[{ required: true, message: '请输入 higher 档阈值' }, POSITIVE_INT_RULE]}
                 style={{ marginTop: 24 }}
               >
-                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} addonAfter="分" />
+                <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="分" />
               </Form.Item>
               <Text type="secondary">
                 默认 30。分值<b>大于</b>此值（严格大于，等于不升档）时进入 higher 档：SPEC 仍走 fast-track 单 run，
@@ -278,6 +278,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 dependencies={['scale_precheck_higher']}
                 rules={[
                   { required: true, message: '请输入 full 档阈值' },
+                  POSITIVE_INT_RULE,
                   ({ getFieldValue }) => ({
                     validator(_, value) {
                       const higher = getFieldValue('scale_precheck_higher');
@@ -290,7 +291,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 ]}
                 style={{ marginTop: 24 }}
               >
-                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} addonAfter="分" />
+                <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="分" />
               </Form.Item>
               <Text type="secondary">
                 默认 45。分值<b>大于</b>此值（严格大于）时判定为 full 档：该 SPEC 的 .spec.yaml 中 mode 会被自动改写为

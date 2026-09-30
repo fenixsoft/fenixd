@@ -952,7 +952,12 @@ class StateMachine:
         return self._bump_counter(spec_name, IMPL_RUN_BUDGET_USED_FIELD, delta)
 
     def set_impl_budget_used_if_unchanged(
-        self, spec_name: str, used_value: int, observed_used: int, observed_run: str
+        self,
+        spec_name: str,
+        used_value: int,
+        observed_used: int,
+        observed_run: str = "",
+        check_run: bool = True,
     ) -> bool:
         """预算对账 used 改写的锁内条件写（CAS，code-review item 0cfbe1852825）。
 
@@ -966,6 +971,11 @@ class StateMachine:
         锚点改写发生过）即不改写返回 False，调用方保守跳过本轮、待下一轮
         对账收敛。仅复核 run 锚不足以挡住 bump：派发的启动计数与锚点改写
         分处两个临界区，bump 先行落地时 run 锚尚未变化，故 used 一并入条件。
+
+        ``check_run=False``（used 上调方向校正专用，item 2fcdfc8f4451）：跳过
+        run 锚复核、仅 CAS used——上调的 ``used_value`` 出自 runs 产物计数
+        扫描，该路径守卫读未观测 run 锚快照（无值可复核）；并发派发/退款
+        的计数改写必先经同一把锁落在 used 上，used 复核已足以挡住覆盖丢失。
 
         锁内不落日志（持锁窗口不含 I/O），SPEC-not-found 告警带出锁外再记
         （同 ``_refund_run_once`` 约定）。
@@ -991,7 +1001,9 @@ class StateMachine:
                         )
                     except (TypeError, ValueError):
                         current_used = 0
-                    if current_used != observed_used or current_run != observed_run:
+                    if current_used != observed_used or (
+                        check_run and current_run != observed_run
+                    ):
                         return False
                     entry[IMPL_RUN_BUDGET_USED_FIELD] = used_value
                     entry["updated"] = datetime.now(timezone.utc).isoformat()

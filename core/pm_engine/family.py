@@ -188,24 +188,11 @@ class FamilyGovernor:
 
         口径依据 STATE 全量 read_all（design D4：不受 ready 清空字段保留策略影响，
         对历史存在的四层命名按现值评估，不追溯惩罚已 done/pushed 祖先）。
+        筛选口径复用 _same_root_siblings（code-review item 7a545a2237b1）：
+        「同根 + 非 done/pushed + 坏条目防御」只保留一份实现，防宽度门与
+        兄弟互斥判定两处口径漂移分叉。
         """
-        root = self._fix_strip_all(child_name)
-        specs = self._pm.state_machine.read_all() or {}
-        count = 0
-        for name, entry in specs.items():
-            if not isinstance(name, str) or not name.startswith("fix-") or name == child_name:
-                continue
-            if self._fix_strip_all(name) != root:
-                continue
-            # STATE 坏条目防御（code-review item 18a70e5931b4）：非 dict 条目
-            # 直接跳过，不让 .get 抛 AttributeError 中断 bug-found 主链。
-            if not isinstance(entry, dict):
-                continue
-            status = (entry or {}).get("status", "")
-            if status in ("done", "pushed"):
-                continue
-            count += 1
-        return count
+        return len(self._same_root_siblings(child_name))
 
     def _family_waiver_set(self, spec_name: str) -> bool:
         """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
@@ -727,7 +714,11 @@ class FamilyGovernor:
 
         保留原有派生逻辑，直至所有存量 fix 链收敛。
         """
-        parent_prio = (self._pm.state_machine.read_one(spec_name) or {}).get("priority", 5)
+        raw_prio = (self._pm.state_machine.read_one(spec_name) or {}).get("priority", 5)
+        # STATE 坏值容错（code-review item f0514aca33fe）：priority 被人工/外部
+        # 改写为 None/非数值时下方 +1 会抛 TypeError 中断 bug-found 主链——
+        # 对齐 dispatch/queue._get_spec_priority 的容错口径，非法值回退 5。
+        parent_prio = raw_prio if isinstance(raw_prio, int) else 5
 
         # 确定本轮 bug 应使用的 fix SPEC 名称
         fix_spec_name = self._resolve_fix_spec_name(spec_name)
@@ -945,11 +936,27 @@ class FamilyGovernor:
             # 255393413ec3）：本段内部不含二级标题，「## 验收标准」等以「验」
             # 开头的后续标题也是合法段界——排除会把整段误并入替换区间删掉。
             after = text[m.end() :]
-            next_heading = re.search(r"\n## ", after)
-            if next_heading:
-                end = m.end() + next_heading.start() + 1  # 包含 \n
-            else:
-                end = len(text)
+            # 段界探测围栏感知（code-review item cb421886ef72）：tasks.md 可能
+            # 贴含行首「## 」的代码围栏示例，裸搜 "\n## " 会在围栏内提前截断
+            # 替换区间丢内容——逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配
+            # 首个二级标题（保持原「下一个二级标题」命中语义）。
+            end = len(text)
+            offset = m.end()
+            fence_char = ""
+            fence_len = 0
+            for line in after.splitlines(keepends=True):
+                body = line.strip()
+                if fence_char:
+                    # 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
+                    if body and set(body) == {fence_char} and len(body) >= fence_len:
+                        fence_char = ""
+                elif body.startswith("```") or body.startswith("~~~"):
+                    fence_char = body[0]
+                    fence_len = len(body) - len(body.lstrip(body[0]))
+                elif line.startswith("## "):
+                    end = offset
+                    break
+                offset += len(line)
             # 行首锚保持（item a25d95843de3）：start 已回退吃掉段前全部换行、
             # section.strip() 又剥掉新段自带的前导换行，直接拼接会把「## 验证修复」
             # 标题粘在上一行行尾，下一轮 ^## 验证修复 MULTILINE 失配走追加分支、

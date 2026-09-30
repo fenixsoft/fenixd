@@ -61,6 +61,12 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   useEffect(() => {
     if (!project) return;
     let cancelled = false;
+    // 作用域切换即先清空上一项目残留草稿（code-review item 6bf8170c023d，
+    // 与 PromptsPanel item 96880454231c 同口径）：加载在飞或失败期间，残留的
+    // 旧项目内容若被「保存」提交，会整文件覆写进当前项目的 todo.md（跨项目
+    // 静默数据破坏）；加载失败路径不回填，保持已复位的空状态
+    setTodoDraft('');
+    setTodoExists(false);
     const load = async () => {
       setTodoLoading(true);
       try {
@@ -110,6 +116,12 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     if (saving) {
       return;
     }
+    // todo.md 加载在飞时短路（code-review item 6bf8170c023d）：此刻 todoDraft
+    // 尚未回填为新作用域内容（或因加载失败保持空），提交会把残留/空草稿整文件
+    // 覆写进当前项目的 todo.md
+    if (todoLoading) {
+      return;
+    }
     setSaving(true);
     // 发起时的作用域快照（code-review item 522b3bd7ae53）：下方 todo.md
     // 覆写/回读续段执行前与 projectRef 比对，作用域已切换即中止——否则
@@ -117,9 +129,19 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // 新作用域面板的编辑框，用户再点「保存」即跨项目整文件覆写 todo.md
     const projectAtStart = project;
     try {
+      // 校验与持久化分离（code-review item f139c66daa4f，与 useGatedFormPanel
+      // 同口径）：校验失败 antd 已在表单内渲染 explain-error 提示，静默返回；
+      // onSave 的 rejection 单独兜底——父级当前自带失败 toast 并以 resolve(false)
+      // 结束（子层观察不到拒绝），此 catch 保证父级反馈路径调整（onSave 改为
+      // reject）时保存失败不退化为无声失败
+      let values;
+      try {
+        values = await form.validateFields();
+      } catch {
+        return;
+      }
       let ok = false;
       try {
-        const values = await form.validateFields();
         ok = await onSave({
           self_review: {
             enabled: values.enabled,
@@ -127,8 +149,8 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
             read_todo: values.read_todo,
           },
         });
-      } catch {
-        // 校验失败：antd 已在表单内渲染 explain-error 提示
+      } catch (error) {
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
         return;
       }
       // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
@@ -306,7 +328,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         )}
       </Form>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
-        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="self-review-save-btn">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || todoLoading} data-testid="self-review-save-btn">
           保存
         </Button>
       </div>

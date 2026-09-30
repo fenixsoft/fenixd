@@ -58,8 +58,10 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
   const savingRef = useRef(false);
 
   // 首帧初值与回填共用 buildValues 单源：<Form initialValues> 首帧直出真实
-  // 配置，不等回填 effect（消除一帧空显闪变）。
-  const initialValues = buildValues();
+  // 配置，不等回填 effect（消除一帧空显闪变）。antd 只在挂载时消费
+  // initialValues，useState 惰性初始化（传函数引用，非调用结果）让 buildValues
+  // 仅首帧执行一次，后续渲染不再白算。
+  const [initialValues] = useState(buildValues);
 
   // 回填门控（各面板原 5be7cabc4d91 / 5d6582ba9951 / 0a2bd3f20fcd /
   // 9f98edec21fa / 241f4f2d452a / cbec8303669f 同族条目）：无条件
@@ -88,8 +90,17 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
     savingRef.current = true;
     setSaving(true);
     try {
-      // 保存入口、校验前的面板专属拦截；false = 面板已给出提示，中止本次保存
-      if (beforeValidate?.() === false) return;
+      // 保存入口、校验前的面板专属拦截；false = 面板已给出提示，中止本次保存。
+      // 回调自身意外异常与 onSave 同口径兜底（否则穿透 handleSave 成为按钮
+      // onClick 的未处理拒绝，saving 复位后按钮恢复可点却无任何错误提示）。
+      let skipped: boolean | void;
+      try {
+        skipped = beforeValidate?.();
+      } catch (error) {
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      if (skipped === false) return;
       // 分离「表单校验」与「保存持久化」（各面板原 834f22222a24 / 25f889b81633
       // / 9125d4a7f7b4 / 3086b7e96c4f / def003cd8cff 同族条目）：校验失败 antd
       // 已在表单内渲染 explain-error 提示，静默返回（不落 console，避免触发
@@ -101,7 +112,14 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
         onValidateError?.();
         return;
       }
-      const invalid = checkValues?.(values);
+      // checkValues 意外异常同 onSave 兜底口径，不无声穿透 handleSave
+      let invalid: string | void;
+      try {
+        invalid = checkValues?.(values);
+      } catch (error) {
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
       if (typeof invalid === 'string') {
         message.error(invalid);
         return;

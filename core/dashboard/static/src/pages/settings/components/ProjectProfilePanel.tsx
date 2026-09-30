@@ -35,10 +35,36 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // querySelector——设置页切作用域曾出现双 DOM 实例并存，选择器会命中隐藏实例）
   const verifySectionRef = useRef<HTMLDivElement>(null);
   const yamlTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // 简介草稿基线与归属（code-review items b1e4d7434e0e / 30aaaac87fce）：比照
+  // yaml 侧 yamlLoadedContentRef/yamlDraftSourceRef 口径——baseline 记录草稿对
+  // 应的已保存值（外部回填前比对，防静默覆盖未保存修改），project 记录草稿
+  // 归属项目（保存前比对，防切项目窗口把上一项目简介以当前项目名写盘）。
+  const descriptionSourceRef = useRef<{ project: string | undefined; baseline: string }>({
+    project,
+    baseline: config.description || '',
+  });
 
   useEffect(() => {
-    setDescription(config.description || '');
-  }, [config.description]);
+    const next = config.description || '';
+    const src = descriptionSourceRef.current;
+    if (src.project !== project) {
+      // 切项目后新 config 到达：显式切换动作，直接覆盖上一项目残留草稿
+      //（比照 yaml 非静默加载口径），归属随之推进到当前项目
+      setDescription(next);
+    } else if (description !== next && description !== src.baseline) {
+      // 同项目外部刷新（「同步用户级设置」回填、其它面板保存触发的父级
+      // setConfig）遇未保存草稿（既不等于服务器新值也不等于基线）：保留
+      // 用户编辑不覆盖，仅同步基线并提示（比照 yaml 静默回写保护口径）。
+      message.warning('项目配置已刷新，但简介有未保存修改，已保留您的编辑');
+    } else {
+      setDescription(next);
+    }
+    descriptionSourceRef.current = { project, baseline: next };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖刻意只有 config：
+    // effect 仅在父级 setConfig（config 对象更替）时触发，此刻闭包里的
+    // description/project 必与该份 config 配套；补 project 会在切项目首渲染
+    //（config 仍是上一项目）用旧值抢跑回填，补 description 则每次键入都重跑
+  }, [config]);
 
   // 聚焦信号到达：滚到 verify.yaml 卡片并把光标送入编辑框（延迟等待页签
   // 切换后本面板真正挂载渲染完成）
@@ -62,6 +88,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   const handleSave = async () => {
     if (saving) return; // 重入守卫：保存请求在飞期间连点直接短路，不发并发保存请求
+    // 草稿归属守卫（code-review item 30aaaac87fce）：比照 yaml 侧
+    // yamlDraftSourceRef 口径——切项目的 config 加载往返窗口内草稿仍是上一个
+    // 项目的简介，此时以当前项目名写盘会覆盖新项目的既有简介——拒绝并提示。
+    if (descriptionSourceRef.current.project !== project) {
+      message.warning('项目简介尚未随当前项目加载完成（或已切换项目），请稍候再保存');
+      return;
+    }
     setSaving(true);
     try {
       // 父级保存失败时返回 false（错误 toast 已由父级呈现），仅明确成功才
@@ -69,6 +102,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       const ok = await onSave({ description });
       if (ok) {
         message.success('保存成功');
+        // 已落盘内容即新基线（比照 yaml 侧 d9f2bd1097f0）：保存触发的父级重载
+        // 回填到来时，草稿不会误入「未保存修改」保护分支
+        descriptionSourceRef.current = { project, baseline: description };
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -88,12 +124,17 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     setLoading(true);
     try {
       const result = await regenerateProjectDescription(project);
-      if (result.ok) {
+      // description 为可选字段：空值时视为失败阻断保存，不得以 undefined 回填草稿
+      // （比照 PromptsPanel 跨项目错写防护的 data 判空口径）
+      if (result.ok && result.description != null) {
         // 先落盘再改本地状态：保存失败（父级返回 false，已由父级 toast）时
         // 不得 setDescription，否则本地简介与服务器漂移且用户无从察觉。
         const saved = await onSave({ description: result.description });
         if (saved) {
           setDescription(result.description);
+          // 已落盘内容即新基线（与 handleSave 同口径）：保存触发的父级重载
+          // 回填到来时，草稿不会误入「未保存修改」保护分支
+          descriptionSourceRef.current = { project, baseline: result.description };
           // 生成成功与保存落盘是两个独立结果，分开提示
           message.success('简介重新生成成功');
           message.success('已保存到项目配置');

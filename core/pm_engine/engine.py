@@ -2976,7 +2976,6 @@ class PMEngine:
                     PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
                 },
             )
-            spec["error"] = final_error  # 同步本地引用供后续读取
             self.logger.error(
                 "pm_engine",
                 f"Push retries exhausted for '{spec_name}' ({attempts}/{max_retries})",
@@ -3001,7 +3000,6 @@ class PMEngine:
                     PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: next_retry,
                 },
             )
-            spec["error"] = final_error  # 同步本地引用供后续读取
             self.logger.warning(
                 "pm_engine",
                 f"Push failed for '{spec_name}' ({ref}): {error_msg}; "
@@ -3737,6 +3735,21 @@ class PMEngine:
                     )
                     continue
                 if stuck_status == "implementing":
+                    # 写前重读复核（code-review item 313f93a4c7c1，对齐
+                    # check_scheduling_deadlines 定时解冻「竞争后到者视为无需
+                    # 操作」的幂等先例）：轮首快照到本分支之间隔着逐 spec 文件
+                    # 系统探针（_attempt_still_alive 等），窗口内该 run 可能已
+                    # 合法收工完成 implementing→implemented 转移，盲写会把合法
+                    # 进度覆写回 ready 并孤儿化 run 结果——状态不再是卡死态即
+                    # 跳过本轮恢复（含下方的预算豁免，均以复核确认为前提）。
+                    fresh = self.state_machine.read_one(spec_name) or {}
+                    if fresh.get("status") != "implementing":
+                        self.logger.info(
+                            "pm_engine",
+                            f"auto-recovery 竞争后到者：'{spec_name}' 状态已为 "
+                            f"'{fresh.get('status')}'，跳过本轮恢复",
+                        )
+                        continue
                     self.logger.info(
                         "pm_engine",
                         f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
@@ -3789,6 +3802,18 @@ class PMEngine:
                         spec_name, f"auto-recovered from stuck {stuck_status}"
                     )
                 elif stuck_status == "testing":
+                    # 写前重读复核（code-review item 313f93a4c7c1，与上方
+                    # implementing 分支及 check_scheduling_deadlines 定时解冻
+                    # 先例同口径）：状态已不是 testing（如 verifier 竞争收工）
+                    # 即跳过本轮恢复，防盲写覆写合法进度。
+                    fresh = self.state_machine.read_one(spec_name) or {}
+                    if fresh.get("status") != "testing":
+                        self.logger.info(
+                            "pm_engine",
+                            f"auto-recovery 竞争后到者：'{spec_name}' 状态已为 "
+                            f"'{fresh.get('status')}'，跳过本轮恢复",
+                        )
+                        continue
                     # code-review item 54075e1dda03：ocr join 停等豁免——entry 带
                     # ``_ocr_join_wait`` 且 ocr 车道在飞（``ocr_lane_busy``）时，
                     # spec 处于 queue._ocr_join_await_lane 承诺的「MUST 停止推进
@@ -3862,8 +3887,6 @@ class PMEngine:
             if elapsed < 3600:
                 return
 
-        self._last_blocker_report_time = now
-
         lines = [
             f"\n### ⚠️ Blocker Report — {now.strftime('%Y-%m-%d %H:%M UTC')}",
             "",
@@ -3910,10 +3933,14 @@ class PMEngine:
             self.logger.warning(
                 "pm_engine",
                 f"Blocker report write to PROJECT_LOG.md failed "
-                f"(auto-recovery loop unaffected): {e}",
+                f"(auto-recovery loop unaffected; 节流窗口未消耗，"
+                f"下一轮立即重试报告): {e}",
             )
             return
 
+        # 节流时间戳写盘成功后才消耗（code-review item e7c4e355a4a2）：写失败
+        # 不占用 1 小时节流窗口，避免瞬态故障恢复后报告通道空窗到节流过期。
+        self._last_blocker_report_time = now
         self.logger.info("pm_engine", "Blocker report written to PROJECT_LOG.md")
 
     def get_health_summary(self) -> str:

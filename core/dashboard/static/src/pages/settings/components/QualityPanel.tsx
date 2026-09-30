@@ -62,6 +62,32 @@ const EFFORT_RULE = {
       : Promise.reject(new Error('须为 low/medium/high')),
 };
 
+// code-review item 2f9799dac3b1：车道裁决模式枚举与批大小上下限比照
+// EFFORT_RULE 抽模块级单源（同族校验器逐字复制粘贴曾实际漂移，见本文件头
+// 注释），避免调档位/边界时再走老路。Select.Option 的档位文案逐档不同、
+// 无法无结构改动地映射枚举，故仅校验器与 InputNumber min/max 走本单源。
+const MODE_OPTIONS = ['gate', 'advisory'] as const;
+
+const MODE_RULE = {
+  validator: (_: unknown, v: string | undefined | null) =>
+    v && (MODE_OPTIONS as readonly string[]).includes(v)
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为 gate/advisory')),
+};
+
+const FIX_BATCH_SIZE_BOUNDS = { min: 1, max: 1000 } as const;
+
+const BATCH_SIZE_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    v !== null &&
+    v !== undefined &&
+    Number.isInteger(v) &&
+    v >= FIX_BATCH_SIZE_BOUNDS.min &&
+    v <= FIX_BATCH_SIZE_BOUNDS.max
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为 1–1000 的整数')),
+};
+
 // 表单值的单一构建来源（code-review item 5ba46a1b4d6c，同族 ParallelSettingsPanel
 // item 3f4e251a395c / ApprovalModePanel item 3f618ddb51cb 口径）：字段映射旧实现
 // 只写在回填 effect 一处，<Form> 未传 initialValues——控件首帧空显（InputNumber
@@ -536,14 +562,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                 车道裁决模式<span className="label-note">（verify.impl_code_review_mode）</span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: string | undefined | null) =>
-                  v && ['gate', 'advisory'].includes(v)
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为 gate/advisory')),
-              },
-            ]}
+            rules={[MODE_RULE]}
             style={{ marginTop: 24 }}
           >
             <Select data-testid="impl-code-review-mode">
@@ -666,19 +685,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                 <span className="label-note">（admin.code_review_fix.batch_size）</span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: number | undefined | null) =>
-                  v !== null && v !== undefined && Number.isInteger(v) && v >= 1 && v <= 1000
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为 1–1000 的整数')),
-              },
-            ]}
+            rules={[BATCH_SIZE_RULE]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
-              min={1}
-              max={1000}
+              min={FIX_BATCH_SIZE_BOUNDS.min}
+              max={FIX_BATCH_SIZE_BOUNDS.max}
               precision={0}
               style={{ width: '100%' }}
               addonAfter="条"
