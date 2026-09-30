@@ -212,11 +212,17 @@ def _check_worktree(proot, spec_name):
     # 报告崩溃；is_dir 一并覆盖，与不存在同口径返回 None 降级。
     if not wt_root.is_dir():
         return None
-    matches = [
-        wt
-        for wt in wt_root.iterdir()
-        if wt.is_dir() and _wt_dir_matches_spec(wt.name, spec_name)
-    ]
+    # 目录存在但不可读（权限/挂载异常）时 iterdir() 抛 PermissionError，
+    # 沿 render_report 传到 main（只捕 ValueError）令整份报告裸栈崩溃；
+    # 与下方 _mtime/os.walk 的 OSError 防御同口径，异常即降级返回 None。
+    try:
+        matches = [
+            wt
+            for wt in wt_root.iterdir()
+            if wt.is_dir() and _wt_dir_matches_spec(wt.name, spec_name)
+        ]
+    except OSError:
+        return None
     if not matches:
         return None
 

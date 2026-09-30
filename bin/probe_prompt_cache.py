@@ -31,7 +31,12 @@ FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 if str(FRAMEWORK_ROOT) not in sys.path:
     sys.path.insert(0, str(FRAMEWORK_ROOT))
 
-# ── 稳定前缀（~6K tokens 量级，用于两次请求的比较）──
+# ── 稳定前缀（约 5.8K 字符，按常见分词约 1.4-1.6K tokens，用于两次请求的比较）──
+# 规模口径提醒（code-review item 395c8e4f7d2f）：旧注释写「~6K tokens」实为
+# 字符数。前缀缓存普遍有最小可缓存长度门槛（如 Anthropic 1024 tokens），
+# 若网关门槛高于此规模，缓存根本不会写入，探针会把「前缀太短不缓存」系统性
+# 误判为「不支持缓存」的假阴性——复验时须结合 evidence.rounds[].input_tokens
+# 的实际规模判读。
 STABLE_PREFIX = (
     "You are a helpful assistant. " * 200
     + "Answer with a single word."
@@ -233,8 +238,13 @@ def _load_provider(config_path: Path, provider_name: str):
     """从配置文件中提取指定 provider 的连接信息。"""
     import yaml
 
+    # 文件消失（TOCTOU）不再 return None（code-review item 40a170065cd9）：
+    # probe() 首检已对文件缺失短路并输出专门错误，正常控制流到不了这里；
+    # 旧实现返回 None 会走「provider 不在配置文件」的误导文案，与真实原因
+    # （文件刚被删除）不符。改抛与首检一致的 ValueError，由 probe() 归入
+    # 确定性 JSON 判据输出。
     if not config_path.exists():
-        return None
+        raise ValueError(f"配置文件不存在: {config_path}")
     with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     # 顶层非映射归一（code-review item fa9052277343）：config.yaml 顶层是
@@ -244,8 +254,22 @@ def _load_provider(config_path: Path, provider_name: str):
         raise ValueError(
             f"配置文件顶层不是映射（{type(raw).__name__}）: {config_path}"
         )
+    # llm 段与 providers 结构漂移归一（code-review item 634ca53039cf）：
+    # llm 为列表/标量（truthy）时 llm.get 抛 AttributeError、providers 为
+    # 标量时 for 循环抛 TypeError，均不在 probe() 捕获的
+    # (yaml.YAMLError, ValueError) 之列，会裸 traceback 破坏「确定性 JSON
+    # 判据」契约。与上方顶层处理同口径转 ValueError。
     llm = raw.get("llm") or {}
+    if not isinstance(llm, dict):
+        raise ValueError(
+            f"配置文件 llm 段不是映射（{type(llm).__name__}）: {config_path}"
+        )
     providers = llm.get("providers") or []
+    if not isinstance(providers, list):
+        raise ValueError(
+            f"配置文件 llm.providers 不是列表"
+            f"（{type(providers).__name__}）: {config_path}"
+        )
     for p in providers:
         if isinstance(p, dict) and p.get("name") == provider_name:
             return p

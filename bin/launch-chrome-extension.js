@@ -124,7 +124,9 @@ function isLocalHostname(hostname) {
  */
 function isExternalUrl(url) {
   if (!url || typeof url !== 'string') return false;
-  if (!url.startsWith('http')) return false;
+  // 放行 ws://、wss://：外部 WebSocket 连接同样进 networkLog 与异常检测，
+  // 否则其连接失败对 hasCriticalAnomalies 不可见，验证结论漏报该类故障（code-review item 90f2565d2d1e）
+  if (!/^(https?|wss?):\/\//i.test(url)) return false;
   try {
     if (isLocalHostname(new URL(url).hostname)) return false;
   } catch {
@@ -376,9 +378,8 @@ async function launchChromeExtension(distPath, opts = {}) {
 
     const endTime = Date.now();
     const anomalies = detectAnomalies(networkLog);
-    const hasCriticalAnomalies = anomalies.some(a =>
-      a.severity === 'high' || a.severity === 'critical'
-    );
+    // 判定范围只含实际会产生的 severity（high）；'critical' 无任何产生来源，已移除死分支（code-review item 26d37b169a48）
+    const hasCriticalAnomalies = anomalies.some(a => a.severity === 'high');
 
     // UI 测试 fail/error（面板未渲染、Console 报错等，与 buildSummary.uiTestFailures 同口径）
     // 纳入 success，防止页面功能全挂时仅凭网络无异常即假通过；超时收卷时 uiResults 为空不受影响
@@ -445,7 +446,8 @@ async function launchChromeExtension(distPath, opts = {}) {
 const SENSITIVE_KEY_PATTERN = /auth|cookie|token|key|secret|credential|password|passwd|session|(?:^|[^a-z0-9])pwd(?:[^a-z0-9]|$)/;
 
 /**
- * 脱敏请求/响应头：保留键名，敏感键（认证/Cookie/密钥类）的值替换为固定占位符
+ * 脱敏请求/响应头：保留键名，敏感键（认证/Cookie/密钥类）的值替换为固定占位符；
+ * URL 形态的值（Referer/Origin 等）额外过 sanitizeUrl 脱敏其查询串
  * networkLog 会随验证产物落盘（--output 文件或 stdout），不落盘密钥；
  * 头检测（checkRequiredHeaders）只判断键名存在性，脱敏不影响
  */
@@ -453,9 +455,15 @@ function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== 'object') return headers;
   const sanitized = {};
   for (const [name, value] of Object.entries(headers)) {
-    sanitized[name] = SENSITIVE_KEY_PATTERN.test(name.toLowerCase())
-      ? '[REDACTED]'
-      : value;
+    if (SENSITIVE_KEY_PATTERN.test(name.toLowerCase())) {
+      sanitized[name] = '[REDACTED]';
+    } else if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+      // 值本身是 URL 的头：其查询串可能携带 token/key 等敏感参数，
+      // 与 sanitizeUrl 同口径脱敏后再落盘，避免经 networkLog 明文泄露（code-review item 1f3f7b7c7a29）
+      sanitized[name] = sanitizeUrl(value);
+    } else {
+      sanitized[name] = value;
+    }
   }
   return sanitized;
 }
@@ -665,8 +673,8 @@ async function runUITests(context, page, consoleErrors = []) {
 // ============================================================================
 
 function buildSummary(anomalies, uiTests = []) {
-  // codeDefects 与 success 判定同口径：只计 high/critical（即 hasCriticalAnomalies 的判定范围）
-  const codeAnomalies = anomalies.filter(a => a.severity === 'high' || a.severity === 'critical');
+  // codeDefects 与 success 判定同口径：只计 high（即 hasCriticalAnomalies 的判定范围）
+  const codeAnomalies = anomalies.filter(a => a.severity === 'high');
   // warning 级问题（如 missing-header）单列，不混入 codeDefects
   const warningAnomalies = anomalies.filter(a => a.severity === 'warning');
   const serviceAnomalies = anomalies.filter(a => a.severity === 'external-service');
@@ -696,6 +704,12 @@ function buildSummary(anomalies, uiTests = []) {
  */
 export function detectTier2Trigger(specDir, projectRoot) {
   const reasons = [];
+
+  // specDir 归一化为绝对路径：相对路径以 projectRoot 为基准解析（与本函数内 src/、dist
+  // 的查找基准一致）。若按进程 cwd 解析，调用方 cwd 与项目根不一致时 .spec.yaml 查找会
+  // 静默 miss，requiresTier2 手动标记失效致 Tier 2 验证被静默跳过（code-review item
+  // 046316689e6c）；cwd==projectRoot 时解析结果与原行为一致
+  specDir = path.isAbsolute(specDir) ? specDir : path.resolve(projectRoot, specDir);
 
   // 1. 检查 .spec.yaml 中的 requiresTier2 标记
   const specYamlPath = path.join(specDir, '.spec.yaml');

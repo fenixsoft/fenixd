@@ -81,7 +81,17 @@ def archive_change(project_root: Path, name: str) -> dict:
                 f"Archive target already exists: {target} — 原位 {change_dir} "
                 f"已被并发重建，误移内容保留在 {moved}，请手工核对处置"
             )
-        shutil.move(str(moved), str(change_dir))
+        try:
+            shutil.move(str(moved), str(change_dir))
+        except OSError as e:
+            # 回滚移回原位自身失败（原位被占、跨设备复制中断等）时内容仍滞留
+            # 在 target/<name> 嵌套层级，报错须带上 moved 实际路径供排障者
+            # 直接定位，与上方并发重建分支的处置口径对齐；转 ValueError 走
+            # main 统一 JSON 错误载荷（OSError 裸抛只显示 errno 文案）。
+            raise ValueError(
+                f"Archive rollback failed: {e} — 回滚移回原位失败，"
+                f"误移内容保留在 {moved}，请手工核对处置"
+            ) from e
         raise ValueError(
             f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
         )

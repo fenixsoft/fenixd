@@ -18,8 +18,10 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
   锁获取/等待结果写日志可观测（concurrent-suite-isolation）。
 
 用法：
-    python3 bin/run_full_suite.py [--timeout <seconds>] [--baseline <ref>]
+    python3 bin/run_full_suite.py [--timeout <seconds>] [--baseline <ref>] [--json]
     python3 bin/run_full_suite.py --baseline HEAD~1 --timeout 1800
+    python3 bin/run_full_suite.py --json [--baseline <ref>]
+      （--json 供脚本消费：日志全部走 stderr，stdout 只含末尾的单一 JSON 文档）
 
 约定：本脚本在项目根（含 .git 的祖先目录）执行；由 run 主树/工作树任意目录调用
 均定位到框架根。
@@ -538,32 +540,46 @@ def main(argv=None) -> int:
                 break
             cur = cur.parent
 
-    os.chdir(project_root)
-    # --json 供脚本消费（code-review item e15ace9e9d3a）：全部 [run_full_suite]
-    # 日志行（主机锁、套件摘要、基线对比清单）改走 stderr，stdout 只保留末尾的
-    # 单一合法 JSON 文档——日志与 JSON 混在同一 stdout 时，消费方对整体
-    # json.loads 会因前导日志行解析失败。
-    log = _log_to_stderr if args.json else print
-    lock = SuiteLock(project_root, log=log)
+    # 入口硬失败兜底（code-review item 840a7a8fd72b）：锁文件建目录/打开
+    # （SuiteLock，.fenix 只读时 OSError）与 Popen 启动（cmd 首元素 pytest 不在
+    # PATH 时 FileNotFoundError ⊂ OSError）等前置失败若裸 traceback 冒出，
+    # --json 模式 stdout 将无任何 JSON，脚本消费方解析失败。统一捕获 OSError
+    # 后转为含 error 字段的结果文档走既有出口（--json 时 stdout 出单一 JSON、
+    # 以非零码退出），与探针类脚本的确定性 JSON 判据出口对齐。
+    try:
+        os.chdir(project_root)
+        # --json 供脚本消费（code-review item e15ace9e9d3a）：全部 [run_full_suite]
+        # 日志行（主机锁、套件摘要、基线对比清单）改走 stderr，stdout 只保留末尾的
+        # 单一合法 JSON 文档——日志与 JSON 混在同一 stdout 时，消费方对整体
+        # json.loads 会因前导日志行解析失败。
+        log = _log_to_stderr if args.json else print
+        lock = SuiteLock(project_root, log=log)
 
-    base = None
-    with lock:
-        # 锁获取失败（等待超时）→ 回退 pid 唯一 basetemp：固定 basetemp 下
-        # 并发套件会在会话开始互相清空对方临时目录，正是主机锁要防的损坏。
-        current = run_suite(
-            project_root, timeout=args.timeout,
-            basetemp_unique=not lock.acquired, log=log,
-        )
-        # baseline 执行纳入同一锁作用域（code-review item b8556d5a478e）：
-        # run_baseline_comparison 会再启一套完整 pytest，「同一主机全量套件
-        # 串行」必须同时覆盖它——否则基线套件可与另一进程的主套件并发执行，
-        # 主机锁只护住一半。锁获取失败时 baseline 与主套件同样回退 pid 唯一
-        # basetemp。
-        if args.baseline:
-            base = run_baseline_comparison(
-                project_root, args.baseline, args.timeout,
+        base = None
+        with lock:
+            # 锁获取失败（等待超时）→ 回退 pid 唯一 basetemp：固定 basetemp 下
+            # 并发套件会在会话开始互相清空对方临时目录，正是主机锁要防的损坏。
+            current = run_suite(
+                project_root, timeout=args.timeout,
                 basetemp_unique=not lock.acquired, log=log,
             )
+            # baseline 执行纳入同一锁作用域（code-review item b8556d5a478e）：
+            # run_baseline_comparison 会再启一套完整 pytest，「同一主机全量套件
+            # 串行」必须同时覆盖它——否则基线套件可与另一进程的主套件并发执行，
+            # 主机锁只护住一半。锁获取失败时 baseline 与主套件同样回退 pid 唯一
+            # basetemp。
+            if args.baseline:
+                base = run_baseline_comparison(
+                    project_root, args.baseline, args.timeout,
+                    basetemp_unique=not lock.acquired, log=log,
+                )
+    except OSError as exc:
+        result = {"error": f"套件启动失败: {exc}", "exit_code": 1}
+        if args.json:
+            print(json_dumps(result))
+        else:
+            print(f"[run_full_suite] {result['error']}", file=sys.stderr)
+        return 1
 
     result = {
         "timed_out": current.get("timed_out"),

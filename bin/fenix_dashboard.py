@@ -139,13 +139,16 @@ def get_active_agents():
         )
         agents = []
         for line in r.stdout.split("\n"):
-            # 旧 ps|grep 管道模式需排除 grep 自身；现 subprocess 直跑 ps，
-            # 管道里没有 grep 进程，子串排除只会误伤 args 含 grep 字样的真实
-            # claude 进程（code-review item d7b426447075）
-            if "claude " not in line:
-                continue
             parts = line.split(None, 3)
             if len(parts) < 4:
+                continue
+            # 旧 ps|grep 管道模式需排除 grep 自身；现 subprocess 直跑 ps，
+            # 管道里没有 grep 进程（code-review item d7b426447075）。
+            # 行尾感知匹配（code-review item ae4edf2f2167）：子串条件
+            # "claude " 会漏计无参数启动的裸 `claude` 进程——其命令行恰以
+            # .../claude 结尾、不含 "claude "；改取首段命令的 basename
+            # 精确判断（node 包装进程、ps 头行等非 claude 可执行不误计）
+            if parts[3].split()[0].rsplit("/", 1)[-1] != "claude":
                 continue
             pid = parts[0]
             cpu = parts[1]
@@ -412,10 +415,15 @@ def render_event_feed(specs):
                 spec_in_msg = n
                 break
 
+        # 统一 100 字符截断（code-review item 91289d75528d）：先截断再高亮，
+        # 含活跃 SPEC 名的超长消息（如完整命令行回显）此前绕过 msg[:100]
+        # 直接 replace，远超 100 字符会撑破 TUI 行宽版式；截断在 ANSI 注入
+        # 前的纯文本上做，转义序列不计长度
+        msg = msg[:100]
         if spec_in_msg:
             msg_display = msg.replace(spec_in_msg, f"{YELLOW}{spec_in_msg}{RESET}")
         else:
-            msg_display = msg[:100]
+            msg_display = msg
 
         lines.append(f"  {DIM}{ts}{RESET} {icon} {msg_display}")
 
@@ -579,6 +587,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Fenix Dashboard — Web / TUI / 项目注册",
     )
+    # --serve 仅作显式声明用（code-review item 3c24b0585dd0）：args.serve
+    # 全文不读取，「--serve 为默认」由 main 尾部 else 分支承载；后续新增
+    # 第三种模式或调整默认行为时须显式处理，勿依赖该隐式默认
     parser.add_argument(
         "--serve", action="store_true", help="启动 Web Dashboard（默认，跨项目监控）"
     )
