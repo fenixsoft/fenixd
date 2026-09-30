@@ -36,8 +36,12 @@ logger = logging.getLogger("fenixd.verify_engine.scenario_static_check")
 # 端口变量绑定字面量（本次事故根因形态：``os.environ.get(
 # 'FENIX_VERIFY_PORT', '57905')`` 兜底），以 PORT 标记 + 邻近数字字面量捕捉。
 _URL_PORT_RE = re.compile(r"(?:https?://[^/\s\"]*:)(\d{2,5})")
+# 标识符分支左边界 (?<![\w\"]) 比照 _PORT_VAR_RE 收窄手法：排除 stdin/env/
+# headers 值里 JSON 字面量键值形态（{"timeout":30000}）——键名紧邻引号/词字
+# 符，冒号后数字是业务值而非端口，误提取会注入失实 stale_literal_port 情报；
+# IP/localhost 分支不加边界（引号包裹的裸 IP:port 是合法命令行形态）
 _HOST_PORT_RE = re.compile(
-    r"(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|[a-zA-Z][a-zA-Z0-9\-]*):(\d{2,5})"
+    r"(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|(?<![\w\"])[a-zA-Z][a-zA-Z0-9\-]*):(\d{2,5})"
 )
 _FLAG_PORT_RE = re.compile(r"(?:--port|-p|--port=|-p=)(?:\s|=)?(\d{2,5})")
 # 左边界用 (?<![A-Za-z]) 而非 \b：事故根因形态 FENIX_VERIFY_PORT 中 PORT

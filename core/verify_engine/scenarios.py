@@ -8,6 +8,7 @@ scenarios.py — 测试场景数据结构定义与校验
 from dataclasses import dataclass, field
 from typing import Any, Optional
 import re
+import math
 
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
 # 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
@@ -566,7 +567,9 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "short": "expected",
             "help": "",
             "example": '"期望的输出内容"',
-            "mode": "post",
+            # include_zero：数值 expected（如 0）按 str() 归一参与匹配，非缺参
+            # （code-review item 01754605c87c）
+            "mode": "include_zero",
         },
     ),
     "file_content": (
@@ -582,7 +585,9 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "short": "expected",
             "help": "",
             "example": '"期望的文件内容"',
-            "mode": "post",
+            # include_zero：数值 expected（如 0）按 str() 归一参与匹配，非缺参
+            # （code-review item 01754605c87c）
+            "mode": "include_zero",
         },
     ),
     "json_output": (
@@ -599,6 +604,16 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "help": "",
             "example": '"data.items.0.name"',
             "mode": "post",
+        },
+        # expected 必填（include_zero：数值 0 是合法 JSON 期望，与 status_code
+        # 同款判空）——缺参时运行期 exact 的 None==None 会产出假通过
+        # （code-review item baaae8c599ae）
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"期望的 JSON 值"',
+            "mode": "include_zero",
         },
     ),
     # ── api 断言 ──
@@ -627,6 +642,17 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "help": "",
             "example": '"data.items.0"',
             "mode": "post",
+        },
+        # expected 必填（code-review item 2cab94c9b2df）：缺 expected 的场景
+        # 须在验收期与其他 api 断言同口径打回，而非耗一轮验证执行后靠运行期
+        # fail-closed 才暴露。mode 用 include_zero——exact 比对下 0/False 是
+        # 合法期望（如 data.code=0），不能按 post 误杀
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"data.items.0 的期望值"',
+            "mode": "include_zero",
         },
     ),
     "response_header": (
@@ -926,6 +952,7 @@ class TestStep:
             description=d.get("description", ""),
             dialog=d.get("dialog", ""),
             # [fenix-ignore:56c49c2fafae] 唯一消费点 browser.py mock_api 已对 status 做 int() 强转+非法值结构化失败（不静默回退 200），数字字符串运行期可正常 mock，所述伪失败不存在；按建议回退 0 反而复活已修复的「4xx mock 静默变 200」缺陷
+            # [fenix-ignore:5a8a2db866a5] or 兜底混同显式 0/None 属纯风格提示且行为无害：status 语义与 timeout/duration 的 has-value 口径不同——0 非合法 mock 状态码且 to_dict 对 status 走真值过滤（显式 0 本就不参与序列化），唯一消费点已 int() 强转兜底，改写收益低于扰动受守卫行的风险
             status=d.get("status", 0) or 0,
             prompt_text=d.get("prompt_text", "") or "",
             command=d.get("command"),
@@ -1266,6 +1293,16 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: timeout 须为正数（秒），收到 {step.timeout}"
             )
+        # 非有限值同款拦截（code-review item bc3618ffb8f5）：_num_field 的
+        # float() 归一放行 "inf"/"nan"/"1e999"，负值拦截覆盖不到；cli_runner
+        # 运行层有 math.isfinite 兜底，api 的 sse_connect duration=inf 时收集
+        # 窗口 deadline 落在无穷远、事件不触顶即无限等待，单场景挂起整轮验证。
+        # 口径对齐运行层（timeout 须为有限数字（秒）），负值已由上方分支报告，
+        # elif 只补 inf/nan 剩余形态，不重复报错。
+        elif step.timeout is not None and not math.isfinite(step.timeout):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: timeout 须为有限数字（秒），收到 {step.timeout}"
+            )
         # sse_connect duration 负值同款拦截（code-review item c0d449652c16）：
         # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场，报错
         # 只剩事件数下限不满足，judge 归因不到「窗口秒数为负」的配置根因。
@@ -1273,6 +1310,13 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         if step.duration and step.duration < 0:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: duration 须为正数（秒），收到 {step.duration}"
+            )
+        # 非有限值同款拦截（口径同上方 timeout 分支，code-review item
+        # bc3618ffb8f5）：duration=inf 的收集窗口 deadline 落在无穷远是本条
+        # 拦截的主通道
+        elif step.duration is not None and not math.isfinite(step.duration):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: duration 须为有限数字（秒），收到 {step.duration}"
             )
 
     for i, a in enumerate(scenario.assertions):

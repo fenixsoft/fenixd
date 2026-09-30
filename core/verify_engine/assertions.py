@@ -111,6 +111,14 @@ class AssertionRunner:
                     result = await handler(page, assertion)
                     result.setdefault("type", a_type)
                     result.setdefault("layer", 0)
+                    # 统一补 label（code-review item 17bc55668597）：仅部分
+                    # handler（element_visible/element_count/element_enabled/
+                    # no_click_interception 等）在结果里自带 label，其余
+                    # （text_match/z_index_order/alignment 等）不带，正常
+                    # 通过/失败路径的 label 缺失使下游证据展示口径不一致；
+                    # setdefault 不覆盖 handler 已携带的值，各 handler 既有
+                    # label 逻辑保持原样。
+                    result.setdefault("label", assertion.get("label", ""))
                     results.append(result)
                 except Exception as e:
                     # 兜底补齐定位上下文：handler 内未预检路径（选择器语法
@@ -569,7 +577,9 @@ class AssertionRunner:
     # regex 模式单次匹配的回溯预算（秒）：compile 通过但呈灾难性回溯的
     # 正则（嵌套量词形态）在匹配时无超时保护，长文本下会同步阻塞
     # AssertionRunner 直至回溯结束，整轮验证被单个断言拖死；planner 产出
-    # 属半可信输入，单次匹配超时按「不匹配」收场，交由轮询按普通失败上报。
+    # 属半可信输入，单次匹配超时按「不匹配」收场，交由轮询按普通失败上报
+    # （匹配超时轮以带「正则匹配超时」归因的 re.error 抛给调用方定向
+    # 标注，见 _regex_search）。
     _REGEX_MATCH_TIMEOUT_S = 1.0
 
     @classmethod
@@ -578,14 +588,22 @@ class AssertionRunner:
 
         优先用第三方 regex 库的 timeout 参数（覆盖嵌套量词等全部灾难性
         回溯形态，超时抛 TimeoutError）；库不可用时退回 stdlib re（行为
-        同旧版，无超时保护）。任何异常一律按不匹配收场——抛错会被
-        _assert_text_match 的 except 当「元素尚未渲染」空转至超时。
+        同旧版，无超时保护）。其余异常一律按不匹配收场——抛错会被
+        _assert_text_match 的 except 当「元素尚未渲染」空转至超时；仅
+        匹配超时重抛为带归因的 re.error（code-review item b34af3a4195b，
+        与 api 侧 _TimeoutRegex 的定向归因口径对齐），由
+        _assert_text_match 单独捕获记入结果 error，归因不被吞。
         """
         if _regex_mod is not None:
             try:
                 return bool(
                     _regex_mod.search(pattern, text, timeout=cls._REGEX_MATCH_TIMEOUT_S)
                 )
+            except TimeoutError:
+                raise re.error(
+                    f"正则匹配超时（>{cls._REGEX_MATCH_TIMEOUT_S}s，"
+                    f"疑似灾难性回溯）: {pattern!r}"
+                ) from None
             except Exception:
                 return False
         return bool(re.search(pattern, text))
@@ -709,6 +727,7 @@ class AssertionRunner:
         actual = ""
         passed = False
         last_error = ""
+        regex_error = ""
 
         while True:
             try:
@@ -730,7 +749,14 @@ class AssertionRunner:
                         await self._locator(page, selector).text_content(timeout=interval_ms)
                     ) or ""
 
-                passed = self._text_matches(actual, expected, mode)
+                try:
+                    passed = self._text_matches(actual, expected, mode)
+                except re.error as e:
+                    # 正则匹配超时（灾难性回溯）的定向归因（code-review item
+                    # b34af3a4195b，与 api 侧 _TimeoutRegex 口径对齐）：按普通
+                    # 失败继续轮询（文本可能随渲染变化），但归因不经「元素尚未
+                    # 渲染」兜底、随结果 error 带出，actual 保留已读文本。
+                    regex_error = str(e)
                 if passed:
                     break
             except Exception as e:
@@ -751,6 +777,9 @@ class AssertionRunner:
             "mode": mode,
             "pass": passed,
             **({"error": last_error} if not passed and last_error else {}),
+            # 正则超时归因后置（同 key 时覆盖读数异常）：后者只说明「元素尚未
+            # 渲染」，定向的正则归因对 judge 判别场景缺陷更有价值。
+            **({"error": regex_error} if not passed and regex_error else {}),
             **({"note": clamp_note} if clamp_note else {}),
         }
 
@@ -776,6 +805,8 @@ class AssertionRunner:
                 "error": "缺少 text/expected 字段",
             }
 
+        # 逐元素取数触顶标注（页面级降级分支不产生），随结果 note 带出
+        budget_note = ""
         if selector:
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配
             try:
@@ -789,8 +820,21 @@ class AssertionRunner:
                 # 已渲染值确定性误判为失败；input_value 取值异常时回退
                 # textContent，取值异常不炸断言收集（落下方 except 按
                 # 普通失败收场，单次读取限时 3s 同方法既有等待口径）。
+                # 总预算防线（code-review item 6405221a79ad）：循环本身无
+                # deadline，宽泛选择器意外命中大量元素时 元素数×3s 可把单条
+                # 断言拖到分钟级占住场景协程（对比 text_match/
+                # attribute_match 的 timeout 钳制预算防线），触顶截断剩余
+                # 元素、已取文本仍参与匹配，并在结果 note 注明。
+                deadline = time.monotonic() + _MAX_POLL_TIMEOUT_MS / 1000
                 texts = []
                 for loc in await page.locator(selector).all():
+                    if time.monotonic() >= deadline:
+                        budget_note = (
+                            f"匹配元素过多，逐元素取数超出总预算"
+                            f"（{_MAX_POLL_TIMEOUT_MS}ms）已截断，"
+                            f"仅检查前 {len(texts)} 个匹配元素"
+                        )
+                        break
                     tag = await loc.evaluate(
                         "el => el.tagName?.toLowerCase()", timeout=3000
                     )
@@ -830,6 +874,7 @@ class AssertionRunner:
             "layer": 3,
             "text": text,
             "pass": passed,
+            **({"note": budget_note} if budget_note else {}),
         }
 
     async def _assert_attribute_match(self, page, a: dict) -> dict:
@@ -970,11 +1015,19 @@ class AssertionRunner:
         通过 assertion 的 _network_errors 字段传入。
         """
         errors = a.get("_network_errors", [])
+        # 收集侧触顶截断标记（browser._capped_append）不计入 errors：标记是
+        # 「后续还有错误被截断」的信号而非真实 4xx/5xx 记录，与 console 侧
+        # （_assert_no_console_error）同口径剔除并以 truncated 标志透出
+        # （code-review item 58ce31605491），judge 读错误清单不再混入标记条目
+        truncated = any(e.startswith("[truncated]") for e in errors)
+        if truncated:
+            errors = [e for e in errors if not e.startswith("[truncated]")]
         return {
             "type": "no_network_error",
             "layer": 3,
             "pass": len(errors) == 0,
             "errors": errors,
+            "truncated": truncated,
         }
 
     async def _assert_no_auth_error(self, page, a: dict) -> dict:
@@ -1159,13 +1212,27 @@ class AssertionRunner:
             });
         }""")
 
+        if not positions:
+            # 空列表按「元素不存在」确定性失败（code-review item 970974a19cd9）：
+            # 存在性预检通过后、evaluate_all 执行前的竞态窗口内元素被全部移除
+            # （或存在性检查读到瞬态节点后未落地）时，此前会落入下方跳过分支
+            # 按 pass 收场，漏检「列表未渲染/行全消失」类回归；与同文件其余
+            # DOM 断言对元素缺失一律显式失败的口径一致。
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
+                "error": "元素不存在",
+            }
+
         if len(positions) < 2:
             return {
                 "type": "alignment",
                 "layer": 4,
                 "selector": selector,
                 "pass": True,
-                "note": "少于2个元素，跳过对齐检查",
+                "note": "仅1个元素，跳过对齐检查",
             }
 
         values = [p[axis] for p in positions]

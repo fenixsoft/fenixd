@@ -44,6 +44,11 @@ def _has_nested_quantifier(pattern: str) -> bool:
         重复次数有限、内层定长（``{m}``）切分唯一，均不构成指数级回溯，不拦；
       - 重叠分支等结构不典型的形态（如 ``(a|aa)+``）不识别，属刻意漏拦：
         漏拦的代价是慢，误拦的代价是拒绝合法场景断言。
+      - 内层 ``{m,n}`` 范围量词亦按变长计：有界却仍拦（``(a{1,2})+`` 类
+        有界形态同样指数回溯，与 ``(?:\\d{1,3}\\.)*`` 类以分隔符消歧的
+        安全形态须语义分析才能区分）——后者是 IP/版本号惯用写法，会被
+        确定性拒绝（fail-closed 可见化，拒绝文案附改写建议），误拦面比
+        「宁少拦」宣称更宽，属已知取舍。
     跳过转义序列与字符类（``[*+]`` 内的量词字符是字面量）。
     """
     group_has_variable_quant: list[bool] = []
@@ -213,7 +218,9 @@ class CliAssertionRunner:
                 if _has_nested_quantifier(str(expected)):
                     raise ValueError(
                         f"正则含嵌套量词高危形态（组内变长量词再被无上界量词"
-                        f"化，灾难性回溯风险），已拒绝执行: {expected!r}"
+                        f"化，灾难性回溯风险），已拒绝执行: {expected!r}；"
+                        f"改写建议：把无上界量词上提为顶层有界重复，如 "
+                        f"(?:\\d{{1,3}}\\.)* → (?:[0-9]{{1,3}}\\.){{0,20}}"
                     )
                 try:
                     m = bool(re.search(str(expected), text))
@@ -286,11 +293,13 @@ class CliAssertionRunner:
                     f"exists 非法，须为布尔或 'true'/'false'/'1'/'0': {raw!r}"
                 )
         raw_path = a.get("path", "")
-        if isinstance(raw_path, str) and not raw_path.strip():
+        if raw_path is None or (isinstance(raw_path, str) and not raw_path.strip()):
             # 空/空白 path 经 Path("") 归一为 "." 落回验证树根本体——根本体
-            # exists() 恒真产出假通过。与缺 expected 的显式失败口径对齐
-            # （验收期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住
-            # 运行期自愈/绕过验收的调用路径）
+            # exists() 恒真产出假通过；显式 null 经 Path(str(None)) 伪装成
+            # 字面量 "None" 路径，exists=false 断言恒通过，同按缺参失败。与
+            # 缺 expected 的显式失败口径对齐（验收期必填表
+            # ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/绕过
+            # 验收的调用路径）
             return {
                 "type": "file_exists",
                 "layer": 1,
@@ -318,13 +327,17 @@ class CliAssertionRunner:
 
     async def _assert_dir_contains(self, a: dict) -> dict:
         """断言目录通配匹配数量在 [min, max] 内（glob 相对验证树根）。"""
-        glob = str(a.get("glob", ""))
+        raw_glob = a.get("glob")
+        # 先拦 None 再字符串化：显式 null 经 str(None)="None" 会伪装成非空串
+        # 绕过空值拦截（字面量 "None" 路径 glob 计 0，无 min/max 时恒通过），
+        # 与空/缺失 glob 同按缺参失败
+        glob = "" if raw_glob is None else str(raw_glob)
         if not glob.strip():
-            # 空/缺失 glob 经 _resolve_under_root 落回树根本体并走下方
-            # ``if glob else []`` 计 0——无 min/max 声明时恒通过。词表将 glob
-            # 列为必填（ASSERTION_REQUIRED_FIELDS mode "post"，缺失/空串均
-            # 非法，本库无「glob 缺省=只验目录存在」语义），与缺 expected 的
-            # 显式失败口径对齐
+            # 空/缺失/显式 null glob 经 _resolve_under_root 落回树根本体并走
+            # 下方 ``if glob else []`` 计 0——无 min/max 声明时恒通过。词表将
+            # glob 列为必填（ASSERTION_REQUIRED_FIELDS mode "post"，缺失/
+            # 空串均非法，本库无「glob 缺省=只验目录存在」语义），与缺
+            # expected 的显式失败口径对齐
             return {
                 "type": "dir_contains",
                 "layer": 1,
@@ -403,13 +416,15 @@ class CliAssertionRunner:
         expected = a.get("expected")
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
-        # exact 空串放行（expected is None 才算缺参）：「命令输出恰为空」与
-        # _assert_file_content 的「文件恰为空」是同类合法期望，判空口径对齐；
-        # 不能简单豁免整个 exact 模式——exact 缺参（expected=None）仍须按缺参
-        # 失败，否则会滑进 _match 与 str(None)="None" 比对
-        if not expected and not (mode == "exact" and expected == ""):
-            # 显式失败而非静默恒真：缺参时 contains 的 `"" in actual` 对任意
-            # 输出恒真、regex 空串恒匹配，会产出假通过；与 web 侧
+        # 判空口径（expected is None 才算缺参）：None 恒拦——exact 缺参仍须按
+        # 缺参失败，否则会滑进 _match 与 str(None)="None" 比对；空串仅拦
+        # contains/regex（`"" in actual` 恒真、空正则恒匹配），exact 空串是
+        # 「命令输出恰为空」的合法期望故放行（与 _assert_file_content 的
+        # 「文件恰为空」口径对齐）；数值 expected（如 0）非空值，按 str()
+        # 归一参与 _match 匹配，与 api 侧数值归一放行口径一致，不按缺参误拦
+        if expected is None or (expected == "" and mode != "exact"):
+            # 显式失败而非静默恒真：缺参/空串的 contains 对任意输出恒真、
+            # regex 空串恒匹配，会产出假通过；与 web 侧
             # text_contains 缺参口径对齐
             return {
                 "type": "output_match",
@@ -424,7 +439,8 @@ class CliAssertionRunner:
         passed = self._match(actual, expected, mode, negate)
         # 证据纪律：报告只保留命中片段（64KB 内、前后文截断），不膨胀
         snippet = ""
-        if not passed and expected:
+        # is not None 判空：数值 expected（如 0）匹配失败时也带命中片段证据
+        if not passed and expected is not None:
             idx = actual.find(str(expected))
             if idx >= 0:
                 snippet = actual[max(0, idx - 80) : idx + len(str(expected)) + 80]
@@ -470,13 +486,14 @@ class CliAssertionRunner:
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
         missing = expected is _MISSING or expected is None
-        if missing or (not expected and mode != "exact"):
+        if missing or (expected == "" and mode != "exact"):
             # 显式失败而非静默恒真：缺 expected 时 contains 的 `"" in 内容`
-            # 恒真、regex 空串恒匹配，会产出假通过；exact 空串是空文件合法
-            # 期望故放行（仅显式空串，缺参/null 均按缺参失败）。与
-            # _assert_output_match 缺 expected 口径对齐（验收期必填表
-            # ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/绕过
-            # 验收的调用路径）
+            # 恒真、regex 空串恒匹配，会产出假通过；空串仅拦 contains/regex，
+            # exact 空串是空文件合法期望故放行（仅显式空串，缺参/null 均按
+            # 缺参失败）；数值 expected（如 0）非空值，按 str() 归一参与
+            # 匹配，不按缺参误拦（与 _assert_output_match 及 api 侧数值归一
+            # 口径对齐）。验收期必填表 ASSERTION_REQUIRED_FIELDS 是前置
+            # 防线，此处兜住运行期自愈/绕过验收的调用路径
             return {
                 "type": "file_content",
                 "layer": 3,
@@ -577,7 +594,7 @@ class CliAssertionRunner:
                     "error": f"stdout 非合法 JSON: {stdout[:120]}",
                 }
         path = a.get("path") or ""
-        expected = a.get("expected")
+        expected = a.get("expected", _MISSING)
         # 哨兵区分「路径不存在」与「显式 null」（与 api 侧 _assert_json_path
         # 口径对齐）：expected=null 且路径缺失时 None==None 会假通过
         actual = evaluate_json_path(data, path, missing=_MISSING) if path else data
@@ -603,6 +620,23 @@ class CliAssertionRunner:
                     f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
                     f"无法与 expected 对比"
                 ),
+            }
+        # fail-closed：比照 _assert_file_content 缺 expected 预检（None 是
+        # 「未设置」哨兵非显式 null）——缺参时 exact 的 None==None 会把目标
+        # 值为显式 null 的假通过计入裁决，contains 则滑进 str(None)="None"
+        # 子串比对（验收期必填表 ASSERTION_REQUIRED_FIELDS 已登记 expected，
+        # 此处兜住运行期自愈/绕过验收的调用路径）
+        if expected is _MISSING or expected is None:
+            return {
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": path,
+                "expected": None,
+                "mode": mode,
+                "negate": negate,
+                "pass": False,
+                "error": "缺少 expected 字段",
             }
         # 匹配逻辑与 _match 共用单一实现；exact 走结构相等（JSON 值可非字符串，
         # 不做 str()/strip），与文本断言的 strip 语义以 exact_strip 开关区分

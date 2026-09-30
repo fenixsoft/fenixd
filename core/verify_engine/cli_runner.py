@@ -168,7 +168,35 @@ class CliRunner(VerifyRunner):
                     "error": f"env 键须为非空且不含 '=' 或控制字符: {_k!r}",
                 }
         env = self._build_env(declared_env)
-        stdin = str(step_dict.get("stdin") or "")
+        for _k in declared_env:
+            # 场景 env 值含 NUL 空字节（场景 JSON \u0000 转义可构造）：
+            # create_subprocess_shell/exec 在 spawn 阶段 os.fsencode 值时抛
+            # ValueError: embedded null byte 穿出 execute（下方 except 只捕
+            # FileNotFoundError）——校验 _build_env 落键的 _interpolate_env
+            # 插值终值，归一为本步骤结构化失败（code-review item
+            # 1878eb42b3d7，与 env 非 dict/env 键非法同规），判 error 与
+            # cwd 缺失同口径：场景定义缺陷不进 product-bug 管道
+            # （item 74368415e965）
+            if "\x00" in env[str(_k)]:
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"env 值不得含 NUL 空字节: {_k!r}",
+                }
+        stdin = step_dict.get("stdin") or ""
+        if stdin and not isinstance(stdin, str):
+            # 场景 stdin 非字符串形态（dict/list 等）：str() 强转会把 Python
+            # repr（如 "{'a': 1}"）当文本静默注入子进程标准输入——归一为本
+            # 步骤结构化失败（code-review item 166d6bced5d5，与 env 非 dict/
+            # timeout 非法同规），判 error 与 cwd 缺失同口径：场景定义缺陷
+            # 不进 product-bug 管道（item 74368415e965）
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": f"stdin 须为字符串，收到 {type(stdin).__name__}",
+            }
         try:
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
             # 改写成缺省 60s，与 api 侧 _execute_http_request 的 timeout 口径
@@ -388,6 +416,7 @@ class CliRunner(VerifyRunner):
             p.resolve().relative_to(root_path.resolve())
         except ValueError:
             return None
+        # [fenix-ignore:5f27f4a2d378] cwd 含 NUL 时上方 p.resolve() 先抛 ValueError 已被 except 捕获返回 None（即便落至 is_dir()，pathlib 自身也吞 ValueError 返 False），结构化 cwd 缺失口径已在位，所述穿出路径不存在
         return p if p.is_dir() else None
 
     def _build_env(self, declared_env: dict) -> dict:

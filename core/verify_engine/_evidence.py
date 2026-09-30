@@ -11,7 +11,7 @@ import re
 _EVIDENCE_LIMIT = 64 * 1024  # 证据 64KB 截断上限
 
 
-def _truncate(text: str) -> tuple:
+def _truncate(text: str) -> tuple[str, bool]:
     """证据截断：超过 64KB（UTF-8 字节口径）截断并带截断标记。返回 (截断后文本, truncated)。"""
     if text is None:
         return "", False
@@ -20,7 +20,9 @@ def _truncate(text: str) -> tuple:
     encoded = text.encode("utf-8", errors="replace")
     if len(encoded) > _EVIDENCE_LIMIT:
         return encoded[:_EVIDENCE_LIMIT].decode("utf-8", errors="ignore"), True
-    return text, False
+    # 未截断分支同样清洗：归一到「必可 UTF-8 编码」口径，与截断分支对称，
+    # 防孤立代理字符原样进入证据链、把 UnicodeEncodeError 拖到 json 落盘时才炸
+    return text.encode("utf-8", errors="replace").decode("utf-8"), False
 
 
 def _interpolate_env(value: str, env: dict) -> str:
@@ -29,6 +31,8 @@ def _interpolate_env(value: str, env: dict) -> str:
         return value
 
     def _repl(m):
-        return env.get(m.group(1), m.group(0))
+        # str() 兜底：env 值可能非字符串（如 YAML env 映射天然产出 int/dict），
+        # 原样作为 re.sub 替换串会抛 "replacement must be a string"
+        return str(env.get(m.group(1), m.group(0)))
 
     return re.sub(r"\{env:([^}]+)\}", _repl, value)

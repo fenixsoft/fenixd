@@ -93,6 +93,9 @@ class VerifyRunner:
         返回结构必须含 ``scenario_id`` / ``status`` / ``step_results`` /
         ``assertion_results``（裁决链只依赖这两者的 pass/layer 字段），
         ``screenshots`` / ``visual_results`` 恒为列表（CLI/API 恒为空）。
+        ``step_results`` 每个条目必含布尔 ``success`` 键：新增返回点须显式
+        写布尔 success，缺键会被 determine_scenario_status 按上游畸形判
+        fail 兜底。
         """
         raise NotImplementedError
 
