@@ -162,11 +162,19 @@ class RRollbackMixin:
                 # defense-in-depth 兜底仅清理状态，避免双入队导致无限重派
                 # （worker 异常 → 入队 → 再 worker 异常 → 再入队…）。
                 # 未入队的残余场景由 recovery 的 reviewing 分支兜底拾取。
+                # 派发退避与另两条回滚车道同口径（code-review item
+                # 9d6d6fc2cbf4）：reviewing 的恢复链（recovery 重触发
+                # spec_reviewing → _enqueue → _process_queue）同样经
+                # _dispatch_backoffed 门——缺退避字段该门恒放行，构造失败/
+                # 快照路径异常这类常确定性复现的派发异常会按恢复扫描节奏
+                # 无节流 rollback→重触发循环。条目退避期内留队列、过期自然
+                # 恢复（_dispatch_backoffed 既有语义）。
                 self._pm.state_machine.update_spec(
                     spec_name,
                     {
                         "reviewer_run": None,
                         "error": f"spec-review-incomplete: dispatch exception: {exc}",
+                        "_dispatch_backoff_until": backoff_until,
                     },
                 )
                 self._pm.logger.warning(
@@ -400,6 +408,22 @@ class RRollbackMixin:
             f"({', '.join(conflict_files)})。{fate_desc}{overlap_desc}。"
             f"逐文件找回：{recover_cmds}"
         )
+        # ERROR 留痕按条目去向分流（code-review item 4eab9c81e3a5）：与上方
+        # fate_desc 口径对齐——已自动 drop 的条目不在 stash 栈中（stash show /
+        # stash list 均不可见），找回路径是按 sha 逐文件 git show（gc 前有效），
+        # 不能沿用「stash 保留」的固定文案误导事后对账与人工找回。
+        if fate.get("kept", True):
+            error_note = (
+                f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动"
+            )
+        else:
+            recover_hint = (
+                f"stash 条目已自动 drop，可按 commit {short_sha} 逐文件 "
+                f"git show {sha}:<file> 找回被丢弃改动（gc 前有效）"
+                if sha
+                else "stash 条目已被自动 drop"
+            )
+            error_note = f"'{spec_name}' {msg} —— {recover_hint}"
         # admin 告警直发（fix-mergeback-stashpop-silent-loss D1）：低频事件、
         # 无风暴风险，不加节流。任何异常都不阻塞 merge-back 主流程。
         self._emit_mergeback_alert(
@@ -407,7 +431,7 @@ class RRollbackMixin:
             "stash_pop_conflict",
             {"error": msg},
             f"stash pop conflict 上报失败 '{spec_name}'（非阻塞）",
-            f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
+            error_note,
             description,
             {
                 "conflict_files": list(conflict_files),
@@ -441,9 +465,13 @@ class RRollbackMixin:
         任何异常都不阻塞 merge 结果处理主流程。
         """
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+        # 找回/核对指引指向分支本体（code-review item c48bce2fa85e）：本车道
+        # 不 stash、不 merge、不 pop，主树零污染——不存在 stash 条目可供
+        # 「查条目去向」，也没有改动被丢弃，MUST NOT 整段复制 stash pop
+        # 站点的溯源文案把 Administrator 引向不存在的 stash 现场。
         recover_cmds = (
-            "git stash list 查条目去向；逐文件 git show <sha>:<file> 核对"
-            "（如 git show stash@{0}:<file>）"
+            f"分支 '{branch}' 改动完整保留，git log/git diff 该分支即可核对；"
+            f"核对主树重叠改动用 git status/git diff"
         )
         # 处置指引对齐自动 merge-only 重试车道语义（code-review item
         # f64b8009ab7b）：提交/stash 重叠改动后由周期复查消费者自动重试，
