@@ -308,7 +308,17 @@ class SpecReviewManager:
                     if self.pm_engine is not None
                     else None
                 ),
-                extra_updates={"reviewer_run": None, "_review_attempts": 0},
+                extra_updates={
+                    "reviewer_run": None,
+                    "_review_attempts": 0,
+                    # 与否决冻结站点及四处通过收口对齐清零否决计数（code-review
+                    # item 10592411f0b1）：冻结前可能已记录 rejected 次数，陈旧
+                    # 计数会使解冻重走评审时首次否决即达 MAX_REJECT_REDO、跳过
+                    # 「初次否决 + 复评确认」的有界自动复评直接冻结转人工。
+                    # _review_rejection_class 按既有清零口径保留作最后打回分类
+                    # 留痕。
+                    "_review_rejections": 0,
+                },
             )
             return False
 
@@ -319,9 +329,13 @@ class SpecReviewManager:
         # ② 派发前快照（写入边界校验的基线）
         snapshot = self._take_snapshot(spec_name)
         snapshot_dir = self.project_root / ".fenix" / "spec-review" / spec_name
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
         snapshot_path = snapshot_dir / "snapshot.json"
         try:
+            # mkdir 同入 try（code-review item 26df83a3df5c）：.fenix/spec-review
+            # 不可写（磁盘满/权限）时 OSError 与下方快照写入同口径 WARNING 降级，
+            # 不逃出本方法留下「锚点已落盘、run 未派发」的残余（派发异常须收口
+            # 锚点、不得留残余的不变量，见下方 ③ 的注释自述）。
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
             # 原子写（tempfile + os.replace，同 engine._write_impl_result_snapshot
             # 手法，code-review item f851cefd6aa4）：快照是写入边界校验（SPEC 目录
             # 删除比对）的唯一基线，旧实现直接 write_text，进程中途崩溃/磁盘满会留
@@ -459,7 +473,11 @@ class SpecReviewManager:
         result_path = spec_review_result_path(self.project_root, spec_name)
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            # UnicodeDecodeError 非 OSError 子类（与本文件既有同族收口一致，
+            # code-review item f818a54f3297）：非 UTF-8/多字节中截断的结果文件
+            # 按读取失败走 _handle_review_failure 的分类/重试/冻结收口，不逃出
+            # 本方法。
             self.logger.warning("spec_review", f"结果文件读取失败: {spec_name}: {e}")
             self._handle_review_failure(spec_name, f"结果文件读取失败: {e}")
             return False
@@ -736,16 +754,15 @@ class SpecReviewManager:
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
-                    # 脏文件判定按 porcelain 首两字符逐位语义展开，覆盖 MM/AM/MT
-                    # 等组合态（仅匹配三种前缀会让组合态脏文件漏出快照，评审期
-                    # 改动随之漏出 _verify_snapshot 的 WARNING 留痕）：
-                    # - ??：未跟踪；
-                    # - index 列 M/A：暂存改动或新增（M /MM/MT/AM/A …）；
-                    # - worktree 列非空格：工作区有未暂存改动（ M/T/RM …）。
+                    # 脏文件判定：porcelain 首两字符（index 列/工作区列）任一非
+                    # 空格即脏——覆盖 ??、MM/AM/MT 组合态，及 index 列 D/R/C 的
+                    # 暂存删除/重命名/拷贝（code-review item 0e6649a88334：旧判据
+                    # index 列仅认 M/A，'D ' 两列均不命中、暂存删除漏出快照）。
+                    # dirty_files 仅作 _verify_snapshot 的 WARNING 留痕、不作硬门，
+                    # 放宽判据无行为安全风险；'!!'（assume-unchanged/skip-worktree）
+                    # 默认 porcelain 输出不含，语义不受影响。
                     status = line[:2]
-                    is_dirty = status == "??" or (
-                        len(status) == 2 and (status[0] in "MA" or status[1] != " ")
-                    )
+                    is_dirty = len(status) == 2 and (status[0] != " " or status[1] != " ")
                     if not is_dirty:
                         continue
                     path = _parse_porcelain_path(line)
@@ -894,32 +911,32 @@ class SpecReviewManager:
             if not resolved.exists():
                 return f"repairs 路径不存在: {path}"
 
-        # 2. 快照比对（需要从临时文件加载派发前快照）
-        snapshot_path = self.project_root / ".fenix" / "spec-review" / spec_name / "snapshot.json"
-        if snapshot_path.exists():
+        # 2. 快照比对（需要从临时文件加载派发前快照；读取/解析抽公共助手
+        # _load_snapshot_or_none 与 _artifact_landed_valid 共用，不再各复制一份
+        # ——code-review item ade5d0dfdc2b）
+        snapshot, snap_err_type, snap_err_msg = self._load_snapshot_or_none(spec_name)
+        if snapshot is not None:
             try:
-                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                # 快照可能被外部写成合法但非对象的 JSON（如 []），_verify_snapshot
-                # 的 .get 会抛 AttributeError 逃出 consume_review_result——按读取
-                # 失败同款口径降级：抛 TypeError 走下方 WARNING 降级分支。
-                if not isinstance(snapshot, dict):
-                    raise TypeError(f"快照非 JSON 对象: {type(snapshot).__name__}")
                 snapshot_err = self._verify_snapshot(spec_name, snapshot)
                 if snapshot_err:
                     return snapshot_err
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
-                # 读取失败不再静默放行（code-review item 5d38e8dd6478 / 6a3f77476d0f）：
-                # 快照是 SPEC 目录完整性硬门（删除检测）的唯一依据，缺失/损坏时
-                # 旧实现 pass 静默放行、且无日志——越界删除将无人发现。Non-UTF8
-                # 内容抛 UnicodeDecodeError（非 OSError 子类）此前还会直接逃出本方法。
-                # 记 WARNING 明确降级（保留既有放行语义，但使降级可观测）。
-                _logger.warning(
-                    "spec_review: 快照读取失败 '%s'（%s，跳过目录完整性比对，"
-                    "删除检测降级）: %s",
-                    spec_name,
-                    type(e).__name__,
-                    e,
-                )
+            except TypeError as e:
+                # 与读取失败同口径降级（沿用抽助手前 verify 位于读取 try 内的
+                # 防御行为，不逃出本方法）。
+                snap_err_type, snap_err_msg = type(e).__name__, str(e)
+        if snap_err_type is not None:
+            # 读取失败不再静默放行（code-review item 5d38e8dd6478 / 6a3f77476d0f）：
+            # 快照是 SPEC 目录完整性硬门（删除检测）的唯一依据，缺失/损坏时
+            # 旧实现 pass 静默放行、且无日志——越界删除将无人发现。Non-UTF8
+            # 内容抛 UnicodeDecodeError（非 OSError 子类）此前还会直接逃出本方法。
+            # 记 WARNING 明确降级（保留既有放行语义，但使降级可观测）。
+            _logger.warning(
+                "spec_review: 快照读取失败 '%s'（%s，跳过目录完整性比对，"
+                "删除检测降级）: %s",
+                spec_name,
+                snap_err_type,
+                snap_err_msg,
+            )
 
         # 3. status 与改动一致性
         status = review_data.get("status")
@@ -935,6 +952,36 @@ class SpecReviewManager:
             return "rejected 状态伴随文件改动"
 
         return None
+
+    def _load_snapshot_or_none(
+        self, spec_name: str
+    ) -> Tuple[Optional[dict], Optional[str], Optional[str]]:
+        """加载派发前快照 JSON（_check_write_boundary 与 _artifact_landed_valid 共用）。
+
+        「读 snapshot.json → json.loads → 非 dict 抛 TypeError → 降级」此前在两个
+        调用点各复制一份，且已为同一缺陷（5d38e8dd6478）两次成对修改（code-review
+        item ade5d0dfdc2b）——抽公共入口，后续再补异常类（如 UnicodeDecodeError
+        家族）只改一处，防人肉同步漂移。快照可能被外部写成合法但非对象的 JSON
+        （如 []），_verify_snapshot 的 .get 会抛 AttributeError 逃出调用方——按
+        读取失败同款口径降级：抛 TypeError 归入读取失败。
+
+        Returns:
+            (snapshot, None, None)：快照存在且为 JSON 对象；
+            (None, None, None)：快照文件不存在（调用方跳过比对）；
+            (None, 异常类型名, 异常消息)：读取失败/非 JSON 对象（调用方记
+            WARNING 降级）。
+        """
+        snapshot_path = self.project_root / ".fenix" / "spec-review" / spec_name / "snapshot.json"
+        if not snapshot_path.exists():
+            return (None, None, None)
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            if not isinstance(snapshot, dict):
+                raise TypeError(f"快照非 JSON 对象: {type(snapshot).__name__}")
+            return (snapshot, None, None)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
+            # Non-UTF8 内容抛 UnicodeDecodeError（非 OSError 子类），显式收口。
+            return (None, type(e).__name__, str(e))
 
     # ── 故障重试 ────────────────────────────────────────────────
 
@@ -996,7 +1043,11 @@ class SpecReviewManager:
             # JSON 解析
             try:
                 data = json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                # UnicodeDecodeError 非 OSError 子类（与本文件既有同族收口一致，
+                # code-review item 1bba3286c4fb）：run 中途崩溃留下的多字节中截断
+                # 产物按「产物非法」返回 (False, None) 走既有重试语义，不逃出本
+                # 方法——dispatch_review 的 run 失败路径直调本方法且无兜底 try。
                 return (False, None)
 
             if not isinstance(data, dict):
@@ -1007,31 +1058,27 @@ class SpecReviewManager:
             if status not in ("approved", "repaired"):
                 return (False, None)
 
-            # 快照 spec 一致性校验（复用 _verify_snapshot）
-            snapshot_path = (
-                self.project_root / ".fenix" / "spec-review" / spec_name / "snapshot.json"
-            )
-            if snapshot_path.exists():
+            # 快照 spec 一致性校验（复用 _verify_snapshot；读取/解析抽公共助手
+            # _load_snapshot_or_none 与 _check_write_boundary 共用，不再各复制
+            # 一份——code-review item ade5d0dfdc2b）
+            snapshot, snap_err_type, snap_err_msg = self._load_snapshot_or_none(spec_name)
+            if snapshot is not None:
                 try:
-                    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                    # 与 _check_write_boundary 同款：快照为合法但非对象的 JSON 时，
-                    # _verify_snapshot 的 .get 会抛 AttributeError，被本方法外层
-                    # except AttributeError 静默吞成「产物非法」且无留痕——按读取
-                    # 失败同款口径降级（抛 TypeError 走下方 WARNING）。
-                    if not isinstance(snapshot, dict):
-                        raise TypeError(f"快照非 JSON 对象: {type(snapshot).__name__}")
                     snapshot_err = self._verify_snapshot(spec_name, snapshot)
                     if snapshot_err:
                         return (False, None)
-                except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
-                    # 与 _check_write_boundary 同款：读取失败记 WARNING 而非静默
-                    # 放行（code-review item 5d38e8dd6478——本文件的同款快照加载
-                    # 代码需一并修正）。
-                    self.logger.warning(
-                        "spec_review",
-                        f"产物判定快照读取失败 '{spec_name}'（跳过一致性校验）: "
-                        f"{type(e).__name__}: {e}",
-                    )
+                except TypeError as e:
+                    # 与读取失败同口径降级（沿用抽助手前 verify 位于读取 try 内
+                    # 的防御行为，不逃出本方法）。
+                    snap_err_type, snap_err_msg = type(e).__name__, str(e)
+            if snap_err_type is not None:
+                # 与 _check_write_boundary 同款：读取失败记 WARNING 而非静默
+                # 放行（code-review item 5d38e8dd6478）。
+                self.logger.warning(
+                    "spec_review",
+                    f"产物判定快照读取失败 '{spec_name}'（跳过一致性校验）: "
+                    f"{snap_err_type}: {snap_err_msg}",
+                )
 
             return (True, data)
 
@@ -1227,7 +1274,15 @@ class SpecReviewManager:
                     if self.pm_engine is not None
                     else None
                 ),
-                extra_updates={"reviewer_run": None, "_review_attempts": 0},
+                extra_updates={
+                    "reviewer_run": None,
+                    "_review_attempts": 0,
+                    # 与否决冻结站点及四处通过收口对齐清零否决计数（code-review
+                    # item 10592411f0b1）：同 dispatch_review 尝试耗尽冻结口径——
+                    # 陈旧否决计数会使解冻重走评审时首次 rejected 即达上限冻结；
+                    # _review_rejection_class 按既有清零口径保留作分类留痕。
+                    "_review_rejections": 0,
+                },
             )
             self.logger.warning("spec_review", f"评审失败达上限: {spec_name}")
 
@@ -1299,6 +1354,11 @@ class SpecReviewManager:
             {
                 "reviewer_run": None,
                 "_review_attempts": 0,
+                # 与本文件四处通过/收口站点对齐清零否决计数（code-review item
+                # 10592411f0b1）：曾记录过否决的 spec 担责放行后再次走评审时，
+                # 陈旧计数会使首次 rejected 即达 MAX_REJECT_REDO 冻结转人工，
+                # 跳过「初次否决 + 复评确认」的有界自动复评契约。
+                "_review_rejections": 0,
                 "error": None,
             },
         )
