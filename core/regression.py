@@ -60,6 +60,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from core import timelib
 from core.verify_contract import RegressionSpec
 
 _logger = logging.getLogger("fenixd.regression")
@@ -484,21 +485,22 @@ def is_regression_running(project_root) -> bool:
     try:
         meta = json.loads(path.read_text(encoding="utf-8"))
         # 畸形 marker 防御（code-review item 1e2951cac732）：合法 JSON 非对象
-        # （null/[]/字符串）没有 .get，AttributeError 不在捕获元组；朴素 ISO
-        # 时间戳（无偏移，旧/外部写手）能过 fromisoformat 但与 tz-aware
-        # now() 相减抛 TypeError 且发生在 try 外——两者都会渗入 HTTP 409
-        # 守卫。此处归一：非 dict 视为 stale；朴素时间戳按系统本地时区解释
-        # （astimezone() 的 naive 语义——外部写手多为本地 now().isoformat()，
-        # 按 UTC 解释会让东侧时区的陈旧 marker 多锁一个时区偏移）。
+        # （null/[]/字符串）没有 .get，AttributeError 不在捕获元组——两者都会
+        # 渗入 HTTP 409 守卫。此处归一：非 dict / 不可解析时间戳一律视为
+        # stale；naive（无偏移，旧/外部写手）按系统本地时区解读
+        # （timelib.parse_ts 唯一策略，add-timelib-consolidation-layer 3.3
+        # 收拢原 astimezone() 的 naive 语义——外部写手多为本地
+        # now().isoformat()，按 UTC 解释会让东侧时区的陈旧 marker 多锁一个
+        # 时区偏移）。
         if not isinstance(meta, dict):
             return False
-        started = datetime.datetime.fromisoformat(str(meta.get("started_at", "")))
-        if started.tzinfo is None:
-            started = started.astimezone()
+        started = timelib.parse_ts(str(meta.get("started_at", "")))
+        if started is None:
+            return False
         timeout_seconds = int(meta.get("timeout_seconds", 1800))
     except (json.JSONDecodeError, ValueError, TypeError, OSError):
         return False
-    life = datetime.datetime.now(datetime.timezone.utc) - started
+    life = timelib.now_utc() - started
     return life.total_seconds() < timeout_seconds + 30
 
 
@@ -544,17 +546,18 @@ def read_progress(project_root) -> Dict[str, Any]:
         )
         # 畸形 marker 防御（code-review item 63b7d232dd9e，与 is_regression_running
         # 同款）：合法 JSON 非对象（null/[]/字符串）没有 .get，AttributeError 不在
-        # 捕获元组——而本函数 docstring 明确读侧 MUST NOT 抛异常；朴素时间戳
-        # （无偏移）按本地时区归一，与 is_regression_running 口径一致。
+        # 捕获元组——而本函数 docstring 明确读侧 MUST NOT 抛异常；naive 时间戳
+        # （无偏移）按本地时区解读（timelib.parse_ts 唯一策略），与
+        # is_regression_running 口径一致。
         if not isinstance(meta, dict):
             return info
-        started = datetime.datetime.fromisoformat(str(meta.get("started_at", "")))
-        if started.tzinfo is None:
-            started = started.astimezone()
+        started = timelib.parse_ts(str(meta.get("started_at", "")))
+        if started is None:
+            return info
         info["elapsed_seconds"] = round(
             max(
                 0.0,
-                (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds(),
+                (timelib.now_utc() - started).total_seconds(),
             ),
             1,
         )

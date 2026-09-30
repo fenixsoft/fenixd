@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from core import timelib
 from core.dashboard import data as dashboard_data
 
 logger = logging.getLogger("fenixd.dashboard.code_review_routes")
@@ -49,21 +50,17 @@ CODE_REVIEW_ACK_WINDOW_SECONDS = 900
 def _parse_iso_utc(value):
     """容错解析 ISO8601 时刻为 aware UTC datetime；非法/空返回 None。
 
-    兼容尾缀 ``Z`` 与无时区的 naive 值（后者按 UTC 解释——全链约定 UTC，
-    design D6）。解析失败返回 None（调用方 fail-open 放行，链路终点是
-    daemon 侧落结果文件的显式反馈，无静默路径）。
+    兼容尾缀 ``Z``。解析内核收拢至 timelib.parse_ts
+    （add-timelib-consolidation-layer 3.4）：naive（无时区，历史/外部人工
+    写手）按**本地时区**解读——推翻本助手旧实现的 naive→UTC（design D6
+    「全链约定 UTC」的字面口径），与全框架唯一 naive 策略一致
+    （design D1：存量 naive 实测多为本地 now()）。解析失败返回 None
+    （调用方 fail-open 放行，链路终点是 daemon 侧落结果文件的显式反馈，
+    无静默路径）。
     """
-    if not isinstance(value, str) or not value.strip():
+    parsed = timelib.parse_ts(value)
+    if parsed is None:
         return None
-    raw = value.strip()
-    if raw.endswith(("Z", "z")):
-        raw = raw[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
 
 

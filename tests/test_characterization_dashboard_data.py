@@ -164,52 +164,72 @@ class TestPureFunctions(unittest.TestCase):
         self.assertIsNone(_parse_iso_ts(None))
         self.assertIsNone(_parse_iso_ts(12345))
 
-    def test_parse_iso_ts_naive_interpreted_as_utc(self):
-        """fix-deferred-findings D2：无时区后缀（naive）结果补 tzinfo=utc。
-
-        与项目「全链时间戳 UTC」约定一致（有意行为变化）：naive 输入不再
-        返回 naive datetime（否则与 aware 的 datetime.max 比较会抛 TypeError）。
+    def test_parse_iso_ts_naive_interpreted_as_local(self):
+        """add-timelib-consolidation-layer 3.2（**推翻** fix-deferred-findings
+        D2 的 naive 补 tzinfo=utc）：naive 统一按本地时区解读（timelib.parse_ts
+        唯一策略，design D1）。返回值恒为 aware——与 aware 的 datetime.max
+        比较/排序不抛 TypeError 的保障不变。
         """
         from core.dashboard.data import _parse_iso_ts
-        dt = _parse_iso_ts("2026-09-15T12:00:00")
-        self.assertIsInstance(dt, datetime)
-        self.assertEqual(dt.tzinfo, timezone.utc)
-        self.assertEqual(dt.hour, 12)
-        # 补 tzinfo 后可与 aware 时间戳直接比较（不再抛 TypeError）
-        aware = _parse_iso_ts("2026-09-15T12:00:01Z")
-        self.assertLess(dt, aware)
+        old_env = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Shanghai"
+        time.tzset()
+        try:
+            dt = _parse_iso_ts("2026-09-15T12:00:00")
+            self.assertIsInstance(dt, datetime)
+            # 12:00 本地（+08:00）== 04:00Z
+            self.assertEqual(dt.utcoffset().total_seconds(), 8 * 3600)
+            self.assertEqual((dt.hour, dt.minute), (12, 0))
+            # aware 值可直接比较（不再抛 TypeError）
+            aware = _parse_iso_ts("2026-09-15T12:00:01Z")
+            self.assertLess(dt, aware)
+        finally:
+            if old_env is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_env
+            time.tzset()
 
-    def test_run_meta_cached_naive_start_interpreted_as_utc(self):
-        """fix-deferred-findings D2 下游消费点：runs.py::_run_meta_cached 对
-        无时区后缀的 run 首事件戳按 UTC 解释。
+    def test_run_meta_cached_naive_start_interpreted_as_local(self):
+        """add-timelib-consolidation-layer 3.2 下游消费点（**推翻**
+        fix-deferred-findings D2）：runs.py::_run_meta_cached 对无时区后缀的
+        run 首事件戳按本地时区解释（timelib 唯一策略）。
 
-        naive 输入经 _parse_iso_ts 补 tzinfo=utc 后：`started` 为 UTC 解释结果，
-        `duration_seconds` 与 mtime - started 自洽（若按本地时区 CST=UTC+8 解释，
-        duration 会凭空多出本地偏移）。
+        naive 首事件多为本地 now() 写手（外部/历史数据），按本地解读后
+        `started`（折算 UTC 下发）与 `duration_seconds`（mtime epoch −
+        started epoch）自洽；按旧 UTC 口径则把 naive 本地串误读晚 8 小时。
         """
         from core.dashboard.data.runs import _run_meta_cached
 
         tmpdir = tempfile.mkdtemp()
+        old_env = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Shanghai"
+        time.tzset()
         try:
             runs_dir = Path(tmpdir) / ".fenix" / "runs"
             runs_dir.mkdir(parents=True)
             run_file = runs_dir / "impl-spec-x-1750000000-a1.jsonl"
-            # 首事件戳无时区后缀（naive）
+            # 首事件戳无时区后缀（naive 本地 12:00 == 04:00Z）
             run_file.write_text(
                 json.dumps({"type": "started", "timestamp": "2026-09-15T12:00:00"}) + "\n",
                 encoding="utf-8",
             )
-            # mtime = 2026-09-15T12:00:30Z（started 后 30 秒）
-            mtime = datetime(2026, 9, 15, 12, 0, 30, tzinfo=timezone.utc).timestamp()
+            # mtime = 2026-09-15T04:00:30Z（真实启动时刻后 30 秒）
+            mtime = datetime(2026, 9, 15, 4, 0, 30, tzinfo=timezone.utc).timestamp()
             os.utime(run_file, (mtime, mtime))
             stat = run_file.stat()
             meta = _run_meta_cached(run_file, stat, time.time(), project_root=Path(tmpdir))
-            # started 按 UTC 解释（本地时区解释会得到 04:00:00+00:00）
-            self.assertEqual(meta["started"], "2026-09-15T12:00:00+00:00")
-            # duration = mtime - started = 30s（自洽）
+            # started 折算 UTC 下发：12:00+08:00 → 04:00:00+00:00
+            self.assertEqual(meta["started"], "2026-09-15T04:00:00+00:00")
+            # duration = mtime(04:00:30Z) - started(04:00:00Z) = 30s（自洽）
             self.assertEqual(meta["duration_seconds"], 30)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+            if old_env is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_env
+            time.tzset()
 
     # ── _ts_delta ──
 
