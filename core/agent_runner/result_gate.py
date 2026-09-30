@@ -445,7 +445,10 @@ def _check_artifact_json_file(
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as e:
         return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})", None)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, RecursionError) as e:
+        # 超深嵌套 JSON 会让 json.loads 抛 RecursionError（非 JSONDecodeError
+        # 子类，不接住会逸出硬门、被 runner 通用异常通道按未归因失败处理）——
+        # 与非法 JSON 同口径 fail-closed（MUST NOT 以未捕获异常崩溃硬门本身）。
         return (f"exit 0 但结果文件非法 JSON（{agent_type} 产物硬门）: {path} ({e})", None)
     return (None, data)
 
@@ -643,7 +646,7 @@ def _validate_code_review_report(
     if len(cr_dispositions) != len(findings):
         return (
             f"exit 0 但收尾审查 findings 条数({len(findings)})与结果文件"
-            f" code_review.dispositions 条数({len(cr_dispositions)})不匹配"
+            f" code_review.{_alias_hit} 条数({len(cr_dispositions)})不匹配"
             f"（impl-code-review-gate）: {report_rel}"
         )
     return _validate_disposition_entries(cr_dispositions, report_rel)
@@ -930,7 +933,16 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError) as e:
+        except OSError as e:
+            # 文件系统级读取失败 ≠ JSON 损坏（与 _check_repo_code_review_artifact
+            # 的 unreadable 归因同取向）：只记 WARNING、不落 bad-json 告警，
+            # 避免环境侧异常冒用 violation_class 污染在途身份去重、误导排障方向。
+            _logger.warning(
+                "quality-gates.json 读取失败（宽松对账，仅告警放行；非 JSON 损坏）"
+                ": %s (%s)", rel, e,
+            )
+            continue
+        except (ValueError, UnicodeDecodeError) as e:
             _logger.warning(
                 "quality-gates.json 无法解析（宽松对账，仅告警放行）: %s (%s)", rel, e
             )
@@ -1047,7 +1059,9 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
                 continue
             try:
                 rec = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
+                # 超深嵌套行会让 json.loads 抛 RecursionError，与非法 JSON 行
+                # 同口径：不计入有效行（valids<=0 时由上方失败文案统一归因）。
                 continue
             if isinstance(rec, dict) and isinstance(rec.get("findings"), list):
                 valids += 1

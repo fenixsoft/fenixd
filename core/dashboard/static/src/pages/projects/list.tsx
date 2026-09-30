@@ -238,7 +238,9 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
   );
 
   const handleClick = () => {
-    history.push(`/projects/${project}/${record.name}`);
+    // 编码与 index.tsx 同形跳转口径一致（code-review item d075831bfba5）：项目名
+    // 源于目录名不限字符集，含 #/?/% 时裸拼接会路由错乱（# 截断为 hash）
+    history.push(`/projects/${encodeURIComponent(project)}/${encodeURIComponent(record.name)}`);
   };
 
   return (

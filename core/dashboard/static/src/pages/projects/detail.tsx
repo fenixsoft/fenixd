@@ -382,7 +382,11 @@ function FilteredFailuresBlock({
     <div>
       {filtered.map((f, idx) => (
         <div
-          key={idx}
+          // SSE 增量刷新可能在既有条目间增删（裁决/重跑），索引 key 会按位置
+          // 错位复用节点（截图 Image 预览等内部状态串到语义已变的条目）。
+          // scenario_id+分类做复合稳定前缀，索引仅作同型重复条目兜底（对齐
+          // Bug 卡片同款口径 code-review item 9c754a9839af，本条 02204ea37b0e）
+          key={`${f.scenario_id}-${f.classification || ''}-${idx}`}
           data-testid="filtered-failure-item"
           style={{
             padding: '8px 12px',
@@ -415,7 +419,9 @@ function FilteredFailuresBlock({
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {f.screenshots.map((file, sIdx) => (
                 <Image
-                  key={sIdx}
+                  // 文件名即稳定 key：索引 key 在 SSE 增量刷新下错位复用
+                  // Image 实例，预览等内部状态串到语义已变的截图
+                  key={file}
                   src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`}
                   alt={`被过滤场景 ${f.scenario_id} 截图 ${sIdx + 1}`}
                   width={150}
@@ -810,7 +816,9 @@ export default function SpecDetailPage() {
               className="spec-quick-switch-row"
               onClick={() => {
                 setSwitchOpen(false);
-                history.push(`/projects/${name}/${s.name}`);
+                // 项目名/SPEC 名经 URL 编码再拼路径（项目名取目录名，可含 #/?/% 等），
+                // 与 index.tsx 的 encodeURIComponent 口径对齐（code-review item 90704bcf4e7b）
+                history.push(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(s.name)}`);
               }}
               style={{
                 display: 'flex',
@@ -877,7 +885,9 @@ export default function SpecDetailPage() {
       // location.key !== 'default' 才表示本条目由应用路由推入（存在应用内
       // 上一条目），刷新后 key 复位为 default，此时兜底 push 不会退出应用。
       if (location.key !== 'default') history.back();
-      else history.push(`/projects/${name}`);
+      // 项目名经 URL 编码再拼路径，与 index.tsx 的 encodeURIComponent 口径对齐
+      // （code-review item 90704bcf4e7b）
+      else history.push(`/projects/${encodeURIComponent(name)}`);
     },
   };
 

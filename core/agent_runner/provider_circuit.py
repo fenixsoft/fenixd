@@ -343,11 +343,19 @@ class ProviderCircuit:
         # "exit code 1432" 被截成 143，前者恰被 classify_switch_error 判成 5xx
         # 驱动链前进。(?!\d) 要求 3 位之后不再是数字才算命中；非数字后缀
         # （"500." / "500)" / 行尾）不受影响。
+        # 裸 code 模式的左边界 (?<!exit )（code-review item 06f7547b214f）：
+        # 恰好 3 位的进程退出码仍会命中——"Exit code: 143"（runner 的
+        # ``Exit code: {returncode}`` 回退形态，信号死法 Exit 143/-9 即此族）
+        # 会被解析成 143；退出码数值一旦撞上 400/401/403/404 或 5xx，就会把
+        # 退出码当网关 HTTP 状态码误驱动 4xx 熔断计数 / classify_switch_error
+        # 链前进。固定宽度回视排除 exit 前缀（re.IGNORECASE 全局生效，覆盖
+        # "Exit "）；"status code 500" 由更早的 status code 模式先行命中，
+        # 不受该回视影响。
         for pat in (
             r"HTTP\s+(\d{3})(?!\d)",
             r"\((\d{3})\)",
             r"status\s*code\s*[:=]?\s*(\d{3})(?!\d)",
-            r"\bcode\s*[:=]?\s*(\d{3})(?!\d)",
+            r"(?<!exit )\bcode\s*[:=]?\s*(\d{3})(?!\d)",
             r"[Ee]rror:?\s*(\d{3})(?!\d)",
         ):
             m = re.search(pat, error_text, re.IGNORECASE)
@@ -1537,18 +1545,28 @@ class ProviderCircuit:
 
         锚点统一 +0.05s 裕量：定时器按墙钟计时、闸门按单调 ``_now`` 判定，
         裕量保证回调里查询时边界已过（避免「差半拍→空唤醒→再排 0.5s」抖动）。
+
+        五字段读取全程持锁（item 32a254d19ead）：与既有解封态读点同一纪律
+        （transient_unseal_gate / is_probe_observation / admit_unseal_dispatch，
+        item 62a1c4e3e71f）——并发状态迁移（如 record_transient_error 触发分支
+        锁内置位新冻结并清空 hold/probe/错峰字段）穿插进无锁读序列可取到新旧
+        混合快照（最坏多一次无害唤醒，或误返 None 终止本轮唤醒链）。纯只读
+        临界区：无嵌套锁与回调，不违反「持本锁不得调
+        _wake_dispatch_after_break/_process_queue」的锁序纪律；唯一调用方
+        _on_unseal_wake 在其清登记临界区外调用本方法，无重复加锁。
         """
-        if self._transient_break_until > now:
-            return self._transient_break_until - now + 0.05
-        if self._transient_hold_until > now:
-            return self._transient_hold_until - now + 0.05
-        if self._transient_probe_until > now:
-            return self._transient_probe_until - now + 0.05
-        if self._transient_release_next_at > 0:
-            if now >= self._transient_release_until:
-                return None
-            return max(0.5, self._transient_release_next_at - now + 0.05)
-        return None
+        with self._unseal_lock:
+            if self._transient_break_until > now:
+                return self._transient_break_until - now + 0.05
+            if self._transient_hold_until > now:
+                return self._transient_hold_until - now + 0.05
+            if self._transient_probe_until > now:
+                return self._transient_probe_until - now + 0.05
+            if self._transient_release_next_at > 0:
+                if now >= self._transient_release_until:
+                    return None
+                return max(0.5, self._transient_release_next_at - now + 0.05)
+            return None
 
     def _alert_transient_break(
         self,

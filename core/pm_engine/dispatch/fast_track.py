@@ -640,11 +640,23 @@ class FFastTrackMixin:
                 # 属死赋值，会误导读者以为 merge 重试受 max_retries 封顶，已删除。
                 fp = self._pm._merge_fingerprint(merge_error)
                 prev_fp = spec_entry.get("_merge_fp")
-                try:
-                    prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
-                except (TypeError, ValueError):
-                    prev_streak = 0
-                streak = prev_streak + 1 if prev_fp == fp else 1
+                # _merge_streak 走锁内原子递增（bump_counters 返回写后值参与
+                # 阈值判定，对齐 queue.py _handle_merge_back_real_failure 同型
+                # 收口，code-review item 893c06695fab）：原先「read_one 读 →
+                # 算 +1 → 并进 update_spec 写回」读与写分处两次 STATE 锁临界
+                # 区，merge-only 重试定时器、WIP 周期消费者与 worker 失败链
+                # 并发进入同一 spec 时各持相同旧值写回、丢一次递增，同指纹
+                # 熔断晚一轮触发、多烧一轮 fast-track run。指纹切换属重置
+                # 语义（绝对写 1，无丢增量面），不 bump、随后续 update_spec
+                # 落盘（streak_bumped=True 时各分支不再并写该字段）。
+                if prev_fp == fp:
+                    streak = self._pm.state_machine.bump_counters(
+                        spec_name, {"_merge_streak": 1}
+                    ).get("_merge_streak", 0)
+                    streak_bumped = True
+                else:
+                    streak = 1
+                    streak_bumped = False
                 # 配置侧 int() 归一（code-review item 74317ab4a77a，与 budget.py
                 # _budget_exempt_alert_threshold 同款）：字符串配置裸用于比较抛
                 # TypeError 中断 merge 失败处置，非法值回退缺省；None 判空而非
@@ -664,15 +676,17 @@ class FFastTrackMixin:
                         spec_name, "blocked",
                         trigger_run_id=None, agent_type="fast-track", channel="auto",
                     )
-                    self._pm.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "error": final_error,
-                            "_merge_fp": fp,
-                            "_merge_streak": streak,
-                            "_retry_count": 0,
-                        },
-                    )
+                    # _retry_count: 0 是重置语义（绝对写，无丢增量面）；streak
+                    # 已由 bump_counters 原子递增落盘时不再并写（同上，防并发
+                    # 写回互相覆盖丢增量）。
+                    breaker_updates: dict = {
+                        "error": final_error,
+                        "_merge_fp": fp,
+                        "_retry_count": 0,
+                    }
+                    if not streak_bumped:
+                        breaker_updates["_merge_streak"] = streak
+                    self._pm.state_machine.update_spec(spec_name, breaker_updates)
                 elif self._pm._should_enter_repair(
                     spec_name, merge_info, streak, breaker_threshold
                 ):
@@ -689,20 +703,18 @@ class FFastTrackMixin:
                         streak=streak,
                     )
                 else:
-                    try:
-                        retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
-                    except (TypeError, ValueError):
-                        retries = 1
-                    self._pm.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "status": "ready",
-                            "error": final_error,
-                            "_merge_fp": fp,
-                            "_merge_streak": streak,
-                            "_retry_count": retries,
-                        },
-                    )
+                    # _retry_count 同型收口：锁内原子递增，不再并入 update_spec
+                    # （对齐 queue.py 先例，防并发写回互相覆盖丢增量；本分支
+                    # 无 max_retries 判定，不需消费写后值）。
+                    self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1})
+                    ready_updates: dict = {
+                        "status": "ready",
+                        "error": final_error,
+                        "_merge_fp": fp,
+                    }
+                    if not streak_bumped:
+                        ready_updates["_merge_streak"] = streak
+                    self._pm.state_machine.update_spec(spec_name, ready_updates)
                     self._enqueue_front(spec_name, "fast-track")
                 self._pm.logger.error(
                     "pm_engine",

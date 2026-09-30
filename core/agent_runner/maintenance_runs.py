@@ -1462,11 +1462,14 @@ def run_code_review(
                 # 剃余重派 run（redispatch_of 非空）以**剩余** manifest 跑，若
                 # 原样按 manual_full 收尾且 findings 非空，未覆盖文件的存量条目
                 # 会被误置 resolved（部分覆盖白洗——与下方 :1288 抢救红线同族
-                # 事故）。解锁门：「本轮累计覆盖（原 run 及其重派链产物 file
-                # 字段并集）⊇ 完整原 manifest」才核销，否则维持抢救红线。
-                # 守卫唯一实现点在本分支（design 核销门挂点二选一：本分支按
-                # 覆盖判定；消费侧 admin_monitor 不重复核销解锁）。原 manifest
-                # 缺失/损坏或守卫异常一律按未覆盖处理（宁锁勿白洗）。
+                # 事故）；普通 manual_full run 同理——存在性产物门只查「任一
+                # 来源有一行有效行」，agent 静默只审 manifest 子集（自行切批
+                # 少审漏审）时同样部分覆盖白洗。解锁门：「本轮累计覆盖（原 run
+                # 及其重派链产物 file 字段并集）⊇ 完整原 manifest」才核销，
+                # 否则维持抢救红线。守卫唯一实现点在本收尾段（重派/普通两
+                # 分支同语义；design 核销门挂点二选一：此处按覆盖判定，消费
+                # 侧 admin_monitor 不重复核销解锁）。原 manifest 缺失/损坏或
+                # 守卫异常一律按未覆盖处理（宁锁勿白洗）。
                 writeoff_locked = False
                 locked_detail = ""
                 if redispatch_of:
@@ -1496,6 +1499,42 @@ def run_code_review(
                                     f"全仓快照核销解锁（run {run_id}）：累计覆盖完整"
                                     f"（{len(origin_files)}/{len(origin_files)} 文件，"
                                     f"redispatch_of={redispatch_of}）",
+                                )
+                    except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
+                        writeoff_locked = True
+                        locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
+                else:
+                    # 普通 manual_full run（非重派）同语义守卫（item 0372755b5bb3）：
+                    # 存在性产物门只查「任一来源有一行有效行」，agent 静默只审
+                    # manifest 子集（自行切批少审漏审，09-19 事故的 agent 不听话
+                    # 形态）时 run_ok=True 且 observed 非空，未审文件的存量条目
+                    # 同样会被白洗。解锁门同口径：本轮累计覆盖（本 run 产物 file
+                    # 字段并集，链长 1 时即 cumulative_covered_files 同口径）
+                    # ⊇ 本轮 manifest 才核销；manifest 以派发参数为准（同内容
+                    # 已落盘 manifest-<run_id>.json）。宁锁勿白洗。
+                    try:
+                        from core.code_review import (
+                            cumulative_covered_files as _cr_cum_covered,
+                        )
+
+                        origin_files = {str(f) for f in manifest if str(f)}
+                        covered = _cr_cum_covered(runner.project_root, run_id)
+                        if not origin_files:
+                            writeoff_locked = True
+                            locked_detail = "manifest 清单为空，完整性不可判"
+                        elif not origin_files.issubset(covered):
+                            writeoff_locked = True
+                            locked_detail = (
+                                f"本轮覆盖 {len(origin_files & covered)}/"
+                                f"{len(origin_files)} 文件，manifest "
+                                f"{len(manifest)} 文件")
+                        else:
+                            _log = getattr(runner, "logger", None)
+                            if _log is not None:
+                                _log.info(
+                                    "code-review",
+                                    f"全仓快照核销解锁（run {run_id}）：覆盖完整"
+                                    f"（{len(origin_files)}/{len(origin_files)} 文件）",
                                 )
                     except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
                         writeoff_locked = True
@@ -1928,6 +1967,12 @@ def _apply_pytest_subset(cmd, subset_nodeids):
     if pytest_idx is None:
         return None
     if any(t in _SHELL_OPERATORS for t in tokens):
+        return None
+    # 命令替换形态（item cccf30d0fcbb）：shlex 不解析命令替换，'$('/反引号
+    # 会附着进相邻 token（``pytest $(ls tests/)`` → ['pytest', '$(ls',
+    # 'tests/)']，反引号形态同理），上面的 token 精确匹配拦不住；任一 token
+    # 含替换记号即按复杂 shell 形态 fail-closed（回退全量）。
+    if any("$(" in t or "`" in t for t in tokens):
         return None
 
     target_indexes = []

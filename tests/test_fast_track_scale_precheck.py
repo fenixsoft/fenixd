@@ -655,8 +655,11 @@ class TestExtensionTailPollLoop:
     """轮询环端到端：extension 末位窗口进入 → 触发 checkpoint → 再超时收口。"""
 
     def test_extension_tail_checkpoint_triggered(self, monkeypatch, tmp_path):
-        """fast-track run + 剩余时间 < 窗口 → 触发 extension-tail checkpoint，
-        然后超时收口（error 最后一行）。"""
+        """fast-track run + 首次到点获得续期（extensions_used>0）+ 续期后剩余
+        时间 < 窗口 → 触发 extension-tail checkpoint，然后超时收口。
+
+        D3 语义修正（code-review item 694feaa7c632）：末位窗口仅在有超时
+        续期后触发，基础超时窗内 remaining < 窗口不消耗一次性标记。"""
         root = tmp_path / "repo"
         init_repo(root)
         wm = make_wm(root)
@@ -685,7 +688,22 @@ class TestExtensionTailPollLoop:
             return original_fn(spec_name, wt_path)
         runner._wip_checkpoint_on_extension_tail = _spy
 
-        # timeout 很短（10s），使得 remaining 初始值 < EXTENSION_TAIL_WINDOW_SECONDS
+        # 监督决策 stub：首查返回 extend（+300s，< 窗口 1800s）使 run 获得
+        # 续期（extensions_used=1）；二次到点委托真实矩阵（liveness 已 stub
+        # stagnant → 超时收口）。
+        real_action = runner._supervision_deadline_action
+        action_calls = {"count": 0}
+        def _fake_deadline_action(run_file, spec_name, run_id, started_at,
+                                  extensions_used, **kwargs):
+            if action_calls["count"] == 0:
+                action_calls["count"] += 1
+                return {"action": "extend", "extension_index": 1,
+                        "extension_seconds": 300, "evidence": "stubbed"}
+            return real_action(run_file, spec_name, run_id, started_at,
+                               extensions_used, **kwargs)
+        runner._supervision_deadline_action = _fake_deadline_action
+
+        # timeout 很短（10s）+ 一次 +300s 续期，使续期后 remaining 落入末位窗口
         runner.config = {"agents": {"run_timeout_seconds": 10}}
 
         # fake time：让 time.time() 快速推进
@@ -712,6 +730,51 @@ class TestExtensionTailPollLoop:
         assert ahead_count(root, branch) >= 1
         msgs = branch_log(root, branch)
         assert any(ANCHOR_EXTENSION_TAIL in m for m in msgs)
+
+    def test_extension_tail_requires_extension(self, monkeypatch, tmp_path):
+        """code-review item 694feaa7c632：未获得任何超时续期（extensions_used
+        == 0）时，基础超时窗内 remaining < 窗口不消耗一次性保全标记——
+        checkpoint 不触发（末位窗口语义只在续期窗口内成立）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        (wt / "work.py").write_text("WORK\n", encoding="utf-8")
+
+        runner = _make_turn_runner(tmp_path)
+        runner.worktree_manager = wm
+        monkeypatch.setattr(
+            "core.agent_runner.liveness.LivenessSupervisor._judge_liveness",
+            lambda self, snapshot, spec_name, run_id: {
+                "verdict": "stagnant", "evidence": "stubbed"})
+        proc = _BurstFakeProc([_evt("assistant", None)])
+        _patch_popen(monkeypatch, proc)
+
+        checkpoint_called = {"count": 0}
+        original_fn = runner._wip_checkpoint_on_extension_tail
+        def _spy(spec_name, wt_path):
+            checkpoint_called["count"] += 1
+            return original_fn(spec_name, wt_path)
+        runner._wip_checkpoint_on_extension_tail = _spy
+
+        # 无续期 stub：到点走真实监督矩阵（liveness stagnant → 终止），
+        # extensions_used 恒为 0
+        runner.config = {"agents": {"run_timeout_seconds": 10}}
+
+        fake_clock = {"now": time.time()}
+        monkeypatch.setattr(
+            "core.agent_runner.runner.time.time", lambda: fake_clock["now"])
+        def _fake_sleep(secs):
+            fake_clock["now"] += secs
+        monkeypatch.setattr("core.agent_runner.runner.time.sleep", _fake_sleep)
+
+        with pytest.raises(RuntimeError):
+            runner._run_claude(
+                "prompt", wt, "impl-demo-97-a1",
+                spec_name="demo", agent_type="fast-track")
+
+        assert checkpoint_called["count"] == 0, (
+            "未获得续期（extensions_used==0）不应触发末位窗口 checkpoint")
 
     def test_non_fast_track_no_checkpoint(self, monkeypatch, tmp_path):
         """非 fast-track run → 末位窗口判定不触发 checkpoint。"""
