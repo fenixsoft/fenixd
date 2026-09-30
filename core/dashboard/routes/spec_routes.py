@@ -129,7 +129,7 @@ class H3SpecRoutesMixin:
         return detail
 
 
-    def _api_spec_doc(self, query) -> dict:
+    def _api_spec_doc(self, query) -> dict | None:
         """GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design|tasks>
 
         读取 SPEC 的 proposal.md / design.md / tasks.md 原文返回 {found, content}。
@@ -169,7 +169,7 @@ class H3SpecRoutesMixin:
     # ── SPEC 状态操作 ─────────────────────────────────────────────────
 
 
-    def _api_spec_error_clear(self, query) -> dict:
+    def _api_spec_error_clear(self, query) -> dict | None:
         """POST /api/spec-error-clear?project=<name>&spec=<name>
 
         在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）。
@@ -241,7 +241,7 @@ class H3SpecRoutesMixin:
         )
 
 
-    def _api_spec_freeze(self, query) -> dict:
+    def _api_spec_freeze(self, query) -> dict | None:
         """POST /api/spec-freeze?project=<name>&spec=<name>
 
         人工冻结 SPEC：status→blocked，error 以「用户指令冻结：」开头
@@ -267,7 +267,7 @@ class H3SpecRoutesMixin:
         self._json(result)
 
 
-    def _api_spec_unfreeze(self, query) -> dict:
+    def _api_spec_unfreeze(self, query) -> dict | None:
         """POST /api/spec-unfreeze?project=<name>&spec=<name>
 
         解冻 SPEC：恢复冻结前状态并清空 error；未冻结为幂等 no-op。
@@ -287,7 +287,7 @@ class H3SpecRoutesMixin:
         self._json(result)
 
 
-    def _api_spec_start_after(self, query) -> dict:
+    def _api_spec_start_after(self, query) -> dict | None:
         """POST /api/spec-start-after?project=<name>&spec=<name>
         body: {"value": "<iso-utc>"|null|"manual"}
 
@@ -345,7 +345,7 @@ class H3SpecRoutesMixin:
         self._json(resp)
 
 
-    def _api_spec_activate(self, query) -> dict:
+    def _api_spec_activate(self, query) -> dict | None:
         """POST /api/spec-activate?project=<name>&spec=<name>
         body: 无参
 
@@ -403,7 +403,7 @@ class H3SpecRoutesMixin:
         self._json(resp)
 
 
-    def _api_spec_resume(self, query) -> dict:
+    def _api_spec_resume(self, query) -> dict | None:
         """POST /api/spec-resume?project=<name>&spec=<name>
         body: 无参
 
@@ -459,7 +459,7 @@ class H3SpecRoutesMixin:
         self._json(resp)
 
 
-    def _api_spec_freeze_config(self, query) -> dict:
+    def _api_spec_freeze_config(self, query) -> dict | None:
         """POST /api/spec-freeze-config?project=<name>&spec=<name>
         body: {"mode": "permanent"|"scheduled"|"unfreeze", "until": "<iso-utc>"?}
 
@@ -508,7 +508,7 @@ class H3SpecRoutesMixin:
         )
 
 
-    def _api_spec_budget(self, query) -> dict:
+    def _api_spec_budget(self, query) -> dict | None:
         """POST /api/spec-budget?project=<name>&spec=<name>
         body: {"budget": <1..budget_max 整数|null>}
 
@@ -558,7 +558,7 @@ class H3SpecRoutesMixin:
         )
 
 
-    def _api_spec_archive(self, query) -> dict:
+    def _api_spec_archive(self, query) -> dict | None:
         """POST /api/spec-archive?project=<name>&spec=<name>
 
         归档终态 SPEC：把 spec/changes/<name>/ 移到 archive/YYYY-MM-DD-<name>/，
@@ -632,7 +632,7 @@ class H3SpecRoutesMixin:
         self._json(resp)
 
 
-    def _api_spec_promote(self, query) -> dict:
+    def _api_spec_promote(self, query) -> dict | None:
         """POST /api/spec-promote?project=<name>&spec=<name>
 
         人工晋升 drafted SPEC：调用共享晋升函数（软化+lint+transition ready）。
@@ -657,7 +657,7 @@ class H3SpecRoutesMixin:
         self._json(result)
 
 
-    def _api_spec_task_reflow(self, query) -> dict:
+    def _api_spec_task_reflow(self, query) -> dict | None:
         """POST /api/spec-task-reflow?project=<name>&spec=<name>
 
         task-gap 滞留 verified SPEC 的人工回炉：把因 verified→done 任务完成度
@@ -684,12 +684,18 @@ class H3SpecRoutesMixin:
             _internal_error(self, "spec task reflow failed", e)
             return
         if not result.get("found"):
-            self._error(404, result.get("reason") or f"spec not found: {spec}")
+            # 与家族同口径先读 error 键；reflow 数据层（admin_actions 包装 +
+            # task_reflow 单一实现点，CLI 同源）not-found 契约键是 reason
+            # （item fa27e47b8a4d），故保留 reason 兜底，不改数据层词表。
+            self._error(
+                404,
+                result.get("error") or result.get("reason") or f"spec not found: {spec}",
+            )
             return
         self._json(result)
 
 
-    def _api_spec_re_review(self, query) -> dict:
+    def _api_spec_re_review(self, query) -> dict | None:
         """POST /api/spec-re-review?project=<name>&spec=<name>
 
         重新评审 blocked SPEC：复核开放条件后执行 blocked → reviewing 并派发新评审
@@ -868,6 +874,7 @@ class H3SpecRoutesMixin:
             # close_connection=True 后按无 body 继续执行，让残留字节随连接
             # 关闭作废。
             content_length = 0
+            # [fenix-ignore:1697e582073c] 防御写法正确，作为本文件可选 body 解析样板保留（溯源 8beb499acc56）
             self.close_connection = True
         if content_length > 0:
             body = self._read_json_body()
