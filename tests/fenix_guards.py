@@ -156,3 +156,121 @@ def seam_param_names(prod_files, seams: dict) -> dict:
                 names = names[1:]
             param_names.setdefault(item.name, set()).update(names)
     return param_names
+
+
+# ── 时间原语守卫（add-timelib-consolidation-layer 2.1）────────────────────
+# 时间产出/解析必须走 core/timelib.py 唯一原语（分层约定：存储/计算=aware
+# UTC，渲染边界=本地；naive 唯一策略=按本地解读）。本扫描器按 ast.Attribute
+# 链判定禁用模式，供 tests/test_timelib_guard.py 棘轮消费。
+
+# timelib 自身全豁免（spec Scenario「timelib 自身豁免」）：它就是唯一原语，
+# 内部实现必然使用 fromisoformat 等底层 API。
+TIME_GUARD_EXEMPT_FILES = frozenset({"core/timelib.py"})
+
+# datetime 模块的缺省接收者别名：调用链根名命中即判定
+# （`datetime.datetime.now()` 链式接收者根名仍为 datetime，同样命中）。
+# 其余别名（`from datetime import datetime as _dt` 的 `_dt` 等）按文件
+# import 绑定动态收集（_datetime_aliases），不依赖静态罗列。
+DATETIME_ROOT_ALIASES = frozenset({"datetime", "dt"})
+
+# 模式名 → 人读描述（违规报告用）。
+TIME_PATTERN_LABELS = {
+    "now-zero-arg": "零参 datetime.now()（naive 本地产出）",
+    "utcnow": "datetime.utcnow()（已废弃且产出 naive）",
+    "fromtimestamp-no-tz": "零/单参 fromtimestamp()（未显式指定 tz）",
+    "utcfromtimestamp": "datetime.utcfromtimestamp()（已废弃）",
+    "fromisoformat": "timelib 之外的 fromisoformat()（解析未收拢）",
+}
+
+
+def _datetime_aliases(tree) -> frozenset:
+    """收集文件内 `import datetime` / `from datetime import X [as Y]` 的
+    绑定名（ast.walk 全作用域，含函数内局部 import），并上缺省别名集。
+    """
+    names = set(DATETIME_ROOT_ALIASES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "datetime":
+                    names.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module == "datetime":
+            for a in node.names:
+                names.add(a.asname or a.name)
+    return frozenset(names)
+
+
+def _datetime_root_name(call: ast.Call, aliases) -> str:
+    """调用接收者链的根名；根名不在 datetime 别名集时返回空串。
+
+    参考 arity-guard 的接收者表达式处理：`datetime.now` / `dt.now` /
+    `datetime.datetime.now` 命中；`self.now` / `page.now` 等无关同名不误报。
+    """
+    node = call.func.value
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    if isinstance(node, ast.Name) and node.id in aliases:
+        return node.id
+    return ""
+
+
+def _time_pattern(call: ast.Call):
+    """判定单个调用的时间禁用模式名；不在禁用集合返回 None。"""
+    attr = call.func.attr
+    if attr == "now":
+        # 只禁零参（naive 产出）；now(timezone.utc) 是合法 aware 写法
+        if not call.args and not call.keywords:
+            return "now-zero-arg"
+        return None
+    if attr == "utcnow":
+        return "utcnow"
+    if attr == "utcfromtimestamp":
+        return "utcfromtimestamp"
+    if attr == "fromtimestamp":
+        # 显式指定 tz（关键字或第二个位参）不算裸调用
+        if any(k.arg == "tz" for k in call.keywords) or len(call.args) >= 2:
+            return None
+        return "fromtimestamp-no-tz"
+    if attr == "fromisoformat":
+        return "fromisoformat"
+    return None
+
+
+def scan_time_primitives(files, root, whitelist=()):
+    """扫描时间禁用模式，返回 (violations, violation_keys)。
+
+    violations: `文件:行 接收者.方法 描述` 列表（含行号，报告/修复定位用）。
+    violation_keys: 命中的 `(仓库相对路径, 模式名)` 集合——白名单键与之
+    对账：白名单键无任何命中即为僵尸条目（design D3，报失败不报警告）。
+    whitelist: `(相对路径, 模式名)` 列表，语义键不含行号（arity-guard
+    2026-09-15 行漂移回归的教训）；豁免粒度=文件×模式，同文件同模式全部
+    现存违例一并豁免，迁移消除后整组收缩该键。
+    """
+    violations = []
+    violation_keys = set()
+    for f in files:
+        if is_vendored(f):
+            continue
+        rel = repo_relative(f, root)
+        if rel in TIME_GUARD_EXEMPT_FILES:
+            continue
+        tree = parse_tree(f)
+        if tree is None:
+            continue
+        aliases = _datetime_aliases(tree)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)):
+                continue
+            if not _datetime_root_name(node, aliases):
+                continue
+            pattern = _time_pattern(node)
+            if pattern is None:
+                continue
+            violation_keys.add((rel, pattern))
+            if (rel, pattern) in whitelist:
+                continue
+            violations.append(
+                f"{rel}:{node.lineno} {ast.unparse(node.func)} "
+                f"{TIME_PATTERN_LABELS[pattern]}")
+    violations.sort()
+    return violations, violation_keys
