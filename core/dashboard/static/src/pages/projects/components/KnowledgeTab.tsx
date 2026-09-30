@@ -92,12 +92,29 @@ export interface KnowledgeCrumb {
   target: 'index' | string | null;
 }
 
+/** 面包屑标题查表：index 下发的 titles（域/能力页）与 adrs[].title（ADR）
+ *  合并为「页路径剥 .md → 标题」单表，供 knowledgeCrumbs 查询展示中文名。 */
+export function crumbTitleLookup(
+  index: Pick<KnowledgeIndexData, 'titles' | 'adrs'> | null,
+): Record<string, string | null> {
+  const out: Record<string, string | null> = { ...(index?.titles ?? {}) };
+  for (const a of index?.adrs ?? []) {
+    if (a.title) out[`adr/${a.file.replace(/\.md$/, '')}`] = a.title;
+  }
+  return out;
+}
+
 /** 面包屑：真相源内路径 → 层级项（含点击目标，替代裸目录路径）。
+ *  标题优先查 titles（键=页路径剥 .md，见 crumbTitleLookup）展示中文名，
+ *  查不到（无数据/null/空串）回退 slug——原行为兜底。
  *  'domains/<域>/<能力>.md' → [总目录→index, <域>→域导航页, <能力>→null]；
  *  'domains/<域>/_domain.md' → [总目录→index, <域>→null]（域名即当前层级）；
  *  'adr/ADR-001-x.md' → [总目录→index, ADR→adr/index.md, ADR-001-x→null]；
  *  'adr/index.md' → [总目录→index, ADR→null]（索引自身，ADR 即当前层级）。 */
-export function knowledgeCrumbs(path: string): KnowledgeCrumb[] {
+export function knowledgeCrumbs(
+  path: string,
+  titles: Record<string, string | null> = {},
+): KnowledgeCrumb[] {
   const rawSegs = path
     .replace(/\.md$/, '')
     .split('/')
@@ -112,18 +129,25 @@ export function knowledgeCrumbs(path: string): KnowledgeCrumb[] {
     return [
       indexCrumb,
       { title: 'ADR', target: 'adr/index.md' },
-      ...segs.slice(1).map((title) => ({ title, target: null })),
+      ...segs.slice(1).map((seg) => ({
+        title: titles[`adr/${seg}`] || seg,
+        target: null,
+      })),
     ];
   }
   return [
     indexCrumb,
-    ...segs.slice(1).map((title, i, arr) => ({
-      title,
-      target:
-        i === 0 && arr.length > 1 && !isDomainNav
-          ? `domains/${title}/_domain.md`
-          : null,
-    })),
+    ...segs.slice(1).map((seg, i, arr) => {
+      const key = i === 0 ? `domains/${seg}` : `domains/${segs[1]}/${seg}`;
+      const title = titles[key] || seg;
+      return {
+        title,
+        target:
+          i === 0 && arr.length > 1 && !isDomainNav
+            ? `domains/${seg}/_domain.md`
+            : null,
+      };
+    }),
   ];
 }
 
@@ -322,8 +346,9 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // ── 详情视图（能力页 / _domain / ADR 单文件）─────────────────────
   if (view.kind === 'page') {
     // 面包屑导航：总目录/域导航层可点（target 见 KnowledgeCrumb），当前层纯文本。
+    // 标题查 index 下发的 titles + adrs[].title 展示中文名，查不到回退 slug。
     // target 以局部变量捕获——闭包内 TS 不保留 map 主体对属性的 null 收窄。
-    const crumbItems = knowledgeCrumbs(view.path).map((crumb) => {
+    const crumbItems = knowledgeCrumbs(view.path, crumbTitleLookup(indexData)).map((crumb) => {
       if (crumb.target === null) return { title: crumb.title };
       const target = crumb.target;
       return {

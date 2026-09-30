@@ -2456,6 +2456,10 @@ export interface KnowledgeIndexData {
   index_md: string | null;
   domains: KnowledgeDomain[];
   adrs: KnowledgeAdrEntry[];
+  /** 页路径剥 .md → 首 H1 标题（面包屑中文名数据源）；无 H1/读取失败为
+   *  null。仅域与能力页（domains/<域>、domains/<域>/<页>）；ADR 标题经
+   *  adrs[].title 另取。 */
+  titles: Record<string, string | null>;
 }
 
 /** 读取项目知识总目录（分面 active 门控；未初始化为占位结构，非错误）。 */

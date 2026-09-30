@@ -5,7 +5,8 @@
 // - resolveKnowledgePath：相对链接归一化（../、./、白名单外、越出真相源根、
 //   外部协议/锚点）→ 白名单路径或 null；
 // - knowledgeCrumbs：面包屑层级项（target='index' 回总目录 / 域导航页路径 /
-//   null 当前层纯文本）；
+//   null 当前层纯文本）+ titles 查表展示中文名、缺键/null/空串回退 slug；
+// - crumbTitleLookup：index titles 与 adrs[].title 合并为单表（ADR 键剥 .md）；
 // - archiveSpecName：spec/archive 归档链接 → 剥日期前缀的 spec 名（供
 //   SpecDocModal 经后端归档回退解析），非归档链接 null；
 // - active=false → 不渲染任何内容（未选中零渲染，按需加载门控）；
@@ -125,6 +126,80 @@ test('knowledgeCrumbs：ADR 页 ADR 层回索引页 adr/index.md', async (t) => 
 
 test('knowledgeCrumbs：adr/index.md 索引自身，ADR 层即当前层', async (t) => {
   const mod = await loadTab();
+  assert.deepEqual(mod.knowledgeCrumbs('adr/index.md'), [
+    { title: '总目录', target: 'index' },
+    { title: 'ADR', target: null },
+  ]);
+});
+
+test('crumbTitleLookup：titles 与 adrs[].title 合并为单表（ADR 键剥 .md）', async (t) => {
+  const mod = await loadTab();
+  const lookup = mod.crumbTitleLookup({
+    titles: {
+      'domains/pickup': '拣选域',
+      'domains/pickup/scheduled-spec-pickup': '定时拣选',
+      'domains/d1': null,
+    },
+    adrs: [
+      { file: 'ADR-001-x.md', title: 'ADR-001：标题甲', status: 'accepted', superseded_by: null },
+      { file: 'ADR-002-y.md', title: null, status: 'accepted', superseded_by: null },
+    ],
+  });
+  assert.deepEqual(lookup, {
+    'domains/pickup': '拣选域',
+    'domains/pickup/scheduled-spec-pickup': '定时拣选',
+    'domains/d1': null,
+    'adr/ADR-001-x': 'ADR-001：标题甲',
+  });
+  assert.deepEqual(mod.crumbTitleLookup(null), {}, 'null index → 空表');
+});
+
+test('knowledgeCrumbs：titles 查表展示中文名（域/能力页/ADR）', async (t) => {
+  const mod = await loadTab();
+  const titles = {
+    'domains/pickup': '拣选域',
+    'domains/pickup/scheduled-spec-pickup': '定时拣选',
+    'adr/ADR-001-spawn-injection': 'ADR-001：标题甲',
+  };
+  assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/scheduled-spec-pickup.md', titles), [
+    { title: '总目录', target: 'index' },
+    { title: '拣选域', target: 'domains/pickup/_domain.md' },
+    { title: '定时拣选', target: null },
+  ]);
+  assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/_domain.md', titles), [
+    { title: '总目录', target: 'index' },
+    { title: '拣选域', target: null },
+  ]);
+  assert.deepEqual(mod.knowledgeCrumbs('adr/ADR-001-spawn-injection.md', titles), [
+    { title: '总目录', target: 'index' },
+    { title: 'ADR', target: 'adr/index.md' },
+    { title: 'ADR-001：标题甲', target: null },
+  ]);
+});
+
+test('knowledgeCrumbs：titles 缺键/null/空串回退 slug（target 不受影响）', async (t) => {
+  const mod = await loadTab();
+  const titles = {
+    'domains/pickup': null,
+    'domains/d2/page-c': '',
+    'adr/ADR-001-spawn-injection': null,
+  };
+  assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/scheduled-spec-pickup.md', titles), [
+    { title: '总目录', target: 'index' },
+    { title: 'pickup', target: 'domains/pickup/_domain.md' },
+    { title: 'scheduled-spec-pickup', target: null },
+  ]);
+  assert.deepEqual(mod.knowledgeCrumbs('domains/d2/page-c.md', titles), [
+    { title: '总目录', target: 'index' },
+    { title: 'd2', target: 'domains/d2/_domain.md' },
+    { title: 'page-c', target: null },
+  ]);
+  assert.deepEqual(mod.knowledgeCrumbs('adr/ADR-001-spawn-injection.md', titles), [
+    { title: '总目录', target: 'index' },
+    { title: 'ADR', target: 'adr/index.md' },
+    { title: 'ADR-001-spawn-injection', target: null },
+  ]);
+  // 无 titles 参数（缺省 {}）同回退：旧调用形态兼容
   assert.deepEqual(mod.knowledgeCrumbs('adr/index.md'), [
     { title: '总目录', target: 'index' },
     { title: 'ADR', target: null },

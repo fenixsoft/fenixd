@@ -1,8 +1,9 @@
 """knowledge_routes.py — 项目知识真相源只读 API（add-knowledge-atlas）。
 
 承载 2 个端点（均 GET、无副作用，project 从 query string 解析）：
-- GET /api/knowledge/index?project=<name> → 总目录：index.md 文本 + 域清单；
-  未初始化（无 index.md，首个蒸馏 run 前）返回 ``initialized: False`` 占位结构。
+- GET /api/knowledge/index?project=<name> → 总目录：index.md 文本 + 域清单
+  + titles 标题映射（面包屑中文名数据源）；未初始化（无 index.md，首个蒸馏
+  run 前）返回 ``initialized: False`` 占位结构。
 - GET /api/knowledge/file?project=<name>&path=<rel> → 单文件内容。path 白名单
   前缀 ``domains/`` 与 ``adr/``；含 ``..`` / 绝对路径 / 反斜杠 / 越出真相源目录
   一律 400（路径穿越恒拒，先于存在性判断）；文件缺失 → 404。
@@ -31,6 +32,9 @@ _ADR_SUPERSEDED_BY_RE = re.compile(r"^Superseded by:\s*(\S+)\s*$", re.M)
 _ADR_TITLE_RE = re.compile(r"^#\s+ADR-\d{3}\s*[:：]\s*(.+?)\s*$", re.M)
 # adr/index.md 表格行：'| ADR-NNN | 标题 | ...'（标题列兜底源）
 _ADR_INDEX_ROW_RE = re.compile(r"^\|\s*(ADR-\d{3})\s*\|\s*([^|]+?)\s*\|", re.M)
+# 首 H1 标题（titles 下发源）：'# <标题>'。能力页头部 marker 为 HTML 注释行、
+# 二级标题缩进一格，均不匹配 ``^# ``，天然跳过；只取首处（首个 H1 即页题）。
+_H1_TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
 
 # 真相源目录相对路径（契约见 spec/knowledge/README.md）
 KNOWLEDGE_DIR = "spec/knowledge"
@@ -65,6 +69,20 @@ def _adr_titles_from_index(text: str) -> dict[str, str]:
     return dict(_ADR_INDEX_ROW_RE.findall(text))
 
 
+def _read_h1_title(path: Path) -> str | None:
+    """读文件提取首 H1 标题；读取失败/解码失败/无 H1 → None。
+
+    titles 下发的单文件取题入口，调用方（域/能力页枚举）对 None 原样
+    下发，前端按「无标题回退 slug」渲染，此处不抛错不告警（缺标题是
+    蒸馏管线的合法中间态，非本端点异常）。
+    """
+    try:
+        m = _H1_TITLE_RE.search(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
+    return m.group(1) if m else None
+
+
 def _safe_knowledge_file(proot: Path, rel: str) -> Path | None:
     """校验并解析用户提供的相对路径；不合法返回 None（调用方恒 400）。
 
@@ -95,16 +113,20 @@ class H14KnowledgeRoutesMixin:
     def _api_knowledge_index(self, query):
         """GET /api/knowledge/index?project=<name>
 
-        返回 ``{project, initialized, index_md, domains, adrs}``；domains 为
-        ``[{name, pages, nav_exists}]``（pages 为域内能力页文件名清单，
+        返回 ``{project, initialized, index_md, domains, adrs, titles}``；
+        domains 为 ``[{name, pages, nav_exists}]``（pages 为域内能力页文件名清单，
         不含 _domain.md）；adrs 为 ``[{file, title, status, superseded_by}]``
         （按文件名排序，ADR 列表视图的编号/标题/状态标签数据源。title 取
         ADR 文件首标题 ``# ADR-NNN：<标题>``，缺失时以 adr/index.md 表格
-        标题列兜底，仍缺为 null）。``initialized`` 与 ``index_md`` 随
+        标题列兜底，仍缺为 null）。titles 为「页路径剥 .md → 首 H1 标题」
+        映射（前端面包屑中文名数据源）：域键 ``domains/<域>`` 取 _domain.md
+        首 H1，能力页键 ``domains/<域>/<页>`` 取页首 H1；无 H1/读取失败为
+        null（前端回退 slug 展示）。ADR 标题不在 titles 重复下发，前端经
+        adrs[].title 自行组装。``initialized`` 与 ``index_md`` 随
         index.md 存在性变化（缺失即 ``initialized: False`` / null）；
-        ``domains``/``adrs`` 始终按真相源目录实际内容填充——回填 bootstrap
-        先产域页、index.md 后置的中间态会出现 ``initialized: False`` 且
-        清单非空。项目不存在 → 404。
+        ``domains``/``adrs``/``titles`` 始终按真相源目录实际内容填充——
+        回填 bootstrap 先产域页、index.md 后置的中间态会出现
+        ``initialized: False`` 且清单非空。项目不存在 → 404。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
@@ -119,6 +141,7 @@ class H14KnowledgeRoutesMixin:
             "index_md": None,
             "domains": [],
             "adrs": [],
+            "titles": {},
         }
         if index_md.is_file():
             try:
@@ -148,6 +171,14 @@ class H14KnowledgeRoutesMixin:
                         "nav_exists": (d / "_domain.md").is_file(),
                     }
                 )
+                # titles：域键 + 能力页键（与前端面包屑/页路径同形，剥 .md）
+                payload["titles"][f"domains/{d.name}"] = _read_h1_title(
+                    d / "_domain.md"
+                )
+                for pg in pages:
+                    payload["titles"][f"domains/{d.name}/{pg[:-3]}"] = (
+                        _read_h1_title(d / pg)
+                    )
         adr_dir = kroot / "adr"
         if adr_dir.is_dir():
             # adr/index.md 表格标题列（ADR 文件首标题缺失时的兜底源）

@@ -45,8 +45,8 @@ def _write_knowledge(proot: Path):
         "# 拣选域\n\n- [定时拣选](scheduled-spec-pickup.md)\n", encoding="utf-8"
     )
     (k / "domains" / "pickup" / "scheduled-spec-pickup.md").write_text(
-        "# 定时拣选\n\n<!-- knowledge: capability=scheduled-spec-pickup rev=1\n"
-        "     sources=spec/archive/x -->\n\n规则。\n",
+        "<!-- knowledge: capability=scheduled-spec-pickup rev=1\n"
+        "     sources=spec/archive/x -->\n\n# 定时拣选\n\n规则。\n",
         encoding="utf-8",
     )
     (k / "adr").mkdir()
@@ -63,6 +63,7 @@ class TestKnowledgeIndexAPI:
             assert body["initialized"] is False
             assert body["index_md"] is None
             assert body["domains"] == []
+            assert body["titles"] == {}
         finally:
             srv.stop()
 
@@ -80,6 +81,50 @@ class TestKnowledgeIndexAPI:
                  "pages": ["scheduled-spec-pickup.md"],
                  "nav_exists": True}
             ]
+            assert body["titles"] == {
+                "domains/pickup": "拣选域",
+                "domains/pickup/scheduled-spec-pickup": "定时拣选",
+            }
+        finally:
+            srv.stop()
+
+    def test_titles_fallbacks(self, tmp_path):
+        """titles 映射（面包屑中文名数据源）：域键取 _domain.md 首 H1、能力页
+        键取页首 H1（marker 注释行在前不干扰，见 _write_knowledge fixture）；
+        无 H1 / 读取失败 → null；域无 _domain.md → null。键 = 页路径剥 .md。"""
+        proot = make_project(tmp_path)
+        k = proot / "spec" / "knowledge"
+        (k / "domains" / "d1").mkdir(parents=True)
+        (k / "domains" / "d2").mkdir(parents=True)
+        (k / "index.md").write_text("# 总目录\n", encoding="utf-8")
+        # d1：域页无 H1（正文直接开始）→ null；页 B 无 H1 → null
+        (k / "domains" / "d1" / "_domain.md").write_text(
+            "直接正文，没有标题。\n", encoding="utf-8"
+        )
+        (k / "domains" / "d1" / "page-a.md").write_text(
+            "<!-- knowledge: capability=page-a rev=1 sources=x -->\n\n"
+            "# 页面甲\n\n正文。\n",
+            encoding="utf-8",
+        )
+        (k / "domains" / "d1" / "page-b.md").write_text("无标题正文\n", encoding="utf-8")
+        # d2：无 _domain.md → null；二级标题不冒充 H1
+        (k / "domains" / "d2" / "page-c.md").write_text(
+            "## 不是一级标题\n", encoding="utf-8"
+        )
+        # 不可解码文件 → null（容错，不 500）
+        (k / "domains" / "d2" / "page-d.md").write_bytes(b"\xff\xfe broken")
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/knowledge/index?project=proj-a")
+            assert status == 200
+            assert body["titles"] == {
+                "domains/d1": None,
+                "domains/d1/page-a": "页面甲",
+                "domains/d1/page-b": None,
+                "domains/d2": None,
+                "domains/d2/page-c": None,
+                "domains/d2/page-d": None,
+            }
         finally:
             srv.stop()
 
