@@ -120,13 +120,9 @@ def _fuse_blocked() -> bool:
     return False
 
 
-def _atomic_write_json(target: Path, data: dict, tmp_prefix: str, label: str) -> bool:
-    """原子写入 JSON 文件的共用实现（mkstemp → fsync → os.replace，失败清理 tmp）。
+def _atomic_write_text(target: Path, text: str, tmp_prefix: str, label: str) -> bool:
+    """原子写入文本文件的共用实现（mkstemp → fsync → os.replace，失败清理 tmp）。
 
-    code-review 67015590c6ce：_write_fuse_marker / _write_supervisor_runtime /
-    _write_daemon_runtime 三处近乎逐行相同的原子写样板收敛为单一实现，消除
-    「同型逻辑多处内联、只改一处不改其余」的漂移面（本脚本漂移前科见
-    _terminate_daemon docstring 引用的 interrupt-recovery-preserve D2）。
     mkdir 也在保护内（.fenix 只读/权限异常等）：任一步 OSError → 清理 tmp、
     经 log 记 ``{label} write failed (non-blocking)`` 并返回 False，不炸穿
     调用方；成功返回 True（成功日志文案各异，由各调用方自带）。
@@ -140,7 +136,7 @@ def _atomic_write_json(target: Path, data: dict, tmp_prefix: str, label: str) ->
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
+                f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, str(target))
@@ -154,6 +150,21 @@ def _atomic_write_json(target: Path, data: dict, tmp_prefix: str, label: str) ->
     except OSError as e:
         log(f"{label} write failed (non-blocking): {e}")
         return False
+
+
+def _atomic_write_json(target: Path, data: dict, tmp_prefix: str, label: str) -> bool:
+    """原子写入 JSON 文件：序列化后走 _atomic_write_text 同一原子写实现。
+
+    code-review 67015590c6ce：_write_fuse_marker / _write_supervisor_runtime /
+    _write_daemon_runtime 三处近乎逐行相同的原子写样板收敛为单一实现，消除
+    「同型逻辑多处内联、只改一处不改其余」的漂移面（本脚本漂移前科见
+    _terminate_daemon docstring 引用的 interrupt-recovery-preserve D2）；
+    code-review 3f99b6283270：daemon_started 时间戳标记亦统一到该口径，
+    免除 write_text 直接截断写的半写/零写窗口被 admin/monitor 误读。
+    """
+    return _atomic_write_text(
+        target, json.dumps(data, ensure_ascii=False), tmp_prefix, label
+    )
 
 
 def _write_fuse_marker(fail_count: int) -> None:
@@ -383,10 +394,12 @@ def start_daemon():
     写失败仅记日志继续拉起；Popen 失败则删除刚写的伪时间戳（避免 admin/monitor
     误判重启已生效）并返回 None，由调用方按启动失败计数。
     """
-    try:
-        DAEMON_STARTED.write_text(_now_iso() + "\n", encoding="utf-8")
-    except OSError as e:
-        log(f"daemon_started marker write failed (non-blocking): {e}")
+    # 原子写口径与 fuse marker / supervisor_runtime / daemon_runtime 统一
+    # （code-review 3f99b6283270）：失败已由 _atomic_write_text 记日志，
+    # 非阻塞继续拉起（读侧 admin/monitor 以该文件判定重启是否生效）。
+    _atomic_write_text(
+        DAEMON_STARTED, _now_iso() + "\n", ".daemon_started.", "daemon_started"
+    )
     try:
         return subprocess.Popen(
             [sys.executable, ".fenix/fenixd.py"],
