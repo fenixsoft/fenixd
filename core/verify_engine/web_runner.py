@@ -313,7 +313,22 @@ class WebRunner(VerifyRunner):
 
         assertion_results: list[dict] = []
         if not steps_failed:
-            assertion_results = await self.asserter.run(page, assertion_defs)
+            try:
+                assertion_results = await self.asserter.run(page, assertion_defs)
+            except Exception as exc:
+                # 兜底断言入口异常（code-review item 7467793325b4，与下方视觉
+                # 对比兜底同模式）：异常若穿透 _execute_scenario，会落到引擎
+                # run_one 的 return_exceptions 兜底——该路径 step_results/
+                # assertion_results 全为空列表，已采集的步骤证据被整体抹掉。
+                # 错误项形状对齐 assertions.run 的兜底（layer=0 → 保守判 fail）。
+                assertion_results = [
+                    {
+                        "type": "assert_run",
+                        "layer": 0,
+                        "pass": False,
+                        "error": f"断言执行入口异常: {type(exc).__name__}: {exc}",
+                    }
+                ]
 
             # 断言真正执行且至少一个失败 → 截图取证（真实产品缺陷）。
             # 断言全部通过则不截图。步骤失败已在上方 break，不进入此分支。
@@ -351,13 +366,17 @@ class WebRunner(VerifyRunner):
                     },
                 )
             except Exception as e:
+                # 兜底形状对齐 visual_diff._compare_once 的结构化 error 结果：
+                # 携带 scenario_id、错误文案用 detail 键
+                # （code-review item b9b9185b012e）。
                 visual_results = [
                     {
                         "baseline": scenario.visual_baseline,
                         "status": "error",
                         "ssim": None,
                         "pass": False,
-                        "error": str(e),
+                        "detail": str(e),
+                        "scenario_id": scenario.id,
                     }
                 ]
 
