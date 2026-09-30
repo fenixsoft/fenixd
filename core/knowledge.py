@@ -278,7 +278,7 @@ def validate_knowledge(project_root) -> list:
                         if not row.startswith("|"):
                             break  # 表格结束
                         cells = [c.strip() for c in row.strip().strip("|").split("|")]
-                        if cells and set(cells[0]) <= {"-"}:  # 分隔行
+                        if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
                             continue
                         if len(cells) != 3 or not _STAMP_CELL_RE.match(cells[2]):
                             violations.append(
@@ -363,7 +363,7 @@ def validate_knowledge(project_root) -> list:
                     if not row.startswith("|"):
                         break  # 表格结束
                     cells = [c.strip() for c in row.strip().strip("|").split("|")]
-                    if cells and set(cells[0]) <= {"-"}:  # 分隔行
+                    if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
                         continue
                     if len(cells) != 4 or not _STAMP_CELL_RE.match(cells[3]):
                         violations.append(
