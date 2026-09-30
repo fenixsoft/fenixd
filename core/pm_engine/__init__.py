@@ -6,11 +6,15 @@
               为测试引用的私有方法保留一行委托（design D3 规则 4）
 - family.py   FamilyGovernor：fix 家族治理（阶段 4）
 - budget.py   ImplBudget：实现尝试总预算（阶段 4）
-- verification.py VerificationPipeline：三阶段+legacy 验证/冻结/合同（阶段 5）
-- dispatch.py  Dispatcher：队列/优先级/老化/退避/_process_queue（阶段 6）
+- verification/ VerificationPipeline 子包：三阶段+legacy 验证/冻结/合同（阶段 5）
+- dispatch/    Dispatcher 子包：队列/优先级/老化/退避/_process_queue（阶段 6）
 - recovery.py  RecoveryWatch：恢复观察注册/复查/持久化（阶段 6）
 - reporting.py ReportBuilder：项目报告/日报/pushable specs（阶段 6）
-- （后续阶段：verification / dispatch / recovery / reporting 渐次就位）
+- infra_breaker.py InfraCircuitBreaker：基础设施熔断
+- promotion.py drafted 晋升与跳审判断（promote_drafted 等）
+- spec_integrity.py SpecIntegrityGate：spec 完整性门禁
+- spec_review.py SpecReviewManager：spec 评审与拒绝分类
+- task_reflow.py 任务回流（reflow_spec）
 
 对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：
 `fenixd.py` 的 `from core.pm_engine import PMEngine`、测试的模块属性补丁缝
@@ -27,4 +31,7 @@
 TASK_GAP_ERROR_PREFIX = "task-gap:"
 
 from .engine import PMEngine  # noqa: F401,E402
+# 补丁缝契约：core.pm_engine.subprocess 等模块属性补丁依赖本行星导入——
+# engine.py 不定义 __all__，其模块级导入名（subprocess 等）才经 `import *`
+# 转出到包命名空间；engine.py 一旦补 __all__ 或改别名导入，补丁缝即静默断裂。
 from .engine import *  # noqa: F401,F403,E402
