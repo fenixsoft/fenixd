@@ -151,7 +151,7 @@ def reflow_spec(
 
 
 def _extract_gap_tasks(error: str) -> list:
-    """从 task-gap: 错误文案提取缺口任务 id 清单（"、"/"，"/空白 分隔的任务 id）。
+    """从 task-gap: 错误文案提取缺口任务 id 清单（按 、/,/，/;/；/:/：/空白 分隔，id 尾部可带 。/./;/； 标点）。
 
     提取失败/无 id → 空清单（留痕退化为引用 error 原文，不伪造）。
     任务 id 合法性判定与 parse_tasks_md 同源（core.run_task_track.is_task_id）：
