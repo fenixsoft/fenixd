@@ -310,6 +310,8 @@ class LivenessSupervisor:
         # 的 background_calls。
         # deadline 多次到点时对同一后台调用的输出文件做增长判定——
         # 「可观测零产出」短路需要两个采样点间 size 零增长而非单点猜测。
+        # 终态回收：_supervision_deadline_action 每轮判定清理已不在当前
+        # background_calls 集合内的 task_id 条目（历史 run 残留）。
         self._output_tracking: dict = {}
 
     def sweep_dangling_runs(self) -> list:
@@ -449,7 +451,10 @@ class LivenessSupervisor:
     def _pgrep_live_attempt(self, spec_name: str) -> bool:
         """pgrep 匹配 cmdline 含该 spec worktree 目录字面量的进程。
 
-        pgrep 不可用（缺失/超时/OSError）时返回 False，由流新鲜度回退判定。
+        pgrep 二进制缺失（FileNotFoundError）时提前返回 False，由流新鲜度回退
+        判定；单前缀瞬时故障（超时/OSError）只跳过该前缀继续扫描其余前缀，
+        全部前缀均不可用时才落到底部 return False——不因单前缀瞬时超时把整体
+        判定放大为漏扫。
 
         pgrep 命中后须逐 PID 复核归属：子串 pattern ``worktrees/{prefix}-<spec>-``
         在 spec 名互为前缀时会命中他 spec 的 worktree（``fix-auth`` 的 pattern
@@ -476,8 +481,24 @@ class LivenessSupervisor:
                     text=True,
                     timeout=5,
                 )
-            except (subprocess.SubprocessError, OSError):
+            except FileNotFoundError:
+                # pgrep 二进制缺失：其余前缀必然同样失败，提前返回 False，
+                # 由 has_live_attempt 的流新鲜度回退判定（保留提前返回路径）
                 return False
+            except (subprocess.SubprocessError, OSError) as e:
+                # 单前缀瞬时故障（如 timeout=5 超时）只跳过本前缀继续扫描其余
+                # 车道，不放大为整体漏扫：repair claude 进程长工具执行期可数
+                # 分钟不写流（见上方前缀集注释），impl 前缀一次瞬时超时即整体
+                # return False 会让 has_live_attempt 对仍在修复中的 spec 误判
+                # 无存活子进程，auto-recovery / 孤儿 ready 白名单随后重置状态。
+                # 与 _stream_recent 的单前缀 glob 失败 continue 口径一致；全部
+                # 前缀均失败自然落到函数末尾 return False。
+                self._pm.logger.debug(
+                    "agent_runner",
+                    f"_pgrep_live_attempt scan failed for prefix '{prefix}' of "
+                    f"'{spec_name}', skipping: {e}",
+                )
+                continue
             if res.returncode != 0 or not res.stdout.strip():
                 continue
             for pid_str in res.stdout.split():
@@ -724,8 +745,11 @@ class LivenessSupervisor:
         - 心跳：type == "tool_progress"
         - 工具完成：_entry_is_tool_result(entry) 为 True
 
-        无时间戳的行（stderr 兜底行等）按「文件 mtime 在窗口内即计入实质事件」的口径
-        处理，保证纯 stderr 流不会被误判为死流。
+        无时间戳的行（stderr 兜底行等）仅以文件 mtime 参与 in_window 窗口归属
+        判定，stderr 兜底行不计入实质事件——纯 stderr 活跃流（mtime 新鲜）在
+        _supervision_deadline_action 的零实质事件守卫下仍会被判停滞终止，这是
+        预期语义：I/O 增长不算进展（fix-run-hang-amplification 口径），心跳 /
+        兜底输出不构成「推进中」的证据。
         """
         now = time.time() if now is None else now
         snapshot = {
@@ -1310,6 +1334,18 @@ class LivenessSupervisor:
                 "evidence": evidence,
                 "settings": sup,
             }
+        # 后台调用追踪条目终态回收（code-review item 11679dc4d275）：
+        # _output_tracking 只在 size/mtime 不可观测时 pop，后台调用正常完成
+        # （输出文件定型、run 收尾）后其 task_id 条目永久留存，daemon 长生命
+        # 周期下随历史 run 无界累积。借每轮监督判定机会，把已不在当前 run
+        # background_calls 集合内的条目清掉（与 _extension_baselines 的流新鲜
+        # 度自清理同思路）；_zero_output_assessment 只消费本 snapshot 的
+        # background_calls，清理其不涉及的条目不影响本轮判定。
+        _live_calls = snapshot.get("background_calls") or {}
+        for _stale_task_id in [
+            tid for tid in self._output_tracking if tid not in _live_calls
+        ]:
+            self._output_tracking.pop(_stale_task_id, None)
         # 1.2 fix-run-hang-amplification：零事件守卫按**实质事件**判定——
         # ``events_in_window`` 现只计数实质事件（assistant/user 含 tool_result/result），
         # 心跳（tool_progress）不再计入进度证据，守卫不再被心跳恒久打穿。
