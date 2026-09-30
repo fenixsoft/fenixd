@@ -84,6 +84,26 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fsync_parent_dir(path: Path) -> None:
+    """rename 原子替换后刷父目录项，保证替换结果掉电不回退（尽力而为）。
+
+    临时文件 fsync 只保证文件内容落盘，rename 的目录项变更是否持久化取决于
+    父目录是否刷盘——不刷则掉电重启后文件可能整体回退为旧内容（code-review
+    item 74e17a6b9d5c）。目录 fsync 在个别文件系统上不支持或失败（EINVAL 等），
+    静默忽略，此时仍保留进程级崩溃安全保证。
+    """
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
 class AdminStore:
     """读写 .fenix/admin_alerts.json 的存储层。
 
@@ -196,6 +216,7 @@ class AdminStore:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(str(tmp_path), str(self.alerts_path))
+            _fsync_parent_dir(self.alerts_path)
         finally:
             if tmp_path.exists():
                 try:
@@ -310,6 +331,7 @@ class AdminStore:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(str(tmp_path), str(self.archive_path))
+            _fsync_parent_dir(self.archive_path)
         finally:
             if tmp_path.exists():
                 try:
@@ -936,6 +958,7 @@ class DisputeAuditStore:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(str(tmp_path), str(self.audit_path))
+            _fsync_parent_dir(self.audit_path)
         finally:
             if tmp_path.exists():
                 try:
