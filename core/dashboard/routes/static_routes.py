@@ -33,6 +33,10 @@ class H10StaticRoutesMixin:
     # 条目数超限整体清空（简单有界，防长生命周期下缓存无界增长）。
     _GZIP_PAYLOAD_CACHE_MAX_BYTES = 2 * 1024 * 1024
     _GZIP_PAYLOAD_CACHE_MAX_ENTRIES = 16
+    # 并发（code-review item cfacda63459c）：类级共享、无锁，安全性依赖
+    # CPython dict 单操作原子性（GIL）；value 为不可变 bytes、key 含文件
+    # 版本，并发最坏只是回填互相覆盖或 clear 后重复压缩——接受该竞态，
+    # 无结构性损坏。
     _gzip_payload_cache: Dict[tuple, bytes] = {}
 
     def _serve_static(self, filename: str):
@@ -104,6 +108,11 @@ class H10StaticRoutesMixin:
             self._error(404, "project not found")
             return
 
+        # 拼接刻意用原始 spec 而非上方校验用的 spec_norm（code-review item
+        # 4ff940f60087）：前提是仅 POSIX——反斜杠不作分隔符折叠，含「\」的
+        # spec 在磁盘上是单个目录名，校验（对 spec_norm）严格保守于拼接
+        # （对原始 spec），穿越防护不受影响；若移植到反斜杠作分隔符的平台
+        # （Windows），两处须同步改用 spec_norm。
         screenshots_dir = (
             Path(project["path"]) / ".fenix" / "verify-progress" / spec / "screenshots"
         ).resolve()
