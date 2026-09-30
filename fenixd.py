@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import json
+import math
 import fcntl
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -3791,7 +3792,14 @@ class FenixDaemon:
             path = Path(proot) / rel
             if not path.is_file():
                 return ""
-            text = path.read_text(encoding="utf-8", errors="replace")
+            # 摘要只需末尾 limit 字符，产物（junit XML）可达数十 MB：二进制
+            # seek 从尾部回退读取（limit*4 字节，覆盖 UTF-8 最坏 4 字节/字的
+            # 余量），避免整文件驻留内存。
+            with path.open("rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - limit * 4))
+                text = f.read().decode("utf-8", errors="replace")
         except OSError:
             return ""
         return text[-limit:] if len(text) > limit else text
@@ -4263,9 +4271,9 @@ class FenixDaemon:
     def _shutdown_drain_seconds(self) -> float:
         """停机排水窗口基线（admin.shutdown_drain_seconds，缺省 1800，0=现行快速停机）。
 
-        interrupt-recovery-preserve D1：非法值（负/非数字）回退缺省；0 显式回退
-        现行快速停机（不排水、不保全）。接受整值/浮点（测试以小数值构造排水超时
-        路径，避免真等整秒；生产配置仍为整数秒）。
+        interrupt-recovery-preserve D1：非法值（负/非数字/非有限）回退缺省；0
+        显式回退现行快速停机（不排水、不保全）。接受整值/浮点（测试以小数值
+        构造排水超时路径，避免真等整秒；生产配置仍为整数秒）。
 
         add-pipeline-throughput-governance D3：restart_request 触发的在飞 run
         排水等待上限改由 ``_run_drain_max_seconds``（agents.run_drain_max_seconds，
@@ -4282,6 +4290,15 @@ class FenixDaemon:
             )
             return 1800
         if value < 0:
+            return 1800
+        if not math.isfinite(value):
+            # .nan/.inf 是 YAML 合法标量、float() 不报错：nan 令后续比较恒
+            # False（supervisor SIGKILL 窗口自检静默失效），inf 则恒真告警——
+            # 按非法值同款路径回退缺省并留痕。
+            self.logger.error(
+                "fenixd",
+                f"admin.shutdown_drain_seconds 非法（应为非负有限数值）: {raw!r}，回退 1800",
+            )
             return 1800
         return value
 
@@ -4969,9 +4986,17 @@ class FenixDaemon:
             _broadcast_checkpoint = getattr(
                 self.agent_runner, "broadcast_restart_checkpoint", None
             )
-            checkpointed = (
-                _broadcast_checkpoint() if callable(_broadcast_checkpoint) else []
-            )
+            checkpointed: list = []
+            if callable(_broadcast_checkpoint):
+                try:
+                    checkpointed = _broadcast_checkpoint()
+                except Exception as e:
+                    # 广播失败不中断收口序列（与下方 _terminate_lanes 同款容
+                    # 错）：记 error 后按无 checkpoint 广播（0/0）继续排水。
+                    _safe_log(
+                        "error",
+                        f"Checkpoint broadcast on planned restart failed: {e}",
+                    )
             _, drain_lanes = self._drain_set_inventory()
             _safe_log(
                 "info",
