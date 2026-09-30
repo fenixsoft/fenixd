@@ -112,6 +112,104 @@ const ADMIN_ANNOTATIONS: {
   },
 ];
 
+// 系统分组单字段控件形态（code-review item 4b4856254978）：旧实现以嵌套三元链选择
+// 控件，违反本项目前端「禁止嵌套三元」规则，抽模块级 helper 以 if/else 表达四种形态：
+// 开关（enabled / narrative_enabled）→ 文本框（narrative_model）→ 下拉
+// （bug_repair_mode）→ 数值框（其余，带 unit 与校验 rule）。仅依赖注解字段本身，
+// 无组件闭包依赖，故放模块级。
+function renderAdminField({
+  key,
+  label,
+  unit,
+  rule,
+}: {
+  key: string;
+  label: string;
+  unit?: string;
+  rule?: object[];
+}) {
+  if (key === 'enabled' || key === 'narrative_enabled') {
+    return (
+      <div className="switch-inline-row" data-testid={`system-field-${key}`}>
+        <Form.Item name={key} valuePropName="checked" noStyle>
+          <Switch data-testid={`system-control-${key}`} />
+        </Form.Item>
+        <span className="switch-inline-label">
+          {label}
+          <span className="label-note">（admin.{key}）</span>
+        </span>
+      </div>
+    );
+  }
+  if (key === 'narrative_model') {
+    return (
+      <Form.Item
+        name={key}
+        label={
+          <>
+            {label}
+            <span className="label-note">（admin.{key}）</span>
+          </>
+        }
+        data-testid={`system-field-${key}`}
+      >
+        {/* 模型名是自由文本（官方 Claude / 网关模型名）：文本框而非
+            InputNumber；空串=清除覆盖、按回退链取模型（与后端回显
+            语义一致） */}
+        <Input
+          data-testid={`system-control-${key}`}
+          style={{ width: '100%' }}
+          placeholder="留空 = 复用 admin.agent_model → 框架默认"
+        />
+      </Form.Item>
+    );
+  }
+  if (key === 'bug_repair_mode') {
+    return (
+      <Form.Item
+        name={key}
+        label={
+          <>
+            {label}
+            <span className="label-note">（admin.{key}）</span>
+          </>
+        }
+        data-testid={`system-field-${key}`}
+      >
+        <Select
+          data-testid={`system-control-${key}`}
+          style={{ width: '100%' }}
+          options={[
+            { value: 'inplace', label: '原地打回（inplace）' },
+            { value: 'derive', label: '派生 fix SPEC（derive）' },
+          ]}
+        />
+      </Form.Item>
+    );
+  }
+  return (
+    <Form.Item
+      name={key}
+      label={
+        <>
+          {label}
+          <span className="label-note">（admin.{key}）</span>
+        </>
+      }
+      rules={rule}
+      data-testid={`system-field-${key}`}
+    >
+      <InputNumber
+        data-testid={`system-control-${key}`}
+        style={{ width: '100%' }}
+        step={1}
+        precision={0}
+        addonAfter={unit}
+      />
+    </Form.Item>
+  );
+}
+
 // 瞬断治理（fix-provider-transient-backoff D6）：键名 = agents.transient_*，
 // 与后端 ConfigLoader.get_transient_config 缺省一致（30,60,120 / 600 / 3 / 600 / 600）。
 const TRANSIENT_ANNOTATIONS: {
@@ -333,77 +431,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
             // margin——否则末行会在卡底残留（global.less 的 :last-child 清零压不过
             // inline style）
             <div key={key}>
-              {key === 'enabled' || key === 'narrative_enabled' ? (
-                <div className="switch-inline-row" data-testid={`system-field-${key}`}>
-                  <Form.Item name={key} valuePropName="checked" noStyle>
-                    <Switch data-testid={`system-control-${key}`} />
-                  </Form.Item>
-                  <span className="switch-inline-label">
-                    {label}
-                    <span className="label-note">（admin.{key}）</span>
-                  </span>
-                </div>
-              ) : key === 'narrative_model' ? (
-                <Form.Item
-                  name={key}
-                  label={
-                    <>
-                      {label}
-                      <span className="label-note">（admin.{key}）</span>
-                    </>
-                  }
-                  data-testid={`system-field-${key}`}
-                >
-                  {/* 模型名是自由文本（官方 Claude / 网关模型名）：文本框而非
-                      InputNumber；空串=清除覆盖、按回退链取模型（与后端回显
-                      语义一致） */}
-                  <Input
-                    data-testid={`system-control-${key}`}
-                    style={{ width: '100%' }}
-                    placeholder="留空 = 复用 admin.agent_model → 框架默认"
-                  />
-                </Form.Item>
-              ) : key === 'bug_repair_mode' ? (
-                <Form.Item
-                  name={key}
-                  label={
-                    <>
-                      {label}
-                      <span className="label-note">（admin.{key}）</span>
-                    </>
-                  }
-                  data-testid={`system-field-${key}`}
-                >
-                  <Select
-                    data-testid={`system-control-${key}`}
-                    style={{ width: '100%' }}
-                    options={[
-                      { value: 'inplace', label: '原地打回（inplace）' },
-                      { value: 'derive', label: '派生 fix SPEC（derive）' },
-                    ]}
-                  />
-                </Form.Item>
-              ) : (
-                <Form.Item
-                  name={key}
-                  label={
-                    <>
-                      {label}
-                      <span className="label-note">（admin.{key}）</span>
-                    </>
-                  }
-                  rules={rule}
-                  data-testid={`system-field-${key}`}
-                >
-                  <InputNumber
-                    data-testid={`system-control-${key}`}
-                    style={{ width: '100%' }}
-                    step={1}
-                    precision={0}
-                    addonAfter={unit}
-                  />
-                </Form.Item>
-              )}
+              {renderAdminField({ key, label, unit, rule })}
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
