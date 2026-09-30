@@ -26,6 +26,27 @@ from core.pm_engine.dispatch import (
 )
 
 
+def _merge_breaker_threshold(pm) -> int:
+    """``agents.merge_breaker_threshold`` 读取与归一（单一落点）。
+
+    归一规则（code-review item bba1be087ad5）：None 判空而非 or 兜底（对齐
+    fast_track c54ffbef69c5，合法配置 0 不被 or 吞成缺省 2）→ ``int()`` 归一
+    （code-review item a8c4f9dfc7a0：字符串/null 配置裸用于熔断比较抛
+    TypeError）→ TypeError/ValueError 回退缺省 2 → ``max(..., 1)`` 下限保护
+    （负数配置无意义，收敛到 1）。归一规则调整只改此处。
+
+    注：queue.py ``_handle_merge_back_real_failure`` 存在同型第三处复制，
+    归 queue.py 处置组范围，本落点不跨文件收敛。
+    """
+    try:
+        cfg_threshold = pm._get_config("agents.merge_breaker_threshold", 2)
+        threshold = 2 if cfg_threshold is None else int(cfg_threshold)
+    except (TypeError, ValueError):
+        threshold = 2
+    # 下限保护：负数配置无意义，收敛到 1。
+    return max(threshold, 1)
+
+
 class PRepairLaneMixin:
     """P merge-back 修复车道（design D1 表 B P 组）。"""
 
@@ -47,15 +68,9 @@ class PRepairLaneMixin:
         # 配置侧 int() 归一（code-review item a8c4f9dfc7a0，对齐 fast_track
         # 同键 74317ab4a77a 治理）：字符串/null 配置裸用于熔断比较抛
         # TypeError，被 worker 外层兜底放大成派发回滚——非法值回退缺省。
-        try:
-            # None 判空而非 or 兜底（对齐 fast_track c54ffbef69c5）：合法
-            # 配置 0 不被 or 吞成缺省 2。
-            cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
-            breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
-        except (TypeError, ValueError):
-            breaker_threshold = 2
-        # 下限保护：负数配置无意义，收敛到 1。
-        breaker_threshold = max(breaker_threshold, 1)
+        # 归一规则单一落点（code-review item bba1be087ad5）：见模块级
+        # _merge_breaker_threshold。
+        breaker_threshold = _merge_breaker_threshold(self._pm)
         if self._pm._should_enter_repair(spec_name, merge_info, 0, breaker_threshold):
             # conflict_paths 统一 getattr 守卫（code-review item c1e84fcc2afd）：
             # merge_info 非 MergeConflictInfo 形态（测试替身/未来重构）时
@@ -631,11 +646,14 @@ class PRepairLaneMixin:
         判定规则（任一不满足 → 判未完成）：
         - ``repair_site_facts.unmerged`` 非空 → 未解决冲突残留；
         - ``repair_site_facts.merge_head`` 为 True → 仍处于未完成 merge；
-        - 基准 ``_repair_base_tip`` 可判时，``branch_tip(branch) != base_tip``
-          → 分支 tip 未前进（可能只暂存未提交）。
-        ``_repair_base_tip`` 缺失（老状态迁移或查询失败）时跳过 tip 前进
-        校验，仅查冲突残留 + MERGE_HEAD（保守放行，与现状一致，不引入新
-        假阴性硬门——修复后只读层的失败也按同样保守原则处理）。
+        - 基准 ``_repair_base_tip`` 可判且 ``branch_tip(branch)`` 查询成功时，
+          ``now_tip == base_tip`` → 分支 tip 未前进（可能只暂存未提交）。
+        ``_repair_base_tip`` 缺失（老状态迁移或查询失败），或 check 时刻
+        ``branch_tip`` 查询失败（异常，或超时/OSError 在 worktree_manager
+        内部降级为 None）时跳过 tip 前进校验，仅查冲突残留 + MERGE_HEAD
+        （保守放行，不引入新假阴性硬门——只读层的失败一律按保守原则处理，
+        与同函数 repair_site_facts 查询侧 fail-open 口径一致；查询成功且
+        tip 等于基准才判未前进）。
 
         Returns:
             ``(ok, error_text)``：ok=True 表示复核通过；ok=False 时
@@ -671,16 +689,28 @@ class PRepairLaneMixin:
             base_tip = None
         if base_tip:
             now_tip = None
+            tip_err = ""
             try:
                 now_tip = wm.branch_tip(branch)
             except Exception as e:
+                tip_err = str(e)
+            if now_tip is None:
+                # 查询失败降级（code-review item 03344b76fd8e）：异常或
+                # branch_tip 内部超时/OSError 降级 None 均跳过 tip 前进校验
+                # （保守放行），不按「未前进」fail-closed——瞬时 git 故障
+                # （锁竞争/仓库短暂不可用）误判会烧掉一整轮已成功落地的
+                # 实现 run；对齐 branch_tip 契约「调用侧据此跳过校验」与
+                # 本方法 docstring「只读层失败按保守原则处理」。未完成的
+                # repair 仍由冲突残留/MERGE_HEAD 硬事实兜底，后续
+                # re-merge-back 真实执行合并，假阳性不会漏网。
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"repair 分支 tip 查询异常（按未前进判未完成，保守）" f"'{spec_name}': {e}",
+                    f"repair 分支 tip 查询失败（{tip_err or 'branch_tip 返回 None'}），"
+                    f"跳过 tip 前进校验（保守放行）'{spec_name}'",
                 )
-            if not now_tip or now_tip == base_tip:
-                base_short = base_tip[:12] if base_tip else "N/A"
-                now_short = now_tip[:12] if now_tip else "N/A"
+            elif now_tip == base_tip:
+                base_short = base_tip[:12]
+                now_short = now_tip[:12]
                 return False, (
                     f"repair git 事实复核未通过：分支 tip 未前进"
                     f"（base={base_short}, now={now_short}）"
@@ -741,15 +771,10 @@ class PRepairLaneMixin:
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
         # 配置侧 int() 归一（code-review item a8c4f9dfc7a0，对齐 fast_track
         # 同键 74317ab4a77a 治理）：字符串/null 配置裸用于比较抛 TypeError
-        # 中断 merge 失败处置，非法值回退缺省。
-        try:
-            cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
-            breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
-        except (TypeError, ValueError):
-            breaker_threshold = 2
-        # 下限保护：streak 自 1 起计，threshold<=1 均为首次失败即熔断，
-        # 收敛到 1 防御负数配置。
-        breaker_threshold = max(breaker_threshold, 1)
+        # 中断 merge 失败处置，非法值回退缺省。归一规则单一落点
+        # （code-review item bba1be087ad5）：见模块级 _merge_breaker_threshold
+        # （下限 1：streak 自 1 起计，threshold<=1 均为首次失败即熔断）。
+        breaker_threshold = _merge_breaker_threshold(self._pm)
         if streak >= breaker_threshold:
             # fix-observability-gaps 2.2：repair re-merge 熔断 blocked（自动降级路径）
             self._pm.state_machine.transition(
