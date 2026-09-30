@@ -511,6 +511,9 @@ def _mk_sweeper(tmp_path, states: dict):
     wm.project_root = proot
     wm.logger = FakeLogger()
     wm._state_reader = lambda: states
+    # __new__ 绕过 G1LifecycleMixin.__init__，补齐 _branch_protected_by_state
+    # 现读取的分支前缀属性（9dd92d791918 归一后新增依赖）；取值同 init 缺省。
+    wm._implement_branch_prefix = "fenix"
     return wm
 
 
