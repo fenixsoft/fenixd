@@ -90,9 +90,10 @@ def tree_sigs(root, memo: dict | None = None, skip_dirs: frozenset = frozenset()
     return tuple(out)
 
 
-def _combine_uncached(parts) -> str:
+def _combine_uncached(serialized: str) -> str:
+    """对已序列化的部件集 repr 串做 sha256（combine 已算好 memo 键，直接复用）。"""
     h = hashlib.sha256()
-    h.update(repr(list(parts)).encode("utf-8", "surrogatepass"))
+    h.update(serialized.encode("utf-8", "surrogatepass"))
     return h.hexdigest()
 
 
@@ -107,7 +108,7 @@ def combine(parts) -> str:
         cached = _HASH_MEMO.get(key)
         if cached is not None:
             return cached
-    digest = _combine_uncached(parts)
+    digest = _combine_uncached(key)
     with _HASH_MEMO_LOCK:
         if len(_HASH_MEMO) > _HASH_MEMO_CAP:
             _HASH_MEMO.clear()
