@@ -82,6 +82,10 @@ const TONE_TAG_COLOR: Record<string, string> = {
   aqua: 'cyan',
 };
 
+// SSE 断线兜底轮询周期（同 list.tsx HEARTBEAT_MS）：详情页无其他轮询，
+// SSE 彻底断开后靠它维持刷新（见主 effect 内心跳注释）
+const HEARTBEAT_MS = 30000;
+
 // 断言类型中文标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）
 const ASSERTION_LABELS: Record<string, string> = {
   // web（18 种）
@@ -715,9 +719,16 @@ export default function SpecDetailPage() {
         throttledLoad();
       }
     };
+    // 30s 轮询兜底（对齐 list.tsx 心跳模式）：服务端连接数满回 503 时浏览器
+    // EventSource 对非 200 响应永久停止重连，而本页 throttledLoad 只由 SSE 消息
+    // 触发——SSE 建立失败/彻底断开后详情将静默停止刷新。SSE 正常时 load 被
+    // request() 的 ETag 304 + applyDetail 内容判等短路，心跳空转零 body、零重渲染
+    // （code-review item d20c72c42c89）
+    const hb = setInterval(() => void load(), HEARTBEAT_MS);
     return () => {
       cancelled = true;
       es.close();
+      clearInterval(hb);
     };
   }, [name, spec]);
 
@@ -1465,7 +1476,13 @@ export default function SpecDetailPage() {
             <div>
               {detail.bugs.map((bug, idx) => (
                 <Card
-                  key={idx}
+                  // SSE 增量刷新可能在既有条目间增删（重跑产生新 Bug），索引 key
+                  // 会按位置错位复用节点（截图 Image 预览等内部状态串到语义已变
+                  // 的条目）。后端 report 分支 bug 无 id（artifacts.py parse_bugs
+                  // 仅 run-result 回退分支带 id 且可为空），取 scenario+断言+描述
+                  // 复合稳定前缀，索引仅作同型重复条目 tie-breaker（对齐场景列表
+                  // 口径 code-review item 92d9f4c54ba9，本条 9c754a9839af）
+                  key={`bug-${bug.scenario || ''}-${bug.assertion || ''}-${bug.description}-${idx}`}
                   size="small"
                   style={{ marginBottom: 12 }}
                   title={
@@ -1530,7 +1547,9 @@ export default function SpecDetailPage() {
                     <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                       {bug.screenshots.map((file, sIdx) => (
                         <Image
-                          key={sIdx}
+                          // 文件名即稳定 key：索引 key 在 SSE 增量刷新下错位复用
+                          // Image 实例，预览等内部状态串到语义已变的截图
+                          key={file}
                           src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`}
                           alt={`Bug ${idx + 1} 截图 ${sIdx + 1}`}
                           width={150}
@@ -1598,9 +1617,12 @@ export default function SpecDetailPage() {
                 }))}
               >
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {detail.screenshots.map((s, idx) => (
+                  {detail.screenshots.map((s) => (
                     <Image
-                      key={idx}
+                      // 文件名即稳定 key（list_screenshots 目录内文件名唯一）：
+                      // 索引 key 在 SSE 增量刷新下错位复用 Image 实例，预览等
+                      // 内部状态串到语义已变的截图（对齐 Bug 截图同款修法）
+                      key={s.file}
                       src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(s.file)}`}
                       alt={s.file}
                       width={150}
