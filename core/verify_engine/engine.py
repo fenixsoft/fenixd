@@ -45,6 +45,11 @@ from .web_runner import WebRunner, locate_app_base_url  # noqa: F401,E402
 from .api_runner import ApiRunner  # noqa: F401,E402
 from .cli_runner import CliRunner  # noqa: F401,E402
 
+# 终态失败档（code-review item 5867b3576e1f）：依赖失败传播判定
+# （_execute_parallel）与报告状态计数（_build_report）共用的单点字面量，
+# 新增失败档状态在此同步扩展，勿在调用点散落硬编码。
+TERMINAL_FAILURE_STATUSES = ("fail", "error")
+
 
 class VerifyEngine:
     """验证引擎主控（纯调度）。
@@ -257,6 +262,22 @@ class VerifyEngine:
             f"{len(normalized)} 个场景, 并行度={self.max_parallel}{_backoff_mark}",
         )
 
+        # ── 零场景守卫（code-review item d0db195a72b0）────────────
+        # 入参为空列表或全部条目落入规范化期 warning 跳过分支时 normalized
+        # 为空：验收门零错误、kinds 空集，若放行到底会以 total=0 的全绿报告
+        # 结算并写「验证完成」进度。上游防线（frozen contract 空集 aborted、
+        # load_scenarios 拒非法）被绕过时（如直接构造 engine 调用）整轮验证
+        # 会以全绿假象收场，此处兜底：复用验收失败同款出口产出 env_error
+        # 报告，不结算为成功。
+        if not normalized:
+            msg = "场景集为空/全部条目无法解析（无可验证场景）"
+            self.logger.error("verify_engine", msg)
+            self._write_progress(0, len(normalized), msg)
+            report = self._build_report([])
+            report["env_error"] = msg
+            self._save_report(report)
+            return report
+
         # ── lazy setup：仅对场景集中实际出现的 kind 执行 ──
         kinds = {s.kind for s in normalized}
         setup_done: list[str] = []
@@ -464,7 +485,7 @@ class VerifyEngine:
                 else:
                     # 依赖失败传播判定源：终态 fail/error 的 id 记入 failed_ids
                     # （warning 属非失败档，不阻断下游，与验收门语义一致）
-                    if r.get("status") in ("fail", "error"):
+                    if r.get("status") in TERMINAL_FAILURE_STATUSES:
                         failed_ids.add(sid)
                     results.append(r)
 
@@ -621,8 +642,12 @@ class VerifyEngine:
         total = len(scenario_results)
         passed = sum(1 for r in scenario_results if r["status"] == "pass")
         warnings = sum(1 for r in scenario_results if r["status"] == "warning")
-        failed = sum(1 for r in scenario_results if r["status"] == "fail")
-        errors = sum(1 for r in scenario_results if r["status"] == "error")
+        # 终态失败两档计数与依赖失败传播判定共用 TERMINAL_FAILURE_STATUSES
+        # （code-review item 5867b3576e1f）：按序解包，第 1 位 fail、第 2 位 error
+        failed, errors = (
+            sum(1 for r in scenario_results if r["status"] == st)
+            for st in TERMINAL_FAILURE_STATUSES
+        )
         blocked_env = sum(1 for r in scenario_results if r["status"] == "blocked-env")
 
         # blocked-env 计入 warning 统计而非 fail（spec verify-environment-sanity-gate），
