@@ -2970,6 +2970,32 @@ class VerificationPipeline:
         # ── 阶段3+ 场景原地修复通道（judge-scenario-repair，见 _handle_scenario_repaired）──
         if self._handle_scenario_repaired(spec_name, verifier_status, _repair_depth):
             return
+        # code-review bcb9a3b4d640：plan-ready 裁决＝验证未完成，不按通过收口
+        # （与 legacy 车道 06ca08e65666 防线对齐）。judge 读侧白名单含 plan-ready
+        # （与 planner-plan 读取路径共享单一来源，MUST NOT 改白名单本身），judge
+        # 输出契约漂移产出 plan-ready 时若落入下方 else → _apply_verified，会在
+        # 进度核对/报告闸门/洗白门禁可能全过的报告上被假收敛为 verified——
+        # plan-ready＝场景已（重）生成、执行阶段尚未真实跑过。比照 legacy
+        # 「验证未完成」分支：保持 testing 留 error、WARNING 留痕，由
+        # full_scan recovery 兜底重排重验。scenario-repaired/bug-found 已由
+        # 上方专门分支消费，此守卫只拦 plan-ready，else 分支即纯 verified。
+        if verifier_status == "plan-ready":
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "tester_run": judge_result.run_id,
+                    "error": (
+                        f"验证未完成：裁决 status={verifier_status}"
+                        f"（场景计划裁决不按通过收口），保持 testing 待重验"
+                    ),
+                },
+            )
+            self._context.logger.warning(
+                "pm_engine",
+                f"验证未完成 '{spec_name}'：plan-ready 裁决不按通过收口"
+                f"（status={verifier_status}），保持 testing 待重验",
+            )
+            return
         if verifier_status == "bug-found":
             self._apply_bug_found(spec_name, judge_result, report, _repair_depth)
             return

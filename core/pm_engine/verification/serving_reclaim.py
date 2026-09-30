@@ -15,6 +15,7 @@ reclaim_verify_serving D1/D2/D3/D5：
 由 fenixd._reclaim_verify_serving_tree 调度，不依赖 VerificationPipeline 实例。
 """
 
+import logging
 import os
 import re
 import shutil
@@ -270,7 +271,8 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
     仍失败且调用方已过五连保留判据（确无主）时降级为对目录本体的受控删除
     （shutil.rmtree），避免残留永久滞留且每周期重复告警。全部手段均失败才抛
     RuntimeError（含 stderr 留痕），由调用方记 WARNING 且不计入 reclaimed，
-    避免目录删除失败仍被记为回收成功。
+    避免目录删除失败仍被记为回收成功。删除动作已成功时，收尾 prune 的失败
+    仅记 WARNING 照常返回（只影响 git 登记簿清理，不影响回收结果）。
     """
 
     def _git_remove():
@@ -308,16 +310,31 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
                 f"{(remove.stderr or remove.stdout).strip()}；"
                 f"prune 后重试仍失败，降级 rmtree 也失败: {rmtree_err}"
             ) from rmtree_err
-    prune = subprocess.run(
-        ["git", "-C", str(project_root), "worktree", "prune"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    # 目录本体已删除成功，收尾 prune 只影响 git 登记簿清理：失败（非零返回码
+    # 或异常）降级为 WARNING 照常返回，保证调用方 reclaimed 记账与实际删除
+    # 结果一致（code-review be503d93b86f）。
+    try:
+        prune = subprocess.run(
+            ["git", "-C", str(project_root), "worktree", "prune"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as prune_err:
+        logging.getLogger(__name__).warning(
+            "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 异常"
+            "（仅影响登记簿清理，不影响回收结果）: %s",
+            wt_path,
+            prune_err,
+        )
+        return
     if prune.returncode != 0:
-        raise RuntimeError(
-            f"git worktree prune 失败 (rc={prune.returncode}): "
-            f"{(prune.stderr or prune.stdout).strip()}"
+        logging.getLogger(__name__).warning(
+            "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 失败 "
+            "(rc=%s)（仅影响登记簿清理，不影响回收结果）: %s",
+            wt_path,
+            prune.returncode,
+            (prune.stderr or prune.stdout).strip(),
         )
 
 
