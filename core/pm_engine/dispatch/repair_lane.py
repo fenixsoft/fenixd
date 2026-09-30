@@ -35,8 +35,8 @@ def _merge_breaker_threshold(pm) -> int:
     TypeError）→ TypeError/ValueError 回退缺省 2 → ``max(..., 1)`` 下限保护
     （负数配置无意义，收敛到 1）。归一规则调整只改此处。
 
-    注：queue.py ``_handle_merge_back_real_failure`` 存在同型第三处复制，
-    归 queue.py 处置组范围，本落点不跨文件收敛。
+    注：queue.py ``_handle_merge_back_real_failure`` 的同型第三处复制亦已
+    改为本读取器的调用点（code-review item bba1be087ad5），三处调用点同源。
     """
     try:
         cfg_threshold = pm._get_config("agents.merge_breaker_threshold", 2)

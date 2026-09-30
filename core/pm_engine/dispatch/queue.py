@@ -29,6 +29,7 @@ from core.state_machine import (
     start_after_pending,
 )
 from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
+from core.pm_engine.dispatch.repair_lane import _merge_breaker_threshold
 
 # ── WIP 延迟合回预算（evo-add-wip-defer-merge-retry-consumer 2.1/2.3）────────
 # 等待窗口（分钟，自首阻时刻起算）与自动 merge-only 重试轮数上限，对齐
@@ -2753,16 +2754,11 @@ class QQQueueMixin:
             self._pm.state_machine.update_spec(spec_name, conflict_updates)
             return
 
-        # 配置侧 int() 归一（code-review item 31e28743fe1c，与 fast_track.py
-        # 同款）：字符串配置裸用于比较抛 TypeError 中断 merge-back 失败处置，
-        # 非法值回退缺省；None 判空而非 or 兜底，合法配置 0（每次 merge 失败
-        # 立即熔断）不被 or 吞成缺省 2。
-        try:
-            cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
-            breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
-        except (TypeError, ValueError):
-            breaker_threshold = 2
-        breaker_threshold = max(breaker_threshold, 1)
+        # 配置侧归一经 repair_lane._merge_breaker_threshold 单一落点
+        # （code-review item bba1be087ad5 收敛三处同型复制：原 31e28743fe1c
+        # 防御语义不变——字符串/null 配置不裸用于比较、None 判空而非 or
+        # 兜底、非法回退 2、下限收敛 1——归一规则调整只改读取器一处）。
+        breaker_threshold = _merge_breaker_threshold(self._pm)
         if streak >= breaker_threshold:
             # 熔断触发：blocked 后 repair 通道一并停止
             # （spec-merge-circuit-breaker：repair 不绕过熔断）。
