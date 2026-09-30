@@ -24,7 +24,7 @@ SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas" / "spec-driven"
 
 DEFAULT_SCHEMA = "spec-driven"
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = logging.getLogger("fenixd.spec_gen")
 
 _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
