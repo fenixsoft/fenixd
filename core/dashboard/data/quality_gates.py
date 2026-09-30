@@ -331,7 +331,8 @@ def _impl_ocr_enabled_cached(project_root) -> bool:
     import core.dashboard.data as _facade
     from core.config import ConfigLoader
 
-    return _facade._cached_config_value(
+    # 公开访问面（code-review item 20ad589a3bc4）：不跨组消费下划线私有名
+    return _facade.cached_config_value(
         project_root, _OCR_SWITCH_CACHE, _OCR_SWITCH_CACHE_MAX,
         ConfigLoader.get_impl_code_review_enabled)
 

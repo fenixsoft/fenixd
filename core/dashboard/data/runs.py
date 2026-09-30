@@ -20,6 +20,9 @@ from core.agent_runner.run_files import (
     run_spec_part,
 )
 
+# 共享日志兜底出口（e57bb78b236c：_retention_log 与 spec_archive.py _archive_log 同款逻辑单源）
+from core.dashboard.data._logutil import fallback_log
+
 # ── 结构化 run 指标日志索引（fix-observability-gaps 1.5 消费点）────────────
 # run 收尾在 fenixd.log 写一条 metric_type=run_metrics 的结构化指标（runner.py
 # _log_run_metrics），含 duration_seconds / cost_usd / terminal / provider。
@@ -262,16 +265,11 @@ def _logged_run_duration(project_root: Path, run_file_stem: str,
 
     run_file_stem 为产物文件名（含 -a<n>/ -r<n>），归一化为基础 run_id 后
     在指标索引中查找；命中返回 duration_seconds（float），未命中 None。
+    双源查找（主日志索引 → 轮转日志 .fenixd.log.1 回退）复用 load_run_metric
+    单源（含 _strip_run_attempt_suffix 归一），回退口径演进只改一处。
     engine 预留字段：后续如需区分「哪个消费点」可传值；当前恒空。
     """
-    if not project_root or not run_file_stem:
-        return None
-    base = _strip_run_attempt_suffix(run_file_stem)
-    index = _load_run_metric_index(project_root)
-    metric = index.get(base)
-    if not metric:
-        # 主索引未命中回退轮转日志 .fenixd.log.1（跨轮转旧 run），与 load_run_metric 双源同口径
-        metric = _load_rotated_run_metric_index(project_root).get(base)
+    metric = load_run_metric(project_root, run_file_stem)
     if not metric:
         return None
     d = metric.get("duration_seconds")
@@ -386,6 +384,9 @@ def _first_run_event_ts(path: Path) -> "str | None":
     故扫描前 200 行、命中即停；全部无样本返回 None（调用方回退 run_id 内嵌
     时间戳）。
     """
+    # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
+    import core.dashboard.data as _facade
+
     try:
         with path.open("rb") as f:
             for _ in range(200):
@@ -400,9 +401,6 @@ def _first_run_event_ts(path: Path) -> "str | None":
                 except json.JSONDecodeError:
                     continue
                 ts = ev.get("timestamp") if isinstance(ev, dict) else None
-                # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
-                import core.dashboard.data as _facade
-
                 if ts and _facade._parse_iso_ts(str(ts)) is not None:
                     return str(ts)
     except OSError:
@@ -500,6 +498,7 @@ def _run_meta_cached(p: Path, stat, now: float,
     # fix-observability-gaps 1.5（消费点）：结构化指标优先——run 收尾落盘的
     # duration_seconds 为真实耗时（time.time()-start_time），替代 mtime 推算；
     # 命中即用、未命中维持 mtime 兜底（旧日志不丢）。
+    logged = None
     if project_root is not None:
         logged = _logged_run_duration(Path(project_root), run_id)
         if logged is not None:
@@ -546,7 +545,8 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
     files: 调用方预扫描的产物路径集（如 SummaryIndex._runs_by_spec_sigs 的
         分组结果）；提供时跳过目录 glob（D2：目录 glob 次数降为常数）。
         与 glob 路径同样按 spec 精确归属过滤、同样以活跃副本优先去重。
-    每条: {run_id, agent_type, spec, status, started, file_size, events}
+    每条: {run_id, agent_type, spec, status, duration_seconds, started,
+        file_size}（事件明细不在条目内，见 get_run_events）
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
@@ -1091,16 +1091,8 @@ def _is_run_archivable(p: Path) -> bool:
 
 
 def _retention_log(logger, level: str, msg: str) -> None:
-    """统一清理日志出口：logger 实例优先（fenixd Logger），缺省打印 stderr。"""
-    if logger is not None:
-        try:
-            getattr(logger, level)("fenixd", msg)
-        except Exception:
-            pass
-    else:
-        import sys
-
-        print(f"[fenixd] {msg}", file=sys.stderr)
+    """统一清理日志出口（单源：_logutil.fallback_log）。"""
+    fallback_log(logger, level, msg)
 
 
 def _retention_files_differ(a: Path, b: Path) -> bool:

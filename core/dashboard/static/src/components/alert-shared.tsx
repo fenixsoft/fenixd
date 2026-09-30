@@ -68,7 +68,11 @@ export function AlertTitle({
  * - 纯展示、不可交互（叙事仅为可读性增强，不承载任何机器语义）；
  * - 无 narrative 字段时不渲染任何容器（DOM 与现状一致，无空壳区块）；
  * - 长文本按既有容器规则滚动展示（maxHeight + overflowY auto），不横向溢出、
- *   不遮挡 choices 操作区。
+ *   不遮挡 choices 操作区；
+ * - 安全前提：narrative.text 为 AI 生成内容，无注入风险依赖 react-markdown
+ *   默认不执行原始 HTML（跳过 raw HTML 节点、链接经 SafeLink 渲染），且共享
+ *   映射 markdownComponents（SpecDocModal）不放行 raw HTML——后者不得引入
+ *   rehype-raw，否则静默放开 HTML 注入面。
  */
 function AlertNarrative({ text }: { text: string }) {
   return (

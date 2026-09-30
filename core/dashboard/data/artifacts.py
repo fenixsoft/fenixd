@@ -316,7 +316,12 @@ def parse_verdict(project_root, spec_name) -> dict:
             if re.match(r"^#{2,4}\s+", s):
                 conclusion_mode = False
             elif s.startswith("**状态"):
-                status_detail = re.sub(r"^.*?状态\s*[：:]\s*|\*\*\s*$", "", s).strip()
+                # 权威写侧「**状态：detail**」由前缀/行尾两分支清洗干净；
+                # 非规范变体「**状态:** detail」（粗体在冒号前闭合）会残留
+                # 行中部「**」，strip 前再补一次行首粗体闭合符清洗
+                status_detail = re.sub(
+                    r"^\*+\s*", "", re.sub(r"^.*?状态\s*[：:]\s*|\*\*\s*$", "", s)
+                ).strip()
             elif s.startswith(("|", "---", "-", "**", ">")):
                 pass
             elif s:

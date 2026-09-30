@@ -21,7 +21,9 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                                         code-review 2546f200e430),
     read_log_window_from (log_index.py 公开别名，timeline.py 经门面解析；
                           code-review 2546f200e430),
-    read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9)
+    read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9),
+    cached_config_value (summary.py 公开别名，quality_gates.py 经门面解析；
+                         code-review 20ad589a3bc4)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
@@ -48,6 +50,7 @@ import yaml  # noqa: F401
 
 from core.agent_runner.run_files import archive_spec_runs
 from core.archive_commit import commit_archive_move
+from core.config import USER_CONFIG_DIR  # 单源锚定：用户级配置目录唯一定义于 core/config.py
 from core.fenix_session import is_running as _is_running
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
@@ -57,8 +60,11 @@ from core.state_machine import (
     VERIFY_INFRA_ROUNDS_FIELD,
 )
 
-# D8：USER_CONFIG_PATH 门面绑定（config_admin 组内经 _facade.USER_CONFIG_PATH 解析）
-USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
+# D8：USER_CONFIG_PATH 门面绑定（config_admin 组内经 _facade.USER_CONFIG_PATH 解析）。
+# 值单源派生自 core.config.USER_CONFIG_DIR（勿在此独立硬编码 Path.home() 路径，
+# code-review item dd0d79107571：防两处定义静默漂移）。import 时计算一次，
+# patch 门面属性（patch("core.dashboard.data.USER_CONFIG_PATH", ...)）语义不变。
+USER_CONFIG_PATH = USER_CONFIG_DIR / "config.yaml"
 
 
 # ── summary 组 ──
@@ -86,6 +92,7 @@ from .summary import (
     _token_recent_entries,
     _degraded_project,
     _cached_config_value,
+    cached_config_value,
     overview,
 )
 
@@ -202,6 +209,7 @@ from .spec_archive import (
 from .spec_docs import (
     _SPEC_NAME_RE,
     _SPEC_DOC_WHITELIST,
+    _validated_spec_name,
     resolve_spec_dir,
     InvalidSpecName,
     InvalidSpecDoc,

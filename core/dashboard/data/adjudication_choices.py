@@ -14,11 +14,15 @@
 恢复、run_cancelled、误报类）不在注册表内——:func:`choices_for` 对其返回空
 元组，告警不携带 choices，前端只出「知道了」。
 
-注册表为纯静态声明（模块常量），MUST NOT 依赖 LLM 生成。返回值为模块级共享
-元组/字典，消费方 MUST NOT 就地改写（只读契约）。
+注册表为纯静态声明（模块常量），MUST NOT 依赖 LLM 生成。只读契约由结构保证
+（code-review item fb6a53a88d08）：注册表外层与各选项 dict 均冻结为
+MappingProxyType，:func:`choices_for` 返回选项的逐项拷贝——消费方就地改写
+要么直接 TypeError、要么只作用于拷贝，不再有跨告警污染注册表的通道。
 """
 
 from __future__ import annotations
+
+from types import MappingProxyType
 
 # 桶 2 真裁决类信号的裁决选项集（proposal 信号表全量 8 类）。
 # 每个选项四字段：
@@ -56,7 +60,7 @@ _MANUAL_FIXED_REVERIFY = {
     "action": "reset_verification",
 }
 
-ADJUDICATION_CHOICES: dict = {
+_ADJUDICATION_REGISTRY: dict = {
     # ── 验证循环耗尽族 ────────────────────────────────────────────
     "impl_budget_exhausted": (
         {
@@ -181,6 +185,14 @@ ADJUDICATION_CHOICES: dict = {
     ),
 }
 
+# 只读契约结构化（code-review item fb6a53a88d08）：构造期先以普通 dict 组装
+# （选项常量被多信号按引用复用，组装逻辑不受影响），再整体冻结——外层注册表
+# 与各选项 dict 均为 MappingProxyType，就地改写直接 TypeError。
+ADJUDICATION_CHOICES: MappingProxyType = MappingProxyType({
+    sig: tuple(MappingProxyType(choice) for choice in choices)
+    for sig, choices in _ADJUDICATION_REGISTRY.items()
+})
+
 # 消费通道约定（registry spec.md）：除 build_artifact_paths_missing 外，各信号的
 # 告警记录均为 kind=ESCALATION（进前端告警区渲染下拉）；build_artifact_paths_missing
 # 写 kind=SIGNAL 记录，不进前端告警区，其 choices 由 Administrator 处置契约消费。
@@ -192,8 +204,14 @@ def choices_for(signal_type) -> tuple:
 
     未注册信号（含桶 0 知情/自愈类与 None/空值）返回空元组，不抛异常——
     发射点以「非空才写入 choices 字段」判定，桶 0 天然不携带。
+
+    返回普通 dict 的逐项拷贝（选项字段全为标量，浅拷贝即完全隔离）：
+    键访问/迭代/isinstance(dict)/JSON 序列化形态与原共享元组一致，消费方
+    即便就地改写也只作用于拷贝，不污染注册表（code-review item fb6a53a88d08）。
     """
-    return ADJUDICATION_CHOICES.get(str(signal_type or ""), ())
+    return tuple(
+        dict(choice) for choice in ADJUDICATION_CHOICES.get(str(signal_type or ""), ())
+    )
 
 
 def is_adjudicable(signal_type) -> bool:

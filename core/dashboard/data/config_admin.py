@@ -975,8 +975,6 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
       write_config 前置校验把关）
     - gates.approve_mode / gates.promote_mode: 只替换对应子键
     """
-    import copy
-
     merged = copy.deepcopy(raw_config)
 
     if "llm" in patch:
@@ -1260,6 +1258,14 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             _bs = crf_sync.get("batch_size")
             if isinstance(_bs, int) and not isinstance(_bs, bool) and _bs > 0:
                 merged_crf["batch_size"] = _bs
+            # code-review item 5607e1eab677：定向重试上限补合并分支（与顶层
+            # code_review_fix 分支同口径：int 非 bool 且 1..5）——_SYNC_PAGE_KEYS
+            # 把用户级 code_review_fix 段原样构进 patch（含 targeted_retry_max），
+            # 缺此步该键在合并阶段被静默丢弃，sync 返回 ok 且 synced 回执原样
+            # 包含该键（synced 与实际落盘不一致，复制粘贴漂移同款坑）
+            _trm = crf_sync.get("targeted_retry_max")
+            if isinstance(_trm, int) and not isinstance(_trm, bool) and 1 <= _trm <= 5:
+                merged_crf["targeted_retry_max"] = _trm
             # add-codefix-affinity-batching 4.3：定向回归开关同口径合并
             if isinstance(crf_sync.get("targeted_regression"), bool):
                 merged_crf["targeted_regression"] = crf_sync["targeted_regression"]
@@ -1648,7 +1654,13 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             _cct = v_patch["context_cost_per_turn_threshold"]
             if isinstance(_cct, bool) or not isinstance(_cct, int) or _cct < 0:
                 return fail(f"verify.context_cost_per_turn_threshold must be a non-negative integer: {_cct!r}")
+        # code-review item cbbece865318：serving_reclaim 非 dict patch 直接拒绝
+        # （合并分支以 isinstance dict 为前置，非 dict 真值走静默跳过、write_config
+        # 仍返回 ok，提交被无声丢弃——对齐下方容器键「must be an object」同款
+        # D7 拒绝契约；None 视为「未提交」放行）
         sr_patch = v_patch.get("serving_reclaim")
+        if sr_patch is not None and not isinstance(sr_patch, dict):
+            return fail(f"verify.serving_reclaim must be an object: {sr_patch!r}")
         if isinstance(sr_patch, dict) and sr_patch.get("enabled") is not None and not isinstance(sr_patch["enabled"], bool):
             return fail(f"verify.serving_reclaim.enabled must be a boolean: {sr_patch['enabled']!r}")
 
@@ -2479,6 +2491,53 @@ _SYNC_PAGE_APPLY_PREDICATES = {
         "audit_enabled": (
             lambda v: isinstance(v, bool),
             "must be a boolean",
+        ),
+    },
+    # code-review item b331b2c9ae73：system 页 admin 标量键补登记——合并分支
+    # 带「is not None」形态条件（None = 未提交，静默跳过），用户级手工写成
+    # null 的键原样构进 patch 后在此被拾取，缺登记则预检放行、合并跳过、
+    # synced 回执照含该键（同款「synced 与实际落盘不一致」假成功）。谓词与
+    # write_config 前置校验同口径（非 None 且类型合法）。
+    "admin": {
+        "enabled": (
+            lambda v: isinstance(v, bool),
+            "must be a boolean",
+        ),
+        "interval_minutes": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0,
+            "must be a positive number",
+        ),
+        "escalation_cooldown_minutes": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative number",
+        ),
+        "merge_breaker_threshold": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+            "must be a positive integer",
+        ),
+        "shutdown_drain_seconds": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative integer",
+        ),
+        "bug_repair_mode": (
+            lambda v: v in ("inplace", "derive"),
+            "must be one of ['inplace', 'derive']",
+        ),
+        "stuck_silence_minutes": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative number",
+        ),
+        "narrative_enabled": (
+            lambda v: isinstance(v, bool),
+            "must be a boolean",
+        ),
+        "narrative_timeout_seconds": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+            "must be a positive integer",
+        ),
+        "narrative_model": (
+            lambda v: isinstance(v, str),
+            "must be a string",
         ),
     },
 }
