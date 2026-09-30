@@ -13,6 +13,7 @@ from core.state_machine import (
 )
 from core.agent_runner.run_files import run_spec_part, strip_run_id_suffixes
 from pathlib import Path
+import io
 import json
 
 # ── 实现尝试总预算缺省值（add-fail-counter-budget D2/D3）──────────
@@ -93,6 +94,12 @@ IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 # 豁免本身不占预算，但极端「死亡循环」仍烧 token——告警兜底人工介入。
 # 可经 pm.budget_exempt_alert_threshold 覆盖（模块常量缺省，不进 Dashboard）。
 BUDGET_EXEMPT_ALERT_THRESHOLD = 6
+
+# run 产物终态判定的尾部扫描窗口（item 66e369185609）：终态行只会在文件尾部，
+# _run_file_died 默认只读该窗口、从后向前找末条有效 dict 行，产物大/修复周期
+# 累积时不再每次对账全量重读；窗口盖不住（末条有效行在窗口之外、超长行被
+# 窗口起点截断）时回退全量读，判定结果与全量逐行读完全一致。
+RUN_FILE_TAIL_SCAN_BYTES = 262144
 
 
 class ImplBudget:
@@ -482,6 +489,11 @@ class ImplBudget:
         # 分处两个临界区，run 锚未必先行变化）——仅复核 run 锚挡不住，故锁内
         # 同时复核 used 与 implementer_run 均未变化才落盘；任一已变即保守
         # 跳过本轮（与上方在飞守卫同口径），待下一轮对账收敛，启动计数不丢。
+        # 上调方向同样收敛为锁内条件写（item 2fcdfc8f4451）：仅复核 used 未变
+        # （check_run=False）——expected 出自 runs 计数扫描，run 锚不在该路径
+        # 守卫读内、无快照可复核；并发派发的启动计数必先经 bump 改写 used，
+        # used 复核已足以挡住覆盖丢失，已变即保守跳过本轮、待下一轮对账
+        # 按新值收敛，启动计数不丢。
         try:
             if expected < used:
                 corrected = self._pm.state_machine.set_impl_budget_used_if_unchanged(
@@ -496,9 +508,17 @@ class ImplBudget:
                     )
                     return
             else:
-                self._pm.state_machine.update_spec(
-                    spec_name, {IMPL_RUN_BUDGET_USED_FIELD: expected}
+                corrected = self._pm.state_machine.set_impl_budget_used_if_unchanged(
+                    spec_name, expected, used, check_run=False
                 )
+                if not corrected:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"预算对账自动校正跳过: '{spec_name}' used={used} → {expected}"
+                        f"（对账窗口内 used 已被并发改写，疑似新派发启动计数已加，"
+                        f"保守不改数，待下一轮对账收敛）",
+                    )
+                    return
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -683,22 +703,68 @@ class ImplBudget:
         文件在 glob 与 open 之间被归档移动，item bb880517c83c）——与同文件
         目录扫描失败的保守口径对齐（不可知 ≠ 死亡），调用方据此整体降级
         跳过本轮对账；「确认 error 终态死亡」仍返回 True。
+
+        终态判定只取决于「末条有效 dict 行」（item 66e369185609）：默认只读
+        文件尾部窗口、从后向前找第一条有效 dict 行，产物大/修复周期累积时
+        不再每次对账全量重读；窗口内不存在有效 dict 行（末条有效行在窗口
+        之外、超长行被窗口起点截断）时回退全量读，判定与全量逐行读完全
+        一致（空文件/末行未收尾半行/非法 JSON 行跳过等边界口径不变）。
         """
-        last = None
+
+        def _last_valid_entry(lines: list) -> dict | None:
+            # 与全量逐行读同口径：strip 后空行/非法 JSON/非 dict 跳过，
+            # 从后向前第一条有效 dict 即全量读口径的末条有效 dict。
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    return entry
+            return None
+
+        start = 0
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(entry, dict):
-                        last = entry
+            with path.open("rb") as f:
+                f.seek(0, io.SEEK_END)
+                size = f.tell()
+                start = max(0, size - RUN_FILE_TAIL_SCAN_BYTES)
+                if start > 0:
+                    # 多读窗口起点前 1 字节判定首片段是否行首对齐：前一字节
+                    # 非 \n 说明窗口起点落在行中间，首片段为残行须丢弃（残行
+                    # 恰为末条有效行时由下方全量回退兜底；多字节 UTF-8 字符
+                    # 不含 0x0A，行首对齐即字符对齐）。
+                    f.seek(start - 1)
+                    chunk = f.read(size - start + 1)
+                else:
+                    f.seek(0)
+                    chunk = f.read()
         except OSError:
             return None
+        # 文本模式逐行读的 universal newlines 口径（\n、\r\n、\r 同作行界）
+        lines = (
+            chunk.decode("utf-8", errors="replace")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .split("\n")
+        )
+        if start > 0 and chunk[:1] != b"\n":
+            lines = lines[1:]
+        last = _last_valid_entry(lines)
+        if last is None and start > 0:
+            # 尾部窗口内无有效 dict 行：末条有效行可能在窗口之外——回退
+            # 全量读，判定与全量逐行读完全一致。
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                return None
+            last = _last_valid_entry(
+                text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            )
         return isinstance(last, dict) and last.get("type") == "error"
 
     def _impl_run_budget_used(self, spec_name: str) -> int:
