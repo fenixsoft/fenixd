@@ -176,6 +176,23 @@ function resultContentToText(content: unknown): string {
   return String(content);
 }
 
+// 终态事件 error/reason 字段文本化（item bec056a5ff10）：字段类型标注为 string，
+// 但载荷实际来自外部事件流，非字符串（对象）经 String() 兜底会产出字面
+// '[object Object]'；typeof 守卫后非字符串对象回落 JSON 序列化（先例：
+// resultContentToText 的 item 0f6b780b771c）
+function payloadText(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v !== null && typeof v === 'object') {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      // 循环引用等序列化失败场景不产出可读文本
+      return '';
+    }
+  }
+  return v ? String(v) : '';
+}
+
 function toolResultFromUserMessage(ev: RunEvent): Array<{ toolUseId: string; result: ToolResult }> {
   const out: Array<{ toolUseId: string; result: ToolResult }> = [];
   const message = (ev as unknown as Record<string, unknown>).message as
@@ -196,6 +213,11 @@ function toolResultFromUserMessage(ev: RunEvent): Array<{ toolUseId: string; res
   }
   return out;
 }
+
+// 用户侧中断哨兵（claude CLI 中断时插入的固定文本，可能随带 tool_result 的 user
+// 消息或纯 user 消息出现）：渲染层两个 user 分支共用同一过滤判定
+//（item 01781f3e4357）
+const USER_INTERRUPT_SENTINEL = '[Request interrupted by user]';
 
 /**
  * 取 user 事件的文本：优先顶层 content 字符串；否则从 message.content 块数组
@@ -317,7 +339,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
         }
         // tool_result 消息不再渲染文本行（除非另有文本内容）
         const text = userMessageText(ev);
-        if (text && text !== '[Request interrupted by user]') {
+        if (text && text !== USER_INTERRUPT_SENTINEL) {
           out.push({ type: 'user', content: text, timestamp });
         }
         continue;
@@ -325,7 +347,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
       // 普通用户消息：优先字符串 content，回显事件（isReplay，块数组无顶层
       // content）经 userMessageText 提取 text 块
       const text = userMessageText(ev);
-      if (text) {
+      if (text && text !== USER_INTERRUPT_SENTINEL) {
         out.push({ type: 'user', content: text, timestamp });
       }
       continue;
@@ -365,7 +387,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     // 原先落 fallback 只剩 [error]/[interrupted] 心跳行，原因文本丢失
     // （Max turns (600) reached 之类死因在运行记录里不可见）。
     if (ev.type === 'error' || ev.type === 'interrupted' || ev.type === 'cancelled') {
-      const text = String(ev.error || ev.reason || '').trim();
+      const text = (payloadText(ev.error) || payloadText(ev.reason)).trim();
       if (text) {
         flushThinking();
         out.push(
@@ -383,7 +405,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     // reason 映射为中文系统行，MUST NOT 落 fallback 的 [session_ended]。
     if (ev.type === 'session_ended') {
       flushThinking();
-      const reason = (ev.reason as string) || '';
+      const reason = payloadText(ev.reason);
       let label: string;
       switch (reason) {
         case 'idle':
@@ -567,6 +589,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     if (t === null || t <= 0) continue;
     toolElapsedAtTime.set(t, (toolElapsedAtTime.get(t) ?? 0) + msg.toolElapsedSeconds);
   }
+  const estimatedAtTime = new Set<number>();
   for (const msg of out) {
     if (!msg.isThinking) continue;
     msg.thinkingPreview = thinkingPreviewText(String(msg.content || ''));
@@ -574,6 +597,12 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     const t = parseTimestampMs(msg.timestamp);
     // 哨兵 0（缺时间戳）会与下一个 assistant 事件产生 epoch 起的荒谬差值 → 跳过估算
     if (t === null || t <= 0) continue;
+    // 同一 timestamp 只估算一次（item c2d1f65c1076）：同事件内多条 thinking（块序
+    // 列 thinking→text→thinking 经 flushThinking 产出两条同 timestamp 消息）或相
+    // 邻 assistant 事件 timestamp 相同（秒级粒度）时，逐条独立估算会把整段差值
+    // 重复计入；同刻后续条目不写时长，折叠头回退「已思考数秒」
+    if (estimatedAtTime.has(t)) continue;
+    estimatedAtTime.add(t);
     const next = assistantTimes.find((x) => x > t);
     if (next === undefined) continue;
     // 扣除同事件工具的观测耗时后再估算（item 5828e59782f2）；扣除后非正 → 不写
