@@ -18,9 +18,14 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
     """
     # SPEC-B 批⑤：渲染边界统一走 timelib.fmt_display（解析内核 parse_ts
     # 单源不变）；解析失败仍走既有 [:19] 切片回退——fmt_display 渲染层
-    # fail-soft 返回空串，此处转译为既有展示契约的 [:19] 回退。
+    # fail-soft 返回空串，此处转译为既有展示契约的 [:19] 回退；None/空串
+    # 直接返回空串，不让 str(None)[:19] 的字面量「None」冒充时间戳。
     out = fmt_display(iso_str, fmt)
-    return out if out else str(iso_str)[:19]
+    if out:
+        return out
+    if not iso_str:
+        return ""
+    return str(iso_str)[:19]
 
 
 def fmt_dur(seconds) -> str:

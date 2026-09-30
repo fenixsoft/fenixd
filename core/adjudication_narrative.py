@@ -176,18 +176,16 @@ def _resolve_admin_config(ctx: Any) -> Dict[str, Any]:
     任何异常回空 dict（= 全缺省 + 开关缺省 true）。
     """
     try:
+        from core.config import ConfigLoader
+
         config = _ctx_get(ctx, "config")
         if config is None:
             project_root = _ctx_get(ctx, "project_root")
             if project_root is None:
                 return {}
-            from core.config import ConfigLoader
-
             config = ConfigLoader.load(Path(project_root) / ".fenix" / "config.yaml")
         if not isinstance(config, dict):
             return {}
-        from core.config import ConfigLoader
-
         admin = ConfigLoader.get_admin_config(config)
         return admin if isinstance(admin, dict) else {}
     except Exception:
