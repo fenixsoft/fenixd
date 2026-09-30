@@ -6,8 +6,8 @@
 
 - `self_review.py` 本地 naive 气泡整体迁 aware UTC：19 处裸 `now()`、2 处 `fromtimestamp()`、`_in_window` 窗口比较、`HH:MM` 调度语义边界（人类时刻按本地墙钟解析、进入计算前转 aware UTC）
 - 写侧散点迁移：`code_review.py`(6)、`evolution.py`(3)、`admin_monitor.py`(3)、`agent_runner/prompt_builder.py`(2)、`worktree_manager/stash_guard.py`、`mergeback.py`、`regression.py`、`dashboard/data/summary.py`、`spec_archive.py`、`bin/fenix_dashboard.py` 各 1
-- 裸 `fromtimestamp()` 16 处改走 `timelib.from_epoch`（`agent_runner/runner.py`、`liveness.py`、`provider_circuit.py`、`admin_monitor.py`、`pm_engine` 3 文件、`fenixd.py`、dashboard data 2 文件、`bin/fenix_process.py`、`self_review.py` 2 处随气泡批）
-- 绕过收拢层的 `fromisoformat()` 13 文件改走 `timelib.parse_ts`（`tui_format`、`admin_store`、`state_machine`、`latency`、`pm_engine/engine`、`alert_routes`、`admin_monitor`、`runner`、dashboard data、`fenixd.py`、`bin/fenix_dashboard.py`、`bin/fenix_status.py`）
+- 裸 `fromtimestamp()`（2026-09-30 盘点 15 处/11 文件，以守卫白名单为权威清单）改走 `timelib.from_epoch`（`agent_runner/runner.py` 3、`liveness.py`、`provider_circuit.py`、`admin_monitor.py` 2、`pm_engine/dispatch/backoff.py`、`pm_engine/verification/pipeline.py`、`fenixd.py`、dashboard data `runs.py`/`artifacts.py`、`bin/fenix_process.py`、`self_review.py` 2 处随气泡批）
+- 绕过收拢层的 `fromisoformat()`（2026-09-30 盘点 17 文件 33 处，以守卫白名单为权威清单）改走 `timelib.parse_ts`：除 `tui_format`、`admin_store`、`state_machine`、`latency`、`pm_engine/engine`、`alert_routes`、`admin_monitor`、`runner`、dashboard data `summary.py`、`fenixd.py`、`bin/fenix_dashboard.py`、`bin/fenix_status.py` 外，`self_review.py`、`provider_circuit.py`、`code_review.py`、`evolution.py`、`regression.py` 的裸 `fromisoformat` 随各自写侧批次一并迁移
 - CLI 展示脚本统一 `timelib.fmt_display`：`bin/fenix_process.py` / `fenix_dashboard.py` 的 `_local_ts` 私有助手退役
 - 守卫白名单清零：全部存量违例迁毕后白名单收缩为空，僵尸条目检测全绿
 - `bin/` 真身修改后，`.fenix/bin` 部署副本刷新登记为人工步骤（未跟踪文件，merge-back 不落地，见 design）

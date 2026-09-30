@@ -62,7 +62,7 @@
 ## 1. 批①：self_review naive 气泡迁 aware UTC
 
 - [ ] 1.1 characterization 测试先行：以固定 run 数据集 + 固定调度配置固化 `_in_window`/`collect_runs_stats`/调度触发的现行为（命中集合快照），作为迁移等价性基准
-- [ ] 1.2 `core/self_review.py` 窗口计算迁 aware UTC：19 处裸 `now()` 走 `timelib.now_utc()`，2 处 `fromtimestamp` 走 `timelib.from_epoch`，`_in_window`/`window_start`/`window_end` 全 aware 比较；`_parse_run_at` 保持本地墙钟语义解析后立即转 aware UTC，配置字面值不变
+- [ ] 1.2 `core/self_review.py` 窗口计算迁 aware UTC：19 处裸 `now()` 走 `timelib.now_utc()`，2 处 `fromtimestamp` 走 `timelib.from_epoch`，1 处裸 `fromisoformat` 走 `timelib.parse_ts`，`_in_window`/`window_start`/`window_end` 全 aware 比较；`_parse_run_at` 保持本地墙钟语义解析后立即转 aware UTC，配置字面值不变
 - [ ] 1.3 同步迁移 `core/self_review.py` 测试替身时间戳格式（grep 测试内 naive 串构造、`ts[:19]` 切片、`fromtimestamp`），跑通 characterization 等价基准与全量自省测试
 - [ ] 1.4 守卫白名单收缩：清除 `self_review.py` 全部条目，僵尸检测通过
 
@@ -81,7 +81,7 @@
 
 ## 4. 批④：dashboard data 与散点收尾
 
-- [ ] 4.1 `core/dashboard/data/summary.py`/`spec_archive.py`/`runs.py`/`artifacts.py`：裸 `now()` 与 `fromtimestamp`/`fromisoformat` 迁移，dashboard 只读契约（容错、不抛）保持
+- [ ] 4.1 `core/dashboard/data/summary.py`/`spec_archive.py`/`runs.py`/`artifacts.py`：裸 `now()` 与 `fromtimestamp`/`fromisoformat` 迁移，dashboard 只读契约（容错、不抛）保持；抽查 dashboard API 时间字段（`frozen_until` 等）在前端 dayjs 渲染无 Invalid Date
 - [ ] 4.2 `core/code_review.py`（6 处裸 `now()`，含 aware→naive 剥时区写入点改 aware UTC 直写）、`evolution.py`（3 处）、`regression.py`、`worktree_manager/stash_guard.py`/`mergeback.py` 各 1 处迁移
 - [ ] 4.3 守卫白名单收缩：清除本批域全部条目
 

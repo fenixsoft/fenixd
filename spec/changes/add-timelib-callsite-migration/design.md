@@ -28,7 +28,7 @@ SPEC-A `add-timelib-consolidation-layer`（2026-09-30 立项）交付 `core/time
 备选「窗口计算保持 naive 本地」：与全层 aware UTC 约定冲突，且下次时间运算仍需换算——否决。
 
 ### D3 `.fenix/bin` 部署副本刷新走人工登记
-`.fenix/bin/` 未跟踪（`git ls-files` 空）且非 gitignored——worktree 内改动不随 merge-back 落地，属「主树专属写操作」，Agent 不可交付。真身 `bin/*.py` 修改后，刷新步骤登记 `.fenix/todo.md`（或 docs help 人工步骤节）。符合声明 lint 的 reference 语义与 §3.2.1 任务粒度规则。
+`.fenix/bin/` 未跟踪（`git ls-files` 空）且被 `.gitignore` 的 `.fenix/*` 规则忽略（`.gitignore:26`）——worktree 内改动不随 merge-back 落地，属「主树专属写操作」，Agent 不可交付。真身 `bin/*.py` 修改后，刷新步骤登记 `.fenix/todo.md`（或 docs help 人工步骤节）。符合声明 lint 的 reference 语义与 §3.2.1 任务粒度规则。
 备选「把 .fenix/bin 纳入跟踪」：改变框架部署模型，超出本 SPEC 职权——否决。
 
 ### D4 白名单清零是机械验收口径，不是估算口径
@@ -41,6 +41,7 @@ SPEC-A `add-timelib-consolidation-layer`（2026-09-30 立项）交付 `core/time
 
 - [self_review 气泡迁移触碰窗口判定回归（自省报告错误聚合窗口）] → 等价性 Scenario 锁定（同数据同配置命中集合相同）+ characterization 测试先行（迁移前固化现行为）+ 单批独立提交
 - [aware UTC 落盘后，外部消费方（人读日志、脚本切片）看到后缀变化] → `parse_ts`/`fmt_display` 已兼容；人读场景靠 CLI `fmt_display` 兜底；对话转述规则已有记忆约定（先转本地再展示）
+- [dashboard API 时间字段 aware 化后，前端 dayjs 直消费（`SpecStatusModal` 的 `frozen_until`、`RegressionTab` 的 iso 等）需可解析新格式] → `to_storage` 产出须为 `new Date`/dayjs 可解析形态（ISO `T` 分隔最稳）；每批迁移抽查 dashboard 消费字段的前端渲染无 Invalid Date，发现不兼容即申报另立项（前端 dayjs 36 处不在本 SPEC 范围）
 - [SPEC-A 实现期 timelib API 微调导致本 SPEC 任务措辞漂移] → 激活前以 SPEC-A 归档态为准刷新本 SPEC tasks（`--modify`）；设计按域分批不绑具体函数签名
 - [ bin 展示输出格式回退事故复现（2026-09-03 a78215d 同类）] → Scenario 锁定三形态输入输出逐字一致；`_local_ts` 退役前先并行跑一轮对照
 - [20 文件迁移横跨多域，review 面大] → 五批独立提交，每批 diff 自含域内；批间无共享文件（self_review 除外，已单列批①）
@@ -55,4 +56,4 @@ SPEC-A `add-timelib-consolidation-layer`（2026-09-30 立项）交付 `core/time
 
 ## Open Questions
 
-（无——分批节奏 2026-09-30 用户定调；激活前置 = SPEC-A 归档，调度档=手工激活）
+（无——分批节奏 2026-09-30 用户定调；依赖前置经 `depends_on: add-timelib-consolidation-layer` 声明，SPEC-A 到接受态（done/pushed/implemented/verified）后由 dispatch-dependency-wakeup 自动拾取，无需人工激活）
