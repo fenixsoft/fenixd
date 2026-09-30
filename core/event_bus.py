@@ -78,6 +78,17 @@ class EventBus:
         self._running = True
 
         # Record initial state
+        # 启动 fail-fast 有意为之（code-review item 82f6eee18b79）：此处刻意
+        # 不对 _update_known_state 做 try/except 降级。基线快照是 D5 不变量
+        # （MUST 同步建立于任何扫描之前），吞异常按空基线继续会让紧随的初扫
+        # 线程（start_initial_scan → _run_full_scan_body，刻意不做二次
+        # baseline）把全部存量 SPEC 判为「新出现」并全量重放 hook 事件
+        # （2026-09-07 事故）——「空基线由后台扫描兜底」在本路径不成立，后台
+        # 初扫不做基线重建。瞬时读盘故障（并发撕裂/EIO）在此向上传播至
+        # fenixd.main() 的 try/except（FATAL + exit 1），由重启兜底，重启后
+        # 瞬时故障通常已消。运行期同源读取的容错口径见 _periodic_scan_loop
+        # 与 _run_full_scan_body（彼时旧基线在手，降级不丢基线）——启动期无
+        # 旧基线可依，口径不同属有意区分。
         self._update_known_state()
 
         # Start the inotify/polling watcher
