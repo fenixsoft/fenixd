@@ -17,7 +17,9 @@ reclaim_verify_serving D1/D2/D3/D5：
 
 import os
 import re
+import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import subprocess
@@ -26,7 +28,7 @@ from core.serving_registry import ServingRegistry
 
 RECLAIM_GRACE_SECONDS = 600
 
-_STATE_DIR_NAMES = frozenset({
+_STATE_FILE_NAMES = frozenset({
     "servers.json",
     "servers.json.lock",
     "contract_selfcheck.json",
@@ -198,24 +200,33 @@ def has_live_process_for_spec(spec: str, project_root: Path) -> bool:
         return True
 
 
-def _should_keep(
+def _should_keep_scoped(
     spec_name: str | None,
-    wt_path: Path,
     project_root: Path,
+    grace_target: Path,
+    keep_registered: Callable[[], bool],
+    keep_live_process: Callable[[], bool],
     is_spec_in_flight=None,
 ) -> bool:
-    """保留判据聚合：满足任一即保留（is_spec_in_flight 命中亦保留）。"""
+    """保留判据聚合（参数化变体）：判据顺序与 fail-safe 语义的单一来源。
+
+    登记在册/活进程两判据的匹配维度由调用方注入（零参谓词，自带 fail-safe、
+    无法判定时返回 True）：目录回收按路径全等（is_registered_in_servers /
+    has_live_process），boot.log 回收按 spec 解析（is_spec_registered_in_servers
+    / has_live_process_for_spec）。spec 存活/宽限期/在飞判据两维共用，避免判据
+    链在目录与 boot.log 两处手工内联漂移。
+    """
     # 判据 1：spec 存活
     if spec_name is not None and is_spec_alive(spec_name, project_root):
         return True
     # 判据 2：登记在册
-    if is_registered_in_servers(wt_path, project_root):
+    if keep_registered():
         return True
     # 判据 3：活进程
-    if has_live_process(wt_path):
+    if keep_live_process():
         return True
     # 判据 4：宽限期内
-    if is_within_grace_period(wt_path):
+    if is_within_grace_period(grace_target):
         return True
     # 判据 5：spec 验证在飞（可选；无法判定时 fail-safe 保留）
     if is_spec_in_flight is not None and spec_name is not None:
@@ -227,36 +238,76 @@ def _should_keep(
     return False
 
 
+def _should_keep(
+    spec_name: str | None,
+    wt_path: Path,
+    project_root: Path,
+    is_spec_in_flight=None,
+) -> bool:
+    """保留判据聚合：满足任一即保留（is_spec_in_flight 命中亦保留）。
+
+    目录维度（路径全等匹配），注入维度判定后委托 _should_keep_scoped。
+    """
+    return _should_keep_scoped(
+        spec_name,
+        project_root,
+        wt_path,
+        keep_registered=lambda: is_registered_in_servers(wt_path, project_root),
+        keep_live_process=lambda: has_live_process(wt_path),
+        is_spec_in_flight=is_spec_in_flight,
+    )
+
+
 # ── 回收执行 ─────────────────────────────────────────────────────────────────
 
 
 def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
     """git worktree remove --force + git worktree prune（幂等）。
 
-    git 非零返回（权限/文件被占用/路径非注册 worktree 等）时抛 RuntimeError
-    （含 stderr 留痕），由调用方记 WARNING 且不计入 reclaimed，
+    git 非零返回（权限/文件被占用/路径非注册 worktree 等）时：先
+    `git worktree prune` 清理失效登记再重试一次 remove——覆盖 git worktree
+    add 中途失败遗留的普通目录、.git 文件损坏/缺失目录等非注册形态的残留；
+    仍失败且调用方已过五连保留判据（确无主）时降级为对目录本体的受控删除
+    （shutil.rmtree），避免残留永久滞留且每周期重复告警。全部手段均失败才抛
+    RuntimeError（含 stderr 留痕），由调用方记 WARNING 且不计入 reclaimed，
     避免目录删除失败仍被记为回收成功。
     """
-    remove = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(project_root),
-            "worktree",
-            "remove",
-            "--force",
-            str(wt_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if remove.returncode != 0:
-        raise RuntimeError(
-            f"git worktree remove --force {wt_path} 失败 "
-            f"(rc={remove.returncode}): "
-            f"{(remove.stderr or remove.stdout).strip()}"
+
+    def _git_remove():
+        return subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "worktree",
+                "remove",
+                "--force",
+                str(wt_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
+
+    remove = _git_remove()
+    if remove.returncode != 0:
+        subprocess.run(
+            ["git", "-C", str(project_root), "worktree", "prune"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        remove = _git_remove()
+    if remove.returncode != 0:
+        try:
+            shutil.rmtree(wt_path)
+        except Exception as rmtree_err:
+            raise RuntimeError(
+                f"git worktree remove --force {wt_path} 失败 "
+                f"(rc={remove.returncode}): "
+                f"{(remove.stderr or remove.stdout).strip()}；"
+                f"prune 后重试仍失败，降级 rmtree 也失败: {rmtree_err}"
+            ) from rmtree_err
     prune = subprocess.run(
         ["git", "-C", str(project_root), "worktree", "prune"],
         capture_output=True,
@@ -285,7 +336,7 @@ def _boot_log_spec(name: str) -> str:
 
 def _is_state_file(name: str) -> bool:
     """判断文件名是否为必须保留的顶层状态文件。"""
-    return name in _STATE_DIR_NAMES
+    return name in _STATE_FILE_NAMES
 
 
 # ── 公开入口 ─────────────────────────────────────────────────────────────────
@@ -365,25 +416,19 @@ def reclaim_verify_serving(
             kept.append(name)
             continue
         log_spec = _boot_log_spec(name)
-        # 按 spec 存活判据判定
-        try:
-            if is_spec_alive(log_spec, project_root):
-                continue
-        except Exception:
-            continue
-        # 与目录回收同一保留口径（fail-safe）：登记在册/活进程/宽限期内，
-        # 防 spec 已消失但实例仍存活或登记在册时误删正在写入的证据日志
-        if is_spec_registered_in_servers(log_spec, project_root):
-            continue
-        if has_live_process_for_spec(log_spec, project_root):
-            continue
-        if is_within_grace_period(file_entry):
-            continue
-        # 无在飞 run 判定（is_spec_in_flight 可选）
-        try:
-            if is_spec_in_flight is not None and is_spec_in_flight(log_spec):
-                continue
-        except Exception:
+        # 与目录回收同一保留口径（判据链复用 _should_keep_scoped，fail-safe）：
+        # spec 存活/登记在册/活进程/宽限期内/在飞任一命中即保留，防 spec 已消失
+        # 但实例仍存活或登记在册时误删正在写入的证据日志。匹配维度为 spec 解析
+        # （is_spec_registered_in_servers / has_live_process_for_spec），以零参
+        # 谓词注入。
+        if _should_keep_scoped(
+            log_spec,
+            project_root,
+            file_entry,
+            keep_registered=lambda: is_spec_registered_in_servers(log_spec, project_root),
+            keep_live_process=lambda: has_live_process_for_spec(log_spec, project_root),
+            is_spec_in_flight=is_spec_in_flight,
+        ):
             continue
         # 无主 → 删除
         try:
