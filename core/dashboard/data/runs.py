@@ -20,6 +20,9 @@ from core.agent_runner.run_files import (
     run_spec_part,
 )
 
+# 共享日志兜底出口（e57bb78b236c：_retention_log 与 spec_archive.py _archive_log 同款逻辑单源）
+from core.dashboard.data._logutil import fallback_log
+
 # ── 结构化 run 指标日志索引（fix-observability-gaps 1.5 消费点）────────────
 # run 收尾在 fenixd.log 写一条 metric_type=run_metrics 的结构化指标（runner.py
 # _log_run_metrics），含 duration_seconds / cost_usd / terminal / provider。
@@ -1088,16 +1091,8 @@ def _is_run_archivable(p: Path) -> bool:
 
 
 def _retention_log(logger, level: str, msg: str) -> None:
-    """统一清理日志出口：logger 实例优先（fenixd Logger），缺省打印 stderr。"""
-    if logger is not None:
-        try:
-            getattr(logger, level)("fenixd", msg)
-        except Exception:
-            pass
-    else:
-        import sys
-
-        print(f"[fenixd] {msg}", file=sys.stderr)
+    """统一清理日志出口（单源：_logutil.fallback_log）。"""
+    fallback_log(logger, level, msg)
 
 
 def _retention_files_differ(a: Path, b: Path) -> bool:

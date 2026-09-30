@@ -5,7 +5,6 @@ refactor-dashboard-data-module D3 分组：本模块承载 SPEC 归档职责域�
 """
 
 import shutil
-import sys
 import time
 from pathlib import Path
 
@@ -15,6 +14,9 @@ from core.archive_commit import commit_archive_move
 
 # state 组（叶子组已搬移，直接导入无环）
 from .state import parse_state, parse_archived_state
+
+# 共享日志兜底出口（e57bb78b236c：_archive_log 与 runs.py _retention_log 同款逻辑单源）
+from ._logutil import fallback_log
 
 # 删除先停后删的等待总上限（add-freeze-stop-inflight-agents 5.3：admin_actions
 # 与 spec_archive 共用同一常量；顶层导入使测试可 patch 覆盖窗口时长）
@@ -404,14 +406,8 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
 
 
 def _archive_log(logger, level: str, msg: str):
-    """auto_archive_check/backfill 共用的日志出口（logger 缺省 print 到 stderr）。"""
-    if logger is not None:
-        try:
-            getattr(logger, level)("fenixd", msg)
-        except Exception:
-            pass
-    else:
-        print(f"[fenixd] {msg}", file=sys.stderr)
+    """auto_archive_check/backfill 共用的日志出口（单源：_logutil.fallback_log）。"""
+    fallback_log(logger, level, msg)
 
 
 def backfill_archived_entries(project_root, logger=None) -> dict:
