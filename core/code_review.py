@@ -609,7 +609,8 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
 
     def _do_locked() -> None:
         nonlocal resolved_count
-        current = _read_items_unlocked(path)
+        corrupted: List[str] = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted)
         changed = False
         for rec in current.values():
             if rec.get("status") != "open":
@@ -626,6 +627,8 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
             content = "".join(
                 json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
             )
+            # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
+            content += "".join(raw + "\n" for raw in corrupted)
             _atomic_write(path, content)
 
     _with_lock(path, _do_locked)
@@ -651,7 +654,8 @@ def set_item_status(project_root, item_id: str, status: str, spec_name: Optional
     path = items_path(project_root)
 
     def _impl() -> dict:
-        current = _read_items_unlocked(path)
+        corrupted: List[str] = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted)
         rec = current.get(item_id)
         if rec is None:
             return {
@@ -673,6 +677,8 @@ def set_item_status(project_root, item_id: str, status: str, spec_name: Optional
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
+        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
+        content += "".join(raw + "\n" for raw in corrupted)
         _atomic_write(path, content)
         return {"ok": True, "item_id": item_id, "status": status, "error": None}
 
