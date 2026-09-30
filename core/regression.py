@@ -190,7 +190,9 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
 
         if failure_el is not None:
             kind = "failure"
-            msg = failure_el.get("message") or (failure_el.text or "").strip()[:500]
+            # message 属性与 text 兜底统一截断（jest-junit 等会把整段堆栈
+            # 塞进 message，超长原文会撑爆单文件覆盖式快照 last-run.json）
+            msg = (failure_el.get("message") or (failure_el.text or "").strip())[:500]
             case_info["kind"] = kind
             case_info["message"] = msg
             failures.append({
@@ -208,7 +210,7 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
             })
         elif error_el is not None:
             kind = "error"
-            msg = error_el.get("message") or (error_el.text or "").strip()[:500]
+            msg = (error_el.get("message") or (error_el.text or "").strip())[:500]
             case_info["kind"] = kind
             case_info["message"] = msg
             failures.append({
@@ -693,21 +695,33 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     既有进程组杀树形态：先 SIGTERM 给优雅退出窗口（5s），再 SIGKILL
     兜底。仅杀直接子进程会让 shell 形态 cmd 派生的测试进程存活，
     回归名存实亡且产物锁被占。
+
+    SIGKILL 兜底不以直接子进程超时为前提（code-review item 72a90eb6cb2e）：
+    无论直接子进程是否在窗口内退出，都探活整组（killpg(pgid, 0)），
+    组内仍有成员（忽略 SIGTERM 的孙进程：自守护的测试 runner、xdist
+    worker 残留）即升级 SIGKILL 补刀。
     """
     try:
         pgid = os.getpgid(proc.pid)
         os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, OSError):
         return  # 进程组已不存在
-    # 给 SIGTERM 窗口，再 SIGKILL 兜底
+    # 给 SIGTERM 窗口（直接子进程未退则等到超时）
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
+        pass
+    # 直接子进程退出 ≠ 组内已清：探活整组，仍有成员则 SIGKILL 补刀；
+    # ProcessLookupError ＝ 组已清空，静默即可。pgid 复用上文的值——
+    # wait 收尸后 getpgid(proc.pid) 会因进程消失而失效。
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
