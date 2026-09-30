@@ -156,7 +156,8 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
     ``core.deliverables._DECLARED_KINDS``）。解析复用 ``extract_declared``，
     与交付物守卫同源；无声明段时回退 ``extract_paths_typed`` 的 deliverables。
 
-    tasks.md 缺失或读取失败记 WARNING 返回低档分（保守放行，design D2）。
+    spec 目录缺失、tasks.md 缺失或读取失败记 WARNING 返回低档分（保守
+    放行，design D2）。
 
     Args:
         spec_dir: spec 目录路径（如 spec/changes/<spec_name>）
@@ -171,8 +172,6 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
         规模分（int），值越大任务越重。
     """
     spec_path = Path(spec_dir)
-    if not spec_path.is_dir():
-        return 0
 
     # 日志通道单点（code-review item 49af374b79b7）：调用方注入 Logger 实例
     # 则经实例通道落本项目日志；未注入回退裸 getLogger 通道（其项目归属
@@ -187,6 +186,10 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
 
         def _warn(message: str) -> None:
             _bare_logger.warning(message)
+
+    if not spec_path.is_dir():
+        _warn(f"fast-track 规模预估 spec 目录缺失（低档放行）: {spec_path}")
+        return 0
 
     # 1. 统计 tasks.md 未勾选任务条数
     tasks_path = spec_path / "tasks.md"
