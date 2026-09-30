@@ -36,6 +36,9 @@ _JSON_PARSE_LIMIT = 1024 * 1024
 # 响应体读入硬上限（读入侧，独立于解析侧 _JSON_PARSE_LIMIT 与证据侧 64KB 截断）：
 # http_request 按块累积、触顶即停，防异常端点数百 MB 级响应整体驻留内存放大 OOM 风险
 _RESPONSE_READ_LIMIT = 8 * 1024 * 1024
+# 响应头值脱敏名单（键保留，存在性判断不受影响）：Set-Cookie 等携带会话
+# 令牌的头原样入证据会随证据长期留存（judge 上下文与落盘），值遮蔽即可
+_EVIDENCE_REDACT_HEADERS = frozenset({"set-cookie", "set-cookie2"})
 
 
 def rewrite_origin(url: str, base_url: str) -> str:
@@ -182,6 +185,18 @@ class ApiRunner(VerifyRunner):
         }
         body = step.get("body", "")
         body_type = str(step.get("body_type") or "").lower()
+        if body_type and body_type not in ("json", "text"):
+            # 未知 body_type（词表仅 json/text）可见化为本步骤结构化失败：
+            # 静默按原文发送会让作者意图（如按 JSON 发送）与实际行为悄然
+            # 背离，失败时被误归因为产品行为不符——与未知 action、未知
+            # 断言 mode 的 fail-closed 口径对齐（值已在上方归一小写）。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"未知 body_type: {step.get('body_type')!r}（词表仅支持 json/text）",
+            }
         try:
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
             # 改写成缺省 30s；缺省仅在键缺失时生效
@@ -348,7 +363,13 @@ class ApiRunner(VerifyRunner):
 
         capture = {
             "status": resp.status_code,
-            "headers": dict(resp.headers),
+            # 脱敏名单内的头只留键名、值遮蔽（长度保留供归因），其余头原样入证据
+            "headers": {
+                k: (
+                    f"<已脱敏:{len(v)} 字符>" if k.lower() in _EVIDENCE_REDACT_HEADERS else v
+                )
+                for k, v in resp.headers.items()
+            },
             "body": resp_body,
             "json": resp_json,
             "latency_ms": latency_ms,
@@ -445,7 +466,11 @@ class ApiRunner(VerifyRunner):
                     elif line.startswith("event:"):
                         event["event"] = line[6:].strip()
                     elif line == "":
-                        if event["data"].strip():
+                        # 仅携带 event 名而无 data 的事件（如纯心跳 event 行）
+                        # 也是合法 SSE 事件：按空 data 入列，否则 sse_event_count/
+                        # sse_event_matches 会少计而假失败；data 与 event 名皆空
+                        # 的空行/连续空行不产生幻影事件。
+                        if event["data"].strip() or event["event"]:
                             data, over = _truncate(event["data"].rstrip("\n"))
                             if over:
                                 data_truncated = True
@@ -495,8 +520,8 @@ class ApiRunner(VerifyRunner):
         # 收尾 flush：deadline 截止 break 与流 EOF 都不会走到空行分帧分支，
         # 缓冲中未以空行终结的最后一个事件若不在此落 events 会被静默丢弃，
         # sse_event_count/sse_event_matches 等事件类断言据此假失败。窗口
-        # 截止/EOF 后仍有 data 的缓冲按空行分帧同口径入列。
-        if event["data"].strip():
+        # 截止/EOF 后仍有 data 或仅有 event 名的缓冲按空行分帧同口径入列。
+        if event["data"].strip() or event["event"]:
             data, over = _truncate(event["data"].rstrip("\n"))
             if over:
                 data_truncated = True
