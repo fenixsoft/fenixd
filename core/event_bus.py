@@ -246,6 +246,10 @@ class EventBus:
         # 路径二）：每轮 full scan 末尾触发一次编排检查点，覆盖 daemon 重启、
         # 异常中断后的续做。经可选的 code_fix_orchestrator（未装配时静默跳过，
         # 形态对齐既有可选组件调用）；异常记 WARNING 不阻断扫描。
+        # 装配契约（code-review item b8d495e5fc74）：code_fix_orchestrator 不在
+        # __init__ 参数/属性中声明，由 fenixd.py 启动序列事后挂载
+        # （``self.event_bus.code_fix_orchestrator = ...``）。测试或第二实例
+        # 未挂载时本检查点静默跳过（getattr 缺省 None），属预期降级非错误。
         _fix_orch = getattr(self, "code_fix_orchestrator", None)
         if _fix_orch is not None:
             try:
@@ -508,9 +512,13 @@ class EventBus:
         # 复用 pm_engine._frozen_state 保持 legacy 文本契约兼容（recovery.py
         # in-place redispatch 同款先例）；判定异常 fail-open 不阻塞既有恢复。
         try:
-            # 仅认真实 True（is True）：pm_engine 为 MagicMock 替身时返回值是
-            # Mock 对象（truthy），直接 bool() 会把全部 ready 误判为冻结
-            frozen = self.pm_engine._frozen_state(entry) is True
+            # 真值判断（code-review item e4fc828f2714）：与 engine.py 派发链对
+            # 同一助手的消费口径一致（``if self._frozen_state(spec):``）。
+            # 助手契约 -> bool，若未来演进为返回真值非布尔，本恢复路径的
+            # frozen 守卫不得因 ``is True`` 身份比较静默失效。Mock 替身的适配
+            # 留在测试层——替身实现返回真实 bool 的 _frozen_state（见
+            # tests/test_startup_full_scan_async.py 的 pm_engine 替身）。
+            frozen = bool(self.pm_engine._frozen_state(entry))
         except Exception:
             frozen = False
         if frozen:
@@ -936,8 +944,11 @@ class EventBus:
         # （RLock 亦允许既有持锁调用方重入）。
         with self._state_lock:
             specs = self.state_machine.read_all()
+            # status None 归一（code-review item a1210ff24c15）：.get 默认值只兜
+            # 键缺失，手改 STATE.md 写出显式 null（YAML 空值）时返回 None 原样
+            # 入快照；``or`` 形态与 _diff_specs 两处取值口径统一。
             self._known_specs = {
-                name: entry.get("status", "drafted") for name, entry in specs.items()
+                name: (entry.get("status") or "drafted") for name, entry in specs.items()
             }
 
     def _dispatch_changes(self, current_specs: dict):
@@ -1006,6 +1017,22 @@ class EventBus:
         # hook 事件采集（add-spec-hooks D1）：锁内只记录不派发，见 docstring。
         hook_events = []
 
+        # 空读视为异常读而非权威删除（code-review item 3838697ca747）：
+        # current_specs 为空（STATE.md 被外部截断/清空、解析层对损坏内容宽松
+        # 返回空 dict）时若照常走下方快照重写，``_known_specs`` 会被整体清空
+        # ——删除不派发事件故当轮无感，但文件恢复后、下一次 full_scan 的
+        # ``_snapshot_baseline`` 介入前（最坏一个 poll_interval），watcher 的
+        # checksum 变更会把全部存量 SPEC 判为「新出现」并重放 hook 事件
+        # （_snapshot_baseline docstring 记录的 2026-09-07 连环触发事故形态）。
+        # 此处保留既有快照、跳过本轮 diff 与快照重写，待下一轮读数确认。
+        if not current_specs:
+            self.logger.warning(
+                "event_bus",
+                "STATE.md 读出空段（可能被外部截断/清空）：跳过本轮 diff，"
+                "保留既有快照待下一轮确认",
+            )
+            return [], [], []
+
         # Check for new or changed SPECs
         for name, entry in current_specs.items():
             if not isinstance(entry, dict):
@@ -1013,7 +1040,12 @@ class EventBus:
                 # _find_dependents / full_scan recovery 段双保险同口径）：坏条目
                 # 只损失自身事件，不再中止整轮 diff 并令 watch 通道每 2s 重复失败
                 continue
-            new_status = entry.get("status", "drafted")
+            # status None 归一（code-review item a1210ff24c15）：显式 null 经
+            # .get 默认值路径原样返回 None 时，快照也存 None → 下一轮
+            # old_status 恒为 None、恒走「New SPEC appeared」分支，hook 事件
+            # 每轮重放、快照永不收敛；归一为 "drafted" 与 _recover_one 侧
+            # status 为 None 时不匹配任何分支的静默跳过口径对齐。
+            new_status = entry.get("status") or "drafted"
             old_status = self._known_specs.get(name)
 
             if old_status is None:
@@ -1045,7 +1077,8 @@ class EventBus:
         next_known = {}
         for name, entry in current_specs.items():
             if isinstance(entry, dict):
-                next_known[name] = entry.get("status", "drafted")
+                # status None 归一（code-review item a1210ff24c15），三处取值同口径
+                next_known[name] = entry.get("status") or "drafted"
             elif name in self._known_specs:
                 next_known[name] = self._known_specs[name]
         self._known_specs = next_known

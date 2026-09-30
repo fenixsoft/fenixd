@@ -32,6 +32,11 @@ class TestStartupScanAsync(unittest.TestCase):
         self.sm = StateMachine(self.state_path, MagicMock())
         self.logger = MagicMock()
         self.pm = MagicMock()
+        # frozen 复核守卫已改真值判断（code-review item e4fc828f2714）：
+        # MagicMock 自动属性返回 truthy Mock 会把全部 ready 条目误判为冻结、
+        # 恢复链被替身静默短路——替身实现返回真实 bool 的 _frozen_state，
+        # 与生产侧非冻结 spec 的判定结果一致。
+        self.pm._frozen_state.return_value = False
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
