@@ -201,6 +201,13 @@ export function useSlashCommands({
 
   const handleCommandMenuKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      // IME 组合态按键属于组词操作（Enter 确认候选词 / Esc 取消组合 / ↑↓ 组内
+      // 选词），不被候选选中拦截——组合期整体让行 IME（code-review item
+      // ec1c3ab24569），与 useFileMentions.handleFileMentionsKeyDown 的守卫
+      // 口径一致；否则命令菜单打开时组合期 Enter 会被拦成「插入首个候选命令」。
+      if (event.nativeEvent.isComposing) {
+        return false;
+      }
       if (!showCommandMenu) {
         return false;
       }

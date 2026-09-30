@@ -468,11 +468,29 @@ class TestConfigFunctions(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertIn("llm", result)
         self.assertEqual(result["llm"], "user")
+        # code-review item 96df8344d8ff：三键未配置时缺省来源 "user"
+        self.assertEqual(result["agents.scale_precheck"], "user")
+        self.assertEqual(result["agents.subagent_model_override"], "user")
+        self.assertEqual(result["verify.context_cost_per_turn_threshold"], "user")
 
     def test_managed_key_sources_project(self):
         from core.dashboard.data import _managed_key_sources
         result = _managed_key_sources({"llm": {"provider": "openai"}})
         self.assertEqual(result["llm"], "project")
+        # code-review item 96df8344d8ff：三键显式定义 → project（此前缺标注分支，
+        # 项目级配置后 sources 恒回 "user"，徽标恒错）
+        result = _managed_key_sources({
+            "llm": {"provider": "openai"},
+            "agents": {
+                "scale_precheck": {"enabled": True, "higher_min_tokens": 1,
+                                   "full_min_tokens": 2},
+                "subagent_model_override": "glm-5.3-flash",
+            },
+            "verify": {"context_cost_per_turn_threshold": 200000},
+        })
+        self.assertEqual(result["agents.scale_precheck"], "project")
+        self.assertEqual(result["agents.subagent_model_override"], "project")
+        self.assertEqual(result["verify.context_cost_per_turn_threshold"], "project")
 
     def test_managed_admin_keys_defaults(self):
         """_managed_admin_keys 返回 admin 段内容（非包裹键）。"""

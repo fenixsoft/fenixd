@@ -15,8 +15,8 @@ import type { CSSProperties } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PageContainer } from '@ant-design/pro-components';
-import type { Components } from 'react-markdown';
-import type { AnchorHTMLAttributes, ComponentType } from 'react';
+import type { Components, ExtraProps } from 'react-markdown';
+import type { AnchorHTMLAttributes, ComponentProps, ComponentType, ReactElement, ReactNode } from 'react';
 
 import { getHelpDocs, getHelpDoc } from '@/services/dashboard';
 import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
@@ -110,12 +110,24 @@ function MermaidBlock({ code }: { code: string }) {
 
 // ── 锚点支持：heading id 注入 + 锚点滚动 ───────────────────────────
 
+/** nodeText 入参的最小结构：渲染树节点的鸭子类型形状（元素按其 children 形状递归）。
+ * React 19 起 ReactElement.props 收紧为 unknown 无法直接下钻，故以 children 形状
+ * 参数化元素分支，nodeText 全链路可查类型；ReactNode 侧以断言入此类型（见 Heading）。 */
+type MdNodeLike =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly MdNodeLike[]
+  | ReactElement<{ children?: MdNodeLike }>;
+
 /** 提取 React 子节点的纯文本（heading 文本 → slug 用）。 */
-function nodeText(node: any): string {
+function nodeText(node: MdNodeLike): string {
   if (node == null || node === false || node === true) return '';
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(nodeText).join('');
-  if (typeof node === 'object' && node.props) return nodeText(node.props.children);
+  if (typeof node === 'object' && 'props' in node && node.props) return nodeText(node.props.children);
   return '';
 }
 
@@ -148,10 +160,12 @@ function scrollToAnchor(anchor: string) {
 
 /** heading 组件工厂：保留原字号样式，注入 GitHub slug id（重复标题按 -1/-2 去重，锚点跳转目标）。 */
 function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: CSSProperties, slugCounts: Map<string, number>) {
-  return function Heading({ children }: any) {
+  return function Heading({ children }: { children?: ReactNode }) {
     // slug 仅分配一次并缓存于 ref：重渲染不重复递增计数，id 保持稳定
     const idRef = useRef<string | null>(null);
-    if (idRef.current === null) idRef.current = allocHeadingId(slugCounts, githubSlug(nodeText(children)));
+    // ReactNode 无法结构匹配 MdNodeLike（React 19 下元素 props 为 unknown），此处按
+    // nodeText 的鸭子类型口径断言入参（运行时形状不变，编译期检查在 nodeText 内完成）
+    if (idRef.current === null) idRef.current = allocHeadingId(slugCounts, githubSlug(nodeText(children as MdNodeLike)));
     return (
       <Tag id={idRef.current} style={{ ...style, scrollMarginTop: 76 }}>
         {children}
@@ -169,7 +183,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
   const slugCounts = new Map<string, number>();
   return {
     ...markdownComponents,
-    code({ className, children, ...props }: any) {
+    code({ className, children, ...props }: ComponentProps<'code'> & ExtraProps) {
       const isMermaid = className === 'language-mermaid';
       if (isMermaid) {
         const codeStr = String(children).replace(/\n$/, '');
@@ -185,7 +199,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
     // mermaid 代码块：code 覆盖返回的 MermaidBlock 根节点是 div，
     // 留在 pre 内会形成 <pre><div> 非法嵌套（pre 仅允许 phrasing content），
     // 这里直接返回图容器使其脱离 pre；其余代码块原样渲染 pre
-    pre({ children }: any) {
+    pre({ children }: ComponentProps<'pre'> & ExtraProps) {
       if (isValidElement(children) && children.type === MermaidBlock) {
         return children;
       }
@@ -198,7 +212,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
     h4: headingComponent('h4', { fontSize: 14, fontWeight: 400 }, slugCounts),
     h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }, slugCounts),
     h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }, slugCounts),
-    a({ href, children, ...rest }: any) {
+    a({ href, children, ...rest }: ComponentProps<'a'> & ExtraProps) {
       // 纯锚点（#xxx，排除 SPA 路由 #/）：当前文档页内滚动。判定条件复用 SafeLink
       // 的 isPageAnchor 单一口径源；分支不删、不能交由兜底 SafeLinkComp 承接——
       // 其管线不给标题生成 id，锚点分支仅拦截原生跳转不做滚动定位（见 SpecDocModal
@@ -353,6 +367,10 @@ export default function HelpPage() {
 
   // 文档目录项点击
   const handleDocChange = useCallback((name: string) => {
+    // 改选文档即作废在途跨文档锚点：暂存锚点只对发起跳转的那篇文档生效，否则
+    // 前一篇的锚点会在新选文档就绪后被滚动 effect 拿去误定位（GitHub slug 常见
+    // 同名小节）。本清除先于 onNavigate 的暂存写入执行，不影响正常跨文档锚点跳转
+    pendingAnchorRef.current = null;
     setCurrentDoc(name);
     setDocInUrl(name);
     setDrawerOpen(false);

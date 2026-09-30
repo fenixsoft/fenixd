@@ -1001,6 +1001,11 @@ def _split_llm_marker(llm: str) -> tuple:
     return llm, ""
 
 
+# 公开访问面（code-review item 329a77d10a7e）：timeline.py 跨组引用改用公开名
+# （不跨组消费下划线私有名），与 _split_llm_marker 同一函数对象单源绑定。
+split_llm_marker = _split_llm_marker
+
+
 def run_activity(project_root, spec_name, *, now: float | None = None, files=None) -> dict:
     """最新 impl run 的存活心跳（不依赖 TaskCreate/TaskUpdate 的实时兜底）。
 

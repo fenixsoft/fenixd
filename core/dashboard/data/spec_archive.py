@@ -139,7 +139,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
                 "pending": running_ids,
                 # 已终止计数 = 回调前在跑数 - 复查后仍未终止数（code-review
                 # item d09db0e81f6a：硬编码 0 与「已停止计数」语义不符）
-                "stopped": initial_running_count - len(running_ids),
+                # 复查是全量重扫，等待窗口内新派发的 run 可能混入，钳 0
+                # 防止负值（code-review item c1a66669c252）
+                "stopped": max(0, initial_running_count - len(running_ids)),
             }
         # 全部已终止，继续正常删除流程
 

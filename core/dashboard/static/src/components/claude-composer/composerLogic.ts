@@ -29,22 +29,34 @@ export interface SlashCommand {
 /**
  * 把 commands 端点返回的 slash_commands / skills 字符串数组规整为候选对象。
  * CLI init 数组形态不保证带前导斜杠（skills 为裸名），统一补 `/`。
+ * 按归一化后的 name 去重（code-review item e621f6f4b830）：slash_commands 与
+ * skills 同名词（或任一数组内部重复）不再生成两条同名候选——CommandMenu 的
+ * key（name::namespace::path）无法区分同名项，菜单会出现两行同名命令。
+ * builtin 优先，先到先得，重名的 skill 被丢弃。
  */
 export function toSlashCommands(
   slashCommands: string[],
   skills: string[],
 ): SlashCommand[] {
   const normalize = (name: string) => (name.startsWith('/') ? name : `/${name}`);
-  const builtin = slashCommands.map((name) => ({
-    name: normalize(name),
-    type: 'builtin' as const,
-  }));
-  const skillCommands = skills.map((name) => ({
-    name: normalize(name),
-    namespace: 'skill',
-    type: 'skill' as const,
-  }));
-  return [...builtin, ...skillCommands];
+  const seen = new Set<string>();
+  const commands: SlashCommand[] = [];
+  const pushAll = (
+    names: string[],
+    extra: Pick<SlashCommand, 'namespace' | 'type'>,
+  ) => {
+    for (const name of names) {
+      const normalized = normalize(name);
+      if (seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      commands.push({ name: normalized, ...extra });
+    }
+  };
+  pushAll(slashCommands, { type: 'builtin' as const });
+  pushAll(skills, { namespace: 'skill', type: 'skill' as const });
+  return commands;
 }
 
 // ── 斜杠触发 ─────────────────────────────────────────────────────────────

@@ -21,6 +21,9 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                                         code-review 2546f200e430),
     read_log_window_from (log_index.py 公开别名，timeline.py 经门面解析；
                           code-review 2546f200e430),
+    timeline_with_retry, load_billing_config, cost_summary_from_timeline,
+    split_llm_marker    (timeline.py/runs.py 公开别名，summary.py、timeline.py
+                         经门面解析；code-review 329a77d10a7e),
     read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9),
     cached_config_value (summary.py 公开别名，quality_gates.py 经门面解析；
                          code-review 20ad589a3bc4)
@@ -101,6 +104,7 @@ from .timeline import (
     _LIFECYCLE_ORDER,
     _backtrack_reason,
     _load_billing_config,
+    load_billing_config,
     _admin_events_for_spec,
     get_spec_timeline,
     _collapse_timeline,
@@ -108,7 +112,9 @@ from .timeline import (
     _timeline_sort_key,
     _ts_delta,
     _timeline_with_retry,
+    timeline_with_retry,
     _cost_summary_from_timeline,
+    cost_summary_from_timeline,
 )
 
 # ── runs 组 ──
@@ -128,6 +134,7 @@ from .runs import (
     run_tail_insights,
     compute_run_cost,
     _split_llm_marker,
+    split_llm_marker,
     _RUN_TERMINAL_STATUS_MAP,
     _RUN_STALE_SECONDS,
     run_activity,

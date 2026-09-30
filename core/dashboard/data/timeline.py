@@ -367,7 +367,7 @@ def get_spec_timeline(
             if lane_summary:
                 node["lane_summary"] = lane_summary
         if billing_table:
-            model, provider = _facade._split_llm_marker(insights["llm"])
+            model, provider = _facade.split_llm_marker(insights["llm"])
             cost = _facade.compute_run_cost(insights["usage"], model, provider, billing_table)
             if cost is not None:
                 node["cost_usd"] = cost
@@ -382,7 +382,10 @@ def get_spec_timeline(
     # 精确时间排在 verified 之前）。多轮验证 report 每轮覆盖 → 只留最后一轮。
     report = _facade.parse_report(project_root, spec_name)
     if report.get("exists") and not report.get("error"):
-        summary = report.get("summary") or {}
+        # summary 为非 dict 真值（report.json 被手改/部分写入）时按空处理，
+        # 对齐 summary.py spec_detail 对 scenarios 的防护口径：否则下方
+        # summary.get 抛 AttributeError 沿时间轴接口穿透 500。
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
         rep_ts = str(report.get("timestamp", "") or "")
         # 时间优先取日志「开始验证」行（引擎开始时刻）；缺失退化报告完成时刻
         v_time = verify_start_ts or rep_ts
@@ -677,3 +680,10 @@ def _cost_summary_from_timeline(timeline: list) -> dict:
         "priced_runs": priced,
         "unpriced_runs": unpriced,
     }
+
+
+# 公开访问面（code-review item 329a77d10a7e）：summary.py 跨组引用改用公开名
+# （不跨组消费下划线私有名），与各私有实现同一函数对象单源绑定。
+timeline_with_retry = _timeline_with_retry
+load_billing_config = _load_billing_config
+cost_summary_from_timeline = _cost_summary_from_timeline

@@ -260,8 +260,6 @@ export default function SessionComposer({
               onScroll={(event) =>
                 composer.syncInputOverlayScroll(event.target as HTMLTextAreaElement)
               }
-              onFocus={() => composer.setIsInputFocused(true)}
-              onBlur={() => composer.setIsInputFocused(false)}
               onInput={composer.handleTextareaInput}
               placeholder={disabled ? '会话已结束' : DEFAULT_PLACEHOLDER}
             />
@@ -286,7 +284,11 @@ export default function SessionComposer({
                   }}
                   disabled={disabled}
                   className="relative"
-                  aria-label="显示全部命令"
+                  /* 开关态语义（code-review item 60db89ee581c）：按钮是开关，
+                     aria-label 随菜单开合切换、aria-expanded 播报当前态；
+                     Tooltip 保持静态文案不随动。 */
+                  aria-expanded={composer.showCommandMenu}
+                  aria-label={composer.showCommandMenu ? '收起命令菜单' : '显示全部命令'}
                 >
                   {composer.slashCommandsCount > 0 && (
                     <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">

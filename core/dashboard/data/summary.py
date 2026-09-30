@@ -637,6 +637,12 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     # （渐进落盘期间列表 gates 阶段须实时刷新）
     add(vp_dir / "quality-gates.json")
     add(vp_dir / "code-review.json")
+    # run-result 两路候选（parse_verify_progress 缺失时回退链
+    # parse_run_result_scenarios 消费的专属副本与共享根文件）同入签名
+    # （宁多勿漏）：与 spec_detail_signature 的源集对齐，否则 run-result
+    # 重写后签名比对判未变，回退链上的 verify_done/total/current 持续陈旧。
+    add(vp_dir / ".fenix-run-result.json")
+    add(proot / ".fenix" / ".fenix-run-result.json")
     # implementing 态 worktree 产物统一在此登记（含 worktree tasks.md，
     # 对应上方项目级 tasks.md；勿再另起重复 implementing 分支）
     # [fenix-ignore:72c95cb763b2] 现行代码已是单个 implementing 分支（一次 find_implementer_worktree 后统一 add tasks.md 与 quality-gates.json/code-review.json），无重复解析与重复 add
@@ -900,8 +906,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     mode = read_spec_mode(project_root, spec_name)
     # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）；
     # created 锚定读取窗口：STATE 条目的 created 使早期事件不被日志尾窗截断
-    # 跨组引用（timeline 组的 get_spec_timeline/_timeline_with_retry）经门面延迟解析（D4）
-    timeline = _facade._timeline_with_retry(
+    # 跨组引用（timeline 组的 get_spec_timeline/timeline_with_retry）经门面延迟解析（D4）
+    timeline = _facade.timeline_with_retry(
         # entry 透传（add-timeline-ocr-lane-visibility 任务 1.2）：最新「→ testing」
         # 节点附 ocr 门状态，与下方 quality_gates Card 同参同源合成
         _facade.get_spec_timeline(project_root, spec_name, entry.get("created") or "", entry=entry),
@@ -912,9 +918,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # （有任一声明 billing 的卡片）时进入计价分支；单 run 计价由匹配函数自行
     # 判定未开启卡片 → None（未开启卡片 run 不计入 priced_runs）。
     cost_summary = None
-    billing_table = _facade._load_billing_config(project_root)
+    billing_table = _facade.load_billing_config(project_root)
     if billing_table:
-        cost_summary = _facade._cost_summary_from_timeline(timeline)
+        cost_summary = _facade.cost_summary_from_timeline(timeline)
     # tasks 与 tasks_note 共享一次解析（code-review item 6d2eca146f3c）：
     # tasks_note 传 groups 免去对 tasks.md 的第二次完整 parse_tasks
     tasks = _facade.parse_tasks(project_root, spec_name, spec_status)

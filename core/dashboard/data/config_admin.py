@@ -244,6 +244,14 @@ def _managed_key_sources(raw: dict) -> dict:
         # （映射段，isinstance 判定对齐 agents.models 同款）
         if isinstance(agents_raw.get("timeout_supervision"), dict):
             sources["agents.timeout_supervision"] = "project"
+        # code-review item 96df8344d8ff：scale_precheck（映射段，isinstance 判定
+        # 对齐 timeout_supervision 同款）与 subagent_model_override（str 存在性
+        # 判定，None=未配置不标；空串是合法显式值=回落 provider model）缺标注
+        # 分支——项目级显式配置后 sources 仍回 "user"，徽标恒错
+        if isinstance(agents_raw.get("scale_precheck"), dict):
+            sources["agents.scale_precheck"] = "project"
+        if isinstance(agents_raw.get("subagent_model_override"), str):
+            sources["agents.subagent_model_override"] = "project"
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
@@ -296,6 +304,12 @@ def _managed_key_sources(raw: dict) -> dict:
         sr_raw = verify_src.get("serving_reclaim")
         if isinstance(sr_raw, dict) and "enabled" in sr_raw:
             sources["verify.serving_reclaim.enabled"] = "project"
+        # code-review item 96df8344d8ff：上下文经济性告警阈值显式定义 → project
+        # （非负整数才标注，0=关闭告警是合法显式值——与读回显/合并分支/写校验
+        # 同域；按正整数判定会把显式 0 误标回 "user"）
+        _cct_src = verify_src.get("context_cost_per_turn_threshold")
+        if isinstance(_cct_src, int) and not isinstance(_cct_src, bool) and _cct_src >= 0:
+            sources["verify.context_cost_per_turn_threshold"] = "project"
     # add-daily-self-review：admin.self_review 段显式定义 → project
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):

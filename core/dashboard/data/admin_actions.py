@@ -766,7 +766,7 @@ def activate_spec(project_root, spec: str) -> dict:
         return {
             "ok": False,
             "found": True,
-            "reason": f"该 SPEC 并非待激活态（start_after 非 manual）",
+            "reason": "该 SPEC 并非待激活态（start_after 非 manual）",
         }
     # 命中 → 清 start_after + 唤醒信号；写入结果如实回报（D3），
     # CLI 与 Dashboard 依 ok 分支文案，不再无条件宣称「立即恢复调度」
@@ -1698,7 +1698,18 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
     sm = _adjudication_sm(proot)
     updates = {"frozen": False, "error": None, "frozen_until": None}
     updates.update(_RETRY_COUNTER_RESETS)
-    sm.update_spec(spec, updates)
+    if not sm.update_spec(spec, updates):
+        # 与 resume_cancelled_spec 同口径（写入必留痕）：spec 在前置校验后被
+        # 并发软删除/写入被拒时计数清理未落盘，steps 如实陈述并提前返回失败
+        # 形状，不再走后续 transition（对缺失 spec 行为未定义）。
+        logger.warning(
+            "reset_verification 清计数失败：spec 已并发删除，计数清理未落盘（spec=%s）",
+            spec,
+        )
+        steps.append("spec 已并发删除，计数清理未落盘")
+        return {"ok": False, "found": True, "steps": steps,
+                "target_status": None,
+                "error": "spec 已并发删除，计数清理未落盘"}
     steps.append("已清零 judge 重跑/验证失败轮等重试计数并解除冻结（保持 blocked）")
 
     # 4b. 复位路径判定（基于清除后的干净 entry）

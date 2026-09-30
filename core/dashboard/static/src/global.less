@@ -83,6 +83,11 @@ body {
 
 // claude-msg 输出面板（迁移自 claudecodeui）：shadcn 语义变量（HSL 三元组），
 // 由 Tailwind 配置里的 hsl(var(--*)) 引用；限定在面板容器内不污染 antd。
+// 反向指针（code-review item 20de6b1b3f8e）：下方 HSL 变量组与
+// src/components/claude-composer/composer.css 里 .fenix-composer /
+// .fenix-composer-portal 两组变量须逐值相同（composer 本体与 portal 弹层不在
+// 本面板后代位置、无法继承，各自显式注入同组亮色值）；三处无构建期单一来源，
+// 调色时除本处外必须同步 composer.css 两个选择器，漏改任意一处即两区域配色漂移。
 .claude-msg-pane {
   padding-right: 30px;
   --background: 44 22% 96%;
