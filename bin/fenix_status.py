@@ -186,13 +186,13 @@ def _collect_signals(
                         if dt is not None:
                             anchor = dt.timestamp()
                             age_min = (now_ts - anchor) / 60
-                        if age_min > VERIFY_STALL_MINUTES:
-                            signals.append(
-                                (
-                                    "warn",
-                                    f"{name}：testing 但无进度文件 {int(age_min)} 分钟（verifier 未写出验证进度）",
+                            if age_min > VERIFY_STALL_MINUTES:
+                                signals.append(
+                                    (
+                                        "warn",
+                                        f"{name}：testing 但无进度文件 {int(age_min)} 分钟（verifier 未写出验证进度）",
+                                    )
                                 )
-                            )
                 except (TypeError, ValueError):
                     pass
         # bug-found 且无活跃 fix 子 SPEC（fix 自身豁免）
