@@ -27,6 +27,11 @@ const whyCache = new Map<string, { status: 'loading' | 'done' | 'empty'; promise
 // done/empty 结果的缓存有效期：proposal.md 运行期可能被更新（Why 区块新增/改写），
 // 过期后重新拉取，避免 SPA 长会话中悬停提示长期展示过期内容。
 const WHY_CACHE_TTL_MS = 60 * 1000;
+// 容量上限（code-review item d3a693828097）：跨项目跨 spec 悬停浏览会持续新增
+// 缓存键，TTL 过期条目仅在同名键再次命中时删除（不再访问的条目永不回收），
+// 无上限则 SPA 长驻留会话内存无界增长；对齐 services/dashboard.ts etagCache
+// 先例（ETAG_CACHE_MAX），写满按插入序淘汰最旧。
+const WHY_CACHE_MAX = 100;
 
 export function fetchProposalWhy(project: string, spec: string): Promise<string | null> {
   const key = `${project}│${spec}`;
@@ -57,6 +62,12 @@ export function fetchProposalWhy(project: string, spec: string): Promise<string 
       }
       return null;
     });
+  // 新键写入前写满先淘汰最旧键（Map 保持插入序，首键即最旧）；已存在键覆盖写
+  // 不增条数，跳过淘汰以免误伤（口径与 etagCache 一致）。
+  if (!whyCache.has(key) && whyCache.size >= WHY_CACHE_MAX) {
+    const oldest = whyCache.keys().next().value;
+    if (oldest !== undefined) whyCache.delete(oldest);
+  }
   whyCache.set(key, { status: 'loading', promise: p });
   return p;
 }
