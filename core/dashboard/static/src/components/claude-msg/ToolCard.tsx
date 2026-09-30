@@ -29,15 +29,19 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
 
   return (
     <div className="px-3 py-0.5">
+      {/* 无输入与结果时按钮不可交互（item 06edb928e359）：disabled 阻止聚焦与
+          点击，hover 变色与 aria-expanded 一并去除，避免「可点但展开区永不出现」
+          的假交互样式误导鼠标与键盘用户 */}
       <button
         type="button"
+        disabled={!hasDetail}
         className={`group flex w-full items-center gap-2 border-l-2 rounded-r-md px-3 py-2 text-left transition-colors ${
           isError
-            ? 'border-destructive/60 bg-destructive/5 hover:bg-destructive/10'
-            : 'border-border bg-muted/25 hover:bg-muted/40'
+            ? `border-destructive/60 bg-destructive/5 ${hasDetail ? 'hover:bg-destructive/10' : ''}`
+            : `border-border bg-muted/25 ${hasDetail ? 'hover:bg-muted/40' : ''}`
         }`}
         onClick={() => hasDetail && setExpanded((current) => !current)}
-        aria-expanded={expanded}
+        aria-expanded={hasDetail ? expanded : undefined}
       >
         <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded bg-background/80 text-xs font-medium">
           {toolIcon(toolName)}

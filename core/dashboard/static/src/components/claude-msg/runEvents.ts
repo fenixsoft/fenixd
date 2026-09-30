@@ -38,15 +38,36 @@ const SILENT_KINDS = new Set([
   'timeout_extension',
 ]);
 
-// stderr 错误词表（固化于常量，统一小写存储）：匹配时对行取小写后 includes，
-// 天然大小写不敏感——归档流实测存在 "ECONNREFUSED ..." 这类全大写错误行
-//（spec 场景锚定其必须渲染为系统行）。（code-review item 288bc70996d0：
-// 旧表混入大小写敏感条目 'Error'/'FATAL' 是死重，大小写不敏感兜底本就覆盖。）
+// stderr 错误词表（固化于常量，统一小写存储）：匹配时对行取小写后按词边界
+// 正则判定（item 34cca47c42ac：旧 includes 子串匹配过宽，'errorhandler' 之类
+// 含关键词字母的无关词与 'no error'/'0 errors' 这类否定/零计数表述都会误判为
+// 错误行）。大小写不敏感——归档流实测存在 "ECONNREFUSED ..." 这类全大写错误行
+//（spec 场景锚定其必须渲染为系统行），'refused' 因此保持子串匹配，词边界会把
+// ECONNREFUSED 整词挡在门外。（code-review item 288bc70996d0：旧表混入大小写
+// 敏感条目 'Error'/'FATAL' 是死重，大小写不敏感兜底本就覆盖。）
 const STDERR_ERROR_KEYWORDS = ['error', 'traceback', 'failed', 'fatal', 'refused'];
+
+// 否定/零计数限定：命中关键词前方紧邻这些限定（允许夹 ≤2 个修饰词）时不判错
+//（'no error'、'0 errors'、'tests: 0 failed' 属「无错误」表述，判错是假噪音；
+// 同行其他位置的真实命中照常判错，如 'fatal: no error handling'）
+const STDERR_NON_ERROR_QUALIFIER = /(?:\b(?:no|zero|without)|\b0)\s+(?:\w+\s+){0,2}$/;
 
 function stderrLooksError(line: string): boolean {
   const lower = line.toLowerCase();
-  return STDERR_ERROR_KEYWORDS.some((kw) => lower.includes(kw));
+  return STDERR_ERROR_KEYWORDS.some((kw) => stderrKeywordHit(lower, kw));
+}
+
+// 单关键词命中判定（item 34cca47c42ac）：默认词边界 + 复数后缀（'errors' 仍
+// 命中 'error'，'errorhandler' 不再误中）；逐个命中位置检查前方是否为否定/
+// 零计数限定，是则该次命中不计。'refused' 例外保持子串匹配，保住
+// 'ECONNREFUSED' 这类整词内的真实错误信号。
+function stderrKeywordHit(lower: string, kw: string): boolean {
+  const re = new RegExp(kw === 'refused' ? kw : `\\b${kw}(?:s|es)?\\b`, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(lower)) !== null) {
+    if (!STDERR_NON_ERROR_QUALIFIER.test(lower.slice(0, m.index))) return true;
+  }
+  return false;
 }
 
 function strField(rec: Record<string, unknown>, key: string): string {
@@ -144,6 +165,13 @@ function resultContentToText(content: unknown): string {
   if (typeof content === 'object') {
     const c = content as Record<string, unknown>;
     if (typeof c.text === 'string') return c.text;
+    // 无 text 字段的普通对象 JSON 序列化展示（item 0f6b780b771c）：String() 兜底
+    // 会产出字面 '[object Object]'，错误详情在卡片里不可读
+    try {
+      return JSON.stringify(c, null, 2);
+    } catch {
+      // 循环引用等序列化失败场景回落 String()
+    }
   }
   return String(content);
 }
@@ -528,6 +556,17 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     const t = parseTimestampMs(ev.timestamp);
     if (t !== null) assistantTimes.push(t);
   }
+  // 同事件工具观测耗时汇总（item 5828e59782f2）：thinking 与同消息的 tool_use
+  // 块共享同一事件 timestamp，下方差值会把工具执行耗时计入（工具耗时长时
+  // 「已思考 N 秒」显著夸大）。按 timestamp 汇总心跳观测到的工具耗时，从差值
+  // 中扣除；无心跳覆盖的工具不扣（保留 design D4 原口径）。
+  const toolElapsedAtTime = new Map<number, number>();
+  for (const msg of out) {
+    if (typeof msg.toolElapsedSeconds !== 'number') continue;
+    const t = parseTimestampMs(msg.timestamp);
+    if (t === null || t <= 0) continue;
+    toolElapsedAtTime.set(t, (toolElapsedAtTime.get(t) ?? 0) + msg.toolElapsedSeconds);
+  }
   for (const msg of out) {
     if (!msg.isThinking) continue;
     msg.thinkingPreview = thinkingPreviewText(String(msg.content || ''));
@@ -537,7 +576,9 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     if (t === null || t <= 0) continue;
     const next = assistantTimes.find((x) => x > t);
     if (next === undefined) continue;
-    const seconds = Math.round((next - t) / 1000);
+    // 扣除同事件工具的观测耗时后再估算（item 5828e59782f2）；扣除后非正 → 不写
+    // 字段，折叠头回退「已思考数秒」
+    const seconds = Math.round((next - t) / 1000 - (toolElapsedAtTime.get(t) ?? 0));
     if (seconds > 0) msg.thinkingSeconds = seconds;
   }
 

@@ -127,6 +127,26 @@ test('stderr：非错误行静默', () => {
   assert.equal(msgs.length, 0);
 });
 
+// item 34cca47c42ac：否定/零计数形态与词边界误报样本不判错（不再渲染假错误条）
+test('stderr：否定/零计数形态与含关键词字母的无关词不判错', () => {
+  const msgs = runEventsToChatMessages([
+    { type: 'stderr', line: 'no error detected, all good' },
+    { type: 'stderr', line: '0 errors so far' },
+    { type: 'stderr', line: 'tests: 0 failed' },
+    { type: 'stderr', line: 'the errorhandler recovered' },
+  ]);
+  assert.equal(msgs.length, 0);
+});
+
+// item 34cca47c42ac：同行否定限定旁的真实关键词仍判错；ECONNREFUSED 整词命中不回归
+test('stderr：否定限定旁的真实关键词仍判错、ECONNREFUSED 不回归', () => {
+  const msgs = runEventsToChatMessages([
+    { type: 'stderr', line: 'fatal: no error handling for this path' },
+    { type: 'stderr', line: 'ECONNREFUSED connecting to gateway' },
+  ]);
+  assert.equal(msgs.length, 2);
+});
+
 // ── 信息类事件语义化系统条 ───────────────────────────────────────────
 
 test('provider_marker 渲染为模型路由条', () => {
