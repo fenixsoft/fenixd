@@ -20,6 +20,11 @@ from .state import parse_state, parse_archived_state
 # 与 spec_archive 共用同一常量；顶层导入使测试可 patch 覆盖窗口时长）
 from .admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS  # noqa: F401
 
+# SPEC 终态口径单源（code-review item 6569c5ad7aa8）：archive_spec 的防御性
+# 终态校验、backfill_archived_entries 的孤儿判定、auto_archive_check 的阈值
+# 统计三处共用，避免内联 ("done", "pushed") 多处漂移。
+_TERMINAL_STATUSES = ("done", "pushed")
+
 
 def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     """软删除 SPEC：STATE.md 移除条目 + spec/changes/<name>/ 移入 archive。
@@ -194,8 +199,12 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     state_entry_removed = False
     try:
         if spec in specs:
-            sm.remove_spec(spec)
-            state_entry_removed = True
+            # 以 remove_spec 真实返回值驱动（code-review item f57d00940d1d）：
+            # specs 是 stop_callback 有界等待前的快照，等待期间条目可能已被
+            # 并发迁出（如同周期先跑的 backfill_archived_entries），remove_spec
+            # 幂等空转返回 False——不得再恒置 True，否则异常路径的半态提示
+            # 「STATE.md 条目已删除但归档清单小节未移除」会与事实不符。
+            state_entry_removed = sm.remove_spec(spec)
         if in_manifest:
             # 清单小节移除在 .STATE.md.lock 的 flock 内执行（与迁出/回填的
             # 清单写入同锁，避免并发竞态，design D6）
@@ -309,7 +318,7 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
             "error": f"spec not found: {spec_name}",
         }
     status = specs[spec_name].get("status")
-    if status not in ("done", "pushed"):
+    if status not in _TERMINAL_STATUSES:
         return {
             "ok": False,
             "found": True,
@@ -379,9 +388,12 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
     # D8：经门面延迟解析（tests 以 patch.object(dash_data, "archive_spec_runs") 替换）
     import core.dashboard.data as _facade
 
+    # 容错口径与上方 evict 环节一致，放宽为 Exception（code-review item
+    # ae9ada1e41dd）：此刻目录已移动、STATE 条目已迁出，archive_spec_runs 抛
+    # 非 OSError 一路上抛会让调用方拿到异常与半完成态，违背 fail-open 承诺。
     try:
         result["runs_archived"] = _facade.archive_spec_runs(proot / ".fenix" / "runs", spec_name)
-    except OSError as e:
+    except Exception as e:  # noqa: BLE001 fail-open：runs 清理失败只降级为告警
         result["runs_archive_warning"] = str(e)
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
     cr = commit_archive_move(proot, spec_name, moved)
@@ -433,7 +445,7 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     evicted = skipped = nonterminal = 0
     for name in orphans:
-        if specs[name].get("status") not in ("done", "pushed"):
+        if specs[name].get("status") not in _TERMINAL_STATUSES:
             nonterminal += 1
             _archive_log(
                 logger,
@@ -506,12 +518,11 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     proot = Path(project_root)
     # 回填后重读活跃 STATE：刚迁出的条目不再进入本轮阈值统计
     specs = parse_state(proot)
-    TERMINAL = ("done", "pushed")
 
     # 统计终态 + 未归档（活跃目录仍存在）
     candidates = []
     for name, entry in specs.items():
-        if entry.get("status") not in TERMINAL:
+        if entry.get("status") not in _TERMINAL_STATUSES:
             continue
         if not (proot / "spec" / "changes" / name).is_dir():
             continue  # 已归档，不计入
