@@ -197,7 +197,8 @@ class VAdjudicationMixin:
     # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage D3/D4）──
 
     def _build_dispute_judge_input(
-        self, spec_name: str, impl_result, missing: list, kind_by_path: "dict | None" = None
+        self, spec_name: str, impl_result, missing: list,
+        kind_by_path: "dict | None" = None, result=None,
     ) -> dict:
         """组装 dispute-judge 输入（4.1/4.5）：缺件 + kind + basename 候选 + 语境。
 
@@ -205,7 +206,9 @@ class VAdjudicationMixin:
         结构化条目（``list[dict]``，每项含 ``path``/``kind``/``violation``）。
         ``kind_by_path`` 可选：声明段 path→kind 映射，供 judge 看到「该路径应被
         删除」而非仅看到缺件路径（add-deliverable-delete-kind 4.5）——条目级
-        kind 优先于映射，映射优先于默认 ``"new"``。
+        kind 优先于映射，映射优先于默认 ``"new"``。``result`` 可选：run 上下文
+        （含 branch/worktree），透传给语境摘录经统一解析入口取生效层，与
+        kind_by_path 同源（code-review item 3c39fe0b78d9）。
 
         Returns:
             dict：``{"spec", "missing": [{"path", "kind", "candidates"}],
@@ -247,12 +250,14 @@ class VAdjudicationMixin:
             "spec": spec_name,
             "missing": missing_entries,
             "spec_context": self._dispute_spec_context(
-                spec_name, [m["path"] for m in missing_entries]
+                spec_name, [m["path"] for m in missing_entries], result=result
             ),
             "findings": findings,
         }
 
-    def _dispute_spec_context(self, spec_name: str, missing: list) -> dict:
+    def _dispute_spec_context(
+        self, spec_name: str, missing: list, result=None
+    ) -> dict:
         """spec 三文档语境摘录：含缺件路径的段落 + Deliverables 声明段全文。
 
         对 proposal.md/design.md/tasks.md/specs/**/*.md：以缺件路径为关键词
@@ -260,10 +265,35 @@ class VAdjudicationMixin:
         specs/ 的相对路径为键）；tasks.md 的声明段经
         ``extract_declared_entries`` 结构化摘录。读取失败逐文件跳过并留痕
         （fail-open，单文件失败不中断其余收集）。
+
+        三文档摘录的读取目录取统一解析入口（``_effective_declaration``，D1：
+        worktree/分支版本优先、主树回退）返回的生效层 ``spec_dir``，与
+        declared_entries 取同一解析结果——MUST NOT 自行拼接主树 spec 目录
+        直读（生效声明命中 worktree/分支层时，摘录取主树陈本而条目取生效层，
+        judge 两段口径分裂；读分支、写主树的错层正是本次事故根因，
+        code-review item 3c39fe0b78d9）。``result`` 提供分支/worktree 上下文
+        （可选；缺失时按主树回退语义解析）。分支版本无落盘位置
+        （spec_dir 为 None）或解析失败时，摘录回退主树目录（fail-open）。
         """
         from pathlib import Path as _Path
 
-        spec_dir = _Path(self._pm.project_root) / "spec" / "changes" / spec_name
+        resolved: dict = {}
+        try:
+            resolved = self._effective_declaration(spec_name, result)
+        except Exception as e:
+            # 声明解析失败不再静默吞（code-review item bb46425e6eae）：判定输入
+            # 缺失 declared_entries 会静默劣化 judge 口径；记 WARNING（与本文件
+            # 其它 fail-open 助手同款留痕），使劣化可诊断。摘录按主树回退目录
+            # 继续收集（fail-open）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"有效声明解析失败 '{spec_name}'（judge 输入缺 declared_entries）: "
+                f"{type(e).__name__}: {e}",
+            )
+        spec_dir = _Path(
+            resolved.get("spec_dir")
+            or _Path(self._pm.project_root) / "spec" / "changes" / spec_name
+        )
         docs = {}
         for name in ("proposal.md", "design.md", "tasks.md"):
             p = spec_dir / name
@@ -308,22 +338,8 @@ class VAdjudicationMixin:
                 excerpts[name] = hits
 
         context: dict = {"excerpts": excerpts}
-        try:
-            # 声明段条目经统一解析入口取（add-declaration-relocation-protocol
-            # D1：worktree/分支版本优先、主树回退），与收工守卫同源——MUST NOT
-            # 自行拼接主树 spec 目录直读（读分支、写主树的错层正是本次事故根因）。
-            resolved = self._effective_declaration(spec_name)
-            if resolved.get("entries"):
-                context["declared_entries"] = resolved["entries"]
-        except Exception as e:
-            # 声明解析失败不再静默吞（code-review item bb46425e6eae）：判定输入
-            # 缺失 declared_entries 会静默劣化 judge 口径；记 WARNING（与本文件
-            # 其它 fail-open 助手同款留痕），使劣化可诊断。
-            self._pm.logger.warning(
-                "pm_engine",
-                f"有效声明解析失败 '{spec_name}'（judge 输入缺 declared_entries）: "
-                f"{type(e).__name__}: {e}",
-            )
+        if resolved.get("entries"):
+            context["declared_entries"] = resolved["entries"]
         return context
 
     def _read_dispute_verdicts(
@@ -1960,7 +1976,8 @@ class VAdjudicationMixin:
 
         # 2. 组装输入并派单轮 dispute-judge run（仅含预分类后剩余项）
         judge_input = self._build_dispute_judge_input(
-            spec_name, impl_result, remaining, kind_by_path=kind_by_path
+            spec_name, impl_result, remaining,
+            kind_by_path=kind_by_path, result=result,
         )
         judge_result = None
         try:
@@ -2029,11 +2046,9 @@ class VAdjudicationMixin:
             self._pm.project_root / "spec" / "changes" / spec_name
         )
         eff_entries = effective_resolved.get("entries") or []
-        eff_by_path = {
-            e["path"]: e
-            for e in eff_entries
-            if isinstance(e, dict) and e.get("path")
-        }
+        # 判据收进共用 helper _entry_by_path（与四预分类器同源，防复制漂移；
+        # code-review item ccfdbcee0430）。
+        eff_by_path = _entry_by_path(eff_entries)
         for m in remaining_paths:
             v = _verdict_of(m)
             verdict = v.get("verdict")
