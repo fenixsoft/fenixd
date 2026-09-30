@@ -1,5 +1,5 @@
 // 弹窗最大化共享逻辑：标题栏最大化/还原按钮 + 几何参数切换。
-// 最大化 = 占满视口（100vw × calc(100vh - 80px)、top 0）；还原 = 各弹窗默认宽高。
+// 最大化 = 占满视口（100% × calc(100dvh - 80px)、top 0）；还原 = 各弹窗默认宽高。
 // 移动端（<768px）默认即全屏——还原态的 80% 宽高在窄屏可用面积太小，且与最大化
 // 态重合后切换按钮无意义，一并隐藏；桌面端行为不变。
 import { Button } from 'antd';
@@ -8,11 +8,15 @@ import { useCallback, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
-// 最大化态共享几何（供 RunRecordModal 等「打开即最大化」弹窗复用，避免与 hook 内双写漂移）
-export const MAXIMIZED_WIDTH = '100vw';
-export const MAXIMIZED_MODAL_STYLE: CSSProperties = { top: 0, maxWidth: '100vw', paddingBottom: 0 };
+// 最大化态共享几何（供 RunRecordModal 等「打开即最大化」弹窗复用，避免与 hook 内双写漂移）。
+// 宽用 100%（相对 fixed 弹层容器 content box）而非 100vw——100vw 含竖向滚动条宽度，经典滚动条
+// 环境下最大化弹窗会横向溢出一条滚动条；高用 dvh（同 SessionPanel/ArchitectureTab 先例）避免
+// 移动端地址栏收展时 100vh 大于实际可视高度、footer 被裁切。CSSProperties 同键双写会被覆盖，
+// 无法表达 CSS 声明级回退，故与先例一致直接用 dvh 不留 vh 回退。
+export const MAXIMIZED_WIDTH = '100%';
+export const MAXIMIZED_MODAL_STYLE: CSSProperties = { top: 0, maxWidth: '100%', paddingBottom: 0 };
 // 80px = 标题栏 + 留白；带 footer 的弹窗再扣掉操作区，否则整窗超出视口
-export const maximizedBodyHeight = (footerHeight = 0): string => `calc(100vh - ${80 + footerHeight}px)`;
+export const maximizedBodyHeight = (footerHeight = 0): string => `calc(100dvh - ${80 + footerHeight}px)`;
 
 interface UseMaximizeModalOptions {
   // 还原态尺寸
