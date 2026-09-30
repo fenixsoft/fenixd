@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+from core.timelib import now_local
 
 
 # spawn 注入缝：run 内单测用 fake spawn 替身；生产用 _default_spawn（claude -p）。
@@ -725,9 +726,9 @@ def _now_local_parts() -> tuple:
 
     真相源盖戳统一时间源（用户定调 2026-09-30：本地时区展示）。与
     ``core.knowledge.local_now_stamp`` 同逻辑——本模块被 knowledge.py 反向
-    导入，独立实现避免循环依赖。
+    导入，独立实现避免循环依赖；时间产出统一走 timelib 原语（守卫棘轮）。
     """
-    now = datetime.now().astimezone()
+    now = now_local()
     total_min = round((now.utcoffset() or timedelta(seconds=0)).total_seconds() / 60)
     sign = "+" if total_min >= 0 else "-"
     hours, minutes = divmod(abs(total_min), 60)

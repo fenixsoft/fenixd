@@ -45,6 +45,7 @@ from core.knowledge_backfill import (
     ledger_has_pending,
     register_archive_pending,
 )
+from core.timelib import now_local
 
 logger = logging.getLogger("fenixd.knowledge")
 
@@ -92,7 +93,7 @@ def local_now_stamp() -> tuple:
     真相源盖戳统一时间源：蒸馏动态段与回填/史前车道占位共用，保证盖戳值
     只出自管线注入、不由 LLM 自报。
     """
-    now = datetime.now().astimezone()
+    now = now_local()
     total_min = round((now.utcoffset() or timedelta()).total_seconds() / 60)
     sign = "+" if total_min >= 0 else "-"
     hours, minutes = divmod(abs(total_min), 60)

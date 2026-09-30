@@ -739,6 +739,9 @@ class TestRecoveryResumePrompt:
         wm.get_reuse_record.return_value = {
             "path": str(proot / ".claude" / "worktrees" / "repair-demo-1"),
             "branch": "fenix/demo-123",
+            # code-review item 82d4de9525cd 起 implementer 分支以
+            # require_recovery=True 判据注入：复用记录须携带恢复来源标记
+            "recovery": True,
         }
         runner.worktree_manager = wm
         prompt = runner._prompt_builder._build_prompt("demo", "implementer")
