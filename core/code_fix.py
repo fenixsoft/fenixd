@@ -664,6 +664,33 @@ def fix_reg_failures_relpath(run_id: str) -> str:
     return f"{FIX_REG_FAILURES_DIR}/fix-reg-failures-{run_id}.json"
 
 
+# 明细保留份数（code-review item 36bd1d38eaa6）：每轮回归非 passed 各落一份
+# 且全链路只写不清（runs retention 只覆盖 .fenix/runs），长期运行文件数无上
+# 界累积成孤儿；写点顺带按 mtime 淘汰最旧、保留最近 N 份。明细是审计辅助件
+# 非门禁（失败档案 detail_ref 只引用最后一轮），淘汰历史轮不影响链路正确性。
+FIX_REG_FAILURES_KEEP = 20
+
+
+def _prune_fix_reg_failures(project_root) -> None:
+    """明细 retention：按 mtime 只保留最近 ``FIX_REG_FAILURES_KEEP`` 份。
+
+    容错口径：glob/stat/unlink 任一 OSError 只放弃本轮清理，MUST NOT 上抛
+    炸写点主流程（明细落盘本已成功，retention 是附属维护动作）。
+    """
+    try:
+        files = sorted(
+            (Path(project_root) / FIX_REG_FAILURES_DIR).glob(
+                "fix-reg-failures-*.json"
+            ),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in files[FIX_REG_FAILURES_KEEP:]:
+            stale.unlink()
+    except OSError:
+        return
+
+
 def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool) -> str:
     """回归失败用例明细落盘（返回相对路径引用，1.1/1.2）。
 
@@ -689,6 +716,7 @@ def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool
         )
     except OSError:
         return ""
+    _prune_fix_reg_failures(project_root)
     return rel
 
 
@@ -891,7 +919,9 @@ def release_failed_batch(project_root, item_ids) -> int:
 
 # ── 延迟合回台账（fix-codefix-wipgate-defer 1.2/D2）──────────────────
 # 与失败档案对齐的惯例：同目录、_atomic_write 原子写、同条目集幂等复用、
-# 读侧对缺失/损坏 fail-open（无 .lock 文件，勿发明锁文件）。
+# 读侧对缺失/损坏 fail-open；读-改-写各写入口全程持 flock（``_with_lock``，
+# 对齐失败档案 fd1dc2a59820 先例——锁文件由 _with_lock 派生自台账文件名；
+# 读点 ``load_deferred_batches`` 保持无锁，锁内复用勿重入）。
 
 
 def _deferred_path(project_root) -> Path:
@@ -933,56 +963,83 @@ def record_deferred_batch(
     链边界重试仍被阻断时由重试方递增（2.3：仅实际尝试才 +1）。同条目集
     幂等复用条目：刷新现场字段、保留 ``first_deferred_at``/``defer_count``
     （预算时间门不因复写漂移）。返回写盘后的条目。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item 35fea063bcff，
+    对齐失败档案 fd1dc2a59820 先例）：批收尾 defer 登记与链边界重试/再认领
+    分属批 worker 与 checkpoint 线程，无锁交叠会整份丢更新。
     """
-    entries = load_deferred_batches(project_root)
-    key = {str(i) for i in item_ids}
-    target = None
-    for rec in entries:
-        if {str(i) for i in rec.get("item_ids") or []} == key:
-            target = rec
-            break
-    if target is None:
-        target = {
-            "item_ids": [str(i) for i in item_ids],
-            "defer_count": 1,
-            "first_deferred_at": time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-            ),
-        }
-        entries.append(target)
-    target["worktree"] = str(worktree)
-    target["branch"] = branch
-    target["tip_sha"] = tip_sha
-    target["fixed_ids"] = [str(i) for i in fixed_ids]
-    target["last_overlap"] = [str(f) for f in (last_overlap or [])]
-    _save_deferred_batches(project_root, entries)
-    return target
+    path = _deferred_path(project_root)
+
+    def _do() -> dict:
+        entries = load_deferred_batches(project_root)
+        key = {str(i) for i in item_ids}
+        target = None
+        for rec in entries:
+            if {str(i) for i in rec.get("item_ids") or []} == key:
+                target = rec
+                break
+        if target is None:
+            target = {
+                "item_ids": [str(i) for i in item_ids],
+                "defer_count": 1,
+                "first_deferred_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+            }
+            entries.append(target)
+        target["worktree"] = str(worktree)
+        target["branch"] = branch
+        target["tip_sha"] = tip_sha
+        target["fixed_ids"] = [str(i) for i in fixed_ids]
+        target["last_overlap"] = [str(f) for f in (last_overlap or [])]
+        _save_deferred_batches(project_root, entries)
+        return target
+
+    return _with_lock(path, _do)
 
 
 def _patch_deferred_entry(project_root, item_ids, **fields) -> None:
-    """按条目集定位并原位更新台账字段（defer_count 递增等），原子写。"""
-    entries = load_deferred_batches(project_root)
-    key = {str(i) for i in item_ids}
-    hit = False
-    for rec in entries:
-        if {str(i) for i in rec.get("item_ids") or []} == key:
-            rec.update(fields)
-            hit = True
-    if hit:
-        _save_deferred_batches(project_root, entries)
+    """按条目集定位并原位更新台账字段（defer_count 递增等），原子写。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item 35fea063bcff，
+    同 ``record_deferred_batch`` 口径）。
+    """
+    path = _deferred_path(project_root)
+
+    def _do() -> None:
+        entries = load_deferred_batches(project_root)
+        key = {str(i) for i in item_ids}
+        hit = False
+        for rec in entries:
+            if {str(i) for i in rec.get("item_ids") or []} == key:
+                rec.update(fields)
+                hit = True
+        if hit:
+            _save_deferred_batches(project_root, entries)
+
+    _with_lock(path, _do)
 
 
 def _remove_deferred_batch(project_root, item_ids) -> None:
-    """从台账移除命中的条目（按 item_ids 集合整条匹配；无命中静默返回）。"""
-    entries = load_deferred_batches(project_root)
-    key = {str(i) for i in item_ids}
-    kept = [
-        rec
-        for rec in entries
-        if {str(i) for i in rec.get("item_ids") or []} != key
-    ]
-    if len(kept) != len(entries):
-        _save_deferred_batches(project_root, kept)
+    """从台账移除命中的条目（按 item_ids 集合整条匹配；无命中静默返回）。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item 35fea063bcff，
+    同 ``record_deferred_batch`` 口径）。
+    """
+    path = _deferred_path(project_root)
+
+    def _do() -> None:
+        entries = load_deferred_batches(project_root)
+        key = {str(i) for i in item_ids}
+        kept = [
+            rec
+            for rec in entries
+            if {str(i) for i in rec.get("item_ids") or []} != key
+        ]
+        if len(kept) != len(entries):
+            _save_deferred_batches(project_root, kept)
+
+    _with_lock(path, _do)
 
 
 def _deferred_item_ids(project_root) -> set:
@@ -1022,13 +1079,21 @@ def reclaim_deferred_batches(project_root) -> int:
     存活（worktree 目录在且 tip_sha 可解析）→ 原样保留（``defer_count``/
     ``first_deferred_at`` 不重置，链边界重试照常覆盖）；丢失 → 清出台账 +
     由调用方记 warning（条目未核销，天然仍在 open 池，无需回写）。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item 35fea063bcff，
+    同 ``record_deferred_batch`` 口径）。
     """
-    entries = load_deferred_batches(project_root)
-    kept = [rec for rec in entries if _deferred_entry_alive(rec)]
-    dropped = len(entries) - len(kept)
-    if dropped:
-        _save_deferred_batches(project_root, kept)
-    return dropped
+    path = _deferred_path(project_root)
+
+    def _do() -> int:
+        entries = load_deferred_batches(project_root)
+        kept = [rec for rec in entries if _deferred_entry_alive(rec)]
+        dropped = len(entries) - len(kept)
+        if dropped:
+            _save_deferred_batches(project_root, kept)
+        return dropped
+
+    return _with_lock(path, _do)
 
 
 def _defer_time_budget_exhausted(entry) -> bool:
@@ -3514,6 +3579,7 @@ class CodeFixOrchestrator:
         )
         write_progress(
             self.project_root,
+            reason="",
             current=(
                 f"第 {batch_no} 批搁浅兜底：分支零提交但工作区有未提交改动，"
                 f"编排已 salvage 提交（{message}）"
@@ -3728,9 +3794,14 @@ class CodeFixOrchestrator:
         # 批 worker 收尾整体中断，2026-09-25 验证打回实证）。
         retry_run_id = ""
         reg_mode = "定向回归" if targeted else "全量回归"
+        # 中间阶段写点显式清 reason（code-review item 48ee3596117c）：合并写
+        # 语义下 checkpoint 的 disabled 提示写点（reason="disabled"）会一直
+        # 粘到批收尾，前端按 reason 分级渲染会把仍在推进的批误显示成终止态
+        # ——与批收尾成功写点的 reason="" 同口径。
         write_progress(
             root,
             phase="regressing",
+            reason="",
             current=f"第 {batch_no} 批{reg_mode}中（{len(items)} 条）",
         )
         # FENIX_TEST_TARGETS 双轨导出（3.3，{port} 先例）：仅回归窗口内设置，
@@ -3766,6 +3837,7 @@ class CodeFixOrchestrator:
                 write_progress(
                     root,
                     phase="retrying",
+                    reason="",
                     current=(
                         f"第 {batch_no} 批定向重试 {attempt}/{retry_max}"
                         f"（失败 {len(cumulative)} 例"
@@ -3814,6 +3886,7 @@ class CodeFixOrchestrator:
                 write_progress(
                     root,
                     phase="regressing",
+                    reason="",
                     current=(
                         f"第 {batch_no} 批定向轮 {attempt} 回归中"
                         + (f"（子集 {len(fail_items)} 例）" if mapped else "（全量）")
@@ -3857,12 +3930,39 @@ class CodeFixOrchestrator:
                 summary2 = _failure_summary(reg)
                 tip_sha = _worktree_head(wt)
                 branch = _worktree_branch(wt)
+                # LLM 拒绝出口在耗尽路径同样生效（code-review item
+                # 95a9442e0a55）：本路径提前 return，到不了下方合回路径的产物
+                # 行分区/mark_ignored——入档前补读产物行（首轮 + 各定向轮
+                # 并集，与合回路径同口径）做同款分区，把 skipped 且标注误报/
+                # 不值得修的条目先置 ignored 终态（链级核销计数同口径累加），
+                # 再从入档集合排除——已终态条目 MUST NOT 随批烧 fail_count
+                # 预算/进告警名录（与 merge_back_conflict 路径 pending_ids
+                # 排除 ignored 的口径一致）。
+                exhaust_rows = read_fix_out(wt, result.run_id)
+                for rid in attempt_run_ids:
+                    exhaust_rows.extend(read_fix_out(wt, rid))
+                _, exhaust_skips = _split_fix_rows(exhaust_rows)
+                exhaust_batch = set(item_ids)
+                exhaust_ignore_ids = [
+                    i for i in exhaust_skips if i in exhaust_batch
+                ]
+                exhaust_ignored = (
+                    mark_ignored(root, exhaust_ignore_ids, reasons=exhaust_skips)
+                    if exhaust_ignore_ids
+                    else 0
+                )
+                if exhaust_ignored:
+                    self._chain_bump(root, chain_ignored=exhaust_ignored)
+                exhaust_ignore_set = set(exhaust_ignore_ids)
+                archive_ids = [
+                    iid for iid in item_ids if iid not in exhaust_ignore_set
+                ]
                 # 失败档案只收未终态条目（code-review item c94a1770a477，与
                 # _downgrade_deferred / 主路径核销前过滤同口径）：选批到重试
                 # 耗尽之间被人工置终态（resolved/in_spec/ignored）的条目不随
                 # 批入档、不进回归失败告警名录——fail_count 预算与达上限一次
                 # 性告警的名录须与真实失败条目一致；子集为空则跳过入档与告警。
-                open_ids = _open_ids_for_archive(root, item_ids)
+                open_ids = _open_ids_for_archive(root, archive_ids)
                 if open_ids:
                     record_failed_batch(
                         root, open_ids, wt,
@@ -3988,6 +4088,7 @@ class CodeFixOrchestrator:
         write_progress(
             root,
             phase="merging",
+            reason="",
             current=f"第 {batch_no} 批合回中（{len(items)} 条）",
         )
         merge_info = wm.merge_back(wt)
