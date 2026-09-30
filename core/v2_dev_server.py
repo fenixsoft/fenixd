@@ -141,7 +141,15 @@ def start(
     if not static_root.is_dir():
         # worktree 可能未含 core/dashboard/static（罕见）；回退主树静态根，
         # 保证服务能起，但失去 worktree 隔离意义——仅作兜底不阻断派发。
+        wt_static_root = static_root
         static_root = Path(__file__).absolute().parent.parent / "core" / "dashboard" / "static"
+        if not static_root.is_dir():
+            # 两处静态根同时缺失（如非常规 checkout 布局）：把失败提前到启动期，
+            # 避免服务对任意路径 404、报错推迟到验证场景阶段且与根因脱节。
+            raise V2DevServerError(
+                f"static root missing in both worktree ({wt_static_root}) "
+                f"and main tree ({static_root})"
+            )
         if logger:
             logger.warning(
                 "v2_dev_server",
@@ -171,7 +179,12 @@ def start(
         V2_DEV_SERVER_MARKER,
     ]
     env = dict(os.environ)
-    env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + f" --max-old-space-size=256").strip()
+    # 先剥离环境中已有的 --max-old-space-size=... 片段再追加，确保内存钳制
+    # 取本框架设定值（不依赖 node 对重复选项的取舍行为）。
+    env["NODE_OPTIONS"] = (
+        re.sub(r"--max-old-space-size=\S+", "", env.get("NODE_OPTIONS", ""))
+        + " --max-old-space-size=256"
+    ).strip()
 
     def _log(level, msg):
         if logger:
