@@ -80,8 +80,10 @@ class ReportBuilder:
             "testing": "🔍",
             "verified": "✅",
             "bug-found": "🐛",
+            "blocked": "⛔",
             "done": "🎯",
             "pushed": "🚀",
+            "reviewing": "💬",
         }
 
         # priority 经 STATE 往返可为字符串，sorted key 混合 int/str 会抛

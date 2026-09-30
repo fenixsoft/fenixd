@@ -174,6 +174,7 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
     1. `.spec.yaml` 的 `mode` 为 `fast-track`
     2. `specs/` 下的能力目录数 ≤ 1
     3. `tasks.md` 的 Deliverables 声明段条目数 ≤ 3
+       （例外：空声明段（0 条）按不满足处理，仍走评审）
     4. SPEC 名 MUST NOT 以 `evo-` 开头
 
     字段缺失时保守取「不跳过」。gates.spec_review_mode: never 时恒返回跳过。

@@ -299,6 +299,20 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": f"命令二进制不存在（argv 形态）: {e}",
             }
+        except OSError as e:
+            # 同族 OSError（argv 命令存在但不可执行 PermissionError、命令路径
+            # 中某段是文件 NotADirectoryError 等；shell 形态解释器本体权限异常
+            # 同此）：与 FileNotFoundError 同为环境/场景定义缺陷，归一为本步骤
+            # 结构化失败（code-review item 1cf6a3ab4c62），判 error 与 cwd 缺失
+            # 同口径：不进 product-bug 管道（item 74368415e965）——异常穿出会被
+            # 引擎 gather(return_exceptions=True) 兜成无步骤定位、error 为
+            # repr 的裸条目
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": f"命令启动失败（{'shell' if use_shell else 'argv'} 形态）: {e}",
+            }
 
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
@@ -378,12 +392,18 @@ class CliRunner(VerifyRunner):
             named_results[name] = result
         named_results["_latest"] = result
 
-        # 非零退出码不判步骤失败：照常记录，由 exit_code 断言仲裁
+        # 非零退出码不判步骤失败：照常记录，由 exit_code 断言仲裁。
+        # stdout/stderr（已按 64KB 证据纪律截断）随步骤结果透出：named_results
+        # 仅在 execute 内喂断言器、不落报告，不带则未命名步骤的输出证据进不了
+        # report.json，judge 只能看断言失败条目的 actual_snippet 片段——与超时
+        # 强杀路径携带截断输出的证据面对称（code-review item e82ec5b8e71b）
         return {
             "success": True,
             "action": "run",
             "command": cmd,
             "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
             "as": name or None,
             "detail": f"退出码 {exit_code}"
             + ("（stdout 已截断 64KB）" if stdout_truncated else "")

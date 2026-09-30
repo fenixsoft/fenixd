@@ -11,6 +11,7 @@ assertions.py — 四层 DOM 断言库
 第4层断言失败 = 需Planner结合上下文判定。
 """
 
+import math
 import re
 import time
 from typing import Any
@@ -26,9 +27,12 @@ except ImportError:  # pragma: no cover
 # （code-review item e396300682b6）：timeout 上界对齐 element_count/
 # element_not_exist 的 3s 收敛预算量级、放宽至 Playwright 默认单操作超时，
 # 拦截 timeout: 999999999 之类超大声明把 deadline 推到数天后、场景协程被
-# 单条断言长期占住；interval 下界防 0/负值在 deadline 前热轮询。越界一律
-# 归一为边界值并在结果 note 中注明，不按配置错误炸场景。
+# 单条断言长期占住；timeout 下界（code-review item e81daf39cc30）防 0/负值
+# 把 deadline 推到过去、首轮读取后零等待即判失败；interval 下界防 0/负值在
+# deadline 前热轮询。越界一律归一为边界值并在结果 note 中注明，不按配置
+# 错误炸场景。
 _MAX_POLL_TIMEOUT_MS = 30000
+_MIN_POLL_TIMEOUT_MS = 1000
 _MIN_POLL_INTERVAL_MS = 50
 
 
@@ -78,11 +82,15 @@ class AssertionRunner:
         """钳制轮询参数越界（同 element_count/element_not_exist 预算防线）。
 
         超大 timeout 声明（如 999999999）会把 deadline 推到数天后，轮询循环
-        （每轮 interval 读取 + wait_for_timeout）持续占住场景协程；interval
-        为 0/负值则在 deadline 前热轮询。越界归一为边界值而非按配置错误炸
-        场景，第三元素返回注明文案供结果 note 携带（未越界为空串）。
+        （每轮 interval 读取 + wait_for_timeout）持续占住场景协程；timeout
+        为 0/负值则 deadline 落在过去，首轮读取后零等待即判失败（异步渲染
+        场景确定性误判）；interval 为 0/负值则在 deadline 前热轮询。越界
+        归一为边界值而非按配置错误炸场景，第三元素返回注明文案供结果 note
+        携带（未越界为空串）。
         """
-        clamped_timeout = min(timeout_ms, _MAX_POLL_TIMEOUT_MS)
+        clamped_timeout = min(
+            max(timeout_ms, _MIN_POLL_TIMEOUT_MS), _MAX_POLL_TIMEOUT_MS
+        )
         clamped_interval = max(interval_ms, _MIN_POLL_INTERVAL_MS)
         if clamped_timeout == timeout_ms and clamped_interval == interval_ms:
             return timeout_ms, interval_ms, ""
@@ -805,6 +813,21 @@ class AssertionRunner:
                 "error": "缺少 text/expected 字段",
             }
 
+        if not isinstance(text, str):
+            # 非字符串 text/expected（planner 误写 JSON 数字/布尔等）是确定性
+            # 配置错误：selector 分支的 `text in (t or "")` 抛 TypeError 会被
+            # 下方 except 吞成无 error 归因的普通失败，页面级分支 get_by_text
+            # 抛错落入保底后 `text in content` 二次抛 TypeError 逃逸到 run()
+            # 被包成「断言执行异常」；与 text_match 非字符串 expected 的预检
+            # 口径一致，进匹配前显式失败。
+            return {
+                "type": "text_contains",
+                "layer": 3,
+                "text": text,
+                "pass": False,
+                "error": f"非法 text/expected: {text!r}，须为字符串",
+            }
+
         # 逐元素取数触顶标注（页面级降级分支不产生），随结果 note 带出
         budget_note = ""
         if selector:
@@ -818,8 +841,7 @@ class AssertionRunner:
                 # item fdf0d3af6c79）：input/textarea/select 的页面值落在
                 # value 属性上、textContent 恒为空串，只读 textContent 会把
                 # 已渲染值确定性误判为失败；input_value 取值异常时回退
-                # textContent，取值异常不炸断言收集（落下方 except 按
-                # 普通失败收场，单次读取限时 3s 同方法既有等待口径）。
+                # textContent（单次读取限时 3s 同方法既有等待口径）。
                 # 总预算防线（code-review item 6405221a79ad）：循环本身无
                 # deadline，宽泛选择器意外命中大量元素时 元素数×3s 可把单条
                 # 断言拖到分钟级占住场景协程（对比 text_match/
@@ -835,16 +857,27 @@ class AssertionRunner:
                             f"仅检查前 {len(texts)} 个匹配元素"
                         )
                         break
-                    tag = await loc.evaluate(
-                        "el => el.tagName?.toLowerCase()", timeout=3000
-                    )
-                    if tag in ("input", "textarea", "select"):
-                        try:
-                            texts.append((await loc.input_value(timeout=3000)) or "")
-                            continue
-                        except Exception:
-                            pass
-                    texts.append((await loc.text_content(timeout=3000)) or "")
+                    try:
+                        tag = await loc.evaluate(
+                            "el => el.tagName?.toLowerCase()", timeout=3000
+                        )
+                        if tag in ("input", "textarea", "select"):
+                            try:
+                                texts.append(
+                                    (await loc.input_value(timeout=3000)) or ""
+                                )
+                                continue
+                            except Exception:
+                                pass
+                        texts.append((await loc.text_content(timeout=3000)) or "")
+                    except Exception:
+                        # 单元素瞬态取数异常（遍历中被移除等）只跳过该元素：
+                        # 异常冒到外层 except 会跳过 any() 判定、丢弃已收集
+                        # 元素的命中结果按普通失败收场，且无 error 归因区分
+                        # 「确无匹配」与「取数中断」；已取文本仍参与匹配的
+                        # 口径同上方预算截断路径（code-review item
+                        # e82503f5caf5）。
+                        continue
                 passed = any(text in (t or "") for t in texts)
             except Exception:
                 passed = False
@@ -1194,6 +1227,22 @@ class AssertionRunner:
                 "tolerance": a.get("tolerance"),
                 "pass": False,
                 "error": f"非法 tolerance: {a.get('tolerance')!r}，须为数值（像素）",
+            }
+        if not math.isfinite(tolerance) or tolerance < 0:
+            # NaN/负数/无穷大同款拦截（与 no_overlap threshold 的区间校验
+            # 对称，有限性口径对齐 scenarios 步骤 timeout 的 isfinite 拦截，
+            # code-review item c9cab59b862c）：NaN 使 max_diff <= tolerance
+            # 恒 False（任何对齐都判失败）、负值恒失败、inf 恒通过，均产出
+            # 方向不明且无提示的裁决，进取数前显式失败。
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "axis": axis,
+                "tolerance": a.get("tolerance"),
+                "pass": False,
+                "error": f"非法 tolerance: {a.get('tolerance')!r}，"
+                f"须为非负有限数值（像素）",
             }
 
         if not await self._element_exists(page, selector):
