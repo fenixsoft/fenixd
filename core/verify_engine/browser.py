@@ -838,6 +838,17 @@ class BrowserManager:
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（应为毫秒数）: {value!r}",
                     }
+                # 负值毫秒数显式失败（code-review item 6057e90f3fa3）：
+                # wait_for_timeout 对负值立即返回，场景声明的等待被静默丢弃，
+                # 断言时点比场景意图提前、失败归因偏向时序而非配置错误——
+                # 与 mock_status/drag 配置脏值的结构化失败同口径
+                if timeout_ms < 0:
+                    return {
+                        "success": False,
+                        "action": action,
+                        "error_type": "invalid_wait_value",
+                        "error": f"wait 值非法（毫秒数不能为负）: {value!r}",
+                    }
                 # 纯计时器不抛 timeout 类异常（code-review item 2d93bf93df4e）：
                 # 此前的 try/except 实际不可达，且真触发时（页面/浏览器关闭等
                 # 环境级故障）会被误标成「wait 超时」，把环境故障伪装成场景
@@ -1064,7 +1075,11 @@ class BrowserManager:
             if action == "click":
                 # 支持 click 步骤携带 dialog 处理（accept/dismiss），
                 # 处理点击后同步弹出的 window.confirm 对话框
-                dialog_mode = (step.get("dialog") or "").lower()
+                # dialog 归一为字符串（code-review item 5f5d31a35c76）：planner
+                # 产物并非不可能为布尔/数值——此前 (dialog or "").lower() 抛
+                # AttributeError 被顶层 except 归为 unknown，与上方 value 的
+                # str() 归一（08ef327b2c7e）同款防御
+                dialog_mode = str(step.get("dialog") or "").lower()
                 if dialog_mode:
                     if dialog_mode not in ("accept", "dismiss"):
                         return {
@@ -1272,6 +1287,7 @@ class BrowserManager:
                 "() => (document.body && document.body.innerText || '').trim().length > 0",
                 timeout=8000,
             )
+        # [fenix-ignore:088471e0a93e] 崩溃类异常与白屏同落 blocked-env 正是 env_gate 设计归因（真崩溃经 _escalate_env_blocked 升级送人工、不进产品归因），无精度弱化
         except Exception:
             # B1（fenixd-registry-ignored-false-attribution-loop）：首帧 8s 超时
             # 不再完全无声——返回 False，navigate 步骤据此落 first_frame_ok=False，
