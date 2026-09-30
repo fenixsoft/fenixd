@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Input, Popconfirm, Typography, message } from 'antd';
+import { Alert, App, Button, Card, Input, Popconfirm, Typography } from 'antd';
 import { useState, useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 // 切页签/作用域丢弃确认的判脏登记（code-review item 8a3eb01dc2b9）
@@ -26,6 +26,9 @@ interface ProjectProfilePanelProps {
 }
 
 export default function ProjectProfilePanel({ config, onSave, project, focusVerifySignal }: ProjectProfilePanelProps) {
+  // 经 App.useApp() 取 message 实例（code-review item 1432cb8853fe）：与其余
+  // 设置面板口径一致，静态 message 不经过 App/ConfigProvider 上下文
+  const { message } = App.useApp();
   const [description, setDescription] = useState(config.description || '');
   const [loading, setLoading] = useState(false);
   // 简介保存重入守卫：保存请求在飞期间置位，按钮 loading/disabled 阻止连点
