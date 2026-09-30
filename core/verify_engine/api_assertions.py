@@ -386,12 +386,13 @@ class ApiAssertionRunner:
                 "error": str(e),
             }
         mode = a.get("mode", "exact")
-        if expected is None:
-            # fail-closed：expected 缺失（None 是 Assertion 的「未设置」哨兵，
-            # 非显式 null）时 exact 与 None 判等、contains 以 "None" 子串、
-            # regex 以字面 None 为模式参与匹配，配置缺失被静默当作合法期望；
-            # 口径对齐 status_code 的 expected 预检（验收期必填表未登记
-            # json_path 的 expected，此处兜住运行期路径）
+        # fail-closed：expected 缺失（None 是 Assertion 的「未设置」哨兵，
+        # 非显式 null）时 exact 与 None 判等、contains 以 "None" 子串、
+        # regex 以字面 None 为模式参与匹配，配置缺失被静默当作合法期望；
+        # 空串 expected 加 contains/regex 同样假绿（空串 contains 恒真、
+        # regex 恒匹配），与 body_contains / sse_event_matches 同口径拦截
+        # （exact 空串是合法期望，不在拦截之列）
+        if expected is None or (expected == "" and mode in ("contains", "regex")):
             return {
                 "type": "json_path",
                 "layer": 3,
@@ -399,7 +400,7 @@ class ApiAssertionRunner:
                 "expected": expected,
                 "actual": None,
                 "pass": False,
-                "error": "断言缺 expected，无法与实际值对比（fail-closed）",
+                "error": "缺少 expected 字段",
             }
         path_missing = actual is _MISSING
         if path_missing:
@@ -638,7 +639,27 @@ class ApiAssertionRunner:
 
     async def _assert_sse_event_matches(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内存在与期望匹配的事件（data 字段）。"""
-        events = [dict(e) for e in (resp.get("events") or [])]
+        raw_events = resp.get("events") or []
+        # 配置错误可见化：events 含非 dict 元素时不再让 dict() 抛 TypeError
+        # 被包成笼统「断言执行异常」（capture 由 mock/手写来源构造时可能出
+        # 现），与本文件其余断言的定向归因口径对齐
+        non_dict = [i for i, e in enumerate(raw_events) if not isinstance(e, dict)]
+        if non_dict:
+            return {
+                "type": "sse_event_matches",
+                "layer": 3,
+                "expected": a.get("expected", ""),
+                "mode": a.get("mode", "contains"),
+                "actual_hits": [],
+                "hit_count": 0,
+                "pass": False,
+                "error": (
+                    f"events 含非 dict 元素（第 {non_dict[0]} 个为 "
+                    f"{type(raw_events[non_dict[0]]).__name__}，"
+                    f"共 {len(non_dict)} 个），capture 结构非法"
+                ),
+            }
+        events = [dict(e) for e in raw_events]
         expected = a.get("expected", "")
         mode = a.get("mode", "contains")
         # fail-closed：缺 expected 时 contains 空串恒真、regex 空串恒匹配，
