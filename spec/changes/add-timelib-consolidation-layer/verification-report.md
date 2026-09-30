@@ -48,3 +48,10 @@
 | regression-suite-knowledge-stamp | knowledge 盖戳域既有测试回归（时间源切换零行为变化背书）：tests/test_knowledge.py + test_knowledge_backfill.py 全绿。出处 tasks.md 4.3「盖戳行格式断言测试锁定」 | pass | 0/2 | - |
 | regression-suite-codereview-selfreview | code_review/self_review/regression 域既有测试回归（轮子收拢气泡语义不动背书）：tests/test_code_review.py + test_daily_self_review.py + test_dashboard_regression_api.py 全绿。出处 tasks.md 4.1「self_review 窗口比较气泡语义不动」+ 3.3「stale 判定行为以测试锁定」 | pass | 0/2 | - |
 | regression-suite-timeline-domain | timeline 域既有测试回归（D2 翻转后排序/展示行为锁定）：tests/test_characterization_dashboard_data.py + test_spec_timeline_name_isolation.py + test_timeline_transition_context.py + test_dashboard_data.py 全绿。出处 tasks.md 3.2「下游排序/展示行为以 characterization 测试锁定」 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 25 个（第 1 轮）。
+
+- 首轮写入 25 个场景
+
