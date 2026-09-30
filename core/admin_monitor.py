@@ -256,6 +256,12 @@ SIGNAL_SEVERITY = {
     # add-test-regression-tab 增强：契约有效但缺 regression 段时，UI 请求 AI 仅补段
     # （区别于 verify_contract_missing 的整契约起草——该场景契约本身有效，只缺段）。
     "verify_regression_missing": "major",
+    # code-review item 82ed15325904：env 阻塞族（ENV_BLOCK_SIGNAL_TYPES，本模块
+    # DISPOSITION_AUTO_RESET_SIGNAL_TYPES 组成部分）与 SIGNAL_RECOMMENDATION 对齐
+    # 显式收录。当前主链路（pm_engine 直写 store + 处置重建）不经 _make_signal
+    # 构造该类型，且缺省回退恰为 major、行为不变——补录消除表不对称：未来
+    # 任何路径经 _make_signal 构造时严重度不再依赖 .get 缺省的巧合一致。
+    "verify_env_blocked": "major",
     # fix-artifact-paths-hardcoded-default D3：merge-back WIP 重叠闸门检出产物
     # 配置未裁决（has_build_artifacts 缺省或 true 配空路径），呼叫 Administrator
     # 起草产物路径配置——与 verify_contract_missing 同级（配置缺口，需人工/起草
@@ -785,6 +791,15 @@ def _queued_for_dispatch(pm_engine, spec_name: str) -> bool:
         return False
 
 
+# 人工暂停/冻结文案的显式短语表（code-review item d5143302506e 判据③收窄）：
+# 已知产生方为 freeze_spec 的 FREEZE_ERROR_PREFIX「用户指令冻结：…」与人工写入
+# 的「用户指令暂停：…」（2026-08-30 误报形态），「用户指令中止」为同族前瞻。
+# 裸「用户指令」子串会误命中恰好提及「用户指令」的普通错误文案（如 LLM 叙述
+# 「按用户指令跳过某步骤后失败」），把该 spec 的全部自动检测/唤起路径静默关成
+# 盲区；显式短语仍按子串匹配（不锚定行首）：存量 spec 文案可能把短语写在句中。
+_INTENTIONAL_PAUSE_MARKERS = ("用户指令冻结", "用户指令暂停", "用户指令中止")
+
+
 def _is_intentionally_paused(entry: dict) -> bool:
     """人工冻结/暂停「有意等待态」三重判据（单点判定，code-review item a1cab4f7bb6c）。
 
@@ -792,9 +807,11 @@ def _is_intentionally_paused(entry: dict) -> bool:
       ① 结构化 ``frozen`` 字段——freeze_spec() 统一入口写入，首要判定，不依赖文案；
       ② error 前缀 ``'frozen:'``——Administrator 为去重/家族收敛人为冻结的
         历史 error 文案（其 blocked/悬置是有意保持的等待态，updated 不会推进）；
-      ③ error 含「用户指令」子串——人工写入的「用户指令暂停/冻结：…」等价于
-        frozen（2026-08-30 v2-acceptance-suite 误报），用词在暂停/冻结间漂移，
-        按子串识别双保险。
+      ③ error 含显式暂停/冻结短语（_INTENTIONAL_PAUSE_MARKERS）——人工写入的
+        「用户指令暂停/冻结：…」等价于 frozen（2026-08-30 v2-acceptance-suite
+        误报），用词在暂停/冻结间漂移；按显式短语识别（code-review item
+        d5143302506e 由裸「用户指令」子串收窄：裸子串误命中普通错误文案会把
+        该 spec 的自动检测/唤起静默关成盲区）。
 
     存量 spec 可能仅以历史 error 文本表达冻结（结构化字段未迁移），全部自动
     检测/唤起路径（blocked_stuck / stuck / orphaned_state / _handle_signal 唤起前
@@ -805,7 +822,7 @@ def _is_intentionally_paused(entry: dict) -> bool:
     if entry.get("frozen"):
         return True
     err = str(entry.get("error") or "")
-    return err.startswith("frozen:") or "用户指令" in err
+    return err.startswith("frozen:") or any(m in err for m in _INTENTIONAL_PAUSE_MARKERS)
 
 
 # [fenix-ignore:a132ca295b06] 多域拆分属架构级重构（需独立设计评审与分域迁移），超出 code-fix 单条最小修复边界，擅自拆分风险大于收益
@@ -1128,7 +1145,10 @@ class AdminMonitor:
             if self._code_review_in_flight:
                 return {"triggered": False, "reason": "already_running"}
             if self.agent_runner is not None:
-                running = getattr(self.agent_runner, "_running_agents", None) or {}
+                # 快照后迭代（code-review item be53fac9d762，对齐 runner 读取侧
+                # 的 list(...) 快照惯例）：runner 侧并发注册/pop 改变字典大小会使
+                # 直接迭代抛 RuntimeError: dictionary changed size during iteration。
+                running = dict(getattr(self.agent_runner, "_running_agents", None) or {})
                 if any(str(rid).startswith("code-review-") for rid in running):
                     # code-review item 68a28fa47419：此处 MUST NOT 置位本车道单飞
                     # 标志——命中的是外部（如 Dashboard 手动）启动的 run，其收尾
@@ -1230,14 +1250,26 @@ class AdminMonitor:
                 finally:
                     with self._code_review_lock:
                         self._code_review_in_flight = False
+                # code-review item 42b4a0f7ac08：排程段自带兜底——经 executor
+                # 投递时本 _worker 跑在无人消费结果的 Future 里，这里抛出的异常
+                # （RATELIMIT_REDISPATCH_MAX import 失败/锁操作等）原本滞留
+                # Future 无任何日志，本生命周期唯一的 429 重派机会静默丢失；
+                # 同步回退路径有外层 try 兜底，仅异步投递路径暴露。保持排在
+                # finally（单飞复位）之后：重派 Timer 冷却可能为 0，若先排程后
+                # 复位，回调会在锁内见到在途标志误判放弃。异常记 ERROR 不再上抛。
                 if ratelimit_intent:
-                    self._schedule_ratelimit_redispatch(
-                        manifest=manifest,
-                        review_kind=review_kind,
-                        window_start=window_start if review_scope == "window" else None,
-                        scope=review_scope,
-                        intent=ratelimit_intent,
-                    )
+                    try:
+                        self._schedule_ratelimit_redispatch(
+                            manifest=manifest,
+                            review_kind=review_kind,
+                            window_start=window_start if review_scope == "window" else None,
+                            scope=review_scope,
+                            intent=ratelimit_intent,
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "admin_monitor", f"code-review 429 重派排程异常: {e}"
+                        )
 
             try:
                 if self._code_review_executor is not None:
@@ -1397,7 +1429,10 @@ class AdminMonitor:
                 )
                 return
             if self.agent_runner is not None:
-                running = getattr(self.agent_runner, "_running_agents", None) or {}
+                # 快照后迭代（code-review item be53fac9d762，对齐 runner 读取侧
+                # 的 list(...) 快照惯例）：runner 侧并发注册/pop 改变字典大小会使
+                # 直接迭代抛 RuntimeError: dictionary changed size during iteration。
+                running = dict(getattr(self.agent_runner, "_running_agents", None) or {})
                 if any(str(rid).startswith("code-review-") for rid in running):
                     self.logger.warning(
                         "admin_monitor",
@@ -1720,7 +1755,10 @@ class AdminMonitor:
             if self._regression_in_flight:
                 return {"triggered": False, "reason": "already_running"}
             if self.agent_runner is not None:
-                running = getattr(self.agent_runner, "_running_agents", None) or {}
+                # 快照后迭代（code-review item be53fac9d762，对齐 runner 读取侧
+                # 的 list(...) 快照惯例）：runner 侧并发注册/pop 改变字典大小会使
+                # 直接迭代抛 RuntimeError: dictionary changed size during iteration。
+                running = dict(getattr(self.agent_runner, "_running_agents", None) or {})
                 if any(str(rid).startswith("regression-") for rid in running):
                     # code-review item 68a28fa47419（对齐 code-review 车道同款）：
                     # 此处 MUST NOT 置位本车道单飞标志——命中的是外部启动的
@@ -2377,6 +2415,21 @@ class AdminMonitor:
                 continue
             if self._has_recent_progress(name, now, grace_minutes * 60):
                 continue
+            # 已入队等待并发槽的豁免（code-review item 8400e0b92e68，与
+            # _detect_orphaned_state 2026-09-18 修复的条件④同口径）：testing 态
+            # verifier 经处置直通道入队后可在队列中等待并发槽数十分钟（队列老化
+            # 最坏 50 分钟 + 在飞 run 剩余时长），期间 run 文件无写活动、无存活
+            # 进程，上述守卫链全不豁免 → stuck 照发唤起 Administrator 空转；同
+            # 场景 orphaned_state 因 elapsed > stuck 阈值主动让位（hand-off），
+            # 两路都不豁免时只剩误报路径。pm_engine 为 None（测试替身/独立组件）
+            # 时不判本条件，行为与修复前一致。
+            if self.pm_engine is not None and _queued_for_dispatch(self.pm_engine, name):
+                self.logger.debug(
+                    "admin_monitor",
+                    f"Skipping stuck for '{name}': queued for dispatch "
+                    f"(waiting for concurrency slot)",
+                )
+                continue
             # D3 处置后静默期：最近一条成功处置距 now < silence 窗口 → 跳过。
             # result=escalated（升级人工）不匹配 resolved/partially-resolved，
             # 天然不触发静默——人工处置是唯一出路，不得被静默吞掉。
@@ -2756,7 +2809,18 @@ class AdminMonitor:
             size = log_file.stat().st_size
             with log_file.open("rb") as f:
                 if size > _TAIL_ERROR_READ_BYTES:
-                    f.seek(size - _TAIL_ERROR_READ_BYTES)
+                    start = size - _TAIL_ERROR_READ_BYTES
+                    # 边界判定（code-review item 96293d84951d）：回看 start 前
+                    # 一字节，恰为换行符说明 start 本身是完整行的起点——回退到
+                    # 该换行符处再 readline，只吞掉行尾换行、保留这条完整 ERROR
+                    # 行（否则同指纹窗口计数少 1，极端情形下升级延迟一轮巡检，
+                    # 漏报方向与模块 fail-closed 取向相反）；mid-line 时 readline
+                    # 照旧丢弃截断残行。
+                    f.seek(start - 1)
+                    if f.read(1) == b"\n":
+                        f.seek(start - 1)
+                    else:
+                        f.seek(start)
                     f.readline()  # 丢弃 seek 可能截断的首行
                 data = f.read().decode("utf-8", "replace")
         except OSError:
@@ -4585,7 +4649,7 @@ class AdminMonitor:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。
 
         判定：结构字段 disp.family_waiver 为 True；或自由文本
-        actions_taken/summary/recommended_action 含显式放行语义（赋值型
+        actions_taken/summary/recommended_action/problem 含显式放行语义（赋值型
         _family_waiver=true、「设置 _family_waiver 为 true」「放行一次」等），
         且不含否定短语（未放行/不再放行/不发放/暂不发放…）。放行模式按句
         判定，命中句须为本次处置的显式放行表述（含「本次/该族」限定词或与本
@@ -4602,9 +4666,13 @@ class AdminMonitor:
         spec = signal.get("spec")
         if not spec:
             return
+        # problem 字段一并纳入（code-review item 6621319f7aae）：与
+        # _apply_infra_reclassification 的文本兜底四字段拼装对齐——Administrator
+        # 可能把「放行一次」表述写进 problem，缺该字段时文本兜底识别不到，
+        # 豁免位不落、父 SPEC 派生口子不开（漏放行方向）。
         text = (
             f"{(disp.actions_taken or '')}\n{(getattr(disp, 'summary', '') or '')}\n"
-            f"{(disp.recommended_action or '')}"
+            f"{(disp.recommended_action or '')}\n{(getattr(disp, 'problem', '') or '')}"
         )
         # 否定语义优先：任何位置出现否定短语即不放行（保守方向：宁可漏放行、
         # 不可给未放行的父 SPEC 错开派生口子）。结构字段 family_waiver=True
