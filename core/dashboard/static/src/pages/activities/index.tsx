@@ -35,6 +35,10 @@ import { AlertLines, AlertTitle, fmtDate } from '@/components/alert-shared';
 
 const REFRESH_THROTTLE_MS = 500;
 
+// SSE 连续重连失败阈值（fix 8fa2edf72bc5）：EventSource 自动重连期间 error 事件
+// 会频繁触发，累积到阈值才展示「实时刷新已断开」提示条，避免瞬态抖动闪烁
+const SSE_DOWN_THRESHOLD = 3;
+
 // 服务端分页页大小：每页 15 条（add-dashboard-paging-and-etag 3.2，design D2
 // 的前端切片改为服务端切片——排序与翻页单点在后端，前端只渲染当前页）
 const PAGE_SIZE = 15;
@@ -323,6 +327,11 @@ export default function ActivitiesPage() {
   // fix 01635701025b: load 自增请求序号——SSE 刷新与用户翻页触发的 load 可能并发
   // 在飞，仅最新一次请求允许落状态，旧响应到达时直接丢弃，防旧页覆盖新页
   const loadSeqRef = useRef(0);
+  // fix 8fa2edf72bc5: SSE 断流失败态——es 只挂 onmessage 时持续重连失败（代理故障、
+  // daemon 停止）期间页面无任何提示，运维记录可能长时间停在陈旧数据而用户无感知。
+  // 连续失败达 SSE_DOWN_THRESHOLD 才置位；连接恢复由 onopen / onmessage 自动消除
+  const [streamDown, setStreamDown] = useState(false);
+  const sseFailCountRef = useRef(0);
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current;
@@ -373,6 +382,11 @@ export default function ActivitiesPage() {
     // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉，保持页签与滚动；
     // 端点走 services/dashboard 的 STREAM_URL 单源，不写字面量）
     const es = new EventSource(STREAM_URL);
+    // fix 8fa2edf72bc5: 连接（重新）建立即复位失败计数并消除断流提示条
+    es.onopen = () => {
+      sseFailCountRef.current = 0;
+      setStreamDown(false);
+    };
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
       try {
@@ -380,6 +394,9 @@ export default function ActivitiesPage() {
       } catch {
         return;
       }
+      // fix 8fa2edf72bc5: 能收到消息即连接存活——复位计数并消除断流提示条
+      sseFailCountRef.current = 0;
+      setStreamDown(false);
       if (msg.type !== 'alerts' && msg.type !== 'refresh') return;
       // fix 4ffc804c77cd: 节流改尾沿触发——窗口内事件不再直接丢弃，改为排一次
       // 尾沿补拉（pending 已排程则合并），避免静默期尾部变更滞留到下个事件才上屏
@@ -396,6 +413,15 @@ export default function ActivitiesPage() {
       }
       lastRefreshRef.current = now;
       void load();
+    };
+    // fix 8fa2edf72bc5: 自动重连期间 error 频繁触发（readyState===CONNECTING 表示
+    // 正在重连），累积连续失败达阈值才提示，避免瞬态抖动闪烁；CLOSED（非 200 响应
+    // 等浏览器已放弃重连）直接提示。恢复由上方 onopen / onmessage 自动消除。
+    es.onerror = () => {
+      sseFailCountRef.current += 1;
+      if (es.readyState === EventSource.CLOSED || sseFailCountRef.current >= SSE_DOWN_THRESHOLD) {
+        setStreamDown(true);
+      }
     };
     // 卸载必须关闭，防 EventSource 连接泄漏；并同步清理尾沿补拉定时器
     return () => {
@@ -511,6 +537,17 @@ export default function ActivitiesPage() {
         subtitle: '跨项目 Administrator 活动',
       }}
     >
+      {/* fix 8fa2edf72bc5: SSE 连续重连失败提示条——断连期间实时刷新静默失效，
+          运维记录/告警可能停留在陈旧数据；连接恢复后由 onopen / onmessage 自动消除 */}
+      {streamDown ? (
+        <div style={{ marginBottom: 16 }}>
+          <Card>
+            <Typography.Text type="warning">
+              实时刷新已断开：页面数据可能不是最新，正在尝试重连
+            </Typography.Text>
+          </Card>
+        </div>
+      ) : null}
       {error ? (
         <div style={{ marginBottom: 16 }}>
           <Card>
