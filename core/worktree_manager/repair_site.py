@@ -97,6 +97,11 @@ class G9RepairSiteMixin:
         wt = self.create_worktree_on_branch(spec_name, branch)
         if wt is None:
             return None, None
+        # 重建新目录必无 node_modules（queries 层明示 create_worktree_on_branch
+        # 「仅登记活动集与分支映射，不 seed」）——与 lifecycle.create() 两条出口
+        # 共用同一段幂等供给（code-review item cb5e28c5cb13）。_provision_worktree_deps
+        # best-effort：失败仅 WARNING 降级，不阻塞 repair/resume 认领。
+        self._provision_worktree_deps(wt)
         return wt, branch
 
     def resolve_resume_site(self, spec_name: str, branch: str):
