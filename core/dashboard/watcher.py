@@ -127,6 +127,11 @@ class FileWatcher:
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                # join 超时 = 单轮 scan_once 尚未完成（万级 spec 树上可能超 5s），
+                # 线程会继续完成本轮扫描（含广播）后才退出。stop() 是非阻塞尽力
+                # 停止，「返回即已停」在此分支不成立，留 warning 供日志反推。
+                logger.warning("dashboard watcher stop() join 超时（5s），扫描线程仍在运行")
 
     def _loop(self):
         tick = 0
@@ -283,8 +288,24 @@ class FileWatcher:
         if _is_dir(changes):
             try:
                 entries = list(changes.iterdir())
-            except OSError:
-                entries = []
+            except OSError as e:
+                # 瞬时失败（EACCES/EMFILE 等）MUST NOT 等同「目录被清空/移除」：
+                # seen 为空会把缓存里全部 spec 误判成 removed、广播整表
+                # summary:null 删除行，下轮恢复又全量推回。跳过本轮删除判定
+                # （缓存原样保留），告警按「扫描失败」同款节流（5 分钟一条）。
+                key = proot.as_posix()
+                now = time.monotonic()
+                last_warn = self._proj_scan_warn.get(key)
+                if last_warn is None or now - last_warn >= 300:
+                    self._proj_scan_warn[key] = now
+                    logger.warning(
+                        "dashboard watcher 枚举项目 %s spec/changes 目录失败，"
+                        "跳过本轮删除判定: %s: %s",
+                        proot,
+                        type(e).__name__,
+                        e,
+                    )
+                return set(), set()
             for d in entries:
                 if not _is_dir(d):
                     continue
