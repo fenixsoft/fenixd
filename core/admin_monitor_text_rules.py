@@ -101,7 +101,8 @@ def family_waiver_granted(text: str, spec: str) -> bool:
 
     Args:
         text: 处置文本拼接（actions_taken/summary/recommended_action）。
-        spec: 本次父 SPEC 名（同现限定用）。
+        spec: 本次父 SPEC 名（同现限定用）；必须为非空 SPEC 名，为 None/空串/
+            非 str 时同现限定不参与判定，仅依赖 _WAIVER_CURRENT_MARKERS 限定词。
 
     Returns:
         True 表示文本表达本次显式放行。
@@ -109,8 +110,12 @@ def family_waiver_granted(text: str, spec: str) -> bool:
     negated = any(n in text for n in _WAIVER_NEGATION_PHRASES)
     if negated:
         return False
+    # spec 防御（code-review 21a00a6ef714）：None/非 str 会使 in 判定抛
+    # TypeError、空串使 `'' in sent` 恒真架空同现限定——非法时回退为仅靠
+    # _WAIVER_CURRENT_MARKERS 限定词判定。
     waived = any(
-        any(m in sent for m in _WAIVER_CURRENT_MARKERS) or spec in sent
+        any(m in sent for m in _WAIVER_CURRENT_MARKERS)
+        or (isinstance(spec, str) and spec and spec in sent)
         for sent in re.split(r"[。！？\n]", text)
         if any(re.search(p, sent) for p in _WAIVER_GRANT_PATTERNS)
     )
@@ -132,7 +137,8 @@ def is_reclassify_negated(text: str) -> bool:
 def infra_reclassify_rounds(text: str) -> int:
     """infra 回拨文本兜底判定：返回显式声明的减回轮次（0=不触发）。
 
-    匹配「回拨 N 轮」/「reclassify N rounds」等模式，取第一个 n>0 的命中；
+    匹配「回拨 N 轮」/「reclassify N rounds」等模式，按 _RECLASSIFY_GRANT_
+    PATTERNS 数组（模式优先级）顺序取首个 n>0 的命中——非文本出现顺序；
     否定短语命中时保守返回 0（宁可漏回拨不可误扣 fail_rounds）。
     """
     if is_reclassify_negated(text):
