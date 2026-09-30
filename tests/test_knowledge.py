@@ -58,8 +58,9 @@ status: accepted
 {body}
 """
 
-# 更新时间盖戳标准行（index 与 _domain 通用；index 第 2 行 / _domain 紧随 H1）
-STAMP = "> 最后更新：2026-09-29 15:02 UTC"
+# 更新时间盖戳标准行（index 与 _domain 通用；index 第 2 行 / _domain 紧随 H1；
+# 本地时区展示，时区后缀随机器动态生成）
+STAMP = "> 最后更新：2026-09-29 15:02 UTC+8"
 
 PREHISTORIC_PAGE = """# 史前基础能力
 
@@ -207,7 +208,9 @@ class TestValidateKnowledge(KnowledgeTestBase):
     def _good_domain_nav(self, domain="pickup"):
         self._write(
             f"{KNOWLEDGE_DIR}/domains/{domain}/_domain.md",
-            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 |\n| --- | --- |\n",
+            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n"
+            "| --- | --- | --- |\n"
+            "| scheduled-spec-pickup | 按周期拣选 | 2026-09-29 15:02 |\n",
         )
 
     def _good_index(self):
@@ -248,6 +251,36 @@ class TestValidateKnowledge(KnowledgeTestBase):
         )
         v = validate_knowledge(self.root)
         self.assertTrue(any("最后更新" in x for x in v))
+
+    def test_domain_nav_missing_page_table(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            f"# 拣选域\n{STAMP}\n\n正文无表格\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("能力页" in x and "三列" in x for x in v))
+
+    def test_domain_nav_page_table_two_columns(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            f"# 拣选域\n{STAMP}\n\n"
+            "| 能力页 | 简介 |\n| --- | --- |\n| scheduled-spec-pickup | 拣选 |\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("能力页" in x and "三列" in x for x in v))
+
+    def test_domain_nav_page_row_bad_time_format(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            f"# 拣选域\n{STAMP}\n\n"
+            "| 能力页 | 简介 | 更新时间 |\n| --- | --- | --- |\n"
+            "| scheduled-spec-pickup | 拣选 | 昨天 |\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("更新时间" in x for x in v))
 
     def test_index_title_must_be_truth_source(self):
         self._good_page()
@@ -754,8 +787,8 @@ class TestDistillManager(KnowledgeTestBase):
 
     def _domain(self):
         return (
-            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 |\n| --- | --- |\n"
-            "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 |\n"
+            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n| --- | --- | --- |\n"
+            "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 | 2026-09-29 15:02 |\n"
         )
 
     def test_success_path_commits(self):

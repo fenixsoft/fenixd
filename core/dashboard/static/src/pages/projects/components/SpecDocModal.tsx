@@ -147,8 +147,8 @@ const collectTableText = (node: ReactNode): string => {
 const KNOWLEDGE_TABLE_WIDTHS: { fingerprint: [string, string]; widths: Record<string, string> }[] = [
   // 总目录「能力域」四列表：30/42/8/20（总和 100%，fixed 布局按比例归一）
   { fingerprint: ['能力域', '能力数量'], widths: { 能力域: '30%', 简介: '42%', 能力数量: '8%', 更新时间: '20%' } },
-  // 域导航「能力页」两列表：35/65
-  { fingerprint: ['能力页', '简介'], widths: { 能力页: '35%', 简介: '65%' } },
+  // 域导航「能力页」三列表：28/52/20
+  { fingerprint: ['能力页', '简介'], widths: { 能力页: '28%', 简介: '52%', 更新时间: '20%' } },
   // ADR 索引「编号/状态/摘要」三列表：15/15/70
   { fingerprint: ['编号', '摘要'], widths: { 编号: '15%', 状态: '15%', 摘要: '70%' } },
 ];

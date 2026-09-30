@@ -37,12 +37,11 @@ import shutil
 import signal
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from core import timelib
 
 # spawn 注入缝：run 内单测用 fake spawn 替身；生产用 _default_spawn（claude -p）。
 SpawnFn = Callable[[str, str], str]
@@ -704,13 +703,19 @@ violations_block = _violations_block
 null_logger = _NullLogger
 
 
-def _now_utc() -> str:
-    """当前 UTC 时间（``YYYY-MM-DD HH:MM``）——盖戳行/表格时间列统一时间源。
+def _now_local_parts() -> tuple:
+    """当前本地时间与展示后缀（``("2026-09-30 10:33", "UTC+8")``）。
 
-    时间源改走 timelib.now_utc()（add-timelib-consolidation-layer 4.3）：
-    输出格式与取值口径逐字不变（aware UTC ``YYYY-MM-DD HH:MM``）。
+    真相源盖戳统一时间源（用户定调 2026-09-30：本地时区展示）。与
+    ``core.knowledge.local_now_stamp`` 同逻辑——本模块被 knowledge.py 反向
+    导入，独立实现避免循环依赖。
     """
-    return timelib.now_utc().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now().astimezone()
+    total_min = round((now.utcoffset() or timedelta(seconds=0)).total_seconds() / 60)
+    sign = "+" if total_min >= 0 else "-"
+    hours, minutes = divmod(abs(total_min), 60)
+    tz = f"UTC{sign}{hours}" + (f":{minutes:02d}" if minutes else "")
+    return now.strftime("%Y-%m-%d %H:%M"), tz
 
 
 def build_prompt(
@@ -774,7 +779,9 @@ def build_prompt(
     text = text.replace(
         "{{DOMAIN_MAP_PATH}}", DOMAIN_MAP_RELPATH
     ).replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
-    return text.replace("{{NOW_UTC}}", _now_utc())
+    return text.replace("{{NOW_LOCAL}}", _now_local_parts()[0]).replace(
+        "{{NOW_TZ}}", _now_local_parts()[1]
+    )
 
 
 def _batch_list_block(
@@ -822,8 +829,8 @@ def build_prehistoric_prompt(
         "\n".join(f"- {c}" for c in sorted(covered_caps)) or "（空）",
     )
     return text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or [])).replace(
-        "{{NOW_UTC}}", _now_utc()
-    )
+        "{{NOW_LOCAL}}", _now_local_parts()[0]
+    ).replace("{{NOW_TZ}}", _now_local_parts()[1])
 
 
 # ── 链索引、批次划分与规模统计 ───────────────────────────────────────────

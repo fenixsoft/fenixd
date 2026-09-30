@@ -1,13 +1,13 @@
 # 代码结构治理
-> 最后更新：2026-09-29 11:27 UTC
+> 最后更新：2026-09-30 10:13 UTC+8
 
 core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。
 
 ## 能力页
 
-| 能力页 | 简介 |
-| --- | --- |
-| [core 包职责分层结构](core-package-structure.md) | core/ 按组合提取+门面分层组织，外部 API 零变化 |
-| [门面转发契约](facade-forwarder-contract.md) | 三大门面 `__getattr__` 注册表转发的收敛边界与调用点覆盖硬门 |
-| [巨型类按职责拆分](giant-class-decomposition.md) | 三大巨型类拆子包/资源子路由的格局与兼容不变式 |
-| [超长函数拆分纪律](long-function-decomposition.md) | 超长函数拆私有方法、主函数收敛为编排骨架 |
+| 能力页 | 简介 | 更新时间 |
+| --- | --- | --- |
+| [core 包职责分层结构](core-package-structure.md) | core/ 按组合提取+门面分层组织，外部 API 零变化 | 2026-09-29 11:27 |
+| [门面转发契约](facade-forwarder-contract.md) | 三大门面 `__getattr__` 注册表转发的收敛边界与调用点覆盖硬门 | 2026-09-29 11:27 |
+| [巨型类按职责拆分](giant-class-decomposition.md) | 三大巨型类拆子包/资源子路由的格局与兼容不变式 | 2026-09-29 11:27 |
+| [超长函数拆分纪律](long-function-decomposition.md) | 超长函数拆私有方法、主函数收敛为编排骨架 | 2026-09-29 11:27 |

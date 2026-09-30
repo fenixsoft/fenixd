@@ -36,11 +36,10 @@ import re
 import signal
 import subprocess
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
-from core import timelib
 from core.knowledge_backfill import (
     append_todo_line,
     ledger_has_pending,
@@ -76,12 +75,29 @@ _GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 # markdown 链接（image/链接同形，只关心 .md 与目录目标）
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
-# 更新时间盖戳（index 与 _domain 通用）：标准行 `> 最后更新：YYYY-MM-DD HH:MM UTC`，
-# 由蒸馏/回填管线以动态段注入的当前 UTC 时间盖写；表格单元格为同格式去 UTC 后缀。
-_STAMP_LINE_RE = re.compile(r"^> 最后更新：(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC$")
+# 更新时间盖戳（index 与 _domain 通用）：标准行 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`，
+# 本地时区（用户定调 2026-09-30：真相源面向人类读者，用本地时区展示）。由蒸馏/回填
+# 管线以动态段注入的当前本地时间盖写，时区后缀随机器动态生成；表格单元格为同格式
+# 去时区后缀。行尾偏移量兼容任意时区机器（UTC+8 / UTC-5 / UTC+5:30）。
+_STAMP_LINE_RE = re.compile(r"^> 最后更新：\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC[+-]\d{1,2}(?::\d{2})?$")
 _STAMP_CELL_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 _INDEX_TITLE = "知识真相源"
 _INDEX_TABLE_HEADER = "| 能力域 | 简介 | 能力数量 | 更新时间 |"
+_DOMAIN_TABLE_HEADER = "| 能力页 | 简介 | 更新时间 |"
+
+
+def local_now_stamp() -> tuple:
+    """当前本地时间与展示后缀（``("2026-09-30 10:33", "UTC+8")``）。
+
+    真相源盖戳统一时间源：蒸馏动态段与回填/史前车道占位共用，保证盖戳值
+    只出自管线注入、不由 LLM 自报。
+    """
+    now = datetime.now().astimezone()
+    total_min = round((now.utcoffset() or timedelta()).total_seconds() / 60)
+    sign = "+" if total_min >= 0 else "-"
+    hours, minutes = divmod(abs(total_min), 60)
+    tz = f"UTC{sign}{hours}" + (f":{minutes:02d}" if minutes else "")
+    return now.strftime("%Y-%m-%d %H:%M"), tz
 
 # ADR 文件名与头部状态
 _ADR_NAME_RE = re.compile(r"^ADR-(\d{3})-.+\.md$")
@@ -243,13 +259,32 @@ def validate_knowledge(project_root) -> list:
                 violations.append(f"{label}: 读取失败: {e}")
                 continue
             if page.name == "_domain.md":
-                # 更新时间盖戳：紧随 H1（第 2 行），格式 `> 最后更新：YYYY-MM-DD HH:MM UTC`
                 lines = text.splitlines()
+                # 更新时间盖戳：紧随 H1（第 2 行），格式 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`
                 if len(lines) < 2 or not _STAMP_LINE_RE.match(lines[1]):
                     violations.append(
                         f"{label}: 缺少「最后更新」盖戳行或未紧随 H1"
-                        "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC）"
+                        "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC+8）"
                     )
+                # 能力页表三列：表头恒定，行末列更新时间格式合法
+                try:
+                    dom_header_pos = lines.index(_DOMAIN_TABLE_HEADER)
+                except ValueError:
+                    violations.append(
+                        f"{label}: 缺能力页三列表（表头须为 {_DOMAIN_TABLE_HEADER}）"
+                    )
+                else:
+                    for row in lines[dom_header_pos + 1:]:
+                        if not row.startswith("|"):
+                            break  # 表格结束
+                        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+                        if cells and set(cells[0]) <= {"-"}:  # 分隔行
+                            continue
+                        if len(cells) != 3 or not _STAMP_CELL_RE.match(cells[2]):
+                            violations.append(
+                                f"{label}: 能力页行更新时间缺失或格式非法"
+                                f"（三列，末列 YYYY-MM-DD HH:MM）: {row}"
+                            )
                 _check_links(text, page.parent, label)
                 continue
             # 域/文件名 kebab 合法性
@@ -315,7 +350,7 @@ def validate_knowledge(project_root) -> list:
             if len(index_lines) < 2 or not _STAMP_LINE_RE.match(index_lines[1]):
                 violations.append(
                     f"{index_label}: 缺少「最后更新」盖戳行"
-                    "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC，紧随标题）"
+                    "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC+8，紧随标题）"
                 )
             try:
                 header_pos = index_lines.index(_INDEX_TABLE_HEADER)
@@ -397,14 +432,15 @@ def build_distill_prompt(proot: Path, archived_names: list) -> str:
     archive_items = "\n".join(
         f"- {name}（目录：{proot / ARCHIVE_DIR / name}）" for name in archived_names
     )
-    now_utc = timelib.now_utc().strftime("%Y-%m-%d %H:%M")
+    now_local, tz = local_now_stamp()
     return (
         f"{tpl}\n\n---\n\n"
         f"## 本次任务（动态段）\n\n"
         f"项目根（当前工作目录）：{proot}\n"
         f"真相源目录：{proot / KNOWLEDGE_DIR}\n"
-        f"当前 UTC 时间：{now_utc}（index.md 与受影响域 _domain.md 的"
-        f"「最后更新」盖戳以此为准）\n\n"
+        f"当前本地时间：{now_local}（时区 {tz}）。index.md 与受影响域 _domain.md 的"
+        f"「最后更新」盖戳行、各表更新时间列一律以此时间为准，盖戳行写为"
+        f"`> 最后更新：{now_local} {tz}`\n\n"
         f"本次待蒸馏的归档：\n{archive_items}\n"
     )
 
