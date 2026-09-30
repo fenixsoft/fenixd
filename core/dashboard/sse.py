@@ -25,11 +25,13 @@ class SSEConnection:
         self.id = cid
         self.queue = queue.Queue(maxsize=256)
         self.watched_runs = set()  # 该连接打开的 run 弹窗（增量推送目标）
+        self.dropped = 0  # 队列满丢弃最旧事件的累计计数（观测用，不改变背压行为）
 
     def send(self, event: dict):
         if self.queue.full():
             try:
                 self.queue.get_nowait()
+                self.dropped += 1
             except queue.Empty:
                 pass
         try:
@@ -95,6 +97,7 @@ class SSEHub:
             if conn:
                 conn.watched_runs.discard(run_id)
 
+    # [fenix-ignore:0b465c351a58] 确认性条目：is_watched 与 watch/unwatch 同用 self._lock，锁纪律对称无竞态
     def is_watched(self, run_id: str) -> bool:
         with self._lock:
             return any(run_id in c.watched_runs for c in self._conns.values())
