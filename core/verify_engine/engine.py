@@ -521,12 +521,19 @@ class VerifyEngine:
         Returns:
             {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
         """
+        # 候选先按 status=="fail" 过滤：is_env_candidate/is_blank_render_
+        # candidate 的契约即「调用方须确保场景 status==fail」，与
+        # finalize_scenario_status 的结算口径一致——非失败档（error/warning）
+        # 残留等待超时类步骤失败时不得触发探针或计入候选（code-review 0ab1506306cc）。
         candidates = [
             r
             for r in results
-            if is_env_candidate(r)
-            or is_connection_error_candidate(r)
-            or is_blank_render_candidate(r)
+            if r.get("status") == "fail"
+            and (
+                is_env_candidate(r)
+                or is_connection_error_candidate(r)
+                or is_blank_render_candidate(r)
+            )
         ]
         if not candidates:
             self._env_probe = {"healthy": True, "detail": "无候选场景，跳过探针"}
