@@ -450,7 +450,10 @@ class H12RegressionRoutesMixin:
             self._error(500, "回归触发信号写入失败")
             return
         if outcome == _TRIGGER_CONFLICT:
-            self._error(409, "已有未消费的回归触发请求（请稍后重试）")
+            self._coded_error(
+                409, "已有未消费的回归触发请求（请稍后重试）",
+                "regression_request_pending",
+            )
             return
         self._json({"ok": True, "requested_at": created})
 
@@ -537,7 +540,10 @@ class H12RegressionRoutesMixin:
             self._error(500, "回归修复触发信号写入失败")
             return
         if outcome == _TRIGGER_CONFLICT:
-            self._error(409, "已有未消费的回归修复触发请求（请稍后重试）")
+            self._coded_error(
+                409, "已有未消费的回归修复触发请求（请稍后重试）",
+                "regression_fix_request_pending",
+            )
             return
         self._json({"ok": True, "requested_at": created})
 
