@@ -139,6 +139,7 @@ def _branch_commit_count(pipeline, result) -> Optional[int]:
                     cwd=root,
                 )
                 ref = (d.stdout or "").strip()
+                # [fenix-ignore:2f89db825e0c] symbolic-ref --short 输出恒带远程前缀（如 origin/main）≠ 裸 main，标准布局下回落候选照常追加、机制不失效
                 if d.returncode == 0 and ref and ref != "main":
                     baselines.append(ref)
             except Exception:
