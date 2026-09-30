@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.run_files import run_spec_part
+from core.pm_engine.verification.scenario_gate import atomic_write_text
 
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
 _MAX_JUDGE_RERUNS = 5
@@ -558,15 +559,20 @@ def _last_planner_run_cost(pipeline, spec_name: str) -> str:
             if candidates:
                 last = candidates[-1]
                 duration_s = None
-                for line in last.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    try:
-                        d = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    if isinstance(d, dict) and d.get("type") == "result":
-                        dur = d.get("duration_ms")
-                        if dur:
-                            duration_s = float(dur) / 1000.0
+                # 逐行流式读（jsonl 转录可达数十 MB）：只取最后一条
+                # type=result 的 duration，整文件 read_text+splitlines 会在
+                # 告警旁路上造成不必要的全量内存峰值（code-review
+                # cd65b5bb8a0c）。
+                with open(last, encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        try:
+                            d = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if isinstance(d, dict) and d.get("type") == "result":
+                            dur = d.get("duration_ms")
+                            if dur:
+                                duration_s = float(dur) / 1000.0
                 if duration_s:
                     hours = duration_s / 3600.0
                     parts.append(f"最近 planner run {hours:.1f} 小时")
@@ -609,9 +615,12 @@ def _write_degrade_context(
             "degraded_at": datetime.now(timezone.utc).isoformat(),
         }
         ctx_path.parent.mkdir(parents=True, exist_ok=True)
-        ctx_path.write_text(
+        # 原子写（mkstemp + os.replace，复用 scenario_gate.atomic_write_text）：
+        # daemon 中途被杀不留半截 JSON——该文件会被 verify_report 合成路径
+        # （G3 降级标注）回读（code-review 2bb2844a51f2，对齐 _all_green_fast_path）。
+        atomic_write_text(
+            ctx_path,
             json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
     except (OSError, TypeError, ValueError) as e:
         # 观测量写入绝不分叉降级主流程：MagicMock 泄漏/路径不可写/类型
