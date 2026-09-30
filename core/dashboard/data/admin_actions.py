@@ -36,11 +36,14 @@ from core.fenix_session import hosting_state as _hosting_state
 # 已迁入中性模块 core.signals（pm_engine 侧消费点不再反向 import
 # dashboard.data），此处 re-export 保住既有门面导入路径。
 # fix-scheduling-kick-single-slot：write_scheduling_kick 亦在 core.signals，
-# admin_actions 委托它写目录形态的唤醒信号。
+# admin_actions 委托它写目录形态的唤醒信号；validate_scheduling_kick_spec
+# 复用为 reset_verification 删除路径的 spec 形态白名单（code-review item
+# a1e09f8181cd，与 kick 写入路径同防线）。
 from core.signals import (  # noqa: F401
     ADMIN_INVOKE_REQUEST,
     SCHEDULING_KICK_DIR,
     request_admin_invoke,
+    validate_scheduling_kick_spec,
     write_scheduling_kick,
 )
 
@@ -185,6 +188,8 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
             "ok": False,
             "conflict": True,
             "missing_run_id": False,
+            "unmanaged": False,
+            "daemon_down": False,
             "file": str(req_path),
             "created": existing_created,
             "error": "已有进行中的取消请求",
@@ -207,6 +212,8 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
             "ok": False,
             "conflict": True,
             "missing_run_id": False,
+            "unmanaged": False,
+            "daemon_down": False,
             "file": str(req_path),
             "created": current_created,
             "error": "已有进行中的取消请求",
@@ -215,6 +222,8 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         "ok": True,
         "conflict": False,
         "missing_run_id": False,
+        "unmanaged": False,
+        "daemon_down": False,
         "file": str(req_path),
         "created": created,
         "error": None,
@@ -590,11 +599,13 @@ def promote_spec(project_root, spec_name: str) -> dict:
 
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    logger = Logger(proot)
+    # audit_logger 专名与模块级 std logging logger 区分（code-review item
+    # 4e77fe1344f6）：同名遮蔽会让后续 logger.warning(...) 误用 Logger 实例
+    audit_logger = Logger(proot)
     # 解析项目有效配置传给 promote_drafted，使评审分流判定与 daemon 同源
     # （add-spec-review-gate 3.4/3.5：不传 config 无法评估跳过白名单，恒直通 ready）
     config = ConfigLoader.resolve_config(proot)
-    result = promote_drafted(proot, spec_name, state_machine=sm, logger=logger, config=config)
+    result = promote_drafted(proot, spec_name, state_machine=sm, logger=audit_logger, config=config)
     if result["ok"]:
         # 依分流结论转移：命中跳过白名单 → ready；否则 → reviewing 待方案评审。
         # 与 _on_spec_drafted 收尾语义一致，MUST NOT 硬编码 ready（全通道覆盖）。
@@ -639,8 +650,8 @@ def reflow_spec(project_root, spec_name: str) -> dict:
 
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    logger = Logger(proot)
-    result = _reflow(proot, spec_name, state_machine=sm, logger=logger, source="api")
+    audit_logger = Logger(proot)
+    result = _reflow(proot, spec_name, state_machine=sm, logger=audit_logger, source="api")
     result.setdefault("found", True)
     return result
 
@@ -665,11 +676,11 @@ def re_review_spec(project_root, spec_name: str) -> dict:
 
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    logger = Logger(proot)
+    audit_logger = Logger(proot)
     # agent_runner=None：跳过同步派发，由 daemon 全扫 recovery 的 reviewing
     # 分支拾取派发（与 CLI cmd_review 同构）；Dashboard 侧请求发往常驻 daemon
     # 管理的进程，状态先落盘、派发由既有调度链接力。
-    review_manager = SpecReviewManager(proot, sm, None, None, {}, logger)
+    review_manager = SpecReviewManager(proot, sm, None, None, {}, audit_logger)
     ok, msg = review_manager.re_review(spec_name)
     if ok:
         return {"ok": True, "found": True, "error": None}
@@ -1562,8 +1573,9 @@ def _adjudication_sm(project_root):
 def reset_verification(project_root, spec: str, note: str = "", signal_type: str = "") -> dict:
     """裁决动词：人工裁定验证链输入已失真，重置验证重跑（add-human-adjudication-choices 3.1）。
 
-    执行序列：前置校验（冻结/blocked 且属验证链信号）→ 删该 spec 的场景与
-    验证进度运行时文件（精确 spec 名拼路径，禁通配）→ 清 judge 重跑与验证
+    执行序列：前置校验（spec 形态白名单/冻结/blocked 且属验证链信号）→ 删该
+    spec 的场景与验证进度运行时文件（精确 spec 名拼路径，禁通配）并失效
+    spec 戳匹配的项目根共享 run-result → 清 judge 重跑与验证
     失败轮计数并剥冻结清 error（保持 blocked）→ 按
     ``resolve_env_blocked_reset_path`` 推进（分支已合并走 BLOCKED→TESTING
     门禁直通道重验，否则 BLOCKED→READY 回实现并写调度唤醒信号）→ 返回执行
@@ -1574,6 +1586,16 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
          "error": str|null}
     """
     proot = Path(project_root)
+    # 形态白名单前置（code-review item a1e09f8181cd）：spec 名直接拼
+    # verify-progress 删除路径，仅靠「须在 STATE.md 注册」一道门禁不足——
+    # 手改塞入含路径分隔符/「..」的名字可越出目录。复用 kebab-case 权威
+    # 正则白名单（与 kick 写入路径 validate_scheduling_kick_spec 同防线），
+    # 不合规形态直接拒绝；合规律名字不可能注册进 STATE.md，故按既有
+    # not-found 形状返回。
+    spec_shape_error = validate_scheduling_kick_spec(spec)
+    if spec_shape_error:
+        return {"ok": False, "found": False, "steps": [], "target_status": None,
+                "error": spec_shape_error}
     specs = parse_state(proot)
     if spec not in specs:
         return {"ok": False, "found": False, "steps": [], "target_status": None,
@@ -1640,6 +1662,34 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                 return {"ok": False, "found": True, "steps": steps,
                         "target_status": None,
                         "error": f"删除验证进度文件失败 {fname}"}
+
+    # 2b. 失效共享 run-result（code-review item 13304b99fea3）：读侧
+    # _load_run_result（artifacts.py）的第二候选是项目根共享
+    # .fenix/.fenix-run-result.json，spec 戳匹配即采纳——专属副本删除后，
+    # 上一轮残留的共享结果仍会经 parse_verdict/parse_bugs/
+    # parse_run_result_scenarios 兜底通道复活旧裁决/场景/bug 清单。仅当共享
+    # 文件显式携带本 spec 戳才删除；损坏/缺失/他 spec 残留一律不动（不误伤
+    # 其它 spec，待下一个任意 spec 的 run 覆盖或其自身 reset 处置）。
+    shared_run_result = proot / ".fenix" / ".fenix-run-result.json"
+    if shared_run_result.is_file():
+        try:
+            shared_data = json.loads(shared_run_result.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            shared_data = None
+        if isinstance(shared_data, dict) and shared_data.get("spec") == spec:
+            try:
+                shared_run_result.unlink()
+                deleted_any = True
+                steps.append(f"已删除 {shared_run_result.relative_to(proot)}")
+            except OSError as e:
+                # 同上：OSError 细节降级，经服务端日志留痕
+                logger.warning(
+                    "reset_verification 删除共享 run-result 失败（spec=%s）: %s: %s",
+                    spec, type(e).__name__, e,
+                )
+                return {"ok": False, "found": True, "steps": steps,
+                        "target_status": None,
+                        "error": "删除共享 run-result 文件失败"}
     if not deleted_any:
         steps.append("无场景/进度文件可删（verify-progress 目录不存在或已清）")
 
