@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from core import timelib
+
 _logger = logging.getLogger("fenixd.evolution")
 
 # ── 结构与常量 ──────────────────────────────────────────────────────
@@ -359,20 +361,16 @@ def advance_watermark(project_root, project: str, snapshot_at: str, run_id: str)
 def _parse_iso(value: str) -> Optional[datetime]:
     """ISO8601 时间解析为时区感知 UTC；失败返回 None（按未就绪/从未分析处理）。
 
-    naive（无时区）输入视为本地时间（self_review 写 ``datetime.now().isoformat()``
-    即本地 naive），统一 astimezone 到 UTC，保证与水位（UTC aware）可比。
-    结尾 ``Z`` 后缀与 code_review._iso_to_local_dt 同口径先归一 ``+00:00``
-    （Python 3.10 的 fromisoformat 不认 Z，code-review item 8f824069987d）。
+    解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-layer 3.5）：
+    naive（无时区）输入按本地时区解读（timelib 唯一策略；原「附本地 tzinfo
+    再转 UTC」内联实现删除，语义不变——self_review 写
+    ``datetime.now().isoformat()`` 即本地 naive），统一折算 UTC，保证与
+    水位（UTC aware）可比。结尾 ``Z`` 后缀同口径归一（Python 3.10 的
+    fromisoformat 不认 Z，code-review item 8f824069987d）。
     """
-    if not isinstance(value, str) or not value:
+    dt = timelib.parse_ts(value)
+    if dt is None:
         return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        dt = dt.replace(tzinfo=local_tz)
     return dt.astimezone(timezone.utc)
 
 

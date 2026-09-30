@@ -42,6 +42,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core import timelib
+
 # spawn 注入缝：run 内单测用 fake spawn 替身；生产用 _default_spawn（claude -p）。
 SpawnFn = Callable[[str, str], str]
 
@@ -594,8 +596,12 @@ violations_block = _violations_block
 
 
 def _now_utc() -> str:
-    """当前 UTC 时间（``YYYY-MM-DD HH:MM``）——盖戳行/表格时间列统一时间源。"""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    """当前 UTC 时间（``YYYY-MM-DD HH:MM``）——盖戳行/表格时间列统一时间源。
+
+    时间源改走 timelib.now_utc()（add-timelib-consolidation-layer 4.3）：
+    输出格式与取值口径逐字不变（aware UTC ``YYYY-MM-DD HH:MM``）。
+    """
+    return timelib.now_utc().strftime("%Y-%m-%d %H:%M")
 
 
 def build_prompt(

@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
+from core import timelib
 from core.knowledge_backfill import (
     append_todo_line,
     ledger_has_pending,
@@ -394,7 +395,7 @@ def build_distill_prompt(proot: Path, archived_names: list) -> str:
     archive_items = "\n".join(
         f"- {name}（目录：{proot / ARCHIVE_DIR / name}）" for name in archived_names
     )
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    now_utc = timelib.now_utc().strftime("%Y-%m-%d %H:%M")
     return (
         f"{tpl}\n\n---\n\n"
         f"## 本次任务（动态段）\n\n"

@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import SELF_REVIEW_DEFAULT_RUN_AT
+from core.timelib import parse_ts
 
 # 状态文件（.fenix/self_review_state.json，与 admin_alerts.json 同目录同风格）
 STATE_FILE = "self_review_state.json"
@@ -178,16 +179,18 @@ def local_today_str() -> str:
 
 
 def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
-    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。"""
-    if not iso_str:
+    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。
+
+    解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-layer 4.1：
+    与 code_review 的逐字重复副本收拢单源）；aware 值转本地后剥时区收尾
+    ——窗口边界为 naive ``datetime.now()``（本文件多处），MUST NOT 把
+    aware 值直接接入比较（aware/naive 比较抛 TypeError）；窗口比较气泡
+    语义不动（SPEC-B 承接迁移）。
+    """
+    dt = parse_ts(iso_str)
+    if dt is None:
         return None
-    try:
-        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone().replace(tzinfo=None)
-    return dt
+    return dt.astimezone().replace(tzinfo=None)
 
 
 def _in_window(

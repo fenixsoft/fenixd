@@ -7,6 +7,8 @@ import json
 import re
 from pathlib import Path
 
+from core import timelib
+
 _LIFECYCLE_ORDER = {
     "drafted": 0,
     "reviewing": 0.5,
@@ -565,19 +567,15 @@ def _collapse_timeline(events: list) -> list:
 def _parse_iso_ts(ts: str):
     """解析 ISO 时间戳（兼容 Z 后缀与 +00:00），失败返回 None。
 
-    fix-deferred-findings D2：无时区后缀（naive）结果补 `tzinfo=utc`——与项目
-    「全链时间戳 UTC」约定一致（有意行为变化：下游 astimezone()/timestamp()
-    不再按本地时区解释）。
+    add-timelib-consolidation-layer 3.2：解析收拢至 timelib.parse_ts，**推翻**
+    fix-deferred-findings D2 的「naive 补 tzinfo=utc」——naive 统一按本地
+    解读（timelib 唯一策略，design D1）。该域写手验读
+    （tests/test_timelib_readside.py）：admin_store/runner/verify_engine/
+    logger 写手全部 aware（``Z`` 或 ``+00:00``），naive 仅历史/外部人工数据
+    （实测多为本地 now()，含 code_review 剥时区链产出的 naive 本地）——
+    切换后该类时间戳的排序/展示时刻平移一个时区偏移（修正而非回归）。
     """
-    try:
-        from datetime import datetime as _dt, timezone as _utz
-
-        dt = _dt.fromisoformat(str(ts).replace("Z", "+00:00"))
-        if dt is not None and dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_utz.utc)
-        return dt
-    except Exception:
-        return None
+    return timelib.parse_ts(ts)
 
 
 def _timeline_sort_key(e: dict):

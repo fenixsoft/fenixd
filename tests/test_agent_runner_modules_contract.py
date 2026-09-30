@@ -12,6 +12,10 @@
    - 行为：result_gate 兄弟函数经实例访问（打桩生效）；
 7. 单独 import 三个新模块不触发循环 import；`latency._default_ts_parser` 与
    `runner.AgentRunner._parse_event_timestamp` 对同一样本逐字段一致。
+   （add-timelib-consolidation-layer 4.2 起例外：runner 侧 ISO 内核收拢
+   `timelib.parse_ts`，naive 无时区形态按**本地**解读——latency 侧留守卫
+   白名单待 SPEC-B 批②迁移后重新合流；契约样本集不含 naive 形态，等价
+   断言不受影响，naive 分叉由 tests/test_timelib_pm_parse.py 锁定。）
 """
 
 import ast

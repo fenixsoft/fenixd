@@ -37,6 +37,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from core.timelib import parse_ts
+
 _logger = logging.getLogger("fenixd.code_review")
 
 # ── 台账路径常量 ─────────────────────────────────────────────────────
@@ -664,16 +666,17 @@ def _read_json_file(path: Path) -> dict:
 
 
 def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
-    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。"""
-    if not iso_str:
+    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。
+
+    解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-layer 4.1：
+    原 code_review/self_review 逐字重复副本收拢单源）；aware 值转本地后剥
+    时区收尾——窗口边界为 naive ``datetime.now()``（compute_window 等），
+    MUST NOT 把 aware 值直接接入比较（aware/naive 比较抛 TypeError）。
+    """
+    dt = parse_ts(iso_str)
+    if dt is None:
         return None
-    try:
-        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone().replace(tzinfo=None)
-    return dt
+    return dt.astimezone().replace(tzinfo=None)
 
 
 def compute_window(project_root, now: Optional[datetime] = None) -> Tuple[datetime, str]:

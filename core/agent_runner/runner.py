@@ -77,6 +77,7 @@ from core.agent_runner.liveness import (
     _file_has_terminal_event,
 )
 from core.agent_runner.session import SessionTracker
+from core.timelib import parse_ts
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_4XX,
@@ -5550,23 +5551,21 @@ class AgentRunner:
         if raw is None:
             return None
         # bool 是 int 子类，显式排除以免 True/False 直通成 epoch 1.0/0.0 秒
-        # 假样本（与 latency._default_ts_parser 逐字段一致，契约测试样本
+        # 假样本（与 latency._default_ts_parser 数值分支一致，契约测试样本
         # 已含 bool 用例锁定该等价性）。
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             return float(raw)
         try:
-            text = str(raw)
-            # 仅剥离结尾一个 "Z"（ISO 8601 UTC 标记；replace 全量替换会误伤
-            # 串中其他 "Z" 字符）；naive（无时区）值显式按 UTC 取 epoch，
-            # 避免 .timestamp() 按进程本地时区解释、TZ 环境不同算出整体偏移。
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            dt = datetime.fromisoformat(text)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
+            # ISO 解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-
+            # layer 4.2；结尾 "Z" 归一在 parse_ts 内部处理）。naive（无时区）
+            # **按本地时区解读**（timelib 唯一 naive 策略，定调 2026-09-30）
+            # ——**推翻**本助手旧实现的显式 naive→UTC（fc528d7216ed 注释）：
+            # 事件写侧恒为 now(timezone.utc).isoformat()（aware），naive 仅
+            # 可能来自人工修补/外部工具且多为本地墙钟。
+            dt = parse_ts(str(raw))
         except (ValueError, TypeError):
             return None
+        return dt.timestamp() if dt is not None else None
 
 
     def _check_daily_limit(self):
