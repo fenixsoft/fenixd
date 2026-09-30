@@ -13,7 +13,7 @@ import os
 import tempfile
 import threading
 import time
-from datetime import datetime
+from core.timelib import parse_ts
 
 # dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同源；
 # pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）。三源同表：
@@ -113,24 +113,19 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
 def _parse_event_timestamp(ts):
     """事件时间戳 → epoch 秒；与 runner._parse_event_timestamp 同口径。
 
-    code-review item fc528d7216ed：接受 epoch 数值与 ISO 字符串；ISO 的 ``Z``
-    后缀归一为 ``+00:00``；naive（无时区）时间戳按 UTC 解释（框架全链 UTC，
-    旧实现按**本地时区**解释会带来时区漂移）。不可解析返回 None。
+    code-review item fc528d7216ed：接受 epoch 数值与 ISO 字符串；ISO 解析
+    内核收拢至 timelib.parse_ts（add-timelib-consolidation-layer 4.2）。
+    naive（无时区）时间戳**按本地时区解读**（timelib 唯一 naive 策略，定调
+    2026-09-30）——**推翻**本助手旧实现与 fc528d7216ed 注释的 naive→UTC
+    口径（「框架全链 UTC」字面化）：事件写侧 runner.py 恒为
+    ``now(timezone.utc).isoformat()``（aware），naive 仅可能来自人工修补/
+    外部工具且多为本地墙钟（4.2 核查留痕见 tests/test_timelib_pm_parse.py）。
+    不可解析返回 None。
     """
     if isinstance(ts, (int, float)) and not isinstance(ts, bool):
         return float(ts)
-    s = str(ts).strip()
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        from datetime import timezone as _tz
-
-        dt = dt.replace(tzinfo=_tz.utc)
-    return dt.timestamp()
+    dt = parse_ts(str(ts))
+    return dt.timestamp() if dt is not None else None
 
 
 class RecoveryWatch:
@@ -868,7 +863,8 @@ class RecoveryWatch:
             # Z 后缀与 epoch 数值容错（code-review item fc528d7216ed）：与
             # runner._parse_event_timestamp 同口径——旧实现 datetime.fromisoformat
             # 遇 'Z' 后缀抛 ValueError → 返回 None → 在途重试顺延静默失效
-            # （正是本机制要防的误升级形态）。naive 时间戳按 UTC 解释（框架全链 UTC）。
+            # （正是本机制要防的误升级形态）。naive 时间戳按本地时区解读
+            # （timelib 唯一 naive 策略，add-timelib-consolidation-layer 4.2）。
             event_ts = _parse_event_timestamp(ts)
         except (ValueError, TypeError):
             return None

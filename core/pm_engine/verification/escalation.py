@@ -33,6 +33,7 @@ from core.state_machine import (
 # 中途被杀会留截断文件，已积累的复核清单/止损留存静默丢失
 # （code-review ef9941a3a42b）。
 from core.pm_engine.verification.scenario_gate import atomic_write_text
+from core.timelib import parse_ts
 
 # fix-recovery-path-blockers D3：预算耗尽重验延时常量（30 分钟，
 # 与 schedule.poll_interval_minutes 缺省对齐）。定时器管准点、周期扫描管兜底
@@ -1668,13 +1669,16 @@ def _env_exempt_disposition_is_stale(
 
     def _parse_ts(value):
         try:
-            dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            # ISO 解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-
+            # layer 4.2）：naive 时间戳（人工修补/外部工具写入）**按本地时区
+            # 解读**（timelib 唯一 naive 策略，定调 2026-09-30）——**推翻**
+            # 旧注释「朴素→UTC 与 AdminStore 一致」：AdminStore 写侧
+            # ``now(timezone.utc).isoformat()`` 恒为 aware，实际信号/处置记录
+            # 不含 naive（4.2 核查留痕见 tests/test_timelib_pm_parse.py）。
+            # 不可解析返回 None（fail-closed 到按陈旧处置重验）。
+            return parse_ts(str(value or ""))
         except (ValueError, TypeError):
             return None
-        if dt.tzinfo is None:
-            # 朴素时间戳（人工修补/外部工具写入）按 UTC 归一（与 AdminStore 一致）
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
 
     try:
         latest_signal_dt = None
@@ -1687,8 +1691,9 @@ def _env_exempt_disposition_is_stale(
                 continue
             # 统一按 _parse_ts 解析后取最近（code-review 4ed9b3c4a946）：
             # 字典序比较在混存朴素时间戳与 +00:00 后缀 ISO 串时由长度决定
-            # 序关系，可能选错「最近一条」；_parse_ts 的朴素→UTC 归一使
-            # 两类时间戳可比。不可解析的记录跳过（不参与锚点选取）。
+            # 序关系，可能选错「最近一条」；_parse_ts 的 naive→本地归一
+            # （timelib 唯一策略，4.2）使两类时间戳可比。不可解析的记录跳过
+            # （不参与锚点选取）。
             rec_dt = _parse_ts(rec.get("created"))
             if rec_dt is not None and (
                 latest_signal_dt is None or rec_dt > latest_signal_dt
