@@ -33,6 +33,20 @@ import { ClaudeMessageList, runEventsToChatMessages } from '@/components/claude-
 import { SessionComposer } from '@/components/claude-composer';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
+// SSE 断流兜底轮询间隔（code-review item 2303508d27ff）：服务端连接数满时
+// /api/stream 返回 503（core/dashboard/routes/sse_routes.py
+// dashboard-connection-limit D6），浏览器 EventSource 对非 200 响应会永久
+// 停止重连，此后会话事件（消息回显、session_ended）永不到达。onerror 置
+// 失败态并降级为低频 REST 快照轮询，间隔对齐 list.tsx HEARTBEAT_MS 量级；
+// onopen（连接恢复）即清除失败态并停轮询。
+const STREAM_FALLBACK_MS = 30000;
+// watch 注册失败退避重试（code-review item a67da3eb2778）：注册因瞬态网络/
+// 服务端错误失败时只记日志的话，EventSource 连接未断就不会重连、hello 不会
+// 再来，本连接内不再有任何注册机会，会话事件静默丢失。有限次固定间隔重试，
+// 全部耗尽置「实时推送不可用」失败态并同样降级轮询（与 SSE 断流共用提示位）。
+const WATCH_RETRY_MAX = 3;
+const WATCH_RETRY_INTERVAL_MS = 5000;
+
 interface SessionPanelProps {
   project: string;
   /** 「会话接入」分面是否被选中：激活时拉取会话状态并订阅事件流，切离即释放订阅 */
@@ -112,6 +126,15 @@ const TRUNCATED_BAR_STYLE: CSSProperties = {
   right: 0,
   textAlign: 'center',
 };
+// 实时更新不可用提示条（code-review items 2303508d27ff / a67da3eb2778 共用
+// 提示位）：SSE 断流或 watch 注册重试耗尽时的降级提示，置于面板顶部、
+// 不遮消息区与输入区
+const STREAM_DOWN_BAR_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '4px 2px',
+};
 
 export default function SessionPanel({ project, active }: SessionPanelProps) {
   const { message } = App.useApp();
@@ -128,6 +151,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   const [started, setStarted] = useState(false); // 会话是否已启动（session: null 时空态）
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState('');
+  // 实时更新不可用失败态（code-review items 2303508d27ff / a67da3eb2778 共用
+  // 提示位）：SSE 断流（含 503 永久停止重连）或 watch 注册重试耗尽时置位，
+  // 面板顶部提示「实时更新不可用」；恢复路径（SSE onopen / watch 注册成功）
+  // 复位。effect 重建（切回分面/切项目）时无条件复位。
+  const [streamDown, setStreamDown] = useState(false);
   // 补全候选（add-session-composer 3.1/3.2）：端点封装已吞错降级为空数组
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
@@ -340,6 +368,89 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   useEffect(() => {
     if (!active || !project) return;
     let disposed = false;
+    setStreamDown(false);
+
+    // ── SSE 断流降级（code-review item 2303508d27ff）──
+    // onerror 只靠「原生自动重连」不够：非 200 响应（连接数满 503 等）会让
+    // 浏览器永久停止重连，本组件又无 list.tsx / overview 的心跳轮询兜底。
+    // 置失败态（界面提示「实时更新不可用」）+ 低频 REST 快照轮询（复用组件级
+    // 快照串行链，carried 合并不丢窗口内事件）；onopen 清失败态并停轮询。
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    const stopStreamFallback = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+    const pollSnapshot = () => {
+      // 静默重拉（不动 loading，避免每次轮询闪 Spin）；任务内部自吞错，
+      // 失败等下一轮，不置 error（error 分支会替换整块对话视图）
+      void enqueueSnapshotLoad(async () => {
+        try {
+          const data = await getSession(project);
+          if (disposed) return;
+          if (data.session) applySnapshotCarried(data);
+          else applySnapshot(data);
+        } catch {
+          // 兜底轮询失败：保持失败态，等下一轮
+        }
+      });
+    };
+    const startStreamFallback = () => {
+      // 幂等：断线重连风暴中 onerror 可连发，只起一个轮询
+      if (pollTimer) return;
+      pollSnapshot();
+      pollTimer = setInterval(pollSnapshot, STREAM_FALLBACK_MS);
+    };
+
+    // ── watch 注册失败退避重试（code-review item a67da3eb2778）──
+    // afterHello 注册失败只记日志的话，连接存活期内（hello 不再来）再无任何
+    // 注册机会。有限次固定间隔重试，cid 取注册时刻的 cidRef.current（断线
+    // 重连后是新连接的 cid）；成功即复位计数与失败态并 carried 重拉一次
+    // （兜住注册失败期间的窗口，同 afterHello 的 design D6 口径）；全部耗尽
+    // 置「实时推送不可用」失败态并降级轮询，与 SSE 断流共用提示位。
+    let watchRetryCount = 0;
+    let watchRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearWatchRetryTimer = () => {
+      if (watchRetryTimer) {
+        clearTimeout(watchRetryTimer);
+        watchRetryTimer = null;
+      }
+    };
+    const scheduleWatchRetry = () => {
+      if (disposed) return;
+      if (watchRetryCount >= WATCH_RETRY_MAX) {
+        setStreamDown(true);
+        startStreamFallback();
+        return;
+      }
+      watchRetryCount += 1;
+      clearWatchRetryTimer();
+      watchRetryTimer = setTimeout(() => {
+        watchRetryTimer = null;
+        if (disposed) return;
+        const liveCid = cidRef.current;
+        if (!liveCid) return;
+        void enqueueSnapshotLoad(async () => {
+          try {
+            if (disposed) return;
+            await registerSessionWatch(projectRef.current, liveCid);
+            // 置位口径与 afterHello 相同（await 返回后无条件置位）
+            watchRegisteredRef.current = true;
+            if (disposed) return;
+            watchRetryCount = 0;
+            setStreamDown(false);
+            const again = await getSession(projectRef.current);
+            if (disposed) return;
+            if (again.session) applySnapshotCarried(again);
+          } catch (e) {
+            if (disposed) return;
+            console.error('Failed to register session watch (retry):', e);
+            scheduleWatchRetry();
+          }
+        });
+      }, WATCH_RETRY_INTERVAL_MS);
+    };
 
     // 快照加载串行化（code-review item 112623f4c6ed）：挂载时 loadAll 与
     // hello 触发的 afterHello 重载并发执行、各自带全量快照调 syncEvents、无
@@ -383,12 +494,19 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           // 竞态窗口内注册必 404 → console.error，污染 no_console_error 断言
           // （与 onmessage / applySnapshot 的终态扫描同口径）。
           if (data.session && !snapshotEnded) {
+            // 新 hello（断线重连）到来即作废在途的重试安排并复位计数
+            // （a67da3eb2778）：本轮注册是最新尝试，旧定时器继续跑会重复注册
+            clearWatchRetryTimer();
+            watchRetryCount = 0;
             // 会话存在：用服务端 hello 分配的 cid 注册 watch
             try {
               await registerSessionWatch(project, cid);
               watchRegisteredRef.current = true;
             } catch (e) {
               console.error('Failed to register session watch:', e);
+              // 安排有限次退避重试（旧实现只记日志：EventSource 不断线
+              // hello 不再来，本连接内再无注册机会，会话事件静默丢失）
+              scheduleWatchRetry();
             }
             // 注册后重拉一次（兜住注册前的窗口，design D6）。
             // carried 合并而非整表替换（code-review item 1371d6ca978a）：本 GET
@@ -411,6 +529,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
 
     const es = new EventSource(STREAM_URL);
     eventSourceRef.current = es;
+    // 连接（重新）建立：清除断流失败态并停兜底轮询（2303508d27ff 的恢复路径）
+    es.onopen = () => {
+      if (disposed) return;
+      setStreamDown(false);
+      stopStreamFallback();
+    };
     es.onmessage = (ev: MessageEvent) => {
       if (disposed) return;
       let msg: { type?: string; cid?: string; session_id?: string; events?: SessionEvent[] } = {};
@@ -442,12 +566,19 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       }
     };
     es.onerror = () => {
-      // EventSource 原生自动重连
+      // 原生自动重连只覆盖瞬态断线；非 200 响应（连接数满 503 等）会让浏览器
+      // 永久停止重连——置失败态并降级低频快照轮询兜底（2303508d27ff），
+      // 连接恢复由 onopen 清除失败态并停轮询
+      if (disposed) return;
+      setStreamDown(true);
+      startStreamFallback();
     };
 
     return () => {
       disposed = true;
       reloadRef.current = null;
+      stopStreamFallback();
+      clearWatchRetryTimer();
       es.close();
       eventSourceRef.current = null;
     };
@@ -720,5 +851,18 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     );
   };
 
-  return <div style={isMobile ? PANEL_LAYOUT_STYLE_MOBILE : PANEL_LAYOUT_STYLE}>{renderBody()}</div>;
+  return (
+    <div style={isMobile ? PANEL_LAYOUT_STYLE_MOBILE : PANEL_LAYOUT_STYLE}>
+      {/* 实时更新不可用提示条（items 2303508d27ff / a67da3eb2778 共用提示位）：
+          SSE 断流（503 等永久停止重连）或 watch 注册重试耗尽时可见降级提示 */}
+      {streamDown ? (
+        <div style={STREAM_DOWN_BAR_STYLE}>
+          <Typography.Text type="warning">
+            实时更新不可用：会话消息可能延迟，已降级为低频刷新
+          </Typography.Text>
+        </div>
+      ) : null}
+      {renderBody()}
+    </div>
+  );
 }
