@@ -176,6 +176,12 @@ class TokenAccountant:
             else:
                 if budget != budget or budget in (float("inf"), float("-inf")):
                     budget_ok = False
+                elif budget < 0:
+                    # code-review item d988dcfea775：负数（如 -5，多半是漏敲符号
+                    # 的配置笔误）此前穿透校验后在下方 budget <= 0 处与合法关闭
+                    # 值 0 一样静默 return，无任何留痕。比照同块 bool/NaN/inf 口径
+                    # 统一记 warning 并回退缺省 50；关闭语义只保留 0 一个文档化入口。
+                    budget_ok = False
         if not budget_ok:
             self._pm.logger.warning(
                 "agent_runner",
@@ -183,7 +189,7 @@ class TokenAccountant:
             )
             budget = 50.0
         if not budget or budget <= 0:
-            return  # 0 = 关闭
+            return  # 0 = 唯一合法的关闭入口（负数已在上方校验块回退缺省 50）
         budget_tokens = budget * 1_000_000
         if budget_tokens <= 0:
             return
@@ -224,18 +230,27 @@ class TokenAccountant:
             warn_flag = bool(entry.get("_token_warn_80", False))
             alert_flag = bool(entry.get("_token_alert_100", False))
 
-            if ratio >= 1.0 and not alert_flag:
-                fire_100 = True
-                try:
-                    # code-review item c41873e0bfa2：从 80% 以下一次性越到 100% 以上
-                    # 时同步置位低档标志，否则下次累计 ratio 仍 >= 1.0 时会走下方
-                    # elif 补发「预算 80% 提醒告警」——先收 100% 再收 80%，时间线
-                    # 倒置。tokens_in 单调递增，两标志同写即可彻底封死补发路径。
-                    self._pm.state_machine.update_spec(
-                        spec_name, {"_token_alert_100": True, "_token_warn_80": True}
-                    )
-                except Exception:
-                    pass
+            if ratio >= 1.0:
+                # code-review item 77b028d83c3b：无条件接管 ratio>=1.0，归一遗留
+                # 不一致态——c41873e0bfa2 修复只封死「首次越过 100%」时的补发路径，
+                # 未归一已存在的不一致 STATE（条目为修复部署前写入：旧 100% 分支
+                # 只置 _token_alert_100，或 _token_warn_80 被人工清除）：旧首分支
+                # 因 alert_flag=True 被跳过，ratio>=0.8 的 elif 便会向已超 100% 的
+                # spec 补发「预算 80% 提醒告警」，先 100% 后 80% 的倒置时间线仍会
+                # 出现一次。现在：alert 未置位才发 100% 告警；无论是否告警，只要
+                # warn_flag 未置位就顺带补写 _token_warn_80=True（不发 80% 告警），
+                # 把遗留不一致态一次性归一。
+                fire_100 = not alert_flag
+                if not alert_flag or not warn_flag:
+                    try:
+                        # code-review item c41873e0bfa2：从 80% 以下一次性越到 100%
+                        # 以上时同步置位低档标志——tokens_in 单调递增，两标志同写
+                        # 即可彻底封死补发路径。
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_token_alert_100": True, "_token_warn_80": True}
+                        )
+                    except Exception:
+                        pass
             elif ratio >= 0.8 and not warn_flag:
                 fire_80 = True
                 try:
