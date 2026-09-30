@@ -27,7 +27,10 @@ _logger = logging.getLogger("fenixd.agent_runner.prompt_builder")
 # 未解析占位符扫描（add-code-review-auto-fix）：填充后残留的 {snake_case} 记
 # warning——模板笔误/重命名占位符、条件键未注入（如非 verifier/fast-track 的
 # progress_path）原样留在派发提示词属 fail-open，静默丢失预期注入。
-_PLACEHOLDER_RE = re.compile(r"\{[a-z_]+\}")
+# 字符类含数字（code-review item 791453120270）：{step_1}/{v2_path} 类含数字
+# 占位符的笔误/重命名残留同样要触发告警；首字符仍限字母/下划线，纯数字
+# 花括号字面量（如 {1}）不落入扫描。
+_PLACEHOLDER_RE = re.compile(r"\{[a-z_][a-z0-9_]*\}")
 
 # 全部 agent 类型 → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
@@ -254,17 +257,28 @@ class PromptBuilder:
         # {scenarios_path} 值按两类型产物文件名恒定——judge/plan 共用的
         # .fenix-run-result.json 与 test_scenarios.json 同此路径；fast-track 的
         # {result_path} 例外（下方分支改填 worktree 根——收工硬门唯一落点）。
+        # 两键按 agent_type 白名单装配（code-review item e6a50ee450b3）：仅现状
+        # 真正引用它们的模板拿到值（agents/*.md 逐一核对）——{scenarios_path}：
+        # planner-plan/planner-judge/fast-track/verifier；{result_path}：
+        # planner-plan/planner-judge（fast-track/spec-review 由下方分支按车道
+        # 覆写）。其余类型不预填——未来模板误引用该占位符时键缺失，自然落入
+        # _fill_and_scan_placeholders 残留扫描告警，不再静默填成主树 planner
+        # 产物路径误导 agent。
         values = {
             "{spec_name}": spec_name,
             "{spec_dir}": f"spec/changes/{spec_name}",
-            "{scenarios_path}": str(planner_result_path(root, spec_name, "planner-plan")),
-            "{result_path}": str(planner_result_path(root, spec_name, "planner-judge")),
             "{report_path}": str(vp_dir / "report.json"),
             # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
             # 与 core/verify_engine/judge_files.py 的 JUDGE_ATTRIBUTION_FILENAME
             # 同源（注入侧路径 = 读侧路径，防双实现漂移）。
             "{judge_attribution_path}": str(vp_dir / "judge_attribution.json"),
         }
+        if agent_type in ("planner-plan", "planner-judge", "fast-track", "verifier"):
+            values["{scenarios_path}"] = str(
+                planner_result_path(root, spec_name, "planner-plan"))
+        if agent_type in ("planner-plan", "planner-judge"):
+            values["{result_path}"] = str(
+                planner_result_path(root, spec_name, "planner-judge"))
         if agent_type == "verifier":
             values["{progress_path}"] = str(
                 root / ".fenix" / "verify-progress" / f"{spec_name}.json"
@@ -389,9 +403,16 @@ class PromptBuilder:
             # 继承终态类型/归因/结论/进度，无诊断时零注入。
             prompt += self._impl_diagnosis_section(spec_name)
             prompt += self._build_legacy_section(spec_name)
-            # 中断恢复保留续做注记（interrupt-recovery-preserve 2.3）：本轮 dispatch
-            # 在保留分支的 worktree 内 resume 续做时注入继承说明。
-            prompt += self._recovery_resume_note(spec_name)
+            # 恢复来源择一注入（code-review item 82d4de9525cd，同 fast-track 分支
+            # 的 fix-fasttrack-recovery-resume D6 口径）：仅带恢复来源标记
+            # （recovery=True）的复用记录注入「中断恢复续做」注记；transient 终态
+            # keep → 重派认领等无恢复标记的复用轮（_take_reusable_worktree 通路
+            # 覆盖 implementer）退回 Worktree 继承注记——不得向普通重派/复用轮
+            # 注入「曾因 daemon 重启被中断」的错误归因文案，也不得让继承说明丢失。
+            prompt += (
+                self._recovery_resume_note(spec_name, require_recovery=True)
+                or self._fast_track_reuse_note(spec_name)
+            )
             # 任务进度契约段（fix-implementer-task-progress D1）：full/fast-track
             # 两个 implementer 分支共用同一文本，保证 harness TaskCreate/TaskUpdate
             # 行为与 tasks.md 编号对齐（进度可见性断链的根治点）。
@@ -493,7 +514,10 @@ class PromptBuilder:
             prompt += self._result_gate_section(spec_name, "spec-review")
             # 重试上下文：上轮失败死因注入（同 implementer/fast-track 的
             # _prev_error_section）。缺本段时评审重试是盲重试，不知道为什么被重派。
-            prompt += self._prev_error_section(spec_name)
+            # lane="review"（code-review item 4525a1155d2c）：被重派的是上一轮
+            # 评审 run 而非实现 run，归因措辞须用评审车道；注入结构不变
+            # （{prev_review_rejection} 剥前缀版与本段前缀原文并存维持现状）。
+            prompt += self._prev_error_section(spec_name, lane="review")
         # administrator 无条件动态段：困境信号经占位符注入
         if agent_type == "administrator":
             # fix-frozen-scenario-orphan-reservoir D6：admin 处置场景文件时的
@@ -1117,11 +1141,16 @@ class PromptBuilder:
             f"- progress: branch={branch}, tasks_checked={tasks}\n"
         )
 
-    def _prev_error_section(self, spec_name: str) -> str:
+    def _prev_error_section(self, spec_name: str, lane: str = "implementation") -> str:
         """上轮 error 上下文注入段（add-implementer-deliverable-gate D4）。
 
         implementer 与 fast-track 共用：打回重派 run 携带上次失败原因，agent
         无需重新考古即知补什么。无 error 时返回空串（prompt 与现状逐字节一致）。
+
+        lane="review"（code-review item 4525a1155d2c，spec-review 重评注入）：
+        归因措辞改用评审车道——被重派的是上一轮评审 run 而非实现 run，
+        implementation attempt 措辞对评审车道失实；缺省 implementation 与
+        既有文案逐字节一致。
         """
         prev_error = ""
         try:
@@ -1131,9 +1160,17 @@ class PromptBuilder:
             prev_error = ""
         if not prev_error:
             return ""
+        if lane == "review":
+            lead = (
+                "The previous review attempt was rejected and this is a re-review. "
+            )
+        else:
+            lead = (
+                "The previous implementation attempt failed and was re-dispatched. "
+            )
         return (
             f"\n\n## Previous run error (context for this attempt)\n"
-            f"The previous implementation attempt failed and was re-dispatched. "
+            f"{lead}"
             f"Use this to focus your work — do NOT repeat the same gap:\n"
             f"\n{prev_error}\n"
         )
@@ -1745,9 +1782,9 @@ class PromptBuilder:
         Args:
             require_recovery: 为真时，除 ``get_reuse_record`` 非空外还 MUST 要求
                 该记录携带恢复来源标记（``rec.get("recovery")``），否则返回空串。
-                缺省 False 时行为与文案逐字节不变——implementer 分支既有调用
-                （不传该形参）与 fast-track 分支（``require_recovery=True`` 择一
-                注入，见 3.1）共用同一函数。
+                implementer 分支（code-review item 82d4de9525cd 起同 fast-track
+                口径）与 fast-track 分支（fix-fasttrack-recovery-resume 3.1）均以
+                ``require_recovery=True`` 择一注入；缺省 False 仅为兼容保留。
 
         判定源说明（fix-fasttrack-recovery-resume 3.4）：
         ① 本函数与 ``_fast_track_reuse_note`` 共享同一 ``_active_reuse`` 判定源
