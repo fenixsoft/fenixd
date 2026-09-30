@@ -45,7 +45,9 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     依赖（deps_mode）并执行契约 prepare（构建产物）。
 
     Returns:
-        (wt_path, head, err)：wt_path=None 时 err 为人类可读原因。
+        (wt_path, head, err, created)：wt_path=None 时 err 为人类可读原因；
+        created 标记本轮是否新建 worktree（False=复用旧条目同一目录），
+        供调用方失败早退分支清理孤儿目录（code-review e3d99b7b7862）。
         server 生命周期（启动/复用/停止）由调用方按 mode 管理。
     """
     serve_root = Path(pipeline._context.project_root) / ".fenix" / "verify-serving"
@@ -65,12 +67,12 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        return None, None, f"获取验证 worktree HEAD 失败: {e}"
+        return None, None, f"获取验证 worktree HEAD 失败: {e}", False
     if head_res.returncode != 0:
         return None, None, (
             "获取验证 worktree HEAD 失败: "
             f"{(head_res.stderr or head_res.stdout).strip()[-200:]}"
-        )
+        ), False
     head = head_res.stdout.strip()
     old = cache.get(spec_name)
     if (
@@ -79,7 +81,7 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         and old.get("mode") == mode
         and Path(old["wt_path"]).is_dir()
     ):
-        return old["wt_path"], head, None
+        return old["wt_path"], head, None, False
     if old is not None:
         # verify-process-lifecycle D6：command 型旧实例 HEAD 变更前先移除登记
         old_server = old.get("server")
@@ -129,9 +131,11 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
             timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        return None, None, f"验证 worktree 创建失败: {e}"
+        return None, None, f"验证 worktree 创建失败: {e}", False
     if r.returncode != 0:
-        return None, None, ("验证 worktree 创建失败: " f"{(r.stderr or r.stdout).strip()[-200:]}")
+        return None, None, (
+            "验证 worktree 创建失败: " f"{(r.stderr or r.stdout).strip()[-200:]}"
+        ), False
     # code-review 7470b5d89795：provision 抛异常（网络/npm 故障）时清理刚建的
     # worktree 再走既有失败路径，避免 .fenix/verify-serving/ 累积孤儿目录
     try:
@@ -144,12 +148,12 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         )
     except Exception as e:
         pipeline._remove_serving_worktree(wt)
-        return None, None, f"验证 worktree 依赖供给失败: {e}"
+        return None, None, f"验证 worktree 依赖供给失败: {e}", False
     err = _facade.run_prepare_steps(contract, wt)
     if err:
         pipeline._remove_serving_worktree(wt)
-        return None, None, f"验证契约 prepare 失败（worktree 内）: {err}"
-    return str(wt), head, None
+        return None, None, f"验证契约 prepare 失败（worktree 内）: {err}", False
+    return str(wt), head, None, True
 
 
 def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tuple:
@@ -184,7 +188,9 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     .fenix/verify-serving/，gitignore 排除）；HEAD 未变时复用已启动实例
     与产物（replan 循环不重复构建）。
     """
-    wt, head, err = pipeline._ensure_serving_worktree(spec_name, contract, mode="static")
+    wt, head, err, _created = pipeline._ensure_serving_worktree(
+        spec_name, contract, mode="static"
+    )
     if wt is None:
         return False, False, err
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
@@ -228,8 +234,14 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     注入——实例永不与既有实例（主树常驻实例等）争抢端口；未消费注入的
     存量契约由 CommandVerifyServer 进程归属/邻近扫描兜底发现。HEAD 未变
     时复用已启动实例。
+
+    与 ``_serve_command_in_main`` 约 90 行同构（legacy 参数解析/入口预检/
+    Popen spawn/boot.log/就绪收尾近乎逐行重复），结构性差异仅 cwd 与
+    worktree 生命周期——两侧改动须同步另一侧（code-review dbe41e3fd97b）。
     """
-    wt, head, err = pipeline._ensure_serving_worktree(spec_name, contract, mode="command")
+    wt, head, err, created = pipeline._ensure_serving_worktree(
+        spec_name, contract, mode="command"
+    )
     if wt is None:
         return False, False, err
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
@@ -249,9 +261,18 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         )
     port = find_free_port()
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
-    # 启动前监听快照（跳过既有实例端口）；cmd 引用 {port} 后两者皆不需要
-    m = re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
-    legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
+    # 启动前监听快照（跳过既有实例端口）。cmd 引用 {port} 后两者皆不需要
+    # （code-review 43f462839c68：以 {port} 引用为门跳过 legacy 解析与 pre
+    # 快照——注入成功的正常路径不消费这组参数，不再白付 51 端口并发探测；
+    # 实例无视注入端口自绑时仍有进程归属发现兜底），仅存量无 {port} 命令
+    # 才做邻近扫描准备。
+    orig_cmd = contract.serve.cmd or ""
+    m = re.search(r"(?:--port|-p)\s+(\d+)", orig_cmd)
+    legacy_hint = (
+        None
+        if "{port}" in orig_cmd
+        else contract.serve.port or (int(m.group(1)) if m else None)
+    )
     pre = (
         _probe_ports_responding(range(legacy_hint, legacy_hint + 51))
         if legacy_hint
@@ -259,7 +280,6 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     )
     # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
     # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
-    orig_cmd = contract.serve.cmd or ""
     preflight_err = entry_preflight_error(orig_cmd, Path(wt))
     if preflight_err:
         pipeline._write_verify_contract_missing(
@@ -271,6 +291,11 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
                 "按错误信息中「候选」提示修正，或确认构建产物已生成后重验"
             ),
         )
+        # code-review e3d99b7b7862：本轮新建的 serving worktree 随预检失败
+        # 清理（对齐 provision/prepare 失败即清理纪律，code-review
+        # 7470b5d89795）；复用态不动——旧缓存条目仍引用同一目录
+        if created:
+            pipeline._remove_serving_worktree(wt)
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
@@ -302,6 +327,11 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 启动即死：boot.log 尾部附入失败描述（Cannot find module 等）
         boot_tail = pipeline._read_boot_log_tail(spec_name, boot_log)
         srv.stop()
+        # code-review e3d99b7b7862：本轮新建的 serving worktree 随启动即死
+        # 清理（复用态不动）；boot.log 句柄已由 srv.stop() 关闭，仅目录本体
+        # 滞留——不再等 serving_reclaim 600s 周期兜底回收
+        if created:
+            pipeline._remove_serving_worktree(wt)
         return (
             False,
             False,
@@ -353,13 +383,26 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     覆写条目前先经 ``_evict_spec_serving`` 清退上一轮旧条目（unregister →
     stop → worktree 清理，对作用域翻转遗留的 worktree 形态条目同样兼容），
     同 spec 连轮不再滞留旧实例与其 servers.json 登记。
+
+    与 ``_serve_command_in_worktree`` 约 90 行同构——两侧改动须同步另一侧
+    （清退口径已分叉：本侧走 ``_evict_spec_serving`` 单一样板，worktree 侧
+    手工 unregister + stop；code-review dbe41e3fd97b）。
     """
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
     port = find_free_port()
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
-    # 启动前监听快照（跳过既有实例端口）；cmd 引用 {port} 后两者皆不需要
-    m = re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
-    legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
+    # 启动前监听快照（跳过既有实例端口）。cmd 引用 {port} 后两者皆不需要
+    # （code-review 43f462839c68：以 {port} 引用为门跳过 legacy 解析与 pre
+    # 快照——注入成功的正常路径不消费这组参数，不再白付 51 端口并发探测；
+    # 实例无视注入端口自绑时仍有进程归属发现兜底），仅存量无 {port} 命令
+    # 才做邻近扫描准备。
+    orig_cmd = contract.serve.cmd or ""
+    m = re.search(r"(?:--port|-p)\s+(\d+)", orig_cmd)
+    legacy_hint = (
+        None
+        if "{port}" in orig_cmd
+        else contract.serve.port or (int(m.group(1)) if m else None)
+    )
     pre = (
         _probe_ports_responding(range(legacy_hint, legacy_hint + 51))
         if legacy_hint
@@ -367,7 +410,6 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     )
     # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
     # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
-    orig_cmd = contract.serve.cmd or ""
     preflight_err = entry_preflight_error(orig_cmd, pipeline._context.project_root)
     if preflight_err:
         pipeline._write_verify_contract_missing(
@@ -1117,15 +1159,27 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # 持久落盘且无回滚，复核失败时残留的「外来端口→base_port」改写
             # 会让场景文件从此指向不被服务的端口、影响后续轮次。
             if all(_probe(u, http_error_ok=True) for u in urls_new):
-                for p in sorted(foreign_ports, key=int):
+                # code-review c0637b767434：改写成败向上反馈——持久化失败时
+                # 内存探针虽通过，场景文件仍指向旧端口（下一轮复现同一
+                # 「不可达→改写」循环），成功文案降级为可判别的警告性 note
+                # （reachable 判定不变）
+                persisted = [
                     pipeline._rewrite_scenario_port(scenarios_path, int(p), base_port)
+                    for p in sorted(foreign_ports, key=int)
+                ]
                 boot_log.close()
+                mismatch = (
+                    f"场景声明端口 {sorted(foreign_ports, key=int)} "
+                    f"与框架分配端口 {base_port} 不符"
+                )
+                if all(persisted):
+                    return (True, False, f"{mismatch}，已改写场景端口并确认可达")
                 return (
                     True,
                     False,
                     (
-                        f"场景声明端口 {sorted(foreign_ports, key=int)} 与框架分配端口 "
-                        f"{base_port} 不符，已改写场景端口并确认可达"
+                        f"{mismatch}，内存探针通过但场景端口持久化失败"
+                        "——场景文件仍指向旧端口，下一轮将复现同一改写循环"
                     ),
                 )
 
@@ -1149,9 +1203,23 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
             ]
             if all(_probe(u, http_error_ok=True) for u in urls_new):
-                pipeline._rewrite_scenario_port(scenarios_path, base_port, port)
+                # code-review c0637b767434：持久化失败时成功文案降级为可判别
+                # 的警告性 note（reachable 判定不变）
+                persisted = pipeline._rewrite_scenario_port(
+                    scenarios_path, base_port, port
+                )
                 boot_log.close()
-                return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
+                note = f"已自动启动应用服务（端口冲突，改用 {port}）"
+                if persisted:
+                    return True, False, note
+                return (
+                    True,
+                    False,
+                    (
+                        f"{note}——但场景端口持久化失败，"
+                        f"场景文件仍指向 {base_port}，下一轮将复现同一改写循环"
+                    ),
+                )
 
     # 探活最终失败：boot.log 尾部（≤2KB）附入错误串，启动即死错误
     # （Cannot find module 等）对 admin 直接可读（design D3）
@@ -1233,6 +1301,13 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
     与 origin 改写不同，端口替换 MUST NOT 要求 ``http(s)://`` 前缀：项目可能
     显式声明 ``http://localhost:3000`` 等地址，端口形态才是本函数的判定依据；
     正则自身以 ``:port`` + 边界锚定，裸域名与非 URL 文本不会被误改。
+
+    Returns:
+        bool：改写是否落盘——True 含「无待改写目标/非列表场景文件（无需
+        落盘）」与原子写成功；JSON 解析/原子写异常为 False（WARNING 已记，
+        异常不向上抛）。调用方据此把成功文案降级为可判别的警告性 note
+        （code-review c0637b767434：改写未落盘时内存探针虽通过，场景文件
+        仍指向旧端口，下一轮会复现同一「不可达→改写」循环）。
     """
     from core.verify_contract import _rewrite_scenario_target_values
     # code-review 22e59d9a5ffb：原子写复用 scenario_gate 助手（失败时清理
@@ -1247,12 +1322,12 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
     try:
         raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
         if not isinstance(raw, list):
-            return
+            return True
         rewritten, n = _rewrite_scenario_target_values(
             raw, requires_http_scheme=False, rewrite_value=_rewrite_value
         )
         if not n:
-            return
+            return True
         # 原子写（tmp+replace 收敛到 scenario_gate._atomic_write_text）：裸写
         # 中途 SIGKILL 会留下截断 JSON，下一轮加载误判 corrupt 触发人工裁决停摆；
         # 失败时助手清理残留 .tmp 再上抛，验证进度目录不再留孤儿 .tmp
@@ -1260,8 +1335,10 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
             scenarios_path, json.dumps(rewritten, ensure_ascii=False, indent=2)
         )
         pipeline._context.logger.info("pm_engine", f"已重写验证场景端口 {old_port} → {new_port}")
+        return True
     except Exception as e:
         pipeline._context.logger.warning("pm_engine", f"重写验证场景端口失败: {e}")
+        return False
 
 
 def _serving_port_for_spec(pipeline, spec_name: str):
