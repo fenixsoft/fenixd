@@ -61,7 +61,15 @@ class H4RunRoutesMixin:
                 # spec_routes _api_admin_invoke 等可选 body 端点的使用惯例对齐）
                 return
             if isinstance(body, dict):
-                reason = (body.get("reason") or "").strip() or None
+                # 类型防线（code-review item bc36b94afa48，对齐 _api_session_send
+                # b82e10346495 先例）：数字/布尔/dict/list 等非字符串真值直接
+                # 400 参数错误，而非 .strip() 抛 AttributeError 被 _handle_inner
+                # 兜成 500；缺省（键不存在/None）仍按未提供处理。
+                body_reason = body.get("reason")
+                if body_reason is not None and not isinstance(body_reason, str):
+                    self._error(400, "reason must be a string")
+                    return
+                reason = (body_reason or "").strip() or None
         # 归一为 strip 后字符串；None/空白一律落空串（下游按空串视为未提供）
         reason = (reason or "").strip()
 

@@ -8,7 +8,7 @@
 - POST /api/code-review/fix-run    （query project）→ 写手动「立即自动修复」信号（add-code-fix-manual-trigger）
 - GET  /api/code-review/fix-run-result（query project）→ 只读手动触发判定结果（add-code-fix-manual-trigger）
 - GET  /api/code-review/run-result （query project）→ 只读审查触发受理判定结果（add-code-review-trigger-ack）
-- POST /api/code-review/generate-spec（body {project, item_ids, start_after?}）→ 生成修复 SPEC
+- POST /api/code-review/generate-spec（query ?project=<name> + body {item_ids, start_after?}）→ 生成修复 SPEC
 - POST /api/code-review/items/status（body {project, item_id, status}）→ 人工状态流转
 
 端点 handler 走既有 mixin 形态（self._json / self._error / _read_json_body）。
@@ -27,6 +27,10 @@ from uuid import uuid4
 
 from core import timelib
 from core.dashboard import data as dashboard_data
+# 消费方守卫提升到共享模块（item fcadb893a1c8：regression run/fix 两端点
+# 此前又各内联一份同构守卫）；本模块 re-import 保持
+# ``code_review_routes._guard_hosting_state`` 属性路径可解析。
+from core.dashboard.routes.hosting_guard import _guard_hosting_state
 
 logger = logging.getLogger("fenixd.dashboard.code_review_routes")
 
@@ -212,43 +216,6 @@ def _write_signal_exclusive(req_path, payload):
     return str(req_path)
 
 
-def _guard_hosting_state(proot, signal_label):
-    """消费方守卫（hosting_state 判据，先例 request_spec_approve_push），
-    run / fix-run 两端点共用（item 13d53dcd5440 去重——此前两端点各复制一份
-    同构守卫，仅「审查信号/修复信号」一词之差，守卫规则变化（新增 hosting 态、
-    改兜底判据、改错误码）需同步改两处，易漂移；去重手法对齐同文件
-    _write_signal_exclusive 先例）。
-
-    - 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）；
-    - unmanaged（daemon 未受 supervisor 托管）→ 409 明确拒绝——信号无人消费
-      会永久滞留并在 daemon 下次启动时被消费成一次用户并未请求的触发；
-    - 非 managed（stopped）→ 400「daemon 未运行」。
-
-    ``signal_label`` 仅用于 409 文案（「审查信号」/「修复信号」）。返回：
-    放行 → None；拒绝 → (http_status, message) 元组，409/400 的错误码与
-    文案由调用方映射，本函数不发响应。
-    """
-    from core.fenix_session import hosting_state as _hosting_state
-
-    try:
-        state = _hosting_state(str(proot))
-    except Exception as exc:
-        # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
-        state = "stopped"
-        logger.warning(
-            "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
-        )
-    if state == "unmanaged":
-        return (
-            409,
-            f"本项目 daemon 未受 supervisor 托管，{signal_label}不会被消费。"
-            f"经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
-        )
-    if state != "managed":
-        return 400, "daemon 未运行，请先启动 daemon"
-    return None
-
-
 class H11CodeReviewRoutesMixin:
     """H11 code-review（design D1 表 C H11）。"""
 
@@ -421,9 +388,8 @@ class H11CodeReviewRoutesMixin:
         # 整秒值——run 结束后结果文件仍停留 started，仅凭新鲜度会把窗口内合法
         # 重触发误判为「排队中」假 409；item 5dbef178f679：同粒度整秒比较，
         # 受理与 run 启动同秒即视为已启动）→ 409 稳定错误码，消灭窗口内第二次
-        # POST 假受理
-        # （今日会被 daemon 单飞静默丢弃）。守卫读结果与 run 实际启动之间存在
-        # 竞态 → fail-open 到 daemon 单飞的显式拒绝并落结果（有反馈不留静默）。
+        # POST 假受理。守卫读结果与 run 实际启动之间存在竞态 → fail-open 到
+        # daemon 单飞的显式拒绝并落结果（有反馈不留静默）。
         ack_result = dashboard_data.read_code_review_request_result(str(proot))
         if (str(ack_result.get("status") or "") == "started"
                 and not progress.get("running")):
@@ -595,7 +561,7 @@ class H11CodeReviewRoutesMixin:
         self._json(dashboard_data.read_code_review_request_result(str(project["path"])))
 
     def _api_code_review_generate_spec(self, query):
-        """POST /api/code-review/generate-spec — body {project, item_ids: [...]}
+        """POST /api/code-review/generate-spec?project=<name> — body {item_ids: [...]}
 
         body 可选 ``start_after``（三态，与 `set_spec_start_after` 同源口径）：
         - 缺省 / null / 空串 → 立即执行

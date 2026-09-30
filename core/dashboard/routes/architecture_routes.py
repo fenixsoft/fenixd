@@ -248,8 +248,13 @@ def _stamp_evidence_head(proot: Path) -> bool:
             lines = lines[1:]
     sha = _repo_head(proot) or "unknown"
     stamped = f"{EVIDENCE_HEAD_PREFIX} {sha} | {_utcnow_iso()}\n\n" + "".join(lines)
+    # code-review item 25f170558fdc：对齐 _write_status 的 tmp+os.replace
+    # 原子写纪律，避免写中途崩溃留下半截 evidence.md（单写者原则下固定
+    # .tmp 后缀即可）。
+    tmp = path.parent / (path.name + ".tmp")
     try:
-        path.write_text(stamped, encoding="utf-8")
+        tmp.write_text(stamped, encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         return False
     return True
@@ -367,7 +372,16 @@ def _judge_artifact(
     """
     if returncode != 0:
         return "failed", f"claude 进程非零退出（exit={returncode}），产物不可信", None
-    if not diagram_path.is_file() or diagram_path.stat().st_size == 0:
+    # code-review item dbc757042726：is_file 与 stat 之间存在 TOCTOU，产物
+    # 并发消失时 stat 抛 OSError，须与缺失分支同归同一文案，避免穿到
+    # _run_generation 兜底误报「内部错误」。
+    try:
+        artifact_missing = (
+            not diagram_path.is_file() or diagram_path.stat().st_size == 0
+        )
+    except OSError:
+        artifact_missing = True
+    if artifact_missing:
         return (
             "failed",
             f"生成产物缺失或为空（{ARCHITECTURE_DIR}/{DIAGRAM_FILENAME}）",

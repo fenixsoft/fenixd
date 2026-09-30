@@ -191,8 +191,10 @@ class H6AlertRoutesMixin:
         page, page_size = self._parse_page_params(
             query.get("page", [None])[0],
             query.get("page_size", [None])[0],
-            default_size=50,
-            max_size=200,
+            # 与归档路径共用同一常量单源承载「缺省 50、上限 200」契约
+            #（code-review item 05811a19064d，防两处字面量静默分叉）
+            default_size=_ARCHIVE_DEFAULT_PAGE_SIZE,
+            max_size=_ARCHIVE_MAX_PAGE_SIZE,
         )
         if project_name:
             project = self.server.project_by_name(project_name)

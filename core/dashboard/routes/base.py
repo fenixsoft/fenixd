@@ -132,6 +132,25 @@ def _sig_spec_detail(s, q, m):
     return _sig.spec_detail_signature(proot, spec)
 
 
+def _aggregate_alerts_sig(s, sig_fn):
+    """跨项目告警类聚合签名（code-review item a71bde47b10c 提取的单点循环）。
+
+    与 _api_alerts 同口径跳过 fixture/不存在项目，聚合集合（registry）参与
+    哈希——_sig_alerts 与 _sig_admin_activities 归档分支共用同一实现，
+    「同口径、不得分叉」由单点保证，新增聚合端点复用本助手而非再抄一份。
+    """
+    from pathlib import Path
+
+    from core.dashboard.data import signature as _sig
+
+    parts = [_sig.registry_signature(s.server.registry)]
+    for p in s.server.projects():
+        if p.get("fixture") or not p.get("exists"):
+            continue
+        parts.append(sig_fn(Path(p["path"])))
+    return _sig.combine(parts)
+
+
 def _sig_alerts(s, q, m):
     from pathlib import Path
 
@@ -140,14 +159,8 @@ def _sig_alerts(s, q, m):
     project = _resolve_project_for_sig(s, q)
     if project is not None:
         return _sig.admin_alerts_signature(Path(project["path"]))
-    # 跨项目聚合：与 _api_alerts 同口径跳过 fixture/不存在项目，聚合集合
-    #（registry）参与哈希
-    parts = [_sig.registry_signature(s.server.registry)]
-    for p in s.server.projects():
-        if p.get("fixture") or not p.get("exists"):
-            continue
-        parts.append(_sig.admin_alerts_signature(Path(p["path"])))
-    return _sig.combine(parts)
+    # 跨项目聚合：同口径循环单点在 _aggregate_alerts_sig
+    return _aggregate_alerts_sig(s, _sig.admin_alerts_signature)
 
 
 def _sig_admin_activities(s, q, m):
@@ -164,14 +177,8 @@ def _sig_admin_activities(s, q, m):
         project = _resolve_project_for_sig(s, q)
         if project is not None:
             return _sig.admin_alerts_archive_signature(Path(project["path"]))
-        # 跨项目聚合：与 _sig_alerts 聚合分支同口径跳过 fixture/不存在项目，
-        # 聚合集合（registry）参与哈希
-        parts = [_sig.registry_signature(s.server.registry)]
-        for p in s.server.projects():
-            if p.get("fixture") or not p.get("exists"):
-                continue
-            parts.append(_sig.admin_alerts_archive_signature(Path(p["path"])))
-        return _sig.combine(parts)
+        # 跨项目聚合：与 _sig_alerts 聚合分支同一循环（单点 _aggregate_alerts_sig）
+        return _aggregate_alerts_sig(s, _sig.admin_alerts_archive_signature)
     # 活跃路径：数据源与 /api/alerts 同一文件（admin_alerts.json）；?spec=
     # 过滤发生在读取之后，不改变签名源
     return _sig_alerts(s, q, m)
@@ -180,11 +187,16 @@ def _sig_admin_activities(s, q, m):
 def _sig_config(s, q, m):
     from core.dashboard.data import signature as _sig
 
+    # 两种 None 须区分（code-review item c96182fb5abc）：仅 query 缺 project
+    # 参数才是合法用户级作用域（_api_config_get 契约）；带了 project 但解析
+    # 为 None（未知/不存在项目，响应本应是 404 错误体）返回 None 退出协商
+    # ——否则用户级 ETag 会把 404 短路成空 304（宁缺 304 不假 304）。
+    if not q.get("project", [None])[0]:
+        # 缺 project 参数 = 合法用户级作用域，签名只依赖用户级 config.yaml
+        return _sig.config_signature(None)
     project = _resolve_project_for_sig(s, q)
     if project is None:
-        # 缺 project 参数 = 合法用户级作用域（_api_config_get 契约），签名
-        # 只依赖用户级 config.yaml
-        return _sig.config_signature(None)
+        return None
     return _sig.config_signature(project["path"])
 
 

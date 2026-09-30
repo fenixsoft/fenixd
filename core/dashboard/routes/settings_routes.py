@@ -49,10 +49,25 @@ def _atomic_write_text(target: Path, content: str) -> None:
         dir=str(target.parent), prefix=f".{target.name}-", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式关 fd（code-review item 71d502440d3b，对齐
+        # code_review_routes._write_signal_exclusive 先例）：fdopen() 自身
+        # 抛错时 with 未进入、裸 fd 无人关闭（with 的 close 只在 fdopen
+        # 成功后才生效）——描述符泄漏。f=None 哨兵接管，fdopen 未成功时
+        # 兜底 os.close；成功后统一经 finally close（等价 with 语义）。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, str(target))
     except Exception:
         try:
@@ -495,7 +510,10 @@ class H5SettingsRoutesMixin:
         from core.verify_contract import load_verify_contract
 
         contract = load_verify_contract(proot, logger=None)
-        overwrite = bool(body.get("overwrite"))
+        # 严格只认布尔 true（对齐 _api_code_review_run 的 confirm 闸门口径）：
+        # bool() 任意非空真值（如字符串 "false"）都为真会绕过覆盖确认——
+        # 本闸门针对改写既有有效 verify.yaml，被绕过即未确认触发重起草。
+        overwrite = body.get("overwrite") is True
         if contract is not None and not overwrite:
             # 有效契约且无覆盖确认 → skipped
             self._json(

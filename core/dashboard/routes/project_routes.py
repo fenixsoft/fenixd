@@ -526,6 +526,7 @@ class H2ProjectRoutesMixin:
 
             # 拼固定中文指令 prompt（必须携带项目名与路径——README 主题重叠的
             # 项目若无项目身份信息会生成彼此的简介）
+            # [fenix-ignore:c43d75c419ec] 本调用点不带 bypassPermissions（异于 knowledge.py/regression_routes 同族），写入类工具默认被拒，输出仅落 description 展示字段，注入面影响有限，维持现约。
             prompt = f"""你是一个项目简介生成器。请为项目「{project["name"]}」（位于 {proot}）生成一句约100字的中文项目简介。
 
 以下是该项目说明文件的内容：
