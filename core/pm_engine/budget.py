@@ -648,7 +648,8 @@ class ImplBudget:
         runs 目录缺失 ＝ 权威 0；扫描失败（IO/权限）返回 None——对账方
         （_reconcile_impl_budget）以本计数为权威改写 used，喂 0 会把预算
         瞬态清零，故失败必须与「真实 0」区分。单文件读取失败
-        （_run_file_died 返回 None，item bb880517c83c）同样整体降级 None。
+        （_run_file_died 返回 None，item bb880517c83c）与单文件 stat 失败
+        （mtime 不可得）同样整体降级 None。
         """
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
@@ -666,8 +667,19 @@ class ImplBudget:
                 base = strip_run_id_suffixes(p.stem)
                 try:
                     mtime = p.stat().st_mtime
-                except OSError:
-                    continue
+                except OSError as e:
+                    # 单文件 stat 失败（权限/IO 抖动、文件在 glob 与 stat 之间
+                    # 被归档移动）＝该 run 收工与否不可知 ≠ 不存在——按 continue
+                    # 剔除会让该 run 从 newest_attempt 归并中消失、completed
+                    # 少计，无豁免因素时纯漂移分支把 used 改写成更小值，真实
+                    # 消耗被抹掉。与上方目录扫描失败（item ba82df251f21）/下方
+                    # 单文件读取失败（item bb880517c83c）口径对齐：整体降级
+                    # None，调用方（_reconcile_impl_budget）跳过本轮对账不改数。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"run 产物 stat 失败 '{spec_name}'（计数不可用）: {e}",
+                    )
+                    return None
                 prev = newest_attempt.get(base)
                 if prev is None or mtime > prev[0]:
                     newest_attempt[base] = (mtime, p)
