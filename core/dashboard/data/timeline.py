@@ -238,6 +238,10 @@ def get_spec_timeline(
     经 quality_gates.parse_quality_gates 公开入口与门禁 Card 同参合成（同源
     硬约束：MUST NOT 复制第二套三态判定）；缺省时任何节点不附该字段。
     """
+    # 跨组引用（log_index 组 / runs 组 / quality_gates 组）经门面延迟解析（D4）：
+    # 函数体开头统一 import 一次，循环体内与后段复用 _facade 局部名
+    import core.dashboard.data as _facade
+
     logs_dir = Path(project_root) / ".fenix" / "logs"
     events: list[dict] = []
     errors_at: list[tuple] = []  # (timestamp, error) —— Agent 记录的 error，作为回退原因
@@ -264,9 +268,6 @@ def get_spec_timeline(
             try:
                 # created 锚定窗口（原尾部 1MB 尾窗对早期事件静默截断）；
                 # 锚点早于文件首行 → 整文件，锚点晚于文件尾 → 仅尾块，量均有限
-                # 跨组引用（log_index 组的 read_log_window_from）经门面延迟解析（D4）
-                import core.dashboard.data as _facade
-
                 content = _facade.read_log_window_from(Path(project_root), lf, created).decode(
                     "utf-8", errors="replace"
                 )
@@ -345,9 +346,6 @@ def get_spec_timeline(
     # 卡片）时进入计价分支，逐 run 按「实际网关卡片开关 + 行 model 匹配」现算
     # cost_usd（None 不下发）；表空时整条时间轴无成本字段（前端不渲染）。
     billing_table = _load_billing_config(project_root)
-    # 跨组引用（runs 组）经门面延迟解析（D4）
-    import core.dashboard.data as _facade
-
     runs = _facade.get_runs(project_root, spec_name, include_archive=True)
     for r in runs:
         insights = _facade.run_tail_insights(_facade.resolve_run_file(project_root, r["run_id"]))
@@ -399,7 +397,9 @@ def get_spec_timeline(
                 "errors": summary.get("errors"),
             }
             if verify_start_ts and rep_ts:
-                d = _ts_delta(rep_ts, verify_start_ts)
+                # 带符号差值：报告完成时刻早于「开始验证」时刻（时钟回拨等
+                # 异常时序）时长为负，非负守卫真正生效——丢弃而不下发
+                d = _ts_delta(rep_ts, verify_start_ts, signed=True)
                 if d is not None and d >= 0:
                     v_node["duration_seconds"] = int(d)
             if report.get("env_error"):
@@ -605,13 +605,19 @@ def _timeline_sort_key(e: dict):
     return (dt.replace(microsecond=0), kind_rank, dt)
 
 
-def _ts_delta(a: str, b: str):
-    """两个 ISO 时间戳的秒级差值（解析失败返回 None）。"""
+def _ts_delta(a: str, b: str, signed: bool = False):
+    """两个 ISO 时间戳的秒级差值（解析失败返回 None）。
+
+    默认取绝对值（邻近度匹配/时长兜底场景）；signed=True 返回带符号差值
+    a - b，供需区分先后方向的调用点（如验证节点时长：报告时刻早于开始
+    时刻属异常时序，负值应丢弃而非被 abs 翻正下发）。
+    """
     ta = _parse_iso_ts(a)
     tb = _parse_iso_ts(b)
     if ta is None or tb is None:
         return None
-    return abs((ta - tb).total_seconds())
+    delta = (ta - tb).total_seconds()
+    return delta if signed else abs(delta)
 
 
 def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
