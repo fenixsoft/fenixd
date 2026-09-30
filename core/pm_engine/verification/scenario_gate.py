@@ -655,8 +655,9 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         pipeline._context.logger.warning("pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
         return
     # verify-report-scenario-section-commit：小节写盘即入库。采纳路径里报告
-    # 闸门的提交先于本函数（pipeline :1120/:948 → transition → :1194/:1034
-    # 渲染）且此后再无提交点，场景段会长期滞留工作区——复用同一 pathspec
+    # 闸门的提交先于本函数（pipeline._apply_bug_found / _apply_verified 内：
+    # add-verify-report-gate 报告闸门 → transition → 函数末尾渲染）且此后
+    # 再无提交点，场景段会长期滞留工作区——复用同一 pathspec
     # 单文件幂等提交器补上该缝（每报告至多一段 → 额外提交至多一次）。失败
     # 降级由提交器内建（git 失败仅 WARNING、非 git 项目静默跳过），此处再兜
     # 意外异常：入库动作绝不影响渲染写盘结论与验证主流程。
@@ -713,13 +714,52 @@ def _write_verify_contract_missing(
         pipeline._context.logger.error("pm_engine", f"verify_contract_missing 信号写入失败: {e}")
 
 
+def _emit_static_findings(
+    pipeline,
+    spec_name: str,
+    scan_fn,
+    write_fn,
+    rule_id_of,
+    check_name: str,
+    log_label: str,
+) -> None:
+    """场景/契约两个静态检查挂点的共用骨架：扫描 → 写盘 → 分布日志（fail-open）。
+
+    扫描（含前置产物读取）经 ``scan_fn`` 在 fail-open 保护内执行，返回
+    ``(findings, info_head)``；``findings is None`` 表示前置不满足、静默
+    跳过（不写盘不记日志）。写盘复用 ``write_fn``（两套 write_* 签名一致），
+    findings 非空时按 ``rule_id_of`` 统计 rule_id 分布记 INFO（``info_head``
+    承载两个挂点 INFO 文案的措辞差异）；任何异常记 WARNING（``check_name``/
+    ``log_label`` 承载 WARNING 文案的措辞差异），不影响验证主流程。
+    """
+    try:
+        findings, info_head = scan_fn()
+        if findings is None:
+            return
+        write_fn(pipeline._context.project_root, spec_name, findings)
+        if findings:
+            from collections import Counter
+
+            dist = dict(Counter(rule_id_of(f) for f in findings))
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"{info_head}检出 {len(findings)} 条情报: {dist}",
+            )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"{check_name}跳过 '{spec_name}'（fail-open，{log_label}）: "
+            f"{type(e).__name__}: {e}",
+        )
+
+
 def _run_scenario_static_check(pipeline, spec_name: str) -> None:
     """场景静态缺陷扫描挂点（add-scenario-defect-triage-gate D3）。
 
     在场景集冻结完成后、阶段2 执行前调用（_run_three_stage_verification
     经门面转调）。findings 覆盖写 ``scenario_static_findings.json`` 供
     judge prompt 情报段注入——**只做情报不拦截执行**，任何异常记 WARNING
-    不阻断验证（fail-open）。
+    不阻断验证（fail-open）。写盘与分布日志骨架共用 _emit_static_findings。
     """
     from core.verify_engine.scenario_static_check import (
         scan_scenarios,
@@ -733,30 +773,27 @@ def _run_scenario_static_check(pipeline, spec_name: str) -> None:
         / spec_name
         / "test_scenarios.json"
     )
-    try:
+
+    def _scan():
         if not scenarios_path.exists():
-            return
+            return None, ""
         data = json.loads(scenarios_path.read_text(encoding="utf-8"))
         if not isinstance(data, list):
-            return
+            return None, ""
         serving_port = pipeline._serving_port_for_spec(spec_name)
         findings = scan_scenarios(data, serving_port=serving_port)
-        write_findings(pipeline._context.project_root, spec_name, findings)
-        if findings:
-            from collections import Counter
+        info_head = f"场景静态扫描 '{spec_name}'（serving 端口 {serving_port or '未知'}）"
+        return findings, info_head
 
-            dist = dict(Counter(f.rule_id for f in findings))
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"场景静态扫描 '{spec_name}'（serving 端口 "
-                f"{serving_port or '未知'}）检出 {len(findings)} 条情报: "
-                f"{dist}",
-            )
-    except Exception as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"场景静态扫描跳过 '{spec_name}'（fail-open，不阻断验证）: " f"{type(e).__name__}: {e}",
-        )
+    _emit_static_findings(
+        pipeline,
+        spec_name,
+        scan_fn=_scan,
+        write_fn=write_findings,
+        rule_id_of=lambda f: f.rule_id,
+        check_name="场景静态扫描",
+        log_label="不阻断验证",
+    )
 
 
 def _run_contract_static_check(pipeline, spec_name: str) -> None:
@@ -766,25 +803,23 @@ def _run_contract_static_check(pipeline, spec_name: str) -> None:
     一致性检查（入口存在性/与 start script 一致性/端口注入），findings
     覆盖写 ``contract_findings.json`` 供 admin 处置 prompt 注入。
     **只做情报不拦截出题**，任何异常记 WARNING 不阻断（fail-open）。
+    写盘与分布日志骨架共用 _emit_static_findings。
     """
     from core.verify_engine.scenario_static_check import (
         scan_contract,
         write_contract_findings,
     )
 
-    try:
+    def _scan():
         findings = scan_contract(pipeline._context.project_root)
-        write_contract_findings(pipeline._context.project_root, spec_name, findings)
-        if findings:
-            from collections import Counter
+        return findings, f"契约静态检查 '{spec_name}' "
 
-            dist = dict(Counter(f["rule_id"] for f in findings))
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"契约静态检查 '{spec_name}' 检出 {len(findings)} 条情报: " f"{dist}",
-            )
-    except Exception as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"契约静态检查跳过 '{spec_name}'（fail-open，不阻断出题）: " f"{type(e).__name__}: {e}",
-        )
+    _emit_static_findings(
+        pipeline,
+        spec_name,
+        scan_fn=_scan,
+        write_fn=write_contract_findings,
+        rule_id_of=lambda f: f["rule_id"],
+        check_name="契约静态检查",
+        log_label="不阻断出题",
+    )
