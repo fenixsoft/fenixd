@@ -890,12 +890,13 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
         # 本函数「MUST NOT 产生任何失败终态」的宽松对账契约（code-review
         # item 9f167849d8a1）：记 WARNING 留痕后按未启用降级返回 None（直接
         # 返回，下方 GATE_STATUSES/RUN_GATE_IDS 引用点不再触达，避免
-        # NameError），与 _check_impl_code_review_artifact 的开关读取降级
-        # 口径一致。
-        runner.logger.warning(
-            "agent_runner",
-            f"quality-gates 宽松对账常量导入失败（按未启用降级，留痕）: "
-            f"{type(e).__name__}: {e}",
+        # NameError）。日志走模块标准通道 _logger（通道契约见 _logger 定义
+        # 处：MUST NOT 走 runner.logger，测试替身无法被 caplog 捕获），与
+        # 同函数 JSON 解析/枚举违规告警同通道。
+        _logger.warning(
+            "quality-gates 宽松对账常量导入失败（按未启用降级，留痕）: %s: %s",
+            type(e).__name__,
+            e,
         )
         return None
 
@@ -1807,12 +1808,14 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
     """收尾审查处置形状自证（ocr join 硬门同源判据，add-impl-selfcheck-model-probe）。
 
     add-impl-ocr-parallel-lane 起 dispositions 的权威判定点在框架侧 join
-    （``_check_impl_code_review_artifact`` / ``_validate_code_review_report``），
-    不在产物硬门内——但形状陷阱（字符串数组）正是打回整轮的重烧源，自检
-    必须覆盖：
+    （core/pm_engine/dispatch/queue.py 的 ``Dispatcher._ocr_join_gate``，
+    自持 _read_ocr_artifact + 指纹校验的完整判定；
+    ``_check_impl_code_review_artifact`` 现已无生产调用点，见
+    _check_impl_result_artifact 内注释），不在产物硬门内——但形状陷阱
+    （字符串数组）正是打回整轮的重烧源，自检必须覆盖：
 
     - worktree 内存在 ``.fenix/verify-progress/<spec>/code-review.json`` →
-      用 join 侧同一校验体 ``_validate_code_review_report`` 全量校验；
+      用产物硬门同一校验体 ``_validate_code_review_report`` 全量校验；
     - 报告缺席但结果文件自带 ``code_review`` 段（含 dispositions 别名键）→
       仅校验条目形状（``_validate_disposition_entries`` 同一函数对象）；
       条数对账需 findings 清单（在 code-review.json 内），报告缺席时无对账
