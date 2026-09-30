@@ -357,6 +357,14 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       }
       // 自动修复回链轮询同口径中止（handler 的 finally 复位 fixPending）
       fixPollAbortedRef.current = true;
+      // 清理即作废在飞响应（code-review item 7fe09ea34122，对齐 QualityTab
+      // 31c9cfb5cb4e 在清理处自增 loadSeqRef 的口径）：seqRef 只在下一次调用
+      // loadResult 时自增，切离分面并不作废已发出的请求——在飞响应（尤其
+      // 失败分支）晚到时 seq 仍是最新值，守卫放行，会把「加载失败」toast 与
+      // pollFailed 落在用户已离开的分面上（成功分支还会写旧快照、重启轮询）。
+      // 自增后切离前的在飞响应一律过期；重进分面 loadResult 重新取号，正常
+      // 加载不受影响。
+      seqRef.current += 1;
     }
   }, [active]);
 
@@ -368,6 +376,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       }
       // 自动修复回链轮询哨：卸载即中止（handleFix 轮询内逐步检查后退出）
       fixPollAbortedRef.current = true;
+      // 卸载同口径作废在飞响应（7fe09ea34122）：卸载前已发出的 loadResult
+      // 响应一律过期，不向已卸载组件写快照/落错误态/弹 toast
+      seqRef.current += 1;
     };
   }, []);
 
