@@ -257,6 +257,13 @@ def _atomic_write(path: Path, data: dict) -> None:
             f.flush()
             f.truncate()
             os.fsync(f.fileno())
+        # mkstemp 以 0600 建临时文件，rename 前放宽到 0644（verify_report
+        # ._atomic_write 同款）：否则 scenarios.json 恒 0600，非 root 辅助
+        # 进程/人工其它账号读取被拒；chmod 失败不阻断写入（尽力而为）。
+        try:
+            os.chmod(tmp_name, 0o644)
+        except OSError:
+            pass
         Path(tmp_name).replace(path)
     finally:
         try:
