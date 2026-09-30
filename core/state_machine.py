@@ -83,15 +83,19 @@ def parse_utc(value) -> Optional[datetime]:
     """ISO8601 UTC 解析（容错）。非法/空/None 返回 None，绝不抛异常。
 
     SPEC-B 批③：解析内核收拢 timelib.parse_ts（唯一入口）。支持带偏移
-    （2026-09-07T01:00:00+00:00）与 'Z' 后缀；字符串入参的 naive 值按
-    timelib 唯一 naive 策略解读（本地时区——原「naive 按 UTC」第二策略
-    退役；框架写侧恒产出 aware +00:00，存量 aware 数据逐项不变）。返回值
-    折算 aware UTC。调度门控与 dashboard 写侧校验共用本函数（design D6
+    （2026-09-07T01:00:00+00:00）与 'Z' 后缀；字符串与 datetime 对象入参的
+    naive 值均按 timelib 唯一 naive 策略解读（本地时区——原「naive 按 UTC」
+    第二策略退役；框架写侧恒产出 aware +00:00，存量 aware 数据逐项不变）。
+    返回值折算 aware UTC。调度门控与 dashboard 写侧校验共用本函数（design D6
     「时间换算工具后端单点实现」），解析漂移收敛单点。
     """
     if isinstance(value, datetime):
         if not value.tzinfo:
-            value = value.replace(tzinfo=timezone.utc)
+            # naive → 本地 aware（astimezone 的 naive 语义：视作系统本地时区），
+            # 对齐 timelib 唯一 naive 策略——原 replace(tzinfo=utc) 是未登记的
+            # 第二种 naive 解读，违反 timelib「任何模块 MUST NOT 自行实现第二
+            # 种 naive 解读」约定（code-review item 20911e4fdb9d）。
+            value = value.astimezone()
         return value.astimezone(timezone.utc)
     dt = parse_ts(value)
     return dt.astimezone(timezone.utc) if dt is not None else None
@@ -525,6 +529,14 @@ class StateParser:
                     # 读回字符串 "False" 为 truthy，周期消费者会把已清账条目
                     # 误判为仍带标志（同 _merge_retry_pending 先例）。
                     "_wip_gate_deferred",
+                    # code-review item 7920884822f1：token 预算告警幂等标志——
+                    # dashboard raise_budget 复位写 False，不转会 STATE.md
+                    # 往返后读回字符串 "False" 为 truthy，复位动作失效、
+                    # 预算翻倍后告警仍永久静默（消费侧 token_budget 以
+                    # bool(entry.get(...)) 读幂等标志，同 _merge_retry_pending
+                    # 先例）。
+                    "_token_warn_80",
+                    "_token_alert_100",
                 ):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
