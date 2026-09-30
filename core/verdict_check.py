@@ -227,7 +227,10 @@ def _clip_derived_text(text, limit: int = _DERIVED_ACTUAL_MAX_CHARS) -> str:
             except (TypeError, ValueError):
                 text = str(text)
         else:
-            text = str(text or "")
+            # None 才折空串（code-review item 9f451083401c）：0/False 等
+            # 假值本身可能是有信息量的错误回传（如退出码），``or`` 兜底会把
+            # 原始值吞成空串再误述成「引擎未返回 error 文本」
+            text = "" if text is None else str(text)
     clipped = _normalize_whitespace(text)
     if len(clipped) > limit:
         return clipped[:limit] + "…"
@@ -243,7 +246,10 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
 
     条目形状与 agents/planner-judge.md「步骤失败型场景必填清单（强制）」处方
     的申报形态一致（type/selector/expected/actual），并附 ``step_failure``
-    标注（步骤失败型形态，非引擎真实断言产物）。无失败信号返回空表。
+    标注——泛指「非引擎断言产物的失败信号派生」而非仅步骤失败型形态：视觉
+    比对条目（type=screenshot_mismatch，非步骤失败）同标（code-review item
+    0f84f7995d37；下游申报形态按 type 区分，勿按本标注区分）。无失败信号
+    返回空表。
     """
     entries: List[dict] = []
     if not isinstance(scenario, dict):
@@ -500,6 +506,10 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
       不得当作豁免理由放行——「遇到 env 就不测试了」被本检查封死）；
     - 场景表存在非对象条目（损坏场景表）→ 不得 verified（fail-closed，
       零有效场景的损坏报告不得静默放行）；
+    - 场景表为空列表（0/0）→ 不得 verified（code-review item ca52c2521b1f：
+      与损坏场景表同款 fail-closed——「0/0 场景通过」既非全失败也非 env，
+      空报告不得静默过洗白门；escalation 通道对空表先行保守放行、不经此处，
+      直调本函数做 verified 防线的调用方由本条把守）；
     - exempt（fast-track 申报豁免）既不算通过也不算失败（code-review item
       e3e2a98e2bb5）——否则全 exempt 表会被「0/N 场景通过（全部失败）」误拦
       并按 env 阻塞升级，与申报豁免语义不符；但 env 豁免仍计入 env 通道
@@ -507,8 +517,12 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
 
     仅约束 verdict=verified；bug-found 不受限。Returns: 违规说明列表（空=放行）。
     """
-    if verdict != "verified" or not isinstance(scenarios, list) or not scenarios:
+    if verdict != "verified" or not isinstance(scenarios, list):
         return []
+    if not scenarios:
+        # 空列表 0/0 表（code-review item ca52c2521b1f）：零有效场景不构成
+        # 验证通过证据，不得静默放行
+        return ["0/0 场景执行（空场景表）不得判 verified"]
     total = len(scenarios)
     passed = 0
     env_failed: List[str] = []
@@ -962,6 +976,14 @@ def compute_attribution_level(scenario: dict) -> str:
     if isinstance(first_failed_step, str) and first_failed_step.strip():
         if not _scenario_has_failed_assertion_evidence(scenario):
             return ATTRIBUTION_LEVEL_SPECULATIVE
+
+    # 末端收口合取（code-review item 87289dd96917）：实质证据仅剩在场信号
+    # （截图在场/弱标签/非 env 的 first_frame_ok）而 assertion_triage 无逐条
+    # 归因证据时，不得按 evidence-backed 收尾——validate_attribution_levels
+    # 与 validate_report 是两个独立入口，先打标后校验或只打标时 speculative
+    # 抑制门不被在场证据旁路（正常管线 triage 覆盖且带证据不受影响）
+    if not _scenario_has_failed_assertion_evidence(scenario):
+        return ATTRIBUTION_LEVEL_SPECULATIVE
 
     return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
 
@@ -1672,6 +1694,15 @@ _BUILD_MANIFEST_CANDIDATES = (
     "go.sum",
 )
 
+# 嵌套清单递归收集的排除目录与深度上限（code-review item 95c65fc58fce）：
+# monorepo/子应用形态（如 core/dashboard/static/package.json）的依赖清单
+# 变更也须参与 build_fingerprint；排除依赖树/版本库/虚拟环境/字节码缓存/
+# 框架配置目录，深度封顶防大仓全量遍历。
+_BUILD_SCAN_PRUNE_DIRS = frozenset(
+    {"node_modules", ".git", "venv", ".venv", "__pycache__", ".fenix"}
+)
+_BUILD_SCAN_MAX_DEPTH = 3  # 项目根下递归扫描的目录层数上限
+
 # 验证配置文件路径（验证配置指纹数据源）。
 _VERIFY_CONFIG_RELATIVE_PATH = ".fenix/verify.yaml"
 
@@ -1705,25 +1736,55 @@ def _stable_file_hash(path: Path) -> str:
         return ""
 
 
+def _iter_build_manifest_files(root: Path):
+    """递归收集构建清单文件：项目根 + 根下 _BUILD_SCAN_MAX_DEPTH 层目录。
+
+    item 95c65fc58fce：只扫项目根会漏嵌套子应用清单（依赖升级改变被测行为
+    而场景定义未变时，四元组缓存键全等、上轮归因结论被沿用）。目录按名排序
+    展开（产出顺序确定，消费侧仍排序后哈希）；_BUILD_SCAN_PRUNE_DIRS 剪枝，
+    不可读目录/条目静默跳过（与 _stable_file_hash 的 OSError 容错同口径）。
+    """
+    stack = [(root, 0)]
+    while stack:
+        cur, depth = stack.pop()
+        try:
+            children = sorted(cur.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            try:
+                if child.is_dir():
+                    if (
+                        depth < _BUILD_SCAN_MAX_DEPTH
+                        and child.name not in _BUILD_SCAN_PRUNE_DIRS
+                    ):
+                        stack.append((child, depth + 1))
+                elif child.is_file() and child.name in _BUILD_MANIFEST_CANDIDATES:
+                    yield child
+            except OSError:
+                continue
+
+
 def compute_build_fingerprint(project_root) -> str:
     """被测构建指纹（缓存键分量③）：依赖/构建清单文件集内容哈希。
 
-    取项目根 ``_BUILD_MANIFEST_CANDIDATES`` 中现存文件的 (相对路径, 内容
-    hash) 集合稳定哈希。**不取 git HEAD**：修复通常不改依赖清单，以文件集
-    为准可避免无关提交击穿缓存；「修复 diff 触碰场景出处文件」的文件级失效
-    由 4.2 消费侧以 head_at_write 基准另行判定，二者正交。
+    取项目根与受限深度子目录（``_BUILD_MANIFEST_CANDIDATES`` 名单内、排除
+    ``_BUILD_SCAN_PRUNE_DIRS``）中现存清单文件的 (相对路径, 内容 hash) 集合
+    稳定哈希。**不取 git HEAD**：修复通常不改依赖清单，以文件集为准可避免
+    无关提交击穿缓存；「修复 diff 触碰场景出处文件」的文件级失效由 4.2
+    消费侧以 head_at_write 基准另行判定，二者正交。
 
     项目根无任何清单 → 返回 ""（fail-closed：无法刻画被测构建则不采信）。
+    根层清单的 parts 字符串（相对路径 == 文件名）与仅扫根层的旧口径逐字
+    一致，既有缓存键不受影响；嵌套清单只做增量输入（安全方向：指纹失配
+    按「缓存未命中照跑」处理）。
     """
     root = Path(project_root)
     parts = []
-    for name in _BUILD_MANIFEST_CANDIDATES:
-        f = root / name
-        if not f.is_file():
-            continue
+    for f in _iter_build_manifest_files(root):
         h = _stable_file_hash(f)
         if h:
-            parts.append(f"{name}:{h}")
+            parts.append(f"{f.relative_to(root).as_posix()}:{h}")
     if not parts:
         return ""
     return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]

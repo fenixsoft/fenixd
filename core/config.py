@@ -603,6 +603,11 @@ class ConfigLoader:
                 if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
 
+        # admin 段入口在此统一取段一次并复用（code-review item ea7c504c6ed9）：
+        # 脏段 ERROR 告警只记一条，供下方 run_drain 一致性校验与末尾 admin.*
+        # 字段校验共用，避免同一轮校验对同一脏段重复输出 ERROR。
+        admin = cls._segment_or_empty(config, "admin")
+
         # add-pipeline-throughput-governance D3：restart 排水窗口上限
         # agents.run_drain_max_seconds（缺省 60，专管 restart 场景；常规停机仍走
         # admin.shutdown_drain_seconds 不变）。显式提供时校验非负数值；与
@@ -622,7 +627,7 @@ class ConfigLoader:
                 raise ValueError(
                     f"agents.run_drain_max_seconds must be a non-negative number: {rdm!r}"
                 )
-            _sd = cls._segment_or_empty(config, "admin").get("shutdown_drain_seconds")
+            _sd = admin.get("shutdown_drain_seconds")
             if (
                 isinstance(_sd, (int, float))
                 and not isinstance(_sd, bool)
@@ -692,7 +697,8 @@ class ConfigLoader:
         # Validate agents.models (optional — absence means no assignments)。
         # models 显式提供（非 None）即进校验：非 dict 段由 _validate_agent_models
         # 内部按"忽略该段 + 告警"降级（improve-hot-reload-robustness D2）。
-        agents = cls._segment_or_empty(config, "agents")
+        # agents 段复用上方已取局部变量，不重复取段（code-review item
+        # ea7c504c6ed9）：脏段同一轮校验只告警一次。
         if "models" in agents and agents["models"] is not None:
             cls._validate_agent_models(agents["models"], llm)
 
@@ -738,8 +744,8 @@ class ConfigLoader:
         cls._check_supervision_consistency(config)
 
         # Validate admin.* (optional — 缺省使用默认值，见 get_admin_config)；
-        # 段入口同样经 _segment_or_empty 归一（code-review item 06352a414cf4）。
-        admin = cls._segment_or_empty(config, "admin")
+        # 段入口同样经 _segment_or_empty 归一（code-review item 06352a414cf4），
+        # 此处复用上方已取的 admin 局部变量（code-review item ea7c504c6ed9）。
         if "enabled" in admin and not isinstance(admin["enabled"], bool):
             raise ValueError(f"admin.enabled must be a boolean: {admin['enabled']}")
         for field in (
@@ -1431,12 +1437,18 @@ class ConfigLoader:
                 value = 60.0
         admin = config.get("admin") if isinstance(config, dict) else None
         sd_raw = admin.get("shutdown_drain_seconds") if isinstance(admin, dict) else None
-        try:
-            shutdown = float(1800 if sd_raw is None else sd_raw)
-        except (TypeError, ValueError):
+        # bool 排除（code-review item 1b768109fdc2）：float(True)=1.0 不抛异常，
+        # planned=False 路径会经下方 min 夹紧把 restart 排水窗静默压到 1 秒——
+        # 与上方 raw 分支及 _num 的既有 bool 护栏同口径回退缺省 1800。
+        if sd_raw is None or isinstance(sd_raw, bool):
             shutdown = 1800.0
-        if not (shutdown >= 0):
-            shutdown = 1800.0
+        else:
+            try:
+                shutdown = float(sd_raw)
+            except (TypeError, ValueError):
+                shutdown = 1800.0
+            if not (shutdown >= 0):
+                shutdown = 1800.0
         if planned:
             # supervisor SIGKILL 等待（_sigkill_wait_seconds 同源建模）
             if shutdown > 0:

@@ -338,15 +338,33 @@ class TestOrphanDetection:
         )
 
     def test_orphan_detected_when_no_claude(self, tmp_path):
-        """worktree 存在但无 claude 引用 → 判为孤儿。"""
+        """worktree 存在、已过启动宽限窗且无 claude 引用 → 判为孤儿。
+
+        （_pid_recently_started 置 False 模拟宽限窗外进程；刚启动进程受
+        60s 豁免保护，见 test_recently_started_orphan_exempted。）"""
         wt = make_worktree(tmp_path, f"impl-orphan-{os.getpid()}")
+        used = set()
+        port, proc = v2_start(wt, 8, used)
+        try:
+            with patch.object(v2, "_pgrep_dev_servers",
+                              return_value=[proc.pid]), \
+                 patch.object(v2, "_pid_recently_started", return_value=False):
+                orphans = v2._dev_server_orphan_pids()
+            assert proc.pid in orphans
+        finally:
+            v2_stop(proc, port, used)
+
+    def test_recently_started_orphan_exempted(self, tmp_path):
+        """启动宽限窗内（<60s）无 claude 引用也不判孤儿——
+        派发「先启 dev-server 再 spawn claude」的 TOCTOU 窗口防误杀。"""
+        wt = make_worktree(tmp_path, f"impl-fresh-{os.getpid()}")
         used = set()
         port, proc = v2_start(wt, 8, used)
         try:
             with patch.object(v2, "_pgrep_dev_servers",
                               return_value=[proc.pid]):
                 orphans = v2._dev_server_orphan_pids()
-            assert proc.pid in orphans
+            assert proc.pid not in orphans, "刚启动的 dev-server 应受宽限豁免"
         finally:
             v2_stop(proc, port, used)
 

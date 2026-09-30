@@ -310,7 +310,11 @@ def _with_lock(path: Path, fn):
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
 
-def _read_items_unlocked(path: Path) -> Dict[str, dict]:
+def _read_items_unlocked(
+    path: Path,
+    corrupted_out: Optional[List[str]] = None,
+    degraded_out: Optional[List[bool]] = None,
+) -> Dict[str, dict]:
     """锁内使用的 items.jsonl 读取（等价 read_items 但路径直传、不加锁）。
 
     解析口径单源：read_items 直接复用本实现（code-review item 07bedf124a12，
@@ -318,6 +322,14 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
     read_items 同款：文件缺失按空集，OSError / 单行 JSON 损坏记 WARNING 后
     降级，MUST NOT 让整个读取失败。MUST NOT 在此再加锁（_with_lock 契约
     禁止在 fn 内重入同一把锁）。
+
+    可区分失败信号（code-review item 9a358bba128c）：返回值容错形态不变
+    （未感知降级的既有调用方零改动），降级细节经可选出参回传——
+    - ``degraded_out``：传列表则 OSError 读失败时置 ``[True]``。全量替换
+      写侧 MUST 据此拒绝本次落盘（瞬时读故障窗口内的全量替换会把台账
+      整体清空）；读侧容错契约不受影响。
+    - ``corrupted_out``：传列表则 JSON 损坏行的原始文本原样收集，回写侧
+      MUST 追加回写保留现场，而非静默丢弃。
     """
     out: Dict[str, dict] = {}
     if not path.is_file():
@@ -326,6 +338,8 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
         _logger.warning("code_review: 读取 items.jsonl 失败: %s", e)
+        if degraded_out is not None:
+            degraded_out.append(True)
         return out
     for lineno, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
@@ -335,6 +349,8 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
             rec = json.loads(line)
         except json.JSONDecodeError as e:
             _logger.warning("code_review: items.jsonl 第 %s 行 JSON 损坏已跳过: %s", lineno, e)
+            if corrupted_out is not None:
+                corrupted_out.append(line)
             continue
         if isinstance(rec, dict) and isinstance(rec.get("item_id"), str):
             out[rec["item_id"]] = rec
@@ -455,7 +471,8 @@ def _coerce_line(value) -> int:
     if isinstance(value, bool):
         return 1
     if isinstance(value, int):
-        return value
+        # 负数/0 与缺省回退同基准钳到 ≥1（与字符串分支口径对齐）
+        return max(value, 1)
     if isinstance(value, float):
         return int(value) if value == value and abs(value) != float("inf") else 1
     m = re.search(r"\d+", str(value))
@@ -483,10 +500,11 @@ def upsert_findings(
     ``spec_map``: fingerprint → spec_name 映射（可选，ingest 时已关联修复
         SPEC 的条目直接带归属）。
 
-    去重语义：同 fingerprint 已存在 → 仅刷新 last_seen_at / severity /
-    description / suggestion（MUST NOT 覆盖 status / spec_name /
-    first_seen_at）；不存在 → 插入新条目（status=open，first_seen_at ==
-    last_seen_at == now）。
+    去重语义：同 fingerprint 已存在 → 刷新除 status / spec_name /
+    first_seen_at 外的全部展示字段（file / line / severity / category /
+    title / description / suggestion / evidence / last_seen_at / review_id /
+    review_kind / reviewed_at；spec_name 仅原值为空且本轮有关联时补写）；
+    不存在 → 插入新条目（status=open，first_seen_at == last_seen_at == now）。
 
     Returns: ``{"inserted": n, "updated": n}``
     """
@@ -499,7 +517,15 @@ def upsert_findings(
 
     def _do() -> None:
         nonlocal inserted, updated
-        current = _read_items_unlocked(path)
+        corrupted: List[str] = []
+        read_degraded: List[bool] = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
+        if read_degraded:
+            # 读降级（OSError 类）：台账完整性未知，拒绝本次全量替换保持
+            # 台账原样——瞬时读故障窗口内的全量替换会把既有条目整体清掉
+            #（code-review item 9a358bba128c）
+            _logger.warning("code_review: items.jsonl 读取降级，本轮审查发现跳过落账")
+            return
         by_fp: Dict[str, dict] = {}
         for rec in current.values():
             fp = rec.get("fingerprint")
@@ -557,6 +583,8 @@ def upsert_findings(
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
+        # JSON 损坏行原样回写保留（code-review item 9a358bba128c：不静默丢弃）
+        content += "".join(raw + "\n" for raw in corrupted)
         _atomic_write(path, content)
 
     _with_lock(path, _do)
@@ -783,6 +811,14 @@ def _git(project_root, args: List[str]) -> str:
         _logger.warning("code_review: git %s 执行失败: %s", args[0], e)
         return ""
     if proc.returncode != 0:
+        # 非零退出码也留痕：git 层故障（非 git 仓库/索引锁/坏对象）表现为
+        # 空 manifest，与「窗口内确实没有变更」不可区分，stderr 是唯一线索
+        _logger.warning(
+            "code_review: git %s 执行失败（退出码 %s）: %s",
+            args[0],
+            proc.returncode,
+            (proc.stderr or "").strip()[:200],
+        )
         return ""
     return proc.stdout
 
@@ -944,8 +980,9 @@ def read_progress(project_root) -> dict:
 
     Returns: ``{running, review_id, review_kind, total, done, current}``
     - ``done`` = 主产物 + 全部分片（out-<run_id>-b<N>.jsonl）按 ``file`` 去重
-      后的有效行数（add-code-review-sharded-out：分片直写模式下进度聚合；
-      空/不可解析行不计，同 file 多行只计一次——``done==total`` 语义严格成立）；
+      后与 manifest 清单求交的有效行数（add-code-review-sharded-out：分片
+      直写模式下进度聚合；空/不可解析行不计，同 file 多行只计一次；清单外
+      路径（agent 幻觉产物）不计入，``done <= total`` 恒成立）；
     - ``total`` = 派发时落盘的 manifest-<review_id>.json 长度；
     - ``current`` = 最后落盘来源（mtime 最晚者，主产物或分片）末行的
       ``file``（被审文件路径，非分片文件名）；
@@ -962,18 +999,19 @@ def read_progress(project_root) -> dict:
     run_id = _latest_review_run(project_root)
     if run_id is None:
         return base
-    # 读 manifest（total 权威来源）
+    # 读 manifest（total 权威来源；_read_json_file 自身已容错，缺失/损坏回空 dict）
     mpath = manifest_path(project_root, run_id)
-    try:
-        mdata = _read_json_file(mpath)
-    except Exception:
-        mdata = {}
+    mdata = _read_json_file(mpath)
     files = mdata.get("files") if isinstance(mdata.get("files"), list) else []
     total = len(files)
     review_kind = mdata.get("review_kind")
     # 读产物（done/current：聚合分片 + 主产物；主产物缺失时进度不归零——
     # 只要有分片行，done 即分片去重行数）
-    done = len(read_review_out_rows(project_root, run_id))
+    covered = {str(r.get("file") or "") for r in read_review_out_rows(project_root, run_id)}
+    covered.discard("")
+    # done 与 manifest 清单求交：agent 幻觉写出的清单外路径不计入进度，
+    # done <= total 恒成立（清单缺失/损坏 → total=0 → done=0）
+    done = len(covered.intersection(files))
     current = None
     sources = [
         p
@@ -1185,7 +1223,11 @@ def _slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     if not s:
         s = "fix"
-    return s
+    # 截断到安全长度：title 由 LLM 原样入库可达数百字符，不截断会使派生目录
+    # 名（fix-cr-<slug>、drafts/specs/<capability>）超文件系统单段 255 字节
+    # 上限，草稿落盘直接 OSError；重名由 -<fp[:6]> 后缀消解兜底
+    #（code-review item 7467b582942b）
+    return s[:50].rstrip("-")
 
 
 def _spec_name_conflicted(project_root, state_machine, candidate: str) -> bool:
@@ -1495,7 +1537,15 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
     path = items_path(project_root)
 
     def _do() -> None:
-        current = _read_items_unlocked(path)
+        corrupted: List[str] = []
+        read_degraded: List[bool] = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
+        if read_degraded:
+            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
+            #（code-review item 9a358bba128c）
+            _logger.warning("code_review: items.jsonl 读取降级，in_spec 置位跳过落盘")
+            return
+        changed = False
         for iid in item_ids:
             rec = current.get(iid)
             # 同 mark_resolved / mark_ignored 守卫（c729af4d1750）：并发
@@ -1504,9 +1554,16 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
                 continue
             rec["status"] = "in_spec"
             rec["spec_name"] = spec_name
+            changed = True
+        if not changed:
+            # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
+            # 无意义写放大与 mtime 抖动（code-review item 9ec5d0c097ca）
+            return
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
+        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
+        content += "".join(raw + "\n" for raw in corrupted)
         _atomic_write(path, content)
 
     _with_lock(path, _do)
@@ -1540,7 +1597,14 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
 
     def _do() -> None:
         nonlocal hit
-        current = _read_items_unlocked(path)
+        corrupted: List[str] = []
+        read_degraded: List[bool] = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
+        if read_degraded:
+            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
+            #（code-review item 9a358bba128c）
+            _logger.warning("code_review: items.jsonl 读取降级，resolved 核销跳过落盘")
+            return
         for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
             rec = current.get(iid)
             if rec is None or rec.get("status") != "open":  # 同 mark_ignored 守卫
@@ -1549,9 +1613,15 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
             rec["resolution"] = "code-fix-auto"
             rec["resolved_at"] = now  # 同 mark_ignored 的 ignored_at / resolve_snapshot 的 resolved_at
             hit += 1
+        if not hit:
+            # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
+            # 无意义写放大与 mtime 抖动（code-review item 9ec5d0c097ca）
+            return
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
+        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
+        content += "".join(raw + "\n" for raw in corrupted)
         _atomic_write(path, content)
 
     _with_lock(path, _do)
@@ -1592,7 +1662,14 @@ def mark_ignored(
 
     def _do() -> None:
         nonlocal hit
-        current = _read_items_unlocked(path)
+        corrupted: List[str] = []
+        read_degraded: List[bool] = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
+        if read_degraded:
+            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
+            #（code-review item 9a358bba128c）
+            _logger.warning("code_review: items.jsonl 读取降级，ignored 置位跳过落盘")
+            return
         for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
             rec = current.get(iid)
             if rec is None or rec.get("status") != "open":
@@ -1602,9 +1679,15 @@ def mark_ignored(
             rec["ignored_reason"] = reason_map.get(iid, "")
             rec["ignored_at"] = now
             hit += 1
+        if not hit:
+            # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
+            # 无意义写放大与 mtime 抖动（code-review item 9ec5d0c097ca）
+            return
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
+        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
+        content += "".join(raw + "\n" for raw in corrupted)
         _atomic_write(path, content)
 
     _with_lock(path, _do)

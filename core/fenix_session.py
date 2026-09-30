@@ -145,6 +145,11 @@ def _argv_script_token(argv):
     处理返回 None，堵住经合并写法绕过检测的旁路。分离式取参旗标的参数
     （`python3 -X faulthandler <script>` / `python3 -W ignore <script>` 中的
     faulthandler / ignore）按 Python 选项语义消费、不当作脚本 token。
+    不支持长选项带分离式参数的形态（如 `python3 --check-hash-based-pycs
+    always <script>`）：其参数 token 会被误当作脚本 token，真正的脚本 token
+    永不被考察，该形态启动的 daemon 会被判活漏检（stop 停不掉、start 可能
+    重复拉起）。实际启动链路不使用该形态，故不为带值长选项维护取参清单
+    （code-review item 176b3879d182）。
     """
     rest = argv[1:]
     i = 0

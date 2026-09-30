@@ -161,6 +161,11 @@ def _primary_keyword(key: str) -> Optional[str]:
     return None
 
 
+def _has_specific_card_candidate(found: Dict[str, InteractiveCandidate]) -> bool:
+    """found 中是否已存在 "cards" 之外的具体卡片 token（主语义关键词为 card）。"""
+    return any(k != "cards" and _primary_keyword(k) == "card" for k in found)
+
+
 def _has_display_decl(lines: List[str], idx: int) -> bool:
     """候选命中行自身是否含纯展示声明（声明与元素同行，避免跨元素误挂）。"""
     return bool(DISPLAY_DECL_RE.search(lines[idx]))
@@ -199,6 +204,8 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
             return
         # 分段精确匹配而非子串包含：discard（含 card）、hyperlink（含 link）
         # 这类嵌入式子串不应被误判为可交互候选
+        # [fenix-ignore:c8aefdd9f8a4] 段级带数字尾（cards2）漏复数召回属识别边角，
+        # 补齐需改 _bare_keyword 全路径且易误判版本化 token，得不偿失
         if not any(_bare_keyword(part) for part in re.split(r"[-_]", key)):
             return
         snippet = lines[idx].strip()
@@ -235,9 +242,9 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
         if m:
             _register(m.group(1).lower(), idx)
 
-    # 去重：SPEC 已识别出具体卡片 token（dark-Card--link 等）时，泛化 "cards"
-    # 候选与它是同一元素族，不再单列
-    if "cards" in found and any(k != "cards" and _primary_keyword(k) == "card" for k in found):
+    # 去重：泛化 "cards" 候选让位给同族具体卡片 token（dark-Card--link 等），
+    # 不再单列——cards→card 的隐式约定收拢在 _has_specific_card_candidate 单点
+    if "cards" in found and _has_specific_card_candidate(found):
         del found["cards"]
         order.remove("cards")
 
@@ -335,9 +342,10 @@ def scenario_cover_channel(scenario: Any, candidate: InteractiveCandidate) -> in
     blob = scenario_text_blob(scenario)
     if not blob:
         return 0
-    # 通道 1：planner 显式登记 covers
+    # 通道 1：planner 显式登记 covers（candidate.key 即 normalize_token(candidate.raw)
+    # 的产物，二者恒等，无需重复归一化）
     covers = _covers_list(scenario)
-    if candidate.key in covers or normalize_token(candidate.raw) in covers:
+    if candidate.key in covers:
         return 1
     # 通道 2：候选标识（原文/归一化）作为独立 token 出现在场景文本。
     # 边界排除字母/数字而非裸子串：card 不得命中 discard、link 不得命中
@@ -410,7 +418,8 @@ def validate_interaction_coverage(
     Args:
         project_root: 项目根（读取 SPEC 文档）。
         spec_name: SPEC 名。
-        planner_scenarios: planner 产出场景列表（dict 列表）。
+        planner_scenarios: planner 产出场景列表（dict 列表）；None 表示场景
+            文件不可读，按「文件不可读」留痕放行（不判覆盖缺口）。
         persisted_set: 持久化场景集（ScenarioSet）——遗留集时跳过强制（D2）。
 
     Returns:
@@ -421,6 +430,18 @@ def validate_interaction_coverage(
     if not result.has_candidates:
         result.ok = True
         result.change_lines.append("- 未检出可交互候选元素，交互契约无强制项")
+        return result
+
+    if planner_scenarios is None:
+        # 场景文件不可读（缺失/JSON 非法）与「覆盖不完整」是两类问题：按候选
+        # 全 uncovered 处理属失败关闭，会误导 planner 去补场景而非排查文件
+        # 读取故障；此处区分结论并放行（与调用方 load 失败即跳过的语义一致）。
+        result.ok = True
+        result.change_lines.append(
+            f"- ⚠️ planner 场景文件不可读，交互契约覆盖无法校验"
+            f"（已检出 {len(result.candidates)} 个候选，非覆盖缺口，"
+            f"请排查场景文件读取故障）"
+        )
         return result
 
     if persisted_set is not None and is_legacy_scenario_set(persisted_set):

@@ -32,16 +32,16 @@ from typing import Callable, Optional
 
 from core.config import ConfigLoader
 from core.knowledge_backfill import (
-    _NullLogger,
-    _validate_with_repair,
     append_todo_line,
     atomic_write_text,
     commit_pathspec,
     default_spawn,
     knowledge_distill_lock,
     load_knowledge_core,
+    null_logger,
     resolve_commit,
     scale_stats,
+    validate_with_repair,
 )
 
 # ── 常量 ─────────────────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ def knowledge_daily_check(
       try/except）。
     """
     project_root = Path(project_root)
-    log = logger or _NullLogger()
+    log = logger or null_logger()
     cfg = ConfigLoader.get_knowledge_lane_config(config or {})
     audit_enabled = cfg["audit_enabled"]
     if not audit_enabled:
@@ -212,7 +212,7 @@ def knowledge_daily_check(
     today = _today()
     results: dict[str, dict] = {}
 
-    if audit_enabled and state.get("last_audit_date") != today:
+    if state.get("last_audit_date") != today:
         try:
             lane = audit_lane or run_audit
             res = lane(project_root, logger=log, config=config) or {}
@@ -289,6 +289,18 @@ def _source_base(src: str) -> str:
     return Path(src.strip().rstrip("/")).name
 
 
+def _trailing_ws_dirty(ln: str) -> bool:
+    """行尾是否带需清理的脏空白。
+
+    Markdown 行尾恰好两个空格是硬换行语义（可见内容形态，非脏空白）：格式
+    扫描对其豁免、机械清理原样保留；其余尾随空白（单个空格、3 个及以上连续
+    空格、制表符等）按脏空白扫描与剥除。扫描与清理共用同一判定，避免出现
+    「扫得出修不掉」的永久挂起格式页。
+    """
+    tail = ln[len(ln.rstrip()) :]
+    return tail not in ("", "  ")
+
+
 def _scan_pages(project_root: Path) -> dict:
     """五类病灶中的页级扫描：悬空溯源（①② 机械）、超行数（报告）、格式。"""
     pages = _collect_pages(project_root)
@@ -326,8 +338,9 @@ def _scan_pages(project_root: Path) -> dict:
                     "missing_sources": missing_sources,
                 }
             )
-        # 格式违规（机械可修）：行尾空白 / 文件缺结尾换行
-        if any(ln != ln.rstrip() for ln in lines) or (
+        # 格式违规（机械可修）：行尾脏空白 / 文件缺结尾换行（行尾恰好两个空格
+        # 属 Markdown 硬换行语义，_trailing_ws_dirty 豁免，机械清理同样保留）
+        if any(_trailing_ws_dirty(ln) for ln in lines) or (
             text and not text.endswith("\n")
         ):
             format_pages.append(page["rel"])
@@ -539,34 +552,55 @@ def _apply_mechanical(project_root: Path, scan: dict) -> tuple[list[str], list[s
     manual: list[str] = []
     # [fenix-ignore:9c26e33a4a68] 病灶快照已在 run_audit 蒸馏锁内采集，扫描与删行同临界区，并发蒸馏 run 无法在两者之间插写错位行号。
     for item in scan["dangling"]:
-        text = item["path"].read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
+        orig_text = item["path"].read_text(encoding="utf-8", errors="replace")
+        lines = orig_text.splitlines()
         drop = set(item["drop_lines"])
         kept = [ln for i, ln in enumerate(lines) if i not in drop]
         text = "\n".join(kept)
         if text and not text.endswith("\n"):
             text += "\n"
 
+        removed_sources = 0
+
         def _clean_sources(mm: re.Match) -> str:
+            nonlocal removed_sources
             fields = mm.group(1)
             sm = re.search(r"sources=([^\s]+)", fields)
             if not sm:
                 return mm.group(0)
             names = [s for s in re.split(r"[,，]", sm.group(1)) if s]
             kept_names = [s for s in names if _source_base(s) in archives]
+            if not kept_names:
+                # sources 全悬空时保留原值不剔除：清空会产出 ``sources=`` 空值，
+                # marker 字段正则要求非空，校验将报「marker 字段非法」——该字符
+                # 串不在修复前违规快照里，属本轮新违规，会令整轮机械自修被回滚；
+                # 保留原值时悬空 sources 违规已在对基快照里，不会拦截提交。
+                return mm.group(0)
+            removed_sources += len(names) - len(kept_names)
             new_fields = fields[: sm.start(1)] + ",".join(kept_names) + fields[sm.end(1) :]
             return f"<!-- knowledge: {new_fields}-->"
 
         text = _MARKER_RE.sub(_clean_sources, text)
+        if text == orig_text:
+            # sources 全悬空保留原值且无悬空引用行可删：无实际改写，不写盘、
+            # 不计修复明细，转待人工（补建归档目录或人工清理 sources）。
+            manual.append(
+                f"{item['rel']}：marker sources 全部悬空（{len(item['missing_sources'])} 项），"
+                f"保留原值待人工处置"
+            )
+            continue
         atomic_write_text(item["path"], text)
         fixed.append(
             f"{item['rel']}：删除悬空溯源 {len(drop)} 行"
-            + (f"、剔除越界 sources {len(item['missing_sources'])} 项" if item["missing_sources"] else "")
+            + (f"、剔除越界 sources {removed_sources} 项" if removed_sources else "")
         )
     for rel in scan["format"]:
         path = Path(project_root) / rel
         text = path.read_text(encoding="utf-8", errors="replace")
-        cleaned = "\n".join(ln.rstrip() for ln in text.splitlines())
+        # 只剥脏行尾空白，保留恰好两个空格的 Markdown 硬换行（与扫描同口径）
+        cleaned = "\n".join(
+            ln.rstrip() if _trailing_ws_dirty(ln) else ln for ln in text.splitlines()
+        )
         if cleaned and not cleaned.endswith("\n"):
             cleaned += "\n"
         if cleaned != text:
@@ -700,7 +734,7 @@ def run_audit(
     （.fenix/knowledge_audit_findings.json）：no-conflict 按内容豁免跳派、
     同批快照滞后去重、连续两轮无确定性判定升级待人工。"""
     project_root = Path(project_root)
-    log = logger or _NullLogger()
+    log = logger or null_logger()
     cfg = ConfigLoader.get_knowledge_lane_config(config or {})
     core = load_knowledge_core()
     if core is None:
@@ -779,7 +813,7 @@ def run_audit(
             counts["pending_manual"] += len(manual_fixes)
             details["manual"].extend(manual_fixes)
         if fixed:
-            _, violations = _validate_with_repair(
+            _, violations = validate_with_repair(
                 project_root,
                 validate,
                 spawn,
@@ -832,6 +866,18 @@ def run_audit(
             _save_findings_ledger(project_root, ledger)
         pages = [finding["a"]["page"], finding["b"]["page"]]
 
+        # 待人工挂起（2.4）：escalated 只停自动复核，人工删除台账条目即消费
+        # 清除、恢复自动复核（todo.md 登记提供人工可见面）。escalated 为终态，
+        # 判定必须先于 superseded-in-batch——涉事页本批被纠偏时只走待人工
+        # 留痕，不得自动翻转状态（否则绕过人工消费约定、下轮重开复核）。
+        if entry.get("status") == "escalated":
+            counts["pending_manual"] += 1
+            details["manual"].append(
+                f"{finding['kind']}（{pages[0]} × {pages[1]}）：升级待人工（escalated），"
+                f"已停止自动复核"
+            )
+            continue
+
         # 同批快照滞后去重（2.3）：疑点清单在扫描开始一次性快照，涉及页在本批
         # 已被纠偏（机械段提交或此前转写提交，含 fail-open 落盘）时，快照规则
         # 行已不代表盘上现状，复核是白跑——标记 superseded-in-batch 跳过。
@@ -842,16 +888,6 @@ def run_audit(
             counts["superseded"] += 1
             details["superseded"].append(
                 f"{finding['kind']}（{pages[0]} × {pages[1]}）：涉及页本批已纠偏，跳过"
-            )
-            continue
-
-        # 待人工挂起（2.4）：escalated 只停自动复核，人工删除台账条目即消费
-        # 清除、恢复自动复核（todo.md 登记提供人工可见面）。
-        if entry.get("status") == "escalated":
-            counts["pending_manual"] += 1
-            details["manual"].append(
-                f"{finding['kind']}（{pages[0]} × {pages[1]}）：升级待人工（escalated），"
-                f"已停止自动复核"
             )
             continue
 
@@ -910,7 +946,7 @@ def run_audit(
             carryover = _knowledge_dirty_files(project_root)
             try:
                 spawn(prompt, run_id)
-                ok, violations = _validate_with_repair(
+                ok, violations = validate_with_repair(
                     project_root, validate, spawn, prompt, run_id
                 )
             except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余

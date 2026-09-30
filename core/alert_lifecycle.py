@@ -109,7 +109,9 @@ def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> 
     if status in TERMINAL_SPEC_STATUSES:
         reason = f"spec {spec_name} 已到达终态 {status}"
     else:
-        reason = f"spec {spec_name} 已离开 blocked（当前 {status}）"
+        # 中性表述：此分支对从未 blocked 的 spec（如 ready/in_progress）同样
+        # 命中，不宜断言「已离开 blocked」；空/缺失 status 兜底显示 unknown。
+        reason = f"spec {spec_name} 当前状态 {status or 'unknown'}，已非 blocked（视为解除）"
     return f"存量回填：{reason}" if backfill else reason
 
 

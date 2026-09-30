@@ -10,7 +10,7 @@ fix-knowledge-backfill-reconstruction：能力聚合全链蒸馏 + 史前复原�
   批序与正确性解耦、可并行、断点按能力续跑；
 - 进度台账 v2 ``.fenix/knowledge_backfill.jsonl`` 双维度条目：
   ``capability:<名>``（能力页蒸馏）与 ``adr:<归档名>``（归档 ADR 抽取），各自
-  pending/distilled/failed，断点独立续跑；v1 归档粒度条目首次重入作废重建；
+  pending/distilled/failed，断点独立续跑；v1 归档粒度条目重入作废剔除；
 - 首段「聚类自举 run」：读链索引能力全集，产出域骨架与 ``能力名 → 域`` 归位清单，
   并接入史前复原段（git 考古求差，未覆盖能力产史前页、已覆盖能力基线作链头）；
 - 中段按域分批派发聚合蒸馏 run，每批经 ``validate_knowledge`` 全量校验（≤2 轮
@@ -99,9 +99,16 @@ def load_knowledge_core():
 
 def atomic_write_text(path: Path, text: str) -> None:
     """整文件原子回写（tmp + os.replace）：裸 write_text 截断重写在进程中途
-    被打断会留半截文件（self_review 同款教训），台账/报告/域清单共用。"""
+    被打断会留半截文件（self_review 同款教训），台账/报告/域清单共用。
+
+    tmp 名掺入 pid：恒定 ``<name>.tmp`` 下，无锁并发回写（如 daemon 与
+    dashboard --serve 两进程同日竞跑体检收尾，audit 的 _write_state/
+    _save_findings_ledger 调本函数时不持锁）会交替截断同一 tmp 再 replace，
+    落盘交错/半旧内容（code-review a0df618ce06b）；tmp 源各自独立后
+    replace 的原子性才成立。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
@@ -194,10 +201,93 @@ def commit_pathspec(project_root: Path, paths: list[str], message: str) -> bool:
     return True
 
 
-def discard_knowledge_changes(project_root: Path) -> None:
-    """放弃本次产出：restore 已跟踪文件 + 清理目录内未跟踪新增（不留半成品，
-    对齐前置 SPEC 蒸馏放弃语义）。只清 ``spec/knowledge/``，不碰他物。"""
+def _knowledge_dirty_files(project_root: Path) -> set[str]:
+    """``spec/knowledge/`` 内未提交改动的 relpath 集合（tracked 改动 + 未跟踪
+    新增，未跟踪目录以整体目录条目出现）。
+
+    差集回滚的基线/现状快照共用（口径与 knowledge_audit._knowledge_dirty_files
+    一致，code-review b2e9ede6adec）；git 不可用/超时 fail-open 返回空集。
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.quotepath=false",
+                "status",
+                "--porcelain",
+                "--",
+                KNOWLEDGE_DIR,
+            ],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    files: set[str] = set()
+    for ln in proc.stdout.splitlines():
+        if len(ln) <= 3:
+            continue
+        rel = ln[3:].strip().strip('"')
+        if " -> " in rel:  # 重命名条目取新路径
+            rel = rel.split(" -> ", 1)[1]
+        if rel:
+            files.add(rel)
+    return files
+
+
+def discard_knowledge_changes(
+    project_root: Path,
+    before: Optional[set[str]] = None,
+    log=None,
+) -> None:
+    """放弃本次产出：只回滚本车道触达的文件（不留半成品，对齐前置 SPEC 蒸馏
+    放弃语义）。只动 ``spec/knowledge/``，不碰他物。
+
+    基线感知差集回滚（对齐 core.knowledge._discard_output 与
+    knowledge_audit._discard_paths 口径，code-review b2e9ede6adec）：``before``
+    为本段 run 前的脏文件快照，只对快照中不存在的新增脏路径 restore/clean；
+    当前仍脏且基线已有的路径疑似用户未提交的手工策展与本车道产出同文件
+    交织、无法安全拆分，降级 WARNING 留痕交人工核查，不再整目录连带回滚。
+    ``before`` 缺省（旧调用口径）退回整目录回滚，可能吞掉用户未提交改动，
+    仅作兜底保留。
+    """
     project_root = Path(project_root)
+    log = log or _NullLogger()
+    if before is not None:
+        after = _knowledge_dirty_files(project_root)
+        overlap = sorted(after & before)
+        if overlap:
+            log.warning(
+                "knowledge",
+                "回填失败回滚：spec/knowledge/ 下存在 run 前已有且当前仍脏的路径"
+                "（疑似用户未提交的手工策展，与本车道产出同文件无法安全拆分），"
+                "保留不回滚，请人工核查：" + ", ".join(overlap[:5]),
+            )
+        rels = sorted(after - before)
+        if not rels:
+            return
+        for rel in rels:
+            # restore 逐路径执行：pathspec 混入未跟踪新路径时整条命令会一起失败
+            subprocess.run(
+                ["git", "restore", "--", rel],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        subprocess.run(
+            ["git", "clean", "-qfd", "--", *rels],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        return
     kdir = project_root / KNOWLEDGE_DIR
     subprocess.run(
         ["git", "restore", "--", KNOWLEDGE_DIR],
@@ -278,14 +368,18 @@ class BackfillLedger:
     条目键带维度前缀：``capability:<能力名>``（能力页聚合蒸馏）与
     ``adr:<归档名>``（该归档 design.md 的 ADR 抽取扫描），各自
     pending/distilled/failed，断点重入按维度独立续跑；收敛汇报分维度计数。
-    v1 归档粒度条目（无前缀键）首次重入作废重建——回填尚未真跑过，无迁移
-    负担（台账是运行时进度非数据资产，design D2）。
+    v1 归档粒度条目（无前缀键）重入即作废剔除、v2 条目保留——台账是运行时
+    进度非数据资产，无迁移负担（design D2）；作废只针对非 v2 键本身，单条
+    v1 残留/误编辑行不再连带清空全部进度（code-review 5a5fe210d316）。
     """
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self.entries: dict[str, dict[str, Any]] = {}
         self.legacy_discarded = False
+        # load 时被作废剔除的 v1 旧格式键（留痕用，run_backfill 告警后随下次
+        # save 从盘上清除）
+        self.legacy_keys: list[str] = []
 
     @classmethod
     def load(cls, path: Path) -> "BackfillLedger":
@@ -302,9 +396,15 @@ class BackfillLedger:
                 name = entry.get("name")
                 if name:
                     ledger.entries[name] = entry
-        if any(not _is_v2_key(k) for k in ledger.entries):
-            ledger.entries = {}
+        # v1 残留只作废非 v2 键本身、保留 v2 条目：单条 v1 误编辑/残留行不再
+        # 连带清空全部 distilled 进度，令数十个 run 的成果为一行脏数据买单
+        # （code-review 5a5fe210d316）
+        stale = sorted(k for k in ledger.entries if not _is_v2_key(k))
+        for k in stale:
+            del ledger.entries[k]
+        if stale:
             ledger.legacy_discarded = True
+            ledger.legacy_keys = stale
         return ledger
 
     def _new_entry(self, key: str) -> dict[str, Any]:
@@ -507,7 +607,9 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     与后续 validate/提交/回滚竞写。SIGKILL 后 ``communicate`` 仍可能永久阻塞
     ——孙进程若重新 setsid 逃出进程组并继承 stdout/stderr 管道，管道不关闭
     （core.knowledge code-review 44d833e20470 教训），此时强杀直接子进程并弃
-    管道，保底让调用方 fail-open 路径继续走。
+    管道，保底让调用方 fail-open 路径继续走；弃管道后补一次限时 ``wait`` 尽力
+    收割，避免常驻进程内每次超时清场残留一个僵尸子进程（code-review
+    209d7134dc52）。
     """
     try:
         pgid = os.getpgid(proc.pid)
@@ -528,6 +630,12 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             for stream in (proc.stdout, proc.stderr):
                 if stream is not None:
                     stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+        # 尽力收割：强杀后不 wait 会残留僵尸子进程；孙进程仍持管道等收不回时
+        # 放弃，交由 init 兜底回收
+        try:
+            proc.wait(timeout=5)
         except Exception:  # noqa: BLE001
             pass
     except Exception:  # noqa: BLE001
@@ -593,6 +701,7 @@ def _violations_block(violations: list[str]) -> str:
 
 # 公开别名（core.knowledge_audit 复用，避免 import 私有名）
 violations_block = _violations_block
+null_logger = _NullLogger
 
 
 def _now_utc() -> str:
@@ -845,11 +954,37 @@ def _clean_untracked_knowledge(project_root: Path, log) -> None:
         )
 
 
+def _domain_has_tracked_content(project_root: Path, domain_dir: Path) -> bool:
+    """域目录内是否存在 git 已跟踪（已入库）文件。git 不可用/超时按 False
+    降级——剪枝照常执行，删除前留痕已足够人工从 git 找回。"""
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--",
+                domain_dir.relative_to(project_root).as_posix(),
+            ],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    return bool(proc.stdout.strip())
+
+
 def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]:
     """以真实聚类重建域清单：不在新域集合中的既有域目录整体移除（fixture
-    遗留域，如 zn-demo-domain）。Returns: 被移除的域名清单。"""
+    遗留域，如 zn-demo-domain）。含 git 已跟踪内容的域同样按白名单移除，但
+    单独告警留痕——单次 LLM 域命名漂移不应静默连带删除已入库知识页，误删
+    可从 git 恢复（code-review 6736a158bcf4）。Returns: 被移除的域名清单。"""
     domains_dir = project_root / KNOWLEDGE_DIR / "domains"
     removed: list[str] = []
+    removed_tracked: list[str] = []
     if not domains_dir.is_dir():
         return removed
     # LLM 值不信任：只收合法单路径成分，畸形值（带路径分隔符/相对引用）不得
@@ -861,11 +996,19 @@ def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]
     }
     for d in sorted(domains_dir.iterdir()):
         if d.is_dir() and d.name not in keep:
+            if _domain_has_tracked_content(project_root, d):
+                removed_tracked.append(d.name)
             shutil.rmtree(d, ignore_errors=True)
             removed.append(d.name)
     if removed:
         log.warning(
             "knowledge", f"回填自举重建域清单，移除遗留域：{', '.join(removed)}"
+        )
+    if removed_tracked:
+        log.warning(
+            "knowledge",
+            "回填自举重建域清单：被移除域含 git 已跟踪（已入库）内容，如系 "
+            "LLM 域命名漂移误删请从 git 恢复：" + ", ".join(removed_tracked),
         )
     return removed
 
@@ -953,6 +1096,12 @@ def run_backfill(
             project_root, f"回填台账 {LEDGER_RELPATH} 读取失败，请人工检查后重跑回填"
         )
         return {"triggered": False, "reason": "ledger-unreadable"}
+    if ledger.legacy_keys:
+        log.warning(
+            "knowledge",
+            f"回填台账含 {len(ledger.legacy_keys)} 条 v1 旧格式条目，已作废剔除"
+            f"（v2 条目保留）：{', '.join(ledger.legacy_keys[:5])}",
+        )
     ledger.reconcile(chain_index, archives)
     ledger.save()
     todo_caps = ledger.pending_capabilities()
@@ -975,6 +1124,8 @@ def run_backfill(
         # ── 聚类自举 run（v2：聚类对象从归档名改为链索引能力名）──
         # 写段取蒸馏锁：与 DistillManager 串行，防两车道并发写 spec/knowledge/
         with knowledge_distill_lock(project_root):
+            # 本段 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
+            dirty_baseline = _knowledge_dirty_files(project_root)
             # 自举重跑清场：fixture 遗留（未跟踪）先清，跑完再按真实聚类删遗留域
             _clean_untracked_knowledge(project_root, log)
             chain_caps = sorted(chain_index)
@@ -1010,7 +1161,7 @@ def run_backfill(
                     "reason": "bootstrap-validate-failed",
                 }
             if not ok:
-                discard_knowledge_changes(project_root)
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 append_todo_line(
                     project_root,
                     "回填自举产出校验 "
@@ -1024,8 +1175,24 @@ def run_backfill(
                 }
             # 剪枝移到校验通过之后：白名单出自 LLM 域清单，先删后验会在清单
             # 缺漏/畸形时把既有真实域内容物理删除并随提交落库；校验失败路径
-            # 此时还未删，无需依赖 restore 兜底（code-review 99e9e002cba5）
+            # 此时还未删，无需依赖 restore 兜底（code-review 99e9e002cba5）。
+            # 但剪枝仍发生在校验与提交之间——删域造成的 index/跨页链接断裂
+            # 须在提交前再拦一次，不随坏状态落库（code-review 6736a158bcf4）
             _prune_stale_domains(project_root, domain_map, log)
+            prune_violations = [str(v) for v in (validate(project_root) or [])]
+            if prune_violations:
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
+                append_todo_line(
+                    project_root,
+                    "回填自举剪枝后校验失败，已放弃本次产出待人工检查重跑："
+                    f"{prune_violations[:3]}",
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "bootstrap-prune-invalid",
+                    "violations": prune_violations[:10],
+                }
             try:
                 commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
@@ -1054,6 +1221,8 @@ def run_backfill(
     if not isinstance(inventory, list) or not inventory:
         # 写段取蒸馏锁（同聚类自举段）
         with knowledge_distill_lock(project_root):
+            # 本段 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
+            dirty_baseline = _knowledge_dirty_files(project_root)
             prompt = build_prehistoric_prompt(project_root, chain_index)
             run_id = f"kb-prehistoric-{int(time.time())}"
             try:
@@ -1092,7 +1261,7 @@ def run_backfill(
                     "reason": "prehistoric-validate-failed",
                 }
             if not ok:
-                discard_knowledge_changes(project_root)
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 append_todo_line(
                     project_root,
                     "回填史前复原产出校验 "
@@ -1136,6 +1305,8 @@ def run_backfill(
         # 写段取蒸馏锁：spawn→校验→提交/回滚作为整体与 DistillManager 串行，
         # 防两车道并发写 spec/knowledge/（code-review 2443e98dc1f0）
         with knowledge_distill_lock(project_root):
+            # 本批 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
+            dirty_baseline = _knowledge_dirty_files(project_root)
             base_prompt = build_prompt(
                 "batch",
                 batch=batch,
@@ -1182,7 +1353,7 @@ def run_backfill(
                         f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
                     )
                 uncommitted_keys.clear()
-                discard_knowledge_changes(project_root)
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 for cap in batch:
                     ledger.mark(CAPABILITY_PREFIX + cap, STATUS_FAILED, batch=i)
                 append_todo_line(
@@ -1223,6 +1394,8 @@ def run_backfill(
     for i, batch in enumerate(adr_batches, 1):
         # 写段取蒸馏锁（同能力聚合批次）
         with knowledge_distill_lock(project_root):
+            # 本批 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
+            dirty_baseline = _knowledge_dirty_files(project_root)
             base_prompt = build_prompt("adr", batch=batch)
             run_id = f"kb-adr{i}-{int(time.time())}"
             try:
@@ -1260,7 +1433,7 @@ def run_backfill(
                         f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
                     )
                 uncommitted_keys.clear()
-                discard_knowledge_changes(project_root)
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 for a in batch:
                     ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
                 append_todo_line(
@@ -1348,6 +1521,10 @@ def _validate_with_repair(
         )
         violations = [str(v) for v in (validate(project_root) or [])]
     return (not violations), violations
+
+
+# 公开别名（core.knowledge_audit 复用，避免 import 私有名；须置于定义之后）
+validate_with_repair = _validate_with_repair
 
 
 def _write_report(project_root: Path, summary: dict) -> None:
