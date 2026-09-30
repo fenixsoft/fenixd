@@ -1988,6 +1988,43 @@ class AgentRunner:
             self.project_root, spec_name, run_id, agent_type,
             wt_path=wt_path, statuses=self._IMPL_RESULT_STATUSES)
 
+    def _wip_checkpoint_commit_safe(self, spec_name: str, wt_path, anchor: str,
+                                    exclude_main_tree: bool = False) -> None:
+        """WIP 保全内核（code-review item b812e741e04b：三锚点助手单点化）。
+
+        统一「None 跳过 → _worktree_path_valid 校验 →（可选主树排除）→
+        commit_wip_checkpoint → 失败 WARNING 兜底」调用序列；日志文案以
+        anchor 插值（三个锚点常量值即各自原前缀文案），收敛前后可观测输出
+        逐字等价。失败仅 WARNING 降级，绝不阻断调用方的收口/退避/轮询流程。
+        """
+        if wt_path is None:
+            return
+        if not self._worktree_path_valid(wt_path):
+            self.logger.debug(
+                "agent_runner",
+                f"WIP checkpoint ({anchor}) skip: worktree "
+                f"{wt_path} not a valid git worktree for '{spec_name}'",
+            )
+            return
+        if exclude_main_tree and self._is_main_worktree(wt_path):
+            self.logger.debug(
+                "agent_runner",
+                f"WIP checkpoint ({anchor}) skip: {wt_path} is the main "
+                f"worktree (no dedicated worktree lane) for '{spec_name}'",
+            )
+            return
+        try:
+            commit_wip_checkpoint(
+                wt_path, spec_name, anchor, self.logger)
+        except Exception as e:
+            # 兜底：commit_wip_checkpoint 理论上不抛，防御性捕获保证调用方
+            # 流程不被阻断
+            self.logger.warning(
+                "agent_runner",
+                f"WIP checkpoint ({anchor}) failed for '{spec_name}': "
+                f"{e} — non-blocking",
+            )
+
     def _wip_checkpoint_before_backoff(self, spec_name: str, wt_path) -> None:
         """锚点 B（add-impl-wip-checkpoint D3）：transient 原地退避前的 WIP 提交。
 
@@ -2001,25 +2038,9 @@ class AgentRunner:
         路径）或路径已失效时跳过——现行行为逐字节不变。失败由 helper 内部
         WARNING 降级，不阻断退避循环。
         """
-        if wt_path is None:
-            return
-        if not self._worktree_path_valid(wt_path):
-            self.logger.debug(
-                "agent_runner",
-                f"WIP checkpoint (transient-backoff) skip: worktree "
-                f"{wt_path} not a valid git worktree for '{spec_name}'",
-            )
-            return
-        try:
-            commit_wip_checkpoint(
-                wt_path, spec_name, ANCHOR_TRANSIENT_BACKOFF, self.logger)
-        except Exception as e:
-            # 兜底：helper 理论上不抛，防御性捕获保证退避循环不被打断
-            self.logger.warning(
-                "agent_runner",
-                f"WIP checkpoint (transient-backoff) failed for '{spec_name}': "
-                f"{e} — non-blocking",
-            )
+        # 收敛单点（code-review item b812e741e04b）：调用序列与日志文案见内核
+        self._wip_checkpoint_commit_safe(spec_name, wt_path,
+                                         ANCHOR_TRANSIENT_BACKOFF)
 
     def _wip_checkpoint_on_forced_kill(self, spec_name: str, wt_path,
                                        anchor: str = ANCHOR_TURN_LIMIT) -> None:
@@ -2046,32 +2067,9 @@ class AgentRunner:
         脏状态卷进主分支历史，故 WIP 保全只对拥有专属 worktree 的车道执行。
         失败由 helper 内部 WARNING 降级（git 超时/失败不阻断收口流程）。
         """
-        if wt_path is None:
-            return
-        if not self._worktree_path_valid(wt_path):
-            self.logger.debug(
-                "agent_runner",
-                f"WIP checkpoint ({anchor}) skip: worktree "
-                f"{wt_path} not a valid git worktree for '{spec_name}'",
-            )
-            return
-        if self._is_main_worktree(wt_path):
-            self.logger.debug(
-                "agent_runner",
-                f"WIP checkpoint ({anchor}) skip: {wt_path} is the main "
-                f"worktree (no dedicated worktree lane) for '{spec_name}'",
-            )
-            return
-        try:
-            commit_wip_checkpoint(
-                wt_path, spec_name, anchor, self.logger)
-        except Exception as e:
-            # 兜底：helper 理论上不抛，防御性捕获保证强杀收口不被阻断
-            self.logger.warning(
-                "agent_runner",
-                f"WIP checkpoint ({anchor}) failed for '{spec_name}': "
-                f"{e} — non-blocking",
-            )
+        # 收敛单点（code-review item b812e741e04b）：强杀路径额外排除主树车道
+        self._wip_checkpoint_commit_safe(
+            spec_name, wt_path, anchor, exclude_main_tree=True)
 
     def _wip_checkpoint_on_extension_tail(self, spec_name: str, wt_path) -> None:
         """extension 末位窗口保全（add-fast-track-scale-precheck D3）。
@@ -2086,25 +2084,9 @@ class AgentRunner:
         失败由 helper 内部 WARNING 降级（git 超时/失败不阻断轮询与收口，
         任务 3.2：保全失败仅 WARNING，既有超时收口照常执行）。
         """
-        if wt_path is None:
-            return
-        if not self._worktree_path_valid(wt_path):
-            self.logger.debug(
-                "agent_runner",
-                f"WIP checkpoint (extension-tail) skip: worktree "
-                f"{wt_path} not a valid git worktree for '{spec_name}'",
-            )
-            return
-        try:
-            commit_wip_checkpoint(
-                wt_path, spec_name, ANCHOR_EXTENSION_TAIL, self.logger)
-        except Exception as e:
-            # 兜底：helper 理论上不抛，防御性捕获保证轮询/收口不被阻断
-            self.logger.warning(
-                "agent_runner",
-                f"WIP checkpoint (extension-tail) failed for '{spec_name}': "
-                f"{e} — non-blocking",
-            )
+        # 收敛单点（code-review item b812e741e04b）：调用序列与日志文案见内核
+        self._wip_checkpoint_commit_safe(spec_name, wt_path,
+                                         ANCHOR_EXTENSION_TAIL)
 
     def _turn_branch_state_forget(self, run_id: str) -> None:
         """run 收尾摘除该 run 的轮次分支基线（code-review item b9f426346304）。
@@ -2972,11 +2954,21 @@ class AgentRunner:
         # [Errno 2] 秒挂白烧一次重试额度。失效处置：implementer/fast-track 丢弃
         # 引用改走新建分支路径；repair 载体失效显式失败交还调度层重新解析
         # （repair 语义要求在实现分支内修复，换新分支即失去载体意义）。
+        # code-review item ecb716eb5dd8：复用前路径校验扩到全部 agent_type——
+        # _finalize_failure_keep 已把 attempt 间 worktree 保留扩展到全部
+        # agent_type，verifier/planner-plan/planner-judge 在 attempt≥2 同样经
+        # st.wt_path 复用上一 attempt 目录；失效时不校验会以 Popen cwd
+        # FileNotFoundError 秒挂白烧重试额度，故一并改走新建（repair 除外，
+        # 维持载体失效显式失败交还调度层）。
         reuse_worktree = False
-        if (agent_type in ("implementer", "fast-track", "repair")
-                and wt_path is not None):
+        if wt_path is not None:
             if self._worktree_path_valid(wt_path):
-                reuse_worktree = True
+                # reuse_worktree（--resume 续跑会话）语义仅 implementer 族
+                # 保持：这些车道跨 attempt resume 上一会话；其余车道
+                # （verifier/planner-plan/planner-judge 等）复用目录但会话
+                # 全新（不 --resume）——语义注记：复用目录≠续跑会话。
+                reuse_worktree = agent_type in (
+                    "implementer", "fast-track", "repair")
             elif agent_type == "repair":
                 error_msg = (f"repair worktree {wt_path} lost between attempts "
                              f"— need fresh carrier resolution")
@@ -3079,6 +3071,14 @@ class AgentRunner:
                 f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
             )
             used_wts.add(wt_path)
+            # add-worktree-test-server（D7 幂等 ensure，code-review item
+            # 83d395247704）：复用分支同样补启专属 dev-server——repair 载体
+            # （pre_wt_path）、recovery 恢复续做与 transient 终态 keep 复用
+            # 认领等入口均从本分支进入，而上一终态 keep 前已
+            # _v2_stop_for_worktree 停掉 server；不补启则 _v2_inject_env 返回
+            # 空、agent 测试静默回退主树 8787。launch 为幂等 ensure（存活
+            # 条目零开销直接返回），与新建分支同口径。
+            self._v2_launch_for_worktree(wt_path)
             if agent_type == "fast-track":
                 # 跨 attempt 复用同一 worktree：补记继承痕迹（prompt 注入用）
                 self.worktree_manager.mark_reused(
@@ -4168,9 +4168,10 @@ class AgentRunner:
                 and not stall_budget_flag:
             time.sleep(10)  # Wait before retry
             # fix-provider-transient-backoff（D3）：attempt 间 worktree
-            # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
-            # frozen/取消检查（见上方 reuse_worktree 判定），不再清工作树。
-            # dev-server 随之复用，不重复启停。
+            # 保留扩展到全部 agent_type——各车道复用前均过 _prepare_worktree
+            # 的复用前路径校验（item ecb716eb5dd8 起覆盖全部 agent_type），
+            # 不再清工作树。dev-server 随之复用，不重复启停（复用分支的
+            # 幂等 launch 兜底补启）。
             return False
         self._v2_stop_for_worktree(st.wt_path)
         if shutdown_interrupted:
@@ -4794,7 +4795,14 @@ class AgentRunner:
                             # 指标（纯读侧旁路）。来源：assistant 事件的
                             # message.usage（与转录同源），不用 CLI
                             # result.modelUsage（D3 记账段证实矛盾）。
-                            _msg = entry.get("message") or {}
+                            # message 本体判型（code-review item 8497e815fa1d）：
+                            # 载体为字符串/列表等 truthy 非 dict 值时 _msg.get
+                            # 抛 AttributeError 命中外层 except——stdout 读线程
+                            # 死亡并误杀整个 run。与 usage/content 的单事件
+                            # 防御同粒度：单事件异常不得终止读线程。
+                            _msg = (entry.get("message")
+                                    if isinstance(entry.get("message"), dict)
+                                    else {})
                             _usage = _msg.get("usage") or {}
                             # usage 字段级防御（code-review item 3a3c7edfa67b）：
                             # 畸形值（非数值字符串/嵌套 dict）令 int() 抛
@@ -5582,6 +5590,14 @@ class AgentRunner:
                 self._provider_circuit._daily_reset_date = today
 
         limit = self._get_config("agents.daily_run_limit", 50)
+        # 类型钳制（code-review item 6d450d30e77c）：对齐 max_retries 的既有
+        # 钳制写法——配置误写成字符串/列表等类型时 ``limit > 0`` 抛 TypeError，
+        # 异常沿 attempt 循环顶裸冒泡，run 收口为与真实死因（配置非法）无关的
+        # 错误形态。非法值统一回落缺省 50。
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 50
         if limit > 0 and self._daily_run_count >= limit:
             raise RuntimeError(f"Daily agent run limit ({limit}) reached")
 
@@ -6511,6 +6527,33 @@ class AgentRunner:
         Returns: 成功写入旗标的 run_id 列表（供调用方留痕于排水日志）。
         """
         dispatched: list = []
+        # code-review item 777a56554bdf：广播前顺带回收陈旧旗标。旗标是排水期
+        # 一次性单向信号，只对在飞 run 有意义；消费链路核实结论：全仓检索无
+        # 读取方（core/ 仅此写点，tests/ 仅断言写侧语义），「有响应语义的
+        # run」的读取链路在仓内不可见。清理点选在旗标唯一写者处而非
+        # _execute_agent 终态 finally：_running_agents 的登记点在 _run_claude
+        # 内，dispute-judge / spec-review 等维护车道直调 _run_claude、不经
+        # _execute_agent 收口，终态清理会漏掉这批旗标；archive_spec_runs 只
+        # 扫 *.jsonl（SPEC 生命周期口径）也不覆盖。此处按「run 已不在在飞
+        # 注册表（或进程已退出）即删」回收，覆盖任意车道与跨 daemon 残留，
+        # 不再随派发量线性累积；单文件失败 best-effort 忽略，不影响广播与
+        # 排水流程。
+        try:
+            _live_ids = set(self.running_run_ids())
+            for _stale in (self.project_root / ".fenix" / "runs").glob(
+                    "*.checkpoint.json"):
+                if _stale.name.removesuffix(".checkpoint.json") in _live_ids:
+                    continue
+                try:
+                    _stale.unlink()
+                except OSError as e:
+                    self.logger.debug(
+                        "agent_runner",
+                        f"restart checkpoint 陈旧旗标回收失败（忽略）: "
+                        f"{_stale.name}: {e}",
+                    )
+        except OSError:
+            pass  # runs 目录不可枚举：回收失败不影响广播主流程
         for rid in self.running_run_ids():
             try:
                 runs_dir = self.project_root / ".fenix" / "runs"

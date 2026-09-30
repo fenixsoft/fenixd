@@ -104,6 +104,12 @@ class V2ServerManager:
                     # 锁外停掉即可，无需 discard。
                     loser = (port, proc)
                 else:
+                    if current is not None:
+                        # 覆写窗口期内他者登记的死亡条目：其端口登记时已入共享记账，
+                        # 覆写前补 discard 释放，与 launch/inject 侧陈旧条目处理口径
+                        # 对齐（discard 对不在集合的端口安全，即使端口与本次相同也
+                        # 先释后记无副作用），避免死亡端口滞留 used_ports 缩池。
+                        self._v2_used_ports.discard(current[0])
                     self._v2_servers[key] = (port, proc)
                     self._v2_used_ports.add(port)
         except V2DevServerError as e:

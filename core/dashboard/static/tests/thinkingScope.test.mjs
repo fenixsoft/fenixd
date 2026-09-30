@@ -55,6 +55,20 @@ test('时间戳缺失时回退', () => {
   assert.equal(thinking.thinkingSeconds, undefined);
 });
 
+// item 5828e59782f2：同事件 tool_use 的心跳观测耗时从估算差值中扣除，
+// 工具执行时长不再计入「已思考 N 秒」
+test('同事件工具的心跳观测耗时从估算差值中扣除', () => {
+  const msgs = runEventsToChatMessages([
+    assistantEventAt('2026-09-22T05:12:24', [thinkingBlock('长工具前的思考'), bashBlock('t1', 'ls')]),
+    { type: 'tool_progress', tool_use_id: 't1', elapsed_time_seconds: 290 },
+    assistantEventAt('2026-09-22T05:17:15', [textBlock('结论')]),
+  ]);
+  const thinking = msgs.find((m) => m.isThinking);
+  assert.ok(thinking);
+  // 差值 291s - 工具观测 290s ≈ 1s，不再把工具执行时长整体计入
+  assert.equal(thinking.thinkingSeconds, 1);
+});
+
 // ── 首行预览 ─────────────────────────────────────────────────────────
 
 test('预览取首个非空行，超长约 40 字符截断加省略号', () => {

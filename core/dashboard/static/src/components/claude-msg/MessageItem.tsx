@@ -44,6 +44,24 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
     [message.content],
   );
 
+  // JSON 正文探测与格式化纳入 useMemo（item 14eea692ef38）：此前在渲染 IIFE 内
+  // 每次组件渲染都重复 JSON.parse + JSON.stringify，长 JSON 正文叠加父列表重
+  // 渲染产生重复解析开销——仅在正文变化时重算，非 JSON 返回 null 走普通分支
+  const jsonFormattedContent = useMemo<string | null>(() => {
+    const trimmed = formattedMessageContent.trim();
+    if (
+      (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
+      (trimmed.endsWith('}') || trimmed.endsWith(']'))
+    ) {
+      try {
+        return JSON.stringify(JSON.parse(trimmed), null, 2);
+      } catch {
+        // Not valid JSON, fall through to normal rendering
+      }
+    }
+    return null;
+  }, [formattedMessageContent]);
+
   const formattedTime = useMemo(() => {
     // 非法 timestamp（缺失/格式错）解析得 Invalid Date，toLocaleTimeString 会把
     // 字面 'Invalid Date' 渲染到头像行/气泡时间（code-review item 4bc55b8aa8d6）：
@@ -74,6 +92,10 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
                 </Markdown>
               </div>
               <div className="mt-1 flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                {/* 复制口径与气泡展示同源（item 1c90277944ce）：用户气泡原样渲染
+                    message.content，复制原始 content；assistant 气泡渲染的是经
+                    formatUsageLimitText（及 JSON 格式化）后的文本，复制同源格式化
+                    文本——两处统一为「剪贴板 == 气泡所见」，不做跨类型拉齐 */}
                 {String(message.content || '').trim().length > 0 && (
                   <MessageCopyControl content={String(message.content || '')} />
                 )}
@@ -157,38 +179,27 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
             ) : (
               <div dir="auto" className="text-sm text-gray-700">
                 {(() => {
-                  const content = formattedMessageContent;
-                  // Detect if content is pure JSON (starts with { or [)
-                  const trimmedContent = content.trim();
-                  if (
-                    (trimmedContent.startsWith('{') || trimmedContent.startsWith('[')) &&
-                    (trimmedContent.endsWith('}') || trimmedContent.endsWith(']'))
-                  ) {
-                    try {
-                      const parsed = JSON.parse(trimmedContent);
-                      const formatted = JSON.stringify(parsed, null, 2);
-                      return (
-                        <div className="my-2">
-                          <div className="overflow-hidden rounded-lg border border-border bg-muted">
-                            <pre className="overflow-x-auto p-4">
-                              <code className="block whitespace-pre font-mono text-sm text-foreground">
-                                {formatted}
-                              </code>
-                            </pre>
-                          </div>
+                  // JSON 探测/格式化结果已 memo 化（item 14eea692ef38），此处只做分支渲染
+                  if (jsonFormattedContent !== null) {
+                    return (
+                      <div className="my-2">
+                        <div className="overflow-hidden rounded-lg border border-border bg-muted">
+                          <pre className="overflow-x-auto p-4">
+                            <code className="block whitespace-pre font-mono text-sm text-foreground">
+                              {jsonFormattedContent}
+                            </code>
+                          </pre>
                         </div>
-                      );
-                    } catch {
-                      // Not valid JSON, fall through to normal rendering
-                    }
+                      </div>
+                    );
                   }
 
                   return message.type === 'assistant' ? (
                     <Markdown className="prose prose-sm prose-gray max-w-none">
-                      {content}
+                      {formattedMessageContent}
                     </Markdown>
                   ) : (
-                    <div className="whitespace-pre-wrap">{content}</div>
+                    <div className="whitespace-pre-wrap">{formattedMessageContent}</div>
                   );
                 })()}
               </div>
@@ -198,6 +209,9 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
               !message.isThinking &&
               !message.isToolUse &&
               String(message.content || '').trim().length > 0 && (
+                /* 复制口径与气泡展示同源（item 1c90277944ce）：气泡渲染的是
+                   formatUsageLimitText 后的文本，复制同源格式化文本，保证
+                   「剪贴板 == 气泡所见」（用户消息侧同理复制其原样展示的 content） */
                 <div className="group mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400">
                   <MessageCopyControl content={formattedMessageContent} />
                 </div>

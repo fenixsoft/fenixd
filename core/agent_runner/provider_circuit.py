@@ -732,7 +732,8 @@ class ProviderCircuit:
         ``HTTP 503`` 字样），使不同 spec 的同型瞬断收敛为同一指纹、真实缺陷型
         错误文本各异则指纹不同。
 
-        实现要点：小写化 → 剥离 ``[claude-code:...]`` 诊断前缀 → 剥 model 名
+        实现要点：小写化 → 剥离 ``[claude-code:...]`` 诊断前缀 → 剥已知非模型
+        数字字段（exit code / http 状态码 / request id）→ 剥 model 名
         （``deepseek-v4-flash`` / ``glm-5.3-flash`` / ``claude-*`` 等形态）→
         剥 ISO 时间戳与长数字串 → 压空白。
         """
@@ -741,11 +742,27 @@ class ProviderCircuit:
         text = error_text.lower()
         # 剥 [claude-code:...] 诊断前缀（v2.1.233+ 每请求写入的噪音）
         text = re.sub(r"\[claude-code:[^\]]*\]", "", text)
-        # 剥 model 名：版本化模型名形如 deepseek-v4-flash / glm-5.3-flash /
-        # claude-3-5-haiku（含「-<数字>」片段）。统一替换为占位符，使不同
-        # 模型变体的同型瞬断收敛为同一指纹。
+        # 先剥已知非模型数字字段（item 686d4a1b599f：必须先于 model 归一，否则
+        # 「字母段-数字」形态会被下方模型 pattern 误吞成 <model>，不同退出码/
+        # 状态码的异类失败被折进同一指纹）。exit code / http 状态码保留数值——
+        # 异类失败指纹必须互异；连字符与空格两种书写形态统一为空格形态，同一
+        # 错误收敛同一指纹。request id 本身是可变字段，剥为骨架。
+        text = re.sub(r"\bexit[\s-]+code[\s-]+(\d+)\b", r"exit code \1", text)
+        text = re.sub(r"\bhttp[\s-]+(\d{3})\b", r"http \1", text)
         text = re.sub(
-            r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*-v?\d+(?:\.\d+)*(?:-[a-z0-9.]+)*\b",
+            r"\brequest[\s-]+id[\s-]+[a-z0-9][a-z0-9-]*\b", "request id", text
+        )
+        # 剥 model 名：版本化模型名形如 deepseek-v4-flash / glm-5.3-flash /
+        # claude-3-5-haiku（含「-<数字>」版本片段）。统一替换为占位符，使不同
+        # 模型变体的同型瞬断收敛为同一指纹。
+        # 版本段收窄（item 686d4a1b599f）：数字版本段只认三类形态——``v`` 前缀
+        # （``-v4``）、点分版本（``-5.3``）、1-2 位裸数字（``-5``，即
+        # claude-sonnet-5 / gpt-5 形态）；裸 3 位以上数字尾段（exit-code-143 /
+        # http-503 / request-id-88271）不构成版本段，不触发剥离。
+        text = re.sub(
+            r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+            r"(?:-v\d+(?:\.\d+)*|-\d{1,2}(?:\.\d+)+|-\d{1,2})"
+            r"(?:-[a-z0-9.]+)*\b",
             "<model>",
             text,
         )
@@ -1467,7 +1484,9 @@ class ProviderCircuit:
         「读旧引 → 造新 → 存新 → cancel 旧」序列持锁（item 62a1c4e3e71f）：
         并发排程的交错此前可留下两活定时器只跟踪其一；cancel/start 在锁外
         （cancel 已 fire 定时器为无操作；start 后回调线程经 _on_unseal_wake
-        再取锁，不持 _queue_lock，无锁序风险）。
+        再取锁，不持 _queue_lock，无锁序风险）。start 失败（线程资源耗尽/
+        解释器关停期可抛 RuntimeError）按身份清登记并 WARNING 留痕
+        （item fac3f4dfaeb4），交下一次状态迁移重新排程，自驱链不静默断裂。
         """
         with self._unseal_lock:
             prior = self._unseal_wake_timer
@@ -1479,7 +1498,21 @@ class ProviderCircuit:
             self._unseal_wake_timer = timer
         if prior is not None:
             prior.cancel()
-        timer.start()
+        try:
+            timer.start()
+        except Exception:
+            # 死定时器不清会使登记表指向永不回调的引用且无痕（item
+            # fac3f4dfaeb4）：按身份清登记（与 _on_unseal_wake 同款判别，避免
+            # 抹掉并发新排程），先复位再留 WARNING 痕。
+            with self._unseal_lock:
+                if self._unseal_wake_timer is timer:
+                    self._unseal_wake_timer = None
+            self._pm.logger.warning(
+                "agent_runner",
+                "Unseal wake timer failed to start — registration cleared, "
+                "wake chain resumes on next state transition "
+                "(evo-fix-transient-break-unseal-backoff)",
+            )
 
     def _on_unseal_wake(self, timer: threading.Timer) -> None:
         """解封节奏定时器回调：唤醒派发闸门 + 按当前态续排下一锚点。"""

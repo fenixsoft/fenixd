@@ -121,6 +121,10 @@ const TERMINAL_RUN_STATUSES = new Set([
   'cancelled',
   'missing',
   'frozen-terminated',
+  // stall-budget-terminated（item 87adf6f381d5）：与 SSE 增量路径的
+  // TERMINAL_EVENT_STATUS 词表对齐——事件产物被轮转/清理的零事件停滞判停 run
+  // 不入集会恒停在「等待输出」转圈
+  'stall-budget-terminated',
 ]);
 
 export default function ClaudeOutputPane({
@@ -438,9 +442,9 @@ export default function ClaudeOutputPane({
   }
 
   // run 定位成功但尚未产出事件：未终态时明确提示 loading；已终态（done/error/
-  // interrupted/cancelled/missing/frozen-terminated，含事件产物被轮转/清理的
-  // 零事件历史 run）改静态提示，不再永久停在「等待输出」转圈
-  // （code-review item 97dcdc581245）
+  // interrupted/cancelled/missing/frozen-terminated/stall-budget-terminated，
+  // 含事件产物被轮转/清理的零事件历史 run）改静态提示，不再永久停在「等待输出」
+  // 转圈（code-review item 97dcdc581245）
   if (events.length === 0) {
     const isTerminalStatus = TERMINAL_RUN_STATUSES.has(runStatus);
     return (

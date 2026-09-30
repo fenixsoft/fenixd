@@ -529,8 +529,19 @@ class LivenessSupervisor:
         for prefix in ("impl", "verify", "spec-review", "repair", "planner-judge", "dispute-judge"):
             try:
                 paths = list(runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"))
-            except OSError:
-                return False
+            except OSError as e:
+                # 单前缀 glob 失败（瞬时 I/O 异常）只跳过本前缀继续扫描其余车道，
+                # 不短路整体判定：此处若 return False，impl 前缀一失败就跳过
+                # 其余五个前缀的存活检查，has_live_attempt 对仍有存活子进程的
+                # spec 误判「无存活 attempt」，调用方会重置状态（误判 False 比
+                # 误判 True 更重）。与下方 p.stat() 的 OSError continue 口径
+                # 一致；全部前缀均失败自然落到函数末尾 return False。
+                self._pm.logger.debug(
+                    "agent_runner",
+                    f"_stream_recent glob failed for prefix '{prefix}' of "
+                    f"'{spec_name}': {e}",
+                )
+                continue
             for p in paths:
                 # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
                 # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的活跃流延期
@@ -1428,6 +1439,10 @@ class LivenessSupervisor:
                             "type": "interrupted",
                             "reason": "daemon shutdown",
                             "by": "agent_runner",
+                            # 与启动/运行期两处清扫的 interrupted 补写对齐：
+                            # append_run_line 原样序列化不自动补时间戳，
+                            # 下游按事件 timestamp 做时序/时效判定时不可缺位
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         },
                     )
             except Exception as e:  # pragma: no cover - run 文件写入失败不影响退出

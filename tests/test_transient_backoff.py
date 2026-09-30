@@ -1297,6 +1297,54 @@ class TestRealFailureFingerprintReplay:
         fps = [ProviderCircuit.normalize_transient_fingerprint(b) for b in bugs]
         assert len(set(fps)) == 3, f"真实缺陷文本指纹应互异: {fps}"
 
+    def test_non_model_numeric_fields_not_swallowed_as_model(self):
+        """exit code / http 状态码 / request id 保留原文，异类失败指纹互异。
+
+        （item 686d4a1b599f：旧宽 pattern 把「连字符分段且数字结尾」的 token
+        一律剥成 <model>，不同退出码/HTTP 状态码的异类失败被折进同一指纹。）
+        """
+        failures = [
+            "process terminated with exit-code-143",
+            "process terminated with exit-code-137",
+            "gateway returned http-503",
+            "gateway returned http-502",
+            "upstream rejected request-id-88271",
+        ]
+        fps = [ProviderCircuit.normalize_transient_fingerprint(s) for s in failures]
+        assert len(set(fps)) == len(failures), f"异类失败指纹应互异: {fps}"
+        assert all("<model>" not in fp for fp in fps), (
+            f"非模型数字字段不应被剥成 <model>: {fps}"
+        )
+
+    def test_numeric_field_hyphen_and_space_forms_converge(self):
+        """同一错误的连字符/空格两种书写形态收敛到同一指纹（item 686d4a1b599f）。"""
+        pairs = [
+            ("process terminated with exit-code-143",
+             "process terminated with exit code 143"),
+            ("gateway returned http-503", "gateway returned http 503"),
+            ("upstream rejected request-id-88271",
+             "upstream rejected request id 88271"),
+        ]
+        for hyphen_form, space_form in pairs:
+            assert (
+                ProviderCircuit.normalize_transient_fingerprint(hyphen_form)
+                == ProviderCircuit.normalize_transient_fingerprint(space_form)
+            ), f"两种书写形态应收敛同一指纹: {hyphen_form!r} vs {space_form!r}"
+
+    def test_versioned_model_names_still_normalized_to_placeholder(self):
+        """收窄版本段 pattern 后真模型名（含版本号形态）仍剥成 <model> 且变体收敛。"""
+        texts = [
+            'API error: unrecognized model "deepseek-v4-flash"',
+            'API error: unrecognized model "glm-5.3-flash"',
+            'API error: unrecognized model "claude-sonnet-5"',
+            'API error: unrecognized model "claude-3-5-haiku"',
+        ]
+        fps = [ProviderCircuit.normalize_transient_fingerprint(t) for t in texts]
+        assert all("<model>" in fp for fp in fps), (
+            f"真模型名应仍被归一为 <model>: {fps}"
+        )
+        assert len(set(fps)) == 1, f"模型变体同型瞬断应收敛同一指纹: {fps}"
+
 
 class TestShutdownInterruptGuard:
     """shutdown-kill 不进瞬断通道（2026-09-09 事故守卫）。
