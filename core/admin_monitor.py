@@ -3866,14 +3866,21 @@ class AdminMonitor:
                 # 终态回写（evo-signal-preprobe-handled-writeback R5）：处置 run 写入
                 # 非 pending 的最终处置结果后，回写对应信号 handled=true——原信号不再
                 # 永挂未处理（此前 mark_signal_handled 仅有 dashboard 人工 alert-resolve
-                # 调用方，处置 run 自动链路上无人回写）。两类豁免：escalate=true 属
+                # 调用方，处置 run 自动链路上无人回写）。三类豁免：escalate=true 属
                 # 升级人工（人工处置是唯一出路，由人工 alert-resolve 闭环）；人工显式
-                # 触发路径 signal_rec=None 无关联记录，跳过。回写失败仅记警告日志，
+                # 触发路径 signal_rec=None 无关联记录，跳过；success=False 的处置
+                # （code-review item 14ce3542d2b9）不回写——run 失败/产物硬门拦截时
+                # result 是框架兜底的 "failed"（零动作），只看 result 会把这类失败
+                # 终态也当处置完成回写 handled，信号被零动作误闭环且不再升级；管理员
+                # 显式宣告 failed（success=True、有真实动作）照常回写。getattr 保底
+                # True 仅为替身兼容（真实 AdminDisposition 恒有 success，同上方
+                # failure_evidence 类型守卫动机）。回写失败仅记警告日志，
                 # 不阻塞处置结果落盘。
                 if (
                     disp.result
                     and disp.result != "pending"
                     and not disp.escalate
+                    and getattr(disp, "success", True)
                     and signal_rec is not None
                 ):
                     try:

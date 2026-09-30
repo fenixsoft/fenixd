@@ -156,6 +156,48 @@ def _apply_provider_env(
         env_overrides[k] = v
 
 
+def _write_lane_provider_marker(
+    runner, run_id: str, spec_name: str, agent_type: str, assignment
+) -> None:
+    """维护型车道 assignment 命中时写 provider_marker（code-review item
+    faea95e2d494）。
+
+    五条维护车道（administrator/self-review/evolution/code-review/code-fix）
+    都不经 _execute_agent_inner 的 attempt 环（runner.py 的自动写点），此前
+    除 run_administrator 手动写点外，其余四条车道的 run jsonl 无任何
+    provider/model 痕迹；而 _admin_failure_evidence 定位「模型不被网关接受」
+    类失败正依赖 provider_marker。本助手在各车道 assignment 命中分支统一
+    接入，观测口径一致：车道不接 failover、只用链首选直连，链内下标恒 0/1
+    （与 run_administrator 既有写点同口径）。未命中（回退 _get_admin_model
+    的默认网关形态）不写。写点是观测增强：替身 runner 缺写点或写入失败
+    均不阻断维护 run 主流程。
+    """
+    if not assignment:
+        return
+    provider, model_override = assignment[0]
+    marker_fn = getattr(runner, "_write_provider_marker", None)
+    if not callable(marker_fn):
+        # 替身/精简 runner 未提供写点（观测通道缺失）→ 跳过，不阻断车道
+        return
+    try:
+        marker_fn(
+            run_id,
+            spec_name,
+            agent_type,
+            provider.get("name"),
+            model_override,
+            0,
+            1,
+        )
+    except Exception as e:  # noqa: BLE001 — 观测增强，写失败不阻断维护 run
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"provider_marker 写入失败 {run_id}（不阻断维护 run）: {e}",
+            )
+
+
 def _unique_admin_run_id(runner, spec: str) -> str:
     """生成不冲突的 ``admin-<spec>-<epoch>`` run_id（code-review item d543e3aaf129）。
 
@@ -218,17 +260,10 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         provider, model_override = assignment[0]
         _apply_provider_env(env_overrides, provider, model_override, runner)
         # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
-        # 时间轴才能展示 Administrator 实际驱动的 model@provider；
-        # Administrator 不接 failover，链内下标恒 0/1
-        runner._write_provider_marker(
-            run_id,
-            spec,
-            "administrator",
-            provider["name"],
-            model_override,
-            0,
-            1,
-        )
+        # 时间轴才能展示 Administrator 实际驱动的 model@provider；写点已提取
+        # 为 _write_lane_provider_marker 与其余四条维护车道共用（item
+        # faea95e2d494），Administrator 不接 failover，链内下标恒 0/1
+        _write_lane_provider_marker(runner, run_id, spec, "administrator", assignment)
     else:
         model_override = runner._get_admin_model()
 
@@ -354,11 +389,20 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
     if success and disp.get("result") not in (
         "resolved", "partially-resolved", "escalated", "failed",
     ):
+        _raw_result = disp.get("result")
         success = False
+        # code-review item 14ce3542d2b9：硬门折算必须同时落到 result 通道——
+        # 仅折算 success 位时，下方返回值 result=disp.get("result") or ...
+        # 会把非空非法值（如管理员误写 "done"/"resolve"）原样透传，消费侧
+        # admin_monitor 的终态回写只判 result 非 pending 且非 escalate、不看
+        # success，非法值仍会 mark_signal_handled——正是本门注释声称要消灭
+        # 的「零动作误闭环」。此处置合法保留值 "failed" 折算返回值，原始
+        # 非法值保留在下方 error 文案中取证。
+        disp["result"] = "failed"
         error = (
-            f"admin 处置记录缺 result 字段: {disp_path.name} 可解析但 result "
-            "缺失或不在合法枚举（resolved/partially-resolved/escalated/failed），"
-            "残缺产物判失败（fail-closed）"
+            f"admin 处置记录 result 非法: {disp_path.name} 可解析但 result "
+            "缺失或不在合法枚举（resolved/partially-resolved/escalated/failed，"
+            f"实际值 {_raw_result!r}），残缺产物判失败（fail-closed）"
         )
         _log = getattr(runner, "logger", None)
         if _log is not None:
@@ -419,7 +463,12 @@ def _read_admin_disposition(disp_path: Path) -> dict:
     """
     try:
         data = json.loads(disp_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError 口径（code-review item b1501667b176）：UnicodeDecodeError
+        # 属 ValueError 系——产物在多字节字符中间被截断时 read_text 直接抛出，
+        # 本函数位于 run_administrator 收尾（任何 try 保护之外），不吞会让已
+        # 完成的处置 run 在读取时崩溃、被消费侧折算成 dispatch-failure 升级。
+        # 对齐 _salvage_evolution_out/_read_ocr_cursor 的既有防御口径。
         return {}
     if not isinstance(data, dict):
         return {}
@@ -497,8 +546,9 @@ def run_self_review(
     Agent 按 prompt 把回顾写入实例文件
     ``.fenix/self_review_out-<run_id>.json``（JSON：
     date/waste/mistakes/improvements/resolved/summary），run 结束读取
-    并清理。失败（异常/超时/rc!=0）返回 success=False（调度器记告警、
-    24h 内不重试）。
+    并清理。失败（异常/超时/rc!=0，或产物硬门判定零产物——out 缺失/
+    不可解析/summary 与四类清单全空，fail-closed）返回 success=False
+    （调度器记告警、24h 内不重试）。
 
     Args:
         runner: AgentRunner 实例（门面依赖注入，D2b 规则 1）。
@@ -531,6 +581,11 @@ def run_self_review(
     if assignment:
         provider, model_override = assignment[0]
         _apply_provider_env(env_overrides, provider, model_override, runner)
+        # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
+        # 车道观测口径一致；写失败不阻断，见助手 docstring）
+        _write_lane_provider_marker(
+            runner, run_id, "self-review", "self-review", assignment
+        )
     else:
         model_override = runner._get_admin_model()
 
@@ -568,6 +623,35 @@ def run_self_review(
                     "reason": str(item.get("reason") or ""),
                 }
             )
+    # ── 产物硬门（code-review item 791f1caf55b2，对齐同族 fail-closed 先例）──
+    # 同族车道均已补产物门（run_administrator 处置硬门 / _check_repo_code_
+    # review_artifact / _check_code_fix_artifact），唯独本车道没有：_run_claude
+    # 正常退出但 agent 从未写 out 文件时，_read_self_review_out 返回空 dict、
+    # success 仍为 True，调度器（core/self_review.py）记「每日自省完成」并把
+    # 空回顾追加进 todo.md，无任何失败告警与重试信号——与本文件多处记载的
+    # 「run exit 0 但零产物空跑被当成功」事故同类。判据：产物缺失/不可解析
+    # 或无任何有效内容（summary 与 waste/mistakes/improvements/resolved 全空）
+    # → 折算失败，error 点名零产物（fail-closed）。
+    if success and not (
+        (data.get("summary") or "").strip()
+        or data.get("waste")
+        or data.get("mistakes")
+        or data.get("improvements")
+        or resolved
+    ):
+        success = False
+        error = (
+            f"自省零产物（fail-closed）: run 正常退出但 {out_path.name} 缺失、"
+            "不可解析或无任何有效内容（summary/waste/mistakes/improvements/"
+            "resolved 全空），判失败"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "self-review",
+                f"每日自省 {run_id} 产物硬门拦截: {error}",
+                {"run_id": run_id, "date": date_str},
+            )
     return SelfReviewResult(
         run_id=run_id,
         date=date_str,
@@ -603,7 +687,10 @@ def _read_self_review_out(out_path: Path) -> dict:
     """读取自省 run 的回顾 JSON；缺失/损坏返回空 dict（调用方兜底）。"""
     try:
         data = json.loads(out_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError 口径（code-review item b1501667b176）：UnicodeDecodeError
+        # 属 ValueError 系，半写/截断的产物文件会让整轮自省在收尾读取时崩溃；
+        # 对齐 _salvage_evolution_out/_read_ocr_cursor 的既有防御口径。
         return {}
     if not isinstance(data, dict):
         return {}
@@ -649,6 +736,16 @@ def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
                 pass
 
 
+# token 归账 runs 数组的条数上限（code-review item f597c1e03461）：归账文件
+# 每次追加都全量读-改-写，runs 无界增长使单次写放大随历史线性增长（累计
+# O(n²) I/O），成本对账读取方也随之变慢。上限取 4000 条（保守值）：归账写方
+# 合计约百条/日量级（code-review 周期审查 + 每 spec 收尾一条的 impl-ocr +
+# self-review/evolution），4000 条 ≈ 月级滚动窗口，覆盖成本对账的常用口径，
+# 同时把单文件体积控制在 MB 量级。超出丢最旧（append 序即时间序，各调用方
+# entry 均带 timestamp/date），并在文件内留痕最近一次裁剪。
+_TOKEN_RUNS_MAX_ENTRIES = 4000
+
+
 def _append_token_run(tokens_json: Path, entry: dict) -> None:
     """向 token 归账文件的 ``runs`` 数组追加一条记录（flock + 原子替换）。
 
@@ -678,6 +775,15 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
                 if not isinstance(runs, list):
                     runs = []
                 runs.append(entry)
+                if len(runs) > _TOKEN_RUNS_MAX_ENTRIES:
+                    # 条数上限熔断（item f597c1e03461）：丢最旧记录并在文件内
+                    # 留痕最近一次裁剪（读取方可感知历史被截断，非静默丢弃）。
+                    dropped = len(runs) - _TOKEN_RUNS_MAX_ENTRIES
+                    runs = runs[-_TOKEN_RUNS_MAX_ENTRIES:]
+                    data["runs_trimmed"] = {
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "dropped": dropped,
+                    }
                 data["runs"] = runs
                 content = json.dumps(data, ensure_ascii=False, indent=2)
                 # 原子替换：进程唯一临时名 + fsync + os.replace
@@ -860,6 +966,11 @@ def run_evolution(
     if assignment:
         provider, model_override = assignment[0]
         _apply_provider_env(env_overrides, provider, model_override, runner)
+        # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
+        # 车道观测口径一致；写失败不阻断，见助手 docstring）
+        _write_lane_provider_marker(
+            runner, run_id, "evolution", "evolution", assignment
+        )
     else:
         model_override = runner._get_admin_model()
 
@@ -1230,6 +1341,11 @@ def run_code_review(
             provider, model_override = assignment[0]
             provider_name = provider.get("name")
             _apply_provider_env(env_overrides, provider, model_override, runner)
+            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条
+            # 维护车道观测口径一致；写失败不阻断，见助手 docstring）
+            _write_lane_provider_marker(
+                runner, run_id, "code-review", "code-review", assignment
+            )
         else:
             model_override = runner._get_admin_model()
         _manifest_settled = True
@@ -2195,6 +2311,11 @@ def run_code_fix(
         if assignment:
             provider, model_override = assignment[0]
             _apply_provider_env(env_overrides, provider, model_override, runner)
+            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条
+            # 维护车道观测口径一致；写失败不阻断，见助手 docstring）
+            _write_lane_provider_marker(
+                runner, run_id, "code-review-fix", "code-fix", assignment
+            )
         else:
             model_override = runner._get_admin_model()
 
@@ -2220,7 +2341,19 @@ def run_code_fix(
                 )
             agent_env = {}
         for _k, _v in agent_env.items():
-            env_overrides[str(_k)] = str(_v)
+            # code-review item a7505e92d33e：yaml 解析值裸 str() 直转会把布尔
+            # 落成 "True"/"False"、浮点落成 "1.0"，与 shell 环境变量惯用形态
+            # （小写 true / 整数）不一致——下游工具按字面匹配（期望 "true"/"1"）
+            # 会静默不生效。归一口径：bool → "1"/"0"（环境变量最通用真值
+            # 形态）；float 可无损整归一时转 int（1.0 → "1"）；int 与字符串
+            # 原样透传。
+            if isinstance(_v, bool):
+                _sv = "1" if _v else "0"
+            elif isinstance(_v, float) and _v.is_integer():
+                _sv = str(int(_v))
+            else:
+                _sv = str(_v)
+            env_overrides[str(_k)] = _sv
         if agent_env:
             _log = getattr(runner, "logger", None)
             if _log is not None:
@@ -2375,11 +2508,17 @@ def _ocr_finding_fingerprint(finding: dict) -> str:
     return hashlib.sha1(f"{path}|{category}|{content}".encode("utf-8")).hexdigest()
 
 
-def _read_ocr_exclude_patterns(project_root) -> list:
+def _read_ocr_exclude_patterns(project_root, logger=None) -> list:
     """读项目级 ocr 审查排除域 ``<project_root>/.fenix/ocr-exclude.txt``。
 
     逐行一条 gitignore 风格 pattern；空行与 `#` 注释行跳过。文件缺失/读失败
     → 空列表（调用方零注入，ocr 命令与无此文件时逐字节一致）。
+
+    含逗号的行拒绝注入（code-review item d28a00f2dac3）：patterns 经
+    ",".join 拼成单值下发给 ocr ``--exclude``，ocr 侧按逗号再切分——本身含
+    逗号的 gitignore 风格 pattern（如字符类 ``[a,b]``）会被拆成多条错误
+    pattern，排除域静默失真且无告警。该文件由部署方编辑、无法约束其不含
+    逗号，故读取侧拒绝此类行并 WARNING 留痕（logger 缺省时仅拒绝不告警）。
     """
     try:
         text = (Path(project_root) / ".fenix" / "ocr-exclude.txt").read_text(
@@ -2387,11 +2526,21 @@ def _read_ocr_exclude_patterns(project_root) -> list:
         )
     except OSError:
         return []
-    return [
-        ln.strip()
-        for ln in text.splitlines()
-        if ln.strip() and not ln.strip().startswith("#")
-    ]
+    patterns: list = []
+    for ln in text.splitlines():
+        pat = ln.strip()
+        if not pat or pat.startswith("#"):
+            continue
+        if "," in pat:
+            if logger is not None:
+                logger.warning(
+                    "impl-ocr",
+                    "ocr-exclude.txt 含逗号的 pattern 拒绝注入"
+                    f"（--exclude 逗号拼接会被 ocr 二次切分）: {pat}",
+                )
+            continue
+        patterns.append(pat)
+    return patterns
 
 
 # ocr 审查背景注入（09-23 忽略标记方案）：代码中 `[fenix-ignore:<item_id>]`
@@ -2861,7 +3010,9 @@ def run_impl_ocr(
             # 含有效行（非空、非 `#` 注释）时逐行拼成逗号分隔串，经 ocr
             # `--exclude`（gitignore 风格，与 rule.json excludes 合并）下发；
             # 文件缺失/空 → 零注入（命令与现状逐字节一致）。
-            exclude_patterns = _read_ocr_exclude_patterns(runner.project_root)
+            exclude_patterns = _read_ocr_exclude_patterns(
+                runner.project_root, getattr(runner, "logger", None)
+            )
             if exclude_patterns:
                 cmd += ["--exclude", ",".join(exclude_patterns)]
             # 忽略标记约定（09-23）：常驻注入，告知审查 LLM [fenix-ignore:*]
