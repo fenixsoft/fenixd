@@ -48,6 +48,9 @@ from core.dashboard.routes.code_review_routes import (
     _SignalWriteError,
     _write_signal_exclusive,
 )
+# 消费方守卫（hosting_state 判据）与 code_review 族共用同一实现（item
+# fcadb893a1c8：run/fix 两端点此前各内联一份同构守卫，规则变化需多点同修）。
+from core.dashboard.routes.hosting_guard import _guard_hosting_state
 
 # 模块级 logger（函数内免外传；handler 无 logger 属性，getattr 恒 None 会使
 # 失败留痕永不生效，见 code-review item 3f7d5ad37689）
@@ -204,6 +207,52 @@ def reap_all_autodraft() -> None:
                 proc.kill()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _reap_autodraft_proc(proc) -> None:
+    """单飞起草进程的清场单点实现（item 54b12852e6bd 去重）。
+
+    autodraft 的 TimeoutExpired 与通用异常兜底两分支曾各复制一份同一清场
+    序列，清场语义修复（换 kill 信号、调 reap 超时、改排管道口径）须双点
+    同修——收敛到此，两分支各一行调用。
+
+    击杀口径与 ``reap_all_autodraft`` 同源（killpg 先例：core/knowledge.py
+    _kill_process_group）：start_new_session 使 claude 为组长，killpg 整组
+    终止——只杀直接子进程不够，它派生的 bash/写文件孙进程会沦为孤儿继续
+    存活，本路径返回后 finally 释放单飞锁，用户重试的新起草进程将与孤儿
+    并发写 verify.yaml / git index（正是单飞锁要防的踩踏），孤儿稍后自行
+    落位还会造成「已报失败但 regression 段事后出现」。组不存在（含已退出）
+    降级 proc.kill 兜底。
+
+    排管道必须带有限超时（``_AUTODRAFT_REAP_TIMEOUT_SECONDS``）：killpg 只
+    约束同组进程，孙进程若经 setsid/nohup 逃出进程组仍持 stdout/stderr 管
+    道写端，无超时的 communicate 会把 HTTP 线程（连带 finally 的单飞锁释
+    放）无限期挂起，此后该项目 autodraft 恒 409；再超时则直接子进程已被
+    SIGKILL，wait(0) 即刻收尸，保证单飞锁不被在途写者挂起。
+
+    ``proc`` 为 None（Popen 自身失败，无进程可清场）直接返回。
+    """
+    if proc is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.communicate(  # 回收已杀进程、排干管道
+            timeout=_AUTODRAFT_REAP_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        try:
+            proc.wait(timeout=0)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:
+        pass
 
 
 def _self_cert_script() -> str:
@@ -380,26 +429,12 @@ class H12RegressionRoutesMixin:
             self._coded_error(409, "已有回归在进行中", "regression_already_running")
             return
 
-        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push）
-        from core.fenix_session import hosting_state as _hosting_state
-
-        try:
-            state = _hosting_state(str(proot))
-        except Exception as exc:
-            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
-            state = "stopped"
-            logger.warning(
-                f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
-            )
-        if state == "unmanaged":
-            self._error(
-                409,
-                "本项目 daemon 未受 supervisor 托管，回归信号不会被消费。"
-                "经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
-            )
-            return
-        if state != "managed":
-            self._error(400, "daemon 未运行，请先启动 daemon")
+        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push；
+        # item fcadb893a1c8：与 code_review 族共用 hosting_guard 单点实现，
+        # 本端点只留「回归信号」label 文案）
+        guard = _guard_hosting_state(proot, "回归信号")
+        if guard is not None:
+            self._error(*guard)
             return
 
         # 键名与消费者契约一致（fenixd._check_regression_requests 读
@@ -476,30 +511,14 @@ class H12RegressionRoutesMixin:
             )
             return
 
-        # 消费方守卫（hosting_state 判据，对齐 _api_regression_run 与
-        # code_review fix-run 先例；item be459dd18625）：daemon 未运行/
-        # 未托管时信号无人消费、长期滞留（并在 daemon 下次启动时被消费成
-        # 用户并未请求的修复），前端轮询 fix-result 恒为 status:none 拿不到
-        # 终态或引导——宁拒勿假受理
-        from core.fenix_session import hosting_state as _hosting_state
-
-        try:
-            state = _hosting_state(str(proot))
-        except Exception as exc:
-            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
-            state = "stopped"
-            logger.warning(
-                f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
-            )
-        if state == "unmanaged":
-            self._error(
-                409,
-                "本项目 daemon 未受 supervisor 托管，回归修复信号不会被消费。"
-                "经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
-            )
-            return
-        if state != "managed":
-            self._error(400, "daemon 未运行，请先启动 daemon")
+        # 消费方守卫（item be459dd18625；item fcadb893a1c8 收敛至共享
+        # hosting_guard，与 _api_regression_run / code_review 族同款）：daemon
+        # 未运行/未托管时信号无人消费、长期滞留（并在 daemon 下次启动时被
+        # 消费成用户并未请求的修复），前端轮询 fix-result 恒为 status:none
+        # 拿不到终态或引导——宁拒勿假受理
+        guard = _guard_hosting_state(proot, "回归修复信号")
+        if guard is not None:
+            self._error(*guard)
             return
 
         # 键名契约：信号 payload 用 created（fenixd
@@ -598,6 +617,7 @@ class H12RegressionRoutesMixin:
                         "ok": True,
                         "project": project["name"],
                         "status": "skipped",
+                        # [fenix-ignore:774383f0d862] 「项目简介」面板即 verify.yaml 真实编辑位置：质量页签回归卡片「手工编辑」按钮本身只是跳转到该面板编辑框（QualityPanel.tsx onManualEdit / settings/index.tsx），本文案指向无误，改指质量页签反而多一跳
                         "message": "regression 段已配置，无需生成。如需调整请在「项目简介」面板编辑 verify.yaml。",
                     }
                 )
@@ -631,36 +651,11 @@ class H12RegressionRoutesMixin:
                 _register_autodraft_proc(proc)
                 stdout, stderr = proc.communicate(timeout=AUTODRAFT_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
-                # 只杀直接子进程 claude 不够：它派生的 bash/写文件孙进程会沦为
-                # 孤儿继续存活，而本路径返回后 finally 释放单飞锁，用户重试的
-                # 新起草进程将与孤儿并发写 verify.yaml / git index（正是单飞
-                # 锁要防的踩踏），孤儿稍后自行落位还会造成「已报失败但
-                # regression 段事后出现」。start_new_session 使 claude 为组长，
-                # killpg 整组终止后锁释放时已无在途写者。
-                try:
-                    pgid = os.getpgid(proc.pid)
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                try:
-                    proc.communicate(  # 回收已杀进程、排干管道
-                        timeout=_AUTODRAFT_REAP_TIMEOUT_SECONDS
-                    )
-                except subprocess.TimeoutExpired:
-                    # killpg 只约束同组进程：若孙进程经 setsid/nohup 逃出进程组
-                    # 仍持管道写端，上面的有限超时到期即到此兜底——直接子进程
-                    # 已被 SIGKILL，wait(0) 即刻收尸，保证 finally 的单飞锁不
-                    # 被在途写者挂起（否则 HTTP 线程永久阻塞、该项目 autodraft
-                    # 恒 409）。
-                    try:
-                        proc.wait(timeout=0)
-                    except Exception:  # noqa: BLE001
-                        pass
-                except Exception:
-                    pass
+                # 清场收敛在 _reap_autodraft_proc（item 54b12852e6bd，此前与
+                # 下方通用异常分支各复制一份同一序列）：killpg 整组击杀 + 有
+                # 限超时排管道，锁释放时已无在途写者——孤儿孙进程踩 verify.yaml
+                # / 挂死单飞锁的根因论述见该助手 docstring
+                _reap_autodraft_proc(proc)
                 logger.warning(
                     f"AI 生成 regression 段超时（>{AUTODRAFT_TIMEOUT_SECONDS}s，"
                     f"project={project['name']}，full_contract={full_contract}）；"
@@ -669,33 +664,11 @@ class H12RegressionRoutesMixin:
                 self._json({"ok": False, "error": "生成超时（AI 起草未在预算时间内完成）"})
                 return
             except Exception as exc:
-                # 兜底清场复用超时分支的序列（item 62d7dda31633）：管道读写等
-                # 任何异常路径同样不得在 finally 释放单飞锁后留下仍在途的起草
-                # 进程组——孤儿起草者稍后自行落位会造成「已报失败但 regression
-                # 段事后出现」，并与用户重试的新起草并发写 verify.yaml /
-                # git index。proc 为 None 即 Popen 自身失败，无进程可杀。
-                if proc is not None:
-                    try:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                    try:
-                        proc.communicate(  # 回收已杀进程、排干管道
-                            timeout=_AUTODRAFT_REAP_TIMEOUT_SECONDS
-                        )
-                    except subprocess.TimeoutExpired:
-                        # 同超时分支：清场后回收管道也须有限超时，防逃出进程
-                        # 组的孙进程持管道写端把本线程与单飞锁一并挂起
-                        try:
-                            proc.wait(timeout=0)
-                        except Exception:  # noqa: BLE001
-                            pass
-                    except Exception:
-                        pass
+                # 兜底清场复用超时分支同一序列（item 62d7dda31633），已收敛至
+                # _reap_autodraft_proc（item 54b12852e6bd）：管道读写等任何异常
+                # 路径同样不得在 finally 释放单飞锁后留下仍在途的起草进程组；
+                # proc 为 None 即 Popen 自身失败，助手内守卫直接返回
+                _reap_autodraft_proc(proc)
                 # 不外泄裸异常文本（describe 同款）：str(exc) 可能携带内部路径/
                 # 命令细节，细节降级经服务端日志留痕，客户端收通用消息。
                 logger.warning(
