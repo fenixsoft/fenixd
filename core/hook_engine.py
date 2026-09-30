@@ -308,6 +308,9 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
 
     规则：
     - 必须为 dict；
+    - id 缺省或字符串：非字符串（手改 config.yaml 写成 list/dict 等 unhashable
+      值）会在执行线程在飞去重的集合操作处抛 TypeError，且该调用位于线程 try
+      保护之外，异常将无审计终结线程，故在配置层按「配置非法（不执行）」拦截；
     - events 非空列表，取值 ∈ VALID_EVENTS（SpecStatus.ALL + 伪事件 all-done，
       后者仅全局作用域生效）；
     - action ∈ 七枚举；
@@ -328,6 +331,10 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
     """
     if not isinstance(entry, dict):
         return "hook 条目必须为对象"
+    hook_id = entry.get("id")
+    # 缺省/None 合法（无 id 手写 hook 为受支持形态），仅拦非字符串类型
+    if hook_id is not None and not isinstance(hook_id, str):
+        return f"id 必须为字符串（缺省允许），收到 {hook_id!r}"
     events = entry.get("events")
     if not isinstance(events, list) or not events:
         return "events 必须为非空数组（订阅的事件类型，取值为全部状态枚举 SpecStatus.ALL 之一）"
@@ -645,10 +652,14 @@ class HookEngine:
     def _inflight_begin(self, hook_id) -> bool:
         """在飞去重 check-and-set：该 hook 已有执行线程在飞则返回 False。
 
-        仅带 id 的 hook 参与去重（无 id 手写 hook 无法定位，保持并发旧行为）；
+        仅带字符串 id 的 hook 参与去重（无 id 手写 hook 无法定位，保持并发旧行为）；
         锁窗口仅集合读写，hook 动作本体一律在锁外执行。
         """
-        if not hook_id:
+        if not hook_id or not isinstance(hook_id, str):
+            # 非字符串 id（手改 config.yaml 写出的 list/dict 等 unhashable 值）
+            # 不参与集合去重：成员判断/add 会对 set 抛 TypeError，而本调用位于
+            # 执行线程 try 保护之外，异常将无审计终结线程；放行交由执行链
+            # validate_hook_entry 按「配置非法（不执行）」记 failure 审计。
             return True
         with self._all_done_lock:
             if hook_id in self._inflight_hooks:
@@ -657,8 +668,8 @@ class HookEngine:
             return True
 
     def _inflight_end(self, hook_id) -> None:
-        """释放在飞标记（执行线程 finally 调用；无 id hook 无标记可释放）。"""
-        if not hook_id:
+        """释放在飞标记（执行线程 finally 调用；无 id/非字符串 id 无标记可释放）。"""
+        if not hook_id or not isinstance(hook_id, str):
             return
         with self._all_done_lock:
             self._inflight_hooks.discard(hook_id)
