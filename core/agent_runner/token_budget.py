@@ -133,7 +133,19 @@ class TokenAccountant:
                     prev_cost = float(entry.get("_cost_usd", 0) or 0)
                     updates["_cost_usd"] = prev_cost + float(cost)
                 except (TypeError, ValueError):
-                    pass
+                    # code-review item 918342f2200f：既有 _cost_usd（或本轮 cost）
+                    # 为非法值时不能静默吞掉——本轮合法成本被丢弃且损坏值原样
+                    # 滞留，之后每一轮合法成本都会在同一分支继续被丢弃、成本观测
+                    # 永久失真。比照上方读失败（67824f1f7c03）/类型异常
+                    # （1cacd875677d）的留痕口径：记 warning（含 spec 名与双方
+                    # 实际值形态）后跳过本轮成本累计；token 分项不受影响，仍正常
+                    # 写回。
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"token 累计成本值非法 '{spec_name}'"
+                        f"（既有 _cost_usd={entry.get('_cost_usd')!r}，"
+                        f"本轮 cost={cost!r}），跳过本轮成本累计",
+                    )
             try:
                 self._pm.state_machine.update_spec(spec_name, updates)
             except Exception as e:
@@ -226,7 +238,19 @@ class TokenAccountant:
                 )
                 return
             if not isinstance(entry, dict):
-                entry = {}
+                # code-review item b3a08d363a84：STATE 条目被损坏/误写为标量时
+                # 不能静默置空继续——两枚标志恒读 False，置位写对损坏条目若不
+                # 生效，同 spec 每轮收工都会重复发射同档告警，正落入上方
+                # b6e08ef1cbbc 注释所述的重复告警面。比照同函数读失败
+                # （b6e08ef1cbbc）与上游 _accumulate_token_usage 类型异常
+                # （1cacd875677d）口径：记 warning 后直接 return 跳过本轮检查。
+                # 锁内 return，由 with 释放 _spec_accumulate_lock，持锁结构不变。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 预算检查读 STATE 条目类型异常 '{spec_name}'"
+                    f"（{type(entry).__name__}），跳过本轮检查",
+                )
+                return
             warn_flag = bool(entry.get("_token_warn_80", False))
             alert_flag = bool(entry.get("_token_alert_100", False))
 
