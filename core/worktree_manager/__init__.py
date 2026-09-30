@@ -21,7 +21,6 @@ import threading
 import time
 
 from pathlib import Path
-from typing import Optional, Set, Dict
 
 from core.proc_utils import is_claude_process
 from core.wip_checkpoint import collapse_wip_commits

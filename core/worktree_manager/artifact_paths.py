@@ -198,7 +198,7 @@ class ArtifactPathMatcher:
     判定正常按 patterns 走（patterns 为空时恒假——未裁决的保守侧）。
 
     **通配不跨目录**：``fnmatch.fnmatchcase`` 的 ``*`` 含 ``/``，故 MUST 追加
-    约束——模式不含 ``/`` 时 MUST NOT 命中含 ``/`` 的路径（只匹配 basename）；
+    约束——模式不含 ``/`` 时 MUST NOT 命中含 ``/`` 的路径（仅命中仓库根级相对路径，不入子目录）；
     模式含 ``/`` 时按完整相对路径匹配（可命中多层路径）。
 
     **故障回退**：配置为空/缺失/全非法时（``normalize_artifact_patterns``

@@ -117,7 +117,23 @@ class G7StaleSweepMixin:
                     timeout=30,
                 )
                 if res.returncode != 0:
+                    # remove 失败先留痕（5e6b1e0ed934）：与同函数分支删除失败
+                    # / prune 失败同款 WARNING 口径——降级 rmtree 前记录 git 侧
+                    # 拒绝原因，避免「删不掉也不留痕」的清扫观测盲区。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Stale worktree remove failed (non-blocking), "
+                        f"falling back to rmtree: '{wt_dir}' — {res.stderr.strip()}",
+                    )
                     shutil.rmtree(str(wt_dir), ignore_errors=True)
+                    if wt_dir.exists():
+                        # 降级删除也失败（目录被占用/权限异常等被 rmtree 吞掉）：
+                        # 目录保留交下轮清扫，同样必须留痕。
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Stale worktree rmtree fallback also failed "
+                            f"(non-blocking): '{wt_dir}' kept for next sweep",
+                        )
                 if branch and branch != "HEAD":
                     # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
                     # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用
@@ -217,9 +233,10 @@ class G7StaleSweepMixin:
             ``branch`` 字段值；或带 ``_recovery_resume`` 标记的 ``ready`` spec
             （§4.3 失败回落形态）的 ``branch`` 字段值；
         (b) 分支按「完整 spec 名 + 分隔符边界」全等匹配任一 ``implementing``
-            spec 的实现分支（``<prefix>/<spec>-<ts>``，口径同 D2/find_branches
-            _by_spec：去前缀后末段纯数字时间戳、其前段与 spec 名全等）——
-            覆盖锚点尚未落盘的场合。
+            spec 的实现分支（``<prefix>/<spec>-<ts>``，解析统一走
+            ``_impl_branch_owned_by_spec``（queries G8），口径同
+            D2/find_branches_by_spec：去前缀后末段纯数字时间戳、其前段与
+            spec 名全等）——覆盖锚点尚未落盘的场合。
 
         Returns: ``(kept: bool, reason: str)``；STATE 不可解析时 ``(True, ...)``
         保守保留。
@@ -249,23 +266,15 @@ class G7StaleSweepMixin:
                 if entry.get("branch") == branch:
                     return True, f"STATE 冻结保持引用（{sname}: blocked+frozen）"
         # (b) 命名空间口径：任一 implementing spec 的 <prefix>/<spec>-<ts>
+        # 边界解析统一走 _impl_branch_owned_by_spec（9dd92d791918 三处内联
+        # 归一：去前缀 + 末段纯数字时间戳 + 前段与 spec 名全等、verify- 结构
+        # 判别剔除）；前缀并集 {"fenix", 配置值} 口径不变。
+        prefixes = ("fenix", self._implement_branch_prefix or "fenix")
         for sname, entry in states.items():
             if entry.get("status") != "implementing":
                 continue
             if not sname:
                 continue
-            rest = None
-            for prefix in ("fenix", self._implement_branch_prefix or "fenix"):
-                if prefix and branch.startswith(f"{prefix}/"):
-                    rest = branch[len(prefix) + 1 :]
-                    break
-            if rest is None:
-                continue
-            if rest.startswith("verify-"):
-                continue
-            segs = rest.rsplit("-", 1)
-            if len(segs) != 2 or not segs[0] or not segs[1].isdigit():
-                continue
-            if segs[0] == sname:
+            if self._impl_branch_owned_by_spec(branch, sname, prefixes):
                 return True, f"命名空间匹配 implementing spec '{sname}'"
         return False, ""

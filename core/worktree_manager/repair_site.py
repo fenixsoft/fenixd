@@ -18,7 +18,10 @@ from core.worktree_manager import (  # noqa: E402
     WT_UNAVAILABLE,
 )
 
+
 class G9RepairSiteMixin:
+    """G9 repair/resume 站点认领（design D1 表 A G9）；repair_site_facts 纯只读，其余方法带登记/重建副作用。"""
+
     def repair_site_facts(self, wt_path) -> dict:
         """repair 现场 git 事实（只读）：未解决冲突清单 + 是否残留未完成 merge。
 
