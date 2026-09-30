@@ -1529,7 +1529,6 @@ class FenixDaemon:
         # 或 epoch 数值；naive 防御分支解读跟齐唯一策略（naive→本地）。
         parsed = parse_ts(raw)
         return parsed.timestamp() if parsed is not None else None
-        return parsed.timestamp()
 
     @staticmethod
     def _history_streak(rec: dict) -> int:
@@ -3335,7 +3334,7 @@ class FenixDaemon:
         def _check_set_locked() -> bool:
             if self.admin_monitor is not None and self.admin_monitor._code_review_in_flight:
                 return True
-            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            running = list(getattr(self.agent_runner, "_running_agents", None) or {})
             if any(str(rid).startswith("code-review-") for rid in running):
                 if self.admin_monitor is not None:
                     self.admin_monitor._code_review_in_flight = True
@@ -3567,7 +3566,7 @@ class FenixDaemon:
         def _check_set_locked() -> bool:
             if self.admin_monitor is not None and self.admin_monitor._regression_in_flight:
                 return True
-            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            running = list(getattr(self.agent_runner, "_running_agents", None) or {})
             if any(str(rid).startswith("regression-") for rid in running):
                 if self.admin_monitor is not None:
                     self.admin_monitor._regression_in_flight = True
@@ -3989,7 +3988,7 @@ class FenixDaemon:
             # 单飞判定（spec「分析 run 在途的判定基于 daemon 内部活跃 run 状态」）
             if self._evolution_in_flight:
                 return
-            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            running = list(getattr(self.agent_runner, "_running_agents", None) or {})
             if any(str(rid).startswith("evo-") for rid in running):
                 # 在途 run（含派发-登记窗口未覆盖的情形）→ 留到下一检查点。
                 # MUST NOT 置 _evolution_in_flight（code-review item d99cb1ec5477）：
