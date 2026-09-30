@@ -11,6 +11,7 @@ import type {
   FormEvent,
   KeyboardEvent,
   MouseEvent,
+  RefObject,
   SetStateAction,
 } from 'react';
 
@@ -40,6 +41,9 @@ interface UseComposerStateArgs {
   skills: string[];
   /** 项目文件相对路径（files 端点）。 */
   files: string[];
+  /** 文件提及下拉容器 ref（SessionComposer 持有），透传 useFileMentions：
+   * 外点判定把下拉容器自身（滚动条/候选行间空白）算作内点。 */
+  fileDropdownRef: RefObject<HTMLDivElement | null>;
 }
 
 export function useComposerState({
@@ -50,6 +54,7 @@ export function useComposerState({
   slashCommands,
   skills,
   files,
+  fileDropdownRef,
 }: UseComposerStateArgs) {
   const [input, setInput] = useState(() => readDraft(project));
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
@@ -68,8 +73,9 @@ export function useComposerState({
 
   // ── 草稿持久化（spec：切页签/路由/刷新保留；发送成功清除） ──
   useEffect(() => {
-    setInput(readDraft(project));
-    inputValueRef.current = readDraft(project);
+    const draft = readDraft(project);
+    setInput(draft);
+    inputValueRef.current = draft;
   }, [project]);
 
   // 记录落盘 effect 上一轮见过的 project：project 刚变化的那一轮，本
@@ -109,6 +115,7 @@ export function useComposerState({
     input,
     setInput,
     textareaRef,
+    dropdownRef: fileDropdownRef,
   });
 
   // ── textarea 高度自适应 + overlay 滚动同步 ──

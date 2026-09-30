@@ -14,6 +14,7 @@ import {
   matchFileMention,
   matchSlashTrigger,
   replaceFileMention,
+  applyCommandInsertion,
   createTrailingDebounce,
   COMMAND_QUERY_DEBOUNCE_MS,
   toSlashCommands,
@@ -149,6 +150,26 @@ test('斜杠不触发：``` 代码块内（奇数围栏）', () => {
 
 test('斜杠查询词为空（仅 `/`）也算触发，query 为空串', () => {
   assert.deepEqual(matchSlashTrigger('/'), { position: 0, query: '' });
+});
+
+// ── 斜杠命令插入（applyCommandInsertion）───────────────────────────────────
+// 回归（code-review 660693cb4a10）：多行草稿行内唤起斜杠补全，旧实现按首个
+// 空格切尾段，斜杠与空格之间夹换行时换行后的既有文本被整体静默丢弃。
+
+test('斜杠命令插入：尾段含换行+空格时按首个 \\s 切分，换行后的既有文本不丢', () => {
+  const input = 'abc /he\ndef ghi';
+  // '/' 在 index 4，光标停在查询词 he 末尾（selectionEnd = 7）
+  const { text, cursor } = applyCommandInsertion(input, '/help', 4, 7, true);
+  // 旧实现（indexOf(' ')）会把「\ndef」整体剔除，只剩「 ghi」
+  assert.equal(text, 'abc /help def ghi');
+  assert.equal(cursor, 'abc /help '.length);
+});
+
+test('斜杠命令插入：单行空格尾段吞掉首个空白，命令落在查询词位置', () => {
+  // '/' 在 index 3，前导「帮我 」以空白结尾，不补分隔空格
+  const { text, cursor } = applyCommandInsertion('帮我 /he 后续内容', '/help', 3, 6, true);
+  assert.equal(text, '帮我 /help 后续内容');
+  assert.equal(cursor, '帮我 /help '.length);
 });
 
 // ── debounce ───────────────────────────────────────────────────────────────

@@ -37,6 +37,8 @@ interface UseFileMentionsOptions {
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
+  /** 下拉容器（SessionComposer 持有的 fileDropdownRef）：容器内点击不算外点。 */
+  dropdownRef?: RefObject<HTMLElement | null>;
 }
 
 export function useFileMentions({
@@ -44,6 +46,7 @@ export function useFileMentions({
   input,
   setInput,
   textareaRef,
+  dropdownRef,
 }: UseFileMentionsOptions) {
   const fileList = useMemo(() => toMentionableFiles(files), [files]);
   const [fileMentions, setFileMentions] = useState<string[]>([]);
@@ -74,6 +77,8 @@ export function useFileMentions({
   // 不算外点，开闭仍由上方 effect 随输入/光标重算）；下拉候选行的 mousedown
   // 已 preventDefault + stopPropagation（SessionComposer），不冒泡到
   // document，选候选不会被外点逻辑误杀。
+  // code-review item 432c294ae05f：下拉容器自身（滚动条/候选行间空白）也是
+  // 内点——候选超过 10 条出现滚动条时，拖动滚动条不得立即收起下拉。
   useEffect(() => {
     if (!showFileDropdown) {
       return;
@@ -83,13 +88,16 @@ export function useFileMentions({
       if (!textarea || !(event.target instanceof Node)) {
         return;
       }
-      if (!textarea.contains(event.target)) {
+      if (
+        !textarea.contains(event.target) &&
+        !dropdownRef?.current?.contains(event.target)
+      ) {
         setShowFileDropdown(false);
       }
     };
     document.addEventListener('mousedown', handleMouseDownOutside);
     return () => document.removeEventListener('mousedown', handleMouseDownOutside);
-  }, [showFileDropdown, textareaRef]);
+  }, [showFileDropdown, textareaRef, dropdownRef]);
 
   const activeFileMentions = useMemo(() => {
     if (!input || fileMentions.length === 0) {

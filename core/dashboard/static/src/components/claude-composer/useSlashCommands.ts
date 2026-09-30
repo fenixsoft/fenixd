@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 
 import {
+  applyCommandInsertion,
   COMMAND_QUERY_DEBOUNCE_MS,
   createTrailingDebounce,
   filterSlashCommands,
@@ -117,23 +118,22 @@ export function useSlashCommands({
         slashPosition >= 0
           ? slashPosition
           : currentTextarea?.selectionStart ?? input.length;
-      const textBeforeCommand = input.slice(0, insertionStart);
-      const textAfterCommandStart = input.slice(insertionStart);
-      const spaceIndex = textAfterCommandStart.indexOf(' ');
-      const textAfterCommand =
-        slashPosition >= 0 && spaceIndex !== -1
-          ? textAfterCommandStart.slice(spaceIndex).trimStart()
-          : input.slice(currentTextarea?.selectionEnd ?? insertionStart);
-      const separator =
-        textBeforeCommand && !/\s$/.test(textBeforeCommand) ? ' ' : '';
-      const newInput = `${textBeforeCommand}${separator}${command.name}${textAfterCommand ? ` ${textAfterCommand}` : ' '}`;
+      // 新输入与光标位计算抽到 composerLogic.applyCommandInsertion（纯逻辑
+      // node --test 直测）；code-review item 660693cb4a10：斜杠与空格之间
+      // 夹换行时尾段按首个 \s 切分，换行后的既有文本不再被静默丢弃。
+      const { text: newInput, cursor: nextCursorPosition } = applyCommandInsertion(
+        input,
+        command.name,
+        insertionStart,
+        currentTextarea?.selectionEnd ?? insertionStart,
+        slashPosition >= 0,
+      );
 
       setInput(newInput);
       resetCommandMenuState();
 
       window.requestAnimationFrame(() => {
         currentTextarea?.focus();
-        const nextCursorPosition = `${textBeforeCommand}${separator}${command.name} `.length;
         currentTextarea?.setSelectionRange(nextCursorPosition, nextCursorPosition);
       });
     },

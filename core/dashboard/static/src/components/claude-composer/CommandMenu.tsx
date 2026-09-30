@@ -7,7 +7,7 @@
 // 依赖，面板内变量在 .claude-msg-pane、portal 到 body 后缺失——见 composer.css）。
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { CSSProperties, ComponentType, ReactElement } from 'react';
+import type { CSSProperties, ComponentType, ReactElement, RefObject } from 'react';
 import {
   CodeOutlined,
   EnterOutlined,
@@ -33,6 +33,9 @@ type CommandMenuProps = {
   position?: { left: number; bottom?: number };
   isOpen?: boolean;
   frequentCommands?: CommandMenuCommand[];
+  /** 唤起按钮 ref：外点关闭须排除按钮自身，否则菜单打开时点按钮会被外点
+   * 关闭后又被按钮 click 重新打开，按钮失去「再点收起」能力。 */
+  triggerRef?: RefObject<HTMLElement | null>;
 };
 
 type CommandMenuRow = {
@@ -155,6 +158,7 @@ export default function CommandMenu({
   position = { left: 0 },
   isOpen = false,
   frequentCommands: frequent = [],
+  triggerRef,
 }: CommandMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const selectedItemRef = useRef<HTMLDivElement | null>(null);
@@ -180,13 +184,19 @@ export default function CommandMenu({
       if (!menuRef.current || !(event.target instanceof Node)) {
         return;
       }
+      // 唤起按钮不算外点（code-review item 6aa027f2f9c1）：否则 mousedown 先
+      // onClose、同一交互里按钮 click 又把菜单重新置开，净效果是按钮无法
+      // 收起菜单（菜单闪一下后保持打开）。
+      if (triggerRef?.current?.contains(event.target)) {
+        return;
+      }
       if (!menuRef.current.contains(event.target)) {
         onClose();
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, triggerRef]);
 
   useEffect(() => {
     if (!selectedItemRef.current || !menuRef.current) {

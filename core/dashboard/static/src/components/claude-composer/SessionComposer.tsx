@@ -71,6 +71,13 @@ export default function SessionComposer({
   files,
 }: SessionComposerProps) {
   const { message } = App.useApp();
+  const fileDropdownRef = useRef<HTMLDivElement | null>(null);
+  const selectedFileRef = useRef<HTMLDivElement | null>(null);
+  // 命令菜单唤起按钮（code-review item 6aa027f2f9c1）：CommandMenu 的外点
+  // 关闭须排除本按钮，否则菜单打开时点按钮会被外点关闭后又被 click 重新
+  // 打开，按钮失去「再点收起」能力。
+  const commandMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+
   // files/slashCommands/skills 端点失败静默降级（SessionPanel 已吞错给空数组）。
   const composer = useComposerState({
     project,
@@ -80,11 +87,11 @@ export default function SessionComposer({
     slashCommands,
     skills,
     files,
+    // 下拉容器 ref 透传 useFileMentions（code-review item 432c294ae05f）：
+    // 拖动下拉滚动条/点候选行间空白不算外点，下拉不被误收起。
+    fileDropdownRef,
   });
   const keyboardHeight = useVisualViewportHeight();
-
-  const fileDropdownRef = useRef<HTMLDivElement | null>(null);
-  const selectedFileRef = useRef<HTMLDivElement | null>(null);
 
   // 命令菜单锚点（code-review c69c4ee705ca）：弹层是 position:fixed，坐标只在
   // 打开那一帧采样会过期——页面滚动、窗口 resize、移动端键盘开合（visualViewport
@@ -207,6 +214,7 @@ export default function SessionComposer({
           position={commandMenuPosition}
           isOpen={composer.showCommandMenu}
           frequentCommands={composer.frequentCommands}
+          triggerRef={commandMenuTriggerRef}
         />
 
         <PromptInput
@@ -264,6 +272,7 @@ export default function SessionComposer({
               <Tooltip title="斜杠命令与 Skills">
                 {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
                 <Button
+                  ref={commandMenuTriggerRef}
                   icon={<MessageOutlined />}
                   onClick={() => {
                     // 空候选点击给显式反馈（2026-09-25 缺陷修复）：init 事件
