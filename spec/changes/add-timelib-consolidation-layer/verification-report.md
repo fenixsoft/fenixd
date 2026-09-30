@@ -1,18 +1,18 @@
 # 验证报告：add-timelib-consolidation-layer
 
-> ⚠️ 本报告由框架于 2026-09-30T04:41:43Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-30T04:35:38.015596+00:00+run-result@mtime1790743279038182673
+> ⚠️ 本报告由框架于 2026-09-30T04:57:14Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-30T04:57:14.508417+00:00+run-result@mtime1790744234537050803
 
 ## 结论：✅ 通过（verified）
 
-**状态：verified — 24/25 场景通过，1 失败，0 错误（其余失败场景已豁免（见分类列））**
+**状态：verified — 25/25 场景通过，0 失败，0 错误（全部场景通过）**
 
-25 场景：24 PASS + 1 判 env→warning（regression-suite-knowledge-stamp）。该场景 exit_code 1 非产品缺陷：引擎 cwd 为主仓 /root/fenixd，其工作区 tests/test_knowledge.py 为未提交旧版残留（stash@{0} merge-back unblock 痕迹，期望 UTC+8 盖戳+三列能力页表格），与 HEAD=6f4defde 新产品代码失配致 7 例假失败（TestValidateKnowledge 4 例+TestDistillManager 3 例）。实证：同 HEAD 的 worktree 下 77 passed 全绿（本地 TZ 与 TZ=UTC 双跑均过）；core/knowledge.py、core/timelib.py 两仓 diff 逐字节相同；同报告其余 4 个 pytest 回归场景全 PASS。被测分支（timelib 收拢层）验证通过，无 bug。
+全绿快道: 25/25 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 24 |
-| 失败 | 1 |
+| 通过 | 25 |
+| 失败 | 0 |
 | 错误 | 0 |
 | 产品 Bug | 0 |
 | 本链增量 Token（输入） | 7.73M |
@@ -45,15 +45,6 @@
 | guard-zombie-whitelist-entry-fails | 僵尸条目检测（白名单虚胖防线）：沙箱内将 core/self_review.py 的 19 处裸 datetime.now()（守卫白名单必然登记的存量违例）sed 移除后，守卫必须因「白名单条目已无对应违例」失败。出处 spec Scenario「白名单只许收缩」+ design D3 | pass | 0/6 | - |
 | guard-whitelist-keys-no-line-numbers | 白名单最小粒度语义键不含行号（防 2026-09-15 行号键回归：文件前部插行后条目全数失配）：AST 提取守卫测试 TIME_WHITELIST 全部键（路径, 模式名）断言无「xxx.py:数字」形态；docstring 出处标注与违规消息定位（_sample.py:2，守卫应报行号）不属白名单键不在约束面（2026-09-30 裁决原地修复探针：原整文件 grep 误计注释）。出处 spec Requirement「AST 静态守卫棘轮」白名单粒度条款 + tests/test_callsite_arity_guard.py:54 房式注释 | pass | 0/2 | - |
 | regression-suite-escalation-recovery | escalation/recovery 域既有测试回归（轮子收拢行为等价背书）：tests/test_admin_dispatch_escalation.py + test_inconclusive_loop_escalation.py + test_pm_recovery.py 全绿（本轮基线实测 134 例通过）。出处 tasks.md 4.2「行为等价以既有测试回归确认」 | pass | 0/2 | - |
-| regression-suite-knowledge-stamp | knowledge 盖戳域既有测试回归（时间源切换零行为变化背书）：tests/test_knowledge.py + test_knowledge_backfill.py 全绿。出处 tasks.md 4.3「盖戳行格式断言测试锁定」 | warning | 1/2 | env |
+| regression-suite-knowledge-stamp | knowledge 盖戳域既有测试回归（时间源切换零行为变化背书）：tests/test_knowledge.py + test_knowledge_backfill.py 全绿。出处 tasks.md 4.3「盖戳行格式断言测试锁定」 | pass | 0/2 | - |
 | regression-suite-codereview-selfreview | code_review/self_review/regression 域既有测试回归（轮子收拢气泡语义不动背书）：tests/test_code_review.py + test_daily_self_review.py + test_dashboard_regression_api.py 全绿。出处 tasks.md 4.1「self_review 窗口比较气泡语义不动」+ 3.3「stale 判定行为以测试锁定」 | pass | 0/2 | - |
 | regression-suite-timeline-domain | timeline 域既有测试回归（D2 翻转后排序/展示行为锁定）：tests/test_characterization_dashboard_data.py + test_spec_timeline_name_isolation.py + test_timeline_transition_context.py + test_dashboard_data.py 全绿。出处 tasks.md 3.2「下游排序/展示行为以 characterization 测试锁定」 | pass | 0/2 | - |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-| 场景 | 断言 | 归类 | 豁免理由 | 证据 |
-| --- | --- | --- | --- | --- |
-| regression-suite-knowledge-stamp | exit_code [kn_pytest] knowledge 回归全绿=0 | env | 环境因素（非产品缺陷） | 主仓复现（复现3/3）：'7 failed, 73 passed'（TestValidateKnowledge 4例+TestDistillManager 3例），WARNING 显示旧测试夹具写 UTC+8 盖戳被新校验器拒绝；同 HEAD worktree 复现1/2：77 passed 全绿（TZ=UTC ... |
