@@ -165,7 +165,7 @@ def project_summary(name: str, path: str, specs=None) -> dict:
     }
 
 
-def _spec_total_duration(project_root, spec_name: str, entry: dict, runs: list) -> int:
+def _spec_total_duration(entry: dict, runs: list) -> int:
     """SPEC 累计耗时（add-spec-detail-duration：列表 spec_summary / 详情 spec_detail
     共用同一口径，保证两页数值严格一致）。done/pushed 优先读 STATE.md 固化的
     total_duration（done 时刻快照，不随 run 产物清理归零）；其余状态或脏值回退
@@ -222,6 +222,11 @@ def _cached_config_value(project_root, cache: dict, cache_max: int, parse):
         cache.clear()
     cache[cache_key] = value
     return value
+
+
+# 公开访问面（code-review item 20ad589a3bc4）：quality_gates.py 跨组引用改用
+# 公开名（不跨组消费下划线私有名），与 _cached_config_value 同一函数对象单源绑定。
+cached_config_value = _cached_config_value
 
 
 def _resolve_global_impl_run_budget(project_root) -> int:
@@ -326,6 +331,11 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         心跳全部复用该文件集，不再各自 glob 整个 runs 目录（D2：目录 glob
         次数为常数）。缺省 None 时内部自行 glob（详情页等非索引路径）。
     """
+    # 入口单点归一（code-review item c028b72cc8ef）：SummaryIndex 调用链本就
+    # 保证 entry 非 None（entry = entry or {}），此处兜底同款归一，函数内
+    # 裸取与散落的 `if entry else` 守卫口径统一（守卫已按恒取前支化简，
+    # None entry 不再有 AttributeError 分叉）。
+    entry = entry or {}
     import core.dashboard.data as _facade
 
     done, total = _facade.task_progress(
@@ -359,7 +369,7 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         phase = "gates"
     else:
         phase = "impl"
-    total_duration = _spec_total_duration(project_root, spec_name, entry, runs)
+    total_duration = _spec_total_duration(entry, runs)
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
 
@@ -374,10 +384,10 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
     )
 
     budget_max = _impl_budget_max(project_root)
-    budget_override_raw = entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD) if entry else None
+    budget_override_raw = entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD)
     budget_override = clamp_impl_run_budget(budget_override_raw, budget_max)
     try:
-        budget_used = int(entry.get("_impl_run_budget_used", 0) or 0) if entry else 0
+        budget_used = int(entry.get("_impl_run_budget_used", 0) or 0)
     except (TypeError, ValueError):
         budget_used = 0
     if budget_override is not None:
@@ -411,7 +421,7 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # 登记在 StateParser._parse_content 的 null→None 归一化键表，serialize 对
         # 空值恒写 `depends_on: null`，透传会让 227/244 条无依赖 SPEC 拿到字面量
         # "null" 而被误标（见 normalize_depends_on docstring）。
-        "depends_on": normalize_depends_on(entry.get("depends_on") if entry else None),
+        "depends_on": normalize_depends_on(entry.get("depends_on")),
         # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
         # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
         "frozen": _facade.is_spec_frozen(entry),
@@ -419,7 +429,7 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # 区块渲染判据。取值为归一化布尔——_cancelled_hold 已登记进
         # state.py parse_state 归一化表（与 frozen 同口径），文本 False 不再
         # 以真值字符串漏出；此处不写 bool(entry.get(...))，保持防回归口径。
-        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
+        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")),
         # add-task-progress-verify-phase + add-quality-gates-visibility：阶段
         # 判定单点在后端（见上方窗口两支注释），前端只消费该字段不重复判定。
         "progress_phase": phase,
@@ -459,18 +469,14 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # _verify_infra_rounds 为本轮验证周期 infra 轮次（纯观测，不参与
         # MAX_VERIFY_FAIL_ROUNDS 冻结；验证 PASS 归零）；_infra_failure_count
         # 为生命周期累计观测值（不归零，同 _budget_exempt_runs 范式）。
-        "verify_infra_rounds": _int_or_zero(entry.get("_verify_infra_rounds")) if entry else 0,
-        "infra_failure_count": _int_or_zero(entry.get("_infra_failure_count")) if entry else 0,
+        "verify_infra_rounds": _int_or_zero(entry.get("_verify_infra_rounds")),
+        "infra_failure_count": _int_or_zero(entry.get("_infra_failure_count")),
         # add-verify-lane-throughput 3.3：judge 治理读侧观测（design 决策 5）——
         # fast-track 复用命中与真实派发的生命周期累计，fast-track 命中率 =
         # hits / (hits + dispatches) 由消费方计算；历史 spec 无记录 → None
         # （缺失容错，与 0 区分「未启用期」）。
-        "judge_fasttrack_hits": _judge_stat_or_none(
-            entry.get("_judge_fasttrack_hits") if entry else None
-        ),
-        "judge_real_dispatches": _judge_stat_or_none(
-            entry.get("_judge_real_dispatches") if entry else None
-        ),
+        "judge_fasttrack_hits": _judge_stat_or_none(entry.get("_judge_fasttrack_hits")),
+        "judge_real_dispatches": _judge_stat_or_none(entry.get("_judge_real_dispatches")),
     }
 
 
@@ -667,6 +673,12 @@ class SummaryIndex:
       签名（fix-dashboard-read-path-performance D1：增量失效，不再全量重建）。
     - 有界性：摘要 dict 常驻内存（10000 spec ≈ 数十 MB，可接受）；签名只对存在
       路径记录，删除的 spec 目录从索引剔除。
+    - 锁粒度取舍（code-review item 8b43aa321467）：get()/invalidation_signature()
+      共用同一把实例级 RLock 且覆盖全部项目——任一项目的冷/增量重建（全项目
+      runs 签名扫描 + 逐 spec 签名比对 + 未命中 spec 的完整摘要重算，含
+      parse_quality_gates/count_scenarios/runs 读取等 IO）期间，其余项目的读请求
+      会被串行化阻塞。属已知取舍：写侧仅 watcher 单写者，HTTP 并发轮询规模
+      有限，按项目分槽锁（或重 IO 移出锁外）的收益不抵复杂度，暂不引入。
     """
 
     def __init__(self):
@@ -903,6 +915,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     billing_table = _facade._load_billing_config(project_root)
     if billing_table:
         cost_summary = _facade._cost_summary_from_timeline(timeline)
+    # tasks 与 tasks_note 共享一次解析（code-review item 6d2eca146f3c）：
+    # tasks_note 传 groups 免去对 tasks.md 的第二次完整 parse_tasks
+    tasks = _facade.parse_tasks(project_root, spec_name, spec_status)
     return {
         "name": spec_name,
         "status": entry.get("status"),
@@ -921,8 +936,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         # STATE.md 对空依赖恒写 `depends_on: null`，透传会让详情态复现列表页
         # 已修掉的「前置依赖」误标（见 normalize_depends_on docstring）
         "depends_on": normalize_depends_on(entry.get("depends_on")),
-        "tasks": _facade.parse_tasks(project_root, spec_name, spec_status),
-        "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status),
+        "tasks": tasks,
+        "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status, groups=tasks),
         "run_progress": _facade.run_task_progress(project_root, spec_name),
         "run_activity": _facade.run_activity(project_root, spec_name),
         "verify_progress": _facade.parse_verify_progress(project_root, spec_name),
@@ -955,7 +970,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "timeline": timeline,
         # add-spec-detail-duration：详情页「耗时」与列表页「耗时」列同源同口径
         # （runs 已含归档，见 _spec_total_duration）
-        "total_duration": _spec_total_duration(project_root, spec_name, entry, runs),
+        "total_duration": _spec_total_duration(entry, runs),
         # add-model-billing-cost-display：SPEC 级成本合计（计费关闭时缺省 None）
         "cost_summary": cost_summary,
         # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。

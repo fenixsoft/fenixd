@@ -21,7 +21,9 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                                         code-review 2546f200e430),
     read_log_window_from (log_index.py 公开别名，timeline.py 经门面解析；
                           code-review 2546f200e430),
-    read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9)
+    read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9),
+    cached_config_value (summary.py 公开别名，quality_gates.py 经门面解析；
+                         code-review 20ad589a3bc4)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
@@ -86,6 +88,7 @@ from .summary import (
     _token_recent_entries,
     _degraded_project,
     _cached_config_value,
+    cached_config_value,
     overview,
 )
 
@@ -202,6 +205,7 @@ from .spec_archive import (
 from .spec_docs import (
     _SPEC_NAME_RE,
     _SPEC_DOC_WHITELIST,
+    _validated_spec_name,
     resolve_spec_dir,
     InvalidSpecName,
     InvalidSpecDoc,
