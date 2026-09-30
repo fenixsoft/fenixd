@@ -2078,6 +2078,16 @@ def _git_branch_merge_base(project_root, branch) -> "str | None":
     return proc.stdout.strip() or None
 
 
+def branch_merge_base(project_root, branch) -> "str | None":
+    """``_git_branch_merge_base`` 的公开薄包装（直接委托，行为逐字一致）。
+
+    code-review item 2fe1cd927997：跨模块消费方（dispatch/adjudication）改经
+    公开名导入，私有本体仍是本模块内部实现细节——其签名/语义调整不再于模块
+    外被静默依赖。既有内部用法与测试对私有名的导入不动。
+    """
+    return _git_branch_merge_base(project_root, branch)
+
+
 def _git_branch_changed_files(project_root, branch, merge_base) -> list:
     """``git diff --name-only --diff-filter=AM <merge-base>..<branch>`` 分支改动
     集合（新增/修改文件，design D1 规则 2；既有用法见 mergeback.py:757）。
