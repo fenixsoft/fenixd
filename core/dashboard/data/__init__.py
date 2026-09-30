@@ -50,6 +50,7 @@ import yaml  # noqa: F401
 
 from core.agent_runner.run_files import archive_spec_runs
 from core.archive_commit import commit_archive_move
+from core.config import USER_CONFIG_DIR  # 单源锚定：用户级配置目录唯一定义于 core/config.py
 from core.fenix_session import is_running as _is_running
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
@@ -59,8 +60,11 @@ from core.state_machine import (
     VERIFY_INFRA_ROUNDS_FIELD,
 )
 
-# D8：USER_CONFIG_PATH 门面绑定（config_admin 组内经 _facade.USER_CONFIG_PATH 解析）
-USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
+# D8：USER_CONFIG_PATH 门面绑定（config_admin 组内经 _facade.USER_CONFIG_PATH 解析）。
+# 值单源派生自 core.config.USER_CONFIG_DIR（勿在此独立硬编码 Path.home() 路径，
+# code-review item dd0d79107571：防两处定义静默漂移）。import 时计算一次，
+# patch 门面属性（patch("core.dashboard.data.USER_CONFIG_PATH", ...)）语义不变。
+USER_CONFIG_PATH = USER_CONFIG_DIR / "config.yaml"
 
 
 # ── summary 组 ──
