@@ -253,7 +253,7 @@ def _load_planned_scenarios(project_root, spec_name) -> "list | None":
     return data
 
 
-def count_generated_scenarios(project_root, spec_name) -> int:
+def count_generated_scenarios(project_root, spec_name, data=None) -> int:
     """统计 planner 已补全的场景数（verification-phase-progress）。
 
     读 .fenix/verify-progress/<spec>/test_scenarios.json（装载助手
@@ -263,8 +263,12 @@ def count_generated_scenarios(project_root, spec_name) -> int:
     先行（fix-planner-scenarios-batching-hook）后，骨架含全部 id 但无肉，
     若按条数计则骨架落盘瞬间出题条 0→N/N 一次跳；数带肉场景使出题条
     随每 1/3 重写真实爬升。
+
+    data 可选传入已装载的场景列表（spec_generation_progress 同一次进度
+    查询内与分母共享装载、免重复读盘）；缺省 None 时自行经装载助手装载。
     """
-    data = _load_planned_scenarios(project_root, spec_name)
+    if data is None:
+        data = _load_planned_scenarios(project_root, spec_name)
     if data is None:
         return 0
     return sum(
@@ -272,7 +276,7 @@ def count_generated_scenarios(project_root, spec_name) -> int:
     )
 
 
-def count_planned_scenarios(project_root, spec_name) -> int:
+def count_planned_scenarios(project_root, spec_name, data=None) -> int:
     """统计 planner 本轮规划的场景条目总数（骨架含全部 id）。
 
     读本轮 planner 出题产物 `.fenix/verify-progress/<spec>/test_scenarios.json`
@@ -287,8 +291,12 @@ def count_planned_scenarios(project_root, spec_name) -> int:
     （web/cli/api，见 agents/planner-plan.md 判定树），二者单位不同、数量无
     绑定关系（实测 243/267 个 spec 出现 done>total，如 20/11）；且非「多形态
     验收」类 spec 的 spec.md 根本不含 `#### Scenario:` 块（分母为 0）。
+
+    data 可选传入已装载的场景列表（spec_generation_progress 同一次进度
+    查询内与分子共享装载、免重复读盘）；缺省 None 时自行经装载助手装载。
     """
-    data = _load_planned_scenarios(project_root, spec_name)
+    if data is None:
+        data = _load_planned_scenarios(project_root, spec_name)
     if data is None:
         return 0
     return sum(1 for sc in data if isinstance(sc, dict))
@@ -314,7 +322,9 @@ def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | 
         vp = _facade.parse_verify_progress(project_root, spec_name)
     if vp.get("total", 0):
         return None
-    done = count_generated_scenarios(project_root, spec_name)
+    # 同一次进度查询只装载一遍 test_scenarios.json，分子/分母共享同一 list
+    scenarios = _load_planned_scenarios(project_root, spec_name)
+    done = count_generated_scenarios(project_root, spec_name, scenarios)
     if not done:
         return None
-    return {"done": done, "total": count_planned_scenarios(project_root, spec_name)}
+    return {"done": done, "total": count_planned_scenarios(project_root, spec_name, scenarios)}
