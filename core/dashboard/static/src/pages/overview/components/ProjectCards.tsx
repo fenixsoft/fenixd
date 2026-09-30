@@ -12,14 +12,13 @@ import { history } from '@umijs/max';
 import type { ProjectSummary } from '@/services/dashboard';
 import { deleteProject, installHosting, startProject, statusMeta, stopProject } from '@/services/dashboard';
 import { OutlinedTag } from '@/components/StatusTag';
+// 百分比帮助函数单源（code-review item d7d303f389f6）：原与 IntroduceRow 各持
+// 逐字相同的本地定义，收敛到 @/utils/percent
+import { pct } from '@/utils/percent';
 
 const TRACK_LIGHT = '#e6f4ff';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
-
-function pct(done: number, total: number) {
-  return total > 0 ? Math.round((done / total) * 100) : 0;
-}
 
 function DaemonBadge({ daemon, hosting }: { daemon: string; hosting?: string }) {
   if (daemon === 'running') {
@@ -84,6 +83,10 @@ export default function ProjectCards({
     // 再刷新，列表/菜单会滞留十几秒——先本地摘除（列表经 onProjectRemoved、菜单经
     // initialState），后端完成后 onChanged() 校准；失败也经 onChanged() 回滚摘除。
     if (action === 'delete') {
+      // delete 同样记账在飞（code-review item f060e4a1ac86）：乐观摘除行后菜单仍可能
+      // 经其它入口（列表快速刷新、错误行恢复）触发，pending 记账 + 菜单项 disabled
+      // 防在飞期间对同一项目并发下发 DELETE
+      setPending((prev) => new Set(prev).add(name));
       onProjectRemoved?.(name);
       const key = `del-${name}`;
       message.loading({ content: `正在移除项目「${name}」…`, key, duration: 0 });
@@ -96,8 +99,13 @@ export default function ProjectCards({
           key,
         });
       } finally {
-        // 先解除在飞删除标记，再刷新——load() 恢复采用服务端真值
-        // （成功=确认移除；失败=回滚乐观摘除，项目重新出现）
+        // 先解除在飞标记（pending 记账 + 父级删除标记），再刷新——load() 恢复采用
+        // 服务端真值（成功=确认移除；失败=回滚乐观摘除，项目重新出现）
+        setPending((prev) => {
+          const next = new Set(prev);
+          next.delete(name);
+          return next;
+        });
         onProjectSettle?.(name);
         onChanged();
       }
@@ -149,13 +157,15 @@ export default function ProjectCards({
   };
 
   const menuItems = (project: ProjectSummary) => {
+    const busy = pending.has(project.name);
     // fix-dashboard-fault-isolation 3.3：错误态项目（摘要带非空 error）内容不可读，
     // 禁 start/stop/install 操作，仅保留「进入」与「删除」（删除 = 软删除逃生通道）。
+    // 删除项两分支统一 disabled: busy（code-review item f060e4a1ac86）：delete 已入
+    // 在飞记账，防在飞期间重复下发
     if (project.error) {
-      return [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }];
+      return [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, disabled: busy }];
     }
     const running = project.daemon === 'running';
-    const busy = pending.has(project.name);
     const items = project.exists
       ? [
           { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running || busy },
@@ -168,7 +178,7 @@ export default function ProjectCards({
           { type: 'divider' as const },
         ]
       : [];
-    return [...items, { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }];
+    return [...items, { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, disabled: busy }];
   };
 
   const onMenuClick = (project: ProjectSummary, key: string) => {
@@ -324,7 +334,17 @@ export default function ProjectCards({
                     <Typography.Text
                       strong
                       style={{ cursor: 'pointer' }}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => history.push(`/projects/${encodeURIComponent(project.name)}`)}
+                      onKeyDown={(e) => {
+                        // 键盘可达（code-review item b5ed7707672e）：Enter/Space 触发跳转，
+                        // 与行内「进入」按钮同操作
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          history.push(`/projects/${encodeURIComponent(project.name)}`);
+                        }
+                      }}
                     >
                       {project.name}
                     </Typography.Text>

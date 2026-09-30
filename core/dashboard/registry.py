@@ -371,7 +371,10 @@ class Registry:
             try:
                 if not base.is_dir():
                     continue
-            except OSError:
+            except OSError as exc:
+                # 扫描根整体不可达（如挂载点 EIO）：留痕便于排障，句式与
+                # _dir_exists 对齐（code-review item 6fc2d365f4ed）。
+                logger.warning("发现层探测扫描根失败 %s: %s", base, exc)
                 continue
             try:
                 children = sorted(base.iterdir())

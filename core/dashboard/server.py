@@ -309,10 +309,36 @@ def _proc_starttime(pid: int) -> int | None:
 
 
 def _claude_watchdog_loop(pid: int, starttime: int, on_death, interval: float = 5.0) -> None:
-    """轮询目标进程（默认每 5s）； starttime 变化或消失 → on_death() 一次后返回。"""
+    """轮询目标进程（默认每 5s）； starttime 变化或消失 → on_death() 一次后返回。
+
+    code-review item 2086ce927c5e：区分「进程不存在」与「/proc 读取失败」。
+    _proc_starttime 在 OSError（如 /proc 重挂载、fd 耗尽）下也返回 None，原实现
+    单次读取失败即等价「目标已死」触发自杀。现按 /proc/<pid> 目录是否仍在区分：
+    目录消失（进程真死）或读到不同 starttime（PID 复用实锤）→ 立即判死，保持
+    既有 fail-safe；进程仍在但读不到 → 视为瞬时读取失败，连续 3 次（≈15s）才
+    判死，首次失败 stderr 留痕一次，避免瞬时读错误误自杀。
+    """
+    read_failures = 0
+    warned = False
     while True:
         time.sleep(interval)
-        if _proc_starttime(pid) != starttime:
+        cur = _proc_starttime(pid)
+        if cur == starttime:
+            read_failures = 0
+            continue
+        if cur is not None or not Path(f"/proc/{pid}").exists():
+            # 读到不同 starttime（PID 复用）或进程已消失 → 判死
+            on_death()
+            return
+        # 进程仍在但 starttime 读不到：按瞬时读取失败宽限，连续 3 次才判死
+        read_failures += 1
+        if not warned:
+            warned = True
+            sys.stderr.write(
+                f"claude-watchdog 目标 PID {pid} starttime 读取失败（进程仍在，"
+                f"连续 {read_failures}/3 次）——暂不判死，继续观察。\n"
+            )
+        if read_failures >= 3:
             on_death()
             return
 
@@ -509,6 +535,11 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             # code-review item fde33bdc20b2：旧写法 `not isinstance(e, OSError) or ...`
             # 的首操作数恒为 False（e 已由 except 绑定为 OSError），系死代码；
             # 实际判据就是 errno，此处化简约。
+            # errno 逐值语义（code-review item 33e07020156d）：98=Linux EADDRINUSE、
+            # 48=macOS EADDRINUSE——errno 常量取值随平台不同，这里按字面量并列做
+            # 跨平台兜底；56=Linux EALREADY，本义「连接已在进行」，并无「地址已
+            # 占用」语义，收录理由初版提交 6393f97d 未说明、已不可考。移除属行为
+            # 变更（可能改变既有环境的接管路径实测面），保守保留判据不变。
             raise
         # EADDRINUSE：地址已被占用 → 端口接管逻辑
         occupant = _find_dashboard_occupant(actual)
@@ -667,12 +698,25 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             reap_all_autodraft()
         except Exception:  # noqa: BLE001
             pass
-        # dashboard-live-session 3.3：先终止会话子进程，再停 watcher
+        # dashboard-live-session 3.3：先终止会话子进程，再停 watcher。
+        # code-review item 7ead46b03f0e：三步各自吞异常并留痕——任一项抛出不得
+        # 跳过后续清理（server_close 被跳过会泄漏已绑定监听 socket，shutdown 被
+        # 跳过会孤儿化 live-session 子进程），与上方启动段异常路径的逐项清理
+        # 纪律对齐，保证 server_close 无条件执行。
         if httpd.session_manager is not None:
-            httpd.session_manager.shutdown()
+            try:
+                httpd.session_manager.shutdown()
+            except Exception as e:
+                sys.stderr.write(f"dashboard 退出清理 session_manager 失败: {e}\n")
             httpd.session_manager = None
-        watcher.stop()
-        httpd.server_close()
+        try:
+            watcher.stop()
+        except Exception as e:
+            sys.stderr.write(f"dashboard 退出清理 watcher 失败: {e}\n")
+        try:
+            httpd.server_close()
+        except Exception as e:
+            sys.stderr.write(f"dashboard 退出清理 server_close 失败: {e}\n")
 
 
 def _is_process_alive(pid: int) -> bool:

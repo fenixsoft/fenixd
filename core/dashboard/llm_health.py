@@ -33,6 +33,15 @@ HEALTH_CHECK_TIMEOUT_SECONDS = 15
 # 非成功响应体回传片段的截断上限（spec「上游返回 HTTP 错误」：≤200 字符）
 _ERROR_SNIPPET_MAX_CHARS = 200
 
+# 错误体读取上限（bytes）：片段只需前 200 字符，UTF-8 每字符至多 4 字节——
+# 读取期就封顶，错误页无限流/超大错误体不整包驻留内存
+_ERROR_SNIPPET_MAX_BYTES = 4 * _ERROR_SNIPPET_MAX_CHARS
+
+# 200 响应体读取上限（bytes）：baseurl 由表单直传属不可信输入，误配/恶意
+# 网关可在超时窗口内灌入巨量响应——正常健康响应（messages JSON）远小于此，
+# 超限即按 empty_reply 归类，不等全量驻留后才截断/解析
+_MAX_BODY_BYTES = 1024 * 1024
+
 # 最小探测请求的 max_tokens。曾为 64：思考型模型（GLM/DeepSeek 系）网关侧默认
 # 开思考，64 全花在 thinking 块上没有正文，被误报 empty_reply（09-29 实测
 # bigmodel.cn / maomaoai 双双误报，max_tokens=256 实测均 end_turn 正常回文）。
@@ -164,11 +173,15 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         # 挂跨主机重定向拦截 handler 的局部 opener（勿 install_opener，避免改全局状态）
         opener = urllib.request.build_opener(_NoCrossHostRedirectHandler)
         with opener.open(req, timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+            # read(n) 到 n 字节或 EOF 即返回：正常响应远小于上限一次拿全量；
+            # 多读 1 字节用于判超限，巨量响应最多驻留上限+1 字节即止
+            raw_bytes = resp.read(_MAX_BODY_BYTES + 1)
     except urllib.error.HTTPError as e:
         # 非 200：读错误体片段供排障（401 密钥无效 / 404 路径不对 / 429 限流等）
         try:
-            snippet = _truncate(e.read().decode("utf-8", errors="replace"))
+            snippet = _truncate(
+                e.read(_ERROR_SNIPPET_MAX_BYTES).decode("utf-8", errors="replace")
+            )
         except (OSError, http.client.HTTPException):
             # 错误体读取中断（如 IncompleteRead）同样只是拿不到片段，兜底空串
             snippet = ""
@@ -197,6 +210,13 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         return _fail(started, "connection_error", error=str(e))
 
     latency_ms = _latency_ms(started)
+    if len(raw_bytes) > _MAX_BODY_BYTES:
+        # 200 但响应体超限（流式端点 / 错误页无限流 / 恶意服务灌流）：不再继续
+        # 收包，按既有 empty_reply 口径归类——解析不出可用的文本回复
+        return _fail(
+            started, "empty_reply", error=f"响应体超过 {_MAX_BODY_BYTES // 1024} KiB 读取上限"
+        )
+    raw = raw_bytes.decode("utf-8", errors="replace")
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as e:

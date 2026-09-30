@@ -3,6 +3,9 @@ import { Area } from '@ant-design/plots';
 import { Card, Progress, Tooltip, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import type { OverviewTotals, TokenUsageItem } from '@/services/dashboard';
+// 百分比帮助函数单源（code-review item 0ccf867a0bdb）：原与 ProjectCards 各持
+// 逐字相同的本地定义，收敛到 @/utils/percent（对齐 @/utils/duration 抽单源先例）
+import { pct } from '@/utils/percent';
 
 /**
  * 统计卡行（复刻 ant-design-pro analysis 页 IntroduceRow 各卡布局）。
@@ -13,10 +16,6 @@ import type { OverviewTotals, TokenUsageItem } from '@/services/dashboard';
  */
 const CARD_BODY = { padding: '16px 24px' } as const;
 const TITLE_GRAY = 'rgba(0,0,0,0.45)';
-
-function pct(done: number, total: number) {
-  return total > 0 ? Math.round((done / total) * 100) : 0;
-}
 
 function compactTokens(n: number): string {
   // 进位守卫：未舍入换算值 ≥9999.95 时 toFixed(1) 会进位成 "10000.0万"（如 99999999），
@@ -166,6 +165,10 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   const byType = totals.active_runs_by_type || {};
   const total = totals.active_runs ?? 0;
   const catTotal = AGENT_CATS.reduce((s, [keys]) => s + keys.reduce((x, k) => x + (byType[k] || 0), 0), 0);
+  // 口径漂移守卫（code-review item 1bc6575b3de5）：服务端 active_runs 与
+  // active_runs_by_type 口径漂移（byType 之和 > total）时，以 max(total, catTotal)
+  // 作分段占比分母，保证条形各段 share 之和不超过 100%（大数字仍显示 total 本值）
+  const barTotal = Math.max(total, catTotal);
   const other = Math.max(0, total - catTotal);
   const data = [
     ...AGENT_CATS.map(([keys, label], i) => ({
@@ -218,7 +221,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
       </div>
       <div style={{ minHeight: 20 }}>
         {data.length ? (
-          <NormalizedBar data={data} total={total} />
+          <NormalizedBar data={data} total={barTotal} />
         ) : (
           <Typography.Text type="secondary">暂无活跃运行</Typography.Text>
         )}
@@ -231,13 +234,19 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
 function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
   const sum = recent.reduce((s, r) => s + r.tokens, 0);
   // recent 为 updated 倒序（最新在前）；面积图 x 轴从旧到新 → 反转，最新在最右
-  const seen = new Set<string>();
+  // 同名 spec 去重（code-review item 59a16a8b1857）：同名 spec 第 n 次（n ≥ 2）
+  // 出现以 `${spec}·${project}·${n}` 追加序号后缀，保证 G2 类目轴 x 值唯一——
+  // 同一 (spec, project) 在窗口内出现两次时，原 `${spec}·${project}` 拼接会把两次
+  // 映射到同一类目（面积图同挂两点致连线/填充畸变）；序号后缀同时降低与含 ·
+  // 字面 spec 名的碰撞面。按 spec 全局计数（跨项目同名同样错开）
+  const seen = new Map<string, number>();
   const data = recent
     .slice()
     .reverse()
     .map((r) => {
-      const spec = seen.has(r.spec) ? `${r.spec}·${r.project}` : r.spec;
-      seen.add(r.spec);
+      const n = (seen.get(r.spec) || 0) + 1;
+      seen.set(r.spec, n);
+      const spec = n === 1 ? r.spec : `${r.spec}·${r.project}·${n}`;
       return { spec, tokens: r.tokens };
     });
   return (
