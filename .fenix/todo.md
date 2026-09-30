@@ -13,14 +13,6 @@
 
 ## 2026-09-29
 
-### 浪费
-- **DNS 故障打死 366 轮批修复 网络类终局不在超时保全签名内**
-  - 自进化：问题部分成立 / 建议不合理 / — 不需要
-  - 影响：09-28 凌晨一次 DNS 不可达把跑了 366 轮、6.19 美元的 code-fix 批（台账修复批）整轮打死，工作区无 WIP 保全、无快照留痕，批成果全部蒸发，靠当晚后续批重跑补回。
-  - 证据：归档 .fenix/runs/archive/code-fix-1790540479.jsonl 末段：result 为「API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)」、terminal_reason 为 api_error、run_metrics 记 366 轮、6.19 美元（16 个子代理 6 个失败）；fenixd.log 2026-09-27T20:33:56Z ERROR「code-fix run 失败（run code-fix-1790540479）: claude CLI failed: Exit code: 1」；该 run_id 在日志中无任何 Pre-rmtree 快照或 salvage 痕迹。
-  - 调查评估：暴露于周期审查 233 条台账的消化链（本地 09-28 04:24 启动的批）。已核实：evo-code-fix-api-timeout-salvage（API 超时现场保全 SPEC）当日 02:37 本地已 merge（提交 19c5a644），其保全判别 is_api_timeout_signature 只命中「terminal_reason 为 api_error 且 result 含 Request timed out」的超时形态；本 run 的 result 是 DNS 不可达（ENOTFOUND），签名不命中，salvage commit（失败现场以提交方式落批分支保全）路径未触发。根因是签名枚举过窄：网络层故障与 API 超时同属「非代码原因的整轮报废」，却不在保全名单。与存量工作：api-timeout-salvage 管超时形态，本条暴露其邻近盲区，属签名扩展关系非重复。结论：批跑得越长暴露越大（本例 366 轮全损），同类网络抖动复发一次即损失一批 300 轮级工作。
-  - 建议：把 salvage 保全签名从「Request timed out」扩展到网络类终局（result 含 ENOTFOUND、ECONNRESET、Can't reach the API server 等形态），复用既有 salvage commit 落批分支加下一批认领接续链路，补对应判别单测。
-
 ### 可改进
 - **消化条均轮数三连升至 15.0 预聚类决策条件已成立（恶化）**
   - 自进化：问题部分成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
@@ -33,15 +25,30 @@
 
 ### 知识真相源
 - [ ] knowledge-distill 重试：归档 2026-09-30-evo-fix-worktree-name-collision-retry — 校验违规经 3 轮 run 仍未通过
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-platform/v2-data-adapters.md × spec/knowledge/domains/dashboard-platform/v2-sdk-vendor.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-platform/v2-data-adapters.md × spec/knowledge/domains/dashboard-platform/v2-legacy-coexist.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/task-progress-phase-display.md × spec/knowledge/domains/implementer-lane/artifact-path-declaration.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-review-lane/impl-code-review-tuning.md × spec/knowledge/domains/dispatch-scheduling/dispatch-concurrency-tuning.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-manual-trigger.md × spec/knowledge/domains/code-review-lane/code-review-trigger-ack.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/dispatch-scheduling/dispatch-concurrency-tuning.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-review-lane/impl-code-review-tuning.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/agent-runtime/long-task-foreground-wait.md × spec/knowledge/domains/verify-pipeline/blocked-reverify-gate.md），请人工核查
+
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/admin-ops/stuck-signal-hygiene.md × spec/knowledge/domains/self-evolution/stale-selfheal-cooldown.md），请人工核查
 
-### 人工步骤
-- add-timelib-callsite-migration 批⑤改动了 `bin/fenix_dashboard.py`/`bin/fenix_process.py`/`bin/fenix_status.py`（时间展示收拢 timelib.fmt_display）：主树 `.fenix/bin/` 下的部署副本（软链/拷贝，未跟踪文件不随 merge-back 落地）需人工刷新——主树手工同步这三个文件，或走重启部署机制重建 `.fenix/bin`，否则 /fenix-status、/fenix-process、TUI 仪表盘仍跑迁移前解析副本
+## 2026-10-01
+
+### 知识真相源
+- audit 疑点升级待人工：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/dispatch-scheduling/dispatch-concurrency-tuning.md）连续 2 轮复核无确定性判定，请人工仲裁；消费后删除 .fenix/knowledge_audit_findings.json 对应条目即恢复自动复核
+- audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-review-lane/repo-review-concurrency.md），请人工核查
+- audit 疑点升级待人工：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-review-lane/impl-code-review-tuning.md）连续 2 轮复核无确定性判定，请人工仲裁；消费后删除 .fenix/knowledge_audit_findings.json 对应条目即恢复自动复核
+- audit 疑点升级待人工：contradiction（spec/knowledge/domains/agent-runtime/long-task-foreground-wait.md × spec/knowledge/domains/verify-pipeline/blocked-reverify-gate.md）连续 2 轮复核无确定性判定，请人工仲裁；消费后删除 .fenix/knowledge_audit_findings.json 对应条目即恢复自动复核
+- audit 疑点升级待人工：contradiction（spec/knowledge/domains/admin-ops/stuck-signal-hygiene.md × spec/knowledge/domains/self-evolution/stale-selfheal-cooldown.md）连续 2 轮复核无确定性判定，请人工仲裁；消费后删除 .fenix/knowledge_audit_findings.json 对应条目即恢复自动复核
