@@ -367,7 +367,12 @@ class G2LegacyRegistryMixin:
                 timeout=10,
             )
             if br.returncode == 0:
-                return br.stdout.strip()
+                branch = br.stdout.strip()
+                # detached HEAD 时 rev-parse 返回字面量 "HEAD"（code-review item
+                # c1c890cd48ff）：与 _physically_reclaim_legacy 的
+                # branch != "HEAD" 守卫在源头对齐，过滤为空串交由调用方
+                # `if not branch` 守卫承接，避免 "HEAD" 作为分支名入册误导。
+                return "" if branch == "HEAD" else branch
         except Exception:
             pass
         return ""
