@@ -303,6 +303,14 @@ def _kill(proc: subprocess.Popen) -> None:
             pass
         try:
             proc.wait(timeout=5)
+            # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
+            # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
+            # 成立；组已空（全员随 SIGTERM 退出）抛 ProcessLookupError，属
+            # 常态按已清算处理。
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
             return
         except subprocess.TimeoutExpired:
             pass
@@ -382,6 +390,19 @@ def _pid_alive(pid: int) -> bool:
         return stat.rsplit(b")", 1)[1].split()[:1] != [b"Z"]
     except (OSError, IndexError):
         return False
+
+
+def _pid_recently_started(pid: int, grace_seconds: float = 60.0) -> bool:
+    """进程启动时刻距现在是否不足 grace_seconds（/proc 目录 mtime 作近似）。
+
+    Linux /proc/<pid> 目录的 mtime 即该 PID 当前进程的创建时刻，可作启动
+    时刻近似（秒级误差可接受）；读取失败（进程已消失等）按不豁免计。
+    """
+    try:
+        started_at = os.stat(f"/proc/{pid}").st_mtime
+    except OSError:
+        return False
+    return (time.time() - started_at) < grace_seconds
 
 
 def _kill_pids(pids: list, logger=None) -> int:
@@ -492,6 +513,9 @@ def _dev_server_orphan_pids(logger=None) -> list:
     → spec 锁永不释放 → 派发滞留（dispatch_stalled）。反向缺陷同样要防：
     无差别按标记清理会误杀 daemon 重启时仍在服务的活跃 run dev-server。
     故以「worktree 存在 且 有存活归属进程」为豁免条件，两条都检查。
+    另设启动宽限豁免：启动不足 60s 的 dev-server 本轮一律跳过（派发先启
+    dev-server、再 spawn claude 的秒级窗口内归属探测必然落空，防周期清扫
+    TOCTOU 误杀在服 run）。
     """
     out = []
     for pid in _pgrep_dev_servers(V2_DEV_SERVER_MARKER):
@@ -520,6 +544,21 @@ def _dev_server_orphan_pids(logger=None) -> list:
             continue
         if wt_root.is_dir() and _worktree_has_live_referencing_process(wt_root, pid):
             continue  # 归属存活 attempt，保留
+        # 启动宽限豁免（TOCTOU 防误杀）：框架派发先启 dev-server、再 spawn
+        # claude（agent_runner D2），dev-server 落地到 claude 进程以 --add-dir
+        # 形式出现在 pgrep 结果存在秒级窗口；周期清扫（fenixd.py 每 600s 一次）
+        # 恰落该窗口时归属探测落空 → 误杀在服 run 的 dev-server（已注入的
+        # V2_BASE_URL 指向死端口，验证轮伪失败）。故启动不足 60s 的进程本轮
+        # 一律跳过，交由下一轮周期清扫再判：漏清代价仅为短暂延迟（dev-server
+        # 另有 ppid 绑定自灭兜底），远低于误杀在服 run。
+        if _pid_recently_started(pid):
+            if logger:
+                logger.info(
+                    "v2_dev_server",
+                    f"orphan sweep skipped for pid={pid}: started <60s ago "
+                    f"（派发启动窗口豁免，防归属探测 TOCTOU 误杀）",
+                )
+            continue
         out.append(pid)
     return out
 
