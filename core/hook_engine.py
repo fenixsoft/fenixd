@@ -197,7 +197,11 @@ def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
 
 
 def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
-    """在项目根执行 git 子命令（统一超时 60s）。
+    """在项目根执行 git 子命令（统一超时 60s，不消费 hook 的 timeout_seconds 配置）。
+
+    timeout_seconds 仅对 shell/webhook 生效（validate_hook_entry 已明示）；git
+    动作按单一固定上限收口（commit-push 一条 hook 串行多个 git 子命令，逐段
+    消费配置超时会使总时长无界）。
 
     有界 spawn 口径对齐 _action_shell：start_new_session 使 git 为新进程组首，
     超时 killpg 连项目级 hook / credential helper / gpg pinentry 等孙进程一并
@@ -316,7 +320,9 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
       侧 (target or "").strip() 抛 AttributeError，被兜底误记为「hook 执行
       异常」告警，故在配置层按「配置非法（不执行）」拦截；
     - 可选 timeout_seconds：正的有限数值（秒），bool/非有限值（.inf 等非法，
-      防手改 config.yaml 绕过执行侧 _num 守卫）。
+      防手改 config.yaml 绕过执行侧 _num 守卫）——仅对 shell/webhook 生效；
+      commit/push/commit-push 走 _run_git 固定 60s 超时，不消费该字段（给
+      git 动作配更长超时不会被采纳，勿据此排期长耗时 git 操作）。
 
     Returns: 非法时返回错误描述（含字段路径），合法返回 None。
     """
@@ -524,6 +530,13 @@ class HookEngine:
         # 多重启一次，无害）。动作在并发 hook 线程执行，读写以锁保护。
         self._dashboard_restart_ok_monotonic = 0.0
         self._dashboard_restart_lock = threading.Lock()
+        # 并发认领标记：「去抖检查 + 标记重启中」在同一锁临界区一次完成，防止
+        # 两条不同 id 的 restart-dashboard hook（内置 pushed 条目与用户自挂条目）
+        # 并发通过入口检查后各自 respawn-window -k，dashboard 被连续弹两次——
+        # 无认领标记的 check-then-act 形态下 D2「窗口内重复触发幂等跳过」对
+        # 并发首跳不成立。动作本体仍锁外执行（对齐在飞去重「锁内纯内存读写」
+        # 惯例），认领在动作收尾（含失败/跳过路径）必然释放。
+        self._dashboard_restart_running = False
         # one-shot 清扫（hook-restart-once）：消费上次 all-done → restart-daemon
         # 触发遗留的清理标记，摘除对应 hook；失败仅告警不阻断 daemon 启动。
         try:
@@ -617,6 +630,14 @@ class HookEngine:
                 )
                 th.start()
         except Exception as e:
+            # 投递中断（match_hooks 异常 / 线程创建或 start 失败如线程数耗尽）：
+            # 复位去重标志，下次成功终态迁移可重新收口触发——标志滞留 True 则
+            # 剩余 hook 被静默错过，需等任一 spec 离开成功终态才可能再触发
+            # （all-done→restart-daemon 即「安全重启点」被跳过）。代价：中断前
+            # 已启动的 hook 在重触发时可能重复执行（动作按幂等设计，重复代价
+            # 小于永久错过；带 id hook 另有在飞去重兜并发）。
+            with self._all_done_lock:
+                self._all_done_fired = False
             self._log_error(f"all-done hook 投递失败（不向调用方抛）: {type(e).__name__}: {e}")
 
     # ── 单条执行 ────────────────────────────────────────────────────
@@ -1134,7 +1155,9 @@ class HookEngine:
 
         dashboard-push-restart D2/D3 健壮化：
         - 去抖（D2）：入口检查进程内最近成功重启时间戳，60s 窗口内幂等跳过
-          （skipped 审计留痕）；失败不写时间戳，窗口内可重试。
+          （skipped 审计留痕）；失败不写时间戳，窗口内可重试。检查与「标记
+          重启中」在同一锁临界区一次完成：并发多条不同 id 的 restart-dashboard
+          hook 命中时仅首个认领者执行动作，其余按 skipped 幂等跳过。
         - 无会话静默跳过（D3）：tmux 会话不存在是环境态而非操作失败（CI/容器
           本就无 dashboard），返回 skipped + debug 日志，不产 failure 审计与
           告警噪音；会话存在但 respawn/端口探测失败仍记 failure（真故障）。
@@ -1143,59 +1166,75 @@ class HookEngine:
         """
         target = (cfg.get("target") or "").strip() or DEFAULT_DASHBOARD_SESSION
         now = time.monotonic()
+        # 临界区一次完成「去抖检查 + 认领重启中」：并发 hook 线程只有首个
+        # 认领成功者继续执行动作，其余按 skipped 跳过——两段式 check-then-act
+        # 会被并发首跳穿透（见 __init__ 认领标记注释）
         with self._dashboard_restart_lock:
             last_ok = self._dashboard_restart_ok_monotonic
-        if last_ok and (now - last_ok) < DASHBOARD_RESTART_DEBOUNCE_SECONDS:
-            return (
-                STATUS_SKIPPED,
-                f"距上次成功重启 {now - last_ok:.0f}s，处于 "
-                f"{DASHBOARD_RESTART_DEBOUNCE_SECONDS:.0f}s 去抖窗口内，跳过重复重启",
-            )
+            in_window = bool(last_ok) and (now - last_ok) < DASHBOARD_RESTART_DEBOUNCE_SECONDS
+            if in_window or self._dashboard_restart_running:
+                claim = False
+                if in_window:
+                    skip_detail = (
+                        f"距上次成功重启 {now - last_ok:.0f}s，处于 "
+                        f"{DASHBOARD_RESTART_DEBOUNCE_SECONDS:.0f}s 去抖窗口内，跳过重复重启"
+                    )
+                else:
+                    skip_detail = "另一 restart-dashboard 正在重启（已认领未收尾），跳过并发重复重启"
+            else:
+                self._dashboard_restart_running = True
+                claim = True
+        if not claim:
+            return STATUS_SKIPPED, skip_detail
         try:
-            has = subprocess.run(
-                ["tmux", "has-session", "-t", target], capture_output=True, text=True, timeout=10
+            try:
+                has = subprocess.run(
+                    ["tmux", "has-session", "-t", target], capture_output=True, text=True, timeout=10
+                )
+            except (subprocess.SubprocessError, OSError) as e:
+                # tmux 二进制缺失/不可执行同为「无 dashboard 环境」环境态：静默跳过
+                self._log_debug(f"tmux has-session 失败（按无 dashboard 环境跳过）: {e}")
+                return STATUS_SKIPPED, f"tmux has-session 失败（按无 dashboard 环境静默跳过）: {e}"
+            if has.returncode != 0:
+                self._log_debug(f"tmux 会话 {target} 不存在，restart-dashboard 静默跳过")
+                return (
+                    STATUS_SKIPPED,
+                    f"tmux 会话 {target} 不存在（dashboard 未运行环境），静默跳过",
+                )
+            dash = self._framework_root / "bin" / "fenix_dashboard.py"
+            if not dash.is_file():
+                return STATUS_FAILURE, f"dashboard 启动脚本不存在: {dash}"
+            shell_cmd = (
+                f"cd {shlex.quote(str(self.project_root))} && "
+                f"env -u CLAUDE_PID python3 {shlex.quote(str(dash))} --serve"
             )
-        except (subprocess.SubprocessError, OSError) as e:
-            # tmux 二进制缺失/不可执行同为「无 dashboard 环境」环境态：静默跳过
-            self._log_debug(f"tmux has-session 失败（按无 dashboard 环境跳过）: {e}")
-            return STATUS_SKIPPED, f"tmux has-session 失败（按无 dashboard 环境静默跳过）: {e}"
-        if has.returncode != 0:
-            self._log_debug(f"tmux 会话 {target} 不存在，restart-dashboard 静默跳过")
-            return (
-                STATUS_SKIPPED,
-                f"tmux 会话 {target} 不存在（dashboard 未运行环境），静默跳过",
-            )
-        dash = self._framework_root / "bin" / "fenix_dashboard.py"
-        if not dash.is_file():
-            return STATUS_FAILURE, f"dashboard 启动脚本不存在: {dash}"
-        shell_cmd = (
-            f"cd {shlex.quote(str(self.project_root))} && "
-            f"env -u CLAUDE_PID python3 {shlex.quote(str(dash))} --serve"
-        )
-        try:
-            respawn = subprocess.run(
-                ["tmux", "respawn-window", "-k", "-t", target, shell_cmd],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        except (subprocess.SubprocessError, OSError) as e:
-            return STATUS_FAILURE, f"tmux respawn-window 失败: {e}"
-        if respawn.returncode != 0:
-            return (
-                STATUS_FAILURE,
-                f"tmux respawn-window 失败: {_tail_combined(respawn.stdout, respawn.stderr)}",
-            )
-        port = self._dashboard_port()
-        if not self._probe_dashboard(port):
-            # 上限按每轮 urlopen timeout=2s + 间隔 DASHBOARD_PROBE_INTERVAL 估算（对应 _probe_dashboard）
-            return (
-                STATUS_FAILURE,
-                f"dashboard 已 respawn，但 {port} 端口最坏 {DASHBOARD_PROBE_ATTEMPTS * (2 + DASHBOARD_PROBE_INTERVAL):.0f}s 内未恢复 HTTP 可服务",
-            )
-        with self._dashboard_restart_lock:
-            self._dashboard_restart_ok_monotonic = time.monotonic()
-        return STATUS_SUCCESS, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
+            try:
+                respawn = subprocess.run(
+                    ["tmux", "respawn-window", "-k", "-t", target, shell_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except (subprocess.SubprocessError, OSError) as e:
+                return STATUS_FAILURE, f"tmux respawn-window 失败: {e}"
+            if respawn.returncode != 0:
+                return (
+                    STATUS_FAILURE,
+                    f"tmux respawn-window 失败: {_tail_combined(respawn.stdout, respawn.stderr)}",
+                )
+            port = self._dashboard_port()
+            if not self._probe_dashboard(port):
+                # 上限按每轮 urlopen timeout=2s + 间隔 DASHBOARD_PROBE_INTERVAL 估算（对应 _probe_dashboard）
+                return (
+                    STATUS_FAILURE,
+                    f"dashboard 已 respawn，但 {port} 端口最坏 {DASHBOARD_PROBE_ATTEMPTS * (2 + DASHBOARD_PROBE_INTERVAL):.0f}s 内未恢复 HTTP 可服务",
+                )
+            with self._dashboard_restart_lock:
+                self._dashboard_restart_ok_monotonic = time.monotonic()
+            return STATUS_SUCCESS, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
+        finally:
+            with self._dashboard_restart_lock:
+                self._dashboard_restart_running = False
 
     def _dashboard_port(self) -> int:
         """dashboard 服务端口：config dashboard.port 合法则用之，否则 8787。"""
@@ -1272,6 +1311,14 @@ class HookEngine:
                 code = resp.status
                 body = resp.read(DETAIL_LIMIT)
         except urllib.error.HTTPError as e:
+            # 非 2xx 直接 return 前显式释放 HTTPError 持有的错误响应 fp/socket
+            # （HTTPError 为 addinfourl 子类，close() 关闭底层连接；fp 缺省时
+            # close 自身安全），对齐 _WebhookRedirectGuard 越界分支的 fp.close()
+            # 口径——不关则连接释放依赖 GC，hook 高频失败时句柄短暂堆积
+            try:
+                e.close()
+            except OSError:
+                pass
             return STATUS_FAILURE, f"webhook 非 2xx: HTTP {e.code}"
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             return STATUS_FAILURE, f"webhook 请求失败: {e}"
