@@ -73,6 +73,13 @@ _GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 # markdown 链接（image/链接同形，只关心 .md 与目录目标）
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
+# 更新时间盖戳（index 与 _domain 通用）：标准行 `> 最后更新：YYYY-MM-DD HH:MM UTC`，
+# 由蒸馏/回填管线以动态段注入的当前 UTC 时间盖写；表格单元格为同格式去 UTC 后缀。
+_STAMP_LINE_RE = re.compile(r"^> 最后更新：(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC$")
+_STAMP_CELL_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+_INDEX_TITLE = "知识真相源"
+_INDEX_TABLE_HEADER = "| 能力域 | 简介 | 能力数量 | 更新时间 |"
+
 # ADR 文件名与头部状态
 _ADR_NAME_RE = re.compile(r"^ADR-(\d{3})-.+\.md$")
 _ADR_STATUS_RE = re.compile(r"^status:\s*(accepted|superseded)\s*$", re.M)
@@ -233,6 +240,13 @@ def validate_knowledge(project_root) -> list:
                 violations.append(f"{label}: 读取失败: {e}")
                 continue
             if page.name == "_domain.md":
+                # 更新时间盖戳：紧随 H1（第 2 行），格式 `> 最后更新：YYYY-MM-DD HH:MM UTC`
+                lines = text.splitlines()
+                if len(lines) < 2 or not _STAMP_LINE_RE.match(lines[1]):
+                    violations.append(
+                        f"{label}: 缺少「最后更新」盖戳行或未紧随 H1"
+                        "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC）"
+                    )
                 _check_links(text, page.parent, label)
                 continue
             # 域/文件名 kebab 合法性
@@ -284,10 +298,40 @@ def validate_knowledge(project_root) -> list:
     # ── index.md（总目录，可选——首跑前允许缺席）────────────────────
     index_md = kroot / "index.md"
     if index_md.is_file():
+        index_label = f"{KNOWLEDGE_DIR}/index.md"
         try:
-            _check_links(index_md.read_text(encoding="utf-8"), kroot, f"{KNOWLEDGE_DIR}/index.md")
+            index_text = index_md.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
-            violations.append(f"{KNOWLEDGE_DIR}/index.md: 读取失败: {e}")
+            violations.append(f"{index_label}: 读取失败: {e}")
+        else:
+            _check_links(index_text, kroot, index_label)
+            # 更新时间盖戳三件套：标题、盖戳行、能力域四列表（行时间格式）
+            index_lines = index_text.splitlines()
+            if not index_lines or index_lines[0].strip() != f"# {_INDEX_TITLE}":
+                violations.append(f"{index_label}: 标题须为「{_INDEX_TITLE}」")
+            if len(index_lines) < 2 or not _STAMP_LINE_RE.match(index_lines[1]):
+                violations.append(
+                    f"{index_label}: 缺少「最后更新」盖戳行"
+                    "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC，紧随标题）"
+                )
+            try:
+                header_pos = index_lines.index(_INDEX_TABLE_HEADER)
+            except ValueError:
+                violations.append(
+                    f"{index_label}: 缺能力域四列表（表头须为 {_INDEX_TABLE_HEADER}）"
+                )
+            else:
+                for row in index_lines[header_pos + 1:]:
+                    if not row.startswith("|"):
+                        break  # 表格结束
+                    cells = [c.strip() for c in row.strip().strip("|").split("|")]
+                    if cells and set(cells[0]) <= {"-"}:  # 分隔行
+                        continue
+                    if len(cells) != 4 or not _STAMP_CELL_RE.match(cells[3]):
+                        violations.append(
+                            f"{index_label}: 能力域行更新时间缺失或格式非法"
+                            f"（四列，末列 YYYY-MM-DD HH:MM）: {row}"
+                        )
 
     # ── ADR（三段式 / 不可变 / supersede 链）────────────────────────
     adr_dir = kroot / "adr"
@@ -350,11 +394,14 @@ def build_distill_prompt(proot: Path, archived_names: list) -> str:
     archive_items = "\n".join(
         f"- {name}（目录：{proot / ARCHIVE_DIR / name}）" for name in archived_names
     )
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     return (
         f"{tpl}\n\n---\n\n"
         f"## 本次任务（动态段）\n\n"
         f"项目根（当前工作目录）：{proot}\n"
-        f"真相源目录：{proot / KNOWLEDGE_DIR}\n\n"
+        f"真相源目录：{proot / KNOWLEDGE_DIR}\n"
+        f"当前 UTC 时间：{now_utc}（index.md 与受影响域 _domain.md 的"
+        f"「最后更新」盖戳以此为准）\n\n"
         f"本次待蒸馏的归档：\n{archive_items}\n"
     )
 

@@ -149,12 +149,17 @@ class KnowledgeE2E(unittest.TestCase):
         (k / "adr").mkdir()
         (k / "README.md").write_text("# 契约\n", encoding="utf-8")
         (k / "index.md").write_text(
-            f"# 总目录\n\n- [拣选域](domains/pickup/_domain.md)\n"
-            f"- [定时拣选](domains/pickup/scheduled-spec-pickup.md)\n",
+            f"# 知识真相源\n> 最后更新：{TODAY} 15:02 UTC\n\n## 能力域\n\n"
+            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | {TODAY} 15:02 |\n",
             encoding="utf-8",
         )
         (k / "domains" / "pickup" / "_domain.md").write_text(
-            "# 拣选域\n\n- [定时拣选](scheduled-spec-pickup.md)\n", encoding="utf-8"
+            f"# 拣选域\n> 最后更新：{TODAY} 15:02 UTC\n\n"
+            "| 能力页 | 简介 |\n| --- | --- |\n"
+            "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 |\n",
+            encoding="utf-8",
         )
         (k / "domains" / "pickup" / "scheduled-spec-pickup.md").write_text(
             PAGE_V1.format(

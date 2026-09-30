@@ -58,6 +58,9 @@ status: accepted
 {body}
 """
 
+# 更新时间盖戳标准行（index 与 _domain 通用；index 第 2 行 / _domain 紧随 H1）
+STAMP = "> 最后更新：2026-09-29 15:02 UTC"
+
 PREHISTORIC_PAGE = """# 史前基础能力
 
 <!-- knowledge: capability=prehistoric-cap rev=1 origin=prehistoric
@@ -198,6 +201,95 @@ class TestValidateKnowledge(KnowledgeTestBase):
         self._write(f"{KNOWLEDGE_DIR}/index.md", "# 总目录\n- [越界](../../spec/archive/x.md)\n")
         v = validate_knowledge(self.root)
         self.assertTrue(any("越出真相源" in x for x in v))
+
+    # ── 更新时间盖戳（index 标题/盖戳行/四列表 + _domain 盖戳行）─────────
+
+    def _good_domain_nav(self, domain="pickup"):
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/{domain}/_domain.md",
+            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 |\n| --- | --- |\n",
+        )
+
+    def _good_index(self):
+        self._write(
+            f"{KNOWLEDGE_DIR}/index.md",
+            f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| pickup | 拣选 | 1 | 2026-09-29 15:02 |\n",
+        )
+
+    def test_valid_full_tree_with_stamps_passes(self):
+        self._good_page()
+        self._good_domain_nav()
+        self._good_index()
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_domain_nav_missing_stamp(self):
+        self._good_page()
+        self._write(f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md", "# 拣选域\n\n内容\n")
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("_domain.md" in x and "最后更新" in x for x in v))
+
+    def test_domain_nav_stamp_bad_format(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            "# 拣选域\n> 最后更新：昨天\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("最后更新" in x for x in v))
+
+    def test_domain_nav_stamp_not_after_h1(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            f"# 拣选域\n\n简介段\n\n{STAMP}\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("最后更新" in x for x in v))
+
+    def test_index_title_must_be_truth_source(self):
+        self._good_page()
+        self._write(f"{KNOWLEDGE_DIR}/index.md", f"# 总目录\n{STAMP}\n")
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("知识真相源" in x for x in v))
+
+    def test_index_missing_stamp(self):
+        self._good_page()
+        self._write(f"{KNOWLEDGE_DIR}/index.md", "# 知识真相源\n\n正文\n")
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("index.md" in x and "最后更新" in x for x in v))
+
+    def test_index_missing_domain_table(self):
+        self._good_page()
+        self._write(f"{KNOWLEDGE_DIR}/index.md", f"# 知识真相源\n{STAMP}\n\n正文无表格\n")
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("能力域" in x for x in v))
+
+    def test_index_table_missing_update_column(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/index.md",
+            f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+            "| 能力域 | 简介 | 能力数量 |\n"
+            "| --- | --- | --- |\n"
+            "| pickup | 拣选 | 1 |\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("能力域" in x and "四列" in x for x in v))
+
+    def test_index_row_bad_time_format(self):
+        self._good_page()
+        self._write(
+            f"{KNOWLEDGE_DIR}/index.md",
+            f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| pickup | 拣选 | 1 | 09-29 |\n",
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("更新时间" in x for x in v))
 
     def test_non_kebab_domain(self):
         self._write(
@@ -654,12 +746,17 @@ class TestDistillManager(KnowledgeTestBase):
 
     def _index(self):
         return (
-            f"# 总目录\n\n- [拣选域](domains/pickup/_domain.md)\n\n"
-            f"- [定时拣选](domains/pickup/scheduled-spec-pickup.md)\n"
+            f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
         )
 
     def _domain(self):
-        return "# 拣选域\n\n- [定时拣选](scheduled-spec-pickup.md)\n"
+        return (
+            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 |\n| --- | --- |\n"
+            "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 |\n"
+        )
 
     def test_success_path_commits(self):
         self._git("init", "-q")

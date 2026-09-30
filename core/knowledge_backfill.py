@@ -37,6 +37,7 @@ import shutil
 import signal
 import subprocess
 import time
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -592,6 +593,11 @@ def _violations_block(violations: list[str]) -> str:
 violations_block = _violations_block
 
 
+def _now_utc() -> str:
+    """当前 UTC 时间（``YYYY-MM-DD HH:MM``）——盖戳行/表格时间列统一时间源。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
 def build_prompt(
     mode: str,
     capabilities: Optional[list[str]] = None,
@@ -653,7 +659,7 @@ def build_prompt(
     text = text.replace(
         "{{DOMAIN_MAP_PATH}}", DOMAIN_MAP_RELPATH
     ).replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
-    return text
+    return text.replace("{{NOW_UTC}}", _now_utc())
 
 
 def _batch_list_block(
@@ -700,7 +706,9 @@ def build_prehistoric_prompt(
         "{{COVERED_CAPS}}",
         "\n".join(f"- {c}" for c in sorted(covered_caps)) or "（空）",
     )
-    return text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
+    return text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or [])).replace(
+        "{{NOW_UTC}}", _now_utc()
+    )
 
 
 # ── 链索引、批次划分与规模统计 ───────────────────────────────────────────
