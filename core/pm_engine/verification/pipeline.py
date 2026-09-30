@@ -1144,7 +1144,7 @@ class VerificationPipeline:
         # → 既有 bug-found→fix SPEC 整轮路径原样。判定与路径选择全程落盘
         # （fastlane_decision.json + 日志）可追溯；连续 2 次失败强制回落整轮。
         try:
-            _fastlane_decision = self._evaluate_fastlane(spec_name, report)
+            _fastlane_decision = self._evaluate_fastlane(spec_name)
             if _fastlane_decision.get("eligible"):
                 _fastlane_lane = self._dispatch_minor_defect_fastlane(
                     spec_name, _fastlane_decision

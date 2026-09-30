@@ -388,6 +388,8 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # 备份取回条目与合法 planner 产出再次整体过结构校验：坏条目剔除留痕，
         # 合法部分照常落盘，不整批拒绝。
         write_valid: list = []
+        write_rejected_ids: list[str] = []
+        write_rejected_covers: set = set()
         for idx, item in enumerate(reconciled):
             if not isinstance(item, dict):
                 write_rejected.append(f"[{idx}]非对象({type(item).__name__})")
@@ -396,8 +398,23 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
             errs = validate_scenario_dicts([item])
             if errs:
                 write_rejected.append(f"{item_id}（{'；'.join(errs[:2])}）")
+                # 3.10 同口径（code-review 960c813941d7）：第二遍剔除与第一
+                # 遍同登记 id/covers 留痕——否则被本遍剔除条目（多为备份取回
+                # 的旧 schema 条目）覆盖的可交互候选会被
+                # _apply_interaction_contract 误判「设计漏项」退回 replan，
+                # 与 3.10 要避免的「重排-剔除」循环同型。仅登记 schema 非法
+                # 条目；非对象条目无 id/covers，与第一遍一致不登记。
+                write_rejected_ids.append(str(item_id))
+                covers = item.get("covers")
+                if isinstance(covers, list):
+                    write_rejected_covers.update(str(c) for c in covers if c)
                 continue
             write_valid.append(item)
+        # 与第一遍登记处（3.10）同形状合并：id 追加进 _last_freeze_rejected
+        # 列表、covers 并入 _last_freeze_rejected_covers 字符串集合。
+        if write_rejected_ids:
+            pipeline._last_freeze_rejected.extend(write_rejected_ids)
+            pipeline._last_freeze_rejected_covers.update(write_rejected_covers)
         if write_rejected:
             pipeline._context.logger.warning(
                 "pm_engine",
