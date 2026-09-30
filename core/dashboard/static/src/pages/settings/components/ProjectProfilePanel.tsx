@@ -124,7 +124,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     setLoading(true);
     try {
       const result = await regenerateProjectDescription(project);
-      if (result.ok) {
+      // description 为可选字段：空值时视为失败阻断保存，不得以 undefined 回填草稿
+      // （比照 PromptsPanel 跨项目错写防护的 data 判空口径）
+      if (result.ok && result.description != null) {
         // 先落盘再改本地状态：保存失败（父级返回 false，已由父级 toast）时
         // 不得 setDescription，否则本地简介与服务器漂移且用户无从察觉。
         const saved = await onSave({ description: result.description });
