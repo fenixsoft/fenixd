@@ -23,7 +23,7 @@ class G6StashGuardMixin:
     """G6 主树还原/autostash 治理（design D1 表 A G6）。"""
 
 
-    def _list_dirty_tracked_files(self) -> list:
+    def _list_dirty_tracked_files(self, status_stdout: str | None = None) -> list:
         """提取主树脏 tracked 文件清单（fix-mergeback-stashpop-silent-loss D3）。
 
         ensure_clean_tree 的 porcelain 脏判定提炼为共享 helper：porcelain v1
@@ -37,21 +37,29 @@ class G6StashGuardMixin:
         （mergeback 同源反转义）还原为真实路径——消费方（mergeback WIP 闸门 /
         code-fix 批 WIP 重叠预检）拿真实路径比对求交，带引号转义形会永不命中。
 
+        Args:
+            status_stdout: 已取回的 ``git status --porcelain`` stdout，传入时
+                跳过子进程调用直接解析（调用方自行保证其 rc==0，命令失败的
+                情形由调用方按各自口径处置），供持锁临界区复用同一次查询
+                结果、消除重复子进程开销（code-review item e4d825bb770e）。
+
         Returns: 排序后的脏 tracked 文件路径列表（rename 两侧都计入，已反转义）。
         """
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return []
-        if result.returncode != 0:
-            return []
+        if status_stdout is None:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                return []
+            if result.returncode != 0:
+                return []
+            status_stdout = result.stdout
         files: list = []
-        for line in result.stdout.splitlines():
+        for line in status_stdout.splitlines():
             if len(line) < 3 or line.startswith("?? "):
                 continue
             if line[0] == " " and line[1] == " ":
@@ -624,8 +632,13 @@ class G6StashGuardMixin:
         # 干净判定复用 _list_dirty_tracked_files 的 tracked-only 口径（与
         # ensure_clean_tree 一致）：本模块的 autostash 只 stash tracked 修改，
         # 存在普通 untracked 文件不应让巡检无限期跳过回收；status 命令失败
-        # （rc!=0）仍按「脏」保守放弃本轮。
-        if status.returncode != 0 or self._list_dirty_tracked_files():
+        # （rc!=0）仍按「脏」保守放弃本轮。脏判定复用上方已取回的 status
+        # 输出，不在持锁临界区内重复起同一子进程（code-review item
+        # e4d825bb770e；mergeback.py 把「逐路径起子进程线性放大持锁时长」
+        # 列为设计关注点）。
+        if status.returncode != 0 or self._list_dirty_tracked_files(
+            status_stdout=status.stdout
+        ):
             return False
         try:
             lst = subprocess.run(
@@ -816,6 +829,113 @@ class G6StashGuardMixin:
                 f"Self-heal index rollback failed: {e}",
             )
 
+    def _untrack_index_paths(self, paths: list, commit_msg: str, log_ctx: str) -> bool:
+        """把 paths 移出索引并作为独立提交落盘（untrack/purge 共享自愈骨架）。
+
+        封装两入口的共同流程：``git rm -f --cached`` 循环 → ``diff --cached``
+        名单反转义 + staged 子集守卫 → 裸 ``git commit`` → 失败时
+        ``_reset_index_paths`` 回滚。check-ignore 校验与路径枚举属各自差异段，
+        留在入口完成（_untrack_ignored_local_changes 的「全须忽略」前置校验 /
+        _purge_ignored_brought_in 的 victims 枚举）。
+
+        回滚集合语义取 purge 侧 processed 口径（code-review item
+        f5b05c836fd7）：只回滚已成功 rm --cached 的路径，rm 中途失败同样回滚
+        本次已移出的索引态，任何中止分支均不残留 staged 删除。
+
+        Args:
+            paths: 要移出索引的路径（真实路径，反转义由调用方负责）。
+            commit_msg: 裸 commit 的提交说明（两入口文案不同：merge 前/后）。
+            log_ctx: 日志前缀（"Self-heal (untrack)" / "Purge ignored
+                brought-in"），保持两入口日志可区分归因。
+
+        Returns: True 表示已全部移出并提交。
+        """
+        processed: list = []  # 已成功 rm --cached 的路径（中途失败按此回滚索引态）
+        try:
+            for path in paths:
+                rm = subprocess.run(
+                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if rm.returncode != 0:
+                    # rm 失败（如 index.lock 争用）：路径仍 tracked，继续的话
+                    # staged 子集校验是单向的（只要求子集、不强求路径入暂存集）、
+                    # 裸 commit 会把该路径照常入库，本自愈对该路径静默失效
+                    # （untrack 撞 DRY 拒绝 / purge 撞车循环原样重启）——先回滚
+                    # 本次已移出的索引态再放弃（不残留 staged 删除），WARNING
+                    # 留观测。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"{log_ctx}: git rm --cached failed for "
+                        f"'{path}': {(rm.stderr or rm.stdout).strip()} — reverting "
+                        f"index, aborting",
+                    )
+                    self._reset_index_paths(processed)
+                    return False
+                processed.append(path)
+            # 路径作用域守卫：裸 commit 会把 index 里其它 staged 条目连带入库，
+            # 校验暂存集不含本次 rm --cached 路径之外的外来条目，有则放弃自愈
+            # （先回滚本次已 rm 的索引态再返回，不残留 staged 删除）。
+            # 只做子集校验、不强求自愈路径必须出现在暂存集（其入暂存已由上方
+            # rm --cached 的返回码保证），避免对暂存态探测过严而误杀正常自愈。
+            # staged 名单须反转义：diff --cached 对非 ASCII 路径默认输出
+            # C-quoted 转义形，不反转义会把该类路径误判为「暂存集越界」。
+            # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
+            # index，pathspec 解析必 fatal rc=128，会永远打断本自愈。）
+            staged = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--cached",
+                    "--name-only",
+                    "HEAD",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            staged_set = {
+                _unquote_git_path(ln) for ln in staged.stdout.splitlines()
+            }
+            if staged.returncode != 0 or not staged_set <= set(paths):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"{log_ctx} aborted: index has staged entries "
+                    f"beyond processed paths: {sorted(staged_set - set(paths))}",
+                )
+                self._reset_index_paths(processed)
+                return False
+            commit = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "commit",
+                    "-m",
+                    commit_msg,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if commit.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"{log_ctx}: commit failed: "
+                    f"{(commit.stderr or commit.stdout).strip()}",
+                )
+                self._reset_index_paths(processed)
+                return False
+            return True
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self._reset_index_paths(processed)
+            self.logger.warning("worktree_manager", f"{log_ctx} failed: {e}")
+            return False
+
     def _untrack_ignored_local_changes(self, paths: list) -> bool:
         """把 merge 需写路径上「被 ignore 的 tracked 本地修改」移出索引并提交。
 
@@ -829,12 +949,14 @@ class G6StashGuardMixin:
         非忽略（误报），--no-index 只按 ignore 规则判定。
         全部路径均被 ignore 才执行（任一未忽略 → 可能是真实交付物，返回 False
         交回原有失败路径）；移出后作为独立提交落盘，随后可重试 merge。
+        rm/staged 子集守卫/commit/回滚骨架共享自 ``_untrack_index_paths``
+        （code-review item f5b05c836fd7），本入口只保留「全须忽略」前置校验
+        与自身日志文案。
 
         Returns: True 表示已全部移出并提交，可重试 merge。
         """
         if not paths:
             return False
-        healed: list = []  # 已执行 rm --cached 的路径（各中止分支按此回滚索引态）
         try:
             for path in paths:
                 chk = subprocess.run(
@@ -859,87 +981,20 @@ class G6StashGuardMixin:
                         f"— not a runtime draft",
                     )
                     return False
-            for path in paths:
-                rm = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if rm.returncode != 0:
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"Self-heal (untrack): git rm --cached failed for "
-                        f"'{path}': {(rm.stderr or rm.stdout).strip()}",
-                    )
-                    self._reset_index_paths(healed)
-                    return False
-                healed.append(path)
-            # 路径作用域守卫：裸 commit 会把 index 里其它 staged 条目连带入库，
-            # 校验暂存集不含本次 rm --cached 路径之外的外来条目，有则放弃自愈
-            # （先回滚本次已 rm 的索引态再返回，不残留 staged 删除）。
-            # 只做子集校验、不强求自愈路径必须出现在暂存集（其入暂存已由上方
-            # rm --cached 的返回码保证），避免对暂存态探测过严而误杀正常自愈。
-            # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
-            # index，pathspec 解析必 fatal rc=128，会永远打断本自愈。）
-            staged = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "diff",
-                    "--cached",
-                    "--name-only",
-                    "HEAD",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            # 同款反转义（同 _purge_ignored_brought_in）：staged 名单要与 paths
-            # （真实路径）做子集校验，diff 输出对非 ASCII 路径默认为 C-quoted
-            # 转义形，不反转义会把该类路径误判为「暂存集越界」并放弃本次自愈。
-            staged_set = {
-                _unquote_git_path(ln) for ln in staged.stdout.splitlines()
-            }
-            if staged.returncode != 0 or not staged_set <= set(paths):
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Self-heal (untrack) aborted: index has staged entries "
-                    f"beyond healed paths: {sorted(staged_set - set(paths))}",
-                )
-                self._reset_index_paths(healed)
-                return False
-            commit = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "commit",
-                    "-m",
-                    "[fenix] fix: merge 前移出被误提交的 ignored 运行时草稿",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if commit.returncode != 0:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Self-heal (untrack): commit failed: "
-                    f"{(commit.stderr or commit.stdout).strip()}",
-                )
-                self._reset_index_paths(healed)
-                return False
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        ok = self._untrack_index_paths(
+            paths,
+            "[fenix] fix: merge 前移出被误提交的 ignored 运行时草稿",
+            "Self-heal (untrack)",
+        )
+        if ok:
             self.logger.info(
                 "worktree_manager",
                 f"Self-heal (untrack): moved ignored tracked drafts out of index: "
                 f"{', '.join(paths)}",
             )
-            return True
-        except (subprocess.TimeoutExpired, OSError):
-            self._reset_index_paths(healed)
-            return False
+        return ok
 
     def _discard_identical_local_changes(self, paths: list, branch: str) -> bool:
         """把「主树未提交修改与分支内容字节级相同」的 tracked 冲突路径恢复干净。
@@ -1042,9 +1097,13 @@ class G6StashGuardMixin:
         不会被 DRY 拒绝，但分支提交的草稿会随 merge 进入主树索引——主树重新变回
         tracked，daemon 下一轮更新草稿又留下脏修改，撞车循环重启。merge 完成后
         对本次 merge 新增（--diff-filter=A）且被 ignore 的路径补一次移出
-        （工作区副本保留），无此类路径时零开销跳过。
+        （工作区副本保留），无此类路径时零开销跳过。rm/staged 子集守卫/commit/
+        回滚骨架共享自 ``_untrack_index_paths``（code-review item
+        f5b05c836fd7），本入口只保留 victims 枚举与自身日志文案。
         """
-        victims: list = []  # 已执行 rm --cached 的路径（各中止分支按此回滚索引态）
+        # victims 供枚举段异常时兜底回滚；rm 段的回滚口径见 _untrack_index_paths
+        # 的 processed（只回滚已成功 rm --cached 的路径）。
+        victims: list = []
         try:
             diff = subprocess.run(
                 [
@@ -1098,89 +1157,15 @@ class G6StashGuardMixin:
                     victims.append(rel)
             if not victims:
                 return
-            processed: list = []  # 已成功 rm --cached 的路径（中途失败按此回滚索引态）
-            for rel in victims:
-                rm = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", rel],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if rm.returncode != 0:
-                    # rm 失败（如 index.lock 争用）：路径仍 tracked，继续的话
-                    # staged 子集校验是单向的（只要求子集、不强求 victims 入暂存
-                    # 集）、裸 commit 会把该路径照常入库，purge 对该路径静默失效
-                    # 撞车循环原样重启——按 _untrack_ignored_local_changes 口径
-                    # 先回滚本次已移出的索引态再放弃（不残留 staged 删除），
-                    # WARNING 留观测。
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"Purge ignored brought-in: git rm --cached failed for "
-                        f"'{rel}': {(rm.stderr or rm.stdout).strip()} — reverting "
-                        f"index, aborting purge",
-                    )
-                    self._reset_index_paths(processed)
-                    return
-                processed.append(rel)
-            # 路径作用域守卫（同 _untrack_ignored_local_changes）：裸 commit 会把
-            # index 里其它 staged 条目连带入库，校验暂存集不含本次移出路径之外的
-            # 外来条目，不过则回滚本次已移出的索引态再返回（不残留 staged 删除）。
-            # 只做子集校验、不强求移出路径必须出现在暂存集（其入暂存
-            # 已由上方 rm --cached 的返回码保证）。
-            # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
-            # index，pathspec 解析必 fatal rc=128。）
-            staged = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "diff",
-                    "--cached",
-                    "--name-only",
-                    "HEAD",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            # 同款反转义：staged 名单要与 victims（已反转义为真实路径）做子集
-            # 校验，带引号转义形会把非 ASCII 路径误判为「暂存集越界」并回滚
-            # 本次 purge。
-            staged_set = {
-                _unquote_git_path(ln) for ln in staged.stdout.splitlines()
-            }
-            if staged.returncode != 0 or not staged_set <= set(victims):
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Purge skipped: index has staged entries beyond purged "
-                    f"paths: {sorted(staged_set - set(victims))}",
-                )
-                self._reset_index_paths(victims)
-                return
-            commit = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "commit",
-                    "-m",
-                    "[fenix] fix: merge 后移出随分支带回的 ignored 运行时草稿",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if commit.returncode == 0:
+            if self._untrack_index_paths(
+                victims,
+                "[fenix] fix: merge 后移出随分支带回的 ignored 运行时草稿",
+                "Purge ignored brought-in",
+            ):
                 self.logger.info(
                     "worktree_manager",
                     f"Purged ignored drafts brought in by merge: {', '.join(victims)}",
                 )
-            else:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Purge commit failed: {(commit.stderr or commit.stdout).strip()}",
-                )
-                self._reset_index_paths(victims)
         except (subprocess.TimeoutExpired, OSError) as e:
             self._reset_index_paths(victims)
             self.logger.warning("worktree_manager", f"Purge ignored brought-in failed: {e}")
@@ -1195,9 +1180,10 @@ class G6StashGuardMixin:
         步骤：存在 DU 冲突且**无其它类型冲突**时，先逐个 ``git rm -f --cached``
         采纳删除（工作区副本保留，供运行时继续使用）——此刻路径已 untracked，
         ``check-ignore`` 判定才可靠（unmerged 条目会被视为 tracked 而误报）；
-        再校验全部路径确被 .gitignore 忽略，任何一条不满足则 ``merge --abort``
-        回到调用方原有失败路径（分支内容仍可从分支提交找回，不丢数据）；
-        全部通过则 ``git commit --no-edit`` 完成 merge。
+        再校验全部路径确被 .gitignore 忽略。rm 失败或任何一条不满足均就地
+        ``merge --abort`` 回到调用方原有失败路径（分支内容仍可从分支提交找回，
+        不丢数据；abort 幂等，调用方兜底重复 abort 无害）；全部通过则
+        ``git commit --no-edit`` 完成 merge。
 
         Returns: True 表示冲突已全部解决且 merge 已提交。
         """
@@ -1248,6 +1234,16 @@ class G6StashGuardMixin:
                         "worktree_manager",
                         f"Self-heal: git rm --cached failed for '{path}': "
                         f"{(rm.stderr or rm.stdout).strip()}",
+                    )
+                    # 与下方 check-ignore 失败分支同口径就地 abort（code-review
+                    # item af9f0b134011）：此刻索引已滞留部分 DU 路径的 staged
+                    # 删除、其余路径仍 UU、MERGE_HEAD 未消，不能把半合并态留给
+                    # 调用方兜底；abort 幂等，调用方重复 abort 无害。
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "merge", "--abort"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                     return False
             for path in du_paths:
