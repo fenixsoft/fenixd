@@ -2064,11 +2064,12 @@ def write_regression_signal(project_root, signal_type: str, logger=None) -> None
     )
     if rec is None:
         _log_alert_rejected(logger, signal_type)
-    if logger is not None:
-        try:
-            logger.warning("code-fix", f"已写回归契约缺失信号: {signal_type}")
-        except Exception:  # noqa: BLE001 — 日志失败不影响信号落盘
-            pass
+    else:
+        if logger is not None:
+            try:
+                logger.warning("code-fix", f"已写回归契约缺失信号: {signal_type}")
+            except Exception:  # noqa: BLE001 — 日志失败不影响信号落盘
+                pass
 
 
 def write_regression_failed_alert(
