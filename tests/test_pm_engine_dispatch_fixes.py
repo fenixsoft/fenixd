@@ -332,9 +332,11 @@ class TestMergebackWipOverlapAlert(unittest.TestCase):
         self.assertEqual(rec.get("spec"), "blocked-spec")
         self.assertEqual(rec.get("severity"), "major")
         desc = rec.get("description", "")
-        for fragment in ("blocked-spec", "core/a.py", "git show", "git stash list",
-                         "提交（git add/commit）或 stash"):
+        # 本车道不 stash、主树零污染（code-review c48bce2fa85e）：找回指引应指向分支本体而非 stash 现场
+        for fragment in ("blocked-spec", "core/a.py", "git log", "改动完整保留",
+                         "git status", "提交（git add/commit）或 stash"):
             self.assertIn(fragment, desc, f"description 应含 {fragment!r}: {desc}")
+        self.assertNotIn("git stash list", desc, f"WIP 重叠告警不应引用 stash 现场: {desc}")
         # evidence 已序列化为 str（dict 穿透 str.replace 会致 Administrator 唤起失败）
         ev = rec.get("evidence")
         self.assertIsInstance(ev, str, f"evidence 应为 str: {ev!r}")
