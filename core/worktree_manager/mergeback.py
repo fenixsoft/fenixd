@@ -746,11 +746,17 @@ class G4MergebackMixin:
         误判影响有界，MUST NOT 为覆盖盲区引入主树写探测）。
         """
         try:
+            # -c core.quotePath=false（code-review item 86475b8c092e）：非 ASCII
+            # 项目目录保持原样输出，否则 porcelain 的 C 转义引号形会让
+            # Path(current_path).name 与 spec 匹配失配、WIP 占用者漏判。与
+            # dist_conflicts 等包内采集点同口径。
             res = subprocess.run(
                 [
                     "git",
                     "-C",
                     str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
                     "worktree",
                     "list",
                     "--porcelain",
@@ -1019,26 +1025,33 @@ class G4MergebackMixin:
             ).stdout.strip()
 
             # Merge with --no-ff to preserve worktree history
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "merge",
-                    "--no-ff",
-                    branch,
-                    "-m",
-                    f"[fenix] merge implementer branch {branch}",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                # 固化 C locale（同 queries.create_worktree_on_branch 先例）：DRY
-                # 拒绝的 "would be overwritten by merge" 是 git 可翻译串（unpack-
-                # trees），本地化下 _parse_merge_blockers 的英文 marker 落空，两个
-                # merge 前自愈永不触发。C locale 无翻译目录，报错恒为英文。
-                env={**os.environ, "LC_ALL": "C"},
-            )
+            # 三处（merge 本体 + 两处自愈重试）逐字相同的命令构造收拢为单一局部
+            # 实现（code-review item 06b1faf04c61）：--no-ff + -m 文案 + C locale
+            # env + timeout 一处维护，后续调 merge 参数不再需三处同步改、杜绝
+            # 口径漂移。调用点的日志、错误分支与返回值语义不变。
+            def _merge_once(merge_branch: str):
+                return subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "merge",
+                        "--no-ff",
+                        merge_branch,
+                        "-m",
+                        f"[fenix] merge implementer branch {merge_branch}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    # 固化 C locale（同 queries.create_worktree_on_branch 先例）：DRY
+                    # 拒绝的 "would be overwritten by merge" 是 git 可翻译串（unpack-
+                    # trees），本地化下 _parse_merge_blockers 的英文 marker 落空，两个
+                    # merge 前自愈永不触发。C locale 无翻译目录，报错恒为英文。
+                    env={**os.environ, "LC_ALL": "C"},
+                )
+
+            result = _merge_once(branch)
             if result.returncode != 0:
                 error = (
                     result.stderr.strip()
@@ -1050,43 +1063,9 @@ class G4MergebackMixin:
                 # 冲突态（_resolve_ignored_modify_delete_conflicts 覆盖不到）。移出后重试。
                 blockers = self._parse_merge_blockers(error)
                 if blockers and self._untrack_ignored_local_changes(blockers):
-                    result = subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            str(self.project_root),
-                            "merge",
-                            "--no-ff",
-                            branch,
-                            "-m",
-                            f"[fenix] merge implementer branch {branch}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        # C locale 恒定（同首个 merge 调用）：本地化报错文案会让
-                        # _parse_merge_blockers 的英文 marker 落空
-                        env={**os.environ, "LC_ALL": "C"},
-                    )
+                    result = _merge_once(branch)
                 elif blockers and self._discard_identical_local_changes(blockers, branch):
-                    result = subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            str(self.project_root),
-                            "merge",
-                            "--no-ff",
-                            branch,
-                            "-m",
-                            f"[fenix] merge implementer branch {branch}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        # C locale 恒定（同首个 merge 调用）：本地化报错文案会让
-                        # _parse_merge_blockers 的英文 marker 落空
-                        env={**os.environ, "LC_ALL": "C"},
-                    )
+                    result = _merge_once(branch)
             if result.returncode == 0:
                 # merge 已落地（HEAD 前移、内容已进主树，code-review item
                 # 9518e4be1085）：以下辅助步骤只做清理/重建，任何抛错仅
@@ -1182,15 +1161,46 @@ class G4MergebackMixin:
             # 「主树可能仍处冲突态」写进 error 文案，让下游告警能区分归因。
             if abort.returncode != 0:
                 abort_err = abort.stderr.strip() or f"exit code {abort.returncode}"
-                self.logger.warning(
-                    "worktree_manager",
-                    f"merge --abort failed for branch '{branch}': {abort_err} — "
-                    f"main tree may still be in a conflicted state",
+                # 「无合并可 abort」≠「冲突残留」（code-review item 1e6e188c3891）：
+                # merge 以 DRY 拒绝等方式失败时主树从未进入冲突态（无 MERGE_HEAD），
+                # abort 恒非 0（There is no merge to abort）——此时归因「conflicted
+                # state」是失真诊断。仅经 status --porcelain 复查确有 unmerged 条目
+                # 才保留该归因；无残留只附中性说明。复查失败不可证伪 → 保守沿用
+                # 原归因。
+                status = subprocess.run(
+                    ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
-                error = (
-                    f"{error}; merge --abort failed ({abort_err}): "
-                    f"main tree may still be in a conflicted state"
-                )
+                # porcelain v1 的 unmerged XY 码全集（DD/AU/UD/UA/DU/AA/UU）
+                unmerged_codes = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+                if status.returncode == 0:
+                    still_conflicted = any(
+                        ln[:2] in unmerged_codes for ln in status.stdout.splitlines()
+                    )
+                else:
+                    still_conflicted = True
+                if still_conflicted:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge --abort failed for branch '{branch}': {abort_err} — "
+                        f"main tree may still be in a conflicted state",
+                    )
+                    error = (
+                        f"{error}; merge --abort failed ({abort_err}): "
+                        f"main tree may still be in a conflicted state"
+                    )
+                else:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge --abort failed for branch '{branch}': {abort_err} — "
+                        f"no merge in progress, main tree not in a conflicted state",
+                    )
+                    error = (
+                        f"{error}; merge --abort failed ({abort_err}): "
+                        f"no merge in progress, main tree not in a conflicted state"
+                    )
             # 恢复被移开的 untracked 文件（不丢数据，供下一轮重试）
             self._restore_backup(backup)
             return MergeConflictInfo(
@@ -1415,7 +1425,14 @@ class G4MergebackMixin:
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
-            except OSError:
+            except OSError as e:
+                # 移开失败留痕（code-review item de36430769eb）：该文件未入备份
+                # 清单，merge 随后大概率在别处因 untracked 冲突失败——失败不计数、
+                # 不影响返回值与主流程，仅对齐 _restore_backup 的失败必 WARNING 口径。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge-back 备份移开失败：rel='{rel}' → '{dst}'：{e}",
+                )
                 continue
         return backup
 
