@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # run 产物 agent 类型推断（原 data.py 顶层导入，随 runs 组迁移）
+from core.timelib import from_epoch
 from core.agent_runner.run_files import (
     infer_run_agent_type,
     run_spec_part,
@@ -494,7 +495,7 @@ def _run_meta_cached(p: Path, stat, now: float,
         # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
         # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
         # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
-        started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+        started = from_epoch(start_ts).isoformat()  # SPEC-B 批④收拢
         duration_seconds = max(0, int(stat.st_mtime - start_ts))
     # fix-observability-gaps 1.5（消费点）：结构化指标优先——run 收尾落盘的
     # duration_seconds 为真实耗时（time.time()-start_time），替代 mtime 推算；

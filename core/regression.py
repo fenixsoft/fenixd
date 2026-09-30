@@ -428,7 +428,7 @@ def save_state(project_root, date_str: str) -> None:
 
 def local_today_str() -> str:
     """本地自然日字符串 YYYY-MM-DD（同自然日防重基准）。"""
-    return datetime.datetime.now().date().isoformat()
+    return timelib.now_local().date().isoformat()  # SPEC-B 批④收拢
 
 
 # ── 运行中标记（POST /api/regression/run 的 409 守卫）─────────────

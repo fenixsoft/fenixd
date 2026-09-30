@@ -81,9 +81,9 @@
 
 ## 4. 批④：dashboard data 与散点收尾
 
-- [ ] 4.1 `core/dashboard/data/summary.py`/`spec_archive.py`/`runs.py`/`artifacts.py`：裸 `now()` 与 `fromtimestamp`/`fromisoformat` 迁移，dashboard 只读契约（容错、不抛）保持；抽查 dashboard API 时间字段（`frozen_until` 等）在前端 dayjs 渲染无 Invalid Date
-- [ ] 4.2 `core/code_review.py`（6 处裸 `now()`，含 aware→naive 剥时区写入点改 aware UTC 直写）、`evolution.py`（3 处）、`regression.py`、`worktree_manager/stash_guard.py`/`mergeback.py` 各 1 处迁移
-- [ ] 4.3 守卫白名单收缩：清除本批域全部条目
+- [x] 4.1 `core/dashboard/data/summary.py`/`spec_archive.py`/`runs.py`/`artifacts.py`：裸 `now()` 与 `fromtimestamp`/`fromisoformat` 迁移，dashboard 只读契约（容错、不抛）保持；抽查 dashboard API 时间字段（`frozen_until` 等）在前端 dayjs 渲染无 Invalid Date
+- [x] 4.2 `core/code_review.py`（6 处裸 `now()`，含 aware→naive 剥时区写入点改 aware UTC 直写）、`evolution.py`（3 处）、`regression.py`、`worktree_manager/stash_guard.py`/`mergeback.py` 各 1 处迁移
+- [x] 4.3 守卫白名单收缩：清除本批域全部条目
 
 ## 5. 批⑤：CLI 展示脚本与白名单清零
 

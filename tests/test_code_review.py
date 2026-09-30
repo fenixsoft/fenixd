@@ -282,7 +282,8 @@ class TestComputeWindow(unittest.TestCase):
         try:
             ws, kind = compute_window(td)
             self.assertEqual(kind, "fallback")
-            now = datetime.now()
+            # SPEC-B 批④：window_start 迁 aware（本地表述）——对照钟同迁
+            now = datetime.now().astimezone()
             self.assertLess(abs((now - ws).total_seconds() - 24 * 3600), 60)
         finally:
             import shutil

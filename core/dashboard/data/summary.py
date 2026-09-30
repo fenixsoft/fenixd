@@ -22,6 +22,7 @@ from core.state_machine import (
     IMPL_RUN_BUDGET_OVERRIDE_FIELD,
 )
 # 取消保持标记归一读值单点（add-cancelled-spec-resume-action D1；叶子模块，无环）
+from core.timelib import now_local, parse_ts
 from .state import normalize_bool_flag
 
 # 服务端日志留痕出口（overview 降级摘要等；客户端只收固定文案，不外泄裸异常）
@@ -1041,11 +1042,9 @@ def _parse_spec_ts(raw) -> "datetime | None":
     """解析 STATE 条目的 updated 时间戳；缺失/非法返回 None。naive 视为本地时间。"""
     if not raw:
         return None
-    try:
-        ts = datetime.fromisoformat(str(raw))
-    except (ValueError, TypeError):
-        return None
-    return ts.astimezone() if ts.tzinfo is None else ts
+    # SPEC-B 批④：解析收拢 parse_ts（唯一入口；naive 视作本地——与原
+    # astimezone() 收尾同语义，失败返回 None 同路）。
+    return parse_ts(str(raw))
 
 
 def _updated_spec_counts(entries: dict, today_start: datetime, week_start: datetime) -> tuple:
@@ -1109,7 +1108,7 @@ def overview(registry_projects: list) -> dict:
     项目——该项目摘要携带 `error` 字段、不向 `totals` 累加任何计数，其余
     项目摘要与 `totals` 照常返回，函数不得抛出（dashboard-server 容错契约）。
     """
-    now = datetime.now().astimezone()
+    now = now_local()  # SPEC-B 批④收拢（与原 now().astimezone() 等价）
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = now - timedelta(days=7)
     projects = []

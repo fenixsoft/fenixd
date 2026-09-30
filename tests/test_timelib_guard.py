@@ -70,18 +70,9 @@ def _rel(path: Path) -> str:
 # ── 存量违例白名单（上线基线=扫描当日全部 68 处 / 30 键，2026-09-30）──────
 # 键 = (仓库相对路径, 模式名)。SPEC-B 逐批迁移后整组收缩对应键；
 # 守卫对无对应违例的键报失败（僵尸检测），收缩是迁移的收尾动作。
-TIME_WHITELIST = [
-    # fromisoformat（解析未收拢，SPEC-B ④ 批迁移）
-    ("core/dashboard/data/summary.py", "fromisoformat"),
-    # 零参 now()（naive 本地产出，SPEC-B ④ 批迁移）
-    ("core/code_review.py", "now-zero-arg"),
-    ("core/dashboard/data/spec_archive.py", "now-zero-arg"),
-    ("core/dashboard/data/summary.py", "now-zero-arg"),
-    ("core/evolution.py", "now-zero-arg"),
-    ("core/regression.py", "now-zero-arg"),
-    ("core/worktree_manager/mergeback.py", "now-zero-arg"),
-    ("core/worktree_manager/stash_guard.py", "now-zero-arg"),
-]
+# SPEC-B 批①-④（add-timelib-callsite-migration）已全部迁移：白名单清零
+# （2026-09-30），棘轮进入零豁免稳态——新违例一律直接报失败。
+TIME_WHITELIST: list = []
 
 
 def _write_temp_py(root: Path, rel: str, source: str) -> Path:
