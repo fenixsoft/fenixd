@@ -37,3 +37,8 @@
 | dashboard-read-contract-intact | dashboard 只读 API 契约在时间戳 aware 化后保持：/api/specs?project=fenixd 200 + {project,specs} 形状（v1 兼容契约，未知项目仍 200 空表）、/api/overview 与 /api/alerts 200 JSON object——aware 解析不得使只读端点 5xx（tasks 4.1「dashboard 只读契约保持」，出处 core/dashboard/routes/spec_routes.py:74、core/dashboard/routes/base.py:524-531） | pass | 0/6 | - |
 | frontend-time-render-overview-no-invalid-date | 概览页时间渲染无 Invalid Date：v1 SPA（8787 根）加载后页面不出现 dayjs 解析失败的 Invalid Date 文本——aware 串（+00:00/Z 后缀）可被前端正常解析（tasks 4.1「抽查 dashboard API 时间字段在前端 dayjs 渲染无 Invalid Date」；URL 出处：8787 根=v1 SPA 静态托管 core/dashboard/routes/base.py:524 路由族，既有验证场景惯例） | pass | 0/4 | - |
 | frontend-time-render-project-no-invalid-date | 项目详情页时间渲染无 Invalid Date：#project/fenixd 详情页 spec 列表 updated/frozen_until 等时间字段渲染正常、无 Invalid Date、无控制台错误（tasks 4.1；URL 出处：hash 路由 #project/fenixd，既有验证场景惯例 + core/dashboard/routes/base.py:524 路由族） | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
