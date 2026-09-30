@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.timelib import parse_ts
 from core.dashboard.data import (
     find_impl_run_file,
     get_runs,
@@ -3527,7 +3528,7 @@ class PMEngine:
                     # error 字段同款）：外部直改的非字符串值直接进 .replace 会
                     # 抛 AttributeError（不在捕获列表内），中断整轮巡检。
                     updated_raw = str(entry.get("updated") or "")
-                    u = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+                    u = parse_ts(updated_raw)  # 收拢 parse_ts（SPEC-B 批③）；None 由下方 TypeError 捕获同路 continue
                     v_elapsed = int((now - u).total_seconds() / 60)
                 except (ValueError, TypeError):
                     continue
@@ -3568,7 +3569,7 @@ class PMEngine:
                 try:
                     updated_str = str(entry.get("updated") or "")  # str 归一防非串值 AttributeError（item 6e8033e77960）
                     if updated_str:
-                        updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                        updated = parse_ts(updated_str)  # 收拢 parse_ts（SPEC-B 批③）
                         elapsed = self._stuck_elapsed_minutes(name, now, updated)
                         if elapsed > stuck_threshold_minutes:
                             blockers.append(
@@ -3607,7 +3608,7 @@ class PMEngine:
                 try:
                     updated_str = str(entry.get("updated") or "")  # str 归一防非串值 AttributeError（item 6e8033e77960）
                     if updated_str:
-                        updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                        updated = parse_ts(updated_str)  # 收拢 parse_ts（SPEC-B 批③）
                         elapsed = (now - updated).total_seconds() / 60
                         if elapsed > stuck_threshold_minutes * 2:
                             warnings.append(

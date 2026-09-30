@@ -71,16 +71,9 @@ def _rel(path: Path) -> str:
 # 键 = (仓库相对路径, 模式名)。SPEC-B 逐批迁移后整组收缩对应键；
 # 守卫对无对应违例的键报失败（僵尸检测），收缩是迁移的收尾动作。
 TIME_WHITELIST = [
-    # fromisoformat（解析未收拢，SPEC-B ③④ 批迁移）
-    ("core/admin_monitor.py", "fromisoformat"),
-    ("core/admin_store.py", "fromisoformat"),
+    # fromisoformat（解析未收拢，SPEC-B ④ 批迁移）
     ("core/dashboard/data/summary.py", "fromisoformat"),
-    ("core/dashboard/routes/alert_routes.py", "fromisoformat"),
-    ("core/pm_engine/engine.py", "fromisoformat"),
-    ("core/state_machine.py", "fromisoformat"),
-    ("core/tui_format.py", "fromisoformat"),
-    # 零参 now()（naive 本地产出，SPEC-B ③④ 批迁移）
-    ("core/admin_monitor.py", "now-zero-arg"),
+    # 零参 now()（naive 本地产出，SPEC-B ④ 批迁移）
     ("core/code_review.py", "now-zero-arg"),
     ("core/dashboard/data/spec_archive.py", "now-zero-arg"),
     ("core/dashboard/data/summary.py", "now-zero-arg"),

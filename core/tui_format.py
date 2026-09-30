@@ -6,6 +6,7 @@ _fmt_dur/_local_ts 在两个脚本各持一份，小时段补零口径漂移 2h0
 同一 SPEC 时长在两份报告里显示不一致，修口径须改多处）。
 """
 
+from core.timelib import parse_ts
 from datetime import datetime
 
 
@@ -15,12 +16,11 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
     默认 fmt 与回退切片 [:19] 是既有展示契约（test_cli_time_display 钉死）；
     需要日期的调用点显式传 fmt="%m-%d %H:%M"。
     """
-    try:
-        return (
-            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
-        )
-    except Exception:
+    # SPEC-B 批③：解析收拢 parse_ts（唯一入口；解析失败仍走既有 [:19] 切片回退）
+    dt = parse_ts(str(iso_str))
+    if dt is None:
         return str(iso_str)[:19]
+    return dt.astimezone().strftime(fmt)
 
 
 def fmt_dur(seconds) -> str:

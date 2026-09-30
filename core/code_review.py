@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.timelib import parse_ts
+from core.timelib import now_local, parse_ts
 
 _logger = logging.getLogger("fenixd.code_review")
 
@@ -1066,7 +1066,8 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     ``{"run_id", "minutes"}``，否则 None。由 admin_monitor 周期节拍调用并
     负责落告警（本函数只判不写）；run 终态（``running=false``）短路不再触发。
 
-    ``now`` 参数供测试注入时钟；生产路径缺省取当前本地时间。
+    ``now`` 参数供测试注入时钟（naive/aware 皆可，按瞬时差计算）；生产路径
+    缺省取 ``timelib.now_local()``（aware 本地，SPEC-B 批③收拢）。
     """
     progress = read_progress(project_root)
     if not progress.get("running"):
@@ -1080,8 +1081,11 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     started = _iso_to_local_dt(mdata.get("requested_at"))
     if started is None:
         return None
-    now_dt = now if now is not None else datetime.now()
-    minutes = int((now_dt - started).total_seconds() // 60)
+    # SPEC-B 批③：缺省钟迁 timelib.now_local()（aware 本地）；时长按
+    # .timestamp() 瞬时差计算（naive started 按本地解读 .timestamp()，与
+    # 迁移前 naive-naive 减法同一瞬时；aware 注入替身同样成立）。
+    now_dt = now if now is not None else now_local()
+    minutes = int((now_dt.timestamp() - started.timestamp()) // 60)
     if minutes < _stall_alert_minutes(project_root):
         return None
     return {"run_id": str(run_id), "minutes": minutes}

@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
+from core.timelib import parse_ts
+
 
 logger = logging.getLogger("fenixd.dashboard.alert_routes")
 
@@ -66,21 +68,11 @@ def _activity_created_ts(raw) -> float:
     """created 字段 → 秒级时间戳；非法/缺失归一 0（与前端归一语义一致）。"""
     if not raw:
         return 0.0
-    s = str(raw).strip()
-    if s.endswith(("Z", "z")):
-        # Python 3.10 fromisoformat 不认 'Z'（AdminStore 产 ISO 含 +00:00，
-        # 外部写入可能带 Z）：dayjs 认 Z，这里同口径处理
-        s = s[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(s)
-    except ValueError:
-        return 0.0
-    if parsed.tzinfo is None:
-        # naive 值按 UTC 解释（全链约定 UTC，与 code_review_routes._parse_iso_utc
-        # 同口径，code-review item e8c240200640）：.timestamp() 对 naive 值按进程
-        # 本地时区折算，排序基准会随部署机时区漂移
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
+    # SPEC-B 批③：解析收拢 parse_ts（唯一入口；Z/±HH:MM 同口径，失败归 0
+    # 不变）。AdminStore 产 ISO 恒为 aware；naive 值按 timelib 唯一策略
+    # （本地时区）解读，原显式 naive→UTC 退役。
+    parsed = parse_ts(str(raw).strip())
+    return parsed.timestamp() if parsed is not None else 0.0
 
 
 def _sort_activities_frontend(items: list) -> None:

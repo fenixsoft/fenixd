@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Optional
 
 from .alert_lifecycle import AUTO_RESOLVE_BY
+from core.timelib import parse_ts
+
 
 # 记录种类
 SIGNAL = "signal"
@@ -681,24 +683,19 @@ class AdminStore:
                 continue
             if spec is None and rec_spec is not None:
                 continue
-            try:
-                created = datetime.fromisoformat((rec.get("created") or "").replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            # SPEC-B 批③：解析收拢 parse_ts（唯一入口，失败 None 同路 continue）。
+            # 存量 created 恒为 aware（_utcnow_iso）；naive 防御分支按唯一策略
+            # （本地）解读，原显式 naive→UTC 退役。
+            created = parse_ts(rec.get("created") or "")
+            if created is None:
                 continue
-            if created.tzinfo is None:
-                # 朴素时间戳（人工修补/外部工具写入）按 UTC 归一：避免与带时区
-                # 记录混存时比较抛 TypeError，且 .timestamp() 不再误按本地时区。
-                created = created.replace(tzinfo=timezone.utc)
             anchor = created
             last_seen_str = rec.get("last_seen")
             if last_seen_str:
-                try:
-                    last_seen = datetime.fromisoformat(str(last_seen_str).replace("Z", "+00:00"))
-                    if last_seen.tzinfo is None:
-                        last_seen = last_seen.replace(tzinfo=timezone.utc)
+                last_seen = parse_ts(str(last_seen_str))
+                if last_seen is not None:
                     anchor = max(created, last_seen)  # 防御：异常数据下取更大者
-                except (ValueError, TypeError):
-                    pass  # last_seen 不可解析时回退 created
+                # last_seen 不可解析时回退 created（与原 except-pass 同路）
             if anchor.timestamp() < cutoff:
                 continue
             if best is None or anchor > best["_anchor"]:

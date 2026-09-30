@@ -79,7 +79,9 @@ class BBackoffMixin:
         until = int(now + delay)
         from datetime import datetime as _dt, timezone as _tz
 
-        until_iso = _dt.fromtimestamp(until, _tz.utc).isoformat()
+        from core.timelib import from_epoch
+
+        until_iso = from_epoch(until).isoformat()
 
         # 不翻转状态：spec 保持 ready，仅记录退避元数据
         self._pm.state_machine.update_spec(

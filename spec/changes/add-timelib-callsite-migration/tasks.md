@@ -61,23 +61,23 @@
 
 ## 1. 批①：self_review naive 气泡迁 aware UTC
 
-- [ ] 1.1 characterization 测试先行：以固定 run 数据集 + 固定调度配置固化 `_in_window`/`collect_runs_stats`/调度触发的现行为（命中集合快照），作为迁移等价性基准
-- [ ] 1.2 `core/self_review.py` 窗口计算迁 aware UTC：19 处裸 `now()` 走 `timelib.now_utc()`，2 处 `fromtimestamp` 走 `timelib.from_epoch`，1 处裸 `fromisoformat` 走 `timelib.parse_ts`，`_in_window`/`window_start`/`window_end` 全 aware 比较；`_parse_run_at` 保持本地墙钟语义解析后立即转 aware UTC，配置字面值不变
-- [ ] 1.3 同步迁移 `core/self_review.py` 测试替身时间戳格式（grep 测试内 naive 串构造、`ts[:19]` 切片、`fromtimestamp`），跑通 characterization 等价基准与全量自省测试
-- [ ] 1.4 守卫白名单收缩：清除 `self_review.py` 全部条目，僵尸检测通过
+- [x] 1.1 characterization 测试先行：以固定 run 数据集 + 固定调度配置固化 `_in_window`/`collect_runs_stats`/调度触发的现行为（命中集合快照），作为迁移等价性基准
+- [x] 1.2 `core/self_review.py` 窗口计算迁 aware UTC：19 处裸 `now()` 走 `timelib.now_utc()`，2 处 `fromtimestamp` 走 `timelib.from_epoch`，1 处裸 `fromisoformat` 走 `timelib.parse_ts`，`_in_window`/`window_start`/`window_end` 全 aware 比较；`_parse_run_at` 保持本地墙钟语义解析后立即转 aware UTC，配置字面值不变
+- [x] 1.3 同步迁移 `core/self_review.py` 测试替身时间戳格式（grep 测试内 naive 串构造、`ts[:19]` 切片、`fromtimestamp`），跑通 characterization 等价基准与全量自省测试
+- [x] 1.4 守卫白名单收缩：清除 `self_review.py` 全部条目，僵尸检测通过
 
 ## 2. 批②：agent_runner 域与入口
 
-- [ ] 2.1 `core/agent_runner/runner.py`/`liveness.py`/`provider_circuit.py`：`fromtimestamp` 改 `timelib.from_epoch`，`fromisoformat` 改 `timelib.parse_ts`，liveness 心跳/stale 判定行为以既有测试锁定
-- [ ] 2.2 `core/agent_runner/prompt_builder.py`（2 处裸 `now()`）与 `core/agent_runner/latency.py`（`fromisoformat`）迁移，测试同步
-- [ ] 2.3 `fenixd.py`：`fromtimestamp` 与 `fromisoformat` 迁移，daemon 入口行为以既有生命周期测试锁定
-- [ ] 2.4 守卫白名单收缩：清除 agent_runner 域与 `fenixd.py` 全部条目
+- [x] 2.1 `core/agent_runner/runner.py`/`liveness.py`/`provider_circuit.py`：`fromtimestamp` 改 `timelib.from_epoch`，`fromisoformat` 改 `timelib.parse_ts`，liveness 心跳/stale 判定行为以既有测试锁定
+- [x] 2.2 `core/agent_runner/prompt_builder.py`（2 处裸 `now()`）与 `core/agent_runner/latency.py`（`fromisoformat`）迁移，测试同步
+- [x] 2.3 `fenixd.py`：`fromtimestamp` 与 `fromisoformat` 迁移，daemon 入口行为以既有生命周期测试锁定
+- [x] 2.4 守卫白名单收缩：清除 agent_runner 域与 `fenixd.py` 全部条目
 
 ## 3. 批③：pm_engine 与 admin/store 域
 
-- [ ] 3.1 `core/pm_engine/engine.py`/`dispatch/backoff.py`/`verification/pipeline.py`：`fromisoformat`/`fromtimestamp` 改走 timelib，退避/升级判定行为以既有测试锁定
-- [ ] 3.2 `core/admin_store.py`/`state_machine.py`/`admin_monitor.py`/`tui_format.py`/`dashboard/routes/alert_routes.py`：`fromisoformat` 与 `admin_monitor` 3 处裸 `now()`、2 处 `fromtimestamp` 迁移，告警时间戳与 TUI 展示格式不变
-- [ ] 3.3 守卫白名单收缩：清除本批域全部条目
+- [x] 3.1 `core/pm_engine/engine.py`/`dispatch/backoff.py`/`verification/pipeline.py`：`fromisoformat`/`fromtimestamp` 改走 timelib，退避/升级判定行为以既有测试锁定
+- [x] 3.2 `core/admin_store.py`/`state_machine.py`/`admin_monitor.py`/`tui_format.py`/`dashboard/routes/alert_routes.py`：`fromisoformat` 与 `admin_monitor` 3 处裸 `now()`、2 处 `fromtimestamp` 迁移，告警时间戳与 TUI 展示格式不变
+- [x] 3.3 守卫白名单收缩：清除本批域全部条目
 
 ## 4. 批④：dashboard data 与散点收尾
 

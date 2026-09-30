@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from core.timelib import now_local
+from core.timelib import from_epoch, now_local, parse_ts
 
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION, evidence_project
 from .alert_lifecycle import attach_trigger, find_resolvable
@@ -1456,7 +1456,7 @@ class AdminMonitor:
         """
         from core.code_review import check_progress_stall
 
-        hit = check_progress_stall(self.project_root, datetime.now())
+        hit = check_progress_stall(self.project_root, now_local())  # SPEC-B 批③收拢
         if hit is None:
             return
         run_id = str(hit.get("run_id") or "")
@@ -1880,9 +1880,8 @@ class AdminMonitor:
                 )
                 continue
             updated_str = entry.get("updated") or entry.get("created") or ""
-            try:
-                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            updated = parse_ts(updated_str)  # SPEC-B 批③收拢 parse_ts；None 同路 continue
+            if updated is None:
                 continue
             elapsed = (now - updated.timestamp()) / 60
             if elapsed <= threshold:
@@ -2355,9 +2354,8 @@ class AdminMonitor:
             if entry.get("_cancelled_hold"):
                 continue
             updated_str = entry.get("updated") or entry.get("created") or ""
-            try:
-                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            updated = parse_ts(updated_str)  # SPEC-B 批③收拢 parse_ts；None 同路 continue
+            if updated is None:
                 continue
             elapsed_minutes = (now - updated.timestamp()) / 60
             if elapsed_minutes <= threshold_minutes:
@@ -2386,13 +2384,12 @@ class AdminMonitor:
                 disp = self.store.latest_resolved_disposition(name, "stuck")
                 if disp is not None:
                     disp_created_str = disp.get("created") or ""
-                    try:
-                        disp_created = datetime.fromisoformat(
-                            disp_created_str.replace("Z", "+00:00")
-                        )
-                        disp_age_minutes = (now - disp_created.timestamp()) / 60
-                    except (ValueError, TypeError):
-                        disp_age_minutes = None
+                    disp_created = parse_ts(disp_created_str)  # SPEC-B 批③收拢
+                    disp_age_minutes = (
+                        (now - disp_created.timestamp()) / 60
+                        if disp_created is not None
+                        else None
+                    )
                     if disp_age_minutes is not None and disp_age_minutes < silence_minutes:
                         self.logger.debug(
                             "admin_monitor",
@@ -2537,9 +2534,8 @@ class AdminMonitor:
                     )
                     continue
             updated_str = entry.get("updated") or entry.get("created") or ""
-            try:
-                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            updated = parse_ts(updated_str)  # SPEC-B 批③收拢 parse_ts；None 同路 continue
+            if updated is None:
                 continue
             elapsed_minutes = (now - updated.timestamp()) / 60
             if elapsed_minutes <= threshold_minutes:
@@ -2641,9 +2637,7 @@ class AdminMonitor:
             count = len(in_window)
             last_ts = ts_ok[-1] if ts_ok else None
             last_str = (
-                datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
-                if last_ts
-                else "无可用时间戳"
+                from_epoch(last_ts).isoformat() if last_ts else "无可用时间戳"
             )
             missing_ts = sum(1 for t in in_window if t is None)
             escalating.append((fp, count, last_str, missing_ts))
@@ -2746,10 +2740,8 @@ class AdminMonitor:
         ts_epoch = None
         ts = entry.get("timestamp")
         if ts:
-            try:
-                ts_epoch = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
-            except (ValueError, TypeError):
-                ts_epoch = None
+            ts_dt = parse_ts(str(ts))  # SPEC-B 批③收拢；失败 None 同路置 None
+            ts_epoch = ts_dt.timestamp() if ts_dt is not None else None
         component = entry.get("component") or "unknown"
         message = entry.get("message") or line
         return ts_epoch, component, message
@@ -3043,9 +3035,8 @@ class AdminMonitor:
             if _is_intentionally_paused(entry):
                 continue
             updated_str = entry.get("updated") or entry.get("created") or ""
-            try:
-                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            updated = parse_ts(updated_str)  # SPEC-B 批③收拢 parse_ts；None 同路 continue
+            if updated is None:
                 continue
             stalled_minutes = (now - updated.timestamp()) / 60
             if stalled_minutes < STALLED_ESCALATION_MINUTES:
@@ -3186,9 +3177,8 @@ class AdminMonitor:
             next_retry_at = rec.get("next_retry_at")
             if not next_retry_at:
                 continue
-            try:
-                due = datetime.fromisoformat(str(next_retry_at).replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            due = parse_ts(str(next_retry_at))  # SPEC-B 批③收拢；None 同路 continue
+            if due is None:
                 continue
             if due.timestamp() > now:
                 continue
@@ -3343,11 +3333,8 @@ class AdminMonitor:
             if info["final"]:
                 continue
             pending = info["rec"]
-            try:
-                created = datetime.fromisoformat(
-                    (pending.get("created") or "").replace("Z", "+00:00")
-                )
-            except (ValueError, TypeError):
+            created = parse_ts(pending.get("created") or "")  # SPEC-B 批③收拢
+            if created is None:
                 continue
             if now - created.timestamp() < grace:
                 continue
@@ -4149,7 +4136,7 @@ class AdminMonitor:
         if signal_rec is None:
             return
         next_retry = time.time() + self.cooldown_minutes * 60
-        entry["next_retry_at"] = datetime.fromtimestamp(next_retry, tz=timezone.utc).isoformat()
+        entry["next_retry_at"] = from_epoch(next_retry).isoformat()
         entry["retry_count"] = 0
 
     def _close_dispatch_failures_on_success(self, signal: dict) -> None:
