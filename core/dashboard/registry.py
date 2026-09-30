@@ -445,6 +445,9 @@ class Registry:
             data, load_error = self._load_for_write()
             if load_error is not None:
                 return False, load_error
+            # 既有条目的生效别名 → 规范化路径（code-review item b1cd0d9f4402：
+            # 落盘前的 name 冲突检测用），归一化口径与 discover 读侧守卫同式。
+            existing_names = {}
             for p in data.get("projects", []):
                 if not isinstance(p, dict):
                     continue
@@ -458,6 +461,10 @@ class Registry:
                     existing = str(Path(raw).expanduser().resolve())
                 except (OSError, RuntimeError, ValueError):
                     continue
+                existing_name = p.get("name")
+                if not isinstance(existing_name, str) or not existing_name.strip():
+                    existing_name = Path(existing).name or existing
+                existing_names[existing_name] = existing
                 if existing == key:
                     return False, f"项目已在监控列表: {key}"
 
@@ -471,6 +478,16 @@ class Registry:
             # 恒为字符串。
             if not isinstance(name, str) or not name.strip():
                 name = rp.name or key
+            # name 唯一性守卫（code-review item b1cd0d9f4402）：与 discover 读侧
+            # 守卫（item 4e59d5393147）闭环——下游 HTTP 以 project=<name> 寻址、
+            # SessionManager 以 name 为会话主键，name 须单值；读侧对重复 name 只
+            # 保留首个并 WARNING，写侧若放行同名条目，落盘成功却被既有条目遮蔽、
+            # 永不可见。冲突时拒绝落盘（CLI 调用方打印消息并返回退出码 1、夹具
+            # 脚本走 mark_fixture 兜底，均能优雅处理 False）。
+            if name in existing_names:
+                return False, (
+                    f"项目别名 {name!r} 已被其他项目占用: {existing_names[name]}"
+                )
             data.setdefault("projects", []).append(
                 {
                     "name": name,
