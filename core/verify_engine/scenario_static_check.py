@@ -275,6 +275,12 @@ def _rule_stale_navigate_port(scenario: dict, serving_port: str | None) -> list[
 # 是正常输入而非文本选择器，不做 2 汉字文本选择器扫描（code-review 8661824c890e）。
 _VALUE_NON_SELECTOR_ACTIONS = frozenset({"type", "seed", "scroll", "select", "mock_api"})
 
+# target 不以选择器语义消费的动作子集：seed 的 target 为 localStorage 键名、
+# mock_api 的 target 为 URL glob（browser.py/scenarios.py ACTIONS_REQUIRING_TARGET
+# 注释同此语义）——同为业务数据、不参与 autoInsertSpace 渲染，与 value 侧同一
+# 理由豁免 2 汉字文本选择器扫描（code-review d50dd968a385）。
+_TARGET_NON_SELECTOR_ACTIONS = frozenset({"seed", "mock_api"})
+
 
 def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
     """③ 双汉字文本选择器（antd autoInsertSpace：二字按钮渲染为「X X」）。
@@ -325,8 +331,12 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
             # type（输入文本/按键名）、seed（localStorage 数据）等动作的
             # value 不参与 autoInsertSpace 渲染，二字中文（如输入「确认」）
             # 是正常业务数据，按文本选择器扫描会产出「点击/断言必失配」的
-            # 失实情报并误导 judge 归因（code-review 8661824c890e）。
-            if field == "value" and action in _VALUE_NON_SELECTOR_ACTIONS:
+            # 失实情报并误导 judge 归因（code-review 8661824c890e）；seed/
+            # mock_api 的 target（localStorage 键名/URL glob）同理豁免
+            # （见 _TARGET_NON_SELECTOR_ACTIONS）。
+            if (field == "value" and action in _VALUE_NON_SELECTOR_ACTIONS) or (
+                field == "target" and action in _TARGET_NON_SELECTOR_ACTIONS
+            ):
                 continue
             text = step.get(field)
             if not isinstance(text, str) or not text:
