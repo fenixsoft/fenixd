@@ -277,7 +277,8 @@ const VERDICT_CACHE_TTL_MS = 30_000;
 function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdict'] | null> {
   const key = `${project}│${spec}`;
   const cached = verdictCache.get(key);
-  if (cached && Date.now() - cached.at < VERDICT_CACHE_TTL_MS) return cached.promise;
+  const now = Date.now();
+  if (cached && now - cached.at < VERDICT_CACHE_TTL_MS) return cached.promise;
   verdictCache.delete(key);
   const p = getSpecDetail(project, spec)
     .then((d) => d.verdict ?? null)
@@ -288,7 +289,14 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
       verdictCache.delete(key);
       return null;
     });
-  verdictCache.set(key, { promise: p, at: Date.now() });
+  // 写入前顺手清扫过期条目（code-review item e315d824f67a）：模块级缓存无容量
+  // 上限，过期条目原本只能靠同 key 再次 hover 覆盖删除，长生命周期页面下 hover
+  // 过大量 spec 后 Map 单调增长（promise 及其持有的 verdict 响应对象滞留）。
+  // Map 迭代中删除条目安全；刚写入的新条目 at=now 不会被本轮误删。
+  for (const [k, v] of verdictCache) {
+    if (now - v.at >= VERDICT_CACHE_TTL_MS) verdictCache.delete(k);
+  }
+  verdictCache.set(key, { promise: p, at: now });
   return p;
 }
 
@@ -868,6 +876,12 @@ export default function SpecListPage() {
     setExpandedKeys([]);
     // specLoadedRef 闩锁随项目复位（code-review item f8144e4ed721）
     specLoadedRef.current = false;
+    // 跨项目数据残留（code-review item 3d02af5ed12e）：specMap 持有上一项目的
+    // 整表数据，load 的失败分支（d.error/catch）只 setError 不清表，币值守卫
+    // 也只拦旧响应落地、不主动清旧数据——不复位则新项目加载返回前（或加载
+    // 失败时）表格、「共 N 个 SPEC」计数与移动端卡片一直显示上一项目的 SPEC。
+    // 函数式守卫避免首挂载空表时的无谓 re-render（同 flushPatches 惯例）。
+    setSpecMap((prev) => (Object.keys(prev).length > 0 ? {} : prev));
   }, [name]);
   useEffect(() => {
     if (expandedInitRef.current) return;
