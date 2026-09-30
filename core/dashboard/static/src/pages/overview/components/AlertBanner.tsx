@@ -26,6 +26,9 @@ function sevRank(sev?: string) {
 export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const { message, modal } = App.useApp();
   const [data, setData] = useState<AlertsData | null>(null);
+  // 告警拉取失败提示（code-review item f6ef9d6c2c12）：对齐 activities 页口径
+  // （fix df39d8bbc138）——人工告警接口失败必须提示，不再静默吞掉；主视图不受阻断
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(true);
   // add-human-adjudication-choices 5.4：裁决选择题交互状态经共享 hook
@@ -39,9 +42,17 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const load = useCallback(async () => {
     try {
       const d = await getAlerts();
-      if (!d.error) setData(d);
-    } catch {
-      // 告警拉取失败静默，不影响主视图
+      if (!d.error) {
+        setData(d);
+        setLoadError(null);
+      } else {
+        // 响应级 error 同样上屏（对齐 activities 页 fix 2ca9c5ff7be6 的 alerts.error
+        // 通道口径）；保留旧 data 不覆盖，主视图不因失败回退为空
+        setLoadError(d.error);
+      }
+    } catch (err) {
+      // 请求级失败不再静默（item f6ef9d6c2c12）：上屏轻量错误提示，主视图不受阻断
+      setLoadError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -60,7 +71,15 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
     if (next.length !== optimistic.length) setOptimistic(next);
   }, [data, optimistic]);
 
-  if (!alerts.length) return null;
+  // 轻量错误提示（item f6ef9d6c2c12）：文案对齐 activities 页「人工告警加载失败」，
+  // 保留主视图不阻断——有告警时与横幅并存，无告警时单独呈现不静默
+  const errorBanner = loadError ? (
+    <Alert banner type="error" showIcon message={`人工告警加载失败：${loadError}`} />
+  ) : null;
+
+  if (!alerts.length) {
+    return errorBanner ? <div style={{ marginBottom: 16 }}>{errorBanner}</div> : null;
+  }
 
   const count = Math.min(data?.total_unhandled ?? alerts.length, alerts.length);
   const top = alerts.reduce((m, a) => (sevRank(a.severity) > sevRank(m.severity) ? a : m), alerts[0]);
@@ -124,6 +143,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
 
   return (
     <div style={{ marginBottom: 16 }}>
+      {errorBanner}
       <Alert
         banner
         type={top.severity === 'critical' ? 'error' : 'warning'}
