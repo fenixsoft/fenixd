@@ -24,7 +24,9 @@ sys.path.insert(0, str(FRAMEWORK_ROOT))
 def _resolve_project_root(args_project: str | None) -> Path:
     """解析项目根路径：--project 或当前目录。"""
     if args_project:
-        proot = Path(args_project).resolve()
+        # 对齐 fenix_archive/fenix_dashboard 口径：先展开 ~ 前缀再解析，
+        # 避免 ~/x 被误判为非 Fenix 项目目录且报错指向不存在的字面路径
+        proot = Path(args_project).expanduser().resolve()
     else:
         proot = Path.cwd()
     if not (proot / ".fenix" / "STATE.md").exists():
@@ -50,7 +52,7 @@ def cmd_promote(args):
     config = ConfigLoader.resolve_config(proot)
 
     result = promote_drafted(proot, args.spec, state_machine=sm, logger=logger, config=config)
-    if result["ok"]:
+    if result.get("ok"):
         # 依 promote_drafted 的分流结论执行转移（add-spec-review-gate 3.4）：
         # 命中跳过白名单 → ready；否则 → reviewing 待方案评审。与 _on_spec_drafted
         # 收尾语义一致，MUST NOT 硬编码 ready（否则 CLI 通道绕过评审门禁）。
