@@ -108,7 +108,6 @@ export default function SettingsPage() {
         const data: OverviewData = await getOverview();
         setProjects(data.projects.map((p) => p.name));
       } catch (e) {
-        console.error('Failed to load projects:', e);
         // 项目列表失败非阻断提示（code-review item 6776b8ee2ba9）：projects 停在
         // 空数组，作用域下拉只剩「用户级」，项目级页签与回归质量配置全部不可达，
         // 仅 console.error 会让用户误以为尚未注册任何项目。比照保存后刷新失败的
@@ -137,7 +136,6 @@ export default function SettingsPage() {
       } catch (e) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : String(e);
-        console.error('Failed to load config:', e);
         // 失败即清空旧 config（code-review item 35bce3eaab39）：保留旧作用域的
         // config 会在错误横幅下继续渲染上一份配置面板，用户可编辑/保存过时值
         //（把上个项目/作用域的配置写进新作用域）。清空后失败路径只渲染错误态。
@@ -190,7 +188,6 @@ export default function SettingsPage() {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`保存失败：${errorMessage}`);
-      console.error('Failed to save config:', error);
       return false;
     }
     message.success('保存成功');
@@ -204,7 +201,6 @@ export default function SettingsPage() {
         setConfig(configData);
       }
     } catch (e) {
-      console.error('Failed to reload config after save:', e);
       message.warning('已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值');
     }
     return true;
@@ -229,7 +225,6 @@ export default function SettingsPage() {
         staleSelfhealRef.current?.collect(),
         suggestionsRef.current?.collect(),
       ]).catch((error) => {
-        console.error('Failed to collect self-evolution sections:', error);
         message.error('收集自进化配置失败，保存已中止，请稍后重试');
         return null;
       });
