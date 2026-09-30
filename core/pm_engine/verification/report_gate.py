@@ -194,7 +194,9 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
         return True
     try:
         data = json.loads(result_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    # UnicodeDecodeError（非 UTF-8 字节/半截二进制）与 JSON 语法错同属内容
+    # 损坏：不可读一律判陈旧（fail-closed），与 pipeline.py 读取点口径对齐。
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return True
     if not isinstance(data, dict):
         return True
@@ -277,7 +279,10 @@ def _read_verifier_result(
             return VerdictReadResult.failure("missing", f"{result_path}")
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError（非 UTF-8 字节）属产物内容损坏而非 IO 失败：
+            # 归 parse 分池（与 pipeline.py 读取点捕获口径对齐），不可读仍
+            # fail-closed 返回 ok=False，绝不放行。
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"Failed to read verifier result (fail-closed): {e}",
@@ -361,7 +366,9 @@ def _read_shared_result(
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # UnicodeDecodeError（非 UTF-8 字节）属产物内容损坏而非 IO 失败：归
+        # parse 分池（与 pipeline.py 读取点捕获口径对齐），仍 fail-closed。
         return VerdictReadResult.failure("parse", f"{path}: {e}")
     except OSError as e:
         # IO 失败（权限/设备错误等）≠ 产物格式损坏：独立 reason=io-error，与

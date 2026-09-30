@@ -324,14 +324,42 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         )
     except Exception as e:
         pipeline._context.logger.error("pm_engine", f"verify_uniform_failure 信号写入失败: {e}")
-    updates: dict = {
-        "error": note,
-        "_uniform_fail_attempts": attempts,
-    }
     if attempts >= _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD:
-        updates["status"] = "blocked"
-        updates["tester_run"] = None
-    pipeline._context.state_machine.update_spec(spec_name, updates)
+        # code-fix 09da400d938c：阈值轮「blocked 交人工」（docstring 语义）收敛到
+        # freeze_for_human 单一入口，与 judge_gate._judge_hard_cap_freeze
+        # （code-fix 0eda9bae5886）同款硬化——原先裸 update_spec 置 blocked 无
+        # frozen 结构化标记，blocked_stuck 看门狗三选一豁免（frozen 字段 /
+        # 'frozen:' 前缀 / '用户指令' 子串）全不命中，「交人工」实际会被自动派
+        # admin run。自动呼叫 admin 不依赖该裸写：上方 verify_uniform_failure
+        # SIGNAL 属 STORED_SIGNAL_TYPES，由 _detect_family_explosion 按记录摄取
+        # 即唤起 Administrator（含本轮，带专属三分支处置指引）；本入口则保证
+        # frozen 与人工升级告警成对落盘。tester_run 清空与 attempts 计数经
+        # extra_updates 并入同一原子写（error/status/frozen 三键由入口自管）。
+        pipeline._context.state_machine.freeze_for_human(
+            spec_name,
+            error=note,
+            signal_type="verify_uniform_failure",
+            severity="major",
+            description=note,
+            evidence=f"signature={signature[:120]}; failed={fail_total}",
+            recommended_action=(
+                "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
+                "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "
+                f"缺陷 → 人工处置。已连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} "
+                "轮同因，spec 已冻结等待人工。"
+            ),
+            alert_callback=pipeline._context.escalation_notifier,
+            extra_updates={
+                "_uniform_fail_attempts": attempts,
+                "tester_run": None,
+            },
+        )
+    else:
+        # 未达阈值：仅落 error 文案与连续计数，不改状态（继续按轮呼叫 admin）。
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {"error": note, "_uniform_fail_attempts": attempts},
+        )
     pipeline._context.logger.warning("pm_engine", f"全场景同因失败哨触发 '{spec_name}': {note}")
     return True
 

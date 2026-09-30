@@ -7,6 +7,7 @@
 """
 
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, VERIFY_INFRA_ROUNDS_FIELD
+from core.pm_engine.verification.fastlane import FASTLANE_STREAK_FIELD
 
 
 def _discard_if_not_testing(pipeline, spec_name, result, label):
@@ -216,6 +217,12 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 不是「验证发现了缺陷」：保持当前状态不流转 bug-found、不派生 fix
         # （2026-08-28 chain_exhausted 误产空壳 fix 实证），由 full_scan
         # recovery 兜底重排；冷却到期后下一次扫描即恢复验证。
+        # ── 在飞 verify 结果状态判据（与 bug-found/verified/process-failure
+        # 分支同款，判据收敛于 _discard_if_not_testing，05d216e0182d）──
+        # 结果应用前 spec 已非 testing → DEBUG 丢弃：不覆写 error、不记
+        # infra 账（终态 SPEC 记 infra 是噪音且附带预算豁免对终态无意义）。
+        if _discard_if_not_testing(pipeline, spec_name, result, "infra"):
+            return
         pipeline._context.state_machine.update_spec(
             spec_name,
             {
@@ -593,6 +600,12 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     "_verify_redo_count": 0,
                     # add-blocked-reverify-lane D3：env 阻塞轮次清零点（legacy 同语义）。
                     ENV_BLOCK_ROUNDS_FIELD: 0,
+                    # minor-defect-fastlane：verified 收口同步清零 fastlane 连败
+                    # 计数（code-review item bfe2b17dcfe2，与 _apply_verified 的
+                    # efbdab0801f3 同款）：正常整轮 verified 不经 fastlane 收敛点，
+                    # 跨验证周期残留旧连击会让后续 fastlane 首败即被误判逼近
+                    # 熔断阈值提前回落整轮。与收敛点清零并存幂等。
+                    FASTLANE_STREAK_FIELD: 0,
                 },
             )
             # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）

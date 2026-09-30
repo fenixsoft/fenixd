@@ -569,16 +569,18 @@ def _write_verdict_violations(
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
             os.replace(tmp_path, path)
-        except OSError:
-            # 清理临时文件后上抛：写盘/替换失败与 mkdir/mkstemp 失败统一由
-            # 外层 WARNING 留痕（本清单是重试 prompt 的违规明细注入源，读侧
-            # fail-open 会丢违规明细，写失败零留痕无法归因）。
+        except (OSError, TypeError, ValueError):
+            # 清理临时文件后上抛：写盘/替换失败（含 json.dump 遇不可序列化
+            # 载荷抛 TypeError/ValueError）与 mkdir/mkstemp 失败统一由外层
+            # WARNING 留痕（本清单是重试 prompt 的违规明细注入源，读侧
+            # fail-open 会丢违规明细，写失败零留痕无法归因，且 .json.tmp
+            # 会残留）。
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
             raise
-    except OSError as e:
+    except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
             f"裁决驳回清单写盘失败 '{spec_name}': {e}",
@@ -695,8 +697,8 @@ def _write_resynthesis_directive(
     内容：被拒场景清单（scenario_ids + reason）、逐场景现有归因文本与
     框架已掌握的场景局部数据（失败步骤序号 / 断言 label）作为差异化素材、
     拒绝计数（rejection_round / resynthesis_attempts，独立轻量计数落在
-    verify-progress 目录，不膨胀 STATE.md）。写失败静默降级（只影响
-    重合成 prompt 注入，不阻断闭环）。
+    verify-progress 目录，不膨胀 STATE.md）。写失败降级（WARNING 留痕，
+    不阻断闭环，只影响重合成 prompt 注入）。
     """
     try:
         payload = {
@@ -716,12 +718,17 @@ def _write_resynthesis_directive(
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
             os.replace(tmp_path, path)
-        except OSError:
+        except (OSError, TypeError, ValueError):
+            # 清理临时文件后上抛交外层 WARNING 留痕（对齐 _write_verdict_violations
+            # 口径）：replace/dump 阶段失败零留痕时重试 judge 收不到定向修复
+            # 素材，会白烧满重合成预算才升级且排障无线索。含 json.dump 遇
+            # 不可序列化载荷抛 TypeError/ValueError（否则 .json.tmp 残留）。
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-    except OSError as e:
+            raise
+    except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
             f"重合成指令写盘失败 '{spec_name}': {e}",
@@ -1060,7 +1067,24 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
 
     # 2) 回炉清单落盘（requeue 子集驱动下轮 judge 只重做该子集）
     prior = pipeline._read_resynthesis_directive(spec_name)
-    rejection_round = int(prior.get("rejection_round") or 0) if isinstance(prior, dict) else 0
+    # 计数字段就地兜 0（code-review item 37ff03ef81c7，与 _handle_attr_dedup_rejection
+    # 同口径）：directive 被人工编辑/外部工具写坏为非数值串时 int() 抛
+    # ValueError，外溢后折算 cause=requeue_error——该文件仅在被采纳或预算
+    # 耗尽升级时清除，损坏条目会让每一轮都在同一处失败、spec 反复
+    # requeue_error 停滞到 stuck 兜底。按 0 兜底并 warning 留痕，计数自本轮
+    # 重新累计。
+    if isinstance(prior, dict):
+        try:
+            rejection_round = int(prior.get("rejection_round") or 0)
+        except (TypeError, ValueError):
+            rejection_round = 0
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
+                f"rejection_round={prior.get('rejection_round')!r}",
+            )
+    else:
+        rejection_round = 0
     try:
         build_requeue_manifest(
             pipeline._context.project_root,
