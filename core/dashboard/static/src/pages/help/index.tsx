@@ -80,7 +80,7 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
     container.innerHTML = svg;
   } catch (err) {
     // 渲染失败回退显示原始代码（D3 规定：不白屏）
-    container.innerHTML = `<pre style="background:#f5f5f5;padding:12px;border-radius:4px;overflow:auto"><code>${code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
+    container.innerHTML = `<pre style="background:var(--ant-color-fill-quaternary);padding:12px;border-radius:4px;overflow:auto"><code>${code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
   }
 }
 
@@ -177,7 +177,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
       }
       // 普通代码块（非 mermaid）：保持等宽字体展示
       return (
-        <code className={className} style={{ background: '#f4f4f4', padding: '2px 4px', borderRadius: 3, fontSize: 13 }} {...props}>
+        <code className={className} style={{ background: 'var(--ant-color-fill-quaternary)', padding: '2px 4px', borderRadius: 3, fontSize: 13 }} {...props}>
           {children}
         </code>
       );
@@ -208,7 +208,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
           <a
             href={href}
             onClick={(e) => { e.preventDefault(); scrollToAnchor(href.slice(1)); }}
-            style={{ color: '#1677ff', cursor: 'pointer' }}
+            style={{ color: 'var(--ant-color-primary)', cursor: 'pointer' }}
             {...rest}
           >
             {children}
@@ -237,7 +237,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
             <a
               href={`#${window.location.hash.split('?')[0].replace('#', '')}?doc=${encodeURIComponent(target)}`}
               onClick={(e) => { e.preventDefault(); onNavigate(target!, anchor || undefined); }}
-              style={{ color: '#1677ff', cursor: 'pointer' }}
+              style={{ color: 'var(--ant-color-primary)', cursor: 'pointer' }}
               {...rest}
             >
               {children}

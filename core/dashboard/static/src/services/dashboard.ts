@@ -96,8 +96,9 @@ function classifyHttpKind(status: number): ApiError['kind'] {
 
 // ── ETag 条件请求缓存（add-dashboard-paging-and-etag 3.1）──────────────
 // 模块级 Map<完整 URL（含 query）, {etag, data}>：GET 命中缓存时随请求携带
-// If-None-Match，服务端数据源未变回 304（空 body）时直接返回缓存数据——
-// 对调用方完全透明（仍拿到完整 T），省掉响应体传输与 JSON 解析。仅 200 且
+// If-None-Match，服务端数据源未变回 304（空 body）时返回缓存数据的结构化
+// 拷贝——对调用方完全透明（仍拿到完整 T，且调用方原地变异不会污染缓存），
+// 省掉响应体传输与 JSON 解析。仅 200 且
 // 响应带 ETag 头时写缓存；304 判定先于 !res.ok（304 非 ok，误入错误分支会
 // 把「数据未变」报成失败）。生命周期 = 页面会话（刷新即清），数据源变更由
 // 服务端签名翻转兜底，无需手动失效；容量有上限（ETAG_CACHE_MAX，写满淘汰
@@ -175,7 +176,12 @@ async function request<T>(
       );
     }
     if (cachedEntry && res.status === 304) {
-      return cachedEntry.data as T;
+      // 304 返回结构化拷贝（code-review item e4a589e90e6c）：缓存条目是共享
+      // 单例，直接返回引用会让调用方的原地变异（push/sort/改字段）写进
+      // etagCache，其后该键每次 304 命中都拿到被污染数据且存活到淘汰。缓存
+      // 数据恒为 JSON.parse 产物（纯 JSON 值），structuredClone 必然可克隆，
+      // 且与 200 路径「每次拿全新对象」的透明度对齐。
+      return structuredClone(cachedEntry.data) as T;
     }
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;

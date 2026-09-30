@@ -89,7 +89,8 @@ class TestFmtDisplayParity(unittest.TestCase):
       转发 core.tui_format.local_ts（内部渲染边界走 fmt_display）
     - naive 无后缀串迁移前后均按本地时区解读（timelib 唯一策略与
       ``fromisoformat().astimezone()`` 既有语义同向，逐字一致）
-    - 解析失败回退裸切片 [:19] 既有展示契约不变
+    - 解析失败回退裸切片 [:19] 既有展示契约不变（None/空串例外：直接返回
+      空串，不让 str(None)[:19] 的字面量「None」冒充时间戳——ade398cf 收窄）
     """
 
     def setUp(self):
@@ -102,9 +103,17 @@ class TestFmtDisplayParity(unittest.TestCase):
         self.local_ts = local_ts
 
     def _fmt_display_fallback(self, iso_str, fmt):
-        """迁移前 _local_ts 语义参照：fmt_display + [:19] 回退（逐字对照基准）。"""
+        """_local_ts 回退语义参照：fmt_display + [:19] 回退（逐字对照基准）。
+
+        None/空串按 ade398cf 收窄后的契约直接返回空串（与
+        core.tui_format.local_ts 一致），不再产出字面量「None」。
+        """
         out = self.timelib.fmt_display(iso_str, fmt)
-        return out if out else str(iso_str)[:19]
+        if out:
+            return out
+        if not iso_str:
+            return ""
+        return str(iso_str)[:19]
 
     def test_three_forms_parity_dashboard_default_fmt(self):
         with TZAsiaShanghai():
