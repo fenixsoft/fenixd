@@ -152,6 +152,23 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // 用户已输入未保存的内容）。
   const serverDraftFor = (atype: string) => projectExtraOf(data, atype);
 
+  // 刷新失败时的本地已保存基线同步（code-review item 37cec996892e）：保存已
+  // 落盘而 refetch 失败（HTTP-200 {error} 载荷或网络异常）时 data 仍持保存前
+  // 旧快照，usePanelDirty 探针按 extraDraft !== projectExtraOf(data, activeAgent)
+  // 恒判脏，切页签会弹多余的「修改尚未保存」确认——内容实际已落盘。把
+  // targetAgent 的 extras 就地同步为刚提交的草稿，使判脏与真实落盘状态一致
+  // （不可变更新，不碰其余字段）。
+  const syncSavedExtra = (agent: string, draft: string) => {
+    setData((prev) =>
+      prev?.project
+        ? {
+            ...prev,
+            project: { ...prev.project, extras: { ...prev.project.extras, [agent]: draft } },
+          }
+        : prev,
+    );
+  };
+
   const handleAgentChange = (atype: string) => {
     if (extraDraft !== serverDraftFor(activeAgent) && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
       return;
@@ -220,6 +237,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         const errPayload = (d as { error?: string }).error;
         if (errPayload) {
           message.warning(`已保存，但刷新列表返回错误：${errPayload}`);
+          // 错误载荷分支同样同步已保存基线（code-review item 37cec996892e）：
+          // 否则 data 保持保存前旧快照，判脏探针恒判脏、切页签误弹丢弃确认。
+          syncSavedExtra(targetAgent, extraDraft);
         } else {
           setData(d);
           // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）。
@@ -236,6 +256,12 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       }
     } catch (e) {
       message.warning(`已保存，但刷新列表失败：${e instanceof Error ? e.message : String(e)}`);
+      // 网络失败分支同步已保存基线（code-review item 37cec996892e）：使判脏
+      // 与真实落盘一致；项目已在飞期间切换（loadedFor 已前移）时不动 data，
+      // 避免把旧项目的内容写进新项目视图（同上方归属对账口径）。
+      if (loadedForRef.current === project) {
+        syncSavedExtra(targetAgent, extraDraft);
+      }
     } finally {
       savingRef.current = false;
       setSaving(false);

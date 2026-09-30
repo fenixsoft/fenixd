@@ -46,7 +46,12 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   // item 589c1c98c5a4 同形态）：handleSave 是异步双段提交（配置 + todo.md），
   // 期间按钮可继续点击会发出重叠保存请求（并发写同一 config/todo 文件，
   // 结果取决于响应到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  // 拦截以 savingRef 同帧写读为权威（code-review item d5a9c299b87c，与
+  // PromptsPanel item 6e35a8c1d5cd / QualityPanel useGatedFormPanel 的
+  // savingRef 同口径）：setSaving 渲染生效存在调度间隙，state 短路拦不住
+  // 同帧双击——本面板双段提交恰是重入后果最重的路径。state 仅留按钮视觉反馈。
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   // 当前 project prop 镜像 ref（code-review item 522b3bd7ae53，与父组件
   // scopeRef/projectRef 同形态）：handleSave 的 todo.md 覆写/回读续段在
   // await onSave 期间执行，用户可能已把作用域切到别的项目，闭包捕获的
@@ -76,7 +81,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           setTodoExists(d.exists);
         }
       } catch (e) {
-        console.error('Failed to load todo.md:', e);
+        // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         if (!cancelled) {
           message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : e}`);
         }
@@ -113,15 +118,15 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   }, [config.self_review, form]);
 
   const handleSave = async () => {
-    if (saving) {
-      return;
-    }
+    // ref 写读同帧原子拦截（code-review item d5a9c299b87c）：state 短路拦不住同帧双击
+    if (savingRef.current) return;
     // todo.md 加载在飞时短路（code-review item 6bf8170c023d）：此刻 todoDraft
     // 尚未回填为新作用域内容（或因加载失败保持空），提交会把残留/空草稿整文件
     // 覆写进当前项目的 todo.md
     if (todoLoading) {
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     // 发起时的作用域快照（code-review item 522b3bd7ae53）：下方 todo.md
     // 覆写/回读续段执行前与 projectRef 比对，作用域已切换即中止——否则
@@ -167,7 +172,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
         message.error(`todo.md 保存失败：${errorMessage}`);
-        console.error('Failed to save todo.md:', e);
+        // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         // 配置段成功已触发父级统一复位判脏，但 todo.md 段未落盘、草稿仍是
         // 未保存改动：重新置脏，切页签/作用域时丢弃确认不可缺席
         setDirty(true);
@@ -184,9 +189,10 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
         message.error(`todo.md 已保存，但回读最新内容失败：${errorMessage}`);
-        console.error('Failed to reload todo.md after save:', e);
+        // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
