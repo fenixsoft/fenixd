@@ -50,14 +50,11 @@ def normalize_module_path(file_path: str, project_root: Path) -> Optional[str]:
     # Convert to module path (replace / with .)
     parts = list(rel.parts)
 
-    # Remove common prefixes
-    if "core" in parts:
-        idx = parts.index("core")
-        parts = parts[idx:]
-    elif "tests" in parts:
-        idx = parts.index("tests")
-        parts = parts[idx:]
-
+    # 保留 project_root 相对全路径作为模块名。旧实现用 parts.index 剥首个出现的
+    # core/tests 段，但顶层 core/…、tests/… 路径的模块名本就以该段开头（截断属
+    # no-op），而中段同名目录（如 tests/fixtures/scheduling-showcase/tests/
+    # foo.py）会被错误折叠成与 build_import_graph 的 tests.* 键空间不符的模块名
+    # （core.foo 等），导入链匹配零命中——故取消截断。
     return ".".join(parts)
 
 
@@ -225,6 +222,7 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
 
     返回 ``(returncode, timed_out)``；超时中止时 returncode 为 None。
     """
+    # [fenix-ignore:f4847e3ea045] basetemp 无需在此注入：tests/conftest.py 的 autouse 会话夹具已把未指定 --basetemp 的直接 pytest 运行兜底指到项目内 .fenix/pytest-basetemp 并在会话末自清，本工具两条 pytest 路径均必然加载该 conftest，不会落系统 /tmp 默认基址。
     proc = subprocess.Popen(cmd, cwd=str(cwd), start_new_session=True)
     try:
         return proc.wait(timeout=timeout), False
@@ -313,6 +311,14 @@ def main():
     tests_dir = project_root / "tests"
 
     if run_all:
+        if target_files:
+            # --all 与位置文件参数同传时本分支只跑全量，文件列表被静默丢弃——
+            # 打告警提示，避免使用者误以为两类输入都生效。
+            print(
+                f"Warning: --all ignores the {len(target_files)} given target "
+                "file(s); the full test suite will run instead.",
+                file=sys.stderr,
+            )
         # 有界运行同 run_tests（同款常量）：faulthandler 先打印挂起栈，硬超时兜底中止
         cmd = [
             sys.executable,
