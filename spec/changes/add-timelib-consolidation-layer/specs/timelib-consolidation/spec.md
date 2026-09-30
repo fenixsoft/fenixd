@@ -27,7 +27,7 @@
 
 ### Requirement: naive 时间戳唯一解读策略为本地时区
 
-`parse_ts` 对无时区后缀的输入 SHALL 按系统本地时区解读（定调 2026-09-30：存量 naive 数据实测多数产自本地 `now()`，机器时区固定 Asia/Shanghai）。该策略为全框架唯一 naive 解释，任何模块 MUST NOT 自行实现第二种 naive 解读。解析失败（非法串、非字符串类型）SHALL 返回 `None` 而非抛异常。
+`parse_ts` 对无时区后缀的输入 SHALL 按系统本地时区解读（定调 2026-09-30：存量 naive 数据实测多数产自本地 `now()`，机器时区固定 Asia/Shanghai）。该策略为全框架唯一 naive 解释，任何模块 MUST NOT 自行实现第二种 naive 解读。本 MUST 约束新增代码与本次改造点；存量违例以守卫白名单登记（含 `core/admin_store.py` 信号/心跳 created/last_seen 的 naive→UTC 归一化等既有第二种解读，由 SPEC-B 逐批迁移并收缩白名单承接），不构成本 SPEC 验收障碍。解析失败（非法串、非字符串类型）SHALL 返回 `None` 而非抛异常。
 
 #### Scenario: naive 输入按本地解读
 - **WHEN** 调用 `parse_ts("2026-09-30T10:33:00")`（机器时区 Asia/Shanghai）
@@ -63,11 +63,11 @@
 
 ### Requirement: 重复转换轮子收拢
 
-`core/code_review.py` 与 `core/self_review.py` 中逐字重复的 `_iso_to_local_dt` MUST 收拢为对 `timelib.parse_ts` 的转发（或直接改调用点删除副本）；`core/pm_engine/verification/escalation.py` 的 `_parse_ts`、`core/pm_engine/recovery.py` 的 `_parse_event_timestamp` 同批改走 `parse_ts`。本 requirement 仅限「解析收拢」，MUST NOT 改动 `self_review.py` 窗口比较的 naive 本地气泡语义（该迁移属后续全仓迁移 SPEC）。
+`core/code_review.py` 与 `core/self_review.py` 中逐字重复的 `_iso_to_local_dt` MUST 收拢为对 `timelib.parse_ts` 的转发（或直接改调用点删除副本）；`core/pm_engine/verification/escalation.py` 的 `_parse_ts`、`core/pm_engine/recovery.py` 的 `_parse_event_timestamp` 同批改走 `parse_ts`。本 requirement 仅限「解析收拢」，MUST NOT 改动 `self_review.py` 窗口比较的 naive 本地气泡语义（该迁移属后续全仓迁移 SPEC）。转发/改写实现 MUST 保持既有 naive 本地输出（`parse_ts` 后接 `.astimezone().replace(tzinfo=None)` 收尾或等价薄包装）——窗口边界为 naive `datetime.now()`（`self_review.py` 多处），MUST NOT 将 aware 值直接接入比较（aware/naive 比较抛 `TypeError`）。
 
 #### Scenario: 重复副本删除后行为等价
 - **WHEN** `_iso_to_local_dt` 的既有调用点传入同一组合法与非法输入（含 `Z` 后缀、`+00:00`、naive、垃圾串、`None`）
-- **THEN** 收拢后返回值与收拢前逐项相等（aware 本地 / `None`）
+- **THEN** 收拢后返回值与收拢前逐项相等（naive 本地 / `None`——现状实现 `astimezone().replace(tzinfo=None)` 剥时区后即 naive 本地）
 
 ### Requirement: AST 静态守卫棘轮
 
@@ -87,7 +87,7 @@
 
 #### Scenario: 白名单只许收缩
 - **WHEN** 白名单中某条目对应的违例代码已被迁移消除
-- **THEN** 从白名单删除该条目后守卫保持通过；守卫 MUST 对「白名单条目已无对应违例」（僵尸条目）给出警告或失败，防止名单虚胖
+- **THEN** 从白名单删除该条目后守卫保持通过；守卫 MUST 对「白名单条目已无对应违例」（僵尸条目）**报失败**（不是警告，与 design D3 一致：无失败信号的收缩会被遗忘），防止名单虚胖
 
 #### Scenario: timelib 自身豁免
 - **WHEN** `core/timelib.py` 内部使用 `datetime.fromisoformat` 实现解析

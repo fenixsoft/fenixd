@@ -21,6 +21,8 @@
   kind: modify
 - path: core/self_review.py
   kind: modify
+- path: core/agent_runner/runner.py
+  kind: modify
 - path: core/pm_engine/verification/escalation.py
   kind: modify
 - path: core/pm_engine/recovery.py
@@ -52,8 +54,8 @@
 
 ## 4. 重复轮子收拢与盖戳时间源
 
-- [ ] 4.1 删除 `core/code_review.py` 与 `core/self_review.py` 的逐字重复 `_iso_to_local_dt`，调用点改走 `timelib.parse_ts`；`self_review.py` 窗口比较气泡语义不动（aware→naive 本地的调用点局部保持等价行为）
-- [ ] 4.2 `core/pm_engine/verification/escalation.py` `_parse_ts` 与 `core/pm_engine/recovery.py` `_parse_event_timestamp` 改走 `timelib.parse_ts`，行为等价以既有测试回归确认
+- [ ] 4.1 删除 `core/code_review.py` 与 `core/self_review.py` 的逐字重复 `_iso_to_local_dt`，解析内核改走 `timelib.parse_ts` 并保留 naive 本地收尾（`parse_ts(x).astimezone().replace(tzinfo=None)` 或等价薄包装——现状返回 naive 本地，窗口边界为 naive `datetime.now()`，MUST NOT 把 aware 值直接接入比较）；`self_review.py` 窗口比较气泡语义不动
+- [ ] 4.2 `core/pm_engine/verification/escalation.py` `_parse_ts` 与 `core/pm_engine/recovery.py` `_parse_event_timestamp`、`core/agent_runner/runner.py` `_parse_event_timestamp`（recovery 注释锁定的同口径副本）的 ISO 解析内核改走 `timelib.parse_ts`：epoch 数值分支与 bool 排除保留（`parse_ts` 不收数值）；aware 输入行为不变，naive 输入按新策略（本地）解读为**有意行为变化**（推翻 escalation「朴素→UTC 与 AdminStore 一致」及 runner/recovery fc528d7216ed 注释，同步更新注释）；实现时核查 admin_store 信号/处置记录与 run 事件是否实际含 naive 时间戳并留痕（admin_store 写侧 `now(timezone.utc).isoformat()` 恒为 aware，naive 仅可能来自人工修补/外部工具）；既有测试若锁定 naive→UTC 需随策略更新
 - [ ] 4.3 `core/knowledge.py` `local_now_stamp` 与 `core/knowledge_backfill.py` `_now_local_parts` 时间源改走 `timelib.now_local()`，输出格式逐字不变（盖戳行格式断言测试锁定）
 
 ## 5. 白名单收缩与全量回归

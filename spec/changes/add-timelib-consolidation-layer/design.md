@@ -21,7 +21,7 @@
 ## Decisions
 
 ### D1 naive 按本地解读（推翻 timeline.py D2 的 naive→UTC）
-理由：存量 naive 数据实测多数产自本地 `now()`（`self_review` 字段、外部/人工 marker，`regression.py` 注释已实证观察）；迁移完成后唯一 naive-UTC 生产者（`code_review.py` 剥时区写入）在 SPEC-B 迁改名单内，消亡后 naive=本地与实际数据分布一致。机器时区固定 Asia/Shanghai 无 DST，无换算陷阱。
+理由：存量 naive 数据实测多数产自本地 `now()`（`self_review` 字段、外部/人工 marker，`regression.py` 注释已实证观察）；剥时区写入链（`astimezone().replace(tzinfo=None)`，`code_review.py:675`/`self_review.py:189`）实测产出 naive **本地**而非 UTC（与本文件 Context「aware→naive 本地的剥时区写入」表述一致），消亡后 naive=本地与实际数据分布更趋一致；真正残留的既有第二种 naive 解读是 `admin_store.py` created/last_seen 归一化（naive→UTC，SPEC-B 承接）与 escalation/recovery/runner 事件解析（naive→UTC，本 SPEC 4.2 批次翻转）。机器时区固定 Asia/Shanghai 无 DST，无换算陷阱。
 备选「naive→UTC」：与「全链 UTC」字面一致，但 self_review 字段、外部 marker 会被错读 8 小时，需随每批迁移修数据——否决。
 备选「严格拒绝 naive」：迁移脚本工作量翻倍且外部人工文件无法自动改写——否决。
 **影响**：timeline 域 deferred findings 时间戳展示平移 8h；实现前以真实存量数据验读，差异清单留痕（spec Scenario 锁定）。
@@ -46,6 +46,7 @@
 - [timeline D2 翻转改变该域展示时刻（平移 8h）] → 实现前真实数据验读 + 差异清单留痕 + spec Scenario 锁定验读动作；若验读发现该域写手实为 naive UTC 存量，升级为「该域数据先修正再切策略」，在 run 记录中申报
 - [读侧统一后，依赖旧解读的下游隐式行为变化] → 4 处修改各自补 characterization 测试（同一输入新旧期望对照）后切换
 - [`self_review` 气泡在收拢后与新 `parse_ts` 语义不一致（它内部 aware→naive 本地）] → 本 SPEC 只收拢解析、不动气泡；`_iso_to_local_dt` 转发实现保持逐字行为等价（spec Scenario 锁定等价性），气泡迁移留给 SPEC-B
+- [escalation/recovery/runner naive→UTC 翻转改变含 naive 记录的时效判定（陈旧放行/恢复复查窗口平移 8h）] → 4.2 核查存量 naive 记录并留痕；admin_store 写侧 `now(timezone.utc).isoformat()` 恒为 aware，主流数据不受影响
 - [守卫白名单基线统计口径与实际违例有出入（如 `datetime` 别名导入）] → AST 扫描按 `ast.Attribute` 链（`datetime.now`/`dt.now` 等接收者别名通配）判定，参考 arity-guard 的接收者表达式处理；上线首跑人工核对违例总数与 grep 口径（398 处大数内的裸 now 计数 72）一致性
 - [timelib API 在 SPEC-B 迁移中发现缺口] → SPEC-B 以 ADDITIONAL requirement 扩展 timelib，不破坏本 SPEC 冻结的 6 函数契约
 
