@@ -837,34 +837,50 @@ class FamilyGovernor:
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return ""
-        if not isinstance(data, dict) or data.get("spec") != spec_name:
-            return ""
-        try:
-            snap_dir = self._pm.project_root / ".fenix" / "verify-progress" / spec_name
-            snap_dir.mkdir(parents=True, exist_ok=True)
-            # 原子写（tempfile + fsync + os.replace，落实 engine.py:1908
-            # 注释声称的「同款手法」——prev-impl-result.json 供人工与后续轮次
-            # 回溯，进程中断不得留截断 JSON）
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=".prev-impl-result.",
-                suffix=".tmp",
-                dir=str(snap_dir),
+            data = None
+        if isinstance(data, dict) and data.get("spec") == spec_name:
+            try:
+                snap_dir = (
+                    self._pm.project_root / ".fenix" / "verify-progress" / spec_name
+                )
+                snap_dir.mkdir(parents=True, exist_ok=True)
+                # 原子写（tempfile + fsync + os.replace，落实 engine.py:1908
+                # 注释声称的「同款手法」——prev-impl-result.json 供人工与后续轮次
+                # 回溯，进程中断不得留截断 JSON）
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".prev-impl-result.",
+                    suffix=".tmp",
+                    dir=str(snap_dir),
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(json.dumps(data, ensure_ascii=False, indent=2))
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_name, str(snap_dir / "prev-impl-result.json"))
+                finally:
+                    if os.path.exists(tmp_name):
+                        try:
+                            os.unlink(tmp_name)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        else:
+            # 根文件缺失/被并发 spec 覆盖时回退读 per-spec 副本（code-review
+            # item 1c6e6ec4620d）：副本的写入条件即根文件 spec 匹配本 spec
+            # （stamp 已等于本 spec），回读无跨 spec 污染；副本已是持久化
+            # 快照，回读时不再重写。
+            snap_path = (
+                self._pm.project_root / ".fenix" / "verify-progress"
+                / spec_name / "prev-impl-result.json"
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(data, ensure_ascii=False, indent=2))
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_name, str(snap_dir / "prev-impl-result.json"))
-            finally:
-                if os.path.exists(tmp_name):
-                    try:
-                        os.unlink(tmp_name)
-                    except OSError:
-                        pass
-        except OSError:
-            pass
+                data = json.loads(snap_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return ""
+            if not isinstance(data, dict) or data.get("spec") != spec_name:
+                return ""
         summary = str(data.get("summary") or "").strip()[:800]
         findings = data.get("findings") or []
         if not summary and not findings:
@@ -1056,7 +1072,19 @@ class FamilyGovernor:
 
             attach_narrative(entry, self._pm)
             rec = store.append(entry)
-            if not severity_needs_human(severity):
+            # code-review item ae509e1816f3：文件损坏留底被下限保护拒写时
+            # append 返回 None（core/admin_store.py append 契约，item
+            # 2570ca391771：记录未落盘，按未落地处理）——未判空即取 rec["id"]
+            # 会抛 TypeError 被外层误记为「Failed to send escalation alert」，
+            # 掩盖 store 拒写真实根因（同款写法见 token_budget item
+            # 3e202131bd3a）。
+            if rec is None:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"human-escalation-alert 未落盘（store 拒写，按未落地处理）: "
+                    f"{signal_type} for '{spec_name}'",
+                )
+            elif not severity_needs_human(severity):
                 store.mark_handled(rec["id"])
             self._pm.logger.warning(
                 "pm_engine",
