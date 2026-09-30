@@ -32,6 +32,7 @@
 ## 2026-09-30
 
 ### 知识真相源
+- [ ] knowledge-distill 重试：归档 2026-09-30-evo-fix-worktree-name-collision-retry — 校验违规经 3 轮 run 仍未通过
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-platform/v2-data-adapters.md × spec/knowledge/domains/dashboard-platform/v2-sdk-vendor.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-platform/v2-data-adapters.md × spec/knowledge/domains/dashboard-platform/v2-legacy-coexist.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/task-progress-phase-display.md × spec/knowledge/domains/implementer-lane/artifact-path-declaration.md），请人工核查
