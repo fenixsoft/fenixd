@@ -11,6 +11,7 @@ schema 数据 vendored 于框架根 schemas/spec-driven/（见其 README），
 """
 
 import glob
+import logging
 import re
 import shutil
 from datetime import date
@@ -22,6 +23,8 @@ import yaml
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas" / "spec-driven"
 
 DEFAULT_SCHEMA = "spec-driven"
+
+_LOGGER = logging.getLogger(__name__)
 
 _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
@@ -177,6 +180,14 @@ def _get_build_order(schema: Dict[str, Any]) -> List[str]:
             if in_degree[dep] == 0:
                 newly_ready.append(dep)
         queue.extend(sorted(newly_ready))
+    if len(result) != len(in_degree):
+        # 含环依赖时环内 artifact 永不入队，输出残缺拓扑序；仅告警不抛错（vendored schema 无环）。
+        _LOGGER.warning(
+            "Dependency cycle in schema '%s': artifacts never reachable in "
+            "build order: %s",
+            schema.get("name", DEFAULT_SCHEMA),
+            sorted(set(in_degree) - set(result)),
+        )
     return result
 
 
