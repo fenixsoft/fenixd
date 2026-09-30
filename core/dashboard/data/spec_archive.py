@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 # 跨组引用（D4：叶子→中枢，直接导入无环——spec_archive 不被中枢反向 import）
+from core.timelib import now_local
 from core.archive_commit import commit_archive_move
 
 # state 组（叶子组已搬移，直接导入无环）
@@ -155,9 +156,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         dest = archive_root / base_name
         # 同名冲突：追加微秒后缀重试，避免 shutil.move 覆盖丢失数据
         if dest.exists():
-            import datetime as _dt
-
-            micros = _dt.datetime.now().strftime("%f")
+            micros = now_local().strftime("%f")  # SPEC-B 批④收拢（微秒唯一性后缀）
             dest = archive_root / f"{base_name}-{micros}"
             # 极端情况仍冲突，再用递增序号兜底
             n = 1

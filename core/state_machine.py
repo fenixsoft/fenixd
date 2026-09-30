@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 import threading
 import time
+
+from core.timelib import parse_ts
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -80,27 +82,19 @@ START_AFTER_MANUAL = "manual"
 def parse_utc(value) -> Optional[datetime]:
     """ISO8601 UTC 解析（容错）。非法/空/None 返回 None，绝不抛异常。
 
-    支持带偏移（2026-09-07T01:00:00+00:00）与 'Z' 后缀；naive 时间按 UTC
-    解释。调度门控与 dashboard 写侧校验共用本函数（design D6「时间换算
-    工具后端单点实现」），解析漂移收敛单点。
+    SPEC-B 批③：解析内核收拢 timelib.parse_ts（唯一入口）。支持带偏移
+    （2026-09-07T01:00:00+00:00）与 'Z' 后缀；字符串入参的 naive 值按
+    timelib 唯一 naive 策略解读（本地时区——原「naive 按 UTC」第二策略
+    退役；框架写侧恒产出 aware +00:00，存量 aware 数据逐项不变）。返回值
+    折算 aware UTC。调度门控与 dashboard 写侧校验共用本函数（design D6
+    「时间换算工具后端单点实现」），解析漂移收敛单点。
     """
-    if value is None:
-        return None
     if isinstance(value, datetime):
-        dt = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(text)
-        except (ValueError, TypeError):
-            return None
-    if not dt.tzinfo:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        if not value.tzinfo:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    dt = parse_ts(value)
+    return dt.astimezone(timezone.utc) if dt is not None else None
 
 
 def start_after_pending(entry: dict, now: Optional[datetime] = None) -> bool:

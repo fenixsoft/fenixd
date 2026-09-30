@@ -20,6 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+from core.timelib import now_local  # noqa: E402
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager import WIP_GATE_STASH_PREFIX  # noqa: E402
@@ -1400,9 +1401,7 @@ class G4MergebackMixin:
         # ——目标已存在时追加微秒后缀，极端情况仍冲突再用递增序号兜底
         # （对齐 spec_archive.soft_delete_spec 的同名冲突处理）。
         if backup.exists():
-            import datetime as _dt
-
-            ms = _dt.datetime.now().strftime("%f")
+            ms = now_local().strftime("%f")  # SPEC-B 批④收拢（微秒唯一性后缀）
             backup = backup_root / f"{base_name}-{ms}"
             n = 1
             while backup.exists():

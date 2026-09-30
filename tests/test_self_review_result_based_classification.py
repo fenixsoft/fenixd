@@ -88,12 +88,12 @@ class TestSuccessTerminalWithTopicWords:
         p = root / ".fenix" / "runs" / "evo-false-positive-2026.jsonl"
         assert _scan_run_signals(p) == f"signal={signal_word}"
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["succeeded"] == 1
         assert stats["failed"] == 0
         assert stats["total"] == 1
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert samples == []
 
     def test_signal_word_beyond_terminal_3_lines_stays_succeeded(self, tmp_path):
@@ -125,11 +125,11 @@ class TestSuccessTerminalWithTopicWords:
         assert category == "succeeded"
         assert detail == ""
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["succeeded"] == 1
         assert stats["failed"] == 0
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert samples == []
 
 
@@ -158,10 +158,10 @@ class TestFallbackOnlyForFailureAttribution:
         ])
         assert category == "failed"
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 1
         assert samples[0]["run_id"] == run_id
         assert samples[0]["detail"] == "signal=impl_budget_exhausted"
@@ -176,7 +176,7 @@ class TestFallbackOnlyForFailureAttribution:
             _line(type="error", error="boom", exit_code=1),
         ])
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 1
         assert samples[0]["detail"] == "boom"  # 不是 signal=...（以前者为准）
 
@@ -206,12 +206,12 @@ class TestFallbackOnlyForFailureAttribution:
         assert category == "running"
         assert detail == "no-terminal"
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["running"] == 1
         assert stats["failed"] == 0
         assert stats["succeeded"] == 0
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert samples == []
 
 
@@ -235,11 +235,11 @@ class TestMarkerRegression:
         assert category == "failed"
         assert detail.startswith("marker=")
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
         assert stats["succeeded"] == 0
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 1
         assert samples[0]["run_id"] == run_id
         assert samples[0]["detail"].startswith("marker=")
@@ -256,7 +256,7 @@ class TestBucketUnchangedNoFalseIncrease:
             _line(type="assistant", message="预算耗尽 主题出现但 run 仍在飞"),
             _line(type="system", subtype="tool_call", tool="Read"),
         ])
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["running"] == 1
         assert stats["failed"] == 0
 
@@ -264,7 +264,7 @@ class TestBucketUnchangedNoFalseIncrease:
         root = tmp_path / "proj"
         root.mkdir()
         _make_run(root, "impl-dropped-empty", [])  # 空文件 → dropped
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["dropped"] == 1
         assert stats["failed"] == 0
 
@@ -286,14 +286,14 @@ class TestBucketUnchangedNoFalseIncrease:
             _line(type="result", result="预算已耗尽，零交付", num_turns=3),
         ])
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 4
         assert stats["succeeded"] == 1
         assert stats["running"] == 1
         assert stats["dropped"] == 1
         assert stats["failed"] == 1  # 仅真失败计入
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert [s["run_id"] for s in samples] == ["impl-real-fail"]
         assert samples[0]["detail"].startswith("marker=")
 
@@ -342,11 +342,11 @@ class TestMarkerWindowConvergence:
         assert category == "succeeded"
         assert detail == ""
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["succeeded"] == 1
         assert stats["failed"] == 0
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert samples == []
 
     def test_signal_guardrail_skips_echo_line_keeps_independent_lines(self):
@@ -424,10 +424,10 @@ class TestMarkerWindowConvergence:
                   is_error=False, subtype="success", num_turns=1),
         ])
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
         assert stats["succeeded"] == 0
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert [s["run_id"] for s in samples] == [run_id]
         assert samples[0]["detail"] == "marker=预算已耗尽"

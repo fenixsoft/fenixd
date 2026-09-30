@@ -42,6 +42,7 @@ FENIX_DIR = Path(__file__).absolute().parent
 PROJECT_ROOT = FENIX_DIR.parent
 sys.path.insert(0, str(FENIX_DIR))
 
+from core.timelib import from_epoch, parse_ts
 from core.config import ConfigLoader
 from core.logger import Logger
 from core.state_machine import StateMachine
@@ -1523,17 +1524,11 @@ class FenixDaemon:
             return None
         if isinstance(raw, (int, float)):
             return float(raw)
-        if not isinstance(raw, str) or not raw.strip():
-            return None
-        text = raw.strip()
-        if text.endswith(("Z", "z")):
-            text = text[:-1] + "+00:00"
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+        # SPEC-B 批②：解析收拢 parse_ts（唯一入口，失败返回 None）。存量
+        # 写入方恒为 aware（datetime.now(timezone.utc).isoformat()，1670 行）
+        # 或 epoch 数值；naive 防御分支解读跟齐唯一策略（naive→本地）。
+        parsed = parse_ts(raw)
+        return parsed.timestamp() if parsed is not None else None
         return parsed.timestamp()
 
     @staticmethod
@@ -1600,7 +1595,7 @@ class FenixDaemon:
             payload = "".join(
                 json.dumps(
                     {
-                        "ts": datetime.fromtimestamp(e["ts"], tz=timezone.utc).isoformat(),
+                        "ts": from_epoch(e["ts"]).isoformat(),
                         "self_triggered": bool(e.get("self_triggered", False)),
                         "self_triggered_streak": e["self_triggered_streak"],
                     },
@@ -2344,12 +2339,12 @@ class FenixDaemon:
         """
         if not isinstance(created, str) or not created:
             return True
-        try:
-            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        except ValueError:
+        # SPEC-B 批②：解析收拢 parse_ts（唯一入口，失败返回 None）。存量
+        # created 恒为 aware（admin_store._utcnow_iso）；naive 防御分支解读
+        # 跟齐唯一策略（naive→本地）。
+        dt = parse_ts(created)
+        if dt is None:
             return True  # created 非法 → 按陈旧处理
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
         return (
             datetime.now(timezone.utc) - dt
         ).total_seconds() > SCHEDULING_KICK_STALE_THRESHOLD_SECONDS
@@ -4443,12 +4438,12 @@ class FenixDaemon:
                 daemon_started = PROJECT_ROOT / ".fenix" / "daemon_started"
                 drift_error = None
                 try:
-                    runtime_ts = datetime.fromisoformat(
-                        str(data.get("started_at") or "")
-                    ).timestamp()
-                    daemon_ts = datetime.fromisoformat(
+                    runtime_dt = parse_ts(str(data.get("started_at") or ""))
+                    daemon_dt = parse_ts(
                         daemon_started.read_text(encoding="utf-8").strip()
-                    ).timestamp()
+                    )
+                    runtime_ts = runtime_dt.timestamp() if runtime_dt else 0.0
+                    daemon_ts = daemon_dt.timestamp() if daemon_dt else 0.0
                     if (
                         runtime_ts
                         and daemon_ts

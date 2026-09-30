@@ -1306,7 +1306,7 @@ def next_spec_run_at(run_at, now=None) -> Optional[str]:
     hh, mm = (int(x) for x in run_at.split(":"))
     # naive 视为本地时间（datetime.astimezone 的既有语义），aware 则换算到本地：
     # 两种情况下一行收敛，调用方传 UTC 或本地 now 都得到同一结果
-    now_local = (now if now is not None else datetime.now()).astimezone()
+    now_local = (now if now is not None else timelib.now_local()).astimezone()  # SPEC-B 批④收拢
     target = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
     if target <= now_local:
         target += timedelta(days=1)

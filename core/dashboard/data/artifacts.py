@@ -16,6 +16,7 @@ from pathlib import Path
 # fix-deferred-findings CYC-1：parse_verify_progress 已迁入中性模块
 # core.signals（pm_engine 侧消费点不再反向 import dashboard.data），
 # 此处 re-export 保住既有门面导入路径。
+from core.timelib import from_epoch
 from core.signals import parse_verify_progress  # noqa: E402,F401
 
 
@@ -138,9 +139,7 @@ def list_screenshots(project_root, spec_name) -> list:
                     {
                         "file": p.name,
                         "size": st.st_size,
-                        "mtime": datetime.fromtimestamp(
-                            st.st_mtime, tz=timezone.utc
-                        ).isoformat(),
+                        "mtime": from_epoch(st.st_mtime).isoformat(),  # SPEC-B 批④收拢
                     }
                 )
     except OSError:

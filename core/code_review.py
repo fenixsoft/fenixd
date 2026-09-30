@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.timelib import parse_ts
+from core.timelib import now_local, parse_ts
 
 _logger = logging.getLogger("fenixd.code_review")
 
@@ -665,18 +665,16 @@ def _read_json_file(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
-    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。
+def _iso_to_aware_dt(iso_str: Optional[str]) -> Optional[datetime]:
+    """ISO 时间戳（含 Z 后缀）→ aware datetime；解析失败返回 None。
 
-    解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-layer 4.1：
-    原 code_review/self_review 逐字重复副本收拢单源）；aware 值转本地后剥
-    时区收尾——窗口边界为 naive ``datetime.now()``（compute_window 等），
-    MUST NOT 把 aware 值直接接入比较（aware/naive 比较抛 TypeError）。
+    SPEC-B 批④：原 ``_iso_to_local_dt``（aware 转本地后剥时区收尾，窗口
+    边界为 naive ``datetime.now()``）随裸 ``now()`` 一起退役——窗口边界改
+    aware（``compute_window`` 走 ``timelib.now_local()``），全链不再剥时区，
+    aware/naive 混比 TypeError 风险随之消除。解析内核 timelib.parse_ts
+    单源（consolidation-layer 4.1 收拢不变）。
     """
-    dt = parse_ts(iso_str)
-    if dt is None:
-        return None
-    return dt.astimezone().replace(tzinfo=None)
+    return parse_ts(iso_str)
 
 
 def compute_window(project_root, now: Optional[datetime] = None) -> Tuple[datetime, str]:
@@ -685,11 +683,15 @@ def compute_window(project_root, now: Optional[datetime] = None) -> Tuple[dateti
     与 ``core/self_review.py`` 的窗口计算同源口径（MUST NOT 另立周期逻辑）：
     ``last_run_at`` 存在 → 窗口起点为该时刻；缺失（首跑/旧格式）→ 回退
     ``now - 24h``。返回 ``(window_start, window_kind)``，window_kind 为
-    ``"last_run"`` 或 ``"fallback"``（供日志/审计区分）。
+    ``"last_run"`` 或 ``"fallback"``（供日志/审计区分）。SPEC-B 批④起
+    ``window_start`` 为 aware（瞬时与原 naive 本地一致；时区表述随输入——
+    naive 串按本地、aware 串保留原时区）。消费侧 ``collect_manifest`` 的
+    ``git log --since``（ISO 串带偏移，git 按偏移解读）与 prompt/元数据
+    ``isoformat()`` 均瞬时等价。
     """
-    now = now or datetime.now()
+    now = now or now_local()
     state = _read_json_file(Path(project_root) / ".fenix" / "self_review_state.json")
-    last_run_at = _iso_to_local_dt(state.get("last_run_at"))
+    last_run_at = _iso_to_aware_dt(state.get("last_run_at"))
     if last_run_at is not None:
         return last_run_at, "last_run"
     return now - timedelta(hours=24), "fallback"
@@ -1020,9 +1022,10 @@ def read_progress(project_root) -> dict:
         if isinstance(last_ev, dict) and last_ev.get("type") in terminal:
             running = False
         else:
-            # 末行非终态 → 看 mtime 是否超 stale 阈值
+            # 末行非终态 → 看 mtime 是否超 stale 阈值（SPEC-B 批④：
+            # now_local().timestamp() 与原 naive now().timestamp() 同一瞬时）
             try:
-                age = datetime.now().timestamp() - run_file.stat().st_mtime
+                age = now_local().timestamp() - run_file.stat().st_mtime
             except OSError:
                 age = 10**9
             running = age <= _run_stale_seconds()
@@ -1066,7 +1069,8 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     ``{"run_id", "minutes"}``，否则 None。由 admin_monitor 周期节拍调用并
     负责落告警（本函数只判不写）；run 终态（``running=false``）短路不再触发。
 
-    ``now`` 参数供测试注入时钟；生产路径缺省取当前本地时间。
+    ``now`` 参数供测试注入时钟（naive/aware 皆可，按瞬时差计算）；生产路径
+    缺省取 ``timelib.now_local()``（aware 本地，SPEC-B 批③收拢）。
     """
     progress = read_progress(project_root)
     if not progress.get("running"):
@@ -1077,11 +1081,14 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     if not run_id:
         return None
     mdata = _read_json_file(manifest_path(project_root, run_id))
-    started = _iso_to_local_dt(mdata.get("requested_at"))
+    started = _iso_to_aware_dt(mdata.get("requested_at"))
     if started is None:
         return None
-    now_dt = now if now is not None else datetime.now()
-    minutes = int((now_dt - started).total_seconds() // 60)
+    # SPEC-B 批③④：缺省钟与 started 均 aware；时长按 .timestamp() 瞬时差
+    # 计算（naive 注入替身按本地解读 .timestamp()，aware 注入直取——皆与
+    # 迁移前 naive-naive 减法同一瞬时）。
+    now_dt = now if now is not None else now_local()
+    minutes = int((now_dt.timestamp() - started.timestamp()) // 60)
     if minutes < _stall_alert_minutes(project_root):
         return None
     return {"run_id": str(run_id), "minutes": minutes}
@@ -1120,7 +1127,7 @@ def _run_stale_seconds() -> float:
 
 def local_today_str() -> str:
     """本地自然日字符串 YYYY-MM-DD（状态文件同日防重复基准，与自省同源）。"""
-    return datetime.now().date().isoformat()
+    return now_local().date().isoformat()  # SPEC-B 批④收拢
 
 
 def _code_review_state_path(project_root) -> Path:
@@ -1145,7 +1152,7 @@ def save_code_review_state(project_root, date_str: str) -> None:
             json.dumps(
                 {
                     "last_run_date": date_str,
-                    "updated_at": datetime.now().astimezone().isoformat(),
+                    "updated_at": now_local().isoformat(),  # SPEC-B 批④收拢
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1336,7 +1343,7 @@ def generate_fix_spec(
         }
 
     capability = slug or "fix"
-    created = datetime.now().astimezone().strftime("%Y-%m-%d")
+    created = now_local().strftime("%Y-%m-%d")  # SPEC-B 批④收拢
     draft_root = code_review_dir(project_root) / "drafts" / name
     try:
         shutil.rmtree(draft_root, ignore_errors=True)

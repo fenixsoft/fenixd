@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from core.agent_runner.run_files import append_run_line
+from core.timelib import from_epoch, parse_ts
 from datetime import datetime, timezone
 from typing import Optional, Dict
 
@@ -962,9 +963,7 @@ class ProviderCircuit:
                         "run_id": ev.run_id,
                         "spec": ev.spec,
                         "provider": ev.provider,
-                        "at": datetime.fromtimestamp(
-                            getattr(ev, "at_wall", ev.at), timezone.utc
-                        ).isoformat(),
+                        "at": from_epoch(getattr(ev, "at_wall", ev.at)).isoformat(),
                     }
                 )
         return out, truncated
@@ -1691,13 +1690,9 @@ class ProviderCircuit:
                 continue
             if rec.get("handled"):
                 continue
-            try:
-                created = datetime.fromisoformat(
-                    (rec.get("created") or "").replace("Z", "+00:00")
-                )
-            except (ValueError, TypeError):
-                continue
-            if created.timestamp() < cutoff:
+            # SPEC-B 批②：解析收拢 parse_ts（唯一入口，失败返回 None 不抛）
+            created = parse_ts(rec.get("created") or "")
+            if created is None or created.timestamp() < cutoff:
                 continue
             return rec
         return None

@@ -12,6 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from core.timelib import now_local  # noqa: E402
 from core.worktree_manager import (  # noqa: E402
     AUTOSTASH_MSG_PREFIX,
 )
@@ -998,9 +999,7 @@ class G6StashGuardMixin:
             # 同名静默复用，shutil.copy2 到已存在 dst 会覆盖抹掉既有备份——目标
             # 已存在时追加微秒后缀，极端情况仍冲突再用递增序号兜底。
             if backup.exists():
-                import datetime as _dt
-
-                ms = _dt.datetime.now().strftime("%f")
+                ms = now_local().strftime("%f")  # SPEC-B 批④收拢（微秒唯一性后缀）
                 backup = backup_root / f"{base_name}-{ms}"
                 n = 1
                 while backup.exists():

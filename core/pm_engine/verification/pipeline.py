@@ -44,6 +44,8 @@ from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 # 调整使本文件多处子串匹配静默失效、熔断轮误走 blocked fail-closed）。
 from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
 
+from core.timelib import from_epoch
+
 # add-blocked-reverify-lane D3：env 阻塞轮次计数清零点收敛后与 state_machine
 # 共用同一字段常量（防字符串漂移；唯一清零点=verified 落定与 unfreeze_spec）。
 from core.state_machine import (
@@ -1556,7 +1558,7 @@ class VerificationPipeline:
                 # MUST NOT 原地重入（设计 D3：立即原地重入会绕过
                 # _SCENARIO_REPAIR_MAX_ROUNDS 的防护语义）。
                 retry_at = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-                retry_iso = datetime.fromtimestamp(retry_at, tz=timezone.utc).isoformat()
+                retry_iso = from_epoch(retry_at).isoformat()
                 _schedule_scenario_repair_reverify(self, spec_name)
                 self._context.state_machine.update_spec(
                     spec_name,

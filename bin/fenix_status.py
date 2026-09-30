@@ -27,6 +27,7 @@ if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
 
 from core.dashboard import data  # noqa: E402
+from core.timelib import parse_ts  # noqa: E402
 # 展示层助手单点在 core.tui_format（code-review item 50a1202e3e91：此前本脚本
 # 的 _fmt_dur 小时段补零输出 2h05m，与 fenix_process 的 2h5m 口径漂移）
 from core.tui_format import fmt_dur as _fmt_dur, local_ts  # noqa: E402
@@ -176,14 +177,15 @@ def _collect_signals(
                 try:
                     updated = entry.get("updated")
                     if updated:
-                        dt = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
-                        if dt.tzinfo is None:
-                            # 历史手写 STATE 可能无时区后缀；与 _local_ts 的
-                            # 「日志层全 UTC 写入」口径对齐，naive 显式补 UTC，
-                            # 否则 .timestamp() 按本地时区解读致停滞分钟虚高/为负。
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        anchor = dt.timestamp()
-                        age_min = (now_ts - anchor) / 60
+                        # SPEC-B 批⑤：解析收拢 parse_ts（唯一入口，失败 None
+                        # 同路跳过该 entry 信号——原 except pass）。naive 语义
+                        # 随全框架唯一策略翻转（原显式补 UTC→现按本地解读）；
+                        # STATE updated 写侧恒 aware，翻转仅影响历史手写数据
+                        # （findings 申报）。
+                        dt = parse_ts(str(updated))
+                        if dt is not None:
+                            anchor = dt.timestamp()
+                            age_min = (now_ts - anchor) / 60
                         if age_min > VERIFY_STALL_MINUTES:
                             signals.append(
                                 (

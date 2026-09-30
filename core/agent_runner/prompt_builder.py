@@ -12,6 +12,8 @@ self._pm，不在本组件持有状态。
 """
 
 import datetime
+
+from core.timelib import now_local
 import json
 import logging
 import re
@@ -1473,7 +1475,7 @@ class PromptBuilder:
         out_path = detail.get("out_path") or (
             self._pm.project_root
             / ".fenix"
-            / f"self_review_out-{token}-{datetime.datetime.now():%Y%m%d%H%M%S}.json"
+            / f"self_review_out-{token}-{now_local():%Y%m%d%H%M%S}.json"
         )
         prompt = _fill_and_scan_placeholders(
             template,
@@ -1543,7 +1545,7 @@ class PromptBuilder:
                 self._pm.project_root
                 / ".fenix"
                 / "evolution"
-                / f"out-{datetime.datetime.now():%Y%m%d%H%M%S}.json"
+                / f"out-{now_local():%Y%m%d%H%M%S}.json"
             )
         # 单趟填充（code-review item 7975ab14dbe7 同款语义）：todo.md 全文/
         # 条目清单来自用户数据，可能本身含占位符字面量，逐键 str.replace

@@ -180,12 +180,12 @@ class TestPhantomRunShape:
         assert category == "succeeded"
         assert detail == ""
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 1
         assert stats["succeeded"] == 1
         assert stats["failed"] == 0
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert samples == []
 
 
@@ -201,7 +201,7 @@ class TestTerminalCrossGuard:
         _make_metric_log(root, {run_id: "success"})
 
         store = _FakeStore()
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0), store=store)
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
         assert samples == []
         assert len(store.appended) == 1
         alert = store.appended[0]
@@ -212,7 +212,7 @@ class TestTerminalCrossGuard:
         assert store.handled == []  # 不自动 mark_handled
 
         # 统计侧同步（2.3）：幻影不计失败统计（改计 succeeded）
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 1
         assert stats["failed"] == 0
         assert stats["succeeded"] == 1
@@ -225,7 +225,7 @@ class TestTerminalCrossGuard:
         _signal_failed_run(root, run_id)
         _make_metric_log(root, {"impl-sig-phantom-1790244002": "success"})
         samples = collect_failed_run_samples(
-            root, datetime(2000, 1, 1, 0, 0), store=_FakeStore()
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), store=_FakeStore()
         )
         assert samples == []
 
@@ -239,7 +239,7 @@ class TestTerminalCrossGuard:
             root, {"impl-rot-phantom-1790244003": "success"}, name="fenixd.log.1"
         )
         store = _FakeStore()
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0), store=store)
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
         assert samples == []
         assert len(store.appended) == 1
         assert store.appended[0]["signal_type"] == "self_review_phantom_failure"
@@ -256,11 +256,11 @@ class TestTerminalCrossGuard:
         _make_metric_log(root, {run_id: "success"})
 
         store = _FakeStore()
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0), store=store)
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
         assert [s["run_id"] for s in samples] == [run_id]
         assert samples[0]["detail"] == "marker=预算已耗尽"
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
         assert stats["succeeded"] == 0
         assert store.appended == []  # 不产生 self_review_phantom_failure 告警
@@ -274,12 +274,12 @@ class TestTerminalCrossGuard:
         # 不写任何指标日志（索引缺失形态）
 
         store = _FakeStore()
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0), store=store)
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
         assert [s["run_id"] for s in samples] == [run_id]
         assert samples[0]["detail"].startswith("signal=")
         assert store.appended == []
 
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
 
     def test_store_absent_still_excludes_and_degrades_to_log(self, tmp_path):
@@ -292,7 +292,7 @@ class TestTerminalCrossGuard:
 
         logger = _FakeLogger()
         samples = collect_failed_run_samples(
-            root, datetime(2000, 1, 1, 0, 0), store=None, logger=logger
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), store=None, logger=logger
         )
         assert samples == []
         assert any("幻影" in w for w in logger.warnings)
@@ -320,12 +320,12 @@ class TestTerminalCrossGuard:
         })
 
         store = _FakeStore()
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 4
         assert stats["failed"] == 2  # marker 抓取 + error 终态真实失败
         assert stats["succeeded"] == 2  # 干净成功 + 幻影改计
 
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0), store=store)
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
         assert {s["run_id"] for s in samples} == {
             "impl-mix-marker-1790244010",
             "impl-mix-real-1790244012",

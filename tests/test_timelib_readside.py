@@ -331,11 +331,16 @@ def _old_iso_to_local_dt(iso_str):
 
 
 class TestIsoToLocalDtCollapse(unittest.TestCase):
-    """4.1 重复副本收拢：既有调用点输入新旧逐项相等（naive 本地 / None）。"""
+    """4.1 重复副本收拢：既有调用点输入新旧逐项相等（同一瞬时 / None）。
+
+    SPEC-B 批④：code_review 侧 `_iso_to_local_dt`（aware 转本地剥时区）
+    随裸 now() 一起退役为 `_iso_to_aware_dt`（aware 直返）——两侧均 aware，
+    与旧 naive 值同一瞬时（wall clock 不变，仅时区后缀差异）。
+    """
 
     def test_equivalent_on_legal_and_illegal_corpus(self):
         """spec Scenario「重复副本删除后行为等价」：Z/+00:00/naive/垃圾串/
-        None 新旧返回值逐项相等。"""
+        None 新旧返回值逐项相等（aware 对偶）。"""
         from core import code_review, self_review
         with TZAsiaShanghai():
             corpus = [
@@ -348,19 +353,26 @@ class TestIsoToLocalDtCollapse(unittest.TestCase):
             ]
             for raw in corpus:
                 expected = _old_iso_to_local_dt(raw)
-                self.assertEqual(code_review._iso_to_local_dt(raw), expected, raw)
-                self.assertEqual(self_review._iso_to_local_dt(raw), expected, raw)
+                # SPEC-B 批①④：self_review / code_review 两侧均迁 aware
+                # （_iso_to_local_dt → _iso_to_aware_dt）——与旧 naive 值
+                # 同一瞬时（wall clock 不变，仅开始带时区后缀）
+                expected_aware = expected.astimezone() if expected is not None else None
+                self.assertEqual(code_review._iso_to_aware_dt(raw), expected_aware, raw)
+                self.assertEqual(self_review._iso_to_aware_dt(raw), expected_aware, raw)
 
-    def test_output_is_naive_local_safe_for_window_compare(self):
-        """输出恒为 naive 本地（aware 折算本地后剥时区）——与窗口边界的
-        naive ``datetime.now()`` 直接相减不抛 TypeError（MUST NOT 接 aware）。"""
+    def test_output_is_aware_local_safe_for_window_compare(self):
+        """输出恒为 aware——与窗口边界的 ``timelib.now_local()`` 直接相减
+        不抛 TypeError（aware-aware 可比较）；瞬时按本地墙钟折算与旧 naive
+        值一致（02:33Z == 10:33 Asia/Shanghai）。"""
         from core import code_review
         with TZAsiaShanghai():
-            dt = code_review._iso_to_local_dt("2026-09-30T02:33:00Z")
-            self.assertIsNone(dt.tzinfo)
+            dt = code_review._iso_to_aware_dt("2026-09-30T02:33:00Z")
+            self.assertIsNotNone(dt.tzinfo)
+            local = dt.astimezone()
             self.assertEqual(
-                (dt.year, dt.month, dt.day, dt.hour), (2026, 9, 30, 10))
-            delta = (datetime.now() - dt).total_seconds()  # naive-naive 可比较
+                (local.year, local.month, local.day, local.hour),
+                (2026, 9, 30, 10))
+            delta = (datetime.now().astimezone() - dt).total_seconds()
             self.assertLess(delta, 86400)
 
 

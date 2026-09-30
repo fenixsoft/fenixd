@@ -77,7 +77,7 @@ class TestCollectRunsStatsArchive:
     """2.1/2.2：归档并集统计的窗口归属与去重。"""
 
     def _stats(self, root):
-        return collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        return collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
 
     def test_archived_in_window_run_counted(self, tmp_path):
         """归档目录内窗口内完成 run 计入 total/succeeded。"""
@@ -122,14 +122,12 @@ class TestCollectRunsStatsArchive:
 
         import core.self_review as sr
 
-        class _FakeDatetime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                # 冻结 now：窗口 [2000-01-01 00:00:00, 2000-01-01 00:00:10]
-                return datetime(2000, 1, 1, 0, 0, 10)
-
-        monkeypatch.setattr(sr, "datetime", _FakeDatetime)
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        # 冻结 now：窗口 [2000-01-01 00:00:00, 2000-01-01 00:00:10]（本地墙钟；
+        # 批① aware 接缝——now_utc 注入同一瞬时的 aware 值）
+        monkeypatch.setattr(
+            sr, "now_utc", lambda: datetime(2000, 1, 1, 0, 0, 10).astimezone()
+        )
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         # 当前目录窗口外 run（ts_out）不计入；归档目录 +1s run（ts_in）计入；
         # 归档目录窗口外 run（ts_out）不计入 → 只计 1
         assert stats["total"] == 1
@@ -165,7 +163,7 @@ class TestArchiveReviewExclusionAndMissing:
         _make_run(root, "impl-arc-1", [
             _line(type="result", result="ok", num_turns=2),
         ], in_archive=True)
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 1
         assert stats["succeeded"] == 1
 
@@ -179,7 +177,7 @@ class TestArchiveReviewExclusionAndMissing:
         _make_run(root, "code-review-2", [
             _line(type="result", result="ok", num_turns=2),
         ], in_archive=True)
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 2
 
     def test_missing_archive_current_only(self, tmp_path):
@@ -189,7 +187,7 @@ class TestArchiveReviewExclusionAndMissing:
         _make_run(root, "impl-cur-1", [
             _line(type="result", result="ok", num_turns=2),
         ])
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 1
         assert stats["succeeded"] == 1
 
@@ -197,7 +195,7 @@ class TestArchiveReviewExclusionAndMissing:
         """runs 目录缺失 → 全零（与现状一致）。"""
         root = tmp_path / "proj"
         root.mkdir()
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats == {
             "total": 0,
             "succeeded": 0,
@@ -219,7 +217,7 @@ class TestCollectFailedRunSamplesArchive:
         _make_run(root, "impl-arc-bad-1", [
             _line(type="result", result="SPEC 内容缺失，无法实现", num_turns=1),
         ], in_archive=True)
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 1
         assert samples[0]["run_id"] == "impl-arc-bad-1"
         assert samples[0]["detail"].startswith("marker=")
@@ -231,7 +229,7 @@ class TestCollectFailedRunSamplesArchive:
         _make_run(root, "review-2026-09-20", [
             _line(type="result", result="SPEC 内容缺失", num_turns=1),
         ], in_archive=True)
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert samples == []
 
     def test_dedup_in_samples(self, tmp_path):
@@ -244,7 +242,7 @@ class TestCollectFailedRunSamplesArchive:
         _make_run(root, "impl-dup-s-1", [
             _line(type="result", result="任务完成", num_turns=4),
         ], in_archive=True)
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 1
         assert samples[0]["run_id"] == "impl-dup-s-1"
         assert samples[0]["detail"].startswith("marker=")
@@ -256,6 +254,6 @@ class TestCollectFailedRunSamplesArchive:
         _make_run(root, "impl-cur-bad-1", [
             _line(type="result", result="SPEC 内容缺失", num_turns=1),
         ])
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 1
         assert samples[0]["run_id"] == "impl-cur-bad-1"

@@ -7,6 +7,7 @@
 from pathlib import Path
 # tool_result 事件识别单一真源（design D1：禁止在真源之外再次硬编码事件类型比较），
 # 本模块经类内 staticmethod 别名委托复用（与 runner.py 同型），不保留本地副本。
+from core.timelib import from_epoch
 from core.agent_runner.latency import _entry_is_tool_result
 from core.agent_runner.run_files import append_run_line, run_spec_part
 from datetime import datetime, timezone
@@ -668,7 +669,7 @@ class LivenessSupervisor:
             "agent_runner",
             f"Extension #{extension_index} noted for '{spec_name}' (run {run_id}) — "
             f"stuck baseline reset, new deadline "
-            f"{datetime.fromtimestamp(new_deadline, timezone.utc).isoformat()}",
+            f"{from_epoch(new_deadline).isoformat()}",
         )
 
     def get_extension_baseline(self, spec_name: str) -> float | None:
