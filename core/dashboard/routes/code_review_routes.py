@@ -8,7 +8,7 @@
 - POST /api/code-review/fix-run    （query project）→ 写手动「立即自动修复」信号（add-code-fix-manual-trigger）
 - GET  /api/code-review/fix-run-result（query project）→ 只读手动触发判定结果（add-code-fix-manual-trigger）
 - GET  /api/code-review/run-result （query project）→ 只读审查触发受理判定结果（add-code-review-trigger-ack）
-- POST /api/code-review/generate-spec（body {project, item_ids, start_after?}）→ 生成修复 SPEC
+- POST /api/code-review/generate-spec（query ?project=<name> + body {item_ids, start_after?}）→ 生成修复 SPEC
 - POST /api/code-review/items/status（body {project, item_id, status}）→ 人工状态流转
 
 端点 handler 走既有 mixin 形态（self._json / self._error / _read_json_body）。
@@ -421,9 +421,8 @@ class H11CodeReviewRoutesMixin:
         # 整秒值——run 结束后结果文件仍停留 started，仅凭新鲜度会把窗口内合法
         # 重触发误判为「排队中」假 409；item 5dbef178f679：同粒度整秒比较，
         # 受理与 run 启动同秒即视为已启动）→ 409 稳定错误码，消灭窗口内第二次
-        # POST 假受理
-        # （今日会被 daemon 单飞静默丢弃）。守卫读结果与 run 实际启动之间存在
-        # 竞态 → fail-open 到 daemon 单飞的显式拒绝并落结果（有反馈不留静默）。
+        # POST 假受理。守卫读结果与 run 实际启动之间存在竞态 → fail-open 到
+        # daemon 单飞的显式拒绝并落结果（有反馈不留静默）。
         ack_result = dashboard_data.read_code_review_request_result(str(proot))
         if (str(ack_result.get("status") or "") == "started"
                 and not progress.get("running")):
@@ -595,7 +594,7 @@ class H11CodeReviewRoutesMixin:
         self._json(dashboard_data.read_code_review_request_result(str(project["path"])))
 
     def _api_code_review_generate_spec(self, query):
-        """POST /api/code-review/generate-spec — body {project, item_ids: [...]}
+        """POST /api/code-review/generate-spec?project=<name> — body {item_ids: [...]}
 
         body 可选 ``start_after``（三态，与 `set_spec_start_after` 同源口径）：
         - 缺省 / null / 空串 → 立即执行
