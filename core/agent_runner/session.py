@@ -4,6 +4,20 @@ from pathlib import Path
 import json
 
 
+def _to_int(value) -> int:
+    """容错转 int：假值/非法值（None、非数值字符串等）统一回退 0（code-review item 7b1ad7313c54）。
+
+    _extract_usage_info 的四个 token 字段原本各自复制一段同构的
+    try/except (TypeError, ValueError) 容错转换，收敛为单一助手消除重复；
+    ``value or 0`` 假值兜底与异常捕获口径和原四段逐字等价，容错思路与
+    同包 token_budget._to_int / maintenance_runs._safe_int 一致（各自独立，不跨模块收敛）。
+    """
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class SessionTracker:
     """SessionTracker组件（门面 AgentRunner 的组合组件）。"""
 
@@ -102,22 +116,10 @@ class SessionTracker:
         if not isinstance(usage, dict):
             usage = {}
         out = dict(empty)
-        try:
-            out["input_tokens"] = int(usage.get("input_tokens") or 0)
-        except (TypeError, ValueError):
-            out["input_tokens"] = 0
-        try:
-            out["output_tokens"] = int(usage.get("output_tokens") or 0)
-        except (TypeError, ValueError):
-            out["output_tokens"] = 0
-        try:
-            out["cache_creation_input_tokens"] = int(usage.get("cache_creation_input_tokens") or 0)
-        except (TypeError, ValueError):
-            out["cache_creation_input_tokens"] = 0
-        try:
-            out["cache_read_input_tokens"] = int(usage.get("cache_read_input_tokens") or 0)
-        except (TypeError, ValueError):
-            out["cache_read_input_tokens"] = 0
+        out["input_tokens"] = _to_int(usage.get("input_tokens"))
+        out["output_tokens"] = _to_int(usage.get("output_tokens"))
+        out["cache_creation_input_tokens"] = _to_int(usage.get("cache_creation_input_tokens"))
+        out["cache_read_input_tokens"] = _to_int(usage.get("cache_read_input_tokens"))
         # 成本字段：仅网关真实回传时非空（design D5 / spec「金额展示不伪造」）
         cost = result_event.get("total_cost_usd", result_event.get("cost_usd"))
         if cost is None:

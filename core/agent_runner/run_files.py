@@ -179,8 +179,16 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
     spec_name 精确匹配的文件删除。单文件 OSError 记 warning 继续处理
     其余文件，不阻断归档主流程。不删除任何其他文件，不修改文件内容。
 
-    Returns: 成功清理的文件数；runs_dir 不存在返回 0。
+    Returns: 成功清理的文件数；runs_dir 不存在或 spec_name 为空返回 0。
     """
+    # 空 spec 名防御（code-review item ace8422038ea）：维护类 run（admin-/
+    # code-review-/repair-/verify-/test- 前缀 + 纯时间戳）经 run_spec_part
+    # 归一后 spec 段为空串，与空 spec_name 精确匹配会把这批产物整批误删。
+    # 现有调用方（bin/fenix_archive.py / spec_archive.py）均传非空 spec 名，
+    # 此处仅挡畸形上游；记 WARNING 留痕，返回 0 不阻断归档主流程。
+    if not spec_name:
+        _logger.warning("archive_spec_runs: spec_name 为空，跳过清理（防止误删维护类 run 产物）")
+        return 0
     if not runs_dir.is_dir():
         return 0
     try:
