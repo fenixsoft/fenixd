@@ -239,6 +239,11 @@ from core.pm_engine.verification.serving import (
     POST_READY_SETTLE_SECONDS,
 )
 
+# 常量归属 branch_guard 组，此处 re-export（code-review item c852ab20c86e：
+# 自文件末尾上移至顶部 import 区与 serving 常量同址集中，末尾只留模块级
+# 常量定义）
+from core.pm_engine.verification.branch_guard import ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS
+
 
 class VerificationPipeline:
     """验证流水线组件（门面 PMEngine 的组合组件）。"""
@@ -789,13 +794,17 @@ class VerificationPipeline:
         # bug-found、不派生 fix。重试前复用入口状态判据（非 testing 丢弃，与
         # stale-result 防护同构，不新增竞态面）。
         if not verifier_result.ok:
-            verdict_result_path = (
-                self._context.project_root
-                / ".fenix"
-                / "verify-progress"
-                / spec_name
-                / ".fenix-run-result.json"
+            # evidence 的 result_file 取真实来源路径（code-review item
+            # 359da5d900bd）：_read_verdict 在 primary 缺失时回退主树共享文件，
+            # 硬编码 primary 路径在共享回退文件损坏场景下指向不存在的位置，
+            # 误导人工排障——复用统一解析助手按 primary.exists() 选择实际
+            # 读取路径（与 legacy 同款函数内 import 先例）。
+            from core.pm_engine.verification.report_gate import (
+                _verify_progress_result_paths,
             )
+
+            _vfp_primary, _vfp_shared = _verify_progress_result_paths(self, spec_name)
+            verdict_result_path = _vfp_primary if _vfp_primary.exists() else _vfp_shared
             retry_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
             if retry_status == "testing":
                 self._context.logger.warning(
@@ -1014,9 +1023,12 @@ class VerificationPipeline:
         # 由框架合成兜底，合成失败则阻断推进（下游修复引用的路径必然可读）
         report_blocker = self._ensure_verification_report(spec_name)
         if report_blocker:
+            # tester_run 与 _apply_verified 同类阻断分支同口径（code-review item
+            # 28e2f027965e）：阻断轮亦留 run 关联，dashboard/排障不错失采纳路径。
             self._context.state_machine.update_spec(
                 spec_name,
                 {
+                    "tester_run": judge_result.run_id,
                     "error": report_blocker,
                 },
             )
@@ -1898,6 +1910,11 @@ class VerificationPipeline:
         app_reachable = True
         reach_note = ""
         user_blocked = False
+        # user_blocked 侧车（code-review item ad95fc9cdbdd）：B4 应用不可达门禁
+        # 须与本处 fail-fast 共享同一「需用户参与」预留判定位。返回五元组契约
+        # 已被 fastlane 子集重验解包消费，扩元组属跨文件签名变更（超本组边界），
+        # 故经实例属性携带、门禁调用点读取（缺省 False 兜底）。
+        self._stage2_user_blocked = False
 
         # ── 阶段2: 验证引擎执行 ──
         self._context.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
@@ -1914,6 +1931,7 @@ class VerificationPipeline:
             # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
             # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
             app_reachable, user_blocked, reach_note = self._ensure_app_reachable(spec_name)
+            self._stage2_user_blocked = user_blocked
             self._context.logger.info(
                 "pm_engine",
                 f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
@@ -2080,11 +2098,14 @@ class VerificationPipeline:
     # 调用者 MUST return 终止流水线；judge_result 非 None 为快道合成结果，
     # None 表示未命中快道、需真实派发 judge。
     def _run_stage2_gates(self, spec_name: str, report, app_reachable: bool,
-                          reach_note: str) -> tuple:
+                          reach_note: str, user_blocked: bool = False) -> tuple:
         """阶段2 门禁链 + 全绿快道（等价搬移自 _run_three_stage_verification B4）。
 
         汇总日志 → 不可达门禁 → 环境性失联门禁 → 全场景同因哨 → 全绿快道。
         任一门禁触发即 (_, None, True) 返回，调用者 MUST return。
+        user_blocked：阶段2.5 可达性自愈的「需用户参与」预留判定位（与
+        _execute_stage2 fail-fast 同源，code-review item ad95fc9cdbdd）；
+        True 时应用不可达门禁不自动判 blocked。
         """
         fail_count = report["summary"]["failed"] + report["summary"]["errors"]
         self._context.logger.info(
@@ -2104,33 +2125,46 @@ class VerificationPipeline:
             and report["summary"]["passed"] == 0
             and fail_count == report["summary"]["total"]
         ):
-            self._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "tester_run": "blocked:app-unreachable",
-                    "error": f"验证无法执行（最终用户验证未完成）: {reach_note or '应用不可达'}",
-                },
-            )
-            self._context.logger.error(
-                "pm_engine",
-                f"验证门禁: '{spec_name}' 应用不可达，未判定 verified — {reach_note}",
-            )
-            # 死端修复（admin 2026-09-07，notes-standalone-sync 卡 testing 事故）：
-            # 此前的裸 return 使 spec 永久滞留 testing——blocked:app-unreachable
-            # 标记全库无消费者，且冻结场景集路径（scenario-reuse-on-reenter）
-            # 不会重新出题，BLOCKER CHECK 的 auto-recovery 只会原样重验并再次
-            # 撞门禁，形成每 stuck_threshold 一次的无效静默重试循环。按冻结
-            # 复用路径同款语义升级：blocked + 自动呼叫 Administrator 处置验证
-            # 基建（场景 URL/serve 配置属 admin 职权，planner 无法自愈）。
-            self._escalate_env_blocked(
-                spec_name,
-                [
-                    f"应用不可达，验证无法执行（冻结场景集下自动重验无效，需 admin "
-                    f"修正场景 URL/serve 配置）: {(reach_note or '应用不可达')[:200]}"
-                ],
-                title="验证环境阻塞",
-            )
-            return fail_count, None, True
+            # 「需用户参与」型不可达让位（code-review item ad95fc9cdbdd）：
+            # user_blocked 预留判定位与阶段2.5 fail-fast 处（_execute_stage2
+            # 「需用户参与（收验证码/登录）」守卫）共享——该型不可达将来实现后
+            # 同样不得被本门禁自动判 blocked：DEBUG 留痕后跳过升级，交由下方
+            # 环境性失联门禁/同因哨与 judge 按报告处置。当前 user_blocked 恒
+            # False，此分支不触发（埋线对齐）。
+            if user_blocked:
+                self._context.logger.debug(
+                    "pm_engine",
+                    f"验证门禁: '{spec_name}' 应用不可达但属用户参与型"
+                    f"（user_blocked）— 不自动判 blocked，跳过本门禁: {reach_note}",
+                )
+            else:
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "tester_run": "blocked:app-unreachable",
+                        "error": f"验证无法执行（最终用户验证未完成）: {reach_note or '应用不可达'}",
+                    },
+                )
+                self._context.logger.error(
+                    "pm_engine",
+                    f"验证门禁: '{spec_name}' 应用不可达，未判定 verified — {reach_note}",
+                )
+                # 死端修复（admin 2026-09-07，notes-standalone-sync 卡 testing 事故）：
+                # 此前的裸 return 使 spec 永久滞留 testing——blocked:app-unreachable
+                # 标记全库无消费者，且冻结场景集路径（scenario-reuse-on-reenter）
+                # 不会重新出题，BLOCKER CHECK 的 auto-recovery 只会原样重验并再次
+                # 撞门禁，形成每 stuck_threshold 一次的无效静默重试循环。按冻结
+                # 复用路径同款语义升级：blocked + 自动呼叫 Administrator 处置验证
+                # 基建（场景 URL/serve 配置属 admin 职权，planner 无法自愈）。
+                self._escalate_env_blocked(
+                    spec_name,
+                    [
+                        f"应用不可达，验证无法执行（冻结场景集下自动重验无效，需 admin "
+                        f"修正场景 URL/serve 配置）: {(reach_note or '应用不可达')[:200]}"
+                    ],
+                    title="验证环境阻塞",
+                )
+                return fail_count, None, True
 
         # ── 阶段2.6 环境性失联门禁（verify-environment-sanity-gate / design D2）──
         # 全批 blocked-env → inconclusive：回 testing 重派新 attempt，不判 bug-found、
@@ -2321,6 +2355,15 @@ class VerificationPipeline:
                             f"in testing, pipeline dropped",
                         )
                         return False
+                    # 标记重读前置（code-review item 7eb06bcdfd58）：产物就绪
+                    # （status != dispatched，如 completed）即短路退出等待循环，
+                    # 无论存活探测是否可用——下方 hasattr 缺失分支旧实现直接
+                    # sleep+continue 跳过标记重读，run 已正常写出产物仍空转到
+                    # 超时出口才兜底消费（缺省 900 秒/轮固定白等）。
+                    marker = lane.read_marker(spec_name) or {}
+                    status = marker.get("status")
+                    if status != "dispatched":
+                        break
                     # run 已死（daemon 重启丢队列/attempt 收尾未写标记）→ 停等。
                     # 停等前重读一次标记：run 写出 completed 标记与从
                     # 在飞登记表移除之间存在竞窗，沿用上一轮轮询读到的
@@ -2350,10 +2393,6 @@ class VerificationPipeline:
                         continue
                     if not self._pm.agent_runner.is_run_alive(prefix):
                         marker = lane.read_marker(spec_name) or {}
-                        break
-                    marker = lane.read_marker(spec_name) or {}
-                    status = marker.get("status")
-                    if status != "dispatched":
                         break
                     time.sleep(self._PARALLEL_PLAN_WAIT_POLL_SECONDS)
                 if marker.get("status") == "dispatched":
@@ -2521,13 +2560,26 @@ class VerificationPipeline:
             else:
                 if replan_feedback is not None:
                     fb = verify_dir / "REPLAN_FEEDBACK.md"
-                    fb.parent.mkdir(parents=True, exist_ok=True)
-                    fb.write_text(
-                        "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
-                        + replan_feedback
-                        + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
-                        encoding="utf-8",
-                    )
+                    try:
+                        fb.parent.mkdir(parents=True, exist_ok=True)
+                        fb.write_text(
+                            "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
+                            + replan_feedback
+                            + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
+                            encoding="utf-8",
+                        )
+                    except OSError as e:
+                        # 反馈写入失败不中止验证轮（code-review item
+                        # 18400c48083e）：磁盘满/权限等 OSError 若上抛会被外层
+                        # engine 捕获整轮回滚，而反馈缺失仅降低重排针对性
+                        # （planner 照常重出题）——WARNING 留痕后继续重排流程
+                        # （与下方验收通过处 unlink 捕 OSError 同口径）。
+                        self._context.logger.warning(
+                            "pm_engine",
+                            f"REPLAN_FEEDBACK.md 写入失败 '{spec_name}'"
+                            f"（非阻塞，重排继续，仅丢失针对性反馈）: "
+                            f"{type(e).__name__}: {e}",
+                        )
                 # ── 阶段1 派 run 前状态重查（fasttrack-orphan-planner-race）──
                 # D6 入口检查只覆盖 pipeline 进入时刻；竞态窗口内 fast-track
                 # advance（_fast_track_advance_to_verified）可能已把 spec 推过
@@ -2555,6 +2607,22 @@ class VerificationPipeline:
                 plan_result = self._pm.agent_runner.run_planner(spec_name, "plan")
 
                 if not plan_result.success:
+                    # ── 冻结终止让位（code-review item 3a96e083bf0d）──
+                    # plan run 在飞期间 spec 被人工冻结、run 完成返回 frozen
+                    # 失败：比照 _dispatch_judge_or_reuse 的 frozen_terminated
+                    # 分支让位——INFO 留痕后静默退出，不 raise（raise 会触发
+                    # legacy verifier 降级，对已冻结 spec 再起一轮验证）、不改
+                    # 状态、不重派，与 judge 同场景「静默让位」语义对称。
+                    # 判定用 `is True`（防 MagicMock 替身自动生成 truthy 属性
+                    # 误判，与 judge 同口径）。
+                    if getattr(plan_result, "frozen_terminated", False) is True:
+                        self._context.logger.info(
+                            "pm_engine",
+                            f"Planner plan run 因 spec 冻结被终止 — 让位退出 "
+                            f"'{spec_name}'（保持原状，不降级不重派）: "
+                            f"{plan_result.error or ''}",
+                        )
+                        return
                     # ── 人工取消 hold-state（add-run-cancel D4）──
                     # planner run 被取消：spec 保持 testing 原状，只写 error，
                     # 不流转 bug-found、不降级 legacy、不入队。
@@ -2878,7 +2946,8 @@ class VerificationPipeline:
 
         # ── B4: 阶段2 门禁 + 全绿快道（见 _run_stage2_gates）──
         fail_count, judge_result, _gates_aborted = self._run_stage2_gates(
-            spec_name, report, app_reachable, reach_note
+            spec_name, report, app_reachable, reach_note,
+            user_blocked=getattr(self, "_stage2_user_blocked", False),
         )
         if _gates_aborted:
             return
@@ -2918,6 +2987,3 @@ class VerificationPipeline:
 # env 族信号类型：仅这些信号触发的 blocking 复位才适用重验直通道判定，其余
 # 信号（如 blocked_stuck 等）的复位语义不动。
 ENV_BLOCK_SIGNAL_TYPES = ("verify_env_blocked", "verify_env_inconclusive")
-
-# git 合并判定超时（常量归属 branch_guard 组，此处 re-export）
-from core.pm_engine.verification.branch_guard import ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS
