@@ -238,6 +238,36 @@ class G6StashGuardMixin:
                     f"防跨进程插队误弹他人条目",
                 )
                 return False, []
+        else:
+            # pin 未取到（stashed=True 栈本应非空——多半已被跨进程移除）：
+            # 复核不能整体跳过（code-review item 01775ad636dd），pop 前再核一次
+            # 栈顶——此刻栈已非空说明 pin 后有新条目进入，无法证明栈顶是本方
+            # 条目，按「栈顶已动」口径放弃本轮（条目保留交 reclaim_stale_autostash
+            # 兜底）；栈仍为空则落到下方 pop 的 No stash entries 正常跳过路径。
+            try:
+                guard = subprocess.run(
+                    ["git", "-C", str(self.project_root), "rev-parse",
+                     "--verify", "stash@{0}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                # 复核不可用 = 无法证明栈顶未动：放弃本轮绝不弹（条目保留）
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stash pop skipped, top-of-stack guard unavailable "
+                    f"(stash preserved): {e}",
+                )
+                return False, []
+            if guard.returncode == 0:
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stash pop aborted: stack top present but pin unavailable "
+                    f"(expected {pinned_sha[:12] or 'n/a'}) — stash preserved, "
+                    f"防跨进程插队误弹他人条目",
+                )
+                return False, []
 
         try:
             result = subprocess.run(
@@ -901,7 +931,18 @@ class G6StashGuardMixin:
             staged_set = {
                 _unquote_git_path(ln) for ln in staged.stdout.splitlines()
             }
-            if staged.returncode != 0 or not staged_set <= set(paths):
+            if staged.returncode != 0:
+                # 命令本身失败（index.lock 争用、git 不可用等）：暂存集内容不可信，
+                # 按「diff --cached failed」归因，勿冒充「越界暂存条目」误导排障
+                # （code-review item 8af338d766c3）
+                self.logger.warning(
+                    "worktree_manager",
+                    f"{log_ctx} aborted: git diff --cached failed: "
+                    f"{(staged.stderr or staged.stdout).strip()}",
+                )
+                self._reset_index_paths(processed)
+                return False
+            if not staged_set <= set(paths):
                 self.logger.warning(
                     "worktree_manager",
                     f"{log_ctx} aborted: index has staged entries "
@@ -1016,6 +1057,7 @@ class G6StashGuardMixin:
         if not paths:
             return False
         identical = []
+        branch_contents = {}
         try:
             for path in paths:
                 wt_file = self.project_root / path
@@ -1045,6 +1087,7 @@ class G6StashGuardMixin:
                     )
                     return False
                 identical.append(path)
+                branch_contents[path] = show.stdout
             backup_root = self.project_root / ".fenix" / "merge-backup"
             base_name = f"identical-{int(time.time())}"
             backup = backup_root / base_name
@@ -1064,6 +1107,18 @@ class G6StashGuardMixin:
                 dest = backup / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(self.project_root / path, dest)
+            # TOCTOU 复核（code-review item 4cfadd9162b5）：字节比对与 checkout
+            # 之间无原子性，跨进程（_main_tree_lock 只串行化本进程）可能在比对
+            # 通过后改写文件——备份后对每路径重读二次校验，不一致即放弃自愈
+            # （不执行 checkout，把裁决交回失败路径，备份已留存可人工找回）。
+            for path in identical:
+                if (self.project_root / path).read_bytes() != branch_contents[path]:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (identical) aborted: '{path}' changed after "
+                        f"compare — possible real local work",
+                    )
+                    return False
             co = subprocess.run(
                 ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", *identical],
                 capture_output=True,
