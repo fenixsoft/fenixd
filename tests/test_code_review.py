@@ -1438,17 +1438,31 @@ class TestReadProgressAggregated(unittest.TestCase):
         self.assertEqual(p["done"], 26)
 
     def test_duplicate_files_counted_once_shard_first(self):
-        # 分片 b1 落 a.py；主产物重复写 a.py + 新增 b.py → done=2 不是 3
+        # 分片 b1 落 core/f0.py；主产物重复写 f0 + 新增 f1 → done=2 不是 3
+        # （产物行须在 manifest 清单内：done 与清单求交，item 8369875cbabf）
         self._proot = self._mk(
             "code-review-1790182833",
             5,
-            [{"file": "a.py"}, {"file": "b.py"}],
-            {1: [{"file": "a.py"}]},
+            [{"file": "core/f0.py"}, {"file": "core/f1.py"}],
+            {1: [{"file": "core/f0.py"}]},
         )
         from core.code_review import read_progress
 
         p = read_progress(self._proot)
         self.assertEqual(p["done"], 2)
+
+    def test_out_of_manifest_rows_not_counted(self):
+        # 清单外路径（agent 幻觉产物行）不计入进度：done=0 而非 1（done <= total 恒成立）
+        self._proot = self._mk(
+            "code-review-1790182834",
+            5,
+            [{"file": "ghost.py"}],
+            {},
+        )
+        from core.code_review import read_progress
+
+        p = read_progress(self._proot)
+        self.assertEqual(p["done"], 0)
 
 
 class TestIngestAggregated(unittest.TestCase):
