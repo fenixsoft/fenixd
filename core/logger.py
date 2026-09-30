@@ -35,7 +35,10 @@ class JsonFormatter(logging.Formatter):
         # 缺此字段 traceback 会被静默丢弃（code-review item c175ecdbbeed）
         if record.exc_info:
             entry["exc_info"] = self.formatException(record.exc_info)
-        return json.dumps(entry, ensure_ascii=False)
+        # default=str 兜底不可序列化的 context 值（datetime/Path 等）：
+        # 否则 json.dumps 抛 TypeError，整条记录被 emit→handleError 吞掉只剩
+        # stderr 提示，结构化日志静默丢失
+        return json.dumps(entry, ensure_ascii=False, default=str)
 
 
 class FlockRotatingFileHandler(RotatingFileHandler):
@@ -82,10 +85,12 @@ class FlockRotatingFileHandler(RotatingFileHandler):
         if super().shouldRollover(record):
             return True
         # 其他进程轮转后本进程仍持旧 fd 会把日志写进已改名文件，陈旧即视为需轮转
+        # [fenix-ignore:6d3b591495d7] 仅放行记录（_log 已先判级）各多两次 stat，节流需引入共享状态、复杂度与收益不成比例，保持现状
         return self._path_is_stale()
 
     def doRollover(self):
         # 取跨进程排他锁，串行化轮转窗口；进程退出后 flock 随 fd 自动释放
+        # [fenix-ignore:68f9518f845d] 锁文件常驻仅是目录卫生问题，close 时清理存在多进程竞态、收益有限，保持现状
         lock_fd = os.open(self._lock_filename, os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
