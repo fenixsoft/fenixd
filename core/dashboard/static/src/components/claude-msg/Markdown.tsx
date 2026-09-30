@@ -21,7 +21,7 @@ type MarkdownProps = {
   breaks?: boolean;
 };
 
-const copyToClipboard = async (text: string): Promise<boolean> => {
+export const copyToClipboard = async (text: string): Promise<boolean> => {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
