@@ -127,12 +127,17 @@ const codeChipStyle: CSSProperties = {
   fontSize: '0.9em',
 };
 
-// 从表格 children（thead/tr/th 元素树）递归收集全部文本，用于表头指纹识别
+// 从表格 children 的表头子树（thead/tr/th）递归收集文本，用于表头指纹识别。
+// 只下钻表头元素：remark-gfm 把 GFM 表格首行渲染为 <thead><tr><th>、表体在
+// <tbody> 内，指纹特征词必须落在表头才算命中——若连表体全文一起匹配，普通
+// 表格正文恰好出现「编号」「摘要」等特征词就会被误套知识表定宽布局
 const collectTableText = (node: ReactNode): string => {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(collectTableText).join('');
   if (isValidElement(node)) {
-    return collectTableText((node as ReactElement<{ children?: ReactNode }>).props.children);
+    const el = node as ReactElement<{ children?: ReactNode }>;
+    if (el.type !== 'thead' && el.type !== 'tr' && el.type !== 'th') return '';
+    return collectTableText(el.props.children);
   }
   return '';
 };
