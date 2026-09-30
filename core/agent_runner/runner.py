@@ -77,7 +77,7 @@ from core.agent_runner.liveness import (
     _file_has_terminal_event,
 )
 from core.agent_runner.session import SessionTracker
-from core.timelib import parse_ts
+from core.timelib import from_epoch, parse_ts
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_4XX,
@@ -3425,8 +3425,7 @@ class AgentRunner:
                     "spec": spec_name,
                     "provider": provider_name,
                     "reason": "429 ratelimit",
-                    "cooldown_until": datetime.fromtimestamp(
-                        cooldown_until, tz=timezone.utc).isoformat(),
+                    "cooldown_until": from_epoch(cooldown_until).isoformat(),
                     "cooldown_until_epoch": cooldown_until,
                     "max_redispatches": RATELIMIT_REDISPATCH_MAX,
                 },
@@ -3438,14 +3437,13 @@ class AgentRunner:
             f"Ratelimit redispatch intent registered (add-code-review-"
             f"concurrency-and-429-resilience) — run={run_id} spec={spec_name!r} "
             f"provider={provider_name!r} cooldown_until="
-            f"{datetime.fromtimestamp(cooldown_until, tz=timezone.utc).isoformat()}",
+            f"{from_epoch(cooldown_until).isoformat()}",
         )
         return {
             "reason": "429 ratelimit",
             "provider": provider_name,
             "run_id": run_id,
-            "cooldown_until": datetime.fromtimestamp(
-                cooldown_until, tz=timezone.utc).isoformat(),
+            "cooldown_until": from_epoch(cooldown_until).isoformat(),
             "cooldown_until_epoch": cooldown_until,
             "max_redispatches": RATELIMIT_REDISPATCH_MAX,
         }

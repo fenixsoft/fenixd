@@ -74,17 +74,13 @@ TIME_WHITELIST = [
     # fromisoformat（解析未收拢，SPEC-B ③④ 批迁移）
     ("core/admin_monitor.py", "fromisoformat"),
     ("core/admin_store.py", "fromisoformat"),
-    ("core/agent_runner/latency.py", "fromisoformat"),
-    ("core/agent_runner/provider_circuit.py", "fromisoformat"),
     ("core/dashboard/data/summary.py", "fromisoformat"),
     ("core/dashboard/routes/alert_routes.py", "fromisoformat"),
     ("core/pm_engine/engine.py", "fromisoformat"),
     ("core/state_machine.py", "fromisoformat"),
     ("core/tui_format.py", "fromisoformat"),
-    ("fenixd.py", "fromisoformat"),
-    # 零参 now()（naive 本地产出，SPEC-B ①② 批迁移）
+    # 零参 now()（naive 本地产出，SPEC-B ③④ 批迁移）
     ("core/admin_monitor.py", "now-zero-arg"),
-    ("core/agent_runner/prompt_builder.py", "now-zero-arg"),
     ("core/code_review.py", "now-zero-arg"),
     ("core/dashboard/data/spec_archive.py", "now-zero-arg"),
     ("core/dashboard/data/summary.py", "now-zero-arg"),

@@ -8,14 +8,14 @@ latency.py — run 级 API 延迟统计纯函数（refactor-agent-runner-module 
 处理时序。
 
 本模块 MUST NOT `import runner`（D4）：`_default_ts_parser` 自带等价实现
-（数值 timestamp 直通；ISO 字符串仅剥离结尾一个 "Z" 后按
-``datetime.fromisoformat(...).timestamp()`` 解析，naive（无时区）值显式按
-UTC 取 epoch；缺失/异常返回 None——与 runner.py
-`AgentRunner._parse_event_timestamp` 现行为逐字段一致，由契约测试锁定）；
-runner.py 保留同名模块级函数并一行委托。
+（数值 timestamp 直通；ISO 字符串走 ``timelib.parse_ts`` 解析——SPEC-B 批②
+收拢单源，naive（无时区）按本地时区解读（timelib 唯一 naive 策略，与
+runner.py `AgentRunner._parse_event_timestamp` 同口径）；缺失/异常返回
+None——两解析器行为逐字段一致，由契约测试锁定）；runner.py 保留同名模块级
+函数并一行委托。
 """
 
-from datetime import datetime, timezone
+from core.timelib import parse_ts
 
 # 长尾阈值：样本 > 该值（秒）计为一次 stall（run-latency-observability D1）。
 # 随消费者同迁本模块（D4 / D2b 规则 3）：latency_stats 读取本模块常量，避免
@@ -34,8 +34,8 @@ def _default_ts_parser(entry: dict):
     与 runner.py `AgentRunner._parse_event_timestamp` 行为逐字段一致：
     - 数值 timestamp（非布尔 int/float；bool 是 int 子类，显式排除以免
       True/False 直通成 epoch 1.0/0.0 秒样本）→ float 直通；
-    - ISO 字符串 → 仅剥离结尾一个 "Z" 后 ``datetime.fromisoformat(...)``
-      的 epoch 秒（naive 无时区值显式按 UTC，避免按进程本地时区解释）；
+    - ISO 字符串 → ``timelib.parse_ts`` 的 epoch 秒（naive 无时区值按本地
+      时区解读，timelib 唯一 naive 策略；SPEC-B 批②收拢单源）；
     - 缺失/解析异常 → None。
     """
     raw = entry.get("timestamp")
@@ -43,19 +43,12 @@ def _default_ts_parser(entry: dict):
         return None
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
-    try:
-        text = str(raw)
-        # 仅剥离结尾一个 "Z"（ISO 8601 UTC 标记；replace 全量替换会误伤
-        # 串中其他 "Z" 字符）；naive（无时区）值显式按 UTC 取 epoch，
-        # 避免 .timestamp() 按进程本地时区解释、TZ 环境不同算出整体偏移。
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except (ValueError, TypeError):
-        return None
+    # SPEC-B 批②：解析内核收拢 parse_ts（唯一入口；失败返回 None 不抛）。
+    # naive（无时区）解读跟齐读侧唯一策略（naive→本地）——与 runner.
+    # _parse_event_timestamp（SPEC-A 4.2 已切 parse_ts）同口径，同一份
+    # stream-json 转录两解析器不再各持一种 naive 策略。
+    dt = parse_ts(str(raw))
+    return dt.timestamp() if dt is not None else None
 
 
 def _entry_is_tool_result(entry: dict) -> bool:
