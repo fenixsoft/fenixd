@@ -47,7 +47,9 @@ def run_dist_build(
     构建什么从 verify.yaml 的 prepare 段读取——不预设目标为 nodejs 项目，
     步骤自带 cwd、每步受 PREPARE_STEP_TIMEOUT 约束；契约缺失时回退历史
     行为（static_root 下 npm run build）；契约存在但未声明 prepare 视为
-    「无构建步骤」，直接成功。
+    「无构建步骤」，直接成功。回退路径下 static_root 无 package.json 视为
+    skip（无可构建目标），与真实构建失败共用 False 返回值，error_detail
+    留 skip 文案供调用方区分。
 
     fix-verdict-env-exemption-admin-handshake 1.1：自 ``_run_dist_build``
     提取的构建执行体模块级化（merge-back 确定性重建与 serving dist 新鲜度
@@ -60,9 +62,9 @@ def run_dist_build(
         logger: 结构化 logger（warning 口径与提取前逐字一致）；传 None 时
             入口静默兜底（_NullLogger），按缺省签名调用不会 AttributeError。
         error_detail: 可选失败现场收集器（list）：失败时追加尾部日志文案
-            （prepare 失败原因 / fallback 构建 stderr+stdout 尾 200 字符），
-            供 serving 探针把构建失败尾部日志写入 run 错误现场；不传时
-            行为与提取前逐字节一致。
+            （prepare 失败原因 / fallback 构建 stderr+stdout 尾 200 字符 /
+            回退无 package.json 的 skip 说明），供 serving 探针把构建失败
+            尾部日志写入 run 错误现场；不传时行为与提取前逐字节一致。
     """
     # logger=None 兜底（code-review item 0f9cdf3a8cec）：按缺省签名（只传
     # project_root）调用时，契约缺失回退 / prepare 失败 / 回退构建失败 /
@@ -111,6 +113,10 @@ def run_dist_build(
             "worktree_manager",
             f"dist rebuild skipped: no package.json under {static_root}",
         )
+        # skip 也留现场（item bd0dbf8b8778）：skip 与真实构建失败共用 False
+        # 返回值，无文案时调用方（serving 探针）拿不到任何失败原因。
+        if error_detail is not None:
+            error_detail.append(f"no package.json under {static_root}")
         return False
     try:
         r = subprocess.run(
@@ -503,8 +509,19 @@ class G5DistConflictsMixin:
                     f"({foreign[:10]}) — amend skipped, rebuilt dist kept in "
                     f"working tree only",
                 )
+                # pathspec 限定 unstage 范围（item 8bb77946bb6b）：不带 pathspec
+                # 的 reset 会把主树既有暂存（stash 降级残留等）一并 unstage，
+                # 与上方 add -A 的 static 根作用域对称。
                 subprocess.run(
-                    ["git", "-C", str(self.project_root), "reset", "-q"],
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "reset",
+                        "-q",
+                        "--",
+                        DASHBOARD_STATIC_ROOT,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -513,8 +530,17 @@ class G5DistConflictsMixin:
             # merge 提交已在 upstream 上（已被外部推送）时，amend 会改写已发布
             # 历史——跳过 amend，unstage 后仅保留工作区重建。
             if self._head_on_upstream():
+                # 同 foreign 分支：pathspec 限定 unstage 范围（item 8bb77946bb6b）。
                 subprocess.run(
-                    ["git", "-C", str(self.project_root), "reset", "-q"],
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "reset",
+                        "-q",
+                        "--",
+                        DASHBOARD_STATIC_ROOT,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -791,7 +817,7 @@ class G5DistConflictsMixin:
                     )
         # 清空 index 残留的 staged 冲突条目（mixed reset，不动工作区）
         try:
-            subprocess.run(
+            res = subprocess.run(
                 ["git", "-C", str(self.project_root), "reset"],
                 capture_output=True,
                 text=True,
@@ -802,3 +828,13 @@ class G5DistConflictsMixin:
                 "worktree_manager",
                 f"git reset failed during stash-pop self-heal: {type(e).__name__}: {e}",
             )
+        else:
+            if res.returncode != 0:
+                # 非零退出也留痕（item 0854cf852ce3，口径对齐上方 checkout 的
+                # rc 检查）：reset 失败时残留冲突条目不再静默无任何留痕，非阻
+                # 塞不改控制流，调用点 remaining 复查仍兜底。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"git reset failed during stash-pop self-heal: "
+                    f"{(res.stderr or '').strip()[:200]}",
+                )
