@@ -255,7 +255,7 @@ def reset_fixture() -> int:
     """
     try:
         return _reset_fixture_body()
-    except Exception as e:  # noqa: BLE001 —— 统一转 FAIL，不留半复位状态
+    except Exception as e:  # noqa: BLE001 —— 统一转 FAIL + 非零退出（半复位残留靠下轮 reset 幂等写回自愈）
         print(f"FAIL: 夹具复位中止 {ROOT}: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
