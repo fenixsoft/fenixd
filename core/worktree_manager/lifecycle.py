@@ -572,6 +572,18 @@ class G1LifecycleMixin:
                 spec = self._spec_from_branch(branch)
                 if spec:
                     self.register_legacy(spec, wt_path, branch)
+                else:
+                    # 登记不成立留痕（code-review item e0a4e5c15072）：spec 不可
+                    # 解析时 register_legacy 无法登记遗产，目录失去清扫豁免、将被
+                    # cleanup_stale_worktrees 按孤儿回收（对齐
+                    # _maybe_register_legacy_for_stale_lock 的跳过留痕口径）。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Failed-worktree legacy registration skipped: spec "
+                        f"unresolvable from branch '{branch}' (wt={wt_path}) — "
+                        f"no sweep exemption, directory is subject to "
+                        f"cleanup_stale_worktrees reclaim",
+                    )
                 self._active_worktrees.discard(wt_str)
                 self._wt_branches.pop(wt_str, None)
                 return
@@ -630,6 +642,16 @@ class G1LifecycleMixin:
                 # 快照已在上方完成（Task 3.3 幂等保证），rmtree 前不再重复留档。
                 if wt_path.exists():
                     shutil.rmtree(str(wt_path), ignore_errors=True)
+                    # 删除失败留痕（code-review item 765918a1c98c）：ignore_errors
+                    # 会静默吞掉权限不足/文件占用等失败，rmtree 后复核残留——目录
+                    # 仍在时追加 WARNING，否则下游存活探测/孤儿清扫继续受骗且无
+                    # 日志可查（对齐 cleanup_orphans 异常兜底分支口径）。
+                    if wt_path.exists():
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Worktree dir still present after rmtree "
+                            f"fallback: {wt_path}",
+                        )
                     # Also prune the worktree reference
                     subprocess.run(
                         ["git", "-C", str(self.project_root), "worktree", "prune"],
@@ -923,6 +945,15 @@ class G1LifecycleMixin:
                         )
                         if wt_dir.exists():
                             shutil.rmtree(str(wt_dir), ignore_errors=True)
+                            # 删除失败留痕（code-review item 765918a1c98c）：与下方
+                            # 异常兜底分支同款——rmtree 后复核残留，目录仍在（权限/
+                            # 占用删不掉）时追加 WARNING，不静默吞掉删除失败。
+                            if wt_dir.exists():
+                                self.logger.warning(
+                                    "worktree_manager",
+                                    f"Orphan worktree dir still present after rmtree "
+                                    f"fallback: {wt_dir}",
+                                )
                 except Exception as e:
                     # subprocess 直接抛异常（如 git 挂起 TimeoutExpired / OSError）
                     # 不静默吞掉：先记 WARNING 留痕（异常类型 + stderr 现场），对齐
