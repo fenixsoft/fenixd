@@ -234,6 +234,13 @@ class SessionManager:
         # 在 _terminate 内串行成立），维持串行。
         for s in sessions:
             self._terminate(s, "shutdown")
+            # code-review item 8d55257a7686：_terminate 幂等守卫对已被 idle 扫描
+            # 线程认领（terminating=True）的会话直接 return，收割留在 daemon
+            # idle 线程手里——进程退出不会等待它，恰在宽限窗内被硬杀时其 killpg
+            # 永不执行，独立进程组（start_new_session=True）的 claude 及其工具
+            # 子进程孤儿化。退出链上补一次有界等待 + killpg 兜底（进程已退出时
+            # 立即返回，零额外开销）。
+            self._reap_claimed_session(s)
 
     # ── 内部：空闲回收 ─────────────────────────────────────────────────────
 
@@ -353,6 +360,35 @@ class SessionManager:
             pid,
             reason,
         )
+
+    def _reap_claimed_session(self, session: Session) -> None:
+        """有界等待已被其他路径认领的会话退出，超时对进程组 killpg 兜底。
+
+        shutdown 专用：认领方（idle 扫描线程）是 daemon 线程，dashboard 进程
+        退出不会等待它，宽限窗内被硬杀则其 killpg 永不执行。等待上限取认领方
+        _terminate 的最长收割时长（宽限 + kill 后 wait）；超时按 _terminate
+        同式（getpgid 失败/进程已消失回退单进程 kill）再 killpg 一次——
+        SIGKILL 幂等，与认领方重复 kill 无害；终态广播与映射摘除仍归认领方，
+        此处不碰（避免同会话两条终态事件）。不持锁等待：认领方收尾需取
+        self._lock 与 session.lock。
+        """
+        try:
+            session.proc.wait(timeout=SESSION_TERMINATE_GRACE_SECONDS + 2)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            pgid = os.getpgid(session.proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            try:
+                session.proc.kill()
+            except Exception:
+                pass
+        try:
+            session.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
 
     def _remove_session_nolock(self, project_name: str) -> None:
         """从映射移除会话（caller 已持有 self._lock）。"""
@@ -509,4 +545,5 @@ class SessionManager:
                 if line:
                     session.stderr_tail.append(line)
         except Exception:
-            pass
+            # code-review item bbb0cd968a89：与 _stdout_reader 的留痕纪律对齐
+            logger.exception("stderr reader error: session=%s", session.session_id)
