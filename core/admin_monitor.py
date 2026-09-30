@@ -26,6 +26,7 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
 
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -1311,7 +1312,9 @@ class AdminMonitor:
         - 重派上限常量 ``RATELIMIT_REDISPATCH_MAX = 1``：本 monitor 生命周期内
           已重派过即不再重派（重派仍 429 按既有失败路径收场，MUST NOT 无限重派）；
         - 至多一个待发 Timer（重复意图不重复排队）；
-        - 冷却到期前 MUST NOT 重派：延迟 = max(0, cooldown_until_epoch − now)。
+        - 冷却到期前 MUST NOT 重派：延迟 = max(0, cooldown_until_epoch − now)；
+        - cooldown_until_epoch 缺失/非法（不可解析为有限数值）时放弃排程并记
+          WARNING（不计配额，按既有失败路径收场升级人工）。
         重派以**原 manifest/参数**复调（幂等保障既有：聚合读侧按 file 去重 +
         提示词「不重审」纪律），并携带 ``redispatch_of`` 供运行记录标注重派缘由。
         """
@@ -1332,10 +1335,29 @@ class AdminMonitor:
                     f"code-review 429 重派跳过：已有待发重派 Timer（原 run {run_id}）",
                 )
                 return
+            # code-review item 2d15a48ece2a：先解析冷却到期时刻，缺失/非法
+            # （不可解析为有限数值，NaN/inf 视同非法）时放弃排程并记 WARNING
+            # （按既有失败路径收场升级人工），不计配额、不排 Timer——旧写法
+            # `or 0.0` 会得大负数被 max(0.0, …) 归零、Timer 立即触发，在
+            # provider 限流窗口内烧掉唯一一次重派额度（重派仍 429 即按失败
+            # 收场），违背「冷却到期前 MUST NOT 重派」契约。在占额前置判定，
+            # 放弃路径无需回滚。
+            try:
+                cooldown_until_epoch = float(intent.get("cooldown_until_epoch"))
+            except (TypeError, ValueError):
+                cooldown_until_epoch = None
+            if cooldown_until_epoch is None or not math.isfinite(cooldown_until_epoch):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 429 重派放弃：intent 无合法 "
+                    f"cooldown_until_epoch（原 run {run_id}，按既有失败路径"
+                    f"收场升级人工）",
+                )
+                return
             # 登记即占额（防并发意图重复消耗/重复排队）；消费侧若因单飞放弃
             # 不退额——防风暴优先。
             self._code_review_ratelimit_redispatches += 1
-            delay = max(0.0, float(intent.get("cooldown_until_epoch") or 0.0) - time.time())
+            delay = max(0.0, cooldown_until_epoch - time.time())
             timer = threading.Timer(
                 delay,
                 self._consume_ratelimit_redispatch,
@@ -3315,9 +3337,21 @@ class AdminMonitor:
 
         exclude_run_id：重派判定时排除「正被孤儿处理的中断 run」自身——其
         pending 记录是本判定的考察对象，不得把自己误判为「已有在飞 run」。
+
+        判定异常 fail-open 返回 False 并记 WARNING（同 _spec_has_active_admin_run
+        口径，守卫故障不阻断调用方当轮的摄取/重派扫描）。
         """
+        try:
+            records = self.store.read_all()
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"_has_active_admin_run_for 判定异常 fail-open（{spec}）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
         by_run = _merge_admin_runs(
-            self.store.read_all(),
+            records,
             spec=spec,
             signal_type=signal_type,
             exclude_run_id=exclude_run_id,
@@ -4823,18 +4857,29 @@ class AdminMonitor:
         # error/done（本方法的返回值语义），故只对齐窗口口径。
         try:
             size = run_file.stat().st_size
+            first_line_truncated = False
             with run_file.open("rb") as f:
                 if size > _RUN_TAIL_READ_WINDOW:
-                    f.seek(size - _RUN_TAIL_READ_WINDOW)
+                    start = size - _RUN_TAIL_READ_WINDOW
+                    # 边界判定（code-review item 190881dd0168，同
+                    # _read_tail_error_entries 的 96293d84951d 修正）：回看
+                    # start 前一字节，恰为换行符说明 start 本身是完整行的
+                    # 起点——该完整行必须保留解析（若它是尾部唯一终态 error
+                    # 事件，误丢会让 last 退化到更早事件、已失败 run 被误判
+                    # running）；仅 mid-line 切入时才丢截断残行。读完这一字节
+                    # 后文件指针恰停在 start，下方 f.read() 仍从 start 起读。
+                    f.seek(start - 1)
+                    first_line_truncated = f.read(1) != b"\n"
                 tail = f.read().decode("utf-8", "replace")
         except OSError:
             return "empty"
         last = None
-        # 窗口首行是从字节窗口切入的上一行残段，必须丢弃（对齐 liveness
-        # _file_tail_is_terminal 与 dashboard _read_run_lines 读取范式）；
-        # 仅 seek 分支丢弃——size <= 窗口时为全量读，首行完整。
+        # 仅 seek 分支且 mid-line 切入时，窗口首行是从字节窗口切入的上一行
+        # 残段，必须丢弃（对齐 liveness _file_tail_is_terminal 与 dashboard
+        # _read_run_lines 读取范式）；边界恰落行首或 size <= 窗口（全量读）
+        # 时首行完整，保留。
         lines = tail.split("\n")
-        if size > _RUN_TAIL_READ_WINDOW:
+        if first_line_truncated:
             lines = lines[1:]
         for line in lines:
             line = line.strip()
