@@ -14,7 +14,7 @@
 import { App, Card, Checkbox, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import HookManager from '@/components/HookManager';
-import { getHookAudit } from '@/services/dashboard';
+import { getConfig, getHookAudit } from '@/services/dashboard';
 import type { ConfigData, HookAuditRecord, HookConfig } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -84,9 +84,15 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
   const handleSave = async (nextGlobal: HookConfig[]) => {
     setSaving(true);
     try {
+      // 基底用保存前重拉的最新配置，不用组件内 config 快照：后端对 hooks 段是
+      // 「patch 存在即整体替换」语义，快照可能已过期（页面挂载/上次保存后，
+      // 另一标签的 SPEC 详情 Hook 页签或 CLI 直改过 hooks），以快照合并会静默
+      // 回退他处的修改（code-review item 26586e4395cd）
+      const latest = await getConfig(project);
+      const latestHooks = latest?.hooks ?? {};
       await onSave({
         hooks: {
-          ...(config.hooks || {}),
+          ...latestHooks,
           global: nextGlobal,
         },
       });
@@ -102,7 +108,10 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
   const handleTogglePushRestart = async (on: boolean) => {
     setSaving(true);
     try {
-      await onSave(pushRestartSavePayload(config.hooks, on));
+      // 基底用保存前重拉的最新配置（同 handleSave：patch 存在即整体替换，
+      // 快照合并会静默回退他处的修改）（code-review item 26586e4395cd）
+      const latest = await getConfig(project);
+      await onSave(pushRestartSavePayload(latest?.hooks, on));
     } catch (e) {
       message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     } finally {
