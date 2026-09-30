@@ -608,9 +608,13 @@ class SpecReviewManager:
             # TypeError 逃出 consume_review_result，绕过失败分类/重试与冻结路径
             # （get 默认值只兜「键缺失」，兜不住显式 null）。`or ""` 归一 falsy
             # 值、str() 兜底非字符串，与 findings 元素级校验同族收口。
+            # blocked_summary 统一截断（code-review item cf117513de9e）：detail 由
+            # LLM 产出、长度无上界，未经截断进 STATE error/description/evidence 会
+            # 撑爆 STATE 行、影响解析与面板展示；同文件日志侧已有 [:200]、recovery.py
+            # 写 evidence 有 [:120] 先例，此处源头统一截断，日志侧 [:200] 保留现状。
             blocked_summary = (
                 "; ".join(str(f.get("detail") or "") for f in blocking) if blocking else "无详情"
-            )
+            )[:500]
 
             entry_now = self.state_machine.read_one(spec_name) or {}
             try:
