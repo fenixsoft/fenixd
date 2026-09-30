@@ -317,6 +317,53 @@ class TestCodeReviewRoutesParse(unittest.TestCase):
                 code_review_routes._parse_iso_utc("2026-09-30T10:33:00"))
 
 
+def _old_iso_to_local_dt(iso_str):
+    """4.1 收拢前旧实现（code_review/self_review 逐字重复副本）。"""
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+class TestIsoToLocalDtCollapse(unittest.TestCase):
+    """4.1 重复副本收拢：既有调用点输入新旧逐项相等（naive 本地 / None）。"""
+
+    def test_equivalent_on_legal_and_illegal_corpus(self):
+        """spec Scenario「重复副本删除后行为等价」：Z/+00:00/naive/垃圾串/
+        None 新旧返回值逐项相等。"""
+        from core import code_review, self_review
+        with TZAsiaShanghai():
+            corpus = [
+                "2026-09-30T10:33:00Z",       # Z 后缀
+                "2026-09-30T10:33:00+00:00",  # +00:00
+                "2026-09-30T10:33:00",        # naive
+                "2026-09-30T10:33:00+08:00",  # 带偏移
+                "2026-09-30",                 # 纯日期
+                "garbage", "", None,          # 垃圾串 / 空 / None
+            ]
+            for raw in corpus:
+                expected = _old_iso_to_local_dt(raw)
+                self.assertEqual(code_review._iso_to_local_dt(raw), expected, raw)
+                self.assertEqual(self_review._iso_to_local_dt(raw), expected, raw)
+
+    def test_output_is_naive_local_safe_for_window_compare(self):
+        """输出恒为 naive 本地（aware 折算本地后剥时区）——与窗口边界的
+        naive ``datetime.now()`` 直接相减不抛 TypeError（MUST NOT 接 aware）。"""
+        from core import code_review
+        with TZAsiaShanghai():
+            dt = code_review._iso_to_local_dt("2026-09-30T02:33:00Z")
+            self.assertIsNone(dt.tzinfo)
+            self.assertEqual(
+                (dt.year, dt.month, dt.day, dt.hour), (2026, 9, 30, 10))
+            delta = (datetime.now() - dt).total_seconds()  # naive-naive 可比较
+            self.assertLess(delta, 86400)
+
+
 class TestEvolutionParseIso(unittest.TestCase):
     """3.5 evolution 切换：naive 附本地 tzinfo 语义不变（收拢等价）。"""
 
