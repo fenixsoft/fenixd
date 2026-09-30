@@ -389,8 +389,23 @@ def _load_verify_contract_with_raw(
             "verify_contract",
             f"verify.yaml ready 段数值非法（回退缺省）: {', '.join(bad_ready_values)}",
         )
+    # url 类型守卫（code-review item b26b723c2ec8）：非字符串值（如
+    # ``url: 404`` 或缩进错误写成的映射）旧实现被 str() 强转成字面量形态路径
+    # （"404"、"/{'a': 1}"），probe_ready 对着无意义路径轮询满 timeout 后报
+    # 「就绪探针超时」，用户难定位到 ready.url 类型写错——记 warning（含原文
+    # repr）后回退缺省 "/"，与同段 expect/timeout 的「告警＋回退缺省」处理
+    # 同口径（item 97f9f0e1a56e）。
+    raw_url = ready_data.get("url")
+    if raw_url is not None and not isinstance(raw_url, str):
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml ready.url 非法（须为字符串路径，回退缺省 \"/\"）: "
+                f"{raw_url!r}",
+            )
+        raw_url = None
     ready = ReadyProbe(
-        url=str(ready_data.get("url") or "/") or "/",
+        url=raw_url or "/",
         expect=_positive_int_or_default(raw_expect, 200),
         timeout=_positive_int_or_default(raw_timeout, DEFAULT_READY_TIMEOUT),
     )
@@ -679,7 +694,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # 避免误读为已执行步数。
     prepare_steps_run = len(contract.prepare)
     if contract.prepare:
-        err = run_prepare_steps(contract, project_root)
+        err = run_prepare_steps(contract, project_root, logger)
         if err:
             prepare_ok = False
             prepare_error = err
@@ -884,13 +899,30 @@ def read_config_deps_mode(project_root) -> str:
         return ""
 
 
-def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[str]:
+def run_prepare_steps(
+    contract: VerifyContract, project_root: Path, logger=None
+) -> Optional[str]:
     """在项目根逐条执行构建步骤。成功返回 None，失败返回人类可读错误说明。
 
     构建失败＝验证环境错误（调用方据此判不可达，交验证门禁拦截），不得
     静默跳过——带着陈旧产物继续验证正是本契约要消灭的场景。
     """
     for i, step in enumerate(contract.prepare, 1):
+        # run 形态守卫（code-review item 7525be4bf368）：loader 侧已用
+        # _prepare_run_valid 拦掉映射/含非字符串元素的 list 形态 run
+        # （item 716108a0bdb4/8a6f8440804e），但本函数可被绕过 loader 的调用方
+        # （测试夹具、未来新入口）以手工构造的 VerifyContract 直达——dict 形态
+        # run 此前经下方 str() 序列化成 Python 字面量进 shell=True 执行。判
+        # 非法记 warning 忽略该步，与 loader 的「记告警忽略该步」惯例对齐。
+        if not _prepare_run_valid(step.run):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"prepare 第 {i} 步 run 非法（须为非空字符串或全字符串列表，"
+                    f"已忽略该步——构建步骤悄悄缺失会验证陈旧产物）: "
+                    f"{repr(step.run)[:200]}",
+                )
+            continue
         cwd = (Path(project_root) / step.cwd) if step.cwd else Path(project_root)
         cmd = step.run if isinstance(step.run, list) else str(step.run)
         use_shell = not isinstance(step.run, list)
@@ -1034,7 +1066,7 @@ class CommandVerifyServer:
             return False
 
     @staticmethod
-    def _owned_listening_ports(pgid: Optional[int]) -> list:
+    def _owned_listening_ports(pgid: Optional[int], timeout: float = 5.0) -> list:
         """本进程组（start_new_session 进程森林）持有的 TCP 监听端口。
 
         经 ``ss -tlnp`` 属主 pid → pgid 匹配。ss 不可用/无匹配返回空列表
@@ -1044,7 +1076,9 @@ class CommandVerifyServer:
         if pgid is None:
             return []
         try:
-            r = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(
+                ["ss", "-tlnp"], capture_output=True, text=True, timeout=timeout
+            )
         except Exception:
             return []
         ports = []
@@ -1092,7 +1126,14 @@ class CommandVerifyServer:
             if injected and _probe_in_budget(f"http://127.0.0.1:{injected}/"):
                 return injected
             # 2) 进程归属发现（实例无视注入端口自绑端口的兜底）
-            for p in self._owned_listening_ports(pgid):
+            # ss 调用同样受 deadline 预算钳制（code-review item 879a86c9c70a）：
+            # 旧实现固定 timeout=5s，deadline 将尽的一轮仍可能阻塞满 5s，叠加
+            # 尾部探针使端口发现总时长顶到 ready.timeout+5s，突破调用方声明的
+            # 就绪等待上限——按剩余预算取 min（下限 0.5s 保 ss 自身有完成
+            # 机会），对齐 _probe_in_budget 的预算纪律。
+            for p in self._owned_listening_ports(
+                pgid, timeout=min(5.0, max(0.5, deadline - time.monotonic()))
+            ):
                 if p != injected and _probe_in_budget(f"http://127.0.0.1:{p}/"):
                     return p
             # 3) 邻近扫描（legacy：服务自身上探邻近端口的存量契约）
@@ -1538,7 +1579,7 @@ _ORIGIN_TARGET_FIELDS = {
 }
 
 
-def _rewrite_origin_in_scenarios(raw, base_url: str) -> tuple[list, int]:
+def _rewrite_origin_in_scenarios(raw, base_url: str, logger=None) -> tuple[list, int]:
     """在场景 dict 列表上就地改写目标地址 origin，返回 (新列表, 改写处数)。
 
     只动作于 ``navigate`` / ``http_request`` / ``sse_connect`` 步骤的目标字段
@@ -1555,6 +1596,24 @@ def _rewrite_origin_in_scenarios(raw, base_url: str) -> tuple[list, int]:
     prefix = base_url.rstrip("/")
 
     def _rewrite_value(value: str) -> tuple[str, int]:
+        # userinfo/IPv6 形态守卫（code-review item 8aca6686700c）：
+        # _URL_ORIGIN_RE 只界定 host[:port]——对 ``https://user:pass@host/path``
+        # 匹配到 "https://user" 即止（``:pass`` 非 ``:数字``），前缀替换会产出
+        # ``http://127.0.0.1:PORT:pass@host/path`` 的非法 URL，步骤必然失败且
+        # 报错与根因（改写）无关；IPv6 字面量主机（``http://[::1]:8000/``）同样
+        # 只吞到空串边界。按 authority 界定（scheme 后、首个 ``/`` 前）检测：
+        # 含 ``@``（userinfo）或以 ``[`` 开头（IPv6）即跳过改写记 warning，保留
+        # 原地址交运行时 rewrite_origin 通道兜底——仅路径/query 内嵌 ``@`` 的
+        # 正常 URL 不受影响。
+        authority = value.split("://", 1)[-1].split("/", 1)[0]
+        if "@" in authority or authority.startswith("["):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"场景目标含 userinfo/IPv6 形态地址，跳过 origin 改写"
+                    f"（保留原地址）: {value[:120]}",
+                )
+            return value, 0
         # code-review item 5ea13f017c5c：只改写字符串起点锚定的目标 origin——
         # 全局 subn 会把 query/路径内嵌的其它绝对 URL（?redirect=、CDN 等
         # 跨域引用）一并改成被测实例地址。与运行时 ApiRunner.rewrite_origin
@@ -1651,7 +1710,7 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
     if not isinstance(raw, list) or not base_url:
         return 0
 
-    rewritten, n = _rewrite_origin_in_scenarios(raw, base_url)
+    rewritten, n = _rewrite_origin_in_scenarios(raw, base_url, logger)
     if not n:
         return 0
     # 原子写回（同目录临时文件 + os.replace，与 verdict_check.save_report 同约定）：
@@ -1844,6 +1903,11 @@ def entry_preflight_error(cmd: str, cwd: Path) -> Optional[str]:
 
 SELFCHECK_FILENAME = "contract_selfcheck.json"
 
+# 消费期 ready 鉴别力自检的探测窗口上限（秒）。契约 ready.timeout（缺省 60s）
+# 是「起实例后等就绪」的预算，自证不起实例、只对现存实例做鉴别力抽查，窗口
+# 按轻量定位单独钳制（code-review item bf322f67f5dd）。
+SELFCHECK_READY_TIMEOUT = 5
+
 
 def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = "") -> Optional[str]:
     """契约消费期轻量自证：mtime 快照门 + serve 段合法性 + ready 鉴别力自检。
@@ -1926,7 +1990,20 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
 
     # 3. ready 探针鉴别力自检（仅现存可达实例，不起实例）
     if base_url:
-        ok, note = probe_ready(base_url, contract.ready)
+        # 消费期探测窗口钳制（code-review item bf322f67f5dd）：base_url 非空只
+        # 代表上游记录过地址，实例可能已被回收——直接复用 probe_ready 会按契约
+        # 声明的 ready.timeout（缺省 60s）整窗轮询，消费期自证在验证关键路径上
+        # 退化成最长一分钟的阻塞。按自证「轻量」定位把探测窗口钳到
+        # SELFCHECK_READY_TIMEOUT（仍足够判死实例与 SPA fallback 鉴别力）；
+        # url/expect 原样保留，契约 ready.timeout 的完整语义只作用于起实例后
+        # 的正式就绪等待（validate_contract / serving），不可达大声失败的既有
+        # 语义（失败不写快照、下轮重证）不变。
+        ready_probe = ReadyProbe(
+            url=contract.ready.url,
+            expect=contract.ready.expect,
+            timeout=min(contract.ready.timeout, SELFCHECK_READY_TIMEOUT),
+        )
+        ok, note = probe_ready(base_url, ready_probe)
         if not ok:
             return f"轻量自证失败（ready 鉴别力）: {note}"
 
