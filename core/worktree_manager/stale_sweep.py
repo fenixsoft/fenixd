@@ -134,6 +134,15 @@ class G7StaleSweepMixin:
                             f"Stale worktree rmtree fallback also failed "
                             f"(non-blocking): '{wt_dir}' kept for next sweep",
                         )
+                    # 兜底删除后先清注册再删分支（69bc35ca6e4c）：rmtree 只删目录
+                    # 不清 git 注册，陈旧注册仍 checkout 该分支会令下方 branch -D
+                    # 被 git 拒绝——对齐 lifecycle.cleanup() 先 prune 再 -D 的次序；
+                    # 收尾 prune 虽能清注册但目录已消失、分支无重试入口即残留。
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "worktree", "prune"],
+                        capture_output=True,
+                        timeout=10,
+                    )
                 if branch and branch != "HEAD":
                     # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
                     # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用

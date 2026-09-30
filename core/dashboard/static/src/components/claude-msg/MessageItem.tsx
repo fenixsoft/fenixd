@@ -9,18 +9,21 @@ import { formatUsageLimitText } from './chatFormatting';
 // 隐藏判定与 toolGrouping 同源单点（code-review item 2faec963d2ea /
 // 1dd4d551b484）：渲染与分组共用同一谓词，防双写漂移
 import { isThinkingHidden } from './toolGrouping';
-import { Markdown } from './Markdown';
+import { Markdown, copyToClipboard } from './Markdown';
 import { Reasoning } from './Reasoning';
 import ClaudeLogo from './ClaudeLogo';
 import ToolCard from './ToolCard';
 
+// 复制统一复用 Markdown.tsx 的 copyToClipboard（item 562395f77242）：带
+// execCommand 降级路径，非安全上下文（如 http://<局域网IP> 访问 dashboard，
+// navigator.clipboard 为 undefined）下复制不再静默失效
 function MessageCopyControl({ content }: { content: string }) {
   return (
     <button
       type="button"
       className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
       title="复制"
-      onClick={() => navigator.clipboard?.writeText(content).catch(() => {})}
+      onClick={() => copyToClipboard(content).catch(() => {})}
     >
       复制
     </button>
@@ -210,10 +213,16 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
               !message.isToolUse &&
               String(message.content || '').trim().length > 0 && (
                 /* 复制口径与气泡展示同源（item 1c90277944ce）：气泡渲染的是
-                   formatUsageLimitText 后的文本，复制同源格式化文本，保证
-                   「剪贴板 == 气泡所见」（用户消息侧同理复制其原样展示的 content） */
+                   formatUsageLimitText 后的文本（JSON 正文分支则为美化后的
+                   jsonFormattedContent，item d49ecef4bdd2），复制同源格式化
+                   文本，保证「剪贴板 == 气泡所见」（用户消息侧同理复制其原样
+                   展示的 content） */
                 <div className="group mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400">
-                  <MessageCopyControl content={formattedMessageContent} />
+                  <MessageCopyControl
+                    content={
+                      jsonFormattedContent !== null ? jsonFormattedContent : formattedMessageContent
+                    }
+                  />
                 </div>
               )}
           </div>

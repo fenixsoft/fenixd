@@ -432,7 +432,7 @@ class G2LegacyRegistryMixin:
         """对单条已出册遗产执行物理回收序列（consume / sweeper 共用单一实现）。
 
         完整销毁序列：git worktree remove --force → 失败且目录仍在时 rmtree
-        兜底 → branch -D（跳过 HEAD）→ worktree prune。rmtree 兜底统一采用
+        兜底 → worktree prune → branch -D（跳过 HEAD）。rmtree 兜底统一采用
         较保守的 wt.exists() 判定，避免对已消失目录无条件 rmtree。
 
         三步彼此隔离容错（code-review item 2e481b11b82f）：任一步失败仅记
@@ -482,6 +482,43 @@ class G2LegacyRegistryMixin:
                     f"Legacy {failure_label} worktree-remove failed for "
                     f"'{spec_name}': {e}",
                 )
+                # 异常兜底（code-review item 7ad969aa114b）：remove 抛异常
+                # （TimeoutExpired / OSError）时目录可能仍在，与 returncode != 0
+                # 分支同款做 rmtree 兜底——否则残留目录继续被存活探测当作有效
+                # worktree 且无重试入口；兜底失败按同款口径留痕，不向上抛。
+                if wt.exists():
+                    try:
+                        shutil.rmtree(str(wt))
+                    except OSError as e:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Legacy {failure_label} rmtree fallback failed for "
+                            f"'{spec_name}': {e} — residual dir may remain at {wt}",
+                        )
+        # prune 提前到 branch -D 之前（code-review item 41d5c0def055）：remove
+        # 失败而 rmtree 兜底成功时，该 worktree 的注册（.git/worktrees 条目）
+        # 尚未清理，branch -D 会因「分支仍被该 worktree checkout」被 git 拒绝
+        # 且记录已出册无重试入口，死分支就此残留；先 prune 清掉陈旧注册再删
+        # 分支，对齐 cleanup() rmtree 兜底块内先 prune 再 branch -D 的成功次序
+        # （prune 幂等，remove 成功的正常路径为 no-op）。
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root), "worktree", "prune"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} prune failed for '{spec_name}': "
+                    f"{(res.stderr or '').strip()[:200]}",
+                )
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy {failure_label} prune failed for '{spec_name}': {e}",
+            )
         if branch and branch != "HEAD":
             # ── 分支在飞引用保护（code-review item 77071d383b94）──
             # 删分支前复核该分支是否被 STATE 在飞/待收口 spec 引用
@@ -522,22 +559,4 @@ class G2LegacyRegistryMixin:
                         f"Legacy {failure_label} branch-delete failed for "
                         f"'{spec_name}': {e}",
                     )
-        try:
-            res = subprocess.run(
-                ["git", "-C", str(self.project_root), "worktree", "prune"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if res.returncode != 0:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Legacy {failure_label} prune failed for '{spec_name}': "
-                    f"{(res.stderr or '').strip()[:200]}",
-                )
-        except Exception as e:
-            self.logger.warning(
-                "worktree_manager",
-                f"Legacy {failure_label} prune failed for '{spec_name}': {e}",
-            )
 

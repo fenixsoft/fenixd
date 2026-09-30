@@ -1439,7 +1439,7 @@ class G4MergebackMixin:
     def _drop_backup(self, backup) -> None:
         """merge 成功后按字节一致性决定备份去留（fix-merge-untracked-guard D3）。
 
-        - 备份中每个文件与 merge 后 HEAD 中同路径文件字节级一致 → 删除备份目录（现状语义）
+        - 备份中每个文件与主树工作区同路径文件字节级一致 → 删除备份目录（现状语义）
         - 存在不一致文件 → 保留备份目录不删，写 logger.warning 列出不一致路径与备份位置，
           防止主树上的有价值改动被分支版本静默覆盖后丢失
 

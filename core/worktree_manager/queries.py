@@ -12,6 +12,7 @@ design D3 须留类命名空间——mixin 上的 staticmethod 经继承仍挂�
 
 from __future__ import annotations
 
+import glob
 import os
 import subprocess
 import time
@@ -475,7 +476,9 @@ class G8QueryMixin:
         candidates: list = []  # {branch, ahead, main_is_ancestor, committerdate}
         try:
             for prefix in prefixes:
-                pattern = f"refs/heads/{prefix}/{spec_name}-*"
+                # spec 名套 glob.escape（与 locks._latest_stream_mtime 同口径），
+                # 防 for-each-ref pattern 按 fnmatch 展开元字符致枚举过配。
+                pattern = f"refs/heads/{prefix}/{glob.escape(spec_name)}-*"
                 res = subprocess.run(
                     [
                         "git",

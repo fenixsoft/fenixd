@@ -43,6 +43,18 @@ function summarize(value: unknown, depth = 0): string {
   return String(value);
 }
 
+// 摘要单值长度上限（code-review item 407e897b563e）：summarize 对字符串值原样
+// 返回、description 分支原样 trim 返回，数千字符的 command/prompt 会整串进入
+// 卡片预览与组头摘要。对齐 runEvents.ts 系统条摘要 80 字上限的口径；该文件的
+// truncateText 为模块私有未导出，在此实现等价行为（trim + 超长截断加省略号）。
+// 渲染层虽有 CSS truncate 视觉兜底，但摘要作为文本内容渲染，超长串仍整段进 DOM。
+const SUMMARY_MAX_LENGTH = 80;
+
+function truncateSummary(text: string): string {
+  const t = text.trim();
+  return t.length > SUMMARY_MAX_LENGTH ? `${t.slice(0, SUMMARY_MAX_LENGTH)}…` : t;
+}
+
 // 卡片语义摘要（design D3）：优先取工具输入的 description 字段（agent 写的意图
 // 描述）；缺失时按工具类型回落既有 summarize 兜底（Bash 用 command 原文、文件类
 // 工具用 file_path/path，其余沿用 primaryKeys）。
@@ -51,10 +63,12 @@ export function describeToolInput(toolInput: unknown): string {
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     const description = (parsed as Record<string, unknown>).description;
     if (typeof description === 'string' && description.trim()) {
-      return description.trim();
+      return truncateSummary(description);
     }
   }
-  return summarize(parsed);
+  // 出口统一截断：summarize 的 key=value / preferred 首值拼接以 key 或首值开头，
+  // 整串截断仍保留前缀语义，无需下沉到 summarize 各叶子值
+  return truncateSummary(summarize(parsed));
 }
 
 // 卡片预览（verification BUG-01 修复）：task_started 凭 tool_use_id 回填的

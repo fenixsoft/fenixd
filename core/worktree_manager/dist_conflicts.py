@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 
 from pathlib import Path
+from typing import Optional
 
 from core.worktree_manager import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
@@ -124,6 +125,12 @@ def run_dist_build(
             cwd=str(static_dir),
             capture_output=True,
             text=True,
+            # errors="replace"（对齐 wip_checkpoint.py 惯例）：非 UTF-8 构建
+            # 输出（本地化工具链 GBK 等）按 strict 解码抛 UnicodeDecodeError
+            # ——它属 ValueError 族，不在下方 except 范围内，会沿调用链上抛；
+            # 降级为可截断的 error_detail 现场而非未捕获异常。
+            encoding="utf-8",
+            errors="replace",
             timeout=600,
         )
         if r.returncode != 0:
@@ -205,6 +212,17 @@ class G5DistConflictsMixin:
 
             # 产物路径无条件对齐 HEAD（HEAD 存在→取 HEAD 版；HEAD 已删→删除）
             head_artifacts = self._artifact_paths("HEAD")
+            if head_artifacts is None:
+                # HEAD 产物集不可知（item 57d34aa036b5）：命令失败时按保守
+                # 分支放弃本轮自愈、交回调用方语义路径（abort 分类），不得把
+                # 空集当「HEAD 已删」执行 git rm——HEAD 实际还存在的产物会被
+                # 错删且随 merge 提交固化。
+                self.logger.warning(
+                    "worktree_manager",
+                    "Build-artifact self-heal skipped: HEAD artifact paths "
+                    "unknown (ls-tree failed)",
+                )
+                return False
             for p in artifact_paths:
                 if p in head_artifacts:
                     co = subprocess.run(
@@ -558,9 +576,21 @@ class G5DistConflictsMixin:
                 timeout=60,
             )
             if amend.returncode != 0:
-                # 恢复干净：unstage + dist 回到提交版，不让脏树阻塞后续 merge
+                # 恢复干净：unstage + dist 回到提交版，不让脏树阻塞后续 merge。
+                # pathspec 限定 unstage 范围（item 75e4515b7204）：与上方
+                # foreign/upstream 分支同款——不带 pathspec 的 reset 会把主树
+                # 既有暂存（stash 降级残留等）一并 unstage，与 add -A 的
+                # static 根作用域对称。
                 subprocess.run(
-                    ["git", "-C", str(self.project_root), "reset", "-q"],
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "reset",
+                        "-q",
+                        "--",
+                        DASHBOARD_STATIC_ROOT,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -638,7 +668,7 @@ class G5DistConflictsMixin:
         except (subprocess.SubprocessError, OSError):
             return False
 
-    def _artifact_paths(self, rev: str) -> set:
+    def _artifact_paths(self, rev: str) -> Optional[set]:
         """列出 <rev> 中全部构建产物路径（按目录层次容错判定，全树枚举）。
 
         全树枚举（code-review item 044c4c78d747）：产物路径由项目配置驱动，
@@ -669,7 +699,16 @@ class G5DistConflictsMixin:
             timeout=30,
         )
         if ls.returncode != 0:
-            return set()
+            # 命令失败 ≠ HEAD 无产物（item 57d34aa036b5）：瞬时故障（超时/
+            # git 锁争用）下静默返回空集会让调用方把「HEAD 产物集不可知」
+            # 等价为「HEAD 已删」而落 git rm 分支——留痕并返回 None，与
+            # checkout/git rm 失败分支的 warning 口径一致。
+            self.logger.warning(
+                "worktree_manager",
+                f"git ls-tree {rev} failed during artifact paths probe: "
+                f"{(ls.stderr or '').strip()[:200]}",
+            )
+            return None
         # 产物判定走实例判定器（evo-merge-back-wip-artifact-scope D3），与其余
         # 调用点同一口径。
         return {
