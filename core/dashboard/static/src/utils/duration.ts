@@ -4,8 +4,8 @@
 // 口径：秒/分/时三段进位，末段为零省略（59秒 / 1分1秒 / 1时0分5秒）。
 
 export function fmtDuration(sec?: number | null) {
-  // 显式 null/undefined 判等（code-review item 95013c6683be）：宽松相等被
-  // 项目 lint 禁止，意图为「null 或 undefined」时逐值显式比较。
+  // 显式 null/undefined 判等（code-review item 95013c6683be）：意图为只排除
+  // 「null 或 undefined」两种空值（0 等合法数值须保留展示），逐值显式比较。
   if (sec === null || sec === undefined || Number.isNaN(sec)) return '';
   let s = Math.max(0, Math.round(sec));
   if (s < 60) return `${s}秒`;

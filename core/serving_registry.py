@@ -261,18 +261,36 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     return True
 
 
-def kill_process_group(pid: int) -> bool:
+def kill_process_group(pid: int, logger=None) -> bool:
     """进程组 SIGTERM → 短等待 → SIGKILL 兜底（同 CommandVerifyServer.stop 语义）。
 
     就绪等待以「进程组非空」（killpg(pgid, 0)）为判据而非组长存活，避免
     shell 形态命令后台化实例后组长先退、组内存活成员逃过 SIGKILL 兜底。
+
+    Args:
+        pid: 目标进程组长 pid。
+        logger: 可选日志器；EPERM 放弃收割时留痕（与 sweep 的 identity
+            mismatch 同款 warning）。
 
     Returns: 是否向进程组发出过信号。
     """
     sent = False
     try:
         pgid = os.getpgid(pid)
-    except (PermissionError, OSError):
+    except ProcessLookupError:
+        pgid = None  # 组长已亡：走下方组长探针分支
+    except PermissionError:
+        # EPERM（进程属其他用户/受限命名空间）同样无从探组：此时 pid_alive
+        # 可能恒 True，固定 3 秒空转后仍发不出任何信号——直接放弃并留痕，
+        # 避免白等与静默放弃（行为仍偏保守，不误杀）。
+        if logger:
+            logger.warning(
+                "serving_registry",
+                f"skip kill pid={pid}: getpgid denied (EPERM, process owned "
+                f"by another user or restricted namespace) — no signal sent",
+            )
+        return sent
+    except OSError:
         pgid = None
     if pgid is not None:
         try:
@@ -334,7 +352,7 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
             if _harvest_identity_ok(entry, pid):
                 # 仅在真正向进程组发出过信号时计数（进程在 pid_alive 与
                 # getpgid 之间已退出的 already-gone 情形不算，避免虚报）
-                if kill_process_group(pid):
+                if kill_process_group(pid, logger):
                     harvested += 1
             elif logger:
                 logger.warning(

@@ -18,6 +18,7 @@ import json
 import sys
 import shutil
 import tempfile
+import traceback
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -274,4 +275,13 @@ if __name__ == "__main__":
     if case not in COMMANDS:
         print(json.dumps({"error": f"unknown case: {case}", "cases": list(COMMANDS)}, ensure_ascii=False))
         sys.exit(1)
-    COMMANDS[case](spec)
+    try:
+        COMMANDS[case](spec)
+    except Exception as e:
+        # 用例内意外异常兜底：失败路径与既有守卫分支同构（stdout JSON + exit 1）
+        print(json.dumps({
+            "error": f"{type(e).__name__}: {e}",
+            "case": case,
+            "traceback": traceback.format_exc(),
+        }, ensure_ascii=False))
+        sys.exit(1)

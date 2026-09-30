@@ -75,6 +75,9 @@ IMPL_RESULT_FILE_OWNERS: Set[str] = {"implementer", "fast-track"}
 # ============================================================================
 
 # 代码文件扩展名（步骤 2 遮蔽后检查）
+# 注意：.json 等非代码扩展名有意不列入本清单——incident 产物路径为
+# 读取/记录语义，不算代码文件特征；排除由清单缺省隐式完成，本处为
+# 单一说明，各判定处不做逐点特判。
 _CODE_EXTENSIONS: tuple = (
     ".py",
     ".ts",
@@ -115,7 +118,9 @@ _SINGLE_CHAR_VERB_NEGATION_PREFIXES: str = "改编誊抄读"
 # 正则
 # ============================================================================
 
-# 任务行匹配（复用 core/deliverables.py 的 _TASKS_ITEM_RE 形态）
+# 任务行匹配（参照 core/deliverables.py 的 _TASKS_ITEM_RE 另行定义，非共享
+# 常量：两处形态已各自独立演进——本处需捕获任务 id 且允许连字符后任意
+# 单空白，deliverables.py 为连字符后恒为空格、无捕获）
 _TASKS_ITEM_RE = re.compile(r"^-\s\[[ x]\]\s+([^\s]+)")
 
 # 已登记核心产物的路径引用：.fenix/verify-progress/<spec>/<核心产物>
@@ -178,7 +183,8 @@ def _line_points_to_code(line: str, mask_literal: str = "") -> bool:
     """
     masked = line.replace(mask_literal, "") if mask_literal else line
 
-    # 代码扩展名（排除 incident 路径里的 .json 等非代码扩展名——特判）
+    # 代码扩展名（.json 等非代码扩展名不在 _CODE_EXTENSIONS 清单内——
+    # incident 产物路径为读取/记录语义，有意不算代码特征，见清单处说明）
     if _CODE_EXT_RE.search(masked):
         return True
 
@@ -235,10 +241,16 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
             task_id = m.group(1)
 
         # ---- 步骤 1a：已登记核心产物的路径限定引用 ----
+        # 单行可能重复提及同一产物路径：同字面量只判一次（与步骤 1b 的
+        # seen_dirs 去重口径一致，避免输出重复违规消息）
+        seen_artifacts: Set[str] = set()
         vp_artifacts = list(_VP_ARTIFACT_RE.finditer(line))
         core_hits: List[str] = []
         for match in vp_artifacts:
             literal = match.group(0)
+            if literal in seen_artifacts:
+                continue  # 同字面量只报一次
+            seen_artifacts.add(literal)
             artifact_key = _match_artifact_key(literal)
             if artifact_key is None:
                 continue  # 防御：未登记文件（理论不可达）

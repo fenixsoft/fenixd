@@ -120,7 +120,10 @@ def commit_wip_checkpoint(
         logger.warning(
             "wip_checkpoint",
             f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed out "
-            f"after {timeout}s in '{path}' — skip (non-blocking)",
+            f"after {timeout}s in '{path}' — skip (non-blocking); the "
+            f"force-killed git subprocess may leave a stale lock (index.lock "
+            f"under the worktree gitdir) — if later git ops keep failing with "
+            f"lock conflicts, inspect and remove it manually",
         )
         return False
     except (OSError, ValueError) as e:
@@ -325,7 +328,11 @@ def collapse_wip_commits(
         logger.warning(
             "wip_checkpoint",
             f"WIP collapse for branch '{branch}' timed out after {timeout}s — "
-            f"merge-back continues on uncollapsed branch (non-blocking)",
+            f"merge-back continues on uncollapsed branch (non-blocking); the "
+            f"force-killed git subprocess may leave a stale lock "
+            f"(<gitdir>/refs/heads/{branch}.lock or packed-refs.lock) — if "
+            f"later update-ref/merge-back ops keep failing with lock "
+            f"conflicts, inspect and remove it manually",
         )
         return False
     except (OSError, ValueError) as e:

@@ -233,6 +233,10 @@ def upsert_item(project_root, record: dict) -> None:
     rename 原子替换，单条更新粒度小、无长事务。MUST NOT 在锁内二次加锁。
     """
     rec = dict(record)
+    # code-review item a820db66d8fa：入参契约快速失败（与 write_items 同风格）
+    # ——记录缺字符串 id 时以裸 KeyError 从 _with_lock 穿透给调用方，难定位。
+    if not isinstance(rec.get("id"), str):
+        raise TypeError("upsert_item 期望含字符串 id 字段的单条记录，记录缺 id 无法定位写回键")
     path = items_path(project_root)
 
     def _do() -> None:
@@ -691,8 +695,15 @@ def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
         if not m or m.group(1).strip() != title:
             continue
         out = list(lines)
-        if i + 1 < len(out) and _TODO_MARKER_RE.match(out[i + 1]):
-            out[i + 1] = marker
+        # 既有标记定位与 strip_processed_entries/parse_todo_entries 同口径：
+        # 标题行与标记行之间夹的空白行忽略（跳到第一个非空白行再匹配）——
+        # 只看紧邻物理行会匹配不到隔空白行的旧标记，每次写入都再插一行新
+        # 标记、旧标记沦为孤立标记行，违反上方「原地替换（幂等）」承诺。
+        j = i + 1
+        while j < len(out) and not out[j].strip():
+            j += 1
+        if j < len(out) and _TODO_MARKER_RE.match(out[j]):
+            out[j] = marker
         else:
             out.insert(i + 1, marker)
         return out
@@ -957,6 +968,11 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     if d is None:
         return None, f"条目 id 非法（草稿路径越界风险）: {eid!r}"
     try:
+        # code-review item 85e167859717：已存在的草稿目录先整体删除重建——
+        # 上次写入中途被杀等留下的旧 capability 子目录或杂散文件若混存，
+        # accept 的 copytree 会原样带入 spec/changes 污染立项产物。
+        if d.is_dir():
+            shutil.rmtree(d)
         d.mkdir(parents=True, exist_ok=True)
         spec_sub = d / "specs" / capability
         spec_sub.mkdir(parents=True, exist_ok=True)
@@ -1173,8 +1189,12 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
                             or candidate in _archive_name_candidates(
                                 archived.name)):
                         return True
-            except OSError:
-                pass
+            except OSError as e:
+                # 归档目录遍历失败与上方 STATE 读取失败同口径保守判冲突
+                # （fail-closed，code-review item f02edb677a23）：瞬时 IO 故障
+                # 静默放行会放过与既有归档撞名的候选名，立项后产生归属歧义。
+                _logger.warning("evolution: 遍历 spec/archive 判定重名失败，保守按冲突处理: %s", e)
+                return True
         return False
 
     candidate = f"evo-{name}"

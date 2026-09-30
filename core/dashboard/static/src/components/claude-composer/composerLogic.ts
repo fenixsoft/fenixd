@@ -84,6 +84,41 @@ export function matchSlashTrigger(textBeforeCursor: string): SlashTriggerMatch |
   };
 }
 
+// ── 斜杠命令插入 ─────────────────────────────────────────────────────────
+
+/**
+ * 选中斜杠命令候选后计算新输入与光标位（useSlashCommands 的
+ * insertCommandIntoInput 抽出的纯逻辑，node --test 直测）。
+ * 斜杠显式触发（isExplicitSlash）时命令替换 slash 起的查询词，尾段从插入
+ * 点起首个空白之后保留——按首个 `\s` 切分而非仅空格：多行草稿里斜杠与空格
+ * 之间夹换行时（「/he」后面还有「\ndef ghi」），若只认空格会把换行后的
+ * 既有内容整体静默丢弃（与 replaceFileMention 同一缺陷模式，见其注释）。
+ * 按钮唤起（非斜杠触发）时命令替换 [insertionStart, selectionEnd) 选区，
+ * 选区之后的文本原样保留。
+ */
+export function applyCommandInsertion(
+  input: string,
+  commandName: string,
+  insertionStart: number,
+  selectionEnd: number,
+  isExplicitSlash: boolean,
+): { text: string; cursor: number } {
+  const textBeforeCommand = input.slice(0, insertionStart);
+  const textAfterCommandStart = input.slice(insertionStart);
+  const whitespaceIndex = textAfterCommandStart.search(/\s/);
+  const textAfterCommand =
+    isExplicitSlash && whitespaceIndex !== -1
+      ? textAfterCommandStart.slice(whitespaceIndex).trimStart()
+      : input.slice(selectionEnd);
+  const separator =
+    textBeforeCommand && !/\s$/.test(textBeforeCommand) ? ' ' : '';
+  const text = `${textBeforeCommand}${separator}${commandName}${textAfterCommand ? ` ${textAfterCommand}` : ' '}`;
+  return {
+    text,
+    cursor: `${textBeforeCommand}${separator}${commandName} `.length,
+  };
+}
+
 // ── @ 文件提及 ───────────────────────────────────────────────────────────
 
 export interface FileMentionMatch {
