@@ -285,17 +285,28 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
 def _derive_status(run_result, report) -> str:
     """从结构化数据推导终局判定：'verified' 或 'bug-found'。
 
-    run_result.status 的显式失败/未完成取值（``error``/``partial``，fast-track
-    结果文件 status 白名单 success/error/partial 中的非成功终态）一律判
-    bug-found（fail-closed 方向）：这类取值若落空，会经「无法判定 → 默认
-    verified」的宽松兜底为实际失败/未完成的验证轮合成出 ✅ 通过报告，与
-    结构化数据语义相反。
+    run_result.status 按白名单正向匹配：已知成功裁决（``verified``/
+    ``bug-found``）原样返回；已知失败/未完成取值（``error``/``partial``，
+    fast-track 结果文件 status 白名单 success/error/partial 中的非成功终态）
+    判 bug-found（fail-closed 方向）。其余非空未知取值（如 implementer/
+    planner 收工票据残留的 ``success``/``plan-ready``，或未来写手新增的
+    timeout 等未收录词）同判 bug-found——与读侧 verdict status 白名单
+    （``core/agent_runner/prompt_builder.PLANNER_RESULT_STATUS_WHITELIST``）
+    同口径：语义错位/未收录取值若落到报告分支，会经「无法判定 → 默认
+    verified」的宽松兜底为实际并非成功裁决的验证轮合成出 ✅ 通过报告，与
+    结构化数据语义及模块 fail-closed 哲学相反。status 缺失/为空仍属「无
+    状态信息」（``_load_run_result`` 允许仅携带 bugs 的合法结果文件），交由
+    下方报告分支判定。
     """
     if run_result:
         status = run_result.get("status")
         if status in ("verified", "bug-found"):
             return status
         if status in ("error", "partial"):
+            return "bug-found"
+        # code-review 07a30ddd0bae：白名单外的非空未知取值 fail-closed，
+        # 不再落报告分支经宽松兜底合成 verified 报告（取舍见 docstring）
+        if status:
             return "bug-found"
     if isinstance(report, dict):
         summary = report.get("summary")
@@ -705,7 +716,12 @@ def render_verification_report(
     # ── 结论标题（内联状态，parse_verdict 的 status 来源）──
     if status == "bug-found":
         head = "❌ 未通过（Bug Found）"
-        count_note = f"{len(bugs)} 个真实产品 Bug"
+        if bugs:
+            count_note = f"{len(bugs)} 个真实产品 Bug"
+        else:
+            # code-review ecfc5b50f951：列表缺失时「0 个真实产品 Bug」与
+            # 「未通过」标题并读自相矛盾，改中性表述（下方说明块指向明细）
+            count_note = "结构化 bug 列表缺失（见下方失败场景明细）"
     else:
         head = "✅ 通过（verified）"
         # count_note 须与状态详情行（detail_parts）一致：豁免失败（flaky/test-defect
@@ -992,7 +1008,23 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
                 or "nothing added to commit" in output
             ):
                 return  # 探测到提交之间他人已入库同内容（并发窗口）：静默跳过
+            # code-review 1ae6ca68e2b9：add 已成功而 commit 失败（index.lock
+            # 争用/hook 拒绝等）时回滚本次 add——spec/changes 的 staged 残留
+            # 会转嫁成后续 merge-back/归档流水线的「内容冲突/DRY 拒绝」阻塞。
+            # reset 失败只追加告警，不掩盖原 commit 失败日志。
+            reset = subprocess.run(
+                ["git", "reset", "-q", "--", rel_path],
+                cwd=str(proot),
+                capture_output=True,
+                text=True,
+                timeout=_REPORT_PROBE_TIMEOUT,
+            )
             _warn(f"git commit 失败: {output or f'exit {commit.returncode}'}")
+            if reset.returncode != 0:
+                _warn(
+                    f"git reset 回滚暂存失败（报告仍以 staged 态残留索引）: "
+                    f"{reset.stderr.strip() or f'exit {reset.returncode}'}"
+                )
     except (OSError, subprocess.TimeoutExpired) as e:
         _warn(f"git 入库异常: {e}")
 
