@@ -136,7 +136,7 @@ class TestCollectStatsAndSamples:
         self._make_run(root, "impl-blank-999", [
             _line(type="result", result="SPEC 内容缺失，无法实现", num_turns=1),
         ])
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
         assert stats["succeeded"] == 0
         assert stats["total"] == 1
@@ -151,7 +151,7 @@ class TestCollectStatsAndSamples:
                   argument="deploy", output="spec_content_missing detected"),
             _line(type="result", result="已退出", num_turns=1),
         ])
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
         assert stats["succeeded"] == 0
 
@@ -178,7 +178,7 @@ class TestCollectStatsAndSamples:
             _line(type="assistant", message="budget-exhausted terminated"),
             _line(type="result", result="已退出", num_turns=1),
         ])
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert len(samples) == 2
         by_id = {s["run_id"]: s["detail"] for s in samples}
         assert "impl-blank-998" in by_id
@@ -197,7 +197,7 @@ class TestCollectStatsAndSamples:
                 _line(type="result", result="预算耗尽" if i % 2 else "SPEC 内容缺失",
                       num_turns=1),
             ])
-        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0), limit=3)
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), limit=3)
         assert len(samples) == 3
         # 倒序：run_id 大（时间晚）的在前
         run_ids = [s["run_id"] for s in samples]
@@ -218,7 +218,7 @@ class TestCollectStatsAndSamples:
                   description="impl_budget_exhausted alert raised"),
             _line(type="result", result="进程正常结束", num_turns=1),
         ])
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["failed"] == 1
 
     def test_success_run_not_in_succeeded_with_review_excluded(self, tmp_path):
@@ -228,5 +228,5 @@ class TestCollectStatsAndSamples:
         self._make_run(root, "review-2026-09-13", [
             _line(type="result", result="ok", num_turns=2),
         ])
-        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 0

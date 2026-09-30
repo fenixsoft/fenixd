@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import SELF_REVIEW_DEFAULT_RUN_AT
-from core.timelib import parse_ts
+from core.timelib import from_epoch, now_local, now_utc, parse_ts, to_storage
 
 # 状态文件（.fenix/self_review_state.json，与 admin_alerts.json 同目录同风格）
 STATE_FILE = "self_review_state.json"
@@ -175,50 +175,47 @@ def _rescue_structured_entry(text: str) -> Optional[dict]:
 
 def local_today_str() -> str:
     """本地自然日字符串 YYYY-MM-DD（todo 日期节与状态文件均按本地时间）。"""
-    return datetime.now().date().isoformat()
+    return now_local().date().isoformat()
 
 
-def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
-    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。
+def _iso_to_aware_dt(iso_str: Optional[str]) -> Optional[datetime]:
+    """ISO 时间戳（含 Z 后缀）→ aware datetime；解析失败返回 None。
 
-    解析内核收拢至 timelib.parse_ts（add-timelib-consolidation-layer 4.1：
-    与 code_review 的逐字重复副本收拢单源）；aware 值转本地后剥时区收尾
-    ——窗口边界为 naive ``datetime.now()``（本文件多处），MUST NOT 把
-    aware 值直接接入比较（aware/naive 比较抛 TypeError）；窗口比较气泡
-    语义不动（SPEC-B 承接迁移）。
+    解析唯一入口 timelib.parse_ts（naive 输入按本地时区解读，唯一策略）；
+    返回值带时区。SPEC-B 批①：窗口气泡整体迁 aware UTC，原「aware 折算
+    本地后剥时区」收尾退役（原 ``_iso_to_local_dt``），与窗口边界的 aware
+    值直接比较；naive→本地解读保持与迁移前同一瞬时。
     """
-    dt = parse_ts(iso_str)
-    if dt is None:
-        return None
-    return dt.astimezone().replace(tzinfo=None)
+    return parse_ts(iso_str)
 
 
 def _in_window(
     dt: Optional[datetime], window_start: datetime, window_end: Optional[datetime] = None
 ) -> bool:
-    """naive 本地 datetime 是否落在 [window_start, window_end] 窗口内。
+    """aware datetime 是否落在 [window_start, window_end] 窗口内。
 
     Args:
-        dt: 待判定的 datetime
-        window_start: 窗口下界
-        window_end: 窗口上界；None 时为实时 datetime.now()（兼容既有调用方）
+        dt: 待判定的 datetime（aware）
+        window_start: 窗口下界（aware）
+        window_end: 窗口上界（aware）；None 时为实时 now_utc()（兼容既有调用方）
     """
     if dt is None:
         return False
     if window_end is None:
-        window_end = datetime.now()
+        window_end = now_utc()
     return window_start <= dt <= window_end
 
 
 def _parse_run_at(run_at: str, today) -> datetime:
-    """把 'HH:MM' 解析为 today（date 对象）当日的本地 datetime；非法回退缺省
-    （单源自 core.config.SELF_REVIEW_DEFAULT_RUN_AT）。"""
+    """把 'HH:MM' 解析为 today（本地 date）当日的本地墙钟并立即转 aware
+    （design D2：人类时刻语义——本地 23:00 即当日 15:00Z，配置字面值不变，
+    窗口计算全 aware）；非法回退缺省（单源自 core.config.SELF_REVIEW_DEFAULT_RUN_AT）。"""
     try:
         hh, mm = str(run_at).split(":")
-        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0)
+        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0).astimezone()
     except (ValueError, AttributeError):
         hh, mm = SELF_REVIEW_DEFAULT_RUN_AT.split(":")
-        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0)
+        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0).astimezone()
 
 
 def _run_start_ts(run_id: str) -> Optional[int]:
@@ -539,7 +536,7 @@ def collect_runs_stats(
     self-review run 自身。
 
     窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
-    datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。窗口
+    now_utc() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。窗口
     遍历、归窗、分类与双源守卫与 collect_failed_run_samples 消费同一份共享
     产出（_iter_window_classified_runs + _is_phantom_signal_failure，口径
     单点维护，code-review item 45181d22b901）。统计源为当前目录 + 归档目录
@@ -564,7 +561,7 @@ def collect_runs_stats(
         runs = pre_classified
     else:
         # 快照化：聚合启动时冻结窗口上界
-        window_end = datetime.now()
+        window_end = now_utc()
         runs = _iter_window_classified_runs(project_root, window_start, window_end)
     for run_id, _p, _ts, category, detail in runs:
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
@@ -623,7 +620,7 @@ def collect_failed_run_samples(
         runs = pre_classified
     else:
         # 快照化：聚合启动时冻结窗口上界
-        window_end = datetime.now()
+        window_end = now_utc()
         runs = _iter_window_classified_runs(project_root, window_start, window_end)
     for run_id, p, ts, category, detail in runs:
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
@@ -724,7 +721,7 @@ def _iter_window_runs(project_root, window_start: datetime, window_end: datetime
             continue
         start_ts = _run_start_ts(run_id)
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if _in_window(datetime.fromtimestamp(ts), window_start, window_end):
+        if _in_window(from_epoch(ts), window_start, window_end):
             yield run_id, p, ts
 
 
@@ -787,7 +784,7 @@ def _collect_metrics_outliers(
         不报错；索引访问异常同样按缺失跳过。
     """
     if window_end is None:
-        window_end = datetime.now()  # 快照化兜底：直调时入口冻结
+        window_end = now_utc()  # 快照化兜底：直调时入口冻结
     try:
         from core.dashboard.data.runs import load_run_metric  # noqa: PLC0415
     except Exception:
@@ -953,7 +950,7 @@ def _collect_midflight_scans(
         其余 run）。
     """
     if window_end is None:
-        window_end = datetime.now()
+        window_end = now_utc()
     results: List[Dict[str, Any]] = []
     for o in outliers or []:
         path = o.get("path")
@@ -966,7 +963,7 @@ def _collect_midflight_scans(
             continue  # 产物已清理/不可读 → 该 run 空产出跳过
         start_ts = _run_start_ts(p.stem)
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
+        if not _in_window(from_epoch(ts), window_start, window_end):
             continue
         try:
             scan = _scan_run_midflight(p)
@@ -999,7 +996,7 @@ def _collect_rescue_traces(
     日志缺失/读取失败降级空 dict（不阻断自省）。
     """
     if window_end is None:
-        window_end = datetime.now()
+        window_end = now_utc()
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
     if not log_path.is_file():
         return {}
@@ -1018,7 +1015,7 @@ def _collect_rescue_traces(
                 if not isinstance(message, str) or not message:
                     continue
                 if not _in_window(
-                    _iso_to_local_dt(entry.get("timestamp")), window_start, window_end
+                    _iso_to_aware_dt(entry.get("timestamp")), window_start, window_end
                 ):
                     continue
                 for pat in _RESCUE_TRACE_PATTERNS:
@@ -1043,7 +1040,7 @@ def collect_log_errors(project_root, window_start: datetime, limit: int = 20) ->
     首跑回退 24h）fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
     （含时间戳/组件/消息）。"""
     # 快照化：聚合启动时冻结窗口上界
-    window_end = datetime.now()
+    window_end = now_utc()
 
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
     errors: List[dict] = []
@@ -1060,7 +1057,7 @@ def collect_log_errors(project_root, window_start: datetime, limit: int = 20) ->
                     if entry.get("level") != "ERROR":
                         continue
                     if not _in_window(
-                        _iso_to_local_dt(entry.get("timestamp")), window_start, window_end
+                        _iso_to_aware_dt(entry.get("timestamp")), window_start, window_end
                     ):
                         continue
                     errors.append(entry)
@@ -1160,8 +1157,10 @@ class SelfReviewScheduler:
         if not sr["enabled"]:
             return {"triggered": False, "reason": "disabled"}
 
-        now = datetime.now()
-        if now < _parse_run_at(sr["run_at"], now.date()):
+        now = now_utc()
+        # run_at 人类时刻按本地墙钟折算 aware（D2）；「今日」取本地自然日
+        # （now_utc().date() 在本地凌晨会落在前一 UTC 日，MUST NOT 用）。
+        if now < _parse_run_at(sr["run_at"], now_local().date()):
             return {"triggered": False, "reason": "before_run_at"}
 
         # 同日防重复：成功/失败/占位跳过都写 last_run_date=today
@@ -1205,7 +1204,7 @@ class SelfReviewScheduler:
         # runs 统计与失败样本消费同一份 _iter_window_classified_runs 产出，
         # 消除同轮自省对窗口 run 的重复全量分类重扫。
         classified_runs = list(
-            _iter_window_classified_runs(self.project_root, window_start, datetime.now())
+            _iter_window_classified_runs(self.project_root, window_start, now_utc())
         )
         stats = collect_runs_stats(
             self.project_root, window_start, pre_classified=classified_runs
@@ -1319,7 +1318,7 @@ class SelfReviewScheduler:
         日志 ERROR / 近 3 日 git 提交 / 中途信号六源。
 
         窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
-        datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。输出
+        now_utc() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。输出
         markdown 文本块，作为自省 prompt 的「数据摘要」注入（与人工复盘同
         源）。任一源读取失败降级为空段（不阻断自省）。
 
@@ -1329,12 +1328,12 @@ class SelfReviewScheduler:
         （直调兼容）。
         """
         # 快照化：聚合启动时冻结窗口上界
-        window_end = datetime.now()
+        window_end = now_utc()
 
         lines = [
             "# 数据摘要",
-            f"窗口: {window_start:%Y-%m-%d %H:%M} ~ "
-            f"{window_end:%Y-%m-%d %H:%M}（本地时间，自上次自省以来）",
+            f"窗口: {window_start.astimezone():%Y-%m-%d %H:%M} ~ "
+            f"{window_end.astimezone():%Y-%m-%d %H:%M}（本地时间，自上次自省以来）",
             "",
         ]
 
@@ -1504,10 +1503,10 @@ class SelfReviewScheduler:
 
         Args:
             window_start: 窗口下界
-            window_end: 窗口上界；None 时为实时 datetime.now()
+            window_end: 窗口上界；None 时为实时 now_utc()
         """
         if window_end is None:
-            window_end = datetime.now()
+            window_end = now_utc()
 
         try:
             records = self.store.read_all()
@@ -1516,7 +1515,7 @@ class SelfReviewScheduler:
         window_records = [
             r
             for r in records
-            if _in_window(_iso_to_local_dt(r.get("created")), window_start, window_end)
+            if _in_window(_iso_to_aware_dt(r.get("created")), window_start, window_end)
         ]
         signals = [r for r in window_records if r.get("kind") == "signal"]
         escalations = [r for r in window_records if r.get("kind") == "escalation"]
@@ -1563,7 +1562,7 @@ class SelfReviewScheduler:
 
         非 git 目录 / 无提交 / 命令失败均降级为占位行，不阻断自省。
         """
-        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
+        since = (now_local() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
         try:
             proc = subprocess.run(
                 [
@@ -1969,7 +1968,7 @@ class SelfReviewScheduler:
         return data if isinstance(data, dict) else {}
 
     def _load_last_run_at(self) -> Optional[datetime]:
-        """状态文件 last_run_at → 本地 naive datetime；缺失/畸形返回 None。
+        """状态文件 last_run_at → aware datetime；缺失/畸形返回 None。
 
         仅作增量窗口锚点使用（2026-09-08 起）；同日防重复由 last_run_date
         承担。旧格式状态文件（仅 last_run_date）返回 None → 回退 24h 窗口。
@@ -1977,7 +1976,7 @@ class SelfReviewScheduler:
         raw = self._load_state().get("last_run_at")
         if not isinstance(raw, str) or not raw:
             return None
-        return _iso_to_local_dt(raw)
+        return _iso_to_aware_dt(raw)
 
     def _save_state(self, date_str: str) -> None:
         """记录执行日（last_run_date，同日防重复判定基准）与执行时刻。
@@ -1993,8 +1992,8 @@ class SelfReviewScheduler:
                 json.dumps(
                     {
                         "last_run_date": date_str,
-                        "last_run_at": datetime.now().isoformat(),
-                        "updated_at": datetime.now().astimezone().isoformat(),
+                        "last_run_at": to_storage(now_utc()),
+                        "updated_at": to_storage(now_utc()),
                     },
                     ensure_ascii=False,
                     indent=2,

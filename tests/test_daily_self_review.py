@@ -36,6 +36,7 @@ from core.self_review import (
     collect_log_errors,
     collect_runs_stats,
 )
+from core.timelib import parse_ts
 
 
 class FakeSM:
@@ -106,20 +107,20 @@ def make_scheduler(proot, enabled=True, run_at="22:00", read_todo=False,
 
 
 def _freeze_time(monkeypatch, fixed: datetime):
-    """Patch self_review module's datetime so `.now()` returns a fixed time.
+    """冻结 self_review 时间源为 fixed（naive 本地墙钟）。
 
-    The subclass approach avoids Python's TypeError when patching the builtin
-    datetime class directly (immutable C type).
+    SPEC-B 批① aware UTC 迁移后时间接缝为 ``now_utc``/``now_local``（原
+    模块级 ``datetime`` 类替换退役）；两个接缝分别注入同一瞬时的 aware
+    对偶值，测试体传参/断言的 naive 本地墙钟语义不变。
     """
-    from datetime import datetime as _real_datetime
-
-    class _FakeDatetime(_real_datetime):
-        @staticmethod
-        def now(tz=None):
-            return fixed
+    from datetime import timezone as _tz
 
     import core.self_review as sr_mod
-    monkeypatch.setattr(sr_mod, "datetime", _FakeDatetime)
+
+    fixed_local = fixed.astimezone()
+    fixed_utc = fixed.astimezone(_tz.utc)
+    monkeypatch.setattr(sr_mod, "now_utc", lambda: fixed_utc)
+    monkeypatch.setattr(sr_mod, "now_local", lambda: fixed_local)
 
 
 def make_run(proot, run_id, terminal, ts=None):
@@ -159,8 +160,9 @@ class TestSelfReviewScheduling:
         # 状态文件记录执行时刻（窗口锚点）+ 执行日（同日防重复基准）
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
-        assert datetime.fromisoformat(state["last_run_at"]) \
-            == datetime(2026, 9, 4, 22, 30)
+        # 批①写侧 to_storage：Z 后缀 UTC 串，解析回同一瞬时（22:30 本地）
+        assert parse_ts(state["last_run_at"]) \
+            == datetime(2026, 9, 4, 22, 30).astimezone()
         assert len(runner.calls) == 1
         # todo.md 已创建
         todo = proot / ".fenix" / "todo.md"
@@ -991,7 +993,7 @@ class TestSummaryHelpers:
         make_run(proot, f"impl-d-{_ts(base)}", "error", ts=base.timestamp())
         make_run(proot, f"impl-e-{_ts(base)}", "empty", ts=base.timestamp())
         make_run(proot, "review-2026-09-04", "done", ts=base.timestamp())  # 自省 run 排除
-        stats = collect_runs_stats(proot, datetime(2026, 9, 4, 0, 0))
+        stats = collect_runs_stats(proot, datetime(2026, 9, 4, 0, 0).astimezone())
         assert stats["succeeded"] == 1
         assert stats["timeout"] == 1
         assert stats["instant_hang"] == 1
@@ -1003,7 +1005,7 @@ class TestSummaryHelpers:
         """窗口开始时刻之前的 run 不计入（24h 滚动窗口语义）。"""
         make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
         make_run(proot, f"impl-b-{_ts(datetime(2026, 9, 3, 10))}", "done")
-        stats = collect_runs_stats(proot, datetime(2026, 9, 4, 0, 0))
+        stats = collect_runs_stats(proot, datetime(2026, 9, 4, 0, 0).astimezone())
         assert stats["total"] == 1
 
     def test_log_errors_aggregate(self, proot):
@@ -1020,7 +1022,7 @@ class TestSummaryHelpers:
         lines.append(json.dumps({"level": "ERROR", "message": "before-window",
                                  "timestamp": "2026-09-03T05:00:00Z"}))
         log.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        agg = collect_log_errors(proot, datetime(2026, 9, 4, 0, 0))
+        agg = collect_log_errors(proot, datetime(2026, 9, 4, 0, 0).astimezone())
         assert agg["error_count"] == 3
         assert len(agg["samples"]) == 3
         assert all("err" in s for s in agg["samples"])
@@ -1503,13 +1505,13 @@ class TestSummaryGitCommits:
         subprocess.run(["git", "-C", str(proot), "add", "f.txt"], check=True)
         subprocess.run(["git", "-C", str(proot), "commit", "-qm", "fix: 闭环修复提交"],
                        check=True)
-        summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4))
+        summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4).astimezone())
         assert "## 5. 近 3 日 git 提交" in summary
         assert "fix: 闭环修复提交" in summary
 
     def test_daily_summary_git_unavailable_degrades(self, proot):
         # 非 git 目录 → 降级提示，不阻断摘要
-        summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4))
+        summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4).astimezone())
         assert "## 5. 近 3 日 git 提交" in summary
         assert "（git log 读取失败）" in summary
 
@@ -1549,7 +1551,7 @@ class TestAdminSummaryFixtureFilter:
         monkeypatch.setattr("core.self_review._is_fixture_project",
                             lambda root: True)
         text = "\n".join(self._scheduler(proot)._collect_admin_summary(
-            datetime(2000, 1, 1)))
+            datetime(2000, 1, 1).astimezone()))
 
         assert "未处理 0 条计入" in text, text
         assert "[fixture]" in text, "夹具告警须带 fixture 标注单独呈现"
@@ -1566,7 +1568,7 @@ class TestAdminSummaryFixtureFilter:
         monkeypatch.setattr("core.self_review._is_fixture_project",
                             lambda root: False)
         lines = self._scheduler(proot)._collect_admin_summary(
-            datetime(2000, 1, 1))
+            datetime(2000, 1, 1).astimezone())
         text = "\n".join(lines)
 
         assert "- 升级告警: 2 条（未处理 2 条）" in text, text
@@ -1587,7 +1589,7 @@ class TestAdminSummaryFixtureFilter:
 
         monkeypatch.setattr("core.dashboard.registry.Registry", _BoomRegistry)
         lines = self._scheduler(proot)._collect_admin_summary(
-            datetime(2000, 1, 1))
+            datetime(2000, 1, 1).astimezone())
         text = "\n".join(lines)
         assert "- 升级告警: 2 条（未处理 2 条）" in text, text
         assert "[fixture]" not in text

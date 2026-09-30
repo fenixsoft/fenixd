@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.timelib import now_local
+
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION, evidence_project
 from .alert_lifecycle import attach_trigger, find_resolvable
 
@@ -1105,7 +1107,10 @@ class AdminMonitor:
             return {"triggered": False, "reason": "disabled"}
 
         sr_cfg = ConfigLoader.get_self_review_config(self.config)
-        now = datetime.now()
+        # aware 本地当前时刻：_parse_run_at（self_review 批① aware 化）返回
+        # aware，naive now 与之比较会抛 TypeError；now_local() 与原 naive
+        # 同一瞬时，now.date() 本地自然日语义不变。
+        now = now_local()
 
         # run_at 未到不触发（与自省同口径）
         if now < _parse_run_at(sr_cfg["run_at"], now.date()):
@@ -1695,7 +1700,10 @@ class AdminMonitor:
             return {"triggered": False, "reason": "disabled"}
 
         sr_cfg = ConfigLoader.get_self_review_config(self.config)
-        now = datetime.now()
+        # aware 本地当前时刻：_parse_run_at（self_review 批① aware 化）返回
+        # aware，naive now 与之比较会抛 TypeError；now_local() 与原 naive
+        # 同一瞬时，now.date() 本地自然日语义不变。
+        now = now_local()
 
         # run_at 未到不触发（与自省同口径：与每日自省同周期）
         if now < _parse_run_at(sr_cfg["run_at"], now.date()):

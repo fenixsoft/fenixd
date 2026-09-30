@@ -90,11 +90,8 @@ TIME_WHITELIST = [
     ("core/dashboard/data/summary.py", "now-zero-arg"),
     ("core/evolution.py", "now-zero-arg"),
     ("core/regression.py", "now-zero-arg"),
-    ("core/self_review.py", "now-zero-arg"),
     ("core/worktree_manager/mergeback.py", "now-zero-arg"),
     ("core/worktree_manager/stash_guard.py", "now-zero-arg"),
-    # 零/单参 fromtimestamp（未显式指定 tz）
-    ("core/self_review.py", "fromtimestamp-no-tz"),
 ]
 
 

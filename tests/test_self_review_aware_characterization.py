@@ -80,7 +80,9 @@ class TestWindowEquivalenceCharacterization:
             (None, False),
         ]
         for dt, expected in wins:
-            got = _in_window(dt, WINDOW_START_NAIVE, FIXED_NAIVE_LOCAL)
+            dt_aware = dt.astimezone() if dt is not None else None
+            got = _in_window(dt_aware, WINDOW_START_NAIVE.astimezone(),
+                             FIXED_NAIVE_LOCAL.astimezone())
             assert got is expected, f"{dt}: {got} != {expected}"
 
     def test_collect_runs_stats_hit_set_snapshot(self, tmp_path: Path):
@@ -96,8 +98,9 @@ class TestWindowEquivalenceCharacterization:
         for ctxs in (_patch_clock(),):
             with ctxs[0], ctxs[1], ctxs[2], ctxs[3]:
                 hit_ids = {rid for rid, _p, _ts in _iter_window_runs(
-                    tmp_path, WINDOW_START_NAIVE, FIXED_NAIVE_LOCAL)}
-                stats = collect_runs_stats(tmp_path, WINDOW_START_NAIVE)
+                    tmp_path, WINDOW_START_NAIVE.astimezone(),
+                    FIXED_NAIVE_LOCAL.astimezone())}
+                stats = collect_runs_stats(tmp_path, WINDOW_START_NAIVE.astimezone())
         assert hit_ids == {rid_in_a, rid_in_b}
         assert stats["total"] == 2
         assert stats["succeeded"] == 2
@@ -131,7 +134,7 @@ class TestWindowEquivalenceCharacterization:
         )
         for ctxs in (_patch_clock(),):
             with ctxs[0], ctxs[1], ctxs[2], ctxs[3]:
-                result = collect_log_errors(tmp_path, WINDOW_START_NAIVE)
+                result = collect_log_errors(tmp_path, WINDOW_START_NAIVE.astimezone())
         assert result["error_count"] == 1
         assert len(result["samples"]) == 1
         assert "error in window" in result["samples"][0]
@@ -175,12 +178,12 @@ class TestSchedulerTriggerCharacterization:
         mock_dt.now.return_value = fixed_naive
         mock_dt.side_effect = lambda *a, **k: datetime(*a, **k)
 
-        # last_run_at 替身走生产解析器（迁移前 _iso_to_local_dt → naive 本地；
-        # 迁移后直返 aware）——两种实现各自拿到与替身串同墙钟/同瞬时的值。
+        # last_run_at 替身走生产解析器（aware 化后 _iso_to_aware_dt 直返
+        # aware；naive 替身串按本地解读，与迁移前同一瞬时）。
         def fake_load_last_run_at():
             if last_run_at_str is None:
                 return None
-            return csr._iso_to_local_dt(last_run_at_str)
+            return csr._iso_to_aware_dt(last_run_at_str)
 
         with (
             mock.patch.object(csr, "datetime", mock_dt),

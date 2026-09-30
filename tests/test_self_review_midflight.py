@@ -73,7 +73,8 @@ def env(tmp_path):
     runs_dir = root / ".fenix" / "runs"
     runs_dir.mkdir(parents=True)
     (root / ".fenix" / "logs").mkdir(parents=True)
-    now = datetime.now()
+    # aware 本地当前时刻（批①：窗口气泡迁 aware，替身边界与生产同批迁移）
+    now = datetime.now().astimezone()
     return {
         "root": root,
         "runs_dir": runs_dir,

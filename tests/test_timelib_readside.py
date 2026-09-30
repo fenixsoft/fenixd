@@ -349,7 +349,11 @@ class TestIsoToLocalDtCollapse(unittest.TestCase):
             for raw in corpus:
                 expected = _old_iso_to_local_dt(raw)
                 self.assertEqual(code_review._iso_to_local_dt(raw), expected, raw)
-                self.assertEqual(self_review._iso_to_local_dt(raw), expected, raw)
+                # SPEC-B 批①：self_review 侧迁 aware（_iso_to_local_dt →
+                # _iso_to_aware_dt）——与旧 naive 值同一瞬时（wall clock 不变，
+                # 仅开始带时区后缀），aware 逐项相等
+                expected_aware = expected.astimezone() if expected is not None else None
+                self.assertEqual(self_review._iso_to_aware_dt(raw), expected_aware, raw)
 
     def test_output_is_naive_local_safe_for_window_compare(self):
         """输出恒为 naive 本地（aware 折算本地后剥时区）——与窗口边界的
