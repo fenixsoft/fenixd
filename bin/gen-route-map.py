@@ -40,7 +40,7 @@ def scan_server_routes(root: Path) -> tuple:
     """扫描 API 路由，产出 (route, source, method) 条目。
 
     返回 (entries, skipped)：skipped 为表驱动条目行中未匹配条目正则的
-    行数（如 pattern 字面量含转义双引号等 "([^"]+)" 覆盖不了的形态），
+    行数（可能为转义双引号、跨行元组等 "([^"]+)" 覆盖不了的形态），
     供调用方在 stdout 末尾提示，防地图静默缺条目。
 
     路由已迁入 `core/dashboard/routes/` 子包（refactor-giant-classes D4），
@@ -79,7 +79,7 @@ def scan_server_routes(root: Path) -> tuple:
             if current_table is None:
                 continue
             # 表结束：遇到下一个表或非缩进条目
-            if line.startswith("]") and current_table:
+            if line.startswith("]"):
                 current_table = None
                 continue
             if not line.strip().startswith("("):
@@ -89,8 +89,8 @@ def scan_server_routes(root: Path) -> tuple:
             # 普通串与 raw-string 两种形态，否则全部 regex 条目落入 skipped。
             rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*r?"([^"]+)"', line)
             if not rm:
-                # 条目行未被条目正则收录（如 pattern 字面量含转义双引号 \" 等
-                # "([^"]+)" 匹配不了的形态）：累计计数上报，防地图静默缺条目
+                # 条目行未被条目正则收录（可能为转义双引号、跨行元组等写法
+                # 形态）：累计计数上报，防地图静默缺条目
                 skipped += 1
                 continue
             pattern = rm.group(2)
@@ -113,7 +113,12 @@ def scan_server_routes(root: Path) -> tuple:
     if server.is_file():
         scan_files.append(server)
     for f in scan_files:
-        lines = f.read_text(encoding="utf-8").splitlines()
+        try:
+            lines = f.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            # 与 scan_testids 口径一致：单文件损坏/不可解码只跳过该文件，
+            # 不让整个生成器非零退出拖垮全部扫描
+            continue
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
             m = api_pat.search(stripped)
@@ -143,7 +148,11 @@ def scan_spa_routes(root: Path) -> list:
     entries: list = []
     if not app.is_file():
         return entries
-    lines = app.read_text(encoding="utf-8").splitlines()
+    try:
+        lines = app.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        # 与 scan_testids 口径一致：文件损坏/不可解码时返回空条目而非崩溃
+        return entries
     for i, line in enumerate(lines, start=1):
         m = re.search(r"path:\s*['\"]([^'\"]+)['\"]", line)
         if not m:
@@ -322,7 +331,7 @@ def main() -> int:
     if table_skipped:
         out.append(
             f"\n> ⚠️ 表驱动条目解析跳过 {table_skipped} 行"
-            f"（pattern 字面量为条目正则不支持的写法形态，如含转义双引号）"
+            f"（条目行未被条目正则收录，可能为转义双引号、跨行元组等写法形态）"
             f"——地图可能缺条目，请人工核对 core/dashboard/routes/base.py\n"
         )
     sys.stdout.write("".join(out))
