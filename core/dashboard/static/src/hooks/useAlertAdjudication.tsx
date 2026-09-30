@@ -51,7 +51,8 @@ export function useAlertAdjudication(): AlertAdjudication {
   // loading 防重；成功回显执行步骤并按后端结果如实组织文案（code-review item
   // a09d0b6c26dd / 896c7e54dafd：动作成功但 marked/disposition_logged 为 false
   // 时告警未入已处理/留痕缺失，一律报「留痕已写入」会诱导用户对不可逆裁决
-  // 重复执行）；失败展示错误且恢复可交互（告警保持未处理，可调整后重试）。
+  // 重复执行；31bff0fb52a8：回执字段缺失（版本代差）同按「留痕状态未知」
+  // 处理而非视为成功）；失败展示错误且恢复可交互（告警保持未处理，可调整后重试）。
   const handleResolve = async (
     a: AlertItem,
     choiceId: string,
@@ -72,6 +73,12 @@ export function useAlertAdjudication(): AlertAdjudication {
       const caveats: string[] = [];
       if (r.marked === false) caveats.push('告警未入已处理（可重试「标记已处理」）');
       if (r.disposition_logged === false) caveats.push('处置留痕写入失败（审计轨迹缺失）');
+      // 回执字段缺失（前后端版本代差，旧 daemon 不回这两字段）不能默认成功：
+      // 如实报「留痕状态未知」走 warning，避免照常宣称「处置留痕已写入」诱导
+      // 用户对不可逆裁决重复执行（code-review item 31bff0fb52a8；现役后端
+      // 成功路径恒回两字段，缺失仅出现在版本代差场景）。
+      if (r.marked === undefined || r.disposition_logged === undefined)
+        caveats.push('留痕状态未知（后端响应缺失 marked/disposition_logged 回执）');
       const text = caveats.length
         ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
         : `裁决已执行，处置留痕已写入${stepSuffix}`;
