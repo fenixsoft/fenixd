@@ -29,6 +29,9 @@ _logger = logging.getLogger("fenixd.verify.env_gate")
 # 「deadline exceeded」）不得混入候选。引擎 wait 步骤封装统一带「wait 超时」
 # 前缀；Playwright 超时文案为「Timeout ...ms exceeded.」形态，由 "timeout "
 # 前缀覆盖。
+# [fenix-ignore:71beefa96751] 文案指纹耦合已在上文显式注明：Playwright 超时
+# 文案为库内固定英文不随 locale 本地化，browser.py 分类以类型化异常优先、
+# 文案仅兜底，引擎「wait 超时」中文前缀本身已在指纹表内。
 _WAIT_TIMEOUT_MARKERS = (
     "timeout ",
     "timed out",
@@ -206,6 +209,9 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
             req = urllib.request.Request(
                 url, method="GET", headers={"User-Agent": "fenix-env-probe"}
             )
+            # [fenix-ignore:1d928f301673] 同步阻塞为设计契约：全部调用点
+            # （engine/web_runner/api_runner）均已 asyncio.to_thread 放线程池，
+            # 事件循环内不存在直调。
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status < 400:
                     return True
