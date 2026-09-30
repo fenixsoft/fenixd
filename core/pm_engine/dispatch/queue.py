@@ -108,6 +108,12 @@ class QQQueueMixin:
         # 循环复查与重试失败 Timer 两条触发路径共用，故 __init__ 统一初始化，
         # 避免两线程各自惰性建集合）。
         self._wip_defer_degrade_notified: set = set()
+        # spec 目录在飞编辑顺延超限降级告警去重集合：{spec_name}，daemon
+        # 生命周期内每条目至多告警一次（code-review item 820ca0230859，
+        # _defer_merge_back 超限分支的幂等去重判据；与 _wip_defer_degrade_notified
+        # 同款范式——merge-only 重试 Timer 链与实现 run 失败链双路并发时，
+        # 防超限后重复发 major 告警）。
+        self._spec_dir_inflight_stuck_notified: set = set()
 
     # ── 验证车道槽位豁免（add-verify-lane-throughput 2.1）──────────────────
     # 槽位豁免车道全集：spec-review（既有先例，fix-spec-review-blocking-dispatch）
@@ -590,7 +596,19 @@ class QQQueueMixin:
         # 显式配置优先级不变——.fenix/config.yaml 写了 agents.max_concurrent
         # 即按配置值生效，代码缺省只对无配置部署生效；full-suite.lock 主机级
         # 回归锁（等待上限 600s、超时 skip）保证多 run 回归互斥语义不变。
-        max_concurrent = self._pm._get_config("agents.max_concurrent", 5)
+        # 配置侧 int() 归一（code-review item db57ee959a49，与
+        # agents.merge_breaker_threshold / agents.max_retries 读取点同款）：
+        # 字符串配置裸用于下方槽位比较（持锁临界区内）抛 TypeError，沿
+        # worker finally / 定时器线程的 _process_queue 调用链逃逸，派发整体
+        # 停摆；非法值回退缺省，max(1, ...) 收下限。
+        try:
+            cfg_max_concurrent = self._pm._get_config("agents.max_concurrent", 5)
+            max_concurrent = (
+                5 if cfg_max_concurrent is None else int(cfg_max_concurrent)
+            )
+        except (TypeError, ValueError):
+            max_concurrent = 5
+        max_concurrent = max(max_concurrent, 1)
 
         # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
         # 被抑制条目保持 queued（后到抑制），但绝不能阻塞其后的条目派发
@@ -1814,16 +1832,38 @@ class QQQueueMixin:
                     # 监督超时/被判停滞而杀（extension budget exhausted / stagnant）
                     # 不豁免——确实消耗了整份预算。
                     if impl_status is None:
-                        self._pm._exempt_dead_run_budget(
-                            spec_name,
-                            f"no run-result file (error={str(final_error)[:80]})",
-                            run_reason=str(final_error) if final_error else None,
-                        )
+                        # 隔离（code-review item 6c566aab43e8，与 rollback.py
+                        # _rollback_failed_dispatch 同名调用点同款）：豁免是
+                        # **尽力而为的记账**（写状态文件，锁/IO 可能失败），若它
+                        # 自己抛异常，控制流会直接跳到外层 except 转
+                        # _rollback_failed_dispatch，下方 provider 熔断保持原状 /
+                        # [provider-transient] 延迟重派 / 模型链不可用 / 同因熔断
+                        # 与重试计数四段终态分类全部被跳过（_retry_count 不递增、
+                        # transient 不排程），失败被降格为通用回滚。故必须独立
+                        # try/except，豁免失败仅 WARNING、按未生效继续走失败分类链。
+                        # exempt_applied 标记：审计日志须携带豁免是否实际生效，
+                        # 否则记账失败时对账会把未生效的豁免当作已豁免。
+                        exempt_applied = False
+                        try:
+                            self._pm._exempt_dead_run_budget(
+                                spec_name,
+                                f"no run-result file (error={str(final_error)[:80]})",
+                                run_reason=str(final_error) if final_error else None,
+                            )
+                            exempt_applied = True
+                        except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞失败分类
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"budget exempt failed for '{spec_name}'（按未豁免"
+                                f"继续失败分类）: {type(exempt_exc).__name__}: "
+                                f"{exempt_exc}",
+                            )
                         # 审计日志：可审计豁免判定（spec、终态、原因、是否豁免）
                         self._pm.logger.info(
                             "pm_engine",
                             f"budget_exempt_audit: spec={spec_name}, "
-                            f"impl_status=None, final_error={str(final_error)[:120]}, "
+                            f"impl_status=None, exempt_applied={exempt_applied}, "
+                            f"final_error={str(final_error)[:120]}, "
                             f"run_reason={str(final_error)[:80] if final_error else ''}",
                         )
                     # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
@@ -2246,9 +2286,17 @@ class QQQueueMixin:
             )
         window_exceeded = (now - first_f) / 60.0 >= grace_minutes
         if window_exceeded or count >= max_rounds:
-            self._report_mergeback_spec_dir_inflight_stuck(
-                spec_name, merge_info, branch, merge_error, count, int(first_f),
-            )
+            # 超限降级告警去重（code-review item 820ca0230859，与 WIP 车道
+            # _report_wip_defer_stuck_once 同款）：daemon 生命周期内每条目至多
+            # 一次（防周期节拍刷屏）——merge-only 重试 Timer 链与实现 run 失败链
+            # 双路并发时，超限后每个迟到 Timer 各触发一次重试-顺延-再报告，
+            # 不去重会重复发多条 major 告警。记账（bump/update_spec）不受去重
+            # 影响，仅告警幂等。
+            if spec_name not in self._spec_dir_inflight_stuck_notified:
+                self._spec_dir_inflight_stuck_notified.add(spec_name)
+                self._report_mergeback_spec_dir_inflight_stuck(
+                    spec_name, merge_info, branch, merge_error, count, int(first_f),
+                )
             return
         self._schedule_merge_retry(spec_name, self._merge_retry_delay_seconds())
 
