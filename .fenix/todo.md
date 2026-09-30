@@ -41,3 +41,6 @@
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-review-lane/impl-code-review-tuning.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/agent-runtime/long-task-foreground-wait.md × spec/knowledge/domains/verify-pipeline/blocked-reverify-gate.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/admin-ops/stuck-signal-hygiene.md × spec/knowledge/domains/self-evolution/stale-selfheal-cooldown.md），请人工核查
+
+### 人工步骤
+- add-timelib-callsite-migration 批⑤改动了 `bin/fenix_dashboard.py`/`bin/fenix_process.py`/`bin/fenix_status.py`（时间展示收拢 timelib.fmt_display）：主树 `.fenix/bin/` 下的部署副本（软链/拷贝，未跟踪文件不随 merge-back 落地）需人工刷新——主树手工同步这三个文件，或走重启部署机制重建 `.fenix/bin`，否则 /fenix-status、/fenix-process、TUI 仪表盘仍跑迁移前解析副本

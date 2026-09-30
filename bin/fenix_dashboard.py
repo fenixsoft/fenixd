@@ -31,7 +31,6 @@ import subprocess
 import sys
 import time
 import unicodedata
-from datetime import datetime
 from pathlib import Path
 
 # 使用 .absolute()（不跟随软链接）：脚本经项目内 .fenix/bin/ 软链接调用
@@ -45,6 +44,11 @@ from core.agent_runner.run_files import run_spec_part  # noqa: E402
 from core.dashboard import data as dash_data  # noqa: E402
 from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
 from core.dashboard.server import serve, STATIC_DIR  # noqa: E402
+from core.timelib import now_local  # noqa: E402
+# 展示层助手单点在 core.tui_format（code-review item 50a1202e3e91 同款
+# 收拢）：私有 _local_ts 副本退役，转发 tui_format.local_ts（内部渲染
+# 边界走 timelib.fmt_display；[:19] 回退契约由 test_cli_time_display 钉死）。
+from core.tui_format import local_ts as _local_ts  # noqa: E402
 
 PROGRESS_DIR = PROJECT_ROOT / ".fenix" / "verify-progress"
 
@@ -374,19 +378,6 @@ def render_active_specs(specs):
     return "\n".join(lines)
 
 
-def _local_ts(iso_str, fmt="%H:%M:%S"):
-    """UTC ISO 时间戳 → 本地时区格式化;解析失败回退裸切片 [:19]。
-
-    日志层统一写 UTC（core/logger.py），展示层负责转本地时区显示。
-    """
-    try:
-        return (
-            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
-        )
-    except Exception:
-        return str(iso_str)[:19]
-
-
 def render_event_feed(specs):
     """渲染最近事件流"""
     events = dash_data.get_recent_events(PROJECT_ROOT, minutes=10)
@@ -470,7 +461,7 @@ def run_tui(interval=3):
             specs = dash_data.parse_state(PROJECT_ROOT)
 
             # 标题
-            now = datetime.now().strftime("%H:%M:%S")
+            now = now_local().strftime("%H:%M:%S")  # SPEC-B 批⑤收拢
             w = shutil.get_terminal_size((120, 40)).columns
             title = f"  Fenix 开发仪表盘  —  {now}  "
             pad = max(0, w - disp_width(title) - 4)

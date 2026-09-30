@@ -81,6 +81,67 @@ class TestLocalTsHelper(unittest.TestCase):
         self.assertEqual(self.dashboard._local_ts(""), "")
 
 
+class TestFmtDisplayParity(unittest.TestCase):
+    """SPEC-B 批⑤：bin 展示脚本私有解析退役改走 timelib.fmt_display 后，
+    三形态输入（Z / +00:00 / naive 无后缀）输出与迁移前逐字一致（对照锁定）。
+
+    - fenix_dashboard 私有 ``_local_ts``（原 fromisoformat 副本）退役 →
+      转发 core.tui_format.local_ts（内部渲染边界走 fmt_display）
+    - naive 无后缀串迁移前后均按本地时区解读（timelib 唯一策略与
+      ``fromisoformat().astimezone()`` 既有语义同向，逐字一致）
+    - 解析失败回退裸切片 [:19] 既有展示契约不变
+    """
+
+    def setUp(self):
+        self.process = _load_module("fenix_process")
+        self.dashboard = _load_module("fenix_dashboard")
+        self.status = _load_module("fenix_status")
+        from core import timelib
+        from core.tui_format import local_ts
+        self.timelib = timelib
+        self.local_ts = local_ts
+
+    def _fmt_display_fallback(self, iso_str, fmt):
+        """迁移前 _local_ts 语义参照：fmt_display + [:19] 回退（逐字对照基准）。"""
+        out = self.timelib.fmt_display(iso_str, fmt)
+        return out if out else str(iso_str)[:19]
+
+    def test_three_forms_parity_dashboard_default_fmt(self):
+        with TZAsiaShanghai():
+            for raw in (
+                "2026-09-03T10:23:50Z",        # Z 后缀（logger 日志行）
+                "2026-09-03T10:23:50+00:00",   # +00:00（admin_store 写手）
+                "2026-09-03T18:23:50",         # naive 无后缀（历史/人工）
+            ):
+                expected = "18:23:50"
+                self.assertEqual(self.dashboard._local_ts(raw), expected, raw)
+                self.assertEqual(self.process._local_ts(raw), expected, raw)
+                self.assertEqual(self.local_ts(raw), expected, raw)
+                self.assertEqual(
+                    self._fmt_display_fallback(raw, "%H:%M:%S"), expected, raw)
+
+    def test_three_forms_parity_status_default_fmt(self):
+        with TZAsiaShanghai():
+            for raw in (
+                "2026-09-03T10:23:50Z",
+                "2026-09-03T10:23:50+00:00",
+                "2026-09-03T18:23:50",
+            ):
+                expected = "09-03 18:23"
+                self.assertEqual(self.status._local_ts(raw), expected, raw)
+
+    def test_unparseable_fallback_identical(self):
+        for raw in ("0123456789abcdefghij", "", None):
+            for helper in (
+                self.dashboard._local_ts,
+                self.process._local_ts,
+                self.status._local_ts,
+                self.local_ts,
+            ):
+                self.assertEqual(
+                    helper(raw), self._fmt_display_fallback(raw, "%H:%M:%S"), raw)
+
+
 class TestManualSentinelDisplay(unittest.TestCase):
     """add-spec-manual-activation 10.6：哨兵 manual 在 CLI 展示层不产生伪时间戳。
 

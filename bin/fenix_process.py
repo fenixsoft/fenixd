@@ -12,7 +12,6 @@ spec_summary 的预算三字段与 worktree 检查。「需要关注」分诊由
 import os
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # .absolute()（不跟随软链接）：兼容两种调用（与 fenix_dashboard.py 同一判定）——
@@ -31,6 +30,7 @@ from core.dashboard import data  # noqa: E402
 # core.tui_format（_local_ts 默认 fmt 契约由 test_cli_time_display 钉死）。
 from core.dashboard.data.summary import normalize_depends_on  # noqa: E402
 from core.tui_format import fmt_dur as _fmt_dur, local_ts as _local_ts  # noqa: E402
+from core.timelib import from_epoch  # noqa: E402
 
 STATUS_ICONS = {
     "drafted": "📝",
@@ -419,7 +419,9 @@ def render_report(project_root, spec_name: str) -> str:
         lines.append("-- 工作区 --")
         lines.append(f"  {wt['path']}")
         for rel, mtime in wt["files"][:10]:
-            ts = datetime.fromtimestamp(mtime).strftime("%H:%M")
+            # SPEC-B 批⑤收拢：from_epoch（aware UTC）→ 本地渲染，与原
+            # 零参 fromtimestamp（本地语义）同一墙钟输出
+            ts = from_epoch(mtime).astimezone().strftime("%H:%M")
             lines.append(f"  {ts} {rel}")
 
     # ── 下一步 ──
