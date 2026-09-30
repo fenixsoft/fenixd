@@ -4747,7 +4747,9 @@ class AdminMonitor:
         判定（对齐 ``_apply_family_waiver`` 文本识别范式）：
           - 结构字段 ``disp.infra_reclassify_rounds`` > 0 优先级最高；
           - 否则文本兜底：actions_taken / summary / recommended_action 含
-            「回拨 N 轮」/「reclassify N rounds」等显式回拨语义，且不含否定短语。
+            「回拨 N 轮」/「reclassify N rounds」等显式回拨语义，且不含否定短语；
+            命中句须含「本次」类限定词或与本次 spec 名同现（与
+            family_waiver_granted 同范式，历史/他 spec 回拨叙述不构成回拨指令）。
           仅 result=resolved/partially-resolved 时触发（处置未成功不执行）。
 
         **方向**：只做减法（product→infra 方向）。env→product-bug 属相反方向
@@ -4778,7 +4780,7 @@ class AdminMonitor:
                     f"infra 回拨被否定短语拦截 '{spec}'（保守不触发回拨）",
                 )
                 return
-            n = infra_reclassify_rounds(text)
+            n = infra_reclassify_rounds(text, spec)
         if n <= 0:
             return
 
