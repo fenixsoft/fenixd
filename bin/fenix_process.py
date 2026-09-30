@@ -294,7 +294,13 @@ def render_report(project_root, spec_name: str) -> str:
         detail_err = exc
     mode = (summary or {}).get("mode") or detail.get("mode") or "full"
 
-    lines.append(f"{icon} {spec_name}  P{entry.get('priority', '?')}  {status}  [{mode}]")
+    # 与 fenix_status.render_report 同口径：STATE.md 序列化对空优先级写 null，
+    # .get 默认值只在键缺失时生效，null 会渲染出 PNone，故 int 折叠为 "?"
+    try:
+        pri = int(entry.get("priority"))
+    except (TypeError, ValueError):
+        pri = "?"
+    lines.append(f"{icon} {spec_name}  P{pri}  {status}  [{mode}]")
     if detail_err is not None:
         lines.append(f"  ⚠ 详情组装失败: {detail_err}")
     head_notes = []
