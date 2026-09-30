@@ -30,7 +30,11 @@ from core.agent_runner.run_files import (
     run_spec_part,
     strip_run_id_suffixes,
 )
-from core.run_task_track import parse_tasks_md, parse_unattainable as _parse_unattainable
+from core.run_task_track import (
+    _TASK_CHECKBOX_RE,
+    parse_tasks_md,
+    parse_unattainable as _parse_unattainable,
+)
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.spec_integrity import SpecIntegrityGate
@@ -1811,10 +1815,27 @@ class PMEngine:
                             f"to implemented, skipping",
                         )
                         return
-                    self.state_machine.transition(
+                    # transition 返回值必须接收（code-review item 0b464aaa47b8，
+                    # 对齐 approve_push 的 f3173b3164ee 口径）：上方
+                    # is_valid_transition 预检与真实转移之间存在竞窗，状态被
+                    # 外部改动（人工冻结剥离/改判 blocked 等）致转移被拒时，
+                    # 不得写 "Re-verifying after fix" error、不得入队
+                    # verifier——否则 error 落在非 implemented 状态的 spec 上，
+                    # 且为不可派发状态的 spec 留下每轮扫描被跳过却不淘汰的
+                    # 滞留条目（同 family.py 收敛入队注释所述形态）。
+                    moved = self.state_machine.transition(
                         original, "implemented",
                         trigger_run_id=None, agent_type=None, channel="auto",
                     )
+                    if not moved:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"Fix done — transition '{original}' "
+                            f"{current_status}→implemented rejected "
+                            f"(state changed externally) — skip error write "
+                            f"and verifier enqueue",
+                        )
+                        return
                     self.state_machine.update_spec(
                         original,
                         {
@@ -2123,7 +2144,25 @@ class PMEngine:
         except (OSError, UnicodeDecodeError):
             return
         lines = text.split("\n")
-        task_lines = [(i, self._TASK_LINE_RE.match(ln)) for i, ln in enumerate(lines)]
+        # 写侧接受域单点对齐（code-review item 382e6930d3c1）：tasks.md 数字
+        # 任务勾选行的单一实现点是门禁侧共用的 core.run_task_track.
+        # _TASK_CHECKBOX_RE（D2，_task_completion_blocker 注释同款「禁止第二套
+        # 正则漂移」对写侧同样生效）。此前 _TASK_LINE_RE 自带缩进/变距容忍，
+        # 接受域比门禁侧宽——缩进勾选行写侧能勾、门禁侧 parse_tasks_md 视作
+        # 无任务（all_ids 空 → 门禁恒放行），完成度一致性门禁对该形态静默
+        # 失效。故 _TASK_LINE_RE 只承担行结构捕获（组序被
+        # tests/test_task_track.py::test_writeback_checks_suffixed_lines 锁定，
+        # 不可改组布局），接受域一律以共享正则放行为准：写侧只勾门禁侧看得见
+        # 的行，两侧不再漂移。
+        task_lines = []
+        for i, ln in enumerate(lines):
+            gate_m = _TASK_CHECKBOX_RE.match(ln)
+            m = self._TASK_LINE_RE.match(ln)
+            # 末位交叉校验：两口径须解析出同一 id（防任一侧正则演进后对同一行
+            # 截断出不同 id——「解析得出、判定判非法」互斥结论同型防御，见
+            # run_task_track._TASK_ID_FULL_RE 注释）
+            if gate_m is not None and m is not None and gate_m.group(2) == m.group(4):
+                task_lines.append((i, m))
         changed = False
 
         if done_ids:
