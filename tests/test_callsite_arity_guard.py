@@ -60,7 +60,7 @@ def _rel(path: Path) -> str:
 # 文件前部插入 39 行（clear_todo 等）后 SPEC_YAML_TEMPLATE.format 由 803
 # 漂到 842，豁免失配 → 守卫误报红灯。核验接收者仍保证「非文件级/全局通配」：
 # 只有该文件的该接收者的该调用被豁免，同文件别处的同名调用仍判定。
-# 实测当前 core/ + fenixd.py 仅三族：
+# 实测当前 core/ + fenixd.py 仅四族：
 # 1. core/evolution.py `SPEC_YAML_TEMPLATE.format(...)` 是 str.format（关键字
 #    展开），与 core/logger.py 的 Formatter.format(self, record) 同名——
 #    string 方法签名不匹配 Formatter 契约，属真实误报。
@@ -80,6 +80,11 @@ ARITY_WHITELIST = [
     ("core/dashboard/routes/base.py", "exception", "logger"),
     ("core/dashboard/session_manager.py", "exception", "logger"),
     ("core/worktree_manager/artifact_paths.py", "exception", "logger"),
+    # 4. str.format 模板调用（core/pm_engine/dispatch/backoff.py 的
+    #    scheduled_log.format(spec_name=..., delay=...)，带 {spec_name}/
+    #    {delay} 占位）与 Formatter.format(self, record) 同名异签名——
+    #    同族 1 的 str.format 误报（05323eed 引入调用点时漏补豁免）。
+    ("core/pm_engine/dispatch/backoff.py", "format", "scheduled_log"),
 ]
 
 
