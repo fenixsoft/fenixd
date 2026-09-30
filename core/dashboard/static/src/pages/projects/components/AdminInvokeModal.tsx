@@ -34,6 +34,12 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const [queued, setQueued] = useState(false);
   // 本次处置是否已到终态（终态词表见 handleRunStatus）：终态后按钮与输入框恢复可用
   const [runDone, setRunDone] = useState(false);
+  // runDone 的同步镜像：handleRunStatus 据此识别 false→true 迁移。ClaudeOutputPane
+  // 会对同一终态反复上报（初载 loadTail、SSE 重连后的 hello 重同步、逐条终态事件），
+  // run 结束后输入框已恢复可用，重复上报不得把用户正在输入的下一条提示词无声清空
+  // （code-review item b165d0c1b6da）；ref 随下方各 setRunDone(false) 复位点同步复位，
+  // 新一轮处置到终态时仍能清空一次
+  const runDoneRef = useRef(false);
   // 定位阶段超时：超过 LOCATE_TIMEOUT_MS 仍未发现本次处置的 run，停止轮询、
   // 等待层改报超时并恢复输入可用
   const [locateTimedOut, setLocateTimedOut] = useState(false);
@@ -90,6 +96,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     setEventCount(0);
     setQueued(false);
     setRunDone(false);
+    runDoneRef.current = false;
     invokeTimeRef.current = 0;
     acceptAnyRunRef.current = false;
     // 自动重连：最新处置记录为 pending 时直接接管其输出流，避免误关弹窗后
@@ -169,8 +176,15 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       || status === 'cancelled' || status === 'missing'
       || status === 'frozen-terminated') {
       setRunDone(true);
-      // 处置完成、按钮恢复可用时同步清空输入框，便于直接输入下一个提示词
-      setPrompt('');
+      // 只在 runDone false→true 迁移时清空一次（code-review item b165d0c1b6da）：
+      // 同一终态会被 ClaudeOutputPane 反复上报（初载 loadTail、SSE 重连后的 hello
+      // 重同步、逐条终态事件），run 结束后弹窗保持打开、输入框已恢复可用，重连
+      // 重同步再次上报终态时不得清掉用户正在输入的下一条提示词
+      if (!runDoneRef.current) {
+        // 处置完成、按钮恢复可用时同步清空输入框，便于直接输入下一个提示词
+        setPrompt('');
+      }
+      runDoneRef.current = true;
     }
   };
 
@@ -206,6 +220,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       setEventCount(0);
       setQueued(false);
       setRunDone(false);
+      runDoneRef.current = false;
       setLocateTimedOut(false);
       setInvoked(true);
     } catch (err) {
@@ -224,6 +239,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         setRunId(null);
         setEventCount(0);
         setRunDone(false);
+        runDoneRef.current = false;
         setLocateTimedOut(false);
         setInvoked(true);
       } else {

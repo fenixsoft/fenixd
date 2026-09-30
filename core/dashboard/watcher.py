@@ -399,7 +399,24 @@ class FileWatcher:
         state_sig = _file_sig(proot / ".fenix" / "STATE.md")
         try:
             summaries = self.summary_index.get(proot, cur, state_sig=state_sig)
-        except Exception:
+        except Exception as e:
+            # 索引兜底失败不再静默（code-review item 9c261607b08d）：回退全量
+            # 重算的降级语义保留，但「索引故障退化为 O(N) 重算」与「索引正常
+            # 命中」必须可从日志区分（口径同下方详情组装失败 item 74be430c66cb），
+            # 否则索引持续抛错时每轮静默退化、扫描成本上升且无从排查。
+            # 节流复用 scan_once 的 _proj_scan_warn 表（键同为项目路径，随
+            # _prune_stale_caches 一并清退）；同项目两类失败 5 分钟内合并记一条，
+            # 符合本文件低频节流纪律。
+            key = proot.as_posix()
+            now = time.monotonic()
+            last_warn = self._proj_scan_warn.get(key)
+            if last_warn is None or now - last_warn >= 300:
+                self._proj_scan_warn[key] = now
+                logger.warning(
+                    "dashboard watcher 索引摘要失败（回退全量重算）: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
             summaries = [dashboard_data.spec_summary(proot, s, e) for s, e in cur.items()]
         new_map = {s.get("name"): s for s in summaries}
         prev_map = self._last_summaries.get(proot.as_posix(), {})

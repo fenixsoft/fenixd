@@ -15,6 +15,7 @@
  *   --debug               保留 Chromium profile 用于调试
  *   --headless            无头模式 (默认: 有头)
  *   --output <path>       输出 JSON 文件路径 (默认: stdout)
+ *   --detect <spec-dir>   仅检测 SPEC 是否需要 Tier 2 验证后退出，不启动浏览器
  *
  * 输出 JSON:
  *   {
@@ -49,6 +50,7 @@ function parseArgs() {
     debug: false,
     headless: false,
     output: null,
+    detect: null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -68,6 +70,9 @@ function parseArgs() {
       case '--output':
         opts.output = args[++i];
         break;
+      case '--detect':
+        opts.detect = args[++i];
+        break;
       default:
         // 对未匹配任何 case 且以 -- 开头的参数告警：拼写错误的选项（如 --timeut）若被静默忽略，
         // 调用方难以察觉参数未生效，验证口径会静默漂移；仅告警不退出，兼容调用方传入的新合法选项。
@@ -81,11 +86,12 @@ function parseArgs() {
 
   // 校验参数取值：--timeout 缺值/非数字会得 NaN、0 或负数会使剩余预算恒为 0 立即超时收卷，
   // 造成零验证假通过，故须为正数；带值选项缺值时静默得 undefined
-  const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>]';
+  const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>] [--detect <spec-dir>]';
   let invalidReason = null;
   if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
   if (opts.distPath === undefined) invalidReason = '--dist-path 缺少取值';
   if (opts.output === undefined) invalidReason = '--output 缺少取值';
+  if (opts.detect === undefined) invalidReason = '--detect 缺少取值';
   if (invalidReason) {
     console.error(`错误: ${invalidReason}\n${usage}`);
     process.exit(1);
@@ -138,23 +144,15 @@ function isExternalUrl(url) {
 /**
  * 检测已知 API 域名所需的请求头
  * 返回缺失的必需头列表
+ *
+ * 域名→必需头规则表默认为空：原内置的 hq.sinajs.cn/sina.com.cn Referer 检查是
+ * stock-panel 扩展的项目特化遗留规则，对其他被验证扩展无作用，且按整条 URL 子串
+ * 匹配会误伤查询串中恰含该域名的请求，已移除。需要域名级头检查时由调用方在
+ * 此注入规则，并按 URL 解析后的 hostname 匹配（勿用整条 URL 子串匹配）。
  */
 function checkRequiredHeaders(url, headers) {
-  const missing = [];
-  const headerKeys = Object.keys(headers || {}).map(k => k.toLowerCase());
-
-  // hq.sinajs.cn 需要 Referer 头
-  if (url.includes('hq.sinajs.cn') || url.includes('sina.com.cn')) {
-    if (!headerKeys.includes('referer')) {
-      missing.push({
-        header: 'Referer',
-        severity: 'warning',
-        suggestion: '建议添加 Referer: https://finance.sina.com.cn',
-      });
-    }
-  }
-
-  return missing;
+  // 规则表默认为空（见上），当前无可检查规则；保留签名作为调用方注入规则的落点
+  return [];
 }
 
 /**
@@ -798,16 +796,10 @@ function checkManifestHostPermissions(manifestPath, reasons) {
 async function main() {
   const opts = parseArgs();
 
-  // 处理特殊命令
-  if (process.argv.includes('--detect')) {
-    const specDir = process.argv[process.argv.indexOf('--detect') + 1];
-    // --detect 为末位参数时缺第二参数，specDir 为 undefined 会让 path.join 抛 TypeError 落入兜底 catch
-    if (specDir === undefined) {
-      console.error('错误: --detect 缺少取值\n用法: node launch-chrome-extension.js --detect <spec-dir>');
-      process.exit(1);
-    }
+  // 处理特殊命令（--detect 已在 parseArgs 注册并完成缺值校验，specDir 取自 opts.detect）
+  if (opts.detect) {
     const projectRoot = opts.distPath ? path.dirname(path.resolve(opts.distPath)) : process.cwd();
-    const result = detectTier2Trigger(specDir, projectRoot);
+    const result = detectTier2Trigger(opts.detect, projectRoot);
     console.log(JSON.stringify(result, null, 2));
     return;
   }

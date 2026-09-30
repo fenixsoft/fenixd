@@ -234,18 +234,22 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
 function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
   const sum = recent.reduce((s, r) => s + r.tokens, 0);
   // recent 为 updated 倒序（最新在前）；面积图 x 轴从旧到新 → 反转，最新在最右
-  // 同名 spec 去重（code-review item 59a16a8b1857）：同名 spec 第 n 次（n ≥ 2）
-  // 出现以 `${spec}·${project}·${n}` 追加序号后缀，保证 G2 类目轴 x 值唯一——
-  // 同一 (spec, project) 在窗口内出现两次时，原 `${spec}·${project}` 拼接会把两次
-  // 映射到同一类目（面积图同挂两点致连线/填充畸变）；序号后缀同时降低与含 ·
-  // 字面 spec 名的碰撞面。按 spec 全局计数（跨项目同名同样错开）
-  const seen = new Map<string, number>();
+  // 同名 spec 去重（code-review item 59a16a8b1857）：同名 spec 除最新一次外
+  // （n ≥ 2，n 按最新往旧数）以 `${spec}·${project}·${n}` 追加序号后缀，保证
+  // G2 类目轴 x 值唯一——同一 (spec, project) 在窗口内出现两次时，原
+  // `${spec}·${project}` 拼接会把两次映射到同一类目（面积图同挂两点致连线/填充
+  // 畸变）；序号后缀同时降低与含 · 字面 spec 名的碰撞面。按 spec 全局计数
+  // （跨项目同名同样错开）。序号从原始（最新在前）顺序统计（8d76a55453c9）：
+  // 最新一次保留纯名——最新点在最右、悬浮最常被查看，应展示「当前活跃」的原始名
+  const left = new Map<string, number>();
+  for (const r of recent) left.set(r.spec, (left.get(r.spec) || 0) + 1);
   const data = recent
     .slice()
     .reverse()
     .map((r) => {
-      const n = (seen.get(r.spec) || 0) + 1;
-      seen.set(r.spec, n);
+      // 剩余出现次数（含本点）= 本点按最新往旧数的发生序号：最新为 1
+      const n = left.get(r.spec) || 1;
+      left.set(r.spec, n - 1);
       const spec = n === 1 ? r.spec : `${r.spec}·${r.project}·${n}`;
       return { spec, tokens: r.tokens };
     });

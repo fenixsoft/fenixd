@@ -196,8 +196,10 @@ class TestTokenBudgetAlert:
             "cost_usd": None,
         })
         entry = sm.read_one("spec-d")
-        assert entry["_token_warn_80"] == "True"
-        assert entry.get("_token_alert_100") != "True"
+        # 布尔幂等标志经 STATE.md 往返后为 bool（code-review item 7920884822f1
+        # 读侧显式转换），断言 bool 形态而非序列化字符串
+        assert entry["_token_warn_80"] is True
+        assert not entry.get("_token_alert_100")
         # spec 状态不受影响（不自动冻结）
         assert entry["status"] == "implementing"
         # 注册表覆盖（choices 已快照）的告警保持未处理进待办队列（item
@@ -215,7 +217,7 @@ class TestTokenBudgetAlert:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
         })
-        assert sm.read_one("spec-d")["_token_warn_80"] == "True"
+        assert sm.read_one("spec-d")["_token_warn_80"] is True
 
     def test_warning_once_at_100(self, tmp_path):
         proot = tmp_path / "proj"
@@ -230,7 +232,7 @@ class TestTokenBudgetAlert:
             "cost_usd": None,
         })
         entry = sm.read_one("spec-e")
-        assert entry["_token_alert_100"] == "True"
+        assert entry["_token_alert_100"] is True
         assert entry["status"] == "implementing"  # 不冻结
         # 100% 线同为警告级（2026-09-01 降噪决策），不发 critical；保持未处理
         # 进待办队列（item ded34cd04dc5，同 80% 档）

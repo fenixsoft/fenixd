@@ -325,7 +325,9 @@ class TestInfraBudgetExempt(unittest.TestCase):
         disp = AdminDisposition(
             run_id="admin-test-1", spec=spec, success=True,
             problem="验证失败根因：基础设施（tsc not found）",
-            actions_taken="回拨 2 轮（infra 误计入 fail_rounds）",
+            # 命中句须含「本次」限定词或与 spec 名同现（text_rules 同现限定，
+            # code-review 666155d105ae）——处置文本按本次口径书写
+            actions_taken="本次验证失败实为 infra 误计入 fail_rounds，回拨 2 轮",
             result="resolved",
             summary="诊断结论：基础设施失败；处置时间线：infra 回拨 2 轮；结果：已解决。",
         )

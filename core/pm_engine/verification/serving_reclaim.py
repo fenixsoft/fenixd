@@ -321,7 +321,7 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
             timeout=15,
         )
     except Exception as prune_err:
-        logging.getLogger(__name__).warning(
+        logging.getLogger("fenixd.serving_reclaim").warning(
             "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 异常"
             "（仅影响登记簿清理，不影响回收结果）: %s",
             wt_path,
@@ -329,7 +329,7 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
         )
         return
     if prune.returncode != 0:
-        logging.getLogger(__name__).warning(
+        logging.getLogger("fenixd.serving_reclaim").warning(
             "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 失败 "
             "(rc=%s)（仅影响登记簿清理，不影响回收结果）: %s",
             wt_path,

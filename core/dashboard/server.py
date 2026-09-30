@@ -202,7 +202,7 @@ class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4R
 
     protocol_version = "HTTP/1.1"
 
-    # 方法实现见各 mixin（routes/ 下 H0~H13）
+    # 方法实现见各 mixin（routes/ 下 H0 起各 mixin）
 
 def _find_dashboard_occupant(port: int) -> dict | None:
     """定位占用目标端口的进程（仅 Linux）。

@@ -69,6 +69,9 @@ export function describeStartAfter(startAfter: string | null): string {
 // getDisabledHours/getDisabledMinutes）。本 picker 粒度为 HH:mm（秒面板未开、
 // 提交时 second/millisecond 归零），且校验要求严格晚于现在——故当前分钟的
 // :00 亦属过去，分钟置灰含当前分钟（与 list.tsx 的秒级粒度变体略宽一档）。
+// 已知限制（code-review item a4770fabe16f）：now 在每次渲染取一次，时间面板
+// 打开后停留跨过分钟边界不会自动重算置灰集合（刚流逝的分钟仍可选中），依赖
+// 调用方 onOk 的 isStartAfterValid 兜底报「执行时间必须晚于当前时间」。
 function rangeArray(start: number, endExclusive: number) {
   const out: number[] = [];
   for (let i = start; i < endExclusive; i += 1) out.push(i);

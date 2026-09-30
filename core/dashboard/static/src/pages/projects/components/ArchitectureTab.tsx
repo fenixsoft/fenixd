@@ -95,7 +95,10 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
         pollTimerRef.current = null;
       }
     } catch (e) {
-      if (seq !== seqRef.current) return;
+      // 失败分支与成功分支同口径复核最新 active：切离分面后无新请求自增
+      // seq，仅靠 seq 复核拦不住在飞失败响应——离面后不再弹 toast/写
+      // readError（用户已看不见本分面的错误条）。
+      if (seq !== seqRef.current || !activeRef.current) return;
       // 轮询失败止损（对齐 RegressionTab e419d82ceb2b）：持久后端错误时
       // 不再每 3s 重复打请求并重复弹同一 toast
       if (pollTimerRef.current !== null) {

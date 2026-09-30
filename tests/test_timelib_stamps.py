@@ -1,25 +1,19 @@
-"""knowledge 盖戳时间源收拢 characterization（add-timelib-consolidation-layer 4.3）。
+"""knowledge 盖戳时间源 characterization（本地时区盖戳迁移后口径）。
 
-4.3：knowledge 真相源盖戳的两个同逻辑时间源副本统一改走
-``timelib.now_utc()``，输出格式与取值口径**逐字不变**。
-
-_声明对账留痕（deliverable-dispute）_：SPEC 任务 4.3 与 spec Scenario 写的
-``knowledge.local_now_stamp`` / ``knowledge_backfill._now_local_parts`` 与
-``("2026-09-30 10:33", "UTC+8")`` / ``> 最后更新：… UTC+8`` 在仓库（含全部
-git 历史）中从未存在；实际是 UTC 盖戳（``_STAMP_LINE_RE`` 锁
-``UTC`` 后缀，蒸馏提示词动态段亦自称「当前 UTC 时间」）。「输出格式逐字
-不变」约束优先于任务文本的 ``now_local()`` 字面——用 ``now_local()`` 会把
-本地墙钟盖进「UTC」标签（值平移 8h 且语义错误）。本地化盖戳若需推进应另
-行走 SPEC（改 ``_STAMP_LINE_RE``/表格单元格/提示词模板三处联动）。
+历史演进：add-timelib-consolidation-layer 4.3 曾把两个同逻辑盖戳时间源收拢
+到 ``timelib.now_utc()``（UTC 盖戳）；其后「知识真相源盖戳迁移本地时区」
+（用户定调 2026-09-30：真相源面向人类读者，用本地时区展示）把盖戳值迁为
+本地墙钟（timelib 原语 ``now_local()``），盖戳行尾追加时区后缀，蒸馏动态段
+自称「当前本地时间」。4.3 的旧 UTC 口径断言随迁移一并改写为本文件。
 
 盖戳行格式（既有 ``_STAMP_LINE_RE``）：
-``> 最后更新：YYYY-MM-DD HH:MM UTC``（index 与 _domain 通用，表格单元格为
-同格式去 UTC 后缀）。
+``> 最后更新：YYYY-MM-DD HH:MM UTC+8``（index 与 _domain 通用，时区后缀兼容
+任意时区机器；表格单元格为同格式去时区后缀）。
 """
 
 import re
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from core import knowledge, knowledge_backfill, timelib
@@ -27,46 +21,68 @@ from core import knowledge, knowledge_backfill, timelib
 _STAMP_LINE_RE = knowledge._STAMP_LINE_RE
 
 
-class TestKnowledgeStampTimeSource(unittest.TestCase):
-    """两个同逻辑盖戳时间源：格式逐字不变、取值=timelib.now_utc()。"""
+def _expect_tz_suffix() -> str:
+    """当前本地时区的展示后缀（``UTC+8`` / ``UTC-5`` / ``UTC+5:30``）。"""
+    off = timelib.now_local().utcoffset() or timedelta(0)
+    total_min = round(off.total_seconds() / 60)
+    sign = "+" if total_min >= 0 else "-"
+    hours, minutes = divmod(abs(total_min), 60)
+    return f"UTC{sign}{hours}" + (f":{minutes:02d}" if minutes else "")
 
-    def test_backfill_now_utc_format_and_value(self):
-        got = knowledge_backfill._now_utc()
-        self.assertRegex(got, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
-        # 与 timelib.now_utc() 同源（分钟粒度，跨分钟边界容差 ±2）
+
+class TestKnowledgeStampTimeSource(unittest.TestCase):
+    """两个同逻辑盖戳时间源：格式一致、取值=timelib.now_local()（本地墙钟）。"""
+
+    def test_backfill_now_local_parts_format_and_value(self):
+        stamp, tz = knowledge_backfill._now_local_parts()
+        self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+        # 与 timelib.now_local() 同源（分钟粒度，跨分钟边界容差 ±2）
         delta = (
-            datetime.strptime(got, "%Y-%m-%d %H:%M")
-            - timelib.now_utc().replace(tzinfo=None, second=0, microsecond=0)
+            datetime.strptime(stamp, "%Y-%m-%d %H:%M")
+            - timelib.now_local().replace(tzinfo=None, second=0, microsecond=0)
         )
         self.assertLessEqual(abs(delta.total_seconds()), 120)
-        # 取值是 UTC 墙钟：与 aware UTC 的本地差零（本地 +8 时差不出现在值里）
-        with self.subTest("utc-not-local"):
-            now_aware = timelib.now_utc()
-            self.assertEqual(
-                knowledge_backfill._now_utc(),
-                now_aware.strftime("%Y-%m-%d %H:%M"),
-            )
+        # 时区后缀=真实本地偏移（非 UTC 裸后缀；本地墙钟 + 本地偏移）
+        self.assertEqual(tz, _expect_tz_suffix())
+
+    def test_local_now_stamp_same_contract(self):
+        """knowledge.local_now_stamp 与回填侧同契约（格式与后缀口径一致）。"""
+        stamp, tz = knowledge.local_now_stamp()
+        self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+        self.assertEqual(tz, _expect_tz_suffix())
 
     def test_distill_prompt_dynamic_segment_stamp(self):
-        """蒸馏提示词动态段「当前 UTC 时间」走同一时间源、格式不变。"""
+        """蒸馏提示词动态段「当前本地时间」走同一时间源、格式不变。"""
         text = knowledge.build_distill_prompt(Path(".").resolve(), ["demo-archive"])
-        m = re.search(r"当前 UTC 时间：(\d{4}-\d{2}-\d{2} \d{2}:\d{2})", text)
+        m = re.search(
+            r"当前本地时间：(\d{4}-\d{2}-\d{2} \d{2}:\d{2})"
+            r"（时区 (UTC[+-]\d{1,2}(?::\d{2})?)）",
+            text,
+        )
         self.assertIsNotNone(m, "动态段时间戳缺失或格式漂移")
-        self.assertEqual(
-            m.group(1), knowledge_backfill._now_utc(),
+        stamp, tz = m.group(1), m.group(2)
+        self.assertEqual(tz, _expect_tz_suffix())
+        # 动态段给出的盖戳行写法能通过盖戳行校验（三处联动的端到端证据）
+        self.assertIsNotNone(_STAMP_LINE_RE.match(f"> 最后更新：{stamp} {tz}"))
+        # 与回填盖戳同一分钟级时间源（跨分钟边界容差 ±2）
+        backfill_stamp = knowledge_backfill._now_local_parts()[0]
+        delta = (
+            datetime.strptime(stamp, "%Y-%m-%d %H:%M")
+            - datetime.strptime(backfill_stamp, "%Y-%m-%d %H:%M")
+        )
+        self.assertLessEqual(
+            abs(delta.total_seconds()), 120,
             "蒸馏动态段与回填盖戳应为同一分钟级时间源")
 
     def test_stamp_line_regex_still_validates_output(self):
-        """时间源产出能通过盖戳行校验（格式逐字不变的端到端证据）。"""
-        stamp = knowledge_backfill._now_utc()
-        line = f"> 最后更新：{stamp} UTC"
-        m = _STAMP_LINE_RE.match(line)
-        self.assertIsNotNone(m)
-        self.assertEqual(m.group(1), stamp)
+        """时间源产出能通过盖戳行校验（格式不变的端到端证据）。"""
+        stamp, tz = knowledge.local_now_stamp()
+        line = f"> 最后更新：{stamp} {tz}"
+        self.assertIsNotNone(_STAMP_LINE_RE.match(line))
 
     def test_table_cell_format_unchanged(self):
-        """表格单元格为同格式去 UTC 后缀（knowledge.py 模块注释约定）。"""
-        stamp = knowledge_backfill._now_utc()
+        """表格单元格为同格式去时区后缀（knowledge.py 模块注释约定）。"""
+        stamp, _tz = knowledge.local_now_stamp()
         self.assertIsNotNone(knowledge._STAMP_CELL_RE.match(stamp))
 
 

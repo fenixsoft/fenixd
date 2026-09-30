@@ -244,8 +244,16 @@ def render_overview(specs, daemon_ok, agents=None):
     implementing = status_counts.get("implementing", 0)
     testing = status_counts.get("testing", 0)
     verified = status_counts.get("verified", 0)
+    # 冻结 SPEC 的 error 存的是冻结标记本身，不算故障——与
+    # fenix_status._collect_signals 同口径（err and not frozen 才计入），
+    # 否则有 frozen 的 SPEC 被展示成「🚨 N 个 SPEC 有错误」（code-review
+    # item fc7fc69f0f54）。
     has_error = sum(
-        1 for e in specs.values() if e.get("error") and e.get("status") not in ("done", "pushed")
+        1
+        for e in specs.values()
+        if e.get("error")
+        and e.get("status") not in ("done", "pushed")
+        and not dash_data.is_spec_frozen(e)
     )
 
     # 计算总体实现进度
@@ -464,46 +472,61 @@ def run_tui(interval=3):
 
     try:
         while True:
-            clear_screen()
-            daemon_ok = check_daemon()
-            specs = dash_data.parse_state(PROJECT_ROOT)
+            # 单轮渲染失败降级为告警行（code-review item 6deaa05e4c14）：
+            # parse_state/render_* 抛未预期异常（如 STATE.md 被并发改写
+            # 瞬间的解析错误）不应带整个 TUI 崩溃退出——与
+            # get_active_agents/check_daemon 的「告警一行、不中断刷新」
+            # 同款容错口径。KeyboardInterrupt 不继承 Exception，Ctrl+C
+            # 仍由外层捕获；告警文本截断防超长异常撑破版式（同文件
+            # msg[:100] 先例）。
+            try:
+                clear_screen()
+                daemon_ok = check_daemon()
+                specs = dash_data.parse_state(PROJECT_ROOT)
 
-            # 标题
-            now = now_local().strftime("%H:%M:%S")  # SPEC-B 批⑤收拢
-            w = shutil.get_terminal_size((120, 40)).columns
-            title = f"  Fenix 开发仪表盘  —  {now}  "
-            pad = max(0, w - disp_width(title) - 4)
-            print(f"\n{BOLD}{BG_BLUE}{WHITE}{title}{RESET}{DIM}{'─' * pad}{RESET}")
+                # 标题
+                now = now_local().strftime("%H:%M:%S")  # SPEC-B 批⑤收拢
+                w = shutil.get_terminal_size((120, 40)).columns
+                title = f"  Fenix 开发仪表盘  —  {now}  "
+                pad = max(0, w - disp_width(title) - 4)
+                print(f"\n{BOLD}{BG_BLUE}{WHITE}{title}{RESET}{DIM}{'─' * pad}{RESET}")
 
-            # 每轮只扫一次 ps，概览与状态栏共用
-            agents = get_active_agents()
+                # 每轮只扫一次 ps，概览与状态栏共用
+                agents = get_active_agents()
 
-            # 1. 概览
-            print(render_overview(specs, daemon_ok, agents))
+                # 1. 概览
+                print(render_overview(specs, daemon_ok, agents))
 
-            # 2. 活跃 SPEC
-            print(header_line("活跃 SPEC"))
-            print(render_active_specs(specs))
+                # 2. 活跃 SPEC
+                print(header_line("活跃 SPEC"))
+                print(render_active_specs(specs))
 
-            # 3. 事件流
-            print(header_line("事件流 (最近 10 分钟)"))
-            print(render_event_feed(specs))
+                # 3. 事件流
+                print(header_line("事件流 (最近 10 分钟)"))
+                print(render_event_feed(specs))
 
-            # 底部状态栏
-            total = len(specs)
-            pushed = sum(1 for e in specs.values() if e.get("status") == "pushed")
-            done = sum(1 for e in specs.values() if e.get("status") == "done")
-            active = sum(
-                1 for e in specs.values() if e.get("status") in ("implementing", "testing")
-            )
-            pending_push = done  # done status means pending push
+                # 底部状态栏
+                total = len(specs)
+                pushed = sum(1 for e in specs.values() if e.get("status") == "pushed")
+                done = sum(1 for e in specs.values() if e.get("status") == "done")
+                active = sum(
+                    1 for e in specs.values() if e.get("status") in ("implementing", "testing")
+                )
+                pending_push = done  # done status means pending push
 
-            w = shutil.get_terminal_size((120, 40)).columns
-            footer = f" SPECs: {total} | 🚀 已推送: {pushed} | 🎯 待推送: {pending_push} | 🔨 活跃: {active} | 🤖 Agent进程: {len(agents)} "
-            pad = max(0, w - disp_width(footer) - 2)
-            print(f"\n{BG_BLUE}{WHITE}{BOLD}{footer}{RESET}{DIM}{'─' * pad}{RESET}")
+                w = shutil.get_terminal_size((120, 40)).columns
+                footer = f" SPECs: {total} | 🚀 已推送: {pushed} | 🎯 待推送: {pending_push} | 🔨 活跃: {active} | 🤖 Agent进程: {len(agents)} "
+                pad = max(0, w - disp_width(footer) - 2)
+                print(f"\n{BG_BLUE}{WHITE}{BOLD}{footer}{RESET}{DIM}{'─' * pad}{RESET}")
 
-            sys.stdout.flush()
+                sys.stdout.flush()
+            except Exception as e:
+                clear_screen()
+                print(
+                    f"{RED}⚠️ 本轮渲染失败（{type(e).__name__}: {str(e)[:100]}），"
+                    f"{interval}s 后重试{RESET}"
+                )
+                sys.stdout.flush()
             time.sleep(interval)
 
     except KeyboardInterrupt:
