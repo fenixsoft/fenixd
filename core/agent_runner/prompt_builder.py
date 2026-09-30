@@ -11,8 +11,6 @@ verdict 退回）仍由代码按状态追加。文件缺失派发显式报错。
 self._pm，不在本组件持有状态。
 """
 
-import datetime
-
 from core.timelib import now_local
 import json
 import logging
@@ -90,9 +88,13 @@ def _single_pass_replace(template: str, values: dict[str, str]) -> str:
     """
     if not values:
         return template
-    return re.compile("|".join(re.escape(k) for k in values)).sub(
-        lambda m: values[m.group(0)], template
-    )
+    # 长键优先参与匹配：Python re 的 alternation 按书写顺序取首个命中而非最长
+    # 命中，互为前缀的键（如 {out_path} 与 {out_path2}）短键在前会把长占位符
+    # 截断替换、静默污染注入内容。按键长度降序排序杜绝前缀遮蔽（同长键互不为
+    # 前缀，次序无关）。
+    return re.compile(
+        "|".join(re.escape(k) for k in sorted(values, key=len, reverse=True))
+    ).sub(lambda m: values[m.group(0)], template)
 
 
 def _fill_and_scan_placeholders(
@@ -307,7 +309,9 @@ class PromptBuilder:
                 # 到达 str.replace 抛 TypeError 中止整个提示词构建——归一不对称防回归）。
                 "{sig_type}": _str_field(sig.get("signal_type")) or "unknown",
                 "{sig_spec}": _str_field(sig.get("spec")) or spec_name,
-                "{severity}": _str_field(sig.get("severity")) or "major",
+                # 严重度缺失显式标记 unknown（与 sig_type 缺省口径一致）——
+                # 不伪造 "major"，避免向 administrator 注入未经证实的优先级。
+                "{severity}": _str_field(sig.get("severity")) or "unknown",
                 "{description}": _str_field(sig.get("description")),
                 "{evidence}": _str_field(sig.get("evidence")),
                 "{recommendation}": _str_field(sig.get("recommended_action")),
@@ -454,8 +458,6 @@ class PromptBuilder:
             # worktree 根写 .fenix-run-result.json，含 verification 段）。
             prompt += self._result_gate_section(
                 spec_name, "fast-track", wt_path=wt_path)
-            # 之前只有 implementer 分支注入 prev_error，fast-track 打回后新 run
-            # 完全不知道上次为何失败（fix-implementer-task-progress 三连打回）。
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._interaction_contract_section(spec_name)
             prompt += self._designed_ids_line(
@@ -465,6 +467,8 @@ class PromptBuilder:
                 / spec_name
                 / "test_scenarios.json"
             )
+            # 之前只有 implementer 分支注入 prev_error，fast-track 打回后新 run
+            # 完全不知道上次为何失败（fix-implementer-task-progress 三连打回）。
             prompt += self._prev_error_section(spec_name)
             # 上轮结构化诊断注入（fix-run-hang-amplification 2.4，与 implementer 分支共用）。
             prompt += self._impl_diagnosis_section(spec_name)
@@ -948,7 +952,9 @@ class PromptBuilder:
             if path.is_file():
                 try:
                     content = path.read_text(encoding="utf-8").strip()
-                except OSError:
+                except (OSError, UnicodeDecodeError):
+                    # 非 UTF-8 编码的项目附加文件零注入而非崩掉派发（与
+                    # _route_map_section/_replan_feedback_section 口径对齐）。
                     content = ""
                 if content:
                     base = f"\n\n## 项目附加提示词\n\n{content}\n"
@@ -1182,8 +1188,15 @@ class PromptBuilder:
 
         snap: list = []
         for e in entries:
-            path = e["path"]
-            kind = e["kind"]
+            # 条目防御（code-review item 4171644a4d03）：非 dict 或缺 path/kind
+            # 键的条目直接跳过——兑现本函数 docstring 的 fail-open 承诺，解析器
+            # 回归/脏数据不得让 KeyError/TypeError 冒泡中止派发 prompt 构建。
+            if not isinstance(e, dict):
+                continue
+            path = e.get("path")
+            kind = e.get("kind")
+            if not isinstance(path, str) or not path or not kind:
+                continue
             item = {
                 "path": path,
                 "kind": kind,
