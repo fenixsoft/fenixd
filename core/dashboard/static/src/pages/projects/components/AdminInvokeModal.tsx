@@ -14,6 +14,10 @@ interface AdminInvokeModalProps {
 }
 
 const POLL_INTERVAL_MS = 3000;
+// 定位阶段最大轮询时长：invoke 受理后 daemon 异步落 run，正常数秒内即可定位到；
+// 超时仍未定位（daemon 崩溃/请求丢失）则停止轮询，等待层改报超时并恢复输入可用，
+// 避免弹窗打开期间无限空转（code-review item 1d0089ad568d）
+const LOCATE_TIMEOUT_MS = 60000;
 // 事件数达到 8 才揭示输出区：LLM prefill 阶段无可见输出，过早切换会先呈现
 // 一段空白面板，保持等待动画直到确有内容可看。重连已有输出的 run 时尾部
 // 事件立即计入 eventCount，几乎立即揭示。
@@ -30,7 +34,15 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const [queued, setQueued] = useState(false);
   // 本次处置是否已到终态（终态词表见 handleRunStatus）：终态后按钮与输入框恢复可用
   const [runDone, setRunDone] = useState(false);
+  // 定位阶段超时：超过 LOCATE_TIMEOUT_MS 仍未发现本次处置的 run，停止轮询、
+  // 等待层改报超时并恢复输入可用
+  const [locateTimedOut, setLocateTimedOut] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 在飞标志（同步防重入）：回车经 setTimeout 延后触发，同帧连发的第二次回车
+  // 调度出的回调读 sending state 拿到的仍是旧闭包值，守卫会被绕过；ref 跨渲染
+  // 帧共享且在 handleSend 入口同步读写才拦得住，sending state 仅负责 loading
+  // 渲染（code-review item 61645635a2a4）
+  const sendingRef = useRef(false);
   // 本轮发起的服务端时刻锚点（ms，取 invoke 响应携带的 created）：轮询只采用此后
   // 产生的 run，避免 daemon 尚未落 pending 时取到历史 run；409（已有处置进行中）
   // 时放宽为接受现有最新 run。
@@ -51,7 +63,8 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     extraBodyStyle: { display: 'flex', flexDirection: 'column', paddingTop: 12 },
   });
 
-  const inProgress = invoked && !runDone;
+  // 定位超时同样解除「进行中」：输入与按钮恢复可用，允许直接重新发起
+  const inProgress = invoked && !runDone && !locateTimedOut;
   // 输出区是否已揭示：事件数达标即揭示（重连已有输出时尾部事件立即计入，几乎立即
   // 成立）；run 已到终态也强制揭示——秒败等极短 run 事件数可能永远达不到阈值，
   // 否则等待层 Spin 会永久悬挂，遮挡已产出的失败输出（code-review item 9c95d9076c6b）。
@@ -70,7 +83,9 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     if (!open) return;
     setPrompt('');
     setSending(false);
+    sendingRef.current = false;
     setInvoked(false);
+    setLocateTimedOut(false);
     setRunId(null);
     setEventCount(0);
     setQueued(false);
@@ -102,9 +117,15 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
 
   // 已发起：轮询定位本次处置的 admin run（daemon 异步启动，invoke 响应不含 run_id）
   useEffect(() => {
-    if (!open || !invoked || runId) return;
+    if (!open || !invoked || runId || locateTimedOut) return;
     let stopped = false;
+    const startAt = Date.now();
     const poll = async () => {
+      // 定位超时：停止轮询，等待层改报超时、输入恢复可用（可重新发起）
+      if (Date.now() - startAt >= LOCATE_TIMEOUT_MS) {
+        if (!stopped) setLocateTimedOut(true);
+        return;
+      }
       try {
         const d = await getAdminActivities(project, spec);
         const latest = (d.activities || [])[0];
@@ -136,7 +157,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         pollTimerRef.current = null;
       }
     };
-  }, [open, invoked, runId, project, spec]);
+  }, [open, invoked, runId, locateTimedOut, project, spec]);
 
   const handleRunStatus = (status: string) => {
     // interrupted/cancelled：终态但非崩溃（daemon 停机/人工取消），同样解除
@@ -155,15 +176,19 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
 
   const handleSend = async () => {
     // sending 在途守卫：回车经 setTimeout 延后触发且按住会连发，首个请求在途
-    // （invoked 尚未置位）时后续回车会重复 POST，且第二次 409 会被误判冲突
-    if (sending) return;
+    // （invoked 尚未置位）时后续回车会重复 POST，且第二次 409 会被误判冲突。
+    // 同帧连发的第二次回车调度出的回调读 sending state 拿到的仍是旧闭包值，
+    // 守卫会被绕过，须用 ref 同步读写（sending state 仅负责 loading 渲染）
+    if (sendingRef.current) return;
     const text = promptRef.current.trim();
     if (!text) {
       message.warning('请输入给 Admin 的提示词');
       return;
     }
-    // 处置进行中不允许重复发起（按钮已禁用，此处拦住回车路径）
-    if (invoked && !runDone) return;
+    // 处置进行中不允许重复发起（按钮已禁用，此处拦住回车路径）；
+    // 定位超时例外——输入已恢复可用，允许直接重新发起
+    if (invoked && !runDone && !locateTimedOut) return;
+    sendingRef.current = true;
     setSending(true);
     try {
       const res = (await invokeSpecAdmin(project, spec, text)) as
@@ -181,6 +206,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       setEventCount(0);
       setQueued(false);
       setRunDone(false);
+      setLocateTimedOut(false);
       setInvoked(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -198,11 +224,13 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         setRunId(null);
         setEventCount(0);
         setRunDone(false);
+        setLocateTimedOut(false);
         setInvoked(true);
       } else {
         message.error(`发起失败：${msg}`);
       }
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
@@ -271,12 +299,20 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
               gap: 12,
             }}
           >
-            <Spin />
-            <Text type="secondary">
-              {queued
-                ? 'Administrator 正在处理先前的处置，本次请求已排队等候（串行处理，完成后自动开始）…'
-                : '等待 Administrator 开始处置…'}
-            </Text>
+            {locateTimedOut ? (
+              <Text type="danger">
+                {`定位处置输出超时（超过 ${LOCATE_TIMEOUT_MS / 1000} 秒）：daemon 可能未受理本次请求，请重新发起或稍后重试`}
+              </Text>
+            ) : (
+              <>
+                <Spin />
+                <Text type="secondary">
+                  {queued
+                    ? 'Administrator 正在处理先前的处置，本次请求已排队等候（串行处理，完成后自动开始）…'
+                    : '等待 Administrator 开始处置…'}
+                </Text>
+              </>
+            )}
           </div>
         )}
         {!invoked && (
