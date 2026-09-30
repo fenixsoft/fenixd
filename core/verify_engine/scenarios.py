@@ -971,6 +971,15 @@ class TestStep:
         )
 
 
+# Assertion 规范键单源表（code-review item b44af2c3e74a）：to_dict 写入侧据此
+# 过滤 extra 中的冲突键，from_dict 读入侧据此把同名键归入 extra 之外的规范
+# 字段——两处共享同一集合，新增规范字段只改本表，防「往返不对称」复发
+# （item 7743535e64de）。
+ASSERTION_CANONICAL_KEYS = frozenset(
+    {"type", "selector", "label", "expected", "threshold"}
+)
+
+
 @dataclass
 class Assertion:
     """单个断言定义。
@@ -1005,7 +1014,9 @@ class Assertion:
         # extra 不得覆盖规范键（code-review item 7743535e64de）：旧实现
         # `d.update(self.extra)` 在写入 type/selector/expected 之后执行，extra 里
         # 含同名键会覆盖基础字段；而 from_dict 侧以 known_keys 剔除同名键，往返
-        # 不对称。改为 extra 中与规范键冲突的条目一律忽略（规范字段优先）。
+        # 不对称。改为 extra 中与规范键冲突的条目一律忽略（规范字段优先）；
+        # 规范键集合收敛为下方模块级单源表 ASSERTION_CANONICAL_KEYS
+        # （code-review item b44af2c3e74a），写入侧过滤与读入侧剔除同一口径。
         d: dict = {"type": self.type}
         if self.selector:
             d["selector"] = self.selector
@@ -1015,16 +1026,14 @@ class Assertion:
             d["expected"] = self.expected
         if self.threshold != 0.2:
             d["threshold"] = self.threshold
-        _known = {"type", "selector", "label", "expected", "threshold"}
         for k, v in (self.extra or {}).items():
-            if k not in _known:
+            if k not in ASSERTION_CANONICAL_KEYS:
                 d[k] = v
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Assertion":
-        known_keys = {"type", "selector", "label", "expected", "threshold"}
-        extra = {k: v for k, v in d.items() if k not in known_keys}
+        extra = {k: v for k, v in d.items() if k not in ASSERTION_CANONICAL_KEYS}
         return cls(
             type=d["type"],
             selector=d.get("selector", ""),
