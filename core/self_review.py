@@ -2,7 +2,7 @@
 
 每晚本地时间 ``admin.self_review.run_at``（缺省 02:00）后，由 Administrator
 通道执行一次工作回顾：聚合执行前 24 小时的数据摘要（STATE 终态 / runs 统计 /
-admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交五源）→ 发起 ``self-review``
+admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交 / 中途信号六源）→ 发起 ``self-review``
 run → 按 resolved 移除已闭环历史条目 + 追加写入项目 ``.fenix/todo.md``
 → 单文件 commit + push。
 
@@ -148,8 +148,11 @@ _BUSINESS_FAIL_SIGNALS = (
     "预算耗尽",
 )
 
-# run_id 内嵌开始时间戳（int(time.time())）的匹配模式（与 data.get_runs 同口径）。
-_RUN_TS_RE = re.compile(r"-(\d{9,10})(?:-a\d+)?$")
+# run_id 内嵌开始时间戳（int(time.time())）的匹配模式：剥 -a/-r 退避与重试尾
+# （impl-<spec>-<ts>-a1-r1，run_task_track 同形态、同族共享 epoch），使重试
+# 产物归窗取开始时刻而非回退 mtime（≈结束时刻）；正则形态对齐
+# admin_monitor._spec_from_run_id（dashboard data.get_runs 不认 -rN）。
+_RUN_TS_RE = re.compile(r"-(\d{9,10})(?:-(?:a|r)\d+)*$")
 
 
 # 结构化条目契约键（_rescue_structured_entry 判定 + dict 渲染共用）。
@@ -257,9 +260,11 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
 
     尾块读取（对齐 dashboard ``_read_run_lines`` 范式）：seek 到文件尾部
     ``_RUN_TAIL_WINDOW_BYTES`` 字节窗口再按行切，不把整份转录读进内存。
-    窗口首片段是从字节窗口切入的上一行残段（起点恰压行尾时为空串），丢弃
-    不解析；丢弃后窗口内完整行不足 max_lines（末行超窗，如单条超大 JSON
-    行）→ 按 ``_RUN_TAIL_WINDOW_GROWTH`` 倍数指数扩窗重读（b4f2e8c47390：
+    窗口首片段是从字节窗口切入的上一行残段（起点恰压行尾时为空串；起点恰
+    压行首时是一条完整行，也一并丢弃、由扩窗重读补偿行数——结果不变，仅
+    偶发一次多余重读），丢弃不解析；丢弃后窗口内完整行不足 max_lines
+    （末行超窗，如单条超大 JSON 行）→ 按 ``_RUN_TAIL_WINDOW_GROWTH``
+    倍数指数扩窗重读（b4f2e8c47390：
     不回退整文件流读，IO 不再与转录总量成正比），直到凑足行数或窗口覆盖
     全文件。返回内容与旧整文件 ``read_text().splitlines()[-max_lines:]``
     一致：窗口覆盖全文件（start=0）时不丢弃首行；起点压行尾时空串首片段
@@ -278,7 +283,7 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
                 if start == 0:
                     # 窗口已覆盖全文件：全量行、不丢首片段（同旧整文件口径）
                     return _parse_run_tail_lines(raw[-max_lines:])
-                raw = raw[1:]  # 首片段是上一行的残段（或压行尾的空串），丢弃
+                raw = raw[1:]  # 首片段是残段/空串/压行首时的完整行，丢弃（扩窗补偿）
                 if len(raw) >= max_lines:
                     return _parse_run_tail_lines(raw[-max_lines:])
                 window *= _RUN_TAIL_WINDOW_GROWTH
@@ -1311,7 +1316,7 @@ class SelfReviewScheduler:
             "reason": "no_spec_activity",
         }
 
-    # ── 四源数据摘要（spec 场景锁定数据源清单） ───────────────
+    # ── 六源数据摘要（spec 场景锁定数据源清单） ───────────────
 
     def collect_daily_summary(self, window_start: datetime, pre_classified=None) -> str:
         """聚合窗口数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 /

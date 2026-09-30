@@ -217,11 +217,16 @@ def _candidates_from_line(line: str) -> List[str]:
             cands.extend(inner)
         else:
             for tok in rest.split():
-                # 中文句子通常无空格，「路径：core/api.py（新增）」切出的
-                # token 会整段尾带全角括注——截断首个全角标点起的尾缀，
-                # 避免括注内容伪装成交付路径（code-review item
-                # d633c26ae3ee；rstrip 剥不掉左括号前挂的括注内容）
-                tok = re.split(r"[（」』】]", tok, maxsplit=1)[0]
+                # 中文句子通常无空格，切出的 token 会整段尾带全角括注或从句
+                # ——在首个全角标点（括注/停顿标点）处截断尾缀，避免伪装成
+                # 交付路径（code-review item d633c26ae3ee；rstrip 剥不掉左
+                # 括号前挂的括注内容）：「路径：core/api.py（新增）」截在（、
+                # 「路径：core/api.py，该文件为新增」截在，。停顿标点截断与
+                # _normalize_token 的尾随标点剥离互补——句号/右闭合标点只
+                # 挂在 token 尾部由后者剥离，此处负责中缀截断（item
+                # ed5bc62b84e9：原字符集只认括注，全角逗号从句无空格可切，
+                # 整段伪装成候选路径、守卫误报缺件）
+                tok = re.split(r"[（」，、；」』】]", tok, maxsplit=1)[0]
                 if tok:
                     cands.append(tok)
 
@@ -834,6 +839,15 @@ def _atomic_write_text(target: Path, content: str) -> None:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        # 替换既有文件时继承其权限（item 80a6ae8b6492）：mkstemp 固定 0600，
+        # os.replace 后目标从常规 0644 静默收窄为 0600，跨用户读取（只读巡检/
+        # 备份任务）会 PermissionError，且被调用方各处「读取失败回退/降级」
+        # 分支掩盖成解析回退而非权限错误；新文件（目标不存在）保持 mkstemp
+        # 默认语义不变。尽力而为，失败不阻断主流程
+        try:
+            os.chmod(tmp_path, os.stat(target).st_mode & 0o777)
+        except OSError:
+            pass
         os.replace(tmp_path, target)
         # 尽力而为 fsync 父目录（rename 目录项持久化）；失败不阻断主流程
         try:
@@ -1395,6 +1409,36 @@ def _declared_kind_line(lines, path_idx, end):
     return None, None
 
 
+def _locate_declared_section(lines):
+    """定位 tasks.md 行列表中 ``## Deliverables`` 声明段边界（单点助手）。
+
+    「``_DECLARED_HEADING_RE`` 定位 start（标题行下一行）→ ``_H2_RE`` 扫描
+    end（下一个二级标题行，无则 ``len(lines)``）」段边界前导的唯一实现——
+    声明段三处文本改写（replace_declared_path / soften_declared_kind /
+    remove_declared_entry）共用（code-review item 95d551db0a47：原三处各持
+    一份扫描拷贝，段边界规则单点演进（如标题别名）需同步改三处，漏一处即
+    出现 lint 放行而某个改写入口上抛的解析漂移），与 _extract_declared_block /
+    _declared_kind_line 的单点化取向一致。条目行定位（``_path_line_re`` 等）
+    各入口 pattern 与报错语境不同，保留在各入口内不抽象。
+
+    Returns:
+        ``(start, end)``；无声明段标题返回 ``None``（调用方按各自语境上抛）。
+    """
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _H2_RE.match(lines[i]):
+            end = i
+            break
+    return start, end
+
+
 @contextmanager
 def _declaration_write_lock(spec_dir):
     """tasks.md 声明段读改写窗口的进程间互斥（flock，``.fenix/declaration-<spec>.lock``）。
@@ -1448,18 +1492,10 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
     with _declaration_write_lock(spec_dir):
         text = tasks.read_text(encoding="utf-8")
         lines = text.splitlines()
-        start = None
-        for i, line in enumerate(lines):
-            if _DECLARED_HEADING_RE.match(line):
-                start = i + 1
-                break
-        if start is None:
+        section = _locate_declared_section(lines)
+        if section is None:
             raise ValueError(f"tasks.md 无 Deliverables 声明段（无法修正 {element}）")
-        end = len(lines)
-        for i in range(start, len(lines)):
-            if _H2_RE.match(lines[i]):
-                end = i
-                break
+        start, end = section
 
         def _path_line_re(p: str):
             return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
@@ -1537,18 +1573,10 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
     with _declaration_write_lock(spec_dir):
         text = tasks.read_text(encoding="utf-8")
         lines = text.splitlines()
-        start = None
-        for i, line in enumerate(lines):
-            if _DECLARED_HEADING_RE.match(line):
-                start = i + 1
-                break
-        if start is None:
+        section = _locate_declared_section(lines)
+        if section is None:
             raise ValueError(f"tasks.md 无 Deliverables 声明段（无法软化 {element}）")
-        end = len(lines)
-        for i in range(start, len(lines)):
-            if _H2_RE.match(lines[i]):
-                end = i
-                break
+        start, end = section
 
         path_idx = None
         for i in range(start, end):
@@ -2195,7 +2223,13 @@ def is_drift_candidate(entry, project_root, branch, merge_base=None) -> dict:
     # 分支 HEAD 缺失 → fail-open 非漂移（不机械改写）
     if not branch:
         return {"drift": False, "evidence": evidence}
-    if _git_object_exists_on_branch(branch, path, project_root):
+    exists = _git_object_exists_on_branch(branch, path, project_root)
+    if exists is not False:
+        # 三态判别（对齐 _declared_satisfied_on_branch 的 None 处置，item
+        # 280861e01f22）：True=分支已落地无缺件；None=git 不可用（超时/无法
+        # 执行/非仓库）存在性未知——旧真值判断把 None 也当「分支缺路径」
+        # 放行，drift=True 与 evidence["branch_missing"] 在 git 不可用环境
+        # 下失真，误导人工裁决
         return {"drift": False, "evidence": evidence}
     evidence["branch_missing"] = True
     # 条件 3：git 历史命中（曾作为文件存在过）
@@ -2239,18 +2273,10 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
     with _declaration_write_lock(spec_dir):
         text = tasks.read_text(encoding="utf-8")
         lines = text.splitlines()
-        start = None
-        for i, line in enumerate(lines):
-            if _DECLARED_HEADING_RE.match(line):
-                start = i + 1
-                break
-        if start is None:
+        section = _locate_declared_section(lines)
+        if section is None:
             raise ValueError(f"tasks.md 无 Deliverables 声明段（无法删除 {element}）")
-        end = len(lines)
-        for i in range(start, len(lines)):
-            if _H2_RE.match(lines[i]):
-                end = i
-                break
+        start, end = section
 
         def _path_line_re(p: str):
             return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")

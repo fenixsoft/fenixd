@@ -149,7 +149,11 @@ def parse_orig_status(error) -> str:
     m = re.search(r"原状态\s+(\S+)", str(error or ""))
     if m:
         status = m.group(1).strip().rstrip("·，,。")
-        if status:
+        # 合法性校验：\S+ 贪婪捕获会把无空格分隔的原因一并吞入
+        # （「原状态 testing·原因」→「testing·原因」，rstrip 剥不掉中间字符），
+        # 非法值落盘后 _admit_entry 会在下个写者 read_all 时丢条目
+        # （branch/run 锚点与预算计数一并物理删除）。非法与缺失同口径回退 ready。
+        if status in SpecStatus.ALL:
             return status
     return SpecStatus.READY
 
@@ -788,28 +792,7 @@ class StateMachine:
         的第二个 fd 再 flock 会阻塞，故锁内不得再走 write_all。
         """
         content = StateParser.serialize(specs)
-        parent = self.state_path.parent
-
-        # Use per-thread unique temp name to avoid threads clobbering each other
-        tid = threading.get_ident()
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=f".STATE.md.{os.getpid()}.{tid}.",
-            suffix=".tmp",
-            dir=str(parent),
-        )
-        tmp_path = Path(tmp_path_str)
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.rename(str(tmp_path), str(self.state_path))
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
+        self._atomic_write_text(self.state_path, content)
 
     # ── 锁内原子读改写范式（fix-state-atomicity-and-selfheal-restart D1）──
 
@@ -1792,7 +1775,8 @@ class StateMachine:
         return "".join(parts)
 
     def _atomic_write_text(self, path: Path, content: str):
-        """temp 写盘 + fsync + rename 的原子文本替换（与 _write_all_locked 同式）。"""
+        """temp 写盘 + fsync + rename 的原子文本替换（原子写机制单点实现，
+        _write_all_locked 亦复用本方法落盘 STATE.md）。"""
         parent = path.parent
         tid = threading.get_ident()
         tmp_fd, tmp_path_str = tempfile.mkstemp(

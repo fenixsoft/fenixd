@@ -55,7 +55,9 @@ KNOWLEDGE_DIR = "spec/knowledge"
 ARCHIVE_DIR = "spec/archive"
 PROMPT_FILE = "knowledge_prompts/distill.md"  # 相对 core/ 包
 
-# 单页 150 行硬顶（spec knowledge-atlas-directory「单页行数硬顶」）
+# 单页 150 行硬顶（spec knowledge-atlas-directory「单页行数硬顶」）。
+# 仅约束能力页（domains/<域>/<能力>.md）——导航层 _domain.md 与 index.md
+# 豁免（validate_knowledge 里行数检查位于能力页分支内，导航页另算）
 MAX_PAGE_LINES = 150
 
 # marker 字段合法性
@@ -454,6 +456,13 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             for stream in (proc.stdout, proc.stderr):
                 if stream is not None:
                     stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+        # 尽力收割：强杀后不 wait 会在常驻 daemon 进程内残留僵尸子进程
+        # （每次超时清场累积一个）；孙进程仍持管道收不回时放弃，交由
+        # init 兜底回收（与 core/knowledge_backfill.py 同款实现一致）
+        try:
+            proc.wait(timeout=5)
         except Exception:  # noqa: BLE001
             pass
     except Exception:  # noqa: BLE001
@@ -918,8 +927,19 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
         logger.warning("knowledge-distill 配置解析失败，跳过派发: %s", e)
         return {"dispatched": False, "reason": f"config-error: {e}"}
 
-    # 归档目录存在性（蒸馏只读归档；软删除路径命名同样落 spec/archive/）
-    missing = [n for n in archived_names if not (proot / ARCHIVE_DIR / n).is_dir()]
+    # 归档目录存在性（蒸馏只读归档；软删除路径命名同样落 spec/archive/）。
+    # 防御（code-review b00585e3c85b）：归档名须为单一路径成分——含路径
+    # 分隔符或为 . / .. 时，存在性检查与蒸馏上下文拼出的路径会越出归档
+    # 目录，一律按缺失拒绝。
+    missing = [
+        n
+        for n in archived_names
+        if not n
+        or n in (".", "..")
+        or os.sep in n
+        or "/" in n
+        or not (proot / ARCHIVE_DIR / n).is_dir()
+    ]
     if missing:
         if len(archived_names) == 1:
             return {"dispatched": False, "reason": "archive-dir-missing"}
@@ -966,8 +986,8 @@ def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=Non
     Returns:
         {"dispatched": bool, "reason": str|None}：
         - dispatched=True：已入队后台 run（结果经日志与 todo.md 观察）；
-        - False：reason ∈ disabled / archive-dir-missing / test-environment /
-          error:<...>。
+        - False：reason ∈ disabled / config-error:<...> / archive-dir-missing /
+          backfill-queued / test-environment / error:<...>。
     """
     if _in_pytest() and dispatcher is None:
         # 测试环境守卫（task 2.3 测试隔离）：替身注入时绕开本守卫
