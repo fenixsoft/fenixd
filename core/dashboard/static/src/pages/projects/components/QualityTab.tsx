@@ -525,6 +525,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 旧项目 running=true 的晚到响应会在本轮清理之后，经过期闭包重建捕获
       // 旧 project 的 2s 轮询。
       progressSeqRef.current += 1;
+      // 同步作废所有在飞 loadItems 响应（code-review item 31c9cfb5cb4e）：与
+      // progressSeqRef 同口径——卸载/active 翻转/project 切换都走本清理，使
+      // 切换前旧项目已发出的在飞 loadItems 一律过期，防旧闭包晚到响应把旧
+      // 项目台账写进新项目视图；新建 loadItems 会再次自增，不影响正常刷新。
+      loadSeqRef.current += 1;
       if (pollTimerRef.current !== null) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -891,7 +896,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               `已生成修复 SPEC：${result.spec_name}${describeStartAfter(holder.startAfter)}`,
             );
             setSelectedKeys([]);
-            void loadItems();
+            // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
+            // await generateFixSpec 往返期间发生项目切换时，直呼本闭包捕获的旧
+            // loader 会拿旧 project 重新请求并把旧项目条目写进新项目视图——此时
+            // seq 取到的仍是最新值，第 365 行守卫拦不住。
+            void loadItemsRef.current();
           } else {
             message.error(result.error || '生成失败');
             // 失败时保留弹窗（用户看清文案再决定重试/改时刻）
@@ -936,7 +945,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         message.warning(`已忽略 ${ok} 条，${failed} 条失败`);
       }
       setSelectedKeys([]);
-      void loadItems();
+      // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
+      // Promise.allSettled 期间发生项目切换时，直呼本闭包捕获的旧 loader 会拿
+      // 旧 project 重新请求并把旧项目条目写进新项目视图——此时 seq 取到的仍
+      // 是最新值，第 365 行守卫拦不住。
+      void loadItemsRef.current();
     } finally {
       setIgnorePending(false);
     }
