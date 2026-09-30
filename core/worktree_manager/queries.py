@@ -16,6 +16,7 @@ import os
 import subprocess
 import time
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,13 @@ from core.worktree_manager import (  # noqa: E402
     WT_REBUILDABLE,
     WT_UNAVAILABLE,
 )
+
+# worktree 载体前缀词表（code-review de964a886af5 单源化）：历史上两处内联
+# 各自为政，词表缺 judge 出过 a800466bdff4 事故（judge 载体无法归属 spec、
+# 清扫侧保守永不清删，目录只增不减）。_spec_from_worktree_name /
+# _wt_name_matches_spec 统一引用本常量，create_worktree_on_branch 的合法
+# prefix 取值同源——新增载体前缀只改这一处。
+_WT_NAME_PREFIXES = ("impl", "verify", "repair", "judge")
 
 
 class G8QueryMixin:
@@ -36,12 +44,12 @@ class G8QueryMixin:
         spec 名自身可含连字符，因此取前缀之后、末段时间戳之前的部分；
         段数不足（非本框架产物）返回 None。
 
-        前缀词表须与 create_worktree_on_branch 的 prefix 取值对齐
-        （code-review item a800466bdff4）：adjudication 以 prefix="judge" 建
+        前缀词表即模块级 ``_WT_NAME_PREFIXES``（与 create_worktree_on_branch
+        的 prefix 取值对齐，code-review item a800466bdff4）：adjudication 以 prefix="judge" 建
         载体，词表缺 judge 会让 judge 载体无法归属 spec——boot 保全集/恢复
         保留判定漏收，清扫侧又因命名不识别保守永不清删，目录只增不减。
         """
-        for prefix in ("impl", "verify", "repair", "judge"):
+        for prefix in _WT_NAME_PREFIXES:
             if wt_name.startswith(f"{prefix}-"):
                 rest = wt_name[len(prefix) + 1 :]
                 parts = rest.rsplit("-", 1)
@@ -71,8 +79,8 @@ class G8QueryMixin:
         """校验某相对路径在分支 HEAD 提交中是否存在（交付物守卫校验基准）。
 
         实现 run 收工时 worktree 已被清理，唯一留存的交付物是分支提交。
-        用 ``git cat-file -e <branch>:<rel_path>`` 做 O(1) 存在性检查——
-        纯文件系统/对象库探测，不触发 LLM / 测试 / 网络。
+        用单次 ``git ls-tree -z <branch> -- <rel_path>`` 同时给出存在性与
+        类型——纯文件系统/对象库探测，不触发 LLM / 测试 / 网络。
 
         Args:
             branch: 实现分支名（AgentRunResult.branch）
@@ -86,28 +94,21 @@ class G8QueryMixin:
         if not branch or not rel_path:
             return False
         try:
-            # -e 仅判断对象可达（blob/tree/symlink），不输出内容，零成本。
-            result = subprocess.run(
-                ["git", "-C", str(self.project_root), "cat-file", "-e", f"{branch}:{rel_path}"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                return False
-            # 类型判定须读 tree 条目的 mode 而非 cat-file -t：symlink 与普通
-            # 文件的对象类型同为 blob（区别仅在 tree 里的 mode 120000），
-            # cat-file -t 无法区分。ls-tree -z 输出形如
-            # ``<mode> <type> <sha>\t<path>``，首 token 即 mode（文件实测
-            # 100644/100755、目录 040000、symlink 120000）；路径不存在时输出
-            # 为空（rc=0）→ 解析得空 mode → False。
+            # 单次 ls-tree 合并「存在性 + 类型」两问（code-review ad5041fa5ac8，
+            # 原 cat-file -e 预检删除——其短路收益只在「分支不存在」场景）：
+            # rc!=0（分支不存在等）→ False；路径不存在时 rc=0 但输出为空 →
+            # 同样 False。输出形如 ``<mode> <type> <sha>\t<path>``，首 token
+            # 即 mode——类型判定须读 tree 条目的 mode 而非 cat-file -t：
+            # symlink 与普通文件的对象类型同为 blob（区别仅在 tree 里的
+            # mode 120000），cat-file -t 无法区分。文件实测 100644/100755、
+            # 目录 040000、symlink 120000。
             kind = subprocess.run(
                 ["git", "-C", str(self.project_root), "ls-tree", "-z", branch, "--", rel_path],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
-            if kind.returncode != 0:
+            if kind.returncode != 0 or not kind.stdout:
                 return False
             # 100644/100755（文件）= 落地交付物；040000（目录）同样算落地——
             # git 不追踪空目录，path 为 tree 必然内含文件（如构建产物 dist/
@@ -170,14 +171,15 @@ class G8QueryMixin:
         return WT_AVAILABLE
 
     def create_worktree_on_branch(
-    self, spec_name: str, branch: str, prefix: str = "repair"
+        self, spec_name: str, branch: str, prefix: str = "repair"
     ) -> Optional[Path]:
         """在既有分支上创建 worktree（checkout 而非 ``-b`` 新建），供 repair 换壳 /
         fix-relint-redispatch-legacy 仅分支遗产认领。
 
         worktree 目录名 ``{prefix}-<spec>-<ts>``（默认 ``repair-``，区别于
         impl-/verify- 前缀，Dashboard/runs 检索据此辨识；仅分支遗产认领传
-        ``impl`` 保持 implementer 通道语义）。仅登记活动集与分支映射，不 seed
+        ``impl`` 保持 implementer 通道语义；合法 prefix 取值即模块级
+        ``_WT_NAME_PREFIXES``）。仅登记活动集与分支映射，不 seed
         spec 文件（分支已含实现历史，spec 文档已在其中）。
 
         Returns: worktree 路径，失败（分支不存在/该分支已有 worktree/git
@@ -450,6 +452,8 @@ class G8QueryMixin:
           时间戳、其前段 MUST 与该 spec 名全等——spec 名互为前缀
           （``fix-x`` / ``fix-x-y``）时 glob 命中集合 MUST NOT 直接当候选；
           ``<prefix>/verify-<spec>-*`` 验证分支 MUST NOT 进入候选清单；
+          解析统一走 :meth:`_impl_branch_owned_by_spec`（code-review
+          9dd92d791918 三处内联归一）；
         - 排序（D2）：先取 ``git merge-base --is-ancestor main <branch>``
           成立者（repair 已把 main 合入分支的形态），按 committerdate 最新；
           无「已含 main」候选时取 ``git rev-list --count main..<branch>``
@@ -502,17 +506,12 @@ class G8QueryMixin:
                         cdate = int(parts[1].strip()) if len(parts) > 1 else 0
                     except ValueError:
                         cdate = 0
-                    # 完整 spec 名 + 分隔符边界全等比较：去前缀后按最后一个
-                    # `-` 分段，末段纯数字时间戳、其前段与 spec 名全等。
-                    rest = name[len(prefix) + 1 :] if name.startswith(f"{prefix}/") else name
-                    segs = rest.rsplit("-", 1)
-                    if len(segs) != 2 or not segs[0] or not segs[1].isdigit():
-                        continue
-                    if segs[0] != spec_name:
-                        # spec 名互为前缀（fix-x / fix-x-y）：非全等命中直接剔除
-                        continue
-                    # verify 验证分支 MUST NOT 进入候选清单
-                    if rest.startswith("verify-"):
+                    # 完整 spec 名 + 分隔符边界全等比较 + verify 验证分支剔除，
+                    # 统一走 _impl_branch_owned_by_spec（9dd92d791918 三处内联
+                    # 归一）：spec 名互为前缀（fix-x / fix-x-y）非全等命中剔除；
+                    # verify- 按结构判别，spec 名自身以 verify- 开头的实现分支
+                    # 不再被一刀切误伤（3f168f91d3af）。
+                    if not self._impl_branch_owned_by_spec(name, spec_name, (prefix,)):
                         continue
                     candidates.append(
                         {
@@ -604,12 +603,13 @@ class G8QueryMixin:
 
         从目录名解析出完整 spec 再与目标精确比较（分隔符边界锚定，禁止子串
         包含）：``impl-fix-x-1`` 对 spec ``fix-x`` 命中、对 ``fix`` 不命中。
-        非本框架命名（前缀不识别/缺时间戳段）返回 False。前缀词表与
-        _spec_from_worktree_name 同源（含 judge，a800466bdff4）。
+        非本框架命名（前缀不识别/缺时间戳段）返回 False。前缀词表即模块级
+        ``_WT_NAME_PREFIXES``（与 _spec_from_worktree_name 单源，含 judge，
+        a800466bdff4）。
         """
         if not wt_name or not spec_name:
             return False
-        for prefix in ("impl", "verify", "repair", "judge"):
+        for prefix in _WT_NAME_PREFIXES:
             if wt_name.startswith(f"{prefix}-"):
                 rest = wt_name[len(prefix) + 1 :]
                 parts = rest.rsplit("-", 1)
@@ -624,13 +624,17 @@ class G8QueryMixin:
         evo-recovery-watch-transition-guard D1：recovery watch 判定 stale 前
         的过渡窗口豁免判据之一。判定标准：
 
-          - 枚举 ``refs/heads/fenix/``（前缀与创建端同源，见类常量注释）；
-          - 候选分支按「完整 spec 名 + 分隔符边界」全等解析（去 ``fenix/``
-            后按最后一个 ``-`` 分段、末段 MUST 为纯数字、其前段与该 spec 名
-            全等；口径同 :meth:`_wt_name_matches_spec`），``fenix/verify-*``
-            验证分支 MUST NOT 进入候选（归属解析见
-            ``_impl_branch_owned_by_spec``，MUST NOT 复用 ``_spec_from_branch``
-            ——它剥 ``verify-`` 前缀且硬编码 ``fenix/``）；
+          - 枚举 ``refs/heads/fenix/`` ∪ 配置 ``implement_branch_prefix``
+            命名空间（创建端 ∪ 配置并集，与 find_branches_by_spec /
+            _branch_protected_by_state 同口径；7c79c46aa62c——非 fenix 配置
+            下仅按创建端命名空间枚举会漏配置命名空间的未合并分支，过渡豁免
+            漏判走 fail-closed 方向：不豁免 → 提前判 stale）；
+          - 候选分支按「完整 spec 名 + 分隔符边界」全等解析（去前缀后按
+            最后一个 ``-`` 分段、末段 MUST 为纯数字、其前段与该 spec 名
+            全等；口径同 :meth:`_wt_name_matches_spec`），验证分支 MUST NOT
+            进入候选（归属解析统一走 ``_impl_branch_owned_by_spec``——
+            verify- 结构判别，MUST NOT 复用 ``_spec_from_branch``：它剥
+            ``verify-`` 前缀且硬编码 ``fenix/``）；
           - ``git rev-list --count main..<branch>`` > 0（有未并入 main 的提交）。
 
         查询失败（git 超时/非零退出/异常）一律返回 False（fail-closed：不
@@ -659,7 +663,12 @@ class G8QueryMixin:
         MUST 以 ``isinstance(ts, (int, float))`` 判定，勿依赖 ``is not None``
         ——测试夹具替身 MagicMock 为真值）。
         """
-        prefix = self.PENDING_MERGE_BRANCH_PREFIX
+        # 枚举前缀并集（7c79c46aa62c）：与 find_branches_by_spec /
+        # _branch_protected_by_state 同口径——创建端 fenix ∪ 配置
+        # implement_branch_prefix。非 fenix 配置下仅按创建端命名空间
+        # （PENDING_MERGE_BRANCH_PREFIX）枚举会漏配置命名空间的未合并分支，
+        # 过渡豁免漏判走 fail-closed（不豁免 → 提前判 stale）。
+        prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
         try:
             res = subprocess.run(
                 [
@@ -668,7 +677,7 @@ class G8QueryMixin:
                     str(self.project_root),
                     "for-each-ref",
                     "--format=%(refname:short)",
-                    f"refs/heads/{prefix}",
+                    *[f"refs/heads/{p}" for p in sorted(prefixes)],
                 ],
                 capture_output=True,
                 text=True,
@@ -681,7 +690,7 @@ class G8QueryMixin:
         latest: Optional[int] = None
         for cand in res.stdout.splitlines():
             cand = cand.strip()
-            if not self._impl_branch_owned_by_spec(cand, spec_name):
+            if not self._impl_branch_owned_by_spec(cand, spec_name, prefixes):
                 continue
             try:
                 ahead = subprocess.run(
@@ -728,33 +737,54 @@ class G8QueryMixin:
         return latest
 
     @staticmethod
-    def _impl_branch_owned_by_spec(branch: str, spec_name: str) -> bool:
-        """分支（``fenix/<spec>-<ts>``）是否精确归属该 spec（完整名 + 分隔符边界）。
+    def _impl_branch_owned_by_spec(
+        branch: str, spec_name: str, prefixes: Iterable[str] | None = None
+    ) -> bool:
+        """分支（``<prefix>/<spec>-<ts>``）是否精确归属该 spec 的实现分支（单一 helper）。
 
-        evo-recovery-watch-transition-guard D1 归属精确性：MUST NOT 复用
-        ``_spec_from_branch``（它硬编码 ``fenix/`` 且剥 ``verify-`` 前缀，会把
-        ``fenix/verify-<spec>-<ts>`` 验证分支误算作本 spec 的实现分支）；MUST
-        走与 :meth:`_wt_name_matches_spec` 同口径的边界守卫——分支名去
-        ``fenix/`` 后按最后一个 ``-`` 分段、末段 MUST 为纯数字、其前段与该
-        spec 名**全等**；``fenix/verify-*`` 显式排除。
+        evo-recovery-watch-transition-guard D1 归属精确性 + code-review
+        9dd92d791918 三处内联归一：find_branches_by_spec /
+        _branch_protected_by_state（stale_sweep G7）/ pending_merge_since 的
+        「分支名去命名空间前缀 + 末段纯数字时间戳 + 前段与 spec 名全等」边界
+        解析统一走本方法。MUST NOT 复用 ``_spec_from_branch``（它剥
+        ``verify-`` 前缀，会把 ``<prefix>/verify-<spec>-<ts>`` 验证分支误算作
+        本 spec 的实现分支）。
+
+        判别规则：
+
+          - ``prefixes`` 缺省 ``("fenix",)``（创建端硬编码口径）；调用方按
+            「创建端 ∪ 配置 implement_branch_prefix」并集传入（与
+            find_branches_by_spec / _branch_protected_by_state 同口径，
+            7c79c46aa62c）；
+          - verify- 按**结构**判别而非裸 ``startswith("verify-")``
+            （3f168f91d3af）：rest 去掉末段纯数字时间戳后，前段恰为
+            ``verify-<spec>`` 才是验证分支——spec 名自身以 ``verify-`` 开头
+            时，其实现分支（前段恰为 spec 名）不再被一刀切永久误伤
+            （此前 recovery 回落候选清单与 pending_merge_since 对该类 spec
+            恒为空，分支锚点回落与过渡豁免静默失效）。
 
         实锤（design D1 归属精确性）：`fenix/evo-add-fast-track-scale-precheck-*`
         命中 5 条分支，其中 ``...-4afdbe-<ts>``（2 条）属**另一 spec**
         ``evo-add-fast-track-scale-precheck-4afdbe``——前缀匹配会把别的 spec 的
         未合并提交算到本 spec 头上。本守卫对 spec ``evo-add-fast-track-scale-precheck``
         解析 ``...-4afdbe-1789277250`` 得前段 ``...-4afdbe`` ≠ spec → 不命中。
+
+        Returns: 实现分支精确命中 True；验证分支 / 非本框架命名 / 他人分支 False。
         """
         if not branch or not spec_name:
             return False
-        if not branch.startswith("fenix/"):
+        for prefix in prefixes or ("fenix",):
+            if branch.startswith(f"{prefix}/"):
+                rest = branch[len(prefix) + 1 :]
+                break
+        else:
             return False
-        rest = branch[len("fenix/") :]
-        if rest.startswith("verify-"):
-            return False  # 验证分支（fenix/verify-<spec>-<ts>）MUST NOT 进入候选
         parts = rest.rsplit("-", 1)
-        if len(parts) == 2 and parts[0] and parts[1].isdigit():
-            return parts[0] == spec_name
-        return False
+        if len(parts) != 2 or not parts[0] or not parts[1].isdigit():
+            return False
+        if parts[0] == f"verify-{spec_name}":
+            return False  # 验证分支（<prefix>/verify-<spec>-<ts>）MUST NOT 进入候选
+        return parts[0] == spec_name
 
     def branch_exists(self, branch: str) -> bool:
         """分支是否存在（``git rev-parse --verify``）。repair 三态判定基准。"""
