@@ -84,6 +84,10 @@ _RECLASSIFY_NEGATION_PHRASES = (
     "not reclassify",
     "不适用回拨",
 )
+# 「本次处置」同句限定词（infra 回拨版）：与 _WAIVER_CURRENT_MARKERS 单源同
+# 口径（code-review 666155d105ae）——命中句须含其一（或与本次 spec 名同现）
+# 才算本次回拨声明，历史/他 spec 的回拨叙述提及不构成对本次对象的回拨指令。
+_RECLASSIFY_CURRENT_MARKERS = _WAIVER_CURRENT_MARKERS
 
 
 def family_waiver_granted(text: str, spec: str) -> bool:
@@ -100,13 +104,18 @@ def family_waiver_granted(text: str, spec: str) -> bool:
       - 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算显式放行。
 
     Args:
-        text: 处置文本拼接（actions_taken/summary/recommended_action）。
+        text: 处置文本拼接（actions_taken/summary/recommended_action）；为
+            None/非 str 时按空串处理（无否定短语、无模式命中，保守返回 False）。
         spec: 本次父 SPEC 名（同现限定用）；必须为非空 SPEC 名，为 None/空串/
             非 str 时同现限定不参与判定，仅依赖 _WAIVER_CURRENT_MARKERS 限定词。
 
     Returns:
         True 表示文本表达本次显式放行。
     """
+    # text 防御（与下方 spec 防御 21a00a6ef714 同款口径）：None/非 str 会使
+    # in 判定抛 TypeError——按空串处理，否定/放行判定自然落空（返回 False）。
+    if not isinstance(text, str):
+        text = ""
     negated = any(n in text for n in _WAIVER_NEGATION_PHRASES)
     if negated:
         return False
@@ -134,18 +143,37 @@ def is_reclassify_negated(text: str) -> bool:
     return any(neg in text for neg in _RECLASSIFY_NEGATION_PHRASES)
 
 
-def infra_reclassify_rounds(text: str) -> int:
+def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     """infra 回拨文本兜底判定：返回显式声明的减回轮次（0=不触发）。
 
     匹配「回拨 N 轮」/「reclassify N rounds」等模式，按 _RECLASSIFY_GRANT_
     PATTERNS 数组（模式优先级）顺序取首个 n>0 的命中——非文本出现顺序；
     否定短语命中时保守返回 0（宁可漏回拨不可误扣 fail_rounds）。
+
+    与 family_waiver_granted 同范式（code-review 666155d105ae）：按
+    。！？\\n 分句判定，命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_
+    MARKERS）或与本次 spec 名同现才算本次回拨声明——处置叙述对历史/其他
+    spec 的回拨提及（「此前已回拨 2 轮」「另一族谱已回拨 3 轮」）且不含
+    否定短语不构成对本次对象的回拨指令。spec 为 None/空串/非 str 时同现
+    限定不参与判定，仅依赖限定词。
+
+    Args:
+        text: 处置文本拼接（actions_taken/summary/recommended_action/problem）。
+        spec: 本次 SPEC 名（同现限定用），防御口径同 family_waiver_granted。
     """
     if is_reclassify_negated(text):
         return 0
     for pattern in _RECLASSIFY_GRANT_PATTERNS:
-        m = re.search(pattern, text)
-        if m:
+        for sent in re.split(r"[。！？\n]", text):
+            m = re.search(pattern, sent)
+            if not m:
+                continue
+            # 「本次处置」同句限定（与 family_waiver_granted 同款写法）。
+            if not (
+                any(mk in sent for mk in _RECLASSIFY_CURRENT_MARKERS)
+                or (isinstance(spec, str) and spec and spec in sent)
+            ):
+                continue
             try:
                 n = int(m.groupdict().get("n") or 0)
             except (TypeError, ValueError):

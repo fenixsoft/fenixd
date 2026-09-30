@@ -32,10 +32,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import signal
 import subprocess
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +52,18 @@ REQUIRED_SECTIONS: tuple = ("发生了什么", "为什么需要你决策", "决�
 
 # admin.narrative_timeout_seconds 缺省（与 ConfigLoader.get_admin_config 单源）
 DEFAULT_TIMEOUT_SECONDS = 60
+
+# 裸 stdlib 日志通道（同 core/config.py、core/code_review.py 等先例）：daemon
+# Logger 往 "fenixd" 根日志器挂 handler，fenixd.* 子日志器记录随之落入 daemon
+# 日志文件——供 default_channel 失败时留痕 CLI 侧真实报错（stderr 尾部）。
+_logger = logging.getLogger("fenixd.adjudication_narrative")
+
+# 失败留痕的 stderr 尾部截断长度（code-review 1692f5b23b83）
+_STDERR_TAIL_CHARS = 500
+
+# claude 子进程 spawn 工作目录注入点（code-review 672decf84c0d）：生产=
+# fenixd main() 装配通道时一并传项目根；未装配回退系统临时目录。
+_project_root: Optional[str] = None
 
 # LLM 通道签名：channel(prompt, model, timeout) -> str | None
 # （返回 None 或抛异常均按失败兜底处理）。模块级注入点（D2）：生产不注入、
@@ -69,6 +83,32 @@ def set_channel(channel: Optional[Callable[[str, Optional[str], float], Optional
 def reset_channel() -> None:
     """恢复缺省通道（测试收尾清理用）。"""
     set_channel(None)
+
+
+def set_project_root(path: Optional[str]) -> None:
+    """注入 claude 子进程 spawn 工作目录（生产=fenixd main() 装配通道时传项目根）。"""
+    global _project_root
+    with _channel_lock:
+        _project_root = path
+
+
+def _stderr_tail(err: Optional[str]) -> str:
+    """stderr 尾部截断摘录（≤_STDERR_TAIL_CHARS；空 stderr 返回空串）。"""
+    text = (err or "").strip()
+    return text[-_STDERR_TAIL_CHARS:] if text else ""
+
+
+def _resolve_spawn_cwd() -> str:
+    """claude 子进程工作目录：项目根优先，未装配回退系统临时目录。
+
+    同 agent_runner 既有 spawn 口径（runner.py / maintenance_runs.py 均显式传
+    cwd）——claude CLI 把 cwd 当工作目录解析项目 CLAUDE.md/settings/会话状态，
+    不显式钉住则叙事上下文随 daemon 启动目录漂移；daemon 以裸进程从非项目
+    目录（如 /）启动时继承目录还可能不受信/不可写（code-review 672decf84c0d）。
+    """
+    with _channel_lock:
+        root = _project_root
+    return str(root) if root else tempfile.gettempdir()
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
@@ -115,6 +155,11 @@ def default_channel(prompt: str, model: Optional[str], timeout: float) -> Option
       禁传项）；
     - 超时/子进程缺失/非零退出/空输出一律返回 None，失败语义由调用方统一
       fail-open 兜底（本函数不重试——「至多一次尝试」由调用方单次调用保证）；
+      非零退出/空输出时 stderr 尾部（≤500 字符）经模块 logger 留痕，CLI 侧
+      真实报错（模型名非法、凭据失效、配额不足等）可诊断；
+    - spawn 显式传 cwd（:func:`set_project_root` 注入的项目根，未装配回退
+      系统临时目录），同 agent_runner 既有 spawn 口径——叙事生成上下文不随
+      daemon 启动目录漂移；
     - 超时经独立进程组（``start_new_session=True``）先 SIGTERM 后 SIGKILL
       收整组（:func:`_kill_process_group`，同 knowledge.py 范式），不留派生
       孙进程孤儿。
@@ -130,17 +175,29 @@ def default_channel(prompt: str, model: Optional[str], timeout: float) -> Option
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            cwd=_resolve_spawn_cwd(),
         )
     except OSError:
         return None
     try:
-        out, _ = proc.communicate(prompt, timeout=max(float(timeout), 1.0))
+        out, err = proc.communicate(prompt, timeout=max(float(timeout), 1.0))
     except (subprocess.TimeoutExpired, OSError):
         _kill_process_group(proc)
         return None
     if proc.returncode != 0:
+        tail = _stderr_tail(err)
+        _logger.warning(
+            "叙事 claude -p 非零退出（code=%s）：%s",
+            proc.returncode,
+            tail or "stderr 为空",
+        )
         return None
-    return (out or "").strip() or None
+    if not (out or "").strip():
+        tail = _stderr_tail(err)
+        if tail:
+            _logger.warning("叙事 claude -p 输出为空，stderr 尾部：%s", tail)
+        return None
+    return out.strip()
 
 
 def _get_channel() -> Optional[Callable[[str, Optional[str], float], Optional[str]]]:

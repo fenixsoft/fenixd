@@ -1174,7 +1174,12 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
             if candidate in parse_archived_state(proot):
                 return True
         except Exception as e:
-            _logger.warning("evolution: 读取归档清单判定重名失败: %s", e)
+            # 归档台账读取故障与上方 STATE 读取、下方 spec/archive 目录遍历
+            # 同口径保守判冲突（fail-closed，code-review item f2d40aa919ee）：
+            # 对仅在台账中登记、目录名归一化候选集不命中的形态，瞬时故障静默
+            # 放行会放过撞名候选，立项后产生归属歧义。
+            _logger.warning("evolution: 读取归档清单判定重名失败，保守按冲突处理: %s", e)
+            return True
         arch_root = proot / "spec" / "archive"
         if arch_root.is_dir():
             try:

@@ -1370,6 +1370,9 @@ def register_relocation_credential(
                 + (f"; {evidence}" if evidence else ""),
             }
         ]
+    if evidence is not None:
+        # 独立落册（code-review item a5cdda56e9a5）：与 Args 文档「随记录
+        # 落册」对齐——只传 evidence 不传 verdict 时不再被静默丢弃
         rec["evidence"] = evidence
     try:
         from core.admin_store import DisputeAuditStore

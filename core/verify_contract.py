@@ -63,7 +63,9 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
     # env 事故 2026-09-06 防复发）。
     ready:
       url: /#/overview               # 探针路径（相对被测实例），缺省 /
-      expect: 200                    # 期望 HTTP 状态码，缺省 200
+      expect: 200                    # 期望 HTTP 状态码，缺省 200（仅 2xx 可命中：
+                                     # 4xx/5xx 抛 HTTPError、3xx 被自动重定向
+                                     # 跟随，非 2xx 期望等满 timeout 后报超时）
       timeout: 60                    # 就绪等待上限（秒），缺省 60
 
 ## 语义要点
@@ -193,7 +195,13 @@ class ServeSpec:
 
 @dataclass
 class ReadyProbe:
-    """就绪探针：GET ``url`` 期待 ``expect`` 状态码，最长等 ``timeout`` 秒。"""
+    """就绪探针：GET ``url`` 期待 ``expect`` 状态码，最长等 ``timeout`` 秒。
+
+    expect 实际仅 2xx 取值可命中（code-review item 300c19e55fde）：探测基于
+    urlopen，4xx/5xx 响应抛 HTTPError、3xx 被自动重定向跟随（比较的是重定向
+    后终态码）——非 2xx 期望将轮询满 timeout 后报「就绪探针超时」。加载契约
+    时对非 2xx 取值记 warning（对齐同段 url/timeout 的「告警＋回退」处理）。
+    """
 
     url: str = "/"
     expect: int = 200
@@ -404,9 +412,24 @@ def _load_verify_contract_with_raw(
                 f"{raw_url!r}",
             )
         raw_url = None
+    # expect 取值可观测性（code-review item 300c19e55fde）：探测基于 urlopen，
+    # 4xx/5xx 响应抛 HTTPError（probe_ready 的 status 比较不可达）、3xx 被
+    # 自动重定向跟随（比较终态码）——expect 实际仅 2xx 取值能命中，配置
+    # expect: 401/301 等会静默轮询满 timeout 后误报「就绪探针超时」。记
+    # warning 留痕（对齐同段 url/timeout 的「告警＋回退」处理；数值本身
+    # 合法故不回退，探测侧行为不变）。
+    parsed_expect = _positive_int_or_default(raw_expect, 200)
+    if not 200 <= parsed_expect < 300 and logger:
+        logger.warning(
+            "verify_contract",
+            f"verify.yaml ready.expect={parsed_expect} 非 2xx（就绪探针基于 "
+            f"urlopen：4xx/5xx 抛 HTTPError、3xx 被自动重定向跟随，非 2xx "
+            f"期望无法命中，将等满 timeout 后报「就绪探针超时」），建议改探 "
+            f"回 2xx 的真实 API 端点",
+        )
     ready = ReadyProbe(
         url=raw_url or "/",
-        expect=_positive_int_or_default(raw_expect, 200),
+        expect=parsed_expect,
         timeout=_positive_int_or_default(raw_timeout, DEFAULT_READY_TIMEOUT),
     )
     # 端口注入迁移告警（不阻断）：cmd 未引用注入端口时实例会与既有实例
@@ -1695,7 +1718,9 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
         logger: 可选日志记录器（写失败时记 WARNING 留痕）
 
     Returns:
-        改写处数；0 = 文件缺失/非场景数组/无候选目标（本无需改写）；
+        改写处数；0 = 文件缺失/非场景数组/无候选目标（本无需改写；场景文件
+        存在但 JSON/UTF-8 解析失败同样返 0，但经 logger 记 WARNING 留痕，
+        code-review item 9f64a2a702bc）；
         -1 = 已解析出候选目标但写盘失败——BASE_URL 铁律未落盘，与 0 可判别
         （code-review item 90ca963ad6e7：写失败与「本无需改写」同返 0 时，
         冻结场景集静默携带 planner 原地址且不可观测）。写失败经 logger 记
@@ -1705,7 +1730,22 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
     """
     try:
         raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except FileNotFoundError:
+        return 0
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # 文件在但解析失败 ≠ 「本无需改写」（code-review item 9f64a2a702bc）：
+        # 与缺失/非场景数组同返 0 会让冻结场景集静默携带 planner 原地址且
+        # 不可观测，与本模块「解析失败大声告警」哲学不符——记 WARNING 留痕
+        # 后仍返 0（调用方语义不变；api 场景另有 ApiRunner 运行时
+        # rewrite_origin 双通道兜底，损坏文件也会在后续场景加载处暴露）。
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"场景文件解析失败（BASE_URL origin 改写跳过，文件在但非合法 "
+                f"UTF-8 JSON）: {scenarios_path}: {e}",
+            )
+        return 0
+    except OSError:
         return 0
     if not isinstance(raw, list) or not base_url:
         return 0

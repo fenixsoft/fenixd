@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -41,6 +42,8 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
 
 
 # spawn 注入缝：run 内单测用 fake spawn 替身；生产用 _default_spawn（claude -p）。
@@ -142,6 +145,12 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     时在文件尾部新建。给人看的队列，不进任务门禁（对齐前置 SPEC D3 口径）。
     读改写全程持 ``_todo_write_lock`` + ``atomic_write_text`` 原子回写。
     """
+    # 多行输入先归一为单行（spawn 失败的 stderr 尾部/失败归因 tail 天然多行）：
+    # 幂等判定按整行精确比较，含换行的 line 使 f"- {line}" 跨多个物理行、与
+    # splitlines() 的任何单行都不可能相等，同一失败会每次重复追加；且多行内容
+    # 经 block.insert 拼回后会被下方按行解析日期节/小节结构的逻辑误当结构行
+    # 处理（code-review d7bd04860ab6）
+    line = re.sub(r"\s*\n\s*", " ", line).strip()
     today = time.strftime("%Y-%m-%d")
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
@@ -649,12 +658,20 @@ def default_spawn(project_root: Path) -> SpawnFn:
         # 与 core.knowledge 蒸馏 spawn 同形态：无头 -p 必须显式提权，
         # 否则 LLM 写域映射/页面文件被权限拒绝、产物只能落 stdout（曾致
         # bootstrap-no-domain-map：25 分钟聚类成果随被丢弃的 stdout 蒸发）
+        env = os.environ.copy()
+        # agent-run 专用上下文键不进子进程环境（core.agent_env_keys 单一口径，
+        # 对齐 core.knowledge._build_spawn_env）：回填车道从 agent-run 会话内
+        # 手工激活时 FENIX_RUN_* / CLAUDE_CODE_ENABLE_TODO_TOOLS 已在父环境，
+        # 直传会令子 claude 误判自身运行上下文
+        for key in AGENT_RUN_BANNED_ENV_KEYS:
+            env.pop(key, None)
         proc = subprocess.Popen(
             ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
             cwd=str(project_root),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
             # 独立会话组：超时可 killpg 整组清场（对齐 core.knowledge
             # DistillManager；裸 run 超时只杀直接子进程，孙进程可存活继续
             # 写真相源）
@@ -946,7 +963,24 @@ def _clean_untracked_knowledge(project_root: Path, log) -> None:
     e2e fixture 遗留（zn 演示域、fixture ADR、graph/ 产物）均为未跟踪文件；
     只动未跟踪内容（git clean），已入库内容不受影响——避免真实抽取的 ADR
     编号与 fixture 条目重复触发校验失败。
+
+    ``-fd`` 会无差别删除目录下一切未跟踪文件与目录（含用户手工新建、尚未提交
+    的知识页草稿），且未跟踪内容无版本兜底、删后只能靠文件系统工具找回——
+    删除前先 ``-nd`` 干跑取删除清单留痕告警（code-review bb5ea5f1ea0d）。
     """
+    dry = subprocess.run(
+        ["git", "clean", "-nd", "--", KNOWLEDGE_DIR],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if dry.returncode == 0 and dry.stdout.strip():
+        log.warning(
+            "knowledge",
+            "回填自举清理将删除 spec/knowledge/ 下未跟踪内容（不可从 git 找回，"
+            "如含手工草稿请先移出）：" + dry.stdout.strip()[:500],
+        )
     proc = subprocess.run(
         ["git", "clean", "-qfd", "--", KNOWLEDGE_DIR],
         cwd=str(project_root),
@@ -1135,6 +1169,10 @@ def run_backfill(
             dirty_baseline = _knowledge_dirty_files(project_root)
             # 自举重跑清场：fixture 遗留（未跟踪）先清，跑完再按真实聚类删遗留域
             _clean_untracked_knowledge(project_root, log)
+            # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规，真相源既有
+            # 无关违规不拦提交（差集口径对齐 knowledge_audit，code-review
+            # 84727f16ab35）
+            before_violations = {str(v) for v in (validate(project_root) or [])}
             chain_caps = sorted(chain_index)
             prompt = build_prompt("bootstrap", capabilities=chain_caps)
             run_id = f"kb-bootstrap-{int(time.time())}"
@@ -1156,7 +1194,8 @@ def run_backfill(
             base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
             try:
                 ok, violations = _validate_with_repair(
-                    project_root, validate, spawn, base_prompt, run_id
+                    project_root, validate, spawn, base_prompt, run_id,
+                    before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
                 append_todo_line(
@@ -1186,7 +1225,13 @@ def run_backfill(
             # 但剪枝仍发生在校验与提交之间——删域造成的 index/跨页链接断裂
             # 须在提交前再拦一次，不随坏状态落库（code-review 6736a158bcf4）
             _prune_stale_domains(project_root, domain_map, log)
-            prune_violations = [str(v) for v in (validate(project_root) or [])]
+            # 剪枝闸门同差集口径：只否决剪枝新引入的违规（域删除导致的
+            # index/跨页链接断裂），既有无关违规不拦提交
+            prune_violations = [
+                str(v)
+                for v in (validate(project_root) or [])
+                if str(v) not in before_violations
+            ]
             if prune_violations:
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 append_todo_line(
@@ -1230,6 +1275,8 @@ def run_backfill(
         with knowledge_distill_lock(project_root):
             # 本段 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
             dirty_baseline = _knowledge_dirty_files(project_root)
+            # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
+            before_violations = {str(v) for v in (validate(project_root) or [])}
             prompt = build_prehistoric_prompt(project_root, chain_index)
             run_id = f"kb-prehistoric-{int(time.time())}"
             try:
@@ -1256,7 +1303,8 @@ def run_backfill(
             base_prompt = build_prehistoric_prompt(project_root, chain_index)
             try:
                 ok, violations = _validate_with_repair(
-                    project_root, validate, spawn, base_prompt, run_id
+                    project_root, validate, spawn, base_prompt, run_id,
+                    before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
                 append_todo_line(
@@ -1314,6 +1362,10 @@ def run_backfill(
         with knowledge_distill_lock(project_root):
             # 本批 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
             dirty_baseline = _knowledge_dirty_files(project_root)
+            # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规，真相源既有
+            # 无关违规不拦提交（差集口径对齐 knowledge_audit，code-review
+            # 84727f16ab35）
+            before_violations = {str(v) for v in (validate(project_root) or [])}
             base_prompt = build_prompt(
                 "batch",
                 batch=batch,
@@ -1324,7 +1376,8 @@ def run_backfill(
             try:
                 spawn(base_prompt, run_id)
                 ok, violations = _validate_with_repair(
-                    project_root, validate, spawn, base_prompt, run_id
+                    project_root, validate, spawn, base_prompt, run_id,
+                    before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
                 ok, violations = False, [f"run 派发/执行失败：{e}"]
@@ -1403,12 +1456,15 @@ def run_backfill(
         with knowledge_distill_lock(project_root):
             # 本批 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
             dirty_baseline = _knowledge_dirty_files(project_root)
+            # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
+            before_violations = {str(v) for v in (validate(project_root) or [])}
             base_prompt = build_prompt("adr", batch=batch)
             run_id = f"kb-adr{i}-{int(time.time())}"
             try:
                 spawn(base_prompt, run_id)
                 ok, violations = _validate_with_repair(
-                    project_root, validate, spawn, base_prompt, run_id
+                    project_root, validate, spawn, base_prompt, run_id,
+                    before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
                 ok, violations = False, [f"run 派发/执行失败：{e}"]
@@ -1509,25 +1565,43 @@ def _validate_with_repair(
     base_prompt: str,
     run_id: str,
     repair_rounds: Optional[int] = None,
+    before_violations: Optional[set[str]] = None,
 ) -> tuple[bool, list[str]]:
     """确定性校验 + 违规反馈修正环（≤MAX_FIX_ROUNDS 轮，对齐前置 SPEC 收尾校验）。
 
     修正环单实现（本车道与 knowledge_audit 共用，MAX_FIX_ROUNDS 同源）；
     ``repair_rounds`` 显式声明修正轮数上限：None = 缺省 ``MAX_FIX_ROUNDS``；
     0 = 只校验、不派发修正 run（无 run 语境的机械自修只验不改语义）。
+
+    ``before_violations``（差集口径，对齐 knowledge_audit 的提交闸门）：本段
+    run 前的违规快照。提供时修正反馈与最终否决只看「本轮新引入的违规」——
+    真相源既有的无关违规（超 150 行硬顶页、marker 缺失、已落盘 ADR 三段正文
+    被改写等 LLM 无法安全修复项）不再令整段/整批恒判失败空转，仍留在真相源
+    走 audit 车道报告/待人工路径；只剩既有违规时也不再派发修正 run。缺省
+    None 保留全量绝对判定旧口径（knowledge_audit 两处调用语义不变）。
     """
     max_rounds = MAX_FIX_ROUNDS if repair_rounds is None else repair_rounds
     violations = [str(v) for v in (validate(project_root) or [])]
+    baseline = set(before_violations) if before_violations is not None else None
     rounds = 0
     while violations and rounds < max_rounds:
+        feedback = violations if baseline is None else [
+            v for v in violations if v not in baseline
+        ]
+        if baseline is not None and not feedback:
+            # 只剩与本轮产出无关的既有违规：无新引入项可修，再派修正 run 必空转
+            break
         rounds += 1
         # 修正 run 复用同一基础提示词（保留模式语境）+ 违规清单附加段
         spawn(
-            base_prompt + "\n\n" + _violations_block(violations),
+            base_prompt + "\n\n" + _violations_block(feedback),
             f"{run_id}-fix{rounds}",
         )
         violations = [str(v) for v in (validate(project_root) or [])]
-    return (not violations), violations
+    if baseline is None:
+        return (not violations), violations
+    new_violations = [v for v in violations if v not in baseline]
+    return (not new_violations), new_violations
 
 
 # 公开别名（core.knowledge_audit 复用，避免 import 私有名；须置于定义之后）

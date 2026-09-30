@@ -1435,8 +1435,10 @@ class ConfigLoader:
             # `not (value >= 0)` 同时捕获负数与 NaN（NaN 参与比较恒 False）
             if not (value >= 0):
                 value = 60.0
-        admin = config.get("admin") if isinstance(config, dict) else None
-        sd_raw = admin.get("shutdown_drain_seconds") if isinstance(admin, dict) else None
+        # 段入口经 _segment_or_empty 归一（code-review item 7035b5e127eb）：
+        # 整段非 dict（如 admin: 3）记 ERROR 并按空段降级，而非静默回退缺省。
+        admin = cls._segment_or_empty(config, "admin")
+        sd_raw = admin.get("shutdown_drain_seconds")
         # bool 排除（code-review item 1b768109fdc2）：float(True)=1.0 不抛异常，
         # planned=False 路径会经下方 min 夹紧把 restart 排水窗静默压到 1 秒——
         # 与上方 raw 分支及 _num 的既有 bool 护栏同口径回退缺省 1800。
@@ -2777,9 +2779,9 @@ class ConfigLoader:
         MUST NOT 从本读取器回退读取死键——否则两个键同时可被用户读作「子代理模型」
         即违反 D1「不留下两个活配置键」约束。
         """
-        agents = config.get("agents") or {}
-        if not isinstance(agents, dict):
-            return ""
+        # 段入口经 _segment_or_empty 归一（code-review item 7035b5e127eb）：
+        # 整段非 dict（如 agents: [1]）记 ERROR 并按空段降级，而非静默返回空串。
+        agents = cls._segment_or_empty(config, "agents")
         val = agents.get("subagent_model_override")
         if isinstance(val, str):
             return val.strip()

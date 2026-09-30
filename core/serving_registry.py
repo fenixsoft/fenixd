@@ -118,7 +118,15 @@ class ServingRegistry:
                     # 不刷新：死条目由 sweep 的 liveness 检查兜底摘除。
                     cur = _proc_start_ticks(pid)
                     if cur is not None and cur != r.get("start_ticks"):
+                        # 登记切换到新进程实例：port/registered_at/worktree
+                        # 与身份快照一并刷新（docstring 所指「身份快照」的
+                        # 完整语义）——消费侧 verification/serving 按 pid
+                        # 存活 + registered_at 最新取 port 拼 base_url，只刷
+                        # start_ticks 会把请求持续打向旧实例端口。
                         r["start_ticks"] = cur
+                        r["port"] = port
+                        r["worktree"] = str(worktree) if worktree else ""
+                        r["registered_at"] = int(time.time())
                         return True
                     return False
             records.append(
@@ -185,6 +193,12 @@ def pid_alive(pid: int) -> bool:
     """/proc 探针：kill(pid, 0) 成功即存活（忽略僵尸判定差异，够用）。"""
     try:
         os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按
+        # 存活，与 kill_process_group 对 getpgid EPERM 的显式处理同口径。
         return True
     except OSError:
         return False
@@ -305,9 +319,21 @@ def kill_process_group(pid: int, logger=None) -> bool:
         # sig=0 只做存在性检查、不投递信号，孤儿组（组长已死）语义不受影响；
         # EPERM 等其他 OSError 说明组仍非空，同样按存活继续等待并按期升级。
         if pgid is None:
-            # getpgid 失败（组长已亡且未向组发过信号）：无从探组，退回组长探针
-            if not pid_alive(pid):
-                return sent
+            # getpgid 失败（组长已亡且未向组发过信号）：组长 pgid 恒等于
+            # 自身 pid，shell 形态命令后台化遗留的孤儿组仍可以 killpg(pid, 0)
+            # 探测——命中即按 pgid=pid 接管后续就绪等待与 SIGKILL 升级，
+            # 不让组内存活成员逃过兜底；组确已空（ESRCH）才返回。pid 复用
+            # 误判风险与下方组长探针同源（且进入本函数前 sweep 已做过
+            # starttime 身份核对），保守口径不变：无权探测（EPERM）按存活
+            # 继续等待但不升级投递。
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return sent  # 孤儿组已空（无存活成员）
+            except OSError:
+                pass  # 组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
+            else:
+                pgid = pid
         else:
             try:
                 os.killpg(pgid, 0)

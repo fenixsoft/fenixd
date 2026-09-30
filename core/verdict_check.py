@@ -257,12 +257,19 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
     for idx, s in enumerate(scenario.get("step_results") or [], 1):
         if not (isinstance(s, dict) and not s.get("success", True)):
             continue
+        # 取值按「None 才折空串」口径逐个回退（item bbd6c288cb56）：or 链会把
+        # 0/False 等有信息量的假值回传（如退出码）先吞成空串，使 _clip_derived_text
+        # 的 is None 防御在调用侧失效、误述成「引擎未返回 error 文本」。
+        error = s.get("error")
+        detail = s.get("detail")
         entries.append(
             {
                 "type": "step_error",
                 "selector": _step_failure_label(s, idx),
                 "expected": "步骤成功",
-                "actual": _clip_derived_text(s.get("error") or s.get("detail") or "")
+                "actual": _clip_derived_text(
+                    error if error is not None else (detail if detail is not None else "")
+                )
                 or "步骤执行失败（引擎未返回 error 文本）",
                 "step_failure": True,
             }
@@ -273,14 +280,32 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
         # 形态归一与 error/detail 同口径（_clip_derived_text，item 114e48d39f91）：
         # baseline/name/id 为非串真值时直接进 _normalize_whitespace 的 re.sub
         # 抛 TypeError，沿调用链外溢致裁决证据校验被旁路。
-        label = _clip_derived_text(v.get("baseline") or v.get("name") or v.get("id") or "")
+        # 标识符取值同按「None 才折空串」口径逐个回退（item bbd6c288cb56）：
+        # id=0 等假值形态是合法且有信息量的标识，不得被 or 链吞掉。
+        baseline = v.get("baseline")
+        name = v.get("name")
+        vid = v.get("id")
+        label = _clip_derived_text(
+            baseline
+            if baseline is not None
+            else (name if name is not None else (vid if vid is not None else ""))
+        )
+        error = v.get("error")
+        detail = v.get("detail")
+        status = v.get("status")
         entries.append(
             {
                 "type": "screenshot_mismatch",
                 "selector": f"visual:{label}" if label else "visual:视觉比对",
                 "expected": "视觉比对通过",
                 "actual": _clip_derived_text(
-                    v.get("error") or v.get("detail") or v.get("status") or ""
+                    error
+                    if error is not None
+                    else (
+                        detail
+                        if detail is not None
+                        else (status if status is not None else "")
+                    )
                 )
                 or "驱动视觉结论",
                 "step_failure": True,

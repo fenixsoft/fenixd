@@ -147,7 +147,9 @@ class AdminStore:
                 # （code-review item 2d386f296ace）。
                 return [], False
             data = json.loads(text)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            # 非法 UTF-8 字节（磁盘损坏/外部工具误写）抛 UnicodeDecodeError
+            # （ValueError 子类，上两类均不覆盖）——同走留底取证路径
             return [], self._quarantine_corrupt(path)
         if not isinstance(data, list):
             # 非数组内容同样无法解读（读-改-写会以空为底抹掉全部历史）——
@@ -313,7 +315,7 @@ class AdminStore:
         未超限零写动作。读取/写失败按无归档处理（不抛出）。"""
         try:
             lines = self.archive_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return
         lines = [ln for ln in lines if ln.strip()]
         if len(lines) <= MAX_ARCHIVE_RECORDS:
@@ -368,7 +370,7 @@ class AdminStore:
                                     out.append(d)
                     finally:
                         fcntl.flock(lf, fcntl.LOCK_UN)
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []
         return out
 
@@ -911,8 +913,11 @@ class DisputeAuditStore:
 
     def append(self, entry: dict) -> None:
         """追加一条审计记录（排他锁内 append + flush + fsync）。入口字段就地补齐。"""
-        rec = {"kind": "dispute-audit", "created": _utcnow_iso()}
-        rec.update(entry or {})
+        # kind/created 为审计默认值，不接受入口覆盖：created 须反映实际落盘
+        # 时刻（复用内存 dict 转写携带旧时间戳不得穿透审计语义）
+        rec = dict(entry or {})
+        rec.setdefault("kind", "dispute-audit")
+        rec.setdefault("created", _utcnow_iso())
         try:
             self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -940,7 +945,7 @@ class DisputeAuditStore:
         """
         try:
             lines = self.audit_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return
         lines = [ln for ln in lines if ln.strip()]
         if len(lines) <= MAX_AUDIT_RECORDS:
@@ -994,7 +999,7 @@ class DisputeAuditStore:
                                     out.append(d)
                     finally:
                         fcntl.flock(lf, fcntl.LOCK_UN)
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []
         # str(...) or ""：对 "created" 非字符串脏形态（null/数字等）设防，
         # 避免 None/int 与 str 混排抛 TypeError
