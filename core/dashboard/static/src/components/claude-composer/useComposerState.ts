@@ -259,8 +259,6 @@ export function useComposerState({
     setIsTextareaExpanded(false);
   }, [slash]);
 
-  const [isInputFocused, setIsInputFocused] = useState(false);
-
   // 草稿恢复/程序性 input 变更后重跑自适应（用户打字已在 onInput 里做）
   useEffect(() => {
     if (!textareaRef.current) {
@@ -286,8 +284,6 @@ export function useComposerState({
     textareaRef,
     inputHighlightRef,
     isTextareaExpanded,
-    isInputFocused,
-    setIsInputFocused,
     handleSubmit,
     handleInputChange,
     handleKeyDown,
