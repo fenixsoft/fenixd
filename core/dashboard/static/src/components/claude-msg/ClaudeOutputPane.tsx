@@ -127,6 +127,11 @@ const TERMINAL_RUN_STATUSES = new Set([
   'stall-budget-terminated',
 ]);
 
+// watch 注册失败的退避重试上限（code-review item 11f787b2d13c）：按 1s/2s/4s
+// 至多重试 3 次，覆盖瞬时故障（短暂 5xx）；耗尽后保持既有 console.error 口径，
+// 照旧走 hello 分支的尾部重拉兜底
+const MAX_WATCH_RETRIES = 3;
+
 export default function ClaudeOutputPane({
   runId,
   project,
@@ -165,6 +170,9 @@ export default function ClaudeOutputPane({
   // 初载响应仍可正常兜底。
   const tailSnapSeqRef = useRef(0);
   const tailSnapAppliedRef = useRef(0);
+  // watch 注册重试的在途退避定时器句柄（code-review item 11f787b2d13c）：SSE
+  // effect 清理时统一撤销，卸载/切 run 后不再触发在途重试
+  const watchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -294,6 +302,36 @@ export default function ClaudeOutputPane({
     const eventSource = new EventSource('/api/stream');
     eventSourceRef.current = eventSource;
 
+    // watch 注册失败有限次退避重试（code-review item 11f787b2d13c）：注册失败时
+    // 后端 sse.broadcast 只投递给 watched_runs 命中的连接，本连接收不到该 run 的
+    // run_events 增量；而 EventSource 在连接本身健康时不会重连、也就不会再收到
+    // hello 补注册，live run 增量从此静默丢失（面板冻结在注册失败时刻的快照）。
+    // 故按 1s/2s/4s 退避至多重试 MAX_WATCH_RETRIES 次；重试经挂载/币值守卫，
+    // 耗尽或已卸载/切 run 时保持既有 console.error 口径并返回（不抛出，调用方
+    // 照旧走尾部重拉兜底）。定时器句柄记入 watchRetryTimerRef 供 effect 清理撤销。
+    const registerWatchWithRetry = async (cid: string): Promise<void> => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await registerRunWatch(runId, project, cid);
+          return;
+        } catch (e) {
+          if (
+            attempt >= MAX_WATCH_RETRIES ||
+            !isMountedRef.current ||
+            activeRunIdRef.current !== runId ||
+            activeProjectRef.current !== project
+          ) {
+            console.error('Failed to register run watch:', e);
+            return;
+          }
+          console.error(`Failed to register run watch (attempt ${attempt + 1}), retrying:`, e);
+          await new Promise<void>((resolve) => {
+            watchRetryTimerRef.current = setTimeout(resolve, 1000 * 2 ** attempt);
+          });
+        }
+      }
+    };
+
     eventSource.onmessage = (ev: MessageEvent) => {
       if (!isMountedRef.current) return;
 
@@ -311,11 +349,9 @@ export default function ClaudeOutputPane({
         // 排序，晚落地的过期一方整包丢弃
         const snapSeq = ++tailSnapSeqRef.current;
         void (async () => {
-          try {
-            await registerRunWatch(runId, project, msg.cid!);
-          } catch (e) {
-            console.error('Failed to register run watch:', e);
-          }
+          // 失败退避重试（code-review item 11f787b2d13c）：重试耗尽不抛出，
+          // 照旧走下方尾部重拉兜底
+          await registerWatchWithRetry(msg.cid!);
           // 注册后重拉一次尾部：兜底「run 在 watch 注册前已结束」或「SSE 断线
           // 重连期间错过终态事件」的场景，否则外层永远收不到完成回调。
           // 重同步改为尾部追加合并（code-review item 289e589fb89b）：整体替换
@@ -391,6 +427,12 @@ export default function ClaudeOutputPane({
     };
 
     return () => {
+      // 撤销在途的 watch 注册重试定时器（code-review item 11f787b2d13c）：
+      // 卸载/切 run 后不再触发在途重试
+      if (watchRetryTimerRef.current !== null) {
+        clearTimeout(watchRetryTimerRef.current);
+        watchRetryTimerRef.current = null;
+      }
       eventSource.close();
       eventSourceRef.current = null;
     };
