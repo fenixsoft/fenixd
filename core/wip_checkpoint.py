@@ -106,6 +106,29 @@ def commit_wip_checkpoint(
                 f"git commit failed in '{path}': "
                 f"{cm.stderr.strip() or cm.stdout.strip()} — skip (non-blocking)",
             )
+            # add -A 已整树暂存而 commit 失败：mixed reset 把 index 恢复到
+            # HEAD（不动工作区），避免 worktree 以「全量 staged、与 HEAD
+            # 分叉」的现场被后继 run 继承（keep_for_reuse 认领同一目录），
+            # 使 _snapshot_dirty_worktree/collapse 等以 HEAD 为基准的留证
+            # 链路判读失真。尽力而为的失败不留副作用：reset 自身失败仅
+            # 追加留痕，不改变本函数返回值与既有降级语义。
+            reset = subprocess.run(
+                ["git", "-C", path, "reset", "-q"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+            if reset.returncode != 0:
+                logger.warning(
+                    "wip_checkpoint",
+                    f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
+                    f"index rollback (git reset) after failed commit failed "
+                    f"in '{path}': "
+                    f"{reset.stderr.strip() or reset.stdout.strip()} "
+                    f"— ignore (non-blocking)",
+                )
             return False
         # 并发 WIP 竞态：同一 worktree 内 add 后 commit 前若又被改动（理论
         # 上极小，锚点时刻 worktree 静默），git commit 仍可能成功收编同批
