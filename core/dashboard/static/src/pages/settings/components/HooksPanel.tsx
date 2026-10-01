@@ -12,7 +12,7 @@
  */
 
 import { App, Card, Checkbox, Typography } from 'antd';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import HookManager from '@/components/HookManager';
 import { getConfig, getHookAudit } from '@/services/dashboard';
 import type { ConfigData, HookAuditRecord, HookConfig } from '@/services/dashboard';
@@ -53,6 +53,14 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 保存重入守卫（比照 useGatedFormPanel 的 savingRef 口径）：本面板两个写盘
+  // 入口（handleSave / handleTogglePushRestart）都是「getConfig 重拉基底 +
+  // onSave 整体替换 hooks 段」的异步链，setSaving 渲染生效存在 React 调度
+  // 间隙，重入防护若只有 Checkbox 的 disabled={saving} 视觉禁用，间隙内连点
+  // 会并发两组写盘请求（后到者以自己重拉的基底覆盖先到者）；经 savingRef
+  // 写读同帧原子短路，state 只负责按钮视觉反馈。两个入口共用一把锁
+  // （写的是同一段 hooks 配置，交叉并发同样冲突）。
+  const savingRef = useRef(false);
 
   const hooksCfg = config.hooks ?? {};
   const globalHooks: HookConfig[] = Array.isArray(hooksCfg.global) ? hooksCfg.global : [];
@@ -82,6 +90,8 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
   }, [project]);
 
   const handleSave = async (nextGlobal: HookConfig[]) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       // 基底用保存前重拉的最新配置，不用组件内 config 快照：后端对 hooks 段是
@@ -99,6 +109,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     } catch (e) {
       message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -106,6 +117,8 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
   // dashboard-push-restart 2.1：逃生键切换即写回（checkbox 切换触发配置写回
   // 调用，经设置页 onSave 统一走 /api/config）
   const handleTogglePushRestart = async (on: boolean) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       // 基底用保存前重拉的最新配置（同 handleSave：patch 存在即整体替换，
@@ -115,6 +128,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     } catch (e) {
       message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
