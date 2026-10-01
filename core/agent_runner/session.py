@@ -122,11 +122,9 @@ class SessionTracker:
         out["cache_read_input_tokens"] = _to_int(usage.get("cache_read_input_tokens"))
         # 成本字段：仅网关真实回传时非空（design D5 / spec「金额展示不伪造」）
         cost = result_event.get("total_cost_usd", result_event.get("cost_usd"))
-        if cost is None:
+        # cost 为 None 时 float(None) 抛 TypeError，由 except 归位 None（out 初始即 None）
+        try:
+            out["cost_usd"] = float(cost)
+        except (TypeError, ValueError):
             out["cost_usd"] = None
-        else:
-            try:
-                out["cost_usd"] = float(cost)
-            except (TypeError, ValueError):
-                out["cost_usd"] = None
         return out
