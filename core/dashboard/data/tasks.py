@@ -234,12 +234,27 @@ def run_task_progress(project_root, spec_name, files=None) -> dict:
     # read_run_lines 是 runs 组公开访问面（runs.py read_run_lines = _read_run_lines
     # 单源绑定），不跨组消费下划线私有名（code-review item 09c363a0b1b9）
     import core.dashboard.data as _facade
+    # 公开名 RUN_STALE_SECONDS（runs.py，code-review item b569f5bb4a32），
+    # 与 core.code_review 同一消费口径，不跨组消费下划线私有名
+    from core.dashboard.data.runs import RUN_STALE_SECONDS
 
     if current and _facade.classify_run(_facade.read_run_lines(run_file, max_lines=3)) not in (
         "running",
         "empty",
     ):
         current = []
+    # 停更陈旧闸门（code-review item 9cc3c59e043a）：被杀且无终态补写的 run 末行
+    # 恒为 running，classify_run 识别不了；补写终态场景被上面的终态闸门覆盖，
+    # 这里对齐 run_activity 的 active 判据——mtime 停更超 RUN_STALE_SECONDS 同样
+    # 置空，僵尸 run 残留 in_progress 不得外显（stat 失败按不活跃 fail-closed，
+    # 与 run_activity 的 OSError 兜底同口径）。
+    if current:
+        try:
+            mtime = run_file.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime is None or max(0, int(time.time() - mtime)) > RUN_STALE_SECONDS:
+            current = []
     return {
         "done": len(rd.get("flat_done") or set()),
         "total": int(rd.get("created_count") or 0),
