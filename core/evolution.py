@@ -242,10 +242,7 @@ def upsert_item(project_root, record: dict) -> None:
     def _do() -> None:
         current = _read_items_unlocked(path)
         current[rec["id"]] = rec
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        _atomic_write(path, content)
+        _write_items_unlocked(path, current)
 
     _with_lock(path, _do)
 
@@ -268,6 +265,22 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
     except OSError:
         return {}
     return _parse_items_text(text)
+
+
+def _write_items_unlocked(path: Path, records: Dict[str, dict]) -> None:
+    """锁内使用的 items.jsonl 全量写回（读-改-写的写侧收口，与
+    _read_items_unlocked 同范式；code-review item 8aa4ff6154be）。
+
+    序列化口径（id 升序排序键、json.dumps 参数、逐条一行 + 换行）与
+    write_items/upsert_item 现状逐字一致，MUST NOT 改变落盘格式；锁语义仍由
+    调用方的外层 _with_lock 表达——本函数 MUST NOT 加锁。已在锁内的路径
+    （upsert_item/accept_item._persist/reject_item/delete_item）MUST NOT 直接
+    走 upsert_item/read_items 写回：同进程对同一把 ``.items.jsonl.lock`` 二次
+    flock 会自阻塞（见 _with_lock），统一收口到本函数后序列化口径单点化，
+    改口径不再四处同步。
+    """
+    content = "".join(json.dumps(records[k], ensure_ascii=False) + "\n" for k in sorted(records))
+    _atomic_write(path, content)
 
 
 # ── 任务 2.3：水位 state.json 读写 ──────────────────────────────────
@@ -574,21 +587,24 @@ def parse_todo_entries(text: str) -> List[dict]:
         if stripped.startswith("-") and _EMPTY_MARKER in stripped:
             continue
 
-        if current_entry is None:
-            # 无法归类（可能在条目块外）→ 跳过
-            continue
-
         # 处理标记行：仅在其紧跟条目标题行（该条目尚未收集任何字段）时才
         # 生效——整条标记为已处理（flush 时丢弃）；孤立标记行（其标题行已被
-        # 手工删除/改写后残留）只告警并跳过自身，不连坐当前条目
+        # 手工删除/改写后残留，含当前无任何条目块的形态）只告警并跳过自身，
+        # 不连坐其它条目。告警判断先于 current_entry 空判：条目块外的孤立
+        # 标记行同样留痕，与 strip_processed_entries 的告警口径对齐
+        # （code-review item faa0eae85057）。
         if _TODO_MARKER_RE.match(raw_line):
-            if not current_fields:
+            if current_entry is not None and not current_fields:
                 current_entry["_processed"] = True
             else:
                 _logger.warning(
                     "evolution: todo.md 孤立处理标记行（未紧跟条目标题行），已忽略: %s",
                     stripped,
                 )
+            continue
+
+        if current_entry is None:
+            # 无法归类（可能在条目块外）→ 跳过
             continue
 
         # 四字段嵌套行：  - 影响：…
@@ -1046,7 +1062,16 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
         return []
     finally:
         if injected:
-            sys.path.remove(fenix_dir)
+            # code-review item 14a703dcb5c9：常驻进程两个线程并发进入本函数时
+            # 可能同时判 injected=True 各插一次，先收尾者 remove 后，后收尾者的
+            # remove 会因条目已不在 sys.path 抛 ValueError 穿透 ingest_item。
+            # 防御式移除（尽力移除、缺席不报错）而非模块级锁：注入唯一生效的
+            # 裸进程形态单线程无竞态，daemon 内注入本就无解析效果（见函数
+            # docstring），不值得为竞态再引入全局锁。
+            try:
+                sys.path.remove(fenix_dir)
+            except ValueError:
+                pass
 
 
 # ── 任务 3.3：落地单条复核结果 ─────────────────────────────────────
@@ -1374,15 +1399,11 @@ def accept_item(
     path = items_path(project_root)
 
     def _persist(rec: dict) -> None:
-        # 锁内单条写回：与 upsert_item 的锁内主体同型（读-改-写 + 原子替换），
-        # 但 MUST NOT 再走 upsert_item/read_items——同进程对同一把
-        # ``.items.jsonl.lock`` 二次 flock 会自阻塞（见 _with_lock）。
+        # 锁内单条写回收口到 _write_items_unlocked；MUST NOT 再走
+        # upsert_item/read_items——锁内二次 flock 自阻塞（见 helper 说明）。
         current = _read_items_unlocked(path)
         current[rec["id"]] = rec
-        _atomic_write(
-            path,
-            "".join(json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)),
-        )
+        _write_items_unlocked(path, current)
 
     def _do() -> dict:
         # [fenix-ignore:17b84b130a08] 整体持锁（含 copytree 与 git 子进程）是
@@ -1659,15 +1680,11 @@ def reject_item(item_id_: str, project_root) -> dict:
 
         rec["status"] = "rejected"
         rec["decided_at"] = now
-        # 锁内单条写回：与 accept_item._persist 同型（读-改-写 + 原子替换），
-        # MUST NOT 再走 upsert_item/read_items——同进程对同一把
-        # ``.items.jsonl.lock`` 二次 flock 会自阻塞（见 _with_lock）。
+        # 锁内单条写回收口到 _write_items_unlocked（MUST NOT 再走
+        # upsert_item/read_items，理由见 helper 说明）。
         current = _read_items_unlocked(path)
         current[rec["id"]] = rec
-        _atomic_write(
-            path,
-            "".join(json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)),
-        )
+        _write_items_unlocked(path, current)
         write_todo_marker(rec, disposition="拒绝")
         return {"ok": True, "status": "rejected", "error": None}
 
@@ -1715,10 +1732,7 @@ def delete_item(item_id_: str, project_root) -> dict:
                 return
 
         current.pop(item_id_, None)
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        _atomic_write(path, content)
+        _write_items_unlocked(path, current)
         # 删除成功后回写标记（保留删除前的处理意见 + 删除：是）；回写失败不影响删除
         write_todo_marker(rec, disposition=_disposition_from_status(status), deleted=True)
         outcome.update({"ok": True, "status": status, "error": None})
