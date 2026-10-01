@@ -237,6 +237,19 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     }
   };
 
+  // 清除单行健康检测条目（按 handlePaste 同款「provider/生效模型变化即清」口径）：
+  // 检测结论是特定 provider+模型组合的一次性结论，行内原位改 Provider 或模型名后
+  // 旧徽标（可能是绿色「已验证」）不再代表当前组合，须清掉避免错配误导
+  // （code-review item 495527f13465）
+  const clearHealthRow = (rowKey: string) => {
+    setHealthRows((m) => {
+      if (!(rowKey in m)) return m;
+      const next = { ...m };
+      delete next[rowKey];
+      return next;
+    });
+  };
+
   // 复制某角色的当前分配到剪贴板（深拷贝，之后编辑该卡片不影响副本）
   const handleCopy = (index: number) => {
     const cur = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
@@ -496,13 +509,21 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                       placeholder="-- 选择 Provider --"
                                       options={providerOptions(curProvider)}
                                       style={{ width: '100%' }}
-                                      onChange={(val) => autofillProviderDefault(index, rIdx, val as string)}
+                                      onChange={(val) => {
+                                        // 切 Provider 后旧健康结论错配到新组合，先清条目
+                                        // （code-review item 495527f13465）
+                                        clearHealthRow(`${index}-${rowField.key}`);
+                                        autofillProviderDefault(index, rIdx, val as string);
+                                      }}
                                     />
                                   </Form.Item>
                                 </Col>
                                 <Col flex="auto">
                                   <Form.Item name={[rowField.name, 'model']} noStyle>
                                     <Input
+                                      // 改模型名即生效模型变化，旧健康结论失效，清条目
+                                      // （code-review item 495527f13465）
+                                      onChange={() => clearHealthRow(`${index}-${rowField.key}`)}
                                       placeholder={
                                         roleModel
                                           ? `留空用角色级缺省 ${roleModel}`
@@ -556,13 +577,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                       // 清除被删行的健康检测条目（code-review item
                                       // 0f5501b57f78）：组合键不随位置迁移被覆盖，
                                       // 须显式清除
-                                      const rowKey = `${index}-${rowField.key}`;
-                                      setHealthRows((m) => {
-                                        if (!(rowKey in m)) return m;
-                                        const next = { ...m };
-                                        delete next[rowKey];
-                                        return next;
-                                      });
+                                      clearHealthRow(`${index}-${rowField.key}`);
                                     }}
                                   />
                                 </Col>
