@@ -568,6 +568,26 @@ def _adopt_leftover_daemon() -> None:
         f"leftover daemon (pid {pid}) did not exit within {sigkill_wait}s "
         "after SIGTERM — SIGKILL"
     )
+    # 升级 SIGKILL 前复核 starttime（code-review b5de7929b247）：旧 daemon 可能
+    # 恰在 SIGTERM 等待窗内退出且 pid 被系统回收复用，轮询探活会把复用进程
+    # 当存活旧 daemon，直接 SIGKILL 会命中无关进程。与首次收编比对同款取向：
+    # 现读为 None（已退/不可读）或不等均跳过 SIGKILL（进程已退则无需强杀）。
+    # 能走到这里说明 SIGTERM 已发成功（EPERM 早在 term_denied 分支放行），
+    # 不存在「存活但 stat 不可读」的 EPERM 例外。
+    if isinstance(recorded_starttime, int):
+        now_starttime = _proc_starttime(pid)
+        if now_starttime is None:
+            log(
+                f"daemon_runtime pid {pid} gone before SIGKILL "
+                "(exited after SIGTERM?) — skip SIGKILL"
+            )
+            return
+        if now_starttime != recorded_starttime:
+            log(
+                f"daemon_runtime pid {pid} alive but start time mismatch before "
+                "SIGKILL (pid reuse) — skip SIGKILL"
+            )
+            return
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:

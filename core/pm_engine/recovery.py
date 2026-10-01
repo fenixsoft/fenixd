@@ -169,7 +169,11 @@ class RecoveryWatch:
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+        # 非法 UTF-8 字节（二进制损坏）抛 UnicodeDecodeError（ValueError 子类，
+        # 既非 OSError 也非 json.JSONDecodeError）——不兜住会沿 engine 构造内的
+        # 裸调用逃逸、daemon 启动直接失败，恰是最需 fail-open 的形态
+        # （code-review item 614e096ffbdb）。
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"recovery_watch.json 读取失败（按空续查，损坏文件改名移开）: "
@@ -273,7 +277,21 @@ class RecoveryWatch:
         return
 
     def _register_watch_entry(self, spec_name, reason, minutes, due) -> None:
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # STATE 读取失败不让异常逃出登记路径（code-review item 63d6472861dd）：
+        # 调用方 register_recovery_watch 注释的设计目标即「畸形不中断
+        # auto-recovery 收尾」，config 侧已兜住、STATE 侧此前仍裸调。与本文件
+        # 既有 read_one 保守降级口径一致（check_recovery_watch 读取失败顺延/
+        # 升级、第 3 层重读回退空 dict、_signal_dispatch_stalled 指纹回退
+        # 'unreadable'）：此处回退空 dict（指纹退化为 status=None）并记 WARNING。
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Recovery watch 登记读取 STATE 失败 '{spec_name}'"
+                f"（按空 entry 保守降级，不中断登记）: {type(e).__name__}: {e}",
+            )
+            entry = {}
         self._recovery_watch[spec_name] = {
             "fingerprint": self._pm._spec_fingerprint(entry),
             "due": due,

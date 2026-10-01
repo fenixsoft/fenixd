@@ -66,15 +66,18 @@ def scan_server_routes(root: Path) -> tuple:
     routes_base = root / "core" / "dashboard" / "routes" / "base.py"
     if routes_base.is_file():
         # 简化：按表边界切分文本后逐表匹配
-        base_lines = routes_base.read_text(encoding="utf-8").splitlines()
+        try:
+            base_lines = routes_base.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            # 与 fallback 级口径一致：主源单文件损坏/不可解码只跳过表驱动级，
+            # 保留文本 fallback 与 SPA/testid 输出，不让整个生成器非零退出
+            base_lines = []
         marker = re.compile(r"_API_(GET|POST|DELETE)_ROUTES = \[")
         current_table = None
-        table_start_line = 0
         for line_idx, line in enumerate(base_lines, start=1):
             m = marker.search(line)
             if m:
                 current_table = m.group(1)
-                table_start_line = line_idx
                 continue
             if current_table is None:
                 continue

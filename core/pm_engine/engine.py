@@ -1610,17 +1610,30 @@ class PMEngine:
                         "pm_engine",
                         f"验证进度不完整 '{spec_name}'，门禁逃生门回退 testing 重新验证: {vblocker}",
                     )
+                    # transition_gate 返回值必须接收（code-review item dc13e7dc5cb3，
+                    # 对齐 _on_spec_done 的 0b464aaa47b8 口径）：自 blocker 计算
+                    # 到转移之间存在竞窗（外部冻结/清除错误/状态被改），转移被拒
+                    # 时不得写 error——先转移、成功后再写，否则 error 落在非
+                    # testing 状态的 spec 上且不回退，误导事后对账。
+                    # fix-observability-gaps 2.1：门禁逃生门 transition_gate 也必须带 context
+                    moved = self.state_machine.transition_gate(
+                        spec_name, "testing",
+                        trigger_run_id=None, agent_type=None, channel="auto",
+                    )
+                    if not moved:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"门禁逃生门 — gate transition '{spec_name}' "
+                            f"→testing rejected (state changed externally) — "
+                            f"skip error write",
+                        )
+                        return
                     # 保留 implementer_run 与既有 progress 断点（D7），仅置 error 摘要
                     self.state_machine.update_spec(
                         spec_name,
                         {
                             "error": f"验证进度不完整，回退重新验证: {vblocker}",
                         },
-                    )
-                    # fix-observability-gaps 2.1：门禁逃生门 transition_gate 也必须带 context
-                    self.state_machine.transition_gate(
-                        spec_name, "testing",
-                        trigger_run_id=None, agent_type=None, channel="auto",
                     )
                     return
                 self.logger.warning(
@@ -2452,7 +2465,10 @@ class PMEngine:
                     detail.append(f"{it.get('task')}: {str(it.get('reason'))[:120]}")
             from core.admin_store import AdminStore, ESCALATION
             store = AdminStore(self.project_root, self.logger)
-            store.append({
+            # append 返回值必须接收（code-review item 372d1c5a3735，对齐
+            # item 2570ca391771 契约）：下限保护拒写时返回 None、记录未落盘，
+            # 不得照记「已写入」成功日志误导事后对账。
+            written = store.append({
                 "kind": ESCALATION,
                 "signal_type": "impl_unattainable_tasks",
                 "spec": spec_name,
@@ -2467,11 +2483,18 @@ class PMEngine:
                     "审批、外部资源），完成后再推送"
                 ),
             })
-            self.logger.warning(
-                "pm_engine",
-                f"诚实退出放行 '{spec_name}'：unattainable={sorted(ids)} "
-                f"（已写人工待办告警）",
-            )
+            if written is not None:
+                self.logger.warning(
+                    "pm_engine",
+                    f"诚实退出放行 '{spec_name}'：unattainable={sorted(ids)} "
+                    f"（已写人工待办告警）",
+                )
+            else:
+                self.logger.warning(
+                    "pm_engine",
+                    f"诚实退出放行 '{spec_name}'：unattainable={sorted(ids)} "
+                    f"（人工待办告警未落盘，下限保护拒写）",
+                )
         except Exception as e:
             self.logger.debug(
                 "pm_engine",
@@ -2580,7 +2603,10 @@ class PMEngine:
             # 临界区穿透，否则 _handle_push_failure 后续的退避计数/next_retry_at
             # 落盘（update_spec）被整体跳过——push 失败退避状态丢失。
             store = AdminStore(self.project_root, self.logger)
-            store.append(
+            # append 返回值必须接收（code-review item 372d1c5a3735，对齐
+            # item 2570ca391771 契约）：下限保护拒写时返回 None、记录未落盘，
+            # 不得照记「已写入」成功日志误导事后对账。
+            written = store.append(
                 {
                     "kind": SIGNAL,
                     "signal_type": "push_failed",
@@ -2597,10 +2623,18 @@ class PMEngine:
                     ),
                 }
             )
-            self.logger.error(
-                "pm_engine",
-                f"push_failed 信号已写入 admin store: '{spec_name}'",
-            )
+            if written is not None:
+                self.logger.error(
+                    "pm_engine",
+                    f"push_failed 信号已写入 admin store: '{spec_name}'",
+                )
+            else:
+                # 拒写仅降级 WARNING（报告可丢，主链不可断）：push 退避状态
+                # 落盘不受本告警写入故障影响
+                self.logger.warning(
+                    "pm_engine",
+                    f"push_failed 信号未落盘（下限保护拒写）: '{spec_name}'",
+                )
         except Exception as e:
             # 告警写入失败降级 WARNING（报告可丢，主链不可断）：push 退避状态
             # 落盘不受本告警写入故障影响
@@ -4129,11 +4163,21 @@ class PMEngine:
                     ),
                 }
                 attach_trigger(entry)
-                store.append(entry)
-                self.logger.warning(
-                    "pm_engine",
-                    f"run_infra_failure triggered: spec={spec_name} count={count}",
-                )
+                # append 返回值必须接收（code-review item 372d1c5a3735，对齐
+                # item 2570ca391771 契约）：下限保护拒写时返回 None、记录未落盘，
+                # 不得照记成功日志误导事后对账。
+                written = store.append(entry)
+                if written is not None:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"run_infra_failure triggered: spec={spec_name} count={count}",
+                    )
+                else:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"run_infra_failure triggered 告警未落盘（下限保护拒写）: "
+                        f"spec={spec_name} count={count}",
+                    )
             else:
                 # recovered：落 SIGNAL 档（链路级恢复，不绑定 spec）
                 entry = {
@@ -4148,11 +4192,18 @@ class PMEngine:
                     "evidence": evidence,
                     "recommended_action": "后续若再次连续 infra 失败将重新熔断",
                 }
-                store.append(entry)
-                self.logger.info(
-                    "pm_engine",
-                    f"run_infra_failure recovered: link=spec-review count={count}",
-                )
+                written = store.append(entry)
+                if written is not None:
+                    self.logger.info(
+                        "pm_engine",
+                        f"run_infra_failure recovered: link=spec-review count={count}",
+                    )
+                else:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"run_infra_failure recovered 告警未落盘（下限保护拒写）: "
+                        f"link=spec-review count={count}",
+                    )
         except Exception as e:
             # 告警写失败降级 WARNING 不中断当轮事件处理（熔断判定/评审入队主链
             # 不受影响，报告可丢）

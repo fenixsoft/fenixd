@@ -116,7 +116,7 @@ def main() -> int:
     for f in files:
         try:
             run_id, stats, summary = analyze_file(f)
-            results.append((run_id, stats, summary, f))
+            results.append((run_id, stats, summary))
         except Exception as e:
             # 只收 ValueError 不够：analyze_file 下游的 samples/stats/summary
             # 是与在线侧共享的解析函数，语义异常但合法 JSON 的事件（如
@@ -136,7 +136,7 @@ def main() -> int:
         else:
             results.sort(key=lambda r: r[0])
         print(f"== 共 {len(results)} 条转录（按 {args.sort} 排序）==\n")
-        for run_id, stats, summary, f in results:
+        for run_id, stats, summary in results:
             print(summary)
 
     if skipped:

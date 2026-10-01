@@ -134,38 +134,38 @@ def promote_drafted(
     return {"ok": True, "violations": [], "next_status": next_status}
 
 
-def _lint_deliverable_declarations(project_root: Path, spec_name: str, logger) -> list:
-    """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
-    from core.deliverables import lint_declared
+def _lint(project_root: Path, spec_name: str, logger, fn_name: str, label: str) -> list:
+    """晋升 lint 公共执行器（fail-open）。
 
+    fn_name 为 core.deliverables 上的 lint 函数名（函数内延迟导入防循环导入）；
+    import 与执行任一环节异常（循环导入/半部署损坏/读取失败）一律降级为
+    warning + 空列表（非阻塞放行），不让异常沿 promote_drafted 传播中断晋升链。
+    """
     spec_dir = project_root / "spec" / "changes" / spec_name
     if not spec_dir.is_dir():
         return []
     try:
-        return lint_declared(spec_dir, project_root)
+        from core import deliverables
+
+        return getattr(deliverables, fn_name)(spec_dir, project_root)
     except Exception as e:
         logger.warning(
             "pm_engine",
-            f"Deliverables lint 异常 '{spec_name}'（非阻塞放行）: {e}",
+            f"{label} lint 异常 '{spec_name}'（非阻塞放行）: {e}",
         )
         return []
+
+
+def _lint_deliverable_declarations(project_root: Path, spec_name: str, logger) -> list:
+    """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
+    return _lint(project_root, spec_name, logger, "lint_declared", "Deliverables")
 
 
 def _lint_tasks_parseable(project_root: Path, spec_name: str, logger) -> list:
     """tasks.md 可解析性 lint（晋升前拦截，fail-open，task-track D2）。"""
-    from core.deliverables import lint_tasks_parseable
-
-    spec_dir = project_root / "spec" / "changes" / spec_name
-    if not spec_dir.is_dir():
-        return []
-    try:
-        return lint_tasks_parseable(spec_dir, project_root)
-    except Exception as e:
-        logger.warning(
-            "pm_engine",
-            f"tasks.md 可解析性 lint 异常 '{spec_name}'（非阻塞放行）: {e}",
-        )
-        return []
+    return _lint(
+        project_root, spec_name, logger, "lint_tasks_parseable", "tasks.md 可解析性"
+    )
 
 
 def should_skip_review(project_root: Path, spec_name: str, config: dict, logger) -> bool:
@@ -179,10 +179,19 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
 
     字段缺失时保守取「不跳过」。gates.spec_review_mode: never 时恒返回跳过。
     """
-    from core.config import ConfigLoader
-
     # gates.spec_review_mode: never 时直接跳过
-    mode = ConfigLoader.get_spec_review_mode(config)
+    try:
+        from core.config import ConfigLoader
+
+        mode = ConfigLoader.get_spec_review_mode(config)
+    except Exception as e:
+        # ConfigLoader 导入/判定异常：保守不跳过评审，不让异常沿
+        # promote_drafted 传播中断晋升链
+        logger.warning(
+            "pm_engine",
+            f"评审跳过判定异常 '{spec_name}'（保守不跳过评审）: {e}",
+        )
+        return False
     if mode == "never":
         return True
 
@@ -234,9 +243,9 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
     #    围栏解析——按全文首个 yaml 围栏计数会与 `## Deliverables` 段定位
     #    口径漂移：前部其他围栏恰含 ≤3 条 `- path:` 而真实声明段 >3 条时，
     #    会误判满足本条件跳过评审）
-    from core.deliverables import extract_declared_entries
-
     try:
+        from core.deliverables import extract_declared_entries
+
         entries = extract_declared_entries(spec_dir)
     except Exception as e:
         # 解析异常（异常形态 tasks.md）：保守不跳过评审，不让异常沿

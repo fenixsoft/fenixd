@@ -160,10 +160,10 @@ def detect_build_artifacts(project_root: Path) -> dict:
                 ) or (
                     name.endswith(".tar.gz")
                     and (
-                        any(
-                            tag in name
-                            for tag in ("release", "build", "dist")
-                        )
+                        # dist/build/release 同须边界语义：tag 前是行首或 -/_，
+                        # tag 后紧跟 -/_/数字/v数字；纯子串会误命中 distribution、
+                        # redistribute、buildkit-docs 等普通词
+                        re.search(r"(?:^|[-_])(?:release|build|dist)(?:[-_]|\d|v\d)", name)
                         # "v" 须带版本语义（如 v1.2.3 / project-v2.0.tar.gz）：
                         # 裸字母 v 子串会误命中 level-data、novel 等任意含 v 的文件名
                         or re.search(r"v\d", name)
@@ -243,8 +243,8 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
 
     注意：有 PyYAML 时走 yaml.dump 全量重写，config.yaml 原有注释与排版会全部
     丢失（PyYAML 不保留注释）；仅无 yaml 的退化文本路径逐行保留原文件。
-    config.yaml 无法解析（YAMLError/OSError）或顶层非映射时中止写入，绝不以空
-    配置起步全量重写，以免静默清空用户其余配置。
+    config.yaml 无法解析（YAMLError/OSError）、顶层非映射或 worktree 段非映射
+    （标量/列表）时中止写入，绝不以空配置起步全量重写，以免静默清空用户其余配置。
 
     Returns: {"wrote": bool, "reason": str}
     """
@@ -295,8 +295,21 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
                     "中止写入以免清空既有配置"
                 ),
             }
-        worktree = config.setdefault("worktree", {})
+        worktree = config.get("worktree")
+        if worktree is not None and not isinstance(worktree, dict):
+            # worktree 段为标量/列表（如 worktree: disabled）：以空 dict 顶替会在
+            # 下方 yaml.dump 全量重写中静默吞掉原值，与顶层非映射同口径中止写入，
+            # 提示人工处置而非覆盖
+            return {
+                "wrote": False,
+                "reason": (
+                    f"worktree 段为 {type(worktree).__name__} 而非映射，"
+                    "中止写入以免清空既有配置"
+                ),
+            }
         if not isinstance(worktree, dict):
+            # 键不在册或显式 null：null 亦视为未裁决（worktree_config_view 同
+            # 口径），以空映射起步落两键
             worktree = {}
         # 仅显式布尔算已裁决（worktree_config_view 同口径）；null/非法值=未裁决，照常写入
         if isinstance(worktree.get("has_build_artifacts"), bool):

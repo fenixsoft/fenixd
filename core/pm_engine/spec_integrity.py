@@ -41,11 +41,6 @@ from pathlib import Path
 # 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
 _logger = logging.getLogger("fenixd.pm_engine.spec_integrity")
 
-# 终态口径（alert-noise-governance 1.1）：与 alert_lifecycle.TERMINAL_SPEC_STATUSES
-# （done/pushed）同口径，另含 spec.md 场景文本使用的 archived 拼写（状态机
-# 当前不产出该值，纳入仅为向前兼容，避免规格语言与实现口径漂移）。
-_TERMINAL_SPEC_STATUSES = ("done", "pushed", "archived")
-
 # 「已交付未落盘」独立信号（alert-noise-governance 1.2）：目录无认可内容但
 # 存在 verification-report.md 时，替代 spec_content_missing 的 signal_type。
 # 闭环条件映射见 core/alert_lifecycle.py（spec_delivered_adjudicated）。
@@ -134,7 +129,11 @@ class SpecIntegrityGate:
             # 已冻结（可能由本闸门或其它闸门触发）：不重复告警，但仍阻止重派
             return True
 
-        if status in _TERMINAL_SPEC_STATUSES:
+        # 终态口径（alert-noise-governance 1.1）复用 alert_lifecycle 权威常量
+        # （done/pushed，另含 spec.md 场景文本的 archived 拼写，向前兼容），
+        # 不再手抄副本——权威集合扩容时本闸门自动跟随，避免口径漂移。
+        from core.alert_lifecycle import DELIVERED_ADJUDICATED_TERMINAL_STATUSES as _TERMINAL
+        if status in _TERMINAL:
             # 终态豁免（alert-noise-governance 1.1，design D1）：已交付/归档
             # spec 不因目录内容缺失被反向冻结、不产 spec_content_missing——
             # 外部 STATE 重置把已交付 spec 打回后按「空 spec」冻结，处置方向

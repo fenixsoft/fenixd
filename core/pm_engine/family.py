@@ -438,7 +438,7 @@ class FamilyGovernor:
 
         try:
             store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append(
+            rec = store.append(
                 {
                     "kind": SIGNAL,
                     "signal_type": "family_explosion",
@@ -455,11 +455,23 @@ class FamilyGovernor:
                     ),
                 }
             )
-            self._pm.logger.error(
-                "pm_engine",
-                f"fix 族谱收敛拦截: '{parent_name}' → {child_name} 自动创建中止（{detail}）"
-                f"，已写入 family_explosion 信号",
-            )
+            # code-review item 17c3e99da9b7：文件损坏留底被下限保护拒写时
+            # append 返回 None（core/admin_store.py append 契约，item
+            # 2570ca391771：记录未落盘，按未落地处理）——Administrator 唤起链
+            # 实际收不到该信号，不得仍记「已写入」误导排查（与同文件
+            # _send_human_escalation_alert 判空口径一致，item ae509e1816f3）。
+            if rec is None:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"family_explosion 信号未落盘（store 拒写，按未落地处理）: "
+                    f"'{parent_name}' → {child_name} 自动创建中止（{detail}）",
+                )
+            else:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fix 族谱收敛拦截: '{parent_name}' → {child_name} 自动创建中止（{detail}）"
+                    f"，已写入 family_explosion 信号",
+                )
         except Exception as e:
             self._pm.logger.error(
                 "pm_engine",
@@ -762,6 +774,24 @@ class FamilyGovernor:
         ):
             self._ensure_fix_spec_files(fix_spec_name, spec_name)
 
+        # 重派通道按 spec 实现模式选择（code-review item f8ec6766731f，与上方
+        # inplace 打回路径、repair_lane._fallback_after_repair 同口径）：fast-track
+        # spec 派生的 fix SPEC 仍走 fast-track 重派，不硬派 implementer（读侧
+        # 异常回退 implementer）。原先硬编码 implementer 入队与 _on_spec_ready
+        # 内的模式感知入队按 (spec, agent_type) 去重键互不吸收，fast-track
+        # fix spec 会双落 fast-track + implementer 两条条目，后者放行后以
+        # implementer 车道错派单 run 全包 spec。
+        try:
+            from core.spec_mode import read_spec_mode
+
+            channel = (
+                "fast-track"
+                if read_spec_mode(self._pm.project_root, fix_spec_name) == "fast-track"
+                else "implementer"
+            )
+        except Exception:
+            channel = "implementer"
+
         if existing_fix:
             if guard_status in _FIX_SPEC_IN_FLIGHT_OR_TERMINAL:
                 self._pm.logger.info(
@@ -792,7 +822,7 @@ class FamilyGovernor:
                 # 等在途或终态）不在 _queue_entry_ready 的 implementer 放行口径
                 # （ready/implementing）内，无条件入队只会留下每轮扫描被跳过却
                 # 不淘汰的永久滞留条目，还违背守卫「不动该 spec」的裁定。
-                self._pm._enqueue(fix_spec_name, "implementer")
+                self._pm._enqueue(fix_spec_name, channel)
         else:
             self._pm.state_machine.add_spec(
                 fix_spec_name,
@@ -805,7 +835,7 @@ class FamilyGovernor:
             )
             self._pm.logger.info("pm_engine", f"Created fix SPEC: {fix_spec_name}")
             # 新建分支入队（同上，code-review item 5e687a6085a1）
-            self._pm._enqueue(fix_spec_name, "implementer")
+            self._pm._enqueue(fix_spec_name, channel)
 
         # PROJECT_LOG 可丢、主链不可断（b21d8f2d8247 同口径）：写盘失败不得
         # 抛穿 bug-found 处理链
