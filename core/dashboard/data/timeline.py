@@ -125,6 +125,7 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
             continue  # 已有最终处置，pending 被替代
         if not is_pending and existing[0]:
             best_by_run[rid] = (False, rec)
+        # [fenix-ignore:e40a6011ce77] created 写侧恒一：AdminStore 三个写口共用 _normalize_entry 的 setdefault("created", _utcnow_iso())（UTC +00:00 单一后缀族），全部写入点核实无显式传值/改写，同后缀族字典序即时间序
         elif (rec.get("created") or "") > (existing[1].get("created") or ""):
             best_by_run[rid] = (is_pending, rec)
 
