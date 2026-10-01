@@ -346,6 +346,7 @@ def _read_shared_result(
     path: Path,
     spec_name: str,
     require_verifier_role: bool,
+    role_label: str = "Verifier",
 ) -> VerdictReadResult:
     """主树共享回退文件的统一读取（fix-code-review DRY）。
 
@@ -363,6 +364,10 @@ def _read_shared_result(
     - require_verifier_role=False（_read_planner_result）：无 role 校验，
       非对象交由委托的 `_read_verifier_result` 按 fail-closed 归因 parse；
       foreign-stamp WARNING 沿用 stale 措辞。
+
+    `role_label`：透传给委托的 `_read_verifier_result` 的 agent 角色标注，
+    使 missing/parse/unknown-status 日志按调用车道归因（fix-code-review）；
+    缺省 Verifier 保持 `_read_verdict` 既有行为不变。
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -402,7 +407,7 @@ def _read_shared_result(
         return VerdictReadResult.failure("foreign-stamp", f"{path}: spec='{stamped}'")
     # 单次读取贯穿戳校验与采信（复用首次解析的 data，消除两次读取之间
     # 文件被其它 spec 覆写、绕过 spec 戳比对按白名单采信的 TOCTOU 窗口）。
-    return _read_verifier_result(pipeline, path, data=data)
+    return _read_verifier_result(pipeline, path, data=data, role_label=role_label)
 
 
 def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
@@ -423,12 +428,16 @@ def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
     """
     primary, fallback = _verify_progress_result_paths(pipeline, spec_name)
     if primary.exists():
-        return _read_verifier_result(pipeline, primary)
+        # planner 车道日志按 Planner 归因（fix-code-review）：missing/parse/
+        # unknown-status 勿沿用读取器默认的 Verifier 措辞误导排障方向。
+        return _read_verifier_result(pipeline, primary, role_label="Planner")
     # 共享结果文件护栏：主树共享文件携带的 spec 与当前 spec 不符时视为残留忽略
     # （与 _read_implementer_result 相同语义），避免误读其它 spec 的
     # implementer 残留状态。
     if fallback.exists():
-        return _read_shared_result(pipeline, fallback, spec_name, require_verifier_role=False)
+        return _read_shared_result(
+            pipeline, fallback, spec_name, require_verifier_role=False, role_label="Planner"
+        )
     # 兜底缺失（primary/fallback 均无）：missing 日志按 planner 语境标注
     # （fix-code-review），勿沿用读取器默认的 Verifier 措辞误导排障方向。
     return _read_verifier_result(pipeline, fallback, role_label="Planner")

@@ -1,9 +1,9 @@
-import { App, Button, Card, Form, Radio, Typography } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { Button, Card, Form, Radio, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
@@ -45,63 +45,37 @@ interface ApprovalModePanelProps {
 }
 
 export default function ApprovalModePanel({ config, onSave, project, onConfigSynced }: ApprovalModePanelProps) {
-  const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  // 保存重入守卫（code-review item 589c1c98c5a4）：onSave 是异步，提交期间
-  // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
-  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
-  const [saving, setSaving] = useState(false);
-  // 上次回填的 gates 序列化值（配合下方 effect 的回填门控）
-  const lastGatesBackfillRef = useRef('');
-
-  useEffect(() => {
-    // 确保字段有值，使用配置值或默认值。回填门控（code-review item
-    // a8786c075c4f）：config.gates 引用变化但内容相同时（保存后父组件
-    // setConfig 重载、其它面板保存触发的刷新）不无条件 setFieldsValue——
-    // 否则会静默丢弃用户尚未保存的单选修改。「同步用户级设置」等显式操作
-    // 带来的是真正内容变化，序列化值不同，仍会回填覆盖。
-    const next = gatesFormValues(config.gates);
-    const key = JSON.stringify(next);
-    if (key === lastGatesBackfillRef.current) return;
-    lastGatesBackfillRef.current = key;
-    form.setFieldsValue(next);
-  }, [config.gates, form]);
-
-  const handleSave = async () => {
-    if (saving) {
-      return;
-    }
-    setSaving(true);
-    try {
-      // 分离「表单校验」与「保存持久化」（code-review item 568b0ff8cce2，
-      // 同 AgentModelPanel item 3086b7e96c4f）：校验失败 antd 已在表单内
-      // 渲染提示，静默返回不落 console（防污染 no_console_error 断言）。
-      const values = await form.validateFields();
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443，本面板
+  // 由 item bcb1a46e7b69 收敛）：savingRef 保存重入守卫（原 item 589c1c98c5a4，
+  // saving 期间按钮置 loading/disabled 并在入口短路）、buildValues 产物序列化
+  // 比较的回填门控（原 item a8786c075c4f：config.gates 引用变化但内容相同时
+  // ——保存后父组件 setConfig 重载、其它面板保存触发的刷新——不无条件
+  // setFieldsValue，不静默丢弃用户尚未保存的单选修改；「同步用户级设置」等
+  // 显式操作带来的是真正内容变化，序列化值不同，仍会回填覆盖）、校验与持久化
+  // 分离的 handleSave（原 item 568b0ff8cce2：校验失败 antd 已在表单内渲染
+  // 提示，静默返回不落 console）均由 hook 承载；本面板只保留 gates 字段映射
+  // （gatesFormValues）与保存载荷组装（gates 四键）。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => gatesFormValues(config.gates),
+    backfillDeps: [config.gates],
+    onSave,
+    buildPayload: (values): Partial<ConfigData> => ({
       // add-spec-review-gate（task 5.2）：保存载荷 MUST 同时提交新键与既有
       // approve_mode/promote_mode——后端按 patch 整段合并，缺键会被 _deep_merge_managed
       // 视作「未提交」保留原值，但并发/双轨写入时整段覆盖有丢失既有设置的风险。
-      try {
-        await onSave({
-          gates: {
-            promote_mode: values.promote_mode,
-            approve_mode: values.approve_mode,
-            spec_review_mode: values.spec_review_mode,
-            start_after_scope: values.start_after_scope,
-          },
-        });
-      } catch (error) {
-        // 保存持久化失败（网络/500）：给用户显式反馈而非静默
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-      }
-    } catch {
-      // 校验失败：antd 已在表单内渲染提示，不落 console
-    } finally {
-      setSaving(false);
-    }
-  };
+      gates: {
+        promote_mode: values.promote_mode,
+        approve_mode: values.approve_mode,
+        spec_review_mode: values.spec_review_mode,
+        start_after_scope: values.start_after_scope,
+      },
+    }),
+  });
 
   return (
     <div>
@@ -113,7 +87,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
       <Card style={{ marginTop: 12 }}>
         <Form
           form={form}
-          initialValues={gatesFormValues(config.gates)}
+          initialValues={initialValues}
           layout="vertical"
           onValuesChange={() => setDirty(true)}
         >

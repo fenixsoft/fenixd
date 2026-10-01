@@ -901,6 +901,28 @@ class VerificationPipeline:
                             f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
                         )
                         return None
+                    # ── 重派轮产物证据分类校验（code-review item cbef6c3847ca）──
+                    # 主路径（_run_three_stage_verification 阶段3+）在进入本函数前
+                    # 已对 judge 产物强制 _verify_verdict_evidence（不合规重派一次、
+                    # 二次仍不合规 blocked）；本 D4 重派轮新写盘的 report.json 若只
+                    # 复读不校验，不合规 classification/evidence 会绕过该防线直接
+                    # 进入 _apply_bug_found/_apply_verified 采纳尾段（下游改道门/
+                    # speculative 门按缺失 classification 保守放行）——「宁可不推进
+                    # 也不带病采纳」语义在该路径失效。此处与主路径同构补一道校验：
+                    # 不合格走既有 _handle_verdict_evidence_rejection 处置链（其内部
+                    # 已完成让位/温和/blocked 各 cause 分型，所有出口均为零采纳，
+                    # 与本函数失败路径 return None 丢弃语义同向），处置后按丢弃收口。
+                    verdict_ret = self._verify_verdict_evidence(spec_name, retry_judge=True)
+                    if not verdict_ret["ok"]:
+                        self._handle_verdict_evidence_rejection(spec_name, verdict_ret)
+                        return None
+                    # 校验合规会按分类-状态映射强制重写 report.json 的 status
+                    # （verdict_evidence D3 采纳收口），复读一次使 verifier_status
+                    # 与盘上产物一致（与主路径「先校验后读取」顺序对齐）；复读
+                    # 失败（校验与复读间产物被破坏的窄窗口）落入下方二次不可读
+                    # fail-closed 分支 blocked，不推进采纳。
+                    verifier_result = self._read_verdict(spec_name)
+                    verifier_status = verifier_result.status if verifier_result.ok else None
             else:
                 # 非 testing 丢弃（code-review item 3219564e2f22）：本节 docstring
                 # 明言「重试前复用入口状态判据（非 testing 丢弃，与 stale-result
@@ -1650,7 +1672,8 @@ class VerificationPipeline:
     # ── 修复轮重验场景集裁剪（add-verify-lane-throughput 4.2，design 决策 6）──
     # 前提三条件（任一不满足即全量，fail-open）：非首轮（_verify_fail_rounds>0）、
     # 缓存有有效 PASS 条目、上轮 report.json 可读出失败集。执行集 = 失败 ∪
-    # 失效（四元组不匹配/出处缺失/出处触碰 fix diff）∪ 其 depends_on 递归闭包；
+    # 失效（四元组不匹配/出处缺失/出处触碰 fix diff）∪ 其 depends_on 递归闭包
+    # （前置链上溯 + 下游依赖方下探，与 fastlane.subset_scenario_ids 同口径）；
     # 其余场景采信缓存判定（合成报告时标注 cached_source）。
     def _fix_diff_files(self, head_at_write: str):
         """head_at_write..HEAD 的修复 diff 文件集；无法计算返回 None（fail-closed）。"""
@@ -1777,7 +1800,7 @@ class VerificationPipeline:
             if not cached_results:
                 return _full("无可采信缓存条目，全量执行")
 
-            # depends_on 递归闭包：执行集须含失败∪失效场景的前置链
+            # depends_on 递归闭包：执行集须含失败∪失效场景的前置链与下游依赖方
             dep_map = {
                 sid: [str(x) for x in (d.get("depends_on") or [])] for d, sid in zip(defs, ids)
             }
@@ -1790,7 +1813,25 @@ class VerificationPipeline:
                     if dep and dep not in closure and dep in known:
                         closure.add(dep)
                         frontier.append(dep)
-            # 被闭包征用为前置的缓存场景改为真实执行（其采信资格让位）
+            # 下游下探（与 fastlane.subset_scenario_ids 同款不动点迭代，
+            # code-review item d8cd847d55c5）：以闭包内任一场景为 depends_on
+            # 前置的场景并入执行集。build 指纹只哈希依赖清单（不含源码），代码
+            # 修复不改清单时依赖方缓存四元组仍有效、出处文件未被 fix diff 触碰
+            # 即被采信免跑——修复波及未在场景出处标注中声明的共享行为时依赖方
+            # 漏验。与 fastlane 子集口径（「下游纳入防修复波及依赖方而漏验」）
+            # 对齐同一不动点语义；新增下游成员不再反向上溯其前置（fastlane
+            # 同款，前置已随失败集上溯入集）。下探只扩大执行集（被征用的缓存
+            # 采信让位于真实执行），fail-open 全量兜底不变。
+            changed = True
+            while changed:
+                changed = False
+                for sid in known:
+                    if sid in closure:
+                        continue
+                    if any(dep in closure for dep in dep_map.get(sid, [])):
+                        closure.add(sid)
+                        changed = True
+            # 被闭包征用为前置/下游的缓存场景改为真实执行（其采信资格让位）
             for sid in list(cached_results):
                 if sid in closure:
                     del cached_results[sid]

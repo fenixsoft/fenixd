@@ -1172,7 +1172,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # 复核探针与同函数其余探活点语义统一：4xx/5xx 同样证明 HTTP
             # 服务在应答（API-only 应用根路径 404/405 不判不可达）
             # code-review a736820044fb：先复核后改写（对齐下方邻近扫描块
-            # 「探针全部通过后才改写」纪律）——改写经 _atomic_write_text
+            # 「探针全部通过后才改写」纪律）——改写经 atomic_write_text
             # 持久落盘且无回滚，复核失败时残留的「外来端口→base_port」改写
             # 会让场景文件从此指向不被服务的端口、影响后续轮次。
             if all(_probe(u, http_error_ok=True) for u in urls_new):
@@ -1329,7 +1329,7 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
     from core.verify_contract import _rewrite_scenario_target_values
     # code-review 22e59d9a5ffb：原子写复用 scenario_gate 助手（失败时清理
     # 残留 .tmp 再上抛，与 fastlane 同一收敛点），不再手写 tmp+replace
-    from core.pm_engine.verification.scenario_gate import _atomic_write_text
+    from core.pm_engine.verification.scenario_gate import atomic_write_text
 
     port_re = re.compile(r":%d" % old_port + _PORT_BOUNDARY)
 
@@ -1345,10 +1345,10 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
         )
         if not n:
             return True
-        # 原子写（tmp+replace 收敛到 scenario_gate._atomic_write_text）：裸写
+        # 原子写（tmp+replace 收敛到 scenario_gate.atomic_write_text）：裸写
         # 中途 SIGKILL 会留下截断 JSON，下一轮加载误判 corrupt 触发人工裁决停摆；
         # 失败时助手清理残留 .tmp 再上抛，验证进度目录不再留孤儿 .tmp
-        _atomic_write_text(
+        atomic_write_text(
             scenarios_path, json.dumps(rewritten, ensure_ascii=False, indent=2)
         )
         pipeline._context.logger.info("pm_engine", f"已重写验证场景端口 {old_port} → {new_port}")

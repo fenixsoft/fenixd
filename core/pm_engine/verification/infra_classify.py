@@ -33,6 +33,13 @@ _FAIL_HISTORY_FILENAME = "fail_history.json"
 # core.state_machine）
 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD = 3
 
+# 全场景同因失败哨的单轮最小失败场景数：0 passed 轮须失败场景数达该值才进入
+# 同因签名比对（1-2 个失败样本过少，签名一致易属巧合，不足以立「全场景同因」
+# 疑点，按小失败轮回落连续计数）。与 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD
+# （连续同因熔断轮数）数值相同但语义不同——前者约束单轮失败场景规模，后者
+# 约束跨轮连续次数，调参时各自独立、无联动。
+_UNIFORM_MIN_FAIL_TOTAL = 3
+
 
 def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
     """verifier 失败是否属基础设施类（不得流转 bug-found）。
@@ -251,10 +258,10 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         # 本轮存在通过场景 → 非「全场景同因失败」轮，连续计数回落为 0
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
-    if fail_total < 3:
-        # 0 passed 但失败不足 3 的小失败轮：非「全场景同因失败」轮，
-        # 同样回落连续计数（与 passed>0 / 混合签名轮处置一致，兑现
-        # 信号文案与 docstring「连续 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD
+    if fail_total < _UNIFORM_MIN_FAIL_TOTAL:
+        # 0 passed 但失败不足 _UNIFORM_MIN_FAIL_TOTAL 的小失败轮：非「全场景
+        # 同因失败」轮，同样回落连续计数（与 passed>0 / 混合签名轮处置一致，
+        # 兑现信号文案与 docstring「连续 _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD
         # 轮同因」的『连续』口径）
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
@@ -267,7 +274,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     ]
     if len(failed_scns) < fail_total:
         # 报告口径不一致，不哨：本轮未确立同因失败，连续计数同样回落
-        # （与 passed>0 / fail_total<3 / 混合签名轮处置一致）
+        # （与 passed>0 / fail_total<_UNIFORM_MIN_FAIL_TOTAL / 混合签名轮处置一致）
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     sigs: set[str] = set()
