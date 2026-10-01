@@ -74,7 +74,7 @@ class G6StashGuardMixin:
                 files.append(_unquote_git_path(path))
         return sorted(p for p in files if p)
 
-    def ensure_clean_tree(self, prefix: str = None) -> bool:
+    def ensure_clean_tree(self, prefix: str | None = None) -> bool:
         """merge guard 段内确保主树 tracked 状态干净，保证 merge-back 可成功。
 
         仅 stash **tracked 修改**（`git stash push` 不带 -u）。返回 True 表示
@@ -213,24 +213,18 @@ class G6StashGuardMixin:
         # WorktreeManager（admin_actions 等以 logger=None 构造）或人工在此
         # 窗口 push 新条目时，不复核会把他人条目弹到刚合并完的主树上、自家
         # guard 条目反滞留栈顶（LIFO 错配）。
+        guard = self._rev_parse_stash_top()
+        if guard is None:
+            # 复核不可用 = 无法证明栈顶未动：放弃本轮绝不弹（条目保留）
+            self.logger.warning(
+                "worktree_manager",
+                "Stash pop skipped, top-of-stack guard unavailable "
+                "(stash preserved)",
+            )
+            return False, []
+        guard_rc, guard_out = guard
         if pinned_sha:
-            try:
-                guard = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-parse",
-                     "--verify", "stash@{0}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            except (subprocess.TimeoutExpired, OSError) as e:
-                # 复核不可用 = 无法证明栈顶未动：放弃本轮绝不弹（条目保留）
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Stash pop skipped, top-of-stack guard unavailable "
-                    f"(stash preserved): {e}",
-                )
-                return False, []
-            if guard.returncode != 0 or guard.stdout.strip() != pinned_sha:
+            if guard_rc != 0 or guard_out.strip() != pinned_sha:
                 self.logger.error(
                     "worktree_manager",
                     f"Stash pop aborted: stash top moved since pin "
@@ -244,23 +238,7 @@ class G6StashGuardMixin:
             # 栈顶——此刻栈已非空说明 pin 后有新条目进入，无法证明栈顶是本方
             # 条目，按「栈顶已动」口径放弃本轮（条目保留交 reclaim_stale_autostash
             # 兜底）；栈仍为空则落到下方 pop 的 No stash entries 正常跳过路径。
-            try:
-                guard = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-parse",
-                     "--verify", "stash@{0}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            except (subprocess.TimeoutExpired, OSError) as e:
-                # 复核不可用 = 无法证明栈顶未动：放弃本轮绝不弹（条目保留）
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Stash pop skipped, top-of-stack guard unavailable "
-                    f"(stash preserved): {e}",
-                )
-                return False, []
-            if guard.returncode == 0:
+            if guard_rc == 0:
                 self.logger.error(
                     "worktree_manager",
                     f"Stash pop aborted: stack top present but pin unavailable "
@@ -364,6 +342,29 @@ class G6StashGuardMixin:
                 f"stash preserved: {output.strip()}",
             )
         return True, conflict_files
+
+    def _rev_parse_stash_top(self) -> tuple[int, str] | None:
+        """pop 前「栈顶复核」共享 helper（code-review item f12db94635ff）：
+        ``git rev-parse --verify stash@{0}``，供 restore_after_merge 的
+        pinned / 未 pinned 两分支复用同一子进程调用与容错，分支各自只留
+        returncode 判定方向与文案。
+
+        Returns: ``(rc, stdout)``；git 超时/不可用返回 None（调用方按
+        「guard 不可用」口径放弃本轮绝不弹）。本调用链位于 guard 的
+        finally 中，异常在此吸收、绝不外抛（对齐 restore_after_merge
+        的容错契约）。
+        """
+        try:
+            rev = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse",
+                 "--verify", "stash@{0}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        return rev.returncode, rev.stdout
 
     def _try_merge_file_threeway(self, f: str, pinned_sha: str) -> bytes | None:
         """对单个 UU 冲突文件做三方重试（态 1），成功返回合并后字节内容。
