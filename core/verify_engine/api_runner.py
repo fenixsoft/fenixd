@@ -276,7 +276,14 @@ class ApiRunner(VerifyRunner):
                     if read_bytes >= _RESPONSE_READ_LIMIT:
                         read_truncated = True
                         break
-                resp_encoding = resp.charset_encoding or "utf-8"
+                # charset_encoding 为 httpx 0.28 引入（旧版属性名为 encoding），
+                # setup 只校验可导入不校验版本，兼容两代属性名取值，旧版环境
+                # 不再 AttributeError 致全量 http_request 步骤失败且归因失真
+                resp_encoding = (
+                    getattr(resp, "charset_encoding", None)
+                    or getattr(resp, "encoding", None)
+                    or "utf-8"
+                )
                 latency_ms = int((time.monotonic() - t0) * 1000)
         except httpx.ConnectError as e:
             return {
@@ -326,12 +333,21 @@ class ApiRunner(VerifyRunner):
                 "error": f"请求超时（{timeout}s）: {e}",
             }
         except Exception as e:
+            # 请求头值经 {env:VAR} 插值后可能携带敏感令牌，非法头值触发的
+            # h11 LocalProtocolError 等异常文案会携带头值原文（如 Illegal
+            # header value b'...'），原样入证据即穿透请求侧脱敏纪律（响应
+            # Set-Cookie 已按 _EVIDENCE_REDACT_HEADERS 遮蔽）——落证据前先
+            # 把本步骤出现过的请求头值替换为占位符。
+            error_text = f"请求异常: {type(e).__name__}: {e}"
+            for header_value in headers.values():
+                if header_value:
+                    error_text = error_text.replace(header_value, "<已脱敏>")
             return {
                 "success": False,
                 "action": "http_request",
                 "method": method,
                 "url": url,
-                "error": f"请求异常: {type(e).__name__}: {e}",
+                "error": error_text,
             }
 
         # 证据截断只作用于证据字段（body/truncated）：JSON 解析必须用完整
