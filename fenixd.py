@@ -250,9 +250,11 @@ def _strict_bool(value, default: bool) -> bool:
 # 无 spec 绑定车道的 run_id 前缀（code-review item 67c551e85f1c）：这些车道
 # 的 run 不绑 SPEC（run_id 均为 <prefix>-<epoch/date> 形态），排水保全路径
 # （_preserve_interrupted_runs）解析不出 spec 属预期形态，降级 info 留痕跳过。
-# 前缀表之外的解析失败（如 admin-<spec>-<ts> / planner-<mode>-<spec>-<ts> /
-# impl-ocr-<spec>-<ts> 等绑 spec 但 _spec_from_run_id 前缀表未覆盖的命名，
-# 以及未知新形态）仍按 warning 留痕，提示可能缺前缀、须人工确认。
+# 其余解析失败（_spec_from_run_id 返回 None）仍按 warning 留痕，提示可能缺
+# 前缀、须人工确认——包括 admin-<spec>-<ts> / planner-<mode>-<spec>-<ts> 等
+# 前缀表未覆盖的命名、车道复合前缀 impl-ocr-<spec>-<ts>（code-review item
+# cb8408ba09ec：_spec_from_run_id 对 impl 剥离后第二段为保留字 ocr 的形态
+# 显式返回 None，不再误产出脏 spec 名「ocr-<spec>」）以及未知新形态。
 _RUN_ID_NO_SPEC_PREFIXES = (
     "code-review-",
     "regression-",
@@ -386,6 +388,12 @@ class FenixDaemon:
         self._stale_check_fresh_seen = False
         self._proc_started_utc = datetime.now(timezone.utc)
         self._dangling_timeout_fired = False
+        # 本悬空周期「自触发窗口内悬空超时」的告警/WARNING 边沿标志（item
+        # a6fb64ba17d4）：与 _dangling_timeout_fired 分立——后者闸收尾重启写
+        # 请求（并被 _stale_selfheal_healthy 健康谓词读取），前者只闸告警入口
+        # （其 WARNING 在 admin 去重判断之前无条件执行），互不挤占。读取走
+        # getattr，容忍未走 initialize 的裸对象（既有测试形态）。
+        self._dangling_timeout_alert_fired = False
         # 重启冷却锁存起点（evo-stale-selfheal-restart-cooldown）：None=不在冷却中；
         # 首次因滑动窗口计数进入冷却的那个 tick 时刻——锁存是「冷却持续
         # cooldown_duration_seconds」的落地点（窗口计数会因条目老化提前回落）。
@@ -1332,9 +1340,10 @@ class FenixDaemon:
                 self.logger.warning("fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
         else:
             # evo-add-stale-code-dangling-deadline 2.1：基线恢复新鲜 → 悬空起点
-            # 清零、超时防重复写标志复位（下一悬空周期从零计量）。
+            # 清零、超时防重复写/告警边沿标志复位（下一悬空周期从零计量）。
             self._code_stale_since = None
             self._dangling_timeout_fired = False
+            self._dangling_timeout_alert_fired = False
             self._stale_check_fresh_seen = True
             self.logger.info(
                 "fenixd",
@@ -1984,8 +1993,10 @@ class FenixDaemon:
             self._heal_block_reason = None
             self._self_triggered_cycle = False
             # evo-add-stale-code-dangling-deadline 2.3：悬空周期收尾，超时防重复
-            # 写标志一并复位（下一悬空周期允许再次超时触发）。
+            # 写标志（含自触发窗口内告警边沿标志，item a6fb64ba17d4）一并复位
+            # （下一悬空周期允许再次超时触发）。
             self._dangling_timeout_fired = False
+            self._dangling_timeout_alert_fired = False
             self._selfheal_loop_alerted = False
             return
 
@@ -1999,23 +2010,46 @@ class FenixDaemon:
             cfg = ConfigLoader.get_stale_code_selfheal_config(self.config)
         except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
             # 兜底缺省引用 ConfigLoader 常量（evo-reduce-stale-code-selfheal-
-            # noise：原硬编码 120 与新缺省 600 漂移会放大重启节律）
+            # noise：原硬编码 120 与新缺省 600 漂移会放大重启节律；item
+            # c79caa073d87：兜底字典全部键与下方冷却/自触发五键同口径引用
+            # 常量，MUST NOT 硬编码字面量——ConfigLoader 侧调缺省时兜底值
+            # 不随之更新会分裂出两套缺省）
             cfg = {
                 "enabled": True,
                 "idle_confirm_seconds": (
                     ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
                 ),
-                "max_dangling_seconds": 14400,
+                "max_dangling_seconds": (
+                    ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT
+                ),
             }
         enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
             "idle_confirm_seconds",
             ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT,
         )
-        cooldown_window = cfg.get("cooldown_window_seconds", 1800)
-        cooldown_threshold = cfg.get("cooldown_threshold", 3)
-        cooldown_duration = cfg.get("cooldown_duration_seconds", 600)
-        self_triggered_window = cfg.get("self_triggered_window_seconds", 300)
-        self_triggered_threshold = cfg.get("self_triggered_threshold", 3)
+        # 冷却/自触发五键的读取缺省同样引用 ConfigLoader 常量（item
+        # c79caa073d87：与上方 idle_confirm_seconds 既有口径对齐——两条读取
+        # 路径 MUST 共用同一套缺省，防 ConfigLoader 侧调缺省后此处漂移）
+        cooldown_window = cfg.get(
+            "cooldown_window_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_WINDOW_SECONDS_DEFAULT,
+        )
+        cooldown_threshold = cfg.get(
+            "cooldown_threshold",
+            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_THRESHOLD_DEFAULT,
+        )
+        cooldown_duration = cfg.get(
+            "cooldown_duration_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_DURATION_SECONDS_DEFAULT,
+        )
+        self_triggered_window = cfg.get(
+            "self_triggered_window_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_SELF_TRIGGERED_WINDOW_SECONDS_DEFAULT,
+        )
+        self_triggered_threshold = cfg.get(
+            "self_triggered_threshold",
+            ConfigLoader.STALE_CODE_SELFHEAL_SELF_TRIGGERED_THRESHOLD_DEFAULT,
+        )
         if not enabled:
             reason = "disabled"
         elif req.exists():
@@ -2108,6 +2142,7 @@ class FenixDaemon:
         recent_restarts = len(
             [e for e in history if (now - e["ts"]) <= cooldown_window]
         )
+        # [fenix-ignore:81d7b258e3b5] 误报：_cooldown_started_at 在整段冷却（锁存 OR 窗口计数超阈）持续期内保持非 None，下方清锁存仅在两条件均转假（冷却整体退出）时才执行，锁存到期而计数仍超阈的 tick 走 if 体但不满足 is None 边沿条件，不会重复告警（tests/test_stale_selfheal_cooldown.py::test_cooldown_alert_is_edge_only 已锁定该行为）
         if latched or recent_restarts >= cooldown_threshold:
             if cooldown_started is None:
                 # 首次进入冷却（边沿）：置锁存起点 + 一次告警/日志，后续 tick 不重复
@@ -2135,7 +2170,10 @@ class FenixDaemon:
         # FR-3「窗口内不写请求」语义优先于悬空升级）。本分支不触碰
         # _self_triggered_cycle（不强制置真），_record_selfheal_restart 按既有
         # 语义如实记录。
-        max_dangling = cfg.get("max_dangling_seconds", 14400)
+        max_dangling = cfg.get(
+            "max_dangling_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT,
+        )
         stale_since = getattr(self, "_code_stale_since", None)
         dangling_seconds = (
             (now - stale_since.timestamp())
@@ -2152,9 +2190,18 @@ class FenixDaemon:
                 # FR-3 语义守卫（code-review item 74da2c8c7864）：max_dangling_seconds
                 # 允许配成小于 self_triggered_window_seconds，悬空超时可能在
                 # 自触发窗口内到期——窗口内仅落升级告警不写 restart_request
-                # （告警自带 60 分钟窗口去重，窗口内重复 tick 不重复成条；
-                # 避免延长重启循环），窗口过期后由后续 tick 在此收尾触发
+                # （避免延长重启循环），窗口过期后由后续 tick 在此收尾触发
                 # （dangling_seconds 只增不减，无需重新起算）。
+                # 边沿控制（code-review item a6fb64ba17d4）：_alert_dangling_timeout
+                # 入口的 logger.warning 在 admin 侧 60 分钟窗口去重判断之前无条件
+                # 执行，1s 粒度下本分支不加防重复会在自触发窗口（缺省 300s）内
+                # 每秒打一条同文 WARNING——此处以独立边沿标志保证告警与 WARNING
+                # 仅本悬空周期首次命中执行、后续 tick 直接 return。MUST NOT 复用
+                # _dangling_timeout_fired：那会把窗口过期后的收尾重启一并拦下
+                # （下方防重复写守卫读的是同一标志）。
+                if getattr(self, "_dangling_timeout_alert_fired", False):
+                    return
+                self._dangling_timeout_alert_fired = True
                 self._alert_dangling_timeout(dangling_seconds, max_dangling)
                 return
             if getattr(self, "_dangling_timeout_fired", False):
@@ -2696,8 +2743,14 @@ class FenixDaemon:
         # [fenix-ignore:f9299c2f3cc4] 删除前已重读 path 并校验 created 同代，读后重写的新 kick 保留待下轮消费（item 6888607ae472 落地）
         tmp_path = None
         try:
+            # 私有副本后缀 MUST NOT 是 .json（code-review item e286692801c1）：
+            # os.replace 与 unlink 之间崩溃/被 SIGKILL 时，.json 结尾的残留会被
+            # _check_scheduling_kick_requests 的 *.json 扫描与
+            # _reclaim_stale_scheduling_kicks 的 endswith(".json") 分支当合法
+            # 信号再次唤起消费（payload 即已消费过的同一代、created 新鲜）——
+            # 非 .json 命名落入 _reclaim_temp_scheduling_kick 按 mtime 阈值回收。
             fd, tmp_str = tempfile.mkstemp(
-                prefix=f".{path.name}.consumed.", suffix=".json",
+                prefix=f".{path.name}.consumed.",
                 dir=str(path.parent),
             )
             os.close(fd)
@@ -2776,7 +2829,9 @@ class FenixDaemon:
         - *.json 条目：created 在回收阈值（1 小时，代码常量）内 → 消费（唤起）
           后删除（幂等，复用 _consume_scheduling_kick_file 的唤起路径）；created
           早于阈值 / 缺失 / 非法 → 仅删除不唤起；损坏 JSON / 缺 spec → 删除防卡死。
-        - 非 *.json 残留（写入中断留下的临时文件）：按 mtime 同阈值清理
+        - 非 *.json 残留（写入中断留下的临时文件，及消费端 os.replace 改名后
+          unlink 前崩溃残留的 .<name>.consumed.* 私有副本——item e286692801c1，
+          该副本不带 .json 后缀故不会被再次唤起消费）：按 mtime 同阈值清理
           （MUST NOT 在 _check_scheduling_kick_requests 的消费扫描中被当作损坏
           信号删除——那里只忽略不删，由本对账统一回收）。
         - 旧单文件路径 .fenix/scheduling_kick_request.json：同判据分档（D5）。
@@ -2804,7 +2859,8 @@ class FenixDaemon:
                 self.logger.error("fenixd", f"scheduling_kick 旧文件对账异常: {e}")
 
     def _reclaim_temp_scheduling_kick(self, path: Path) -> None:
-        """非 .json 残留（写入中断留下的临时文件）按 mtime 同阈值清理。"""
+        """非 .json 残留（写入中断留下的临时文件，及消费端崩溃残留的
+        .consumed 私有副本，见 item e286692801c1）按 mtime 同阈值清理。"""
         try:
             mtime = path.stat().st_mtime
         except OSError:
@@ -4855,6 +4911,15 @@ class FenixDaemon:
         for prefix in ("impl", "verify", "repair"):
             if rid.startswith(f"{prefix}-"):
                 rest = rid[len(prefix) + 1 :]
+                # 车道复合前缀（code-review item cb8408ba09ec）：impl-ocr-<spec>-<ts>
+                # （core/agent_runner/maintenance_runs._unique_impl_ocr_run_id 的
+                # 实际命名）按 impl 剥离后第二段是保留字「ocr」（车道名）而非
+                # spec——若放行，末段纯数字即「解析成功」，误产出脏 spec 名
+                # 「ocr-<spec>」：调用方既不走 warning 留痕，还会用错误 spec 写
+                # branch/worktree 全空的保全条目。此处返回 None 交由调用方
+                # （_preserve_interrupted_runs）按 warning 留痕、提示人工确认。
+                if prefix == "impl" and rest.split("-", 1)[0] == "ocr":
+                    return None
                 break
         else:
             return None
