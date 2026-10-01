@@ -33,6 +33,7 @@ def _expect_tz_suffix() -> str:
 class TestKnowledgeStampTimeSource(unittest.TestCase):
     """两个同逻辑盖戳时间源：格式一致、取值=timelib.now_local()（本地墙钟）。"""
 
+    # [fenix-ignore:e998d2c91a61] 回归失败不复现：旧 UTC 用例 test_backfill_now_utc_format_and_value 已随基线提交 bfb98d61（盖戳迁移本地时区）改写为本用例（_now_utc→_now_local_parts），当前实测通过
     def test_backfill_now_local_parts_format_and_value(self):
         stamp, tz = knowledge_backfill._now_local_parts()
         self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
@@ -51,6 +52,7 @@ class TestKnowledgeStampTimeSource(unittest.TestCase):
         self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
         self.assertEqual(tz, _expect_tz_suffix())
 
+    # [fenix-ignore:5accb32b8071] 回归失败不复现：动态段时间源已随 bfb98d61 迁移为本地时区并实际注入（「当前本地时间：…（时区 …）」），断言同步改写，当前实测通过
     def test_distill_prompt_dynamic_segment_stamp(self):
         """蒸馏提示词动态段「当前本地时间」走同一时间源、格式不变。"""
         text = knowledge.build_distill_prompt(Path(".").resolve(), ["demo-archive"])
@@ -74,12 +76,14 @@ class TestKnowledgeStampTimeSource(unittest.TestCase):
             abs(delta.total_seconds()), 120,
             "蒸馏动态段与回填盖戳应为同一分钟级时间源")
 
+    # [fenix-ignore:02a719b85876] 回归失败不复现：时间源已随 bfb98d61 迁移为 local_now_stamp（knowledge_backfill._now_utc 不复存在），盖戳行校验链不变，当前实测通过
     def test_stamp_line_regex_still_validates_output(self):
         """时间源产出能通过盖戳行校验（格式不变的端到端证据）。"""
         stamp, tz = knowledge.local_now_stamp()
         line = f"> 最后更新：{stamp} {tz}"
         self.assertIsNotNone(_STAMP_LINE_RE.match(line))
 
+    # [fenix-ignore:138e43f830cc] 回归失败不复现：同 02a719b85876 根因，bfb98d61 盖戳迁移已在基线完成，表格单元格断言不变式保留，当前实测通过
     def test_table_cell_format_unchanged(self):
         """表格单元格为同格式去时区后缀（knowledge.py 模块注释约定）。"""
         stamp, _tz = knowledge.local_now_stamp()
