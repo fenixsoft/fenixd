@@ -56,7 +56,14 @@ let mermaidPromise: Promise<typeof import('mermaid').default> | null = null;
 
 function getMermaid() {
   if (!mermaidPromise) {
-    mermaidPromise = import('mermaid').then((m) => m.default);
+    // fix ab0d49fdcd19：动态 import 失败即清除缓存并重抛，后续 mermaid 块可重新
+    // 触发加载；否则 rejected promise 被永久缓存，整页会话内所有图退化为源码展示
+    mermaidPromise = import('mermaid')
+      .then((m) => m.default)
+      .catch((err) => {
+        mermaidPromise = null;
+        throw err;
+      });
   }
   return mermaidPromise;
 }
@@ -308,6 +315,11 @@ export default function HelpPage() {
   const [loading, setLoading] = useState(true);
   const [docLoading, setDocLoading] = useState(false);
   const [error, setError] = useState('');
+  // fix 012586eccad9：文档清单加载失败独立成 docsError（文案区分「文档清单加载失败」
+  // 与单篇「文档加载失败」，口径同 activities 页 fix 2ca9c5ff7be6 的失败来源区分）
+  const [docsError, setDocsError] = useState('');
+  // 清单加载重试序号：递增驱动加载 effect 重跑（保留 cancelled 守卫结构）
+  const [docsRetrySeq, setDocsRetrySeq] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // 跨文档锚点跳转：待滚动锚点暂存，内容就绪后消费（见下方 effect）。
@@ -315,21 +327,28 @@ export default function HelpPage() {
   // 写入此 ref，声明与使用顺序倒置易被误读为另一同名变量。
   const pendingAnchorRef = useRef<string | null>(null);
 
-  // 加载文档清单
+  // 加载文档清单。fix 012586eccad9：失败须显式提示（见 renderContent 的重试 Alert），
+  // 不能静默 setDocs([]) 渲染误导性「暂无帮助文档」空态（口径同 activities 页
+  // fix df39d8bbc138）；Empty 仅留给接口成功返回的空清单
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setDocsError('');
     (async () => {
       try {
         const d = await getHelpDocs();
         if (!cancelled) setDocs(d.docs || []);
-      } catch {
-        if (!cancelled) setDocs([]);
+      } catch (err) {
+        if (!cancelled) {
+          setDocs([]);
+          setDocsError(err instanceof Error ? err.message : '文档清单加载失败');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [docsRetrySeq]);
 
   // URL hash 变更 → 同步文档选择
   useEffect(() => {
@@ -413,6 +432,21 @@ export default function HelpPage() {
 
   const renderContent = () => {
     if (loading) return <Skeleton active paragraph={{ rows: 6 }} />;
+    // fix 012586eccad9：清单加载失败显式报错并提供重试（重试序号驱动加载 effect 重跑）
+    if (docsError) {
+      return (
+        <Alert
+          type="error"
+          message="文档清单加载失败"
+          description={docsError}
+          action={(
+            <Button size="small" onClick={() => setDocsRetrySeq((n) => n + 1)}>
+              重试
+            </Button>
+          )}
+        />
+      );
+    }
     if (!docs.length) return <Empty description="暂无帮助文档" />;
     if (docLoading) return <Skeleton active paragraph={{ rows: 8 }} />;
     if (error) return <Alert type="error" message="文档加载失败" description={error} />;
