@@ -203,6 +203,7 @@ class TestRatchetMechanics(unittest.TestCase):
 class TestTimeGuardOnRepo(unittest.TestCase):
     """落地实证：当前 core/ + fenixd.py 白名单外违例 = 0，白名单无僵尸。"""
 
+    # [fenix-ignore:4b216478bc98] 回归失败不复现：knowledge.py:96 / knowledge_backfill.py:731 已随基线提交 bfb98d61 改走 timelib.now_local()，TIME_WHITELIST 保持零豁免，当前实测 0 违例
     def test_current_production_zero_non_whitelist_violations(self):
         violations, _keys = scan_time_primitives(
             _prod_files(), REPO_ROOT, TIME_WHITELIST)
