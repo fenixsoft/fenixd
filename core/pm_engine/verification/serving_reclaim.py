@@ -262,8 +262,12 @@ def _should_keep(
 # ── 回收执行 ─────────────────────────────────────────────────────────────────
 
 
-def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
+def _remove_serving_worktree(project_root: Path, wt_path: Path, logger=None) -> None:
     """git worktree remove --force + git worktree prune（幂等）。
+
+    logger: 可选 fenix 风格日志记录器（(component, message) 接口）。注入时
+    两条收尾 prune 告警与其余回收日志走同一通道（同一轮回收的观测记录不拆
+    sink）；缺省 None 回落 std logging（保持独立调用兼容）。
 
     git 非零返回（权限/文件被占用/路径非注册 worktree 等）时：先
     `git worktree prune` 清理失效登记再重试一次 remove——覆盖 git worktree
@@ -321,21 +325,36 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
             timeout=15,
         )
     except Exception as prune_err:
-        logging.getLogger("fenixd.serving_reclaim").warning(
-            "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 异常"
-            "（仅影响登记簿清理，不影响回收结果）: %s",
-            wt_path,
-            prune_err,
-        )
+        if logger is not None:
+            logger.warning(
+                "serving_reclaim",
+                f"serving_reclaim: 目录 {wt_path} 已删除但收尾 git worktree prune 异常"
+                f"（仅影响登记簿清理，不影响回收结果）: {prune_err}",
+            )
+        else:
+            logging.getLogger("fenixd.serving_reclaim").warning(
+                "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 异常"
+                "（仅影响登记簿清理，不影响回收结果）: %s",
+                wt_path,
+                prune_err,
+            )
         return
     if prune.returncode != 0:
-        logging.getLogger("fenixd.serving_reclaim").warning(
-            "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 失败 "
-            "(rc=%s)（仅影响登记簿清理，不影响回收结果）: %s",
-            wt_path,
-            prune.returncode,
-            (prune.stderr or prune.stdout).strip(),
-        )
+        if logger is not None:
+            logger.warning(
+                "serving_reclaim",
+                f"serving_reclaim: 目录 {wt_path} 已删除但收尾 git worktree prune 失败 "
+                f"(rc={prune.returncode})（仅影响登记簿清理，不影响回收结果）: "
+                f"{(prune.stderr or prune.stdout).strip()}",
+            )
+        else:
+            logging.getLogger("fenixd.serving_reclaim").warning(
+                "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 失败 "
+                "(rc=%s)（仅影响登记簿清理，不影响回收结果）: %s",
+                wt_path,
+                prune.returncode,
+                (prune.stderr or prune.stdout).strip(),
+            )
 
 
 def _is_boot_log_target(name: str) -> bool:
@@ -406,7 +425,7 @@ def reclaim_verify_serving(
             continue
         # 无主 → 回收
         try:
-            _remove_serving_worktree(project_root, entry)
+            _remove_serving_worktree(project_root, entry, logger)
             reclaimed.append(entry.name)
             if logger:
                 logger.info(
