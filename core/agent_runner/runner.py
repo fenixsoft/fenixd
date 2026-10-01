@@ -1126,6 +1126,15 @@ class AgentRunner:
             _meta = self._cancel_meta.get(run_id, {})
             _reason = _meta.get("reason", "")
             self._cancel_clear(run_id)
+            # fix-observability-gaps 1.1 / code-review item e77ac696cbb7：排队期
+            # 取消也是终态，补写结构化指标行，与其它取消终态路径
+            #（_attempt_top_guards / _exhausted_result）口径对齐（run 未派发，
+            # duration/turns/usage 均 0，provider/model 未知传 None）。
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=f"planner-{mode}",
+                duration_seconds=0.0, turns=0, usage_info={},
+                terminal="cancelled", provider=None, model=None,
+            )
             return AgentRunResult(
                 run_id, spec_name, f"planner-{mode}",
                 success=False, duration_seconds=0.0,
@@ -5554,7 +5563,10 @@ class AgentRunner:
         # 路径同形）。
         observed_result = None if reader_stuck else last_result
         output = observed_result.get("result", "") if observed_result else ""
-        turns = observed_result.get("num_turns", 0)
+        # code-review item 36b4f158ce71：reader_stuck（observed_result=None）时
+        # turns 同样按 unobserved 口径取 0，防 AttributeError 冒泡出 _run_claude
+        # 把 rc==0 的 run 误判失败 / 丢失 rc!=0 异常上的归因属性。
+        turns = observed_result.get("num_turns", 0) if observed_result else 0
         session_id = observed_result.get("session_id") if observed_result else None
 
         if returncode != 0:
@@ -6128,12 +6140,21 @@ class AgentRunner:
         # setdefault+自增持锁（code-review item 557ef1ce8559）：与成功重置
         #（_reset_instant_fail）及派发侧到期清零并发时，无锁读改写互相丢失
         # 更新（对齐 _daily_run_count 先例）。
+        # code-review item 53c98a62022b：达阈值判定 + cooldown_until 写入一并
+        # 纳入临界区（对齐 _daily_count_lock 对自增+判定的整体覆盖）——两者留在
+        # 锁外时与 _reset_instant_fail 的锁内 pop 并发（同 spec 并发一败一成），
+        # 冷却会写进已被摘除的孤儿 dict 而静默丢失。日志/告警的文件 IO 留在锁外。
         with self._instant_fail_lock:
             st = self._instant_fail.setdefault(
                 spec_name, {"count": 0, "cooldown_until": 0.0})
             st["count"] = st.get("count", 0) + 1
-        cooldown_after = self._instant_fail_cooldown_after()
-        if st["count"] < cooldown_after:
+            cooldown_after = self._instant_fail_cooldown_after()
+            cooldown_seconds = self._instant_fail_cooldown_seconds()
+            reached_cooldown = st["count"] >= cooldown_after
+            if reached_cooldown:
+                st["cooldown_until"] = self._now() + cooldown_seconds
+
+        if not reached_cooldown:
             self.logger.warning(
                 "agent_runner",
                 f"'{spec_name}' 秒挂 {st['count']}/{cooldown_after} "
@@ -6141,10 +6162,7 @@ class AgentRunner:
             )
             return
 
-        # 达阈值：进入冷却
-        cooldown_seconds = self._instant_fail_cooldown_seconds()
-        now = self._now()
-        st["cooldown_until"] = now + cooldown_seconds
+        # 达阈值：进入冷却（cooldown_until 已在锁内写入，此处仅日志与告警）
         self.logger.error(
             "agent_runner",
             f"'{spec_name}' 连续 {st['count']} 次秒挂（阈值 {cooldown_after}）— "

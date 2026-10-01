@@ -942,7 +942,12 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
                 ": %s (%s)", rel, e,
             )
             continue
-        except (ValueError, UnicodeDecodeError) as e:
+        except (ValueError, UnicodeDecodeError, RecursionError) as e:
+            # RecursionError：超深嵌套 JSON 会让 json.loads 抛 RecursionError
+            # （非 JSONDecodeError/ValueError 子类，同 _check_artifact_json_file
+            # 与 _check_repo_code_review_artifact 既有先例）——quality-gates.json
+            # 是 agent 侧产物，不接住会逸出本软检查、击穿「MUST NOT 产生任何
+            # 失败终态」契约，故与非法 JSON 同口径记 WARNING + bad-json 告警放行。
             _logger.warning(
                 "quality-gates.json 无法解析（宽松对账，仅告警放行）: %s (%s)", rel, e
             )
@@ -1289,7 +1294,10 @@ def salvage_result_from_transcript(
                     continue
                 try:
                     d = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
+                    # 超深嵌套行会让 json.loads 抛 RecursionError（非
+                    # JSONDecodeError 子类，同 _check_artifact_json_file 口径）
+                    # ——按不可读行跳过，守住本函数「转录损坏不抛异常」契约。
                     continue
                 if not isinstance(d, dict):
                     continue
@@ -1319,7 +1327,11 @@ def salvage_result_from_transcript(
     for block in reversed(matches):
         try:
             candidate = json.loads(block)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # fenced 块来自 agent 完全可控的末轮 assistant text，超深嵌套 JSON
+            # 会让 json.loads 抛 RecursionError（非 JSONDecodeError 子类，同
+            # _check_artifact_json_file 先例）——按「抽不出合法 JSON」同口径
+            # continue，守住本函数「转录缺失/不可读 → 不抛异常」契约。
             continue
         if isinstance(candidate, dict) and candidate.get("status") in whitelist:
             payload = candidate
