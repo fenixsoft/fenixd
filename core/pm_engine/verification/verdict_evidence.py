@@ -269,7 +269,10 @@ def _adopt_report(
     if mapping["corrected"] or gate_mutated or not save_on_corrected_only:
         try:
             save_report(pipeline._context.project_root, spec_name, report)
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
+            # save_report 清理半成品后原样上抛（含 json.dump 遇不可序列化
+            # 载荷抛 TypeError/ValueError），与同文件两个写盘点及
+            # core.verdict_check 原子写族同口径，维持非阻塞承诺。
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"裁决映射重写写回失败 '{spec_name}': {e}",
