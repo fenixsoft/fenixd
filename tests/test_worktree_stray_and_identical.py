@@ -52,13 +52,31 @@ def spawn_proc(token: str, fake_argv0: str) -> subprocess.Popen:
     )
 
 
-def wait_token_in_pgrep(token: str, timeout: float = 5.0) -> bool:
+def wait_token_in_pgrep(token: str, timeout: float = 5.0,
+                        argv0: str | None = None) -> bool:
+    """轮询 pgrep 直到 token 命中；argv0 给定时还须命中进程 argv0 已切到该值。
+
+    spawn_proc 经 execv 重建 argv，存在预-execv 窗口：launcher（argv0=python3）
+    的 cmdline 已含 token 但 argv0 未切换，pgrep 即命中——正向断言（claude）
+    在窗口内采到 launcher 会被 _pgrep_spec_process 正确判非 claude 而假失败
+    （回归 8f440cb6524f，高负载下窗口拉宽）。argv0 参数把「扫到」收紧为
+    「以目标 argv0 扫到」，消除该竞态。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         r = subprocess.run(["pgrep", "-f", token],
                            capture_output=True, text=True, timeout=5)
         if r.returncode == 0 and r.stdout.strip():
-            return True
+            if argv0 is None:
+                return True
+            for pid in r.stdout.split():
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as f:
+                        first = f.read().split(b"\0", 1)[0]
+                except (OSError, IndexError):
+                    continue
+                if os.path.basename(first.decode("utf-8", "replace")) == argv0:
+                    return True
         time.sleep(0.05)
     return False
 
@@ -100,7 +118,8 @@ class TestPgrepAnchoring:
         token = f"{base}/impl-{spec}-1"
         proc = spawn_proc(token, "claude")
         try:
-            assert wait_token_in_pgrep(token), "测试进程应能被 pgrep 扫到"
+            assert wait_token_in_pgrep(token, argv0="claude"), \
+                "测试进程应能被 pgrep 扫到"
             wm = make_wm(tmp_path)
             assert wm._pgrep_spec_process(spec) is True
         finally:
