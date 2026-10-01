@@ -71,6 +71,28 @@ def _read_int_config(pipeline, key: str, default: int) -> int:
         return default
 
 
+def _summary_count(pipeline, spec_name: str, summary: dict, field: str) -> int:
+    """读取 report.json summary 计数并防御性转换（code-review db671dba96d3）。
+
+    原裸 `int(summary.get(field, 0) or 0)` 模式：计数被写坏为非数字串
+    （外部编辑/半截写残留）时 int() 抛 ValueError 沿
+    _handle_env_blocked_inconclusive / _handle_verdict_env_exemption_inconclusive
+    逃出到 pipeline 裁决路径，本轮 verdict 处置中断。比照同文件记账字段
+    兜底口径（_inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD /
+    _credibility_gate_attempts）：脏值回退 0 并记 WARNING，不让记账字段
+    脏值瘫痪升级通道。
+    """
+    try:
+        return int(summary.get(field, 0) or 0)
+    except (TypeError, ValueError):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' report summary.{field} 字段脏值（非数字），"
+            f"已按 0 兜底继续本轮判定",
+        )
+        return 0
+
+
 def _escalate_threshold_note(
     attempts: int, max_attempts: int, escalate_attempts: int
 ) -> str:
@@ -110,9 +132,9 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         判定）；False 表示无环境性失联，按既有判定继续。
     """
     summary = report.get("summary") or {}
-    blocked_env = int(summary.get("blocked_env", 0) or 0)
-    failed = int(summary.get("failed", 0) or 0)
-    errors = int(summary.get("errors", 0) or 0)
+    blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
+    failed = _summary_count(pipeline, spec_name, summary, "failed")
+    errors = _summary_count(pipeline, spec_name, summary, "errors")
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
     if blocked_env <= 0 or (failed + errors) > 0:
         # add-verify-parallel-backoff / design D2：非 inconclusive 判定即
@@ -1562,7 +1584,7 @@ def _handle_verdict_env_exemption_inconclusive(
     attempts≥2 并行度降档。恒返回 True（调用方不得再落 verified）。
     """
     summary = (report or {}).get("summary") or {}
-    blocked_env = int(summary.get("blocked_env", 0) or 0)
+    blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
     try:
         attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
