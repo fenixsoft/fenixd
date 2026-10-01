@@ -1,10 +1,11 @@
-import { Alert, Button, Card, Form, Input, message, Radio, Space, Switch, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, Radio, Space, Switch, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
+import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
@@ -77,54 +78,24 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  // 保存重入守卫（code-review item 2a3a76864687）：onSave 是异步，提交期间
-  // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
-  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路；setSaving 渲染
-  // 生效存在 React 调度间隙，同帧双击可穿透纯 state 守卫（code-review item
-  // e565d4593ac3，比照 SystemPanel 8ccf20511320 口径），经 savingRef 写读
-  // 同帧原子拦住连点，state 只负责按钮视觉反馈。
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
   // 产物路径为项目级键：用户级作用域下只读展示（无 project 即用户级）
   const artifactEditable = Boolean(project);
   // 三态联动：无产物（false）时路径列表隐藏并显示结案提示
   const hasBuildArtifacts = Form.useWatch('has_build_artifacts', form) as
     | HasBuildArtifactsState
     | undefined;
-
-  const initialValues = buildVerifyFormValues(config);
-
-  // 回填门控（code-review item 90e26b043318，比照 TokenBudgetPanel
-  // cbec8303669f）：无条件 setFieldsValue 会在保存往返或「同步用户级设置」刷新
-  // config 时，用外部值覆盖用户在保存请求在飞期间继续输入、尚未保存的内容。
-  // 改为序列化比较，只在内容真变化时回填。
-  const lastBackfillRef = useRef('');
-  useEffect(() => {
-    const next = buildVerifyFormValues(config);
-    const key = JSON.stringify(next);
-    if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
-    form.setFieldsValue(next);
-  }, [config.verify, config.worktree, form]);
-
-  // 「无派生物」时清空路径 List 的 store 值（code-review item aceafc981274）：
-  // 三态切到 false 时整个 Form.List（name='build_artifact_paths'）卸载，
-  // rc-field-form 默认保留卸载项值且 validateFields 只校验在场字段——此前
-  // 输入的任意行（含 artifactPathRule 校验失败行，如 dist 缺尾斜杠）残留在
-  // form store 被 handleSave 原样提交。切到「无派生物」即显式清值，保证
-  // 提交口径与所见一致；再切回「有派生物」时从空列表开始，不受残留行污染。
-  useEffect(() => {
-    if (hasBuildArtifacts === 'false') {
-      form.setFieldValue('build_artifact_paths', []);
-    }
-  }, [hasBuildArtifacts, form]);
-
-  const handleSave = async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      const values = await form.validateFields();
+  // 表单脚手架统一走 useGatedFormPanel（code-review item 5407d2f4b09b）：
+  // 原手写 savingRef 重入守卫（原 item 2a3a76864687 / e565d4593ac3）、
+  // lastBackfillRef 序列化比较回填门控（原 item 90e26b043318）与「校验与
+  // 持久化分离」的 handleSave（原 item 9423058588de）曾与六个已收敛面板
+  // 双份维护，收敛进 hook；本面板保留字段映射（buildVerifyFormValues）与
+  // 保存载荷组装（artifactEditable 条件键 + 三态映射，见 buildPayload）。
+  const { saving, initialValues, handleSave } = useGatedFormPanel({
+    form,
+    buildValues: () => buildVerifyFormValues(config),
+    backfillDeps: [config.verify, config.worktree],
+    onSave,
+    buildPayload: (values): Partial<ConfigData> => {
       const payload: Partial<ConfigData> = {
         verify: {
           static_scope: values.static_scope,
@@ -158,24 +129,21 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
           payload.worktree.has_build_artifacts = null;
         }
       }
-      // 分离「表单校验」与「保存持久化」（code-review item 9423058588de，比照
-      // TokenBudgetPanel def003cd8cff 口径）：校验失败 antd 已在表单内渲染提示，
-      // 静默返回；onSave 持久化失败（网络/500）拆独立 try/catch 显式反馈，避免
-      // 用户误以为配置已保存。
-      try {
-        await onSave(payload);
-      } catch (error) {
-        // 保存持久化失败（网络/500）：给用户显式反馈而非静默
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-      }
-    } catch {
-      // 校验失败：antd 已在表单内渲染提示，不落 console（避免触发验证的
-      // no_console_error 断言，与同族面板口径一致）
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
+      return payload;
+    },
+  });
+
+  // 「无派生物」时清空路径 List 的 store 值（code-review item aceafc981274）：
+  // 三态切到 false 时整个 Form.List（name='build_artifact_paths'）卸载，
+  // rc-field-form 默认保留卸载项值且 validateFields 只校验在场字段——此前
+  // 输入的任意行（含 artifactPathRule 校验失败行，如 dist 缺尾斜杠）残留在
+  // form store 被 handleSave 原样提交。切到「无派生物」即显式清值，保证
+  // 提交口径与所见一致；再切回「有派生物」时从空列表开始，不受残留行污染。
+  useEffect(() => {
+    if (hasBuildArtifacts === 'false') {
+      form.setFieldValue('build_artifact_paths', []);
     }
-  };
+  }, [hasBuildArtifacts, form]);
 
   const artifactsState = hasBuildArtifacts ?? toFormState(config.worktree?.has_build_artifacts);
   const declaredNoArtifacts = artifactsState === 'false';
