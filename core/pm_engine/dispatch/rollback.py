@@ -198,14 +198,19 @@ class RRollbackMixin:
                 # exempt_applied 标记（code-review item 6d56aa5de387）：审计日志
                 # 无条件落盘，须携带豁免是否实际生效，否则记账失败（状态文件
                 # 锁/IO 异常）时对账会把未生效的豁免当作已豁免。
+                # 结果判定（code-review item 963d40154301）：_exempt_dead_run_budget
+                # 对拒绝/幂等跳过/记账异常三条未生效路径均静默 return、不抛异常，
+                # 仅凭本处 except 判不出未生效——改按其返回指纹置标记，并把指纹
+                # 附进审计行，供与 budget.py 内部拒绝/跳过 WARNING/INFO 交叉对账。
                 exempt_applied = False
+                exempt_result = None
                 try:
-                    self._pm._exempt_dead_run_budget(
+                    exempt_result = self._pm._exempt_dead_run_budget(
                         spec_name,
                         f"dispatch exception: {str(exc)[:80]}",
                         run_reason=str(exc) if exc else None,
                     )
-                    exempt_applied = True
+                    exempt_applied = exempt_result == "applied"
                 except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞回滚
                     self._pm.logger.warning(
                         "pm_engine",
@@ -216,6 +221,7 @@ class RRollbackMixin:
                     "pm_engine",
                     f"budget_exempt_audit: spec={spec_name}, "
                     f"dispatch_exception, exempt_applied={exempt_applied}, "
+                    f"exempt_result={exempt_result}, "
                     f"exc={str(exc)[:120]}, "
                     f"run_reason={str(exc)[:80] if exc else ''}",
                 )
@@ -327,7 +333,7 @@ class RRollbackMixin:
 
             evidence = _str_field(evidence_obj)
             store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append(
+            written = store.append(
                 {
                     "kind": SIGNAL,
                     "signal_type": signal_type,
@@ -338,10 +344,20 @@ class RRollbackMixin:
                     "recommended_action": recommended_action,
                 }
             )
-            self._pm.logger.info(
-                "pm_engine",
-                f"{signal_type} 告警已写入 admin store: '{spec_name}'",
-            )
+            if written is None:
+                # 下限保护拒写（code-review item 503dc872568f）：append 返回
+                # None＝记录未落盘，按「告警写入失败（非阻塞）」既有分支同
+                # 口径记 WARNING，不得伪造「已写入」成功日志误导事后对账。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"{signal_type} 告警未落盘 '{spec_name}'"
+                    f"（admin store 下限保护拒写，非阻塞）",
+                )
+            else:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"{signal_type} 告警已写入 admin store: '{spec_name}'",
+                )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
