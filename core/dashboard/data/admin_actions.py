@@ -465,7 +465,15 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     from core.state_machine import StateMachine, project_state_logger
 
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
-    sm.freeze_spec(spec_name, reason=note)
+    if not sm.freeze_spec(spec_name, reason=note):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时冻结未落盘，WARNING 留痕并如实返回失败形状。
+        logger.warning(
+            "freeze_spec 冻结失败：spec 已并发删除或写入被拒，冻结未落盘（spec=%s）",
+            spec_name,
+        )
+        return {"ok": False, "found": True, "frozen": False,
+                "error": "spec 已并发删除或写入被拒，裁决未落盘"}
     return {"ok": True, "found": True, "frozen": True, "error": None, "stopped_agents": len(running)}
 
 
@@ -505,9 +513,17 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
         )
     except Exception:
         pass
-    sm.unfreeze_spec(spec_name, status=orig,
-                     project_root=Path(project_root),
-                     worktree_manager=_wt_mgr)
+    if not sm.unfreeze_spec(spec_name, status=orig,
+                            project_root=Path(project_root),
+                            worktree_manager=_wt_mgr):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时解冻未落盘，WARNING 留痕并如实返回失败形状。
+        logger.warning(
+            "unfreeze_spec 解冻失败：spec 已并发删除或写入被拒，解冻未落盘（spec=%s）",
+            spec_name,
+        )
+        return {"ok": False, "found": True, "frozen": True,
+                "error": "spec 已并发删除或写入被拒，裁决未落盘"}
     return {"ok": True, "found": True, "frozen": False, "error": None}
 
 
@@ -1771,7 +1787,17 @@ def force_advance(project_root, spec: str, target_status: str = "done", note: st
         }
     old_status = entry.get("status")
     sm = _adjudication_sm(proot)
-    sm.update_spec(spec, {"frozen": False, "status": target_status, "error": None})
+    if not sm.update_spec(spec, {"frozen": False, "status": target_status, "error": None}):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时推进未落盘，WARNING 留痕并如实返回失败，
+        # 不再拼「Transition」步骤伪装成功（对缺失 spec 行为未定义）。
+        logger.warning(
+            "force_advance 推进失败：spec 已并发删除或写入被拒，裁决未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "found": True, "steps": [], "from_status": None,
+                "status": None,
+                "error": "spec 已并发删除或写入被拒，裁决未落盘"}
     basis = "人工豁免推进" + (f"：{note}" if note else "")
     sm.logger.info(
         "state_machine",
@@ -1825,10 +1851,20 @@ def skip_review_gate(project_root, spec: str, note: str = "") -> dict:
             "error": "非评审器失败冻结（error 无 spec-review-incomplete 特征），跳过评审门被拒绝",
         }
     sm = _adjudication_sm(proot)
-    sm.update_spec(spec, {
+    if not sm.update_spec(spec, {
         "frozen": False, "status": "ready", "error": None,
         "reviewer_run": None, "_review_attempts": 0,
-    })
+    }):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时跳过评审未落盘，WARNING 留痕并如实返回失败，
+        # 不再拼「Transition」步骤伪装成功（对缺失 spec 行为未定义）。
+        logger.warning(
+            "skip_review_gate 跳过评审门失败：spec 已并发删除或写入被拒，"
+            "裁决未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "found": True, "steps": [], "status": None,
+                "error": "spec 已并发删除或写入被拒，裁决未落盘"}
     basis = "人工授权跳过评审" + (f"：{note}" if note else "")
     sm.logger.info(
         "state_machine",
@@ -1866,10 +1902,20 @@ def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label
         return {"ok": False, "steps": [],
                 "error": f"该冻结非 {marker} 类，{label}被拒绝"}
     sm = _adjudication_sm(proot)
-    sm.update_spec(spec, {
+    if not sm.update_spec(spec, {
         "frozen": False, "status": "reviewing", "error": None,
         "reviewer_run": None, "_review_attempts": 0,
-    })
+    }):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时解冻未落盘，WARNING 留痕并如实返回失败，
+        # 不再拼「Transition」步骤伪装成功（对缺失 spec 行为未定义）。
+        logger.warning(
+            "_exec_review_unfreeze 解冻失败：spec 已并发删除或写入被拒，"
+            "裁决未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "steps": [],
+                "error": "spec 已并发删除或写入被拒，裁决未落盘"}
     sm.logger.info(
         "state_machine",
         f"Transition: {spec} blocked → reviewing",
@@ -1940,7 +1986,17 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
         prev_used = 0
     updates[BUDGET_MANUAL_RESET_BASELINE_FIELD] = max(0, prev_used)
     updates["_impl_run_budget_used"] = 0
-    sm.update_spec(spec, updates)
+    if not sm.update_spec(spec, updates):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时清计数未落盘，WARNING 留痕并如实返回失败，
+        # 不再继续 transition（对缺失 spec 行为未定义）伪装成功。
+        logger.warning(
+            "continue_auto_fix 清计数失败：spec 已并发删除或写入被拒，"
+            "裁决未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "steps": [],
+                "error": "spec 已并发删除或写入被拒，裁决未落盘"}
     sm.transition(spec, "ready", channel="manual")
     kicked = _kick_step_suffix(proot, spec)
     steps = [

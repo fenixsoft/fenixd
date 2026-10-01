@@ -17,6 +17,13 @@ _ACCUM_LOCKS_GUARD = threading.Lock()
 # [fenix-ignore:c00c25def3a1] 每 spec 仅一个小 Lock、量级极小；收尾弹键会破坏「他线程持锁中被弹出」的互斥、weakref 在 CPython _thread.lock 上不可用，修复反引入并发复杂度，维持现状
 _ACCUM_LOCKS = {}  # spec_name -> threading.Lock
 
+# code-review item a8dd529ad6f3：_unobserved_runs 的 ``+= 1`` 是「读-改-写」三步
+# 操作，多线程收工路径（impl-ocr 并行车道、dashboard 线程）下并发自增会互相
+# 覆盖丢失增量，DEBUG 审计口径失真。比照 _ACCUM_LOCKS_GUARD 用模块级锁串行化
+# 自增；计数器本身仍挂实例，锁取模块级是因为 _token_accountant 惰性 property
+# 在并发首次访问下可能产出多个实例，实例锁会随实例分裂而失效。
+_UNOBSERVED_GUARD = threading.Lock()
+
 
 def _spec_accumulate_lock(spec_name: str) -> threading.Lock:
     with _ACCUM_LOCKS_GUARD:
@@ -70,11 +77,16 @@ class TokenAccountant:
         if not isinstance(usage_info, dict):
             usage_info = {}
         if usage_info.get("unobserved"):
-            self._unobserved_runs += 1
+            # code-review item a8dd529ad6f3：自增取模块级锁串行化，避免多线程
+            # 收工并发「读-改-写」互相覆盖丢失增量；锁内快照 total 供日志使用，
+            # 保证日志数字与本次自增一致。
+            with _UNOBSERVED_GUARD:
+                self._unobserved_runs += 1
+                total = self._unobserved_runs
             self._pm.logger.debug(
                 "agent_runner",
                 f"token usage unobserved for '{spec_name}' — skipped accumulation "
-                f"(unobserved total: {self._unobserved_runs}, "
+                f"(unobserved total: {total}, "
                 f"add-turn-limit-anchor-c D4)",
             )
             return

@@ -652,8 +652,9 @@ class LivenessSupervisor:
                 )
         if not reviewer_run:
             return False, None
-        # 判据 2：进程表（in-process 注册表；判据异常不回退到流判据的判定不成立，
-        # 而是 fail-open 放行——进程表读不出不等于评审在飞）
+        # 判据 2：进程表（in-process 注册表）为真相；判定异常记 WARNING 后
+        # fail-open 继续判据 3（流文件判定），不落入判据 4 的 stale 终局——
+        # 进程表读不出既不等于评审在飞，也不等于 run 已终态
         try:
             running = self._pm.running_run_ids() or []
             if reviewer_run in running:

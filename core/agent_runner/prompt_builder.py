@@ -807,7 +807,10 @@ class PromptBuilder:
             round_no = int(data.get("round", 1) or 1)
         except (TypeError, ValueError):
             round_no = 1
-        max_rounds = data.get("max_rounds", 1)
+        try:
+            max_rounds = int(data.get("max_rounds", 1) or 1)
+        except (TypeError, ValueError):
+            max_rounds = 1
         lines = [
             "\n\n## ocr 代码审查 findings 修复义务（impl-ocr-join-gate，强制）\n"
             f"你本轮是被框架侧 ocr 代码审查车道打回的**修复轮**"

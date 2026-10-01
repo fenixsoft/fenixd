@@ -34,7 +34,7 @@ def parse_report(project_root, spec_name) -> dict:
         data.pop("exists", None)
         data.pop("error", None)
         return {"exists": True, **data}
-    except (json.JSONDecodeError, OSError, TypeError):
+    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError):
         return {"exists": True, "error": "corrupt"}
 
 
@@ -48,7 +48,7 @@ def parse_test_scenarios(project_root, spec_name) -> list:
         if isinstance(data, list):
             return data
         return []
-    except (json.JSONDecodeError, OSError, TypeError):
+    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError):
         return []
 
 
@@ -109,7 +109,7 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
                     for s in ts_scenarios
                     if isinstance(s, dict) and s.get("kind")
                 }
-        except (json.JSONDecodeError, OSError, AttributeError):
+        except (json.JSONDecodeError, OSError, AttributeError, UnicodeDecodeError):
             kind_by_id = {}
         if kind_by_id:
             for sc in out:
@@ -188,7 +188,7 @@ def _load_run_result(project_root, spec_name) -> dict | None:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, TypeError):
+        except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError):
             continue
         if not isinstance(data, dict):
             continue

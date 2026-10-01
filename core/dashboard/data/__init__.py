@@ -10,10 +10,10 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
 "<name>")` 打桩。当前已知清单（新增门面延迟引用时同步登记）：
 
     _is_running, USER_CONFIG_PATH,
-    archive_spec_runs   (spec_archive.py:201，显式 D8 注释),
-    spec_summary        (summary.py:585),
-    parse_verify_progress (spec_docs.py:191),
-    classify_run        (tasks.py:206),
+    archive_spec_runs   (spec_archive.py，显式 D8 注释),
+    spec_summary        (summary.py),
+    parse_verify_progress (spec_docs.py),
+    classify_run        (runs.py，tasks.py 经门面解析),
     parse_quality_gates (quality_gates.py，summary.py 经门面消费),
     find_implementer_worktree (tasks.py，quality_gates.py 经门面解析),
     _resolve_run_file, _read_run_lines (runs.py，quality_gates.py 经门面解析),

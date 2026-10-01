@@ -57,7 +57,9 @@ def _strip_run_attempt_suffix(run_id: str) -> str:
     """
     if not run_id:
         return run_id
-    # 优先剥 -a<n>（attempt 后缀），再剥 -r<n>（原地重试子产物后缀）
+    # 先剥 -r<n>（原地重试子产物后缀），再剥 -a<n>（attempt 后缀）：-r<n> 可能
+    # 挂在 -a<n> 之后（-a1-r1），若先剥 -a 则命中不了行尾，只能靠后续 -r 剥成
+    # -a1 而漏掉 attempt 后缀——顺序不可对调
     stripped = re.sub(r"-r\d+$", "", run_id)
     stripped = re.sub(r"-a\d+$", "", stripped)
     if stripped != run_id:

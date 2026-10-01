@@ -49,6 +49,21 @@ def _next_line_start(f, start: int, size: int) -> int:
     return -1
 
 
+def _boundary_at_line_start(f, boundary: int) -> bool:
+    """判采样边界是否恰为行首（boundary==0，或前一字节为换行）。
+
+    对齐 _update_log_block_index 接缝特判的判法：某行恰好结束于块边界整数倍时
+    boundary 即下一行行首，常规采样 chunk 首字节就是该行内容，find 命中的是它
+    自己的换行，boundary+nl+1 会指到再下一行——该行本身没进索引（读窗锚定该
+    块时丢一条完整行）。供 _build_log_block_index 与 _update_log_block_index
+    共用，避免两处判法漂移。
+    """
+    if boundary == 0:
+        return True
+    f.seek(boundary - 1)
+    return f.read(1) == b"\n"
+
+
 def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
     """全量扫描日志一次，构建 {size, offsets}；构建失败返回 None。
 
@@ -89,7 +104,13 @@ def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
                     else:
                         offsets.append(offsets[-1])
                 else:
-                    offsets.append(boundary + nl + 1)
+                    # boundary 恰为行首（上一行换行是前一字节）时，nl 命中的是这一
+                    # 行自己的换行，boundary+nl+1 指到再下一行——该行被整条踢出
+                    # 索引，读窗锚定该块即丢一条完整行；判行首后直接以 boundary 入索引。
+                    if _boundary_at_line_start(f, boundary):
+                        offsets.append(boundary)
+                    else:
+                        offsets.append(boundary + nl + 1)
     except OSError:
         # 不可返回 {size: size, offsets: [0]} 的不一致索引：一旦被 _load_log_index
         # 落盘复用，size 持平的后续查询在 _read_log_tail_window 被钳位到块 0 退化成
@@ -192,7 +213,12 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
                     else:
                         offsets.append(offsets[-1])
                 else:
-                    offsets.append(boundary + nl + 1)
+                    # 同 _build_log_block_index：boundary 恰为行首时直接入索引，
+                    # 避免把该行整条踢出索引（读窗锚定该块丢一条完整行）。
+                    if _boundary_at_line_start(f, boundary):
+                        offsets.append(boundary)
+                    else:
+                        offsets.append(boundary + nl + 1)
     except OSError:
         return idx
     # 同 _build_log_block_index：末条采样可能越过 EOF（boundary+nl+1 == size，非

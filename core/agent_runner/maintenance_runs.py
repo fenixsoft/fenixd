@@ -393,11 +393,12 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         success = False
         # code-review item 14ce3542d2b9：硬门折算必须同时落到 result 通道——
         # 仅折算 success 位时，下方返回值 result=disp.get("result") or ...
-        # 会把非空非法值（如管理员误写 "done"/"resolve"）原样透传，消费侧
-        # admin_monitor 的终态回写只判 result 非 pending 且非 escalate、不看
-        # success，非法值仍会 mark_signal_handled——正是本门注释声称要消灭
-        # 的「零动作误闭环」。此处置合法保留值 "failed" 折算返回值，原始
-        # 非法值保留在下方 error 文案中取证。
+        # 会把非空非法值（如管理员误写 "done"/"resolve"）原样透传。消费侧
+        # admin_monitor 已按同 item 给终态回写门补上 success 前置条件
+        # （success=False 不再 mark_signal_handled），此处折算 result 通道
+        # 属双保险：兼容替身/旧消费方，以及 latest_resolved_disposition 等
+        # 只看 result 的查询路径。此处置合法保留值 "failed" 折算返回值，
+        # 原始非法值保留在下方 error 文案中取证。
         disp["result"] = "failed"
         error = (
             f"admin 处置记录 result 非法: {disp_path.name} 可解析但 result "
@@ -1206,6 +1207,41 @@ def _get_admin_model(runner) -> str:
     return DEFAULT_GATEWAY_MODEL
 
 
+def _writeoff_coverage_guard(
+    origin_files: set,
+    covered_files: set,
+    logger,
+    run_id: str,
+    *,
+    empty_detail: str,
+    locked_detail_tmpl: str,
+    unlock_detail_tmpl: str,
+) -> tuple[bool, str]:
+    """全仓快照核销覆盖完整性守卫的公共判定（item a5262dd130c0）。
+
+    重派 run 与普通 manual_full run 两分支除 origin_files/covered 的数据
+    来源外判定结构逐行同构（空集锁死、issubset 解锁、解锁 info 日志），
+    收敛于此防两分支单边演进造成核销行为分裂；来源组装与分支差异文案由
+    调用方负责（try/except 宁锁勿白洗也留在调用侧，因其须覆盖来源组装
+    本身）。返回 (locked, locked_detail)，解锁时 detail 为空串；锁定/
+    解锁文案由调用方以 {cov}/{total} 占位模板提供，保证日志逐字不变。
+    """
+    if not origin_files:
+        return True, empty_detail
+    if not origin_files.issubset(covered_files):
+        return True, locked_detail_tmpl.format(
+            cov=len(origin_files & covered_files),
+            total=len(origin_files),
+        )
+    if logger is not None:
+        logger.info(
+            "code-review",
+            f"全仓快照核销解锁（run {run_id}）："
+            + unlock_detail_tmpl.format(total=len(origin_files)),
+        )
+    return False, ""
+
+
 # ── 周期性代码审查 run（add-code-review-agent-and-quality-tab）──────
 
 
@@ -1482,24 +1518,18 @@ def run_code_review(
                         origin_files = set(
                             _cr_manifest_files(runner.project_root, redispatch_of))
                         covered = _cr_cum_covered(runner.project_root, redispatch_of)
-                        if not origin_files:
-                            writeoff_locked = True
-                            locked_detail = "原 manifest 缺失/损坏，完整性不可判"
-                        elif not origin_files.issubset(covered):
-                            writeoff_locked = True
-                            locked_detail = (
-                                f"累计覆盖 {len(origin_files & covered)}/"
-                                f"{len(origin_files)} 文件（redispatch_of={redispatch_of}）"
-                                f"，本轮 manifest {len(manifest)} 文件")
-                        else:
-                            _log = getattr(runner, "logger", None)
-                            if _log is not None:
-                                _log.info(
-                                    "code-review",
-                                    f"全仓快照核销解锁（run {run_id}）：累计覆盖完整"
-                                    f"（{len(origin_files)}/{len(origin_files)} 文件，"
-                                    f"redispatch_of={redispatch_of}）",
-                                )
+                        writeoff_locked, locked_detail = _writeoff_coverage_guard(
+                            origin_files, covered,
+                            getattr(runner, "logger", None), run_id,
+                            empty_detail="原 manifest 缺失/损坏，完整性不可判",
+                            locked_detail_tmpl=(
+                                f"累计覆盖 {{cov}}/{{total}} 文件"
+                                f"（redispatch_of={redispatch_of}），"
+                                f"本轮 manifest {len(manifest)} 文件"),
+                            unlock_detail_tmpl=(
+                                f"累计覆盖完整（{{total}}/{{total}} 文件，"
+                                f"redispatch_of={redispatch_of}）"),
+                        )
                     except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
                         writeoff_locked = True
                         locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
@@ -1519,23 +1549,15 @@ def run_code_review(
 
                         origin_files = {str(f) for f in manifest if str(f)}
                         covered = _cr_cum_covered(runner.project_root, run_id)
-                        if not origin_files:
-                            writeoff_locked = True
-                            locked_detail = "manifest 清单为空，完整性不可判"
-                        elif not origin_files.issubset(covered):
-                            writeoff_locked = True
-                            locked_detail = (
-                                f"本轮覆盖 {len(origin_files & covered)}/"
-                                f"{len(origin_files)} 文件，manifest "
-                                f"{len(manifest)} 文件")
-                        else:
-                            _log = getattr(runner, "logger", None)
-                            if _log is not None:
-                                _log.info(
-                                    "code-review",
-                                    f"全仓快照核销解锁（run {run_id}）：覆盖完整"
-                                    f"（{len(origin_files)}/{len(origin_files)} 文件）",
-                                )
+                        writeoff_locked, locked_detail = _writeoff_coverage_guard(
+                            origin_files, covered,
+                            getattr(runner, "logger", None), run_id,
+                            empty_detail="manifest 清单为空，完整性不可判",
+                            locked_detail_tmpl=(
+                                f"本轮覆盖 {{cov}}/{{total}} 文件，manifest "
+                                f"{len(manifest)} 文件"),
+                            unlock_detail_tmpl="覆盖完整（{total}/{total} 文件）",
+                        )
                     except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
                         writeoff_locked = True
                         locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
