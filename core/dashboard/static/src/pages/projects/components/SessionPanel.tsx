@@ -684,6 +684,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       if (!activeRef.current || projectStale()) return;
       setError('');
     } catch (e) {
+      // 失败前已切离/已切换项目：不落错误（同上方各 await 后守卫口径，旧项目
+      // 的错误文案与「重试」按钮不得串显到新项目面板；finally 复位 loading 保留）
+      if (!activeRef.current || projectStale()) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
