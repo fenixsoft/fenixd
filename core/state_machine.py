@@ -556,6 +556,14 @@ class StateParser:
                     "tester_run",
                     "branch",
                     "error",
+                    # code-review 56f1aefd2823：depends_on 可空——serialize 对
+                    # 缺失/None 恒写 null，未登记本表则 STATE.md 往返后读回
+                    # 字符串 "null" 而非 None，消费点被迫各自硬编码
+                    # == "null" 防御（event_bus._find_dependents、
+                    # pm_engine._dependencies_satisfied/_dependencies_pending），
+                    # 新消费点漏写即把 "null" 当依赖 spec 名去查并误告警。
+                    # serialize 写格式保持不变（仍写 null，兼容既有落盘格式）。
+                    "depends_on",
                     "total_duration",
                     START_AFTER_FIELD,
                     FROZEN_UNTIL_FIELD,
@@ -2468,6 +2476,10 @@ class StateMachine:
         - ``update_spec``：status=implemented、error=None、保留
           branch/implementer_run、_merge_fp/_merge_streak/_repair_round/
           _repair_merge_error 清零、_repair_awaiting_remerge=False；
+        - 锚点（branch/implementer_run）回写在 ``.STATE.md.lock`` 锁内以最新
+          条目复核（与 freeze_spec 同一口径，code-fix b609ecf63750）：快照
+          锚点在 re-merge 的 git 窗口内被并发改写时放弃回写并 WARNING，
+          推进本身不回滚（滞留 implementing 会反复重试已合并分支）。
         - 收口副作用（依赖接线，tasks 4.2）：``remerge_callback(spec_name)``
           由 fenixd 注入 PMEngine 侧实现（_clear_dispatch_conflict /
           _sync_task_progress / _reconcile_impl_budget / consume_legacy），
@@ -2524,24 +2536,62 @@ class StateMachine:
                 f"{remerge_error} — 清除待 re-merge 标记，回落保留续做",
             )
             return False
-        # re-merge 成功：推进 implemented，收口字段对齐 repair re-merge 路径
-        self.update_spec(
-            name,
-            {
-                "status": SpecStatus.IMPLEMENTED,
-                "error": None,
-                "implementer_run": entry.get("implementer_run"),
-                "branch": branch,
-                "_retry_count": 0,
-                "_merge_fp": None,
-                "_merge_streak": 0,
-                REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
-                "_redispatch_cause_fp": None,
-                "_repair_round": 0,
-                "_repair_merge_error": None,
-                "_repair_awaiting_remerge": False,
-            },
-        )
+        # re-merge 成功：推进 implemented，收口字段对齐 repair re-merge 路径。
+        # 锚点回写（implementer_run/branch）在 .STATE.md.lock 锁内以最新条目
+        # 复核（与 freeze_spec code-fix d266d19c4860 / unfreeze_spec
+        # fenix-fix f5a17d596717 同一口径，code-fix b609ecf63750）：上方 entry
+        # 是 recover_interrupted 经 get_by_status 取的锁外快照，与本写之间隔着
+        # merge_back_from_branch 的 git 子进程（窗口可达秒级），期间
+        # dashboard/admin 等其他写者若已改写或清空锚点，快照旧值会在本写中
+        # 复活。合并已不可逆，复核不一致时不回滚推进（回滚会让「仅剩合并」的
+        # spec 滞留 implementing 反复重试已合并分支），仅放弃快照锚点回写、
+        # 保留锁内最新值并 WARNING 留痕。
+        updates: dict = {
+            "status": SpecStatus.IMPLEMENTED,
+            "error": None,
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+            REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
+            "_redispatch_cause_fp": None,
+            "_repair_round": 0,
+            "_repair_merge_error": None,
+            "_repair_awaiting_remerge": False,
+        }
+        applied: dict = {}
+        anchor_recheck: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(name) or {}
+            if (
+                fresh.get("branch") == entry.get("branch")
+                and fresh.get("implementer_run") == entry.get("implementer_run")
+            ):
+                updates["implementer_run"] = entry.get("implementer_run")
+                updates["branch"] = branch
+            else:
+                anchor_recheck["snapshot"] = entry
+                anchor_recheck["fresh"] = fresh
+            found = self._apply_updates_entry(specs, name, updates, applied)
+            return found, found
+
+        if not self._mutate_locked(_mutate):
+            self.logger.warning("state_machine", f"SPEC not found: {name}")
+        elif anchor_recheck:
+            _snap = anchor_recheck["snapshot"]
+            _fresh = anchor_recheck["fresh"]
+            self.logger.warning(
+                "state_machine",
+                f"Recovery remerge anchor recheck: spec '{name}' 的 branch/"
+                f"implementer_run 锚点在恢复期 re-merge 期间被并发改写（快照 "
+                f"branch={_snap.get('branch')!r}/implementer_run="
+                f"{_snap.get('implementer_run')!r}，最新 branch="
+                f"{_fresh.get('branch')!r}/implementer_run="
+                f"{_fresh.get('implementer_run')!r}）——放弃快照锚点回写，"
+                f"以最新条目为准推进 implemented",
+            )
+        else:
+            self._log_update_applied(name, applied)
         # 收口副作用回调（PMEngine 侧注入；tasks 4.2 依赖接线）
         if remerge_callback is not None:
             try:
@@ -2678,6 +2728,10 @@ class StateMachine:
         单源查询（is_available）：在场原地登记（受清理豁免）；缺失在既有分支
         上重建 worktree；不可用降级清空重建并 WARNING。
 
+        锚点回写在 ``.STATE.md.lock`` 锁内以最新条目复核（与 freeze_spec 同一
+        口径，code-fix b609ecf63750）：快照锚点在保留判定的 git 窗口内被并发
+        改写时放弃本写并 WARNING，返回 False 回落调用方清空重建路径。
+
         Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）。
         """
         if project_root is None or worktree_manager is None:
@@ -2692,32 +2746,73 @@ class StateMachine:
             f"'{resolved_branch}' (ahead of main) — resume continuation, "
             f"worktree={wt}",
         )
-        self.update_spec(
-            name,
-            {
-                "status": SpecStatus.READY,
-                "error": f"Recovered from interrupted state: implementing "
-                f"(resume preserved branch)",
-                "implementer_run": entry.get("implementer_run"),
-                "tester_run": None,
-                "branch": resolved_branch,
-                # dispatch 层据此识别「恢复续做」路径：在保留分支的 worktree 内
-                # resume（claude --resume + 继承注记），而非从零新建分支。
-                "_recovery_resume": True,
-                # WIP 等待标志复位（evo-add-wip-defer-merge-retry-consumer 1.2，
-                # 清除写点之一）：保留续做落 ready 后恢复 run 在飞期间，陈旧
-                # 标志会让周期消费者把半成品分支过早 merge 进主树、并与在飞
-                # run 收尾竞态。不变式「implementing + _wip_gate_deferred ⇒
-                # 无在飞实现 run」由 boot 复位写点 + implementing→ready 中央
-                # 清除（_apply_updates_entry 单点，封住 admin 处置复位/人工
-                # ready 重派的稳态绕行）+ 消费者扫描兜底清理共同保证——boot
-                # 复位 MUST 清标志。
-                "_wip_gate_deferred": False,
-                "_retry_count": 0,
-                "_merge_fp": None,
-                "_merge_streak": 0,
-                REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
-                "_redispatch_cause_fp": None,
-            },
-        )
+        updates: dict = {
+            "status": SpecStatus.READY,
+            "error": f"Recovered from interrupted state: implementing "
+            f"(resume preserved branch)",
+            "implementer_run": entry.get("implementer_run"),
+            "tester_run": None,
+            "branch": resolved_branch,
+            # dispatch 层据此识别「恢复续做」路径：在保留分支的 worktree 内
+            # resume（claude --resume + 继承注记），而非从零新建分支。
+            "_recovery_resume": True,
+            # WIP 等待标志复位（evo-add-wip-defer-merge-retry-consumer 1.2，
+            # 清除写点之一）：保留续做落 ready 后恢复 run 在飞期间，陈旧
+            # 标志会让周期消费者把半成品分支过早 merge 进主树、并与在飞
+            # run 收尾竞态。不变式「implementing + _wip_gate_deferred ⇒
+            # 无在飞实现 run」由 boot 复位写点 + implementing→ready 中央
+            # 清除（_apply_updates_entry 单点，封住 admin 处置复位/人工
+            # ready 重派的稳态绕行）+ 消费者扫描兜底清理共同保证——boot
+            # 复位 MUST 清标志。
+            "_wip_gate_deferred": False,
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+            REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
+            "_redispatch_cause_fp": None,
+        }
+        # 锚点回写（implementer_run/branch）在 .STATE.md.lock 锁内以最新条目
+        # 复核（与 freeze_spec code-fix d266d19c4860 / unfreeze_spec
+        # fenix-fix f5a17d596717 同一口径，code-fix b609ecf63750）：上方 entry
+        # 是 recover_interrupted 经 get_by_status 取的锁外快照，与本写之间隔着
+        # _resolve_preserved_branch 的 git 子进程（窗口可达秒级），期间
+        # dashboard/admin 等其他写者若已改写或清空锚点，快照旧值会在本写中
+        # 复活，续做判定拿到陈旧 run 锚。update_spec 的单条目写语义在此显式
+        # 展开（_mutate_locked + _apply_updates_entry + _log_update_applied）：
+        # 复核不一致则放弃本写并 WARNING 留痕，返回 False 回落调用方清空重建
+        # 路径（该路径只写常量、无快照锚点回写，不会复活陈旧值）。
+        applied: dict = {}
+        anchor_recheck: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(name) or {}
+            if (
+                fresh.get("branch") == entry.get("branch")
+                and fresh.get("implementer_run") == entry.get("implementer_run")
+            ):
+                found = self._apply_updates_entry(specs, name, updates, applied)
+            else:
+                anchor_recheck["snapshot"] = entry
+                anchor_recheck["fresh"] = fresh
+                found = False
+            return found, found
+
+        if not self._mutate_locked(_mutate):
+            if anchor_recheck:
+                _snap = anchor_recheck["snapshot"]
+                _fresh = anchor_recheck["fresh"]
+                self.logger.warning(
+                    "state_machine",
+                    f"Recovery preserve anchor recheck: spec '{name}' 的 "
+                    f"branch/implementer_run 锚点在保留判定后被并发改写（快照 "
+                    f"branch={_snap.get('branch')!r}/implementer_run="
+                    f"{_snap.get('implementer_run')!r}，最新 branch="
+                    f"{_fresh.get('branch')!r}/implementer_run="
+                    f"{_fresh.get('implementer_run')!r}）——放弃恢复续做回写，"
+                    f"回落清空重建路径，以最新条目为准",
+                )
+                return False
+            self.logger.warning("state_machine", f"SPEC not found: {name}")
+            return True
+        self._log_update_applied(name, applied)
         return True

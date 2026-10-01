@@ -1121,7 +1121,9 @@ class EventBus:
             if name == dep_name or not isinstance(entry, dict):
                 continue
             deps = entry.get("depends_on")
-            if not deps or deps == "null":
+            # "null" 字面量已在 StateParser.parse 归一为 None
+            # （code-review 56f1aefd2823），此处只需判空。
+            if not deps:
                 continue
             dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
             if dep_name in dep_names:
