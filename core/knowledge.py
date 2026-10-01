@@ -36,6 +36,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -215,6 +216,15 @@ def _git_ref_resolvable(proot: Path, ref: str) -> bool:
     return r.returncode == 0
 
 
+# validate_knowledge 内 git 子进程总预算（code-review 4263215a1773）：逐 ADR
+# _git_show 与逐 prehistoric 锚点 _git_ref_resolvable 都在 knowledge-distill
+# 持锁的 worker 线程内串行执行，git 存储挂起/钩子卡死时最坏 n×30s，同项目
+# 后续蒸馏批次全部在 flock 上排队。给整段设 120s 总预算：超时后对剩余
+# ADR/锚点降级跳过 git 检查，WARNING 留痕（不落入 violations——降级不是
+# 产出违规，落进去会让合法产出被误打回重写）。
+_VALIDATE_GIT_BUDGET_SECONDS = 120.0
+
+
 def validate_knowledge(project_root) -> list:
     """确定性校验 ``spec/knowledge/``（task 2.1）。
 
@@ -225,6 +235,10 @@ def validate_knowledge(project_root) -> list:
     proot = Path(project_root)
     kroot = proot / KNOWLEDGE_DIR
     violations: list = []
+    # git 检查总预算（code-review 4263215a1773）：覆盖 prehistoric ref 解析与
+    # ADR HEAD 比对两段，超时降级跳过、文末 WARNING 留痕
+    git_deadline = time.monotonic() + _VALIDATE_GIT_BUDGET_SECONDS
+    degraded_git = {"ref": 0, "diff": 0}
     if not kroot.is_dir():
         return violations
 
@@ -320,7 +334,9 @@ def validate_knowledge(project_root) -> list:
                             f"（应形如 git:<ref>-..<日期>）: {src}"
                         )
                         continue
-                    if not _git_ref_resolvable(proot, am.group(1)):
+                    if time.monotonic() >= git_deadline:
+                        degraded_git["ref"] += 1  # 预算耗尽：跳过 ref 解析（降级，文末 WARNING 留痕）
+                    elif not _git_ref_resolvable(proot, am.group(1)):
                         violations.append(
                             f"{label}: prehistoric 锚点起始 ref 不可解析: {src}"
                         )
@@ -412,10 +428,23 @@ def validate_knowledge(project_root) -> list:
             # 不可变性：tracked ADR 三段正文与 HEAD 逐字比对（accepted 与
             # superseded 同样不可改写；未跟踪/非 git/读 HEAD 失败跳过）
             rel_posix = (Path(KNOWLEDGE_DIR) / "adr" / adr.name).as_posix()
-            head_text = _git_show(proot, rel_posix)
-            if head_text is not None and _adr_body(head_text) != _adr_body(text):
-                violations.append(f"{label}: 已落盘 ADR 三段正文被改写（不可变契约）")
+            if time.monotonic() >= git_deadline:
+                degraded_git["diff"] += 1  # 预算耗尽：跳过 HEAD 比对（降级，文末 WARNING 留痕）
+            else:
+                head_text = _git_show(proot, rel_posix)
+                if head_text is not None and _adr_body(head_text) != _adr_body(text):
+                    violations.append(f"{label}: 已落盘 ADR 三段正文被改写（不可变契约）")
 
+    if degraded_git["ref"] or degraded_git["diff"]:
+        # 降级留痕：本轮校验结论未做全量 git 检查，日志显式标注降级口径
+        logger.warning(
+            "validate_knowledge git 检查总预算（%.0fs）耗尽，本轮结论降级："
+            "%d 个 prehistoric 锚点跳过起始 ref 解析、%d 个 ADR 跳过 HEAD "
+            "不可变性比对（下一轮校验补全）",
+            _VALIDATE_GIT_BUDGET_SECONDS,
+            degraded_git["ref"],
+            degraded_git["diff"],
+        )
     return violations
 
 
@@ -552,7 +581,10 @@ def _discard_output(proot: Path, before=None) -> bool:
     时同样保守跳过。
 
     Returns:
-        True = 已执行回滚清理；False = 保守跳过（含基线已有路径或基线不可用）。
+        True = 回滚清理已执行且残留复查确认干净；False = 保守跳过（基线已有
+        路径或基线不可用）或回滚未确认（restore/clean 失败、残留复查不可用、
+        复查仍有残留）。调用方须把 False 按「回滚未确认」口径落日志与台账，
+        不得当作已清理干净。
     """
     after = _git_status_paths(proot)
     if before is None or after is None:
@@ -571,7 +603,19 @@ def _discard_output(proot: Path, before=None) -> bool:
         )
         return False
     try:
-        _git(proot, ["restore", "--", KNOWLEDGE_DIR])
+        restore = _git(proot, ["restore", "--", KNOWLEDGE_DIR])
+        if restore.returncode != 0:
+            # code-review 37565545ea29：非零退出（index.lock 占用、路径规格
+            # 异常等）必须留痕。注意 pathspec 在索引零命中（产出全为新建
+            # 未跟踪文件、无可 restore 的 tracked 改动）时 restore 也退出
+            # 非零——这是良性态，是否「未确认」交由下方残留复查裁决，
+            # 不在此处直接判失败
+            logger.warning(
+                "knowledge-distill git restore 退出码 %d（stderr: %s），"
+                "tracked 改动回滚结果待残留复查确认",
+                restore.returncode,
+                (restore.stderr or "").strip()[-300:] or "（空）",
+            )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git restore 失败: %s", e)
     try:
@@ -579,19 +623,35 @@ def _discard_output(proot: Path, before=None) -> bool:
         # 域目录（spec/knowledge/domains/<新域>/ 等）乃至整个 spec/knowledge/
         # 会整体滞留工作区，滞留半成品会被下批 _commit_output 的全目录
         # git add 一并提交进知识库真相源
-        _git(proot, ["clean", "-fd", "--", KNOWLEDGE_DIR])
+        clean = _git(proot, ["clean", "-fd", "--", KNOWLEDGE_DIR])
+        if clean.returncode != 0:
+            logger.warning(
+                "knowledge-distill git clean 退出码 %d（stderr: %s），"
+                "未跟踪半成品清理结果待残留复查确认",
+                clean.returncode,
+                (clean.stderr or "").strip()[-300:] or "（空）",
+            )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill git clean 失败: %s", e)
     # 残留复查（code-review e2029f25ad5b）：restore/clean 未覆盖的路径（如被
     # ignore 的文件）滞留即告警留痕，不让「不留半成品」静默失约
     residue = _git_status_paths(proot)
-    left = sorted(p for p in (residue or ()) if p.startswith(KNOWLEDGE_DIR + "/"))
+    if residue is None:
+        # code-review 37565545ea29：复查不可用 ≠ 无残留，显式告警并按
+        # 「回滚未确认」上报，不留静默
+        logger.warning(
+            "knowledge-distill 放弃产出：回滚后残留复查不可用（git status 失败），"
+            "spec/knowledge/ 清理结果未确认，请人工核查"
+        )
+        return False
+    left = sorted(p for p in residue if p.startswith(KNOWLEDGE_DIR + "/"))
     if left:
         logger.warning(
             "knowledge-distill 放弃产出：回滚后 spec/knowledge/ 仍有残留半成品，"
             "请人工核查: %s",
             ", ".join(left),
         )
+        return False
     return True
 
 
@@ -918,17 +978,26 @@ class DistillManager:
     def _give_up(self, proot: Path, archived_names: list, reason: str, before=None) -> None:
         """放弃产出：清理半成品 + 登重试台账（``before`` = run 前基线快照）。"""
         discarded = _discard_output(proot, before)
-        _register_todo_retry(proot, archived_names, reason)
         if discarded:
+            _register_todo_retry(proot, archived_names, reason)
             logger.warning(
                 "knowledge-distill 放弃产出（%s）: %s；已清理 spec/knowledge/ 半成品并登重试台账",
                 ", ".join(archived_names),
                 reason,
             )
         else:
+            # code-review 37565545ea29：回滚未确认（保守跳过 / restore、clean
+            # 失败 / 残留复查不可用或仍有残留）时，台账 reason 同步带上该口径，
+            # 人工排查不会误以为工作区已清理干净
+            _register_todo_retry(
+                proot,
+                archived_names,
+                f"{reason}（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查）",
+            )
             logger.warning(
-                "knowledge-distill 放弃产出（%s）: %s；spec/knowledge/ 回滚已保守跳过"
-                "（详见前序告警），半成品滞留工作区请人工核查，已登重试台账",
+                "knowledge-distill 放弃产出（%s）: %s；spec/knowledge/ 回滚未确认"
+                "（保守跳过或 git 清理失败，详见前序告警），半成品滞留工作区"
+                "请人工核查，已登重试台账",
                 ", ".join(archived_names),
                 reason,
             )

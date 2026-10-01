@@ -194,13 +194,17 @@ class AdminStore:
         return True
 
     def _read_locked(self) -> list:
-        with self._lock() as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                records, _corrupt = self._read_unlocked(self.alerts_path)
-                return records
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+        # 读路径加锁口径与 read_archive / DisputeAuditStore.read_all 统一：
+        # _thread_lock（同进程跨线程串行）+ flock（跨进程互斥，每次经
+        # _lock() 新开 fd，同进程跨 fd 亦互斥）双锁，不留单 flock 特例
+        with self._thread_lock:
+            with self._lock() as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    records, _corrupt = self._read_unlocked(self.alerts_path)
+                    return records
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
 
     def _write_unlocked(self, records: list):
         """原子写（临时文件 + rename），调用方须已持有文件排他锁。"""
@@ -916,8 +920,8 @@ class DisputeAuditStore:
         # kind/created 为审计默认值，不接受入口覆盖：created 须反映实际落盘
         # 时刻（复用内存 dict 转写携带旧时间戳不得穿透审计语义）
         rec = dict(entry or {})
-        rec.setdefault("kind", "dispute-audit")
-        rec.setdefault("created", _utcnow_iso())
+        rec["kind"] = "dispute-audit"
+        rec["created"] = _utcnow_iso()
         try:
             self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:

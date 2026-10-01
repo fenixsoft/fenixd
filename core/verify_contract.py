@@ -740,9 +740,15 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     ready_error = ""
     ready_url = ""
     ready_expect = contract.ready.expect
-    if contract.serve is not None and prepare_ok:
-        # serve 段实际执行过——prepare 失败时整段跳过，serve_ran 保持 False，
-        # CLI 据此显示「未启动」而非「✓ 通过」（item 3d9623096956）
+    # serve_ok 守卫（code-review item f0bf566bda6e）：第 2 步已判 serve 段结构
+    # 非法（serve_ok=False，如 kind=static 缺 root / kind=command 缺 cmd）时
+    # 不进入 serve 段——否则 static 空 root 会把项目根本体（含 .fenix/）短暂
+    # 暴露在 127.0.0.1 HTTP 上，command 空 cmd 会 spawn 空 shell 命令；结构
+    # 非法的契约不执行任何 serve 动作。serve_ok=True 的既有路径行为不变。
+    if contract.serve is not None and prepare_ok and serve_ok:
+        # serve 段实际执行过——prepare 失败/serve 段结构非法时整段跳过，
+        # serve_ran 保持 False，CLI 据此显示「未启动」而非「✓ 通过」
+        # （item 3d9623096956）
         serve_ran = True
         base_url = ""
         try:
@@ -873,6 +879,14 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 try:
                     os.killpg(pgid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                # 收尸（code-review item 2c7a3051bb99，对齐 020ba8771283 收尸
+                # 纪律）：SIGKILL 补刀后补一次 wait 回收 leader 退出状态——
+                # stdout/stderr 走 DEVNULL 无管道可排空，wait 即可，不留
+                # zombie 窗口靠本短命进程退出兜底。
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
                     pass
 
     return ValidateResult(
@@ -1232,6 +1246,15 @@ class CommandVerifyServer:
         try:
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
+            pass
+        # 收尸（code-review item 2c7a3051bb99，对齐 run_prepare_steps /
+        # _run_npm_provision 的 020ba8771283 收尸纪律）：SIGKILL 补刀后被杀
+        # leader 仍须 wait 回收退出状态——本类 stdout/stderr 走 DEVNULL 无管道
+        # 可排空，补一次 wait(timeout=2) 即可，不留 zombie 窗口靠解释器 GC 与
+        # 下一次 Popen._cleanup 兜底；wait(5) 已回收时立即返回。
+        try:
+            self._proc.wait(timeout=2)
+        except Exception:
             pass
         # 进程退出后关闭 boot.log 句柄（design D3：Popen 持句柄、退出后关闭）
         if self._boot_log is not None:
@@ -1719,8 +1742,8 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
 
     Returns:
         改写处数；0 = 文件缺失/非场景数组/无候选目标（本无需改写；场景文件
-        存在但 JSON/UTF-8 解析失败同样返 0，但经 logger 记 WARNING 留痕，
-        code-review item 9f64a2a702bc）；
+        存在但 JSON/UTF-8 解析失败或读取失败（OSError）同样返 0，但经 logger
+        记 WARNING 留痕，code-review item 9f64a2a702bc/687c424565d9）；
         -1 = 已解析出候选目标但写盘失败——BASE_URL 铁律未落盘，与 0 可判别
         （code-review item 90ca963ad6e7：写失败与「本无需改写」同返 0 时，
         冻结场景集静默携带 planner 原地址且不可观测）。写失败经 logger 记
@@ -1745,7 +1768,16 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
                 f"UTF-8 JSON）: {scenarios_path}: {e}",
             )
         return 0
-    except OSError:
+    except OSError as e:
+        # 读取失败（权限不足/IsADirectoryError 等非 FileNotFoundError 的
+        # OSError）≠「本无需改写」（code-review item 687c424565d9）：与上方
+        # JSON/UTF-8 解析失败分支同口径记 WARNING 留痕后仍返 0，避免落入
+        # 「BASE_URL 改写未执行且不可观测」的静默形态。
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"场景文件读取失败（BASE_URL origin 改写跳过）: {scenarios_path}: {e}",
+            )
         return 0
     if not isinstance(raw, list) or not base_url:
         return 0

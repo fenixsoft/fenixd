@@ -2668,8 +2668,9 @@ class CodeFixOrchestrator:
                         f"code-fix 新链启动：{dropped} 条延迟批 worktree 已丢失，"
                         "清出台账（条目保持 open，可被重新选批）",
                     )
-            # 选批排除并集（D4 配套约束）：失败档案 ∪ chain_skipped ∪ 延迟台账
-            # item_ids——defer 条目在合回成功前始终是 open 且不在失败档案，不
+            # 选批排除并集（D4 配套约束）：chain_skipped ∪ 延迟台账 item_ids
+            # （失败档案并集由 select_batch 内部经 _failed_item_ids 并入，不在
+            # 本变量）——defer 条目在合回成功前始终是 open 且不在失败档案，不
             # 排除则下一边界 earliest-first 立即重选同批、重跑 agent。
             exclude_ids = set(chain_skipped) | _deferred_item_ids(root)
             batch = select_batch(
@@ -2690,13 +2691,27 @@ class CodeFixOrchestrator:
                     "blocked",
                 ):
                     # maxed 判定收窄到本轮实际参与排除的档案记录（code-review
-                    # item 4ac4bea334b2）：按全量档案统计会把已达上限但已离开
-                    # 排除集（人工置终态等）的条目也计成「需人工」，观测口径
-                    # 与真实排除原因失真；released 墓碑不参与排除，同口径跳过。
-                    # fail_count 解析类型容错（外部直改非数值按缺省 1）。
+                    # item 4ac4bea334b2 收窄语义保留 + item 643b6d778de3 修复
+                    # 不可达）：按「该档案条目在台账中仍为 open」判定而非与
+                    # exclude_ids 求交——各失败收尾路径入档都不写
+                    # chain_skipped/延迟台账（defer 降级入档时条目已移出台账），
+                    # 档案条目与 exclude_ids 求交恒为空集，旧判据下 maxed 恒
+                    # False、failed_batch_maxed 需人工态不可达。仍 open 的在档
+                    # 条目即真实参与本轮排除（select_batch 排除非 released 失败
+                    # 档案并集）；人工已置终态（resolved/in_spec/ignored）条目
+                    # 不计入，released 墓碑（重回可选池）同口径跳过；台账读失败
+                    # 按空集 fail-open（同 _open_ids_for_archive 先例）。fail_count
+                    # 解析类型容错（外部直改非数值按缺省 1）。
+                    try:
+                        ledger = read_items(root)
+                    except Exception:  # noqa: BLE001 — 台账读失败按空集（maxed 判 False）
+                        ledger = {}
                     maxed = any(
                         not rec.get("released")
-                        and bool({str(i) for i in rec.get("item_ids") or []} & exclude_ids)
+                        and any(
+                            (ledger.get(str(i)) or {}).get("status") == "open"
+                            for i in rec.get("item_ids") or []
+                        )
                         and _fail_count_int(rec.get("fail_count")) >= FAIL_RETRY_MAX
                         for rec in load_failed_batches(root)
                     )

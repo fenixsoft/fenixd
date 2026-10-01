@@ -3435,7 +3435,9 @@ class PMEngine:
             return True
 
         deps = spec.get("depends_on")
-        if not deps or deps == "null":
+        # "null" 字面量已在 StateParser.parse 归一为 None
+        # （code-review 56f1aefd2823），此处只需判空。
+        if not deps:
             return True
 
         # deps is a comma-separated list of SPEC names
@@ -3474,7 +3476,9 @@ class PMEngine:
         """
         spec = self.state_machine.read_one(spec_name) or {}
         deps = spec.get("depends_on")
-        if not deps or deps == "null":
+        # "null" 字面量已在 StateParser.parse 归一为 None
+        # （code-review 56f1aefd2823），此处只需判空。
+        if not deps:
             return False
         dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
         if not dep_names:

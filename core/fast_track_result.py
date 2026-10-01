@@ -3,7 +3,7 @@
 fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加验证段：
 
     {
-      "status": "success" | "error",
+      "status": "success" | "partial" | "error",
       "spec": "<spec>",
       "mode": "fast-track",
       "summary": "<brief summary>",
@@ -13,6 +13,9 @@ fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加�
         "bugs": [ ... ]
       }
     }
+
+    status 白名单权威源见 agents/fast-track.md（success/error/partial 三值），
+    其中 ``partial`` 为做不完时的未完成收工态。
 
 本模块定义：
   - schema 常量（键名单点定义，避免与 agents/fast-track.md / 硬校验器三处漂移）

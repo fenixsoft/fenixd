@@ -928,8 +928,22 @@ def run_audit(
             entry["updated_at"] = _today()
             _save_findings_ledger(project_root, ledger)
 
-        # 进入复核：升级轮次 +1（连续 N 轮无确定性判定即升级，N 见配置）
-        entry["review_rounds"] = int(entry.get("review_rounds") or 0) + 1
+        # 进入复核：升级轮次 +1（连续 N 轮无确定性判定即升级，N 见配置）。
+        # review_rounds 人工编辑/旧版本可能写坏为非数字：就地归零重计走正常
+        # 复核并 WARNING 留痕，不让单条损坏条目炸整轮 audit 车道（与
+        # _record_verdict 对 verdicts 的就地补齐同口径）。
+        raw_rounds = entry.get("review_rounds")
+        try:
+            prev_rounds = int(raw_rounds or 0)
+        except (TypeError, ValueError):
+            prev_rounds = 0
+            log.warning(
+                "knowledge",
+                f"audit 台账条目 review_rounds 类型损坏（{raw_rounds!r}），"
+                f"就地归零重计：{finding['kind']}"
+                f"（{pages[0]} × {pages[1]}）",
+            )
+        entry["review_rounds"] = prev_rounds + 1
 
         # 写段取蒸馏锁（同机械段）：每次转写迭代的 spawn→validate→提交/回滚
         # 整体与 DistillManager / run_backfill 串行（与 run_backfill 批次同款
@@ -959,8 +973,17 @@ def run_audit(
             before_violations = {str(v) for v in (validate(project_root) or [])}
             try:
                 spawn(prompt, run_id)
+                # 透传进锁后采集的违规基线（与 backfill 批次同款差集口径）：修正
+                # 反馈与最终否决只看本轮新引入的违规——真相源既有的报告类病灶
+                # （超 150 行硬顶页、marker 缺失等）不令转写 run 恒判失败空转、
+                # 误回滚有效重写并推高 review_rounds 误升级。
                 ok, violations = validate_with_repair(
-                    project_root, validate, spawn, prompt, run_id
+                    project_root,
+                    validate,
+                    spawn,
+                    prompt,
+                    run_id,
+                    before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
                 ok, violations = False, [f"转写 run 失败：{e}"]

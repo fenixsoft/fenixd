@@ -315,16 +315,7 @@ class EventBus:
                 # 每个扫描周期无视暂停标记强行 re-trigger（add-spec-status-
                 # modal-budget 实证每小时重验 9 轮）。暂停唯一出路是人工处置后
                 # 解冻/清计数，与「暂停自动重验」语义一致。
-                try:
-                    attempts = int(entry.get("_inconclusive_attempts", 0) or 0)
-                except (TypeError, ValueError):
-                    attempts = 0
-                if attempts > 0:
-                    self.logger.info(
-                        "event_bus",
-                        f"Skipping recovery for '{name}': inconclusive 暂停自动重验中"
-                        f"（_inconclusive_attempts={attempts}），等待人工处置",
-                    )
+                if self._inconclusive_paused(name, entry):
                     return True
                 self.logger.info("event_bus", f"Recovery: re-triggering verify for '{name}'")
                 self.pm_engine.handle_event("spec_implemented", name, entry)
@@ -384,23 +375,18 @@ class EventBus:
             )
         return False
 
-    def _recover_testing(self, name: str, entry: dict):
-        """testing 无驱动恢复出口（add-control-plane-silent-failure-guards 4.3）。
+    def _inconclusive_paused(self, name: str, entry: dict) -> bool:
+        """inconclusive 暂停自动重验守卫，两恢复出口单点共用（B6 语义）。
 
-        事故根因（proposal.md §Why）：spec 落入 testing 后 verifier 入队静默
-        丢失（handle_event 实参不符 TypeError），运行期无人驱动、只能等 daemon
-        重启回退 ready——testing 态在 recovery 分支中无任何出口。本方法补齐：
+        code-review item 363eadbaf5b4：``_recover_one`` implemented 分支与
+        ``_recover_testing`` 原各持一份逐字重复的「解析 ``_inconclusive_attempts``
+        + attempts>0 记 info 跳过」逻辑，下沉为本单点（与 ``_ready_hold_blocks``
+        先例同口径，防恢复行为漂移）。
 
-        - 复用 implemented 分支的防重入守卫：`_inconclusive_attempts
-          > 0`（暂停自动重验）跳过；`tester_run` 的重验风暴防护由无驱动判定的
-          「run 文件活跃度 + 存活子进程」检查吸收——verifier 在跑 = 该 spec
-          有近期写活动的 run 文件/存活子进程 → 非无驱动 → 跳过（等效于
-          implemented 分支「已有 tester run 即跳过」）。注意不可按 implemented
-          分支原样查 tester_run 硬挡：env 阻塞会写入 tester_run="blocked:app-
-          unreachable" 标记，硬挡会让事故形态（复位后 testing 无驱动）永不恢复。
-        - 无驱动判定与 admin_monitor._detect_orphaned_state 共用
-          `spec_is_undriven` 同一口径（R1 三条件 + 2026-09-18 补的条件 ④
-          「无排队中的派发条目」），防止双路径重复触发；pm_engine 注入见调用点。
+        解析容错（TypeError/ValueError → 0）；attempts>0 视为处于暂停期，记
+        info 级跳过日志并返回 True，调用方早退（implemented 分支 ``return
+        True`` 计入 handled，testing 出口直接 ``return``）。返回 True 表示
+        「须跳过自动重验」。
         """
         try:
             attempts = int(entry.get("_inconclusive_attempts", 0) or 0)
@@ -412,6 +398,29 @@ class EventBus:
                 f"Skipping recovery for '{name}': inconclusive 暂停自动重验中"
                 f"（_inconclusive_attempts={attempts}），等待人工处置",
             )
+            return True
+        return False
+
+    def _recover_testing(self, name: str, entry: dict):
+        """testing 无驱动恢复出口（add-control-plane-silent-failure-guards 4.3）。
+
+        事故根因（proposal.md §Why）：spec 落入 testing 后 verifier 入队静默
+        丢失（handle_event 实参不符 TypeError），运行期无人驱动、只能等 daemon
+        重启回退 ready——testing 态在 recovery 分支中无任何出口。本方法补齐：
+
+        - 复用 implemented 分支的防重入守卫（单点 ``_inconclusive_paused``）：
+          `_inconclusive_attempts > 0`（暂停自动重验）跳过；`tester_run` 的
+          重验风暴防护由无驱动判定的
+          「run 文件活跃度 + 存活子进程」检查吸收——verifier 在跑 = 该 spec
+          有近期写活动的 run 文件/存活子进程 → 非无驱动 → 跳过（等效于
+          implemented 分支「已有 tester run 即跳过」）。注意不可按 implemented
+          分支原样查 tester_run 硬挡：env 阻塞会写入 tester_run="blocked:app-
+          unreachable" 标记，硬挡会让事故形态（复位后 testing 无驱动）永不恢复。
+        - 无驱动判定与 admin_monitor._detect_orphaned_state 共用
+          `spec_is_undriven` 同一口径（R1 三条件 + 2026-09-18 补的条件 ④
+          「无排队中的派发条目」），防止双路径重复触发；pm_engine 注入见调用点。
+        """
+        if self._inconclusive_paused(name, entry):
             return
         project_root = getattr(self.pm_engine, "project_root", None)
         if project_root is None:
@@ -1112,7 +1121,9 @@ class EventBus:
             if name == dep_name or not isinstance(entry, dict):
                 continue
             deps = entry.get("depends_on")
-            if not deps or deps == "null":
+            # "null" 字面量已在 StateParser.parse 归一为 None
+            # （code-review 56f1aefd2823），此处只需判空。
+            if not deps:
                 continue
             dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
             if dep_name in dep_names:

@@ -56,6 +56,11 @@ REVIEW_OUT_PREFIX = "self_review_out-"
 # D-1..D-3 的条目，更早的历史日期节保留不动。模块常量而非配置键。
 CLEANUP_WINDOW_DAYS = 3
 
+# git 提交回看窗口（collect_daily_summary 第 5 节标题与 _collect_recent_commits
+# 缺省窗口共用）：与 todo.md 闭环移除窗口（CLEANUP_WINDOW_DAYS）是两个独立
+# 概念，独立常量避免调整其一时联动漂移。模块常量而非配置键。
+COMMIT_LOOKBACK_DAYS = 3
+
 # todo.md 结构标题正则：## YYYY-MM-DD 日期节 / ### 小节。
 _TODO_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
 _TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
@@ -1183,7 +1188,7 @@ class SelfReviewScheduler:
         # 成立——否则确定性异常会随巡检轮（分钟级）全天循环完整触发。
         today = local_today_str()
         try:
-            return self._execute_review(today, now, sr, window_start)
+            return self._execute_review(today, sr, window_start)
         except Exception as e:
             self._record_failure_alert(f"{today}: 自省执行意外异常: {e}")
             self._save_state(today)
@@ -1194,7 +1199,7 @@ class SelfReviewScheduler:
                 "date": today,
             }
 
-    def _execute_review(self, today: str, now: datetime, sr: dict, window_start: datetime) -> dict:
+    def _execute_review(self, today: str, sr: dict, window_start: datetime) -> dict:
         """执行一次自省：聚合窗口数据 → 发起 run → 追加 todo.md → 提交。"""
         if self.agent_runner is None:
             self._record_failure_alert(f"{today}: agent_runner 不可用（未装配），无法执行自省")
@@ -1396,8 +1401,8 @@ class SelfReviewScheduler:
             lines.append("- （窗口内无 ERROR）")
         lines.append("")
 
-        # 5. 近 3 日 git 提交（闭环判定硬证据：问题是否已有对应修复落地）
-        lines.append("## 5. 近 3 日 git 提交")
+        # 5. 近 COMMIT_LOOKBACK_DAYS 日 git 提交（闭环判定硬证据：问题是否已有对应修复落地）
+        lines.append(f"## 5. 近 {COMMIT_LOOKBACK_DAYS} 日 git 提交")
         lines.extend(self._collect_recent_commits())
         lines.append("")
 
@@ -1522,9 +1527,13 @@ class SelfReviewScheduler:
             for r in records
             if _in_window(_iso_to_aware_dt(r.get("created")), window_start, window_end)
         ]
-        signals = [r for r in window_records if r.get("kind") == "signal"]
-        escalations = [r for r in window_records if r.get("kind") == "escalation"]
-        dispositions = [r for r in window_records if r.get("kind") == "disposition"]
+        # kind 比对复用 admin_store 常量（延迟导入，与写侧 _record_failure_alert
+        # 同款），避免常量值变更时读侧过滤静默失配。
+        from .admin_store import DISPOSITION, ESCALATION, SIGNAL  # noqa: PLC0415
+
+        signals = [r for r in window_records if r.get("kind") == SIGNAL]
+        escalations = [r for r in window_records if r.get("kind") == ESCALATION]
+        dispositions = [r for r in window_records if r.get("kind") == DISPOSITION]
         unhandled = [r for r in escalations if not r.get("handled")]
         if _is_fixture_project(self.project_root):
             # 夹具项目（alert-noise-governance 4.1）：未处理计数不含夹具告警
@@ -1561,7 +1570,7 @@ class SelfReviewScheduler:
         return lines
 
     def _collect_recent_commits(
-        self, days: int = CLEANUP_WINDOW_DAYS, limit: int = 100
+        self, days: int = COMMIT_LOOKBACK_DAYS, limit: int = 100
     ) -> List[str]:
         """近 N 日 git 提交清单（hash + 本地时间 + 标题），闭环判定的硬证据源。
 
