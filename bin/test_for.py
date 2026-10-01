@@ -245,6 +245,27 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
         return None, True
 
 
+def _build_pytest_cmd(extra: List[str]) -> List[str]:
+    """构造有界 pytest 命令（run_tests 与 main --all 两路共用，单源化防漂移）。"""
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-v",
+        "-o",
+        f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
+    ] + extra
+
+
+def _print_timeout_hint() -> None:
+    """打印硬超时中止提示（run_tests 与 main --all 两路共用，单源化防漂移）。"""
+    print(
+        f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
+        f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
+        f"挂起定位请改用: python3 bin/run_full_suite.py"
+    )
+
+
 def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
     """Run the specified test files.
 
@@ -264,25 +285,14 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
         return True
 
     # Run pytest with selected test files (bounded, 同 run_full_suite 约定)
-    cmd = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-v",
-        "-o",
-        f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
-    ] + test_files
+    cmd = _build_pytest_cmd(test_files)
     print(f"Running: {' '.join(cmd)}")
 
     returncode, timed_out = run_bounded(
         cmd, Path(__file__).resolve().parent.parent, timeout=SUBPROCESS_TIMEOUT_SECONDS
     )
     if timed_out:
-        print(
-            f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
-            f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
-            f"挂起定位请改用: python3 bin/run_full_suite.py"
-        )
+        _print_timeout_hint()
         return False
     return returncode == 0
 
@@ -320,15 +330,7 @@ def main():
                 file=sys.stderr,
             )
         # 有界运行同 run_tests（同款常量）：faulthandler 先打印挂起栈，硬超时兜底中止
-        cmd = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-v",
-            "-o",
-            f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
-            str(tests_dir),
-        ]
+        cmd = _build_pytest_cmd([str(tests_dir)])
         if dry_run:
             # --dry-run 与 --all 组合：对齐 run_tests 的 dry-run 语义，
             # 仅列出将执行的完整命令，不实际起 pytest（避免 3600s 硬超时内的真实副作用）
@@ -339,11 +341,7 @@ def main():
             cmd, project_root, timeout=SUBPROCESS_TIMEOUT_SECONDS
         )
         if timed_out:
-            print(
-                f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
-                f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
-                f"挂起定位请改用: python3 bin/run_full_suite.py"
-            )
+            _print_timeout_hint()
             sys.exit(1)
         sys.exit(returncode)
 
