@@ -511,11 +511,29 @@ def _log_to_stderr(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _positive_int(value):
+    """--timeout 取值校验（code-review item 084b705344b2）：仅接受正整数。
+
+    0/负数传入 run_command 后 communicate(timeout<=0) 立即抛 TimeoutExpired，
+    套件一个用例未跑即被整组 SIGKILL 并误归为「挂起」。与
+    fenix_dashboard._port_type 同口径：argparse 校验失败自动以退出码 2 报参数错误。
+    """
+    try:
+        timeout = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"无效超时秒数: {value!r}")
+    if timeout < 1:
+        raise argparse.ArgumentTypeError(
+            f"超时秒数 {timeout} 必须为正整数（0/负数会瞬时超时误报挂起）"
+        )
+    return timeout
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="有界全量套件入口（fix-run-hang-amplification）")
     parser.add_argument(
         "--timeout",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"硬超时秒数（默认 {DEFAULT_TIMEOUT_SECONDS}）",
     )
