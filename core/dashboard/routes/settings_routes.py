@@ -292,13 +292,10 @@ class H5SettingsRoutesMixin:
         body = self._read_json_body()
         if body is None:
             return
-        name = query.get("project", [None])[0]
-        if not name:
-            self._error(400, "缺少 project 参数（项目附加提示词必须挂到具体项目）")
-            return
-        project = self.server.project_by_name(name)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        # 项目解析收敛共用助手 _project_query_or_error（code-review item
+        # cdeb53ab76fd）：缺参 400、未知/不存在 404 单源同修
+        project = self._project_query_or_error(query, "项目附加提示词")
+        if project is None:
             return
         agent_type = body.get("agent_type")
         if not isinstance(agent_type, str) or agent_type not in AGENT_PROMPT_FILES:

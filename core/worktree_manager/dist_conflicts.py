@@ -827,8 +827,8 @@ class G5DistConflictsMixin:
         "path is unmerged"，因此用 ``-f`` 强制从 HEAD 还原——stash 应用内容与
         冲突合并态一并丢弃，工作区与 index 统一回到 HEAD 侧版本（不存在被
         「保留」的 merge 结果，丢弃面即 conflict_files 上的全部本地改动，调用点
-        告警须明示）。随后 ``git reset`` 兜底清空 index 中任何残留的 staged 冲突
-        条目，使主树回到干净可写状态。
+        告警须明示）。随后 ``git reset``（pathspec 限定冲突文件）兜底清空 index
+        中残留的冲突条目，使主树回到干净可写状态。
         """
         for f in conflict_files:
             try:
@@ -854,10 +854,27 @@ class G5DistConflictsMixin:
                         f"checkout -f HEAD -- {f} failed during stash-pop "
                         f"self-heal: {(res.stderr or '').strip()[:200]}",
                     )
-        # 清空 index 残留的 staged 冲突条目（mixed reset，不动工作区）
+        # 清空 index 残留的 staged 冲突条目（mixed reset，不动工作区）。
+        # pathspec 限定 reset 范围（code-review item d2a5c64158c4，与
+        # _rebuild_dist_after_merge 的 8bb77946bb6b/75e4515b7204 先例同口径）：
+        # 不带 pathspec 的裸 reset 作用域是整个 index，会把主树中与本轮
+        # stash-pop/merge 冲突无关的既有暂存（用户手工暂存、ensure_clean_tree
+        # stash 失败降级残留等）一并 unstage，静默打散用户暂存集——unmerged
+        # 条目对指定路径 reset 到 HEAD 即可清除冲突态，无需全树 reset。
+        if not conflict_files:
+            # 调用点保证非空；防御空表时退化为无 pathspec 的全树 reset
+            return
         try:
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "reset"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "reset",
+                    "-q",
+                    "--",
+                    *conflict_files,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,

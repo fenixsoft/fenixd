@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Button, Card, Menu, Select, Space, Typography, message } from 'antd';
+import { App, Button, Card, Menu, Select, Space, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
@@ -69,6 +69,10 @@ function decodeScopeValue(value: string): { scope: 'user' | 'project'; project?:
 }
 
 export default function SettingsPage() {
+  // 页面级提示（项目列表/配置加载、保存结果、自进化收集等）经 App.useApp()
+  // 取上下文实例（code-review item ceed3c01bf6e）：静态 message 不经过
+  // App/ConfigProvider 上下文，与本页各设置面板统一口径
+  const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [activeKey, setActiveKey] = useState('llm');
   const [scope, setScope] = useState<'user' | 'project'>('user');
@@ -98,7 +102,10 @@ export default function SettingsPage() {
   // 原子拦住连点，state 只负责按钮视觉反馈。
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
-  // 质量页签「手工编辑」→「项目简介」页签聚焦信号（时间戳；0=无待处理信号）
+  // 质量页签「手工编辑」→「项目简介」页签聚焦信号（时间戳；0=无待处理信号；
+  // 面板聚焦落地后经 onConsumed 回调复位——用后不复位会在面板卸载重挂载
+  // （切走再切回页签/切项目重建）时拿旧时间戳重触发聚焦，code-review item
+  // ff9fbfa71d51）
   const [verifyFocusSignal, setVerifyFocusSignal] = useState(0);
 
   // 加载项目列表
@@ -486,6 +493,7 @@ export default function SettingsPage() {
                     onSave={handleSave}
                     project={project}
                     focusVerifySignal={verifyFocusSignal}
+                    onConsumed={() => setVerifyFocusSignal(0)}
                   />
                 )}
               </>

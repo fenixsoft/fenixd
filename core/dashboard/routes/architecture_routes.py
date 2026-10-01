@@ -58,6 +58,14 @@ logger = logging.getLogger("fenixd.dashboard.routes.architecture_routes")
 _EXPLORE_TIMEOUT_SECONDS = 720
 _AUTHOR_TIMEOUT_SECONDS = 1080
 
+# 击杀后排干上限（秒）：SIGKILL 进程组后直连子进程应立即退出、管道随即
+# EOF；若孙进程曾重新 setsid 逃出进程组并继承 stdout/stderr 管道句柄，EOF
+# 永不到来——无上限的 communicate() 会把生成线程永久卡在 _run_stage 内，
+# 单飞锁不释放、该项目后续 refresh 全 409（reap_all docstring 承认的
+# knowledge.py 同款已知形态，code-review item 4ac76808cb18）。超时即放弃
+# 排干（对齐 reap_all 口径：管道回收交进程退出）。
+_REAP_DRAIN_TIMEOUT_SECONDS = 10
+
 # 生成完成 marker 协议（autodraft marker 范式）：阶段2 stdout 末行
 # ``ARCHIFY_DONE <组件数>``。
 ARCHIFY_MARKER_PREFIX = "ARCHIFY_DONE"
@@ -640,8 +648,10 @@ class ArchitectureManager:
                 except Exception:  # noqa: BLE001
                     pass
             try:
-                proc.communicate()  # 回收已杀进程、排干管道
-            except Exception:  # noqa: BLE001
+                # 短上限排干（_REAP_DRAIN_TIMEOUT_SECONDS）：超时说明有孙进程
+                # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）
+                proc.communicate(timeout=_REAP_DRAIN_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 — 含 TimeoutExpired（放弃排干）
                 pass
             if logger is not None:
                 logger.warning(
@@ -670,8 +680,10 @@ class ArchitectureManager:
                 except Exception:  # noqa: BLE001
                     pass
             try:
-                proc.communicate()  # 回收已杀进程、排干管道
-            except Exception:  # noqa: BLE001
+                # 短上限排干（_REAP_DRAIN_TIMEOUT_SECONDS）：超时说明有孙进程
+                # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）
+                proc.communicate(timeout=_REAP_DRAIN_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 — 含 TimeoutExpired（放弃排干）
                 pass
             if logger is not None:
                 logger.warning(

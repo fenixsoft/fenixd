@@ -404,7 +404,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 错误码由后端 _coded_error 下发、ApiError.code 承载。
       if (e instanceof ApiError && e.code === 'regression_already_running') {
         message.warning('已有回归在进行中');
-        void loadResult();
+        // 同 7a7ce4f87987：经 ref 取最新闭包，POST 往返期间切换项目后旧闭包
+        // 后发先至，seq 守卫拦不住——刷新目标跟随当前 active/project
+        void loadResultRef.current();
       } else if (e instanceof ApiError && e.code === 'regression_not_configured') {
         message.warning('该项目未配置全量回归（verify.yaml regression 段）');
       } else {

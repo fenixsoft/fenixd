@@ -169,13 +169,28 @@ class G4MergebackMixin:
 
             # ── spec 目录在飞编辑卫检查（evo-merge-back-spec-dir-inflight-guard D1）──
             # 闸门顺序（task 0.1 固化）：_rehearse_merge_from_branch →
-            # _wip_overlap_gate → 本卫检查 → ensure_clean_tree。三者均为主树
-            # 零污染早退，顺序不改变各自判定结果，但 MUST 固化以防把「需 repair 的
+            # _wip_overlap_gate → 本卫检查 → ensure_clean_tree。预演闸与本卫检查
+            # 为主树零污染早退；_wip_overlap_gate 的 D3b 段会把产物重叠对齐 HEAD
+            # （写主树——丢弃的只是可由 src 重建的产物投影，见其方法注释），顺序
+            # 不改变各自判定结果，但 MUST 固化以防把「需 repair 的
             # 冲突」误报为「等待提交」。复用 _spec_from_branch（queries.py:43）从
             # 分支名解析 spec；解析失败（非 fenix/<spec>-<ts> 形态）→ 返回 None
             # 放行（fail-open，MUST NOT 退化为对 spec/changes/ 全目录检测）。
             inflight_info = self._check_spec_dir_inflight(branch)
             if inflight_info is not None:
+                # 留痕补记（code-review item a4946a98680a，与 escalate 拦截路径
+                # e9a558db29e6 同款）：本卫检查排在 _wip_overlap_gate 之后，命中
+                # 早退时本轮 D3b 产物对齐可能已写主树（本地未提交产物改动已被
+                # 丢弃）而 merge 并未发生——人工排查「早退后产物为何变了」须有
+                # 线索可循。
+                if self._wip_gate_aligned_artifacts:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"spec 目录在飞早退前，WIP 重叠闸门已按 D3b 把 "
+                        f"{len(self._wip_gate_aligned_artifacts)} 个产物重叠文件对齐 "
+                        f"HEAD（本地未提交产物改动已丢弃，merge 未发生；顺延解除后"
+                        f"由 src 重建找回）：{self._wip_gate_aligned_artifacts}",
+                    )
                 return inflight_info
 
             stashed = self.ensure_clean_tree(
@@ -316,6 +331,12 @@ class G4MergebackMixin:
         把重叠集合中判定为产物的子集对齐 HEAD（使其变干净、不进 stash、pop 无
         产物冲突）——从源头消除「产物 → stash → pop 冲突 → 误报 major 告警」链路。
         """
+        # 本轮 D3b 已对齐 HEAD 的产物清单（code-review item a4946a98680a）：先
+        # 置空、产物对齐完成后再赋真实值，不残留上一轮 merge-back 的值；调用方
+        # 在后续 spec 目录在飞卫检查早退时据此补记「对齐已写主树、merge 未发生」
+        # 的留痕（escalate 拦截文案在本方法内直读局部 aligned_ok，早退路径只能
+        # 经实例属性传递）。
+        self._wip_gate_aligned_artifacts: list = []
         # 产物配置未裁决兜底信号（fix-artifact-paths-hardcoded-default D3）：
         # MUST 置于「无重叠早退」之前——主树干净是常态，若在早退之后判定，最
         # 常见形态永不触发起草，配置缺口被静默掩盖（本 SPEC 要消灭的「默认值
@@ -391,6 +412,10 @@ class G4MergebackMixin:
                     f"WIP overlap D3b: aligned {len(aligned_ok)} artifact(s) to "
                     f"HEAD before stash — {aligned_ok}",
                 )
+            # 本轮已对齐清单同步到实例属性（item a4946a98680a）：escalate 拦截
+            # 文案在本方法内直读局部 aligned_ok；后续 spec 目录在飞卫检查早退
+            # 在调用方，只能经属性取得本清单补记留痕。
+            self._wip_gate_aligned_artifacts = list(aligned_ok)
             # 对齐失败的路径**逐路径**回落：并入 semantic_overlap——即退回
             # 现行行为（照旧 stash、照旧可能 pop 冲突与告警）。
             # **fail-safe 方向 = 与现行行为一致**：MUST NOT 因对齐失败而阻塞
@@ -1240,7 +1265,17 @@ class G4MergebackMixin:
                     f"main tree may still be in a conflicted state",
                 )
             if backup is not None:
-                self._restore_backup(backup)
+                # 回移失败不掩盖原始超时归因（code-review item 53854b7ae021，与
+                # 末尾通用 except 分支同口径）：超时失败路径与其余失败路径一致
+                # 收敛为 MergeConflictInfo，滞留备份目录仅 WARNING 留痕交人工。
+                try:
+                    self._restore_backup(backup)
+                except Exception as restore_err:  # noqa: BLE001 — 回移失败不掩盖超时归因
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 超时后回移备份失败，用户文件滞留备份目录"
+                        f"待人工处理：backup='{backup}'：{restore_err}",
+                    )
             # 错误文案反映真正超时的命令与时限（code-review item 50597755297c）：
             # try 块内 merge-base/rev-parse/备份采集等子命令各带 timeout=30，只有
             # merge 本体是 120——硬编码 "git merge ... 120s" 会把前置阶段超时误

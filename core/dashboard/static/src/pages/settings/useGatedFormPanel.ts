@@ -6,7 +6,7 @@
 // （重入守卫一度 savingRef 与仅 state 两种形态并存）。收敛为单个 hook 后，
 // 各面板只保留字段映射（buildValues / buildPayload）与校验规则（表单 rules +
 // checkValues），流程语义与各面板原实现逐点等价。
-import { message } from 'antd';
+import { App } from 'antd';
 import type { FormInstance } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
@@ -48,6 +48,11 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
     onValidateError,
     onBackfill,
   } = options;
+  // 保存失败/校验失败 toast 经 App.useApp() 取上下文实例（code-review item
+  // 4afc8dbb7bd0）：静态 message 不经过 App/ConfigProvider 上下文（antd v5
+  // 会提示 Static function can not consume context），与 index 页壳及其余
+  // 设置面板统一口径
+  const { message } = App.useApp();
   // 保存重入守卫（各面板原 8ccf20511320 / 53b14fb31196 / fe84991f84a0 /
   // bbc939741560 / d0faa2345d54 / 66e48a34144b 同族条目）：onSave 是异步，
   // 提交期间连点会发出重叠的 saveConfig 请求（并发写同一配置文件，落盘结果

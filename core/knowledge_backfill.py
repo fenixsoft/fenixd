@@ -1400,17 +1400,18 @@ def run_backfill(
                     ledger.mark(CAPABILITY_PREFIX + cap, STATUS_DISTILLED, batch=i)
                 ok_batches.append(i)
             else:
-                # 回滚会把此前提交失败批次仍在盘上的有效产出一并清掉：先把这些
-                # 条目打回 pending（重入重做），否则内容被丢弃而台账仍标
-                # distilled——真相源永久丢失且台账宣称已完成
+                # 差集回滚只清本批新增脏路径：前批提交失败仍在盘上的产出落在
+                # 基线内会被保留并告警（不连带清除），但内容尚未落库——台账打回
+                # pending 待重入对账重做，不让台账宣称未落库内容已完成
                 stale = sorted(uncommitted_keys)
                 for key in stale:
                     ledger.reset_pending(key)
                 if stale:
                     append_todo_line(
                         project_root,
-                        f"回填批次 {i}/{total} 回滚连带清除了此前提交失败批次的在盘"
-                        f"产出，相关条目已打回 pending 待重入重做："
+                        f"回填批次 {i}/{total} 回滚保留在盘产出（差集回滚只清本批"
+                        f"新增脏路径），此前提交失败批次产出未落库，相关条目"
+                        f"已打回 pending 待重入对账重做："
                         f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
                     )
                 uncommitted_keys.clear()
@@ -1485,15 +1486,17 @@ def run_backfill(
                     ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
                 adr_ok += 1
             else:
-                # 回滚前把仍未落库的有效产出打回 pending（同能力批次循环口径）
+                # 回滚前把仍未落库的有效产出打回 pending（差集回滚保留在盘产出，
+                # 同能力批次循环口径）
                 stale = sorted(uncommitted_keys)
                 for key in stale:
                     ledger.reset_pending(key)
                 if stale:
                     append_todo_line(
                         project_root,
-                        f"回填 ADR 批次 {i}/{adr_total} 回滚连带清除了此前提交失败"
-                        f"批次的在盘产出，相关条目已打回 pending 待重入重做："
+                        f"回填 ADR 批次 {i}/{adr_total} 回滚保留在盘产出（差集回滚"
+                        f"只清本批新增脏路径），此前提交失败批次产出未落库，相关条目"
+                        f"已打回 pending 待重入对账重做："
                         f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
                     )
                 uncommitted_keys.clear()

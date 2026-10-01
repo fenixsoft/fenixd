@@ -23,11 +23,17 @@ interface ProjectProfilePanelProps {
   /** 聚焦信号（时间戳）：质量页签「手工编辑」跳转过来时 >0，滚动定位到
    *  verify.yaml 卡片并聚焦编辑框；常规切页签传 0 不触发 */
   focusVerifySignal?: number;
+  /** 聚焦信号消费回调：聚焦落地（或面板提前卸载）后由父级把信号复位为 0。
+   *  用后不复位会在面板卸载重挂载时拿旧时间戳重触发聚焦（code-review item
+   *  ff9fbfa71d51） */
+  onConsumed?: () => void;
 }
 
-export default function ProjectProfilePanel({ config, onSave, project, focusVerifySignal }: ProjectProfilePanelProps) {
-  // 经 App.useApp() 取 message 实例（code-review item 1432cb8853fe）：与其余
-  // 设置面板口径一致，静态 message 不经过 App/ConfigProvider 上下文
+export default function ProjectProfilePanel({ config, onSave, project, focusVerifySignal, onConsumed }: ProjectProfilePanelProps) {
+  // 经 App.useApp() 取 message 实例（code-review item 1432cb8853fe）：设置页
+  // 主链路（index 页壳与 useGatedFormPanel 各面板）现已统一此口径（code-review
+  // item 4afc8dbb7bd0 / ceed3c01bf6e），静态 message 不经过 App/ConfigProvider
+  // 上下文
   const { message } = App.useApp();
   const [description, setDescription] = useState(config.description || '');
   const [loading, setLoading] = useState(false);
@@ -75,10 +81,19 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     //（config 仍是上一项目）用旧值抢跑回填，补 description 则每次键入都重跑
   }, [config]);
 
+  // onConsumed 的 ref 镜像：聚焦 effect 的依赖只保留信号本身，父级内联
+  // 箭头每渲染换新身份也不会重跑聚焦
+  const onConsumedRef = useRef(onConsumed);
+  onConsumedRef.current = onConsumed;
+
   // 聚焦信号到达：滚到 verify.yaml 卡片并把光标送入编辑框（延迟等待页签
   // 切换后本面板真正挂载渲染完成）
   useEffect(() => {
     if (!focusVerifySignal) return;
+    // 信号一次性消费（code-review item ff9fbfa71d51）：复位必须安排在聚焦
+    // 落地之后——父级提前置 0 会令本 effect 因依赖变更走清理路径、取消尚未
+    // 执行的聚焦定时器；消费置于聚焦定时器回调与卸载清理两处
+    const consume = () => onConsumedRef.current?.();
     verifySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     const t = setTimeout(() => {
       const el = yamlTextareaRef.current;
@@ -91,8 +106,14 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           /* setSelectionRange 对特定 type 可能抛错，聚焦已达成即可 */
         }
       }
+      consume();
     }, 300);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      // 提前卸载（含 300ms 内切走页签）同样消费：信号已不可能再被本实例
+      // 消费，复位后重挂载不会重放聚焦
+      consume();
+    };
   }, [focusVerifySignal]);
 
   const handleSave = async () => {

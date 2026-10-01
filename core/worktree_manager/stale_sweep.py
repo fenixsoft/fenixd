@@ -36,10 +36,13 @@ class G7StaleSweepMixin:
         self._reclaim_expired_legacy()
         if not self.base_dir.exists():
             return
-        # 在册遗产 worktree 名集合（宽限期内豁免）；实时监控避免与 _reclaim 竞争。
-        # 迭代前物化快照（code-review item 19fc3ac92552）：register_legacy /
-        # consume_legacy / keep_for_reuse 可在本清扫期间并发增删 _legacy，
-        # 直接迭代 values() 会触发 "dictionary changed size during iteration"。
+        # 在册遗产 worktree 名集合（宽限期内豁免）。循环前一次性物化快照
+        # （code-review item 19fc3ac92552）：register_legacy / consume_legacy /
+        # keep_for_reuse 可在本清扫期间并发增删 _legacy，直接迭代 values() 会
+        # 触发 "dictionary changed size during iteration"。已知窗口：快照非实时
+        # （并非「实时监控」），清扫期间新登记的遗产目录不在集合内、仍会被本轮
+        # 扫掉——后果温和（consume 侧 is_available 判无效回落全新 create，分支
+        # 侧另有 _branch_protected_by_state 保护），不在循环内逐目录复核。
         legacy_names = {
             rec.get("worktree_name") for rec in list(self._legacy.values())
         }
