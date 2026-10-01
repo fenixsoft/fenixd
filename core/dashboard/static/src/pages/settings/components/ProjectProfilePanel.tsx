@@ -34,6 +34,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 简介保存重入守卫：保存请求在飞期间置位，按钮 loading/disabled 阻止连点
   // 并发发多个写同一配置文件的保存请求（对齐 verify.yaml 保存的 yamlSaving 口径）
   const [saving, setSaving] = useState(false);
+  // 简介保存/重新生成的同帧重入锁（code-review item d6fe81eb894e）：
+  // setSaving/setLoading 渲染生效存在 React 调度间隙（实证 100ms 内双击穿透，
+  // 见下方 autodraftInFlight 注释），useRef 写读同帧原子补上该窗口；
+  // saving/loading state 仅作按钮视觉反馈
+  const saveInFlight = useRef(false);
+  const regenerateInFlight = useRef(false);
   // 「手工编辑」跳转定位：ref 指向本实例渲染的卡片/编辑框（不用
   // querySelector——设置页切作用域曾出现双 DOM 实例并存，选择器会命中隐藏实例）
   const verifySectionRef = useRef<HTMLDivElement>(null);
@@ -90,11 +96,14 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   }, [focusVerifySignal]);
 
   const handleSave = async () => {
-    if (saving) return; // 重入守卫：保存请求在飞期间连点直接短路，不发并发保存请求
+    if (saving) return; // 渲染生效后的连点短路（视觉反馈层，非重入守卫）
+    if (saveInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
+    saveInFlight.current = true;
     // 草稿归属守卫（code-review item 30aaaac87fce）：比照 yaml 侧
     // yamlDraftSourceRef 口径——切项目的 config 加载往返窗口内草稿仍是上一个
     // 项目的简介，此时以当前项目名写盘会覆盖新项目的既有简介——拒绝并提示。
     if (descriptionSourceRef.current.project !== project) {
+      saveInFlight.current = false; // 未进入在飞段，就地释放锁
       message.warning('项目简介尚未随当前项目加载完成（或已切换项目），请稍候再保存');
       return;
     }
@@ -115,6 +124,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to save description:', error);
     } finally {
       setSaving(false);
+      saveInFlight.current = false;
     }
   };
 
@@ -123,7 +133,8 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       message.error('项目名称缺失，无法重新生成');
       return;
     }
-
+    if (regenerateInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
+    regenerateInFlight.current = true;
     setLoading(true);
     try {
       const result = await regenerateProjectDescription(project);
@@ -153,6 +164,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to regenerate description:', error);
     } finally {
       setLoading(false);
+      regenerateInFlight.current = false;
     }
   };
 
@@ -170,6 +182,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // loading 渲染生效存在 React 调度间隙（实证 100ms 内双击穿透），useRef 写读同帧
   // 原子、无渲染依赖，在途期间重复触发直接 return 不发网络请求。
   const autodraftInFlight = useRef(false);
+  // verify.yaml 保存的同帧重入锁（code-review item d6fe81eb894e）：与
+  // autodraftInFlight 同口径，yamlSaving 穿透后果是并发发两个 saveVerifyYaml
+  // 写同一文件，落盘结果取决于到达顺序
+  const yamlSavingInFlight = useRef(false);
   // 过期响应守卫：每次发起加载自增序号，响应回来时序号已不是最新（期间切换了
   // 项目或发起了新加载）则丢弃——防止慢响应乱序把旧项目的契约内容写进当前
   // 项目草稿，进而被「保存 verify.yaml」以当前项目名写盘造成跨项目覆盖。
@@ -267,10 +283,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   const handleYamlSave = async () => {
     if (!project) return;
+    if (yamlSavingInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
+    yamlSavingInFlight.current = true;
     // 过期草稿守卫：加载未完成或草稿仍属于上一个项目（切项目的加载往返
     // 窗口内残留）时，以当前项目名写盘会覆盖既有契约——放弃保存并提示。
     const src = yamlDraftSourceRef.current;
     if (!src || src.project !== project || src.seq !== yamlLoadSeq.current) {
+      yamlSavingInFlight.current = false; // 未进入在飞段，就地释放锁
       message.warning('verify.yaml 内容尚未加载完成（或已切换项目），请重新加载后再保存');
       return;
     }
@@ -294,6 +313,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to save verify.yaml:', e);
     } finally {
       setYamlSaving(false);
+      yamlSavingInFlight.current = false;
     }
   };
 
