@@ -121,9 +121,12 @@ class CliRunner(VerifyRunner):
         """执行单个 run 步骤（subprocess，进程组会话隔离）。"""
         cmd = step_dict.get("command")
         if not cmd:
+            # 缺 command 属场景定义缺陷：判 error 与 cwd/env/stdin/timeout
+            # 兜底同口径，不进 product-bug 管道（item 74368415e965）
             return {
                 "success": False,
                 "action": "run",
+                "error_level": "error",
                 "error": "run 步骤缺少 command",
             }
         use_shell = not isinstance(cmd, list)

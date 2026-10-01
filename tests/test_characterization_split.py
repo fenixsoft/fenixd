@@ -269,7 +269,17 @@ class TestDependenciesSatisfiedCharacterization(unittest.TestCase):
         self.assertTrue(self.engine._dependencies_satisfied("a"))
 
     def test_null_string_deps_is_satisfied(self):
-        self.sm.read_one.return_value = {"name": "a", "depends_on": "null"}
+        # 「null」字面量已在 StateParser.parse 归一为 None（code-review
+        # 56f1aefd2823 可空字段登记表），引擎侧只判空——字面串不可能抵达
+        # _dependencies_satisfied。经真实 StateMachine 落盘往返复现引擎实际
+        # 读到的形态：add_spec 缺省 depends_on=None → serialize 写 null →
+        # parse 归一回 None。
+        from core.state_machine import StateMachine
+
+        sm = StateMachine(Path(self.tmpdir) / "STATE.md", MagicMock())
+        sm.add_spec("a", {"priority": 5})
+        self.sm.read_one.side_effect = sm.read_one
+        self.assertIsNone(sm.read_one("a").get("depends_on"))
         self.assertTrue(self.engine._dependencies_satisfied("a"))
 
     def test_missing_dependency_blocks(self):

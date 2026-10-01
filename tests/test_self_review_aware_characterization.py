@@ -168,9 +168,8 @@ class TestSchedulerTriggerCharacterization:
         fixed_local = now_naive_local.astimezone()
         captured = {}
 
-        def fake_execute(today, now, sr, window_start):
+        def fake_execute(today, sr, window_start):
             captured["today"] = today
-            captured["now"] = now
             captured["window_start"] = window_start
             return {"triggered": True, "ok": True}
 
@@ -226,10 +225,9 @@ class TestSchedulerTriggerCharacterization:
         assert captured["window_start"].timestamp() == datetime(
             2026, 9, 13, 8, 0, 0
         ).timestamp()
-        # now = 固定瞬时（本地 23:30）
-        assert captured["now"].timestamp() == datetime(
-            2026, 9, 13, 23, 30, 0
-        ).timestamp()
+        # now 不再传入 _execute_review（现签名 today, sr, window_start）：
+        # 触发判定用的固定瞬时由 now_utc/now_local 替身钉住（见
+        # test_before_run_at_not_triggered 的边界对偶）。
 
     def test_before_run_at_not_triggered(self, tmp_path):
         """本地 22:59（=14:59Z）< run_at 23:00（=15:00Z）→ 不触发。

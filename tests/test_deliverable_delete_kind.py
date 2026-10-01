@@ -366,8 +366,12 @@ class TestAntiWhitewashDelete(unittest.TestCase):
         ])
         outcome = self.engine._dispatcher._preclassify_missing("s1", result, missing)
         self.assertEqual(outcome["action"], "continue")
-        # delete 条目保留在 remaining（未被软化进 deterministic）
-        self.assertIn("core/old.py", outcome["remaining"])
+        # delete 条目保留在 remaining（未被软化进 deterministic）；remaining 为
+        # 守卫复检新鲜清单（dict 形态，与其余三个预分类器口径一致）
+        self.assertIn(
+            {"path": "core/old.py", "kind": "delete", "violation": "undeleted"},
+            outcome["remaining"],
+        )
         # 声明段未被改写（delete 条目原样保留）
         text = (self.spec_dir / "tasks.md").read_text(encoding="utf-8")
         self.assertIn("core/old.py\n  kind: delete", text)

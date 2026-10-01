@@ -24,6 +24,7 @@ visual_diff.py — 截图视觉对比
     suspicious + admin 告警；重建交人工确认（不自动覆盖/删除）。
 """
 
+import asyncio
 import json
 import os
 import re
@@ -242,7 +243,8 @@ class VisualDiffer:
         # 事故链教训：白屏被固化为基线，干净截图反而被判差异）。后续轮次
         # 截图干净时正常建立，不扩大失败。
         if not baseline_path.exists():
-            labels = classify_screenshot(str(current_path))
+            # 线程池执行：classify_screenshot 为同步 CPU 密集解码+统计，避免卡死事件循环
+            labels = await asyncio.to_thread(classify_screenshot, str(current_path))
             has_pollution = labels.get("blank_screenshot") or labels.get("low_contrast")
             if has_pollution:
                 return [
@@ -307,7 +309,8 @@ class VisualDiffer:
         # [fenix-ignore:7cf3ba96236e] 问题已由提交 9362f29b 修复：_compare_once
         # 内层已有 (OSError, ValueError) 解码异常兜底，返回与 size_mismatch/
         # skipped 同型的 status='error' 结构化结果，首次调用与重拍循环均覆盖。
-        results = _compare_once()
+        # 线程池执行：SSIM/像素 diff 为同步 CPU 密集计算（全图 float64），避免卡死事件循环
+        results = await asyncio.to_thread(_compare_once)
         best = results[0]
 
         # ── SSIM 低分自动重拍（fix-visual-baseline-settle D2）──
@@ -331,7 +334,7 @@ class VisualDiffer:
             retake_diff = screenshots_dir / f"{scenario_id}_diff_r{retake_no}.png"
             await page.screenshot(path=str(retake_shot), full_page=False)
             retake_count += 1
-            cand = _compare_once(retake_shot, retake_diff)[0]
+            cand = (await asyncio.to_thread(_compare_once, retake_shot, retake_diff))[0]
             # 跨标尺防护（code-review e91595028247）：SSIM 分与像素降级折算分
             # （1-差异比）语义不同，极端情况下首轮 SSIM、重拍轮 skimage 失效
             # 降级像素时直接比较无意义；方案标识不一致时维持 best 不择优。

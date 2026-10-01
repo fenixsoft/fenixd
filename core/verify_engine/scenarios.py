@@ -544,7 +544,10 @@ ACTIONS_REQUIRING_TARGET = {
 #   mode:    判空语义（4.3 锁定既有校验细节，行为零变化）：
 #              "post" = 缺失/空串/None 均非法（`not v`）；
 #              "include_zero" = 仅缺失/空串/None 非法，0 类零值合法
-#                （`v in ("", None)`，如 status_code 的 expected=0 是合法码）。
+#                （`v in ("", None)`，如 status_code 的 expected=0 是合法码）；
+#              "none_only" = 仅 None（「未设置」哨兵）非法，空串/0 类零值
+#                合法（`v is None`，如 json_path 的 expected="" 是合法
+#                exact 期望）。
 #
 ASSERTION_REQUIRED_FIELDS: dict = {
     # ── cli 断言 ──
@@ -645,14 +648,16 @@ ASSERTION_REQUIRED_FIELDS: dict = {
         },
         # expected 必填（code-review item 2cab94c9b2df）：缺 expected 的场景
         # 须在验收期与其他 api 断言同口径打回，而非耗一轮验证执行后靠运行期
-        # fail-closed 才暴露。mode 用 include_zero——exact 比对下 0/False 是
-        # 合法期望（如 data.code=0），不能按 post 误杀
+        # fail-closed 才暴露。mode 用 none_only——exact 比对下空串（如
+        # 「detail 为空串」，与 Assertion.expected 哨兵及执行侧拦截口径一致）
+        # 与 0/False（如 data.code=0）都是合法期望，仅拒 None 哨兵
+        # （code-review item a77baf1044ff）
         {
             "key": "expected",
             "short": "expected",
             "help": "",
             "example": '"data.items.0 的期望值"',
-            "mode": "include_zero",
+            "mode": "none_only",
         },
     ),
     "response_header": (
@@ -766,6 +771,11 @@ ACTION_REQUIRED_FIELDS: dict = {
 
 def _field_missing(value, mode: str) -> bool:
     """必填字段判空语义（单源表锁定，4.3 等价性回归逐字段对齐）。"""
+    if mode == "none_only":
+        # 仅拒 None（「未设置」哨兵）：空串是 json_path expected 的合法
+        # exact 期望（执行侧 _assert_json_path 对 exact 空串放行、仅拦
+        # contains/regex 空串，见 api_assertions 同名分支）
+        return value is None
     if mode == "include_zero":
         return value in ("", None)
     return not value
@@ -1377,12 +1387,16 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
         errors.append("场景ID不能为空")
     # depends_on 列表类型验收（code-review item 301443cb108c）：非列表形态
     # （str/dict）会被逐字符/逐键迭代，原样放行要拖到 engine 编排期才暴露。
-    if scenario.depends_on is not None and not isinstance(scenario.depends_on, list):
+    # None 不豁免（code-review item d47577e9058f）：数据类缺省与 from_dict
+    # 读端均归一空列表，None 只能来自直构实例显式置空——engine 验收门对非
+    # list 一律跳过（其注释假定本函数已报「必须为场景ID列表」），None 漏报
+    # 会放行到 _execute_parallel 迭代 None 抛 TypeError 穿出 run()。
+    if not isinstance(scenario.depends_on, list):
         errors.append(
             f"场景'{scenario.id}': depends_on 必须为场景ID列表，"
             f"收到 {type(scenario.depends_on).__name__}"
         )
-    elif isinstance(scenario.depends_on, list):
+    else:
         # depends_on 条目形态验收（code-review item 10bc32b28d05）：条目为
         # dict/list 等 unhashable 形态（冻结文件被手工修坏）时，engine 悬空
         # 依赖检查的 dep in seen_ids 对 set 求成员先抛 TypeError，穿出 run()
@@ -1394,6 +1408,12 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
                     f"场景'{scenario.id}': depends_on[{i}] 必须为场景ID字符串，"
                     f"收到 {type(dep).__name__}"
                 )
+    # steps 为 None 的直构守卫（code-review item d47577e9058f）：数据类缺省
+    # 与 from_dict 读端均归一空列表，None 只能来自直构实例——下方 per-kind
+    # 词表校验的 enumerate(scenario.steps) 会对 None 抛 TypeError 穿出 run()
+    # 验收门，此处补字段级报错，走「场景验收失败」出口落报告。
+    if scenario.steps is None:
+        errors.append(f"场景'{scenario.id}': steps 必须为步骤列表，收到 None")
     # kind 形态守卫（code-review item c74c42575c7c）：kind 为 dict/list 等不
     # 可哈希形态（冻结文件被手工修坏）时，对 set 求成员先抛 TypeError，被
     # 外层包成不含场景 id 的「解析失败」，拿不到「未知 kind」字段级定位。

@@ -191,7 +191,7 @@ class ImplBudget:
         reason: str,
         run_reason: str | None = None,
         run_id: str = "",
-    ) -> None:
+    ) -> str:
         """死亡 run 豁免：回退本次启动的计数增量 + 侧车递增 + 审计日志。
 
         fix-budget-counting-semantics D1：run 异常死亡（进程消失/零输出/
@@ -227,6 +227,14 @@ class ImplBudget:
                         关键词检查；None/空时按旧语义豁免。
             run_id: 本次死亡 run 的 id（幂等退款锚点；空串回退 STATE
                     ``implementer_run``）。
+
+        Returns:
+            豁免结果指纹（code-review item 963d40154301）：``"applied"`` 豁免
+            实际生效（退款 + 侧车递增完成）；``"refused"`` run_reason 未过
+            ``_is_exemptable_reason`` 被拒；``"idempotent_skip"`` 该死亡 run
+            已退款（幂等跳过）；``"failed"`` 记账段异常降级（容错不抛穿）。
+            三条未生效路径原为静默 return、调用方 except 判不出，现以返回值
+            区分，供调用方审计标记（budget_exempt_audit）按实际生效口径落盘。
         """
         if run_reason and not self._is_exemptable_reason(run_reason):
             # 监督超时/被判停滞而杀：不豁免，保持计数
@@ -235,7 +243,7 @@ class ImplBudget:
                 f"预算豁免被拒（非基础设施性死亡）: '{spec_name}' reason={reason}, "
                 f"run_reason={run_reason[:80] if run_reason else ''}",
             )
-            return
+            return "refused"
         # 容错（item 3b6448c3a22b）：记账失败记 WARNING 返回、不抛穿（姿态与
         # _exempt_infra_run_budget 同，理由见 docstring「容错」段）。
         try:
@@ -250,7 +258,7 @@ class ImplBudget:
                     "pm_engine",
                     f"死亡 run 预算豁免幂等跳过 '{spec_name}' run={anchor}（该 run 已退款）",
                 )
-                return
+                return "idempotent_skip"
             exempt = self._pm.state_machine.bump_budget_exempt_runs(spec_name)
             self._pm.logger.warning(
                 "pm_engine",
@@ -260,11 +268,13 @@ class ImplBudget:
             )
             if exempt >= self._budget_exempt_alert_threshold():
                 self._alert_budget_exempt_loop(spec_name, exempt)
+            return "applied"
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"死亡 run 预算豁免异常跳过 '{spec_name}'（不阻断主流程）: {e}",
             )
+            return "failed"
 
     def _exempt_infra_run_budget(self, spec_name: str, reason: str, refund_key: str = "") -> bool:
         """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。

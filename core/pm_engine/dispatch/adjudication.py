@@ -870,7 +870,6 @@ class VAdjudicationMixin:
         diff_by_element: dict = {}
         soft_failed: list = []
         for m in deterministic[:]:  # copy以便异常时移除
-            entry = entry_by_path[m]
             from core.deliverables import soften_declared_kind
 
             ok, detail, diff = self._apply_declaration_correction(
@@ -967,8 +966,10 @@ class VAdjudicationMixin:
                 f"预分类缺件全清 '{spec_name}' — 守卫重跑通过，放行 merge",
             )
 
-        # 仍有剩余 → remaining 带入 judge
-        return {"action": "continue", "remaining": remaining}
+        # 仍有剩余 → 以守卫复检权威清单带入 judge（对齐 _preclassify_stale/
+        # _orphan/_drift 的复检返回范式，code-review item 9842183003df：
+        # 预分类时点推导的旧 remaining 不反映软化后守卫现状）
+        return {"action": "continue", "remaining": gate_result}
 
     # ── 孤儿声明机械预分类（deliverable-dispute-orphan-preclassify）────────
 
@@ -1942,6 +1943,42 @@ class VAdjudicationMixin:
         remaining = preclassify_result.get("remaining", missing)
         # 将 remaining 规范化为路径列表（兼容 list[str] 与 list[dict]）
         remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
+        # 空缺件早退（code-review item af1bab4a33c7）：预分类后剩余缺件为空清单
+        # （上游守卫复检异常返回空 remaining / 调用方直入空 missing）MUST NOT 置
+        # blocked 空「缺件 []」误导文案并派空输入 judge run（白烧一次 LLM 终审）
+        # ——重跑守卫对账：全清走放行分支；仍有缺件以复检权威清单续走终审；
+        # 对账异常不得盲放行（防洗白），按真实归因置 blocked 转人工。
+        if not remaining_paths:
+            try:
+                gate_recheck = self._pm._deliverable_gate_missing(spec_name, result)
+            except Exception as e:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "blocked",
+                        "tester_run": None,
+                        "error": (
+                            "交付物守卫缺件对账异常（预分类后剩余清单为空）— "
+                            f"已 blocked 待人工裁决: {type(e).__name__}: {e}"
+                        ),
+                    },
+                )
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"空剩余缺件守卫对账异常 '{spec_name}'（等价 unclear 转人工）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return {"action": "handled"}
+            if not gate_recheck:
+                return self._all_clear_proceed(
+                    spec_name,
+                    f"预分类后剩余缺件为空 '{spec_name}' — 守卫对账通过，放行 merge",
+                )
+            # 复检仍有缺件 → 以守卫权威清单续走终审（不空派 judge）
+            remaining = gate_recheck
+            remaining_paths = [
+                r["path"] if isinstance(r, dict) else str(r) for r in remaining
+            ]
         # kind 映射：供 judge 输入携带 kind（4.5）及 delete 防洗白（4.3）。
         # 经统一解析入口取生效声明条目（add-declaration-relocation-protocol
         # D1，与守卫同源），缺省 "new"（正则回退路径无 kind 概念）。

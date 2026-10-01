@@ -600,7 +600,24 @@ class VerifyEngine:
             if runner is None:
                 continue
             sub = [c for c in candidates if c.get("kind", "web") == kind]
-            per_kind[kind] = await runner.probe_env(sub)
+            # 探针异常兜底（code-review item f76556b99512）：VerifyRunner 契约
+            # 仅以 docstring 约定 probe_env「返回不抛」，新增 Runner 或既有实现
+            # 回归一旦抛错会穿出 run()——run() 对 _post_classify_environment 的
+            # 包裹只有 finally 没有 except，整轮已执行结果既不落 report.json 也
+            # 不写进度。按 probe_env 的保守语义降级：判健康 + WARNING 留痕，
+            # 不让探针异常击穿已完成的执行结果。
+            try:
+                per_kind[kind] = await runner.probe_env(sub)
+            except Exception as e:
+                self.logger.warning(
+                    "verify_engine",
+                    f"环境探针 kind '{kind}' 抛异常，按保守口径判健康继续: "
+                    f"{type(e).__name__}: {e}",
+                )
+                per_kind[kind] = {
+                    "healthy": True,
+                    "detail": f"探针异常（{type(e).__name__}），保守判健康",
+                }
         if not per_kind:
             return await self._fallback_environment_probe(candidates)
         # 汇总：overall 取各 kind 探针的合取（任一失联即整轮判失联的保守

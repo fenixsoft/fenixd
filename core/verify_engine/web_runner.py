@@ -200,8 +200,8 @@ class WebRunner(VerifyRunner):
         """
         try:
             context = await self.browser.new_context()
-            page = await context.new_page()
             try:
+                page = await context.new_page()
                 nav_ok = await self.browser.navigate_to_app(page)
                 if not nav_ok:
                     try:
@@ -418,8 +418,8 @@ async def _probe_web_push(browser) -> bool:
     复用 browser.navigate_to_app + wait_selector，与场景执行同一浏览器实例。
     """
     context = await browser.new_context()
-    page = await context.new_page()
     try:
+        page = await context.new_page()
         nav_ok = await browser.navigate_to_app(page)
         if not nav_ok:
             return False

@@ -967,8 +967,11 @@ class TestImplResultSnapshot(unittest.TestCase):
         self.sm.read_one.return_value = {"status": "implementing",
                                          "implementer_run": "impl-demo-1-a1"}
         result = SimpleNamespace(
-            success=True, error=None, run_id="impl-demo-1-a1", branch=None,
-            worktree_dirty=[], cancelled=False,
+            # branch 非空（真实 success 路径分支名由 runner 从 worktree 取得；
+            # branch=None 的「跳过合并伪推进」形态已被 item e45c71cbcd2c 守卫
+            # 按契约判失败重派，不再写快照收口）
+            success=True, error=None, run_id="impl-demo-1-a1",
+            branch="fenix/demo-1", worktree_dirty=[], cancelled=False,
         )
         # 零变更哨 / 交付物守卫返回无缺口，merge-back 成功
         self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
