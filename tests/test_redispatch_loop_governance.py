@@ -133,7 +133,11 @@ class TestConvergenceContract(_RunAgentBase):
         entry = self._run_impl(
             {"status": "partial", "spec": self.spec,
              "completed_tasks": ["1.1", "1.2"],
-             "unattainable": UNATTAINABLE_73}
+             "unattainable": UNATTAINABLE_73},
+            # branch 非空（真实 success 路径的分支名由 runner 从 worktree 取得）；
+            # branch=None 旧会经「跳过合并伪推进」缺陷收口，已被
+            # item e45c71cbcd2c 守卫按契约判失败重派。
+            branch="fenix/demo-1",
         )
         assert entry["status"] == "implemented", entry
         assert entry.get("error") is None, entry
@@ -148,7 +152,8 @@ class TestConvergenceContract(_RunAgentBase):
         self._run_impl(
             {"status": "partial", "spec": self.spec,
              "completed_tasks": ["1.1", "1.2"],
-             "unattainable": UNATTAINABLE_73}
+             "unattainable": UNATTAINABLE_73},
+            branch="fenix/demo-1",
         )
         # 任何形式的 implementer 重派（_enqueue / _enqueue_front）均不得发生
         for call in self.engine._dispatcher._enqueue.call_args_list:
@@ -193,7 +198,8 @@ class TestAntiReadSourceFallback(_RunAgentBase):
         entry = self._run_impl(
             {"status": "partial", "spec": self.spec,
              "completed_tasks": ["1.1", "1.2"],
-             "unattainable": UNATTAINABLE_73}
+             "unattainable": UNATTAINABLE_73},
+            branch="fenix/demo-1",
         )
         assert entry["status"] == "implemented", entry
         assert int(entry.get("_retry_count", 0) or 0) == 0
