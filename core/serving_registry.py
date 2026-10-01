@@ -176,14 +176,26 @@ class ServingRegistry:
             return False
 
     def entries(self) -> list:
-        """当前全部登记项（只读快照）。"""
-        with self._thread_lock:
-            with self._lock() as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
-                try:
-                    return self._read_unlocked(self.path)
-                finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+        """当前全部登记项（只读快照）。
+
+        锁获取（mkdir/open）与 flock 的 OSError 同 register/remove 口径降级
+        warning 并返回空列表：登记制是兜底增强，读失败仅损失收割效率，
+        不制造新失败——sweep 被启动清扫直接消费，entries() 不可让 .fenix
+        目录异常穿透中断 daemon 启动。finally unlock 仍保证异常路径不漏锁
+        （flock(LOCK_EX) 未成功时无锁可放，`with self._lock()` 关闭句柄兜底）。
+        """
+        try:
+            with self._thread_lock:
+                with self._lock() as lf:
+                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    try:
+                        return self._read_unlocked(self.path)
+                    finally:
+                        fcntl.flock(lf, fcntl.LOCK_UN)
+        except OSError:
+            if self.logger:
+                self.logger.warning("serving_registry", f"登记读取失败（非阻塞）: {self.path}")
+            return []
 
 
 # ── 进程存活与收割助手（/proc liveness）──────────────────────────────
