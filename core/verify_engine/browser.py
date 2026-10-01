@@ -20,6 +20,7 @@ import asyncio
 import http.server
 import inspect
 import json
+import math
 import os
 import re
 import socketserver
@@ -838,16 +839,19 @@ class BrowserManager:
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（应为毫秒数）: {value!r}",
                     }
-                # 负值毫秒数显式失败（code-review item 6057e90f3fa3）：
-                # wait_for_timeout 对负值立即返回，场景声明的等待被静默丢弃，
-                # 断言时点比场景意图提前、失败归因偏向时序而非配置错误——
-                # 与 mock_status/drag 配置脏值的结构化失败同口径
-                if timeout_ms < 0:
+                # 负值/inf/nan 毫秒数显式失败（code-review item 6057e90f3fa3；
+                # inf/nan 补拦 09fcf01028c6）：wait_for_timeout 对负值立即返回，
+                # 场景声明的等待被静默丢弃，断言时点比场景意图提前、失败归因
+                # 偏向时序而非配置错误——与 mock_status/drag 配置脏值的结构化
+                # 失败同口径。inf/nan（float("inf")/"nan"/"1e999" 的解析产物）
+                # 与任何数比较恒为 False，只拦负值拦不住，脏值流入 Playwright
+                # 协议层后落顶层 except 归因退化为 unknown，同样按配置错误拦截
+                if timeout_ms < 0 or not math.isfinite(timeout_ms):
                     return {
                         "success": False,
                         "action": action,
                         "error_type": "invalid_wait_value",
-                        "error": f"wait 值非法（毫秒数不能为负）: {value!r}",
+                        "error": f"wait 值非法（毫秒数不能为负且必须有限）: {value!r}",
                     }
                 # 纯计时器不抛 timeout 类异常（code-review item 2d93bf93df4e）：
                 # 此前的 try/except 实际不可达，且真触发时（页面/浏览器关闭等
@@ -1002,6 +1006,12 @@ class BrowserManager:
                     # value 为 "dx,dy" 像素位移（默认 0,300），经鼠标滚轮触发真实 scroll 事件
                     try:
                         dx, dy = (float(x) for x in (value or "0,300").split(","))
+                        # inf/nan 脏值同款拦截（code-review item 09fcf01028c6）：
+                        # 比较恒为 False 绕过数值校验直达 mouse.wheel，失败落
+                        # 顶层 except 归因退化为 unknown——并入下方既有
+                        # invalid_scroll_value 结构化失败口径
+                        if not (math.isfinite(dx) and math.isfinite(dy)):
+                            raise ValueError
                     except ValueError:
                         # 不静默回退默认位移（code-review item 34ae9c4badaa）：
                         # 与 wait 的 invalid_wait_value / mock_api 的
