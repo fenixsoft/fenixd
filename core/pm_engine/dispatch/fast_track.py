@@ -1167,7 +1167,13 @@ class FFastTrackMixin:
         # 2. 记录升级原因
         bugs_summary = (
             "; ".join(
-                b.get("description", "")[:80]
+                # 防 TypeError（code-review item 58abca526f2e）：bugs 条目是半受信
+                # agent 输出，上游 parse 只校验 bugs 是 list，不保证 description
+                # 是 str（{"description": null} 形态 None[:80] 抛 TypeError）。
+                # 调用点在 merge 成功推进 implemented 之后，异常沿 flow→worker
+                # 外层 except 转 _rollback_failed_dispatch，会把正常 bug-found
+                # 升级误成对已合并 spec 的回滚重派。
+                str(b.get("description") or "")[:80]
                 for b in (verification.get("bugs") or [])
                 if isinstance(b, dict)
             )
@@ -1263,16 +1269,31 @@ class FFastTrackMixin:
             # final_error（既有行为）——固定人文案永不命中 _is_exemptable_reason
             # 的监督击杀关键词，会让监督击杀的 run 被误豁免（预算回退）。
             exempt_reason = run_reason if run_reason is not None else final_error
-            self._pm._exempt_dead_run_budget(
-                spec_name,
-                f"fast-track no run-result (error={str(final_error)[:80]})",
-                # （code-review item 867125061b61）对齐 full 车道（queue.py 死亡
-                # run 豁免）：run_reason 传入豁免判据——监督超时/被判停滞而杀
-                # （extension budget exhausted / stagnant）不豁免（确实消耗了整份
-                # 预算）；缺此实参此类 run 被错误豁免（预算回退），同一次监督击杀
-                # 两条车道预算记账口径不一致，被击杀 run 可无限重派烧预算。
-                run_reason=str(exempt_reason) if exempt_reason else None,
-            )
+            # 隔离（code-review item efeb8db73d75，与 full 车道 queue.py 同站点
+            # 同款）：豁免是**尽力而为的记账**（写状态文件，锁/IO 可能失败），若
+            # 它自己抛异常，整个 failure handler 中断、异常沿 _run_fast_track_flow
+            # → _run_fast_track_worker 外层 except 转 _rollback_failed_dispatch，
+            # 下方 provider 熔断 / [provider-transient] / 模型链不可用 / 重试计数
+            # 四段终态分类全部被跳过。故必须独立 try/except，豁免失败仅 WARNING、
+            # 按未生效继续走失败分类链。
+            try:
+                self._pm._exempt_dead_run_budget(
+                    spec_name,
+                    f"fast-track no run-result (error={str(final_error)[:80]})",
+                    # （code-review item 867125061b61）对齐 full 车道（queue.py 死亡
+                    # run 豁免）：run_reason 传入豁免判据——监督超时/被判停滞而杀
+                    # （extension budget exhausted / stagnant）不豁免（确实消耗了整份
+                    # 预算）；缺此实参此类 run 被错误豁免（预算回退），同一次监督击杀
+                    # 两条车道预算记账口径不一致，被击杀 run 可无限重派烧预算。
+                    run_reason=str(exempt_reason) if exempt_reason else None,
+                )
+            except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞失败分类
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"budget exempt failed for '{spec_name}'（按未豁免"
+                    f"继续失败分类）: {type(exempt_exc).__name__}: "
+                    f"{exempt_exc}",
+                )
         # ── MUST 同步（code-review item 0caca76e37b1）──────────────────
         # 本方法以下四段「终态错误分类→处置动作」（provider 熔断
         # "provider circuit open" 保持原状 / [provider-transient] 延迟重派 /
@@ -1412,13 +1433,48 @@ class FFastTrackMixin:
             "_zero_change_attempts": attempts,
         }
         if attempts >= 3:
-            updates["status"] = "blocked"
-            # 与 full 车道零变更哨 twin 分支（queue.py）对齐：blocked 终态清掉
-            # 旧 tester_run 指针，避免跨模式复用/此前走过完整模式验证的 spec
-            # 残留与本轮无关的历史验证 run 引用（code-review item 14a6755b9728）。
-            updates["tester_run"] = None
-            updates["error"] = "fast-track 连续 3 次零变更报成功 — blocked，需人工检查"
-        self._pm.state_machine.update_spec(spec_name, updates)
+            # 同型收敛（code-review item 44d5bfbf87a6，与 full 车道零变更哨 twin
+            # 分支 queue.py 同款）：连续失败交人工收敛到 freeze_for_human 单一
+            # 入口（frozen + 人工升级告警成对写入）。原裸 status=blocked 既无
+            # frozen 标记也无成对告警，admin_monitor 的 blocked_stuck 豁免判据
+            # 一条不占，冷却期满会被按 stuck 自动召唤 admin run，形成与 full
+            # 车道分裂的两套处置机制。error 内嵌「原状态 X」供 parse_orig_status
+            # 解冻还原；blocked 终态清旧 tester_run 指针沿用
+            # （code-review item 14a6755b9728）。
+            orig_status = spec_entry.get("status") or "implementing"
+            self._pm.state_machine.freeze_for_human(
+                spec_name,
+                error=(
+                    f"原状态 {orig_status} · fast-track 连续 {attempts} 次"
+                    f"零变更报成功 — 已冻结转人工，需人工检查"
+                ),
+                signal_type="redispatch_loop_detected",
+                severity="major",
+                description=(
+                    f"'{spec_name}' fast-track 连续 {attempts} 次零变更报成功"
+                    f"（疑似空转），自动重派终止——已冻结转人工处置"
+                ),
+                evidence=(
+                    f"spec={spec_name}; zero_change_attempts={attempts}; "
+                    f"run={getattr(result, 'run_id', '') or ''}"
+                ),
+                recommended_action=(
+                    "检查任务书/上下文/网关稳定性；处置后解冻"
+                    "（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
+                ),
+                alert_callback=self._pm._send_human_escalation_alert,
+                extra_updates={
+                    "_zero_change_attempts": attempts,
+                    "tester_run": None,
+                },
+            )
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track 零变更哨超限 '{spec_name}'（第 {attempts} 次）— "
+                f"冻结转人工，不再重派",
+            )
+        else:
+            self._pm.state_machine.update_spec(spec_name, updates)
         if attempts < 3:
             self._enqueue_front(spec_name, "fast-track")
 
