@@ -35,7 +35,7 @@ def read_evolution_items(project_root, project_filter=None) -> list:
     """
     from core.evolution import (
         read_items,
-        draft_dir,
+        _safe_draft_dir,
         resolve_accepted_spec_dir,
     )
 
@@ -47,7 +47,13 @@ def read_evolution_items(project_root, project_filter=None) -> list:
         if project_filter and rec.get("project") != project_filter:
             continue
         eid = rec.get("id")
-        has_draft = bool(eid) and draft_dir(project_root, str(eid)).is_dir()
+        # 与 read_evolution_draft 同防线：eid 取自可手工编辑的 items.jsonl，
+        # 须经 _safe_draft_dir 校验（分隔符/``..``/resolve 越界全查），非法
+        # id 一律视为无草稿——否则 ``../../x`` 类 id 可把「任意目录是否存在」
+        # 经 has_draft/doc_source 布尔位泄露给端点
+        # （code-review item 5550e5e65275）。
+        d = _safe_draft_dir(project_root, str(eid)) if eid else None
+        has_draft = d is not None and d.is_dir()
         if has_draft:
             doc_source = "draft"
         elif (
