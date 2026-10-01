@@ -67,15 +67,23 @@ class BBackoffMixin:
                 f"empty, skipping backoff write and retry scheduling",
             )
             return
-        try:
-            count = int(spec.get("_lock_conflict_count", 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
+        # code-review item af49c10825f7：count 走锁内原子递增（bump_counters
+        # 返回写后值，与 queue.py:2259 _record_wip_defer_retry_failure 同款）：
+        # 原先「read_one 读 → 算 +1 → update_spec 绝对写回」两段式读改写，
+        # 退避恢复定时器与周期扫描并发进入同一 spec 时各持相同旧值写回、丢一次
+        # 递增，退避档位推进变慢、dispatch_stalled 升级晚触发。写后值即本次
+        # 冲突序号（1 起）：档位下标取 count-1、耗尽判定 idx >= len(schedule)，
+        # 串行语义与原实现逐位等价；下方 update_spec 不再并写该字段（防并发
+        # 写回互相覆盖丢增量）。
+        count = self._pm.state_machine.bump_counters(
+            spec_name, {"_lock_conflict_count": 1}
+        ).get("_lock_conflict_count", 0)
         schedule = self._pm._dispatch_backoff_schedule()
 
         now = time.time()
-        exhausted = count >= len(schedule)
-        delay = schedule[-1] if exhausted else schedule[count]
+        idx = max(0, count - 1)
+        exhausted = idx >= len(schedule)
+        delay = schedule[-1] if exhausted else schedule[idx]
         until = int(now + delay)
         from datetime import datetime as _dt, timezone as _tz
 
@@ -88,7 +96,8 @@ class BBackoffMixin:
             spec_name,
             {
                 "error": f"worktree already active (lock conflict); backoff until {until_iso}",
-                "_lock_conflict_count": count + 1,
+                # _lock_conflict_count 已由上方 bump_counters 原子递增落盘，
+                # 此处不再并写（防并发写回互相覆盖丢增量）
                 "_dispatch_backoff_until": until,
                 "_last_lock_conflict_at": _dt.now(_tz.utc).isoformat(),
             },
@@ -102,7 +111,7 @@ class BBackoffMixin:
             # _dispatch_lock_conflict_pending 在窗内判「退避中」而早退，
             # orphaned_state 等滞留探测随之静默；error 文案亦按等待人工口径记录。
             evidence = (
-                f"lock conflicts={count + 1} (backoff schedule {list(schedule)}s exhausted), "
+                f"lock conflicts={count} (backoff schedule {list(schedule)}s exhausted), "
                 f"last conflict at {spec.get('_last_lock_conflict_at') or 'n/a'}, "
                 f"error={str(spec.get('error') or '')[:120]}"
             )
@@ -118,7 +127,7 @@ class BBackoffMixin:
         self._pm.logger.info(
             "pm_engine",
             f"Dispatch lock conflict for '{spec_name}' — backoff {int(delay)}s "
-            f"(attempt {count + 1}/{len(schedule)}), not counted against retries",
+            f"(attempt {count}/{len(schedule)}), not counted against retries",
         )
         self._pm._schedule_backoff_retry(spec_name, delay)
 
@@ -133,7 +142,23 @@ class BBackoffMixin:
         with self._queue_lock:
             self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
             self._backoff_timers.append(timer)
-        timer.start()
+        # code-review item 488e916852e4：对齐 queue.py:989 / repair_lane.py:305
+        # 的线程启动守卫——start 失败（解释器关闭期 RuntimeError、线程资源
+        # 耗尽等）时摘除本 timer 登记并记 WARNING，异常不再沿
+        # _handle_dispatch_lock_conflict → _process_queue 外泄；本轮退避重试
+        # 缺失，恢复依赖 daemon 重启后周期扫描兜底。
+        try:
+            timer.start()
+        except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未排程」处置
+            with self._queue_lock:
+                self._backoff_timers = [
+                    t for t in getattr(self, "_backoff_timers", []) if t is not timer
+                ]
+            self._pm.logger.warning(
+                "pm_engine",
+                f"backoff retry timer start failed for '{spec_name}' — 已摘除"
+                f"登记（恢复依赖下轮周期扫描兜底）: {type(e).__name__}: {e}",
+            )
 
     # ── 冷却恢复排程参数化共用实现（code-review item 71e4594e6d49）─────────
     # 三条冷却恢复通道（秒挂 / 信号死法 / 瞬断）的排程与到期回调收敛为以下
@@ -221,7 +246,21 @@ class BBackoffMixin:
         timer = threading.Timer(delay, callback, args=(spec_name,))
         timer.daemon = True
         timers.add(spec_name)
-        timer.start()
+        # code-review item 488e916852e4：对齐 queue.py:989 / repair_lane.py:305
+        # 的线程启动守卫——start 失败（解释器关闭期 RuntimeError、线程资源
+        # 耗尽等）时回滚判重标记并记 WARNING：否则该 spec 已入 timers 而定时器
+        # 并未运行，后续调用因幂等早退被永久短路，退避/冷却通道失去唯一恢复
+        # 驱动；异常亦不再沿 _queue_entry_ready → _process_queue 外泄。
+        try:
+            timer.start()
+        except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未排程」处置
+            timers.discard(spec_name)
+            self._pm.logger.warning(
+                "pm_engine",
+                f"recovery timer start failed for '{spec_name}' — 判重标记已"
+                f"回滚（恢复依赖下轮周期扫描兜底）: {type(e).__name__}: {e}",
+            )
+            return
         if scheduled_log is not None:
             self._pm.logger.info(
                 "pm_engine",
