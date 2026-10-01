@@ -16,7 +16,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from core.proc_utils import find_free_port, is_claude_process
 
@@ -212,7 +212,7 @@ def start(
     # 异码服务上。同一 addr:port 的 LISTEN socket 唯一（node 未用 SO_REUSEPORT），
     # 核对端口 LISTEN inode 是否归属本进程 /proc/<pid>/fd 即可确定性判定应答者
     # 身份，取代「延迟数百毫秒再看存活」的时长启发式（进程存活≠端口归它）。
-    ready = _wait_ready(port, timeout=5.0, logger=logger) and _port_listened_by(
+    ready = _wait_ready(port, timeout=5.0) and _port_listened_by(
         port, proc
     )
     if not ready:
@@ -227,7 +227,7 @@ def start(
     return port, proc
 
 
-def _wait_ready(port: int, timeout: float = 5.0, logger=None) -> bool:
+def _wait_ready(port: int, timeout: float = 5.0) -> bool:
     """轮询端口是否可连接（dev-server 监听成功即返回）。"""
     import socket
 
@@ -351,6 +351,12 @@ def _kill(proc: subprocess.Popen) -> None:
             try:
                 proc.kill()
             except OSError:
+                pass
+            # SIGKILL 命中后收尾 wait()：否则子进程残留僵尸态，直至下一次
+            # spawn 才被 subprocess 的 _active 机制顺带回收。
+            try:
+                proc.wait(timeout=1)
+            except (subprocess.TimeoutExpired, OSError):
                 pass
         except OSError:
             pass
@@ -492,29 +498,17 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     worktree 的两个孤儿 dev-server 互为"存活引用"互相豁免、永不清扫（09-04/05
     事故根因之一）。与 worktree_manager._worktree_has_live_process 同判定。
     """
-    try:
-        # 尾边界防串扰：pgrep -f 按子串 ERE 匹配，worktree 名 foo 会连引用
-        # worktrees/foo-bar 的进程一并命中（跨 worktree 误豁免）；须后随
-        # /、空白或行尾才算引用本 worktree。名含正则元字符时 re.escape
-        # 免被当作模式语法解释。
-        res = subprocess.run(
-            [
-                "pgrep",
-                "-f",
-                rf"worktrees/{re.escape(wt_root.name)}(/|[[:space:]]|$)",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return False
-    if res.returncode != 0 or not res.stdout.strip():
-        return False
+    # 尾边界防串扰：pgrep -f 按子串 ERE 匹配，worktree 名 foo 会连引用
+    # worktrees/foo-bar 的进程一并命中（跨 worktree 误豁免）；须后随
+    # /、空白或行尾才算引用本 worktree。名含正则元字符时 re.escape
+    # 免被当作模式语法解释。pgrep 调用与解析复用 _pgrep_dev_servers
+    # （pgrep 不可用/超时/无命中返回空列表 → any 恒 False，与原内联
+    # 实现的错误语义等价）。
+    pids = _pgrep_dev_servers(
+        rf"worktrees/{re.escape(wt_root.name)}(/|[[:space:]]|$)"
+    )
     return any(
-        int(s) != exclude_pid and is_claude_process(s)
-        for s in res.stdout.split()
-        if s.strip().isdigit()
+        pid != exclude_pid and is_claude_process(str(pid)) for pid in pids
     )
 
 
