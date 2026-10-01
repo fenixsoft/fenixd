@@ -807,7 +807,7 @@ export async function getSpecDoc(
   doc: 'proposal' | 'design' | 'tasks' | 'verification' | 'scenarios',
 ): Promise<{ found: boolean; content: string }> {
   return request(
-    `/api/spec-doc?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}&doc=${doc}`,
+    `/api/spec-doc?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}&doc=${encodeURIComponent(doc)}`,
   );
 }
 
