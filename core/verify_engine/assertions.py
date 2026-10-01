@@ -929,6 +929,21 @@ class AssertionRunner:
                 "pass": False,
                 "error": "缺少 attribute 字段" if not attr else "缺少 expected 字段",
             }
+        if not isinstance(expected, str):
+            # 非字符串 expected（planner 误写 JSON 数字/布尔）是确定性配置
+            # 错误：get_attribute 返回 str/None，与数值期望永不相等，会空转
+            # 满超时后按普通失败收场且无配置错误归因；属性值恒为字符串语义，
+            # 比照 text_match 的非字符串 expected 预检口径（code-review item
+            # ff8a84f7be8f），进轮询前显式失败。
+            return {
+                "type": "attribute_match",
+                "layer": 3,
+                "selector": selector,
+                "attribute": attr,
+                "expected": expected,
+                "pass": False,
+                "error": f"非法 expected: {expected!r}，须为字符串",
+            }
         if not await self._element_exists(page, selector):
             # 快速失败：比照 _assert_element_enabled 先查存在性，
             # 避免元素缺失时 get_attribute 拖满 Playwright 默认 30 秒超时
@@ -1090,8 +1105,19 @@ class AssertionRunner:
         ]
         try:
             body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
-        except Exception:
-            body_text = ""
+        except Exception as e:
+            # 正文不可读（页面崩溃/跳转中/上下文关闭）时不得兜底为空串判
+            # pass：matched 恒为空会让认证类错误检查被静默跳过且无任何
+            # error 标注，judge 无从得知检查未真正执行；比照模块其余断言
+            # 「元素/数据缺失一律显式失败」的 fail-closed 口径显式失败
+            # （code-review item 48e41871df44）。
+            return {
+                "type": "no_auth_error",
+                "layer": 3,
+                "pass": False,
+                "matched": [],
+                "error": f"页面正文读取失败，无法检查认证错误文案: {e}",
+            }
         matched = [k for k in keywords if k in body_text]
         return {
             "type": "no_auth_error",
