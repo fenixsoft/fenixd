@@ -372,7 +372,11 @@ class TestIsoToLocalDtCollapse(unittest.TestCase):
             self.assertEqual(
                 (local.year, local.month, local.day, local.hour),
                 (2026, 9, 30, 10))
-            delta = (datetime.now().astimezone() - dt).total_seconds()
+            # 窗口比较用动态近旁瞬时（硬编码日期会随时钟漂出 86400s 窗口）
+            fresh = timelib.now_utc() - timedelta(hours=1)
+            dt_fresh = code_review._iso_to_aware_dt(
+                fresh.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            delta = (datetime.now().astimezone() - dt_fresh).total_seconds()
             self.assertLess(delta, 86400)
 
 
