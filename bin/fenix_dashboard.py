@@ -64,8 +64,6 @@ WHITE = "\033[97m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 RESET = "\033[0m"
-BG_GREEN = "\033[42m"
-BG_RED = "\033[41m"
 BG_BLUE = "\033[44m"
 
 STATUS_ICONS = {
