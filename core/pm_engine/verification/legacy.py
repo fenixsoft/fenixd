@@ -408,6 +408,25 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # ── 归因分级门禁（legacy 路径同门禁，add-verdict-credibility-gate / D2）──
             if pipeline._speculative_bug_found_gate(spec_name):
                 return
+            # ── judge 自述环境问题守卫（2026-08-28 伪 fix 级联事故防线，
+            # 与主路径 pipeline._apply_bug_found 同序：speculative 门之后）──
+            # judge 自己把全部 bug 根因描述为环境/基础设施问题时，属「验证没
+            # 能发生」而非「验证发现了缺陷」，不得流转 bug-found 派生伪 fix
+            # 级联。读的正是 legacy verifier 同样落盘的 verify-progress/<spec>/
+            # .fenix-run-result.json primary 产物（见本文件上方 _read_verdict
+            # 注释），经门面转发注册表（__getattr__ partial）复用 escalation
+            # 实现，与既有 pipeline._handle_env_blocked_inconclusive 同一接入
+            # 惯例；命中即按 inconclusive 处置（回 implemented 重验/超限升级）。
+            if pipeline._judge_bugs_declare_env(spec_name) and pipeline._handle_judge_env_declared(
+                spec_name
+            ):
+                return
+            # ── 场景缺陷改道门豁免（有意缺位，记录豁免理由）──
+            # 主路径 bug-found 的 _scenario_defect_reroute_gate（纯场景缺陷
+            # 定向重派 judge 走 scenario-repaired 原地修复通道）在 legacy 车
+            # 道维持豁免：legacy 降级车道无 scenario-repaired 重入通道（见下
+            # 方 else 分支注释——plan-ready/scenario-repaired 裁决只能保持
+            # testing 由 full_scan recovery 兜底重验），改道重派动作无处落地。
             # ── verified 一次性放行门（judge-rerun-stability R2）──
             # 已 verified 且场景集未变 → 拒绝降级为 bug-found（legacy 路径
             # 同门禁；复用自有 verdict_stability.json 而非共享 .fenix-run-
