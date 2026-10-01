@@ -972,7 +972,24 @@ class AdminMonitor:
         except Exception as e:
             self.logger.error("admin_monitor", f"Family-explosion intake failed: {e}")
 
-        if not self.has_in_progress_specs():
+        # code-review item eccaad574376：状态读取与规则链检测逐段 try 兜底，
+        # 异常按空表降级（任何异常只记日志不阻断巡检）。
+        # code-review item 45a3b8f03516：specs 读取前移——原先
+        # has_in_progress_specs() 的独立 read_all 在任何 try 之外，读态异常
+        # 会中断整个 run_once（本轮孤儿处置恢复、派发失败重试、告警生命周期
+        # 与 code-review/regression/self-review 各检查点全部跳过）；in-progress
+        # 条件改由下方同一份逐段 try 兜底的 specs 推导（status in
+        # implementing/testing，与 has_in_progress_specs 同口径，单次读取）。
+        try:
+            specs = self.state_machine.read_all()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"State read failed: {e}")
+            specs = {}
+        now = time.time()
+        if not any(
+            entry.get("status") in ("implementing", "testing")
+            for entry in specs.values()
+        ):
             # 假就绪盲区修复（improve-run-lifecycle-governance D6）：无 in-progress
             # spec 只说明没有运行态任务，MUST NOT 成为跳过整轮巡检的理由——
             # ready 滞留（假就绪）、blocked_stuck、daemon_errors 等非运行态检查
@@ -982,14 +999,6 @@ class AdminMonitor:
                 "No in-progress SPECs — continuing non-running-state scans",
             )
 
-        # code-review item eccaad574376：状态读取与规则链检测逐段 try 兜底，
-        # 异常按空表降级（任何异常只记日志不阻断巡检）。
-        try:
-            specs = self.state_machine.read_all()
-        except Exception as e:
-            self.logger.error("admin_monitor", f"State read failed: {e}")
-            specs = {}
-        now = time.time()
         regular = []
         try:
             regular = self._detect(specs, now)
@@ -2591,16 +2600,32 @@ class AdminMonitor:
                     _wip_count = int(entry.get("_merge_retry_count", 0) or 0)
                 except (TypeError, ValueError):
                     _wip_count = 0
+                # 等待起点解析（code-review 4242f060d0e9）：first_at 缺失/非法
+                # 时改用 entry 的 updated/created 时间戳兜底作等待起点近似，
+                # 不再回退 now——回退 now 使窗口超限判据 (now-first_at)/60 恒
+                # 为 0，若 _merge_retry_count 亦为 0/缺失（手工编辑 STATE.md、
+                # 标志与时间戳解耦的异常残留态），orphaned_state 对该 spec 在
+                # 标志存续期间永久豁免（漏报方向，与本文件头「宁多唤起一次也
+                # 不掩真阳性」取向相反）。updated/created 亦不可解析即起点
+                # 不可考：不豁免、照常探测（保守方向；探测段随后对不可解析
+                # 时间戳自会跳过，不产生新风险）。
                 _wip_first = entry.get("_merge_retry_first_at")
+                _wip_first_f = None
                 try:
-                    _wip_first_f = float(_wip_first) if _wip_first else now
+                    _wip_first_f = float(_wip_first) if _wip_first else None
                 except (TypeError, ValueError):
-                    _wip_first_f = now
-                _wip_over = (
+                    _wip_first_f = None
+                if _wip_first_f is None:
+                    for _wip_ts_key in ("updated", "created"):
+                        _wip_dt = parse_ts(entry.get(_wip_ts_key))
+                        if _wip_dt is not None:
+                            _wip_first_f = _wip_dt.timestamp()
+                            break
+                _wip_over = _wip_first_f is not None and (
                     (now - _wip_first_f) / 60.0 >= WIP_DEFER_WINDOW_MINUTES
                     or _wip_count >= WIP_DEFER_MAX_ROUNDS
                 )
-                if not _wip_over:
+                if _wip_first_f is not None and not _wip_over:
                     self.logger.debug(
                         "admin_monitor",
                         f"跳过 orphaned_state 探测：'{name}' 为 WIP 延迟合回等待"
@@ -3133,14 +3158,18 @@ class AdminMonitor:
                 for st in STALLED_ESCALATION_SIGNAL_TYPES
             ):
                 continue
-            first_seen = self._first_signal_time(name) or updated_str
+            # 单点扫描（code-review 0abcbd87e154）：一次遍历同时取「信号首见
+            # 时间」与「最新底层信号类型」，不再对每条命中 spec 先后做两次
+            # 全量扫描；悬置族过滤条件改动只落 _stalled_signal_first_and_latest
+            # 一处。
+            first_seen, underlying = self._stalled_signal_first_and_latest(name)
+            first_seen = first_seen or updated_str
             # 真实根因透传（code-review d3006f6884e0）：落盘 signal_type 恒为
             # blocked_stuck（按 signal_type 路由的既有消费口径不变），因 ENV
             # 阻塞族悬置而被强制升级时，真实信号类型经 underlying_signal_type
             # 透传（对齐 disposition_signal_hits_auto_reset /
             # fix-manual-invoke-signal-type-passthrough 2.1 约定），并在 evidence
             # 中显式呈现供人工/看板归位。
-            underlying = self._underlying_stalled_signal_type(name)
             self.store.append(
                 attach_trigger(
                     {
@@ -3178,37 +3207,27 @@ class AdminMonitor:
             escalated_specs.append(name)
         return escalated_specs
 
-    def _first_signal_time(self, spec: str) -> Optional[str]:
-        """返回 spec 最早的悬置类信号记录 created（首见时间），无则 None。
+    def _stalled_signal_first_and_latest(self, spec: str) -> tuple[Optional[str], str]:
+        """单次扫描返回 (最早悬置类信号 created, 最新悬置类信号 signal_type)。
 
-        状态沉淀后 created 保留首次语义（first_seen），多轮续报只刷 last_seen
-        ——取最早一条即「信号首见」；跨状态变化的多个记录中取最早的仍能反映
-        「该 spec 最早因悬置被监视器关注」的时间。
+        单点助手（code-review 0abcbd87e154：原 _first_signal_time 与
+        _underlying_stalled_signal_type 是同一段「read_all + kind=SIGNAL +
+        spec 相等 + 悬置族过滤」循环的两个副本，仅聚合方向不同——最早
+        created / 最新 created 并取类型；合并为一次遍历后过滤条件改动只落
+        此处，消费方 _force_escalate_stalled 对每条命中 spec 不再先后两次
+        全量扫描）。
+
+        created 语义（原两函数口径逐字保持）：状态沉淀后 created 保留首次
+        语义（first_seen），多轮续报只刷 last_seen——最早一条即「信号首见」，
+        最新一条的类型反映当前根因。_force_escalate_stalled 落盘的
+        ESCALATION 恒写 signal_type=blocked_stuck，ENV 阻塞族
+        （verify_env_blocked/verify_env_inconclusive）悬置的真实类型经
+        underlying_signal_type 透传（消费约定见
+        disposition_signal_hits_auto_reset）；无悬置族信号记录（或记录无
+        created）时 created 为 None、类型回退 blocked_stuck。created 比较
+        口径：store 统一生成同格式 UTC ISO 串，字典序即时间序。
         """
         earliest = None
-        for rec in self.store.read_all():
-            if (
-                rec.get("kind") != SIGNAL
-                or rec.get("spec") != spec
-                or rec.get("signal_type") not in STALLED_ESCALATION_SIGNAL_TYPES
-            ):
-                continue
-            created = rec.get("created")
-            # [fenix-ignore:a39572533269] store 侧 created 恒由 _utcnow_iso() 统一生成（UTC +00:00、微秒精度，无写入方显式传值），同偏移下该格式族字典序与时间序一致，不存在混用格式
-            if created and (earliest is None or created < earliest):
-                earliest = created
-        return earliest
-
-    def _underlying_stalled_signal_type(self, spec: str) -> str:
-        """返回 spec 悬置类信号记录的真实信号类型（最新一条，反映当前根因）。
-
-        _force_escalate_stalled 落盘的 ESCALATION 恒写 signal_type=blocked_stuck，
-        ENV 阻塞族（verify_env_blocked/verify_env_inconclusive）悬置的真实类型
-        经 underlying_signal_type 透传（消费约定见
-        disposition_signal_hits_auto_reset）；无悬置族信号记录时回退
-        blocked_stuck。created 比较口径与 _first_signal_time 相同（store 统一
-        生成同格式 UTC ISO 串，字典序即时间序）。
-        """
         latest = None
         latest_type = "blocked_stuck"
         for rec in self.store.read_all():
@@ -3219,10 +3238,15 @@ class AdminMonitor:
             ):
                 continue
             created = rec.get("created")
-            if created and (latest is None or created > latest):
+            # [fenix-ignore:a39572533269] store 侧 created 恒由 _utcnow_iso() 统一生成（UTC +00:00、微秒精度，无写入方显式传值），同偏移下该格式族字典序与时间序一致，不存在混用格式
+            if not created:
+                continue
+            if earliest is None or created < earliest:
+                earliest = created
+            if latest is None or created > latest:
                 latest = created
                 latest_type = str(rec.get("signal_type") or "blocked_stuck")
-        return latest_type
+        return earliest, latest_type
 
     # ── 派发失败重试巡检（admin-dispatch-failure-escalation D2） ──
 
@@ -4404,10 +4428,26 @@ class AdminMonitor:
         sm = self.state_machine
         if not hasattr(sm, "read_one") or not hasattr(sm, "update_spec"):
             return
-        spec_entry = sm.read_one(spec)
-        if not spec_entry:
+        # 守卫半段（code-review 9e2916c4f8cf）：read_one / resolve_env_blocked_
+        # reset_path 的编程错误（TypeError/AttributeError 等签名漂移形态）同样
+        # 属 D3「复位路径编程错误必升级」口径——裸调在 try 之外时只会被
+        # _invoke_administrator 外层通用兜底吞成一行 ERROR，复位静默失败、
+        # spec 滞留原状态。编程错误走同一 critical 升级（reset_path 记为
+        # guard，标注失败落在守卫半段），运维类异常仍走既有 WARNING 语义。
+        try:
+            spec_entry = sm.read_one(spec)
+            if not spec_entry:
+                return
+            reset_path = resolve_env_blocked_reset_path(spec_entry, self.project_root)
+        except (TypeError, AttributeError, NameError) as pe:
+            self._escalate_reset_programming_error(pe, signal, "guard")
             return
-        reset_path = resolve_env_blocked_reset_path(spec_entry, self.project_root)
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"env 阻塞处置复位守卫读取失败 '{spec}': {e}",
+            )
+            return
         if reset_path is None:
             return
 
@@ -4553,10 +4593,24 @@ class AdminMonitor:
         sm = self.state_machine
         if not hasattr(sm, "read_one") or not hasattr(sm, "update_spec"):
             return
-        spec_entry = sm.read_one(spec)
-        if not spec_entry:
+        # 守卫半段（code-review 9e2916c4f8cf）：同 _reset_env_blocked_after_
+        # disposition——read_one/状态读取的编程错误（TypeError/AttributeError
+        # 等签名漂移形态）走 D3 critical 升级（reset_path 记为 guard），不被
+        # 外层通用兜底吞掉；运维类异常仍走既有 WARNING 语义。
+        try:
+            spec_entry = sm.read_one(spec)
+            if not spec_entry:
+                return
+            status = spec_entry.get("status")
+        except (TypeError, AttributeError, NameError) as pe:
+            self._escalate_reset_programming_error(pe, signal, "guard")
             return
-        status = spec_entry.get("status")
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"孤儿状态处置复位守卫读取失败 '{spec}': {e}",
+            )
+            return
         if status == "testing":
             try:
                 # fix-recovery-path-blockers D2：派发 verifier 前与在飞 admin run
