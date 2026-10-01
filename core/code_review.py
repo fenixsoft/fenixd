@@ -335,7 +335,10 @@ def _read_items_unlocked(
     if not path.is_file():
         return out
     try:
-        text = path.read_text(encoding="utf-8")
+        # errors="replace"：坏 UTF-8 字节降级为替换符，由后续逐行 JSON 解析自然
+        # 兜底——否则 UnicodeDecodeError 会从全部读写路径穿透（同
+        # read_review_out_rows 的读取口径）
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         _logger.warning("code_review: 读取 items.jsonl 失败: %s", e)
         if degraded_out is not None:
@@ -378,6 +381,9 @@ def write_items(project_root, records) -> None:
     跳过，最终 ``content = ""`` 会把台账整体清空——一次静默的全量丢失
     （code-review item f81b36084781）。此处入口统一归一化。
     同一 item_id MUST 只保留一条（dict 天然保证）。
+
+    无生产调用方，仅供测试夹具使用；全量替换绕过读降级（degraded）/
+    损坏行保留（corrupted）契约，调用方须自证整份记录完整后再落盘。
     """
     if isinstance(records, dict):
         records = list(records.values())
@@ -474,7 +480,9 @@ def _coerce_line(value) -> int:
         # 负数/0 与缺省回退同基准钳到 ≥1（与字符串分支口径对齐）
         return max(value, 1)
     if isinstance(value, float):
-        return int(value) if value == value and abs(value) != float("inf") else 1
+        # NaN/inf 已在条件中先行回退 1；截断结果与 int 分支同口径钳到 ≥1
+        #（0.9 → 1、-3.5 → 1，避免落账出 0/负行号）
+        return max(int(value), 1)
     m = re.search(r"\d+", str(value))
     if m:
         try:
