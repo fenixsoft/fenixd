@@ -462,8 +462,8 @@ def mark_running(project_root, timeout_seconds: int = 1800) -> None:
                 }
             ),
         )
-    except OSError:
-        pass
+    except OSError as e:
+        _logger.warning("regression: .running marker 写入失败: %s: %s", path, e)
 
 
 def clear_running(project_root) -> None:
