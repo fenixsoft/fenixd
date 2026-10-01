@@ -1390,6 +1390,25 @@ class QQQueueMixin:
                                 "_zero_change_attempts": 0,
                             },
                         )
+                        # （code-review item 85495e15ab27）确认型 no-op 分支同样落
+                        # impl-result 快照（与 fast_track.py 确认型 no-op 同分支对齐）：
+                        # 本分支 transition implemented 后直接入队 verifier，不经下方
+                        # 通用成功路径的快照写点——快照缺失时 verified→done 门禁
+                        # _task_completion_blocker 规则 3 在「共享结果文件已被其它
+                        # spec 成功覆盖 + tasks.md 有未勾数字任务 + implementer_run
+                        # 在场」组合下 fail-closed 误拦，spec 滞留 verified 需人工
+                        # 解锁。写失败仅 WARNING 不阻塞（fail-open，与通用路径同口径）。
+                        if impl_result is not None:
+                            try:
+                                self._pm._write_impl_result_snapshot(
+                                    spec_name, impl_result
+                                )
+                            except Exception as e:
+                                self._pm.logger.warning(
+                                    "pm_engine",
+                                    f"确认型 no-op impl-result 快照写入失败 "
+                                    f"'{spec_name}'（非阻塞）: {e}",
+                                )
                         self._enqueue_front(spec_name, "verifier")
                         return
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -1707,6 +1726,95 @@ class QQQueueMixin:
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
                     # 所以用分支名直接 merge。
+                    if not result.branch:
+                        # （code-review item e45c71cbcd2c）防御「success 蕴含 branch
+                        # 非空」契约：runner 成功路径的分支名取自
+                        # worktree_manager.get_branch_name（Optional[str]——daemon
+                        # 重启后内存映射重建缺项等场景可返回 None）。branch 为空时
+                        # 下方 merge_ok 默认 True 且 if result.branch: 跳过合并，将经
+                        # _finalize_merge_success(branch=None) 伪推进 implemented 并
+                        # 入队 verifier——实现成果未合入 main 且 worktree 已被清理；
+                        # 三个下游检查点对该形态全部放行（_implementer_zero_change
+                        # 对 branch 空直接返回 False 不判定、_deliverable_gate_missing
+                        # 对 branch 空保守放行、relint fail-open），成果静默丢失。
+                        # 对齐 fast-track 车道同款守卫（item 69fe26c88579）：直接判
+                        # 失败走重派，禁止无 branch 的伪合并收口——无真实 merge 失败
+                        # 可归因，不经 fingerprint/breaker/repair 记账，也不触同因
+                        # 重派 streak（作用域边界同通用失败分支 3.3b 约定）；
+                        # worktree 已被 runner 清理，无可保留现场。
+                        contract_err = (
+                            "merge skipped（success 但 branch 为空，违反「success "
+                            "蕴含 branch 非空」契约）：实现成果未经合并，按 merge "
+                            "失败重派"
+                        )
+                        try:
+                            # 配置侧 int() 归一（与通用失败分支同款）：字符串配置
+                            # 裸用于比较抛 TypeError 中断重派处置，非法值回退缺省。
+                            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
+                            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
+                        except (TypeError, ValueError):
+                            max_r = 3
+                        max_r = max(max_r, 1)
+                        # _retry_count 锁内原子递增（写后值不再并入 update_spec，
+                        # 对齐 _handle_merge_back_real_failure 防并发写回丢增量）。
+                        # 本出口重派同样受 agents.max_retries 封顶（对齐 fast-track
+                        # item a7395837fcbb）：持续性「success 但 branch 为空」若只
+                        # 递增重派会无限烧实现 run 预算——达阈冻结转人工，不再自动
+                        # 重派。
+                        retries = self._pm.state_machine.bump_counters(
+                            spec_name, {"_retry_count": 1}
+                        ).get("_retry_count", 0)
+                        if retries >= max_r:
+                            spec_entry = (
+                                self._pm.state_machine.read_one(spec_name) or {}
+                            )
+                            fp = self._pm._redispatch_cause_fingerprint(contract_err)
+                            orig_status = spec_entry.get("status") or "implementing"
+                            self._pm.state_machine.freeze_for_human(
+                                spec_name,
+                                error=(
+                                    f"原状态 {orig_status} · 重试耗尽"
+                                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
+                                ),
+                                signal_type="redispatch_loop_detected",
+                                severity="major",
+                                description=(
+                                    f"'{spec_name}' 契约违反（success 但 branch 为空）"
+                                    f"连续重试 {max_r} 轮已达上限（max_retries），"
+                                    f"自动重试终止——已冻结转人工处置"
+                                ),
+                                evidence=(
+                                    f"spec={spec_name}; retries={retries}; "
+                                    f"max_retries={max_r}; fp={fp}; "
+                                    f"final_error={contract_err}"
+                                ),
+                                recommended_action=(
+                                    "检查 runner 成功但分支名缺失的根因；处置后解冻"
+                                    "（unfreeze_spec 自动清零计数）可重新获得自动"
+                                    "修复机会"
+                                ),
+                                alert_callback=self._pm._send_human_escalation_alert,
+                            )
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"All retries exhausted for '{spec_name}' — "
+                                f"冻结转人工，不再重派（{retries}/{max_r}，fp={fp}）",
+                            )
+                        else:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": contract_err,
+                                },
+                            )
+                            self._enqueue_front(spec_name, "implementer")
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"merge-back skipped for '{spec_name}': "
+                                f"{contract_err}",
+                            )
+                        return
                     merge_ok = True
                     merge_error = ""
                     merge_info = None
@@ -2351,7 +2459,48 @@ class QQQueueMixin:
         with self._queue_lock:
             self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
             self._backoff_timers.append(timer)
-        timer.start()
+        # （code-review item 53c202982773）start 守卫：裸 timer.start() 的启动异常
+        # （如环境性 RuntimeError can't start new thread）会沿 _defer_merge_back →
+        # _handle_retryable_mergeback_failure → worker 外层 except 转
+        # _rollback_failed_dispatch，把一次「仅顺延重试合并」放大成整轮回滚；且
+        # _merge_retry_pending 已登记而该通道唯一的自动重试驱动（merge-only
+        # Timer）未排成——_recheck_wip_deferred_merges 只扫 _wip_gate_deferred，
+        # spec 将悬置 implementing 直至外部巡检。对齐本文件 worker 线程启动守卫
+        # 范式（_process_queue 的 Thread.start 同款）：捕获失败、保持登记与定时器
+        # 状态一致（摘除死条目 + 清 _merge_retry_pending），再降级走显式重试体——
+        # 同步调用 _on_merge_retry 复用既有状态守卫/预算闸门/有界顺延（最坏再排程
+        # 一次，_merge_retry_count 递增使顺延受窗口/轮数上限与 stuck 告警兜底），
+        # 异常不回灌调用方放大成 run 回滚。
+        try:
+            timer.start()
+        except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未排成」处置
+            with self._queue_lock:
+                self._backoff_timers = [
+                    t for t in self._backoff_timers if t is not timer
+                ]
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, {"_merge_retry_pending": False},
+                )
+            except Exception as we:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"merge 重试排程失败清账写入 '{spec_name}'（非阻塞）: {we}",
+                )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"merge-only 重试定时器启动失败 '{spec_name}' — 已摘除死定时器并清"
+                f"_merge_retry_pending，改走显式重试: {type(e).__name__}: {e}",
+            )
+            try:
+                self._on_merge_retry(spec_name)
+            except Exception as re_err:  # noqa: BLE001 — 重试体异常不回灌调用方
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"merge 显式重试异常 '{spec_name}': "
+                    f"{type(re_err).__name__}: {re_err}",
+                )
+            return
         self._pm.logger.info(
             "pm_engine",
             f"merge-only 重试已排程 '{spec_name}'（{int(max(0.5, float(delay)))}s，"
