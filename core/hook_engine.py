@@ -318,6 +318,10 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
     - action=shell 必须 command 非空字符串；
     - action=commit/commit-push 可选 paths：非空字符串数组（git pathspec，
       缺省仅 DEFAULT_COMMIT_PATHS 收口产物）；
+    - action=commit/commit-push 可选 message：字符串（提交信息模板，支持
+      {spec}/{event} 变量）——非字符串会在执行侧 render_message_template 的
+      template.replace 处抛 AttributeError，被兜底误记为「hook 执行异常」major
+      告警，故在配置层按「配置非法（不执行）」拦截；
     - action=restart-dashboard 可选 target：字符串（tmux 会话名，缺省
       fenix-dashboard）——非字符串（如手改 config.yaml 写成数字）会在执行
       侧 (target or "").strip() 抛 AttributeError，被兜底误记为「hook 执行
@@ -366,6 +370,15 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
             or not all(isinstance(p, str) and p.strip() for p in paths)
         ):
             return "commit/commit-push 的 paths 必须为非空字符串数组（git pathspec，如 [\"spec\"]）"
+    if action in ("commit", "commit-push") and entry.get("message") is not None:
+        message = entry.get("message")
+        # 缺省/None/空串 合法（执行侧 render_message_template 回退缺省模板），
+        # 仅拦非字符串类型（口径对齐 restart-dashboard 的 target 拦截）
+        if not isinstance(message, str):
+            return (
+                f"commit/commit-push 的 message 必须为字符串"
+                f"（提交信息模板，支持 {{spec}}/{{event}} 变量），收到 {message!r}"
+            )
     if action == "restart-dashboard":
         target = entry.get("target")
         # 缺省/None 合法（执行侧回退 DEFAULT_DASHBOARD_SESSION）；空串同样
@@ -569,6 +582,9 @@ class HookEngine:
             self._log_error(f"hook 匹配失败 spec={spec} event={to_status}: {type(e).__name__}: {e}")
             return
         try:
+            # 非 dict 条目留痕（code-review item 5e0fb9aa037a）：这类条目无
+            # events 可匹配、永远进不了执行链，若不在此显式审计将整条静默蒸发
+            self._audit_malformed_hook_entries(spec, from_status, to_status)
             for cfg, scope in matches:
                 hook_id = cfg.get("id") if isinstance(cfg, dict) else None
                 th = threading.Thread(
@@ -591,6 +607,49 @@ class HookEngine:
             self._log_error(
                 f"hook 投递失败（不向调用方抛）spec={spec} event={to_status}: "
                 f"{type(e).__name__}: {e}"
+            )
+
+    def _audit_malformed_hook_entries(
+        self, spec: str, from_status: Optional[str], to_status: str
+    ) -> None:
+        """hooks 段存在非对象条目时逐条记 failure 审计（code-review item 5e0fb9aa037a）。
+
+        手改 config.yaml 把 hooks.global/specs 条目写成字符串等非 dict 形态时，
+        match_hooks 的 isinstance 守卫使其永远无法命中（无 events 可匹配），执行
+        链 validate_hook_entry 也到不了——整条静默蒸发、无任何留痕，用户无从
+        发现 hook 未生效。每次事件分发对现存非对象条目记一条 failure 审计，口径
+        与 _execute_one 对「配置非法（不执行）」一致：不执行、不告警、审计暴露。
+        """
+        hooks = hook_config(self.config)
+        malformed: List[Tuple[str, str]] = []  # (scope, 条目定位)
+        g = hooks.get("global")
+        if isinstance(g, list):
+            malformed.extend(
+                ("global", f"hooks.global[{idx}]")
+                for idx, h in enumerate(g)
+                if not isinstance(h, dict)
+            )
+        specs = hooks.get("specs")
+        if isinstance(specs, dict):
+            for name, lst in specs.items():
+                if not isinstance(lst, list):
+                    continue
+                malformed.extend(
+                    ("spec", f"hooks.specs.{name}[{idx}]")
+                    for idx, h in enumerate(lst)
+                    if not isinstance(h, dict)
+                )
+        for scope, where in malformed:
+            self._audit(
+                spec,
+                from_status,
+                to_status,
+                None,  # 非 dict 条目提取不到 id
+                None,  # 同理提取不到 action
+                scope,
+                STATUS_FAILURE,
+                f"hook 配置非法（不执行）: {where} 条目必须为对象（非对象条目不参与匹配，未执行）",
+                0.0,
             )
 
     # ── 项目级 all-done（fix-hook-all-specs-done）────────────────────
@@ -1052,7 +1111,10 @@ class HookEngine:
                         pass
                     raise
                 changed += 1
-            except (OSError, yaml.YAMLError) as e:
+            # UnicodeDecodeError（ValueError 子类）：非 UTF-8 字节的配置文件在
+            # read_text 处抛出，不接住会穿出逐文件循环、剩余配置文件不再清扫
+            # （code-review item f3778b44687e）——计入 failed 继续处理其余文件
+            except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
                 failed += 1
                 self._log_warning(f"hook 清扫读改 {cfg_path} 失败: {e}")
             finally:
