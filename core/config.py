@@ -97,6 +97,16 @@ _RUN_TIMEOUT_FALLBACK_WARNED = False
 # ERROR 同步刷屏）。keys 以键名字符串为准，不随进程内白名单变化失效。
 _UNKNOWN_AGENT_MODEL_KEYS_WARNED = set()
 
+# 整段非 dict 降级 ERROR 的进程级一次性去重（code-review item bb5366851f4a，
+# 同 _UNKNOWN_AGENT_MODEL_KEYS_WARNED 范式）：同一 (段键, 脏值类型) 只在首次
+# 告警。一条读取链会反复取同一脏段（get_admin_config → get_self_review_config
+# / get_run_infra_breaker_config；agents 脏段经 _validate →
+# _check_supervision_consistency → normalize_timeout_overrides /
+# effective_run_timeout_seconds 按 agent 类型循环取段），30s 热更新下单轮可
+# 产生十余条逐字相同的 ERROR。去重只作用于告警分支，归一返回值（空段降级）
+# 行为不变。
+_SEGMENT_DIRTY_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -548,6 +558,13 @@ class ConfigLoader:
         if isinstance(seg, dict):
             return seg
         if seg is not None:
+            # 进程级 (key, 脏值类型) 一次性去重（code-review item bb5366851f4a，
+            # 同 _UNKNOWN_AGENT_MODEL_KEYS_WARNED 范式）：只在告警分支去重，
+            # 合法段与缺段路径不经过此处；降级返回 {} 的行为不变。
+            dedup_key = (key, type(seg).__name__)
+            if dedup_key in _SEGMENT_DIRTY_WARNED:
+                return {}
+            _SEGMENT_DIRTY_WARNED.add(dedup_key)
             _logger.error(
                 "config.%s 整段非 dict（%s），该段已忽略、按空段降级；其余配置照常生效",
                 key,
@@ -2080,7 +2097,16 @@ class ConfigLoader:
             or (isinstance(threshold, float) and not threshold.is_integer())
         ):
             threshold = 3
-        if not isinstance(cooldown, (int, float)) or isinstance(cooldown, bool) or cooldown <= 0:
+        # 非有限浮点同拒（code-review item 25f2aed84a49，范式先例 a61ee2b2031e /
+        # d9e9a238696f）：nan 使 <=0 比较恒 False 可穿透校验，冷却比较恒 False
+        # （熔断即建即恢复或永不恢复），且经 get_admin_config 嵌套输出时以 NaN
+        # 字面量进入 JSON 序列化（非法 JSON）。
+        if (
+            not isinstance(cooldown, (int, float))
+            or isinstance(cooldown, bool)
+            or (isinstance(cooldown, float) and not math.isfinite(cooldown))
+            or cooldown <= 0
+        ):
             cooldown = 30
         return {
             "threshold": int(threshold),
@@ -2590,6 +2616,7 @@ class ConfigLoader:
         _RUN_TIMEOUT_FALLBACK_WARNED = False
         _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
+        _SEGMENT_DIRTY_WARNED.clear()
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
