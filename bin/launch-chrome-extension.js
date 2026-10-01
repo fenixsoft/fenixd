@@ -820,7 +820,10 @@ async function main() {
     console.log(jsonOutput);
   }
 
-  process.exit(result.success ? 0 : 1);
+  // 用 process.exitCode 而非 process.exit：stdout 为管道时写入是异步的，process.exit
+  // 不等待待写缓冲排空即终止进程，大体积 JSON（含 networkLog）可能被截断致下游解析失败；
+  // 设 exitCode 让进程自然排空缓冲后退出，退出码语义不变（--output 落盘分支是同步写入，不受影响）
+  process.exitCode = result.success ? 0 : 1;
 }
 
 // 直接运行时执行 main（realpath 对比，兼容经改名软链调用）
