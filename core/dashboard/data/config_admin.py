@@ -369,6 +369,15 @@ def _managed_key_sources(raw: dict) -> dict:
         sources["worktree.build_artifact_paths"] = "project"
     if isinstance(wm_raw, dict) and "has_build_artifacts" in wm_raw:
         sources["worktree.has_build_artifacts"] = "project"
+    # add-knowledge-atlas(-maintenance)：knowledge 两键存在性判定 → project
+    # （code-review item 84c86642e5c9：缺标注分支——项目级显式配置后 sources
+    # 仍回 "user"，设置页「杂项」页签徽标恒错；对齐 worktree 两键同款写法）
+    kn_raw = raw.get("knowledge")
+    if isinstance(kn_raw, dict):
+        if "enabled" in kn_raw:
+            sources["knowledge.enabled"] = "project"
+        if "audit_enabled" in kn_raw:
+            sources["knowledge.audit_enabled"] = "project"
     return sources
 
 
@@ -558,6 +567,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         result["sources"] = _managed_key_sources(raw)
 
     # 提取受管键（白名单：llm / agents.models / agents.max_concurrent / gates.approve_mode）
+    # [fenix-ignore:6032b09cf68a] apikey 掩码需配对写侧 mask-keep，而 llm 为整段替换写入且生效视图跨 user/project 作用域（哨兵落盘毁配置或跨作用域复制密钥），属成面改动不实施
     if isinstance(raw.get("llm"), dict):
         result["llm"] = raw["llm"]
     agents_raw = raw.get("agents")
@@ -814,6 +824,7 @@ def read_effective_config(project_root) -> dict:
         return result
 
     # 提取受管键（有效合并值）
+    # [fenix-ignore:6032b09cf68a] apikey 掩码需配对写侧 mask-keep，而 llm 为整段替换写入且生效视图跨 user/project 作用域（哨兵落盘毁配置或跨作用域复制密钥），属成面改动不实施
     if isinstance(effective.get("llm"), dict):
         result["llm"] = effective["llm"]
     agents_eff = effective.get("agents")
