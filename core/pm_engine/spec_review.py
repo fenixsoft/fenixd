@@ -461,6 +461,18 @@ class SpecReviewManager:
 
         # 结果硬门校验（复用 _check_agent_result_artifact，spec-review 分支
         # 2026-09-15 已真接线：缺失/空/非白名单 status/陈旧 mtime 均由此拦截）
+        # agent_runner 为 None 的 CLI 场景无硬门可复用：与 re_review/复评入队
+        # 的 None 降级口径对齐，fail-closed 按硬门失败收口，不裸取属性抛
+        # AttributeError 逃出评审收口（code-review item 79306fe3541e）；
+        # allow_artifact=False 禁 artifact 回流——回流会递归回本方法再撞同一
+        # None 守卫（4b9f59b8717f 同款防递归口径）。
+        if self.agent_runner is None:
+            err = "agent_runner 未注入（CLI 形态），结果硬门校验不可用"
+            self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
+            self._handle_review_failure(
+                spec_name, err, allow_artifact=False, run_started_at=run_started_at
+            )
+            return False
         err = self.agent_runner._check_agent_result_artifact(
             spec_name, "spec-review", run_started_at=run_started_at
         )
@@ -909,8 +921,11 @@ class SpecReviewManager:
             if candidate.is_absolute():
                 return f"repairs 路径越界（绝对路径）: {path}"
             resolved = (self.project_root / candidate).resolve()
-            # 归一化后必须落在本 spec 目录内（startswith 于父目录且不等于父目录本身）
-            if resolved != allowed_dir and allowed_dir not in resolved.parents:
+            # 归一化后必须落在本 spec 目录内的文件上（等于目录本身视为越界：
+            # 目录 exists() 恒真，一条指向目录自身的伪 repair 即可满足
+            # 「repaired 状态无修补清单」硬门，repairs 清单失去指向真实被修补
+            # 文件的审计语义——code-review item b497c1b4ebbc）
+            if resolved == allowed_dir or allowed_dir not in resolved.parents:
                 return f"repairs 路径越界（须落在 {spec_name}/ 内）: {path}"
             if not resolved.exists():
                 return f"repairs 路径不存在: {path}"
