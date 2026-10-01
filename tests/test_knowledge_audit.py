@@ -619,11 +619,17 @@ def test_audit_second_suspected_round_escalates(proj_settled, install_core):
     state = {"broken": False}
 
     def violations():
-        return (
-            ["spec/knowledge/domains/dom-a/beta.md：marker 不可解析"]
-            if state["broken"]
-            else []
-        )
+        # 违规与盘上内容联动：转写 run 把 beta.md marker 写坏 → 校验报违规；
+        # 失败回滚（git restore）后违规随之消失。MUST NOT 用全局开关式恒在
+        # 违规——校验按「每条疑点 spawn 前基线」取差集判新发（差集口径，
+        # knowledge_backfill._validate_with_repair），前一条疑点残留的恒在
+        # 违规会被后继疑点当既有违规豁免（零改动判 no-conflict），两疑点
+        # 只有一条进转写失败，与真实「每轮修正新引入违规、回滚即清除」形态
+        # 不符。
+        beta = proj_settled / "spec/knowledge/domains/dom-a/beta.md"
+        if "BROKEN-MARKER" in beta.read_text(encoding="utf-8"):
+            return ["spec/knowledge/domains/dom-a/beta.md：marker 不可解析"]
+        return []
 
     install_core(FakeCore(proj_settled, violations_fn=violations))
     calls = {"n": 0}
@@ -631,7 +637,13 @@ def test_audit_second_suspected_round_escalates(proj_settled, install_core):
     def spawn(prompt, run_id):
         if "定向转写" in prompt:
             calls["n"] += 1
-            state["broken"] = True  # 修正轮持续违规 → 转写失败回滚
+            # 修正轮持续写坏 marker（真实「转写 run 改坏页面」形态）→
+            # 新发违规恒在 → 转写失败回滚
+            beta = proj_settled / "spec/knowledge/domains/dom-a/beta.md"
+            beta.write_text(
+                beta.read_text(encoding="utf-8") + "BROKEN-MARKER\n",
+                encoding="utf-8",
+            )
         return "ok"
 
     r1 = ka.run_audit(proj_settled, spawn=spawn)

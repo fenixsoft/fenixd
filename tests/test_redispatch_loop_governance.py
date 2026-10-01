@@ -134,9 +134,10 @@ class TestConvergenceContract(_RunAgentBase):
             {"status": "partial", "spec": self.spec,
              "completed_tasks": ["1.1", "1.2"],
              "unattainable": UNATTAINABLE_73},
-            # branch 非空（真实 success 路径的分支名由 runner 从 worktree 取得）；
-            # branch=None 旧会经「跳过合并伪推进」缺陷收口，已被
-            # item e45c71cbcd2c 守卫按契约判失败重派。
+            # branch 非空（真实 success 路径的分支名由 runner 从 worktree 取得，
+            # 本例走真实 merge-back 收口）。partial 诚实退出收敛允许 branch 缺失
+            # （守卫豁免 impl_status == "partial"，见 queue.py item e45c71cbcd2c
+            # 注释）；守卫只拦伪 success（自报 success/无结果文件）的缺支。
             branch="fenix/demo-1",
         )
         assert entry["status"] == "implemented", entry

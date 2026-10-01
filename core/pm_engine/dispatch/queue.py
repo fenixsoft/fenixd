@@ -1726,7 +1726,7 @@ class QQQueueMixin:
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
                     # 所以用分支名直接 merge。
-                    if not result.branch:
+                    if impl_status != "partial" and not result.branch:
                         # （code-review item e45c71cbcd2c）防御「success 蕴含 branch
                         # 非空」契约：runner 成功路径的分支名取自
                         # worktree_manager.get_branch_name（Optional[str]——daemon
@@ -1742,6 +1742,14 @@ class QQQueueMixin:
                         # 可归因，不经 fingerprint/breaker/repair 记账，也不触同因
                         # 重派 streak（作用域边界同通用失败分支 3.3b 约定）；
                         # worktree 已被 runner 清理，无可保留现场。
+                        # 豁免 impl_status == "partial"（诚实退出收敛，定向重试轮
+                        # 回归修复）：run-result 自报 partial + 缺口全部 ⊆
+                        # unattainable 时上方已按成功收口，该契约形态本就允许
+                        # branch 缺失（「run 已收工、worktree 已清理」下收尾只推进
+                        # 状态并入队 verifier，无合并动作——
+                        # test_honest_exit_convergence 钉住，fix-dashboard-read-path-
+                        # performance 实测事故的收敛出口）。守卫只盯伪 success
+                        # （自报 success / 无结果文件），不拦自报 partial 的合法缺支。
                         contract_err = (
                             "merge skipped（success 但 branch 为空，违反「success "
                             "蕴含 branch 非空」契约）：实现成果未经合并，按 merge "
