@@ -62,6 +62,11 @@ class H9SseRoutesMixin:
             # 若留在 try 外，响应首字节刷出前客户端 RST 会让写失败穿出本方法、
             # finally 未建立，该槽位永久泄漏（仅进程重启可回收）。
             self.connection.settimeout(SSE_WRITE_TIMEOUT_SECONDS)
+            # 直写响应与 _json/_error/_write_304 同一登记纪律（code-review
+            # item 78ee3db75b4a）：先登记再写头，循环内若逃逸出非连接类异常
+            # （外层 except 元组只覆盖 OSError 族），base 层 _handle_inner 的
+            # 500 兜底据此不对流已开始的连接补写第二个响应。
+            self._mark_response_started()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")

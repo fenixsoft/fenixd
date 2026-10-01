@@ -63,8 +63,12 @@ logger = logging.getLogger("fenixd.dashboard.routes.base")
 def _resolve_project_for_sig(s, query):
     """签名函数共用的只读项目解析：缺失/未知/不存在项目返回 None。
 
-    不复用 _project_or_user_scope / _project_from_query：那些助手在失败分支
-    自写 404 响应，签名阶段绝不能写响应（协商可能命中 304 短路）。
+    不复用 _project_or_user_scope：它在失败分支自写 404 响应，签名阶段绝
+    不能写响应（协商可能命中 304 短路）。_project_from_query 则是纯查询
+    （只做字典查找返回 dict/None，不写任何响应，调用方须自行处理 None
+    分支，code-review item 81fe3c75b483），但不核验 exists 且把「无参」
+    与「不存在」折叠为同一 None——故就地内联，缺失/未知/不存在统一返回
+    None 供签名层降级。
     """
     name = query.get("project", [None])[0]
     if not name:
@@ -687,17 +691,19 @@ class H0BaseMixin:
     # ── 服务端分页参数解析单源（add-dashboard-paging-and-etag 2.1/2.2）──
 
     @staticmethod
-    def _parse_page_params(page_raw, size_raw, default_size: int, max_size: int):
+    def _parse_page_params(
+        page_raw, size_raw, default_size: int, max_size: int, *, default_page=None
+    ):
         """解析 page/page_size 查询参数，返回 (page | None, page_size)。
 
-        - page **缺席** → page=None：全量兼容路径（响应不带任何分页字段，
-          与改造前逐字段一致）。
+        - page **缺席** → default_page（缺省 None：全量兼容路径，响应不带
+          任何分页字段，与改造前逐字段一致；归档路径传 1——响应恒分页）。
         - page 在场但非法（非整数/<1）→ 回退 1（分页响应形态保留）。
         - page_size 缺席 → default_size；非法（非整数/<1）→ 回退 default_size；
           超过 max_size → 截到 max_size。
         """
         default_size = min(default_size, max_size)
-        page = None
+        page = default_page
         if page_raw is not None:
             try:
                 page = int(str(page_raw).strip())

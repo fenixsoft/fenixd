@@ -35,14 +35,6 @@ _ARCHIVE_DEFAULT_PAGE_SIZE = 50
 _ARCHIVE_MAX_PAGE_SIZE = 200
 
 
-def _query_int(query, key: str, default: int) -> int:
-    """从 query dict 取整数参数（urllib.parse.parse_qs 形态）；非法/缺省回退。"""
-    try:
-        return int(query.get(key, [None])[0])
-    except (TypeError, ValueError):
-        return default
-
-
 def _adjudication_lock(alert_id: str) -> threading.Lock:
     """按 alert_id 取（懒建）进程内互斥锁；字典只在告警裁决时增长，量级有限。"""
     with _ADJUDICATION_LOCKS_GUARD:
@@ -277,9 +269,17 @@ class H6AlertRoutesMixin:
         page*page_size（同构活跃分页语义，先过滤后分页）。聚合口径与缺省
         活跃聚合一致：跳过 fixture 项目与不存在项目、逐条注入 project。
         """
-        page = max(1, _query_int(query, "page", 1))
-        page_size = _query_int(query, "page_size", _ARCHIVE_DEFAULT_PAGE_SIZE)
-        page_size = min(max(1, page_size), _ARCHIVE_MAX_PAGE_SIZE)
+        # 分页钳制收敛 _parse_page_params 单点（code-review item
+        # 365cdcfb05d8），与活跃路径共用同一常量单源（_api_admin_activities）
+        page, page_size = self._parse_page_params(
+            query.get("page", [None])[0],
+            query.get("page_size", [None])[0],
+            default_size=_ARCHIVE_DEFAULT_PAGE_SIZE,
+            max_size=_ARCHIVE_MAX_PAGE_SIZE,
+            # 归档响应恒分页（total/page/page_size/has_more 必在）：page
+            # 缺席回退 1，而非活跃路径的 None=全量兼容模式
+            default_page=1,
+        )
 
         if project_name:
             project = self.server.project_by_name(project_name)
