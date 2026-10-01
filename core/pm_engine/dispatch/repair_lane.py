@@ -144,8 +144,8 @@ class PRepairLaneMixin:
 
         返回值（code-review item ec22643fa99a 锁移交标记）：True 表示已认领
         现场并启动新一轮 repair worker（``{spec}:repair`` 锁已移交给新
-        worker）；False 表示未派发（冷却/超限/载体缺失等早退路径，均未重新
-        认领锁，上一轮 worker 可安全释放自己那轮的锁）。
+        worker）；False 表示未派发（冷却/超限/载体缺失/线程启动失败等早退
+        路径，均未重新认领锁，上一轮 worker 可安全释放自己那轮的锁）。
 
         载体三态（design D3，以 git 事实为判定基准）：
         (a) 原 worktree 存在 → 原地进入（保留 node_modules/构建缓存）；
@@ -324,6 +324,17 @@ class PRepairLaneMixin:
                 "pm_engine",
                 f"repair 线程启动失败 '{spec_name}'（已回滚本轮认领，"
                 f"按未派发处置）: {type(e).__name__}: {e}",
+            )
+            # code-review item 641365358807：回滚后补恢复安排（与超限/载体缺失
+            # 早退路径同款 fallback 重派）——本方法四个调用点均不消费 False
+            # 返回值安排重派，原行为 spec 悬置 implementing 且无活跃 run，只能
+            # 等 admin_monitor stuck 阈值唤起人工。_repair_round 已在上方回退
+            # 至派发前值，此处由 fallback 收尾统一归零。
+            self._fallback_after_repair(
+                spec_name,
+                resolved_branch,
+                repair_error=f"repair 线程启动失败（{type(e).__name__}）",
+                merge_error=getattr(merge_info, "error", "") or "",
             )
             return False
         # 锁已移交给新 worker（code-review item ec22643fa99a）：此后调用方的
@@ -518,80 +529,147 @@ class PRepairLaneMixin:
             remerge_ok, remerge_error = remerge_info
 
             if remerge_ok:
-                # 链成功：回收 repair worktree，推进 implemented
-                # ── 顺序修复（fix-recovery-branch-anchor D1 1.4）───────
-                # update_spec(branch=...) MUST 先于 wm.cleanup 执行
-                # （先写锚点载体、后删 worktree，happy path 上不留窗口）。
-                # fix-observability-gaps 2.2：repair re-merge 成功 → implemented
-                # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard D3）：
-                # status=ready（评审收尾竞态回退残留）时先补记 ready→implementing，
-                # 再推进 implemented（消除 ready→implemented 非法转移 ERROR）。
-                self._pm._merge_ready_fallback(
-                    spec_name,
-                    getattr(r, "run_id", None) or None,
-                    "repair",
-                    branch,
-                )
-                self._pm.state_machine.transition(
-                    spec_name, "implemented",
-                    trigger_run_id=getattr(r, "run_id", None) or None,
-                    agent_type="repair", channel="auto",
-                )
-                self._pm.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "implementer_run": getattr(r, "run_id", None) or None,
-                        "branch": branch,
-                        "error": None,
-                        "_retry_count": 0,
-                        "_merge_fp": None,
-                        "_merge_streak": 0,
-                        "_repair_round": 0,
-                        "_repair_merge_error": None,
-                        # repair 链成功收口：基准 tip 随 _repair_round 一并清零
-                        # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
-                        "_repair_base_tip": None,
-                        "_repair_awaiting_remerge": False,
-                        **self._pm._clear_dispatch_conflict(spec_name),
-                    },
-                )
-                # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
-                # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
+                # 成功尾段单独包 try/except（code-review item 6a553a71ac8a）：
+                # 此段任一 IO 类异常若外溢到 worker 的外层 except，会被兜底成
+                # _fallback_after_repair 全新重派——而此时 re-merge 已成功、
+                # 分支已并入 main、锚点已写，白烧一轮实现 run。尾段异常改走
+                # 下方恢复路径（保留 implemented 锚点 + verifier 重入队）。
                 try:
-                    self._pm.agent_runner._v2_stop_for_worktree(wt_path)
-                except Exception:
-                    pass
-                try:
-                    wm.cleanup(wt_path, success=True)
-                except Exception as e:
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"repair worktree 清理失败 '{spec_name}'（非阻塞）: {e}",
+                    # 链成功：回收 repair worktree，推进 implemented
+                    # ── 顺序修复（fix-recovery-branch-anchor D1 1.4）───────
+                    # update_spec(branch=...) MUST 先于 wm.cleanup 执行
+                    # （先写锚点载体、后删 worktree，happy path 上不留窗口）。
+                    # fix-observability-gaps 2.2：repair re-merge 成功 → implemented
+                    # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard D3）：
+                    # status=ready（评审收尾竞态回退残留）时先补记 ready→implementing，
+                    # 再推进 implemented（消除 ready→implemented 非法转移 ERROR）。
+                    self._pm._merge_ready_fallback(
+                        spec_name,
+                        getattr(r, "run_id", None) or None,
+                        "repair",
+                        branch,
                     )
-                try:
-                    self._pm._sync_task_progress(spec_name)
-                except Exception as e:
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"repair 任务进度回写失败 '{spec_name}'（非阻塞）: {e}",
+                    self._pm.state_machine.transition(
+                        spec_name, "implemented",
+                        trigger_run_id=getattr(r, "run_id", None) or None,
+                        agent_type="repair", channel="auto",
                     )
-                try:
-                    wm.consume_legacy(spec_name)
-                except Exception as e:
-                    # 失败不再静默吞掉（code-review item 8fde33e82e7b）：与
-                    # fast_track.py / queue.py 的等价调用同款非阻塞 WARNING，
-                    # 使持续的 legacy 清理失败在本车道可观测（fail-open 但可见）。
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"consume_legacy 清理失败 '{spec_name}'（非阻塞）: "
-                        f"{type(e).__name__}: {e}",
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "implementer_run": getattr(r, "run_id", None) or None,
+                            "branch": branch,
+                            "error": None,
+                            "_retry_count": 0,
+                            "_merge_fp": None,
+                            "_merge_streak": 0,
+                            "_repair_round": 0,
+                            "_repair_merge_error": None,
+                            # repair 链成功收口：基准 tip 随 _repair_round 一并清零
+                            # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
+                            "_repair_base_tip": None,
+                            "_repair_awaiting_remerge": False,
+                            **self._pm._clear_dispatch_conflict(spec_name),
+                        },
                     )
-                self._enqueue_front(spec_name, "verifier")
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"repair 链成功：'{spec_name}' re-merge-back 完成 → implemented",
-                )
-                return
+                    # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
+                    # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
+                    try:
+                        self._pm.agent_runner._v2_stop_for_worktree(wt_path)
+                    except Exception:
+                        pass
+                    try:
+                        wm.cleanup(wt_path, success=True)
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"repair worktree 清理失败 '{spec_name}'（非阻塞）: {e}",
+                        )
+                    try:
+                        self._pm._sync_task_progress(spec_name)
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"repair 任务进度回写失败 '{spec_name}'（非阻塞）: {e}",
+                        )
+                    try:
+                        wm.consume_legacy(spec_name)
+                    except Exception as e:
+                        # 失败不再静默吞掉（code-review item 8fde33e82e7b）：与
+                        # fast_track.py / queue.py 的等价调用同款非阻塞 WARNING，
+                        # 使持续的 legacy 清理失败在本车道可观测（fail-open 但可见）。
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"consume_legacy 清理失败 '{spec_name}'（非阻塞）: "
+                            f"{type(e).__name__}: {e}",
+                        )
+                    self._enqueue_front(spec_name, "verifier")
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"repair 链成功：'{spec_name}' re-merge-back 完成 → implemented",
+                    )
+                    return
+                except Exception as tail_e:
+                    # code-review item 6a553a71ac8a：成功尾段异常不转
+                    # _fallback_after_repair——bump _retry_count 强制 ready 全新
+                    # 重派会白烧已成功的实现 run，且该路径无 queue.py:2735-2755
+                    # 式在飞状态回写保护，可能把已推进的 implemented 锚点覆盖回
+                    # ready。恢复口径：保留 implemented 锚点，best-effort 补齐
+                    # 收口后重入队 verifier（transition 对非法转移仅 WARNING +
+                    # False 不抛异常，已推进时幂等短路，重复补推无副作用）。
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"repair 链成功尾段异常 '{spec_name}'（re-merge 已成功，"
+                        f"不回退重派，转 verifier 重入队恢复）: "
+                        f"{type(tail_e).__name__}: {tail_e}",
+                    )
+                    try:
+                        self._pm.state_machine.transition(
+                            spec_name, "implemented",
+                            trigger_run_id=getattr(r, "run_id", None) or None,
+                            agent_type="repair", channel="auto",
+                        )
+                    except Exception as e2:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"成功尾段异常恢复：补推 implemented 失败 "
+                            f"'{spec_name}'（非阻塞）: {e2}",
+                        )
+                    try:
+                        # best-effort 补齐收口字段（与成功尾段 update_spec 同族
+                        # 复位，含 _clear_dispatch_conflict 锁冲突收口；已写过的
+                        # 字段幂等重写无害）。写面与成功尾段一致，仅触发时机不同。
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "implementer_run": getattr(r, "run_id", None) or None,
+                                "branch": branch,
+                                "error": None,
+                                "_retry_count": 0,
+                                "_merge_fp": None,
+                                "_merge_streak": 0,
+                                "_repair_round": 0,
+                                "_repair_merge_error": None,
+                                "_repair_base_tip": None,
+                                "_repair_awaiting_remerge": False,
+                                **self._pm._clear_dispatch_conflict(spec_name),
+                            },
+                        )
+                    except Exception as e3:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"成功尾段异常恢复：收口字段回写失败 "
+                            f"'{spec_name}'（非阻塞）: {e3}",
+                        )
+                    try:
+                        self._enqueue_front(spec_name, "verifier")
+                    except Exception as e4:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"成功尾段异常恢复：verifier 重入队失败 "
+                            f"'{spec_name}'（等 full_scan 周期兜底）: {e4}",
+                        )
+                    return
 
             # re-merge-back 再失败：与首次 merge 失败同路径处理（熔断计数连续累计），
             # repair 轮不清零 _merge_fp/_merge_streak（spec-merge-circuit-breaker）。
@@ -763,11 +841,20 @@ class PRepairLaneMixin:
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
-        try:
-            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
-        except (TypeError, ValueError):
-            prev_streak = 0
-        streak = prev_streak + 1 if prev_fp == fp else 1
+        # _merge_streak 走锁内原子递增（bump_counters 返回写后值参与阈值判定，
+        # 同型修复见 queue.py _handle_merge_back_real_failure，code-review item
+        # 6c89067c172a）：原先「read_one 读 → 算 +1 → 并进 update_spec 写回」读与
+        # 写分处两次 STATE 锁临界区，merge-only 重试通道并发进入同一 spec 时各持
+        # 相同旧值写回、丢一次递增，同指纹熔断晚一轮触发。指纹切换属重置语义
+        # （绝对写 1，无丢增量面），不 bump、随后续 update_spec 落盘。
+        if prev_fp == fp:
+            streak = self._pm.state_machine.bump_counters(
+                spec_name, {"_merge_streak": 1}
+            ).get("_merge_streak", 0)
+            streak_bumped = True
+        else:
+            streak = 1
+            streak_bumped = False
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
         # 配置侧 int() 归一（code-review item a8c4f9dfc7a0，对齐 fast_track
         # 同键 74317ab4a77a 治理）：字符串/null 配置裸用于比较抛 TypeError
@@ -781,19 +868,20 @@ class PRepairLaneMixin:
                 spec_name, "blocked",
                 trigger_run_id=None, agent_type="repair", channel="auto",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": final_error,
-                    "_merge_fp": fp,
-                    "_merge_streak": streak,
-                    "_retry_count": 0,
-                    # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
-                    # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
-                    # 残留导致后续启动误走 re-merge 路径。
-                    "_repair_awaiting_remerge": False,
-                },
-            )
+            # streak 已由 bump_counters 原子递增落盘时不再并写该字段
+            # （防并发写回互相覆盖丢增量），仅指纹切换重置路径补绝对写。
+            breaker_updates: dict = {
+                "error": final_error,
+                "_merge_fp": fp,
+                "_retry_count": 0,
+                # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
+                # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
+                # 残留导致后续启动误走 re-merge 路径。
+                "_repair_awaiting_remerge": False,
+            }
+            if not streak_bumped:
+                breaker_updates["_merge_streak"] = streak
+            self._pm.state_machine.update_spec(spec_name, breaker_updates)
             self._pm.logger.error(
                 "pm_engine",
                 f"Circuit breaker tripped after repair for '{spec_name}' (fp={fp}) "
