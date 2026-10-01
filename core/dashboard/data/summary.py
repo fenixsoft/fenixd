@@ -323,13 +323,21 @@ def normalize_depends_on(raw) -> str | None:
 _normalize_depends_on = normalize_depends_on
 
 
-def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | None = None) -> dict:
+def spec_summary(
+    project_root, spec_name: str, entry: dict, runs_files: list | None = None,
+    state_entries: dict | None = None, archived_entries: dict | None = None,
+) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。
 
     runs_files: 调用方预扫描的本 spec run 产物路径集（SummaryIndex 每轮经
         _runs_by_spec_sigs 预扫一次后传入）；提供时 get_runs/任务进度/存活
         心跳全部复用该文件集，不再各自 glob 整个 runs 目录（D2：目录 glob
         次数为常数）。缺省 None 时内部自行 glob（详情页等非索引路径）。
+    state_entries / archived_entries: 调用方已解析的活跃 STATE.md / 归档清单
+        快照（与 project_summary(specs=...) 同模式），仅供 is_spec_archived
+        判定复用——SummaryIndex 重建链逐 spec 透传，避免对每个已归档 spec
+        全量重解析双 STATE 文件（code-review item c5e751f5a595）。缺省 None
+        时 is_spec_archived 内部自行解析，行为与原先一致。
     """
     # 入口单点归一（code-review item c028b72cc8ef）：SummaryIndex 调用链本就
     # 保证 entry 非 None（entry = entry or {}），此处兜底同款归一，函数内
@@ -397,7 +405,12 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
     return {
         "name": spec_name,
         "status": entry.get("status"),
-        "archived": _facade.is_spec_archived(project_root, spec_name),
+        # 快照透传（c5e751f5a595）：SummaryIndex 调用链复用本轮已解析的活跃/
+        # 清单快照，非索引路径（缺省 None）内部自解析，行为不变。
+        "archived": _facade.is_spec_archived(
+            project_root, spec_name,
+            state_entries=state_entries, archived_entries=archived_entries,
+        ),
         # add-archive-state-migration D4：迁出溯源字段透传（清单条目自带，
         # 活跃条目无该键 → None）。条目来自合并快照（SummaryIndex 活跃 ∪ 清单），
         # 迁出条目的字段即清单小节原值。
@@ -767,7 +780,13 @@ class SummaryIndex:
                 # D2：复用本轮预扫描的 runs_sigs 分组结果，spec_summary 不再
                 # 自行 glob runs/archive 目录（目录 glob 次数为常数）。
                 spec_files = [Path(p) for p in (runs_sigs.get(spec_name) or {})]
-                summary = _facade.spec_summary(proot, spec_name, entry, runs_files=spec_files)
+                # c5e751f5a595：透传本轮已解析的活跃（active_specs）与归档清单
+                # （archived_entries）快照，is_spec_archived 不再对每个已归档
+                # spec 全量重解析双 STATE 文件（重建期 O(N) 放大）。
+                summary = _facade.spec_summary(
+                    proot, spec_name, entry, runs_files=spec_files,
+                    state_entries=active_specs, archived_entries=archived_entries,
+                )
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
 

@@ -263,9 +263,18 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     return result
 
 
-def is_spec_archived(project_root, spec_name: str) -> bool:
+def is_spec_archived(
+    project_root, spec_name: str, state_entries: dict | None = None,
+    archived_entries: dict | None = None,
+) -> bool:
     """归档判定：活跃目录 `spec/changes/<name>/` 不存在，且活跃 STATE.md 或
     归档清单 `.fenix/STATE.archive.md` 有该条目（双源合取，D4）。
+
+    state_entries / archived_entries: 调用方已解析的活跃 STATE.md / 归档清单
+    快照（与 project_summary(specs=...) 同模式，SummaryIndex 重建链透传；
+    code-review item c5e751f5a595——重建期逐 spec 全量重解析双 STATE 文件是
+    O(N) 放大）。缺省 None 时内部自行解析，行为与原先一致；任一侧缺省仅
+    该侧回退自解析，两侧快照均须各自完整（活跃侧/清单侧，不收合并快照）。
 
     D1：归档可见性以活跃目录存在性为准——不检测 archive/ 下具体路径
     形态（删除路径命名 `<name>-<Unix秒>` 不同、手动移动命名不可控），也不写
@@ -276,10 +285,15 @@ def is_spec_archived(project_root, spec_name: str) -> bool:
     """
     # 先查目录：未归档 spec 短路返回 False，不额外读 STATE.md（性能敏感路径，
     # /api/specs 对全部 spec 逐个调用）；目录缺席再合取双源条目校验
-    return not (Path(project_root) / "spec" / "changes" / spec_name).is_dir() and (
-        spec_name in parse_state(project_root)
-        or spec_name in parse_archived_state(project_root)
-    )
+    if (Path(project_root) / "spec" / "changes" / spec_name).is_dir():
+        return False
+    if state_entries is None:
+        state_entries = parse_state(project_root)
+    if spec_name in state_entries:
+        return True
+    if archived_entries is None:
+        archived_entries = parse_archived_state(project_root)
+    return spec_name in archived_entries
 
 
 def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
