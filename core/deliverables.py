@@ -321,6 +321,7 @@ def extract_paths_typed(spec_dir) -> dict:
             continue
 
         in_fence = False
+        fence_char = ""  # 当前围栏开栏标记（``` / ~~~）；空 = 未在围栏内
         in_tasks_header = True  # 第一个 `## ` 标题之前为头部说明段
         in_scenario = False  # 能力 spec 的 Scenario 小节
 
@@ -339,13 +340,23 @@ def extract_paths_typed(spec_dir) -> dict:
             # 打为 False，其后围栏块经 _classify_line 落入错误档位，且该状态
             # 在块外持续生效（双向漂移）。围栏分隔行本身不命中任何标题正则，
             # 先判围栏对开/关翻转行为零影响。
-            if _FENCE_RE.match(raw_line):
+            m = _FENCE_RE.match(raw_line)
+            if m:
                 if not in_fence:
+                    # 开栏记标记字符，仅同字符可闭（CommonMark 同字符闭合
+                    # 语义，对齐 _extract_declared_block，item 820df5cad84b
+                    # ——``` 与 ~~~ 不互为翻转标记）
+                    fence_char = m.group(1)
                     fence_ctx = _classify_line(
                         "", doc_kind, in_tasks_header, in_scenario
                     )
-                in_fence = not in_fence
-                continue
+                    in_fence = True
+                    continue
+                if m.group(1) == fence_char:
+                    in_fence = False
+                    continue
+                # 异字符围栏行是块内容而非闭栏（不翻转边界），落入下方
+                # in_fence 分支按围栏内 token 处理
             if in_fence:
                 ctx = fence_ctx
             else:
@@ -1238,30 +1249,14 @@ def is_stale_declaration(entry, project_root) -> bool:
     kind = str(entry.get("kind") or "").strip().lower()
     if kind != "modify" or not path:
         return False
-    # 主树 HEAD 存在性：git cat-file -e HEAD:<path>；仅 git 不可用（超时/无法
-    # 执行/非仓库）才回退文件系统存在性（item 0a451454809b；item
-    # d5da82df85c3：非仓库错误与「路径不存在」同为退出码 128，须按 stderr
-    # 形态区分——非仓库不可判确定性陈旧，同样回退文件系统）
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(project_root), "cat-file", "-e", f"HEAD:{path}"],
-            # stderr 留管道供 128 形态判别，同 _git_object_exists_on_branch
-            # 三态化（取代旧全 DEVNULL 只看 returncode，feccb157c1d5）。
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            # LC_ALL=C 固化英文文案（item 77767180a566，同上）
-            env=_git_c_env(),
-            timeout=_GIT_READ_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        pass  # git 判定不可用：走文件系统回退
-    else:
-        if r.returncode == 0:
-            return False  # 主树 HEAD 存在 → 非陈旧
-        stderr_text = (r.stderr or b"").decode("utf-8", "replace").lower()
-        if "does not exist" in stderr_text:
-            return True  # git 成功执行且 HEAD 无该路径 → 确定性陈旧
-        # 非仓库/对象名无效等 git 不可用错误 → 不判确定性陈旧，走文件系统回退
+    # 主树 HEAD 存在性：复用 _git_object_exists_on_branch("HEAD", ...) 三态
+    # 判别（True/False/None 恰映射「非陈旧/确定性陈旧/回退文件系统」三分支，
+    # item 8d2c1a78fe92）。仅 git 不可用（超时/无法执行/非仓库）才回退文件
+    # 系统存在性的取向不变（item 0a451454809b）；item d5da82df85c3 的「退出
+    # 码 128 须按 stderr 形态区分非仓库与路径不存在」判别单点在助手内。
+    exists = _git_object_exists_on_branch("HEAD", path, project_root)
+    if exists is not None:
+        return exists is False  # True=HEAD 存在→非陈旧；False=HEAD 无该路径→陈旧
     # git 判定不可用（超时/无法执行/非仓库）：回退文件系统存在性（fail-safe）
     try:
         return not (Path(project_root) / path).exists()
