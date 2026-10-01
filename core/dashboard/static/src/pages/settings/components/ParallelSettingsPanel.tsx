@@ -56,8 +56,11 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
         max_turns: values.max_turns,
         run_timeout_seconds: values.run_timeout_seconds,
       },
+      // 只提交本面板管理的键（code-review item 5d82bd4c6d76）：不展开
+      // config.verify——项目作用域下它是 user+project 合并视图，展开会把
+      // 用户级继承来的键冻结成项目级覆盖。后端 verify 分支为逐键合并，
+      // 无需基底。
       verify: {
-        ...(config.verify || {}),
         planner_max_concurrent: values.planner_throttle
           ? values.planner_max_concurrent
           : 0,
@@ -170,7 +173,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="parallel" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="settings-save">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="parallel-save">
           保存
         </Button>
       </div>
