@@ -31,7 +31,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Any, List, Optional, Set
 
 from core.fast_track_result import SCENARIO_STATUSES
 
@@ -1218,7 +1218,9 @@ def _normalize_attribution(sc: dict) -> str:
                 if isinstance(ev, str):
                     ev = ev.strip()
                 else:
-                    ev = str(ev or "").strip()
+                    # None 才折空串（与 _clip_derived_text 同口径）：0/False
+                    # 等假值是有信息量回传（如退出码），不得被 or 吞成空串
+                    ev = ("" if ev is None else str(ev)).strip()
                 parts.append(f"a={assertion}:c={cls}:e={ev}")
     normalized = " ".join(parts)
     return re.sub(r"\s+", " ", normalized).strip()

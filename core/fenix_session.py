@@ -222,6 +222,25 @@ def _daemon_procs_under(root: Path) -> bool:
     return bool(_procs_matching(_match))
 
 
+def _daemon_proc_running(root: Path) -> bool:
+    """项目根下是否有 daemon 本体进程（仅 _is_daemon_proc 口径，不含 supervisor）。
+
+    start_daemon 幂等门细分判定（code-review item e17df2678564）：is_running
+    主判定命中 daemon 或 supervisor 任一，仅托管壳（supervisor）在跑而 daemon
+    本体缺席（如 supervisor 拉起连续失败进入退避/熔断计数）时，不能把「壳在
+    跑」当成「daemon 已就绪」。/proc 不可用时返回 True——复核手段自身失效时
+    保守沿用既有 already 语义，不因探测降级改变幂等行为。
+    """
+
+    def _match(cwd: Path, argv) -> bool:
+        return _is_daemon_proc(cwd, argv, root)
+
+    try:
+        return bool(_procs_matching(_match))
+    except Exception:
+        return True
+
+
 def _tmux_match(proot: Path) -> bool:
     """回退判定：唯一名 session（+ 旧版固定 `fenixd` cwd 匹配）。"""
     try:
@@ -376,7 +395,10 @@ def start_daemon(root: str | None = None) -> dict:
     的父进程）。与 `fenix-setup` 技能第 7 步的命令保持一致。
 
     启动前校验项目根存在 `.fenix`（框架软链接）与 `STATE.md`，缺失返回可读
-    错误且不产生 daemon 进程。幂等：已运行则直接返回 already，不重复拉起。
+    错误且不产生 daemon 进程。幂等：daemon 或 supervisor 已在跑则不重复拉起——
+    daemon 本体在跑直接返回 already；仅 supervisor 在跑（daemon 本体缺席，如
+    supervisor 启动退避/熔断计数中）同样不重复拉起，但返回值追加 warning
+    说明未检测到 daemon（code-review item e17df2678564）。
     启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
     避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
     至多约 5 秒，命中再返回成功；窗口耗尽则经 `tmux has-session` 复核会话
@@ -385,7 +407,8 @@ def start_daemon(root: str | None = None) -> dict:
     new-session 返回码非零（duplicate session 除外，维持既有「已存在」路径
     语义落回轮询复核）同样直接返回 ok=False 并附 stderr，不静默忽略。
 
-    返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}
+    返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}；
+    仅「仅 supervisor 在跑、daemon 本体未检测到」分支额外附 warning: str。
     任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
     """
     proot = resolve_root(root)
@@ -405,7 +428,22 @@ def start_daemon(root: str | None = None) -> dict:
             "already": False,
         }
     if is_running(proot):
-        return {"ok": True, "error": None, "session": session, "already": True}
+        if _daemon_proc_running(proot):
+            return {"ok": True, "error": None, "session": session, "already": True}
+        # 幂等门细分判定（code-review item e17df2678564）：is_running 主判定命中
+        # daemon 或 supervisor 任一——仅托管壳在跑、daemon 本体缺席（如 supervisor
+        # 拉起连续失败进入退避/熔断计数，daemon 不会被重新拉起）时，不得谎报
+        # daemon 已就绪；也不走下方 new-session 拉起（同名 tmux 会话被既有
+        # supervisor 占用，duplicate session 落回轮询后 is_running 仍会因
+        # supervisor 在跑立即判真，同样谎报成功）。维持既有 ok/already 键结构，
+        # 追加 warning 供调用方区分「daemon 在跑」与「仅托管壳在跑」。
+        return {
+            "ok": True,
+            "error": None,
+            "session": session,
+            "already": True,
+            "warning": "supervisor 在跑但未检测到 daemon 进程（可能处于启动退避、熔断或停止流程中），请查看 .fenix/logs/supervisor.log",
+        }
 
     # 陈旧 stop 标记清理（3.3）：is_running 为假（已幂等返回）且 supervisor 也未
     # 在跑时删除——避免误删一次正在进行的停止操作留下的标记

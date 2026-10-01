@@ -7,7 +7,6 @@ _fmt_dur/_local_ts 在两个脚本各持一份，小时段补零口径漂移 2h0
 """
 
 from core.timelib import fmt_display
-from datetime import datetime
 
 
 def local_ts(iso_str, fmt="%H:%M:%S"):
@@ -32,7 +31,7 @@ def fmt_dur(seconds) -> str:
     """秒数 → 紧凑时长（30s / 5m / 2h5m / 1d5h）；非正数或非法输入返回空串。"""
     try:
         s = int(seconds or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return ""
     if s <= 0:
         return ""

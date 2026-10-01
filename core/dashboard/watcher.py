@@ -338,7 +338,24 @@ class FileWatcher:
         run_changed = set()
         try:
             run_files = list(runs_dir.glob("*.jsonl"))
-        except OSError:
+        except OSError as e:
+            # 瞬时失败（EACCES/EMFILE 等）不再静默（code-review item e2decbb39a72）：
+            # 「本轮无变化」与「扫描失败」必须可从日志区分，否则瞬时故障导致该轮
+            # run 变化漏检且无从排查。直接返回、不动 _run_base 基线（基线保留即
+            # 不会把已有 run 误判清退，语义同 _scan_spec_dirs 跳过本轮删除判定）；
+            # 节流复用 _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches
+            # 一并清退；同项目两类失败 5 分钟内合并记一条，符合本文件低频节流纪律）。
+            key = proot.as_posix()
+            now = time.monotonic()
+            last_warn = self._proj_scan_warn.get(key)
+            if last_warn is None or now - last_warn >= 300:
+                self._proj_scan_warn[key] = now
+                logger.warning(
+                    "dashboard watcher 枚举项目 %s runs 目录失败，跳过本轮 run 比对: %s: %s",
+                    proot,
+                    type(e).__name__,
+                    e,
+                )
             return set()
         active = set()
         for p in run_files:
@@ -365,7 +382,23 @@ class FileWatcher:
         changed = False
         try:
             log_files = list(logs_dir.glob("fenixd*.log"))
-        except OSError:
+        except OSError as e:
+            # 瞬时失败（EACCES/EMFILE 等）不再静默（code-review item e2decbb39a72）：
+            # 「本轮无变化」与「扫描失败」必须可从日志区分，否则瞬时故障导致该轮
+            # log 变化漏检且无从排查。签名缓存原样保留，下轮恢复后变化照常补检；
+            # 节流复用 _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches
+            # 一并清退；同项目两类失败 5 分钟内合并记一条，符合本文件低频节流纪律）。
+            key = proot.as_posix()
+            now = time.monotonic()
+            last_warn = self._proj_scan_warn.get(key)
+            if last_warn is None or now - last_warn >= 300:
+                self._proj_scan_warn[key] = now
+                logger.warning(
+                    "dashboard watcher 枚举项目 %s logs 目录失败，跳过本轮 log 比对: %s: %s",
+                    proot,
+                    type(e).__name__,
+                    e,
+                )
             return False
         seen = set()
         for p in log_files:
@@ -483,7 +516,24 @@ class FileWatcher:
             return
         try:
             d = dashboard_data.spec_detail(proot, spec, entry)
-        except Exception:
+        except Exception as e:
+            # 详情组装失败不再静默（code-review item f8e2f0e599a7）：与
+            # _handle_state_change 的详情失败留痕（item 74be430c66cb）同口径，
+            # 「解析失败」与「确实无详情」必须可区分，否则 detail 通道持续失败
+            # 时前端详情弹窗静默不刷新、无从从日志反推原因。节流复用
+            # _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches 一并
+            # 清退；同项目两类失败 5 分钟内合并记一条，避免每轮刷屏）。
+            key = proot.as_posix()
+            now = time.monotonic()
+            last_warn = self._proj_scan_warn.get(key)
+            if last_warn is None or now - last_warn >= 300:
+                self._proj_scan_warn[key] = now
+                logger.warning(
+                    "dashboard watcher 组装 spec %s 详情失败（detail 事件跳过推送）: %s: %s",
+                    spec,
+                    type(e).__name__,
+                    e,
+                )
             return
         d["project"] = name
         self.hub.broadcast({"project": name, "type": "detail", "spec": spec, "data": d})

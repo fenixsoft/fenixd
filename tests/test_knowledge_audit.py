@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 import types
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -702,8 +703,10 @@ def test_checkpoint_merge_keeps_last_scale_and_report_trend(proj, install_core, 
     assert state["last_scale"]["pages"] >= 2  # 未被检查点回写覆盖丢失
     lines1 = state["last_scale"]["lines"]
 
-    # 自然日推进 → 第二次体检基于 last_scale 出趋势后缀
-    monkey_today = "2026-10-02"
+    # 自然日推进 → 第二次体检基于 last_scale 出趋势后缀。
+    # 模拟日期动态取未来一天，勿硬编码（硬编码日期一到当天断言即自过期，
+    # 2026-10-02 事故：assert "2026-10-02" != _today() 恰逢当日恒假）。
+    monkey_today = (date.today() + timedelta(days=1)).isoformat()
     assert monkey_today != ka._today()
     monkeypatch.setattr(ka, "_today", lambda: monkey_today)
     ka.knowledge_daily_check(

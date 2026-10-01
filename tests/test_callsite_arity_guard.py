@@ -85,6 +85,12 @@ ARITY_WHITELIST = [
     #    {delay} 占位）与 Formatter.format(self, record) 同名异签名——
     #    同族 1 的 str.format 误报（05323eed 引入调用点时漏补豁免）。
     ("core/pm_engine/dispatch/backoff.py", "format", "scheduled_log"),
+    # 5. core/agent_runner/maintenance_runs.py 核销守卫公共判定的模板实参
+    #    locked_detail_tmpl/unlock_detail_tmpl 是 str.format（全关键字展开，
+    #    {cov}/{total} 占位）与 Formatter.format(self, record) 同名异签名——
+    #    同族 1/4 的 str.format 误报（item a5262dd130c0 引入调用点时漏补豁免）。
+    ("core/agent_runner/maintenance_runs.py", "format", "locked_detail_tmpl"),
+    ("core/agent_runner/maintenance_runs.py", "format", "unlock_detail_tmpl"),
 ]
 
 

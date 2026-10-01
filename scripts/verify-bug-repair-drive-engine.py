@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""drive_engine.py — CLI 场景驱动脚本：在真实环境中测试 admin.bug_repair_mode 分流。
+"""verify-bug-repair-drive-engine.py（由 drive_engine.py 迁移改名）— CLI 场景驱动脚本：在真实环境中测试 admin.bug_repair_mode 分流。
 
-用法：python3 drive_engine.py <test_case> <spec_name>
+用法：python3 scripts/verify-bug-repair-drive-engine.py <test_case> <spec_name>
 
 test_case:
   first-round       — 首次失败 inplace（spec_name 首次 bug-found）
@@ -159,6 +159,7 @@ def test_third_round(spec_name: str):
         engine._enqueue = MagicMock()
 
         _make_buggy_spec(sm, spec_name)
+        _write_tasks(proot, spec_name)
         sm.update_spec(spec_name, {"_verify_fail_rounds": 2, "status": "bug-found"})
 
         engine._family._do_spec_bug_found(spec_name)
