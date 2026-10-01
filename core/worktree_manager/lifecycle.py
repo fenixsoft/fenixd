@@ -59,8 +59,9 @@ class G1LifecycleMixin:
         self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
         self._spec_locks: Set[str] = set()  # SPECs currently being worked on
         # 分支创建端口径前缀（fix-recovery-branch-anchor D2）：
-        # 分支创建端硬编码 `fenix/`（create() 第 223/226 行），此参数用于
-        # `find_branches_by_spec` 枚举前缀——取配置值与创建端口径的并集，
+        # 分支创建端硬编码 `fenix/`（同 mixin create() 内 _names 闭包的分支名
+        # 拼装；code-review item ded13afb19bb：拆包后失效行号引用改方法级定位），
+        # 此参数用于 `find_branches_by_spec` 枚举前缀——取配置值与创建端口径的并集，
         # 确保非 fenix 配置下仍命中 fenix 创建的分支（若配置值为 fenix，
         # 只枚举一次，无重复扫描）。
         self._implement_branch_prefix = implement_branch_prefix or "fenix"
@@ -998,10 +999,16 @@ class G1LifecycleMixin:
                 f"Worktree prune failed during orphan cleanup: {e}",
             )
 
-        self._active_worktrees.clear()
-        self._spec_locks.clear()
-        self._lock_since.clear()
-        self._proc_scan_cache.clear()
+        # 登记清空与其他锁变更点同纪律持 _spec_lock_th（code-review item
+        # 342c3b64ac76）：并发 runner/dispatcher 侧 _release_spec_locks 的
+        # 列表推导迭代无 RuntimeError 容错，无锁 clear() 会令其抛
+        # "Set changed size during iteration" 穿出派发闸门调用链。本方法
+        # 其余路径未持该非重入锁，锁内取锁无死锁风险。
+        with self._spec_lock_th:
+            self._active_worktrees.clear()
+            self._spec_locks.clear()
+            self._lock_since.clear()
+            self._proc_scan_cache.clear()
 
     def has_active_worktree(self, spec_name: str) -> bool:
         """Check if any worktree is active for the given SPEC.

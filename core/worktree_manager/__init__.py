@@ -107,8 +107,12 @@ class WorktreeManager(
     Manage git worktree lifecycle for Agent isolation.
 
     Each Agent run gets its own worktree:
-      - Implementer: .claude/worktrees/<spec>-<timestamp>/ on branch fenix/<spec>
-      - Verifier:    .claude/worktrees/verify-<spec>-<timestamp>/ on branch fenix/verify-<spec>
+      - Implementer: .claude/worktrees/impl-<spec>-<timestamp>/ on branch fenix/<spec>-<timestamp>
+      - Verifier:    .claude/worktrees/verify-<spec>-<timestamp>/ on branch fenix/verify-<spec>-<timestamp>
+
+    目录名前缀词表以 queries._WT_NAME_PREFIXES 为单源（impl/verify/repair/judge；
+    code-review item 946ca55e8466：原文档命名滞后于 lifecycle.create 的 _names
+    实际产出，按文档形态检索 worktree 目录会落空）。
 
     类为薄门面：全部方法按职责分布在各组 mixin（design D1 分组表），
     此处仅保留类级状态（design D3）与文档。
@@ -125,7 +129,9 @@ class WorktreeManager(
     # 判据 = 归属该 spec 的实现分支存在未并入 main 的提交（rev-list > 0），
     # **不是**分支存在性——仓库 1014 条 fenix/* 历史分支中 933 条已并入 main，
     # 存在性判据会把已合并分支也算作待合并，永久抑制真实 stale 检出。
-    # 前缀硬编码 "fenix/" 与分支创建端同源（create() :223/:226），不读配置——
+    # 前缀硬编码 "fenix/" 与分支创建端同源（lifecycle.G1LifecycleMixin.create
+    # 内 _names 闭包的分支名拼装，code-review item ded13afb19bb：拆包后失效
+    # 行号引用改方法级定位），不读配置——
     # worktree.implement_branch_prefix 仅 engine._resolve_push_branch 读取、
     # 非创建端事实源（design D1「前缀来源」，非 fenix 配置下按配置枚举会
     # 扫空命名空间、豁免静默失效）。

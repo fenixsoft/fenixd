@@ -188,6 +188,20 @@ class G8QueryMixin:
         """
         if not branch:
             return None
+        # prefix 合法性校验（code-review item 5a206c5d242e）：docstring 声明的
+        # 「合法取值即 _WT_NAME_PREFIXES」在此处落地——未登记前缀产出的
+        # {prefix}-<spec>-<ts> 不被 _spec_from_worktree_name /
+        # _wt_name_matches_spec 识别（boot 保全/恢复归属漏收、清扫侧又保守
+        # 永不清删，a800466bdff4 同型故障的复发入口）。fail-fast：记 WARNING
+        # 拒绝创建，不造出永不归属的孤儿载体。
+        if prefix not in _WT_NAME_PREFIXES:
+            self.logger.warning(
+                "worktree_manager",
+                f"create_worktree_on_branch: invalid prefix '{prefix}' for "
+                f"'{spec_name}' — not in {_WT_NAME_PREFIXES}, refusing to "
+                f"create an unattributable worktree",
+            )
+            return None
         timestamp = int(time.time())
         wt_name = f"{prefix}-{spec_name}-{timestamp}"
         wt_path = self.base_dir / wt_name
@@ -442,8 +456,10 @@ class G8QueryMixin:
         事实源为 git refs（``git for-each-ref``），与 worktree 是否在册无关——
         覆盖「run 已成功、worktree 已清、branch 未落盘」窗口（本 SPEC 事故环 4）。
 
-        - 枚举前缀与分支**创建端同源**：创建端硬编码 ``fenix/``（``create()``
-          :223/:226），配置 ``worktree.implement_branch_prefix`` 仅推送侧读取、
+        - 枚举前缀与分支**创建端同源**：创建端硬编码 ``fenix/``
+          （lifecycle.G1LifecycleMixin.create 内 _names 闭包的分支名拼装，
+          code-review item ded13afb19bb：拆包后失效行号引用改方法级定位），
+          配置 ``worktree.implement_branch_prefix`` 仅推送侧读取、
           非创建端事实源——本层取「配置值 ∪ 创建端 ``fenix/``」并集枚举，
           MUST NOT 仅凭配置值取前缀（非 fenix 配置下创建端仍产出
           ``fenix/<spec>-<ts>``，仅按配置枚举会扫空命名空间、本层静默失效）；
@@ -501,12 +517,17 @@ class G8QueryMixin:
                     )
                     continue
                 for line in res.stdout.splitlines():
-                    parts = line.split("|")
-                    if not parts:
+                    # refname 允许含 "|"（check-ref-format 不禁），split("|")
+                    # 会把名字含竖线的分支切错——parts[0] 成名字前缀、parts[1]
+                    # 非时间戳（int 落 0），候选随后被静默剔除。解析意图实为
+                    # 「最后一个 | 右侧是 committerdate」，改按最后一个 "|"
+                    # 切分（code-review item 9b25e0c16044）；int 解析失败仍落 0。
+                    name, sep, cdate_text = line.rpartition("|")
+                    if not sep:
                         continue
-                    name = parts[0].strip()
+                    name = name.strip()
                     try:
-                        cdate = int(parts[1].strip()) if len(parts) > 1 else 0
+                        cdate = int(cdate_text.strip())
                     except ValueError:
                         cdate = 0
                     # 完整 spec 名 + 分隔符边界全等比较 + verify 验证分支剔除，
