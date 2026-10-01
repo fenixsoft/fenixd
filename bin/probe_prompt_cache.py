@@ -30,6 +30,12 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 if str(FRAMEWORK_ROOT) not in sys.path:
     sys.path.insert(0, str(FRAMEWORK_ROOT))
+# 项目根（.absolute() 不跟随软链接：经项目内 .fenix/bin/ 软链调用时 = 项目目录）。
+# 与 fenix_dashboard.py 的项目资源口径一致——FRAMEWORK_ROOT 的 .resolve() 会
+# 跟随软链回到框架主树（定位框架自身资源用），项目配置等资源须用项目根。
+_THIS_DIR = Path(__file__).absolute().parent
+_FENIX_DIR = _THIS_DIR.parent
+PROJECT_ROOT = _FENIX_DIR.parent if _FENIX_DIR.name == ".fenix" else _FENIX_DIR
 
 # ── 稳定前缀（约 5.8K 字符，按常见分词约 1.4-1.6K tokens，用于两次请求的比较）──
 # 规模口径提醒（code-review item 395c8e4f7d2f）：旧注释写「~6K tokens」实为
@@ -281,7 +287,7 @@ def main() -> int:
     parser.add_argument("--provider", required=True, help="provider 名称")
     parser.add_argument(
         "--config",
-        default=str(FRAMEWORK_ROOT / ".fenix" / "config.yaml"),
+        default=str(PROJECT_ROOT / ".fenix" / "config.yaml"),
         help="配置文件路径（默认 .fenix/config.yaml）",
     )
     args = parser.parse_args()
