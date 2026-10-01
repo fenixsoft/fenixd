@@ -124,7 +124,14 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 Token 预算<span className="label-note">（agents.token_budget_millions，百万，0=关闭）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入 Token 预算' }, NON_NEGATIVE_INT_RULE]}
+            rules={[
+              { required: true, message: '请输入 Token 预算' },
+              NON_NEGATIVE_INT_RULE,
+              // 上界拦截走 rules（code-review item a4e49b74dbf4，比照 ParallelSettingsPanel
+              // 同族口径）：不能用 InputNumber 的 max 代替——blur 时会把越界值静默钳回
+              // 边界，用户永远看不到非法输入被拦截的表单错误提示；max 保留作输入辅助。
+              { type: 'integer', min: 0, max: 1000, message: 'Token 预算须为 0-1000 的整数（百万）' },
+            ]}
           >
             <InputNumber min={0} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="百万" />
           </Form.Item>
@@ -184,7 +191,12 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 实现尝试预算上限<span className="label-note">（agents.impl_run_budget_max，1-1000）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入实现尝试预算上限' }, POSITIVE_INT_RULE]}
+            rules={[
+              { required: true, message: '请输入实现尝试预算上限' },
+              POSITIVE_INT_RULE,
+              // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
+              { type: 'integer', min: 1, max: 1000, message: '实现尝试预算上限须为 1-1000 的正整数' },
+            ]}
             style={{ marginTop: 24 }}
           >
             <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
@@ -200,7 +212,12 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 重启重验预算<span className="label-note">（agents.verify_redo_budget，1-10）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入重启重验预算' }, POSITIVE_INT_RULE]}
+            rules={[
+              { required: true, message: '请输入重启重验预算' },
+              POSITIVE_INT_RULE,
+              // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
+              { type: 'integer', min: 1, max: 10, message: '重启重验预算须为 1-10 的正整数' },
+            ]}
             style={{ marginTop: 24 }}
           >
             <InputNumber min={1} max={10} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
@@ -216,7 +233,12 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 同因重派熔断阈值<span className="label-note">（agents.max_same_cause_redispatches，1-100）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入同因重派熔断阈值' }, POSITIVE_INT_RULE]}
+            rules={[
+              { required: true, message: '请输入同因重派熔断阈值' },
+              POSITIVE_INT_RULE,
+              // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
+              { type: 'integer', min: 1, max: 100, message: '同因重派熔断阈值须为 1-100 的正整数' },
+            ]}
             style={{ marginTop: 24 }}
           >
             <InputNumber min={1} max={100} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
