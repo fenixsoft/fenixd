@@ -167,6 +167,10 @@ def _get_build_order(schema: Dict[str, Any]) -> List[str]:
     dependents: Dict[str, List[str]] = {a["id"]: [] for a in schema["artifacts"]}
     for artifact in schema["artifacts"]:
         for req in artifact.get("requires", []):
+            if req not in in_degree:
+                # 悬空 requires（指向未声明 artifact）：跳过建边，依赖永不满足、
+                # artifact 不入拓扑序，与 _get_blocked 的 blocked 语义一致而非 KeyError。
+                continue
             dependents[req].append(artifact["id"])
 
     queue = sorted(aid for aid, deg in in_degree.items() if deg == 0)
