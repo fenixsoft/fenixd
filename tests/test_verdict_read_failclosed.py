@@ -140,6 +140,11 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
             VerdictReadResult.failure(
                 "parse",
                 "Invalid control character at: line 25 column 402"),
+            # 重派轮 evidence 校验合规后的复读（item cbef6c3847ca）——
+            # 复读仍坏 → blocked + 告警。
+            VerdictReadResult.failure(
+                "parse",
+                "Invalid control character at: line 25 column 402"),
         ])
         self._run_three_stage()
         entry = self.sm.read_one("demo-spec")
@@ -167,6 +172,9 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
         self.engine._verification._read_verdict = MagicMock(side_effect=[
             VerdictReadResult.failure("unknown-status", "status='success'"),
             VerdictReadResult.failure("unknown-status", "status='success'"),
+            # 重派轮 evidence 校验合规后的复读（item cbef6c3847ca）——
+            # 复读仍白名单外 → blocked。
+            VerdictReadResult.failure("unknown-status", "status='success'"),
         ])
         self._run_three_stage()
         entry = self.sm.read_one("demo-spec")
@@ -178,6 +186,9 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
         """首次 unreadable → 重试后合法 bug-found → 正常走 fix 链。"""
         self.engine._verification._read_verdict = MagicMock(side_effect=[
             VerdictReadResult.failure("parse", "bad json"),
+            VerdictReadResult.success("bug-found"),
+            # 重派轮 evidence 校验合规后的复读（item cbef6c3847ca）——
+            # 与盘上产物一致，仍 bug-found → 正常走 fix 链。
             VerdictReadResult.success("bug-found"),
         ])
         self._run_three_stage()
