@@ -139,7 +139,14 @@ def family_waiver_granted(text: str, spec: str) -> bool:
 
 
 def is_reclassify_negated(text: str) -> bool:
-    """infra 回拨文本是否命中否定短语（命中即保守不触发回拨）。"""
+    """infra 回拨文本是否命中否定短语（命中即保守不触发回拨）。
+
+    text 为 None/非 str 时按空串处理（无否定短语命中，返回 False）。
+    """
+    # text 防御（与 family_waiver_granted 同款口径）：None/非 str 会使
+    # in 判定抛 TypeError——按空串处理，否定短语判定自然落空（返回 False）。
+    if not isinstance(text, str):
+        text = ""
     return any(neg in text for neg in _RECLASSIFY_NEGATION_PHRASES)
 
 
@@ -158,9 +165,14 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     限定不参与判定，仅依赖限定词。
 
     Args:
-        text: 处置文本拼接（actions_taken/summary/recommended_action/problem）。
+        text: 处置文本拼接（actions_taken/summary/recommended_action/problem）；
+            为 None/非 str 时按空串处理（无否定短语、无模式命中，返回 0）。
         spec: 本次 SPEC 名（同现限定用），防御口径同 family_waiver_granted。
     """
+    # text 防御（与 family_waiver_granted 同款口径）：None/非 str 会使下方
+    # re.split 抛 TypeError——按空串处理，否定/模式判定自然落空（返回 0）。
+    if not isinstance(text, str):
+        text = ""
     if is_reclassify_negated(text):
         return 0
     for pattern in _RECLASSIFY_GRANT_PATTERNS:
