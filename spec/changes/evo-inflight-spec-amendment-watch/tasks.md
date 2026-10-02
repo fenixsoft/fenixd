@@ -5,6 +5,8 @@
   kind: modify
 - path: core/pm_engine/dispatch/queue.py
   kind: modify
+- path: core/pm_engine/dispatch/repair_lane.py
+  kind: modify
 - path: core/admin_monitor.py
   kind: modify
 - path: tests/test_merge_back_spec_dir_guard.py
@@ -27,4 +29,4 @@
 
 - [ ] 3.1 tests/test_merge_back_spec_dir_guard.py：扩展——夹具仓库在 merge-base 之后于主树提交 spec 目录改动 → merge-back 发告警且 merge_info.amended_inflight 携带提交列表、repair 上下文含根因段；主树无新提交 → 行为与告警完全不变；分支不存在 → 静默跳过不报错
 - [ ] 3.2 tests/test_admin_monitor_spec_amendment.py：实现 run 在飞 + 主树 spec 修订 → 一个扫描周期内告警、同指纹不重复；run 不在飞 → 不检测不告警
-- [ ] 3.3 回归：tests/test_mergeback_wip_overlap_gate.py、tests/test_merge_tree_rehearsal.py、tests/test_mergeback_repair_lane.py 通过
+- [ ] 3.3 回归：tests/test_worktree_merge_guard.py（含 _wip_overlap_gate 用例）、tests/test_merge_tree_rehearsal.py、tests/test_mergeback_repair_lane.py 通过

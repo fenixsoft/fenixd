@@ -2,7 +2,7 @@
 
 ## Why
 
-2026-10-02 cimbar-airgap-transfer 实现期间，框架外的 spec 修订提交 803c688（10:46:21，改写 tasks.md 四条任务并新增 5 项）落进主树，与实现分支对同一 tasks.md 的勾选更新自 merge-base 7ebb4db 分叉，14:28:55 merge 预演必然检出语义冲突、直通 repair 车道，多耗一次 run（61 轮 / $0.427，repair-cimbar-airgap-transfer-1790922535-a1）。现行 merge-back 三道闸门全部只覆盖「未提交」改动：_rehearse_merge_from_branch（core/worktree_manager/mergeback.py:143）只能事后检出冲突；_wip_overlap_gate（:166）显式排除 spec/changes/**；_check_spec_dir_inflight（:253）只查未提交——已提交修订从落盘到 merge 时刻的近 4 小时里零反馈，repair 车道还要自行考古根因。
+2026-10-02 cimbar-airgap-transfer 实现期间，框架外的 spec 修订提交 803c688（10:46:21，改写 tasks.md 四条任务并新增 5 项）落进主树，与实现分支对同一 tasks.md 的勾选更新自 merge-base 7ebb4db 分叉，14:28:55 merge 预演必然检出语义冲突、直通 repair 车道，多耗一次 run（61 轮 / $0.427，repair-cimbar-airgap-transfer-1790922535-a1）。现行 merge-back 三道闸门全部只覆盖「未提交」改动：_rehearse_merge_from_branch（core/worktree_manager/mergeback.py 调用点:143、定义:893）只能事后检出冲突；_wip_overlap_gate（调用点:166、定义:312）显式排除 spec/changes/**；_check_spec_dir_inflight（:253）只查未提交——已提交修订从落盘到 merge 时刻的近 4 小时里零反馈，repair 车道还要自行考古根因。
 
 ## What Changes
 

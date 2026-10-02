@@ -2,7 +2,7 @@
 
 ## 背景与痛点
 
-2026-10-02 cimbar-airgap-transfer 实现在飞期间，框架外提交 803c688 改主树 tasks.md，与实现分支勾选更新在 merge-back 预演相撞，直通 repair 多耗 61 轮 / $0.427；修订落地到 merge 时刻近 4 小时零反馈，repair 靠自行考古定位根因。现行三道闸（core/worktree_manager/mergeback.py: _rehearse_merge_from_branch:143/_wip_overlap_gate:166/_check_spec_dir_inflight:253）均不覆盖「已提交修订」。
+2026-10-02 cimbar-airgap-transfer 实现在飞期间，框架外提交 803c688 改主树 tasks.md，与实现分支勾选更新在 merge-back 预演相撞，直通 repair 多耗 61 轮 / $0.427；修订落地到 merge 时刻近 4 小时零反馈，repair 靠自行考古定位根因。现行三道闸（core/worktree_manager/mergeback.py: _rehearse_merge_from_branch 调用点:143/定义:893、_wip_overlap_gate 调用点:166/定义:312、_check_spec_dir_inflight:253）均不覆盖「已提交修订」。
 
 ## 目标
 
@@ -30,4 +30,4 @@
 
 - 扩展 tests/test_merge_back_spec_dir_guard.py：夹具仓库在 merge-base 之后于主树提交 spec 目录改动 → merge-back 发告警且 merge_info 携带 amended_inflight、repair 上下文含根因段；主树无新提交 → 行为与告警完全不变；分支不存在 → 静默跳过。
 - 新增 tests/test_admin_monitor_spec_amendment.py：实现 run 在飞 + 主树 spec 修订 → 一个扫描周期内告警、同指纹不重复；run 不在飞 → 不检测。
-- 回归：tests/test_mergeback_wip_overlap_gate.py、tests/test_merge_tree_rehearsal.py、tests/test_mergeback_repair_lane.py。
+- 回归：tests/test_worktree_merge_guard.py（含 _wip_overlap_gate 用例）、tests/test_merge_tree_rehearsal.py、tests/test_mergeback_repair_lane.py。
