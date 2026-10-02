@@ -4,6 +4,10 @@
 上移共用的无状态判定函数，避免模块间循环依赖：
 
 - ``is_claude_process``：进程 argv[0] 是否为 claude agent（存活判定与清扫豁免锚点）；
+- ``proc_stat_fields``：/proc/<pid>/stat 尾段单点解析（comm 可含括号与空格的陷阱在此收口）；
+- ``pid_alive_stat``：/proc stat 口径存活判定，僵尸态语义由 zombie_is_dead 显式选择；
+- ``proc_start_ticks``：starttime 身份快照（pid 复用防护锚点）；
+- ``pid_alive_signal``：kill(pid, 0) 存在性判定（不区分僵尸态）；
 - ``find_free_port``：向系统申请一个临时空闲端口（bind 0 + getsockname）；
 - ``find_bound_socket``：保留已绑定 socket 的 contextmanager（消除 TOCTOU 竞态窗口，
   concurrent-suite-isolation 4.1），绑定失败时按可重试策略重取。
@@ -15,6 +19,7 @@ import os
 import socket
 import time
 from contextlib import contextmanager
+from typing import List, Optional
 
 
 def is_claude_process(pid_str: str) -> bool:
@@ -31,6 +36,83 @@ def is_claude_process(pid_str: str) -> bool:
             argv0 = f.read().split(b"\0", 1)[0]
         return os.path.basename(argv0.decode("utf-8", "replace")) in ("claude", "claude.exe")
     except (OSError, IndexError):
+        return False
+
+
+def proc_stat_fields(pid: int) -> Optional[List[str]]:
+    """读取 /proc/<pid>/stat，返回最后一个 ')' 之后的字段列表（首项即字段 3 state）。
+
+    comm 字段（第 2 项）可含空格与括号，须从**最后一个** ')' 之后切分才是
+    真正的状态字段区——这是 stat 解析的经典陷阱，此处单点收口，供存活判定
+    （pid_alive_stat）与身份快照（proc_start_ticks）共用，避免同款解析在
+    各模块漂移。
+
+    读取失败（/proc 缺失、权限不足、非 Linux 等 OSError）或内容无右括号
+    （畸形）返回 None。
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    _, sep, tail = data.rpartition(")")
+    if not sep:
+        return None
+    return tail.split()
+
+
+def pid_alive_stat(pid: int, zombie_is_dead: bool = False) -> bool:
+    """/proc stat 口径的存活判定；僵尸态语义由 zombie_is_dead 显式选择。
+
+    两种口径各有场景理由，由调用点显式参数选择而非隐式共享：
+
+    - zombie_is_dead=True（v2_dev_server 孤儿清扫）：孤儿 dev-server 的父
+      进程（已死 daemon 的 shell 链）可能不收尸，/proc 条目以 Z 态残留，
+      须按已终止计，否则误补 SIGKILL 且漏计清理数；
+    - zombie_is_dead=False：/proc 条目可读即存活（含 Z 态），与 kill(pid, 0)
+      口径（pid_alive_signal）的「有主即活」保守方向一致。
+
+    stat 不可读（/proc 缺失、权限、畸形）按已终止计（宁可少杀）。
+    """
+    fields = proc_stat_fields(pid)
+    if fields is None:
+        return False
+    if zombie_is_dead and fields[:1] == ["Z"]:
+        return False
+    return True
+
+
+def proc_start_ticks(pid: int) -> Optional[int]:
+    """/proc/<pid>/stat 的 starttime 字段（字段 22，系统启动后的 tick 数），读不到返回 None。
+
+    pid + starttime 唯一确定一个进程实例：原进程退出后 pid 被系统复用时，
+    新进程的 starttime 必然不同——以此锚定登记项的收割目标（对 exec/argv
+    变化免疫，starttime 在 fork 时即固定），serving_registry 登记制据此
+    做 pid 复用防误杀。
+    """
+    fields = proc_stat_fields(pid)
+    if fields is None or len(fields) < 20:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def pid_alive_signal(pid: int) -> bool:
+    """kill(pid, 0) 存在性判定：命中即存活（不区分僵尸态，够用）。
+
+    EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按存活，
+    与 kill_process_group 对 getpgid EPERM 的显式处理同口径。
+    """
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
         return False
 
 

@@ -31,7 +31,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1547,6 +1546,12 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
     "open"`` 的条目可置——generate_fix_spec 选出候选到置位之间隔着 lint/
     git 提交等秒级耗时，窗口内已被终态化（resolved/ignored）的条目跳过
     不覆写，不冲掉核销/忽略记录。
+
+    读降级（items.jsonl OSError 类不可读）时记 WARNING 并上抛 ``OSError``：
+    SPEC 此刻已提交并注册为 drafted，静默跳过会让调用方误判置位成功、条目
+    留在 open 而下轮重复立项（code-review item 8e0e362859de）；上抛复用
+    generate_fix_spec 的置位写失败错误通道（SPEC 已生成、请勿重试生成、
+    需人工核对条目）。
     """
     path = items_path(project_root)
 
@@ -1556,9 +1561,13 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
         current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
         if read_degraded:
             # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
-            #（code-review item 9a358bba128c）
-            _logger.warning("code_review: items.jsonl 读取降级，in_spec 置位跳过落盘")
-            return
+            #（code-review item 9a358bba128c）。MUST 上抛而非静默 return：
+            # SPEC 此刻已提交并注册，静默跳过会让 generate_fix_spec 以
+            # ok=True 收尾，条目留在 open、下轮对同一批问题重复立项
+            #（code-review item 8e0e362859de）。上抛 OSError 复用调用方
+            # 置位写失败的既有错误通道（SPEC 已生成、勿重试、需人工核对）。
+            _logger.warning("code_review: items.jsonl 读取降级，in_spec 置位未落盘")
+            raise OSError(f"items.jsonl 读取降级，in_spec 置位未落盘（{path}）")
         changed = False
         for iid in item_ids:
             rec = current.get(iid)
@@ -1883,62 +1892,27 @@ def _tasks_md(name: str, items: List[dict]) -> str:
 
 
 def _lint_draft(draft_dir_: Path, project_root) -> List[str]:
-    """对草稿目录执行与 daemon 晋升同源的 lint 预检（复用 evolution 形态）。
+    """对草稿目录执行与 daemon 晋升同源的 lint 预检（薄委托 evolution.lint_draft）。
 
-    ``sys.path`` 指向项目 ``.fenix/`` 后调用 ``core.deliverables.lint_declared``
-    与 ``core.deliverables.lint_tasks_parseable``（MUST NOT 自实现第二套）。
+    唯一实现在 ``core.evolution.lint_draft``（sys.path 注入 + 两级失败语义：
+    lint 函数自身异常 fail-open、``core.deliverables`` 导入失败显式上抛），
+    本函数仅转发，防两套实现漂移（code-review item 2beb5528e1b9）。函数内
+    延迟导入同 fenixd.py 既有口径；fail-open WARNING 的日志前缀随唯一实现
+    落 ``fenixd.evolution`` 通道。
     """
-    proot = Path(project_root)
-    fenix_dir = str(proot / ".fenix")
-    injected = fenix_dir not in sys.path
-    if injected:
-        sys.path.insert(0, fenix_dir)
-    try:
-        from core.deliverables import lint_declared, lint_tasks_parseable
+    from core.evolution import lint_draft
 
-        violations: List[str] = []
-        for fn in (lint_declared, lint_tasks_parseable):
-            try:
-                violations.extend(fn(draft_dir_, proot) or [])
-            except Exception as e:
-                _logger.warning("code_review: 草稿 lint 异常（非阻塞放行）: %s", e)
-        return violations
-    finally:
-        # 注入项在 lint 结束后恢复，不长期驻留 sys.path（同 evolution.lint_draft）
-        if injected:
-            sys.path.remove(fenix_dir)
+    return lint_draft(draft_dir_, project_root)
 
 
 def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
-    """仅提交目标 spec 目录（MUST NOT ``git add -A`` / ``git add .``）。
+    """仅提交目标 spec 目录（薄委托 evolution._git_commit 唯一实现）。
 
-    add 与 commit 均以同一 pathspec 限定（--only 语义，与
-    archive_commit.commit_archive_move 同式），不吞索引中无关 staged 内容。
-
-    Returns: ``(ok, error)``；ok=False 时调用方负责清理未跟踪副本。
+    add 与 commit 均以 ``spec/changes/<name>`` 同一 pathspec 限定（MUST NOT
+    ``git add -A`` / ``git add .``），返回 ``(ok, error)``、error 前缀区分
+    add / commit 阶段——语义详见唯一实现 docstring（code-review item
+    2beb5528e1b9，单点演进防再漂移）。函数内延迟导入同 fenixd.py 既有口径。
     """
-    git = ["git", "-C", str(project_root)]
-    spec_path = f"spec/changes/{spec_name}"
-    try:
-        add = subprocess.run(
-            git + ["add", "--", spec_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"git add 失败: {e}"
-    if add.returncode != 0:
-        return False, f"git add 失败: {add.stderr.strip()[:300]}"
-    try:
-        commit = subprocess.run(
-            git + ["commit", "-m", f"[fenix] spec: {spec_name}", "--", spec_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"git commit 失败: {e}"
-    if commit.returncode != 0:
-        return False, f"git commit 失败: {commit.stderr.strip()[:300]}"
-    return True, ""
+    from core.evolution import _git_commit as _evolution_git_commit
+
+    return _evolution_git_commit(project_root, spec_name)

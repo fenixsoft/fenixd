@@ -451,7 +451,11 @@ def match_hooks(config: dict, spec: str, event_type: str) -> List[Tuple[dict, st
             matched.append((h, "global"))
     if event_type == HOOK_EVENT_ALL_DONE:
         return matched
-    spec_hooks = hooks.get("specs") or {}
+    # specs 段类型守卫：非 dict（如手改 YAML 写成非空列表）按空处理，与
+    # validate_hooks_config 口径对齐；否则对 list 调 .get 抛 AttributeError，
+    # 配置坏掉期间每条状态迁移事件都会刷一条「hook 匹配失败」error 日志。
+    spec_hooks = hooks.get("specs")
+    spec_hooks = spec_hooks if isinstance(spec_hooks, dict) else {}
     for h in spec_hooks.get(spec) or []:
         evs = h.get("events") if isinstance(h, dict) else None
         if isinstance(evs, list) and event_type in evs:
@@ -1509,6 +1513,9 @@ class HookEngine:
                         with path.open("a", encoding="utf-8") as f:
                             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                             f.flush()
+                            # 与 DisputeAuditStore/_trim_unlocked 落盘口径统一：
+                            # SIGKILL/掉电时最新一条审计行不因页缓存未刷而丢失
+                            os.fsync(f.fileno())
                     finally:
                         fcntl.flock(lf, fcntl.LOCK_UN)
         except OSError as e:

@@ -221,6 +221,19 @@ class TestRepairRoundDetection:
         assert declares_new_delivery(
             "## 验证修复\n- [ ] 新增交付：历史错误的修复向导") is True
 
+    def test_declares_new_delivery_negation(self):
+        # 否定句式（code-review cec71a4419ae）：动词前同条款紧邻否定前缀
+        # ＝未声明新增交付，不得误开修复轮扩容闸门
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 未新增场景") is False
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 无新增交付范围") is False
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 不增加功能") is False
+        # 否定排除限定同条款：前半句否定不得吞掉跨句读的真实声明
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 上一轮无新增，本次新增 2 个场景") is True
+
 
 # ── 3.2 v2-config-page 真实 11→17 夹具回归 ────────────────────────
 

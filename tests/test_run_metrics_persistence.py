@@ -92,7 +92,8 @@ class TestRunMetricsSuccess:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             return ("output", 3, "sess-1", USAGE_WITH_COST)
 
         runner._run_claude = fake_run_claude
@@ -141,7 +142,8 @@ class TestRunMetricsFailure:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             exc = RuntimeError("claude CLI failed: Exit code: 1")
             exc.stderr_lines = ["error"]
             exc.exit_code = 1
@@ -186,7 +188,8 @@ class TestRunMetricsUsage:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             return ("ok", 5, "sess-u", USAGE_WITH_COST)
 
         runner._run_claude = fake_run_claude

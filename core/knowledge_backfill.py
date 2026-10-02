@@ -270,12 +270,71 @@ def commit_pathspec(project_root: Path, paths: list[str], message: str) -> bool:
     return True
 
 
+# git porcelain 引号路径的 C 风格短转义表（quote.c 同款；其余特殊字节走
+# \NNN 八进制形式）
+_GIT_SHORT_ESCAPES = {
+    '"': '"',
+    "\\": "\\",
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
+
+
+def _decode_git_quoted_path(rel: str) -> str:
+    """解码 git porcelain 引号路径（C 风格转义）为盘上真实路径。
+
+    git 对含双引号/控制字符等特殊字符的路径输出 ``"..."`` 引号串并转义内部
+    字符（``\\"``、``\\\\``、``\\t`` 等短转义与 ``\\NNN`` 八进制字节转义）；
+    只剥外层引号会把转义序列留在字面量里，得到的 relpath 与盘上真实路径
+    不一致——该文件既回滚不掉也不计入 touched（code-review 36eb21ca1661 /
+    38ce9b967142）。字节级反转义后按文件系统同款 utf-8 + surrogateescape
+    解码（``core.quotepath=false`` 下非 ASCII 字节原样输出，八进制转义只
+    来自控制字符等特殊字节）；未知转义序列原样保留，不臆造映射。
+    """
+    if len(rel) < 2 or rel[0] != '"' or rel[-1] != '"':
+        return rel
+    body = rel[1:-1]
+    raw = bytearray()
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\" or i + 1 >= n:
+            raw.extend(ch.encode("utf-8"))
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt in _GIT_SHORT_ESCAPES:
+            raw.extend(_GIT_SHORT_ESCAPES[nxt].encode("utf-8"))
+            i += 2
+            continue
+        if nxt in "01234567":
+            digits = ""
+            j = i + 1
+            while j < n and len(digits) < 3 and body[j] in "01234567":
+                digits += body[j]
+                j += 1
+            raw.append(int(digits, 8))
+            i = j
+            continue
+        # 未知转义序列：反斜杠与后随字符原样保留
+        raw.extend(ch.encode("utf-8"))
+        i += 1
+    return raw.decode("utf-8", "surrogateescape")
+
+
 def _knowledge_dirty_files(project_root: Path) -> set[str]:
     """``spec/knowledge/`` 内未提交改动的 relpath 集合（tracked 改动 + 未跟踪
     新增，未跟踪目录以整体目录条目出现）。
 
-    差集回滚的基线/现状快照共用（口径与 knowledge_audit._knowledge_dirty_files
-    一致，code-review b2e9ede6adec）；git 不可用/超时 fail-open 返回空集。
+    差集回滚的基线/现状快照共用单实现（knowledge_audit 亦 import 本函数，
+    code-review b2e9ede6adec / 36eb21ca1661）；git 不可用/超时 fail-open
+    返回空集。
     """
     try:
         proc = subprocess.run(
@@ -301,12 +360,54 @@ def _knowledge_dirty_files(project_root: Path) -> set[str]:
     for ln in proc.stdout.splitlines():
         if len(ln) <= 3:
             continue
-        rel = ln[3:].strip().strip('"')
+        rel = ln[3:].strip()
         if " -> " in rel:  # 重命名条目取新路径
             rel = rel.split(" -> ", 1)[1]
+        if len(rel) >= 2 and rel[0] == '"' and rel[-1] == '"':
+            # 引号包裹的特殊字符路径：反转义还原真实 relpath
+            rel = _decode_git_quoted_path(rel)
+        else:
+            rel = rel.strip('"')
         if rel:
             files.add(rel)
     return files
+
+
+def discard_paths(project_root: Path, rels: list[str]) -> None:
+    """只回滚指定文件（tracked restore 逐路径 + 未跟踪批量 clean），不碰
+    工作区其他改动。
+
+    差集回滚口径的单实现（code-review 0f0f5941025c）：knowledge_audit 的
+    语义转写失败回滚与本车道 ``discard_knowledge_changes`` 的 before 差集
+    回滚共用本原语，超时值/restore 粒度不再各自演进。restore 逐路径执行：
+    pathspec 混入未跟踪新路径时整条命令会一起失败（git restore 只要有一个
+    pathspec 不匹配即整体报错，同条 tracked 文件也一并不被还原）。git 不可
+    用/超时 fail-open——回滚失败的内容仍在盘上，由调用方的 leftover 告警/
+    待人工路径曝光，不阻塞调用方收尾。
+    """
+    if not rels:
+        return
+    for rel in rels:
+        try:
+            subprocess.run(
+                ["git", "restore", "--", rel],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        subprocess.run(
+            ["git", "clean", "-qfd", "--", *rels],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def discard_knowledge_changes(
@@ -317,9 +418,10 @@ def discard_knowledge_changes(
     """放弃本次产出：只回滚本车道触达的文件（不留半成品，对齐前置 SPEC 蒸馏
     放弃语义）。只动 ``spec/knowledge/``，不碰他物。
 
-    基线感知差集回滚（对齐 core.knowledge._discard_output 与
-    knowledge_audit._discard_paths 口径，code-review b2e9ede6adec）：``before``
-    为本段 run 前的脏文件快照，只对快照中不存在的新增脏路径 restore/clean；
+    基线感知差集回滚（对齐 core.knowledge._discard_output 口径；restore/clean
+    原语经 discard_paths 与 knowledge_audit 单实现共用，code-review
+    b2e9ede6adec / 0f0f5941025c）：``before`` 为本段 run 前的脏文件快照，只对
+    快照中不存在的新增脏路径 restore/clean；
     当前仍脏且基线已有的路径疑似用户未提交的手工策展与本车道产出同文件
     交织、无法安全拆分，降级 WARNING 留痕交人工核查，不再整目录连带回滚。
     ``before`` 缺省（旧调用口径）退回整目录回滚，可能吞掉用户未提交改动，
@@ -340,22 +442,7 @@ def discard_knowledge_changes(
         rels = sorted(after - before)
         if not rels:
             return
-        for rel in rels:
-            # restore 逐路径执行：pathspec 混入未跟踪新路径时整条命令会一起失败
-            subprocess.run(
-                ["git", "restore", "--", rel],
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        subprocess.run(
-            ["git", "clean", "-qfd", "--", *rels],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        discard_paths(project_root, rels)
         return
     kdir = project_root / KNOWLEDGE_DIR
     subprocess.run(
@@ -779,6 +866,7 @@ def _violations_block(violations: list[str]) -> str:
 # 公开别名（core.knowledge_audit 复用，避免 import 私有名）
 violations_block = _violations_block
 null_logger = _NullLogger
+knowledge_dirty_files = _knowledge_dirty_files
 
 
 def _now_local_parts() -> tuple:
@@ -996,6 +1084,20 @@ def _read_json(path: Path):
 # ── 史前求差与自举清理（任务 2.3） ───────────────────────────────────────
 
 
+def _valid_domain_component(v: object) -> bool:
+    """LLM 产出的域名合法单路径成分判定：字符串、非空、不含路径分隔符、
+    不为点号目录。``_prune_stale_domains`` 的白名单与
+    ``_missing_prehistoric_pages`` 的路径拼接共用——畸形值（带斜杠/相对
+    引用）不得参与路径语义（code-review 9bd4d8ede459）。
+    """
+    return (
+        isinstance(v, str)
+        and bool(v)
+        and "/" not in v
+        and v not in (".", "..")
+    )
+
+
 def _missing_prehistoric_pages(
     project_root: Path, inventory: list, chain_index: dict
 ) -> list[str]:
@@ -1012,6 +1114,13 @@ def _missing_prehistoric_pages(
         if not cap or cap in chain_index:
             continue  # 已被归档覆盖：不写史前页（baseline 走链头输入）
         domain = str(item.get("domain") or "").strip()
+        if not _valid_domain_component(domain):
+            # LLM 清单产出的 domain 非法（空/含斜杠/点号目录）：拼出的 page
+            # 路径会越出 domains 目录、is_file 探测到真相源之外的路径，缺页
+            # 核验失真（误判已覆盖跳过补写，或对合法能力恒报缺页）。不拿畸形
+            # 路径做覆盖判定，直接按缺页登记提示人工（不静默忽略）。
+            missing.append(f"{cap}（域 {domain or '未声明'}）")
+            continue
         page = project_root / KNOWLEDGE_DIR / "domains" / domain / f"{cap}.md"
         if not page.is_file():
             missing.append(f"{cap}（域 {domain or '未声明'}）")
@@ -1091,11 +1200,7 @@ def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]
         return removed
     # LLM 值不信任：只收合法单路径成分，畸形值（带路径分隔符/相对引用）不得
     # 影响白名单判定
-    keep = {
-        v
-        for v in domain_map.values()
-        if isinstance(v, str) and v and "/" not in v and v not in (".", "..")
-    }
+    keep = {v for v in domain_map.values() if _valid_domain_component(v)}
     for d in sorted(domains_dir.iterdir()):
         if d.is_dir() and d.name not in keep:
             if _domain_has_tracked_content(project_root, d):
@@ -1184,6 +1289,25 @@ def run_backfill(
     )
     if not archives:
         return {"triggered": False, "reason": "no-archives"}
+
+    # 提示词模板入口预读一次（code-review c07182378afd）：build_prompt /
+    # build_prehistoric_prompt 的模板 read_text 落在各段 run 的 try 之外，
+    # 模板缺失/不可读会以裸异常掀翻车道，与「单段失败不阻塞车道」口径相悖。
+    # 入口预读把确定性故障提前为显式登记 todo 待人工、零动作退出（对齐台账
+    # 不可读的 fail-open 先例）；不吞错——读不到模板即终止本车道，绝不以空
+    # 提示词派发 run。
+    try:
+        for _tpl in (PROMPT_PATH, PREHISTORIC_PROMPT_PATH):
+            _tpl.read_text(encoding="utf-8")
+    except OSError as e:
+        log.warning(
+            "knowledge", f"回填提示词模板读取失败，本车道跳过待人工检查：{e}"
+        )
+        append_todo_line(
+            project_root,
+            "回填提示词模板读取失败，请检查 core/knowledge_prompts/ 后重跑回填",
+        )
+        return {"triggered": False, "reason": "prompt-template-unreadable"}
 
     chain_index = build_chain_index(project_root)
     try:

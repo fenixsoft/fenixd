@@ -539,14 +539,19 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
 
 
 def collect_runs_stats(
-    project_root, window_start: datetime, pre_classified: Optional[List[tuple]] = None
+    project_root,
+    window_start: datetime,
+    pre_classified: Optional[List[tuple]] = None,
+    window_end: Optional[datetime] = None,
 ) -> Dict[str, int]:
     """[window_start, window_end] 窗口（调度侧为 [last_run_at, now] 增量，
     首跑回退 24h）runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
     self-review run 自身。
 
-    窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
-    now_utc() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。窗口
+    窗口 = [window_start, window_end]，其中 window_end 为调用侧贯穿传入的
+    冻结快照值（code-review item bf3b2bc56a05：调度侧一次冻结后全节共用，
+    保证同一份日报各节窗口上界一致）；None 时函数入口冻结 now_utc() 兜底
+    （直调兼容），聚合执行期间不再调用实时时钟判定窗口归属。窗口
     遍历、归窗、分类与双源守卫与 collect_failed_run_samples 消费同一份共享
     产出（_iter_window_classified_runs + _is_phantom_signal_failure，口径
     单点维护，code-review item 45181d22b901）。统计源为当前目录 + 归档目录
@@ -556,7 +561,7 @@ def collect_runs_stats(
     pre_classified（code-review item 8c9ee042a091）：调用侧已物化的
     _iter_window_classified_runs 分类产出（同轮自省一次分类、统计与样本
     两侧共享，消除重复的全量分类重扫）；传入时跳过窗口重扫，window_end
-    亦不再冻结。
+    亦不再参与。
     """
     counts = {
         "total": 0,
@@ -570,8 +575,9 @@ def collect_runs_stats(
     if pre_classified is not None:
         runs = pre_classified
     else:
-        # 快照化：聚合启动时冻结窗口上界
-        window_end = now_utc()
+        # 快照化：聚合启动时冻结窗口上界（调用侧贯穿传入时用调用侧快照）
+        if window_end is None:
+            window_end = now_utc()
         runs = _iter_window_classified_runs(project_root, window_start, window_end)
     for run_id, _p, _ts, category, detail in runs:
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
@@ -598,6 +604,7 @@ def collect_failed_run_samples(
     store=None,
     logger=None,
     pre_classified: Optional[List[tuple]] = None,
+    window_end: Optional[datetime] = None,
 ) -> List[Dict[str, str]]:
     """收集 [window_start, window_end] 窗口内业务失败 run 样本（调度侧为
     [last_run_at, now] 增量，首跑回退 24h；run_id + 失败依据摘要），用于
@@ -605,7 +612,9 @@ def collect_failed_run_samples(
 
     返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
     结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选。
-    窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属。
+    窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属；
+    window_end 为调用侧贯穿传入的冻结快照值（code-review item
+    bf3b2bc56a05），None 时函数入口冻结 now_utc() 兜底（直调兼容）。
     统计源与 collect_runs_stats 消费同一份共享产出（_iter_window_classified_runs：
     当前目录 + 归档目录并集，同 run_id 当前目录优先去重），保证计数与样本
     口径一致。
@@ -613,7 +622,7 @@ def collect_failed_run_samples(
     pre_classified（code-review item 8c9ee042a091）：调用侧已物化的
     _iter_window_classified_runs 分类产出（同轮自省一次分类、统计与样本
     两侧共享，消除重复的全量分类重扫）；传入时跳过窗口重扫，window_end
-    亦不再冻结。
+    亦不再参与。
 
     双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2）：仅对信号
     路径命中（detail 前缀 signal=）的样本查 daemon 侧 run_metrics 终态；
@@ -629,8 +638,9 @@ def collect_failed_run_samples(
     if pre_classified is not None:
         runs = pre_classified
     else:
-        # 快照化：聚合启动时冻结窗口上界
-        window_end = now_utc()
+        # 快照化：聚合启动时冻结窗口上界（调用侧贯穿传入时用调用侧快照）
+        if window_end is None:
+            window_end = now_utc()
         runs = _iter_window_classified_runs(project_root, window_start, window_end)
     for run_id, p, ts, category, detail in runs:
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
@@ -1054,12 +1064,23 @@ def _collect_rescue_traces(
     return groups
 
 
-def collect_log_errors(project_root, window_start: datetime, limit: int = 20) -> Dict[str, Any]:
+def collect_log_errors(
+    project_root,
+    window_start: datetime,
+    limit: int = 20,
+    window_end: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """[window_start, window_end] 窗口（调度侧为 [last_run_at, now] 增量，
     首跑回退 24h）fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
-    （含时间戳/组件/消息）。"""
-    # 快照化：聚合启动时冻结窗口上界
-    window_end = now_utc()
+    （含时间戳/组件/消息）。
+
+    window_end 为调用侧贯穿传入的冻结快照值（code-review item
+    bf3b2bc56a05：与同一份日报其余各节共用同一上界）；None 时函数入口
+    冻结 now_utc() 兜底（直调兼容）。
+    """
+    # 快照化：聚合启动时冻结窗口上界（调用侧贯穿传入时用调用侧快照）
+    if window_end is None:
+        window_end = now_utc()
 
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
     errors: List[dict] = []
@@ -1222,8 +1243,11 @@ class SelfReviewScheduler:
         # 三处共享（code-review item 8c9ee042a091）：零活动判定、摘要的
         # runs 统计与失败样本消费同一份 _iter_window_classified_runs 产出，
         # 消除同轮自省对窗口 run 的重复全量分类重扫。
+        # 窗口上界一次冻结（code-review item bf3b2bc56a05）：分类物化与摘要
+        # 全节共用同一上界，消除两处 now_utc() 冻结点之间新落 run 的口径错位。
+        window_end = now_utc()
         classified_runs = list(
-            _iter_window_classified_runs(self.project_root, window_start, now_utc())
+            _iter_window_classified_runs(self.project_root, window_start, window_end)
         )
         stats = collect_runs_stats(
             self.project_root, window_start, pre_classified=classified_runs
@@ -1231,7 +1255,9 @@ class SelfReviewScheduler:
         if stats["total"] == 0:
             return self._skip_review(today)
 
-        daily_summary = self.collect_daily_summary(window_start, pre_classified=classified_runs)
+        daily_summary = self.collect_daily_summary(
+            window_start, pre_classified=classified_runs, window_end=window_end
+        )
         # 闭环判定条目（read_todo=true 时收集窗口内既有条目并 ID 标注注入）
         cleanup_entries: List[Dict[str, str]] = []
         todo_md = None
@@ -1332,22 +1358,30 @@ class SelfReviewScheduler:
 
     # ── 六源数据摘要（spec 场景锁定数据源清单） ───────────────
 
-    def collect_daily_summary(self, window_start: datetime, pre_classified=None) -> str:
+    def collect_daily_summary(
+        self,
+        window_start: datetime,
+        pre_classified=None,
+        window_end: Optional[datetime] = None,
+    ) -> str:
         """聚合窗口数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 /
         日志 ERROR / 近 3 日 git 提交 / 中途信号六源。
 
-        窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
-        now_utc() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。输出
+        窗口 = [window_start, window_end]，其中 window_end 为调用侧贯穿传入
+        的冻结快照值（code-review item bf3b2bc56a05：调度侧一次冻结后全节
+        共用，头部窗口行与各节上界一致）；None 时函数入口冻结 now_utc()
+        兜底（直调兼容），聚合执行期间不再调用实时时钟判定窗口归属。输出
         markdown 文本块，作为自省 prompt 的「数据摘要」注入（与人工复盘同
         源）。任一源读取失败降级为空段（不阻断自省）。
 
         pre_classified（code-review item 8c9ee042a091）：调用侧已物化的
         _iter_window_classified_runs 分类产出，透传给 runs 统计与失败样本
         两节共享，避免同轮自省重复执行窗口分类遍历；None 时各自原地扫描
-        （直调兼容）。
+        （直调兼容，同样消费贯穿的 window_end）。
         """
-        # 快照化：聚合启动时冻结窗口上界
-        window_end = now_utc()
+        # 快照化：聚合启动时冻结窗口上界（调用侧贯穿传入时用调用侧快照）
+        if window_end is None:
+            window_end = now_utc()
 
         lines = [
             "# 数据摘要",
@@ -1368,7 +1402,12 @@ class SelfReviewScheduler:
 
         # 2. runs 统计
         lines.append("## 2. runs 统计（窗口内）")
-        stats = collect_runs_stats(self.project_root, window_start, pre_classified=pre_classified)
+        stats = collect_runs_stats(
+            self.project_root,
+            window_start,
+            pre_classified=pre_classified,
+            window_end=window_end,
+        )
         lines.append(f"- 总 run 数: {stats['total']}")
         lines.append(f"- 成功: {stats['succeeded']}")
         lines.append(f"- 失败: {stats['failed']}")
@@ -1386,6 +1425,7 @@ class SelfReviewScheduler:
             store=self.store,
             logger=self.logger,
             pre_classified=pre_classified,
+            window_end=window_end,
         )
         if samples:
             lines.append("- 失败样本:")
@@ -1400,7 +1440,7 @@ class SelfReviewScheduler:
 
         # 4. 日志 ERROR 聚合
         lines.append("## 4. 日志 ERROR 聚合（窗口内）")
-        err = collect_log_errors(self.project_root, window_start)
+        err = collect_log_errors(self.project_root, window_start, window_end=window_end)
         lines.append(f"- ERROR 总数: {err['error_count']}")
         if err["samples"]:
             lines.append("- 最近样本:")
@@ -1694,8 +1734,11 @@ class SelfReviewScheduler:
 
         只处理注入清单（entries）内的 id；命中条件为 (日期, 小节, 原文快照)
         逐字一致——不一致（运行期间文件被并发编辑）跳过该条并记 WARNING，
-        绝不按序号盲删。条目移除后空小节剔除，小节全空的日期节整体剔除；
-        未涉及的日期节逐字保留（涉及块按机器格式规范化重渲染）。
+        绝不按序号盲删。同日期节同小节下逐字相同的重复条目按收集序（id 序）
+        逐块核销（code-review item ff0901b2eba8：三元组键不唯一，同文重复
+        条目各自可命中各自的 id），各自命中只删对应块。条目移除后空小节剔除，
+        小节全空的日期节整体剔除；未涉及的日期节逐字保留（涉及块按机器格式
+        规范化重渲染）。
         """
         todo = self.project_root / ".fenix" / "todo.md"
         if not todo.is_file() or not resolved or not entries:
@@ -1718,11 +1761,13 @@ class SelfReviewScheduler:
             except OSError as e:
                 self.logger.warning("self_review", f"闭环移除读取 todo.md 失败: {e}")
                 return []
-            match_key = {
-                (e["date"], e["section"], e["text"]): eid
-                for eid, e in by_id.items()
-                if eid in targets
-            }
+            # (日期, 小节, 原文快照) -> 待核销 id 队列（code-review item
+            # ff0901b2eba8）：同键同文重复条目全部入队，按收集序（即文件序）
+            # 逐块核销，避免 dict 单值覆盖使后来者永远匹配不上。
+            match_key: Dict[Tuple[str, str, str], List[str]] = {}
+            for eid, e in by_id.items():
+                if eid in targets:
+                    match_key.setdefault((e["date"], e["section"], e["text"]), []).append(eid)
             target_dates = {by_id[eid]["date"] for eid in targets}
             preamble, blocks = parse_todo_blocks(text)
             matched_ids: set = set()
@@ -1760,8 +1805,17 @@ class SelfReviewScheduler:
                         continue
                     if is_new_bullet:
                         item = line[2:].strip()
-                        eid = match_key.get((date, cur["title"], item))
-                        if eid and eid not in matched_ids:
+                        # 同文重复条目按未消费 id 队列逐个核销：命中块只消费
+                        # 队首一个 id，其余同文条目留待各自块命中时核销
+                        eid = next(
+                            (
+                                cand
+                                for cand in match_key.get((date, cur["title"], item)) or []
+                                if cand not in matched_ids
+                            ),
+                            None,
+                        )
+                        if eid:
                             matched_ids.add(eid)
                             skip_block = True  # 命中快照 → 整块移除
                             continue

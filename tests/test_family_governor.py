@@ -570,13 +570,18 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
                       mon.state_machine.updates)
 
     def test_waiver_via_assignment_text(self):
-        """文本动作含赋值型放行（_family_waiver=true）视为放行。"""
+        """文本动作含赋值型放行（_family_waiver=true）视为放行。
+
+        命中句须含「本次处置」限定语境（a2644017472b 收紧，与动词型 4dd652206902
+        同款口径：含「本次/该族」限定词或与本次父 SPEC 名同现），夹具文本据此
+        带「本次」。
+        """
         specs = {"fix-fix-fix-x": {"status": "bug-found"}}
         mon = self._make_monitor(specs)
 
         class _Disp:
             family_waiver = False
-            actions_taken = "确认放行：对父 SPEC 设置 _family_waiver=true"
+            actions_taken = "确认放行：对本次父 SPEC 设置 _family_waiver=true"
             recommended_action = ""
 
         mon._apply_family_waiver({"signal_type": "family_explosion",
@@ -584,6 +589,27 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         self.assertIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
                       mon.state_machine.updates)
+
+    def test_waiver_cross_family_release_with_assignment_same_sentence_does_not_grant(self):
+        """他族谱放行叙述与字段赋值同句不构成对本次对象的放行（a2644017472b）。
+
+        赋值型兜底曾只要求 _family_waiver=true 与「放行」二字同句——
+        「另一族谱已放行（全库唯一的 _family_waiver=true）」这类无任何否定
+        短语的他族谱叙述会绕过限定，给未放行的本次父 SPEC 误写豁免位。
+        """
+        specs = {"fix-fix-fix-x": {"status": "bug-found"}}
+        mon = self._make_monitor(specs)
+
+        class _Disp:
+            family_waiver = False
+            actions_taken = "另一族谱已放行（全库唯一的 _family_waiver=true）"
+            recommended_action = ""
+
+        mon._apply_family_waiver({"signal_type": "family_explosion",
+                                  "spec": "fix-fix-fix-x"}, _Disp())
+
+        self.assertNotIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
+                         mon.state_machine.updates)
 
     def test_waiver_mention_in_negative_sentence_does_not_grant(self):
         """仅在否定句中提及豁免位字面令牌不构成放行（2026-08-28 实证回归）。

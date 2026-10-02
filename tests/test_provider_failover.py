@@ -291,7 +291,7 @@ class TestChainSelectExecute:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
+                            agent_type=None, task_progress_snapshot=None):
             calls["n"] += 1
             calls["providers"].append(env_overrides.get("ANTHROPIC_BASE_URL"))
             if calls["n"] == 1:
@@ -334,7 +334,7 @@ class TestChainSelectExecute:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
+                            agent_type=None, task_progress_snapshot=None):
             calls["n"] += 1
             calls["resumes"].append(resume_session_id)
             if calls["n"] == 1:
@@ -367,7 +367,7 @@ class TestChainSelectExecute:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
+                            agent_type=None, task_progress_snapshot=None):
             calls["providers"].append(env_overrides.get("ANTHROPIC_BASE_URL"))
             # 始终 4xx → 不切换，链指针不动，下一 attempt 仍用首候选
             raise RuntimeError("HTTP 404")
@@ -396,7 +396,7 @@ class TestConfigDirSwitch:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
+                            agent_type=None, task_progress_snapshot=None):
             captured_dirs.append(env_overrides.get("CLAUDE_CONFIG_DIR"))
             if len(captured_dirs) == 1:
                 raise RuntimeError("unrecognized_model")
@@ -420,7 +420,7 @@ class TestConfigDirSwitch:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
+                            agent_type=None, task_progress_snapshot=None):
             if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
                 raise RuntimeError("unrecognized_model")
             return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
@@ -511,7 +511,7 @@ class TestModelChangedLog:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
+                            agent_type=None, task_progress_snapshot=None):
             # 首候选失败 → 触发链前进到次候选
             if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
                 raise RuntimeError("unrecognized_model")

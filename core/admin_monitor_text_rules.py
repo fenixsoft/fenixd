@@ -30,6 +30,11 @@ import re
 # 现动词型模式同样分句判定，且命中句须含「本次处置」限定（_WAIVER_CURRENT_
 # MARKERS 限定词或本 spec 名同现）；否定清单补「不再放行」（非「不放行」的连续
 # 子串，此前漏检）「暂不发放」等变体。
+# code-review a2644017472b 补修：赋值型兜底（_family_waiver=true 与「放行」同句）
+# 未同步收口——「另一族谱已放行（全库唯一的 _family_waiver=true）」这类他族谱
+# 叙述 + 字段赋值同句、无任何否定短语的句子仍会绕过限定，给未放行的本次父
+# SPEC 误写 _family_waiver=true（与上文两次实证误判同型）。现赋值型兜底复用与
+# 动词型相同的「本次处置」同句限定（_WAIVER_CURRENT_MARKERS 或本 spec 名同现）。
 _WAIVER_NEGATION_PHRASES = (
     "未放行",
     "不放行",
@@ -101,7 +106,8 @@ def family_waiver_granted(text: str, spec: str) -> bool:
         提及其他族谱/历史放行（「另一族谱已同意放行」「父 SPEC 此前已放行过
         一次」）且不含否定短语不构成对本次对象的放行（code-review
         4dd652206902）；
-      - 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算显式放行。
+      - 赋值型兜底：_family_waiver=true 须与「放行」动词同句，且命中句同样
+        须含「本次处置」限定（a2644017472b，与动词型同款口径）才算显式放行。
 
     Args:
         text: 处置文本拼接（actions_taken/summary/recommended_action）；为
@@ -131,8 +137,18 @@ def family_waiver_granted(text: str, spec: str) -> bool:
     if not waived:
         # 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算
         # 显式放行——叙述中对他族谱豁免状态的提及不构成放行。
+        # 「本次处置」同句限定（code-review a2644017472b，与动词型路径同款
+        # 口径）：命中句须含 _WAIVER_CURRENT_MARKERS 限定词或与本次 spec 名
+        # 同现——否则「另一族谱已放行（全库唯一的 _family_waiver=true）」
+        # 这类他族谱叙述 + 字段赋值同句、无否定短语的句子会绕过限定，给未
+        # 放行的本次父 SPEC 误写豁免位。
         waived = any(
-            _WAIVER_ASSIGN_RE.search(sent) and "放行" in sent
+            _WAIVER_ASSIGN_RE.search(sent)
+            and "放行" in sent
+            and (
+                any(m in sent for m in _WAIVER_CURRENT_MARKERS)
+                or (isinstance(spec, str) and spec and spec in sent)
+            )
             for sent in re.split(r"[。！？\n]", text)
         )
     return waived

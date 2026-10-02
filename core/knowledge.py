@@ -462,15 +462,15 @@ def build_distill_prompt(proot: Path, archived_names: list) -> str:
     archive_items = "\n".join(
         f"- {name}（目录：{proot / ARCHIVE_DIR / name}）" for name in archived_names
     )
-    now_local, tz = local_now_stamp()
+    stamp, tz = local_now_stamp()
     return (
         f"{tpl}\n\n---\n\n"
         f"## 本次任务（动态段）\n\n"
         f"项目根（当前工作目录）：{proot}\n"
         f"真相源目录：{proot / KNOWLEDGE_DIR}\n"
-        f"当前本地时间：{now_local}（时区 {tz}）。index.md 与受影响域 _domain.md 的"
+        f"当前本地时间：{stamp}（时区 {tz}）。index.md 与受影响域 _domain.md 的"
         f"「最后更新」盖戳行、各表更新时间列一律以此时间为准，盖戳行写为"
-        f"`> 最后更新：{now_local} {tz}`\n\n"
+        f"`> 最后更新：{stamp} {tz}`\n\n"
         f"本次待蒸馏的归档：\n{archive_items}\n"
     )
 
@@ -483,10 +483,17 @@ def _build_spawn_env() -> dict:
 
 
 def _default_spawn(cmd: list, cwd: str):
-    """spawn claude 子进程（独立会话组，超时可 killpg 整组清场）。"""
+    """spawn claude 子进程（独立会话组，超时可 killpg 整组清场）。
+
+    提示词经 stdin 传入（spawn 带 ``stdin=subprocess.PIPE``，配合
+    :meth:`DistillManager._spawn_and_wait` 的 ``communicate(prompt, ...)``），
+    同 agent_runner / adjudication_narrative 既有口径——argv 全文驻留
+    /proc/<pid>/cmdline 对同机其他用户可见，且单参数受 MAX_ARG_STRLEN 约束。
+    """
     return subprocess.Popen(
         cmd,
         cwd=cwd,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -946,13 +953,17 @@ class DistillManager:
         Returns:
             (ok, error)：ok=True 进程已退出且退出码 0（产物合法性交校验脚本）。
         """
-        cmd = ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"]
+        # 提示词经 stdin 传入，不走 argv（同 agent_runner /
+        # adjudication_narrative.default_channel 既有口径）：argv 全文驻留
+        # /proc/<pid>/cmdline 对同机其他用户可见，且 Linux 单参数受
+        # MAX_ARG_STRLEN≈128KB 约束，模板膨胀后 spawn 会以 E2BIG 失败。
+        cmd = ["claude", "-p", "--permission-mode", "bypassPermissions"]
         try:
             proc = self._spawn(cmd, cwd=str(proot))
         except Exception as e:  # noqa: BLE001 — CLI 不存在等 spawn 失败
             return False, f"调用 claude CLI 失败: {e}"
         try:
-            stdout, stderr = proc.communicate(timeout=RUN_TIMEOUT_SECONDS)
+            stdout, stderr = proc.communicate(prompt, timeout=RUN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
             return False, f"run 超时（>{RUN_TIMEOUT_SECONDS}s），已终止进程组"

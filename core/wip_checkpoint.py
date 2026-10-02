@@ -14,7 +14,10 @@ wip_checkpoint.py — WIP checkpoint 提交与 merge-back 塌缩（add-impl-wip-
     D1：builtin a1 84min 未提交工作滞留 worktree 的事故补位）。
 
 消息契约（D5）：``fenix(wip): checkpoint <anchor> <spec>``，机器可识别前缀
-供 merge-back 前塌缩（D4）扫描与人工审计。提交尊重 worktree 的 gitignore
+供 merge-back 前塌缩（D4）扫描与人工审计。塌缩（D4）把 merge-base 到分支
+tip 的整段区间折叠为单提交：区间内全部提交（含非 WIP 的常规提交）一并
+进入该单提交、从分支可达历史上消失，消息取区间内最终非 WIP 提交（仅
+WIP 时改写前缀）。提交尊重 worktree 的 gitignore
 （git add -A 天然排除 ignored）。
 
 失败降级（D6）：所有 git 操作 15s 超时，失败仅 WARNING 留痕并继续既有收口/
@@ -204,7 +207,11 @@ def collapse_wip_commits(
     *,
     timeout: int = WIP_TIMEOUT_SECONDS,
 ) -> bool:
-    """把分支上的全部 ``fenix(wip):`` 前缀提交塌缩为单提交（merge-back 前）。
+    """把 merge-base 到分支 tip 的整段区间塌缩为单提交（merge-back 前）。
+
+    塌缩对象不止 ``fenix(wip):`` 前缀提交：区间内全部提交（含非 WIP 的
+    常规提交）一并折叠进这单提交、从分支可达历史上消失；仅当区间内存在
+    WIP 前缀提交才触发，消息取最终非 WIP 提交（仅 WIP 时改写前缀）。
 
     ``git merge-base HEAD branch`` 为基点：先读分支 tip commit sha 作 CAS
     旧值，再以该 tip 解析 tree（与旧值同一时点）经 ``git commit-tree`` 重建

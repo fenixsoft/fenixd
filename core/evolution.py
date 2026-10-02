@@ -1032,7 +1032,15 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
     ``sys.path`` 指向项目 ``.fenix/`` 后调用 ``core.deliverables.lint_declared``
     与 ``core.deliverables.lint_tasks_parseable``（与 fenixd.py 启动时同款
     sys.path 注入），返回合并后的 violation 清单。MUST NOT 自实现第二套声明
-    解析。lint 自身故障 fail-open（记 WARNING 返回空清单，不阻塞）。
+    解析。
+
+    两级失败语义（code-review item 2beb5528e1b9 收拢后口径）：lint 函数
+    自身故障（lint_declared / lint_tasks_parseable 内部异常）fail-open——
+    记 WARNING 跳过该函数，不阻塞；``core.deliverables`` 导入失败（框架
+    安装残缺 / sys.path 错，确定性环境故障而非 lint 抖动）显式上抛——
+    门禁静默放行会让带缺陷草稿照常立项，代价是一轮完整 run 后才在晋升/
+    守卫暴露。本函数是唯一实现（code_review._lint_draft 薄委托至此），
+    单点演进防再漂移。
 
     注入的实际解析范围（如实标注）：常驻进程（daemon）中顶层包 ``core`` 早已
     进 ``sys.modules``，``from core.deliverables import ...`` 的子模块解析走已
@@ -1055,11 +1063,6 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
             except Exception as e:
                 _logger.warning("evolution: 草稿 lint 异常（非阻塞放行）: %s", e)
         return violations
-    except ImportError as e:
-        _logger.warning(
-            "evolution: 草稿 lint 模块导入失败（fail-open 返回空清单）: %s", e
-        )
-        return []
     finally:
         if injected:
             # code-review item 14a703dcb5c9：常驻进程两个线程并发进入本函数时
@@ -1244,7 +1247,12 @@ def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
     commit 同样以 ``spec/changes/<name>`` 为 pathspec，确保索引中残留的
     其他暂存内容不会被裹挟进本条提交。
 
-    Returns: ``(ok, error)``；ok=False 时调用方负责清理未跟踪副本。
+    本函数是唯一实现（code_review._git_commit 薄委托至此，code-review item
+    2beb5528e1b9），单点演进防再漂移。
+
+    Returns: ``(ok, error)``；ok=False 时调用方负责清理未跟踪副本（含
+    撤回 pathspec 暂存项——error 前缀区分 ``git add 失败`` / ``git commit
+    失败`` 阶段，调用方可据此判断脏索引形态）。
     """
     git = ["git", "-C", str(project_root)]
     try:
@@ -1531,6 +1539,32 @@ def accept_item(
 
         ok, err = _git_commit(project_root, name)
         if not ok:
+            # code-review item 397de4b415ba：add 已写入索引而 commit 失败
+            # （hook 拒绝 / index.lock 竞争 / 缺 identity 等）时，先撤回
+            # pathspec 暂存项再删工作树副本，避免留下「索引暂存新文件 +
+            # 工作树已删」的脏索引阻塞/污染后续 merge-back（与
+            # code_review.generate_fix_spec 的提交失败分支同款）。add 阶段
+            # 失败时索引也可能已部分暂存，故无条件 reset（幂等）；撤回失败
+            # 只留痕，不掩盖提交失败本因。
+            try:
+                undo = subprocess.run(
+                    [
+                        "git", "-C", str(project_root),
+                        "reset", "-q", "--", f"spec/changes/{name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if undo.returncode != 0:
+                    _logger.warning(
+                        "evolution: 撤回暂存 spec/changes/%s 失败（退出码 %s）: %s",
+                        name,
+                        undo.returncode,
+                        (undo.stderr or "").strip()[:200],
+                    )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                _logger.warning("evolution: 撤回暂存 spec/changes/%s 失败: %s", name, e)
             # 提交失败：删除副本（主树无未跟踪文件），保留暂存草稿可重试
             shutil.rmtree(dest, ignore_errors=True)
             rec["status"] = "accept_failed"

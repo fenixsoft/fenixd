@@ -1304,7 +1304,9 @@ def register_relocation_credential(
 
     替代路径在实现分支 HEAD 不存在（branch 提供时以 git cat-file 判定；branch
     缺失时保守拒绝——无第三方证明替代路径已落地，防「改声明≠交付物」）或来源标注
-    缺失 → MUST NOT 登记，返回 None（调用方转既有缺件处置）。MUST NOT 因「声明段
+    缺失 → MUST NOT 登记，返回 None（调用方转既有缺件处置）。git 不可用（超时/
+    无法执行/非仓库）存在性未知时同样拒绝，但留痕文案按「确定不存在」与「无法
+    校验」区分（item f45e17548a60），不作失真断言。MUST NOT 因「声明段
     无该条目」上抛卡死（本函数不触碰声明段，无该语义的异常面）。写盘失败仅
     WARNING 不抛。
 
@@ -1330,11 +1332,23 @@ def register_relocation_credential(
     if not old_path or not new_path or not source:
         return None
     if branch is not None:
-        if not _git_object_exists_on_branch(branch, new_path, project_root):
+        exists = _git_object_exists_on_branch(branch, new_path, project_root)
+        if exists is not True:
+            # 三态区分（对齐 is_drift_candidate 对同一助手的 None 处置，item
+            # 280861e01f22）：False=确定不存在；None=git 不可用（超时/无法执行/
+            # 非仓库）存在性未知——留痕文案不作「不存在」的失真断言（item
+            # f45e17548a60）。两种情形行为方向一致：拒绝登记、转缺件处置。
+            if exists is False:
+                reason = f"替代路径 {new_path} 在分支 {branch} HEAD 不存在"
+            else:
+                reason = (
+                    f"git 不可用、无法校验替代路径 {new_path} "
+                    f"在分支 {branch} HEAD 是否落地"
+                )
             _resolution_logger.warning(
                 "deliverables",
-                f"重定位凭据登记拒绝 '{spec_name}': 替代路径 {new_path} "
-                f"在分支 {branch} HEAD 不存在（转既有缺件处置）",
+                f"重定位凭据登记拒绝 '{spec_name}': {reason}"
+                f"（转既有缺件处置）",
             )
             return None
     else:

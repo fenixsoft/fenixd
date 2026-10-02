@@ -59,7 +59,7 @@ def _validate_name(name: str) -> Optional[str]:
     """kebab-case 名称校验；合法返回 None，否则返回具体错误信息。"""
     if not name:
         return "Change name cannot be empty"
-    if not _KEBAB_RE.match(name):
+    if not _KEBAB_RE.fullmatch(name):
         if re.search(r"[A-Z]", name):
             return "Change name must be lowercase (use kebab-case)"
         if re.search(r"\s", name):

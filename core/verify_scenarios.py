@@ -48,8 +48,11 @@ _VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
 
 # 修复段中声明「新增交付范围」的匹配：带「新增」字样且非纯修复的条目。
 # 设计 D2：仅当修复段声明了新增交付时，planner 才允许为该范围追加场景。
+# 动词-名词衔接窗口限定同条款（不含句读/换行，cec71a4419ae）：放任跨句读
+# 会让「上一轮无新增，本次新增 X 场景」中前半句的否定动词配上后半句的
+# 名词成一条匹配，否定排除随之吞掉真实声明。
 _NEW_DELIVERY_RE = re.compile(
-    r"(新增|追加|增加).{0,12}?(交付|范围|功能|场景|支持|能力|特性|页面|模块)",
+    r"(新增|追加|增加)[^，。；\n]{0,12}?(交付|范围|功能|场景|支持|能力|特性|页面|模块)",
     re.MULTILINE,
 )
 
@@ -59,6 +62,16 @@ _NEW_DELIVERY_RE = re.compile(
 # 交付条目也误排除。
 _REPAIR_PHRASE_RE = re.compile(
     r"[^，。；\n]{0,4}(?:对|针对|对于)[^，。；\n]{0,60}的修复"
+)
+
+# 否定语境排除（code-review cec71a4419ae）：命中动词前（同条款内回看，
+# 不含句读/换行——「上一轮无新增，本次新增 X 场景」的后半句真实声明不受
+# 前半句否定影响）紧邻否定前缀＝否定表述（「未新增场景」「无新增交付
+# 范围」「不增加功能」），按非声明处理，不得误开修复轮扩容闸门。多字
+# 否定词须排在单字前（正则交替从左到右，否则「不再」会被「不」截断、
+# 尾锚 ``$`` 失配漏判）。
+_NEGATED_DELIVERY_RE = re.compile(
+    r"(?:没有|不再|暂不|不曾|并未|并不|并非|无需|无须|不需|未|无|不)$"
 )
 
 
@@ -313,6 +326,8 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     合法部分照常落盘——不整批拒绝（避免单条坏数据放大成整轮验证无法进行）。
     非 ScenarioEntry 条目按校验失败剔除留痕（2eaebbf39624：原 ``dict(e)``
     伪兜底转换出的裸 dict 无 ``to_dict``、写回阶段必崩，契约外类型不转换）。
+    剔除只作用于落盘副本，不原地改写入参（code-review b94f527e8bb8）——
+    调用方 save 后复用同一 ScenarioSet 拿到的仍是原集合，无隐性剪枝。
     """
     clean_entries: list[ScenarioEntry] = []
     rejected: list[str] = []
@@ -339,9 +354,16 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
             len(rejected),
             "、".join(rejected),
         )
-    scenario_set.scenarios = clean_entries
+    # 落盘副本（b94f527e8bb8）：__init__ 内部 ``list(scenarios or [])`` 换新
+    # 列表，与入参 scenarios 无列表引用共享；display_declarations 亦逐项复制。
+    persist_set = ScenarioSet(
+        scenario_set.spec,
+        scenario_set.round,
+        clean_entries,
+        display_declarations=scenario_set.display_declarations,
+    )
     path = scenarios_path_for(project_root, scenario_set.spec)
-    _atomic_write(path, scenario_set.to_dict())
+    _atomic_write(path, persist_set.to_dict())
     return path
 
 
@@ -373,7 +395,11 @@ def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = No
     纯修复（无新增范围）返回 False，planner 不得扩容。动词后（允许「了」等
     少量衔接字）出现「对/针对/对于 … 的修复」短语的命中按修复语境排除、
     不计入新增交付声明（bcb05f957b2d：如「追加对场景 X 的修复」「追加了
-    针对场景 X 的修复」），排除时向 ``notes``（若提供）追加留痕行供审计。
+    针对场景 X 的修复」）。动词前同条款内紧邻否定前缀（未/无/不…）的命中
+    按否定表述排除（code-review cec71a4419ae：如「未新增场景」「无新增
+    交付范围」「不增加功能」），同条款限定防跨句误排除——「上一轮无新增，
+    本次新增 X 场景」的后半句真实声明仍计为扩容。两类排除均向 ``notes``
+    （若提供）追加留痕行供审计。
     """
     if not fix_section:
         return False
@@ -388,6 +414,23 @@ def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = No
                 notes.append(
                     f"- 「{excerpt}」命中新增交付词形但属修复语境"
                     f"（对…的修复），该处不计入新增交付声明"
+                )
+            continue
+        # 否定语境排除（cec71a4419ae）：自上一句读/换行到动词前的同条款
+        # 片段以否定词收尾 ⇒ 否定表述，按非声明处理并留痕。
+        clause_start = max(
+            fix_section.rfind(ch, 0, m.start(1)) for ch in "，。；\n"
+        ) + 1
+        if _NEGATED_DELIVERY_RE.search(fix_section[clause_start : m.start(1)]):
+            if notes is not None:
+                line_start = fix_section.rfind("\n", 0, m.start()) + 1
+                line_end = fix_section.find("\n", m.end())
+                if line_end == -1:
+                    line_end = len(fix_section)
+                excerpt = fix_section[line_start:line_end].strip()[:60]
+                notes.append(
+                    f"- 「{excerpt}」命中新增交付词形但属否定表述"
+                    f"（未/无/不…），该处不计入新增交付声明"
                 )
             continue
         return True

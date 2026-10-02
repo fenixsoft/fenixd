@@ -211,7 +211,6 @@ class KnowledgeE2E(unittest.TestCase):
         # index.lock（非产品缺陷，测试须布防真实时序）——等主线程受理方
         # commit_archive_move 返回后再开工。
         self.archive_committed.wait(timeout=30)
-        self.prompts.append(cmd[2])
         proot = Path(cwd)
         archive = proot / "spec" / "archive" / ARCHIVE_NAME
         assert archive.is_dir(), "fake spawn 运行时归档目录必须已存在"
@@ -238,7 +237,9 @@ class KnowledgeE2E(unittest.TestCase):
             "- [ADR-002](ADR-002-auto-commit.md) accepted\n",
             encoding="utf-8",
         )
-        return _Proc0()
+        # 提示词已改经 stdin 传入（code-review 7d3934ff42b9，不在 argv）：
+        # 捕获点随接口同步，挪到 communicate 首参
+        return _Proc0(on_prompt=self.prompts.append)
 
     def _wait_distill_commit(self, deadline=30.0) -> bool:
         """worker 线程异步执行：有界轮询等蒸馏提交出现（或失败台账）。"""
@@ -352,8 +353,15 @@ class KnowledgeE2E(unittest.TestCase):
 
 class _Proc0:
     returncode = 0
+    pid = -1
 
-    def communicate(self, timeout=None):
+    def __init__(self, on_prompt=None):
+        self._on_prompt = on_prompt
+
+    def communicate(self, prompt=None, timeout=None):
+        # 与产品 _spawn_and_wait 的 stdin 传参口径一致：首参为提示词
+        if self._on_prompt is not None:
+            self._on_prompt(prompt or "")
         return "", ""
 
 

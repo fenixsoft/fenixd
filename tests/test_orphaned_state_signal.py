@@ -320,7 +320,7 @@ class TestInprocessVerifyActive:
     进度文件 mtime 两态用 os.utime 造。
     """
 
-    def _write_progress(self, proot: Path, spec: str, mtime=None) -> Path:
+    def _seed_verify_progress(self, proot: Path, spec: str, mtime=None) -> Path:
         d = proot / ".fenix" / "verify-progress"
         d.mkdir(parents=True, exist_ok=True)
         p = d / f"{spec}.json"
@@ -368,13 +368,13 @@ class TestInprocessVerifyActive:
     def test_fresh_progress_mtime_exempted(self, tmp_path):
         """进度文件 mtime 新鲜（线程不在）→ 豁免（辅证臂独立成立）。"""
         spec = "demo-mtime-fresh"
-        self._write_progress(tmp_path, spec, time.time())
+        self._seed_verify_progress(tmp_path, spec, time.time())
         assert inprocess_verify_active(tmp_path, spec) is True
 
     def test_stale_progress_beyond_window_not_exempted(self, tmp_path):
         """mtime 超独立窗口（900s）→ 不豁免，spec_is_undriven 判无驱动。"""
         spec = "demo-mtime-stale"
-        self._write_progress(tmp_path, spec, time.time() - 901)
+        self._seed_verify_progress(tmp_path, spec, time.time() - 901)
         assert inprocess_verify_active(tmp_path, spec) is False
         with mock.patch("core.admin_monitor._pgrep_live_worktree",
                         return_value=False):
@@ -388,7 +388,7 @@ class TestInprocessVerifyActive:
     def test_explicit_window_boundary(self, tmp_path):
         """window_seconds 参数化边界：窗口内 True / 超窗 False。"""
         spec = "demo-mtime-window"
-        self._write_progress(tmp_path, spec, time.time() - 130)
+        self._seed_verify_progress(tmp_path, spec, time.time() - 130)
         assert inprocess_verify_active(tmp_path, spec,
                                        window_seconds=120) is False
         assert inprocess_verify_active(tmp_path, spec,
@@ -399,7 +399,7 @@ class TestInprocessVerifyActive:
         （单场景长批间隔实测 4-5 分钟），但落独立窗口 900s 内 → 条件⑤豁免。
         独立窗口 MUST NOT 沿用 120s 宽限，否则「正在长跑」被误判停滞。"""
         spec = "demo-batch-gap"
-        self._write_progress(tmp_path, spec, time.time() - 300)
+        self._seed_verify_progress(tmp_path, spec, time.time() - 300)
         # 对照①：同 mtime 在 120s run 宽限下判「无活动 run 文件」
         assert _has_recent_spec_run(
             tmp_path, spec, time.time(), ORPHANED_RUN_GRACE_SECONDS) is False
@@ -413,7 +413,7 @@ class TestInprocessVerifyActive:
     def test_thread_probe_wins_over_stale_mtime(self, tmp_path):
         """线程探测为主判据：线程活、mtime 停滞（超窗）→ 仍豁免（零时间窗）。"""
         spec = "demo-thread-long-scene"
-        self._write_progress(tmp_path, spec, time.time() - 3600)
+        self._seed_verify_progress(tmp_path, spec, time.time() - 3600)
         t, started, stop = _live_verifier_thread(spec)
         t.start()
         assert started.wait(10)
