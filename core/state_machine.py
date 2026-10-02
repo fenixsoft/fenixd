@@ -620,6 +620,31 @@ class StateParser:
 
         return specs
 
+    # serialize 固定字段表（顺序即落盘字段序）。成员判定共用 SERIALIZED_FIELD_SET
+    # （code-review 94803b70af42）：写侧（_apply_updates_entry 的白名单外键
+    # 显性化告警）与读侧口径以此单源，避免第二份漂移白名单。固定表之外的键中
+    # 仅下划线前缀内部字段会被 serialize 透传，其余普通命名键在全量回写时
+    # 被丢弃——写侧据此显性化（不改变丢弃行为）。
+    SERIALIZED_FIELDS = [
+        "status",
+        "priority",
+        "created",
+        "updated",
+        "implementer_run",
+        "tester_run",
+        "branch",
+        "error",
+        "depends_on",
+        "total_duration",
+        FROZEN_FIELD,
+        START_AFTER_FIELD,
+        FROZEN_UNTIL_FIELD,
+        IMPL_RUN_BUDGET_OVERRIDE_FIELD,
+        IMPL_TURN_CAP_OVERRIDE_FIELD,
+        "reviewer_run",
+    ]
+    SERIALIZED_FIELD_SET = frozenset(SERIALIZED_FIELDS)
+
     @staticmethod
     def serialize(specs: Dict[str, dict]) -> str:
         """Serialize spec entries back into STATE.md format."""
@@ -642,24 +667,7 @@ class StateParser:
             # 裸换行会让续行脱离条目结构；解析侧 header 经 _unescape_state_value
             # 逆变换，转义后可无损往返。
             lines.append(f"### {_escape_state_value(name)}")
-            for key in [
-                "status",
-                "priority",
-                "created",
-                "updated",
-                "implementer_run",
-                "tester_run",
-                "branch",
-                "error",
-                "depends_on",
-                "total_duration",
-                FROZEN_FIELD,
-                START_AFTER_FIELD,
-                FROZEN_UNTIL_FIELD,
-                IMPL_RUN_BUDGET_OVERRIDE_FIELD,
-                IMPL_TURN_CAP_OVERRIDE_FIELD,
-                "reviewer_run",
-            ]:
+            for key in StateParser.SERIALIZED_FIELDS:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"
@@ -863,6 +871,43 @@ class StateMachine:
                 return result
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+    def _anchor_recheck_locked(self, specs: Dict[str, dict], spec_name: str,
+                               snapshot: Optional[dict],
+                               anchor_fields) -> tuple:
+        """锁内锚点复核共享 helper（code-review 6e8fb8190679）。
+
+        「锁内以最新条目处理 branch/implementer_run 等快照锚点、不一致时经
+        ``anchor_recheck`` 带出锁外告警」的 ``_mutate`` 闭包模式此前在
+        freeze_spec（锁内取最新值透传）、unfreeze_spec、_recovery_remerge_pending、
+        _recovery_preserve_spec（后三处复核锁外快照，失败策略各异：放弃锚点
+        回写继续解冻 / 放弃锚点回写保留推进 / 整体放弃本写）四处各持一份实现，
+        新增锚点字段或调整比较口径须四处人工同步。本 helper 收敛「取最新条目 +
+        锚点字段逐项比较」这一公共口径为单源；差异化的失败策略留在各调用方
+        分支。
+
+        Args:
+            specs: ``_mutate_locked`` 锁内回调拿到的最新条目表。
+            spec_name: 目标条目名。
+            snapshot: 锁外快照 entry；None 表示无快照可比（freeze_spec 锁内
+                取值形态），matched 恒 True。
+            anchor_fields: 参与比较的锚点字段集。
+
+        Returns: ``(fresh, matched)``：fresh 为最新条目（SPEC 缺失时空 dict，
+            该缺失形态由调用方据其落「SPEC 并发删除」出口，见
+            _recovery_remerge_pending / _recovery_preserve_spec）；matched 为
+            锚点字段集内快照与最新值是否全部一致。
+
+        锁语义：MUST 在 ``.STATE.md.lock`` 的锁内被调用（本方法不取锁、不落
+        盘、无 I/O，持锁窗口不含日志）。
+        """
+        fresh = specs.get(spec_name) or {}
+        if snapshot is None:
+            return fresh, True
+        matched = all(
+            fresh.get(field) == snapshot.get(field) for field in anchor_fields
+        )
+        return fresh, matched
 
     # ── 预算计数原子原语（fix-budget-counting-semantics D2）──────────
 
@@ -1342,6 +1387,19 @@ class StateMachine:
         specs[spec_name].update(local)
         specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
         applied.update(local)
+        # code-review 94803b70af42：serialize 只落固定字段表 + 下划线前缀内部
+        # 字段两类键，既不在固定表也无下划线前缀的自定义键（如未来写入的
+        # note/verified_at 等普通命名键）会在下一次全量回写时被静默丢弃，而
+        # 解析端 _parse_content 的 kv 正则却无条件收编——读写口径不对称。此处
+        # 不改变丢弃行为，仅把「写了但存不下」显性化（与 _admit_entry 的
+        # 显性化策略同款）：收集进 applied 带出锁外，由 _log_update_applied
+        # 输出 warning（锁内不落日志，见 _log_update_applied docstring）。
+        dropped = sorted(
+            k for k in local
+            if not k.startswith("_") and k not in StateParser.SERIALIZED_FIELD_SET
+        )
+        if dropped:
+            applied["_dropped_keys"] = dropped
         return True
 
     def _log_update_applied(self, spec_name: str, applied: dict) -> None:
@@ -1359,12 +1417,23 @@ class StateMachine:
                 f"'{applied['_stripped']}' stripped — manual freeze intact, "
                 f"unfreeze via unfreeze_spec() to resume",
             )
+        dropped = applied.get("_dropped_keys")
+        if dropped:
+            # code-review 94803b70af42：serialize 白名单外普通命名键的显性化
+            # 告警（收集点在 _apply_updates_entry，此处锁外输出）
+            self.logger.warning(
+                "state_machine",
+                f"SPEC '{spec_name}' 的更新含 serialize 固定字段表外且无下划线"
+                f"前缀的键 {dropped}——本次内存写可见，但 STATE.md 全量回写时"
+                f"会被静默丢弃（读写口径不对称，仅显性化不改变丢弃行为）",
+            )
         self.logger.info(
             "state_machine",
             f"Updated SPEC '{spec_name}'",
             {
                 "updates": {
-                    k: v for k, v in applied.items() if k not in ("updated", "_stripped")
+                    k: v for k, v in applied.items()
+                    if k not in ("updated", "_stripped", "_dropped_keys")
                 }
             },
         )
@@ -1400,11 +1469,15 @@ class StateMachine:
         applied: dict = {}
 
         def _mutate(specs):
-            entry = specs.get(spec_name) or {}
-            if entry.get("status") in INTERRUPTED_STATES:
+            # 锚点取最新条目的口径收敛到共享 helper（code-review 6e8fb8190679；
+            # 本处为锁内取值形态，无快照可比 → snapshot=None）
+            fresh, _matched = self._anchor_recheck_locked(
+                specs, spec_name, None, ("branch", "implementer_run", "reviewer_run")
+            )
+            if fresh.get("status") in INTERRUPTED_STATES:
                 for _anchor in ("branch", "implementer_run", "reviewer_run"):
-                    if entry.get(_anchor) is not None:
-                        updates[_anchor] = entry.get(_anchor)
+                    if fresh.get(_anchor) is not None:
+                        updates[_anchor] = fresh.get(_anchor)
             found = self._apply_updates_entry(specs, spec_name, updates, applied)
             return found, found
 
@@ -1704,11 +1777,12 @@ class StateMachine:
 
         def _mutate(specs):
             if resume_anchors:
-                fresh = specs.get(spec_name) or {}
-                if (
-                    fresh.get("branch") == entry.get("branch")
-                    and fresh.get("implementer_run") == entry.get("implementer_run")
-                ):
+                # 快照锚点复核口径收敛到共享 helper（code-review 6e8fb8190679）；
+                # 失败策略（放弃锚点回写、解冻照常推进）留在本调用方分支。
+                fresh, matched = self._anchor_recheck_locked(
+                    specs, spec_name, entry, ("branch", "implementer_run")
+                )
+                if matched:
                     updates.update(resume_anchors)
                 else:
                     anchor_recheck["snapshot"] = entry
@@ -2447,7 +2521,7 @@ class StateMachine:
                 )
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
-                self.update_spec(
+                cleared = self.update_spec(
                     name,
                     {
                         "status": SpecStatus.READY,
@@ -2469,7 +2543,12 @@ class StateMachine:
                         "_redispatch_cause_fp": None,
                     },
                 )
-                recovered.append(name)
+                # code-review 1b4fc51aac73：SPEC 在恢复窗口内被并发删除时
+                # update_spec 返回 False——不计入 recovered（recovered 口径
+                # 只收「确实恢复了状态」的 spec；spec 在场时返回值恒 True，
+                # 既有行为不变）
+                if cleared:
+                    recovered.append(name)
         return recovered
 
     def _recovery_remerge_pending(
@@ -2505,7 +2584,8 @@ class StateMachine:
 
         Returns: True 表示 re-merge 成功并已推进 implemented；False 表示
         re-merge 失败（调用方清除标记后回落保留续做路径，spec 不滞留
-        implementing）。
+        implementing），或 SPEC 已在本方法的 git 窗口内被并发删除
+        （code-review 1b4fc51aac73：跳过收口回调与成功日志，不计成功）。
         """
         branch = entry.get("branch")
         if not branch:
@@ -2579,11 +2659,16 @@ class StateMachine:
         anchor_recheck: dict = {}
 
         def _mutate(specs):
-            fresh = specs.get(name) or {}
-            if (
-                fresh.get("branch") == entry.get("branch")
-                and fresh.get("implementer_run") == entry.get("implementer_run")
-            ):
+            # 快照锚点复核口径收敛到共享 helper（code-review 6e8fb8190679）；
+            # 失败策略（放弃锚点回写、推进不回滚）留在本调用方分支。
+            fresh, matched = self._anchor_recheck_locked(
+                specs, name, entry, ("branch", "implementer_run")
+            )
+            if not fresh:
+                # SPEC 已在 re-merge 的 git 窗口内被并发删除（code-review
+                # 1b4fc51aac73）：缺失事实带出锁外，收口出口据此跳过假成功
+                anchor_recheck["missing"] = True
+            if matched:
                 updates["implementer_run"] = entry.get("implementer_run")
                 updates["branch"] = branch
             else:
@@ -2593,6 +2678,18 @@ class StateMachine:
             return found, found
 
         if not self._mutate_locked(_mutate):
+            if anchor_recheck.get("missing"):
+                # SPEC 已被并发删除：不记假成功、不触发收口副作用——此前本
+                # 出口只记一条 SPEC not found warning 后无条件执行
+                # remerge_callback/consume_legacy 并输出「成功 → implemented」
+                # 日志返回 True（缺失 spec 不会被本路径复活、无状态损坏，但
+                # 审计日志与下游副作用失真）。返回 False 交调用方按缺失处置。
+                self.logger.warning(
+                    "state_machine",
+                    f"SPEC not found: {name}（恢复期 re-merge 窗口内被并发删除）"
+                    f"— 跳过 remerge 收口回调与 consume_legacy，不计成功",
+                )
+                return False
             self.logger.warning("state_machine", f"SPEC not found: {name}")
         elif anchor_recheck:
             _snap = anchor_recheck["snapshot"]
@@ -2759,7 +2856,9 @@ class StateMachine:
         口径，code-fix b609ecf63750）：快照锚点在保留判定的 git 窗口内被并发
         改写时放弃本写并 WARNING，返回 False 回落调用方清空重建路径。
 
-        Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）。
+        Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）；
+        False 表示判定未通过、锚点复核不一致（并发改写），或 SPEC 已在本方法
+        的 git 窗口内被并发删除（code-review 1b4fc51aac73，不计入 recovered）。
         """
         if project_root is None or worktree_manager is None:
             return False
@@ -2812,11 +2911,16 @@ class StateMachine:
         anchor_recheck: dict = {}
 
         def _mutate(specs):
-            fresh = specs.get(name) or {}
-            if (
-                fresh.get("branch") == entry.get("branch")
-                and fresh.get("implementer_run") == entry.get("implementer_run")
-            ):
+            # 快照锚点复核口径收敛到共享 helper（code-review 6e8fb8190679）；
+            # 失败策略（锚点不一致整体放弃本写）留在本调用方分支。
+            fresh, matched = self._anchor_recheck_locked(
+                specs, name, entry, ("branch", "implementer_run")
+            )
+            if not fresh:
+                # SPEC 已在保留判定的 git 窗口内被并发删除（code-review
+                # 1b4fc51aac73）：缺失事实带出锁外，收口出口据此跳过假成功
+                anchor_recheck["missing"] = True
+            if matched:
                 found = self._apply_updates_entry(specs, name, updates, applied)
             else:
                 anchor_recheck["snapshot"] = entry
@@ -2825,6 +2929,16 @@ class StateMachine:
             return found, found
 
         if not self._mutate_locked(_mutate):
+            if anchor_recheck.get("missing"):
+                # SPEC 已被并发删除：不再走下方「SPEC not found → return True」
+                # 假成功出口（否则调用方把已删 spec 计入 recovered，与 docstring
+                # 「True 表示已保留并写入恢复续做标记」相悖）。返回 False。
+                self.logger.warning(
+                    "state_machine",
+                    f"SPEC not found: {name}（恢复期保留判定窗口内被并发删除）"
+                    f"— 不计入 recovered",
+                )
+                return False
             if anchor_recheck:
                 _snap = anchor_recheck["snapshot"]
                 _fresh = anchor_recheck["fresh"]
