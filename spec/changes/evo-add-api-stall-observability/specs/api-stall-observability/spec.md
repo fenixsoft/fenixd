@@ -41,7 +41,8 @@ run 收尾时，档案 run_metrics 记录（`append_run_line` 的 `type: run_met
 
 #### Scenario: 停滞记录不改变 run 终态与调度
 
-- **WHEN** 某 run 连续出现多条 >120s 样本（如 85.1/86.3/123.0/251.1s 四次停滞）
+- **WHEN** 某 run 连续出现多条 >120s 样本（如 85.1/86.3/123.0/251.1s 四次停滞），且既有 run-stop-loss（`RUN_STALL_ROUND_SECONDS` 判停线，缺省关闭）未启用
 - **THEN** run 仍按 CLI 子进程自然终态收尾（success/failure 均不因停滞记录改变）
-- **AND** 无任何重派/取消/kill 动作被触发，无人工告警产生
+- **AND** 本能力的记录动作（WARNING 与字段入账）不触发任何重派/取消/kill 动作，无人工告警产生
 - **AND** run jsonl 事件类型集合与记录前一致（无新增事件类型）
+- **AND** 既有 run-stop-loss 判停机制按其自身判据独立评估，不受本能力影响亦不被本能力豁免（stop-loss 启用部署下其判停行为照旧，不构成对本 scenario 的违反）

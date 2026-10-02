@@ -13,9 +13,9 @@
 
 ## 1. 落地实现
 
-- [ ] 1.1 core/agent_runner/latency.py：新增模块级常量 `STALL_ROUND_WARN_SECONDS = 120.0`（run 期内单次 API 往返样本的 WARNING 阈值），附注释说明与既有 `LATENCY_STALL_SECONDS = 60.0`（统计口径）的语义分离、二者互不改写。
+- [ ] 1.1 core/agent_runner/latency.py：新增模块级常量 `STALL_ROUND_WARN_SECONDS = 120.0`（run 期内单次 API 往返样本的 WARNING 阈值），附注释说明与既有 `LATENCY_STALL_SECONDS = 60.0`（统计口径）的语义分离、二者互不改写；并注明与 `runner.py:172` 既有 `RUN_STALL_ROUND_SECONDS = 120.0`（run-stop-loss 判停判据一的样本计入线）**同值不同义**——一个是期内告警线、一个是判停计入线，严禁合并、复用或互相引用（合并即把告警线改动泄漏成判停行为变更）。
 - [ ] 1.2 core/agent_runner/runner.py：在 `_run_claude` 在飞延迟采样点（tool_result→assistant 样本入列处，约 4995-5002 行旁路块）对样本 > `STALL_ROUND_WARN_SECONDS` 的情况经 `self.logger.warning("agent_runner", …)` 即时打一条日志，至少含 run_id、样本秒数（`:.1f` 格式）与轮序号（该样本在有效样本序列中的序数）；纯读侧，不改变流式处理时序、不 kill 进程、不重派、不触发人工告警，样本与 stats 结果与不加告警时逐字段一致。
-- [ ] 1.3 core/agent_runner/runner.py：run 收尾两处指标落点补停滞字段——档案 run_metrics 行（`append_run_line` 的 `type: run_metrics`，约 5427-5440 行）与 daemon 侧 run metrics 结构化日志（`metric_type: run_metrics`，约 6807-6829 行）均新增 `latency_rounds`/`latency_stalls`/`latency_max` 三字段，取值直接复用 run 末延迟摘要已计算的同一 `latency_stats` 结果（约 5364-5377 行，禁止二次采样）；无样本时回退 `latency_rounds=0`、`latency_stalls=0`、`latency_max=None`，写入失败不阻断 run 收尾；既有字段与行序（run_metrics 行在终态行之后、恰一条）不变。
+- [ ] 1.3 core/agent_runner/runner.py：run 收尾指标落点补停滞字段——三处：①档案 run_metrics 行（`append_run_line` 的 `type: run_metrics`，约 5426-5437 行）；②daemon 侧 run metrics 结构化日志之 `_run_claude` 正常收尾内联形态（`metric_type: run_metrics`，约 5440-5457 行，**不经过** `_log_run_metrics`，直接复用同一 stats 结果）；③daemon 侧同 `metric_type` 之通用方法 `_log_run_metrics`（约 6787-6832 行，新增可选参数承接 stats——其既有调用点 run_planner/_prepare_worktree/_attempt_top_guards/_finalize_success/_resolve_provider_candidate/_exhausted_result 等提前终态路径均在 `_run_claude` 之外、无样本上下文，不传参时按零样本回退）。三处均新增 `latency_rounds`/`latency_stalls`/`latency_max` 三字段，取值直接复用 run 末延迟摘要已计算的同一 `latency_stats` 结果（约 5364-5377 行，禁止二次采样）；无样本时回退 `latency_rounds=0`、`latency_stalls=0`、`latency_max=None`，写入失败不阻断 run 收尾；既有字段与行序（run_metrics 行在终态行之后、恰一条）不变。
 
 ## 2. 测试
 
