@@ -41,3 +41,10 @@
 | sweep-probe-fingerprint-timing | 独立探针·mtime 批量重写免疫与换指纹重起算（R2「指纹稳定时保持原计时」端到端复核）：宽限 30 建档后以 autostash pop 形态批量重写改动文件 mtime（同一历史时刻、内容不变）→ 指纹不变、first_seen 保持原值不归零、宽限内零告警；随后改动内容改写 → 新指纹、旧条目清除、新条目 fresh 起算（1 分钟内）、注册表恰一条、全程零告警。出处：core/worktree_manager/stray_wip.py:203（first_seen 沿用）/:239（指纹）、design.md D1。 | pass | 0/9 | - |
 | sweep-probe-holder-attribution | 独立探针·真实车道现场归因分流（R2「在飞车道命中则不告警」复核）：真实 git worktree 车道分支现场（worktree 目录 impl-spec-x-1700000000、分支 fenix/spec-x-1700000000 已提交对 a.tsx 的改动）+ 主树同文件散件，宽限=0 哨兵：传在飞 run_id impl-spec-x-1700000000-a1 → status=holder、holder_run_ids 命中、注册表零建档、零告警、重复盘点仍不计时；同一现场不传车道 → 零命中立即 alerted（证明夹具交集真实存在的方向对照）。出处：core/worktree_manager/mergeback.py:675（identify_wip_occupant）、core/worktree_manager/types.py:14（WipOccupantInfo + BLIND_SPOT_NOTE）。 | pass | 0/8 | - |
 | sweep-probe-lock-discipline | 独立探针·主树锁非阻塞纪律（R1「锁忙时本轮跳过」复核）：外部持有 _main_tree_lock（模拟 merge-back stash→merge→pop 写临界区）→ sweep 非阻塞弃轮返回 None、注册表零建档、零告警；锁释放后下一轮正常建档（orphan-timed、注册表恰一条）——盘点绝不与写临界区并发、也绝不阻塞调用方主循环（design D4，对齐 stash_guard 同款 acquire(blocking=False)）。出处：core/worktree_manager/stray_wip.py:128（锁忙放弃）、core/worktree_manager/lifecycle.py:99（_main_tree_lock 构造）。 | pass | 0/6 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 18 个（第 1 轮）。
+
+- 首轮写入 18 个场景
+
