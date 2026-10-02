@@ -32,3 +32,10 @@
 | regression-pm-recovery-suite | 回归（tasks 2.4）：tests/test_pm_recovery.py 全过——PM recovery 车道不受条件⑤与处置在飞复核扰动（实测基线 16 用例全过）。出处：tests/test_pm_recovery.py | pass | 0/2 | - |
 | regression-inconclusive-loop-escalation-suite | 回归（tasks 2.4）：tests/test_inconclusive_loop_escalation.py 全过——不确定结论循环升级路径不受条件⑤扰动（实测基线 22 用例全过）。出处：tests/test_inconclusive_loop_escalation.py | pass | 0/2 | - |
 | regression-impl-ocr-parallel-lane-suite | 回归（tasks 2.4）：tests/test_impl_ocr_parallel_lane.py 全过——OCR 心跳先例路径不受扰（实测基线 43 用例全过）。出处：tests/test_impl_ocr_parallel_lane.py | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
