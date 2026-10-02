@@ -12,9 +12,9 @@
 
 ## Decisions
 
-- D1 计时用内容指纹，不用 mtime：本次案例中 4 文件 mtime 被 02:22:13 autostash pop 纳秒级同刻重写，mtime 计时会被外部操作归零。指纹 = 改动路径排序集 + `git diff` 内容哈希；指纹不变即沿用原 first_seen。
-- D2 归因复用而非新造：直接消费 `WipOccupantInfo`（在飞车道分支 diff 求交），证据文本携带既有 BLIND_SPOT_NOTE（人工/主树直改形态必零命中→按无主走宽限，误判影响有界）。
-- D3 告警型制照抄 `_write_defer_orphan_alert`：`signal_type=maintree_stray_wip_stale`、severity=major（SIGNAL_SEVERITY 登记）、AdminStore.append、同指纹先查后记一次性去重、recommended_action 指向提交/stash（无 spec 可重派，同 coordination spec 的批语义适配）。
+- D1 计时用内容指纹，不用 mtime：本次案例中 4 文件 mtime 被 02:22:13 autostash pop 纳秒级同刻重写，mtime 计时会被外部操作归零。指纹 = 改动路径排序集 + `git diff HEAD` 内容哈希（diff 对 HEAD 求，含暂存+未暂存，与 porcelain tracked 口径一致——纯 `git diff` 对纯暂存态散件为空，哈希退化为空串）；指纹不变即沿用原 first_seen。
+- D2 归因复用而非新造：直呼既有机械归因器 `identify_wip_occupant`（core/worktree_manager/mergeback.py:675，入参改动集 + 在飞实现车道 run_ids，内部完成 worktree 注册表真相 + 分支三点式 diff 求交，返回 `WipOccupantInfo`），不重造求交逻辑；证据文本携带既有 BLIND_SPOT_NOTE（人工/主树直改形态必零命中→按无主走宽限，误判影响有界）。接线隐含约束：engine 包装方法须供 run_ids 与 WorktreeManager 句柄（对齐 engine.py:4478 `reclaim_stale_autostash_if_idle` 先例；sweep 不设 `_active_runs` 空闲预检，否则永远看不到在飞车道、全部按无主升级）。
+- D3 告警型制照抄 `_write_defer_orphan_alert`：`signal_type=maintree_stray_wip_stale`、severity=major、AdminStore.append、同指纹先查后记一次性去重、recommended_action 指向提交/stash（无 spec 可重派，同 coordination spec 的批语义适配）。登记须 admin_monitor 三表齐全：SIGNAL_SEVERITY + SIGNAL_RECOMMENDATION + STORED_SIGNAL_TYPES（摄取门 admin_monitor.py:2008 只放行收录类型；漏 STORED_SIGNAL_TYPES 则记录落 store 后无人摄取、Administrator 不唤起——姊妹信号 :430 注记明言的既有落空模式）。
 - D4 锁纪律对齐 stash_guard：sweep 以非阻塞 acquire 参与 `_main_tree_lock`，锁忙即弃本轮——与 reclaim_stale_autostash 同款退化语义，绝不与 stash→merge→pop 临界区并发。
 - D5 注册表进程内持有：first_seen 注册表为 daemon 内存态，daemon 重启即重置宽限。可接受：重启后散件仍在场会重新起算并最终再告警，损失仅是时效；不引入新的持久化状态文件。
 - D6 只增不改：不改动 autostash 路径、reclaim「脏不抢」语义、WIP overlap 闸门任何现行行为；sweep 是旁路只读观察者。
