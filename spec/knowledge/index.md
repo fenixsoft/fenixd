@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-03 05:23 UTC+8
+> 最后更新：2026-10-03 05:45 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -14,14 +14,14 @@
 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 21 | 2026-10-03 04:59 |
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | 调度与派发 | 8 | 2026-10-03 04:59 |
 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 26 | 2026-10-03 04:59 |
-| [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 46 | 2026-10-03 04:59 |
-| [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 19 | 2026-10-03 04:59 |
+| [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 47 | 2026-10-03 05:45 |
+| [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 20 | 2026-10-03 05:45 |
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 16 | 2026-10-03 04:59 |
-| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 20 | 2026-10-03 05:23 |
+| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 21 | 2026-10-03 05:45 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 14 | 2026-10-03 04:59 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 26 | 2026-10-03 04:59 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-10-03 04:59 |
-| [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 15 | 2026-10-03 04:59 |
+| [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 16 | 2026-10-03 05:45 |
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 12 | 2026-10-03 04:59 |
 | [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 18 | 2026-10-03 04:59 |
 | [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 13 | 2026-10-03 04:59 |

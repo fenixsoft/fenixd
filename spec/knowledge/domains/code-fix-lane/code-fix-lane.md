@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=3
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry -->
+<!-- knowledge: capability=code-fix-lane rev=5
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -32,8 +32,14 @@
 - 定向子集执行由门面承载：`run_regression` 接受可选失败用例集参数（`subset_nodeids`），项目命令为 pytest 形态且子集非空时，以该子集 nodeids **取代命令中的既有收集位置参数**（首个收集目标位放全部 nodeids、其余收集目标删除，`-q`/`--junit-xml` 等非收集旗标逐字保留）。MUST NOT 在命令尾部追加 nodeid——pytest 多位置参数为收集目标并集，追加会静默退化全量。命令非 pytest 形态、子集为空、无既有收集目标、含 shell 控制操作符或命令替换记号时忽略子集回退全量（fail-closed）。
 - 回归 `passed` 时经 `worktree_manager.merge_back(wt_path)` 合回，不得绕过既有 merge-back 闸门（merge-tree 预演 / WIP 重叠 / spec 目录在飞）。
 - 合回后仅把该批中产物行 `status == "fixed"` 的条目按 `item_id` 精确置 `resolved`，不置未参与该批的条目，不置 agent 判 `skipped` 的条目；带 `fix_scope=test` 标注的产物行照常核销，标注仅供审计。
-- 零有效修复拒合回：批内产物行无一条 `fixed`，或 worktree 分支相对建树点无任何提交时，不合回、不置任何条目 `resolved`（防止全 `skipped` 的批被白洗成 `resolved`）；收尾清理 worktree，该批条目写入 `chain_skipped`，进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批——零产物批按 `halt` 终止链会使最早队列头永久堵塞车道。
+- 零有效修复拒合回：批内产物行无一条 `fixed`，或 worktree 分支相对建树点无任何提交**且 salvage 检测无可提交的未提交改动**（见「先 commit 再验证与收尾 salvage」）时，不合回、不置任何条目 `resolved`（防止全 `skipped` 的批被白洗成 `resolved`）；收尾清理 worktree，该批条目写入 `chain_skipped`，进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批——零产物批按 `halt` 终止链会使最早队列头永久堵塞车道。
 - worktree 内回归快照随执行根落盘于 worktree，不作为主树「测试回归」分面的数据源。
+
+### 先 commit 再验证与收尾 salvage
+- 提示词契约（`agents/code-fix.md` 契约段，软约束）：每修复一条立即 `git commit`（分支上 commit 廉价且可回退）；后台/定向验证 MUST NOT 作为 commit 的前置条件；回合结束前 worktree 工作区必须干净（全部改动已 commit）。机械保障由收尾 salvage 承担。
+- 收尾 salvage 三元组检测：批收尾判定「分支相对建树点无提交」时，编排 MUST 先检测三元组——产物行存在 `status == "fixed"` ∧ 分支无提交 ∧ worktree 存在未提交改动（`git status --porcelain` 非空）。三元组同时满足 → 自动以 `orchestrator-salvage: batch <批号> run <run_id>` message 把未提交改动提交到批分支，随后按正常路径继续回归/合回裁决，MUST NOT 直接按 `no_effective_fix` 拒合回。
+- salvage 留痕与保真：salvage 事件写进度 current 与 warning 日志双留痕；提交内容与工作区源码改动一致，gitignored 噪音（运行时产物等）不被卷入。
+- 真零改动维持拒合回：三元组任一不满足（尤其产物声明 `fixed` 但工作区干净，即声明与事实不符）时 MUST 维持 `no_effective_fix` 拒合回语义，MUST NOT 空提交凑数（空提交会把声明与事实不符的批白洗成 `resolved`）。
 
 ### 回归契约缺失 fail-closed
 - 项目 `verify.yaml` 无有效 `regression` 段时不派批、不合回，按契约状态分流写信号（经 AdminStore，severity=major）：契约整体缺失（`contract is None`）→ `verify_contract_missing`（administrator 起草完整契约）；契约有效但缺 regression 段 → `verify_regression_missing`（administrator 仅补段，不得动 prepare/serve/ready）。
@@ -57,3 +63,4 @@
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：两路自动激活、批次编排循环、幂等与单飞、全量回归门与合回、回归契约缺失 fail-closed、失败重试与丢弃、回归执行锁根锚定主树。
 - 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 批收尾改三态（success/consumed/halt，consumed 自驱动）；失败路径由「保留现场待人工」改写为「现场即弃 + 锁即释 + 档案留痕」；零有效修复拒合回由链终止改为链内跳过；回归失败丢弃接入失败档案重试预算，废除「每次丢弃追加 todo 人工项」与「失败集合须人工 release」语义。
 - 2026-10-03 2026-10-03-add-codefix-targeted-retry（spec/archive/2026-10-03-add-codefix-targeted-retry） — 回归门通过语义分轮（首轮全量、定向轮失败子集且通过即门通过）；回归失败重试由「整批 items 重做 + 全量回归重跑」改写为定向重试轮：上限 targeted_retry_max（缺省 3）、失败明细结构化落盘（classname 主导 nodeid 映射、映射失败回退全量）、轮间累计注入、修测试授权（fix_scope=test 标注）、门面 subset_nodeids 子集执行（取代收集位置参数）、耗尽现场即弃沿用并追加明细引用入档。
+- 2026-10-03 2026-10-03-add-codefix-commit-first-contract（spec/archive/2026-10-03-add-codefix-commit-first-contract） — 零有效修复拒合回新增 salvage 前置分支：批收尾「分支无提交」判定先过 salvage 三元组检测（fixed 行 ∧ 无提交 ∧ porcelain 非空），命中即 `orchestrator-salvage:` 自动提交后继续回归/合回裁决，真零改动维持拒合回、禁空提交；新增 `agents/code-fix.md`「先 commit 再验证」软契约（逐条即 commit、验证不阻塞 commit、收尾工作区干净），机械保障由 salvage 承担。

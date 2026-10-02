@@ -1,5 +1,5 @@
 # 验证裁决与证据
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-03 05:45 UTC+8
 
 验证裁决与证据：覆盖裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义、查重与重合成、缓存复验，以及裁决在 Dashboard 的可见性。
 
@@ -26,3 +26,4 @@
 | [judge-incremental-attribution](judge-incremental-attribution.md) | judge 增量归因 | 2026-10-03 04:59 |
 | [judge-rerun-governance](judge-rerun-governance.md) | judge 重跑治理 | 2026-10-03 04:59 |
 | [inconclusive-loop-escalation](inconclusive-loop-escalation.md) | 无结论循环升级 | 2026-10-03 04:59 |
+| [verdict-env-exemption-handshake](verdict-env-exemption-handshake.md) | 裁决 env 豁免与 admin 升级链握手（豁免不得自我批准） | 2026-10-03 05:45 |

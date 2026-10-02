@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-03 05:45 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -11,13 +11,14 @@
 | [verification-pipeline-modules](verification-pipeline-modules.md) | 验证管线模块化结构 | 2026-10-03 04:59 |
 | [verify-process-lifecycle](verify-process-lifecycle.md) | 验证进程生命周期管理 | 2026-10-03 04:59 |
 | [verify-preflight-gate](verify-preflight-gate.md) | 验证预检门 | 2026-10-03 04:59 |
-| [verify-environment-sanity-gate](verify-environment-sanity-gate.md) | 验证环境健康门 | 2026-10-03 04:59 |
+| [verify-environment-sanity-gate](verify-environment-sanity-gate.md) | 验证环境健康门（探针、blocked-env 换算与两级 inconclusive 判据） | 2026-10-03 05:45 |
 | [verify-lane-slot-exemption](verify-lane-slot-exemption.md) | 验证车道槽位豁免 | 2026-10-03 04:59 |
 | [verify-unreachable-failfast](verify-unreachable-failfast.md) | 被测服务不可达快速失败 | 2026-10-03 04:59 |
 | [verify-deps-provision-default](verify-deps-provision-default.md) | 验证依赖供给缺省 | 2026-10-03 04:59 |
 | [main-tree-deps-provision](main-tree-deps-provision.md) | 主树依赖供给 | 2026-10-03 04:59 |
 | [worktree-test-server](worktree-test-server.md) | worktree 被测服务供给 | 2026-10-03 04:59 |
 | [serve-scope-matrix](serve-scope-matrix.md) | 被测实例 serve 范围矩阵 | 2026-10-03 04:59 |
+| [serving-dist-freshness-probe](serving-dist-freshness-probe.md) | verify run 前 dist 新鲜度探针与自动重建 | 2026-10-03 05:45 |
 | [verify-serving-reclaim](verify-serving-reclaim.md) | 验证服务磁盘回收 | 2026-10-03 04:59 |
 | [verify-contract-autodraft](verify-contract-autodraft.md) | 验证契约（verify.yaml）自主起草 | 2026-10-03 04:59 |
 | [verify-contract-autodraft-ui](verify-contract-autodraft-ui.md) | 契约 AI 生成按钮 | 2026-10-03 04:59 |

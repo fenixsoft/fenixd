@@ -1,7 +1,7 @@
 # code-fix 批内并行处置
 
-<!-- knowledge: capability=code-fix-batch-parallel rev=1
-     sources=spec/archive/2026-09-29-add-codefix-batch-parallel -->
+<!-- knowledge: capability=code-fix-batch-parallel rev=3
+     sources=spec/archive/2026-09-29-add-codefix-batch-parallel,spec/archive/2026-10-03-add-codefix-commit-first-contract -->
 
 code-fix 批内多文件组时的并行修复协议：主 agent 以 orchestrator 身份派 Task 子代理并发处置各组，汇总落盘、统一验证提交；框架契约（单 run / 单 out_path / 回归+合回）保持不变。
 
@@ -28,11 +28,12 @@ code-fix 批内多文件组时的并行修复协议：主 agent 以 orchestrator
 - 返回记录非法（缺 `item_id`/`status`）→ 该组重试一次处置；重试后仍非法的条目标注 `skipped: unfixable`，MUST NOT 把非法行写入 `{out_path}`。
 - 任何单组兜底 MUST NOT 阻塞其他组的落盘与派发。
 
-### 提交与验证
-- 并行只改变「谁修复、结果何时可见」，提交与验证契约不变：每组改动落盘后 orchestrator 把该组修复改动 commit 到当前分支（逐组提交或收尾一次提交均合法），提交 MUST 先于收尾验证完成；带未提交改动收工会触发编排 salvage 兜底，真零改动整批按 `no_effective_fix` 拒合回。
-- 全部组落盘后按触碰面做**一次**定向验证（仅前端 → tsc + 前端单测；仅 Python → 定向 pytest；混合 → 两者），验证发现问题补修并追加 commit；MUST NOT 逐组验证。
-- 子代理一律不验证、不提交；验证完成后的框架回归 + 合回流程与串行批完全一致。
+### 提交与验证（边修复边提交、收尾一次验证）
+- 并行只改变「谁修复、结果何时可见」，框架回归 + 合回流程与串行批完全一致：每组改动落盘后 orchestrator 把该组修复改动 commit 到当前分支（逐组提交或收尾一次提交均合法），提交 MUST 先于收尾验证完成；带未提交改动收工会触发编排 salvage 兜底，真零改动整批按 `no_effective_fix` 拒合回。
+- 验证 MUST NOT 作为提交的前置条件：全部组落盘完成后按触碰面做**一次**定向验证（仅前端 → tsc + 前端单测；仅 Python → 定向 pytest；混合 → 两者），验证于提交之后进行、结果用于回归门前的自查补修（补修改动 MUST 再次 commit）；MUST NOT 逐组验证。
+- 回合结束前 worktree 工作区必须干净（全部改动已 commit，机械保障见 [code-fix-lane](code-fix-lane.md)「收尾 salvage」）；子代理一律不验证、不提交。
 
 ## 溯源
 
 - 2026-09-29 2026-09-29-add-codefix-batch-parallel（spec/archive/2026-09-29-add-codefix-batch-parallel） — 新建本页：批内并行处置协议（多组批派子代理、单组批退化串行）、orchestrator 单写者落盘、三级失败兜底、汇总后一次定向验证；并发上限后演进为框架按批组数分档注入（4/6/8），提交时序并入「先 commit 再验证」契约（逐组提交合法）。
+- 2026-10-03 2026-10-03-add-codefix-commit-first-contract（spec/archive/2026-10-03-add-codefix-commit-first-contract） — 「汇总后一次验证一次提交」改写为「边修复边提交、收尾一次验证」：验证 MUST NOT 作为提交的前置条件（原「验证先行 + MUST NOT 多次提交」与先 commit 再验证契约互斥），逐组提交或收尾一次提交均合法，验证结果用于回归门前的自查补修、补修改动须再次 commit。
