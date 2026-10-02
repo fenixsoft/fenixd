@@ -107,6 +107,15 @@ _UNKNOWN_AGENT_MODEL_KEYS_WARNED = set()
 # 行为不变。
 _SEGMENT_DIRTY_WARNED = set()
 
+# 校验期 ERROR 的进程级一次性去重（code-review item eec7502eb329，同
+# _SEGMENT_DIRTY_WARNED 范式）：resolve_config 每 30s 热更新全量重跑
+# _validate → _validate_agent_models，「provider 引用不存在的名字」与「链元素
+# 无法解析出模型名」两处 ERROR 在坏配置在场时逐周期重复打印。键取
+# (agent_type, provider 名) / (agent_type, provider 名, 链元素下标)，同一坏点
+# 只在首次告警；去重只作用于告警分支，校验/跳过行为不变。
+_UNKNOWN_PROVIDER_REF_WARNED = set()
+_UNRESOLVED_CHAIN_MODEL_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -537,6 +546,13 @@ class ConfigLoader:
 
         if config is None:
             raise ValueError(f"Config file is empty: {config_path}")
+
+        # 顶层类型检查（code-review item 9d47730f6504）：标量/列表顶层落到
+        # _validate 会以 TypeError（`key not in <int>`）或误导性的
+        # 「Missing required config key」报错。与 _load_optional_yaml 的
+        # 「顶层不是对象」检查对称，此处提前给出清晰报错。
+        if not isinstance(config, dict):
+            raise ValueError(f"配置顶层必须是对象: {config_path}")
 
         cls._validate(config)
         return config
@@ -1174,11 +1190,16 @@ class ConfigLoader:
             # 沿用热更新哲学，运行期该链元素被跳过）。不再抛 ValueError，否则坏一个名字
             # 就整 daemon 起不来。
             unknown = [n for (n, _m) in chain if n not in provider_names]
-            if unknown:
+            for unknown_name in unknown:
+                # 进程级一次性去重（code-review item eec7502eb329）：热更新逐周期
+                # 重跑本校验，同一 (agent_type, provider) 坏点只在首次告警。
+                if (agent_type, unknown_name) in _UNKNOWN_PROVIDER_REF_WARNED:
+                    continue
+                _UNKNOWN_PROVIDER_REF_WARNED.add((agent_type, unknown_name))
                 _logger.error(
                     "agents.models.%s.provider 引用了不存在的 provider（已跳过，不阻塞加载）: %s",
                     agent_type,
-                    ", ".join(unknown),
+                    unknown_name,
                 )
             # design D1/D2：逐元素可解析性检查（替换原"角色级 model 必须非空"）。
             # 元素自带 / 角色级 / provider 条目 model 三者皆空 → ERROR 指明元素下标（不阻塞）。
@@ -1187,6 +1208,12 @@ class ConfigLoader:
                     continue  # 未知 provider 已打过 ERROR，跳过其模型解析
                 resolved = cls._resolve_element_model(element_model, role_model, by_name[name])
                 if not resolved:
+                    # 进程级一次性去重（code-review item eec7502eb329）：同上，
+                    # 同一 (agent_type, provider, 元素下标) 坏点只在首次告警。
+                    dedup_key = (agent_type, name, idx)
+                    if dedup_key in _UNRESOLVED_CHAIN_MODEL_WARNED:
+                        continue
+                    _UNRESOLVED_CHAIN_MODEL_WARNED.add(dedup_key)
                     _logger.error(
                         "agents.models.%s.provider[%d] 无法解析出模型名（元素/model、角色级 "
                         "model、provider 条目 model 均为空），运行期将跳过该元素",
@@ -2629,6 +2656,8 @@ class ConfigLoader:
         _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
         _SEGMENT_DIRTY_WARNED.clear()
+        _UNKNOWN_PROVIDER_REF_WARNED.clear()
+        _UNRESOLVED_CHAIN_MODEL_WARNED.clear()
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
@@ -2688,15 +2717,10 @@ class ConfigLoader:
         该键支持用户级默认 + 项目级覆盖（合并由既有 ``resolve_config`` 深合并
         完成），本读取器只看合并后的结果。
         """
-        verify = config.get("verify")
-        if not isinstance(verify, dict):
-            if verify is not None:  # 段缺失仍静默；仅存在但非 dict（手编 YAML 误缩进）留痕
-                _logger.warning(
-                    "config.verify 整段非 dict（%s），verify 段按空段降级、"
-                    "相关键回退缺省；其余配置照常生效",
-                    type(verify).__name__,
-                )
-            return False
+        # verify 段归一统一走 _segment_or_empty（code-review item fa432f912635）：
+        # 段缺失静默、真值非 dict 记 ERROR（进程级一次性去重）并按空段降级，
+        # 与本文件其他段读取器同口径；空段下键读取回退缺省，返回语义不变。
+        verify = cls._segment_or_empty(config, "verify")
         val = verify.get("impl_code_review")
         return val is True  # 严格 bool：1/"yes" 等非 bool 一律不算
 
@@ -2712,15 +2736,9 @@ class ConfigLoader:
         ——缺省只由各读取器单点提供（与 ``get_impl_code_review_enabled`` 同款，
         避免 defaults 与读取器缺省双源漂移）。
         """
-        verify = config.get("verify")
-        if not isinstance(verify, dict):
-            if verify is not None:  # 段缺失仍静默；仅存在但非 dict（手编 YAML 误缩进）留痕
-                _logger.warning(
-                    "config.verify 整段非 dict（%s），verify 段按空段降级、"
-                    "相关键回退缺省；其余配置照常生效",
-                    type(verify).__name__,
-                )
-            return default
+        # verify 段归一统一走 _segment_or_empty（code-review item fa432f912635，
+        # 与 get_impl_code_review_enabled 同口径）；空段下键读取回退缺省。
+        verify = cls._segment_or_empty(config, "verify")
         val = verify.get(key)
         if isinstance(val, bool):
             return default
@@ -2747,15 +2765,9 @@ class ConfigLoader:
         注意：经本助手读取的键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表
         ——缺省只由各读取器单点提供（与 ``get_impl_code_review_enabled`` 同款）。
         """
-        verify = config.get("verify")
-        if not isinstance(verify, dict):
-            if verify is not None:  # 段缺失仍静默；仅存在但非 dict（手编 YAML 误缩进）留痕
-                _logger.warning(
-                    "config.verify 整段非 dict（%s），verify 段按空段降级、"
-                    "相关键回退缺省；其余配置照常生效",
-                    type(verify).__name__,
-                )
-            return default
+        # verify 段归一统一走 _segment_or_empty（code-review item fa432f912635，
+        # 与 get_impl_code_review_enabled 同口径）；空段下键读取回退缺省。
+        verify = cls._segment_or_empty(config, "verify")
         val = verify.get(key)
         if val in choices:
             return val
