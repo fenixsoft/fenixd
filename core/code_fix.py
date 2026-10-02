@@ -1227,8 +1227,21 @@ def _append_todo_entry(project_root, item_ids, reason="", branch="", tip_sha="")
     )
     try:
         todo_path.parent.mkdir(parents=True, exist_ok=True)
-        with todo_path.open("a", encoding="utf-8") as fh:
-            fh.write(entry)
+
+        def _append_locked() -> None:
+            with todo_path.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+
+        # evolution 侧对 todo.md 的读-改-写（write_todo_marker / clear_todo）
+        # 持同一把伴生 flock 后经 _atomic_write（os.replace 整文件替换）写回；
+        # 本追加 MUST 持同一把锁，否则落在对方「读后写前」窗口内的行会被整
+        # 文件替换吞掉。锁派生与 evolution 侧一致：两侧 _with_lock 同式派生
+        # ``.<name>.lock``（code_review.py:307 ``path.parent / f".{path.name}.lock"``
+        # ≡ evolution.py:137），对本文件均解析到 ``.fenix/.todo.md.lock``，
+        # 且两侧路径均按 ``<proj>/.fenix/todo.md`` 解析到同一文件
+        # （evolution.write_todo_marker evolution.py:871）。
+        # （code-review item 28c473f92809）
+        _with_lock(todo_path, _append_locked)
     except OSError:
         # todo 登记失败不阻断失败批落盘（fix-failed.json 才是跳过判据）
         pass
