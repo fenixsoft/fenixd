@@ -339,3 +339,138 @@ def get_scale_precheck_config(config: dict) -> dict:
         "higher_threshold": higher,
         "full_threshold": full,
     }
+
+
+# ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.1）────────────
+# 配置键（agents.turn_budget_sizing.*）与合法域：实现车道 run 启动时按
+# estimate_spec_scale 规模分推算生效轮数上限（design D3/D7）。推算开关缺省
+# 开（大 spec 抬高起点上限，消除 cimbar 形「烧满熔断→续做再耗数百轮」主
+# 浪费段）；kill_early（末位扩容拆停守卫）缺省关——沿 run_stall_budget
+# 缺省关闭灰度先例（evo-add-run-stop-loss），不动摇 ADR-103 续期矩阵不变量。
+TURN_BUDGET_SIZING_CONFIG_KEY = "turn_budget_sizing"
+TURN_BUDGET_ENABLED_KEY = "enabled"
+TURN_BUDGET_FULL_SCALE_THRESHOLD_KEY = "full_scale_threshold"
+TURN_BUDGET_SUGGESTED_TURN_CAP_KEY = "suggested_turn_cap"
+TURN_BUDGET_BOOKKEEPING_SHARE_KEY = "bookkeeping_share_threshold"
+TURN_BUDGET_KILL_EARLY_KEY = "kill_early"
+TURN_BUDGET_KILL_EARLY_ENABLED_KEY = "enabled"
+TURN_BUDGET_KILL_EARLY_REMAINING_KEY = "remaining_tasks_threshold"
+TURN_BUDGET_KILL_EARLY_PROGRESS_FLOOR_KEY = "progress_floor"
+
+DEFAULT_TURN_BUDGET_ENABLED = True
+# full 档阈值缺省 45：与 budget_tier_for_scale 的 DEFAULT_FULL_THRESHOLD 同源
+# 取值（estimate_spec_scale 口径下 38 任务 + 40 交付物 ≈ 118 分的实证 spec
+# 远超此阈），语义独立不共用常量——两处阈值后续可独立收敛。
+DEFAULT_TURN_BUDGET_FULL_SCALE_THRESHOLD = 45
+DEFAULT_TURN_BUDGET_SUGGESTED_TURN_CAP = 800
+DEFAULT_TURN_BUDGET_BOOKKEEPING_SHARE_THRESHOLD = 0.5
+DEFAULT_KILL_EARLY_ENABLED = False
+DEFAULT_KILL_EARLY_REMAINING_TASKS_THRESHOLD = 10
+DEFAULT_KILL_EARLY_PROGRESS_FLOOR = 0.1
+
+# 正整数键的合法域（风格对齐 scale_precheck：非 bool 的 int，且在闭区间内）。
+TURN_BUDGET_INT_MIN = 1
+TURN_BUDGET_INT_MAX = 10000
+
+
+def get_turn_budget_sizing_config(config: dict) -> dict:
+    """归一化 ``agents.turn_budget_sizing`` 配置（读侧与设置界面共用，单点缺省）。
+
+    非法值逐项回退缺省（风格对齐 ``get_scale_precheck_config``，不抛异常）：
+
+    - ``enabled``: 布尔，缺省 True（推算抬升缺省开启）；
+    - ``full_scale_threshold`` / ``suggested_turn_cap``: 正整数，缺省 45 / 800；
+    - ``bookkeeping_share_threshold``: 数值 [0,1]，缺省 0.5（bool 不算数值）；
+    - ``kill_early.enabled``: 布尔，缺省 False（末位扩容拆停守卫缺省关闭）；
+    - ``kill_early.remaining_tasks_threshold``: 正整数，缺省 10；
+    - ``kill_early.progress_floor``: 数值 [0,1]，缺省 0.1。
+
+    Returns:
+        ``{"enabled": bool, "full_scale_threshold": int, "suggested_turn_cap": int,
+        "bookkeeping_share_threshold": float, "kill_early": {"enabled": bool,
+        "remaining_tasks_threshold": int, "progress_floor": float}}``
+    """
+    agents = config.get("agents") if isinstance(config, dict) else None
+    agents = agents if isinstance(agents, dict) else {}
+    section = agents.get(TURN_BUDGET_SIZING_CONFIG_KEY)
+    section = section if isinstance(section, dict) else {}
+
+    def _int(sect: dict, key: str, default: int) -> int:
+        val = sect.get(key, default)
+        if isinstance(val, bool) or not isinstance(val, int):
+            return default
+        if val < TURN_BUDGET_INT_MIN or val > TURN_BUDGET_INT_MAX:
+            return default
+        return val
+
+    def _ratio(sect: dict, key: str, default: float) -> float:
+        val = sect.get(key, default)
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return default
+        if val < 0.0 or val > 1.0:
+            return default
+        return float(val)
+
+    enabled = section.get(TURN_BUDGET_ENABLED_KEY, DEFAULT_TURN_BUDGET_ENABLED)
+    if not isinstance(enabled, bool):
+        enabled = DEFAULT_TURN_BUDGET_ENABLED
+
+    kill_raw = section.get(TURN_BUDGET_KILL_EARLY_KEY)
+    kill_raw = kill_raw if isinstance(kill_raw, dict) else {}
+    kill_enabled = kill_raw.get(
+        TURN_BUDGET_KILL_EARLY_ENABLED_KEY, DEFAULT_KILL_EARLY_ENABLED)
+    if not isinstance(kill_enabled, bool):
+        kill_enabled = DEFAULT_KILL_EARLY_ENABLED
+
+    return {
+        "enabled": enabled,
+        "full_scale_threshold": _int(
+            section, TURN_BUDGET_FULL_SCALE_THRESHOLD_KEY,
+            DEFAULT_TURN_BUDGET_FULL_SCALE_THRESHOLD),
+        "suggested_turn_cap": _int(
+            section, TURN_BUDGET_SUGGESTED_TURN_CAP_KEY,
+            DEFAULT_TURN_BUDGET_SUGGESTED_TURN_CAP),
+        "bookkeeping_share_threshold": _ratio(
+            section, TURN_BUDGET_BOOKKEEPING_SHARE_KEY,
+            DEFAULT_TURN_BUDGET_BOOKKEEPING_SHARE_THRESHOLD),
+        "kill_early": {
+            "enabled": kill_enabled,
+            "remaining_tasks_threshold": _int(
+                kill_raw, TURN_BUDGET_KILL_EARLY_REMAINING_KEY,
+                DEFAULT_KILL_EARLY_REMAINING_TASKS_THRESHOLD),
+            "progress_floor": _ratio(
+                kill_raw, TURN_BUDGET_KILL_EARLY_PROGRESS_FLOOR_KEY,
+                DEFAULT_KILL_EARLY_PROGRESS_FLOOR),
+        },
+    }
+
+
+def suggested_turn_cap_for_scale(base_turn_cap: int, scale: int, cfg: dict) -> int:
+    """按规模分推算生效轮数上限（evo-add-impl-run-budget-sizing design D3）。
+
+    ``enabled`` 且 ``scale`` **严格大于** ``full_scale_threshold`` 时返回
+    ``max(base_turn_cap, suggested_turn_cap)``——推算只抬不压，永不低于
+    base；否则原样返回 base（规模分等于阈值不抬，与 ``budget_tier_for_scale``
+    的严格大于语义同源）。
+
+    Args:
+        base_turn_cap: 基础轮数上限（``agents.max_turns``）。
+        scale: 规模分（``estimate_spec_scale`` 的返回值）。
+        cfg: ``get_turn_budget_sizing_config`` 的返回值（契约：调用方先归一化）。
+
+    Returns:
+        生效轮数上限（int）。
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    if not cfg.get(TURN_BUDGET_ENABLED_KEY, DEFAULT_TURN_BUDGET_ENABLED):
+        return base_turn_cap
+    threshold = cfg.get(
+        TURN_BUDGET_FULL_SCALE_THRESHOLD_KEY, DEFAULT_TURN_BUDGET_FULL_SCALE_THRESHOLD)
+    suggested = cfg.get(
+        TURN_BUDGET_SUGGESTED_TURN_CAP_KEY, DEFAULT_TURN_BUDGET_SUGGESTED_TURN_CAP)
+    if (isinstance(scale, int) and not isinstance(scale, bool)
+            and isinstance(threshold, int) and not isinstance(threshold, bool)
+            and isinstance(suggested, int) and not isinstance(suggested, bool)
+            and scale > threshold):
+        return max(base_turn_cap, suggested)
+    return base_turn_cap

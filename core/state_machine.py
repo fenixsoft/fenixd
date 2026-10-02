@@ -217,6 +217,12 @@ BUDGET_MANUAL_RESET_BASELINE_FIELD = "_budget_manual_reset_baseline"
 # 有效预算（上限由 agents.impl_run_budget_max 决定，open-impl-budget-ceiling）。
 # 与 priority/start_after 同类，须随条目序列化（serialize 显式键表）。
 IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
+# ── per-spec 轮数上限覆写（evo-add-impl-run-budget-sizing 1.2）──────────
+# 人工管理属性：null/缺失 = 跟随 agents.max_turns（规模推算照常）；正整数 =
+# per-spec 生效轮数上限（override > 推算 > base，design D3）。沿
+# impl_run_budget_override 命名与语义先例，与 priority/start_after 同类，
+# 须随条目序列化（serialize 显式键表），否则 STATE.md 全量回写时静默丢失。
+IMPL_TURN_CAP_OVERRIDE_FIELD = "impl_turn_cap_override"
 
 # ── 重启重验预算计数（fix-daemon-lifecycle-races D3）──────────────────
 # - _verify_redo_count：daemon 重启恢复路径（testing→implemented 重派 verify）
@@ -513,6 +519,15 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = None
+                elif key == IMPL_TURN_CAP_OVERRIDE_FIELD:
+                    # per-spec 轮数上限覆写（evo-add-impl-run-budget-sizing
+                    # 1.2）：同 impl_run_budget_override 先例——不转则 STATE.md
+                    # 往返后读回字符串 "1200"，消费点正整数判定会误判非法。
+                    # 非法值按 null 容错，消费点（runner）再作正整数校验。
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        value = None
                 elif key in (
                     FROZEN_FIELD,
                     "_recovery_resume",
@@ -641,6 +656,7 @@ class StateParser:
                 START_AFTER_FIELD,
                 FROZEN_UNTIL_FIELD,
                 IMPL_RUN_BUDGET_OVERRIDE_FIELD,
+                IMPL_TURN_CAP_OVERRIDE_FIELD,
                 "reviewer_run",
             ]:
                 val = entry.get(key, "null")

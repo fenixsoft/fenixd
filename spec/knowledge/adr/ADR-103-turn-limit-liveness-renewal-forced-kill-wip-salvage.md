@@ -18,3 +18,11 @@ turn-limit（Max turns reached）强杀是三不管死法：未提交现场不�
 - 健康长任务不再被腰斩；无活性 run 一次续期都拿不到。最坏墙钟增幅有界（步长 25% × 封顶 2 次，仅对真活性 run 发生）。
 - WIP 保全窗口族扩展到强杀收口；锚点产生的 `fenix(wip):` 提交由 merge-back 前既有塌缩机制清理，零新增塌缩逻辑。
 - 活性判定引入的 git 子进程调用只在触发判定时执行，不进常规轮询周期。
+
+## 补充注记（evo-add-impl-run-budget-sizing，2026-10-03）
+
+本 SPEC 是对 ADR-103 的**补充而非修订**：除下述缺省关闭的守卫外，续期矩阵的 extend/kill 语义与本 ADR 的 Decision 逐位一致。
+
+- **观测面新增字段（不参与判定语义）**：`turn_extension` 事件新增 `remaining_tasks`（判定时点 main 树 tasks.md 剩余未勾选任务数，缺失记 `unavailable`/None——附加不替换，既有字段与读侧零改动）；`run_metrics` 事件同键新增 `remaining_tasks`（run 收尾时点快照）与整 run 累计簿记占比观测（`tool_uses` 直方图中 TaskCreate+TaskUpdate 占全部工具调用比，≥ 阈值仅在轮次上限判定点 WARNING + evidence 注记，不改 extend/kill 结论）。
+- **STATE 新增 per-spec 覆写键 `impl_turn_cap_override`**（正整数）：run 启动点生效轮数上限的覆写入口，优先级高于按 spec 规模分（`estimate_spec_scale`）的 `suggested_turn_cap_for_scale` 推算（enabled 且规模分严格大于 `full_scale_threshold` 时抬到 max(base, suggested)，只抬不压）；仅实现车道（implementer / fast-track）参与推算与覆写。
+- **kill_early 末位扩容拆停守卫（缺省关闭，仅实现车道）**：`agents.turn_budget_sizing.kill_early.enabled` 为 true、且本次判定恰为最后一次可用扩容（extension_index+1 == TURN_EXTENSION_MAX）、且剩余未勾选任务数 ≥ `remaining_tasks_threshold`、且 run 期间勾选进度 ≤ `progress_floor`（启动点快照后新勾 ÷ 启动时未勾；分母 0 或无基线不判）四条件全满足时，提前返回 kill 并复用既有 turn-limit kill 收口（含 WIP 保全锚点），不新增收口实现——相当于把本 ADR「末位续期」中 renewal unlikely to finish remaining work 的那一段，从「有活性即续」收窄为可配置的提前止损；enabled 为 false（含缺省）时对任意输入的结论与引入前逐位一致。
