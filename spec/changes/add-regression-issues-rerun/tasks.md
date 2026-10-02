@@ -42,7 +42,7 @@
 ## 2. 门面与消费端：scope 分支派发
 
 - [ ] 2.1 `core/agent_runner/maintenance_runs.py` `run_regression` 门面：`_apply_pytest_subset` 改写成功时向 `run_and_write_regression` 传 `run_scope="issues"`，回退全量分支 MUST NOT 传；日志文案「code-fix 定向子集回归」泛化为「定向子集回归」（回退分支文案同步泛化）；测试补断言：子集生效时封装层收到 run_scope=issues、回退时收到 None（mock `run_and_write_regression` 捕获入参）
-- [ ] 2.2 `fenixd.py` `_check_regression_requests`：payload `scope == "issues"` 分支——`core.regression.read_result` 读快照 → `map_snapshot_issues_to_nodeids(PROJECT_ROOT)` 算子集 → 命中且非空以 `subset_nodeids=<nodeids>` 派发 `self.agent_runner.run_regression(spec, reason="manual", subset_nodeids=...)`；映射失败/结果空 → WARNING 日志留痕并按全量派发（fail-closed，MUST NOT 丢弃请求、MUST NOT 派发空跑）；无 `scope`/未知 `scope` 按既有全量路径（行为逐字节不变）；时效分档/单飞/hosting 守卫全部沿用不动。`tests/test_regression_execution.py` 补用例：scope=issues 派发带子集、缺 classname 回退全量且请求不丢、无 scope 兼容全量
+- [ ] 2.2 `fenixd.py` `_check_regression_requests`：payload `scope == "issues"` 分支——`core.regression.read_result` 读快照 → `map_snapshot_issues_to_nodeids(snapshot, PROJECT_ROOT)` 算子集（exec_root 传 PROJECT_ROOT 供在盘测试文件探测） → 命中且非空以 `subset_nodeids=<nodeids>` 派发 `self.agent_runner.run_regression(spec, reason="manual", subset_nodeids=...)`；映射失败/结果空 → WARNING 日志留痕并按全量派发（fail-closed，MUST NOT 丢弃请求、MUST NOT 派发空跑）；无 `scope`/未知 `scope` 按既有全量路径（行为逐字节不变）；时效分档/单飞/hosting 守卫全部沿用不动。`tests/test_regression_execution.py` 补用例：scope=issues 派发带子集、缺 classname 回退全量且请求不丢、无 scope 兼容全量
 
 ## 3. 端点层：run-issues 与守卫收敛
 
@@ -52,7 +52,7 @@
 
 ## 4. 质量门禁：子集快照不可见
 
-- [ ] 4.1 `core/dashboard/data/quality_gates.py` `_full_suite_product_status`：在 status 白名单判定之前，快照 `data.get("run_scope") == "issues"` → 返回 `(None, "")`（本源不可见，沿用既有 fail-open 逐级回落，MUST NOT 抛异常）；`tests/test_quality_gates_progress.py` 补用例：子集快照（issues + passed + 指纹匹配）不呈现 passed（回落 pending/自查值）、全量快照（无 run_scope）行为零变化
+- [ ] 4.1 `core/dashboard/data/quality_gates.py` `_full_suite_product_status`：在 status 白名单判定之前，快照为 dict 且 `data.get("run_scope") == "issues"` → 返回 `(None, "")`（`data` 非 dict 一并按不可见返回 `(None, "")`——`read_result` 对合法 JSON 非 dict 载荷原样返回，不做 isinstance 守卫直取 `.get` 会 AttributeError 穿透 fail-open 契约；本源不可见，沿用既有 fail-open 逐级回落，MUST NOT 抛异常）；`tests/test_quality_gates_progress.py` 补用例：子集快照（issues + passed + 指纹匹配）不呈现 passed（回落 pending/自查值）、全量快照（无 run_scope）行为零变化
 
 ## 5. 前端：按钮与子集快照标识
 
