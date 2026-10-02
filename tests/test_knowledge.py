@@ -738,8 +738,12 @@ class _FakeProc:
     def __init__(self, returncode=0, timeout=None):
         self.returncode = returncode
         self.timeout = timeout
+        # 无真实进程：pid 取非法值，_kill_process_group 的 getpgid 会走
+        # ProcessLookupError 兜底分支，不会误杀测试自身进程组
+        self.pid = -1
 
-    def communicate(self, timeout=None):
+    def communicate(self, prompt=None, timeout=None):
+        # 与产品 _spawn_and_wait 的 stdin 传参口径一致：首参为提示词
         if self.timeout is not None:
             raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
         return "", ""
@@ -833,16 +837,23 @@ class TestDistillManager(KnowledgeTestBase):
         }
         prompts = []
 
+        class _PromptCaptureProc(_FakeProc):
+            # 提示词已改经 stdin 传入（不再在 argv），捕获点随接口同步
+            def communicate(self, prompt=None, timeout=None):
+                prompts.append(prompt)
+                return super().communicate(prompt, timeout)
+
         def on_spawn(cmd, cwd):
-            prompts.append(cmd[2])
-            rnd = len(prompts) - 1
+            rnd = len(prompts)
             payload = bad if rnd == 0 else good
             for rel, text in payload.items():
                 p = Path(cwd) / rel
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(text, encoding="utf-8")
+            return _PromptCaptureProc()
 
-        mgr = self._manager(on_spawn)
+        mgr = DistillManager(max_fix_rounds=2)
+        mgr._spawn = on_spawn
         result = mgr._run_batch(self.root, [self._archive_name()])
         self.assertTrue(result["ok"])
         self.assertEqual(result["rounds"], 2)
