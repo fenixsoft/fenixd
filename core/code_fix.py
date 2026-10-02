@@ -51,6 +51,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.code_review import (  # noqa: F401
@@ -63,6 +64,7 @@ from core.code_review import (  # noqa: F401
     mark_resolved,
     read_items,
 )
+from core.agent_runner.provider_circuit import PROVIDER_SWITCH_COOLDOWN_SECONDS
 from core.config import ConfigLoader
 from core.verify_contract import load_verify_contract
 
@@ -145,6 +147,15 @@ FIX_PROGRESS_DEFAULT = {
     # 时写入（结构见 _emit_chain_rollup）；新链启动不清除——历史链最后的
     # rollup 保持可读，直至被新链终局写点覆盖。
     "chain_rollup": None,
+    # 同链冷却态（evo-add-codefix-conn-error-cooldown 2.1/2.2）：批次死于上游
+    # 连接类 api_error 时失败收尾写入，checkpoint 投递入口守卫「下一批派发
+    # 时刻不早于该 epoch 秒」。持久化（合并写）跨重启仍生效——观测期 daemon
+    # 多次重启，内存态会在残余窗口内漏拦（design D4）。null=无冷却；到期后
+    # 首个通过守卫的 checkpoint 补写解除告警并把两键清回 null（design D5）。
+    "switch_cooldown_until": None,
+    # 冷却起点（触发时刻 epoch 秒）：解除告警 evidence 的「实际推迟时长」度量
+    # 基准（=首个通过守卫的 checkpoint 时刻 − 本字段）；随冷却态一并清除。
+    "switch_cooldown_from": None,
 }
 
 # phase 合法值（spec code-fix-progress）
@@ -2167,6 +2178,85 @@ def write_regression_failed_alert(
         _log_alert_rejected(logger, "code_fix_regression_failed")
 
 
+def _epoch_iso(ts: float) -> str:
+    """epoch 秒 → UTC ISO8601（冷却告警 evidence 的到期时刻展示形态）。"""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+CODE_FIX_COOLDOWN_SIGNAL_TYPE = "code_fix_switch_window_deferred"
+
+
+def _write_switch_cooldown_alert(
+    project_root, run_id: str, cause_text: str, until_ts: float,
+    cooldown_seconds: float, logger=None,
+) -> None:
+    """连接类失败冷却触发告警（evo-add-codefix-conn-error-cooldown 2.3，D5）。
+
+    经 AdminStore 写 kind=SIGNAL（signal_type=code_fix_switch_window_deferred，
+    source=code-fix-lane），evidence 携带 run_id / 死因文本 / 到期时刻（spec
+    R3）；AdminStore 拒写（文件损坏留底被下限保护拒写，记录未落盘）走
+    ``_log_alert_rejected`` 留痕。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": CODE_FIX_COOLDOWN_SIGNAL_TYPE,
+            "spec": None,
+            "severity": "warning",
+            "description": (
+                "code-fix 批死于上游连接类 api_error，同链下一批派发已推迟"
+                f"至冷却到期（{cooldown_seconds:.0f} 秒）"
+            ),
+            "evidence": (
+                f"项目名={Path(project_root).name}; run_id={run_id or 'unknown'}; "
+                f"死因={str(cause_text or 'unknown')[:300]}; "
+                f"冷却到期={_epoch_iso(until_ts)}; 冷却时长={cooldown_seconds:.0f}s"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "上游网关连接性窗口通常自愈：冷却到期后同链下一批自动恢复投递，"
+                "无需人工介入；若跨日同刻复发请检查网关侧定时故障"
+            ),
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, CODE_FIX_COOLDOWN_SIGNAL_TYPE)
+
+
+def _write_switch_cooldown_release_alert(
+    project_root, until_ts: float, deferred_seconds: float, logger=None,
+) -> None:
+    """冷却解除告警（evo-add-codefix-conn-error-cooldown 2.3，D5）。
+
+    无后台定时器写入口：由冷却到期后**首个通过守卫的 checkpoint** 补写一条，
+    evidence 携带实际推迟时长（=该 checkpoint 时刻 − 冷却起点）；冷却期内无
+    后续 checkpoint 通过（台账清空空转）则不写解除。拒写留痕同触发告警。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": CODE_FIX_COOLDOWN_SIGNAL_TYPE,
+            "spec": None,
+            "severity": "warning",
+            "description": "code-fix 连接类失败冷却到期，恢复同链下一批投递",
+            "evidence": (
+                f"项目名={Path(project_root).name}; "
+                f"冷却到期={_epoch_iso(until_ts)}; 实际推迟={deferred_seconds:.0f}s"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": "冷却已解除，同链下一批已恢复投递，无需操作",
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, CODE_FIX_COOLDOWN_SIGNAL_TYPE)
+
+
 def _write_retry_exhausted_alert(
     project_root, item_ids, reason, branch, tip_sha, logger=None
 ) -> None:
@@ -2441,6 +2531,73 @@ class CodeFixOrchestrator:
             return v
         return TARGETED_RETRY_MAX_DEFAULT
 
+    def _switch_cooldown_seconds(self) -> float:
+        """连接类失败冷却时长（秒，evo-add-codefix-conn-error-cooldown 2.2）。
+
+        缺省复用 PROVIDER_SWITCH_COOLDOWN_SECONDS（300s > 实测约 101 秒连接
+        窗口）；配置键 ``admin.code_review_fix.switch_cooldown_seconds`` 覆盖。
+        读取与防御转换仿 ``_orphan_grace_minutes``：解析失败/负值/NaN/inf 回退
+        缺省（配置事故 MUST NOT 放大成「无限期停摆」极端）；``0`` 合法＝关闭
+        冷却（spec R2「0 表示关闭」）。读取走 ``ConfigLoader.get`` 点号键——
+        ``_get_config()`` 段读取器是白名单形态（未登记的新键会被剥掉），直接
+        问段会恒取缺省。
+        """
+        try:
+            raw = ConfigLoader.get(
+                self._get_root_config(),
+                "admin.code_review_fix.switch_cooldown_seconds",
+                PROVIDER_SWITCH_COOLDOWN_SECONDS,
+            )
+            val = float(raw)
+        except (TypeError, ValueError):
+            return float(PROVIDER_SWITCH_COOLDOWN_SECONDS)
+        # 负值/NaN（val != val）回退；inf 与负值同属「配置事故放大」极端。
+        # 0 不回退（合法的关闭语义）。
+        if val != val or val < 0 or val == float("inf"):
+            return float(PROVIDER_SWITCH_COOLDOWN_SECONDS)
+        return val
+
+    def _arm_switch_cooldown(self, result) -> None:
+        """连接类失败收尾置同链冷却态（2.1/2.3）：持久化冷却字段 + 触发告警。
+
+        命中判定读信封 ``conn_error`` 布尔（runner 层判别单源透传，调用方
+        ``getattr`` 守护测试替身信封缺字段形态）；配置关闭（0）不置冷却。
+        冷却起点一并落盘（解除告警「实际推迟时长」度量基准，design D5）；
+        写盘/告警异常均不劫持失败收尾（对齐 write_regression_signal 调用点
+        纪律，code-review item 2ab1bb5633f0）。
+        """
+        cooldown = self._switch_cooldown_seconds()
+        if cooldown <= 0:
+            return
+        now_ts = time.time()
+        until_ts = now_ts + cooldown
+        try:
+            write_progress(
+                self.project_root,
+                switch_cooldown_until=until_ts,
+                switch_cooldown_from=now_ts,
+                current=(
+                    f"上游连接类失败（run {getattr(result, 'run_id', '') or 'unknown'}），"
+                    f"同链下一批推迟至 {_epoch_iso(until_ts)}"
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 — 冷却态写盘失败不劫持失败收尾
+            self._log("warning", f"code-fix 冷却态写盘异常: {e}")
+        try:
+            _write_switch_cooldown_alert(
+                self.project_root,
+                run_id=getattr(result, "run_id", "") or "",
+                cause_text=(
+                    getattr(result, "result_text", "") or ""
+                    or getattr(result, "error", "") or ""
+                ),
+                until_ts=until_ts,
+                cooldown_seconds=cooldown,
+                logger=self._logger,
+            )
+        except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+            self._log("warning", f"code-fix 冷却触发告警写盘异常: {e}")
+
     def _targeted_regression_enabled(self) -> bool:
         """批收尾定向回归开关（add-codefix-affinity-batching 4.1）。
 
@@ -2662,6 +2819,70 @@ class CodeFixOrchestrator:
                         **self._chain_terminal_fields("chain_converged"),
                     )
                 return {"triggered": False, "reason": "no_open_items"}
+
+            # 连接类失败冷却守卫（evo-add-codefix-conn-error-cooldown 2.2）：
+            # 本入口是全部激活路径（full scan 末尾兜底 event_bus / 新条目激活
+            # / 自驱动 _resubmit / 事件驱动重试回调）的唯一共用投递入口，闸在
+            # 这里才能同时拦住「full scan 在窗口内再触发的批次」（design D3；
+            # _resubmit 只覆盖自驱动一路，不取）。冷却态持久化于
+            # fix-progress.json（合并写），进程重启后残余窗口内仍拦（D4）。
+            # 位置在 no_open_items 早退之后：台账清空空转的 checkpoint 不写
+            # 解除告警（D5），且冷却不改失败批条目记账语义（consumed/
+            # chain_skipped 维持现状，仅推迟下一批投递，spec R2）。
+            try:
+                cooldown_until = float(
+                    prev_chain.get("switch_cooldown_until") or 0
+                )
+            except (TypeError, ValueError):
+                cooldown_until = 0.0
+            if cooldown_until > 0:
+                now_ts = time.time()
+                if now_ts < cooldown_until:
+                    # 冷却期内：拒投递，进度只刷提示文案（running/phase 链上
+                    # 状态不动——链仍 live，自驱动/兜底节拍到期后自然续跑）。
+                    write_progress(
+                        root,
+                        reason="switch_cooldown",
+                        current=(
+                            "上游连接类失败冷却中，同链下一批暂缓派发至 "
+                            f"{_epoch_iso(cooldown_until)}"
+                        ),
+                    )
+                    self._log(
+                        "info",
+                        "code-fix 冷却守卫拦截投递（"
+                        f"至 {_epoch_iso(cooldown_until)}）",
+                    )
+                    return {"triggered": False, "reason": "switch_cooldown"}
+                # 到期：本 checkpoint 即「冷却到期后首个通过守卫的 checkpoint」
+                # ——补写解除告警（evidence 携带实际推迟时长）并清冷却态，
+                # 保证只发一次；告警/清态异常不阻断后续投递（同款纪律）。
+                try:
+                    cooldown_from = float(
+                        prev_chain.get("switch_cooldown_from")
+                        or (cooldown_until - self._switch_cooldown_seconds())
+                    )
+                except (TypeError, ValueError):
+                    cooldown_from = cooldown_until - self._switch_cooldown_seconds()
+                try:
+                    _write_switch_cooldown_release_alert(
+                        root,
+                        until_ts=cooldown_until,
+                        deferred_seconds=max(0.0, now_ts - cooldown_from),
+                        logger=self._logger,
+                    )
+                except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+                    self._log("warning", f"code-fix 冷却解除告警写盘异常: {e}")
+                try:
+                    write_progress(
+                        root,
+                        switch_cooldown_until=None,
+                        switch_cooldown_from=None,
+                        current="连接类失败冷却到期，恢复同链下一批投递",
+                        reason="",
+                    )
+                except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
+                    self._log("warning", f"code-fix 冷却态清除写盘异常: {e}")
 
             # 进度链身份（D8）：同链沿用 activation_id，新链重算。判定
             # 前移到选批之前（selfheal）：新链启动先释放预算内失败档案并重置
@@ -3844,6 +4065,14 @@ class CodeFixOrchestrator:
                 reason=f"agent_run_failed: {result.error}"[:500],
                 chain_skip_ids=item_ids,
             )
+            # evo-add-codefix-conn-error-cooldown 2.1：连接类失败置同链冷却
+            # ——写持久化冷却态 + 触发告警（在 _consumed_progress 之后：冷却
+            # 提示文案是收尾时刻的最终进度面）。consumed 记账语义不变（R2：
+            # 仅推迟下一批投递）；紧随的 _resubmit → checkpoint 被冷却守卫
+            # 拦下，实现「失败后零延迟重派改为冷却到期再投递」。getattr
+            # 守护测试替身信封（SimpleNamespace）缺 conn_error 字段的形态。
+            if getattr(result, "conn_error", False):
+                self._arm_switch_cooldown(result)
             return "consumed"
 
         # 批收尾回归两段式分流（add-codefix-affinity-batching 3.4）：链末批

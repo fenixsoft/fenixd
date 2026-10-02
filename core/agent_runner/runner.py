@@ -90,6 +90,7 @@ from core.agent_runner.provider_circuit import (
     RATELIMIT_REDISPATCH_MAX,
     ProviderCircuit,
     annotate_model_chain_unavailable,
+    is_code_fix_conn_error,
 )
 from core.agent_runner.run_files import (
     archive_spec_runs,
@@ -5606,6 +5607,16 @@ class AgentRunner:
                 str(observed_result.get("result") or "")
                 if observed_result else ""
             )
+            # evo-add-codefix-conn-error-cooldown 1.2：连接类 api_error 布尔挂
+            # 异常（对齐 exc.api_timeout 先例：判别在 runner 层一次完成，车道
+            # 层只读标记不重复解析，design D1）。判据三条件 =
+            # terminal_reason=='api_error' + exit_code!=0 + result_text 命中
+            # code-fix 车道本地连接类词表（MUST NOT 扩充共享
+            # SWITCH_ERROR_CONN_PATTERNS——扩充即改变 spec/impl 车道切换行为）；
+            # 不读 stderr（unrecognized_model 是每 run 定噪行，裸匹配等价
+            # 「exit 1 即命中」）。与 api_timeout 可同时为真（api_error 是其
+            # 宽判分支），互不掣肘（design D2）。
+            exc.conn_error = is_code_fix_conn_error(observed_result, returncode)
             raise exc
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败

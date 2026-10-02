@@ -115,6 +115,71 @@ SWITCH_ERROR_CONN_PATTERNS = (
     r"temporarily unavailable",
     r"network is unreachable",
 )
+# ── code-fix 车道本地连接类词表（evo-add-codefix-conn-error-cooldown 1.1）──
+# 2026-09-28 起 4 天实测：上游网关每日 UTC 20:31 前后约 100 秒连接性窗口烧毁
+# code-fix 批（真实死因「API Error: Can't reach the API server (ENOTFOUND)」，
+# result 终态 terminal_reason='api_error' + exit_code=1）。共享
+# SWITCH_ERROR_CONN_PATTERNS 对该死因文本全部漏判（ENOTFOUND 形态不在其列）。
+# 本词表是 **code-fix 车道本地** 常量：仅供连接类失败分类（runner 挂载
+# conn_error 布尔，is_code_fix_conn_error 判别单源）消费。MUST NOT 扩充共享
+# SWITCH_ERROR_CONN_PATTERNS——该词表被 classify_switch_error（:418）消费、
+# runner 以其判定驱动 spec/impl 车道切链与 provider switch 短冷却，扩充即改变
+# spec/impl 车道既有切换行为（proposal Non-Goal）；且 ENOTFOUND 属本地 DNS
+# 故障，切链无济于事只会烧尽链候选（design D1）。
+# 不新增 stderr unrecognized_model 判据：该行是 CLI_STDERR_NOISE_TEXT_PATTERNS
+# 登记的 glm/deepseek 链每 run 定噪（成功 run 同样在场），裸匹配 stderr 等价
+# 于「exit 1 即命中」，语义与告警文案都会错（design D1）。
+CODE_FIX_CONN_ERROR_PATTERNS = (
+    r"can't reach the api server",  # 2026-09 实测死因形态（SDK 包装文本）
+    r"ENOTFOUND",                   # 本地 DNS 解析失败（getaddrinfo 形态）
+    # ── 既有连接类形态收纳（与共享词表同款、车道内独立枚举，非共享引用）──
+    r"connection.*(refused|reset|error|timeout)",
+    r"connect.*(refused|reset|error|timeout)",
+    r"failed to connect",
+    r"name or service not known",  # DNS 解析失败
+    r"temporarily unavailable",
+    r"network is unreachable",
+)
+
+
+def match_code_fix_conn_error_text(text: str) -> bool:
+    """判断失败文本是否命中 code-fix 车道本地连接类词表（1.1）。
+
+    纯函数（无副作用）；词表语义只定义在这一处。匹配忽略大小写
+    （ENOTFOUND 实测以大写出现、SDK 文本大小写混排，与
+    classify_switch_error 的 IGNORECASE 口径一致）。
+    """
+    if not text:
+        return False
+    for pat in CODE_FIX_CONN_ERROR_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def is_code_fix_conn_error(last_result, exit_code) -> bool:
+    """判别末次 result 事件是否 code-fix 车道「连接类 api_error」（1.1/1.2 判别单源）。
+
+    三判据（spec R1，全部命中才判连接类）：
+    - ``terminal_reason == "api_error"``（与 is_api_timeout_signature 第一分支
+      同源——连接故障与单轮超时同落该宽判终态，靠文本词表二次区分）；
+    - ``exit_code != 0``（连接故障 CLI 非零退出）；
+    - result 文本命中车道本地 CODE_FIX_CONN_ERROR_PATTERNS。
+
+    ``last_result`` 为空（崩溃/强杀路径无 result 事件）恒 False。与 api_timeout
+    布尔的关系（design D2）：api_error 是 api_timeout 的宽判分支，两布尔可同时
+    为真——api_timeout 保持「现场抢救」触发语义，conn_error 只驱动车道冷却，
+    互不掣肘。
+    """
+    if not last_result:
+        return False
+    if str(last_result.get("terminal_reason") or "") != "api_error":
+        return False
+    if exit_code is None or exit_code == 0:
+        return False
+    return match_code_fix_conn_error_text(str(last_result.get("result") or ""))
+
+
 # per-provider 当日 attempt 计数告警上限（design D5：防备备份 provider 悄悄烧贵）；
 # 可配 pm.failover.daily_attempts_warn，默认 50。
 PROVIDER_DAILY_ATTEMPTS_WARN = 50

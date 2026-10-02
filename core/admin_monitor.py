@@ -137,6 +137,16 @@ FLAPPING_THRESHOLD = 3
 DAEMON_ERROR_THRESHOLD = 2
 DAEMON_ERROR_WINDOW_MINUTES = 10
 DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES = 5
+# evo-add-codefix-conn-error-cooldown 3.1：daemon_errors 指纹记账的「跨日同刻
+# 复发」升级维度（design D6）。保留每指纹最近一次失败终态时刻，新失败与上次
+# 跨日差在 24h±5 分钟内即升级 escalation，不受已知指纹重启冷却窗压制（2026-09
+# 连续 4 天实测样本跨日时刻差 <2 秒，±5 分钟容差充裕）。模块常量不入 config
+# （对齐本层既有做法，规避「新增配置项必须带 Dashboard UI」约束）。
+DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS = 24 * 3600
+DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS = 5 * 60
+# 指纹「最近失败终态时刻」记忆容量上限（实例内存防无界增长；超限淘汰最早的
+# 一半）。日志尾读窗口（≤256KB）内的活跃指纹量级远低于此。
+DAEMON_ERROR_FP_MEMORY_LIMIT = 512
 # alert-noise-governance 3.1：指纹级重启冷却窗（模块常量不入 config，对齐本
 # 层既有做法，规避「新增配置项必须带 Dashboard UI」约束）。
 # 治理目标 = 重启后首扫回放：daemon 重启不清日志，首扫即命中与停机前相同
@@ -901,6 +911,11 @@ class AdminMonitor:
         # store 既有 daemon_errors 记录的 description 内嵌指纹前缀）。
         self._started_at = time.time()
         self._daemon_fp_escalated_at = {}
+        # evo-add-codefix-conn-error-cooldown 3.1：fp → 最近一次失败终态时刻
+        # （epoch 秒，逐扫更新；跨日同刻复发判别的记忆事实源，容量上限
+        # DAEMON_ERROR_FP_MEMORY_LIMIT）。daemon 重启丢内存态——本生命周期
+        # 首见指纹回退日志尾部次新条目对账（_detect_crossday_recurrence）。
+        self._daemon_fp_last_failure = {}
         # code-review item 9427d41c85ef：fixture 判定实例级 TTL 备忘。
         # _fixture_invocation_suppressed 每条信号都走一次 _is_fixture_project
         # （Registry.discover = YAML 读 + 扫描根目录级遍历）；夹具标记实践中
@@ -2715,22 +2730,30 @@ class AdminMonitor:
         # 与真实 daemon 启动后的首扫行为一致
         in_restart_window = (now - getattr(self, "_started_at", now)) < cooldown
 
-        escalating = []  # [(fp, count, last_str, missing_ts)]
+        escalating = []  # [(fp, count, last_str, missing_ts, crossday)]
+        # 跨日同刻复发判别（evo-add-codefix-conn-error-cooldown 3.1，D6）：
+        # 先于逐指纹升级判定独立成判（记忆更新独立于升级与否），命中者绕过
+        # 已知指纹冷却窗。
+        crossday = self._detect_crossday_recurrence(by_fp)
         for fp, stamps in by_fp.items():
+            cd = crossday.get(fp)
             in_window = [t for t in stamps if t is None or (now - window <= t <= now)]
-            if len(in_window) < DAEMON_ERROR_THRESHOLD:
+            # 升级第二维度（D6）：跨日同刻复发单次在窗也升级——既有「≥2 次/
+            # 10 分钟窗」判定保留为第一维度（cd=None 时语义不变）。
+            if cd is None and len(in_window) < DAEMON_ERROR_THRESHOLD:
                 continue
             ts_ok = sorted(t for t in in_window if t is not None)
-            if len(ts_ok) >= 2 and (ts_ok[-1] - ts_ok[-2]) > max_gap:
+            if cd is None and len(ts_ok) >= 2 and (ts_ok[-1] - ts_ok[-2]) > max_gap:
                 continue
             # 已知指纹对账仅服务冷却窗分支（known 只被 known and
             # in_restart_window 消费）——冷却窗关闭后（长驻 daemon 的常态）
             # 不再为每个达阈指纹做全 store 扫描（code-review item e681493f4102）。
-            if not in_restart_window:
+            # 跨日同刻复发（cd 命中）不受该冷却压制（3.1），无需对账。
+            if not in_restart_window or cd is not None:
                 known, source = False, ""
             else:
                 known, source = self._daemon_fp_known(fp)
-            if known and in_restart_window:
+            if known and in_restart_window and cd is None:
                 # 冷却命中（3.1）：重启后首扫窗口内的已知指纹不计满、不召唤，
                 # INFO 留痕冷却决策；窗后复现照常升级（3.3，冷却仅约束首扫窗口）
                 self.logger.info(
@@ -2747,7 +2770,7 @@ class AdminMonitor:
                 from_epoch(last_ts).isoformat() if last_ts else "无可用时间戳"
             )
             missing_ts = sum(1 for t in in_window if t is None)
-            escalating.append((fp, count, last_str, missing_ts))
+            escalating.append((fp, count, last_str, missing_ts, cd))
 
         if not escalating:
             return []
@@ -2758,6 +2781,56 @@ class AdminMonitor:
             return [self._make_daemon_error_signal(*escalating[0])]
         # 同轮孪生/成对指纹合并（3.2）：一条召唤信号、一次 Administrator run
         return [self._make_daemon_error_signal_merged(escalating)]
+
+    def _detect_crossday_recurrence(self, by_fp: dict) -> dict:
+        """跨日同刻复发判别（evo-add-codefix-conn-error-cooldown 3.1，design D6）。
+
+        保留每指纹最近一次失败终态时刻（实例内存 ``_daemon_fp_last_failure``，
+        逐扫更新）；新失败与上次失败终态时刻跨日差在 24h±5 分钟内即判定跨日
+        同刻复发，返回 ``{fp: (prev_ts, last_ts)}``（信号构造消费，升级文案与
+        evidence 注明前次时刻）。
+
+        恰发一次语义：记忆更新到本扫最近时刻后，同一 ``last_ts`` 的后续扫描
+        不再命中（prev==last 不比）——10 分钟内同指纹不重复升级；新失败到来
+        （last_ts > 记忆）才重新判别。本生命周期首见指纹（daemon 重启丢内存
+        态）回退日志尾部的次新条目对账——日志保留历史时跨重启仍可识别。
+
+        缺时间戳条目（ts=None）不参与判别（无跨日差可算）；日志尾读窗口外的
+        历史不可见——漏判方向 fail-open，与模块取证取向一致。
+        """
+        memory = getattr(self, "_daemon_fp_last_failure", None)
+        if memory is None:
+            # __new__ 直构（单测）无 __init__：按空记忆处理并就地建
+            memory = self._daemon_fp_last_failure = {}
+        hits = {}
+        for fp, stamps in by_fp.items():
+            ts_all = sorted(t for t in stamps if t is not None)
+            if not ts_all:
+                continue
+            last_ts = ts_all[-1]
+            prev = memory.get(fp)
+            if prev is None:
+                # 本生命周期首见：回退日志内次新条目判跨日差（跨重启对账）
+                for cand in reversed(ts_all[:-1]):
+                    if (
+                        abs(last_ts - cand - DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS)
+                        <= DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS
+                    ):
+                        hits[fp] = (cand, last_ts)
+                        break
+            elif last_ts > prev:
+                if (
+                    abs(last_ts - prev - DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS)
+                    <= DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS
+                ):
+                    hits[fp] = (prev, last_ts)
+            if prev != last_ts:
+                memory[fp] = last_ts
+            # 容量上限（防无界增长）：超限淘汰最早一半（dict 保插入序）
+            if len(memory) > DAEMON_ERROR_FP_MEMORY_LIMIT:
+                for k in list(memory)[: DAEMON_ERROR_FP_MEMORY_LIMIT // 2]:
+                    memory.pop(k, None)
+        return hits
 
     def _daemon_fp_known(self, fp: str) -> tuple:
         """指纹是否「已知」（alert-noise-governance 3.1）。
@@ -2783,17 +2856,37 @@ class AdminMonitor:
             pass
         return False, ""
 
-    def _make_daemon_error_signal(self, fp: str, count, last_str, missing_ts) -> dict:
-        """单指纹 daemon_errors 信号（文案与治理前保持一致，语义回归）。"""
+    def _make_daemon_error_signal(self, fp: str, count, last_str, missing_ts,
+                                  crossday=None) -> dict:
+        """单指纹 daemon_errors 信号（文案与治理前保持一致，语义回归）。
+
+        ``crossday``（可选，evo-add-codefix-conn-error-cooldown 3.1）：跨日同刻
+        复发命中的 (prev_ts, last_ts) 二元组——description 追加复发判定（保留
+        「指纹 <fp[:8]>」前缀子串，跨重启已知指纹对账依赖它），evidence 注明
+        前次时刻明细。
+        """
+        crossday_desc = ""
+        crossday_evidence = ""
+        if crossday is not None:
+            prev_ts, _last_ts = crossday
+            crossday_desc = (
+                "，判定为跨日同刻复发（与上次同指纹失败时刻差≈24 小时），"
+                "已绕过已知指纹冷却升级"
+            )
+            crossday_evidence = (
+                f"；跨日同刻复发：前次 {from_epoch(prev_ts).isoformat()}，"
+                f"跨日差 {(_last_ts - prev_ts) / 3600:.2f} 小时"
+                f"（容差 ±{DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS // 60} 分钟）"
+            )
         sig = self._make_signal(
             "daemon_errors",
             None,
             f"fenixd 日志同错误（指纹 {fp[:8]}）在 {DAEMON_ERROR_WINDOW_MINUTES} 分钟"
-            f"窗口内复现 {count} 次，建议检查根因并重启 daemon",
+            f"窗口内复现 {count} 次，建议检查根因并重启 daemon" + crossday_desc,
             f"同指纹 ERROR 复现 {count} 次（最近一次 {last_str}"
             + (f"；{missing_ts} 条缺时间戳按窗口内计入" if missing_ts else "")
             + f"）；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
-            f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
+            f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟" + crossday_evidence,
         )
         # admin-signal-consolidation D1：daemon 级信号（spec=None）的
         # status_hash 回退判据 = 稳定错误指纹（_signal_status_hash 消费，
@@ -2809,17 +2902,29 @@ class AdminMonitor:
         合并形态下逐指纹仍可命中；evidence 另载各指纹复现明细。
         """
         fp_summary = "、".join(
-            f"指纹 {fp[:8]}（复现 {count} 次）" for fp, count, _, _ in escalating
+            f"指纹 {fp[:8]}（复现 {count} 次）" for fp, count, *_ in escalating
+        )
+        crossday_fps = [
+            fp for fp, _, _, _, cd in escalating if cd is not None
+        ]
+        crossday_desc = (
+            f"（其中指纹 {'、'.join(f[:8] for f in crossday_fps)} 判定跨日同刻"
+            "复发，已绕过已知指纹冷却升级）"
+            if crossday_fps else ""
         )
         sig = self._make_signal(
             "daemon_errors",
             None,
             f"fenixd 日志同轮 {len(escalating)} 项错误同时达升级阈值（{fp_summary}），"
             f"已合并为一条召唤信号、一次 Administrator run（alert-noise-governance"
-            f" 3.2），建议检查根因并重启 daemon",
+            f" 3.2），建议检查根因并重启 daemon" + crossday_desc,
             "；".join(
                 f"指纹 {fp[:8]} 复现 {count} 次（最近一次 {last_str}）"
-                for fp, count, last_str, _ in escalating
+                + (
+                    f"；跨日同刻复发：前次 {from_epoch(cd[0]).isoformat()}"
+                    if cd is not None else ""
+                )
+                for fp, count, last_str, _, cd in escalating
             )
             + f"；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
             f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
