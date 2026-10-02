@@ -24,6 +24,7 @@
 ``ensure_verification_report``，禁止第二套渲染逻辑。
 """
 
+import fcntl
 import json
 import os
 import re
@@ -1301,6 +1302,13 @@ def record_verdict_round(
 
     stamp / report_mtime 为 None 时自动从当前状态推导。
     首轮写入 rounds=[round]；第二轮起保留最近两轮用于一致比较。
+
+    读-改-写在单次跨进程排他锁内完成（serving_registry / admin_store 的
+    fcntl 伴生 ``.lock`` 范式）：同 spec 双活跃 run（manual-intervention 与
+    blocked_stuck 各一）几乎同时采纳裁决时，两步无锁读改写会让后写者覆盖
+    前写者丢一轮，稳定性判据退化（多跑一次 judge）。_atomic_write 只保证
+    文件不撕裂，不保证读-改-写原子。锁文件不可用时降级为无锁读改写——
+    缓存属尽力而为（同 write_verdict_stability 静默语义），不阻断裁决。
     """
     if stamp is None:
         stamp = compute_spec_stamp(project_root, spec_name)
@@ -1314,23 +1322,38 @@ def record_verdict_round(
         "at": now,
     }
 
-    data = read_verdict_stability(project_root, spec_name) or {}
-    rounds = data.get("rounds") or []
-    if not isinstance(rounds, list):
-        rounds = []
+    # 伴生锁文件（serving_registry._lock 同款）：每次新开 fd 的 flock 在
+    # 同进程跨 fd 亦互斥，单文件锁即覆盖跨进程与跨线程并发
+    stability_path = _verdict_stability_path(project_root, spec_name)
+    try:
+        stability_path.parent.mkdir(parents=True, exist_ok=True)
+        lf = open(stability_path.parent / f".{stability_path.name}.lock", "w")
+    except OSError:
+        lf = None
+    try:
+        if lf is not None:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+        data = read_verdict_stability(project_root, spec_name) or {}
+        rounds = data.get("rounds") or []
+        if not isinstance(rounds, list):
+            rounds = []
 
-    rounds.append(current_round)
-    # 保留最近两轮（_STABILITY_MIN_ROUNDS），更早的轮次出清
-    if len(rounds) > _STABILITY_MIN_ROUNDS:
-        rounds = rounds[-_STABILITY_MIN_ROUNDS:]
+        rounds.append(current_round)
+        # 保留最近两轮（_STABILITY_MIN_ROUNDS），更早的轮次出清
+        if len(rounds) > _STABILITY_MIN_ROUNDS:
+            rounds = rounds[-_STABILITY_MIN_ROUNDS:]
 
-    data["stamp"] = stamp
-    data["report_mtime_ns"] = report_mtime
-    data["rounds"] = rounds
-    data["updated_at"] = now
+        data["stamp"] = stamp
+        data["report_mtime_ns"] = report_mtime
+        data["rounds"] = rounds
+        data["updated_at"] = now
 
-    write_verdict_stability(project_root, spec_name, data)
-    return data
+        write_verdict_stability(project_root, spec_name, data)
+        return data
+    finally:
+        if lf is not None:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+            lf.close()
 
 
 def is_verdict_stable(project_root, spec_name) -> bool:
