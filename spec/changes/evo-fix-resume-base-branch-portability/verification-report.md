@@ -34,3 +34,10 @@
 | callsite-runtime-probe | 四个调用点的运行时独立探针（不依赖交付测试代码，现场建真实 tmp master 主干仓驱动生产代码路径）：①终态零提交门——零提交+dirty 抛 [terminal-no-commit]、1 提交放行（core/agent_runner/runner.py:1987）；②branch_guard._branch_commit_count——1 提交→1、零提交→0、缺分支→None（core/pm_engine/verification/branch_guard.py:116）；③legacy 快照含提交清单（core/agent_runner/prompt_builder.py:1980）；④fenixd._preserve_base_branch 返回 master、_ahead_commit_count 1 提交分支计数 1（fenixd.py:123）。stdout 可能含被导入模块的附加打印，故以 PROBE-RESULT 标记行 + output_match 子串断言 JSON 键值形态（json.dumps 缺省分隔符 ": "）。 | pass | 0/10 | - |
 | deliverable-files-and-contract | 交付物存在性与模块契约源码检查：9 个交付物路径 file_exists（tasks.md Deliverables 全量）；core/git_base_branch.py MUST NOT import fenixd（防成环，锚定行首 import 语句形态，docstring 决策来源叙述不误伤）；resolve_base_branch/reset_cache 定义与 DEFAULT_TIMEOUT_SECONDS 超时常量在场；六处调用点（state_machine/queries/runner/prompt_builder/branch_guard/fenixd）均含 `from core.git_base_branch import resolve_base_branch` 接入行。出处：tasks.md Deliverables 段、core/git_base_branch.py:1-39 模块契约、各调用点 import 行（core/state_machine.py:20、core/worktree_manager/queries.py:24、core/agent_runner/runner.py:25、core/agent_runner/prompt_builder.py:15、core/pm_engine/verification/branch_guard.py:16、fenixd.py:47）。 | pass | 0/11 | - |
 | main-trunk-regression-guard | spec Impact 回归护栏：既有 main 主干测试集全量保留且全绿——一次运行覆盖被改模块全部相关既有测试面（test_terminal_nocommit_gate / test_recovery_legacy / test_cancelled_spec_resume / test_deliverable_gate / test_freeze_stop_inflight_agents / test_recovery_watch_transition_guard / test_relocation_writeback_layer / test_facade_delegation_contract / test_impl_selfcheck_model_probe / test_git_base_branch / test_recovery_branch_anchor 共 11 文件，本工作树实测 250 passed + 549 subtests passed）。-q 安静形态 + 「N passed」断言（无 -v 并列）。出处：specs/resume-base-branch-portability/spec.md「既有测试全绿」、proposal.md Impact 回归护栏、tests/test_recovery_branch_anchor.py:85-587 既有 main 主干用例保留。 | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
