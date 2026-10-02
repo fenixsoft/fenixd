@@ -2165,7 +2165,14 @@ class CodeFixResult:
     - 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：``api_timeout``
       （单轮 API 请求超时终局，判别单源在 runner 层挂异常标记）、
       ``exit_code`` / ``stderr_summary``（原始退出码与 stderr 尾行摘要）——
-      失败现场可判别、可追溯，不再把签名压扁为异常字符串。
+      失败现场可判别、可追溯，不再把签名压扁为异常字符串；
+    - ``conn_error`` / ``result_text``（evo-add-codefix-conn-error-cooldown
+      1.3）：连接类 api_error 布尔（判别单源在 runner 层挂异常标记，三判据
+      见 provider_circuit.is_code_fix_conn_error）与末次 result 事件文本原样
+      透传——conn_error 驱动车道冷却，result_text 供告警 evidence 与单测。
+      与 api_timeout 的分工（design D2）：api_timeout 保持「现场抢救」触发
+      语义不变，conn_error 只驱动冷却、不参与 salvage 判定；两布尔可同时为
+      真（api_error 是 api_timeout 的宽判分支），互不掣肘。
     """
 
     def __init__(
@@ -2179,6 +2186,8 @@ class CodeFixResult:
         api_timeout: bool = False,
         exit_code=None,
         stderr_summary: str = "",
+        conn_error: bool = False,
+        result_text: str = "",
     ):
         self.run_id = run_id
         self.success = success
@@ -2189,6 +2198,8 @@ class CodeFixResult:
         self.api_timeout = api_timeout
         self.exit_code = exit_code
         self.stderr_summary = stderr_summary
+        self.conn_error = conn_error
+        self.result_text = result_text
 
 
 def _stderr_tail_summary(stderr_lines, max_lines: int = 3, max_chars: int = 200) -> str:
@@ -2439,6 +2450,10 @@ def run_code_fix(
         api_timeout = False
         exit_code = None
         stderr_summary = ""
+        # evo-add-codefix-conn-error-cooldown 1.3：连接类签名同纪律（非
+        # _run_claude 失败异常恒 False/空，硬门/计数失败路径不携带）。
+        conn_error = False
+        result_text = ""
         try:
             output, _turns, _session_id, _usage_info = runner._run_claude(
                 prompt,
@@ -2466,6 +2481,12 @@ def run_code_fix(
             api_timeout = bool(getattr(e, "api_timeout", False))
             exit_code = getattr(e, "exit_code", None)
             stderr_summary = _stderr_tail_summary(getattr(e, "stderr_lines", None))
+            # evo-add-codefix-conn-error-cooldown 1.3：conn_error 判别在 runner
+            # 层完成（is_code_fix_conn_error 三判据），此处只读异常布尔标记；
+            # result_text 原样透传（末次 result 事件文本，供告警 evidence 与
+            # 单测）。api_timeout/salvage 判定不读本布尔（design D2 分工）。
+            conn_error = bool(getattr(e, "conn_error", False))
+            result_text = str(getattr(e, "result_text", "") or "")
             if api_timeout or exit_code is not None or stderr_summary:
                 error = (
                     f"{error} [api_timeout={api_timeout} exit_code={exit_code}"
@@ -2515,6 +2536,8 @@ def run_code_fix(
             api_timeout=api_timeout if not run_ok else False,
             exit_code=exit_code if not run_ok else None,
             stderr_summary=stderr_summary if not run_ok else "",
+            conn_error=conn_error if not run_ok else False,
+            result_text=result_text if not run_ok else "",
         )
     finally:
         try:
