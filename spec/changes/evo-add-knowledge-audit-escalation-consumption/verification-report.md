@@ -38,3 +38,10 @@
 | arbitration-empty-list-zero-write | R4 空状态零写零提交·实驱动：无清单文件时 knowledge_daily_check 正常跑车道但 results 无 arbitration 键、清单文件不被创建、零提交；人工清空为 [] 后 consume_arbitration 台账逐字节不变、零提交——未命中保持 300s 周期执行的轻量（出处：core/knowledge_audit.py:384-386 fail-open 空清单、:493-501 消费段未命中零写、tests/test_knowledge_audit_escalation_governance.py:510） | pass | 0/6 | - |
 | arbitration-all-decisions-consumed | R4 decision 合法枚举全覆盖·实驱动：3 条 escalated 指纹分别登记 fixed / no-conflict / false-positive 三种合法决定，调 consume_arbitration：triggered=True、consumed=3、三指纹全部自台账删除、清单回写为空——三种合法决定同走 _record_verdict+删条目通路（出处：core/knowledge_audit.py:78 ARBITRATION_DECISIONS=('fixed','no-conflict','false-positive')、:387-428 消费循环） | pass | 0/5 | - |
 | disputed-annotation-shared-page-convergence-on-partial-consume | R3/R4 同页多疑点注记收敛·实驱动：页 p00a 挂两条超龄 escalated（真实指纹 8 龄期 + 合成指纹 10 龄期）、p00b 仅真实指纹——写入阶段 p00a 收敛为单条注记含两指纹前 8 位（since 取最早 first_seen）、p00b 仅真实指纹注记；仲裁消费真实指纹（false-positive）后 p00a 注记原位改写收敛为仅剩合成指纹（fps 收敛而非误摘）、p00b 注记摘除，同步自提交、工作区干净（出处：core/knowledge_audit.py:262-281 _disputed_targets 同页收敛、:428-443 消费后按台账现状重算期望态+restrict_pages、tests 语义出处 design.md D4） | pass | 0/8 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 15 个（第 1 轮）。
+
+- 首轮写入 15 个场景
+
