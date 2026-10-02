@@ -587,7 +587,7 @@ def _merge_admin_runs(records, spec=None, signal_type=None, exclude_run_id=None)
     """DISPOSITION 记录按 ``admin_run_id`` 归并（单一实现，勿二次漂移）。
 
     三处在飞/孤儿判定共用同一归并本体（``_spec_has_active_admin_run`` /
-    ``AdminMonitor._has_active_admin_run_for`` /
+    ``AdminMonitor._has_active_admin_run_for_spec`` 薄封装 /
     ``_recover_orphaned_dispositions`` 的孤儿扫描），差异仅在过滤条件，
     以参数传入（None = 不过滤）：
 
@@ -624,7 +624,7 @@ def _merge_admin_runs(records, spec=None, signal_type=None, exclude_run_id=None)
     return by_run
 
 
-def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
+def _spec_has_active_admin_run(store, spec: str, logger=None, exclude_run_id=None) -> bool:
     """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
 
     fix-recovery-path-blockers D2：按 ``(spec)`` 单键聚合 store 中
@@ -634,7 +634,14 @@ def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
     pending 记录均不算），不传 signal_type 过滤：
     admin 处置的 signal_type 可能是 ``verify_env_blocked`` /
     ``manual-intervention`` / ``stuck``，不只有 ``orphaned_state``，
-    按 ``(spec, signal_type)`` 精确匹配会漏。
+    按 ``(spec, signal_type)`` 精确匹配会漏
+    （fix-admin-cross-type-duplicate-dispatch：摄取/到期重派/孤儿重派
+    三路径统一收拢到本宽口径，跨 signal_type 的在飞处置必须命中守卫）。
+
+    exclude_run_id：透传 ``_merge_admin_runs`` 既有同名参数（缺省 None
+    零迁移）——孤儿重派排除正被孤儿处理的中断 run 自身，其 pending
+    记录是考察对象，不得自证「已有在飞 run」；仅排除该 run，不排除
+    其他在飞 run。
 
     模块级单一实现：``AdminMonitor._has_active_admin_run_for_spec`` 与
     ``event_bus`` 的两个守卫调用点都委托本函数（store 作为入参），勿复制
@@ -651,7 +658,7 @@ def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
                 f"{type(e).__name__}: {e}",
             )
         return False
-    by_run = _merge_admin_runs(records, spec=spec)
+    by_run = _merge_admin_runs(records, spec=spec, exclude_run_id=exclude_run_id)
     return any(info["has_pending"] and not info["final"] for info in by_run.values())
 
 
@@ -2072,15 +2079,15 @@ class AdminMonitor:
             # fix-recovery-path-blockers D2b 在飞互斥守卫（code-review item
             # 82e05894a9b0）：本方法直接 _invoke_administrator，不经 _handle_signal
             # 的「已有在飞 admin run 即跳过」守卫（同 _retry_due_dispatch_failures /
-            # _recover_orphaned_dispositions 重派分支的既有豁免形态）。同 spec 同
-            # signal_type 已有在飞/待派发的 admin run（如 env 阻塞处置正在写
+            # _recover_orphaned_dispositions 重派分支的既有豁免形态）。同 spec
+            # 任意 signal_type 已有在飞/待派发的 admin run（如 env 阻塞处置正在写
             # STATE/test_scenarios.json）时再唤起，会产生与在飞处置**并行**的
             # 第二个 Administrator run 写同一批状态。为真 → 跳过本次唤起。
             # 与上方终态守卫/前提复核守卫的 mark_escalated+continue 核销范式不同，
             # 本守卫 MUST NOT mark_escalated——源记录保持未消费（写入即待唤起
             # 语义保留），在飞 run 结束后的下一巡检周期由本摄取循环自然重评
             # （再武装路径）；落点必须在 mark_escalated 之前。
-            if spec and self._has_active_admin_run_for(spec, stype):
+            if spec and self._has_active_admin_run_for_spec(spec):
                 self.logger.warning(
                     "admin_monitor",
                     f"{stype}: 已有在飞处置，跳过本次摄取唤起 '{spec}'"
@@ -3311,13 +3318,14 @@ class AdminMonitor:
             signal["_dispatch_retry_id"] = rec.get("id")
             # fix-recovery-path-blockers D2b 在飞互斥：本路径直接调
             # _invoke_administrator，绕过了 _handle_signal 的「已有在飞 admin
-            # run 即跳过」守卫——到期重派若撞上该信号已有在飞 admin run（另
+            # run 即跳过」守卫——到期重派若撞上同 spec 已有在飞 admin run（另
             # 一信号类型或人工通道），会与其并行写同一批 STATE/test_scenarios.json。
-            # 守卫口径与 _recover_orphaned_dispositions 重派守卫对齐（同款
-            # _has_active_admin_run_for 按信号类型判定；本路径无既有 run 可
-            # 排除，不传 exclude_run_id）。为真 → 跳过本轮重试，不 bump
-            # retry_count（互斥非派发失败，下轮到期仍会重评）。
-            if spec and self._has_active_admin_run_for(spec, signal.get("signal_type")):
+            # 守卫口径与 _recover_orphaned_dispositions 重派守卫对齐（spec 单键
+            # 聚合、任意 signal_type 命中——fix-admin-cross-type-duplicate-
+            # dispatch：注释中「另一信号类型或人工通道」的危害至此被真正守住；
+            # 本路径无既有 run 可排除，不传 exclude_run_id）。为真 → 跳过本轮
+            # 重试，不 bump retry_count（互斥非派发失败，下轮到期仍会重评）。
+            if spec and self._has_active_admin_run_for_spec(spec):
                 self.logger.info(
                     "admin_monitor",
                     f"Skipping dispatch retry for '{spec}' (signal "
@@ -3349,40 +3357,7 @@ class AdminMonitor:
 
     # ── 孤儿处置重派（admin-disposition-reschedule） ─────────────
 
-    def _has_active_admin_run_for(self, spec, signal_type: str, exclude_run_id: Optional[str] = None) -> bool:
-        """同 (spec, signal_type) 是否已有在飞/待派发的 admin run。
-
-        判据与 _recover_orphaned_dispositions 的 by_run 归并同源（归并本体
-        单点 ``_merge_admin_runs``，勿二次漂移）：一个 run 只有在「存在
-        pending 记录且无任何非 pending 兄弟记录」时才视为在飞——已终结
-        run（含被 superseded/interrupted/escalated 终结的原 pending 记录
-        仍滞留 store 的形态）不算在飞。据此为「已有在飞 run 的信号」去重，
-        避免双重派发。
-
-        exclude_run_id：重派判定时排除「正被孤儿处理的中断 run」自身——其
-        pending 记录是本判定的考察对象，不得把自己误判为「已有在飞 run」。
-
-        判定异常 fail-open 返回 False 并记 WARNING（同 _spec_has_active_admin_run
-        口径，守卫故障不阻断调用方当轮的摄取/重派扫描）。
-        """
-        try:
-            records = self.store.read_all()
-        except Exception as e:
-            self.logger.warning(
-                "admin_monitor",
-                f"_has_active_admin_run_for 判定异常 fail-open（{spec}）: "
-                f"{type(e).__name__}: {e}",
-            )
-            return False
-        by_run = _merge_admin_runs(
-            records,
-            spec=spec,
-            signal_type=signal_type,
-            exclude_run_id=exclude_run_id,
-        )
-        return any(info["has_pending"] and not info["final"] for info in by_run.values())
-
-    def _has_active_admin_run_for_spec(self, spec) -> bool:
+    def _has_active_admin_run_for_spec(self, spec, exclude_run_id=None) -> bool:
         """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
 
         fix-recovery-path-blockers D2：守卫口径按 spec 单键聚合、覆盖**任意**
@@ -3390,8 +3365,16 @@ class AdminMonitor:
         manual-intervention / stuck，不只有 orphaned_state）。委托模块级
         ``_spec_has_active_admin_run``（单一归并实现，勿二次漂移）；判定异常
         fail-open 返回 False 并记 WARNING（守卫故障不阻断恢复路径）。
+
+        exclude_run_id：透传归并本体同名参数——孤儿重派排除「正被孤儿处理的
+        中断 run」自身，其 pending 记录是本判定的考察对象，不得把自己误判为
+        「已有在飞 run」；仅排除该 run，同 spec 其他（跨类型）在飞 run 仍命中
+        （fix-admin-cross-type-duplicate-dispatch：全部派发路径统一 spec 单键
+        口径，按 (spec, signal_type) 精确匹配的窄口径方法已收敛删除）。
         """
-        return _spec_has_active_admin_run(self.store, spec, logger=self.logger)
+        return _spec_has_active_admin_run(
+            self.store, spec, logger=self.logger, exclude_run_id=exclude_run_id
+        )
 
     def _reschedule_count_for(self, spec, signal_type: str) -> int:
         """读同 (spec, signal_type) 的 DISPOSITION 记录 reschedule_count 最大值（缺省 0）。
@@ -3547,13 +3530,16 @@ class AdminMonitor:
                     # 在飞互斥守卫口径与 _retry_due_dispatch_failures 对齐
                     # （`if spec and ...`）：daemon 级记录 spec=None 时
                     # _merge_admin_runs 的 spec 过滤被 None 哨兵禁用（None =
-                    # 不过滤），任意其他 spec 同 signal_type 的在飞 pending 都会
+                    # 不过滤），任意其他 spec 的在飞 pending 都会
                     # 令守卫误真 → 重派被放弃、原 run 落 interrupted 终结；
                     # spec 非空才判定，spec=None 跳过守卫（同款先例 2751/2971）。
+                    # spec 单键聚合、任意 signal_type 命中（fix-admin-cross-type-
+                    # duplicate-dispatch）；exclude_run_id=rid 仅排除被处理的中断
+                    # run 自身，同 spec 其他（跨类型）在飞 run 仍命中守卫。
                     if signal is not None and (
                         not spec
-                        or not self._has_active_admin_run_for(
-                            spec, sig_type, exclude_run_id=rid
+                        or not self._has_active_admin_run_for_spec(
+                            spec, exclude_run_id=rid
                         )
                     ):
                         # fixture 项目抑制（alert-noise-governance 5.1）：置于
