@@ -35,3 +35,10 @@
 | state-override-roundtrip-probe | 独立探针（STATE 覆写键全链路）：core/state_machine.py 的 IMPL_TURN_CAP_OVERRIDE_FIELD 写 1200 → 新实例从盘重读仍为 int 1200（update_spec 写入端 int 显式转换防字符串往返）；STATE.md 文本含 - impl_turn_cap_override: 1200 行（序列化白名单在场）；runner 消费点 _impl_turn_budget 生效 1200；duck-type STATE 桩注入数字字符串 '1350' → 读侧 isdigit 容错取 1350、布尔 True、负数 -5、缺字段 → 一律等价 override=None（不放大为 run 故障）。出处：core/state_machine.py:225/:522-529/:653-665、core/agent_runner/runner.py:6008-6033。 | pass | 0/9 | - |
 | adr103-knowledge-note-probe | 5.1 knowledge 注记在场景：spec/knowledge/adr/ADR-103-turn-limit-liveness-renewal-forced-kill-wip-salvage.md 含观测字段注记（remaining_tasks 于 turn_extension/run_metrics、TaskCreate+TaskUpdate 簿记占比观测）、STATE 覆写键 impl_turn_cap_override 与 suggested_turn_cap_for_scale 推算、kill_early 守卫（缺省关闭、仅实现车道、复用 WIP 保全、TURN_EXTENSION_MAX 末位条件）与 ADR-103 续期矩阵的关系表述——file_content 三条 + python 探针核对中文语义关键词。出处：tasks.md 5.1、ADR-103 文件 :26-28。 | pass | 0/15 | - |
 | adjacent-regression-suite | 回归哨：与本 SPEC 改动面相邻的三套既有套件合跑（tests/test_turn_limit_lifecycle.py + tests/test_fast_track_result.py + tests/test_agent_runner.py，50 例）——轮次上限生命周期、fast_track_result（estimate_spec_scale/scale_precheck 同文件邻接）、agent_runner 主体行为零回归。-q 安静形态（无 -v 并列），断言 exit_code 与 50 passed 汇总行。 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
