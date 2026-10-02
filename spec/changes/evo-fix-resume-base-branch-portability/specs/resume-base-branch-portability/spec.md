@@ -23,7 +23,7 @@ THEN 返回 "main"（与现 PRESERVE_AHEAD_BASE_BRANCH 回退一致），调用�
 
 ### Requirement: 恢复续做判定跨基线分支成立
 
-`core/state_machine.py::_resolve_preserved_branch` 的 rev-list 非空闸门 MUST 以共享解析器的基线替换硬编码 `main..{branch}`；解析器彻底失败（返回 None 语义之外的异常路径）时 MUST 维持现行清空重建的 fail-closed 行为。
+`core/state_machine.py::_resolve_preserved_branch` 的 rev-list 非空闸门 MUST 以共享解析器的基线替换硬编码 `main..{branch}`。解析器自身吞异常回退常量、不向调用方抛异常、无 None 返回语义；闸门的 fail-closed 行为由替换后的 rev-list 维持——rev-list 非零退出/超时/计数 ≤0 时 MUST 维持现行 `(None, None)` 早退清空重建（state_machine.py:2690-2699）。
 
 #### Scenario: master 基线仓库中被排水中断且 WIP 提交在场的 spec 走保留续做
 
@@ -62,3 +62,17 @@ THEN 抛出携带 `[terminal-no-commit]` 前缀的 AgentArtifactGateError 进入
 
 WHEN master 基线仓库触发 recovery legacy 现场采集
 THEN `git log --oneline <基线>..branch` 基于解析基线执行并返回提交快照，不再因 unknown revision 恒空
+
+### Requirement: 零变更哨与验证分支守卫跨基线成立
+
+`core/pm_engine/verification/branch_guard.py::_branch_commit_count`（零变更哨与验证分支守卫的共用单一来源）的基线候选 MUST 改用共享解析器；rev-list 失败时 MUST 维持现行 None 返回与调用方 fail-open 语义。
+
+#### Scenario: master 主干无 remote 仓库零变更哨恢复侦测
+
+WHEN 仓库基线为 master 且无 remote，实现器 run 宣称成功、分支含 1 个未合并提交、全程零编辑类工具调用且 worktree 干净
+THEN _branch_commit_count 返回 1（非 None），零变更哨正常判零变更并按空转处置（替换前该判定因基线候选失效恒 None 而漏报）
+
+#### Scenario: main 主干仓库哨行为不变
+
+WHEN 仓库基线为 main（现行主场景）
+THEN _branch_commit_count 返回值与替换前逐项一致（既有测试全绿）

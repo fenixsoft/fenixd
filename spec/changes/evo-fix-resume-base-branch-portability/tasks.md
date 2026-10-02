@@ -11,6 +11,8 @@
   kind: modify
 - path: core/agent_runner/prompt_builder.py
   kind: modify
+- path: core/pm_engine/verification/branch_guard.py
+  kind: modify
 - path: fenixd.py
   kind: modify
 - path: tests/test_git_base_branch.py
@@ -31,7 +33,7 @@
 
 ## 3. 分支命名空间枚举与待合并判定接入
 
-- [ ] 3.1 core/worktree_manager/queries.py：将 find_branches_by_spec 的候选 rev-list 剔除/排序（现 :579、:721）、has_pending_merge / pending_merge_since 的 `git log -1 --format=%ct main..<branch>`（现 :745 附近）三处基线统一替换为 `resolve_base_branch(self.project_root)`；查询失败的 fail-closed 返回（空列表/None）语义不变。
+- [ ] 3.1 core/worktree_manager/queries.py：将 find_branches_by_spec 的候选 rev-list 剔除/排序（现 :579、:721）、同函数「已含基线」分组键 `git merge-base --is-ancestor main <branch>`（现 :562，master 主干仓库恒 False 致分组退化）、has_pending_merge / pending_merge_since 的 `git log -1 --format=%ct main..<branch>`（现 :745 附近）四处基线统一替换为 `resolve_base_branch(self.project_root)`；查询失败的 fail-closed 返回（空列表/None）语义不变。
 - [ ] 3.2 tests/test_recovery_branch_anchor.py：新增 master 主干下的 find_branches_by_spec 用例（worktree 已清、仅剩含 1 提交的实现分支 → 枚举命中该候选）与 pending_merge_since 用例（返回该分支最新提交的 committer date 而非 None），并断言 main 主干既有用例结果不变。
 
 ## 4. 终态零提交门与遗产快照接入
@@ -44,3 +46,8 @@
 
 - [ ] 5.1 fenixd.py：`_preserve_base_branch` 改为委托 `core.git_base_branch.resolve_base_branch`（保留函数名、进程内缓存语义与 PRESERVE_AHEAD_BASE_BRANCH 兜底常量，`_ahead_commit_count` 及 :4703、:4868 两处调用点零改动），使无 remote 的 master 主干仓库 ahead 计数不再恒 0。
 - [ ] 5.2 tests/test_git_base_branch.py：补一条 `_ahead_commit_count` 级语义用例——master 主干无 remote 仓中含 1 提交的分支计数为 1（经 fenixd 侧公开路径或以同参调用共享解析器等价断言），并在 docstring 标注其对 `_preserve_interrupted_runs`/`_preserve_implementing_specs` 保全条目 ahead 字段的影响。
+
+## 6. 零变更哨与验证分支守卫基线收敛
+
+- [ ] 6.1 core/pm_engine/verification/branch_guard.py `_branch_commit_count`：将 `baselines = ["main"]` 候选循环与 origin/HEAD 回落探测（现 :111-146）替换为经 `resolve_base_branch(project_root)` 解析的单基线（先解析后 rev-list 一次）；rev-list 失败仍返回 None、调用方 fail-open 语义不变；同步修正 docstring 中「回落仅发生在首候选非零退出后」段落为解析器口径。
+- [ ] 6.2 tests/test_git_base_branch.py：补 branch_guard 调用点用例——master 主干无 remote 仓中含 1 提交分支 `_branch_commit_count` 返回 1（非 None）、真零提交分支返回 0（零变更哨可判零变更）；main 主干既有用例结果不变。
