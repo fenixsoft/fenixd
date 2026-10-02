@@ -51,6 +51,15 @@ class FlockRotatingFileHandler(RotatingFileHandler):
     rollover 会互相覆盖备份。本子类用伴随锁文件 `<日志>.lock` 的 flock
     串行化各进程的轮转窗口，并在持锁后做 (st_dev, st_ino) 陈旧检测，
     发现基底文件已被其他进程轮转时仅重新打开新基底文件，不再重复 rename。
+
+    已知残留窗口（code-review item 15ae410d5d35）：伴随 flock 只包住
+    doRollover，emit 路径（handle 内的 shouldRollover 判定与 stream.write）
+    不持锁。本进程在 shouldRollover 判定「未过期」之后、写入之前，若另一
+    进程恰好完成一轮轮转改名，本条记录会追加进已被改名的备份文件而非新
+    基底；下一条记录的 _path_is_stale 检测会重开新基底，故损失限于每次
+    轮转至多一条错位记录（不丢，仅落错文件）。彻底消除需在 emit 前后同样
+    持 flock，代价是所有日志写跨进程串行，与该单条错位的收益不成比例，
+    故接受现状并在此明示。
     """
 
     def __init__(self, *args, **kwargs):
