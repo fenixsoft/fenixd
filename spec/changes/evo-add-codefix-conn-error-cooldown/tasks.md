@@ -39,6 +39,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-add-codefix-conn-error-cooldown/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/evo-add-codefix-conn-error-cooldown/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：BUG-01 属真实产品缺陷——spec R2 原文「0=关闭」，场景期望与 spec 相符，产品守卫却按残留 switch_cooldown_until 字面拦截）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（core/code_fix.py checkpoint 冷却守卫复核 _switch_cooldown_seconds()：0=关闭时不拦残留态并清除、不写解除告警；tests/test_codefix_conn_error_cooldown.py 补 test_zero_config_bypasses_residual_cooldown；顺修 tests/test_code_fix.py::TestRegressionLockRoot 存量替身签名漂移 run_scope）
+- [x] 修复后重跑验证确认通过（新套件 22 passed；相关回归 214 passed：test_code_fix/test_code_fix_item_level_progress/test_provider_circuit/test_code_fix_api_timeout_salvage/test_admin_dispatch_escalation；全量回归由验证链复跑）
