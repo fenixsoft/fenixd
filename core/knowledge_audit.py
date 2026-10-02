@@ -27,6 +27,7 @@ import json
 import re
 import subprocess
 import time
+from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -41,6 +42,7 @@ from core.knowledge_backfill import (
     null_logger,
     resolve_commit,
     scale_stats,
+    upsert_todo_line,
     validate_with_repair,
 )
 
@@ -61,6 +63,26 @@ GROWTH_FLAG_RATIO = 0.10
 # 语义项单轮转写 run 数上限（误报进 run 由 LLM 终判，但需封顶控成本）；
 # 超出部分不静默丢弃，由 run_audit 转入体检报告待人工明细留痕
 MAX_SEMANTIC_RUNS = 10
+
+# escalated 超龄注记阈值天数（add-knowledge-audit-escalation-consumption 2.1，
+# 缺省 7）：escalated 挂起超过该天数即对涉事知识页顶部写 disputed 机器可读
+# 注记；knowledge.escalated_stale_days 可覆盖（get_knowledge_lane_config
+# 白名单解析，非法值回退本缺省）。
+ESCALATED_STALE_DAYS = 7
+# 人工仲裁清单（本 SPEC 2.2：人工仲裁唯一入口）。.fenix/ 整体 gitignore
+# （仅 todo.md/verify.yaml/config.template.yaml 白名单入库），人工本地裁决
+# 不入库；条目形态 {fingerprint, decision, decided_at, note}。
+ARBITRATION_RELPATH = ".fenix/knowledge_audit_arbitration.json"
+# 仲裁决定合法值：no-conflict → exempt（豁免键随 _record_verdict 重建）；
+# fixed / false-positive → fixed（纠偏语义）。复用 _record_verdict 状态迁移。
+ARBITRATION_DECISIONS = ("fixed", "no-conflict", "false-positive")
+# todo.md 升级登记聚合行固定前缀（同前缀替换不追加，1.3）与历史逐条行前缀
+# （首跑 upsert 一并替换清理）
+TODO_ESCALATED_AGG_PREFIX = "audit 疑点升级待人工（聚合）"
+TODO_ESCALATED_LEGACY_PREFIX = "audit 疑点升级待人工："
+# disputed 注记行解析（2.1）：不含 knowledge: 前缀——parse_marker/_MARKER_RE
+# 取首个 knowledge: 匹配，disputed 前缀天然不冲突（不劫持 marker 解析）
+_DISPUTED_RE = re.compile(r"<!--\s*disputed:\s*(.*?)-->")
 
 _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
@@ -184,6 +206,260 @@ def _record_verdict(
     entry["updated_at"] = _today()
 
 
+# ── escalated 治理（add-knowledge-audit-escalation-consumption） ──────────
+
+
+def _escalated_entries(ledger: dict) -> dict[str, dict]:
+    """台账中 escalated 态条目（指纹 → 条目）；损坏条目跳过不炸车道。"""
+    return {
+        fp: e
+        for fp, e in ledger.items()
+        if isinstance(e, dict) and e.get("status") == "escalated"
+    }
+
+
+def _finding_age_days(first_seen, today=None) -> int:
+    """自 first_seen 起算的龄期天数；日期串缺失/损坏按 0 计（不炸车道）。"""
+    try:
+        start = date.fromisoformat(str(first_seen or ""))
+        end = date.fromisoformat(str(today or _today()))
+    except ValueError:
+        return 0
+    return max(0, (end - start).days)
+
+
+def _escalated_summary(escalated: dict) -> Optional[dict]:
+    """escalated 聚合汇总（1.2）：条数 + 最长龄期（自 first_seen 起算）。
+    空台账返回 None，报告不出汇总节。"""
+    if not escalated:
+        return None
+    today = _today()
+    ages = [_finding_age_days(e.get("first_seen"), today) for e in escalated.values()]
+    return {"count": len(ages), "max_age_days": max(ages) if ages else 0}
+
+
+def _escalated_todo_line(escalated: dict) -> str:
+    """todo.md 升级登记聚合行（1.3）：N 条待仲裁 + 最长龄期 + 仲裁清单路径
+    （唯一人工入口）。空台账返回空串（upsert 按纯清理语义摘除残留行）。"""
+    if not escalated:
+        return ""
+    summary = _escalated_summary(escalated)
+    return (
+        f"{TODO_ESCALATED_AGG_PREFIX}：{summary['count']} 条待人工仲裁"
+        f"（最长龄期 {summary['max_age_days']} 天），请人工按指纹在 "
+        f"{ARBITRATION_RELPATH} 登记仲裁决定（fingerprint/decision/decided_at/"
+        f"note），框架检查点自动消费后恢复自动复核"
+    )
+
+
+def _disputed_line(since: str, fps: list[str]) -> str:
+    """页顶 disputed 注记行（design D3 格式）。不含 knowledge: 前缀、不引用
+    archive 路径（marker 三红线），fps 为指纹前缀 8 位列表（逗号连接无空格，
+    排序保形——同页同条目集多次生成注记逐字节稳定）。"""
+    return f"<!-- disputed: since={since} fps={','.join(sorted(fps))} -->"
+
+
+def _disputed_targets(escalated: dict, stale_days: int) -> dict[str, str]:
+    """超龄 escalated 条目 → 涉事页期望注记行（2.1）。
+
+    龄期（自 first_seen 起算）严格大于 stale_days 才注记；同页多条超龄条目
+    收敛为一条注记（since 取最早 first_seen，fps 并集）。"""
+    by_page: dict[str, list[tuple[str, str]]] = {}
+    today = _today()
+    for fp, entry in escalated.items():
+        if _finding_age_days(entry.get("first_seen"), today) <= stale_days:
+            continue
+        for rel in entry.get("pages") or []:
+            if isinstance(rel, str) and rel:
+                by_page.setdefault(rel, []).append(
+                    (str(entry.get("first_seen") or ""), str(fp)[:8])
+                )
+    return {
+        rel: _disputed_line(min(seen for seen, _ in items) or today, [fp for _, fp in items])
+        for rel, items in by_page.items()
+    }
+
+
+def _annotation_insert_index(lines: list[str]) -> int:
+    """注记插入位（design D3）：H1 与既有 knowledge marker 之后、独立成行。
+    取页首若干行内二者最后一次出现的下一行；都不在场（导航页等）插页首。"""
+    pos = 0
+    for i, ln in enumerate(lines[:10]):
+        if "<!-- knowledge:" in ln or ln.startswith("# "):
+            pos = i + 1
+    return pos
+
+
+def _sync_disputed_annotations(
+    project_root: Path,
+    desired: dict[str, str],
+    restrict_pages=None,
+) -> tuple[list[str], list[str]]:
+    """把涉事页顶 disputed 注记对齐到期望态（写入/更新/摘除）。
+
+    ``desired`` 为页 rel → 期望注记行；不在期望态的受限页摘除既有注记（消费
+    摘除 / 台账清零自愈共用）。``restrict_pages`` 限定可触碰页（消费段传涉事
+    页保持轻量；缺省不限）。写前查 150 行硬顶（超限跳过留痕不写，返回值第二
+    元）；既有注记为原位替换（行数不变，无硬顶问题）。返回 ``(改写页, 跳过页)``。
+    """
+    pages = set(desired)
+    if restrict_pages is not None:
+        # 并集而非交集：受限页是「允许触碰」上限，desired 为空（消费摘除 /
+        # 台账清零自愈）时受限页上的既有注记仍须被摘除——交集会让摘除场景
+        # 空转（desired 空集 × restrict = 空集，注记永久残留）。
+        pages |= set(restrict_pages)
+    changed: list[str] = []
+    skipped: list[str] = []
+    for rel in sorted(pages):
+        path = Path(project_root) / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        idx = next((i for i, ln in enumerate(lines) if _DISPUTED_RE.search(ln)), None)
+        new_line = desired.get(rel)
+        if new_line is None:
+            if idx is None:
+                continue
+            del lines[idx]
+        elif idx is not None:
+            if lines[idx].strip() == new_line:
+                continue
+            lines[idx] = new_line
+        else:
+            # 150 行硬顶（红线三）：写入前查行数，新增一行不得越顶
+            if len(lines) + 1 > LINE_CAP:
+                skipped.append(rel)
+                continue
+            lines.insert(_annotation_insert_index(lines), new_line)
+        new_text = "\n".join(lines)
+        if text.endswith("\n"):
+            new_text += "\n"
+        atomic_write_text(path, new_text)
+        changed.append(rel)
+    return changed, skipped
+
+
+def _load_arbitration_list(project_root: Path) -> list[dict]:
+    """读人工仲裁清单（fail-open：缺失/损坏/形态不符 → 空清单）。裸数组或
+    ``{"decisions": [...]}`` 两种形态均可（人工手写容错）。"""
+    path = Path(project_root) / ARBITRATION_RELPATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if isinstance(data, dict):
+        data = data.get("decisions")
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict)]
+
+
+def _save_arbitration_list(project_root: Path, entries: list[dict]) -> None:
+    """仲裁清单原子回写（消费后剔除已消费条目，防 300s 周期重复消费）。"""
+    atomic_write_text(
+        Path(project_root) / ARBITRATION_RELPATH,
+        json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def consume_arbitration(
+    project_root,
+    logger=None,
+    config: Optional[dict] = None,
+) -> dict:
+    """人工仲裁清单独立消费段（2.2）。
+
+    由 knowledge_daily_check 在 audit_enabled 门控后、自然日防重短路前调用：
+    不依赖当日体检是否已跑，每次 300s 检查点都执行，人工写入当日生效。命中
+    台账 escalated 指纹且 decision 合法 → _record_verdict 状态迁移（复用既有
+    轮次清零）→ 删台账条目（条目缺席即恢复该页对自动复核，既有
+    _new_finding_entry 重建语义，零新机制）→ 摘涉事页 disputed 注记并走既有
+    ``[fenix] knowledge`` 提交路径自提交（摘除残留不成为下一轮 carryover
+    告警源）。非法 decision / 未知指纹 / 非 escalated 状态：跳过留痕，不抛错
+    不阻断审计。未命中零写零提交（保持周期执行的轻量）。
+    """
+    project_root = Path(project_root)
+    log = logger or null_logger()
+    decisions = _load_arbitration_list(project_root)
+    if not decisions:
+        return {"triggered": False, "consumed": 0}
+    ledger = _load_findings_ledger(project_root)
+    consumed: list[dict] = []
+    kept: list[dict] = []
+    pages_touched: set[str] = set()
+    for item in decisions:
+        fp = str(item.get("fingerprint") or "")
+        decision = str(item.get("decision") or "")
+        if decision not in ARBITRATION_DECISIONS:
+            log.warning(
+                "knowledge",
+                f"仲裁清单条目 decision 非法（{decision!r}），跳过留痕："
+                f"fp={fp[:8]} note={item.get('note')!r}",
+            )
+            kept.append(item)
+            continue
+        entry = ledger.get(fp)
+        if not isinstance(entry, dict) or entry.get("status") != "escalated":
+            log.warning(
+                "knowledge",
+                f"仲裁清单条目指纹未知或非 escalated 状态，跳过留痕：fp={fp[:8]}",
+            )
+            kept.append(item)
+            continue
+        # 状态迁移入账（轮次清零）后即删条目：消费 = 台账条目删除，缺席即
+        # 恢复自动复核（页对矛盾仍在时下一轮 audit 以新 suspected 条目重开）
+        _record_verdict(entry, decision)
+        pages_touched |= {
+            p for p in (entry.get("pages") or []) if isinstance(p, str)
+        }
+        del ledger[fp]
+        consumed.append(item)
+        log.info(
+            "knowledge",
+            f"仲裁清单消费：fp={fp[:8]} decision={decision}，台账条目已删除，恢复自动复核",
+        )
+    if not consumed:
+        return {"triggered": False, "consumed": 0, "skipped": len(kept)}
+    _save_findings_ledger(project_root, ledger)
+    _save_arbitration_list(project_root, kept)
+    # 摘注记按消费后台账现状重算期望态、只限涉事页：同页其余 escalated 条目
+    # 仍超龄在册时注记改写（fps 收敛）而非误摘。
+    changed: list[str] = []
+    core = load_knowledge_core()
+    if core is None:
+        log.warning(
+            "knowledge",
+            "仲裁消费后注记摘除跳过：core.knowledge 不可用（下一轮 audit 补同步）",
+        )
+    else:
+        cfg = ConfigLoader.get_knowledge_lane_config(config or {})
+        desired = _disputed_targets(
+            _escalated_entries(ledger), cfg["escalated_stale_days"]
+        )
+        changed, _skipped = _sync_disputed_annotations(
+            project_root, desired, restrict_pages=pages_touched
+        )
+        if changed:
+            try:
+                resolve_commit(core)(
+                    project_root,
+                    [KNOWLEDGE_DIR],
+                    f"[fenix] knowledge: audit disputed 注记摘除（{len(changed)} 页）",
+                )
+            except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
+                log.warning("knowledge", f"仲裁摘注记提交失败（fail-open）：{e}")
+    return {
+        "triggered": True,
+        "consumed": len(consumed),
+        "skipped": len(kept),
+        "annotations_removed": len(changed),
+    }
+
+
 # ── 每日检查点（fenixd 主循环挂载入口） ──────────────────────────────────
 
 
@@ -211,6 +487,18 @@ def knowledge_daily_check(
     state = _read_state(project_root)
     today = _today()
     results: dict[str, dict] = {}
+
+    # 仲裁清单独立消费段（2.2）挂防重短路之前：若挂 escalated-skip 分支（audit
+    # 车道内），当日体检已跑后防重会整段短路车道，人工写入要等次日体检才被
+    # 消费，「当日生效」不成立；独立消费段不依赖当日体检是否已跑，每次 300s
+    # 检查点都执行。异常记日志不阻断审计主车道。
+    try:
+        arb = consume_arbitration(project_root, logger=log, config=config)
+    except Exception as e:  # noqa: BLE001 - 消费段异常不中断主循环
+        log.error("knowledge", f"仲裁清单消费段执行失败（不阻断审计）：{e}")
+        arb = {"triggered": False, "error": str(e)}
+    if arb.get("triggered"):
+        results["arbitration"] = arb
 
     if state.get("last_audit_date") != today:
         try:
@@ -795,16 +1083,33 @@ def run_audit(
         scan["adr"] = _scan_adrs(project_root)
         semantic_all = _scan_semantic(scan["pages"])
 
+        # 台账提前加载（1.1 解冻点）：escalated 指纹在切片前从候选中剔除——
+        # 切片 semantic_all[:MAX_SEMANTIC_RUNS] 已定，循环内 continue 无法让
+        # 名额回流到第 11+ 条候选（escalated-skip 占槽会把转写预算锁死在挂起
+        # 疑点上，新候选当日零入账）；剔除后 escalated 不再计入转写预算。
+        ledger = _load_findings_ledger(project_root)
+        escalated = _escalated_entries(ledger)
+        escalated_fps = set(escalated)
+        semantic_pending = [
+            f for f in semantic_all if _finding_fingerprint(f) not in escalated_fps
+        ]
+
         # 语义初筛截断显式留痕：溢出候选不静默丢弃，超出单轮转写上限的部分转入
         # 待人工明细（报告呈现为「共 N 条、本轮仅转写前 10 条、其余人工核查」），
         # 体检报告不再对被截断的矛盾/重复候选呈现为「无更多语义发现」。
-        semantic = semantic_all[:MAX_SEMANTIC_RUNS]
-        if len(semantic_all) > MAX_SEMANTIC_RUNS:
+        semantic = semantic_pending[:MAX_SEMANTIC_RUNS]
+        if len(semantic_pending) > MAX_SEMANTIC_RUNS:
             counts["pending_manual"] += 1
             details["manual"].append(
-                f"语义初筛候选共 {len(semantic_all)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
-                f"其余 {len(semantic_all) - MAX_SEMANTIC_RUNS} 条请人工核查"
+                f"语义初筛候选共 {len(semantic_pending)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
+                f"其余 {len(semantic_pending) - MAX_SEMANTIC_RUNS} 条请人工核查"
             )
+
+        # escalated 报告留痕（1.1/1.2）：移出循环、明细折叠为单条聚合汇总
+        # （条数 + 最长龄期，_render_report 专节渲染），不再逐条展开堆积。
+        if escalated:
+            counts["pending_manual"] += 1
+            details["escalated_summary"] = _escalated_summary(escalated)
 
         # 修复前违规快照：提交闸门只否决「本轮修复新引入的违规」。机械项只修
         # 悬空溯源/格式/ADR index 三类，真相源里脚本修不了的既有违规（marker
@@ -865,7 +1170,8 @@ def run_audit(
                 )
 
     # ── 语义转写（矛盾/重复 → 定向蒸馏 run；疑点台账接入豁免/去重/升级） ──
-    ledger = _load_findings_ledger(project_root)
+    # escalated 条目已在切片前剔除（1.1）：不进本循环、不占转写预算，也不再
+    # 需要循环内 skip 分支；其留痕由循环前聚合汇总统一渲染。
     for idx, finding in enumerate(semantic, 1):
         fp = _finding_fingerprint(finding)
         entry = ledger.get(fp)
@@ -874,18 +1180,6 @@ def run_audit(
             ledger[fp] = entry
             _save_findings_ledger(project_root, ledger)
         pages = [finding["a"]["page"], finding["b"]["page"]]
-
-        # 待人工挂起（2.4）：escalated 只停自动复核，人工删除台账条目即消费
-        # 清除、恢复自动复核（todo.md 登记提供人工可见面）。escalated 为终态，
-        # 判定必须先于 superseded-in-batch——涉事页本批被纠偏时只走待人工
-        # 留痕，不得自动翻转状态（否则绕过人工消费约定、下轮重开复核）。
-        if entry.get("status") == "escalated":
-            counts["pending_manual"] += 1
-            details["manual"].append(
-                f"{finding['kind']}（{pages[0]} × {pages[1]}）：升级待人工（escalated），"
-                f"已停止自动复核"
-            )
-            continue
 
         # 同批快照滞后去重（2.3）：疑点清单在扫描开始一次性快照，涉及页在本批
         # 已被纠偏（机械段提交或此前转写提交，含 fail-open 落盘）时，快照规则
@@ -1008,20 +1302,15 @@ def run_audit(
                 counts["pending_manual"] += 1
                 if entry["review_rounds"] >= cfg["escalate_after_rounds"]:
                     # 连续两轮进入复核均未产出确定性判定（仍 suspected，如转写
-                    # 失败回滚）→ 升级待人工：登记 todo.md 并停止自动复核。
+                    # 失败回滚）→ 升级待人工：停止自动复核。todo.md 登记收敛
+                    # 为循环后单条聚合行（1.3），此处只留本 run 升级事件明细。
                     entry["status"] = "escalated"
                     entry["updated_at"] = _today()
                     _save_findings_ledger(project_root, ledger)
+                    escalated[fp] = entry  # 计入本轮聚合（todo 行 / 注记 / 报告汇总）
                     details["manual"].append(
                         f"{finding['kind']}（{pages[0]} × {pages[1]}）：连续 "
                         f"{entry['review_rounds']} 轮复核无确定性判定，升级待人工（escalated）"
-                    )
-                    append_todo_line(
-                        project_root,
-                        f"audit 疑点升级待人工：{finding['kind']}"
-                        f"（{pages[0]} × {pages[1]}）连续 {entry['review_rounds']} 轮复核"
-                        f"无确定性判定，请人工仲裁；消费后删除 "
-                        f".fenix/knowledge_audit_findings.json 对应条目即恢复自动复核",
                     )
                     continue
                 details["manual"].append(
@@ -1068,6 +1357,43 @@ def run_audit(
             _record_verdict(entry, "fixed", commit=commit_msg)
             _save_findings_ledger(project_root, ledger)
             remediated_pages |= touched
+
+    # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加（龄期逐日推进由
+    # upsert 整行替换消化，聚合行不变成每日重述）；历史逐条行（旧前缀）一并
+    # 清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯清理语义摘除残留。
+    upsert_todo_line(
+        project_root,
+        TODO_ESCALATED_AGG_PREFIX,
+        _escalated_todo_line(escalated),
+        cleanup_prefixes=(TODO_ESCALATED_LEGACY_PREFIX,),
+    )
+
+    # 超龄注记（2.1）：escalated 超过阈值天数 → 涉事页顶 disputed 注记（机器
+    # 可读 HTML 注释、不含 knowledge: 前缀、不引用 archive 路径、写前查 150
+    # 行硬顶）。写段取蒸馏锁（同机械段/转写段），写完走既有 [fenix] knowledge
+    # 提交路径自提交——框架自己的注记改动不留工作区，避免成为下一轮 audit
+    # 的 dirty carryover 告警源。
+    stale_days = cfg.get("escalated_stale_days", ESCALATED_STALE_DAYS)
+    desired = _disputed_targets(escalated, stale_days)
+    annotated = {p["rel"] for p in scan["pages"] if _DISPUTED_RE.search(p["text"])}
+    with knowledge_distill_lock(project_root):
+        changed, note_skipped = _sync_disputed_annotations(
+            project_root, desired, restrict_pages=set(desired) | annotated
+        )
+    if note_skipped:
+        counts["pending_manual"] += 1
+        details["manual"].append(
+            f"disputed 注记写入跳过（页超 {LINE_CAP} 行硬顶）：{'、'.join(note_skipped)}"
+        )
+    if changed:
+        try:
+            commit(
+                project_root,
+                [KNOWLEDGE_DIR],
+                f"[fenix] knowledge: audit disputed 注记同步（{len(changed)} 页）",
+            )
+        except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
+            log.warning("knowledge", f"disputed 注记提交失败（fail-open）：{e}")
 
     leftover = _knowledge_dirty_files(project_root)
     if leftover:
@@ -1128,7 +1454,16 @@ def run_audit(
                 page_lines.append({"rel": page["rel"], "lines": n})
         slim_candidates = sorted(page_lines, key=lambda x: -x["lines"])[:10]
 
-    report = _render_report(counts, details, scale, prev_lines, growth, slim, slim_candidates)
+    report = _render_report(
+        counts,
+        details,
+        scale,
+        prev_lines,
+        growth,
+        slim,
+        slim_candidates,
+        escalated_summary=details.get("escalated_summary"),
+    )
     atomic_write_text(project_root / REPORT_RELPATH, report)
     state["last_scale"] = scale
     _write_state(project_root, state)
@@ -1157,6 +1492,7 @@ def _render_report(
     growth: float,
     slim: bool,
     slim_candidates: list,
+    escalated_summary: Optional[dict] = None,
 ) -> str:
     lines = [
         "# 知识真相源 audit 体检报告",
@@ -1180,6 +1516,19 @@ def _render_report(
         lines.append("")
         for cand in slim_candidates:
             lines.append(f"- `{cand['rel']}`（{cand['lines']} 行）")
+        lines.append("")
+    # escalated 明细折叠为单条聚合汇总（1.2）：条数 + 最长龄期，不逐条展开
+    if escalated_summary:
+        lines.append("## 升级待人工（escalated）汇总")
+        lines.append("")
+        lines.append(
+            f"- 共 {escalated_summary['count']} 条待人工仲裁，最长龄期 "
+            f"{escalated_summary['max_age_days']} 天（自 first_seen 起算）"
+        )
+        lines.append(
+            f"- 仲裁入口：`{ARBITRATION_RELPATH}`"
+            f"（登记 fingerprint/decision/decided_at/note，框架检查点自动消费）"
+        )
         lines.append("")
     for title, key in (
         ("机械自修明细", "fixed"),

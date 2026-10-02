@@ -130,6 +130,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
                 "audit_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
 
@@ -143,6 +144,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
                 "audit_enabled": False,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
 
@@ -156,6 +158,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
                 "audit_enabled": False,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
 
@@ -170,6 +173,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
                 "audit_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
         joined = "\n".join(captured.output)
@@ -183,6 +187,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
                 "audit_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
 
@@ -197,6 +202,7 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
                 "audit_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
 
@@ -247,6 +253,7 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
                 "audit_enabled": True,
                 "no_conflict_exempt": True,
                 "escalate_after_rounds": 2,
+                "escalated_stale_days": 7,
             },
         )
 
