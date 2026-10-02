@@ -186,7 +186,15 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
 
   // active 门控拉取：先 config 判 enabled，再拉 index
   const load = useCallback(async () => {
-    if (!active || !project) return;
+    if (!active || !project) {
+      // inactive 早退也作废在飞请求（code-review item 3ac5cd53eb73）：切项目且
+      // 分面未选中时，项目切换重置 effect 只清视图态不动序号，旧项目在途
+      // openPage 的响应会通过 seq 守卫把上个项目页面内容写进新项目视图，且切回
+      // 分面后 load 只更新 indexData 不重置 view，持续串页；此处递增使在飞响应
+      // 一律判过期丢弃（active 门控语义不变，仅收窄过期响应的落盘）。
+      ++seqRef.current;
+      return;
+    }
     const seq = ++seqRef.current;
     setLoading(true);
     try {
