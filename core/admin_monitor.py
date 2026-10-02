@@ -303,6 +303,12 @@ SIGNAL_SEVERITY = {
     # 事件驱动重试等待、不打扰人工，降噪）；批保持「保留待自动合回」语义，
     # 升级不改变批的预算/台账状态。
     "mergeback_wip_orphan_stuck": "major",
+    # evo-add-maintree-stray-wip-sweep 1.4/D3：主树散件 WIP（流水线外产生的
+    # tracked 未提交改动）周期盘点归因为无主、宽限耗尽的一次性升级——
+    # ``mergeback_wip_orphan_stuck`` 同级 major：同为「无主陈旧 WIP 宽限耗尽」
+    # 人工告警族，差异只在数据源（本信号来自 daemon 周期只读盘点，非 defer
+    # 批占用者协调）。由 STORED_SIGNAL_TYPES 收录，admin_monitor 摄取唤起。
+    "maintree_stray_wip_stale": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -372,6 +378,10 @@ SIGNAL_RECOMMENDATION = {
     # 语义适配（批无 spec 可重派，指引指向提交/stash 重叠文件；主树清完后
     # 链边界自动合回，无需重派）。
     "mergeback_wip_orphan_stuck": "无主陈旧 WIP 宽限耗尽（占用者识别为零命中，宽限内无人认领）：该批无 spec 可重派，人工核对重叠文件归属后，提交（git add/commit）或 stash（git stash push）主树这些改动，链边界（选批前/收敛出口）自动重试合回核销该批，无需人工重派；识别证据与盲区注记见 evidence（worktree 分支型在飞车道之外的主树直改形态会被按无主升级，升级仅为告警）",
+    # evo-add-maintree-stray-wip-sweep 1.4：主树散件 WIP 处置指引——项目级
+    # 盘点信号无 spec 可重派，指向人工提交/stash（姊妹信号
+    # mergeback_wip_orphan_stuck 同款批语义适配）。
+    "maintree_stray_wip_stale": "主树散件 WIP 滞留宽限耗尽（周期盘点归因在飞实现车道零命中，无人认领）：人工核对主树未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树这些改动；文件清单与滞留起点见 evidence（含盲区注记——worktree 分支型在飞车道之外的主树直改形态会被按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后盘点状态自动复位",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
@@ -429,6 +439,11 @@ STORED_SIGNAL_TYPES = (
     # 告警由 code-fix defer 消费者直发——未收录则记录落 store 后无人摄取、
     # Administrator 不唤起，「MUST NOT 无限期静默等待」的升级出口落空。
     "mergeback_wip_orphan_stuck",
+    # evo-add-maintree-stray-wip-sweep 2.2：主树散件 WIP 滞留升级告警由
+    # worktree_manager.stray_wip 周期盘点直发——未收录则记录落 store 后无人
+    # 摄取、Administrator 不唤起，「散件滞留分钟级浮出」目标静默落空。
+    # 记录无 spec（项目级盘点），证据含「项目名=」供无 spec 形态解析。
+    "maintree_stray_wip_stale",
     "verify_contract_redraft",
     # add-test-regression-tab 增强：UI 手动请求「仅补 regression 段」——未收录则
     # 记录落 store 后无人摄取（信号石沉大海）。证据含「项目名=」供无 spec 形态解析。
@@ -2084,6 +2099,11 @@ class AdminMonitor:
                 # fix-artifact-paths-hardcoded-default D3：WIP 闸门信号无 spec
                 # （非常规分支名退化为仅靠 evidence）时同样从「项目名=」解析。
                 "build_artifact_paths_missing",
+                # evo-add-maintree-stray-wip-sweep 2.2：主树散件 WIP 信号为
+                # 项目级盘点（无 spec），按「项目名=」解析——未加入则
+                # spec=None → 被下方丢弃、记录落 store 后无人唤起，告警浮出
+                # 目标静默落空（与三表漏登记同款落空模式）。
+                "maintree_stray_wip_stale",
             ):
                 # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）。
                 # 「项目名=」字段解析单源：core.admin_store.evidence_project

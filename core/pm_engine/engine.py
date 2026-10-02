@@ -405,6 +405,10 @@ class PMEngine:
         # check-then-act 分离存在双派发竞态窗口（对齐 approve_push 的 _push_lock
         # 实例锁先例）。锁内仅做 set 操作、不外呼，不可重入无死锁风险。
         self._dispatch_guard_lock = threading.Lock()
+        # 主树散件 WIP 盘点器（evo-add-maintree-stray-wip-sweep 2.1）：懒创建
+        # （首次 sweep 时按 agent_runner.worktree_manager 句柄装配），first_seen
+        # 注册表随实例进程内持有（D5）。
+        self._stray_wip_sweeper = None
         # 派发冷却登记（双派发穿透原地修 2026-09-06）：spec -> 上次成功派发时刻。
         # 单飞键只覆盖「同时在飞」——dispatch 流程 <50ms 返回后标记即释放，而锁要等
         # run 线程执行 create() 才可见：full_scan 与 STATE 监听/spec_ready 双通道在
@@ -4484,6 +4488,33 @@ class PMEngine:
         if self._active_runs > 0:
             return False
         return self.agent_runner.worktree_manager.reclaim_stale_autostash()
+
+    def sweep_maintree_stray_wip(self):
+        """主树散件 WIP 周期盘点（evo-add-maintree-stray-wip-sweep 2.1）。
+
+        engine 包装方法（对齐 reclaim_stale_autostash_if_idle 先例）：由
+        engine 供在飞 run_ids（run 注册表，识别归因入参）与 WorktreeManager
+        句柄（主树锁 + 归因器）。盘点器实例按 WorktreeManager 句柄身份缓存
+        （first_seen 注册表进程内持有，D5；wm 句柄更换即重建）。
+
+        刻意**不设** ``_active_runs > 0`` 空闲预检（design D2）：sweep 是
+        只读观察者，必须能看到在飞实现车道做归因——加了空闲预检就永远看不到
+        在飞车道、全部按无主升级，告警语义失真（有 run 时零触碰盘点同样安全，
+        与 merge-back 互斥由 worktree_manager 主树锁非阻塞 acquire 兜住）。
+        """
+        runner = self.agent_runner
+        wm = runner.worktree_manager
+        running = getattr(runner, "_running_agents", None) or {}
+        run_ids = [str(rid) for rid in running.keys()]
+        sweeper = self._stray_wip_sweeper
+        if sweeper is None or getattr(sweeper, "worktree_manager", None) is not wm:
+            from core.worktree_manager.stray_wip import MainTreeStrayWipSweeper
+
+            sweeper = MainTreeStrayWipSweeper(
+                self.project_root, wm, config=self.config, logger=self.logger,
+            )
+            self._stray_wip_sweeper = sweeper
+        return sweeper.sweep(running_run_ids=run_ids)
 
     _spec_fingerprint = staticmethod(RecoveryWatch._spec_fingerprint)
 

@@ -901,6 +901,16 @@ class FenixDaemon:
                         self.pm_engine.reclaim_stale_autostash_if_idle()
                     except Exception as e:
                         self.logger.error("fenixd", f"Autostash reclaim check failed: {e}")
+                    # 主树散件 WIP 周期盘点（evo-add-maintree-stray-wip-sweep
+                    # 2.1）：只读盘点主树 tracked 未提交改动并归因在飞实现车道；
+                    # 无主且宽限耗尽经 AdminStore 发一次性 major 告警。全程零
+                    # 触碰（不 stash/checkout/clean/reset），与 merge-back 互斥
+                    # 由主树锁非阻塞 acquire 兜住（锁忙即弃本轮）。异常捕获留
+                    # 日志，不阻断主循环。
+                    try:
+                        self.pm_engine.sweep_maintree_stray_wip()
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Stray WIP sweep failed: {e}")
                 # 自动归档周期检查（add-spec-archive D4）：每 300s 遍历项目内
                 # 终态未归档 SPEC，超阈值按 updated 升序归档直至达标；异常捕获
                 # 记日志不中断主循环。阈值热更新经 effective_auto_archive_threshold
