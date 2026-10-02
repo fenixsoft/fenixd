@@ -12,6 +12,7 @@ self._pm，不在本组件持有状态。
 """
 
 from core.timelib import now_local
+from core.git_base_branch import resolve_base_branch
 import json
 import logging
 import re
@@ -1929,7 +1930,7 @@ class PromptBuilder:
                 f"### 遗产位置\n"
                 f"- 分支名: `{branch}`（worktree 已按成功收工清理，仅分支留存完整"
                 f"已提交成果）\n\n"
-                f"### 分支提交快照（相对 main 的新增提交，git log --oneline）\n"
+                f"### 分支提交快照（相对基线分支的新增提交，git log --oneline）\n"
                 f"```\n{self._legacy_branch_snapshot(branch)}\n```\n\n"
             )
             context = (
@@ -1967,12 +1968,16 @@ class PromptBuilder:
         )
 
     def _legacy_branch_snapshot(self, branch: str) -> str:
-        """现场采集仅分支遗产的提交快照（git log --oneline main..branch）。
+        """现场采集仅分支遗产的提交快照（``git log --oneline <基线>..branch``）。
 
-        采集失败（分支不存在等）返回降级提示串，不抛出异常。
+        基线经共享解析器 ``resolve_base_branch`` 取（origin/HEAD → 本地
+        main → master → 回退 "main"，evo-fix-resume-base-branch-portability
+        4.2）——非 main 主干仓库此前 unknown revision 恒空。采集失败（分支
+        不存在等）返回降级提示串，不抛出异常。
         """
         import subprocess as _sp
 
+        base = resolve_base_branch(self._pm.project_root)
         try:
             res = _sp.run(
                 [
@@ -1982,7 +1987,7 @@ class PromptBuilder:
                     "log",
                     "--oneline",
                     "-10",
-                    f"main..{branch}",
+                    f"{base}..{branch}",
                 ],
                 capture_output=True,
                 text=True,
@@ -1994,7 +1999,7 @@ class PromptBuilder:
         if res.returncode != 0:
             return f"（快照采集失败: {(res.stderr or '').strip()[:120]}）"
         if not out:
-            return "（分支相对 main 无独立提交）"
+            return "（分支相对基线无独立提交）"
         return out[:2000]
 
     def _legacy_dirty_snapshot(self, wt_path: str) -> str:

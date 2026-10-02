@@ -44,7 +44,7 @@ def git(root: Path, *args, check=True):
     return result
 
 
-def init_repo(root: Path):
+def init_repo(root: Path, trunk: str = "main"):
     root.mkdir(parents=True, exist_ok=True)
     git(root, "init", "-q")
     git(root, "config", "user.email", "test@fenix.local")
@@ -53,7 +53,7 @@ def init_repo(root: Path):
     (root / "shared.py").write_text("BASE\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "[fenix] base")
-    git(root, "branch", "-M", "main")
+    git(root, "branch", "-M", trunk)
 
 
 def make_wm(root: Path, **kwargs) -> WorktreeManager:
@@ -471,6 +471,131 @@ class TestLivenessUnchangedByD1(unittest.TestCase):
         bus.pm_engine = pm
         self.assertTrue(bus._ready_has_live_child("demo"))
         pm.agent_runner.has_live_attempt.assert_called_once_with("demo")
+
+
+# ── evo-fix-resume-base-branch-portability: master 主干无 remote 仓回归 ──────
+
+
+class TestMasterTrunkRecoveryResume(unittest.TestCase):
+    """2.2: master 主干无 remote 仓的中断恢复保留续做全链路。
+
+    2026-10-02 potplayer-base 事故回归：基线分支 master、无 main、无 remote
+    时旧实现 rev-list 闸门硬编码 ``main..{branch}`` 恒 128 退出，已提交的
+    WIP 检查点被判「三处锚点均不可得」清空重建。夹具经 ``git init`` +
+    ``branch -M master`` 改名（不依赖 init 缺省分支名）。
+    """
+
+    def setUp(self):
+        from core.git_base_branch import reset_cache
+        reset_cache()
+        self.addCleanup(reset_cache)
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp) / "repo"
+        init_repo(self.root, trunk="master")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _wip_branch(self):
+        git(self.root, "checkout", "-q", "-b", "fenix/fix-y-1234567890")
+        add_commit(self.root, "feat.py", "IMPL\n", "[fenix] impl")
+        git(self.root, "checkout", "-q", "master")
+
+    def test_wip_branch_preserved_for_resume(self):
+        """分支含 1 未合并提交、STATE.branch 缺失 → 保留续做不灭失。"""
+        self._wip_branch()
+        sm = make_sm(self.root, {
+            "fix-y": {"status": "implementing", "branch": None,
+                      "implementer_run": None},
+        })
+        logger = MagicMock()
+        sm.logger = logger
+        recovered = sm.recover_interrupted(project_root=self.root,
+                                           worktree_manager=make_wm(self.root))
+        warnings = [str(c.args) for c in logger.warning.call_args_list]
+        self.assertFalse(any("三处锚点均不可得" in w for w in warnings),
+                         f"master 主干 MUST NOT 清空重建: {warnings}")
+        self.assertIn("fix-y", recovered)
+        entry = sm.read_one("fix-y")
+        self.assertEqual(entry["branch"], "fenix/fix-y-1234567890")
+        self.assertIs(entry.get("_recovery_resume"), True,
+                      "MUST 写入 _recovery_resume: True")
+        self.assertTrue(
+            any("Recovering interrupted SPEC" in w for w in warnings),
+            f"MUST 打保留续做日志: {warnings}")
+
+    def test_zero_commit_branch_still_cleared(self):
+        """分支相对 master 零提交 → 仍走清空重建（基线替换不引入误保留）。"""
+        git(self.root, "checkout", "-q", "-b", "fenix/fix-y-1234567890")
+        git(self.root, "checkout", "-q", "master")
+        sm = make_sm(self.root, {
+            "fix-y": {"status": "implementing", "branch": None,
+                      "implementer_run": None},
+        })
+        logger = MagicMock()
+        sm.logger = logger
+        recovered = sm.recover_interrupted(project_root=self.root,
+                                           worktree_manager=make_wm(self.root))
+        warnings = [str(c.args) for c in logger.warning.call_args_list]
+        self.assertTrue(any("三处锚点均不可得" in w for w in warnings),
+                         f"真零提交 MUST 走清空重建: {warnings}")
+        entry = sm.read_one("fix-y")
+        self.assertIsNone(entry.get("_recovery_resume"),
+                          "零提交 MUST NOT 写续做标记")
+
+
+class TestMasterTrunkBranchQueries(unittest.TestCase):
+    """3.2: master 主干下的 find_branches_by_spec / pending_merge_since。"""
+
+    def setUp(self):
+        from core.git_base_branch import reset_cache
+        reset_cache()
+        self.addCleanup(reset_cache)
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp) / "repo"
+        init_repo(self.root, trunk="master")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_branch_enumeration_hits_candidate(self):
+        """worktree 已清、仅剩含 1 提交的实现分支 → 枚举命中该候选。"""
+        git(self.root, "checkout", "-q", "-b", "fenix/fix-y-1234567890")
+        add_commit(self.root, "feat.py", "IMPL\n", "[fenix] impl")
+        git(self.root, "checkout", "-q", "master")
+        wm = make_wm(self.root)
+        cands = wm.find_branches_by_spec("fix-y")
+        names = [c["branch"] for c in cands]
+        self.assertIn("fenix/fix-y-1234567890", names,
+                      f"master 主干枚举 MUST 命中候选: {names}")
+        self.assertEqual(cands[0]["ahead"], 1)
+
+    def test_pending_merge_since_returns_commit_date(self):
+        """master 主干待合并分支 → 返回 committer date 而非 None。"""
+        git(self.root, "checkout", "-q", "-b", "fenix/fix-y-1234567890")
+        add_commit(self.root, "feat.py", "IMPL\n", "[fenix] impl")
+        git(self.root, "checkout", "-q", "master")
+        wm = make_wm(self.root)
+        ts = wm.pending_merge_since("fix-y")
+        self.assertIsInstance(ts, int,
+                              f"master 主干 pending_merge_since MUST 返回时间戳: {ts}")
+        self.assertGreater(ts, 0)
+        self.assertTrue(wm.has_pending_merge("fix-y"))
+
+    def test_main_trunk_results_unchanged(self):
+        """main 主干既有结果不变（零漂移护栏）。"""
+        root = Path(self.tmp) / "repo-main"
+        init_repo(root, trunk="main")
+        git(root, "checkout", "-q", "-b", "fenix/fix-y-1234567890")
+        add_commit(root, "feat.py", "IMPL\n", "[fenix] impl")
+        git(root, "checkout", "-q", "main")
+        wm = make_wm(root)
+        cands = wm.find_branches_by_spec("fix-y")
+        self.assertEqual([c["branch"] for c in cands],
+                         ["fenix/fix-y-1234567890"])
+        self.assertIsInstance(wm.pending_merge_since("fix-y"), int)
 
 
 if __name__ == "__main__":

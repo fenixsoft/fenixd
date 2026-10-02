@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from core.git_base_branch import resolve_base_branch
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
     spec_review_result_path,
@@ -1967,8 +1968,10 @@ class AgentRunner:
                                        sub_run_id: str) -> None:
         """终态零提交门判定（add-impl-terminal-nocommit-gate D2）。
 
-        仅 implementer 车道生效：分支相对 main 零新提交（`git rev-list --count
-        main..branch` == 0）且 worktree dirty 取证非空时，抛携带
+        仅 implementer 车道生效：分支相对解析基线零新提交（基线经共享解析器
+        ``resolve_base_branch`` 取——origin/HEAD → 本地 main → master → 回退
+        "main"，evo-fix-resume-base-branch-portability 4.1；``git rev-list
+        --count <基线>..branch`` == 0）且 worktree dirty 取证非空时，抛携带
         `[terminal-no-commit]` 前缀与机械归因文案的 `AgentArtifactGateError`，
         进入既有原地退避重试通道（锚点 B WIP 提交 + 退避 + resume 续做）。
 
@@ -1981,9 +1984,10 @@ class AgentRunner:
         if not branch:
             return
         try:
+            base = resolve_base_branch(self.project_root)
             rc = subprocess.run(
                 ["git", "-C", str(self.project_root), "rev-list",
-                 "--count", f"main..{branch}"],
+                 "--count", f"{base}..{branch}"],
                 capture_output=True, text=True, timeout=15,
             )
             zero_commit = (
