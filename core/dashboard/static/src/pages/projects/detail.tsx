@@ -724,6 +724,15 @@ export default function SpecDetailPage() {
       if ((msg.type === 'run_meta' && msg.project === name) || msg.type === 'refresh') {
         throttledLoad();
       }
+      // admin_activities：AdminMonitor 新写入人工升级告警时按 project 广播——长驻
+      // 本页期间新升级的告警（含需裁决的 choices）实时上屏，与 overview 横幅的
+      // 实时告警口径一致（code-review item b16075711be1）；帧只带 project，
+      // spec 归属由 loadSpecAlerts 按当前路由值过滤，重复触发幂等
+      if (msg.type === 'admin_activities' && (!msg.project || msg.project === name)) {
+        // loadSpecAlerts 声明在本 effect 之后（组件体后段）：闭包内引用仅
+        // 运行时求值，且其身份只随 [name, spec] 变化，与 effect 重建时机一致
+        void loadSpecAlerts();
+      }
     };
     // 30s 轮询兜底（对齐 list.tsx 心跳模式）：服务端连接数满回 503 时浏览器
     // EventSource 对非 200 响应永久停止重连，而本页 throttledLoad 只由 SSE 消息
@@ -814,11 +823,23 @@ export default function SpecDetailPage() {
             <div
               key={s.name}
               className="spec-quick-switch-row"
+              role="button"
+              tabIndex={0}
               onClick={() => {
                 setSwitchOpen(false);
                 // 项目名/SPEC 名经 URL 编码再拼路径（项目名取目录名，可含 #/?/% 等），
                 // 与 index.tsx 的 encodeURIComponent 口径对齐（code-review item 90704bcf4e7b）
                 history.push(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(s.name)}`);
+              }}
+              onKeyDown={(e) => {
+                // 键盘可达（code-review item cadf21251f15）：Enter/Space 触发与点击
+                // 相同的跳转，preventDefault 防空格滚动页面（与 ProjectCards 项目名
+                // 跳转同口径）
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setSwitchOpen(false);
+                  history.push(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(s.name)}`);
+                }
               }}
               style={{
                 display: 'flex',
