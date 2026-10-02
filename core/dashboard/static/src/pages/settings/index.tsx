@@ -9,7 +9,7 @@ import type { ConfigData, OverviewData } from '@/services/dashboard';
 import { PAGE_LABELS } from './pageLabels';
 import type { PageKey } from './pageLabels';
 // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：活跃面板判脏
-import { anyPanelDirty, resetPanelDirty } from './panelDirty';
+import { anyPanelDirty, snapshotPanelDirty } from './panelDirty';
 import LlmProviderPanel from './components/LlmProviderPanel';
 import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
@@ -190,6 +190,12 @@ export default function SettingsPage() {
   const handleSave = async (values: Partial<ConfigData>): Promise<boolean> => {
     const scopeAtStart = scope;
     const projectAtStart = project;
+    // 判脏复位只覆盖被保存面板（code-review item 1b0adfd4fcaa）：在首个 await
+    // 之前的同一同步段内快照在场面板，成功后仅复位这批面板——保存是多段异步
+    // 链（写盘往返 + 重载），在飞期间经丢弃确认切页签新编辑的其他面板若被全量
+    // 复位，其未保存编辑会在后续切换时静默丢弃。快照恰为发起保存时的活跃页签
+    // 条目（面板按 activeKey 条件渲染），保存失败不复位、语义无损。
+    const resetSavedPanelDirty = snapshotPanelDirty();
     try {
       await saveConfig(project, values);
     } catch (error) {
@@ -199,8 +205,9 @@ export default function SettingsPage() {
     }
     message.success('保存成功');
     // 已落盘的编辑不再是「未保存改动」（code-review item 8a3eb01dc2b9）：复位
-    // 判脏，后续切页签/作用域不再对已保存的内容弹丢弃确认。
-    resetPanelDirty();
+    // 判脏，后续切页签/作用域不再对已保存的内容弹丢弃确认；仅复位发起保存时
+    // 在场的被保存面板（item 1b0adfd4fcaa），在飞期间新编辑的其他页签保留脏标记。
+    resetSavedPanelDirty();
     // 重新加载配置（失败不影响保存结论）
     try {
       const configData = await getConfig(project);
