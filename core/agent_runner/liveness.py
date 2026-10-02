@@ -415,6 +415,13 @@ class LivenessSupervisor:
                     continue
             self._terminal_verified.add(stem)
             patched.append((stem, run_file))
+        # code-review item f17a6512bf05：按本轮 glob 到的现存文件集合对缓存做
+        # 差集修剪——run 产物会被保留清理（runs_retention_check）移入 archive/ 或
+        # 删除，被清理文件的 stem 残留缓存只是语义噪音，daemon 数周不重启时集合
+        # 无界累积。仅按 stem 字符串修剪，在飞文件（不入缓存）与刚入缓存的条目
+        # 均在本轮 files 内、不受影响；若与并发 sweep 交错，最坏多读一轮文件，
+        # 无正确性影响。
+        self._terminal_verified &= {f.stem for f in files}
         if patched:
             # 告警格式对齐启动清扫（fenixd.py 启动清扫 WARNING）
             self._pm.logger.warning(
@@ -1422,8 +1429,10 @@ class LivenessSupervisor:
           3. 统一等待 ≤ grace 缓冲窗口（默认 10s），让 claude 收尾；
           4. 窗口结束仍未退出的 agent 用 SIGKILL 兜底。
 
-        总终止时长恒 ≲ grace，不随 agent 数量线性增长，确保 daemon 在 supervisor 60s
-        窗口内退出。
+        总终止时长有上界（≈ grace + 5s 收割上限），不随 agent 数量线性增长，
+        确保 daemon 在 supervisor 60s 窗口内退出（code-review item
+        f2b28f960fde：收尾收割循环对 D state 等不可中断进程的逐个等待受整体
+        deadline 约束，不再 5s×N 无界叠加）。
 
         Args:
             timeout: 缓冲窗口秒数（子类/测试可覆写短值避免真实等待）。
@@ -1520,12 +1529,19 @@ class LivenessSupervisor:
                     except ProcessLookupError:
                         pass
 
-        # 收割所有子进程，避免僵尸进程
+        # 收割所有子进程，避免僵尸进程。code-review item f2b28f960fde：逐 agent
+        # 串行 wait(timeout=5) 在 D state / 未随进程组退出的进程上可叠加 5N 秒，
+        # 突破 grace 乃至 supervisor 60s SIGKILL 窗口——改为整体 deadline 有界
+        # 等待（grace + 5s 上限），逐 agent 只等剩余额度；额度耗尽后不再等待，
+        # 注册表照常 pop（残留进程的僵尸回收交由内核/init 兜底，不阻塞关闭）。
+        harvest_deadline = time.time() + grace + 5
         for name, proc in list(self._pm._running_agents.items()):
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            except Exception:  # pragma: no cover - 防御性
-                pass
+            remaining = harvest_deadline - time.time()
+            if remaining > 0:
+                try:
+                    proc.wait(timeout=min(5, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
+                except Exception:  # pragma: no cover - 防御性
+                    pass
             self._pm._running_agents.pop(name, None)
