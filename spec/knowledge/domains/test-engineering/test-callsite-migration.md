@@ -13,4 +13,4 @@ tests/ 对 core 组件的访问规则：一律直调组件实现，不经门面�
 
 ## 溯源
 
-- [2026-09-07 refactor-test-callsites](spec/archive/2026-09-07-refactor-test-callsites/) — 确立测试调用点组件直调、门面死委托清除与分批迁移验证纪律；迁移后全量 pytest 结果不劣于基线
+- 2026-09-07 refactor-test-callsites（spec/archive/2026-09-07-refactor-test-callsites） — 确立测试调用点组件直调、门面死委托清除与分批迁移验证纪律；迁移后全量 pytest 结果不劣于基线

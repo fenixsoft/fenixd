@@ -14,4 +14,4 @@
 ## 溯源
 
 - 史前复原（存量基线） — 验证报告为产物闸门：共享合成器兜底合成报告，合成兜底静默化不发人工升级告警
-- [2026-09-04 add-verify-report-gate](spec/archive/2026-09-04-add-verify-report-gate/) — 闸门机械化：裁决放行前强校验报告存在、缺失由共享合成器从结构化数据兜底、结构化数据不可用则阻断推进（裁决 Agent 漏写报告曾致 fix SPEC 盲目引用不存在路径，implementer 只能从第一性原理重复诊断）
+- 2026-09-04 add-verify-report-gate（spec/archive/2026-09-04-add-verify-report-gate） — 闸门机械化：裁决放行前强校验报告存在、缺失由共享合成器从结构化数据兜底、结构化数据不可用则阻断推进（裁决 Agent 漏写报告曾致 fix SPEC 盲目引用不存在路径，implementer 只能从第一性原理重复诊断）

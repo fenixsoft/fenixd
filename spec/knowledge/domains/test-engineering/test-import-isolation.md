@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-18 fix-root-init-import-shadow](spec/archive/2026-09-18-fix-root-init-import-shadow/) — 消除仓库根 `__init__.py` 截胡 `import fenixd` 的根因，确立收集期硬失败守卫、导入方式收敛与专属回归锚点
+- 2026-09-18 fix-root-init-import-shadow（spec/archive/2026-09-18-fix-root-init-import-shadow） — 消除仓库根 `__init__.py` 截胡 `import fenixd` 的根因，确立收集期硬失败守卫、导入方式收敛与专属回归锚点

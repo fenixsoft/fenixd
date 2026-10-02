@@ -17,5 +17,5 @@ run 粒度的人工终止原语与全链路取消语义：进程终止、产物�
 
 ## 溯源
 
-- [2026-09-10 add-run-cancel](spec/archive/2026-09-10-add-run-cancel/) — 确立 cancel_run 原语与归一化匹配、cancelled 终态行、attempt 链不重试不计秒挂、dispatch hold-state、文件信号入口、dashboard API 与审计留痕
-- [2026-09-14 fix-run-cancel-retry-flag-miss](spec/archive/2026-09-14-fix-run-cancel-retry-flag-miss/) — 旗标归一化扩展为剥离连续多组 `-a<N>`/`-r<N>` 后缀，补齐瞬态重试轮在飞 run 的取消覆盖
+- 2026-09-10 add-run-cancel（spec/archive/2026-09-10-add-run-cancel） — 确立 cancel_run 原语与归一化匹配、cancelled 终态行、attempt 链不重试不计秒挂、dispatch hold-state、文件信号入口、dashboard API 与审计留痕
+- 2026-09-14 fix-run-cancel-retry-flag-miss（spec/archive/2026-09-14-fix-run-cancel-retry-flag-miss） — 旗标归一化扩展为剥离连续多组 `-a<N>`/`-r<N>` 后缀，补齐瞬态重试轮在飞 run 的取消覆盖

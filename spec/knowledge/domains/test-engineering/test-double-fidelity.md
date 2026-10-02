@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-20 add-control-plane-silent-failure-guards](spec/archive/2026-09-20-add-control-plane-silent-failure-guards/) — 新增替身签名保真守卫（宽容替身/欠必填报违规、seam 候选黑名单、有牙自检），并同步收紧 4 个测试文件内的既有偏离替身为显式签名，守卫零欠债落地
+- 2026-09-20 add-control-plane-silent-failure-guards（spec/archive/2026-09-20-add-control-plane-silent-failure-guards） — 新增替身签名保真守卫（宽容替身/欠必填报违规、seam 候选黑名单、有牙自检），并同步收紧 4 个测试文件内的既有偏离替身为显式签名，守卫零欠债落地

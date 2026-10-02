@@ -16,6 +16,6 @@ v2 应用壳的 hash 路由解析、参数路由与页面 JSON 合并加载契�
 ## 溯源
 
 - 史前复原 — v2 壳层 hash 路由：embed 页面按路由挂载，项目作用域经路由参数与 localStorage 全局选择器传递
-- [2026-09-04 2026-09-04-v2-shell-hash-router](spec/archive/2026-09-04-v2-shell-hash-router/) — 落地 hash 路由解析（5 模式含参数路由与深链）、页面 JSON 合并加载容错与 Playwright 冒烟基建
+- 2026-09-04 2026-09-04-v2-shell-hash-router（spec/archive/2026-09-04-v2-shell-hash-router） — 落地 hash 路由解析（5 模式含参数路由与深链）、页面 JSON 合并加载容错与 Playwright 冒烟基建
 - 2026-09-02 git:ea88dd5a — v1/v2 dashboard 壳整体移除（根路由 302 到 v3），本能力随壳层退役
 - 2026-09-28 audit git:25bd6751 — 根路由改直服 v3 SPA（`/` 直接返回 `dist/index.html`，302 跳转取消），退役注记根路由表述纠偏

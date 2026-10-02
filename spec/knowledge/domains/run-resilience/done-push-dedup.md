@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- [2026-09-12 fix-daemon-lifecycle-races](spec/archive/2026-09-12-fix-daemon-lifecycle-races/) — 将 verify 成功同步直调与 event_bus spec_done 事件的双路径并发收编为锁内 check-then-act 单飞，消除重复 push 与假 ERROR 告警
+- 2026-09-12 fix-daemon-lifecycle-races（spec/archive/2026-09-12-fix-daemon-lifecycle-races） — 将 verify 成功同步直调与 event_bus spec_done 事件的双路径并发收编为锁内 check-then-act 单飞，消除重复 push 与假 ERROR 告警

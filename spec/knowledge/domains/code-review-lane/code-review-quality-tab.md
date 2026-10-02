@@ -21,4 +21,4 @@
 
 ## 溯源
 
-- [2026-09-24 add-code-review-agent-and-quality-tab](spec/archive/2026-09-24-add-code-review-agent-and-quality-tab/) — 新建质量分面：问题表格与忽略/清除归属操作、双触发按钮（409 单飞拒绝与 unmanaged 托管拒绝透传）、真实进度条与取消、生成修复 SPEC 入口。
+- 2026-09-24 add-code-review-agent-and-quality-tab（spec/archive/2026-09-24-add-code-review-agent-and-quality-tab） — 新建质量分面：问题表格与忽略/清除归属操作、双触发按钮（409 单飞拒绝与 unmanaged 托管拒绝透传）、真实进度条与取消、生成修复 SPEC 入口。

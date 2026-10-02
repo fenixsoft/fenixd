@@ -18,4 +18,4 @@
 
 ## 溯源
 
-- [2026-09-26 add-spec-list-filter-stickiness](spec/archive/2026-09-26-add-spec-list-filter-stickiness/) — 建立过滤与页签状态的 URL 持久化：replace 写入、缺省不写参、三路径恢复一致与非法参数 fail-safe 消毒
+- 2026-09-26 add-spec-list-filter-stickiness（spec/archive/2026-09-26-add-spec-list-filter-stickiness） — 建立过滤与页签状态的 URL 持久化：replace 写入、缺省不写参、三路径恢复一致与非法参数 fail-safe 消毒

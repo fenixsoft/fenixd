@@ -18,4 +18,4 @@ v3 的统一设置入口：左侧子项菜单 + 右侧面板，复用 v1 配置�
 
 ## 溯源
 
-- [2026-09-08 add-v3-settings-page](spec/archive/2026-09-08-add-v3-settings-page/) — 建立 v3 设置页六子项布局、作用域读写与继承标注、各子项配置键契约及统一保存 / 错误反馈
+- 2026-09-08 add-v3-settings-page（spec/archive/2026-09-08-add-v3-settings-page） — 建立 v3 设置页六子项布局、作用域读写与继承标注、各子项配置键契约及统一保存 / 错误反馈

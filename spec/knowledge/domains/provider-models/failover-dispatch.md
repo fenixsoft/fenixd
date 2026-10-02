@@ -18,5 +18,5 @@ attempt 失败后的链推进决策与留痕：切换类错误驱动候选链前
 
 ## 溯源
 
-- [2026-09-02 add-provider-failover](spec/archive/2026-09-02-add-provider-failover/) — 建立切换类错误分类、链推进与全链冷却失败语义，以及 provider_marker / provider switched / 高频告警三件可观测契约
-- [2026-09-30 add-code-review-concurrency-and-429-resilience](spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience/) — 429 限流纳入切换类分类（三形态判定先于瞬断/4xx、独立限流冷却缺省 300s、不计 4xx 熔断双计数），新增限流打死 run 冷却到期自动重派一次（意图登记/唯一消费方/幂等续做/预算守卫/留痕标注）
+- 2026-09-02 add-provider-failover（spec/archive/2026-09-02-add-provider-failover） — 建立切换类错误分类、链推进与全链冷却失败语义，以及 provider_marker / provider switched / 高频告警三件可观测契约
+- 2026-09-30 add-code-review-concurrency-and-429-resilience（spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience） — 429 限流纳入切换类分类（三形态判定先于瞬断/4xx、独立限流冷却缺省 300s、不计 4xx 熔断双计数），新增限流打死 run 冷却到期自动重派一次（意图登记/唯一消费方/幂等续做/预算守卫/留痕标注）

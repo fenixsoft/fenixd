@@ -15,5 +15,5 @@ dashboard 服务端的 spec 摘要缓存与配置解析缓存：`/api/specs` 与
 
 ## 溯源
 
-- [2026-09-09 2026-09-09-add-dashboard-incremental-data](spec/archive/2026-09-09-add-dashboard-incremental-data/) — 建立内存摘要索引、配置解析签名缓存与 cleanup_runs 节流，`/api/specs` 从每请求 O(N) 全量重算改为读索引
+- 2026-09-09 2026-09-09-add-dashboard-incremental-data（spec/archive/2026-09-09-add-dashboard-incremental-data） — 建立内存摘要索引、配置解析签名缓存与 cleanup_runs 节流，`/api/specs` 从每请求 O(N) 全量重算改为读索引
 - 已随 2026-09-21-fix-dashboard-read-path-performance 废除：STATE.md 签名变化即丢弃全部缓存并全量重建的失效语义（现按 spec 增量失效，规则由 dashboard-read-path-performance 能力页承载）

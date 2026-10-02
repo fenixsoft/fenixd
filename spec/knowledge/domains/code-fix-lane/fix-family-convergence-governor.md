@@ -16,4 +16,4 @@
 ## 溯源
 
 - 史前基线 — bug-found 派生已确立族谱收敛治理方向：family_explosion 越界转人工并支持单次显式放行，放行语义显式记录，不递归派生。
-- [2026-09-02 2026-09-02-improve-scheduling-noise-governance](spec/archive/2026-09-02-improve-scheduling-noise-governance/) — 契约化：深度/宽度上限参数（`pm.family.max_depth`=3 / `max_width`=2）、越界转 family_explosion 信号、单次放行豁免位与计数口径兼容。
+- 2026-09-02 2026-09-02-improve-scheduling-noise-governance（spec/archive/2026-09-02-improve-scheduling-noise-governance） — 契约化：深度/宽度上限参数（`pm.family.max_depth`=3 / `max_width`=2）、越界转 family_explosion 信号、单次放行豁免位与计数口径兼容。

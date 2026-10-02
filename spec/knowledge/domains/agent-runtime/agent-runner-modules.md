@@ -20,4 +20,4 @@
 
 ## 溯源
 
-- [2026-09-21 refactor-agent-runner-module](spec/archive/2026-09-21-refactor-agent-runner-module/) — 固化 runner/result_gate/maintenance_runs/latency 四模块职责边界、re-export 与打桩兼容契约、测试缝 setter/deleter 收敛、状态单一归属与零行为重构纪律
+- 2026-09-21 refactor-agent-runner-module（spec/archive/2026-09-21-refactor-agent-runner-module） — 固化 runner/result_gate/maintenance_runs/latency 四模块职责边界、re-export 与打桩兼容契约、测试缝 setter/deleter 收敛、状态单一归属与零行为重构纪律

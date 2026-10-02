@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- [2026-09-27 2026-09-27-add-run-record-readability](spec/archive/2026-09-27-add-run-record-readability/) — 分组维度由「同名连续」升级为「同类连续」三类映射，新增 description 优先语义摘要与心跳耗时标注（组内逐条成败+耗时）。
+- 2026-09-27 2026-09-27-add-run-record-readability（spec/archive/2026-09-27-add-run-record-readability） — 分组维度由「同名连续」升级为「同类连续」三类映射，新增 description 优先语义摘要与心跳耗时标注（组内逐条成败+耗时）。

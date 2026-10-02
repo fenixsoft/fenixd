@@ -17,4 +17,4 @@
 
 ## 溯源
 
-- [2026-09-09 add-project-description](spec/archive/2026-09-09-add-project-description/) — 新增本能力：setup 自动生成与兜底规则、config 存储与模板、聚合输出与前端展示、设置页面板（项目级作用域限定）手动编辑与 AI 重新生成
+- 2026-09-09 add-project-description（spec/archive/2026-09-09-add-project-description） — 新增本能力：setup 自动生成与兜底规则、config 存储与模板、聚合输出与前端展示、设置页面板（项目级作用域限定）手动编辑与 AI 重新生成

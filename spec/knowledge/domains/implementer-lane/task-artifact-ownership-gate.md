@@ -16,4 +16,4 @@ tasks.md 任务行的产物归属校验：验证链产物只能由其归属车�
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-add-task-artifact-ownership-gate](spec/archive/2026-09-23-add-task-artifact-ownership-gate/) — 确立归属表单一真相源、任务行三条件判据、mode 车道比对、三挂点同源与 fail-open 语义
+- 2026-09-23 2026-09-23-add-task-artifact-ownership-gate（spec/archive/2026-09-23-add-task-artifact-ownership-gate） — 确立归属表单一真相源、任务行三条件判据、mode 车道比对、三挂点同源与 fail-open 语义

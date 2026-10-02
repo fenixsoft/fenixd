@@ -26,4 +26,4 @@
 
 ## 溯源
 
-- [2026-09-26 2026-09-26-add-code-review-auto-fix](spec/archive/2026-09-26-add-code-review-auto-fix/) — 新建本页：agent 类型四处注册点、模型链缺省回退 code-review、worktree 写权限与逐条 out 文件产物契约（产物缺失判失败）。
+- 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：agent 类型四处注册点、模型链缺省回退 code-review、worktree 写权限与逐条 out 文件产物契约（产物缺失判失败）。

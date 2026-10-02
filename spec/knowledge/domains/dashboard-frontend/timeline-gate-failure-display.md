@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-25 add-timeline-gate-failure-display](spec/archive/2026-09-25-add-timeline-gate-failure-display/) — 建立门禁失败可见化全链：transient_retry/superseded 事件带归因、gate-blocked 独立终态事件与读写两侧同步登记、时间轴节点带原因与前端红色失败渲染
+- 2026-09-25 add-timeline-gate-failure-display（spec/archive/2026-09-25-add-timeline-gate-failure-display） — 建立门禁失败可见化全链：transient_retry/superseded 事件带归因、gate-blocked 独立终态事件与读写两侧同步登记、时间轴节点带原因与前端红色失败渲染

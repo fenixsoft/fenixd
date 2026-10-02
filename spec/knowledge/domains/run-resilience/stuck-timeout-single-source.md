@@ -15,4 +15,4 @@ stuck（记账静止）判定阈值自 run 超时单源派生：阈值恒大于 
 ## 溯源
 
 - 史前复原 — 迁移期基线：stuck 阈值单源派生，旧配置键弃用，absolute_max 护栏封顶，检测基准随续期顺延
-- [2026-09-02 fix-stuck-threshold-unify](spec/archive/2026-09-02-fix-stuck-threshold-unify/) — 确立阈值自 run_timeout_seconds+600 单源派生、旧键弃用降级与超时缺省防御；absolute_max 联动护栏同场确立，其下限派生与对齐处置机制后由 timeout-supervision 能力页承接
+- 2026-09-02 fix-stuck-threshold-unify（spec/archive/2026-09-02-fix-stuck-threshold-unify） — 确立阈值自 run_timeout_seconds+600 单源派生、旧键弃用降级与超时缺省防御；absolute_max 联动护栏同场确立，其下限派生与对齐处置机制后由 timeout-supervision 能力页承接

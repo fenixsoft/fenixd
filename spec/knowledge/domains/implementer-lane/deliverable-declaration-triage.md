@@ -19,6 +19,6 @@
 
 ## 溯源
 
-- [2026-09-12 2026-09-12-add-deliverable-declaration-triage](spec/archive/2026-09-12-add-deliverable-declaration-triage/) — 建立三层对账：晋升 lint 存在性校验、派发前声明现实处方注入、守卫缺件 LLM 终审与裁决机械执行审计
-- [2026-09-19 2026-09-19-add-deliverable-delete-kind](spec/archive/2026-09-19-add-deliverable-delete-kind/) — 处方覆盖 `delete` 条目（双形态标注）、delete 裁决归宿收窄（拒 reference）、违规话术按 kind 分化
-- [2026-09-23 2026-09-23-add-declaration-relocation-protocol](spec/archive/2026-09-23-add-declaration-relocation-protocol/) — 收敛为车道无关统一裁决流水线（结构化全量输入、action 输出）、fast-track 同源接入终审、执行目标改为生效声明所在层 + 分支提交、预算对齐
+- 2026-09-12 2026-09-12-add-deliverable-declaration-triage（spec/archive/2026-09-12-add-deliverable-declaration-triage） — 建立三层对账：晋升 lint 存在性校验、派发前声明现实处方注入、守卫缺件 LLM 终审与裁决机械执行审计
+- 2026-09-19 2026-09-19-add-deliverable-delete-kind（spec/archive/2026-09-19-add-deliverable-delete-kind） — 处方覆盖 `delete` 条目（双形态标注）、delete 裁决归宿收窄（拒 reference）、违规话术按 kind 分化
+- 2026-09-23 2026-09-23-add-declaration-relocation-protocol（spec/archive/2026-09-23-add-declaration-relocation-protocol） — 收敛为车道无关统一裁决流水线（结构化全量输入、action 输出）、fast-track 同源接入终审、执行目标改为生效声明所在层 + 分支提交、预算对齐

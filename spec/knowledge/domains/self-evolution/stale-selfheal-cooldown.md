@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-25 evo-stale-selfheal-restart-cooldown](spec/archive/2026-09-25-evo-stale-selfheal-restart-cooldown/) — 新增滑动窗口重启冷却锁存、自触发 stale 识别与 streak 升级告警、_is_idle 纳入 _running_agents（治正反馈循环：单日 47 分钟 27 次重启、全天 93 次并杀死在飞评审 run）
+- 2026-09-25 evo-stale-selfheal-restart-cooldown（spec/archive/2026-09-25-evo-stale-selfheal-restart-cooldown） — 新增滑动窗口重启冷却锁存、自触发 stale 识别与 streak 升级告警、_is_idle 纳入 _running_agents（治正反馈循环：单日 47 分钟 27 次重启、全天 93 次并杀死在飞评审 run）

@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-12 2026-09-12-add-spec-scheduling-controls](spec/archive/2026-09-12-add-spec-scheduling-controls/) — 新增定时解冻：冻结管理弹窗、frozen_until 字段契约、到期自动解冻与幂等、重启扫描兜底、过去时间立即解冻、时间轴来源标记
+- 2026-09-12 2026-09-12-add-spec-scheduling-controls（spec/archive/2026-09-12-add-spec-scheduling-controls） — 新增定时解冻：冻结管理弹窗、frozen_until 字段契约、到期自动解冻与幂等、重启扫描兜底、过去时间立即解冻、时间轴来源标记

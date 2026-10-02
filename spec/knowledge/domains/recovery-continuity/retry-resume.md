@@ -12,4 +12,4 @@ implementer 失败重试时复用同一 worktree 与同一 claude session 从失
 
 ## 溯源
 
-- [2026-09-02 fix-fenix-token-waste](spec/archive/2026-09-02-fix-fenix-token-waste/) — 新增失败重试的 worktree/session 复用续跑与按 attempt 独立 run_id 的产物隔离
+- 2026-09-02 fix-fenix-token-waste（spec/archive/2026-09-02-fix-fenix-token-waste） — 新增失败重试的 worktree/session 复用续跑与按 attempt 独立 run_id 的产物隔离

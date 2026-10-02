@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-15 add-spec-status-modal-budget](spec/archive/2026-09-15-add-spec-status-modal-budget/) — 确立 per-spec 预算覆盖属性、闸门覆盖优先解析口径、预算设置 API 的状态码契约、摘要三字段与弹窗预算区块
+- 2026-09-15 add-spec-status-modal-budget（spec/archive/2026-09-15-add-spec-status-modal-budget） — 确立 per-spec 预算覆盖属性、闸门覆盖优先解析口径、预算设置 API 的状态码契约、摘要三字段与弹窗预算区块

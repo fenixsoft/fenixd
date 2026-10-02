@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-24 2026-09-24-evo-deliverable-declaration-drift-align](spec/archive/2026-09-24-evo-deliverable-declaration-drift-align/) — 确立漂移三条件与确定性候选定位、既有原语复用与通道互斥、对齐动作审计，及 SUPERSEDED.md 派发前收敛检查
+- 2026-09-24 2026-09-24-evo-deliverable-declaration-drift-align（spec/archive/2026-09-24-evo-deliverable-declaration-drift-align） — 确立漂移三条件与确定性候选定位、既有原语复用与通道互斥、对齐动作审计，及 SUPERSEDED.md 派发前收敛检查

@@ -12,4 +12,4 @@ worktree 基础目录的启动期清扫：daemon 启动时清掉不属于本次�
 
 ## 溯源
 
-- [2026-09-02 fix-fenix-token-waste](spec/archive/2026-09-02-fix-fenix-token-waste/) — 新增启动期孤儿 worktree 目录与对应分支清扫、`git worktree prune`，以及清理失败告警不阻塞 daemon 启动
+- 2026-09-02 fix-fenix-token-waste（spec/archive/2026-09-02-fix-fenix-token-waste） — 新增启动期孤儿 worktree 目录与对应分支清扫、`git worktree prune`，以及清理失败告警不阻塞 daemon 启动

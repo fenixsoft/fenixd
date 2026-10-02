@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-06 add-verdict-evidence-taxonomy](spec/archive/2026-09-06-add-verdict-evidence-taxonomy/) — 确立非 PASS 场景强制四分类、分类-状态映射约束、结构化证据落盘与连续两轮 warning 升级告警
+- 2026-09-06 add-verdict-evidence-taxonomy（spec/archive/2026-09-06-add-verdict-evidence-taxonomy） — 确立非 PASS 场景强制四分类、分类-状态映射约束、结构化证据落盘与连续两轮 warning 升级告警

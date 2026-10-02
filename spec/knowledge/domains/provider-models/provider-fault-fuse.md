@@ -16,4 +16,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：provider 4xx 类故障触发熔断：熔断期请求快速失败并计次，verifier/planner 侧拦截与放行口径一致
-- [2026-09-02 fix-stashpop-deadlock-and-provider-fuse](spec/archive/2026-09-02-fix-stashpop-deadlock-and-provider-fuse/) — 固化滚动窗口阈值与冷却参数、熔断期派发失败不计 spec 重试不回状态、半开探针自动恢复与三通道故障可见性契约
+- 2026-09-02 fix-stashpop-deadlock-and-provider-fuse（spec/archive/2026-09-02-fix-stashpop-deadlock-and-provider-fuse） — 固化滚动窗口阈值与冷却参数、熔断期派发失败不计 spec 重试不回状态、半开探针自动恢复与三通道故障可见性契约

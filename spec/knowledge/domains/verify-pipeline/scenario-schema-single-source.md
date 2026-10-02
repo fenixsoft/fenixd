@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-19 evo-planner-scenario-schema-alignment](spec/archive/2026-09-19-evo-planner-scenario-schema-alignment/) — 新增断言必填字段规则单源化、三条生成分支共用运行时渲染注入、写盘前逐条预校验与空集显式失败（此前写端校验规则与 planner 生成指令两源漂移，出现 25/25、17/17 条整批被剔除退回的重复浪费）
+- 2026-09-19 evo-planner-scenario-schema-alignment（spec/archive/2026-09-19-evo-planner-scenario-schema-alignment） — 新增断言必填字段规则单源化、三条生成分支共用运行时渲染注入、写盘前逐条预校验与空集显式失败（此前写端校验规则与 planner 生成指令两源漂移，出现 25/25、17/17 条整批被剔除退回的重复浪费）

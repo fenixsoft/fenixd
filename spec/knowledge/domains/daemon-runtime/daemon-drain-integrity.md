@@ -13,4 +13,4 @@ daemon 在启动窗口内自证运行记录完整、并核对自身与 superviso
 
 ## 溯源
 
-- [2026-09-12 fix-daemon-lifecycle-races](spec/archive/2026-09-12-fix-daemon-lifecycle-races/) — 新增启动时终态补写扫描、supervisor SIGKILL 等待窗口自报与 drain 窗口一致性自检
+- 2026-09-12 fix-daemon-lifecycle-races（spec/archive/2026-09-12-fix-daemon-lifecycle-races） — 新增启动时终态补写扫描、supervisor SIGKILL 等待窗口自报与 drain 窗口一致性自检

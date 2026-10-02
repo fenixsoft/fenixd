@@ -15,4 +15,4 @@ SPEC 列表行内右键唤起自绘上下文菜单，提供呼叫 Admin、调整
 ## 溯源
 
 - 史前复原 — SPEC 行右键菜单三项操作（呼叫 Admin、调整优先级、删除）与删除后行/信息子行无残留
-- [2026-09-03 add-spec-context-menu](spec/archive/2026-09-03-add-spec-context-menu/) — 固化右键菜单交互契约：原生菜单拦截与边缘翻转、Esc/外点关闭、Admin 唤起成功与拒绝反馈、优先级双侧校验与软删除确认流
+- 2026-09-03 add-spec-context-menu（spec/archive/2026-09-03-add-spec-context-menu） — 固化右键菜单交互契约：原生菜单拦截与边缘翻转、Esc/外点关闭、Admin 唤起成功与拒绝反馈、优先级双侧校验与软删除确认流

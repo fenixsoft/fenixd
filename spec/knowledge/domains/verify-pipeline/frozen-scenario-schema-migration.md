@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-19 evo-add-frozen-scenario-schema-migration](spec/archive/2026-09-19-evo-add-frozen-scenario-schema-migration/) — 新增读侧旧字段迁移、`schema_version` 版本标记与字段级差异报错，并把 blocked_stuck 纳入处置成功后自动复位集合
+- 2026-09-19 evo-add-frozen-scenario-schema-migration（spec/archive/2026-09-19-evo-add-frozen-scenario-schema-migration） — 新增读侧旧字段迁移、`schema_version` 版本标记与字段级差异报错，并把 blocked_stuck 纳入处置成功后自动复位集合

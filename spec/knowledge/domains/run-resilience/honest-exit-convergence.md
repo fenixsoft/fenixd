@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-22 fix-redispatch-loop-governance](spec/archive/2026-09-22-fix-redispatch-loop-governance/) — 确立 partial + unattainable 全覆盖的收敛判据、`gap_from_result` 缺口单点解析、非法申报 fail-closed 与两车道对称收口
+- 2026-09-22 fix-redispatch-loop-governance（spec/archive/2026-09-22-fix-redispatch-loop-governance） — 确立 partial + unattainable 全覆盖的收敛判据、`gap_from_result` 缺口单点解析、非法申报 fail-closed 与两车道对称收口

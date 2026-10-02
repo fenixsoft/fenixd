@@ -16,4 +16,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原 — 迁移期已存在的基线：agent 以 -p 非交互模式运行，结果经结构化输出与结果文件回读，不依赖交互式会话语义
-- [2026-09-22 fix-agent-noninteractive-contract](spec/archive/2026-09-22-fix-agent-noninteractive-contract/) — 固化契约段构建层统一注入、全类型覆盖与四条关键语义
+- 2026-09-22 fix-agent-noninteractive-contract（spec/archive/2026-09-22-fix-agent-noninteractive-contract） — 固化契约段构建层统一注入、全类型覆盖与四条关键语义

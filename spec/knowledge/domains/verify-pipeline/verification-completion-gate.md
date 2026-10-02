@@ -13,6 +13,6 @@ SPEC 推进 done/pushed 前的三层放行门禁：进度完成度、场景结�
 
 ## 溯源
 
-- [2026-09-02 fix-dashboard-duration-and-verify-gate](spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate/) — 建立进度门禁（done==total 才可推进）与耗时列真实性断言规则
-- [2026-09-02 improve-verify-adjudication](spec/archive/2026-09-02-improve-verify-adjudication/) — 叠加场景结论质量闸门、噪音/真缺陷分流与结果文件缺口 fail-closed（取代「解析失败视为 verified」的 fail-open 行为）
-- [2026-09-05 add-inplace-bug-repair](spec/archive/2026-09-05-add-inplace-bug-repair/) — 真实产品缺陷处置由派生 fix SPEC 改为原地打回父 SPEC（保留全部上下文，噪音分流与 fail-closed 语义不变）
+- 2026-09-02 fix-dashboard-duration-and-verify-gate（spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate） — 建立进度门禁（done==total 才可推进）与耗时列真实性断言规则
+- 2026-09-02 improve-verify-adjudication（spec/archive/2026-09-02-improve-verify-adjudication） — 叠加场景结论质量闸门、噪音/真缺陷分流与结果文件缺口 fail-closed（取代「解析失败视为 verified」的 fail-open 行为）
+- 2026-09-05 add-inplace-bug-repair（spec/archive/2026-09-05-add-inplace-bug-repair） — 真实产品缺陷处置由派生 fix SPEC 改为原地打回父 SPEC（保留全部上下文，噪音分流与 fail-closed 语义不变）

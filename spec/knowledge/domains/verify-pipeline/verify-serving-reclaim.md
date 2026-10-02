@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-23 fix-verify-serving-disk-reclaim](spec/archive/2026-09-23-fix-verify-serving-disk-reclaim/) — 新增 serving 目录与 boot.log 的生命周期回收（既有回收入口只在 spec 转 done 且内存缓存在手时触发，daemon 重启或 spec 未经 done 后线索丢失、目录永久残留，实测 19 个 worktree 占 30G）
+- 2026-09-23 fix-verify-serving-disk-reclaim（spec/archive/2026-09-23-fix-verify-serving-disk-reclaim） — 新增 serving 目录与 boot.log 的生命周期回收（既有回收入口只在 spec 转 done 且内存缓存在手时触发，daemon 重启或 spec 未经 done 后线索丢失、目录永久残留，实测 19 个 worktree 占 30G）

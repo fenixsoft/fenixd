@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-27 2026-09-27-add-impl-selfcheck-model-probe](spec/archive/2026-09-27-add-impl-selfcheck-model-probe/) — 回归责任单点化：收尾措辞改为委托验证链、`full-suite` 键改为降级路径才落盘、读侧合成数据源两级优先级
+- 2026-09-27 2026-09-27-add-impl-selfcheck-model-probe（spec/archive/2026-09-27-add-impl-selfcheck-model-probe） — 回归责任单点化：收尾措辞改为委托验证链、`full-suite` 键改为降级路径才落盘、读侧合成数据源两级优先级

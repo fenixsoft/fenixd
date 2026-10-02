@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-19 fix-command-main-serve-scope](spec/archive/2026-09-19-fix-command-main-serve-scope/) — 补齐 `command×main` 组合的契约实例路径接线（此前四条组合只有三条接线，默认配置下该组合每轮静默退回 legacy 兜底、绕开 BASE_URL 全量改写铁律），并修正 legacy 段端口改写日志的无据归因措辞
+- 2026-09-19 fix-command-main-serve-scope（spec/archive/2026-09-19-fix-command-main-serve-scope） — 补齐 `command×main` 组合的契约实例路径接线（此前四条组合只有三条接线，默认配置下该组合每轮静默退回 legacy 兜底、绕开 BASE_URL 全量改写铁律），并修正 legacy 段端口改写日志的无据归因措辞

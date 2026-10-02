@@ -21,6 +21,6 @@
 
 ## 溯源
 
-- [2026-09-25 add-freeze-stop-inflight-agents](spec/archive/2026-09-25-add-freeze-stop-inflight-agents/) — 新增本能力：轮询环冻结检查、`frozen-terminated` 独立终态、`_frozen_hold` 保持标记、冻结保留锚点、dispatch 冻结保持分支与解冻保留分支续做
-- [2026-09-26 fix-relocation-writeback-layer](spec/archive/2026-09-26-fix-relocation-writeback-layer/) — 解冻保留判定去除对调用方上下文的前置依赖（自解析项目根）；worktree 已清理时经分支命名空间枚举续做，禁止因载体缺失丢弃保留分支转从 main 新建
-- [2026-09-29 2026-09-29-evo-alert-noise-governance](spec/archive/2026-09-29-evo-alert-noise-governance/) — 新增派发入口 frozen 复核（`_on_spec_ready` 守卫链、内容闸门校验之前）与派发失败重试路径的 frozen 跳过，冻结后不再新派、不重放闸门拦截流程
+- 2026-09-25 add-freeze-stop-inflight-agents（spec/archive/2026-09-25-add-freeze-stop-inflight-agents） — 新增本能力：轮询环冻结检查、`frozen-terminated` 独立终态、`_frozen_hold` 保持标记、冻结保留锚点、dispatch 冻结保持分支与解冻保留分支续做
+- 2026-09-26 fix-relocation-writeback-layer（spec/archive/2026-09-26-fix-relocation-writeback-layer） — 解冻保留判定去除对调用方上下文的前置依赖（自解析项目根）；worktree 已清理时经分支命名空间枚举续做，禁止因载体缺失丢弃保留分支转从 main 新建
+- 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 新增派发入口 frozen 复核（`_on_spec_ready` 守卫链、内容闸门校验之前）与派发失败重试路径的 frozen 跳过，冻结后不再新派、不重放闸门拦截流程

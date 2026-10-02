@@ -16,4 +16,4 @@ SPEC 级手动唤起 Administrator 的端到端通路：dashboard API → 文件
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：手动唤起 Admin 写文件信号（admin_invoke），daemon 主循环拾取信号后唤起 Administrator，manual-intervention 指令进入 admin prompt
-- [2026-09-03 add-spec-context-menu](spec/archive/2026-09-03-add-spec-context-menu/) — 落地 SPEC 级手动唤起端到端通路：dashboard POST API、请求文件校验（404/409）、daemon 2 秒拾取与固定检查指令注入，明确与自动检测的节流隔离
+- 2026-09-03 add-spec-context-menu（spec/archive/2026-09-03-add-spec-context-menu） — 落地 SPEC 级手动唤起端到端通路：dashboard POST API、请求文件校验（404/409）、daemon 2 秒拾取与固定检查指令注入，明确与自动检测的节流隔离

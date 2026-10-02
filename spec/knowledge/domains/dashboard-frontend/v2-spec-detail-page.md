@@ -14,4 +14,4 @@ v2 的 SPEC 详情：验证卡 + 4 页签 + SSE 定向刷新 + 时间轴节点�
 ## 溯源
 
 - 史前复原 — v2 详情页验证卡 + 4 页签 + SSE detail 刷新骨架；验证卡标题恒可见
-- [2026-09-05 v2-spec-detail-page](spec/archive/2026-09-05-v2-spec-detail-page/) — 落地验证结论卡数字化、4 页签内容区（时间轴 / 场景 / Bug / 截图 lightbox）、sse:detail 定向刷新与时间轴节点弹窗契约（RunStream run 模式挂载 + dispose 清理）
+- 2026-09-05 v2-spec-detail-page（spec/archive/2026-09-05-v2-spec-detail-page） — 落地验证结论卡数字化、4 页签内容区（时间轴 / 场景 / Bug / 截图 lightbox）、sse:detail 定向刷新与时间轴节点弹窗契约（RunStream run 模式挂载 + dispose 清理）

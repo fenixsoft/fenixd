@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-15 add-verdict-credibility-gate](spec/archive/2026-09-15-add-verdict-credibility-gate/) — 确立截图落盘时纯算法健全性判定（blank_screenshot/low_contrast 结构化标签+量化指标）、缺标签正常态与判定异常不阻断
+- 2026-09-15 add-verdict-credibility-gate（spec/archive/2026-09-15-add-verdict-credibility-gate） — 确立截图落盘时纯算法健全性判定（blank_screenshot/low_contrast 结构化标签+量化指标）、缺标签正常态与判定异常不阻断

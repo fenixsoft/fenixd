@@ -15,4 +15,4 @@ v2 壳层的告警聚合入口与 admin 活动时间线页。
 ## 溯源
 
 - 史前复原 — v2 壳级告警横幅与运维记录页骨架；已处理后列表保持展开、支持一键清理全部事件
-- [2026-09-05 v2-alerts-activities](spec/archive/2026-09-05-v2-alerts-activities/) — 落地告警横幅聚合拉取与处置闭环（单条已处理 / 全部清空 / sse:alerts 重拉）及运维记录时间线、项目过滤与 sse:admin_activities 重拉
+- 2026-09-05 v2-alerts-activities（spec/archive/2026-09-05-v2-alerts-activities） — 落地告警横幅聚合拉取与处置闭环（单条已处理 / 全部清空 / sse:alerts 重拉）及运维记录时间线、项目过滤与 sse:admin_activities 重拉

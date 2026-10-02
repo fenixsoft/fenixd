@@ -24,4 +24,4 @@ run 流归属、告警存储与结构化日志三类边界健壮性的现行规�
 
 ## 溯源
 
-- [2026-09-21 2026-09-21-fix-robustness-edge-cases](spec/archive/2026-09-21-fix-robustness-edge-cases/) — 新建本页：run 流归属全等匹配（七处判定点收敛、后缀形态不漏命中）、告警存储损坏留底与清库式写回拒绝、裸 getLogger 旁路收敛与静态防回归。
+- 2026-09-21 2026-09-21-fix-robustness-edge-cases（spec/archive/2026-09-21-fix-robustness-edge-cases） — 新建本页：run 流归属全等匹配（七处判定点收敛、后缀形态不漏命中）、告警存储损坏留底与清库式写回拒绝、裸 getLogger 旁路收敛与静态防回归。

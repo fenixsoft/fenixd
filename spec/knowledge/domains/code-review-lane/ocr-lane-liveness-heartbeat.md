@@ -17,4 +17,4 @@ ocr 审查车道运行期间的心跳事件：以 run 转录 mtime 的持续刷�
 
 ## 溯源
 
-- [2026-09-27 fix-ocr-lane-orphaned-state-misfire](spec/archive/2026-09-27-fix-ocr-lane-orphaned-state-misfire/) — 新建车道运行中心跳：≤60s progress 事件与停跳先于终态、与 `spec_is_undriven` 的相容语义（大 diff 长审查不再误报孤儿、重启停跳后真孤儿仍上报）、终态分类器与渲染层对 progress 的透明容忍。
+- 2026-09-27 fix-ocr-lane-orphaned-state-misfire（spec/archive/2026-09-27-fix-ocr-lane-orphaned-state-misfire） — 新建车道运行中心跳：≤60s progress 事件与停跳先于终态、与 `spec_is_undriven` 的相容语义（大 diff 长审查不再误报孤儿、重启停跳后真孤儿仍上报）、终态分类器与渲染层对 progress 的透明容忍。

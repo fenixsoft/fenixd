@@ -16,5 +16,5 @@
 
 ## 溯源
 
-- [2026-09-25 fix-impl-code-review-writepath](spec/archive/2026-09-25-fix-impl-code-review-writepath/) — 新建写路径纪律：提示词与 agent 契约显式锚定 worktree 内相对路径、`--add-dir` 按车道精准授予（根治「报告被绝对路径写进主树、门在 worktree 恒判缺失」的写读错层）。
-- [2026-09-26 add-impl-ocr-parallel-lane](spec/archive/2026-09-26-add-impl-ocr-parallel-lane/) — 内联收尾审查段摘除，实现者不再落盘 `code-review.json`（报告改由框架侧 ocr 车道写入）；`--add-dir` 授权矩阵与契约消歧规则保留。
+- 2026-09-25 fix-impl-code-review-writepath（spec/archive/2026-09-25-fix-impl-code-review-writepath） — 新建写路径纪律：提示词与 agent 契约显式锚定 worktree 内相对路径、`--add-dir` 按车道精准授予（根治「报告被绝对路径写进主树、门在 worktree 恒判缺失」的写读错层）。
+- 2026-09-26 add-impl-ocr-parallel-lane（spec/archive/2026-09-26-add-impl-ocr-parallel-lane） — 内联收尾审查段摘除，实现者不再落盘 `code-review.json`（报告改由框架侧 ocr 车道写入）；`--add-dir` 授权矩阵与契约消歧规则保留。

@@ -15,4 +15,4 @@ SPEC 详情时间轴的名称隔离与方向保真：日志行按完整 spec 名
 
 ## 溯源
 
-- [2026-09-14 fix-timeline-substring-leak](spec/archive/2026-09-14-fix-timeline-substring-leak/) — 根治前缀名子串吸收姊妹 spec 状态节点：`Updated SPEC` 全名精确匹配、`backward` 方向字段双路径统一输出与前端回退徽标按方向渲染
+- 2026-09-14 fix-timeline-substring-leak（spec/archive/2026-09-14-fix-timeline-substring-leak） — 根治前缀名子串吸收姊妹 spec 状态节点：`Updated SPEC` 全名精确匹配、`backward` 方向字段双路径统一输出与前端回退徽标按方向渲染

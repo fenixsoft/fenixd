@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-09 2026-09-09-add-spec-archive](spec/archive/2026-09-09-add-spec-archive/) — 新增自动归档：阈值配置与设置页控件、daemon 周期检查与最久优先归档、单条失败不阻塞
+- 2026-09-09 2026-09-09-add-spec-archive（spec/archive/2026-09-09-add-spec-archive） — 新增自动归档：阈值配置与设置页控件、daemon 周期检查与最久优先归档、单条失败不阻塞

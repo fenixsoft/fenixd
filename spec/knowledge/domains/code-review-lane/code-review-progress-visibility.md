@@ -25,4 +25,4 @@ code-review 车道的事中可观测层：进度按「主产物 + 全部分片�
 
 ## 溯源
 
-- [2026-09-29 add-code-review-sharded-out](spec/archive/2026-09-29-add-code-review-sharded-out/) — 新建：分片直写模式下的三侧聚合消费口径（唯一入口/迭代顺序/file 去重/current 口径/主产物缺失不归零），加事中零进度停滞告警（admin_monitor 节拍检测、run 级去重、阈值配置与设置页输入）。
+- 2026-09-29 add-code-review-sharded-out（spec/archive/2026-09-29-add-code-review-sharded-out） — 新建：分片直写模式下的三侧聚合消费口径（唯一入口/迭代顺序/file 去重/current 口径/主产物缺失不归零），加事中零进度停滞告警（admin_monitor 节拍检测、run 级去重、阈值配置与设置页输入）。

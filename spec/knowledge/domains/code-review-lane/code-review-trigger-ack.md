@@ -30,4 +30,4 @@
 
 ## 溯源
 
-- [2026-09-29 add-code-review-trigger-ack](spec/archive/2026-09-29-add-code-review-trigger-ack/) — 新建本能力：daemon 写侧三态落盘（移植 code-fix 手动触发回链先例、键名随本车道信号 payload 用 `requested_at`）、GET run-result 只读端点、POST 受理窗口守卫（epoch 判据为评审修补）、前端受理等待态与三态分派反馈。
+- 2026-09-29 add-code-review-trigger-ack（spec/archive/2026-09-29-add-code-review-trigger-ack） — 新建本能力：daemon 写侧三态落盘（移植 code-fix 手动触发回链先例、键名随本车道信号 payload 用 `requested_at`）、GET run-result 只读端点、POST 受理窗口守卫（epoch 判据为评审修补）、前端受理等待态与三态分派反馈。

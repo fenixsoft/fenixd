@@ -15,4 +15,4 @@ Dashboard 设置页产物卡片的编辑与回显契约：三态呈现区分「�
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default](spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default/) — 新增产物卡片三态呈现与作用域只读、写入后端校验与受管键登记、回显未裁决/显式 false 保真
+- 2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default（spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default） — 新增产物卡片三态呈现与作用域只读、写入后端校验与受管键登记、回显未裁决/显式 false 保真

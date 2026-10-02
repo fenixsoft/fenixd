@@ -14,4 +14,4 @@ daemon restart 流程等待在飞 run 排水的时长上限与 checkpoint 广播
 
 ## 溯源
 
-- [2026-09-27 add-pipeline-throughput-governance](spec/archive/2026-09-27-add-pipeline-throughput-governance/) — 新增 restart 专用排水窗口配置并与 supervisor SIGKILL 宽限协调；restart 触发时向在飞 run 广播 checkpoint 信号
+- 2026-09-27 add-pipeline-throughput-governance（spec/archive/2026-09-27-add-pipeline-throughput-governance） — 新增 restart 专用排水窗口配置并与 supervisor SIGKILL 宽限协调；restart 触发时向在飞 run 广播 checkpoint 信号

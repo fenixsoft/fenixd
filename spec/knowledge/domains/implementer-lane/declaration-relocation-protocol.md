@@ -16,5 +16,5 @@
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-add-declaration-relocation-protocol](spec/archive/2026-09-23-add-declaration-relocation-protocol/) — 确立陈日确定性信号、凭据三要素契约、机械执行与审计、已对齐声明的凭据登记、防洗白复检与失败安全
-- [2026-09-26 2026-09-26-fix-relocation-writeback-layer](spec/archive/2026-09-26-fix-relocation-writeback-layer/) — 改写目标对齐写回层契约：按解析命中层落点（worktree/主树就地/branch 走凭据通道），执行后写读一致性复检
+- 2026-09-23 2026-09-23-add-declaration-relocation-protocol（spec/archive/2026-09-23-add-declaration-relocation-protocol） — 确立陈日确定性信号、凭据三要素契约、机械执行与审计、已对齐声明的凭据登记、防洗白复检与失败安全
+- 2026-09-26 2026-09-26-fix-relocation-writeback-layer（spec/archive/2026-09-26-fix-relocation-writeback-layer） — 改写目标对齐写回层契约：按解析命中层落点（worktree/主树就地/branch 走凭据通道），执行后写读一致性复检

@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-27 add-verify-lane-throughput](spec/archive/2026-09-27-add-verify-lane-throughput/) — 新增 ready 态并行出题派发与 testing 进入就绪短路（此前出题串行排在 implemented 之后，中位 36 分钟纯 LLM 生成全部落在验证关键路径上）
+- 2026-09-27 add-verify-lane-throughput（spec/archive/2026-09-27-add-verify-lane-throughput） — 新增 ready 态并行出题派发与 testing 进入就绪短路（此前出题串行排在 implemented 之后，中位 36 分钟纯 LLM 生成全部落在验证关键路径上）

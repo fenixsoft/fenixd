@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-10 fix-verify-report-fasttrack-scenarios](spec/archive/2026-09-10-fix-verify-report-fasttrack-scenarios/) — 补齐合成器对 fast-track 结果文件 `verification.scenarios` 嵌套键的回退读取（fast-track 不产 report.json，合成报告场景表此前恒为空，纯读取端格式兼容缺口）
+- 2026-09-10 fix-verify-report-fasttrack-scenarios（spec/archive/2026-09-10-fix-verify-report-fasttrack-scenarios） — 补齐合成器对 fast-track 结果文件 `verification.scenarios` 嵌套键的回退读取（fast-track 不产 report.json，合成报告场景表此前恒为空，纯读取端格式兼容缺口）

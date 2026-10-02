@@ -17,4 +17,4 @@ tasks.md 可解析性 lint 在实现收口期的复检门禁——implementer �
 
 ## 溯源
 
-- [2026-09-17 2026-09-17-add-tasksmd-relint-gate](spec/archive/2026-09-17-add-tasksmd-relint-gate/) — 「分组在但任务行为 0」新增为违规形态（与既有 0 分组并列）；full/fast-track 两车道收口期 merge 前复检门禁与 fail-open 语义落地
+- 2026-09-17 2026-09-17-add-tasksmd-relint-gate（spec/archive/2026-09-17-add-tasksmd-relint-gate） — 「分组在但任务行为 0」新增为违规形态（与既有 0 分组并列）；full/fast-track 两车道收口期 merge 前复检门禁与 fail-open 语义落地

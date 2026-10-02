@@ -18,4 +18,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：派发队列按 effective_priority 有限等待窗口老化，等待超窗后提级，防低优先级饿死
-- [2026-09-02 2026-09-02-improve-scheduling-noise-governance](spec/archive/2026-09-02-improve-scheduling-noise-governance/) — 固化入队时间戳、老化公式与边界约束（活跃任务不老化、floor 上限、同级顺序稳定），配置键 `pm.dispatch.aging.*` 缺省关闭保持向后兼容。
+- 2026-09-02 2026-09-02-improve-scheduling-noise-governance（spec/archive/2026-09-02-improve-scheduling-noise-governance） — 固化入队时间戳、老化公式与边界约束（活跃任务不老化、floor 上限、同级顺序稳定），配置键 `pm.dispatch.aging.*` 缺省关闭保持向后兼容。

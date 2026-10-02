@@ -19,4 +19,4 @@ planner-plan 出题阶段的验证契约只读一致性检查通道：契约偏�
 
 ## 溯源
 
-- [2026-09-18 2026-09-18-add-verify-preflight-gate](spec/archive/2026-09-18-add-verify-preflight-gate/) — 新增出题期契约只读检查（入口存在性、start 入口一致性、端口形态提示）、contract_findings.json 落盘与 admin 处置 prompt 注入通道。
+- 2026-09-18 2026-09-18-add-verify-preflight-gate（spec/archive/2026-09-18-add-verify-preflight-gate） — 新增出题期契约只读检查（入口存在性、start 入口一致性、端口形态提示）、contract_findings.json 落盘与 admin 处置 prompt 注入通道。

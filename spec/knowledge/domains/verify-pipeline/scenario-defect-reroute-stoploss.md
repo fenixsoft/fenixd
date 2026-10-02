@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- [2026-09-23 evo-scenario-defect-reroute-stoploss](spec/archive/2026-09-23-evo-scenario-defect-reroute-stoploss/) — 新增改道重入轮的同批失败集比对与提前止损、跨轮失败集留存文件（此前改道只按次数预算与 judge 自报 verdict 收口，judge 申报修复而重跑同批失败时机制识别不出改道无效、继续空烧改道预算）
+- 2026-09-23 evo-scenario-defect-reroute-stoploss（spec/archive/2026-09-23-evo-scenario-defect-reroute-stoploss） — 新增改道重入轮的同批失败集比对与提前止损、跨轮失败集留存文件（此前改道只按次数预算与 judge 自报 verdict 收口，judge 申报修复而重跑同批失败时机制识别不出改道无效、继续空烧改道预算）

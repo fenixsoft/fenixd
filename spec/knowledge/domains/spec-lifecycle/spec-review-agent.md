@@ -19,4 +19,4 @@
 
 ## 溯源
 
-- [2026-09-19 2026-09-19-add-spec-review-gate](spec/archive/2026-09-19-add-spec-review-gate/) — 新增评审 agent 契约：提示词注册与占位符、判官范式与 run_id 双处登记、模型路由与输入可及性、结果 JSON 契约、结果硬门与主树写入边界（含不自动回滚裁定）
+- 2026-09-19 2026-09-19-add-spec-review-gate（spec/archive/2026-09-19-add-spec-review-gate） — 新增评审 agent 契约：提示词注册与占位符、判官范式与 run_id 双处登记、模型路由与输入可及性、结果 JSON 契约、结果硬门与主树写入边界（含不自动回滚裁定）

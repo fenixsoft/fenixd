@@ -22,5 +22,5 @@
 ## 溯源
 
 - 史前基线 — bug-found 处置已确立原地打回方向：打回 implementer 修复以替代 fix 派生，打回后调度资格放行 implementer，升级告警摘要携带 SPEC 名称。
-- [2026-09-05 2026-09-05-add-inplace-bug-repair](spec/archive/2026-09-05-add-inplace-bug-repair/) — 契约化原地打回：失败轮数计数持久化、tasks.md「验证修复」任务段注入、3 轮升级冻结闸门与人工升级告警。
-- [2026-09-12 2026-09-12-add-bug-repair-mode-config](spec/archive/2026-09-12-add-bug-repair-mode-config/) — 分流依据由 SPEC 名称前缀改为 `admin.bug_repair_mode` 配置（缺省 inplace，前缀判定退役），补 derive 模式分支；升级闸门限定仅作用 inplace 计数。
+- 2026-09-05 2026-09-05-add-inplace-bug-repair（spec/archive/2026-09-05-add-inplace-bug-repair） — 契约化原地打回：失败轮数计数持久化、tasks.md「验证修复」任务段注入、3 轮升级冻结闸门与人工升级告警。
+- 2026-09-12 2026-09-12-add-bug-repair-mode-config（spec/archive/2026-09-12-add-bug-repair-mode-config） — 分流依据由 SPEC 名称前缀改为 `admin.bug_repair_mode` 配置（缺省 inplace，前缀判定退役），补 derive 模式分支；升级闸门限定仅作用 inplace 计数。

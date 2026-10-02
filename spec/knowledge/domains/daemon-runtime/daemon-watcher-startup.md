@@ -15,5 +15,5 @@ PMEngine 的 Agent 派发全部走独立 worker 线程；daemon 启动序列保�
 
 ## 溯源
 
-- [2026-09-02 fix-worktree-spec-seeding](spec/archive/2026-09-02-fix-worktree-spec-seeding/) — Agent 派发改异步 worker 线程：启动初扫与运行期事件处理不被 Agent 阻塞，多 Agent 按 `max_concurrent` 并发执行，共享状态加锁
-- [2026-09-24 fix-spec-review-blocking-dispatch](spec/archive/2026-09-24-fix-spec-review-blocking-dispatch/) — 异步约束扩展到全部 agent 类型；初扫拆「基线快照同步 + 扫描主体异步」，主循环与文件信号消费者不再被启动期恢复阻塞
+- 2026-09-02 fix-worktree-spec-seeding（spec/archive/2026-09-02-fix-worktree-spec-seeding） — Agent 派发改异步 worker 线程：启动初扫与运行期事件处理不被 Agent 阻塞，多 Agent 按 `max_concurrent` 并发执行，共享状态加锁
+- 2026-09-24 fix-spec-review-blocking-dispatch（spec/archive/2026-09-24-fix-spec-review-blocking-dispatch） — 异步约束扩展到全部 agent 类型；初扫拆「基线快照同步 + 扫描主体异步」，主循环与文件信号消费者不再被启动期恢复阻塞

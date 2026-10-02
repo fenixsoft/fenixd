@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-27 add-verify-lane-throughput](spec/archive/2026-09-27-add-verify-lane-throughput/) — 确立缓存键四元组全等与三类失效条件（含出处交集判据与存疑 fail-closed）、写侧 PASS 条目扩展、修复轮场景集三并集裁剪与缓存异常 fail-open 回落全量
+- 2026-09-27 add-verify-lane-throughput（spec/archive/2026-09-27-add-verify-lane-throughput） — 确立缓存键四元组全等与三类失效条件（含出处交集判据与存疑 fail-closed）、写侧 PASS 条目扩展、修复轮场景集三并集裁剪与缓存异常 fail-open 回落全量

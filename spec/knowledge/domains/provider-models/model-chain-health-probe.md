@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-27 add-impl-selfcheck-model-probe](spec/archive/2026-09-27-add-impl-selfcheck-model-probe/) — 将 unrecognized_model 从瞬断类改归确定性模型失败并建立链上立即 failover 契约，固化模板拒模型警示与运行时链人工摘除的运维文档处方
+- 2026-09-27 add-impl-selfcheck-model-probe（spec/archive/2026-09-27-add-impl-selfcheck-model-probe） — 将 unrecognized_model 从瞬断类改归确定性模型失败并建立链上立即 failover 契约，固化模板拒模型警示与运行时链人工摘除的运维文档处方

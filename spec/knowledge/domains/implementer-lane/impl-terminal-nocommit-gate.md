@@ -15,4 +15,4 @@ implementer run 成功收口前的最后机械检查：分支零新提交且工�
 
 ## 溯源
 
-- [2026-09-17 2026-09-17-add-impl-terminal-nocommit-gate](spec/archive/2026-09-17-add-impl-terminal-nocommit-gate/) — 确立终态零提交判定、退避 + resume 处置复用、机械归因透传与 cleanup rmtree 前快照留档
+- 2026-09-17 2026-09-17-add-impl-terminal-nocommit-gate（spec/archive/2026-09-17-add-impl-terminal-nocommit-gate） — 确立终态零提交判定、退避 + resume 处置复用、机械归因透传与 cleanup rmtree 前快照留档

@@ -15,4 +15,4 @@ planner-judge 契约文本与 verdict_check 校验器常量的同源锚定：契
 
 ## 溯源
 
-- [2026-09-15 add-verdict-contract-singularity](spec/archive/2026-09-15-add-verdict-contract-singularity/) — 新增契约文本与校验器常量的同源锚定测试（四分类取值、非 PASS 状态集、evidence 键名、triage 字段、强制 failed 映射集与哨兵防私增）
+- 2026-09-15 add-verdict-contract-singularity（spec/archive/2026-09-15-add-verdict-contract-singularity） — 新增契约文本与校验器常量的同源锚定测试（四分类取值、非 PASS 状态集、evidence 键名、triage 字段、强制 failed 映射集与哨兵防私增）

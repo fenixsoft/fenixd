@@ -18,6 +18,6 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：Administrator 为自愈 agent，健康监视器按需唤起，处置产出叙述总结与运维记录；自愈不终结在飞链路时不得重复唤起
-- [2026-09-02 add-administrator-agent](spec/archive/2026-09-02-add-administrator-agent/) — 固化按需唤起契约、高级处置权限清单与处置留痕
-- [2026-09-08 fix-admin-run-blocks-mainloop](spec/archive/2026-09-08-fix-admin-run-blocks-mainloop/) — 执行模型改后台 worker 池并行：主循环解耦、disposition 状态文件按 run 实例分离、落痕语义保持不变
-- [2026-09-29 2026-09-29-evo-alert-noise-governance](spec/archive/2026-09-29-evo-alert-noise-governance/) — 自动召唤通道新增夹具项目抑制：fixture 标记项目的升级信号不再自动召唤 Administrator（INFO 留痕、告警记录保留、人工显式触发不受限、判定 fail-open）
+- 2026-09-02 add-administrator-agent（spec/archive/2026-09-02-add-administrator-agent） — 固化按需唤起契约、高级处置权限清单与处置留痕
+- 2026-09-08 fix-admin-run-blocks-mainloop（spec/archive/2026-09-08-fix-admin-run-blocks-mainloop） — 执行模型改后台 worker 池并行：主循环解耦、disposition 状态文件按 run 实例分离、落痕语义保持不变
+- 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 自动召唤通道新增夹具项目抑制：fixture 标记项目的升级信号不再自动召唤 Administrator（INFO 留痕、告警记录保留、人工显式触发不受限、判定 fail-open）

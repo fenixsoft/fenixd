@@ -14,4 +14,4 @@ v3 的 SPEC 文档查看：三页签懒加载 + Markdown 富文本渲染 + 三�
 
 ## 溯源
 
-- [2026-09-08 improve-v3-spec-doc-markdown](spec/archive/2026-09-08-improve-v3-spec-doc-markdown/) — 落地三页签懒加载与组件内缓存、GFM Markdown 安全渲染（链接协议白名单）及空态 / 错误态 / 加载态三态区分
+- 2026-09-08 improve-v3-spec-doc-markdown（spec/archive/2026-09-08-improve-v3-spec-doc-markdown） — 落地三页签懒加载与组件内缓存、GFM Markdown 安全渲染（链接协议白名单）及空态 / 错误态 / 加载态三态区分

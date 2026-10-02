@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-19 fix-run-hang-amplification](spec/archive/2026-09-19-fix-run-hang-amplification/) — 确立跨 attempt 的 spec 级累计预算扣减、耗尽终态收口与上一轮结构化诊断摘要的 prompt 继承
+- 2026-09-19 fix-run-hang-amplification（spec/archive/2026-09-19-fix-run-hang-amplification） — 确立跨 attempt 的 spec 级累计预算扣减、耗尽终态收口与上一轮结构化诊断摘要的 prompt 继承

@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default](spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default/) — 建立 setup LLM 探测预填、`_wip_overlap_gate` 未裁决信号、admin 摄取唤起与 Administrator 起草手册的闭环
+- 2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default（spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default） — 建立 setup LLM 探测预填、`_wip_overlap_gate` 未裁决信号、admin 摄取唤起与 Administrator 起草手册的闭环

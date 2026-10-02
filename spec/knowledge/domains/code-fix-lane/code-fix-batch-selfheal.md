@@ -32,4 +32,4 @@
 
 ## 溯源
 
-- [2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal](spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal/) — 新建本页：失败批现场即弃与锁释放、批收尾三态与链自驱动条件、链内跳过集生命周期、失败档案 fail_count 重试预算与达上限一次性告警。
+- 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 新建本页：失败批现场即弃与锁释放、批收尾三态与链自驱动条件、链内跳过集生命周期、失败档案 fail_count 重试预算与达上限一次性告警。

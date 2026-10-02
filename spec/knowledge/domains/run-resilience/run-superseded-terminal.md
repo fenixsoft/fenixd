@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-16 fix-retry-orphan-active-runs](spec/archive/2026-09-16-fix-retry-orphan-active-runs/) — 确立 superseded 终态补写时点、读侧终态识别与 1800 秒 stale 兜底，全量消化存量 transient_retry 尸体文件
+- 2026-09-16 fix-retry-orphan-active-runs（spec/archive/2026-09-16-fix-retry-orphan-active-runs） — 确立 superseded 终态补写时点、读侧终态识别与 1800 秒 stale 兜底，全量消化存量 transient_retry 尸体文件

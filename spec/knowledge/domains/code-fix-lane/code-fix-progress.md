@@ -29,5 +29,5 @@
 
 ## 溯源
 
-- [2026-09-26 2026-09-26-add-code-review-auto-fix](spec/archive/2026-09-26-add-code-review-auto-fix/) — 新建本页：fix-progress.json 快照结构与 activation_id 链内 total 不变语义、只读进度 API、审查页签进度呈现与双进度并存。
-- [2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal](spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal/) — 快照结构增 `chain_skipped` 链内跳过集字段及其新链重置语义。
+- 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：fix-progress.json 快照结构与 activation_id 链内 total 不变语义、只读进度 API、审查页签进度呈现与双进度并存。
+- 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 快照结构增 `chain_skipped` 链内跳过集字段及其新链重置语义。

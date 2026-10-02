@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-25 fix-agent-lane-efficiency](spec/archive/2026-09-25-fix-agent-lane-efficiency/) — 新增工具调用效率契约段（批量并行/定向读取/同 run 去重）与取证深度上限、输出裁剪约束，明确零框架侧拦截
+- 2026-09-25 fix-agent-lane-efficiency（spec/archive/2026-09-25-fix-agent-lane-efficiency） — 新增工具调用效率契约段（批量并行/定向读取/同 run 去重）与取证深度上限、输出裁剪约束，明确零框架侧拦截

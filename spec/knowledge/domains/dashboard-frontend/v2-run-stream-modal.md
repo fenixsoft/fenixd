@@ -15,4 +15,4 @@ run 流实时渲染组件：run 模式订阅运行事件流，admin 模式经等
 ## 溯源
 
 - 史前复原 — v2 运行记录弹窗 watch 增量渲染 + 粘性滚动 + token 统计；弹窗隐藏与轮询失败有显式恢复
-- [2026-09-06 v2-run-stream-modal](spec/archive/2026-09-06-v2-run-stream-modal/) — 落地 run/admin 双模式订阅契约（tail 预取 + watch 订阅 + reset 整段替换）、关闭退订清理与 admin 等待态状态机（409 终止 / admin_run_id 轮询切换）
+- 2026-09-06 v2-run-stream-modal（spec/archive/2026-09-06-v2-run-stream-modal） — 落地 run/admin 双模式订阅契约（tail 预取 + watch 订阅 + reset 整段替换）、关闭退订清理与 admin 等待态状态机（409 终止 / admin_run_id 轮询切换）

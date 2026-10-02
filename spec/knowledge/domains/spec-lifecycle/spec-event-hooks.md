@@ -25,4 +25,4 @@ SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作
 
 ## 溯源
 
-- [2026-09-12 2026-09-12-add-spec-hooks](spec/archive/2026-09-12-add-spec-hooks/) — 新增事件钩子：全局状态观察者与事件发布、两级订阅与七种动作、异步执行与失败告警不重试、hook_audit 审计与查询 API、配置契约与 Dashboard 两个管理面
+- 2026-09-12 2026-09-12-add-spec-hooks（spec/archive/2026-09-12-add-spec-hooks） — 新增事件钩子：全局状态观察者与事件发布、两级订阅与七种动作、异步执行与失败告警不重试、hook_audit 审计与查询 API、配置契约与 Dashboard 两个管理面

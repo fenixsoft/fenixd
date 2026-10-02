@@ -18,5 +18,5 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 
 ## 溯源
 
-- [2026-09-11 improve-hot-reload-robustness](spec/archive/2026-09-11-improve-hot-reload-robustness/) — 错误升级改为指纹复现口径，固化指纹归一化、防抖边界、缺 timestamp fail-closed 与阈值不配置化
-- [2026-09-29 2026-09-29-evo-alert-noise-governance](spec/archive/2026-09-29-evo-alert-noise-governance/) — 新增指纹级重启冷却（重启后首扫回放的已知指纹 30 分钟窗内不升级不召唤，窗后/全新指纹照常）与同轮孪生指纹合并召唤（多指纹一轮只产一条信号一次 run）
+- 2026-09-11 improve-hot-reload-robustness（spec/archive/2026-09-11-improve-hot-reload-robustness） — 错误升级改为指纹复现口径，固化指纹归一化、防抖边界、缺 timestamp fail-closed 与阈值不配置化
+- 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 新增指纹级重启冷却（重启后首扫回放的已知指纹 30 分钟窗内不升级不召唤，窗后/全新指纹照常）与同轮孪生指纹合并召唤（多指纹一轮只产一条信号一次 run）

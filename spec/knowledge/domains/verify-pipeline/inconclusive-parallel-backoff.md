@@ -12,4 +12,4 @@
 
 ## 溯源
 
-- [2026-09-17 add-verify-parallel-backoff](spec/archive/2026-09-17-add-verify-parallel-backoff/) — 新增 inconclusive 重验并行度按 attempt 递减、健康轮自动复位与降档可观测（此前重验并行度不变，被测实例渲染过载时同一条件原样复现连续空跑）
+- 2026-09-17 add-verify-parallel-backoff（spec/archive/2026-09-17-add-verify-parallel-backoff） — 新增 inconclusive 重验并行度按 attempt 递减、健康轮自动复位与降档可观测（此前重验并行度不变，被测实例渲染过载时同一条件原样复现连续空跑）

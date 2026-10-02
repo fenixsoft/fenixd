@@ -14,5 +14,5 @@
 
 ## 溯源
 
-- [2026-09-02 improve-run-lifecycle-governance](spec/archive/2026-09-02-improve-run-lifecycle-governance/) — 新增恢复前存活子进程核验、worktree 锁按进程表重建与陈锁回收、锁冲突指数退避不消耗 attempt 配额
-- [2026-09-22 fix-orphan-ready-recovery-liveness](spec/archive/2026-09-22-fix-orphan-ready-recovery-liveness/) — 存活核验扩至 BLOCKER CHECK 与 full_scan recovery 的 ready 态；流文件末条终态不计存活、`superseded` 例外、解析失败保守存活
+- 2026-09-02 improve-run-lifecycle-governance（spec/archive/2026-09-02-improve-run-lifecycle-governance） — 新增恢复前存活子进程核验、worktree 锁按进程表重建与陈锁回收、锁冲突指数退避不消耗 attempt 配额
+- 2026-09-22 fix-orphan-ready-recovery-liveness（spec/archive/2026-09-22-fix-orphan-ready-recovery-liveness） — 存活核验扩至 BLOCKER CHECK 与 full_scan recovery 的 ready 态；流文件末条终态不计存活、`superseded` 例外、解析失败保守存活

@@ -24,4 +24,4 @@ drafted 晋升前的方案评审门：`reviewing` 第 11 状态、评审模式�
 
 ## 溯源
 
-- [2026-09-19 2026-09-19-add-spec-review-gate](spec/archive/2026-09-19-add-spec-review-gate/) — 新增评审门：reviewing 状态与转移边、spec_review_mode 配置、四条全中跳过白名单（evo- 硬否决）、晋升链四通道分流、事件/调度/恢复接入、中断回退与并发闸门
+- 2026-09-19 2026-09-19-add-spec-review-gate（spec/archive/2026-09-19-add-spec-review-gate） — 新增评审门：reviewing 状态与转移边、spec_review_mode 配置、四条全中跳过白名单（evo- 硬否决）、晋升链四通道分流、事件/调度/恢复接入、中断回退与并发闸门

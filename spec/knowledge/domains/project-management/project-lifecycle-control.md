@@ -15,5 +15,5 @@
 
 ## 溯源
 
-- [2026-09-02 improve-dashboard-sections](spec/archive/2026-09-02-improve-dashboard-sections/) — 新增本能力：概览卡片启动/停止 daemon（当时 tmux 直启 `fenixd.py`、SIGINT 优雅关闭约 5 秒）、软删除（停 daemon + 写 `ignored`）与三个管理端点（start/stop/delete）
-- [2026-09-18 fix-supervisor-hosting-chain](spec/archive/2026-09-18-fix-supervisor-hosting-chain/) — 启动改为 session 内拉起 supervisor 托管入口；停止改为「写 `.fenix/stop` + SIGTERM + 约 30 秒双进程收口 + 兜底 SIGKILL」；端点扩为五个（新增 restart、install-hosting）；unmanaged 项目 restart 前置拒绝
+- 2026-09-02 improve-dashboard-sections（spec/archive/2026-09-02-improve-dashboard-sections） — 新增本能力：概览卡片启动/停止 daemon（当时 tmux 直启 `fenixd.py`、SIGINT 优雅关闭约 5 秒）、软删除（停 daemon + 写 `ignored`）与三个管理端点（start/stop/delete）
+- 2026-09-18 fix-supervisor-hosting-chain（spec/archive/2026-09-18-fix-supervisor-hosting-chain） — 启动改为 session 内拉起 supervisor 托管入口；停止改为「写 `.fenix/stop` + SIGTERM + 约 30 秒双进程收口 + 兜底 SIGKILL」；端点扩为五个（新增 restart、install-hosting）；unmanaged 项目 restart 前置拒绝

@@ -14,4 +14,4 @@ daemon 在 push 流程尾部把主树里的归档移动残留以独立提交收�
 
 ## 溯源
 
-- [2026-09-10 2026-09-10-run-lifecycle-hardening](spec/archive/2026-09-10-run-lifecycle-hardening/) — 新增归档移动随 push 自动提交：残留检测、独立提交与内容限定、失败不阻塞主流程
+- 2026-09-10 2026-09-10-run-lifecycle-hardening（spec/archive/2026-09-10-run-lifecycle-hardening） — 新增归档移动随 push 自动提交：残留检测、独立提交与内容限定、失败不阻塞主流程

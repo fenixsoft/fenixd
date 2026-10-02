@@ -17,6 +17,6 @@ v2 壳级 SSE 桥：把 `/api/stream` 帧转为 AMIS broadcast 事件供页面�
 ## 溯源
 
 - 史前复原 — SSE 桥为 custom 组件 + broadcast 广播链路：桥端维护项目行基线，refresh/state 事件增量合并实现无感刷新
-- [2026-09-05 2026-09-05-v2-sse-bridge](spec/archive/2026-09-05-v2-sse-bridge/) — 落地帧转 broadcast（`sse:<type>`）、cid 暴露、refresh/state 500ms 前缘节流与断线告警（史前的「桥端行基线增量合并」收敛为「广播原始帧、页面 onEvent→reload 消费」）
+- 2026-09-05 2026-09-05-v2-sse-bridge（spec/archive/2026-09-05-v2-sse-bridge） — 落地帧转 broadcast（`sse:<type>`）、cid 暴露、refresh/state 500ms 前缘节流与断线告警（史前的「桥端行基线增量合并」收敛为「广播原始帧、页面 onEvent→reload 消费」）
 - 2026-09-02 git:ea88dd5a — v1/v2 dashboard 壳整体移除，SSE 桥随壳退役
 - 2026-09-28 audit git:25bd6751 — 根路由改直服 v3 SPA（`/` 直接返回 `dist/index.html`，302 跳转取消），退役注记根路由表述纠偏

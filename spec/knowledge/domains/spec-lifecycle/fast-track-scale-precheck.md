@@ -19,5 +19,5 @@ fast-track 派发前按任务面做轻量静态规模预估，超阈 SPEC 自动
 
 ## 溯源
 
-- [2026-09-18 2026-09-18-evo-add-fast-track-scale-precheck](spec/archive/2026-09-18-evo-add-fast-track-scale-precheck/) — 新增规模预检：任务条数+文件面静态预估与分档、预检失败保守放行、extension 末位自动 WIP 保全
-- [2026-09-18 2026-09-18-evo-add-fast-track-scale-precheck-4afdbe](spec/archive/2026-09-18-evo-add-fast-track-scale-precheck-4afdbe/) — 同名重复立项归档，增量规则口径与前一份一致，未引入新规则
+- 2026-09-18 2026-09-18-evo-add-fast-track-scale-precheck（spec/archive/2026-09-18-evo-add-fast-track-scale-precheck） — 新增规模预检：任务条数+文件面静态预估与分档、预检失败保守放行、extension 末位自动 WIP 保全
+- 2026-09-18 2026-09-18-evo-add-fast-track-scale-precheck-4afdbe（spec/archive/2026-09-18-evo-add-fast-track-scale-precheck-4afdbe） — 同名重复立项归档，增量规则口径与前一份一致，未引入新规则

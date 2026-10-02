@@ -17,4 +17,4 @@ stuck 信号的误报降噪：进程存活反证优先于文件活跃判据、re
 
 ## 溯源
 
-- [2026-09-21 evo-stuck-signal-hygiene](spec/archive/2026-09-21-evo-stuck-signal-hygiene/) — 固化进程存活反证、merge_signal 去重回归锁定、resolved/partially-resolved 处置后静默期与 escalated 边界、`admin.stuck_silence_minutes` 配置与系统设置面板接线
+- 2026-09-21 evo-stuck-signal-hygiene（spec/archive/2026-09-21-evo-stuck-signal-hygiene） — 固化进程存活反证、merge_signal 去重回归锁定、resolved/partially-resolved 处置后静默期与 escalated 边界、`admin.stuck_silence_minutes` 配置与系统设置面板接线

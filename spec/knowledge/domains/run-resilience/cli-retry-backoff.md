@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-10 run-lifecycle-hardening](spec/archive/2026-09-10-run-lifecycle-hardening/) — 确立连续秒挂的 spec 级退避冷却（阈值/次数/时长三配置键）、风暴告警与 provider 熔断正交语义
+- 2026-09-10 run-lifecycle-hardening（spec/archive/2026-09-10-run-lifecycle-hardening） — 确立连续秒挂的 spec 级退避冷却（阈值/次数/时长三配置键）、风暴告警与 provider 熔断正交语义

@@ -17,4 +17,4 @@
 
 ## 溯源
 
-- [2026-09-17 fix-verdict-dedup-resynthesis](spec/archive/2026-09-17-fix-verdict-dedup-resynthesis/) — 确立查重拒后违规清单落盘+定向重合成+回灌校验闭环、二次拒绝升级 admin、归因文本事前契约、级联豁免归一化、原地重试前状态复查与「拒绝采纳」文案
+- 2026-09-17 fix-verdict-dedup-resynthesis（spec/archive/2026-09-17-fix-verdict-dedup-resynthesis） — 确立查重拒后违规清单落盘+定向重合成+回灌校验闭环、二次拒绝升级 admin、归因文本事前契约、级联豁免归一化、原地重试前状态复查与「拒绝采纳」文案

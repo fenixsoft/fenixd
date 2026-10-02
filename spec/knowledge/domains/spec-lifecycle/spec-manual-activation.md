@@ -18,5 +18,5 @@
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-add-spec-manual-activation](spec/archive/2026-09-23-add-spec-manual-activation/) — 新增手工激活：哨兵值语义与谓词前置判定、激活动作与误操作拒绝、四条立项/放行入口、到期检测豁免与有意等待不告警
-- [2026-09-25 2026-09-25-fix-scheduling-kick-single-slot](spec/archive/2026-09-25-fix-scheduling-kick-single-slot/) — 激活唤醒信号解耦单一文件路径（改经 scheduling-kick-signal 契约）、信号失败如实回报、多 SPEC 先后激活互不丢弃
+- 2026-09-23 2026-09-23-add-spec-manual-activation（spec/archive/2026-09-23-add-spec-manual-activation） — 新增手工激活：哨兵值语义与谓词前置判定、激活动作与误操作拒绝、四条立项/放行入口、到期检测豁免与有意等待不告警
+- 2026-09-25 2026-09-25-fix-scheduling-kick-single-slot（spec/archive/2026-09-25-fix-scheduling-kick-single-slot） — 激活唤醒信号解耦单一文件路径（改经 scheduling-kick-signal 契约）、信号失败如实回报、多 SPEC 先后激活互不丢弃

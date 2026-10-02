@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-10 2026-09-10-add-dashboard-help-center](spec/archive/2026-09-10-add-dashboard-help-center/) — 建立文档集与撰写契约：README+编号章节结构、主题覆盖清单、mermaid 图表纪律、以代码为准与模板漂移点集中澄清、每篇独立可读与交叉链接有效性
+- 2026-09-10 2026-09-10-add-dashboard-help-center（spec/archive/2026-09-10-add-dashboard-help-center） — 建立文档集与撰写契约：README+编号章节结构、主题覆盖清单、mermaid 图表纪律、以代码为准与模板漂移点集中澄清、每篇独立可读与交叉链接有效性

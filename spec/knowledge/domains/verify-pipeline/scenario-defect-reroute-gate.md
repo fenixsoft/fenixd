@@ -14,4 +14,4 @@ judge 申报 bug-found 后的机械改道判定：纯场景缺陷清单不消耗
 ## 溯源
 
 - 史前复原（存量基线） — 场景验收缺陷走退回 plan 闭环：场景自身缺陷回到重规划修正，不误判为产品缺陷
-- [2026-09-15 add-scenario-defect-triage-gate](spec/archive/2026-09-15-add-scenario-defect-triage-gate/) — 新增 bug-found 前的 classification 分布机械改道判定、定向重派 judge 协议、改道预算与人工升级路径、judge prompt 场景修复路由约定（此前 100% 场景缺陷的清单照单消耗实现轮整轮修场景文件）
+- 2026-09-15 add-scenario-defect-triage-gate（spec/archive/2026-09-15-add-scenario-defect-triage-gate） — 新增 bug-found 前的 classification 分布机械改道判定、定向重派 judge 协议、改道预算与人工升级路径、judge prompt 场景修复路由约定（此前 100% 场景缺陷的清单照单消耗实现轮整轮修场景文件）

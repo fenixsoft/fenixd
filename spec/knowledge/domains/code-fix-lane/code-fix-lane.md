@@ -46,5 +46,5 @@
 
 ## 溯源
 
-- [2026-09-26 2026-09-26-add-code-review-auto-fix](spec/archive/2026-09-26-add-code-review-auto-fix/) — 新建本页：两路自动激活、批次编排循环、幂等与单飞、全量回归门与合回、回归契约缺失 fail-closed、失败重试与丢弃、回归执行锁根锚定主树。
-- [2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal](spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal/) — 批收尾改三态（success/consumed/halt，consumed 自驱动）；失败路径由「保留现场待人工」改写为「现场即弃 + 锁即释 + 档案留痕」；零有效修复拒合回由链终止改为链内跳过；回归失败丢弃接入失败档案重试预算，废除「每次丢弃追加 todo 人工项」与「失败集合须人工 release」语义。
+- 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：两路自动激活、批次编排循环、幂等与单飞、全量回归门与合回、回归契约缺失 fail-closed、失败重试与丢弃、回归执行锁根锚定主树。
+- 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 批收尾改三态（success/consumed/halt，consumed 自驱动）；失败路径由「保留现场待人工」改写为「现场即弃 + 锁即释 + 档案留痕」；零有效修复拒合回由链终止改为链内跳过；回归失败丢弃接入失败档案重试预算，废除「每次丢弃追加 todo 人工项」与「失败集合须人工 release」语义。

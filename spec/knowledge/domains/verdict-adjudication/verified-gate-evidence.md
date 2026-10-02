@@ -14,4 +14,4 @@ verified→done 任务完成门禁的证据寻址、fail 方向与恢复机制�
 
 ## 溯源
 
-- [2026-09-13 fix-verified-gate-evidence-race](spec/archive/2026-09-13-fix-verified-gate-evidence-race/) — 确立 implementer 结果 per-spec 快照、门禁证据源优先级（快照>共享兜底>fail-closed）、task-gap 结论结构化持久与恢复巡检对门禁结论的尊重
+- 2026-09-13 fix-verified-gate-evidence-race（spec/archive/2026-09-13-fix-verified-gate-evidence-race） — 确立 implementer 结果 per-spec 快照、门禁证据源优先级（快照>共享兜底>fail-closed）、task-gap 结论结构化持久与恢复巡检对门禁结论的尊重

@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-13 add-verify-contract-autodraft](spec/archive/2026-09-13-add-verify-contract-autodraft/) — 新增契约缺失/损坏的自主恢复路径：路由信号化（不再作为打回 plan 反馈空转）、admin 三段自证起草门、契约权限边界与校验入口（此前人类不写契约就无人写，验证撞墙烧两轮打回升级后仍须人工应急手写）
+- 2026-09-13 add-verify-contract-autodraft（spec/archive/2026-09-13-add-verify-contract-autodraft） — 新增契约缺失/损坏的自主恢复路径：路由信号化（不再作为打回 plan 反馈空转）、admin 三段自证起草门、契约权限边界与校验入口（此前人类不写契约就无人写，验证撞墙烧两轮打回升级后仍须人工应急手写）

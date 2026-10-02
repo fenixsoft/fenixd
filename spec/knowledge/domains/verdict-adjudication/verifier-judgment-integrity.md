@@ -13,4 +13,4 @@ agent run 终态与验证晋级口径的完整性护栏：进程假成功被拒�
 
 ## 溯源
 
-- [2026-09-02 fix-dispatch-orphan](spec/archive/2026-09-02-fix-dispatch-orphan/) — 确立 agent 终态语义校验（is_error/subtype 判失败）、verified 晋级前完整性核对（fail-closed）、VERIFIED→TESTING 逃生门（仅门禁自动路径）与 run 产物生命周期持久性
+- 2026-09-02 fix-dispatch-orphan（spec/archive/2026-09-02-fix-dispatch-orphan） — 确立 agent 终态语义校验（is_error/subtype 判失败）、verified 晋级前完整性核对（fail-closed）、VERIFIED→TESTING 逃生门（仅门禁自动路径）与 run 产物生命周期持久性

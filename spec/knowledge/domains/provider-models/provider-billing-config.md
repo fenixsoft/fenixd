@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-11 improve-provider-billing-config](spec/archive/2026-09-11-improve-provider-billing-config/) — 将计费从面板级全局开关收敛为 provider 卡片级开关、存储从顶层 llm.billing 内嵌进 provider 对象，固化价格行预填、输入约束与按卡片校验契约
+- 2026-09-11 improve-provider-billing-config（spec/archive/2026-09-11-improve-provider-billing-config） — 将计费从面板级全局开关收敛为 provider 卡片级开关、存储从顶层 llm.billing 内嵌进 provider 对象，固化价格行预填、输入约束与按卡片校验契约

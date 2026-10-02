@@ -11,4 +11,4 @@ verifier 出题断言选择器的实测来源约束：CSS 选择器必须来自�
 
 ## 溯源
 
-- [2026-09-11 fix-verify-verdict-visibility](spec/archive/2026-09-11-fix-verify-verdict-visibility/) — 确立断言选择器「先 playwright 实查后落盘」的强制约束，写入 verifier 提示词出题/断言约束段并附 antd v6 类名改名反例
+- 2026-09-11 fix-verify-verdict-visibility（spec/archive/2026-09-11-fix-verify-verdict-visibility） — 确立断言选择器「先 playwright 实查后落盘」的强制约束，写入 verifier 提示词出题/断言约束段并附 antd v6 类名改名反例

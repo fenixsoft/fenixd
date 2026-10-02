@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-11 fix-verify-verdict-visibility](spec/archive/2026-09-11-fix-verify-verdict-visibility/) — 新增被裁决过滤失败场景的 Bug 列表摘要展示、后端 filtered_failures 结构与旧格式数据兼容边界
+- 2026-09-11 fix-verify-verdict-visibility（spec/archive/2026-09-11-fix-verify-verdict-visibility） — 新增被裁决过滤失败场景的 Bug 列表摘要展示、后端 filtered_failures 结构与旧格式数据兼容边界

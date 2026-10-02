@@ -12,5 +12,5 @@
 
 ## 溯源
 
-- [2026-09-25 fix-impl-code-review-gate-readback](spec/archive/2026-09-25-fix-impl-code-review-gate-readback/) — 新建读侧容错：实现产物硬门的审查报告探测改「worktree 优先、主树回退」双候选，两处经同一套校验（status 白名单 / findings 与 dispositions 逐条对账 / rejected、deferred 须附非空 reason）；主树回退候选加 mtime 新鲜度守卫（resume 复用 worktree 跳过硬拦）；两处均缺失时才判失败且文案并列给出两个已探测位置；候选存在但未过校验时原样上抛该候选归因（陈旧候选归因含「陈旧」），不折叠为「报告缺失」。
-- [2026-09-26 add-impl-ocr-parallel-lane](spec/archive/2026-09-26-add-impl-ocr-parallel-lane/) — 同 run 产物硬门整体摘除（`_check_impl_code_review_artifact` 退出生产调用），上述读侧判读由 join 门判据（产物存在 + status 白名单 + 指纹新鲜）替代。
+- 2026-09-25 fix-impl-code-review-gate-readback（spec/archive/2026-09-25-fix-impl-code-review-gate-readback） — 新建读侧容错：实现产物硬门的审查报告探测改「worktree 优先、主树回退」双候选，两处经同一套校验（status 白名单 / findings 与 dispositions 逐条对账 / rejected、deferred 须附非空 reason）；主树回退候选加 mtime 新鲜度守卫（resume 复用 worktree 跳过硬拦）；两处均缺失时才判失败且文案并列给出两个已探测位置；候选存在但未过校验时原样上抛该候选归因（陈旧候选归因含「陈旧」），不折叠为「报告缺失」。
+- 2026-09-26 add-impl-ocr-parallel-lane（spec/archive/2026-09-26-add-impl-ocr-parallel-lane） — 同 run 产物硬门整体摘除（`_check_impl_code_review_artifact` 退出生产调用），上述读侧判读由 join 门判据（产物存在 + status 白名单 + 指纹新鲜）替代。

@@ -14,5 +14,5 @@
 ## 溯源
 
 - 史前复原 — 迁移期基线：验证失败计数驱动实现尝试预算，防预算被伪失败烧尽
-- [2026-09-06 add-fail-counter-budget](spec/archive/2026-09-06-add-fail-counter-budget/) — 确立 PASS 才归零的失败计数、跨修复周期累计的实现尝试总预算与配置页编辑界面
-- [2026-09-07 fix-budget-counting-semantics](spec/archive/2026-09-07-fix-budget-counting-semantics/) — 计数语义修正：死亡 run 豁免计数并回退增量、`_budget_exempt_runs` 侧车阈值告警、计数经文件锁原子化持久化
+- 2026-09-06 add-fail-counter-budget（spec/archive/2026-09-06-add-fail-counter-budget） — 确立 PASS 才归零的失败计数、跨修复周期累计的实现尝试总预算与配置页编辑界面
+- 2026-09-07 fix-budget-counting-semantics（spec/archive/2026-09-07-fix-budget-counting-semantics） — 计数语义修正：死亡 run 豁免计数并回退增量、`_budget_exempt_runs` 侧车阈值告警、计数经文件锁原子化持久化

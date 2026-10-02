@@ -15,5 +15,5 @@ dispatch 层对瞬断终态失败的延迟重派，以及同错误指纹风暴�
 
 ## 溯源
 
-- [2026-09-13 fix-provider-transient-backoff](spec/archive/2026-09-13-fix-provider-transient-backoff/) — 建立 [provider-transient] 终态延迟重派（替代立即重入队）、归一化指纹全局熔断与进程内存计数语义
-- [2026-09-29 evo-fix-transient-break-unseal-backoff](spec/archive/2026-09-29-evo-fix-transient-break-unseal-backoff/) — 解封出口改为渐进恢复节奏（hold→探针→错峰，解封细节拆分至 transient-unseal-recovery 能力页），熔断触发/滑窗/冻结期与指纹归一口径不变
+- 2026-09-13 fix-provider-transient-backoff（spec/archive/2026-09-13-fix-provider-transient-backoff） — 建立 [provider-transient] 终态延迟重派（替代立即重入队）、归一化指纹全局熔断与进程内存计数语义
+- 2026-09-29 evo-fix-transient-break-unseal-backoff（spec/archive/2026-09-29-evo-fix-transient-break-unseal-backoff） — 解封出口改为渐进恢复节奏（hold→探针→错峰，解封细节拆分至 transient-unseal-recovery 能力页），熔断触发/滑窗/冻结期与指纹归一口径不变

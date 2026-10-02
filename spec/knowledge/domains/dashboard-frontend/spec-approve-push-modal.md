@@ -13,4 +13,4 @@ done SPEC 的人工审批推送入口：弹窗区块 + 信号文件 API + daemon
 
 ## 溯源
 
-- [2026-09-17 add-spec-approve-push-modal](spec/archive/2026-09-17-add-spec-approve-push-modal/) — 建立审批推送弹窗区块、/api/spec-approve-push 信号 API（五道校验与原子写入）与 daemon 主循环信号消费闭环
+- 2026-09-17 add-spec-approve-push-modal（spec/archive/2026-09-17-add-spec-approve-push-modal） — 建立审批推送弹窗区块、/api/spec-approve-push 信号 API（五道校验与原子写入）与 daemon 主循环信号消费闭环

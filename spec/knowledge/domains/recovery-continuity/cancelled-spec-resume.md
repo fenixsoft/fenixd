@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-25 add-cancelled-spec-resume-action](spec/archive/2026-09-25-add-cancelled-spec-resume-action/) — 新增取消保持态可见字段、恢复运行端点（含降级与拒绝语义）与弹窗恢复区块
+- 2026-09-25 add-cancelled-spec-resume-action（spec/archive/2026-09-25-add-cancelled-spec-resume-action） — 新增取消保持态可见字段、恢复运行端点（含降级与拒绝语义）与弹窗恢复区块

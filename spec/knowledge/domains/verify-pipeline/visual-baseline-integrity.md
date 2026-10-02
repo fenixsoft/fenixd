@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-17 fix-visual-baseline-settle](spec/archive/2026-09-17-fix-visual-baseline-settle/) — 新增基线固化门与污染基线三连侦测（首轮固化曾无条件放行，Modal fade 动画未完成的「弹窗未出现」画面被固化为基线，此后每轮正确截图与污染基线恒比恒低，六轮 judge 被迫逐场景归因）
+- 2026-09-17 fix-visual-baseline-settle（spec/archive/2026-09-17-fix-visual-baseline-settle） — 新增基线固化门与污染基线三连侦测（首轮固化曾无条件放行，Modal fade 动画未完成的「弹窗未出现」画面被固化为基线，此后每轮正确截图与污染基线恒比恒低，六轮 judge 被迫逐场景归因）

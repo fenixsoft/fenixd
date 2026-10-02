@@ -23,4 +23,4 @@ planner-plan run 的产物硬门：出题轮只有同时交付场景文件与 pl
 
 ## 溯源
 
-- [2026-09-16 2026-09-16-add-planready-artifact-gate](spec/archive/2026-09-16-add-planready-artifact-gate/) — 新增 planner-plan 分支的 `.fenix-run-result.json` 硬门校验（status 白名单、新鲜度守卫、读侧同源路径）与可诊断归因要求。
+- 2026-09-16 2026-09-16-add-planready-artifact-gate（spec/archive/2026-09-16-add-planready-artifact-gate） — 新增 planner-plan 分支的 `.fenix-run-result.json` 硬门校验（status 白名单、新鲜度守卫、读侧同源路径）与可诊断归因要求。

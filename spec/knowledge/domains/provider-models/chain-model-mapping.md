@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-03 improve-failover-model-mapping-ui](spec/archive/2026-09-03-improve-failover-model-mapping-ui/) — 引入对象形态与元素级模型解析顺序，废除「角色级 model 强制且对全链生效」的解析与校验行为（str/list 旧形态逐字节兼容），并为切换留痕补 model_changed 语义
+- 2026-09-03 improve-failover-model-mapping-ui（spec/archive/2026-09-03-improve-failover-model-mapping-ui） — 引入对象形态与元素级模型解析顺序，废除「角色级 model 强制且对全链生效」的解析与校验行为（str/list 旧形态逐字节兼容），并为切换留痕补 model_changed 语义

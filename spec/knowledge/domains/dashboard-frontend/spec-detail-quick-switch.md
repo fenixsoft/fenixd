@@ -14,4 +14,4 @@ SPEC 详情页标题区名称旁的下拉切换器，在项目内多个 SPEC 之
 
 ## 溯源
 
-- [2026-09-09 add-v3-spec-quick-switch](spec/archive/2026-09-09-add-v3-spec-quick-switch/) — 新增详情页名称旁下拉快速切换（排除当前 SPEC、状态标签同源 statusMeta、失败静默降级）
+- 2026-09-09 add-v3-spec-quick-switch（spec/archive/2026-09-09-add-v3-spec-quick-switch） — 新增详情页名称旁下拉快速切换（排除当前 SPEC、状态标签同源 statusMeta、失败静默降级）

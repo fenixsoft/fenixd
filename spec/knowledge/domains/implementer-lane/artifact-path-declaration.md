@@ -23,4 +23,4 @@
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default](spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default/) — 移除内置默认路径集合，判定改为纯配置驱动；确立 `has_build_artifacts` 缺省=未裁决的三态语义表
+- 2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default（spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default） — 移除内置默认路径集合，判定改为纯配置驱动；确立 `has_build_artifacts` 缺省=未裁决的三态语义表

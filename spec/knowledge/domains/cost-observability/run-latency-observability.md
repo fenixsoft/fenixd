@@ -15,5 +15,5 @@
 
 ## 溯源
 
-- [2026-09-11 2026-09-11-add-planner-efficiency](spec/archive/2026-09-11-add-planner-efficiency/) — 新增在线延迟统计与 run 末摘要日志、失败 run 延迟证据附加、`bin/analyze_run_latency.py` 事后分析脚本，并确立不产生独立人工告警的纪律。
-- [2026-09-18 2026-09-18-fix-run-latency-toolresult-parser](spec/archive/2026-09-18-fix-run-latency-toolresult-parser/) — tool_result 识别改按 `tool-result-stream-detection` 统一口径（user 事件包裹 block 曾致样本全盲），新增非 tool_result user 事件排除、真实转录非空样本验收与「有轮次零样本」失明自检 WARNING。
+- 2026-09-11 2026-09-11-add-planner-efficiency（spec/archive/2026-09-11-add-planner-efficiency） — 新增在线延迟统计与 run 末摘要日志、失败 run 延迟证据附加、`bin/analyze_run_latency.py` 事后分析脚本，并确立不产生独立人工告警的纪律。
+- 2026-09-18 2026-09-18-fix-run-latency-toolresult-parser（spec/archive/2026-09-18-fix-run-latency-toolresult-parser） — tool_result 识别改按 `tool-result-stream-detection` 统一口径（user 事件包裹 block 曾致样本全盲），新增非 tool_result user 事件排除、真实转录非空样本验收与「有轮次零样本」失明自检 WARNING。

@@ -20,4 +20,4 @@
 
 ## 溯源
 
-- [2026-09-23 add-impl-code-review-gate](spec/archive/2026-09-23-add-impl-code-review-gate/) — 新建配置键语义（缺省 false / fail-open / 两级作用域）、设置页「验证」页签同源开关读写、配置模板登记。
+- 2026-09-23 add-impl-code-review-gate（spec/archive/2026-09-23-add-impl-code-review-gate） — 新建配置键语义（缺省 false / fail-open / 两级作用域）、设置页「验证」页签同源开关读写、配置模板登记。

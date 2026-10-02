@@ -17,4 +17,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：配置按全局与项目两级深度合并（resolve_config）出有效配置；可选字段不强制存在校验；daemon 与 Dashboard 读写同走有效配置口径
-- [2026-09-02 add-hierarchical-config](spec/archive/2026-09-02-add-hierarchical-config/) — 固化两层路径与深度合并语义、resolve_config 兜底与 project.name 补齐、Dashboard 双作用域读写与继承标注、注册识别放宽为仅 STATE.md
+- 2026-09-02 add-hierarchical-config（spec/archive/2026-09-02-add-hierarchical-config） — 固化两层路径与深度合并语义、resolve_config 兜底与 project.name 补齐、Dashboard 双作用域读写与继承标注、注册识别放宽为仅 STATE.md

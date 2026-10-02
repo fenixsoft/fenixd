@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-18 2026-09-18-fix-writepoint-anchor-drift](spec/archive/2026-09-18-fix-writepoint-anchor-drift/) — 写点断言从绝对行号改为语义锚点动态定位；零命中/多命中即红、六处写点数量自证、行号漂移免疫落地，清除历史行号重钉考古注释
+- 2026-09-18 2026-09-18-fix-writepoint-anchor-drift（spec/archive/2026-09-18-fix-writepoint-anchor-drift） — 写点断言从绝对行号改为语义锚点动态定位；零命中/多命中即红、六处写点数量自证、行号漂移免疫落地，清除历史行号重钉考古注释

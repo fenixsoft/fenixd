@@ -15,4 +15,4 @@ SPEC 行右键菜单背后的两个后端端点：优先级原子写回与软删
 ## 溯源
 
 - 史前复原 — 优先级写回与软删除后端 API 基线（`state_machine.remove_spec` 原子移除）
-- [2026-09-03 add-spec-context-menu](spec/archive/2026-09-03-add-spec-context-menu/) — 固化 /api/spec-priority 与 /api/spec-delete 契约：目录缺失幂等、归档时间戳冲突毫秒后缀重试、在飞 run 409 拒绝删除
+- 2026-09-03 add-spec-context-menu（spec/archive/2026-09-03-add-spec-context-menu） — 固化 /api/spec-priority 与 /api/spec-delete 契约：目录缺失幂等、归档时间戳冲突毫秒后缀重试、在飞 run 409 拒绝删除

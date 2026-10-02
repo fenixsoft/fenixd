@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-11 improve-hot-reload-robustness](spec/archive/2026-09-11-improve-hot-reload-robustness/) — 建立未知 agent 类型键逐键降级与告警三要素、值类错误整段拒绝与原子保留、启动热重载统一宽容、磁盘代码陈旧检测告警
+- 2026-09-11 improve-hot-reload-robustness（spec/archive/2026-09-11-improve-hot-reload-robustness） — 建立未知 agent 类型键逐键降级与告警三要素、值类错误整段拒绝与原子保留、启动热重载统一宽容、磁盘代码陈旧检测告警

@@ -17,4 +17,4 @@ Dashboard 的黑/白双主题能力：配置页入口、全站即时切换与浏
 
 ## 溯源
 
-- [2026-09-02 add-dashboard-theme-switch](spec/archive/2026-09-02-add-dashboard-theme-switch/) — 建立黑白双主题 CSS 变量体系、配置页「界面风格」入口、`data-theme` 全站即时切换、localStorage 持久化与首帧防闪烁契约
+- 2026-09-02 add-dashboard-theme-switch（spec/archive/2026-09-02-add-dashboard-theme-switch） — 建立黑白双主题 CSS 变量体系、配置页「界面风格」入口、`data-theme` 全站即时切换、localStorage 持久化与首帧防闪烁契约

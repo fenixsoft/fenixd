@@ -16,4 +16,4 @@ daemon 侧零 LLM 成本的周期性困境检测（AdminMonitor），是唤起 A
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：AdminMonitor 周期巡检含 blocked_stuck 检测；人工冻结对 blocked_stuck 豁免，豁免按结构化 frozen 标记识别
-- [2026-09-02 add-administrator-agent](spec/archive/2026-09-02-add-administrator-agent/) — 固化周期检测契约：本地数据零 LLM 检测项清单（重复失败/状态抖动/卡死/merge 反复失败/连续 ERROR）与同信号冷却节流
+- 2026-09-02 add-administrator-agent（spec/archive/2026-09-02-add-administrator-agent） — 固化周期检测契约：本地数据零 LLM 检测项清单（重复失败/状态抖动/卡死/merge 反复失败/连续 ERROR）与同信号冷却节流

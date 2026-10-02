@@ -15,5 +15,5 @@
 
 ## 溯源
 
-- [2026-09-13 2026-09-13-add-declaration-premechanize](spec/archive/2026-09-13-add-declaration-premechanize/) — 确立晋升期机械软化、lint 规则 6 仓库外路径、守卫缺件确定性预分类、产出期教学注入与部署副本同源
-- [2026-09-19 2026-09-19-add-deliverable-delete-kind](spec/archive/2026-09-19-add-deliverable-delete-kind/) — `delete` 声明的四类不可交付形态 lint 拒绝；`delete` 排除出全部软化路径；教学注入升级四类 kind 语义与 gitignored 删除边界明示
+- 2026-09-13 2026-09-13-add-declaration-premechanize（spec/archive/2026-09-13-add-declaration-premechanize） — 确立晋升期机械软化、lint 规则 6 仓库外路径、守卫缺件确定性预分类、产出期教学注入与部署副本同源
+- 2026-09-19 2026-09-19-add-deliverable-delete-kind（spec/archive/2026-09-19-add-deliverable-delete-kind） — `delete` 声明的四类不可交付形态 lint 拒绝；`delete` 排除出全部软化路径；教学注入升级四类 kind 语义与 gitignored 删除边界明示

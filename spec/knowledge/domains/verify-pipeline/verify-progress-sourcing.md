@@ -13,4 +13,4 @@ Dashboard 验证进度数据源契约：进度文件优先，缺失时回退 fas
 
 ## 溯源
 
-- [2026-09-11 fix-verify-progress-fasttrack](spec/archive/2026-09-11-fix-verify-progress-fasttrack/) — 新增 fast-track 裁决结果文件回退合成验证进度并加来源标记（fast-track 不产进度文件，spec 列表验证列此前恒 0/0 空态）、列表空数据改「—」占位
+- 2026-09-11 fix-verify-progress-fasttrack（spec/archive/2026-09-11-fix-verify-progress-fasttrack） — 新增 fast-track 裁决结果文件回退合成验证进度并加来源标记（fast-track 不产进度文件，spec 列表验证列此前恒 0/0 空态）、列表空数据改「—」占位

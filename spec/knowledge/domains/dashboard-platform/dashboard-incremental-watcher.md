@@ -14,4 +14,4 @@ dashboard 侧的文件监视与广播通道：目录签名跳层监视 + 增量�
 
 ## 溯源
 
-- [2026-09-09 2026-09-09-add-dashboard-incremental-data](spec/archive/2026-09-09-add-dashboard-incremental-data/) — watcher 由「日志一变即全量重组广播」改为增量 diff 广播 + 目录级签名跳层监视，广播 payload 从 ~100KB/次降至 KB 级
+- 2026-09-09 2026-09-09-add-dashboard-incremental-data（spec/archive/2026-09-09-add-dashboard-incremental-data） — watcher 由「日志一变即全量重组广播」改为增量 diff 广播 + 目录级签名跳层监视，广播 payload 从 ~100KB/次降至 KB 级

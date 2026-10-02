@@ -22,4 +22,4 @@
 
 ## 溯源
 
-- [2026-09-19 2026-09-19-fix-impl-tasks-completion-gate](spec/archive/2026-09-19-fix-impl-tasks-completion-gate/) — 确立全部门禁：结果文件硬门覆盖实现者双车道、success/partial 判据、TaskUpdate 能力探测条件化、原地续做处置、归因契约与 partial 消费点一致性
+- 2026-09-19 2026-09-19-fix-impl-tasks-completion-gate（spec/archive/2026-09-19-fix-impl-tasks-completion-gate） — 确立全部门禁：结果文件硬门覆盖实现者双车道、success/partial 判据、TaskUpdate 能力探测条件化、原地续做处置、归因契约与 partial 消费点一致性

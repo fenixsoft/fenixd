@@ -22,4 +22,4 @@
 
 ## 溯源
 
-- [2026-09-24 add-code-review-agent-and-quality-tab](spec/archive/2026-09-24-add-code-review-agent-and-quality-tab/) — 新建问题台账：字段契约与三组枚举、指纹去重权威、manual_full 快照核销语义（scheduled/manual_window 只增不核销）、ignored/in_spec/resolved 流转与幂等。
+- 2026-09-24 add-code-review-agent-and-quality-tab（spec/archive/2026-09-24-add-code-review-agent-and-quality-tab） — 新建问题台账：字段契约与三组枚举、指纹去重权威、manual_full 快照核销语义（scheduled/manual_window 只增不核销）、ignored/in_spec/resolved 流转与幂等。

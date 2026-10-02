@@ -22,9 +22,9 @@
 ## 溯源
 
 - 史前复原 — SPEC 表 summary 携带 created/updated、created 倒序缺失排最后与表头排序/耗时列可用基线
-- [2026-09-02 add-dashboard-spec-doc-tabs-and-info-clear](spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear/) — 建立「文档」单链接入口（整合背景/设计两按钮）与信息子行「标签同行 + 清除按钮」契约
-- [2026-09-02 add-dashboard-spec-table](spec/archive/2026-09-02-add-dashboard-spec-table/) — 建立 created/updated 摘要字段、created 倒序默认排序、表格化展示与名称/状态前端过滤及其刷新保持
-- [2026-09-02 add-spec-doc-buttons](spec/archive/2026-09-02-add-spec-doc-buttons/) — 固化三页签文档弹窗（按需加载与缓存、页签级缺失空态）与信息子行 error 清除链路
-- [2026-09-02 add-spec-list-hover-hint](spec/archive/2026-09-02-add-spec-list-hover-hint/) — 新增名称 hover Why 提示（div 悬浮 + 按需缓存），并以信息子行替换「错误」列
-- [2026-09-02 add-spec-type-filter](spec/archive/2026-09-02-add-spec-type-filter/) — 新增类型过滤（全部/仅需求/仅问题，fix- 树层级保持）
-- [2026-09-23 add-spec-manual-activation](spec/archive/2026-09-23-add-spec-manual-activation/) — 新增「待激活」「前置依赖」状态列标记与 depends_on 规范化摘要字段（纳入指纹字段集）
+- 2026-09-02 add-dashboard-spec-doc-tabs-and-info-clear（spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear） — 建立「文档」单链接入口（整合背景/设计两按钮）与信息子行「标签同行 + 清除按钮」契约
+- 2026-09-02 add-dashboard-spec-table（spec/archive/2026-09-02-add-dashboard-spec-table） — 建立 created/updated 摘要字段、created 倒序默认排序、表格化展示与名称/状态前端过滤及其刷新保持
+- 2026-09-02 add-spec-doc-buttons（spec/archive/2026-09-02-add-spec-doc-buttons） — 固化三页签文档弹窗（按需加载与缓存、页签级缺失空态）与信息子行 error 清除链路
+- 2026-09-02 add-spec-list-hover-hint（spec/archive/2026-09-02-add-spec-list-hover-hint） — 新增名称 hover Why 提示（div 悬浮 + 按需缓存），并以信息子行替换「错误」列
+- 2026-09-02 add-spec-type-filter（spec/archive/2026-09-02-add-spec-type-filter） — 新增类型过滤（全部/仅需求/仅问题，fix- 树层级保持）
+- 2026-09-23 add-spec-manual-activation（spec/archive/2026-09-23-add-spec-manual-activation） — 新增「待激活」「前置依赖」状态列标记与 depends_on 规范化摘要字段（纳入指纹字段集）

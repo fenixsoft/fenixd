@@ -15,4 +15,4 @@ implementer 成功到 merge 完成之间存在状态过渡窗口，恢复监视�
 
 ## 溯源
 
-- [2026-09-19 evo-recovery-watch-transition-guard](spec/archive/2026-09-19-evo-recovery-watch-transition-guard/) — 新增待合并分支与成功收工缓冲的过渡窗口顺延、分支归属全等比较、有界豁免与巡检侧条件性豁免
+- 2026-09-19 evo-recovery-watch-transition-guard（spec/archive/2026-09-19-evo-recovery-watch-transition-guard） — 新增待合并分支与成功收工缓冲的过渡窗口顺延、分支归属全等比较、有界豁免与巡检侧条件性豁免

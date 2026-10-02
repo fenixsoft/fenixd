@@ -15,4 +15,4 @@ SPEC 因「run 层成功但 spec 层判失败」被打回重派时，保证已�
 
 ## 溯源
 
-- [2026-09-22 fix-relint-redispatch-legacy](spec/archive/2026-09-22-fix-relint-redispatch-legacy/) — 补齐 relint 打回路径的分支遗产登记，固化四条打回路径的一致性断言与无分支 fail-open 边界
+- 2026-09-22 fix-relint-redispatch-legacy（spec/archive/2026-09-22-fix-relint-redispatch-legacy） — 补齐 relint 打回路径的分支遗产登记，固化四条打回路径的一致性断言与无分支 fail-open 边界

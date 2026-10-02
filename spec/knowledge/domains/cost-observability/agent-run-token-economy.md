@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-25 2026-09-25-fix-agent-lane-efficiency](spec/archive/2026-09-25-fix-agent-lane-efficiency/) — 新增 run 级上下文经济性指标、超阈值诊断告警与 `bin/probe_prompt_cache.py` 缓存能力探针，并固化「不依赖前缀缓存」的定案结论。
+- 2026-09-25 2026-09-25-fix-agent-lane-efficiency（spec/archive/2026-09-25-fix-agent-lane-efficiency） — 新增 run 级上下文经济性指标、超阈值诊断告警与 `bin/probe_prompt_cache.py` 缓存能力探针，并固化「不依赖前缀缓存」的定案结论。

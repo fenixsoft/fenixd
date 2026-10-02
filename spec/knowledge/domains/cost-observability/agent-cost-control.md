@@ -11,4 +11,4 @@
 
 ## 溯源
 
-- [2026-09-02 2026-09-02-fix-fenix-token-waste](spec/archive/2026-09-02-fix-fenix-token-waste/) — 新增 max_turns 强制执行与 thinking_tokens 遥测过滤，确立单 run 成本上限与产物干净度口径。
+- 2026-09-02 2026-09-02-fix-fenix-token-waste（spec/archive/2026-09-02-fix-fenix-token-waste） — 新增 max_turns 强制执行与 thinking_tokens 遥测过滤，确立单 run 成本上限与产物干净度口径。

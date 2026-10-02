@@ -13,4 +13,4 @@
 ## 溯源
 
 - 史前复原（存量基线） — 视觉校验以截图采集与基线 diff 判定，采集路径须稳健可重放，基线缺失不误判通过
-- [2026-09-17 fix-visual-baseline-settle](spec/archive/2026-09-17-fix-visual-baseline-settle/) — 新增截图前动画静置等待与低分限次重拍取最高分（渲染动画未 settle 的时序噪声曾逐轮制造 SSIM 假差异，menu 类场景 2.71% 差异像素逐轮进归因）
+- 2026-09-17 fix-visual-baseline-settle（spec/archive/2026-09-17-fix-visual-baseline-settle） — 新增截图前动画静置等待与低分限次重拍取最高分（渲染动画未 settle 的时序噪声曾逐轮制造 SSIM 假差异，menu 类场景 2.71% 差异像素逐轮进归因）

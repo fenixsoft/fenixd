@@ -15,5 +15,5 @@ agent run 的转录产物契约：流式落盘可运行期回放，终态与指�
 ## 溯源
 
 - 2026-09-02 史前复原 — 迁移期已存在的基线：agent run 转录流式落盘为 run 产物，运行过程可回放取证；产物写入与 runs 清理配套
-- [2026-09-02 add-fenix-dashboard](spec/archive/2026-09-02-add-fenix-dashboard/) — 固化 stream-json 流式落盘与逐行 flush、stderr 兜底、result/error 终态行与 RuntimeError 语义、runs 保留上限（默认 20）与 gitignore
-- [2026-09-25 fix-agent-lane-efficiency](spec/archive/2026-09-25-fix-agent-lane-efficiency/) — 增设终态后 run_metrics 上下文经济性指标行（纯读侧追加，既有事件与读侧不受影响）
+- 2026-09-02 add-fenix-dashboard（spec/archive/2026-09-02-add-fenix-dashboard） — 固化 stream-json 流式落盘与逐行 flush、stderr 兜底、result/error 终态行与 RuntimeError 语义、runs 保留上限（默认 20）与 gitignore
+- 2026-09-25 fix-agent-lane-efficiency（spec/archive/2026-09-25-fix-agent-lane-efficiency） — 增设终态后 run_metrics 上下文经济性指标行（纯读侧追加，既有事件与读侧不受影响）

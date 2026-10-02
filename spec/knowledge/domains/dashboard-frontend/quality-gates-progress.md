@@ -15,6 +15,6 @@ implementer 收尾自查与框架守卫合成的 6 道质量门禁状态，在 S
 
 ## 溯源
 
-- [2026-09-26 add-quality-gates-visibility](spec/archive/2026-09-26-add-quality-gates-visibility/) — 建立门禁可观测全链：quality-gates.json 落盘契约（键名固化、code-review 不落盘）、守卫宽松对账、读侧合成 6 道门与详情页门禁 Card
-- [2026-09-27 add-impl-selfcheck-model-probe](spec/archive/2026-09-27-add-impl-selfcheck-model-probe/) — `full-suite` 门改数据源优先级：框架侧回归产物优先、run 内自查降级兼容、皆无 pending 零打回
-- [2026-09-28 fix-quality-gates-terminal-blindspot](spec/archive/2026-09-28-fix-quality-gates-terminal-blindspot/) — 终态盲区修复：ocr 门指纹校验增加 merge-back 豁免（merge_base==head_commit 构造性判据时跳过 merge_base 比对，已 push SPEC 的完成审查不再恒 pending）；full-suite 门增加最高优先级终态豁免（verified/done/pushed 合成 skipped，回归跟踪责任移交主树）；指纹陈旧场景收窄为 head 前移情形
+- 2026-09-26 add-quality-gates-visibility（spec/archive/2026-09-26-add-quality-gates-visibility） — 建立门禁可观测全链：quality-gates.json 落盘契约（键名固化、code-review 不落盘）、守卫宽松对账、读侧合成 6 道门与详情页门禁 Card
+- 2026-09-27 add-impl-selfcheck-model-probe（spec/archive/2026-09-27-add-impl-selfcheck-model-probe） — `full-suite` 门改数据源优先级：框架侧回归产物优先、run 内自查降级兼容、皆无 pending 零打回
+- 2026-09-28 fix-quality-gates-terminal-blindspot（spec/archive/2026-09-28-fix-quality-gates-terminal-blindspot） — 终态盲区修复：ocr 门指纹校验增加 merge-back 豁免（merge_base==head_commit 构造性判据时跳过 merge_base 比对，已 push SPEC 的完成审查不再恒 pending）；full-suite 门增加最高优先级终态豁免（verified/done/pushed 合成 skipped，回归跟踪责任移交主树）；指纹陈旧场景收窄为 head 前移情形

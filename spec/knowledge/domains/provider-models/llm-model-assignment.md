@@ -17,4 +17,4 @@
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：agent 按角色路由模型分配，sdk_model 即 --model 直接发往 provider 网关；未登记角色回退默认网关
-- [2026-09-02 add-fenix-config](spec/archive/2026-09-02-add-fenix-config/) — 固化 provider 注册表结构、角色分配与环境变量注入契约、Dashboard 配置页读写闭环与模板骨架
+- 2026-09-02 add-fenix-config（spec/archive/2026-09-02-add-fenix-config） — 固化 provider 注册表结构、角色分配与环境变量注入契约、Dashboard 配置页读写闭环与模板骨架

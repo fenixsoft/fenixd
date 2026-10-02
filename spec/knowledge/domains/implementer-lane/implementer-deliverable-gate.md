@@ -20,8 +20,8 @@
 ## 溯源
 
 - 史前复原（早于 2026-09-06） — 基线形态：交付物存在性守卫核对声明与工作树实际产物，`.fenix/` 前缀路径归一化到项目根路径后核对
-- [2026-09-06 2026-09-06-add-implementer-deliverable-gate](spec/archive/2026-09-06-add-implementer-deliverable-gate/) — 建立守卫：从 tasks/proposal 提取交付路径、收工存在性校验、缺件阻断 merge、纯 stat 零成本约束
-- [2026-09-07 2026-09-07-add-deliverable-extractor-semantics](spec/archive/2026-09-07-add-deliverable-extractor-semantics/) — 提取器升级硬软两类输出与 `.fenix/` 前缀归一化正式化，引用类缺失仅审计留痕
-- [2026-09-19 2026-09-19-add-deliverable-delete-kind](spec/archive/2026-09-19-add-deliverable-delete-kind/) — 提取契约改为声明段显式四类 kind；校验基准迁移到声明段 + 实现分支 HEAD blob；`delete` 反判与结构化 violation 返回
-- [2026-09-23 2026-09-23-add-declaration-relocation-protocol](spec/archive/2026-09-23-add-declaration-relocation-protocol/) — 校验声明源改为生效声明（消灭主树硬编码错层）；新增声明收缩防护（`removed`）与陈日声明前置分类
-- [2026-09-26 2026-09-26-fix-relocation-writeback-layer](spec/archive/2026-09-26-fix-relocation-writeback-layer/) — 新增缺件凭据核销收敛：跨轮残留凭据 + 替代路径落地校验，收敛「缺件 → 无界重派」
+- 2026-09-06 2026-09-06-add-implementer-deliverable-gate（spec/archive/2026-09-06-add-implementer-deliverable-gate） — 建立守卫：从 tasks/proposal 提取交付路径、收工存在性校验、缺件阻断 merge、纯 stat 零成本约束
+- 2026-09-07 2026-09-07-add-deliverable-extractor-semantics（spec/archive/2026-09-07-add-deliverable-extractor-semantics） — 提取器升级硬软两类输出与 `.fenix/` 前缀归一化正式化，引用类缺失仅审计留痕
+- 2026-09-19 2026-09-19-add-deliverable-delete-kind（spec/archive/2026-09-19-add-deliverable-delete-kind） — 提取契约改为声明段显式四类 kind；校验基准迁移到声明段 + 实现分支 HEAD blob；`delete` 反判与结构化 violation 返回
+- 2026-09-23 2026-09-23-add-declaration-relocation-protocol（spec/archive/2026-09-23-add-declaration-relocation-protocol） — 校验声明源改为生效声明（消灭主树硬编码错层）；新增声明收缩防护（`removed`）与陈日声明前置分类
+- 2026-09-26 2026-09-26-fix-relocation-writeback-layer（spec/archive/2026-09-26-fix-relocation-writeback-layer） — 新增缺件凭据核销收敛：跨轮残留凭据 + 替代路径落地校验，收敛「缺件 → 无界重派」

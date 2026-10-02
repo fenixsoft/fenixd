@@ -22,5 +22,5 @@
 ## 溯源
 
 - 史前复原 — dashboard 由数据层、多项目注册发现与 HTTP 服务组成，bin 统一入口启动；run 行读取须容错 UTF-8 解码异常
-- [2026-09-02 2026-09-02-add-fenix-dashboard](spec/archive/2026-09-02-add-fenix-dashboard/) — 建立多项目注册发现、六端点聚合 API、截图路径穿越防护与独立进程端口管理
-- [2026-09-18 2026-09-18-fix-dashboard-fault-isolation](spec/archive/2026-09-18-fix-dashboard-fault-isolation/) — 容错范围扩展至发现层与聚合层（逐项目隔离、error 字段、不污染 totals），并固化发现结果缓存的异常语义（保留上次成功结果、TTL 无条件推进）
+- 2026-09-02 2026-09-02-add-fenix-dashboard（spec/archive/2026-09-02-add-fenix-dashboard） — 建立多项目注册发现、六端点聚合 API、截图路径穿越防护与独立进程端口管理
+- 2026-09-18 2026-09-18-fix-dashboard-fault-isolation（spec/archive/2026-09-18-fix-dashboard-fault-isolation） — 容错范围扩展至发现层与聚合层（逐项目隔离、error 字段、不污染 totals），并固化发现结果缓存的异常语义（保留上次成功结果、TTL 无条件推进）

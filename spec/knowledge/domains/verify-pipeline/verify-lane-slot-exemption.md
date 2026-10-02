@@ -11,4 +11,4 @@
 
 ## 溯源
 
-- [2026-09-27 add-verify-lane-throughput](spec/archive/2026-09-27-add-verify-lane-throughput/) — 新增并行出题条目的实现槽位豁免与独立并发上限 1（出题中位 36m 且几乎纯 LLM 生成，曾串行排在 implemented 之后并在槽满时滞留队列），验证车道出题不再与实现争抢槽位
+- 2026-09-27 add-verify-lane-throughput（spec/archive/2026-09-27-add-verify-lane-throughput） — 新增并行出题条目的实现槽位豁免与独立并发上限 1（出题中位 36m 且几乎纯 LLM 生成，曾串行排在 implemented 之后并在槽满时滞留队列），验证车道出题不再与实现争抢槽位

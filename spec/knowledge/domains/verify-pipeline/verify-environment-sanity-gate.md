@@ -13,4 +13,4 @@ mock 环境下等待类断言失败的健全性探针与 blocked-env 换算：�
 ## 溯源
 
 - 史前复原（存量基线） — 验证环境不健全归类 blocked-env 并按 inconclusive 重派，不计为产品失败、不流转 bug-found
-- [2026-09-02 improve-scheduling-noise-governance](spec/archive/2026-09-02-improve-scheduling-noise-governance/) — 新增 mock 环境健全性探针、`blocked_env` 统计字段与 inconclusive 重验换算（mock_api 斩断 SSE 曾造成整批假阴性，每轮假阴性派生 fix 子 SPEC 空转完整实现+验证周期）
+- 2026-09-02 improve-scheduling-noise-governance（spec/archive/2026-09-02-improve-scheduling-noise-governance） — 新增 mock 环境健全性探针、`blocked_env` 统计字段与 inconclusive 重验换算（mock_api 斩断 SSE 曾造成整批假阴性，每轮假阴性派生 fix 子 SPEC 空转完整实现+验证周期）

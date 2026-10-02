@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-10 run-lifecycle-hardening](spec/archive/2026-09-10-run-lifecycle-hardening/) — 固化按 agent_type 超时覆盖与七类 run 适用、非法值护栏、supervision extension/absolute_max 派生联动（stuck 阈值不联动）与 supervision-judge 超时配置化
+- 2026-09-10 run-lifecycle-hardening（spec/archive/2026-09-10-run-lifecycle-hardening） — 固化按 agent_type 超时覆盖与七类 run 适用、非法值护栏、supervision extension/absolute_max 派生联动（stuck 阈值不联动）与 supervision-judge 超时配置化

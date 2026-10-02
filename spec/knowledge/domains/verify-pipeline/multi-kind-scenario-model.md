@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-12 add-verify-multi-kind-runner](spec/archive/2026-09-12-add-verify-multi-kind-runner/) — 新增场景 kind 字段（缺省 web 零迁移）、CLI/API 两套词表与特异执行语义、断言分层跨 kind 统一、per-kind 验收校验（此前场景模型以 web 为唯一形态假设，纯 CLI/API 类 spec 在验收门即被整体拒绝）
+- 2026-09-12 add-verify-multi-kind-runner（spec/archive/2026-09-12-add-verify-multi-kind-runner） — 新增场景 kind 字段（缺省 web 零迁移）、CLI/API 两套词表与特异执行语义、断言分层跨 kind 统一、per-kind 验收校验（此前场景模型以 web 为唯一形态假设，纯 CLI/API 类 spec 在验收门即被整体拒绝）

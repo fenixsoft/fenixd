@@ -16,4 +16,4 @@ core/ 后端引擎按「组合提取 + 门面」模式分层组织：巨型实�
 ## 溯源
 
 - 2026-09-02 史前复原 — 迁移期已存在的基线：core/ 按组合提取+门面分层组织（agent_runner/pm_engine/verify_engine/worktree_manager/admin_monitor 等子包），门面转发保持既有调用契约，巨文件拆分不改变外部行为
-- [2026-09-07 2026-09-07-refactor-core-packages](spec/archive/2026-09-07-refactor-core-packages/) — 固化 pm_engine/agent_runner 两巨文件拆包的包结构、状态归属与锁安全（Dispatcher 单锁）、外部 API 兼容不变式、行为等价搬移与分阶段验证纪律
+- 2026-09-07 2026-09-07-refactor-core-packages（spec/archive/2026-09-07-refactor-core-packages） — 固化 pm_engine/agent_runner 两巨文件拆包的包结构、状态归属与锁安全（Dispatcher 单锁）、外部 API 兼容不变式、行为等价搬移与分阶段验证纪律

@@ -13,4 +13,4 @@
 
 ## 溯源
 
-- [2026-09-19 fix-run-hang-amplification](spec/archive/2026-09-19-fix-run-hang-amplification/) — 确立全量回归有界执行入口、基线等价执行归类与存量归类快速收口契约；自举物缺失的测试改 skip 不计失败
+- 2026-09-19 fix-run-hang-amplification（spec/archive/2026-09-19-fix-run-hang-amplification） — 确立全量回归有界执行入口、基线等价执行归类与存量归类快速收口契约；自举物缺失的测试改 skip 不计失败

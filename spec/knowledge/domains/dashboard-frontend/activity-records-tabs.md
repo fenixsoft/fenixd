@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-02 improve-dashboard-sections](spec/archive/2026-09-02-improve-dashboard-sections/) — 建立跨项目运维记录按项目页签组织（「全部」聚合页签、纯前端选中态、单项目路由不变）与处置记录换行落盘/换行展示契约
+- 2026-09-02 improve-dashboard-sections（spec/archive/2026-09-02-improve-dashboard-sections） — 建立跨项目运维记录按项目页签组织（「全部」聚合页签、纯前端选中态、单项目路由不变）与处置记录换行落盘/换行展示契约

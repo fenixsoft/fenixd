@@ -17,4 +17,4 @@ spec-review 打回结果的结构化分类字段：区分「机械可修复」�
 
 ## 溯源
 
-- [2026-09-27 2026-09-27-add-pipeline-throughput-governance](spec/archive/2026-09-27-add-pipeline-throughput-governance/) — 新增打回分类契约：rejection_class 枚举与 prompt 注入判定标准、缺字段 unknown 兼容与存量零迁移、分桶统计与 fail-open
+- 2026-09-27 2026-09-27-add-pipeline-throughput-governance（spec/archive/2026-09-27-add-pipeline-throughput-governance） — 新增打回分类契约：rejection_class 枚举与 prompt 注入判定标准、缺字段 unknown 兼容与存量零迁移、分桶统计与 fail-open

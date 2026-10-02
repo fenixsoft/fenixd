@@ -17,5 +17,5 @@
 
 ## 溯源
 
-- [2026-09-09 add-merge-back-repair-lane](spec/archive/2026-09-09-add-merge-back-repair-lane/) — 新增语义冲突 repair 通道：分支载体三态、修复方向反转与主树干净态、遗产认领竞态防护、prompt 形态约束与 2 轮预算约束
-- [2026-09-19 fix-recovery-branch-anchor-without-worktree](spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree/) — 新增「待 re-merge-back」持久标记与修复期状态可区分性（运行期不写标记、三时机清除）、re-merge 成功路径先落锚点再清载体的顺序不变式
+- 2026-09-09 add-merge-back-repair-lane（spec/archive/2026-09-09-add-merge-back-repair-lane） — 新增语义冲突 repair 通道：分支载体三态、修复方向反转与主树干净态、遗产认领竞态防护、prompt 形态约束与 2 轮预算约束
+- 2026-09-19 fix-recovery-branch-anchor-without-worktree（spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree） — 新增「待 re-merge-back」持久标记与修复期状态可区分性（运行期不写标记、三时机清除）、re-merge 成功路径先落锚点再清载体的顺序不变式

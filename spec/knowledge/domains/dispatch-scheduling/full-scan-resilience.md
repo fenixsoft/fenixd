@@ -20,5 +20,5 @@ full_scan 的单条异常隔离与孤儿 ready 的白名单恢复：毒条目不
 
 ## 溯源
 
-- [2026-09-02 2026-09-02-fix-dispatch-orphan](spec/archive/2026-09-02-fix-dispatch-orphan/) — 新增全量扫描单条隔离与 handled/failed 统计；孤儿 ready 恢复跳过条件由黑名单（有 error 或有 implementer_run 即跳过）改白名单，带 error 与带历史 run 的孤儿 ready 获得重新派发。
-- [2026-09-22 2026-09-22-fix-orphan-ready-recovery-liveness](spec/archive/2026-09-22-fix-orphan-ready-recovery-liveness/) — 孤儿 ready 恢复增加 60 秒级精触发（与 full_scan recovery 同源入口，恢复延迟从最坏 30 分钟降到 60 秒），并补退避期/取消保持入口早退、稳态零写入与逐条异常隔离约束。
+- 2026-09-02 2026-09-02-fix-dispatch-orphan（spec/archive/2026-09-02-fix-dispatch-orphan） — 新增全量扫描单条隔离与 handled/failed 统计；孤儿 ready 恢复跳过条件由黑名单（有 error 或有 implementer_run 即跳过）改白名单，带 error 与带历史 run 的孤儿 ready 获得重新派发。
+- 2026-09-22 2026-09-22-fix-orphan-ready-recovery-liveness（spec/archive/2026-09-22-fix-orphan-ready-recovery-liveness） — 孤儿 ready 恢复增加 60 秒级精触发（与 full_scan recovery 同源入口，恢复延迟从最坏 30 分钟降到 60 秒），并补退避期/取消保持入口早退、稳态零写入与逐条异常隔离约束。

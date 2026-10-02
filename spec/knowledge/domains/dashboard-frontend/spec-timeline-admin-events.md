@@ -15,4 +15,4 @@ SPEC 时间轴接入升级告警与运维处置记录，与状态/运行节点�
 
 ## 溯源
 
-- [2026-09-12 add-timeline-admin-events](spec/archive/2026-09-12-add-timeline-admin-events/) — 时间轴接入 admin 运维事件：escalation/disposition 节点下发、pending 处置归并、同秒排序次序、紧凑运维卡片渲染与告警源缺失 fail-open
+- 2026-09-12 add-timeline-admin-events（spec/archive/2026-09-12-add-timeline-admin-events） — 时间轴接入 admin 运维事件：escalation/disposition 节点下发、pending 处置归并、同秒排序次序、紧凑运维卡片渲染与告警源缺失 fail-open

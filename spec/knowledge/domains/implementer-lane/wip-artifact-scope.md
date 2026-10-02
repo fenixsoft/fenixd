@@ -24,5 +24,5 @@ merge-back 触发 → WIP 重叠计算时排除配置产物 → 重叠产物在 
 
 ## 溯源
 
-- [2026-09-23 2026-09-23-evo-merge-back-wip-artifact-scope](spec/archive/2026-09-23-evo-merge-back-wip-artifact-scope/) — 产物判定改为实例化可配置判定器（时带内置默认集合），五消费点改用实例判定器；WIP 重叠集合排除配置产物；merge-back guard 段 stash 前置对齐重叠产物
-- [2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default](spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default/) — 废除内置默认判定集合，判定完全配置驱动；未配置从「回退默认」改为「未裁决（恒非产物）」；空/非法配置的回退目标改为空集合
+- 2026-09-23 2026-09-23-evo-merge-back-wip-artifact-scope（spec/archive/2026-09-23-evo-merge-back-wip-artifact-scope） — 产物判定改为实例化可配置判定器（时带内置默认集合），五消费点改用实例判定器；WIP 重叠集合排除配置产物；merge-back guard 段 stash 前置对齐重叠产物
+- 2026-09-23 2026-09-23-fix-artifact-paths-hardcoded-default（spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default） — 废除内置默认判定集合，判定完全配置驱动；未配置从「回退默认」改为「未裁决（恒非产物）」；空/非法配置的回退目标改为空集合

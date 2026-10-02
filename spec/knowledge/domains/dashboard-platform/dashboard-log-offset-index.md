@@ -15,4 +15,4 @@ fenixd 结构化日志的块偏移索引：时间轴与事件查询只读尾部�
 
 ## 溯源
 
-- [2026-09-09 2026-09-09-add-dashboard-incremental-data](spec/archive/2026-09-09-add-dashboard-incremental-data/) — 建立日志块偏移索引与窗口截断语义，时间轴/事件查询从全量扫描（7.5MB，万级 spec 时 700MB）改为只读尾部 1MB 窗口
+- 2026-09-09 2026-09-09-add-dashboard-incremental-data（spec/archive/2026-09-09-add-dashboard-incremental-data） — 建立日志块偏移索引与窗口截断语义，时间轴/事件查询从全量扫描（7.5MB，万级 spec 时 700MB）改为只读尾部 1MB 窗口

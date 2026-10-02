@@ -14,5 +14,5 @@
 
 ## 溯源
 
-- [2026-09-19 evo-judge-rerun-stability](spec/archive/2026-09-19-evo-judge-rerun-stability/) — 新增 judge verdict 稳定复用与 verified 一次性放行（验证已通过后 judge/verify/legacy 多路径互踩空转，单 spec 实测 11 次 judge + 4 次 admin 处置、+$24.6）
-- [2026-09-19 evo-verifier-result-single-source](spec/archive/2026-09-19-evo-verifier-result-single-source/) — 裁决读取收敛单一来源并引入 role 字段写入隔离（implementer 残留 status=success 污染主树共享文件曾被误当裁决判 blocked，同根因两度复发）
+- 2026-09-19 evo-judge-rerun-stability（spec/archive/2026-09-19-evo-judge-rerun-stability） — 新增 judge verdict 稳定复用与 verified 一次性放行（验证已通过后 judge/verify/legacy 多路径互踩空转，单 spec 实测 11 次 judge + 4 次 admin 处置、+$24.6）
+- 2026-09-19 evo-verifier-result-single-source（spec/archive/2026-09-19-evo-verifier-result-single-source） — 裁决读取收敛单一来源并引入 role 字段写入隔离（implementer 残留 status=success 污染主树共享文件曾被误当裁决判 blocked，同根因两度复发）

@@ -15,5 +15,5 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：daemon 存活按进程判定而非端口探测；健康状态经周期 refresh 心跳自动推送 dashboard
-- [2026-09-02 add-multi-project-monitoring](spec/archive/2026-09-02-add-multi-project-monitoring/) — 新增每项目 daemon 健康检测函数与 `/api/projects`、`/api/overview` 的 `daemon` 字段暴露（tmux session 命中口径）
-- [2026-09-18 fix-supervisor-hosting-chain](spec/archive/2026-09-18-fix-supervisor-hosting-chain/) — 判定主源改为 `/proc` 进程检测（裸 daemon 不再漏判为未运行），tmux session 降为回退
+- 2026-09-02 add-multi-project-monitoring（spec/archive/2026-09-02-add-multi-project-monitoring） — 新增每项目 daemon 健康检测函数与 `/api/projects`、`/api/overview` 的 `daemon` 字段暴露（tmux session 命中口径）
+- 2026-09-18 fix-supervisor-hosting-chain（spec/archive/2026-09-18-fix-supervisor-hosting-chain） — 判定主源改为 `/proc` 进程检测（裸 daemon 不再漏判为未运行），tmux session 降为回退

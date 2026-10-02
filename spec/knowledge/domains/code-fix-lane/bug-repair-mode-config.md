@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-12 2026-09-12-add-bug-repair-mode-config](spec/archive/2026-09-12-add-bug-repair-mode-config/) — 新建本页：inplace/derive 枚举与缺省值、非法取值校验护栏、系统页签展示与修改持久化、30s 热更新生效语义。
+- 2026-09-12 2026-09-12-add-bug-repair-mode-config（spec/archive/2026-09-12-add-bug-repair-mode-config） — 新建本页：inplace/derive 枚举与缺省值、非法取值校验护栏、系统页签展示与修改持久化、30s 热更新生效语义。

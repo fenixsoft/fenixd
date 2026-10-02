@@ -14,4 +14,4 @@
 ## 溯源
 
 - 史前复原（存量基线） — 验证场景以交互契约声明操作与断言，裁决按逐断言分诊定位失败归属
-- [2026-09-07 add-interaction-contract-and-per-assert-triage](spec/archive/2026-09-07-add-interaction-contract-and-per-assert-triage/) — 新增可交互元素覆盖契约与 scenarios.json 元数据登记、豁免粒度细化到逐断言归因、报告断言级豁免清单小节、实现任务书契约呼应要求（此前豁免以场景为单位，视觉可交互但未声明行为的元素无覆盖通路）
+- 2026-09-07 add-interaction-contract-and-per-assert-triage（spec/archive/2026-09-07-add-interaction-contract-and-per-assert-triage） — 新增可交互元素覆盖契约与 scenarios.json 元数据登记、豁免粒度细化到逐断言归因、报告断言级豁免清单小节、实现任务书契约呼应要求（此前豁免以场景为单位，视觉可交互但未声明行为的元素无覆盖通路）

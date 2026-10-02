@@ -16,5 +16,5 @@ daemon 每晚由 Administrator Agent 自动复盘当日运行（浪费/失误/�
 
 ## 溯源
 
-- [2026-09-10 2026-09-10-add-daily-self-review](spec/archive/2026-09-10-add-daily-self-review/) — 新增每日自省全链规则（定时调度与补跑防重、Administrator 通道执行、todo.md 结构化追加与自动提交、read_todo 开关、禁止自动立项、设置页界面）
-- [2026-09-29 2026-09-29-evo-alert-noise-governance](spec/archive/2026-09-29-evo-alert-noise-governance/) — 数据摘要装配新增夹具项目过滤：fixture 标记项目告警不进未处理计数、以 fixture 标注单独呈现，fail-open 不因标记异常失效
+- 2026-09-10 2026-09-10-add-daily-self-review（spec/archive/2026-09-10-add-daily-self-review） — 新增每日自省全链规则（定时调度与补跑防重、Administrator 通道执行、todo.md 结构化追加与自动提交、read_todo 开关、禁止自动立项、设置页界面）
+- 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 数据摘要装配新增夹具项目过滤：fixture 标记项目告警不进未处理计数、以 fixture 标注单独呈现，fail-open 不因标记异常失效

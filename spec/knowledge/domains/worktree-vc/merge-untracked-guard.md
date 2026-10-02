@@ -14,4 +14,4 @@ merge-back 前把主树上与分支新增路径重合的 untracked 文件移开�
 ## 溯源
 
 - 史前复原（存量基线） — merge-back 对 untracked 冲突做防护；冲突文件与分支侧字节一致时豁免放行
-- [2026-09-04 fix-merge-untracked-guard](spec/archive/2026-09-04-fix-merge-untracked-guard/) — 固化 merge 前交集移开备份、失败 abort 后移回原位、成功后按字节一致性定备份去留并告警、空集零开销跳过
+- 2026-09-04 fix-merge-untracked-guard（spec/archive/2026-09-04-fix-merge-untracked-guard） — 固化 merge 前交集移开备份、失败 abort 后移回原位、成功后按字节一致性定备份去留并告警、空集零开销跳过

@@ -16,5 +16,5 @@ daemon 关停时对在跑 agent 的终止协议，以及停机路径对在飞成
 ## 溯源
 
 - 2026-09-02 史前复原 — 迁移期已存在的基线：agent 关闭语义为 terminate 流程，先终止子进程再收尾；以 interrupted 标记识别被打断的 run，恢复链路据此区分打断与失败
-- [2026-09-02 fix-graceful-shutdown-agents](spec/archive/2026-09-02-fix-graceful-shutdown-agents/) — 固化优雅退出主动 SIGTERM 与 10s 量级终止、缓冲超时 SIGKILL 兜底、多 agent 并行终止与 interrupted 标记追加
-- [2026-09-19 fix-recovery-branch-anchor-without-worktree](spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree/) — interrupted 标记收窄为尾部无终态 run 且写入时机先于保全；增设关闭期分支在飞引用保护（全等比较口径）与停机保护集结构性下界
+- 2026-09-02 fix-graceful-shutdown-agents（spec/archive/2026-09-02-fix-graceful-shutdown-agents） — 固化优雅退出主动 SIGTERM 与 10s 量级终止、缓冲超时 SIGKILL 兜底、多 agent 并行终止与 interrupted 标记追加
+- 2026-09-19 fix-recovery-branch-anchor-without-worktree（spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree） — interrupted 标记收窄为尾部无终态 run 且写入时机先于保全；增设关闭期分支在飞引用保护（全等比较口径）与停机保护集结构性下界

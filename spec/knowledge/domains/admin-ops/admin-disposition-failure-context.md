@@ -14,4 +14,4 @@ Administrator 处置 run 异常结束时，final disposition 记录必须自带�
 
 ## 溯源
 
-- [2026-09-10 fix-admin-disposition-empty-shell](spec/archive/2026-09-10-fix-admin-disposition-empty-shell/) — 消灭失败处置空壳记录：error 字段、recommended_action/description 兜底、失败 WARNING 日志与 UI 展示
+- 2026-09-10 fix-admin-disposition-empty-shell（spec/archive/2026-09-10-fix-admin-disposition-empty-shell） — 消灭失败处置空壳记录：error 字段、recommended_action/description 兜底、失败 WARNING 日志与 UI 展示

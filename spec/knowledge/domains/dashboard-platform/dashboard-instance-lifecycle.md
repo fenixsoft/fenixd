@@ -18,5 +18,5 @@ dashboard 服务实例的端口独占、启动退出纪律与孤儿泄漏防护�
 
 ## 溯源
 
-- [2026-09-02 2026-09-02-fix-dashboard-duration-and-verify-gate](spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate/) — 建立端口独占与启动语义：旧实例接管、异主报错退出、5 秒僵尸退出
-- [2026-09-26 2026-09-26-fix-dashboard-watchdog-misfire](spec/archive/2026-09-26-fix-dashboard-watchdog-misfire/) — watchdog 增加「tmux 承载即显式长驻、不装配」父进程判据（PPID comm 恰等匹配），禁 TMUX 环境变量与 tmux 子串误判路径；skill/agent/hook 入口补 `env -u CLAUDE_PID` 双保险
+- 2026-09-02 2026-09-02-fix-dashboard-duration-and-verify-gate（spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate） — 建立端口独占与启动语义：旧实例接管、异主报错退出、5 秒僵尸退出
+- 2026-09-26 2026-09-26-fix-dashboard-watchdog-misfire（spec/archive/2026-09-26-fix-dashboard-watchdog-misfire） — watchdog 增加「tmux 承载即显式长驻、不装配」父进程判据（PPID comm 恰等匹配），禁 TMUX 环境变量与 tmux 子串误判路径；skill/agent/hook 入口补 `env -u CLAUDE_PID` 双保险

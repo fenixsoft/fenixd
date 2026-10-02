@@ -17,5 +17,5 @@
 ## 溯源
 
 - 2026-09-02 史前复原 — 迁移期已存在的基线：自愈不可达时升级人工告警；合成兜底类告警静默化，不进入人工升级通道
-- [2026-09-02 add-administrator-agent](spec/archive/2026-09-02-add-administrator-agent/) — 固化升级告警 8 字段结构与 admin_alerts.json 持久化、150 条写回裁剪、Dashboard 横幅与「标记已处理」闭环
-- [2026-09-02 fix-graceful-shutdown-agents](spec/archive/2026-09-02-fix-graceful-shutdown-agents/) — 孤儿检测升级口径收窄：run 文件含 interrupted 标记的已知中断终结而不告警，无证据场景保守维持升级
+- 2026-09-02 add-administrator-agent（spec/archive/2026-09-02-add-administrator-agent） — 固化升级告警 8 字段结构与 admin_alerts.json 持久化、150 条写回裁剪、Dashboard 横幅与「标记已处理」闭环
+- 2026-09-02 fix-graceful-shutdown-agents（spec/archive/2026-09-02-fix-graceful-shutdown-agents） — 孤儿检测升级口径收窄：run 文件含 interrupted 标记的已知中断终结而不告警，无证据场景保守维持升级

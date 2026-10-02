@@ -28,4 +28,4 @@
 
 ## 溯源
 
-- [2026-09-26 2026-09-26-add-code-review-auto-fix](spec/archive/2026-09-26-add-code-review-auto-fix/) — 新建本页：enabled/batch_size 参数定义与非法回退、Dashboard 受管键读写链、模板与帮助文档同步、设置页质量页签开关与批大小。
+- 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：enabled/batch_size 参数定义与非法回退、Dashboard 受管键读写链、模板与帮助文档同步、设置页质量页签开关与批大小。

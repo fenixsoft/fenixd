@@ -1,4 +1,4 @@
-<!-- knowledge: capability=merge-back rev=3 sources=spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976,spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard,spec/archive/2026-09-25-evo-stash-pop-conflict-triage -->
+<!-- knowledge: capability=merge-back rev=4 sources=spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976,spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard,spec/archive/2026-09-25-evo-stash-pop-conflict-triage,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer -->
 
 # merge-back 合并回主树
 
@@ -9,6 +9,7 @@
 - 闸门顺序不变式：`merge-tree` 预演闸 → WIP 重叠闸门 → spec 目录在飞编辑卫检查 → `ensure_clean_tree` → merge。优先级为语义冲突 → WIP 重叠拦截 → spec 目录在飞编辑顺延 → 放行 merge。
 - 无重叠且主树干净的路径：autostash（含 untracked）→ `git merge --no-ff`（保留历史，分支已为主树祖先时幂等跳过）→ 成功后 stash pop 恢复主树 WIP。
 - WIP 重叠闸门：重叠集合 = 主树脏 tracked 文件 ∩ 分支触碰文件集，且 MUST 排除 `spec/changes/**`（该前缀由既有 `ensure_spec_committed` / `_commit_softened_declaration` 提交通道收口，不引入新的 stash/阻塞语义）。交集非空的缺省处置为升级人工拦截（不发 merge，人工告警附交集清单；该缺省由 merge-back-precheck 预检确立）；显式 `worktree.mergeback_wip_overlap_policy=auto` 维持自动收纳（收纳 → merge → 成功后恢复主树 WIP）；显式 `block` 并入升级出口；`worktree.merge_precheck_bypass=true` 跳过预检直接 merge。
+- WIP 拦截后的等待与自动合回：拦截落人工告警的同时在 spec 状态上落结构化等待标志（布尔 + 重试计数 + 首阻时刻），daemon 周期复查、主树重叠文件干净后在主树锁内 merge-only 自动合回并闭环原告警（详见 [WIP 阻断延迟合回](wip-defer-merge-retry.md)）；闸门本体与升级拦截语义不因此改变。
 - 阻塞与顺延不记账：WIP 重叠拦截 MUST NOT 计入 `_merge_fp`/`_merge_streak` 熔断记账，spec MUST NOT 因拦截被自动 `transition("blocked")`；spec 目录顺延同样不计指纹、不递增 `_retry_count`、不消耗实现尝试预算、不触发「新轮次派发清除锚点」。
 - spec 目录在飞编辑卫检查：merge 前对 `spec/changes/<spec>/` 整目录（含 specs/**、proposal/design/tasks，spec 名由分支推导）做未提交改动检测，检测只读、不就地提交/还原主树；命中 → merge-back 顺延（携带顺延原因与等待语义，由调度方重排，不判失败）。spec 名解析失败（非 `fenix/<spec>-<ts>` 形态）→ fail-open 放行现行流程，MUST NOT 退化为对整个 `spec/changes/` 的检测。顺延信号沿用 merge-back 返回值结构（新增布尔字段，与 `rehearsed`/`wip_gate_blocked` 同型），保持 `(success, err)` 解包契约。
 - 顺延的有界性与解除：解除条件 = 主树侧该 spec 目录被提交（派发前 `ensure_spec_committed`、merge 成功后 `_sync_task_progress` 或人工提交；分支侧提交不构成解除——`git status` 只看主树）。顺延有硬上限：自首次顺延起超过 `mergeback.spec_dir_inflight_grace_minutes`（缺省 30 分钟）或连续 3 轮仍未解除 → 回落「发告警 + 等待人工处置」，MUST NOT 无限顺延；上限 MUST 先于 `agents.impl_run_budget`（缺省 6）耗尽收敛；到期告警对该 spec 可见。非 dispatch 调用方（`_recovery_remerge_pending` / repair re-merge / fast-track 成功路径）MUST NOT 消费 `_repair_awaiting_remerge` 标记，原样保留待下轮再试。
@@ -20,6 +21,7 @@
 
 ## 溯源
 
-- [2026-09-22 evo-merge-back-wip-overlap-gate-575976](spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976/) — WIP 重叠处置从仅预警升级为执行级闸门（自动收纳/阻塞策略、`spec/changes/**` 排除、闸门不记账）、stash 保留判据与 stash 前缀隔离、`mergeback_wip_overlap` 直发告警通路（其缺省策略后经 merge-back-precheck 改为升级拦截，见该能力页）
-- [2026-09-25 evo-merge-back-spec-dir-inflight-guard](spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard/) — 新增 spec 目录在飞编辑卫检查与顺延有界性（30 分钟/3 轮双上限、fail-open 边界）、可重试失败仅重试合并的分类语义与预算记账口径
-- [2026-09-25 evo-stash-pop-conflict-triage](spec/archive/2026-09-25-evo-stash-pop-conflict-triage/) — stash pop 冲突自愈升级为三态重试（双版本落盘/路径作用域恢复 commit/兜底登记），主树未提交改动不再因自愈静默丢失，处置路径结构化日志可观测
+- 2026-09-22 evo-merge-back-wip-overlap-gate-575976（spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976） — WIP 重叠处置从仅预警升级为执行级闸门（自动收纳/阻塞策略、`spec/changes/**` 排除、闸门不记账）、stash 保留判据与 stash 前缀隔离、`mergeback_wip_overlap` 直发告警通路（其缺省策略后经 merge-back-precheck 改为升级拦截，见该能力页）
+- 2026-09-25 evo-merge-back-spec-dir-inflight-guard（spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard） — 新增 spec 目录在飞编辑卫检查与顺延有界性（30 分钟/3 轮双上限、fail-open 边界）、可重试失败仅重试合并的分类语义与预算记账口径
+- 2026-09-25 evo-stash-pop-conflict-triage（spec/archive/2026-09-25-evo-stash-pop-conflict-triage） — stash pop 冲突自愈升级为三态重试（双版本落盘/路径作用域恢复 commit/兜底登记），主树未提交改动不再因自愈静默丢失，处置路径结构化日志可观测
+- 2026-10-02 evo-add-wip-defer-merge-retry-consumer（spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer） — WIP 拦截出口新增结构化等待标志与 daemon 周期自动合回（独立能力页 wip-defer-merge-retry 承载），闸门本体与升级拦截语义不变

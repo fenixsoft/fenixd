@@ -35,4 +35,4 @@ code-fix 批内多文件组时的并行修复协议：主 agent 以 orchestrator
 
 ## 溯源
 
-- [2026-09-29 2026-09-29-add-codefix-batch-parallel](spec/archive/2026-09-29-add-codefix-batch-parallel/) — 新建本页：批内并行处置协议（多组批派子代理、单组批退化串行）、orchestrator 单写者落盘、三级失败兜底、汇总后一次定向验证；并发上限后演进为框架按批组数分档注入（4/6/8），提交时序并入「先 commit 再验证」契约（逐组提交合法）。
+- 2026-09-29 2026-09-29-add-codefix-batch-parallel（spec/archive/2026-09-29-add-codefix-batch-parallel） — 新建本页：批内并行处置协议（多组批派子代理、单组批退化串行）、orchestrator 单写者落盘、三级失败兜底、汇总后一次定向验证；并发上限后演进为框架按批组数分档注入（4/6/8），提交时序并入「先 commit 再验证」契约（逐组提交合法）。

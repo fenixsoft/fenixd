@@ -13,4 +13,4 @@ daemon 重启恢复重验（testing 回退 implemented 并重派 verify）的持
 
 ## 溯源
 
-- [2026-09-12 fix-daemon-lifecycle-races](spec/archive/2026-09-12-fix-daemon-lifecycle-races/) — 新增重验计数持久化与超限结构化冻结：每次恢复重验递增 _verify_redo_count，达 agents.verify_redo_budget 冻结 blocked 等人工裁决
+- 2026-09-12 fix-daemon-lifecycle-races（spec/archive/2026-09-12-fix-daemon-lifecycle-races） — 新增重验计数持久化与超限结构化冻结：每次恢复重验递增 _verify_redo_count，达 agents.verify_redo_budget 冻结 blocked 等人工裁决

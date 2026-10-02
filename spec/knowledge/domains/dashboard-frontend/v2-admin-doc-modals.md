@@ -13,4 +13,4 @@ v2 列表页的两个入口弹窗：呼叫 Admin 接通 run 流 admin 状态机�
 ## 溯源
 
 - 史前复原 — v2 Admin 处置弹窗与 SPEC 文档弹窗经注册机制挂载，Escape 只关闭最上层弹窗
-- [2026-09-05 v2-admin-doc-modals](spec/archive/2026-09-05-v2-admin-doc-modals/) — Admin 弹窗接通 RunStream admin 状态机（等待态文案 + 关闭发出 DELETE watch 退订），文档弹窗落地三页签懒加载与「未找到文档」空态
+- 2026-09-05 v2-admin-doc-modals（spec/archive/2026-09-05-v2-admin-doc-modals） — Admin 弹窗接通 RunStream admin 状态机（等待态文案 + 关闭发出 DELETE watch 退订），文档弹窗落地三页签懒加载与「未找到文档」空态

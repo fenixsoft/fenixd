@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-16 2026-09-16-add-planready-artifact-gate](spec/archive/2026-09-16-add-planready-artifact-gate/) — 新增降级合成报告的标注契约（降级原因 + 被降级轮次代价，采集点、持久化与缺省不渲染）。
+- 2026-09-16 2026-09-16-add-planready-artifact-gate（spec/archive/2026-09-16-add-planready-artifact-gate） — 新增降级合成报告的标注契约（降级原因 + 被降级轮次代价，采集点、持久化与缺省不渲染）。

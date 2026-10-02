@@ -20,4 +20,4 @@ run 终态 success → 解析 run 产物完成集 → 勾选主树 tasks.md 对�
 ## 溯源
 
 - 史前基线 — tasks.md 勾选写侧回写与 verified→done 一致性门禁已存在：回写以共享解析函数为准，一致性门禁核对勾选与终态。
-- [2026-09-02 2026-09-02-add-task-progress-sync](spec/archive/2026-09-02-add-task-progress-sync/) — 机制化写侧回写（run 产物解析、固定 message commit、幂等只增不减）与 verified→done 一致性门禁（阻断推送 + error 暴露缺口），读侧叠加降为兜底视图
+- 2026-09-02 2026-09-02-add-task-progress-sync（spec/archive/2026-09-02-add-task-progress-sync） — 机制化写侧回写（run 产物解析、固定 message commit、幂等只增不减）与 verified→done 一致性门禁（阻断推送 + error 暴露缺口），读侧叠加降为兜底视图

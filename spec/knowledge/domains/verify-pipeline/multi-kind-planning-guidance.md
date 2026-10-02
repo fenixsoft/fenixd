@@ -14,4 +14,4 @@ planner 侧的多形态（web/cli/api）场景规划引导、词表权威源约�
 
 ## 溯源
 
-- [2026-09-12 add-verify-multi-kind-runner](spec/archive/2026-09-12-add-verify-multi-kind-runner/) — 新增 planner kind 判定树与词表引导（权威源标注 scenarios.py 常量）、验收门打回消息带词表速查、verifier/judge/fast-track 截图措辞中立化、docs/help 多形态验证文档
+- 2026-09-12 add-verify-multi-kind-runner（spec/archive/2026-09-12-add-verify-multi-kind-runner） — 新增 planner kind 判定树与词表引导（权威源标注 scenarios.py 常量）、验收门打回消息带词表速查、verifier/judge/fast-track 截图措辞中立化、docs/help 多形态验证文档

@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-15 add-scenario-defect-triage-gate](spec/archive/2026-09-15-add-scenario-defect-triage-gate/) — 新增场景执行前的模式表静态扫描（跨轮端口残留/双汉字文本选择器）、findings 落盘与 judge 情报注入、fail-open 边界（此前场景跨轮环境假设随 replan 写回带进新一轮，seed 未建成导致下游场景连锁失败）
+- 2026-09-15 add-scenario-defect-triage-gate（spec/archive/2026-09-15-add-scenario-defect-triage-gate） — 新增场景执行前的模式表静态扫描（跨轮端口残留/双汉字文本选择器）、findings 落盘与 judge 情报注入、fail-open 边界（此前场景跨轮环境假设随 replan 写回带进新一轮，seed 未建成导致下游场景连锁失败）

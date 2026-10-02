@@ -14,4 +14,4 @@
 ## 溯源
 
 - 史前复原（存量基线） — 实现工作在独立 git worktree 内进行，主树不被实现期改动污染；完成后经 merge-back 合入主树
-- [2026-09-02 fix-worktree-agent-cwd](spec/archive/2026-09-02-fix-worktree-agent-cwd/) — 固化 Popen cwd 指向 worktree、merge-back `--no-ff` 幂等合回、tasks.md 读取路径按生命周期分流与 implement→verify 周期不回归
+- 2026-09-02 fix-worktree-agent-cwd（spec/archive/2026-09-02-fix-worktree-agent-cwd） — 固化 Popen cwd 指向 worktree、merge-back `--no-ff` 幂等合回、tasks.md 读取路径按生命周期分流与 implement→verify 周期不回归

@@ -14,4 +14,4 @@ Administrator 角色的 Provider + 模型分配，与其余 Agent 角色同构�
 
 ## 溯源
 
-- [2026-09-02 improve-config-ui-tabs](spec/archive/2026-09-02-improve-config-ui-tabs/) — Administrator 纳入 Agent 模型分配区（agents.models.administrator），运行时按指派注入 Provider env 并保留 admin.agent_model → 默认网关回退链
+- 2026-09-02 improve-config-ui-tabs（spec/archive/2026-09-02-improve-config-ui-tabs） — Administrator 纳入 Agent 模型分配区（agents.models.administrator），运行时按指派注入 Provider env 并保留 admin.agent_model → 默认网关回退链

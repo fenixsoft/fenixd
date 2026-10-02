@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-19 2026-09-19-fix-impl-tasks-completion-gate](spec/archive/2026-09-19-fix-impl-tasks-completion-gate/) — 随任务完成度门禁配套确立回炉动作：API + CLI 双入口单实现、四项开放条件、原子复位语义与留痕
+- 2026-09-19 2026-09-19-fix-impl-tasks-completion-gate（spec/archive/2026-09-19-fix-impl-tasks-completion-gate） — 随任务完成度门禁配套确立回炉动作：API + CLI 双入口单实现、四项开放条件、原子复位语义与留痕

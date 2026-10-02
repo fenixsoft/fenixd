@@ -19,4 +19,4 @@
 
 ## 溯源
 
-- [2026-09-15 2026-09-15-add-impl-wip-checkpoint](spec/archive/2026-09-15-add-impl-wip-checkpoint/) — 确立锚点 A/B 两个 WIP 检查点、提交物性契约（gitignore/前缀/限时）、merge-back 前塌缩与失败降级
+- 2026-09-15 2026-09-15-add-impl-wip-checkpoint（spec/archive/2026-09-15-add-impl-wip-checkpoint） — 确立锚点 A/B 两个 WIP 检查点、提交物性契约（gitignore/前缀/限时）、merge-back 前塌缩与失败降级

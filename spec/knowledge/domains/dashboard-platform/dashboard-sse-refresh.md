@@ -15,4 +15,4 @@ v3 SPA 前端的数据刷新模型：SSE 增量驱动 + 低频兜底心跳，轮
 
 ## 溯源
 
-- [2026-09-09 2026-09-09-add-dashboard-incremental-data](spec/archive/2026-09-09-add-dashboard-incremental-data/) — 前端由 2s 固定轮询（spec 列表页 3 秒 10 次请求）改为 SSE 增量驱动 + 30s 级兜底心跳 + visibilitychange 补刷 + 检索防抖
+- 2026-09-09 2026-09-09-add-dashboard-incremental-data（spec/archive/2026-09-09-add-dashboard-incremental-data） — 前端由 2s 固定轮询（spec 列表页 3 秒 10 次请求）改为 SSE 增量驱动 + 30s 级兜底心跳 + visibilitychange 补刷 + 检索防抖

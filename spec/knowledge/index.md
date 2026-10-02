@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-09-30 13:17 UTC+8
+> 最后更新：2026-10-03 04:59 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -9,30 +9,30 @@
 
 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- |
-| [project-management](domains/project-management/_domain.md) | 项目接入与生命周期 | 8 | 2026-09-29 11:27 |
-| [planning-generation](domains/planning-generation/_domain.md) | 规划与出题 | 6 | 2026-09-29 11:27 |
-| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 21 | 2026-09-29 11:27 |
-| [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | 调度与派发 | 8 | 2026-09-29 11:27 |
-| [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 26 | 2026-09-29 11:27 |
-| [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 43 | 2026-09-29 11:27 |
-| [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 19 | 2026-09-29 11:27 |
-| [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 16 | 2026-09-30 05:05 |
-| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 20 | 2026-09-29 11:27 |
-| [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 14 | 2026-09-29 11:27 |
-| [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 26 | 2026-09-29 11:27 |
-| [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-09-29 11:27 |
-| [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 15 | 2026-09-30 05:17 |
-| [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 12 | 2026-09-29 11:27 |
-| [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 18 | 2026-09-30 05:05 |
-| [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 13 | 2026-09-29 11:27 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 32 | 2026-09-29 11:27 |
-| [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 16 | 2026-09-29 11:27 |
-| [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-09-29 11:27 |
-| [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 23 | 2026-09-29 11:27 |
-| [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 9 | 2026-09-29 11:27 |
-| [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 11 | 2026-09-29 11:27 |
-| [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-09-29 11:27 |
-| [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 3 | 2026-09-29 11:27 |
+| [project-management](domains/project-management/_domain.md) | 项目接入与生命周期 | 8 | 2026-10-03 04:59 |
+| [planning-generation](domains/planning-generation/_domain.md) | 规划与出题 | 6 | 2026-10-03 04:59 |
+| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 21 | 2026-10-03 04:59 |
+| [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | 调度与派发 | 8 | 2026-10-03 04:59 |
+| [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 26 | 2026-10-03 04:59 |
+| [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 46 | 2026-10-03 04:59 |
+| [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 19 | 2026-10-03 04:59 |
+| [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 16 | 2026-10-03 04:59 |
+| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 20 | 2026-10-03 04:59 |
+| [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 14 | 2026-10-03 04:59 |
+| [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 26 | 2026-10-03 04:59 |
+| [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-10-03 04:59 |
+| [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 15 | 2026-10-03 04:59 |
+| [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 12 | 2026-10-03 04:59 |
+| [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 18 | 2026-10-03 04:59 |
+| [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 13 | 2026-10-03 04:59 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 32 | 2026-10-03 04:59 |
+| [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 17 | 2026-10-03 04:59 |
+| [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
+| [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 23 | 2026-10-03 04:59 |
+| [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 10 | 2026-10-03 04:59 |
+| [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 11 | 2026-10-03 04:59 |
+| [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
+| [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 3 | 2026-10-03 04:59 |
 
 ## 决策记录
 

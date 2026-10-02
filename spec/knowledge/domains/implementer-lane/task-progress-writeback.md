@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-09 2026-09-09-fix-implementer-task-progress](spec/archive/2026-09-09-fix-implementer-task-progress/) — done_ids 为空时不再直接跳过：新增 flat_done（harness 创建序完成下标）回退勾选并配弱一致性校验防误写；done_ids 精确对齐路径保持不变
+- 2026-09-09 2026-09-09-fix-implementer-task-progress（spec/archive/2026-09-09-fix-implementer-task-progress） — done_ids 为空时不再直接跳过：新增 flat_done（harness 创建序完成下标）回退勾选并配弱一致性校验防误写；done_ids 精确对齐路径保持不变

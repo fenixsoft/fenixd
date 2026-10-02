@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-22 2026-09-22-fix-observability-gaps](spec/archive/2026-09-22-fix-observability-gaps/) — 新增 run 终止结构化指标落盘、Transition 日志结构化 context 与时间轴结构化消费优先、审计保留窗口下限与 supervisor 双写修正。
+- 2026-09-22 2026-09-22-fix-observability-gaps（spec/archive/2026-09-22-fix-observability-gaps） — 新增 run 终止结构化指标落盘、Transition 日志结构化 context 与时间轴结构化消费优先、审计保留窗口下限与 supervisor 双写修正。

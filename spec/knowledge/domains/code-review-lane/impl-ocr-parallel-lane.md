@@ -18,4 +18,4 @@
 
 ## 溯源
 
-- [2026-09-26 add-impl-ocr-parallel-lane](spec/archive/2026-09-26-add-impl-ocr-parallel-lane/) — 新建框架侧 ocr 异步车道：tester 派发时点并行启动、`(branch, base, head)` 指纹绑定与 stale 判定、独立硬超时键（2400s，与单请求超时键分离）与失败降级、维护 run 形态（不占 spec 预算与 agent 轮次）、恢复续做轮增量审查游标。
+- 2026-09-26 add-impl-ocr-parallel-lane（spec/archive/2026-09-26-add-impl-ocr-parallel-lane） — 新建框架侧 ocr 异步车道：tester 派发时点并行启动、`(branch, base, head)` 指纹绑定与 stale 判定、独立硬超时键（2400s，与单请求超时键分离）与失败降级、维护 run 形态（不占 spec 预算与 agent 轮次）、恢复续做轮增量审查游标。

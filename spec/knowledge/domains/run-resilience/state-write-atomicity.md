@@ -14,4 +14,4 @@ STATE.md 的并发一致性：写入以文件锁串行化并原子替换落盘�
 ## 溯源
 
 - 史前复原 — 迁移期基线：STATE.md 写入以 fcntl 文件锁串行化并原子替换落盘，并发读者任一时刻只见完整旧值或完整新值
-- [2026-09-25 fix-state-atomicity-and-selfheal-restart](spec/archive/2026-09-25-fix-state-atomicity-and-selfheal-restart/) — update_spec 的读改写收进同一把 .STATE.md.lock 消除并发丢失更新；确立写入必留痕与全部构造点真实 logger 注入；冻结 error 在并发下可靠存续、解冻恢复真实原状态
+- 2026-09-25 fix-state-atomicity-and-selfheal-restart（spec/archive/2026-09-25-fix-state-atomicity-and-selfheal-restart） — update_spec 的读改写收进同一把 .STATE.md.lock 消除并发丢失更新；确立写入必留痕与全部构造点真实 logger 注入；冻结 error 在并发下可靠存续、解冻恢复真实原状态

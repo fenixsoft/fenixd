@@ -17,4 +17,4 @@ AdminMonitor 孤儿处置检测对「known shutdown 中断的 admin run」的收
 
 ## 溯源
 
-- [2026-09-23 evo-admin-disposition-reschedule](spec/archive/2026-09-23-evo-admin-disposition-reschedule/) — 孤儿处置对已知中断从静默终结改为「查底层信号 → 重派或升级」，确立 reschedule_count 上限、superseded 留痕与禁写 dispatched 记录的约束
+- 2026-09-23 evo-admin-disposition-reschedule（spec/archive/2026-09-23-evo-admin-disposition-reschedule） — 孤儿处置对已知中断从静默终结改为「查底层信号 → 重派或升级」，确立 reschedule_count 上限、superseded 留痕与禁写 dispatched 记录的约束

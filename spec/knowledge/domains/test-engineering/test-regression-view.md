@@ -15,4 +15,4 @@ dashboard 项目页「测试回归」分面的结果展示规则，以及设置�
 
 ## 溯源
 
-- [2026-09-25 add-test-regression-tab](spec/archive/2026-09-25-add-test-regression-tab/) — 新增「测试回归」分面三形态渲染与手动触发、只读结果 API 的容错语义、设置页质量页签周期回归配置与 _SOURCE_KEYS 登记要求
+- 2026-09-25 add-test-regression-tab（spec/archive/2026-09-25-add-test-regression-tab） — 新增「测试回归」分面三形态渲染与手动触发、只读结果 API 的容错语义、设置页质量页签周期回归配置与 _SOURCE_KEYS 登记要求

@@ -21,4 +21,4 @@ Dashboard 内置的框架使用帮助入口：侧边栏直达的帮助中心页�
 
 ## 溯源
 
-- [2026-09-10 2026-09-10-add-dashboard-help-center](spec/archive/2026-09-10-add-dashboard-help-center/) — 建立「帮助」菜单与 `/help` 路由、文档清单与单篇正文两个读取端点（动态读盘 + 白名单防穿越）、目录+正文布局与 mermaid 动态渲染、空态容错与移动端适配
+- 2026-09-10 2026-09-10-add-dashboard-help-center（spec/archive/2026-09-10-add-dashboard-help-center） — 建立「帮助」菜单与 `/help` 路由、文档清单与单篇正文两个读取端点（动态读盘 + 白名单防穿越）、目录+正文布局与 mermaid 动态渲染、空态容错与移动端适配

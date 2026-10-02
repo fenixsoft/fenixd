@@ -14,4 +14,4 @@
 
 ## 溯源
 
-- [2026-09-18 add-blocked-reverify-lane](spec/archive/2026-09-18-add-blocked-reverify-lane/) — 新增 BLOCKED→TESTING 重验直通道、admin 处置复位收敛为框架机械动作、`_env_block_rounds` 改生命周期累计（此前 admin 复位清零架空冻结门，且 blocked→ready 复位必然触发全量重实现空跑）
+- 2026-09-18 add-blocked-reverify-lane（spec/archive/2026-09-18-add-blocked-reverify-lane） — 新增 BLOCKED→TESTING 重验直通道、admin 处置复位收敛为框架机械动作、`_env_block_rounds` 改生命周期累计（此前 admin 复位清零架空冻结门，且 blocked→ready 复位必然触发全量重实现空跑）

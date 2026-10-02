@@ -16,4 +16,4 @@
 
 ## 溯源
 
-- [2026-09-25 add-freeze-stop-inflight-agents](spec/archive/2026-09-25-add-freeze-stop-inflight-agents/) — 新增本能力：删除从「120 秒内活跃 run 直接拒绝（409）」升级为先停后删、API 异步受理（托管态校验 + 信号消费）与前端停止计数反馈
+- 2026-09-25 add-freeze-stop-inflight-agents（spec/archive/2026-09-25-add-freeze-stop-inflight-agents） — 新增本能力：删除从「120 秒内活跃 run 直接拒绝（409）」升级为先停后删、API 异步受理（托管态校验 + 信号消费）与前端停止计数反馈

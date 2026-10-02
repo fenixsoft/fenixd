@@ -15,4 +15,4 @@
 
 ## 溯源
 
-- [2026-09-14 fix-cancel-holdstate-recovery](spec/archive/2026-09-14-fix-cancel-holdstate-recovery/) — 新增取消保持持久标记、重启恢复尊重、显式复位解锁与监测豁免
+- 2026-09-14 fix-cancel-holdstate-recovery（spec/archive/2026-09-14-fix-cancel-holdstate-recovery） — 新增取消保持持久标记、重启恢复尊重、显式复位解锁与监测豁免
