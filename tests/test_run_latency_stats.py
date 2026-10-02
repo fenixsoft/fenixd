@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent_runner.runner import (
     LATENCY_STALL_SECONDS,
+    STALL_ROUND_WARN_SECONDS,
     _entry_is_tool_result,
     format_latency_summary,
     latency_samples_from_events,
@@ -402,6 +403,145 @@ class TestRunClaudeIntegration:
             and (a[2] if len(a) >= 3 else {}).get("latency_rounds") == 0
         ]
         assert len(blind_warns) == 0, f"真空跑不应触发失明告警；records={rec_logger.records}"
+
+
+# ── 期内停滞 WARNING（evo-add-api-stall-observability 1.1/1.2）──────
+
+
+class TestStallRoundWarn:
+    """Scenario: 超阈值样本期内 WARNING / 阈值内静默 / 无效测量双静默 /
+    纯读侧（stats 不因告警改变）。"""
+
+    def _make_runner(self, proot):
+        import threading
+
+        from test_agent_runner import make_runner
+        runner = make_runner(proot)
+        runner.config = {"agents": {"run_timeout_seconds": 3600}}
+        runner._cancel_requested = set()
+        runner._cancel_requested_lock = threading.Lock()
+        runner._cancel_meta = {}
+        return runner
+
+    _fake_subprocess = staticmethod(TestRunClaudeIntegration._fake_subprocess)
+
+    @staticmethod
+    def _stall_warns(logger):
+        """提取停滞 WARNING 记录（event=api_round_stall）。"""
+        return [
+            (a, k) for (kind, a, k) in logger.records
+            if kind == "warning" and len(a) >= 3
+            and isinstance(a[2], dict)
+            and a[2].get("event") == "api_round_stall"
+        ]
+
+    def test_stall_round_warn_constant_value(self):
+        """常量值 120.0；与既有常量各自独立、既有常量未被改动。"""
+        from core.agent_runner import latency as latency_mod
+        from core.agent_runner.runner import RUN_STALL_ROUND_SECONDS
+        assert STALL_ROUND_WARN_SECONDS == 120.0
+        # 单源：runner re-export 与 latency.py 模块属性同值（不另立常量）
+        assert latency_mod.STALL_ROUND_WARN_SECONDS == 120.0
+        # 统计口径（60.0）与判停计入线（120.0）未被本能力改动
+        assert LATENCY_STALL_SECONDS == 60.0
+        assert RUN_STALL_ROUND_SECONDS == 120.0
+
+    def test_over_threshold_sample_warns(self, tmp_path):
+        """251.1s 样本：在飞采样点产出 WARNING（含 run_id 与样本秒数），
+        样本照常进入既有样本序列。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec = _RecordingLogger()
+        runner.logger = rec
+        events = [
+            {"type": "tool_result", "timestamp": 100.0},
+            {"type": "assistant", "timestamp": 351.1},  # 251.1s > 120s
+        ]
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError):
+                runner._run_claude("prompt", proot, "impl-stall-warn-1")
+        warns = self._stall_warns(rec)
+        assert len(warns) == 1, f"应恰一条停滞 WARNING；records={rec.records}"
+        a, _k = warns[0]
+        assert a[0] == "agent_runner"
+        assert "run impl-stall-warn-1" in a[1]
+        assert "251.1" in a[1]  # 样本秒数（:.1f 格式）
+        extra = a[2]
+        assert extra["run_id"] == "impl-stall-warn-1"
+        assert extra["latency_round"] == 1  # 有效样本序列中的序数（1 基）
+        assert extra["latency_max"] == pytest.approx(251.1)
+
+    def test_boundary_and_below_threshold_silent(self, tmp_path):
+        """119.9s 边界内与恰 120.0s（严格 > 比较）样本全 run 静默，
+        且样本照常入序列（静默不等于丢样本）。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec = _RecordingLogger()
+        runner.logger = rec
+        events = [
+            {"type": "tool_result", "timestamp": 0.0},
+            {"type": "assistant", "timestamp": 119.9},   # 边界内
+            {"type": "tool_result", "timestamp": 1000.0},
+            {"type": "assistant", "timestamp": 1120.0},  # 恰等于阈值
+        ]
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError) as cm:
+                runner._run_claude("prompt", proot, "impl-stall-quiet-1")
+        assert self._stall_warns(rec) == []
+        # 两个样本照常进 stats（error 摘要 2 rounds）
+        assert "run impl-stall-quiet-1: 2 rounds" in str(cm.value)
+
+    def test_invalid_measurement_no_sample_no_warn(self, tmp_path):
+        """timestamp 缺失/负差值无效测量：既不产样本也不触发 WARNING。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec = _RecordingLogger()
+        runner.logger = rec
+        events = [
+            {"type": "tool_result"},                    # 缺 timestamp：不记录待配对
+            {"type": "assistant", "timestamp": 300.0},  # 无待配对 → 无样本
+            {"type": "tool_result", "timestamp": 400.0},
+            {"type": "assistant", "timestamp": 350.0},  # 负差值 → 无效测量
+        ]
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError) as cm:
+                runner._run_claude("prompt", proot, "impl-stall-invalid-1")
+        assert self._stall_warns(rec) == []
+        # 无有效样本（error 摘要 0 rounds）
+        assert "0 rounds" in str(cm.value)
+
+    def test_stats_unchanged_by_warning(self, tmp_path):
+        """纯读侧：触发 WARNING 的 run 其 stats 与纯函数对同一事件序列的
+        计算逐字段一致（样本序列未被告警改变）。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec = _RecordingLogger()
+        runner.logger = rec
+        events = [
+            {"type": "tool_result", "timestamp": 0.0},
+            {"type": "assistant", "timestamp": 119.9},   # ≤120s：静默
+            {"type": "tool_result", "timestamp": 1000.0},
+            {"type": "assistant", "timestamp": 1251.1},  # 251.1s：告警
+        ]
+        expected = latency_stats(latency_samples_from_events(events))
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError) as cm:
+                runner._run_claude("prompt", proot, "impl-stall-pure-1")
+        # 恰一条告警，序数为第 2 个有效样本
+        warns = self._stall_warns(rec)
+        assert len(warns) == 1
+        assert warns[0][0][2]["latency_round"] == 2
+        # run 末摘要与纯函数结果逐字段一致（拼入 error 上下文的同一文本）
+        expected_text = format_latency_summary("impl-stall-pure-1", expected)
+        assert f" | latency: {expected_text}" in str(cm.value)
 
 
 # ── 事后分析脚本（bin/analyze_run_latency.py）──────────────────────
