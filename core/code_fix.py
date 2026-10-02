@@ -2835,6 +2835,23 @@ class CodeFixOrchestrator:
                 )
             except (TypeError, ValueError):
                 cooldown_until = 0.0
+            # 配置关闭（switch_cooldown_seconds=0，spec R2「0=关闭」）时守卫
+            # 不生效：_arm 层 0 不武装新冷却，但已落盘的残留未来冷却态若仍按
+            # 字面拦截，关闭配置解除不了窗口（验证轮 BUG-01）。命中残留态时
+            # 一并清除，避免日后重新启用配置时旧窗口复活；关闭态不写解除
+            # 告警——冷却从未实际推迟过投递，evidence 会误报「实际推迟时长」。
+            if cooldown_until > 0 and self._switch_cooldown_seconds() <= 0:
+                try:
+                    write_progress(
+                        root,
+                        switch_cooldown_until=None,
+                        switch_cooldown_from=None,
+                        current="连接类失败冷却已由配置关闭，清除残留冷却态",
+                        reason="",
+                    )
+                except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
+                    self._log("warning", f"code-fix 冷却残留态清除写盘异常: {e}")
+                cooldown_until = 0.0
             if cooldown_until > 0:
                 now_ts = time.time()
                 if now_ts < cooldown_until:

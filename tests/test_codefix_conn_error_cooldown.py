@@ -309,6 +309,29 @@ class TestCooldownGate(unittest.TestCase):
         res = self._orch(proot).checkpoint()
         self.assertEqual(res, {"triggered": False, "reason": "switch_cooldown"})
 
+    def test_zero_config_bypasses_residual_cooldown(self):
+        """配置关闭（0）时残留未来冷却态不拦（验证轮 BUG-01 回归）：守卫复核
+        配置语义而非残留字面值；残留态清除且不写解除告警，checkpoint 放行。"""
+        from core.admin_store import AdminStore
+        from core.code_fix import read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        self._arm(proot, until_offset=300)
+        orch = self._orch(proot, {"admin": {"code_review_fix": {
+            "enabled": True, "switch_cooldown_seconds": 0}}})
+        res = orch.checkpoint()
+        self.assertEqual(res, {"triggered": True, "reason": "dispatched"})
+        prog = read_progress(proot)
+        self.assertIsNone(prog["switch_cooldown_until"], "关闭配置须清残留态")
+        self.assertIsNone(prog["switch_cooldown_from"])
+        recs = AdminStore(proot, logger=None).read_all()
+        self.assertEqual(
+            [r for r in recs
+             if r.get("signal_type") == "code_fix_switch_window_deferred"],
+            [], "关闭态从未实际推迟投递，不写解除告警")
+
     def test_no_open_items_bypasses_release_alert(self):
         """台账清空空转：checkpoint 在守卫前早退，不写解除告警（design D5）。"""
         from core.code_fix import write_progress
