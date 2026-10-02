@@ -1147,6 +1147,20 @@ def _first_failed_step_desc(ffs_text) -> str:
 
 def _normalize_whitespace(text) -> str:
     """空白折叠 + strip（归一化比较的统一前置）。"""
+    # 形态归一（code-review item 87574a9c6a50）：非串真值（judge 产出字段被
+    # 整体改写为 dict/int 等形态）直接进 re.sub 抛 TypeError，沿
+    # triage_violation → validate_report 调用链外溢，被门禁「异常不阻断」
+    # 降级后裁决证据校验被旁路。与 _clip_derived_text 同款：str 原样、
+    # dict/list 用 json.dumps、其余 str()，不再依赖调用序隐式保证；falsy
+    # 入参仍按 ``or`` 折空串兜底，字符串路径行为零变化。
+    if text and not isinstance(text, str):
+        if isinstance(text, (dict, list)):
+            try:
+                text = json.dumps(text, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                text = str(text)
+        else:
+            text = str(text)
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
