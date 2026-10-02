@@ -408,7 +408,8 @@ class TestRegressionLockRoot(unittest.TestCase):
         runner = _make_runner(proot)
         captured = {}
 
-        def fake_raw(exec_root, spec, logger=None, lock_root=None):
+        def fake_raw(exec_root, spec, logger=None, lock_root=None,
+                     run_scope=None):
             captured["exec_root"] = exec_root
             captured["lock_root"] = lock_root
             return {"status": "passed", "total": 1, "duration_seconds": 0}
@@ -427,7 +428,8 @@ class TestRegressionLockRoot(unittest.TestCase):
         runner = _make_runner(proot)
         captured = {}
 
-        def fake_raw(exec_root, spec, logger=None, lock_root=None):
+        def fake_raw(exec_root, spec, logger=None, lock_root=None,
+                     run_scope=None):
             captured["exec_root"] = exec_root
             captured["lock_root"] = lock_root
             return {"status": "passed"}

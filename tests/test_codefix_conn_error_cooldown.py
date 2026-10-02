@@ -208,10 +208,12 @@ class TestConnErrorClassification(unittest.TestCase):
             def _get_admin_model(self):
                 return None
 
-            def _build_prompt(self, *a, **k):
+            def _build_prompt(self, run_id, agent_type, detail=None):
                 return "prompt"
 
-            def _run_claude(self, *a, **k):
+            def _run_claude(self, prompt, cwd, run_id, model_override=None,
+                            env_overrides=None, max_turns=None,
+                            spec_name=None, agent_type=None):
                 raise self._exc
 
         items = [_item("a")]
