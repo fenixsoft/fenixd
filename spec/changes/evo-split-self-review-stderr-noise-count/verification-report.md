@@ -35,3 +35,10 @@
 | discriminator-single-source | 判别单源复用：core/self_review.py 源码引用 is_cli_stderr_noise 且未复制 pattern 常量（MUST NOT 复制）；is_cli_stderr_noise 对规范噪声行判真、真实诊断行与空串判假。出处 provider_circuit.py:101-103/227-239（单源收口）、spec Requirement 判别单源与分类零扰动 | pass | 0/6 | - |
 | provider-circuit-zero-regression | 分类行为零回归：CLI_STDERR_NOISE_TEXT_PATTERNS 仍为单条行首锚定 pattern；classify_unrecognized_model_error 对噪声行判真/真实行判假；classify_transient_error 对 exit=1+无 result+噪声 stderr 判瞬断、exit=0+有 result 判非瞬断（读原始 stderr 信号，与变更前一致）。出处 provider_circuit.py:518-535/557+、spec「分类行为零回归」 | pass | 0/8 | - |
 | pytest-midflight-suite-regression | 交付物测试口径全量回归：pytest tests/test_self_review_midflight.py 全套 25 用例通过，含口径更新用例（first_stderr 跳噪声/全噪声置空）与新增渲染注记用例（定噪不再冒充信号/无噪声对照）。出处 tests/test_self_review_midflight.py:263-303/560-602 | pass | 0/6 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
