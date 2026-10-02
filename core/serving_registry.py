@@ -22,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 
+from core.proc_utils import pid_alive_signal, proc_start_ticks
+
 SERVERS_FILENAME = "servers.json"
 
 
@@ -202,18 +204,12 @@ class ServingRegistry:
 
 
 def pid_alive(pid: int) -> bool:
-    """/proc 探针：kill(pid, 0) 成功即存活（忽略僵尸判定差异，够用）。"""
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按
-        # 存活，与 kill_process_group 对 getpgid EPERM 的显式处理同口径。
-        return True
-    except OSError:
-        return False
+    """/proc 探针：kill(pid, 0) 成功即存活（忽略僵尸判定差异，够用）。
+
+    实现上移 core.proc_utils.pid_alive_signal 单点（consistency：探针助手
+    收敛；与 v2_dev_server 的 /proc stat 口径各有场景理由，语义不变）。
+    """
+    return pid_alive_signal(pid)
 
 
 def _proc_start_ticks(pid: int):
@@ -222,21 +218,11 @@ def _proc_start_ticks(pid: int):
     pid + starttime 唯一确定一个进程实例：原进程退出后 pid 被系统复用时，
     新进程的 starttime 必然不同——以此锚定登记项的收割目标（对 exec/argv
     变化免疫，starttime 在 fork 时即固定）。
+
+    实现上移 core.proc_utils.proc_start_ticks 单点（consistency：探针助手
+    收敛），本壳保留既有模块内调用点。
     """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            data = f.read().decode("utf-8", "replace")
-    except OSError:
-        return None
-    # comm 字段可含空格与括号：从最后一个 ')' 之后起算（其后首项是字段 3
-    # state），starttime 为字段 22 → 相对 state 的第 20 项。
-    tail = data.rpartition(")")[2].split()
-    if len(tail) < 20:
-        return None
-    try:
-        return int(tail[19])
-    except ValueError:
-        return None
+    return proc_start_ticks(pid)
 
 
 def _harvest_identity_ok(entry: dict, pid: int) -> bool:

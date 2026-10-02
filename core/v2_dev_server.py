@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-from core.proc_utils import find_free_port, is_claude_process
+from core.proc_utils import find_free_port, is_claude_process, pid_alive_stat
 
 # ── 端口分配（design D3）──────────────────────────────────────────────
 # 确定性端口段：V2_TEST_PORT_BASE 起、连续 V2_TEST_PORT_RANGE 个高位端口。
@@ -402,13 +402,11 @@ def _pid_alive(pid: int) -> bool:
 
     孤儿 dev-server 的父进程（已死 daemon 的 shell 链）可能不收尸，/proc
     条目以 Z 态残留，须按已终止计，否则误补 SIGKILL 且漏计清理数。
+
+    /proc stat 解析与判定上移 core.proc_utils 单点（consistency：三处探针
+    助手收敛），zombie_is_dead=True 显式选择本模块的 Z=死口径。
     """
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_bytes()
-        # comm 可含空格/括号，取最后一个 ')' 之后的首字段（state）。
-        return stat.rsplit(b")", 1)[1].split()[:1] != [b"Z"]
-    except (OSError, IndexError):
-        return False
+    return pid_alive_stat(pid, zombie_is_dead=True)
 
 
 def _pid_recently_started(pid: int, grace_seconds: float = 60.0) -> bool:
