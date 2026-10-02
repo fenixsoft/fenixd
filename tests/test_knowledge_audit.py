@@ -658,13 +658,22 @@ def test_audit_second_suspected_round_escalates(proj_settled, install_core):
     ledger = ka._load_findings_ledger(proj_settled)
     assert all(e["status"] == "escalated" for e in ledger.values())
     todo = (proj_settled / ".fenix" / "todo.md").read_text(encoding="utf-8")
-    assert "升级待人工" in todo
-    assert "knowledge_audit_findings.json" in todo  # 人工消费指引在场
+    # 升级登记收敛为单条聚合行（add-knowledge-audit-escalation-consumption 1.3）
+    assert "audit 疑点升级待人工（聚合）" in todo
+    assert "knowledge_audit_arbitration.json" in todo  # 仲裁清单唯一入口在场
+    assert "knowledge_audit_findings.json" not in todo  # 旧逐条消费指引已收敛
+    assert todo.count("audit 疑点升级待人工") == todo.count("audit 疑点升级待人工（聚合）")
 
     calls_before = calls["n"]
     r3 = ka.run_audit(proj_settled, spawn=spawn)  # 挂起等人工
-    assert calls["n"] == calls_before  # escalated 零派发
-    assert r3["counts"]["pending_manual"] >= 2
+    assert calls["n"] == calls_before  # escalated 零派发（切片前剔除，不占槽）
+    # 明细折叠为单条聚合汇总：待人工计数只 +1（1.1/1.2）
+    assert r3["counts"]["pending_manual"] == 1
+    report = (proj_settled / ".fenix" / "knowledge_audit_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## 升级待人工（escalated）汇总" in report
+    assert "共 2 条待人工仲裁" in report
 
 
 def test_adr_broken_chain_matches_slug_filenames(proj):

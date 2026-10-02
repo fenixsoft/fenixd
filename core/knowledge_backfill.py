@@ -139,6 +139,29 @@ def _todo_write_lock(project_root: Path):
             fh.close()
 
 
+def _todo_subsection_insert(lines: list[str], subsection: str, item: str) -> list[str]:
+    """把 ``item`` 归位插入今日日期节（``## YYYY-MM-DD``）的小节下（原位修改
+    并返回 ``lines``）；日期节缺失时在文件尾部新建。今日节边界 = 下一个
+    ``## `` 日期节或文件尾。"""
+    today = time.strftime("%Y-%m-%d")
+    today_idx = next((i for i, ln in enumerate(lines) if ln.strip() == f"## {today}"), None)
+    if today_idx is None:
+        lines += ["", f"## {today}", subsection, item]
+        return lines
+    end = next(
+        (i for i in range(today_idx + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    block = lines[today_idx:end]
+    sub_idx = next((i for i, ln in enumerate(block) if ln.strip() == subsection), None)
+    if sub_idx is None:
+        lines[today_idx:end] = block + [subsection, item]
+    else:
+        block.insert(sub_idx + 1, item)
+        lines[today_idx:end] = block
+    return lines
+
+
 def append_todo_line(project_root: Path, line: str) -> bool:
     """向项目 ``.fenix/todo.md`` 追加一条待办（幂等：同文本已存在则跳过）。
 
@@ -152,7 +175,6 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     # 经 block.insert 拼回后会被下方按行解析日期节/小节结构的逻辑误当结构行
     # 处理（code-review d7bd04860ab6）
     line = re.sub(r"\s*\n\s*", " ", line).strip()
-    today = time.strftime("%Y-%m-%d")
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
         text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
@@ -160,25 +182,63 @@ def append_todo_line(project_root: Path, line: str) -> bool:
         # 的不同待办（动态尾串差异）误判为已存在而吞掉（code-review 599700eee421）
         if f"- {line}" in text.splitlines():
             return False
-        subsection = "### 知识真相源"
+        lines = _todo_subsection_insert(text.splitlines(), "### 知识真相源", f"- {line}")
+        atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
+    return True
+
+
+def upsert_todo_line(
+    project_root: Path,
+    prefix: str,
+    line: str,
+    cleanup_prefixes: tuple[str, ...] = (),
+) -> bool:
+    """同前缀 upsert 待办（add-knowledge-audit-escalation-consumption 1.3）。
+
+    todo.md 中已存在以 ``prefix`` 开头的行（或 ``cleanup_prefixes`` 任一前缀的
+    历史行）时收敛为单条 ``line``：整行替换、首条匹配行原位落点，多条历史行
+    一并清理；不存在时按 append_todo_line 同款归位追加。``line`` 为空串时纯
+    清理（只删不补——聚合对象清零后摘除残留行）。
+
+    动态内容（如逐日推进的龄期）会改变行尾可变段：append_todo_line 的整行精确
+    比较幂等对它失效（每天追加新行，聚合行自身变成每日重述），固定前缀匹配 +
+    整行替换才保证「行内容变化时替换而非追加」。读改写全程持 ``_todo_write_lock``
+    + ``atomic_write_text`` 原子回写；返回是否发生实际写盘。
+    """
+    prefix = prefix.strip()
+    if not prefix:
+        raise ValueError("upsert_todo_line: prefix 不能为空")
+    all_prefixes = tuple(
+        dict.fromkeys((prefix, *(p.strip() for p in cleanup_prefixes if p.strip())))
+    )
+    line = re.sub(r"\s*\n\s*", " ", line).strip()
+    todo_path = Path(project_root) / ".fenix" / "todo.md"
+    with _todo_write_lock(project_root):
+        text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
+        # 落盘形态为 "- {内容}"，前缀匹配对齐该形态
+        match_idx = [
+            i
+            for i, ln in enumerate(text.splitlines())
+            if any(ln.startswith(f"- {p}") for p in all_prefixes)
+        ]
+        if not match_idx and not line:
+            return False  # 纯清理但无残留行：零写盘
         lines = text.splitlines()
-        # 定位今日日期节行号；无则新建于尾部
-        today_idx = next((i for i, ln in enumerate(lines) if ln.strip() == f"## {today}"), None)
-        if today_idx is None:
-            lines += ["", f"## {today}", subsection, f"- {line}"]
-        else:
-            # 今日节边界 = 下一个 `## ` 日期节或文件尾
-            end = next(
-                (i for i in range(today_idx + 1, len(lines)) if lines[i].startswith("## ")),
-                len(lines),
-            )
-            block = lines[today_idx:end]
-            sub_idx = next((i for i, ln in enumerate(block) if ln.strip() == subsection), None)
-            if sub_idx is None:
-                lines[today_idx:end] = block + [subsection, f"- {line}"]
+        first = match_idx[0] if match_idx else None
+        if (
+            len(match_idx) == 1
+            and line
+            and lines[first] == f"- {line}"
+        ):
+            return False  # 同前缀单行且内容未变：幂等零写盘
+        for i in reversed(match_idx):
+            del lines[i]
+        if line:
+            item = f"- {line}"
+            if first is not None:
+                lines.insert(first, item)
             else:
-                block.insert(sub_idx + 1, f"- {line}")
-                lines[today_idx:end] = block
+                lines = _todo_subsection_insert(lines, "### 知识真相源", item)
         atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
     return True
 

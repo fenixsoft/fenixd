@@ -2003,6 +2003,9 @@ class ConfigLoader:
           add-knowledge-audit-finding-ledger 4.1）。
         - escalate_after_rounds：正整数，缺省 2（同一疑点连续 N 轮复核均无
           确定性判定即升级待人工；豁免解冻重派不计入升级轮次）。
+        - escalated_stale_days：正整数，缺省 7（escalated 挂起超过该天数即对
+          涉事知识页写 disputed 超龄注记，add-knowledge-audit-escalation-
+          consumption 2.1）。
         - 非法值不阻塞加载/热更新：WARNING 告警并回退缺省（bool 键同
           get_code_review_fix_config 的 targeted_regression 口径——解析级
           容错，语义破坏由消费方门控兜底）。
@@ -2039,6 +2042,15 @@ class ConfigLoader:
             )
             rounds = 2
         result["escalate_after_rounds"] = rounds
+        stale = knowledge.get("escalated_stale_days", 7)
+        # 同 escalate_after_rounds 口径：bool 是 int 子类不当天数
+        if not isinstance(stale, int) or isinstance(stale, bool) or stale < 1:
+            _logger.warning(
+                "knowledge.escalated_stale_days 非法值 %r（非正整数），回退缺省 7",
+                stale,
+            )
+            stale = 7
+        result["escalated_stale_days"] = stale
         return result
 
     @classmethod
