@@ -43,9 +43,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 简介保存/重新生成的同帧重入锁（code-review item d6fe81eb894e）：
   // setSaving/setLoading 渲染生效存在 React 调度间隙（实证 100ms 内双击穿透，
   // 见下方 autodraftInFlight 注释），useRef 写读同帧原子补上该窗口；
-  // saving/loading state 仅作按钮视觉反馈
-  const saveInFlight = useRef(false);
-  const regenerateInFlight = useRef(false);
+  // saving/loading state 仅作按钮视觉反馈。
+  // 两入口共用同一把锁（比照 HooksPanel savingRef 口径）：保存与 AI 重新生成
+  // 最终都经 onSave 写同一段 description 配置，各持独立锁时保存在飞仍可点
+  // 「AI 自动生成」（或反之），两个写盘请求并发到达、落盘结果取决于到达顺序
+  // （code-review item 44d1fc0fef6a）
+  const descWriteInFlight = useRef(false);
   // 「手工编辑」跳转定位：ref 指向本实例渲染的卡片/编辑框（不用
   // querySelector——设置页切作用域曾出现双 DOM 实例并存，选择器会命中隐藏实例）
   const verifySectionRef = useRef<HTMLDivElement>(null);
@@ -118,13 +121,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   const handleSave = async () => {
     if (saving) return; // 渲染生效后的连点短路（视觉反馈层，非重入守卫）
-    if (saveInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
-    saveInFlight.current = true;
+    if (descWriteInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
+    descWriteInFlight.current = true;
     // 草稿归属守卫（code-review item 30aaaac87fce）：比照 yaml 侧
     // yamlDraftSourceRef 口径——切项目的 config 加载往返窗口内草稿仍是上一个
     // 项目的简介，此时以当前项目名写盘会覆盖新项目的既有简介——拒绝并提示。
     if (descriptionSourceRef.current.project !== project) {
-      saveInFlight.current = false; // 未进入在飞段，就地释放锁
+      descWriteInFlight.current = false; // 未进入在飞段，就地释放锁
       message.warning('项目简介尚未随当前项目加载完成（或已切换项目），请稍候再保存');
       return;
     }
@@ -145,7 +148,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to save description:', error);
     } finally {
       setSaving(false);
-      saveInFlight.current = false;
+      descWriteInFlight.current = false;
     }
   };
 
@@ -154,8 +157,8 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       message.error('项目名称缺失，无法重新生成');
       return;
     }
-    if (regenerateInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
-    regenerateInFlight.current = true;
+    if (descWriteInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
+    descWriteInFlight.current = true;
     setLoading(true);
     try {
       const result = await regenerateProjectDescription(project);
@@ -185,7 +188,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to regenerate description:', error);
     } finally {
       setLoading(false);
-      regenerateInFlight.current = false;
+      descWriteInFlight.current = false;
     }
   };
 
