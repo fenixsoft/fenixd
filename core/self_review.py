@@ -868,12 +868,14 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
     生成器，喂 latency.latency_samples_from_events（延迟导入；生成器入口是其
     既有契约）采样 API 往返，latency_stats 算 stall 计数与最长往返；同一遍
     累计中途 error/stderr 事件计数与首条摘要（≤140 字符；first_stderr 跳过
-    CLI 启动期诊断噪声行——D2，计数保留全量）。单行可能数 MB
+    CLI 启动期诊断噪声行——D2，计数按噪声分离：stderr_count 只计非噪声行，
+    噪声行单独计入 stderr_noise_count）。单行可能数 MB
     （assistant 全量消息体），MUST NOT 整文件读入内存；超过 max_lines 行停止
     并置 truncated 标记。
 
-    Returns: {rounds, stalls, max_gap, error_count, stderr_count, first_error,
-        first_stderr, truncated}；文件不可读时返回零值扫描结果（不抛异常）。
+    Returns: {rounds, stalls, max_gap, error_count, stderr_count,
+        stderr_noise_count, first_error, first_stderr, truncated}；
+        文件不可读时返回零值扫描结果（不抛异常）。
     """
     from core.agent_runner.latency import (  # noqa: PLC0415
         latency_samples_from_events,
@@ -886,6 +888,7 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
         "truncated": False,
         "error_count": 0,
         "stderr_count": 0,
+        "stderr_noise_count": 0,
         "first_error": None,
         "first_stderr": None,
     }
@@ -910,19 +913,23 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
                         if state["first_error"] is None:
                             state["first_error"] = _midflight_event_summary(entry)
                     elif etype == "stderr":
-                        state["stderr_count"] += 1
-                        if state["first_stderr"] is None:
+                        raw_line = entry.get("line")
+                        noise = isinstance(raw_line, str) and is_cli_stderr_noise(raw_line)
+                        if noise:
+                            # 噪声行剥离出主计数、单独累计（
+                            # split-self-review-stderr-noise-count）：
+                            # stderr_count 只计非噪声行，判别单源复用
+                            # is_cli_stderr_noise（provider_circuit 收口入口），
+                            # 不在本模块复制 pattern。
+                            state["stderr_noise_count"] += 1
+                        else:
+                            state["stderr_count"] += 1
+                        if state["first_stderr"] is None and not noise:
                             # first_stderr 选取跳过 CLI 启动期诊断噪声行
                             # （reduce-cli-stderr-noise-attribution D2）：该噪声
                             # 每 run 恒 1 条、与死因零相关，放任占位会让连续
-                            # 两个自省窗口的条目被同一噪声带偏；stderr_count
-                            # 仍保留全量计数（取证现场完整），全噪声时置空。
-                            raw_line = entry.get("line")
-                            if not (isinstance(raw_line, str)
-                                    and is_cli_stderr_noise(raw_line)):
-                                state["first_stderr"] = (
-                                    _midflight_event_summary(entry)
-                                )
+                            # 两个自省窗口的条目被同一噪声带偏；全噪声时置空。
+                            state["first_stderr"] = _midflight_event_summary(entry)
                     yield entry
         except OSError:
             return  # 读取失败按空产出（零值扫描），不阻断其余 run
@@ -935,6 +942,7 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
         "max_gap": stats["max"],
         "error_count": state["error_count"],
         "stderr_count": state["stderr_count"],
+        "stderr_noise_count": state["stderr_noise_count"],
         "first_error": state["first_error"],
         "first_stderr": state["first_stderr"],
         "truncated": state["truncated"],
@@ -955,7 +963,8 @@ def _collect_midflight_scans(
             深扫编排之间时间推进，run_id 内嵌时间戳优先、缺失回退 mtime）。
 
     Returns: [{run_id, agent_type, terminal, outliers, rounds, stalls, max_gap,
-        error_count, stderr_count, first_error, first_stderr, truncated}]。
+        error_count, stderr_count, stderr_noise_count, first_error,
+        first_stderr, truncated}]。
         无离群 run 返回空；path 不存在/读取失败按该 run 空产出跳过（不阻断
         其余 run）。
     """
@@ -1468,7 +1477,24 @@ class SelfReviewScheduler:
                     else ""
                 )
                 errs = f" 中途error={s['error_count']}" if s.get("error_count") else ""
-                stderrs = f" 中途stderr={s['stderr_count']}" if s.get("stderr_count") else ""
+                # 噪声注记（split-self-review-stderr-noise-count）：
+                # stderr_count 已剥离 CLI 启动噪声，噪声行数以同行注记承载——
+                # 承接原「保留全量」的取证可见性意图，且让「全噪声」与
+                # 「无 stderr」可区分（stderr=0 仍落段）；缺省或为 0（旧
+                # scan dict 兼容）不产生注记、行形态同现状。
+                noise_n = s.get("stderr_noise_count")
+                has_noise = (
+                    isinstance(noise_n, int)
+                    and not isinstance(noise_n, bool)
+                    and noise_n > 0
+                )
+                if has_noise:
+                    stderrs = (
+                        f" 中途stderr={s.get('stderr_count') or 0}"
+                        f"（另 {noise_n} 条已知 CLI 启动噪声）"
+                    )
+                else:
+                    stderrs = f" 中途stderr={s['stderr_count']}" if s.get("stderr_count") else ""
                 trunc = " [truncated]" if s.get("truncated") else ""
                 row = f"- {s['run_id']}: stall={s.get('stalls', 0)}{gap}{errs}{stderrs}{trunc}"
                 if s.get("first_error"):

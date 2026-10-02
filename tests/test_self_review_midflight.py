@@ -263,6 +263,7 @@ class TestScanRunMidflight:
         assert r["stalls"] == 3
         assert r["max_gap"] == pytest.approx(100.0)
         assert r["stderr_count"] == 2
+        assert r["stderr_noise_count"] == 0  # 夹具两条 stderr 均为真实行
         assert r["first_stderr"] == "warn one"
         assert r["error_count"] == 0
         assert r["truncated"] is False
@@ -271,7 +272,8 @@ class TestScanRunMidflight:
         """first_stderr 跳过 CLI 启动期诊断噪声行，取首条非噪声行（D2）。
 
         [claude-code:unrecognized_model] 每 run 恒 1 条、与死因零相关；
-        stderr_count 仍保留全量计数（含噪声行）。
+        计数按噪声分离：stderr_count 只计非噪声行，噪声行走
+        stderr_noise_count 单独累计。
         """
         rid = _run_id("noise", datetime.now().timestamp() - 120)
         lines = [
@@ -282,11 +284,13 @@ class TestScanRunMidflight:
         ]
         p = _write_run_file(env["runs_dir"], rid, lines)
         r = _scan_run_midflight(p)
-        assert r["stderr_count"] == 2  # 计数保留全量（噪声行也计）
+        assert r["stderr_count"] == 1  # 只计真实行（噪声行已剥离）
+        assert r["stderr_noise_count"] == 1
         assert r["first_stderr"] == "real diagnostic: ECONNRESET"
 
     def test_all_noise_stderr_left_blank(self, env):
-        """stderr 全为噪声行时 first_stderr 置空，计数仍计（D2）。"""
+        """stderr 全为噪声行时 first_stderr 置空，stderr_count 归零、
+        stderr_noise_count 计满（D2 + 计数分离）。"""
         rid = _run_id("allnoise", datetime.now().timestamp() - 120)
         lines = [
             {"type": "stderr",
@@ -296,7 +300,8 @@ class TestScanRunMidflight:
         ]
         p = _write_run_file(env["runs_dir"], rid, lines)
         r = _scan_run_midflight(p)
-        assert r["stderr_count"] == 2
+        assert r["stderr_count"] == 0
+        assert r["stderr_noise_count"] == 2  # 噪声行数单独计满
         assert r["first_stderr"] is None
 
     def test_error_events_counted_with_summary(self, env):
@@ -550,3 +555,48 @@ class TestDailySummarySection6:
             assert head in summary
         # 降级留痕 warning
         assert any("screening boom" in str(w) for w in logger.warnings)
+
+
+# ── 4.4 深扫行噪声注记（split-self-review-stderr-noise-count）─────────
+
+
+class TestMidflightScanRowNoiseAnnotation:
+    """深扫行「中途stderr=」非噪声口径 + 噪声同行注记（渲染层）。"""
+
+    @staticmethod
+    def _outlier_summary(env, transcript):
+        """构造 turns 离群 run（90 vs 组 10/12）并返回每日摘要与离群 run_id。"""
+        now_ts = datetime.now().timestamp()
+        rid = _run_id("nz", now_ts - 120)
+        _write_run_file(env["runs_dir"], rid, transcript)
+        for i, t in enumerate((10, 12, 90)):
+            pad = _run_id(f"p{i}", now_ts - 130 - i)
+            _write_run_file(env["runs_dir"], pad, [{"type": "result", "subtype": "success"}])
+            _append_metric(env["log_path"], pad if t != 90 else rid,
+                           turns=t, duration=100.0 + i * 10, terminal="success")
+        summary = _make_scheduler(env["root"]).collect_daily_summary(env["window_start"])
+        return rid, summary
+
+    def test_noise_only_run_renders_annotation(self, env):
+        """离群 run stderr 仅为 1 条已知启动噪声：呈现
+        「中途stderr=0（另 1 条已知 CLI 启动噪声）」，定噪不再冒充信号。"""
+        rid, summary = self._outlier_summary(env, [
+            {"type": "system", "subtype": "init"},
+            {"type": "stderr",
+             "line": "[claude-code:unrecognized_model] Model 'glm-5.3-flash' is not a valid model name"},
+            {"type": "result", "subtype": "success"},
+        ])
+        assert "### 离群 run 事件流深扫（API 停滞与中途 error）" in summary
+        assert f"- {rid}: stall=0 中途stderr=0（另 1 条已知 CLI 启动噪声）" in summary
+        assert "中途stderr=1" not in summary  # 噪声行不计入主计数
+
+    def test_real_only_run_keeps_plain_shape(self, env):
+        """对照档案无噪声行（真实诊断行 1 条）：行形如「中途stderr=1」
+        且不含噪声注记。"""
+        rid, summary = self._outlier_summary(env, [
+            {"type": "system", "subtype": "init"},
+            {"type": "stderr", "line": "real diagnostic: ECONNRESET"},
+            {"type": "result", "subtype": "success"},
+        ])
+        assert f"- {rid}: stall=0 中途stderr=1" in summary
+        assert "已知 CLI 启动噪声" not in summary
