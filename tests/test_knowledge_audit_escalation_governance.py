@@ -255,7 +255,9 @@ def test_todo_aggregated_row_upsert_replaces_not_appends(tmp_path, install_core)
     # 台账 escalated 清零（人工删条目）→ 聚合行摘除，不残留陈旧登记
     ledger = ka._load_findings_ledger(root)
     del ledger[fp]
-    ka._save_findings_ledger(root, ledger)
+    # 合并写语义下删除须走显式删除通道（deleted_fingerprints），否则按指纹
+    # 合并会把盘上条目复活（与仲裁消费段同款口径）
+    ka._save_findings_ledger(root, ledger, deleted_fingerprints={fp})
     ka.run_audit(root, spawn=lambda p, rid: "ok")
     assert [ln for ln in _todo_lines(root) if "audit 疑点升级待人工" in ln] == []
 

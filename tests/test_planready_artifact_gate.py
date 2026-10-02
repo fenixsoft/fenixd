@@ -225,7 +225,8 @@ class TestPlanreadyArtifactGateIntegration:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             # 复刻白烧事故：只写场景文件、忘写结果文件
             sc.parent.mkdir(parents=True, exist_ok=True)
@@ -251,7 +252,8 @@ class TestPlanreadyArtifactGateIntegration:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             sc.parent.mkdir(parents=True, exist_ok=True)
             sc.write_text(json.dumps([{"id": "s1", "description": "d"}]),
                           encoding="utf-8")
@@ -274,7 +276,8 @@ class TestPlanreadyArtifactGateIntegration:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             sc.parent.mkdir(parents=True, exist_ok=True)
             sc.write_text(json.dumps([{"id": "s1", "description": "d"}]),
                           encoding="utf-8")
@@ -304,7 +307,8 @@ class TestPlanreadyArtifactGateIntegration:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             # 本轮只写场景文件——陈旧结果文件未刷新
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
@@ -324,7 +328,8 @@ class TestPlanreadyArtifactGateIntegration:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             sc.parent.mkdir(parents=True, exist_ok=True)
             sc.write_text(json.dumps([{"id": "s1", "description": "d"}]),

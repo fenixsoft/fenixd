@@ -178,7 +178,8 @@ class TestArtifactGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             return ("done", 1, "sess-gate", _usage_ok())
 
@@ -216,7 +217,8 @@ class TestArtifactGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text("{{not-json", encoding="utf-8")
@@ -241,7 +243,8 @@ class TestArtifactGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             # 产物须在 run 启动后写入（D2 新鲜度：mtime ≥ attempt_started_at）
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(
@@ -270,7 +273,8 @@ class TestArtifactGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
@@ -296,7 +300,8 @@ class TestArtifactGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             # 双产物须在 run 启动后写入（D2 新鲜度：mtime ≥ attempt_started_at）；
             # add-planready-artifact-gate：planner-plan 结果文件契约与 judge 同源路径
             scenarios_path.parent.mkdir(parents=True, exist_ok=True)
@@ -334,7 +339,8 @@ class TestArtifactGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 return ("done", 1, "sess-gate", _usage_ok())  # 无产物 → gate 失败
@@ -387,7 +393,8 @@ class TestVerdictReadFailClosedGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             # 每轮重写 worktree 侧非法产物（本轮真实产出 = 非法 JSON）
             (wt_vp / ".fenix-run-result.json").write_text(
@@ -418,7 +425,8 @@ class TestVerdictReadFailClosedGate:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             (wt_vp / ".fenix-run-result.json").write_text(
                 json.dumps({"status": "bug-found", "summary": "found"}),
                 encoding="utf-8")
@@ -638,7 +646,8 @@ class TestGateBlockedTerminal:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             # 复刻真实 _run_claude 的 CLI 收尾行：门禁是在 exit 0「之后」判的，
             # 故 result 行必然先落盘——gate-blocked MUST 成为其后的末行
             p = tmp_path / ".fenix" / "runs" / f"{run_id}.jsonl"
