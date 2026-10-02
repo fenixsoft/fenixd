@@ -529,6 +529,32 @@ def _load_verify_contract_with_raw(
     ), data
 
 
+def contract_file_unresolvable(project_root: Path) -> bool:
+    """只读判定：契约是否处于「文件存在但不可解析」的模板态。
+
+    add-verify-contract-preflight 1.1：fenix-init 会向每个新项目写全注释
+    verify.yaml 模板——文件挂着却从未裁决，而消费期对「存在但解析为 None」
+    fail-fast、对「文件缺失」放行，两者叠加使每个新项目首个 spec 必然在验证
+    消费点卡 blocked。本判定供 admin_monitor 周期巡检在 spec 尚未进入验证
+    消费（ready/implementing）时前置识别该形态，把契约起草前移到实现阶段
+    并行完成。
+
+    语义边界（与 ADR-080「缺失=合法无契约回退」一致）：
+    - 文件缺失 → False（回退既定语义，前置预检不扩大触发面）；
+    - 文件存在且 loader 返回 (None, None)（全注释模板/损坏 YAML/顶层非
+      映射等「整体无效」形态）→ True。
+
+    内部复用既有 ``_load_verify_contract_with_raw``（单次 read_text 同源），
+    不二次读文件、不引入第二套解析口径；logger 传 None 保持静默（巡检周期
+    会重复调用，具体解析原因由消费期路径大声告警即可）。
+    """
+    path = Path(project_root) / ".fenix" / CONTRACT_FILENAME
+    if not path.is_file():
+        return False
+    contract, _raw = _load_verify_contract_with_raw(project_root, None)
+    return contract is None
+
+
 # valid=False 时的结构化失败原因枚举（code-review item fdb60ffde7a8）：CLI 按
 # 枚举映射退出码，不再依赖人类可读文案的中文子串匹配——文案可自由调整而不
 # 影响退出码语义。空串 = 非格式失败（valid=True，或失败属 prepare/serve/ready

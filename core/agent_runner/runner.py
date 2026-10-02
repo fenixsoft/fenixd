@@ -62,6 +62,7 @@ from core.agent_runner.result_gate import (  # noqa: F401
 # 既有导入路径（D6）；`_default_ts_parser` 在 runner.py 保留一行委托（见下）。
 from core.agent_runner.latency import (  # noqa: F401
     LATENCY_STALL_SECONDS,
+    STALL_ROUND_WARN_SECONDS,
     _default_ts_parser as _latency_default_ts_parser,
     _entry_is_tool_result,
     _percentile,
@@ -5187,6 +5188,30 @@ class AgentRunner:
                                 # 单写者，内部异常仅 WARNING 不阻断读流）。
                                 self._stall_budget_record_sample(
                                     base_run_id, _sb_sample)
+                                # evo-add-api-stall-observability 1.2：单次
+                                # API 往返停滞的期内时点 WARNING（纯读侧旁
+                                # 路）。阈值 STALL_ROUND_WARN_SECONDS（120s，
+                                # 期内告警线）与统计口径 LATENCY_STALL_SECONDS、
+                                # 判停计入线 RUN_STALL_ROUND_SECONDS 同值不
+                                # 同义，严禁合并复用。超线样本在完成时点即时
+                                # 留痕（补足「只有聚合数、无逐次现场」）；
+                                # 不 kill、不重派、不触发人工告警，样本与
+                                # stats 结果与不加告警时逐字段一致。
+                                if _sb_sample > STALL_ROUND_WARN_SECONDS:
+                                    self.logger.warning(
+                                        "agent_runner",
+                                        f"run {run_id}: API round-trip stall: "
+                                        f"{_sb_sample:.1f}s (round #"
+                                        f"{len(latency_state['samples'])} > "
+                                        f"{STALL_ROUND_WARN_SECONDS:.0f}s)",
+                                        {
+                                            "run_id": run_id,
+                                            "event": "api_round_stall",
+                                            "latency_round": len(
+                                                latency_state["samples"]),
+                                            "latency_max": _sb_sample,
+                                        },
+                                    )
                     # code-review item c6a2b45a214d：转录事件透传改单次
                     # os.write(O_APPEND) 落盘。assistant/tool_result 事件常超
                     # append_run_line 的 TextIOWrapper 内部缓冲（约 8KiB）——
@@ -5551,8 +5576,14 @@ class AgentRunner:
             # add-planner-efficiency（run-latency-observability）：run 末延迟摘要
             # 日志——统一覆盖成功/失败/取消全部退出路径（component=agent_runner，
             # 含 run_id）。纯读侧统计，不改变事件处理时序。
+            # ── evo-add-api-stall-observability 1.3：停滞指标随 run_metrics
+            # 入账的单一真源——直接引用下方延迟摘要已计算的同一 stats 结果
+            # （禁止二次采样）；延迟摘要计算失败时按零样本回退（0/0/None），
+            # 写入失败不阻断 run 收尾（下方既有 try 兜底覆盖）。
+            stall_latency: dict = {"rounds": 0, "stalls": 0, "max": None}
             try:
                 stats = latency_stats(latency_state["samples"])
+                stall_latency = stats
                 latency_summary_text = format_latency_summary(run_id, stats)
                 self.logger.info(
                     "agent_runner",
@@ -5634,6 +5665,11 @@ class AgentRunner:
                     "tool_uses_total": _tools_total,
                     "tool_uses": _tool_hist,
                     "remaining_tasks": _remaining_tasks,
+                    # evo-add-api-stall-observability 1.3①：停滞指标入账
+                    # （复用延迟摘要同一 stats，零样本回退 0/0/None）。
+                    "latency_rounds": stall_latency["rounds"],
+                    "latency_stalls": stall_latency["stalls"],
+                    "latency_max": stall_latency["max"],
                 })
                 # 日志侧也落一份（与既有的 _log_run_metrics 同源，
                 # dashboard 读侧按 metric_type==run_metrics 增量索引）
@@ -5654,6 +5690,11 @@ class AgentRunner:
                         "tool_uses_total": _tools_total,
                         "tool_uses": _tool_hist,
                         "remaining_tasks": _remaining_tasks,
+                        # evo-add-api-stall-observability 1.3②：同 stats
+                        # 单一真源（与档案行同段、不经过 _log_run_metrics）。
+                        "latency_rounds": stall_latency["rounds"],
+                        "latency_stalls": stall_latency["stalls"],
+                        "latency_max": stall_latency["max"],
                     },
                 )
                 # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）
@@ -7110,13 +7151,22 @@ class AgentRunner:
         terminal: str,
         provider: str | None = None,
         model: str | None = None,
+        latency: dict | None = None,
     ) -> None:
         """写一条 run 收尾结构化指标（成功/失败/取消/中断等终态各一条）。
 
         复用 ``self.logger.info(component, message, context)`` 落盘（JSON 行，
         context 为结构化字段）；落盘失败仅记 warning，绝不阻断 run 收尾。
+
+        ``latency``（evo-add-api-stall-observability 1.3③）：可选承接 run 末
+        延迟摘要的同一 ``latency_stats`` 结果（单一真源，禁止二次采样）。本
+        方法既有调用点（run_planner/_prepare_worktree/_attempt_top_guards/
+        _finalize_success/_resolve_provider_candidate/_exhausted_result 等提
+        前终态路径）均在 ``_run_claude`` 之外、无样本上下文，不传参时按零样
+        本回退（latency_rounds=0 / latency_stalls=0 / latency_max=None）。
         """
         usage = usage_info or {}
+        latency = latency or {}
         try:
             self.logger.info(
                 "agent_runner",
@@ -7137,6 +7187,11 @@ class AgentRunner:
                     "cost_usd": usage.get("cost_usd"),
                     "terminal": terminal,
                     "provider": provider,
+                    # evo-add-api-stall-observability 1.3③：停滞指标（零样本
+                    # 回退 0/0/None）。
+                    "latency_rounds": int(latency.get("rounds") or 0),
+                    "latency_stalls": int(latency.get("stalls") or 0),
+                    "latency_max": latency.get("max"),
                 },
             )
         except Exception as e:  # 指标落盘失败不得阻断 run 收尾

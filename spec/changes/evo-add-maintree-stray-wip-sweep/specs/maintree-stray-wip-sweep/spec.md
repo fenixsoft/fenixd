@@ -9,7 +9,7 @@ daemon 周期巡检 SHALL 对主树 tracked 未提交改动做只读盘点（`gi
 #### Scenario: 滞留散件被盘点入库
 
 WHEN 主树存在 tracked 未提交修改且主树锁空闲
-THEN 本轮盘点产出该改动集的指纹（路径排序集 + diff 内容哈希）并记录首次出现时刻
+THEN 本轮盘点产出该改动集的指纹（路径排序集 + `git diff HEAD` 内容哈希，含暂存+未暂存）并记录首次出现时刻
 
 #### Scenario: 主树干净时零产出
 
@@ -42,12 +42,17 @@ THEN 该指纹沿用原 first_seen 继续计时，计时器不归零
 
 ### Requirement: 宽限耗尽一次性升级告警
 
-无主散件 WIP 宽限耗尽时，框架 SHALL 恰发一次 `maintree_stray_wip_stale` major 告警（经 AdminStore，型制对齐 `_write_defer_orphan_alert`）：evidence 附文件清单、first_seen、归因证据与 WipOccupantInfo.BLIND_SPOT_NOTE 盲区注记，recommended_action 指向人工提交或 stash 留痕；同指纹先查后记去重，MUST NOT 重复升级；改动集消失（已被提交/stash/还原）时 SHALL 清除计时状态且不告警。
+无主散件 WIP 宽限耗尽时，框架 SHALL 恰发一次 `maintree_stray_wip_stale` major 告警（经 AdminStore，型制对齐 `_write_defer_orphan_alert`）：evidence 附文件清单、first_seen、归因证据与 WipOccupantInfo.BLIND_SPOT_NOTE 盲区注记，recommended_action 指向人工提交或 stash 留痕；同指纹先查后记去重，MUST NOT 重复升级；改动集消失（已被提交/stash/还原）时 SHALL 清除计时状态且不告警。告警 SHALL 经 admin_monitor `STORED_SIGNAL_TYPES` 收录摄取并唤起 Administrator（本告警与姊妹信号 `mergeback_wip_orphan_stuck` 同为组件直写 store 形态，未收录则记录落 store 后无人摄取、升级出口落空），处置建议经 SIGNAL_RECOMMENDATION 登记。
 
 #### Scenario: 宽限耗尽恰发一次
 
 WHEN 无主散件 WIP 在场时间超过宽限（如已滞留 31 分钟，超过 30 分钟宽限）
 THEN 发出一次 major 告警，后续盘点周期不重复发送
+
+#### Scenario: 告警经监视器摄取唤起
+
+WHEN maintree_stray_wip_stale 告警记录写入 AdminStore
+THEN admin_monitor 摄取该类型（STORED_SIGNAL_TYPES 收录）并唤起 Administrator，SIGNAL_RECOMMENDATION 登记的处置建议随唤起呈现
 
 #### Scenario: 改动消失即复位
 
