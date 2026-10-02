@@ -32,4 +32,4 @@
 
 ## 5. knowledge 注记
 
-- [ ] 5.1 spec/knowledge/adr/ADR-103-turn-limit-liveness-renewal-forced-kill-wip-salvage.md：补一条注记，说明 turn_extension 事件 / run_metrics 新增的 `remaining_tasks` 与簿记占比观测字段、STATE 覆写键 `impl_turn_cap_override`、以及 kill_early 守卫（缺省关闭、仅实现车道）与 ADR-103 续期矩阵的关系——本 SPEC 是对该 ADR 的补充而非修订（proposal Impact 声明的义务，tasks.md 原漏列）。
+- [x] 5.1 spec/knowledge/adr/ADR-103-turn-limit-liveness-renewal-forced-kill-wip-salvage.md：补一条注记，说明 turn_extension 事件 / run_metrics 新增的 `remaining_tasks` 与簿记占比观测字段、STATE 覆写键 `impl_turn_cap_override`、以及 kill_early 守卫（缺省关闭、仅实现车道）与 ADR-103 续期矩阵的关系——本 SPEC 是对该 ADR 的补充而非修订（proposal Impact 声明的义务，tasks.md 原漏列）。
