@@ -40,3 +40,10 @@
 | regression-merge-tree-rehearsal | 回归（任务 3.3）：tests/test_merge_tree_rehearsal.py 全绿（实测 15 例）——merge 预演语义未被在飞修订检测改动（proposal 非目标：不改 _rehearse_merge_from_branch 预演语义）。出处：tests/test_merge_tree_rehearsal.py；spec/changes/evo-inflight-spec-amendment-watch/proposal.md:15 | pass | 0/2 | - |
 | regression-mergeback-repair-lane | 回归（任务 3.3）：tests/test_mergeback_repair_lane.py 全绿（实测 26 例）——repair 车道既有解决策略与 conflict_summary 透传零漂移。出处：core/pm_engine/dispatch/repair_lane.py:86-88；tests/test_mergeback_repair_lane.py | pass | 0/2 | - |
 | spec-two-test-files-full-green | 本 SPEC 两测试文件合跑全绿收口（实测 28+11=39 例）：merge-back 侧扩展守卫与周期扫描新文件无相互干扰、无收集错误——任务 3.1/3.2 交付面整体可用。出处：tests/test_merge_back_spec_dir_guard.py:624-827；tests/test_admin_monitor_spec_amendment.py | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 17 个（第 1 轮）。
+
+- 首轮写入 17 个场景
+
