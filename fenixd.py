@@ -44,6 +44,7 @@ PROJECT_ROOT = FENIX_DIR.parent
 sys.path.insert(0, str(FENIX_DIR))
 
 from core.timelib import from_epoch, parse_ts
+from core.git_base_branch import resolve_base_branch
 from core.config import ConfigLoader
 from core.logger import Logger
 from core.state_machine import StateMachine
@@ -101,45 +102,29 @@ SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 # 保全条目 ``ahead_commits`` 的统计口径（code-review item 89d3e927d59c）：基线
 # 分支与 subprocess 超时收敛为常量，两处保全路径共用一份口径，避免双处漂移。
 # 基线分支不再硬编码取用（code-review item ec528621b2ec）：该值仅作探测失败
-# 的回退，实际基线由 _preserve_base_branch() 惰性探测 origin/HEAD 得到。
+# 的回退，实际基线由 _preserve_base_branch() 经共享解析器解析得到
+# （evo-fix-resume-base-branch-portability 5.1——解析器补齐本地 main/master
+# 探测，无 remote 的 master 主干仓库不再回退常量）。
 PRESERVE_AHEAD_BASE_BRANCH = "main"
 PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS = 15
 
-# 基线分支进程内缓存（探测一次；None 表示尚未探测）。
-_preserve_base_branch_cache: Optional[str] = None
-
 
 def _preserve_base_branch() -> str:
-    """探测保全统计的基线分支（进程内缓存一次，失败回退常量，不抛错）。
+    """探测保全统计的基线分支（委托共享解析器，进程内缓存，失败回退常量）。
 
     code-review item ec528621b2ec：旧实现硬编码 ``main``，默认分支为
     master 等非 main 主干的仓库里 ``git rev-list --count main..<branch>``
-    持续非零退出，ahead 恒按 0 口径，中断恢复的保留续做判定不命中。优先
-    ``origin/HEAD`` 符号引用（``origin/<branch>`` 形态，去前缀取本地分支
-    名，兼容含 ``/`` 的分支名）；无 remote / 非 git 仓 / 超时回退
-    PRESERVE_AHEAD_BASE_BRANCH。
+    持续非零退出，ahead 恒按 0 口径，中断恢复的保留续做判定不命中。现委托
+    ``core.git_base_branch.resolve_base_branch``（origin/HEAD → 本地 main →
+    本地 master → 回退 PRESERVE_AHEAD_BASE_BRANCH）；缓存与超时口径由解析器
+    承担（按 project_root 进程内缓存一次、子进程带
+    PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS 超时，语义与旧实现一致，不抛错）。
     """
-    global _preserve_base_branch_cache
-    if _preserve_base_branch_cache is None:
-        branch = PRESERVE_AHEAD_BASE_BRANCH
-        try:
-            res = subprocess.run(
-                ["git", "-C", str(PROJECT_ROOT), "symbolic-ref", "--short",
-                 "refs/remotes/origin/HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS,
-            )
-            if res.returncode == 0:
-                name = res.stdout.strip()
-                if name.startswith("origin/"):
-                    name = name[len("origin/"):]
-                if name:
-                    branch = name
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-        _preserve_base_branch_cache = branch
-    return _preserve_base_branch_cache
+    return resolve_base_branch(
+        PROJECT_ROOT,
+        timeout=PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS,
+        fallback=PRESERVE_AHEAD_BASE_BRANCH,
+    )
 
 
 # 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：

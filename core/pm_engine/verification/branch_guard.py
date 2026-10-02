@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from core.git_base_branch import resolve_base_branch
 from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
 
 # git 子进程统一超时（rev-list/status/show 等本地只读查询共用单一来源，
@@ -96,55 +97,36 @@ def _branch_commit_count(pipeline, result) -> Optional[int]:
 
     单一来源（fix-fasttrack-resultfile-missing-redispatch D1）：供
     ``_implementation_branch_has_commits`` 与 ``_implementer_zero_change``
-    共用。基线优先 ``main``（既有口径，main 分支仓库计数不变）；main 引用
-    缺失（仓库默认分支为 master 等）时回落 origin/HEAD 指向的默认分支再试
-    一次——避免 rev-list 因基线引用缺失非零退出被调用方 fail-open 误判零
-    提交、触发无谓重派。``result.branch`` 为空或 rev-list 失败/超时返回
-    None（调用方各自按 conservative fail-open 处置，不吞风险；回落仅发生在
-    首候选非零退出后，失败方向与既有口径一致——分支不存在时回落候选同样
-    非零退出 → 仍返回 None）。
+    共用。基线经共享解析器 ``core.git_base_branch.resolve_base_branch``
+    单源解析（evo-fix-resume-base-branch-portability 6.1，替换旧
+    ``baselines = ["main"]`` 候选循环 + origin/HEAD 回落探测两连击）：
+    origin/HEAD → 本地 main → 本地 master → 回退 "main"。main 主干仓库
+    解析结果同为 main、rev-list 逐字节同参（零漂移）；master 主干无 remote
+    仓库由恒 None（fail-open 漏报空转）变为正确计数。``result.branch`` 为
+    空或 rev-list 失败/超时返回 None（调用方各自按 conservative fail-open
+    处置，不吞风险；解析器吞异常回退常量、不抛错，失败方向由 rev-list
+    自身维持——分支不存在时同样非零退出 → 仍返回 None）。
     """
     branch = getattr(result, "branch", None)
     if not branch:
         return None
     root = str(pipeline._context.project_root)
-    baselines = ["main"]
-    while baselines:
-        base = baselines.pop(0)
-        try:
-            r = subprocess.run(
-                ["git", "rev-list", "--count", f"{base}..{branch}"],
-                capture_output=True,
-                text=True,
-                timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
-                cwd=root,
-            )
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            return None
-        if r.returncode == 0:
-            return int(r.stdout.strip() or "0")
-        # 首候选非零退出（基线引用缺失或分支不存在）：回落探测 origin/HEAD
-        # 指向的默认分支再试一次；探测失败/与 main 同名则维持单候选
-        # （等价既有口径）。
-        if base == "main":
-            try:
-                d = subprocess.run(
-                    [
-                        "git", "symbolic-ref", "-q", "--short",
-                        "refs/remotes/origin/HEAD",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
-                    cwd=root,
-                )
-                ref = (d.stdout or "").strip()
-                # [fenix-ignore:2f89db825e0c] symbolic-ref --short 输出恒带远程前缀（如 origin/main）≠ 裸 main，标准布局下回落候选照常追加、机制不失效
-                if d.returncode == 0 and ref and ref != "main":
-                    baselines.append(ref)
-            except Exception:
-                pass  # 探测不可用 → 维持单候选，等价既有口径
-    return None
+    # 先解析后 rev-list 一次（无 remote 的 master 主干仓库直接命中，省去
+    # 旧实现「main 失败 → 探 origin/HEAD 再试」的第二次探测子进程）。
+    base = resolve_base_branch(root, timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS)
+    try:
+        r = subprocess.run(
+            ["git", "rev-list", "--count", f"{base}..{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
+            cwd=root,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return int(r.stdout.strip() or "0")
 
 
 def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:

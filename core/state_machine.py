@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 
+from core.git_base_branch import resolve_base_branch
 from core.timelib import parse_ts
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1525,7 +1526,7 @@ class StateMachine:
         ``_frozen_hold: True``（曾被冻结终止、现场已保全）且 project_root /
         worktree_manager 均传入，走 ``_resolve_preserved_branch`` 共享判定
         （与 _recovery_preserve_spec 同源、零漂移）：
-        - 判定通过（分支在册 + 相对 main 有未合并提交 + 载体可用）→ 同一
+        - 判定通过（分支在册 + 相对解析基线有未合并提交 + 载体可用）→ 同一
           原子写保留 branch/implementer_run、置 ``_recovery_resume: True``、
           清 ``_frozen_hold``，status 用解析出的原状态——dispatch 拾取后在
           保留分支上 resume 续做，而非从零新建分支。
@@ -2261,7 +2262,7 @@ class StateMachine:
 
         恢复目标按中断态区分（2026-09-04 help-center 误派实证）：
         - implementing（实现中断）→ ready 重派 implementer。interrupt-recovery-
-          preserve（D4）改判定：分支存在且相对 main 有未合并提交 → 保留
+          preserve（D4）改判定：分支存在且相对解析基线有未合并提交 → 保留
           branch/implementer_run + ``_recovery_resume`` 标记，按 resume 续做
           （dispatch 层在保留分支上续做而非从零重派）；仅零提交/分支缺失才走
           现行清空路径（逐字节兼容）。project_root/worktree_manager 缺省时行为
@@ -2630,11 +2631,16 @@ class StateMachine:
         1. STATE.branch；
         2. ``find_worktree_by_spec``（在册 worktree 事实查询）；
         3. ``find_branches_by_spec``（git 分支命名空间枚举，worktree 已清
-           只剩分支时命中；候选经「已含 main」优先排序，零提交候选已剔除）。
+           只剩分支时命中；候选经「已含基线」优先排序，零提交候选已剔除）。
         第三层命中时走既有 rev-list 非空闸门与 resolve_resume_site 载体处置。
 
-        Returns: ``(resolved_branch, wt)`` 判定通过（分支可解析、相对 main
-        有未合并提交、载体可用）；``(branch, None)`` 分支可解析且有未合并
+        闸门基线经共享解析器 ``resolve_base_branch`` 取（evo-fix-resume-
+        base-branch-portability 2.1）：origin/HEAD → 本地 main → master →
+        回退 "main"，不再硬编码 ``main``——非 main 主干仓库（master 主干
+        无 remote）此前 rev-list 恒非零退出、必走清空重建。
+
+        Returns: ``(resolved_branch, wt)`` 判定通过（分支可解析、相对解析
+        基线有未合并提交、载体可用）；``(branch, None)`` 分支可解析且有未合并
         提交但载体三态暂不可用（Task 7.2：锚点不丢，交调用方重建载体）；
         ``(None, None)`` 判定不通过（锚点不可得/分支缺失/零提交）。
         """
@@ -2656,7 +2662,7 @@ class StateMachine:
                 )
         if not branch and worktree_manager is not None:
             # 第三层：git 分支命名空间枚举（worktree 已清只剩分支的窗口）。
-            # 候选已按「已含 main」优先排序、零提交候选剔除（D2/tasks 2.5）。
+            # 候选已按「已含基线」优先排序、零提交候选剔除（D2/tasks 2.5）。
             ns_candidates = worktree_manager.find_branches_by_spec(name)
             if ns_candidates:
                 best = ns_candidates[0]
@@ -2679,10 +2685,14 @@ class StateMachine:
             )
             return None, None
         try:
-            # 分支可解析 + 相对 main 有未合并提交（rev-list --count > 0）。
-            # 分支不存在时 rev-list 非零退出 → 走现行清空路径。
+            # 分支可解析 + 相对解析基线有未合并提交（rev-list --count > 0）。
+            # 基线经共享解析器取（evo-fix-resume-base-branch-portability
+            # 2.1）：origin/HEAD → 本地 main → master → 回退 "main"，非
+            # main 主干仓库不再恒走清空重建。解析器自身吞异常回退常量、
+            # 不抛错；分支不存在时 rev-list 非零退出 → 走现行清空路径。
+            base = resolve_base_branch(project_root)
             ahead = subprocess.run(
-                ["git", "-C", str(project_root), "rev-list", "--count", f"main..{branch}"],
+                ["git", "-C", str(project_root), "rev-list", "--count", f"{base}..{branch}"],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -2723,8 +2733,9 @@ class StateMachine:
         inflight-agents 2.4 共享单点，本方法与其零漂移），此处仅负责判定通过
         后的更新集写入。
 
-        判定：branch 在册、分支可解析、且 ``git rev-parse main..branch`` 非空
-        （相对 main 有未合并提交）→ 保留。载体处置经 worktree_manager 三态
+        判定：branch 在册、分支可解析、且 rev-list 相对解析基线（共享解析器
+        ``resolve_base_branch``）非空（有未合并提交）→ 保留。载体处置经
+        worktree_manager 三态
         单源查询（is_available）：在场原地登记（受清理豁免）；缺失在既有分支
         上重建 worktree；不可用降级清空重建并 WARNING。
 

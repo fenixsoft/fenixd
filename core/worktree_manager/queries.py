@@ -21,6 +21,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
 
+from core.git_base_branch import resolve_base_branch
+
 from core.worktree_manager import (  # noqa: E402
     WT_AVAILABLE,
     WT_REBUILDABLE,
@@ -471,11 +473,14 @@ class G8QueryMixin:
           ``<prefix>/verify-<spec>-*`` 验证分支 MUST NOT 进入候选清单；
           解析统一走 :meth:`_impl_branch_owned_by_spec`（code-review
           9dd92d791918 三处内联归一）；
-        - 排序（D2）：先取 ``git merge-base --is-ancestor main <branch>``
-          成立者（repair 已把 main 合入分支的形态），按 committerdate 最新；
-          无「已含 main」候选时取 ``git rev-list --count main..<branch>``
-          最大者；**零提交候选（``main..branch`` 为空）自候选清单剔除、
-          不参与排序**（闸门先于排序，见 tasks 2.5）；
+        - 排序（D2）：先取 ``git merge-base --is-ancestor <基线> <branch>``
+          成立者（repair 已把基线合入分支的形态），按 committerdate 最新；
+          无「已含基线」候选时取 ``git rev-list --count <基线>..<branch>``
+          最大者；**零提交候选（``<基线>..branch`` 为空）自候选清单剔除、
+          不参与排序**（闸门先于排序，见 tasks 2.5）；基线经共享解析器
+          ``core.git_base_branch.resolve_base_branch`` 取（origin/HEAD →
+          本地 main → master → 回退 "main"，evo-fix-resume-base-branch-
+          portability 3.1——非 main 主干仓库此前分组恒退化、候选恒空）；
         - 防御口径（2.3）：命令超时/非零退出/异常降级 WARNING 返回空清单，
           MUST NOT 阻塞 boot 路径；MUST NOT 依赖 ``_active_worktrees`` /
           ``_wt_branches`` 内存表。
@@ -491,6 +496,10 @@ class G8QueryMixin:
         prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
         candidates: list = []  # {branch, ahead, main_is_ancestor, committerdate}
         try:
+            # 基线经共享解析器取（evo-fix-resume-base-branch-portability
+            # 3.1）：origin/HEAD → 本地 main → master → 回退 "main"，非
+            # main 主干仓库不再恒空/分组退化。解析器吞异常回退常量、不抛错。
+            base = resolve_base_branch(self.project_root)
             for prefix in prefixes:
                 # spec 名套 glob.escape（与 locks._latest_stream_mtime 同口径），
                 # 防 for-each-ref pattern 按 fnmatch 展开元字符致枚举过配。
@@ -547,7 +556,7 @@ class G8QueryMixin:
                     )
             if not candidates:
                 return []
-            # 逐候选计算 ahead 与「main 是否为祖先」；零提交候选剔除
+            # 逐候选计算 ahead 与「基线是否为祖先」；零提交候选剔除
             valid: list = []
             for cand in candidates:
                 branch = cand["branch"]
@@ -559,7 +568,7 @@ class G8QueryMixin:
                             str(self.project_root),
                             "merge-base",
                             "--is-ancestor",
-                            "main",
+                            base,
                             branch,
                         ],
                         capture_output=True,
@@ -576,7 +585,7 @@ class G8QueryMixin:
                             str(self.project_root),
                             "rev-list",
                             "--count",
-                            f"main..{branch}",
+                            f"{base}..{branch}",
                         ],
                         capture_output=True,
                         text=True,
@@ -596,7 +605,7 @@ class G8QueryMixin:
                     self.logger.warning(
                         "worktree_manager",
                         f"find_branches_by_spec('{spec_name}'): 零提交候选 "
-                        f"'{branch}'（main..branch 为空）剔除，不参与排序",
+                        f"'{branch}'（{base}..branch 为空）剔除，不参与排序",
                     )
                     continue
                 valid.append(cand)
@@ -659,7 +668,9 @@ class G8QueryMixin:
             进入候选（归属解析统一走 ``_impl_branch_owned_by_spec``——
             verify- 结构判别，MUST NOT 复用 ``_spec_from_branch``：它剥
             ``verify-`` 前缀且硬编码 ``fenix/``）；
-          - ``git rev-list --count main..<branch>`` > 0（有未并入 main 的提交）。
+          - ``git rev-list --count <基线>..<branch>`` > 0（有未并入基线的提交；
+            基线经共享解析器 ``resolve_base_branch`` 取，evo-fix-resume-base-
+            branch-portability 3.1）。
 
         查询失败（git 超时/非零退出/异常）一律返回 False（fail-closed：不
         豁免 → 调用方走既有 stale 判定，不把真实卡死洗成健康）。
@@ -677,8 +688,8 @@ class G8QueryMixin:
         判定，避免「分支永挂 → 永不告警」把真实卡死洗成健康。
 
         取值口径：枚举归属该 spec 的实现分支（同 :meth:`has_pending_merge`
-        的归属解析），对每个有未并入 main 提交的候选分支取
-        ``git log -1 --format=%ct main..<branch>``（该分支未并入 main 最新
+        的归属解析），对每个有未并入基线提交的候选分支取
+        ``git log -1 --format=%ct <基线>..<branch>``（该分支未并入基线最新
         提交的 committer date，epoch 秒）；返回所有候选中的**最大值**（最近
         一次产生未合并提交的时刻——与实现分支自带的 ``-<ts>`` 时间戳同语义，
         均为「最近的实现/失败活动」，供调用方与 succeed 痕迹取 max 作年龄起点）。
@@ -711,6 +722,11 @@ class G8QueryMixin:
             return None
         if res.returncode != 0:
             return None
+        # 基线经共享解析器取（evo-fix-resume-base-branch-portability 3.1）：
+        # origin/HEAD → 本地 main → master → 回退 "main"；解析器吞异常回退
+        # 常量、不抛错，查询失败方向由 rev-list 自身维持（非零退出 continue
+        # → 最终 None，与既有 fail-closed 一致）。
+        base = resolve_base_branch(self.project_root)
         latest: Optional[int] = None
         for cand in res.stdout.splitlines():
             cand = cand.strip()
@@ -718,7 +734,7 @@ class G8QueryMixin:
                 continue
             try:
                 ahead = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-list", "--count", f"main..{cand}"],
+                    ["git", "-C", str(self.project_root), "rev-list", "--count", f"{base}..{cand}"],
                     capture_output=True,
                     text=True,
                     timeout=15,
@@ -742,7 +758,7 @@ class G8QueryMixin:
                         "log",
                         "-1",
                         "--format=%ct",
-                        f"main..{cand}",
+                        f"{base}..{cand}",
                     ],
                     capture_output=True,
                     text=True,
