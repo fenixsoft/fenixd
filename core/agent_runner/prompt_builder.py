@@ -1476,6 +1476,9 @@ class PromptBuilder:
                 - conflict_paths: 冲突路径列表
                 - has_semantic_conflict: 是否含语义冲突
                 - repair_round: 当前是第几轮 repair
+                - amended_inflight: 主树已提交在飞修订提交短哈希列表
+                  （evo-inflight-spec-amendment-watch 1.3，可选；非空时注入
+                  「主树在飞修订根因」段）
         """
         spec_dir = f"spec/changes/{spec_name}"
         # _str_field 归一：键缺失、显式 None 或结构化值都安全（None 切片 [:2000] 抛
@@ -1483,6 +1486,10 @@ class PromptBuilder:
         merge_error = _str_field(conflict_summary.get("merge_error")) or "（未提供原始错误）"
         conflict_paths = conflict_summary.get("conflict_paths", [])
         repair_round = conflict_summary.get("repair_round", 1)
+        # 主树在飞修订根因（evo-inflight-spec-amendment-watch 1.3）：merge-back
+        # 侧检出 spec/changes/<spec>/ 的主树已提交修订时由调度层透传——非空才
+        # 注入根因段（未命中时 prompt 与现状逐字节一致）。
+        amended_inflight = conflict_summary.get("amended_inflight") or []
 
         conflict_section = ""
         if conflict_paths:
@@ -1494,6 +1501,18 @@ class PromptBuilder:
         else:
             conflict_section = (
                 f"\n## 冲突文件清单\n" f"请自行通过 `git status --porcelain` 检查当前冲突文件。\n"
+            )
+        if amended_inflight:
+            amended_list = ", ".join(str(c) for c in amended_inflight)
+            conflict_section += (
+                f"\n## 主树在飞修订根因（spec_amendment_inflight）\n"
+                f"本次冲突的已知根因：本 SPEC 的 spec/changes/{spec_name}/ 在实现"
+                f"期间被框架外提交者在主树直接修订（提交：{amended_list}），与实现"
+                f"分支对该目录的改动（如 tasks.md 勾选）相撞。\n"
+                f"解决 spec 目录内冲突时：先读主树修订内容（git log/main 侧），"
+                f"保留修订的有效意图，再叠加分支侧的任务进度；禁止盲目 "
+                f"`git checkout --ours/--theirs` 整文件覆盖（会丢掉一侧的修订或"
+                f"进度）。\n"
             )
 
         prompt = (

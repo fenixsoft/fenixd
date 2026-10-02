@@ -12,8 +12,15 @@
         WIP 重叠 → wip_gate_blocked（不被顺延接走）
   3.5: spec 名解析失败（非 fenix/<spec>-<ts> 分支名）时 fail-open 放行，
         断言未对 spec/changes/ 全目录做检测（dirty 仍放行）
+
+evo-inflight-spec-amendment-watch 3.1 增补：主树已提交在飞修订检测——
+  夹具仓库在 merge-base 之后于主树提交 spec 目录改动 → merge-back 发
+  spec_amendment_inflight 告警且 merge_info.amended_inflight 携带提交列表、
+  repair 上下文含根因段；主树无新提交 → 行为与告警完全不变；分支不存在 →
+  静默跳过不报错。
 """
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -23,6 +30,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from core.worktree_manager import WorktreeManager
+from core.worktree_manager.mergeback import (
+    detect_spec_amended_inflight,
+    spec_amendment_fingerprint,
+)
 from core.worktree_manager.types import MergeConflictInfo
 
 from test_agent_runner import FakeLogger
@@ -592,3 +603,225 @@ class TestRetrySucceeds(_BaseDispatch):
 
         # 闸门命中：不调用 merge_back_from_branch（不尝试合并、不绕过告警通道）
         wm.merge_back_from_branch.assert_not_called()
+
+
+# ── evo-inflight-spec-amendment-watch 3.1: 主树已提交在飞修订检测 ────────────
+
+def _spec_records(root: Path) -> list:
+    """读 fixture 仓库 admin store 中 spec_amendment_inflight 信号记录。"""
+    from core.admin_store import AdminStore
+
+    path = AdminStore(root, FakeLogger()).alerts_path
+    if not path.exists():
+        return []
+    return [
+        r
+        for r in json.loads(path.read_text(encoding="utf-8"))
+        if r.get("signal_type") == "spec_amendment_inflight"
+    ]
+
+
+class TestInflightSpecAmendmentWatch:
+    """3.1: merge-base 之后主树提交 spec 目录改动 → 告警 + amended_inflight。
+
+    复演 2026-10-02 cimbar-airgap-transfer 事故形态：框架外提交者在实现分支
+    在飞期间直接改主树 spec/changes/<spec>/（已提交形态），与分支勾选更新在
+    merge-back 预演相撞。
+    """
+
+    def _amended_repo(
+        self,
+        tmp_path,
+        spec: str = "evo-a",
+        branch_touches_spec: bool = True,
+        main_touches_shared: bool = True,
+    ):
+        """构造 repo：分支在 merge-base 后改 shared.py+spec 目录勾选，
+        主树随后提交 shared.py（语义冲突）+ spec 目录修订（在飞修订）。
+
+        main_touches_shared=False 构造不相撞变体（修订只落 spec 目录、分支
+        未触该目录）——用于验证检测命中不改 merge 成败结局（1.2）。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        spec_dir = root / "spec" / "changes" / spec
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "proposal.md").write_text("proposal\n", encoding="utf-8")
+        (spec_dir / "tasks.md").write_text("tasks\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", f"[fenix] spec {spec} base")
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        branch = f"fenix/{spec}-1700000020"
+        git(root, "checkout", "-q", "-b", branch)
+        (root / "shared.py").write_text("BRANCH-VERSION\n", encoding="utf-8")
+        (root / "core").mkdir(parents=True, exist_ok=True)
+        (root / "core" / "impl.py").write_text("IMPL\n", encoding="utf-8")
+        if branch_touches_spec:
+            (spec_dir / "tasks.md").write_text("- [x] t1\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", f"[fenix] branch {branch}")
+        git(root, "checkout", "-q", base_sha)
+        # 主树：语义冲突提交（shared.py）+ 在飞修订提交（spec 目录）
+        if main_touches_shared:
+            (root / "shared.py").write_text("MAIN-VERSION\n", encoding="utf-8")
+        (spec_dir / "proposal.md").write_text("proposal amended\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] spec amendment out-of-band")
+        amend_short = git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+        return root, branch, amend_short
+
+    def test_amended_conflict_alerts_and_attaches(self, tmp_path):
+        """相撞场景：rehearsed 语义冲突 + amended_inflight 携带修订提交 + 告警落盘。"""
+        root, branch, amend_short = self._amended_repo(tmp_path)
+        wm = make_wm(root)
+
+        info = wm.merge_back_from_branch(branch)
+
+        # 相撞结局不变：仍由预演检出语义冲突（1.2 不改变判定语义）
+        assert info.rehearsed is True, f"语义冲突应仍返回 rehearsed: {info.error}"
+        assert info.has_semantic_conflict is True
+        assert info.spec_dir_inflight is False
+        assert info.wip_gate_blocked is False
+        # amended_inflight 携带修订提交短哈希列表（1.1）
+        assert info.amended_inflight == [amend_short], f"{info!r}"
+        # 告警落 admin store：含修订提交列表与指纹（1.1）
+        hits = _spec_records(root)
+        assert len(hits) == 1, f"应恰好一条在飞修订告警: {hits}"
+        assert hits[0].get("spec") == "evo-a"
+        assert amend_short in (hits[0].get("evidence") or "")
+        assert "指纹=" in (hits[0].get("evidence") or "")
+        assert hits[0].get("severity") == "major"
+
+    def test_amendment_repeat_merge_dedups_same_fingerprint(self, tmp_path):
+        """同一修订集合的重复 merge-back 尝试 → 不逐轮重复告警（指纹在途去重）。"""
+        root, branch, _ = self._amended_repo(tmp_path)
+        wm = make_wm(root)
+
+        wm.merge_back_from_branch(branch)
+        wm.merge_back_from_branch(branch)
+
+        assert len(_spec_records(root)) == 1, "同指纹在途去重应只写一条"
+
+    def test_amended_success_merge_semantics_unchanged(self, tmp_path):
+        """修订与分支改动不相撞（分支未触 spec 目录）→ merge 成功结局不变（1.2），
+        告警照发、amended_inflight 照附。"""
+        root, branch, amend_short = self._amended_repo(
+            tmp_path, spec="evo-b", branch_touches_spec=False, main_touches_shared=False
+        )
+        wm = make_wm(root)
+
+        info = wm.merge_back_from_branch(branch)
+
+        # 返回值语义不变：命中不改变 success / rehearsed 判定
+        assert info.success is True, f"不相撞时应正常 merge: {info.error}"
+        assert info.rehearsed is False
+        assert info.has_semantic_conflict is False
+        assert info.amended_inflight == [amend_short]
+        assert len(_spec_records(root)) == 1
+
+    def test_no_amendment_no_alert_no_field(self, tmp_path):
+        """对照：主树 merge-base 后无新提交 → 行为与告警完全不变。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        spec_dir = root / "spec" / "changes" / "evo-c"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "proposal.md").write_text("proposal\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] spec evo-c base")
+        make_branch(root, "fenix/evo-c-1700000021", "core/impl.py", "IMPL\n",
+                    shared_content="BASE-MOD\n")
+        wm = make_wm(root)
+
+        info = wm.merge_back_from_branch("fenix/evo-c-1700000021")
+
+        assert info.success is True, f"无修订应正常 merge: {info.error}"
+        assert info.amended_inflight == []
+        assert _spec_records(root) == [], "无修订 MUST NOT 产生告警"
+
+    def test_missing_branch_silent_skip(self, tmp_path):
+        """分支不存在（merge-base 失败/已清理）→ 静默跳过不报错。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+
+        assert detect_spec_amended_inflight(root, "fenix/ghost-1700000099", "evo-a") == []
+        wm = make_wm(root)
+        # 非形态分支（spec 名解析失败）同路静默：不检测、不告警、不抛错
+        assert wm._detect_spec_amended_inflight("feature-not-fenix") == []
+        assert _spec_records(root) == []
+
+    def test_fingerprint_tracks_commit_set(self, tmp_path):
+        """指纹 = spec+修订提交集合：同集合同指纹，新增修订变指纹（2.1 去重单源）。"""
+        assert spec_amendment_fingerprint("evo-a", ["aaa", "bbb"]) == spec_amendment_fingerprint(
+            "evo-a", ["bbb", "aaa"]
+        ), "顺序无关、去重后同集合 → 同指纹"
+        assert spec_amendment_fingerprint("evo-a", ["aaa"]) != spec_amendment_fingerprint(
+            "evo-a", ["aaa", "bbb"]
+        ), "修订集合变化 → 新指纹"
+        assert spec_amendment_fingerprint("evo-a", ["aaa"]) != spec_amendment_fingerprint(
+            "evo-b", ["aaa"]
+        ), "spec 维度参与指纹"
+
+
+class TestAmendedInflightRepairPassthrough(_BaseDispatch):
+    """3.1: rehearsed 直通 repair 透传 amended_inflight，prompt 含根因段（1.3）。"""
+
+    def _amended_merge_info(self) -> MergeConflictInfo:
+        return MergeConflictInfo(
+            False,
+            "CONFLICT (content): Merge conflict in shared.py",
+            conflict_paths=["shared.py"],
+            has_semantic_conflict=True,
+            rehearsed=True,
+            amended_inflight=["abc1234"],
+        )
+
+    def test_direct_rehearsed_passthrough_carries_amendment(self):
+        """_direct_rehearsed_to_repair 透传：merge_info 原样进 repair 派发。"""
+        self._mk()
+        info = self._amended_merge_info()
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch.return_value = info
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
+
+        self.engine._dispatcher._direct_rehearsed_to_repair(
+            "spec-x", info, "fenix/spec-x-1700000010", "conflict"
+        )
+
+        self.engine._dispatcher._dispatch_repair_lane.assert_called_once()
+        passed_info = self.engine._dispatcher._dispatch_repair_lane.call_args[0][1]
+        assert list(passed_info.amended_inflight) == ["abc1234"]
+
+    def test_conflict_summary_and_prompt_carry_root_cause(self):
+        """派发上下文（_repair_conflict_summary）与 prompt 均含修订根因段。"""
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        self._mk()
+        info = self._amended_merge_info()
+
+        summary = self.engine._dispatcher._repair_conflict_summary("spec-x", info)
+
+        assert summary["amended_inflight"] == ["abc1234"]
+        pb = PromptBuilder.__new__(PromptBuilder)
+        pb._pm = MagicMock()
+        pb._pm.project_root = self.repo
+        prompt = pb._build_repair_prompt("spec-x", summary)
+        assert "主树在飞修订根因" in prompt
+        assert "abc1234" in prompt
+        assert "spec/changes/spec-x/" in prompt
+
+    def test_no_amendment_prompt_byte_identical_prefix(self):
+        """未命中修订 → prompt 不含根因段（与现状一致，不注入空段）。"""
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        pb = PromptBuilder.__new__(PromptBuilder)
+        pb._pm = MagicMock()
+        pb._pm.project_root = self.repo
+        summary = {
+            "spec": "spec-x",
+            "merge_error": "conflict",
+            "conflict_paths": ["shared.py"],
+            "has_semantic_conflict": True,
+            "repair_round": 1,
+            "amended_inflight": [],
+        }
+        prompt = pb._build_repair_prompt("spec-x", summary)
+        assert "主树在飞修订根因" not in prompt

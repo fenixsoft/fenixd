@@ -127,6 +127,7 @@ class MergeConflictInfo:
         "wip_overlap",
         "wip_gate_blocked",
         "spec_dir_inflight",
+        "amended_inflight",
     )
 
     def __init__(
@@ -141,6 +142,7 @@ class MergeConflictInfo:
         wip_overlap: list | None = None,
         wip_gate_blocked: bool = False,
         spec_dir_inflight: bool = False,
+        amended_inflight: list | None = None,
     ):
         self.success = bool(success)
         self.error = error
@@ -163,6 +165,13 @@ class MergeConflictInfo:
         # dispatch 层据此旁路熔断记账，spec 保持 in-flight 只重试合并（不重派
         # 实现 run），由外部提交动作解除；有界顺延超限回落告警+人工通道。
         self.spec_dir_inflight = bool(spec_dir_inflight)
+        # 已提交在飞修订检测（evo-inflight-spec-amendment-watch 1.1）：merge-back
+        # 前检测到 spec/changes/<spec>/ 相对 merge-base 在主树出现的新已提交修订
+        # 时，携带修订提交短哈希列表（时间正序）；空列表 = 未命中/未检测。仅附带
+        # 情报，MUST NOT 改变 success/has_semantic_conflict 语义（1.2）——相撞
+        # 仍由预演检出并按既有 rehearsed 链路转 repair，本字段只给 repair 车道
+        # 透传根因（dispatch 层消费）。
+        self.amended_inflight = list(amended_inflight or [])
 
     def __iter__(self):
         """兼容 (bool, str) 解包：既有调用方 ``success, err = ...`` 照常工作。"""
@@ -180,5 +189,6 @@ class MergeConflictInfo:
             f"semantic={self.has_semantic_conflict}, rehearsed={self.rehearsed}, "
             f"wip_overlap={self.wip_overlap}, "
             f"wip_gate_blocked={self.wip_gate_blocked}, "
-            f"spec_dir_inflight={self.spec_dir_inflight})"
+            f"spec_dir_inflight={self.spec_dir_inflight}, "
+            f"amended_inflight={self.amended_inflight})"
         )
