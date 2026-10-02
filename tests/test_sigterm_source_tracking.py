@@ -245,7 +245,8 @@ class TestSignalKillCooldown:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(
                 json.dumps({"status": "verified", "summary": "ok"}),
@@ -275,7 +276,8 @@ class TestNetworkTransientUnchanged:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             exc = RuntimeError("claude CLI failed: failed to connect: "
                                "connection refused")
@@ -318,7 +320,8 @@ class TestArtifactGateChannelIsolation:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             return ("done", 1, "sess-gate", _usage_ok())
 
@@ -364,7 +367,8 @@ class TestArtifactGateChannelIsolation:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(
@@ -415,7 +419,8 @@ class TestFrameworkSelfKillExcluded:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             exc = RuntimeError(text)
             # 真实路径异常不带 exit_code（timeout/turn_limit raise 无属性），
             # 此处显式带 -9 模拟 returncode 语义——错误文本排除仍须生效

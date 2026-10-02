@@ -119,7 +119,8 @@ class TestProviderTransientSuperseded:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             # 模拟真实 _run_claude 在流文件落盘普通事件（provoke 弃置场景）
             with (runs_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "assistant",
@@ -187,7 +188,8 @@ class TestArtifactGateSuperseded:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             with (runs_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "assistant",

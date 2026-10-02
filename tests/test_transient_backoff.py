@@ -475,7 +475,8 @@ class TestWorktreeReuseAcrossAttempts:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             attempt_n["n"] += 1
             call_cwds.append(cwd)
             if attempt_n["n"] <= 2:
@@ -1409,7 +1410,8 @@ class TestShutdownInterruptGuard:
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             # 模拟 daemon 侧同步写入 interrupted 标记（liveness 第二步）
             runs_dir = runner.project_root / ".fenix" / "runs"

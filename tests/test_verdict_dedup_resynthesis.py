@@ -538,7 +538,8 @@ class TestInPlaceRetryYields(ResynthesisHarness):
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             raise self._TransientError("connection reset by peer")
 
@@ -560,7 +561,8 @@ class TestInPlaceRetryYields(ResynthesisHarness):
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
-                            spec_name=None, agent_type=None):
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise self._TransientError("connection reset by peer")

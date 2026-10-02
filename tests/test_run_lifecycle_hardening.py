@@ -778,7 +778,7 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
 
         def fake_claude(prompt, cwd, run_id, model_override, env_overrides,
                         resume_session_id=None, max_turns=None, spec_name=None,
-                        agent_type=None):
+                        agent_type=None, task_progress_snapshot=None):
             attempt["n"] += 1
             if attempt["n"] == 1:
                 # a1 失败，且运行中该 spec 被人为冻结（模拟运行期冻结）
