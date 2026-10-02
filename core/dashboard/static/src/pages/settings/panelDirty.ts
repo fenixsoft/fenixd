@@ -27,16 +27,32 @@ export function anyPanelDirty(): boolean {
   return false;
 }
 
-/** 保存成功后统一复位（index 的 handleSave 是全部配置面板保存的公共出口）。 */
-export function resetPanelDirty(): void {
-  entries.forEach((entry) => entry.reset());
+/**
+ * 保存发起时锁定当前在场面板集合，返回仅复位这批面板脏标记的复位函数
+ * （code-review item 1b0adfd4fcaa）。旧 resetPanelDirty 在保存成功后遍历全部
+ * 在册条目，而保存是多段异步链（写盘往返 + 重载），期间页签切换未被阻断：
+ * 用户在在飞保存期间经丢弃确认切到其他页签并编辑置脏，成功回调的全量复位会把
+ * 新页签的脏标记一并抹掉，后续切换不再弹丢弃确认、未保存编辑被静默丢弃。
+ * 面板按 activeKey 条件渲染、发起保存时被保存页签必在场，故发起时刻的快照
+ * 恰为被保存面板的条目（自进化页签两张卡片各一份、同属被保存页签）：
+ * 仅复位快照内仍挂载的条目，此后挂载/编辑的其他面板不受波及；保存失败时
+ * 调用方不执行复位，被保存面板的脏标记原样保留（编辑仍未落盘）。
+ */
+export function snapshotPanelDirty(): () => void {
+  const armed = new Set(entries);
+  return () => {
+    for (const entry of armed) {
+      if (entries.has(entry)) entry.reset();
+    }
+  };
 }
 
 /**
  * 面板判脏挂钩：默认由面板在用户编辑事件（Form onValuesChange / 受控输入
- * onChange）里 setDirty(true) 置脏，保存成功后由 index 统一 setDirty(false)/
- * resetPanelDirty() 复位；PromptsPanel 等自持草稿的面板可传入 probe 按既有
- * 判脏口径注册（probe 每次实时求值，忽略内部 dirtyRef）。卸载自动注销。
+ * onChange）里 setDirty(true) 置脏，保存成功后由 index 对发起保存时快照的
+ * 在场面板统一复位（snapshotPanelDirty）；PromptsPanel 等自持草稿的面板可传入
+ * probe 按既有判脏口径注册（probe 每次实时求值，忽略内部 dirtyRef）。
+ * 卸载自动注销。
  */
 export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolean) => void } {
   const dirtyRef = useRef(false);

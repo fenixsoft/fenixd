@@ -1925,7 +1925,22 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
         timer = threading.Timer(_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS, _on_reverify_due)
         timer.daemon = True
         timers.add(spec_name)
-        timer.start()
+        try:
+            timer.start()
+        except Exception as e:
+            # code-review item 274b668bbaf0：start 失败（解释器关闭期 RuntimeError、
+            # 线程资源耗尽等环境性原因）时回滚占位标记——否则标记只由定时器回调
+            # 清除，定时器未启动即永不触发，同 spec 后续排程恒被上方幂等早退短路，
+            # 本周期重验日程无法重建。仿 backoff.py _schedule_recovery_timer_locked
+            # 的「摘除标记 + WARNING」回滚口径（item 488e916852e4）；异常不上抛，
+            # 恢复依赖周期扫描兜底。
+            timers.discard(spec_name)
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重验定时器启动失败，已回滚判重标记 '{spec_name}'"
+                f"（待周期扫描兜底重验）: {type(e).__name__}: {e}",
+            )
+            return
     # 写 _dispatch_backoff_until：退避窗内 spec_is_undriven 条件③ 为真，
     # 探测器静默；到期后由定时器（主）+ 周期扫描（兜底）触发重验。
     # （锁外执行——状态机写盘属耗时 IO，MUST NOT 入临界区；写失败不阻断

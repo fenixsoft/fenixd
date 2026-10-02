@@ -1356,7 +1356,17 @@ def salvage_result_from_transcript(
                 os.chmod(tmp_path, 0o644)
             except OSError:
                 pass
-            os.replace(tmp_path, target)
+            # code-review item b926fcc65614：os.replace 无条件覆盖，会击穿上方
+            # target.exists() 守卫与落盘之间的竞态窗口（并发 attempt/同轮二次
+            # 捞回抢先建目标）。改用同目录硬链接 os.link 占位提交——目标已存在
+            # 即 FileExistsError，按上方「已存在不覆盖」口径放弃；个别不支持
+            # 硬链接的文件系统退回 replace（接受极窄竞态，保住落盘可用性）。
+            try:
+                os.link(tmp_path, target)
+            except FileExistsError:
+                return False
+            except OSError:
+                os.replace(tmp_path, target)
         finally:
             if tmp_path.exists():
                 try:

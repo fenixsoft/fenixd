@@ -99,15 +99,18 @@ function appendWithoutOverlap(newer: RunEvent[], loaded: RunEvent[]): RunEvent[]
 // 旧产物的中间弃置件（重试走新产物文件、可能仍在飞），gate-blocked 是门禁
 // 失败收口而非「在飞 run 被中断」——映射为 interrupted 会误解锁仍在飞的重试
 // 链路，admin 调用方语义未定前不入映射。
-const TERMINAL_EVENT_STATUS: Record<string, string> = {
-  result: 'done',
-  error: 'error',
-  interrupted: 'interrupted',
-  cancelled: 'cancelled',
-  session_ended: 'interrupted',
-  'frozen-terminated': 'interrupted',
-  'stall-budget-terminated': 'interrupted',
-};
+// Map 而非对象字面量（code-review item aaf2897625a6）：`ev.type in obj` 沿
+// Object.prototype 原型链查找，'toString'/'constructor' 等键也会命中而误判终态；
+// Map 的 has/get 不走原型链，与下方 TERMINAL_RUN_STATUSES 的 Set.has 口径对齐。
+const TERMINAL_EVENT_STATUS = new Map<string, string>([
+  ['result', 'done'],
+  ['error', 'error'],
+  ['interrupted', 'interrupted'],
+  ['cancelled', 'cancelled'],
+  ['session_ended', 'interrupted'],
+  ['frozen-terminated', 'interrupted'],
+  ['stall-budget-terminated', 'interrupted'],
+]);
 
 // REST 拉取返回的 run status 终态集合（空态分支判定用），与 onRunStatus 契约
 // 词表对齐：frozen-terminated（item ce8a84164320 扩展）REST 初载/重同步直报原
@@ -408,16 +411,34 @@ export default function ClaudeOutputPane({
           })();
         } else if (msg.events && msg.events.length > 0) {
           const incoming = msg.events;
-          setEvents((prev) => [...prev, ...incoming]);
+          // 增量追加前对界去重（code-review item a36d72e0b207）：SSE 层在重连
+          // 边界可能向同一连接重复投递同批事件（服务端广播与重拉竞态），直接
+          // 追加会让同一条事件重复渲染且 total 双计。与 hello 重同步共用
+          // appendWithoutOverlap 对界核心，只把真正新增的尾部追加进来。
+          // appended 用本批闭包变量传给下方 totalEvents updater——updater 必须
+          // 是纯函数（StrictMode/并发重放会在其中顺手 setState 双计），React 按
+          // 入队顺序执行同批 updater，此处重放时 prev 不变、结果幂等。
+          let appended = 0;
+          setEvents((prev) => {
+            const newer = appendWithoutOverlap(incoming, prev);
+            appended = newer.length;
+            return newer.length > 0 ? [...prev, ...newer] : prev;
+          });
           // 增量同步推进总数（code-review item 7ae6c2b659c2）：watcher 的
           // run_events 只带增量 events 不带 total，不推进会让「共 M 条」停在
           // 最近一次 REST 拉取值——live run 流入条数超过 stale total 后
           // canLoadOlder（events.length < totalEvents）恒 false，「加载更早
-          // 事件」被错误禁用而更早历史仍在。reset/重同步路径整体重拉 total，
-          // 不经本分支。
-          setTotalEvents((prev) => prev + incoming.length);
-          const terminal = incoming.find((ev) => ev.type in TERMINAL_EVENT_STATUS);
-          if (terminal) reportStatus(TERMINAL_EVENT_STATUS[terminal.type]);
+          // 事件」被错误禁用而更早历史仍在。按剔除重叠后的实际追加条数记账
+          //（item a36d72e0b207），重复投递整批被剔除时 total 不动。reset/
+          // 重同步路径整体重拉 total，不经本分支。
+          setTotalEvents((prev) => prev + appended);
+          for (const ev of incoming) {
+            const status = TERMINAL_EVENT_STATUS.get(ev.type);
+            if (status) {
+              reportStatus(status);
+              break;
+            }
+          }
         }
       }
     };

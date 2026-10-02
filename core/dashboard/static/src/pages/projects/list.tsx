@@ -257,6 +257,16 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
         onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          // 键盘可达（code-review item 3e07fb4c2b30）：Enter/Space 触发跳转，
+          // 口径对齐 ProjectCards 项目名跳转（item b5ed7707672e）
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleClick();
+          }
+        }}
         style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#1677ff' }}
       >
         {record.name}
@@ -538,6 +548,9 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
     <List
       loading={loading}
       dataSource={flat}
+      // 按行数据身份复用节点（code-review item add168d205dc）：SSE patch 删除
+      // 行后避免按索引复用，悬浮浮层状态随正确行走（与桌面 Table rowKey 对齐）
+      rowKey={(n) => n.record.name}
       pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
       renderItem={({ record, level }) => {
         const m = statusMeta(record.status || '');

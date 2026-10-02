@@ -27,7 +27,6 @@ import json
 import re
 import subprocess
 import time
-from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -45,6 +44,7 @@ from core.knowledge_backfill import (
     upsert_todo_line,
     validate_with_repair,
 )
+from core.timelib import parse_ts
 
 # ── 常量 ─────────────────────────────────────────────────────────────────
 
@@ -220,12 +220,11 @@ def _escalated_entries(ledger: dict) -> dict[str, dict]:
 
 def _finding_age_days(first_seen, today=None) -> int:
     """自 first_seen 起算的龄期天数；日期串缺失/损坏按 0 计（不炸车道）。"""
-    try:
-        start = date.fromisoformat(str(first_seen or ""))
-        end = date.fromisoformat(str(today or _today()))
-    except ValueError:
+    start_dt = parse_ts(str(first_seen or ""))
+    end_dt = parse_ts(str(today or _today()))
+    if start_dt is None or end_dt is None:
         return 0
-    return max(0, (end - start).days)
+    return max(0, (end_dt.date() - start_dt.date()).days)
 
 
 def _escalated_summary(escalated: dict) -> Optional[dict]:

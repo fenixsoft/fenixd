@@ -15,6 +15,14 @@ from core.v2_dev_server import (
     base_url as v2_base_url,
 )
 
+# code-review item 1b8c509e19a5：_v2_ensure_state 的惰性建锁（check-then-create）
+# 无同步保护时，``AgentRunner.__new__`` 装配路径下两个线程并发首次进入会各自
+# 创建不同的 Lock，_v2_servers/_v2_used_ports 的互斥承诺被打破。比照
+# token_budget._ACCUM_LOCKS_GUARD / _UNOBSERVED_GUARD 口径：惰性首次创建由
+# 模块级守卫锁串行化（daemon 正常 __init__ 路径已无条件建锁，守卫锁只覆盖
+# 兜底路径的几个属性检查，无实质开销）。
+_V2_STATE_GUARD = threading.Lock()
+
 
 class V2ServerManager:
     """per-run 隔离测试服务器组件（门面 AgentRunner 的组合组件）。"""
@@ -43,15 +51,21 @@ class V2ServerManager:
         """惰性初始化 V2 状态（设计容错：部分测试以 ``AgentRunner.__new__`` 绕过
         ``__init__`` 构造实例，此时实例属性未建立；访问前补齐默认值避免 AttributeError，
         行为与 daemon 正常 __init__ 路径一致）。
+
+        惰性建锁是 check-then-create：无同步保护时并发首次进入会产出多把锁使
+        互斥失效（code-review item 1b8c509e19a5），故整体纳入模块级 _V2_STATE_GUARD
+        临界区——锁内只有属性检查与默认值赋值，不调用任何会取 _v2_lock 的代码，
+        无锁序/自死锁面。
         """
-        if not hasattr(self, "_v2_servers") or self._v2_servers is None:
-            self._v2_servers: Dict[str, Tuple] = {}
-        if not hasattr(self, "_v2_used_ports") or self._v2_used_ports is None:
-            self._v2_used_ports: set = set()
-        if not hasattr(self, "_v2_run_seq"):
-            self._v2_run_seq = 0
-        if not hasattr(self, "_v2_lock") or self._v2_lock is None:
-            self._v2_lock = threading.Lock()
+        with _V2_STATE_GUARD:
+            if not hasattr(self, "_v2_servers") or self._v2_servers is None:
+                self._v2_servers: Dict[str, Tuple] = {}
+            if not hasattr(self, "_v2_used_ports") or self._v2_used_ports is None:
+                self._v2_used_ports: set = set()
+            if not hasattr(self, "_v2_run_seq"):
+                self._v2_run_seq = 0
+            if not hasattr(self, "_v2_lock") or self._v2_lock is None:
+                self._v2_lock = threading.Lock()
 
     def _v2_launch_for_worktree(self, wt_path: Path) -> None:
         """为某 worktree 启动专属 dev-server 并登记（D2 派发前启动）。
