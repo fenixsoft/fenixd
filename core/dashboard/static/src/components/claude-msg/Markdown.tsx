@@ -252,6 +252,23 @@ export function Markdown({ children, className, breaks = false }: MarkdownProps)
           );
         }
 
+        // 协议白名单（与 SpecDocModal 的 SafeLink 同口径：http/https/mailto）：
+        // AI 生成的正文或工具输出可能携带 javascript: 等危险协议链接，非白名单
+        // 协议一律降级为纯文本，杜绝点击执行任意脚本。href 交给 URL 解析器统一
+        // 处理大小写与制表符/换行混淆（java\tscript:）、首尾空白；相对路径无协
+        // 议，基于当前页面解析后落在本站 http(s) 白名单内，维持既有可点击渲染。
+        // 不直接复用 SafeLink：claude-msg 是共享组件目录，反向依赖 pages 模块会
+        // 拖入 antd Modal/Tabs 等页面级耦合
+        let linkUrl: URL | undefined;
+        try {
+          linkUrl = new URL(href || '', window.location.href);
+        } catch {
+          // 无效 URL：按纯文本处理
+        }
+        if (!linkUrl || !['http:', 'https:', 'mailto:'].includes(linkUrl.protocol)) {
+          return <span>{linkChildren}</span>;
+        }
+
         return (
           <a
             href={href}
