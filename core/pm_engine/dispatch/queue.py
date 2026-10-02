@@ -42,6 +42,18 @@ WIP_DEFER_WINDOW_MINUTES = 90.0
 WIP_DEFER_MAX_ROUNDS = 6
 
 
+def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
+    """agent worker 线程命名的**单点**（evo-inprocess-verify-activity-signal 1.1）。
+
+    形如 ``fenix-{agent_type}-{spec_name}``（本文件 _process_queue 的 Thread
+    构造处）。抽函数而非两处硬编码字面量：admin_monitor 的 in-process 验证
+    活性探测（``inprocess_verify_active`` 线程臂）按 ``threading.enumerate()``
+    匹配同名活线程，判定读侧与命名写侧必须同一来源，防止命名漂移使探测
+    静默失效。
+    """
+    return f"fenix-{agent_type}-{spec_name}"
+
+
 class QQQueueMixin:
     """Q 队列核心/worker（design D1 表 B Q 组）。"""
 
@@ -983,7 +995,7 @@ class QQQueueMixin:
                     target=self._pm._run_agent_worker,
                     args=(spec_name, agent_type, priority),
                     daemon=True,
-                    name=f"fenix-{agent_type}-{spec_name}",
+                    name=agent_worker_thread_name(spec_name, agent_type),
                 )
                 t.start()
             except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未派发」处置

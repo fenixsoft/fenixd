@@ -14,10 +14,18 @@
 """
 
 import json
+import threading
 import time
 from pathlib import Path
 from unittest import mock
 
+from core.admin_monitor import (
+    ORPHANED_RUN_GRACE_SECONDS,
+    _has_recent_spec_run,
+    inprocess_verify_active,
+    spec_is_undriven,
+)
+from core.pm_engine.dispatch.queue import agent_worker_thread_name
 from tests.helpers import FakeLogger, iso_ago
 
 
@@ -284,6 +292,138 @@ class TestTestingRecovery:
         assert recorded == []
 
 
+def _live_verifier_thread(spec: str):
+    """造一个名为 fenix-verifier-<spec> 的活线程（Event 阻塞，测试终了回收）。
+
+    线程名取自命名单点 agent_worker_thread_name（与 queue.py Thread 构造同源
+    ——命名漂移时本装置与判定同步失效，测试可抓）。
+    """
+    started = threading.Event()
+    stop = threading.Event()
+
+    def _run():
+        started.set()
+        stop.wait(10)
+
+    t = threading.Thread(
+        target=_run, name=agent_worker_thread_name(spec, "verifier"),
+        daemon=True,
+    )
+    return t, started, stop
+
+
+class TestInprocessVerifyActive:
+    """条件⑤ helper（evo-inprocess-verify-activity-signal 1.1/2.1/2.2）：
+    in-process 验证活性 = 线程探测（主，零时间窗）OR 进度 mtime 独立窗口（辅）。
+
+    线程名取自命名单点 agent_worker_thread_name（与 queue.py Thread 构造同源），
+    进度文件 mtime 两态用 os.utime 造。
+    """
+
+    def _write_progress(self, proot: Path, spec: str, mtime=None) -> Path:
+        d = proot / ".fenix" / "verify-progress"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{spec}.json"
+        p.write_text(json.dumps({"total": 1, "done": 0, "current": "x"}),
+                     encoding="utf-8")
+        if mtime is not None:
+            os_utime(proot, p, mtime)
+        return p
+
+    # ── 2.1 线程两态 ────────────────────────────────────────────
+
+    def test_live_thread_means_driven(self, tmp_path):
+        """存在活 verifier 线程 → helper True，spec_is_undriven 判有驱动。"""
+        spec = "demo-live-thread"
+        t, started, stop = _live_verifier_thread(spec)
+        t.start()
+        assert started.wait(10)
+        try:
+            assert inprocess_verify_active(tmp_path, spec) is True
+            with mock.patch("core.admin_monitor._pgrep_live_worktree",
+                            return_value=False):
+                assert spec_is_undriven(tmp_path, spec,
+                                        {"status": "testing"}) is False
+        finally:
+            stop.set()
+            t.join(10)
+
+    def test_thread_exited_matches_legacy_four_conditions(self, tmp_path):
+        """线程退出后判定与现状四条件口径完全一致（无新增豁免）。"""
+        spec = "demo-dead-thread"
+        # 同名线程已结束（join 回收）→ 线程臂不豁免
+        t, started, stop = _live_verifier_thread(spec)
+        t.start()
+        started.wait(10)
+        stop.set()
+        t.join(10)
+        assert inprocess_verify_active(tmp_path, spec) is False
+        with mock.patch("core.admin_monitor._pgrep_live_worktree",
+                        return_value=False):
+            assert spec_is_undriven(tmp_path, spec,
+                                    {"status": "testing"}) is True
+
+    # ── 2.2 进度 mtime 两态与窗口边界 ───────────────────────────
+
+    def test_fresh_progress_mtime_exempted(self, tmp_path):
+        """进度文件 mtime 新鲜（线程不在）→ 豁免（辅证臂独立成立）。"""
+        spec = "demo-mtime-fresh"
+        self._write_progress(tmp_path, spec, time.time())
+        assert inprocess_verify_active(tmp_path, spec) is True
+
+    def test_stale_progress_beyond_window_not_exempted(self, tmp_path):
+        """mtime 超独立窗口（900s）→ 不豁免，spec_is_undriven 判无驱动。"""
+        spec = "demo-mtime-stale"
+        self._write_progress(tmp_path, spec, time.time() - 901)
+        assert inprocess_verify_active(tmp_path, spec) is False
+        with mock.patch("core.admin_monitor._pgrep_live_worktree",
+                        return_value=False):
+            assert spec_is_undriven(tmp_path, spec,
+                                    {"status": "testing"}) is True
+
+    def test_missing_progress_file_not_exempted(self, tmp_path):
+        """文件缺失 → 不豁免（线程也不在）。"""
+        assert inprocess_verify_active(tmp_path, "demo-missing") is False
+
+    def test_explicit_window_boundary(self, tmp_path):
+        """window_seconds 参数化边界：窗口内 True / 超窗 False。"""
+        spec = "demo-mtime-window"
+        self._write_progress(tmp_path, spec, time.time() - 130)
+        assert inprocess_verify_active(tmp_path, spec,
+                                       window_seconds=120) is False
+        assert inprocess_verify_active(tmp_path, spec,
+                                       window_seconds=200) is True
+
+    def test_batch_gap_beyond_120s_grace_still_exempted(self, tmp_path):
+        """对照（关键约束）：mtime 距今 300s——超出条件①的 120s run 宽限
+        （单场景长批间隔实测 4-5 分钟），但落独立窗口 900s 内 → 条件⑤豁免。
+        独立窗口 MUST NOT 沿用 120s 宽限，否则「正在长跑」被误判停滞。"""
+        spec = "demo-batch-gap"
+        self._write_progress(tmp_path, spec, time.time() - 300)
+        # 对照①：同 mtime 在 120s run 宽限下判「无活动 run 文件」
+        assert _has_recent_spec_run(
+            tmp_path, spec, time.time(), ORPHANED_RUN_GRACE_SECONDS) is False
+        # 条件⑤独立窗口判「有驱动」
+        assert inprocess_verify_active(tmp_path, spec) is True
+        with mock.patch("core.admin_monitor._pgrep_live_worktree",
+                        return_value=False):
+            assert spec_is_undriven(tmp_path, spec,
+                                    {"status": "testing"}) is False
+
+    def test_thread_probe_wins_over_stale_mtime(self, tmp_path):
+        """线程探测为主判据：线程活、mtime 停滞（超窗）→ 仍豁免（零时间窗）。"""
+        spec = "demo-thread-long-scene"
+        self._write_progress(tmp_path, spec, time.time() - 3600)
+        t, started, stop = _live_verifier_thread(spec)
+        t.start()
+        assert started.wait(10)
+        try:
+            assert inprocess_verify_active(tmp_path, spec) is True
+        finally:
+            stop.set()
+            t.join(10)
+
+
 class TestOrphanedResetAfterDisposition:
     """R3 复位直通道：Administrator 处置成功（resolved）后框架自动复位。"""
 
@@ -320,3 +460,60 @@ class TestOrphanedResetAfterDisposition:
         mon._reset_orphaned_after_disposition(signal)
         assert enqueued == []
         assert sm.read_one("demo")["status"] == "ready"
+
+    # ── 2.3 在飞验证复核（evo-inprocess-verify-activity-signal 1.3）────
+
+    @staticmethod
+    def _reset_setup(proot, spec):
+        sm = _sm({spec: {"status": "testing", "updated": iso_ago(20),
+                         "error": "orphaned"}})
+        transitions = []
+        orig_gate = sm.transition_gate
+
+        def _counting_gate(name, new_status, **kw):
+            transitions.append((name, new_status))
+            return orig_gate(name, new_status, **kw)
+
+        sm.transition_gate = _counting_gate
+        enqueued = []
+
+        class _PM:
+            def handle_event(self, event_kind, spec_name, spec_entry):
+                enqueued.append((event_kind, spec_name))
+
+        return sm, transitions, _PM(), enqueued
+
+    def test_testing_reset_skips_reenqueue_while_verify_inflight(self, tmp_path):
+        """verifier 线程活跃 → 跳过 handle_event 重派（第三放大器出口堵口），
+        复位语义保留：transition_gate 幂等 + 清 error 照常，无重复 transition。"""
+        spec = "demo-inflight-verify"
+        proot, mon = _make_monitor(tmp_path, {})
+        sm, transitions, pm, enqueued = self._reset_setup(proot, spec)
+        mon.state_machine = sm
+        mon.pm_engine = pm
+        t, started, stop = _live_verifier_thread(spec)
+        t.start()
+        assert started.wait(10)
+        try:
+            mon._reset_orphaned_after_disposition(
+                {"signal_type": "orphaned_state", "spec": spec})
+            assert enqueued == []  # 跳过重派，无重复批
+            assert transitions == [(spec, "testing")]  # 无重复 transition
+            assert sm.read_one(spec)["status"] == "testing"  # 复位语义保留
+            assert sm.read_one(spec)["error"] is None  # 清 error 照常
+        finally:
+            stop.set()
+            t.join(10)
+
+    def test_testing_reset_reenqueues_when_no_verify_inflight(self, tmp_path):
+        """无在飞验证 → 复位重派照常入队（transition + handle_event 各一次）。"""
+        spec = "demo-no-verify"
+        proot, mon = _make_monitor(tmp_path, {})
+        sm, transitions, pm, enqueued = self._reset_setup(proot, spec)
+        mon.state_machine = sm
+        mon.pm_engine = pm
+        mon._reset_orphaned_after_disposition(
+            {"signal_type": "orphaned_state", "spec": spec})
+        assert enqueued == [("spec_implemented", spec)]
+        assert transitions == [(spec, "testing")]
+        assert sm.read_one(spec)["error"] is None

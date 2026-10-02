@@ -60,7 +60,11 @@ from core.pm_engine.verification import (
 
 # evo-add-wip-defer-merge-retry-consumer 2.3：WIP 等待豁免的上限口径与周期
 # 消费者（queue.py）共用同一常量——超限即「降级人工 + 豁免自动失效」单源。
-from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
+from core.pm_engine.dispatch.queue import (
+    WIP_DEFER_WINDOW_MINUTES,
+    WIP_DEFER_MAX_ROUNDS,
+    agent_worker_thread_name,
+)
 
 # code-review item a10425b71546：run 终态判定的尾读窗口与
 # core.agent_runner.liveness._TAIL_READ_WINDOW 单源对齐（64KB，覆盖携带长
@@ -173,6 +177,15 @@ STALLED_ESCALATION_MINUTES = 120
 # event_bus._ready_has_live_child 的 120s 存活探测口径一致——长 run 一定在
 # 持续写 run 文件（有进度），mtime 超宽限 + 无存活子进程才是真无驱动。
 ORPHANED_RUN_GRACE_SECONDS = 120
+# in-process 验证活性窗口（evo-inprocess-verify-activity-signal 1.1）：
+# .fenix/verify-progress/<spec>.json（verify_engine._write_progress 起跑/逐
+# 场景原子写）mtime 落入本窗内视为验证在飞。**独立于 ORPHANED_RUN_GRACE_
+# SECONDS（120s）**：进度文件按逐场景节奏写，单场景可跑 4-5 分钟（2026-10-02
+# cimbar-airgap-transfer 实测批间隔），沿用 120s 会把「正在长跑」误判为停滞
+# （假阴性）。缺省 900s = 对齐 DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES
+# （15 分钟）×60，与孤儿阈值同量级——超窗即恢复既有判定口径，残留 mtime
+# 不构成长期豁免。
+INPROCESS_VERIFY_ACTIVITY_WINDOW_SECONDS = 900
 # 阈值缺省：15 分钟 = 3 个 admin.interval_minutes(5) 巡检周期（design D5，
 # 与巡检周期整数倍对齐避免漏检），远短于 stuck（run_timeout+600s ≈ 160 分钟）。
 DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES = 15
@@ -746,6 +759,52 @@ def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> 
     return False
 
 
+def inprocess_verify_active(project_root, spec_name: str, *, window_seconds=None) -> bool:
+    """daemon 进程内验证是否在飞（evo-inprocess-verify-activity-signal 1.1）。
+
+    in-process 全量验证（daemon 线程内 asyncio.run，无 verify-<spec>-*.jsonl
+    run 文件、无独立子进程）对 spec_is_undriven 原四条件全部不可见；本 helper
+    补两类活性信号，OR 语义任一命中即 True：
+
+      (a) 线程探测（主判据，零时间窗依赖）：threading.enumerate() 存在名为
+          fenix-verifier-<spec> 的活线程（命名单点
+          core/pm_engine/dispatch/queue.py agent_worker_thread_name）。
+      (b) 进度文件 mtime（辅证）：.fenix/verify-progress/<spec>.json
+          （verify_engine._write_progress 既有产物，起跑/逐场景原子写）mtime
+          落入独立活动窗口（INPROCESS_VERIFY_ACTIVITY_WINDOW_SECONDS，缺省
+          900s）内。MUST NOT 沿用条件①的 120s run 宽限——单场景长批间隔
+          实测 4-5 分钟，120s 会把「正在长跑」误判为停滞。
+
+    假阳性防线（design 已接受的风险）：进度文件起跑即写，run 崩溃残留的新鲜
+    mtime 可能短暂豁免孤儿判定——以线程探测为主判据、mtime 仅作辅证；OR
+    语义下残留风险可接受，下一窗口 mtime 超窗即恢复既有口径。线程臂无时间
+    上界（零调参目标）：挂死不退出的 verifier 线程会持续豁免，回收依赖验证
+    车道既有超时/升级机制。
+
+    文件缺失 / mtime 超窗 / 线程不在 / 判定异常 → False（fail-open，与
+    spec_is_undriven 既有容错同取向：豁免故障不得掩掉真阳性）。
+    """
+    try:
+        expected = agent_worker_thread_name(spec_name, "verifier")
+        for t in threading.enumerate():
+            if t.name == expected and t.is_alive():
+                return True
+    except Exception:
+        pass  # 线程臂故障不阻塞 mtime 臂（fail-open）
+    if window_seconds is None:
+        window_seconds = INPROCESS_VERIFY_ACTIVITY_WINDOW_SECONDS
+    if project_root is None:
+        return False
+    progress = (
+        Path(project_root) / ".fenix" / "verify-progress" / f"{spec_name}.json"
+    )
+    try:
+        mtime = progress.stat().st_mtime
+    except OSError:
+        return False  # 文件缺失 / 不可达 → 不豁免
+    return (time.time() - mtime) < window_seconds
+
+
 def spec_is_undriven(
     project_root,
     spec_name: str,
@@ -756,7 +815,7 @@ def spec_is_undriven(
 ) -> bool:
     """「无驱动」判定（orphaned-state-signal R1 三条件，同一判定口径）。
 
-    返回 True 当且仅当四者同时成立：
+    返回 True 当且仅当五者同时成立：
       ① 无活动 run 文件：该 spec 的 run 文件 mtime 均超出 run_grace_seconds
          （任意 run 前缀，含 repair-，orphaned-state-probe-calibration 1.3）；
       ② 无存活 agent 子进程：不存在 impl-<spec>- / verify-<spec>- /
@@ -764,9 +823,12 @@ def spec_is_undriven(
       ③ 无待派发：无 _cancelled_hold / start_after 未到 / 派发退避
          （_dispatch_backoff_until）未到期；
       ④ 无排队中的派发条目：pm_engine 给出时，该 spec 无待派发队列条目
-         （见下）。
-    任一不成立（长 run 仍在跑 / 进程仍存活 / 有意等待中 / 已入队等待槽位）
-    → False——避免把正常长 run 或有意等待误判为孤儿。
+         （见下）；
+      ⑤ 无进程内验证在飞：daemon 线程 fenix-verifier-<spec> 不存在且
+         verify-progress 进度文件 mtime 超独立窗口（inprocess_verify_active，
+         evo-inprocess-verify-activity-signal 1.2）。
+    任一不成立（长 run 仍在跑 / 进程仍存活 / 有意等待中 / 已入队等待槽位 /
+    in-process 验证在飞）→ False——避免把正常长 run 或有意等待误判为孤儿。
 
     ④ 的由来（2026-09-18 取证，实证误报）：条件 ③ 只覆盖「结构化的有意等待」
     （start_after / 退避 / 取消保持），**不覆盖「已入队、正在等并发槽」**。
@@ -783,6 +845,18 @@ def spec_is_undriven(
     `transition_gate(testing) + verifier 入队`，条目此后一直在队列（并发槽被
     三个 P5 run 占满），08:07:23Z 与 23 分钟后 08:30Z 两轮巡检均判「无驱动」并
     各唤起一次 Administrator——两次都为误报，40 分钟后该 verifier 才实际起 run。
+
+    ⑤ 的由来（evo-inprocess-verify-activity-signal，2026-10-02 实证误报）：
+    全量验证自 verify_engine 三段流水线起改为 in-process 执行（daemon 线程
+    fenix-verifier-<spec> 内 asyncio.run，无 verify-<spec>-*.jsonl run 文件、
+    无独立子进程），条件 ①② 对它全部不可见。'cimbar-airgap-transfer' 验证
+    活跃期被本函数误判孤儿态，两条 orphaned_state 告警（09:50:36Z/10:35:37Z
+    本地 17:50:36/18:35:37），recovery 出口（event_bus._recover_testing）与
+    处置复位直通道（_reset_orphaned_after_disposition）先后重派，三个 23 场景
+    全量批交错执行，外加 $1.289 admin 调查 run（admin-cimbar-airgap-transfer-
+    1790934636）。补条件 ⑤：线程探测零调参为主判据、进度文件独立窗口 mtime
+    （900s，非条件 ① 的 120s——单场景长批间隔实测 4-5 分钟）为辅。条件 ①
+    保持不动：legacy 外置 verifier 车道本就被 ①② 覆盖。
 
     保留 `pm_engine=None`（不判定 ④）：本函数是模块级工具，既有单元测试与
     外部调用只传三参；缺省行为与引入 ④ 之前逐位一致，调用点按需注入。
@@ -817,6 +891,11 @@ def spec_is_undriven(
         return False
     # ④ 无排队中的派发条目（调用方注入 pm_engine 时判定；见 docstring）
     if pm_engine is not None and _queued_for_dispatch(pm_engine, spec_name):
+        return False
+    # ⑤ 无进程内验证在飞（evo-inprocess-verify-activity-signal 1.2）：
+    # in-process 全量验证无 run 文件/无子进程，①② 不可见——线程探测（主）
+    # + verify-progress mtime 独立窗口（辅）任一命中即「有驱动」。
+    if inprocess_verify_active(project_root, spec_name):
         return False
     return True
 
@@ -4862,6 +4941,9 @@ class AdminMonitor:
         手动 reset spec 状态：
         - testing：transition_gate(testing) 幂等（already testing）+ verifier
           入队重验（spec_implemented 重派），复用 env 阻塞直通道语义；
+          重派前复核在飞 in-process 验证（inprocess_verify_active），命中即
+          跳过本次重派（复位语义保留，evo-inprocess-verify-activity-signal
+          1.3——本出口不经 spec_is_undriven，须单独堵口）；
         - implementing：transition(ready) 清 error 重实现（VALID_TRANSITIONS
           允许 IMPLEMENTING→READY）。
 
@@ -4906,6 +4988,15 @@ class AdminMonitor:
                         f"verifier 重验派发互斥（fix-recovery-path-blockers D2）",
                     )
                     return
+                # 在飞 in-process 验证复核（evo-inprocess-verify-activity-signal
+                # 1.3，第三放大器出口）：本直通道不经 spec_is_undriven，2026-10-02
+                # cimbar-airgap-transfer 09:58:19Z 第三批重派即来源于此。验证在飞
+                # 时跳过本次 handle_event 重派——在飞验证本身即重验，其结果路径
+                # 照常推进状态；复位语义保留（下方 transition_gate 幂等 + 清
+                # error 照常执行）。MUST NOT 设延迟队列或新增状态：处置复位经
+                # _apply_choice_execution 单次消费、无重扫回放机制，「延后重派」
+                # 无人触发；且在飞验证收尾后再派会重新制造重复批。
+                verify_inflight = inprocess_verify_active(self.project_root, spec)
                 # fix-observability-gaps 2.1：transition_gate 带 context（恢复来源；
                 # 正常路径为幂等 old==new，state_machine 幂等分支不产生日志；
                 # 兜底真实转换时也带上恢复来源）
@@ -4915,7 +5006,15 @@ class AdminMonitor:
                 )  # 幂等（already testing）
                 sm.update_spec(spec, {"error": None})
                 if self.pm_engine is not None:
-                    self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
+                    if verify_inflight:
+                        self.logger.info(
+                            "admin_monitor",
+                            f"孤儿 testing 复位 '{spec}': in-process 验证在飞，"
+                            "跳过本次 verifier 重派（在飞验证本身即重验，"
+                            "evo-inprocess-verify-activity-signal 1.3）",
+                        )
+                    else:
+                        self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
                 self.logger.info(
                     "admin_monitor",
                     f"孤儿 testing 复位：'{spec}' transition_gate(testing)幂等"
