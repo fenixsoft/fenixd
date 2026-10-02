@@ -23,7 +23,7 @@
 
 ## 3. 末位扩容拆停守卫（缺省关闭）
 
-- [ ] 3.1 core/agent_runner/runner.py：`_turn_limit_action` 增 kill_early 守卫——仅当 `get_turn_budget_sizing_config` 的 kill_early.enabled 为 true、且本次判定为最后一次可用扩容（extension_index+1 == TURN_EXTENSION_MAX）、且剩余未勾选任务数 ≥ remaining_tasks_threshold、且 run 期间任务勾选进度占比 ≤ progress_floor（基线：run 启动点在 1.2 同一读点顺带快照已勾选/未勾选任务数，进度 = 快照后新勾选 ÷ 启动时未勾选，分母 0 时视为健康不判；守卫仅对实现车道生效——`agent_type` 为 implementer/fast-track 系，dispute-judge/spec-review 等车道勾选进度恒零、不限车道则开启项目内必被误杀）时，返回 kill 并在 evidence 注明 early-split 与 remaining_tasks；收口完全复用既有 turn-limit kill 路径（含 WIP 保全锚点），不新增收口实现；enabled 为 false（含缺省）时函数对其余输入的 extend/kill 结论与引入前逐位一致。
+- [x] 3.1 core/agent_runner/runner.py：`_turn_limit_action` 增 kill_early 守卫——仅当 `get_turn_budget_sizing_config` 的 kill_early.enabled 为 true、且本次判定为最后一次可用扩容（extension_index+1 == TURN_EXTENSION_MAX）、且剩余未勾选任务数 ≥ remaining_tasks_threshold、且 run 期间任务勾选进度占比 ≤ progress_floor（基线：run 启动点在 1.2 同一读点顺带快照已勾选/未勾选任务数，进度 = 快照后新勾选 ÷ 启动时未勾选，分母 0 时视为健康不判；守卫仅对实现车道生效——`agent_type` 为 implementer/fast-track 系，dispute-judge/spec-review 等车道勾选进度恒零、不限车道则开启项目内必被误杀）时，返回 kill 并在 evidence 注明 early-split 与 remaining_tasks；收口完全复用既有 turn-limit kill 路径（含 WIP 保全锚点），不新增收口实现；enabled 为 false（含缺省）时函数对其余输入的 extend/kill 结论与引入前逐位一致。
 
 ## 4. 测试
 

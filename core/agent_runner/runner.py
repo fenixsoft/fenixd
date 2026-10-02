@@ -2228,7 +2228,8 @@ class AgentRunner:
                            run_id: str, turn_extensions_used: int,
                            wt_path, agent_type: str | None = None,
                            *, max_turns: int | None = None,
-                           bookkeeping_share: float | None = None) -> dict:
+                           bookkeeping_share: float | None = None,
+                           task_progress_snapshot: dict | None = None) -> dict:
         """轮次上限到期后的监督决策（add-turn-limit-anchor-c design D2）：续期 or 终止。
 
         封闭矩阵（先封顶后活性，与超时路径 ``_supervision_deadline_action``
@@ -2269,11 +2270,13 @@ class AgentRunner:
         # 故障不改变既有活性矩阵判定；该字段只增观测面，不参与判定语义
         # （tasks.md 缺失 → parse_tasks_md 返回空 → unavailable）。
         remaining_tasks: int | None = None
+        current_checked: frozenset = frozenset()
         if spec_name:
             try:
                 from core.run_task_track import parse_tasks_md
                 _all_ids, _checked_ids = parse_tasks_md(self.project_root, spec_name)
                 if _all_ids:
+                    current_checked = frozenset(_checked_ids)
                     remaining_tasks = len(_all_ids) - len(_checked_ids)
             except Exception:
                 remaining_tasks = None
@@ -2324,6 +2327,25 @@ class AgentRunner:
                 "evidence": _annotated(
                     f"turn extension budget exhausted "
                     f"({turn_extensions_used}/{TURN_EXTENSION_MAX})"),
+                "new_turn_cap": (max_turns or 0)
+                + turn_extensions_used * turn_step,
+                "remaining_tasks": remaining_tasks,
+            }
+
+        # ── 末位扩容拆停守卫（3.1，design D6：缺省关闭、条件多重与）──────
+        # 命中时提前走既有 turn-limit kill 收口（含 WIP 保全锚点，零新增收口
+        # 实现）；判定先于活性矩阵——末次扩容点续期不济即收口，不再消耗一次
+        # 「有活性但干不成事」的续期配额。enabled 为 false（含缺省）时
+        # _turn_kill_early_evidence 恒空串，对其余输入的 extend/kill 结论与
+        # 引入前逐位一致。
+        early_kill_evidence = self._turn_kill_early_evidence(
+            agent_type, turn_extensions_used, remaining_tasks, current_checked,
+            task_progress_snapshot)
+        if early_kill_evidence:
+            return {
+                **base,
+                "action": "kill",
+                "evidence": _annotated(early_kill_evidence),
                 "new_turn_cap": (max_turns or 0)
                 + turn_extensions_used * turn_step,
                 "remaining_tasks": remaining_tasks,
@@ -2424,6 +2446,66 @@ class AgentRunner:
             "new_turn_cap": (max_turns or 0) + turn_extensions_used * turn_step,
             "remaining_tasks": remaining_tasks,
         }
+
+    def _turn_kill_early_evidence(self, agent_type, turn_extensions_used,
+                                  remaining_tasks, current_checked,
+                                  task_progress_snapshot) -> str:
+        """末位扩容拆停守卫判据（evo-add-impl-run-budget-sizing 3.1，design D6）。
+
+        命中返回 kill evidence 文本（调用方复用既有 turn-limit kill + WIP 保全
+        收口），否则返回空串（空串 = 不触发，落入既有活性矩阵）。条件缺一
+        不可：
+
+        - ``agents.turn_budget_sizing.kill_early.enabled`` 为 true（缺省关闭，
+          沿 run_stall_budget 缺省关闭灰度先例）；
+        - 仅实现车道（``IMPL_LANE_AGENT_TYPES``）——dispute-judge / spec-review
+          等评审与裁决车道 run 内勾选进度恒零，不限车道则开启项目内必被误杀；
+        - 本次判定为最后一次可用扩容（extension_index+1 == TURN_EXTENSION_MAX）；
+        - 剩余未勾选任务数 ≥ ``kill_early.remaining_tasks_threshold``；
+        - run 期间任务勾选进度占比 ≤ ``kill_early.progress_floor``——进度 =
+          run 启动点快照后新勾选 ÷ 启动时未勾选；分母 0 视为进度健康不判；
+          无启动快照基线（无数字任务/快照失败）不判——保守不误杀。
+
+        enabled 为 false（含缺省）时恒返回空串——同输入同输出逐位一致。
+        """
+        from core.fast_track_result import (
+            DEFAULT_KILL_EARLY_PROGRESS_FLOOR,
+            DEFAULT_KILL_EARLY_REMAINING_TASKS_THRESHOLD,
+            get_turn_budget_sizing_config,
+        )
+        ke = get_turn_budget_sizing_config(self.config).get("kill_early") or {}
+        if not ke.get("enabled"):
+            return ""
+        if agent_type not in IMPL_LANE_AGENT_TYPES:
+            return ""
+        if turn_extensions_used + 1 != TURN_EXTENSION_MAX:
+            return ""
+        if remaining_tasks is None:
+            return ""
+        remaining_threshold = ke.get(
+            "remaining_tasks_threshold", DEFAULT_KILL_EARLY_REMAINING_TASKS_THRESHOLD)
+        if remaining_tasks < remaining_threshold:
+            return ""
+        snap = task_progress_snapshot if isinstance(task_progress_snapshot, dict) else {}
+        start_checked = snap.get("checked_ids")
+        start_unchecked = snap.get("unchecked")
+        if not isinstance(start_checked, (set, frozenset)) \
+                or not isinstance(start_unchecked, int):
+            return ""  # 无启动基线 → 不判不济（保守不误杀）
+        if start_unchecked <= 0:
+            return ""  # 分母 0：启动时已全勾，进度健康不判（design D6）
+        progress_floor = ke.get(
+            "progress_floor", DEFAULT_KILL_EARLY_PROGRESS_FLOOR)
+        progress = (len(frozenset(current_checked or ()) - start_checked)
+                    / start_unchecked)
+        if progress > progress_floor:
+            return ""
+        return (
+            f"early-split: last extension ({turn_extensions_used + 1}/"
+            f"{TURN_EXTENSION_MAX}) with remaining_tasks={remaining_tasks} "
+            f">= {remaining_threshold} and run progress {progress:.2f} <= "
+            f"{progress_floor} — renewal unlikely to finish remaining work; "
+            f"salvage via WIP checkpoint")
 
     def _turn_traffic_active(self, run_file: Path,
                              window_seconds: float = TURN_EXTENSION_WINDOW_SECONDS
@@ -5382,7 +5464,8 @@ class AgentRunner:
                     action = self._turn_limit_action(
                         run_file, spec_name, run_id, turn_extensions_used,
                         cwd, agent_type=agent_type, max_turns=max_turns,
-                        bookkeeping_share=_bookkeeping_tool_share(tool_metrics))
+                        bookkeeping_share=_bookkeeping_tool_share(tool_metrics),
+                        task_progress_snapshot=task_progress_snapshot)
                     if action["action"] == "extend":
                         turn_extensions_used = int(action["extension_index"])
                         current_turn_cap = int(action["new_turn_cap"])
