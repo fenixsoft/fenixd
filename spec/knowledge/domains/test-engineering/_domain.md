@@ -1,5 +1,5 @@
 # 测试工程
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-03 05:13 UTC+8
 
 测试工程：测试套件自身的结构、隔离与守卫，以及全量回归的声明、执行与展示。本域能力页清单如下。
 
@@ -12,6 +12,7 @@
 | [test-callsite-migration](test-callsite-migration.md) | 测试调用点迁移 | 2026-10-03 04:59 |
 | [test-double-fidelity](test-double-fidelity.md) | 测试替身保真度 | 2026-10-03 04:59 |
 | [concurrent-suite-isolation](concurrent-suite-isolation.md) | 并发套件隔离 | 2026-10-03 04:59 |
+| [per-test-timeout](per-test-timeout.md) | pytest 单用例超时硬门（10s 门 + 显式豁免清单） | 2026-10-03 05:13 |
 | [fixture-project-governance](fixture-project-governance.md) | fixture 项目治理 | 2026-10-03 04:59 |
 | [regression-coverage](regression-coverage.md) | 语义回归覆盖 | 2026-10-03 04:59 |
 | [test-regression-declaration](test-regression-declaration.md) | 回归声明 | 2026-10-03 04:59 |

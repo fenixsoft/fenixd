@@ -213,3 +213,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-206](ADR-206-regression-fix-single-channel-code-fix-lane-ledger-conversion.md) | accepted | 回归问题修复复用 code-fix 车道单通道（消费端转换入账+override 授权派发，禁独立修复车道与前端台账写路径），台账共享契约零改动、`regression-` 前缀隔离标识，快照读取以当下为准缺读落 snapshot_missing 不重试 |
 | [ADR-207](ADR-207-tailwind-content-explicit-dir-registration.md) | accepted | Dashboard 双样式管线并存：tailwind 仅服务 claude-* 迁移组件且按目录显式注册 content（CLI 有 content 配置时不启用自动内容检测，不注册则类名静默不编译、构建零报错），禁 preflight、全站恒亮色，新增 tailwind 目录须成对扩 content 并 import 生成 css |
 | [ADR-208](ADR-208-session-completion-metadata-from-init-event-only.md) | accepted | 会话补全元数据唯一口径=CLI init 事件缓存（禁自扫 skills/命令目录），init 捕获写入 Session 缓存后即丢弃不进事件缓冲不广播 SSE，缓存随 Session 生命周期存亡，init 未到达静默降级空候选 |
+| [ADR-209](ADR-209-pytest-per-test-timeout-gate-single-source-signal.md) | accepted | pytest 单用例 10s 超时门仓级单源（pytest.ini，各入口零配置继承禁旁路）、不设全局放宽旋钮（唯一放宽通道=显式豁免清单三字段+机械校验）、中断方法固定 signal（thread 整进程代价禁作全局方法），与套件级硬超时分层互补 |
