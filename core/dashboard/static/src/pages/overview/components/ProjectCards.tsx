@@ -235,6 +235,7 @@ export default function ProjectCards({
       <List
         itemLayout="horizontal"
         dataSource={filtered}
+        rowKey={(p) => p.name}
         renderItem={(project) => {
           // fix-dashboard-fault-isolation 3.3：项目级错误态——摘要携带非空 error 时
           // 呈现警示色错误卡片（不渲染 daemon 徽标 / 状态 Tag / 进度数字），
