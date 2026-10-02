@@ -791,6 +791,61 @@ def _map_junit_failures_to_nodeids(failures, exec_root=None):
     return items, True
 
 
+def map_snapshot_issues_to_nodeids(snapshot, exec_root=None):
+    """回归快照异常用例 → 定向子集 nodeids（add-regression-issues-rerun 1.3）。
+
+    公开薄封装，供 daemon 消费端（fenixd._check_regression_requests 的
+    ``scope=="issues"`` 分支）复用 targeted-retry 的 nodeid 重构：快照
+    ``failures``（失败+错误）+ ``long_tests``（长耗时）构造映射条目，交给
+    ``_map_junit_failures_to_nodeids`` 做 classname 主导重构。
+
+    - 映射条目 **剥离 ``file`` 键**：本项目 pytest junitxml 不产 file 属性、
+      快照 file 是 ``_resolve_file`` 的点分 classname 兜底（如
+      ``tests.test_knowledge_audit``），带入会被 file 一致性校验判不一致、
+      映射恒失败；file 属性缺失本就是预期形态，剥离零信息损失（非 Python
+      标识符形态 classname 本就判失败回全量）。
+    - long_tests 条目补 ``kind: "long"``（摘要回退取 kind）。
+    - 按 nodeid 去重（failures 与 long_tests 可能同一用例），保持稳定顺序
+      （failures 在前、long_tests 次之，同源遍历序）。
+    - 整体 fail-closed：任一条目不可映射（缺 classname / 非 dict 条目 /
+      非 Python 形态 / 在盘探测歧义或缺失）→ ``(空或部分?, ok=False)``
+      ——子集 MUST 覆盖全部异常用例，漏一例即漏跑一例，调用方据此回退
+      全量。映射成功但异常用例为零 → ``([], True)``（结果空由调用方按
+      回退全量处置）。
+
+    返回 ``(nodeids, ok)``：nodeids 为去重后的有序 nodeid 列表（ok=True 时
+    才可采信）；snapshot 非 dict / 快照键非列表时同样 fail-closed。
+    """
+    if not isinstance(snapshot, dict):
+        return [], False
+    failures = snapshot.get("failures")
+    long_tests = snapshot.get("long_tests")
+    if failures is not None and not isinstance(failures, list):
+        return [], False
+    if long_tests is not None and not isinstance(long_tests, list):
+        return [], False
+
+    entries = []
+    for src, default_kind in ((failures, None), (long_tests, "long")):
+        for e in src or []:
+            if not isinstance(e, dict):
+                # 非 dict 条目交由 _map_junit_failures_to_nodeids 判整体失败
+                entries.append(e)
+                continue
+            entry = {k: v for k, v in e.items() if k != "file"}
+            if default_kind is not None:
+                entry.setdefault("kind", default_kind)
+            entries.append(entry)
+
+    items, ok = _map_junit_failures_to_nodeids(entries, exec_root=exec_root)
+    if not ok:
+        return [], False
+    deduped: dict = {}
+    for item in items:
+        deduped.setdefault(item["nodeid"], item)
+    return list(deduped), True
+
+
 def _merge_failure_items(cumulative, items):
     """轮间累计明细合并（2.3）：按 nodeid 去重，后轮摘要覆盖前轮。"""
     merged = {i["nodeid"]: i for i in cumulative}

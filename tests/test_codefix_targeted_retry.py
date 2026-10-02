@@ -297,6 +297,116 @@ class TestMapJunitFailuresToNodeids(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class TestMapSnapshotIssuesToNodeids(unittest.TestCase):
+    """快照异常用例 → 定向子集封装（add-regression-issues-rerun 1.3）。
+
+    failures + long_tests 并集、剥离 file 键、去重、整体 fail-closed。
+    """
+
+    def _root_with_tests(self):
+        root = Path(_mkdtemp("cfix-snap-"))
+        (root / "tests").mkdir()
+        (root / "tests" / "test_x.py").write_text("x=1", encoding="utf-8")
+        return root
+
+    def test_union_dedup_stable_order(self):
+        """failures 与 long_tests 同例 → 按 nodeid 去重且保持稳定顺序。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        snapshot = {
+            "failures": [
+                {"name": "test_a", "classname": "tests.test_x", "file": "tests.test_x",
+                 "line": 1, "time": 0.1, "kind": "failure", "message": "boom"},
+            ],
+            "long_tests": [
+                # 与 failures 同一用例（同 nodeid）→ 去重为一条
+                {"name": "test_a", "classname": "tests.test_x", "file": "tests.test_x",
+                 "line": 1, "time": 12.0},
+                {"name": "test_slow", "classname": "tests.test_x", "file": "tests.test_x",
+                 "line": 9, "time": 30.0},
+            ],
+        }
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids(snapshot, exec_root=root)
+        self.assertTrue(ok)
+        self.assertEqual(nodeids, [
+            "tests/test_x.py::test_a",
+            "tests/test_x.py::test_slow",
+        ])
+
+    def test_dot_classname_file_fallback_maps_ok(self):
+        """file=点分 classname 兜底形态（真实快照）可映射成功——剥离 file 生效：
+        带入会被 _map_junit_failures_to_nodeids 的 file 一致性校验恒判失败。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        snapshot = {
+            "failures": [
+                {"name": "test_a", "classname": "tests.test_x",
+                 "file": "tests.test_x", "line": 1, "time": 0.1,
+                 "kind": "failure", "message": "boom"},
+            ],
+            "long_tests": [],
+        }
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids(snapshot, exec_root=root)
+        self.assertTrue(ok, "file 键已被封装剥离，MUST NOT 触发一致性校验失败")
+        self.assertEqual(nodeids, ["tests/test_x.py::test_a"])
+
+    def test_missing_classname_fails_whole_set(self):
+        """long_tests 缺 classname（存量旧快照）→ 整体 ok=False（fail-closed）。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        snapshot = {
+            "failures": [
+                {"name": "test_a", "classname": "tests.test_x", "line": 1,
+                 "time": 0.1, "kind": "failure"},
+            ],
+            "long_tests": [
+                {"name": "test_slow", "file": "tests/test_x.py", "line": 9,
+                 "time": 30.0},  # 无 classname
+            ],
+        }
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids(snapshot, exec_root=root)
+        self.assertFalse(ok)
+        self.assertEqual(nodeids, [])
+
+    def test_non_dict_entry_fails_whole_set(self):
+        """非 dict 条目 → 整体 ok=False。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        snapshot = {
+            "failures": ["tests/test_x.py::test_a"],
+            "long_tests": [],
+        }
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids(snapshot, exec_root=root)
+        self.assertFalse(ok)
+        self.assertEqual(nodeids, [])
+
+    def test_non_dict_snapshot_and_bad_list_shapes_fail_closed(self):
+        """snapshot 非 dict / 快照键非列表 → fail-closed（不抛异常）。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids("not-a-dict", exec_root=root)
+        self.assertFalse(ok)
+        self.assertEqual(nodeids, [])
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids(
+            {"failures": "oops", "long_tests": []}, exec_root=root)
+        self.assertFalse(ok)
+        self.assertEqual(nodeids, [])
+
+    def test_empty_issues_map_to_empty_ok(self):
+        """failures/long_tests 均空 → ([], True)（结果空由调用方按回退全量处置）。"""
+        import core.code_fix as cf
+
+        nodeids, ok = cf.map_snapshot_issues_to_nodeids(
+            {"failures": [], "long_tests": []})
+        self.assertTrue(ok)
+        self.assertEqual(nodeids, [])
+
+
 class TestApplyPytestSubset(unittest.TestCase):
     """门面子集命令替换（2.1，D2）：取代既有收集位置参数，MUST NOT 尾部追加。"""
 
@@ -376,7 +486,7 @@ class TestFacadeSubsetRegression(unittest.TestCase):
         logger = None
 
     def _capture(self, cmd):
-        """捕获门面传给 run_and_write_regression 的 spec.cmd。
+        """捕获门面传给 run_and_write_regression 的 spec.cmd 与 run_scope。
 
         门面对 run_and_write_regression 是函数内 import（每次调用从
         core.regression 取当前对象），故 patch core.regression 侧。
@@ -386,10 +496,11 @@ class TestFacadeSubsetRegression(unittest.TestCase):
         captured = {}
         orig = reg_mod.run_and_write_regression
 
-        def fake(root, spec, logger=None, lock_root=None):
+        def fake(root, spec, logger=None, lock_root=None, run_scope=None):
             captured["cmd"] = spec.cmd
             captured["root"] = root
             captured["lock_root"] = lock_root
+            captured["run_scope"] = run_scope
             return {"status": "passed", "cmd": str(spec.cmd)}
 
         reg_mod.run_and_write_regression = fake
@@ -412,10 +523,20 @@ class TestFacadeSubsetRegression(unittest.TestCase):
         self.assertEqual(captured["root"], "/wt")
         self.assertEqual(captured["lock_root"], "/main")
 
+    def test_subset_effective_stamps_run_scope_issues(self):
+        """add-regression-issues-rerun 2.1：子集改写生效 → 封装层收到
+        run_scope="issues"（快照据此落定向子集标记）。"""
+        captured = self._capture(
+            "python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml")
+        self.assertEqual(captured["run_scope"], "issues")
+
     def test_non_pytest_falls_back_to_full(self):
         captured = self._capture("npm test -- --junit")
         self.assertEqual(captured["cmd"], "npm test -- --junit",
                          "非 pytest 形态忽略子集跑全量（fail-closed）")
+        # add-regression-issues-rerun 2.1：回退全量是真全量 → run_scope=None
+        # （快照不落标记，门禁可正常采信）
+        self.assertIsNone(captured["run_scope"])
 
 
 class TestTargetedRetryLoop(unittest.TestCase):

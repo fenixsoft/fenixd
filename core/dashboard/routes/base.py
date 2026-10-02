@@ -472,6 +472,11 @@ def _post_code_review_fix_run(s, p, q, m):
 def _post_regression_run(s, p, q, m):
     s._api_regression_run(q)
 
+# 定向子集回归触发信号（add-regression-issues-rerun，写文件信号 scope=issues，
+# daemon 消费端按快照计算 nodeid 子集、fail-closed 回退全量）
+def _post_regression_run_issues(s, p, q, m):
+    s._api_regression_run_issues(q)
+
 def _post_regression_autodraft(s, p, q, m):
     s._api_regression_autodraft_post(q)
 
@@ -642,6 +647,9 @@ _API_POST_ROUTES = [
     ("exact", "/api/code-review/items/status", _post_code_review_items_status),
     # regression（add-test-regression-tab）：手动触发（写文件信号，daemon 消费）
     ("exact", "/api/regression/run", _post_regression_run),
+    # regression 定向子集触发（add-regression-issues-rerun，写 scope=issues
+    # 信号，daemon 消费端算子集、fail-closed 回退全量）
+    ("exact", "/api/regression/run-issues", _post_regression_run_issues),
     # regression：AI 补写 regression 段（写 AdminStore 信号，巡检唤起 Administrator）
     ("exact", "/api/regression/autodraft", _post_regression_autodraft),
     # regression 自动修复触发信号（add-regression-auto-fix，写文件信号，daemon 消费）

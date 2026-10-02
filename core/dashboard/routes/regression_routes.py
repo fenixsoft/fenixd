@@ -391,6 +391,57 @@ class H12RegressionRoutesMixin:
             }
         )
 
+    def _regression_trigger_guards(self, query):
+        """run / run-issues 两端点共享守卫链（add-regression-issues-rerun 3.1）。
+
+        收敛 404 / 400 ``regression_not_configured`` / 409
+        ``regression_already_running`` / hosting 守卫四段同构检查（对齐
+        item e22bfec7b9ee 的 ``_write_trigger_signal`` 收敛先例）——两端点
+        MUST NOT 复制两份同构守卫。守卫顺序与拒绝语义逐字节保持 run 端点
+        既有行为：
+
+        - 项目不存在 → 404
+        - verify.yaml 无有效 regression 段 → 400 ``regression_not_configured``
+        - 已有回归在跑（marker 新鲜度判定）→ 409 ``regression_already_running``
+        - daemon 未受 supervisor 托管 / 未运行 → 409 / 400（hosting 守卫，
+          ``_guard_hosting_state`` 单点实现，label 固定「回归信号」）
+
+        校验全过返回 ``(project, proot, spec)``；任一守卫拒绝时响应已写出、
+        返回 ``None``（调用方直接 return）。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return None
+        proot = Path(project["path"])
+
+        # 项目未配置回归守卫（verify.yaml regression 段缺失/无效 → 400）
+        from core.verify_contract import load_verify_contract
+
+        contract = load_verify_contract(proot, logger=_ContractLoggerAdapter(logger))
+        if contract is None or contract.regression is None:
+            self._coded_error(
+                400, "该项目未配置全量回归（verify.yaml regression 段）",
+                "regression_not_configured",
+            )
+            return None
+
+        # 运行中守卫（已有回归在跑 → 409，单飞不并发；基于 marker 新鲜度
+        # 判定，与 code_review 的 progress.running 同义——marker 不存在
+        # 或超窗 stale 即视为未运行）
+        if dashboard_data.is_regression_running(proot):
+            self._coded_error(409, "已有回归在进行中", "regression_already_running")
+            return None
+
+        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push；
+        # item fcadb893a1c8：与 code_review 族共用 hosting_guard 单点实现，
+        # 本端点只留「回归信号」label 文案）
+        guard = _guard_hosting_state(proot, "回归信号")
+        if guard is not None:
+            self._error(*guard)
+            return None
+        return project, proot, contract.regression
+
     def _api_regression_run(self, query):
         """POST /api/regression/run — query project
 
@@ -404,38 +455,14 @@ class H12RegressionRoutesMixin:
         - 消费方守卫：daemon 未受 supervisor 托管（hosting_state ==
           "unmanaged"）→ 409 明确拒绝；stopped → 400「daemon 未运行」
         - 受理 → 200 + {ok, requested_at}
+
+        四段守卫收敛在 ``_regression_trigger_guards``（add-regression-issues-rerun
+        3.1，与 run-issues 端点共享；本端点行为零变化）。
         """
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        guards = self._regression_trigger_guards(query)
+        if guards is None:
             return
-        proot = Path(project["path"])
-
-        # 项目未配置回归守卫（verify.yaml regression 段缺失/无效 → 400）
-        from core.verify_contract import load_verify_contract
-
-        contract = load_verify_contract(proot, logger=_ContractLoggerAdapter(logger))
-        if contract is None or contract.regression is None:
-            self._coded_error(
-                400, "该项目未配置全量回归（verify.yaml regression 段）",
-                "regression_not_configured",
-            )
-            return
-
-        # 运行中守卫（已有回归在跑 → 409，单飞不并发；基于 marker 新鲜度
-        # 判定，与 code_review 的 progress.running 同义——marker 不存在
-        # 或超窗 stale 即视为未运行）
-        if dashboard_data.is_regression_running(proot):
-            self._coded_error(409, "已有回归在进行中", "regression_already_running")
-            return
-
-        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push；
-        # item fcadb893a1c8：与 code_review 族共用 hosting_guard 单点实现，
-        # 本端点只留「回归信号」label 文案）
-        guard = _guard_hosting_state(proot, "回归信号")
-        if guard is not None:
-            self._error(*guard)
-            return
+        proot = guards[1]
 
         # 键名与消费者契约一致（fenixd._check_regression_requests 读
         # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
@@ -445,6 +472,89 @@ class H12RegressionRoutesMixin:
         # 三步原子独占写 + 失败脱敏日志收敛在 _write_trigger_signal（item
         # e22bfec7b9ee 去重），此处只按结果映射响应：error → 500、
         # conflict → 409（并发第二 POST 或上一信号尚未被消费）
+        outcome = _write_trigger_signal(req_path, payload, "回归触发")
+        if outcome == _TRIGGER_ERROR:
+            self._error(500, "回归触发信号写入失败")
+            return
+        if outcome == _TRIGGER_CONFLICT:
+            self._coded_error(
+                409, "已有未消费的回归触发请求（请稍后重试）",
+                "regression_request_pending",
+            )
+            return
+        self._json({"ok": True, "requested_at": created})
+
+    def _api_regression_run_issues(self, query):
+        """POST /api/regression/run-issues — query project
+        （add-regression-issues-rerun 3.1，capability regression-issues-rerun）
+
+        定向子集回归触发：只重跑最近一次快照 ``failures``（失败+错误）与
+        ``long_tests``（长耗时）用例的并集。写同一
+        ``.fenix/regression_request.json`` 信号（payload 增
+        ``"scope": "issues"``），nodeid 子集由 daemon 消费端按消费时点快照
+        计算（D2：映射依赖 exec_root 在盘探测，端点不做）；本端点只做
+        「快照有异常用例」的机械守卫并写信号，MUST NOT 在 HTTP 线程内同步
+        映射/派发。
+
+        守卫链与 run 端点一致（共享 ``_regression_trigger_guards``），另加
+        快照两道校验（判定口径对齐 fix 端点 ``_api_regression_fix``）：
+        - 快照缺失/损坏/不可解析 → 400 ``regression_never_run``
+        - failures 与 long_tests 均空且 status 非 timeout → 400
+          ``regression_no_issues``（timeout 整体超时伪行非用例，仍受理——
+          子集计算在消费端自然回退全量）
+        - 受理 → 200 + {ok, requested_at}；写入失败 500 / 信号已存在 409
+          ``regression_request_pending`` 与 run 端点同款
+        """
+        guards = self._regression_trigger_guards(query)
+        if guards is None:
+            return
+        proot = guards[1]
+
+        # 快照校验（读侧契约与 core.regression.read_result 一致：缺失 →
+        # never_run，损坏 → parse_error；统一归 never_run 拒绝）
+        from core.regression import read_result
+
+        try:
+            snapshot = read_result(str(proot))
+        except Exception:  # noqa: BLE001 — 读侧任何异常按缺失兜底（宁拒勿 500）
+            snapshot = {"status": "never_run"}
+        snapshot_status = (
+            str(snapshot.get("status") or "") if isinstance(snapshot, dict) else ""
+        )
+        if snapshot_status in ("", "never_run", "parse_error"):
+            self._coded_error(
+                400, "最近一次回归快照缺失或不可解析，请先执行一次全量回归",
+                "regression_never_run",
+            )
+            return
+
+        # 异常用例守卫：failures 非空 / long_tests 非空 / 整体超时 三者其一
+        # （口径与 fix 端点 has_issues 一致；「整体超时」伪行非用例、不可选，
+        # 但快照整体超时仍受理——消费端子集为空时 fail-closed 回退全量）
+        failures = snapshot.get("failures")
+        long_tests = snapshot.get("long_tests")
+        has_issues = (
+            (isinstance(failures, list) and len(failures) > 0)
+            or (isinstance(long_tests, list) and len(long_tests) > 0)
+            or snapshot_status == "timeout"
+        )
+        if not has_issues:
+            self._coded_error(
+                400, "最近一次回归无异常用例，无需定向重跑", "regression_no_issues",
+            )
+            return
+
+        # 键名契约与 run 端点一致，payload 增 scope: "issues"（消费端对无
+        # scope/未知 scope 的信号按全量消费，向后兼容）
+        created = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "source": "dashboard",
+            "requested_at": created,
+            "scope": "issues",
+        }
+        req_path = proot / REGRESSION_REQUEST
+        # 三步原子独占写 + 失败脱敏日志收敛在 _write_trigger_signal，响应
+        # 映射与 run 端点同款：error → 500、conflict → 409
         outcome = _write_trigger_signal(req_path, payload, "回归触发")
         if outcome == _TRIGGER_ERROR:
             self._error(500, "回归触发信号写入失败")

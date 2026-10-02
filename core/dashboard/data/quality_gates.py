@@ -396,6 +396,14 @@ def _full_suite_product_status(project_root) -> tuple:
         data = _reg.read_result(project_root)
     except Exception:
         return None, ""
+    # 定向子集快照不可见（add-regression-issues-rerun 4.1，D6）：快照为
+    # dict 且 run_scope == "issues" → 按本源不可见返回 (None, "")——否则
+    # 「子集 passed」会把 full-suite 门洗成 passed（与空场景白洗通道同类
+    # 洞）。判定置于 status 白名单之前（子集快照无论什么状态都不采信）；
+    # 本源不可见沿用既有 fail-open 逐级回落（回落 run 自查值），MUST NOT
+    # 抛异常。
+    if isinstance(data, dict) and data.get("run_scope") == "issues":
+        return None, ""
     status_raw = data.get("status") if isinstance(data, dict) else None
     if status_raw not in _FULL_SUITE_PRODUCT_STATUS:
         # never_run / parse_error / 状态映射外 → 本源不可用（成员判定直接

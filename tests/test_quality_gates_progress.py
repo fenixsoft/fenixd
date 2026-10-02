@@ -815,6 +815,90 @@ class TestFullSuiteTerminalExempt(QualityGatesTestBase):
         assert self._item(out, "full-suite")["status"] == "pending"
 
 
+class TestFullSuiteSubsetSnapshotInvisible(QualityGatesTestBase):
+    """add-regression-issues-rerun 4.1：full-suite 门对子集快照（run_scope=="issues"）
+    判本源不可见——子集通过 MUST NOT 使本门呈现 passed（防白洗通道，D6）。
+    """
+
+    def _git(self, *args) -> str:
+        out = subprocess.run(["git", "-C", str(self.root), *args],
+                             capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+
+    def setup_method(self):
+        super().setup_method()
+        subprocess.run(["git", "init", "-b", "main", str(self.root)],
+                       capture_output=True, check=True)
+        self._git("config", "user.email", "t@t")
+        self._git("config", "user.name", "t")
+        (self.root / "base.txt").write_text("base", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "init")
+        # run 自查文件可读但无 full-suite 键（add-impl-selfcheck-model-probe 3.1
+        # 后实现者默认不写）——子集产物不可见时该门既有回落语义 = pending
+        self._write_gates({"frontend-build": {"status": "skipped",
+                                              "reason": "无前端改动"}})
+
+    def _write_subset_snapshot(self, status="passed", passed=3, failed=0):
+        from core.regression import write_result
+
+        write_result(self.root, {
+            "status": status, "total": 3, "passed": passed, "failed": failed,
+            "errors": 0, "skipped": 0, "failures": [], "long_tests": [],
+            "run_scope": "issues",
+        })
+
+    def test_subset_passed_snapshot_not_trusted_falls_back_pending(self):
+        # 子集快照（issues + passed + 指纹匹配）+ 自查无 full-suite 键 →
+        # 不呈现 passed，数据源③回落 pending；解析不抛异常
+        self._write_subset_snapshot()
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"}, runs=[])
+        item = self._item(out, "full-suite")
+        assert item["status"] == "pending"
+        assert "passed" not in (item["detail"] or "")
+
+    def test_subset_snapshot_falls_back_to_selfcheck_value(self):
+        # 子集产物不可见 → 沿用既有 fail-open 逐级回落：采纳 run 自查值
+        self._write_subset_snapshot()
+        self._write_gates({
+            "frontend-build": {"status": "skipped", "reason": "无前端改动"},
+            "full-suite": {"status": "passed", "passed": 128, "failed": 0},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"}, runs=[])
+        assert self._item(out, "full-suite")["status"] == "passed"
+
+    def test_full_snapshot_without_run_scope_unchanged(self):
+        # 全量快照（无 run_scope 键）+ 指纹匹配 → 既有规则正常采信，行为零变化
+        from core.regression import write_result
+
+        write_result(self.root, {
+            "status": "passed", "total": 5045, "passed": 5045, "failed": 0,
+            "errors": 0, "skipped": 0, "failures": [], "long_tests": [],
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"}, runs=[])
+        item = self._item(out, "full-suite")
+        assert item["status"] == "passed"
+        assert "5045" in item["detail"]
+
+    def test_subset_failed_snapshot_not_trusted_either(self):
+        # 子集快照无论什么状态都不采信（判定置于 status 白名单之前）：
+        # failed 子集同样不可见回落，不让子集结论进 full-suite 门
+        self._write_subset_snapshot(status="failed", passed=1, failed=2)
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"}, runs=[])
+        assert self._item(out, "full-suite")["status"] == "pending"
+
+    def test_non_dict_payload_snapshot_invisible_no_exception(self):
+        # read_result 对合法 JSON 非 dict 载荷原样返回——isinstance 守卫使
+        # 非 dict 一并按不可见 (None, "") 处理，.get 直取会 AttributeError
+        # 穿透 fail-open 契约
+        d = self.root / ".fenix" / "regression"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "last-run.json").write_text('["not", "a", "dict"]', encoding="utf-8")
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"}, runs=[])
+        assert self._item(out, "full-suite")["status"] == "pending"
+
+
 class TestWorktreePriority(QualityGatesTestBase):
     """1.4 worktree 优先读取策略。"""
 
