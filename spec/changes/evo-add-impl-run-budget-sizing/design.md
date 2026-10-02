@@ -21,13 +21,13 @@
 - **D2 修订增量不作首版输入**：派发时点不存在实现产物，「修订增量→轮数」无可观测源。首版 sizing 输入 = estimate_spec_scale（任务数 + 交付物数）；若未来需要，可在续做 run（resume 场景）用分支 commit 数作增量信号，留作后续项。
 - **D3 生效序 = override > 推算 > base**：override 用 STATE `impl_turn_cap_override`（沿 impl_run_budget_override 命名与语义先例），仅接受正整数；推算只在 enabled 且规模分 > full_scale_threshold 时抬到 max(base, suggested_turn_cap)，永不低于 base。
 - **D4 剩余任务数读 main 树口径（project_root）**：与 result_gate 硬门、`_task_completion_blocker` 同一 tasks_md_path 口径；worktree 内 tasks.md 未合回时会滞后，main 树口径与完成度门禁判据一致，避免双口径漂移（run_task_track docstring 的「禁止第二套正则」约束）。
-- **D5 簿记占比只观测不改判**：占比高是低效/打转信号但非失败证据（大 spec 首轮建任务簿记天然高），单独作为 kill 依据会误伤；仅 WARNING + evidence 注记。占比计算从 `_run_claude` 已维护的 tool_metrics 直方图派生，不新增转录扫描。
-- **D6 kill_early 缺省关闭、条件三重与**：末次扩容判定点 + 剩余任务超阈 + run 内进度近零，三条件同时成立才提前 kill；收口复用 ADR-103 既有 kill+WIP 保全锚点，零新增收口代码。关闭路径零行为变化（测试断言同输入同输出）。
+- **D5 簿记占比只观测不改判**：占比高是低效/打转信号但非失败证据（大 spec 首轮建任务簿记天然高），单独作为 kill 依据会误伤；仅 WARNING + evidence 注记。占比计算从 `_run_claude` 已维护的 tool_metrics 直方图派生（整 run 累计口径——直方图无尾窗粒度，与 proposal 实证口径一致），由调用点派生后传入 `_turn_limit_action`，不新增转录扫描。
+- **D6 kill_early 缺省关闭、条件三重与**：末次扩容判定点 + 剩余任务超阈 + run 内进度近零，三条件同时成立才提前 kill；仅实现车道生效（dispute-judge / spec-review 等评审与裁决车道 run 内勾选进度恒零，不限车道则开启项目内必被误杀）；run 内进度以 run 启动时点快照为基线（启动 sizing 读 tasks.md 时顺带快照），分母为 0 视为进度健康；收口复用 ADR-103 既有 kill+WIP 保全锚点，零新增收口代码。关闭路径零行为变化（测试断言同输入同输出）。
 - **D7 配置键**：`agents.turn_budget_sizing.{enabled, full_scale_threshold, suggested_turn_cap, bookkeeping_share_threshold, kill_early.{enabled, remaining_tasks_threshold, progress_floor}}`，归一化单点 `get_turn_budget_sizing_config`（非法值逐项回退缺省，风格对齐 get_scale_precheck_config），与设置界面读侧同源。
 
 ## Risks
 
-- **推算过高大 spec 长跑**：suggested_turn_cap 缺省 800 较 base +50%，失控 run 的最坏墙钟增幅由既有 60s 无活性 kill 兜底（无活性一次扩容都拿不到，ADR-103 已证）；可在 config 按项目收敛。
+- **推算过高大 spec 长跑**：suggested_turn_cap 缺省 800 较常用 base 抬升明显（runner 缺省 300 时约 +167%，potplayer-base 实配 400 时 +100%），失控 run 的最坏墙钟增幅由既有 60s 无活性 kill 兜底（无活性一次扩容都拿不到，ADR-103 已证）；可在 config 按项目收敛。
 - **kill_early 误杀慢热 run**：三重与条件 + 缺省关闭 + 勾选进度地板三重护栏；开启项目首次触发需在告警证据中复核。
 - **evidence/事件新字段破坏读侧**：turn_extension 读侧按既有字段消费（dashboard/自省），新增键为附加不替换；`append_run_line` 侧同步（runner.py:5288 附近）保持单点。
 - **与 evo-add-run-stop-loss 边界**：该 SPEC 管 run 级止损（取消旗标/retry 让位/停滞判停），本 SPEC 管轮数预算轴；两者都改 runner.py 时注意 rebase 顺序，语义无交叠。

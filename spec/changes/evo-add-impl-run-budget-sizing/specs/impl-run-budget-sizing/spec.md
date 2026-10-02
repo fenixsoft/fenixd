@@ -4,7 +4,7 @@
 
 ### Requirement: 实现车道启动时按规模推算轮数上限
 
-实现 run（implementer / fast-track 及一切消费 `agents.max_turns` 的工作车道）启动时，生效轮数上限按序确定：STATE 中该 spec 的 `impl_turn_cap_override`（正整数）优先；否则按 `estimate_spec_scale` 规模分推算——规模分大于 `agents.turn_budget_sizing.full_scale_threshold`（缺省 45）时生效 `agents.turn_budget_sizing.suggested_turn_cap`（缺省 800）与基础值中的较大者，否则等于基础值。规模解析异常（tasks.md 缺失/IO 失败）保守回退基础值，不阻断派发，WARNING 留痕。启动日志记录 base / override / 生效值三元组。
+实现车道 run（implementer / fast-track）启动时，生效轮数上限按序确定：STATE 中该 spec 的 `impl_turn_cap_override`（正整数）优先；否则按 `estimate_spec_scale` 规模分推算——规模分大于 `agents.turn_budget_sizing.full_scale_threshold`（缺省 45）时生效 `agents.turn_budget_sizing.suggested_turn_cap`（缺省 800）与基础值中的较大者，否则等于基础值。规模解析异常（tasks.md 缺失/IO 失败）保守回退基础值，不阻断派发，WARNING 留痕。启动日志记录 base / override / 生效值三元组。推算抬升仅限实现车道：dispute-judge / spec-review 等评审与裁决车道（其各自的 `agents.max_turns` 读点，runner.py:1266/:1407）不参与推算，轮数上限维持 base 值。
 
 #### Scenario: 大规模 spec 启动获得更高轮数上限
 
@@ -28,7 +28,7 @@
 
 ### Requirement: 扩容判定与事件携带剩余工作量
 
-`_turn_limit_action` 判定时读取剩余未勾选任务数（core/run_task_track.parse_tasks_md，project_root 口径；缺失或解析失败记 None 并在证据中注明 unavailable）与簿记占比（run 文件尾窗内 TaskCreate+TaskUpdate 占全部工具调用比）。extend 与 kill 的 evidence 拼接 `remaining_tasks=<n>`；`turn_extension` 事件与 run_metrics 新增 `remaining_tasks` 字段。簿记占比 ≥ `agents.turn_budget_sizing.bookkeeping_share_threshold`（缺省 0.5）时写 WARNING 并在 evidence 注记，但 MUST NOT 因此单独改变 extend/kill 结论。剩余工作量字段只增观测面，不改变既有活性矩阵的判定语义。
+`_turn_limit_action` 判定时读取剩余未勾选任务数（core/run_task_track.parse_tasks_md，project_root 口径；缺失或解析失败记 None 并在证据中注明 unavailable）与簿记占比（run 累计口径：TaskCreate+TaskUpdate 占全部工具调用比，派生自 run_metrics 的 tool_uses 累计直方图，与 proposal 实证口径一致）。extend 与 kill 的 evidence 拼接 `remaining_tasks=<n>`；`turn_extension` 事件与 run_metrics 新增 `remaining_tasks` 字段。簿记占比 ≥ `agents.turn_budget_sizing.bookkeeping_share_threshold`（缺省 0.5）时写 WARNING 并在 evidence 注记，但 MUST NOT 因此单独改变 extend/kill 结论。剩余工作量字段只增观测面，不改变既有活性矩阵的判定语义。remaining_tasks 观测与簿记占比 WARNING 不受 `agents.turn_budget_sizing.enabled` 门控（观测面恒开，评审/裁决车道仅获得观测字段，无推算抬升与守卫）。
 
 #### Scenario: 扩容事件记录剩余任务数
 
@@ -42,12 +42,12 @@
 
 #### Scenario: 簿记占比异常只留痕不改判
 
-- **WHEN** 尾窗内 TaskCreate+TaskUpdate 占工具调用比 ≥ 0.5 且分支活性成立
+- **WHEN** run 累计口径下 TaskCreate+TaskUpdate 占全部工具调用比 ≥ 0.5 且分支活性成立
 - **THEN** 写 WARNING 与 evidence 注记，判定仍为 extend
 
 ### Requirement: 末位扩容拆停守卫缺省关闭且开启时保守判定
 
-`agents.turn_budget_sizing.kill_early.enabled` 缺省 false。关闭时 `_turn_limit_action` 决策与现状逐位一致（同输入同输出，新字段只增不改）。开启时，仅当到达最后一次可用扩容（extension_index 将等于 TURN_EXTENSION_MAX）且剩余未勾选任务数 ≥ `kill_early.remaining_tasks_threshold`（缺省 10）且本次 run 期间任务勾选进度占比 ≤ `kill_early.progress_floor`（缺省 0.1）时，判 kill 并在 evidence 注明 early-split 依据；收口必须复用既有 turn-limit kill + WIP 保全路径，不新增收口实现。
+`agents.turn_budget_sizing.kill_early.enabled` 缺省 false，且守卫仅对实现车道生效（dispute-judge / spec-review 等评审与裁决车道不受守卫影响——其 run 期间勾选进度恒为零，不限车道则开启项目内必被误杀）。关闭时 `_turn_limit_action` 决策与现状逐位一致（同输入同输出，新字段只增不改）。开启时，仅当到达最后一次可用扩容（extension_index 将等于 TURN_EXTENSION_MAX）且剩余未勾选任务数 ≥ `kill_early.remaining_tasks_threshold`（缺省 10）且本次 run 期间任务勾选进度占比 ≤ `kill_early.progress_floor`（缺省 0.1；进度 = run 启动时点快照后新勾选任务数 ÷ 启动时未勾选任务数，分母为 0 时视为进度健康不判不济）时，判 kill 并在 evidence 注明 early-split 依据；收口必须复用既有 turn-limit kill + WIP 保全路径，不新增收口实现。
 
 #### Scenario: 缺省关闭时零行为变化
 
