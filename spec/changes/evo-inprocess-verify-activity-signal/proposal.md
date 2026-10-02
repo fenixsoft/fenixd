@@ -7,8 +7,8 @@
 ## What Changes
 
 - spec_is_undriven 新增条件⑤「daemon 进程内 verifier 线程活跃」：threading.enumerate() 命中 fenix-verifier-<spec>（线程名出处 core/pm_engine/dispatch/queue.py name=f"fenix-{agent_type}-{spec_name}"）即判有驱动；零调参、不依赖时间窗。
-- 条件①活动文件口径扩展：把 .fenix/verify-progress/<spec>.json（既有逐场景原子写）mtime 纳入，用独立活动窗口（默认对齐孤儿阈值 15 分钟），不沿用 120s run 宽限（单场景长批间隔实测 4-5 分钟，会假阴性）。
-- 处置复位直通道（_reset_orphaned_after_disposition testing 分支，不过判定函数的第三出口）重派前增加在飞验证复核，命中即顺延。
+- 进度文件 mtime 纳入条件⑤ helper 的 OR 臂（评审钉死落点：NOT 条件①扩展）：把 .fenix/verify-progress/<spec>.json（既有逐场景原子写）mtime 纳入 inprocess_verify_active helper，用独立活动窗口（默认对齐孤儿阈值 15 分钟），不沿用 120s run 宽限（单场景长批间隔实测 4-5 分钟，会假阴性）；条件① _has_recent_spec_run（120s）保持不动。
+- 处置复位直通道（_reset_orphaned_after_disposition testing 分支，不过判定函数的第三出口）重派前增加在飞验证复核，命中即跳过本次重派（transition + 清 error 复位语义保留；在飞验证本身即重验，不设延迟队列）。
 - docstring 按既有记忆惯例增补条件⑤由来（本次实证），替代「只记条件④」的历史口径。
 
 ## 非目标

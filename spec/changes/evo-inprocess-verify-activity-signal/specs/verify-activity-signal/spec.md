@@ -6,7 +6,7 @@
 
 spec_is_undriven（core/admin_monitor.py:706-778）MUST 新增条件⑤：daemon 进程内存在名为 fenix-verifier-<spec> 的活线程（threading.enumerate()，线程名出处 core/pm_engine/dispatch/queue.py 线程构造 name=f"fenix-{agent_type}-{spec_name}"）时判定「有驱动」。同进程调用的两个消费点（admin_monitor._detect_orphaned_state :2666、event_bus._recover_testing :439）因此自动豁免，MUST NOT 再对活跃中的 in-process 全量验证发 orphaned_state 或重派验证。
 
-- 条件①活动文件口径 MUST 扩展：.fenix/verify-progress/<spec>.json（verify_engine._write_progress 既有产物，engine.py:706-733）mtime 落入独立活动窗口内即判有驱动；窗口常量 MUST 独立于 ORPHANED_RUN_GRACE_SECONDS（120s），缺省对齐 DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES（15 分钟）——单场景长批间隔实测 4-5 分钟，120s 会假阴性。
+- 进度文件 mtime MUST 作为条件⑤ helper 的 OR 臂（评审钉死落点：NOT 条件①扩展）：.fenix/verify-progress/<spec>.json（verify_engine._write_progress 既有产物，engine.py:700-733）mtime 落入独立活动窗口内即判有驱动；条件① _has_recent_spec_run（120s run 宽限）保持不动。窗口常量 MUST 独立于 ORPHANED_RUN_GRACE_SECONDS（120s），缺省对齐 DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES（15 分钟）——单场景长批间隔实测 4-5 分钟，120s 会假阴性。
 - docstring MUST 按既有记忆惯例增补条件⑤的由来实证（2026-10-02 cimbar-airgap-transfer 误报孤儿态+重复验证），保持「每次误报补条件并留证」的演化记录。
 - 两类新信号 MUST NOT 产生假阳性豁免：线程已退出且进度文件超窗时，判定结果 MUST 与现状完全一致。
 
@@ -34,4 +34,4 @@ _reset_orphaned_after_disposition（core/admin_monitor.py:4679）testing 分支�
 #### Scenario: 处置完成瞬间不打断在飞批
 
 - **WHEN** admin 处置写 result 触发 testing 复位直通道，而 verifier 线程仍在执行
-- **THEN** 重派顺延；线程退出后重派照常执行
+- **THEN** 复位语义保留（transition_gate(testing) 幂等 + 清 error），重派跳过、无重复批；在飞验证结果路径照常推进状态，不设延迟队列
