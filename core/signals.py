@@ -189,7 +189,7 @@ def validate_scheduling_kick_spec(spec: str) -> str | None:
         return f"spec 名必须为字符串（当前类型 {type(spec).__name__}）"
     if not spec:
         return "spec 名为空"
-    if not _KEBAB_RE.match(spec):
+    if not _KEBAB_RE.fullmatch(spec):
         return (
             f"spec 名不合法（须为 kebab-case，如 'fix-foo-bar'）：{spec!r}"
         )
