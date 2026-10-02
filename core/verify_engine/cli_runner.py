@@ -356,13 +356,26 @@ class CliRunner(VerifyRunner):
             # 只体现为 shell 退出码 128+n，由 exit_code 断言仲裁
             # （code-review item bf0cbf18b226）
             sig = -exit_code
+            # 崩溃前输出恰恰是段错误排障最需要的证据：与超时强杀路径同款 64KB
+            # 证据纪律附上 stdout/stderr，丢弃会让 judge/排障只看到「被信号 N
+            # 终止」一行（code-review item f2459fbe9674）
+            stdout, stdout_truncated = _truncate(
+                (stdout_b or b"").decode(errors="replace")
+            )
+            stderr, stderr_truncated = _truncate(
+                (stderr_b or b"").decode(errors="replace")
+            )
             return {
                 "success": False,
                 "action": "run",
                 "error_level": "error",
                 "error_type": "signal",
                 "signal": sig,
-                "error": f"命令被信号 {sig} 终止（段错误等），判 error 不进 product-bug 管道",
+                "stdout": stdout,
+                "stderr": stderr,
+                "error": f"命令被信号 {sig} 终止（段错误等），判 error 不进 product-bug 管道"
+                + ("（stdout 已截断 64KB）" if stdout_truncated else "")
+                + ("（stderr 已截断 64KB）" if stderr_truncated else ""),
             }
 
         stdout_full = stdout_b.decode(errors="replace") if stdout_b else ""

@@ -11,7 +11,7 @@
  * 7.6: 表头排序 + 状态（默认待决策）/项目/日期过滤条 + 多选与批量同意/拒绝
  * 7.7: 操作列「删除」（硬删条目）+ 批量删除；类别列 Tag 渲染
  */
-import { Alert, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, message, Modal, Radio, Select, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography } from 'antd';
+import { Alert, App, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, Modal, Radio, Select, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography } from 'antd';
 import { LeftOutlined, MoreOutlined, RightOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -306,6 +306,11 @@ const SuggestedImprovementsPanel = forwardRef<
   SuggestedImprovementsPanelProps
 >(function SuggestedImprovementsPanel({ config, scope, project }, ref) {
   const [form] = Form.useForm();
+  // 反馈提示经 App.useApp() 取上下文实例（code-review item 5fa659aaf869）：
+  // 静态 message 不经过 App/ConfigProvider 上下文（antd v5 会提示 Static
+  // function can not consume context），与其余设置面板口径统一；
+  // Modal.confirm/Modal.error 属命令式 API，维持现状
+  const { message } = App.useApp();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）；项目级作用域整表 disabled 不会触发
   const { setDirty } = usePanelDirty();

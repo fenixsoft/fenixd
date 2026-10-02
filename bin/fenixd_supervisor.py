@@ -667,7 +667,18 @@ def _acquire_supervisor_lock() -> None:
     """
     global _LOCK_FD
     lock_path = FENIX_DIR / "supervisor.lock"
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as e:
+        # 锁文件不可用（FENIX_DIR 只读、supervisor.lock 被同名目录占用等）：
+        # 与本文件其余 .fenix 写路径同口径降级为可读错误+非零码干净退出，
+        # 不裸栈——看门狗无痕死亡意味着 daemon 从此无人拉起。
+        print(
+            f"FATAL: 无法打开 supervisor 单实例锁文件 {lock_path}: {e}，本实例退出",
+            file=sys.stderr,
+        )
+        log(f"cannot open singleton lock file {lock_path}: {e} — exiting")
+        sys.exit(1)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

@@ -292,7 +292,26 @@ class VisualDiffer:
         # 首次运行：建立基线（正常画面 + 通过性门通过）
         if not baseline_path.exists():
             baseline_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(str(current_path), str(baseline_path))
+            # 原子固化（code-review item ad6629b5e2fd，与 _save_baseline_streaks
+            # 的 temp + rename 同型）：裸 copy 直写中途被杀（daemon SIGKILL/
+            # 断电）会在 baselines/ 留下截断 PNG，下一轮 exists() 误判已有基线
+            # 进入对比路径，该场景视觉验证永久 error。先 copy 到同目录临时文
+            # 件再 os.replace，保证读者只见完整基线。
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(baseline_path.parent),
+                prefix=f".{baseline_path.name}.",
+                suffix=".tmp",
+            )
+            os.close(fd)
+            try:
+                shutil.copy(str(current_path), tmp_path)
+                os.replace(tmp_path, baseline_path)
+            except OSError:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             return [
                 _evidence_fields(
                     {

@@ -184,7 +184,21 @@ class WebRunner(VerifyRunner):
                 )
             return result
         finally:
-            await context.close()
+            # code-review item 9d9cfb64c2e3：close 在浏览器进程已崩溃/连接
+            # 已断时抛 TargetClosedError，裸奔会在 return result 前把已算好
+            # 的场景结果（step_results/assertion_results 等全部证据）顶掉，
+            # 穿到引擎 run_one 的 return_exceptions 兜底被替换成空 error 条
+            # 目。与 BrowserManager.stop 的逐步容错口径对齐：warning 留痕
+            # 后吞掉，try 体的 result 正常返回；try 体本身已抛异常时原异常
+            # 照常穿出（此处仅吞 close 的次生异常）。
+            try:
+                await context.close()
+            except Exception as e:
+                self.logger.warning(
+                    "verify_engine",
+                    f"场景'{scenario.id}': context.close 失败: "
+                    f"{type(e).__name__}: {e}",
+                )
 
     async def _perform_health_check(self) -> tuple:
         """场景执行前健康检查：验证应用页面是否能成功加载。

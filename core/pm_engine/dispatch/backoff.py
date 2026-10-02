@@ -132,7 +132,19 @@ class BBackoffMixin:
         self._pm._schedule_backoff_retry(spec_name, delay)
 
     def _schedule_backoff_retry(self, spec_name: str, delay: float) -> None:
-        """退避到期后重入 ``_on_spec_ready``（daemon 线程；关闭期间自然失效）。"""
+        """退避到期后重入 ``_on_spec_ready``（daemon 线程；关闭期间自然失效）。
+
+        幂等判重（code-review item c996f928d3de）：登记前按 spec_name 查
+        ``_backoff_timer_specs``，已存在未到期定时器则先 cancel 旧 Timer 再
+        登记新 Timer——同 spec 同时至多一个待到期退避定时器。原先仅 is_alive
+        惰性清理后直接 append，退避窗口内再次触发
+        ``_handle_dispatch_lock_conflict``（周期扫描与事件回调并发进入）会叠加
+        第二个 Timer，到期后 ``_on_spec_ready`` 被重复调用，重复派发尝试再遇锁
+        冲突经 bump_counters 推进 ``_lock_conflict_count``，退避档位虚快推进、
+        提前耗尽序列触发 dispatch_stalled。cancel 对已到期/在途回调是 no-op，
+        不回退已发生的恢复（对齐同文件三条冷却通道 _schedule_recovery_timer
+        的幂等判重形态）。
+        """
         timer = threading.Timer(
             max(0.5, float(delay)),
             self._pm._on_spec_ready,
@@ -140,8 +152,18 @@ class BBackoffMixin:
         )
         timer.daemon = True
         with self._queue_lock:
+            # 判重登记表（spec_name -> Timer）：仅本退避通道登记；merge-only
+            # 重试定时器走 queue.py _schedule_merge_retry 同构站点共用
+            # ``_backoff_timers``，不进本表、不受本判重约束。
+            pending: dict = getattr(self, "_backoff_timer_specs", None)
+            if pending is None:
+                pending = self._backoff_timer_specs = {}
+            stale = pending.pop(spec_name, None)
             self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
+            if stale is not None and stale.is_alive():
+                stale.cancel()
             self._backoff_timers.append(timer)
+            pending[spec_name] = timer
         # code-review item 488e916852e4：对齐 queue.py:989 / repair_lane.py:305
         # 的线程启动守卫——start 失败（解释器关闭期 RuntimeError、线程资源
         # 耗尽等）时摘除本 timer 登记并记 WARNING，异常不再沿
@@ -154,6 +176,11 @@ class BBackoffMixin:
                 self._backoff_timers = [
                     t for t in getattr(self, "_backoff_timers", []) if t is not timer
                 ]
+                # 判重标记同步回滚（对齐 _schedule_recovery_timer_locked）：失败
+                # 的 Timer 未运行，残留登记只占位（下轮排程会替换），摘除保持
+                # 登记表与在飞定时器一致。
+                if getattr(self, "_backoff_timer_specs", {}).get(spec_name) is timer:
+                    self._backoff_timer_specs.pop(spec_name, None)
             self._pm.logger.warning(
                 "pm_engine",
                 f"backoff retry timer start failed for '{spec_name}' — 已摘除"

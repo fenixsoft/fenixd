@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Descriptions, Form, InputNumber, Select, Switch, Typography, message } from 'antd';
+import { Alert, App, Button, Card, Descriptions, Form, InputNumber, Select, Switch, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import { autodraftRegression, getOcrStatus, getRegressionConfig, installOcr } from '@/services/dashboard';
@@ -151,6 +151,9 @@ interface QualityPanelProps {
 
 export default function QualityPanel({ config, onSave, project, onConfigSynced, onManualEdit }: QualityPanelProps) {
   const [form] = Form.useForm();
+  // 反馈提示经 App.useApp() 取上下文实例（code-review item 0d5a482c07a7）：
+  // 静态 message 不经过 App/ConfigProvider 上下文，与其余设置面板口径统一
+  const { message } = App.useApp();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
