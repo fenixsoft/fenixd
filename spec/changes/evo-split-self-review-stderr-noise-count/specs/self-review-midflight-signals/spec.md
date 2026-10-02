@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: 深扫 stderr 计数噪声分离
-自省中途信号深扫（`core/self_review.py` `_scan_run_midflight`）收集 stderr 事件时，`stderr_count` SHALL 只累计非噪声行（判别复用 `core/agent_runner/provider_circuit.py` 的 `is_cli_stderr_noise`，MUST NOT 在 self_review 内复制 pattern）；噪声行计数 SHALL 单独产出为 `stderr_noise_count`；first_stderr 既有选取语义（跳过噪声行、全噪声置空）SHALL 保持不变；run 产物 jsonl 的 stderr 原始事件 SHALL 保持不过滤（取证现场完整）。
+自省中途信号深扫（`core/self_review.py` `_scan_run_midflight`）收集 stderr 事件时，`stderr_count` SHALL 只累计非噪声行（判别复用 `core/agent_runner/provider_circuit.py` 的 `is_cli_stderr_noise`，MUST NOT 在 self_review 内复制 pattern）；噪声行计数 SHALL 单独产出为 `stderr_noise_count`；first_stderr 既有选取语义（跳过噪声行、全噪声置空）SHALL 保持不变；run 产物 jsonl 的 stderr 原始事件 SHALL 保持不过滤（取证现场完整）。本 Requirement 细化并取代既有 change `evo-reduce-cli-stderr-noise-attribution`（specs/cli-stderr-noise-filtering「深扫 first_stderr 降噪」Requirement）中「stderr 计数 SHALL 保留全量（含噪声行）」的计数条款——两文档并存时计数口径以本 Requirement 为准（first_stderr 降噪与全噪声置空语义不受该取代影响）。
 
 #### Scenario: 混合行计数分离
 - WHEN 某 run 的 stderr 事件依次为 1 条 `[claude-code:unrecognized_model]` 噪声行 + 1 条真实诊断行
