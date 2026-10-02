@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=5
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract -->
+<!-- knowledge: capability=code-fix-lane rev=6
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -15,6 +15,12 @@
 ### 守卫链与单飞
 - 检查点按序守卫，任一命中即不投递：`admin.code_review_fix.enabled` 为 false → `disabled`；已有 code-fix run 在跑（编排器 `_in_flight` 标记，或 `_running_agents` 存在 `code-fix-` 前缀 run）→ `already_running`；无 `open` 条目 → `no_open_items`；回归契约不可用 → `regression_contract_missing`。
 - 单飞标记投递时置位、批 worker 收尾时复位；两条激活路径并发到达由同一把锁保证至多一次投递。
+
+### 与审查车道的调度解耦
+- 批派发与链推进的判据集合不含「周期审查 run 在飞」：守卫链没有审查在飞否决或等待条件，审查 run 长时间在飞（含无产出停滞形态）期间车道照常建树、派批、推进，MUST NOT 出现因审查在飞导致的派批空窗。
+- 与审查的真实资源冲突点只有回归主机级套件锁（见「回归门与合回」），由既有锁自然串行；逻辑调度层 MUST NOT 为审查在飞再加互斥或等待。
+- 链自驱动推进对所有批收尾路径成立，含延迟批（defer）合回路径：批收尾 `wip_gate_blocked` 走延迟合回按 `consumed` 收尾照常推进下一批（语义见 [code-fix-wipgate-defer](code-fix-wipgate-defer.md)）；延迟台账合回成功核销后在同一检查点内联继续选批投递（与 `success` 收尾推进等价），MUST NOT 等待审查收尾事件或周期扫描才恢复。
+- 审查 run 被停滞看门狗自动取消（见 [review-run-stall-watchdog](../code-review-lane/review-run-stall-watchdog.md)）时产物走急救落账、条目照常落 `open`，但取消收场 MUST NOT 激活修复链——激活仅由「成功收尾且本轮落账产生 `open` 条目」驱动（见「激活」）。
 
 ### 批次编排
 - 选批取台账 `open` 条目最早优先（按 `first_seen_at` 升序，缺省按 `item_id` 稳定排序），每批条目数 = `admin.code_review_fix.batch_size`（末批可少）；排除集 = 失败档案条目并集 ∪ `chain_skipped`（跳过语义见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)）。
@@ -64,3 +70,4 @@
 - 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 批收尾改三态（success/consumed/halt，consumed 自驱动）；失败路径由「保留现场待人工」改写为「现场即弃 + 锁即释 + 档案留痕」；零有效修复拒合回由链终止改为链内跳过；回归失败丢弃接入失败档案重试预算，废除「每次丢弃追加 todo 人工项」与「失败集合须人工 release」语义。
 - 2026-10-03 2026-10-03-add-codefix-targeted-retry（spec/archive/2026-10-03-add-codefix-targeted-retry） — 回归门通过语义分轮（首轮全量、定向轮失败子集且通过即门通过）；回归失败重试由「整批 items 重做 + 全量回归重跑」改写为定向重试轮：上限 targeted_retry_max（缺省 3）、失败明细结构化落盘（classname 主导 nodeid 映射、映射失败回退全量）、轮间累计注入、修测试授权（fix_scope=test 标注）、门面 subset_nodeids 子集执行（取代收集位置参数）、耗尽现场即弃沿用并追加明细引用入档。
 - 2026-10-03 2026-10-03-add-codefix-commit-first-contract（spec/archive/2026-10-03-add-codefix-commit-first-contract） — 零有效修复拒合回新增 salvage 前置分支：批收尾「分支无提交」判定先过 salvage 三元组检测（fixed 行 ∧ 无提交 ∧ porcelain 非空），命中即 `orchestrator-salvage:` 自动提交后继续回归/合回裁决，真零改动维持拒合回、禁空提交；新增 `agents/code-fix.md`「先 commit 再验证」软契约（逐条即 commit、验证不阻塞 commit、收尾工作区干净），机械保障由 salvage 承担。
+- 2026-10-03 2026-10-03-decouple-codefix-review-lanes（spec/archive/2026-10-03-decouple-codefix-review-lanes） — 新增「与审查车道的调度解耦」：守卫链无审查在飞条件、物理冲突只剩回归主机级套件锁自然串行；延迟批合回自驱动推进语义固化（defer 按 consumed 收尾照常推进、延迟台账合回核销同检查点继续选批）；同归档另建审查 run 停滞看门狗能力页（code-review-lane/review-run-stall-watchdog），其取消收场急救落账不激活修复链。
