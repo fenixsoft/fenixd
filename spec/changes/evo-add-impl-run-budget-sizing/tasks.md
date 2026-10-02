@@ -18,8 +18,8 @@
 
 ## 2. 扩容判定携带工作量维度
 
-- [ ] 2.1 core/agent_runner/runner.py：`_turn_limit_action` 判定前用 `core.run_task_track.parse_tasks_md(project_root, spec_name)` 读剩余未勾选任务数（缺失/异常记 None 并在 evidence 注明 unavailable，不抛出），extend 与 kill 两个返回分支的 evidence 统一拼接 `remaining_tasks=<n|unavailable>`；调用点（:5284 附近）把该值随 `turn_extension` 事件新增 `remaining_tasks` 字段落盘，事件既有字段保持不变。
-- [ ] 2.2 core/agent_runner/runner.py：从 `_run_claude` 已维护的 tool_metrics 直方图派生整 run 累计簿记占比（TaskCreate+TaskUpdate / tool_uses_total，总数为 0 时记 None；直方图为整 run 累计、无尾窗粒度，统一用整 run 口径与 proposal 实证一致），由调用点派生后以参数传入 `_turn_limit_action`（方法内不重扫转录）；占比 ≥ `get_turn_budget_sizing_config` 阈值时在轮次上限判定点写 WARNING（同点评估一次，不在常规轮询路径周期性发出）并在 `_turn_limit_action` evidence 注记（不改 extend/kill 结论）；run_metrics 事件新增 `remaining_tasks` 字段（写侧 :5413-5436 处，run 收尾时点快照，解析失败记 None）。
+- [x] 2.1 core/agent_runner/runner.py：`_turn_limit_action` 判定前用 `core.run_task_track.parse_tasks_md(project_root, spec_name)` 读剩余未勾选任务数（缺失/异常记 None 并在 evidence 注明 unavailable，不抛出），extend 与 kill 两个返回分支的 evidence 统一拼接 `remaining_tasks=<n|unavailable>`；调用点（:5284 附近）把该值随 `turn_extension` 事件新增 `remaining_tasks` 字段落盘，事件既有字段保持不变。
+- [x] 2.2 core/agent_runner/runner.py：从 `_run_claude` 已维护的 tool_metrics 直方图派生整 run 累计簿记占比（TaskCreate+TaskUpdate / tool_uses_total，总数为 0 时记 None；直方图为整 run 累计、无尾窗粒度，统一用整 run 口径与 proposal 实证一致），由调用点派生后以参数传入 `_turn_limit_action`（方法内不重扫转录）；占比 ≥ `get_turn_budget_sizing_config` 阈值时在轮次上限判定点写 WARNING（同点评估一次，不在常规轮询路径周期性发出）并在 `_turn_limit_action` evidence 注记（不改 extend/kill 结论）；run_metrics 事件新增 `remaining_tasks` 字段（写侧 :5413-5436 处，run 收尾时点快照，解析失败记 None）。
 
 ## 3. 末位扩容拆停守卫（缺省关闭）
 

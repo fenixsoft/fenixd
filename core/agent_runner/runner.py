@@ -378,6 +378,26 @@ TURN_EXTENSION_WINDOW_SECONDS = 60.0
 # _salvage_impl_result 的实现车道判定同口径。
 IMPL_LANE_AGENT_TYPES = ("implementer", "fast-track")
 
+
+def _bookkeeping_tool_share(tool_metrics: dict | None) -> float | None:
+    """整 run 累计簿记占比（evo-add-impl-run-budget-sizing 2.2，design D5）。
+
+    ``TaskCreate+TaskUpdate`` 占全部工具调用比，从 ``_run_claude`` 已维护的
+    ``tool_metrics`` 直方图派生（整 run 累计、无尾窗粒度——与 proposal 实证
+    口径一致）；工具调用总数为 0 时记 None（无法判定不注记）。直方图键即
+    转录 tool_use content block 的工具名。纯读侧派生，不重扫转录。
+    """
+    hist = (tool_metrics or {}).get("tool_uses")
+    if not isinstance(hist, dict):
+        return None
+    total = sum(v for v in hist.values() if isinstance(v, (int, float)))
+    if total <= 0:
+        return None
+    booked = sum(v for k, v in hist.items()
+                 if k in ("TaskCreate", "TaskUpdate")
+                 and isinstance(v, (int, float)))
+    return booked / total
+
 # _run_claude 的 stderr 环形缓冲容量（code-review item 0cbb6c8176cd）：与 stdout
 # 同治理（stdout 已不累积，item 85d9e72b64b3），只保留近期行供 _denoise_stderr
 # 拼装 error 文本与瞬断分类（classify_transient_error）使用，不随 run 时长无界
@@ -2207,7 +2227,8 @@ class AgentRunner:
     def _turn_limit_action(self, run_file: Path, spec_name: str | None,
                            run_id: str, turn_extensions_used: int,
                            wt_path, agent_type: str | None = None,
-                           *, max_turns: int | None = None) -> dict:
+                           *, max_turns: int | None = None,
+                           bookkeeping_share: float | None = None) -> dict:
         """轮次上限到期后的监督决策（add-turn-limit-anchor-c design D2）：续期 or 终止。
 
         封闭矩阵（先封顶后活性，与超时路径 ``_supervision_deadline_action``
@@ -2257,11 +2278,44 @@ class AgentRunner:
             except Exception:
                 remaining_tasks = None
 
+        # ── 簿记占比观测（2.2，design D5：只观测不改判）──────────────────
+        # 占比由调用点从 _run_claude 已维护的 tool_metrics 直方图派生传入
+        # （整 run 累计口径——直方图无尾窗粒度，与 proposal 实证一致；方法内
+        # 不重扫转录）。≥ 阈值时在轮次上限判定点写 WARNING（本判定只在命中
+        # 轮次上限的轮询轮执行，同点评估一次，不在常规轮询路径周期性发出）
+        # 并在 evidence 注记。占比高是低效/打转信号但非失败证据（大 spec 首轮
+        # 建任务簿记天然高），MUST NOT 因此单独改变 extend/kill 结论。观测面
+        # 不受 turn_budget_sizing.enabled 门控（spec 明示恒开）。
+        bookkeeping_note = ""
+        if bookkeeping_share is not None:
+            from core.fast_track_result import get_turn_budget_sizing_config
+            _share_threshold = get_turn_budget_sizing_config(
+                self.config)["bookkeeping_share_threshold"]
+            if bookkeeping_share >= _share_threshold:
+                self.logger.warning(
+                    "agent_runner",
+                    f"Turn limit decision for '{spec_name}' ({run_id}): "
+                    f"bookkeeping share {bookkeeping_share:.2f} >= threshold "
+                    f"{_share_threshold:.2f}（TaskCreate+TaskUpdate 占全部工具"
+                    f"调用，整 run 累计口径）——低效/打转信号，仅注记不改判定",
+                    {"run_id": run_id, "spec": spec_name,
+                     "bookkeeping_share": bookkeeping_share,
+                     "threshold": _share_threshold},
+                )
+                bookkeeping_note = (
+                    f"bookkeeping_share={bookkeeping_share:.2f}"
+                    f">={_share_threshold:.2f}")
+
         def _annotated(evidence: str) -> str:
-            """evidence 统一拼接 remaining_tasks（extend/kill 分支同口径）。"""
-            return (evidence + " | remaining_tasks="
-                    + ("unavailable" if remaining_tasks is None
-                       else str(remaining_tasks)))
+            """evidence 统一注记（2.1/2.2）：簿记占比告警注记 + remaining_tasks。"""
+            parts = [evidence]
+            if bookkeeping_note:
+                parts.append(bookkeeping_note)
+            parts.append(
+                "remaining_tasks="
+                + ("unavailable" if remaining_tasks is None
+                   else str(remaining_tasks)))
+            return " | ".join(parts)
 
         if turn_extensions_used >= TURN_EXTENSION_MAX:
             return {
@@ -5327,7 +5381,8 @@ class AgentRunner:
                     # tool_result 流量活性）判定续期或终止，与超时路径同构。
                     action = self._turn_limit_action(
                         run_file, spec_name, run_id, turn_extensions_used,
-                        cwd, agent_type=agent_type, max_turns=max_turns)
+                        cwd, agent_type=agent_type, max_turns=max_turns,
+                        bookkeeping_share=_bookkeeping_tool_share(tool_metrics))
                     if action["action"] == "extend":
                         turn_extensions_used = int(action["extension_index"])
                         current_turn_cap = int(action["new_turn_cap"])
@@ -5462,6 +5517,18 @@ class AgentRunner:
                 _tool_hist = dict(sorted(tool_metrics["tool_uses"].items()))
                 _text_turns = tool_metrics["text_turns"]
                 _tools_total = sum(_tool_hist.values())
+                # 剩余工作量观测（evo-add-impl-run-budget-sizing 2.2）：run
+                # 收尾时点快照（main 树 parse_tasks_md 口径，与判定时点同源）；
+                # 解析失败记 None——观测字段不阻断 run 终态落盘。
+                _remaining_tasks = None
+                if spec_name:
+                    try:
+                        from core.run_task_track import parse_tasks_md as _ptm
+                        _tm_all, _tm_checked = _ptm(self.project_root, spec_name)
+                        if _tm_all:
+                            _remaining_tasks = len(_tm_all) - len(_tm_checked)
+                    except Exception:
+                        _remaining_tasks = None
                 # 指标行落盘（正常路径先于终态行，type 为 run_metrics）。
                 # [fenix-ignore:4782bd380bdd] 崩溃路径 run_metrics 行落在
                 # except 先写的 error 行之后是权威测试锁定的契约形态
@@ -5483,6 +5550,7 @@ class AgentRunner:
                     "text_turns": _text_turns,
                     "tool_uses_total": _tools_total,
                     "tool_uses": _tool_hist,
+                    "remaining_tasks": _remaining_tasks,
                 })
                 # 日志侧也落一份（与既有的 _log_run_metrics 同源，
                 # dashboard 读侧按 metric_type==run_metrics 增量索引）
@@ -5502,6 +5570,7 @@ class AgentRunner:
                         "text_turns": _text_turns,
                         "tool_uses_total": _tools_total,
                         "tool_uses": _tool_hist,
+                        "remaining_tasks": _remaining_tasks,
                     },
                 )
                 # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）
