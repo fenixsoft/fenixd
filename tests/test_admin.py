@@ -1063,6 +1063,130 @@ class TestAdminDispatchMutualExclusion:
         inv.assert_not_called()
 
 
+class TestCrossTypeDispatchMutex:
+    """跨 signal_type 在飞互斥（fix-admin-cross-type-duplicate-dispatch）。
+
+    摄取循环 / 到期重派 / 孤儿重派三路径统一 spec 单键口径
+    （``_has_active_admin_run_for_spec`` → 模块级 ``_spec_has_active_admin_run``）：
+    2026-10-02 cimbar-airgap-transfer 实证按 ``(spec, signal_type)`` 精确匹配时，
+    escalation 即时链路派的 ``manual-intervention`` 在飞 run 挡不住摄取链路对
+    ``verify_contract_missing`` 信号的二次派发（两个 Administrator run 并行处置
+    同一 SPEC）。窄口径方法已收敛删除；孤儿重派的 ``exclude_run_id``（排除被
+    处理的中断 run 自身）语义保持。
+    """
+
+    def _append_inflight_manual(self, mon):
+        """跨类型在飞 run1（escalation 即时链路派的 manual-intervention 处置）。"""
+        mon.store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "manual-intervention", "spec": "spec-a",
+            "admin_run_id": "admin-spec-a-1", "description": "人工介入处置中",
+        })
+
+    def test_ingest_loop_skips_cross_type_inflight(self, tmp_path):
+        """① 摄取循环：manual-intervention 在飞时摄取 verify_contract_missing → 不唤起、源记录未消费。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        self._append_inflight_manual(mon)
+        mon.store.append({
+            "kind": SIGNAL, "signal_type": "verify_contract_missing",
+            "spec": "spec-a", "severity": "major",
+            "description": "缺验证契约", "evidence": "项目名=spec-a",
+        })
+        with mock.patch.object(mon, "_invoke_administrator") as inv:
+            got = mon._detect_family_explosion()
+        inv.assert_not_called()  # 按 spec 单键判定，跨类型命中 → 不唤起第二个 Administrator
+        assert got == []
+        # 跳过不 mark_escalated——源记录保持未消费（写入即待唤起语义保留），
+        # 在飞 run 结束后的下一巡检周期自然重评
+        src = [r for r in mon.store.read_all()
+               if r.get("kind") == SIGNAL and r.get("signal_type") == "verify_contract_missing"]
+        assert src and not any(r.get("escalated") for r in src)
+
+    def test_retry_due_skips_cross_type_inflight_without_bump(self, tmp_path):
+        """② 到期重派：跨类型在飞时跳过且不 bump retry_count（互斥非派发失败）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        self._append_inflight_manual(mon)
+        mon.store.append({
+            "kind": ESCALATION, "signal_type": "verify_contract_missing",
+            "spec": "spec-a", "severity": "major",
+            "description": "Administrator 派发失败，待到期重试",
+            "handled": False, "retry_count": 0, "next_retry_at": iso_ago(1),
+        })
+        with mock.patch.object(mon, "_invoke_administrator") as inv:
+            retried = mon._retry_due_dispatch_failures(now=time.time())
+        assert retried == 0
+        inv.assert_not_called()
+        esc = [r for r in mon.store.read_all() if r.get("kind") == ESCALATION]
+        assert esc and int(esc[0].get("retry_count") or 0) == 0  # 跳过不 bump，下轮到期仍会重评
+
+    def _setup_orphan(self, proot, mon, *, with_cross_type: bool):
+        """孤儿重派装置：自身 pending（run 含 interrupted 标记）+ 回溯信号；跨类型在飞可选。
+
+        自身 pending 记录 backdate 超 grace（15m）、run 文件末行 interrupted
+        （死亡证据门 + 已知中断标记）；跨类型在飞 run2 不 backdate（孤儿循环
+        按 grace 跳过，仅供互斥守卫命中）。
+        """
+        store = mon.store
+        own = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "orphaned_state", "spec": "spec-a",
+            "admin_run_id": "admin-spec-a-1",
+        })
+        if with_cross_type:
+            store.append({
+                "kind": DISPOSITION, "status": "pending", "result": "pending",
+                "signal_type": "manual-intervention", "spec": "spec-a",
+                "admin_run_id": "admin-spec-a-2", "description": "人工介入处置中",
+            })
+        # 底层未处理信号（escalated=true 才会被 unhandled_signal_for 回溯）
+        store.append({
+            "kind": SIGNAL, "signal_type": "orphaned_state", "spec": "spec-a",
+            "severity": "major", "description": "孤儿信号", "evidence": "e",
+            "escalated": True,
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text(encoding="utf-8"))
+        for r in alerts:
+            if r["id"] == own["id"]:
+                r["created"] = iso_ago(40)
+        (proot / ".fenix" / "admin_alerts.json").write_text(
+            json.dumps(alerts, ensure_ascii=False), encoding="utf-8")
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / "admin-spec-a-1.jsonl").write_text(
+            json.dumps({"type": "interrupted"}) + "\n", encoding="utf-8")
+
+    def test_orphan_reschedule_blocked_by_cross_type_inflight(self, tmp_path):
+        """③a 孤儿重派：自身 pending + 跨类型在飞 → 不重派（exclude_run_id 仅排除自身），回落 interrupted 终结。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        self._setup_orphan(proot, mon, with_cross_type=True)
+        with mock.patch.object(mon, "_invoke_administrator") as inv:
+            mon._recover_orphaned_dispositions()
+        inv.assert_not_called()
+        own = [r for r in mon.store.read_all() if r.get("admin_run_id") == "admin-spec-a-1"]
+        assert not any(r.get("result") == "superseded" for r in own)  # 重派被抑制
+        assert any((r.get("status") or r.get("result")) == "interrupted" for r in own)  # 回落原终结逻辑
+        other = [r for r in mon.store.read_all() if r.get("admin_run_id") == "admin-spec-a-2"]
+        assert any((r.get("status") or r.get("result")) == "pending" for r in other)  # 在飞 run 不受影响
+
+    def test_orphan_reschedule_proceeds_without_other_inflight(self, tmp_path):
+        """③b 孤儿重派：仅自身、无其他在飞 → 照常重派（exclude_run_id 排除自身语义保持）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        self._setup_orphan(proot, mon, with_cross_type=False)
+        with mock.patch.object(mon, "_invoke_administrator") as inv:
+            mon._recover_orphaned_dispositions()
+        assert inv.call_count == 1
+        own = [r for r in mon.store.read_all() if r.get("admin_run_id") == "admin-spec-a-1"]
+        assert any(r.get("result") == "superseded" for r in own)  # 中断 run 被正常重派
+
+
 # ── 2026-09-18 取证：已入队待槽 ≠ 无驱动（条件 ④）─────────────────
 
 class TestQueuedDispatchSuppressesOrphanedProbe:
