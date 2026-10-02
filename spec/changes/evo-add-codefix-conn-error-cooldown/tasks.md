@@ -36,3 +36,9 @@
 - [x] 4.1 tests/test_codefix_conn_error_cooldown.py：分类判据单测——ENOTFOUND 文本命中、单轮超时文本不误判、成功信封（exit 0）与 stderr 定噪行均不触发
 - [x] 4.2 tests/test_codefix_conn_error_cooldown.py：冷却闸门单测——冷却内置态后 checkpoint 拒投递、到期恢复投递、配置覆盖与非法值回退、持久化读回（重启后仍拦）
 - [x] 4.3 tests/test_codefix_conn_error_cooldown.py：告警与跨日指纹单测——SIGNAL 告警字段断言、24h±5 分钟命中升级、10 分钟内同指纹不重复升级
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-add-codefix-conn-error-cooldown/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
