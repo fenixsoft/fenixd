@@ -17,6 +17,8 @@
 - **只读判定收在 verify_contract.py**：新增公共函数（如 `contract_file_unresolvable(project_root) -> bool`），内部复用 `_load_verify_contract_with_raw`（:252），以「文件存在且返回 (None, None)」为真；文件缺失返回假。单次读取同源，避免第二套解析口径漂移。
 - **触发窗口取 ready/implementing**：spec 进入 testing 后消费期 fail-fast（pipeline.py:2850-2894）已是权威检测点，前置检测器在 testing 及之后静默，保证同一形态不双发信号。
 - **description 注明「前置预检」**：与消费期信号文案区分，Administrator 处置可识别触发来源；recommended_action 复用既有起草指引（admin_monitor.py:346），不另写一套。
+- **description 须注明「勿复位 spec 状态」**：ADR-080 收尾动作「spec 复位 ready 触发重验证」是消费期场景语义（spec 已被验证失败打断）；前置信号触发时 spec 尚在 ready/implementing、可能有活跃实现 run，且 VALID_TRANSITIONS 允许 IMPLEMENTING→READY（admin_monitor.py:4676）——Administrator 机械复位会把进行中的实现打回重做、与活跃 run 收尾竞态。前置起草落位即可（验证消费点届时经 mtime 门直接放行），description 须写明「spec 仍在实现流程中，起草落位即可，勿复位 spec 状态」。
+- **项目级单例信号**：契约是项目级产物（一个项目一份 .fenix/verify.yaml），既有节流按 (spec, signal_type) 判定、对不同 spec 不互斥——检测器若按命中 spec 逐个产出信号，N 个 ready/implementing spec 会放大为 N 次唤起。检测器 MUST 只返回一条信号（spec 字段取首个命中 spec），同项目多 spec 命中不放大唤起。
 - **不收「文件缺失」形态**：ADR-080 与 verify_contract.py:2006-2007 的「缺失=合法回退」是既定语义，前置预检只治理「模板态文件挂着从未裁决」这一确定性缺口，避免把无契约项目误入起草强制流。
 
 ## Risks

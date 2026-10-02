@@ -7,7 +7,12 @@
 #### Scenario: ready spec 撞上全注释模板
 
 WHEN 项目存在状态为 ready 或 implementing 的 spec，且 `.fenix/verify.yaml` 文件存在、经 yaml 解析不产生顶层映射（全注释模板即此形态）
-THEN 巡检写一条 `verify_contract_missing` 信号，spec 字段为该 spec 名，description 注明「前置预检：验证契约仍为未裁决模板态」，evidence 含项目根与契约路径
+THEN 巡检写一条 `verify_contract_missing` 信号，spec 字段为该 spec 名，description 注明「前置预检：验证契约仍为未裁决模板态；spec 仍在实现流程中，起草落位即可，勿复位 spec 状态」（避免 Administrator 沿用消费期场景的「spec 复位 ready」收尾、把进行中的实现打回重做），evidence 含项目根与契约路径
+
+#### Scenario: 多 spec 命中仅一条信号
+
+WHEN 项目存在多个状态为 ready 或 implementing 的 spec，且 `.fenix/verify.yaml` 处于模板态
+THEN 巡检仅写一条 `verify_contract_missing` 信号（spec 字段取首个命中 spec），不按 spec 数量放大唤起——契约是项目级产物，既有 (spec, signal_type) 节流对不同 spec 不互斥
 
 #### Scenario: 有效契约不触发
 
