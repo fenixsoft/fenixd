@@ -106,30 +106,76 @@ def _fill_and_scan_placeholders(
     agent_type: str,
     context_id: str,
     label: str = "run_id",
+    template_name: str | None = None,
 ) -> str:
-    """独立构建路径与主路径共用收尾：单趟填充 + 未解析占位符残留扫描告警。
+    """独立构建路径与主路径共用收尾：单趟填充 + 未解析占位符残留双通道判别。
 
     code-review item ebd39ad068f3：self-review/evolution/code-review/code-fix
     四条独立构建路径（不走 _fill_placeholders）原先各自 _single_pass_replace
     后直接返回，仅 code-review 有残留扫描——模板漂移导致的注入静默丢失在
     其余三条车道不可见，与 add-code-review-auto-fix 的 fail-open 可观测口径
-    不齐。统一收尾：扫描扣除 values 已知键（正文含合法 {snake_case} 字面量
-    时不误报），残留记 warning 不阻断派发；日志消息结构沿用
-    _build_code_review_prompt 既有实现（agent=<车道> <label>=<context_id>
-    leftover=<残留键>）。独立路径用默认 label="run_id"（context_id 传 run
+    不齐。统一收尾：独立路径用默认 label="run_id"（context_id 传 run
     token），主路径 _fill_placeholders 传 label="spec"（context_id 传
     spec_name）——同一收尾不再维护两份手写扫描拷贝。
+
+    双通道判别（evo-improve-placeholder-scan-discrimination D1）：残留扫描
+    拆两段，分清「模板骨架真漂移」（值得告警）与「注入值字面量」（合法文本）：
+
+    - 通道一（模板侧真漂移）：填充前对模板骨架扫描（findall(template)）与
+      values 键集作差——模板引用了构建方未填充的占位符，保留 WARNING 且消息
+      补模板名（template_name，由 AGENT_PROMPT_FILES[agent_type] 导出），
+      可直达模板文件；当前 12 模板实测零漂移，无需预置豁免机制。
+    - 通道二（注入值字面量）：填充后残差扣除模板侧已告警键——注入值文本
+      （code-review 台账引用的源码片段 f-string「{e}」、URL 模板「&doc=${doc}」
+      等）里的花括号字面量是合法内容，降为 INFO 计数不再打 WARNING（历史
+      WARNING 无人消费且字面量键名回流下游形成自指噪音）。
+
+    template_name keyword 缺省 None 时退化为单通道现行为（全残差 WARNING、
+    无通道判别），不破坏潜在非白名单调用方；填充行为保持无条件 return out
+    不阻断派发。边界注记（评审修补）：注入值字面量与模板真漂移同键时，残差
+    扣除 template_leftover 会把该字面量一并归入模板通道——仅多计一条
+    WARNING，无 INFO 漏报，亦不影响返回值，保守方向可接受，不预置消歧机制。
     """
     out = _single_pass_replace(template, values)
-    leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))
-    if leftover:
+    value_keys = set(values)
+    if template_name is None:
+        # 向后兼容：未传模板标识的调用方退化单通道现行为（不判别通道）。
+        leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - value_keys)
+        if leftover:
+            _logger.warning(
+                "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
+                "agent=%s %s=%s leftover=%s",
+                agent_type,
+                label,
+                context_id,
+                leftover,
+            )
+        return out
+    # 通道一：模板骨架真漂移（填充前扫描，与 values 键集作差）。
+    template_leftover = set(_PLACEHOLDER_RE.findall(template)) - value_keys
+    # 通道二：注入值字面量（填充后残差扣除模板侧已告警键）。
+    injected_literals = (
+        set(_PLACEHOLDER_RE.findall(out)) - value_keys - template_leftover
+    )
+    if template_leftover:
         _logger.warning(
             "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
-            "agent=%s %s=%s leftover=%s",
+            "agent=%s template=%s %s=%s leftover=%s",
             agent_type,
+            template_name,
             label,
             context_id,
-            leftover,
+            sorted(template_leftover),
+        )
+    if injected_literals:
+        _logger.info(
+            "提示词占位符字面量（注入值合法文本，不计模板漂移）: "
+            "agent=%s template=%s %s=%s count=%s",
+            agent_type,
+            template_name,
+            label,
+            context_id,
+            len(injected_literals),
         )
     return out
 
@@ -345,7 +391,8 @@ class PromptBuilder:
         # 与四条独立构建路径共用同一收尾 _fill_and_scan_placeholders（原手写拷贝
         # 仅日志字段不同，已参数化），日志按本路径维度记 spec=<spec_name>。
         return _fill_and_scan_placeholders(
-            template, values, agent_type, spec_name, label="spec"
+            template, values, agent_type, spec_name, label="spec",
+            template_name=AGENT_PROMPT_FILES[agent_type],
         )
 
     def _build_prompt(
@@ -1544,6 +1591,7 @@ class PromptBuilder:
             },
             "self-review",
             token,
+            template_name=AGENT_PROMPT_FILES["self-review"],
         )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
@@ -1618,6 +1666,7 @@ class PromptBuilder:
             },
             "evolution",
             spec_name,
+            template_name=AGENT_PROMPT_FILES["evolution"],
         )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
@@ -1681,7 +1730,10 @@ class PromptBuilder:
         }
         # 填充 + 残留占位符扫描告警走共用收尾（code-review item ebd39ad068f3）；
         # 日志参数用 token（本函数无 run_id 名，误引用曾致 NameError 使派发失败）。
-        prompt = _fill_and_scan_placeholders(template, values, "code-review", str(token))
+        prompt = _fill_and_scan_placeholders(
+            template, values, "code-review", str(token),
+            template_name=AGENT_PROMPT_FILES["code-review"],
+        )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
@@ -1743,6 +1795,7 @@ class PromptBuilder:
             },
             "code-fix",
             run_id,
+            template_name=AGENT_PROMPT_FILES["code-fix"],
         )
         # 回归失败重试轮注入（task 5.6）：上一轮全量回归的失败用例摘要——
         # 令 agent 优先修复其上轮修复引入的回归，再继续处置清单剩余条目。
