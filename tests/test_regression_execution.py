@@ -16,7 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -177,6 +177,24 @@ class TestExtractLongTests(unittest.TestCase):
 
     def test_empty_cases(self):
         self.assertEqual(extract_long_tests([], 10), [])
+
+    def test_long_tests_carry_classname(self):
+        """add-regression-issues-rerun 1.1：long_tests 条目透传 classname
+        （定向子集 nodeid 映射源，对齐 failures 侧 add-codefix-targeted-retry
+        1.1 的补齐做法；cases 侧本就携带）。"""
+        cases = [
+            {"name": "slow", "file": "tests/test_x.py", "line": 3, "time": 20.0,
+             "classname": "tests.test_x"},
+        ]
+        long = extract_long_tests(cases, 10)
+        self.assertEqual(long[0]["classname"], "tests.test_x")
+
+    def test_legacy_cases_without_classname_tolerated(self):
+        """缺 classname 的存量快照不受影响（读侧宽松）：键兜底空串不抛异常，
+        消费端映射按 fail-closed 回退全量（不在此处判）。"""
+        cases = [{"name": "slow", "file": "a.py", "line": 1, "time": 15.0}]
+        long = extract_long_tests(cases, 10)
+        self.assertEqual(long[0]["classname"], "")
 
 
 class TestSnapshotReadWrite(unittest.TestCase):
@@ -364,6 +382,45 @@ class TestRunRegression(unittest.TestCase):
         lt = result["long_tests"][0]
         self.assertEqual(lt["name"], "slow")
         self.assertEqual(lt["time"], 12.5)
+
+
+class TestRunScopeStamp(unittest.TestCase):
+    """run_and_write_regression 的 run_scope stamp（add-regression-issues-rerun 1.2）。
+
+    仅子集改写实际生效时由门面传 "issues"；stamp 单点在 write_result 之前，
+    覆盖全部状态路径。缺省 None 不落键（真全量可被门禁正常采信）。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _spec(self):
+        cmd = (
+            'python3 -c "import xml.etree.ElementTree as ET; '
+            "root=ET.Element('testsuites'); "
+            "suite=ET.SubElement(root,'testsuite',attrib={{'name':'t','tests':'1'}}); "
+            "ET.SubElement(suite,'testcase',attrib={{'classname':'c','name':'n','time':'0.1'}}); "
+            "tree=ET.ElementTree(root); tree.write('{output}')"
+            '"'
+        ).format(output="junit.xml")
+        return RegressionSpec(cmd=cmd, output="junit.xml", timeout_seconds=30,
+                              long_test_threshold_seconds=10)
+
+    def test_run_scope_issues_stamped(self):
+        """传 run_scope="issues" → 快照含 run_scope=="issues"。"""
+        result = run_and_write_regression(self.tmp, self._spec(), run_scope="issues")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["run_scope"], "issues")
+        read = read_result(self.tmp)
+        self.assertEqual(read["run_scope"], "issues")
+
+    def test_default_no_run_scope_key(self):
+        """缺省 None → 快照无 run_scope 键（既有调用点零迁移）。"""
+        result = run_and_write_regression(self.tmp, self._spec())
+        self.assertNotIn("run_scope", result)
+        read = read_result(self.tmp)
+        self.assertNotIn("run_scope", read)
 
 
 class TestReadProgress(unittest.TestCase):
@@ -558,6 +615,177 @@ class TestFenixdRegressionSignalConsumption(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(str(proot), ignore_errors=True)
+
+
+class TestFenixdScopeIssuesDispatch(unittest.TestCase):
+    """_check_regression_requests 的 scope==issues 分支（add-regression-issues-rerun 2.2）。
+
+    FenixDaemon 不整体实例化（耦合过重，对齐 TestFenixdRegressionSignalConsumption
+    先例），以 __new__ 空壳装配最小协作面（_admin_executor=None 使 worker 同步
+    执行、断言确定性）；PROJECT_ROOT 为模块全局运行期查找，patch 到临时仓库即可
+    生效；hosting_state 在消费方法体内延迟导入，patch core.fenix_session 属性即可。
+    """
+
+    def _make_repo(self) -> Path:
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        (repo / ".fenix").mkdir(parents=True)
+        (repo / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: 'true'\n"
+            "serve:\n  kind: static\n  root: site\n"
+            "ready:\n  url: /\n  expect: 200\n"
+            "regression:\n"
+            '  cmd: "pytest tests/ --junit-xml=.fenix/regression/junit.xml"\n'
+            '  output: ".fenix/regression/junit.xml"\n',
+            encoding="utf-8",
+        )
+        # 在盘测试文件（exec_root 探测目标）：classname → nodeid 重构依赖
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_demo.py").write_text(
+            "def test_a():\n    assert True\n", encoding="utf-8"
+        )
+        return repo
+
+    def _write_signal(self, repo: Path, payload: dict) -> None:
+        (repo / ".fenix" / "regression_request.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+    def _write_snapshot(self, repo: Path, snapshot: dict) -> None:
+        d = repo / ".fenix" / "regression"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "last-run.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+    def _consume(self, repo: Path):
+        """装配空壳 daemon 消费一次信号，返回 (agent_runner kwargs 列表, logger)。
+
+        logger 用 fenixd 双参接口替身（(component, message) 签名，stdlib Logger
+        会把 component 当格式串、message 当参数 → % 格式化 TypeError）。
+        """
+        import fenixd
+
+        calls = []
+
+        class _FakeLogger:
+            def __init__(self):
+                self.records = []
+
+            def _rec(self, level, component, message, context=None):
+                self.records.append((level, message))
+
+            def warning(self, component, message, context=None):
+                self._rec("WARNING", component, message, context)
+
+            def info(self, component, message, context=None):
+                self._rec("INFO", component, message, context)
+
+            def error(self, component, message, context=None):
+                self._rec("ERROR", component, message, context)
+
+        logger = _FakeLogger()
+
+        class _R:
+            run_id = "regression-1"
+            success = True
+            status = "passed"
+            error = ""
+
+        class _Runner:
+            _running_agents = {}
+
+            def run_regression(self, *a, **k):
+                calls.append(k)
+                return _R()
+
+        daemon = fenixd.FenixDaemon.__new__(fenixd.FenixDaemon)
+        daemon.logger = logger
+        daemon.admin_monitor = None
+        daemon.agent_runner = _Runner()
+        daemon._admin_executor = None  # 同步执行 _worker_with_flag
+        with patch.object(fenixd, "PROJECT_ROOT", repo), \
+                patch("core.fenix_session.hosting_state", lambda p: "managed"):
+            daemon._check_regression_requests()
+        return calls, logger
+
+    def _fresh_signal(self, scope=None) -> dict:
+        payload = {
+            "source": "dashboard",
+            "requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        if scope is not None:
+            payload["scope"] = scope
+        return payload
+
+    def test_scope_issues_dispatches_subset(self):
+        """scope=issues + 可映射快照 → run_regression 收到去重 nodeids 子集。"""
+        repo = self._make_repo()
+        # file=点分 classname 兜底形态（真实快照形态）——封装须剥离 file 才可映射
+        self._write_snapshot(repo, {
+            "status": "failed",
+            "failures": [
+                {"name": "test_a", "classname": "tests.test_demo",
+                 "file": "tests.test_demo", "line": 1, "time": 0.1,
+                 "kind": "failure", "message": "boom"},
+            ],
+            "long_tests": [
+                {"name": "test_slow", "classname": "tests.test_demo",
+                 "file": "tests.test_demo", "line": 5, "time": 12.0},
+            ],
+        })
+        self._write_signal(repo, self._fresh_signal(scope="issues"))
+        calls, _logger = self._consume(repo)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].get("reason"), "manual")
+        self.assertEqual(
+            calls[0].get("subset_nodeids"),
+            ["tests/test_demo.py::test_a", "tests/test_demo.py::test_slow"],
+        )
+        # 信号已消费（不残留）
+        self.assertFalse((repo / ".fenix" / "regression_request.json").exists())
+
+    def test_scope_issues_missing_classname_falls_back_full(self):
+        """缺 classname（存量旧快照）→ WARNING 留痕回退全量，请求不丢。"""
+        repo = self._make_repo()
+        self._write_snapshot(repo, {
+            "status": "failed",
+            "failures": [
+                {"name": "test_a", "file": "tests/test_demo.py", "line": 1,
+                 "time": 0.1, "kind": "failure", "message": "boom"},
+            ],
+            "long_tests": [],
+        })
+        self._write_signal(repo, self._fresh_signal(scope="issues"))
+        calls, logger = self._consume(repo)
+        self.assertEqual(len(calls), 1, "回退全量仍 MUST 派发（请求不丢）")
+        self.assertNotIn("subset_nodeids", calls[0])
+        # fail-closed 回退 WARNING 留痕（对齐 targeted-retry 既有语义）
+        self.assertTrue(any(
+            lvl == "WARNING" and "回退全量" in msg for lvl, msg in logger.records
+        ), f"应记回退 WARNING，实际: {logger.records}")
+        self.assertFalse((repo / ".fenix" / "regression_request.json").exists())
+
+    def test_no_scope_dispatches_full(self):
+        """无 scope 键（存量写手）→ 按全量消费，行为与既有完全一致。"""
+        repo = self._make_repo()
+        self._write_snapshot(repo, {
+            "status": "failed",
+            "failures": [
+                {"name": "test_a", "classname": "tests.test_demo", "line": 1,
+                 "time": 0.1, "kind": "failure"},
+            ],
+        })
+        self._write_signal(repo, self._fresh_signal())
+        calls, _logger = self._consume(repo)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("subset_nodeids", calls[0])
+
+    def test_unknown_scope_dispatches_full(self):
+        """未知 scope 值 → 按全量消费（向后兼容，不猜语义）。"""
+        repo = self._make_repo()
+        self._write_signal(repo, self._fresh_signal(scope="whatever"))
+        calls, _logger = self._consume(repo)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("subset_nodeids", calls[0])
 
 
 if __name__ == "__main__":

@@ -3642,11 +3642,57 @@ class FenixDaemon:
             f"消费 regression 手动触发信号：requested_at={requested_at}",
         )
 
+        # scope=issues 分支（add-regression-issues-rerun 2.2，D2）：定向子集
+        # 回归——消费时点从最近快照计算 failures+long_tests 的 nodeid 并集
+        # （映射依赖 exec_root 在盘测试文件探测，且快照可能在信号滞留窗口内
+        # 被覆盖，消费时点计算才新鲜）。fail-closed：映射失败 / 结果空 →
+        # WARNING 留痕并按全量派发（请求不丢，宁可慢跑不静默漏跑）；
+        # 无 scope / 未知 scope 按既有全量路径（行为逐字节不变）。
+        subset_nodeids = None
+        if payload.get("scope") == "issues":
+            from core.code_fix import map_snapshot_issues_to_nodeids
+            from core.regression import read_result
+
+            try:
+                snapshot = read_result(PROJECT_ROOT)
+                nodeids, mapped = map_snapshot_issues_to_nodeids(
+                    snapshot, PROJECT_ROOT
+                )
+            except Exception as e:  # noqa: BLE001 — 读快照/映射异常兜底回全量
+                nodeids, mapped = [], False
+                self.logger.warning(
+                    "fenixd",
+                    f"定向子集计算异常（{e}），回退全量回归",
+                )
+            if mapped and nodeids:
+                subset_nodeids = nodeids
+                self.logger.info(
+                    "fenixd",
+                    f"定向子集回归：{len(nodeids)} 例"
+                    "（快照 failures+long_tests 并集去重）",
+                )
+            elif mapped:
+                self.logger.warning(
+                    "fenixd",
+                    "定向子集为空（快照无异常用例），回退全量回归",
+                )
+            else:
+                self.logger.warning(
+                    "fenixd",
+                    "定向子集不可用（快照条目缺 classname 或无法映射为 "
+                    "nodeid，如存量旧快照/非 pytest 形态），回退全量回归",
+                )
+
         def _worker():
             try:
-                result = self.agent_runner.run_regression(
-                    spec, reason="manual"
-                )
+                if subset_nodeids:
+                    result = self.agent_runner.run_regression(
+                        spec, reason="manual", subset_nodeids=subset_nodeids
+                    )
+                else:
+                    result = self.agent_runner.run_regression(
+                        spec, reason="manual"
+                    )
                 self.logger.info(
                     "fenixd",
                     f"回归完成：run_id={result.run_id}, status={result.status}"

@@ -15,6 +15,10 @@
 // - 「自动修复回归问题」按钮（add-regression-auto-fix）：可用性由快照机械判定
 //   （有异常用例才可用），POST /api/regression/fix 写触发信号 → daemon 消费
 //   （回归快照→code-fix 台账条目→修复批），轮询 fix-result 回链反馈。
+// - 「立即执行错误/长耗时回归」按钮（add-regression-issues-rerun）：POST
+//   /api/regression/run-issues 写 scope=issues 信号 → daemon 消费端按最近
+//   快照算 failures+long_tests 的 nodeid 并集定向重跑（无法定向时 fail-closed
+//   回退全量）；快照带 run_scope=="issues" 时概览卡展示「定向子集」标识。
 //
 // 运行中判据（task 5.6）：以服务端快照的 `running` 字段为准（marker 新鲜度
 // 判定，见 core/regression.is_regression_running），MUST NOT 仅以 POST 受理
@@ -42,6 +46,7 @@ import {
   getRegressionResult,
   isTriggerResultForRequest,
   triggerRegression,
+  triggerRegressionIssues,
 } from '../../../services/dashboard';
 import type {
   RegressionFixRunResult,
@@ -116,6 +121,119 @@ function triggerBtnLabel(running: boolean, awaitingStart: boolean): string {
   if (running) return '回归进行中…';
   if (awaitingStart) return '等待启动…';
   return '立即执行全量回归';
+}
+
+// ── 定向子集触发（add-regression-issues-rerun 5.2）────────────────────
+// 按钮文案 / Tooltip 单源（spec：primary 蓝底白字，位于全量按钮左侧；
+// 回退行为在 Tooltip 预告，映射失败静默感由消费端 warning 留痕兜底）。
+export const ISSUES_BTN_TEXT = '立即执行错误/长耗时回归';
+export const ISSUES_BTN_TOOLTIP = '只重跑失败/错误/长耗时的用例；无法定向时自动回退全量';
+export const ISSUES_BTN_DISABLED_TOOLTIP = '无异常用例可重跑';
+export const SUBSET_TAG_TEXT = '定向子集';
+
+/** 定向子集按钮可用性机械判定（spec 口径）：快照 failures 或 long_tests
+ * 非空（结果表存在可重跑行；「整体超时」伪行非用例、不计入——与
+ * fixAvailable 的 timeout 分支刻意不同口径，超时无可重跑的具体用例）。 */
+export function issuesAvailable(snapshot: RegressionResult | null | undefined): boolean {
+  return (
+    (snapshot?.failures?.length ?? 0) > 0 ||
+    (snapshot?.long_tests?.length ?? 0) > 0
+  );
+}
+
+/** 子集快照判定：run_scope == "issues"（仅子集改写实际生效时后端 stamp）。 */
+export function isSubsetSnapshot(snapshot: RegressionResult | null | undefined): boolean {
+  return snapshot?.run_scope === 'issues';
+}
+
+/** 子集快照口径说明（概览卡「定向子集」Tag 旁 secondary 文案；非子集快照
+ * 返回空串不渲染——防子集计数被误读为全量，spec Scenario「子集快照标识」）。 */
+export function subsetScopeNote(snapshot: RegressionResult | null | undefined): string {
+  return isSubsetSnapshot(snapshot)
+    ? '本快照为定向子集回归结果：用例总数/通过数按子集口径（只重跑失败/错误/长耗时用例），再执行一次全量回归即恢复全量口径。'
+    : '';
+}
+
+/** 概览卡状态行（非运行中分支，add-regression-issues-rerun 5.2 抽为纯渲染
+ * 单元，供前端测试断言「定向子集」标识）：状态 Tag + 子集快照 Tag。 */
+export function statusTagRow(snapshot: RegressionResult | null) {
+  const status = snapshot?.status ?? 'never_run';
+  return (
+    <Space size={8}>
+      <Tag color={STATUS_TAG_COLOR[status] ?? 'red'}>
+        {STATUS_TAG_TEXT[status] ?? '存在失败'}
+      </Tag>
+      {isSubsetSnapshot(snapshot) ? <Tag color="blue">{SUBSET_TAG_TEXT}</Tag> : null}
+    </Space>
+  );
+}
+
+/** 概览卡按钮行（add-regression-issues-rerun 5.2 抽为纯渲染单元，供前端
+ * 测试以元素树断言形态与接线）：自动修复 → 定向子集（primary）→ 全量。
+ * 三键禁用口径：running / awaitingStart 全禁；定向子集另受可用性机械判定
+ * （不可用禁用，span+Tooltip 说明，对齐自动修复禁用态范式）。 */
+export function overviewActions(opts: {
+  snapshot: RegressionResult | null;
+  running: boolean;
+  awaitingStart: boolean;
+  triggering: boolean;
+  issuesTriggering: boolean;
+  fixPending: boolean;
+  onFix: () => void;
+  onTriggerIssues: () => void;
+  onTrigger: () => void;
+}) {
+  const { snapshot, running, awaitingStart } = opts;
+  // 自动修复可用性（add-regression-auto-fix 既有口径：failures/long_tests
+  // 非空或整体超时）——随按钮行一并收拢，行为与抽取前逐字节一致
+  const fixAvailable =
+    (snapshot?.failures?.length ?? 0) > 0 ||
+    (snapshot?.long_tests?.length ?? 0) > 0 ||
+    snapshot?.status === 'timeout';
+  const issuesOk = issuesAvailable(snapshot);
+  return (
+    <div style={{ marginTop: 4, textAlign: 'right' }}>
+      <Space>
+        {/* 自动修复回归问题（add-regression-auto-fix）：可用性由快照机械
+            判定；全绿禁用态悬停提示「无异常用例可修复」。disabled 按钮
+            不触发悬停事件，按 antd 惯例外包一层 span 承载 Tooltip。 */}
+        <Tooltip title={fixAvailable ? undefined : '无异常用例可修复'}>
+          <span>
+            <Button
+              loading={opts.fixPending}
+              disabled={!fixAvailable || running || awaitingStart}
+              onClick={opts.onFix}
+            >
+              自动修复回归问题
+            </Button>
+          </span>
+        </Tooltip>
+        {/* 定向子集回归（add-regression-issues-rerun）：primary 蓝底白字，
+            位于全量按钮左侧；可用时 Tooltip 预告回退行为，不可用禁用态
+            悬停提示「无异常用例可重跑」（同 span 承载范式） */}
+        <Tooltip title={issuesOk ? ISSUES_BTN_TOOLTIP : ISSUES_BTN_DISABLED_TOOLTIP}>
+          <span>
+            <Button
+              type="primary"
+              loading={opts.issuesTriggering}
+              disabled={!issuesOk || running || awaitingStart}
+              onClick={opts.onTriggerIssues}
+            >
+              {ISSUES_BTN_TEXT}
+            </Button>
+          </span>
+        </Tooltip>
+        <Button
+          type="primary"
+          loading={opts.triggering}
+          disabled={running || awaitingStart}
+          onClick={opts.onTrigger}
+        >
+          {triggerBtnLabel(running, awaitingStart)}
+        </Button>
+      </Space>
+    </div>
+  );
 }
 
 // ── 运行中/等待启动进度视图 ──────────────────────────────────────────
@@ -243,6 +361,8 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 自动修复（add-regression-auto-fix）：触发在途 loading 态 + 回链轮询哨
   const [fixPending, setFixPending] = useState(false);
   const fixPollAbortedRef = useRef(false);
+  // 定向子集触发（add-regression-issues-rerun）：在途 loading 态
+  const [issuesTriggering, setIssuesTriggering] = useState(false);
   // 请求序号守卫（对齐 QualityTab）：轮询与手动刷新并发时较慢的早期响应
   // 不得覆盖较新数据。
   const seqRef = useRef(0);
@@ -489,6 +609,41 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     }
   };
 
+  // ── 定向子集触发（add-regression-issues-rerun 5.2）────────────────
+  // 受理范式对齐 handleTrigger：受理成功 → awaitingStart 过渡态 + 立即刷新
+  // （轮询/进度条接管）；业务拒绝按稳定错误码分支（934af264345f），错误码
+  // 面为 run-issues 端点专属五码 + 通用兜底。
+  const handleTriggerIssues = async () => {
+    if (issuesTriggering) return;
+    setIssuesTriggering(true);
+    try {
+      await triggerRegressionIssues(project);
+      message.success('已受理，daemon 将只重跑失败/错误/长耗时的用例（无法定向时自动回退全量）');
+      // 受理成功 → 等待启动过渡态（同 handleTrigger，running 置位后由真实
+      // 进度接管）；经 ref 调最新闭包（7a7ce4f87987，切项目防旧闭包后发先至）
+      setAwaitingStart(true);
+      void loadResultRef.current();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'regression_already_running') {
+        message.warning('已有回归在进行中');
+        void loadResultRef.current();
+      } else if (e instanceof ApiError && e.code === 'regression_not_configured') {
+        message.warning('该项目未配置全量回归（verify.yaml regression 段）');
+      } else if (e instanceof ApiError && e.code === 'regression_never_run') {
+        message.warning('最近一次回归快照缺失或不可解析，请先执行一次全量回归');
+      } else if (e instanceof ApiError && e.code === 'regression_no_issues') {
+        message.warning('最近一次回归无异常用例，无需定向重跑');
+      } else if (e instanceof ApiError && e.code === 'regression_request_pending') {
+        message.warning('已有未消费的回归触发请求（请稍后重试）');
+      } else {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        message.error(`触发失败: ${errMsg}`);
+      }
+    } finally {
+      setIssuesTriggering(false);
+    }
+  };
+
   if (!active) return null;
 
   const status = snapshot?.status ?? 'never_run';
@@ -578,13 +733,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     (snapshot?.failures?.length ?? 0) > 0 ||
     (snapshot?.long_tests?.length ?? 0) > 0;
 
-  // 自动修复按钮可用性（add-regression-auto-fix，spec 机械判定口径）：
-  // 快照存在且问题列表非空（failures 非空 / long_tests 非空 / 整体超时）。
-  // 回归进行中/等待启动期间快照即将被覆盖，与触发按钮同口径禁用。
-  const fixAvailable =
-    (snapshot?.failures?.length ?? 0) > 0 ||
-    (snapshot?.long_tests?.length ?? 0) > 0 ||
-    status === 'timeout';
+  // 按钮行（自动修复/定向子集/全量）收拢在 overviewActions 纯渲染单元
+  // （add-regression-issues-rerun 5.2）：可用性判定随行内聚，组件内不再
+  // 重复展开
 
   const columns: ColumnsType<CaseRow> = isMobile
     ? [
@@ -675,10 +826,15 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               {pollFailBanner}
             </Space>
           ) : (
-            <Tag color={STATUS_TAG_COLOR[status] ?? 'red'}>
-              {STATUS_TAG_TEXT[status] ?? '存在失败'}
-            </Tag>
+            statusTagRow(snapshot)
           )}
+          {/* 子集快照口径说明：防子集计数被误读为全量（用例总数按子集口径，
+              单快照覆盖语义，再跑全量即恢复） */}
+          {subsetScopeNote(snapshot) ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {subsetScopeNote(snapshot)}
+            </Typography.Text>
+          ) : null}
           <Descriptions
             className="regression-overview-desc"
             size="small"
@@ -747,32 +903,17 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             </Typography.Paragraph>
           ) : null}
           {awaitingStart && !running ? <RunningProgressView waiting /> : null}
-          <div style={{ marginTop: 4, textAlign: 'right' }}>
-            <Space>
-              {/* 自动修复回归问题（add-regression-auto-fix）：可用性由快照机械
-                  判定；全绿禁用态悬停提示「无异常用例可修复」。disabled 按钮
-                  不触发悬停事件，按 antd 惯例外包一层 span 承载 Tooltip。 */}
-              <Tooltip title={fixAvailable ? undefined : '无异常用例可修复'}>
-                <span>
-                  <Button
-                    loading={fixPending}
-                    disabled={!fixAvailable || running || awaitingStart}
-                    onClick={() => void handleFix()}
-                  >
-                    自动修复回归问题
-                  </Button>
-                </span>
-              </Tooltip>
-              <Button
-                type="primary"
-                loading={triggering}
-                disabled={running || awaitingStart}
-                onClick={() => void handleTrigger()}
-              >
-                {triggerBtnLabel(running, awaitingStart)}
-              </Button>
-            </Space>
-          </div>
+          {overviewActions({
+            snapshot,
+            running,
+            awaitingStart,
+            triggering,
+            issuesTriggering,
+            fixPending,
+            onFix: () => void handleFix(),
+            onTriggerIssues: () => void handleTriggerIssues(),
+            onTrigger: () => void handleTrigger(),
+          })}
         </Space>
       </Card>
 

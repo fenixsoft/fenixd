@@ -2058,6 +2058,9 @@ def run_regression(
             子集为空或命令非 pytest 形态（或无法安全改写）时忽略子集跑
             全量（fail-closed 到现状语义）。锁根/执行根透传语义逐字不变；
             子集替换只发生在门面层（D2：不扩散到 core.regression 原语）。
+            子集生效时经 ``run_scope="issues"`` 让快照落定向子集标记
+            （add-regression-issues-rerun 2.1，full-suite 门据此不采信），
+            回退全量的运行不落标记。
 
     返回:
         RegressionResult(status=快照状态, snapshot=完整快照)。
@@ -2079,15 +2082,19 @@ def run_regression(
         runner.project_root / ".fenix" / "regression" / f"run-{run_id}.json"
     )
     try:
+        # run_scope（add-regression-issues-rerun 2.1）：仅子集改写实际生效时
+        # stamp "issues"——回退全量的运行是真全量，不落标记（门禁可正常采信）
+        run_scope = None
         subset = list(subset_nodeids) if subset_nodeids else []
         if subset:
             subset_cmd = _apply_pytest_subset(spec.cmd, subset)
             if subset_cmd is not None:
                 spec = dataclasses.replace(spec, cmd=subset_cmd)
+                run_scope = "issues"
                 if log is not None:
                     log.info(
                         "regression",
-                        f"code-fix 定向子集回归（{len(subset)} 例，取代既有收集目标）",
+                        f"定向子集回归（{len(subset)} 例，取代既有收集目标）",
                     )
             else:
                 # 非 pytest 形态 / 无法安全改写 → 忽略子集跑全量（fail-closed）
@@ -2103,6 +2110,7 @@ def run_regression(
                 spec,
                 logger=log,
                 lock_root=lock_root,
+                run_scope=run_scope,
             )
         except Exception as e:  # noqa: BLE001 — 执行异常兜底为失败快照
             snapshot = {

@@ -2230,6 +2230,9 @@ export interface RegressionResult {
   failures?: RegressionFailure[];
   long_tests?: RegressionLongTest[];
   reason?: string;
+  /** add-regression-issues-rerun：定向子集标记——仅子集改写实际生效时后端
+   *  stamp "issues"；缺失即真全量产物（门禁/分面按全量口径采信） */
+  run_scope?: string;
 }
 
 /** 读取项目最近一次全量回归快照（分面 active 门控轮询）。 */
@@ -2242,6 +2245,21 @@ export async function getRegressionResult(project: string): Promise<RegressionRe
 export function triggerRegression(project: string) {
   return request<{ ok: boolean; requested_at: string }>(
     `/api/regression/run?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+/** add-regression-issues-rerun：手动触发定向子集回归
+ *  （POST /api/regression/run-issues，只重跑快照 failures+long_tests 用例
+ *  并集；无法定向时 daemon 消费端 fail-closed 回退全量）。409/400 时抛错
+ *  带稳定 code（同族 triggerRegression 口径，body 空对象与同族一致）。 */
+export function triggerRegressionIssues(project: string) {
+  return request<{ ok: boolean; requested_at: string }>(
+    `/api/regression/run-issues?project=${encodeURIComponent(project)}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

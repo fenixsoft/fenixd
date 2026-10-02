@@ -256,9 +256,20 @@ def extract_long_tests(
 
     对齐 design D6：long_tests 独立于 failures——一个慢但通过的用例也
     在其中（名称、文件:行、耗时）。
+
+    classname（add-regression-issues-rerun 1.1）：对齐 failures 侧
+    add-codefix-targeted-retry 1.1 的补齐做法——cases 侧本就携带，此侧
+    原样透传，作为定向子集回归 nodeid 映射源；缺 classname 的存量快照
+    读侧宽松（映射判失败回退全量，不影响展示）。
     """
     return [
-        {"name": c["name"], "file": c["file"], "line": c["line"], "time": c["time"]}
+        {
+            "name": c["name"],
+            "file": c["file"],
+            "line": c["line"],
+            "time": c["time"],
+            "classname": c.get("classname", ""),
+        }
         for c in cases
         if c["time"] > threshold
     ]
@@ -953,6 +964,7 @@ def run_and_write_regression(
     spec: RegressionSpec,
     logger=None,
     lock_root=None,
+    run_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
     """执行回归并写入快照盘（write_result），返回结果 dict。
 
@@ -963,6 +975,12 @@ def run_and_write_regression(
     lock_root（add-code-review-auto-fix D10）：透传给 run_regression 的
     主机级锁锚定根（缺省 None 回落 project_root，既有调用点零迁移）。
     worktree 内回归传 ``lock_root=<主树根>`` 使其与主树共用同一把锁。
+
+    run_scope（add-regression-issues-rerun 1.2）：定向子集标记，缺省 None
+    （既有调用点零迁移，真全量不落标记）。非 None 时在 write_result 前
+    stamp 进结果 dict（单点覆盖全部状态路径——passed/failed/timeout/
+    parse_error 同一写盘口）；仅子集改写实际生效时由门面传 ``"issues"``，
+    full-suite 质量门据此判子集产物不可见（防白洗通道）。
     """
     log = logger or _default_logger
     # 声明窗口计入锁等待预算（code-review item 652febabc458）：run_regression
@@ -976,6 +994,11 @@ def run_and_write_regression(
     try:
         result = run_regression(project_root, spec, logger=log, lock_root=lock_root)
         if result.get("status") != "skipped":
+            # run_scope 单点 stamp（add-regression-issues-rerun 1.2）：write_result
+            # 之前统一盖章，覆盖 passed/failed/timeout/parse_error 全部落盘路径；
+            # write_result 不改写调用方传入的 dict（{**result, ...} 拷贝式）
+            if run_scope is not None:
+                result = {**result, "run_scope": run_scope}
             write_result(project_root, result)
             log.info(
                 "regression",

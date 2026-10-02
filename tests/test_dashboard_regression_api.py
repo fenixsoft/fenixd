@@ -170,6 +170,207 @@ class TestRegressionRunAPI:
         finally:
             srv.stop()
 
+    def test_already_running_409(self, tmp_path, monkeypatch):
+        """守卫收敛后既有 run 端点行为回归：在跑 409 且不写信号（抽查分支）。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        import core.fenix_session
+        from core.regression import clear_running, mark_running
+
+        monkeypatch.setattr(core.fenix_session, "hosting_state", lambda p: "managed")
+        mark_running(proot, timeout_seconds=60)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run?project=proj-a", {})
+            assert status == 409
+            assert body["code"] == "regression_already_running"
+            assert not (proot / ".fenix" / "regression_request.json").exists()
+        finally:
+            clear_running(proot)
+            srv.stop()
+
+    def test_pending_signal_409(self, tmp_path, monkeypatch):
+        """守卫收敛后既有 run 端点行为回归：信号已存在 409 request_pending。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        import core.fenix_session
+
+        monkeypatch.setattr(core.fenix_session, "hosting_state", lambda p: "managed")
+        req = proot / ".fenix" / "regression_request.json"
+        req.parent.mkdir(parents=True, exist_ok=True)
+        req.write_text(json.dumps({"source": "dashboard", "requested_at": "x"}),
+                       encoding="utf-8")
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run?project=proj-a", {})
+            assert status == 409
+            assert body["code"] == "regression_request_pending"
+        finally:
+            srv.stop()
+
+
+class TestRegressionRunIssuesAPI:
+    """POST /api/regression/run-issues 受理与守卫（add-regression-issues-rerun 3.3）。"""
+
+    def _write_snapshot(self, proot: Path, snapshot: dict) -> None:
+        d = proot / ".fenix" / "regression"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "last-run.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+    @staticmethod
+    def _managed(monkeypatch):
+        import core.fenix_session
+
+        monkeypatch.setattr(core.fenix_session, "hosting_state", lambda p: "managed")
+
+    def test_accepts_writes_scope_issues_signal(self, tmp_path, monkeypatch):
+        """受理成功：信号 scope==issues 且 requested_at 与响应一致。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        self._write_snapshot(proot, {
+            "status": "failed", "total": 3, "passed": 1, "failed": 1,
+            "errors": 0, "skipped": 0,
+            "failures": [{"name": "test_a", "classname": "tests.test_demo",
+                          "file": "tests.test_demo", "line": 1, "time": 0.1,
+                          "kind": "failure", "message": "boom"}],
+            "long_tests": [],
+        })
+        self._managed(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 200
+            assert body["ok"] is True
+            assert body["requested_at"]
+            signal_path = proot / ".fenix" / "regression_request.json"
+            assert signal_path.is_file()
+            payload = json.loads(signal_path.read_text(encoding="utf-8"))
+            assert payload["scope"] == "issues"
+            assert payload["requested_at"] == body["requested_at"]
+            assert payload["source"] == "dashboard"
+        finally:
+            srv.stop()
+
+    def test_no_issues_rejected_and_no_signal(self, tmp_path, monkeypatch):
+        """快照全绿（failures/long_tests 均空且非 timeout）→ 400 no_issues 不写信号。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        self._write_snapshot(proot, {
+            "status": "passed", "total": 5, "passed": 5, "failed": 0,
+            "errors": 0, "skipped": 0, "failures": [], "long_tests": [],
+        })
+        self._managed(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 400
+            assert body["code"] == "regression_no_issues"
+            assert not (proot / ".fenix" / "regression_request.json").exists()
+        finally:
+            srv.stop()
+
+    def test_never_run_rejected(self, tmp_path, monkeypatch):
+        """快照缺失 → 400 regression_never_run 不写信号。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        self._managed(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 400
+            assert body["code"] == "regression_never_run"
+            assert not (proot / ".fenix" / "regression_request.json").exists()
+        finally:
+            srv.stop()
+
+    def test_parse_error_rejected_as_never_run(self, tmp_path, monkeypatch):
+        """快照损坏（parse_error）→ 统一归 never_run 拒绝（对齐 fix 端点）。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        d = proot / ".fenix" / "regression"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "last-run.json").write_text("not json {", encoding="utf-8")
+        self._managed(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 400
+            assert body["code"] == "regression_never_run"
+        finally:
+            srv.stop()
+
+    def test_already_running_409(self, tmp_path, monkeypatch):
+        """回归在跑（marker 新鲜）→ 409 already_running 不写信号。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        self._write_snapshot(proot, {
+            "status": "failed", "total": 1, "passed": 0, "failed": 1,
+            "errors": 0, "skipped": 0,
+            "failures": [{"name": "test_a", "classname": "tests.test_demo",
+                          "line": 1, "time": 0.1, "kind": "failure"}],
+            "long_tests": [],
+        })
+        self._managed(monkeypatch)
+        from core.regression import clear_running, mark_running
+
+        mark_running(proot, timeout_seconds=60)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 409
+            assert body["code"] == "regression_already_running"
+            assert not (proot / ".fenix" / "regression_request.json").exists()
+        finally:
+            clear_running(proot)
+            srv.stop()
+
+    def test_request_pending_409(self, tmp_path, monkeypatch):
+        """信号已存在（上一信号未消费/并发第二 POST）→ 409 request_pending。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        self._write_snapshot(proot, {
+            "status": "failed", "total": 1, "passed": 0, "failed": 1,
+            "errors": 0, "skipped": 0,
+            "failures": [{"name": "test_a", "classname": "tests.test_demo",
+                          "line": 1, "time": 0.1, "kind": "failure"}],
+            "long_tests": [],
+        })
+        self._managed(monkeypatch)
+        req = proot / ".fenix" / "regression_request.json"
+        req.parent.mkdir(parents=True, exist_ok=True)
+        req.write_text(json.dumps({"source": "dashboard", "requested_at": "x"}),
+                       encoding="utf-8")
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 409
+            assert body["code"] == "regression_request_pending"
+        finally:
+            srv.stop()
+
+    def test_not_configured_400(self, tmp_path, monkeypatch):
+        """verify.yaml 无 regression 段 → 400 not_configured（共享守卫链）。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)  # 无 regression 段
+        self._managed(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=proj-a", {})
+            assert status == 400
+            assert body["code"] == "regression_not_configured"
+            assert not (proot / ".fenix" / "regression_request.json").exists()
+        finally:
+            srv.stop()
+
+    def test_unknown_project_404(self, tmp_path):
+        proot = make_project(tmp_path)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/run-issues?project=nope", {})
+            assert status == 404
+        finally:
+            srv.stop()
+
 
 class TestRegressionConfigAdmin:
     """admin.regression 受管键：登记 / sources / 回显 / 写读 / 非法拒绝（task 3.5/3.6）。"""
