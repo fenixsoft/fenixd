@@ -1939,6 +1939,69 @@ class AdminMonitor:
         signals.extend(self._detect_blocked_stuck(specs, now))
         signals.extend(self._detect_orphaned_state(specs, now))
         signals.extend(self._detect_daemon_errors(now))
+        signals.extend(self._detect_verify_contract_unresolved(specs))
+        return signals
+
+    def _detect_verify_contract_unresolved(self, specs: dict) -> list:
+        """契约模板态前置预检（add-verify-contract-preflight 1.2）。
+
+        fenix-init 对每个新项目写入全注释 verify.yaml 模板，而消费期对
+        「文件存在但解析为 None」fail-fast、对「文件缺失」放行——两者叠加
+        使每个新项目首个 spec 推进到验证段必然卡 blocked 等待自主起草。本
+        检测器在 spec 尚未进入验证消费（状态 ready/implementing）时前置识别
+        该模板态，写既有 ``verify_contract_missing`` 信号，把契约起草从验证
+        消费点前移到实现阶段并行完成。
+
+        语义与边界：
+        - 触发窗口只取 ready/implementing：spec 进入 testing 后由消费期轻量
+          自证 fail-fast（pipeline）与其信号通道负责，两段互斥不双发；
+        - 项目级单例：契约是项目级产物（一个项目一份 .fenix/verify.yaml），
+          既有节流按 (spec, signal_type) 判定、对不同 spec 不互斥——多 spec
+          命中只产出一条信号（spec 字段取首个命中 spec），不按 spec 数量
+          放大 Administrator 唤起；
+        - description 注明「前置预检」与「勿复位 spec 状态」：前置触发时
+          spec 可能有活跃实现 run（VALID_TRANSITIONS 允许
+          IMPLEMENTING→READY），机械沿用消费期「spec 复位 ready」收尾会把
+          进行中的实现打回重做、与活跃 run 收尾竞态——前置起草落位即可
+          （验证消费点届时经 mtime 门直接放行）；
+        - 零新机制：recommended_action 复用 SIGNAL_RECOMMENDATION 既有起草
+          指引，信号写入走既有 store 通道与同 spec 节流，PREPROBE 白名单
+          已含 verify_contract_missing（契约在信号在途期间被修正为可解析时
+          免唤起），不新增信号类型、不新增去重机制；
+        - 自身异常 fail-open（对齐巡检惯例）：预检缺陷不阻断其余检测器。
+        """
+        signals = []
+        try:
+            hits = [
+                name
+                for name, entry in specs.items()
+                if entry.get("status") in ("ready", "implementing")
+            ]
+            if not hits:
+                return signals
+            from .verify_contract import CONTRACT_FILENAME, contract_file_unresolvable
+
+            if not contract_file_unresolvable(self.project_root):
+                return signals
+            hits_desc = "、".join(
+                "{}({})".format(n, specs[n].get("status")) for n in hits
+            )
+            signals.append(
+                self._make_signal(
+                    "verify_contract_missing",
+                    hits[0],
+                    "前置预检：验证契约仍为未裁决模板态；spec 仍在实现流程中，"
+                    "起草落位即可，勿复位 spec 状态",
+                    f"项目根={self.project_root}，契约路径=.fenix/"
+                    f"{CONTRACT_FILENAME}；命中 spec={hits_desc}",
+                )
+            )
+        except Exception as e:
+            # fail-open：预检缺陷不得拖垮监视器（design Risks 第 3 条）
+            self.logger.error(
+                "admin_monitor",
+                f"verify contract preflight 检测器异常（fail-open）: {e}",
+            )
         return signals
 
     def _detect_blocked_stuck(self, specs: dict, now: float) -> list:
