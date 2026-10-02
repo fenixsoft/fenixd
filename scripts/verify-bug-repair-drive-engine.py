@@ -15,6 +15,7 @@ test_case:
 """
 
 import json
+import os
 import sys
 import shutil
 import tempfile
@@ -270,7 +271,9 @@ COMMANDS = {
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print(json.dumps({"error": "usage: drive_engine.py <case> <spec>"}, ensure_ascii=False))
+        # 动态取当前脚本名：文件已由 drive_engine.py 改名，硬编码旧名会在
+        # 下次改名时再次漂移
+        print(json.dumps({"error": f"usage: {os.path.basename(sys.argv[0])} <case> <spec>"}, ensure_ascii=False))
         sys.exit(1)
     case, spec = sys.argv[1], sys.argv[2]
     if case not in COMMANDS:

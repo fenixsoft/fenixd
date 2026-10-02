@@ -90,6 +90,10 @@ STATUS_COLORS = {
     "implemented": MAGENTA,
 }
 
+# 活跃 SPEC 状态口径（code-review item 87a49c79ab80）：活跃面板与事件流高亮
+# 共用同一集合——implemented 的 SPEC 消息同样获得黄色高亮，两处「活跃」不再漂移
+ACTIVE_STATUSES = ("implementing", "testing", "implemented")
+
 
 # ── 项目注册子命令 ──────────────────────────────────────────────
 
@@ -303,7 +307,7 @@ def render_active_specs(specs):
     active = [
         (name, entry)
         for name, entry in specs.items()
-        if entry.get("status") in ("implementing", "testing", "implemented")
+        if entry.get("status") in ACTIVE_STATUSES
     ]
     # 与 fenix_status._active_sort_key 同口径：priority 为 null/缺失/非法时折叠为 999，
     # 防人工直改 STATE.md 写空值后 sorted 比较 None 与 int 抛 TypeError 崩溃渲染
@@ -393,7 +397,7 @@ def render_event_feed(specs):
     if not events:
         return f"  {GRAY}(最近 10 分钟无事件){RESET}"
 
-    active_names = {n for n, e in specs.items() if e.get("status") in ("implementing", "testing")}
+    active_names = {n for n, e in specs.items() if e.get("status") in ACTIVE_STATUSES}
 
     lines = []
     component_icons = {

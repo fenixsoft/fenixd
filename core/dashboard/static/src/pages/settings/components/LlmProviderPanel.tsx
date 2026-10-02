@@ -196,6 +196,14 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     Record<number, { loading: boolean; display?: HealthCheckDisplay }>
   >({});
 
+  // 健康检测同帧重入守卫（code-review item eea9b5b7cbd1，比照 QualityPanel 的
+  // installInFlight / useGatedFormPanel 的 savingRef 口径）：healthMap 的
+  // loading state 渲染生效存在 React 调度间隙，拦不住同帧双击——checkLlmHealth
+  // 是慢请求（含网关往返超时），同帧连点会并发发出多个检测请求（重复 toast +
+  // last-write-wins 的检测结果）。按 field.key 记录在飞行、入口写读同帧原子
+  // 短路；healthMap 的 loading 仍保留，仅作按钮 loading/disabled 视觉反馈。
+  const healthCheckInFlightRef = useRef<Set<number>>(new Set());
+
   // 表单脚手架统一走 useGatedFormPanel（code-review item 5c5a259b8443）：
   // 序列化比较回填门控（原 item 5d6582ba9951）、savingRef 重入守卫（原 item
   // fe84991f84a0 / 41641b9b90a5）、校验/持久化分离（原 item 25f889b81633）由
@@ -311,6 +319,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       message.warning(`健康检测前请先补齐该卡片的 ${missing.join('、')}`);
       return;
     }
+    // 同帧短路（item eea9b5b7cbd1）：前置补齐检查是同步代码、无调度间隙，守卫
+    // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该卡片已有检测在飞，直接 return
+    if (healthCheckInFlightRef.current.has(field.key)) return;
+    healthCheckInFlightRef.current.add(field.key);
     setHealthMap((m) => ({ ...m, [field.key]: { loading: true } }));
     try {
       const r = await checkLlmHealth({ baseurl, apikey, model });
@@ -328,6 +340,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         [field.key]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
       }));
       message.error(`健康检测请求失败：${msg}`);
+    } finally {
+      healthCheckInFlightRef.current.delete(field.key);
     }
   };
 

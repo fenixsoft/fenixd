@@ -1411,9 +1411,12 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
     # steps 为 None 的直构守卫（code-review item d47577e9058f）：数据类缺省
     # 与 from_dict 读端均归一空列表，None 只能来自直构实例——下方 per-kind
     # 词表校验的 enumerate(scenario.steps) 会对 None 抛 TypeError 穿出 run()
-    # 验收门，此处补字段级报错，走「场景验收失败」出口落报告。
+    # 验收门，此处补字段级报错后立即返回，走「场景验收失败」出口落报告
+    # （code-review item d2631ff09933：缺提前 return 时报错追加后仍在
+    # enumerate(None) 处抛 TypeError，守卫承诺的出口实际不生效）。
     if scenario.steps is None:
         errors.append(f"场景'{scenario.id}': steps 必须为步骤列表，收到 None")
+        return errors
     # kind 形态守卫（code-review item c74c42575c7c）：kind 为 dict/list 等不
     # 可哈希形态（冻结文件被手工修坏）时，对 set 求成员先抛 TypeError，被
     # 外层包成不含场景 id 的「解析失败」，拿不到「未知 kind」字段级定位。

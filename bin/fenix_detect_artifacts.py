@@ -53,6 +53,10 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(FRAMEWORK_ROOT))
 
+# package.json 构建脚本键白名单（code-review item 0c0caf5199e6）：判存在与列
+# 键名共用同一元组（单一事实源），避免两处字面量须同步演进、漏改一处漂移
+_BUILD_SCRIPT_KEYS = ("build", "dist", "release", "bundle")
+
 
 def detect_build_artifacts(project_root: Path) -> dict:
     """纯本地探测项目构建产物路径（无网络、无子进程）。
@@ -97,14 +101,8 @@ def detect_build_artifacts(project_root: Path) -> dict:
             scripts = pkg.get("scripts") or {}
             if not isinstance(scripts, dict):
                 scripts = {}
-            has_build_script = any(
-                key in ("build", "dist", "release", "bundle")
-                for key in scripts
-            )
-            if has_build_script:
-                build_script_keys = [
-                    k for k in scripts if k in ("build", "dist", "release", "bundle")
-                ]
+            build_script_keys = [k for k in scripts if k in _BUILD_SCRIPT_KEYS]
+            if build_script_keys:
                 sources.append(
                     "package.json scripts: " + ", ".join(build_script_keys)
                 )

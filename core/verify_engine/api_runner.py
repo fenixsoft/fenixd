@@ -400,6 +400,17 @@ class ApiRunner(VerifyRunner):
                 f"响应体超过读入上限（{_RESPONSE_READ_LIMIT} 字节），仅保留前缀参与解析与证据"
             )
         name = step.get("as") or ""
+        if name == "_latest":
+            # `_latest` 是框架保留键（断言缺省引用最近一次捕获）：场景 as 命名
+            # 撞上会与后续未命名步骤的 captures["_latest"] 同槽互相覆盖，断言
+            # 缺省引用读到非预期响应且无提示——与 cli_runner 同款结构化失败
+            # （code-review item f247bc4a9f97）
+            return {
+                "success": False,
+                "action": "http_request",
+                "url": url,
+                "error": "as 命名 '_latest' 是框架保留键，请改用其他名称",
+            }
         if name:
             captures[name] = capture
         captures["_latest"] = capture
@@ -545,6 +556,16 @@ class ApiRunner(VerifyRunner):
 
         capture = {"type": "sse", "events": events, "duration": duration}
         name = step.get("as") or ""
+        if name == "_latest":
+            # `_latest` 是框架保留键：场景 as 命名撞上会与未命名步骤的
+            # captures["_latest"] 同槽互相覆盖——与 cli_runner 同款结构化失败
+            # （code-review item f247bc4a9f97）
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error": "as 命名 '_latest' 是框架保留键，请改用其他名称",
+            }
         if name:
             captures[name] = capture
         captures["_latest"] = capture

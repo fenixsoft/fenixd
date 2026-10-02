@@ -2056,10 +2056,17 @@ class QQQueueMixin:
                         # 的 read_one or {} 站点对齐（对照定位用方法名/分支语义，
                         # 勿写裸行号——本文件自定约定）。
                         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-                        prev_retries = self._parse_int_field(
-                            spec_entry, "_retry_count", 0
-                        )
-                        retries = prev_retries + 1
+                        # _retry_count 锁内原子递增（code-review item
+                        # e0da51239a8d）：取写后值参与 retries >= max_r 判定与
+                        # error 文案，else 分支 update_spec 不再并写该字段（对齐
+                        # 契约违反分支与本文件 _handle_merge_back_real_failure
+                        # 同型收口，防并发写回互相覆盖丢增量）——原两段式
+                        # 「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁临界
+                        # 区，并发交错丢一次递增，max_retries 封顶与重试耗尽冻结
+                        # 晚一轮触发。冻结分支不写该字段的既有语义不变。
+                        retries = self._pm.state_machine.bump_counters(
+                            spec_name, {"_retry_count": 1}
+                        ).get("_retry_count", 0)
                         try:
                             # 配置侧 int() 归一（code-review item 84d793a3ac41，
                             # 与 adjudication.py 同款）：字符串配置裸用于比较抛
@@ -2174,7 +2181,8 @@ class QQQueueMixin:
                                 {
                                     "status": "ready",
                                     "error": final_error,
-                                    "_retry_count": retries,
+                                    # _retry_count 已由上方 bump_counters 原子递增
+                                    # 落盘，此处不再并写（防并发写回互相覆盖丢增量）
                                     "_redispatch_cause_fp": fp,
                                     "_redispatch_same_cause_streak": streak,
                                 },

@@ -123,6 +123,15 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
                 f"陈旧 JUnit XML 暂存失败（{e}），无法确保解析的是本次执行"
                 f"产出，拒绝自证: {output_rel}"
             )
+
+    def _stale_stage_hint() -> str:
+        """失败路径的暂存附记（code-review item a73f9bdeeaf8）：暂存旧产物仅
+        在自证成功路径删除，启动失败/超时/XML 不可解析等失败路径同样会遗留
+        暂存文件——统一附上暂存名，避免误删找回线索缺失。"""
+        if stale_stage is None:
+            return ""
+        return f"（旧产物已暂存为 {stale_stage.name}，如系误指非产物路径可手动找回）"
+
     use_shell = isinstance(cmd, str)
     try:
         proc = subprocess.Popen(
@@ -143,7 +152,7 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
         # 检查，非字符串/含非字符串项的列表会漏到这里），Popen 对畸形 cmd 抛
         # TypeError/ValueError——须与 OSError 同转 (False, "回归命令启动失败: …")
         # 而非裸 traceback（code-review item 92ffb7d32798）。
-        return False, f"回归命令启动失败: {e}"
+        return False, f"回归命令启动失败: {e}" + _stale_stage_hint()
     try:
         proc.wait(timeout=spec.timeout_seconds)
     except subprocess.TimeoutExpired:
@@ -167,21 +176,19 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
                     pass
         except (OSError, ProcessLookupError):
             pass
-        return False, f"回归命令超时（>{spec.timeout_seconds}s），未能确认产出 JUnit XML"
-    if not output_abs.is_file():
-        staged_hint = (
-            f"（旧产物已暂存为 {stale_stage.name}，如系误指非产物路径可手动找回）"
-            if stale_stage is not None
-            else ""
+        return False, (
+            f"回归命令超时（>{spec.timeout_seconds}s），未能确认产出 JUnit XML"
+            + _stale_stage_hint()
         )
+    if not output_abs.is_file():
         return False, (
             f"回归命令退出码 {proc.returncode}，但 JUnit XML 产物不存在: "
-            f"{output_rel}{staged_hint}"
+            f"{output_rel}{_stale_stage_hint()}"
         )
     try:
         parsed = parse_junit_xml(output_abs)
     except Exception as e:
-        return False, f"JUnit XML 不可解析: {e}"
+        return False, f"JUnit XML 不可解析: {e}" + _stale_stage_hint()
     note = f"回归自证通过（{parsed['total']} 用例，产出 {output_rel}）"
     if stale_stage is not None:
         try:

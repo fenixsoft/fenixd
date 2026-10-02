@@ -5279,7 +5279,17 @@ def _acquire_singleton_lock() -> None:
     """
     global _LOCK_FD
     lock_path = FENIX_DIR / "daemon.lock"
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as e:
+        # 锁文件不可用（.fenix 只读、daemon.lock 残留为同名目录等）：main() 在
+        # 任何 try 块之前直接调本函数，不接住就以裸 traceback 退出——按入口
+        # 路径守卫同款 FATAL 单行提示原因并以非零码干净退出。
+        print(
+            f"FATAL: 无法打开 daemon 单实例锁文件 {lock_path}: {e}，本实例退出",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

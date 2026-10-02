@@ -160,6 +160,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     Record<string, { loading: boolean; display?: HealthCheckDisplay }>
   >({});
 
+  // 行内健康检测同帧重入守卫（code-review item abd644ca22c4，比照 QualityPanel
+  // 的 installInFlight / useGatedFormPanel 的 savingRef 口径）：healthRows 的
+  // loading state 渲染生效存在 React 调度间隙，拦不住同帧双击——checkLlmHealth
+  // 是慢请求（含网关往返超时），同帧连点会并发发出多个检测请求（重复 toast +
+  // last-write-wins 的检测结论）。按 rowKey 记录在飞行、入口写读同帧原子短路；
+  // healthRows 的 loading 仍保留，仅作按钮 loading/disabled 视觉反馈。
+  const healthCheckInFlight = useRef<Set<string>>(new Set());
+
   // 各角色「rows」Form.List 的 fields 快照（render 期捕获）：handlePaste 是
   // 事件回调、拿不到内层 List 的稳定 field.key，粘贴覆盖后清理 healthRows 须
   // 按「行位置 → key」映射定位条目（code-review item 46bf16b0f8df）。
@@ -217,6 +225,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
       message.warning(resolved.error);
       return;
     }
+    // 同帧短路（item abd644ca22c4）：前置参数解析是同步代码、无调度间隙，守卫
+    // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该行已有检测在飞，直接 return
+    if (healthCheckInFlight.current.has(rowKey)) return;
+    healthCheckInFlight.current.add(rowKey);
     setHealthRows((m) => ({ ...m, [rowKey]: { loading: true } }));
     try {
       const r = await checkLlmHealth(resolved);
@@ -234,6 +246,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         [rowKey]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
       }));
       message.error(`健康检测请求失败：${msg}`);
+    } finally {
+      healthCheckInFlight.current.delete(rowKey);
     }
   };
 

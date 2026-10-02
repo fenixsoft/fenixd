@@ -401,6 +401,15 @@ def main():
             affected_tests.add(module_path)
         elif test_path.startswith("tests."):
             affected_tests.add(test_path)
+        elif test_path:
+            # 非 tests/、tests. 前缀的非空值（如误写成 unit/test_x.py 或绝对
+            # 路径）在此既不生效也不告警，配置者会误以为映射已生效而漏测；
+            # 空字符串值（docs/ → "" 表示无需测试）维持静默跳过的既有约定
+            print(
+                f"Warning: test_map.yaml explicit mapping value {test_path!r} is "
+                "not under tests/ (nor a tests. module path); ignoring it.",
+                file=sys.stderr,
+            )
 
     # Convert module paths to file paths
     test_files = []

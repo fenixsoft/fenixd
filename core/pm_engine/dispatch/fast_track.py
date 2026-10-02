@@ -736,10 +736,15 @@ class FFastTrackMixin:
             )
             self._keep_fast_track_worktree(spec_name, result)
             spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-            try:
-                retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
-            except (TypeError, ValueError):
-                retries = 1
+            # _retry_count 同型收口（code-review item 0a1571596925）：锁内原子
+            # 递增取写后值参与 max_retries 判定，随后 update_spec 不再并写该
+            # 字段（对齐本方法 merge 失败 ready 分支与 backoff.py
+            # _handle_dispatch_lock_conflict 先例，防并发写回互相覆盖丢增量）
+            # ——原两段式「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁临界
+            # 区，并发交错丢一次递增，封顶晚一轮触发、多烧一轮 fast-track run。
+            retries = self._pm.state_machine.bump_counters(
+                spec_name, {"_retry_count": 1}
+            ).get("_retry_count", 0)
             # （code-review item a7395837fcbb）本出口重派同样受 agents.max_retries
             # 封顶：派发入口不读 _retry_count 设闸，持续性「success 但 branch 为空」
             # 若只递增重派会无限烧 fast-track run 预算——封顶判据与
@@ -782,7 +787,8 @@ class FFastTrackMixin:
                 {
                     "status": "ready",
                     "error": contract_err,
-                    "_retry_count": retries,
+                    # _retry_count 已由上方 bump_counters 原子递增落盘，此处
+                    # 不再并写（防并发写回互相覆盖丢增量）
                 },
             )
             self._enqueue_front(spec_name, "fast-track")
