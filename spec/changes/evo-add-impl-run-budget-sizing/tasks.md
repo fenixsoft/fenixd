@@ -27,8 +27,8 @@
 
 ## 4. 测试
 
-- [ ] 4.1 tests/test_impl_run_budget_sizing.py：覆盖 `get_turn_budget_sizing_config` 归一化（非法类型/越界/倒挂逐项回退缺省）与 `suggested_turn_cap_for_scale` 边界（scale 等于阈值不抬、阈值+1 抬、suggested 小于 base 时取 base、override 优先序）。
-- [ ] 4.2 tests/test_impl_run_budget_sizing.py：用 seed STATE + 进程内装配（仿 tests/test_turn_limit_lifecycle.py 既有装置）覆盖：大规模 spec 启动生效上限为 suggested_turn_cap、小规模等于 base、override 优先、tasks.md 解析失败回退 base 不阻断派发；`_turn_limit_action` 在 extend 与 kill 分支的 evidence 含 remaining_tasks、turn_extension 事件落盘含该字段、簿记占比超阈只注记不改判；kill_early 关闭时同输入同输出逐位一致、开启且三条件满足时提前 kill、进度健康时仍 extend、评审/裁决车道 agent_type 不触发守卫。
+- [x] 4.1 tests/test_impl_run_budget_sizing.py：覆盖 `get_turn_budget_sizing_config` 归一化（非法类型/越界/倒挂逐项回退缺省）与 `suggested_turn_cap_for_scale` 边界（scale 等于阈值不抬、阈值+1 抬、suggested 小于 base 时取 base、override 优先序）。
+- [x] 4.2 tests/test_impl_run_budget_sizing.py：用 seed STATE + 进程内装配（仿 tests/test_turn_limit_lifecycle.py 既有装置）覆盖：大规模 spec 启动生效上限为 suggested_turn_cap、小规模等于 base、override 优先、tasks.md 解析失败回退 base 不阻断派发；`_turn_limit_action` 在 extend 与 kill 分支的 evidence 含 remaining_tasks、turn_extension 事件落盘含该字段、簿记占比超阈只注记不改判；kill_early 关闭时同输入同输出逐位一致、开启且三条件满足时提前 kill、进度健康时仍 extend、评审/裁决车道 agent_type 不触发守卫。
 
 ## 5. knowledge 注记
 
