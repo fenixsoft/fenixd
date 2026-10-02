@@ -371,6 +371,13 @@ TURN_EXTENSION_STEP_FRACTION = 0.25
 TURN_EXTENSION_MAX = 2
 TURN_EXTENSION_WINDOW_SECONDS = 60.0
 
+# 实现车道 agent_type 集合（evo-add-impl-run-budget-sizing D6）：轮数预算
+# sizing（_impl_turn_budget）与 kill_early 末位扩容守卫（_turn_limit_action）
+# 仅对实现车道生效——dispute-judge / spec-review 等评审与裁决车道 run 内
+# 勾选进度恒零，不限车道则 kill_early 开启项目内必被误杀。与
+# _salvage_impl_result 的实现车道判定同口径。
+IMPL_LANE_AGENT_TYPES = ("implementer", "fast-track")
+
 # _run_claude 的 stderr 环形缓冲容量（code-review item 0cbb6c8176cd）：与 stdout
 # 同治理（stdout 已不累积，item 85d9e72b64b3），只保留近期行供 _denoise_stderr
 # 拼装 error 文本与瞬断分类（classify_transient_error）使用，不随 run 时长无界
@@ -2617,6 +2624,12 @@ class AgentRunner:
                 self._get_config("agents.transient_backoff_schedule", "30,60,120"))
             resume_failures = 0  # resume 失败计数（首次命中即弃用死 session，见下）
             sub_run_id = attempt_run_id
+            # ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.2）──
+            # run 启动点一次计算注入（design D1：sizing 落在 runner 启动点而非
+            # pm_engine 派发点）；顺带快照任务进度作 kill_early 基线（3.1，同一
+            # 读点）。非实现车道返回 (base, None)，行为与引入前一致。
+            effective_turn_cap, _task_progress_snap = self._impl_turn_budget(
+                spec_name, agent_type)
 
             while True:
                 if transient_retries > 0:
@@ -2692,9 +2705,10 @@ class AgentRunner:
                         resume_session_id=self._resumable_session_id(
                             session_id, session_provider, provider_name, reuse_worktree,
                         ),
-                        max_turns=self._get_config("agents.max_turns", 300),
+                        max_turns=effective_turn_cap,
                         spec_name=spec_name,
                         agent_type=agent_type,
+                        task_progress_snapshot=_task_progress_snap,
                     )
                     if run_session_id:
                         session_id = run_session_id
@@ -4661,7 +4675,8 @@ class AgentRunner:
                     resume_session_id: str | None = None,
                     max_turns: int | None = None,
                     spec_name: str | None = None,
-                    agent_type: str | None = None) -> tuple:
+                    agent_type: str | None = None,
+                    task_progress_snapshot: dict | None = None) -> tuple:
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -4695,6 +4710,10 @@ class AgentRunner:
                 用于按 agent_type 注入不同 Provider 的 baseurl/apikey/model。
             resume_session_id: 非 None 时以 `--resume <id>` 续跑该 session。
             max_turns: 单次运行轮次上限；达到即 kill（None 表示不限制）。
+            task_progress_snapshot: run 启动点任务进度快照（kill_early 进度
+                基线，evo-add-impl-run-budget-sizing 3.1；``_impl_turn_budget``
+                在 1.2 同一读点顺带产出）。None（评审/裁决车道或无数字任务）
+                时守卫侧视为无基线不判不济。
 
         Returns: (output, turns_used, session_id, usage_info)。usage_info 为终态
             result 事件提取的 usage/成本（add-cost-observability D1，经
@@ -5760,6 +5779,119 @@ class AgentRunner:
         """
         from core.config import ConfigLoader
         return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
+
+    # ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.2）──────
+
+    def _impl_turn_cap_override(self, spec_name: str) -> Optional[int]:
+        """STATE per-spec 轮数上限覆写（正整数；沿 impl_run_budget_override 先例）。
+
+        state_machine 缺失/读取异常/字段非法（bool、非正整数、非数字字符串）
+        一律等价 override=None——覆写不可用不放大为 run 故障（spec「缺失 STATE
+        访问或字段非法时等价 override=None」）。
+        """
+        try:
+            if self.state_machine is None:
+                return None
+            from core.state_machine import IMPL_TURN_CAP_OVERRIDE_FIELD
+            entry = self.state_machine.read_one(spec_name) or {}
+            raw = entry.get(IMPL_TURN_CAP_OVERRIDE_FIELD)
+            if isinstance(raw, bool):
+                return None
+            if isinstance(raw, str) and raw.strip().isdigit():
+                raw = int(raw.strip())
+            if isinstance(raw, int) and raw > 0:
+                return raw
+            return None
+        except Exception as e:
+            self.logger.debug(
+                "agent_runner",
+                f"impl_turn_cap_override 读取失败（等价 override=None）: {e}",
+            )
+            return None
+
+    def _task_progress_snapshot(self, spec_name: str) -> Optional[dict]:
+        """run 启动点任务进度快照（kill_early 进度基线，3.1；main 树口径 D4）。
+
+        ``core.run_task_track.parse_tasks_md`` 单点正则（与 result_gate 硬门、
+        ``_task_completion_blocker`` 同源——禁止第二套解析）；worktree 内
+        tasks.md 未合回会滞后，main 树口径与完成度门禁判据一致。
+
+        Returns:
+            ``{"checked_ids": frozenset, "unchecked": int}``；tasks.md 无数字
+            任务/读取异常时 None（guard 侧视为无基线不判不济）。
+        """
+        try:
+            from core.run_task_track import parse_tasks_md
+            all_ids, checked = parse_tasks_md(self.project_root, spec_name)
+            if not all_ids:
+                return None
+            return {
+                "checked_ids": frozenset(checked),
+                "unchecked": len(all_ids) - len(checked),
+            }
+        except Exception:
+            return None
+
+    def _impl_turn_budget(self, spec_name: Optional[str],
+                          agent_type: Optional[str]) -> tuple:
+        """实现车道 run 启动点轮数上限 sizing（1.2）+ 任务进度快照（3.1 基线）。
+
+        生效序（design D3）：STATE ``impl_turn_cap_override``（正整数）> 规模
+        推算（``suggested_turn_cap_for_scale``，enabled 且规模分严格大于
+        ``full_scale_threshold`` 时抬到 max(base, suggested)）> base。推算输入
+        ``estimate_spec_scale``（与 fast-track 规模预检同文件单点，禁止再造
+        第二套 tasks.md/交付物解析）；传入 runner Logger 实例使 WARNING 落
+        **本项目** fenixd.log（core/logger.py 项目归属约定）。解析异常
+        WARNING 回退 base 不阻断派发。
+
+        推算与快照仅限实现车道（``IMPL_LANE_AGENT_TYPES``）：dispute-judge /
+        spec-review 等评审与裁决车道轮数维持 base、不参与推算（spec 明示，
+        runner 其余 ``agents.max_turns`` 读点零改动）。启动日志记录
+        base/override/effective 三元组。
+
+        Returns:
+            ``(effective_turn_cap, task_progress_snapshot)``；非实现车道返回
+            ``(base, None)``（快照亦不取——守卫不消费，省一次文件读）。
+        """
+        base = self._get_config("agents.max_turns", 300)
+        if agent_type not in IMPL_LANE_AGENT_TYPES or not spec_name:
+            return base, None
+
+        from core.fast_track_result import (
+            get_turn_budget_sizing_config,
+            suggested_turn_cap_for_scale,
+        )
+        cfg = get_turn_budget_sizing_config(self.config)
+        override = self._impl_turn_cap_override(spec_name)
+
+        effective: int
+        if override is not None:
+            effective = override
+        else:
+            try:
+                from core.fast_track_result import estimate_spec_scale
+                scale = estimate_spec_scale(
+                    Path(self.project_root) / "spec" / "changes" / spec_name,
+                    logger=self.logger,
+                )
+                effective = suggested_turn_cap_for_scale(base, scale, cfg)
+            except Exception as e:
+                # 规模解析异常保守回退 base，不阻断派发（spec 明示）
+                self.logger.warning(
+                    "agent_runner",
+                    f"impl turn budget sizing 推算异常，回退 base={base}: {e}",
+                    {"spec": spec_name},
+                )
+                effective = base
+
+        self.logger.info(
+            "agent_runner",
+            f"impl turn budget sizing for '{spec_name}': "
+            f"base={base} override={override} effective={effective}",
+            {"spec": spec_name, "base_turn_cap": base,
+             "turn_cap_override": override, "effective_turn_cap": effective},
+        )
+        return effective, self._task_progress_snapshot(spec_name)
 
     def _spec_is_frozen(self, spec_name: str) -> bool:
         """spec 是否处于人工冻结态（结构化 frozen 字段，lifecycle-hygiene 4.1）。

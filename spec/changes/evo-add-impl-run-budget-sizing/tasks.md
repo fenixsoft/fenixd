@@ -14,7 +14,7 @@
 ## 1. 规模化轮数预算
 
 - [x] 1.1 core/fast_track_result.py：新增 `get_turn_budget_sizing_config(config)`（归一化 `agents.turn_budget_sizing` 段：enabled 布尔、full_scale_threshold 正整数、suggested_turn_cap 正整数、bookkeeping_share_threshold 浮点 [0,1]、kill_early 嵌套段，非法值逐项回退缺省 enabled=True/45/800/0.5/kill_early.enabled=False/10/0.1，风格与既有 `get_scale_precheck_config` 同源）与 `suggested_turn_cap_for_scale(base_turn_cap, scale, cfg)`（enabled 且 scale > full_scale_threshold 时返回 max(base, suggested_turn_cap)，否则返回 base）。
-- [ ] 1.2 core/agent_runner/runner.py：实现车道启动处（现 :2695 `max_turns=self._get_config("agents.max_turns", 300)` 的一次注入点）计算生效轮数上限——依次取 STATE 该 spec 的 `impl_turn_cap_override`（正整数优先）、`suggested_turn_cap_for_scale` 推算值（scale 用 `estimate_spec_scale(spec/changes/<spec>)`，传入 runner Logger 实例（core/logger.py 项目归属约定），解析异常 WARNING 回退 base 不阻断）、base；启动日志记录 base/override/effective 三元组；缺失 STATE 访问或字段非法时等价 override=None。
+- [x] 1.2 core/agent_runner/runner.py：实现车道启动处（现 :2695 `max_turns=self._get_config("agents.max_turns", 300)` 的一次注入点）计算生效轮数上限——依次取 STATE 该 spec 的 `impl_turn_cap_override`（正整数优先）、`suggested_turn_cap_for_scale` 推算值（scale 用 `estimate_spec_scale(spec/changes/<spec>)`，传入 runner Logger 实例（core/logger.py 项目归属约定），解析异常 WARNING 回退 base 不阻断）、base；启动日志记录 base/override/effective 三元组；缺失 STATE 访问或字段非法时等价 override=None。
 
 ## 2. 扩容判定携带工作量维度
 
