@@ -11,6 +11,7 @@ D3 patch 缝隙：`MergeConflictInfo` 从 types 模块导入（包命名空间 r
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -82,6 +83,69 @@ def _unquote_git_path(p: str) -> str:
         return raw.decode("latin-1")
 
 
+def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
+    """spec/changes/<spec>/ 已提交在飞修订检测（evo-inflight-spec-amendment-watch 1.1）。
+
+    以 ``git merge-base <主树HEAD> <branch>`` 求实现分支与主树的分叉点，再以
+    ``git log <merge-base>..<主树HEAD> -- spec/changes/<spec>/`` 判定主树侧
+    是否出现该 spec 目录的新已提交修订（框架外提交者直接改主树的形态）。
+    命中即返回修订提交短哈希列表（时间正序）；未命中/分支不存在/命令失败或
+    超时一律返回空列表（静默跳过，零副作用——调用方不得据此改变 merge 决策）。
+
+    纯只读探测：不触碰工作区、不写任何状态。模块级函数供 merge-back 主链与
+    admin_monitor 周期扫描两个入口共用同一判定（本 SPEC 两入口同条件）。
+    """
+    if not project_root or not branch or not spec:
+        return []
+    rel = f"spec/changes/{spec}"
+    try:
+        mb = subprocess.run(
+            ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # merge-base 失败（分支不存在/已清理/仓库异常）→ 静默跳过（关键约束：
+        # 检测依赖实现分支存活，缺分支不报错、不告警）。
+        if mb.returncode != 0 or not mb.stdout.strip():
+            return []
+        merge_base = mb.stdout.strip()
+        log = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "log",
+                "--format=%h",
+                f"{merge_base}..HEAD",
+                "--",
+                rel,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if log.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    # git log 按时间倒序输出（新→旧）；倒转为时间正序，便于人工按序追修订。
+    commits = [ln.strip() for ln in log.stdout.splitlines() if ln.strip()]
+    commits.reverse()
+    return commits
+
+
+def spec_amendment_fingerprint(spec: str, commits: list) -> str:
+    """在飞修订告警指纹 = sha1(spec + 排序后提交集) 前 12 位（2.1 去重单源）。
+
+    同一 spec 的修订集合未变 → 同指纹（不逐扫描周期重复告警）；主树又落了
+    新修订 → 提交集变化 → 新指纹（允许再次成条提醒相撞风险升级）。
+    merge-back 侧在途去重与 admin_monitor 周期去重共用本函数（勿二次漂移）。
+    """
+    raw = f"{spec or ''}\x00{','.join(sorted(set(commits or [])))}"
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:12]
+
+
 class G4MergebackMixin:
     """G4 merge-back 主链（design D1 表 A G4）。"""
 
@@ -137,11 +201,26 @@ class G4MergebackMixin:
             # 后无条件读取；成功路径随后由 guard 段写入真实值，先重置后赋值）。
             self.last_stash_pop_conflicts = []
             self.last_stash_entry_fate = {"kept": True, "sha": ""}
+            # ── 已提交在飞修订检测（evo-inflight-spec-amendment-watch 1.1/1.2）──
+            # design 原定插点在 _check_spec_dir_inflight 之后，但 amended_inflight
+            # 须搭预演闸的早退返回值抵达 repair 车道（1.3 根因透传：相撞场景里
+            # merge_info 就是 rehearsed 标记），而预演闸是第一道闸、命中即返回——
+            # 检测纯只读（git merge-base / git log，零写零副作用），前移到闸门
+            # 序列头部不改变任何闸门的判定结果，故固化于此。命中只发告警 + 附带
+            # 情报：返回值布尔与 has_semantic_conflict 语义不变、不经熔断记账
+            # （1.2），相撞的确定性结局不变——仍由预演检出并按既有 rehearsed
+            # 链路转 repair。
+            amended_inflight = self._detect_spec_amended_inflight(branch)
+            if amended_inflight:
+                self._report_spec_amendment_inflight(branch, amended_inflight)
             # 预演闸（add-merge-tree-rehearsal D1/D2）：guard 锁内、stash 之前只读
             # 预演。语义冲突 → 直接返回 rehearsed 标记（主树零污染，调度层直通
             # repair）；None = 放行（零冲突或产物/ignored-DU 冲突）→ 走现行流程。
             rehearsed_info = self._rehearse_merge_from_branch(branch)
             if rehearsed_info is not None:
+                # 修订列表搭 rehearsed 早退值下行：调度层 _direct_rehearsed_to_repair
+                # 据此透传进 repair 派发上下文与 prompt（根因免考古）。
+                rehearsed_info.amended_inflight = amended_inflight
                 return rehearsed_info
 
             # WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2；缺省处置已由
@@ -199,6 +278,9 @@ class G4MergebackMixin:
             try:
                 info = self._merge_back_from_branch_locked(branch)
                 info.wip_overlap = wip_overlap
+                # 修订列表搭最终结果下行（成功/真失败均携带）：dispatch 层在
+                # rehearsed 直通 repair 之外也可读该字段做观测，不改变判定。
+                info.amended_inflight = amended_inflight
                 return info
             finally:
                 if stashed:
@@ -308,6 +390,103 @@ class G4MergebackMixin:
             f"（提交或 git commit -am \"spec: {spec}\" 后重试）",
             spec_dir_inflight=True,
         )
+
+    def _detect_spec_amended_inflight(self, branch: str) -> list:
+        """spec/changes/<spec>/ 已提交在飞修订检测（evo-inflight-spec-amendment-watch 1.1）。
+
+        检测主树相对 merge-base 的新已提交修订（``git merge-base`` 求分叉点 +
+        ``git log <merge-base>..HEAD -- spec/changes/<spec>/``），返回修订提交
+        短哈希列表。spec 名经 ``_spec_from_branch`` 从分支名解析；解析失败（非
+        ``fenix/<spec>-<ts>`` 形态）→ 空列表放行（fail-open，与
+        _check_spec_dir_inflight 同口径，MUST NOT 退化为对 spec/changes/ 全目录
+        检测）。分支不存在/命令失败由模块级
+        ``detect_spec_amended_inflight`` 静默跳过（返回空列表，不报错）。
+        """
+        spec = self._spec_from_branch(branch)
+        if not spec or not isinstance(spec, str):
+            return []
+        return detect_spec_amended_inflight(self.project_root, branch, spec)
+
+    def _report_spec_amendment_inflight(self, branch: str, commits: list) -> None:
+        """在飞修订命中告警直发（1.1）：spec_amendment_inflight 信号写 admin store。
+
+        告警含修订提交短哈希列表与相撞预警——把发现时刻从 merge 时刻提前到
+        修订落地后的本次 merge-back 尝试。结局不变：相撞仍由预演检出并按既有
+        rehearsed 链路转 repair，本信号只做早期反馈与根因留痕。
+
+        节流（1.1 在途去重）：同 spec 同指纹（spec+修订提交集合，
+        ``spec_amendment_fingerprint``）的未消费信号已在途时跳过重复写入——
+        merge-back 会被周期复查车道反复触发（merge-only 重试 120s 节拍），
+        不去重会逐轮轰炸；主树又落新修订 → 提交集变化 → 新指纹照常写入。
+        escalated 检查对齐 _maybe_signal_build_artifact_paths_missing 同源口径
+        （SIGNAL 记录恒 handled=False，摄取侧改写的是 escalated，漏检会让首条
+        信号被拾取后永远占住在途位）。
+
+        写入异常仅记 warning 不抛穿（信号通道故障不影响 merge-back 判定）。
+        """
+        spec = self._spec_from_branch(branch)
+        fp = spec_amendment_fingerprint(spec or "", commits)
+        try:
+            from core.admin_store import AdminStore, SIGNAL
+
+            store = AdminStore(self.project_root, self.logger)
+            for r in store.read_all():
+                if (
+                    r.get("kind") == SIGNAL
+                    and r.get("signal_type") == "spec_amendment_inflight"
+                    and not r.get("handled")
+                    and not r.get("escalated")
+                    and r.get("spec") == spec
+                    and f"指纹={fp}" in (r.get("evidence") or "")
+                ):
+                    return
+            short = ", ".join(commits)
+            written = store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "spec_amendment_inflight",
+                    "spec": spec or "",
+                    "severity": "major",
+                    "description": (
+                        f"SPEC '{spec}' 实现分支在飞期间，主树 spec/changes/{spec}/ "
+                        f"出现 {len(commits)} 个新已提交修订（{short}）——与分支 "
+                        f"'{branch}' 对同一 spec 目录的改动存在 merge-back 相撞风险"
+                        f"（现行三道闸门只覆盖未提交改动）。结局不变：相撞仍由预演"
+                        f"检出并按 rehearsed 链路转 repair。"
+                    ),
+                    "evidence": (
+                        f"项目名={self.project_root.name}; spec={spec}; "
+                        f"branch={branch}; amended_commits={commits}; 指纹={fp}"
+                    ),
+                    # 与 admin_monitor.SIGNAL_RECOMMENDATION["spec_amendment_inflight"]
+                    # 同文（直写 store 的记录不经 _make_signal，表值不会自动注入；
+                    # 文案变更两处同步——见该表条目注释）。
+                    "recommended_action": (
+                        "等实现收尾后在分支上补齐同一修订（merge main 或手工同步到"
+                        "分支），或等 merge-back 相撞后经 repair 车道把 main 合入分支"
+                        "（上下文自带修订提交列表根因）；勿在主树侧继续叠加修订加剧分叉"
+                    ),
+                }
+            )
+            if written is None:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"spec_amendment_inflight 告警未落盘 (spec={spec}, "
+                    f"project={self.project_root.name}）——admin store 下限保护拒写",
+                )
+            else:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"spec_amendment_inflight 告警已写入 (spec={spec}, "
+                    f"project={self.project_root.name}）——主树在飞修订 "
+                    f"{commits}，相撞预警（根因透传 repair 车道）",
+                )
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"spec_amendment_inflight 信号写入失败"
+                f"（不影响 merge-back 判定）: {e}",
+            )
 
     def _wip_overlap_gate(self, branch: str) -> tuple:
         """merge-back 前 WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2，

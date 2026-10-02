@@ -327,6 +327,13 @@ SIGNAL_SEVERITY = {
     # evidence 穿透 str.replace 实证：prompt_builder.py:204），Administrator
     # 无法修复、重试无意义，须工程侧定位修正派发链后人工处置闭环。
     "admin_dispatch_programming_error": "critical",
+    # evo-inflight-spec-amendment-watch 2.1：spec/changes/<spec>/ 在实现分支
+    # 在飞期间被框架外提交者于主树直接修订（已提交形态，现行三道闸门只覆盖
+    # 未提交改动）——与分支勾选更新存在 merge-back 相撞风险。major（对照
+    # orphaned_state: major）：预警级（结局不变——相撞仍由预演检出按 rehearsed
+    # 链路转 repair），非 critical（非全链路瘫痪）、非 minor（相撞后 repair
+    # 多耗一轮 run，2026-10-02 cimbar-airgap-transfer 实证 61 轮 / $0.427）。
+    "spec_amendment_inflight": "major",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -396,6 +403,12 @@ SIGNAL_RECOMMENDATION = {
     # add-control-plane-silent-failure-guards 3.3 的文案模式：代码缺陷须
     # 工程侧定位、Administrator 无法修复、勿派子 fix 反复重跑。
     "admin_dispatch_programming_error": "代码缺陷（TypeError/AttributeError/NameError/ValueError，调用点与异常消息见 evidence）：Administrator 无法修复，勿派子 fix 反复重跑；须工程侧定位修正派发链（prompt_builder 提示词构造/序列化/参数）后，由人工处置闭环该告警",
+    # evo-inflight-spec-amendment-watch 2.1：在飞修订预警处置指引——指向「等实现
+    # 收尾后在分支上补修订或经 repair 合并」（design 关键约束）。与
+    # worktree_manager/mergeback.py _report_spec_amendment_inflight 直写记录的
+    # inline recommended_action 同文（直写 store 的记录不经 _make_signal，文案
+    # 变更两处同步）。
+    "spec_amendment_inflight": "主树 spec/changes/<spec>/ 在实现分支在飞期间被框架外修订（已提交，详见 evidence 修订提交列表）：等实现收尾后在分支上补齐同一修订（merge main 或手工同步到分支），或等 merge-back 相撞后经 repair 车道把 main 合入分支（上下文自带修订提交列表根因）；勿在主树侧继续叠加修订加剧分叉",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
@@ -449,6 +462,11 @@ STORED_SIGNAL_TYPES = (
     # 清理丢失，写端非产品缺陷），两条信号 handled=False 悬置十余小时，夹具
     # 从未恢复，直到人工介入。补入本表后由 _detect_family_explosion 摄取唤起。
     "verify_uniform_failure",
+    # evo-inflight-spec-amendment-watch 1.1：merge-back 主链检出的主树已提交
+    # 在飞修订告警由 worktree_manager 直发（_report_spec_amendment_inflight，
+    # AdminStore.append）——未收录则记录落 store 后无人摄取、Administrator
+    # 不唤起，「修订落地后一个扫描周期内告警」目标落空。
+    "spec_amendment_inflight",
 )
 
 # 前置探测白名单（evo-signal-preprobe-handled-writeback R1）：请求型
@@ -921,6 +939,11 @@ class AdminMonitor:
         # （Registry.discover = YAML 读 + 扫描根目录级遍历）；夹具标记实践中
         # 静态，TTL 300s 内同项目只做一次真实解析（条目 (monotonic, bool)）。
         self._fixture_project_memo: dict = {}
+        # evo-inflight-spec-amendment-watch 2.1：在飞修订告警指纹备忘（spec →
+        # 最近一次告警指纹）。同 spec+修订提交集合不逐扫描周期重复成条；主树
+        # 又落新修订 → 提交集变化 → 新指纹允许再次成条。内存态，daemon 重启后
+        # 首轮可重复提醒一次（与 latest_signal 冷却互为补充，可接受）。
+        self._spec_amendment_fp_alerted: dict = {}
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -1938,6 +1961,7 @@ class AdminMonitor:
         signals.extend(self._detect_merge_streak(specs))
         signals.extend(self._detect_blocked_stuck(specs, now))
         signals.extend(self._detect_orphaned_state(specs, now))
+        signals.extend(self._detect_spec_amendment_inflight(specs, now))
         signals.extend(self._detect_daemon_errors(now))
         return signals
 
@@ -2694,6 +2718,88 @@ class AdminMonitor:
                     # 下抛 ValueError 中断整轮检测）。
                     f"（stuck 阈值 {int(stuck_threshold)}"
                     " 分钟远高于此，本信号先于 stuck 捕获）",
+                )
+            )
+        return signals
+
+    def _detect_spec_amendment_inflight(self, specs: dict, now: float) -> list:
+        """主树 spec 目录在飞修订周期探测（evo-inflight-spec-amendment-watch 2.1）。
+
+        对有活跃实现 run 的 spec（implementing + 分支锚点在案 + run 文件写活动
+        或 worktree agent 进程存活），检测 spec/changes/<spec>/ 相对 merge-base
+        在主树出现的新已提交修订——与 merge-back 主链同条件（同一模块级判定
+        ``core.worktree_manager.mergeback.detect_spec_amended_inflight``，延迟
+        导入防装载环：admin_monitor ← pm_engine ← worktree_manager 顶层互导入
+        环；命中路径低频，函数级导入无热路径开销）。命中发 spec_amendment_inflight
+        信号，把发现时刻从 merge 时刻提前到修订落地后的一个扫描周期；结局不变
+        （相撞仍由预演检出按 rehearsed 链路转 repair，本信号只做早期反馈）。
+
+        去重（2.1）：以 spec+修订提交集合为告警指纹（``spec_amendment_fingerprint``）
+        ——同指纹不重复成条（不逐扫描周期轰炸）；主树又落新修订 → 提交集变化 →
+        新指纹允许再次成条。``_throttled``（latest_signal 冷却 + unhandled，
+        _handle_signal 处）依旧生效，本去重是其上的指纹级补口（orphaned_state
+        同款节流语义 + 本 SPEC 要求的指纹维度）。
+
+        静默跳过（关键约束）：run 不在飞（状态非 implementing / 无分支锚点 /
+        无 run 写活动且无存活进程）→ 不检测；分支不存在（merge-base 失败/已
+        清理）→ 模块级判定返回空列表；检测命令失败/超时同路——均不报错、
+        不产信号。分支名取自 spec 记录的 branch 锚点（run/spec 记录为准，
+        不自行猜测命名规则）。
+        """
+        signals = []
+        for name, entry in specs.items():
+            if entry.get("status") != "implementing":
+                continue
+            branch = entry.get("branch")
+            if not branch or not isinstance(branch, str):
+                continue
+            # run 在飞判定：run 文件写活动在宽限窗内，或 worktree agent 进程
+            # 存活（长工具调用窗口内 run 文件可数分钟不落笔，进程判据兜住——
+            # 与 spec_is_undriven 的 ①② 条同源判据，口径不漂移）。
+            if not _has_recent_spec_run(
+                self.project_root, name, now, ORPHANED_RUN_GRACE_SECONDS
+            ) and not _pgrep_live_worktree(name):
+                continue
+            try:
+                from core.worktree_manager.mergeback import (
+                    detect_spec_amended_inflight,
+                    spec_amendment_fingerprint,
+                )
+
+                commits = detect_spec_amended_inflight(self.project_root, branch, name)
+            except Exception as e:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"spec_amendment_inflight 检测异常 '{name}'（静默跳过）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                continue
+            if not commits:
+                continue
+            fp = spec_amendment_fingerprint(name, commits)
+            seen = getattr(self, "_spec_amendment_fp_alerted", None)
+            if seen is None:
+                # 半初始化实例（测试用 __new__ 绕过 __init__）兜底，与
+                # _fixture_invocation_suppressed 同款 getattr 形态。
+                seen = self._spec_amendment_fp_alerted = {}
+            if seen.get(name) == fp:
+                continue
+            seen[name] = fp
+            signals.append(
+                self._make_signal(
+                    "spec_amendment_inflight",
+                    name,
+                    (
+                        f"'{name}' 实现分支在飞期间，主树 spec/changes/{name}/ 出现 "
+                        f"{len(commits)} 个新已提交修订（{', '.join(commits)}）——与分支 "
+                        f"'{branch}' 对同一 spec 目录的改动存在 merge-back 相撞风险"
+                        f"（现行三道闸门只覆盖未提交改动）。结局不变：相撞仍由预演"
+                        f"检出并按 rehearsed 链路转 repair。"
+                    ),
+                    (
+                        f"项目名={self.project_root.name}; spec={name}; "
+                        f"branch={branch}; amended_commits={commits}; 指纹={fp}"
+                    ),
                 )
             )
         return signals

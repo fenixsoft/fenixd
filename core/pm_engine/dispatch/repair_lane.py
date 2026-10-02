@@ -76,12 +76,26 @@ class PRepairLaneMixin:
             # merge_info 非 MergeConflictInfo 形态（测试替身/未来重构）时
             # 不因裸取属性抛 AttributeError 中断直通 repair 分支。
             conflict_paths = list(getattr(merge_info, "conflict_paths", []) or [])
+            # 主树在飞修订根因透传（evo-inflight-spec-amendment-watch 1.3）：
+            # merge-back 侧检出 spec/changes/<spec>/ 的主树已提交修订时，
+            # merge_info.amended_inflight 携带修订提交短哈希列表——随 merge_info
+            # 经 _dispatch_repair_lane → _run_repair_worker →
+            # _repair_conflict_summary 下行进 repair prompt（「主树在飞修订根因」
+            # 段），repair 直接带根因，消除考古成本。同款 getattr 守卫：旧形态
+            # merge_info（测试替身/无字段）按未命中处理。
+            amended = list(getattr(merge_info, "amended_inflight", []) or [])
+            root_note = (
+                f"，含主树在飞修订 {len(amended)} commit(s) {amended}"
+                f"（根因随上下文透传 repair prompt）"
+                if amended
+                else ""
+            )
             self._pm.logger.info(
                 "pm_engine",
                 f"预演检出语义冲突直通 repair '{spec_name}'："
                 f"{len(conflict_paths)} path(s) "
                 f"{conflict_paths} — 主树零污染，"
-                f"不经 fp 记账（rehearsed）",
+                f"不经 fp 记账（rehearsed）{root_note}",
             )
             self._pm._dispatch_repair_lane(spec_name, merge_info, branch)
         else:
@@ -1058,6 +1072,11 @@ class PRepairLaneMixin:
         """构造 repair prompt 的冲突摘要（D5：spec 身份 + 冲突清单 + 方向说明）。
 
         不含原 worktree 地址类间接情报（agent 即在现场，冲突状态自查）。
+
+        evo-inflight-spec-amendment-watch 1.3：附 ``amended_inflight``（主树
+        已提交在飞修订提交短哈希列表，merge-back 侧检出时携带）——prompt 构建侧
+        （_build_repair_prompt）据此增补「主树在飞修订根因」段；旧形态
+        merge_info（测试替身/无字段）按未命中空列表处理。
         """
         try:
             repair_round = int(
@@ -1071,4 +1090,5 @@ class PRepairLaneMixin:
             "conflict_paths": list(getattr(merge_info, "conflict_paths", []) or []),
             "has_semantic_conflict": bool(getattr(merge_info, "has_semantic_conflict", False)),
             "repair_round": repair_round,
+            "amended_inflight": list(getattr(merge_info, "amended_inflight", []) or []),
         }
