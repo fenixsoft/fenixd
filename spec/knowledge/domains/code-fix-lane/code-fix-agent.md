@@ -1,7 +1,7 @@
 # code-fix 修复 agent
 
-<!-- knowledge: capability=code-fix-agent rev=1
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix -->
+<!-- knowledge: capability=code-fix-agent rev=2
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-10-03-add-codefix-targeted-retry -->
 
 一等公民 agent 类型 `code-fix`：在隔离 worktree 内逐条修复审查台账条目并落盘处置结果。
 
@@ -18,7 +18,12 @@
 
 ### 写权限与产物契约
 - 派发经 `worktree_manager.create(spec_name="code-review-fix", agent_type="code-fix")` 创建独立 worktree，agent 工作目录为该 worktree，不得为主树；运行中主树工作区保持不变。
-- 每处置完一条问题，向框架注入的 out 文件（绝对路径，`<worktree>/.fenix/code-review/fix-out-<run_id>.jsonl`）追加一行，字段至少含 `item_id`、`status`（`fixed` | `skipped`）、`file`；逐条增量落盘，不等全批处置完。
+- 每处置完一条问题，向框架注入的 out 文件（绝对路径，`<worktree>/.fenix/code-review/fix-out-<run_id>.jsonl`）追加一行，字段至少含 `item_id`、`status`（`fixed` | `skipped`）、`file`；定向轮修测试的条目额外带 `"fix_scope": "test"`；逐条增量落盘，不等全批处置完。
+
+### 定向重试轮契约
+- 回归失败后的定向重试 run prompt 注入上一轮失败用例的结构化明细（nodeid + 失败摘要）：agent MUST 只修与失败用例相关的问题，MUST NOT 扩面重做全批。
+- 失败用例背后的原因可能是产品代码缺陷，也可能是测试本身缺陷（断言过时、替身失真、超时替身自旋类），修复对象由 agent 依据用例信息自行判定。
+- 修复对象是测试本身时，该条目产物行 `status` 照常写 `fixed` 并 MUST 额外带 `"fix_scope": "test"` 字段标注；修产品代码时不带该字段。
 - 修复提交到当前 worktree 的分支；merge-back 由框架完成，agent 不得执行。
 - 不得修改 `.fenix/` 下的框架运行时文件或台账 `items.jsonl`（条目状态由框架在合回成功后更新）。
 - 仅处理注入清单中的条目，不得顺手重构清单外代码。
@@ -27,3 +32,4 @@
 ## 溯源
 
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：agent 类型四处注册点、模型链缺省回退 code-review、worktree 写权限与逐条 out 文件产物契约（产物缺失判失败）。
+- 2026-10-03 2026-10-03-add-codefix-targeted-retry（spec/archive/2026-10-03-add-codefix-targeted-retry） — 新增定向重试轮契约段：只修失败用例相关问题禁扩面、修复对象可为产品代码或测试本身（agent 判定）、修测试产物行 fix_scope=test 标注。

@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-03 05:23 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -7,12 +7,12 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [code-fix-lane](code-fix-lane.md) | 自动修复车道编排 | 2026-10-03 04:59 |
+| [code-fix-lane](code-fix-lane.md) | 自动修复车道编排 | 2026-10-03 05:23 |
 | [code-fix-batch-parallel](code-fix-batch-parallel.md) | 批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底、一次定向验证） | 2026-10-03 04:59 |
 | [code-fix-batch-selfheal](code-fix-batch-selfheal.md) | 修复批失败自愈（现场即弃、三态收尾、两层跳过与重试预算） | 2026-10-03 04:59 |
 | [code-fix-wipgate-defer](code-fix-wipgate-defer.md) | 修复批合回 WIP 阻断延迟合回（暂态零预算、现场保留+放锁、自动重试） | 2026-10-03 04:59 |
-| [code-fix-agent](code-fix-agent.md) | code-fix 修复 agent | 2026-10-03 04:59 |
-| [code-fix-config](code-fix-config.md) | code-fix 车道配置 | 2026-10-03 04:59 |
+| [code-fix-agent](code-fix-agent.md) | code-fix 修复 agent | 2026-10-03 05:23 |
+| [code-fix-config](code-fix-config.md) | code-fix 车道配置 | 2026-10-03 05:23 |
 | [code-fix-progress](code-fix-progress.md) | 修复进度聚合与呈现 | 2026-10-03 04:59 |
 | [code-fix-item-level-progress](code-fix-item-level-progress.md) | 修复批内条级进度（读侧实时合成与呈现） | 2026-10-03 04:59 |
 | [code-fix-manual-trigger](code-fix-manual-trigger.md) | 手工触发修复的 checkpoint 授权 | 2026-10-03 04:59 |
