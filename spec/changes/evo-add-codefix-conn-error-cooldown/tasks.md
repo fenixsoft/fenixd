@@ -17,7 +17,7 @@
 
 ## 1. 失败分类与信封透传
 
-- [ ] 1.1 core/agent_runner/provider_circuit.py：连接类签名词表扩充「Can't reach the API server」「ENOTFOUND」形态（现有 SWITCH_ERROR_CONN_PATTERNS 实测对本死因文本漏判）；不新增 stderr unrecognized_model 判据（定噪行）
+- [ ] 1.1 core/agent_runner/provider_circuit.py：新增 code-fix 车道本地连接类词表常量 CODE_FIX_CONN_ERROR_PATTERNS，覆盖「Can't reach the API server」「ENOTFOUND」形态并纳既有连接类形态（共享 SWITCH_ERROR_CONN_PATTERNS 实测对本死因文本漏判，且 MUST NOT 扩充它——该词表被 classify_switch_error（:418）消费、runner.py:2931 以此驱动 spec/impl 切链，扩充会改变 spec/impl 车道切换行为，违反 proposal Non-Goal）；不新增 stderr unrecognized_model 判据（定噪行）
 - [ ] 1.2 core/agent_runner/runner.py：异常挂载块（exc.api_timeout 同位置）新增连接类失败布尔挂载，判据 = terminal_reason=='api_error' + exit_code!=0 + result_text 命中连接类词表
 - [ ] 1.3 core/agent_runner/maintenance_runs.py：CodeFixResult 新增 conn_error 布尔与 result_text 字段，run_code_fix except 块抄传；api_timeout/salvage 语义不动
 
