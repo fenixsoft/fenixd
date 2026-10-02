@@ -1199,7 +1199,13 @@ class VerificationPipeline:
         # 转 inconclusive 重验（该轮不再到达洗白门禁，同一轮两道裁决后防线
         # 不叠加动作）；查得放行记录保留处置回链后放行。级二不命中零改动
         # 直通（含全绿快道合成报告——无豁免对象，快道不受影响）。
-        if self._handle_env_exemption_handshake(spec_name, report):
+        # 传 None（code-review item 90032212ad27）：级二判定与放行回链均以盘上
+        # judge 增强后的 report.json 为准（引擎内存 report 只有 status、无
+        # assertion_triage/classification，直传会让每个失败场景落 non_env、
+        # 级二恒不命中；且放行分支会把内存 report save_report 覆写盘上裁决
+        # 产物）——入参非 None 会跳过 load_report，故 MUST 传 None 走读盘，
+        # 与 legacy 车道（_read_verify_report 读盘传入）口径一致。
+        if self._handle_env_exemption_handshake(spec_name, None):
             return
         # D6: testing→verified 前置进度核对：done>=total 才晋级
         vblocker = self._check_verification_gate(spec_name)
