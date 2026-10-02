@@ -27,6 +27,7 @@ import json
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -36,6 +37,8 @@ from core.knowledge_backfill import (
     atomic_write_text,
     commit_pathspec,
     default_spawn,
+    discard_paths,
+    knowledge_dirty_files,
     knowledge_distill_lock,
     load_knowledge_core,
     null_logger,
@@ -133,12 +136,60 @@ def _load_findings_ledger(project_root: Path) -> dict:
         return {}
 
 
-def _save_findings_ledger(project_root: Path, ledger: dict) -> None:
-    """疑点台账原子回写（对齐 _write_state 的 tmp + os.replace 模式）。"""
-    atomic_write_text(
-        Path(project_root) / FINDINGS_RELPATH,
-        json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
-    )
+@contextmanager
+def _findings_write_lock(project_root: Path):
+    """疑点台账读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_findings.lock``）。
+
+    atomic_write_text 只保证单次写不撕裂，不保证读改写原子性：daemon 与
+    dashboard --serve 两进程同日竞跑体检收尾时各持开局快照，后写者会用旧
+    内存台账整体覆盖先写者刚落盘的 verdict 与 page_hashes——no-conflict
+    豁免键随之丢失、疑点被重复派发转写 run（code-review e13450339289，
+    对齐 BackfillLedger.save 的处置）。锁文件自身无内容语义。
+    """
+    import fcntl
+
+    lock_dir = Path(project_root) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge_audit_findings.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def _save_findings_ledger(
+    project_root: Path,
+    ledger: dict,
+    deleted_fingerprints: Optional[set[str]] = None,
+) -> None:
+    """疑点台账回写（持进程间文件锁 + 按指纹合并，对齐 BackfillLedger.save）。
+
+    持锁重读盘上最新台账按指纹合并：仅一方持有的指纹直接纳入，两方都有的
+    指纹取 ``updated_at`` 较新的一方，合并后再整文件原子回写——并发的另一
+    run 刚落盘的判定与豁免键不再被本方旧快照覆盖丢失。
+    ``deleted_fingerprints``：本方已删除的指纹（仲裁消费段）。按指纹合并
+    只并键不删键，不显式剔除会让盘上另一进程写入的同指纹条目复活被删条目，
+    人工仲裁决定随之失效。
+    """
+    with _findings_write_lock(project_root):
+        merged = dict(_load_findings_ledger(project_root))
+        for fp in tuple(deleted_fingerprints or ()):
+            merged.pop(fp, None)
+        for fp, entry in ledger.items():
+            other = merged.get(fp)
+            if (
+                other is None
+                or str(entry.get("updated_at", "")) >= str(other.get("updated_at", ""))
+            ):
+                merged[fp] = entry
+        atomic_write_text(
+            Path(project_root) / FINDINGS_RELPATH,
+            json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        )
 
 
 def _finding_fingerprint(finding: dict) -> str:
@@ -423,7 +474,13 @@ def consume_arbitration(
         )
     if not consumed:
         return {"triggered": False, "consumed": 0, "skipped": len(kept)}
-    _save_findings_ledger(project_root, ledger)
+    _save_findings_ledger(
+        project_root,
+        ledger,
+        deleted_fingerprints={
+            str(item.get("fingerprint") or "") for item in consumed
+        },
+    )
     _save_arbitration_list(project_root, kept)
     # 摘注记按消费后台账现状重算期望态、只限涉事页：同页其余 escalated 条目
     # 仍超龄在册时注记改写（fps 收敛）而非误摘。
@@ -611,7 +668,26 @@ def _scan_pages(project_root: Path) -> dict:
         if marker and marker.get("sources"):
             names = [s for s in re.split(r"[,，]", marker["sources"]) if s]
             missing_sources = [s for s in names if _source_base(s) not in archives]
+        # marker 跨度行不进 drop_lines（code-review 0b78fcd778e3）：marker 的
+        # sources 项是全路径 ``spec/archive/<名>``（core.knowledge 校验器强制
+        # 该前缀），归档目录被删后 marker 行自身就会命中 _ARCHIVE_REF_RE；若
+        # 按行删除会把 marker（或其 sources 字段）整行移除，validate_knowledge
+        # 随即报「marker 缺失/字段非法」新违规，run_audit 的提交闸门会把本轮
+        # 全部机械修复回滚。marker 行的 sources 悬空剔除只交给
+        # _apply_mechanical._clean_sources 按字段粒度处理（sources 全悬空保留
+        # 原值转待人工的防御才真正可达）。
+        mk = _MARKER_RE.search(text)
+        marker_lines: set[int] = set()
+        if mk:
+            marker_lines = set(
+                range(
+                    text.count("\n", 0, mk.start()),
+                    text.count("\n", 0, mk.end()) + 1,
+                )
+            )
         for i, ln in enumerate(lines):
+            if i in marker_lines:
+                continue
             for m in _ARCHIVE_REF_RE.finditer(ln):
                 if m.group(1).strip("\"'`") not in archives:
                     drop_lines.append(i)
@@ -952,66 +1028,10 @@ def _page_text_by_rel(project_root: Path, rel: str) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def _knowledge_dirty_files(project_root: Path) -> set[str]:
-    """spec/knowledge/ 内未提交改动的 relpath 集合（tracked 改动 + 未跟踪新增）。
-
-    转写段的零改动判定与提交/回滚范围都以此为唯一依据——只快照涉事两页会
-    漏掉转写 run 落在第三页的修正（误判零改动后改动滞留工作区）。git 不可用/
-    超时 fail-open 返回空集。"""
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-c",
-                "core.quotepath=false",
-                "status",
-                "--porcelain",
-                "--",
-                KNOWLEDGE_DIR,
-            ],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return set()
-    if proc.returncode != 0:
-        return set()
-    files: set[str] = set()
-    for ln in proc.stdout.splitlines():
-        if len(ln) <= 3:
-            continue
-        rel = ln[3:].strip().strip('"')
-        if " -> " in rel:  # 重命名条目取新路径
-            rel = rel.split(" -> ", 1)[1]
-        if rel:
-            files.add(rel)
-    return files
-
-
-def _discard_paths(project_root: Path, rels: list[str]) -> None:
-    """只回滚指定文件（tracked restore + 未跟踪 clean），不碰工作区其他改动。
-
-    语义转写失败路径用它在清除本轮半成品的同时保住早前已验证但未提交的
-    产出（如机械段提交失败遗留内容），不得全目录连带回滚。"""
-    if not rels:
-        return
-    for cmd in (
-        ["git", "restore", "--", *rels],
-        ["git", "clean", "-qfd", "--", *rels],
-    ):
-        try:
-            subprocess.run(
-                cmd,
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
+# spec/knowledge/ 未提交改动集合与按 rels 回滚两件工具已收敛为
+# knowledge_backfill 单实现（code-review 0f0f5941025c / 36eb21ca1661 /
+# 38ce9b967142）：本文件经 import 的 knowledge_dirty_files / discard_paths
+# 复用，零改动判定与失败回滚的语义说明见该函数 docstring。
 
 # ── 车道主入口 ───────────────────────────────────────────────────────────
 
@@ -1119,7 +1139,7 @@ def run_audit(
         # carryover：机械段开始前 spec/knowledge/ 已有的未提交改动（上一轮提交
         # 失败 fail-open 留盘的已验证产出、人工在盘上的编辑）。回滚纪律与语义
         # 段同款：只还原本轮触达的文件，不得全目录连带清除。
-        carryover = _knowledge_dirty_files(project_root)
+        carryover = knowledge_dirty_files(project_root)
         fixed, manual_fixes, rewritten_rels = _apply_mechanical(project_root, scan)
         if manual_fixes:
             counts["pending_manual"] += len(manual_fixes)
@@ -1159,9 +1179,9 @@ def run_audit(
                 # 本轮若恰好也改写了 carryover 在场文件则无法拆分，该文件保持在
                 # 盘（转写段收尾 leftover 告警与 ADR 目录未提交改动报告可见），
                 # 交由下一轮体检或人工处置，不连带销毁既有未提交内容。
-                _discard_paths(
+                discard_paths(
                     project_root,
-                    sorted(_knowledge_dirty_files(project_root) - carryover),
+                    sorted(knowledge_dirty_files(project_root) - carryover),
                 )
                 counts["pending_manual"] += 1
                 details["manual"].append(
@@ -1259,7 +1279,7 @@ def run_audit(
             # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
             # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
             # 已验证产出），失败回滚只作用于本轮新触达的文件。
-            carryover = _knowledge_dirty_files(project_root)
+            carryover = knowledge_dirty_files(project_root)
             # 违规基线进锁后、spawn 前采集（与机械段 before_violations 同款口径）：
             # 失败回滚只在「相对本基线的新发违规」时才连带回滚 carryover，真相源
             # 里与 carryover 无关的既有违规（marker 缺失等报告类病灶）不拦。
@@ -1280,7 +1300,7 @@ def run_audit(
                 )
             except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
                 ok, violations = False, [f"转写 run 失败：{e}"]
-            dirty_now = _knowledge_dirty_files(project_root)
+            dirty_now = knowledge_dirty_files(project_root)
             # 本 run 新触达的文件（2.3 快照滞后去重的「已纠偏」判定基准）：carryover
             # 是本轮开始前已存在的未提交改动，不是本 run 的产出，既不能当作该疑点的
             # 「重写」证据，也不能据此把涉及页标记为本批已纠偏。
@@ -1292,12 +1312,12 @@ def run_audit(
                 # 口径：与 carryover 无关的既有违规不拦——carryover 里的机械产出
                 # 下一轮体检可重建，人工在盘上的编辑不可重建，不得因既有违规
                 # 被连带销毁）。
-                _discard_paths(project_root, sorted(touched))
+                discard_paths(project_root, sorted(touched))
                 new_violations = {
                     str(v) for v in (validate(project_root) or [])
                 } - before_violations
                 if dirty_now & carryover and new_violations:
-                    _discard_paths(project_root, sorted(dirty_now & carryover))
+                    discard_paths(project_root, sorted(dirty_now & carryover))
                 counts["pending_manual"] += 1
                 if entry["review_rounds"] >= cfg["escalate_after_rounds"]:
                     # 连续两轮进入复核均未产出确定性判定（仍 suspected，如转写
@@ -1394,7 +1414,7 @@ def run_audit(
         except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
             log.warning("knowledge", f"disputed 注记提交失败（fail-open）：{e}")
 
-    leftover = _knowledge_dirty_files(project_root)
+    leftover = knowledge_dirty_files(project_root)
     if leftover:
         # 转写段结束仍有未提交改动（提交失败 fail-open 的已验证产出）显式
         # 曝光，留待后续提交扫入或人工处置，不再无声滞留工作区。
