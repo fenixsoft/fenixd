@@ -1,0 +1,38 @@
+## Deliverables
+
+```yaml
+- path: core/agent_runner/provider_circuit.py
+  kind: modify
+- path: core/agent_runner/runner.py
+  kind: modify
+- path: core/agent_runner/maintenance_runs.py
+  kind: modify
+- path: core/code_fix.py
+  kind: modify
+- path: core/admin_monitor.py
+  kind: modify
+- path: tests/test_codefix_conn_error_cooldown.py
+  kind: new
+```
+
+## 1. 失败分类与信封透传
+
+- [ ] 1.1 core/agent_runner/provider_circuit.py：连接类签名词表扩充「Can't reach the API server」「ENOTFOUND」形态（现有 SWITCH_ERROR_CONN_PATTERNS 实测对本死因文本漏判）；不新增 stderr unrecognized_model 判据（定噪行）
+- [ ] 1.2 core/agent_runner/runner.py：异常挂载块（exc.api_timeout 同位置）新增连接类失败布尔挂载，判据 = terminal_reason=='api_error' + exit_code!=0 + result_text 命中连接类词表
+- [ ] 1.3 core/agent_runner/maintenance_runs.py：CodeFixResult 新增 conn_error 布尔与 result_text 字段，run_code_fix except 块抄传；api_timeout/salvage 语义不动
+
+## 2. 车道冷却闸门
+
+- [ ] 2.1 core/code_fix.py：失败收尾分支读取 conn_error，命中时写 fix-progress.json 新字段 switch_cooldown_until（write_progress 合并写，持久化跨重启）
+- [ ] 2.2 core/code_fix.py：checkpoint 投递入口加「下一批不早于 switch_cooldown_until」守卫（覆盖 full scan/手动/自驱动三路）；冷却时长复用 PROVIDER_SWITCH_COOLDOWN_SECONDS，配置键 admin.code_review_fix.switch_cooldown_seconds 覆盖（仿 _orphan_grace_minutes 防御转换，0=关闭）
+- [ ] 2.3 core/code_fix.py：冷却触发/解除写 AdminStore SIGNAL 告警（signal_type=code_fix_switch_window_deferred，source=code-fix-lane，evidence 携带 run_id/死因/到期时刻），拒写留痕
+
+## 3. 跨日同刻指纹升级
+
+- [ ] 3.1 core/admin_monitor.py：daemon_errors 指纹记账增加跨日同刻复发维度（同签名失败终态跨日差 24h±5 分钟），命中升级 escalation 且不受已知指纹 30 分钟冷却压制
+
+## 4. 测试
+
+- [ ] 4.1 tests/test_codefix_conn_error_cooldown.py：分类判据单测——ENOTFOUND 文本命中、单轮超时文本不误判、成功信封（exit 0）与 stderr 定噪行均不触发
+- [ ] 4.2 tests/test_codefix_conn_error_cooldown.py：冷却闸门单测——冷却内置态后 checkpoint 拒投递、到期恢复投递、配置覆盖与非法值回退、持久化读回（重启后仍拦）
+- [ ] 4.3 tests/test_codefix_conn_error_cooldown.py：告警与跨日指纹单测——SIGNAL 告警字段断言、24h±5 分钟命中升级、10 分钟内同指纹不重复升级
