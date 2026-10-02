@@ -61,6 +61,28 @@ _logger = logging.getLogger("fenixd.adjudication_narrative")
 # 失败留痕的 stderr 尾部截断长度（code-review 1692f5b23b83）
 _STDERR_TAIL_CHARS = 500
 
+# 叙事正文整体预算（字符，code-review d1ec8fd1687f）：_validate_structure 只校验
+# 三段标题齐全且顺序不倒置、不约束总长——模型失控输出（或被提示注入诱导复述
+# 上下文）会把超长文本原样写进 entry["narrative"]["text"] 随告警落盘，拖累告警
+# 列表渲染与落盘体积。按字符计而非 UTF-8 字节（同 hook_engine D6 审计截断口径），
+# 量级对齐仓库 8KB 惯例（regression.py _PROGRESS_TAIL_BYTES=8192）。
+_NARRATIVE_MAX_CHARS = 8192
+
+# 段省略标记（超预算段砍尾后附于段尾，同 hook_engine 截断先例形态）
+_NARRATIVE_TRUNCATION_MARK = "\n…（截断）"
+
+# 单段截断预算：整体预算均摊三段并预扣各省略标记开销（截断后整体 ≤ _NARRATIVE_MAX_CHARS）
+_NARRATIVE_SECTION_MAX_CHARS = (
+    _NARRATIVE_MAX_CHARS - len(_NARRATIVE_TRUNCATION_MARK) * len(REQUIRED_SECTIONS)
+) // len(REQUIRED_SECTIONS)
+
+# 三段标题锚定正则（与 _validate_structure 同形态 ^##<空白><标题>，MULTILINE
+# 逐行锚定）：截断分段边界用
+_SECTION_HEAD_RE = re.compile(
+    "^##[ \t]*(?:" + "|".join(re.escape(h) for h in REQUIRED_SECTIONS) + ")",
+    re.MULTILINE,
+)
+
 # claude 子进程 spawn 工作目录注入点（code-review 672decf84c0d）：生产=
 # fenixd main() 装配通道时一并传项目根；未装配回退系统临时目录。
 _project_root: Optional[str] = None
@@ -384,6 +406,35 @@ def _validate_structure(text: str) -> bool:
     return positions == sorted(positions)
 
 
+def _clip_narrative(text: str) -> str:
+    """超长叙事截断（code-review d1ec8fd1687f）：整体预算 _NARRATIVE_MAX_CHARS。
+
+    以三段标题为段界均摊预算、逐段砍尾附省略标记——标题行始终保留，三段
+    结构与顺序不变，不破坏 _validate_structure 已验证的结构与下游按 ``^## ``
+    标题的分段渲染。重复标题等病态形态下仅认前 len(REQUIRED_SECTIONS) 个
+    匹配为段界，多余重复标题归入末段正文一并受预算约束；标题前前导文本
+    （指令要求仅含三段，正常输出无）不占段落预算、压缩为单行省略标记。
+    仅在结构校验通过后调用（段界缺失的防御性兜底整体砍尾）。永不抛出。
+    """
+    if len(text) <= _NARRATIVE_MAX_CHARS:
+        return text
+    starts = [m.start() for m in _SECTION_HEAD_RE.finditer(text)]
+    if len(starts) < len(REQUIRED_SECTIONS):
+        # 防御性兜底（不应发生——调用前已过 _validate_structure）
+        return text[:_NARRATIVE_MAX_CHARS].rstrip() + _NARRATIVE_TRUNCATION_MARK
+    starts = starts[: len(REQUIRED_SECTIONS)]
+    bounds = starts + [len(text)]
+    pieces: list = []
+    if starts[0] > 0:
+        pieces.append("…\n")
+    for i in range(len(REQUIRED_SECTIONS)):
+        seg = text[starts[i] : bounds[i + 1]]
+        if len(seg) > _NARRATIVE_SECTION_MAX_CHARS:
+            seg = seg[:_NARRATIVE_SECTION_MAX_CHARS].rstrip() + _NARRATIVE_TRUNCATION_MARK
+        pieces.append(seg)
+    return "".join(pieces)
+
+
 def build_narrative(
     ctx: Any,
     entry: dict,
@@ -431,6 +482,9 @@ def build_narrative(
                 f"spec={spec or '?'}），告警以机械文案落盘",
             )
             return None
+        # 超长输出截断（code-review d1ec8fd1687f）：三段标题结构保留，
+        # 防止失控输出把告警 JSON 撑爆
+        text = _clip_narrative(text)
         return {"text": text, "model": model or "default"}
     except Exception as e:  # fail-open：叙事是增强不是门禁（D4）
         _warn(ctx, f"叙事生成异常（告警照常落盘）: {e}")
