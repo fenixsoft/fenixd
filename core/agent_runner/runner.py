@@ -2228,7 +2228,7 @@ class AgentRunner:
         路径上，无周期拖慢）。
 
         Returns: {"action": "extend"|"kill", "extension_index",
-                  "turn_step", "evidence", "new_turn_cap"}
+                  "turn_step", "evidence", "new_turn_cap", "remaining_tasks"}
         """
         # 生产路径 __init__ 已建态；此处原子惰性回退仅供测试以 ``__new__`` 绕过
         # __init__ 的实例——dict.setdefault 单键原子（GIL），并发首次进入共享
@@ -2240,15 +2240,39 @@ class AgentRunner:
             "extension_index": turn_extensions_used,
             "turn_step": turn_step,
         }
+
+        # ── 剩余工作量观测（evo-add-impl-run-budget-sizing 2.1）──────────
+        # 判定前读剩余未勾选任务数（main 树 parse_tasks_md 单点正则口径，
+        # design D4——与 result_gate 硬门、_task_completion_blocker 同源）。
+        # 缺失/异常记 None 并在 evidence 注明 unavailable，不抛出——观测面
+        # 故障不改变既有活性矩阵判定；该字段只增观测面，不参与判定语义
+        # （tasks.md 缺失 → parse_tasks_md 返回空 → unavailable）。
+        remaining_tasks: int | None = None
+        if spec_name:
+            try:
+                from core.run_task_track import parse_tasks_md
+                _all_ids, _checked_ids = parse_tasks_md(self.project_root, spec_name)
+                if _all_ids:
+                    remaining_tasks = len(_all_ids) - len(_checked_ids)
+            except Exception:
+                remaining_tasks = None
+
+        def _annotated(evidence: str) -> str:
+            """evidence 统一拼接 remaining_tasks（extend/kill 分支同口径）。"""
+            return (evidence + " | remaining_tasks="
+                    + ("unavailable" if remaining_tasks is None
+                       else str(remaining_tasks)))
+
         if turn_extensions_used >= TURN_EXTENSION_MAX:
             return {
                 **base,
                 "action": "kill",
-                "evidence": (
+                "evidence": _annotated(
                     f"turn extension budget exhausted "
                     f"({turn_extensions_used}/{TURN_EXTENSION_MAX})"),
                 "new_turn_cap": (max_turns or 0)
                 + turn_extensions_used * turn_step,
+                "remaining_tasks": remaining_tasks,
             }
 
         # ── 活性证据 a：分支提交增量（首次以主树 HEAD 为 run 起点基线）──
@@ -2332,16 +2356,19 @@ class AgentRunner:
                 **base,
                 "action": "extend",
                 "extension_index": new_index,
-                "evidence": " or ".join(evidence_parts) or "liveness evidence",
+                "evidence": _annotated(
+                    " or ".join(evidence_parts) or "liveness evidence"),
                 "new_turn_cap": (max_turns or 0) + new_index * turn_step,
+                "remaining_tasks": remaining_tasks,
             }
         return {
             **base,
             "action": "kill",
-            "evidence": (
+            "evidence": _annotated(
                 "no liveness: no branch commits and no tool_result traffic "
                 f"within {int(TURN_EXTENSION_WINDOW_SECONDS)}s"),
             "new_turn_cap": (max_turns or 0) + turn_extensions_used * turn_step,
+            "remaining_tasks": remaining_tasks,
         }
 
     def _turn_traffic_active(self, run_file: Path,
@@ -5313,6 +5340,9 @@ class AgentRunner:
                                 "turn_step": int(action.get("turn_step") or 0),
                                 "evidence": str(action.get("evidence") or "")[:400],
                                 "new_turn_cap": current_turn_cap,
+                                # 剩余工作量观测（evo-add-impl-run-budget-sizing
+                                # 2.1）：新增键为附加不替换，既有字段与读侧零改动
+                                "remaining_tasks": action.get("remaining_tasks"),
                             })
                         except OSError as e:
                             self.logger.warning(
