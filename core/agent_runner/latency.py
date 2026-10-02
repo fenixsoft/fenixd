@@ -22,6 +22,19 @@ from core.timelib import parse_ts
 # 回引 runner 造成循环 import。runner.py re-export 维持既有导入路径。
 LATENCY_STALL_SECONDS = 60.0
 
+# run 期内单次 API 往返样本的 WARNING 阈值（evo-add-api-stall-observability
+# 1.1）：在飞采样点（_run_claude 流式循环旁路）对超过该值的单次样本在完成
+# 时点即时打一条 WARNING（期内逐次现场），纯记录、不触发任何干预。
+#
+# 语义分离（勿合并）：
+# - 与 LATENCY_STALL_SECONDS（上方，统计口径：深扫行、run 末摘要、
+#   stall_ratio 分母均依赖）互不改写——改它会破坏历史可比性；
+# - 与 runner.py 既有 RUN_STALL_ROUND_SECONDS = 120.0（run-stop-loss 判停
+#   判据一的样本计入线）**同值不同义**：一个是期内告警线（本常量，纯读侧
+#   记录），一个是判停计入线（行为面）。严禁合并、复用或互相引用——合并
+#   即把告警线改动泄漏成判停行为变更。
+STALL_ROUND_WARN_SECONDS = 120.0
+
 
 def iter_events(entries):
     """逐条 yield（兼容既有调用方传 list 或生成器）。"""
