@@ -32,3 +32,10 @@
 | stall-accounting-crash-path-defaults | 轮询环崩溃路径字段缺省不抛：poll 环异常（TypeError）→ error 终态行照常先写，run_metrics 行照常追加于终态行之后（权威契约形态），字段缺省走同一零样本回退（0/0/None）不抛；daemon 侧内联日志同样落盘、字段缺省不抛。spec.md「AND 崩溃路径（轮询环异常 → error 终态）下 run_metrics 行仍照既有契约追加，字段缺省不抛」。断言文案来自 -v 输出真实形态（本机实测）。tasks.md 2.2（出处 core/agent_runner/runner.py:5448-5456 注记契约、tests/test_run_stall_accounting.py::TestStallMetricsAccounting::test_poll_loop_crash_metrics_defaults） | pass | 0/2 | - |
 | stall-observability-terminal-contract-regression | 回归点（行序契约权威测试）：既有权威测试 test_run_claude_poll_loop_crash_writes_error_terminal（spec.md AND 子句引用的行序口径——恰一条 run_metrics 行且位于终态行之后、末行契约读侧口径）在新三字段入账后仍通过，证明加法字段无破坏（design 风险项：严格 schema 消费者不被未知字段拒绝）。断言文案来自 -v 输出真实形态（本机实测该 node id 全形态输出 PASSED）。tasks.md 1.3（出处 tests/test_daemon_lifecycle_races.py:448 TestRuntimeDanglingRunSweep::test_run_claude_poll_loop_crash_writes_error_terminal） | pass | 0/2 | - |
 | stall-observability-full-suite-regression | 回归点（交付测试文件全量）：本 SPEC 两个测试交付物 tests/test_run_latency_stats.py（扩展：既有 tool_result 识别/样本提取/统计摘要用例 + 新增 TestStallRoundWarn 五用例）与 tests/test_run_stall_accounting.py（新增三用例）合并运行整体通过（本机实测同命令摘要行「36 passed, 7 warnings in 0.35s」形态）——无既有用例回归、无新增用例失败。tasks.md Deliverables（出处 spec/changes/evo-add-api-stall-observability/tasks.md、两测试文件）。此场景只带 -q（安静形态）并按其真实摘要「N passed」断言，不与 -v 并列（pytest 9 中 -q 覆盖 -v） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
