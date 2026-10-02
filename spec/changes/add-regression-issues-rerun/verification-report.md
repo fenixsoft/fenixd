@@ -53,3 +53,8 @@
 | cli-live-fallback-full-consumed | 消费端 fail-closed 回退全量（D3 端到端）：daemon 消费 scope=issues 信号 → map_snapshot_issues_to_nodeids 对 legacy 缺 classname 条目整体失败 → 回退全量 pytest → 新快照 MUST NOT 带 run_scope 戳记（仅 _apply_pytest_subset 成功才 stamp），total=5 / passed=3 / failed=1 / errors=1，且真实 junit 产出的 failures 与 long_tests（2 条）全部带 classname==tests.test_demo（D4 端到端：新快照恢复可定向形态），信号文件消费后移除。出处 fenixd.py:3650-3660、core/agent_runner/maintenance_runs.py:2085-2113、core/regression.py:962-1010。 | pass | 0/7 | - |
 | web-live-issues-fullchain-subset-tag | UI 全链收口（用户可见终点）：regiss-live（daemon managed、上一轮全量失败快照含 2 失败/错误 + 2 长耗时）页签点击定向子集按钮受理 → daemon 消费执行子集回归（约 7-9s 真实睡眠）→ 重新进入页签后概览卡出现「定向子集」Tag 与口径说明「本快照为定向子集回归结果：…再执行一次全量回归即恢复全量口径。」，结果表呈现子集真实行（长耗时 test_slow_export）。受理 toast 属瞬态不作断言，只断终态（防 flake）。出处 RegressionTab.tsx:146-155（isSubsetSnapshot/subsetScopeNote）、158-170（statusTagRow）、回归表 924（.regression-result-table）。 | pass | 0/5 | - |
 | cli-regiss-final-cleanup | 收尾清理：停止 regiss-live / regiss-pending 的托管 daemon（hosting 复位 stopped），删除全部 10 个 regiss-* 合成项目目录（registry ~ 一级目录 10s TTL 后自动淡出，不污染用户项目视图与后续验证轮次）。出处 core/dashboard/registry.py:18-23。 | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
