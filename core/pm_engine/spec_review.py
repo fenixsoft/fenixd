@@ -160,6 +160,32 @@ def rejection_class_stats(project_root) -> dict:
     return buckets
 
 
+def _runner_result_gate(agent_runner):
+    """评审结果硬门入口解析（code-review item 9e1197a61f51 契约化）。
+
+    真实 AgentRunner 走公开别名 ``check_result_artifact``（显式契约：runner
+    侧重构签名/语义时本文件调用点可被静态检查覆盖，不再依赖下划线私有成员
+    构成的事实契约；别名经 ``self.<私有名>`` 委派，实例打桩继续生效）。测试
+    替身（MagicMock 属性自动生成、手写 stub 按旧私有名打桩，无法甄别公开
+    别名是否真实存在）回退私有名——缺失时 AttributeError 与既有形态一致。
+    """
+    if isinstance(agent_runner, AgentRunner):
+        return agent_runner.check_result_artifact
+    return agent_runner._check_agent_result_artifact
+
+
+def _runner_salvage_hook(agent_runner):
+    """评审结果捞回入口解析（code-review item 9e1197a61f51 契约化）。
+
+    分流口径同 ``_runner_result_gate``；回退分支保留 ``getattr(..., None)``
+    容忍（CLI 形态 agent_runner=None 与不及格替身均返回 None，由调用方
+    ``callable`` 判定跳过——沿用旧口径不改变行为）。
+    """
+    if isinstance(agent_runner, AgentRunner):
+        return agent_runner.salvage_spec_review_result
+    return getattr(agent_runner, "_salvage_spec_review_result", None)
+
+
 class SpecReviewManager:
     """评审管理器：负责评审 run 的派发、结果消费、边界校验、重试与恢复。"""
 
@@ -400,7 +426,9 @@ class SpecReviewManager:
                 return False
 
             # ① 结果捞回（run 失败时尝试从转录代写落盘，避免白烧重试）
-            salvage = getattr(self.agent_runner, "_salvage_spec_review_result", None)
+            # 公开契约解析（code-review item 9e1197a61f51）：不再直取 runner
+            # 下划线私有成员形成隐式耦合。
+            salvage = _runner_salvage_hook(self.agent_runner)
             if callable(salvage):
                 try:
                     salvage(spec_name, run_id)
@@ -429,7 +457,7 @@ class SpecReviewManager:
         # ③b 结果捞回（2026-09-15 事故修复）：评审 run 正常收工但从未调用 Write，
         # 把结果 JSON 当正文 fenced 代码块吐出。此处从转录代写落盘，避免整轮白烧
         # 重试。抽不出/已存在时不动作，交下方硬门按既有语义处理。
-        salvage = getattr(self.agent_runner, "_salvage_spec_review_result", None)
+        salvage = _runner_salvage_hook(self.agent_runner)
         if callable(salvage):
             try:
                 salvage(spec_name, run_id)
@@ -473,7 +501,9 @@ class SpecReviewManager:
                 spec_name, err, allow_artifact=False, run_started_at=run_started_at
             )
             return False
-        err = self.agent_runner._check_agent_result_artifact(
+        # 公开契约调用（code-review item 9e1197a61f51）：硬门入口经
+        # _runner_result_gate 解析，不再直取 runner 下划线私有方法。
+        err = _runner_result_gate(self.agent_runner)(
             spec_name, "spec-review", run_started_at=run_started_at
         )
         if err is not None:
@@ -628,12 +658,17 @@ class SpecReviewManager:
                 "; ".join(str(f.get("detail") or "") for f in blocking) if blocking else "无详情"
             )[:500]
 
-            entry_now = self.state_machine.read_one(spec_name) or {}
-            try:
-                rejections = int(entry_now.get("_review_rejections", 0) or 0)
-            except (TypeError, ValueError):
-                rejections = 0
-            rejections += 1
+            # 否决计数走锁内原子递增（bump_counters 返回写后值参与阈值判定，
+            # code-review item 40842f773883，与 family._do_spec_bug_found 对
+            # _verify_fail_rounds 的同型修复 code-fix dd37a2be6ef6 对齐）：
+            # 原先「read_one 读旧值 → 内存 +1 → 下方 update_spec 整体写回」
+            # 读与写分处两个 STATE 锁临界区，与并发写者（恢复扫描重置字段、
+            # 人工面板写 error 的 update_spec）时间重叠时，读旧值写回会吞掉
+            # 对方刚写的增量——少计多烧一轮复评；读到并发方刚写的更大值再
+            # +1 落回则多计，提前达上限冻结转人工。
+            rejections = self.state_machine.bump_counters(
+                spec_name, {"_review_rejections": 1}
+            ).get("_review_rejections", 0)
             # rejection_class 结构化打回分类（add-pipeline-throughput-governance
             # 5.2）：缺字段/非法值按 unknown 兼容，读侧解析不失败、不告警升级；
             # 分类随 STATE 持久化供统计分桶（统计查询函数 rejection_class_stats
@@ -645,8 +680,9 @@ class SpecReviewManager:
                 # transition 返回值校验（与上方 approved 分支的 TOCTOU 口径对称）：
                 # 读态与 transition 之间存在并发窗口，写者可能已把 spec 推进到
                 # 别的状态（或冻结剥离），reviewing→ 非法/被剥离返回 False。失败时
-                # 保留 reviewer_run 锚点与重试计数，不落打回字段、不入队复评——
-                # 否则非评审态的 spec 会被盖上评审打回错误文案并丢失锚点。
+                # 保留 reviewer_run 锚点，不落打回字段、不入队复评——否则非评审态
+                # 的 spec 会被盖上评审打回错误文案并丢失锚点（否决计数已由上方
+                # bump_counters 原子落盘：该次否决真实发生，保留计入）。
                 success = self.state_machine.transition(
                     spec_name, "reviewing",
                     trigger_run_id=run_id, agent_type="spec-review", channel="auto",
@@ -662,7 +698,8 @@ class SpecReviewManager:
                     {
                         "reviewer_run": None,
                         "_review_attempts": 0,
-                        "_review_rejections": rejections,
+                        # _review_rejections 已由上方 bump_counters 原子递增
+                        # 落盘，此处不再并写（防覆盖并发写者增量）
                         "_review_rejection_class": rejection_class,
                         "error": (f"spec-review-rejected: {blocked_summary}"),
                     },
@@ -1243,28 +1280,38 @@ class SpecReviewManager:
         entry = self.state_machine.read_one(spec_name)
         if not entry:
             return
-        try:
-            attempts = int(entry.get("_review_attempts", 0) or 0)
-        except (TypeError, ValueError):
-            attempts = 0
-        if attempts < MAX_REVIEW_ATTEMPTS:
+        # 尝试计数走锁内原子递增（bump_counters 返回写后值参与阈值判定，
+        # code-review item 40842f773883，与 family._do_spec_bug_found /
+        # dispatch/queue._merge_streak 的同型修复对齐）：原先「read_one 读
+        # 旧值 → 内存 +1 → update_spec 整体写回」读与写分处两个 STATE 锁
+        # 临界区，与并发写者（恢复扫描重置字段、人工面板写 error 的
+        # update_spec）时间重叠时，读旧值写回会吞掉对方刚加的增量——少计
+        # 多烧一轮重试；读到并发方刚写的更大值再 +1 落回则多计，提前达上限
+        # 冻结转人工。
+        attempts = self.state_machine.bump_counters(
+            spec_name, {"_review_attempts": 1}
+        ).get("_review_attempts", 0)
+        if attempts <= MAX_REVIEW_ATTEMPTS:
             # 重试：保持 reviewing 状态，清除 reviewer_run + 入队
+            # （_review_attempts 已由上方 bump_counters 原子递增落盘，此处
+            # 不再并写，防覆盖并发写者增量）
             self.state_machine.update_spec(
                 spec_name,
                 {
                     "reviewer_run": None,
-                    "_review_attempts": attempts + 1,
                     "error": f"spec-review-incomplete: {reason}",
                 },
             )
-            self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts+1}")
+            self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts}")
             if self.pm_engine is not None:
                 self.pm_engine._enqueue(spec_name, "spec-review")
         else:
             # 达上限转冻结转人工（fix-blocked-freeze-classification 2.2）：
             # admin 对「评审器连续失败」无操作杠杆（模型链/配置问题），
             # 改走 freeze_for_human「冻结 + 告警」成对入口，使 admin_monitor
-            # 的 blocked_stuck 豁免生效。
+            # 的 blocked_stuck 豁免生效。_review_attempts 已由上方
+            # bump_counters 写过 MAX+1，随本次冻结 extra_updates 显式清零
+            # （清零口径不变，不覆盖并发写者增量的问题在此不存在）。
             r_id = entry.get("reviewer_run")
             error_msg = (
                 f"{FREEZE_ERROR_PREFIX}原状态 reviewing · " f"spec-review-incomplete: {reason}"

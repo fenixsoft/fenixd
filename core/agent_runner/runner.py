@@ -2102,6 +2102,29 @@ class AgentRunner:
             self.project_root, spec_name, run_id, agent_type,
             wt_path=wt_path, statuses=self._IMPL_RESULT_STATUSES)
 
+    # ── 公开契约别名（code-review item 9e1197a61f51）────────────────────
+    # SpecReviewManager 等跨对象消费者不再直取下划线私有成员（私有名原为
+    # 事实契约：runner 侧重构签名/语义时调用方静态检查不可见，失败形态是
+    # 运行期 AttributeError）。别名经 ``self.<私有名>`` 委派——实例/子类
+    # 打桩（测试替身挂私有名）继续生效，行为与直取私有名逐字等价。
+
+    def check_result_artifact(
+        self, spec_name: str, agent_type: str,
+        run_started_at: float | None = None,
+        wt_path: Path | None = None,
+        is_resumed_worktree: bool = False,
+    ) -> str | None:
+        """产物硬门公开契约（``_check_agent_result_artifact`` 别名）。"""
+        return self._check_agent_result_artifact(
+            spec_name, agent_type, run_started_at=run_started_at,
+            wt_path=wt_path, is_resumed_worktree=is_resumed_worktree,
+        )
+
+    def salvage_spec_review_result(self, spec_name: str,
+                                   run_id: str | None) -> bool:
+        """评审结果捞回公开契约（``_salvage_spec_review_result`` 别名）。"""
+        return self._salvage_spec_review_result(spec_name, run_id)
+
     def _wip_checkpoint_commit_safe(self, spec_name: str, wt_path, anchor: str,
                                     exclude_main_tree: bool = False) -> None:
         """WIP 保全内核（code-review item b812e741e04b：三锚点助手单点化）。
