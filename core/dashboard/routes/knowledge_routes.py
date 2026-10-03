@@ -161,9 +161,19 @@ class H14KnowledgeRoutesMixin:
                 )
                 domain_dirs = []
             for d in domain_dirs:
-                pages = sorted(
-                    p.name for p in d.glob("*.md") if p.name != "_domain.md"
-                )
+                # 枚举本身失败（权限/IO）时按空清单降级，对齐上下两处容错口径
+                try:
+                    pages = sorted(
+                        p.name for p in d.glob("*.md") if p.name != "_domain.md"
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "knowledge domains/%s 能力页枚举失败（%s）: %s",
+                        d.name,
+                        project["name"],
+                        exc,
+                    )
+                    pages = []
                 payload["domains"].append(
                     {
                         "name": d.name,
