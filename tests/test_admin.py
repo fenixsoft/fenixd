@@ -1329,18 +1329,24 @@ class TestPgrepRepairProbe:
 
     def test_pattern_set_includes_repair(self):
         """模式集包含 impl-/verify-/repair- 三态，repair-<spec>- 被实际发起 pgrep。"""
+        # item 780797acccdb：spec 名经 re.escape 转义后再拼模式（pgrep 按正则
+        # 解释 pattern，\- 匹配字面量 -，转义不改变匹配目标、只防元字符放大
+        # 匹配集），断言对齐转义后形态
+        escaped = re.escape("evo-x")
         with mock.patch("core.admin_monitor.subprocess.run") as m_run:
             m_run.return_value = mock.Mock(returncode=1, stdout="")
             assert _pgrep_live_worktree("evo-x") is False
             patterns = [c.args[0][2] for c in m_run.call_args_list]
-            assert "impl-evo-x-" in patterns
-            assert "verify-evo-x-" in patterns
-            assert "repair-evo-x-" in patterns
+            assert f"impl-{escaped}-" in patterns
+            assert f"verify-{escaped}-" in patterns
+            assert f"repair-{escaped}-" in patterns
 
     def test_repair_process_judged_live(self):
         """repair-<spec>-<ts> worktree 下存在 claude 进程 → 判定为存活。"""
+        escaped = re.escape("evo-x")
+
         def side_effect(cmd, **kw):
-            if cmd[2] == "repair-evo-x-":
+            if cmd[2] == f"repair-{escaped}-":
                 return mock.Mock(returncode=0, stdout="4242\n")
             return mock.Mock(returncode=1, stdout="")
         with mock.patch("core.admin_monitor.subprocess.run",

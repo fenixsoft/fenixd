@@ -368,10 +368,20 @@ class CliRunner(VerifyRunner):
         ]
         if stdin_data and proc.stdin is not None:
             readers.append(asyncio.ensure_future(_pump_stdin()))
+
+        async def _collect():
+            # communicate() 契约的两段缺一不可：读尽流（EOF）之后还须 wait()
+            # 收割子进程，proc.returncode 才保证就绪——流 EOF 只证明子进程
+            # 已退出，child watcher 的收割是异步的，省略 wait() 会竞态读到
+            # returncode=None，信号死亡判类与 exit_code 断言全部失真（定向
+            # 重试轮回归：test_signal_death_is_error 等六例）。EOF 已证明
+            # 进程退出，wait() 只做收割、立即返回，不额外拉长超时预算。
+            gathered = await asyncio.gather(*readers)
+            await proc.wait()
+            return gathered
+
         try:
-            gathered = await asyncio.wait_for(
-                asyncio.gather(*readers), timeout=timeout
-            )
+            gathered = await asyncio.wait_for(_collect(), timeout=timeout)
             stdout_b, stdout_read_truncated = gathered[0]
             stderr_b, stderr_read_truncated = gathered[1]
         except asyncio.TimeoutError:
