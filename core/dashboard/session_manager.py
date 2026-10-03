@@ -76,6 +76,9 @@ class SessionManager:
         self._lock = threading.Lock()
         self._idle_thread: threading.Thread | None = None
         self._idle_stop = threading.Event()
+        # code-review item ba9e09f14e6d：关闭闸门——shutdown 置位后 start 拒绝
+        # 新会话，堵住「快照之后、进程退出之前」窗口内 spawn 的孤儿子进程。
+        self._closed = False
         self._start_idle_thread()
 
     # ── D1.11：必须不出现的 env 键 ────────────────────────────────────────
@@ -113,6 +116,10 @@ class SessionManager:
         """
         project_path = Path(project_path)
         with self._lock:
+            # code-review item ba9e09f14e6d：已关闭则拒绝新会话（含复用分支）。
+            # 调用方 _api_session_start 以 except Exception 兜底 500，无穿透。
+            if self._closed:
+                raise SessionError("session manager is shut down")
             existing = self._sessions.get(project_name)
             if existing is not None:
                 # code-review item 6f1f51a385a0：_terminate 认领后（关 stdin →
@@ -227,6 +234,11 @@ class SessionManager:
         """终止全部会话并停空闲回收线程。幂等。"""
         self._idle_stop.set()
         with self._lock:
+            # code-review item ba9e09f14e6d：持锁先置位关闭标记再快照——start 与
+            # shutdown 在同一把锁上串行：置位前完成的 start 必已把会话登记进
+            # 映射、必入快照被终止；置位后到达的 start 必被拒绝。消除「快照后
+            # spawn、退出链不知晓」的孤儿窗口。
+            self._closed = True
             sessions = list(self._sessions.values())
         # code-review item da1eacbbbe78：串行终止为有意选择——会话数少（每项目
         # 至多一个），正常会话关 stdin 即退，仅僵死会话各拖约宽限 5s+kill 后 2s；
