@@ -836,11 +836,26 @@ class VerificationPipeline:
                 # 显式让位（人工已接管不写 blocked 不发告警）。
                 if not retry_judge.success:
                     if getattr(retry_judge, "frozen_terminated", False) is True:
+                        # 补 hold 标记（code-review item b7f86878b739）：与首次
+                        # 派发路径 _dispatch_judge_or_reuse 的 frozen_terminated
+                        # 分支同口径——不落 _frozen_hold 则解冻后 unfreeze_spec
+                        # 的续做判定（_resolve_preserved_branch →
+                        # _recovery_resume）不触发，重试轮恰是 spec 冻结时刻
+                        # 唯一在飞且被终止的 run 时现场降级普通重派。
+                        # mark_frozen_hold 不改 status、不清锚点，与让位语义
+                        # （不写 blocked、不发告警）兼容。
+                        j_err = retry_judge.error or ""
+                        frozen_err = (
+                            f"judge run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                            f"{': ' + j_err if j_err else ''}"
+                        )
+                        self._context.state_machine.mark_frozen_hold(
+                            spec_name, frozen_err)
                         self._context.logger.info(
                             "pm_engine",
                             f"重派 judge run 因 spec 冻结被终止 '{spec_name}' — "
-                            f"让位：保持原状，不写 blocked、不发告警: "
-                            f"{retry_judge.error or ''}",
+                            f"让位：写 hold 保全现场，不写 blocked、不发告警: "
+                            f"{j_err}",
                         )
                         return None
                     # 判定用 `is True`（与上方 frozen_terminated 及
@@ -2753,12 +2768,17 @@ class VerificationPipeline:
                         if not plan_read.ok
                         else f"'{plan_read.status}'"
                     )
+                    # 时长统一空值守卫（code-review item 30f5b0c0c57e）：与下方
+                    # _write_degrade_context 的 `or 0` 同口径，防 duration_seconds
+                    # 可空（或测试以替身注入）时 f-string 除法 TypeError。
+                    _dur = plan_result.duration_seconds or 0
+                    _dur_min = _dur / 60
                     self._context.state_machine.update_spec(
                         spec_name,
                         {
                             "error": (
                                 f"Planner 场景生成无效（status={plan_status_text}，run="
-                                f"{plan_result.run_id}，{plan_result.duration_seconds / 60:.1f}min）"
+                                f"{plan_result.run_id}，{_dur_min:.1f}min）"
                                 f"— 降级旧版验证流程"
                             ),
                         },
@@ -2767,7 +2787,7 @@ class VerificationPipeline:
                         "pm_engine",
                         f"Planner 未生成有效场景 '{spec_name}'（status={plan_status_text}，"
                         f"run={plan_result.run_id}，白烧 "
-                        f"{plan_result.duration_seconds / 60:.1f}min）— 降级旧版 verifier",
+                        f"{_dur_min:.1f}min）— 降级旧版 verifier",
                     )
                     # add-planready-artifact-gate D3：降级前落盘上下文
                     # （供 verify_report 合成路径注入降级标注，G3）。
@@ -2775,7 +2795,7 @@ class VerificationPipeline:
                         spec_name,
                         reason=(f"Planner 未生成有效场景，status={plan_status_text}"),
                         run_id=plan_result.run_id,
-                        duration_seconds=plan_result.duration_seconds or 0,
+                        duration_seconds=_dur,
                     )
                     raise RuntimeError(f"Planner 未生成有效场景，status={plan_status_text}")
 

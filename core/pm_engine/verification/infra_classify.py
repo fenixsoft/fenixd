@@ -507,7 +507,10 @@ def _scenario_classification_distribution(pipeline, spec_name: str) -> dict:
         if sc.get("status") in ("pass", "passed"):
             continue
         sid = sc.get("scenario_id") or sc.get("id") or "?"
-        failed.append((str(sid), sc.get("classification")))
+        # 非 str（脏数据可为 list/dict 等不可哈希值）归一为 None，走 unclassified
+        # 口径，避免下方 Counter 构造抛 TypeError: unhashable type
+        raw_cls = sc.get("classification")
+        failed.append((str(sid), raw_cls if isinstance(raw_cls, str) else None))
     if not failed:
         return dist
     counts = Counter(cls for _sid, cls in failed)

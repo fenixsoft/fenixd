@@ -137,8 +137,10 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
     worktree 未提交改动补查（19a447af3bfc）：Bash 重定向/heredoc 等写
     通道落盘不产生 tool_use 记录，仅凭工具名判定会把真实改动误判空转、
     触发重派（未提交改动随后随 worktree 复位丢失）；存在未提交改动即按
-    非零变更返回 False，杜绝误重派。该项查询失败（无 worktree/子进程
-    异常）按跳过处理，维持既有「仅按工具名判定」语义（不吞空转侦测能力）。
+    非零变更返回 False，杜绝误重派。该项的失败降级分两条路径：
+    git status 非零退出 → 按非零变更保守处理（不重派）；无 worktree/
+    子进程异常 → 按跳过处理，维持既有「仅按工具名判定」语义（不吞空转
+    侦测能力）。
     """
     branch = getattr(result, "branch", None)
     if not branch:

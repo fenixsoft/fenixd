@@ -2,7 +2,7 @@
 显式复位解锁与监测豁免。
 
 覆盖：
-- 六处取消收尾分支写入 _cancelled_hold 标记且不改既有取消语义（任务 1.3）
+- 七处取消收尾分支写入 _cancelled_hold 标记且不改既有取消语义（任务 1.3）
 - recover_interrupted 遇标记跳过复位/重派/重启重验计数，无标记回归不变（任务 2.2）
 - update_spec 显式携带 status 清标记、仅 error 隐式更新不清（任务 3.2）
 - admin_monitor._detect_stuck 对保持态豁免，无标记回归不变（任务 4.2）
@@ -57,7 +57,7 @@ def _stale(sm: StateMachine, name: str, hours: float = 3.0) -> None:
 class CancelFinalizeMarkerContract(unittest.TestCase):
     """取消收尾分支 update_spec 调用必须携带 _cancelled_hold=True。
 
-    六处收尾分支形态各异（缩进/上下文不同），静态钉六处写点：
+    七处收尾分支形态各异（缩进/上下文不同），静态钉七处写点：
     对每处断言其 update_spec 调用字典含 "_cancelled_hold": True 键，
     且紧邻的 error 键在同一个调用内（同层写入，逐字段一致契约）。
 
@@ -74,7 +74,9 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     # 核验恰好命中 1 次，唯一性由 _locate 与全库扫描双重自证）。
     # 锚点行 → 写点行偏移：implementer +20 / fast-track +17 / repair
     # +16（dispatch.py），planner-plan +11 / planner-judge +10 /
-    # legacy-verifier +10（verification/_legacy.py），全部落在
+    # legacy-verifier +10（verification/_legacy.py），reroute-judge +16
+    # （verification/escalation.py，code-review 9affa1c31b7c 补齐改道
+    # 车道取消 hold-state 留痕），全部落在
     # [anchor_line, anchor_line+25) 窗口内（最大偏移 +20，留 5 行余量）。
     WRITE_POINTS = [
         ("core/pm_engine/dispatch/queue.py",
@@ -95,6 +97,9 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         ("core/pm_engine/verification/legacy.py",
          "人工取消 hold-state（add-run-cancel D4，legacy verifier）",
          "legacy-verifier"),
+        ("core/pm_engine/verification/escalation.py",
+         "人工取消 hold-state（与 pipeline.py",
+         "reroute-judge"),
     ]
     # 断言窗口：锚点行起向后 WRITE_POINT_WINDOW 行。
     # 覆盖表内最大偏移 +20 并留 5 行余量；若未来某写点与锚点距离拉大
@@ -125,7 +130,7 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
                 "（不唯一，请改用更精确串）")
         return hits[0]
 
-    def test_six_holdstate_write_points_carry_marker(self):
+    def test_seven_holdstate_write_points_carry_marker(self):
         for rel, anchor, label in self.WRITE_POINTS:
             with self.subTest(label=label):
                 lines = self._load(rel)
@@ -147,10 +152,10 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
                 )
 
     def test_no_new_holdstate_write_point_missed(self):
-        """全库 hold-state 收尾写点恰好六处，与锚点表条目数/文件集合互为印证。
+        """全库 hold-state 收尾写点恰好七处，与锚点表条目数/文件集合互为印证。
 
-        与 test_six_holdstate_write_points_carry_marker 的锚点表并行：
-        文件集合一致（无新增/删减文件）+ 写点总数恰好六处（无漏入表）。
+        与 test_seven_holdstate_write_points_carry_marker 的锚点表并行：
+        文件集合一致（无新增/删减文件）+ 写点总数恰好七处（无漏入表）。
         未来新增 run 类型时，此处与锚点表会同时红。
         """
         root = Path(__file__).resolve().parent.parent / "core"
@@ -169,14 +174,14 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
             sorted({rel for rel, _, _ in self.WRITE_POINTS}),
             "全库 hold-state 写点文件集合与锚点表不一致",
         )
-        # 写点总数恰好六处，与锚点表条目数互为印证
+        # 写点总数恰好七处，与锚点表条目数互为印证
         self.assertEqual(
-            sum(hits.values()), 6,
-            "全库 _cancelled_hold 写点总数非六处：新增/删除了写点而未同步锚点表",
+            sum(hits.values()), 7,
+            "全库 _cancelled_hold 写点总数非七处：新增/删除了写点而未同步锚点表",
         )
         self.assertEqual(
-            len(self.WRITE_POINTS), 6,
-            "锚点表条目数非六处：与全库写点总数不一致",
+            len(self.WRITE_POINTS), 7,
+            "锚点表条目数非七处：与全库写点总数不一致",
         )
 
 
@@ -393,7 +398,7 @@ class TestMonitorExemptsHold(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ── 六处收尾行为级单测（夹具 run 取消收尾 → 标记 + 语义一致） ──────────
+# ── 七处收尾行为级单测（夹具 run 取消收尾 → 标记 + 语义一致） ──────────
 
 class _CancelledResult:
     """模拟被人工取消的 run 结果对象（与 AgentRunResult 取消字段同形）。"""

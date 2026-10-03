@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -1502,9 +1503,16 @@ class QQQueueMixin:
                         self._enqueue_front(spec_name, "verifier")
                         return
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-                    attempts = (
-                        self._parse_int_field(spec_entry, "_zero_change_attempts", 0) + 1
-                    )
+                    # _zero_change_attempts 锁内原子递增（code-review item
+                    # 8eb2f7b9e6ad）：取写后值参与 attempts >= 3 判定与 error 文案，
+                    # 下方 update_spec / freeze_for_human 不再并写该字段（对齐
+                    # _retry_count 同型站点收口形态，防并发写回互相覆盖丢增量）
+                    # ——原两段式「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁
+                    # 临界区，与 merge-only 重试定时器/WIP 周期消费者并发进入同一
+                    # spec 时可丢一次递增，「连续 3 次零变更」冻结转人工晚一轮触发。
+                    attempts = self._pm.state_machine.bump_counters(
+                        spec_name, {"_zero_change_attempts": 1}
+                    ).get("_zero_change_attempts", 0)
                     # fix-zero-change-blindspot：区分「真空转」与「有工作未提交」。
                     # cleanup 前取证的 worktree_dirty 非空 = agent 确实动过文件
                     # （如用 Bash 写文件而非 Edit/Write），只是没 commit——不是空转，
@@ -1527,7 +1535,8 @@ class QQQueueMixin:
                     updates: dict = {
                         "status": "ready",
                         "error": err_note + f"（第 {attempts} 次）",
-                        "_zero_change_attempts": attempts,
+                        # _zero_change_attempts 已由上方 bump_counters 原子递增落盘，
+                        # 不再并写（防并发写回互相覆盖丢增量）
                     }
                     if attempts >= 3:
                         # fix-blocked-freeze-classification 3.1 同型收敛（code-review
@@ -1564,7 +1573,8 @@ class QQQueueMixin:
                             ),
                             alert_callback=self._pm._send_human_escalation_alert,
                             extra_updates={
-                                "_zero_change_attempts": attempts,
+                                # _zero_change_attempts 已由上方 bump_counters 原子
+                                # 递增落盘，不再并写（防并发写回互相覆盖丢增量）
                                 "tester_run": None,
                             },
                         )
@@ -3486,6 +3496,12 @@ class QQQueueMixin:
                     f"ocr 收尾审查发现 {len(actionable)} 条未裁决 findings"
                     f"（gate 档打回，修复轮 {rounds + 1}/1）"
                 ),
+                # _ocr_fix_rounds 绝对写回而非 bump_counters 原子递增（code-review
+                # item 99ba2e45e362）：修复轮上限硬编码为 1（gate 侧 rounds < 1 即
+                # 打回、directive max_rounds=1、>=1 转台账放行），两路并发各持同一
+                # 旧值写回最多丢一次递增，影响被「>=1 即终止」封顶。前提钉死：若
+                # 放宽修复轮上限，MUST 先改用 bump_counters 锁内原子递增取写后值
+                # （对齐 _retry_count/_merge_streak 同型站点），防丢增量。
                 "_ocr_fix_rounds": rounds + 1,
                 **self._ocr_join_pending_cleared(),
             },
@@ -3515,21 +3531,39 @@ class QQQueueMixin:
         )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(".ocr_findings_directive.json.tmp")
-            tmp.write_text(
-                json.dumps(
-                    {
-                        "spec": spec_name,
-                        "round": round_no,
-                        "max_rounds": 1,
-                        "findings": findings,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+            # 原子落盘对齐 infra_breaker.py 写入范式（code-review item
+            # c208b7542b6e）：同目录 mkstemp 生成唯一 tmp 名（join gate 多入口
+            # 并发生成同一 spec 的 directive 时不再共用固定 tmp 路径，消除交错写
+            # 把半截内容 replace 进正式文件的窗口）+ fsync（掉电/崩溃不留截断
+            # 内容被下轮实现 prompt 误读）+ os.replace 原子替换。
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=str(path.parent),
             )
-            os.replace(tmp, path)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "spec": spec_name,
+                                "round": round_no,
+                                "max_rounds": 1,
+                                "findings": findings,
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_str, str(path))
+            finally:
+                if os.path.exists(tmp_str):
+                    try:
+                        os.unlink(tmp_str)
+                    except OSError:
+                        pass
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",

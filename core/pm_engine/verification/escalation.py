@@ -8,8 +8,6 @@
 """
 
 import json
-import os
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -300,9 +298,11 @@ def _clear_inconclusive_reverify_flag(pipeline, spec_name: str) -> None:
         )
 
 
-# [fenix-ignore:d5f83f2038f4] 三处同构骨架经停止分支合并（922e79f7a511）
-# 与 _read_int_config 抽取后，残留分歧仅在各自文案与 judge 无并行降档，
-# 参数化抽取风险大于收益，暂不共享实现
+# [fenix-ignore:d5f83f2038f4] 三处 inconclusive 升级停车均已共用
+# _escalate_inconclusive_parking 收口（922e79f7a511 停止分支合并；judge
+# 自述形态经 5a9cdf9b2dac 并入），残留分歧仅在各自非升级分支：重验文案、
+# env 阻塞形态的并行降档与签名基准（judge 自述形态无 blocked-env 签名，
+# 按空串回写）——参数化抽取风险大于收益，暂不共享实现
 def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> bool:
     """环境性失联门禁：全批 blocked-env → inconclusive → 保持 testing 重派新 attempt。
 
@@ -757,22 +757,14 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     for stale_id in set(streaks) - current_ids:
         del streaks[stale_id]
 
-    # 写回侧车
+    # 写回侧车（原子写统一走共用助手 atomic_write_text，与模块头声明及本
+    # 文件其余侧车落盘点一致，code-review d38282cb353a——不再手写 mkstemp
+    # 第二套实现；助手内建失败清理残留临时文件）
     try:
         streaks_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(streaks_path.parent), prefix=".warning_streaks.", suffix=".json.tmp"
+        atomic_write_text(
+            streaks_path, json.dumps(streaks, ensure_ascii=False, indent=2)
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(streaks, f, ensure_ascii=False, indent=2)
-                f.flush()
-            os.replace(tmp_path, streaks_path)
-        except OSError:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
     except OSError as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -1129,9 +1121,29 @@ def _scenario_defect_reroute_gate(
             )
             return True
         if getattr(reroute_judge, "cancelled", False) is True:
+            # 人工取消 hold-state（与 pipeline.py _dispatch_judge_or_reuse 的
+            # cancelled 分支同口径，code-review 9affa1c31b7c）：写 error +
+            # _cancelled_hold 持久标记（fix-cancel-holdstate-recovery D1），
+            # 保持 testing。恢复链路按取消保持跳过（recover_interrupted D3 /
+            # _ready_hold_blocks），人工「随根因修复一并重派」的决策不被重启
+            # 恢复静默覆盖；此前本车道零写入，取消事实在 dashboard/
+            # 排障侧不可见（cancelled_hold 渲染判据读不到）。
+            cancelled_err = (
+                f"run 被人工取消：{reroute_judge.error}"
+                if reroute_judge.error
+                else "run 被人工取消"
+            )
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": cancelled_err,
+                    "_cancelled_hold": True,
+                },
+            )
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"改道重派 judge 被取消 '{spec_name}' — hold-state（保持 testing）",
+                f"改道重派 judge 被取消 '{spec_name}' — hold-state"
+                f"（保持 testing）: {cancelled_err}",
             )
         else:
             pipeline._context.logger.warning(
@@ -1375,46 +1387,35 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
 
     # ── B7 升级通道（design D6）──
     # 达升级阈值或达重验上限（attempts >= max_attempts，停止收口与升级
-    # 合并，code-review 922e79f7a511）即升级写 SIGNAL。
+    # 合并，code-review 922e79f7a511）即升级停车——经共用收口
+    # _escalate_inconclusive_parking（code-review 5a9cdf9b2dac：不再内联
+    # 只写 SIGNAL 的第二套收口，与 _handle_env_blocked_inconclusive /
+    # _handle_verdict_env_exemption_inconclusive 同族同通道：SIGNAL +
+    # escalation_notifier 带 choices 人工告警 + _in_inconclusive_reverify
+    # 旗标（judge 预算隔离）+ _last_inconclusive_signature 回写）。本形态
+    # 失败集不来自 blocked-env 场景（judge 判 bug-found 但根因自述 env），
+    # 无签名比较基准、按空串回写（下一轮按签名未知保守走计数上限）；
+    # blocked_env 计 0，signal_description 沿用与本故障形态一致的措辞
+    # （不引人工走向 blocked-env 探针方向，_write_inconclusive_loop_signal
+    # description 覆盖语义同款）。
     if attempts >= escalate_attempts or attempts >= max_attempts:
-        # 构造一个简化 report（blocked-env 场景信息从 state 读）：
-        # judge 自述环境问题时，blocked-env 数需要从上轮 report 提取，
-        # 此处用 _inconclusive_attempts 作为上下文。
-        pipeline._write_inconclusive_loop_signal(
+        threshold_note = _escalate_threshold_note(
+            attempts, max_attempts, escalate_attempts
+        )
+        _escalate_inconclusive_parking(
+            pipeline,
             spec_name,
             attempts,
             0,
-            {"scenarios": [], "summary": {"blocked_env": 0}},
-            description=(
+            {},
+            signature="",
+            threshold_note=threshold_note,
+            env_note="judge 自述全部 bug 根因为环境/基础设施问题（伪失败）",
+            signal_description=(
                 f"'{spec_name}' 连续 {attempts} 轮验证均因环境/基础设施问题"
-                f"未完成（judge 自述），"
-                f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
+                f"未完成（judge 自述），{threshold_note}，"
                 f"请 Administrator 核查验证环境"
             ),
-        )
-        pipeline._context.logger.error(
-            "pm_engine",
-            f"'{spec_name}' judge 连续 {attempts} 轮均自述环境问题，"
-            f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
-            f"SIGNAL 已写 admin store，"
-            f"暂停自动重验等待人工处置",
-        )
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "implemented",
-                "tester_run": None,
-                "error": (
-                    f"连续 {attempts} 轮验证均因环境/基础设施问题未完成"
-                    f"（judge 自述），已呼叫 Administrator 核查验证环境；"
-                    f"人工处置后需清 _inconclusive_attempts 才能恢复自动重验"
-                ),
-                "_inconclusive_attempts": attempts,
-                "_dispatch_backoff_until": (
-                    int(datetime.now(timezone.utc).timestamp())
-                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-                ),
-            },
         )
         return True
 
@@ -1446,21 +1447,44 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
     自述「这是一个环境问题，而非产品 Bug」，却把 status 标为 bug-found，
     pm_engine 据此派生伪 fix 级联。此处以 judge 自己的根因描述为准：
     所有 bug 均自述环境/基础设施问题时，按「验证没能发生」处理。
+
+    采信前置（code-review fdd837807758）：结果文件直读 MUST 先过 spec 戳
+    与 status 白名单两道护栏，防上一轮 implementer（status=success/error，
+    不产 bugs 语义）或异 spec 残留的 bugs 字段被误采信、把真实 bug-found
+    打回吞成 inconclusive。role 门不在前置内：primary 是 judge/verifier
+    直写落点、常缺 role 戳（judge_gate 快道 D3 教训，
+    report_gate._verifier_result_is_stale 对 primary 同款豁免 role 门）——
+    「本产物确出自验证裁决车道」由 status=bug-found 白名单表达
+    （implementer/planner 不产出该 status）。
     """
-    primary = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / ".fenix-run-result.json"
+    # 路径解析与戳校验复用统一读取入口的实现（evo-verifier-result-single-
+    # source R1；函数内 import 与 pipeline.py 同款先例，防模块环导入）。
+    from core.pm_engine.verification.report_gate import (
+        _verifier_stamp_gate,
+        _verify_progress_result_paths,
     )
+
+    primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
     if not primary.exists():
         return False
     try:
         data = json.loads(primary.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    # UnicodeDecodeError（非 UTF-8 字节）与 JSON 语法错同属内容损坏：
+    # fail-closed 按「无法采信」返回 False（与 report_gate 读取点口径对齐）。
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return False
-    bugs = data.get("bugs") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return False
+    # spec 戳不符 = 其它 spec 残留，不采信（规则唯一实现在
+    # _verifier_stamp_gate；primary 只做 spec 戳、不做 role 门，见 docstring）
+    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    if not ok:
+        return False
+    # 仅验证裁决车道申报的 bug-found 产物才采信 bugs 字段（implementer
+    # success/error 残留、旧轮 verified/plan-ready 残留一律不采信）
+    if data.get("status") != "bug-found":
+        return False
+    bugs = data.get("bugs")
     if not isinstance(bugs, list) or not bugs:
         return False
 

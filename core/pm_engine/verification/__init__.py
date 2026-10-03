@@ -5,9 +5,9 @@ refactor-verification-module D8/D9：`verification.py` 单文件模块拆分为
 公开与私有名字，保证既有调用路径（`from core.pm_engine.verification import X`
 与测试字符串路径 patch）零改动。
 
-_D9 约定_：`subprocess` / `ensure_main_tree_deps` / `run_prepare_steps` /
-`load_verify_contract` / `rewrite_scenarios_origin` 五个可 patch 名绑定在本
-门面；`_legacy` 内对它们的调用点 MUST 经本门面延迟解析（`import
+_D9 约定_：`subprocess` / `probe_ready` / `ensure_main_tree_deps` /
+`run_prepare_steps` / `load_verify_contract` / `rewrite_scenarios_origin`
+六个可 patch 名绑定在本门面；`_legacy` 内对它们的调用点 MUST 经本门面延迟解析（`import
 core.pm_engine.verification as _facade; _facade.<name>(...)`），使
 `patch("core.pm_engine.verification.<name>")` 继续命中。
 """

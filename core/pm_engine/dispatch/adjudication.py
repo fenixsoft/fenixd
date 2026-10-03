@@ -1120,6 +1120,8 @@ class VAdjudicationMixin:
             try:
                 # .history 备份（对齐 admin 处置备份惯例）：备份文件不可写/
                 # 目录异常不阻塞删除本身（备份是附加留痕，fail-open）。
+                # before_text 为循环前批量快照——非本条删除时刻的文件现状
+                # （语义见 _backup_to_history docstring）。
                 self._backup_to_history(spec_name, m, before_text)
                 # Task 1.4/2.4：删除经统一落点执行器（写回层 + 立即提交）；
                 # 改写/提交失败（worktree 占用、git 冲突）→ 该条保留人工，
@@ -1428,8 +1430,11 @@ class VAdjudicationMixin:
         备份目标：``<project_root>/.history/<spec_name>/<元素 basename>.<元素
         路径哈希前 8 位>.<时间戳>.orphan-preclassify.bak``（.history 已在
         .gitignore 排除，不提交）。
-        备份内容为删除前的 tasks.md 全文快照（diff.before 同源）。备份失败仅
-        WARNING，不阻塞删除本身（备份是附加留痕，fail-open）。
+        备份内容为调用方传入的 tasks.md 全文快照（与审计 diff.before 同源）。
+        唯一调用方 _preclassify_orphan_impl 传入的是删除循环**前**的批量快照：
+        第二条起的备份并非该条目删除时刻的文件现状（前序已删条目仍在其中），
+        逐条核对删除前状态以写回层 git 提交历史为准。备份失败仅 WARNING，
+        不阻塞删除本身（备份是附加留痕，fail-open）。
         """
         try:
             backup_dir = self._pm.project_root / ".history" / spec_name

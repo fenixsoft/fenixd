@@ -325,36 +325,30 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path, logger=None) -> 
             timeout=15,
         )
     except Exception as prune_err:
+        msg_tpl = (
+            "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 异常"
+            "（仅影响登记簿清理，不影响回收结果）: %s"
+        )
+        msg_args = (wt_path, prune_err)
         if logger is not None:
-            logger.warning(
-                "serving_reclaim",
-                f"serving_reclaim: 目录 {wt_path} 已删除但收尾 git worktree prune 异常"
-                f"（仅影响登记簿清理，不影响回收结果）: {prune_err}",
-            )
+            logger.warning("serving_reclaim", msg_tpl % msg_args)
         else:
-            logging.getLogger("fenixd.serving_reclaim").warning(
-                "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 异常"
-                "（仅影响登记簿清理，不影响回收结果）: %s",
-                wt_path,
-                prune_err,
-            )
+            logging.getLogger("fenixd.serving_reclaim").warning(msg_tpl, *msg_args)
         return
     if prune.returncode != 0:
+        msg_tpl = (
+            "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 失败 "
+            "(rc=%s)（仅影响登记簿清理，不影响回收结果）: %s"
+        )
+        msg_args = (
+            wt_path,
+            prune.returncode,
+            (prune.stderr or prune.stdout).strip(),
+        )
         if logger is not None:
-            logger.warning(
-                "serving_reclaim",
-                f"serving_reclaim: 目录 {wt_path} 已删除但收尾 git worktree prune 失败 "
-                f"(rc={prune.returncode})（仅影响登记簿清理，不影响回收结果）: "
-                f"{(prune.stderr or prune.stdout).strip()}",
-            )
+            logger.warning("serving_reclaim", msg_tpl % msg_args)
         else:
-            logging.getLogger("fenixd.serving_reclaim").warning(
-                "serving_reclaim: 目录 %s 已删除但收尾 git worktree prune 失败 "
-                "(rc=%s)（仅影响登记簿清理，不影响回收结果）: %s",
-                wt_path,
-                prune.returncode,
-                (prune.stderr or prune.stdout).strip(),
-            )
+            logging.getLogger("fenixd.serving_reclaim").warning(msg_tpl, *msg_args)
 
 
 def _is_boot_log_target(name: str) -> bool:
