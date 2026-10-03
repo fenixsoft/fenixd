@@ -35,3 +35,10 @@
 | sf-regression-worktree-backoff | 回归点：worktree 竞争退避相关既有测试零回退（test_worktree_acquire_backoff、test_verify_parallel_backoff、test_transient_backoff、test_transient_unseal_backoff）——自适应预算不得改变既有固定序列语义。出处：tests/ | pass | 0/2 | - |
 | sf-regression-worktree-conflict-admin-cross-type | 回归点：worktree 并发保护/conflict-recovery/admin 跨类型重复派发既有测试零回退（test_worktree_merge_guard、test_worktree_reuse、test_worktree_stray_and_identical、test_worktree_wip_artifact_scope、test_stash_pop_conflict_triage、test_admin_dispatch_escalation）——单飞守卫不改 dual-dispatch guard 语义。出处：tests/ | pass | 0/2 | - |
 | sf-regression-verify-contract | 回归点：verify 契约既有测试零回退（test_verify_contract、test_verify_contract_autodraft、test_verify_contract_template_preflight）——prepare 护栏单点收敛于 run_prepare_steps，不改契约既有语义。出处：tests/ | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
