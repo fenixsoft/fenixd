@@ -915,7 +915,19 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                         serve_error = f"serve 端口发现异常: {e}"
                     if srv is not None and not srv.ok:
                         serve_ok = False
-                        serve_error = srv.failure_note or "serve 命令未就绪（注入端口未被消费）"
+                        if srv.port is not None:
+                            # 端口已发现但进程已退出（ok = 端口命中且存活，此处必是
+                            # poll() 非 None——如探针 GET 本身触发脆弱应用崩溃）：
+                            # failure_note 只在发现阶段两条失败路径赋值，此时仍为
+                            # 空串，默认文案「注入端口未被消费」会与真实根因相反
+                            # （code-review item 40825790776f）——按端口是否已发现
+                            # 区分两种形态，默认文案只留给端口未发现形态。
+                            serve_error = (
+                                f"serve 实例曾就绪（端口 {srv.port}）但进程已退出"
+                                f"（exit={proc.returncode}）——检查 serve.cmd 为何在就绪后崩溃"
+                            )
+                        else:
+                            serve_error = srv.failure_note or "serve 命令未就绪（注入端口未被消费）"
                         # serve 命令未就绪是运行时问题，不是契约格式问题——契约结构有效
                     elif srv is not None:
                         base_url = srv.base_url
@@ -1221,7 +1233,11 @@ def _run_prepare_steps_unlocked(
                 text=True,
                 start_new_session=True,
             )
-        except OSError as e:
+        # ValueError 与 OSError 同捕（code-review item c9a11de9d009）：cmd/cwd
+        # 含空字节（YAML 双引号 ``\0`` 转义可过 _prepare_run_valid 的形态守卫）
+        # 时 Popen 抛 ValueError 而非 OSError——不拦会从本函数冒出，冲垮只按
+        # 返回值 err 串处理的验证管线与 dist rebuild 调用方。
+        except (OSError, ValueError) as e:
             return f"第 {i} 步启动失败: {e}"
         try:
             out, err = p.communicate(timeout=PREPARE_STEP_TIMEOUT)
