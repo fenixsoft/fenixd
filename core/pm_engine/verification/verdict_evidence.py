@@ -1233,6 +1233,13 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                 # 泄漏使后续正常轮的 judge 派发持续被分流进隔离账。
                 JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 0,
                 IN_INCONCLUSIVE_REVERIFY_FIELD: False,
+                # 同机制去重旗标（judge_gate._judge_inconclusive_cap_escalate
+                # 写入）：独立计数器到顶升级告警「只发一次」的语义须限定在
+                # 单个 episode 内——verified 落定不清除会永久残留，后续新
+                # episode 再到顶时去重命中、人工升级告警被静默吞掉。与人工
+                # 复位清单（admin_actions._RETRY_COUNTER_RESETS）同形态清
+                # False；读侧为字符串防御式解析，STATE.md 往返安全。
+                "_judge_inconclusive_cap_escalated": False,
             },
         )
 
