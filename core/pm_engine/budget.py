@@ -447,13 +447,15 @@ class ImplBudget:
                 return
         exemption = self._budget_reconcile_has_exemption(spec_name)
         if exemption is None:
-            # 归档扫描失败、豁免因素不可知（item efb5917745cb）：与上方
-            # completed is None 同口径——本轮不改数（按无豁免继续会走纯漂移
-            # 分支把 used 改写为更小值，已归档 run 的消耗被抹掉）。
+            # 豁免因素不可知（item efb5917745cb 归档扫描失败 / item
+            # c903cac4ac2e 豁免侧车字段损坏）：与上方 completed is None 同
+            # 口径——本轮不改数（按无豁免继续会走纯漂移分支把 used 改写为
+            # 更小值，已归档 run 的消耗/豁免退款被抹掉）。
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算计数对账跳过: '{spec_name}' used={used}"
-                f"（归档目录扫描失败，豁免因素不可知，本轮不改数）",
+                f"（豁免因素不可知：归档目录扫描失败或豁免侧车字段损坏，"
+                f"本轮不改数）",
             )
             return
         if exemption:
@@ -607,26 +609,47 @@ class ImplBudget:
         - runs 产物被归档/保留上限（.fenix/runs/archive/ 下存在该 spec 的 impl 产物）：
           顶层计数不完整，改数会把 used 错误压到已归档前的值。
 
-        返回 None（item efb5917745cb）：archive 归档目录扫描失败（OSError）——
-        豁免因素**不可知** ≠ 无豁免，与同文件 _count_normal_completed_impl_runs
-        （扫描失败返回 None 跳过对账）/ _impl_run_unmaterialized（扫描失败按
-        未落盘保守处理）的「扫描失败＝不可知、本轮不改数」口径对齐：按 False
-        返回会把已归档 run 当作不存在，纯漂移分支把 used 改写为更小值，已归档
-        消耗被静默抹掉、spec 意外重获预算。调用方（_reconcile_impl_budget）
-        据此与 completed is None 同样跳过本轮对账不改数。
+        返回 None（不可知）：豁免侧车字段损坏（``_budget_exempt_runs`` /
+        ``_infra_failure_count`` 非整数字符串等，item c903cac4ac2e）或 archive
+        归档目录扫描失败（OSError，item efb5917745cb）——豁免因素**不可知** ≠
+        无豁免，与同文件 _count_normal_completed_impl_runs（扫描失败返回 None
+        跳过对账）/ _impl_run_unmaterialized（扫描失败按未落盘保守处理）的
+        「扫描失败＝不可知、本轮不改数」口径对齐：字段损坏按 0 兜底会把「有
+        豁免」误判为「无豁免」，纯漂移分支把 used 改写为更小值，死亡豁免/
+        infra 退款语义被静默冲掉、spec 意外重获预算。调用方
+        （_reconcile_impl_budget）据此与 completed is None 同样跳过本轮对账
+        不改数。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         try:
             exempt = int(entry.get(BUDGET_EXEMPT_RUNS_FIELD, 0) or 0)
         except (TypeError, ValueError):
-            exempt = 0
+            # 侧车字段损坏＝豁免因素不可知 ≠ 无豁免（item c903cac4ac2e）：
+            # 按 0 兜底会走纯漂移分支改写 used，冲掉死亡豁免退款。与下方
+            # archive 扫描失败（OSError → None）三态口径对齐，返回 None 跳过
+            # 本轮对账；WARNING 留痕便于定位写坏来源。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算豁免侧车字段损坏 '{spec_name}'（{BUDGET_EXEMPT_RUNS_FIELD}"
+                f" 非法，豁免因素不可知，本轮对账不改数）: "
+                f"{entry.get(BUDGET_EXEMPT_RUNS_FIELD)!r}",
+            )
+            return None
         if exempt > 0:
             return True
         # ── infra 失败预算退款（R2）：有退款则改数会冲掉退款，豁免 ──
         try:
             infra_count = int(entry.get(INFRA_FAILURE_COUNT_FIELD, 0) or 0)
         except (TypeError, ValueError):
-            infra_count = 0
+            # 同上（item c903cac4ac2e）：infra 侧车字段损坏＝不可知，返回 None
+            # 跳过本轮对账，不按「无豁免」处理。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算豁免侧车字段损坏 '{spec_name}'（{INFRA_FAILURE_COUNT_FIELD}"
+                f" 非法，豁免因素不可知，本轮对账不改数）: "
+                f"{entry.get(INFRA_FAILURE_COUNT_FIELD)!r}",
+            )
+            return None
         if infra_count > 0:
             return True
         runs_dir = self._pm.project_root / ".fenix" / "runs"
