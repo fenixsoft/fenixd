@@ -18,7 +18,6 @@ patch time 模块对象属性全进程共享，重绑依旧生效。
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 
@@ -806,10 +805,22 @@ class FFastTrackMixin:
         self._pm._merge_ready_fallback(
             spec_name, result.run_id, "fast-track", result.branch
         )
-        self._pm.state_machine.transition(
+        # transition 返回值校验（code-review item 40292d21fd97，对齐 spec_review
+        # 同仓 TOCTOU 处置）：上方读态/fallback 与 implemented 转移之间存在窗口，
+        # 并发写者可能已把 spec 推进/冻结（非法转移返回 False）。失败时保留计数
+        # 与 error 原样、不继续清字段，早退交由收口重试/审计——否则清零与清
+        # error 照常落盘、后续转移同样失败，spec 停在并发方写入的状态但错误
+        # 现场已被抹掉。
+        if not self._pm.state_machine.transition(
             spec_name, "implemented",
             trigger_run_id=result.run_id, agent_type="fast-track", channel="auto",
-        )
+        ):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track merge 成功但 transition 到 implemented 失败，"
+                f"保留计数与 error 待收口重试/审计: {spec_name}",
+            )
+            return False
         self._pm.state_machine.update_spec(
             spec_name,
             {
@@ -1132,14 +1143,23 @@ class FFastTrackMixin:
                 data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("mode") == "fast-track":
                     data["mode"] = "full"
-                    # 同目录临时文件 + os.replace 原子替换（对齐 state_machine
-                    # 写回约定）：写一半被杀不留截断 YAML（queue.py 同式）。
-                    tmp_path = yaml_path.with_name(".spec.yaml.tmp")
-                    tmp_path.write_text(
-                        _yaml.safe_dump(data, default_flow_style=False, sort_keys=False),
-                        encoding="utf-8",
+                    # mkstemp 唯一临时文件 + fsync + os.replace 原子写（复用仓库
+                    # 统一助手 scenario_gate.atomic_write_text，code-review item
+                    # efb92f4ba1d7）：原固定名 ``.spec.yaml.tmp`` + 裸 write_text
+                    # 两个漂移点——① 无 flush+fsync，掉电/内核崩溃时 replace 后
+                    # 内容可能在文件系统层未持久；② 固定临时名在并发改写同一
+                    # .spec.yaml 时互踩同一 tmp，后写者可能把截断/混合内容
+                    # replace 成正式文件。唯一临时名保证 rename 前目标不变、
+                    # rename 后内容完整（函数内 import 同 serving.py 先例，避开
+                    # verification 包门面的重依赖导入链）。
+                    from core.pm_engine.verification.scenario_gate import (
+                        atomic_write_text,
                     )
-                    os.replace(tmp_path, yaml_path)
+
+                    atomic_write_text(
+                        yaml_path,
+                        _yaml.safe_dump(data, default_flow_style=False, sort_keys=False),
+                    )
                     self._pm.logger.info(
                         "pm_engine",
                         f"fast-track 升级: .spec.yaml mode → full " f"for '{spec_name}'",
@@ -1345,11 +1365,16 @@ class FFastTrackMixin:
             return
         # 重试
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        try:
-            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            prev_retries = 0
-        retries = prev_retries + 1
+        # _retry_count 走锁内原子递增（bump_counters 消费写后值判阈值，对齐本
+        # 文件 _reconcile_and_merge 同型收口，code-review item 8164fca82421）：
+        # 原先「read_one 读 → 算 +1 → update_spec 绝对写回」读与写分处两次
+        # STATE 锁临界区，merge-only 重试定时器/周期恢复扫描与 worker 失败链
+        # 并发进入同一 spec 时各持相同旧值写回、丢一次递增，max_retries 冻结
+        # 封顶晚一轮触发、多烧一轮 fast-track run。bump 自带 int 归一（非法值
+        # 按 0 起算），下方 update_spec 不再并写该字段（防并发写回互相覆盖）。
+        retries = self._pm.state_machine.bump_counters(
+            spec_name, {"_retry_count": 1}
+        ).get("_retry_count", 0)
         # 配置侧 int() 归一（code-review item 74317ab4a77a）：字符串配置裸用于
         # `retries >= max_r` 比较抛 TypeError 中断失败重派，非法值回退缺省；
         # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
@@ -1397,7 +1422,8 @@ class FFastTrackMixin:
                 {
                     "status": "ready",
                     "error": f"{final_error}｜自动重试 {retries}/{max_r}",
-                    "_retry_count": retries,
+                    # _retry_count 已由上方 bump_counters 原子递增落盘，此处
+                    # 不再并写（防并发写回互相覆盖丢增量）
                 },
             )
             # 复位 ready 后显式重新入队（code-review item 6e6259821f64）：调用方
@@ -1420,11 +1446,13 @@ class FFastTrackMixin:
         不消费恢复标记（重派经 dispatch 入口按续做标记处置）。
         """
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        attempts = 0
-        try:
-            attempts = int(spec_entry.get("_zero_change_attempts", 0) or 0) + 1
-        except (TypeError, ValueError):
-            attempts = 1
+        # _zero_change_attempts 同型收口（code-review item 8164fca82421）：锁内
+        # 原子递增、消费写后值判「连续 3 次」哨阈值，下方 update_spec 与 freeze
+        # extra_updates 不再并写该字段（对齐 _reconcile_and_merge 的 bump_counters
+        # 收口形态，防并发写回互相覆盖丢增量、零变更哨晚触发多烧 run）。
+        attempts = self._pm.state_machine.bump_counters(
+            spec_name, {"_zero_change_attempts": 1}
+        ).get("_zero_change_attempts", 0)
         dirty = list(getattr(result, "worktree_dirty", None) or [])
         if dirty:
             err_note = (
@@ -1436,7 +1464,8 @@ class FFastTrackMixin:
         updates: dict = {
             "status": "ready",
             "error": err_note + f"（第 {attempts} 次）",
-            "_zero_change_attempts": attempts,
+            # _zero_change_attempts 已由上方 bump_counters 原子递增落盘，此处
+            # 不再并写（防并发写回互相覆盖丢增量）
         }
         if attempts >= 3:
             # 同型收敛（code-review item 44d5bfbf87a6，与 full 车道零变更哨 twin
@@ -1470,7 +1499,8 @@ class FFastTrackMixin:
                 ),
                 alert_callback=self._pm._send_human_escalation_alert,
                 extra_updates={
-                    "_zero_change_attempts": attempts,
+                    # _zero_change_attempts 已由 bump_counters 原子递增落盘，
+                    # 不再并写（防并发写回互相覆盖丢增量）
                     "tester_run": None,
                 },
             )
