@@ -25,6 +25,7 @@ from core.verdict_check import (
     enforce_blank_screenshot_direction,
     validate_attribution_levels,
     check_batch_attribution_dedup,
+    merge_engine_cascade_markers,
     tag_cached_attributions,
     scenario_fingerprint,
 )
@@ -406,7 +407,12 @@ class TestDedupNormalizationCascadeExemption(unittest.TestCase):
         self.assertEqual(len(result["violations"][0]["scenario_ids"]), 3)
 
     def test_shared_text_no_step_no_triage_still_rejected(self):
-        """共享模板串 + 无步骤序号 + 无断言 → 仍拒（16:39 模板偷懒原形）。"""
+        """共享模板串 + 无步骤序号 + 无断言 → 仍拒（16:39 模板偷懒原形）。
+
+        add-attribution-dedup-cascade-exemption 语义更新后的保留分支：无引擎
+        结构化级联标记的同文（真实 failed 场景模板套用）不豁免。引擎级联
+        标记在位的同形场景走纯级联组豁免（见下方两个用例）。
+        """
         report = {"scenarios": [
             {"scenario_id": "s1", "status": "fail",
              "classification": "env",
@@ -423,6 +429,71 @@ class TestDedupNormalizationCascadeExemption(unittest.TestCase):
         ]}
         result = check_batch_attribution_dedup(report)
         self.assertFalse(result["ok"])
+
+    @staticmethod
+    def _engine_cascade_scenario(sid):
+        """构造引擎依赖失败传播合成条目（add-attribution-dedup-cascade-exemption）。
+
+        宿主缺 Gradle/adb 形态：统一跳过文案进 evidence、无步骤序号、无断言
+        triage——归一化后仅剩 cls= 段，天然同文（依赖级联的正确归因本就逐字
+        相同）。
+        """
+        error = "依赖场景失败，未执行: gradle-setup（依赖失败传播，非本场景产品缺陷）"
+        return {"scenario_id": sid, "status": "blocked-env",
+                "classification": "env",
+                "evidence": {"error": error},
+                "assertion_triage": [],
+                "dependency_skipped": True,
+                "skipped_depends_on": ["gradle-setup"]}
+
+    def test_pure_cascade_group_exempted(self):
+        """纯级联组（无步骤无断言同文＋引擎级联标记）→ 豁免不判拒。
+
+        add-attribution-dedup-cascade-exemption 的有意行为变更：2026-10-03
+        potplayer-base 两轮误拒即此形态（依赖级联 blocked-env 同文凑满 ≥3）。
+        """
+        report = {"scenarios": [
+            self._engine_cascade_scenario("s1"),
+            self._engine_cascade_scenario("s2"),
+            self._engine_cascade_scenario("s3"),
+            self._engine_cascade_scenario("s4"),
+        ]}
+        merge_engine_cascade_markers(report)
+        result = check_batch_attribution_dedup(report)
+        self.assertTrue(result["ok"], "纯依赖级联组同文不得判拒")
+        self.assertEqual(
+            result["exemptions"][0]["reason"],
+            "同因级联组豁免（4 场景，dependency_skipped）",
+        )
+
+    def test_mixed_group_with_cascade_still_rejected(self):
+        """混合组（3 个真实 failed 无标记同文＋级联场景）→ 仍拒，级联子集豁免。
+
+        阈值仅对非级联子集计数：模板套用防御不回退（保留拒绝），级联场景
+        不计入违规组。
+        """
+        report = {"scenarios": [
+            {"scenario_id": "r1", "status": "fail",
+             "classification": "env",
+             "evidence": {"first_failed_step": "CROSS_FIRST_FAILED"},
+             "assertion_triage": []},
+            {"scenario_id": "r2", "status": "fail",
+             "classification": "env",
+             "evidence": {"first_failed_step": "CROSS_FIRST_FAILED"},
+             "assertion_triage": []},
+            {"scenario_id": "r3", "status": "fail",
+             "classification": "env",
+             "evidence": {"first_failed_step": "CROSS_FIRST_FAILED"},
+             "assertion_triage": []},
+            self._engine_cascade_scenario("c1"),
+        ]}
+        merge_engine_cascade_markers(report)
+        result = check_batch_attribution_dedup(report)
+        self.assertFalse(result["ok"], "混合组（真实 failed 同文）保持拒绝")
+        self.assertEqual(
+            sorted(result["violations"][0]["scenario_ids"]), ["r1", "r2", "r3"]
+        )
+        self.assertEqual(result["exemptions"][0]["scenario_ids"], ["c1"])
 
     def test_two_identical_cascade_steps_passed(self):
         """2 场景边界：即使同文也放行（threshold=3 不变）。"""

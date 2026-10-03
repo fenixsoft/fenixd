@@ -1240,6 +1240,72 @@ def _normalize_attribution(sc: dict) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+# ── 依赖级联同因组豁免（add-attribution-dedup-cascade-exemption 1.1/1.2）──
+# 引擎对依赖失败传播场景合成的结构化标记（core/verify_engine/engine.py 写入
+# dependency_skipped/skipped_depends_on + 统一跳过文案 + 空步骤/断言）。此类
+# 场景的归因本就逐字相同（统一模板 + 空证据，无步骤/断言可细分，D3 归一化
+# 拆分结构性不可用），同文不构成模板套用嫌疑——从「归一化逐字同文 ≥3 即拒」
+# 判据单列豁免；混合组（含真实 failed 同文）仅对非级联子集计阈值，仍照拒。
+# 豁免锚点用引擎结构化标记而非统一文案比对：文案改动不破坏豁免。
+ENGINE_CASCADE_SKIP_FLAG = "dependency_skipped"
+ENGINE_CASCADE_SKIP_DEPS = "skipped_depends_on"
+# 框架合并后的豁免判据键（gate-owned）：仅由 merge_engine_cascade_markers 在
+# 查重门前写入/清除。查重豁免判据只认该键——judge 报告自行申报的
+# dependency_skipped 同名字段不作为豁免依据（防实现 run 伪标逃逸）。
+ENGINE_CASCADE_EXEMPT_KEY = "_engine_dependency_skipped"
+# 豁免段 reason 模板（与既有违规 reason 体系区分；留痕可审计豁免是否被滥用）
+_ENGINE_CASCADE_EXEMPT_REASON = "同因级联组豁免（{count} 场景，dependency_skipped）"
+
+
+def is_engine_cascade_scenario(sc: dict) -> bool:
+    """判断场景条目是否携带引擎写入的依赖级联跳过结构化签名。
+
+    引擎对依赖失败传播场景写入的完整签名（合成条目三要素）：标记位
+    ``dependency_skipped is True`` + 级联来源清单 ``skipped_depends_on`` 非空
+    + 合成状态 ``blocked-env``。三者缺一即签名不成立——judge 只申报标记位、
+    或对真实 failed 场景伪标（status/执行形状与合成签名矛盾）时均不成立，
+    豁免判据不认 judge 自行申报的同名字段。
+    """
+    if not isinstance(sc, dict):
+        return False
+    if sc.get(ENGINE_CASCADE_SKIP_FLAG) is not True:
+        return False
+    deps = sc.get(ENGINE_CASCADE_SKIP_DEPS)
+    if not (isinstance(deps, list) and deps):
+        return False
+    return sc.get("status") == "blocked-env"
+
+
+def merge_engine_cascade_markers(report) -> list:
+    """框架结构化透传（add-attribution-dedup-cascade-exemption 1.0）。
+
+    在查重门前把引擎执行结果条目的 dependency_skipped/skipped_depends_on
+    按 scenario_id 合并进 report 场景条目，归一为 gate-owned 豁免判据键
+    ``_engine_dependency_skipped``：条目携带引擎结构化级联签名 → 置 True；
+    否则清除该键（防 judge 上一轮写入的伪标/残留键经后续轮次洗白）。查重
+    豁免判据只认本函数写入的键——该键在每次查重前被本函数全量重算覆写，
+    judge 报告自行申报的 dependency_skipped 同名字段（无论写不写 gate-owned
+    键）都不构成豁免依据，防御在数据流层闭合。
+
+    原地修改 report 场景条目。返回置标的场景 id 列表（留痕用）。
+    """
+    merged: list = []
+    if not isinstance(report, dict):
+        return merged
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return merged
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        if is_engine_cascade_scenario(sc):
+            sc[ENGINE_CASCADE_EXEMPT_KEY] = True
+            merged.append(str(sc.get("scenario_id") or sc.get("id") or "?"))
+        else:
+            sc.pop(ENGINE_CASCADE_EXEMPT_KEY, None)
+    return merged
+
+
 def check_batch_attribution_dedup(report: dict) -> dict:
     """报告落盘前批量归因查重（Task 3.2 / D4；fix-verdict-dedup-resynthesis）。
 
@@ -1250,12 +1316,17 @@ def check_batch_attribution_dedup(report: dict) -> dict:
     - 步骤序号进指纹——16:39 事故 5 个级联场景因 error[:120] 截断同文而误拒，
       但它们各自失败步骤/断言不同，是单根因级联失败的合法形态；
     - 步骤序号 / 断言清单任一不同 → 归一化即不同组，凑不满「≥3 同文」——
-      合法级联由归一化拆分放行（不设组内豁免分支：同组成员在步骤/断言/
-      描述体各分量上必然全等，豁免判定只会得到 False）；
+      合法级联由归一化拆分放行；
     - 纯模板偷懒（连步骤引用都逐字复制）→ 仍坍缩同组 → 拒绝。
 
+    依赖级联同因组豁免（add-attribution-dedup-cascade-exemption 1.1）：携带
+    引擎结构化透传标记（``merge_engine_cascade_markers`` 写入的 gate-owned
+    键）的场景单列豁免，不参与同文分组；豁免信息随返回结构 ``exemptions``
+    段留痕（组清单＋原因），与违规 reason 体系区分。
+
     Returns:
-        {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}]}
+        {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}],
+         "exemptions": [{"scenario_ids": [...], "reason": str}]}
     """
     return _batch_attribution_dedup_common(report, scenario_level=False)
 
@@ -1266,12 +1337,15 @@ def check_batch_attribution_dedup_scenario(report: dict) -> dict:
     与 ``check_batch_attribution_dedup`` 同源归一化，但判定粒度
     从整批降为场景：命中重复（≥3 场景归一化后逐字相同）的
     场景归因置 ``requeue``（待回炉），其余非重复场景置 ``accept``（保留
-    复用）——**MUST NOT 因子集重复废弃整轮已写盘归因**。
+    复用）——**MUST NOT 因子集重复废弃整轮已写盘归因**。依赖级联同因组
+    豁免（add-attribution-dedup-cascade-exemption 1.1）同源生效：级联豁免
+    场景不参与同文分组、按 accept 保留。
 
     Returns:
         {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}],
          "requeue_ids": [str],      # 命中重复、待回炉的场景 id
          "accept_ids": [str],       # 非重复、保留复用的场景 id
+         "exemptions": [{"scenario_ids": [...], "reason": str}],
          "counts": {"total": int, "requeue": int, "accept": int}}
     """
     return _batch_attribution_dedup_common(report, scenario_level=True)
@@ -1288,11 +1362,12 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
     docstring 承诺一致的返回形状（场景级补齐空 requeue_ids / accept_ids /
     counts），避免调用方按下标访问时 KeyError。
     """
-    extra: dict = {}
+    extra: dict = {"exemptions": []}
     if scenario_level:
         extra = {
             "requeue_ids": [],
             "accept_ids": [],
+            "exemptions": [],
             "counts": {"total": 0, "requeue": 0, "accept": 0},
         }
     if not isinstance(report, dict):
@@ -1302,6 +1377,14 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         return {"ok": True, "violations": [], **extra}
 
     groups: dict[str, list] = {}
+    # 依赖级联同因组豁免（add-attribution-dedup-cascade-exemption 1.1）：
+    # 携带框架结构化透传标记（merge_engine_cascade_markers 写入的 gate-owned
+    # 键）的场景从「归一化逐字同文 ≥3 即拒」判据单列——引擎统一模板文案 +
+    # 空证据使此类场景归因本就逐字相同，同文不构成模板套用嫌疑；且依赖跳过
+    # 形态无步骤/断言可细分，D3 归一化拆分豁免对其结构性不可用。豁免判据只
+    # 认框架合并的标记键，judge 自行申报的 dependency_skipped 同名字段不经
+    # 此分支（签名校验在 merge 侧，status/执行形状矛盾即不置标）。
+    cascade_exempt_ids: List[str] = []
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
@@ -1309,6 +1392,9 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         if status in ("pass", "passed"):
             continue
         sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        if sc.get(ENGINE_CASCADE_EXEMPT_KEY) is True:
+            cascade_exempt_ids.append(sid)
+            continue
         norm = _normalize_attribution(sc)
         if not norm:
             continue
@@ -1335,9 +1421,31 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         if scenario_level:
             requeue_ids.extend(sids)
 
-    if not scenario_level:
-        return {"ok": len(violations) == 0, "violations": violations}
+    # 豁免决策留痕（add-attribution-dedup-cascade-exemption 1.2）：豁免=无
+    # violations、不触发拒绝收口链，信息随返回结构豁免段（组清单＋原因）
+    # 返回，由统一入口 _run_attribution_gate 记 info 日志，与既有违规
+    # reason 体系区分，可事后审计豁免是否被滥用。
+    exemptions: List[dict] = []
+    if cascade_exempt_ids:
+        exemptions.append(
+            {
+                "scenario_ids": cascade_exempt_ids,
+                "reason": _ENGINE_CASCADE_EXEMPT_REASON.format(
+                    count=len(cascade_exempt_ids)
+                ),
+            }
+        )
 
+    if not scenario_level:
+        return {
+            "ok": len(violations) == 0,
+            "violations": violations,
+            "exemptions": exemptions,
+        }
+
+    # 场景级：级联豁免场景视作保留（accept 复用，不进回炉）——豁免语义下
+    # 其归因无套用嫌疑，MUST NOT 因豁免被回炉重写。
+    accept_ids = cascade_exempt_ids + accept_ids
     # 场景级：全部参与判定的 id（含无归因文本场景——无归因不参与查重，视为保留）
     participating = set(accept_ids) | set(requeue_ids)
     for sc in scenarios:
@@ -1358,6 +1466,7 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         "violations": violations,
         "requeue_ids": requeue_ids,
         "accept_ids": accept_ids,
+        "exemptions": exemptions,
         "counts": counts,
     }
 

@@ -24,7 +24,10 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
     首轮（``_verify_verdict_evidence``）/ 重试轮 / 重合成轮（``_handle_scenario_requeue``
     回灌）在同一入口位执行（非旁路）：框架侧机械计算 attribution_level，白屏
     方向约束强制改写分类；批量归因查重拒绝硬编码套用；跨轮缓存归因打新鲜度标
-    （design D3 / Task 3.1）。全部发生在报告落盘/打回上下文组装前。
+    （design D3 / Task 3.1）。全部发生在报告落盘/打回上下文组装前。查重前先做
+    引擎级联标记结构化透传（add-attribution-dedup-cascade-exemption 1.0，
+    ``merge_engine_cascade_markers``），豁免命中时记 info 日志留痕（1.2，豁免=
+    无 violations，不走拒绝收口链）。
 
     ``lane_label`` 为轮次标签（首轮 ``" "`` / ``"（重试轮）"`` / ``"（重合成）"``），
     仅用于日志前缀，保持各轮次既有文案不变。
@@ -45,6 +48,7 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
             validate_attribution_levels,
             enforce_blank_screenshot_direction,
             check_batch_attribution_dedup_scenario,
+            merge_engine_cascade_markers,
             load_verdict_cache,
             tag_cached_attributions,
         )
@@ -75,7 +79,26 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
         # 批量归因查重：≥3 场景逐字相同 → 场景级判定（add-judge-
         # incremental-attribution 2.1：命中重复的归因置 requeue 待回炉，
         # 非重复置 accept 保留；MUST NOT 因子集重复废弃整轮归因）。
+        # 查重前先做引擎级联标记的结构化透传（add-attribution-dedup-cascade-
+        # exemption 1.0）：按 scenario_id 把引擎执行结果条目的 dependency_skipped/
+        # skipped_depends_on 合并进 report 场景条目（归一为 gate-owned 豁免判据
+        # 键）——该标记由引擎在执行期结构化写入（engine.py 合成条目），judge
+        # 裁决条目不含可靠副本，不透传则级联豁免恒不命中。豁免判据只认框架
+        # 本次合并的标记（merge 侧全量重算覆写），judge 自行申报的同名字段
+        # 不作为豁免依据。
+        merge_engine_cascade_markers(report)
         dedup = check_batch_attribution_dedup_scenario(report)
+        # 豁免决策留痕（add-attribution-dedup-cascade-exemption 1.2）：豁免=
+        # 无 violations、不触发拒绝收口链 _rejection_closure（仅对 violations
+        # 非空执行），留痕只走 info 日志与查重结果豁免段（组清单＋原因），
+        # 与既有违规 reason 体系区分，可事后审计豁免是否被滥用。
+        for exemption in (dedup or {}).get("exemptions") or []:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"批量归因查重豁免{lane_label}'{spec_name}': "
+                f"{exemption.get('reason')}，场景 "
+                f"{', '.join(exemption.get('scenario_ids') or [])}",
+            )
     except Exception as e:
         # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
         # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
