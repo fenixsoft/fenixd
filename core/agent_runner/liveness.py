@@ -1206,6 +1206,9 @@ class LivenessSupervisor:
         extensions_used: int,
         judge=None,
         agent_type: str | None = None,
+        *,
+        remaining_tasks: int | None = None,
+        impl_scale: int | None = None,
     ) -> dict:
         """deadline 到点后的监督决策（D3）：续期 or 终止，封闭矩阵。
 
@@ -1218,17 +1221,42 @@ class LivenessSupervisor:
           5. LLM 判定 advancing → 续期 extension_seconds；
           6. LLM 判定 stagnant（含 judge 不可用）→ 终止并保留证据。
 
+        evo-add-impl-wallclock-budget-sizing 2.1：``remaining_tasks``（剩余
+        未勾选任务数，调用点由 runner 经 parse_tasks_md 同源取数传入）与
+        ``impl_scale``（run 启动点总规模分，estimate_spec_scale 单点）为
+        纯观测/档位入参，均不新增/改写本矩阵的判定分支——remaining_tasks
+        只随 extend/kill evidence 与返回字段携带供复盘归因；impl_scale 只
+        参与下方 impl 车道档位抬升（幂等入参，禁止以 remaining_tasks 回算）。
+        两参缺省 None（门面委托/既有直调兼容），None 等价「不抬升、观测
+        unavailable」，行为与引入前逐位一致。
+
         Returns: {"action": "extend"|"kill", "reason", "extension_seconds"?,
-                  "extension_index"?, "evidence", "settings"}
+                  "extension_index"?, "evidence", "settings", "remaining_tasks"}
         """
         sup = self._supervision_settings()
         evidence = ""
+
+        def _annotated(ev: str) -> str:
+            # 剩余工作量观测（evo-add-impl-wallclock-budget-sizing 2.1）：
+            # extend/kill evidence 统一携带 remaining_tasks（与轮数路径
+            # _turn_limit_action 的 _annotated 同型）；只进 evidence/返回
+            # 字段、不进 reason——budget._is_exemptable_reason 按 reason
+            # 子串匹配豁免口径（"extension budget exhausted" 仍不可豁免），
+            # reason 文案改动会误改豁免判定。
+            parts = [ev] if ev else []
+            parts.append(
+                "remaining_tasks="
+                + ("unavailable" if remaining_tasks is None
+                   else str(remaining_tasks)))
+            return " | ".join(parts)
+
         if not sup["enabled"]:
             return {
                 "action": "kill",
                 "reason": "run timeout reached (supervision disabled)",
-                "evidence": evidence,
+                "evidence": _annotated(evidence),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         # per-agent-timeout-override 3.2：supervision 的 extension 总额与 absolute_max
         # 护栏按该 agent type 的生效超时派生（覆盖值参与），stuck 阈值派生保持全局默认
@@ -1262,6 +1290,53 @@ class LivenessSupervisor:
                 self._pm.logger.warning(
                     "agent_runner",
                     f"fast-track scale tier precheck failed for '{spec_name}' "
+                    f"— keeping default max_extensions={max_extensions}: {e}",
+                )
+        # ── impl 车道墙钟预算 sizing（evo-add-impl-wallclock-budget-sizing 1.2）──
+        # 泛化上方 fast-track higher 档先例到 implementer 车道：按 run 启动
+        # 同源总规模（estimate_spec_scale 单点，runner 在 run 启动点一次解析
+        # 后经 impl_scale 传入）抬升续期预算 max_extensions。生效序（对齐
+        # _impl_turn_budget 的 override > 推算 > base）：STATE 覆盖键
+        # impl_wallclock_extension_override（正整数，只抬不压）> 规模推算
+        # （lifted_max_extensions_for_scale，enabled 门控）> base。逐 deadline
+        # 判定的档位推导幂等——impl_scale 为同一入参，MUST NOT 以
+        # remaining_tasks 回算（剩余数随推进递减，逐次重算会回撤已抬档位，
+        # 使 extensions_used ≥ 回撤后 max_extensions 触发伪击杀）。
+        # impl_scale=None（非实现车道/解析回退/既有直调）不抬升，行为与引入
+        # 前逐位一致。absolute_max_seconds 封顶语义不变：sizing 只扩续期预算，
+        # 下方 floor 派生传抬升后的实际预算（与 fast-track 加成同机制协同）。
+        if agent_type == "implementer" and spec_name:
+            try:
+                from core.fast_track_result import (
+                    get_impl_wallclock_sizing_config,
+                    lifted_max_extensions_for_scale,
+                )
+                _wc_cfg = get_impl_wallclock_sizing_config(
+                    getattr(self._pm, "config", None))
+                _wc_override = None
+                _ov_fn = getattr(
+                    self._pm, "_impl_wallclock_extension_override", None)
+                if callable(_ov_fn):
+                    _wc_override = _ov_fn(spec_name)
+                if _wc_override is not None:
+                    _wc_target = max(max_extensions, int(_wc_override))
+                elif _wc_cfg.get("enabled") and impl_scale is not None:
+                    _wc_target = lifted_max_extensions_for_scale(
+                        max_extensions, int(impl_scale), _wc_cfg)
+                else:
+                    _wc_target = max_extensions
+                if _wc_target != max_extensions:
+                    max_extensions = _wc_target
+                    self._pm.logger.info(
+                        "agent_runner",
+                        f"impl wallclock sizing: max_extensions "
+                        f"increased to {max_extensions} for '{spec_name}' "
+                        f"(override={_wc_override}, scale={impl_scale})",
+                    )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"impl wallclock sizing failed for '{spec_name}' "
                     f"— keeping default max_extensions={max_extensions}: {e}",
                 )
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
@@ -1308,15 +1383,21 @@ class LivenessSupervisor:
                     f"absolute_max_seconds cap reached ({int(absolute_max)}s, "
                     f"extensions_used={extensions_used})"
                 ),
-                "evidence": evidence,
+                "evidence": _annotated(evidence),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         if extensions_used >= max_extensions:
             return {
                 "action": "kill",
+                # reason 串原样保留 "extension budget exhausted" 子串
+                # （budget.py _is_exemptable_reason 按子串匹配判不可豁免，
+                # evo-add-impl-wallclock-budget-sizing 决策 5 复核口径）；
+                # remaining_tasks 只进 evidence/返回字段。
                 "reason": (f"extension budget exhausted " f"({extensions_used}/{max_extensions})"),
-                "evidence": evidence,
+                "evidence": _annotated(evidence),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         window = max(30.0, float(sup["judge_window"]))
         snapshot = self._liveness_snapshot(run_file, window)
@@ -1339,8 +1420,9 @@ class LivenessSupervisor:
             return {
                 "action": "kill",
                 "reason": "run stream unavailable: liveness snapshot unreadable after retry",
-                "evidence": evidence,
+                "evidence": _annotated(evidence),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         # 后台调用追踪条目终态回收（code-review item 11679dc4d275）：
         # _output_tracking 只在 size/mtime 不可观测时 pop，后台调用正常完成
@@ -1365,8 +1447,9 @@ class LivenessSupervisor:
             return {
                 "action": "kill",
                 "reason": "stagnant: zero substantive run events within judge window",
-                "evidence": evidence,
+                "evidence": _annotated(evidence),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         # 1.4/1.5/1.7「可观测零产出」确定性短路：三条件同时成立 → 直接 kill，
         # MUST NOT 调用 judge LLM。证据标注为启发式「零产出」判定（含输出文件
@@ -1396,8 +1479,9 @@ class LivenessSupervisor:
             return {
                 "action": "kill",
                 "reason": f"stagnant: {zero_output}",
-                "evidence": evidence + " | " + zero_output,
+                "evidence": _annotated(evidence + " | " + zero_output),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         verdict = (judge or self._judge_liveness)(snapshot, spec_name, run_id)
         if verdict.get("verdict") == "advancing":
@@ -1406,14 +1490,16 @@ class LivenessSupervisor:
                 "extension_seconds": extension_seconds,
                 "extension_index": extensions_used + 1,
                 "reason": "judged advancing",
-                "evidence": str(verdict.get("evidence") or "")[:400],
+                "evidence": _annotated(str(verdict.get("evidence") or "")[:400]),
                 "settings": sup,
+                "remaining_tasks": remaining_tasks,
             }
         return {
             "action": "kill",
             "reason": "judged stagnant",
-            "evidence": str(verdict.get("evidence") or "")[:400],
+            "evidence": _annotated(str(verdict.get("evidence") or "")[:400]),
             "settings": sup,
+            "remaining_tasks": remaining_tasks,
         }
 
     def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):

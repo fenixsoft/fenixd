@@ -474,3 +474,110 @@ def suggested_turn_cap_for_scale(base_turn_cap: int, scale: int, cfg: dict) -> i
             and scale > threshold):
         return max(base_turn_cap, suggested)
     return base_turn_cap
+
+
+# ── impl 车道墙钟预算 sizing（evo-add-impl-wallclock-budget-sizing 1.1）────
+# 配置键（agents.impl_wallclock_sizing.*）：实现车道 deadline 监督按
+# estimate_spec_scale 总规模分抬升续期预算 max_extensions（design 决策 1，
+# 泛化 fast-track higher 档 +2 先例；fast-track 车道既有加成行为不动）。
+# 只抬不压、缺省向后兼容、关闭/非法值回退缺省；STATE 覆盖键
+# impl_wallclock_extension_override 在消费点（liveness）优先于本推算。
+# 缺省值单源于 core.config.IMPL_WALLCLOCK_SIZING_DEFAULTS（SUPERVISION_
+# DEFAULTS 旁，与监督缺省同处维护），本模块只做归一化与档位推算。
+IMPL_WALLCLOCK_SIZING_CONFIG_KEY = "impl_wallclock_sizing"
+IMPL_WALLCLOCK_ENABLED_KEY = "enabled"
+IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY = "full_scale_threshold"
+IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY = "extra_extensions"
+# 正整数（extra 允许 0=显式不抬）键的合法域（风格对齐 TURN_BUDGET_INT_*）。
+IMPL_WALLCLOCK_INT_MIN = 0
+IMPL_WALLCLOCK_INT_MAX = 10000
+
+
+def _impl_wallclock_default(key: str):
+    """读墙钟 sizing 单点缺省（core.config；惰性导入避免模块环）。"""
+    from core.config import IMPL_WALLCLOCK_SIZING_DEFAULTS
+    return IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
+
+
+def get_impl_wallclock_sizing_config(config: dict) -> dict:
+    """归一化 ``agents.impl_wallclock_sizing`` 配置（读侧与设置界面共用，单点缺省）。
+
+    非法值逐项回退缺省（风格对齐 ``get_turn_budget_sizing_config``，不抛异常）：
+
+    - ``enabled``: 布尔，缺省 True（推算抬升缺省开启）；
+    - ``full_scale_threshold``: 非负整数，缺省 45（与轮数 sizing 缺省同值，
+      语义独立不共用常量）；
+    - ``extra_extensions``: 非负整数，缺省 2（0 = enabled 下显式不抬）。
+
+    Returns:
+        ``{"enabled": bool, "full_scale_threshold": int, "extra_extensions": int}``
+    """
+    agents = config.get("agents") if isinstance(config, dict) else None
+    agents = agents if isinstance(agents, dict) else {}
+    section = agents.get(IMPL_WALLCLOCK_SIZING_CONFIG_KEY)
+    section = section if isinstance(section, dict) else {}
+
+    def _int(sect: dict, key: str, default: int) -> int:
+        val = sect.get(key, default)
+        if isinstance(val, bool) or not isinstance(val, int):
+            return default
+        if val < IMPL_WALLCLOCK_INT_MIN or val > IMPL_WALLCLOCK_INT_MAX:
+            return default
+        return val
+
+    enabled = section.get(IMPL_WALLCLOCK_ENABLED_KEY, _impl_wallclock_default("enabled"))
+    if not isinstance(enabled, bool):
+        enabled = _impl_wallclock_default("enabled")
+
+    return {
+        "enabled": enabled,
+        "full_scale_threshold": _int(
+            section, IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY,
+            _impl_wallclock_default("full_scale_threshold")),
+        "extra_extensions": _int(
+            section, IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY,
+            _impl_wallclock_default("extra_extensions")),
+    }
+
+
+def lifted_max_extensions_for_scale(
+    base_max_extensions: int, scale: int, cfg: dict,
+) -> int:
+    """按规模分推算 impl 车道生效续期预算（只抬不压，1.1/1.2）。
+
+    ``enabled`` 且 ``scale`` **严格大于** ``full_scale_threshold`` 时返回
+    ``max(base_max_extensions, base_max_extensions + extra_extensions)``
+    ——推算只抬不压，永不低于 base；否则原样返回 base（规模分等于阈值不抬，
+    与 ``budget_tier_for_scale`` / ``suggested_turn_cap_for_scale`` 的严格
+    大于语义同源）。
+
+    幂等契约（design「档位幂等」）：``scale`` 取 run 启动同源总规模
+    （``estimate_spec_scale`` 单点）且同 run 各次 deadline 判定复用同一入参
+    ——禁止以 remaining_tasks 回算：剩余数随 tasks.md 推进递减，逐 deadline
+    重算会回撤已抬档位，使 extensions_used ≥ 回撤后 max_extensions 触发伪
+    "extension budget exhausted" 击杀。
+
+    Args:
+        base_max_extensions: 基础续期预算（``agents.timeout_supervision.
+            max_extensions``，经 ``_supervision_settings`` 归一）。
+        scale: 规模分（run 启动点 ``estimate_spec_scale`` 返回值）。
+        cfg: ``get_impl_wallclock_sizing_config`` 的返回值（契约：调用方先归一化）。
+
+    Returns:
+        生效续期预算（int）。
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    if not cfg.get(IMPL_WALLCLOCK_ENABLED_KEY, _impl_wallclock_default("enabled")):
+        return base_max_extensions
+    threshold = cfg.get(
+        IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY,
+        _impl_wallclock_default("full_scale_threshold"))
+    extra = cfg.get(
+        IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY,
+        _impl_wallclock_default("extra_extensions"))
+    if (isinstance(scale, int) and not isinstance(scale, bool)
+            and isinstance(threshold, int) and not isinstance(threshold, bool)
+            and isinstance(extra, int) and not isinstance(extra, bool)
+            and scale > threshold):
+        return max(base_max_extensions, base_max_extensions + extra)
+    return base_max_extensions
