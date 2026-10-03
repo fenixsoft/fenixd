@@ -2556,6 +2556,46 @@ class PMEngine:
 
     # ── 环境性失联门禁（verify-environment-sanity-gate）───────────
 
+    # ── worktree 竞争类异常判据（evo-add-verify-dispatch-single-flight 3.2）──
+    # 新验证流程失败按异常文本分流降级策略：竞争类（worktree 锁碰撞的 gave up
+    # 终态签名，文案签名自 fix-restart-dual-dispatch 沿用、
+    # evo-add-worktree-acquire-backoff 保持不变）先重入新流程一次再降级——
+    # 竞争是瞬时资源冲突，peer 排空后重试即成功，直接降级会把整条三步链
+    # （出题/执行/judge，实测 $1.86/835s）作废换 legacy 接管（$1.36/568s）双烧。
+    # 判不准 fail-open 回直接降级（保守侧＝现状）。fragment 判据只锚定终态
+    # 签名原文，MUST NOT 用宽泛词（如单独 "gave up"）。
+    _WORKTREE_CONTENTION_ERROR_FRAGMENTS = (
+        "gave up: parallel run or manual freeze",
+    )
+    # 验证管线 worktree 碰撞面（主 verifier 条目＋管线内同步派发的 judge/
+    # 出题 run）；重试前逐一复查，任一仍活跃即不重试。
+    _PIPELINE_WORKTREE_LOCK_AGENT_TYPES = ("verifier", "planner-judge", "planner-plan")
+
+    def _is_worktree_contention_error(self, error: Exception) -> bool:
+        """判定验证管线异常是否 worktree 竞争类（降级分流判据，3.2）。"""
+        text = str(error or "")
+        return any(frag in text for frag in self._WORKTREE_CONTENTION_ERROR_FRAGMENTS)
+
+    def _worktree_locks_released(self, spec_name: str) -> bool:
+        """重试前校验本 spec 验证管线碰撞面的 worktree 锁已全部释放。
+
+        design 决策 5：派发在飞集合对同 spec 自指（本 run 自身条目必然在飞
+        登记），无 peer 判别力；lifecycle 锁侧 has_active_lock 按
+        spec:agent_type 记账才是「是否有其它 run 持锁」的权威判据。锁仍活跃
+        → 不重试（必然再撞锁白烧一轮），按非竞争路径直接降级。句柄缺失/
+        判定异常 fail-open 放行重试（竞争判据已先行命中，重试成本一次封顶）。
+        """
+        try:
+            wm = getattr(self.agent_runner, "worktree_manager", None)
+            if wm is None or not hasattr(wm, "has_active_lock"):
+                return True
+            return not any(
+                wm.has_active_lock(spec_name, agent_type)
+                for agent_type in self._PIPELINE_WORKTREE_LOCK_AGENT_TYPES
+            )
+        except Exception:
+            return True
+
     def _run_verification_pipeline(self, spec_name: str):
         """执行三步验证流水线。
 
@@ -2563,7 +2603,8 @@ class PMEngine:
         步骤2: VerifyEngine 并行执行场景（DOM断言 + 视觉对比）
         步骤3: Planner Agent 判定结果
 
-        新流程失败时自动降级到旧版 verifier。
+        新流程失败时自动降级到旧版 verifier；worktree 竞争类失败先重入新
+        流程一次，仍败才降级（evo-add-verify-dispatch-single-flight 3.2）。
         """
         use_new_flow = self._get_config("agents.use_new_verifier", True)
 
@@ -2574,13 +2615,34 @@ class PMEngine:
         try:
             self._run_three_stage_verification(spec_name)
         except Exception as e:
+            degrade_error = e
+            if self._is_worktree_contention_error(e) and self._worktree_locks_released(
+                spec_name
+            ):
+                self.logger.warning(
+                    "pm_engine",
+                    f"验证管线 worktree 竞争类失败 '{spec_name}': {e} — 锁已"
+                    f"释放，先重入新流程一次再考虑降级"
+                    f"（evo-add-verify-dispatch-single-flight 3.2）",
+                )
+                try:
+                    self._run_three_stage_verification(spec_name)
+                    return
+                except Exception as e_retry:
+                    degrade_error = e_retry
+                    self.logger.warning(
+                        "pm_engine",
+                        f"竞争类重试仍失败 '{spec_name}': {e_retry}"
+                        f"（首次失败: {e}）— 转降级通道"
+                        f"（evo-add-verify-dispatch-single-flight 3.2）",
+                    )
             # evo-add-worktree-acquire-backoff 1.3：模块级累计计数（实例按
             # run 重建，实例级计数恒为 1），WARNING 附「第 N 次降级」。
             global _NEW_VERIFIER_FALLBACK_COUNT
             _NEW_VERIFIER_FALLBACK_COUNT += 1
             self.logger.warning(
                 "pm_engine",
-                f"新验证流程失败 '{spec_name}': {e}，降级到旧版 verifier"
+                f"新验证流程失败 '{spec_name}': {degrade_error}，降级到旧版 verifier"
                 f"（第 {_NEW_VERIFIER_FALLBACK_COUNT} 次降级）",
             )
             try:

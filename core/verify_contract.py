@@ -107,6 +107,7 @@ BASE_URL 注入范围扩展（design D4）：
 回退逻辑（该逻辑在场景失联时会漏判）。无实例形态下改写与注入为无害空操作。
 """
 
+import fcntl
 import json
 import os
 import re
@@ -962,6 +963,116 @@ def read_config_deps_mode(project_root) -> str:
         return ""
 
 
+# ── 主树 prepare 主机级并发护栏（evo-add-verify-dispatch-single-flight 2.1）──
+# 复用 full-suite.lock 形态（core/regression.py _SuiteLock 先例）：fcntl
+# LOCK_EX 非阻塞轮询＋等待上限；获取成功后写入持有者 pid（锁残留可诊断）。
+PREPARE_LOCK_REL = ".fenix/verify-prepare.lock"
+PREPARE_LOCK_TIMEOUT = 600  # 锁等待上限（秒）：对齐 full-suite.lock 600s 先例
+
+
+def _is_main_checkout(project_root) -> bool:
+    """判定 project_root 是否 git 主检出（worktree 的 .git 是文件，主检出是目录）。
+
+    verify 车道 worktree 复用（serving 方案 2）下 prepare 在 run 专属 worktree
+    内执行，构建目录天然 run 级隔离；仅主检出上的 prepare 存在「两路验证并发
+    擦写共享构建目录」的竞争面（neutralize-pack 事故：一路 clean 擦掉另一路刚
+    归档的 .a 产物 → fail-fast 误报 blocked）。
+    """
+    try:
+        return (Path(project_root) / ".git").is_dir()
+    except OSError:
+        return False
+
+
+class _PrepareHostLock:
+    """主树 prepare 主机级互斥（``.fenix/verify-prepare.lock`` fcntl 文件锁）。
+
+    与 _SuiteLock 的语义差异：等待超时不按「放弃并跳过」降级——并发擦除正是
+    本护栏的靶场景，无锁继续等于护栏不存在；调用方把未获锁映射为 prepare
+    环境错误（fail-visible，交验证门禁拦截）。锁文件不可创建（权限等基础
+    设施故障）才按无锁继续（bypassed，对齐 _SuiteLock 保守语义）。
+    """
+
+    def __init__(self, project_root, timeout: float = PREPARE_LOCK_TIMEOUT, log_fn=None):
+        self._lock_path = Path(project_root) / PREPARE_LOCK_REL
+        self._timeout = float(timeout)
+        self._log = log_fn or (lambda msg: None)
+        self._file = None
+        self._acquired = False
+        self._bypassed = False
+
+    def acquire(self) -> bool:
+        """尝试获取主机级锁；True=已持有，False=超时未获（bypassed 见属性）。"""
+        try:
+            self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            # O_RDWR｜O_CREAT、MUST NOT O_TRUNC：等待方 open 截断会抹掉持有者
+            # 刚写入的 pid，超时方 holder_pid() 即读到空（「未知」不可诊断）。
+            fd = os.open(str(self._lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+            self._file = os.fdopen(fd, "r+")
+        except OSError as e:
+            self._bypassed = True
+            self._log(f"verify-prepare: 无法创建主机级锁文件（跳过锁，无串行保证）: {e}")
+            return False
+        start = time.time()
+        while time.time() - start < self._timeout:
+            try:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._acquired = True
+                break
+            except OSError:
+                time.sleep(1)
+        if not self._acquired:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
+            return False
+        # pid 记录（design 风险项「锁残留/死锁：超时＋pid 记录」）：等待超时的
+        # 后续调用经 holder_pid() 定位当前持有者（陈旧 pid 即锁残留排查线索）。
+        try:
+            self._file.seek(0)
+            self._file.truncate()
+            self._file.write(str(os.getpid()))
+            self._file.flush()
+        except OSError:
+            pass
+        self._log(
+            f"verify-prepare: 主机级锁获取成功（wait={round(time.time() - start, 1)}s）"
+        )
+        return True
+
+    @property
+    def bypassed(self) -> bool:
+        """锁文件不可用而按「无锁继续」降级（区别于等待超时的未获锁）。"""
+        return self._bypassed
+
+    @property
+    def timeout(self) -> float:
+        return self._timeout
+
+    def holder_pid(self) -> str:
+        """读取锁文件当前内容（等待超时方定位持有者；读不到返回空串）。"""
+        try:
+            return self._lock_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def release(self):
+        if self._file is not None:
+            try:
+                if self._acquired:
+                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                self._file.close()
+            except OSError:
+                pass
+        self._file = None
+        self._acquired = False
+
+
 def run_prepare_steps(
     contract: VerifyContract, project_root: Path, logger=None
 ) -> Optional[str]:
@@ -969,7 +1080,45 @@ def run_prepare_steps(
 
     构建失败＝验证环境错误（调用方据此判不可达，交验证门禁拦截），不得
     静默跳过——带着陈旧产物继续验证正是本契约要消灭的场景。
+
+    主树并发护栏（evo-add-verify-dispatch-single-flight 2.1）：project_root 为
+    主检出时整个 prepare 段持主机级 fcntl 锁串行执行；锁等待超时按 prepare
+    环境错误返回（fail-visible，附持有者 pid 供残留诊断）。worktree 调用
+    （.git 为文件）构建目录天然 run 级隔离，不加锁零开销。per-run 隔离构建
+    目录形态不采用：prepare 是 verify.yaml 声明的任意 shell 命令，框架无法
+    通用重定向其产物输出路径（design 决策 3：不可行处落 fcntl 主机锁）。
+    覆盖面：validate_contract（本文件）、serving 主树两调用点、
+    dist_conflicts re-prepare——全部汇聚本函数，护栏单点生效。
     """
+    root = Path(project_root)
+    if not _is_main_checkout(root):
+        return _run_prepare_steps_unlocked(contract, root, logger)
+    log_fn = (lambda msg: logger.info("verify_contract", msg)) if logger else None
+    lock = _PrepareHostLock(root, log_fn=log_fn)
+    if not lock.acquire():
+        if lock.bypassed:
+            # 锁基础设施故障（权限等）：按无锁继续（保守可用性，对齐
+            # _SuiteLock bypassed 语义），竞争面回退原状但不断供验证。
+            return _run_prepare_steps_unlocked(contract, root, logger)
+        holder = lock.holder_pid()
+        msg = (
+            f"prepare 主机锁等待超时（>{lock.timeout:.0f}s，{PREPARE_LOCK_REL}"
+            f" 持有者 pid={holder or '未知'}）— 并发 prepare 已被串行化保护，"
+            "请按 pid 排查锁残留"
+        )
+        if logger:
+            logger.warning("verify_contract", msg)
+        return msg
+    try:
+        return _run_prepare_steps_unlocked(contract, root, logger)
+    finally:
+        lock.release()
+
+
+def _run_prepare_steps_unlocked(
+    contract: VerifyContract, project_root: Path, logger=None
+) -> Optional[str]:
+    """逐条执行构建步骤本体（run_prepare_steps 的无锁实现，护栏在其上游）。"""
     for i, step in enumerate(contract.prepare, 1):
         # run 形态守卫（code-review item 7525be4bf368）：loader 侧已用
         # _prepare_run_valid 拦掉映射/含非字符串元素的 list 形态 run

@@ -4887,6 +4887,12 @@ class AdminMonitor:
                     # 3 必填位参——旧调用 `handle_event("spec_implemented", spec)`
                     # 缺 spec_entry 必然 TypeError，verifier 入队静默丢失（spec 卡
                     # 在 testing 无人驱动）。spec_entry 复用上文 read_one 结果。
+                    # verify 单飞守卫（evo-add-verify-dispatch-single-flight 1.2）：
+                    # 本复位直通道经 handle_event("spec_implemented") 汇聚
+                    # _on_spec_implemented → _enqueue，未引入旁路入队——同 spec
+                    # 在飞验证时的重复入队由 _enqueue/_enqueue_front/出队分流的
+                    # verify_single_flight 守卫拒绝并结构化留痕；在飞 run 收工后
+                    # 重试本处置即显式放行（合法重验不被阻塞）。
                     self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
                 self.logger.info(
                     "admin_monitor",

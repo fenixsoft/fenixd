@@ -3383,6 +3383,81 @@ class AgentRunner:
     # 在 _prepare_worktree 内完成、不消耗 attempt 重试额度；耗尽才交还
     # 调用方走既有 gave up 终态。
     WORKTREE_ACQUIRE_BACKOFF_SEQUENCE = (30, 60, 120)
+    # 自适应预算缺省（evo-add-verify-dispatch-single-flight 3.1）：peer 预计
+    # run 时长（judge 车道实测 835-988s 同窗，取 900）与预算封顶（占住本 run
+    # worker 线程的上界）。配置键 worktree.acquire_backoff_peer_run_seconds /
+    # worktree.acquire_backoff_max_budget_seconds 可覆盖；锁龄不可知时保守回
+    # 固定序列预算（既有 210s 定额语义不变，零回退约束）。
+    ACQUIRE_BACKOFF_PEER_RUN_DEFAULT_SECONDS = 900.0
+    ACQUIRE_BACKOFF_BUDGET_CAP_DEFAULT_SECONDS = 1200.0
+
+    def _worktree_lock_age(self, spec_name: str, agent_type: str):
+        """同 spec:agent_type worktree 锁持有龄（秒）；不可知返回 None。
+
+        ``_lock_since`` 由 lifecycle.create 持锁时登记（键
+        ``f"{spec_name}:{agent_type}"``，lifecycle.py:77/:158）；测试桩
+        （MagicMock 属性）或形态不合法 → None（调用方保守回固定序列预算）。
+        """
+        lock_since = getattr(self.worktree_manager, "_lock_since", None)
+        if lock_since is None:
+            return None
+        try:
+            started = lock_since.get(f"{spec_name}:{agent_type}")
+        except Exception:
+            return None
+        if isinstance(started, bool) or not isinstance(started, (int, float)):
+            return None
+        return max(0.0, time.time() - float(started))
+
+    def _worktree_acquire_backoff_budget(self, spec_name: str, agent_type: str) -> dict:
+        """碰撞退避自适应预算解析（evo-add-verify-dispatch-single-flight 3.1）。
+
+        预算 = min(配置封顶, max(固定序列总长, peer 剩余时长估计))，其中
+        peer 剩余 = peer 预计 run 时长 − 锁龄。三态：
+        - fixed：锁龄不可知（桩/缺 ``_lock_since`` 登记）→ 固定序列总长，
+          既有 210s 定额语义不变；
+        - adaptive：锁龄 < peer 预计时长 → 预算按 peer 剩余延长（封顶截断），
+          实测 peer 835-988s vs 固定 210s 必然耗尽的失配由此消除；
+        - early-giveup：锁龄已超 peer 预计时长 → 预算归零快速放弃（持锁
+          peer 大概率滞留/僵死，再按序列空转无收益，交 gave up 通道＋锁
+          治理孤儿清扫兜底）。
+
+        配置畸形只降级回缺省值，不炸退避循环（口径对齐 _aging_bonus 读取器）。
+        """
+        seq = self.WORKTREE_ACQUIRE_BACKOFF_SEQUENCE
+        fixed_total = float(sum(seq))
+        peer_default = self.ACQUIRE_BACKOFF_PEER_RUN_DEFAULT_SECONDS
+        cap_default = self.ACQUIRE_BACKOFF_BUDGET_CAP_DEFAULT_SECONDS
+        try:
+            raw_peer = self._get_config(
+                "worktree.acquire_backoff_peer_run_seconds", None)
+            raw_cap = self._get_config(
+                "worktree.acquire_backoff_max_budget_seconds", None)
+        except Exception:
+            raw_peer = raw_cap = None
+        try:
+            peer_estimate = (float(raw_peer) if raw_peer is not None
+                             else peer_default)
+        except (TypeError, ValueError):
+            peer_estimate = peer_default
+        try:
+            cap = float(raw_cap) if raw_cap is not None else cap_default
+        except (TypeError, ValueError):
+            cap = cap_default
+        peer_estimate = max(0.0, peer_estimate)
+        cap = max(0.0, cap)
+        lock_age = self._worktree_lock_age(spec_name, agent_type)
+        detail = {"lock_age": lock_age, "peer_estimate": peer_estimate, "cap": cap}
+        if lock_age is None:
+            detail.update(budget=fixed_total, mode="fixed")
+            return detail
+        peer_remaining = peer_estimate - lock_age
+        if peer_remaining <= 0:
+            detail.update(budget=0.0, mode="early-giveup")
+            return detail
+        detail.update(budget=min(cap, max(fixed_total, peer_remaining)),
+                      mode="adaptive")
+        return detail
 
     def _create_worktree_with_backoff(self, spec_name: str,
                                       agent_type: str) -> tuple:
@@ -3395,11 +3470,14 @@ class AgentRunner:
           check_lock=False 探针）：立即让位，不进退避——人工接管语义
           不可自动穿越；
         - 锁活跃（has_active_lock 探针，并行 run 持同 spec:agent_type
-          锁）：按 WORKTREE_ACQUIRE_BACKOFF_SEQUENCE 退避等待重试，
-          每轮重探前复查人工接管态（等待期间被冻结/取消保持/status
-          迁出，含并行 run 完成后的状态迁移，即立即让位，不得在锁
-          释放后照常取得 worktree——先例：provider-transient 退避的
-          重派前复查）；锁释放后下一轮 create 即取得。
+          锁）：按 WORKTREE_ACQUIRE_BACKOFF_SEQUENCE 退避等待重试
+          （预算按锁龄自适应延长或提前放弃、配置封顶，
+          evo-add-verify-dispatch-single-flight 3.1；锁龄不可知时保持
+          固定序列定额），每轮重探前复查人工接管态（等待期间被冻结/
+          取消保持/status 迁出，含并行 run 完成后的状态迁移，即立即
+          让位，不得在锁释放后照常取得 worktree——先例：
+          provider-transient 退避的重派前复查）；锁释放后下一轮
+          create 即取得。
         - 其余失败原因（非锁、非人工接管）：不等待，交还调用方按
           既有 attempt 层语义处理。
 
@@ -3422,12 +3500,39 @@ class AgentRunner:
         if wm is None or not wm.has_active_lock(spec_name, agent_type):
             return None, "create-failed"
         seq = self.WORKTREE_ACQUIRE_BACKOFF_SEQUENCE
-        for round_no, backoff in enumerate(seq, start=1):
+        # 自适应预算（evo-add-verify-dispatch-single-flight 3.1）：按锁龄解析
+        # 本轮退避预算；预算归零（early-giveup）即快速放弃，不烧固定序列。
+        plan = self._worktree_acquire_backoff_budget(spec_name, agent_type)
+        budget = plan["budget"]
+        if budget <= 0:
+            self.logger.warning(
+                "agent_runner",
+                f"Worktree acquire for '{spec_name}' ({agent_type}) gives up "
+                f"without waiting: lock age {plan['lock_age']:.0f}s exceeds "
+                f"peer run estimate {plan['peer_estimate']:.0f}s "
+                f"(adaptive backoff early give-up, cap {plan['cap']:.0f}s) "
+                f"(evo-add-verify-dispatch-single-flight 3.1)",
+            )
+            return None, "lock-backoff-exhausted"
+        # 逐轮等待时长：固定序列优先消耗预算；预算仍有余（adaptive 延长）按
+        # 末步粒度顺延重探；末轮可被预算截短（总等待恰为预算，封顶生效）。
+        waits = []
+        remaining = float(budget)
+        for backoff in seq:
+            wait = min(backoff, remaining)
+            waits.append(int(wait) if float(wait).is_integer() else wait)
+            remaining -= wait
+        while remaining > 0:
+            wait = min(seq[-1], remaining)
+            waits.append(int(wait) if float(wait).is_integer() else wait)
+            remaining -= wait
+        for round_no, backoff in enumerate(waits, start=1):
             self.logger.warning(
                 "agent_runner",
                 f"Worktree create for '{spec_name}' ({agent_type}) blocked "
                 f"by active spec lock — waiting {backoff}s before re-probe "
-                f"({round_no}/{len(seq)}) "
+                f"({round_no}/{len(waits)}, adaptive budget {budget:.0f}s "
+                f"[{plan['mode']}]) "
                 f"(evo-add-worktree-acquire-backoff)",
             )
             time.sleep(backoff)
