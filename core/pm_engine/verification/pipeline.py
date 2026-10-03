@@ -2110,11 +2110,15 @@ class VerificationPipeline:
                     engine.max_parallel = int(_parallel_override)
                     engine._parallel_override_active = True
                 except (TypeError, ValueError):
+                    # evo-fix-verify-parallel-override-type 2.2：留痕补字段来源
+                    # ——值取自 spec attrs（read_one 条目），repr 不退化
+                    # （写侧守卫＋parse 归一后正常轮到不了这里，仅兜锁外内存
+                    # 写等旁路坏值；不把布尔语义映射为特定并行度）。
                     self._context.logger.warning(
                         "pm_engine",
                         f"降档并行度解析失败 '{spec_name}' "
-                        f"(_verify_parallel_override={_parallel_override!r})，"
-                        f"沿用配置并行度",
+                        f"(_verify_parallel_override={_parallel_override!r}，"
+                        f"取自 spec attrs)，沿用配置并行度",
                     )
             # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
             # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
