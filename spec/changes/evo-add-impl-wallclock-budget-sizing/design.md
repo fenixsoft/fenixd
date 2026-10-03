@@ -12,8 +12,10 @@
 ## 方案决策
 
 1. **sizing 函数仿轮数版**：在 core/fast_track_result.py 增墙钟 sizing 配置读取与档位函数（规模阈值复用 agents.turn_budget_sizing 的 full_scale_threshold 判定形态），输出 max_extensions 抬升档位；只抬不压、缺省向后兼容；STATE 覆盖键（如 impl_wallclock_extension_override）优先。配置缺省键落 core/config.py SUPERVISION_DEFAULTS 旁。
-2. **liveness 判定接入**：_supervision_deadline_action 增 remaining_tasks 入参（由 runner 超时收口 :5482-5489 传入），按 sizing 档位抬 max_extensions（泛化 :1249-1266 先例）；absolute_max_seconds 封顶不变——sizing 只扩「续期预算」，不触碰绝对上限，防失控 run 无限独占车道。
-3. **evidence/事件同型扩展**：extend/kill evidence 与 timeout_extension 事件携带 remaining_tasks，与 turn_extension/轮数 kill_early 证据同型，供事后归因与扩容判定复盘。
+2. **liveness 判定接入**：_supervision_deadline_action 增 remaining_tasks 入参（缺省 None，由 runner 超时收口调用点 runner.py:5456-5458 传入，kill 收口 :5481-5488 同源取数），按 sizing 档位抬 max_extensions（泛化 :1249-1266 先例）；absolute_max_seconds 封顶不变——sizing 只扩「续期预算」，不触碰绝对上限，防失控 run 无限独占车道。两条约束：
+   - **档位幂等**：档位的规模入参取 run 启动同源的总规模口径（estimate_spec_scale，fast_track_result.py:152，与轮数 sizing 单点同源），MUST NOT 以 remaining_tasks 回算档位——剩余数随推进递减，逐 deadline 重算会回撤已抬档位，使 extensions_used ≥ 回撤后 max_extensions 触发伪 "extension budget exhausted" 击杀（liveness.py:1314）；同 run 各次 deadline 判定的档位推导 MUST 幂等（含 tasks.md 被勾选推进后的重解析）。
+   - **封闭矩阵不变**：remaining_tasks 不新增/改写判定分支——不因剩余非零绕过零事件停滞判停与 absolute_max 封顶，也不因剩余为零新增提前击杀（turn 侧 kill_early 缺省关闭的口径照搬，本 SPEC 不开启）；「纳入判定」的落点＝extend/kill 理由与 evidence 携带 remaining_tasks 供复盘归因。
+3. **evidence/事件同型扩展**：extend/kill evidence 与 timeout_extension 事件携带 remaining_tasks，与 turn_extension/轮数 kill_early 证据同型，供事后归因与扩容判定复盘。reason 串 MUST 原样保留 "extension budget exhausted" 子串（budget.py:340 豁免判据按子串匹配，决策 5 的「仍不可豁免」复核依赖它），remaining_tasks 只进 evidence/事件字段。
 4. **用量缺失注记而非伪数据**：finally 块在「击杀且无 CLI result」时附加用量注记（原因=provider 无逐轮上报＋transcript 字节数/轮数粗估维度），不臆造 cost 数值；成功路径（:5730-5733）行为不变。provider 侧逐轮上报列为非目标。
 5. **口径复核**：budget.py:330-345 不可豁免口径在墙钟 sizing 生效后复核（仍不可豁免，避免 sizing 被当成预算放宽后豁免误判）；config.py:2327 supervision_floor 派生下限与新档位协同复核。
 
