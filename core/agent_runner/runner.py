@@ -4520,9 +4520,9 @@ class AgentRunner:
                                provider_name, model,
                                error, cancelled_flag: bool,
                                shutdown_interrupted: bool,
+                               st: _AttemptState, handed_off: set,
                                frozen_terminated_flag: bool = False,
-                               stall_budget_flag: bool = False,
-                               st: _AttemptState, handed_off: set) -> bool:
+                               stall_budget_flag: bool = False) -> bool:
         """失败终态分型（等价搬移，D1 R8）：重试等待 or 终态 keep。
 
         返回 True 表示 should_break（cancelled_flag or shutdown_interrupted or

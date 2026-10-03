@@ -1103,7 +1103,20 @@ class LivenessSupervisor:
             if value is None:
                 continue
             if isinstance(default, bool):
-                cfg[key] = bool(value)
+                # enabled 等 bool 键严格归一（对齐 ConfigLoader._supervision_settings
+                # 的同名归一，code-review item 6b032f4596e5）：bool(value) 会把
+                # 引号串 "false" 判 True（监督被静默保持开启且无日志线索）、把
+                # 0 判禁用而校验层判启用——同一段配置两口径结论相反。非 bool 打
+                # WARNING 回退缺省，与 config 层口径一致。
+                if isinstance(value, bool):
+                    cfg[key] = value
+                else:
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"Invalid timeout_supervision.{key}={value!r} — keeping default "
+                        f"{default}",
+                    )
+                    cfg[key] = default
                 continue
             try:
                 cfg[key] = type(default)(value)

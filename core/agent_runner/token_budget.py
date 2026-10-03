@@ -364,14 +364,8 @@ class TokenAccountant:
                     from core.adjudication_narrative import schedule_narrative
 
                     schedule_narrative(rec["id"], payload, self._pm)
-                # 注册表覆盖（choices 已快照）→ 保持未处理进待办队列，选项才有人可
-                # 执行（item ded34cd04dc5）；无 choices 的警告级仍按 2026-09-01 降噪
-                # 决策 born-handled，不占待办
-                # code-review item 3e202131bd3a：文件损坏留底被下限保护拒写时 append
-                # 返回 None（core/admin_store.py append 契约，item 2570ca391771：
-                # 记录未落盘，按未落地处理）——此时跳过 born-handled 闭环标记，避免
-                # rec["id"] 抛 TypeError 被外层误记为「Failed to send token budget
-                # alert」（告警本就未落盘，崩溃在 mark_handled 阶段使归因失真）。
+                # born-handled 分支（choices 分支与 append None 守卫的完整解释
+                # 见上方 rec 判空前的共享注释，不再重复）
                 if not choices and not severity_needs_human(severity):
                     store.mark_handled(rec["id"])
             self._pm.logger.warning(
