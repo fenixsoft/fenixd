@@ -38,3 +38,10 @@
 | sidecar-merge-read-side | 读侧合并契约（进程内装配临时项目）：get_alerts 按 alert_id 合并侧车 narrative 字段（text/model/at 形态不变）；侧车缺失的未 handled 告警附 narrative_pending=true 且无 narrative；已 handled 无侧车不附 pending；已 handled 有侧车照常合并（历史完整性）；admin_alerts.json 本体保持不可变（侧车承载补叙、本体无 narrative 字段）。（出处：tasks.md 3.3/3.2；core/dashboard/data/admin_alerts.py:10-14 get_alerts 读侧单源；core/dashboard/routes/alert_routes.py:106 路由消费点） | pass | 0/7 | - |
 | cleanup-cascade-sidecar | 告警清理级联删除侧车（进程内装配）：AdminStore 保留上限裁剪（MAX_RECORDS=150）移出最旧记录时，其侧车文件同步删除；未裁剪记录的侧车保留；新记录照常入册。（出处：tasks.md 3.4；core/admin_store.py:43-56/241-284 MAX_RECORDS 与 _mutate 裁剪路径） | pass | 0/5 | - |
 | wiring-config-docs-dist | 接线/配置/文档/构建产物源码级契约：三个发射点仍共享 attach_narrative 单源（不内联第二套生成逻辑）且预留可选 facts 参数位；DEFAULT_TIMEOUT_SECONDS 与 ConfigLoader 缺省、config.template.yaml 三键同步 180/true；帮助文档更新（调查结论段/侧车补叙/熔断/narrative_timeout_seconds）；dist 构建产物含 narrative_pending 前端新代码；两个测试交付文件在位。（出处：tasks.md 1.2/3.2/交付物清单；core/pm_engine/family.py:1049/1101；core/config.py:1588-1601/1650-1655；docs/help/06-governance.md:277-293） | pass | 0/16 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 15 个（第 1 轮）。
+
+- 首轮写入 15 个场景
+
