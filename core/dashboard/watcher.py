@@ -582,10 +582,14 @@ class FileWatcher:
             # 基线：read_run_events_between 读失败（并发归档/移除等 OSError）
             # 返回 None 区别于「无新增」的 []，此时保留旧基线，下一轮扫描
             # 重读同一区间，避免这段事件被永久跳过（item 522789f55ab8）。
-            new_events = dashboard_data.read_run_events_between(proot, run_id, prev_size)
-            if new_events is not None:
+            # 基线推进用读取返回的实际终止偏移而非本轮 stat 的 size：读取完成
+            # 晚于 stat，stat 与读完成之间追加的字节本轮已解析推送，若基线停在
+            # stat 值，下轮扫描会重读同一区间造成重复事件（item 098ae174254b）。
+            result = dashboard_data.read_run_events_between(proot, run_id, prev_size)
+            if result is not None:
+                new_events, read_end = result
                 advanced = True
-                self._run_base[key] = {"size": size, "status": status}
+                self._run_base[key] = {"size": read_end, "status": status}
         else:
             new_events = []
             advanced = True
