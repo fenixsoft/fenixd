@@ -419,13 +419,22 @@ class H6AlertRoutesMixin:
 
             signal_type = str(alert.get("signal_type") or "")
             spec = str(alert.get("spec") or "")
-            # choice 合法性：记录内 choices 优先（发射点快照），缺失回退注册表。
+            # choice 合法性：记录内 choices 优先（发射点快照），键缺失/None 回退
+            # 注册表。显式空列表 [] 不回退（code-review item 9c88822928cb）：
+            # `or` 判空会把显式 [] 快照与缺失混同——AdminStore._normalize_entry
+            # 合法保留 []（仅非列表/元素非 dict 才归一 None），若发射点注册表为空
+            # （快照即 []、本意不可裁决），之后注册表为该 signal_type 新增了
+            # choice，本告警就会被放行执行 abandon/force_advance 等破坏性动词，
+            # 恰好绕过 item 14b854aeccf9 堵住的口子。isinstance 区分「键缺失/归一
+            # None」（回退注册表）与「显式空快照」（[] 走下方既有「无合法 choice
+            # 集」400 拒绝路径，不可裁决而非崩溃）。
             # 合法集为空（不可裁决信号：桶 0/自愈类、signal_type 缺失——
             # choices_for() 返回空元组且记录无快照）→ 直接 400 拒绝（code-review
             # item 14b854aeccf9）：此前的空集直通会让 execute_adjudication_choice
             # 的注册表级反查接受任意已注册 choice_id（含 abandon/force_advance/
             # skip_review_gate 等破坏性动词）执行到本告警 spec 上，与端点契约相悖。
-            record_choices = alert.get("choices") or choices_for(signal_type)
+            ch = alert.get("choices")
+            record_choices = ch if isinstance(ch, list) else choices_for(signal_type)
             valid_ids = [c.get("id") for c in record_choices if isinstance(c, dict)]
             if not valid_ids:
                 self._error(

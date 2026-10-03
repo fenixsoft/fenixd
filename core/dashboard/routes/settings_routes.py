@@ -55,14 +55,29 @@ def _atomic_write_text(target: Path, content: str) -> None:
         # 成功后才生效）——描述符泄漏。f=None 哨兵接管，fdopen 未成功时
         # 兜底 os.close；成功后统一经 finally close（等价 with 语义）。
         f = None
+        body_error = False
         try:
             f = os.fdopen(fd, "w", encoding="utf-8")
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        except BaseException:
+            body_error = True
+            raise
         finally:
             if f is not None:
-                f.close()
+                try:
+                    f.close()
+                except OSError:
+                    # code-review item e16236fc45c4：写体已抛错时，close() 的
+                    # 隐式 flush 可再次抛 OSError 并在 finally 中替换原始异常
+                    # 向上传播——调用方 logger.warning 记到的是 close 报错而非
+                    # 真实写失败原因，排查归因偏差。故写体已失败时吞掉 close
+                    # 的二次错误（原始异常优先传播）；写体成功时 close 错误
+                    # 照常上抛（flush/close 失败是真实写失败，吞掉会让下方
+                    # os.replace 把可能未落盘的临时文件假成功发布）。
+                    if not body_error:
+                        raise
             else:
                 try:
                     os.close(fd)
@@ -75,6 +90,29 @@ def _atomic_write_text(target: Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _validate_verify_yaml(content: str) -> str | None:
+    """verify.yaml 写前校验（_write_project_doc 的 validate 钩子）。
+
+    与 todo.md 的关键差异：保存前做校验——
+    1. YAML 语法必须可解析（坏 YAML 会被 load_verify_contract 按「无契约」
+       静默回退，用户以为契约生效了实则没有，编辑器必须当场拦截）；
+    2. 顶层必须为字段映射或空（列表/标量同样静默失效）。
+    宽捕获同 load_verify_contract 口径：对抗性/深度嵌套输入可抛
+    RecursionError 等非 YAMLError 异常，一律按 400 可读拒绝而非 500。
+    返回错误文案（400 拒绝保存）或 None（通过）。
+    """
+    try:
+        data = yaml.safe_load(content)
+    except Exception as e:
+        return f"YAML 语法错误，拒绝保存（坏契约会被框架按「无契约」静默回退）: {e}"
+    if data is not None and not isinstance(data, dict):
+        return (
+            f"verify.yaml 顶层必须是字段映射（prepare/serve/ready），"
+            f"当前为 {type(data).__name__}——非映射契约会被框架静默失效"
+        )
+    return None
 
 
 class H5SettingsRoutesMixin:
@@ -328,6 +366,52 @@ class H5SettingsRoutesMixin:
         self._json({"ok": True, "agent_type": agent_type, "path": str(target)})
 
 
+    def _read_project_doc(self, project: dict, what: str) -> None:
+        """读取 <项目根>/.fenix/<what> 共用体（自含响应）。
+
+        code-review item d02a3b4bfecf：todo.md 与 verify.yaml 两个 GET 端点
+        除文件名/文案外逐行同构（exists 判定、OSError/UnicodeDecodeError
+        分支、响应形状），收敛单源防单边漂移（item 113782f1517d 的
+        「读失败转可读 500」当时即需双处回填）。what 既是 .fenix/ 下的
+        相对文件名也是错误文案语境名（现有调用二者同值）。
+        """
+        target = Path(project["path"]) / ".fenix" / what
+        exists = target.is_file()
+        content = ""
+        try:
+            if exists:
+                content = target.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning("%s 读取失败（%s）: %s", what, project["name"], e)
+            self._error(500, f"{what} 读取失败")
+            return
+        except UnicodeDecodeError as e:
+            self._error(500, f"{what} 读取失败（文件编码非 UTF-8）: {e}")
+            return
+        self._json(
+            {"project": project["name"], "path": str(target), "exists": exists, "content": content}
+        )
+
+    def _write_project_doc(self, project: dict, content: str, what: str, validate=None) -> None:
+        """整文件覆写 <项目根>/.fenix/<what> 共用体（自含响应）。
+
+        validate：可选写前校验钩子（同形端点的差异点，如 verify.yaml 的
+        _validate_verify_yaml），返回错误文案则 400 拒绝保存、返回 None 放行。
+        """
+        if validate is not None:
+            err = validate(content)
+            if err is not None:
+                self._error(400, err)
+                return
+        target = Path(project["path"]) / ".fenix" / what
+        try:
+            _atomic_write_text(target, content)
+        except OSError as e:
+            logger.warning("%s 保存失败（%s）: %s", what, project["name"], e)
+            self._error(500, f"{what} 保存失败")
+            return
+        self._json({"ok": True, "project": project["name"], "path": str(target)})
+
     def _api_todo_get(self, query) -> None:
         """GET /api/todo?project=<name> — 项目 todo.md 读取（设置页「自省」面板）。
 
@@ -337,23 +421,7 @@ class H5SettingsRoutesMixin:
         project = self._project_query_or_error(query, "todo.md")
         if project is None:
             return
-        proot = Path(project["path"])
-        target = proot / ".fenix" / "todo.md"
-        exists = target.is_file()
-        content = ""
-        try:
-            if exists:
-                content = target.read_text(encoding="utf-8")
-        except OSError as e:
-            logger.warning("todo.md 读取失败（%s）: %s", project["name"], e)
-            self._error(500, "todo.md 读取失败")
-            return
-        except UnicodeDecodeError as e:
-            self._error(500, f"todo.md 读取失败（文件编码非 UTF-8）: {e}")
-            return
-        self._json(
-            {"project": project["name"], "path": str(target), "exists": exists, "content": content}
-        )
+        self._read_project_doc(project, "todo.md")
 
 
     def _api_todo_post(self, query):
@@ -372,15 +440,7 @@ class H5SettingsRoutesMixin:
         if not isinstance(content, str):
             self._error(400, "content 必须为字符串（自由 Markdown，不做 schema 校验）")
             return
-        proot = Path(project["path"])
-        target = proot / ".fenix" / "todo.md"
-        try:
-            _atomic_write_text(target, content)
-        except OSError as e:
-            logger.warning("todo.md 保存失败（%s）: %s", project["name"], e)
-            self._error(500, "todo.md 保存失败")
-            return
-        self._json({"ok": True, "project": project["name"], "path": str(target)})
+        self._write_project_doc(project, content, "todo.md")
 
 
     def _api_verify_yaml_get(self, query) -> None:
@@ -392,33 +452,16 @@ class H5SettingsRoutesMixin:
         project = self._project_query_or_error(query, "verify.yaml")
         if project is None:
             return
-        proot = Path(project["path"])
-        target = proot / ".fenix" / "verify.yaml"
-        exists = target.is_file()
-        content = ""
-        try:
-            if exists:
-                content = target.read_text(encoding="utf-8")
-        except OSError as e:
-            logger.warning("verify.yaml 读取失败（%s）: %s", project["name"], e)
-            self._error(500, "verify.yaml 读取失败")
-            return
-        except UnicodeDecodeError as e:
-            self._error(500, f"verify.yaml 读取失败（文件编码非 UTF-8）: {e}")
-            return
-        self._json(
-            {"project": project["name"], "path": str(target), "exists": exists, "content": content}
-        )
+        self._read_project_doc(project, "verify.yaml")
 
 
     def _api_verify_yaml_post(self, query):
         """POST /api/verify-yaml?project=<name> — 保存验证契约（整文件覆写）。
 
-        body: {"content": <自由 YAML>}。与 todo.md 的关键差异：保存前做校验——
-        1. YAML 语法必须可解析（坏 YAML 会被 load_verify_contract 按「无契约」
-           静默回退，用户以为契约生效了实则没有，编辑器必须当场拦截）；
-        2. 顶层必须为字段映射或空（列表/标量同样静默失效）。
-        不做字段级 schema 校验：加载器对未知字段宽容，字段语义在模板注释里。
+        body: {"content": <自由 YAML>}。不做字段级 schema 校验：加载器对未知
+        字段宽容，字段语义在模板注释里。写前校验（YAML 语法可解析 + 顶层
+        字段映射）单源在 _validate_verify_yaml，经 _write_project_doc 的
+        validate 钩子接入。
         """
         body = self._read_json_body()
         if body is None:
@@ -430,31 +473,9 @@ class H5SettingsRoutesMixin:
         if not isinstance(content, str):
             self._error(400, "content 必须为字符串（自由 YAML，不做字段级 schema 校验）")
             return
-        try:
-            data = yaml.safe_load(content)
-        except Exception as e:
-            # 宽捕获同 load_verify_contract 口径：对抗性/深度嵌套输入可抛
-            # RecursionError 等非 YAMLError 异常，一律按 400 可读拒绝而非 500。
-            self._error(
-                400, f"YAML 语法错误，拒绝保存（坏契约会被框架按「无契约」" f"静默回退）: {e}"
-            )
-            return
-        if data is not None and not isinstance(data, dict):
-            self._error(
-                400,
-                f"verify.yaml 顶层必须是字段映射（prepare/serve/ready），"
-                f"当前为 {type(data).__name__}——非映射契约会被框架静默失效",
-            )
-            return
-        proot = Path(project["path"])
-        target = proot / ".fenix" / "verify.yaml"
-        try:
-            _atomic_write_text(target, content)
-        except OSError as e:
-            logger.warning("verify.yaml 保存失败（%s）: %s", project["name"], e)
-            self._error(500, "verify.yaml 保存失败")
-            return
-        self._json({"ok": True, "project": project["name"], "path": str(target)})
+        self._write_project_doc(
+            project, content, "verify.yaml", validate=_validate_verify_yaml
+        )
 
 
     def _api_verify_yaml_template(self) -> None:

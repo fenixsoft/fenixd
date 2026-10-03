@@ -18,7 +18,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import threading
 
@@ -126,22 +128,68 @@ def install_ocr(timeout: int = _INSTALL_TIMEOUT) -> dict:
         _INSTALL_LOCK.release()
 
 
+def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
+    """npm install 执行（start_new_session + 超时进程组清扫）。
+
+    subprocess.run(timeout=...) 超时只终止直接子进程 npm，npm 派生的 node
+    孙进程未经收组残留，可继续写全局前缀的 node_modules（半解包/EEXIST，
+    与本模块并发安装互斥锁要防的形态同型，code-review item 1984565d20b3）。
+    按 core/verify_contract.py ``_run_npm_provision`` 同款组清扫纪律：
+    start_new_session 使 leader 即进程组长（pgid == p.pid），提前取定句柄
+    防 wait 回收 leader 后 getpgid 失效；超时 SIGTERM 组 → wait(5) →
+    SIGKILL 组补刀 → 补 communicate 排空管道收尸，随后按 subprocess.run 同
+    约定向调用方抛 TimeoutExpired（既有超时分支的 _partial_output 诊断继续
+    生效）。Popen 的 OSError 同样交由调用方捕获。
+    """
+    p = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        # 非交互：npm 首次运行可能弹交互确认，读 DEVNULL 使其走非交互
+        # 分支/立即失败，不挂起到超时、不消费 daemon 终端输入
+        stdin=subprocess.DEVNULL,
+        # 同 _ocr_version：显式 UTF-8 + replace，免 locale 依赖解码
+        # （code-review item fb2757a60715）。
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=True,
+    )
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            pgid = os.getpgid(p.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = p.pid
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            pass
+        # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
+        # （npm 派生的 node）会残留继续写全局前缀，无论 wait 成败都补一次
+        # SIGKILL；ProcessLookupError＝组已清空，静默即可。
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
+        try:
+            p.communicate(timeout=5)
+        except Exception:
+            pass
+        raise
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
 def _install_ocr_locked(timeout: int) -> dict:
     """`_INSTALL_LOCK` 保护下的实际安装流程（调用方持锁）。"""
     try:
-        r = subprocess.run(
-            ["npm", "install", "-g", OCR_NPM_PACKAGE],
-            capture_output=True,
-            # 非交互：npm 首次运行可能弹交互确认，读 DEVNULL 使其走非交互
-            # 分支/立即失败，不挂起到超时、不消费 daemon 终端输入
-            stdin=subprocess.DEVNULL,
-            # 同 _ocr_version：显式 UTF-8 + replace，免 locale 依赖解码
-            # （code-review item fb2757a60715）。
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        r = _run_npm_install(["npm", "install", "-g", OCR_NPM_PACKAGE], timeout)
     except subprocess.TimeoutExpired as e:
         # 超时分支保留子进程已写出的部分诊断（code-review item 95afe353e7d3）：
         # 最慢的失败模式（300s 安装）此前只返回空 output，用户看不到任何细节，

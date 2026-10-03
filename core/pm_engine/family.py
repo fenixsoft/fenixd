@@ -16,10 +16,17 @@ import tempfile
 # 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
 MAX_VERIFY_FAIL_ROUNDS = 3
 
+# fix SPEC 的「终态」状态集：_resolve_fix_spec_name 的递归派生判定与
+# _same_root_siblings 的家族宽度/兄弟互斥筛选共用（code-review item
+# 757e05f354fd：两处各写字面量后口径漂移——verified 的同根兄弟既被宽度门
+# 计为活跃成员（已收敛家族仍可能被 family_explosion 误拦）、又被继续加前缀
+# 派生新子代，对同一状态给出相反的在飞判断），抽公共常量防再分叉。
+_FIX_SPEC_TERMINAL = ("done", "verified", "pushed")
+
 # fix SPEC 的「在途或终态」状态集：模板写入守卫与幂等重置守卫共用（防两处
-# 逐字重复后新增状态漏改导致行为分叉）。与 _resolve_fix_spec_name 的状态集
-# 包含关系：本集合 ⊇ 其终态集（done/verified/pushed）∪ 进行中集
-# （testing/implementing），另含 implemented/blocked——同样不重写模板、不重置。
+# 逐字重复后新增状态漏改导致行为分叉）。与上述状态集的包含关系：本集合 ⊇
+# _FIX_SPEC_TERMINAL ∪ 进行中集（testing/implementing），另含
+# implemented/blocked——同样不重写模板、不重置。
 _FIX_SPEC_IN_FLIGHT_OR_TERMINAL = (
     "implementing",
     "testing",
@@ -58,7 +65,7 @@ class FamilyGovernor:
             if status in ("testing", "implementing"):
                 # 已有进行中的 fix SPEC，视为重复派发，跳过
                 return None
-            if status in ("done", "verified", "pushed"):
+            if status in _FIX_SPEC_TERMINAL:
                 # 上一轮修复已终态完成，本轮是新 bug，递归加前缀
                 candidate = f"fix-{candidate}"
                 continue
@@ -184,12 +191,12 @@ class FamilyGovernor:
         )
 
     def _family_width(self, child_name: str) -> int:
-        """宽度：同根（剥除全部 fix- 前缀后同名）且未完成（非 done/pushed）的 fix 子代数量。
+        """宽度：同根（剥除全部 fix- 前缀后同名）且未完成（非 _FIX_SPEC_TERMINAL 终态）的 fix 子代数量。
 
         口径依据 STATE 全量 read_all（design D4：不受 ready 清空字段保留策略影响，
         对历史存在的四层命名按现值评估，不追溯惩罚已 done/pushed 祖先）。
         筛选口径复用 _same_root_siblings（code-review item 7a545a2237b1）：
-        「同根 + 非 done/pushed + 坏条目防御」只保留一份实现，防宽度门与
+        「同根 + 非终态 + 坏条目防御」只保留一份实现，防宽度门与
         兄弟互斥判定两处口径漂移分叉。
         """
         return len(self._same_root_siblings(child_name))
@@ -249,7 +256,10 @@ class FamilyGovernor:
     def _same_root_siblings(self, spec_name: str) -> list:
         """返回 spec_name 的同根非终态兄弟列表（排除自身，design 守卫一/三）。
 
-        口径：同根（剥除全部 fix- 前缀后同名）+ 非终态（非 done/pushed）。
+        口径：同根（剥除全部 fix- 前缀后同名）+ 非终态（终态集
+        _FIX_SPEC_TERMINAL，与 _resolve_fix_spec_name 的派生判定同源——
+        verified 兄弟已被加前缀继续派生、属已收敛成员，不再计入家族宽度，
+        code-review item 757e05f354fd）。
         含自身处于进行中的兄弟亦计入——守卫关心的是「同根是否已有非终态修复活动」。
         """
         if not self._is_fix_spec(spec_name):
@@ -269,7 +279,7 @@ class FamilyGovernor:
             if not isinstance(entry, dict):
                 continue
             status = (entry or {}).get("status", "")
-            if status in ("done", "pushed"):
+            if status in _FIX_SPEC_TERMINAL:
                 continue
             siblings.append(name)
         return siblings
@@ -931,6 +941,32 @@ class FamilyGovernor:
             lines.append("")
         return "\n".join(lines)
 
+    @staticmethod
+    def _sanitize_injected_text(text: str) -> str:
+        """净化拼入「## 验证修复」段的自由文本（code-review item 0d8df4cc0e33）。
+
+        上轮实现结论是 agent 自由文本，可能含行首「## 」或 ``` / ~~~ 围栏行，
+        而段界探测按「围栏外首个行首二级标题」截断替换区间、按 stripped 后的
+        围栏标记开合过滤——不净化则行首「## 」会让下轮段界提前落在结论内部
+        （旧段剩余任务清单残留并逐轮堆积）、未闭合围栏让段界永不命中（end 停在
+        文件尾，替换区间吞掉该段之后全部文件内容）。危险行统一加「> 」引用前缀
+        使其失去行首锚（strip 后也不再以围栏标记开头），内容保留可读；判定谓词
+        与段界探测逐字对齐（原始行「## 」前缀、stripped 后 ``` / ~~~ 前缀）。
+        """
+        if not text:
+            return text
+        safe_lines = []
+        for line in text.splitlines(keepends=True):
+            stripped = line.strip()
+            if (
+                line.startswith("## ")
+                or stripped.startswith("```")
+                or stripped.startswith("~~~")
+            ):
+                line = "> " + line
+            safe_lines.append(line)
+        return "".join(safe_lines)
+
     def _inject_verify_fix_task(self, spec_name: str, fail_rounds: int):
         """在父 SPEC 的 tasks.md 末尾追加/更新「## 验证修复」任务段。
 
@@ -959,7 +995,10 @@ class FamilyGovernor:
         # fix-fake-failure-first：第一步强制复核失败场景有效性——验证场景自身
         # 的断言缺陷（英文状态字面量 vs 产品中文渲染、不存在选择器等）曾被当作
         # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。
-        prev = self._read_prev_impl_conclusions(spec_name)
+        # prev 是 agent 自由文本，拼入段前先净化（行首「## 」/围栏标记加引用
+        # 前缀），防下方段界扫描被注入文本内部的伪段界/未闭合围栏带偏
+        # （code-review item 0d8df4cc0e33）。
+        prev = self._sanitize_injected_text(self._read_prev_impl_conclusions(spec_name))
         section = (
             f"\n\n## 验证修复（原地打回第 {fail_rounds} 轮）\n"
             f"{prev}"

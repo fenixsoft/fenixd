@@ -195,6 +195,22 @@ class RecoveryWatch:
                 pass
             return
         if isinstance(data, dict):
+            # 条目级损坏同样不静默（code-review item b54edc068ab7）：合法 JSON
+            # 但某条目值非 dict（如手工编辑把条目改成字符串）此前被 comprehension
+            # 直接过滤——无任何日志、被丢弃内容不留存，与上方文件级损坏/非 dict
+            # 顶层结构「记 WARNING 留存现场」口径不一致，条目级损坏发生时现场
+            # 无从排查。这里对被丢弃键逐条记 WARNING（含键名、类型与原值摘要）。
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    continue
+                preview = repr(v)
+                if len(preview) > 200:
+                    preview = preview[:200] + "...<truncated>"
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"recovery_watch.json 条目 {k!r} 值非 dict"
+                    f"（type={type(v).__name__}），已丢弃该条目（原值: {preview}）",
+                )
             self._recovery_watch = {k: v for k, v in data.items() if isinstance(v, dict)}
             return
         # 合法 JSON 但非 dict 同样不静默（code-review item 465164d164ed）：

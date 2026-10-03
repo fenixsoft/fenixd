@@ -804,10 +804,16 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     }
 
 
-def read_run_events_between(project_root, run_id: str, start_offset: int) -> "list | None":
-    """读取运行产物从 start_offset 字节到 EOF 的事件（增量推送用）。
+def read_run_events_between(
+    project_root, run_id: str, start_offset: int
+) -> "tuple[list, int] | None":
+    """读取运行产物从 start_offset 字节到读取时 EOF 的事件（增量推送用）。
 
     O_APPEND 只增写：按上次记录的字节偏移读取新增部分，避免整文件重读。
+    返回 (事件列表, 实际读取终止偏移)：偏移取读取完成后的 f.tell()，调用侧
+    （watcher 增量推送的基线推进）用它而非扫描入口 stat 的 size，消除
+    stat→read 窗口内新追加字节「本轮已解析推送、基线却停在 stat 值、下轮
+    重读同一区间重复推送」的重叠（code-review item 098ae174254b）。
     跨扫描边界被截断的半个 JSON 行会降级为 stderr 条目（_parse_run_lines 容错）。
     读失败（文件被并发归档/移除等 OSError）返回 None 以区别于「无新增」的 []，
     调用侧（watcher 增量推送）据此保留旧基线，下一轮重读同一区间。
@@ -822,10 +828,11 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> "li
         with run_file.open("rb") as f:
             f.seek(start_offset)
             raw = f.read()
+            end_offset = f.tell()
     except OSError:
         return None
     text = raw.decode("utf-8", errors="replace")
-    return _parse_run_lines(text.splitlines())
+    return _parse_run_lines(text.splitlines()), end_offset
 
 
 # ── 聚合视图（供 Web API / 概览 / 详情） ──────────────────────────

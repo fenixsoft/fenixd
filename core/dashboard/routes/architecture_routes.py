@@ -608,23 +608,35 @@ class ArchitectureManager:
           失败文案，调用方直接 failed 短路。
         """
         try:
-            # [fenix-ignore:002d0de5aed2] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
-            proc = subprocess.Popen(
-                ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
-                cwd=str(proot),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                # 显式 UTF-8：text=True 缺省按 locale 解码，LC_ALL=C 启动的
-                # daemon 下 claude -p 的非 ASCII 回复会 decode 失败被误判
-                # 通信失败（同 ocr_status 修复，code-review item 7ddf7e2b3ed9）
-                encoding="utf-8",
-                errors="replace",
-                env=_build_spawn_env(),
-                # 独立会话组（autodraft 同款）：超时可 killpg 整组清场，
-                # 杜绝只杀直接子进程留下的孤儿孙进程
-                start_new_session=True,
-            )
+            # 持登记锁完成 spawn + 登记（item 69eb4844d0b5）：登记原来在
+            # Popen 返回之后才执行，两句之间（含 Popen 内部 fork/exec 释放
+            # GIL 的窗口，子进程彼时已以 start_new_session 独立组存在）若
+            # serve() finally 走 reap_all()，本进程组不在快照集合里、不会被
+            # killpg——孤儿以 bypassPermissions 继续写 diagram.html/
+            # evidence.md。临界区罩住整个 Popen 后，退出链 reap_all 在锁上
+            # 排队：要么在本进程组入集合之后才快照（必然收割），要么在本
+            # 进程组 spawn 之前就已快照（无可收割对象，残余竞态固有不可闭
+            # 合）。communicate 的长等待必须留在锁外。spawn 失败时不入集合
+            # （with 体未执行到登记行），无悬挂占位句柄可供 reap_all 误杀。
+            with self._guard:
+                # [fenix-ignore:002d0de5aed2] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
+                proc = subprocess.Popen(
+                    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
+                    cwd=str(proot),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    # 显式 UTF-8：text=True 缺省按 locale 解码，LC_ALL=C 启动的
+                    # daemon 下 claude -p 的非 ASCII 回复会 decode 失败被误判
+                    # 通信失败（同 ocr_status 修复，code-review item 7ddf7e2b3ed9）
+                    encoding="utf-8",
+                    errors="replace",
+                    env=_build_spawn_env(),
+                    # 独立会话组（autodraft 同款）：超时可 killpg 整组清场，
+                    # 杜绝只杀直接子进程留下的孤儿孙进程
+                    start_new_session=True,
+                )
+                self._procs[key] = proc
         except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
             if logger is not None:
                 logger.warning(
@@ -632,8 +644,6 @@ class ArchitectureManager:
                     f"{stage_label}）: {type(exc).__name__}: {exc!r}",
                 )
             return False, None, None, None, "调用 claude CLI 失败"
-        with self._guard:
-            self._procs[key] = proc
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:

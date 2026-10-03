@@ -50,7 +50,6 @@ import os
 import re
 import sys
 import signal
-import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,6 +64,7 @@ from core.agent_runner.prompt_builder import (
     project_agents_dir,
 )
 from core.fenix_session import start_daemon, stop_daemon
+from core.proc_utils import find_free_port as _proc_find_free_port
 
 logger = logging.getLogger("fenixd.dashboard.server")
 
@@ -108,24 +108,18 @@ from .sse import SSEConnection, SSEHub  # noqa: F401 — D1 门面 re-export
 from .http_server import DashboardHTTPServer  # noqa: F401 — D1 门面 re-export
 
 
-def find_free_port(start: int, max_attempts: int = 50) -> int:
-    """从 start 开始向上探测第一个空闲端口。
+def find_free_port(start: int = 0, max_attempts: int = 50) -> int:
+    """兼容壳：转发 core.proc_utils.find_free_port（code-review ca8a69e04fda）。
 
-    注意（TOCTOU，code-review cf56f85b4659）：bind 成功即关闭 socket 并返回
-    端口号，从探测到调用方真正监听之间存在端口被其他进程抢占的窗口；本函数
-    不做重试，调用方需自行处理随后的绑定失败（serve() 对占用走接管/退出语义，
-    且不再自动上探）。需要消除该竞态窗口的新调用方请改用
+    原上探实现（bind 逐个试、成功即关闭返回）已删除——与 proc_utils 版同名
+    双实现并存，且生产调用方（core/verify_contract.py、core/v2_dev_server.py、
+    core/pm_engine/verification/serving.py）早已全部切换到 proc_utils 版本；
+    此处仅保留同名入口供既有测试调用方（tests/conftest.py 等）过渡，端口分配
+    逻辑单一来源化。``start`` / ``max_attempts`` 不再参与分配（由 OS bind 0
+    分配临时端口）；需要消除「探测到正式启动」竞态窗口的新调用方请改用
     core.proc_utils.find_bound_socket（持有已绑定 socket 直到正式启动）。
     """
-    for port in range(start, start + max_attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f"无法找到空闲端口（{start}~{start + max_attempts - 1} 均被占用）")
+    return _proc_find_free_port()
 
 
 @contextlib.contextmanager

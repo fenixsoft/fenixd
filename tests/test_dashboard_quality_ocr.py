@@ -74,20 +74,36 @@ class TestCheckOcrInstalled:
 # ── install_ocr ───────────────────────────────────────────────────────
 
 
+class _FakeNpmProc:
+    """``ocr_status._run_npm_install`` 的 Popen 替身（item 1984565d20b3 后实现
+    走 start_new_session + 进程组清扫的 Popen，替身缝从 subprocess.run 迁来）。
+
+    pid 用不存在的值：超时清扫路径 os.getpgid/os.killpg 对其抛
+    ProcessLookupError，走静默分支，不会波及真实进程组。
+    """
+
+    def __init__(self, out="", err="", returncode=0, communicate_exc=None):
+        self.pid = 2 ** 29
+        self.returncode = returncode
+        self._out, self._err = out, err
+        self._communicate_exc = communicate_exc
+
+    def communicate(self, timeout=None):
+        if self._communicate_exc is not None:
+            raise self._communicate_exc
+        return self._out, self._err
+
+
 class TestInstallOcr:
     def test_success(self, monkeypatch):
         """npm 安装成功 → ok=True + 重新探测得到的 version。"""
         calls = {}
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             calls["argv"] = argv
-            r = MagicMock()
-            r.returncode = 0
-            r.stdout = "added 1 package"
-            r.stderr = ""
-            return r
+            return _FakeNpmProc(out="added 1 package")
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         monkeypatch.setattr(
             ocr_status, "check_ocr_installed",
             lambda: {"installed": True, "bin": "/usr/bin/ocr", "version": "v9"},
@@ -100,14 +116,13 @@ class TestInstallOcr:
 
     def test_nonzero_exit(self, monkeypatch):
         """npm 非零退出（如 EACCES）→ ok=False，output 含原始报错尾部。"""
-        def fake_run(argv, **kwargs):
-            r = MagicMock()
-            r.returncode = 243
-            r.stdout = ""
-            r.stderr = "npm ERR! code EACCES\nnpm ERR! permission denied"
-            return r
+        def fake_popen(argv, **kwargs):
+            return _FakeNpmProc(
+                returncode=243,
+                err="npm ERR! code EACCES\nnpm ERR! permission denied",
+            )
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         out = install_ocr()
         assert out["ok"] is False
         assert "非零退出码" in out["error"]
@@ -115,34 +130,56 @@ class TestInstallOcr:
 
     def test_timeout(self, monkeypatch):
         """npm 超时 → ok=False + 可读错误。"""
-        def fake_run(argv, **kwargs):
-            raise ocr_status.subprocess.TimeoutExpired(cmd="npm", timeout=1)
+        def fake_popen(argv, **kwargs):
+            return _FakeNpmProc(
+                communicate_exc=ocr_status.subprocess.TimeoutExpired(
+                    cmd="npm", timeout=1),
+            )
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         out = install_ocr(timeout=1)
         assert out["ok"] is False
         assert "超时" in out["error"]
 
+    def test_timeout_kills_process_group(self, monkeypatch):
+        """超时清扫：SIGTERM/SIGKILL 发给整组（start_new_session 的 pgid），非仅直接子进程。"""
+        killed = []
+
+        def fake_popen(argv, **kwargs):
+            proc = _FakeNpmProc(
+                communicate_exc=ocr_status.subprocess.TimeoutExpired(
+                    cmd="npm", timeout=1),
+            )
+            monkeypatch.setattr(
+                ocr_status.os, "getpgid", lambda pid: killed.append(("pgid", pid)) or pid)
+            monkeypatch.setattr(
+                ocr_status.os, "killpg",
+                lambda pgid, sig: killed.append((sig.name, pgid)))
+            return proc
+
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
+        out = install_ocr(timeout=1)
+        assert out["ok"] is False
+        # 组清扫纪律：SIGTERM 整组 → 补刀 SIGKILL 整组，pgid == leader pid
+        assert ("SIGTERM", 2 ** 29) in killed
+        assert ("SIGKILL", 2 ** 29) in killed
+
     def test_npm_missing(self, monkeypatch):
         """npm 不可执行（OSError）→ ok=False + 可读错误。"""
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             raise OSError("npm not found")
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         out = install_ocr()
         assert out["ok"] is False
         assert "npm" in out["error"]
 
     def test_success_but_still_missing_from_path(self, monkeypatch):
         """npm 报成功但 PATH 上仍无 ocr → ok=False（提示检查全局前缀）。"""
-        def fake_run(argv, **kwargs):
-            r = MagicMock()
-            r.returncode = 0
-            r.stdout = "added 1 package"
-            r.stderr = ""
-            return r
+        def fake_popen(argv, **kwargs):
+            return _FakeNpmProc(out="added 1 package")
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         monkeypatch.setattr(
             ocr_status, "check_ocr_installed",
             lambda: {"installed": False, "bin": None, "version": None},

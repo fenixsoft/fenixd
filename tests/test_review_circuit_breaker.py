@@ -10,7 +10,7 @@ test_review_circuit_breaker.py — evo-run-failure-classification-circuitbreaker
 import json
 import os
 import time
-from typing import Optional
+from typing import Dict, Optional
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -40,7 +40,7 @@ def breaker(tmp_project):
 
 
 class FakeStateMachine:
-    """最小 state_machine mock，支持 read_one / update_spec。
+    """最小 state_machine mock，支持 read_one / update_spec / bump_counters。
 
     freeze_for_human 签名与 production（core/state_machine.py:624）逐参对齐
     （测试替身保真守卫：宽容 **kwargs 替身违规）。
@@ -55,6 +55,24 @@ class FakeStateMachine:
         if spec_name not in self._specs:
             self._specs[spec_name] = {}
         self._specs[spec_name].update(updates)
+
+    def bump_counters(self, spec_name: str, deltas: Dict[str, int]) -> Dict[str, int]:
+        """计数器原地递增，契约与 production（core/state_machine.py:1034）对齐：
+        各字段按 delta 累加（负 delta 下限 0），返回 ``{field: 最终生效值}``；
+        SPEC 不存在时返回全 0（production 另记 warning，替身省略日志）。
+        """
+        if spec_name not in self._specs:
+            return {field: 0 for field in deltas}
+        entry = self._specs[spec_name]
+        result = {}
+        for field, delta in deltas.items():
+            try:
+                current = int(entry.get(field, 0) or 0)
+            except (TypeError, ValueError):
+                current = 0
+            result[field] = max(0, current + delta)
+            entry[field] = result[field]
+        return result
 
     def freeze_for_human(
         self,

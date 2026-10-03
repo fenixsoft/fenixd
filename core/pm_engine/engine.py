@@ -842,6 +842,25 @@ class PMEngine:
                     f"同源草案收敛检查异常 '{spec_name}'（fail-open 放行）: {e}",
                 )
             if convergence.get("blocked"):
+                # 写前重读复核（code-review item f9e6461bbd96，对齐
+                # check_blockers auto-recovery「竞争后到者视为无需操作」先例，
+                # 上游先例 check_scheduling_deadlines 定时解冻）：轮首 read_one
+                # 快照到此处隔着冻结/退避/依赖/在飞评审判据与
+                # _check_superseded_convergence 的全目录文件 IO 扫描，窗口内
+                # 队列 worker 可能已消费早前入队的 implementer 条目并把 spec
+                # 转入 implementing；盲写会把合法进度覆写回 blocked（worktree
+                # 锁仍被在飞 run 持有，run 收尾与 STATE 失配）。状态已非 ready
+                # 即让位于在飞进度，跳过本次收敛拦截、不派发；收敛义务由后续
+                # full_scan / spec_ready 周期重评兜底。
+                fresh = self.state_machine.read_one(spec_name) or {}
+                if fresh.get("status") != "ready":
+                    self.logger.info(
+                        "pm_engine",
+                        f"同源草案收敛拦截竞争后到者：'{spec_name}' 状态已为 "
+                        f"'{fresh.get('status')}'，让位于在飞进度，跳过本次 "
+                        f"blocked 拦截与派发（收敛义务留待后续周期重评）",
+                    )
+                    return
                 self.state_machine.update_spec(
                     spec_name,
                     {

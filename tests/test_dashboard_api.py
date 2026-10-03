@@ -20,7 +20,7 @@ from conftest import _TestServer, make_project  # noqa: E402
 
 from core.dashboard import data as dash_data
 from core.dashboard.registry import Registry
-from core.dashboard.server import find_free_port
+from core.proc_utils import find_free_port
 
 
 # ── server.py ─────────────────────────────────────────────────────────
@@ -198,14 +198,15 @@ class TestServerAPI:
         finally:
             srv.stop()
 
-    def test_find_free_port_probes_upward(self):
-        occupied = find_free_port(20100)
+    def test_find_free_port_returns_bindable_port(self):
+        # 迁移自 server.find_free_port 用例（code-review ca8a69e04fda）：端口
+        # 分配实现已收敛到 core.proc_utils.find_free_port（bind 0 + getsockname，
+        # server 侧仅存兼容壳），等价断言为「返回端口确实可绑定监听」。
+        port = find_free_port()
         import socket
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", occupied))
+            s.bind(("127.0.0.1", port))
             s.listen(1)
-            free = find_free_port(occupied)
-            assert free != occupied
 
 
 class TestSpecSchedulingAPI:

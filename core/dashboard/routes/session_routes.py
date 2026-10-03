@@ -64,7 +64,9 @@ class H_SessionRoutesMixin:
         self._json({
             "session": {
                 "id": session.session_id,
-                "started_at": session.last_activity,
+                # code-review item 2e9b99afdf93：started_at 取会话创建时刻
+                # （Session.started_at），非随活动漂移的 last_activity。
+                "started_at": session.started_at,
             }
         })
 
@@ -94,7 +96,9 @@ class H_SessionRoutesMixin:
         self._json({
             "session": {
                 "id": session.session_id,
-                "started_at": session.last_activity,
+                # code-review item 2e9b99afdf93：同 _api_session_start，取
+                # Session.started_at（创建时刻），非 last_activity。
+                "started_at": session.started_at,
             },
             "events": events,
             "truncated": truncated,
