@@ -35,3 +35,8 @@
 | regression-worktree-acquire-backoff | tasks 4.2 回归·既有 worktree backoff 零回退：tests/test_worktree_acquire_backoff.py 全量通过（锁释放取得/退避耗尽/人工接管让位/退避期间接管/非锁失败不进退避/gave up 文案签名——预算自适应改造不得改变既有退避序列与让位语义）。整文件 exit 0 为准 | pass | 0/2 | - |
 | regression-dual-dispatch-and-verify-contract | tasks 4.2 回归·双派发守卫与验证契约零回退：tests/test_dual_dispatch_and_freeze.py （dual-dispatch guard 保留——本 SPEC 非目标明确不改 worktree 并发保护语义）与 tests/test_verify_contract.py（prepare 契约既有校验——护栏加入不得破坏既有 prepare 解析/执行语义）两文件全量通过。整文件 exit 0 为准【场景修复 judge 2026-10-04】场景步骤未自建隔离 basetemp，直接踩 tests/conftest.py 兜底共享单根 .fenix/pytest-basetemp（会话首清空/会话末整根 rmtree，daemon 并发车道互删在用 tmp_path 树→setup ERROR 假失败）；两 pytest 步骤补 per-run 隔离 basetemp（$$=shell pid，pytest 会话首清空、conftest 会话末自清理，GIT_CEILING_DIRECTORIES 语义与 /tmp 落点一致） | pass | 0/2 | - |
 | regression-pm-dispatch-and-verification | tasks 4.2 回归·派发队列与验证管线零回退：tests/test_pm_dispatch.py（队列去重/槽位记账/在飞集合既有语义）与 tests/test_pm_verification.py（stale 守卫/管线既有语义）两文件全量通过——单飞在飞集合加入后 _active_runs 记账与既有去重不得漂移。整文件 exit 0 为准 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
