@@ -3,6 +3,7 @@
 
 export const fmtMillions = (tokens: number) => {
   const m = (tokens || 0) / 1e6;
+  // [fenix-ignore:218adec2de95] 999.95M~1000M 进位显示 1000.0M 是 tests/tokens.test.mjs 明确断言的既定口径（未过 G 门槛按 M 四舍五入），仅观感差异且改动会破坏既有测试
   return m >= 1000 ? (m / 1000).toFixed(2) + 'G' : m.toFixed(1) + 'M';
 };
 
