@@ -614,6 +614,12 @@ class PromptBuilder:
         if agent_type in ("implementer", "fast-track"):
             prompt += self._quality_gates_section(spec_name)
 
+        # add-verify-evidence-placement-contract 1.3：验证证据落位契约注入——
+        # quality-gates 同族位置，覆盖两条实现车道 + verifier（验证/核查链：
+        # verifier 是原始证据的主要产地——扫描转储/探针产物/场景中间输出）。
+        if agent_type in ("implementer", "fast-track", "verifier"):
+            prompt += self._evidence_placement_section(spec_name)
+
         # add-impl-selfcheck-model-probe（1.2/3.1）：收工自证契约段——自检
         # CLI 完整命令 + dispositions 正反例 + status/必填键固化说明。统一
         # 收尾处注入（项目级附加段之前），只覆盖两条实现车道（fast-track
@@ -955,6 +961,48 @@ class PromptBuilder:
             "- **双位置兜底**：读侧对 worktree/主树双位置 fail-open 兜底——本 run "
             "正常写 worktree 相对路径即可；fast-track 车道持主树 verify-progress "
             "写授权，允许直落主树同名目录，两种落点读侧均可见。\n"
+        )
+
+    def _evidence_placement_section(self, spec_name: str) -> str:
+        """验证证据落位契约段（add-verify-evidence-placement-contract 1.3）。
+
+        指引验证/核查 run 把原始证据统一落**消费项目主树**（绝对路径）——
+        evidence 是「run 后人工核查」语义，落主树与 worktree 生命周期解耦
+        （worktree 销毁后报告引用不断链）。落点缺省
+        ``.fenix/verify-evidence/<spec>/``，验证契约 ``evidence_dir`` 显式
+        声明时以其为准（``resolve_evidence_dir`` 单源解析）。契约加载失败
+        回退缺省——prompt 软约束 fail-open，不阻断派发（与 quality-gates
+        同族模式，prompt_builder.py:910 先例）。指引须写明「主树根绝对
+        路径」，防验证 agent 在 worktree 内自发落位、run 结束即失联。
+        """
+        rel_dir = ""
+        try:
+            from core.verify_contract import load_verify_contract
+
+            contract = load_verify_contract(self._pm.project_root, logger=None)
+            if contract is not None:
+                rel_dir = contract.resolve_evidence_dir(spec_name)
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open
+            rel_dir = ""
+        if not rel_dir:
+            from core.verify_contract import default_evidence_dir
+
+            rel_dir = default_evidence_dir(spec_name)
+        abs_dir = Path(self._pm.project_root) / rel_dir
+        return (
+            "\n\n## 验证证据落位（.fenix/verify-evidence/<spec>/，强制）\n"
+            "验证/核查 run 产生的原始证据文件（扫描结果/转储/探针产物/中间"
+            "输出）统一落**消费项目主树根**：\n"
+            f"- 落点（绝对路径）：`{abs_dir}`（相对主树根为 `{rel_dir}`；"
+            "验证契约 `evidence_dir` 显式声明时以契约为准）。\n"
+            "- **MUST NOT 落在本次 run 的 worktree 内或 worktree 相对路径**——"
+            "worktree 是临时隔离副本，run 结束即销毁，证据落 worktree 等于"
+            "销毁证据、报告引用断链失联；同样 MUST NOT 散落在主树根或其它"
+            "未约定目录（untracked 证据散件会触发主树盘点告警）。\n"
+            "- 报告本体只引用**以主树根为基准的相对路径**（如 "
+            f"`{rel_dir}/<文件名>`），供 run 结束后人工核查回查。\n"
+            "- 写入前先以 mkdir -p 语义创建目录；`.fenix/` 已被消费项目忽略"
+            "规则覆盖，不产生 git status 噪声。\n"
         )
 
     def _selfcheck_section(self, spec_name: str, wt_path: Path | None = None) -> str:

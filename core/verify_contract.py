@@ -67,6 +67,13 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
                                      # 4xx/5xx 抛 HTTPError、3xx 被自动重定向
                                      # 跟随，非 2xx 期望等满 timeout 后报超时）
       timeout: 60                    # 就绪等待上限（秒），缺省 60
+    # ── 可选。验证原始证据落位目录（add-verify-evidence-placement-contract
+    # 1.1）。验证/核查 run 产生的原始证据（扫描结果/转储/探针产物）统一落
+    # 消费项目**主树**（绝对路径 = 项目根/<evidence_dir>），与 worktree 生命
+    # 周期解耦——worktree 销毁后报告引用不断链。报告本体只引用以主树根为
+    # 基准的相对路径。绝对路径/".." 段等非法值记 warning 后回退缺省。
+    evidence_dir: .fenix/verify-evidence/<spec>/   # 缺省如左（<spec> 按 SPEC 名替换）；
+                                                   # 声明其它相对路径时以其为准
 
 ## 语义要点
 
@@ -136,6 +143,23 @@ DEFAULT_READY_TIMEOUT = 60
 # 默认 hardlink：主树 node_modules 以 os.link 硬链接副本共享 inode，秒级且不占双倍空间。
 DEPS_MODES = ("prefer-offline", "hardlink")
 DEFAULT_DEPS_MODE = "hardlink"
+
+# 验证证据落位契约（add-verify-evidence-placement-contract 1.1）：验证/核查
+# 原始证据（扫描结果/转储/探针产物）统一落消费项目**主树**的目录模板，
+# ``{spec}`` 按 spec 名替换。相对项目根声明；绝对路径 = 项目根/<evidence_dir>。
+# 落点语义=主树：evidence 是「run 后人工核查」语义，落主树与 worktree 生命
+# 周期解耦（worktree 销毁后报告引用不断链），且 .fenix/ 被消费项目忽略规则
+# 覆盖、不产生 untracked 噪声——与框架既有主树运行时形态
+# （.fenix/verify-progress/<spec>/report.json）一致。
+DEFAULT_EVIDENCE_DIR_TEMPLATE = ".fenix/verify-evidence/{spec}"
+
+
+def default_evidence_dir(spec_name: str) -> str:
+    """spec 的缺省证据目录（相对项目根的路径，POSIX 分隔符）。
+
+    契约未声明 ``evidence_dir`` 时的回退值：``.fenix/verify-evidence/<spec>/``。
+    """
+    return DEFAULT_EVIDENCE_DIR_TEMPLATE.format(spec=spec_name)
 
 
 def _positive_int_or_default(value, default: int) -> int:
@@ -239,6 +263,24 @@ class VerifyContract:
     # 全量回归执行声明（design D1：归 verify.yaml 而非 config.yaml——与
     # prepare/serve/ready 同属「项目如何被测」语义域；缺失=未配置回归，零迁移）
     regression: Optional[RegressionSpec] = None
+    # 验证证据落位契约（add-verify-evidence-placement-contract 1.1）：相对
+    # 项目根（消费项目主树）的证据目录；空=未声明（回退缺省
+    # .fenix/verify-evidence/<spec>/，见 default_evidence_dir）。加载层对
+    # 非法值（绝对路径/".." 段/非字符串）记 warning 后回退缺省。
+    evidence_dir: str = ""
+
+    def resolve_evidence_dir(self, spec_name: str) -> str:
+        """该 spec 的证据目录（**相对项目根**的路径；落点语义=主树）。
+
+        契约显式声明 ``evidence_dir`` 时以契约为准（spec delta「契约覆盖」
+        场景），否则回退缺省 ``.fenix/verify-evidence/<spec>/``。返回相对
+        路径：报告本体只引用以主树根为基准的相对路径，绝对路径由消费方
+        join 项目根得到（项目根=消费项目主树，与 worktree 生命周期解耦）。
+        """
+        declared = (self.evidence_dir or "").strip()
+        if not declared:
+            return default_evidence_dir(spec_name)
+        return declared
 
 
 def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyContract]:
@@ -461,6 +503,32 @@ def _load_verify_contract_with_raw(
                 f"verify.yaml deps_mode 非法（忽略，可用值 {list(DEPS_MODES)}）: "
                 f"{data['deps_mode']}",
             )
+    # evidence_dir（add-verify-evidence-placement-contract 1.1）：可选。未
+    # 声明/空 → ""（走缺省 .fenix/verify-evidence/<spec>/）。非法值（非字符串/
+    # 绝对路径/含 ".." 段）记 warning 后回退缺省——绝对路径会让消费方
+    # ``Path(项目根) / evidence_dir`` 静默漂移到项目根之外（Path("/p") /
+    # "/abs" == /abs），".." 段同理逃出主树；「落点在主树内受控目录」的语义
+    # 由加载层单点守卫（对齐 deps_mode「告警＋回退」惯例）。
+    evidence_dir = ""
+    raw_evidence_dir = data.get("evidence_dir")
+    if raw_evidence_dir is not None:
+        cand = raw_evidence_dir.strip() if isinstance(raw_evidence_dir, str) else ""
+        bad_reason = ""
+        if not cand:
+            bad_reason = "空值或非字符串"
+        elif cand.startswith("/"):
+            bad_reason = "绝对路径（须为相对项目根的路径）"
+        elif ".." in cand.split("/"):
+            bad_reason = '含 ".." 段（不得逃出项目根）'
+        if bad_reason:
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"verify.yaml evidence_dir 非法（{bad_reason}，回退缺省 "
+                    f"{DEFAULT_EVIDENCE_DIR_TEMPLATE}）: {raw_evidence_dir!r}",
+                )
+        else:
+            evidence_dir = cand
     # regression 段（design D1/D2）：可选。缺段 → regression=None（未配置回归，
     # 分面引导态、周期检查点跳过、触发端点 400，存量项目零迁移）。缺 cmd/output
     # 或 format 非 junit 均视整段无效 → None + WARNING——MUST NOT 静默按 junit
@@ -527,6 +595,7 @@ def _load_verify_contract_with_raw(
         ready=ready,
         deps_mode=deps_mode,
         regression=regression,
+        evidence_dir=evidence_dir,
     ), data
 
 
