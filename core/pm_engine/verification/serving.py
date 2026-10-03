@@ -482,7 +482,10 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
     语义只保证「探针路径此刻可达」，冷实例的后端收尾/前端首帧渲染仍有
     长尾（add-spec-hooks 第 1 轮 4 个 web 场景白屏 env 事故——探针通过
     与场景开跑同一秒）。与 browser 首帧渲染等待、探针鉴别力自检同层，
-    白屏防复发第三道纵深。用户指令 2026-09-06。
+    白屏防复发第三道纵深。用户指令 2026-09-06。静置按「探针通过」一刀切，
+    不分实例冷热：HEAD 未变的复用分支（worktree static/command）与主树
+    共享实例的连轮复用同样汇入本函数并静置——warm 实例每轮白付 10s 属
+    有意纵深，不按 created/复用标记跳过（code-review 349e84a1184e）。
     """
     # D9：经包命名空间延迟解析，使 patch("core.pm_engine.verification.rewrite_scenarios_origin") 生效
     import core.pm_engine.verification as _facade
@@ -615,7 +618,9 @@ def _evict_spec_serving(pipeline, spec_name: str) -> None:
     server = old.get("server")
     try:
         if server is not None and hasattr(server, "pid"):
-            # 登记过的实例（CommandVerifyServer 或兜底 spawn Popen）同步移除
+            # 登记过的实例同步移除登记——缓存条目只可能是 CommandVerifyServer
+            # （兜底 spawn 的裸 Popen 只进 ServingRegistry 不进本缓存，其回收
+            # 由周期 sweep 按 liveness 收割，code-review 3e6d4b449ab8）
             pipeline._unregister_serving_instance(spec_name, server)
         if server is not None:
             # code-review 07bce05c191b：去掉 ok 门——CommandVerifyServer 的
