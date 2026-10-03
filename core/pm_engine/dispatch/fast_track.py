@@ -808,9 +808,11 @@ class FFastTrackMixin:
         # transition 返回值校验（code-review item 40292d21fd97，对齐 spec_review
         # 同仓 TOCTOU 处置）：上方读态/fallback 与 implemented 转移之间存在窗口，
         # 并发写者可能已把 spec 推进/冻结（非法转移返回 False）。失败时保留计数
-        # 与 error 原样、不继续清字段，早退交由收口重试/审计——否则清零与清
-        # error 照常落盘、后续转移同样失败，spec 停在并发方写入的状态但错误
-        # 现场已被抹掉。
+        # 与 error 原样、不继续清字段——否则清零与清 error 照常落盘、后续转移
+        # 同样失败，spec 停在并发方写入的状态但错误现场已被抹掉。返回值不因
+        # 转移失败翻转（本方法既有契约，见
+        # test_fast_track_verify_branch_no_fallback），后续 verified 推进由
+        # 状态机拒绝自然拦截，错误现场留给收口重试/审计。
         if not self._pm.state_machine.transition(
             spec_name, "implemented",
             trigger_run_id=result.run_id, agent_type="fast-track", channel="auto",
@@ -820,7 +822,7 @@ class FFastTrackMixin:
                 f"fast-track merge 成功但 transition 到 implemented 失败，"
                 f"保留计数与 error 待收口重试/审计: {spec_name}",
             )
-            return False
+            return True
         self._pm.state_machine.update_spec(
             spec_name,
             {
