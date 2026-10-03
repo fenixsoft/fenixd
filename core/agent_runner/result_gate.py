@@ -396,11 +396,74 @@ class RegressionResult:
         self.output = output
 
 
+class CodeFixResult:
+    """code-fix run 的结果信封（run_code_fix 返回，add-code-review-auto-fix）。
+
+    与 CodeReviewResult / RegressionResult 同形态的维护型 run 结果：
+    - ``fixed`` / ``skipped``: out 产物行中 status=fixed / skipped 的计数
+      （skipped 条目 MUST 保持 open——由编排器在合回成功后只核销 fixed）；
+    - ``error``: success=False 时的失败原因（含产物硬门拦截文案）；
+    - 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：``api_timeout``
+      （单轮 API 请求超时终局，判别单源在 runner 层挂异常标记）、
+      ``exit_code`` / ``stderr_summary``（原始退出码与 stderr 尾行摘要）——
+      失败现场可判别、可追溯，不再把签名压扁为异常字符串；
+    - ``conn_error`` / ``result_text``（evo-add-codefix-conn-error-cooldown
+      1.3）：连接类 api_error 布尔（判别单源在 runner 层挂异常标记，三判据
+      见 provider_circuit.is_code_fix_conn_error）与末次 result 事件文本原样
+      透传——conn_error 驱动车道冷却，result_text 供告警 evidence 与单测。
+      与 api_timeout 的分工（design D2）：api_timeout 保持「现场抢救」触发
+      语义不变，conn_error 只驱动冷却、不参与 salvage 判定；两布尔可同时为
+      真（api_error 是 api_timeout 的宽判分支），互不掣肘。
+
+    与同族维护型 run 结果信封同址本模块（code-review item 08e3c8a68262）；
+    原定义于 maintenance_runs.py，该模块改为导入本类，既有
+    ``from core.agent_runner.maintenance_runs import CodeFixResult`` 路径
+    保持可用。
+    """
+
+    def __init__(
+        self,
+        run_id: str = "",
+        success: bool = True,
+        fixed: int = 0,
+        skipped: int = 0,
+        error: str = "",
+        output: str = "",
+        api_timeout: bool = False,
+        exit_code=None,
+        stderr_summary: str = "",
+        conn_error: bool = False,
+        result_text: str = "",
+    ):
+        self.run_id = run_id
+        self.success = success
+        self.fixed = fixed
+        self.skipped = skipped
+        self.error = error
+        self.output = output
+        self.api_timeout = api_timeout
+        self.exit_code = exit_code
+        self.stderr_summary = stderr_summary
+        self.conn_error = conn_error
+        self.result_text = result_text
+
+
 # ── 产物门族（add-judge-artifact-gate / add-planready-artifact-gate /
 #     fix-verdict-read-failclosed / fix-impl-tasks-completion-gate）──
 #
 # 门面依赖统一经 `runner` 参数注入（D2b 规则 1）；兄弟函数间调用一律
 # `runner.<方法名>`（D2b 规则 2），保证实例属性打桩/运行期替换仍然生效。
+
+# ── 归因类别共享常量（code-review item b02fb265b7e5）────────────────────
+# _check_artifact_json_file 的失败归因文案被本模块两处消费方按子串判定类别：
+# _check_impl_code_review_artifact 区分「文件缺失」与其他校验失败（探测竞态
+# 下的缺失 err 不得记进 first_err），classify_and_enrich_artifact_error 判定
+# 是否拼接终态归因；「陈旧」文案则承载 fix-impl-code-review-gate-readback 的
+# spec 契约（主树残留终态 MUST 指明陈旧）。此前文案与两处判定各写一份字面
+# 量，任一侧措辞调整即静默失效且无类型层保护；现文案统一由常量插值生成、
+# 消费方按同一常量判定，字面值保持既有契约（含下游测试断言）不变。
+_ARTIFACT_ERR_MISSING = "结果文件缺失"
+_ARTIFACT_ERR_STALE = "陈旧"
 
 
 def _check_artifact_json_file(
@@ -430,14 +493,14 @@ def _check_artifact_json_file(
     """
     try:
         if not path.is_file():
-            return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}", None)
+            return (f"exit 0 但{_ARTIFACT_ERR_MISSING}（{agent_type} 产物硬门）: {path}", None)
         if path.stat().st_size == 0:
             return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}", None)
         if run_started_at is not None and not is_resumed_worktree:
             mtime = path.stat().st_mtime
             if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
                 return (
-                    f"exit 0 但结果文件早于本轮启动（陈旧残留，{agent_type} "
+                    f"exit 0 但结果文件早于本轮启动（{_ARTIFACT_ERR_STALE}残留，{agent_type} "
                     f"产物硬门）: {path} (mtime={mtime:.1f} < "
                     f"run_started_at - grace={run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:.1f})",
                     None,
@@ -762,7 +825,10 @@ def _check_impl_code_review_artifact(
                 # 继续尝试下一候选；「缺失」err 不属此类（先行 is_file 已排除，
                 # 仅防御探测竞态）。MUST NOT 折叠成缺失归因——spec「主树报告
                 # 陈旧 → 文案 MUST 指明陈旧」场景依赖此终态。
-                if "缺失" not in err and first_err is None:
+                # 按共享常量判定类别（item b02fb265b7e5）：err 的唯一缺失归因
+                # 即 _check_artifact_json_file 的「结果文件缺失」文案，与既有
+                # 「缺失」子串判定等价，不再依赖裸字面量。
+                if _ARTIFACT_ERR_MISSING not in err and first_err is None:
                     first_err = err
                 continue
         # 读到有效数据 → 同一套校验体（worktree / 主树逐字相同的判定语义）；
@@ -1430,11 +1496,11 @@ def classify_and_enrich_artifact_error(
     """
     if agent_type not in ("implementer", "fast-track"):
         return error_text
-    if not sub_run_id or "结果文件缺失" not in error_text:
+    if not sub_run_id or _ARTIFACT_ERR_MISSING not in error_text:
         return error_text
     stall_reason = classify_terminal_stall(runner, sub_run_id)
     return error_text.replace(
-        "结果文件缺失", f"结果文件缺失（{stall_reason}）", 1)
+        _ARTIFACT_ERR_MISSING, f"{_ARTIFACT_ERR_MISSING}（{stall_reason}）", 1)
 
 
 def _format_gap_list(gap: list, limit: int = 20) -> str:
