@@ -408,12 +408,60 @@ def _load_arbitration_list(project_root: Path) -> list[dict]:
     return [e for e in data if isinstance(e, dict)]
 
 
-def _save_arbitration_list(project_root: Path, entries: list[dict]) -> None:
-    """仲裁清单原子回写（消费后剔除已消费条目，防 300s 周期重复消费）。"""
-    atomic_write_text(
-        Path(project_root) / ARBITRATION_RELPATH,
-        json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
-    )
+@contextmanager
+def _arbitration_write_lock(project_root: Path):
+    """仲裁清单读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_arbitration.lock``）。
+
+    同 _findings_write_lock 口径：atomic_write_text 只保证单次写不撕裂，不保证
+    读改写原子性——daemon 与 dashboard --serve 两进程并发消费不同条目时各持
+    开局快照，后写者的 kept 整体覆盖先写者刚落盘的剔除结果，已消费条目被写回
+    清单且此后每轮 300s 检查点因台账条目已删恒走「指纹未知」warning 分支、
+    consumed 为空不回写，残留条目无法被框架自动摘除（code-review f619e62ef214，
+    对齐 _findings_write_lock 的处置）。锁文件自身无内容语义。
+    """
+    import fcntl
+
+    lock_dir = Path(project_root) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge_audit_arbitration.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def _arbitration_entry_key(entry: dict) -> str:
+    """仲裁条目同一性键（规范化 JSON）：消费剔除按完整条目对账而非仅指纹——
+    同指纹可并存多条（合法 decision 已消费、非法 decision 跳过留痕），按指纹
+    剔除会误吞跳过留痕条目。"""
+    return json.dumps(entry, ensure_ascii=False, sort_keys=True)
+
+
+def _save_arbitration_list(project_root: Path, consumed: list[dict]) -> None:
+    """仲裁清单回写（持进程间文件锁 + 按条目合并，对齐 _save_findings_ledger）。
+
+    持锁重读盘上最新清单、只剔除本方已消费条目（按 _arbitration_entry_key 对
+    账）后整文件原子回写：另一进程并发消费刚剔除的条目不复活（盘上已缺席），
+    另一进程保留/人工新写入的条目不丢失——消除两进程并发消费时后写者 kept
+    整体覆盖先写者的 last-writer-wins。本方跳过留痕条目不在此回添：kept ⊆
+    开局快照，盘上仍在场的已随盘上清单保留，盘上已缺席的（他方已消费或人工
+    已移除）回添即复活已消费条目。
+    """
+    with _arbitration_write_lock(project_root):
+        consumed_keys = {_arbitration_entry_key(e) for e in consumed}
+        merged = [
+            e
+            for e in _load_arbitration_list(project_root)
+            if _arbitration_entry_key(e) not in consumed_keys
+        ]
+        atomic_write_text(
+            Path(project_root) / ARBITRATION_RELPATH,
+            json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        )
 
 
 def consume_arbitration(
@@ -481,7 +529,7 @@ def consume_arbitration(
             str(item.get("fingerprint") or "") for item in consumed
         },
     )
-    _save_arbitration_list(project_root, kept)
+    _save_arbitration_list(project_root, consumed)
     # 摘注记按消费后台账现状重算期望态、只限涉事页：同页其余 escalated 条目
     # 仍超龄在册时注记改写（fps 收敛）而非误摘。
     changed: list[str] = []
@@ -496,18 +544,25 @@ def consume_arbitration(
         desired = _disputed_targets(
             _escalated_entries(ledger), cfg["escalated_stale_days"]
         )
-        changed, _skipped = _sync_disputed_annotations(
-            project_root, desired, restrict_pages=pages_touched
-        )
-        if changed:
-            try:
-                resolve_commit(core)(
-                    project_root,
-                    [KNOWLEDGE_DIR],
-                    f"[fenix] knowledge: audit disputed 注记摘除（{len(changed)} 页）",
-                )
-            except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
-                log.warning("knowledge", f"仲裁摘注记提交失败（fail-open）：{e}")
+        # 写段取蒸馏锁（同 run_audit 注记同步段口径）：_sync_disputed_annotations
+        # 是对知识页的读盘-改行-整页原子回写，仲裁消费挂在 300s 检查点上、与
+        # 归档事件触发的蒸馏 run 并发时，消费段基于读时快照的回写会覆盖蒸馏
+        # run 刚写入的页面内容（丢失蒸馏产出），反之消费段的注记变更也会被蒸
+        # 馏 run 随后回写丢弃（code-review b018e793634e）。本调用链
+        # （knowledge_daily_check → 本段）不持蒸馏锁，无自阻塞。
+        with knowledge_distill_lock(project_root):
+            changed, _skipped = _sync_disputed_annotations(
+                project_root, desired, restrict_pages=pages_touched
+            )
+            if changed:
+                try:
+                    resolve_commit(core)(
+                        project_root,
+                        [KNOWLEDGE_DIR],
+                        f"[fenix] knowledge: audit disputed 注记摘除（{len(changed)} 页）",
+                    )
+                except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
+                    log.warning("knowledge", f"仲裁摘注记提交失败（fail-open）：{e}")
     return {
         "triggered": True,
         "consumed": len(consumed),
