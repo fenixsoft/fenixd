@@ -1938,7 +1938,7 @@ class SelfReviewScheduler:
             if blocks:
                 sections.append("\n\n".join(blocks))
             else:
-                sections.append("- （当日无）")
+                sections.append(f"- {_EMPTY_MARKER}")
             sections.append("")
         block = "\n".join(sections).rstrip()
         content = f"## {date_str}\n\n{block}\n"
