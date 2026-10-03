@@ -663,10 +663,13 @@ class Registry:
             name = p.get("name")
             if not isinstance(name, str) or not name.strip():
                 name = rp.name or str(rp)
+            # code-review item 254427558f27：与 discover/add_project 同口径
+            # 透出规范化 key（str(rp)），原始配置值（~/proj、冗余分隔符等）
+            # 直接透出会使本列表与监控列表的路径形态不一致。
             out.append(
                 {
                     "name": name,
-                    "path": p.get("path"),
+                    "path": str(rp),
                 }
             )
         return out
