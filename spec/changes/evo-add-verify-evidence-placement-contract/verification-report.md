@@ -37,3 +37,10 @@
 | admin-monitor-two-table-registration | admin_monitor 两表登记（只告警不处置降噪语义）：SIGNAL_SEVERITY 登记 maintree_untracked_stray_stale=info；SIGNAL_RECOMMENDATION 登记只告警不处置文案（含挪入 .fenix/verify-evidence/<spec>/ 的指引）；MUST NOT 收录 STORED_SIGNAL_TYPES（收录即被摄取循环无条件唤起人工，与 info 留痕语义相抵）；告警落 AdminStore 记录形态（kind/severity/spec/evidence 字段在案）。出处：core/admin_monitor.py:264-331/:364-415/:452、tests/test_verify_evidence_placement.py::TestAdminMonitorRegistration | pass | 0/5 | - |
 | evd-prompt-baseline-and-report-gate-regression | 回归点：verifier 提示词逐字节 baseline（含新增证据落位段 _evidence_placement_section 拼接）零漂移、admin 结构化 evidence 渲染不回退（tests/test_agent_prompt_files.py）；verify_report 单文件入库 pathspec 零触碰（tests/test_verify_report_gate.py，proposal 非目标：不改动该 pathspec）。出处：tests/test_agent_prompt_files.py:250-268、tests/test_verify_report_gate.py | pass | 0/2 | - |
 | regression-stray-sweep-and-verify-contract | 回归点：既有 maintree stray sweep 与 verify contract 相关测试零回退（test_maintree_stray_wip_sweep、test_verify_contract、test_verify_contract_template_preflight、test_verify_contract_autodraft、test_worktree_stray_and_identical）——tracked 口径现行行为逐字节不变、evidence_dir 增量不改契约既有语义。出处：tasks.md 3.2、tests/ | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 1 轮）。
+
+- 首轮写入 14 个场景
+
