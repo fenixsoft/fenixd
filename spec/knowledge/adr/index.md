@@ -226,3 +226,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-219](ADR-219-external-skill-dependencies-vendored-no-runtime-install.md) | accepted | 外部 skill/工具依赖一律 vendored 整包随库分发（vendor/<name>/ + VENDORED.md 溯源，只许整包替换升级），运行时零联网安装、零用户环境依赖，指引以提示词注入原文+包根绝对路径交付；部署缺件属部署损坏 fail-closed 判失败禁安装自愈，可用性禁押在运行时外网可达性上 |
 | [ADR-220](ADR-220-run-stall-composite-criteria-default-off-chain-terminate.md) | accepted | run 停滞判停只许复合判据（连续 N×120s 往返 或 stall 占比过半+M 分钟无产物进展）、整个预算缺省关闭灰度，命中即强杀 attempt 并终止整个重试链（禁瞬态/in-place 重派放大止损），统计 run 级累积跨 attempt 不重置，禁绝对次数单一阈值 |
 | [ADR-221](ADR-221-agent-runner-reads-pm-engine-via-injected-callback.md) | accepted | agent_runner 读 pm_engine 车道状态一律构造注入 reader 回调（沿 result_gate 注入约定）禁模块级依赖，未注入/读取异常/数据缺失一律按无数据处理 fail-open 不阻断既有行为 |
+| [ADR-222](ADR-222-project-log-alert-dedup-at-business-check-site.md) | accepted | PROJECT_LOG 告警去重是业务检查点语义禁下沉共享日志通道，去重状态承载 AdminStore 持久告警存储（latest_signal 窗口查询）按 signal_type 族级键判定、禁扫描日志文本，状态源不可用降级照常追加 |
