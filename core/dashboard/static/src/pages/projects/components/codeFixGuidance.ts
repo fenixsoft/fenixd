@@ -52,9 +52,26 @@ const BLOCKED_REASONS: Record<string, BlockedReasonInfo> = {
   },
 };
 
+// 自愈等待类 reason（后端语义：链收敛的正常等待，下一审查轮到来自动重试/
+// 边界重试，对应 BLOCKED_REASONS 中 guidance 为「无需处理」的条目）。集合与
+// 指引文案同在本文件同点维护（code-review item 5400cd0de2c3）：后端新增自愈
+// 类 blocked reason 只需同步这里两处，不再需要另改渲染组件。
+const SELFHEAL_WAIT_REASONS: ReadonlySet<string> = new Set([
+  'wip_gate_blocked',
+  'failed_batch_retained',
+]);
+
+/**
+ * 是否自愈等待类 blocked reason（渲染方据此呈现中性等待态而非红色故障）。
+ * 未知/空 reason 返回 false（宁严勿松，按需人工样式回退，漂移不静默）。
+ */
+export function isSelfhealWait(reason: string | null | undefined): boolean {
+  return reason != null && reason !== '' && SELFHEAL_WAIT_REASONS.has(reason);
+}
+
 /**
  * reason → 展示信息；未知 reason 宁严勿松回退（原码 + 需人工排查），
- * 与前端既有 SELFHEAL_WAIT_REASONS 的「reason 漂移不静默」口径一致。
+ * 与 isSelfhealWait 对未知/空 reason 判 false 的「漂移不静默」口径一致。
  */
 export function blockedReasonInfo(reason: string | null | undefined): BlockedReasonInfo {
   // hasOwnProperty 排除 Object.prototype 继承键（constructor/toString 等），
