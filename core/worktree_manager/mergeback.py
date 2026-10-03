@@ -873,9 +873,17 @@ class G4MergebackMixin:
         ``holder=False``（无主陈旧 WIP）。识别 MUST 纯机械（worktree 注册表、
         在飞 run 列表、git diff），MUST NOT 使用 LLM 推导路径名。
 
-        已知盲区（随 WipOccupantInfo.BLIND_SPOT_NOTE 留痕）：只覆盖 worktree
-        分支型在飞车道；持有者直接改主树不入分支的形态（admin/人工会话、
-        主树内构建产物）分支 diff 必零命中，一律按无主走宽限升级。
+        主树直改形态（车道归因零命中）追加只读「主树活交互会话」探测
+        （evo-add-maintree-interactive-session-attribution 1.1，见
+        ``_maintree_session_holders``）：命中返回会话归因形态
+        （``source=WipOccupantInfo.SOURCE_MAINTREE_SESSION``，holders 带
+        ``kind=interactive-session`` 与会话线索）；探测零命中/源缺失仍按
+        无主走宽限升级（fail-open，行为与现状一致）。识别全程只读，无主树
+        写入。
+
+        已知盲区（随 WipOccupantInfo.BLIND_SPOT_NOTE 留痕）：车道数据源只
+        覆盖 worktree 分支型在飞车道；主树直改形态由会话探测补充，探测
+        零命中/源缺失时仍按无主走宽限升级。
 
         只读不写：不触碰主树、不改任何闸门判定——识别结果仅供 defer 消费方
         决定订阅/升级。
@@ -897,11 +905,9 @@ class G4MergebackMixin:
                 lane_specs.setdefault(spec, [])
                 if rid not in lane_specs[spec]:
                     lane_specs[spec].append(rid)
-        if not lane_specs:
-            return WipOccupantInfo(False, [], overlap)
 
         # 2) worktree 注册表真相 → (目录名, 路径, 分支) 候选
-        pairs = self._worktree_name_branch_pairs()
+        pairs = self._worktree_name_branch_pairs() if lane_specs else []
 
         # 3) 逐车道分支求交
         holders: list = []
@@ -923,6 +929,14 @@ class G4MergebackMixin:
                     )
         if holders:
             return WipOccupantInfo(True, holders, overlap)
+
+        # 4) 车道归因零命中 → 主树活交互会话只读探测（1.1，fail-open 回无主）
+        session_holders = self._maintree_session_holders(overlap)
+        if session_holders:
+            return WipOccupantInfo(
+                True, session_holders, overlap,
+                source=WipOccupantInfo.SOURCE_MAINTREE_SESSION,
+            )
         return WipOccupantInfo(False, [], overlap)
 
     def _lane_run_specs(self, run_id: str) -> list:
@@ -1020,6 +1034,214 @@ class G4MergebackMixin:
             for ln in res.stdout.splitlines()
             if ln.strip()
         }
+
+    # ── 主树活交互会话只读探测（evo-add-maintree-interactive-session-attribution 1.1）──
+
+    # 候选②：最近提交人启发的时间窗（小时）。窗口内存在与项目配置身份一致的
+    # 提交且其触碰路径与散件相交 → 该工作流（活交互会话）大概率仍持有主树散件。
+    _SESSION_COMMIT_WINDOW_HOURS = 24.0
+    # 候选③：交互会话 transcript 的 mtime 活跃窗（秒）——仍在被写入才算「活」。
+    _SESSION_TRANSCRIPT_ACTIVE_SECONDS = 30 * 60
+    # 候选③：单个 transcript 尾部扫描上限（字节）——只为散件路径提及相关性，
+    # 不整读（transcript 可达 MB 级）。
+    _SESSION_TRANSCRIPT_TAIL_BYTES = 256 * 1024
+    # 候选③：至多检查的活跃 transcript 份数（按 mtime 新→旧取前 K）。
+    _SESSION_TRANSCRIPT_MAX_SCAN = 5
+
+    def _maintree_session_holders(self, overlap_files) -> list:
+        """主树活交互会话只读探测（design 决策 1 的实现取舍）。
+
+        在飞车道分支归因零命中后调用，尝试把主树直改散件归因到活交互会话：
+        - 候选② git 最近提交人启发（主源）：项目配置身份（``git config``
+          user.name/user.email）在近窗（24h）内有提交，且散件路径与其最近
+          提交触碰集相交——身份 + 时间窗 + 路径交三重判据；
+        - 候选③ 交互会话 transcript 活跃信号（辅源，②零命中时兜底）：
+          ``~/.claude/projects/<主树路径 munge>`` 下 mtime 在活跃窗内的
+          transcript 尾部出现散件路径提及——活跃窗 + 工作范围交叠判据。
+        （候选①框架会话注册表/锁文件：本框架无交互会话注册机制，无可读
+        句柄，按 design「若存在可读句柄」的取舍条件缺席。）
+
+        任一源构成命中 MUST 含散件×会话的相关性信号（路径交/路径提及）——
+        仅「存在活跃交互会话」MUST NOT 单独构成归因命中，否则真实滞留散件
+        会被活跃会话吞掉。全程只读（git config/log、transcript 文件读），
+        零命中/源缺失/任何异常返回 []（fail-open 回无主现状）；不触碰主树
+        工作区/索引（对齐 :952「MUST NOT 为覆盖盲区引入主树写探测」）。
+        """
+        try:
+            return self._maintree_session_holders_impl(
+                sorted({str(p) for p in (overlap_files or []) if p})
+            )
+        except Exception:  # noqa: BLE001 — 探测是纯增量情报，任何异常 fail-open 回无主
+            return []
+
+    def _maintree_session_holders_impl(self, overlap: list) -> list:
+        root = Path(self.project_root)
+        overlap_set = set(overlap)
+        if not overlap_set:
+            return []
+        hit = self._session_hit_recent_commit(root, overlap_set)
+        if hit is None:
+            hit = self._session_hit_transcript(root, overlap_set)
+        return [hit] if hit is not None else []
+
+    def _maintree_git_out(self, *args: str) -> "str | None":
+        """主树只读 git 读取（config/log 等查询命令）；失败/超时返回 None。"""
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root), *args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if res.returncode != 0:
+            return None
+        return res.stdout
+
+    def _session_hit_recent_commit(self, root: Path, overlap_set: set) -> "dict | None":
+        """候选②：git 最近提交人启发（身份一致 + 近窗提交 + 路径交）。
+
+        返回会话归因 holders 条目 dict；零命中/源缺失（身份未配置、git 不可
+        用）返回 None。纯机械：不解析提交信息语义、不用 LLM 推导。
+        """
+        # 项目配置身份（候选②前置：两侧都未配置 → 无判据，源缺失放弃）
+        name = (self._maintree_git_out("config", "--get", "user.name") or "").strip()
+        email = (self._maintree_git_out("config", "--get", "user.email") or "").strip()
+        if not name and not email:
+            return None
+        since = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() - self._SESSION_COMMIT_WINDOW_HOURS * 3600),
+        )
+        # \x1e 分隔提交记录、\x1f 分隔头字段（author/committer 身份 + subject），
+        # 头行后逐行文件名（--name-only，无 -M 不展开 rename 对）；quotePath
+        # 关闭 + 反转义，与 _worktree_name_branch_pairs/_branch_changed_files
+        # 同口径。
+        out = self._maintree_git_out(
+            "-c", "core.quotePath=false",
+            "log",
+            f"--since={since}",
+            "--pretty=format:%x1e%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%s",
+            "--name-only",
+        )
+        if not out:
+            return None
+        touched: set = set()
+        matched = 0
+        last_commit = ""
+        for rec in out.split("\x1e"):
+            lines = [ln for ln in rec.splitlines()]
+            while lines and not lines[0].strip():
+                lines.pop(0)
+            if not lines:
+                continue
+            head = lines[0].split("\x1f")
+            if len(head) < 6:
+                continue
+            sha, an, ae, cn, ce, subject = head[:6]
+            files = {
+                _unquote_git_path(ln.strip())
+                for ln in lines[1:]
+                if ln.strip()
+            }
+            if not (
+                self._identity_matches(an, ae, name, email)
+                or self._identity_matches(cn, ce, name, email)
+            ):
+                continue
+            matched += 1
+            touched |= files
+            if not last_commit:
+                last_commit = f"{sha[:8]} {subject}"
+        hits = sorted(overlap_set & touched)
+        if not matched or not hits:
+            # 身份匹配的近窗提交缺席，或散件与其触碰集零交——任一不满足都不
+            # 构成命中（仅「近期有提交」MUST NOT 单独吞掉无主散件）。
+            return None
+        identity = f"{name} <{email}>" if name and email else (name or email)
+        return {
+            "run_ids": [],
+            "spec": "",
+            "branch": "",
+            "worktree": str(root),
+            "files": hits,
+            "kind": "interactive-session",
+            "session": {
+                "identity": identity,
+                "signals": ["recent-commit-path-intersection"],
+                "recent_commits": matched,
+                "window_hours": self._SESSION_COMMIT_WINDOW_HOURS,
+                "last_commit": last_commit,
+            },
+        }
+
+    @staticmethod
+    def _identity_matches(got_name: str, got_email: str, want_name: str, want_email: str) -> bool:
+        """提交人身份与项目配置身份一致（name/email 任一字段相等即算）。"""
+        if want_name and got_name and got_name.strip() == want_name:
+            return True
+        if want_email and got_email and got_email.strip() == want_email:
+            return True
+        return False
+
+    def _session_hit_transcript(self, root: Path, overlap_set: set) -> "dict | None":
+        """候选③：交互会话 transcript 活跃信号（活跃窗 + 路径提及）。
+
+        transcript 目录按 Claude Code 惯例（``~/.claude/projects/<主树路径
+        munge>``，munge=``/``→``-``）；目录不存在/无活跃 transcript/尾部无
+        散件路径提及均返回 None（源缺失或相关性不足，fail-open 回无主）。
+        """
+        home = Path.home()
+        munged = str(root).replace("/", "-")
+        tdir = home / ".claude" / "projects" / munged
+        if not tdir.is_dir():
+            return None
+        now = time.time()
+        active: list = []
+        for p in tdir.glob("*.jsonl"):
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if now - mtime <= self._SESSION_TRANSCRIPT_ACTIVE_SECONDS:
+                active.append((mtime, p))
+        if not active:
+            return None
+        active.sort(key=lambda t: t[0], reverse=True)
+        for _mtime, p in active[: self._SESSION_TRANSCRIPT_MAX_SCAN]:
+            tail = self._read_text_tail(p, self._SESSION_TRANSCRIPT_TAIL_BYTES)
+            if not tail:
+                continue
+            mentions = sorted(q for q in overlap_set if q in tail)
+            if mentions:
+                return {
+                    "run_ids": [],
+                    "spec": "",
+                    "branch": "",
+                    "worktree": str(root),
+                    "files": mentions,
+                    "kind": "interactive-session",
+                    "session": {
+                        "identity": "",
+                        "signals": ["transcript-active+path-mention"],
+                        "transcript": str(p),
+                        "active_within_seconds": self._SESSION_TRANSCRIPT_ACTIVE_SECONDS,
+                    },
+                }
+        return None
+
+    @staticmethod
+    def _read_text_tail(path: Path, limit: int) -> str:
+        """读文件尾部 ≤limit 字节并按 UTF-8 宽松解码（只为路径提及扫描）。"""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - limit))
+                return f.read(limit).decode("utf-8", errors="replace")
+        except OSError:
+            return ""
 
     def _merge_tree_supported(self) -> bool:
         """``git merge-tree --write-tree`` 可用性一次性探测（进程内缓存）。

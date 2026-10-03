@@ -400,5 +400,69 @@ class TestAdminMonitorRegistration(unittest.TestCase):
         self.assertEqual(evidence_project(rec["evidence"]), "proj")
 
 
+class TestSessionAttributionDowngrade(unittest.TestCase):
+    """会话归因散件盘点侧降级（evo-add-maintree-interactive-session-attribution 3.2）。
+
+    活会话归因命中 → 不发 major 告警、info 留痕（status=session-attributed）；
+    配置 keep 回退（或非法值守卫）→ 视同零命中仍发 major（现状行为）。
+    """
+
+    def _make_session_repo(self):
+        """主树仓：近窗提交（作者=本仓配置身份 isess <isess@t>，触碰 a.tsx）+ a.tsx 散件。"""
+        repo, _wt = _make_repo()
+        subprocess.run(["git", "config", "user.name", "isess"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "isess@t"], cwd=str(repo), check=True, capture_output=True)
+        # 近窗提交必须以仓库配置身份落作者（-c 注入会覆盖，归因身份判据失配）
+        (repo / "a.tsx").write_text("session committed work", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "session work"], cwd=str(repo),
+            check=True, capture_output=True,
+        )
+        # 恢复散件脏态（与 _make_repo 后同内容：a.tsx 主树直改未提交）
+        (repo / "a.tsx").write_text("main wip", encoding="utf-8")
+        return repo
+
+    def _sweeper(self, repo, grace=30.0, action=None):
+        admin = {"maintree_stray_wip_grace_minutes": grace}
+        if action is not None:
+            admin["maintree_session_attribution_action"] = action
+        return MainTreeStrayWipSweeper(
+            repo, _WmProbe(repo), config={"admin": admin}, logger=None,
+        )
+
+    def test_session_hit_no_major_info_trace_only(self):
+        """活会话归因命中：不发 major 告警，info 留痕（grace=0 反证零告警）。"""
+        repo = self._make_session_repo()
+        before = _status(repo)
+        sw = self._sweeper(repo, grace=0.0)
+        r = sw.sweep()
+        self.assertEqual(r["status"], "session-attributed")
+        self.assertEqual(_stale_alerts(repo), [])
+        # 计时/复位与在飞车道命中分支同型：pop 计时条目、指纹消失即复位
+        self.assertEqual(sw._registry, {})
+        self.assertEqual(_status(repo), before)
+
+    def test_keep_fallback_still_alerts_major(self):
+        """配置 keep 回退：会话归因视同零命中，仍按现状发 major 告警。"""
+        repo = self._make_session_repo()
+        sw = self._sweeper(repo, grace=0.0, action="keep")
+        self.assertEqual(sw.sweep()["status"], "alerted")
+        alerts = _stale_alerts(repo)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["severity"], "major")
+        # evidence 仍透传 describe() 会话线索（回退不吞线索）
+        self.assertIn("主树活交互会话", alerts[0].get("evidence") or "")
+
+    def test_invalid_action_guard_falls_back_to_keep(self):
+        """非法配置值守卫回退 keep：配置事故 MUST NOT 静默吞 major。"""
+        repo = self._make_session_repo()
+        sw = self._sweeper(repo, grace=0.0, action="bogus")
+        self.assertEqual(sw.sweep()["status"], "alerted")
+        self.assertEqual(len(_stale_alerts(repo)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
