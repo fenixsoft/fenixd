@@ -227,3 +227,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-220](ADR-220-run-stall-composite-criteria-default-off-chain-terminate.md) | accepted | run 停滞判停只许复合判据（连续 N×120s 往返 或 stall 占比过半+M 分钟无产物进展）、整个预算缺省关闭灰度，命中即强杀 attempt 并终止整个重试链（禁瞬态/in-place 重派放大止损），统计 run 级累积跨 attempt 不重置，禁绝对次数单一阈值 |
 | [ADR-221](ADR-221-agent-runner-reads-pm-engine-via-injected-callback.md) | accepted | agent_runner 读 pm_engine 车道状态一律构造注入 reader 回调（沿 result_gate 注入约定）禁模块级依赖，未注入/读取异常/数据缺失一律按无数据处理 fail-open 不阻断既有行为 |
 | [ADR-222](ADR-222-project-log-alert-dedup-at-business-check-site.md) | accepted | PROJECT_LOG 告警去重是业务检查点语义禁下沉共享日志通道，去重状态承载 AdminStore 持久告警存储（latest_signal 窗口查询）按 signal_type 族级键判定、禁扫描日志文本，状态源不可用降级照常追加 |
+| [ADR-223](ADR-223-request-signal-autoclosure-whitelist-fact-equivalence.md) | accepted | 请求型信号「探测通过即免唤起」自动闭环走白名单制，入表门槛=只读谓词+「谓词与诉求满足是同一事实」语义等价双条件，需语义判断类型永不收录；探测 fail-open 永不为信号前置门，handled 回写属记账动作失败降级不阻塞处置落盘 |

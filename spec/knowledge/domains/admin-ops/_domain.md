@@ -1,7 +1,7 @@
 # 管理员运营与告警
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-04 04:51 UTC+8
 
-管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、人工裁决选择题、告警生命周期。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
+管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、人工裁决选择题、告警生命周期、请求型信号前置探测闭环。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
 ## 能力页
 
@@ -30,3 +30,4 @@
 | [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警发出与节流 | 2026-10-03 04:59 |
 | [blocked-disposition-classification](blocked-disposition-classification.md) | blocked 冻结/阻塞二分类机械化 | 2026-10-03 04:59 |
 | [stuck-signal-hygiene](stuck-signal-hygiene.md) | stuck 信号活跃度预检与处置后静默 | 2026-10-03 04:59 |
+| [signal-preprobe-handled-writeback](signal-preprobe-handled-writeback.md) | 请求型信号前置探测闭环与处置回写 | 2026-10-04 04:51 |
