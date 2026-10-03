@@ -511,9 +511,7 @@ def run_tui(interval=3):
                 total = len(specs)
                 pushed = sum(1 for e in specs.values() if e.get("status") == "pushed")
                 done = sum(1 for e in specs.values() if e.get("status") == "done")
-                active = sum(
-                    1 for e in specs.values() if e.get("status") in ("implementing", "testing")
-                )
+                active = sum(1 for e in specs.values() if e.get("status") in ACTIVE_STATUSES)
                 pending_push = done  # done status means pending push
 
                 w = shutil.get_terminal_size((120, 40)).columns
