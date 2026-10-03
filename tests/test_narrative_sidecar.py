@@ -166,6 +166,14 @@ class TestReadSideMerge:
         item = admin_alerts.get_alerts(tmp_path)[0]
         assert "narrative_pending" not in item
 
+    def test_legacy_inline_narrative_no_pending(self, tmp_path):
+        """存量告警（旧同步实现把 narrative 写进本体）不标 pending。"""
+        store = AdminStore(tmp_path, RecordingLogger())
+        store.append(make_entry(narrative={"text": GOOD_TEXT, "model": "m", "at": "t"}))
+        item = admin_alerts.get_alerts(tmp_path)[0]
+        assert item["narrative"]["text"] == GOOD_TEXT
+        assert "narrative_pending" not in item
+
     def test_terminal_sidecar_merged_not_pending(self, tmp_path):
         """终态侧车（失败说明）与补叙侧车同构合并，不出 pending。"""
         store = AdminStore(tmp_path, RecordingLogger())

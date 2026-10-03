@@ -43,7 +43,13 @@ def _merge_narrative_sidecars(project_root, records: list) -> list:
                 "at": payload.get("at") or "",
             }
             item.pop("narrative_pending", None)
-        elif not item.get("handled") and item.get("choices"):
+        elif (
+            not item.get("handled")
+            and item.get("choices")
+            and not item.get("narrative")
+        ):
+            # 侧车缺失且本体已带 narrative 的存量告警（旧同步实现写入）不标
+            # pending——已有叙事可渲染，标了即是「生成中」假态
             item["narrative_pending"] = True
         merged.append(item)
     return merged
