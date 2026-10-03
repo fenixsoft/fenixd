@@ -12,11 +12,11 @@
 
 ## 方案决策
 
-1. 单飞落派发层：DispatchQueue 增 verify 在飞集合（键=spec_name），_enqueue/_enqueue_front 双查「未派发队列∪在飞」；verifier 派发成功登记（:930-937）、收工/异常回滚（:937-950）摘除；repair 尾段与 admin 直通道共用同一守卫入口，存在旁路则在入口补查。
+1. 单飞落派发层：DispatchQueue 增 verify 在飞集合（键=spec_name），_enqueue/_enqueue_front 双查「未派发队列∪在飞」；出队分流锁内原子「查在飞→命中即拒绝留痕并丢弃条目→未命中即登记」——在飞登记 MUST 与出队同 _queue_lock 锁段完成（对齐 _active_reviews「出队时置位」先例与 _reviews_dispatching 过渡窗口教训，queue.py:77-97），MUST NOT 延后到线程启动后的「派发成功」点（:930-937）：本案第一路 13ms 即被 pop，若登记晚于出队，第二路恰在「已出队未登记」窗口入队则双查双双落空；收工/异常回滚（:937-950）摘除；repair 尾段与 admin 直通道共用同一守卫入口，存在旁路则在入口补查。
 2. 拒绝＋留痕优于排队：「在飞即排队」需引入延迟派发语义；改为拒绝＋结构化留痕＋admin 通道显式放行（对齐 fix-admin-cross-type-duplicate-dispatch 先例）。
 3. prepare 护栏二选一：优先 per-run 隔离构建目录（worktree 已隔离的 run 侧成本更低）；不可行处（主树路径 serving.py:926/:989）对 prepare 加 fcntl 主机锁（复用 full-suite.lock 形态，带超时与 pid 记录，残留可诊断）。
 4. 退避自适应：预算=max(固定序列, 按锁龄推算的 peer 剩余时长估计)，配置封顶；耗尽走既有 gave up 通道（:3336 文案不变）。
-5. 降级分流：engine.py 降级分支按异常分类（worktree 竞争特征），竞争类先重入新流程一次（重试前查在飞集合确保 peer 已退场），仍败才 legacy；非竞争类维持现状。
+5. 降级分流：engine.py 降级分支按异常分类（worktree 竞争特征），竞争类先重入新流程一次（重试前校验 worktree 锁已释放：lifecycle.has_active_lock/_lock_since——派发在飞集合对同 spec 自指、自身条目必然在飞，无 peer 判别力），仍败才 legacy；非竞争类维持现状。
 
 ## 风险
 
