@@ -535,6 +535,10 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
       与损坏场景表同款 fail-closed——「0/0 场景通过」既非全失败也非 env，
       空报告不得静默过洗白门；escalation 通道对空表先行保守放行、不经此处，
       直调本函数做 verified 防线的调用方由本条把守）；
+    - 场景表非列表（结构损坏）→ 不得 verified（code-review item
+      c4f79c5c5fe9：与空表/非对象条目同款 fail-closed——escalation 通道
+      `report.get("scenarios") or []` 会把非 list 真值原样透传进来，
+      损坏输入不得比空表更宽）；
     - exempt（fast-track 申报豁免）既不算通过也不算失败（code-review item
       e3e2a98e2bb5）——否则全 exempt 表会被「0/N 场景通过（全部失败）」误拦
       并按 env 阻塞升级，与申报豁免语义不符；但 env 豁免仍计入 env 通道
@@ -542,8 +546,14 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
 
     仅约束 verdict=verified；bug-found 不受限。Returns: 违规说明列表（空=放行）。
     """
-    if verdict != "verified" or not isinstance(scenarios, list):
+    if verdict != "verified":
         return []
+    if not isinstance(scenarios, list):
+        # 非 list 场景表属结构损坏（code-review item c4f79c5c5fe9）：与空表
+        # （ca52c2521b1f）/非 dict 条目同款 fail-closed——escalation 通道
+        # `report.get("scenarios") or []` 会把非 list 真值（dict/非空字符串）
+        # 原样传入，损坏输入不得比空表更宽
+        return ["场景表结构损坏（非列表）不得判 verified"]
     if not scenarios:
         # 空列表 0/0 表（code-review item ca52c2521b1f）：零有效场景不构成
         # 验证通过证据，不得静默放行
