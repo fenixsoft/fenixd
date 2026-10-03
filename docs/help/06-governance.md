@@ -272,24 +272,27 @@ flowchart TD
 
 为防止同一信号反复唤起烧钱，Administrator 的唤起有冷却期（`admin.escalation_cooldown_minutes` 默认 60 分钟）。告警的检测逻辑、分级依据与生命周期闭环机制见[保障机制](07-safeguards.md#告警系统自愈无法覆盖时升级人工)。
 
-## 告警三段式叙事
+## 告警四段式调查叙事
 
-转人工裁决告警（携带裁决选项 choices 的信号）落盘时，系统会同步经一次轻量 LLM 调用生成三段式人类可读叙事，以 `narrative` 字段并入告警记录，让决策者不查任何其他材料即可理解现状并裁决：
+转人工裁决告警（携带裁决选项 choices 的信号）以机械文案**立即落盘**后，系统会在后台经轻量 LLM 调用生成四段式人类可读的**调查叙事**，让决策者不查任何其他材料即可理解现状、知道根因并裁决：
 
 - **发生了什么**：把 description/evidence 中的技术串（如 `failure_profile=round1:real-bugs; round3:repeat`）翻译为因果白话，指明信号主体（哪个 SPEC、哪个闸门、第几轮）；
+- **调查结论**：基于验证材料给出根因判断并引用具体证据（计数器/预算/环境事实）；材料内有据可依的因果推断必须给出，材料外事实不得编造；材料不足以定位时明确写「材料不足以定位」并给出建议查证路径；
 - **为什么需要你决策**：自动链已尝试的路径与停止原因（哪条计数器/预算/闸门到顶），以及放任自动继续的代价；
 - **决策选项**：对告警快照中的每个裁决选项（按 id 一一对应）给出含义、执行后果与建议倾向（建议倾向仅供参考，最终由人决定）。
 
-**生成时机与覆盖面**：全部转人工裁决告警发射点——升级闸门/预算耗尽/评审两族/judge 重跑上限/同因重派熔断/恢复期回调（经 `pm_engine._send_human_escalation_alert` 汇聚写入口），以及 token 预算与 merge-back 产物路径缺失两个旁路点。`narrative` 是纯增强字段：description/evidence/recommended_action/choices/trigger 等既有字段与 alert-resolve 裁决执行链完全不受影响。
+**调查材料**：验证族信号（judge 重跑上限 / 无结论循环 / 验证闸门与判定族）生成前自动采集标准产物注入——`spec/changes/<spec>/verification-report.md` 正文、`.fenix/verify-progress/<spec>/report.json` 失败场景与 classification 分布、`verdict_stability.json` 判定轮次、`fail_history.json` 失败演进（总预算 16K 字符分段截断；任一产物缺失跳过该段，不阻断生成）。
 
-**失败兜底**：LLM 异常、超时（`admin.narrative_timeout_seconds`）或输出三段结构不完整时，本次放弃生成（至多一次尝试），告警照常以既有机械文案落盘（不写 `narrative` 字段），发射链路零阻塞——叙事是增强，不是门禁。Dashboard 告警区在证据之前渲染叙事；无该字段的记录（存量告警或生成失败）渲染保持现状。
+**生成时机与覆盖面**：全部转人工裁决告警发射点——升级闸门/预算耗尽/评审两族/judge 重跑上限/同因重派熔断/恢复期回调（经 `pm_engine._send_human_escalation_alert` 汇聚写入口），以及 token 预算与 merge-back 产物路径缺失两个旁路点。叙事是纯增强：经侧车 `.fenix/admin_alerts_narrative/<alert_id>.json` 补写、告警读侧按 alert_id 合并渲染，description/evidence/recommended_action/choices/trigger 等既有字段与 alert-resolve 裁决执行链完全不受影响；人工已处置（handled）后补叙照常落盘（历史完整性优先）。告警落盘路径零阻塞——叙事时延与失败都不影响告警及时性；侧车尚未生成时告警区显示「调查生成中…」占位（不阻塞裁决操作）。
+
+**失败兜底与熔断**：LLM 异常、超时（`admin.narrative_timeout_seconds`）或输出四段结构不完整时，本次放弃（至多 2 次尝试），告警本体始终以机械文案完整可用；生成失败或连续 3 次失败触发熔断（1 小时冷却期内跳过生成）时写终态侧车（失败说明、无模型名），告警区渲染失败说明而非悬挂「生成中」假态。网关事故期熔断自动止血，冷却到期自动恢复。
 
 **配置**（设置页「系统」页签可编辑，保存后约 30 秒经配置热更新生效；亦可直接改 `.fenix/config.yaml` 的 admin 段）：
 
 | 配置项 | 缺省 | 说明 |
 |--------|------|------|
-| `admin.narrative_enabled` | `true` | 叙事开关；关闭后写告警零 LLM 调用、零额外延迟，行为与本功能落地前完全一致 |
-| `admin.narrative_timeout_seconds` | `60` | 叙事同步调用硬超时（秒） |
+| `admin.narrative_enabled` | `true` | 叙事开关；关闭后写告警零 LLM 调用、零额外延迟，行为与本功能落地前完全一致（熔断器同时旁路） |
+| `admin.narrative_timeout_seconds` | `180` | 叙事单次调用硬超时（秒；异步补叙后超时不阻塞告警落盘，180 覆盖网关 stall 长尾） |
 | `admin.narrative_model` | 空 | 叙事模型名；空=回退 `admin.agent_model`，仍为空时复用框架默认网关模型 |
 
 ## 重启协议
