@@ -951,6 +951,9 @@ def release_failed_batch(project_root, item_ids) -> int:
     """人工清理后解除失败保留（从 fix-failed.json 移除命中的 item_id）。
 
     返回解除的记录条数（供人工/审计确认；未命中返回 0）。
+    无命中且无部分解除时不写盘——不凭空创建空档案、不重写未变化记录
+    （对齐同模块 _patch_deferred_entry/_remove_deferred_batch/
+    release_retryable_failed_batches 的无变化守卫惯例）。
 
     读-改-写全程持 flock（``_with_lock``，code-review item fd1dc2a59820，
     对齐同文件 ``write_progress`` 先例）：人工 release 与链边界自动操作
@@ -966,6 +969,7 @@ def release_failed_batch(project_root, item_ids) -> int:
         records = load_failed_batches(project_root)
         kept = []
         released = 0
+        changed = 0
         for rec in records:
             ids = [i for i in rec.get("item_ids") or [] if i not in target]
             if len(ids) == len(rec.get("item_ids") or []):
@@ -973,12 +977,14 @@ def release_failed_batch(project_root, item_ids) -> int:
             elif ids:
                 rec["item_ids"] = ids
                 kept.append(rec)  # 部分解除，保留余量
+                changed += 1
             else:
                 released += 1  # 整批解除
-        _atomic_write(
-            path,
-            json.dumps(kept, ensure_ascii=False, indent=2),
-        )
+        if changed or released:  # 无变化不写盘（对齐同模块守卫惯例）
+            _atomic_write(
+                path,
+                json.dumps(kept, ensure_ascii=False, indent=2),
+            )
         return released
 
     return _with_lock(path, _do)
@@ -2239,9 +2245,14 @@ def write_regression_signal(project_root, signal_type: str, logger=None) -> None
 def write_regression_failed_alert(
     project_root, item_ids, worktree, failures_summary: str,
     branch="", tip_sha="", logger=None,
+    retry_rounds: int = TARGETED_RETRY_MAX_DEFAULT,
 ) -> None:
-    """回归两次均失败丢弃批时写失败告警（selfheal：已跳过，下轮自动重试）。
+    """回归多轮（首轮 + 定向重试）耗尽仍失败丢弃批时写失败告警。
 
+    ``retry_rounds``：定向重试轮数，调用方按生效 targeted_retry_max 传入
+    （缺省 TARGETED_RETRY_MAX_DEFAULT），文案按「首轮 + N 轮重试」如实
+    描述回归轮数——历史文案「两次全量回归均未通过」已随定向重试机制
+    漂移（add-codefix-targeted-retry），不再使用。
     ``worktree`` 形参保留兼容既有签名，但现场即弃后 worktree 已清理，
     evidence 改以 ``branch``/``tip_sha`` 作为追溯线索（git reflog 可找回）。
     ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕。
@@ -2256,7 +2267,8 @@ def write_regression_failed_alert(
             "spec": None,
             "severity": "warning",
             "description": (
-                "code-fix 批两次全量回归均未通过，已跳过（未合回、条目保持 open，"
+                f"code-fix 批首轮及 {retry_rounds} 轮定向重试共 "
+                f"{retry_rounds + 1} 轮回归均未通过，已跳过（未合回、条目保持 open，"
                 "worktree 已清理，下轮自动重试）"
             ),
             "evidence": (
@@ -4669,6 +4681,8 @@ class CodeFixOrchestrator:
                 if open_ids:
                     record_failed_batch(
                         root, open_ids, wt,
+                        # "regression_failed_twice" 是历史兼容名（定向重试上线前的
+                        # 两次全量回归语义）：存量档案与告警检索依赖此标识，不改名。
                         reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
                         detail_ref=last_detail_ref, logger=self._logger,
                     )
@@ -4679,6 +4693,7 @@ class CodeFixOrchestrator:
                         write_regression_failed_alert(
                             root, open_ids, wt, summary2,
                             branch=branch, tip_sha=tip_sha, logger=self._logger,
+                            retry_rounds=retry_max,
                         )
                     except Exception as e:  # noqa: BLE001 — 告警失败只留痕
                         self._log(
