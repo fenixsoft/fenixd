@@ -43,6 +43,28 @@ JUDGE_TIMEOUT_SECONDS = 120
 # 活性快照 last_output 片段截断字符数（D1）
 LIVENESS_SNIPPET_CHARS = 400
 
+# ── run 死亡归因结构化标记（code-review item 44703a4ffce6）────────────────
+# 监督死亡判定点（_supervision_deadline_action）在每个 kill 决策上输出结构化
+# ``death_kind``；run 终态错误文本组装时（runner 轮询环 timeout_error）经
+# death_kind_marker 转成稳定机器标记 ``[death-kind:<kind>]`` 随文本透传
+# （与 [signal-kill: …] 同一错误文本标记惯例）。消费端
+# pm_engine/budget._is_exemptable_reason 优先读该标记判豁免、reason 关键词
+# 匹配仅作历史数据回退——监督文案换词 / error 粘贴含关键词日志片段不再
+# 静默翻转豁免口径。
+# supervision = 监督主动终止（墙钟/续期用尽/停滞判死，确实消耗整份预算）；
+# infra = 基础设施性终止（如监督流不可读的证据缺失，走豁免口径）。
+DEATH_KIND_SUPERVISION = "supervision"
+DEATH_KIND_INFRA = "infra"
+
+
+def death_kind_marker(kind: str) -> str:
+    """run 死亡归因结构化标记的单源格式（词表与 reason 文案演化解耦）。
+
+    生产：runner 轮询环按 kill 决策携带的 ``death_kind`` 追加进终态错误文本；
+    消费：budget._is_exemptable_reason 优先匹配该标记。
+    """
+    return f"[death-kind:{kind}]"
+
 # ── 挂起判别常量（fix-run-hang-amplification D1）──────────────────────────
 # 基于 fix-root-init-import-shadow 事故实证：
 # - 后台调用（pytest）输出文件停在 0–22 字节，Agent 轮询数小时；
@@ -1266,6 +1288,7 @@ class LivenessSupervisor:
         if not sup["enabled"]:
             return {
                 "action": "kill",
+                "death_kind": DEATH_KIND_SUPERVISION,
                 "reason": "run timeout reached (supervision disabled)",
                 "evidence": _annotated(evidence),
                 "settings": sup,
@@ -1392,6 +1415,7 @@ class LivenessSupervisor:
         if now - started_at >= absolute_max:
             return {
                 "action": "kill",
+                "death_kind": DEATH_KIND_SUPERVISION,
                 "reason": (
                     f"absolute_max_seconds cap reached ({int(absolute_max)}s, "
                     f"extensions_used={extensions_used})"
@@ -1403,6 +1427,7 @@ class LivenessSupervisor:
         if extensions_used >= max_extensions:
             return {
                 "action": "kill",
+                "death_kind": DEATH_KIND_SUPERVISION,
                 # reason 串原样保留 "extension budget exhausted" 子串
                 # （budget.py _is_exemptable_reason 按子串匹配判不可豁免，
                 # evo-add-impl-wallclock-budget-sizing 决策 5 复核口径）；
@@ -1432,6 +1457,7 @@ class LivenessSupervisor:
             )
             return {
                 "action": "kill",
+                "death_kind": DEATH_KIND_INFRA,
                 "reason": "run stream unavailable: liveness snapshot unreadable after retry",
                 "evidence": _annotated(evidence),
                 "settings": sup,
@@ -1459,6 +1485,7 @@ class LivenessSupervisor:
         ):
             return {
                 "action": "kill",
+                "death_kind": DEATH_KIND_SUPERVISION,
                 "reason": "stagnant: zero substantive run events within judge window",
                 "evidence": _annotated(evidence),
                 "settings": sup,
@@ -1491,6 +1518,7 @@ class LivenessSupervisor:
             )
             return {
                 "action": "kill",
+                "death_kind": DEATH_KIND_SUPERVISION,
                 "reason": f"stagnant: {zero_output}",
                 "evidence": _annotated(evidence + " | " + zero_output),
                 "settings": sup,
@@ -1509,6 +1537,7 @@ class LivenessSupervisor:
             }
         return {
             "action": "kill",
+            "death_kind": DEATH_KIND_SUPERVISION,
             "reason": "judged stagnant",
             "evidence": _annotated(str(verdict.get("evidence") or "")[:400]),
             "settings": sup,

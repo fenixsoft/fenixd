@@ -77,6 +77,7 @@ from core.agent_runner.liveness import (
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
     LivenessSupervisor,
     _file_has_terminal_event,
+    death_kind_marker,
 )
 from core.agent_runner.session import SessionTracker
 from core.timelib import from_epoch, parse_ts
@@ -5632,6 +5633,16 @@ class AgentRunner:
                         f"Timeout after {int(time.time() - started_at)}s — "
                         f"{action['reason']}"
                     )
+                    # 结构化死亡归因标记透传（code-review item 44703a4ffce6）：
+                    # kill 决策携带的 death_kind 转成稳定机器标记随终态错误文本
+                    # 下发（异常 → 产物 error 行 → 车道 run_reason），预算豁免
+                    # 判定（budget._is_exemptable_reason）优先读该标记——监督
+                    # 文案换词不再静默翻转豁免口径；缺省（无标记，如 turn-limit
+                    # 轮数路径）不追加，维持既有文本形态。
+                    if action.get("death_kind"):
+                        timeout_error += (
+                            f" {death_kind_marker(str(action['death_kind']))}"
+                        )
                     if action.get("evidence"):
                         timeout_error += f" | evidence: {action['evidence']}"
                     proc.kill()
