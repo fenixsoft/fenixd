@@ -140,6 +140,15 @@ _SEGMENT_DIRTY_WARNED = set()
 _UNKNOWN_PROVIDER_REF_WARNED = set()
 _UNRESOLVED_CHAIN_MODEL_WARNED = set()
 
+# _validate 软校验 ERROR 的进程级一次性去重（code-review item a84b10635fb2，
+# 同 _SEGMENT_DIRTY_WARNED / _UNKNOWN_PROVIDER_REF_WARNED 范式）：resolve_config
+# 每 30s 热更新全量重跑 _validate，四处软校验（admin.self_review 整段非 dict、
+# archive.auto_threshold 非法、knowledge.enabled 非法、self_evolution 段及其
+# 子键 auto_accept / max_items_per_run / spec_run_at 非法）只记 ERROR 不抛错，
+# 坏配置在场时逐周期重复打印同一告警。键取 (段键/键路径, 脏值类型)，同一坏点
+# 只在首次告警；去重只作用于告警分支，校验/降级行为不变。
+_VALIDATE_SOFT_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -876,11 +885,16 @@ class ConfigLoader:
         # 热更新——读取器 get_self_review_config 对非 dict 段本就按空段兜底。
         sr = admin.get("self_review") if isinstance(admin, dict) else None
         if sr is not None and not isinstance(sr, dict):
-            _logger.error(
-                "admin.self_review 段非法（应为对象）：%r，按空段降级"
-                "（enabled 缺省 false）；其余配置照常生效",
-                type(sr).__name__,
-            )
+            # 进程级一次性去重（code-review item a84b10635fb2，同
+            # _SEGMENT_DIRTY_WARNED 范式，见 _VALIDATE_SOFT_WARNED 定义处）。
+            dedup_key = ("admin.self_review", type(sr).__name__)
+            if dedup_key not in _VALIDATE_SOFT_WARNED:
+                _VALIDATE_SOFT_WARNED.add(dedup_key)
+                _logger.error(
+                    "admin.self_review 段非法（应为对象）：%r，按空段降级"
+                    "（enabled 缺省 false）；其余配置照常生效",
+                    type(sr).__name__,
+                )
         elif isinstance(sr, dict):
             for field in ("enabled", "read_todo"):
                 if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
@@ -898,10 +912,14 @@ class ConfigLoader:
         if "auto_threshold" in archive and archive["auto_threshold"] is not None:
             at = archive["auto_threshold"]
             if not isinstance(at, int) or isinstance(at, bool) or at < 0:
-                _logger.error(
-                    "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，" "回落默认 50",
-                    at,
-                )
+                # 进程级一次性去重（code-review item a84b10635fb2）。
+                dedup_key = ("archive.auto_threshold", type(at).__name__)
+                if dedup_key not in _VALIDATE_SOFT_WARNED:
+                    _VALIDATE_SOFT_WARNED.add(dedup_key)
+                    _logger.error(
+                        "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，" "回落默认 50",
+                        at,
+                    )
 
         # add-knowledge-atlas（task 1.1）：knowledge 段护栏（软校验）。与
         # archive.auto_threshold 同型：键存在但类型非法时不进硬失败路径——只记
@@ -913,10 +931,14 @@ class ConfigLoader:
             and knowledge["enabled"] is not None
             and not isinstance(knowledge["enabled"], bool)
         ):
-            _logger.error(
-                "knowledge.enabled 非法（应为布尔）：%r，回退缺省 true",
-                knowledge["enabled"],
-            )
+            # 进程级一次性去重（code-review item a84b10635fb2）。
+            dedup_key = ("knowledge.enabled", type(knowledge["enabled"]).__name__)
+            if dedup_key not in _VALIDATE_SOFT_WARNED:
+                _VALIDATE_SOFT_WARNED.add(dedup_key)
+                _logger.error(
+                    "knowledge.enabled 非法（应为布尔）：%r，回退缺省 true",
+                    knowledge["enabled"],
+                )
 
         # add-framework-self-evolution：self_evolution 段护栏（软校验）。
         # 与 stale_code_selfheal 的处理方式一致：节/键存在但类型非法时不进入硬
@@ -925,21 +947,29 @@ class ConfigLoader:
         # 被中断（用户级全局键，项目级写入由 dashboard 前置校验拒绝）。
         se = config.get("self_evolution")
         if se is not None and not isinstance(se, dict):
-            _logger.error(
-                "self_evolution 段非法（应为对象）：%r，按缺省值生效",
-                type(se).__name__,
-            )
+            # 进程级一次性去重（code-review item a84b10635fb2）。
+            dedup_key = ("self_evolution", type(se).__name__)
+            if dedup_key not in _VALIDATE_SOFT_WARNED:
+                _VALIDATE_SOFT_WARNED.add(dedup_key)
+                _logger.error(
+                    "self_evolution 段非法（应为对象）：%r，按缺省值生效",
+                    type(se).__name__,
+                )
         elif isinstance(se, dict):
             if (
                 "auto_accept" in se
                 and se["auto_accept"] is not None
                 and not isinstance(se["auto_accept"], bool)
             ):
-                _logger.error(
-                    "self_evolution.auto_accept 非法（应为布尔）：%r，" "回退缺省 %s",
-                    se["auto_accept"],
-                    SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
-                )
+                # 进程级一次性去重（code-review item a84b10635fb2）。
+                dedup_key = ("self_evolution.auto_accept", type(se["auto_accept"]).__name__)
+                if dedup_key not in _VALIDATE_SOFT_WARNED:
+                    _VALIDATE_SOFT_WARNED.add(dedup_key)
+                    _logger.error(
+                        "self_evolution.auto_accept 非法（应为布尔）：%r，" "回退缺省 %s",
+                        se["auto_accept"],
+                        SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
+                    )
             if "max_items_per_run" in se and se["max_items_per_run"] is not None:
                 mip = se["max_items_per_run"]
                 if (
@@ -948,22 +978,30 @@ class ConfigLoader:
                     or mip < 1
                     or mip > SELF_EVOLUTION_MAX_ITEMS_UPPER
                 ):
-                    _logger.error(
-                        "self_evolution.max_items_per_run 非法（应为 1..%s 整数）："
-                        "%r，回退缺省 %s",
-                        SELF_EVOLUTION_MAX_ITEMS_UPPER,
-                        mip,
-                        SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
-                    )
+                    # 进程级一次性去重（code-review item a84b10635fb2）。
+                    dedup_key = ("self_evolution.max_items_per_run", type(mip).__name__)
+                    if dedup_key not in _VALIDATE_SOFT_WARNED:
+                        _VALIDATE_SOFT_WARNED.add(dedup_key)
+                        _logger.error(
+                            "self_evolution.max_items_per_run 非法（应为 1..%s 整数）："
+                            "%r，回退缺省 %s",
+                            SELF_EVOLUTION_MAX_ITEMS_UPPER,
+                            mip,
+                            SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
+                        )
             # spec_run_at 合法域 = None（立即执行）或 "HH:mm"；其余回退 None
             if "spec_run_at" in se and se["spec_run_at"] is not None:
                 sra = se["spec_run_at"]
                 if not (isinstance(sra, str) and _HHMM_RE.match(sra)):
-                    _logger.error(
-                        "self_evolution.spec_run_at 非法（应为 null 或 HH:mm，"
-                        "如 02:00）：%r，回退缺省（立项后立即执行）",
-                        sra,
-                    )
+                    # 进程级一次性去重（code-review item a84b10635fb2）。
+                    dedup_key = ("self_evolution.spec_run_at", type(sra).__name__)
+                    if dedup_key not in _VALIDATE_SOFT_WARNED:
+                        _VALIDATE_SOFT_WARNED.add(dedup_key)
+                        _logger.error(
+                            "self_evolution.spec_run_at 非法（应为 null 或 HH:mm，"
+                            "如 02:00）：%r，回退缺省（立项后立即执行）",
+                            sra,
+                        )
 
     @classmethod
     def _validate_provider_billing(cls, providers) -> None:
@@ -1678,7 +1716,7 @@ class ConfigLoader:
             # 段（阈值/冷却分钟，缺省 3/30）
             "run_infra_breaker": cls.get_run_infra_breaker_config(config),
             # add-adjudication-alert-narrative：转人工裁决告警三段式叙事三键
-            # （叙事开关缺省 true；同步调用硬超时缺省 60s；模型缺省 None=
+            # （叙事开关缺省 true；同步调用硬超时缺省 180s；模型缺省 None=
             # 回退链 admin.agent_model → 框架默认）
             "narrative_enabled": narrative_enabled,
             "narrative_timeout_seconds": narrative_timeout,
@@ -2479,7 +2517,7 @@ class ConfigLoader:
 
         顺序约定：自动对齐分支先执行，仅当其被显式关闭时才进入阻断分支——两者
         不同时生效。持久化 MUST 复用 core.dashboard.data.write_config（受管键
-        白名单 + 原子写 + 配置头注释），由 daemon（fenxid.py）在 resolve_config
+        白名单 + 原子写 + 配置头注释），由 daemon（fenixd.py）在 resolve_config
         后调用；本模块 MUST NOT 直接写配置文件。
         """
         # 对齐记录按次清零（code-review item c0436bc5e566）：_SUPERVISION_LAST_ALIGNED
@@ -2688,6 +2726,7 @@ class ConfigLoader:
         _SEGMENT_DIRTY_WARNED.clear()
         _UNKNOWN_PROVIDER_REF_WARNED.clear()
         _UNRESOLVED_CHAIN_MODEL_WARNED.clear()
+        _VALIDATE_SOFT_WARNED.clear()
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
