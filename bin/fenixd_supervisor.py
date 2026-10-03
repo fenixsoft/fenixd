@@ -519,13 +519,13 @@ def _adopt_leftover_daemon() -> None:
         )
     recorded_starttime = data.get("proc_starttime")
     if isinstance(recorded_starttime, int):
-        # 不等（含现读为 None：进程恰在本窗口退出/不可读）均不收编——
-        # 不发信号是两种解释下都安全的取向（进程已退则无需收编）。
-        # EPERM 例外：存活已被 os.kill 探查证实，现读 None 只能是权限不可读
-        # 而非退出，不据此 skip（否则 EPERM 场景恰会退回双拉）。
+        # 仅现读不等（可实锤 pid 复用）才跳过收编。现读为 None（code-review
+        # 158644d95b99：恰在本窗口退出 / stat 不可读但仍存活，两种解释无法
+        # 区分）不据此 skip——存活而不可读时跳过收编、主循环随即无条件拉起
+        # 正是本函数要防的双 daemon，与 EPERM 分支「宁可多等不双拉」同款
+        # 取向，落入收编序列：进程已退则 SIGTERM 立即 ProcessLookupError
+        # 返回（无延迟亦无误杀），仍存活则被正常收编。
         now_starttime = _proc_starttime(pid)
-        if now_starttime is None and alive is not None:
-            return
         if now_starttime is not None and now_starttime != recorded_starttime:
             log(
                 f"daemon_runtime pid {pid} alive but start time mismatch "

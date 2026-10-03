@@ -199,7 +199,7 @@ def _read_existing_config(project_root: Path) -> dict | None:
         if not stripped or stripped.startswith("#"):
             continue
         # 段标题检测
-        if stripped == "worktree:" and not line.startswith(" "):
+        if stripped == "worktree:" and not line.startswith((" ", "\t")):
             in_worktree = True
             continue
         if in_worktree:

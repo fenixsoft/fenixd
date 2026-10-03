@@ -92,6 +92,16 @@ def archive_change(project_root: Path, name: str) -> dict:
                 f"Archive rollback failed: {e} — 回滚移回原位失败，"
                 f"误移内容保留在 {moved}，请手工核对处置"
             ) from e
+        # 二次 TOCTOU：回滚 move 前 is_dir 检查与移动之间原位若被并发者重建
+        # 为同名目录，shutil.move 会把内容静默嵌套移入该目录内部（moved 派生
+        # 路径 change_dir/moved.name）而不抛异常，统一报错文案找不到内容；
+        # 报错须带上实际落点，与上方并发重建/回滚失败分支的处置口径对齐。
+        nested = change_dir / moved.name
+        if nested.exists():
+            raise ValueError(
+                f"Archive target already exists: {target} — 回滚时原位 {change_dir} "
+                f"已被并发重建，误移内容嵌套保留在 {nested}，请手工核对处置"
+            )
         raise ValueError(
             f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
         )

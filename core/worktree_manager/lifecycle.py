@@ -896,8 +896,22 @@ class G1LifecycleMixin:
                 # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
                 for k in to_remove:
                     self._proc_scan_cache.pop(self._lock_spec_name(k), None)
-                    # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）
-                    self._active_reuse.pop(self._lock_spec_name(k), None)
+                    # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）。
+                    # 仅清不再指向活动集成员的残留（code-review item 23e1bc091552，
+                    # 同 create() 的 097d73d377dd 口径）：_active_reuse 以 spec 为键、
+                    # 无 agent_type 维度，verifier 收尾只摘 :verifier 家族锁，仍按
+                    # spec 单键 pop 会把同 spec 仍在飞他族 run（如 implementer 重派）
+                    # 的认领记录一并抹掉——get_reuse_record 随后返回 None，后续
+                    # relint/重派 prompt 的继承说明注入丢失。记录 path 仍在活动集
+                    # （其 run 在飞）则保留；指向已清 worktree 自身的残留照旧清除。
+                    k_spec = self._lock_spec_name(k)
+                    reuse_rec = self._active_reuse.get(k_spec)
+                    if (
+                        reuse_rec is not None
+                        and str(reuse_rec.get("path") or "")
+                        not in self._active_worktrees
+                    ):
+                        self._active_reuse.pop(k_spec, None)
 
     def _snapshot_dirty_worktree(self, wt_path: Path, branch: str | None = None) -> str:
         """cleanup rmtree fallback 前对 dirty worktree 做 stash create 快照留档。
@@ -1048,7 +1062,12 @@ class G1LifecycleMixin:
         if not self.base_dir.exists():
             return
 
-        for wt_dir in self.base_dir.iterdir():
+        # 迭代前物化快照（code-review item 17750ac199fb，同 _reclaim_expired_legacy
+        # 对 _legacy 的物化纪律）：循环体内 rmtree / worktree remove 删除的是同一
+        # base_dir 的子项，iterdir 惰性迭代期间修改目录在 POSIX 未定义（Linux
+        # getdents 缓冲条目可能因并发删除漏报/重报），会跳过本轮 shutdown 清理的
+        # 部分孤儿目录。
+        for wt_dir in list(self.base_dir.iterdir()):
             if wt_dir.is_dir() and str(wt_dir) in self._active_worktrees:
                 if str(wt_dir) in protected:
                     self.logger.info(
@@ -1211,6 +1230,13 @@ class G1LifecycleMixin:
         # 回收，孤儿清理语义不变。
         if mtime is None and self._lock_young(spec_name):
             return True
+        # ── 恢复重派遗产（add-recovery-legacy-check D2，同 refresh_locks 口径）──
+        # 陈锁释放的同一时刻为孤儿 implementer worktree 注册遗产兜底
+        # （code-review item 72e12f537b2a）：若锁在此处先被释放，refresh_locks
+        # 的快照不再包含该键，D2 的遗产注册时机被永久跳过，死亡 run 的 WIP 目录
+        # 失去清扫豁免与快照留档保障。幂等（register_legacy 覆盖式更新；
+        # worktree 仍在活动集时该方法自身跳过）。
+        self._maybe_register_legacy_for_stale_lock(spec_name)
         released = self._release_spec_locks(
             spec_name, "stale lock (no live process)", not_after=entry_ts
         )

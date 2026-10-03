@@ -630,15 +630,19 @@ class TestDistBuildContractDriven:
         (static_dir / "package.json").write_text("{}", encoding="utf-8")
         seen = {}
 
-        def fake_run(cmd, **kw):
-            seen["cmd"] = cmd
-            seen["cwd"] = kw.get("cwd")
+        # 回退构建已按组清扫纪律改走 Popen（start_new_session + 超时
+        # killpg），替身须同步打桩 Popen.communicate 而非旧 subprocess.run。
+        class FakePopen:
+            returncode = 0
 
-            class R:
-                returncode = 0
-            return R()
+            def __init__(self, cmd, **kw):
+                seen["cmd"] = cmd
+                seen["cwd"] = kw.get("cwd")
 
-        monkeypatch.setattr("core.worktree_manager.subprocess.run", fake_run)
+            def communicate(self, timeout=None):
+                return ("", "")
+
+        monkeypatch.setattr("core.worktree_manager.subprocess.Popen", FakePopen)
         assert wm._run_dist_build() is True
         assert seen["cmd"] == ["npm", "run", "build"]
         assert Path(seen["cwd"]) == static_dir

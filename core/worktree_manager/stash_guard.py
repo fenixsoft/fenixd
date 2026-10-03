@@ -727,6 +727,36 @@ class G6StashGuardMixin:
                 f"mis-pop",
             )
             return False
+        # TOCTOU 复核（code-review item 9a1a53693bb4）：上方干净判定与 pop 之间
+        # 还隔着 stash list / rev-parse / 防插队复核多个子进程，窗口内用户（或
+        # dashboard 侧进程）可能向主树落盘新改动——若与 autostash 条目触碰同一
+        # 文件，pop 冲突后 _heal_unmerged_files 的 checkout -f 会把窗口内写入的
+        # 未提交修改一并丢弃。pop 前重查一次 tracked 干净态（口径同函数开头：
+        # rc!=0 按「脏」保守放弃；开销为一次子进程，同 _discard_identical_local
+        # _changes 的丢弃前二次校验模式），脏则放弃本轮，条目保留交下轮巡检。
+        try:
+            recheck = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash reclaim skipped (git unavailable): {e}",
+            )
+            return False
+        if recheck.returncode != 0 or self._list_dirty_tracked_files(
+            status_stdout=recheck.stdout
+        ):
+            self.logger.warning(
+                "worktree_manager",
+                "Stale autostash reclaim aborted: main tree turned dirty "
+                "between clean check and pop (TOCTOU recheck), skip this "
+                "round and preserve the stash entry",
+            )
+            return False
         try:
             pop = subprocess.run(
                 ["git", "-C", str(self.project_root), "stash", "pop", "stash@{0}"],
