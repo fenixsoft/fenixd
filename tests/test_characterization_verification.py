@@ -173,8 +173,10 @@ class TestHandleEnvBlockedInconclusive:
             assert result is True
             entry = sm.read_one("my-spec")
             assert entry.get("_inconclusive_attempts") == "2"
-            # base=5, attempts=2 → max(1, 5>>1) = max(1,2) = 2
-            assert entry.get("_verify_parallel_override") == "2"
+            # base=5, attempts=2 → max(1, 5>>1) = max(1,2) = 2。
+            # evo-fix-verify-parallel-override-type 3.2：parse 侧 int|None 归一
+            # 后 STATE.md 往返读值为 int 2（原为 str "2"）。
+            assert entry.get("_verify_parallel_override") == 2
         finally:
             _teardown(tmpdir)
 

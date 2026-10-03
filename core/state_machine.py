@@ -556,6 +556,23 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = None
+                elif key == "_verify_parallel_override":
+                    # 降档并行度覆盖（add-verify-parallel-backoff）：契约
+                    # int|None（evo-fix-verify-parallel-override-type 2.1）。
+                    # 与 impl_run_budget_override 先例同款 int 归一，null 兼容
+                    # （None=复位语义，原 null 清单成员迁入本分支）。存量
+                    # STATE.md 的 'False' 坏写（布尔归一清单不含本字段，布尔
+                    # 值曾整段字符串化落盘）首读即清洗为 None——复位语义，
+                    # 读端沿用配置并行度且不再触发解析降档告警；其余不可解析
+                    # 形状同样容错为 None（写侧 _apply_updates_entry 已拒布尔/
+                    # 字符串，此处仅兜历史残留与锁外内存写）。
+                    if value.lower() in ("null", "none", ""):
+                        value = None
+                    else:
+                        try:
+                            value = int(value)
+                        except ValueError:
+                            value = None
                 elif key in (
                     FROZEN_FIELD,
                     "_recovery_resume",
@@ -615,7 +632,8 @@ class StateParser:
                     "total_duration",
                     START_AFTER_FIELD,
                     FROZEN_UNTIL_FIELD,
-                    "_verify_parallel_override",
+                    # _verify_parallel_override 已迁出本清单（上方 int|None 归一
+                    # 分支，evo-fix-verify-parallel-override-type 2.1）。
                     "reviewer_run",
                     "_repair_base_tip",
                     "_repair_merge_error",
@@ -1386,7 +1404,11 @@ class StateMachine:
           implementing 落 ready 时顺带清 ``_wip_gate_deferred``——admin 处置
           复位与人工 ready 重派不得携带陈旧等待标志进入下一轮派发（显式
           携带该标志的更新视为知情写，原样放行）；
-        - 条目 ``updated`` 时间戳随每次成功应用刷新。
+        - 条目 ``updated`` 时间戳随每次成功应用刷新；
+        - 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：非法
+          形状（布尔/字符串等非 int|None）的 ``_verify_parallel_override``
+          拒绝写入，剥字段留痕（``_rejected_verify_parallel_override``），
+          其余更新照常应用。
 
         ``applied`` 收集本次实际生效的字段（含 ``_stripped`` 剥离留痕），
         供 ``_log_update_applied`` 在锁外输出留痕日志。
@@ -1397,6 +1419,19 @@ class StateMachine:
             return False
         entry = specs[spec_name]
         local = dict(updates)
+        # 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：
+        # _verify_parallel_override 契约 int|None（降档并行度 int 或复位
+        # null）。布尔或非 int 形状（'False'/'true' 等字符串、float 等）拒绝
+        # 写入——不静默序列化进 STATE.md（布尔 False 曾整段字符串化往返、
+        # 读端 int() 解析失败降档告警）。仅剥该字段，其余更新照常应用（裁决
+        # 复位主体不受牵连）；注意 bool 是 int 子类，先判 bool。拒绝优先于
+        # 静默归 None（design 风险项：归一过宽会掩盖真实坏值），留痕经
+        # applied 带出锁外，由 _log_update_applied 输出 warning（锁内不落日志）。
+        if "_verify_parallel_override" in local:
+            _vpo = local["_verify_parallel_override"]
+            if not (_vpo is None or (isinstance(_vpo, int) and not isinstance(_vpo, bool))):
+                applied["_rejected_verify_parallel_override"] = _vpo
+                del local["_verify_parallel_override"]
         if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in local and "status" in local:
             applied["_stripped"] = local.pop("status")
         if "status" in local:
@@ -1459,13 +1494,25 @@ class StateMachine:
                 f"前缀的键 {dropped}——本次内存写可见，但 STATE.md 全量回写时"
                 f"会被静默丢弃（读写口径不对称，仅显性化不改变丢弃行为）",
             )
+        if "_rejected_verify_parallel_override" in applied:
+            # evo-fix-verify-parallel-override-type 2.1a：非法形状拒绝留痕
+            # （收集点在 _apply_updates_entry，此处锁外输出）。值恒非 None
+            # （None 是合法形状，不会进 rejected）。
+            self.logger.warning(
+                "state_machine",
+                f"SPEC '{spec_name}' 的更新含非法形状的 _verify_parallel_override="
+                f"{applied['_rejected_verify_parallel_override']!r}"
+                f"（契约 int|None：降档并行度 int 或复位 null）——已拒绝该字段"
+                f"写入，不序列化进 STATE.md；其余更新照常应用",
+            )
         self.logger.info(
             "state_machine",
             f"Updated SPEC '{spec_name}'",
             {
                 "updates": {
                     k: v for k, v in applied.items()
-                    if k not in ("updated", "_stripped", "_dropped_keys")
+                    if k not in ("updated", "_stripped", "_dropped_keys",
+                                 "_rejected_verify_parallel_override")
                 }
             },
         )

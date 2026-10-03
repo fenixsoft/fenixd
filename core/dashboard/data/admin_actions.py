@@ -1558,11 +1558,13 @@ _VERIFY_PROGRESS_RUNTIME_FILES = (
 )
 
 # 重置/继续修复时清零的重试计数器（unfreeze_spec 自动清零集的超集补充：
-# judge/verify 失败轮不在其清零面）。布尔标记清 False——与 unfreeze_spec 清
-# _verify_parallel_override 同款先例：STATE.md 是文本表，落盘规范形即
-# `False` 字面量，生产读者经 StateMachine.parse 的布尔归一清单
-# （_judge_cap_frozen/_verify_parallel_override 在列，state_machine.py）读回
-# 真 False；计数清 0 后消费端 int(...or 0) 语义不变。生命周期累计字段
+# judge/verify 失败轮不在其清零面）。布尔标记清 False（_judge_cap_frozen 等
+# 在 parse 布尔归一清单内，读回真 False）。_verify_parallel_override 清
+# None——其契约是 int|None（降档并行度 int 写点 escalation、复位点一律
+# None，unfreeze_spec 先例亦写 None），布尔归一清单不含该字段：写 False
+# 会 STATE.md 往返字符串化、读端 int() 解析失败降档告警
+# （evo-fix-verify-parallel-override-type 1.1 纠偏；state_machine 写侧另有
+# 单字段形状守卫拒绝布尔/字符串写入）。生命周期累计字段
 # （_tokens_*、_cost_usd）与实现预算 _impl_run_budget_used 不在此——后者仅
 # continue_auto_fix 语义清零，reset_verification 不重发实现预算。
 _RETRY_COUNTER_RESETS = {
@@ -1570,7 +1572,7 @@ _RETRY_COUNTER_RESETS = {
     "_judge_cap_frozen": False,
     "_verify_fail_rounds": 0,
     "_verify_redo_count": 0,
-    "_verify_parallel_override": False,
+    "_verify_parallel_override": None,
     "_inconclusive_attempts": 0,
     "_env_block_rounds": 0,
     "_redispatch_same_cause_streak": 0,
