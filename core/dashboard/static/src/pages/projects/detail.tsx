@@ -639,10 +639,17 @@ export default function SpecDetailPage() {
     // Spin 替换再重建，交互状态全丢、agent 运行期间页面持续闪烁）。
     // applyDetail 以 JSON 内容判等，数据无变化时跳过 setState 避免无谓重渲染。
     const lastDetailRef = { current: '' };
+    // 已应用详情的单调时序标记：REST 快照的服务端读取可能早于已落地的 SSE
+    // 事件、响应却晚于事件返回——仅 JSON 内容判等拦不住「内容确实变旧」的
+    // 回写（详情视图短暂回跳旧态，需等下一条 SSE 或 30s 心跳才自愈）。SSE
+    // 每次实际写入时前进序号，REST 响应落地前与发出时的基线比对，序号已
+    // 前进即整表丢弃本次快照（code-review item d5c13e7ab70c）
+    let appliedSeq = 0;
     const applyDetail = (data: SpecDetail) => {
       const serialized = JSON.stringify(data);
       if (serialized === lastDetailRef.current) return;
       lastDetailRef.current = serialized;
+      appliedSeq += 1;
       setDetail(data);
     };
 
@@ -657,11 +664,14 @@ export default function SpecDetailPage() {
     // 生效：数据源未变时服务端回 304，request() 原样返回缓存 JSON，
     // applyDetail 的内容判等照常短路 setState——心跳空转零 body 传输、零重渲染。
     const load = async (initial = false) => {
+      // 时序基线：await 期间若有 SSE 详情落地（appliedSeq 前进），本次 REST
+      // 快照相对已应用内容已过期，落地时整表丢弃、不把页面拉回旧态
+      const seqAtRequest = appliedSeq;
       try {
         if (initial) setLoading(true);
         const data = await getSpecDetail(name, spec);
         if (cancelled) return;
-        applyDetail(data);
+        if (appliedSeq === seqAtRequest) applyDetail(data);
         // 拉取成功即复位错误，不限首载：首载失败进入整页错误 Alert 后 SSE
         // 心跳触发的后台 load 仍在跑，若只在首载清错页面将永远停在错误页、
         // 无法随数据恢复自愈（code-review item f11b7ed7d05a）
