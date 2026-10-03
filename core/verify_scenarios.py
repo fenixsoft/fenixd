@@ -220,37 +220,43 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
     if not isinstance(data, dict):
         return None
     raw_entries = data.get("scenarios")
-    if isinstance(raw_entries, list):
-        kept: list = []
-        rejected: list[str] = []
-        backfilled: list[str] = []
-        for i, item in enumerate(raw_entries):
-            if not isinstance(item, dict):
-                # 记原始数组下标（非已保留计数），供 admin 按日志定位文件行（f79a6e2da286）。
-                rejected.append(f"[{i}]非对象")
-                continue
-            if item.get("kind") not in ("web", "cli", "api"):
-                # b25b28a4ed8a：缺/非法 kind 兜底归类 web 保留在集（不再剔除，
-                # 防存量无 kind 冻结集被清成空集后写回）；不写回文件。
-                backfilled.append(str(item.get("id") or "?"))
-                item = {**item, "kind": "web"}
-            kept.append(item)
-        if backfilled:
-            _logger.warning(
-                "持久化集加载净化：%d 条缺/非法 kind 条目兜底归类 web 保留在集"
-                "（scenarios.json 文件不改写，diff 侧合法 kind 仍可刷新）: %s",
-                len(backfilled),
-                "、".join(backfilled),
-            )
-        if rejected:
-            _logger.warning(
-                "持久化集加载净化剔除 %d 条非对象孤儿条目"
-                "（scenarios.json 文件不改写，仅内存集合净化）: %s",
-                len(rejected),
-                "、".join(rejected),
-            )
-        if backfilled or rejected:
-            data = {**data, "scenarios": kept}
+    if not isinstance(raw_entries, list):
+        # 7ba7327e8ebc：合法 JSON dict 缺 ``scenarios`` 键（或值非 list）与
+        # 顶层非 dict 同口径按损坏返回 None——否则 from_dict 以缺省 [] 构造
+        # 空集，diff 走「有持久化集」分支把 planner 重出场景全按新增处理、
+        # 修复轮被超发拦截后以空集写回，冻结集无法从 planner 产出自愈
+        # （b25b28a4ed8a 同故障方向）。
+        return None
+    kept: list = []
+    rejected: list[str] = []
+    backfilled: list[str] = []
+    for i, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            # 记原始数组下标（非已保留计数），供 admin 按日志定位文件行（f79a6e2da286）。
+            rejected.append(f"[{i}]非对象")
+            continue
+        if item.get("kind") not in ("web", "cli", "api"):
+            # b25b28a4ed8a：缺/非法 kind 兜底归类 web 保留在集（不再剔除，
+            # 防存量无 kind 冻结集被清成空集后写回）；不写回文件。
+            backfilled.append(str(item.get("id") or "?"))
+            item = {**item, "kind": "web"}
+        kept.append(item)
+    if backfilled:
+        _logger.warning(
+            "持久化集加载净化：%d 条缺/非法 kind 条目兜底归类 web 保留在集"
+            "（scenarios.json 文件不改写，diff 侧合法 kind 仍可刷新）: %s",
+            len(backfilled),
+            "、".join(backfilled),
+        )
+    if rejected:
+        _logger.warning(
+            "持久化集加载净化剔除 %d 条非对象孤儿条目"
+            "（scenarios.json 文件不改写，仅内存集合净化）: %s",
+            len(rejected),
+            "、".join(rejected),
+        )
+    if backfilled or rejected:
+        data = {**data, "scenarios": kept}
     try:
         return ScenarioSet.from_dict(data)
     except (ValueError, TypeError, AttributeError):
