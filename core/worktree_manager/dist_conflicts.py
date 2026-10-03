@@ -6,6 +6,8 @@ verify_contract 函数延迟导入（原方法体内已有延迟 import 模式�
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 
 from pathlib import Path
@@ -120,31 +122,71 @@ def run_dist_build(
             error_detail.append(f"no package.json under {static_root}")
         return False
     try:
-        r = subprocess.run(
+        # 回退构建改用 start_new_session + 超时进程组清扫（code-review item
+        # 23fb5d47f396）：裸 subprocess.run(timeout=...) 超时只 kill 直接子进
+        # 程 npm，npm 派生的 node 孙进程未经收组残留，会继续写 dist 目录，与
+        # 紧随其后的 git add/checkout 竞态——按 verify_contract
+        # ``_run_npm_provision`` 同款组清扫纪律（只读参照，本文件自含实现）：
+        # start_new_session 使 leader 即进程组长（pgid == p.pid），超时 SIGTERM
+        # 组 → wait → SIGKILL 组补刀 → 补 communicate 排空管道收尸，随后按
+        # subprocess.run 同约定向调用方抛 TimeoutExpired（TimeoutExpired 属
+        # SubprocessError 族，由下方既有 except 接管，失败口径不变）。
+        p = subprocess.Popen(
             ["npm", "run", "build"],
             cwd=str(static_dir),
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             # errors="replace"（对齐 wip_checkpoint.py 惯例）：非 UTF-8 构建
             # 输出（本地化工具链 GBK 等）按 strict 解码抛 UnicodeDecodeError
             # ——它属 ValueError 族，不在下方 except 范围内，会沿调用链上抛；
             # 降级为可截断的 error_detail 现场而非未捕获异常。
+            text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=600,
+            start_new_session=True,
         )
-        if r.returncode != 0:
+        try:
+            out, err = p.communicate(timeout=600)
+        except subprocess.TimeoutExpired:
+            # 提前取定 pgid 句柄：wait 回收 leader 后 getpgid 将抛
+            # ProcessLookupError，组清扫补刀须用此句柄。
+            try:
+                pgid = os.getpgid(p.pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                pgid = p.pid
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                p.wait(timeout=5)
+            except Exception:
+                pass
+            # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
+            # （npm 派生的 node）会残留继续写 dist，无论 wait 成败都补一次
+            # SIGKILL；ProcessLookupError＝组已清空，静默即可。
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
+            try:
+                p.communicate(timeout=5)
+            except Exception:
+                pass
+            raise
+        if p.returncode != 0:
             # 回退构建失败时保留输出尾部现场（截断口径与 commit 失败取
             # stderr[:200] 的既有做法一致），编译错误多在末尾，便于从日志
             # 直接定位而不必人工重跑。
-            detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()[-200:]
+            detail = ((err or "") + "\n" + (out or "")).strip()[-200:]
             logger.warning(
                 "worktree_manager",
                 f"dist rebuild fallback build failed: {detail}",
             )
             if error_detail is not None:
                 error_detail.append(detail)
-        return r.returncode == 0
+        return p.returncode == 0
     except (subprocess.SubprocessError, OSError) as e:
         logger.warning(
             "worktree_manager",
@@ -823,12 +865,15 @@ class G5DistConflictsMixin:
     def _heal_unmerged_files(self, conflict_files: list) -> None:
         """对 UU 文件执行自愈：丢弃 stash/冲突合并态，统一回退 HEAD 版本。
 
-        每个 UU 文件处于 unmerged 状态，普通 ``git checkout HEAD -- <file>`` 会报
-        "path is unmerged"，因此用 ``-f`` 强制从 HEAD 还原——stash 应用内容与
-        冲突合并态一并丢弃，工作区与 index 统一回到 HEAD 侧版本（不存在被
-        「保留」的 merge 结果，丢弃面即 conflict_files 上的全部本地改动，调用点
-        告警须明示）。随后 ``git reset``（pathspec 限定冲突文件）兜底清空 index
-        中残留的冲突条目，使主树回到干净可写状态。
+        ``-f`` 是兼容性防御而非该形态下的必需：带 tree-ish 的 ``git checkout
+        HEAD -- <file>`` 本身即覆盖工作区并清除 UU 冲突态（新式 git 实测
+        rc=0），报 "path is unmerged" 的是无 tree-ish 的索引形态 ``git
+        checkout -- <file>``（部分旧版 git 行为更保守）——``-f`` 保证各版本
+        各形态下都强制从 HEAD 还原。stash 应用内容与冲突合并态一并丢弃，
+        工作区与 index 统一回到 HEAD 侧版本（不存在被「保留」的 merge 结果，
+        丢弃面即 conflict_files 上的全部本地改动，调用点告警须明示）。随后
+        ``git reset``（pathspec 限定冲突文件）兜底清空 index 中残留的冲突
+        条目，使主树回到干净可写状态。
         """
         for f in conflict_files:
             try:
