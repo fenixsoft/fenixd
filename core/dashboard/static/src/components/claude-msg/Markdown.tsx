@@ -3,7 +3,7 @@
 // - 去 usePaletteOps / 文件编辑器跳转（文件链接保留样式，不做拦截）
 // - 去 MermaidDiagram（mermaid 代码块按普通代码高亮显示）
 // - 去 useTheme（dashboard 全站亮色，语法高亮固定 oneLight）
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -79,6 +79,10 @@ type CodeBlockProps = {
 // `node` is destructured out so react-markdown's hast node never reaches the DOM.
 const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: CodeBlockProps) => {
   const [copied, setCopied] = useState(false);
+  // 「已复制」2 秒回退定时器的句柄：覆盖旧定时器，并在组件卸载时清理，
+  // 避免悬挂定时器在卸载后仍触发 setState。
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimerRef.current), []);
   // Fenced blocks carry a trailing newline in the tree; trim it so the
   // highlighter doesn't render an empty final line.
   const raw = (Array.isArray(children) ? children.join('') : String(children ?? '')).replace(/\n$/, '');
@@ -113,7 +117,8 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
             copyToClipboard(raw).then((success) => {
               if (success) {
                 setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
+                clearTimeout(copiedTimerRef.current);
+                copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
               }
             })
           }
