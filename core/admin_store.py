@@ -581,7 +581,8 @@ class AdminStore:
 
         return self._mutate(mutate, skip_unchanged=True)
 
-    def mark_signal_handled(self, alert_id: str) -> bool:
+    def mark_signal_handled(self, alert_id: str, action_taken=None, result=None,
+                            handled: bool = True) -> bool:
         """将某条 kind=SIGNAL 记录标记已处理（add-human-adjudication-choices 4.1）。
 
         ``mark_handled`` 仅匹配 ESCALATION（既有人工告警闭环锚点，语义不可
@@ -589,15 +590,29 @@ class AdminStore:
         记录——alert-resolve 端点对其经本方法直接更新 handled 族字段。仅改写
         handled/handled_at（与 mark_handled 同集，不伪造 handled_by），已处理
         条目幂等返回 False。
+
+        fix-global-signal-choice-execution 2.3：留痕与闭环解耦——
+        - ``action_taken`` / ``result`` 非 None 时一并写入告警记录（choice
+          执行的动作名与成败终态留痕；此前恒为 null）；
+        - ``handled=False`` 只留痕不置 handled/handled_at（choice 执行失败
+          路径专用：信号保留待重审，MUST NOT 闭环）；
+        - 缺省调用（仅 alert_id）行为与历史完全一致：置 handled=true，已处理
+          条目幂等返回 False（既有调用点不传参零行为变化）。
         """
 
         def mutate(records):
             changed = False
             for rec in records:
                 if rec.get("id") == alert_id and rec.get("kind") == SIGNAL:
-                    if not rec.get("handled"):
+                    if handled and not rec.get("handled"):
                         rec["handled"] = True
                         rec["handled_at"] = _utcnow_iso()
+                        changed = True
+                    if action_taken is not None:
+                        rec["action_taken"] = action_taken
+                        changed = True
+                    if result is not None:
+                        rec["result"] = result
                         changed = True
             return changed
 

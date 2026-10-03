@@ -2209,7 +2209,10 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
     alert-resolve 端点与 Administrator 处置记录消费共用本执行器：同一动作
     映射、同一留痕格式，自动处置与人工下拉处置收敛为同一裁决空间（D1）。
     action 判定：signal_type 注册表内精确匹配优先；缺 signal_type 上下文时
-    按 choice_id 全表反查（同一 id 在各信号下 action 语义一致）。
+    按 choice_id 全表反查（同一 id 在各信号下 action 语义一致；spec_scoped
+    动作不再兜底放行，fix-global-signal-choice-execution 1.1）。
+    作用域守卫（fix-global-signal-choice-execution 1.2）：spec 为空或占位
+    'global' 的全局信号拒绝执行 spec_scoped choice；非作用域 choice 不受限。
 
     本函数只执行动作，不做告警 handled 标记与 disposition 留痕——由调用方
     （端点 / admin 消费路径）按各自通道收口。
@@ -2218,37 +2221,45 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
         {"ok": bool, "choice_id": str, "action": str, "steps": [str],
          "error": str|null, ...动作附加字段}
     """
-    from .adjudication_choices import ADJUDICATION_CHOICES
+    from .adjudication_choices import is_global_spec, resolve_choice
 
     if not choice_id or not str(choice_id).strip():
         return {"ok": False, "choice_id": choice_id or "", "action": None,
                 "steps": [], "error": "choice_id is required"}
     choice_id = str(choice_id).strip()
     sig = str(signal_type or "")
-    action = None
-    for c in ADJUDICATION_CHOICES.get(sig, ()):
-        if c.get("id") == choice_id:
-            action = c.get("action")
-            break
-    if action is None and sig in ADJUDICATION_CHOICES:
-        # signal_type 已注册：choice 必须落在该信号选项集内（alert-resolve
-        # 契约「按 alert 的 signal_type 校验 choice_id 合法」），不做跨信号放行
-        return {"ok": False, "choice_id": choice_id, "action": None, "steps": [],
-                "error": (f"非法 choice_id '{choice_id}'"
-                          f"（不在信号 '{sig}' 的选项集内）")}
-    if action is None:
-        # signal_type 缺失/未注册（直接调用 / Administrator 自由处置带建议 id）：
-        # 按 id 全表反查（同一 id 在各信号下 action 语义一致）
-        for sig_choices in ADJUDICATION_CHOICES.values():
-            for c in sig_choices:
-                if c.get("id") == choice_id:
-                    action = c.get("action")
-                    break
-            if action:
-                break
-    if action is None:
+    # choice 解析收敛注册表单源（fix-global-signal-choice-execution 1.1）：
+    # 桶内精确匹配 / 未注册信号全表反查（spec_scoped 动作不再兜底放行）同序
+    # 同源，执行器与消费端守卫共用一套解析（resolve_choice）。
+    choice, reason = resolve_choice(choice_id, sig)
+    if choice is None:
+        if reason == "not-in-bucket":
+            # signal_type 已注册：choice 必须落在该信号选项集内（alert-resolve
+            # 契约「按 alert 的 signal_type 校验 choice_id 合法」），不做跨信号放行
+            return {"ok": False, "choice_id": choice_id, "action": None,
+                    "steps": [],
+                    "error": (f"非法 choice_id '{choice_id}'"
+                              f"（不在信号 '{sig}' 的选项集内）")}
+        if reason == "scoped-no-reverse":
+            # 未注册 signal_type × spec 作用域动作：不再经全表反查兜底放行
+            # （1.1 收紧）——历史上放行会在执行期才于 parse_state 处报错
+            return {"ok": False, "choice_id": choice_id, "action": None,
+                    "steps": [],
+                    "error": (f"choice_id '{choice_id}' 为 spec 作用域动作，"
+                              f"信号 '{sig}' 未注册裁决选项集，"
+                              f"不经跨信号全表反查兜底放行")}
         return {"ok": False, "choice_id": choice_id, "action": None, "steps": [],
                 "error": f"非法 choice_id '{choice_id}'（注册表无此选项）"}
+    action = choice.get("action")
+    # 全局信号作用域守卫（fix-global-signal-choice-execution 1.2）：spec 为空
+    # 或占位 'global' 的信号无具体 spec 可操作，MUST NOT 执行 spec 作用域动作
+    # （2026-10-02 ce27a93f9dca：全局指纹告警选 retry_review，执行器 parse_state
+    # 报 spec not found 且同秒信号已被误记 handled）。非作用域 choice 不受影响。
+    if choice.get("spec_scoped", True) and is_global_spec(spec):
+        return {"ok": False, "choice_id": choice_id, "action": action,
+                "steps": [],
+                "error": (f"全局信号（spec={spec!r}）不可执行 spec 作用域动作 "
+                          f"'{action}'（无 spec 可操作，信号保留待重审）")}
 
     try:
         if action == "reset_verification":
@@ -2281,6 +2292,13 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             r = _exec_declare_no_artifacts(project_root, spec, note)
         elif action == "ignore":
             r = {"ok": True, "steps": ["知情确认：仅关闭本条告警，不改动 spec 状态"],
+                 "error": None}
+        elif action == "ack_self_heal":
+            # fix-global-signal-choice-execution 1.3：全局信号的非作用域收口
+            # （确认自愈/继续观察）——仅留痕关断，不触碰任何 spec 状态机
+            r = {"ok": True,
+                 "steps": ["确认自愈/继续观察：仅留痕并关闭本条信号，不改动"
+                           "任何 spec 状态"],
                  "error": None}
         elif action == "open_config":
             r = {"ok": True,

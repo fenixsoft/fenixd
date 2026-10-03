@@ -4298,6 +4298,30 @@ class AdminMonitor:
                 # dispatch 时刻，不扩 alert_lifecycle._SIGNAL_CONDITIONS。
                 self._close_dispatch_failures_on_success(signal)
 
+                # fix-global-signal-choice-execution 2.2：choice 执行结果前置——
+                # 在处置留痕与终态回写判定之前执行 choice。原序（先回写后执行）
+                # 会把尚未执行/注定失败的 choice 当已闭环收口（2026-10-02
+                # ce27a93f9dca：retry_review 执行报错的同一秒信号已被记
+                # handled=true/resolved）。执行失败/全局跳过时终态回写被收紧
+                # 拦截，信号保留待重审。
+                choice_outcome = self._apply_choice_execution(signal, disp)
+                choice_failed = (
+                    choice_outcome is not None and not choice_outcome.get("ok")
+                )
+                # 处置记录 error 并入 choice 执行失败/跳过原因（2.2 留痕可溯源）
+                disp_error = disp.error or ""
+                if choice_failed:
+                    _cnote = str(choice_outcome.get("error") or "执行失败")
+                    _caction = (
+                        choice_outcome.get("action")
+                        or getattr(disp, "choice_id", "")
+                        or ""
+                    )
+                    disp_error = (
+                        (f"{disp_error}；" if disp_error else "")
+                        + f"choice 执行未生效（{_caction}）：{_cnote}"
+                    )
+
                 # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
                 # 的 pending 会变孤儿触发人工升级），记日志后继续
                 # fix-admin-disposition-empty-shell：失败记录自解释——error 携带 CLI 失败
@@ -4320,7 +4344,7 @@ class AdminMonitor:
                             "summary": disp.summary,
                             "admin_run_id": disp.run_id,
                             "escalate": bool(disp.escalate),
-                            "error": disp.error or "",
+                            "error": disp_error,
                             # orphaned-state-probe-calibration 1.5：非零退出的可定位
                             # 失败证据（原始 stderr 摘录/退出码/provider·model/带时间戳
                             # 事件时间线），独立字段随处置记录留痕；无证据时省略
@@ -4357,15 +4381,30 @@ class AdminMonitor:
                 # True 仅为替身兼容（真实 AdminDisposition 恒有 success，同上方
                 # failure_evidence 类型守卫动机）。回写失败仅记警告日志，
                 # 不阻塞处置结果落盘。
+                # fix-global-signal-choice-execution 2.2：choice 执行失败/全局
+                # 跳过（choice_failed）时本门收紧——不回写 handled=true/resolved，
+                # 信号保留待重审，另走下方失败留痕分支（result=failed + 动作名，
+                # handled=False 形态写入）。
                 if (
                     disp.result
                     and disp.result != "pending"
                     and not disp.escalate
                     and getattr(disp, "success", True)
                     and signal_rec is not None
+                    and not choice_failed
                 ):
                     try:
-                        if self.store.mark_signal_handled(signal_rec.get("id")):
+                        if self.store.mark_signal_handled(
+                            signal_rec.get("id"),
+                            action_taken=(
+                                choice_outcome.get("action")
+                                if choice_outcome is not None
+                                else None
+                            ),
+                            result=(
+                                "resolved" if choice_outcome is not None else None
+                            ),
+                        ):
                             self.logger.info(
                                 "admin_monitor",
                                 f"处置终态（result={disp.result}）已回写信号 handled=true"
@@ -4376,6 +4415,27 @@ class AdminMonitor:
                         self.logger.warning(
                             "admin_monitor",
                             f"处置终态回写信号 handled 失败（不阻塞处置结果落盘）: {e}",
+                            {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
+                        )
+                elif choice_failed and signal_rec is not None:
+                    # fix-global-signal-choice-execution 2.2：告警记录留痕但
+                    # 不闭环（handled 不置位，信号保留待重审）——失败原因已在
+                    # 处置记录 error 字段与上方 ERROR/INFO 日志留痕。
+                    try:
+                        self.store.mark_signal_handled(
+                            signal_rec.get("id"),
+                            action_taken=(
+                                choice_outcome.get("action")
+                                or getattr(disp, "choice_id", "")
+                                or None
+                            ),
+                            result="failed",
+                            handled=False,
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"choice 失败留痕写告警记录失败（不阻塞处置收尾）: {e}",
                             {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
                         )
 
@@ -4389,10 +4449,9 @@ class AdminMonitor:
                 # infra 轮次并解冻（幂等，审计留痕 admin_store DISPOSITION）。
                 self._apply_infra_reclassification(signal, disp)
 
-                # add-human-adjudication-choices 4.2：处置结论表达为结构化 choice_id
-                # 时，走与人工 alert-resolve 相同的动作映射执行路径（同一动作映射、
-                # 同一留痕格式），自动处置与人工处置收敛为同一裁决空间。
-                self._apply_choice_execution(signal, disp)
+                # add-human-adjudication-choices 4.2 的 choice 执行已前置到处置
+                # 留痕之前（fix-global-signal-choice-execution 2.2：执行结果并入
+                # 终态回写判定），此处不再重复执行。
 
                 # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
                 # frozen-scenario-schema-migration D3）：result 为 resolved/
@@ -5061,7 +5120,7 @@ class AdminMonitor:
                 f"孤儿信号但 spec '{spec}' 状态 {status} 无需复位（可能已被处置）",
             )
 
-    def _apply_choice_execution(self, signal: dict, disp) -> None:
+    def _apply_choice_execution(self, signal: dict, disp) -> "dict | None":
         """Administrator 处置 choice_id 非空 → 执行注册表动作映射（4.2）。
 
         与人工 alert-resolve 端点共用 ``execute_adjudication_choice``：同一
@@ -5069,17 +5128,78 @@ class AdminMonitor:
         记录已含 choice_id 留痕，动作步骤入日志 context）；执行失败记
         ERROR 不阻塞后续收尾（escalation 闭环 / 升级告警），失败状态由
         日志与既有告警面呈现。
+
+        fix-global-signal-choice-execution 2.1/2.2：返回执行结果 dict 供终态
+        回写判定——``{"ok": bool, "action": str|None, "error": str|None,
+        "skipped": bool}``；未尝试执行（choice_id 为空 / 无关联 spec）返回
+        None。全局信号（spec 为空或占位 'global'）的 spec_scoped choice 在此
+        提前跳过并留 INFO（与上方『无关联 spec 跳过』分支同型；执行器守卫
+        1.2 为正确性兜底），跳过形态返回 ok=False + skipped=True——信号保留
+        待重审，不闭环。
         """
         choice_id = str(getattr(disp, "choice_id", "") or "").strip()
         if not choice_id:
-            return
+            return None
         spec = signal.get("spec") or disp.spec
-        if not spec:
+        # fix-global-signal-choice-execution 2.1：全局信号 × spec_scoped choice
+        # 提前跳过（双层设防的消费端一层），避免无谓执行报错；INFO 留痕。
+        # 守卫须先于『无关联 spec 跳过』分支——spec 为空同样属全局形态，此
+        # 形态下 spec_scoped choice 的跳过 MUST 以 not-ok 结果上报（拦截终态
+        # 回写，信号保留待重审），不能走 None 短路被回写门视为已执行成功。
+        # 未知 choice_id 不在此拦截——交执行器报非法 choice（走失败留痕）。
+        _resolved_choice = None
+        try:
+            from core.dashboard.data.adjudication_choices import (
+                is_global_spec,
+                resolve_choice,
+            )
+
+            _resolved_choice, _resolve_reason = resolve_choice(
+                choice_id, str(signal.get("signal_type") or "")
+            )
+            # scoped-no-reverse（未注册 signal_type 的 spec_scoped 动作被反查
+            # 收紧拒解析）同属作用域拒入形态——全局信号照此提前跳过
+            _globally_scoped = bool(
+                is_global_spec(spec)
+                and (
+                    (
+                        _resolved_choice
+                        and _resolved_choice.get("spec_scoped", True)
+                    )
+                    or _resolve_reason == "scoped-no-reverse"
+                )
+            )
+        except Exception as e:  # noqa: BLE001 — 守卫不可用不阻塞执行（执行器兜底）
+            self.logger.debug(
+                "admin_monitor",
+                f"choice 作用域预判不可用（执行器守卫兜底）: {e}",
+            )
+            _globally_scoped = False
+            _resolved_choice = None
+        if _globally_scoped:
+            self.logger.info(
+                "admin_monitor",
+                f"处置 choice_id={choice_id} 为 spec 作用域动作，全局信号"
+                f"（spec={spec!r}）无 spec 可操作，跳过执行（信号保留待重审）",
+            )
+            return {"ok": False, "skipped": True,
+                    # 未注册 signal_type 的 scoped 动作被反查收紧拒解析，动作名
+                    # 以 choice_id 兜底（留痕 action_taken 不缺位）
+                    "action": ((_resolved_choice or {}).get("action") or choice_id),
+                    "error": (f"全局信号（spec={spec!r}）不可执行 spec 作用域"
+                              f"动作，已跳过")}
+        if not spec and not (
+            _resolved_choice and not _resolved_choice.get("spec_scoped", True)
+        ):
+            # 无关联 spec（信号与处置记录均空）且动作语义需要具体 spec
+            # （spec_scoped / 注册表未知 id）——跳过执行。非作用域动作放行
+            # （1.3：全局/空 spec 信号的非作用域收口不断路，执行器守卫 1.2
+            # 兜底正确性）。
             self.logger.warning(
                 "admin_monitor",
                 f"处置 choice_id={choice_id} 无关联 spec，跳过执行",
             )
-            return
+            return None
         # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
         basis = str(getattr(disp, "actions_taken", "") or "")[:200]
         try:
@@ -5097,7 +5217,9 @@ class AdminMonitor:
                 "admin_monitor",
                 f"处置 choice 执行异常 choice_id={choice_id} spec='{spec}': {e}",
             )
-            return
+            # fix-global-signal-choice-execution 2.2：异常按失败上报——终态回写
+            # 被拦截（fail-closed，信号保留待重审）
+            return {"ok": False, "action": None, "error": f"choice 执行异常: {e}"}
         if result.get("ok"):
             self.logger.info(
                 "admin_monitor",
@@ -5111,6 +5233,9 @@ class AdminMonitor:
                 f"{result.get('error')}",
                 {"steps": result.get("steps") or []},
             )
+        return {"ok": bool(result.get("ok")), "action": result.get("action"),
+                "error": result.get("error"),
+                "steps": result.get("steps") or []}
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。
