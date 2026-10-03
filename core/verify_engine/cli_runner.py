@@ -36,6 +36,16 @@ from .scenarios import validate_scenario
 
 DEFAULT_RUN_TIMEOUT = 60.0
 
+# run 步骤输出读入硬上限（比照 api_runner 的 _RESPONSE_READ_LIMIT 口径，读入侧，
+# 独立于解析侧 _RUN_JSON_PARSE_LIMIT 与证据侧 64KB 截断）：失控命令（如持续刷
+# 日志的进程）在超时窗口内可产出 GB 级输出，无上限 slurp 会全量驻留内存放大
+# OOM 风险（code-review item cba7e5aca858）。
+_OUTPUT_READ_LIMIT = 8 * 1024 * 1024
+# JSON 解析侧上限（比照 api_runner 的 _JSON_PARSE_LIMIT 口径）：完整 stdout
+# 超限时跳过 json.loads——解析对象树与原文同时驻留会放大内存峰值，json 输出
+# 类断言按「非 JSON」口径失败，结果带标注供 judge 归因。
+_RUN_JSON_PARSE_LIMIT = 1024 * 1024
+
 
 @register_runner
 class CliRunner(VerifyRunner):
@@ -317,11 +327,53 @@ class CliRunner(VerifyRunner):
                 "error": f"命令启动失败（{'shell' if use_shell else 'argv'} 形态）: {e}",
             }
 
+        async def _read_capped(stream):
+            # 读入侧硬上限：按块累积、触顶停止累积但继续排空管道。只停读不
+            # 排空会让超限输出写满管道阻塞子进程、把退出语义改写成「写阻塞
+            # 超时被强杀」，归因失真；排空丢弃只约束内存驻留，不改变子进程
+            # 行为。触顶标注随结果透出供 judge 归因（code-review item
+            # cba7e5aca858）。
+            chunks = []
+            total = 0
+            read_truncated = False
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    return b"".join(chunks), read_truncated
+                total += len(chunk)
+                if total <= _OUTPUT_READ_LIMIT:
+                    chunks.append(chunk)
+                else:
+                    read_truncated = True
+
+        stdin_data = stdin.encode() if stdin else None
+
+        async def _pump_stdin():
+            # communicate 的 stdin 泵送等价物：写完即关写端（防子进程等 EOF
+            # 挂起），写失败（断管等）按容错吞掉，不改变子进程可见行为
+            try:
+                proc.stdin.write(stdin_data)
+                await proc.stdin.drain()
+            except Exception:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        readers = [
+            asyncio.ensure_future(_read_capped(proc.stdout)),
+            asyncio.ensure_future(_read_capped(proc.stderr)),
+        ]
+        if stdin_data and proc.stdin is not None:
+            readers.append(asyncio.ensure_future(_pump_stdin()))
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(input=stdin.encode() if stdin else None),
-                timeout=timeout,
+            gathered = await asyncio.wait_for(
+                asyncio.gather(*readers), timeout=timeout
             )
+            stdout_b, stdout_read_truncated = gathered[0]
+            stderr_b, stderr_read_truncated = gathered[1]
         except asyncio.TimeoutError:
             # 超时强杀整个进程组（防孤儿子进程）＝步骤失败（hang 是要抓的缺陷）
             self._kill_process_group(proc)
@@ -384,7 +436,12 @@ class CliRunner(VerifyRunner):
         # 若先 _truncate 再 json.loads，>64KB 的合法 JSON 会被截成非法文本 →
         # json_output 断言必然假失败（harness 缺陷，非产品缺陷、非场景缺陷）。
         # json_parsed 与 json 分开存：区分「非法 JSON」与合法的字面量 null。
-        if stdout_full.strip():
+        # 解析侧体积上限（比照 api_runner 的 _JSON_PARSE_LIMIT 口径）：超限跳过
+        # 解析——json.loads 的对象树与原文同时驻留会放大内存峰值；json 输出类
+        # 断言按「非 JSON」口径失败，带标注供 judge 归因。
+        stdout_text_bytes = len(stdout_full.encode("utf-8", errors="replace"))
+        json_parse_skipped = stdout_text_bytes > _RUN_JSON_PARSE_LIMIT
+        if stdout_full.strip() and not json_parse_skipped:
             try:
                 stdout_json = json.loads(stdout_full)
                 stdout_json_parsed = True
@@ -404,6 +461,16 @@ class CliRunner(VerifyRunner):
             "json": stdout_json,
             "json_parsed": stdout_json_parsed,
         }
+        # 读入/解析侧越界标注（与 api_runner capture 同形态）：断言侧据此可把
+        # json 输出类失败归因为「输出超限未解析」而非路径不存在
+        if json_parse_skipped:
+            result["json_parse_skipped"] = (
+                f"stdout 超大未解析（{stdout_text_bytes} 字节 > 上限 {_RUN_JSON_PARSE_LIMIT}）"
+            )
+        if stdout_read_truncated:
+            result["read_truncated"] = (
+                f"stdout 超过读入上限（{_OUTPUT_READ_LIMIT} 字节），仅保留前缀参与解析与证据"
+            )
         if name:
             named_results[name] = result
         named_results["_latest"] = result
@@ -423,7 +490,8 @@ class CliRunner(VerifyRunner):
             "as": name or None,
             "detail": f"退出码 {exit_code}"
             + ("（stdout 已截断 64KB）" if stdout_truncated else "")
-            + ("（stderr 已截断 64KB）" if stderr_truncated else ""),
+            + ("（stderr 已截断 64KB）" if stderr_truncated else "")
+            + ("（stdout 超读入上限，仅保留前缀）" if stdout_read_truncated else ""),
         }
 
     # ── 辅助 ───────────────────────────────────────────────────
