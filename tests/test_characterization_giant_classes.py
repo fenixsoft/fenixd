@@ -202,9 +202,12 @@ class TestRunDistBuild:
         static_dir.mkdir(parents=True)
         (static_dir / "package.json").write_text('{"scripts":{"build":"echo ok"}}', encoding="utf-8")
         wm = make_wm(root)
-        # patch npm 为成功
-        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
-        with patch("core.worktree_manager.subprocess.run", return_value=mock_result) as m:
+        # patch npm 为成功。回退构建已改 Popen + 进程组清扫（item
+        # 23fb5d47f396），替身须随行：仍 patch 旧 subprocess.run 会静默
+        # 漏拦、替身失真致真实 npm 上屏（call_args 为 None）。
+        mock_proc = MagicMock(returncode=0)
+        mock_proc.communicate.return_value = ("ok", "")
+        with patch("core.worktree_manager.subprocess.Popen", return_value=mock_proc) as m:
             result = wm._run_dist_build()
             assert result is True
             # 验证调用 npm run build
@@ -219,8 +222,10 @@ class TestRunDistBuild:
         static_dir.mkdir(parents=True)
         (static_dir / "package.json").write_text('{"scripts":{"build":"exit 1"}}', encoding="utf-8")
         wm = make_wm(root)
-        mock_result = MagicMock(returncode=1, stdout="", stderr="build error")
-        with patch("core.worktree_manager.subprocess.run", return_value=mock_result):
+        # 替身随 Popen（item 23fb5d47f396）同上款：失败路径 returncode=1
+        mock_proc = MagicMock(returncode=1)
+        mock_proc.communicate.return_value = ("", "build error")
+        with patch("core.worktree_manager.subprocess.Popen", return_value=mock_proc):
             result = wm._run_dist_build()
             assert result is False
 

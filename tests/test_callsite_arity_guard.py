@@ -91,6 +91,12 @@ ARITY_WHITELIST = [
     #    同族 1/4 的 str.format 误报（item a5262dd130c0 引入调用点时漏补豁免）。
     ("core/agent_runner/maintenance_runs.py", "format", "locked_detail_tmpl"),
     ("core/agent_runner/maintenance_runs.py", "format", "unlock_detail_tmpl"),
+    # 6. core/verdict_check.py 级联豁免留痕的 reason 模板
+    #    _ENGINE_CASCADE_EXEMPT_REASON 是模块级 str 模板（{count} 占位），
+    #    .format(count=...) 为 str.format，与 Formatter.format(self, record)
+    #    同名异签名——同族 1/4/5 的 str.format 误报（evo b739713e 引入
+    #    调用点时漏补豁免）。
+    ("core/verdict_check.py", "format", "_ENGINE_CASCADE_EXEMPT_REASON"),
 ]
 
 
