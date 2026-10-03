@@ -16,7 +16,10 @@ add-spec-review-gate 的教训正是 CLI 通道绕过评审分流（cmd_promote 
 
 **执行语义**：经 `StateMachine.update_spec` 原子写回 `status = "ready"` 与
 `error = null`（`update_spec` 对携带 `status` 的更新会自动解除取消保持标记，
-语义与既有面板重派 / admin 处置复位一致）。MUST NOT 直接改写 tasks.md、
+语义与既有面板重派 / admin 处置复位一致）。写回后重读复核（code-review
+b790603c7cae）：读快照判 verified 与写回之间无原子性，窗口内该 SPEC 已被
+verified→done 门禁放行（total_duration 残留判别，全库唯一写点在门禁放行
+分支）时，回写恢复 done 并如实返回失败。MUST NOT 直接改写 tasks.md、
 MUST NOT 修改实现尝试预算计数（`_impl_run_budget_used`）、MUST NOT 触碰
 `frozen` / `frozen_until` / `start_after`，MUST NOT 绕过 daemon 的后续派发
 闸门（依赖、start_after、退避、冻结检查照常生效）。
@@ -56,7 +59,8 @@ def reflow_spec(
         {"ok": False, "found": False, "reason": ...} — SPEC 不存在；
         {"ok": False, "found": True, "reason": ...} — 拒绝（非 verified /
                                                       error 非 task-gap 前缀 /
-                                                      冻结态 / 写回期间被并发冻结）。
+                                                      冻结态 / 写回期间被并发冻结 /
+                                                      写回窗口内已被门禁放行为 done）。
     """
     from core.state_machine import FROZEN_FIELD
 
@@ -122,6 +126,81 @@ def reflow_spec(
             "ok": False,
             "found": True,
             "reason": f"spec '{spec_name}' 写回期间已被冻结，回炉未生效（status 写被剥离）",
+        }
+
+    # ── 写回后重读复核（code-review b790603c7cae）：_stripped 只能识破「并发
+    #    冻结剥离 status 写」一种竞态，普通状态转移竞态不设防——读快照判
+    #    verified 与本写回之间，verified→done 门禁恰好放行（人工补勾任务后
+    #    engine._on_spec_verified 自动重试转移）时，update_spec 的无条件
+    #    status=ready 写会把已 done 的 SPEC 盲覆盖回 ready，触发对已交付成果
+    #    的重派实现——正是本模块设计要避免的反向处置。state_machine 无 status
+    #    条件写公开原语（set_impl_budget_used_if_unchanged 仅覆盖预算字段，
+    #    新增通用原语属清单外改动），故取写回后重读校验的最小侵入修法：
+    #    total_duration 是 done 落定的全库唯一残留写点（门禁放行转移成功后
+    #    落盘），快照无而有即判「窗口内已 done」——状态仍为 ready（尚无并发
+    #    派发消费这个错误的 ready）则回写恢复 done；已推进则不回写干预、只
+    #    告警。两种异常路径均如实返回失败、不落 PROJECT_LOG 成功留痕（日志
+    #    语义与真实状态一致，同 _stripped 分支口径）。
+    post = state_machine.read_one(spec_name)
+    post = dict(post) if isinstance(post, dict) else {}
+    if not post:
+        logger.warning(
+            "pm_engine",
+            f"回炉写回后复核失败 '{spec_name}'（来源={source}）：SPEC 已不在 "
+            f"STATE.md（并发驱逐/归档），回炉结果不可判读",
+        )
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"spec '{spec_name}' 写回后复核失败（SPEC 已不在 STATE.md）",
+        }
+    # total_duration 用 is not None 判（门禁放行分支写 runs 求和值，合法写 0）
+    _done_in_window = (
+        post.get("total_duration") is not None
+        and entry.get("total_duration") is None
+    )
+    if _done_in_window or post.get("status") == "done":
+        _post_status = post.get("status", "")
+        if _post_status == "ready":
+            # 仍是 ready → 我们的误覆盖就是当前态，回写恢复 done（有意盲写：
+            # 任务已全部可确认完成、门禁已放行，done 是该 SPEC 的真实归宿）
+            restored: dict = {}
+            state_machine.update_spec(
+                spec_name, {"status": "done"}, applied_out=restored
+            )
+            if "_stripped" in restored:
+                logger.warning(
+                    "pm_engine",
+                    f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
+                    f"done 的写回又被并发冻结剥离——须人工核对状态",
+                )
+            else:
+                logger.warning(
+                    "pm_engine",
+                    f"回炉写回与门禁放行竞态 '{spec_name}'（来源={source}）："
+                    f"写回窗口内该 SPEC 已被 verified→done 门禁放行，ready 写"
+                    f"误覆盖已交付状态（total_duration 残留证实）——已回写恢"
+                    f"复 done，本次回炉不生效",
+                )
+            _rollback_note = "（已回写恢复 done）"
+        else:
+            # 已被并发写者推进（如派发立即消费了误覆盖的 ready）→ 不再盲写
+            # 对打在飞转移，告警交人工对账
+            logger.warning(
+                "pm_engine",
+                f"回炉写回与门禁放行竞态 '{spec_name}'（来源={source}）：写回"
+                f"窗口内该 SPEC 已被门禁放行为 done、现状态 '{_post_status}'"
+                + ("（total_duration 残留证实）" if _done_in_window else "")
+                + "——不回写干预，须人工核对状态",
+            )
+            _rollback_note = f"（状态已推进至 '{_post_status}'，未回写）"
+        return {
+            "ok": False,
+            "found": True,
+            "reason": (
+                f"spec '{spec_name}' 写回窗口内已被 verified→done 门禁放行，"
+                f"回炉写回误覆盖已交付状态{_rollback_note}"
+            ),
         }
 
     # ── 留痕：PROJECT_LOG.md 追加可追溯记录（失败仅 warning，不阻塞复位）──
