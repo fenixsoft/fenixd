@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.run_files import run_spec_part
+# fix-env-exemption-exit-reachability 3.3：inconclusive 重验窗口的独立计数
+# 上限复用 escalation 的防御性配置读取助手（同键同缺省，防两侧调参漂移）；
+# escalation 不回引本模块，无循环导入。
+from core.pm_engine.verification.escalation import _read_int_config
 from core.pm_engine.verification.scenario_gate import atomic_write_text
 
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
@@ -292,9 +296,13 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
 
     调用点在阶段3 judge 派发处（三阶段主路径 + 全绿快道回退）：
       - judge_rerun_count +1（含被稳定性复用跳过但未实际派发的判定次数）；
+        inconclusive 重验旗标置位时例外（fix-env-exemption-exit-reachability
+        D3）：派发计入独立计数器 _judge_inconclusive_dispatches（上限 =
+        verify_engine.inconclusive_max_attempts），_judge_rerun_count 不动；
       - 总数超上限（_MAX_JUDGE_RERUNS=5）→ blocked + 人工升级告警，hard cap
         触发时 judge_rerun_count 与 _verify_fail_rounds 一并冻结
-        （_judge_cap_frozen 标记，两者的自动递增全部失效）；
+        （_judge_cap_frozen 标记，两者的自动递增全部失效）；独立计数器到顶
+        则走 _judge_round_escalate 同款人工升级停车（不冻结）；
       - verdict 稳定（spec 戳未变 && report.json mtime 未变 && 连续两轮
         一致）→ 返回合成复用结果（不新起 judge run，叫停连发重派），并记
         fast-track 命中（``_judge_fasttrack_hits``，不计真实派发）；
@@ -321,10 +329,30 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
     # 发出，此处不复读避免逐次重复告警）。
     if _judge_round_state(pipeline, spec_name)["escalated"]:
         return False
-    count = pipeline._judge_rerun_count(spec_name, delta=1)
-    if count > _MAX_JUDGE_RERUNS:
-        pipeline._judge_hard_cap_freeze(spec_name, count)
-        return False
+    # ── judge 预算隔离分流（fix-env-exemption-exit-reachability D3/3.3）──
+    # inconclusive 重验旗标置位（env 豁免握手/inconclusive 升级链的重验窗口）
+    # → 本次派发计入独立计数器 ``_judge_inconclusive_dispatches``（上限 =
+    # verify_engine.inconclusive_max_attempts 配置值），**不递增**
+    # _judge_rerun_count——「重验等人工」与「judge 生命周期硬上限」两个互不
+    # 知情的预算不再赛跑，到 admin 出口永不因 judge_rerun_cap 触顶被截断；
+    # 独立计数器到顶复用 _judge_round_escalate 同款人工升级停车（不冻结），
+    # 自有上限兜底防旗标泄漏导致的无限派发。
+    # 旗标未置 → 既有 _judge_rerun_count 语义零变化（含 _judge_cap_frozen
+    # 冻结早退）。
+    if _inconclusive_reverify_flag_set(pipeline, spec_name):
+        cap = _read_int_config(
+            pipeline, "verify_engine.inconclusive_max_attempts", 2
+        )
+        count = _judge_inconclusive_dispatches_read(pipeline, spec_name)
+        if count >= cap:
+            _judge_inconclusive_cap_escalate(pipeline, spec_name, count, cap)
+            return False
+        count = _judge_inconclusive_dispatches_bump(pipeline, spec_name)
+    else:
+        count = pipeline._judge_rerun_count(spec_name, delta=1)
+        if count > _MAX_JUDGE_RERUNS:
+            pipeline._judge_hard_cap_freeze(spec_name, count)
+            return False
     if not is_verdict_stable(pipeline._context.project_root, spec_name):
         # ── 轮内重裁决阈值门（add-verify-lane-throughput 3.1）──
         # 治理对象是「同一份已落盘报告的反复重裁决」：report.json 缺失
@@ -402,6 +430,110 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
         "pm_engine",
         f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— " f"冻结为 blocked，等待人工裁决",
     )
+
+
+# ── judge 预算隔离（fix-env-exemption-exit-reachability D3/3.3）──────────
+
+
+def _inconclusive_reverify_flag_set(pipeline, spec_name: str) -> bool:
+    """读 inconclusive 重验旗标（judge 预算分流的分流判据）。
+
+    STATE 属性可能以字符串持久化（布尔落盘 'True'/'False'）——不能用
+    bool() 直接包（bool('False') 为真会误分流）；与 _judge_round_state 的
+    escalated 读法同口径。
+    """
+    from core.state_machine import IN_INCONCLUSIVE_REVERIFY_FIELD
+
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    return str(entry.get(IN_INCONCLUSIVE_REVERIFY_FIELD) or "").strip().lower() in (
+        "true",
+        "1",
+    )
+
+
+def _judge_inconclusive_dispatches_bump(pipeline, spec_name: str) -> int:
+    """重验窗口内 judge 派发计入独立计数器（不烧 _judge_rerun_count 生命周期账）。
+
+    锁内原子递增（与 _judge_round_bump 同款）；读侧脏值按 0 兜底。
+    """
+    from core.state_machine import JUDGE_INCONCLUSIVE_DISPATCHES_FIELD
+
+    return pipeline._context.state_machine.bump_counters(
+        spec_name, {JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 1}
+    ).get(JUDGE_INCONCLUSIVE_DISPATCHES_FIELD, 0)
+
+
+def _judge_inconclusive_dispatches_read(pipeline, spec_name: str) -> int:
+    """读重验窗口 judge 独立计数（脏值按 0 兜底，与 _judge_rerun_count 同防御）。"""
+    from core.state_machine import JUDGE_INCONCLUSIVE_DISPATCHES_FIELD
+
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    try:
+        return int(entry.get(JUDGE_INCONCLUSIVE_DISPATCHES_FIELD, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _judge_inconclusive_cap_escalate(
+    pipeline, spec_name: str, count: int, cap: int
+) -> None:
+    """重验窗口 judge 独立计数器到顶的人工升级停车（复用 _judge_round_escalate
+    同款手法：不冻结、不销毁产物，只发一次升级告警）。
+
+    spec 保持当前态——人工经 inconclusive_loop choices 一键处置（授予豁免/
+    修环境重置）。signal_type=inconclusive_loop：本计数器只在 inconclusive
+    重验窗口计数，人工面对的仍是同一裁决。独立计数器到顶是旗标泄漏/异常
+    重入的兜底（正常路径人工出口在升级停车即达，远早于本计数器到顶）。
+    """
+    dedup_field = "_judge_inconclusive_cap_escalated"
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    if str(entry.get(dedup_field) or "").strip().lower() in ("true", "1"):
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"inconclusive 重验 judge 独立计数已到顶（本 episode 已升级）"
+            f"'{spec_name}' — 不重复告警",
+        )
+        return
+    try:
+        pipeline._context.state_machine.update_spec(spec_name, {dedup_field: True})
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"inconclusive 计数到顶标记写入失败 '{spec_name}'（不阻断停车）: "
+            f"{type(e).__name__}: {e}",
+        )
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"inconclusive 重验轮 judge 派发达独立上限 '{spec_name}'"
+        f"（{count}/{cap} 次）— 停止派发，人工升级；spec 保持可处置状态",
+    )
+    # 升级通道自身失败不得抛穿裁决流程（与 _judge_round_escalate 对齐）
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="inconclusive_loop",
+            severity="major",
+            description=(
+                f"'{spec_name}' inconclusive 重验窗口内 judge 派发达独立上限"
+                f"（{count}/{cap} 次）— 已停止派发等待人工处置（env 豁免握手"
+                f" episode 的预算隔离兜底）"
+            ),
+            evidence=(
+                f"spec={spec_name}; judge_inconclusive_dispatches={count}; "
+                f"cap={cap}"
+            ),
+            recommended_action=(
+                "inconclusive 重验窗口内 judge 派发异常频繁（正常路径应停在升级"
+                "停车等人工）：请经 inconclusive_loop choices 一键处置（授予 env "
+                "豁免 / 修环境重置重验），或排查旗标泄漏"
+            ),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"inconclusive 计数到顶升级告警失败 '{spec_name}'（非阻塞）: "
+            f"{type(e).__name__}: {e}",
+        )
 
 
 def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:

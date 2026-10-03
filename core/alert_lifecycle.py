@@ -58,6 +58,11 @@ AUTO_RESOLVE_BY = "auto-resolve"
 # 条件 spec_delivered_adjudicated——仅终态闭环（信号产生时 SPEC 停在 ready
 # 待裁决，见条件常量处注释）；「补 tasks.md 归档凭据」裁决路径的告警收口为
 # 人工 handled（本模块只读状态表不读目录，不承诺「补内容即自动闭环」）。
+# inconclusive_loop（fix-env-exemption-exit-reachability 4.3）：env 豁免握手
+# 停车族刻意不接入本枚举——其出口是人工裁决（授予豁免/修环境重置/放弃，
+# adjudication_choices 注册表），任何一种都不可由状态表字段自动判定达成
+# （「已豁免」是 DISPOSITION 台账事实而非状态迁移），按保守缺省不写 trigger、
+# 永不自动闭环；闭环一律走人工处置后的 alert-resolve handled 收口。
 _SIGNAL_CONDITIONS = {
     "verify_fail_escalation": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "blocked_stuck": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,

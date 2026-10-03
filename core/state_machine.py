@@ -336,6 +336,33 @@ PUSH_ATTEMPTS_FIELD = "_push_attempts"
 # 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
 SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 
+# ── inconclusive 重验轮的 judge 预算隔离（fix-env-exemption-exit-reachability
+# D3）────────────────────────────────────────────────────────────────
+# 字段名单点定义（pm_engine.verification 与 state_machine 共用，避免漂移）。
+# env 豁免握手/inconclusive 升级链进入重验窗口时，judge 派发门按旗标把本次
+# 派发分流进独立计数器，MUST NOT 烧 ``_judge_rerun_count`` 生命周期预算——
+# 否则「重验等人工」与「judge 硬上限」赛跑，后者总先到顶把人工出口截断
+# （2026-10-03 potplayer-base 事故：judge_rerun_cap 冻结 6/5 先于 B7 升级）。
+# _in_inconclusive_reverify：旗标。置位点 = 两处 inconclusive 处置
+# （escalation.py 级一 ``_handle_env_blocked_inconclusive`` / 级二
+# ``_handle_verdict_env_exemption_inconclusive``）；清除点 = judge 申报非全 env
+# 结论（bug-found / verified 放行 / scenario-repaired 重入决策点，单一助手
+# ``_clear_inconclusive_reverify_flag``）、verified 落定、人工 reset_verification。
+# _judge_inconclusive_dispatches：重验窗口内 judge 派发的独立计数（上限 =
+# verify_engine.inconclusive_max_attempts 配置值），到顶升级停车。
+# 两者与 _judge_rerun_count 同生命周期累计语义：**唯一**清零点 = 验证通过
+# （verified 落定，verdict_evidence._record_verdict_adoption 既有清零点扩展）
+# 与人工 reset_verification 清零清单。
+JUDGE_INCONCLUSIVE_DISPATCHES_FIELD = "_judge_inconclusive_dispatches"
+IN_INCONCLUSIVE_REVERIFY_FIELD = "_in_inconclusive_reverify"
+
+# 上一轮 inconclusive 失败签名摘要（同 spec 2.2）：级一签名一致提前升级的
+# 跨轮比较基准，每轮 inconclusive 处置点回写本轮值；与 _inconclusive_attempts
+# 同生命周期（人工 reset_verification 清零清单含本字段——防跨 episode 过期
+# 基准误判「环境未变」）。值域为 _inconclusive_fail_signature 产物串，空串 =
+# 基准未知（保守走计数上限）。
+LAST_INCONCLUSIVE_SIGNATURE_FIELD = "_last_inconclusive_signature"
+
 # ── judge 场景原地修复预算（judge-scenario-repair）──────────────────
 # 上限重入轮数单点定义（pm_engine.verification 的 pipeline.py 与 escalation.py
 # 共用，避免两处漂移：一侧调参会使改道门与 judge 重入预算对不上）。
@@ -536,6 +563,11 @@ class StateParser:
                     FROZEN_HOLD_FIELD,  # add-freeze-stop-inflight-agents D3
                     "_repair_awaiting_remerge",
                     "_judge_cap_frozen",
+                    # fix-env-exemption-exit-reachability D3：inconclusive 重验
+                    # 旗标（judge 预算隔离分流判据）——False 不转会被误判为
+                    # 恒在重验轮（judge 派发持续分流进独立计数器，生命周期
+                    # 账永不累计）。
+                    "_in_inconclusive_reverify",
                     # evo-merge-back-spec-dir-inflight-guard D2：merge-only 重试
                     # 顺延标记——False 不转会被误判为恒顺延（_defer_merge_back
                     # 读回字符串 "False" 为 truthy）。

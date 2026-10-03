@@ -1189,7 +1189,11 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     # hard cap 冻结标记（与 _verify_fail_rounds 的清零点对齐，D1 同语义）；
     # 打回轮（bug-found）不清零——失败链中计数跨轮累计直至上限。
     if status == "verified":
-        from core.state_machine import SCENARIO_REPAIR_EXHAUSTED_FIELD
+        from core.state_machine import (
+            IN_INCONCLUSIVE_REVERIFY_FIELD,
+            JUDGE_INCONCLUSIVE_DISPATCHES_FIELD,
+            SCENARIO_REPAIR_EXHAUSTED_FIELD,
+        )
 
         pipeline._context.state_machine.update_spec(
             spec_name,
@@ -1200,6 +1204,12 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                 # _judge_rerun_count 同生命周期——verified 落定清零，使成功
                 # 后的新一轮验证重新获得「首次耗尽排程重验」的完整体验。
                 SCENARIO_REPAIR_EXHAUSTED_FIELD: 0,
+                # fix-env-exemption-exit-reachability D3：inconclusive 重验
+                # 预算隔离双字段与 _judge_rerun_count 同生命周期——verified
+                # 落定一并清零/清除（独立计数器归零、旗标清除），防旗标
+                # 泄漏使后续正常轮的 judge 派发持续被分流进隔离账。
+                JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 0,
+                IN_INCONCLUSIVE_REVERIFY_FIELD: False,
             },
         )
 

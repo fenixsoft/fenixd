@@ -42,6 +42,8 @@ _EXPECTED_CHOICE_IDS = {
     "spec-review-incomplete": {"retry_review", "skip_review_gate", "abandon"},
     "token_budget": {"ignore", "freeze_stop_loss", "raise_budget"},
     "build_artifact_paths_missing": {"open_config", "declare_no_artifacts"},
+    # fix-env-exemption-exit-reachability 4.1：env 豁免握手 inconclusive 停车族
+    "inconclusive_loop": {"grant_env_exemption", "manual_fixed_reverify", "abandon"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -100,9 +102,9 @@ def _entry(proot: Path, spec: str) -> dict:
 
 
 class TestRegistry:
-    def test_covers_exactly_8_signal_types(self):
+    def test_covers_exactly_9_signal_types(self):
         assert set(registered_signal_types()) == set(_EXPECTED_CHOICE_IDS)
-        assert len(ADJUDICATION_CHOICES) == 8
+        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 9
 
     def test_per_signal_choice_id_sets(self):
         for sig, expected in _EXPECTED_CHOICE_IDS.items():
