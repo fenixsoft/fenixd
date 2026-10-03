@@ -334,6 +334,10 @@ class PMEngine:
         "generate_report": ("_reporting", "generate_report"),
         "generate_daily_report": ("_reporting", "generate_daily_report"),
         "get_pushable_specs": ("_reporting", "get_pushable_specs"),
+        # dev-server 收割单跳（code-review item 227d772b3847）：repair 车道三处
+        # 收割点改经门面，不再穿透 agent_runner 私有链——与 _apply_verified
+        # （525fd816c134）同一收敛方向，私有方法重命名只在注册表一处断链。
+        "_stop_devserver_for_worktree": ("agent_runner", "_v2_stop_for_worktree"),
     }
 
     def __getattr__(self, name: str):

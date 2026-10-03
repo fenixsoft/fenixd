@@ -588,8 +588,9 @@ class PRepairLaneMixin:
                     )
                     # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
                     # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
+                    # dev-server 收割经门面单跳（code-review item 227d772b3847）。
                     try:
-                        self._pm.agent_runner._v2_stop_for_worktree(wt_path)
+                        self._pm._stop_devserver_for_worktree(wt_path)
                     except Exception:
                         pass
                     try:
@@ -707,8 +708,9 @@ class PRepairLaneMixin:
             # verify-process-lifecycle（D3 dispatch 兜底）：hand-off 边界内异常
             # 时收割 repair 载体 worktree 的 dev-server 注册条目（run_repair 的
             # runner 收割因 repair 属 handed_off 而跳过）。幂等，双调无害。
+            # dev-server 收割经门面单跳（code-review item 227d772b3847）。
             try:
-                self._pm.agent_runner._v2_stop_for_worktree(Path(wt_path))
+                self._pm._stop_devserver_for_worktree(Path(wt_path))
             except Exception:
                 pass
             self._fallback_after_repair(
@@ -953,7 +955,8 @@ class PRepairLaneMixin:
                 wt_path = wm.find_worktree_path(branch)
                 if wt_path is not None and wt_path.exists():
                     try:
-                        self._pm.agent_runner._v2_stop_for_worktree(wt_path)
+                        # dev-server 收割经门面单跳（code-review item 227d772b3847）。
+                        self._pm._stop_devserver_for_worktree(wt_path)
                     except Exception:
                         pass
                     wm.cleanup(wt_path, success=True)
