@@ -2236,6 +2236,192 @@ class TestBatchOutcomeSelfDrive(unittest.TestCase):
         self.assertEqual(len(executor.jobs), 1)
 
 
+# ── evo-add-codefix-mergeback-conflict-salvage 3.2：救回接线下存量行为护栏 ──
+
+
+class _RenamedBranchWM(_FakeWM):
+    """create 后把 worktree 分支固定改名（消除 git init 默认分支名的环境差）。
+
+    救回 rebase 的目标基线由 ``resolve_base_branch`` 对非 git 仓的
+    project_root 回退为 "main"；worktree 侧分支固定为非 main/master，
+    ``git rebase main`` 必败（基线引用不存在），救回确定性地走降级路径。
+    """
+
+    def create(self, spec_name, agent_type="implementer"):
+        repo = super().create(spec_name, agent_type)
+        if repo is not None:
+            cur = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True).stdout.strip()
+            if cur and cur != "salvage-t":
+                subprocess.run(
+                    ["git", "-C", str(repo), "branch", "-m", cur, "salvage-t"],
+                    capture_output=True)
+        return repo
+
+
+def _rehearsed_conflict_info(paths):
+    """带 conflict_paths 的预演冲突形态（mergeback.py 升级出口；触发救回）。"""
+    import types as _t
+    return _t.SimpleNamespace(
+        success=False,
+        error="Semantic merge conflicts detected by pre-merge rehearsal",
+        conflict_paths=list(paths),
+        has_semantic_conflict=True,
+        rehearsed=True,
+    )
+
+
+class TestMergebackConflictSalvageCompat(unittest.TestCase):
+    """救回接线不改变存量行为的护栏回归（evo-add-codefix-mergeback-conflict-salvage 3.2）：
+
+    1. wip_gate_blocked defer 路径行为不变——存量替身形态（merge_info 无
+       ``conflict_paths`` 字段）不触发救回（零额外回归调用、零救回日志）；
+    2. 带 ``conflict_paths`` 的冲突在救回失败（本文件 _FakeWM 无
+       ``rehearsal_conflict_paths`` 查询 → 无法判定提交可回收性）时，兜底整批
+       入档案与现状一致（reason/branch/tip_sha + 自驱动下一批）；
+    3. 救回各阶段日志留痕：开始 / 降级 / 终局三段在场，终局单行汇总恰一条。
+    """
+
+    def _orch(self, proot, runner, batch_size=1, logger=None):
+        from core.code_fix import CodeFixOrchestrator
+
+        return CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True,
+                                                  "batch_size": batch_size}}},
+            logger=logger)
+
+    def _arm_conflict(self, wm, info):
+        """伪 merge_back：首次返回注入形态，此后放行真实现（自驱动批）。
+
+        放行走原 ``merge_back``（其内部自带 merge_calls 记账），此处仅对
+        注入那次手动记账，避免双重计数。
+        """
+        real_merge = wm.merge_back
+        state = {"armed": False}
+
+        def once(wt_path):
+            if not state["armed"]:
+                state["armed"] = True
+                wm.merge_calls.append(str(wt_path))
+                return info
+            return real_merge(wt_path)
+
+        wm.merge_back = once
+
+    @staticmethod
+    def _arm_always_blocked(wm, info):
+        """恒阻断伪 merge_back：defer 台账/重试链路的确定性形态。"""
+
+        def blocked(wt_path):
+            wm.merge_calls.append(str(wt_path))
+            return info
+
+        wm.merge_back = blocked
+
+    def _salvage_logs(self, cap, needle):
+        return [m for lv, _tag, m in cap.records if lv == "info" or lv == "warning"
+                if needle in m]
+
+    def test_wip_defer_path_unchanged_no_salvage(self):
+        """wip 形态（无 conflict_paths 字段）→ defer 原样，救回零触发。
+
+        恒阻断形态：checkpoint 同步跑完整链，链边界的 defer 重试（既有语义）
+        会被再次阻断——断言两次合回尝试均为 wip 形态、无救回插手。
+        """
+        from core.code_fix import (load_deferred_batches, load_failed_batches,
+                                   read_progress)
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        cap = _CapturingLogger()
+        runner = _FakeRunner(proot)
+        runner.worktree_manager = _FakeWM("git", enforce_lock=True)
+        wm = runner.worktree_manager
+        self._arm_always_blocked(wm, _wip_blocked_info(["src/a.py"]))
+        orch = self._orch(proot, runner, logger=cap)
+        self.assertTrue(orch.checkpoint()["triggered"])
+
+        entries = load_deferred_batches(proot)
+        self.assertEqual(len(entries), 1, "wip 阻断 MUST 走 defer（现状不变）")
+        self.assertEqual(entries[0]["defer_count"], 2,
+                         "链边界重试仍被阻断 → defer_count 递增（既有语义）")
+        self.assertEqual(len(runner.regression_calls), 1,
+                         "defer 路径 MUST NOT 产生救回回归调用")
+        self.assertEqual(len(wm.merge_calls), 2,
+                         "defer 路径仅首次合回 + 链边界重试，无救回合回")
+        self.assertEqual([], self._salvage_logs(cap, "救回"),
+                         "defer 路径 MUST NOT 留救回日志")
+        self.assertEqual(read_progress(proot)["reason"], "wip_gate_blocked")
+        self.assertEqual(load_failed_batches(proot), [],
+                         "defer 零预算 MUST NOT 入失败档案")
+
+    def _run_rehearsal_conflict(self, logger):
+        """rehearsed 冲突形态 + 无冲突集查询的 WM → 救回失败兜底场景。"""
+        from core.code_fix import load_failed_batches
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        runner.worktree_manager = _RenamedBranchWM("git", enforce_lock=True)
+        wm = runner.worktree_manager
+        self._arm_conflict(wm, _rehearsed_conflict_info(["src/a.py"]))
+        orch = self._orch(proot, runner, logger=logger)
+        orch.checkpoint()
+        return proot, runner, wm
+
+    def test_salvage_failure_falls_back_like_status_quo(self):
+        """救回失败 → 兜底整批入档案与现状一致 + 自驱动下一批核销。"""
+        from core.code_fix import load_failed_batches
+        from core.code_review import read_items
+
+        proot, runner, wm = self._run_rehearsal_conflict(logger=None)
+
+        self.assertEqual(len(wm.merge_calls), 2,
+                         "救回失败批 consumed 后 MUST 自驱动批 b 合回")
+        self.assertEqual(len(runner.regression_calls), 2,
+                         "批 a + 自驱动批 b 各一次批回归；救回失败（rebase 即败）"
+                         "MUST NOT 追加回归调用")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "resolved")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(set(failed[0]["item_ids"]), {"a"})
+        self.assertEqual(failed[0]["reason"], "merge_back_conflict")
+        self.assertTrue(failed[0]["branch"] and failed[0]["tip_sha"],
+                        "兜底入档 MUST 带 branch/tip_sha（现状口径）")
+        self.assertEqual(
+            [ok for _p, ok in wm.cleanup_calls], [False, True],
+            "救回失败批现场即弃（success=False），自驱动批 b 正常收尾（True）")
+        self.assertEqual(wm.cleanup_calls[0][0], wm.merge_calls[0],
+                         "首个 cleanup MUST 是救回失败批的 worktree")
+
+    def test_salvage_stage_logs_recorded(self):
+        """救回各阶段日志留痕：开始 / 降级 / 终局三段在场，终局单行汇总。"""
+        cap = _CapturingLogger()
+        self._run_rehearsal_conflict(logger=cap)
+
+        starts = self._salvage_logs(cap, "合回冲突救回开始")
+        self.assertEqual(len(starts), 1, "救回开始 MUST 恰一条 info 留痕")
+        self.assertIn("branch=salvage-t", starts[0])
+        self.assertIn("commits=", starts[0])
+        degrade = self._salvage_logs(cap, "降级 commit 组粒度回收")
+        self.assertEqual(len(degrade), 1, "rebase 失败降级 MUST 留 warning")
+        self.assertIn("rebase 失败", degrade[0])
+        finals = self._salvage_logs(cap, "救回终局")
+        self.assertEqual(len(finals), 1, "终局单行汇总 MUST 恰一条")
+        self.assertIn("兜底全弃", finals[0])
+        self.assertIn("冲突文件集不可得", finals[0])
+
+
 class TestFailureLockRelease(unittest.TestCase):
     """现场即弃的锁释放（selfheal 3.2）：失败收尾清理 worktree 目录并释放 spec 锁。"""
 

@@ -1181,6 +1181,25 @@ class G4MergebackMixin:
             return False
         return chk.returncode == 0
 
+    def rehearsal_conflict_paths(self, branch: str) -> list:
+        """救回路径的冲突文件集查询（evo-add-codefix-mergeback-conflict-salvage 1.2）。
+
+        复用 ``_rehearse_merge_from_branch`` 的 git merge-tree 只读预演，返回
+        该分支并入主树的语义冲突路径清单（构建产物/被忽略 DU 草稿已过滤——与
+        ``rehearsed=True`` 返回值携带的 ``conflict_paths`` 同一口径）；零冲突
+        或预演不可用（git 不支持 merge-tree / 预演失败/超时）返回空清单。
+
+        供 code-fix 编排的合回冲突救回（组粒度回收）判定「提交是否触碰冲突
+        文件」；调用方拿到空清单时 MUST 保守放弃回收（无法判定可回收性时不
+        做无据归属）。与真合并同持 ``_main_tree_lock``：只读不写，复用既有
+        锁语义、不新增锁（与并行 evo 合回自然串行，不争锁死等）。
+        """
+        with self._main_tree_lock:
+            info = self._rehearse_merge_from_branch(branch)
+        if info is None:
+            return []
+        return list(getattr(info, "conflict_paths", []) or [])
+
     def _merge_back_from_branch_locked(self, branch: str) -> MergeConflictInfo:
         """merge_back_from_branch 的实现体，调用方必须已持有 _main_tree_lock。
 
