@@ -329,8 +329,9 @@ class G8QueryMixin:
         真相，不信任 ``_active_worktrees`` / ``_wt_branches`` 内存表（daemon
         重启即失，不足以支撑 boot 路径）。
 
-        - 按 worktree 目录命名约定（``impl-<spec>-<ts>`` / ``verify-<spec>-<ts>``
-          / ``repair-<spec>-<ts>``，见 create/create_worktree_on_branch）以
+        - 按 worktree 目录命名约定（``_WT_NAME_PREFIXES`` 全部前缀即
+          ``{impl,verify,repair,judge}-<spec>-<ts>``，见
+          create/create_worktree_on_branch）以
           **完整 spec 名 + 分隔符边界**匹配（解析命名得完整 spec 名再精确比较，
           禁止子串包含：spec 名互为前缀如 ``fix-x`` 与 ``fix-x-y`` 不误匹配）；
         - 歧义命中（同一 spec 存在多个在册 worktree）MUST NOT 静默取首个，
@@ -415,7 +416,8 @@ class G8QueryMixin:
         impl- 与 repair- 两个在册 worktree）。
 
         算法：解析所有在册 worktree 的目录名，凡 ``_wt_name_matches_spec``
-        命中即加入返回（目录名口径天然覆盖 impl/verify/repair 三种前缀）。
+        命中即加入返回（目录名口径天然覆盖 ``_WT_NAME_PREFIXES`` 全部前缀
+        impl/verify/repair/judge）。
 
         防御口径与 ``find_worktree_by_spec`` 同款：命令超时/非零退出/异常
         降级返回空清单，MUST NOT 阻塞调用路径。
