@@ -3357,9 +3357,14 @@ class AgentRunner:
             # 为其启动专属 dev-server，供本次 attempt 的测试请求命中 worktree 副本。
             self._v2_launch_for_worktree(wt_path)
         else:
+            # code-review item 1ef5865f9802：按 reuse_worktree 取值区分文案——
+            # 仅 implementer 族为 --resume 续跑会话；verifier/planner 等车道
+            # 复用目录但会话全新（语义注记：复用目录≠续跑会话）。
+            reuse_mode = "resume" if reuse_worktree else "reuse dir"
             self.logger.info(
                 "agent_runner",
-                f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
+                f"Reusing worktree {wt_path} for '{spec_name}' "
+                f"(attempt {attempt}, {reuse_mode})",
             )
             used_wts.add(wt_path)
             # add-worktree-test-server（D7 幂等 ensure，code-review item
@@ -4517,7 +4522,7 @@ class AgentRunner:
                                shutdown_interrupted: bool,
                                frozen_terminated_flag: bool = False,
                                stall_budget_flag: bool = False,
-                               st: _AttemptState = None, handed_off: set = None) -> bool:
+                               st: _AttemptState, handed_off: set) -> bool:
         """失败终态分型（等价搬移，D1 R8）：重试等待 or 终态 keep。
 
         返回 True 表示 should_break（cancelled_flag or shutdown_interrupted or
@@ -6759,7 +6764,11 @@ class AgentRunner:
             return None
         done = data.get("done")
         total = data.get("total")
-        if not isinstance(total, int) or not isinstance(done, int):
+        # bool 是 int 子类，isinstance(total, int) 会放行 true/false（code-review
+        # item 66c994e144e9）——显式排除布尔，否则进度以 1/0 流入续跑提示词。
+        total_is_int = isinstance(total, int) and not isinstance(total, bool)
+        done_is_int = isinstance(done, int) and not isinstance(done, bool)
+        if not total_is_int or not done_is_int:
             # schema 非法与 JSON 损坏同语义（code-review item 680bbf7cde75）：
             # 坏文件不留痕——移除以免后续 attempt 反复解析失败、拿不到干净基线。
             try:
