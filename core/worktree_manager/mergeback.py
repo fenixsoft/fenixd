@@ -784,11 +784,10 @@ class G4MergebackMixin:
         Returns: 排序后的重叠文件路径列表（无重叠为空列表）。
         """
         try:
-            # 与下方 branch_files 同口径反转义 quotePath 转义形（dirty 来自
-            # stash_guard 的按行解析）：任一侧残留带引号转义形时裸交集会漏判
-            dirty = [
-                _unquote_git_path(p) for p in self._list_dirty_tracked_files()
-            ]
+            # _list_dirty_tracked_files 已逐路径 _unquote_git_path 反转义，与下方
+            # branch_files 的单次反转义同口径；此处不做二次反转义——该函数对名为
+            # "foo" 这类首尾带引号的字面文件名非幂等，二次调用会剥掉真实引号
+            dirty = self._list_dirty_tracked_files()
             if not dirty:
                 return []
             mb = subprocess.run(
