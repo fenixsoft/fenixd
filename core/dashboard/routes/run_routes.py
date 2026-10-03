@@ -60,6 +60,7 @@ class H4RunRoutesMixin:
                 # 否则继续执行会向同一 keep-alive 连接写第二个响应（与
                 # spec_routes _api_admin_invoke 等可选 body 端点的使用惯例对齐）
                 return
+            # [fenix-ignore:f3dc8a69f935] 非 dict body 在 _read_json_body（base.py）已统一 400「Request body must be a JSON object」并返回 None，此分支 isinstance 恒真，条目所称「非 dict 静默忽略」不存在，口径本就一致
             if isinstance(body, dict):
                 # 类型防线（code-review item bc36b94afa48，对齐 _api_session_send
                 # b82e10346495 先例）：数字/布尔/dict/list 等非字符串真值直接
@@ -209,6 +210,3 @@ class H4RunRoutesMixin:
             limit = 20
         records = read_hook_audit(Path(project["path"]), spec=(spec or None), limit=limit)
         return {"project": project["name"], "audit": records}
-
-    # ── agent 提示词（add-agent-prompt-files 任务 3.1）────────────────
-
