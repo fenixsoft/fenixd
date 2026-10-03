@@ -13,6 +13,7 @@ D3 patch 缝隙：
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -40,9 +41,19 @@ class BBackoffMixin:
         out = []
         for x in sched:
             try:
-                out.append(max(0.0, float(x)))
+                v = float(x)
             except (TypeError, ValueError):
                 continue
+            # code-review item e2d87491cc64：非有限浮点（.inf/.nan，YAML 合法
+            # 字面量）按脏值跳过——``.inf`` 使 threading.Timer 永不到期（退避
+            # 恢复通道失去唯一驱动），``int(now + delay)`` 对 inf 抛
+            # OverflowError 沿派发主链外泄，``.nan`` 经 max(0.0, nan) 落 0.0
+            # 造成零间隔自旋重试；isfinite 须在 max 夹紧之前施加（max 会把
+            # nan 吸收成 0.0），口径对齐 infra_breaker cooldown_minutes 同构
+            # 守卫（item d0a328355581）。
+            if not math.isfinite(v):
+                continue
+            out.append(max(0.0, v))
         return out or list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
 
     def _handle_dispatch_lock_conflict(self, spec_name: str) -> None:
@@ -214,11 +225,18 @@ class BBackoffMixin:
         ``resolve_delay`` 签名（该通道等待时长与 spec 无关）。
         """
         try:
-            return float(
+            val = float(
                 self._pm._get_config("agents.transient_redispatch_delay_seconds", 600)
             )
         except (TypeError, ValueError):
             return 600.0
+        # code-review item e2d87491cc64：非有限浮点（.inf/.nan）穿透按脏值回退
+        # 缺省——``.inf`` 使瞬断重派 Timer 永不到期（恢复通道失去唯一驱动），
+        # ``.nan`` 使排程退化为零间隔自旋；口径对齐 infra_breaker
+        # cooldown_minutes 同构守卫（item d0a328355581）。
+        if not math.isfinite(val):
+            return 600.0
+        return val
 
     def _schedule_recovery_timer(
         self,
