@@ -20,4 +20,4 @@
 
 - 构造主树内活交互会话直改场景：归因结果给出会话线索（非「无主」），盘点侧降级为 info 留痕而不派 major 告警。
 - 无活会话/探测源缺失时行为与现状一致（fail-open 回「无主」走既有宽限升级），不新增误报。
-- 新增测试覆盖归因分支；tests/test_maintree_stray_wip_sweep.py 既有用例不回退。
+- 新增测试覆盖归因分支；tests/test_maintree_stray_wip_sweep.py 与 tests/test_mergeback_wip_coordination.py 既有用例不回退。
