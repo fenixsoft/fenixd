@@ -57,6 +57,13 @@ const REQUEST_TIMEOUT_MS = 30000;
     「安装进行中」）。给足 300s + 余量，客户端等到服务端真实结论。 */
 const OCR_INSTALL_TIMEOUT_MS = 330000;
 
+/** 项目简介再生成的 per-call 超时（毫秒，code-review item c9e2a7e67173）：
+    服务端 _api_project_describe 在 HTTP 线程内同步跑 headless claude、
+    预算 timeout=120s，统一 30s 超时会先行中止、把仍在跑的生成误报为
+    「请求超时」（重试又撞同项目互斥锁的「生成进行中」）。参照
+    OCR_INSTALL_TIMEOUT_MS 先例给足 120s + 余量，客户端等到服务端真实结论。 */
+const PROJECT_DESCRIBE_TIMEOUT_MS = 150000;
+
 /** SSE 事件流端点（业务端点，跨视图组件复用——code-review item ba13417eb1ff：
     以共享服务层常量单源，视图不再各自硬编码字面量）。 */
 export const STREAM_URL = '/api/stream';
@@ -1618,9 +1625,13 @@ export async function saveConfig(
 }
 
 export async function regenerateProjectDescription(project: string): Promise<{ ok: boolean; description?: string; error?: string }> {
+  // per-call 超时（code-review item c9e2a7e67173）：后端同步跑 headless
+  // claude 预算 120s，统一 30s 超时会先行中止、把仍在跑的生成误报为
+  // 「请求超时」。
   return request<{ ok: boolean; description?: string; error?: string }>(
     `/api/project/describe?project=${encodeURIComponent(project)}`,
     { method: 'POST' },
+    { timeoutMs: PROJECT_DESCRIBE_TIMEOUT_MS },
   );
 }
 
