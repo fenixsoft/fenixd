@@ -173,7 +173,9 @@ def _autodraft_lock(proot: Path) -> threading.Lock:
 # 于路由局部变量——dashboard 退出链无从收割，退出后孤儿仍以 bypassPermissions
 # 继续写目标项目 verify.yaml。带锁集合最小登记句柄，供退出链
 # reap_all_autodraft() 整组终止。
-_AUTODRAFT_PROCS_GUARD = threading.Lock()
+# RLock（非 Lock）：item 87e3191349e9 的 spawn 临界区持锁完成 Popen 后经
+# _register_autodraft_proc 同线程重入登记。
+_AUTODRAFT_PROCS_GUARD = threading.RLock()
 _AUTODRAFT_PROCS: set[subprocess.Popen] = set()
 
 
@@ -484,34 +486,27 @@ class H12RegressionRoutesMixin:
             return
         self._json({"ok": True, "requested_at": created})
 
-    def _api_regression_run_issues(self, query):
-        """POST /api/regression/run-issues — query project
-        （add-regression-issues-rerun 3.1，capability regression-issues-rerun）
+    def _require_issue_snapshot(self, proot: Path, no_issues_msg: str) -> bool:
+        """run-issues / fix 两端点共享的快照校验 + 异常用例守卫单点实现
+        （item 685a914a959c 去重）。
 
-        定向子集回归触发：只重跑最近一次快照 ``failures``（失败+错误）与
-        ``long_tests``（长耗时）用例的并集。写同一
-        ``.fenix/regression_request.json`` 信号（payload 增
-        ``"scope": "issues"``），nodeid 子集由 daemon 消费端按消费时点快照
-        计算（D2：映射依赖 exec_root 在盘探测，端点不做）；本端点只做
-        「快照有异常用例」的机械守卫并写信号，MUST NOT 在 HTTP 线程内同步
-        映射/派发。
+        两端点曾各持一份同构块：``read_result`` 容错读 → never_run/parse_error
+        归一拒绝 → failures/long_tests/timeout 三者其一 has_issues 判定 →
+        拒绝响应，仅 no_issues 文案不同（「无需定向重跑」/「无需修复」）。
+        判定口径调整（新增 status 值、改 timeout 受理语义等）须双点同修、
+        易漂移——收敛到此，两端点各留一行调用与各自的文案。
 
-        守卫链与 run 端点一致（共享 ``_regression_trigger_guards``），另加
-        快照两道校验（判定口径对齐 fix 端点 ``_api_regression_fix``）：
-        - 快照缺失/损坏/不可解析 → 400 ``regression_never_run``
+        - 快照缺失/损坏/不可解析 → 400 ``regression_never_run``（读侧契约与
+          core.regression.read_result 一致：缺失 → never_run，损坏 →
+          parse_error；读侧任何异常按缺失兜底——宁拒勿 500）
         - failures 与 long_tests 均空且 status 非 timeout → 400
-          ``regression_no_issues``（timeout 整体超时伪行非用例，仍受理——
-          子集计算在消费端自然回退全量）
-        - 受理 → 200 + {ok, requested_at}；写入失败 500 / 信号已存在 409
-          ``regression_request_pending`` 与 run 端点同款
-        """
-        guards = self._regression_trigger_guards(query)
-        if guards is None:
-            return
-        proot = guards[1]
+          ``regression_no_issues``（timeout 整体超时伪行非用例、不可选，但
+          快照整体超时仍受理——run-issues 消费端子集为空时 fail-closed 回退
+          全量）
 
-        # 快照校验（读侧契约与 core.regression.read_result 一致：缺失 →
-        # never_run，损坏 → parse_error；统一归 never_run 拒绝）
+        校验通过返回 ``True``；任一守卫拒绝时响应已写出、返回 ``False``
+        （调用方直接 return）。
+        """
         from core.regression import read_result
 
         try:
@@ -526,11 +521,9 @@ class H12RegressionRoutesMixin:
                 400, "最近一次回归快照缺失或不可解析，请先执行一次全量回归",
                 "regression_never_run",
             )
-            return
+            return False
 
         # 异常用例守卫：failures 非空 / long_tests 非空 / 整体超时 三者其一
-        # （口径与 fix 端点 has_issues 一致；「整体超时」伪行非用例、不可选，
-        # 但快照整体超时仍受理——消费端子集为空时 fail-closed 回退全量）
         failures = snapshot.get("failures")
         long_tests = snapshot.get("long_tests")
         has_issues = (
@@ -539,9 +532,42 @@ class H12RegressionRoutesMixin:
             or snapshot_status == "timeout"
         )
         if not has_issues:
-            self._coded_error(
-                400, "最近一次回归无异常用例，无需定向重跑", "regression_no_issues",
-            )
+            self._coded_error(400, no_issues_msg, "regression_no_issues")
+            return False
+        return True
+
+    def _api_regression_run_issues(self, query):
+        """POST /api/regression/run-issues — query project
+        （add-regression-issues-rerun 3.1，capability regression-issues-rerun）
+
+        定向子集回归触发：只重跑最近一次快照 ``failures``（失败+错误）与
+        ``long_tests``（长耗时）用例的并集。写同一
+        ``.fenix/regression_request.json`` 信号（payload 增
+        ``"scope": "issues"``），nodeid 子集由 daemon 消费端按消费时点快照
+        计算（D2：映射依赖 exec_root 在盘探测，端点不做）；本端点只做
+        「快照有异常用例」的机械守卫并写信号，MUST NOT 在 HTTP 线程内同步
+        映射/派发。
+
+        守卫链与 run 端点一致（共享 ``_regression_trigger_guards``），另加
+        快照两道校验（与 fix 端点共享 ``_require_issue_snapshot`` 单点实现，
+        item 685a914a959c）：
+        - 快照缺失/损坏/不可解析 → 400 ``regression_never_run``
+        - failures 与 long_tests 均空且 status 非 timeout → 400
+          ``regression_no_issues``（timeout 整体超时伪行非用例，仍受理——
+          子集计算在消费端自然回退全量）
+        - 受理 → 200 + {ok, requested_at}；写入失败 500 / 信号已存在 409
+          ``regression_request_pending`` 与 run 端点同款
+        """
+        guards = self._regression_trigger_guards(query)
+        if guards is None:
+            return
+        proot = guards[1]
+
+        # 快照两道校验收敛在 _require_issue_snapshot（item 685a914a959c 去重，
+        # 判定口径与 fix 端点单点同源），此处只留 run-issues 端点的文案
+        if not self._require_issue_snapshot(
+            proot, "最近一次回归无异常用例，无需定向重跑",
+        ):
             return
 
         # 键名契约与 run 端点一致，payload 增 scope: "issues"（消费端对无
@@ -570,8 +596,10 @@ class H12RegressionRoutesMixin:
     def _api_regression_fix(self, query):
         """POST /api/regression/fix — query project（add-regression-auto-fix 2.1）
 
-        手动「自动修复回归问题」：校验最近一次回归快照存在且问题列表非空后，
-        写 ``.fenix/regression_fix_request.json`` 文件信号 → daemon 主循环消费
+        手动「自动修复回归问题」：校验最近一次回归快照存在且问题列表非空后
+        （快照两道校验与 run-issues 端点共享 ``_require_issue_snapshot``，
+        item 685a914a959c），写 ``.fenix/regression_fix_request.json`` 文件
+        信号 → daemon 主循环消费
         （``fenixd._check_regression_fix_requests`` 读快照转换为 code-fix 台账
         条目并以 ``override_enabled=True`` 投递）。MUST NOT 在 HTTP 线程内
         同步转换/投递。
@@ -594,34 +622,11 @@ class H12RegressionRoutesMixin:
             return
         proot = Path(project["path"])
 
-        # 快照校验（读侧契约与 core.regression.read_result 一致：缺失 →
-        # never_run，损坏 → parse_error；统一归 never_run 拒绝）
-        from core.regression import read_result
-
-        try:
-            snapshot = read_result(str(proot))
-        except Exception:  # noqa: BLE001 — 读侧任何异常按缺失兜底（宁拒勿 500）
-            snapshot = {"status": "never_run"}
-        status = str(snapshot.get("status") or "") if isinstance(snapshot, dict) else ""
-        if status in ("", "never_run", "parse_error"):
-            self._coded_error(
-                400, "最近一次回归快照缺失或不可解析，请先执行一次全量回归",
-                "regression_never_run",
-            )
-            return
-
-        # 问题列表非空守卫：failures 非空 / long_tests 非空 / 整体超时 三者其一
-        failures = snapshot.get("failures")
-        long_tests = snapshot.get("long_tests")
-        has_issues = (
-            (isinstance(failures, list) and len(failures) > 0)
-            or (isinstance(long_tests, list) and len(long_tests) > 0)
-            or status == "timeout"
-        )
-        if not has_issues:
-            self._coded_error(
-                400, "最近一次回归无异常用例，无需修复", "regression_no_issues",
-            )
+        # 快照两道校验收敛在 _require_issue_snapshot（item 685a914a959c 去重，
+        # 与 run-issues 端点单点同源），此处只留 fix 端点的 no_issues 文案
+        if not self._require_issue_snapshot(
+            proot, "最近一次回归无异常用例，无需修复",
+        ):
             return
 
         # 消费方守卫（item be459dd18625；item fcadb893a1c8 收敛至共享
@@ -743,28 +748,38 @@ class H12RegressionRoutesMixin:
             proc = None  # Popen 自身抛异常（如 claude 不在 PATH）时下方兜底无进程可清场
             try:
                 # [fenix-ignore:3a5492245966] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
-                proc = subprocess.Popen(
-                    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
-                    cwd=str(proot),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 等
-                    # 非 UTF-8 locale 启动的 daemon 读中文管道会抛
-                    # UnicodeDecodeError（item 8771db5cac23）；errors=replace
-                    # 保证坏字节不再中断起草（对齐 ocr_status.py 同款修复）
-                    encoding="utf-8",
-                    errors="replace",
-                    # 独立会话组（对齐 verify_engine/cli_runner 惯例）：超时可
-                    # killpg 整组清场，杜绝只杀直接子进程留下的孤儿孙进程
-                    start_new_session=True,
-                    # 剥离 agent-run 专用环境键（与 architecture_routes
-                    # ._build_spawn_env 同口径，item c6630211c148）：一次性
-                    # 起草与 agent-run 无关，MUST NOT 注入 agent-run 上下文
-                    env=_build_spawn_env(),
-                )
-                # 登记（item dffc01af10fa）：句柄供 dashboard 退出链收割
-                _register_autodraft_proc(proc)
+                # 持登记锁完成 spawn + 登记（item 87e3191349e9）：登记原来在
+                # Popen 返回之后才执行，两句之间（含 Popen 内部 fork/exec 释放
+                # GIL 的窗口，子进程彼时已以 start_new_session 独立组存在）若
+                # serve() finally 走 reap_all_autodraft()，本进程组不在快照集合
+                # 里、不会被 killpg——孤儿以 bypassPermissions 继续写目标项目
+                # verify.yaml / git index。临界区罩住整个 Popen 后，退出链在锁
+                # 上排队：要么在本进程组入集合之后才快照（必然收割），要么在
+                # 本进程组 spawn 之前就已快照（无可收割对象，残余竞态固有不
+                # 可闭合）。communicate 的长等待必须留在锁外。
+                with _AUTODRAFT_PROCS_GUARD:
+                    proc = subprocess.Popen(
+                        ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
+                        cwd=str(proot),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 等
+                        # 非 UTF-8 locale 启动的 daemon 读中文管道会抛
+                        # UnicodeDecodeError（item 8771db5cac23）；errors=replace
+                        # 保证坏字节不再中断起草（对齐 ocr_status.py 同款修复）
+                        encoding="utf-8",
+                        errors="replace",
+                        # 独立会话组（对齐 verify_engine/cli_runner 惯例）：超时可
+                        # killpg 整组清场，杜绝只杀直接子进程留下的孤儿孙进程
+                        start_new_session=True,
+                        # 剥离 agent-run 专用环境键（与 architecture_routes
+                        # ._build_spawn_env 同口径，item c6630211c148）：一次性
+                        # 起草与 agent-run 无关，MUST NOT 注入 agent-run 上下文
+                        env=_build_spawn_env(),
+                    )
+                    # 登记（item dffc01af10fa）：句柄供 dashboard 退出链收割
+                    _register_autodraft_proc(proc)
                 stdout, stderr = proc.communicate(timeout=AUTODRAFT_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 # 清场收敛在 _reap_autodraft_proc（item 54b12852e6bd，此前与
