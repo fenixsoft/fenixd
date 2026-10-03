@@ -39,3 +39,10 @@
 | wc-sizing-config-explicit-section | 墙钟 sizing 显式配置生效与关闭：enabled=false 关闭、threshold=50 独立生效、extra=0 合法（显式不抬非回退）（core/fast_track_result.py:528-539） | pass | 0/5 | - |
 | wc-lift-tier-scale-threshold | 档位函数规模阈值判定：scale 严格大于阈值才抬（60>45 抬、45 等值不抬、10 不抬）、只抬不压、disabled/非法 scale 回 base（core/fast_track_result.py:556） | pass | 0/8 | - |
 | wc-lift-tier-idempotent | 档位幂等契约：同 scale 重复调用结果恒定（档位入参取启动同源总规模，不以 remaining_tasks 回算的基础保证）（core/fast_track_result.py:556） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 16 个（第 1 轮）。
+
+- 首轮写入 16 个场景
+
