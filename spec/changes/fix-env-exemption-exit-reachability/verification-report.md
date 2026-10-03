@@ -43,3 +43,10 @@
 | governance-help-doc-choices | 帮助文档裁决选项段含 inconclusive_loop 三选项语义与授予豁免后 verified 链路说明（docs/help/06-governance.md 交付物 L298-310；GET /api/help/doc?name=06-governance.md，出处 core/dashboard/routes/base.py:565 + core/dashboard/routes/help_routes.py:90-119） | pass | 0/7 | - |
 | handshake-legacy-tests-updated-pass | 既有握手测试回归通过：tests/test_verify_env_handshake.py 中断言级二旧自动重验时序的用例已更新为新语义（test_mixed_form_all_env_assertions_first_hit_parks 取代旧 requeues 命名）且全文件 20 用例通过（tasks 5.4） | pass | 0/3 | - |
 | new-tests-full-suite-pass | 新建配套测试全量通过：tests/test_env_exemption_exit_reachability.py 收集无错误、假 notifier/store 注入（_FakeLogger + MagicMock）不真调网关、全部 15 用例通过（tasks 5.1-5.3） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 20 个（第 1 轮）。
+
+- 首轮写入 20 个场景
+
