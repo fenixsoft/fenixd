@@ -92,6 +92,16 @@ class QQQueueMixin:
         # 在飞数即豁免上限计量（_PARALLEL_PLAN_INFLIGHT_CAP），与
         # agents.max_concurrent 解耦（调大实现并发不放大豁免上限）。
         self._active_parallel_plans: set = set()
+        # verify 车道同 spec 单飞在飞集合（evo-add-verify-dispatch-single-flight
+        # 1.1）：spec 名集合，键=spec_name。verifier 条目占实现槽位（_active_runs，
+        # 出队分流 else 分支照常递增），本集合只做同 spec 防双路验证的守卫判据，
+        # 不参与槽位计量。生命周期对齐 _active_reviews：入队去重（_enqueue/
+        # _enqueue_front 扩展为「未派发队列∪在飞」双查）＋出队分流锁内置位
+        # （与 pop 同 _queue_lock 锁段，MUST NOT 延后到线程启动的「派发成功」点
+        # ——neutralize-pack 事故第一路入队到派发仅约 13ms，登记晚于出队则
+        # 「已出队未登记」窗口内第二路入队双查落空）＋worker finally 幂等摘除
+        # （异常路径也摘除）。
+        self._active_verifies: set = set()
         # Pending (priority, spec_name, agent_type, enqueued_at) tuples。
         # enqueued_at 为入队时刻 time.time()，仅供内存态老化计时（design D3）：
         # 不持久化，daemon 重启重建队列即视为等待清零。
@@ -203,6 +213,20 @@ class QQQueueMixin:
         priority = self._pm._get_spec_priority(spec_name)
         entry = (priority, spec_name, agent_type, time.time())
         with self._queue_lock:
+            # verify 单飞守卫（evo-add-verify-dispatch-single-flight 1.1）：同 spec
+            # 已有在飞验证 run → 拒绝＋结构化留痕，不排队（design 决策 2：拒绝优于
+            # 排队——「在飞即排队」需引入延迟派发语义，而在飞 run 收工自有终态
+            # 收口，重复条目只会派出第二个并发验证；对齐
+            # fix-admin-cross-type-duplicate-dispatch 先例）。
+            if agent_type == "verifier" and spec_name in self._active_verifies:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"verify 单飞守卫：'{spec_name}' 已有在飞验证，拒绝重复入队"
+                    f" ({agent_type})",
+                    {"spec": spec_name, "agent_type": agent_type,
+                     "guard": "verify_single_flight", "path": "enqueue"},
+                )
+                return
             # 去重：忽略 priority 差异，只看 (spec, agent)
             if not any(e[1] == spec_name and e[2] == agent_type for e in self._run_queue):
                 self._run_queue.append(entry)
@@ -233,6 +257,18 @@ class QQQueueMixin:
         priority = self._pm._get_spec_priority(spec_name)
         entry = (priority, spec_name, agent_type, time.time())
         with self._queue_lock:
+            # verify 单飞守卫（evo-add-verify-dispatch-single-flight 1.1）：同 spec
+            # 已有在飞验证 → 拒绝＋结构化留痕（repair 链成功/异常尾段
+            # _enqueue_front 与 admin 复位直通道均汇聚本入口，命中即不插队不排队）。
+            if agent_type == "verifier" and spec_name in self._active_verifies:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"verify 单飞守卫：'{spec_name}' 已有在飞验证，拒绝队首重入队"
+                    f" ({agent_type})",
+                    {"spec": spec_name, "agent_type": agent_type,
+                     "guard": "verify_single_flight", "path": "enqueue_front"},
+                )
+                return
             # Remove existing duplicate (ignoring priority)
             self._run_queue = [
                 e for e in self._run_queue if not (e[1] == spec_name and e[2] == agent_type)
@@ -755,6 +791,8 @@ class QQQueueMixin:
                 # （code-review item 76330e41877d：原仅 else 分支绑定，异常兜底
                 # 无条件引用对豁免车道存在 NameError 风险）。
                 base_prio = priority
+                # verify 单飞出队分流命中标记（锁内置位，出锁段留痕后丢弃条目）。
+                verify_flight_rejected = False
                 if agent_type == "spec-review":
                     # 评审条目不占实现车道槽位（design D2）：MUST NOT 增减
                     # _active_runs、MUST NOT 写 _active_priority_counts /
@@ -773,12 +811,42 @@ class QQQueueMixin:
                     self._active_parallel_plans.add(spec_name)
                     active_count = self._active_runs
                 else:
-                    self._active_runs += 1
-                    self._active_priority_counts[base_prio] = (
-                        self._active_priority_counts.get(base_prio, 0) + 1
-                    )
-                    self._active_priorities.add(base_prio)
-                    active_count = self._active_runs
+                    # verify 单飞出队分流守卫（evo-add-verify-dispatch-single-flight
+                    # 1.1）：锁内原子「查在飞→命中即拒绝留痕并丢弃条目→未命中即
+                    # 登记」。查/登记与 pop 同 _queue_lock 锁段完成——登记延后到
+                    # 线程启动的「派发成功」点（历史 :930-937 形态）会在「已出队
+                    # 未登记」窗口放进第二路（入队双查与出队查双双落空）。
+                    # 命中路径：条目已 pop 即丢弃（不重新入队，拒绝优于排队）；
+                    # 槽位从未递增（递增在本分支下方才发生），故只退还本拍准入
+                    # （recredit），MUST NOT 调 _rollback_dispatch_slot（那会把
+                    # _active_runs 减成负数）。
+                    if agent_type == "verifier" and spec_name in self._active_verifies:
+                        self._pm._transient_unseal_recredit()
+                        verify_flight_rejected = True
+                        active_count = self._active_runs
+                    else:
+                        if agent_type == "verifier":
+                            self._active_verifies.add(spec_name)
+                        self._active_runs += 1
+                        self._active_priority_counts[base_prio] = (
+                            self._active_priority_counts.get(base_prio, 0) + 1
+                        )
+                        self._active_priorities.add(base_prio)
+                        active_count = self._active_runs
+
+            if verify_flight_rejected:
+                # verify 单飞出队分流命中（evo-add-verify-dispatch-single-flight
+                # 1.1）：结构化留痕（对齐下方「Dispatching」打印点口径）后丢弃
+                # 条目继续扫描后队（拦截自己 ≠ 阻塞他人，条目不入队无热旋）。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"verify 单飞守卫：'{spec_name}' 已有在飞验证，拒绝重复派发"
+                    f"并丢弃条目",
+                    {"spec": spec_name, "agent_type": agent_type,
+                     "guard": "verify_single_flight", "path": "dequeue",
+                     "active_runs": active_count},
+                )
+                continue
 
             # ── 派发前同源草案收敛检查（evo-deliverable-declaration-drift-align
             # D3，同口径兜底）──
@@ -960,6 +1028,11 @@ class QQQueueMixin:
                 with self._queue_lock:
                     self._pm._transient_unseal_recredit()
                     if agent_type in ("implementer", "fast-track", "verifier"):
+                        if agent_type == "verifier":
+                            # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
+                            # flight 1.1）：闸门异常/线程启动失败路径与前置登记
+                            # 严格互逆（对齐 _active_reviews 分流回滚处置）。
+                            self._active_verifies.discard(spec_name)
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     elif agent_type == "spec-review":
                         self._active_reviews.discard(spec_name)
@@ -1002,6 +1075,11 @@ class QQQueueMixin:
                 with self._queue_lock:
                     self._pm._transient_unseal_recredit()
                     if agent_type in ("implementer", "fast-track", "verifier"):
+                        if agent_type == "verifier":
+                            # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
+                            # flight 1.1）：闸门异常/线程启动失败路径与前置登记
+                            # 严格互逆（对齐 _active_reviews 分流回滚处置）。
+                            self._active_verifies.discard(spec_name)
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     elif agent_type == "spec-review":
                         self._active_reviews.discard(spec_name)
@@ -2248,6 +2326,12 @@ class QQQueueMixin:
                     # _active_priorities（条目从未递增它们）。
                     self._active_parallel_plans.discard(spec_name)
                 else:
+                    if agent_type == "verifier":
+                        # verify 单飞在飞摘除（evo-add-verify-dispatch-single-flight
+                        # 1.1）：worker 收工（成功或异常路径经 finally 兜底）即
+                        # 放行同 spec 后续合法重验（spec Scenario「在飞结束后
+                        # 放行」）。
+                        self._active_verifies.discard(spec_name)
                     self._active_runs -= 1
                     # 宽松优先级：按优先级计数释放，仅当该档最后一个 run 结束才移除该档，
                     # 避免多档并发时把仍活动的档位误移除（fix：多档并发）

@@ -617,6 +617,11 @@ class PRepairLaneMixin:
                             f"consume_legacy 清理失败 '{spec_name}'（非阻塞）: "
                             f"{type(e).__name__}: {e}",
                         )
+                    # verify 单飞守卫（evo-add-verify-dispatch-single-flight 1.3）：
+                    # repair 链成功尾段经 _enqueue_front 入队，与 spec_implemented
+                    # 事件/admin 复位直通道共用同一守卫入口——同 spec 已有在飞
+                    # 验证时此处为空操作（_enqueue_front 内拒绝＋结构化留痕），
+                    # 在飞 run 收工后由既有通道重新入队。
                     self._enqueue_front(spec_name, "verifier")
                     self._pm.logger.info(
                         "pm_engine",
@@ -676,6 +681,8 @@ class PRepairLaneMixin:
                             f"'{spec_name}'（非阻塞）: {e3}",
                         )
                     try:
+                        # verify 单飞守卫同上（evo-add-verify-dispatch-single-flight
+                        # 1.3）：异常恢复尾段与成功尾段共用 _enqueue_front 守卫入口。
                         self._enqueue_front(spec_name, "verifier")
                     except Exception as e4:
                         self._pm.logger.warning(

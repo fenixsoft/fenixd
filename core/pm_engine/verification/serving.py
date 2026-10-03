@@ -923,6 +923,11 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 ),
                 logger=pipeline._context.logger,
             )
+            # 主树 prepare 并发护栏（evo-add-verify-dispatch-single-flight 2.2）：
+            # 本路径 project_root=主检出，run_prepare_steps 内按主检出判定自动
+            # 持 .fenix/verify-prepare.lock 主机锁串行——两路验证并发 clean/构建
+            # 互擦产物（neutralize-pack 事故）由此拦截；worktree 路径（:152）
+            # 天然 run 级隔离不加锁。
             err = _facade.run_prepare_steps(contract, pipeline._context.project_root)
             if err:
                 return False, False, f"验证契约 prepare 失败: {err}"
@@ -986,6 +991,11 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 ),
                 logger=pipeline._context.logger,
             )
+            # 主树 prepare 并发护栏（evo-add-verify-dispatch-single-flight 2.2）：
+            # 本路径 project_root=主检出，run_prepare_steps 内按主检出判定自动
+            # 持 .fenix/verify-prepare.lock 主机锁串行——两路验证并发 clean/构建
+            # 互擦产物（neutralize-pack 事故）由此拦截；worktree 路径（:152）
+            # 天然 run 级隔离不加锁。
             err = _facade.run_prepare_steps(contract, pipeline._context.project_root)
             if err:
                 return False, False, f"验证契约 prepare 失败: {err}"
