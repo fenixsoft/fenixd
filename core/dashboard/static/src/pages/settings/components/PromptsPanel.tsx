@@ -1,4 +1,4 @@
-import { Button, Input, Select, Typography, message } from 'antd';
+import { App, Button, Input, Select, Typography } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -42,6 +42,10 @@ function projectExtraOf(d: PromptsData | null | undefined, agentType: string): s
 }
 
 export default function PromptsPanel({ project }: PromptsPanelProps) {
+  // 提示经 App.useApp() 取上下文实例（code-review item 3254bd677d01）：antd v5
+  // 静态 message 不消费 App/ConfigProvider 上下文，与 index/useGatedFormPanel
+  // 及同族面板口径统一
+  const { message } = App.useApp();
   const [data, setData] = useState<PromptsData | null>(null);
   const [activeAgent, setActiveAgent] = useState<string>('implementer');
   const [extraDraft, setExtraDraft] = useState<string>('');

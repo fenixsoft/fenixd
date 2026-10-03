@@ -191,11 +191,25 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 实现尝试预算上限<span className="label-note">（agents.impl_run_budget_max，1-1000）</span>
               </>
             }
+            // 反向依赖（code-review item 7376981b5b9b）：上方「预算」字段仅单向
+            // 依赖本字段校验「预算 ≤ 上限」；反方向先填大预算再改小上限时，
+            // 本字段自身校验仍通过、可保存出 budget > max 组合（保存后被后端
+            // 静默夹紧且无提示），故本字段反向依赖预算做对向一致性校验
+            dependencies={['impl_run_budget']}
             rules={[
               { required: true, message: '请输入实现尝试预算上限' },
               POSITIVE_INT_RULE,
               // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
               { type: 'integer', min: 1, max: 1000, message: '实现尝试预算上限须为 1-1000 的正整数' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  const budget = getFieldValue('impl_run_budget');
+                  if (value == null || budget == null || value >= budget) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('实现尝试预算上限须不小于实现尝试预算'));
+                },
+              }),
             ]}
             style={{ marginTop: 24 }}
           >
@@ -279,7 +293,24 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                     higher 档阈值<span className="label-note">（agents.scale_precheck.higher_threshold）</span>
                   </>
                 }
-                rules={[{ required: true, message: '请输入 higher 档阈值' }, POSITIVE_INT_RULE]}
+                // 反向依赖（code-review item 7376981b5b9b）：下方 full 字段仅单向
+                // 依赖本字段校验「full > higher」；反方向先填小 full 再改大 higher
+                // 时不重校验会漏拦 higher ≥ full 组合，故本字段反向依赖 full 做
+                // 对向一致性校验
+                dependencies={['scale_precheck_full']}
+                rules={[
+                  { required: true, message: '请输入 higher 档阈值' },
+                  POSITIVE_INT_RULE,
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      const full = getFieldValue('scale_precheck_full');
+                      if (value == null || full == null || value < full) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error('higher 档阈值须小于 full 档阈值'));
+                    },
+                  }),
+                ]}
                 style={{ marginTop: 24 }}
               >
                 <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="分" />
