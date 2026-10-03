@@ -458,7 +458,9 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
       const hasLegacyText =
         ev.type === 'system' && typeof ev.content === 'string' && ev.content.trim() !== '';
       if (!hasLegacyText) {
-        const errorPayload = strField(rec, 'error').trim();
+        // error 载荷可能为对象形态（见 payloadText 注释），与 :390 终态分支
+        // 同一文本化口径，strField 会把非字符串 error 判空导致整段静默
+        const errorPayload = payloadText(rec.error).trim();
         if (!errorPayload) continue;
         pushSystem(`系统事件（${kind}）：${truncateText(errorPayload, 80)}`, timestamp);
         continue;
