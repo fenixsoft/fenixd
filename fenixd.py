@@ -702,7 +702,17 @@ class FenixDaemon:
         # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
         _clear_preserve_sidecar()
 
-        self.worktree_manager.cleanup_stale_worktrees()
+        # 启动清扫 non-blocking 包裹（code-review item ea0ba60cd65f）：清扫内
+        # 仍有未纳入其内部 try 的路径（活进程探测 / spec 解析 / 快照留档等），
+        # 任何异常不得中断后续启动序列（v2_cleanup_orphans、event_bus.start
+        # 等），与周边启动步骤的 non-blocking 口径一致。
+        try:
+            self.worktree_manager.cleanup_stale_worktrees()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Stale worktree cleanup failed (non-blocking, daemon 启动继续): {e}",
+            )
 
         # add-worktree-test-server（D2 启动清扫）：上次异常退出遗留的 dev-server 进程
         # 在 daemon 重启时早已失活（worktree 已清），需按命令行标记回收端口。

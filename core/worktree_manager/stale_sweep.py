@@ -33,7 +33,16 @@ class G7StaleSweepMixin:
         孤儿——宽限期内的遗产保持不动，宽限期外的遗产在此被兜底清除。
         """
         # 宽限期兜底回收：超时遗产由 sweeper 在此清除并记审计（设计 D2）。
-        self._reclaim_expired_legacy()
+        # non-blocking 承诺（code-review item ea0ba60cd65f）：回收链内的
+        # 分支保护判定等异常不得中断启动清扫，与 docstring「失败记 WARNING，
+        # 不阻塞 daemon 启动」对齐——降级 WARNING 后继续扫孤儿。
+        try:
+            self._reclaim_expired_legacy()
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy grace-period reclaim failed (non-blocking): {e}",
+            )
         if not self.base_dir.exists():
             return
         # 在册遗产 worktree 名集合（宽限期内豁免）。循环前一次性物化快照
@@ -49,7 +58,18 @@ class G7StaleSweepMixin:
         # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
         # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
         # 物化后删除不再作用于正在扫描的目录流。
-        for wt_dir in sorted(self.base_dir.iterdir()):
+        # 二次容错（code-review item ea0ba60cd65f）：exists() 检查后 base_dir
+        # 被并发移除时 iterdir 抛 FileNotFoundError/NotADirectoryError，按
+        # non-blocking 承诺降级 WARNING、本轮放弃清扫（下轮重启再扫）。
+        try:
+            stale_dirs = sorted(self.base_dir.iterdir())
+        except OSError as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale worktree scan failed (non-blocking): {e}",
+            )
+            return
+        for wt_dir in stale_dirs:
             if not wt_dir.is_dir() or str(wt_dir) in self._active_worktrees:
                 continue
             # 遗产豁免（add-recovery-legacy-check D2）：宽限期内不得清，留给后继 run 收编
@@ -177,16 +197,41 @@ class G7StaleSweepMixin:
                                 f"Stale branch delete failed (non-blocking): "
                                 f"'{branch}' — {del_res.stderr.strip()}",
                             )
+                elif not branch and not wt_dir.exists():
+                    # 分支名识别失败（rev-parse 非零退出，gitdir 损坏等）且
+                    # worktree 已删：分支处置（在飞引用保护 + 删除）整体跳过，
+                    # 残留分支成为无留痕孤儿——与同函数 remove 失败 / 删除失败
+                    # 路径同款 WARNING 留痕口径，不留「目录已删、分支静默残留
+                    # 无线索」的观测盲区（rmtree 兜底也失败的场合目录仍在、
+                    # 下轮可重试，不在此列）。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Stale worktree branch name unresolved (rev-parse "
+                        f"failed, non-blocking): '{wt_dir}' — in-flight "
+                        f"protection and branch delete skipped, branch kept "
+                        f"as-is for manual inspection",
+                    )
             except Exception as e:
                 self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
         # 收尾 prune 同样不得抛穿（297556cff10d）：与循环体一致降级 WARNING，
         # 不阻塞 daemon 启动清扫。
         try:
-            subprocess.run(
+            prune_res = subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
                 capture_output=True,
+                text=True,
                 timeout=10,
             )
+            if prune_res.returncode != 0:
+                # 非零退出同样留痕（引用锁、.git/worktrees 残留锁冲突等会令
+                # 陈旧注册静默残留且无下游信号兜底），对齐
+                # legacy_registry._physically_reclaim_legacy 的 prune
+                # returncode 检查 + WARNING 口径，兑现上方注释声明。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Final worktree prune failed (non-blocking): "
+                    f"{(prune_res.stderr or '').strip()[:200]}",
+                )
         except (subprocess.TimeoutExpired, OSError) as e:
             self.logger.warning(
                 "worktree_manager",
@@ -248,7 +293,11 @@ class G7StaleSweepMixin:
             spec 的实现分支（``<prefix>/<spec>-<ts>``，解析统一走
             ``_impl_branch_owned_by_spec``（queries G8），口径同
             D2/find_branches_by_spec：去前缀后末段纯数字时间戳、其前段与
-            spec 名全等）——覆盖锚点尚未落盘的场合。
+            spec 名全等）——覆盖锚点尚未落盘的场合；
+        (c) ``blocked`` 且 ``frozen`` + ``_frozen_hold`` 的 spec，其 ``branch``
+            字段值属冻结保持引用（add-freeze-stop-inflight-agents 2.7）：
+            冻结终止的保留分支所在 spec 状态是 blocked（不在 (a) 的豁免集
+            内），解冻前不得删，否则「解冻后续做」降级为从零重派。
 
         Returns: ``(kept: bool, reason: str)``；STATE 不可解析时 ``(True, ...)``
         保守保留。
@@ -260,6 +309,16 @@ class G7StaleSweepMixin:
             return True, "STATE 不可解析，保守保留"
         # (a) 字段值直接命中
         for sname, entry in states.items():
+            if not isinstance(entry, dict):
+                # 条目形态异常（上游反序列化产出 list/str 等）与
+                # _read_state_entries 顶层归一同款保守姿态：按读取异常处理、
+                # 保守保留分支，不抛 AttributeError——本守卫令下方 (a)/(b)
+                # 两个循环均不再触达非 dict 条目（异常逃逸会在 cleanup 路径
+                # 被吞成笼统告警、在 legacy 回收链一路传播中断启动清扫）。
+                return True, (
+                    f"STATE 条目形态异常（{sname}: {type(entry).__name__}），"
+                    f"保守保留"
+                )
             status = entry.get("status", "")
             if status in ("implementing", "implemented", "testing", "ready"):
                 if entry.get("branch") == branch:
@@ -281,7 +340,7 @@ class G7StaleSweepMixin:
         # 边界解析统一走 _impl_branch_owned_by_spec（9dd92d791918 三处内联
         # 归一：去前缀 + 末段纯数字时间戳 + 前段与 spec 名全等、verify- 结构
         # 判别剔除）；前缀并集 {"fenix", 配置值} 口径不变。
-        prefixes = ("fenix", self._implement_branch_prefix or "fenix")
+        prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
         for sname, entry in states.items():
             if entry.get("status") != "implementing":
                 continue
