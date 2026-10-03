@@ -32,3 +32,10 @@
 | pytest-code-fix-existing-suite-regression | 既有 code-fix 车道套件回归（tasks 3.2：tests/test_code_fix.py 补 defer 路径不变/兜底入档现状一致/日志留痕断言后全绿；本 SPEC 改写 _run_batch_created 真冲突分支 core/code_fix.py:4424-4460，既有合回冲突/现场即弃/defer 语义锁必须全过）：python3 -m pytest tests/test_code_fix.py -q 全部通过（-q 汇总行含 passed）。 | pass | 0/2 | - |
 | pytest-code-fix-related-lanes-regression | 相关 code-fix 车道套件回归：wip 预检（test_code_fix_wip_precheck.py，defer/预检路径）、条级进度（test_code_fix_item_level_progress.py）、手动触发（test_code_fix_manual_trigger.py）、既有 salvage 机制（test_code_fix_salvage.py：api_timeout/stranded 救回与本 SPEC 救回同函数邻域）、亲和性聚批（test_code_fix_affinity_batching.py，本场景批构造依赖其同目录聚批语义）、启动阶段可见性（test_code_fix_startup_stage_visibility.py）全部通过——救回插入不得外溢扰动相邻车道。 | pass | 0/2 | - |
 | contract-codefix-agent-items-body-annotation | commit 契约增强落盘（tasks 2.2）：agents/code-fix.md 的 commit 契约补 body 的 item_id 结构化标注约定（items: 前缀清单——该锚今天不在文件中，落地后才出现；probe-salvage-cherry-pick-partial-recovery 的组归属解析即消费此约定）；既有「逐组提交或收尾一次提交」弹性表述保留（item_id 引用仍在场）。 | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
