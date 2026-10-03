@@ -322,6 +322,13 @@ SIGNAL_SEVERITY = {
     # 人工告警族，差异只在数据源（本信号来自 daemon 周期只读盘点，非 defer
     # 批占用者协调）。由 STORED_SIGNAL_TYPES 收录，admin_monitor 摄取唤起。
     "maintree_stray_wip_stale": "major",
+    # add-verify-evidence-placement-contract 2.2：主树 untracked 散件超阈值
+    # 滞留（entry 级周期盘点）——info 级「只告警不处置」：AdminStore 纯留痕
+    # （不进人工队列、无处理生命周期）、Dashboard 承载可见性。**MUST NOT
+    # 收录 STORED_SIGNAL_TYPES**：摄取循环对收录类型无条件唤起、无 severity
+    # 过滤，收录即把 info 留痕升级为人工唤起，与降噪意图相抵（info 级 +
+    # 阈值 + 同指纹一次性三重兜底，观察误报率后再调）。
+    "maintree_untracked_stray_stale": "info",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -402,6 +409,10 @@ SIGNAL_RECOMMENDATION = {
     # 盘点信号无 spec 可重派，指向人工提交/stash（姊妹信号
     # mergeback_wip_orphan_stuck 同款批语义适配）。
     "maintree_stray_wip_stale": "主树散件 WIP 滞留宽限耗尽（周期盘点归因在飞实现车道零命中，无人认领）：人工核对主树未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树这些改动；文件清单与滞留起点见 evidence（含盲区注记——worktree 分支型在飞车道之外的主树直改形态会被按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后盘点状态自动复位",
+    # add-verify-evidence-placement-contract 2.2：untracked 散件处置指引——
+    # 复制 maintree_stray_wip_stale「只告警不处置」模板：info 级不唤起人工、
+    # 不派生自动处置，本信号只增可见性（豁免注记与证据落位约定见 evidence）。
+    "maintree_untracked_stray_stale": "主树 untracked 散件超阈值滞留（周期盘点，info 级只告警不处置，不唤起人工）：本告警不派生任何自动处置；人工按需核对主树这些 untracked 文件归属后自行决定挪入证据落位目录 .fenix/verify-evidence/<spec>/、补 ignore 规则或删除；文件清单、阈值与滞留起点见 evidence（.fenix/ negation 放行项与已 ignore 路径不计入）。同指纹一次性告警，指纹消失后盘点状态自动复位",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。

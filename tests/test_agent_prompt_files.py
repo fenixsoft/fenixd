@@ -261,7 +261,8 @@ class TestProjectExtraPrompt:
                 encoding="utf-8"),
             "verifier", "demo", None,
         ) + runner._prompt_builder._verifier_breakpoint_section("demo") \
-            + runner._prompt_builder._noninteractive_contract_section()
+            + runner._prompt_builder._noninteractive_contract_section() \
+            + runner._prompt_builder._evidence_placement_section("demo")
         assert prompt == baseline
 
     def test_empty_extra_file_zero_injection(self, tmp_path):

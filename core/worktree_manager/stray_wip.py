@@ -36,6 +36,17 @@ from pathlib import Path
 # 告警信号类型（admin_monitor 三表登记单源，见 core/admin_monitor.py）。
 SIGNAL_TYPE = "maintree_stray_wip_stale"
 
+# untracked 散件滞留一次性告警（add-verify-evidence-placement-contract 2.1）：
+# info 级「只告警不处置」。admin_monitor 仅两表登记（SIGNAL_SEVERITY /
+# SIGNAL_RECOMMENDATION），**MUST NOT 收录 STORED_SIGNAL_TYPES**——摄取循环
+# 对收录类型无条件唤起、无 severity 过滤，收录即把 info 留痕升级为人工唤起，
+# 与降噪意图相抵（可见性由 AdminStore 留痕与 Dashboard 承载）。
+UNTRACKED_SIGNAL_TYPE = "maintree_untracked_stray_stale"
+
+# untracked 散件告警阈值缺省（entry 个数）：info 级降噪起步，低于阈值不计
+# 时不告警——构建型项目散件天然多，阈值兜噪声（design 风险条目）。
+DEFAULT_UNTRACKED_THRESHOLD = 5
+
 # 宽限缺省 30 分钟（对齐 admin.mergeback_wip_orphan_grace_minutes 先例量级）。
 DEFAULT_GRACE_MINUTES = 30.0
 
@@ -65,6 +76,31 @@ def grace_minutes(config) -> float:
     if val != val or val < 0 or val == float("inf") or val > _MAX_GRACE_MINUTES:
         return DEFAULT_GRACE_MINUTES
     return val
+
+
+def untracked_stray_threshold(config) -> int:
+    """untracked 散件告警阈值（entry 个数）：``admin.maintree_untracked_stray_threshold``。
+
+    经 ConfigLoader 点号键读取，缺省 5（info 级降噪起步）：解析失败/负值/
+    NaN/inf/小于 1 一律回退缺省——阈值是降噪闸门，``0`` 会把任意 untracked
+    散件都升级成告警、等同关闭降噪，按配置事故回退处理（与 grace_minutes
+    允许 ``0`` 的「耗尽即升级」语义刻意不同：阈值小了只会更吵，宽限小了
+    只会更早报，方向相反）。
+    """
+    from core.config import ConfigLoader
+
+    try:
+        raw = ConfigLoader.get(
+            config, "admin.maintree_untracked_stray_threshold",
+            DEFAULT_UNTRACKED_THRESHOLD,
+        )
+        val = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_UNTRACKED_THRESHOLD
+    # NaN 由 val != val 判别；<1（含 0/负值）按配置事故回退，见 docstring。
+    if val != val or val < 1 or val == float("inf"):
+        return DEFAULT_UNTRACKED_THRESHOLD
+    return int(val)
 
 
 # 会话归因散件的盘点动作（evo-add-maintree-interactive-session-attribution 2.1）：
@@ -113,6 +149,11 @@ class MainTreeStrayWipSweeper:
         #   {"first_seen": epoch 秒, "first_seen_iso": str,
         #    "files": [路径...], "escalated_at": iso 或 ""}
         self._registry: dict = {}
+        # untracked 散件注册表（add-verify-evidence-placement-contract 2.1）：
+        # 形态同上，但指纹语义不同（路径排序集 + 逐文件内容 sha256——
+        # untracked 不进 git diff HEAD），与 tracked 注册表分账独立：
+        # tracked 侧各分支按「当前 tracked 指纹集」复位，混账会被他侧清空。
+        self._untracked_registry: dict = {}
 
     # ── 基础 ────────────────────────────────────────────────────────────
 
@@ -177,7 +218,16 @@ class MainTreeStrayWipSweeper:
             lock.release()
 
     def _sweep_locked(self, running_run_ids=()) -> "dict | None":
-        """sweep 实现体，调用方必须已持有 _main_tree_lock。"""
+        """sweep 实现体，调用方必须已持有 _main_tree_lock。
+
+        编排两路只读口径（add-verify-evidence-placement-contract 2.1）：
+        tracked 散件流（``_tracked_sweep_locked``，现行行为逐字节不变）+
+        untracked 散件信号流（entry 级判定）。untracked 盘点插桩在 tracked
+        空集早退**之前**——现行实现在 tracked 零改动时直接返回 clean，纯
+        untracked 场景若在其后判定，信号永不触发。untracked 结果以附加键
+        ``untracked``（子 dict）并入返回，既有键（status/files/fingerprint
+        等）取值不变——tracked 口径零改动，消费方按增量键取用。
+        """
         wm = self.worktree_manager
         # 1) tracked-only 脏判定（口径对齐 stash_guard._list_dirty_tracked_files，
         #    复用同一实现：porcelain 脏判定 / rename 两侧计入 / untracked 不计 /
@@ -190,7 +240,34 @@ class MainTreeStrayWipSweeper:
                 "conservative abandon, entries kept)",
             )
             return None
+        # 1.5) untracked 散件口径（2.1）：entry 级判定（porcelain -uall 逐文件
+        #      展开），豁免 .fenix/ negation 放行项与已 ignore 路径。git 查询
+        #      失败按放弃本轮（保守：条目保留，与 status 不可用同款处置）。
+        untracked = self._untracked_stray_entries()
+        if untracked is None:
+            self._log(
+                "warning",
+                "Stray WIP sweep skipped (untracked inventory unavailable; "
+                "conservative abandon, entries kept)",
+            )
+            return None
         files = list(wm._list_dirty_tracked_files(status_stdout=status))
+        result = self._tracked_sweep_locked(files, running_run_ids)
+        if result is None:
+            # tracked 侧放弃本轮（diff 失败/识别器缺失）：untracked 条目同轮
+            # 保留交下轮，注册表均不复位（保守不告警）。
+            return None
+        if not untracked:
+            self._reset_untracked_registry_absent(set())
+            return result
+        result["untracked"] = self._untracked_signal(untracked)
+        return result
+
+    def _tracked_sweep_locked(
+        self, files: list, running_run_ids=()
+    ) -> "dict | None":
+        """tracked 散件流（现行行为逐字节不变）：调用方必须已持有主树锁。"""
+        wm = self.worktree_manager
         if not files:
             self._reset_registry_absent(set())
             return {"status": "clean", "files": [], "fingerprint": ""}
@@ -315,6 +392,249 @@ class MainTreeStrayWipSweeper:
         """清除指纹不再出现的注册表条目（1.5 状态复位：不告警不残留）。"""
         for fp in [k for k in self._registry if k not in current_fingerprints]:
             del self._registry[fp]
+
+    # ── untracked 散件口径（add-verify-evidence-placement-contract 2.1）──
+
+    def _untracked_stray_entries(self) -> "list[str] | None":
+        """untracked 散件清单（entry 级，已豁免放行项与 ignore 路径）。
+
+        - ``git status --porcelain -uall``：untracked 逐文件展开（目录不折叠
+          成 ``dir/``），entry 级判定由此保证——混合目录里已 tracked 条目不
+          出现在 untracked 清单（verify-evidence/ 内已 tracked 条目不误报）；
+        - 豁免①：``.fenix/`` negation 放行项——``git check-ignore -v -n
+          --non-matching`` 对被 ``!`` 否定规则显式放行的路径输出以 ``!`` 开头
+          的规则行（如 ``!.fenix/verify.yaml``，实测样本：.fenix/ 为混合目录
+          时放行项恰恰以 ``??`` 形态出现在 porcelain 里），这是「框架有意
+          放行的运行时状态文件」的机械判据，零 .gitignore 自解析；
+        - 豁免②：已 ignore 路径——porcelain 缺省不列 ignored，check-ignore
+          复核兜底（非 ``!`` 规则命中的同样不计）；
+        - 无任何忽略规则的 ``.fenix/`` 证据散件**不豁免**（design 风险条目：
+          契约不依赖消费项目忽略规则成立，此类散件由本信号兜底可见性）。
+
+        git 查询失败返回 None（调用方按放弃本轮处置，条目保留）。check-ignore
+        以 --stdin 批量一次调用（散件多时避免逐路径子进程）；``-n
+        --non-matching`` 保证每个输入路径都有输出行（未匹配输出 ``::\t路径``），
+        按输出末列回映射、不依赖行序。
+        """
+        out = self._git("status", "--porcelain", "-uall")
+        if out is None:
+            return None
+        from core.worktree_manager.mergeback import _unquote_git_path
+
+        paths: list = []
+        for line in out.splitlines():
+            if not line.startswith("?? "):
+                continue
+            raw = line[3:].strip()
+            if raw:
+                paths.append(_unquote_git_path(raw))
+        if not paths:
+            return []
+        detail = self._git_check_ignore_detail(paths)
+        if detail is None:
+            return None
+        entries = []
+        for p in paths:
+            pattern = detail.get(p)
+            if pattern is None:
+                # check-ignore 未回该路径（异常形态）→ 保守不计入（宁漏勿误报）
+                continue
+            if not pattern:
+                entries.append(p)  # 无规则命中＝真散件
+            # 非 ``!`` 规则命中＝已 ignore（豁免②）；``!`` 开头＝negation
+            # 放行项（豁免①）——两者都不计入。
+        return sorted(entries)
+
+    def _git_check_ignore_detail(self, paths: list) -> "dict[str, str] | None":
+        """批量 ``git check-ignore -v -n --non-matching --stdin``。
+
+        返回 路径 → 匹配规则（未匹配 ``::`` 行归一为空串）；check-ignore 退出
+        码语义特殊（0=存在 ignored，1=全部未 ignored），1 是合法终态——与
+        ``_git`` 的「非零即失败」不同，此处只把超时/不可用/128 视为失败返回
+        None。规则行左段形如 ``<source>:<linenum>:<pattern>``，按前两个冒号切
+        分取 pattern（源文件路径含冒号的罕见形态由末列路径回映射兜住正确性）。
+        """
+        try:
+            res = subprocess.run(
+                [
+                    "git", "-C", str(self.project_root),
+                    "check-ignore", "-v", "-n", "--non-matching", "--stdin",
+                ],
+                input="\n".join(paths) + "\n",
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if res.returncode not in (0, 1):
+            return None
+        detail: dict = {}
+        for line in res.stdout.splitlines():
+            if "\t" not in line:
+                continue
+            left, echoed = line.split("\t", 1)
+            parts = left.split(":", 2)
+            detail[echoed] = parts[2] if len(parts) == 3 else ""
+        return detail
+
+    def _untracked_signal(self, entries: list) -> dict:
+        """untracked 散件滞留信号流（2.1）：阈值闸门 + 宽限计时 + 一次性告警。
+
+        记账/复位复用 tracked 形态（first_seen 注册表、同指纹一次性、指纹
+        消失自动复位），注册表独立（``_untracked_registry``）。阈值
+        （``admin.maintree_untracked_stray_threshold``，缺省 5）之下不告警
+        但照常建档计时——滞留时长从首次目击起算，越过阈值时已在场的散件
+        不因阈值调整重计。宽限复用 ``admin.maintree_stray_wip_grace_minutes``
+        （同族同语义，不膨胀配置面）。只告警不处置：info 级 AdminStore 留痕，
+        不派 major、不唤起人工。
+
+        Returns: 子 dict（并入 sweep 返回的 ``untracked`` 键）：status 取
+        ``below-threshold`` / ``timed`` / ``alerted``。
+        """
+        fp = self._untracked_fingerprint(entries)
+        now = time.time()
+        entry = self._untracked_registry.get(fp)
+        if entry is None:
+            entry = {
+                "first_seen": now,
+                "first_seen_iso": self._iso(now),
+                "files": list(entries),
+                "escalated_at": "",
+            }
+            self._untracked_registry[fp] = entry
+        else:
+            # 指纹不变沿用原 first_seen（与 tracked 流 D1 同款：不归零重计）；
+            # 仅刷新文件快照供告警 evidence 取最新清单。
+            entry["files"] = list(entries)
+        self._reset_untracked_registry_absent({fp})
+
+        threshold = untracked_stray_threshold(self._config)
+        count = len(entries)
+        if count < threshold:
+            return {
+                "status": "below-threshold",
+                "files": list(entries),
+                "count": count,
+                "threshold": threshold,
+                "fingerprint": fp,
+            }
+        grace = grace_minutes(self._config)
+        elapsed_min = (now - entry["first_seen"]) / 60.0
+        alerted = False
+        if elapsed_min >= grace and not entry.get("escalated_at"):
+            if self._write_untracked_alert(entry, fp, threshold, grace, elapsed_min):
+                entry["escalated_at"] = self._iso(now)
+                alerted = True
+        return {
+            "status": "alerted" if alerted else "timed",
+            "files": list(entries),
+            "count": count,
+            "threshold": threshold,
+            "fingerprint": fp,
+            "first_seen_iso": entry["first_seen_iso"],
+            "grace_minutes": grace,
+            "elapsed_minutes": round(elapsed_min, 3),
+        }
+
+    def _untracked_fingerprint(self, entries: list) -> str:
+        """untracked 散件指纹（2.1）：路径排序集 + 逐文件内容 sha256。
+
+        不可复用 tracked 形态（``git diff HEAD`` 哈希）：untracked 条目不进
+        diff，复用会退化为纯路径集哈希——日志追加/转储重写等内容演化不再被
+        计入，「同内容滞留」与「持续演化」两种形态不可分。路径与内容哈希用
+        NUL 分隔，防「文件列表拼接歧义」撞指纹（与 ``_fingerprint`` 同款）。
+        盘点与哈希之间文件被删改的竞态（OSError）按占位标记参与哈希：该
+        entry 下轮指纹自然变化、计时重起，不虚构内容哈希。
+        """
+        h = hashlib.sha256()
+        rels = sorted(str(p) for p in entries)
+        h.update("\x00".join(rels).encode("utf-8"))
+        h.update(b"\x00\x00")
+        for rel in rels:
+            digest = hashlib.sha256()
+            try:
+                with open(self.project_root / rel, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        digest.update(chunk)
+                content_fp = digest.hexdigest()
+            except OSError:
+                content_fp = "unreadable"
+            h.update(rel.encode("utf-8"))
+            h.update(b"\x00")
+            h.update(content_fp.encode("utf-8"))
+            h.update(b"\x00")
+        return h.hexdigest()
+
+    def _reset_untracked_registry_absent(self, current_fingerprints: set) -> None:
+        """清除指纹不再出现的 untracked 注册表条目（指纹消失自动复位）。"""
+        for fp in [
+            k for k in self._untracked_registry if k not in current_fingerprints
+        ]:
+            del self._untracked_registry[fp]
+
+    def _write_untracked_alert(self, entry, fp, threshold, grace, elapsed_min) -> bool:
+        """untracked 散件滞留一次性 info 告警（经 AdminStore.append 落盘）。
+
+        ``signal_type=maintree_untracked_stray_stale``：admin_monitor 仅两表
+        登记（SIGNAL_SEVERITY=info / SIGNAL_RECOMMENDATION「只告警不处置」
+        模板），**MUST NOT 收录 STORED_SIGNAL_TYPES**——摄取循环对收录类型
+        无条件唤起、无 severity 过滤，收录即把 info 留痕升级为人工唤起。
+        可见性由 AdminStore 留痕与 Dashboard 承载。AdminStore 拒写时返回
+        False（escalated_at 不落、下轮重试），不让告警静默蒸发。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+
+        files = list(entry.get("files") or [])
+        evidence = (
+            f"项目名={self.project_root.name}; "
+            f"first_seen={entry.get('first_seen_iso') or '?'}; "
+            f"滞留={round(elapsed_min, 1)}分钟; 宽限={grace:g}分钟; "
+            f"阈值={threshold}个entry; 指纹={fp[:16]}; "
+            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"计时口径: 内容指纹（untracked 路径排序集 + 逐文件内容 sha256"
+            f"——untracked 不进 git diff HEAD，不可复用 tracked 指纹形态）; "
+            f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入; "
+            f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
+            f"告警发出前后主树工作区状态未变"
+        )
+        store = AdminStore(self.project_root, logger=None)
+        rec = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": UNTRACKED_SIGNAL_TYPE,
+                "spec": None,
+                "severity": "info",
+                "description": (
+                    "主树 untracked 散件超阈值滞留（周期盘点，info 级只告警"
+                    f"不处置）：{len(files)} 个 untracked entry 自 first_seen "
+                    f"起超过宽限 {grace:g} 分钟。本告警不派生任何自动处置、"
+                    "不唤起人工，仅留痕供 Dashboard 呈现与人工核查"
+                ),
+                "evidence": evidence,
+                "source": "maintree-stray-wip-sweep",
+                "recommended_action": (
+                    "只告警不处置（info 级）：人工按需核对主树这些 untracked "
+                    "文件归属，挪入证据落位目录 .fenix/verify-evidence/<spec>/、"
+                    "补 ignore 规则或删除；文件清单与滞留起点见 evidence。"
+                    "同指纹一次性告警，指纹消失后盘点状态自动复位"
+                ),
+            }
+        )
+        if rec is None:
+            self._log(
+                "warning",
+                f"{UNTRACKED_SIGNAL_TYPE}: 告警写入被拒（AdminStore 拒写），"
+                f"未落盘——本轮不计升级标记，下轮盘点重试",
+            )
+            return False
+        self._log(
+            "info",
+            f"{UNTRACKED_SIGNAL_TYPE}: 主树 untracked 散件超阈值滞留"
+            f"（{len(files)} entry，first_seen={entry.get('first_seen_iso')}）"
+            f"已发一次性 info 告警: {', '.join(files)}",
+        )
+        return True
 
     # ── 告警（core/code_fix._write_defer_orphan_alert 同型）─────────────
 

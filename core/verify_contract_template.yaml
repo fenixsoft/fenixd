@@ -97,3 +97,12 @@
 #   url: /
 #   expect: 200
 #   timeout: 60
+
+# ── 验证证据落位目录（add-verify-evidence-placement-contract，可选）──────
+# 验证/核查 run 产生的原始证据（扫描结果/转储/探针产物）统一落消费项目主树
+# （绝对路径 = 项目根/<evidence_dir>），与 worktree 生命周期解耦——worktree
+# 销毁后报告引用不断链；报告本体只引用以主树根为基准的相对路径。
+# 缺省（本段保持注释=未声明）：.fenix/verify-evidence/<spec>/（<spec> 按
+# SPEC 名替换）。.fenix/ 被消费项目忽略规则覆盖，不产生 untracked 噪声。
+# 声明其它相对路径时以其为准；绝对路径/含 ".." 段等非法值回退缺省并告警。
+# evidence_dir: .fenix/verify-evidence/<spec>/
