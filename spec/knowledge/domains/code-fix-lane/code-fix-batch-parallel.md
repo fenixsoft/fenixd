@@ -1,7 +1,7 @@
 # code-fix 批内并行处置
 
-<!-- knowledge: capability=code-fix-batch-parallel rev=3
-     sources=spec/archive/2026-09-29-add-codefix-batch-parallel,spec/archive/2026-10-03-add-codefix-commit-first-contract -->
+<!-- knowledge: capability=code-fix-batch-parallel rev=4
+     sources=spec/archive/2026-09-29-add-codefix-batch-parallel,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-04-add-codefix-affinity-batching -->
 
 code-fix 批内多文件组时的并行修复协议：主 agent 以 orchestrator 身份派 Task 子代理并发处置各组，汇总落盘、统一验证提交；框架契约（单 run / 单 out_path / 回归+合回）保持不变。
 
@@ -12,7 +12,7 @@ code-fix 批内多文件组时的并行修复协议：主 agent 以 orchestrator
 - 分组沿用按 `file` 分组规则，组间文件互斥（同一条目的 file 唯一 → 组间无编辑交集）；跨组共享文件的场景与串行处理风险一致，不新增处理。
 
 ### 派发（波次语义）
-- 每组一个子代理；同波在飞子代理数 ≤ 框架按本批组数分档注入的上限（组数 ≤4 → 上限 4，5–8 组 → 上限 6，≥9 组 → 上限 8，8 为硬上限），防网关限流放大。
+- 每组一个子代理；同波在飞子代理数 ≤ 框架按本批文件组数分档注入的上限（分档数值与硬上限由选批/波次能力页单源定义，见 [codefix-affinity-batching](codefix-affinity-batching.md)「批内并行波次上限自适应」），防网关限流放大。
 - 同波全部子代理调用必须在同一条消息内发出（一条消息多个 Task 调用 = 真并发）；首波 MUST 一次打满在飞额度，MUST NOT 拆成多条消息逐个派发。
 - 每有一组完成落盘，立即补派下一组，直至全部组派完。
 - 子代理 prompt MUST 内联：该组条目 JSON；修复契约（最小改动、只处理本组条目、取证一次到位、`fenix-ignore` 忽略标记规则、out 行格式与 `item_id` 一致性纪律）；边界三禁——子代理 MUST NOT 自行写 `{out_path}`、MUST NOT 自行验证、MUST NOT 自行提交（含任何 git 写操作），只把修复改动落 worktree 文件并结构化返回每条目一行结果记录。
@@ -37,3 +37,4 @@ code-fix 批内多文件组时的并行修复协议：主 agent 以 orchestrator
 
 - 2026-09-29 2026-09-29-add-codefix-batch-parallel（spec/archive/2026-09-29-add-codefix-batch-parallel） — 新建本页：批内并行处置协议（多组批派子代理、单组批退化串行）、orchestrator 单写者落盘、三级失败兜底、汇总后一次定向验证；并发上限后演进为框架按批组数分档注入（4/6/8），提交时序并入「先 commit 再验证」契约（逐组提交合法）。
 - 2026-10-03 2026-10-03-add-codefix-commit-first-contract（spec/archive/2026-10-03-add-codefix-commit-first-contract） — 「汇总后一次验证一次提交」改写为「边修复边提交、收尾一次验证」：验证 MUST NOT 作为提交的前置条件（原「验证先行 + MUST NOT 多次提交」与先 commit 再验证契约互斥），逐组提交或收尾一次提交均合法，验证结果用于回归门前的自查补修、补修改动须再次 commit。
+- 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 派发节并发上限由模板固定常量改为框架按批内文件组数分档计算、经 `{wave_cap}` 占位符注入（分档 4/6/8，8 硬上限）；分档规则与缺省回退由 codefix-affinity-batching 页单源承载，本页只保留波次派发协议。

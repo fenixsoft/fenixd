@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=6
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes -->
+<!-- knowledge: capability=code-fix-lane rev=7
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -23,7 +23,7 @@
 - 审查 run 被停滞看门狗自动取消（见 [review-run-stall-watchdog](../code-review-lane/review-run-stall-watchdog.md)）时产物走急救落账、条目照常落 `open`，但取消收场 MUST NOT 激活修复链——激活仅由「成功收尾且本轮落账产生 `open` 条目」驱动（见「激活」）。
 
 ### 批次编排
-- 选批取台账 `open` 条目最早优先（按 `first_seen_at` 升序，缺省按 `item_id` 稳定排序），每批条目数 = `admin.code_review_fix.batch_size`（末批可少）；排除集 = 失败档案条目并集 ∪ `chain_skipped`（跳过语义见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)）。
+- 选批按文件亲和性贪心装箱：以文件组为最小不可拆单元，`admin.code_review_fix.batch_size` 为目标规模 T、硬上限 2T（装箱规则详见 [codefix-affinity-batching](codefix-affinity-batching.md)）；排除集 = 失败档案条目并集 ∪ `chain_skipped`（跳过语义见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)）。
 - 每批新建从当前 HEAD 起的独立 worktree（`worktree_manager.create(spec_name="code-review-fix", agent_type="code-fix")`），不复用上一批合回后的 worktree。
 - `create()` 返回 `None`（同名锁占用 / git 建树失败）时中止本次激活：不派 run、不合回，进度 `phase=failed`、`reason=worktree_create_failed`，条目保持 `open` 待下一轮 full scan 重试。
 - 批收尾为三态：`success`（合回并核销）/ `consumed`（该批条目已全部离开可选池）/ `halt`（环境性失败）；`success` 与 `consumed` 均自驱动推进下一批，仅 `halt` 终止链，完整路径映射与收敛保证见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)。
@@ -32,7 +32,7 @@
 - 批 worker 收尾后经 executor 再次投递检查点推进下一批（`success`/`consumed`），仅 `halt` 终止链、不投递，不得批内递归直调；台账无 `open` 条目时编排收尾（`running=false`），不空转派发。
 
 ### 回归门与合回
-- 回归门范围分轮：首轮为全量回归；定向重试轮（见「回归失败定向重试与丢弃」）的回归范围为上一轮失败用例集，定向轮回归通过即视为该批回归门通过，MUST NOT 再强制补跑一次全量。
+- 回归门范围按批位置分两段（分流规则详见 [codefix-affinity-batching](codefix-affinity-batching.md)）：链内非末批按批触碰面定向回归（配置关闭、cmd 无占位符或映射空集时回退全量），链末批恒全量兜底（末批在核销前按链选批同口径排除后判定）。在此基础上再分轮：某轮回归非 `passed` 时进入定向重试轮（见「回归失败定向重试与丢弃」），其回归范围为上一轮失败用例集，定向轮回归通过即视为该批回归门通过，MUST NOT 再强制补跑一次全量。
 - 回归复用 `core.regression.run_regression` 执行原语与项目 `verify.yaml` 的 `regression` 段契约，在该批 worktree 内执行（执行根 = worktree，`project_root` 取 worktree 路径）。
 - 回归与主树共用主机级套件锁：调用显式传 `lock_root=<主树根>`，锁文件为 `<主树根>/.fenix/full-suite.lock`；锁根锚定后回归命令工作目录仍为 worktree 根。`lock_root` 缺省回落 `project_root`；门面 `core/agent_runner/maintenance_runs.run_regression` 同步透传 `project_root` 与 `lock_root`，锁根与执行根语义对子集执行逐字不变。
 - 定向子集执行由门面承载：`run_regression` 接受可选失败用例集参数（`subset_nodeids`），项目命令为 pytest 形态且子集非空时，以该子集 nodeids **取代命令中的既有收集位置参数**（首个收集目标位放全部 nodeids、其余收集目标删除，`-q`/`--junit-xml` 等非收集旗标逐字保留）。MUST NOT 在命令尾部追加 nodeid——pytest 多位置参数为收集目标并集，追加会静默退化全量。命令非 pytest 形态、子集为空、无既有收集目标、含 shell 控制操作符或命令替换记号时忽略子集回退全量（fail-closed）。
@@ -71,3 +71,4 @@
 - 2026-10-03 2026-10-03-add-codefix-targeted-retry（spec/archive/2026-10-03-add-codefix-targeted-retry） — 回归门通过语义分轮（首轮全量、定向轮失败子集且通过即门通过）；回归失败重试由「整批 items 重做 + 全量回归重跑」改写为定向重试轮：上限 targeted_retry_max（缺省 3）、失败明细结构化落盘（classname 主导 nodeid 映射、映射失败回退全量）、轮间累计注入、修测试授权（fix_scope=test 标注）、门面 subset_nodeids 子集执行（取代收集位置参数）、耗尽现场即弃沿用并追加明细引用入档。
 - 2026-10-03 2026-10-03-add-codefix-commit-first-contract（spec/archive/2026-10-03-add-codefix-commit-first-contract） — 零有效修复拒合回新增 salvage 前置分支：批收尾「分支无提交」判定先过 salvage 三元组检测（fixed 行 ∧ 无提交 ∧ porcelain 非空），命中即 `orchestrator-salvage:` 自动提交后继续回归/合回裁决，真零改动维持拒合回、禁空提交；新增 `agents/code-fix.md`「先 commit 再验证」软契约（逐条即 commit、验证不阻塞 commit、收尾工作区干净），机械保障由 salvage 承担。
 - 2026-10-03 2026-10-03-decouple-codefix-review-lanes（spec/archive/2026-10-03-decouple-codefix-review-lanes） — 新增「与审查车道的调度解耦」：守卫链无审查在飞条件、物理冲突只剩回归主机级套件锁自然串行；延迟批合回自驱动推进语义固化（defer 按 consumed 收尾照常推进、延迟台账合回核销同检查点继续选批）；同归档另建审查 run 停滞看门狗能力页（code-review-lane/review-run-stall-watchdog），其取消收场急救落账不激活修复链。
+- 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 选批由「最早优先截前 batch_size 条」改写为文件亲和性贪心装箱（batch_size 放宽为目标规模 T、硬上限 2T）；回归门范围由「首轮恒全量」改写为两段式（非末批定向、末批恒全量兜底），定向失败与全量失败同走既有定向重试轮；算法与分流细则独立成页 codefix-affinity-batching。
