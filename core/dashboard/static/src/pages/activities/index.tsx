@@ -381,7 +381,9 @@ export default function ActivitiesPage() {
       // 告警失败已归一到 alerts.error 通道，走到这里只剩运维记录接口失败
       setError({ source: 'activities', message: e instanceof Error ? e.message : String(e) });
     } finally {
-      setLoading(false);
+      // fix 9fc948945fc7: 收尾置 false 同样纳入序号守卫——旧请求先完成时
+      // 不抢在并发中的新请求之前撤掉加载指示，避免首屏短暂闪空态
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
