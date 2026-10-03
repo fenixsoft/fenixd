@@ -192,7 +192,8 @@ def spec_detail_signature(proot, spec: str) -> str:
     覆盖：STATE.md（条目）、本 spec 目录树（docs/specs/verification-report/
     .spec.yaml）、verify-progress 本 spec 产物（report.json/scenarios/
     screenshots/quality-gates/code-review）与 <spec>.json、共享
-    .fenix-run-result.json（run-result 兜底读取的两路候选之一）、admin_alerts
+    .fenix-run-result.json（run-result 兜底读取的两路候选之一）、回归产物
+    last-run.json（full-suite 门框架侧源，与 _spec_dep_sigs 同源）、admin_alerts
     （时间轴 admin 事件）、.fenix/logs 树（时间轴日志源）、本 spec 命名的
     runs 产物（含归档；仅本 spec——他 spec 的新 run 不翻转本详情）、归档目录
     中本 spec 的副本树（resolve_spec_dir 归档回退）、两级 config（时间轴
@@ -207,6 +208,7 @@ def spec_detail_signature(proot, spec: str) -> str:
         proot / ".fenix" / "verify-progress" / f"{spec}.json",
         proot / ".fenix" / "verify-progress" / spec,
         proot / ".fenix" / ".fenix-run-result.json",
+        proot / ".fenix" / "regression" / "last-run.json",
         proot / ".fenix" / "admin_alerts.json",
         proot / ".fenix" / "config.yaml",
     ]
