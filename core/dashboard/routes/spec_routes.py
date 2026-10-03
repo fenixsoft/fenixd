@@ -703,7 +703,7 @@ class H3SpecRoutesMixin:
         未冻结的 blocked SPEC 开放；不符合条件 STATE 零变更）。
         - project 不存在 → 404；spec 不在项目 STATE.md → 404
         - 不符合开放条件（非 blocked / 非评审前缀 / 冻结 / 转移失败）→ 400
-          + {ok: false, error: 明确原因}
+          + {error: 明确原因}
         - 成功 → 200 + {ok: true, project, spec}
         """
         resolved = self._spec_query_or_error(query)
