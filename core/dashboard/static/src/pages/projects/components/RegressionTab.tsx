@@ -170,8 +170,10 @@ export function statusTagRow(snapshot: RegressionResult | null) {
 
 /** 概览卡按钮行（add-regression-issues-rerun 5.2 抽为纯渲染单元，供前端
  * 测试以元素树断言形态与接线）：自动修复 → 定向子集（primary）→ 全量。
- * 三键禁用口径：running / awaitingStart 全禁；定向子集另受可用性机械判定
- * （不可用禁用，span+Tooltip 说明，对齐自动修复禁用态范式）。 */
+ * 三键禁用口径：running / awaitingStart / 任一回归动作在途（anyPending 交叉
+ * 门控，code-review item 5cbfc2119f5a，对齐 QualityTab 交叉 pending 范式）全禁；
+ * 定向子集另受可用性机械判定（不可用禁用，span+Tooltip 说明，对齐自动修复
+ * 禁用态范式）。 */
 export function overviewActions(opts: {
   snapshot: RegressionResult | null;
   running: boolean;
@@ -184,6 +186,13 @@ export function overviewActions(opts: {
   onTrigger: () => void;
 }) {
   const { snapshot, running, awaitingStart } = opts;
+  // 交叉 pending 门控（code-review item 5cbfc2119f5a）：任一回归动作 POST 在飞
+  // （running/awaitingStart 尚未置位的受理窗口）即三键全禁，杜绝在飞窗口内
+  // 并发下发两份触发信号——否则第二份只能靠后端 regression_already_running /
+  // regression_request_pending 拒绝并弹 warning（对齐 QualityTab handleTrigger
+  // 查 actionPending||ackPending、handleTriggerFixRun 查 fixRunPending||
+  // actionPending 的既有范式）
+  const anyPending = opts.triggering || opts.issuesTriggering || opts.fixPending;
   // 自动修复可用性（add-regression-auto-fix 既有口径：failures/long_tests
   // 非空或整体超时）——随按钮行一并收拢，行为与抽取前逐字节一致
   const fixAvailable =
@@ -201,7 +210,7 @@ export function overviewActions(opts: {
           <span>
             <Button
               loading={opts.fixPending}
-              disabled={!fixAvailable || running || awaitingStart}
+              disabled={!fixAvailable || running || awaitingStart || anyPending}
               onClick={opts.onFix}
             >
               自动修复回归问题
@@ -216,7 +225,7 @@ export function overviewActions(opts: {
             <Button
               type="primary"
               loading={opts.issuesTriggering}
-              disabled={!issuesOk || running || awaitingStart}
+              disabled={!issuesOk || running || awaitingStart || anyPending}
               onClick={opts.onTriggerIssues}
             >
               {ISSUES_BTN_TEXT}
@@ -226,7 +235,7 @@ export function overviewActions(opts: {
         <Button
           type="primary"
           loading={opts.triggering}
-          disabled={running || awaitingStart}
+          disabled={running || awaitingStart || anyPending}
           onClick={opts.onTrigger}
         >
           {triggerBtnLabel(running, awaitingStart)}
@@ -504,7 +513,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
 
   // ── 手动触发（spec「手动触发按钮」Scenario）──────────────────────
   const handleTrigger = async () => {
-    if (triggering) return;
+    // 交叉 pending 门控（code-review item 5cbfc2119f5a，对齐 QualityTab
+    // handleTrigger 查 actionPending||ackPending 的范式）：只查本动作在途态
+    // 拦不住「点全量后立刻点定向子集/自动修复」——POST 受理返回前
+    // running/awaitingStart 尚未置位，任一回归动作在途即不再受理新触发
+    if (triggering || issuesTriggering || fixPending) return;
     setTriggering(true);
     try {
       await triggerRegression(project);
@@ -544,7 +557,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 轮询判定结果（上限 30s），仅认 request_created 回链本次 requested_at
   // 的结果；触发成功指引「质量」页签既有 CodeFixProgressCard 看进展。
   const handleFix = async () => {
-    if (fixPending) return; // loading 防重复：在途时重复点击不产生第二个信号
+    // 交叉 pending 门控（同 handleTrigger，5cbfc2119f5a）：任一回归动作在途
+    // 即不再受理；loading 防重复语义不变——在途时重复点击不产生第二个信号
+    if (fixPending || triggering || issuesTriggering) return;
     setFixPending(true);
     fixPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     try {
@@ -614,7 +629,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // （轮询/进度条接管）；业务拒绝按稳定错误码分支（934af264345f），错误码
   // 面为 run-issues 端点专属五码 + 通用兜底。
   const handleTriggerIssues = async () => {
-    if (issuesTriggering) return;
+    // 交叉 pending 门控（同 handleTrigger，5cbfc2119f5a）：任一回归动作在途
+    // 即不再受理，杜绝 POST 在飞窗口内并发下发两份触发信号
+    if (issuesTriggering || triggering || fixPending) return;
     setIssuesTriggering(true);
     try {
       await triggerRegressionIssues(project);
