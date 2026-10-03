@@ -84,14 +84,20 @@ class AssertionRunner:
         超大 timeout 声明（如 999999999）会把 deadline 推到数天后，轮询循环
         （每轮 interval 读取 + wait_for_timeout）持续占住场景协程；timeout
         为 0/负值则 deadline 落在过去，首轮读取后零等待即判失败（异步渲染
-        场景确定性误判）；interval 为 0/负值则在 deadline 前热轮询。越界
-        归一为边界值而非按配置错误炸场景，第三元素返回注明文案供结果 note
-        携带（未越界为空串）。
+        场景确定性误判）；interval 为 0/负值则在 deadline 前热轮询；interval
+        无上界时（code-review item 1c993346c4da），轮询循环在每轮读取后执行
+        wait_for_timeout(interval_ms) 且该等待发生在 deadline 判断之后，超大
+        interval（如 999999999）会在首轮读取失败后一次性 sleep 远超 timeout
+        预算，与超大 timeout 同类地长期占住场景协程，故钳到 clamped_timeout
+        （单条断言预算量级）封顶。越界归一为边界值而非按配置错误炸场景，
+        第三元素返回注明文案供结果 note 携带（未越界为空串）。
         """
         clamped_timeout = min(
             max(timeout_ms, _MIN_POLL_TIMEOUT_MS), _MAX_POLL_TIMEOUT_MS
         )
-        clamped_interval = max(interval_ms, _MIN_POLL_INTERVAL_MS)
+        clamped_interval = min(
+            max(interval_ms, _MIN_POLL_INTERVAL_MS), clamped_timeout
+        )
         if clamped_timeout == timeout_ms and clamped_interval == interval_ms:
             return timeout_ms, interval_ms, ""
         parts = []
@@ -547,8 +553,33 @@ class AssertionRunner:
         z2_result = await self._safe_evaluate(
             page, compare_selector, "el => parseInt(getComputedStyle(el).zIndex) || 0"
         )
-        z1 = z1_result if z1_result is not None else 0
-        z2 = z2_result if z2_result is not None else 0
+        # 存在性预检通过后、读取前的竞态窗口内元素被移除时 _safe_evaluate
+        # 返回 None：比照 _assert_alignment 对 evaluate_all 空列表的口径显式
+        # 按元素不存在失败（code-review item e4f0eb541bb2），而非折叠为 0
+        # 继续裁决——后者对 ==（或 < 且对比侧 z-index>0）会把已消失的元素
+        # 判 pass，与模块头「第 1-3 层缺失一律显式失败」的承诺相悖。
+        if z1_result is None:
+            return {
+                "type": "z_index_order",
+                "layer": 2,
+                "selector": selector,
+                "compare_selector": compare_selector,
+                "operator": op,
+                "pass": False,
+                "error": f"元素 '{selector}' 不存在",
+            }
+        if z2_result is None:
+            return {
+                "type": "z_index_order",
+                "layer": 2,
+                "selector": selector,
+                "compare_selector": compare_selector,
+                "operator": op,
+                "pass": False,
+                "error": f"对比元素 '{compare_selector}' 不存在",
+            }
+        z1 = z1_result
+        z2 = z2_result
 
         if op == ">":
             passed = z1 > z2
@@ -698,12 +729,22 @@ class AssertionRunner:
                 "error": f"mode={mode} 时 expected 为显式空串恒真，拒绝",
             }
 
-        # 非法正则是确定性错误：_text_matches 内 re.search 每轮重抛 re.error，
-        # 会被下方 except 当作「元素尚未渲染」的临时态空转至超时，故进轮询前预检。
+        # 非法正则是确定性错误：_text_matches 经 _regex_search 匹配时在 regex
+        # 库可用时走 _regex_mod.search，预检须用同一引擎——regex 是 re 的超集，
+        # 仅 regex 支持的语法（如递归）会被 stdlib re.compile 误判为非法正则、
+        # 把可执行的合法期望值按确定性错误拒绝；regex.error 与 re.error 无继承
+        # 关系，须按引擎捕获对应异常。库缺失时回退 re.compile/re.error。
+        # （code-review item 11293370e8f2）非法正则本身仍是确定性错误：
+        # _text_matches 内每轮重抛匹配异常，会被下方 except 当作「元素尚未
+        # 渲染」的临时态空转至超时，故进轮询前预检。
         if mode == "regex":
+            if _regex_mod is not None:
+                regex_compile, regex_errors = _regex_mod.compile, _regex_mod.error
+            else:
+                regex_compile, regex_errors = re.compile, re.error
             try:
-                re.compile(expected)
-            except re.error as e:
+                regex_compile(expected)
+            except regex_errors as e:
                 return {
                     "type": "text_match",
                     "layer": 3,

@@ -79,6 +79,18 @@ class ApiRunner(VerifyRunner):
         errors = validate_scenario(scenario)
         if errors:
             return errors
+        # as 命名保留键验收（code-review item 063aa5e8ad24）：'_latest' 是
+        # 框架保留键（断言缺省引用最近一次捕获）。步骤内检查在请求已完整
+        # 执行后才触发（http_request 在响应读取完毕后、sse_connect 在收集
+        # 窗口结束后），POST/DELETE 等副作用请求已真实打到实例而捕获被整体
+        # 丢弃，可能污染同一实例上后续场景的执行前提——前移到验收期在发送
+        # 前拒绝，步骤内两处检查保留为兜底。
+        for i, step in enumerate(scenario.steps):
+            if step.action in ("http_request", "sse_connect") and step.as_ == "_latest":
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: "
+                    f"as 命名 '_latest' 是框架保留键，请改用其他名称"
+                )
         if (
             any(a.type == "json_schema" for a in scenario.assertions)
             and not json_schema_available()
@@ -536,6 +548,21 @@ class ApiRunner(VerifyRunner):
             # 触发时截止时刻必然已过：按窗口正常结束处理，保留已收集事件返回
             # 成功（0 事件交由断言判定），不误判「SSE 收集异常」。
             pass
+        except (httpx.ReadError, httpx.RemoteProtocolError) as e:
+            # 响应中途断连（aiter_lines 读流阶段服务端断开、流不完整）：与
+            # http_request 同形态口径（code-review item e5dbbae31e02）——
+            # 典型为实例进程响应途中崩溃/重启，属实例失联形态，补
+            # error_type=connection_failed 进入环境候选分流（env_gate 只认
+            # 该既有值），不落入通用异常分支被误归因为产品/场景失败；
+            # 已收集事件随失败结果保留供归因。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error_type": "connection_failed",
+                "events": events,
+                "error": f"响应中途断连（连接失败类，环境候选，待环境探针复核）: {e}",
+            }
         except Exception as e:
             return {
                 "success": False,
