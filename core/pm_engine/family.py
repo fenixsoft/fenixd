@@ -1055,6 +1055,7 @@ class FamilyGovernor:
         evidence: str,
         recommended_action: str,
         trigger: Optional[dict] = None,
+        facts: Optional[dict] = None,
     ):
         """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
 
@@ -1062,6 +1063,10 @@ class FamilyGovernor:
         type/spec/condition），供闭环判定直接消费、无需解析自然语言 description。
         trigger 缺省时按 signal_type 从闭环枚举推导（接入点集中在此一处）；
         未接入枚举的 signal_type 不写 trigger、永不自动闭环（保守默认）。
+        facts 为可选结构化增强参数位（upgrade-narrative-to-investigation 1.2：
+        发射点内存中独有、事后难重建的信息如 judge 派发台账；本期缺省不传
+        不注入，prompt【补充事实】段存在时才注入），不参与 trigger/choices
+        既有落盘形态。
 
         降噪分级（2026-09-01 用户决策）：仅 critical/major 进人工待处理队列；
         warning/minor 写入即标记 handled，只留历史记录不弹横幅。
@@ -1095,12 +1100,13 @@ class FamilyGovernor:
             choices = choices_for(signal_type)
             if choices:
                 entry["choices"] = list(choices)
-            # add-adjudication-alert-narrative 2.1：桶 2 告警落盘前附加三段式
-            # 叙事（纯增强、fail-open：LLM 失败不写 narrative 字段、不影响下方
-            # 既有落盘与 severity 降噪分支；choices 非空才发起，桶 0 零调用）。
-            from core.adjudication_narrative import attach_narrative
-
-            attach_narrative(entry, self._pm)
+            # add-adjudication-alert-narrative 2.1 → upgrade-narrative-to-
+            # investigation 3.1：叙事从「落盘前同步附加」改为「落盘后后台补叙」
+            # ——告警以机械文案**立即落盘**（append 先行，叙事时延/失败零阻塞
+            # 落盘路径），随后调度后台生成经侧车补叙（alert_id 取落地记录的
+            # id，MUST NOT 依赖 entry 预先持有）；choices 非空才发起（桶 0
+            # 零线程零调用）。facts 为可选结构化增强（task 1.2 参数位，本期
+            # 发射点缺省不传不注入）。
             rec = store.append(entry)
             # code-review item ae509e1816f3：文件损坏留底被下限保护拒写时
             # append 返回 None（core/admin_store.py append 契约，item
@@ -1114,8 +1120,12 @@ class FamilyGovernor:
                     f"human-escalation-alert 未落盘（store 拒写，按未落地处理）: "
                     f"{signal_type} for '{spec_name}'",
                 )
-            elif not severity_needs_human(severity):
-                store.mark_handled(rec["id"])
+            else:
+                if not severity_needs_human(severity):
+                    store.mark_handled(rec["id"])
+                from core.adjudication_narrative import schedule_narrative
+
+                schedule_narrative(rec["id"], entry, self._pm, facts=facts)
             self._pm.logger.warning(
                 "pm_engine",
                 f"human-escalation-alert: {signal_type} for '{spec_name}'",

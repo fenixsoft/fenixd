@@ -274,6 +274,11 @@ class AdminStore:
                     if len(records) > MAX_RECORDS:
                         trimmed = records[:-MAX_RECORDS]
                         del records[:-MAX_RECORDS]
+                        # 叙事侧车级联删除（upgrade-narrative-to-investigation
+                        # 3.4）：被裁告警的补叙侧车同步清理防孤儿堆积；删除
+                        # 失败仅 WARNING 不阻断清理主流程（残留侧车渲染按
+                        # alert_id 匹配不到即忽略，无害）
+                        self._cleanup_narrative_sidecars(trimmed)
                         # 归档与裁剪同锁完成（spec：裁剪与归档之间不得丢记录）；
                         # 归档失败仅记日志，活跃文件写回主路径照常执行（D2 软失败）
                         self._archive_unlocked(trimmed)
@@ -281,6 +286,31 @@ class AdminStore:
                     return result
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
+
+    # ── 叙事侧车级联清理（upgrade-narrative-to-investigation 3.4）──────
+
+    def _cleanup_narrative_sidecars(self, trimmed: list) -> None:
+        """被裁告警的叙事侧车级联删除（.fenix/admin_alerts_narrative/<id>.json）。
+
+        D2 软失败：删除失败仅 WARNING 留痕、绝不抛出——清理主流程（活跃文件
+        写回 + 归档）永不被侧车清扫拖挂；残留侧车渲染按 alert_id 匹配不到
+        即忽略，仅占磁盘无害。
+        """
+        try:
+            from core.adjudication_narrative import delete_narrative_sidecars
+
+            ids = [r.get("id") for r in trimmed if isinstance(r, dict) and r.get("id")]
+            if ids:
+                delete_narrative_sidecars(self.project_root, ids)
+        except Exception as e:
+            if self._logger is not None:
+                try:
+                    self._logger.warning(
+                        "admin_store",
+                        f"叙事侧车级联删除失败（不阻断清理主流程）: {e}",
+                    )
+                except Exception:
+                    pass
 
     # ── 归档（add-alerts-archive-and-overview-cache 1.1/1.2）──────
 
