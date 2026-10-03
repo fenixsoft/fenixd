@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-04 04:51 UTC+8
+> 最后更新：2026-10-04 04:57 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -26,13 +26,13 @@
 | [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 18 | 2026-10-03 04:59 |
 | [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 13 | 2026-10-03 04:59 |
 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 32 | 2026-10-03 04:59 |
-| [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 18 | 2026-10-04 01:53 |
+| [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 18 | 2026-10-04 04:57 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
 | [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 24 | 2026-10-04 04:51 |
 | [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 10 | 2026-10-03 04:59 |
 | [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 12 | 2026-10-03 05:13 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
-| [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 3 | 2026-10-03 04:59 |
+| [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 4 | 2026-10-04 04:57 |
 
 ## 决策记录
 

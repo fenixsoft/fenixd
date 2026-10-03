@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-10-04 01:53 UTC+8
+> 最后更新：2026-10-04 04:57 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建与按需生成类任务。
 
@@ -20,7 +20,7 @@
 | [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 | 2026-10-03 04:59 |
 | [dashboard-live-session](dashboard-live-session.md) | 实时会话视图 | 2026-10-03 04:59 |
 | [session-composer](session-composer.md) | 会话输入控件（补全/草稿/键盘适配） | 2026-10-03 04:59 |
-| [project-architecture-diagram](project-architecture-diagram.md) | 项目架构图（archify 按需生成） | 2026-10-04 01:53 |
+| [project-architecture-diagram](project-architecture-diagram.md) | 项目架构图（archify 按需生成） | 2026-10-04 04:57 |
 | [v2-data-adapters](v2-data-adapters.md) | v2 数据适配层（已随壳层退役） | 2026-10-03 04:59 |
 | [v2-sdk-vendor](v2-sdk-vendor.md) | v2 vendored SDK（已随壳层退役） | 2026-10-03 04:59 |
 | [v2-shell-router](v2-shell-router.md) | v2 shell 与 hash 路由（已随壳层退役） | 2026-10-03 04:59 |
