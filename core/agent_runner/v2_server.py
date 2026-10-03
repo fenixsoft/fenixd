@@ -10,9 +10,11 @@ from typing import Dict, Tuple
 from pathlib import Path
 from core.v2_dev_server import (
     V2DevServerError,
+    register_v2_server,
     start as v2_start_dev_server,
     stop as v2_stop_dev_server,
     base_url as v2_base_url,
+    unregister_v2_server,
 )
 
 # code-review item 1b8c509e19a5：_v2_ensure_state 的惰性建锁（check-then-create）
@@ -105,6 +107,7 @@ class V2ServerManager:
             # 的写入收敛到下方临界区（与 _v2_lock 注释声称的覆盖口径一致）。
             used_snapshot = set(self._v2_used_ports)
         loser = None
+        registered = None
         try:
             port, proc = v2_start_dev_server(
                 wt_path, run_seq, used_snapshot, self._pm.logger
@@ -126,6 +129,7 @@ class V2ServerManager:
                         self._v2_used_ports.discard(current[0])
                     self._v2_servers[key] = (port, proc)
                     self._v2_used_ports.add(port)
+                    registered = proc
         except V2DevServerError as e:
             # 启动失败：仅当本线程锁内确认过的陈旧条目原样在册时才移除（identity
             # 匹配），保证 _v2_inject_env 拿不到死端口条目、返回空 dict，测试按
@@ -147,6 +151,10 @@ class V2ServerManager:
                 self._pm.logger.warning(
                     "agent_runner", f"V2 dev-server loser stop failed for {wt_path}: {e}"
                 )
+        if registered is not None:
+            # 重启对账登记（fix-v2-devserver-fallback-attribution 2.3）：登记
+            # 持久化在临界区外做（文件 I/O 慢操作不进临界区）；失败不阻断派发。
+            self._v2_registry_record(wt_path, port, registered.pid)
 
     def _v2_inject_env(self, wt_path: Path) -> Dict[str, str]:
         """返回该 worktree 的 V2_BASE_URL 注入片段（D1 注入运行环境）。
@@ -167,6 +175,46 @@ class V2ServerManager:
                 return {}
         return {"V2_BASE_URL": v2_base_url(entry[0])}
 
+    def _v2_registry_project_root(self):
+        """登记文件归属项目根（pm 门面缺 project_root 时返回 None＝跳过登记）。
+
+        测试常以仅含 logger 的假 pm 构造本组件；登记属 best-effort 运行时
+        增强，缺项目根时静默跳过而非报错。
+        """
+        return getattr(self._pm, "project_root", None)
+
+    def _v2_registry_record(self, wt_path: Path, port: int, pid: int) -> None:
+        """登记持久化（fix-v2-devserver-fallback-attribution 2.3）。
+
+        _v2_servers 是进程内状态，daemon 重启即失；登记文件让启动对账
+        （core.v2_dev_server.reconcile_v2_servers）能识别重启前在册实例，按
+        「pid 存活 + starttime 身份核对 + 归属引用判定」只收割无主进程。
+        best-effort：写失败仅 WARNING——漏登记只损失重启对账覆盖，不制造
+        新失败（dev-server 另有 marker pgrep 清扫与 ppid 自灭两道防线）。
+        """
+        project_root = self._v2_registry_project_root()
+        if project_root is None:
+            return
+        try:
+            register_v2_server(project_root, wt_path, pid, port, self._pm.logger)
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner", f"V2 server registry write failed for {wt_path}: {e}"
+            )
+
+    def _v2_registry_remove(self, wt_path: Path, pid: int) -> None:
+        """移除登记（终态回收后调用，best-effort 静默——残留条目由下次启动
+        对账按 pid 消亡摘除兜底）。"""
+        project_root = self._v2_registry_project_root()
+        if project_root is None:
+            return
+        try:
+            unregister_v2_server(project_root, wt_path, pid, self._pm.logger)
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner", f"V2 server registry remove failed for {wt_path}: {e}"
+            )
+
     def _v2_stop_for_worktree(self, wt_path: Path) -> None:
         """回收某 worktree 的 dev-server（D2 终态回收）。"""
         self._v2_ensure_state()
@@ -175,6 +223,10 @@ class V2ServerManager:
         if entry is None:
             return
         port, proc = entry
+        # 重启对账登记同步移除（fix-v2-devserver-fallback-attribution 2.3）：
+        # 终态回收后条目即失效，先于底层 stop 落盘（stop 成败不影响条目失效
+        # ——句柄既已弹出，daemon 已失去该 server 的管理权）。
+        self._v2_registry_remove(wt_path, proc.pid)
         try:
             # used_ports 传 None：stop 内部不触碰共享记账，端口释放收敛到下方
             # 临界区（与 _v2_lock 注释声称的覆盖口径一致）。
