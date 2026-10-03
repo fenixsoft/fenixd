@@ -7,7 +7,9 @@ pre-dispatch/merge-back autostash 会先把主树腾空，WIP overlap 占用者�
 
 本模块补一个**旁路只读观察者**：按 daemon 主循环节拍盘点主树 tracked 未
 提交改动，复用既有机械归因器（``identify_wip_occupant``）对在飞实现车道
-归因；无主且宽限耗尽时经 AdminStore 发一次性 major 告警。设计决策：
+归因；归因到主树活交互会话的散件默认降级 info 留痕（可配置回退，见
+``session_attribution_action``）；无主且宽限耗尽时经 AdminStore 发一次性
+major 告警。设计决策：
 
 - D1 计时用内容指纹，不用 mtime：改动路径排序集 + ``git diff HEAD`` 内容
   哈希（对 HEAD 求，含暂存+未暂存，与 porcelain tracked 口径一致——纯
@@ -63,6 +65,35 @@ def grace_minutes(config) -> float:
     if val != val or val < 0 or val == float("inf") or val > _MAX_GRACE_MINUTES:
         return DEFAULT_GRACE_MINUTES
     return val
+
+
+# 会话归因散件的盘点动作（evo-add-maintree-interactive-session-attribution 2.1）：
+# ``info``＝降级 info 留痕（不派 major、不触发 admin 代查）；``keep``＝现状
+# 行为（按无主走既有宽限升级）。
+_SESSION_ATTRIBUTION_ACTIONS = ("info", "keep")
+DEFAULT_SESSION_ATTRIBUTION_ACTION = "info"
+
+
+def session_attribution_action(config) -> str:
+    """会话归因散件动作：``admin.maintree_session_attribution_action``。
+
+    ``info``（缺省）＝活会话归因散件降级 info 留痕；``keep``＝现状行为
+    （视同零命中按无主走既有宽限升级）。与 ``grace_minutes`` 同型加载
+    （ConfigLoader 点号键）。**非法值守卫回退 keep**（保守方向：配置事故
+    MUST NOT 静默吞 major——把失效变成缺省的安全侧，对齐 grace_minutes
+    守卫哲学；``info`` 只在显式合法值上生效）。code_fix defer 侧消费同一
+    读取器（同键约束：keep 时 defer 侧把会话归因视同零命中走 orphan
+    宽限升级流，防「盘点侧可回退、defer 侧无开关」的不对称）。
+    """
+    from core.config import ConfigLoader
+
+    raw = ConfigLoader.get(
+        config,
+        "admin.maintree_session_attribution_action",
+        DEFAULT_SESSION_ATTRIBUTION_ACTION,
+    )
+    val = str(raw if raw is not None else "").strip().lower()
+    return val if val in _SESSION_ATTRIBUTION_ACTIONS else "keep"
 
 
 class MainTreeStrayWipSweeper:
@@ -179,8 +210,9 @@ class MainTreeStrayWipSweeper:
 
         # 3) 机械归因（复用 identify_wip_occupant，不重造求交逻辑）：命中
         #    在飞实现车道 → 不计时不告警（归属期间不算散件滞留，既有计时
-        #    条目复位——车道终态后若仍未提交则重新起算）；零命中 → 按指纹
-        #    维护 first_seen。
+        #    条目复位——车道终态后若仍未提交则重新起算）；命中主树活交互
+        #    会话 → 默认降级 info 留痕（不派 major、不触发 admin 代查，配置
+        #    keep 回退现状）；零命中 → 按指纹维护 first_seen。
         identify = getattr(wm, "identify_wip_occupant", None)
         if not callable(identify):
             self._log(
@@ -190,7 +222,8 @@ class MainTreeStrayWipSweeper:
             return None
         info = identify(files, list(running_run_ids or []))
         now = time.time()
-        if info.holder:
+        session_attributed = info.holder and info.is_session_attribution()
+        if info.holder and not session_attributed:
             self._registry.pop(fp, None)
             self._reset_registry_absent({fp})
             return {
@@ -199,6 +232,34 @@ class MainTreeStrayWipSweeper:
                 "fingerprint": fp,
                 "holder_run_ids": info.holder_run_ids(),
             }
+        if session_attributed and session_attribution_action(self._config) != "keep":
+            # 会话归因散件降级 info 留痕（2.1）：计时/复位与在飞车道命中
+            # 分支同型（pop 计时条目、指纹消失即复位）。留痕走盘点结构化
+            # 返回值与既有日志通道，MUST NOT 新增 AdminStore signal_type
+            # （免 admin_monitor 三表登记缺口——漏登记则落 store 后无人摄取）。
+            self._registry.pop(fp, None)
+            self._reset_registry_absent({fp})
+            session = next(iter(info.holders), {}).get("session") or {}
+            self._log(
+                "info",
+                f"主树散件 WIP 归因到主树活交互会话，降级 info 留痕（不派"
+                f" major 不触发 admin 代查）: {', '.join(files)}; "
+                f"{info.describe()}",
+            )
+            return {
+                "status": "session-attributed",
+                "files": files,
+                "fingerprint": fp,
+                "session_signals": list(session.get("signals") or []),
+            }
+        # 落入无主流形的两种情况共用既有宽限升级流：真零命中，或会话归因被
+        # 配置 keep 回退（视同零命中走现状行为——配置事故/人工回退保守方向）。
+        if session_attributed:
+            self._log(
+                "info",
+                "会话归因散件按 admin.maintree_session_attribution_action=keep "
+                "回退现状行为（视同零命中走无主宽限升级）",
+            )
 
         entry = self._registry.get(fp)
         if entry is None:

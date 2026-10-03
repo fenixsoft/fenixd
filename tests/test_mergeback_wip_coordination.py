@@ -635,5 +635,119 @@ class TestNoOverlapZeroOverhead(unittest.TestCase):
             self.assertIsNone(saved.get(field), f"无 overlap MUST NOT 写 {field}")
 
 
+class TestSessionAttributionCoordination(unittest.TestCase):
+    """主树活交互会话归因接入 defer 消费点（evo-add-maintree-interactive-
+    session-attribution 3.2）：命中 → 采信（holder、零升级、零订阅）；配置
+    keep 回退 → 视同零命中走 orphan 宽限升级（现状行为，major 仍发）。
+    """
+
+    def _make_session_scene(self):
+        """主树仓：近窗提交（作者=本仓配置身份 isess <isess@t>，触碰 a.tsx）+ a.tsx 散件。"""
+        base = Path(_mkdtemp("msac-scene-"))
+        repo = _git_init_repo(base / "main")
+        (repo / "a.tsx").write_text("base", encoding="utf-8")
+        (repo / "b.tsx").write_text("base", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "-q", "-m", "init", cwd=repo)
+        subprocess.run(["git", "config", "user.name", "isess"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "isess@t"], cwd=str(repo), check=True, capture_output=True)
+        # 近窗提交必须以仓库配置身份落作者（-c 注入会覆盖，归因身份判据失配）
+        (repo / "a.tsx").write_text("session committed work", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "session work"], cwd=str(repo), check=True, capture_output=True)
+        (repo / "a.tsx").write_text("main wip", encoding="utf-8")
+        return repo
+
+    def _deferred_scene(self, repo):
+        proot = _make_project_root()
+        wt_dir = _git_init_repo(Path(_mkdtemp("msac-wt-")))
+        (wt_dir / "f.txt").write_text("x", encoding="utf-8")
+        _git("add", "-A", cwd=wt_dir)
+        _git("commit", "-q", "-m", "init", cwd=wt_dir)
+        runner = _make_runner(proot)
+        probe = _IdentifyProbe(repo)
+        fake_wm = _FakeWM()
+        fake_wm.identify_wip_occupant = probe.identify_wip_occupant
+        runner.worktree_manager = fake_wm
+        entry = _record_deferred(proot, wt_dir, ["a.tsx"])
+        return proot, runner, entry
+
+    @staticmethod
+    def _cfg(action=None, orphan_grace=None):
+        admin = {"code_review_fix": {"enabled": True}}
+        if action is not None:
+            admin["maintree_session_attribution_action"] = action
+        if orphan_grace is not None:
+            admin["mergeback_wip_orphan_grace_minutes"] = orphan_grace
+        return {"admin": admin}
+
+    def _orphan_alerts(self, proot):
+        from core.admin_store import AdminStore, SIGNAL
+
+        return [
+            r for r in AdminStore(proot).read_all()
+            if r.get("kind") == SIGNAL
+            and r.get("signal_type") == "mergeback_wip_orphan_stuck"
+        ]
+
+    def test_identify_hits_session_when_lane_misses(self):
+        """车道零命中 + 会话探测命中 → holder=True（source=会话探测）。"""
+        repo = self._make_session_scene()
+        probe = _IdentifyProbe(repo)
+        info = probe.identify_wip_occupant(["a.tsx"], [])
+        self.assertTrue(info.holder)
+        self.assertTrue(info.is_session_attribution())
+        self.assertEqual(info.holders[0]["kind"], "interactive-session")
+        self.assertEqual(info.holder_run_ids(), [])
+        self.assertIn("占用者=主树活交互会话", info.describe())
+        # 路径零交散件仍零命中（相关性判据不可被活跃会话吞掉）
+        self.assertFalse(probe.identify_wip_occupant(["b.tsx"], []).holder)
+
+    def test_trusted_session_attribution_no_major(self):
+        """缺省 info：defer 侧采信会话归因 → holder 台账、零升级、零订阅。"""
+        repo = self._make_session_scene()
+        proot, runner, entry = self._deferred_scene(repo)
+        from core.code_fix import CodeFixOrchestrator, load_deferred_batches
+
+        orch = CodeFixOrchestrator(runner, proot, config=self._cfg(), logger=None)
+        note = orch._coordinate_blocked_merge(
+            entry, ["i1"], ["a.tsx"], "fenix/spec-x-1700000000",
+            str(entry.get("tip_sha") or ""),
+        )
+        self.assertIn("占用者=主树活交互会话", note)
+        saved = load_deferred_batches(proot)[0]
+        self.assertEqual(saved.get("owner_kind"), "holder")
+        self.assertIsNone(saved.get("owner_orphan_since"))
+        self.assertEqual(runner._run_terminal_callback_table(), {})
+        self.assertEqual(self._orphan_alerts(proot), [])
+
+    def test_keep_fallback_escalates_major(self):
+        """配置 keep 回退：视同零命中走 orphan 宽限升级，major 仍发（evidence
+        透传 describe() 会话线索与盲区注记）。"""
+        repo = self._make_session_scene()
+        proot, runner, entry = self._deferred_scene(repo)
+        from core.code_fix import CodeFixOrchestrator, load_deferred_batches
+
+        orch = CodeFixOrchestrator(
+            runner, proot, config=self._cfg(action="keep", orphan_grace=0), logger=None,
+        )
+        note = orch._coordinate_blocked_merge(
+            entry, ["i1"], ["a.tsx"], "fenix/spec-x-1700000000",
+            str(entry.get("tip_sha") or ""),
+        )
+        self.assertIn("主树活交互会话", note)
+        self.assertIn("keep", note)
+        saved = load_deferred_batches(proot)[0]
+        self.assertEqual(saved.get("owner_kind"), "orphan")
+        self.assertTrue(saved.get("owner_orphan_since"))
+        alerts = self._orphan_alerts(proot)
+        self.assertEqual(len(alerts), 1)
+        evidence = alerts[0].get("evidence") or ""
+        self.assertIn("主树活交互会话", evidence)
+        from core.worktree_manager.types import WipOccupantInfo
+
+        self.assertIn(WipOccupantInfo.BLIND_SPOT_NOTE, evidence)
+
+
 if __name__ == "__main__":
     unittest.main()

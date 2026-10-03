@@ -3652,19 +3652,35 @@ class CodeFixOrchestrator:
         if not callable(identify):
             return ""
         info = identify(overlap, self._inflight_impl_run_ids())
+        # 会话归因（主树活交互会话，evo-add-maintree-interactive-session-
+        # attribution 2.2）的采信受 admin.maintree_session_attribution_action
+        # 同键约束（与 stray_wip 盘点侧对称，复用同一读取器、不复制探测）：
+        # info＝采信（owner_kind=holder，不计时升级）；keep＝视同零命中走
+        # 现状 orphan 宽限升级流（evidence 仍透传 describe() 会话线索）。
+        # 会话归因 holders 无 run_ids → 终态回调注册自然缺席（事件驱动重试
+        # 缺席、既有轮询兜底在场，行为安全）。
+        session_attributed = info.holder and info.is_session_attribution()
+        session_trusted = True
+        if session_attributed:
+            from core.worktree_manager.stray_wip import session_attribution_action
+
+            session_trusted = session_attribution_action(self._get_root_config()) != "keep"
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         fields = {
-            "owner_kind": "holder" if info.holder else "orphan",
+            "owner_kind": (
+                "holder" if (info.holder and (not session_attributed or session_trusted)) else "orphan"
+            ),
             "owner_holders": info.to_dict()["holders"],
             "owner_identified_at": now,
         }
-        if info.holder:
+        if info.holder and (not session_attributed or session_trusted):
             # 识别结果变化（无主→有主）：宽限计时清零重计（design D2 轮询
             # 时识别结果变化随之更新）。
             fields["owner_orphan_since"] = None
+            holder_run_ids = info.holder_run_ids()
             register = getattr(runner, "register_run_terminal_callback", None)
-            if callable(register):
-                for rid in info.holder_run_ids():
+            if holder_run_ids and callable(register):
+                for rid in holder_run_ids:
                     register(
                         rid,
                         self._make_holder_retry_callback(branch),
@@ -3673,7 +3689,13 @@ class CodeFixOrchestrator:
                 self._log(
                     "info",
                     f"延迟批占用者为在飞车道，已注册其终态监听（事件驱动重试）"
-                    f": branch={branch}, holder_runs={info.holder_run_ids()}",
+                    f": branch={branch}, holder_runs={holder_run_ids}",
+                )
+            elif session_attributed:
+                self._log(
+                    "info",
+                    f"延迟批占用者为主树活交互会话（会话归因无 run 终态可订阅"
+                    f"，事件驱动重试缺席、轮询兜底在场）: branch={branch}",
                 )
             note = info.describe()
         else:
@@ -3681,6 +3703,11 @@ class CodeFixOrchestrator:
             since = str(entry.get("owner_orphan_since") or "") or now
             fields["owner_orphan_since"] = since
             note = info.describe()
+            if session_attributed and not session_trusted:
+                note += (
+                    "（会话归因未采信：admin.maintree_session_attribution_action"
+                    "=keep，视同零命中走无主宽限升级）"
+                )
             grace = self._orphan_grace_minutes()
             try:
                 start = calendar.timegm(time.strptime(since, "%Y-%m-%dT%H:%M:%SZ"))
