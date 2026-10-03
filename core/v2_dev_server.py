@@ -10,15 +10,23 @@ v2_dev_server.py — per-run 隔离测试服务生命周期管理（add-worktree
 遗留进程清扫（daemon 启动时）。dev-server.mjs 自身实现见 tests/v2/dev-server.mjs。
 """
 
+import json
 import os
 import re
 import signal
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from core.proc_utils import find_free_port, is_claude_process, pid_alive_stat
+from core.proc_utils import (
+    find_free_port,
+    is_claude_process,
+    pid_alive_stat,
+    proc_start_ticks,
+)
 
 # ── 端口分配（design D3）──────────────────────────────────────────────
 # 确定性端口段：V2_TEST_PORT_BASE 起、连续 V2_TEST_PORT_RANGE 个高位端口。
@@ -32,6 +40,14 @@ PPID_POLL_INTERVAL = 2
 
 # 子进程命令行标记（D2 清扫依据）：daemon 重启时扫 pgrep 该字面量识别遗留 dev-server。
 V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
+
+# 不可归因进程记账（fix-v2-devserver-fallback-attribution 2.1）：daemon 进程内
+# 状态，重启即失、不持久化——重启后按新进程重放一次首见告警，可接受（重启
+# 场景由 reconcile_v2_servers 启动对账兜底）。结构 {pid: 累计扫描见次}：首见
+# WARNING 一次，后续静默计数——杜绝同 pid 每个清扫周期（600s）刷一条告警
+# （2026-10-02/03 双 daemon 主机同 pid 207 条告警的刷屏形态）。
+_unattributed_seen: Dict[int, int] = {}
+_unattributed_lock = threading.Lock()
 
 
 class V2DevServerError(Exception):
@@ -138,9 +154,14 @@ def start(
     Raises: V2DevServerError: 端口分配或启动失败。
     """
     static_root = Path(wt_path) / "core" / "dashboard" / "static"
+    # 归因标记（fix-v2-devserver-fallback-attribution 1.1）：回退形态时置位，
+    # 启动时追加到 argv 尾部（见下方回退分支与 cmd 组装处说明）。
+    attribution_token: Optional[str] = None
     if not static_root.is_dir():
-        # worktree 可能未含 core/dashboard/static（罕见）；回退主树静态根，
-        # 保证服务能起，但失去 worktree 隔离意义——仅作兜底不阻断派发。
+        # worktree 可能未含 core/dashboard/static：git 不携带构建产物目录，
+        # 非框架目标项目（其仓库无 core/dashboard）的 worktree **常态**落此
+        # 回退形态；回退主树静态根，保证服务能起，但失去 worktree 隔离意义
+        # ——仅作兜底不阻断派发。
         wt_static_root = static_root
         static_root = Path(__file__).absolute().parent.parent / "core" / "dashboard" / "static"
         if not static_root.is_dir():
@@ -155,6 +176,14 @@ def start(
                 "v2_dev_server",
                 f"worktree static root missing, fallback to main tree: {static_root}",
             )
+        # argv 归因标记：回退后 static_root 指向主树（不含 worktree 路径），
+        # argv 从此无法被孤儿清扫归因（_dev_server_worktree_root 判 None）→
+        # 每 600s 周期性 skip WARNING（2026-10-02/03 potplayer-base 101 条误报
+        # 的根因）。此处记下 worktree 侧静态根路径（<wt>/core/dashboard/static，
+        # 与 static-root token 同形态），在 cmd 尾部追加，使既有归因/豁免逻辑
+        # （_dev_server_worktree_root + _worktree_has_live_referencing_process）
+        # 自然生效。
+        attribution_token = str(wt_static_root)
 
     try:
         # design D5：allocate_port 不再抛 V2DevServerError（耗尽回退临时端口）；
@@ -178,6 +207,13 @@ def start(
         str(port),
         V2_DEV_SERVER_MARKER,
     ]
+    if attribution_token:
+        # 回退形态归因标记（fix-v2-devserver-fallback-attribution 1.1）：MUST
+        # 追加在**尾部**——dev-server.mjs 按位置读 argv[2]=static_root、
+        # argv[3]=port（tests/v2/dev-server.mjs:25-26），前插会改变脚本语义；
+        # 标记只供清扫 pgrep/argv 解析消费，node 自身不读它。追加不改变既有
+        # pgrep 匹配模式（匹配键仍含 dev-server.mjs 路径与 marker 字面量）。
+        cmd.append(attribution_token)
     env = dict(os.environ)
     # 先剥离环境中已有的 --max-old-space-size=... 片段再追加，确保内存钳制
     # 取本框架设定值（不依赖 node 对重复选项的取舍行为）。
@@ -468,7 +504,16 @@ def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
     以静态根 token（含 ``/core/dashboard/static`` 尾缀）为**权威归属**：脚本自身
     路径在框架运行于 worktree 内时（本仓库以 worktree 为开发态时）同样含
     ``/worktrees/``，若按首个命中会误把脚本路径解析为归属 worktree。
+
+    取**末个**命中而非首个（fix-v2-devserver-fallback-attribution 1.1）：回退
+    形态会在 argv 尾部追加归属标记 token（<wt>/core/dashboard/static）；框架
+    自身运行于 worktree（开发态）时，回退用的主树静态根 token 同样含
+    /worktrees/ 且位置在前——归属语义必须让位于显式追加的标记 token（它承载
+    run 的真实归属 worktree，而非被服务静态内容的来源）。常态形态只有静态根
+    一个命中 token，末个==首个，行为不变；token 内多段 /worktrees/ 仍按
+    rsplit 末段归属（下方注释，回归守卫不变）。
     """
+    found = None
     for t in tokens:
         if not t.startswith("/") or "/core/dashboard/static" not in t:
             continue
@@ -482,8 +527,8 @@ def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
         prefix, rest = t.rsplit("/worktrees/", 1)
         wt_name = rest.split("/", 1)[0]
         if wt_name:
-            return Path(prefix) / "worktrees" / wt_name
-    return None
+            found = Path(prefix) / "worktrees" / wt_name
+    return found
 
 
 def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> bool:
@@ -510,7 +555,19 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     )
 
 
-def _dev_server_orphan_pids(logger=None) -> list:
+def _argv_touches_worktree_base(tokens: list, worktree_base: Path) -> bool:
+    """argv 是否携带本项目 worktree 基路径的绝对路径 token（项目收窄判据）。
+
+    整路径前缀匹配（非裸子串，避免同主机相似路径误命中）：正常形态
+    dev-server 的 static-root token 与回退形态追加的归因标记 token 均携带
+    ``<worktree_base>/`` 前缀；两者皆无（旧版回退形态存量进程/他项目进程）
+    则不属本项目裁量范围。
+    """
+    prefix = str(worktree_base).rstrip("/") + "/"
+    return any(t.startswith(prefix) for t in tokens if t.startswith("/"))
+
+
+def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
     """识别孤儿 dev-server PID：worktree 已消失，或无任何存活进程归属。
 
     背景（admin 处置 v2-alerts-activities）：孤儿 dev-server 的 argv 残留已删除
@@ -521,30 +578,57 @@ def _dev_server_orphan_pids(logger=None) -> list:
     另设启动宽限豁免：启动不足 60s 的 dev-server 本轮一律跳过（派发先启
     dev-server、再 spawn claude 的秒级窗口内归属探测必然落空，防周期清扫
     TOCTOU 误杀在服 run）。
+
+    fix-v2-devserver-fallback-attribution：worktree_base 传入时扫描面按项目
+    收窄（2.1）——argv 不携带本项目 worktree 基路径的进程不记账不告警不清扫
+    （双 daemon 主机各管各的，不互刷）；不可归因进程（旧版回退形态存量）按
+    pid 记账，首见告警一次、后续静默计数（2.1），处置以「无引用进程」为前提
+    （2.2 文案联动），不按裸存活时长自动 kill。
     """
     out = []
+    seen_unattributed = set()
     for pid in _pgrep_dev_servers(V2_DEV_SERVER_MARKER):
         try:
             argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
             tokens = [a.decode("utf-8", "replace") for a in argv if a]
         except OSError:
             continue
+        if worktree_base is not None and not _argv_touches_worktree_base(
+            tokens, Path(worktree_base)
+        ):
+            # 扫描面按项目收窄（fix-v2-devserver-fallback-attribution 2.1）：
+            # pgrep -f 全局匹配会命中同主机其他项目 daemon 的 dev-server，同
+            # pid 在两份日志各刷一条（2026-10-02/03 双 daemon 207 条告警）。
+            # 他项目进程不记账、不告警、不清扫——归属与豁免判据（worktree
+            # 基路径、存活 claude 引用）本就以本项目为界，越界判定无意义。
+            continue
         wt_root = _dev_server_worktree_root(tokens)
         if wt_root is None:
-            # 不携带 worktree 路径（如 start() 主树静态根回退形态）：argv 无归属
-            # 可探测，按虚构路径反查 pgrep 恒落空（恒判孤儿、误杀在服 run）。
+            # 不携带 worktree 路径（旧版主树静态根回退形态存量进程）：argv 无
+            # 归属可探测，按虚构路径反查 pgrep 恒落空（恒判孤儿、误杀在服 run）。
             # 归属 attempt 的 claude 进程经 --add-dir 引用 worktree 路径，无法从
-            # argv 反推，故无安全探测面——保守跳过清扫并 WARNING 留痕，交由运维
-            # 判别处置（该形态罕见，且 dev-server 仍有 ppid 绑定自灭兜底）。
-            static_root = next(
-                (t for t in tokens if "/core/dashboard/static" in t), "")
-            if logger:
+            # argv 反推，故无安全探测面——保守跳过清扫，按 pid 记账（2.1）：
+            # 首见告警一次、后续静默计数（该形态对非框架目标项目的存量进程
+            # 是常态，且 dev-server 仍有 ppid 绑定自灭兜底）。处置前提：确认
+            # 无存活进程引用其来源 worktree 后方可人工处置——禁止按裸存活
+            # 时长自动 kill，在服 run 可合法长持（实测 4.2h），误杀会打断
+            # 验证（V2_BASE_URL 悬挂）。
+            with _unattributed_lock:
+                first_seen = pid not in _unattributed_seen
+                _unattributed_seen[pid] = _unattributed_seen.get(pid, 0) + 1
+            seen_unattributed.add(pid)
+            if logger and first_seen:
+                static_root = next(
+                    (t for t in tokens if "/core/dashboard/static" in t), "")
                 logger.warning(
                     "v2_dev_server",
                     f"orphan sweep skipped for pid={pid}: argv carries no "
                     f"worktree path (static_root={static_root or 'unknown'}) "
-                    f"— 未清扫的存量 dev-server（主树静态根回退形态），"
-                    f"确认无活跃 run 后可手动 kill",
+                    f"— 不可归因残留 dev-server（主树静态根回退形态存量），"
+                    f"归属无法安全判定：在服 run 可合法长持，误杀会打断验证"
+                    f"（V2_BASE_URL 悬挂）。已按 pid 记账，本告警首见一次、"
+                    f"后续静默计数；仅当确认无存活进程引用其来源 worktree 后"
+                    f"方可人工处置，勿按存活时长直接 kill",
                 )
             continue
         if wt_root.is_dir() and _worktree_has_live_referencing_process(wt_root, pid):
@@ -565,10 +649,19 @@ def _dev_server_orphan_pids(logger=None) -> list:
                 )
             continue
         out.append(pid)
+    # 记账簿瘦身：本轮未见且已消亡的 pid 移除（防 dict 随历史 pid 无界增长，
+    # 也让 pid 复用后能重放首见告警）；仍存活但本轮 pgrep 未命中的保留计数，
+    # 避免瞬时 pgrep 抖动重放首见告警。
+    with _unattributed_lock:
+        for stale in [
+            p for p in _unattributed_seen
+            if p not in seen_unattributed and not _pid_alive(p)
+        ]:
+            _unattributed_seen.pop(stale, None)
     return out
 
 
-def cleanup_orphans(logger=None) -> int:
+def cleanup_orphans(logger=None, worktree_base=None) -> int:
     """daemon 启动时清扫遗留 dev-server（D2）：无存活归属的 dev-server 进程。
 
     判定（admin 处置 v2-alerts-activities 加固，取代纯标记匹配）：
@@ -576,15 +669,223 @@ def cleanup_orphans(logger=None) -> int:
     或进程表中无该 worktree 的存活归属进程（attempt 已死而 server 残留）→
     孤儿，回收；归属存活 attempt → 保留（daemon 重启可能先于子进程结束）。
     防止残留进程被 worktree_manager 的 pgrep 存活探测误判为持锁 attempt。
-    argv 不携带 worktree 路径（主树静态根回退形态）→ 无归属可探测，保守
-    跳过并 WARNING 留痕（误杀在服 run 比漏清罕见残留代价更高）。
+    argv 不携带 worktree 路径（主树静态根回退形态存量）→ 无归属可探测，保守
+    跳过并按 pid 记账留痕（首见 WARNING 一次、后续静默计数，fix-v2-devserver-
+    fallback-attribution 2.1/2.2；误杀在服 run 比漏清罕见残留代价更高）。
+
+    Args:
+        worktree_base: 本项目 worktree 基目录（2.1 项目收窄判据）。传入时仅
+            考量 argv 携带该基路径的 dev-server，同主机多 daemon（多项目）
+            互不记账互不清扫；None 保持全局扫描（既有调用/测试形态兼容）。
 
     Returns: 被终止的进程数。
     """
-    pids = sorted(set(_dev_server_orphan_pids(logger=logger)))
+    pids = sorted(
+        set(_dev_server_orphan_pids(logger=logger, worktree_base=worktree_base))
+    )
     if not pids:
         return 0
     killed = _kill_pids(pids, logger=logger)
     if killed and logger:
         logger.warning("v2_dev_server", f"cleaned up {killed} orphan dev-server(s)")
+    return killed
+
+
+# ── 在册登记持久化与重启对账（fix-v2-devserver-fallback-attribution 2.3）──────
+# _v2_servers 是 daemon 进程内状态（core/agent_runner/v2_server.py:37-48），daemon
+# 重启后归零：重启窗口内仍在服的 dev-server 归属从此无人能判定（泄漏盲区，
+# 端口池被永久占用）。登记制让启动对账按「pid 存活 + 身份核对 + 归属引用
+# 判定」只收割无主进程（形态参照 core/serving_registry.py:351-394 sweep）。
+# 登记制是兜底增强而非唯一防线：dev-server 仍有 marker pgrep 扫描路径
+# （cleanup_orphans）与 ppid 绑定自灭；json 写入失败仅损失对账覆盖，不制造
+# 新失败。文件属运行时状态（.fenix/ 不入库，非仓库交付物）。单写者：文件按
+# 项目根隔离，每项目仅一个 daemon 写（原子写 last-writer-wins，并发窗口最坏
+# 丢条目＝损失对账覆盖，不损坏文件），进程内以 _registry_io_lock 串行化
+# 读改写即可，无需跨进程 fcntl。
+V2_SERVERS_FILENAME = "v2_servers.json"
+
+_registry_io_lock = threading.Lock()
+
+
+def v2_servers_registry_path(project_root) -> Path:
+    """登记文件绝对路径：<project_root>/.fenix/v2-serving/v2_servers.json。"""
+    return Path(project_root) / ".fenix" / "v2-serving" / V2_SERVERS_FILENAME
+
+
+def load_v2_server_entries(project_root) -> list:
+    """读登记条目（文件缺失/损坏返回空；非 dict 条目剔除）。"""
+    try:
+        data = json.loads(
+            v2_servers_registry_path(project_root).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict)]
+
+
+def _rewrite_v2_server_entries(project_root, entries: list) -> bool:
+    """原子重写登记文件（临时文件 + replace）。OSError 返回 False 不抛。"""
+    path = v2_servers_registry_path(project_root)
+    tmp_path = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".v2_servers.", suffix=".tmp", dir=str(path.parent)
+        )
+        tmp_path = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(path))
+        tmp_path = None
+        return True
+    except OSError:
+        return False
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def register_v2_server(project_root, wt_path, pid: int, port: int, logger=None) -> None:
+    """登记一条在册 dev-server（launch 成功时调用，best-effort 不阻断派发）。
+
+    带 /proc starttime 快照：pid + starttime 唯一确定进程实例，重启对账据此
+    做 pid 复用防误杀（纪律同 serving_registry._harvest_identity_ok）。同
+    (wt_path, pid) 已登记时幂等刷新快照。写失败仅 WARNING（调用方 logger 可
+    为 None 时静默）。
+    """
+
+    def _upsert(entries: list) -> None:
+        for e in entries:
+            if e.get("pid") == pid and e.get("wt_path") == str(wt_path):
+                e["port"] = port
+                e["start_ticks"] = proc_start_ticks(pid)
+                e["registered_at"] = int(time.time())
+                return
+        entries.append(
+            {
+                "wt_path": str(wt_path),
+                "pid": pid,
+                "port": port,
+                "start_ticks": proc_start_ticks(pid),
+                "registered_at": int(time.time()),
+            }
+        )
+
+    with _registry_io_lock:
+        entries = load_v2_server_entries(project_root)
+        _upsert(entries)
+        if not _rewrite_v2_server_entries(project_root, entries) and logger:
+            logger.warning(
+                "v2_dev_server",
+                f"v2 server registry write failed (non-blocking): "
+                f"{v2_servers_registry_path(project_root)}",
+            )
+
+
+def unregister_v2_server(project_root, wt_path, pid=None, logger=None) -> None:
+    """移除登记（终态回收时调用，best-effort）。
+
+    pid 传入时按 (wt_path, pid) 精确匹配；未传按 wt_path 匹配全部条目。
+    """
+    with _registry_io_lock:
+        entries = load_v2_server_entries(project_root)
+        kept = [
+            e for e in entries
+            if not (
+                e.get("wt_path") == str(wt_path)
+                and (pid is None or e.get("pid") == pid)
+            )
+        ]
+        if len(kept) != len(entries):
+            if not _rewrite_v2_server_entries(project_root, kept) and logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"v2 server registry write failed (non-blocking): "
+                    f"{v2_servers_registry_path(project_root)}",
+                )
+
+
+def reconcile_v2_servers(project_root, logger=None) -> int:
+    """daemon 启动对账：按登记收割无主 dev-server（2.3），返回收割数。
+
+    daemon 重启后 _v2_servers 进程内状态归零，登记文件是重启前在册实例的
+    唯一线索。逐条判定（「记账 + 身份核对 + 收割」形态参照
+    core/serving_registry.py:351-394）：
+
+    - pid 已消亡 → 仅摘登记（自然消亡/自灭，无进程可收割）；
+    - pid 存活但 starttime 快照失配 → pid 已被复用，仅摘登记**不杀**（误杀
+      无关进程的代价远高于漏清，同 serving_registry 身份核对纪律）；
+    - pid 存活且身份匹配 → 按登记 wt_path 判归属引用：worktree 已消失、或
+      无存活引用进程 → 无主，收割进程并摘登记；有存活引用进程 → 在服 run
+      跨重启存活，保留进程与登记（归因标记形态另受周期清扫 argv 判据保护，
+      终态回收后条目由下次对账按 pid 消亡摘除）。
+
+    与 cleanup_orphans 互补：本函数覆盖「argv 不可归因但登记在册」的存量
+    回退形态进程——登记 wt_path 补上了 argv 缺失的归属线索。启动宽限豁免
+    （<60s）同样适用：引用进程可能在 dev-server 落地后才 spawn（TOCTOU 防
+    误杀，同 _dev_server_orphan_pids）。
+    """
+    killed = 0
+    with _registry_io_lock:
+        entries = load_v2_server_entries(project_root)
+        if not entries:
+            return 0
+        kept = []
+        for entry in entries:
+            pid = entry.get("pid")
+            wt_text = str(entry.get("wt_path") or "")
+            if not isinstance(pid, int) or pid <= 0:
+                continue  # 形状非法条目：丢弃
+            if not _pid_alive(pid):
+                continue  # 已消亡：摘登记
+            snapshot = entry.get("start_ticks")
+            if (
+                isinstance(snapshot, int)
+                and snapshot > 0
+                and proc_start_ticks(pid) != snapshot
+            ):
+                if logger:
+                    logger.warning(
+                        "v2_dev_server",
+                        f"reconcile skip pid={pid} (wt={wt_text or '-'}) "
+                        f"start_ticks mismatch — pid likely reused; removed "
+                        f"registry entry without killing",
+                    )
+                continue  # pid 复用：摘登记不杀
+            wt_root = Path(wt_text) if wt_text else None
+            owned = (
+                wt_root is not None
+                and wt_root.is_dir()
+                and _worktree_has_live_referencing_process(wt_root, pid)
+            )
+            if owned or _pid_recently_started(pid):
+                # 有主（在服 run 跨重启存活）或启动宽限窗内：保留进程与登记
+                kept.append(entry)
+                continue
+            # 无主：worktree 已消失 / 无引用进程 / 登记无 wt_path → 收割。
+            # 杀失败（权限/竞态）也摘登记：保留条目只会每轮重试同一失败，
+            # 摘除后交由周期清扫的 argv 判据兜底。
+            if _kill_pids([pid], logger=logger) >= 1:
+                killed += 1
+                if logger:
+                    logger.warning(
+                        "v2_dev_server",
+                        f"reconcile harvested unowned dev-server pid={pid} "
+                        f"(wt={wt_text or '-'}) — left unowned across daemon "
+                        f"restart",
+                    )
+        _rewrite_v2_server_entries(project_root, kept)
+    if killed and logger:
+        logger.warning(
+            "v2_dev_server",
+            f"v2 server reconcile harvested {killed} unowned dev-server(s)",
+        )
     return killed

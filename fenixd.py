@@ -53,6 +53,7 @@ from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
 from core.agent_runner.runner import ADMIN_DISPOSITION_GLOB
 from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
+from core.v2_dev_server import reconcile_v2_servers as v2_reconcile_v2_servers
 # fix-scheduling-kick-single-slot D2：scheduling kick 信号载体（目录形态）定义在
 # 中性模块 core.signals——daemon 消费侧与 dashboard 写入侧共用同一份常量，
 # 不产生 dashboard → 根 daemon 的反向依赖。
@@ -694,7 +695,18 @@ class FenixDaemon:
 
         # add-worktree-test-server（D2 启动清扫）：上次异常退出遗留的 dev-server 进程
         # 在 daemon 重启时早已失活（worktree 已清），需按命令行标记回收端口。
-        v2_cleanup_orphans(self.logger)
+        # worktree_base 项目收窄（fix-v2-devserver-fallback-attribution 2.1）：
+        # 只考量 argv 携带本项目 worktree 基路径的 dev-server，双 daemon 主机
+        # 不互刷（他项目进程不记账、不告警、不清扫）。
+        v2_cleanup_orphans(
+            self.logger, worktree_base=self.worktree_manager.base_dir
+        )
+        # 重启对账（fix-v2-devserver-fallback-attribution 2.3）：登记在册的
+        # 重启前实例按「身份核对 + 归属引用判定」只收割无主进程，有主保留。
+        try:
+            v2_reconcile_v2_servers(PROJECT_ROOT, self.logger)
+        except Exception as e:
+            self.logger.error("fenixd", f"V2 server restart reconcile failed: {e}")
 
         # verify-process-lifecycle（D6 启动收割）：上轮 daemon 崩退时登记者全部
         # 视为非在飞——servers.json 中进程仍存活的登记实例按 /proc liveness 收割。
@@ -975,7 +987,10 @@ class FenixDaemon:
                 if time.time() - orphan_clean_ts >= 600:
                     orphan_clean_ts = time.time()
                     try:
-                        v2_cleanup_orphans(self.logger)
+                        v2_cleanup_orphans(
+                            self.logger,
+                            worktree_base=self.worktree_manager.base_dir,
+                        )
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic V2 orphan cleanup failed: {e}")
                     try:

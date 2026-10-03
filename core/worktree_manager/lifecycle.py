@@ -29,6 +29,73 @@ from core.worktree_manager.artifact_paths import (
 )
 
 
+def _wt_repo_common_dir(project_root):
+    """项目根所属 git 仓库的 common dir（.git）；非 git 仓库返回 None。
+
+    worktree 软链的 git 不可见性要写仓库级 info/exclude——per-worktree 的
+    <gitdir>/info/exclude 不被 git 读取（实测），exclude 规则只有 common dir
+    一份。锚定 project_root 而非 worktree 自身：防嵌套仓库语境（测试
+    basetemp 落在框架仓库内等）把排除规则误写到宿主仓库。
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    p = Path(out.stdout.strip())
+    if not p.is_absolute():
+        p = Path(project_root) / p
+    return p
+
+
+def _path_git_ignored(wt_path, rel: str) -> bool:
+    """rel 路径在该 worktree 的 git 判定下是否被忽略（check-ignore 语义：
+
+    退出码 0=忽略、1=未忽略、128=出错；出错按未忽略处理，交由调用方走
+    exclude 建立路径并复核）。
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(wt_path), "check-ignore", "-q", rel],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return out.returncode == 0
+
+
+def _ensure_git_exclude(common_dir, rel: str) -> bool:
+    """把 rel 幂等追加进仓库 common dir 的 info/exclude；失败返回 False。
+
+    info/exclude 是 git 为「仓库特定、无需共享」的忽略规则设计的本地位
+    （不入库、不写工作区文件）。软链若不被 git 忽略，会以未跟踪形态永久
+    弄脏 worktree——空变更 WIP checkpoint 的幂等跳过契约
+    （tests/test_impl_wip_checkpoint 空变更断言）与 merge-back 干净判定都会
+    被未跟踪软链击穿（3 例空变更断言失败的实证根因）。
+    """
+    excl = Path(common_dir) / "info" / "exclude"
+    try:
+        excl.parent.mkdir(parents=True, exist_ok=True)
+        existing = excl.read_text(encoding="utf-8") if excl.exists() else ""
+        if any(line.strip() == rel for line in existing.splitlines()):
+            return True
+        with excl.open("a", encoding="utf-8") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write(
+                "# fenix worktree provisioning: v2 dev-server static root"
+                " (provisioned, do not track)\n"
+                f"{rel}\n"
+            )
+        return True
+    except OSError:
+        return False
+
+
 class G1LifecycleMixin:
     """G1 创建/销毁生命周期（design D1 表 A G1）。"""
     def __init__(
@@ -322,6 +389,15 @@ class G1LifecycleMixin:
         item 1e3f877e379b）：供给按 deps_mode 幂等，旧目录已带依赖时无副作用；
         失败仅 WARNING 降级，不阻塞派发。
         """
+        # core/dashboard/static 软链供给（fix-v2-devserver-fallback-attribution
+        # 1.2）：消除 v2 dev-server 的主树静态根回退形态本身。独立兜底 try：
+        # 软链任何意外失败都不阻塞 node_modules 供给与派发。
+        try:
+            self._provision_worktree_static_root(wt_path)
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager", f"worktree static 软链供给跳过: {e}"
+            )
         try:
             from core.verify_contract import (
                 load_verify_contract,
@@ -342,6 +418,74 @@ class G1LifecycleMixin:
                 )
         except Exception as e:
             self.logger.warning("worktree_manager", f"worktree node_modules 供给跳过: {e}")
+
+    def _provision_worktree_static_root(self, wt_path: Path) -> None:
+        """worktree 补 core/dashboard/static 软链（fix-v2-devserver-fallback-
+        attribution 1.2，create 两出口共用——经 _provision_worktree_deps）。
+
+        git 不携带构建产物目录：非框架目标项目（仓库无 core/dashboard）的
+        worktree 天然缺 core/dashboard/static，v2 dev-server 启动即落主树静态
+        根回退形态（argv 失去 worktree 归属线索，清扫判不可归因）。对框架侧
+        静态根建软链——推导与 v2_dev_server.start() 回退分支同源（框架仓库
+        根 = ``Path(__file__).parent.parent.parent``，本文件深踞
+        core/worktree_manager/ 一层，比 core/v2_dev_server.py 多一层 parent），
+        链接后 start() 走 worktree 路径、不再回退。幂等：目标
+        已存在（跟踪产物或历史软链）跳过——框架目标项目 worktree 自带跟踪的
+        static 目录，本供给零开销。
+
+        git 不可见性闸门（回归修复）：软链对 git 是未跟踪文件，直接落盘会
+        永久弄脏 worktree——空变更 WIP checkpoint 的幂等跳过契约与 merge-back
+        干净判定都会被未跟踪软链击穿（tests/test_impl_wip_checkpoint 3 例空
+        变更断言失败的实证根因）。故软链前确保路径被 git 忽略：已忽略（仓库
+        自带 ignore 规则）直接链接；否则幂等追加进仓库 common dir 的
+        info/exclude（不入库、不写工作区文件）并用 check-ignore 复核；无法
+        保证忽略时**跳过软链**静默降级（非 git 仓库语境无「脏」概念，直接
+        链接）。软链/闸门任何失败仅 WARNING，不阻塞 create 派发：回退形态
+        仍有 argv 归因标记（1.1）与清扫记账（2.1）兜底。
+        """
+        wt_static = Path(wt_path) / "core" / "dashboard" / "static"
+        if wt_static.is_dir() or wt_static.is_symlink():
+            return  # 已有（跟踪产物/历史软链）：幂等跳过（is_dir 对指向目录
+            # 的软链为真，先判软链覆盖悬空链形态）
+        framework_static = (
+            Path(__file__).absolute().parent.parent.parent
+            / "core" / "dashboard" / "static"
+        )
+        if not framework_static.is_dir():
+            return  # 框架侧无静态根（非常规布局）：无从链接，静默跳过
+        rel = "core/dashboard/static"
+        common_dir = _wt_repo_common_dir(self.project_root)
+        if common_dir is not None and not _path_git_ignored(wt_path, rel):
+            # 仓库语境且路径尚未被忽略：先写 info/exclude 建立忽略并复核，
+            # 通过才落软链；建不成（只读/异常/仓库否定规则反杀）→ 跳过软链
+            # 降级，防未跟踪软链永久弄脏 worktree。
+            if not _ensure_git_exclude(common_dir, rel) or not _path_git_ignored(
+                wt_path, rel
+            ):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"worktree static root provisioning skipped: {rel} 无法"
+                    f"安全对 git 不可见（exclude 不可写或被仓库规则反杀），"
+                    f"跳过软链防 worktree 变脏；dev-server 走主树静态根回退"
+                    f"形态（argv 归因标记兜底）: {wt_static}",
+                )
+                return
+        try:
+            wt_static.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(framework_static, wt_static)
+        except OSError as e:
+            if wt_static.is_symlink():
+                return  # EEXIST 竞态（并发 provision 已落地）：按已存在处理
+            self.logger.warning(
+                "worktree_manager",
+                f"worktree static root symlink failed ({e}); dev-server 将走"
+                f"主树静态根回退形态（argv 归因标记兜底）: {wt_static}",
+            )
+            return
+        self.logger.info(
+            "worktree_manager",
+            f"worktree static root linked: {wt_static} -> {framework_static}",
+        )
 
     def has_active_lock(self, spec_name: str, agent_type: str = "implementer") -> bool:
         """查询该 spec+agent_type 是否有活跃的 worktree 锁（fix-restart-dual-dispatch）。
