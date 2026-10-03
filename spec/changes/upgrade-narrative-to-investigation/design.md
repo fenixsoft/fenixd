@@ -34,7 +34,8 @@ add-adjudication-alert-narrative 落地后的实测缺陷（2026-10-04 取证）
 
 `admin_alerts.json` 记录 append 后不可变（alert-resolve/闭环判定按 id 操作本体），原地补写 narrative 会引入「读改写整文件」的并发窗口与迁移成本。侧车 `.fenix/admin_alerts_narrative/<alert_id>.json`（原子写）+ 读侧按 alert_id 合并，是零迁移、零并发风险的增量形态。
 
-- 告警清理路径（既有保留上限/归档清理）追加侧车级联删除，防孤儿堆积；
+- 告警清理路径（既有保留上限/归档清理）追加侧车级联删除，防孤儿堆积（归档视图不含 narrative 属预期——侧车只服务活跃告警集）；
+- 生成失败/熔断跳过写**终态侧车**（同构，text 为机械说明、model 为 null），读侧 pending 判定即「侧车文件缺失」，失败告警渲染失败说明而非悬挂「调查生成中」假态；
 - 前端 `AlertNarrative` 已按 `narrative` 字段渲染——读侧合并后字段形态不变，前端增量仅「调查生成中」占位（侧车缺失且告警未 handled 时显示）。
 
 ### D3：prompt 四段化 + 反编造规则收窄
@@ -45,7 +46,7 @@ add-adjudication-alert-narrative 落地后的实测缺陷（2026-10-04 取证）
 
 ### D4：熔断器用进程内滑动计数，不持久化
 
-连续失败计数与冷却窗口存 daemon 进程内（模块级状态）：daemon 重启即复位——可接受，熔断的敌人是「网关事故期的连续白烧」，重启本身已重置了该场景。持久化会引入「熔断状态陈旧」新问题（重启后该试不试），得不偿失。窗口 1 小时与 `escalation_cooldown_minutes` 量级对齐。
+连续失败计数与冷却窗口存 daemon 进程内（模块级状态）：daemon 重启即复位——可接受，熔断的敌人是「网关事故期的连续白烧」，重启本身已重置了该场景。持久化会引入「熔断状态陈旧」新问题（重启后该试不试），得不偿失。窗口 1 小时与 `escalation_cooldown_minutes`（缺省 60 分钟）量级对齐。复位语义：冷却期内零调用，不存在「期间成功」路径；到期恢复尝试后一次成功即清零计数。
 
 ### D5：超时 180s + 至多 2 次尝试
 
@@ -65,6 +66,8 @@ add-adjudication-alert-narrative 落地后的实测缺陷（2026-10-04 取证）
 - `core/worktree_manager/mergeback.py`、`core/agent_runner/token_budget.py`（旁路点同接线）
 - `core/dashboard/data/admin_alerts.py` 或读侧合并层（侧车合并，按实际读侧模块落位）
 - `core/admin_store.py`（清理路径侧车级联）
+- `.fenix/config.template.yaml`（叙事配置段注释随超时缺省同步）
+- `docs/help/06-governance.md`（告警叙事说明更新）
 - `core/dashboard/static/src/components/alert-shared.tsx`（占位 + 渲染确认）
 - `core/dashboard/static/dist/index.html`（构建产物，reference）
 - `tests/test_adjudication_narrative.py`（扩展）+ `tests/test_narrative_sidecar.py`（新增，按需）

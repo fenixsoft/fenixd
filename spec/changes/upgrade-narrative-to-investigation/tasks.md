@@ -19,6 +19,8 @@
   kind: modify
 - path: tests/test_narrative_sidecar.py
   kind: new
+- path: .fenix/config.template.yaml
+  kind: modify
 - path: docs/help/06-governance.md
   kind: modify
 - path: core/dashboard/static/dist/index.html
@@ -37,15 +39,15 @@
 
 ## 3. 异步补叙
 
-- [ ] 3.1 `core/pm_engine/family.py` `_send_human_escalation_alert` 及 `core/worktree_manager/mergeback.py`、`core/agent_runner/token_budget.py`：`attach_narrative` 同步调用改为落盘后后台生成（threading.Thread daemon=True 或既有后台模式，任一告警发射点 MUST NOT 因叙事阻塞）；告警以机械文案立即落盘的既有时序零变化
-- [ ] 3.2 补叙落点改侧车：`.fenix/admin_alerts_narrative/<alert_id>.json`（结构 `{"alert_id","text","model","at"}`，mkstemp + os.replace 原子写，目录不存在即建）；超时缺省 60→180（`DEFAULT_TIMEOUT_SECONDS` 与 ConfigLoader 单源注释、config.template.yaml 同步）；至多 2 次尝试（第 2 次失败 WARNING 后放弃）；人工已处置（handled）后补叙照常落盘
-- [ ] 3.3 `core/dashboard/data/admin_alerts.py` 读侧合并：告警列表/详情按 alert_id 合并侧车 narrative 字段（字段形态与既有 `{"text","model","at"}` 一致，前端零 schema 变更）；侧车缺失时未 handled 告警附 `narrative_pending: true` 供占位
+- [ ] 3.1 `core/pm_engine/family.py` `_send_human_escalation_alert` 及 `core/worktree_manager/mergeback.py`、`core/agent_runner/token_budget.py`：`attach_narrative` 同步调用改为落盘后后台生成（threading.Thread daemon=True 或既有后台模式，任一告警发射点 MUST NOT 因叙事阻塞）；告警以机械文案立即落盘的既有时序零变化；后台线程所需的 alert_id MUST 取 `store.append` 返回记录的 `id`（append 内 `_normalize_entry` 补齐，admin_store.py append 契约「返回落地后的记录」），MUST NOT 依赖发射点 entry 预先持有 id
+- [ ] 3.2 补叙落点改侧车：`.fenix/admin_alerts_narrative/<alert_id>.json`（结构 `{"alert_id","text","model","at"}`，mkstemp + os.replace 原子写，目录不存在即建）；超时缺省 60→180（`DEFAULT_TIMEOUT_SECONDS` 与 ConfigLoader 单源注释、`.fenix/config.template.yaml` 叙事配置段注释同步）；至多 2 次尝试（第 2 次失败 WARNING 后放弃）；人工已处置（handled）后补叙照常落盘；2 次全败或熔断跳过时 MUST 写**终态侧车**（同目录同结构，`text` 为机械说明如「调查未能生成（连续超时/叙事熔断中）」、`model` 为 null）——失败/跳过告警 MUST NOT 以 narrative_pending 悬挂「调查生成中」假态
+- [ ] 3.3 `core/dashboard/data/admin_alerts.py` 读侧合并：告警列表/详情按 alert_id 合并侧车 narrative 字段（字段形态与既有 `{"text","model","at"}` 一致，前端零 schema 变更）；侧车缺失（无补叙也无终态侧车）时未 handled 告警附 `narrative_pending: true` 供占位；终态侧车与补叙侧车同构同目录，读侧无差别合并
 - [ ] 3.4 `core/admin_store.py` 告警清理路径（保留上限/归档清理）追加侧车级联删除；删除失败 WARNING 不阻断清理主流程
 - [ ] 3.5 前端 `core/dashboard/static/src/components/alert-shared.tsx`：`narrative_pending` 告警渲染「调查生成中…」占位（灰态、不阻塞 choices 下拉）；既有 AlertNarrative 渲染确认四段 Markdown 兼容
 
 ## 4. 连续失败熔断
 
-- [ ] 4.1 `core/adjudication_narrative.py` 模块级熔断器：连续失败计数（超时/空输出/结构校验失败）达 3 → 熔断 1 小时（窗口内生成调用直接跳过，零调用零延迟）；冷却到期或一次成功即复位；熔断生效/解除 WARNING 留痕；进程内状态不持久化；`admin.narrative_enabled=false` 时旁路
+- [ ] 4.1 `core/adjudication_narrative.py` 模块级熔断器：连续失败计数（超时/空输出/结构校验失败）达 3 → 熔断 1 小时（窗口内生成调用直接跳过，零调用零延迟，跳过的告警按 3.2 写终态侧车）；冷却期内零调用故无「期间成功」复位路径，冷却到期后恢复尝试、恢复后一次成功即清零计数；熔断生效/解除 WARNING 留痕；进程内状态不持久化；`admin.narrative_enabled=false` 时旁路
 
 ## 5. 配套测试
 
