@@ -16,6 +16,14 @@ import urllib.parse
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
+# describe 端点 spawn claude 的 env 剔除与 architecture_routes 同源（code-review
+# item 0ea03763257b）：HTTP 线程内 subprocess.run 若不传 env，dashboard 进程环境
+# 里的 agent-run 专用键（FENIX_RUN_PROJECT_ROOT / FENIX_RUN_WORKTREE /
+# CLAUDE_CODE_ENABLE_TODO_TOOLS，agent 自测拉起的 dashboard 即携带）会原样进入
+# 子进程，其中 CLAUDE_CODE_ENABLE_TODO_TOOLS 还会实际改变子进程工具面。
+# _build_spawn_env 为模块级函数且 architecture_routes 不反向依赖本模块，
+# 无循环导入（先例 regression_routes；server.py 本就导入两模块，零新增导入重量）。
+from core.dashboard.routes.architecture_routes import _build_spawn_env
 
 logger = logging.getLogger("fenixd.dashboard.project_routes")
 
@@ -116,8 +124,23 @@ class H2ProjectRoutesMixin:
 
     def _api_overview(self) -> dict:
         projects = self.server.projects()
+        # 清单标记并入缓存键（code-review item 651a9ae154ce）：discovered /
+        # fixture 与 base.py _sig_overview 的「项目清单标记参与哈希」口径对齐
+        # ——否则对已扫描发现的项目 add_project（discovered True→False）或
+        # remove_project（False→True）时 name/path/exists 均不变，旧 payload
+        # 会被 TTL 快路径与签名复用路径无限期续期（复用还刷新 computed_at），
+        # 而 ETag 签名已翻转，客户端持新 ETag 拿到旧内容。
         projects_key = tuple(
-            sorted((p["name"], p["path"], bool(p.get("exists"))) for p in projects)
+            sorted(
+                (
+                    p["name"],
+                    p["path"],
+                    bool(p.get("exists")),
+                    bool(p.get("discovered")),
+                    bool(p.get("fixture")),
+                )
+                for p in projects
+            )
         )
         # 快路径：TTL 窗口内直接命中（免全量签名 stat）
         with _OVERVIEW_CACHE_LOCK:
@@ -548,6 +571,10 @@ class H2ProjectRoutesMixin:
                 result = subprocess.run(
                     ["claude", "-p", prompt],
                     cwd=str(proot),
+                    # env 剔除与同仓其余 spawn claude 车道同源（item
+                    # 0ea03763257b）：不传 env 会让 agent-run 专用键随 dashboard
+                    # 进程环境泄入子进程（详见模块头导入处注释）。
+                    env=_build_spawn_env(),
                     timeout=120,
                     shell=False,
                     capture_output=True,
