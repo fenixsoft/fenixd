@@ -36,6 +36,14 @@ from types import MappingProxyType
 #                决定执行前二次确认——确认门由注册表单源驱动，前端不再
 #                硬编码业务 id（code-review item 19f72b875e8f；历史告警
 #                快照缺该字段时前端按已知不可逆 id 回退）
+# 可选第六字段：
+#   spec_scoped  True=spec 作用域动作（动作语义针对某个具体 spec 的状态机，
+#                如 retry_review/force_advance/abandon）；False=非作用域
+#                （仅确认/观察/写项目配置，不触碰任何 spec 状态机）。缺省按
+#                True 保守处理（fix-global-signal-choice-execution 1.1）：
+#                执行器与消费端据此守卫——全局信号（spec 为空或占位 'global'）
+#                MUST NOT 执行 spec 作用域动作（无 spec 可操作），非作用域
+#                动作不受限且保留全表反查可达。
 # 跨信号逐字共享的选项提为模块级单源（code-review item 7542b25da792），
 # 各信号元组按引用复用：字段演进只改一处，不再多点同步。desc 带信号特定
 # 文案的同名选项（judge/verify 链的 manual_fixed_reverify、评审族的
@@ -46,18 +54,37 @@ _ABANDON = {
     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
     "action": "abandon",
     "destructive": True,
+    "spec_scoped": True,
 }
 _FORCE_ADVANCE = {
     "id": "force_advance",
     "label": "接受现状推进",
     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
     "action": "force_advance",
+    "spec_scoped": True,
 }
 _MANUAL_FIXED_REVERIFY = {
     "id": "manual_fixed_reverify",
     "label": "人工已修复·重置验证重跑",
     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
     "action": "reset_verification",
+    "spec_scoped": True,
+}
+
+# fix-global-signal-choice-execution 1.3：全局形态信号的非作用域收口动作。
+# 全局信号（spec 为空或占位 'global'，如 daemon_errors——注册表无此桶）被
+# 执行守卫拒入 spec 作用域动作后，仍须有非作用域动作可收口，不滞留 pending
+# 无路可走（design 决策 5）。声明在可能全局形态的已注册桶内
+# （build_artifact_paths_missing 的 spec 允许为空串）保证注册表单源可见；
+# 未注册 signal_type 经 resolve_choice 的「非 spec_scoped 动作全表反查放行」
+# 可达。提示词呈现侧不过滤（design 决策 5，执行时守卫已兜底）。
+_ACK_SELF_HEAL = {
+    "id": "ack_self_heal",
+    "label": "确认自愈·继续观察",
+    "desc": "确认信号属瞬时/自愈或暂不需处置：仅留痕并关闭本条信号，"
+            "不触碰任何 spec 状态机（全局信号可执行）",
+    "action": "ack_self_heal",
+    "spec_scoped": False,
 }
 
 _ADJUDICATION_REGISTRY: dict = {
@@ -68,6 +95,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "label": "继续自动修复",
             "desc": "解冻并重置实现预算计数（重新获得完整实现预算），继续自动修复",
             "action": "continue_auto_fix",
+            "spec_scoped": True,
         },
         _MANUAL_FIXED_REVERIFY,
         _FORCE_ADVANCE,
@@ -79,6 +107,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "label": "人工已修复·重置验证重跑",
             "desc": "人工已修复验证链问题：清场景文件与 judge/验证计数器后重置重验",
             "action": "reset_verification",
+            "spec_scoped": True,
         },
         _FORCE_ADVANCE,
         _ABANDON,
@@ -89,12 +118,14 @@ _ADJUDICATION_REGISTRY: dict = {
             "label": "继续自动修复",
             "desc": "解冻并重置验证失败轮计数（重新获得自动修复预算），继续自动修复",
             "action": "continue_auto_fix",
+            "spec_scoped": True,
         },
         {
             "id": "manual_fixed_reverify",
             "label": "人工已修复·重置验证重跑",
             "desc": "人工已修复问题：清场景与验证失败轮计数后重置验证重跑",
             "action": "reset_verification",
+            "spec_scoped": True,
         },
         _FORCE_ADVANCE,
         _ABANDON,
@@ -113,6 +144,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "确认失败确属环境且不可修复：落 env 豁免放行记录并重置验证"
             "重跑（下轮 verified 合法生效，报告带豁免回链）",
             "action": "grant_env_exemption",
+            "spec_scoped": True,
         },
         _MANUAL_FIXED_REVERIFY,
         _ABANDON,
@@ -123,6 +155,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "label": "继续自动修复",
             "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
             "action": "continue_auto_fix",
+            "spec_scoped": True,
         },
         _MANUAL_FIXED_REVERIFY,
         _FORCE_ADVANCE,
@@ -136,12 +169,14 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "人工已按否决意见修订方案（proposal.md/design.md）：清否决计数、"
             "解冻回 reviewing 重新评审",
             "action": "revise_reproposal",
+            "spec_scoped": True,
         },
         {
             "id": "force_advance",
             "label": "接受现状推进",
             "desc": "人工裁定方向仍成立，豁免评审门推进到 done（留豁免痕）",
             "action": "force_advance",
+            "spec_scoped": True,
         },
         _ABANDON,
     ),
@@ -151,6 +186,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "label": "重派评审",
             "desc": "评审链路已排查修复：解冻回 reviewing 重新派发评审",
             "action": "retry_review",
+            "spec_scoped": True,
         },
         {
             "id": "skip_review_gate",
@@ -159,6 +195,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "正常实现调度（留授权痕）",
             "action": "skip_review_gate",
             "destructive": True,
+            "spec_scoped": True,
         },
         _ABANDON,
     ),
@@ -169,12 +206,14 @@ _ADJUDICATION_REGISTRY: dict = {
             "label": "知情确认",
             "desc": "确认 token 消耗符合预期，仅关闭本条告警，不改动 spec 状态",
             "action": "ignore",
+            "spec_scoped": False,
         },
         {
             "id": "freeze_stop_loss",
             "label": "冻结止损",
             "desc": "立即冻结该 spec（blocked + 冻结标记），停止自动派发止损",
             "action": "freeze_stop_loss",
+            "spec_scoped": True,
         },
         {
             "id": "raise_budget",
@@ -182,6 +221,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "将 agents.token_budget_millions 翻倍并复位告警幂等标记，"
             "继续当前工作",
             "action": "raise_budget",
+            "spec_scoped": False,
         },
     ),
     # ── 配置裁决类（kind=SIGNAL，经 Administrator 处置契约消费，不经前端告警区）──
@@ -192,6 +232,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "引导到 Dashboard 配置表单填写 worktree.has_build_artifacts / "
             "build_artifact_paths（本动作仅确认信号，不代填配置）",
             "action": "open_config",
+            "spec_scoped": False,
         },
         {
             "id": "declare_no_artifacts",
@@ -199,7 +240,12 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "探测确认项目无构建产物：写 has_build_artifacts=false 结案"
             "（留处置痕）",
             "action": "declare_no_artifacts",
+            "spec_scoped": False,
         },
+        _ACK_SELF_HEAL,
+        # 本桶末位追加 _ACK_SELF_HEAL：该桶 spec 允许为空串（可能全局形态的
+        # 已注册桶，见 _ACK_SELF_HEAL 处注释），非作用域收口动作声明于此，
+        # 供未注册 signal_type 经全表反查到达（fix-global-signal-choice-execution 1.3）。
     ),
 }
 
@@ -240,3 +286,51 @@ def is_adjudicable(signal_type) -> bool:
 def registered_signal_types() -> tuple:
     """注册表覆盖的全部 signal_type（发射点接线测试清单）。"""
     return tuple(ADJUDICATION_CHOICES.keys())
+
+
+# 全局形态信号判定（fix-global-signal-choice-execution 1.2）：spec 为 None/空
+# 串，或被空 spec 占位符顶替——core/agent_runner/maintenance_runs.py 以
+# 'global' 占位空 spec（run 名、pending 记录、AdminDisposition.spec 均由此），
+# 使全局信号在执行端表现为存在 spec 名。
+GLOBAL_SPEC_PLACEHOLDER = "global"
+
+
+def is_global_spec(spec) -> bool:
+    """spec 是否全局形态（空值或占位 'global'）——无具体 spec 可操作。"""
+    s = str(spec or "").strip()
+    return (not s) or s.lower() == GLOBAL_SPEC_PLACEHOLDER
+
+
+def resolve_choice(choice_id, signal_type=""):
+    """choice_id → (选项 dict 拷贝 | None, 拒绝原因)（注册表单源解析）。
+
+    解析序与 ``execute_adjudication_choice`` 契约一致；执行器
+    （admin_actions）与消费端守卫（admin_monitor._apply_choice_execution）
+    共用本函数，防止双处解析漂移（fix-global-signal-choice-execution 1.1）：
+
+    1. signal_type 已注册：桶内精确匹配；未命中 → (None, "not-in-bucket")
+       （alert-resolve 契约「按 alert 的 signal_type 校验 choice_id 合法」，
+       不跨信号放行）；
+    2. signal_type 缺失/未注册：全表反查——同一 id 在各信号下 action 语义
+       一致，但 spec 作用域动作（spec_scoped 缺省 True 保守）不再兜底放行
+       （1.1 收紧只针对 spec_scoped 动作）→ (None, "scoped-no-reverse")；
+       命中非作用域动作 → (拷贝, "")；
+    3. 全表无此 id → (None, "unknown-choice")。
+
+    返回选项的逐项拷贝（同 :func:`choices_for` 契约），消费方就地改写只作用
+    于拷贝，不污染注册表。
+    """
+    cid = str(choice_id or "").strip()
+    sig = str(signal_type or "")
+    for c in ADJUDICATION_CHOICES.get(sig, ()):
+        if c.get("id") == cid:
+            return dict(c), ""
+    if sig in ADJUDICATION_CHOICES:
+        return None, "not-in-bucket"
+    for sig_choices in ADJUDICATION_CHOICES.values():
+        for c in sig_choices:
+            if c.get("id") == cid:
+                if c.get("spec_scoped", True):
+                    return None, "scoped-no-reverse"
+                return dict(c), ""
+    return None, "unknown-choice"

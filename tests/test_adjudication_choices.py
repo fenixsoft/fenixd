@@ -41,7 +41,8 @@ _EXPECTED_CHOICE_IDS = {
     "spec-review-rejected": {"revise_reproposal", "force_advance", "abandon"},
     "spec-review-incomplete": {"retry_review", "skip_review_gate", "abandon"},
     "token_budget": {"ignore", "freeze_stop_loss", "raise_budget"},
-    "build_artifact_paths_missing": {"open_config", "declare_no_artifacts"},
+    # fix-global-signal-choice-execution 1.3：桶尾追加非作用域收口 ack_self_heal
+    "build_artifact_paths_missing": {"open_config", "declare_no_artifacts", "ack_self_heal"},
     # fix-env-exemption-exit-reachability 4.1：env 豁免握手 inconclusive 停车族
     "inconclusive_loop": {"grant_env_exemption", "manual_fixed_reverify", "abandon"},
 }
@@ -120,6 +121,26 @@ class TestRegistry:
                     assert isinstance(c.get(field), str) and c[field].strip(), (
                         f"{sig}/{c.get('id')} 缺字段 {field}"
                     )
+
+    def test_spec_scoped_declared_per_choice(self):
+        """fix-global-signal-choice-execution 1.1：逐项作用域显式声明。"""
+        for sig, choices in ADJUDICATION_CHOICES.items():
+            for c in choices:
+                assert isinstance(c.get("spec_scoped"), bool), (
+                    f"{sig}/{c.get('id')} 缺 spec_scoped 显式声明"
+                )
+        # spec 作用域（动作语义针对具体 spec 状态机）：retry_review 等
+        assert choices_for("spec-review-incomplete")[0]["spec_scoped"] is True
+        assert choices_for("impl_budget_exhausted")[3]["spec_scoped"] is True  # abandon
+        # 非作用域（仅确认/观察/写项目配置）：全局信号唯一可执行面
+        nonscoped = {
+            c["action"] for chs in ADJUDICATION_CHOICES.values() for c in chs
+            if not c["spec_scoped"]
+        }
+        assert nonscoped == {
+            "ignore", "raise_budget", "open_config",
+            "declare_no_artifacts", "ack_self_heal",
+        }
 
     def test_unregistered_returns_empty_tuple(self):
         for sig in _BUCKET0_SIGNAL_TYPES + ("unknown_type",):
@@ -531,6 +552,49 @@ class TestExecuteAdjudicationChoice:
             {"signal_type": "impl_budget_exhausted", "spec": "spec-frozen"},
             AdminDisposition(run_id="r1"))
         assert _entry(proot, "spec-frozen")["status"] == "blocked"  # 未动
+
+    def test_apply_choice_execution_global_signal_scoped_choice_skipped(self, tmp_path):
+        """fix-global-signal-choice-execution 2.1：全局信号 × spec 作用域 choice
+        被跳过（not-ok + skipped），spec 状态机未被触碰——终态回写按 not-ok
+        拦截，信号不回写 resolved。spec=None 与占位 'global' 两形态均覆盖。"""
+        proot = _make_proot(tmp_path)
+        _freeze(proot, "spec-frozen", "spec-review-incomplete: 评审尝试已达上限")
+        from core.agent_runner.result_gate import AdminDisposition
+        from core.admin_monitor import AdminMonitor
+        from core.dashboard.data.adjudication_choices import is_global_spec
+
+        mon = AdminMonitor.__new__(AdminMonitor)
+        mon.project_root = proot
+        mon.logger = FakeLogger()
+        for gspec in (None, "global"):
+            assert is_global_spec(gspec)
+            outcome = mon._apply_choice_execution(
+                {"signal_type": "spec-review-incomplete", "spec": gspec},
+                AdminDisposition(run_id="r1", choice_id="retry_review"),
+            )
+            assert outcome is not None and outcome["ok"] is False
+            assert outcome.get("skipped") is True
+            assert outcome.get("action") == "retry_review"
+            # 真实 spec 状态机未被触碰（retry_review 的解冻未发生）
+            assert _entry(proot, "spec-frozen")["status"] == "blocked"
+
+    def test_apply_choice_execution_global_signal_nonscoped_choice_executes(self, tmp_path):
+        """fix-global-signal-choice-execution 1.3：全局信号保留非作用域收口
+        ——未注册 signal_type（daemon_errors）经非 spec_scoped 全表反查放行，
+        ack_self_heal 照常执行，全局信号收口不断路。"""
+        proot = _make_proot(tmp_path)
+        from core.agent_runner.result_gate import AdminDisposition
+        from core.admin_monitor import AdminMonitor
+
+        mon = AdminMonitor.__new__(AdminMonitor)
+        mon.project_root = proot
+        mon.logger = FakeLogger()
+        outcome = mon._apply_choice_execution(
+            {"signal_type": "daemon_errors", "spec": "global"},
+            AdminDisposition(run_id="r1", choice_id="ack_self_heal"),
+        )
+        assert outcome["ok"] is True
+        assert outcome["action"] == "ack_self_heal"
 
 
 # ── 6. alert-resolve 端点闭环 ────────────────────────────────────────────
