@@ -1,15 +1,15 @@
 # 项目架构图（archify 按需生成）
 
-<!-- knowledge: capability=project-architecture-diagram rev=1
-     sources=spec/archive/2026-10-04-add-project-architecture-tab -->
+<!-- knowledge: capability=project-architecture-diagram rev=2
+     sources=spec/archive/2026-10-04-add-project-architecture-tab,spec/archive/2026-10-04-fix-archify-vendored-injection -->
 
-项目详情页的「项目架构」页签：用户手动触发生成项目高层运行时架构图（headless claude 挂 archify skill），产物经后端下发、前端沙箱渲染，让读者快速看懂项目核心组件、主链路与外部依赖。
+项目详情页的「项目架构」页签：用户手动触发生成项目高层运行时架构图（headless claude 按 vendored archify 指引生成），产物经后端下发、前端沙箱渲染，让读者快速看懂项目核心组件、主链路与外部依赖。
 
 ## 规则
 
 - 页签与手动触发：项目详情页页签序列固定为 …→测试回归→项目架构（key `architecture`、label「项目架构」）→会话接入，对全部注册项目一视同仁（无项目级特殊处理），未注册项目查询一律 404。页签内容由独立组件 ArchitectureTab 承载，按 `active` 门控——仅选中本页签才发起请求，未选中零请求。系统不得在页面加载、页签切换、daemon 启动等任何时机自动触发生成；从未生成时展示空态提示与「刷新架构图」按钮。
 - 生成范式：点击「刷新架构图」后 POST 只受理并立即返回，实际生成由 daemon 后台线程执行一次性 headless claude：`claude -p <提示词> --permission-mode bypassPermissions`，cwd=项目根，`start_new_session=True`，env=`os.environ.copy()` 剔除 agent-run 专用三键（FENIX_RUN_PROJECT_ROOT / FENIX_RUN_WORKTREE / CLAUDE_CODE_ENABLE_TODO_TOOLS）。HTTP 线程不得同步等待生成（范式见 ADR-216）。生成完全在开发主链路之外：无 run 台账、无车道、无预算、无新增配置项，超时等均为模块常数。
-- archify skill 保障：spawn 前探测 skill 安装，`$CLAUDE_CONFIG_DIR/skills/archify/SKILL.md` 与 `~/.claude/skills/archify/SKILL.md` 两处都查（settings env 可能覆盖 CLAUDE_CONFIG_DIR）；缺失时后台线程自动执行 `npx skills add tt-a1i/archify -g`（限时 120s）；安装失败或超时判 failed，错误信息原样携带该安装命令供人工执行。
+- archify 依赖保障（vendored 随库分发）：archify 以 vendored 整包随本仓库分发于 `vendor/archify/`——SKILL.md 与其指引引用的全部伴生文件（schemas/ examples/ references/ renderers/ bin/ scripts/ assets/ 等）必须整包在位，只注入 SKILL.md 文本不够；上游 LICENSE 与 THIRD_PARTY_NOTICES 随包保留，溯源（上游仓库/快照 commit/许可/剔除项）与升级方法见 `vendor/archify/VENDORED.md`，升级=手工整包替换并同步更新该文件，禁止只换 SKILL.md（指引与伴生文件版本耦合）。spawn 前校验包完整性：`vendor/archify/SKILL.md` 存在且非空；缺失或为空判 failed，错误信息注明 vendored 包缺件属部署损坏、提示对照 VENDORED.md 恢复，且 MUST NOT 触发任何安装动作。生成提示词前置注入 SKILL.md 指引原文并给出包根绝对路径（指引中出现的相对路径均相对包根解析；`node bin/archify.mjs validate` 为本地执行、无网络依赖），不再以「请使用 archify skill」等措辞隐含依赖环境已装 skill。生成链路零联网安装（含 `npx skills add`）、零用户环境依赖（不读不写 `~/.claude` 与 `$CLAUDE_CONFIG_DIR` 下任何路径），期间派生的唯一外部进程是 claude 本身（claude 进程 cwd=目标项目根，读 vendored 包走绝对路径）。
 - 图形态契约（约束落在提示词文本）：只保留 8–16 个核心组件；突出且仅突出一条主要路径；标注外部依赖与信任边界；辅助信息放说明卡片而非继续增加连线；节点与说明文字用中文。组件数机械校验只对「能提取到」的情况生效——提取到则越出 8–16 判 failed（错误信息含实际组件数与允许范围）；marker 缺失提取不到时记 `component_count: null` 放行，产物可用性优先于校验完备性。
 - 产物判定权威链：进程退出码 → diagram.html 存在且非空 → 自包含 HTML 特征（起始 `<html` / `<!DOCTYPE html`）→ 组件数提取（stdout 末行 marker `ARCHIFY_DONE <组件数>`，缺失则从产物提取）。判定权威是产物实况，不采信 claude 自述（口径见 ADR-217）；任一必需环节不满足判 failed。
 - 存储与单写者：产物按项目存于项目根 `.fenix/architecture/`（`diagram.html` + `status.json`，gitignored 运行时产物，目录按需创建），每次状态迁移 tmp+rename 原子写；dashboard 进程内 ArchitectureManager 持单飞锁与在飞进程句柄，是唯一写者。刷新即覆盖旧图，只保留最近一次，无历史版本。status.json 字段：`state` / `generated_at` / `started_at` / `error` / `duration_ms` / `component_count`。
@@ -20,3 +20,4 @@
 ## 溯源
 
 - 2026-10-04 add-project-architecture-tab（spec/archive/2026-10-04-add-project-architecture-tab） — 新建本能力：项目详情页新增「项目架构」页签，确立手动触发、一次性 headless claude + archify 生成、单飞/超时/重启残留合成三件套生命周期治理、`.fenix/architecture/` 产物存储与 3 端点下发、iframe 沙箱渲染契约
+- 2026-10-04 fix-archify-vendored-injection（spec/archive/2026-10-04-fix-archify-vendored-injection） — 改写「archify skill 可用性保障」：废除运行时自动安装（`npx skills add` 限时 120s 及三探测函数），改为 vendored 整包随库分发（`vendor/archify/`，commit 4e03cd2f 先于本 SPEC 入库）+ SKILL.md 原文与包根绝对路径注入提示词，生成链路零联网安装、零用户环境依赖，缺件按部署损坏判失败；其余规则不变

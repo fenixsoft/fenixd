@@ -223,3 +223,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-216](ADR-216-dashboard-on-demand-longtask-accept-poll-lightweight-spawn.md) | accepted | dashboard 按需长任务固定受理-轮询异步范式（HTTP 线程禁同步等待、状态原子写落盘、重启残留读侧合成中断）+ 一次性 headless spawn 执行不入开发主链路（无 run 台账/车道/预算/新配置项），成本靠手动触发+单飞+超时上限自然节流 |
 | [ADR-217](ADR-217-spawn-artifact-verdict-authority-reality-not-selfreport.md) | accepted | spawn 产物成败判定权威=产物实况（退出码→文件存在非空→特征校验→marker 提取）禁采信 agent 自述；形态数值校验只对能提取的情况生效、提取失败记 null 放行，可用性优先于校验完备性 |
 | [ADR-218](ADR-218-generated-html-iframe-sandbox-no-same-origin.md) | accepted | 机器生成 HTML 一律专用只读端点下发 + iframe sandbox=allow-scripts（禁 allow-same-origin）渲染，产物脚本与主站存储/DOM 隔离；同源交互需求须独立安全设计评估禁顺手放开 |
+| [ADR-219](ADR-219-external-skill-dependencies-vendored-no-runtime-install.md) | accepted | 外部 skill/工具依赖一律 vendored 整包随库分发（vendor/<name>/ + VENDORED.md 溯源，只许整包替换升级），运行时零联网安装、零用户环境依赖，指引以提示词注入原文+包根绝对路径交付；部署缺件属部署损坏 fail-closed 判失败禁安装自愈，可用性禁押在运行时外网可达性上 |
