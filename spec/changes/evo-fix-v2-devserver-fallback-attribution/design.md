@@ -11,13 +11,14 @@
 
 ## 方案决策
 
-1. **归因恢复双管**：①主改 start() 回退分支（:140-157）给 dev-server argv 附加 worktree 路径标记——不依赖项目布局、改动面最小，且让既有豁免逻辑自然生效、skip 分支消失；②辅改 worktree 侧 core/dashboard/static 软链（core/worktree_manager/lifecycle.py:316 _provision_worktree_deps，create 两出口 :187/:298 共用），消除回退形态本身，软链失败不阻塞 create。同时修正 :142「该形态罕见」的错误注释。
-2. **记账而非超期杀**：skip 分支按 pid 记账（首见告警一次、后续静默计数）；升级/处置必须以「无引用进程」判定为前提——**明确不做按裸存活时长的自动 kill**（在服 run 可合法持有 4.2h）。pgrep 按项目收窄，双 daemon 不互刷。
+1. **归因恢复双管**：①主改 start() 回退分支（:140-157）给 dev-server argv 附加 worktree 路径标记——不依赖项目布局、改动面最小，且让既有豁免逻辑自然生效、skip 分支消失（附加约定：标记 token 追加在 argv **尾部**——dev-server.mjs 按位置读 argv[2]=static_root、argv[3]=port（tests/v2/dev-server.mjs:25-26），前插会改变语义；形态取 `<wt>/core/dashboard/static`，与 _dev_server_worktree_root（:464-486）的 static-root token 权威归属判据对齐，提取逻辑无需改动）；②辅改 worktree 侧 core/dashboard/static 软链（core/worktree_manager/lifecycle.py:316 _provision_worktree_deps，create 两出口 :187/:298 共用），消除回退形态本身，软链失败不阻塞 create。同时修正 :142「该形态罕见」的错误注释。
+2. **记账而非超期杀**：skip 分支按 pid 记账（首见告警一次、后续静默计数；记账为 daemon 进程内状态，重启即失、不持久化——重启后按新进程重放一次首见告警，可接受，重启场景由决策 4 对账兜底）；升级/处置必须以「无引用进程」判定为前提——**明确不做按裸存活时长的自动 kill**（在服 run 可合法持有 4.2h）。pgrep 按项目收窄，双 daemon 不互刷。
 3. **文案联动**：skip 告警文案改条件形态（说明判定局限+误杀风险），移除无条件「可手动 kill」。
 4. **重启收口复用成熟形态**：_v2_servers 登记持久化（或 daemon 启动按端口段 19000-19019+argv 对账），只收割无主进程；实现参照 core/serving_registry.py:351-394 的「按 pid 记账+身份核对+收割」形态。
 
 ## 风险
 
-- argv 附加改变进程 cmdline：确认不影响既有 pgrep 匹配模式与调试习惯（匹配键仍含 dev-server.mjs 路径）。
+- argv 附加改变进程 cmdline：确认不影响既有 pgrep 匹配模式与调试习惯（匹配键仍含 dev-server.mjs 路径与 marker 字面量，追加在尾部）。
+- argv 携带 worktree 路径被 worktree_manager 锁存活探测误判为持锁 attempt：已排除——两处判定（v2_dev_server.py:489-510、worktree_manager/locks.py:222/:312）均以 is_claude_process 过滤进程类型，dev-server 不入锚；且正常形态 dev-server 的 static-root token 本就含 worktree 路径（:467 argv 形态），本方案只是使回退形态与正常形态一致，无新增风险形态。
 - 软链对每个 worktree 增加 provisioning 开销：失败静默降级回退形态（此时由记账+豁免兜底）。
 - 重启对账误杀有主进程：以 argv 标记+引用判定双条件收口，测试覆盖「run 在飞时重启 daemon」场景。
