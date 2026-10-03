@@ -632,6 +632,8 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
     有效配置 `agents.max_retries`（ConfigLoader.resolve_config 用户级+项目级
     深合并，与派发侧 runner._get_config 同口径；缺失/异常回退 3，与 dispatch
     取值默认一致；read_effective_config 是受管键白名单视图，不含 max_retries）。
+    取值后按派发侧同构规则钳制（runner._execute_agent_inner：0/负数被
+    max(1, ...) 收口到 1），展示口径与真实 attempt 循环一致。
     """
     try:
         count = int(entry.get("_retry_count") or 0)
@@ -644,7 +646,10 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
         from core.config import ConfigLoader
 
         cfg = ConfigLoader.resolve_config(Path(project_root))
-        max_r = int(ConfigLoader.get(cfg, "agents.max_retries", 3) or 3)
+        # 下限钳制与派发侧 runner._execute_agent_inner 同构：0/负数会被
+        # max(1, ...) 收口到 1。不写 `or 3`——那会把合法配置的 0 静默
+        # 吞成 3、负数原样透传，展示与真实派发行为脱节。
+        max_r = max(1, int(ConfigLoader.get(cfg, "agents.max_retries", 3)))
     except (TypeError, ValueError):
         # resolve_config 自兜底（文件缺失/解析失败降级空 dict），此处仅防
         # max_retries 配出非数值——回退默认 3，展示信号不阻断时间轴
