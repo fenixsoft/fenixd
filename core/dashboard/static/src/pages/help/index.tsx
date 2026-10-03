@@ -10,7 +10,7 @@
  */
 import { Empty, Skeleton, Alert, Drawer, Button, Card } from 'antd';
 import { MenuOutlined } from '@ant-design/icons';
-import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -100,7 +100,7 @@ function waitForMermaidRenders(): Promise<void> {
   return Promise.all(pendingMermaidRenders).then(() => undefined);
 }
 
-// ── MermaidBlock：拦截 language-mermaid code 块 ────────────────────
+// ── MermaidBlock：承接 language-mermaid 围栏块（由 pre 覆盖拦截后转入）──
 
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -191,24 +191,28 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
   return {
     ...markdownComponents,
     code({ className, children, ...props }: ComponentProps<'code'> & ExtraProps) {
-      const isMermaid = className === 'language-mermaid';
-      if (isMermaid) {
-        const codeStr = String(children).replace(/\n$/, '');
-        return <MermaidBlock code={codeStr} />;
-      }
-      // 普通代码块（非 mermaid）：保持等宽字体展示
+      // 普通代码块：保持等宽字体展示；language-mermaid 围栏块不会到达这里
+      // （remark-rehype 恒以 pre 包裹围栏块，mermaid 已在其覆盖层拦截）
       return (
         <code className={className} style={{ background: 'var(--ant-color-fill-quaternary)', padding: '2px 4px', borderRadius: 3, fontSize: 13 }} {...props}>
           {children}
         </code>
       );
     },
-    // mermaid 代码块：code 覆盖返回的 MermaidBlock 根节点是 div，
-    // 留在 pre 内会形成 <pre><div> 非法嵌套（pre 仅允许 phrasing content），
-    // 这里直接返回图容器使其脱离 pre；其余代码块原样渲染 pre
-    pre({ children }: ComponentProps<'pre'> & ExtraProps) {
-      if (isValidElement(children) && children.type === MermaidBlock) {
-        return children;
+    // mermaid 代码块：pre 的 children 是尚未渲染的 code 组件元素（type 为 components
+    // 里的 code 函数，永远不会是 MermaidBlock），无法据 children 识别；react-markdown
+    // 开启 passNode，按注入的 hast 元数据判定——pre 的 children[0] 即 code 节点，
+    // 其 className 含 language-mermaid。命中则直接返回图容器使其脱离 pre
+    //（pre 仅允许 phrasing content，<pre><div> 属非法嵌套）；其余代码块原样渲染 pre
+    pre({ node, children }: ComponentProps<'pre'> & ExtraProps) {
+      const code = node?.children[0];
+      if (code?.type === 'element') {
+        const { className } = code.properties ?? {};
+        if (Array.isArray(className) && className.includes('language-mermaid')) {
+          const text = code.children[0];
+          const codeStr = text?.type === 'text' ? text.value.replace(/\n$/, '') : '';
+          return <MermaidBlock code={codeStr} />;
+        }
       }
       return <pre>{children}</pre>;
     },
