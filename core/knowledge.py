@@ -898,7 +898,10 @@ class DistillManager:
             if not violations:
                 commit = _commit_output(proot, archived_names)
                 if commit is None:
-                    # 提交失败当轮重试一次（index.lock 撞车等瞬态失败常可恢复）
+                    # 提交失败当轮重试一次（index.lock 撞车等瞬态失败常可恢复）；
+                    # 锁持有方通常毫秒到秒级才释放，零间隔重试命中率极低，先短
+                    # 退避再重试（code-review 06141f417790）
+                    time.sleep(1.0)
                     commit = _commit_output(proot, archived_names)
                 if commit is not None:
                     result["ok"] = True
@@ -1040,7 +1043,9 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
             effective = ConfigLoader.resolve_config(proot)
         if not ConfigLoader.get_knowledge_config(effective or {})["enabled"]:
             return {"dispatched": False, "reason": "disabled"}
-    except Exception as e:  # noqa: BLE001 — 配置解析失败按禁用处理（fail-open）
+    # 配置解析失败按禁用处理：对本车道是保守不派发（fail-closed，非降级放行
+    # 的 fail-open）；归档主流程不受影响（code-review 6104aea75dbd 正名）。
+    except Exception as e:  # noqa: BLE001
         logger.warning("knowledge-distill 配置解析失败，跳过派发: %s", e)
         return {"dispatched": False, "reason": f"config-error: {e}"}
 
