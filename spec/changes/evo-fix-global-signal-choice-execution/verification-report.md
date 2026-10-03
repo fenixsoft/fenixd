@@ -38,3 +38,10 @@
 | e2e-manual-ack-self-heal-global-closes-200 | 端到端·全局信号非作用域收口不断路：POST /api/alert-resolve（project=fenixd, alert_id=e2e-global-ack-selfheal-close, choice_id=ack_self_heal）——非作用域动作对全局形态不受限，执行成功回 200，响应 ok=true、action=ack_self_heal、marked=true（ESCALATION 经 mark_handled 闭环）。出处 spec「过滤后仍有可用动作」；core/dashboard/routes/alert_routes.py:468-526、core/dashboard/data/admin_actions.py:2296-2302 | pass | 0/4 | - |
 | e2e-rejected-global-alert-stays-unhandled | 端到端·被拒信号保留待重审：POST 被拒（400）后读回 .fenix/admin_alerts.json——e2e-global-retry-review-guard 仍 handled=False、handled_at 空、action_taken/result 为空（人工通道失败路径不标记 handled 也不写留痕，信号可重新处置），与验收「执行被跳过/拒绝，信号终态非 resolved」对账。出处 proposal 验收第 1 条；core/dashboard/routes/alert_routes.py:459-466 | pass | 0/2 | - |
 | e2e-ack-self-heal-alert-marked-handled | 端到端·非作用域收口闭环读回：读回 .fenix/admin_alerts.json——e2e-global-ack-selfheal-close 已 handled=True 且 handled_at 落值（全局信号不滞留 pending 无路可走）；action_taken/result 保持空（人工端点为非目标、mark_signal_handled 缺省调用不写留痕字段——2.3 向后兼容约束的端点级回归锚点）。出处 spec 非目标「不修改人工端点既有防护行为」、design 决策 4；core/admin_store.py:599-600 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 15 个（第 1 轮）。
+
+- 首轮写入 15 个场景
+
