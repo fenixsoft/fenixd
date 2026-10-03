@@ -1,7 +1,7 @@
 # 模型网关与配置
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-04 05:20 UTC+8
 
-模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置，以及分级配置与设置界面的配置体系。
+模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置，以及分级配置与设置界面的配置体系，外加 Provider 手动健康检测。
 
 ## 能力页
 
@@ -25,3 +25,4 @@
 | [hot-reload-unknown-key-tolerance](hot-reload-unknown-key-tolerance.md) | 配置热更新未知键容错 | 2026-10-03 04:59 |
 | [config-tabs](config-tabs.md) | 配置页页签 | 2026-10-03 04:59 |
 | [settings-system-tab](settings-system-tab.md) | 设置页系统页签 | 2026-10-03 04:59 |
+| [llm-health-check](llm-health-check.md) | Provider 手动健康检测（一键探测可用性与耗时） | 2026-10-04 05:20 |

@@ -232,3 +232,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-225](ADR-225-help-docs-placement-by-user-scenario.md) | accepted | 帮助文档机制描述按使用场景落位进「用户遇到问题时会翻的那一章」（env 豁免→验证章、unseal→治理节、取消保持态→生命周期+Dashboard 互链），禁集中新建「新机制汇总」章；组织轴=使用场景非提交历史，篇幅两段式上限+既有标题文本不动防锚点漂移 |
 | [ADR-226](ADR-226-codefix-batch-file-group-indivisible-target-scale-binpacking.md) | accepted | code-fix 选批以文件组为最小不可拆单元确定性贪心装箱，batch_size 定语义为目标规模 T（硬上限 2T）、同目录=直接父目录全等禁语义相似度判据、单文件组超限独立成批不拆；后续触碰选批者不得破坏确定性与文件组不可拆 |
 | [ADR-227](ADR-227-codefix-two-stage-regression-last-batch-full-baseline.md) | accepted | code-fix 批收尾回归两段式：非末批按触碰面定向（{test_targets} 占位符）、末批恒全量为整链唯一合并防线；定向化 fail-open（无占位符/映射空/配置关一律回退全量禁跳过）、末批判定与链选批同排除口径禁裸计数、复用 run_regression 不新增执行通道；合回防线降为末批全量是显式取舍，后续 SPEC 不得削弱 |
+| [ADR-228](ADR-228-manual-llm-health-probe-stateless-proxy-circuit-isolated.md) | accepted | 手动 LLM 健康探测=daemon 后端代理纯探测（浏览器不直连、端点无状态显式三字段、解析链在前端），与运行期熔断状态严格隔离禁写熔断计数/切换冷却/半开探针，请求签名与运行期 CLI 同构保证结论对运行期有效 |
