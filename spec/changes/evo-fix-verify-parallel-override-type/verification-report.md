@@ -31,3 +31,10 @@
 | vpo-read-side-warning-repr-source | 定向跑提交的读端告警用例（三段式验证链 harness + 旁路坏值 'False' 注入 read_one，绕开写侧守卫模拟锁外内存写形态）：解析失败降档沿用配置并行度 5（不把布尔语义映射为特定并行度）、告警含 repr（_verify_parallel_override='False'）与字段来源「取自 spec attrs」。（出处：core/pm_engine/verification/pipeline.py:2110-2119 读端告警补来源；specs/verify-parallel-override/spec.md「非法值告警」；tests/test_verify_parallel_override_reset.py::TestReadSideWarningKeepsRepr::test_unparseable_value_warns_with_repr_and_source） | pass | 0/3 | - |
 | vpo-backoff-regression-zero-drift | 回归：既有降档链路测试模块 17 用例零回退——int() 包裹断言对 str/int 双形态兼容，parse 归一不得改变降档写值与复位行为；output_match 照抄实测 PASSED 行（覆盖降档写、健康轮复位、unfreeze/fast-track/全链清零、读端覆盖与配置并行度保持）。（出处：tests/test_verify_parallel_backoff.py；proposal 验收「既有 tests/test_verify_parallel_backoff.py 零回退」） | pass | 0/7 | - |
 | vpo-characterization-int-roundtrip-regression | 回归：定向跑表征测试降档计数与健康轮复位两用例——前者断言已同轮更新为 int 2（parse 归一带来的可观察类型变化 "2"→2 不静默留红，tests/test_characterization_verification.py:177），后者覆盖复位路径 _verify_parallel_override=None。（出处：tests/test_characterization_verification.py::TestHandleEnvBlockedInconclusive；proposal 验收第三条「同轮更新…不静默留红」） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+
