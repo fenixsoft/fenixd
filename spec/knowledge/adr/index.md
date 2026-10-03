@@ -224,3 +224,5 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-217](ADR-217-spawn-artifact-verdict-authority-reality-not-selfreport.md) | accepted | spawn 产物成败判定权威=产物实况（退出码→文件存在非空→特征校验→marker 提取）禁采信 agent 自述；形态数值校验只对能提取的情况生效、提取失败记 null 放行，可用性优先于校验完备性 |
 | [ADR-218](ADR-218-generated-html-iframe-sandbox-no-same-origin.md) | accepted | 机器生成 HTML 一律专用只读端点下发 + iframe sandbox=allow-scripts（禁 allow-same-origin）渲染，产物脚本与主站存储/DOM 隔离；同源交互需求须独立安全设计评估禁顺手放开 |
 | [ADR-219](ADR-219-external-skill-dependencies-vendored-no-runtime-install.md) | accepted | 外部 skill/工具依赖一律 vendored 整包随库分发（vendor/<name>/ + VENDORED.md 溯源，只许整包替换升级），运行时零联网安装、零用户环境依赖，指引以提示词注入原文+包根绝对路径交付；部署缺件属部署损坏 fail-closed 判失败禁安装自愈，可用性禁押在运行时外网可达性上 |
+| [ADR-220](ADR-220-run-stall-composite-criteria-default-off-chain-terminate.md) | accepted | run 停滞判停只许复合判据（连续 N×120s 往返 或 stall 占比过半+M 分钟无产物进展）、整个预算缺省关闭灰度，命中即强杀 attempt 并终止整个重试链（禁瞬态/in-place 重派放大止损），统计 run 级累积跨 attempt 不重置，禁绝对次数单一阈值 |
+| [ADR-221](ADR-221-agent-runner-reads-pm-engine-via-injected-callback.md) | accepted | agent_runner 读 pm_engine 车道状态一律构造注入 reader 回调（沿 result_gate 注入约定）禁模块级依赖，未注入/读取异常/数据缺失一律按无数据处理 fail-open 不阻断既有行为 |

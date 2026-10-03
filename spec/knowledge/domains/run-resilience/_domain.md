@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-04 03:36 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -17,7 +17,7 @@
 | [per-spec-impl-budget](per-spec-impl-budget.md) | 单 SPEC 实现预算 | 2026-10-03 04:59 |
 | [run-budget-continuity](run-budget-continuity.md) | run 预算连续性 | 2026-10-03 04:59 |
 | [verify-recovery-budget](verify-recovery-budget.md) | 重启重验预算与超限冻结 | 2026-10-03 04:59 |
-| [run-cancel](run-cancel.md) | run 取消 | 2026-10-03 04:59 |
+| [run-cancel](run-cancel.md) | run 取消 | 2026-10-04 03:36 |
 | [run-superseded-terminal](run-superseded-terminal.md) | 被取代 run 的终态标记 | 2026-10-03 04:59 |
 | [runtime-run-sweep](runtime-run-sweep.md) | 运行时 run 清扫 | 2026-10-03 04:59 |
 | [redispatch-loop-governance](redispatch-loop-governance.md) | 重派循环治理 | 2026-10-03 04:59 |
@@ -33,3 +33,4 @@
 | [baseline-blocked-gate](baseline-blocked-gate.md) | 回归基线失败挂起门 | 2026-10-03 04:59 |
 | [lifecycle-hygiene](lifecycle-hygiene.md) | run 生命周期卫生 | 2026-10-03 04:59 |
 | [cli-retry-backoff](cli-retry-backoff.md) | CLI 退避重试 | 2026-10-03 04:59 |
+| [run-stop-loss](run-stop-loss.md) | run 级止损（attempt 间隙取消/重试让位/停滞预算） | 2026-10-04 03:36 |
