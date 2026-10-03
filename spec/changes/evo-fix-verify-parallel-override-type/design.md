@@ -10,9 +10,9 @@
 ## 方案决策
 
 1. 写侧单行修正 False→None＋注释纠偏——最小且直击源头。
-2. parse 侧登记 int|None 归一（int 先例区 :538-558＋null 清单 :602-638），布尔与字符串形状拒绝并告警或归 None；覆盖存量 STATE.md 首读清洗。
+2. 双层归一，职责分离：写入侧在 update_spec/_apply_updates_entry（:1373-1435）为该字段加单字段形状守卫——布尔或字符串形状（'False'/'true' 等）拒绝并告警或归 None，不静默序列化进 STATE.md（单字段守卫，不属非目标排除的全字段通用框架）；parse 侧登记 int|None 归一（int 先例区 :538-558，null 兼容），覆盖存量 STATE.md 'False' 首读清洗。注意：parse 归一使往返读值由 str "2" 变 int 2（read_one→read_all 全量 parse 实证），既有 tests/test_characterization_verification.py:177 裸字符串断言须同轮更新。
 3. 明确不做布尔清单注册（反模式：会把合法降档值 '2' 误转 False）与读端 'false'→max_parallel=1 映射（写入者真实意图是清零复位，映射会把复位扭曲成单线程验证；int(False)=0 会把并行度置 0，同为坏值）。
-4. 读端只加 repr 值形状留痕。
+4. 读端告警现网已含 repr（pipeline.py:2114 `{_parallel_override!r}`）——仅确认不退化并补字段来源（值取自 spec attrs），无结构性改动。
 
 ## 风险
 

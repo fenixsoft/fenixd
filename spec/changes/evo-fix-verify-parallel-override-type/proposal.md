@@ -8,7 +8,7 @@ android-station-port 人工裁决恢复（reset_verification）把 _verify_paral
 
 1. 写侧归位：_RETRY_COUNTER_RESETS 该字段 False→None，与 unfreeze_spec 先例语义对齐；修正失实注释。
 2. 解析侧归一：state_machine 为该字段登记 int|None 归一，非法形状写入前拒绝或归 None，杜绝 STATE.md 往返字符串化。
-3. 读端留痕加固：解析失败告警补值形状（repr）与字段来源；不做布尔→并行度映射。
+3. 读端留痕加固：解析失败告警现网已含值形状 repr（pipeline.py:2114 `{value!r}`）——保持不退化并补字段来源（值取自 spec attrs）；不做布尔→并行度映射。
 
 ## 非目标
 
@@ -19,4 +19,4 @@ android-station-port 人工裁决恢复（reset_verification）把 _verify_paral
 
 - reset_verification 与 continue_auto_fix 处置后该字段为 null，STATE.md 往返读回 null，验证启动不再出解析告警。
 - 注入 'False'/'true' 等字符串或布尔值：写入前被归一/拒绝并告警，读端告警含 repr 留痕。
-- 既有 tests/test_verify_parallel_backoff.py 零回退。
+- 既有 tests/test_verify_parallel_backoff.py 零回退；parse 归一带来的可观察类型变化（往返值 `"2"`→`2`）须同轮更新 tests/test_characterization_verification.py:177 断言，不静默留红。
