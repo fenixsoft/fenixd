@@ -753,6 +753,21 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     # 生产 STATE 记录恒带 status，「缺失」不构成门禁拒绝的证据，不据此误回落。
     _applied_status = str((sm.read_one(spec_name) or {}).get("status", "") or "")
     if _applied_status and _applied_status != "verified":
+        # 门禁拒绝回落整轮前回写上一轮全量报告：与子集重验失败回落（上方
+        # 682-689）对称——merged 报告（实跑子集全 pass + carried-over 沿用）
+        # 已落盘规范 report.json，而 spec 实际滞留 testing 按 bug-found 走整轮
+        # 处置，不回写则读侧（_failed_scenario_ids/_detect_uniform_verify_
+        # failure/dashboard 展示）在窗口内读到与状态失真的乐观全绿报告。
+        # prev_report 为 None（本就无报告/不可读）按无报告语义跳过写盘；
+        # 回写失败不阻断回落记账（整轮验证随后会重写报告）。
+        if prev_report is not None:
+            try:
+                save_report(ctx.project_root, spec_name, prev_report)
+            except OSError as e:
+                ctx.logger.warning(
+                    "pm_engine",
+                    f"fastlane 门禁拒绝回落回写上一轮报告失败 '{spec_name}': {e!r}",
+                )
         return _bump_fail_streak(
             f"fastlane 收敛门禁未通过（_apply_verified 后 status={_applied_status}"
             f"≠verified，spec 未收口），回落整轮"
