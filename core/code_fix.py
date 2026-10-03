@@ -66,6 +66,7 @@ from core.code_review import (  # noqa: F401
 )
 from core.agent_runner.provider_circuit import PROVIDER_SWITCH_COOLDOWN_SECONDS
 from core.config import ConfigLoader
+from core.git_base_branch import resolve_base_branch
 from core.verify_contract import load_verify_contract
 
 # 进度快照（单文件覆盖式，与 .fenix/regression/last-run.json 同型，D8）
@@ -2056,6 +2057,90 @@ def _salvage_commit(worktree, message: str) -> bool:
         return False
 
 
+# ── 合回冲突定向救回的 git 取证原语（evo-add-codefix-mergeback-conflict-salvage）──
+
+
+def _git_try(worktree, args: list, timeout: float = 120):
+    """worktree 内跑一条 git 命令，返回 CompletedProcess。
+
+    超时/OSError 返回 None——调用方按「判据不可得」保守处理（救回降级/放弃，
+    回落既有整批入档案兜底），MUST NOT 向批 worker 上抛。"""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _salvage_batch_commits(worktree, created_sha: str) -> list:
+    """批分支相对建树点的提交清单（旧→新序）；判据不可得返回空清单。
+
+    在救回入口（rebase/cherry-pick 改写分支前）枚举一次：rebase 会改写提交
+    SHA，``created_sha..HEAD`` 在改写后不再可用，原始 SHA 由 reflog 保全、
+    cherry-pick 跨基线照常可用。"""
+    if not created_sha:
+        return []
+    res = _git_try(
+        worktree, ["rev-list", "--reverse", f"{created_sha}..HEAD"], timeout=30,
+    )
+    if res is None or res.returncode != 0:
+        return []
+    return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+
+
+def _commit_changed_paths(worktree, sha: str):
+    """提交触碰的文件路径清单；git 判据不可得返回 None（保守按不可回收）。"""
+    res = _git_try(
+        worktree,
+        ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha],
+        timeout=30,
+    )
+    if res is None or res.returncode != 0:
+        return None
+    return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+
+
+def _commit_item_ids(worktree, sha: str):
+    """解析提交 body 的 ``items:`` 清单（agents/code-fix.md 契约的归属单源）。
+
+    返回条目 id 清单；body 无 ``items:`` 行（旧契约提交）或 git 判据不可得
+    返回 None——调用方保守处理：不做无据归属，剩余未出账条目整体随兜底入
+    失败档案（与现状整批入档同口径）。"""
+    res = _git_try(worktree, ["show", "-s", "--format=%B", sha], timeout=30)
+    if res is None or res.returncode != 0:
+        return None
+    for line in (res.stdout or "").splitlines():
+        s = line.strip()
+        if s.startswith("items:"):
+            return [p.strip() for p in s[len("items:"):].split(",") if p.strip()]
+    return None
+
+
+def _branch_head(worktree, branch: str) -> str:
+    """分支引用当前指向（入档追溯线索；判据不可得返回空串）。"""
+    res = _git_try(
+        worktree, ["rev-parse", "--verify", "--quiet", branch], timeout=30,
+    )
+    if res is None or res.returncode != 0:
+        return ""
+    return (res.stdout or "").strip()
+
+
+def _salvage_restore_branch(worktree, branch0: str) -> bool:
+    """救回放弃时把 worktree 还原回批分支（尽力而为）。
+
+    先 abort 可能挂在飞中的 cherry-pick，再 checkout 回批分支。任一步失败
+    返回 False：现场随既有 ``cleanup(success=False)`` 的 recovery legacy 保全，
+    不影响兜底入档案（``_wt_branches`` 登记的批分支名与 checkout 态无关）。"""
+    _git_try(worktree, ["cherry-pick", "--abort"], timeout=60)
+    res = _git_try(worktree, ["checkout", branch0], timeout=60)
+    return res is not None and res.returncode == 0
+
+
 # ── 回归契约缺失信号（5.5 / D5，分流口径对齐 regression_routes 既有区分）──
 
 # 「项目名=」字段解析单源：core.admin_store.evidence_project
@@ -3971,6 +4056,267 @@ class CodeFixOrchestrator:
             )
         return marked
 
+    def _salvage_merge_back_conflict(
+        self, wm, wt: Path, ctx: dict, orig_info,
+        eff_spec: str, targets, fixed_ids: list, pending_ids: list,
+        created_sha: str,
+    ):
+        """合回真冲突的定向救回（evo-add-codefix-mergeback-conflict-salvage 1.1/1.3）。
+
+        调用前提：``merge_back`` 已返回真冲突（``conflict_paths`` 非空且
+        ``wip_gate_blocked=False``——WIP 预检阻断走既有 defer，不进本方法）。
+        救回发生在 ``_safe_cleanup`` 之前（批分支引用全程可用，design D4：
+        现场即弃后分支即被删，救回 MUST 单轮闭环）；至多一次 rebase 救回，
+        失败降级 commit 组粒度回收（``_salvage_cherry_pick_recover``）。
+
+        返回 ``(merge_info, fixed_ids)``：
+        - 救回合回成功（整批救回/部分回收）→ ``success=True``；部分回收时
+          ``fixed_ids`` 收窄为可归属到回收集的条目（随调用方成功核销路径出账；
+          仍冲突/无法归属条目已在回收阶段入失败档案）；
+        - 救回重走合回命中 ``wip_gate_blocked`` → 原样透传：调用方按既有 defer
+          零预算路径处理，不计救回失败、不触发组粒度回收；
+        - 其余失败 → 批分支已还原（rebase abort / checkout 回批分支），调用方
+          走既有整批入档案兜底（行为与现状兼容）。
+        """
+        root = self.project_root
+        runner = self._agent_runner
+        batch_no = ctx["batch_no"]
+        branch0 = _worktree_branch(wt)
+        tip0 = _worktree_head(wt)
+        commits = _salvage_batch_commits(wt, created_sha)
+        self._log(
+            "info",
+            f"code-fix 第 {batch_no} 批合回冲突救回开始：branch={branch0} "
+            f"tip={tip0[:12]} commits={len(commits)}",
+        )
+        try:
+            base = resolve_base_branch(root)
+            rb = _git_try(wt, ["rebase", base], timeout=300)
+            if rb is not None and rb.returncode == 0:
+                self._log(
+                    "info",
+                    f"code-fix 第 {batch_no} 批救回 rebase 到基线 {base} 成功，重跑批回归",
+                )
+                write_progress(
+                    root, phase="regressing", reason="",
+                    current=f"第 {batch_no} 批合回冲突救回中（rebase 后重跑回归）",
+                )
+                with _with_test_targets_env(targets):
+                    reg = runner.run_regression(
+                        eff_spec, reason="code-fix", project_root=wt, lock_root=root
+                    )
+                if getattr(reg, "status", "") == "passed":
+                    self._log("info", f"code-fix 第 {batch_no} 批救回回归通过，重走合回")
+                    info = wm.merge_back(wt)
+                    if getattr(info, "success", False):
+                        self._log(
+                            "info",
+                            f"code-fix 第 {batch_no} 批合回冲突救回终局：整批救回"
+                            f"（rebase 后合回成功，resolved 候选 {len(fixed_ids)} 条）",
+                        )
+                        return info, list(fixed_ids)
+                    if bool(getattr(info, "wip_gate_blocked", False)):
+                        # defer 零预算（task 1.3）：WIP 预检是可等待自愈的暂态，
+                        # 不计救回失败、不触发组粒度回收，交既有 defer 通路。
+                        self._log(
+                            "warning",
+                            f"code-fix 第 {batch_no} 批合回冲突救回终局：救回合回被"
+                            "主树 WIP 预检阻断，转 defer 零预算（不计救回失败）",
+                        )
+                        return info, list(fixed_ids)
+                    self._log(
+                        "warning",
+                        f"code-fix 第 {batch_no} 批救回合回仍冲突，"
+                        "降级 commit 组粒度回收",
+                    )
+                else:
+                    self._log(
+                        "warning",
+                        f"code-fix 第 {batch_no} 批救回回归未通过"
+                        f"（{getattr(reg, 'status', '')}），降级 commit 组粒度回收",
+                    )
+            else:
+                _git_try(wt, ["rebase", "--abort"], timeout=60)
+                why = (
+                    "git 不可用" if rb is None
+                    else ((rb.stderr or rb.stdout or "rebase 冲突").strip()[:200])
+                )
+                self._log(
+                    "warning",
+                    f"code-fix 第 {batch_no} 批救回 rebase 失败（{why}），"
+                    "已 abort 还原批分支，降级 commit 组粒度回收",
+                )
+            # 阶段二：commit（组）粒度回收（2.1）
+            return self._salvage_cherry_pick_recover(
+                wm, wt, ctx, orig_info, base=base, commits=commits,
+                eff_spec=eff_spec, targets=targets,
+                fixed_ids=fixed_ids, pending_ids=pending_ids,
+                branch0=branch0, tip0=tip0,
+            )
+        except Exception as e:  # noqa: BLE001 — 救回自身异常 MUST NOT 劫持既有
+            # 整批入档案兜底（与 defer 收尾同款兜底手法）：尽力还原现场后按
+            # 现状收尾，异常细节留日志。
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批合回冲突救回终局：救回异常（{e}），"
+                "整批入档案兜底（现状口径）",
+            )
+            _salvage_restore_branch(wt, branch0)
+            return orig_info, list(fixed_ids)
+
+    def _salvage_give_up(self, wt, ctx: dict, orig_info, fixed_ids: list,
+                         branch0: str, why: str, carrier: str = ""):
+        """组粒度回收放弃收口：还原批分支 + 终局单行汇总，回落整批入档案兜底。
+
+        返回 ``(orig_info, fixed_ids)``（调用方既有兜底路径按现状收尾）。"""
+        self._log(
+            "warning",
+            f"code-fix 第 {ctx['batch_no']} 批合回冲突救回终局：兜底全弃"
+            f"（{why}）——整批入档案（现状口径）",
+        )
+        _salvage_restore_branch(wt, branch0)
+        if carrier:
+            # 未合并的承载分支 best-effort 删除（其提交均来自批分支，无信息损失）
+            _git_try(wt, ["branch", "-D", carrier], timeout=30)
+        return orig_info, list(fixed_ids)
+
+    def _salvage_cherry_pick_recover(
+        self, wm, wt: Path, ctx: dict, orig_info, base: str, commits: list,
+        eff_spec: str, targets, fixed_ids: list, pending_ids: list,
+        branch0: str, tip0: str,
+    ):
+        """救回阶段二：commit（组）粒度回收（evo-add-codefix-mergeback-conflict-salvage 2.1）。
+
+        从当前基线新建承载分支，按「提交是否触碰冲突文件」（冲突集来自
+        ``wm.rehearsal_conflict_paths`` 只读预演，task 1.2）逐组 cherry-pick
+        回收；回收集重跑批回归（:4140 同参）通过后经
+        ``merge_back_from_branch`` 重走合回。条目归属以提交 body 的
+        ``items:`` 清单解析为准：可归属到回收集的条目随调用方成功核销路径
+        resolved；仍冲突提交对应条目与「无法归属到非冲突组的剩余未出账条目」
+        （旧契约批解析不出清单）保守整体入失败档案计 fail_count（与现状整批
+        入档同口径，不做无据归属）。
+
+        返回形态同 ``_salvage_merge_back_conflict``。
+        """
+        root = self.project_root
+        runner = self._agent_runner
+        batch_no = ctx["batch_no"]
+
+        def _give_up(why: str, carrier: str = ""):
+            return self._salvage_give_up(
+                wt, ctx, orig_info, fixed_ids, branch0, why, carrier=carrier,
+            )
+
+        conflict_paths: list = []
+        query = getattr(wm, "rehearsal_conflict_paths", None)
+        probe_branch = _worktree_branch(wt) or branch0
+        if callable(query):
+            try:
+                conflict_paths = list(query(probe_branch) or [])
+            except Exception:  # noqa: BLE001 — 查询失败按不可得保守处理
+                conflict_paths = []
+        if not commits:
+            return _give_up("批提交清单不可得")
+        if not conflict_paths:
+            return _give_up("冲突文件集不可得（无法判定提交可回收性）")
+        cp_set = set(conflict_paths)
+        recoverable, still = [], []
+        for sha in commits:
+            paths = _commit_changed_paths(wt, sha)
+            if paths is None or (set(paths) & cp_set):
+                still.append(sha)
+            else:
+                recoverable.append(sha)
+        self._log(
+            "info",
+            f"code-fix 第 {batch_no} 批组粒度回收：冲突文件 {len(cp_set)} 个，"
+            f"可回收 {len(recoverable)}/{len(commits)} 组",
+        )
+        if not recoverable:
+            return _give_up("无可回收提交组")
+        carrier = f"{branch0}-salvage-{int(time.time())}"
+        co = _git_try(wt, ["checkout", "-b", carrier, base], timeout=60)
+        if co is None or co.returncode != 0:
+            return _give_up(
+                "承载分支建树失败（"
+                + ("" if co is None else (co.stderr or "").strip()[:120]) + ")"
+            )
+        picked: list = []
+        for sha in recoverable:
+            cp = _git_try(wt, ["cherry-pick", sha], timeout=120)
+            if cp is not None and cp.returncode == 0:
+                picked.append(sha)
+                continue
+            # 单组冲突：--skip 跳过失败组继续回收后续组（保留已回收前缀）；
+            # skip 失败则 abort 放弃回收（整批兜底）。
+            skip = _git_try(wt, ["cherry-pick", "--skip"], timeout=120)
+            if skip is None or skip.returncode != 0:
+                still.extend(sha for sha in recoverable if sha not in picked)
+                return _give_up(
+                    f"cherry-pick 冲突且跳过失败（{(cp.stderr or '').strip()[:120] if cp else 'git 不可用'}）",
+                    carrier=carrier,
+                )
+            still.append(sha)
+        if not picked:
+            return _give_up("零提交组被回收", carrier=carrier)
+        write_progress(
+            root, phase="regressing", reason="",
+            current=f"第 {batch_no} 批合回冲突救回中（组粒度回收集回归，"
+                    f"回收 {len(picked)}/{len(commits)} 组）",
+        )
+        with _with_test_targets_env(targets):
+            reg = runner.run_regression(
+                eff_spec, reason="code-fix", project_root=wt, lock_root=root
+            )
+        if getattr(reg, "status", "") != "passed":
+            return _give_up(
+                f"回收集二次回归未通过（{getattr(reg, 'status', '')}）",
+                carrier=carrier,
+            )
+        self._log(
+            "info",
+            f"code-fix 第 {batch_no} 批回收集回归通过，承载分支 {carrier} 重走合回",
+        )
+        info = wm.merge_back_from_branch(carrier)
+        if not getattr(info, "success", False):
+            return _give_up(
+                "承载分支合回未成功（"
+                + str(getattr(info, "error", ""))[:120] + "）",
+                carrier=carrier,
+            )
+        # 条目归属与出账（2.1）：归属以提交 body 的 items: 清单解析为准。
+        fixed_set = {str(i) for i in fixed_ids}
+        recovered_ids: list = []
+        for sha in picked:
+            ids = _commit_item_ids(wt, sha)
+            if not ids:
+                continue  # 旧契约提交：无法归属（保守兜底，不做无据出账）
+            for iid in ids:
+                if str(iid) in fixed_set and str(iid) not in recovered_ids:
+                    recovered_ids.append(str(iid))
+        accounted = set(recovered_ids)
+        archive_ids = [str(i) for i in pending_ids if str(i) not in accounted]
+        archived = 0
+        if archive_ids:
+            # 失败档案只收未终态条目（与主路径入档同口径）；含仍冲突组条目
+            # 与旧契约批无法归属条目（保守整批口径）。
+            open_ids = _open_ids_for_archive(root, archive_ids)
+            if open_ids:
+                record_failed_batch(
+                    root, open_ids, wt,
+                    reason="merge_back_conflict",
+                    branch=branch0, tip_sha=_branch_head(wt, branch0) or tip0,
+                    logger=self._logger,
+                )
+                archived = len(open_ids)
+        self._log(
+            "info",
+            f"code-fix 第 {batch_no} 批合回冲突救回终局：部分回收"
+            f"（回收 {len(picked)}/{len(commits)} 组，resolved 候选 "
+            f"{len(recovered_ids)} 条，兜底入档案 {archived} 条）",
+        )
+        return info, recovered_ids
+
     def _run_batch(self, ctx: dict) -> None:
         batch_no = ctx["batch_no"]
         outcome = "halt"
@@ -4426,38 +4772,60 @@ class CodeFixOrchestrator:
             # 合回失败分类（fix-codefix-wipgate-defer D1）：先读
             # wip_gate_blocked 标志分派（不解析 error 字符串——脆弱；getattr
             # 缺省 False 对旧类型对象容错）。True=主树 WIP overlap 预检阻断，
-            # 可等待自愈的暂态，走 defer 路径零预算；False=真冲突，既有
-            # 「现场即弃」语义逐字保留。
+            # 可等待自愈的暂态，走 defer 路径零预算；False=真冲突，进入下方
+            # 定向救回（救回失败仍保留既有「现场即弃」兜底语义）。
             if bool(getattr(merge_info, "wip_gate_blocked", False)):
                 return self._defer_merge_back(
                     wm, wt, ctx, merge_info,
                     fixed_ids=fixed_ids, pending_ids=pending_ids,
                 )
-            # 合回冲突 → 现场即弃（selfheal D2）：cleanup 前把 branch/tip_sha
-            # 写入失败档案（fail_count 预算），随后清理 worktree 释放锁——
-            # 不再保留现场待人工（原语义锁死车道至 daemon 重启）。consumed：
-            # 条目已入档案，链继续。
-            self._log("error", f"code-fix 第 {batch_no} 批合回冲突，现场即弃（branch/tip_sha 入档案）")
-            tip_sha = _worktree_head(wt)
-            branch = _worktree_branch(wt)
-            # 失败档案只收未终态条目（code-review item c94a1770a477，与
-            # _downgrade_deferred / 定向重试耗尽 / 主路径核销前过滤同口径）：
-            # 选批到合回之间被并发置 in_spec/resolved 的条目不随批入档——
-            # fail_count 预算与达上限一次性告警的名录须与真实失败条目一致；
-            # 子集为空则跳过入档（ignored 已在 pending_ids 构造处排除）。
-            open_ids = _open_ids_for_archive(root, pending_ids)
-            if open_ids:
-                record_failed_batch(
-                    root, open_ids, wt,
-                    reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
-                    logger=self._logger,
+            # 合回冲突 → 定向救回（evo-add-codefix-mergeback-conflict-salvage
+            # 1.1）：cleanup 前批分支引用全程可用，至多一次 rebase 救回 + 一轮
+            # commit 组粒度回收。真冲突判据：``conflict_paths`` 非空（预演闸/
+            # 真合并冲突均携带；无该字段的失败——锁/暂存等瞬态——不触发救回，
+            # 维持现状语义）。返回 success=True 时落入下方成功核销路径（部分
+            # 回收时 fixed_ids 已收窄为回收集条目）。
+            if getattr(merge_info, "conflict_paths", None):
+                merge_info, fixed_ids = self._salvage_merge_back_conflict(
+                    wm, wt, ctx, merge_info,
+                    eff_spec=eff_spec, targets=targets,
+                    fixed_ids=fixed_ids, pending_ids=pending_ids,
+                    created_sha=created_sha,
                 )
-            _safe_cleanup(wm, wt, success=False, logger=self._logger)
-            self._consumed_progress(
-                current=f"第 {batch_no} 批失败已跳过（合回冲突）— 继续后续批次",
-                reason="merge_back_conflict",
-            )
-            return "consumed"
+                if not getattr(merge_info, "success", False):
+                    if bool(getattr(merge_info, "wip_gate_blocked", False)):
+                        # 救回重走合回命中 WIP 预检：既有 defer 零预算路径
+                        # （不计救回失败，task 1.3）。
+                        return self._defer_merge_back(
+                            wm, wt, ctx, merge_info,
+                            fixed_ids=fixed_ids, pending_ids=pending_ids,
+                        )
+            if not getattr(merge_info, "success", False):
+                # 合回冲突（救回未成功）→ 现场即弃（selfheal D2）：cleanup 前把
+                # branch/tip_sha 写入失败档案（fail_count 预算），随后清理
+                # worktree 释放锁——不再保留现场待人工（原语义锁死车道至 daemon
+                # 重启）。consumed：条目已入档案，链继续。
+                self._log("error", f"code-fix 第 {batch_no} 批合回冲突，现场即弃（branch/tip_sha 入档案）")
+                tip_sha = _worktree_head(wt)
+                branch = _worktree_branch(wt)
+                # 失败档案只收未终态条目（code-review item c94a1770a477，与
+                # _downgrade_deferred / 定向重试耗尽 / 主路径核销前过滤同口径）：
+                # 选批到合回之间被并发置 in_spec/resolved 的条目不随批入档——
+                # fail_count 预算与达上限一次性告警的名录须与真实失败条目一致；
+                # 子集为空则跳过入档（ignored 已在 pending_ids 构造处排除）。
+                open_ids = _open_ids_for_archive(root, pending_ids)
+                if open_ids:
+                    record_failed_batch(
+                        root, open_ids, wt,
+                        reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+                        logger=self._logger,
+                    )
+                _safe_cleanup(wm, wt, success=False, logger=self._logger)
+                self._consumed_progress(
+                    current=f"第 {batch_no} 批失败已跳过（合回冲突）— 继续后续批次",
+                    reason="merge_back_conflict",
+                )
+                return "consumed"
         # 核销前过滤（code-review item 65f65b784f2a，与 defer 路径同口径）：
         # mark_resolved 对命中 id 无条件置 resolved、无终态保护，核销方 MUST
         # 先以 read_items 过滤——选批到合回之间被并发置 in_spec/ignored 的条目
