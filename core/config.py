@@ -49,6 +49,30 @@ SUPERVISION_DEFAULTS = {
 # 命中同文案 ERROR，「消除 ERROR 复发」目标落空——实测依据见 proposal）。
 SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS = 2
 
+# ── evo-add-impl-wallclock-budget-sizing 1.3：impl 车道墙钟 sizing 缺省 ────
+# 档位函数（core/fast_track_result.get_impl_wallclock_sizing_config）与设置
+# 读侧共用的单点缺省（禁两处手写，沿 SUPERVISION_DEFAULTS 单源纪律）：
+# - enabled：sizing 总开关，缺省开（大 spec 抬续期预算，消除 potplayer 形
+#   「轮数 sizing 已生效但墙钟仍烧满硬上限被 SIGKILL」主浪费段）；
+# - full_scale_threshold：规模阈值，**严格大于**才抬（与 budget_tier_for_scale /
+#   轮数 sizing 判定形态同源），缺省与轮数 sizing 同值 45（语义独立不共用常量，
+#   两处阈值后续可独立收敛）；
+# - extra_extensions：抬升幅度（max_extensions += extra），泛化 fast-track
+#   higher 档 +2 先例（SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS）。
+# absolute_max_seconds 封顶语义不变：sizing 只扩「续期预算」，不触碰绝对上限
+# （防失控 run 无限独占车道）。supervision_floor 协同复核结论（design 决策 5）：
+# 运行时下限由 liveness 以抬升后的实际续期预算作 extension_budget 入参派生
+# （liveness 先抬 max_extensions、后调 supervision_floor，与 fast-track higher
+# 档同机制），configured_abs_max < floor 时既有 ERROR 守护与抬升兜底照常生效，
+# 本表新增键不触碰 supervision_floor / supervision_config_floor 派生公式；
+# 配置校验层最大下限（supervision_config_floor）仍按 fast-track 最大部署口径，
+# impl sizing 抬得更高时走运行时 ERROR + 抬升兜底路径（有界：续期轮次有限）。
+IMPL_WALLCLOCK_SIZING_DEFAULTS = {
+    "enabled": True,
+    "full_scale_threshold": 45,
+    "extra_extensions": 2,
+}
+
 # ── add-bug-repair-mode-config：admin.bug_repair_mode 取值枚举 ────────
 # bug-found 处置的修复方式：inplace（原地打回，缺省）/ derive（派生 fix-* 子
 # SPEC）。枚举而非布尔，为未来第三种修复策略留扩展位（design D1）。

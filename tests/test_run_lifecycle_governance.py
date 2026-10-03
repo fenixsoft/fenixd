@@ -1158,7 +1158,11 @@ class TestSupervisionDeadlineAction(unittest.TestCase):
         self.assertEqual(d["action"], "extend")
         self.assertEqual(d["extension_index"], 1)
         self.assertEqual(d["extension_seconds"], 1800)
-        self.assertEqual(d["evidence"], "still editing")
+        # evo-add-impl-wallclock-budget-sizing 2.1：extend evidence 统一携带
+        # remaining_tasks（直调未传 → unavailable，与轮数路径 _annotated 同型）
+        self.assertEqual(
+            d["evidence"], "still editing | remaining_tasks=unavailable")
+        self.assertIsNone(d["remaining_tasks"])
 
     def test_stagnant_verdict_terminates_with_evidence(self):
         judge = MagicMock(return_value={
@@ -1166,7 +1170,10 @@ class TestSupervisionDeadlineAction(unittest.TestCase):
         d = self.decision(extensions=0, started_ago=3700, judge=judge)
         self.assertEqual(d["action"], "kill")
         self.assertEqual(d["reason"], "judged stagnant")
-        self.assertEqual(d["evidence"], "same bash call looped")
+        # evo-add-impl-wallclock-budget-sizing 2.1：kill evidence 同型携带
+        self.assertEqual(
+            d["evidence"], "same bash call looped | remaining_tasks=unavailable")
+        self.assertIsNone(d["remaining_tasks"])
 
     # test_absolute_max_raised_to_cover_extension_budget 已并入
     # test_run_lifecycle_hardening.py::TestSupervisionAbsoluteMaxFloor（floor

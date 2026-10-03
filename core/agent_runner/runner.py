@@ -5381,6 +5381,13 @@ class AgentRunner:
         started_at = time.time()
         deadline = started_at + timeout
         extensions_used = 0  # 本 run 已续期次数（D3 封闭矩阵）
+        # ── impl 车道墙钟预算 sizing（evo-add-impl-wallclock-budget-sizing 1.2）──
+        # run 启动点一次解析总规模（estimate_spec_scale 单点），同 run 全部
+        # deadline 判定复用同一入参——档位推导幂等，MUST NOT 以 remaining_tasks
+        # 回算（剩余数随 tasks.md 推进递减，逐 deadline 重算会回撤已抬档位，
+        # 触发伪 extension budget exhausted 击杀）。非实现车道恒 None（liveness
+        # 不抬升，行为与引入前逐位一致）。
+        _wallclock_scale = self._impl_wallclock_scale(spec_name, agent_type)
         # add-turn-limit-anchor-c（design D2/D3）：轮次续期独立计数与当前上限。
         # current_turn_cap 初始 = max_turns，extend 后累加步长；两套续期计数
         # （extensions_used / turn_extensions_used）各自封顶、互不读写。
@@ -5558,9 +5565,15 @@ class AgentRunner:
                 if remaining <= 0:
                     # 超时活性监督（improve-run-lifecycle-governance D3）：到点不
                     # 立即杀——按封闭决策矩阵判定（硬上限 → 次数上限 → 活性）。
+                    # evo-add-impl-wallclock-budget-sizing 2.1：剩余任务数同源
+                    # 取数（parse_tasks_md，与 finally run_metrics 一致）传入，
+                    # extend/kill evidence 与 timeout_extension 事件携带；
+                    # impl_scale 为 run 启动点总规模（档位幂等入参）。
                     action = self._supervision_deadline_action(
                         run_file, spec_name, run_id, started_at, extensions_used,
-                        agent_type=agent_type)
+                        agent_type=agent_type,
+                        remaining_tasks=self._remaining_tasks_now(spec_name),
+                        impl_scale=_wallclock_scale)
                     if action["action"] == "extend":
                         extensions_used = int(action["extension_index"])
                         deadline += float(action["extension_seconds"])
@@ -5573,6 +5586,10 @@ class AgentRunner:
                                 "extension_seconds": action["extension_seconds"],
                                 "evidence": str(action.get("evidence") or "")[:400],
                                 "new_deadline": deadline,
+                                # 剩余工作量观测（evo-add-impl-wallclock-budget-
+                                # sizing 2.1）：与 turn_extension 事件同型的附加
+                                # 键（新增键不替换，既有字段与读侧零改动）。
+                                "remaining_tasks": action.get("remaining_tasks"),
                             })
                         except OSError as e:
                             self.logger.warning(
@@ -5752,6 +5769,30 @@ class AgentRunner:
                             _remaining_tasks = len(_tm_all) - len(_tm_checked)
                     except Exception:
                         _remaining_tasks = None
+                # ── 用量缺失注记（evo-add-impl-wallclock-budget-sizing 2.2）──
+                # 击杀类终止（超时/轮次上限/判停 SIGKILL）且无 CLI result 时，
+                # 聚合 usage 随 result 事件落盘的通道同时失联（provider 逐轮
+                # usage 恒零、SIGKILL 无 result），token/cost 从此无从回溯——
+                # 显式注记消除静默黑洞：原因 + transcript 字节数/轮数粗估维度，
+                # 不臆造 cost 数值。成功路径（result 在场）不落本注记，行为不变。
+                _usage_missing_note = None
+                if ((timeout_error is not None or turn_limit_error is not None
+                        or stall_error is not None)
+                        and (not last_result or reader_stuck)):
+                    _txb = None
+                    try:
+                        _txb = run_file.stat().st_size
+                    except OSError:
+                        _txb = None
+                    _usage_missing_note = {
+                        "reason": (
+                            "killed_without_cli_result: 聚合 usage 仅随 CLI "
+                            "result 事件落盘，击杀后不可得；provider 逐轮 "
+                            "usage 未上报，token/cost 无从回溯（粗估维度见 "
+                            "transcript_bytes/turns）"),
+                        "transcript_bytes": _txb,
+                        "turns": turn_count[0],
+                    }
                 # 指标行落盘（正常路径先于终态行，type 为 run_metrics）。
                 # [fenix-ignore:4782bd380bdd] 崩溃路径 run_metrics 行落在
                 # except 先写的 error 行之后是权威测试锁定的契约形态
@@ -5762,7 +5803,7 @@ class AgentRunner:
                 # 尾行非终态的读侧风险有界——liveness 存活判定带 mtime 冷却
                 # 门、运行期清扫器按全文件终态口径（error 行在场即不补写
                 # interrupted）——故按误报处置，维持照写。
-                append_run_line(run_file, {
+                _metrics_line = {
                     "type": "run_metrics",
                     "run_id": run_id,
                     "turns": _turns,
@@ -5779,7 +5820,20 @@ class AgentRunner:
                     "latency_rounds": stall_latency["rounds"],
                     "latency_stalls": stall_latency["stalls"],
                     "latency_max": stall_latency["max"],
-                })
+                }
+                if _usage_missing_note is not None:
+                    _metrics_line["usage_missing"] = _usage_missing_note
+                append_run_line(run_file, _metrics_line)
+                if _usage_missing_note is not None:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"run {run_id}: 击杀且无 CLI result——token/cost 用量"
+                        f"缺失（transcript_bytes="
+                        f"{_usage_missing_note['transcript_bytes']}, "
+                        f"turns={_usage_missing_note['turns']}），详见 run_"
+                        f"metrics 行 usage_missing 注记",
+                        {"run_id": run_id, "usage_missing": _usage_missing_note},
+                    )
                 # 日志侧也落一份（与既有的 _log_run_metrics 同源，
                 # dashboard 读侧按 metric_type==run_metrics 增量索引）
                 self.logger.info(
@@ -6140,6 +6194,79 @@ class AgentRunner:
                 f"impl_turn_cap_override 读取失败（等价 override=None）: {e}",
             )
             return None
+
+    def _impl_wallclock_extension_override(self, spec_name: str) -> Optional[int]:
+        """STATE per-spec 墙钟续期预算覆写（正整数；沿 impl_turn_cap_override 先例）。
+
+        state_machine 缺失/读取异常/字段非法（bool、非正整数、非数字字符串）
+        一律等价 override=None——覆写不可用不放大为监督故障（与
+        ``_impl_turn_cap_override`` 同款容错）。
+        """
+        try:
+            if self.state_machine is None:
+                return None
+            from core.state_machine import IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD
+            entry = self.state_machine.read_one(spec_name) or {}
+            raw = entry.get(IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD)
+            if isinstance(raw, bool):
+                return None
+            if isinstance(raw, str) and raw.strip().isdigit():
+                raw = int(raw.strip())
+            if isinstance(raw, int) and raw > 0:
+                return raw
+            return None
+        except Exception as e:
+            self.logger.debug(
+                "agent_runner",
+                f"impl_wallclock_extension_override 读取失败"
+                f"（等价 override=None）: {e}",
+            )
+            return None
+
+    def _impl_wallclock_scale(
+        self, spec_name: str | None, agent_type: str | None,
+    ) -> Optional[int]:
+        """实现车道 run 启动点总规模分（墙钟 sizing 档位入参，单点同源）。
+
+        ``estimate_spec_scale`` 与轮数 sizing 同文件单点（禁止第二套
+        tasks.md/交付物解析）；传入 runner Logger 实例使 WARNING 落本项目
+        fenixd.log。仅 implementer 车道取数（fast-track 车道既有 higher 档
+        加成不动，不叠加 sizing 抬升）；非实现车道/解析异常回退 None——
+        None 等价「不抬升」（liveness 消费侧对 None 短路），行为与引入前
+        逐位一致。
+
+        幂等契约（design「档位幂等」）：本方法只在 run 启动点调用一次，
+        返回值供同 run 全部 deadline 判定复用——禁止逐 deadline 以
+        remaining_tasks 回算档位。
+        """
+        if agent_type != "implementer" or not spec_name:
+            return None
+        try:
+            from core.fast_track_result import estimate_spec_scale
+            return int(estimate_spec_scale(
+                Path(self.project_root) / "spec" / "changes" / spec_name,
+                logger=self.logger,
+            ))
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"impl wallclock sizing 规模解析异常，回退不抬升: {e}",
+                {"spec": spec_name},
+            )
+            return None
+
+    def _remaining_tasks_now(self, spec_name: str | None) -> Optional[int]:
+        """剩余未勾选任务数（parse_tasks_md 单点，与 finally run_metrics 同源）。
+
+        design 风险条目：kill 收口路径的取数时点可能与 context metrics 略有
+        偏差——以 finally 块同一取数源（``parse_tasks_md`` 经
+        ``_task_progress_snapshot``）为准，保证 evidence 与 run_metrics 一致。
+        tasks.md 缺失/无数字任务/读取异常 → None（观测面故障不改变判定）。
+        """
+        if not spec_name:
+            return None
+        snap = self._task_progress_snapshot(spec_name)
+        return snap["unchecked"] if snap else None
 
     def _task_progress_snapshot(self, spec_name: str) -> Optional[dict]:
         """run 启动点任务进度快照（kill_early 进度基线，3.1；main 树口径 D4）。

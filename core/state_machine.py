@@ -224,6 +224,13 @@ IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
 # impl_run_budget_override 命名与语义先例，与 priority/start_after 同类，
 # 须随条目序列化（serialize 显式键表），否则 STATE.md 全量回写时静默丢失。
 IMPL_TURN_CAP_OVERRIDE_FIELD = "impl_turn_cap_override"
+# ── per-spec 墙钟续期预算覆写（evo-add-impl-wallclock-budget-sizing 1.1）──
+# 人工管理属性：null/缺失 = 跟随 agents.impl_wallclock_sizing（规模推算照常）；
+# 正整数 = per-spec 生效续期预算 max_extensions（override > 推算 > base，只抬
+# 不压，消费点 liveness._supervision_deadline_action）。沿
+# impl_turn_cap_override 命名与语义先例，与 priority/start_after 同类，
+# 须随条目序列化（serialize 显式键表），否则 STATE.md 全量回写时静默丢失。
+IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD = "impl_wallclock_extension_override"
 
 # ── 重启重验预算计数（fix-daemon-lifecycle-races D3）──────────────────
 # - _verify_redo_count：daemon 重启恢复路径（testing→implemented 重派 verify）
@@ -556,6 +563,15 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = None
+                elif key == IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD:
+                    # per-spec 墙钟续期预算覆写（evo-add-impl-wallclock-budget-
+                    # sizing 1.1）：同 impl_turn_cap_override 先例——不转则
+                    # STATE.md 往返后读回字符串 "4"，消费点正整数判定会误判
+                    # 非法。非法值按 null 容错，消费点（runner）再作正整数校验。
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        value = None
                 elif key == "_verify_parallel_override":
                     # 降档并行度覆盖（add-verify-parallel-backoff）：契约
                     # int|None（evo-fix-verify-parallel-override-type 2.1）。
@@ -691,6 +707,7 @@ class StateParser:
         FROZEN_UNTIL_FIELD,
         IMPL_RUN_BUDGET_OVERRIDE_FIELD,
         IMPL_TURN_CAP_OVERRIDE_FIELD,
+        IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD,
         "reviewer_run",
     ]
     SERIALIZED_FIELD_SET = frozenset(SERIALIZED_FIELDS)
