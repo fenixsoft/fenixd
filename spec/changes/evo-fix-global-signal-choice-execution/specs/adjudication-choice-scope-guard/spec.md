@@ -31,5 +31,5 @@ choice 执行失败时系统 SHALL NOT 将信号回写为 handled=true / result=
 对全局信号过滤 spec 作用域 choice 后，系统 SHALL 保留至少一个非 spec 作用域的可执行 choice（如『确认自愈/继续观察』类），避免全局信号滞留 pending 无路可走。
 
 #### Scenario: 过滤后仍有可用动作
-- **WHEN** 全局信号的 choices 被作用域过滤
+- **WHEN** 全局信号的 spec 作用域 choice 被执行守卫拒绝（呈现侧不过滤，见 design 决策 5）
 - **THEN** 非作用域 choice（或全局等价动作）仍可执行并正常收口

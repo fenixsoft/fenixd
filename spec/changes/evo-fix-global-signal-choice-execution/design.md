@@ -12,9 +12,9 @@
 
 1. **作用域声明进注册表**：在裁决 choice 注册表（core/dashboard/data/adjudication_choices.py）逐 choice 增加 spec_scoped 标记（retry_review 等为 True），执行器据此守卫，避免硬编码动作清单；跨信号全表反查（admin_actions.py:2251-2262）对 spec_scoped 动作不再兜底放行。
 2. **双层设防**：执行器拒绝是正确性底线；消费端 _apply_choice_execution 对全局信号提前跳过 spec_scoped choice 并留 INFO（与 :5079-5082 既有『无关联 spec 跳过』分支同型），避免无谓报错。
-3. **回写纠偏采用结果前置**：将 choice 执行结果并入终态回写判定——失败改记 failed、保留信号待重审、处置记录 error 留痕；成功才 resolved。与 evo-signal-preprobe-handled-writeback 引入的预探写回逻辑的先后序在实现时对齐（预探写回发生在唤起前，不与本链冲突）。
-4. **留痕**：mark_signal_handled（core/admin_store.py:584-596）扩展 action_taken/result 参数，缺省值保持向后兼容（既有调用不传参行为不变）。
-5. **全局等价动作**：过滤后若全局信号无可执行 choice，注册表补一个非 spec 作用域的『确认自愈/继续观察』类动作。提示词呈现侧不强制过滤（执行时守卫已兜底），控制改动面。
+3. **回写纠偏采用结果前置**：将 choice 执行结果并入终态回写判定——失败改记 failed、保留信号待重审、处置记录 error 留痕；成功才 resolved。落点约定：failed/action_taken 写到告警记录（SIGNAL 记录）字段；DISPOSITION 记录现无 error 字段（admin_store.py 处置落库 dict 无此键），实现时新增该键（记录为自由 dict schema，加字段无迁移成本）。与 evo-signal-preprobe-handled-writeback 引入的预探写回逻辑的先后序在实现时对齐（预探写回发生在唤起前，不与本链冲突）。
+4. **留痕**：mark_signal_handled（core/admin_store.py:584-596）扩展 action_taken/result 参数，缺省值保持向后兼容（既有调用点 core/admin_monitor.py:2441/:4368、core/dashboard/routes/alert_routes.py:471、core/dashboard/data/admin_alerts.py:110 不传参行为不变）。**留痕与 handled 置位必须解耦**：mark_signal_handled 现语义是置 handled=true（幂等闭环），choice 失败留痕若复用该语义会直接违反「失败保留待重审」（目标 2）——扩展时须增加 handled 置位开关（缺省 True 兼容既有调用）或独立只留痕不闭环的方法；失败路径以不置 handled 的形态写 action_taken/result，成功路径才闭环。
+5. **全局等价动作**：注册表补一个非 spec 作用域（spec_scoped=false）的『确认自愈/继续观察』类动作，保证全局信号执行收口不断路。挂载与可达性约定：全局形态信号多为未注册 signal_type（实例 ce27a93f9dca 即 daemon_errors，注册表无此桶），故该动作除声明在可能全局形态的已注册桶内外，还须依赖「非 spec_scoped 动作保留全表反查放行」（决策 1 的收紧只针对 spec_scoped 动作）对未注册信号可达；提示词呈现侧不强制过滤（执行时守卫已兜底），控制改动面。
 
 ## 风险
 
