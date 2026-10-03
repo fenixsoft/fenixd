@@ -53,6 +53,10 @@ class Session:
     session_id: str       # 本地生成，仅作 SSE 订阅键与前端句柄
     events: deque = field(default_factory=lambda: deque(maxlen=SESSION_EVENT_BUFFER))
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # code-review item 2e9b99afdf93：会话创建时刻，仅 start 重建时随新实例生成，
+    # 活动/复用不刷新——routes 的 started_at 响应键语义为真（last_activity 随
+    # send/读线程事件不断前移，不能当起始时刻用）。
+    started_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=200))
     terminating: bool = False  # _terminate 已认领，防并发双终态
