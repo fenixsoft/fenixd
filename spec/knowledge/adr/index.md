@@ -220,3 +220,6 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-213](ADR-213-mergeback-wip-mechanical-occupant-id-event-driven-wakeup.md) | accepted | 合回 WIP 阻断：占用者识别纯机械求交（三点 diff + run 前缀过滤 + code-fix spec 桥接，禁 LLM 推导；主树直改盲区按无主走宽限升级禁主树写探测），唤醒以持有者 run 终态事件为主（per-run 终态监听挂 agent_runner 终态收口、注册先查已终态）轮询兜底、禁依赖 scheduling_kick 单槽位唯一唤醒，事件重试复用单一重试入口禁旁路线程直调，无主宽限耗尽升级禁自动 stash/丢弃主树改动 |
 | [ADR-214](ADR-214-maintenance-run-stall-dual-criteria-fail-open.md) | accepted | 维护型 run 停滞判定双判据合取（产物 mtime × 进程树 CPU，任一有进展即重置），判据不可用 fail-open 不触发，阈值独立配置键脏值回退缺省，取消走既有原语与急救落账禁新造通道 |
 | [ADR-215](ADR-215-lane-decoupling-logical-only-physical-contention-natural.md) | accepted | 车道解耦只删逻辑调度层否决/等待条件，物理冲突点由既有锁自然串行禁再叠互斥，车道自驱动推进覆盖全部批收尾路径不依赖他车道事件或周期扫描兜底 |
+| [ADR-216](ADR-216-dashboard-on-demand-longtask-accept-poll-lightweight-spawn.md) | accepted | dashboard 按需长任务固定受理-轮询异步范式（HTTP 线程禁同步等待、状态原子写落盘、重启残留读侧合成中断）+ 一次性 headless spawn 执行不入开发主链路（无 run 台账/车道/预算/新配置项），成本靠手动触发+单飞+超时上限自然节流 |
+| [ADR-217](ADR-217-spawn-artifact-verdict-authority-reality-not-selfreport.md) | accepted | spawn 产物成败判定权威=产物实况（退出码→文件存在非空→特征校验→marker 提取）禁采信 agent 自述；形态数值校验只对能提取的情况生效、提取失败记 null 放行，可用性优先于校验完备性 |
+| [ADR-218](ADR-218-generated-html-iframe-sandbox-no-same-origin.md) | accepted | 机器生成 HTML 一律专用只读端点下发 + iframe sandbox=allow-scripts（禁 allow-same-origin）渲染，产物脚本与主站存储/DOM 隔离；同源交互需求须独立安全设计评估禁顺手放开 |
