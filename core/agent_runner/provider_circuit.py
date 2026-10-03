@@ -1466,6 +1466,14 @@ class ProviderCircuit:
         """
         now = self._pm._now() if now is None else now
         with self._unseal_lock:
+            # 冻结态防御（code-review item 6843a5efe91c）：调用方「查闸态 →
+            # pop 前调本方法」两步之间，record_transient_error 的重熔断分支
+            # 会持 _unseal_lock 原子置位全局冻结并清零 hold/probe/错峰字段，
+            # 彼时下方三分支全不命中、直落末尾 return True——该条目在冻结期
+            # 内照常启动 run。与 transient_unseal_gate 的短路优先序（frozen
+            # 最优先）对齐。
+            if self._transient_break_until > now:
+                return False  # 防御：全局冻结态不得经 admit 旁路放行
             if self._transient_hold_until > now:
                 return False  # 防御：hold 态不得经 admit 旁路放行
             if self._transient_probe_until > now:

@@ -118,17 +118,21 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 @contextmanager
 def _todo_write_lock(project_root: Path):
-    """todo.md 读改写窗口的进程间互斥（flock，``.fenix/todo.lock``）。
+    """todo.md 读改写窗口的进程间互斥（flock，``.fenix/.todo.md.lock``）。
 
     todo.md 的追加是「读全文→拼接→整文件回写」，两个写者同时读旧文本再
     各自回写时后写者会覆盖先写者的行；蒸馏重试台账与回填/审计车道共用
-    本锁串行化该窗口（code-review 1bb1eacf2463）。锁文件自身无内容语义。
+    本锁串行化该窗口（code-review 1bb1eacf2463）。锁文件名与其他 todo.md
+    写方同一把——evolution._with_lock 对 ``todo.md`` 派生 ``.<name>.lock``、
+    self_review._append_todo 与 code_fix 失败批追加均持该伴生锁；若本车道
+    另立锁名，两簇锁互不互斥，跨车道并发仍是「各自读旧全文→拼接→原子
+    替换」的后写覆盖先写（code-review 7508274d893d）。锁文件自身无内容语义。
     """
     import fcntl
 
     todo_dir = Path(project_root) / ".fenix"
     todo_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(todo_dir / "todo.lock", "w")  # noqa: SIM115 — 生命周期=with
+    fh = open(todo_dir / ".todo.md.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         yield
@@ -445,20 +449,30 @@ def discard_knowledge_changes(
         discard_paths(project_root, rels)
         return
     kdir = project_root / KNOWLEDGE_DIR
-    subprocess.run(
-        ["git", "restore", "--", KNOWLEDGE_DIR],
-        cwd=str(project_root),
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if kdir.is_dir():
+    # 兜底分支与 discard_paths 同款 fail-open：git 不可用/超时不以
+    # OSError/TimeoutExpired 沿调用链上抛，留痕告警交人工核查
+    # （code-review 514b88161b35）。
+    try:
         subprocess.run(
-            ["git", "clean", "-qfd", "--", KNOWLEDGE_DIR],
+            ["git", "restore", "--", KNOWLEDGE_DIR],
             cwd=str(project_root),
             capture_output=True,
             text=True,
             timeout=120,
+        )
+        if kdir.is_dir():
+            subprocess.run(
+                ["git", "clean", "-qfd", "--", KNOWLEDGE_DIR],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        log.warning(
+            "knowledge",
+            "回填失败回滚（旧口径整目录兜底）：git restore/clean 不可用或超时，"
+            "spec/knowledge/ 下本次产出未回滚，请人工核查",
         )
 
 
@@ -945,9 +959,10 @@ def build_prompt(
     text = text.replace(
         "{{DOMAIN_MAP_PATH}}", DOMAIN_MAP_RELPATH
     ).replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
-    return text.replace("{{NOW_LOCAL}}", _now_local_parts()[0]).replace(
-        "{{NOW_TZ}}", _now_local_parts()[1]
-    )
+    now_local, now_tz = _now_local_parts()
+    # 同一份提示词内时间与时区标注取自同一次时钟读数：分两次取值跨分钟/
+    # DST 切换边界时两段会不一致（code-review 8980a66d334c）。
+    return text.replace("{{NOW_LOCAL}}", now_local).replace("{{NOW_TZ}}", now_tz)
 
 
 def _batch_list_block(
@@ -994,9 +1009,12 @@ def build_prehistoric_prompt(
         "{{COVERED_CAPS}}",
         "\n".join(f"- {c}" for c in sorted(covered_caps)) or "（空）",
     )
-    return text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or [])).replace(
-        "{{NOW_LOCAL}}", _now_local_parts()[0]
-    ).replace("{{NOW_TZ}}", _now_local_parts()[1])
+    now_local, now_tz = _now_local_parts()
+    return (
+        text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
+        .replace("{{NOW_LOCAL}}", now_local)
+        .replace("{{NOW_TZ}}", now_tz)
+    )
 
 
 # ── 链索引、批次划分与规模统计 ───────────────────────────────────────────
@@ -1111,7 +1129,19 @@ def _missing_prehistoric_pages(
         if not isinstance(item, dict):
             continue
         cap = item.get("capability")
-        if not cap or cap in chain_index:
+        if not _valid_domain_component(cap):
+            # LLM 清单产出的 capability 非法（缺失/非字符串/含路径分隔符/点号
+            # 目录）：非 hashable 类型 `cap in chain_index` 直接抛 TypeError，
+            # 本函数在 run_backfill 史前复原段的裸 try 之外调用，异常会掀翻
+            # 整条回填车道；畸形成分拼出的 page 路径会越出 domains 目录、
+            # is_file 探测到真相源之外的路径，把能力误判已覆盖跳过补写。同
+            # domain 侧纪律：不拿畸形值做覆盖判定，按缺页登记提示人工
+            # （code-review 80a84d1821ac）。
+            missing.append(
+                f"{cap}（域 {str(item.get('domain') or '').strip() or '未声明'}）"
+            )
+            continue
+        if cap in chain_index:
             continue  # 已被归档覆盖：不写史前页（baseline 走链头输入）
         domain = str(item.get("domain") or "").strip()
         if not _valid_domain_component(domain):

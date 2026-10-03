@@ -819,11 +819,13 @@ def _str_field(d: dict, key: str) -> str:
     写出数字等非字符串形态时归一为 str——原样透传会令词表校验期的
     ``(step.value or "").strip()`` / ``step.url.strip()`` 抛 AttributeError，
     被外层包成不含场景 id 的笼统「解析失败」。归一口径与 browser.py 运行层
-    的 ``str(step.get("value") or "")``（code-review item 08ef327b2c7e）一致，
-    不改变 wait 以毫秒数消费 value 等合法形态的运行语义；非法形态（如
-    navigate 收到数字）交词表校验走形态报错的字段级路径，不静默吞。"""
-    raw = d.get(key, "")
-    return str(raw) if raw else ""
+    的「仅以 is None 判缺失」（code-review item 205fe924442d）一致：键缺失
+    或 null 归一空串，显式 0/False 等假值保留为 str 形态（"0"/"False"），
+    不再被当「未提供」清空；不改变 wait 以毫秒数消费 value 等合法形态的
+    运行语义；非法形态（如 navigate 收到数字）交词表校验走形态报错的
+    字段级路径，不静默吞。"""
+    raw = d.get(key)
+    return "" if raw is None else str(raw)
 
 
 def _num_field(d: dict, key: str) -> Optional[float]:

@@ -18,13 +18,15 @@ judge_files.py — judge 归因产物按场景逐条目读写（add-judge-increm
   - 归因查重算法（由 verdict_check.check_batch_attribution_dedup 负责）
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("fenixd.verify_engine.judge_files")
 
@@ -65,7 +67,7 @@ def _fsync_dir(path: Path) -> None:
         pass
 
 
-def load_attribution(project_root: Path, spec_name: str) -> Optional[Dict[str, Any]]:
+def load_attribution(project_root: Path, spec_name: str) -> dict[str, Any] | None:
     """读取 judge 归因产物，自动兼容新旧格式。
 
     新格式（逐场景条目）：
@@ -112,7 +114,7 @@ def load_attribution(project_root: Path, spec_name: str) -> Optional[Dict[str, A
     return _migrate_legacy_attribution(data)
 
 
-def _migrate_legacy_attribution(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
+def _migrate_legacy_attribution(legacy_data: dict[str, Any]) -> dict[str, Any]:
     """将旧格式整块归因转为新格式逐场景条目。
 
     旧格式来自早期 judge 产物，无 scenarios 列表字段（调用方 load_attribution
@@ -149,7 +151,7 @@ def _migrate_legacy_attribution(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
 def save_attribution(
     project_root: Path,
     spec_name: str,
-    scenarios: List[Dict[str, Any]],
+    scenarios: list[dict[str, Any]],
     format_version: str = "1.0",
 ) -> None:
     """原子写入 judge 归因产物（新格式）。
@@ -189,7 +191,7 @@ def save_attribution(
         raise
 
 
-def get_requeue_scenarios(project_root: Path, spec_name: str) -> List[Dict[str, Any]]:
+def get_requeue_scenarios(project_root: Path, spec_name: str) -> list[dict[str, Any]]:
     """获取所有状态为 requeue 的场景条目。
 
     Returns:
@@ -220,7 +222,7 @@ def build_requeue_manifest(
     project_root: Path,
     spec_name: str,
     rejection_round: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """构建并写入回炉清单（供下轮 judge 仅重做 requeue 子集）。
 
     回炉清单结构：

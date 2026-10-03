@@ -36,6 +36,7 @@ from typing import Dict
 
 from core.agent_runner.result_gate import (
     AdminDisposition,
+    CodeFixResult,
     CodeReviewResult,
     EvolutionResult,
     RegressionResult,
@@ -1885,6 +1886,28 @@ def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> Non
     _append_token_run(tokens_json, entry)
 
 
+def _accumulate_code_fix_tokens(runner, run_id: str, usage_info: dict) -> None:
+    """code-fix token 归账到 cost-observability 独立类目（item 4aaad812aa8a）。
+
+    追加到 ``.fenix/cost/code_fix_tokens.json`` 的 runs 数组（与
+    code_review_tokens.json 同结构，字段形态逐字对齐 _accumulate_code_review_tokens，
+    agent_type=code-fix），供成本对账口径一致——code-fix 同为不经
+    _execute_agent 的运维车道且整批修复 run 消耗可观，不归账会让成本视图
+    系统性低估该车道。不写 STATE（code-fix run 无 spec 维度）。写路径走
+    _append_token_run（flock + 原子替换，写失败静默降级）。
+    """
+    tokens_json = runner.project_root / ".fenix" / "cost" / "code_fix_tokens.json"
+    now = datetime.now(timezone.utc)
+    entry = {
+        "agent_type": "code-fix",
+        "date": now.date().isoformat(),
+        "run_id": run_id,
+        "timestamp": now.isoformat(),
+        **_token_usage_fields(usage_info),
+    }
+    _append_token_run(tokens_json, entry)
+
+
 # ── 全量回归执行（add-test-regression-tab，task 3.1）────────────────────
 
 
@@ -2153,53 +2176,9 @@ def run_regression(
 
 
 # ── 自动修复执行（add-code-review-auto-fix，task 6.1-6.3）────────────────
-
-
-class CodeFixResult:
-    """code-fix run 的结果信封（run_code_fix 返回，add-code-review-auto-fix）。
-
-    与 CodeReviewResult / RegressionResult 同形态的维护型 run 结果：
-    - ``fixed`` / ``skipped``: out 产物行中 status=fixed / skipped 的计数
-      （skipped 条目 MUST 保持 open——由编排器在合回成功后只核销 fixed）；
-    - ``error``: success=False 时的失败原因（含产物硬门拦截文案）；
-    - 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：``api_timeout``
-      （单轮 API 请求超时终局，判别单源在 runner 层挂异常标记）、
-      ``exit_code`` / ``stderr_summary``（原始退出码与 stderr 尾行摘要）——
-      失败现场可判别、可追溯，不再把签名压扁为异常字符串；
-    - ``conn_error`` / ``result_text``（evo-add-codefix-conn-error-cooldown
-      1.3）：连接类 api_error 布尔（判别单源在 runner 层挂异常标记，三判据
-      见 provider_circuit.is_code_fix_conn_error）与末次 result 事件文本原样
-      透传——conn_error 驱动车道冷却，result_text 供告警 evidence 与单测。
-      与 api_timeout 的分工（design D2）：api_timeout 保持「现场抢救」触发
-      语义不变，conn_error 只驱动冷却、不参与 salvage 判定；两布尔可同时为
-      真（api_error 是 api_timeout 的宽判分支），互不掣肘。
-    """
-
-    def __init__(
-        self,
-        run_id: str = "",
-        success: bool = True,
-        fixed: int = 0,
-        skipped: int = 0,
-        error: str = "",
-        output: str = "",
-        api_timeout: bool = False,
-        exit_code=None,
-        stderr_summary: str = "",
-        conn_error: bool = False,
-        result_text: str = "",
-    ):
-        self.run_id = run_id
-        self.success = success
-        self.fixed = fixed
-        self.skipped = skipped
-        self.error = error
-        self.output = output
-        self.api_timeout = api_timeout
-        self.exit_code = exit_code
-        self.stderr_summary = stderr_summary
-        self.conn_error = conn_error
-        self.result_text = result_text
+# 结果信封 CodeFixResult 同址 core/agent_runner/result_gate.py（与同族维护型
+# run 结果信封收敛，item 08e3c8a68262）；本模块经头部 import 引入，既有导入
+# 路径 `from ...maintenance_runs import CodeFixResult` 不变。
 
 
 def _stderr_tail_summary(stderr_lines, max_lines: int = 3, max_chars: int = 200) -> str:
@@ -2455,7 +2434,7 @@ def run_code_fix(
         conn_error = False
         result_text = ""
         try:
-            output, _turns, _session_id, _usage_info = runner._run_claude(
+            output, _turns, _session_id, usage_info = runner._run_claude(
                 prompt,
                 wt,
                 run_id,
@@ -2474,6 +2453,11 @@ def run_code_fix(
             output = ""
             run_ok = False
             error = str(e)
+            # 失败路径无 usage 可归账 → 零值条目：_token_usage_fields 对空
+            # dict 的产出与 run_code_review 例外路径 _extract_usage_info(None)
+            # 的归账形态逐字段相同（input/output 0、cost_usd None）。不走该
+            # facade/静态方法——打桩 runner（本车道单测）未必提供。
+            usage_info = {}
             # evo-code-fix-api-timeout-salvage 1.2：结构化签名透出——失败记录与
             # 日志携带 api_timeout / exit_code / stderr 摘要，替代仅 str(e) 压扁。
             # api_timeout 判别在 runner 层完成（design D1），此处只读异常布尔标记；
@@ -2493,6 +2477,14 @@ def run_code_fix(
                     + (f" stderr_tail: {stderr_summary}" if stderr_summary else "")
                     + "]"
                 )
+
+        # token 归账到独立类目（item 4aaad812aa8a，落点/字段形态对齐
+        # run_code_review 的收尾段）：成功/失败路径统一落
+        # .fenix/cost/code_fix_tokens.json（agent_type=code-fix）。直调本
+        # 模块函数（同 _check_code_fix_artifact 等本车道 helper 形态）——
+        # _accumulate_code_fix_tokens 未注册进 runner._FORWARDER_REGISTRY，
+        # `runner.<名>` 门面形态不可用（注册须改 runner.py）。
+        _accumulate_code_fix_tokens(runner, run_id, usage_info)
 
         # ── 产物硬门（task 6.2）：run exit 0 但 out 缺失/零有效行 → 判失败 ──
         if run_ok:

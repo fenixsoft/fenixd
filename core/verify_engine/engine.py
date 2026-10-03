@@ -93,7 +93,8 @@ class VerifyEngine:
             verify_cfg = {}
         try:
             self.max_parallel = max(1, int(verify_cfg.get("max_parallel", 5)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError：int(float('inf'))（如 JSON 合法值 1e999）；nan 走 ValueError
             self.max_parallel = 5
 
         # 兼容旧访问点：web Runner 的浏览器管理器（未创建 web Runner 时为

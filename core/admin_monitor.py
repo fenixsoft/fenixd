@@ -612,10 +612,18 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
     为 fail-open（多做「存活」判定，不会误报 stuck/误杀），修复需先枚举
     worktree 目录再精确匹配，机制不同。承接方：待后续 worktree 活性相关
     SPEC 处理，本 SPEC 不引入。
+
+    code-review item 780797acccdb：spec 名经 ``re.escape`` 转义后再拼模式，
+    spec 名含正则元字符不再放大匹配集（同向 fail-open 的另一失真形态，
+    本侧已修；event_bus 同名方法委托本实现，两路径同口径）。
     """
     try:
         for prefix in ("impl", "verify", "repair"):
-            pattern = f"{prefix}-{spec_name}-"
+            # spec 名先做正则元字符转义（item 780797acccdb）：pgrep 的
+            # pattern 按正则解释，spec 名含 . + 等元字符时匹配集被放大
+            # （fail-open：无驱动 spec 被误判有存活子进程，压制
+            # orphaned_state/stuck 检测）。前缀互撞仍按上方处置记录 defer。
+            pattern = f"{prefix}-{re.escape(spec_name)}-"
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
                 capture_output=True,
@@ -1093,13 +1101,6 @@ class AdminMonitor:
             return default
 
     # ── 主入口 ──────────────────────────────────────────────────
-
-    def has_in_progress_specs(self) -> bool:
-        """是否存在进行中 spec（implementing/testing）——检测前置条件。"""
-        for entry in self.state_machine.read_all().values():
-            if entry.get("status") in ("implementing", "testing"):
-                return True
-        return False
 
     def run_once(self) -> list:
         """执行一次完整检测：识别信号 → 记录 → 节流判定 → 唤起 Administrator。
@@ -5373,7 +5374,7 @@ class AdminMonitor:
                 f"admin disposition: {getattr(disp, 'run_id', '')}",
                 actor="admin",
             )
-            self.logger.warning(
+            self.logger.info(
                 "admin_monitor",
                 f"infra 回拨: '{spec}' fail_rounds → {result.get('fail_rounds')} "
                 f"（减回 {result.get('applied', 0)} 轮，status={result.get('status')}）",
@@ -5422,7 +5423,13 @@ class AdminMonitor:
     def _run_terminal_status(run_file: Path) -> str:
         """读取产物尾部判定终态：error / done / running / empty。
 
-        与 dashboard.data.classify_run 同语义，避免跨层 import dashboard。
+        口径为 classify_run 的**子集**（code-review item dff59c9ccf3d）：仅按
+        末行 type=result→done / type=error→error 二分，其余一律 running——
+        classify_run 的完整终态集（interrupted/cancelled/superseded 等）在此
+        不区分、全落 running。当前唯一消费方 _detect_repeated_failures 只认
+        error，不受影响；复用做通用终态判定前须按此子集口径复核。与
+        classify_run 一致的只是「尾部窗口取末行完整事件」的读取范式，避免
+        跨层 import dashboard。
         """
         # code-review item a10425b71546：尾读窗口对齐 liveness._TAIL_READ_WINDOW
         # （模块顶部单源 import 的 _RUN_TAIL_READ_WINDOW，64KB）——旧值 4096 下，

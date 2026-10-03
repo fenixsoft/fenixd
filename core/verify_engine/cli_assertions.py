@@ -479,7 +479,21 @@ class CliAssertionRunner:
 
     async def _assert_file_content(self, a: dict) -> dict:
         """断言文件内容匹配（path 相对验证树根；mode/negate）。"""
-        path = self._resolve_under_root(a.get("path", ""))
+        raw_path = a.get("path", "")
+        if raw_path is None or (isinstance(raw_path, str) and not raw_path.strip()):
+            # 空/缺失/显式 null path 经 Path("") 归一为 "." 落回验证树根本体，
+            # 根本体 is_file() 为 False 误报「文件不存在」，把场景编写缺参
+            # 误导为产品未产出文件；与 _assert_file_exists 的缺参显式失败
+            # 口径对齐（验收期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，
+            # 此处兜住运行期自愈/绕过验收的调用路径）
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": raw_path,
+                "pass": False,
+                "error": "缺少 path 字段",
+            }
+        path = self._resolve_under_root(raw_path)
         if path is None:
             return {
                 "type": "file_content",

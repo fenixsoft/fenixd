@@ -108,8 +108,10 @@ _RELOCATION_AUDIT_TYPE = "relocation"
 # 核心交付路径前缀（相对项目根）：实现产物的稳定落点。
 _DELIVERABLE_PREFIXES = ("core/", "tests/", ".fenix/", "scripts/")
 
-# 围栏代码块起始/结束（``` 或 ~~~，允许跟随语言标识）。
-_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+# 围栏代码块起始/结束（≥3 个 ` 或 ~ 的完整 run，允许跟随语言标识）。捕获完整
+# run 而非前三个字符：4+ 反引号围栏只能被不短于它的同字符围栏闭合（CommonMark），
+# 只认三字符会让内层 ``` 被误判为闭栏、块边界错位截断（item 575b928f818a）。
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
 # 「路径：」/「路径:」前缀行（中文/英文冒号，前后允许空白与装饰）。
 _PATH_LABEL_RE = re.compile(r"^\s*[·•\-*•]?\s*路径\s*[:：]\s*(?P<rest>.+?)\s*$")
@@ -141,7 +143,10 @@ _REFERENCE_KEYWORDS = (
 # 交付语境动词：出现即视为「新建交付物」语境（参与缺件判定）。
 _DELIVERABLE_VERBS = ("新增", "新建", "创建", "添加", "交付", "落地", "编写")
 
-# tasks 勾选行：任务清单是交付物声明的第一语义位。
+# tasks 勾选行：任务清单是交付物声明的第一语义位。宽口径（容忍缩进、*/+ 项目
+# 符、大写 X）仅用于语境分类；孤儿判定/任务计数用文件末尾 _TASKS_ITEM_RE 严
+# 口径（仅行首 `- [x]`）——两套宽严差异有意、用途不同，勿混用（item
+# 6e387df34df1）。
 _CHECKBOX_RE = re.compile(r"^\s*[-*+]?\s*\[[ xX]\]")
 
 # tasks.md 头部说明段边界：第一个 `## ` 二级标题（D1）。
@@ -321,7 +326,7 @@ def extract_paths_typed(spec_dir) -> dict:
             continue
 
         in_fence = False
-        fence_char = ""  # 当前围栏开栏标记（``` / ~~~）；空 = 未在围栏内
+        fence_char = ""  # 当前围栏开栏标记 run（```/~~~~ 等）；空 = 未在围栏内
         in_tasks_header = True  # 第一个 `## ` 标题之前为头部说明段
         in_scenario = False  # 能力 spec 的 Scenario 小节
 
@@ -343,20 +348,22 @@ def extract_paths_typed(spec_dir) -> dict:
             m = _FENCE_RE.match(raw_line)
             if m:
                 if not in_fence:
-                    # 开栏记标记字符，仅同字符可闭（CommonMark 同字符闭合
-                    # 语义，对齐 _extract_declared_block，item 820df5cad84b
-                    # ——``` 与 ~~~ 不互为翻转标记）
+                    # 开栏记完整标记 run，闭栏须同字符且长度不短于开栏
+                    # （CommonMark 闭合语义：4+ 反引号围栏不被内层 ```
+                    # 错位截断，item 575b928f818a；同字符不互为翻转标记
+                    # 对齐 _extract_declared_block，item 820df5cad84b）
                     fence_char = m.group(1)
                     fence_ctx = _classify_line(
                         "", doc_kind, in_tasks_header, in_scenario
                     )
                     in_fence = True
                     continue
-                if m.group(1) == fence_char:
+                cur = m.group(1)
+                if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
                     in_fence = False
                     continue
-                # 异字符围栏行是块内容而非闭栏（不翻转边界），落入下方
-                # in_fence 分支按围栏内 token 处理
+                # 同字符但更短/异字符的围栏行是块内容而非闭栏（不翻转边界），
+                # 落入下方 in_fence 分支按围栏内 token 处理
             if in_fence:
                 ctx = fence_ctx
             else:
@@ -484,7 +491,7 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
         return None, None
 
     block: List[str] = []
-    fence_char = ""  # 当前围栏的开栏标记（``` / ~~~）；空串 = 尚未进入围栏
+    fence_char = ""  # 当前围栏的开栏标记 run（≥3 个 ` 或 ~）；空串 = 尚未进入围栏
     for line in lines[start:]:
         # 围栏开/关判定先于 _H2_RE 标题截断（fence-first，对齐同文件
         # extract_paths_typed 的同型修复 code-review item fedc3744144a，本次
@@ -496,11 +503,12 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
         m = _FENCE_RE.match(line)
         if m:
             if not fence_char:
-                fence_char = m.group(1)  # 开栏：记录标记，仅同字符可闭
+                fence_char = m.group(1)  # 开栏：记录完整标记 run
                 continue
-            if m.group(1) == fence_char:
+            cur = m.group(1)
+            if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
                 break  # 闭栏即取完——声明块只取节内首个围栏，后续围栏不并入
-            block.append(line)  # 异字符围栏行是块内容而非闭栏（不翻转边界）
+            block.append(line)  # 同字符更短/异字符围栏行是块内容而非闭栏
             continue
         if fence_char:
             block.append(line)
@@ -1721,7 +1729,10 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
                 timeout=10,
             )
         except (OSError, subprocess.SubprocessError):
-            return False
+            # fail-open 只作用于当前候选：继续判下一个候选（docstring「任一
+            # 被排除即 True」契约，item 505afa4a6f26——此处 return False 会让
+            # 首候选异常跳过后续候选，多候选场景静默漏判）
+            continue
         if r.returncode == 0:
             return True
         # >=2 = git 自身错误（非仓库等）：fail-open 视为未排除，继续下一候选
@@ -2631,6 +2642,8 @@ def lint_declared(spec_dir, project_root) -> List[str]:
 _TASKS_GROUP_RE = re.compile(r"^##\s+\d+\.?\s+(.+)$")
 
 # 任务项正则：与 data.py:parse_tasks / fenix_process.py:parse_tasks 同源。
+# 严口径（仅行首 `- [x]`/`- [ ]`）专用于任务行计数与孤儿判定；语境分类用
+# 文件头部 _CHECKBOX_RE 宽口径，差异有意、勿混用（item 6e387df34df1）。
 _TASKS_ITEM_RE = re.compile(r"^- \[(x| )\]")
 
 

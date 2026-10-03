@@ -536,7 +536,18 @@ class FenixDaemon:
         # 处置在 worker 线程执行，主循环 1s 粒度调度不再被阻塞；多个 worker 可并行
         # 执行多个 admin run（用户决策：不建 worktree、容忍主树写冲突风险）。
         # admin.workers=0 → 不启用后台池，回退主循环内同步执行（逃生门）。
-        admin_workers = int(ConfigLoader.get(self.config, "admin.workers", 2) or 0)
+        # 非法值（非数字字符串等）回退缺省并留痕（code-review item
+        # 8f6bf8446388，同 _shutdown_drain_seconds 范式）：裸 int() 抛
+        # ValueError 会令 initialize FATAL 退出、supervisor 拉起即再崩
+        raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
+        try:
+            admin_workers = int(raw_workers or 0)
+        except (TypeError, ValueError):
+            self.logger.error(
+                "fenixd",
+                f"admin.workers 非法（应为非负整数）: {raw_workers!r}，回退 2",
+            )
+            admin_workers = 2
         if admin_workers > 0:
             self._admin_executor = ThreadPoolExecutor(
                 max_workers=admin_workers,
@@ -733,6 +744,13 @@ class FenixDaemon:
             self._reclaim_stale_scheduling_kicks()
         except Exception as e:
             self.logger.error("fenixd", f"Startup scheduling_kick reclaim failed: {e}")
+
+        # 原子消费崩溃窗口残留回收（code-review item bd0b3d74ebca）：启动清扫
+        # 处理存量，主循环 600s 周期时点兜底（与 scheduling_kick 对账同挂载）。
+        try:
+            self._reclaim_consumed_request_residues()
+        except Exception as e:
+            self.logger.error("fenixd", f"Startup consumed-residue reclaim failed: {e}")
 
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
@@ -1012,18 +1030,31 @@ class FenixDaemon:
                         self._reclaim_stale_scheduling_kicks()
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic scheduling_kick reclaim failed: {e}")
+                    # 原子消费崩溃窗口残留（item bd0b3d74ebca）周期兜底回收
+                    try:
+                        self._reclaim_consumed_request_residues()
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Periodic consumed-residue reclaim failed: {e}")
                 # add-framework-self-evolution 5.1：自进化检查点（节拍复用
                 # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
                 # 就绪即入队、无在途立即启动分析 run）。
                 # 口径与 _admin_monitor_loop 一致（float + 0.5 下限）：int 截断会
                 # 把 0.5 这类小数分钟变成 0 再被 or 5 静默兜回缺省 5 分钟。
-                evo_interval = (
-                    max(
-                        float(ConfigLoader.get(self.config, "admin.interval_minutes", 5) or 5),
-                        0.5,
+                # 非法值（非数字字符串等）回退缺省并留痕（code-review item
+                # 8f6bf8446388，同 _shutdown_drain_seconds 范式）：裸 float() 在
+                # 主循环体直接抛出会越过逐任务异常隔离与 except KeyboardInterrupt，
+                # 经 finally shutdown 后以 FATAL 结束（supervisor 拉起即再崩）
+                raw_interval = ConfigLoader.get(self.config, "admin.interval_minutes", 5)
+                try:
+                    interval_minutes = float(raw_interval or 5)
+                except (TypeError, ValueError):
+                    self.logger.error(
+                        "fenixd",
+                        f"admin.interval_minutes 非法（应为数值分钟）: "
+                        f"{raw_interval!r}，回退 5",
                     )
-                    * 60
-                )
+                    interval_minutes = 5.0
+                evo_interval = max(interval_minutes, 0.5) * 60
                 if time.time() - evolution_check_ts >= evo_interval:
                     evolution_check_ts = time.time()
                     try:
@@ -2339,8 +2370,13 @@ class FenixDaemon:
             return None
         tmp_path = None
         try:
+            # 私有副本后缀 MUST NOT 是 .json（code-review item bd0b3d74ebca，
+            # 对齐 scheduling_kick 消费器 item e286692801c1 同型教训）：
+            # os.replace 占位与 finally unlink 之间被 SIGKILL/断电时，.fenix/
+            # 下会留下 .json 结尾的残留且无任何回收方、永久堆积；去后缀命名
+            # 由 _reclaim_consumed_request_residues 按 mtime 阈值统一回收
             fd, tmp_str = tempfile.mkstemp(
-                prefix=f".{req_path.name}.consumed.", suffix=".json",
+                prefix=f".{req_path.name}.consumed.",
                 dir=str(req_path.parent),
             )
             os.close(fd)
@@ -2384,6 +2420,32 @@ class FenixDaemon:
             return payload
         outcome["kind"] = "payload"
         return None
+
+    @staticmethod
+    def _reclaim_consumed_request_residues() -> None:
+        """回收 _consume_request_file 崩溃窗口残留的 .consumed 私有副本
+        （code-review item bd0b3d74ebca）。
+
+        mkstemp 占位与 finally unlink 之间被 SIGKILL/断电时，.fenix/ 下会留下
+        ``.<名>.json.consumed.<rand>`` 残留：副本不带 .json 结尾故不会被任何
+        车道当合法信号再次消费，但也无写入方、每次崩溃惰性累积。与
+        _reclaim_temp_scheduling_kick 同口径，按 mtime 超过
+        SCHEDULING_KICK_STALE_THRESHOLD_SECONDS 清理；由启动清扫与主循环
+        600s 周期时点挂载调用，不新建线程。
+        """
+        fenix_dir = PROJECT_ROOT / ".fenix"
+        cutoff = time.time() - SCHEDULING_KICK_STALE_THRESHOLD_SECONDS
+        try:
+            candidates = list(fenix_dir.glob(".*.consumed.*"))
+        except OSError:
+            return
+        for path in candidates:
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                path.unlink()
+            except OSError:
+                continue
 
     @staticmethod
     def _signal_created_is_stale(created) -> bool:
@@ -2532,6 +2594,12 @@ class FenixDaemon:
         69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
         重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
         approve_push / code_review / regression 四条已迁移车道同口径）。
+
+        时效分档豁免说明（code-review item 04cdc784e187，有意豁免）：本车道
+        不经 _signal_created_is_stale 做 created 时效分档——run_id 全局唯一且
+        cancel_run 幂等无害，停机积压的旧取消信号重启后重放至多对早已结束的
+        run_id 空转一次（未命中即返回），不存在兄弟车道那种「昂贵/破坏性动作
+        被旧请求重放」的风险，故豁免并在此留痕。
         """
         req_path = PROJECT_ROOT / ".fenix" / "cancel_run_request.json"
         payload = self._consume_request_file(req_path)
@@ -3360,8 +3428,13 @@ class FenixDaemon:
                 requested_at, "dropped", "stale_created")
             return
 
-        # 守卫：daemon 未运行或 unmanaged 时信号无人消费
-        hs = "stopped"
+        # 守卫：daemon 未运行或 unmanaged 时信号无人消费。hosting_state 探测
+        # 异常（读 /proc 或 pid 文件抖动，code-review item 832fa99b8eeb）不按
+        # stopped 丢弃——本消费方即 daemon，守卫目标（防「信号写了没人消费」）
+        # 已天然满足，异常时放行而非按未托管拒绝，亦不落 daemon_not_running
+        # 的误导回执（对照 stale 自愈同型探测按未托管跳过重启的「宁紧勿松」，
+        # 本处守卫方向相反）
+        hs = None
         try:
             hs = hosting_state(PROJECT_ROOT)
         except Exception:
@@ -3558,7 +3631,9 @@ class FenixDaemon:
 
         消费方守卫（对齐 _check_code_review_requests）：daemon 未运行或
         hosting_state == unmanaged 时信号无人消费；已有回归在跑时单飞
-        忽略请求（不排队、不并发）。信号文件在框架根 PROJECT_ROOT
+        忽略请求（不排队、不并发），且单飞在飞判定前置到消费之前作只读
+        去重门——在飞期间新请求留盘待下轮消费，不静默丢请求（code-review
+        item 11654f7b26bf）。信号文件在框架根 PROJECT_ROOT
         （单项目自托管形态，MUST NOT 按多项目 registry 逐项目扫描）。
 
         消费走 _consume_request_file 原子模式（code-review item
@@ -3575,6 +3650,21 @@ class FenixDaemon:
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "regression_request.json"
+        # 去重门（code-review item 11654f7b26bf，对齐 spec_delete 的 item
+        # dc0563435ba5 先例）：单飞在飞判定放在消费**之前**且只读不置位——
+        # 回归在飞期间新请求留在盘上，worker 收尾（finally 复位
+        # _regression_in_flight）后下一轮再消费，不再「请求已被消费却因单飞
+        # 被拒、又无结果回执文件」地静默丢请求（本车道无 code_review 那样的
+        # 结果回执链路）。置位仍只发生在消费后的 _in_flight_check_and_set
+        # 锁内——此处若置位，信号缺席的常态轮次会误置位把车道锁死。在飞期间
+        # 主循环每轮静默让路不记日志（对齐 spec_delete，防刷屏）
+        if self.admin_monitor is not None and self.admin_monitor._regression_in_flight:
+            return
+        if any(
+            str(rid).startswith("regression-")
+            for rid in list(getattr(self.agent_runner, "_running_agents", None) or {})
+        ):
+            return
         payload = self._consume_request_file(req_path)
         if payload is None:
             return
@@ -3592,8 +3682,10 @@ class FenixDaemon:
             )
             return
 
-        # 守卫：daemon 未运行或 unmanaged 时信号无人消费
-        hs = "stopped"
+        # 守卫：daemon 未运行或 unmanaged 时信号无人消费。hosting_state 探测
+        # 异常不按 stopped 丢弃（同 code_review 车道，code-review item
+        # 832fa99b8eeb）：本消费方即 daemon，守卫目标已天然满足，异常时放行
+        hs = None
         try:
             hs = hosting_state(PROJECT_ROOT)
         except Exception:
@@ -4357,7 +4449,10 @@ class FenixDaemon:
 
         run 异常中断（daemon 被杀等）时 .fenix/admin_disposition-<run_id>.json
         可能残留；无功能影响（每个实例按 run_id 读写），但会无限累积。旧全局
-        文件 admin_disposition.json 已不再读写，存在即视为残留一并清理。
+        文件 admin_disposition.json 已不再读写（无写入方、mtime 必然陈旧），
+        与实例文件并入同一 candidates 列表按同一 24h mtime 阈值清理——首次
+        清扫即满足阈值（code-review item e76f0a7ed092：legacy 并非「存在即
+        清理」，同样受 24h 阈值约束）。
         """
         fenix_dir = PROJECT_ROOT / ".fenix"
         cutoff = time.time() - ADMIN_DISPOSITION_STALE_SECONDS

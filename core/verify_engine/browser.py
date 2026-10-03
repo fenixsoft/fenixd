@@ -510,22 +510,36 @@ class BrowserManager:
                 )
             self._playwright = None
 
-        self._playwright = await async_playwright().start()
-        launch_args = [
-            "--disable-animations",
-            "--disable-gpu",
-            "--font-render-hinting=none",
-        ]
-        # 沙箱按运行环境注入（code-review item 03879984b764）：仅 root
-        # （euid==0，Chromium 渲染进程沙箱在此环境无法启用）才回退
-        # --no-sandbox；其余环境保留默认沙箱隔离，避免被测页面侧漏洞
-        # 直达宿主。geteuid 在非 Unix 平台不存在，按非 root 处理。
-        if getattr(os, "geteuid", None) is not None and os.geteuid() == 0:
-            launch_args.append("--no-sandbox")
-        self._browser = await self._playwright.chromium.launch(
-            headless=headless,
-            args=launch_args,
-        )
+        try:
+            self._playwright = await async_playwright().start()
+            launch_args = [
+                "--disable-animations",
+                "--disable-gpu",
+                "--font-render-hinting=none",
+            ]
+            # 沙箱按运行环境注入（code-review item 03879984b764）：仅 root
+            # （euid==0，Chromium 渲染进程沙箱在此环境无法启用）才回退
+            # --no-sandbox；其余环境保留默认沙箱隔离，避免被测页面侧漏洞
+            # 直达宿主。geteuid 在非 Unix 平台不存在，按非 root 处理。
+            if getattr(os, "geteuid", None) is not None and os.geteuid() == 0:
+                launch_args.append("--no-sandbox")
+            self._browser = await self._playwright.chromium.launch(
+                headless=headless,
+                args=launch_args,
+            )
+        except Exception:
+            # launch 失败路径回收本地 HTTP 服务器（code-review item bf93a61f4d20）：
+            # _start_dev_server 已在上面先行启动，此处抛错若不回收，_started 仍为
+            # False 而监听 socket 与服务器线程驻留至进程退出；调用方在 start()
+            # 失败后通常不会（也无法配对地）调用 stop()，无人值守 daemon 跨轮
+            # 重试每次失败泄漏一个。best-effort：与残留 playwright 释放同款容错。
+            try:
+                self._stop_dev_server()
+            except Exception as e:
+                self._log(
+                    "warning", f"回收本地 HTTP 服务器失败: {type(e).__name__}: {e}"
+                )
+            raise
         self._started = True
 
     async def stop(self):
@@ -992,6 +1006,7 @@ class BrowserManager:
                         "success": False,
                         "action": action,
                         "target": target,
+                        "error_type": "mock_api_failed",
                         "error": f"mock_api 失败: {e}",
                     }
 
