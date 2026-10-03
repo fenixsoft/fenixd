@@ -239,13 +239,15 @@ class IncidentReplayTest(unittest.TestCase):
         sm.add_spec("s1", {"priority": 5})
         sm.update_spec("s1", {"status": "implemented"})
 
-        report = {"summary": {"total": 5, "passed": 0, "warnings": 5,
-                              "failed": 0, "errors": 0, "blocked_env": 5},
-                  "scenarios": [
-                      {"scenario_id": "s1", "status": "blocked-env",
-                       "env_probe_detail": "HTTP 探测失联"},
-                  ]}
-        for _ in range(4):
+        # 逐轮换 scenario_id（fix-env-exemption-exit-reachability 2.2 后签名
+        # 一致会提前升级，第 2 轮即截停；本用例考察的是 4 轮计数路径）
+        for i in range(4):
+            report = {"summary": {"total": 5, "passed": 0, "warnings": 5,
+                                  "failed": 0, "errors": 0, "blocked_env": 5},
+                      "scenarios": [
+                          {"scenario_id": f"s1-{i}", "status": "blocked-env",
+                           "env_probe_detail": "HTTP 探测失联"},
+                      ]}
             engine._verification._handle_env_blocked_inconclusive("s1", report)
 
         store = AdminStore(self.tmpdir, logger)

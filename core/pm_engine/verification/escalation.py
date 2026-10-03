@@ -108,6 +108,198 @@ def _escalate_threshold_note(
     return f"已达升级阈值 {escalate_attempts}"
 
 
+# 升级停车 error 文案的稳定特征子串（fix-env-exemption-exit-reachability 4.5）：
+# reset_verification 前置状态门按此识别本能力域停车形态（implemented +
+# _inconclusive_attempts>0 + 本特征命中），escalation 写侧与 admin_actions 读侧
+# 共用同一常量防文案漂移。刻意不含 FREEZE_ERROR_PREFIX——本设计是「暂停自动
+# 重验等人工裁决」而非结构化冻结，人工经 choices 一键处置，不走 unfreeze 通道。
+INCONCLUSIVE_PARKING_ERROR_MARKER = "等待人工豁免或修环境裁决"
+
+
+def _inconclusive_fail_signature(pipeline, spec_name: str, report: dict) -> str:
+    """本轮 inconclusive 失败签名摘要（fix-env-exemption-exit-reachability 1.2/2.2）。
+
+    从 report.json 场景表现算（MUST NOT 以 fail_history.json 为基准——其条目
+    仅存场景 id 集且仅在归因失败轮追加、inconclusive 轮不落台账）：
+
+      - 非 pass 场景：首失败断言 ``type + _normalize_fail_signature(actual)``
+        摘要（归一化口径与 ``infra_classify._normalize_fail_signature`` 一致：
+        数字→N、去引号、折叠空白）；failed_assertions 缺失时兼容
+        assertion_results / assertion 历史字段（verdict_check 同款兼容序），
+        仍无则回退「场景级 classification + first_failed_step」；
+      - blocked-env 场景（从未执行、无失败断言）：签名退化为
+        ``<sid>:blocked-env``，签名整体附 blocked 计数——足以表达「环境未变化」。
+
+    片段排序后拼接（场景序跨轮可能被 planner 重排，排序保证可比）；无失败
+    场景（report 不可得/空）返回空串——调用方按「本轮签名未知」处理，不参与
+    一致性判定。签名同时用于 SIGNAL/告警 evidence 组装（供人工核对）与
+    STATE ``_last_inconclusive_signature`` 跨轮比较基准回写。
+    """
+    from core.pm_engine.verification.infra_classify import _normalize_fail_signature
+
+    fragments: list = []
+    blocked_count = 0
+    for sc in (report or {}).get("scenarios") or []:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        if status == "blocked-env":
+            blocked_count += 1
+            fragments.append(f"{sid}:blocked-env")
+            continue
+        ev = sc.get("evidence") if isinstance(sc.get("evidence"), dict) else {}
+        fa = None
+        for key in ("failed_assertions", "assertion_results", "assertion"):
+            val = ev.get(key)
+            if isinstance(val, list) and val:
+                fa = val
+                break
+        first = fa[0] if fa and isinstance(fa[0], dict) else None
+        if first is not None:
+            head = str(first.get("type") or "?")
+            actual = str(first.get("actual") or "")
+        else:
+            head = "nosig"
+            actual = (
+                f"{sc.get('classification') or ''}|{ev.get('first_failed_step') or ''}"
+            )
+        fragments.append(f"{sid}:{head}+{_normalize_fail_signature(actual)[:120]}")
+    if not fragments:
+        return ""
+    fragments.sort()
+    head_note = f"blocked={blocked_count}" if blocked_count else ""
+    return ";".join(fragments) + (f"|{head_note}" if head_note else "")
+
+
+def _escalate_inconclusive_parking(
+    pipeline,
+    spec_name: str,
+    attempts: int,
+    blocked_env: int,
+    report: dict,
+    signature: str,
+    threshold_note: str,
+    env_note: str = "",
+    signal_description: str | None = None,
+) -> None:
+    """inconclusive 升级停车共用收口（fix-env-exemption-exit-reachability 1.1/2.1）。
+
+    级二首次命中与级一（签名一致提前升级 / 计数到顶）的升级停车走同一条
+    通道，避免三处各自漂移：
+
+      1. 写 inconclusive_loop SIGNAL（kind=SIGNAL，Administrator 通道，保住
+         ``latest_resolved_disposition(spec, "inconclusive_loop")`` 放行查询
+         锚点），evidence 附本轮失败签名摘要与 attempts 当前值；
+      2. 经 ``escalation_notifier`` 发带 choices 的人工告警（severity=major，
+         choices 由注册表按 signal_type 自动附加）——SIGNAL 与 ESCALATION
+         双通道并存：Administrator 可自动核查环境，人工可一键豁免；
+      3. spec 停 implemented、tester_run 清空、error 写等待人工裁决文案
+         （不用 FREEZE_ERROR_PREFIX——本设计是暂停自动重验等裁决而非结构化
+         冻结，人工经 choices 解锁，不走 unfreeze 通道）、
+         ``_dispatch_backoff_until`` 置退避防 orphaned_state 误报；
+      4. 置 ``_in_inconclusive_reverify`` 旗标（judge 预算隔离，design D3）、
+         回写 ``_last_inconclusive_signature``（下一轮比较基准）。
+
+    升级后停止自动重验（MUST NOT enqueue verifier）——人工处置是唯一出路。
+    SIGNAL 写失败静默降级（error 字段已承载人工可见信息）；告警失败仅
+    WARNING 留痕（升级通道自身失败不得抛穿裁决流程）。
+    """
+    env_note = f"，{env_note}" if env_note else ""
+    human_description = (
+        f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决归类 env"
+        f"（{threshold_note}{env_note}），judge 已裁决全部失败归环境、"
+        f"等待人工豁免或修环境——自动重验已停止"
+    )
+    pipeline._write_inconclusive_loop_signal(
+        spec_name,
+        attempts,
+        blocked_env,
+        report or {},
+        description=signal_description,
+        threshold_note=threshold_note,
+        signature=signature,
+    )
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="inconclusive_loop",
+            severity="major",
+            description=human_description,
+            evidence=(
+                f"spec={spec_name}; 连续轮数={attempts}; "
+                f"末轮blocked_env数={blocked_env}; "
+                f"签名摘要={signature or '无'}"
+            ),
+            recommended_action=(
+                "人工裁决三选一：① 确认失败确属环境且不可修复 → 授予 env 豁免"
+                "（grant_env_exemption：落放行记录并重置重验，下轮 verified 合法"
+                "生效带豁免回链）；② 已修复环境 → manual_fixed_reverify 重置重验；"
+                "③ 放弃该 spec → abandon。Administrator 可按 SIGNAL 同步核查环境"
+            ),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"inconclusive 升级人工告警失败 '{spec_name}'（非阻塞）: "
+            f"{type(e).__name__}: {e}",
+        )
+    pipeline._context.state_machine.update_spec(
+        spec_name,
+        {
+            "status": "implemented",
+            "tester_run": None,
+            "error": (
+                f"连续 {attempts} 轮验证失败均被裁决归类 env"
+                f"（{threshold_note}{env_note}），无 admin 放行处置记录 — "
+                f"{INCONCLUSIVE_PARKING_ERROR_MARKER}"
+                f"（choices：grant_env_exemption / manual_fixed_reverify / "
+                f"abandon）；自动重验已停止"
+            ),
+            "_inconclusive_attempts": attempts,
+            "_last_inconclusive_signature": signature or "",
+            "_in_inconclusive_reverify": True,
+            "_dispatch_backoff_until": (
+                int(datetime.now(timezone.utc).timestamp())
+                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+            ),
+        },
+    )
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决归类 env"
+        f"（{threshold_note}{env_note}）— SIGNAL + 人工告警已发，"
+        f"暂停自动重验等待人工豁免或修环境裁决",
+    )
+
+
+def _clear_inconclusive_reverify_flag(pipeline, spec_name: str) -> None:
+    """清除 inconclusive 重验旗标，恢复 judge 生命周期正计（3.2 单一收口）。
+
+    judge 申报结论非全 env（bug-found 路由 / verified 放行 / scenario-repaired
+    重入决策点）时调用——正常路由的 judge 消耗照旧计入 ``_judge_rerun_count``
+    生命周期账。旗标为真才写盘（避免每轮无谓写盘，与 _verify_parallel_override
+    存在才清同款）；写失败仅 WARNING——旗标滞留的兜底由 verified 落定清零点
+    与 ``_judge_inconclusive_dispatches`` 独立上限承担。
+    """
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    flag = str(entry.get("_in_inconclusive_reverify") or "").strip().lower()
+    if flag not in ("true", "1"):
+        return
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name, {"_in_inconclusive_reverify": False}
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"inconclusive 重验旗标清除失败 '{spec_name}'（不阻断路由）: "
+            f"{type(e).__name__}: {e}",
+        )
+
+
 # [fenix-ignore:d5f83f2038f4] 三处同构骨架经停止分支合并（922e79f7a511）
 # 与 _read_int_config 抽取后，残留分歧仅在各自文案与 judge 无并行降档，
 # 参数化抽取风险大于收益，暂不共享实现
@@ -122,10 +314,18 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
     run 产物，repeated_failures 检测天然不累积（连续 inconclusive 不唤醒
     Administrator，对应 spec Scenario）。
 
-    重验上限沿用 attempts=3（verify_engine.inconclusive_max_attempts 可调）：
-    连续超限后停止自动重验、保持 implemented 并写 error 暴露——停止收口
-    与 SIGNAL 升级合并（code-review 922e79f7a511）：达上限轮次写
-    inconclusive_loop SIGNAL 唤起 Administrator，不再无界自动重验。
+    重验上限缺省 2（verify_engine.inconclusive_max_attempts 可调，
+    fix-env-exemption-exit-reachability 2.1：3→2——级一面向瞬时环境抖动，
+    同签名复现即无新信息，长烧无收益；缺省值与同键全部读取点同步）。
+    连续超限后升级停车（``_escalate_inconclusive_parking``：SIGNAL + 人工
+    告警 + 停止自动重验，code-review 922e79f7a511 停止收口与升级合并语义
+    不变）。
+
+    提前升级（2.1/2.2）：本轮失败签名（``_inconclusive_fail_signature``）
+    与 STATE 上一轮摘要（``_last_inconclusive_signature``，上一轮 inconclusive
+    处置点回写）完全一致 → 视为「环境未变化、重验必复现」，不等计数到顶
+    直接升级停车。基准缺失/不可解析（首轮、人工重置后）按「上一轮签名
+    未知」处理——不提前升级，保守走计数上限（防首轮误停）。
 
     Returns:
         True 表示本轮已按 inconclusive 处理（调用方跳过 bug-found/verified
@@ -154,52 +354,60 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
     except (TypeError, ValueError):
         attempts = 1
     max_attempts = _read_int_config(
-        pipeline, "verify_engine.inconclusive_max_attempts", 3
+        pipeline, "verify_engine.inconclusive_max_attempts", 2
     )
     escalate_attempts = _read_int_config(
         pipeline, "verify_engine.inconclusive_escalate_attempts", 4
     )
+    signature = _inconclusive_fail_signature(pipeline, spec_name, report)
 
-    # ── B7 升级通道（add-verdict-credibility-gate / design D6）──
-    # 达升级阈值（缺省 4）或达重验上限（attempts >= max_attempts，缺省 3，
-    # 停止收口与升级合并，code-review 922e79f7a511）：向 admin store 写
-    # kind=SIGNAL 记录，经 admin_monitor 摄取唤起 Administrator。三层既有
-    # 检测口径（repeated_failures / stuck / blocked_stuck）均实证错过该
-    # 故障形态，不可依赖它们。写入后停止自动重验：计数不清零则 recovery
-    # （B6）保持跳过，人工处置是唯一出路——与「暂停自动重验」语义闭环。
-    if attempts >= escalate_attempts or attempts >= max_attempts:
-        pipeline._write_inconclusive_loop_signal(
+    # ── 签名一致提前升级（fix-env-exemption-exit-reachability 2.1/2.2）──
+    # 比较基准 = 上一轮 inconclusive 处置点回写 STATE 的
+    # _last_inconclusive_signature（与 _inconclusive_attempts 同生命周期，
+    # 人工重置清零后自然失效）。两侧非空且完全一致才判「环境未变化」；
+    # 任一侧为空（首轮/重置后/report 不可得）按签名未知处理，保守走计数
+    # 上限，不制造新的停止点。
+    prev_signature = str(spec.get("_last_inconclusive_signature") or "").strip()
+    if prev_signature and signature and prev_signature == signature:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' 本轮 {blocked_env} 个失败场景全部为 blocked-env，"
+            f"失败签名与上一轮完全一致（环境未变化，重验必复现）— "
+            f"跳过剩余重验，直接升级停车",
+        )
+        _escalate_inconclusive_parking(
+            pipeline,
             spec_name,
             attempts,
             blocked_env,
             report,
+            signature,
+            threshold_note="重验失败签名与上一轮完全一致（环境未变化）",
+            signal_description=(
+                f"'{spec_name}' 连续 {attempts} 轮验证全部为 blocked-env"
+                f"（环境性失联）且失败签名与上一轮完全一致——环境未变化、"
+                f"重验必复现，请人工修复环境或授予豁免"
+            ),
+        )
+        return True
+
+    # ── B7 升级通道（add-verdict-credibility-gate / design D6）──
+    # 达升级阈值（缺省 4）或达重验上限（attempts >= max_attempts，缺省 2，
+    # 停止收口与升级合并，code-review 922e79f7a511）：升级停车（SIGNAL +
+    # 人工告警）。三层既有检测口径（repeated_failures / stuck / blocked_stuck）
+    # 均实证错过该故障形态，不可依赖它们。写入后停止自动重验：计数不清零
+    # 则 recovery（B6）保持跳过，人工处置是唯一出路。
+    if attempts >= escalate_attempts or attempts >= max_attempts:
+        _escalate_inconclusive_parking(
+            pipeline,
+            spec_name,
+            attempts,
+            blocked_env,
+            report,
+            signature,
             threshold_note=_escalate_threshold_note(
                 attempts, max_attempts, escalate_attempts
             ),
-        )
-        pipeline._context.logger.error(
-            "pm_engine",
-            f"'{spec_name}' 连续 {attempts} 轮验证全部 blocked-env，"
-            f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
-            f"SIGNAL 已写 admin store，"
-            f"暂停自动重验等待人工处置",
-        )
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "implemented",
-                "tester_run": None,
-                "error": (
-                    f"连续 {attempts} 轮验证全部环境性失联（blocked-env），"
-                    f"已呼叫 Administrator 核查验证环境；"
-                    f"人工处置后需清 _inconclusive_attempts 才能恢复自动重验"
-                ),
-                "_inconclusive_attempts": attempts,
-                "_dispatch_backoff_until": (
-                    int(datetime.now(timezone.utc).timestamp())
-                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-                ),
-            },
         )
         return True
 
@@ -217,6 +425,12 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                 f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"
             ),
             "_inconclusive_attempts": attempts,
+            # 2.2：回写本轮签名摘要——下一轮 inconclusive 处置点的比较基准
+            # （与 _inconclusive_attempts 同生命周期，人工重置清零后失效）。
+            "_last_inconclusive_signature": signature,
+            # 预算隔离（design D3）：本重验轮若触发 judge 派发，计入独立
+            # 计数器而非 _judge_rerun_count 生命周期账。
+            "_in_inconclusive_reverify": True,
         }
         # add-verify-parallel-backoff / design D1：连续 blocked-env 重验按
         # attempt 递减有效并行度——attempts≥2 起降档（配置值逐轮减半向下
@@ -1149,7 +1363,7 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
     except (TypeError, ValueError):
         attempts = 1
     max_attempts = _read_int_config(
-        pipeline, "verify_engine.inconclusive_max_attempts", 3
+        pipeline, "verify_engine.inconclusive_max_attempts", 2
     )
     escalate_attempts = _read_int_config(
         pipeline, "verify_engine.inconclusive_escalate_attempts", 4
@@ -1422,11 +1636,13 @@ def _write_inconclusive_loop_signal(
     report: dict,
     description: str | None = None,
     threshold_note: str | None = None,
+    signature: str = "",
 ) -> bool:
     """向 admin store 写 inconclusive_loop SIGNAL（design D6 / Task 5.2）。
 
     连续 blocked-env 达升级阈值时调用：kind=SIGNAL，type=inconclusive_loop，
-    附 spec 名、连续轮数、末轮 blocked_env 数、最近实例探针摘要。admin_monitor
+    附 spec 名、连续轮数、末轮 blocked_env 数、本轮失败签名摘要（1.1/2.2：
+    供人工核对「环境是否变化」与放行裁决）、最近实例探针摘要。admin_monitor
     _detect_family_explosion 摄取后按既有 SIGNAL 通道唤起 Administrator。
 
     description 可覆盖缺省的 blocked-env 模板文案（code-review item
@@ -1476,6 +1692,7 @@ def _write_inconclusive_loop_signal(
                 "evidence": (
                     f"spec={spec_name}; 连续轮数={attempts}; "
                     f"末轮blocked_env数={blocked_env}; "
+                    f"签名摘要={signature or '无'}; "
                     f"探针摘要={probe_detail or '无'}"
                 ),
                 "recommended_action": (
@@ -1575,13 +1792,28 @@ def _verdict_env_exemption_level2(
 def _handle_verdict_env_exemption_inconclusive(
     pipeline, spec_name: str, report: dict, verdict: dict
 ) -> bool:
-    """级二命中后的 inconclusive 处置（与 _handle_env_blocked_inconclusive 同源）。
+    """级二命中后的升级停车（fix-env-exemption-exit-reachability 1.1：首次命中即升级）。
 
-    共享 ``_inconclusive_attempts`` 计数（两级同一计数器，避免双计数漂移——
-    阶段 2.6 命中即 return，单轮内两级互斥、无并发写者）、
-    ``verify_engine.inconclusive_max_attempts`` 上限、
-    ``inconclusive_escalate_attempts`` 升级阈值（B7 SIGNAL 通道）与
-    attempts≥2 并行度降档。恒返回 True（调用方不得再落 verified）。
+    级二命中的前提是 judge 已对全部失败作出 env 终局裁决——重验只有在环境
+    变化时才有新信息，而框架没有环境变化探测器，自动重验是纯预算焚烧
+    （2026-10-03 事故：每轮重验因 report timestamp 翻新必烧 1 次 judge
+    生命周期派发，人工出口前 judge_rerun_cap 先冻结）。故**首次命中即升级**，
+    不再走「先自动重验 N 次」：
+
+      1. 写 inconclusive_loop SIGNAL（signal_type 与既有 B7 一致，保住
+         ``latest_resolved_disposition(spec, "inconclusive_loop")`` 放行查询
+         锚点），evidence 附本轮失败签名摘要与 attempts 当前值；
+      2. 经 ``escalation_notifier`` 发带 choices 的人工告警（severity=major，
+         choices 由注册表按 signal_type 自动附加）；
+      3. spec 停 implemented、tester_run 清空、error 写等待人工裁决文案
+         （不用 FREEZE_ERROR_PREFIX 冻结前缀）、``_dispatch_backoff_until``
+         置退避防 orphaned_state 误报；
+      4. 置 ``_in_inconclusive_reverify`` 旗标（judge 预算隔离）并回写
+         ``_last_inconclusive_signature``。
+
+    **不 enqueue verifier 自动重验**——升级后停止自动重验，人工经 choices
+    处置（grant_env_exemption / manual_fixed_reverify / abandon）是唯一出路。
+    恒返回 True（调用方不得再落 verified）。
     """
     summary = (report or {}).get("summary") or {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
@@ -1590,84 +1822,26 @@ def _handle_verdict_env_exemption_inconclusive(
         attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
     except (TypeError, ValueError):
         attempts = 1
-    max_attempts = _read_int_config(
-        pipeline, "verify_engine.inconclusive_max_attempts", 3
-    )
-    escalate_attempts = _read_int_config(
-        pipeline, "verify_engine.inconclusive_escalate_attempts", 4
-    )
     env_note = (
-        f"验证失败全部被裁决归类 env（env 断言 {verdict.get('env_entries', 0)} 条、"
-        f"blocked-env 场景 {len(verdict.get('blocked_env_scenarios') or [])} 个）"
+        f"env 断言 {verdict.get('env_entries', 0)} 条、"
+        f"blocked-env 场景 {len(verdict.get('blocked_env_scenarios') or [])} 个"
     )
-
-    # ── B7 升级通道（复用既有 SIGNAL 写入，add-verdict-credibility-gate D6）──
-    # 达升级阈值或达重验上限（attempts >= max_attempts，停止收口与升级
-    # 合并，code-review 922e79f7a511）即升级写 SIGNAL。
-    if attempts >= escalate_attempts or attempts >= max_attempts:
-        pipeline._write_inconclusive_loop_signal(
-            spec_name,
-            attempts,
-            blocked_env,
-            report or {},
-            threshold_note=_escalate_threshold_note(
-                attempts, max_attempts, escalate_attempts
-            ),
-        )
-        pipeline._context.logger.error(
-            "pm_engine",
-            f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决豁免为环境性，"
-            f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
-            f"SIGNAL 已写 admin store，"
-            f"暂停自动重验等待人工处置（豁免清单不得作为 verified 依据）",
-        )
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "implemented",
-                "tester_run": None,
-                "error": (
-                    f"连续 {attempts} 轮验证失败均被裁决归类 env（豁免握手拦截），"
-                    f"无 admin 放行处置记录，已呼叫 Administrator 核查验证环境；"
-                    f"人工放行（处置落库）后豁免方可生效，或清 _inconclusive_attempts "
-                    f"恢复自动重验"
-                ),
-                "_inconclusive_attempts": attempts,
-                "_dispatch_backoff_until": (
-                    int(datetime.now(timezone.utc).timestamp())
-                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-                ),
-            },
-        )
-        return True
-
-    if attempts < max_attempts:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"'{spec_name}' 本轮{env_note}（豁免握手拦截，不直接放行），"
-            f"verdict=inconclusive，第 {attempts}/{max_attempts} 次重验",
-        )
-        updates = {
-            "status": "implemented",
-            "tester_run": None,
-            "error": (
-                f"环境性失联（裁决豁免握手）：{env_note}，"
-                f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"
-            ),
-            "_inconclusive_attempts": attempts,
-        }
-        # add-verify-parallel-backoff / design D1：与级一同款降档——attempts≥2
-        # 起按配置值逐轮减半向下取整、下限 1，下一轮 VerifyEngine 构造时读取。
-        if attempts >= 2:
-            base = _read_int_config(pipeline, "verify_engine.max_parallel", 5)
-            updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
-        pipeline._context.state_machine.update_spec(spec_name, updates)
-        pipeline._context.enqueue(spec_name, "verifier")
-        return True
-
-    # 显式兜底：升级分支已覆盖 attempts >= max_attempts，到达此处条件恒真
-    # ——恒按 inconclusive 处理、恒返回 True。显式写出避免隐式 None 出口
-    # 被调用方按真值消费时静默传播。
+    signature = _inconclusive_fail_signature(pipeline, spec_name, report)
+    _escalate_inconclusive_parking(
+        pipeline,
+        spec_name,
+        attempts,
+        blocked_env,
+        report or {},
+        signature,
+        threshold_note="级二豁免握手首次命中即升级（judge 已裁决全 env）",
+        env_note=env_note,
+        signal_description=(
+            f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决归类 env"
+            f"（{env_note}），豁免握手拦截、无 admin 放行处置记录 — "
+            f"judge 已裁决全 env，等待人工豁免或修环境（自动重验已停止）"
+        ),
+    )
     return True
 
 
@@ -1752,10 +1926,11 @@ def _handle_env_exemption_handshake(
 
       1. AdminStore 无该 SPEC 放行处置记录（kind=DISPOSITION，经
          ``latest_resolved_disposition`` 按 spec 查询；dashboard/CLI 人工
-         放行动作落库后同一锚点可查）→ 转与
-         ``_handle_env_blocked_inconclusive`` 同源的 inconclusive 处置
-         （回 implemented、tester_run 清空、``_inconclusive_attempts`` 加一、
-         attempts≥2 并行度降档、重验排队；穷尽走既有 B7 SIGNAL 通道），
+         放行动作落库后同一锚点可查）→ 转
+         ``_handle_verdict_env_exemption_inconclusive`` 升级停车
+         （fix-env-exemption-exit-reachability 1.1：**首次命中即升级**——
+         SIGNAL + 带 choices 的人工告警、spec 停 implemented 等待人工豁免
+         或修环境裁决、**不再自动重验**，人工经 choices 处置后重置重验），
          返回 True（调用方 MUST NOT 再落 verified）；
       2. 查得放行记录且其 created 晚于本 spec 最近一条 inconclusive_loop
          SIGNAL（时效校验，``_env_exempt_disposition_is_stale``，防早先
@@ -1768,8 +1943,8 @@ def _handle_env_exemption_handshake(
     classification=env 形态）与既有 verified 流转不受影响；全绿机械快道
     （0 失败 0 警告）无豁免对象，同样零改动直通。
 
-    守卫读 store 异常时按「无放行记录」处置（fail-closed 到重验，绝不
-    fail-open 到 verified）。
+    守卫读 store 异常时按「无放行记录」处置（fail-closed，绝不 fail-open
+    到 verified）——既有 fail-open 守卫语义零变更。
     """
     from core.admin_store import AdminStore
     from core.verdict_check import load_report, save_report

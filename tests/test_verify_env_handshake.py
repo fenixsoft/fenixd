@@ -8,8 +8,9 @@
     test-defect 断言不命中走 bug-found；flaky 断言混合形态维持既有豁免放行
     不转重验；全批 blocked-env 级一先命中短路（judge 不被调用）；豁免清单
     为空 verified 直通
-  - 升级与守卫（tasks 4.2）：_inconclusive_attempts 达升级阈值写 SIGNAL 且
-    暂停自动重验；无 admin 放行记录时豁免不得落 verified；放行记录存在后
+  - 升级与守卫（tasks 4.2，fix-env-exemption-exit-reachability 1.1 更新为
+    首次命中即升级）：级二命中写 SIGNAL + 带 choices 人工告警、停车等待人工、
+    不再自动重验；无 admin 放行记录时豁免不得落 verified；放行记录存在后
     豁免生效且报告含处置回链
   - 探针（tasks 4.3，tmp_path 伪造 src/dist mtime）：dist 新鲜直通零重建、
     滞后重建成功后开跑、重建失败错误现场留痕且不静默开跑、worktree 自建
@@ -28,7 +29,7 @@ from unittest import mock
 # 确保 tests 目录在 import 路径（兼容直接执行）
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.admin_store import AdminStore, DISPOSITION, SIGNAL
+from core.admin_store import AdminStore, DISPOSITION, ESCALATION, SIGNAL
 from core.pm_engine.engine import PMEngine
 from core.state_machine import StateMachine
 from core.verdict_check import load_report
@@ -130,6 +131,12 @@ def _signals(tmpdir):
     return [r for r in store.read_all() if r.get("kind") == SIGNAL]
 
 
+def store_records(tmpdir, kind):
+    """按 kind 过滤 admin store 记录（ESCALATION 断言用）。"""
+    store = AdminStore(Path(tmpdir), _FakeLogger())
+    return [r for r in store.read_all() if r.get("kind") == kind]
+
+
 # ── tasks 4.1：级二判据 ──────────────────────────────────────────────────
 
 
@@ -140,19 +147,19 @@ class TestLevel2Criteria(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
 
-    def test_mixed_form_all_env_assertions_hits_and_requeues(self):
-        """混合形态（failed>0 且断言级 triage 全 env、场景级未标 env）→ 转
-        inconclusive：回 implemented、tester_run 清空、计数加一、重验排队。"""
+    def test_mixed_form_all_env_assertions_first_hit_parks(self):
+        """混合形态（failed>0 且断言级 triage 全 env、场景级未标 env）→ 首次
+        命中即升级停车：回 implemented 等人工裁决、tester_run 清空、不重验。"""
         engine, sm, _ = _mk_engine(self.tmpdir)
         report = _mixed_env_report()
         with mock.patch.object(engine, "_enqueue") as enq:
             handled = engine._verification._handle_env_exemption_handshake("s1", report)
         self.assertTrue(handled, "级二命中应由握手处置（不得落 verified）")
         spec = sm.read_one("s1")
-        self.assertEqual(spec["status"], "implemented", "应回 implemented 排队重验")
+        self.assertEqual(spec["status"], "implemented", "应停车 implemented 等待人工")
         self.assertIsNone(spec["tester_run"], "tester_run 应清空")
-        self.assertEqual(int(spec["_inconclusive_attempts"]), 1, "计数应加一")
-        enq.assert_any_call("s1", "verifier")
+        self.assertEqual(int(spec["_inconclusive_attempts"]), 1, "首次命中即升级")
+        enq.assert_not_called()
         self.assertNotEqual(spec["status"], "verified")
 
     def test_product_bug_assertion_not_hit(self):
@@ -251,19 +258,24 @@ class TestEscalationAndGuard(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
 
-    def test_threshold_writes_signal_and_pauses_auto_reverify(self):
-        """计数达升级阈值（缺省 4）写 SIGNAL 且暂停自动重验。"""
-        engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=4, max_attempts=10)
+    def test_first_hit_writes_signal_choices_alert_and_parks(self):
+        """首次命中即升级：SIGNAL + 带 choices 的人工告警各一条，停车等人工。"""
+        engine, sm, _ = _mk_engine(self.tmpdir)
         report = _mixed_env_report()
-        for i in range(4):
-            handled = engine._verification._handle_env_exemption_handshake("s1", report)
-            self.assertTrue(handled)
+        handled = engine._verification._handle_env_exemption_handshake("s1", report)
+        self.assertTrue(handled)
         sigs = [s for s in _signals(self.tmpdir)
                 if s.get("signal_type") == "inconclusive_loop"]
-        self.assertEqual(len(sigs), 1, "第 4 轮应写入一条 inconclusive_loop SIGNAL")
+        self.assertEqual(len(sigs), 1, "首次命中即写一条 inconclusive_loop SIGNAL")
         rec = sigs[0]
         self.assertEqual(str(rec.get("spec")), "s1")
-        self.assertIn("连续轮数=4", rec.get("evidence") or "")
+        self.assertIn("连续轮数=1", rec.get("evidence") or "")
+        self.assertIn("签名摘要=", rec.get("evidence") or "")
+        escs = [r for r in store_records(self.tmpdir, ESCALATION)
+                if r.get("signal_type") == "inconclusive_loop"]
+        self.assertEqual(len(escs), 1, "人工告警恰一条（双通道并存）")
+        choice_ids = [c.get("id") for c in escs[0].get("choices") or []]
+        self.assertIn("grant_env_exemption", choice_ids, "告警应快照裁决 choices")
         spec = sm.read_one("s1")
         self.assertEqual(spec["status"], "implemented")
         self.assertIn("放行", spec.get("error") or "", "error 现场应含人工放行指引")
@@ -271,14 +283,14 @@ class TestEscalationAndGuard(unittest.TestCase):
             int(spec.get("_dispatch_backoff_until") or 0) > 0,
             "暂停自动重验应有退避窗",
         )
-        self.assertEqual(int(spec["_inconclusive_attempts"]), 4)
+        self.assertEqual(int(spec["_inconclusive_attempts"]), 1)
 
     def test_no_release_record_exemption_not_verified(self):
-        """无 admin 放行记录：豁免不得落 verified（始终 implemented 等待）。"""
-        engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=4, max_attempts=10)
+        """无 admin 放行记录：豁免不得落 verified（停车 implemented 等待）。"""
+        engine, sm, _ = _mk_engine(self.tmpdir)
         report = _mixed_env_report()
-        for _ in range(3):
-            engine._verification._handle_env_exemption_handshake("s1", report)
+        handled = engine._verification._handle_env_exemption_handshake("s1", report)
+        self.assertTrue(handled)
         self.assertEqual(sm.read_one("s1")["status"], "implemented")
         self.assertEqual(_dispositions(self.tmpdir), [], "前置：不应有处置记录")
 
@@ -337,19 +349,21 @@ class TestEscalationAndGuard(unittest.TestCase):
         )
         self.assertTrue(handled, "他 SPEC 的放行记录不得放行本 SPEC")
 
-    def test_exhausted_max_attempts_stops_auto_reverify(self):
-        """达重验上限（无放行）：停止自动重验、不排队、留 error 现场。"""
-        engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=10, max_attempts=3)
+    def test_parked_spec_keeps_auto_reverify_stopped(self):
+        """升级停车后（无放行）：自动重验保持停止——重复命中只重复停车。"""
+        engine, sm, _ = _mk_engine(self.tmpdir)
         report = _mixed_env_report()
-        for _ in range(3):
-            engine._verification._handle_env_exemption_handshake("s1", report)
+        engine._verification._handle_env_exemption_handshake("s1", report)
         spec = sm.read_one("s1")
         self.assertEqual(spec["status"], "implemented")
-        self.assertEqual(int(spec["_inconclusive_attempts"]), 3)
+        self.assertEqual(int(spec["_inconclusive_attempts"]), 1)
         self.assertTrue(int(spec.get("_dispatch_backoff_until") or 0) > 0)
         with mock.patch.object(engine, "_enqueue") as enq:
             engine._verification._handle_env_exemption_handshake("s1", report)
         enq.assert_not_called()
+        spec = sm.read_one("s1")
+        self.assertEqual(spec["status"], "implemented", "重复命中也不落 verified")
+        self.assertEqual(int(spec["_inconclusive_attempts"]), 2)
 
 
 # ── tasks 4.3：serving dist 新鲜度探针 ──────────────────────────────────

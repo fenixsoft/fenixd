@@ -1530,6 +1530,11 @@ VERIFY_CHAIN_SIGNAL_TYPES = frozenset({
     "judge_rerun_cap",
     "verify_fail_escalation",
     "redispatch_loop_detected",
+    # fix-env-exemption-exit-reachability 4.5：env 豁免握手/inconclusive 升级
+    # 停车族的一键处置可达性硬前提——grant_env_exemption / manual_fixed_
+    # reverify 经 alert-resolve 以 signal_type=inconclusive_loop 调本动词，
+    # 不放行则在前置校验即被拒，选项集接线形同虚设。
+    "inconclusive_loop",
 })
 _VERIFY_CHAIN_ERROR_MARKERS = (
     "judge", "验证", "重派", "预算", "verify", "inconclusive", "env",
@@ -1570,6 +1575,20 @@ _RETRY_COUNTER_RESETS = {
     "_env_block_rounds": 0,
     "_redispatch_same_cause_streak": 0,
     "_redispatch_cause_fp": None,
+    # fix-env-exemption-exit-reachability 3.4：inconclusive 重验预算隔离双
+    # 字段（独立计数器 + 旗标，design D3）与 _judge_rerun_count 同生命周期，
+    # 人工复位一并清零/清除（防旗标滞留使复位后正常轮 judge 派发持续分流）。
+    "_judge_inconclusive_dispatches": 0,
+    "_in_inconclusive_reverify": False,
+    # 同 spec 2.2：级一签名比较基准——跨 episode 过期基准会把重置后的首轮
+    # 误判「环境未变」提前升级，复位必须清（首轮按基准未知保守走计数上限）。
+    "_last_inconclusive_signature": None,
+    # 同 spec 1.1：级二停车退避窗——清 error 后残留会拖延重置后首派
+    # （spec_is_undriven 条件③ 在退避窗内恒真，探测器静默）。
+    "_dispatch_backoff_until": None,
+    # 同字段 3.3：独立计数器到顶升级告警的去重标记——复位后新 episode
+    # 再到顶应能再次告警。
+    "_judge_inconclusive_cap_escalated": False,
 }
 
 # force_advance 允许的目标状态（design D4：校验目标可达性，不开放任意跳转）
@@ -1584,6 +1603,29 @@ def _adjudication_sm(project_root):
         Path(project_root) / ".fenix" / "STATE.md",
         project_state_logger(project_root),
     )
+
+
+def _is_inconclusive_parking_form(entry: dict) -> bool:
+    """spec 条目是否为 env 豁免握手 inconclusive 升级停车形态（4.5 前置门扩展）。
+
+    停车形态（fix-env-exemption-exit-reachability D5）：status=implemented +
+    ``_inconclusive_attempts``>0 + error 命中 inconclusive 停车文案特征
+    （与 escalation 写侧共用同一常量防漂移）。三条件缺一不可——裸
+    implemented 不放行（重置验证不适用于任意实现中 spec），计数为 0 说明
+    不在 inconclusive episode 内。
+    """
+    from core.pm_engine.verification.escalation import (
+        INCONCLUSIVE_PARKING_ERROR_MARKER,
+    )
+
+    if str(entry.get("status") or "") != "implemented":
+        return False
+    try:
+        if int(entry.get("_inconclusive_attempts", 0) or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return INCONCLUSIVE_PARKING_ERROR_MARKER in str(entry.get("error") or "")
 
 
 def reset_verification(project_root, spec: str, note: str = "", signal_type: str = "") -> dict:
@@ -1617,7 +1659,8 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
         return {"ok": False, "found": False, "steps": [], "target_status": None,
                 "error": f"spec not found: {spec}"}
     entry = specs[spec]
-    if not (is_spec_frozen(entry) or entry.get("status") == "blocked"):
+    parking_form = _is_inconclusive_parking_form(entry)
+    if not (is_spec_frozen(entry) or entry.get("status") == "blocked" or parking_form):
         return {
             "ok": False, "found": True, "steps": [], "target_status": None,
             "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
@@ -2082,6 +2125,83 @@ def _exec_declare_no_artifacts(project_root, spec: str, note: str = "") -> dict:
     return {"ok": True, "steps": steps, "error": None}
 
 
+def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
+    """grant_env_exemption：人工授予 env 豁免（fix-env-exemption-exit-reachability 4.2）。
+
+    执行序列（fail-closed）：
+      1. 经 AdminStore 写 kind=DISPOSITION 放行记录（signal_type=inconclusive_loop、
+         result 显式 env 豁免放行语义、note 落人工审计文本）——幂等锚点对齐
+         既有 disposition 形态（``latest_resolved_disposition`` 按
+         spec+signal_type+result∈{resolved, partially-resolved} 取最近一条）；
+      2. 调 ``reset_verification`` 复用既有清计数/清验证进度路径（signal_type
+         显式传入走 VERIFY_CHAIN_SIGNAL_TYPES 精确判别）。
+
+    DISPOSITION 写失败**不执行重置**（fail-closed）：握手守卫查不到放行记录
+    会把重验后的全 env 轮再次拦截回升级停车——「重置了却没放行」正是
+    2026-10-03 死循环的复发形态。放行 → 重置 → 重验 → 握手查得放行 →
+    合法 verified（报告带 admin_disposition_backlink 回链），全链零新机制
+    （DISPOSITION created 晚于 SIGNAL，天然通过时效校验）。
+
+    Returns:
+        {"ok": bool, "steps": [str], "target_status": str|null, "error": str|null,
+         "disposition_id": str|null}
+    """
+    from core.admin_store import AdminStore, DISPOSITION
+
+    proot = Path(project_root)
+    store = AdminStore(proot, logger)
+    audit_note = note or "人工授予 env 豁免：失败确属环境且不可修复，放行重验"
+    try:
+        rec = store.append({
+            "kind": DISPOSITION,
+            "signal_type": "inconclusive_loop",
+            "spec": spec,
+            "severity": "major",
+            "description": (
+                f"人工授予 env 豁免（'{spec}' judge 已裁决全部失败归 env、"
+                f"豁免握手拦截 verified）"
+            ),
+            "action_taken": "grant_env_exemption",
+            # result 显式 env 豁免放行语义：resolved 进 latest_resolved_
+            # disposition 放行查询锚点（非 resolved 不构成放行，握手不认）。
+            "result": "resolved",
+            "note": audit_note,
+        })
+    except Exception as e:
+        # 不外泄裸异常文本（code-review item e584a2ede367 同口径）
+        logger.warning(
+            "grant_env_exemption 写放行记录失败（spec=%s）: %s: %s",
+            spec, type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [], "target_status": None,
+                "disposition_id": None,
+                "error": "env 豁免放行记录写入失败（fail-closed，不执行重置）"}
+    if rec is None:
+        # store 拒写（文件损坏留底被下限保护等，append 契约返回 None）：
+        # 记录未落盘，按 fail-closed 处置（item 2570ca39177a 先例）
+        return {"ok": False, "steps": [], "target_status": None,
+                "disposition_id": None,
+                "error": "env 豁免放行记录未落盘（store 拒写，fail-closed 不执行重置）"}
+    steps = [f"已落 env 豁免放行记录（id={rec.get('id')}，result=resolved，"
+             f"豁免下轮 verified 合法生效带回链）"]
+    r = reset_verification(
+        project_root, spec,
+        note=f"授予 env 豁免后重置重验：{audit_note}" if note else "授予 env 豁免后重置重验",
+        signal_type="inconclusive_loop",
+    )
+    steps.extend(r.get("steps") or [])
+    merged = {
+        "ok": bool(r.get("ok")),
+        "steps": steps,
+        "target_status": r.get("target_status"),
+        "disposition_id": rec.get("id"),
+        "error": r.get("error"),
+    }
+    if not r.get("ok") and not merged["error"]:
+        merged["error"] = "放行记录已落库，但验证重置未成功"
+    return merged
+
+
 def execute_adjudication_choice(project_root, spec: str, choice_id: str,
                                 note: str = "", signal_type: str = "") -> dict:
     """choice_id → 后端动作统一映射执行器（add-human-adjudication-choices 4.1/4.2）。
@@ -2133,6 +2253,10 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
     try:
         if action == "reset_verification":
             r = reset_verification(project_root, spec, note=note, signal_type=signal_type)
+        elif action == "grant_env_exemption":
+            # fix-env-exemption-exit-reachability 4.2：授予 env 豁免（DISPOSITION
+            # 放行 + 重置重验）
+            r = _exec_grant_env_exemption(project_root, spec, note)
         elif action == "force_advance":
             r = force_advance(project_root, spec, target_status="done", note=note)
         elif action == "skip_review_gate":

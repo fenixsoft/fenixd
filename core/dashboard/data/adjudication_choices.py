@@ -99,6 +99,24 @@ _ADJUDICATION_REGISTRY: dict = {
         _FORCE_ADVANCE,
         _ABANDON,
     ),
+    # ── env 豁免握手 inconclusive 停车族（fix-env-exemption-exit-reachability
+    # 4.1）────────────────────────────────────────────────────────
+    # judge 已裁决全部失败归 env、豁免握手拦截（无 admin 放行记录不落
+    # verified）后的升级停车。三选一：授予豁免（落 DISPOSITION 放行记录 +
+    # 重置重验，下轮 verified 合法生效带豁免回链）/ 修环境重置重验 / 放弃。
+    # 消费通道为 ESCALATION（前端告警区下拉），不加入 SIGNAL_CHANNEL_SIGNAL_
+    # TYPES——SIGNAL 通道（Administrator 自动核查）与人工 choices 双通道并存。
+    "inconclusive_loop": (
+        {
+            "id": "grant_env_exemption",
+            "label": "授予 env 豁免",
+            "desc": "确认失败确属环境且不可修复：落 env 豁免放行记录并重置验证"
+            "重跑（下轮 verified 合法生效，报告带豁免回链）",
+            "action": "grant_env_exemption",
+        },
+        _MANUAL_FIXED_REVERIFY,
+        _ABANDON,
+    ),
     "redispatch_loop_detected": (
         {
             "id": "continue_auto_fix",

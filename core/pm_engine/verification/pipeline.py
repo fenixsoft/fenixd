@@ -158,6 +158,7 @@ from core.pm_engine.verification.serving import (
 
 # refactor-verification-module 阶段3.7：escalation/legacy/verdict_evidence 三组已迁。
 from core.pm_engine.verification.escalation import (
+    _clear_inconclusive_reverify_flag,
     _env_whitewash_gate,
     _escalate_env_blocked,
     _escalate_scenario_defect_reroute,
@@ -310,6 +311,9 @@ class VerificationPipeline:
         "_current_verify_round": _current_verify_round,
         "_handle_env_blocked_inconclusive": _handle_env_blocked_inconclusive,
         "_write_inconclusive_loop_signal": _write_inconclusive_loop_signal,
+        # fix-env-exemption-exit-reachability D3：inconclusive 重验旗标单一
+        # 清除助手（judge 非全 env 结论三处路由点共用）
+        "_clear_inconclusive_reverify_flag": _clear_inconclusive_reverify_flag,
         "_env_whitewash_gate": _env_whitewash_gate,
         "_escalate_env_blocked": _escalate_env_blocked,
         # fix-verdict-env-exemption-handshake：裁决豁免握手（级二判据/同源
@@ -1017,6 +1021,10 @@ class VerificationPipeline:
         等价搬移自 _run_three_stage_verification 的 bug-found 分支体，保持控制流逐条等价。
         内部多个 return 为提前退出主函数语义；调用者 MUST 在 return 之后显式 return。
         """
+        # fix-env-exemption-exit-reachability D3：judge 申报结论非全 env
+        # （bug-found 路由）→ 清除 inconclusive 重验旗标，恢复 judge 生命周期
+        # 正计（正常路由的 judge 消耗照旧计入 _judge_rerun_count 生命周期账）。
+        self._clear_inconclusive_reverify_flag(spec_name)
         # ── 归因分级门禁（add-verdict-credibility-gate / design D2 / Task 2.2）──
         # 打回依据全部为 speculative（推测级）时抑制 bug-found 打回：
         # 转重验一次或写 error「归因证据不足待人工复核」，不得带推测
@@ -1207,6 +1215,10 @@ class VerificationPipeline:
         # 与 legacy 车道（_read_verify_report 读盘传入）口径一致。
         if self._handle_env_exemption_handshake(spec_name, None):
             return
+        # fix-env-exemption-exit-reachability D3：verified 放行（握手查得新鲜
+        # 放行处置记录）= judge 申报结论非全 env 之一 → 清除 inconclusive 重验
+        # 旗标恢复正计（级二命中时握手已提前 return，旗标保留到人工处置）。
+        self._clear_inconclusive_reverify_flag(spec_name)
         # D6: testing→verified 前置进度核对：done>=total 才晋级
         vblocker = self._check_verification_gate(spec_name)
         if vblocker:
@@ -1576,6 +1588,9 @@ class VerificationPipeline:
         """
         if verifier_status != "scenario-repaired":
             return False
+        # fix-env-exemption-exit-reachability D3：scenario-repaired 重入决策点
+        # = judge 申报结论非全 env 之一 → 清除 inconclusive 重验旗标恢复正计。
+        self._clear_inconclusive_reverify_flag(spec_name)
         if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
             # ── fix-recovery-path-blockers D3/D4/D5：预算耗尽两态处置 ──
             # 先读跨轮持久计数、再分两条不同文案写（MUST NOT 先写旧文案再

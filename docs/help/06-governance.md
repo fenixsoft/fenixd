@@ -292,7 +292,22 @@ flowchart TD
 | `admin.narrative_timeout_seconds` | `60` | 叙事同步调用硬超时（秒） |
 | `admin.narrative_model` | 空 | 叙事模型名；空=回退 `admin.agent_model`，仍为空时复用框架默认网关模型 |
 
+## env 豁免裁决选项（inconclusive_loop）
+
+当验证失败被 judge 裁决「全部归因环境、无产品 bug」且无 admin 放行记录时，env 豁免握手会拦截 verified 并**首次命中即升级停车**（不再自动重验——重验在环境不变时不产生新信息），SPEC 停在 implemented 等待人工裁决，告警携带三个裁决选项：
+
+| 选项 | 语义 |
+|------|------|
+| `grant_env_exemption`（授予 env 豁免） | 确认失败确属环境且不可修复：落一条 env 豁免放行处置记录（DISPOSITION）并重置验证重跑 |
+| `manual_fixed_reverify`（人工已修复·重置验证重跑） | 人工已修复环境：清场景与验证计数器后重置验证重跑，下一轮按真实结果裁决 |
+| `abandon`（撤销丢弃） | 放弃该 SPEC（软删除归档，留处置痕，不可自动恢复） |
+
+**授予豁免后的 verified 链路**：`grant_env_exemption` 先落放行记录（created 晚于触发它的 inconclusive_loop 信号，天然通过时效校验），再重置验证；重验后 judge 再次裁决全 env 时，握手守卫查得新鲜放行记录 → 豁免清单作为 verified 依据合法生效，验证报告带 `admin_disposition_backlink` 处置回链（记录放行人选择与审计文本），之后走既有 verified → done → 自动推送链。不放行记录则永不落 verified——豁免不得自我批准。
+
+同一升级同时写 inconclusive_loop SIGNAL 唤起 Administrator（可自动核查验证环境）与人工告警（可一键裁决）；两者竞争由「同 SPEC 最近一条放行处置记录」的幂等锚点收敛，留痕完整可审计。
+
 ## 重启协议
+
 
 daemon 由 supervisor（`fenixd_supervisor.py`）托管，异常退出会被自动拉起，重启后中断状态按上文「自动恢复」回退。项目的启停通过 `/fenix-setup` 或 Dashboard 项目页操作，跨项目的统一管理则由 `/fenix-dashboard` 负责。
 

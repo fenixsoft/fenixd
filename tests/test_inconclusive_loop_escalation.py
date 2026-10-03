@@ -65,14 +65,20 @@ def _mk_engine(tmpdir, escalate_attempts=4, max_attempts=3):
     return engine, sm, logger
 
 
-def _all_blocked_report(blocked_env=3):
+def _all_blocked_report(blocked_env=3, sid="s-x"):
+    """构造全批 blocked-env 报告。
+
+    sid 按轮变化（fix-env-exemption-exit-reachability 2.2 后）：签名一致提前
+    升级使「同报告连续多轮」在第 2 轮即命中签名匹配——要考察计数上限路径的
+    用例必须逐轮换 sid 让签名不同，否则走的是提前升级分支而非计数分支。
+    """
     return {
         "summary": {
             "total": blocked_env, "passed": 0, "warnings": blocked_env,
             "failed": 0, "errors": 0, "blocked_env": blocked_env,
         },
         "scenarios": [
-            {"scenario_id": "s-x", "status": "blocked-env",
+            {"scenario_id": sid, "status": "blocked-env",
              "env_probe_detail": "HTTP 探测失联"},
         ],
     }
@@ -94,13 +100,14 @@ class TestEscalationThreshold(unittest.TestCase):
     def test_rounds_1_2_no_signal_cap_writes(self):
         """第 1-2 轮（重验分支内）不写 SIGNAL；第 3 轮达重验上限写 SIGNAL。
 
-        922e79f7a511 修复后停止收口与升级合并：attempts >= max_attempts（缺省
-        3）即写 inconclusive_loop SIGNAL——缺省配置（escalate=4 > max=3）下
-        升级分支可达，不再「停止分支不写信号」造成 inconclusive 无人呼唤。
+        922e79f7a511 修复后停止收口与升级合并：attempts >= max_attempts（本用
+        例显式配 3）即写 inconclusive_loop SIGNAL。逐轮换 sid 让签名不同——
+        签名一致提前升级（fix-env-exemption-exit-reachability 2.1）若不换会
+        在第 2 轮截停，覆盖不到计数路径。
         """
         engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=4)
-        report = _all_blocked_report()
         for expected_round in (1, 2):
+            report = _all_blocked_report(sid=f"s-x-{expected_round}")
             handled = engine._verification._handle_env_blocked_inconclusive("s1", report)
             self.assertTrue(handled, f"第 {expected_round} 轮应按 inconclusive 处理")
             self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]),
@@ -112,6 +119,7 @@ class TestEscalationThreshold(unittest.TestCase):
                              f"第 {expected_round} 轮不应写入 inconclusive_loop SIGNAL")
         # 第 3 轮达重验上限（max_attempts=3，未达 escalate=4）：合并后的升级
         # 分支写 SIGNAL（SIGNAL 即停止自动重验的人工唤起通道）
+        report = _all_blocked_report(sid="s-x-final")
         handled = engine._verification._handle_env_blocked_inconclusive("s1", report)
         self.assertTrue(handled)
         self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 3)
@@ -121,12 +129,15 @@ class TestEscalationThreshold(unittest.TestCase):
         self.assertEqual(len(inconclusive), 1, "第 3 轮达重验上限应写 SIGNAL")
 
     def test_round_4_writes_signal(self):
-        """第 4 轮（缺省阈值）写入 SIGNAL 且暂停自动重验。"""
+        """第 4 轮（升级阈值）写入 SIGNAL 且暂停自动重验。"""
         engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=4, max_attempts=10)
-        report = _all_blocked_report(blocked_env=3)
-        for _ in range(3):
-            engine._verification._handle_env_blocked_inconclusive("s1", report)
-        handled = engine._verification._handle_env_blocked_inconclusive("s1", report)
+        for i in range(3):
+            engine._verification._handle_env_blocked_inconclusive(
+                "s1", _all_blocked_report(blocked_env=3, sid=f"s-x-{i}")
+            )
+        handled = engine._verification._handle_env_blocked_inconclusive(
+            "s1", _all_blocked_report(blocked_env=3, sid="s-x-final")
+        )
         self.assertTrue(handled)
         sigs = _signals(self.tmpdir)
         inconclusive = [s for s in sigs
@@ -139,16 +150,19 @@ class TestEscalationThreshold(unittest.TestCase):
         self.assertIn("HTTP 探测失联", rec.get("evidence") or "")
 
     def test_threshold_configurable_n(self):
-        """阈值可配：N=2 时第 2 轮触发 SIGNAL。"""
+        """阈值可配：N=2 时第 2 轮触发 SIGNAL（逐轮换 sid 走计数路径）。"""
         engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=2, max_attempts=5)
-        report = _all_blocked_report()
         # 第 1 轮：不触发
-        engine._verification._handle_env_blocked_inconclusive("s1", report)
+        engine._verification._handle_env_blocked_inconclusive(
+            "s1", _all_blocked_report(sid="s-x-1")
+        )
         inconclusive = [s for s in _signals(self.tmpdir)
                         if s.get("signal_type") == "inconclusive_loop"]
         self.assertEqual(len(inconclusive), 0, "第 1 轮不应触发")
         # 第 2 轮：触发
-        engine._verification._handle_env_blocked_inconclusive("s1", report)
+        engine._verification._handle_env_blocked_inconclusive(
+            "s1", _all_blocked_report(sid="s-x-2")
+        )
         inconclusive = [s for s in _signals(self.tmpdir)
                         if s.get("signal_type") == "inconclusive_loop"]
         self.assertEqual(len(inconclusive), 1, "第 2 轮应触发 SIGNAL")
@@ -173,15 +187,18 @@ class TestManualCountReset(unittest.TestCase):
     def test_clear_count_restarts_from_1(self):
         """人工清 _inconclusive_attempts 后，后续 blocked-env 从 1 重新计数。"""
         engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=5, max_attempts=10)
-        report = _all_blocked_report()
-        # 先累积 3 轮
-        for _ in range(3):
-            engine._verification._handle_env_blocked_inconclusive("s1", report)
+        # 先累积 3 轮（逐轮换 sid：签名一致会在第 2 轮提前升级，覆盖不到本用例）
+        for i in range(3):
+            engine._verification._handle_env_blocked_inconclusive(
+                "s1", _all_blocked_report(sid=f"s-x-{i}")
+            )
         self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 3)
         # 人工处置：清计数
         sm.update_spec("s1", {"_inconclusive_attempts": 0})
         # 新一轮从 1 重新计数
-        engine._verification._handle_env_blocked_inconclusive("s1", report)
+        engine._verification._handle_env_blocked_inconclusive(
+            "s1", _all_blocked_report(sid="s-x-new")
+        )
         self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 1)
         # 且不会因为旧残留计数立即触发升级
         inconclusive = [s for s in _signals(self.tmpdir)
@@ -191,9 +208,10 @@ class TestManualCountReset(unittest.TestCase):
     def test_unfreeze_clears_count(self):
         """unfreeze 清 _inconclusive_attempts（与 _verify_redo_count 同语义）。"""
         engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=10, max_attempts=10)
-        report = _all_blocked_report()
-        for _ in range(3):
-            engine._verification._handle_env_blocked_inconclusive("s1", report)
+        for i in range(3):
+            engine._verification._handle_env_blocked_inconclusive(
+                "s1", _all_blocked_report(sid=f"s-x-{i}")
+            )
         self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 3)
         # 冻结后解冻
         sm.update_spec("s1", {"status": "blocked"})
@@ -202,7 +220,9 @@ class TestManualCountReset(unittest.TestCase):
         self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 0,
                          "unfreeze 后 _inconclusive_attempts 应清零")
         # 新一轮从 1 计数
-        engine._verification._handle_env_blocked_inconclusive("s1", report)
+        engine._verification._handle_env_blocked_inconclusive(
+            "s1", _all_blocked_report(sid="s-x-new")
+        )
         self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 1)
 
 
