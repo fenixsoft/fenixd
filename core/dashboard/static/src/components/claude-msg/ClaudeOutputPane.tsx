@@ -156,7 +156,6 @@ export default function ClaudeOutputPane({
   // 显示思考过程开关：默认关闭（thinking 占比 14-19% 且恒为折叠态，关闭后
   // 不再以「已思考数秒」噪声行打断工具聚合）；无正文兜底见 runEvents
   const [thinkingVisible, setThinkingVisible] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const isMountedRef = useRef(true);
   // 响应币值守卫（code-review item 5dbf7b6044bf）：detail.tsx / AdminRunModal.tsx
   // 等无 key 调用点在 runId 切换时复用本组件实例（不卸载），仅 isMountedRef
@@ -303,7 +302,6 @@ export default function ClaudeOutputPane({
     if (!runId || !project) return;
 
     const eventSource = new EventSource('/api/stream');
-    eventSourceRef.current = eventSource;
 
     // watch 注册失败有限次退避重试（code-review item 11f787b2d13c）：注册失败时
     // 后端 sse.broadcast 只投递给 watched_runs 命中的连接，本连接收不到该 run 的
@@ -455,7 +453,6 @@ export default function ClaudeOutputPane({
         watchRetryTimerRef.current = null;
       }
       eventSource.close();
-      eventSourceRef.current = null;
     };
     // reportStatus 刻意不入依赖（code-review item aa6c0683def4，理由同初载
     // effect）：onRunStatus 引用不稳定时列入依赖会逐事件关闭重建 EventSource

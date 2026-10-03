@@ -633,7 +633,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
 export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
   const isMobile = useIsMobile();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   // add-spec-list-filter-stickiness：过滤状态持久化到 URL 查询参数（replace 写回）
   const [searchParams, setSearchParams] = useSearchParams();
   // 读侧（D1）：挂载时惰性初始化一次性解析 URL（useState 惰性函数只在首渲染
@@ -656,8 +656,16 @@ export default function SpecListPage() {
   const lastRefreshRef = useRef(0);
 
   // 增量 patch 队列：同 spec 1s 内多事件只应用最新（3.1 去重合并）。
-  const pendingPatchesRef = useRef<Record<string, SpecSummary | null>>({});
+  const pendingPatchesRef = useRef<Record<string, { summary: SpecSummary | null; seq: number }>>({});
   const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 整表 load 与 SSE patch 的时序守卫（code-review item 5509401e08f0）：load 响应
+  // 是请求时刻的服务端快照，若请求在飞期间有 patch 被 flush 应用，晚到的旧快照
+  // 会把较新的增量行覆盖回旧值（loadSeqRef 只排多次 load 之间、不感知 patch）。
+  // 每条 patch 入队时领单调序号，flush 时把已应用条目按序号记入日志；load 响应
+  // 落地时把序号晚于本次请求的日志条目重新合并进快照再写表，增量不再被回退。
+  // 日志在每次 load 发起时按本次请求序号裁剪，规模以两次 load 间的事件数为上界。
+  const patchSeqRef = useRef(0);
+  const patchLogRef = useRef<Array<{ seq: number; spec: string; summary: SpecSummary | null }>>([]);
   const specMapRef = useRef(specMap);
   // 「已成功加载」闩锁（code-review item f8144e4ed721）：区分「首屏未载入/加载
   // 失败」与「已成功加载但为空」两种空表情形，零 SPEC 项目成功加载后不再随搜索
@@ -700,6 +708,10 @@ export default function SpecListPage() {
   const load = useCallback(async () => {
     if (!name) return;
     const seq = ++loadSeqRef.current;
+    // 本次请求发出前已入队的 patch 不参与合并（快照必然不旧于它们）；只合并
+    // 请求在飞期间入队（seq 更大）的 patch，同时据此裁剪日志
+    const atPatchSeq = patchSeqRef.current;
+    patchLogRef.current = patchLogRef.current.filter((e) => e.seq > atPatchSeq);
     try {
       const d = await getSpecs(name);
       if (loadSeqRef.current !== seq) return;
@@ -708,6 +720,13 @@ export default function SpecListPage() {
       } else {
         const next: Record<string, SpecSummary> = {};
         for (const s of d.specs || []) next[s.name] = s;
+        // 快照落地前重放「请求在飞期间应用」的 patch（code-review item
+        // 5509401e08f0）：旧快照不再把较新增量行覆盖回旧值或抹掉新增行。
+        // 仍在挂起未 flush 的 patch 无需在此处理——其定时器到点后自会叠加在本表之上。
+        for (const e of patchLogRef.current) {
+          if (e.summary === null) delete next[e.spec];
+          else next[e.spec] = e.summary;
+        }
         setSpecMap(next);
         setError('');
         // 成功加载（含空表）即闩锁，后续防抖回退不再触发（code-review item f8144e4ed721）
@@ -727,18 +746,24 @@ export default function SpecListPage() {
     patchTimerRef.current = null;
     const patches = pendingPatchesRef.current;
     pendingPatchesRef.current = {};
+    // 已应用的 patch 记入日志供在飞 load 响应合并（见 patchLogRef 注释）。
+    // flush 定时器互斥且每批收尽此前入队事件，故日志追加序与 seq 单调序一致，
+    // 响应侧按序覆盖即得同 spec 最新值。
+    for (const [spec, p] of Object.entries(patches)) {
+      patchLogRef.current.push({ seq: p.seq, spec, summary: p.summary });
+    }
     setSpecMap((prev) => {
       const next = { ...prev };
       let changed = false;
-      for (const [spec, summary] of Object.entries(patches)) {
-        if (summary === null) {
+      for (const [spec, p] of Object.entries(patches)) {
+        if (p.summary === null) {
           // 删除标记：summary:null → 从本地表移除该行
           if (spec in next) {
             delete next[spec];
             changed = true;
           }
-        } else if (next[spec] !== summary) {
-          next[spec] = summary;
+        } else if (next[spec] !== p.summary) {
+          next[spec] = p.summary;
           changed = true;
         }
       }
@@ -746,9 +771,10 @@ export default function SpecListPage() {
     });
   }, []);
 
-  // 入队一条增量 patch；同 spec 在 1s 窗口内只保留最新值
+  // 入队一条增量 patch；同 spec 在 1s 窗口内只保留最新值（并领单调序号，
+  // 供 load 响应区分「请求发出前/后」的 patch）
   const enqueuePatch = useCallback((spec: string, summary: SpecSummary | null) => {
-    pendingPatchesRef.current[spec] = summary;
+    pendingPatchesRef.current[spec] = { summary, seq: ++patchSeqRef.current };
     // 显式 null/undefined 判等（code-review item 95013c6683be，宽松相等被 lint 禁止）
     if (patchTimerRef.current === null || patchTimerRef.current === undefined) {
       patchTimerRef.current = setTimeout(flushPatches, PATCH_COALESCE_MS);
@@ -917,7 +943,7 @@ export default function SpecListPage() {
   };
 
   const handleDeleteSpec = (record: SpecSummary) => {
-    Modal.confirm({
+    modal.confirm({
       title: '删除 SPEC',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
@@ -961,7 +987,7 @@ export default function SpecListPage() {
     // SPEC_REVIEW_BLOCKED_PREFIXES（与后端 re_review 白名单同源）的
     // blocked SPEC 显示本入口；后端仍会复核开放条件（非 blocked/冻结/
     // 前缀不符任一拒绝），失败时展示后端返回的拒绝原因。
-    Modal.confirm({
+    modal.confirm({
       title: '重新评审 SPEC',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
