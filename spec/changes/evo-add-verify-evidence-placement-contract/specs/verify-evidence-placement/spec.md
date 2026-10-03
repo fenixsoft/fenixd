@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: 验证证据落位契约
-验证/核查链 SHALL 把原始证据统一落 .fenix/verify-evidence/<spec>/（被消费项目忽略规则覆盖的路径），验证契约 SHALL 提供可覆盖的 evidence_dir 字段（缺省上述路径）。
+验证/核查链 SHALL 把原始证据统一落消费项目主树 .fenix/verify-evidence/<spec>/（绝对路径；被消费项目忽略规则覆盖、与 worktree 生命周期解耦），验证契约 SHALL 提供可覆盖的 evidence_dir 字段（缺省上述路径），报告 SHALL 仅引用以主树根为基准的相对路径。
 
 #### Scenario: 证据落位
 - **WHEN** 验证 run 产生原始证据文件（扫描结果/转储/探针产物）
@@ -14,11 +14,11 @@
 - **THEN** 以契约值为准，缺省回退 .fenix/verify-evidence/<spec>/
 
 ### Requirement: untracked 散件盘点信号
-maintree 盘点 SHALL 增补 untracked 散件信号（只告警不处置）：entry 级判定、同指纹一次性、指纹消失自动复位，豁免 .fenix/ negation 放行项与已 ignore 路径。
+maintree 盘点 SHALL 增补 untracked 散件信号（只告警不处置、info 级留痕不唤起人工）：entry 级判定、同指纹一次性、指纹消失自动复位，豁免 .fenix/ negation 放行项与已 ignore 路径，且 tracked 口径既有行为不变。
 
 #### Scenario: untracked 散件滞留
 - **WHEN** 主树出现超阈值的 untracked 散件且跨宽限周期滞留
-- **THEN** 发一次性告警列明路径，不自动处置；指纹消失后状态自动复位
+- **THEN** 发一次性 info 告警列明路径（落 AdminStore 留痕与 Dashboard，不唤起人工），不自动处置；指纹消失后状态自动复位
 
 #### Scenario: 有意放行项不误报
 - **WHEN** untracked 条目位于 .fenix/ 内被显式 negation 放行（如 .fenix/verify.yaml）或已被 ignore 规则覆盖
