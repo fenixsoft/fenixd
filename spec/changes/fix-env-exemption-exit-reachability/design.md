@@ -40,7 +40,7 @@
 
 签名字段：失败/blocked 场景 id 集 + 每场景失败签名（断言 type + 归一化 actual 摘要，归一化复用 `_normalize_fail_signature` 口径：数字→N、去引号、折叠空白）。全部一致 → 判定「环境未变化，重验必复现」→ 提前升级。任一不同 → 环境有变化信号 → 允许继续自愈重试。
 
-数据源：`fail_history.json` 已存每轮 failed_scenarios；本轮签名在升级判定点从 report.json 场景表现算，无需新持久化（比较在内存完成，签名摘要随 SIGNAL evidence 落库供人工核对）。
+数据源（评审修订）：比较基准 = 上一轮 inconclusive 处置点回写 spec STATE 的签名摘要字段 `_last_inconclusive_signature`（与 `_inconclusive_attempts` 同生命周期、无新持久化文件）。**MUST NOT 以 `fail_history.json` 为基准**：其条目仅 `{round, cause_type, failed_scenarios(场景 id 串集), failure_class, run_id}`（`infra_classify._append_fail_history`），只存场景 id、无每场景签名，且仅在归因失败轮（evidence-invalid / real-bugs / infra）追加——inconclusive 轮不落台账，比较会永不触发。本轮签名在升级判定点从 report.json 场景表现现算，与 STATE 上一轮摘要内存比对后回写本轮值；签名摘要同时随 SIGNAL evidence 落库供人工核对。级一 blocked-env 场景从未执行、无失败断言，其签名退化为「场景 id 集 + blocked 计数」，足以表达「环境未变化」。
 
 ### D3：预算隔离用「旗标 + 分账计数器」，不用提额
 
@@ -62,11 +62,13 @@
 
 `inconclusive_loop` 注册三项：`grant_env_exemption`（新动作）/ `manual_fixed_reverify`（复用 `_MANUAL_FIXED_REVERIFY` 共享常量）/ `abandon`（复用 `_ABANDON`）。新执行器 `_exec_grant_env_exemption`：经 AdminStore 写 kind=DISPOSITION（signal_type=inconclusive_loop、result 显式放行语义、note 落人工审计文本）+ 调 `reset_verification` 复用既有清计数/清验证进度逻辑。DISPOSITION created 晚于 SIGNAL，天然通过 `_env_exempt_disposition_is_stale` 时效校验——放行→重验→握手查得放行→合法 verified，全链零新机制。
 
+reset_verification 前置门兼容扩展（评审修订，一键处置可达性硬前提）：现有前置校验只放行「frozen 或 blocked」（admin_actions.py `reset_verification`：否则报「spec 未处于冻结/blocked 态」），且 `signal_type` 白名单 `VERIFY_CHAIN_SIGNAL_TYPES` 不含 `inconclusive_loop`——而本设计停车形态是 implemented + error（无冻结前缀，见 D5），两道门都会把 `grant_env_exemption` / `manual_fixed_reverify` 一键处置拒绝。MUST：`VERIFY_CHAIN_SIGNAL_TYPES` 追加 `inconclusive_loop`；前置状态门放行本设计停车形态（`implemented` + `_inconclusive_attempts`>0 + error 命中 inconclusive 停车文案特征）。复位分支对非 blocked 形态的既有兜底成立（清计数后保持 implemented、tester_run 已清 → 正常调度重派 verifier），无需新增状态转换；清零清单同步追加 `_judge_inconclusive_dispatches` / `_in_inconclusive_reverify` / `_last_inconclusive_signature` / `_dispatch_backoff_until`。
+
 人工告警走 `escalation_notifier`（`_send_human_escalation_alert` 按注册表自动附加 choices 快照），severity=major 进人工待处理队列。SIGNAL（Administrator 通道）与 ESCALATION（人工通道）双通道并存：Administrator 可自动核查环境，人工可一键豁免，二者竞争由 DISPOSITION 幂等锚点（同 spec 只认最近一条 resolved）收敛。
 
 ### D5：error 文案与冻结看门狗豁免的兼容
 
-升级停车写 implemented + error 文案，**不用** FREEZE_ERROR_PREFIX 冻结前缀（本设计是「暂停自动重验等裁决」而非结构化冻结——人工经 choices 解锁，不走 unfreeze 通道）。`_dispatch_backoff_until` 置退避（复用 `_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS` 同款手法）防 `spec_is_undriven` 判 orphaned_state 误报成条。
+升级停车写 implemented + error 文案，**不用** FREEZE_ERROR_PREFIX 冻结前缀（本设计是「暂停自动重验等裁决」而非结构化冻结——人工经 choices 解锁，不走 unfreeze 通道）。`_dispatch_backoff_until` 置退避（复用 `_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS` 同款手法）防 `spec_is_undriven` 判 orphaned_state 误报成条。（该 implemented 停车形态经 D4 的 reset_verification 前置门扩展保证人工 choices 可重置。）
 
 ## Risks / Trade-offs
 
@@ -83,4 +85,4 @@
 - `core/state_machine.py`（字段常量 + 清零清单注释）
 - `core/dashboard/data/adjudication_choices.py`（注册表注册）
 - `core/dashboard/data/admin_actions.py`（grant_env_exemption 执行器）
-- `tests/test_env_exemption_handshake.py` 等配套测试
+- `tests/test_verify_env_handshake.py`（既有握手测试，评审修订更正文件名：原清单误写 `test_env_exemption_handshake.py`，该文件不存在；级二时序变更需同步更新其中断言旧自动重验语义的用例）+ 新建 `tests/test_env_exemption_exit_reachability.py`

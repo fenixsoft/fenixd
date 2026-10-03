@@ -30,7 +30,7 @@ env 豁免握手（`_handle_env_exemption_handshake` 级二命中：judge 裁决
 `_handle_env_blocked_inconclusive`（summary.blocked_env > 0 且 failed+errors = 0 的环境性失联）保留自动重验，但：
 
 - 重验上限改由 `verify_engine.inconclusive_max_attempts` 配置（缺省 **2**）；
-- 本轮失败场景集 + 各场景失败签名（归一化，同 `_normalize_fail_signature` 口径：数字→N、去引号、折叠空白）与 fail_history 上一轮完全一致时，**不等计数到顶立即升级**（写 inconclusive_loop SIGNAL + 人工告警），停止自动重验。
+- 本轮失败场景集 + 各场景失败签名（归一化，同 `_normalize_fail_signature` 口径：数字→N、去引号、折叠空白）与上一轮签名基准完全一致时，**不等计数到顶立即升级**（写 inconclusive_loop SIGNAL + 人工告警），停止自动重验。基准由上一轮 inconclusive 处置点回写的 spec STATE 字段 `_last_inconclusive_signature` 承载（MUST NOT 以 `fail_history.json` 为基准：其条目仅存场景 id 集且仅在归因失败轮追加、inconclusive 轮不落台账）；基准缺失（首轮/重置后）按首轮处理，不提前升级。blocked-env 场景从未执行、无失败断言，其签名退化为「场景 id 集 + blocked 计数」。
 
 #### Scenario: 签名一致跳过剩余重验
 
@@ -69,6 +69,7 @@ env 豁免握手（`_handle_env_exemption_handshake` 级二命中：judge 裁决
 1. `grant_env_exemption`——「授予 env 豁免」：写 DISPOSITION 放行记录（result 显式指向 env 豁免放行、note 落审计）+ 重置验证重跑；执行器在 `execute_adjudication_choice` 映射实现；
 2. `manual_fixed_reverify`——「人工已修环境·重置重验」：复用既有 reset_verification 动作；
 3. `abandon`——「撤销丢弃」（destructive，复用共享选项）。
+4. 一键处置可达性 MUST：`VERIFY_CHAIN_SIGNAL_TYPES` 追加 `inconclusive_loop`，且 `reset_verification` 前置状态门放行本能力域停车形态（`implemented` + `_inconclusive_attempts`>0 + inconclusive 停车 error 文案特征）——现门禁仅放行 frozen/blocked，不扩展则 `grant_env_exemption` / `manual_fixed_reverify` 在前置校验即被拒绝，选项集接线形同虚设。
 
 #### Scenario: 选项集接线生效
 
