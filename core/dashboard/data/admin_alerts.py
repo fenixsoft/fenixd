@@ -7,18 +7,70 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 告警职责域
 # ── Administrator 告警（.fenix/admin_alerts.json） ─────────────────
 
 
+def _merge_narrative_sidecars(project_root, records: list) -> list:
+    """按 alert_id 合并叙事侧车（upgrade-narrative-to-investigation 3.3）。
+
+    补叙异步生成后落 ``.fenix/admin_alerts_narrative/<alert_id>.json`` 侧车
+    （admin_alerts.json 记录本体不可变）；本助手在告警读出后按 id 合并回
+    ``narrative`` 字段，形态与既有 ``{"text", "model", "at"}`` 一致——前端
+    AlertNarrative 零 schema 变更。终态侧车（生成失败/熔断跳过）与补叙侧车
+    同构同目录，读侧无差别合并（失败告警渲染失败说明而非悬挂占位）。
+
+    侧车缺失（无补叙也无终态侧车）且未 handled 的裁决类告警（choices 非空
+    ——叙事覆盖面口径，桶 0 无 choices 本就不生成）附 ``narrative_pending:
+    True`` 供前端渲染「调查生成中」占位。单条合并永不抛出；侧车目录缺失/
+    损坏条目 fail-open 跳过。
+    """
+    if not records:
+        return records
+    try:
+        from core.adjudication_narrative import load_narrative_sidecars
+
+        sidecars = load_narrative_sidecars(project_root)
+    except Exception:
+        sidecars = {}
+    merged: list = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            merged.append(rec)
+            continue
+        item = dict(rec)
+        payload = sidecars.get(str(item.get("id") or ""))
+        if payload:
+            item["narrative"] = {
+                "text": payload.get("text") or "",
+                "model": payload.get("model"),
+                "at": payload.get("at") or "",
+            }
+            item.pop("narrative_pending", None)
+        elif (
+            not item.get("handled")
+            and item.get("choices")
+            and not item.get("narrative")
+        ):
+            # 侧车缺失且本体已带 narrative 的存量告警（旧同步实现写入）不标
+            # pending——已有叙事可渲染，标了即是「生成中」假态
+            item["narrative_pending"] = True
+        merged.append(item)
+    return merged
+
+
 def get_alerts(project_root) -> list:
-    """读取项目全部 Administrator 告警/处置记录（最新在前）。缺失/损坏返回 []。"""
+    """读取项目全部 Administrator 告警/处置记录（最新在前）。缺失/损坏返回 []。
+
+    返回前合并叙事侧车（upgrade-narrative-to-investigation 3.3）：含补叙
+    narrative 字段与未完成告警的 narrative_pending 占位标记。
+    """
     from core.admin_store import AdminStore
 
-    return AdminStore(project_root).read_all()
+    return _merge_narrative_sidecars(project_root, AdminStore(project_root).read_all())
 
 
 def get_unhandled_alerts(project_root) -> list:
-    """读取项目未处理的升级告警（最新在前）。"""
+    """读取项目未处理的升级告警（最新在前）。含叙事侧车合并（3.3）。"""
     from core.admin_store import AdminStore
 
-    return AdminStore(project_root).unhandled()
+    return _merge_narrative_sidecars(project_root, AdminStore(project_root).unhandled())
 
 
 def get_resolved_alerts(project_root, limit: int = 50) -> list:
@@ -26,7 +78,8 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
 
     供管理员视图「已解决」折叠区展示：含 handled_by（区分自动解决/人工处理）、
     resolve_note（解除/处置依据）与 handled_at。仍走 AdminStore.read_all 既有
-    读取路径（不绕锁、不改存储格式）。
+    读取路径（不绕锁、不改存储格式）。已解决告警同样合并侧车 narrative
+    （历史完整性：人工已处置后补叙照常落盘，3.2）。
     """
     from core.admin_store import AdminStore, ESCALATION
 
@@ -35,7 +88,7 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
         for r in AdminStore(project_root).read_all()
         if r.get("kind") == ESCALATION and r.get("handled")
     ]
-    return resolved[:limit]
+    return _merge_narrative_sidecars(project_root, resolved[:limit])
 
 
 def mark_alert_handled(project_root, alert_id: str) -> bool:

@@ -100,6 +100,23 @@ function AlertNarrative({ text }: { text: string }) {
 }
 
 /**
+ * 「调查生成中」占位（upgrade-narrative-to-investigation 3.5）：告警已落盘、
+ * 后台调查叙事尚在生成（读侧 narrative_pending 标记，侧车缺失且未 handled
+ * 的裁决类告警）时渲染；灰态纯展示、不可交互，不阻塞 choices 下拉与处置
+ * 动作（处置不依赖 narrative）。侧车补叙完成后轮询自然补齐为 AlertNarrative；
+ * 终态侧车（生成失败/熔断跳过）渲染失败说明、不出本占位。
+ */
+function AlertNarrativePending() {
+  return (
+    <div data-testid="alert-narrative-pending" style={{ margin: '4px 0' }}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        调查生成中…
+      </Typography.Text>
+    </div>
+  );
+}
+
+/**
  * 告警明细字段区（描述/叙事/证据/处置/建议/解决依据），六段行单源只写一份，
  * 布局差异按 variant 保留、isPage 仅在真实差异点分支（两变体渲染输出逐字等价）：
  * - 描述行：page 有描述才独占一行渲染，banner 恒渲染并入 📌 spec 前缀；
@@ -128,7 +145,11 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
     // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
     <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
       {descriptionLine}
-      {item.narrative?.text ? <AlertNarrative text={item.narrative.text} /> : null}
+      {item.narrative?.text ? (
+        <AlertNarrative text={item.narrative.text} />
+      ) : item.narrative_pending ? (
+        <AlertNarrativePending />
+      ) : null}
       {isPage ? (evidenceLine ? <div>{evidenceLine}</div> : null) : evidenceLine}
       {item.action_taken ? (
         <div>

@@ -227,11 +227,13 @@ class TokenAccountant:
         # （threading.Lock 不可重入：调用点 _accumulate_token_usage 须在锁外
         # 调本方法，本方法内不得再经持锁路径被调用）。config 读取与 ratio
         # 计算不涉共享标志，留在锁外保持临界区最小。
-        # code-review item 9fff308e34f4：告警发射（_send_token_alert 经
-        # attach_narrative → build_narrative 同步发起一次 LLM 调用，带超时可达
-        # 数十秒）不得占住临界区——同 spec 并发收工线程会在锁入口被阻塞拖慢
-        # 收尾。锁内只完成「是否本线程发射」的判定与标志置位读改写，锁释放后
-        # 再发射；发射权由锁内置位判定唯一化，同阈值仍只发一次，语义不变。
+        # code-review item 9fff308e34f4：告警发射（_send_token_alert 的 LLM
+        # 叙事自 upgrade-narrative-to-investigation 3.1 起已异步补叙化——
+        # schedule_narrative 只起后台线程零阻塞；此前经 attach_narrative →
+        # build_narrative 同步调用带超时可达数十秒）不得占住临界区——同 spec
+        # 并发收工线程会在锁入口被阻塞拖慢收尾。锁内只完成「是否本线程发射」
+        # 的判定与标志置位读改写，锁释放后再发射；发射权由锁内置位判定唯一化，
+        # 同阈值仍只发一次，语义不变。
         fire_100 = False
         fire_80 = False
         with _spec_accumulate_lock(spec_name):
@@ -345,13 +347,6 @@ class TokenAccountant:
             choices = choices_for("token_budget")
             if choices:
                 payload["choices"] = list(choices)
-                # add-adjudication-alert-narrative 2.2：旁路 choices 附带点复用
-                # 同一叙事辅助模块（本路径直写 AdminStore、不经
-                # _send_human_escalation_alert，禁止第二套 prompt/生成逻辑）；
-                # fail-open：失败不写 narrative、不影响下方既有落盘。
-                from core.adjudication_narrative import attach_narrative
-
-                attach_narrative(payload, self._pm)
             rec = store.append(payload)
             # 注册表覆盖（choices 已快照）→ 保持未处理进待办队列，选项才有人可
             # 执行（item ded34cd04dc5）；无 choices 的警告级仍按 2026-09-01 降噪
@@ -361,8 +356,24 @@ class TokenAccountant:
             # 记录未落盘，按未落地处理）——此时跳过 born-handled 闭环标记，避免
             # rec["id"] 抛 TypeError 被外层误记为「Failed to send token budget
             # alert」（告警本就未落盘，崩溃在 mark_handled 阶段使归因失真）。
-            if rec is not None and not choices and not severity_needs_human(severity):
-                store.mark_handled(rec["id"])
+            if rec is not None:
+                # upgrade-narrative-to-investigation 3.1：告警已以机械文案落盘，
+                # 注册表内信号（choices 已快照）落盘后调度后台补叙（侧车承载，
+                # alert_id 取落地记录 id；叙事时延/失败零阻塞本发射路径）。
+                if choices:
+                    from core.adjudication_narrative import schedule_narrative
+
+                    schedule_narrative(rec["id"], payload, self._pm)
+                # 注册表覆盖（choices 已快照）→ 保持未处理进待办队列，选项才有人可
+                # 执行（item ded34cd04dc5）；无 choices 的警告级仍按 2026-09-01 降噪
+                # 决策 born-handled，不占待办
+                # code-review item 3e202131bd3a：文件损坏留底被下限保护拒写时 append
+                # 返回 None（core/admin_store.py append 契约，item 2570ca391771：
+                # 记录未落盘，按未落地处理）——此时跳过 born-handled 闭环标记，避免
+                # rec["id"] 抛 TypeError 被外层误记为「Failed to send token budget
+                # alert」（告警本就未落盘，崩溃在 mark_handled 阶段使归因失真）。
+                if not choices and not severity_needs_human(severity):
+                    store.mark_handled(rec["id"])
             self._pm.logger.warning(
                 "agent_runner",
                 f"token budget alert ({severity}) for '{spec_name}': "

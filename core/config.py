@@ -1522,8 +1522,11 @@ class ConfigLoader:
         - bug_repair_mode: "inplace"（原地打回；derive = 派生 fix-* 子 SPEC）
         - stuck_silence_minutes: 120（stuck 处置后静默期：result=resolved/
           partially-resolved 处置后同 (spec, signal_type) 在窗口内不产信号）
-        - narrative_enabled: True（转人工裁决告警三段式叙事开关）
-        - narrative_timeout_seconds: 60（叙事同步调用硬超时，秒）
+        - narrative_enabled: True（转人工裁决告警四段式调查叙事开关）
+        - narrative_timeout_seconds: 180（叙事单次调用硬超时，秒；
+          upgrade-narrative-to-investigation 3.2 缺省 60→180，与
+          core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS 单源对齐——
+          网关 stall 实测 p90≈55s、max≈188s，60s 把长尾全判死）
         - narrative_model: None（叙事模型，None=回退链 admin.agent_model →
           框架默认）
         """
@@ -1586,19 +1589,22 @@ class ConfigLoader:
             enabled = True
 
         # add-adjudication-alert-narrative：告警叙事三键（enabled 严格 bool
-        # 缺省 True；timeout 正整数缺省 60，bool/非数值/≤0 回缺省；model 空值
-        # 归一 None=回退链 admin.agent_model → 框架默认）。类型非法 fail-open
-        # 回缺省，与上方 breaker/_num 同哲学。
+        # 缺省 True；timeout 正整数缺省 180——upgrade-narrative-to-
+        # investigation 3.2 由 60 上调以覆盖网关 stall 长尾，异步补叙后超时
+        # 成本不落告警路径，与 core.adjudication_narrative.DEFAULT_TIMEOUT_
+        # SECONDS 单源对齐；bool/非数值/≤0 回缺省；model 空值归一 None=回退
+        # 链 admin.agent_model → 框架默认）。类型非法 fail-open 回缺省，与
+        # 上方 breaker/_num 同哲学。
         narrative_enabled = admin.get("narrative_enabled", True)
         if not isinstance(narrative_enabled, bool):
             narrative_enabled = True
         narrative_timeout_raw = admin.get("narrative_timeout_seconds")
         if isinstance(narrative_timeout_raw, bool):
-            narrative_timeout = 60
+            narrative_timeout = 180
         else:
-            narrative_timeout = _num(narrative_timeout_raw, 60, int)
+            narrative_timeout = _num(narrative_timeout_raw, 180, int)
             if narrative_timeout is None or narrative_timeout <= 0:
-                narrative_timeout = 60
+                narrative_timeout = 180
 
         return {
             "enabled": enabled,

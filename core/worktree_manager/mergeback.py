@@ -733,15 +733,17 @@ class G4MergebackMixin:
                     "不得用「路径留空」冒充已裁决"
                 ),
             }
-            # add-adjudication-alert-narrative 2.2：旁路 choices 附带点复用同一
-            # 叙事辅助模块（禁第二套 prompt/生成逻辑）。kind=SIGNAL 记录不进
-            # 前端告警区，narrative 仅要求字段落盘供消费侧读取（覆盖面口径
-            # spec-review 2026-09-29）；fail-open 不影响下方落盘。本宿主
-            # （WorktreeManager）无 config 属性——模块按 project_root 现读。
-            from core.adjudication_narrative import attach_narrative
+            # add-adjudication-alert-narrative 2.2 → upgrade-narrative-to-
+            # investigation 3.1：旁路 choices 附带点复用同一叙事辅助模块
+            # （禁第二套 prompt/生成逻辑）。告警先以机械文案落盘（叙事零阻塞），
+            # 随后调度后台补叙经侧车承载（alert_id 取落地记录 id，append 拒写
+            # 返回 None 时按未落地处理、不调度）。本宿主（WorktreeManager）
+            # 无 config 属性——模块按 project_root 现读。
+            from core.adjudication_narrative import schedule_narrative
 
-            attach_narrative(signal_entry, self)
-            store.append(signal_entry)
+            rec = store.append(signal_entry)
+            if rec is not None:
+                schedule_narrative(rec["id"], signal_entry, self)
             self.logger.warning(
                 "worktree_manager",
                 f"build_artifact_paths_missing 信号已写入 "

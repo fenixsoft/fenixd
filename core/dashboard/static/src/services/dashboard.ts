@@ -379,10 +379,14 @@ export interface AlertItem {
   resolve_note?: string;
   /** add-human-adjudication-choices：裁决选项集（发射点快照；无该字段=非裁决类，只出「知道了」） */
   choices?: AlertChoice[];
-  /** add-adjudication-alert-narrative：三段式人类可读叙事（告警落盘时同步经一次
-   * 轻量 LLM 调用生成；无该字段=开关关闭/生成失败/桶 0，渲染保持现状）。
-   * 纯增强字段，不承载任何机器语义。 */
-  narrative?: { text: string; model: string; at: string };
+  /** add-adjudication-alert-narrative：四段式人类可读调查叙事（后台生成后经
+   * 侧车 .fenix/admin_alerts_narrative/<id>.json 承载、读侧按 alert_id 合并；
+   * 无该字段=开关关闭/桶 0/尚未生成，渲染保持现状）。纯增强字段，不承载
+   * 任何机器语义。 */
+  narrative?: { text: string; model: string | null; at: string };
+  /** upgrade-narrative-to-investigation 3.3：调查叙事生成中占位标记（侧车
+   * 缺失且未 handled 的裁决类告警）；渲染「调查生成中…」，不阻塞 choices。 */
+  narrative_pending?: boolean;
 }
 
 export interface AlertChoice {
