@@ -65,6 +65,16 @@ def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""
     # implemented 触发整轮重验（裁决仍以 verdict_stability.json 为准）。
     if pipeline._verified_gate_refuses(spec_name, "implemented"):
         return
+    # ── 直写 update_spec 而非 transition（code-review db38086cb54a）──
+    # testing→implemented 不在 VALID_TRANSITIONS（TESTING 仅放行
+    # verified/bug-found），transition 会确定性拒绝——若按「被拒保留原状」
+    # 口径消费返回值，本重派路径将永久失效（stale/foreign 结果永远无人
+    # 重派）。测试车道保护性回退全库既定通道均为 update_spec 直写（同款：
+    # dispatch/rollback.py _rollback_failed_dispatch verifier 分支）；与
+    # bug-found/verified 分支的 transition 口径差异即在此——那两处目标是
+    # TESTING 的合法出边。复核与写入间 TOCTOU 窗口由上方
+    # _discard_if_not_testing + _verified_gate_refuses 读侧复核收敛，
+    # 与主路径同款。
     pipeline._context.state_machine.update_spec(
         spec_name,
         {
@@ -111,6 +121,14 @@ def _block_legacy_verdict(
         f"（reason={verifier_result.reason}）: "
         f"{verifier_result.detail}",
     )
+    # ── 直写 update_spec 而非 transition（code-review db38086cb54a）──
+    # testing→blocked 不在 VALID_TRANSITIONS（TESTING 仅放行
+    # verified/bug-found），transition 会确定性拒绝——若按「被拒保留原状」
+    # 口径消费返回值，D5 fail-closed 阻断将永久失效（不可读/白名单外结果
+    # 永远无人 blocked）。主路径同场景（pipeline.py 裁决不可读分支）同为
+    # 读侧复核收敛 TOCTOU 后 update_spec 直写 blocked，与本收口点同款；
+    # 与 bug-found/verified 分支的 transition 口径差异即在此——那两处目标
+    # 是 TESTING 的合法出边。
     pipeline._context.state_machine.update_spec(
         spec_name,
         {
