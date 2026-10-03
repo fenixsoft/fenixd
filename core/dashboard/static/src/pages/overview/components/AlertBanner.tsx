@@ -1,5 +1,5 @@
 import { Alert, App, Button, Card, Collapse, Input, List, Select, Space, Typography } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
 import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
 // 告警标题/明细展示单源（code-review item 5478d16d70c7，SEV 常量与 fmtDate 同源收敛）
@@ -39,9 +39,18 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
     resolvingAlerts, alertResolveMsgs,
   } = adj;
 
+  // fix 9e69e892b7e5: load 自增请求序号——refreshTick / handleOne / handleClearAll /
+  // 裁决 onResolved 多处触发的 load 可并发在飞，响应到达顺序不保证，旧响应后到会把
+  // 已处理告警的旧快照写回 setData 致其闪回「未处理」。仿 activities 页 loadSeqRef
+  // （fix 01635701025b）：仅最新一次请求允许落状态，过期响应（含其失败）直接丢弃
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const d = await getAlerts();
+      // 写回前复核序号：过期请求不改写任何状态（data 与 loadError 均不覆盖）
+      if (seq !== loadSeqRef.current) return;
       if (!d.error) {
         setData(d);
         setLoadError(null);
@@ -51,6 +60,8 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
         setLoadError(d.error);
       }
     } catch (err) {
+      // 过期请求的失败同样不落状态，防旧错误提示覆盖新请求结果
+      if (seq !== loadSeqRef.current) return;
       // 请求级失败不再静默（item f6ef9d6c2c12）：上屏轻量错误提示，主视图不受阻断
       setLoadError(err instanceof Error ? err.message : String(err));
     }
