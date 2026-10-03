@@ -27,6 +27,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -479,8 +480,12 @@ def _coerce_line(value) -> int:
         # 负数/0 与缺省回退同基准钳到 ≥1（与字符串分支口径对齐）
         return max(value, 1)
     if isinstance(value, float):
-        # NaN/inf 已在条件中先行回退 1；截断结果与 int 分支同口径钳到 ≥1
+        # NaN/inf 截断为 int 会抛 ValueError/OverflowError（前置的 None/空串/
+        # bool/int 条件均不覆盖），显式先行回退 1（value != value 仅 NaN 为
+        # 真）；其余截断结果与 int 分支同口径钳到 ≥1
         #（0.9 → 1、-3.5 → 1，避免落账出 0/负行号）
+        if value != value or math.isinf(value):
+            return 1
         return max(int(value), 1)
     m = re.search(r"\d+", str(value))
     if m:
@@ -871,9 +876,24 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
             return []
         raw = _git(
             project_root,
-            ["log", "--since", since, "--diff-filter=ACMR", "--name-only", "--pretty=format:"],
+            [
+                "log",
+                "--since",
+                since,
+                "--diff-filter=ACMR",
+                "--name-only",
+                "--pretty=format:",
+                # -z：文件名以 NUL 结尾且原样输出，不做 core.quotePath 引号
+                # 转义（默认 true 时非 ASCII 文件名以带引号的八进制转义形式
+                # 输出，与真实文件系统路径失配被下方 is_file 二次剔除，文件
+                # 被静默排除出窗口清单）。与上方 full scope 同款修复，
+                # code-review item 36685afefe53。
+                "-z",
+            ],
         )
-        files = [line for line in raw.splitlines() if line.strip()]
+        # -z 下多 commit 边界（--pretty=format: 空输出 + 分隔 NUL）会留出
+        # 空段，文件路径不可能为空串，过滤空段即可还原逐文件序列。
+        files = [line for line in raw.split("\0") if line.strip()]
         # --diff-filter=ACMR 按单次提交的变更类型过滤，挡不住窗口内先增/改、
         # 随后又删除的路径（A/M 事件仍会把已消失的文件列入清单）。按工作树
         # 存在性二次剔除，兑现上方「不让审查对已删除文件空转」的排除语义。
