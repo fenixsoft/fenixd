@@ -28,7 +28,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Card, Space, Typography } from 'antd';
 import ProgressBarTile from './ProgressBarTile';
-import { blockedReasonDisplay, blockedReasonInfo } from './codeFixGuidance';
+import {
+  blockedReasonDisplay,
+  blockedReasonInfo,
+  isSelfhealWait,
+} from './codeFixGuidance';
 import { getCodeReviewFixProgress } from '../../../services/dashboard';
 import type { CodeReviewFixProgress } from '../../../services/dashboard';
 
@@ -40,14 +44,11 @@ const POLL_INTERVAL_MS = 2000;
 // 改名 phase 的漂移由运行时 `PHASE_LABELS[phase] || phase` 兜底展示。
 const STOP_PHASES: ReadonlySet<CodeReviewFixProgress['phase']> =
   new Set(['blocked', 'failed']);
-// 自愈等待类 reason（后端语义：链收敛的正常等待，下一审查轮到来自动重试/
-// 边界重试）——渲染为中性等待态而非红色故障。红 exception 只留给真正需
-// 人工的终止态（failed_batch_maxed / 契约缺失等）。未知 reason 按需人工
-// 样式回退（宁严勿松，reason 漂移不静默）。
-const SELFHEAL_WAIT_REASONS: ReadonlySet<string> = new Set([
-  'failed_batch_retained',
-  'wip_gate_blocked',
-]);
+// 自愈等待类 reason 的判定集合收在 codeFixGuidance（与同组 reason 的「无需
+// 处理」指引文案同点维护，code-review item 5400cd0de2c3），本组件只保留渲染
+// 口径：命中即中性等待态而非红色故障，红 exception 只留给真正需人工的终止态
+// （failed_batch_maxed / 契约缺失等）；未知/空 reason 判 false，按需人工样式
+// 回退（宁严勿松，reason 漂移不静默）。
 // 连续读取失败上限：达到即停轮询（无退避的 2s 空转无意义）
 const MAX_CONSECUTIVE_ERRORS = 3;
 // 阶段中文名（模块作用域：不随每次渲染重建）。键与后端 FIX_PHASES 同源。
@@ -216,7 +217,7 @@ export default function CodeFixProgressCard(
     !readFailed &&
     phase === 'blocked' &&
     reason !== '' &&
-    SELFHEAL_WAIT_REASONS.has(reason);
+    isSelfhealWait(reason);
   const alarm = stopped && !selfhealWait;
 
   // 条级进度文案（add-code-fix-item-level-progress 5.1）：仅 fixing 阶段渲染。

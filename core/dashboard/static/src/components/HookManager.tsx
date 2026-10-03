@@ -348,8 +348,13 @@ export default function HookManager({
       title: '参数',
       key: 'param',
       width: 360,
+      // 换行渲染对齐主表格参数列口径：ellipsis+maxWidth 会截断长 webhook
+      // URL/command 且无 tooltip，用户无法查看完整参数
       render: (_: unknown, r: { hook: HookConfig }) => (
-        <Text type="secondary" ellipsis style={{ maxWidth: 320 }}>
+        <Text
+          type="secondary"
+          style={{ display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+        >
           {paramSummary(r.hook)}
         </Text>
       ),

@@ -175,9 +175,19 @@ def gap_from_result(data, project_root, spec_name) -> "list[str]":
         return [str(t) for t in unfinished]
     completed = (data or {}).get("completed_tasks")
     if isinstance(completed, list):
+        # code-review item 9afc80c852c8：all_ids 取自主树 tasks.md——三处消费点
+        # （engine._partial_attribution / engine._task_completion_blocker /
+        # rollback._honest_exit_gap）均传主树 project_root（既有语义），中性模块
+        # 不解析 worktree：门禁时点 worktree 可能已被 merge-back/清理移除，
+        # 改源会在缺 worktree 时把缺口塌缩成空、令既有收敛翻成 fail-closed
+        # 拦截。前提：实现者不在 worktree tasks.md 增补编号任务——若增补且
+        # 未完成，completed_tasks（与 worktree 勾选对齐）与主树 all_ids 均不含
+        # 它，缺口口径即漏掉该项。
         all_ids, _checked = parse_tasks_md(project_root, spec_name)
         done = {str(t) for t in completed}
-        return [t for t in all_ids if t not in done]
+        # code-review item a13b782d263d：去重保序——同一 id 被 tasks.md 重复
+        # 罗列（如正文与验证修复段各列一次）时，缺口清单不得含重复条目。
+        return list(dict.fromkeys(t for t in all_ids if t not in done))
     return []
 
 

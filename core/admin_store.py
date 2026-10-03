@@ -629,7 +629,10 @@ class AdminStore:
         def mutate(records):
             changed = False
             for rec in records:
-                if rec.get("id") == alert_id:
+                # 仅锚定 kind=SIGNAL，与 mark_handled（ESCALATION）/
+                # mark_signal_handled（SIGNAL）同族判据对齐，避免把 escalation
+                # 等非 signal 记录误标 escalated 并触发无谓写回
+                if rec.get("id") == alert_id and rec.get("kind") == SIGNAL:
                     if not rec.get("escalated"):
                         rec["escalated"] = True
                         changed = True

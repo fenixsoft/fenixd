@@ -12,6 +12,14 @@ from core.state_machine import (
     INFRA_FAILURE_COUNT_FIELD,
 )
 from core.agent_runner.run_files import run_spec_part, strip_run_id_suffixes
+# run 死亡归因结构化标记单源（code-review item 44703a4ffce6）：生产侧
+# liveness._supervision_deadline_action 写 death_kind、runner 随终态错误文本
+# 透传，本组件豁免判定优先消费（关键词匹配降级为历史数据回退）。
+from core.agent_runner.liveness import (
+    DEATH_KIND_INFRA,
+    DEATH_KIND_SUPERVISION,
+    death_kind_marker,
+)
 from pathlib import Path
 import io
 import json
@@ -224,7 +232,8 @@ class ImplBudget:
 
         Args:
             run_reason: 终态 reason 文本（run的 error/reason 字段），供豁免判定
-                        关键词检查；None/空时按旧语义豁免。
+                        （含 [death-kind:*] 结构化标记优先，关键词回退）检查；
+                        None/空时按旧语义豁免。
             run_id: 本次死亡 run 的 id（幂等退款锚点；空串回退 STATE
                     ``implementer_run``）。
 
@@ -329,6 +338,14 @@ class ImplBudget:
     def _is_exemptable_reason(run_reason: str) -> bool:
         """判定 run终态 reason 是否属于基础设施性死亡（可豁免）。
 
+        结构化标记优先（code-review item 44703a4ffce6）：监督死亡判定点
+        （liveness._supervision_deadline_action）写入 kill 决策的 ``death_kind``
+        经 runner 随终态错误文本透传为 ``[death-kind:<kind>]`` 稳定标记，命中
+        即按其归因判定（supervision 不可豁免 / infra 可豁免）——监督文案换词
+        或 error 粘贴含关键词日志片段不再静默翻转豁免口径。关键词匹配仅作
+        历史数据/无标记路径（turn-limit 轮数强杀、auto-recovery 合成文案等）
+        的回退：
+
         不可豁免（监督超时/被判停滞而杀）：reason 含
           "extension budget exhausted"（监督超时续期用尽）、"stagnant"（被判停滞）、
           "absolute_max_seconds cap reached"（总墙钟上限，判定先于续期预算用尽）
@@ -337,6 +354,10 @@ class ImplBudget:
         网关链路耗尽/provider circuit open 等）。
         """
         r = str(run_reason).lower()
+        if death_kind_marker(DEATH_KIND_SUPERVISION) in r:
+            return False
+        if death_kind_marker(DEATH_KIND_INFRA) in r:
+            return True
         if "extension budget exhausted" in r:
             return False
         if "stagnant" in r:

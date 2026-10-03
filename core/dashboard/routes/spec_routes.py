@@ -207,6 +207,7 @@ class H3SpecRoutesMixin:
         - project 不存在 → 404
         - spec 不在项目 STATE.md → 404
         - body 缺 priority / 非法值（0、10、非整数）→ 400
+        - 写入失败（并发软删除/写入被拒）→ 409（STATE.md 零变更）
         - 成功 → 200 + {ok: true, priority: N}
         """
         resolved = self._spec_query_or_error(query)
@@ -235,6 +236,11 @@ class H3SpecRoutesMixin:
             return
         if not result.get("found"):
             self._error(404, f"spec not found: {spec}")
+            return
+        if not result.get("ok"):
+            # 写入失败（并发软删除/写入被拒，item eec1c39e51ed）：如实 409，
+            # 不再伪装成功响应
+            self._error(409, result.get("error") or "SPEC 写入失败")
             return
         self._json(
             {"ok": True, "project": project["name"], "spec": spec, "priority": result["priority"]}
@@ -299,6 +305,7 @@ class H3SpecRoutesMixin:
         - project 不存在 → 404；spec 不在项目 STATE.md → 404
         - 终态（done/pushed）→ 403「终态不可设置定时拾取」
         - value 非法 ISO8601 → 400（STATE.md 不变）
+        - 写入失败（并发软删除/写入被拒）→ 409（STATE.md 零变更）
         - 成功 → 200 + {ok: true, start_after: <iso|null|"manual">}
           清空时（start_after null）若即时唤醒信号写出失败，响应携带 warning
           （ok 仍为 true——start_after 已成功置 null，附告警供前端分支文案）
@@ -327,6 +334,11 @@ class H3SpecRoutesMixin:
             return
         if result.get("invalid"):
             self._error(400, result.get("error") or "start_after 非法 ISO8601")
+            return
+        if not result.get("ok"):
+            # 写入失败（并发软删除/写入被拒，item eec1c39e51ed）：如实 409，
+            # 不再伪装成功响应
+            self._error(409, result.get("error") or "SPEC 写入失败")
             return
         resp = {
             "ok": True,
@@ -517,6 +529,7 @@ class H3SpecRoutesMixin:
         - body 缺 budget 键 / 非整数（bool/浮点/字符串数字）→ 400
         - 越界（0、超过 agents.impl_run_budget_max）→ 400
         - 终态（done/pushed）→ 403「终态不可设置预算覆盖」
+        - 写入失败（并发软删除/写入被拒）→ 409（STATE.md 零变更）
         - 成功 → 200 + {ok: true, budget: <值|null>}（null 清除覆盖，恢复跟随全局）
         修改只写覆盖属性，不触碰 _impl_run_budget_used（对账组件管辖）。
 
@@ -552,6 +565,11 @@ class H3SpecRoutesMixin:
             return
         if result.get("invalid"):
             self._error(400, result.get("error") or "budget out of range")
+            return
+        if not result.get("ok"):
+            # 写入失败（并发软删除/写入被拒，item eec1c39e51ed）：如实 409，
+            # 不再伪装成功响应
+            self._error(409, result.get("error") or "SPEC 写入失败")
             return
         self._json(
             {"ok": True, "project": project["name"], "spec": spec, "budget": result.get("budget")}

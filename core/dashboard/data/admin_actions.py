@@ -760,6 +760,8 @@ def activate_spec(project_root, spec: str) -> dict:
       （STATE 零变更——幂等拒绝，不误清定时值）
     - 命中 → update_spec 清 start_after + 写 kick 信号
       → ``{ok: True, found: True, spec, start_after: None}``
+    - 写入失败（前置校验后 spec 被并发软删除/写入被拒）→
+      ``{ok: False, found: True, reason/error: ...}``（WARNING 留痕，STATE 零变更）
     """
     from core.state_machine import StateMachine, project_state_logger
 
@@ -787,7 +789,17 @@ def activate_spec(project_root, spec: str) -> dict:
     # 命中 → 清 start_after + 唤醒信号；写入结果如实回报（D3），
     # CLI 与 Dashboard 依 ok 分支文案，不再无条件宣称「立即恢复调度」
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    sm.update_spec(spec, {"start_after": None})
+    if not sm.update_spec(spec, {"start_after": None}):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时变更未落盘，WARNING 留痕并如实返回失败形状，不再
+        # 无条件宣称「已激活」（路由/CLI 均按 ok 分流，reason 供拒绝文案位复用）。
+        logger.warning(
+            "activate_spec 激活失败：spec 已并发删除或写入被拒，变更未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "found": True,
+                "reason": "spec 已并发删除或写入被拒，激活未落盘",
+                "error": "spec 已并发删除或写入被拒，激活未落盘"}
     kick_result = _write_scheduling_kick_signal(proot, spec)
     return {
         "ok": True,
@@ -1031,6 +1043,8 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
     - value 非法 → {invalid: True}（拒绝写入，STATE.md 不变）
     - 终态（done/pushed）→ {terminal: True}（拒绝，定时不影响终态语义）
     - 成功 → {ok: True, start_after: <ISO8601 UTC 或 None 或 "manual">}
+    - 写入失败（前置校验后 spec 被并发软删除/写入被拒）→
+      {ok: False, found: True, error: ...}（WARNING 留痕，STATE 零变更）
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
     """
     from core.state_machine import StateMachine, parse_utc, project_state_logger
@@ -1064,7 +1078,17 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
             }
         normalized = dt.isoformat()
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    sm.update_spec(spec, {"start_after": normalized})
+    if not sm.update_spec(spec, {"start_after": normalized}):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时变更未落盘，WARNING 留痕并如实返回失败形状，不再
+        # 无条件宣称「已设置」（路由侧按 ok 分流 409）。
+        logger.warning(
+            "set_spec_start_after 写入失败：spec 已并发删除或写入被拒，"
+            "变更未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "found": True,
+                "error": "spec 已并发删除或写入被拒，变更未落盘"}
     # 清空即唤醒（2026-09-08 fix-run-cancel-retry-flag-miss 事故路径）：status 恒为
     # ready，event_bus watcher 只盯 status 不发事件、check_scheduling_deadlines 只管
     # 「时间流逝到期」，此前清空后要等 30min 一轮 recovery full_scan 才被捞起。
@@ -1091,6 +1115,8 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
     - 终态（done/pushed）→ {terminal: True}（终态修改预算无意义）
     - 非法值 → {invalid: True}
     - 成功 → {ok: True, budget: <整数或 None>}
+    - 写入失败（前置校验后 spec 被并发软删除/写入被拒）→
+      {ok: False, found: True, error: ...}（WARNING 留痕，STATE 零变更）
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
 
     边界（add-spec-status-modal-budget D3）：本函数只写覆盖属性
@@ -1115,7 +1141,17 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
         from core.state_machine import StateMachine, project_state_logger
 
         sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-        sm.update_spec(spec, {"impl_run_budget_override": None})
+        if not sm.update_spec(spec, {"impl_run_budget_override": None}):
+            # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被
+            # 并发软删除/写入被拒时清除未落盘，WARNING 留痕并如实返回失败形状
+            # （路由侧按 ok 分流 409）。
+            logger.warning(
+                "set_spec_budget 清除失败：spec 已并发删除或写入被拒，"
+                "变更未落盘（spec=%s）",
+                spec,
+            )
+            return {"ok": False, "found": True, "budget": None,
+                    "error": "spec 已并发删除或写入被拒，变更未落盘"}
         return {"ok": True, "found": True, "budget": None}
     # 非法值校验（int，非 bool，[1, 有效上限]）
     # open-impl-budget-ceiling：上限 = agents.impl_run_budget_max（缺省 100），
@@ -1151,7 +1187,16 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
     from core.state_machine import StateMachine, project_state_logger
 
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    sm.update_spec(spec, {"impl_run_budget_override": budget})
+    if not sm.update_spec(spec, {"impl_run_budget_override": budget}):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时写入未落盘，WARNING 留痕并如实返回失败形状
+        # （路由侧按 ok 分流 409）。
+        logger.warning(
+            "set_spec_budget 写入失败：spec 已并发删除或写入被拒，变更未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "found": True, "budget": None,
+                "error": "spec 已并发删除或写入被拒，变更未落盘"}
     return {"ok": True, "found": True, "budget": budget}
 
 
@@ -1165,6 +1210,8 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
     - spec 必须处于冻结态（is_spec_frozen），否则拒绝——保证 frozen_until
       只存在于冻结态 spec 上（spec scheduled-spec-unfreeze 字段契约）。
     - 非 scheduled 的 until 参数忽略；非法 mode → {invalid: True}。
+    - 写入失败（前置校验后 spec 被并发软删除/写入被拒）→
+      {ok: False, found: True, error: ...}（WARNING 留痕，STATE 零变更）。
 
     写入经 StateMachine（flock + 原子 rename）：frozen_until 更新不带 status
     键，不触发冻结保护剥离；带 status 的解冻一律走 unfreeze_spec 官方通道。
@@ -1185,7 +1232,16 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     if mode == "unfreeze":
         orig = parse_orig_status(entry.get("error"))
-        sm.unfreeze_spec(spec, status=orig)
+        # 与 unfreeze_spec 同口径（写入必留痕）：spec 在前置校验后被并发软删除/
+        # 写入被拒时解冻未落盘，WARNING 留痕并如实返回失败形状（路由按 ok 分流）。
+        if not sm.unfreeze_spec(spec, status=orig):
+            logger.warning(
+                "configure_spec_freeze 解冻失败：spec 已并发删除或写入被拒，"
+                "解冻未落盘（spec=%s）",
+                spec,
+            )
+            return {"ok": False, "found": True,
+                    "error": "spec 已并发删除或写入被拒，裁决未落盘"}
         return {
             "ok": True,
             "found": True,
@@ -1194,7 +1250,15 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
             "frozen_until": None,
         }
     if mode == "permanent":
-        sm.update_spec(spec, {"frozen_until": None})
+        # 同上（写入必留痕）：写入被拒时如实返回失败形状。
+        if not sm.update_spec(spec, {"frozen_until": None}):
+            logger.warning(
+                "configure_spec_freeze 写入失败：spec 已并发删除或写入被拒，"
+                "变更未落盘（spec=%s）",
+                spec,
+            )
+            return {"ok": False, "found": True,
+                    "error": "spec 已并发删除或写入被拒，变更未落盘"}
         return {"ok": True, "found": True, "mode": "permanent", "frozen_until": None}
     if mode == "scheduled":
         dt = parse_utc(until)
@@ -1209,7 +1273,16 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
         if dt <= datetime.now(timezone.utc):
             # 已过去 → 立即解冻（等价到期，不留待下一轮 tick/扫描）
             orig = parse_orig_status(entry.get("error"))
-            sm.unfreeze_spec(spec, status=orig)
+            # 与 unfreeze_spec 同口径（写入必留痕）：并发软删除/写入被拒时
+            # 解冻未落盘，WARNING 留痕并如实返回失败形状（路由按 ok 分流）。
+            if not sm.unfreeze_spec(spec, status=orig):
+                logger.warning(
+                    "configure_spec_freeze 解冻失败：spec 已并发删除或写入被拒，"
+                    "解冻未落盘（spec=%s）",
+                    spec,
+                )
+                return {"ok": False, "found": True,
+                        "error": "spec 已并发删除或写入被拒，裁决未落盘"}
             return {
                 "ok": True,
                 "found": True,
@@ -1217,7 +1290,15 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
                 "unfrozen": True,
                 "frozen_until": normalized,
             }
-        sm.update_spec(spec, {"frozen_until": normalized})
+        if not sm.update_spec(spec, {"frozen_until": normalized}):
+            # 同上（写入必留痕）：写入被拒时如实返回失败形状。
+            logger.warning(
+                "configure_spec_freeze 写入失败：spec 已并发删除或写入被拒，"
+                "变更未落盘（spec=%s）",
+                spec,
+            )
+            return {"ok": False, "found": True,
+                    "error": "spec 已并发删除或写入被拒，变更未落盘"}
         return {"ok": True, "found": True, "mode": "scheduled", "frozen_until": normalized}
     return {"ok": False, "found": True, "invalid": True, "error": f"未知冻结模式: {mode!r}"}
 
@@ -1424,6 +1505,9 @@ def clear_spec_error(project_root, spec: str) -> dict:
         {"found": False}             — spec 不存在
         {"ok": False, "found": True, "frozen": True, "error": 原因}
                                      — 冻结态/豁免标记拒绝
+        {"ok": False, "found": True, "error": 原因}
+                                     — 写入失败（前置校验后并发软删除/写入被拒，
+                                       WARNING 留痕，STATE 零变更）
     """
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -1471,7 +1555,16 @@ def clear_spec_error(project_root, spec: str) -> dict:
         updates[PUSH_ATTEMPTS_FIELD] = push_attempts
 
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    sm.update_spec(spec, updates)
+    if not sm.update_spec(spec, updates):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时清除未落盘，WARNING 留痕并如实返回失败形状
+        # （路由侧按 ok 分流 409），不再无条件宣称「已清除」。
+        logger.warning(
+            "clear_spec_error 清除失败：spec 已并发删除或写入被拒，清除未落盘（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "found": True,
+                "error": "spec 已并发删除或写入被拒，清除未落盘"}
     return {"ok": True, "found": True}
 
 
@@ -1492,6 +1585,9 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
 
     Returns:
         {"found": bool, "priority": int}  — found=False 表示 spec 不在 STATE.md
+        写入失败（前置校验后并发软删除/写入被拒）→
+        {"found": True, "ok": False, "priority": None, "error": ...}
+        （WARNING 留痕，STATE 零变更；路由侧按 ok 分流 409）
     Raises:
         InvalidPriority: priority 不在 1-9 或不可转为整数
     """
@@ -1514,7 +1610,16 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     from core.state_machine import StateMachine, project_state_logger
 
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    sm.update_spec(spec, {"priority": p})
+    if not sm.update_spec(spec, {"priority": p}):
+        # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
+        # 软删除/写入被拒时写入未落盘，WARNING 留痕并如实返回失败形状
+        # （路由侧按 ok 分流 409），不再无条件宣称已写入。
+        logger.warning(
+            "set_spec_priority 写入失败：spec 已并发删除或写入被拒，写入未落盘（spec=%s）",
+            spec,
+        )
+        return {"found": True, "ok": False, "priority": None,
+                "error": "spec 已并发删除或写入被拒，写入未落盘"}
     return {"found": True, "priority": p}
 
 

@@ -269,33 +269,39 @@ export default function SessionComposer({
             <PromptInputTools className="min-w-0">
               <Tooltip title="斜杠命令与 Skills">
                 {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
-                <Button
-                  ref={commandMenuTriggerRef}
-                  icon={<MessageOutlined />}
-                  onClick={() => {
-                    // 空候选点击给显式反馈（2026-09-25 缺陷修复）：init 事件
-                    // 要等会话首次交互后才产生（stream-json 实证），新会话
-                    // 首条消息前候选恒为空，静默不弹菜单会被当成按钮坏了。
-                    if (composer.slashCommandsCount === 0) {
-                      message.info('命令候选尚未就绪：会话完成首次交互后即可唤起');
-                      return;
-                    }
-                    composer.handleToggleCommandMenu();
-                  }}
-                  disabled={disabled}
-                  className="relative"
-                  /* 开关态语义（code-review item 60db89ee581c）：按钮是开关，
-                     aria-label 随菜单开合切换、aria-expanded 播报当前态；
-                     Tooltip 保持静态文案不随动。 */
-                  aria-expanded={composer.showCommandMenu}
-                  aria-label={composer.showCommandMenu ? '收起命令菜单' : '显示全部命令'}
-                >
-                  {composer.slashCommandsCount > 0 && (
-                    <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
-                      {formatCommandCount(composer.slashCommandsCount)}
-                    </span>
-                  )}
-                </Button>
+                {/* disabled 按钮不派发鼠标事件、禁用态 Tooltip 永不弹出
+                    （PromptInput.tsx 头注同款坑），外包 span 承载悬停
+                    （同 RegressionTab span 承载范式）；inline-flex 使包装
+                    不改变按钮在 flex 行内的尺寸与对齐。 */}
+                <span className="inline-flex">
+                  <Button
+                    ref={commandMenuTriggerRef}
+                    icon={<MessageOutlined />}
+                    onClick={() => {
+                      // 空候选点击给显式反馈（2026-09-25 缺陷修复）：init 事件
+                      // 要等会话首次交互后才产生（stream-json 实证），新会话
+                      // 首条消息前候选恒为空，静默不弹菜单会被当成按钮坏了。
+                      if (composer.slashCommandsCount === 0) {
+                        message.info('命令候选尚未就绪：会话完成首次交互后即可唤起');
+                        return;
+                      }
+                      composer.handleToggleCommandMenu();
+                    }}
+                    disabled={disabled}
+                    className="relative"
+                    /* 开关态语义（code-review item 60db89ee581c）：按钮是开关，
+                       aria-label 随菜单开合切换、aria-expanded 播报当前态；
+                       Tooltip 保持静态文案不随动。 */
+                    aria-expanded={composer.showCommandMenu}
+                    aria-label={composer.showCommandMenu ? '收起命令菜单' : '显示全部命令'}
+                  >
+                    {composer.slashCommandsCount > 0 && (
+                      <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                        {formatCommandCount(composer.slashCommandsCount)}
+                      </span>
+                    )}
+                  </Button>
+                </span>
               </Tooltip>
 
               {hasInput && (
@@ -324,26 +330,38 @@ export default function SessionComposer({
               {canStop && onStop && (
                 <Tooltip title="停止会话">
                   {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
-                  <Button
-                    danger
-                    icon={<StopOutlined />}
-                    loading={stopping}
-                    disabled={disabled || stopping}
-                    onClick={onStop}
-                    aria-label="停止会话"
-                  />
+                  {/* disabled 按钮不派发鼠标事件、禁用态 Tooltip 永不弹出
+                      （PromptInput.tsx 头注同款坑），外包 span 承载悬停
+                      （同 RegressionTab span 承载范式）。 */}
+                  <span className="inline-flex">
+                    <Button
+                      danger
+                      icon={<StopOutlined />}
+                      loading={stopping}
+                      disabled={disabled || stopping}
+                      onClick={onStop}
+                      aria-label="停止会话"
+                    />
+                  </span>
                 </Tooltip>
               )}
 
+              {/* disabled 按钮不派发鼠标事件、禁用态 Tooltip 永不弹出
+                  （PromptInput.tsx 头注同款坑；sendDisabled 在空输入恒真，
+                  禁用态悬停提示恰是最需要提示的场景），外包 span 承载悬停
+                  （同 RegressionTab span 承载范式）；原 title 原生提示是
+                  禁用态无提示的补偿 hack，Tooltip 恢复后会同文案双弹，移除
+                  （可访问名仍由 aria-label 提供）。 */}
               <Tooltip title={disabled ? '会话已结束' : '发送'}>
-                <Button
-                  icon={<SendOutlined />}
-                  loading={sending}
-                  disabled={sendDisabled}
-                  onClick={handleFormSubmit}
-                  aria-label={disabled ? '会话已结束' : '发送'}
-                  title={disabled ? '会话已结束' : '发送'}
-                />
+                <span className="inline-flex">
+                  <Button
+                    icon={<SendOutlined />}
+                    loading={sending}
+                    disabled={sendDisabled}
+                    onClick={handleFormSubmit}
+                    aria-label={disabled ? '会话已结束' : '发送'}
+                  />
+                </span>
               </Tooltip>
             </div>
           </PromptInputFooter>

@@ -256,18 +256,35 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     verify_contract）。killpg 失败（进程组已退出）静默吞掉；末尾弃管道收割
     直接子进程，不留僵尸、不让逃出进程组的孙进程悬挂管道
     （knowledge.py code-review 44d833e20470 教训）。
+
+    SIGKILL 补刀不以直接子进程超时为前提（code-review item 72a90eb6cb2e，
+    对齐 core/regression.py 同名实现）：无论直接子进程是否在窗口内退出，
+    都探活整组（killpg(pgid, 0)），组内仍有成员（忽略 SIGTERM 的孙进程）
+    即升级 SIGKILL 补刀。
     """
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except OSError:
-        pass  # 进程组已不存在
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pgid = None  # 进程组已不存在（直接子进程已消亡），仅剩管道清理尾巴
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
+        pass
+    # 直接子进程退出 ≠ 组内已清：探活整组，仍有成员（忽略 SIGTERM 的孙
+    # 进程）则 SIGKILL 补刀；ProcessLookupError ＝ 组已清空，静默即可。
+    # pgid 复用上方捕获的值——wait 收尸后 getpgid(proc.pid) 会因进程
+    # 消失而失效。
+    if pgid is not None:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass  # 进程组已不存在
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, OSError):
+            pgid = None  # 组已清空，无需 SIGKILL 补刀
+        else:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass  # 进程组已不存在
     try:
         proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
     except subprocess.TimeoutExpired:
@@ -970,13 +987,17 @@ def delete_narrative_sidecars(project_root: Any, alert_ids: Any) -> int:
     """
     if not alert_ids:
         return 0
+    # 入口固化一次（code-review item df08d9ca5f54）：失败汇总的总数统计与
+    # 循环共用同一列表——调用方传生成器/迭代器时，耗尽后再 list() 恒为空，
+    # WARNING 文案会误报「N/0」。
+    ids = list(alert_ids)
     try:
         d = _sidecar_dir(project_root)
     except Exception:
         return 0
     deleted = 0
     errors: list = []
-    for aid in alert_ids:
+    for aid in ids:
         name = _safe_alert_id(aid)
         if not name:
             continue
@@ -993,7 +1014,7 @@ def delete_narrative_sidecars(project_root: Any, alert_ids: Any) -> int:
         _logger.warning(
             "叙事侧车级联删除部分失败（%d/%d）：%s",
             len(errors),
-            len(list(alert_ids)),
+            len(ids),
             "; ".join(errors[:5]),
         )
     return deleted

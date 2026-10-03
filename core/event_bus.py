@@ -71,6 +71,10 @@ class EventBus:
         # ``_update_known_state`` 重写覆盖另一方刚建立的快照，使迁移双方都观测不到、
         # 事件被静默丢弃到下一轮全扫。``_dispatch_changes`` 对 PM Engine 非幂等，
         # 故整段临界区持锁（见 _state_lock）。
+        # 锁内取读数（code-review item 8780d9734a12）：diff 所依据的盘上读数
+        # 同样须在临界区内取得（_dispatch_changes 持锁后重读、_update_known_state
+        # 直接锁内 read_all）——锁外预读的快照可能被另一线程的整轮派发甩开，
+        # 对陈旧读数 diff 会产生「快照新 → 读数旧」的逆向迁移事件。
         self._state_lock = threading.RLock()
 
     def start(self):
@@ -209,6 +213,9 @@ class EventBus:
         日志，不中止整轮扫描；扫描末尾输出 handled/failed 统计。
         """
         self.logger.debug("event_bus", "Performing full scan...")
+        # 此处锁外预读仅作读取失败闸与下方 recovery/统计的数据源；diff 不再
+        # 消费它——_dispatch_changes 持锁后重读盘上最新状态再 diff（code-review
+        # item 8780d9734a12），避免陈旧读数对已推进的快照产生逆向迁移事件。
         try:
             current_specs = self.state_machine.read_all()
         except Exception as e:
@@ -855,6 +862,9 @@ class EventBus:
                     # 该次状态变化事件被静默丢弃、且下轮 checksum 已相同不再触发
                     # ——一次变更永久丢失（仅 30 分钟全扫兜底）。改为成功后提交：
                     # 失败时 checksum 保持旧值，下一 tick 自然重试。
+                    # 此处预读仅作读取失败闸（失败则不提交 checksum）；diff 由
+                    # _dispatch_changes 持锁重读盘上最新状态承担（code-review
+                    # item 8780d9734a12），锁外读数不进 diff。
                     current_specs = self.state_machine.read_all()
                     self._dispatch_changes(current_specs)
                     self._last_checksum = current_hash
@@ -974,14 +984,31 @@ class EventBus:
     def _dispatch_changes(self, current_specs: dict):
         """Compare current state against known state and dispatch events.
 
-        「读快照 → diff → 重写快照」整段持 ``_state_lock``（RLock 允许重入：
-        收尾阶段的 ``pm_engine`` 回调若再读 ``_known_specs`` 不会自锁）。
+        「读盘 → 读快照 → diff → 重写快照」整段持 ``_state_lock``（RLock 允许
+        重入：收尾阶段的 ``pm_engine`` 回调若再读 ``_known_specs`` 不会自锁）。
         PM Engine 处理、hook 分发与依赖唤醒放在锁外执行——它们可能耗时且会
         回调状态机，不应阻塞 watch/scan 的另一条线程超过必要时间。hook 分发
         同属此类回调（code-review item 592f948a8b25）：HookEngine.dispatch 的
         all-done 评估会同步读盘解析 STATE.md，留在临界区内会拉长锁持有时长。
+
+        入参 ``current_specs`` 仅为既有签名兼容（调用方预读的快照）；diff 一律
+        以临界区内**重读**的盘上最新状态为准（code-review item 8780d9734a12）：
+        锁外预读与持锁 diff 之间，另一线程（watch 与 scan 互为对方的「另一
+        线程」）可能已完成整轮派发并把 ``_known_specs`` 推进到更新状态，此时
+        对陈旧读数 diff 会得到「快照新 → 读数旧」的逆向迁移——向 PM Engine
+        派发逆序事件（如 implemented→ready 触发 spec_ready 重派）、按逆向
+        状态对触发一次 hook 回调、快照被回写为旧态，下一轮再补一发正向
+        事件，形成一对冗余事件。持锁重读与 ``_update_known_state`` 的
+        0d392c7aaec3 同口径（read_all 为纯盘读解析、不持其他锁，锁内调用
+        无死锁风险）；重读失败按异常上抛（watch 侧不提交 checksum、下一
+        tick 重试；full_scan 侧走既有 dispatch 兜底），不回退到陈旧读数；
+        重读为空走 ``_diff_specs`` 的空读降级。重读结果同时供锁外依赖唤醒的
+        ``_find_dependents`` 复用，与事件同源。
         """
         with self._state_lock:
+            # 持锁重读盘上最新状态再 diff（见 docstring，code-review item
+            # 8780d9734a12），避免调用方锁外预读的陈旧快照产生逆向迁移事件。
+            current_specs = self.state_machine.read_all()
             events, accepted_names, hook_events = self._diff_specs(current_specs)
 
         # Hook 分发（锁外，code-review item 592f948a8b25）：锁内只采集事件，

@@ -4,7 +4,7 @@
 // - thinking 折叠用本目录 Reasoning（无 radix 依赖）
 import { memo, useMemo } from 'react';
 
-import type { ChatMessage } from './types';
+import type { ChatMessage, ChatMessageType } from './types';
 import { formatUsageLimitText } from './chatFormatting';
 // 隐藏判定与 toolGrouping 同源单点（code-review item 2faec963d2ea /
 // 1dd4d551b484）：渲染与分组共用同一谓词，防双写漂移
@@ -13,6 +13,46 @@ import { Markdown, copyToClipboard } from './Markdown';
 import { Reasoning } from './Reasoning';
 import ClaudeLogo from './ClaudeLogo';
 import ToolCard from './ToolCard';
+
+// 非用户消息的头像与头部文案（code-review item fd9e3ef421b4）：旧实现以三层嵌套
+// 三元链选择头像元素与文案，违反本项目前端「禁止嵌套三元」规则（先例：runEvents.ts
+// 同款展开、QualityPanel renderOcrStatus、SystemPanel renderAdminField），抽模块级
+// helper 以 if/else 表达 error / tool / system / 默认（assistant 等）四分支。
+function avatarFor(type: ChatMessageType) {
+  if (type === 'error') {
+    return (
+      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-destructive text-sm text-white">
+        !
+      </div>
+    );
+  }
+  if (type === 'tool') {
+    return (
+      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-600 text-sm text-white">
+        🔧
+      </div>
+    );
+  }
+  if (type === 'system') {
+    return (
+      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-400 text-sm text-white">
+        ⚙
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-0.5">
+      <ClaudeLogo className="h-full w-full" />
+    </div>
+  );
+}
+
+function headerLabelFor(type: ChatMessageType) {
+  if (type === 'error') return '错误';
+  if (type === 'tool') return '工具';
+  if (type === 'system') return '系统';
+  return 'Claude';
+}
 
 // 复制统一复用 Markdown.tsx 的 copyToClipboard（item 562395f77242）：带
 // execCommand 降级路径，非安全上下文（如 http://<局域网IP> 访问 dashboard，
@@ -116,31 +156,9 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
         <div className="w-full">
           {!isGrouped && (
             <div className="mb-2 flex items-center space-x-3">
-              {message.type === 'error' ? (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-destructive text-sm text-white">
-                  !
-                </div>
-              ) : message.type === 'tool' ? (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-600 text-sm text-white">
-                  🔧
-                </div>
-              ) : message.type === 'system' ? (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-400 text-sm text-white">
-                  ⚙
-                </div>
-              ) : (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-0.5">
-                  <ClaudeLogo className="h-full w-full" />
-                </div>
-              )}
+              {avatarFor(message.type)}
               <div className="whitespace-nowrap text-sm font-medium text-foreground">
-                {message.type === 'error'
-                  ? '错误'
-                  : message.type === 'tool'
-                    ? '工具'
-                    : message.type === 'system'
-                      ? '系统'
-                      : 'Claude'}
+                {headerLabelFor(message.type)}
               </div>
               <span className="ml-auto text-[11px] text-gray-400">{formattedTime}</span>
             </div>

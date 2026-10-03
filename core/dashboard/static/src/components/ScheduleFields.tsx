@@ -93,7 +93,11 @@ function disablePastTimeSlot(picked: Dayjs | null) {
  * 一眼可读，且与 describeStartAfter 的分档语义同源可对读）。 */
 function initialModeOf(initial: string | null): 'immediate' | 'scheduled' | 'manual' {
   if (initial === START_AFTER_MANUAL) return 'manual';
-  return initial ? 'scheduled' : 'immediate';
+  // code-review item 6ec3feca3f5a：非 manual 的非法时间串（如损坏的落盘值）
+  // 按 nextRunAtISO 的既有约定（空/非法 → null = 立即执行）降级为「立即」，
+  // 否则挂载 commit('scheduled', Invalid Date) 会抛 RangeError: Invalid time
+  // value，Modal.confirm 内容区渲染失败。
+  return initial && dayjs(initial).isValid() ? 'scheduled' : 'immediate';
 }
 
 /**
@@ -115,8 +119,10 @@ export default function ScheduleFields({
 }) {
   const [mode, setMode] = useState<'immediate' | 'scheduled' | 'manual'>(initialModeOf(initial));
   // 配置为「立即」时改选「指定时间」的预填值：1 小时后（用户自己改）
+  // code-review item 6ec3feca3f5a：isValid 兜底——非法 initial 回退 immediate
+  // 档默认值，防止 Invalid Date 流入 DatePicker / commit 的 toISOString。
   const [when, setWhen] = useState<Dayjs>(
-    initial && initial !== START_AFTER_MANUAL
+    initial && initial !== START_AFTER_MANUAL && dayjs(initial).isValid()
       ? dayjs(initial)
       : dayjs().add(1, 'hour').startOf('minute'));
 

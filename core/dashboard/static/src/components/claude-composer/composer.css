@@ -13,6 +13,7 @@
 /* ── composer 本体与 portal 弹层的 HSL 语义变量（两选择器均不在
  *    .claude-msg-pane 后代位置、无法继承，各自需显式赋值；分组共用
  *    一份值，与 .claude-msg-pane 同值，亮色） ── */
+/* [fenix-ignore:c3d33e9b80b7] 三处消费方横跨 css-loader（本文件，JS 侧副作用引入）与 less（global.less，umi 约定加载）两条构建链，抽共享 tokens 片段须双管线各自内联且失败模式即文件头实证过的变量静默失色（发送按钮透明），info 级下风险大于手工同步成本，保留既有取舍 */
 .fenix-composer,
 .fenix-composer-portal {
   --background: 44 22% 96%;

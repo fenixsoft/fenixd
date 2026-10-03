@@ -650,6 +650,10 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     # （渐进落盘期间列表 gates 阶段须实时刷新）
     add(vp_dir / "quality-gates.json")
     add(vp_dir / "code-review.json")
+    # full-suite 门的框架侧产物源（parse_quality_gates _full_suite_product_status
+    # 经 read_result 消费，按分支指纹匹配可见）：回归快照单独落盘而本 spec
+    # 其余依赖未变时也须失效摘要（宁多勿漏，与 spec_detail_signature 同源对齐）
+    add(proot / ".fenix" / "regression" / "last-run.json")
     # run-result 两路候选（parse_verify_progress 缺失时回退链
     # parse_run_result_scenarios 消费的专属副本与共享根文件）同入签名
     # （宁多勿漏）：与 spec_detail_signature 的源集对齐，否则 run-result
