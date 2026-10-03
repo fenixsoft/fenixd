@@ -395,18 +395,21 @@ admin:
   interval_minutes: 5
   # Administrator Agent 使用的模型名（官方 Claude 模型名；未配置时复用框架默认 cc-switch 网关模型）
   agent_model: "claude-sonnet-5"
-  # ---- 转人工裁决告警三段式叙事（add-adjudication-alert-narrative）----
-  # 告警落盘时同步经一次轻量 LLM 调用生成「发生了什么/为什么需要你决策/决策选项」
-  # 三段式人类可读叙事，以 narrative 字段并入告警记录（纯增强：既有结构化字段
-  # 与裁决执行链零感知）。覆盖全部转人工裁决告警发射点（含 token_budget 与
-  # merge-back 产物路径缺失两个旁路点）。
+  # ---- 转人工裁决告警四段式调查叙事（upgrade-narrative-to-investigation）----
+  # 告警以机械文案立即落盘后，后台经轻量 LLM 调用生成「发生了什么/调查结论/
+  # 为什么需要你决策/决策选项」四段式调查叙事（验证族信号自动采集验证报告/
+  # 判定轮次/失败演进等材料作根因依据），原子补写侧车
+  # .fenix/admin_alerts_narrative/<alert_id>.json，Dashboard 读侧按 alert_id
+  # 合并渲染（admin_alerts.json 记录本体不可变）。覆盖全部转人工裁决告警
+  # 发射点（含 token_budget 与 merge-back 产物路径缺失两个旁路点）。
   # 叙事开关（缺省 true）：关闭后写告警零 LLM 调用、零额外延迟，行为与本功能
-  # 落地前完全一致。生成失败（异常/超时/结构校验不过）时自动兜底：告警照常以
-  # 机械文案落盘（不写 narrative 字段），发射链路零阻塞。
+  # 落地前完全一致（熔断器同时旁路）。生成失败（异常/超时/结构校验不过，
+  # 至多 2 次尝试）或连续失败熔断期跳过时写终态侧车（机械说明、model=null），
+  # 告警本体与裁决链路不受影响。
   narrative_enabled: true
-  # 叙事同步调用硬超时（秒，缺省 60）：转人工是低频事件，超时上限内告警保证
-  # 落盘；非法值回退缺省。
-  narrative_timeout_seconds: 60
+  # 叙事单次调用硬超时（秒，缺省 180）：补叙已异步化，超时不再阻塞告警落盘；
+  # 上调至 180 覆盖网关 stall 长尾（实测 p90≈55s、max≈188s）。非法值回退缺省。
+  narrative_timeout_seconds: 180
   # 叙事使用的模型名（缺省空=回退链 admin.agent_model，仍为空时复用框架默认
   # cc-switch 网关模型）。
   narrative_model: ""
