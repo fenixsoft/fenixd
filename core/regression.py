@@ -773,7 +773,9 @@ def run_regression(
     对齐 test-regression-execution 执行契约：
     - shell 字符串 / argv 列表两态（VerifyContract.spec.cmd 形态）；
     - 硬超时 spec.timeout_seconds 中止整个进程组（D8）；
-    - 非零退出但 XML 可解析时以解析结果为准（status: failed）；
+    - 非零退出但 XML 可解析时以解析结果为准（XML 有失败/错误 → status:
+      failed；XML 全绿仍 status: passed，不因非零退出降级，但结果附
+      exit_code 字段并以 WARNING 留痕——非零退出不静默蒸发）；
     - XML 不可解析 → status: parse_error（附非空 reason）；
     - 命令启动失败（Popen OSError，argv 形态可执行文件缺失等）→ status 同为
       parse_error，附 ``launch_error: True`` 结构化判别（「未起跑」≠「跑完产
@@ -942,12 +944,13 @@ def run_regression(
         if parse_result is not None:
             cases = parse_result["cases"]
             long_tests = extract_long_tests(cases, spec.long_test_threshold_seconds)
-            # 状态判定：timeout 优先；否则按解析结果
+            # 状态判定：timeout 优先；否则按解析结果（退出码不改判——XML 全绿
+            # 仍 passed，非零退出经下方 exit_code 留痕，不静默蒸发）
             if parse_result["failed"] > 0 or parse_result["errors"] > 0:
                 status = "failed"
             else:
                 status = "passed"
-            return {
+            result = {
                 "status": status,
                 "cmd": cmd_display,
                 "output": output_rel,
@@ -963,6 +966,18 @@ def run_regression(
                 "failures": parse_result["failures"],
                 "long_tests": long_tests,
             }
+            # 非零退出但 XML 全绿（如 runner 在 sessionfinish 收尾阶段崩溃、
+            # 命令含测试后处理步骤失败）：status 仍按解析结果 passed（不新增
+            # 状态枚举，quality_gates 等消费侧的白名单回落语义不变），附
+            # exit_code 结构化留痕 + WARNING——退出码异常不因解析全绿被吞掉。
+            if status == "passed" and returncode != 0:
+                result["exit_code"] = returncode
+                log.warning(
+                    "regression",
+                    f"回归命令非零退出（exit={returncode}）但 JUnit XML 可解析且无失败，"
+                    f"按解析结果判 {status}（exit_code 已附入结果/快照留痕）: {cmd_display}",
+                )
+            return result
 
         # parse_error 路径：XML 不可解析
         return {
