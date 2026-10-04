@@ -12,6 +12,7 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -372,7 +373,15 @@ class SpecReviewManager:
             return False
 
         # ① 锚点先落盘：预生成 run_id，保证 STATE 里的 reviewer_run 与实际 run 一致
-        run_id = f"spec-review-{spec_name}-{int(time.time())}"
+        # 随机中缀（code-review item 08fa550ac034）：秒级时间戳在 content 失败
+        # 重派（review.content_retry_delay_seconds=0 即立即入队）同秒收口再派发
+        # 时会生成与上一轮逐字相同的 run_id，下游以整串 run_id 作锚点/salvage/
+        # 在飞关联键，同 id 复用会把上一轮终态 run 的转录/存活状态误关联到本轮。
+        # 随机段 MUST 放在 epoch 尾段**之前**：_artifact_landed_valid 的回落
+        # 锚点解析按 ``rsplit("-", 1)[-1].isdigit()`` 取尾段秒级 epoch（见下方
+        # :1113），尾段若被非数字后缀占据会让解析静默失效、产物 mtime 新鲜度
+        # 校验被跳过。
+        run_id = f"spec-review-{spec_name}-{uuid.uuid4().hex[:6]}-{int(time.time())}"
         self.state_machine.update_spec(spec_name, {"reviewer_run": run_id})
 
         # ② 派发前快照（写入边界校验的基线）
@@ -1097,7 +1106,8 @@ class SpecReviewManager:
         ``consume_review_result`` 同名单参同口径，code-review item 1ea5bc3bc4b7
         ——旧实现被 run_id 尾段 epoch 无条件覆盖，参数语义失效）；未显式传入时
         才回落解析 entry.reviewer_run 内嵌 epoch 时间戳（dispatch_review 步骤①
-        写入 run_id 的时刻，run_id 形如 ``spec-review-<spec>-<ts>``）。
+        写入 run_id 的时刻，run_id 形如
+        ``spec-review-<spec>-<rand>-<ts>``，尾段恒为秒级 epoch）。
         """
         result_path = spec_review_result_path(self.project_root, spec_name)
 
