@@ -378,7 +378,7 @@ def _knowledge_dirty_files(project_root: Path) -> set[str]:
     return files
 
 
-def discard_paths(project_root: Path, rels: list[str]) -> None:
+def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
     """只回滚指定文件（tracked restore 逐路径 + 未跟踪批量 clean），不碰
     工作区其他改动。
 
@@ -387,14 +387,19 @@ def discard_paths(project_root: Path, rels: list[str]) -> None:
     回滚共用本原语，超时值/restore 粒度不再各自演进。restore 逐路径执行：
     pathspec 混入未跟踪新路径时整条命令会一起失败（git restore 只要有一个
     pathspec 不匹配即整体报错，同条 tracked 文件也一并不被还原）。git 不可
-    用/超时 fail-open——回滚失败的内容仍在盘上，由调用方的 leftover 告警/
-    待人工路径曝光，不阻塞调用方收尾。
+    用/超时 fail-open；命令非零退出（pathspec 不匹配/索引锁冲突等）同样不
+    抛错，收集失败路径统一 WARNING 留痕（code-review 0f075b2bce72）——回
+    滚失败的内容仍在盘上，由本告警与调用方的 leftover 告警/待人工路径曝光，
+    不阻塞调用方收尾。
     """
     if not rels:
         return
+    log = log or _NullLogger()
+    failed: list[str] = []
+    clean_err = ""
     for rel in rels:
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 ["git", "restore", "--", rel],
                 cwd=str(project_root),
                 capture_output=True,
@@ -403,8 +408,12 @@ def discard_paths(project_root: Path, rels: list[str]) -> None:
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
+        else:
+            if proc.returncode != 0:
+                # 本路径未还原：留痕待人工，不中断其余路径的回滚
+                failed.append(rel)
     try:
-        subprocess.run(
+        proc = subprocess.run(
             ["git", "clean", "-qfd", "--", *rels],
             cwd=str(project_root),
             capture_output=True,
@@ -413,6 +422,19 @@ def discard_paths(project_root: Path, rels: list[str]) -> None:
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
+    else:
+        if proc.returncode != 0:
+            # clean 整体失败时未跟踪残留全部未清、无法细化到单路径，全量留痕
+            failed.extend(rels)
+            clean_err = proc.stderr.strip()[:200]
+    if failed:
+        log.warning(
+            "knowledge",
+            "回滚半失败留痕（fail-open 不抛错）：以下路径 restore/clean 返回"
+            "非零，可能仍滞留 spec/knowledge/，请人工核查："
+            + ", ".join(sorted(set(failed))[:10])
+            + (f"（clean stderr：{clean_err}）" if clean_err else ""),
+        )
 
 
 def discard_knowledge_changes(
@@ -447,7 +469,7 @@ def discard_knowledge_changes(
         rels = sorted(after - before)
         if not rels:
             return
-        discard_paths(project_root, rels)
+        discard_paths(project_root, rels, log=log)
         return
     kdir = project_root / KNOWLEDGE_DIR
     # 兜底分支与 discard_paths 同款 fail-open：git 不可用/超时不以
@@ -1171,27 +1193,46 @@ def _clean_untracked_knowledge(project_root: Path, log) -> None:
     ``-fd`` 会无差别删除目录下一切未跟踪文件与目录（含用户手工新建、尚未提交
     的知识页草稿），且未跟踪内容无版本兜底、删后只能靠文件系统工具找回——
     删除前先 ``-nd`` 干跑取删除清单留痕告警（code-review bb5ea5f1ea0d）。
+    git 缺失/超时不沿自举段上抛掀翻车道，WARNING 留痕后返回（code-review
+    b35ae9ddcaaf）——自举清场属尽力而为，不应阻塞回填。
     """
-    dry = subprocess.run(
-        ["git", "clean", "-nd", "--", KNOWLEDGE_DIR],
-        cwd=str(project_root),
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        dry = subprocess.run(
+            ["git", "clean", "-nd", "--", KNOWLEDGE_DIR],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # 干跑失败时删除清单不可知，跳过实际清理（避免无枚举兜底的破坏性删除）
+        log.warning(
+            "knowledge",
+            f"回填自举清理干跑不可用（fail-open），跳过未跟踪残留清场，"
+            f"请人工核查：{str(exc)[:200]}",
+        )
+        return
     if dry.returncode == 0 and dry.stdout.strip():
         log.warning(
             "knowledge",
             "回填自举清理将删除 spec/knowledge/ 下未跟踪内容（不可从 git 找回，"
             "如含手工草稿请先移出）：" + dry.stdout.strip()[:500],
         )
-    proc = subprocess.run(
-        ["git", "clean", "-qfd", "--", KNOWLEDGE_DIR],
-        cwd=str(project_root),
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "clean", "-qfd", "--", KNOWLEDGE_DIR],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        log.warning(
+            "knowledge",
+            "回填自举清理未跟踪残留失败（fail-open）：git 不可用或超时，"
+            "spec/knowledge/ 下未跟踪残留未清，请人工核查",
+        )
+        return
     if proc.returncode != 0:  # noqa: BLE001 - fail-open 清理不阻塞自举
         log.warning(
             "knowledge",
