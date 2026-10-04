@@ -40,6 +40,11 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   const [todoDraft, setTodoDraft] = useState('');
   const [todoExists, setTodoExists] = useState(false);
   const [todoLoading, setTodoLoading] = useState(false);
+  // 加载失败标志（code-review item e092a8069ea2）：失败路径不回填、草稿保持
+  // 空态，此时提交保存会以空串整文件覆写磁盘上真实存在的 todo.md（夜间自省
+  // 追加的历史回顾静默丢失）——失败态须与在飞态同样拦截保存；作用域变化
+  // 重新加载时复位（见下方加载 effect）
+  const [todoLoadFailed, setTodoLoadFailed] = useState(false);
 
   // todo.md 视图页签：预览在前且为默认（先看渲染效果，需要改动再切编辑）；
   // 切换纯前端状态，两页签共享草稿无损
@@ -67,6 +72,10 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   const lastSelfReviewBackfillRef = useRef('');
 
   useEffect(() => {
+    // 作用域变化即先清失败标志（code-review item e092a8069ea2）：含切到用户级
+    // 作用域（下方直接 return 不加载）——若残留失败态会误拦用户级的配置保存；
+    // 是否失败由本次重新加载重新裁决
+    setTodoLoadFailed(false);
     if (!project) return;
     let cancelled = false;
     // 作用域切换即先清空上一项目残留草稿（code-review item 6bf8170c023d，
@@ -86,6 +95,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       } catch (e) {
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         if (!cancelled) {
+          // 置失败标志：保存入口与「尚无 todo.md」引导文案此后均按失败态短路，
+          // 不再以空草稿放行整文件覆写
+          setTodoLoadFailed(true);
           message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : e}`);
         }
       } finally {
@@ -127,6 +139,13 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // 尚未回填为新作用域内容（或因加载失败保持空），提交会把残留/空草稿整文件
     // 覆写进当前项目的 todo.md
     if (todoLoading) {
+      return;
+    }
+    // 加载失败态同样短路（code-review item e092a8069ea2）：失败路径不回填、
+    // todoDraft 保持空串，此刻提交会以空串整文件覆写磁盘上真实存在的 todo.md，
+    // 静默丢失夜间自省追加的历史回顾
+    if (todoLoadFailed) {
+      message.error('todo.md 加载失败，内容未回填，已阻止保存以免以空草稿覆写磁盘内容；请切换作用域重新加载后重试。');
       return;
     }
     savingRef.current = true;
@@ -260,13 +279,24 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
               自省 Agent 每晚追加写入工作回顾。编辑后经本页签右下角「保存」按钮与自省设置一并保存（整文件覆写）；
               注意与 daemon 夜间追加的时序。
             </Text>
-            {!todoExists && !todoLoading && (
+            {!todoExists && !todoLoading && !todoLoadFailed && (
               <Alert
                 style={{ marginTop: 8 }}
                 type="info"
                 showIcon
                 message="尚无 todo.md（自省首次运行后生成），可保存以下内容提前创建。"
                 data-testid="todo-missing-alert"
+              />
+            )}
+            {/* 加载失败态不再渲染「尚无 todo.md 可提前创建」的误导引导
+                （code-review item e092a8069ea2）：失败即内容未回填，保存已被拦 */}
+            {todoLoadFailed && !todoLoading && (
+              <Alert
+                style={{ marginTop: 8 }}
+                type="warning"
+                showIcon
+                message="todo.md 加载失败：内容未回填，已阻止保存以免以空草稿覆写磁盘内容；请切换作用域后重试加载。"
+                data-testid="todo-load-error-alert"
               />
             )}
             <Tabs
