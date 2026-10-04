@@ -34,6 +34,27 @@ DEFAULT_PORT = 8787
 DEFAULT_CONFIG = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
 
 
+def _fsync_parent_dir(path: Path) -> None:
+    """rename 原子替换后刷父目录项，保证替换结果掉电不回退（尽力而为）。
+
+    与 core/admin_store.py 的同名 helper 同款（code-review item 1c3cd3c55252）：
+    临时文件 fsync 只保证文件内容落盘，rename 的目录项变更是否持久化取决于
+    父目录是否刷盘——不刷则掉电重启后配置可能整体回退为旧内容。目录 fsync
+    在个别文件系统上不支持或失败（EINVAL 等），静默忽略，此时仍保留进程级
+    崩溃安全保证。
+    """
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
 class Registry:
     """读写监控配置并执行多项目发现。"""
 
@@ -219,6 +240,7 @@ class Registry:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_str, str(self.config_path))
+            _fsync_parent_dir(self.config_path)
         finally:
             tmp_path = Path(tmp_str)
             if tmp_path.exists():
