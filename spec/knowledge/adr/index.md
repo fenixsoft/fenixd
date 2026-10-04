@@ -234,3 +234,5 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-227](ADR-227-codefix-two-stage-regression-last-batch-full-baseline.md) | accepted | code-fix 批收尾回归两段式：非末批按触碰面定向（{test_targets} 占位符）、末批恒全量为整链唯一合并防线；定向化 fail-open（无占位符/映射空/配置关一律回退全量禁跳过）、末批判定与链选批同排除口径禁裸计数、复用 run_regression 不新增执行通道；合回防线降为末批全量是显式取舍，后续 SPEC 不得削弱 |
 | [ADR-228](ADR-228-manual-llm-health-probe-stateless-proxy-circuit-isolated.md) | accepted | 手动 LLM 健康探测=daemon 后端代理纯探测（浏览器不直连、端点无状态显式三字段、解析链在前端），与运行期熔断状态严格隔离禁写熔断计数/切换冷却/半开探针，请求签名与运行期 CLI 同构保证结论对运行期有效 |
 | [ADR-229](ADR-229-worktree-lock-wait-caller-layer-no-takeover-crossing.md) | accepted | worktree 锁让路退避归 runner 获取调用层（共用原语禁内嵌等待、不消耗 attempt 额度不写 STATE 退避字段），自动等待一律不可穿越人工接管——frozen/_cancelled_hold/status 迁出立即让位且退避每轮重探前复查，锁释放后取得不构成并行 run |
+| [ADR-230](ADR-230-truth-source-write-single-gate.md) | accepted | 知识真相源写入单门：增量蒸馏/回填/audit 转写一切写入走同一蒸馏契约+validate_knowledge 全量校验+pathspec 限定提交，页级冲突先提交者胜、后写 run 重读现网叠加，不做页级锁 |
+| [ADR-231](ADR-231-audit-two-tier-disposition-semantic-llm-only.md) | accepted | audit 病灶两级处置：机械项脚本直修直提交，语义项禁脚本改写必走定向蒸馏 run 由 LLM 终判重写，初筛宁松勿紧、误报判无矛盾零改动收场 |

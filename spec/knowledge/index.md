@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-05 02:42 UTC+8
+> 最后更新：2026-10-05 03:02 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -33,6 +33,7 @@
 | [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 12 | 2026-10-03 05:13 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
 | [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 5 | 2026-10-04 05:06 |
+| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源维护 | 3 | 2026-10-05 03:02 |
 
 ## 决策记录
 
