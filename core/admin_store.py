@@ -277,6 +277,7 @@ class AdminStore:
                                 "待人工介入；留底后新告警恢复写入不被拦）",
                             )
                         return None if refuse_returns_none else result
+                    trimmed = None
                     if len(records) > MAX_RECORDS:
                         trimmed = records[:-MAX_RECORDS]
                         del records[:-MAX_RECORDS]
@@ -285,10 +286,19 @@ class AdminStore:
                         # 失败仅 WARNING 不阻断清理主流程（残留侧车渲染按
                         # alert_id 匹配不到即忽略，无害）
                         self._cleanup_narrative_sidecars(trimmed)
-                        # 归档与裁剪同锁完成（spec：裁剪与归档之间不得丢记录）；
-                        # 归档失败仅记日志，活跃文件写回主路径照常执行（D2 软失败）
-                        self._archive_unlocked(trimmed)
+                    # 先写回活跃文件、成功后再归档被裁记录（7d9acdee863a）：
+                    # 旧顺序先归档后写回，写回失败（如磁盘满 fsync 抛
+                    # OSError）上抛时归档已落盘、被裁记录仍留在活跃文件，
+                    # 下次 mutate 成功会再次裁剪并归档同一批，归档 JSONL
+                    # 出现重复条目；调整后写回失败时归档尚未执行，重试
+                    # 不再产生重复归档行
                     self._write_unlocked(records)
+                    if trimmed:
+                        # 归档与裁剪同锁完成（spec：裁剪与归档之间不得丢
+                        # 记录，trimmed 批次在内存持有到归档完成）；归档
+                        # 失败仅记日志（D2 软失败）：活跃已正确，仅该批
+                        # 归档缺账，不阻断已完成的写回
+                        self._archive_unlocked(trimmed)
                     return result
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
