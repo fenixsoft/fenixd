@@ -147,6 +147,8 @@ class AgentRunResult:
         worktree_kept: bool = False,
         cancelled: bool = False,
         frozen_terminated: bool = False,
+        api_error_status=None,
+        conn_error=None,
     ):
         self.run_id = run_id
         self.spec_name = spec_name
@@ -180,6 +182,14 @@ class AgentRunResult:
         # （FrozenTerminatedError → 独立 frozen-terminated 终态；与 cancelled
         # 并列、互不读写——dispatch 侧据此写 _frozen_hold 而非 _cancelled_hold）。
         self.frozen_terminated = frozen_terminated
+        # evo-fix-spec-review-infra-attribution-bridge 1.1：单轮 API 错误的结构化
+        # 归因（对齐 exc.api_error_status / exc.conn_error 挂载先例 runner.py）。
+        # 异常上挂的归因经 run 车道 catch-all 回填（spec_review 车道 1.2），随
+        # 结果对象传递到失败分类层——失败分类优先消费结构化字段，不再依赖经
+        # _denoise_stderr 降噪后的 stderr 文本（降噪后只剩 "Exit code: 1"，
+        # 文本分类恒 False）。缺省 None：既有构造点不传即兼容。
+        self.api_error_status = api_error_status
+        self.conn_error = conn_error
 
     def to_dict(self) -> dict:
         return {
