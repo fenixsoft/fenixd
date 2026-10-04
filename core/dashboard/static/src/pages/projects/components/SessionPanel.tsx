@@ -718,6 +718,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // state——error 分支会替换整块对话视图+输入区（转录被隐藏、无法就地
       // 重试，code-review item b1609f78d29c）。rethrow 让 composer 把输入
       // 还原为发送前文本（失败不丢用户输入）。
+      // 失败前已切离/已切换项目：不弹错误 toast（同 handleStart catch 守卫
+      // 口径，旧项目的「发送失败」文案不得串显到新项目面板）；仍 rethrow 让
+      // composer 还原草稿（reject 经其调用方吞掉，不弹「发送失败」）。
+      if (!activeRef.current || projectRef.current !== startProject) {
+        throw e instanceof Error ? e : new Error(String(e));
+      }
       message.error(`发送失败：${e instanceof Error ? e.message : String(e)}`);
       throw e instanceof Error ? e : new Error(String(e));
     } finally {
@@ -746,6 +752,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 标记未注册，切离分面不再发 DELETE（避免污染 no_console_error 断言）
       watchRegisteredRef.current = false;
     } catch (e) {
+      // 失败前已切离/已切换项目：不弹错误 toast（同 handleStart catch 守卫
+      // 口径，旧项目的「停止失败」文案不得串显到新项目面板）。
+      if (!activeRef.current || projectRef.current !== startProject) return;
       message.error(`停止失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setStopping(false);
