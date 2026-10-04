@@ -402,8 +402,10 @@ def start_daemon(root: str | None = None) -> dict:
     启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
     避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
     至多约 5 秒，命中再返回成功；窗口耗尽则经 `tmux has-session` 复核会话
-    存活，并经 `list-panes` 校验会话确以 supervisor 命令启动——会话已退出
-    （启动命令失败）或会话内是同名残留的无关窗格，均返回 ok=False。
+    存活，并经 `list-panes` 校验会话确以 supervisor 命令启动，且对 supervisor
+    窗格的 pane_pid 做一次 /proc 活性核对——会话已退出（启动命令失败）、
+    会话内是同名残留的无关窗格、或残留会话仅余已死的 supervisor 窗格
+    （remain-on-exit 等配置占位），均返回 ok=False。
     new-session 返回码非零（duplicate session 除外，维持既有「已存在」路径
     语义落回轮询复核）同样直接返回 ok=False 并附 stderr，不静默忽略。
 
@@ -529,7 +531,7 @@ def start_daemon(root: str | None = None) -> dict:
     # （复核手段自身拿不到窗格信息）时维持既有宽容语义，不因校验失效改判失败。
     try:
         panes = subprocess.run(
-            ["tmux", "list-panes", "-t", session, "-F", "#{pane_start_command}"],
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_pid} #{pane_start_command}"],
             capture_output=True,
             text=True,
             timeout=2,
@@ -549,7 +551,17 @@ def start_daemon(root: str | None = None) -> dict:
             "session": session,
             "already": False,
         }
-    start_cmds = [ln.strip() for ln in panes.stdout.splitlines() if ln.strip()]
+    # 输出行格式 "#{pane_pid} #{pane_start_command}"：pid 与命令串以首个空格分隔
+    start_cmds = []
+    supervisor_pane_pids = []
+    for ln in panes.stdout.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        pid_txt, _, cmd = ln.partition(" ")
+        start_cmds.append(cmd.strip())
+        if pid_txt.isdigit() and "fenixd_supervisor.py" in cmd:
+            supervisor_pane_pids.append(int(pid_txt))
     if start_cmds and not any("fenixd_supervisor.py" in cmd for cmd in start_cmds):
         return {
             "ok": False,
@@ -557,6 +569,36 @@ def start_daemon(root: str | None = None) -> dict:
             "session": session,
             "already": False,
         }
+    # pane_start_command 是窗格创建时刻记录的静态命令串、非活性信号（code-review
+    # item 698d0b8b17ea）：同名残留会话在 remain-on-exit 等配置下可保留已死的
+    # supervisor 窗格，start command 照样含 supervisor 字面量，仅凭上方字面量
+    # 判据会把「无任何进程在跑」误报成功。此处对 supervisor 窗格的 pane_pid 做
+    # 一次 /proc 活性核对（能走到本宽容分支即探测轮的 is_running 主判定为
+    # /proc 扫描、procfs 可用）：pid 存在且 cmdline 含 supervisor 脚本名才判
+    # 活；全部窗格可证已死（pid 消失，或 pid 已被不含该字面量的他者进程复用）
+    # 才改判失败；cmdline 不可读等复核手段失效形态维持既有宽容语义，不因校验
+    # 降级改判失败（与会话内容校验的宽容口径一致）。
+    if supervisor_pane_pids:
+        alive = False
+        inconclusive = False
+        for pane_pid in supervisor_pane_pids:
+            try:
+                with open(f"/proc/{pane_pid}/cmdline", "rb") as f:
+                    raw = f.read().decode("utf-8", errors="replace")
+            except FileNotFoundError:
+                continue  # pid 已消失：窗格进程可证已死
+            except OSError:
+                inconclusive = True  # procfs 拒读等：校验失效，保持宽容
+                continue
+            if "fenixd_supervisor.py" in raw:
+                alive = True
+        if not alive and not inconclusive:
+            return {
+                "ok": False,
+                "error": "daemon 启动探测超时且 tmux 会话内 supervisor 窗格进程已不存在（残留会话占位？），请查看 .fenix/logs/supervisor.log",
+                "session": session,
+                "already": False,
+            }
     return {"ok": True, "error": None, "session": session, "already": False}
 
 
