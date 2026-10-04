@@ -92,7 +92,18 @@ class VerifyEngine:
         if not isinstance(verify_cfg, dict):  # 段非 dict（str/list 等）时回退空段
             verify_cfg = {}
         try:
-            self.max_parallel = max(1, int(verify_cfg.get("max_parallel", 5)))
+            raw_parallel = verify_cfg.get("max_parallel", 5)
+            # bool 是 int 子类：int(True)=1 会把默认并行度 5 静默收紧为 1
+            # （int(False)=0 再被下方 max(1, ...) 抬回 1），TypeError/ValueError
+            # 均拦不住；显式排除（口径对齐 config.py 的整型归一），回退默认
+            # 5 并 warning 留痕。
+            if isinstance(raw_parallel, bool):
+                self.logger.warning(
+                    "verify_engine",
+                    f"verify_engine.max_parallel 为布尔值 {raw_parallel!r}，回退默认 5",
+                )
+                raw_parallel = 5
+            self.max_parallel = max(1, int(raw_parallel))
         except (TypeError, ValueError, OverflowError):
             # OverflowError：int(float('inf'))（如 JSON 合法值 1e999）；nan 走 ValueError
             self.max_parallel = 5
@@ -705,7 +716,6 @@ class VerifyEngine:
         {"total": N, "done": D, "current": "描述"}
         """
         progress_path = self.project_root / ".fenix" / "verify-progress" / f"{self.spec_name}.json"
-        progress_path.parent.mkdir(parents=True, exist_ok=True)
         progress = {
             "total": total,
             "done": done,
@@ -715,6 +725,11 @@ class VerifyEngine:
         # 的 mkstemp+os.replace 范式）：进度文件随每个场景完成高频重写，裸
         # open("w") 原地截断会让并发读取侧（dashboard/质量门）读到半截 JSON。
         try:
+            # mkdir 一并纳入兜底（对齐 _save_report 与下方写盘段的「非致命」
+            # 口径）：磁盘满/权限等 OSError 若穿出，会把 run() 的「验收失败
+            # 打回 plan」等出口变成未捕获异常，run_one finally 中抛出更会吞
+            # 掉 runner.execute 的正常结果、令场景被误记为 error。
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(
                 prefix=f".{progress_path.name}.", suffix=".tmp", dir=str(progress_path.parent)
             )
