@@ -6,7 +6,7 @@ admin run 在「动作已执行、终态未落账」窗口死亡时，台账出�
 
 ## What Changes
 
-1. （主）孤儿处置收敛的生效核查补记：_recover_orphaned_dispositions 对 final 组不再无条件跳过——组内终结记录 handled=False（或仍有滞留 pending）时，对「动作是否已实际生效」做只读核查（STATE frozen/status、fenixd.log Transition 留痕等真实状态证据），核查通过则补记 resolved（append 新记录、注明补记与依据）并对关联信号 mark_signal_handled 收口；核查不通过维持滞留并走既有升级（fail-closed，守 evo-fix-global-signal-choice-execution 2.2 语义）。
+1. （主）孤儿处置收敛的生效核查补记：_recover_orphaned_dispositions 对 final 组不再无条件跳过——final 组且其关联底层 SIGNAL 记录仍未收口（unhandled_signal_for 命中，escalated=true 口径；SIGNAL 记录 spec=null 与 DISPOSITION 记录 spec="global" 的记法差异须归一化匹配；组内已有 escalate=true 终结记录或同 spec 存在在飞 run 时跳过）时，对「动作是否已实际生效」做只读核查（STATE frozen/status、fenixd.log Transition 留痕等真实状态证据），核查通过则补记 resolved（append 新记录、注明补记与依据）并对关联信号 mark_signal_handled 收口；核查不通过维持滞留并走既有升级（fail-closed，守 evo-fix-global-signal-choice-execution 2.2 语义）。
 2. （辅）choice 粒度小步落账：AdminMonitor 结构化 choice 通道内单个动作执行成功后即落逐动作 DISPOSITION 事件并提前收口信号，缩短「执行成功→落账」窗口；执行失败不得预写 resolved。
 
 ## Impact
