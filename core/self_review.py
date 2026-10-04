@@ -1192,7 +1192,9 @@ class SelfReviewScheduler:
         数据聚合与活动判定窗口 = [last_run_at, now] 增量（2026-09-08 用户
         决策：自然日触发取代 24h 滚动窗口——run_at 是当日触发点，审查范围
         是上次执行以来的增量；成功/失败/占位跳过都写 last_run_date=today，
-        当日不再重试，失败次日 run_at 自然重试）。返回结果 dict（触发与否/
+        当日不再重试，失败次日 run_at 自然重试——失败路径保留 last_run_at
+        不前移（_save_state advance_anchor=False），本次已聚合但未产出回顾
+        的窗口内容次日仍落在增量窗口内被真正覆盖）。返回结果 dict（触发与否/
         原因/结果）供测试与审计。enabled=false 时全链路零动作（不调度、不
         执行、不写文件）。无 last_run_at（首跑/旧格式状态文件）回退 24h
         窗口；手动触发通道 = 删除状态文件；把 last_run_date 改为昨日仅解除
@@ -1228,7 +1230,9 @@ class SelfReviewScheduler:
             return self._execute_review(today, sr, window_start)
         except Exception as e:
             self._record_failure_alert(f"{today}: 自省执行意外异常: {e}")
-            self._save_state(today)
+            # 失败路径不前移增量窗口锚点（保留 last_run_at），本次窗口内容
+            # 次日仍落在窗口内被真正覆盖
+            self._save_state(today, advance_anchor=False)
             return {
                 "triggered": True,
                 "ok": False,
@@ -1240,7 +1244,7 @@ class SelfReviewScheduler:
         """执行一次自省：聚合窗口数据 → 发起 run → 追加 todo.md → 提交。"""
         if self.agent_runner is None:
             self._record_failure_alert(f"{today}: agent_runner 不可用（未装配），无法执行自省")
-            self._save_state(today)
+            self._save_state(today, advance_anchor=False)
             return {"triggered": True, "ok": False, "reason": "no_runner", "date": today}
 
         # 零活动防护：窗口 [last_run_at, now] 内无任何 SPEC run（review-
@@ -1284,14 +1288,14 @@ class SelfReviewScheduler:
             result = self.agent_runner.run_self_review(today, daily_summary, todo_md, todo_entries)
         except Exception as e:
             self._record_failure_alert(f"{today}: run_self_review 异常: {e}")
-            self._save_state(today)
+            self._save_state(today, advance_anchor=False)
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": today}
 
         if not result.success:
             self._record_failure_alert(
                 f"{today}: 自省 run 失败（run_id={result.run_id}）: {result.error}"
             )
-            self._save_state(today)
+            self._save_state(today, advance_anchor=False)
             return {
                 "triggered": True,
                 "ok": False,
@@ -1304,7 +1308,7 @@ class SelfReviewScheduler:
             written = self._apply_todo_update(today, result, cleanup_entries)
         except Exception as e:
             self._record_failure_alert(f"{today}: todo.md 追加失败: {e}")
-            self._save_state(today)
+            self._save_state(today, advance_anchor=False)
             return {"triggered": True, "ok": False, "reason": f"append_error: {e}", "date": today}
 
         committed = self._commit_todo(today)
@@ -1512,7 +1516,10 @@ class SelfReviewScheduler:
 
         lines: List[str] = []
         if outliers:
-            lines.append("### 初筛离群 run（run_metrics 量化，> 组中位 ×3）")
+            # 倍数自 MIDFLIGHT_OUTLIER_MULTIPLIER 渲染（单源，调常量标题不漂移）
+            lines.append(
+                f"### 初筛离群 run（run_metrics 量化，> 组中位 ×{MIDFLIGHT_OUTLIER_MULTIPLIER}）"
+            )
             for o in outliers:
                 success = str(o.get("terminal") or "").strip().lower() == "success"
                 dims = "、".join(
@@ -2085,26 +2092,33 @@ class SelfReviewScheduler:
             return None
         return _iso_to_aware_dt(raw)
 
-    def _save_state(self, date_str: str) -> None:
+    def _save_state(self, date_str: str, advance_anchor: bool = True) -> None:
         """记录执行日（last_run_date，同日防重复判定基准）与执行时刻。
 
         last_run_at 保留写入：下次执行的增量窗口锚点（数据聚合与活动判定
         从该时刻起算）；调度防重复只看 last_run_date。
+
+        advance_anchor=False（失败路径专用，code-review item b1a753feeac8）：
+        保留原 last_run_at 不前移——本次窗口 [旧锚点, now] 内容已聚合但未
+        产出回顾，锚点不动使这些内容次日仍落在增量窗口内被真正覆盖；原
+        锚点缺失（首跑/旧格式状态文件）时省略该字段，读端回退 24h 窗口
+        口径不变。
         """
         path = self._state_path()
         try:
+            if advance_anchor:
+                anchor: Optional[str] = to_storage(now_utc())
+            else:
+                prev = self._load_last_run_at()
+                anchor = to_storage(prev) if prev is not None else None
+            state: Dict[str, str] = {"last_run_date": date_str}
+            if anchor is not None:
+                state["last_run_at"] = anchor
+            state["updated_at"] = to_storage(now_utc())
             path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_text(
                 path,
-                json.dumps(
-                    {
-                        "last_run_date": date_str,
-                        "last_run_at": to_storage(now_utc()),
-                        "updated_at": to_storage(now_utc()),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
+                json.dumps(state, ensure_ascii=False, indent=2),
             )
         except OSError as e:
             self.logger.error("self_review", f"状态文件写入失败: {e}")
