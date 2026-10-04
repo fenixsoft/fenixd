@@ -576,6 +576,10 @@ class FileWatcher:
         # 且未订阅 run 也需跟踪 size，保证订阅后首轮增量起点正确）
         status = self._classify(run_file)
         advanced = False
+        # 预置空列表：订阅 run 增量读取失败（read_run_events_between 返回
+        # None）时安静保留旧基线不推送、下轮重读同一区间，避免下方
+        # if new_events: 引用未绑定名中断本轮项目扫描（code-review item 62a3aadf31f2）。
+        new_events = []
 
         if self.hub.is_watched(run_id):
             # 仅被订阅的 run 才读取新增字节并解析事件。先读增量、成功后才推进
