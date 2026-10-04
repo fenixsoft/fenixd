@@ -236,3 +236,5 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-229](ADR-229-worktree-lock-wait-caller-layer-no-takeover-crossing.md) | accepted | worktree 锁让路退避归 runner 获取调用层（共用原语禁内嵌等待、不消耗 attempt 额度不写 STATE 退避字段），自动等待一律不可穿越人工接管——frozen/_cancelled_hold/status 迁出立即让位且退避每轮重探前复查，锁释放后取得不构成并行 run |
 | [ADR-230](ADR-230-truth-source-write-single-gate.md) | accepted | 知识真相源写入单门：增量蒸馏/回填/audit 转写一切写入走同一蒸馏契约+validate_knowledge 全量校验+pathspec 限定提交，页级冲突先提交者胜、后写 run 重读现网叠加，不做页级锁 |
 | [ADR-231](ADR-231-audit-two-tier-disposition-semantic-llm-only.md) | accepted | audit 病灶两级处置：机械项脚本直修直提交，语义项禁脚本改写必走定向蒸馏 run 由 LLM 终判重写，初筛宁松勿紧、误报判无矛盾零改动收场 |
+| [ADR-232](ADR-232-distill-run-main-tree-direct-no-mergeback.md) | accepted | 蒸馏 run 主树直跑无 merge-back（与 fast-track worktree 模式 deliberately 不同），格式对账与 git 提交不进 agent：daemon 侧 validate_knowledge 对账+违规回反馈 ≤2 轮+pathspec 限定提交，放弃产出 restore 不留半成品 |
+| [ADR-233](ADR-233-distill-trigger-single-funnel-commit-archive-move.md) | accepted | 蒸馏触发单点挂载归档共同漏斗 commit_archive_move：手工/自动归档/软删除三路径单点全生效，fail-open 不影响归档返回值，新增归档路径必须沿用漏斗否则视为放弃蒸馏 |
