@@ -151,6 +151,19 @@ DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS = 5 * 60
 # 指纹「最近失败终态时刻」记忆容量上限（实例内存防无界增长；超限淘汰最早的
 # 一半）。日志尾读窗口（≤256KB）内的活跃指纹量级远低于此。
 DAEMON_ERROR_FP_MEMORY_LIMIT = 512
+# evo-fix-crossday-recurrence-fingerprint-normalization 2.1：跨日指纹记忆的
+# 持久化状态文件（相对 project_root；仿 .fenix/admin_infra_breaker.json 既有
+# 形态：实例 threading.Lock + mkstemp/fsync/os.replace 原子替换）。daemon 重启
+# 后加载续用；缺失/损坏降级为日志定向回退检索，不影响主扫描。
+CROSSDAY_FP_MEMORY_REL = ".fenix/crossday_fp_memory.json"
+# 2.2（design D3）：定向回退检索的逐轮预算与 grep 超时。检索仅对「无记忆且
+# tail 窗内次新条目未命中」的指纹触发（重启后首轮常态），预算防多新指纹同轮
+# 放大 IO；超限/失败的指纹漏判方向 fail-open。
+_CROSSDAY_SEARCH_MAX_PER_SCAN = 4
+_CROSSDAY_SEARCH_TIMEOUT_SECONDS = 30
+# 日志轮转备份上限（core/logger.py FlockRotatingFileHandler backupCount=5）：
+# 回退检索的候选文件集为 fenixd.log 与 fenixd.log.1..5。
+_LOG_ROTATION_BACKUPS = 5
 # alert-noise-governance 3.1：指纹级重启冷却窗（模块常量不入 config，对齐本
 # 层既有做法，规避「新增配置项必须带 Dashboard UI」约束）。
 # 治理目标 = 重启后首扫回放：daemon 重启不清日志，首扫即命中与停机前相同
@@ -557,6 +570,15 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 _HEX16_RE = re.compile(r"[0-9a-fA-F]{16,}")
+# 「小数+单位字母」形态（evo-fix-crossday-recurrence-fingerprint-normalization
+# 1.1，design D1）：延迟/时长类数值（"median 84.0s"、"23.4s"、"5.3s"）。既有
+# _STANDALONE_NUMBER_RE 对 "23.4s" 只归一小数点前的整数 23——尾数 4 后跟单位
+# 字母 s 不满足「不被字母包围」而被保留，延迟数值不同的同形死亡行指纹必然
+# 不等（10-02/10-03 两夜实测 dbd8dc91f1530046 vs 2770ed6f532f254c）。本规则把
+# 小数体整体归一为 #、单位字母保留（"23.4s"→"#s"）：仅同形不同值聚合，指纹
+# 其余部分（stderr_tail 骨架等）仍须全等，非数值差异照旧区分。负向先行/后行
+# 限定与既有保守集同口径（v1.2b、标识符内小数不动）。
+_DECIMAL_UNIT_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+\.\d+(?=[a-zA-Z])")
 # 独立数字 token（不被字母/下划线包围）——run_id、attempt 计数、epoch、超时秒数等
 _STANDALONE_NUMBER_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+(?![0-9a-zA-Z_])")
 
@@ -564,13 +586,15 @@ _STANDALONE_NUMBER_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+(?![0-9a-zA-Z_])")
 def _normalize_error_message(message: str) -> str:
     """err message 归一化（improve-hot-reload-robustness D6 保守集）。
 
-    顺序：先按 ISO 时间戳（含日期骨架）、UUID、hex 三类带字母形态替换，最后替换
-    独立数字序列——防止 hex 中的数字被先行拆散。
+    顺序：先按 ISO 时间戳（含日期骨架）、UUID、hex 三类带字母形态替换，再替换
+    「小数+单位字母」形态（1.1），最后替换独立数字序列——防止 hex 中的数字被
+    先行拆散、防止整数先归一拆散小数形态。
     """
     msg = str(message)
     msg = _ISO_TS_RE.sub("@", msg)
     msg = _UUID_RE.sub("~", msg)
     msg = _HEX16_RE.sub("~", msg)
+    msg = _DECIMAL_UNIT_RE.sub("#", msg)
     msg = _STANDALONE_NUMBER_RE.sub("#", msg)
     return msg
 
@@ -583,6 +607,16 @@ def _error_fingerprint(component: str, message: str) -> str:
     """
     raw = f"{component or ''}\x00{_normalize_error_message(message)}"
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
+
+
+# evo-fix-crossday-recurrence-fingerprint-normalization 1.2（design D1 备选
+# 路径裁决）：api_timeout 类失败终态「结构化签名（api_timeout 布尔 + stderr_tail
+# 骨架哈希）替代整行指纹」为可选路径，本 SPEC 不采用——上方 _DECIMAL_UNIT_RE
+# 已把两夜死亡行中唯一跨夜漂移的「延迟小数+单位」归一，整行指纹即可同形聚合
+# （stderr_tail 骨架、exit_code、rounds 数等骨架部分本就参与指纹，误聚面更小）；
+# 结构化路径须为 daemon_errors 另立指纹空间并做前缀命名空间隔离，复杂度与收益
+# 不成比例。若后续实测误聚/漏聚数据需要重启该路径，MUST 以 "structured:" 类
+# 前缀与既有指纹空间隔离，且不串扰 daemon_errors 第一维度判定。
 
 
 # 尾部读上限：日志增长后每轮巡检只 seek 最近 256KB（3.5），避免全量 read_text
@@ -1044,9 +1078,12 @@ class AdminMonitor:
         self._daemon_fp_escalated_at = {}
         # evo-add-codefix-conn-error-cooldown 3.1：fp → 最近一次失败终态时刻
         # （epoch 秒，逐扫更新；跨日同刻复发判别的记忆事实源，容量上限
-        # DAEMON_ERROR_FP_MEMORY_LIMIT）。daemon 重启丢内存态——本生命周期
-        # 首见指纹回退日志尾部次新条目对账（_detect_crossday_recurrence）。
-        self._daemon_fp_last_failure = {}
+        # DAEMON_ERROR_FP_MEMORY_LIMIT）。evo-fix-crossday-recurrence-
+        # fingerprint-normalization 2.1：记忆持久化到 CROSSDAY_FP_MEMORY_REL，
+        # daemon 重启后加载续用；文件缺失/损坏降级为空记忆（回退两级对账：
+        # tail 次新条目 → ≥24h 定向检索，_detect_crossday_recurrence）。
+        self._crossday_memory_lock = threading.Lock()
+        self._daemon_fp_last_failure = self._load_crossday_memory()
         # code-review item 9427d41c85ef：fixture 判定实例级 TTL 备忘。
         # _fixture_invocation_suppressed 每条信号都走一次 _is_fixture_project
         # （Registry.discover = YAML 读 + 扫描根目录级遍历）；夹具标记实践中
@@ -3081,24 +3118,33 @@ class AdminMonitor:
     def _detect_crossday_recurrence(self, by_fp: dict) -> dict:
         """跨日同刻复发判别（evo-add-codefix-conn-error-cooldown 3.1，design D6）。
 
-        保留每指纹最近一次失败终态时刻（实例内存 ``_daemon_fp_last_failure``，
-        逐扫更新）；新失败与上次失败终态时刻跨日差在 24h±5 分钟内即判定跨日
-        同刻复发，返回 ``{fp: (prev_ts, last_ts)}``（信号构造消费，升级文案与
-        evidence 注明前次时刻）。
+        保留每指纹最近一次失败终态时刻（记忆 ``_daemon_fp_last_failure``，逐扫
+        更新并持久化到 CROSSDAY_FP_MEMORY_REL——evo-fix-crossday-recurrence-
+        fingerprint-normalization 2.1，daemon 重启后由 __init__ 加载续用）；新
+        失败与上次失败终态时刻跨日差在 24h±5 分钟内即判定跨日同刻复发，返回
+        ``{fp: (prev_ts, last_ts)}``（信号构造消费，升级文案与 evidence 注明
+        前次时刻）。
 
         恰发一次语义：记忆更新到本扫最近时刻后，同一 ``last_ts`` 的后续扫描
         不再命中（prev==last 不比）——10 分钟内同指纹不重复升级；新失败到来
-        （last_ts > 记忆）才重新判别。本生命周期首见指纹（daemon 重启丢内存
-        态）回退日志尾部的次新条目对账——日志保留历史时跨重启仍可识别。
+        （last_ts > 记忆）才重新判别。本生命周期首见指纹（含重启后记忆文件
+        缺失/损坏的降级态）回退对账分两级：先就 tail 窗内的次新条目判跨日差
+        （零额外 IO）；仍无命中时对 ≥24h 前做定向检索（2.2，design D3：以
+        last_ts 为锚构造窄时间窗，先按轮转文件 mtime 与行前缀缩小范围再
+        grep，替代 256KB 尾读窗的 24h 盲区；逐轮预算
+        _CROSSDAY_SEARCH_MAX_PER_SCAN 封顶）。
 
-        缺时间戳条目（ts=None）不参与判别（无跨日差可算）；日志尾读窗口外的
-        历史不可见——漏判方向 fail-open，与模块取证取向一致。
+        缺时间戳条目（ts=None）不参与判别（无跨日差可算）；两级回退均未命中
+        ——漏判方向 fail-open，与模块取证取向一致。持久化失败仅记日志，不
+        影响主扫描。
         """
         memory = getattr(self, "_daemon_fp_last_failure", None)
         if memory is None:
             # __new__ 直构（单测）无 __init__：按空记忆处理并就地建
             memory = self._daemon_fp_last_failure = {}
         hits = {}
+        dirty = False
+        search_budget = _CROSSDAY_SEARCH_MAX_PER_SCAN
         for fp, stamps in by_fp.items():
             ts_all = sorted(t for t in stamps if t is not None)
             if not ts_all:
@@ -3106,7 +3152,7 @@ class AdminMonitor:
             last_ts = ts_all[-1]
             prev = memory.get(fp)
             if prev is None:
-                # 本生命周期首见：回退日志内次新条目判跨日差（跨重启对账）
+                # 本生命周期首见：先就 tail 窗内次新条目判跨日差（零额外 IO）
                 for cand in reversed(ts_all[:-1]):
                     if (
                         abs(last_ts - cand - DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS)
@@ -3114,6 +3160,12 @@ class AdminMonitor:
                     ):
                         hits[fp] = (cand, last_ts)
                         break
+                # tail 窗无前夜条目（重启后常态）：定向检索 ≥24h 前同签名
+                if fp not in hits and search_budget > 0:
+                    search_budget -= 1
+                    cand = self._search_crossday_predecessor(fp, last_ts)
+                    if cand is not None:
+                        hits[fp] = (cand, last_ts)
             elif last_ts > prev:
                 if (
                     abs(last_ts - prev - DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS)
@@ -3122,11 +3174,207 @@ class AdminMonitor:
                     hits[fp] = (prev, last_ts)
             if prev != last_ts:
                 memory[fp] = last_ts
+                dirty = True
             # 容量上限（防无界增长）：超限淘汰最早一半（dict 保插入序）
             if len(memory) > DAEMON_ERROR_FP_MEMORY_LIMIT:
                 for k in list(memory)[: DAEMON_ERROR_FP_MEMORY_LIMIT // 2]:
                     memory.pop(k, None)
+                dirty = True
+        if dirty:
+            # 淘汰后快照落盘：文件体量随 DAEMON_ERROR_FP_MEMORY_LIMIT 有界
+            self._persist_crossday_memory(memory)
         return hits
+
+    def _crossday_log(self, level: str, message: str):
+        """跨日记忆/检索的留痕通道：logger 缺失或级不存在时静默吞掉。
+
+        观测私有路径——留痕失败 MUST NOT 打断主扫描（半初始化实例、close 后
+        的 logger 等测试/关停态均安全）。
+        """
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            return
+        try:
+            getattr(logger, level)("admin_monitor", message)
+        except Exception:  # noqa: BLE001 — 留痕失败不影响主扫描
+            pass
+
+    def _load_crossday_memory(self) -> dict:
+        """加载持久化跨日指纹记忆（evo-fix-…-normalization 2.1，启动时调用）。
+
+        文件缺失/不可解析/形态不符一律降级为空记忆（回退两级日志对账），
+        不抛错——观测私有记忆受损 MUST NOT 影响主扫描（规格「记忆损坏时降级
+        安全」）。仅同进程单实例写（生产路径仅 daemon 构造一例），与
+        pm_engine.infra_breaker 同判：跨进程 flock 防不了各自整文件覆写的
+        lost update，实例内 threading.Lock 已覆盖读改写窗口。
+        """
+        project_root = getattr(self, "project_root", None)
+        if project_root is None:
+            return {}
+        path = Path(project_root) / CROSSDAY_FP_MEMORY_REL
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as e:
+            self._crossday_log(
+                "info", f"跨日指纹记忆文件不可解析，降级为日志回退对账: {e}"
+            )
+            return {}
+        memory: dict = {}
+        entries = data.get("memory") if isinstance(data, dict) else None
+        if isinstance(entries, dict):
+            for k, v in entries.items():
+                # 形态不符的条目跳过（部分损坏只弃坏条目，不弃整份记忆）
+                if isinstance(k, str) and isinstance(v, (int, float)):
+                    try:
+                        memory[k] = float(v)
+                    except (OSError, ValueError, TypeError):
+                        continue
+        return memory
+
+    def _persist_crossday_memory(self, memory: dict):
+        """持久化跨日指纹记忆快照（evo-fix-…-normalization 2.1）。写失败仅记
+        日志不阻塞。须在调用方完成淘汰后调用（快照=淘汰后记忆，条目数随
+        DAEMON_ERROR_FP_MEMORY_LIMIT 有界）。原子替换（mkstemp + fsync +
+        os.replace，对齐 pm_engine/infra_breaker._save_state 既有形态）——
+        写中途崩溃不留截断 JSON。
+        """
+        project_root = getattr(self, "project_root", None)
+        if project_root is None:
+            return
+        lock = getattr(self, "_crossday_memory_lock", None)
+        if lock is None:
+            # __new__ 直构（单测）无 __init__：就地补锁（对象尚未共享时安全）
+            lock = self._crossday_memory_lock = threading.Lock()
+        path = Path(project_root) / CROSSDAY_FP_MEMORY_REL
+        data = {
+            "version": 1,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "memory": dict(memory),
+        }
+        try:
+            with lock:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp_str = tempfile.mkstemp(
+                    prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_str, str(path))
+                finally:
+                    if os.path.exists(tmp_str):
+                        try:
+                            os.unlink(tmp_str)
+                        except OSError:
+                            pass
+        except OSError as e:
+            self._crossday_log(
+                "warning", f"跨日指纹记忆持久化失败（降级内存记忆）: {e}"
+            )
+
+    def _search_crossday_predecessor(self, fp: str, last_ts: float):
+        """定向检索 ≥24h 前的同签名死亡条目（evo-fix-…-normalization 2.2，
+        design D3）。
+
+        以本轮扫描得到的同签名最新时刻 ``last_ts`` 为锚，构造 ``last_ts − 24h
+        ± 容差`` 的窄时间窗（±5 分钟 → 分钟粒度行前缀 ≤12 个），先按轮转备份
+        mtime 缩小候选集（mtime 早于窗口起点的备份只含更老条目），再 grep -F
+        行前缀过滤，逐命中解析核对指纹与秒级窗。检索能力覆盖 ≥24h（受轮转
+        备份保留期约束），替代 256KB 尾读窗的盲区；检索成本与命中留痕写
+        debug 日志。任何失败（文件缺失/超时/grep 不可用）返回 None——漏判
+        方向 fail-open，不影响主扫描。
+        """
+        project_root = getattr(self, "project_root", None)
+        if project_root is None or not last_ts:
+            return None
+        win_start = (
+            last_ts
+            - DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS
+            - DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS
+        )
+        win_end = (
+            last_ts
+            - DAEMON_ERROR_CROSSDAY_PERIOD_SECONDS
+            + DAEMON_ERROR_CROSSDAY_TOLERANCE_SECONDS
+        )
+        log_dir = Path(project_root) / ".fenix" / "logs"
+        # 行前缀窄窗：logger 的 JSON 行键序固定（timestamp 居首），分钟粒度
+        # 固定串可被 grep -F 精确匹配（isoformat 的秒/微秒后缀不影响前缀）
+        prefixes = []
+        cur = math.floor(win_start / 60) * 60
+        while cur <= win_end:
+            prefixes.append(
+                '"timestamp": "'
+                + datetime.fromtimestamp(cur, tz=timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M"
+                )
+            )
+            cur += 60
+        candidates = []
+        total_bytes = 0
+        for name in ("fenixd.log",) + tuple(
+            f"fenixd.log.{i}" for i in range(1, _LOG_ROTATION_BACKUPS + 1)
+        ):
+            f = log_dir / name
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            if st.st_mtime < win_start:
+                continue  # 该备份最后写入早于窗口起点 → 只含更老条目
+            candidates.append(str(f))
+            total_bytes += st.st_size
+        window_desc = (
+            f"{from_epoch(win_start).isoformat()}~{from_epoch(win_end).isoformat()}"
+        )
+        if not candidates:
+            self._crossday_log(
+                "debug",
+                f"跨日回退定向检索：指纹 {fp[:8]} 窗口 {window_desc} 无候选"
+                f"日志文件，未命中",
+            )
+            return None
+        cmd = ["grep", "-F", "-h"]
+        for p in prefixes:
+            cmd += ["-e", p]
+        cmd += candidates
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=_CROSSDAY_SEARCH_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            self._crossday_log(
+                "debug", f"跨日回退定向检索失败（fail-open 漏判）: {e}"
+            )
+            return None
+        hit_ts = None
+        sig_lines = 0
+        # 字节捕获 + replace 解码：日志可能含非 UTF-8 杂质，严格解码会整批失败
+        for line in (res.stdout or b"").decode("utf-8", "replace").splitlines():
+            parsed = self._parse_error_line(line.strip())
+            if parsed is None:
+                continue
+            ts_epoch, component, message = parsed
+            if ts_epoch is None or not (win_start <= ts_epoch <= win_end):
+                continue
+            if _error_fingerprint(component, message) != fp:
+                continue
+            sig_lines += 1
+            if hit_ts is None or ts_epoch > hit_ts:
+                hit_ts = ts_epoch
+        self._crossday_log(
+            "debug",
+            f"跨日回退定向检索：指纹 {fp[:8]} 窗口 {window_desc} 扫候选文件"
+            f" {len(candidates)} 个共 {total_bytes // 1024} KB、同签名 ERROR"
+            f" {sig_lines} 条，{'命中 ' + str(from_epoch(hit_ts).isoformat()) if hit_ts else '未命中'}",
+        )
+        return hit_ts
 
     def _daemon_fp_known(self, fp: str) -> tuple:
         """指纹是否「已知」（alert-noise-governance 3.1）。
