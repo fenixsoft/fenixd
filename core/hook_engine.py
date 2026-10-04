@@ -215,6 +215,10 @@ def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # 非 UTF-8 输出以替换符容错解码，不抛 UnicodeDecodeError：各动作的
+        # 捕获口径为 (SubprocessError, OSError)，解码异常会穿到通用兜底、
+        # 使审计归因降级为「hook 执行异常」而非具体 git 段失败
+        errors="replace",
         start_new_session=True,
     )
     try:
