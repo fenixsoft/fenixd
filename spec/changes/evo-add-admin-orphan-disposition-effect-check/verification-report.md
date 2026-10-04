@@ -41,3 +41,10 @@
 | monitor-convergence-api-surface | 交付物 API 面（task 1.1/2.1）：AdminMonitor 挂载孤儿收敛分支 _converge_final_orphan_group 与小步落账 _persist_choice_step_records 且均可调用。出处 core/admin_monitor.py:4349,5864（plan-v1） | pass | 0/2 | - |
 | orphan-file-full-regression | 新增测试文件全量回归：tests/test_admin_orphan_disposition_effect_check.py 14 例（收敛 8 + 幂等 2 + 小步落账 4）全部通过。出处 tests/test_admin_orphan_disposition_effect_check.py（plan-v1） | pass | 0/3 | - |
 | admin-adjacent-regression-251 | 邻接回归（防收敛分支破坏既有语义）：admin/alert 邻接 9 个测试文件（admin 主套件、派发升级、处置失败上下文、处置重排、历史保留、spec 修正、store 归档、store 损坏、alert 生命周期）共 251 例全部通过。出处 tests/test_admin*.py 与 tests/test_alert_lifecycle.py（plan-v1） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 18 个（第 1 轮）。
+
+- 首轮写入 18 个场景
+
