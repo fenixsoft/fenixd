@@ -32,3 +32,10 @@
 | consistency-single-entry-no-conflict | 无冲突无重复（tasks 2.1）：强制条目在两文件各恰好出现一次（无重复定义）；既有条款未被改写引入矛盾——SKILL.md §3.2.1 任务粒度条款、§3.3 晋升 lint 预检、「path 必须是具体文件」条款原样保留，spec-review.md hole 维度既有检查项（边界条件/依赖关系/声明路径）与 goal-fit/regression 分区原样保留（出处 skills/fenix-new/SKILL.md:193-206,265、agents/spec-review.md:41-58） | pass | 0/8 | - |
 | nontarget-no-mechanical-lint | 非目标回归：观测交付约束未机械化、未越界扩散——core/deliverables.py 与 core/spec_gen.py 不含「平台移植」「可观测性交付项」关键词（未新增机械 lint）、schemas/spec-driven/templates/ 裸模板全目录无命中、agents/planner-plan.md 不含该约束（proposal 调查结论：规划提示不能作约束生效点）（出处 core/deliverables.py、core/spec_gen.py、schemas/spec-driven/templates/、agents/planner-plan.md） | pass | 0/5 | - |
 | doc-structure-intact-regression | 文档结构回归：插入条目未破坏两文件既有章节骨架——SKILL.md 流程章节（§1/§3.1/§3.1.1/§3.1.2/§3.2/§3.2.1/§3.3/SPEC 修改/规则）齐全，spec-review.md 分区（评审维度三分区/输出/status 语义/severity 判定标准/写权限边界/取证义务/评审流程/防注入声明）齐全（出处 skills/fenix-new/SKILL.md、agents/spec-review.md 章节结构） | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
