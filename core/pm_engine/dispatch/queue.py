@@ -122,6 +122,12 @@ class QQQueueMixin:
         # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
         # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
         self._transient_timers: set = set()
+        # 评审 content 失败重派短退避定时器判重集合（evo-fix-spec-review-
+        # infra-attribution-bridge 3.1）：{spec_name}，幂等排程防重复定时器。
+        # 由 SpecReviewManager._enqueue_review_retry 经 _schedule_recovery_timer
+        # 排程（集合挂门面存续——SpecReviewManager 每次派发重建，实例级集合
+        # 判不住跨派发重复）；到期回调重入队评审条目并重扫队列。
+        self._review_content_backoff_timers: set = set()
         # add-impl-ocr-parallel-lane（任务 4.1/4.2）：ocr 审查车道在飞登记
         # {spec_name: True} + 专锁。单飞去重判据（join 侧幂等触发与 merge-back
         # 时点启动共用）；车道线程完成回调经同锁摘除登记。
@@ -149,6 +155,15 @@ class QQQueueMixin:
     # 防出题分片（低优先级任务 5.1）挤占网关。独立常量、不走 agents.max_concurrent
     # ——调大实现并发不放大豁免上限（spec Scenario: 实现并发上调不放大豁免）。
     _PARALLEL_PLAN_INFLIGHT_CAP = 1
+    # 评审车道在飞上限（evo-fix-spec-review-infra-attribution-bridge 2.1）：
+    # 批量晋升的评审条目并发无上限（_SLOT_EXEMPT_LANE_TYPES 豁免实现槽位），
+    # 短窗口批量晋升即并发风暴（实证：8 个 spec 4.58 秒内同时派评审撞账户级
+    # 429）。达上限时候选评审条目保留队列不 pop（条目不丢，下轮补位）。
+    # 可配 review.max_inflight（缺省 3；非法/非正值回退缺省），独立常量、
+    # 不走 agents.max_concurrent——同 _PARALLEL_PLAN_INFLIGHT_CAP 范式，
+    # 调大实现并发不放大评审豁免上限。
+    _REVIEW_INFLIGHT_CAP = 3
+    _REVIEW_INFLIGHT_CAP_CONFIG_KEY = "review.max_inflight"
     # 并行出题条目可派发的 spec 状态集：ready（触发时刻）/ implementing /
     # implemented（impl 先完成、出题仍在排队的追平窗口）。drafted/blocked（含
     # 冻结——freeze_spec 置 blocked）等回退态一律不可派发（任务 1.2：回退即停）。
@@ -157,6 +172,36 @@ class QQQueueMixin:
     def _parallel_plan_cap_reached(self) -> bool:
         """并行 planner-plan 豁免上限判定（在飞 ≥1 即达上限）。"""
         return len(self._active_parallel_plans) >= self._PARALLEL_PLAN_INFLIGHT_CAP
+
+    def _review_inflight_cap(self) -> int:
+        """评审车道在飞上限（evo-fix-spec-review-infra-attribution-bridge 2.1）。
+
+        配置键 ``review.max_inflight``，缺省 ``_REVIEW_INFLIGHT_CAP``（3）。
+        配置容错（同 agents.max_concurrent 读取点口径）：字符串/None/非法值
+        不中断候选扫描——int() 失败或非正值回退缺省。
+        """
+        try:
+            val = int(
+                self._pm._get_config(
+                    self._REVIEW_INFLIGHT_CAP_CONFIG_KEY, self._REVIEW_INFLIGHT_CAP
+                )
+            )
+        except (TypeError, ValueError):
+            return self._REVIEW_INFLIGHT_CAP
+        if val <= 0:
+            return self._REVIEW_INFLIGHT_CAP
+        return val
+
+    def _review_inflight_count(self) -> int:
+        """评审车道当前占用数（evo-fix-spec-review-infra-attribution-bridge 2.1）。
+
+        计量集 = ``_active_reviews``（已出队、锚点未落盘）∪
+        ``_reviews_dispatching``（worker 已释放前者、dispatch_review 未收工——
+        真正的在飞评审 run 都在这段窗口内）。两集合按生命周期互斥（worker 在
+        同一锁段内释放前者、置位后者），并集即「已占用评审车道」的完整计数；
+        成员读不加锁（对齐 engine.is_review_in_flight 的裸读先例）。
+        """
+        return len(self._active_reviews) + len(self._reviews_dispatching)
 
     def _parallel_plan_entry_ready(self, spec: dict) -> bool:
         """并行出题条目候选可派发判定（对齐 _review_entry_ready 单一落点范式）。
@@ -409,6 +454,18 @@ class QQQueueMixin:
         - 判定异常 fail-open 放行（保守不阻塞候选扫描，与其它候选闸门一致）。
         """
         if spec.get("status") != "reviewing":
+            return False
+        # 评审在飞上限（evo-fix-spec-review-infra-attribution-bridge 2.1）：达
+        # 上限时候选条目保留队列不 pop（条目不丢，下轮 worker finally 重扫补位
+        # ——同 :558「在飞即跳过候选、条目保留」先例）。置最前（status 校验后）：
+        # 廉价集合计数短路，超载时不做后续 reviewer_in_flight 进程表/流文件探测。
+        # INFO 留痕（生产日志全库 0 条 DEBUG，闸门静默不可见曾是事故复盘要点）。
+        if self._review_inflight_count() >= self._review_inflight_cap():
+            self._pm.logger.info(
+                "pm_engine",
+                f"评审在飞达上限（{self._review_inflight_count()} ≥ "
+                f"{self._review_inflight_cap()}），派发顺延（条目保留队列）: {sname}",
+            )
             return False
         # 过渡在飞判据（code-review item e3d1d53906cb）：见 docstring。成员读
         # 不加锁（对齐 engine.is_review_in_flight 对 _active_reviews 的裸读先例）。

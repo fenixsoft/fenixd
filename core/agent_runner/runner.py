@@ -1454,6 +1454,17 @@ class AgentRunner:
                 success=False, duration_seconds=time.time() - start_time,
                 error=str(e),
                 provider_used=provider_name, model_used=model_override,
+                # evo-fix-spec-review-infra-attribution-bridge 1.2：归因桥接——
+                # _run_claude 失败路径已在异常上挂 api_error_status / conn_error
+                # （挂载先例见本文件 _run_claude 的 exc 挂载段），catch-all 从
+                # 异常对象回填进 AgentRunResult，不再只落 error=str(e)：stderr
+                # 经 _denoise_stderr 降噪后只剩 "Exit code: 1"，文本分类对限流
+                # 类失败恒 False，结构化字段是失败分类层（spec_review 车道
+                # _classify_run_failure）唯一可靠的供给瞬态归因来源。非 API 错误
+                # 异常（取消/冻结终止等）不携带这两个属性，getattr 缺省 None
+                # 自然回退文本分类，行为不变。
+                api_error_status=getattr(e, "api_error_status", None),
+                conn_error=getattr(e, "conn_error", None),
             )
 
     def _planner_throttle_semaphore(self) -> Optional[threading.BoundedSemaphore]:

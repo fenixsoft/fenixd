@@ -248,6 +248,10 @@ class TestContentFailureEnqueues(unittest.TestCase):
         })
         engine = MagicMock()
         engine.is_review_in_flight = MagicMock(return_value=False)
+        # 短退避关闭（evo-fix-spec-review-infra-attribution-bridge 3.1 后 content
+        # 重派默认延迟入队）：本用例验证既有「失败即入队」契约，置 0 走立即入队
+        # 降级；延迟排程/判重契约见 test_spec_review_infra_attribution.py。
+        engine._get_config = MagicMock(return_value=0)
         # Fake agent_runner：_check_agent_result_artifact 返回错误
         runner = MagicMock()
         runner._check_agent_result_artifact = MagicMock(return_value="结果文件缺失")

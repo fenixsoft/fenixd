@@ -6,6 +6,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -17,7 +18,8 @@ from typing import Dict, Optional, Tuple
 from core.state_machine import (
     SpecStatus,
     FROZEN_FIELD,
-    FREEZE_ERROR_PREFIX,
+    REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX,
+    REVIEW_REJECTED_FREEZE_ERROR_PREFIX,
     _NullLogger,
 )
 from core.agent_runner.runner import AgentRunner
@@ -30,6 +32,16 @@ _logger = logging.getLogger("fenixd.pm_engine.spec_review")
 
 # 评审尝试上限（首次 + 最多 2 次重试，常量名自解释）
 MAX_REVIEW_ATTEMPTS = 3
+
+# content（评审质量）失败重派短退避秒数（evo-fix-spec-review-infra-attribution-
+# bridge 3.1）：content 失败的重派原为秒级甚至毫秒级连发（实测失败→重派仅
+# 0.05s），批量窗口内同一质量缺陷会瞬间烧光 3 次尝试预算。按
+# dispatch/backoff.py _schedule_recovery_timer 范式加一档秒级短延迟；
+# 可配 review.content_retry_delay_seconds（0 = 关闭退避立即重派，测试/部署
+# 逃生口；负值/非有限浮点回退缺省）。infra 分支不适用——其节奏由熔断冷却
+# 负责（两类互不干扰，spec「评审质量失败重派短退避」Requirement）。
+REVIEW_CONTENT_RETRY_BACKOFF_SECONDS = 2.0
+REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY = "review.content_retry_delay_seconds"
 
 # 评审否决自动复评上限（2026-09-15 评审误判事故）：`blocking` 由 LLM 自分类，
 # 存在把「文档内部矛盾/遗漏」误判为「方向不成立」的残差。首次 rejected 不直接
@@ -116,6 +128,14 @@ _INFRA_FINGERPRINT_RE = re.compile(
 )
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
 _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
+
+# 结构化归因的 infra 状态码集（evo-fix-spec-review-infra-attribution-bridge
+# 1.3）：与 _NUMERIC_INFRA_RE 的数字词表同源（402 余额不足 / 403 网关拒绝 /
+# 429 限流）。结构化字段（AgentRunResult.api_error_status）由 runner 层从
+# result 事件挂载、随异常回填，不经 stderr 降噪——是降噪后文本指纹失效时
+# 唯一可靠的供给瞬态归因来源；判定优先于文本词表（spec「优先消费结构化
+# 归因，文本分类作为回退」）。
+_STRUCTURED_INFRA_API_STATUS = frozenset((402, 403, 429))
 
 
 # spec-review 打回理由结构化分类（add-pipeline-throughput-governance 5.1/5.2）
@@ -301,8 +321,11 @@ class SpecReviewManager:
             # 改走 freeze_for_human「冻结 + 告警」成对入口——admin 对
             # 「评审器连续失败」无杠杆（模型链/配置问题）；冻结后
             # admin_monitor 的 blocked_stuck 豁免生效。
+            # 评审专用冻结前缀（evo-fix-spec-review-infra-attribution-bridge
+            # 4.1）：自动冻结不自称「用户指令冻结」；「原状态 reviewing」子串
+            # 与 spec-review-incomplete 标记按红线保留（解冻还原 + 既有契约）。
             error_msg = (
-                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                f"{REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX}原状态 reviewing · "
                 f"spec-review-incomplete: 评审尝试已达上限"
                 f"（{MAX_REVIEW_ATTEMPTS}）"
             )
@@ -450,7 +473,15 @@ class SpecReviewManager:
                 return True
 
             # ③ 产物不合法 → 走既有重试语义（attempt 递增）
-            self._handle_review_failure(spec_name, f"评审 run 执行失败: {run_err}")
+            # 结构化归因随结果透传（evo-fix-spec-review-infra-attribution-bridge
+            # 1.3）：run 失败结果可能携带 api_error_status / conn_error（runner
+            # catch-all 从异常回填），分类层优先消费——异常路径 result=None 时
+            # getattr 缺省 None，自然回退文本分类。
+            self._handle_review_failure(
+                spec_name, f"评审 run 执行失败: {run_err}",
+                api_error_status=getattr(result, "api_error_status", None),
+                conn_error=getattr(result, "conn_error", None),
+            )
             return False
         self.logger.info("spec_review", f"评审 run 已收工: {spec_name} run_id={run_id}")
 
@@ -721,9 +752,10 @@ class SpecReviewManager:
                     self.pm_engine._enqueue(spec_name, "spec-review")
                 return True
 
-            # 达上限：方向确不成立，冻结转人工（原语义）
+            # 达上限：方向确不成立，冻结转人工（原语义）；评审专用冻结前缀
+            # （4.1），「原状态 reviewing」与 spec-review-rejected 标记保留。
             error_msg = (
-                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                f"{REVIEW_REJECTED_FREEZE_ERROR_PREFIX}原状态 reviewing · "
                 f"spec-review-rejected: {blocked_summary}"
             )
             self.state_machine.freeze_for_human(
@@ -1141,15 +1173,24 @@ class SpecReviewManager:
         except (OSError, AttributeError):
             return (False, None)
 
-    def _classify_run_failure(self, reason: str | None, spec_name: str | None = None) -> str:
+    def _classify_run_failure(
+        self,
+        reason: str | None,
+        spec_name: str | None = None,
+        *,
+        api_error_status=None,
+        conn_error=None,
+    ) -> str:
         """三类失败分类（evo-run-failure-classification-circuitbreaker D1）。
 
         扩展 evo-run-failure-artifact-first 的同名 `_classify_run_failure`（沿用同名，
         勿另开 `_classify_failure`）为三分 "artifact" | "infra" | "content"：
 
         - artifact：产物已落盘合法（调用 `_artifact_landed_valid`）；优先级最高；
-        - infra：指纹匹配（403/402/429/quota/budget/余额/insufficient balance/
-          rate limit / 既有 provider 熔断信号 "provider circuit open" /
+        - infra：结构化归因命中（api_error_status ∈ {402,403,429} /
+          conn_error 真值——evo-fix-spec-review-infra-attribution-bridge 1.3，
+          优先于文本词表）或指纹匹配（403/402/429/quota/budget/余额/insufficient
+          balance/ rate limit / 既有 provider 熔断信号 "provider circuit open" /
           "provider chain exhausted"——runner.py:2458/2473，供侧熔断同属 infra）
           或 CLI 进程级崩溃（error 含 "Exit code: N" 且 N 非 0/1——"Exit code: 1"
           不得一律判 infra，评审器内容失败同样 exit 1）；或 probe 标记
@@ -1159,6 +1200,11 @@ class SpecReviewManager:
         Args:
             reason: run 失败原因文本（可为 None）。
             spec_name: 可选；给出时前置校验产物是否已合法落盘，命中则判 artifact。
+            api_error_status: 可选结构化归因（单轮 API 错误状态码，来自
+                AgentRunResult.api_error_status）；非 None 时优先消费，命中
+                _STRUCTURED_INFRA_API_STATUS 即判 infra。
+            conn_error: 可选结构化归因（连接类标记，来自
+                AgentRunResult.conn_error）；真值即判 infra。
 
         Returns: "artifact" | "infra" | "content"。
         """
@@ -1172,6 +1218,22 @@ class SpecReviewManager:
             artifact_ok = landed[0] if isinstance(landed, tuple) else bool(landed)
             if artifact_ok:
                 return "artifact"
+        # 结构化归因优先（evo-fix-spec-review-infra-attribution-bridge 1.3）：
+        # stderr 降噪后文本指纹对限流类失败恒 False（只剩 "Exit code: 1"），
+        # runner 层挂载的 api_error_status / conn_error 是供给瞬态的第一手证据。
+        # 容错非 int 形态（防御性 int() 归一，脏值按未携带处理回退文本分类）。
+        if api_error_status is not None:
+            try:
+                status_code = int(api_error_status)
+            except (TypeError, ValueError):
+                status_code = None
+            if status_code in _STRUCTURED_INFRA_API_STATUS:
+                return "infra"
+        # 严格等值判定（对齐 :414 frozen_terminated `is True` 先例）：MagicMock
+        # 等替身在属性访问时自动生成 truthy 子对象，裸布尔会把无结构化归因的
+        # content 失败误判 infra——生产结果该字段为显式 bool/None，不受影响。
+        if conn_error is True:
+            return "infra"
         low = (reason or "").lower()
         # 监督超时前置排除（code-review item 4b0176280b0a）：须在指纹匹配之前——
         # "extension budget exhausted" 含裸指纹 "budget" 会被误判 infra；归 content
@@ -1204,6 +1266,7 @@ class SpecReviewManager:
     def _handle_review_failure(
         self, spec_name: str, reason: str, *, allow_artifact: bool = True,
         run_started_at: float | None = None,
+        api_error_status=None, conn_error=None,
     ):
         """处理评审失败：按失败分类落点（D1/D2）。
 
@@ -1211,6 +1274,11 @@ class SpecReviewManager:
         ——否则 consume → 边界错误 → _handle_review_failure → artifact →
         consume 无限递归（code-review item 4b9f59b8717f）。``run_started_at``
         透传给回流消费，保持 mtime 新鲜度校验。
+
+        ``api_error_status`` / ``conn_error``（evo-fix-spec-review-infra-
+        attribution-bridge 1.3）：AgentRunResult 的结构化归因字段原样透传给
+        ``_classify_run_failure``——归因桥接的最后一段，缺省 None 时分类走
+        既有文本词表回退，既有调用形态（不传这两个关键字）行为不变。
 
         - artifact：产物已落盘合法 → 直接消费（不重试，run-failure-artifact-first
           承接；`_artifact_landed_valid` 缺失时回退 content）；
@@ -1225,7 +1293,8 @@ class SpecReviewManager:
         startswith 契约）。
         """
         failure_type = self._classify_run_failure(
-            reason, spec_name if allow_artifact else None
+            reason, spec_name if allow_artifact else None,
+            api_error_status=api_error_status, conn_error=conn_error,
         )
 
         if failure_type == "artifact":
@@ -1304,7 +1373,9 @@ class SpecReviewManager:
             )
             self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts}")
             if self.pm_engine is not None:
-                self.pm_engine._enqueue(spec_name, "spec-review")
+                # content 失败重派短退避（evo-fix-spec-review-infra-attribution-
+                # bridge 3.1）：重派入队前加一档秒级短延迟（判重防重复定时器）。
+                self._enqueue_review_retry(spec_name)
         else:
             # 达上限转冻结转人工（fix-blocked-freeze-classification 2.2）：
             # admin 对「评审器连续失败」无操作杠杆（模型链/配置问题），
@@ -1313,8 +1384,11 @@ class SpecReviewManager:
             # bump_counters 写过 MAX+1，随本次冻结 extra_updates 显式清零
             # （清零口径不变，不覆盖并发写者增量的问题在此不存在）。
             r_id = entry.get("reviewer_run")
+            # 评审专用冻结前缀（4.1）：自动冻结不自称「用户指令冻结」；
+            # 「原状态 reviewing」子串与 spec-review-incomplete 标记按红线保留。
             error_msg = (
-                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · " f"spec-review-incomplete: {reason}"
+                f"{REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                f"spec-review-incomplete: {reason}"
             )
             self.state_machine.freeze_for_human(
                 spec_name,
@@ -1351,6 +1425,86 @@ class SpecReviewManager:
                 },
             )
             self.logger.warning("spec_review", f"评审失败达上限: {spec_name}")
+
+    # ── content 重试短退避（evo-fix-spec-review-infra-attribution-bridge 3.1）──
+
+    def _content_retry_backoff_seconds(self) -> float:
+        """content 失败重派短退避秒数（``review.content_retry_delay_seconds``）。
+
+        配置容错（对齐 backoff._transient_redispatch_delay 口径）：非法配置值
+        回退缺省，不中断重试链路；0 = 关闭退避（立即重派，既有行为）。
+        """
+        getter = getattr(self.pm_engine, "_get_config", None)
+        if not callable(getter):
+            return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
+        try:
+            val = float(
+                getter(
+                    REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY,
+                    REVIEW_CONTENT_RETRY_BACKOFF_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
+        # 负值/非有限浮点（.inf/.nan）按脏值回退缺省——同 backoff.py 对
+        # transient_redispatch_delay 的守卫口径（item e2d87491cc64）。
+        if not math.isfinite(val) or val < 0:
+            return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
+        return val
+
+    def _enqueue_review_retry(self, spec_name: str) -> None:
+        """content 失败重试入队：短退避延迟后入队（3.1）。
+
+        - 退避关闭（delay <= 0）或 pm_engine 未初始化定时器机制（CLI 形态 /
+          测试替身缺成员）：立即入队降级——退避属节奏优化非正确性依赖
+          （design 风险段），MUST NOT 因退避机制缺失丢失重派；
+        - 否则按 backoff._schedule_recovery_timer 范式排程一次性 Timer：
+          判重集合 ``_review_content_backoff_timers``（pm_engine 门面持有、
+          跨 SpecReviewManager 实例存续——本管理器每次派发重建，实例级集合
+          判不住跨派发重复）防重复定时器；到期回调重入队 + 重扫队列。
+          Timer 跨重启丢失即退回现状立即重派（recovery reviewing 分支兜底），
+          可接受。
+        """
+        pm = self.pm_engine
+        delay = self._content_retry_backoff_seconds()
+        timers = getattr(pm, "_review_content_backoff_timers", None)
+        scheduler = getattr(pm, "_schedule_recovery_timer", None)
+        if delay <= 0 or not hasattr(timers, "discard") or not callable(scheduler):
+            pm._enqueue(spec_name, "spec-review")
+            return
+        scheduler(
+            spec_name,
+            timers=timers,
+            resolve_delay=lambda _spec: delay,
+            min_delay=delay,
+            callback=self._fire_content_backoff,
+            scheduled_log=(
+                "评审质量失败短退避：'{spec_name}' 将在 {delay}s 后重派评审"
+                "（review.content_retry_delay_seconds）"
+            ),
+        )
+
+    def _fire_content_backoff(self, spec_name: str) -> None:
+        """短退避到期回调：摘判重标记 → 重入队评审 → 重扫队列。
+
+        对齐 backoff._fire_recovery_callback 范式（摘标记须持 ``_queue_lock``
+        ——与 ``_schedule_recovery_timer_locked`` 的锁内 add 同锁互斥）。
+        """
+        pm = self.pm_engine
+        timers = getattr(pm, "_review_content_backoff_timers", None)
+        lock = getattr(pm, "_queue_lock", None)
+        if timers is not None and lock is not None:
+            try:
+                with lock:
+                    timers.discard(spec_name)
+            except Exception:  # noqa: BLE001 — 摘标记失败不得阻断重派
+                self.logger.warning(
+                    "spec_review", f"短退避判重标记摘除失败: {spec_name}"
+                )
+        pm._enqueue(spec_name, "spec-review")
+        process_queue = getattr(pm, "_process_queue", None)
+        if callable(process_queue):
+            process_queue()
 
     # ── 人工恢复入口 ────────────────────────────────────────────
 

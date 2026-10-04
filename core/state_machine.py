@@ -63,6 +63,21 @@ class SpecStatus:
 FROZEN_FIELD = "frozen"
 FREEZE_ERROR_PREFIX = "用户指令冻结："
 
+# 评审自动冻结专用前缀（evo-fix-spec-review-infra-attribution-bridge 4.1）：
+# 评审自动冻结不得自称「用户指令冻结」，按根因取用可区分的评审专用前缀——
+# - REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX：评审器连续失败至尝试上限（结果硬门/
+#   写入边界/评审器内容失败等 content 类失败烧尽尝试预算）；
+# - REVIEW_REJECTED_FREEZE_ERROR_PREFIX：方案连续被评审否决达 MAX_REJECT_REDO。
+# 三条红线：① 调用点保留「原状态 reviewing」子串（parse_orig_status 解冻还原
+# 依赖）与 spec-review-incomplete / spec-review-rejected 标记子串；② 前缀不得
+# 命中 admin_monitor._INTENTIONAL_PAUSE_MARKERS 三短语、不得以 "frozen:" 开头
+# （不挪用有意等待豁免的文本判据——该豁免语义属人工冻结）；③ 冻结仍经
+# freeze_for_human「冻结+告警」成对入口。MUST NOT 据此修改 FREEZE_ERROR_PREFIX
+# 常量值——freeze_spec 人工冻结路径（本文件）与 parse_orig_status 文档契约
+# 依赖「用户指令冻结」前缀的有意豁免语义，动了即人工冻结豁免失效。
+REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX = "评审失败冻结："
+REVIEW_REJECTED_FREEZE_ERROR_PREFIX = "评审否决冻结："
+
 
 # ── SPEC 定时调度（add-spec-scheduling-controls D1）────────────────────
 # 单一事实源 = STATE.md entry 字段：start_after（定时拾取）与 frozen_until
