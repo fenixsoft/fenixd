@@ -674,7 +674,22 @@ class FenixDaemon:
         # 被保全引用的 worktree——清理与保全永不互删。
         # verify_redo_budget（fix-daemon-lifecycle-races D3）：重启恢复重验的
         # 预算阈值，缺省 3；恢复路径据此决定重验派发或冻结等待人工裁决。
-        _redo_budget = int(ConfigLoader.get(self.config, "agents.verify_redo_budget", 3) or 3)
+        # 非法值（非数字字符串等）回退缺省并留痕（code-review item
+        # 8f6bf8446388，同 admin.workers 范式）：裸 int() 抛 ValueError 会使
+        # start() 中断、daemon 启动即崩，supervisor 拉起即再崩循环（code-review
+        # item fc1f18a4eb95）。「or 3」语义保留：下游 state_machine 以
+        # max(1, int(verify_redo_budget or 0)) 收敛到至少 1，显式 0 并不能表达
+        # 「禁用预算」，故不改显式 None 判断（保守，不引入未验证的行为变化）。
+        raw_redo_budget = ConfigLoader.get(self.config, "agents.verify_redo_budget", 3)
+        try:
+            _redo_budget = int(raw_redo_budget or 3)
+        except (TypeError, ValueError):
+            self.logger.error(
+                "fenixd",
+                f"agents.verify_redo_budget 非法（应为正整数）: "
+                f"{raw_redo_budget!r}，回退 3",
+            )
+            _redo_budget = 3
         # 恢复期 re-merge-back 收口回调（fix-recovery-branch-anchor D4/4.2）：
         # recover_interrupted 内 re-merge 成功后的 PMEngine 侧副作用
         # （_clear_dispatch_conflict / _sync_task_progress / _reconcile_impl_budget
@@ -1169,10 +1184,24 @@ class FenixDaemon:
             from core.config import ConfigLoader as _CL
 
             self.admin_monitor.admin_cfg = _CL.get_admin_config(self.config)
-        # admin.workers 变更不热生效（worker 池在启动时定型）：提示重启后生效
+        # admin.workers 变更不热生效（worker 池在启动时定型）：提示重启后生效。
+        # 非法值（非数字字符串等）回退缺省并留痕（code-review item
+        # 8f6bf8446388，同启动路径守卫范式）：裸 int() 抛 ValueError 会越出本
+        # 方法，_config_snapshot 不更新、对齐持久化不落盘，此后每个热更新周期
+        # 重复失败刷屏（code-review item 0950743a8143）——此处仅用于对比提示，
+        # 非法时跳过比对，保证快照刷新与对齐持久化总能走到。
         if self._admin_executor is not None:
-            workers = int(ConfigLoader.get(self.config, "admin.workers", 2) or 0)
-            if workers != self._admin_executor._max_workers:  # noqa: SLF001 只读探测
+            raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
+            workers = None
+            try:
+                workers = int(raw_workers or 0)
+            except (TypeError, ValueError):
+                self.logger.error(
+                    "fenixd",
+                    f"admin.workers 非法（应为非负整数）: {raw_workers!r}，"
+                    "跳过 worker 池大小比对",
+                )
+            if workers is not None and workers != self._admin_executor._max_workers:  # noqa: SLF001 只读探测
                 self.logger.info(
                     "fenixd",
                     f"admin.workers 变为 {workers}，worker 池大小在 daemon 重启后生效"
@@ -2349,7 +2378,20 @@ class FenixDaemon:
             # 每轮重读间隔（对齐主循环自进化检查点的读法）：_maybe_reload_config
             # 热更新会原地刷新 admin_cfg 快照，interval_minutes 属性随之热生效。
             # float + 0.5 下限防 int 截断（0.5 类小数分钟变 0 再被 or 5 兜回缺省）。
-            interval = max(float(self.admin_monitor.interval_minutes), 0.5)
+            # 非法值（非数字字符串等）回退缺省并留痕（code-review item
+            # 8f6bf8446388，同主循环守卫范式，缺省口径一致回退 5 分钟）：裸
+            # float() 在逐轮 run_once 的 try/except 之外抛出会击穿整个巡检
+            # 线程，admin 监视永久停摆（code-review item 0c251f8d00a5）。
+            try:
+                interval = max(float(self.admin_monitor.interval_minutes), 0.5)
+            except (TypeError, ValueError):
+                self.logger.error(
+                    "admin_monitor",
+                    f"admin.interval_minutes 非法（应为数值分钟）: "
+                    f"{self.admin_monitor.admin_cfg.get('interval_minutes')!r}，"
+                    "回退 5",
+                )
+                interval = 5.0
             time.sleep(interval * 60)
             if not self.running:
                 break
