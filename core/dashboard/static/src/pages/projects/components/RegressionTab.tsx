@@ -702,10 +702,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               </Typography.Text>
               {awaitingStart ? <RunningProgressView waiting /> : null}
               <div style={{ textAlign: 'right' }}>
+                {/* 交叉 pending 门控（code-review item f80503ee8385）：任一回归
+                    动作在飞即禁用，对齐 overviewActions 三键 anyPending 与
+                    handleTrigger 守卫口径，避免点击被守卫静默吞掉无反馈 */}
                 <Button
                   type="primary"
                   loading={triggering}
-                  disabled={awaitingStart}
+                  disabled={awaitingStart || fixPending || issuesTriggering}
                   onClick={() => void handleTrigger()}
                 >
                   {triggerBtnLabel(false, awaitingStart)}
@@ -730,10 +733,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           {pollFailBanner}
           {awaitingStart ? <RunningProgressView waiting /> : null}
           <div style={{ textAlign: 'right' }}>
+            {/* 交叉 pending 门控（code-review item f80503ee8385）：任一回归
+                动作在飞即禁用，对齐 overviewActions 三键 anyPending 与
+                handleTrigger 守卫口径，避免点击被守卫静默吞掉无反馈 */}
             <Button
               type="primary"
               loading={triggering}
-              disabled={running || awaitingStart}
+              disabled={running || awaitingStart || fixPending || issuesTriggering}
               onClick={() => void handleTrigger()}
             >
               {triggerBtnLabel(running, awaitingStart)}
