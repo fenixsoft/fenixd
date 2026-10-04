@@ -1,6 +1,6 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { App, Button, Card, Menu, Select, Space, Typography } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
@@ -108,24 +108,34 @@ export default function SettingsPage() {
   // ff9fbfa71d51）
   const [verifyFocusSignal, setVerifyFocusSignal] = useState(0);
 
-  // 加载项目列表
+  // 加载项目列表（code-review item 5c15a853b040）：旧实现内联在空依赖 effect 里
+  // 仅挂载时拉取一次，失败后 projects 停在空数组且无任何重试触发点，daemon 瞬时
+  // 繁忙（503 server busy）会让项目级作用域在会话剩余时间内持续不可达，只能整页
+  // 刷新。现提升为稳定回调，供作用域 Select 下拉展开时懒重拉（见下方 Select 的
+  // onOpenChange）；loadingProjectsRef 写读同 ref 拦在飞重叠请求（同 savingRef
+  // 口径：setSaving 渲染生效存在 React 调度间隙，state 拦不住同帧连点）。
+  const loadingProjectsRef = useRef(false);
+  const loadProjects = useCallback(async () => {
+    if (loadingProjectsRef.current) return;
+    loadingProjectsRef.current = true;
+    try {
+      const data: OverviewData = await getOverview();
+      setProjects(data.projects.map((p) => p.name));
+    } catch (e) {
+      // 项目列表失败非阻断提示（code-review item 6776b8ee2ba9）：projects 停在
+      // 空数组，作用域下拉只剩「用户级」，项目级页签与回归质量配置全部不可达，
+      // 仅 console.error 会让用户误以为尚未注册任何项目。比照保存后刷新失败的
+      // message.warning 口径提示，不与配置加载失败的 loadError 横幅混为一谈。
+      message.warning(
+        `项目列表加载失败，项目级作用域暂不可用：${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      loadingProjectsRef.current = false;
+    }
+  }, [message]);
   useEffect(() => {
-    const loadProjects = async () => {
-      try {
-        const data: OverviewData = await getOverview();
-        setProjects(data.projects.map((p) => p.name));
-      } catch (e) {
-        // 项目列表失败非阻断提示（code-review item 6776b8ee2ba9）：projects 停在
-        // 空数组，作用域下拉只剩「用户级」，项目级页签与回归质量配置全部不可达，
-        // 仅 console.error 会让用户误以为尚未注册任何项目。比照保存后刷新失败的
-        // message.warning 口径提示，不与配置加载失败的 loadError 横幅混为一谈。
-        message.warning(
-          `项目列表加载失败，项目级作用域暂不可用：${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-    };
     loadProjects();
-  }, []);
+  }, [loadProjects]);
 
   // 加载配置
   useEffect(() => {
@@ -295,6 +305,11 @@ export default function SettingsPage() {
             <Select
               value={scope === 'user' ? USER_SCOPE : `project:${project}`}
               onChange={handleScopeSelect}
+              // 懒重试通道（code-review item 5c15a853b040）：下拉展开且项目列表
+              // 为空（挂载时拉取失败或尚未注册项目）则重拉一次，无需整页刷新
+              onOpenChange={(open) => {
+                if (open && projects.length === 0) loadProjects();
+              }}
               style={{ width: 200 }}
               options={[
                 { value: USER_SCOPE, label: '用户级' },
