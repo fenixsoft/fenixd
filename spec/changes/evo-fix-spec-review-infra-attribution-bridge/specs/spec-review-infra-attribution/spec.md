@@ -31,12 +31,16 @@ content（评审质量）类失败的重派 SHALL 在重派前施加短延迟退
 - **WHEN** 某 spec 连续 content 失败进入重派
 - **THEN** 两次重派间隔不小于配置的短退避，不再出现秒级三连败
 
-### Requirement: 冻结前缀区分供给瞬态与质量不达标
-评审冻结 SHALL 按根因区分前缀（供给瞬态 vs 评审质量不达标）；供给瞬态前缀 SHALL NOT 命中 _INTENTIONAL_PAUSE_MARKERS（避免被误判为有意等待而压制自动唤起），且 SHALL 保留「原状态 reviewing」子串供 parse_orig_status 解冻还原、SHALL 仍经 freeze_for_human 成对入口落冻结与告警。
+### Requirement: 冻结文案按根因区分且人工冻结契约不变
+评审自动冻结文案 SHALL 按根因使用与「用户指令冻结」可区分的评审专用前缀（自动冻结不得自称用户指令），SHALL NOT 命中 _INTENTIONAL_PAUSE_MARKERS 三短语或以 "frozen:" 开头（不得挪用有意等待豁免），且 SHALL 保留「原状态 reviewing」子串供 parse_orig_status 解冻还原、SHALL 仍经 freeze_for_human 成对入口落冻结与告警；freeze_spec 人工冻结路径的既有前缀与豁免语义 SHALL NOT 改变。供给瞬态类失败（结构化归因判 infra）SHALL NOT 进入冻结路径——其自动恢复由既有熔断冷却承载（不递增尝试、冷却期满自动重派）；走 freeze_for_human 的冻结置 frozen=True 后被有意等待豁免命中属「冻结转人工」预期语义。
 
-#### Scenario: 瞬态冻结可自动恢复
-- **WHEN** 供给瞬态类冻结发生
-- **THEN** 该 spec 不被 intentionally-paused 豁免跳过自动唤起，冻结文案含可解析的「原状态 reviewing」
+#### Scenario: 供给瞬态不冻结、冷却自动恢复
+- **WHEN** 评审 run 因 api_error_status=429 等供给瞬态失败且被分类为 infra
+- **THEN** 不递增 _review_attempts、不产生冻结，infra_breaker 武装冷却，冷却期满 dispatch_review 自动重派
+
+#### Scenario: 评审冻结文案区分且可解冻还原
+- **WHEN** 评审器连续失败达尝试上限触发冻结
+- **THEN** 冻结文案使用评审专用前缀（与「用户指令冻结」可区分）、含可解析的「原状态 reviewing」、不命中 _INTENTIONAL_PAUSE_MARKERS 且不以 "frozen:" 开头，冻结与告警成对落盘
 
 #### Scenario: 质量冻结语义不变
 - **WHEN** 评审质量不达标触发的冻结发生

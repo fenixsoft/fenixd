@@ -9,7 +9,7 @@
 1. （P0）归因桥接：AgentRunResult 增加 api_error_status / conn_error 结构化字段；run_spec_review 的 catch-all 从异常回填；_handle_review_failure 优先读结构化字段判 infra，文本分类作为回退——命中即走既有 infra 分支（不烧预算 + 熔断 30 分钟冷却自动生效），无需新增车道结构。
 2. （P0）评审在飞上限：评审车道增加在飞并发上限（_REVIEW_INFLIGHT_CAP，建议 2-3、可配），命中时条目保留队列不 pop，削掉批量晋升的并发峰值（风暴源头振幅）。
 3. （P1）content 重试短退避：评审质量类失败重派前加一档短延迟（判重 Timer），infra 分支语义不动（其节奏已由熔断负责）。
-4. （P1）冻结文案区分：供给瞬态冻结与评审质量冻结分前缀；硬约束——保留「原状态 reviewing」子串供 parse_orig_status 解冻还原、前缀不得落入 _INTENTIONAL_PAUSE_MARKERS 短语（否则有意等待豁免失效引发循环误报）、仍走 freeze_for_human 成对入口。
+4. （P1）冻结文案区分：评审自动冻结换用与「用户指令冻结」可区分的评审专用前缀（按根因分档）；硬约束——保留「原状态 reviewing」子串供 parse_orig_status 解冻还原、新前缀不得命中 _INTENTIONAL_PAUSE_MARKERS 短语或以 "frozen:" 开头（不得挪用有意等待豁免）、不得修改 FREEZE_ERROR_PREFIX 常量（freeze_spec 人工冻结的豁免语义依赖它）、仍走 freeze_for_human 成对入口。供给瞬态的自动恢复由第 1 条归因桥接 + 既有熔断冷却承载（infra 分类不冻结、不递增尝试），本条属冻结文案归因准确化，不改变冻结转人工语义。
 
 ## Impact
 
