@@ -12,7 +12,7 @@
 ## 1. evolution 车道 env 注入
 
 - [ ] 1.1 core/agent_runner/maintenance_runs.py：在 run_evolution 的 env_overrides 组装处（现约 :964-977）注入 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0"，仅作用于 evolution 车道；不改动 core/agent_runner/runner.py 的全局 env 构造（CLAUDE_CODE_ENABLE_TODO_TOOLS 等全局注入位保持不变）
-- [ ] 1.2 core/agent_runner/maintenance_runs.py：对 run_self_review / run_code_review 等「派子代理等汇总」型同构车道实测评估是否同样存在 600 秒击杀暴露，把「注入/不注入」的决策与理由以注释留痕；默认不改其行为
+- [ ] 1.2 core/agent_runner/maintenance_runs.py：评估同构车道的 600 秒击杀暴露——以证据评估（模板是否含子代理派发、既有转录有无后台派发与「Background tasks still running」stderr 签名），MUST NOT 为此新派真实 run。已知事实：run_code_review 属「派子代理等汇总」型（agents/code-review.md:28-36，已另有「禁 async 等待收工」守卫与分片直写纪律）；run_self_review 模板（agents/self-review.md）未含子代理派发，列作对照项。把「注入/不注入」的决策与理由以注释留痕；默认不改其行为
 
 ## 2. 进化提示词兜底约束
 
@@ -20,7 +20,7 @@
 
 ## 3. 上限击杀失败归因增强
 
-- [ ] 3.1 core/agent_runner/maintenance_runs.py：在 evolution 收尾契约缺失置 success=False 的分支（现约 :1022-1031）增加嗅探——读本 run 转录文件尾部若干 type: stderr 行，命中「Background tasks still running after 600s」子串（大小写不敏感）时，向失败 reason 追加「CLI 后台等待 600 秒上限击杀（CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS），子代理半成品随 run 作废」说明；转录不可读时静默跳过
+- [ ] 3.1 core/agent_runner/maintenance_runs.py：在 evolution 收尾契约缺失置 success=False 的分支（现约 :1022-1031）增加嗅探，实现为模块级辅助函数（与 _salvage_evolution_out 同型，供 4.2 直接单测）——读本 run 转录文件（.fenix/runs/ 下 {run_id}.jsonl）的全部 type: stderr 行（MUST NOT 全文件 grep：签名文本会以引用形态出现在 assistant/user 记录里，evo-1791134863 实测 19 处引用 vs 真 stderr 行 1 条），命中「Background tasks still running after 600s」子串（大小写不敏感）时，向失败 reason 追加「CLI 后台等待 600 秒上限击杀（CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS），子代理半成品随 run 作废」说明；转录不可读时静默跳过
 
 ## 4. 测试
 
