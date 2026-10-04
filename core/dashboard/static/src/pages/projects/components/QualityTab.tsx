@@ -717,6 +717,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       const res = await triggerCodeFixRun(project);
       setFixRunRestartTick((t) => t + 1); // 重启进度卡片轮询（见 fixRunRestartTick 注释）
       const wantedAt = res.requested_at;
+      // 防御守卫（与 handleTrigger 的 `if (!wantedAt) return` 口径一致）：
+      // 回链时间戳缺失时 isTriggerResultForRequest 恒不匹配，轮询必然空转到
+      // 超时并误报「触发结果尚未就绪」，此处提前返回如实反馈
+      if (!wantedAt) {
+        message.info('未收到触发回链时间戳，请稍后在进度卡片确认');
+        return;
+      }
       const deadline = Date.now() + FIX_RUN_RESULT_POLL_BUDGET_MS;
       let result: CodeFixRunResult | null = null;
       while (Date.now() < deadline) {
