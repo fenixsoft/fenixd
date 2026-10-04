@@ -1,7 +1,7 @@
 # 真相源目录契约与能力页格式
 
-<!-- knowledge: capability=knowledge-atlas-directory rev=1
-     sources=spec/archive/2026-10-05-add-knowledge-atlas -->
+<!-- knowledge: capability=knowledge-atlas-directory rev=2
+     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction -->
 
 `spec/knowledge/` 是项目知识真相源：只装「系统现在是什么规则」的常驻知识层；归档 SPEC 继续承担历史职责，两者以溯源链接互指。
 
@@ -9,7 +9,7 @@
 
 - 目录结构：`index.md`（总目录，列全部能力域与一行简介）、`domains/<域>/<能力>.md`（一能力一页，域为能力的业务聚类）、`adr/index.md` + `adr/ADR-NNN-<标题>.md`（决策索引与条目）、`README.md`（目录契约说明）。全目录 git tracked；首次蒸馏前允许只含 README.md 骨架。能力域由蒸馏 run 自动聚类生成，不预置人工清单；`_domain.md` 与 `index.md` 是导航层，由蒸馏 run 维护。
 - 能力页结构（Markdown，人类可读性优先）：H1 能力名（中文表述）→ 紧随的 HTML 注释 marker → 角色一句话 → `## 规则`（当前生效业务规则）→ `## 关键行为`（可选）→ `## 溯源`（来源列表）。
-- marker 机器接口：`<!-- knowledge: capability=<能力kebab名> rev=<整数,初始1> sources=spec/archive/<名1>[,<名2>...] -->`，脚本据此解析能力名、版本与来源链；sources 中每个路径必须指向真实存在的归档目录。
+- marker 机器接口：`<!-- knowledge: capability=<能力kebab名> rev=<整数,初始1> sources=<来源项列表> [part=<n>] [origin=archive|prehistoric] -->`，脚本据此解析能力名、版本与来源链；sources 校验按 origin 分支——archive 页（缺省）每项必须指向真实存在的归档目录，prehistoric 页允许 `git:<起始ref>-..<结束日期>` 区间锚点（契约见史前能力复原页）。
 - 规则段必须是蒸馏 run 以一致语言风格重写的当前事实：禁机械搬运 delta 原文，禁「本 SPEC 新增了/修复了/原先是/改为」等历史叙述措辞，历史演变只出现在溯源段。同一能力被多个 SPEC 先后修改时，规则段只保留最终态，被覆盖的旧规则从规则段消失而非新旧并列。
 - 溯源行格式 `- <归档日期> <spec名>（spec/archive/<完整目录名>/） — <该归档对本页做了什么>`；只给真实存在的归档目录加链接，史前复原与无归档的演变保持纯文本、不加链接。
 - 导航层盖戳：`index.md` 第 2 行为整源盖戳行、各域 `_domain.md` 第 2 行为域盖戳行（`> 最后更新：<YYYY-MM-DD HH:MM> <时区>`，每次蒸馏刷新，时间取调度方注入的当前本地时间、不得自报）；index 能力域表恒四列（域/简介/能力数量/更新时间），`_domain.md` 能力页表恒三列（页/简介/更新时间）——被本轮重写的页刷新时间，未涉及页保持原值。
@@ -20,3 +20,4 @@
 - 2026-10-05 add-knowledge-atlas（spec/archive/2026-10-05-add-knowledge-atlas/） — 新增本能力页：目录结构、能力页契约（marker 机器接口、规则段散文重写、溯源段）、150 行硬顶与主从分片拆页规则
 - 2026-09-29 真相源溯源行链接化+导航表格化（git:0b8044d4，无归档目录） — 溯源行改链接形态、导航层改表格登记、知识页签溯源弹窗接线
 - 2026-09-30 真相源更新时间盖戳+本地时区（git:77341632，无归档目录） — index/_domain 盖戳行与表格更新时间列契约，盖戳取本地时间
+- 2026-10-05 fix-knowledge-backfill-reconstruction（spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction/） — marker 增可选 origin 字段（archive 缺省 / prehistoric），sources 存在性校验按 origin 分支放行 git 区间锚点

@@ -238,3 +238,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-231](ADR-231-audit-two-tier-disposition-semantic-llm-only.md) | accepted | audit 病灶两级处置：机械项脚本直修直提交，语义项禁脚本改写必走定向蒸馏 run 由 LLM 终判重写，初筛宁松勿紧、误报判无矛盾零改动收场 |
 | [ADR-232](ADR-232-distill-run-main-tree-direct-no-mergeback.md) | accepted | 蒸馏 run 主树直跑无 merge-back（与 fast-track worktree 模式 deliberately 不同），格式对账与 git 提交不进 agent：daemon 侧 validate_knowledge 对账+违规回反馈 ≤2 轮+pathspec 限定提交，放弃产出 restore 不留半成品 |
 | [ADR-233](ADR-233-distill-trigger-single-funnel-commit-archive-move.md) | accepted | 蒸馏触发单点挂载归档共同漏斗 commit_archive_move：手工/自动归档/软删除三路径单点全生效，fail-open 不影响归档返回值，新增归档路径必须沿用漏斗否则视为放弃蒸馏 |
+| [ADR-234](ADR-234-backfill-distill-queue-ledger-registration-single-writer.md) | accepted | 回填期增量蒸馏排队=登记进回填台账而非内存队列/写者锁，spec/knowledge 单写者归零页级冲突，收敛（台账无 pending）后恢复即时派发，排队判定故障 fail-open 放行原派发 |
