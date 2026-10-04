@@ -35,6 +35,12 @@ import re
 # 叙述 + 字段赋值同句、无任何否定短语的句子仍会绕过限定，给未放行的本次父
 # SPEC 误写 _family_waiver=true（与上文两次实证误判同型）。现赋值型兜底复用与
 # 动词型相同的「本次处置」同句限定（_WAIVER_CURRENT_MARKERS 或本 spec 名同现）。
+# 处置文本分句分隔符（family_waiver_granted / infra_reclassify_rounds 共用）：
+# 句末标点（。！？\n）外补中文/英文分号——分号并列的「历史回拨/放行叙述；
+# 本次指令」此前会被并为一句，re.search 取句内首个命中会拿到历史数字或历史
+# 放行表述（code-review 83115be72911）。分句更细只会让「同句限定」更精确、
+# 更漏不误，与模块保守方向（宁可漏放行/漏回拨，不可误扣 fail_rounds）一致。
+_SENTENCE_SPLIT_RE = re.compile(r"[。！？；;\n]")
 _WAIVER_NEGATION_PHRASES = (
     "未放行",
     "不放行",
@@ -60,7 +66,7 @@ _WAIVER_GRANT_PATTERNS = (
 # 动词型放行模式命中句的「本次处置」限定词：命中句须含其一（或与本次父 SPEC 名
 # 同现）才算本次放行——他族谱/历史放行的叙述提及不构成对本次对象的放行。
 _WAIVER_CURRENT_MARKERS = ("本次", "该族", "本族")
-# 赋值型 _family_waiver=true 必须与放行动词同句（。！？\n 分句）才算显式放行，
+# 赋值型 _family_waiver=true 必须与放行动词同句（_SENTENCE_SPLIT_RE 分句）才算显式放行，
 # 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
 _WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
 
@@ -101,7 +107,8 @@ def family_waiver_granted(text: str, spec: str) -> bool:
     判定（沿用既有实证修正，与 ``_apply_family_waiver`` 文本兜底一致）：
       - 命中否定短语即不放行（保守方向：宁可漏放行、不可给未放行的父 SPEC
         错开派生口子）；
-      - 否则动词型/赋值型模式按句（。！？\\n）判定，命中句须为本次处置的
+      - 否则动词型/赋值型模式按句（_SENTENCE_SPLIT_RE 分句：句末标点外加
+        分号）判定，命中句须为本次处置的
         显式放行表述：含「本次/该族」限定词或与本次父 SPEC 名同现——叙述
         提及其他族谱/历史放行（「另一族谱已同意放行」「父 SPEC 此前已放行过
         一次」）且不含否定短语不构成对本次对象的放行（code-review
@@ -131,7 +138,7 @@ def family_waiver_granted(text: str, spec: str) -> bool:
     waived = any(
         any(m in sent for m in _WAIVER_CURRENT_MARKERS)
         or (isinstance(spec, str) and spec and spec in sent)
-        for sent in re.split(r"[。！？\n]", text)
+        for sent in _SENTENCE_SPLIT_RE.split(text)
         if any(re.search(p, sent) for p in _WAIVER_GRANT_PATTERNS)
     )
     if not waived:
@@ -149,7 +156,7 @@ def family_waiver_granted(text: str, spec: str) -> bool:
                 any(m in sent for m in _WAIVER_CURRENT_MARKERS)
                 or (isinstance(spec, str) and spec and spec in sent)
             )
-            for sent in re.split(r"[。！？\n]", text)
+            for sent in _SENTENCE_SPLIT_RE.split(text)
         )
     return waived
 
@@ -174,7 +181,9 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     否定短语命中时保守返回 0（宁可漏回拨不可误扣 fail_rounds）。
 
     与 family_waiver_granted 同范式（code-review 666155d105ae）：按
-    。！？\\n 分句判定，命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_
+    _SENTENCE_SPLIT_RE 分句（句末标点外加分号——分号并列的历史回拨叙述与
+    本次指令不再同句，避免句内首命中取到历史轮次，code-review 83115be72911），
+    命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_
     MARKERS）或与本次 spec 名同现才算本次回拨声明——处置叙述对历史/其他
     spec 的回拨提及（「此前已回拨 2 轮」「另一族谱已回拨 3 轮」）且不含
     否定短语不构成对本次对象的回拨指令。spec 为 None/空串/非 str 时同现
@@ -192,7 +201,7 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     if is_reclassify_negated(text):
         return 0
     for pattern in _RECLASSIFY_GRANT_PATTERNS:
-        for sent in re.split(r"[。！？\n]", text):
+        for sent in _SENTENCE_SPLIT_RE.split(text):
             m = re.search(pattern, sent)
             if not m:
                 continue
