@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-review-midflight-signals rev=1 sources=spec/archive/2026-10-03-add-self-review-midflight-signals -->
+<!-- knowledge: capability=self-review-midflight-signals rev=2 sources=spec/archive/2026-10-03-add-self-review-midflight-signals,spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution -->
 
 # 自省中途信号采集（含成功 run）
 
@@ -12,7 +12,7 @@
 - 样本不足不出假离群：组内有效样本 < 3 时该维度跳过（2 个样本互为彼此的离群对照无意义）；某维度全组值为 0/缺失时跳过（部分 provider 不回传 cost_usd，不产假离群）。
 - 索引缺失不判离群：run_metrics 索引查不到的 run（旧日志轮转出窗）跳过初筛，不视为离群也不报错。
 - 深扫仅限离群 run：无离群 run 时深扫环节整体跳过；深扫覆盖事件流全程（停滞与中途 error 分布在转录中段，尾部窗口会复刻终态分类盲区）。
-- 深扫采集两类信号：停滞信号复用 `core.agent_runner.latency` 纯函数（`latency_samples_from_events` + `latency_stats`），报告 stall 计数与最长往返秒数，阈值沿用 `LATENCY_STALL_SECONDS=60.0`；中途 error/stderr 事件记计数 + 首条摘要（截断，当前 ≤140 字符）。
+- 深扫采集两类信号：停滞信号复用 `core.agent_runner.latency` 纯函数（`latency_samples_from_events` + `latency_stats`），报告 stall 计数与最长往返秒数，阈值沿用 `LATENCY_STALL_SECONDS=60.0`；中途 error/stderr 事件记计数 + 首条摘要（截断 ≤140 字符）。stderr 摘要与计数按噪声分离：首条摘要跳过 CLI 启动期诊断噪声行（判别统一经 provider_circuit 噪声入口，见 [cli-stderr-noise-filtering](../run-resilience/cli-stderr-noise-filtering.md)），全噪声置空；`stderr_count` 只计非噪声行，噪声行单独计入 `stderr_noise_count`。
 - 深扫必须流式逐行解析（逐行 `readline` + 单行 `json.loads`，坏行跳过），禁止将整文件读入内存（单行事件可达数 MB）；单 run 深扫行数上限 20000 行，超限停止并标注 `truncated`，不抛异常。
 - 编排救回痕迹按「关键词 → 组件」成对归集：`provider switched`（agent_runner，换道）、`in-place retry`（agent_runner，transient 退避续跑）、`gave up`（pm_engine，派发收尾 error）。泛词 retry 不得单独成模式（会卷入 event_bus 无关行），组件错配行不卷入；关键词清单为模块常量并注释来源日志语句，日志文案变更时单点维护。
 - 痕迹不按 run_id 关联：相关日志行的 run_id 口径不统一（部分行只有 spec 名），按关键词归组计数 + 每组最多 5 条样本（时间戳 + 摘要截断）已足够自省 LLM 与 runs 统计、失败样本交叉核对；不引入第三个 run_id 解析口径。
@@ -29,3 +29,4 @@
 ## 溯源
 
 - 2026-10-03 add-self-review-midflight-signals（spec/archive/2026-10-03-add-self-review-midflight-signals） — 新增第六数据源：量化离群初筛（同 agent_type 中位 ×3、样本 <3 跳过）、离群 run 事件流流式深扫（stall/中途 error、2 万行截断）、编排救回痕迹关键词归集；只进摘要不进告警，采集器故障降级不阻断自省
+- 2026-10-05 evo-reduce-cli-stderr-noise-attribution（spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution） — 修订深扫 stderr 采集：首条摘要跳过 CLI 启动期诊断噪声行、全噪声置空，判别统一走框架噪声常量（stderr 计数噪声分离双计数由已实现未归档变更 evo-split-self-review-stderr-noise-count 落地，一并按最终态记载）

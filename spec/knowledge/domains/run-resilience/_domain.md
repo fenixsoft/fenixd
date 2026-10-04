@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-10-04 03:36 UTC+8
+> 最后更新：2026-10-05 04:08 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -34,3 +34,4 @@
 | [lifecycle-hygiene](lifecycle-hygiene.md) | run 生命周期卫生 | 2026-10-03 04:59 |
 | [cli-retry-backoff](cli-retry-backoff.md) | CLI 退避重试 | 2026-10-03 04:59 |
 | [run-stop-loss](run-stop-loss.md) | run 级止损（attempt 间隙取消/重试让位/停滞预算） | 2026-10-04 03:36 |
+| [cli-stderr-noise-filtering](cli-stderr-noise-filtering.md) | CLI stderr 诊断噪声统一判别与降噪（判别单源、深扫摘要与回填归因消费端、admin 证据豁免） | 2026-10-05 04:08 |
