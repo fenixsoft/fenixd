@@ -1,18 +1,7 @@
 ## 2026-10-02
 
 ### 知识真相源
-- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 4 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
-
-## 2026-10-03
-
-### 浪费
-- **code-fix 连续 4 天 04:31 双 run 死于网关拒模型，单批损失 28 分钟工作量**
-  - 自进化：问题成立 / 建议部分合理 / — 不需要
-  - 影响：code-fix 车道（夜间批量修复 code-review 审查台账的维护车道）连续 4 天在每日本地 04:31 前后各报废 2 个 run，累计 8 个；最重的一次（run code-fix-1790884995）跑了 28 分 07 秒、368 轮 API 往返、789 turns、372 次工具调用（含 84 次 Edit），全部随弃树蒸发，同批条目由后续批次重做一遍；每天还额外烧一次 0 轮秒败派发。
-  - 证据：fenixd.log 中 4 天失败时刻精确到秒复现（UTC 20:31:22.8 / 23.4 / 23.1 / 22.2）：09-28 run code-fix-1790627269（1 轮）与 code-fix-1790627486（0 轮）、09-29 code-fix-1790713696 与 1790713886、09-30 code-fix-1790800112 与 1790800286、10-01 code-fix-1790884995（368 轮）与 1790886686（0 轮），stderr_tail 均为 [claude-code:unrecognized_model]（模型网关拒绝 glm-5.3-flash 的报错），exit_code=1、api_timeout=True（单轮 API 请求超时/错误终局签名）；日志行 33221/36106/38182/38795。
-  - 调查评估：已核实：失败 run 无分支留存（git branch 无 fenix/code-review-fix-1790884992/1790886683），worktree_manager 记「Cleaning up worktree ... (success=False)」；死亡时工作区干净，api_timeout 终局的 WIP salvage（未提交现场即时抢救提交，evo-code-fix-api-timeout-salvage 2.1）按设计跳过。损失边界已核实为重复算力而非发现丢失：台账 .fenix/code-review/items.jsonl 共 4082 条、open 为 0，被弃两批涉及文件的 10 条抽样 findings 已于 20:03/22:33 UTC 由同链其他批次解决。根因：失败时刻跨 4 天精确到秒复现、窗口仅约 100 秒（20:33:07 起的第 5 批即成功），判定为上游模型网关每日固定窗口短暂拒绝 glm-5.3-flash（具体根因未核实，无法从仓内取证）；run 本身无失误。与存量工作关系：add-provider-failover 的切换冷却与拒模型快切（provider_circuit.py）覆盖 spec/impl 车道，code-fix 车道本次未触发任何切换/冷却路径，车道按 api_timeout 签名走 salvage 后 4 秒即重派下一批、再次撞进同一窗口；active 区 add-provider-health-check 是人工一键健康检测，不覆盖自动耐受。结论：外部窗口 × 车道无耐受的系统性浪费，逐日复发中。
-  - 建议：先加只读观测：对「同一 stderr 签名 + 同刻连发 ≥2 天」做跨日聚合告警，把上游窗口显性化；随后按改进条给 code-fix 车道接拒模型短冷却，避免窗口内重派。
-
+- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 5 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
 
 ## 2026-10-04
 
@@ -24,18 +13,34 @@
   - 调查评估：在 code-fix 夜间批与 8 个 evo spec 的出题/实现/评审并行推进时暴露。已核实：根因是上游 provider（bigmodel.cn）连接类瞬态，非框架失误；耐受机制按设计工作——36 次原地重试救回大部分在跑 run，进化产物部分回收 4/11 由已落地的 evo-add-evolution-product-salvage（自进化产物抢救，5/5 任务验证通过）完成，缺失 7 条由下轮幂等去重补齐、无永久丢失。与存量工作关系：10-03#可改进#1 对应的 evo-add-codefix-conn-error-cooldown 已于当晚合并（5dcf0666），但本窗口未见冷却武装痕迹（fix-progress.json 的 switch_cooldown_until 仍为 null、新 signal_type 告警 0 条），code-fix 下一批 20:41:57 才派出更可能由 20:31 的全局冻结代偿——冷却是否真能拦截本死因，归因未证实；另该 spec 非目标栏已声明 administrator/self-review/evolution 等兄弟车道同型盲点留待后续。结论：外部瞬态为主因、损失已被压到个位 run，不值得新立项；残余缺口是冷却触发的可观测性与分类词表对本死因（api_timeout 终局形态）的覆盖。
   - 建议：给 code-fix 车道冷却（_arm_switch_cooldown）补「触发/跳过」双侧日志留痕（现状仅写盘异常落 WARNING），下一个同刻窗口按日志归因验证拦截效果；同时复核连接类失败分类词表对 api_timeout 终局加工作区干净形态的命中，未命中则扩词表而非新增机制。
 
+
+## 2026-10-05
+
+### 浪费
+- **04:31上游瞬态窗口第6夜复发，在跑批仍死但首次零蒸发**
+  - 影响：上游 provider 瞬态窗口连续第 6 夜在本地 04:31 前后击杀在跑 code-fix 批（夜间批量修复 code-review 台账的车道），但本次零工作蒸发：整夜只死 1 个 run（此前每晚双 run 蒸发），另致 2 次全局派发冻结（Global transient break，全局瞬态熔断，各 600 秒合计 20 分钟）与全窗口 25 次 in-place retry（原地重试）；整条 code-fix 链最终交付 resolved=127 条台账修复。
+  - 证据：run code-fix-1791058640（当夜在跑批）于 2026-10-03T20:32:40Z（本地 04:32）api_timeout 终局（单轮 API 请求超时/错误类终局签名）：142 轮 API 往返、255 turns、144 次工具调用，stderr 为 [claude-code:unrecognized_model]（网关拒模型行），死因为 API Error: Can't reach the API server（ENOTFOUND，DNS/连接失败）；4 秒后告警 93e461c553da（code_fix_switch_window_deferred 冷却武装信号）记录 300 秒冷却生效，告警 76d67a9b9df4（冷却解除信号）记录同链下一批实际推迟 977 秒；fenixd.log 行 44338 记「未提交现场已 salvage 提交到批分支……下批认领继承」（salvage 即未提交现场抢救提交）；23:33:15Z 链 rollup（整链收尾汇总）runs=10 resolved=127 ignored=1；两次全局熔断触发于 19:40:30Z 与 20:25:18Z，25 次原地重试 provider 均为 bigmodel.cn。
+  - 调查评估：在 code-fix 夜间批与 evo 管线并行推进时暴露，是 2026-10-04#浪费#1（第 5 夜风暴）的延续：失败同刻（04:31±1 分）复发、根因仍是上游 bigmodel.cn 瞬态（今晚为连接类 ENOTFOUND 与拒模型 stderr 同现），非框架失误。已核实两条既有防线今晚首次同台实弹生效——evo-add-codefix-conn-error-cooldown（code-fix 连接类失败短冷却，merge 5dcf0666）武装并把下一批推迟 977 秒避开窗口，「每晚双 run 死亡」形态消失；evo-code-fix-api-timeout-salvage（api_timeout 终局的现场抢救）把 142 轮未提交现场提交进批分支由下批继承，整链无重做。结论：外部窗口仓内不可修，损失已收敛到「在跑 run 死亡一次、零蒸发」，不值得新立项；残余为每日仍烧一次在跑 run 的死亡-重启开销，以及 10-03 条建议的「同一 stderr 签名 + 同刻连发 ≥2 天」跨日聚合观测仍未落地。
+  - 建议：落实跨日聚合只读观测（同一 stderr 签名 + 同刻连发 ≥2 天即聚合告警），把上游窗口显性化为可追踪信号；在跑 run 的单次死亡开销暂容忍，待窗口消失后复核冷却与 salvage 是否可退场。
+
+- **自进化run被后台任务600秒上限击杀，299 turns全重跑**
+  - 影响：1 个自进化分析 run（189 轮 API 往返、299 turns、191 次工具调用）连同其派出的 3 个只读核查子代理的半成品全部作废，26 分钟后同任务整体重跑一遍（又耗 166 轮、299 turns），单次事件约双倍消耗一个完整分析。
+  - 证据：run evo-1791048570（自进化复核 fenixd todo.md 三条既有条目）于 2026-10-03T17:43:35Z 报「自进化分析 run 失败（水位不推进）: 产物文件未写出」；其转录尾部 stderr 为「Background tasks still running after 600s; terminating. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.」（CLI 后台任务等待 600 秒上限强制终止），result 字段只是中期文案「已派出：3 个只读核查子代理……各子代理完成后我将逐条起草判定」；重跑 run evo-1791049605 于 18:09:17Z 落地完成（3 条目、接受 2、草稿 2）。
+  - 调查评估：在自进化 agent（框架自进化复核者）复核 10-04 三条既有条目（网关风暴/告警误记/合回冲突）时暴露。已核实：agent 把核查拆给 3 个后台子代理后结束回合，CLI 按 600 秒后台等待上限强杀仍在跑的子代理，主 run 以中期消息充当 result 终局、产物 json 未写出；框架「水位不推进」探测（产物文件缺失即判失败并重派）正确兜底，重跑因子代理在时限内完成而成功。根因：自进化「派子代理-等待-汇总」工作流与 CLI 后台等待 600 秒上限硬冲突，属编排配置缺口而非模型失误。与存量工作关系：active 区 evo-add-api-stall-observability（API 停滞观测）与 evo-add-impl-run-budget-sizing（run 预算）均不覆盖该上限。结论：确定性缺口，凡子代理核查超 600 秒必复发，值得一次小专项。
+  - 建议：给自进化等「派子代理等汇总」型 run 注入 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0（无限等待后台任务），或在进化提示词中约定子代理前台执行、分片结果即时落盘可续跑；并把「result 为中期文案且产物缺失」的失败归因直接指向该上限，省去下轮诊断。
+
 ### 失误
-- **全局告警误选 spec 处置动作，失败仍记 resolved**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：1 条 critical 级 daemon_errors 信号（告警 ce27a93f9dca，即 spec_review 评审 run 连败指纹 10 分钟内复现 2 次的升级信号）以未执行的动作收口：处置动作 retry_review（重派评审）执行失败，信号却回写 handled=true 与 result=resolved，处置台账与实际动作不符；本次无直接算力损失（底层评审已由 orphan ready 恢复自愈重派并通过），风险在处置记录可信度与同类信号的处置有效性。
-  - 证据：2026-10-02T20:29:59Z admin_monitor 同秒双日志：「处置终态（result=resolved）已回写信号 handled=true（id=ce27a93f9dca，daemon_errors）」与「处置 choice 执行失败 choice_id=retry_review spec='global': spec not found: global」（fenixd.log 行 40820）；该告警记录 spec=null（全局指纹信号无关联 spec），处置方为 admin run admin-global-1790972103（35 轮、82 turns）。
-  - 调查评估：在处置 spec_review 连败升级信号时暴露。已核实：retry_review 是 spec 作用域动作（需按 spec 名查状态机重派评审），而全局信号 spec=null 被占位为字符串 'global' 直接查证失败；终态回写不校验 choice 执行结果，动作失败与 resolved 并存，且告警记录 action_taken 与 result 字段均为 null、未留实际动作痕迹。根因归属：通道设计缺口而非 admin 会话单次失误——「全局信号 × spec 作用域 choice」组合无路由防护，任一全局告警选到此类动作都会复现。与存量工作关系：active 区 add-adjudication-alert-narrative（告警叙事）与 evo-signal-preprobe-handled-writeback（预探写回）均不覆盖处置路由。结论：低频（窗口内 8 条处置仅 1 次失败）但属通道正确性缺口，值得一次小专项。
-  - 建议：execute_adjudication_choice 对 spec 为空或占位 'global' 的信号过滤 spec 作用域 choices（retry_review 等）或提供全局等价动作（如「自愈确认/继续观察」）；choice 执行失败时 MUST NOT 回写 resolved（改 failed 并保留信号待重审），并把 choice 执行结果写入告警 action_taken 字段留痕。
+- （当日无）
 
 ### 可改进
-- **code-fix 合回冲突整批即弃，完工产物全重做**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：复发敞口：一整条链完工后毁于合回冲突即全量重做——本次实测 2 个 run、700 turns、350 次工具调用全弃（resolved=0、2 条台账条目被忽略后由新链重做），约 1 小时批处理算力双倍消耗；该类「合回冲突即弃」10 天内已第 4 次（09-23、09-24 两次、本次），按每 3-4 天一次的频度持续放血。
-  - 证据：2026-10-02T21:29:32Z code-fix 第 1 批回归未通过定向重试，21:34:48 重试 run code-fix-1790976572 完成（25 轮），21:40:52 合并预演检出分支 fenix/code-review-fix-1790973716 与 main 在 core/state_machine.py 语义冲突，随即「现场即弃（branch/tip_sha 入档案）」并出链终局 rollup（runs=2 turns=700 tool_uses=350 resolved=0 ignored=2），21:41:57 新链释放失败档案重做；冲突前 1 小时内 main 侧同文件刚被 evo-fix-resume-base-branch-portability 落地推进（commit 749d3e88 及其合并 3a9ff694，UTC 20:56-20:57）。
-  - 调查评估：在 code-fix 夜间批与 evo 管线夜间批量合回并行时暴露。已核实：合回冲突在 core/code_fix.py:4436-4465 属「真冲突」分支，按 selfheal D2 设计整批现场即弃（branch/tip_sha 入失败档案、条目带 fail_count 预算下轮自动重试），仅主树 WIP 预检阻断（wip_gate_blocked）走 defer 零预算路径；根因是链生命周期约 1 小时内基线前移，批完工才首次做合并预检，检出即全弃——而分支按 add-codefix-commit-first-contract 契约（已归档）本就逐条 commit，条目级回收在结构上可行。与存量工作关系：evo-merge-back-wip-overlap-gate（在飞、0/10 任务）只管主树未提交 WIP 重叠，不覆盖已提交内容冲突；evo-fix-resume-base-branch-portability 已统一基线分支解析，rebase 目标现成。结论：确定性缺口、复发频度稳定，值得立项。
-  - 建议：起草 SPEC：合回冲突即弃前插入一次定向救回——分支 rebase 到当前基线（复用统一基线解析器）并重跑批回归，最多 1 次；rebase 仍冲突则按条目 commit 粒度 cherry-pick 回收非冲突条目（commit-first 契约已保证提交边界），仅冲突条目入失败档案计 fail_count，验收以「冲突即弃链的 turns 重复消耗下降」为准。
+- **评审重试无退避，429风暴18秒烧光3次预算冻住3个spec**
+  - 影响：复发敞口：上游瞬态（限流/断连/拒模型）撞上批量评审窗口时，每个 spec 的 3 次评审重试会在约 20 秒内全灭并触发冻结，随后需一次 admin run（告警处置会话，本轮 36 轮）人工解冻；本轮实测 8 个 spec 同时晋升、19:31-19:39 共 34 条评审失败日志、3 个自进化 spec 被冻（evo-add-attribution-dedup-cascade-exemption、evo-fix-v2-devserver-fallback-attribution、evo-fix-verify-parallel-override-type）。
+  - 证据：pm_engine（编排引擎）于 19:31:04-09Z 五秒内把 8 个 spec Auto-promoting（自动晋升）drafted→reviewing 并同时派评审；evo-fix-verify-parallel-override-type 三连败时刻为 19:31:12.6/16.8/26.0Z（attempt 1→2→3，重派间隔仅 4.2 秒/9.2 秒，0-1 轮即死）；处置记录 827b4f2fe0c8（本轮 admin run 的终态诊断）核实失败转录 api_error_status=429「您的账户已达到速率限制」（bigmodel.cn 1302）；STATE 冻结标记却套「用户指令冻结」模板；19:40:21Z 经人工裁决通道（channel=manual）解冻重派后 19:47:10Z 评审通过。
+  - 调查评估：在 8 个自进化 spec 批量晋升评审时撞上账户级限流暴露。已核实：spec_review 的失败重试是失败即重派、无退避，且把供给类瞬态失败与评审质量失败同权计入 3 次预算，瞬时风暴必然烧光预算误触发冻结；冻结 error 前缀「用户指令冻结」与真实根因无关，误导诊断（admin 需先解包指纹才发现 429）。根因归属：评审车道缺少对限流类失败的分类与节奏控制，系统性缺口而非单次失误。与存量工作关系：evo-add-code-review-ratelimit-resume（全仓审查车道 429 分类+300 秒冷却+剃余重派，STATE 已 pushed）与 evo-add-codefix-conn-error-cooldown（code-fix 车道连接类短冷却，已 pushed）都在兄弟车道落地了同型防护，spec_review 车道独缺。结论：确定性缺口、有现成模式可复用，值得立项。
+  - 建议：起草 SPEC：spec_review 对限流/连接类失败（429、ENOTFOUND、拒模型等瞬态签名，复用 classify_ratelimit_error 分类词表）不计入 3 次评审预算，改走带退避的短冷却重试；批量晋升评审时对并发派发做错峰；冻结标记区分「评审质量不达标」与「供给瞬态」两类前缀，避免「用户指令冻结」误导后续诊断。
+
+- **admin run动作已执行但终态未落账即死，处置滞留pending**
+  - 影响：复发敞口：admin run（告警处置会话）在「动作已执行、终态未落账」窗口死亡时，处置记录永久滞留 pending、告警滞留 partially-resolved，台账无法反映已处置事实，后续会话可能重做诊断或误判信号未处理；本轮 pending 处置已滞留 21 小时以上无消费。
+  - 证据：run admin-global-1791056118（处置 429 冻结信号的全局 admin 会话）于 19:40:21Z 已执行三个被冻 spec 的解冻重派（channel=manual 人工裁决通道，note=重派评审（人工裁决），三 spec 现均已 pushed），但自身 19:44:56Z 死于 [claude-code:unrecognized_model]（共 36 轮）；其终态处置记录 827b4f2fe0c8 停在 result=partially-resolved、handled=False，摘要停留在「计划动作：……解冻重派评审，随后写最终处置记录」；占位记录 613d42266fdb（pending 处置，admin_run_id 指向已死 run）创建于 19:35:18Z，至今无任何后续日志。
+  - 调查评估：在处置限流冻结信号时暴露，与已闭环的 2026-10-04#失误#1 互补但不同层——那题守「失败不得误记 resolved」（evo-fix-global-signal-choice-execution 已修，merge 2bca125c），本题是「成功来不及记账」：choice（处置动作）执行与终态落账非原子，run 进程死亡时无人代写。已核实：动作本身全部生效（STATE 三 spec 均 pushed），仅台账失真；AdminMonitor（告警与处置监控组件）有孤儿处置升级机制，但该记录滞留 21 小时仍 pending，升级未见闭环消费。与存量工作关系：evo-signal-preprobe-handled-writeback（已归档）管唤起前预探写回，evo-add-adjudication-alert-narrative（在飞）管告警叙事，均不覆盖孤儿处置收敛。结论：低频（需恰死在动作后落账前）但属台账可信度缺口，可小专项解决。
+  - 建议：起草 SPEC：admin 收尾按 choice 粒度小步持久化（每执行一个动作即落一条处置事件）；AdminMonitor 收敛孤儿处置时核查「动作是否已实际生效」（如解冻已发生即补记 resolved 并注明补记），而非无限期滞留 pending。
