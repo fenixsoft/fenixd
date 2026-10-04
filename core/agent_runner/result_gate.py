@@ -1941,6 +1941,9 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
     if spec_name and report_path.is_file():
         try:
             cr_data = json.loads(report_path.read_text(encoding="utf-8"))
+        # [fenix-ignore:ab11f8ece35d] except 元组已含 RecursionError（超深嵌套
+        # 报告按「收尾审查报告无法解析」违规行 fail-closed，同
+        # _check_artifact_json_file 口径），所指漏洞不存在
         except (OSError, ValueError, UnicodeDecodeError, RecursionError) as e:
             # RecursionError：超深嵌套 JSON 会让 json.loads 抛 RecursionError
             # （非 ValueError 子类，同 _check_artifact_json_file 口径）——
