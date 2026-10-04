@@ -992,17 +992,25 @@ class PromptBuilder:
         """
         rel_dir = ""
         try:
-            from core.verify_contract import load_verify_contract
+            from core.verify_contract import (
+                default_evidence_dir,
+                load_verify_contract,
+            )
 
             contract = load_verify_contract(self._pm.project_root, logger=None)
             if contract is not None:
                 rel_dir = contract.resolve_evidence_dir(spec_name)
+            if not rel_dir:
+                rel_dir = default_evidence_dir(spec_name)
         except Exception:  # noqa: BLE001 — prompt 软约束 fail-open
             rel_dir = ""
         if not rel_dir:
-            from core.verify_contract import default_evidence_dir
-
-            rel_dir = default_evidence_dir(spec_name)
+            # 最终兜底（code-review item e2d71bbe1a6a）：core.verify_contract
+            # 模块级导入/加载整体失败时不再让 ImportError 冒泡中止 _build_prompt
+            # （派发中止）——本地硬编码缺省目录，与该模块 DEFAULT_EVIDENCE_DIR_
+            # TEMPLATE（".fenix/verify-evidence/{spec}"）字面等价，任何导入路径
+            # 失败都只回退缺省 rel_dir。
+            rel_dir = f".fenix/verify-evidence/{spec_name}"
         abs_dir = Path(self._pm.project_root) / rel_dir
         return (
             "\n\n## 验证证据落位（.fenix/verify-evidence/<spec>/，强制）\n"
