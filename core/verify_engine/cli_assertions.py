@@ -659,14 +659,17 @@ class CliAssertionRunner:
         # 「未设置」哨兵非显式 null）——缺参时 exact 的 None==None 会把目标
         # 值为显式 null 的假通过计入裁决，contains 则滑进 str(None)="None"
         # 子串比对（验收期必填表 ASSERTION_REQUIRED_FIELDS 已登记 expected，
-        # 此处兜住运行期自愈/绕过验收的调用路径）
-        if expected is _MISSING or expected is None:
+        # 此处兜住运行期自愈/绕过验收的调用路径）；空串仅拦 contains/regex
+        # （`"" in str(actual)` 对任意 JSON 子树恒真、空正则恒匹配），exact
+        # 空串对字符串子树是合法期望故放行（与 _assert_output_match /
+        # _assert_file_content 的判空口径对齐）
+        if expected is _MISSING or expected is None or (expected == "" and mode != "exact"):
             return {
                 "type": "json_output",
                 "layer": 3,
                 "step": a.get("step"),
                 "path": path,
-                "expected": None,
+                "expected": None if expected is _MISSING else expected,
                 "mode": mode,
                 "negate": negate,
                 "pass": False,
