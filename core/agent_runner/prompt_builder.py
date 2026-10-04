@@ -1637,7 +1637,8 @@ class PromptBuilder:
         - {todo_md_content}: read_todo=true 时的既有 todo.md 全文；
           关闭或不存在时为占位提示（Agent 无需区分）
         - {todo_entries}: read_todo=true 时 ID 标注的近 3 日条目清单
-          （闭环判定对象）；关闭或无条目时为占位提示
+          （闭环判定对象），空窗口渲染「（近3日窗口内无既有条目）」；
+          read_todo=false 时为显式未收集陈述；意外空值才落兜底提示
         - {out_path}: 回顾 JSON 写入路径（.fenix/self_review_out-<run_id>.json）
         """
         template = self._load_agent_template("self-review")
@@ -1665,8 +1666,13 @@ class PromptBuilder:
                 or "（无数据）",
                 "{todo_md_content}": _str_field(detail.get("todo_md"))
                 or "（read_todo 关闭或 todo.md 不存在，不注入）",
+                # or-fallback 收窄为意外空值兜底（evo-add-self-review-todo-
+                # fallback-honesty）：组装侧（self_review._execute_review）已
+                # 保证注入值非空——read_todo=false 给显式未收集陈述、true 给
+                # render_todo_entries 渲染（含空窗口结论）；本兜底仅测试/异常
+                # 构建路径触达，文案与两种真实状态均可分辨。
                 "{todo_entries}": _str_field(detail.get("todo_entries"))
-                or "（近3日窗口内无既有条目）",
+                or "（意外空值：既有条目清单未提供）",
                 "{out_path}": str(out_path),
             },
             "self-review",

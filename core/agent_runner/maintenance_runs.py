@@ -558,7 +558,8 @@ def run_self_review(
         daily_summary: 框架聚合的近 24 小时数据摘要（五源），注入 prompt。
         todo_md: read_todo=true 时的既有 todo.md 全文；None 不注入。
         todo_entries: read_todo=true 时 ID 标注的近 3 日条目清单
-            （闭环判定对象）；None 注入占位提示。
+            （闭环判定对象）；read_todo=false 时为显式未收集陈述；None
+            （历史调用方）归一空串，落 prompt_builder 意外空值兜底。
     """
     run_id = _unique_self_review_run_id(runner, date_str)
     out_path = runner.project_root / ".fenix" / f"self_review_out-{run_id}.json"
@@ -569,6 +570,8 @@ def run_self_review(
             "review_date": date_str,
             "daily_summary": daily_summary or "",
             "todo_md": todo_md or "",
+            # 显式未收集陈述（read_todo=false，evo-add-self-review-todo-
+            # fallback-honesty）为非空串，or-归一原样透传不吞；None 仍归一空串。
             "todo_entries": todo_entries or "",
             "out_path": str(out_path),
         },
