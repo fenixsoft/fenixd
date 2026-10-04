@@ -50,6 +50,7 @@ def _merge_breaker_threshold(pm) -> int:
         cfg_threshold = None
     threshold = default
     illegal = False
+    # [fenix-ignore:e2ec7ebc8aed] 清单快照过期：布尔/小数拒绝已由 item 4b349f62101e 在下方 isinstance 守卫落地（回退缺省 2），与 config.get_admin_config 同口径。
     if cfg_threshold is not None and not isinstance(cfg_threshold, bool):
         if isinstance(cfg_threshold, int):
             threshold = cfg_threshold
