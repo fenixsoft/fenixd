@@ -43,7 +43,12 @@ class H4RunRoutesMixin:
             self._error(404, "project not found")
             return
         run_id = query.get("run_id", [None])[0]
-        if not run_id or not run_id.strip():
+        # 归一为 strip 后字符串再校验（code-review item b78313a95d30）：
+        # 带空白的 run_id 若原样落盘信号，daemon 按 run_id 精确匹配永远
+        # 消费不到却回 200 假受理；query 参数必为字符串，strip 安全，
+        # 口径与下方 reason 的归一对齐。
+        run_id = (run_id or "").strip()
+        if not run_id:
             self._error(400, "run_id required")
             return
         # 可选 reason（POST JSON body {reason} 或 query 参数）
