@@ -32,3 +32,10 @@
 | crossday-escalation-read-only-no-autoaction | 聚合告警不驱动动作：跨日升级触发前后项目树快照对比，除观测私有记忆状态文件（.fenix 顶层）外无任何重派/熔断/冷却痕迹；既有第一维度（10 分钟窗 ≥2 次）判定保形不回退（spec R3 / design D4） | pass | 0/5 | - |
 | crossday-outside-tolerance-no-false-merge | 归一化放宽不破容差闸门：同形行跨日差 24h+10 分钟（超出 ±5 分钟容差）指纹虽相等也不判复发，单次在窗不升级不误聚（core/admin_monitor.py:3104-3119） | pass | 0/3 | - |
 | crossday-regression-existing-suite-green | 回归：新增测试文件 tests/test_crossday_recurrence_fingerprint.py 存在且全绿；既有冷却/跨日语义套件 tests/test_codefix_conn_error_cooldown.py 不回退（tasks 3.1/3.2） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
