@@ -32,6 +32,12 @@ from core.timelib import parse_ts
 SIGNAL = "signal"
 ESCALATION = "escalation"
 DISPOSITION = "disposition"
+
+# evo-add-admin-orphan-disposition-effect-check 1.3：孤儿处置收敛补记记录的
+# 独立来源标记（disposition 记录 source 字段值）。补记一律 append 新记录，
+# 不就地改写既有 pending/终态记录；「组内已存在该标记记录即跳过」是收敛
+# 幂等判据（与 mark_signal_handled 的已处理幂等双保险）。单点常量防漂移。
+ORPHAN_BACKFILL_SOURCE = "orphan-backfill"
 # evo-reduce-stale-code-selfheal-noise 2.1：info 级留痕 kind。无处理生命周期
 # （mark_handled/unhandled/pending_escalations 仍仅锚定 ESCALATION，口径不变），
 # 仅参与 latest_signal 窗口去重（见白名单）。
@@ -878,6 +884,60 @@ class AdminStore:
                 continue
             return rec
         return None
+
+    # ── evo-add-admin-orphan-disposition-effect-check 1.3 ─────────
+
+    def has_disposition_backfill(self, admin_run_id: str) -> bool:
+        """某处置组（admin_run_id）内是否已存在补记记录（幂等判据）。
+
+        仅匹配 kind=DISPOSITION ∧ admin_run_id 相等 ∧
+        source == ORPHAN_BACKFILL_SOURCE。补记记录携带同组 admin_run_id
+        （审计可溯），非 pending 形态不改变 _merge_admin_runs 的 final 归并
+        语义（组本已 final）；本探测供孤儿收敛分支「已补记即跳过」用。
+        """
+        if not admin_run_id:
+            return False
+        for rec in self.read_records():
+            if rec.get("kind") != DISPOSITION:
+                continue
+            if rec.get("admin_run_id") != admin_run_id:
+                continue
+            if rec.get("source") == ORPHAN_BACKFILL_SOURCE:
+                return True
+        return False
+
+    def append_orphan_backfill(
+        self,
+        admin_run_id: str,
+        signal_type: str,
+        spec: Optional[str],
+        actions_taken: str,
+        description: str,
+        evidence: Optional[str] = None,
+    ) -> "dict | None":
+        """追加一条孤儿处置收敛补记（result=resolved，source 标记落痕）。
+
+        append-only：新增独立记录，绝不就地改写既有 pending/终态记录
+        （DISPOSITION 记录本无就地 mutator，补记走 append 与
+        _close_signal_preprobed 留痕先例同型）。记录携带同组 admin_run_id
+        （审计可溯）——组已 final，追加非 pending 记录不改变归并结果，
+        不会把任何在飞组误判提前终结。文件损坏留底被下限保护拒写时返回
+        None（记录未落盘，调用方按未补记处理，不把内存记录当成功）。
+        """
+        return self.append(
+            {
+                "kind": DISPOSITION,
+                "status": "resolved",
+                "signal_type": signal_type,
+                "spec": spec,
+                "admin_run_id": admin_run_id,
+                "result": "resolved",
+                "source": ORPHAN_BACKFILL_SOURCE,
+                "actions_taken": actions_taken,
+                "description": description,
+                "evidence": evidence,
+            }
+        )
 
     # ── admin-dispatch-failure-escalation D2 ──────────────────────
 
