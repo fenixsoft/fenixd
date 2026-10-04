@@ -1158,9 +1158,18 @@ class AdminMonitor:
 
         for signal in regular:
             try:
-                self._handle_signal(signal)
+                delivered = bool(self._handle_signal(signal))
             except Exception as e:
                 self.logger.error("admin_monitor", f"Signal handling failed: {e}")
+                delivered = False
+            if not delivered and signal.get("_amendment_fp_pending"):
+                # code-review item 78eb37d3b06b：在飞修订指纹备忘于成条时预写，
+                # 信号被 _handle_signal 守卫丢弃或唤起异常时在此回滚该条目——
+                # 冷却过期后同修订提交集合仍可再次成条，不把「未送达」
+                # 记成「已告警」（getattr 兜底半初始化实例，与检测侧同款形态）。
+                getattr(self, "_spec_amendment_fp_alerted", {}).pop(
+                    signal.get("spec"), None
+                )
 
         # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
         # （code-review item eccaad574376：逐段 try 兜底，任何异常只记日志不阻断巡检）
@@ -2959,23 +2968,30 @@ class AdminMonitor:
             if seen.get(name) == fp:
                 continue
             seen[name] = fp
-            signals.append(
-                self._make_signal(
-                    "spec_amendment_inflight",
-                    name,
-                    (
-                        f"'{name}' 实现分支在飞期间，主树 spec/changes/{name}/ 出现 "
-                        f"{len(commits)} 个新已提交修订（{', '.join(commits)}）——与分支 "
-                        f"'{branch}' 对同一 spec 目录的改动存在 merge-back 相撞风险"
-                        f"（现行三道闸门只覆盖未提交改动）。结局不变：相撞仍由预演"
-                        f"检出并按 rehearsed 链路转 repair。"
-                    ),
-                    (
-                        f"项目名={self.project_root.name}; spec={name}; "
-                        f"branch={branch}; amended_commits={commits}; 指纹={fp}"
-                    ),
-                )
+            signal = self._make_signal(
+                "spec_amendment_inflight",
+                name,
+                (
+                    f"'{name}' 实现分支在飞期间，主树 spec/changes/{name}/ 出现 "
+                    f"{len(commits)} 个新已提交修订（{', '.join(commits)}）——与分支 "
+                    f"'{branch}' 对同一 spec 目录的改动存在 merge-back 相撞风险"
+                    f"（现行三道闸门只覆盖未提交改动）。结局不变：相撞仍由预演"
+                    f"检出并按 rehearsed 链路转 repair。"
+                ),
+                (
+                    f"项目名={self.project_root.name}; spec={name}; "
+                    f"branch={branch}; amended_commits={commits}; 指纹={fp}"
+                ),
             )
+            # code-review item 78eb37d3b06b：成条 ≠ 送达。指纹备忘仍于成条时
+            # 预写（同指纹去重在本方法内闭环），但信号还要经 run_once 的
+            # _handle_signal 守卫链（节流/冻结/夹具抑制/在飞互斥/落库拒写），
+            # 任一命中即丢弃本次唤起——信号携带 ``_amendment_fp_pending``，
+            # 由 run_once 在未送达时回滚备忘，冷却过期后同修订提交集合仍可
+            # 再次成条（否则告警未送达却被记为已告警，漏报）；送达成功则
+            # 备忘照常保留。
+            signal["_amendment_fp_pending"] = fp
+            signals.append(signal)
         return signals
 
     def _detect_daemon_errors(self, now: float) -> list:
@@ -3374,7 +3390,13 @@ class AdminMonitor:
         return True
 
     def _handle_signal(self, signal: dict):
-        """处理单条信号：状态沉淀记录 + 节流判定 + 唤起 Administrator。"""
+        """处理单条信号：状态沉淀记录 + 节流判定 + 唤起 Administrator。
+
+        返回 True 仅当信号通过全部守卫、抵达唤起（code-review item
+        78eb37d3b06b）；各守卫丢弃路径（节流/冻结/夹具抑制/在飞互斥/
+        落库拒写）为裸 return（None = 未送达），供 run_once 回滚
+        spec_amendment_inflight 的指纹备忘。
+        """
         spec = signal.get("spec")
         signal_type = signal.get("signal_type")
         status_hash = self._signal_status_hash(signal)
@@ -3491,6 +3513,9 @@ class AdminMonitor:
             {"signal": signal},
         )
         self._invoke_administrator(signal, signal_rec)
+        # code-review item 78eb37d3b06b：唯一送达出口——上方各守卫丢弃路径
+        # 均为裸 return（None），run_once 据此区分「已唤起」与「被丢弃」。
+        return True
 
     def _throttled(self, spec, signal_type: str) -> bool:
         """冷却窗口内已有同信号记录，或已存在未处理升级告警 → 节流。"""
