@@ -195,6 +195,11 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
 
      **任务必须是实现 Agent 可独立完成的**（强制，见 §3.2.1）。
 
+     **平台移植/新采集链路类 SPEC 的首个采集里程碑必须含可观测性交付项**（强制）：
+     首个采集（取流/解码）里程碑的验收项 MUST 含输入帧 dump、管线逐级计数、
+     坏事件分类统计至少其二，与功能交付同批验收，不待问题出现后补插桩；
+     允许按平台等价替代（如无独立解码器时以采集回调 dump 等价物）。
+
 2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
 3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
 
