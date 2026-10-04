@@ -15,7 +15,6 @@ import re
 import subprocess
 import tempfile
 import threading
-import time
 
 from core.git_base_branch import resolve_base_branch
 from core.timelib import parse_ts
@@ -2537,7 +2536,15 @@ class StateMachine:
                         # 反复重启仍无法收敛的毒 spec 必须有人被告知。
                         self.freeze_for_human(
                             name,
-                            error=f"{FREEZE_ERROR_PREFIX}重启重验超限，等待人工裁决",
+                            # 内嵌「原状态 implemented」子串（code-review a2cf023df335）：
+                            # dashboard/CLI 解冻按 parse_orig_status 还原目标，缺失
+                            # 时回退 ready——testing 冻结的实现已合并，误恢复 ready
+                            # 会派 implementer 从头实现并劫持 branch 字段（与下方
+                            # testing→implemented 的非超限恢复路径同口径）。
+                            error=(
+                                f"{FREEZE_ERROR_PREFIX}原状态 implemented · "
+                                "重启重验超限，等待人工裁决"
+                            ),
                             signal_type="verify_redo_exhausted",
                             severity="major",
                             description=(
