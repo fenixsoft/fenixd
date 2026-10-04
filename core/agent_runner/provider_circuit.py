@@ -1962,6 +1962,12 @@ class ProviderCircuit:
         # 的既有兜底行为不变。
         if type(raw) is bool:
             return SIGNAL_KILL_COOLDOWN_AFTER
+        # 字符串 "0" 归一（code-review item 0a1086a801e0）：yaml 引号写法 "0"
+        # 为真值、绕过下方 or 兜缺省，int("0")=0 后被 max(1) 钳成 1——与数值
+        # 0 的「兜缺省」语义分叉（首个信号死法即触发 600s spec 冷却）。显式
+        # 0 一律归缺省，两写法同口径；其余兜底（负数钳 1/非法串兜缺省）不变。
+        if raw == 0 or raw == "0":
+            raw = 0
         try:
             v = int(raw or SIGNAL_KILL_COOLDOWN_AFTER)
         except (TypeError, ValueError):
@@ -1976,6 +1982,11 @@ class ProviderCircuit:
         # ——int(True)=1 会把冷却时长收成 1 秒，bool 按畸形回缺省，其余兜底不变。
         if type(raw) is bool:
             return SIGNAL_KILL_COOLDOWN_SECONDS
+        # 字符串 "0" 归一（code-review item 0a1086a801e0）：同
+        # _signal_kill_cooldown_after——"0" 绕过 or 兜缺省后被 max(1) 钳成
+        # 1 秒冷却，与数值 0 的「兜缺省」语义分叉，显式 0 一律归缺省。
+        if raw == 0 or raw == "0":
+            raw = 0
         try:
             v = int(raw or SIGNAL_KILL_COOLDOWN_SECONDS)
         except (TypeError, ValueError):
