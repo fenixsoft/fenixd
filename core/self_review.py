@@ -1136,6 +1136,13 @@ def parse_todo_blocks(text: str) -> Tuple[List[str], List[Tuple[str, List[str]]]
     return preamble, blocks
 
 
+# read_todo=false 时 {todo_entries} 段的显式未收集陈述
+# （evo-add-self-review-todo-fallback-honesty）：归因 read_todo 关闭，
+# 与 render_todo_entries 空清单的「（近3日窗口内无既有条目）」（真收集后
+# 的可核实结论）可分辨。
+TODO_ENTRIES_NOT_COLLECTED = "（read_todo 关闭，未收集既有条目）"
+
+
 def render_todo_entries(entries: List[Dict[str, str]]) -> str:
     """把闭环判定条目渲染为 ID 标注清单（注入 self-review prompt 用）。"""
     if not entries:
@@ -1261,7 +1268,13 @@ class SelfReviewScheduler:
         # 闭环判定条目（read_todo=true 时收集窗口内既有条目并 ID 标注注入）
         cleanup_entries: List[Dict[str, str]] = []
         todo_md = None
-        todo_entries = None
+        # read_todo=false 时注入显式未收集陈述（evo-add-self-review-todo-
+        # fallback-honesty）：未收集与「真收集为空」是两种状态，不得共用
+        # 「（近3日窗口内无既有条目）」——否则回顾 agent 会在 .fenix/todo.md
+        # 实存窗口内条目时据误导性文案声称窗口无条目（2026-10-05 potplayer-
+        # base 实证）。显式字符串经 run_self_review 的 ``todo_entries or ""``
+        # 归一非空透传不吞。
+        todo_entries = TODO_ENTRIES_NOT_COLLECTED
         if sr.get("read_todo"):
             todo_md = self._read_todo()
             cleanup_entries = self._collect_recent_entries(today)

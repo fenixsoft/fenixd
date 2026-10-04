@@ -1228,8 +1228,10 @@ class TestTodoCleanup:
         runner = FakeReviewRunner(result=result)
         sched = make_scheduler(proot, run_at="22:00", read_todo=False, runner=runner)
         sched.check_and_run()
-        # read_todo=false：todo.md 全文（第 3 参）与条目清单（第 4 参）均不注入
-        assert runner.calls[0][3] is None
+        # read_todo=false：todo.md 全文（第 3 参）不注入；条目清单（第 4 参）
+        # 注入显式未收集陈述（evo-add-self-review-todo-fallback-honesty）
+        from core.self_review import TODO_ENTRIES_NOT_COLLECTED
+        assert runner.calls[0][3] == TODO_ENTRIES_NOT_COLLECTED
         assert runner.calls[0][2] is None
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "证据：A1" in content  # 未被移除
@@ -1485,9 +1487,16 @@ class TestSelfReviewPromptEntries:
         assert "resolved" in prompt
 
     def test_todo_entries_default_when_absent(self, proot):
+        """detail 缺 todo_entries 时落意外空值兜底（与未收集/空窗口态可分辨）。
+
+        evo-add-self-review-todo-fallback-honesty 1.2：or-fallback 语义收窄，
+        不再复用「（近3日窗口内无既有条目）」空窗口文案。
+        """
         prompt = self._builder(proot)._build_self_review_prompt(
             "2026-09-04", {"daily_summary": "s", "out_path": "/tmp/o.json"})
-        assert "（近3日窗口内无既有条目）" in prompt
+        assert "（意外空值：既有条目清单未提供）" in prompt
+        assert "（近3日窗口内无既有条目）" not in prompt
+        assert "（read_todo 关闭，未收集既有条目）" not in prompt
 
 
 class TestSummaryGitCommits:
