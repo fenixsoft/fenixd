@@ -502,6 +502,12 @@ class ApiRunner(VerifyRunner):
                         if data_bytes <= _EVIDENCE_LIMIT:
                             data_bytes += len((v + "\n").encode("utf-8", errors="replace"))
                             event["data"] += v + "\n"
+                        else:
+                            # 触顶后同一事件的后续 data 行被丢弃：此处显式置标。
+                            # 收尾 _truncate 复判的是去掉尾部换行后的保留前缀，
+                            # 恰停在边界内（如一行 65536 字节后接续行）会判不超
+                            # 限而漏标，judge 拿到外观完整的截断事件做归因。
+                            data_truncated = True
                     elif line.startswith("event:"):
                         event["event"] = line[6:].strip()
                     elif line == "":
