@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-evolution rev=2 sources=spec/archive/2026-09-18-add-framework-self-evolution,spec/archive/2026-09-19-evo-item-retention-doc-tracking -->
+<!-- knowledge: capability=self-evolution rev=3 sources=spec/archive/2026-09-18-add-framework-self-evolution,spec/archive/2026-09-19-evo-item-retention-doc-tracking,spec/archive/2026-10-05-evo-add-evolution-product-salvage -->
 
 # 自进化车道（条目复核与 SPEC 起草立项）
 
@@ -11,7 +11,10 @@
 - 分析 run 形态：agent 角色 `evolution`、prompt 模板 `agents/evolution.md`，经既有 `AgentRunner._run_claude` 启动（超时、轮次上限、token 预算、provider 熔断、run 文件与归账全走既有链路，不另起子进程路径）；模型链取 `agents.models.self-review` → 回退 `agents.models.administrator` → 默认网关兜底（缺配置不拒绝启动）；在框架主树执行且不创建 worktree；run_id 前缀 `evo-`，stream-json 落 `.fenix/runs/evo-*.jsonl`。
 - 逐条子代理复核：一条目派一个 Task 子代理（同一条目单 run 内不重复派发），输入至少含条目在 todo.md 中的原文与所属项目根路径；子代理为只读核查者——不建 `spec/changes/` 条目、不写 STATE.md、不改任何文件。init 事件工具表无 Task 工具族时降级为同进程串行逐条复核，并在 run 日志与契约产物记 `degraded: "no-task-tool"`；降级不导致整轮失败。
 - 判定契约：子代理必须独立回源核查（只读日志、源码、STATE.md、git 记录），不直接采信 todo.md 自述的「调查评估」；每条结论含 `problem_exists`、`suggestion_sound`（yes/no/partial）、`worth_spec`（布尔）与 `rationale`（引用 `文件:行号`、日志时间戳、run id、STATE 条目名等至少一项可核对证据）；核实不了明示「未核实」并给保守判定（`worth_spec` 不为真），不编造；`analysis_md` 须可独立阅读（含结论、核查过程、证据、与存量 SPEC 的关系），不只复述原文。
-- 产物契约：run 结束写 `.fenix/evolution/out-<run_id>.json`——`items[]` 含 project、date_section、section（∈ 浪费/失误/可改进）、title（逐字取自 todo.md）、impact/evidence/analysis/suggestion、verdict、analysis_md、spec{name/capability/proposal_md/spec_md/design_md/tasks_md（仅 `worth_spec` 为真时必填，否则为 null）}。JSON 非法、缺 `items`、section 越枚举或缺必填字段 → 整轮判失败：admin WARNING（含 run_id 与原因）、水位不推进、零条目零草稿；`worth_spec` 为真而 spec 内容缺失 → 该条标 `draft_failed` 并记录缺失字段，其余条目照常落地。产物文件在框架读取完成后删除。
+- 产物契约：run 结束写 `.fenix/evolution/out-<run_id>.json`——`items[]` 含 project、date_section、section（∈ 浪费/失误/可改进）、title（逐字取自 todo.md）、impact/evidence/analysis/suggestion、verdict、analysis_md、spec{name/capability/proposal_md/spec_md/design_md/tasks_md（仅 `worth_spec` 为真时必填，否则为 null）}。JSON 非法、缺 `items`、section 越枚举或缺必填字段 → 整轮判失败：admin WARNING（含 run_id 与原因）、水位不推进、零条目零草稿；`worth_spec` 为真而 spec 内容缺失 → 该条标 `draft_failed` 并记录缺失字段，其余条目照常落地。产物文件在框架确认无产物可救后才删除，清理范围含 `.parts` 残片目录。
+- 产物抢救：run 收尾无论 CLI 退出码如何，都先尝试读取 `.fenix/evolution/out-<run_id>.json` 再谈清理；产物文件缺失或 JSON 不可解析时，若 `<产物>.parts/` 下存在分片，按合并配方（sorted(glob) 拼接 items）恢复产物后再读。恢复出完整契约（条目数与待分析条目一致，或条目数未知）按成功落地，CLI 非零退出只落 INFO 说明；部分恢复（条目不足）按失败落地并在错误中标注缺失数，MUST NOT 推进水位——已落地条目由 ingest 幂等去重，未分析条目由下一检查点重派自然补齐。确无产物可救（产物缺失且 `.parts` 目录为空）才按失败处理并清理。抢救覆盖「已写分片未合并」与「写完产物但 CLI 才失败」两类；子代理死于分片写出阶段的场景无片可救，由检查点自然再派兜底。
+- 失败归因分级：产物读取失败时「产物文件未写出」与「产物 JSON 不可解析」是两个可判别的错误文案，告警与日志可直接分辨，不折叠为同一错误。
+- 分片增量合并契约：`agents/evolution.md` 的分片写入契约为增量合并——每写完一条分片立即并入最终产物文件，任意中断点的最大损失为单条分片；结尾保留全量校验步。分片机制本身是纯提示词约定，框架不参与写出，只在抢救时按合并配方读取。
 - 身份与幂等：条目 id = `sha1(f"{project}\x1f{date_section}\x1f{section}\x1f{title}")[:12]`，跨环境稳定；去重权威来源为 `.fenix/evolution/items.jsonl` 已有 id 集合——id 已存在的条目无论状态（pending/analyzed/draft_failed/accepted/auto_accepted/rejected/accept_failed）均不再分析、不再生成草稿；items.jsonl 对同一 id 只保留一条记录（重复落地更新而非追加）。
 - 水位：`.fenix/evolution/state.json` 按项目记 `last_analyzed_at`（ISO8601 UTC）与 `last_run_id`，仅作触发判据；推进仅发生在分析 run 成功落地之后，且取 run 启动时刻的快照（不取落地时刻，避免漏掉 run 执行期间新写入的条目）。`self_evolution.max_items_per_run` 限制单轮处理条目数，超出者留待下轮（id 未入库，下轮自然再选中），水位不因截断推进到「已全部处理」。
 - 草稿与同源 lint：`worth_spec` 为真且 spec 内容齐全 → 按 fenix-new 流程把 SPEC 全套写入 `.fenix/evolution/drafts/<id>/`（proposal.md、specs/<capability>/spec.md、design.md、tasks.md——`## Deliverables` fenced yaml + `## <编号>. <标题>` 分组任务行、`.spec.yaml`（schema: spec-driven + created + mode: full）），随后执行与 daemon 晋升同源的 lint 预检（`lint_declared` + `lint_tasks_parseable`）：无 violation → 条目 `pending`；有 violation 或内容缺失 → 条目 `draft_failed`、删除草稿目录（不留半成品）、violation 原文与 agent 原始内容摘要记入条目记录，绝不落 `spec/changes/`、绝不注册 STATE.md。`worth_spec` 为假 → 不生成草稿，状态 `analyzed`。
@@ -21,9 +24,10 @@
 - 自动接受：`self_evolution.auto_accept` 为真时，分析 run 落地完成后同一检查点内对本轮全部 `pending` 条目逐条走接受路径（`decided_by: auto`），不需要前端交互；单条失败置 `accept_failed` 并保留草稿，不影响其余条目；不作用于 `analyzed` 与 `draft_failed` 条目、不改已决定条目。开关为假（含配置缺失）时保持 `pending` 等待用户决定。
 - 条目保留与自动清理：items.jsonl 仅保留「创建时间在最近 7 天内」与「按创建时间倒序最近 100 条」的并集（两者中数量较多者），其余硬删；两阈值为固定常量，不新增配置键。清理复用删除路径语义（不写墓碑、草稿一并删、路径包含校验、todo.md 标记幂等回写）；保留排序以创建时间倒序 + 条目 id 兜底为确定性次序；`created_at` 缺失或不可解析 → 判为保留。清理由 daemon 检查点周期执行，不因分析 run 在途而跳过，也不依赖分析 run 成功落地；逐条删除失败（如 OSError）计数记录、不中断其余条目清理与 daemon 主循环。
 - 配置节 `self_evolution`：`auto_accept`（布尔，缺省 false）与 `max_items_per_run`（正整数，缺省 20，上界 200）；节、键缺失或值非法（非布尔/非正整数/超上界）一律回退缺省，不抛异常、不使 daemon 启动失败；走既有 30s 配置热更新。两键均为全局（用户级）键：Dashboard 配置写入 API 对项目级作用域提交 `self_evolution` 返回 400 与可读错误；读取侧取合并后配置。
-- 失败与可观测性：检查点整体 try/except，任何环节异常（registry 读取失败、写盘失败等）不中断 daemon 主循环，记 ERROR 日志；分析 run 失败（非零退出、超时、产物文件缺失、JSON 非法）写一条 WARNING admin 告警（含 run_id 与原因），水位不推进、下一检查点自动重试；降级在 run 日志与契约产物留痕；每轮落地结果（就绪项目、条目数、草稿数、接受数、失败数）记 INFO 日志。
+- 失败与可观测性：检查点整体 try/except，任何环节异常（registry 读取失败、写盘失败等）不中断 daemon 主循环，记 ERROR 日志；分析 run 失败（非零退出、超时、产物经抢救仍不可用、JSON 非法）写一条 WARNING admin 告警（含 run_id 与原因），水位不推进、下一检查点自动重试；产物完整但 CLI 非零退出、经抢救按成功落地的只落 INFO 不告警；降级在 run 日志与契约产物留痕；每轮落地结果（就绪项目、条目数、草稿数、接受数、失败数）记 INFO 日志。
 
 ## 溯源
 
 - 2026-09-18 2026-09-18-add-framework-self-evolution（spec/archive/2026-09-18-add-framework-self-evolution） — 新增自进化链路全部规则（就绪扫描与单飞、evolution 角色与主树直跑、逐条子代理复核与降级、产物契约、水位幂等、草稿同源 lint、接受/拒绝/删除路径、自动接受、配置节、失败可观测）
 - 2026-09-19 2026-09-19-evo-item-retention-doc-tracking（spec/archive/2026-09-19-evo-item-retention-doc-tracking） — 新增条目保留与自动清理（7 天 ∪ 最近 100 条并集硬删、清理独立于分析 run 在途与成败、单条失败隔离）
+- 2026-10-05 2026-10-05-evo-add-evolution-product-salvage（spec/archive/2026-10-05-evo-add-evolution-product-salvage） — 修改产物收尾与失败语义：run 失败先抢救再清理、完整/部分恢复分级落地、部分恢复不推进水位、清理范围含 .parts 残片目录；新增失败归因分级与分片增量合并契约
