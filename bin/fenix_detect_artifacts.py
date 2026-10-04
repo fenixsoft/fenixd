@@ -344,6 +344,28 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
                 "reason": f"config.yaml 无法读取，中止写入以免清空既有配置: {e}",
             }
 
+    # 宽松复查（code-review item 7e3785b68cba）：段头识别（_read_existing_config 与
+    # 下方 wt_start 定位）都只认裸 worktree: 行，段头带行尾注释（worktree:  # c）或
+    # 内联映射（worktree: {has_build_artifacts: false}）时两处均失配 → 早退不触发，
+    # 会走「无 worktree 段」分支在文件尾追加第二个 worktree: 段，YAML 重复键后者胜出，
+    # 用户显式布尔裁决被探测结果静默覆盖。有 PyYAML 时 safe_load 后的在册复查兜住
+    # 这两种形态；无 PyYAML 走到此处没有任何权威复查，故写盘前对旧文本做一次宽松
+    # 扫描：任一非注释行含 has_build_artifacts: 键且值为显式布尔（别名集与
+    # _read_existing_config 同口径）即中止写入——宁可漏写，不覆盖人工设置。
+    for row in old_lines:
+        s = row.strip()
+        if not s or s.startswith("#"):
+            continue
+        _, sep, val = s.partition("has_build_artifacts:")
+        if not sep:
+            continue
+        # 截到首个分隔符：兼容内联映射（worktree: {has_build_artifacts: false, ...}）
+        # 与行尾注释（has_build_artifacts: false  # c）；带引号的值非 YAML 布尔，
+        # 与 PyYAML 路径的 isinstance(bool) 同口径不视为已裁决
+        val = re.split(r"[,}\[#]", val, maxsplit=1)[0].strip()
+        if val.lower() in ("true", "1", "yes", "on", "false", "0", "no", "off"):
+            return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
+
     def _is_block_item(s: str) -> bool:
         return s == "-" or s.startswith("- ")
 
