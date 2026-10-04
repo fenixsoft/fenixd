@@ -364,9 +364,11 @@ SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 # 派发分流进独立计数器，MUST NOT 烧 ``_judge_rerun_count`` 生命周期预算——
 # 否则「重验等人工」与「judge 硬上限」赛跑，后者总先到顶把人工出口截断
 # （2026-10-03 potplayer-base 事故：judge_rerun_cap 冻结 6/5 先于 B7 升级）。
-# _in_inconclusive_reverify：旗标。置位点 = 两处 inconclusive 处置
-# （escalation.py 级一 ``_handle_env_blocked_inconclusive`` / 级二
-# ``_handle_verdict_env_exemption_inconclusive``）；清除点 = judge 申报非全 env
+# _in_inconclusive_reverify：旗标。置位点 = inconclusive 处置链（escalation.py
+# 级一 ``_handle_env_blocked_inconclusive`` / 级二
+# ``_handle_verdict_env_exemption_inconclusive`` / judge 自述形态
+# ``_handle_judge_env_declared``：各自重验分支直接置位，升级停车经共用收口
+# ``_escalate_inconclusive_parking`` 置位）；清除点 = judge 申报非全 env
 # 结论（bug-found / verified 放行 / scenario-repaired 重入决策点，单一助手
 # ``_clear_inconclusive_reverify_flag``）、verified 落定、人工 reset_verification。
 # _judge_inconclusive_dispatches：重验窗口内 judge 派发的独立计数（上限 =
