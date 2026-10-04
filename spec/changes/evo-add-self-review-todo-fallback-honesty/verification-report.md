@@ -34,3 +34,10 @@
 | run-self-review-normalization-preserves-statement | 归一透传：maintenance_runs.run_self_review 的 todo_entries or "" 归一把显式未收集陈述非空透传进 detail（不被吞成空串）；None（历史调用方形态）仍归一空串、落意外空值兜底而非伪结论（出处 core/agent_runner/maintenance_runs.py:571-575） | pass | 0/4 | - |
 | delivered-fallback-tests-green | 本 SPEC 新交付测试文件全绿：tests/test_self_review_todo_fallback.py 7 例 PASSED（组装侧三态、文案可分辨、prompt 两态透传断言）（出处 tests/test_self_review_todo_fallback.py） | pass | 0/7 | - |
 | daily-self-review-regression-green | 既有 daily 套件回归全绿：tests/test_daily_self_review.py 70 例 PASSED，含按新兜底改断言的 test_todo_entries_default_when_absent、改显式陈述断言的 test_read_todo_off_no_removal，与不受影响的 render 空清单断言（出处 tests/test_daily_self_review.py:1489、1219、1101） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
