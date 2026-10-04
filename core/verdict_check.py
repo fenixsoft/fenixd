@@ -1218,14 +1218,21 @@ def _normalize_attribution(sc: dict) -> str:
     描述体」两步——步骤序号单独进指纹，描述体插哈希取前 32 位（保持熵的
     同时避免整段原文撑爆指纹）；断言 triage 的 assertion label 与 evidence
     保持原文进指纹（逐场景本就不同，保留即可区分）。
+
+    既无 ``first_failed_step`` 又无 triage 归因条目的场景返回空串：空归因
+    不构成「归因雷同 / 批量套用」嫌疑，调用方按空串跳过查重分组（与
+    「无归因不参与查重、视为保留」的既有口径一致），避免裸 ``cls=`` 指纹
+    把多个无归因场景坍缩同组判成假违规。
     """
     parts = []
     classification = sc.get("classification") or ""
     parts.append(f"cls={classification}")
+    has_attribution = False
     evidence = sc.get("evidence") or {}
     if isinstance(evidence, dict):
         ffs = evidence.get("first_failed_step") or ""
         if isinstance(ffs, str) and ffs.strip():
+            has_attribution = True
             step = _extract_step_number(ffs)
             desc = _first_failed_step_desc(ffs)
             desc_digest = hashlib.sha256(_normalize_whitespace(desc).encode("utf-8")).hexdigest()[
@@ -1236,6 +1243,7 @@ def _normalize_attribution(sc: dict) -> str:
     if isinstance(triage, list):
         for t in triage:
             if isinstance(t, dict):
+                has_attribution = True
                 assertion = str(t.get("assertion") or "").strip()
                 cls = str(t.get("classification") or "").strip()
                 ev = t.get("evidence")
@@ -1246,6 +1254,10 @@ def _normalize_attribution(sc: dict) -> str:
                     # 等假值是有信息量回传（如退出码），不得被 or 吞成空串
                     ev = ("" if ev is None else str(ev)).strip()
                 parts.append(f"a={assertion}:c={cls}:e={ev}")
+    if not has_attribution:
+        # 无归因文本（无 first_failed_step、无 triage 条目）：返回空串，
+        # 让「无归因不参与查重」分支（调用侧 if not norm）真实可达
+        return ""
     normalized = " ".join(parts)
     return re.sub(r"\s+", " ", normalized).strip()
 
