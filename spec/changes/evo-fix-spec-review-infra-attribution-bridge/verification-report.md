@@ -34,3 +34,10 @@
 | freeze-prefix-human-contract-unchanged | 冻结前缀：FREEZE_ERROR_PREFIX 常量值仍为「用户指令冻结：」未被改动（红线 MUST NOT），freeze_spec 人工冻结路径仍使用该前缀——人工冻结豁免语义契约不变（tasks 4.1/5.3 / spec Requirement 冻结文案按根因区分且人工冻结契约不变） | pass | 0/1 | - |
 | infra-no-freeze-no-attempt | 供给瞬态：api_error_status=429 的评审失败被分类为 infra 后——_review_attempts 不递增（bump_counters 不被调）、不进入冻结路径（freeze_for_human 不被调）、清锚点且 error 文案保持 spec-review-incomplete: infra failure 契约（tasks 5.3 / spec Scenario 供给瞬态不冻结、冷却自动恢复） | pass | 0/1 | - |
 | regression-existing-spec-review-tests | 回归点：既有 spec_review 分类/异步派发/产物门/状态机（冻结与 parse_orig_status 契约）测试套件在本 SPEC 改动后无回归（基线实测 89 passed），SPEC 交付新测试文件同轮通过（spec Non-Goal：不改评审预算 3 次、冻结/告警成对契约、回写门 fail-closed） | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
