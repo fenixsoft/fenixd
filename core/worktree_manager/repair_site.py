@@ -43,6 +43,11 @@ class G9RepairSiteMixin:
                 ["git", "-C", str(wt_path), "ls-files", "-u"],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8：text=True 缺省按 locale 解码，非 UTF-8 locale
+                # 下读中文等非 ASCII 未合并路径抛 UnicodeDecodeError（ValueError
+                # 子类，逃逸下方 except，对齐 session_routes._list_project_files 同款惯例）
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if ls.returncode == 0:
@@ -61,6 +66,8 @@ class G9RepairSiteMixin:
                 ["git", "-C", str(wt_path), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             facts["merge_head"] = mh.returncode == 0
