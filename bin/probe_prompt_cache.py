@@ -52,9 +52,9 @@ STABLE_PREFIX = (
 def _build_request(provider: dict) -> dict:
     """构造带 cache_control 的请求体（system 段作缓存前缀）。
 
-    模型名取 provider 的 model（缺失时回退 common/default 字段检查）。
+    模型名取 provider 的 model，缺失时抛 ValueError 走确定性 JSON 判据输出。
     """
-    model = provider.get("model") or provider.get("default_model")
+    model = provider.get("model")
     if not model:
         raise ValueError(
             f"provider '{provider.get('name')}' 缺 model 字段，无法构造探针请求"
@@ -160,7 +160,7 @@ def probe(provider_name: str, config_path: Path) -> dict:
             "error": f"provider '{provider_name}' 不在配置文件 {config_path} 中",
         }
     # 参数类错误也走 JSON 判据输出路径（code-review item a3d3577dfe29）：
-    # _build_request 对缺 model/default_model 的 provider 抛 ValueError，
+    # _build_request 对缺 model 的 provider 抛 ValueError，
     # 不捕获则 main() 直接 traceback 崩溃，破坏模块「确定性 JSON 判据」契约；
     # 归为 cache_supported=None，main() 据此 exit 1（参数类硬错误同口径）。
     try:

@@ -593,15 +593,47 @@ async function runUITests(context, page, consoleErrors = []) {
     }
 
     // 测试 2: 面板渲染
+    // panel/widget 类名选择器是 stock-panel 时代沿用的启发式：以 shadow DOM、canvas 或
+    // 无此类命名的 UI 形态（列表页、全屏 newtab 等）承载功能的扩展会命中 0 而恒 fail，
+    // 给功能完好的扩展假阴性结论。主选择器未命中时改查替代命中面（页面实质内容：
+    // 元素数、shadow root、文本量），仍未命中才 fail，且 detail 标注启发式局限，
+    // 供上游区分真缺陷与 UI 形态不匹配（code-review item d731fddbf7c3）
     try {
       const panels = await page.$$('[class*="panel"], [class*="widget"], [data-panel]');
-      results.push({
-        test: '面板渲染',
-        status: panels.length > 0 ? 'pass' : 'fail',
-        detail: panels.length > 0
-          ? `发现 ${panels.length} 个面板`
-          : '未发现面板元素',
-      });
+      if (panels.length > 0) {
+        results.push({
+          test: '面板渲染',
+          status: 'pass',
+          detail: `发现 ${panels.length} 个面板`,
+        });
+      } else {
+        const alt = await page.evaluate(() => {
+          let shadowRoots = 0;
+          for (const el of document.querySelectorAll('*')) {
+            if (el.shadowRoot) shadowRoots++;
+          }
+          const body = document.body;
+          const textLen = body && body.textContent ? body.textContent.trim().length : 0;
+          return {
+            shadowRoots,
+            elementCount: document.querySelectorAll('body *').length,
+            textLen,
+          };
+        });
+        if (alt.elementCount > 0 || alt.shadowRoots > 0 || alt.textLen > 0) {
+          results.push({
+            test: '面板渲染',
+            status: 'pass',
+            detail: `未命中 panel/widget 类名启发式，但页面已有实质内容（元素 ${alt.elementCount} 个、shadow root ${alt.shadowRoots} 个、文本 ${alt.textLen} 字符）`,
+          });
+        } else {
+          results.push({
+            test: '面板渲染',
+            status: 'fail',
+            detail: '未发现面板元素（panel/widget 类名启发式未命中且页面无实质内容；可能为 UI 形态不匹配，也可能确实渲染失败）',
+          });
+        }
+      }
     } catch (e) {
       results.push({ test: '面板渲染', status: 'error', detail: e.message });
     }
@@ -698,9 +730,12 @@ function buildSummary(anomalies, uiTests = []) {
  * 检测 SPEC 是否需要 Tier 2 验证
  * @param {string} specDir - SPEC 目录路径 (如 spec/changes/stock-panel/)
  * @param {string} projectRoot - 项目根目录
+ * @param {string|null} [distManifestPath=null] - 构建产物 manifest 首选探测位
+ *   （由调用方 --dist-path 解析得出，与 launch 侧加载的扩展目录同源）；
+ *   缺省时回退 <projectRoot>/dist/manifest.json 旧口径
  * @returns {{ triggered: boolean, reasons: string[] }}
  */
-export function detectTier2Trigger(specDir, projectRoot) {
+export function detectTier2Trigger(specDir, projectRoot, distManifestPath = null) {
   const reasons = [];
 
   // specDir 归一化为绝对路径：相对路径以 projectRoot 为基准解析（与本函数内 src/、dist
@@ -739,9 +774,13 @@ export function detectTier2Trigger(specDir, projectRoot) {
   }
 
   // 3. 检查 manifest.json 中的 host_permissions
-  const manifestPath = path.join(projectRoot, 'dist', 'manifest.json');
+  // 首选探测位取调用方 --dist-path 解析出的 manifest（与 launch 侧加载的扩展目录同源）：
+  // --dist-path 指向非 dist 命名目录（如 ./build）时，<root>/dist/manifest.json 不存在，
+  // 下方 altPaths（根目录、public/）也都不命中，host_permissions 信号会静默失效，
+  // Tier 2 可能因缺该信号而 triggered=false、验证被跳过（code-review item 7507866cc878）
+  const manifestPath = distManifestPath || path.join(projectRoot, 'dist', 'manifest.json');
   if (!fs.existsSync(manifestPath)) {
-    // 尝试从项目根目录查找
+    // 兼容回退：项目根目录与 public/ 下的 manifest
     const altPaths = [
       path.join(projectRoot, 'manifest.json'),
       path.join(projectRoot, 'public', 'manifest.json'),
@@ -798,8 +837,14 @@ async function main() {
 
   // 处理特殊命令（--detect 已在 parseArgs 注册并完成缺值校验，specDir 取自 opts.detect）
   if (opts.detect) {
-    const projectRoot = opts.distPath ? path.dirname(path.resolve(opts.distPath)) : process.cwd();
-    const result = detectTier2Trigger(opts.detect, projectRoot);
+    const absoluteDist = opts.distPath ? path.resolve(opts.distPath) : null;
+    const projectRoot = absoluteDist ? path.dirname(absoluteDist) : process.cwd();
+    // manifest 首选探测位与 launch 侧加载的扩展目录同源（同用 path.resolve(distPath) 解析）
+    const result = detectTier2Trigger(
+      opts.detect,
+      projectRoot,
+      absoluteDist ? path.join(absoluteDist, 'manifest.json') : null
+    );
     console.log(JSON.stringify(result, null, 2));
     return;
   }

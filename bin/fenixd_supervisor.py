@@ -540,6 +540,15 @@ def _adopt_leftover_daemon() -> None:
                 return
         except OSError:
             log(f"daemon_runtime pid {pid} alive, cmdline unreadable — adopt conservatively")
+        # code-review c6ac6582df44：proc_starttime 记录缺失（旧版 runtime /
+        # 写盘时 /proc 读取失败省略）时，SIGKILL 升级前无 starttime 可比对，
+        # pid 在 SIGTERM 等待窗内被 cmdline 恰含 fenixd 字样的无关进程复用
+        # 会误杀。现读一次 starttime 作会话内基线（须在 SIGTERM 发出前读：
+        # 旧 daemon 秒退后 pid 被复用时，SIGTERM 后现读会把复用进程当基线），
+        # 供升级前与现值比对；读不到保持缺省，升级前退回 cmdline 复核兜底。
+        session_starttime = _proc_starttime(pid)
+        if session_starttime is not None:
+            recorded_starttime = session_starttime
     log(f"leftover daemon (pid {pid}) detected — SIGTERM before starting a new one")
     term_denied = False
     try:
@@ -585,6 +594,22 @@ def _adopt_leftover_daemon() -> None:
         if now_starttime != recorded_starttime:
             log(
                 f"daemon_runtime pid {pid} alive but start time mismatch before "
+                "SIGKILL (pid reuse) — skip SIGKILL"
+            )
+            return
+    else:
+        # code-review c6ac6582df44：会话内基线也未能建立（上面现读 starttime
+        # 失败）时，SIGKILL 前至少重读 cmdline 复核仍含 fenixd，避免把等待窗
+        # 内被无关进程复用的 pid 强杀。能走到这里说明 SIGTERM 已发成功（无
+        # EPERM 例外，同上），cmdline 不可读按已退处理、跳过强杀放行拉起。
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            log(f"daemon_runtime pid {pid} gone or unreadable before SIGKILL — skip SIGKILL")
+            return
+        if b"fenixd" not in cmdline:
+            log(
+                f"daemon_runtime pid {pid} alive but not fenixd before "
                 "SIGKILL (pid reuse) — skip SIGKILL"
             )
             return
@@ -780,7 +805,11 @@ def main():
             time.sleep(3)
             log("restarting daemon...")
             continue
-        started_ts = time.time()
+        # 存活时长用单调钟度量（code-review 682cf36c80ea）：time.time() 遇 NTP
+        # 大步回拨/虚拟机迁移恢复时可能倒退，alive_seconds 变负 → 意外退出被
+        # 误判为「存活 <60s 窗口」计启动失败，连续 3 次即假熔断。与
+        # _adopt_leftover_daemon 等待窗（time.monotonic）同口径。
+        started_ts = time.monotonic()
         log(f"daemon started (pid {proc.pid})")
         # 记录 daemon pid（原子覆写）：supervisor 被 SIGKILL 后重启时供
         # _adopt_leftover_daemon 检测收编（写入失败降级日志，不阻断监视）
@@ -820,7 +849,7 @@ def main():
         if rc is None:
             # 监视循环内已处理退出，兜底再等
             rc = proc.wait()
-        alive_seconds = time.time() - started_ts
+        alive_seconds = time.monotonic() - started_ts
         log(
             f"daemon exited (rc={rc}, restart={'yes' if restart else 'auto'}, "
             f"alive={alive_seconds:.0f}s)"

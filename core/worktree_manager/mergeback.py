@@ -154,6 +154,20 @@ class G4MergebackMixin:
         """Return the branch name for an active worktree, or None if unknown."""
         return self._wt_branches.get(str(wt_path))
 
+    def _reset_stash_state(self) -> None:
+        """stash 状态重置到「本轮无 stash 活动」确定态（单源，勿内联漂移）。
+
+        merge-back 的每一条返回路径（含空分支名 / Unknown worktree 等入口
+        早退）返回前都必须经过本方法：消费方 queue/rollback 每次 merge 返回
+        后无条件读取 last_stash_pop_conflicts / last_stash_entry_fate，早退
+        不重置会把上一轮 merge-back 的真实值误读为本轮活动
+        （code-review item c752ef77c3fa）。调用方 MUST 持 _main_tree_lock——
+        与 guard 段的写入串行，防并发 merge-back 的入口重置清掉在飞轮次
+        刚写入的真实值。
+        """
+        self.last_stash_pop_conflicts = []
+        self.last_stash_entry_fate = {"kept": True, "sha": ""}
+
     def merge_back(self, wt_path: Path) -> MergeConflictInfo:
         """Merge the worktree's branch into the main tree (project_root HEAD).
 
@@ -165,6 +179,10 @@ class G4MergebackMixin:
         wt_str = str(wt_path)
         branch = self._wt_branches.get(wt_str)
         if not branch:
+            # Unknown worktree 早退同样不残留上一轮 stash 状态（契约见
+            # _reset_stash_state）；锁内重置与 guard 段写入串行。
+            with self._main_tree_lock:
+                self._reset_stash_state()
             return MergeConflictInfo(False, f"Unknown worktree (no branch recorded): {wt_path}")
         return self.merge_back_from_branch(branch)
 
@@ -192,6 +210,10 @@ class G4MergebackMixin:
         进入 repair 通道）。
         """
         if not branch:
+            # 空分支名早退同样不残留上一轮 stash 状态（契约见 _reset_stash_state）；
+            # 锁内重置与 guard 段写入串行。
+            with self._main_tree_lock:
+                self._reset_stash_state()
             return MergeConflictInfo(False, "Empty branch name")
 
         with self._main_tree_lock:
@@ -199,8 +221,7 @@ class G4MergebackMixin:
             # spec_dir_inflight 任一早退后属性都处于「本轮无 stash 活动」确定态，
             # 不残留上一轮 merge-back 的值（消费方 queue/rollback 每次 merge 返回
             # 后无条件读取；成功路径随后由 guard 段写入真实值，先重置后赋值）。
-            self.last_stash_pop_conflicts = []
-            self.last_stash_entry_fate = {"kept": True, "sha": ""}
+            self._reset_stash_state()
             # ── 已提交在飞修订检测（evo-inflight-spec-amendment-watch 1.1/1.2）──
             # design 原定插点在 _check_spec_dir_inflight 之后，但 amended_inflight
             # 须搭预演闸的早退返回值抵达 repair 车道（1.3 根因透传：相撞场景里
@@ -910,11 +931,17 @@ class G4MergebackMixin:
 
         # 3) 逐车道分支求交
         holders: list = []
+        # branch -> 改动文件集（同轮识别内按分支记忆化）：结果与分支一一对应，
+        # spec×worktree 笛卡尔积复用同一份，少 spawn 重复的 git diff 子进程
+        # （code-review item f2ae13cc8f25）。
+        branch_files_cache: dict = {}
         for spec, run_ids in lane_specs.items():
             for wt_name, wt_path, branch in pairs:
                 if not self._wt_name_matches_spec(wt_name, spec):
                     continue
-                branch_files = self._branch_changed_files(branch)
+                if branch not in branch_files_cache:
+                    branch_files_cache[branch] = self._branch_changed_files(branch)
+                branch_files = branch_files_cache[branch]
                 hits = sorted(overlap_set & branch_files)
                 if hits:
                     holders.append(

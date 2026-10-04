@@ -24,6 +24,7 @@ import gzip
 import json
 import logging
 import re as _re
+import socket
 import urllib.parse
 
 # fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
@@ -696,6 +697,15 @@ class H0BaseMixin:
     _GZIP_EXT = {".js", ".css", ".html", ".htm", ".svg", ".json", ".md", ".txt", ".map"}
     _GZIP_MIN = 860  # 小于阈值的响应不值得压缩
 
+    # 请求体读取 socket 超时（秒，code-review item c8eb14f69a14）：handler 与
+    # DashboardHTTPServer 均未设 timeout 属性（ThreadingHTTPServer 缺省 None），
+    # 既有注释「阻塞 worker 线程至 socket 超时」的天然上界（_handle 503 分支、
+    # 413 分支、drain 超限分支）实际不存在——声明合法 Content-Length 却只发
+    # 部分字节后停滞的客户端可无限期占住请求槽位。类级全局 timeout 会误伤
+    # SSE 长连接与空闲 keep-alive，故只经 _read_body_bytes_with_timeout 对
+    # body 读取窗口局部生效（先例同 sse_routes 的写超时处置）。
+    _BODY_READ_TIMEOUT_SECONDS = 30.0
+
     # ── 服务端分页参数解析单源（add-dashboard-paging-and-etag 2.1/2.2）──
 
     @staticmethod
@@ -752,7 +762,9 @@ class H0BaseMixin:
         1.2）：If-None-Match 命中 → 在 route handler 调用**之前**写 304 短路
         （兼容 _api_config_get 等自含响应 handler——等返回值再拦截对它们无效）；
         未命中 → 200 全量路径，ETag 经 _pending_etag 由 _json 附带（仅 200
-        成功响应携带，错误响应不挂）。
+        成功响应携带，错误响应不挂）；_json 发头前按签名上下文复核一次，
+        两趟读取间隙内数据已变化的丢弃 ETag（宁缺 304 不假 304，
+        code-review item dba2f23f1f9d）。
         """
         for entry in table:
             m = _route_match(entry[0], entry[1], path)
@@ -769,10 +781,15 @@ class H0BaseMixin:
             # keep-alive 下 handler 实例跨请求复用：_pending_etag 必须 finally
             # 清零，防泄漏到同连接下一请求
             self._pending_etag = etag
+            # 签名上下文留给 _json 发头前复核（code-review item dba2f23f1f9d）：
+            # 上方签名计算与 handler 取数生成响应体是两趟读取，间隙内数据变化
+            # 会让旧签名错标新体（客户端缓存后数据回摆即复放假 304）
+            self._pending_etag_ctx = (sig_fn, query, m) if etag is not None else None
             try:
                 handler(self, path, query, m)
             finally:
                 self._pending_etag = None
+                self._pending_etag_ctx = None
             return
         self._error(404, "Not Found")
 
@@ -969,6 +986,36 @@ class H0BaseMixin:
                 except Exception:
                     pass
 
+    def _read_body_bytes_with_timeout(self, size: int) -> bytes:
+        """rfile.read 的局部读超时包装（code-review item c8eb14f69a14）。
+
+        settimeout 只约束单次 recv 等待（与 llm_health 同一口径）：覆盖本条目
+        场景「发送部分字节后停滞」（停滞中的 recv 到点抛 socket.timeout），
+        不承诺字节滴漏场景的全阶段墙上时限。读取前对 connection 局部设超时、
+        读完/异常恢复原值；连接已带更紧超时（如 SSE 流终结后复用的连接，
+        见 sse_routes 注记）时尊重原值不放大。超时即置 close_connection=True
+        ——停滞半截的 body 残留不可信，随连接关闭作废（与 413/超限分支同
+        口径），再上抛由调用方处置（_read_json_body 回 408、drain 静默放弃）。
+        """
+        conn = self.connection
+        original_timeout = None
+        try:
+            original_timeout = conn.gettimeout()
+            if (
+                original_timeout is None
+                or original_timeout > self._BODY_READ_TIMEOUT_SECONDS
+            ):
+                conn.settimeout(self._BODY_READ_TIMEOUT_SECONDS)
+            return self.rfile.read(size)
+        except (socket.timeout, TimeoutError):
+            self.close_connection = True
+            raise
+        finally:
+            try:
+                conn.settimeout(original_timeout)
+            except OSError:
+                pass
+
     def _read_json_body(self) -> dict | None:
         """读取并解析 JSON 请求体，做大小限制。
 
@@ -1001,7 +1048,7 @@ class H0BaseMixin:
             self._error(413, "Request body too large")
             return None
         try:
-            raw = self.rfile.read(content_length)
+            raw = self._read_body_bytes_with_timeout(content_length)
             # BUG-01：标记本请求已消费的 body 字节（POST/DELETE 派发后
             # _drain_remaining_request_body 据此计算残留）
             self._request_body_consumed = content_length
@@ -1010,6 +1057,12 @@ class H0BaseMixin:
                 self._error(400, "Request body must be a JSON object")
                 return None
             return body
+        except (socket.timeout, TimeoutError):
+            # 请求体读取停滞超时（code-review item c8eb14f69a14）：不再无限期
+            # 占住 worker 线程与请求槽位。连接已被 _read_body_bytes_with_timeout
+            # 置 close_connection=True，半截残留随连接关闭作废（不排空）。
+            self._error(408, "Request body timeout")
+            return None
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._error(400, "Invalid JSON body")
             return None
@@ -1047,8 +1100,11 @@ class H0BaseMixin:
                 self.close_connection = True
                 return
             try:
-                self.rfile.read(remaining)
+                self._read_body_bytes_with_timeout(remaining)
             except Exception:  # noqa: BLE001 连接已断/异常则放弃排空，不影响主响应
+                # 读停滞超时（c8eb14f69a14）已由 _read_body_bytes_with_timeout
+                # 置 close_connection=True：半截残留随连接关闭作废，不再盲等
+                # 占死 worker 线程
                 pass
 
     def _wants_gzip(self) -> bool:
@@ -1072,8 +1128,21 @@ class H0BaseMixin:
         etag = getattr(self, "_pending_etag", None)
         if etag:
             self._pending_etag = None
+            sig_ctx = getattr(self, "_pending_etag_ctx", None)
+            self._pending_etag_ctx = None
             if status == 200:
-                self.send_header("ETag", etag)
+                if sig_ctx is not None and self._route_etag(*sig_ctx) != etag:
+                    # 签名与响应体两趟读取之间数据源已变化（code-review item
+                    # dba2f23f1f9d）：旧签名挂上新体即错标，客户端缓存后数据
+                    # 回摆会被 If-None-Match 复放成假 304。按「宁缺 304 不假
+                    # 304」纪律不挂 ETag，本响应降级为无条件 200（含复核计算
+                    # 失败的降级路径，统一走 _route_etag 单点）。304 短路收益
+                    # 不受影响——复核只在确实生成 200 体时多算一次 stat 级签名。
+                    logger.debug(
+                        "ETag 签名与响应体生成之间数据源变化，本响应不挂 ETag"
+                    )
+                else:
+                    self.send_header("ETag", etag)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         body = self._maybe_gzip(body)

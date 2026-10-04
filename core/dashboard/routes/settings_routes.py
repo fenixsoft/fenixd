@@ -255,7 +255,8 @@ class H5SettingsRoutesMixin:
         """GET /api/prompts[?project=<name>] — agent 提示词读取（自含响应）。
 
         缺省 → 仅通用层六文件（用户级只读视图）；带 project → 追加项目级
-        .fenix/agents/ 附加内容。通用层一律只读，端点不提供通用层写入。
+        .fenix/agents/ 附加内容，project 在场但解析不到/不存在 → 404。
+        通用层一律只读，端点不提供通用层写入。
 
         读失败转可读 500（code-review item 113782f1517d）：通用层或项目
         extras 文件的权限/IO 错误静默降级空串会让 UI 显示空白编辑器、与
@@ -275,14 +276,17 @@ class H5SettingsRoutesMixin:
                 return
             agents.append({"type": atype, "file": fname, "content": content})
         out: dict = {"agents": agents}
-        project = self._project_from_query(query)
+        # 判定单源共用助手 _project_or_user_scope（code-review item
+        # 5170ba611ac1）：_project_from_query 把「无 project 参数」与
+        # 「project 名不在 registry」折叠成 None，直接以 None 判用户级会把
+        # 笔误/已删项目名静默折进用户级 extras——缺参才回退用户级，在场但
+        # 解析不到/不存在 404 已由助手发送（口径同同文件 POST 端点，item
+        # 89d191770258），此处仅需终止处理。
+        project, project_param = self._project_or_user_scope(query)
+        if project_param and project is None:
+            return
         if project is None:
             self._json(out)
-            return
-        if not project.get("exists"):
-            # 未知项目 404 与同文件 POST 端点一致（code-review item
-            # 89d191770258）：200+{"error"} 载荷会被前端 request() 当成功数据
-            self._error(404, "project not found")
             return
         proot = Path(project["path"])
         try:

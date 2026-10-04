@@ -82,10 +82,20 @@ export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
     );
   }
 
-  // SPA 路由链接（#/）与裸 #：保持原生跳转
-  if (href.startsWith('#')) {
+  // SPA 路由链接（#/）：保持原生跳转
+  if (href.startsWith('#/')) {
     return (
       <a href={href} {...props}>
+        {children}
+      </a>
+    );
+  }
+
+  // 裸 #（如 LLM 生成 markdown 里的 [占位](#)）：与上方页内锚点同理须 preventDefault，
+  // 原生跳转会清空 location.hash，被路由当作路径变更切回缺省页导致当前页面被切走
+  if (href === '#') {
+    return (
+      <a href={href} onClick={(e) => e.preventDefault()} {...props}>
         {children}
       </a>
     );

@@ -745,8 +745,23 @@ class G1LifecycleMixin:
                     )
                     if br.returncode == 0:
                         branch = br.stdout.strip()
-                except Exception:
-                    pass
+                    else:
+                        # 解析失败留痕（code-review item c11ad5bb37e1）：branch
+                        # 保持 None 会使下方 branch -D 整段跳过，失败分支静默
+                        # 残留且无日志可查，与本方法 worktree remove / rmtree /
+                        # branch -D 失败必记 WARNING 的口径对齐。
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Branch name resolve failed for {wt_path} "
+                            f"(rc={br.returncode}): {(br.stderr or '').strip()} — "
+                            f"failure-path branch delete will be skipped",
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Branch name resolve error for {wt_path}: {e} — "
+                        f"failure-path branch delete will be skipped",
+                    )
 
             # 收工清扫：agent 已退出，先杀掉其残留测试子进程（dev-server 孤儿），
             # 否则目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检测永久受骗）

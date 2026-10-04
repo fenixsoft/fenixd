@@ -351,6 +351,19 @@ class G5DistConflictsMixin:
                             f"git rm -- {p} failed during stray "
                             f"artifact removal: {(rm.stderr or '').strip()[:200]}",
                         )
+            else:
+                # staged 采集失败留痕（code-review item c0ed1f04d75b）：无 else
+                # 分支时旧 hash chunk / rename 双胞胎旧路径等 staged 新增产物会
+                # 随 merge 提交复活且无告警——非阻塞记录（remaining 复查与
+                # commit 兜底不变），口径对齐下方复查失败留痕。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Build-artifact self-heal staged-adds probe failed "
+                    f"(rc={staged.returncode}): "
+                    f"{(staged.stderr or '').strip()[:200]} — cannot sweep "
+                    f"stray branch-added artifacts, they may survive the "
+                    f"merge commit",
+                )
             # 剩余冲突：非产物路径仍冲突 → 语义冲突，交回调用方（不 abort）
             res2 = subprocess.run(
                 [
@@ -473,6 +486,18 @@ class G5DistConflictsMixin:
                 timeout=30,
             )
             if diff.returncode != 0:
+                # diff 探测失败留痕（code-review item fdf7b8522ab9）：浅克隆/
+                # 被改写历史等场景 HEAD^1..HEAD 可能确定性失败，静默 return 与
+                # docstring「失败时保留现有工作区产物并告警」承诺相悖——非阻
+                # 塞记录（行为不变，仅补可见性），口径对齐下方口径漂移留痕。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge diff probe failed (rc={diff.returncode}): "
+                    f"{(diff.stderr or '').strip()[:200]} — cannot tell whether "
+                    f"the merge touched src, skipping dist rebuild; "
+                    f"working-tree artifacts may lag merged src, rebuild "
+                    f"manually per the .fenix/verify.yaml prepare contract",
+                )
                 return
             changed = [l.strip() for l in diff.stdout.splitlines() if l.strip()]
             # 首个子句以 DASHBOARD_STATIC_ROOT 限定重建作用域（Non-Goals：不改

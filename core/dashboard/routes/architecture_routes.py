@@ -461,6 +461,11 @@ class ArchitectureManager:
         落盘——此时读到 generating 只能是重启残留。反之先读后判存在竞态：
         读到 generating 后生成线程才完成「写终态+释放锁」，会把已完成的
         生成误合成为中断（实测假失败）。
+
+        首判定为非在飞仍须复核（item cae05392adba）：判定与读文件两步之间
+        他线程 refresh 可刚受理并写 generating（锁自受理起持有至终态落盘才
+        释放），过期快照会把刚受理的生成误合成中断——故合成前重读状态并
+        二次复核在飞，仍非在飞才合成。
         """
         alive = self._in_flight_alive(proot)
         data = _read_status(proot)
@@ -468,12 +473,24 @@ class ArchitectureManager:
             return _status_payload("none")
         state = str(data.get("state") or "")
         if state == "generating" and not alive:
-            synth = _status_payload(
-                "failed",
-                started_at=data.get("started_at"),
-                error="生成被中断（daemon 重启或后台线程已不存在），请重新点击「刷新架构图」",
-            )
-            return synth
+            # code-review item cae05392adba：在飞判定与读文件两步之间存在
+            # 间隙——另一线程的 refresh() 可在 alive 判定之后、读文件之前
+            # 完成受理（acquire 单飞锁并写 generating），本次读到的
+            # generating 配上过期快照 alive=False 会把刚受理的生成误合成
+            # 为中断。单飞锁自受理起持有、终态写盘后才释放，故合成前重读
+            # 一次状态并复核在飞：复核已回到在飞 → 落到下方按正常
+            # generating 返回；重读已非 generating → 以新读结果为准；仍
+            # generating 且仍非在飞才合成 failed（首判定已把「读到
+            # generating 后生成才完成」的既有反向竞态挡在门外）。
+            data = _read_status(proot) or data
+            state = str(data.get("state") or "")
+            if state == "generating" and not self._in_flight_alive(proot):
+                synth = _status_payload(
+                    "failed",
+                    started_at=data.get("started_at"),
+                    error="生成被中断（daemon 重启或后台线程已不存在），请重新点击「刷新架构图」",
+                )
+                return synth
         # 补齐存量六键 + stage（旧版残留文件可能缺键）
         full = _status_payload(state or "none")
         for key in ("started_at", "generated_at", "error", "duration_ms",
