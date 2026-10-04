@@ -65,11 +65,12 @@ def _atomic_write(path: Path, content: str) -> None:
     后、进程 B 在同一 .tmp 上截断改写，随后任一方的 replace 都可能把截断内容落盘。
     唯一临时名保证并发写不可能产生截断产物——rename 前目标不变，rename 后内容完整。
 
-    mkstemp 以 0600 建临时文件，rename 前显式放宽到 0644：否则经本函数落盘的
-    产物（verification-report.md / report.json / verdict_stability.json）比常规
-    write_text 的 umask 缺省（通常 0644）更收紧——「Agent 手写 → 框架重合成
-    覆盖」后同一文件权限突然变 0600，跨用户读取（非 root 的辅助进程/人工其它
-    账号）会拒绝访问。chmod 失败不阻断写入（权限是尽力而为的附属属性）。
+    mkstemp 以 0600 建临时文件，rename 前修复权限，口径对齐 deliverables
+    _atomic_write_text（item 7ec0cecc423d）：替换**既有**文件时继承其原权限——
+    运维若刻意把产物（verification-report.md / report.json / verdict_stability.json）
+    收紧为 0600，「Agent 手写 → 框架重合成覆盖」一轮不应被静默放宽；**新**文件
+    放宽到 0644，与常规 write_text 的 umask 缺省一致，避免跨用户读取（非 root
+    的辅助进程/人工其它账号）被拒。chmod 失败不阻断写入（权限是尽力而为的附属属性）。
     """
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +82,8 @@ def _atomic_write(path: Path, content: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         try:
-            os.chmod(tmp_path, 0o644)
+            mode = os.stat(path).st_mode & 0o777 if path.exists() else 0o644
+            os.chmod(tmp_path, mode)
         except OSError:
             pass
         os.replace(tmp_path, path)
@@ -482,6 +484,13 @@ def _report_is_superseded(project_root, spec_name, content) -> bool:
         return False  # 解析不出结论（Agent 自由叙述）→ 不判矛盾
     if declared_verdict is not None and declared_verdict != _derive_status(run_result, report):
         return True
+    # 已知边界（item 7a55e645a08c）：下方计数兜底只读 report.json 顶层 summary；
+    # fast-track 形态（report.json 缺失、场景明细在 .fenix-run-result.json 的
+    # verification.scenarios）下 failed/errors 恒为 None，两条计数比对被跳过，
+    # 仅剩上方 verdict 标题行比对生效。方向保守（不会误判残留、只可能漏判后
+    # 维持 present），且 _load_run_result 的 status 比对通常已覆盖；若未来
+    # fast-track 残留误放行出现，须在此对 _resolve_scenarios 的场景计数做同款
+    # 比对（同步消费 run_result 侧计数），不能只扩 report.json 侧。
     _passed, failed, errors, _total = _summary_counts(report)
     if declared_failed is not None and failed is not None and declared_failed != failed:
         return True
