@@ -208,6 +208,38 @@ class TestBatchMergedCommit:
         text = (repo / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert text.count("自进化：") == 2
 
+    def test_ingest_pending_batch_defers_commit(self, tmp_path, monkeypatch):
+        """pending 分支同属批量路径（BUG-01 回归点）：逐条不提交，批末合并。"""
+        repo = _tracked_repo(tmp_path)
+        monkeypatch.setattr(
+            "core.evolution._resolve_project_path_by_name", lambda name: repo
+        )
+        # 走到 pending 分支：草稿落盘与 lint 均通过（stub 掉真实物化，
+        # 聚焦提交开关行为本身）
+        monkeypatch.setattr(
+            "core.evolution.materialize_draft",
+            lambda item, proot: (Path(proot) / "spec" / "changes" / "evo-fake", None),
+        )
+        monkeypatch.setattr("core.evolution.lint_draft", lambda d, proot: [])
+        base = _commit_count(repo)
+
+        assert ingest_item(ITEM, repo) == "pending"
+        assert ingest_item(
+            dict(ITEM, title="问题乙", section="可改进", impact="i2",
+                 evidence="e2", analysis="a2", suggestion="s2"),
+            repo,
+        ) == "pending"
+
+        # pending 逐条写标记但不逐条提交
+        assert _commit_count(repo) == base
+
+        # 编排层批末合并提交：两条 pending 标记收进恰一枚提交
+        assert commit_todo_marker(project_path=repo) is True
+        assert _commit_count(repo) == base + 1
+        assert _head_files(repo) == [".fenix/todo.md"]
+        text = (repo / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert text.count("自进化：") == 2
+
     def test_merged_commit_noop_when_nothing_changed(self, tmp_path):
         """无未提交改动时批末提交为良性 no-op，不报错。"""
         repo = _tracked_repo(tmp_path)

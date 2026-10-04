@@ -1298,7 +1298,9 @@ def ingest_item(item: dict, project_root) -> str:
 
     base["status"] = "pending"
     upsert_item(project_root, base)
-    write_todo_marker(base)
+    # pending 是 ingest_item 批量路径的第 4 处回写：同传 commit=False，
+    # 由编排层批末 commit_todo_marker 合并提交（避免逐条提交风暴）
+    write_todo_marker(base, commit=False)
     return "pending"
 
 
