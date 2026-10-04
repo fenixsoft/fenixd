@@ -682,6 +682,20 @@ class QQQueueMixin:
                     "(fix-provider-transient-backoff D4)",
                 )
             return
+        # 错峰开放拍空队收口（code-review item 31578b1e77d8）：下方收口判据
+        # 只覆盖 release-wait（当拍未到节拍）；当拍已开放（gate == "release"）
+        # 时积压若已在窗口内清空（如条目被守卫回滚/移除而未经 admit），队列
+        # 恒空、gate 恒为 release——下方 `not self._run_queue` 兜底收口在槽满
+        # 提前返回路径不可达，唤醒链会以 0.5s 间隔空转直至硬过期（horizon
+        # ≥600s ≈ 1200 次空跑 _process_queue）。队列空即退出错峰态终止链条；
+        # held 非空不收口——条目仍落到下方常态派发路径按节拍准入
+        # （admit_unseal_dispatch 控拍），错峰语义不变。
+        if gate == "release":
+            with self._queue_lock:
+                held = len(self._run_queue)
+            if not held:
+                self._pm._transient_unseal_note_drained()
+                return
         if gate in ("hold", "observe", "release-wait"):
             with self._queue_lock:
                 held = len(self._run_queue)

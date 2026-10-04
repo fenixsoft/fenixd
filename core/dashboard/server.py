@@ -544,55 +544,79 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             # _claude_watchdog_loop 的 PID 复用防护），不一致则视为目标已消失、
             # 不再发信号（端口若仍被占，下方重绑会失败并明确报错）。
             expected_start = occupant.get("starttime")
-            if expected_start is None or _proc_starttime(occupant["pid"]) != expected_start:
+            identity_gone = (
+                expected_start is None or _proc_starttime(occupant["pid"]) != expected_start
+            )
+            if identity_gone:
+                # 身份复核不一致（code-review item e15cefc5aa28）：占用者可能恰在
+                # 「bind 失败→查表→复核」间隙自然退出（或 /proc 瞬时读取失败令
+                # starttime 读成 None），端口此刻或已空闲——先试一次免信号重绑，
+                # 仅重绑仍失败才报错退出；保守方向不变，绝不向身份存疑的 PID
+                # 发送任何信号。
+                try:
+                    httpd = DashboardHTTPServer(
+                        ("127.0.0.1", actual),
+                        registry,
+                        static_dir or STATIC_DIR,
+                    )
+                except OSError as e2:
+                    sys.stderr.write(
+                        f"端口 {actual} 占用者 PID {occupant['pid']} 身份已变化/已退出，"
+                        f"跳过接管信号（防 PID 复用误杀）；重绑仍失败: {e2}"
+                        f"——端口可能仍被占用，可稍后重试或用 --port 换端口。\n"
+                    )
+                    sys.exit(1)
                 sys.stderr.write(
-                    f"端口 {actual} 占用者 PID {occupant['pid']} 身份已变化/已退出，"
-                    f"跳过接管信号（防 PID 复用误杀）。\n"
+                    f"端口 {actual} 原占用者已退出，免信号重绑成功"
+                    f"（未向身份存疑的 PID {occupant['pid']} 发送任何信号）。\n"
                 )
-                sys.exit(1)
-            # 常驻豁免（2026-09-29 事故）：占用者父进程为 tmux server → 人工
-            # 常驻实例，MUST NOT 发送任何信号（pane 进程死 → 单窗口 tmux 会话
-            # 消失、用户可访问实例静默死亡）。打印可操作错误后非 0 退出；
-            # agent 自适应换端口，非 tmux 旧实例（agent 自测/nohup 遗留）接管
-            # 语义不变。
-            if _parent_is_tmux_server(occupant["pid"]):
-                sys.stderr.write(
-                    f"端口 {actual} 已被 tmux 承载的常驻 dashboard 实例占用"
-                    f"（占用者 PID {occupant['pid']}）——常驻实例不可被接管，"
-                    f"未向其发送任何信号。\n"
-                    f"请用 --port 指定其它端口，或直接复用常驻实例。\n"
-                )
-                sys.exit(1)
-            try:
-                os.kill(occupant["pid"], signal.SIGTERM)
-            except OSError as e:
-                # 目标在查表后已退出属可预期竞态，记日志而非静默 pass
-                # （code-review item 5612e191a8f5）。
-                sys.stderr.write(
-                    f"端口 {actual} 接管：向 PID {occupant['pid']} 发 SIGTERM 失败"
-                    f"（目标可能已退出）: {e}\n"
-                )
-            # 等待旧实例退出（≤9s）。SIGTERM 在本模块内是 graceful 退出
-            # （_graceful_term → httpd.shutdown → finally 清理链：watcher/
-            # SSE/session_manager 收尾），实测空闲实例 ≈4.3s 进程才消失——
-            # 初版 3s 窗口不等旧实例死透就重绑，必然再撞 EADDRINUSE、新实例
-            # 报错退出（2026-09-30 真实环境场景验证实证：「非 tmux 旧实例仍
-            # 接管」的「终止旧实例并成功绑定」时序破裂）。
-            deadline = time.monotonic() + 9.0
-            while time.monotonic() < deadline:
-                if not _is_process_alive(occupant["pid"]):
-                    break
-                time.sleep(0.1)
-            # 重新绑定一次
-            try:
-                httpd = DashboardHTTPServer(
-                    ("127.0.0.1", actual),
-                    registry,
-                    static_dir or STATIC_DIR,
-                )
-            except OSError as e2:
-                sys.stderr.write(f"端口 {actual} 接管旧 dashboard 实例后仍无法绑定：{e2}\n")
-                sys.exit(1)
+            if not identity_gone:
+                # 常驻豁免（2026-09-29 事故）：占用者父进程为 tmux server → 人工
+                # 常驻实例，MUST NOT 发送任何信号（pane 进程死 → 单窗口 tmux 会话
+                # 消失、用户可访问实例静默死亡）。打印可操作错误后非 0 退出；
+                # agent 自适应换端口，非 tmux 旧实例（agent 自测/nohup 遗留）接管
+                # 语义不变。
+                if _parent_is_tmux_server(occupant["pid"]):
+                    sys.stderr.write(
+                        f"端口 {actual} 已被 tmux 承载的常驻 dashboard 实例占用"
+                        f"（占用者 PID {occupant['pid']}）——常驻实例不可被接管，"
+                        f"未向其发送任何信号。\n"
+                        f"请用 --port 指定其它端口，或直接复用常驻实例。\n"
+                    )
+                    sys.exit(1)
+                try:
+                    os.kill(occupant["pid"], signal.SIGTERM)
+                except OSError as e:
+                    # 目标在查表后已退出属可预期竞态，记日志而非静默 pass
+                    # （code-review item 5612e191a8f5）。
+                    sys.stderr.write(
+                        f"端口 {actual} 接管：向 PID {occupant['pid']} 发 SIGTERM 失败"
+                        f"（目标可能已退出）: {e}\n"
+                    )
+                # 等待旧实例退出（≤9s）。SIGTERM 在本模块内是 graceful 退出
+                # （_graceful_term → httpd.shutdown → finally 清理链：watcher/
+                # SSE/session_manager 收尾），实测空闲实例 ≈4.3s 进程才消失——
+                # 初版 3s 窗口不等旧实例死透就重绑，必然再撞 EADDRINUSE、新实例
+                # 报错退出（2026-09-30 真实环境场景验证实证：「非 tmux 旧实例仍
+                # 接管」的「终止旧实例并成功绑定」时序破裂）。
+                deadline = time.monotonic() + 9.0
+                while time.monotonic() < deadline:
+                    if not _is_process_alive(occupant["pid"]) or _proc_state(occupant["pid"]) == "Z":
+                        # 僵尸态旧实例已终止、不再持有监听 socket，仅因父进程未收割
+                        # 而 /proc 目录仍在——继续等待只会拖满 9s 窗口（code-review
+                        # item 10ab31b04112），视同已退出立即重绑。
+                        break
+                    time.sleep(0.1)
+                # 重新绑定一次
+                try:
+                    httpd = DashboardHTTPServer(
+                        ("127.0.0.1", actual),
+                        registry,
+                        static_dir or STATIC_DIR,
+                    )
+                except OSError as e2:
+                    sys.stderr.write(f"端口 {actual} 接管旧 dashboard 实例后仍无法绑定：{e2}\n")
+                    sys.exit(1)
         else:
             # 占用者为非 dashboard 进程（或无法判定）→ 明确报错非 0 退出
             info = occupant["cmdline"] if occupant else "未知进程"
@@ -719,3 +743,16 @@ def _is_process_alive(pid: int) -> bool:
         return Path(f"/proc/{pid}").exists()
     except OSError:
         return False
+
+
+def _proc_state(pid: int) -> str | None:
+    """读 /proc/<pid>/stat 的 state 字段（第 3 字段，Z=僵尸）；读不到 → None。
+
+    解析纪律同 _proc_starttime——comm 字段可能含空格/括号，从最后一个 ')'
+    之后取字段，其后首字段即 state。仅用于接管等待期识别僵尸态旧实例。
+    """
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+        return data[data.rindex(")") + 2 :].split()[0]
+    except (OSError, ValueError, IndexError):
+        return None

@@ -1289,11 +1289,22 @@ class AgentRunner:
         else:
             model_override = DEFAULT_GATEWAY_MODEL
 
+        # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
+        # 的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
+        # （如 max_turns: "300"）传进 _run_claude 后，轮询环 ``turn_count[0] >=
+        # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
+        # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
+        max_turns = self._get_config("agents.max_turns", 300)
+        try:
+            max_turns = int(max_turns)
+        except (TypeError, ValueError):
+            max_turns = 300
+
         start_time = time.time()
         try:
             output, turns, _session_id, _usage = self._run_claude(
                 prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=self._get_config("agents.max_turns", 300),
+                max_turns=max_turns,
                 spec_name=spec_name,
                 agent_type="dispute-judge",
             )
@@ -1430,11 +1441,22 @@ class AgentRunner:
         else:
             model_override = DEFAULT_GATEWAY_MODEL
 
+        # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
+        # 的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
+        # （如 max_turns: "300"）传进 _run_claude 后，轮询环 ``turn_count[0] >=
+        # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
+        # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
+        max_turns = self._get_config("agents.max_turns", 300)
+        try:
+            max_turns = int(max_turns)
+        except (TypeError, ValueError):
+            max_turns = 300
+
         start_time = time.time()
         try:
             output, turns, _session_id, _usage = self._run_claude(
                 prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=self._get_config("agents.max_turns", 300),
+                max_turns=max_turns,
                 spec_name=spec_name,
                 agent_type="spec-review",
             )
@@ -4862,7 +4884,8 @@ class AgentRunner:
     # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────
 
     def _copyback_verify_progress(self, wt_path: Path, spec_name: str) -> None:
-        """成功收尾：把 worktree 的 per-spec 验证产物目录逐文件拷回主树同路径。
+        """_run_claude 正常返回即拷回（先于产物硬门，失败 run 同样保留进度）：
+        把 worktree 的 per-spec 验证产物目录逐文件拷回主树同路径。
 
         add-worktree-verify-progress-copyback（D2 mtime 守卫 / D3 fail-open /
         D4 零动作）：worktree `.fenix/verify-progress/<spec>/` 不存在时直接返回
@@ -5939,16 +5962,32 @@ class AgentRunner:
             # 读线程残留存活时不落（dict(last_result) 快照同样可能采到
             # clear+update 中间态，code-review item 48b02c8e1746）。
             if last_result and not reader_stuck:
-                append_run_line(run_file, dict(last_result))
+                # code-review item 2750494abc4c：终态行落盘统一包 OSError 防护
+                # （下同）——finally 段写失败会以 OSError 替换在飞的取消/冻结/
+                # 判停异常，attempt 循环的专用 except 接不住，终止整个重试链的
+                # 收口语义退化为普通失败。留痕写失败仅 WARNING 不阻断。
+                try:
+                    append_run_line(run_file, dict(last_result))
+                except OSError as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"result 终态行落盘失败（不阻断 run 终态）: {e}",
+                    )
             # add-run-cancel D2：cancelled 终态行在 join 之后落盘（result 行后），
             # 保证 cancelled 行是文件最后一行（终态后置既有次序）。
             if cancel_error is not None:
-                append_run_line(run_file, {
-                    "type": "cancelled",
-                    "reason": cancel_error.reason,
-                    "by": cancel_error.by,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                try:
+                    append_run_line(run_file, {
+                        "type": "cancelled",
+                        "reason": cancel_error.reason,
+                        "by": cancel_error.by,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"cancelled 终态行落盘失败（不阻断取消收口）: {e}",
+                    )
                 # 取消已在轮询环内消费：run 收尾清理旗标防泄漏（幂等；
                 # _execute_agent 层的 _cancel_clear 亦会兜底）。
                 self._cancel_clear(base_run_id)
@@ -5958,23 +5997,35 @@ class AgentRunner:
             # 不属于终态事件，不影响 classify_run 的末行判定；MUST NOT 把
             # run_metrics 调到终态行之后，否则文件末行不再是终态）。
             if frozen_error is not None:
-                append_run_line(run_file, {
-                    "type": "frozen-terminated",
-                    "reason": frozen_error.reason,
-                    "by": frozen_error.by,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                try:
+                    append_run_line(run_file, {
+                        "type": "frozen-terminated",
+                        "reason": frozen_error.reason,
+                        "by": frozen_error.by,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"frozen-terminated 终态行落盘失败（不阻断冻结收口）: {e}",
+                    )
             # evo-add-run-stop-loss 2.1：stall-budget-terminated 终态行与
             # cancelled / frozen-terminated 同位置（join 后、result 行后），
             # 保证为文件末行级终态；命中判据与统计快照入行可审计（判停
             # 不新增 admin 告警，run 转录即唯一落点）。
             if stall_error is not None:
-                append_run_line(run_file, {
-                    "type": "stall-budget-terminated",
-                    "criterion": stall_error.criterion,
-                    "detail": stall_error.detail,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                try:
+                    append_run_line(run_file, {
+                        "type": "stall-budget-terminated",
+                        "criterion": stall_error.criterion,
+                        "detail": stall_error.detail,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"stall-budget-terminated 终态行落盘失败（不阻断判停收口）: {e}",
+                    )
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
         if cancel_error is not None:
@@ -5999,7 +6050,13 @@ class AgentRunner:
             # 此刻子进程已 kill、读线程已 join（finally 语义保证 worktree 静默可
             # 证明），先保全未提交现场再 append_run_error——失败降级不阻断收口。
             self._wip_checkpoint_on_forced_kill(spec_name, cwd)
-            append_run_error(run_file, timeout_error, returncode)
+            try:
+                append_run_error(run_file, timeout_error, returncode)
+            except OSError as e:
+                self.logger.warning(
+                    "agent_runner",
+                    f"timeout 终态错误行落盘失败（不阻断收口）: {e}",
+                )
             raise RuntimeError(
                 f"claude CLI {timeout_error}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
@@ -6009,7 +6066,13 @@ class AgentRunner:
             # 保全——零提交型 run（builtin a1 84min 未提交工作滞留 worktree）的
             # 现场保全点，后续 attempt resume 或降级重建从该提交恢复。
             self._wip_checkpoint_on_forced_kill(spec_name, cwd)
-            append_run_error(run_file, turn_limit_error, returncode)
+            try:
+                append_run_error(run_file, turn_limit_error, returncode)
+            except OSError as e:
+                self.logger.warning(
+                    "agent_runner",
+                    f"turn-limit 终态错误行落盘失败（不阻断收口）: {e}",
+                )
             raise RuntimeError(
                 f"claude CLI {turn_limit_error}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
@@ -6031,7 +6094,13 @@ class AgentRunner:
             # 死因被系统性误标。过滤后无剩余内容 → 回退 `Exit code: {returncode}`。
             # run 产物 jsonl 的 stderr 原始事件保持不过滤（取证现场完整）。
             effective_lines, error_msg = self._denoise_stderr(stderr_lines, returncode)
-            append_run_error(run_file, error_msg, returncode)
+            try:
+                append_run_error(run_file, error_msg, returncode)
+            except OSError as e:
+                self.logger.warning(
+                    "agent_runner",
+                    f"CLI 失败错误行落盘失败（不阻断收口）: {e}",
+                )
             exc = RuntimeError(
                 f"claude CLI failed: {error_msg}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
@@ -6081,7 +6150,17 @@ class AgentRunner:
             result_subtype = observed_result.get("subtype", "success")
             if result_is_error or result_subtype in ("error", "error_during_execution"):
                 err_text = observed_result.get("result", "") or f"is_error={result_is_error}, subtype={result_subtype}"
-                append_run_error(run_file, f"API error disguised as success: {err_text}", returncode)
+                try:
+                    append_run_error(
+                        run_file,
+                        f"API error disguised as success: {err_text}",
+                        returncode,
+                    )
+                except OSError as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"伪装成功错误行落盘失败（不阻断收口）: {e}",
+                    )
                 raise RuntimeError(
                     f"claude CLI rc==0 but result indicates error: {err_text}"
                     + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
@@ -6363,6 +6442,14 @@ class AgentRunner:
             ``(base, None)``（快照亦不取——守卫不消费，省一次文件读）。
         """
         base = self._get_config("agents.max_turns", 300)
+        # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
+        # 的既有钳制写法——配置误写成字符串时，轮询环 ``turn_count[0] >=
+        # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
+        # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
+        try:
+            base = int(base)
+        except (TypeError, ValueError):
+            base = 300
         if agent_type not in IMPL_LANE_AGENT_TYPES or not spec_name:
             return base, None
 

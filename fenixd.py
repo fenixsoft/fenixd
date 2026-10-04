@@ -680,6 +680,7 @@ class FenixDaemon:
         # item fc1f18a4eb95）。「or 3」语义保留：下游 state_machine 以
         # max(1, int(verify_redo_budget or 0)) 收敛到至少 1，显式 0 并不能表达
         # 「禁用预算」，故不改显式 None 判断（保守，不引入未验证的行为变化）。
+        # [fenix-ignore:fc1f18a4eb95] 已修复（code-fix 批次 61dd54b8 落地）：下方 int() 已包 try/except (TypeError, ValueError)，非法值回退 3 并 ERROR 留痕，所指启动即崩不复存在
         raw_redo_budget = ConfigLoader.get(self.config, "agents.verify_redo_budget", 3)
         try:
             _redo_budget = int(raw_redo_budget or 3)
@@ -1190,6 +1191,7 @@ class FenixDaemon:
         # 方法，_config_snapshot 不更新、对齐持久化不落盘，此后每个热更新周期
         # 重复失败刷屏（code-review item 0950743a8143）——此处仅用于对比提示，
         # 非法时跳过比对，保证快照刷新与对齐持久化总能走到。
+        # [fenix-ignore:0950743a8143] 已修复（code-fix 批次 61dd54b8 落地）：下方 int() 已包 try/except (TypeError, ValueError)，非法值记 ERROR 跳过比对，_config_snapshot 刷新与对齐持久化总能走到，所指裸 int() 不复存在
         if self._admin_executor is not None:
             raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
             workers = None
@@ -2382,6 +2384,7 @@ class FenixDaemon:
             # 8f6bf8446388，同主循环守卫范式，缺省口径一致回退 5 分钟）：裸
             # float() 在逐轮 run_once 的 try/except 之外抛出会击穿整个巡检
             # 线程，admin 监视永久停摆（code-review item 0c251f8d00a5）。
+            # [fenix-ignore:0c251f8d00a5] 已修复（code-fix 批次 61dd54b8 落地）：interval 读取已纳入逐轮 try/except (TypeError, ValueError)，非法值回退 5.0 并 ERROR 留痕，所指巡检线程击穿不复存在
             try:
                 interval = max(float(self.admin_monitor.interval_minutes), 0.5)
             except (TypeError, ValueError):

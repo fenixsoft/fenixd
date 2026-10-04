@@ -3980,6 +3980,7 @@ class PMEngine:
                             f"'{fresh.get('status')}'，跳过本轮恢复",
                         )
                         continue
+                    # [fenix-ignore:b33341a8f31b] 问题已修复（commit bffc1407）：下方已按 is_fast_track 分流短路，fast-track spec 走 _fasttrack_recovery_reentry 恢复收尾、不再回 implemented+入队 verifier，当前树问题不成立
                     # code-review item b33341a8f31b：fast-track 分流——单 run 全包
                     # 不设 verifier 车道（与 _on_spec_implemented 同一防线，
                     # fasttrack-orphan-planner-race），回 implemented + 入队
