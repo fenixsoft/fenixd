@@ -77,6 +77,12 @@ _GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 # markdown 链接（image/链接同形，只关心 .md 与目录目标）
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
+# 宽松兜底形态：捕获组不排除空白/括号，专用于识别「形如链接但目标含空格
+# 或嵌套括号」的非标准产出（蒸馏由 LLM 生成，不保证 %20 转义或尖括号包裹；
+# 此类目标 _LINK_RE 匹配不到，死链/越界链接会静默逃过校验，code-review
+# a89f0fcb03e7）
+_LINK_LOOSE_RE = re.compile(r"\[[^\]]*\]\(([^)]*)\)")
+
 # 更新时间盖戳（index 与 _domain 通用）：标准行 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`，
 # 本地时区（用户定调 2026-09-30：真相源面向人类读者，用本地时区展示）。由蒸馏/回填
 # 管线以动态段注入的当前本地时间盖写，时区后缀随机器动态生成；表格单元格为同格式
@@ -261,6 +267,25 @@ def validate_knowledge(project_root) -> list:
                 continue
             if not resolved.exists():
                 violations.append(f"{label}: 链接目标不存在: {target}")
+
+        # 非标准目标兜底（code-review a89f0fcb03e7）：_LINK_RE 捕获组排除
+        # 空白与右括号，目标含空格/嵌套括号的链接整体不参与上方越界/存在性
+        # 检查——死链静默通过校验落库。对「形如链接但目标含空格或括号」显式
+        # 报一条格式违规（此类目标对应的文件名违反 kebab-case 契约，落库必
+        # 是死链）。先剔除围栏代码块与行内代码 span，避免文档里的示例链接
+        # 文本误报。外链与上方口径一致不参与检查。
+        scrubbed = re.sub(r"```.*?```", "", text, flags=re.S)
+        scrubbed = re.sub(r"`[^`\n]+`", "", scrubbed)
+        for m in _LINK_LOOSE_RE.finditer(scrubbed):
+            target = m.group(1)
+            if not target or not re.search(r"[\s(]", target):
+                continue  # 空目标无路径语义；合法形态已由 _LINK_RE 检查
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            violations.append(
+                f"{label}: 链接目标格式非法（含空格或未转义括号，须 %20 转义"
+                f"或 <目标> 尖括号包裹）: {target}"
+            )
 
     # ── 能力页（domains/<域>/<能力>.md，_domain.md 为导航层另行处理）──
     domains_dir = kroot / "domains"
@@ -742,7 +767,8 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
     """pathspec 限定自动提交（复用 archive_commit 的 fail-open 哲学）。
 
     Returns:
-        commit hash；``""``（工作区无变更，nothing to commit，视为 ok）；
+        commit hash；``""``（工作区无变更 nothing to commit，或提交已落库
+        但 hash 回读失败——后者已记 warning，视为 ok）；
         None（提交失败，已记 warning）。
     """
     names = ", ".join(archived_names)
@@ -768,7 +794,19 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
             )
             return None
         rev = _git(proot, ["log", "-1", "--format=%H", "--", KNOWLEDGE_DIR])
-        return rev.stdout.strip() if rev.returncode == 0 else None
+        if rev.returncode == 0:
+            return rev.stdout.strip()
+        # 走到这里 commit 已落库（上方 returncode == 0），仅 hash 回读瞬态
+        # 失败（index.lock 撞车、git 钩子抖动等）。不能返回 None——调用方
+        # 会把 None 一律按「提交失败」处理，误报「产出滞留工作区」并重复
+        # 登重试台账、对同一批归档再跑一轮完整蒸馏（code-review
+        # 46be2e75f49e）。降级按成功返回 ""（hash 未知），warning 留痕。
+        logger.warning(
+            "knowledge-distill git log 回读 commit hash 失败（提交已落库，"
+            "hash 未知）: %s",
+            rev.stderr.strip() or f"exit {rev.returncode}",
+        )
+        return ""
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("knowledge-distill 自动提交异常: %s", e)
         return None
