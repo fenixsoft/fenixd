@@ -897,12 +897,17 @@ class TestStaleConfigDefaults(unittest.TestCase):
         zero = ConfigLoader.get_stale_code_selfheal_config(
             {"stale_code_selfheal": {"max_dangling_seconds": 0}})
         assert zero["max_dangling_seconds"] == 0
-        # 合法值透传（小数取整）
+        # 合法值透传（整值浮点 90.0 按整数接受 90）
         passthrough = ConfigLoader.get_stale_code_selfheal_config(
-            {"stale_code_selfheal": {"max_dangling_seconds": 90.7}})
+            {"stale_code_selfheal": {"max_dangling_seconds": 90.0}})
         assert passthrough["max_dangling_seconds"] == 90
-        # 负值 / bool / 字符串 / None → 回退缺省 14400
+        # 非整值浮点回退缺省 14400（item 6a69eac80f8a：旧 int() 截断把正小数
+        # 翻转成「0=关闭升级」语义，现与 _normalize_transient_seconds 同口径）
         default = ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT
+        noninteger = ConfigLoader.get_stale_code_selfheal_config(
+            {"stale_code_selfheal": {"max_dangling_seconds": 90.7}})
+        assert noninteger["max_dangling_seconds"] == default
+        # 负值 / bool / 字符串 / None → 回退缺省 14400
         for bad in (-5, True, False, "快", None, [3600]):
             cfg = ConfigLoader.get_stale_code_selfheal_config(
                 {"stale_code_selfheal": {"max_dangling_seconds": bad}})

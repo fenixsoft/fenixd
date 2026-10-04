@@ -705,7 +705,10 @@ def set_item_status(project_root, item_id: str, status: str, spec_name: Optional
 def _read_json_file(path: Path) -> dict:
     """读取 JSON 文件；缺失/损坏返回空 dict。"""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # errors="replace"：坏 UTF-8 字节降级为替换符，由后续 json.loads 兜为
+        # JSONDecodeError 路径——否则 UnicodeDecodeError 会穿透到进度端点与
+        # 周期调度（同 _read_items_unlocked / read_request_result 的容错口径）
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}

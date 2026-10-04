@@ -208,12 +208,13 @@ class TestCooldownConfigKeys(unittest.TestCase):
             assert cfg[key] == expected, (key, cfg)
 
     def test_legal_values_passthrough(self):
-        """合法整数值透传（float 取整）。"""
+        """合法整数值透传（整值浮点 30.0 按整数接受；非整值浮点回退缺省，
+        code-review item 2460e8a27c5d）。"""
         cfg = ConfigLoader.get_stale_code_selfheal_config({
             "stale_code_selfheal": {
                 "cooldown_window_seconds": 60,
                 "cooldown_threshold": 1,
-                "cooldown_duration_seconds": 30.7,
+                "cooldown_duration_seconds": 30.0,
                 "self_triggered_window_seconds": 10,
                 "self_triggered_threshold": 2,
             }
@@ -225,12 +226,13 @@ class TestCooldownConfigKeys(unittest.TestCase):
         assert cfg["self_triggered_threshold"] == 2
 
     def test_bool_trap_and_non_positive_fallback(self):
-        """bool 陷阱 / 0 / 负数 / 字符串 / None 一律回退缺省，不抛异常。
+        """bool 陷阱 / 0 / 负数 / 字符串 / None / 非整值浮点一律回退缺省，
+        不抛异常（非整值浮点口径见 code-review item 2460e8a27c5d）。
 
         `0` **不等效关闭**（与 idle_confirm_seconds 一致：冷却无独立开关，
         整体关闭走 enabled: false）。
         """
-        bad_values = [True, False, 0, -1, "60", None, [], {}]
+        bad_values = [True, False, 0, -1, "60", None, [], {}, 30.7]
         for key, default in self.DEFAULTS.items():
             for value in bad_values:
                 cfg = ConfigLoader.get_stale_code_selfheal_config(

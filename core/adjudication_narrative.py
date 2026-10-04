@@ -931,8 +931,10 @@ def write_narrative_sidecar(
             "at": datetime.now(timezone.utc).isoformat(),
         }
         fd, tmp = tempfile.mkstemp(dir=d, prefix=".narrative-", suffix=".tmp")
+        f = None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            with f:
                 json.dump(payload, f, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
@@ -943,6 +945,15 @@ def write_narrative_sidecar(
             except OSError:
                 pass
             raise
+        finally:
+            # fdopen 自身抛错时 with 未绑定文件、裸 fd 无人关闭——daemon 长
+            # 生命周期内描述符泄漏，兜底 os.close（对齐 item cbb57806fbfd 口径，
+            # item bad97ae2edc3）。
+            if f is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         try:
             dfd = os.open(d, os.O_RDONLY)
             try:
@@ -1110,9 +1121,18 @@ def schedule_narrative(
             daemon=True,
             name=f"narrative-{_safe_alert_id(alert_id)}",
         )
-        with _active_lock:
-            _active_threads.add(t)
-        t.start()
+        try:
+            with _active_lock:
+                _active_threads.add(t)
+            t.start()
+        except BaseException:
+            # start 失败（线程数耗尽等）时 worker 的 finally 自摘永不执行，
+            # 未启动线程残留登记集会让 wait_pending_narrative 对其 join 抛
+            # RuntimeError——先摘牌再上抛，保持外层 fail-open 吞异常语义不变
+            # （item b98a4502183a）。
+            with _active_lock:
+                _active_threads.discard(t)
+            raise
         return t
     except Exception as e:  # fail-open：叙事是增强不是门禁
         _warn(ctx, f"叙事调度异常（告警已落盘不受影响）: {e}")

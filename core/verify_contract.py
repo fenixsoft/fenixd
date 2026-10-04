@@ -812,7 +812,16 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # 会波及 serving/dist_conflicts 等调用方），CLI 据此显示「声明 N 步」，
     # 避免误读为已执行步数。
     prepare_steps_run = len(contract.prepare)
-    if contract.prepare:
+    # serve 段结构非法时跳过 prepare（code-review item 82187038c510）：此处
+    # serve_ok 仅可能被第 2 步静态判定置 False（fail_kind=FAIL_SERVE_INVALID，
+    # 如 kind 笔误 / root、cmd 为空），运行时 serve 失败发生在其后。此时
+    # valid=False 已定，构建结果对结论无贡献，白付每步最长 600s 的构建成本
+    # 只会拖慢 Administrator 草稿校验循环——结构错误先修，修好后再验 prepare。
+    # 跳过后 prepare_ok/prepare_error 保持初始空态（无失败记录），
+    # prepare_steps_run 仍为声明步数（item 69f20b76f5a2 口径「声明 N 步」本
+    # 就不等于已执行步数）；serve/ready 段随既有 serve_ok 守卫与 base_url 判空
+    # 自然跳过，返回结构不变。
+    if contract.prepare and serve_ok:
         err = run_prepare_steps(contract, project_root, logger)
         if err:
             prepare_ok = False
@@ -2183,19 +2192,28 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
 
 
 def _entry_candidates(entry: Path) -> list:
-    """缺失入口的确定性候选：同名目录下 index.js + 同目录 *.js 文件。"""
+    """缺失入口的确定性候选：同名目录下 index.<ext> + 同目录脚本后缀文件。
+
+    后缀口径与 ``_SCRIPT_ENTRY_SUFFIXES`` 白名单同源（code-review item
+    880535661beb）：TS/ESM 项目写 ``node dist/server.ts`` 时，同目录 *.ts 与
+    dist/server/index.ts 候选同样进入提示，不再只扫 *.js——提示覆盖面与
+    入口后缀白名单保持一致。逐后缀扫描、组内字典序 + 去重，保持既有排序
+    语义（排序确定性供调用方取前 3 候选展示）。
+    """
     cands = []
     parent = entry.parent
     try:
-        # 1. 同名目录下的 index.js（如 dist/server.js → dist/server/index.js）
+        # 1. 同名目录下的 index.<ext>（如 dist/server.js → dist/server/index.js）
         named_dir = parent / entry.stem
-        named_idx = named_dir / "index.js"
-        if named_idx.is_file():
-            cands.append(named_idx)
-        # 2. 同目录 *.js 文件
-        for p in sorted(parent.glob("*.js")):
-            if p.is_file() and p not in cands:
-                cands.append(p)
+        for ext in sorted(_SCRIPT_ENTRY_SUFFIXES):
+            named_idx = named_dir / f"index{ext}"
+            if named_idx.is_file() and named_idx not in cands:
+                cands.append(named_idx)
+        # 2. 同目录各脚本后缀文件（逐后缀 glob，组内字典序）
+        for ext in sorted(_SCRIPT_ENTRY_SUFFIXES):
+            for p in sorted(parent.glob(f"*{ext}")):
+                if p.is_file() and p not in cands:
+                    cands.append(p)
     except OSError:
         pass
     return cands

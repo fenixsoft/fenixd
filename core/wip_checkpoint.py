@@ -151,6 +151,37 @@ def commit_wip_checkpoint(
             f"under the worktree gitdir) — if later git ops keep failing with "
             f"lock conflicts, inspect and remove it manually",
         )
+        # 超时同样可能落在 add 已完成、commit 卡住/被杀的窗口：此刻 index
+        # 已是全量 staged 态，与上方 commit 失败分支要防的现场一致（被
+        # keep_for_reuse 后继继承后使以 HEAD 为基准的留证链路判读失真）。
+        # 补一次尽力而为的 mixed reset 回滚 index，使「失败不留副作用」
+        # 契约覆盖超时路径；本分支已在原 try 的 except 内，reset 自身的
+        # 二次超时/OS/解码异常须就地兜住，失败仅追加留痕，不改返回值。
+        try:
+            reset = subprocess.run(
+                ["git", "-C", path, "reset", "-q"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+            if reset.returncode != 0:
+                logger.warning(
+                    "wip_checkpoint",
+                    f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
+                    f"index rollback (git reset) after timed-out checkpoint "
+                    f"failed in '{path}': "
+                    f"{reset.stderr.strip() or reset.stdout.strip()} "
+                    f"— ignore (non-blocking)",
+                )
+        except (subprocess.TimeoutExpired, OSError, ValueError) as reset_err:
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') index "
+                f"rollback (git reset) after timed-out checkpoint failed "
+                f"in '{path}': {reset_err} — ignore (non-blocking)",
+            )
         return False
     except (OSError, ValueError) as e:
         # UnicodeDecodeError 属 ValueError 族：解码失败同样按失败降级，不外溢。

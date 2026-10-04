@@ -343,6 +343,10 @@ def kill_process_group(pid: int, logger=None) -> bool:
     if pgid is not None:
         try:
             os.killpg(pgid, signal.SIGKILL)
+            # 组长已亡、pgid 由 None 被接管为 pid 的孤儿组路径此前从未向组
+            # 发过信号，此处发出成功同样置位，保证返回值与「是否向进程组
+            # 发出过信号」的契约一致（sweep 的 harvested 计数依赖它）。
+            sent = True
         except (PermissionError, OSError):
             pass
     return sent

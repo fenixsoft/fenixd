@@ -161,6 +161,12 @@ def _findings_write_lock(project_root: Path):
             fh.close()
 
 
+def _has_verdicts(entry: dict) -> bool:
+    """条目是否已带确定性裁决（verdicts 非空列表）；形态损坏按无裁决计。"""
+    verdicts = entry.get("verdicts")
+    return isinstance(verdicts, list) and bool(verdicts)
+
+
 def _save_findings_ledger(
     project_root: Path,
     ledger: dict,
@@ -169,8 +175,9 @@ def _save_findings_ledger(
     """疑点台账回写（持进程间文件锁 + 按指纹合并，对齐 BackfillLedger.save）。
 
     持锁重读盘上最新台账按指纹合并：仅一方持有的指纹直接纳入，两方都有的
-    指纹取 ``updated_at`` 较新的一方，合并后再整文件原子回写——并发的另一
-    run 刚落盘的判定与豁免键不再被本方旧快照覆盖丢失。
+    指纹取 ``updated_at`` 较新的一方（仅日期粒度，同日平手仅在「盘上已带
+    裁决而本方未带」时保盘上，其余形态本方胜出），合并后再整文件原子回写
+    ——并发的另一 run 刚落盘的判定与豁免键不再被本方旧快照覆盖丢失。
     ``deleted_fingerprints``：本方已删除的指纹（仲裁消费段）。按指纹合并
     只并键不删键，不显式剔除会让盘上另一进程写入的同指纹条目复活被删条目，
     人工仲裁决定随之失效。
@@ -181,11 +188,27 @@ def _save_findings_ledger(
             merged.pop(fp, None)
         for fp, entry in ledger.items():
             other = merged.get(fp)
-            if (
-                other is None
-                or str(entry.get("updated_at", "")) >= str(other.get("updated_at", ""))
-            ):
+            if other is None:
                 merged[fp] = entry
+                continue
+            entry_at = str(entry.get("updated_at", ""))
+            other_at = str(other.get("updated_at", ""))
+            if entry_at != other_at:
+                if entry_at > other_at:
+                    merged[fp] = entry
+                continue
+            # 同日平手：updated_at 由 _today() 生成、仅日期粒度，daemon 与
+            # dashboard --serve 同日竞跑时本方可能仍持开局快照里的 suspected
+            # 旧副本，而盘上另一 run 已为同指纹落盘裁决（updated_at 同为今天
+            # 不分先后）——平手仅当「盘上已带裁决而本方未带」时保盘上（已
+            # 裁决的 no-conflict 判定与豁免键不被旧快照覆盖丢失，code-review
+            # e11faa0c441c）；其余形态（两侧都有/都无裁决）本方胜出——本方是
+            # 本次 run 的最新视图，同一 run 此前落盘的中途副本也是更旧状态，
+            # 终态不得被回退（否则 run 的末次保存恒输给自己轮内的中途落盘，
+            # exempted_at/review_rounds/first_seen 等终态字段整体丢失）。
+            if _has_verdicts(other) and not _has_verdicts(entry):
+                continue
+            merged[fp] = entry
         atomic_write_text(
             Path(project_root) / FINDINGS_RELPATH,
             json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
@@ -332,11 +355,21 @@ def _disputed_targets(escalated: dict, stale_days: int) -> dict[str, str]:
 
 def _annotation_insert_index(lines: list[str]) -> int:
     """注记插入位（design D3）：H1 与既有 knowledge marker 之后、独立成行。
-    取页首若干行内二者最后一次出现的下一行；都不在场（导航页等）插页首。"""
+    H1 取其行的下一行；marker 取注释块结束行（``-->`` 所在行）的下一行——
+    marker 契约允许跨行（spec/knowledge/README.md 展示的多行形态，_MARKER_RE
+    亦 DOTALL 容跨行），按「起始行 i+1」会把注记插进注释块内部、被
+    _parse_marker 当作 marker 字段文本解析出垃圾字段。二者取较大者；都不在
+    场（导航页等）插页首。"""
     pos = 0
     for i, ln in enumerate(lines[:10]):
-        if "<!-- knowledge:" in ln or ln.startswith("# "):
+        if ln.startswith("# "):
             pos = i + 1
+    text = "\n".join(lines)
+    m = _MARKER_RE.search(text)
+    if m:
+        start_line = text.count("\n", 0, m.start())
+        if start_line < 10:  # 既有口径：只认页首 10 行内的 marker
+            pos = max(pos, text.count("\n", 0, m.end()) + 1)
     return pos
 
 

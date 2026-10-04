@@ -3036,10 +3036,38 @@ class CodeFixOrchestrator:
                 # （total_open 统计在合并之后），口径自洽不双计。
                 total = done + total_open
                 batch_no = prev.get("batch_no") or 0
-                chain_skipped = list(prev.get("chain_skipped") or [])
+                # 链级字段形态守卫（code-review item 3f883a9ac93c，与上方
+                # switch_cooldown_until 同位置同款防御）：read_progress 对
+                # 「JSON 合法、字段被外部写坏成非列表标量」原样透传，直接
+                # list() 会在 int/bool 等不可迭代值上抛 TypeError 中断本轮
+                # 投递——读侧按「损坏不炸主流程」纪律先判 isinstance(list)
+                # 再拷贝，非列表回退空列表（truthy 垃圾值 warning 留痕；
+                # None/空值静默回退，等价旧 or [] 语义），下次链级写点即以
+                # 空列表覆盖自愈。
+                chain_skipped = prev.get("chain_skipped")
+                if isinstance(chain_skipped, list):
+                    chain_skipped = list(chain_skipped)
+                else:
+                    if chain_skipped:
+                        self._log(
+                            "warning",
+                            "code-fix 进度 chain_skipped 字段形态异常（非列表："
+                            f"{type(chain_skipped).__name__}），按空列表容错",
+                        )
+                    chain_skipped = []
                 # 链级 run 清单随链身份沿用（2.2）：合并写语义下未传字段保留
                 # 现值，这里显式读出仅供 ctx 下发批 worker 追加本批 run_id。
-                chain_run_ids = list(prev.get("chain_run_ids") or [])
+                chain_run_ids = prev.get("chain_run_ids")
+                if isinstance(chain_run_ids, list):
+                    chain_run_ids = list(chain_run_ids)
+                else:
+                    if chain_run_ids:
+                        self._log(
+                            "warning",
+                            "code-fix 进度 chain_run_ids 字段形态异常（非列表："
+                            f"{type(chain_run_ids).__name__}），按空列表容错",
+                        )
+                    chain_run_ids = []
                 new_chain = False
             else:
                 activation_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
@@ -3787,26 +3815,61 @@ class CodeFixOrchestrator:
             # 终态的条目跳过：mark_resolved 对命中 id 无条件置 resolved、无
             # 终态保护，核销方 MUST 先以 read_items 过滤（不能依赖其幂等）。
             hit = 0
+            ledger_read_failed = False
             if fixed_ids:
-                try:
-                    items = read_items(root)
-                except Exception:  # noqa: BLE001 — 台账读失败按空集（不核销）
-                    items = {}
-                # 批界守卫（与 _run_batch_created 核销前 batch_set 过滤同口径）：
-                # agent 产物带出的批外 id 不核销。
-                batch_set = set(item_ids)
-                still_open = [
-                    i for i in fixed_ids
-                    if i in batch_set and (items.get(i) or {}).get("status") == "open"
-                ]
-                if still_open:
-                    hit = mark_resolved(root, still_open)
+                # 台账读有限重试（code-review item 5905398dbbcb）：merge_back
+                # 成功后此刻瞬时读失败若按空集降级，会「已合回却不核销」且随即
+                # 移除台账销毁 fixed_ids——条目仍 open 会被下链重选，agent 在已
+                # 含修复的新 HEAD 上多半零提交，跨链反复空转。短间隔重试 3 次，
+                # 仍失败则保留台账条目等下一链边界再核销（merge_back 幂等：
+                # 分支已是 HEAD 祖先时跳过并报成功，重试无副作用）。
+                items = None
+                for attempt in range(3):
+                    try:
+                        items = read_items(root)
+                        break
+                    except Exception:  # noqa: BLE001 — 重试耗尽走「保留待下链」分支
+                        if attempt < 2:
+                            time.sleep(0.2 * (attempt + 1))
+                if items is None:
+                    ledger_read_failed = True
+                else:
+                    # 批界守卫（与 _run_batch_created 核销前 batch_set 过滤同
+                    # 口径）：agent 产物带出的批外 id 不核销。
+                    batch_set = set(item_ids)
+                    still_open = [
+                        i for i in fixed_ids
+                        if i in batch_set
+                        and (items.get(i) or {}).get("status") == "open"
+                    ]
+                    if still_open:
+                        hit = mark_resolved(root, still_open)
             # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准，与主路径
             # _run_batch_created 同口径——缺它则延迟批核销不进任何链的 rollup
             # （resolved 计数低于真实台账核销数、纯延迟核销场景整行被判无累积
             # 跳过，code-review item 3776b9915001）。
             if hit:
                 self._chain_bump(root, chain_resolved=hit)
+            if ledger_read_failed:
+                # 已合回但核销状态未知（code-review item 5905398dbbcb）：MUST
+                # NOT 此刻清理现场/移除台账——fixed_ids 随台账删除而丢失，下链
+                # 无法识别修复已在主树。保留条目与 worktree，不动链计数，等下
+                # 一链边界重试核销；持续读失败的极端由既有时间门降级路径兜底。
+                self._log(
+                    "warning",
+                    f"code-fix 延迟批已合回但台账读失败（重试耗尽），已合回未核销"
+                    f"——保留台账条目与 worktree 待下一链边界重试核销"
+                    f"（branch={branch}, item_ids={item_ids}）",
+                )
+                write_progress(
+                    root,
+                    reason="",
+                    current=(
+                        f"延迟批已合回但台账读失败未核销，保留待下一链边界重试"
+                        f"（branch={branch}）"
+                    ),
+                )
+                return 0, "延迟批已合回未核销（台账读失败，保留待下链边界重试）"
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
             prog = read_progress(root)

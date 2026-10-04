@@ -149,6 +149,12 @@ _UNRESOLVED_CHAIN_MODEL_WARNED = set()
 # 只在首次告警；去重只作用于告警分支，校验/降级行为不变。
 _VALIDATE_SOFT_WARNED = set()
 
+# agents.transient_backoff_schedule 回退 WARNING 的进程级一次性去重（code-review
+# item 0bae22a66073，同 _SEGMENT_DIRTY_WARNED / _RUN_TIMEOUT_FALLBACK_WARNED 范式）：
+# normalize_transient_backoff_schedule 经 get_transient_config 被消费方与 30s 热更新
+# 反复调用，同一坏值只在首次告警；键取 repr(raw)，去重只作用于日志、回退行为不变。
+_TRANSIENT_BACKOFF_FALLBACK_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -346,13 +352,37 @@ class ConfigLoader:
         return float(val)
 
     @classmethod
+    def _warn_backoff_schedule_fallback(cls, raw) -> str:
+        """schedule 非法回退缺省前留痕（code-review item 0bae22a66073）。
+
+        回退发生时配置已合法通过加载、生效值却被整条替换为缺省，静默无痕违背
+        本文件「回退必告警」哲学（对照 _validated_run_at / get_knowledge_config）。
+        本助手经 get_transient_config 被消费方与 30s 热更新反复调用，同一坏值
+        进程级只告警一次（同 _SEGMENT_DIRTY_WARNED 范式，去重只作用于日志、
+        回退行为不变）。
+        """
+        dedup_key = repr(raw)
+        if dedup_key not in _TRANSIENT_BACKOFF_FALLBACK_WARNED:
+            _TRANSIENT_BACKOFF_FALLBACK_WARNED.add(dedup_key)
+            _logger.warning(
+                "agents.transient_backoff_schedule 非法（应为逗号分隔正整数"
+                "序列字符串或其列表）：%r，回退缺省 %s",
+                raw,
+                cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT,
+            )
+        return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+
+    @classmethod
     def normalize_transient_backoff_schedule(cls, raw) -> str:
         """规范 `agents.transient_backoff_schedule` 为合法逗号秒序列字符串。
 
         非法（非字符串 / 非逗号分隔正整数序列）回退缺省 ``"30,60,120"``（防御式
-        先例同 ``_shutdown_drain_seconds``）。空串视为关闭原地退避（设计 Migration
-        Plan：`transient_backoff_schedule: ""` 关闭原地退避），保持原样返回。
+        先例同 ``_shutdown_drain_seconds``）并打 WARNING 留痕（code-review item
+        0bae22a66073；``raw is None`` 属缺省语义，不算非法、不告警）。空串视为
+        关闭原地退避（设计 Migration Plan：`transient_backoff_schedule: ""` 关闭
+        原地退避），保持原样返回。
         """
+        raw_orig = raw
         if raw is None:
             return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
         if isinstance(raw, (list, tuple)):
@@ -362,7 +392,7 @@ class ConfigLoader:
             # 列表按逗号序列同口径规范化（元素须为正整数）。
             raw = ",".join(str(x) for x in raw)
         if not isinstance(raw, str):
-            return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+            return cls._warn_backoff_schedule_fallback(raw_orig)
         if not raw.strip():
             return ""  # 显式空串 = 关闭原地退避（Migration Plan）
         parts = []
@@ -373,12 +403,12 @@ class ConfigLoader:
             try:
                 val = int(part)
             except (TypeError, ValueError):
-                return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+                return cls._warn_backoff_schedule_fallback(raw_orig)
             if val <= 0:
-                return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+                return cls._warn_backoff_schedule_fallback(raw_orig)
             parts.append(str(val))
         if not parts:
-            return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+            return cls._warn_backoff_schedule_fallback(raw_orig)
         return ",".join(parts)
 
     @classmethod
@@ -738,6 +768,25 @@ class ConfigLoader:
                     "agents.transient_backoff_schedule must be a comma-separated "
                     f"seconds string or list: {schedule_val!r}"
                 )
+            if isinstance(schedule_val, list):
+                # 列表元素须为非空标量（code-review item 0bae22a66073）：旧版
+                # 对 list 只查容器类型，[30, null] / [{}] / 嵌套 list 均放行，
+                # 运行期 join 后逐元素 int() 解析必然整体回退缺省——配置看似
+                # 合法加载、生效值被整条替换，加载阶段硬拒绝更早暴露。bool
+                # （int 子类，str(True)="True" 解析必败）与非有限浮点（.nan/
+                # .inf）同本文件既有护栏一并排除。
+                for _el in schedule_val:
+                    if (
+                        _el is None
+                        or isinstance(_el, bool)
+                        or not isinstance(_el, (str, int, float))
+                        or (isinstance(_el, float) and not math.isfinite(_el))
+                        or (isinstance(_el, str) and not _el.strip())
+                    ):
+                        raise ValueError(
+                            "agents.transient_backoff_schedule list elements must "
+                            f"be non-empty scalars (str/int/float): {schedule_val!r}"
+                        )
 
         # Validate project type — 仅当（严格路径 或 显式提供 type）时校验。
         # 段入口经 _segment_or_empty 归一（code-review item b72e37e34e3b）：
@@ -1661,7 +1710,15 @@ class ConfigLoader:
         if not isinstance(narrative_enabled, bool):
             narrative_enabled = True
         narrative_timeout_raw = admin.get("narrative_timeout_seconds")
-        if isinstance(narrative_timeout_raw, bool):
+        if isinstance(narrative_timeout_raw, bool) or (
+            isinstance(narrative_timeout_raw, float)
+            and not narrative_timeout_raw.is_integer()
+        ):
+            # bool 与非整值浮点回缺省（code-review item ed7dedfe5a87）：2.5
+            # 旧实现经 _num 的 int() 截成 2 直接生效，与 run_infra_breaker.
+            # threshold（item f03d70778889）/ _normalize_transient_seconds 的
+            # 「非整值浮点回退缺省」口径对齐（.nan/.inf 的 is_integer() 为
+            # False，同在此回缺省）。整值浮点（如 180.0）仍按整数接受。
             narrative_timeout = 180
         else:
             narrative_timeout = _num(narrative_timeout_raw, 180, int)
@@ -1753,9 +1810,13 @@ class ConfigLoader:
         """取 ``section[key]`` 的正整数，非法/缺失回退 ``default``（不抛异常）。
 
         bool 是 int 子类须显式排除（``True``/``False`` 不是合法的秒数/次数）；
-        float 取整；``0`` / 负数 / 字符串 / None 一律回退缺省——与
+        ``0`` / 负数 / 字符串 / None / 非整值浮点一律回退缺省——与
         ``idle_confirm_seconds`` 同款校验范式（``0`` 不等效关闭）。非有限
-        浮点（YAML ``.nan``/``.inf`` 字面量）同样回退缺省。
+        浮点（YAML ``.nan``/``.inf`` 字面量）同样回退缺省；非整值浮点（如
+        ``0.5``）旧实现 ``int()`` 截断成 0 返回，恰落进「0 一律回退缺省」的
+        非法域（code-review item 2460e8a27c5d），现与
+        ``_normalize_transient_seconds`` 同口径回退缺省，整值浮点（``30.0``）
+        仍按整数接受。
         """
         value = section.get(key, default)
         # code-review d9e9a238696f：.nan/.inf 能穿透 isinstance 与 <=0 比较，
@@ -1767,6 +1828,12 @@ class ConfigLoader:
             or value <= 0
         ):
             return default
+        # code-review item 2460e8a27c5d：非整值浮点（如 0.5）旧实现 int() 截断
+        # 成 0 返回——阈值静默变 0（cooldown_threshold: 0.5 立即触发冷却）。
+        # 与 _normalize_transient_seconds 同口径：非整值浮点回退缺省，整值
+        # 浮点（如 30.0）按整数接受。
+        if isinstance(value, float) and not value.is_integer():
+            return default
         return int(value)
 
     @classmethod
@@ -1777,9 +1844,11 @@ class ConfigLoader:
 
         evo-add-stale-code-dangling-deadline 1.1：MUST NOT 复用
         ``_stale_selfheal_positive_int``——后者「0/负数一律回退缺省（0 不等效
-        关闭）」，与本键「0 = 关闭升级」语义冲突。本校验：``0``（含 0.0）合法
-        并原样返回 0（关闭升级）；负值 / 字符串 / None / bool（int 子类须显式
-        排除）回退缺省；float 取整（与既有 helper 同款截断范式）。
+        关闭）」，与本键「0 = 关闭升级」语义冲突。本校验：``0``（含 0.0 整值
+        浮点）合法并原样返回 0（关闭升级）；负值 / 字符串 / None / bool（int
+        子类须显式排除）回退缺省；非整值浮点同样回退缺省（code-review item
+        6a69eac80f8a，与 _normalize_transient_seconds 同口径——旧 ``int()``
+        截断把 ``0.5`` 变成 0，语义翻转成「关闭升级」而非回退缺省 14400）。
         """
         value = section.get(key, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1790,6 +1859,12 @@ class ConfigLoader:
         if value == 0:
             return 0
         if value < 0:
+            return default
+        # code-review item 6a69eac80f8a：非整值浮点（如 0.5）旧实现 int() 静默
+        # 截断成 0——而本键「0 = 关闭升级」，正小数被翻转成关闭语义而非回退
+        # 缺省。与 _normalize_transient_seconds / run_infra_breaker.threshold
+        # 同口径：非整值浮点回退缺省；0.0 整值浮点已在上方按「关闭升级」放行。
+        if isinstance(value, float) and not value.is_integer():
             return default
         return int(value)
 

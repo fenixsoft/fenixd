@@ -263,7 +263,12 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
     if not path.is_file():
         return {}
     try:
-        text = path.read_text(encoding="utf-8")
+        # errors="replace"：与 read_items 同参（365a1932a94c），坏 UTF-8 字节
+        # 降级为替换符、由 _parse_items_text 逐行 JSON 解析自然兜底——否则
+        # UnicodeDecodeError 会从 accept_item/reject_item/delete_item/upsert_item
+        # 的锁内路径穿透（非 OSError、不在捕获列表内），与「单行 JSON 损坏
+        # 记 WARNING 后跳过」的容错口径不一致。
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {}
     return _parse_items_text(text)

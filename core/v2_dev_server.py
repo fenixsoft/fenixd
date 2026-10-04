@@ -907,7 +907,12 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
                         f"(wt={wt_text or '-'}) — left unowned across daemon "
                         f"restart",
                     )
-        _rewrite_v2_server_entries(project_root, kept)
+        if not _rewrite_v2_server_entries(project_root, kept) and logger:
+            logger.warning(
+                "v2_dev_server",
+                f"v2 server registry write failed (non-blocking): "
+                f"{v2_servers_registry_path(project_root)}",
+            )
     if killed and logger:
         logger.warning(
             "v2_dev_server",

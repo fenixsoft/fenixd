@@ -967,14 +967,30 @@ def _git_c_env() -> dict:
     return env
 
 
+# 「确定不存在」stderr 文案容忍集合（小写匹配，code-review item 03edd97d523c）。
+# 单点收敛避免对单一措辞的脆弱耦合：当前主形态为
+# ``fatal: path 'X' does not exist in 'Y'``，补充等义改写形态，git 小版本
+# 改写措辞时「确定性不存在」不整体退化为 None。只收「查询对象缺失」语义的
+# 文案；``not a git repository``（非仓库）、``invalid object name``/
+# ``unknown revision``（分支或对象名无效）**不**纳入——分支名无效时对象存在性
+# 无从谈起，维持归 None 由调用方保守处置，fail-safe 方向不因集合放宽而翻转。
+_GIT_OBJECT_ABSENT_STDERR_MARKERS = (
+    "does not exist",  # path 'X' does not exist in 'Y'（当前主形态）
+    "not found in",  # path 'X' not found in 'Y'（可能改写形态）
+    "missing from",  # 'X' missing from tree 'Y'（可能改写形态）
+    "no such path",  # no such path 'X' in 'Y'（可能改写形态）
+)
+
+
 def _git_object_exists_on_branch(branch, path, project_root) -> "bool | None":
     """``git cat-file -e <branch>:<path>`` O(1) 探测（纯对象库，零成本）。
 
     Returns:
         True = 确定存在；False = git 成功执行且确定不存在（退出码非零且
-        stderr 呈「does not exist」形态）；None = git 不可用（超时/无法执行/
-        非仓库/分支对象名无效）。退出码 128 同时覆盖「路径不存在」与
-        「非仓库」，单看 returncode 无法区分（code-review item
+        stderr 命中「确定不存在」文案集合
+        ``_GIT_OBJECT_ABSENT_STDERR_MARKERS`` 之一）；None = git 不可用
+        （超时/无法执行/非仓库/分支对象名无效）。退出码 128 同时覆盖「路径
+        不存在」与「非仓库」，单看 returncode 无法区分（code-review item
         d5da82df85c3），故按 stderr 形态三态判别；无法识别的失败一律归
         不可用（None），由调用方按各自 fail-safe 语义处置。
     """
@@ -996,7 +1012,7 @@ def _git_object_exists_on_branch(branch, path, project_root) -> "bool | None":
     if r.returncode == 0:
         return True
     stderr_text = (r.stderr or b"").decode("utf-8", "replace").lower()
-    if "does not exist" in stderr_text:
+    if any(m in stderr_text for m in _GIT_OBJECT_ABSENT_STDERR_MARKERS):
         return False
     return None
 
@@ -1367,6 +1383,10 @@ def register_relocation_credential(
             f"{new_path}（转既有缺件处置）",
         )
         return None
+    # created 不在此处赋值（code-review item c3cc5432891e）：落册记录的
+    # created 由 DisputeAuditStore.append 统一以落盘时刻补齐（core/admin_store.py
+    # 「created 为审计默认值，不接受入口覆盖」，且在拷贝上改写、不回写本 dict），
+    # 入口侧赋值是死代码、双处时间戳语义易漂移
     rec = {
         "spec": spec_name,
         "trigger_run_id": run_id or "",
@@ -1375,7 +1395,6 @@ def register_relocation_credential(
         "new_path": new_path,
         "source": source,
         "run_id": run_id or "",
-        "created": _utcnow_iso(),
     }
     if verdict:
         rec["verdicts"] = [
@@ -1475,10 +1494,22 @@ def _declaration_write_lock(spec_dir):
     ``spec_dir.parent.parent.parent``）。三入口互不嵌套调用（adjudication 逐条
     串行 apply、relocate_declared_path 仅薄委托 replace），同进程直接阻塞取锁
     不自锁。锁文件自身无内容语义。
+
+    ``spec_dir`` MUST 为**绝对路径**：相对路径会使 parent.parent.parent 推导
+    落到 cwd，锁文件落在当前工作目录 ``.fenix/`` 下、与 daemon 侧不同文件，
+    flock 互斥形同虚设（code-review item aa009e1d5f45）——入口直接上抛而非
+    静默取错锁（仓内各调用点经 resolve_writeback_target / project_root 拼接
+    均为绝对路径，校验不改变既有行为）。
     """
     import fcntl
 
-    fenix_dir = Path(spec_dir).parent.parent.parent / ".fenix"
+    spec_path = Path(spec_dir)
+    if not spec_path.is_absolute():
+        raise ValueError(
+            f"_declaration_write_lock 要求 spec_dir 为绝对路径"
+            f"（相对路径会使锁目录推导落到 cwd、互斥失效）: {spec_dir}"
+        )
+    fenix_dir = spec_path.parent.parent.parent / ".fenix"
     fenix_dir.mkdir(parents=True, exist_ok=True)
     fh = open(
         fenix_dir / f"declaration-{Path(spec_dir).name}.lock", "w"
