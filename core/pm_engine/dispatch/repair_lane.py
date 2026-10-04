@@ -30,19 +30,50 @@ def _merge_breaker_threshold(pm) -> int:
     """``agents.merge_breaker_threshold`` 读取与归一（单一落点）。
 
     归一规则（code-review item bba1be087ad5）：None 判空而非 or 兜底（对齐
-    fast_track c54ffbef69c5，合法配置 0 不被 or 吞成缺省 2）→ ``int()`` 归一
-    （code-review item a8c4f9dfc7a0：字符串/null 配置裸用于熔断比较抛
-    TypeError）→ TypeError/ValueError 回退缺省 2 → ``max(..., 1)`` 下限保护
-    （负数配置无意义，收敛到 1）。归一规则调整只改此处。
+    fast_track c54ffbef69c5，合法配置 0 不被 or 吞成缺省 2）→ TypeError/
+    ValueError 回退缺省 2（code-review item a8c4f9dfc7a0：字符串/null 配置
+    裸用于熔断比较抛 TypeError）→ ``max(..., 1)`` 下限保护（负数配置无意义，
+    收敛到 1）。bool/小数显式拒绝（code-review item 4b349f62101e，对齐
+    config._normalize_transient_seconds 归一口径）：裸 ``int()`` 会把
+    ``true`` 截成 1、``1.5`` 截成 1，配置写坏静默改写熔断阈值——整值浮点
+    （``2.0``）按整数接受，非法值回退缺省并经 ``pm.logger`` WARNING 留痕
+    （logger 取 getattr 守卫，兼容仅注入 _get_config 的测试替身）。归一
+    规则调整只改此处。
 
     注：queue.py ``_handle_merge_back_real_failure`` 的同型第三处复制亦已
     改为本读取器的调用点（code-review item bba1be087ad5），三处调用点同源。
     """
+    default = 2
     try:
         cfg_threshold = pm._get_config("agents.merge_breaker_threshold", 2)
-        threshold = 2 if cfg_threshold is None else int(cfg_threshold)
     except (TypeError, ValueError):
-        threshold = 2
+        cfg_threshold = None
+    threshold = default
+    illegal = False
+    if cfg_threshold is not None and not isinstance(cfg_threshold, bool):
+        if isinstance(cfg_threshold, int):
+            threshold = cfg_threshold
+        elif isinstance(cfg_threshold, float):
+            # 小数拒绝——int() 截断会静默改写熔断阈值（item 4b349f62101e）。
+            if cfg_threshold.is_integer():
+                threshold = int(cfg_threshold)
+            else:
+                illegal = True
+        else:
+            try:
+                threshold = int(str(cfg_threshold).strip())
+            except (TypeError, ValueError):
+                illegal = True
+    elif cfg_threshold is not None:
+        illegal = True
+    if illegal:
+        logger = getattr(pm, "logger", None)
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                "配置 agents.merge_breaker_threshold 非法（应为整数，"
+                f"布尔/小数/非数字均不合法）: {cfg_threshold!r}，回退缺省 {default}",
+            )
     # 下限保护：负数配置无意义，收敛到 1。
     return max(threshold, 1)
 
