@@ -304,22 +304,26 @@ class PromptBuilder:
         # {scenarios_path} 值按两类型产物文件名恒定——judge/plan 共用的
         # .fenix-run-result.json 与 test_scenarios.json 同此路径；fast-track 的
         # {result_path} 例外（下方分支改填 worktree 根——收工硬门唯一落点）。
-        # 两键按 agent_type 白名单装配（code-review item e6a50ee450b3）：仅现状
-        # 真正引用它们的模板拿到值（agents/*.md 逐一核对）——{scenarios_path}：
+        # 四键按 agent_type 白名单装配（code-review item e6a50ee450b3；{report_path}/
+        # {judge_attribution_path} 一并纳入 = item 3f3a0b605c32）：仅现状真正引用
+        # 它们的模板拿到值（agents/*.md 逐一核对）——{scenarios_path}：
         # planner-plan/planner-judge/fast-track/verifier；{result_path}：
         # planner-plan/planner-judge（fast-track/spec-review 由下方分支按车道
-        # 覆写）。其余类型不预填——未来模板误引用该占位符时键缺失，自然落入
-        # _fill_and_scan_placeholders 残留扫描告警，不再静默填成主树 planner
+        # 覆写）；{report_path}：planner-judge/verifier；{judge_attribution_path}：
+        # planner-judge。其余类型不预填——未来模板误引用该占位符时键缺失，自然
+        # 落入 _fill_and_scan_placeholders 残留扫描告警，不再静默填成主树 planner
         # 产物路径误导 agent。
         values = {
             "{spec_name}": spec_name,
             "{spec_dir}": f"spec/changes/{spec_name}",
-            "{report_path}": str(vp_dir / "report.json"),
+        }
+        if agent_type in ("planner-judge", "verifier"):
+            values["{report_path}"] = str(vp_dir / "report.json")
+        if agent_type == "planner-judge":
             # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
             # 与 core/verify_engine/judge_files.py 的 JUDGE_ATTRIBUTION_FILENAME
             # 同源（注入侧路径 = 读侧路径，防双实现漂移）。
-            "{judge_attribution_path}": str(vp_dir / "judge_attribution.json"),
-        }
+            values["{judge_attribution_path}"] = str(vp_dir / "judge_attribution.json")
         if agent_type in ("planner-plan", "planner-judge", "fast-track", "verifier"):
             values["{scenarios_path}"] = str(
                 planner_result_path(root, spec_name, "planner-plan"))
@@ -529,12 +533,11 @@ class PromptBuilder:
                 spec_name, "fast-track", wt_path=wt_path)
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._interaction_contract_section(spec_name)
+            # 场景集路径经 planner_result_path 单源计算（code-review item
+            # 3dbe97e6fc39）：不再内联第三份路径拼接，与 {scenarios_path} 注入侧
+            # 及 runner 产物硬门校验侧同源（防双实现漂移）。
             prompt += self._designed_ids_line(
-                self._pm.project_root
-                / ".fenix"
-                / "verify-progress"
-                / spec_name
-                / "test_scenarios.json"
+                planner_result_path(self._pm.project_root, spec_name, "planner-plan")
             )
             # 之前只有 implementer 分支注入 prev_error，fast-track 打回后新 run
             # 完全不知道上次为何失败（fix-implementer-task-progress 三连打回）。
@@ -1150,7 +1153,10 @@ class PromptBuilder:
         让新 agent 从 done+1 场景继续，不再从头重跑。文件缺失 / done==0 /
         JSON 损坏 → 不注入、全新开始，损坏文件移除以免污染后续 attempt。
         """
-        progress = self._pm._read_verify_progress(spec_name)
+        try:
+            progress = self._pm.read_verify_progress(spec_name)
+        except Exception:  # noqa: BLE001 — 与 _declared_reality_snapshot 同型 fail-open：读取入口异常跳过注入，不阻断派发
+            return ""
         if progress is None:
             return ""
         total = progress.get("total")

@@ -6950,6 +6950,16 @@ class AgentRunner:
                 pass
             return None
         return data
+
+    def read_verify_progress(self, spec_name: str) -> dict | None:
+        """读取 verifier 断点进度文件的公开入口（code-review item 859466d60dcf）。
+
+        跨组件（prompt_builder 断点续跑段）经门面公开方法访问，不再触碰私有
+        _read_verify_progress（下划线私有方法被门面侧重命名/收编时 AttributeError
+        会中止派发提示词构建）；语义与 _read_verify_progress 完全一致（薄委托）。
+        """
+        return self._read_verify_progress(spec_name)
+
     @property
     def _prompt_builder(self) -> PromptBuilder:
         """组合组件（refactor-core-packages 阶段 1）：提示词构建器。
