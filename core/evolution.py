@@ -857,13 +857,22 @@ def clear_todo(project_path) -> dict:
 
 
 def write_todo_marker(
-    item: dict, disposition: Optional[str] = None, deleted: bool = False, project_path=None
+    item: dict,
+    disposition: Optional[str] = None,
+    deleted: bool = False,
+    project_path=None,
+    commit: bool = True,
 ) -> bool:
     """把该条目的处理标记写入其项目 ``.fenix/todo.md``。
 
     幂等：已有标记行则原地更新，不追加第二行。定位不到条目（用户改过标题 /
     删过条目）、项目路径解析失败、todo.md 不可读一律返回 False 并记 WARNING，
     MUST NOT 抛异常——回写是附带的记录动作，失败不得影响分析/处置主流程。
+
+    写入成功后对 tracked 的 todo.md 就地 git add + commit + push（ADR-060
+    即时提交原则：tracked 文件的未提交改动滞留主树会触发滞留盘点 major 告警
+    并消耗 admin 车道代提交）。``commit=False`` 关闭逐条提交——ingest_item
+    批量路径传 False，由编排层批末按项目调用 ``commit_todo_marker`` 合并提交。
     """
     proot = (
         Path(project_path)
@@ -901,7 +910,125 @@ def write_todo_marker(
         _with_lock(todo, _do)
     except Exception as e:  # noqa: BLE001 —— 回写失败不穿透
         _logger.warning("evolution: 标记回写异常（已跳过）: %s", e)
+    if outcome["ok"] and commit:
+        # 提交动作在 todo.md 的 flock 释放后执行：git 子命令不得放入锁内，
+        # 避免拉长持锁窗口阻塞 code_fix / self_review 的并发追加。
+        commit_todo_marker(project_path=proot)
     return outcome["ok"]
+
+
+def _commit_todo_marker(proot) -> bool:
+    """对项目 ``.fenix/todo.md`` 的标记改动就地 add + commit + push（ADR-060）。
+
+    命令形态与 ``self_review._commit_todo`` 一致（``git add -- .fenix/todo.md``
+    与同样带 pathspec 限定的 ``git commit -- .fenix/todo.md``）：commit 不带
+    pathspec 会把索引里并发暂存的其他内容（merge-back、交付物守卫等自动化
+    产物）卷进本提交并随 push 外泄。git 子命令各 30s 超时。
+
+    - todo.md 未被 git 跟踪（含 ls-files 非零退出——目录非 git 仓库）→ 跳过
+      提交，行为与不提交时一致，不报错；
+    - push 失败降级 WARNING 不重试（commit 已产生，与 _commit_todo 同策略）；
+    - 提交失败（含 index.lock 竞争）降级为日志留痕，不抛错、不回滚已写入
+      内容、不做自动重试（下一次写入自然再试）。返回是否完成 commit。
+    """
+    proot = Path(proot)
+    todo_rel = ".fenix/todo.md"
+    git = ["git", "-C", str(proot)]
+    try:
+        ls = subprocess.run(
+            git + ["ls-files", "--", todo_rel],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _logger.warning("evolution: todo.md git ls-files 失败，跳过提交: %s", e)
+        return False
+    if ls.returncode != 0 or not ls.stdout.strip():
+        # 未 tracked / 非 git 仓库：按现状不提交，debug 留痕即可（不报错）
+        _logger.debug(
+            "evolution: todo.md 未被 git 跟踪，跳过提交 %s: %s",
+            proot,
+            ls.stderr.strip()[:120],
+        )
+        return False
+    try:
+        add = subprocess.run(
+            git + ["add", "--", todo_rel],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _logger.warning("evolution: todo.md git add 失败（跳过提交）: %s", e)
+        return False
+    if add.returncode != 0:
+        _logger.warning(
+            "evolution: todo.md git add 失败（跳过提交，写入不回滚）: %s",
+            add.stderr.strip()[:200],
+        )
+        return False
+    msg = f"[fenix] evolution: 自进化标记回写 {datetime.now().strftime('%Y-%m-%d')}"
+    try:
+        commit = subprocess.run(
+            git + ["commit", "-m", msg, "--", todo_rel],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _logger.warning("evolution: todo.md git commit 失败: %s", e)
+        return False
+    if commit.returncode != 0:
+        output = f"{commit.stdout.strip()}\n{commit.stderr.strip()}".strip()
+        # 良性无变更两形态：「nothing to commit, working tree clean」（树干净）
+        # 与「nothing added to commit but untracked files present」（树上有
+        # 未跟踪文件但本 pathspec 无变更）——后者才是批末合并提交的常态
+        # （items.jsonl 等 gitignored 外文件在场）。
+        if "nothing to commit" in output or "nothing added to commit" in output:
+            _logger.info("evolution: todo.md 提交无变更: %s", output[:200])
+        else:
+            _logger.warning(
+                "evolution: todo.md git commit 失败（降级留痕，写入不回滚）: %s",
+                output[:200],
+            )
+        return False
+    try:
+        push = subprocess.run(git + ["push"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _logger.warning("evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: %s", e)
+        return True
+    if push.returncode != 0:
+        _logger.warning(
+            "evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: %s",
+            push.stderr.strip()[:200],
+        )
+    return True
+
+
+def commit_todo_marker(project_path=None, project_name=None) -> bool:
+    """按项目触发一次 todo.md 标记合并提交（编排层批末入口）。
+
+    ingest_item 批量路径的标记回写不逐条 commit（避免提交风暴），由编排层在
+    一轮 ingest 循环结束后对本轮涉及的每个项目各调用一次本函数合并提交；
+    单点写路径（accept / reject / delete）经 ``write_todo_marker`` 的缺省
+    提交开关即时提交，不走本入口。
+
+    ``project_path`` 与 ``project_name`` 均未提供、或名称经 registry 解析
+    失败时返回 False。提交失败降级日志，不向调用方抛错。
+    """
+    if project_path is not None:
+        proot = Path(project_path)
+    else:
+        proot = _resolve_project_path_by_name(str(project_name or ""))
+    if proot is None:
+        _logger.warning("evolution: todo.md 批量提交跳过——项目路径未解析: %s", project_name)
+        return False
+    try:
+        return _commit_todo_marker(proot)
+    except Exception as e:  # noqa: BLE001 —— 提交失败不向调用方抛错
+        _logger.warning("evolution: todo.md 提交异常（已跳过，写入不回滚）: %s", e)
+        return False
 
 
 # ── 任务 2.6：增量筛选 ──────────────────────────────────────────────
@@ -1099,6 +1226,10 @@ def ingest_item(item: dict, project_root) -> str:
     标记回写 MUST NOT 显式传 project_path（code-review item 8e29b50298c7）：
     write_todo_marker 按条目 project 名经 registry 解析源项目 todo.md；钉死框架
     根会使多项目部署下非框架项目条目的标记在框架 todo.md 里落空（或误标同名条目）。
+
+    标记回写传 ``commit=False`` 关闭逐条提交（evo-add-todo-marker-commit-on-write）：
+    一轮批量落多条目时逐条 commit 会退化为提交风暴，由编排层（maintenance_runs
+    一轮 ingest 循环结束后）对本轮涉及的项目集合按项目各触发一次合并提交。
     """
     verdict = item.get("verdict") if isinstance(item, dict) else None
     worth_spec = bool(isinstance(verdict, dict) and verdict.get("worth_spec"))
@@ -1138,7 +1269,7 @@ def ingest_item(item: dict, project_root) -> str:
     if not worth_spec:
         base["status"] = "analyzed"
         upsert_item(project_root, base)
-        write_todo_marker(base)
+        write_todo_marker(base, commit=False)
         return "analyzed"
 
     d, reason = materialize_draft(base, project_root)
@@ -1147,7 +1278,7 @@ def ingest_item(item: dict, project_root) -> str:
         base["draft_failed_reason"] = reason
         _logger.warning("evolution: 条目 %s 草稿落盘失败: %s", eid, reason)
         upsert_item(project_root, base)
-        write_todo_marker(base)
+        write_todo_marker(base, commit=False)
         return "draft_failed"
 
     violations = lint_draft(d, project_root)
@@ -1162,7 +1293,7 @@ def ingest_item(item: dict, project_root) -> str:
             base["draft_failed_reason"],
         )
         upsert_item(project_root, base)
-        write_todo_marker(base)
+        write_todo_marker(base, commit=False)
         return "draft_failed"
 
     base["status"] = "pending"

@@ -1032,7 +1032,12 @@ def run_evolution(
     drafts = 0
     try:
         try:
-            from core.evolution import ContractError, read_contract, ingest_item
+            from core.evolution import (
+                ContractError,
+                commit_todo_marker,
+                read_contract,
+                ingest_item,
+            )
 
             # 先抢救：_run_claude 非零退出/产物半写时按分片合并配方恢复
             salvaged = _salvage_evolution_out(out_path)
@@ -1067,6 +1072,7 @@ def run_evolution(
                 expected = len(pending_entries) if pending_entries else None
                 partial = expected is not None and len(items) < expected
                 degraded = contract.get("degraded")
+                marker_projects = set()
                 for item in items:
                     try:
                         status = ingest_item(item, runner.project_root)
@@ -1080,8 +1086,26 @@ def run_evolution(
                             )
                         continue
                     items_ingested += 1
+                    if isinstance(item, dict) and item.get("project"):
+                        marker_projects.add(str(item["project"]))
                     if status == "pending":
                         drafts += 1
+                # 批末按项目合并提交（evo-add-todo-marker-commit-on-write 1.3）：
+                # ingest_item 的标记回写传 commit=False 不逐条 commit（避免提交
+                # 风暴），一轮 ingest 循环结束后对本轮涉及的项目集合按项目各触发
+                # 一次。write_todo_marker 按条目 project 名经 registry 解析目标
+                # 项目，一轮可涉及多个项目，不存在跨项目单提交；提交失败在
+                # commit_todo_marker 内降级日志，不影响本轮结果。
+                for proj_name in sorted(marker_projects):
+                    try:
+                        commit_todo_marker(project_name=proj_name)
+                    except Exception as e:
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            _log.warning(
+                                "self-evolution",
+                                f"todo.md 批量提交异常（跳过）: {proj_name}: {e}",
+                            )
                 if partial:
                     # 部分恢复按失败落地：缺失数入 error、不触发水位推进
                     # （见上方收尾段说明；已落地条目由下轮幂等去重补齐）。
