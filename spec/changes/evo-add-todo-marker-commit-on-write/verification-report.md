@@ -36,3 +36,8 @@
 | todo-marker-write-failure-no-commit | 异常路径：条目在 todo.md 中定位不到（用户改过标题/删过条目）时标记回写返回 False、todo.md 内容不被改动、且不触发提交、不向调用方抛错（出处 core/evolution.py:893-899 apply_marker_to_lines 返回 None 分支与 914-915 仅写入成功才提交的门槛） | pass | 0/5 | - |
 | todo-marker-delivered-tests-green | 交付测试全绿：tests/test_evolution_todo_marker_commit.py 全部 12 例 PASSED（含 :260 参数化展开 2 项）——恰一枚提交且工作区干净 / pathspec 防卷入并发暂存 / untracked 与非 git 跳过 / index.lock 竞争降级不抛错 / push 失败降级 commit 保持 / 批末合并提交 / 无变更 no-op / 非 git 批量跳过 / 项目解析失败参数化 2 例（出处 tests/test_evolution_todo_marker_commit.py:92-234 测试清单，断言文案与 -v 输出实测对齐） | pass | 0/12 | - |
 | todo-marker-affected-suite-regression | 回归保护：引用 ingest_item/write_todo_marker/commit_todo_marker/run_evolution 的 6 个既有测试文件（self_evolution、evolution_clear_todo、evolution_bg_wait_ceiling、evolution_product_salvage、daily_self_review、facade_delegation_contract）共 252 例全通过，提交开关与批末合并提交未破坏既有回写/编排/门面委托行为（基线实测 2026-10-05 于实现分支：252 passed，544 subtests passed） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
