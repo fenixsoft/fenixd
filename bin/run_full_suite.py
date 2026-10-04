@@ -498,12 +498,19 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, l
                 "hanging": baseline.get("hanging_test"),
             }
         finally:
-            subprocess.run(
+            remove = subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt)],
                 cwd=str(project_root),
                 capture_output=True,
                 text=True,
             )
+            # 清理失败必留痕：静默吞掉会残留 .git/worktrees/baseline_wt 悬挂
+            # 元数据（需 git worktree prune 才能清理），后续枚举与排查无从得知。
+            if remove.returncode != 0:
+                log(
+                    "[run_full_suite] 基线 worktree 清理失败（可 git worktree prune）: "
+                    f"{(remove.stderr or remove.stdout)[-300:]}"
+                )
 
 
 def _log_to_stderr(message: str) -> None:
