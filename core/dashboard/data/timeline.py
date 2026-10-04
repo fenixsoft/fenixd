@@ -31,6 +31,11 @@ def _backtrack_reason(frm: str, to: str) -> str:
         return "验证失败/中断，回退实现"
     if frm == "implemented" and to in ("implementing", "ready"):
         return "实现未通过，回退重做"
+    # 不可达分支（防御保留）：仅有的两个调用点（get_spec_timeline 的 Transition
+    # 路径与打回重建路径）均在 backward 守卫内，而 backward 按生命周期序严格
+    # 小于判定，frm == to 时恒为 False——ready→ready 在时间轴数据流中到不了
+    # 这里（该转移会被当作前向节点折叠、本文案不下发）。保留仅因本函数经
+    # 门面公开导出、可被直接调用（特征测试锁定此返回值），非时间轴下发路径。
     if frm == "ready" and to == "ready":
         return "实现失败，重试"
     return "状态回退"
@@ -330,6 +335,12 @@ def get_spec_timeline(
                 if "Updated SPEC" in msg and f"'{spec_name}'" in msg:
                     # 复用上方已 isinstance 归一化的 ctx 取 updates（非 dict 视为缺失）
                     updates = ctx.get("updates", {}) or {}
+                    # updates 为非 dict 真值（日志行被手改/部分写入/旧版本结构
+                    # 漂移）时按缺失处理，对齐同函数 ctx 与 report.summary 的
+                    # 防护口径：否则下方 updates.get 抛 AttributeError 沿时间轴
+                    # 接口穿透 500
+                    if not isinstance(updates, dict):
+                        updates = {}
                     err = updates.get("error")
                     if err:
                         errors_at.append((ts, str(err)))
