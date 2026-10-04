@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Form, Input, Switch, Tabs, TimePicker, Typography, message } from 'antd';
+import { Alert, App, Button, Card, Form, Input, Switch, Tabs, TimePicker, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
@@ -24,6 +24,9 @@ interface SelfReviewPanelProps {
 }
 
 export default function SelfReviewPanel({ config, onSave, project }: SelfReviewPanelProps) {
+  // 提示经 App.useApp() 取上下文实例（code-review item 8ec702fc6b4a）：antd v5
+  // 静态 message 不消费 App/ConfigProvider 上下文，与同族面板口径统一
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）。自省表单与 todo.md 草稿两路编辑都置脏；

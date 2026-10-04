@@ -240,7 +240,10 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
 
     build_order = _get_build_order(schema)
     order_map = {aid: idx for idx, aid in enumerate(build_order)}
-    artifacts.sort(key=lambda a: order_map.get(a["id"], 0))
+    # 回退值取 len(build_order) 而非 0（code-review item 482caa99457a）：悬空
+    # requires/环依赖 artifact 不入拓扑序，回退 0 会与首位 artifact 同键、排序
+    # 后窜到列表最前——回退末位序号使其排在所有可拓扑排序的 artifact 之后。
+    artifacts.sort(key=lambda a: order_map.get(a["id"], len(build_order)))
 
     apply = schema.get("apply") or {}
     apply_requires = apply.get("requires") or [a["id"] for a in schema["artifacts"]]

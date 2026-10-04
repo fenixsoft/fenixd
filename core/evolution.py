@@ -188,7 +188,9 @@ def read_items(project_root) -> Dict[str, dict]:
     if not path.is_file():
         return {}
     try:
-        text = path.read_text(encoding="utf-8")
+        # errors="replace"：坏 UTF-8 字节降级为替换符、由逐行 JSON 解析自然
+        # 兜底，否则 UnicodeDecodeError 会从全部读写路径穿透（365a1932a94c）
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         _logger.warning("evolution: 读取 items.jsonl 失败: %s", e)
         return {}
@@ -487,7 +489,10 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
             _logger.debug("evolution: 项目 %s 无 todo.md，不就绪", name)
             continue
         try:
-            todo_text = todo.read_text(encoding="utf-8")
+            # errors="replace"：坏字节降级为替换符、由条目解析自然兜底，否则
+            # UnicodeDecodeError 会穿透 OSError 捕获掀翻整轮就绪扫描
+            # （code-review 365a1932a94c）
+            todo_text = todo.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             _logger.info("evolution: 项目 %s 的 todo.md 不可读（不就绪）: %s", name, e)
             continue
@@ -874,7 +879,9 @@ def write_todo_marker(
 
     def _do() -> None:
         try:
-            text = todo.read_text(encoding="utf-8")
+            # errors="replace"：坏字节降级为替换符，避免 UnicodeDecodeError
+            # 穿透（回写失败不得影响主流程，code-review 365a1932a94c）
+            text = todo.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             _logger.warning("evolution: todo.md 不可读，标记回写跳过: %s", e)
             return

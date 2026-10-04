@@ -234,7 +234,8 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
 
         # 从 spec_dir 反推 project_root（spec_dir = project_root/spec/changes/<name>）
         spec_name = spec_path.name
-        proj_root = spec_path.parent.parent.parent  # project_root/spec/changes -> project_root
+        # 向上三层：<root>/spec/changes/<name> -> <root>（item 8a36fc320187）
+        proj_root = spec_path.parent.parent.parent
         declared = None
         if proj_root.is_dir() and (
             proj_root / "spec" / "changes" / spec_name / "tasks.md"
@@ -245,8 +246,12 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
                 spec_name,
                 project_root=str(proj_root),
             )
+        # .get 访问（code-review item 4b2acae9e21a）：resolve_effective_declaration
+        # 契约漂移致键缺失时直接下标会抛 KeyError、被下方 except 吞成 file_count=0
+        # 静默低估规模分——与回退路径的 .get 口径对齐，缺键交由 KeyError 分支
+        # 显式记「疑似契约漂移」。
         if declared is None or (
-            not declared["deliverables"] and not declared["references"]
+            not declared.get("deliverables") and not declared.get("references")
         ):
             # 无标准布局 / 无声明段：先 extract_declared（保有 kind 语义——
             # reference 不计分），再无声明段回退语境推断的 deliverables 口径
@@ -254,6 +259,10 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
             if declared is None:
                 declared = extract_paths_typed(spec_path)
         file_count = len((declared or {}).get("deliverables") or [])
+    except KeyError as e:
+        # 契约漂移类异常与 IO/解析失败区分记录（不同 message），便于发现上游断裂
+        _warn(f"fast-track 规模预估交付物声明结构缺键（疑似上游契约漂移，低档放行）: {e}")
+        file_count = 0
     except Exception as e:
         # 解析失败保守低档放行（与 tasks.md 缺失同语义，不阻断派发）
         _warn(f"fast-track 规模预估解析交付物失败（低档放行）: {e}")

@@ -337,9 +337,16 @@ def _covers_list(scenario: Any) -> List[str]:
     return [normalize_token(str(c)) for c in covers if c]
 
 
-def scenario_cover_channel(scenario: Any, candidate: InteractiveCandidate) -> int:
-    """场景覆盖候选所用的通道号（0=未覆盖，1/2/3 见模块 docstring 三通道）。"""
-    blob = scenario_text_blob(scenario)
+def scenario_cover_channel(
+    scenario: Any, candidate: InteractiveCandidate, blob: Optional[str] = None
+) -> int:
+    """场景覆盖候选所用的通道号（0=未覆盖，1/2/3 见模块 docstring 三通道）。
+
+    ``blob`` 可传入预计算的 ``scenario_text_blob``（批量校验对候选×场景双重
+    循环时按场景算一次复用，避免 C×S 次重复拼串）；缺省时现算。
+    """
+    if blob is None:
+        blob = scenario_text_blob(scenario)
     if not blob:
         return 0
     # 通道 1：planner 显式登记 covers（candidate.key 即 normalize_token(candidate.raw)
@@ -456,6 +463,9 @@ def validate_interaction_coverage(
 
     declared = set(collect_display_declarations(planner_scenarios))
     scenarios = [s for s in (planner_scenarios or []) if isinstance(s, dict)]
+    # 场景文本 blob 按场景预计算一次（code-review 34f3ba1de74b）：下方双重
+    # 循环里每对 (候选, 场景) 都重拼串，候选与场景多时重复开销线性放大。
+    scenario_blobs = [scenario_text_blob(s) for s in scenarios]
 
     for cand in result.candidates:
         if cand.declared_display or cand.key in declared:
@@ -465,8 +475,8 @@ def validate_interaction_coverage(
             )
             continue
         covering = []
-        for s in scenarios:
-            ch = scenario_cover_channel(s, cand)
+        for s, blob in zip(scenarios, scenario_blobs):
+            ch = scenario_cover_channel(s, cand, blob)
             if ch:
                 covering.append((str(s.get("id") or "?"), ch))
         if covering:

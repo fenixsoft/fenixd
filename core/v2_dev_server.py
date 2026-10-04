@@ -41,6 +41,11 @@ PPID_POLL_INTERVAL = 2
 # 子进程命令行标记（D2 清扫依据）：daemon 重启时扫 pgrep 该字面量识别遗留 dev-server。
 V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
 
+# start 的就绪判定窗口（秒，code-review item 76b1c9ed20c1）：_wait_ready 轮询
+# 上限。正常负载下余量充足、不放宽（改超时数值属启动时序调整，非本条目范围）；
+# 提为常量供就绪超时错误文案引用同一语义值，便于排障按因识别。
+V2_READY_TIMEOUT_SECONDS = 5.0
+
 # 不可归因进程记账（fix-v2-devserver-fallback-attribution 2.1）：daemon 进程内
 # 状态，重启即失、不持久化——重启后按新进程重放一次首见告警，可接受（重启
 # 场景由 reconcile_v2_servers 启动对账兜底）。结构 {pid: 累计扫描见次}：首见
@@ -248,14 +253,34 @@ def start(
     # 异码服务上。同一 addr:port 的 LISTEN socket 唯一（node 未用 SO_REUSEPORT），
     # 核对端口 LISTEN inode 是否归属本进程 /proc/<pid>/fd 即可确定性判定应答者
     # 身份，取代「延迟数百毫秒再看存活」的时长启发式（进程存活≠端口归它）。
-    ready = _wait_ready(port, timeout=5.0) and _port_listened_by(
-        port, proc
-    )
-    if not ready:
-        # 启动但端口未就绪/端口非本进程持有：视为失败，回收子进程，按端口冲突重试语义上抛。
-        _log("error", f"dev-server on port {port} not ready or port not served by it, killing")
+    ready = _wait_ready(port, timeout=V2_READY_TIMEOUT_SECONDS)
+    # 身份收口仅在连通后执行（保持原 and 短路语义：超时路径不再核对端口归属）。
+    served_by_self = _port_listened_by(port, proc) if ready else False
+    if not (ready and served_by_self):
+        # 失败归因二分（code-review item 76b1c9ed20c1）：就绪超时（高载下 node
+        # 冷启动超窗）与端口身份不符（allocate_port bind 探测与 node 实际 bind
+        # 之间被抢注 / proc 已退出）是两类现场，错误文案区分开供调用方/排障
+        # 按因识别；两类均维持既有「回收子进程后按启动失败上抛」语义，不改
+        # 启动时序。
+        if not ready:
+            _log(
+                "error",
+                f"dev-server on port {port} not ready within "
+                f"{V2_READY_TIMEOUT_SECONDS:.0f}s, killing",
+            )
+            _kill(proc)
+            raise V2DevServerError(
+                f"dev-server on port {port} not ready within "
+                f"{V2_READY_TIMEOUT_SECONDS:.0f}s (readiness timeout)"
+            )
+        _log(
+            "error",
+            f"dev-server on port {port} ready but port not served by it, killing",
+        )
         _kill(proc)
-        raise V2DevServerError(f"dev-server on port {port} failed to become ready")
+        raise V2DevServerError(
+            f"dev-server on port {port} listened by another process (port conflict)"
+        )
 
     if used_ports is not None:
         used_ports.add(port)

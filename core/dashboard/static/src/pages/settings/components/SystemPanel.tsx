@@ -1,4 +1,4 @@
-import { App, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Typography } from 'antd';
+import { App, Button, Card, Form, Input, InputNumber, Select, Space, Switch, Typography } from 'antd';
 import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { usePanelDirty } from '../panelDirty';
@@ -340,9 +340,11 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
   const [form] = Form.useForm<SystemFormValues>();
   // 反馈提示经 App.useApp() 取上下文实例（code-review item afa35698f8fd）：
-  // 静态 message 不经过 App/ConfigProvider 上下文，与其余设置面板口径统一
-  // （handleRestart 的 Modal.confirm onOk 闭包在组件渲染作用域内，可直接捕获）
-  const { message } = App.useApp();
+  // 静态 message 不经过 App/ConfigProvider 上下文，与其余设置面板口径统一；
+  // 重启确认的 modal 同取上下文实例（code-review item 6836d264fde4）：静态
+  // Modal.confirm 与静态 message 同一局限（不消费 App/ConfigProvider 上下文），
+  // handleRestart 的 onOk 闭包在组件渲染作用域内，可直接捕获
+  const { message, modal } = App.useApp();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
@@ -391,7 +393,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
   // 排水（admin.shutdown_drain_seconds）后优雅重启，dashboard 不直接杀进程
   const handleRestart = () => {
     if (!project) return;
-    Modal.confirm({
+    modal.confirm({
       title: '重启 Fenix Daemon',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
@@ -409,7 +411,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
             message.success('重启请求已写入，daemon 将排水后自动重启');
           } else {
             message.error(`重启失败：${res?.error ?? '未知错误'}`);
-            // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着供直接重试
+            // 失败时拒绝 resolve，modal.confirm 不自动关闭，弹窗原样留着供直接重试
             return Promise.reject(new Error(res?.error ?? 'restart failed'));
           }
         } catch (err) {

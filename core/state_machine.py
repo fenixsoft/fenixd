@@ -2550,8 +2550,12 @@ class StateMachine:
                         recovered.append(name)
                         continue
                     # 清 tester_run 让验证流水线全新重入；branch/implementer_run
-                    # 保留（实现的身份事实，验证不重做实现）
-                    self.update_spec(
+                    # 保留（实现的身份事实，验证不重做实现）。
+                    # code-review 3926b50faeed：SPEC 在恢复窗口内被并发删除时
+                    # update_spec 返回 False——不计入 recovered（recovered 口径
+                    # 只收「确实恢复了状态」的 spec；spec 在场时返回值恒 True，
+                    # 既有行为不变），与下方清空重建路径同型守卫
+                    retested = self.update_spec(
                         name,
                         {
                             "status": SpecStatus.IMPLEMENTED,
@@ -2564,13 +2568,17 @@ class StateMachine:
                             "_redispatch_cause_fp": None,
                         },
                     )
-                    recovered.append(name)
+                    if retested:
+                        recovered.append(name)
                     continue
                 elif status == SpecStatus.REVIEWING:
                     # 评审中断恢复：回退 drafted，清空评审 run 引用与尝试计数，
                     # 使其重新进入晋升链（软化与两道 lint 幂等，分流重新判定）。
                     # 评审者对 SPEC 目录的修补被保留（不还原）。
-                    self.update_spec(
+                    # code-review 3926b50faeed：同 TESTING 分支守卫——SPEC 在
+                    # 恢复窗口内被并发删除（update_spec 返回 False）不计入
+                    # recovered；spec 在场时返回值恒 True，既有行为不变
+                    redrafted = self.update_spec(
                         name,
                         {
                             "status": SpecStatus.DRAFTED,
@@ -2579,7 +2587,8 @@ class StateMachine:
                             "_review_attempts": 0,
                         },
                     )
-                    recovered.append(name)
+                    if redrafted:
+                        recovered.append(name)
                     continue
                 # ── 待 re-merge-back 标记消费（fix-recovery-branch-anchor D3/D4）──
                 # repair 成功待合并的 implementing spec（_repair_awaiting_remerge
@@ -2787,6 +2796,14 @@ class StateMachine:
                 )
                 return False
             self.logger.warning("state_machine", f"SPEC not found: {name}")
+            # code-review 90fa33787d14：历史「not found 落入假成功」残留出口——
+            # 仅当 _anchor_recheck_locked 判 fresh（specs 有条目）而
+            # _apply_updates_entry 判 not found（同一把锁内读同一 specs 字典）
+            # 同时成立时可达，实际不可达；显式 return False 与上方 missing 出口
+            # 及 docstring「True 表示 re-merge 成功并已推进 implemented」口径
+            # 一致，避免不变式被后续改动打破时复活为假成功（跳过收口回调与
+            # consume_legacy，不计成功）。
+            return False
         elif anchor_recheck:
             _snap = anchor_recheck["snapshot"]
             _fresh = anchor_recheck["fresh"]
@@ -3050,6 +3067,13 @@ class StateMachine:
                 )
                 return False
             self.logger.warning("state_machine", f"SPEC not found: {name}")
-            return True
+            # code-review 90fa33787d14：历史「not found → 假成功返回 True」
+            # 残留出口——仅当 _anchor_recheck_locked 判 fresh（specs 有条目）
+            # 而 _apply_updates_entry 判 not found（同一把锁内读同一 specs
+            # 字典）同时成立时可达，实际不可达；显式 return False 与上方
+            # missing 出口及 docstring「True 表示已保留并写入恢复续做标记」
+            # 口径一致，避免不变式被后续改动打破时复活假成功（误把已删 spec
+            # 计入 recovered）。
+            return False
         self._log_update_applied(name, applied)
         return True

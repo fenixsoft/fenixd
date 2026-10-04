@@ -145,7 +145,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`保存失败：${errorMessage}`);
-      console.error('Failed to save description:', error);
     } finally {
       setSaving(false);
       descWriteInFlight.current = false;
@@ -185,7 +184,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`重新生成失败：${errorMessage}`);
-      console.error('Failed to regenerate description:', error);
     } finally {
       setLoading(false);
       descWriteInFlight.current = false;
@@ -282,7 +280,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (e) {
       if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
       setYamlLoadError(true); // 失败时不让 yamlExists 的旧值冒充「确认不存在」
-      console.error('Failed to load verify.yaml:', e);
       message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
     } finally {
       // 非 silent 是 yamlLoading 的置位者，无条件清理自身锁——即使响应已过期
@@ -334,7 +331,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`保存失败：${errorMessage}`);
-      console.error('Failed to save verify.yaml:', e);
     } finally {
       setYamlSaving(false);
       yamlSavingInFlight.current = false;
@@ -351,7 +347,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`模板加载失败：${errorMessage}`);
-      console.error('Failed to load verify.yaml template:', e);
     }
   };
 
@@ -374,7 +369,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`自动起草失败：${errorMessage}`);
-      console.error('Failed to autodraft verify.yaml:', e);
     } finally {
       setAutodraftLoading(false);
       autodraftInFlight.current = false;

@@ -132,6 +132,7 @@ def _todo_write_lock(project_root: Path):
 
     todo_dir = Path(project_root) / ".fenix"
     todo_dir.mkdir(parents=True, exist_ok=True)
+    # [fenix-ignore:7508274d893d] 条目描述的另立锁名 todo.lock 在当前代码中不存在：锁文件已与其他 todo.md 写方统一为 .fenix/.todo.md.lock（见 docstring）
     fh = open(todo_dir / ".todo.md.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
@@ -452,6 +453,7 @@ def discard_knowledge_changes(
     # 兜底分支与 discard_paths 同款 fail-open：git 不可用/超时不以
     # OSError/TimeoutExpired 沿调用链上抛，留痕告警交人工核查
     # （code-review 514b88161b35）。
+    # [fenix-ignore:514b88161b35] 条目指向的裸 subprocess.run 在当前代码中不存在：兜底分支已包 try/except (OSError, TimeoutExpired) 并留痕告警 fail-open（见上注）
     try:
         subprocess.run(
             ["git", "restore", "--", KNOWLEDGE_DIR],
@@ -959,6 +961,7 @@ def build_prompt(
     text = text.replace(
         "{{DOMAIN_MAP_PATH}}", DOMAIN_MAP_RELPATH
     ).replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
+    # [fenix-ignore:8980a66d334c] 条目描述的两次独立调用 _now_local_parts 在当前代码中不存在：已取一次解包为 now_local/now_tz 复用（见下注）
     now_local, now_tz = _now_local_parts()
     # 同一份提示词内时间与时区标注取自同一次时钟读数：分两次取值跨分钟/
     # DST 切换边界时两段会不一致（code-review 8980a66d334c）。
@@ -1141,6 +1144,7 @@ def _missing_prehistoric_pages(
                 f"{cap}（域 {str(item.get('domain') or '').strip() or '未声明'}）"
             )
             continue
+        # [fenix-ignore:80a84d1821ac] 条目描述的未校验 capability 直接 `cap in chain_index` 在当前代码中不存在：上方已先以 _valid_domain_component 校验类型与路径成分，畸形值按缺页登记交人工
         if cap in chain_index:
             continue  # 已被归档覆盖：不写史前页（baseline 走链头输入）
         domain = str(item.get("domain") or "").strip()

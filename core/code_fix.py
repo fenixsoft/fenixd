@@ -980,6 +980,7 @@ def release_failed_batch(project_root, item_ids) -> int:
                 changed += 1
             else:
                 released += 1  # 整批解除
+        # [fenix-ignore:513aabee5028] 无变化不写盘守卫已在先前 code-fix 批次落地（changed/released 计数条件写盘，docstring 同步声明），条目所指「无命中仍无条件重写、凭空创建空档案」已不存在。
         if changed or released:  # 无变化不写盘（对齐同模块守卫惯例）
             _atomic_write(
                 path,
@@ -2266,6 +2267,7 @@ def write_regression_failed_alert(
             "signal_type": "code_fix_regression_failed",
             "spec": None,
             "severity": "warning",
+            # [fenix-ignore:eebdeefa1bc6] 告警文案已随定向重试机制改为「首轮 + N 轮定向重试」如实描述（retry_rounds 由调用方按生效上限传入），「两次全量回归」旧文案已废除；reason 标识 regression_failed_twice 保持历史兼容名并已在批收尾 record_failed_batch 调用处加注。
             "description": (
                 f"code-fix 批首轮及 {retry_rounds} 轮定向重试共 "
                 f"{retry_rounds + 1} 轮回归均未通过，已跳过（未合回、条目保持 open，"
