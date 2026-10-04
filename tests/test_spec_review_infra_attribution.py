@@ -377,8 +377,12 @@ class _BackoffHost:
         self._mixin._queue_lock = self._queue_lock
         self._mixin._pm = SimpleNamespace(logger=MagicMock())
 
-    def _schedule_recovery_timer(self, spec_name, **kwargs):
-        self._mixin._schedule_recovery_timer(spec_name, **kwargs)
+    def _schedule_recovery_timer(self, spec_name, timers, resolve_delay,
+                                 min_delay, callback, scheduled_log=None,
+                                 lock_held=False):
+        self._mixin._schedule_recovery_timer(
+            spec_name, timers, resolve_delay, min_delay, callback,
+            scheduled_log, lock_held)
 
 
 class _PmStub:
@@ -397,8 +401,12 @@ class _PmStub:
             return self._delay
         return default
 
-    def _schedule_recovery_timer(self, spec_name, **kwargs):
-        self._backoff_host._schedule_recovery_timer(spec_name, **kwargs)
+    def _schedule_recovery_timer(self, spec_name, timers, resolve_delay,
+                                 min_delay, callback, scheduled_log=None,
+                                 lock_held=False):
+        self._backoff_host._schedule_recovery_timer(
+            spec_name, timers, resolve_delay, min_delay, callback,
+            scheduled_log, lock_held)
 
     def _enqueue(self, spec_name, agent_type):
         self.enqueued.append((spec_name, agent_type))

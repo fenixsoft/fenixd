@@ -973,7 +973,7 @@ def _commit_todo_marker(proot) -> bool:
             add.stderr.strip()[:200],
         )
         return False
-    msg = f"[fenix] evolution: 自进化标记回写 {datetime.now().strftime('%Y-%m-%d')}"
+    msg = f"[fenix] evolution: 自进化标记回写 {timelib.now_local().strftime('%Y-%m-%d')}"
     try:
         commit = subprocess.run(
             git + ["commit", "-m", msg, "--", todo_rel],
