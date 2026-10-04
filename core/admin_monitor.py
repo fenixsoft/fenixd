@@ -843,6 +843,52 @@ def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> 
     return False
 
 
+def _build_runs_activity_snapshot(project_root) -> dict:
+    """单次 glob+stat 构建 runs 目录活跃快照：``{spec: 最近 run 文件 mtime}``。
+
+    code-review item cfa277dc36e7：_detect_stuck 与 _detect_orphaned_state 旧
+    对每个 spec 各自全量 glob+stat（O(spec 数 × run 文件数)，run 文件长期
+    累积后单轮巡检要执行数万次 stat，拖慢 admin 巡检线程并连带推迟同线程
+    后续检查点），本快照把目录扫描压到每轮一次、两检测器共用。口径与
+    ``_has_recent_spec_run`` 一致：排除 admin- 前缀（``_is_admin_run_id``
+    单点判定）、stem 还原不出 spec 的文件跳过；同 spec 取最大 mtime——
+    「任一文件 mtime 落窗」与「最大 mtime 落窗」等价。glob 失败返回空表
+    （与 _has_recent_spec_run 的 OSError → False 同 fail-open 方向）。快照
+    生命周期不跨轮：由 ``AdminMonitor._round_runs_activity`` 按轮失效重建。
+    """
+    if project_root is None:
+        return {}
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    try:
+        files = list(runs_dir.glob("*.jsonl"))
+    except OSError:
+        return {}
+    snapshot: dict = {}
+    for p in files:
+        if _is_admin_run_id(p.stem):
+            continue
+        spec = AdminMonitor._spec_from_run_id(p.stem)
+        if not spec:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > snapshot.get(spec, float("-inf")):
+            snapshot[spec] = mtime
+    return snapshot
+
+
+def _runs_activity_recent(snapshot: dict, spec: str, now: float, window: float) -> bool:
+    """基于快照的「窗口内有写活动」判定（_has_recent_spec_run 的等价消费形态）。
+
+    快照未含该 spec（无该 spec 的非 admin run 文件）或最近 mtime 超窗 →
+    False；判定阈值与逐文件扫描完全一致（``now - mtime < window``）。
+    """
+    mtime = snapshot.get(spec)
+    return mtime is not None and (now - mtime) < window
+
+
 def inprocess_verify_active(project_root, spec_name: str, *, window_seconds=None) -> bool:
     """daemon 进程内验证是否在飞（evo-inprocess-verify-activity-signal 1.1）。
 
@@ -896,6 +942,8 @@ def spec_is_undriven(
     *,
     run_grace_seconds: float = ORPHANED_RUN_GRACE_SECONDS,
     pm_engine=None,
+    runs_activity=None,
+    pgrep_cache=None,
 ) -> bool:
     """「无驱动」判定（orphaned-state-signal R1 三条件，同一判定口径）。
 
@@ -945,6 +993,12 @@ def spec_is_undriven(
     保留 `pm_engine=None`（不判定 ④）：本函数是模块级工具，既有单元测试与
     外部调用只传三参；缺省行为与引入 ④ 之前逐位一致，调用点按需注入。
 
+    ``runs_activity`` / ``pgrep_cache``（code-review item cfa277dc36e7，可选）：
+    传入每轮巡检级的 runs 目录快照（``_build_runs_activity_snapshot`` 产物）
+    与 pgrep 结果缓存 dict 时，条件 ①② 改消费缓存——同轮内同 spec 只做一次
+    目录 stat 与一次 pgrep 子进程派生，判定阈值不变；缺省 None 保持既有逐次
+    扫描行为（event_bus 恢复出口与既有测试不受影响）。
+
     admin_monitor 检测在此之上叠加「状态停留超短阈值」；event_bus 恢复在此
     之上叠加 _inconclusive_attempts 暂停守卫。二者共用本函数 → 同一判定口径。
     """
@@ -967,11 +1021,27 @@ def spec_is_undriven(
             return False
     except Exception:
         pass  # 同上 fail-open
-    # ② 无存活 agent 子进程
-    if _pgrep_live_worktree(spec_name):
+    # ② 无存活 agent 子进程（pgrep_cache 传入时按轮缓存：同轮内同 spec 幂等，
+    # 三个前缀的 pgrep 子进程派生不再随消费方数量放大）
+    if pgrep_cache is not None and spec_name in pgrep_cache:
+        alive = pgrep_cache[spec_name]
+    else:
+        alive = _pgrep_live_worktree(spec_name)
+        if pgrep_cache is not None:
+            pgrep_cache[spec_name] = alive
+    if alive:
         return False
-    # ① 无活动 run 文件
-    if _has_recent_spec_run(project_root, spec_name, time.time(), run_grace_seconds):
+    # ① 无活动 run 文件（runs_activity 快照传入时零逐文件 stat：快照已含该
+    # spec 全部非 admin run 文件的最近 mtime，窗口判定与逐文件扫描等价）
+    if runs_activity is not None:
+        recent = _runs_activity_recent(
+            runs_activity, spec_name, time.time(), run_grace_seconds
+        )
+    else:
+        recent = _has_recent_spec_run(
+            project_root, spec_name, time.time(), run_grace_seconds
+        )
+    if recent:
         return False
     # ④ 无排队中的派发条目（调用方注入 pm_engine 时判定；见 docstring）
     if pm_engine is not None and _queued_for_dispatch(pm_engine, spec_name):
@@ -1177,6 +1247,14 @@ class AdminMonitor:
         """
         if not self.enabled:
             return []
+
+        # code-review item cfa277dc36e7：轮首失效本轮级扫描缓存——runs 目录
+        # 快照（spec → 最近 mtime）与 pgrep 结果在单轮内构建/派生一次，供
+        # _detect_stuck 与 _detect_orphaned_state 共用，生命周期不跨轮（惰性
+        # 构建，本轮首个消费方触发时才发生 IO；半初始化实例由 _round_* 取值
+        # 器的 getattr 兜底覆盖，直接调检测器的测试路径同样成立）。
+        self._runs_activity_cache = None
+        self._pgrep_round_cache = {}
 
         # 族谱爆炸信号由 pm_engine 在拦截时直接写入 store（父 SPEC 保持 bug-found，
         # 不满足 has_in_progress_specs 门控，却同样需要送达 Administrator）。
@@ -2741,7 +2819,11 @@ class AdminMonitor:
                     f"Skipping stuck for '{name}': alive run process(es) registered",
                 )
                 continue
-            if self._has_recent_progress(name, now, grace_minutes * 60):
+            # 有进度豁免改消费每轮 runs 快照（code-review item cfa277dc36e7，
+            # 与 _detect_orphaned_state 共用同一次 glob+stat，判定阈值不变）
+            if _runs_activity_recent(
+                self._round_runs_activity(), name, now, grace_minutes * 60
+            ):
                 continue
             # 已入队等待并发槽的豁免（code-review item 8400e0b92e68，与
             # _detect_orphaned_state 2026-09-18 修复的条件④同口径）：testing 态
@@ -2953,7 +3035,17 @@ class AdminMonitor:
             # 里等并发槽数十分钟，缺此判定则每轮巡检必判「无驱动」并唤起
             # Administrator（本 SPEC 07:55/08:07/08:30 三连误报实证）。pm_engine
             # 为 None（测试替身/独立组件）时不判 ④，行为与修复前一致。
-            if not spec_is_undriven(self.project_root, name, entry, pm_engine=self.pm_engine):
+            # 无驱动判定注入每轮 runs 快照与 pgrep 缓存（code-review item
+            # cfa277dc36e7）：目录扫描与子进程派生在单轮内各做一次，与
+            # _detect_stuck 共用；缺省 None 形态（event_bus/既有测试）行为不变。
+            if not spec_is_undriven(
+                self.project_root,
+                name,
+                entry,
+                pm_engine=self.pm_engine,
+                runs_activity=self._round_runs_activity(),
+                pgrep_cache=self._round_pgrep_cache(),
+            ):
                 continue
             signals.append(
                 self._make_signal(
@@ -3204,6 +3296,14 @@ class AdminMonitor:
                 ):
                     hits[fp] = (prev, last_ts)
             if prev != last_ts:
+                # 先 pop 再重插（code-review item 33042541a50c）：dict 对已存在
+                # key 的就地赋值不刷新插入位次，下方「淘汰最早一半」按插入序取
+                # 队首，会把长期活跃（每日复发、持续更新）的老指纹先于一次性
+                # 出现后不再复发的陈旧指纹淘汰——跨日记忆丢失后下次复发只能
+                # 回退日志尾对账，256KB 尾读窗容不下 24h 前的次新条目，跨日
+                # 升级维度静默失效。重插使插入序=最近失败时刻序，淘汰才与
+                # 注释「最早」的真实语义（最近失败时刻最旧）重新对齐。
+                memory.pop(fp, None)
                 memory[fp] = last_ts
                 dirty = True
             # 容量上限（防无界增长）：超限淘汰最早一半（dict 保插入序）
@@ -4148,17 +4248,56 @@ class AdminMonitor:
             # 死亡证据门（2026-09-18 误报取证修复，与 fix-graceful-shutdown-agents
             # 的 interrupted 判定同源扩展）：admin 处置耗时不受 grace 约束，故
             # 「超 grace 无最终记录」**不足以**推断 run 已死。仅当 run 文件同时
-            # 满足 ① 存在 且 ② 末行是终态事件 时才确认死亡；文件缺失/无终态
-            # （仍在跑）/读失败 → 本方法不是死亡判定器，跳过，不落告警。
+            # 满足 ① 存在 且 ② 末行是终态事件 时才确认死亡；文件存在但末行非
+            # 终态（仍在跑）/读失败 → 本方法不是死亡判定器，跳过，不落告警。
             # 保守方向：宁可漏报（用户可见 admin run 仍在写流），不可拿「超时」
             # 冒充「被杀」——误报的措辞会误导人工去查根本不存在的 daemon 崩溃。
+            #
+            # ① 文件两处均缺失的分支（code-review item 8075b441970d）：run 文件
+            # 被「runs 保留」规则连顶层与 archive 归档副本一起清理（或从未落盘）
+            # 时，旧逻辑按「非终态 → 跳过」处理，该 pending 组每轮巡检都被
+            # continue、永远拿不到非 pending 终结记录——_merge_admin_runs 的
+            # 在飞判据（has_pending 且非 final）随之恒真，_handle_signal /
+            # 家族爆炸摄取 / 派发失败重试 / 处置后复位四条自动通道全部被
+            # _has_active_admin_run_for_spec 永久封死（仅人工通道可用）。文件全无
+            # = 既无「仍在写流」证据、也无死亡证据，但 pending 不能永久占用在飞
+            # 判定：补一条 result=interrupted 的非 pending 处置终结该 run（沿用
+            # 既有中断词表，不落人工升级告警，保守取向不变；底层信号仍在 store，
+            # 冷却过期后由既有检测自然重派）。
+            if self._admin_run_file(rid) is None:
+                self.store.append(
+                    {
+                        "kind": DISPOSITION,
+                        "status": "interrupted",
+                        "signal_type": sig_type,
+                        "spec": spec,
+                        "admin_run_id": rid,
+                        "result": "interrupted",
+                        "actions_taken": (
+                            "AdminMonitor 孤儿检测：run 产物在顶层与 archive 两处均"
+                            "不存在（保留规则已清理或从未落盘），无在写证据，"
+                            "补非 pending 终结避免 pending 永久占用在飞判定"
+                        ),
+                        "description": (
+                            f"Administrator 处置 run 产物缺失（run {rid}），"
+                            f"pending 终结（不升级人工）"
+                        ),
+                    }
+                )
+                self.logger.info(
+                    "admin_monitor",
+                    f"Orphaned admin disposition terminated (run file missing "
+                    f"from runs/ and archive/): {rid}",
+                )
+                continue
             if not self._run_file_has_terminal_state(rid):
                 continue
 
             # fix-graceful-shutdown-agents：先验 run 文件是否含 interrupted 标记（daemon
             # 优雅退出所致已知中断）。含标记 → 判定已知中断：终结 pending disposition 且
-            # 不产生人工升级告警；无标记/文件缺失 → 维持现有"疑似 daemon 崩溃"升级兜底
-            # （保守方向：宁可多告警不漏告警，files 被 prune 删除也按无标记处理）。
+            # 不产生人工升级告警；无标记 → 维持现有"疑似 daemon 崩溃"升级兜底
+            # （保守方向：宁可多告警不漏告警；文件两处均缺失的形态已在上方
+            # 死亡证据门①补终结，不再到达本分支）。
             #
             # admin-disposition-reschedule：已知中断分支前置回溯底层未处理信号——
             # 命中（kind=signal ∧ escalated ∧ 非 handled ∧ (spec, signal_type) 严格相等）
@@ -6160,6 +6299,30 @@ class AdminMonitor:
         if t == "error":
             return "error"
         return "running"
+
+    # ── 每轮扫描缓存（code-review item cfa277dc36e7）────────────
+
+    def _round_runs_activity(self) -> dict:
+        """本轮 runs 目录活跃快照（spec → 最近 mtime），轮首失效、轮内惰性构建。
+
+        _detect_stuck 与 _detect_orphaned_state 共用同一次 glob+stat，替代
+        逐 spec 全量扫描（O(spec 数 × run 文件数) → O(run 文件数)）；失效由
+        run_once 轮首复位承担（生命周期不跨轮）。半初始化实例（测试用
+        __new__ 绕过 __init__）与未过 run_once 的直接调用经 getattr 兜底。
+        """
+        snap = getattr(self, "_runs_activity_cache", None)
+        if snap is None:
+            snap = self._runs_activity_cache = _build_runs_activity_snapshot(
+                self.project_root
+            )
+        return snap
+
+    def _round_pgrep_cache(self) -> dict:
+        """本轮 pgrep 结果缓存（spec → bool），轮首失效；同轮内同 spec 幂等。"""
+        cache = getattr(self, "_pgrep_round_cache", None)
+        if cache is None:
+            cache = self._pgrep_round_cache = {}
+        return cache
 
     def _has_recent_progress(self, spec: str, now: float, window: float) -> bool:
         """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
