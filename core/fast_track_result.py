@@ -79,6 +79,8 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
           - 无 ``scenarios`` 或非 list / 为空
           - ``verdict`` 缺失或非合法取值
           - 场景条目结构不完整或 status 非法（任一条）
+          - ``bugs`` 存在但非 list（缺失/``null`` 沿用历史口径容错规整为
+            空列表，不判失败——verified 无 bug 时写侧可省略该字段）
     """
     if not isinstance(result, dict):
         return None
@@ -99,8 +101,16 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
         return None
 
     bugs = verification.get(BUGS_KEY)
-    if not isinstance(bugs, list):
+    if bugs is None:
+        # 字段缺失沿用历史口径容错规整为空列表（verified 无 bug 时写侧可
+        # 省略该字段，不据此判失败；``null`` 同此口径）。
         bugs = []
+    elif not isinstance(bugs, list):
+        # bugs 存在但非 list（LLM 把明细写成字符串/dict 等畸形形态）与
+        # scenarios/verdict 同口径 fail-closed 返回 None（调用方按失败重派/
+        # 产物门原地补写）：否则 verdict=bug-found 照常过硬校验而 bug 明细
+        # 被静默清空，修复车道拿不到 bug 描述与场景关联、在无上下文下盲修。
+        return None
 
     return {
         SCENARIOS_KEY: scenarios,
