@@ -14,8 +14,8 @@
 
 ## 2. 跨日记忆跨重启可用
 
-- [ ] 2.1 core/admin_monitor.py：_detect_crossday_recurrence（现约 :3081-3129）的指纹→上次失败时刻记忆持久化到 .fenix/ 下状态文件（原子写+锁，形态仿既有状态文件），daemon 启动时加载；文件缺失/损坏时降级为日志回退路径、不影响主扫描
-- [ ] 2.2 core/admin_monitor.py：无持久化记忆时的回退对账从 256KB 尾读（_read_tail_error_entries，现约 :3257）改为可回溯至少 24 小时的定向检索（按时间前缀/日期缩小范围后 grep），并在 debug 日志留检索成本与命中痕迹
+- [ ] 2.1 core/admin_monitor.py：_detect_crossday_recurrence（现约 :3081-3129）的指纹→上次失败时刻记忆持久化到 .fenix/ 下状态文件（原子写+锁，形态仿既有状态文件），daemon 启动时加载；文件缺失/损坏时降级为日志回退路径、不影响主扫描；持久化沿用既有内存淘汰语义（DAEMON_ERROR_FP_MEMORY_LIMIT 超限淘汰最早一半，admin_monitor.py:3121-3124）——淘汰后快照落盘，文件体量有界
+- [ ] 2.2 core/admin_monitor.py：无持久化记忆时的回退对账从 256KB 尾读（_read_tail_error_entries，现约 :3257）改为定向检索：以本轮扫描得到的同签名最新时刻为锚，按「该时刻 − 24h ± 容差」构造窄时间窗（先按日期文件/行前缀缩小范围后 grep），检索能力覆盖至少 24h 回溯（非全窗扫描），并在 debug 日志留检索成本与命中痕迹
 
 ## 3. 测试
 

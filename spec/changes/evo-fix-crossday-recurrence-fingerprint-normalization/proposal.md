@@ -16,4 +16,4 @@
   - core/admin_monitor.py（指纹归一化 + 记忆持久化/回退检索）
   - tests/test_crossday_recurrence_fingerprint.py（新增测试）
 
-纯只读观测增强：不新增告警类型、不改变熔断/冷却/salvage 行为、不影响 daemon_errors 既有第一维度（≥2 次/10 分钟）判定。
+纯只读观测增强：不新增告警类型、不改变熔断/冷却/salvage 行为。daemon_errors 第一维度（≥2 次/10 分钟）判定规则代码不动，但归一化放宽必然改变其计数输入（by_fp 同喂第一维度与跨日检测，admin_monitor.py:3020-3034）：同形行聚合计数只增不减（不减少既有告警），且合并后指纹值变化使已冷却指纹 fp[:8] 前缀对账一次性失配（部署期一次性效应）——详见 design Risks。
