@@ -591,9 +591,22 @@ def _write_verdict_violations(
             dir=str(path.parent), prefix=".verdictv.", suffix=".json.tmp"
         )
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式接管（对齐 agent_runner _write_claim_placeholder
+            # 先例 cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，
+            # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             os.replace(tmp_path, path)
         except (OSError, TypeError, ValueError):
             # 清理临时文件后上抛：写盘/替换失败（含 json.dump 遇不可序列化
@@ -740,9 +753,23 @@ def _write_resynthesis_directive(
             dir=str(path.parent), prefix=".resynth.", suffix=".json.tmp"
         )
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式接管（对齐 _write_verdict_violations 及
+            # agent_runner _write_claim_placeholder 先例 cbb57806fbfd）：
+            # with 的 close 只在 fdopen 成功后才生效，fdopen 自身抛错时裸
+            # fd 无人关闭——f 为 None 时兜底 os.close。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             os.replace(tmp_path, path)
         except (OSError, TypeError, ValueError):
             # 清理临时文件后上抛交外层 WARNING 留痕（对齐 _write_verdict_violations
