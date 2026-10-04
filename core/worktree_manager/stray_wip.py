@@ -150,8 +150,9 @@ class MainTreeStrayWipSweeper:
         #    "files": [路径...], "escalated_at": iso 或 ""}
         self._registry: dict = {}
         # untracked 散件注册表（add-verify-evidence-placement-contract 2.1）：
-        # 形态同上，但指纹语义不同（路径排序集 + 逐文件内容 sha256——
-        # untracked 不进 git diff HEAD），与 tracked 注册表分账独立：
+        # 形态同上，但指纹语义不同（两级：阈值下仅路径排序集，越过阈值后
+        # 升级为追加逐文件内容 sha256 的完整指纹——untracked 不进 git diff
+        # HEAD），与 tracked 注册表分账独立：
         # tracked 侧各分支按「当前 tracked 指纹集」复位，混账会被他侧清空。
         self._untracked_registry: dict = {}
 
@@ -169,8 +170,9 @@ class MainTreeStrayWipSweeper:
     def _iso(epoch: float) -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
-    def _git(self, *args: str) -> "tuple[int, str] | None":
-        """只读 git 子进程（超时/不可用返回 None，调用方按放弃本轮处置）。
+    def _git(self, *args: str) -> "str | None":
+        """只读 git 子进程：成功返回 stdout（str）；超时/不可用/非零退出码
+        返回 None，调用方按放弃本轮处置。
 
         本方法与调用点均只发起读命令（status/diff）；任何会写工作区/索引/
         stash 栈的 git 操作都不允许出现在本模块（零触碰契约，见模块 docstring）。
@@ -484,15 +486,26 @@ class MainTreeStrayWipSweeper:
         记账/复位复用 tracked 形态（first_seen 注册表、同指纹一次性、指纹
         消失自动复位），注册表独立（``_untracked_registry``）。阈值
         （``admin.maintree_untracked_stray_threshold``，缺省 5）之下不告警
-        但照常建档计时——滞留时长从首次目击起算，越过阈值时已在场的散件
-        不因阈值调整重计。宽限复用 ``admin.maintree_stray_wip_grace_minutes``
+        但照常建档计时（两级指纹的路径级，零文件读盘）；越过阈值升级为
+        内容级完整指纹，升级当刻 fp 变化、计时自然重起，此后稳定期内沿用
+        原 first_seen 不重计。宽限复用
+        ``admin.maintree_stray_wip_grace_minutes``
         （同族同语义，不膨胀配置面）。只告警不处置：info 级 AdminStore 留痕，
         不派 major、不唤起人工。
 
         Returns: 子 dict（并入 sweep 返回的 ``untracked`` 键）：status 取
         ``below-threshold`` / ``timed`` / ``alerted``。
         """
-        fp = self._untracked_fingerprint(entries)
+        threshold = untracked_stray_threshold(self._config)
+        count = len(entries)
+        below_threshold = count < threshold
+        # 两级指纹（常态开销收敛）：低于阈值仅按路径排序集建档计时（零文件
+        # 读盘，IO 与散件内容规模解耦）；越过阈值升级为含内容 sha256 的完整
+        # 指纹。级别切换改变 fp → 升级当刻计时自然重起（语义损失可控），
+        # 同级别稳定期内沿用原 first_seen 不重计（与 tracked 流 D1 同款）。
+        fp = self._untracked_fingerprint(
+            entries, include_content=not below_threshold
+        )
         now = time.time()
         entry = self._untracked_registry.get(fp)
         if entry is None:
@@ -509,9 +522,7 @@ class MainTreeStrayWipSweeper:
             entry["files"] = list(entries)
         self._reset_untracked_registry_absent({fp})
 
-        threshold = untracked_stray_threshold(self._config)
-        count = len(entries)
-        if count < threshold:
+        if below_threshold:
             return {
                 "status": "below-threshold",
                 "files": list(entries),
@@ -537,8 +548,8 @@ class MainTreeStrayWipSweeper:
             "elapsed_minutes": round(elapsed_min, 3),
         }
 
-    def _untracked_fingerprint(self, entries: list) -> str:
-        """untracked 散件指纹（2.1）：路径排序集 + 逐文件内容 sha256。
+    def _untracked_fingerprint(self, entries: list, include_content: bool = True) -> str:
+        """untracked 散件指纹（2.1）：路径排序集（+ 可选逐文件内容 sha256）。
 
         不可复用 tracked 形态（``git diff HEAD`` 哈希）：untracked 条目不进
         diff，复用会退化为纯路径集哈希——日志追加/转储重写等内容演化不再被
@@ -546,11 +557,18 @@ class MainTreeStrayWipSweeper:
         NUL 分隔，防「文件列表拼接歧义」撞指纹（与 ``_fingerprint`` 同款）。
         盘点与哈希之间文件被删改的竞态（OSError）按占位标记参与哈希：该
         entry 下轮指纹自然变化、计时重起，不虚构内容哈希。
+
+        两级形态（常态开销收敛）：``include_content=False`` 只哈希路径排序
+        集、零文件读盘——低于降噪阈值的常态轮次用此级建档计时，IO 与散件
+        内容规模解耦；``include_content=True`` 追加逐文件 sha256（越过阈值
+        后的告警判定级）。级别切换改变 fp 值，计时在升级当刻自然重起。
         """
         h = hashlib.sha256()
         rels = sorted(str(p) for p in entries)
         h.update("\x00".join(rels).encode("utf-8"))
         h.update(b"\x00\x00")
+        if not include_content:
+            return h.hexdigest()
         for rel in rels:
             digest = hashlib.sha256()
             try:
