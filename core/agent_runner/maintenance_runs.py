@@ -576,6 +576,11 @@ def run_self_review(
 
     # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
     # （向后兼容：自省未单独配置时继承运维通道分配）> admin.agent_model → 默认网关
+    # 同构车道评估（add-evolution-subagent-wait-ceiling 1.2，2026-10-05）：
+    # 本车道**不注入** CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS。证据：模板
+    # agents/self-review.md 全文无 Task 子代理派发（「亲自回顾聚合数据」单
+    # 进程形态），不存在「派子代理-结束回合-后台被 600 秒上限击杀」暴露面。
+    # 默认不改变未发生问题的车道行为（D2）。
     env_overrides: Dict[str, str] = {}
     assignment = runner._get_agent_model_assignment(
         "self-review"
@@ -962,6 +967,18 @@ def run_evolution(
     # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
     # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
     env_overrides: Dict[str, str] = {}
+    # evolution 车道专属 env：后台子代理等待上限归零（
+    # add-evolution-subagent-wait-ceiling 1.1）。本车道强制「逐条子代理」核查
+    # （agents/evolution.md 执行模式），Claude Code CLI 对未显式指定的 Task
+    # 子代理默认转后台，主 run 结束回合后 CLI 至多再等 600 秒
+    # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省 600000ms）即强杀仍在跑的
+    # 子代理——evo-1791048570 实证：主 run 以中期文案充当终局（CLI 侧
+    # completed、退出码 0），产物 json 与 .parts 分片零落盘，_salvage_evolution_
+    # out 无从合并，整任务重跑双倍消耗。置 "0" = 无限等待后台任务。只注入本
+    # 车道（D1）：其他维护车道若残留后台任务，等待上限归零会让 run 永不主动
+    # 退出、烧满 run_timeout，故不放 runner.py 全局 env 构造位
+    # （CLAUDE_CODE_ENABLE_TODO_TOOLS 所在，runner.py:5063 附近）。
+    env_overrides["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
     assignment = runner._get_agent_model_assignment(
         "self-review"
     ) or runner._get_agent_model_assignment("administrator")
@@ -1028,6 +1045,18 @@ def run_evolution(
                 error = str(e)
                 if prev_error and prev_error != str(e):
                     error = f"{error}（CLI 退出异常: {prev_error}）"
+                # 600 秒上限击杀归因（add-evolution-subagent-wait-ceiling
+                # 3.1）：CLI 侧退出码 0（terminal_reason=completed）时失败
+                # 走本分支，转录 stderr 命中「Background tasks still running
+                # after 600s」签名即子代理被后台等待上限强杀——把上限归因
+                # 写进 reason（经 _evolution_warn/ERROR 日志路径直出），下轮
+                # 诊断零成本。转录不可读时嗅探静默跳过，不影响原失败路径。
+                if _evolution_bg_wait_ceiling_hit(runner, run_id):
+                    error += (
+                        "（CLI 后台等待 600 秒上限击杀"
+                        "（CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS），"
+                        "子代理半成品随 run 作废）"
+                    )
                 contract = None
 
             if contract is not None:
@@ -1175,6 +1204,56 @@ def _salvage_evolution_out(out_path: Path) -> int | None:
     except OSError:
         return None
     return len(items)
+
+
+# 「后台任务 600 秒等待上限击杀」stderr 签名（小写形态；匹配时对转录行
+# 同样 lower 后做子串比对，大小写不敏感——CLI 文案漂移时退回现状文案，
+# 无副作用）。evo-1791048570 实测签名出现在 CLI 收尾 stderr 行。
+_BG_WAIT_CEILING_SIGNATURE = "background tasks still running after 600s"
+
+
+def _evolution_bg_wait_ceiling_hit(runner, run_id: str) -> bool:
+    """嗅探本 run 转录 stderr 行中的「后台任务 600 秒上限击杀」签名。
+
+    add-evolution-subagent-wait-ceiling 3.1：CLI 侧退出码 0（terminal_
+    reason=completed）时，产物缺失走 read_contract 的 ContractError 路径
+    （run_evolution 收尾段置 success=False），而非 _run_claude 异常路径——
+    归因嗅探只能挂在收尾段。命中签名说明子代理是被 CLI 的后台等待上限
+    （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS）强杀的，把该上限写进失败
+    reason 后下轮诊断零成本。
+
+    只扫 ``type: stderr`` 行、MUST NOT 全文件 grep：签名文本会以引用形态
+    大量出现在 assistant/user 记录里（evo-1791134863 复核含 600s 条目的
+    todo 时实测 19 处引用 vs 真 stderr 行 1 条），全文件 grep 会把引用
+    误判为击杀。stderr 行格式 ``{"type": "stderr", "line": ...}``（与
+    runner 落盘格式一致），整 run 稀疏，全扫成本可忽略。
+
+    转录不可读/无该行时返回 False，静默跳过，不影响原失败路径。实现为
+    模块级辅助函数（与 _salvage_evolution_out 同型），供单测不经完整
+    run_evolution 装配直接调用。
+    """
+    try:
+        run_file = (
+            runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        )
+        raw = run_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in raw.splitlines():
+        line = line.strip()
+        # 前滤只做廉价子串判断，行类型以解析后的 type 字段为准（对
+        # json.dumps 分隔符变体健壮），确保只扫 stderr 行不误判引用。
+        if "stderr" not in line or '"type"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "stderr":
+            continue
+        if _BG_WAIT_CEILING_SIGNATURE in str(ev.get("line") or "").lower():
+            return True
+    return False
 
 
 def _accumulate_evolution_tokens(runner, run_id: str, usage_info: dict) -> None:
@@ -1367,6 +1446,15 @@ def run_code_review(
 
         # 模型解析链：agents.models.code-review > self-review > administrator >
         # _get_admin_model → 默认网关（design D1 模型链回退）
+        # 同构车道评估（add-evolution-subagent-wait-ceiling 1.2，2026-10-05）：
+        # 本车道**不注入** CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS。证据：模板
+        # agents/code-review.md 审查路径明确「manifest 大时可派子代理并行审查」，
+        # 属「派子代理等汇总」型，但已有两道兜底把暴露面挡住——①「禁 async 等
+        # 待收工」守卫（违反 = run 判失败）要求派发后轮询分片文件推进、
+        # MUST NOT 以等待通知为由结束 turn，turn 不结束则 CLI 的 600 秒后台
+        # 等待上限不会被触达；②「谁审谁写、审完即写」分片直写纪律保证子代理
+        # 半成品也已落盘可消费。若守卫失效，注入等待上限归零反而会让 run 永不
+        # 主动退出、烧满 run_timeout（D1 权衡），故维持现状不改行为（D2）。
         env_overrides: Dict[str, str] = {}
         assignment = (
             runner._get_agent_model_assignment("code-review")
