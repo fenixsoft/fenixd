@@ -1351,7 +1351,9 @@ class VerificationPipeline:
         旧集先被判 corrupt 直接升级人工）。全场景过时（aborted=
         'all_scenarios_stale'）自动删除冻结文件并回落出题通道；未登记迁移段
         （aborted='no_migration_path'）与其余损坏维持既有 corrupt →
-        env_blocked 人工通道（fail-closed）。
+        env_blocked 人工通道（fail-closed）。写回失败轮（code-review item
+        4f886aa7c126）另经实例属性 _stage2_scenarios_override 随行携带内存
+        迁移集，供 _execute_stage2 本轮一次性消费。
         """
         # D4：import 留在函数体内（core.verify_engine.scenarios 在
         # _reload_verify_engine_modules 的 reload 清单内，函数体内调用时解析
@@ -1372,6 +1374,12 @@ class VerificationPipeline:
         # 步骤 4 改以内存迁移结果走验收——盘上此刻仍是未迁移旧场景集，读盘
         # 会把迁移本要修正的旧端口/URL 原样跑完整轮。
         write_back_failed = False
+        # 写回失败轮随行携带的阶段2 内存迁移集（code-review item 4f886aa7c126）：
+        # 步骤 4 产出的内存 frozen 若只用于验收，_execute_stage2 仍无条件
+        # load_scenarios 读盘，本轮消费的还是未迁移旧集。经实例属性携带
+        # （返回二元组契约被测试解包消费，扩元组属签名变更）、stage2 一次性
+        # 读取消费，见 _execute_stage2 消费点。
+        self._stage2_scenarios_override = None
 
         # ── 场景冻结复用（scenario-reuse-on-reenter，2026-09-04）──
         # 冻结集一经生成即跨轮一致的量尺：重入验证（打回/修复轮/重试）直接
@@ -1530,6 +1538,9 @@ class VerificationPipeline:
                         + "\n".join(f"  - {e}" for e in mem_errors)
                     )
                 frozen = [TestScenario.from_dict(item) for item in raw_mem]
+                # 写回失败轮随行携带内存迁移集（item 4f886aa7c126）：阶段2
+                # 本轮消费它而非盘上未迁移旧集（消费点见 _execute_stage2）。
+                self._stage2_scenarios_override = frozen
             else:
                 frozen = load_scenarios(path)
         except ValueError as e:
@@ -1977,6 +1988,10 @@ class VerificationPipeline:
         - skip_prune=True：跳过修复轮缓存裁剪（_prune_rescan_scenarios），
           以传入场景集原样作为本轮执行集（fastlane 子集重验用，兑现模块
           docstring「绕过缓存逻辑」不变量）
+        - _stage2_scenarios_override（实例属性，code-review item 4f886aa7c126）：
+          冻结契约迁移写回失败轮由 _load_frozen_or_escalate 随行携带的内存
+          迁移集，本方法一次性读取消费后即清位——盘上该轮仍是未迁移旧集，
+          读盘会把迁移本要修正的旧端口/URL 原样跑完整轮
         """
         import asyncio
         from core.verify_engine import VerifyEngine
@@ -1993,13 +2008,25 @@ class VerificationPipeline:
         # 故经实例属性携带、门禁调用点读取（缺省 False 兜底）。
         self._stage2_user_blocked = False
 
+        # 写回失败轮消费内存迁移集（code-review item 4f886aa7c126）：
+        # _load_frozen_or_escalate 契约迁移写回失败时盘上仍是未迁移旧集，
+        # 下方两处 load_scenarios 读盘会把迁移本要修正的旧端口/URL 原样跑
+        # 完整轮——该轮改消费随行携带的内存迁移集（已过同源验收 + from_dict
+        # 解析，与 load_scenarios 产物同构）。一次性读取即清位，防 replan
+        # 循环后续轮误消费陈旧 override。
+        scenarios_override = getattr(self, "_stage2_scenarios_override", None)
+        self._stage2_scenarios_override = None
+
         # ── 阶段2: 验证引擎执行 ──
         self._context.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
 
         # 场景文件验收失败（相对 URL/结构非法）＝ 明确的环境错误：
         # 退回 plan 阶段重新生成，不走 raise 穿透、更不判 bug-found。
         try:
-            scenarios = load_scenarios(scenarios_path)
+            if scenarios_override is not None:
+                scenarios = scenarios_override
+            else:
+                scenarios = load_scenarios(scenarios_path)
         except ValueError as e:
             env_error = f"场景文件验收失败: {e}"
 
@@ -2041,10 +2068,14 @@ class VerificationPipeline:
             # 执行无效 → 全场景对失联端口 navigate 整轮伪失败
             # （add-v3-spec-detail-page：24 场景导航 localhost:8000 全灭）。
             # 故自愈后必须重读场景文件再执行。
-            try:
-                scenarios = load_scenarios(scenarios_path)
-            except ValueError as e:
-                env_error = f"自愈改写后场景文件验收失败: {e}"
+            # 写回失败轮例外（item 4f886aa7c126）：盘上是未迁移旧集，重读即
+            # 回退迁移——保持内存迁移集执行；自愈端口改写只落盘上旧集，本轮
+            # 不反映，下轮写回成功后由自愈再改写。
+            if scenarios_override is None:
+                try:
+                    scenarios = load_scenarios(scenarios_path)
+                except ValueError as e:
+                    env_error = f"自愈改写后场景文件验收失败: {e}"
 
         if env_error is None:
             # ── 场景静态缺陷扫描（add-scenario-defect-triage-gate D3）──
@@ -3064,7 +3095,8 @@ class VerificationPipeline:
         # plan-ready＝场景已（重）生成、执行阶段尚未真实跑过。比照 legacy
         # 「验证未完成」分支：保持 testing 留 error、WARNING 留痕，由
         # full_scan recovery 兜底重排重验。scenario-repaired/bug-found 已由
-        # 上方专门分支消费，此守卫只拦 plan-ready，else 分支即纯 verified。
+        # 上方专门分支消费，此守卫只拦 plan-ready，落到此后的平铺尾段即纯
+        # verified。
         if verifier_status == "plan-ready":
             self._context.state_machine.update_spec(
                 spec_name,
@@ -3085,9 +3117,8 @@ class VerificationPipeline:
         if verifier_status == "bug-found":
             self._apply_bug_found(spec_name, judge_result, report, _repair_depth)
             return
-        else:
-            self._apply_verified(spec_name, judge_result, report)
-            return
+        self._apply_verified(spec_name, judge_result, report)
+        return
 
 
 # ── env 阻塞复位判定（add-blocked-reverify-lane D2）────────────────

@@ -462,9 +462,8 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     # （stopped_agents 计数）」；验证 BUG-01 修复点）——冻结 STATE 写入
     # 后 runner 轮询环感知到 frozen 终止，计数为终止窗口前的快照值。
     running = running_run_ids_for_spec(project_root, spec_name)
-    from core.state_machine import StateMachine, project_state_logger
 
-    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
+    sm = _sm(project_root)
     if not sm.freeze_spec(spec_name, reason=note):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时冻结未落盘，WARNING 留痕并如实返回失败形状。
@@ -501,8 +500,7 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     if not is_spec_frozen(entry):
         return {"ok": True, "found": True, "frozen": False, "error": None}
     orig = parse_orig_status(entry.get("error"))
-    from core.state_machine import StateMachine, project_state_logger
-    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
+    sm = _sm(project_root)
     _wt_mgr = None
     try:
         from core.worktree_manager import WorktreeManager
@@ -547,7 +545,6 @@ def reclassify_infra_rounds(
         dict：{ok, fail_rounds, status, applied, error?}。
         spec 不存在 → {ok: False, found: False, error}.
     """
-    from core.state_machine import StateMachine, project_state_logger
     from core.pm_engine.verification import reclassify_infra_rounds as _recl
 
     specs = parse_state(project_root)
@@ -555,7 +552,7 @@ def reclassify_infra_rounds(
         return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     if not str(audit_reason or "").strip():
         return {"ok": False, "found": True, "error": "audit_reason 必填（审计留痕要求）"}
-    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
+    sm = _sm(project_root)
     try:
         n_val = int(n)
     except (TypeError, ValueError) as e:
@@ -609,12 +606,11 @@ def promote_spec(project_root, spec_name: str) -> dict:
     if spec_name not in specs:
         return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     from core.pm_engine.promotion import promote_drafted
-    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
     from core.config import ConfigLoader
 
     proot = Path(project_root)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     # audit_logger 专名与模块级 std logging logger 区分（code-review item
     # 4e77fe1344f6）：同名遮蔽会让后续 logger.warning(...) 误用 Logger 实例
     audit_logger = Logger(proot)
@@ -661,11 +657,10 @@ def reflow_spec(project_root, spec_name: str) -> dict:
     if spec_name not in specs:
         return {"ok": False, "found": False, "reason": f"spec not found: {spec_name}"}
     from core.pm_engine.task_reflow import reflow_spec as _reflow
-    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
 
     proot = Path(project_root)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     audit_logger = Logger(proot)
     result = _reflow(proot, spec_name, state_machine=sm, logger=audit_logger, source="api")
     result.setdefault("found", True)
@@ -687,11 +682,10 @@ def re_review_spec(project_root, spec_name: str) -> dict:
     if spec_name not in specs:
         return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     from core.pm_engine.spec_review import SpecReviewManager
-    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
 
     proot = Path(project_root)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     audit_logger = Logger(proot)
     # agent_runner=None：跳过同步派发，由 daemon 全扫 recovery 的 reviewing
     # 分支拾取派发（与 CLI cmd_review 同构）；Dashboard 侧请求发往常驻 daemon
@@ -763,8 +757,6 @@ def activate_spec(project_root, spec: str) -> dict:
     - 写入失败（前置校验后 spec 被并发软删除/写入被拒）→
       ``{ok: False, found: True, reason/error: ...}``（WARNING 留痕，STATE 零变更）
     """
-    from core.state_machine import StateMachine, project_state_logger
-
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
@@ -788,7 +780,7 @@ def activate_spec(project_root, spec: str) -> dict:
         }
     # 命中 → 清 start_after + 唤醒信号；写入结果如实回报（D3），
     # CLI 与 Dashboard 依 ok 分支文案，不再无条件宣称「立即恢复调度」
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     if not sm.update_spec(spec, {"start_after": None}):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时变更未落盘，WARNING 留痕并如实返回失败形状，不再
@@ -847,8 +839,6 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
     - ``_cancelled_hold`` 非 true → ``{ok: False, reason}``（幂等拒绝，
       STATE 零变更）
     """
-    from core.state_machine import StateMachine, project_state_logger
-
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
@@ -891,7 +881,7 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             "found": True,
             "reason": "worktree 管理器不可用，无法判定保留分支",
         }
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     resolved_branch, _wt = sm._resolve_preserved_branch(
         spec, entry, proot, wm, context="Cancel-hold resume")
     if resolved_branch is not None:
@@ -1047,7 +1037,7 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
       {ok: False, found: True, error: ...}（WARNING 留痕，STATE 零变更）
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
     """
-    from core.state_machine import StateMachine, parse_utc, project_state_logger
+    from core.state_machine import parse_utc
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -1077,7 +1067,7 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
                 "error": f"start_after 非法 ISO8601: {value!r}",
             }
         normalized = dt.isoformat()
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     if not sm.update_spec(spec, {"start_after": normalized}):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时变更未落盘，WARNING 留痕并如实返回失败形状，不再
@@ -1138,9 +1128,7 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
         }
     # null 清除
     if budget is None:
-        from core.state_machine import StateMachine, project_state_logger
-
-        sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+        sm = _sm(proot)
         if not sm.update_spec(spec, {"impl_run_budget_override": None}):
             # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被
             # 并发软删除/写入被拒时清除未落盘，WARNING 留痕并如实返回失败形状
@@ -1184,9 +1172,7 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
             "invalid": True,
             "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)",
         }
-    from core.state_machine import StateMachine, project_state_logger
-
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     if not sm.update_spec(spec, {"impl_run_budget_override": budget}):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时写入未落盘，WARNING 留痕并如实返回失败形状
@@ -1216,7 +1202,7 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
     写入经 StateMachine（flock + 原子 rename）：frozen_until 更新不带 status
     键，不触发冻结保护剥离；带 status 的解冻一律走 unfreeze_spec 官方通道。
     """
-    from core.state_machine import StateMachine, parse_utc, project_state_logger
+    from core.state_machine import parse_utc
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -1229,7 +1215,7 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
             "found": True,
             "error": "spec 未处于冻结态（冻结管理仅对冻结 spec 生效）",
         }
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     if mode == "unfreeze":
         orig = parse_orig_status(entry.get("error"))
         # 与 unfreeze_spec 同口径（写入必留痕）：spec 在前置校验后被并发软删除/
@@ -1538,8 +1524,6 @@ def clear_spec_error(project_root, spec: str) -> dict:
     from core.state_machine import (
         PUSH_ATTEMPTS_FIELD,
         PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
-        StateMachine,
-        project_state_logger,
     )
 
     # 退避标记摘取回写（code-review item bbba88d8e6af）：机器可读标记寄居
@@ -1554,7 +1538,7 @@ def clear_spec_error(project_root, spec: str) -> dict:
     if push_attempts is not None:
         updates[PUSH_ATTEMPTS_FIELD] = push_attempts
 
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     if not sm.update_spec(spec, updates):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时清除未落盘，WARNING 留痕并如实返回失败形状
@@ -1607,9 +1591,7 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     if spec not in specs:
         return {"found": False}
 
-    from core.state_machine import StateMachine, project_state_logger
-
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+    sm = _sm(proot)
     if not sm.update_spec(spec, {"priority": p}):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时写入未落盘，WARNING 留痕并如实返回失败形状
@@ -1702,14 +1684,23 @@ _RETRY_COUNTER_RESETS = {
 _FORCE_ADVANCE_TARGETS = ("done", "verified")
 
 
-def _adjudication_sm(project_root):
-    """裁决动词共用的 StateMachine 构造（flock + 原子写，与 daemon 并发安全）。"""
+def _sm(project_root):
+    """本模块动作函数共用的 StateMachine 构造（flock + 原子写，与 daemon 并发安全）。
+
+    原 _adjudication_sm 只收编裁决动词，构造口径（路径/日志器）改动时仍须
+    逐点扫齐其余动作函数的内联构造，故扩展为通用助手并更名；旧名保留作
+    兼容别名。
+    """
     from core.state_machine import StateMachine, project_state_logger
 
     return StateMachine(
         Path(project_root) / ".fenix" / "STATE.md",
         project_state_logger(project_root),
     )
+
+
+# 兼容别名：既有裁决动词调用点与外部引用仍可用旧名
+_adjudication_sm = _sm
 
 
 def _is_inconclusive_parking_form(entry: dict) -> bool:
@@ -1861,7 +1852,7 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
 
     # 3+4a. 清计数 + 剥冻结 + 清 error（自带 frozen 键走 update_spec 显式豁免，
     # status 保持 blocked 供复位路径判定）
-    sm = _adjudication_sm(proot)
+    sm = _sm(proot)
     updates = {"frozen": False, "error": None, "frozen_until": None}
     updates.update(_RETRY_COUNTER_RESETS)
     if not sm.update_spec(spec, updates):
@@ -1882,22 +1873,40 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
     from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
 
     entry2 = parse_state(proot).get(spec) or {}
+    reset_error = None
     if entry2.get("status") != "blocked":
         steps.append(f"spec 已不在 blocked（当前 {entry2.get('status')}），无需复位转换")
         target = entry2.get("status")
     else:
         path = resolve_env_blocked_reset_path(entry2, proot)
         if path == "testing":
-            sm.transition_gate(spec, "testing", channel="manual")
-            target = "testing"
-            steps.append("实现分支已合并：BLOCKED→TESTING 门禁直通道重验")
+            # 复位转换结果如实回报（code-review item 5f650e3b6404）：快照与
+            # transition 之间 spec 被并发改写或门禁拒绝时返回 False，此时 error
+            # 已被上一步清空、spec 仍滞留 blocked——不得宣称已复位到 testing。
+            if not sm.transition_gate(spec, "testing", channel="manual"):
+                reset_error = "复位转换未生效：BLOCKED→TESTING 门禁转换被拒或未落盘"
+            else:
+                target = "testing"
+                steps.append("实现分支已合并：BLOCKED→TESTING 门禁直通道重验")
         else:
-            sm.transition(spec, "ready", channel="manual")
-            target = "ready"
-            kicked = _kick_step_suffix(proot, spec)
-            steps.append("实现分支未合并或缺 branch：BLOCKED→READY 回实现通道" + kicked)
+            if not sm.transition(spec, "ready", channel="manual"):
+                reset_error = "复位转换未生效：BLOCKED→READY 转换被拒或未落盘"
+            else:
+                target = "ready"
+                kicked = _kick_step_suffix(proot, spec)
+                steps.append("实现分支未合并或缺 branch：BLOCKED→READY 回实现通道" + kicked)
+    if reset_error:
+        # 与上方 update_spec 同口径（写入必留痕）：WARNING 留痕 + 失败形状，
+        # target_status 如实报 None（spec 实际仍滞留 blocked 且 error 已清空）。
+        logger.warning(
+            "reset_verification %s，spec 仍滞留 blocked（spec=%s）", reset_error, spec,
+        )
+        steps.append(reset_error + "，spec 仍滞留 blocked")
     if note:
         steps.append(f"裁决依据：{note}")
+    if reset_error:
+        return {"ok": False, "found": True, "steps": steps,
+                "target_status": None, "error": reset_error}
     return {"ok": True, "found": True, "steps": steps, "target_status": target, "error": None}
 
 
@@ -1936,7 +1945,7 @@ def force_advance(project_root, spec: str, target_status: str = "done", note: st
                       f"（允许：{'/'.join(_FORCE_ADVANCE_TARGETS)}）"),
         }
     old_status = entry.get("status")
-    sm = _adjudication_sm(proot)
+    sm = _sm(proot)
     if not sm.update_spec(spec, {"frozen": False, "status": target_status, "error": None}):
         # 与 reset_verification 同口径（写入必留痕）：spec 在前置校验后被并发
         # 软删除/写入被拒时推进未落盘，WARNING 留痕并如实返回失败，
@@ -2000,7 +2009,7 @@ def skip_review_gate(project_root, spec: str, note: str = "") -> dict:
             "ok": False, "found": True, "steps": [], "status": None,
             "error": "非评审器失败冻结（error 无 spec-review-incomplete 特征），跳过评审门被拒绝",
         }
-    sm = _adjudication_sm(proot)
+    sm = _sm(proot)
     if not sm.update_spec(spec, {
         "frozen": False, "status": "ready", "error": None,
         "reviewer_run": None, "_review_attempts": 0,
@@ -2051,7 +2060,7 @@ def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label
     if marker not in str(entry.get("error") or ""):
         return {"ok": False, "steps": [],
                 "error": f"该冻结非 {marker} 类，{label}被拒绝"}
-    sm = _adjudication_sm(proot)
+    sm = _sm(proot)
     if not sm.update_spec(spec, {
         "frozen": False, "status": "reviewing", "error": None,
         "reviewer_run": None, "_review_attempts": 0,
@@ -2117,7 +2126,7 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
         return {"ok": False, "steps": [],
                 "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
                           "继续自动修复被拒绝")}
-    sm = _adjudication_sm(proot)
+    sm = _sm(proot)
     updates = {"frozen": False, "error": None, "frozen_until": None}
     updates.update(_RETRY_COUNTER_RESETS)
     # 人工重置基线（code-review item 043e9fdd3ac7）：只清零不写可被对账识别
@@ -2147,7 +2156,17 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
         )
         return {"ok": False, "steps": [],
                 "error": "spec 已并发删除或写入被拒，裁决未落盘"}
-    sm.transition(spec, "ready", channel="manual")
+    if not sm.transition(spec, "ready", channel="manual"):
+        # 复位转换结果如实回报（code-review item 5f650e3b6404）：快照与
+        # transition 之间 spec 被并发改写或转换被拒时未生效，error 已被上一步
+        # 清空、spec 仍滞留 blocked——不得宣称「BLOCKED→READY 回实现通道」。
+        logger.warning(
+            "continue_auto_fix 复位转换未生效：BLOCKED→READY 被拒或未落盘，"
+            "spec 仍滞留 blocked（spec=%s）",
+            spec,
+        )
+        return {"ok": False, "steps": [],
+                "error": "复位转换未生效：BLOCKED→READY 转换被拒或未落盘"}
     kicked = _kick_step_suffix(proot, spec)
     steps = [
         "解冻并清零实现预算与验证链重试计数（重新获得完整自动修复预算）",
@@ -2197,7 +2216,7 @@ def _exec_raise_budget(project_root, spec: str) -> dict:
     # 不可安全回退（回退会让重试再翻倍），故保持 ok:True，但 WARNING 留痕 +
     # 步骤警告如实透出，提示人工核查。
     try:
-        sm = _adjudication_sm(proot)
+        sm = _sm(proot)
         if sm.update_spec(spec, {"_token_warn_80": False, "_token_alert_100": False}):
             steps.append("已复位 _token_warn_80/_token_alert_100 告警幂等标记")
         else:

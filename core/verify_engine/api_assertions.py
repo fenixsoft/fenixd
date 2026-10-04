@@ -170,8 +170,8 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     求值失败（键缺失/越界）返回 ``missing``（缺省 None——与「值相等或不等」
     语义无关，断言结果通过 actual=None 与 expected 对比即可区分；
     传入哨兵可区分「路径不存在」与「显式 null」）。
-    路径非法（含空段、裸引号段或引号未闭合）抛 ValueError，由调用方归一为
-    显式 error。
+    路径非法（含空段、裸引号段、引号未闭合或畸形括号段）抛 ValueError，
+    由调用方归一为显式 error。
     """
     if not path:
         return data
@@ -182,7 +182,14 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
         while token:
             m = re.match(r"([^\[]+)|\[(\d+|'[^']*'|\"[^\"]*\")\]", token)
             if not m:
-                return missing
+                # 首分支 [^\[]+ 对任何非 [ 起始的 token 恒可匹配，失配必为
+                # [ 起始的畸形括号段（未闭合下标 data[0、裸标识符 data[abc]、
+                # 数字后缀 data[0x] 等）。若静默按「路径不存在」失败，judge
+                # 会把路径语法笔误误归因为产品/场景缺陷——与 _split_path_tokens
+                # 对空段/裸引号段/未闭合引号的口径一致，显式 fail-closed
+                raise ValueError(
+                    f"路径非法（括号段须为数字下标或引号键）: {path!r}"
+                )
             if m.group(1) is not None:
                 key = m.group(1)
                 if isinstance(cur, dict) and key in cur:

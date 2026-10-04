@@ -42,6 +42,11 @@ _ERROR_SNIPPET_MAX_BYTES = 4 * _ERROR_SNIPPET_MAX_CHARS
 # 超限即按 empty_reply 归类，不等全量驻留后才截断/解析
 _MAX_BODY_BYTES = 1024 * 1024
 
+# 200 响应体分段读的单段大小（bytes）：读循环按此粒度分段，段间对账总
+# deadline（见 run_llm_health_check 读循环）——urlopen 的 timeout 经 socket
+# settimeout 只约束单次 recv 操作，不能约束整个读体阶段
+_READ_CHUNK_BYTES = 64 * 1024
+
 # 最小探测请求的 max_tokens。曾为 64：思考型模型（GLM/DeepSeek 系）网关侧默认
 # 开思考，64 全花在 thinking 块上没有正文，被误报 empty_reply（09-29 实测
 # bigmodel.cn / maomaoai 双双误报，max_tokens=256 实测均 end_turn 正常回文）。
@@ -172,10 +177,32 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         req = _build_probe_request(baseurl, apikey, model)
         # 挂跨主机重定向拦截 handler 的局部 opener（勿 install_opener，避免改全局状态）
         opener = urllib.request.build_opener(_NoCrossHostRedirectHandler)
+        # open 的 timeout 只作用于建连/收响应头的单次 socket 操作，整个探测
+        # 窗口的时限由下方读循环按 started 起算的总 deadline 兜底
         with opener.open(req, timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as resp:
-            # read(n) 到 n 字节或 EOF 即返回：正常响应远小于上限一次拿全量；
-            # 多读 1 字节用于判超限，巨量响应最多驻留上限+1 字节即止
-            raw_bytes = resp.read(_MAX_BODY_BYTES + 1)
+            # 分段读 + 总 deadline：urlopen 的 timeout 是 per-recv 而非总时限，
+            # 一次性 read(_MAX_BODY_BYTES + 1) 需收满 ~1MiB 或 EOF 才返回，遇
+            # 慢滴流端点（每次 recv 间隔 <15s）每次 recv 都重置超时、总耗时
+            # 可达小时级，长时间占住同步探测的路由线程——每段后对账
+            # started+15s 总时限，超限按 timeout 归类（与裸 socket 超时同
+            # 口径，design D4「15s 不至于让页面干等过久」）；单段
+            # _READ_CHUNK_BYTES 受 per-recv timeout 约束，累计读满
+            # _MAX_BODY_BYTES + 1 字节即止（多读 1 字节用于判超限），内存
+            # 驻留上限与分段前一致
+            deadline = started + HEALTH_CHECK_TIMEOUT_SECONDS
+            chunks: list[bytes] = []
+            remaining = _MAX_BODY_BYTES + 1
+            while remaining > 0:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"响应体读取超过 {HEALTH_CHECK_TIMEOUT_SECONDS}s 总时限"
+                    )
+                chunk = resp.read(min(_READ_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw_bytes = b"".join(chunks)
     except urllib.error.HTTPError as e:
         # 非 200：读错误体片段供排障（401 密钥无效 / 404 路径不对 / 429 限流等）
         try:

@@ -612,10 +612,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
         from core.fast_track_result import get_scale_precheck_config as _get_sp
 
         agents_result["scale_precheck"] = _get_sp(raw)
-        if agents_result:
-            # 只在结果中有受管键时覆盖默认，避免清空默认值
-            for k, v in agents_result.items():
-                result["agents"][k] = v
+        # code-review item d73ee0a33fbe：本分支内 subagent_model_override 等键
+        # 无条件写入，agents_result 必非空（原恒真守卫已删）；逐键覆盖默认，
+        # 避免整段替换清空默认值
+        for k, v in agents_result.items():
+            result["agents"][k] = v
     gates_raw = raw.get("gates")
     # code-review item 775c04d26905：合法枚举才回显（非法值留空由缺省段 manual
     # 兜底，与运行时 get_approve_mode 回退 manual 口径一致；对齐同段 promote_mode
@@ -2379,6 +2380,11 @@ _SYNC_PAGE_KEYS = {
             "token_budget_millions",
             "daily_run_limit",
             "impl_run_budget",
+            # open-impl-budget-ceiling（code-review item 9996d46ad1a9）：实现尝试
+            # 预算上限随 token 页签同步——项目级 impl_run_budget 的校验上限按项目级
+            # impl_run_budget_max 取值，缺此键时「同步用户级设置」会静默漏同步，
+            # 项目级校验仍走旧上限
+            "impl_run_budget_max",
             "verify_redo_budget",
         ],
     },

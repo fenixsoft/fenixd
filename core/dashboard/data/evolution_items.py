@@ -139,7 +139,10 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
             return {"found": False}
         try:
             content = resolved.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # 文档可被手工编辑成非 UTF-8 编码，解码失败与 IO 错误同样按
+            # 不可读落空态，不穿透为不透明 500（同 settings_routes 的
+            # _read_project_doc 双分支防护）
             return {"found": False}
         return {"found": True, "content": content}
 

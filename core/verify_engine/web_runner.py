@@ -60,6 +60,31 @@ def locate_app_base_url(candidates: list) -> str:
     return ""
 
 
+def _normalize_bool_config(value, key, default, logger=None) -> bool:
+    """verify_engine 布尔型配置键归一读值（code-review item 278aa4c0a8e5）。
+
+    JSON 合法写入 "headless": "false" 时裸真值判定得 True——非空字符串
+    恒为真，期望的有头调试形态静默失效。口径：bool 直通；字符串按小写
+    白名单（true/1/yes、false/0/no，与 dashboard normalize_bool_flag 同款
+    白名单思路）；其余未识别形态 WARNING 留痕后回退缺省。本模块为叶子，
+    不反向依赖 dashboard 包，就地实现同口径。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("true", "1", "yes"):
+            return True
+        if low in ("false", "0", "no"):
+            return False
+    if logger:
+        logger.warning(
+            "verify_engine",
+            f"配置 verify_engine.{key}={value!r} 非布尔形态，回退缺省 {default}",
+        )
+    return default
+
+
 @register_runner
 class WebRunner(VerifyRunner):
     """浏览器驱动 Runner（playwright 异步 API，单浏览器多 context）。"""
@@ -81,7 +106,14 @@ class WebRunner(VerifyRunner):
         verify_cfg = (config or {}).get("verify_engine") or {}
         if not isinstance(verify_cfg, dict):
             verify_cfg = {}
-        self.headless = verify_cfg.get("headless", True)
+        # code-review item 278aa4c0a8e5：headless 字符串形态布尔值归一，
+        # 避免 "false" 非空字符串真值导致无头模式静默失效。
+        self.headless = _normalize_bool_config(
+            verify_cfg.get("headless", True),
+            "headless",
+            default=True,
+            logger=self.logger,
+        )
         self._setup_health_ok = True
 
     @staticmethod
@@ -264,7 +296,18 @@ class WebRunner(VerifyRunner):
                         "请确认 dist/ 构建产物完整"
                     )
             finally:
-                await context.close()
+                # code-review item 6fec72673aa8：close 在浏览器进程已崩溃/
+                # 连接已断时抛 TargetClosedError，finally 裸奔会顶掉 try 体
+                # 已算好的健康检查结论（True 或 False+成因文案）。与 execute
+                # 的 finally（item 9d9cfb64c2e3）同款口径：warning 留痕后吞掉。
+                try:
+                    await context.close()
+                except Exception as e:
+                    self.logger.warning(
+                        "verify_engine",
+                        f"健康检查 context.close 失败: "
+                        f"{type(e).__name__}: {e}",
+                    )
         except Exception as e:
             self.logger.warning(
                 "verify_engine",
@@ -425,7 +468,7 @@ class WebRunner(VerifyRunner):
         )
 
 
-async def _probe_web_push(browser) -> bool:
+async def _probe_web_push(browser, logger=None) -> bool:
     """在真实浏览器中验证数据推流：加载应用并等待数据域渲染。
 
     mock 斩断 SSE 时数据节点永不渲染 → 等待超时 → 判定推流中断。
@@ -446,7 +489,17 @@ async def _probe_web_push(browser) -> bool:
         except Exception:
             return False
     finally:
-        await context.close()
+        # code-review item 6fec72673aa8：同款口径包裹 close 次生异常，
+        # 避免顶掉 try 体的推流检查结论（True/False）。无 logger 形态
+        # （engine.py 直调点未传）静默吞，结论保住为先。
+        try:
+            await context.close()
+        except Exception as e:
+            if logger:
+                logger.warning(
+                    "verify_engine",
+                    f"推流探针 context.close 失败: {type(e).__name__}: {e}",
+                )
 
 
 async def probe_web_environment(
@@ -473,7 +526,7 @@ async def probe_web_environment(
     # 推流检查（扩展项目 / 浏览器可用时）
     if healthy and browser.is_extension_project:
         try:
-            push_ok = await _probe_web_push(browser)
+            push_ok = await _probe_web_push(browser, logger=logger)
             healthy = healthy and push_ok
             detail += f"；推流{'正常' if push_ok else '中断'}"
         except Exception as e:

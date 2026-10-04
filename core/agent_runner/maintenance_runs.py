@@ -226,7 +226,7 @@ def _unique_admin_run_id(runner, spec: str) -> str:
         return candidate
 
 
-def run_administrator(runner, signal: dict) -> AdminDisposition:
+def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
 
     与 implementer/verifier 不同：Administrator 是运维角色，直接在 main 树
@@ -240,14 +240,14 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
 
     Args:
         runner: AgentRunner 实例（门面依赖注入，D2b 规则 1）。
-        signal: admin_monitor 检测到的困境信号 dict
+        admin_signal: admin_monitor 检测到的困境信号 dict
             （signal_type/spec/severity/description/evidence/recommended_action）。
     """
-    spec = signal.get("spec") or "global"
+    spec = admin_signal.get("spec") or "global"
     run_id = _unique_admin_run_id(runner, spec)
     # 实例路径注入提示词（prompt_builder 把写入指令指向该文件）
     disp_path = admin_disposition_path(runner.project_root, run_id)
-    prompt_detail = dict(signal)
+    prompt_detail = dict(admin_signal)
     prompt_detail["disposition_path"] = str(disp_path)
     prompt = runner._build_prompt(spec, "administrator", detail=prompt_detail)
 
@@ -278,7 +278,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
             {
                 "kind": DISPOSITION,
                 "status": "pending",
-                "signal_type": signal.get("signal_type"),
+                "signal_type": admin_signal.get("signal_type"),
                 "spec": spec,
                 "admin_run_id": run_id,
                 "description": (
@@ -286,7 +286,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
                     f"若长时间无最终结果，AdminMonitor 会自动升级人工"
                 ),
                 "result": "pending",
-                "recommended_action": signal.get("recommended_action"),
+                "recommended_action": admin_signal.get("recommended_action"),
             }
         )
     except Exception as e:
@@ -420,7 +420,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         run_id=run_id,
         spec=disp.get("spec") or spec,
         success=success,
-        problem=disp.get("problem") or signal.get("description", ""),
+        problem=disp.get("problem") or admin_signal.get("description", ""),
         actions_taken=disp.get("actions_taken") or "",
         result=disp.get("result") or ("resolved" if success else "failed"),
         escalate=bool(disp.get("escalate", False)),
@@ -3202,7 +3202,11 @@ def run_impl_ocr(
             env_overrides["GIT_WORK_TREE"] = str(wt)
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             cmd = [
-                sys.executable, "bin/ocr_review.py", "review",
+                # 绝对路径钉主树 wrapper（code-review item 8739f31ce7e1）：cwd 已
+                # 切到 detached worktree，相对路径会依赖被审分支恰好携带该脚本，
+                # 分支基线落后/路径调整即 rc=2 can't open file 且归因失真。
+                sys.executable,
+                str(runner.project_root / "bin" / "ocr_review.py"), "review",
                 "--from", from_commit,
                 "--to", head_commit,
                 "--concurrency",

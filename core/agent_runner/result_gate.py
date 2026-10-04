@@ -1941,7 +1941,10 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
     if spec_name and report_path.is_file():
         try:
             cr_data = json.loads(report_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError) as e:
+        except (OSError, ValueError, UnicodeDecodeError, RecursionError) as e:
+            # RecursionError：超深嵌套 JSON 会让 json.loads 抛 RecursionError
+            # （非 ValueError 子类，同 _check_artifact_json_file 口径）——
+            # fail-closed 归因为「收尾审查报告无法解析」违规行，不逸出自检 CLI。
             return [
                 f"收尾审查报告无法解析（impl-code-review-gate 自证）: "
                 f"{report_rel} ({e})"

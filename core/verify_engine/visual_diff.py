@@ -312,6 +312,18 @@ class VisualDiffer:
                 except OSError:
                     pass
                 raise
+            # 重建基线即新 episode（code-review item f67d3318a6a7）：旧基线
+            # 被人工删除后此处重建，若不清侧车，残留的 suspicious=True 会让
+            # 下一轮对比 newly_suspicious 恒 False——二次污染的
+            # _mark_suspicious/_alert_suspicious 永久静默，且 ssims 窗口混入
+            # 旧 episode 分数误导人工核验。与 _update_baseline_streaks 的
+            # pass/warning 分支同款清理（重置条目 + 撤已失基线的 suspicious
+            # 标记）；首次建基线无既有条目，不动侧车文件。
+            streaks = self._load_baseline_streaks()
+            if isinstance(streaks.get(scenario_id), dict):
+                streaks[scenario_id] = {"count": 0, "suspicious": False, "ssims": []}
+                self._save_baseline_streaks(streaks)
+            self._remove_suspicious(baseline_name)
             return [
                 _evidence_fields(
                     {

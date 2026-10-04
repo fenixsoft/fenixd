@@ -269,9 +269,19 @@ class TestConsumerGlobalSkipAndWriteback(_TempProjCase):
         sig = {r["id"]: r for r in store.read_all()}[rec["id"]]
         self.assertFalse(sig.get("handled"), "执行失败 MUST NOT 闭环")
         self.assertEqual(sig.get("result"), "failed")
+        # 逐动作落账（evo-add-admin-orphan-disposition-effect-check 2.1）后
+        # 失败形态留两条：主处置记录（带 admin_run_id）+ 逐动作 failed 审计
+        # 事件（无 admin_run_id，run 在 final 落账前死亡时已执行事实不丢）。
+        # 本用例原断言的「不闭环 + 失败留痕可溯源」语义均不变，仅记录总数
+        # 随逐动作事件 +1。
         disps = [r for r in store.read_all() if r.get("kind") == DISPOSITION]
-        self.assertEqual(len(disps), 1)
-        self.assertIn("非法 choice_id", disps[0].get("error") or "")
+        finals = [r for r in disps if r.get("admin_run_id") == "admin-run-g3"]
+        steps = [r for r in disps if not r.get("admin_run_id")]
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0].get("result"), "failed")
+        self.assertIn("非法 choice_id", finals[0].get("error") or "")
+        self.assertIn("非法 choice_id", steps[0].get("error") or "")
 
 
 # ── 3. mark_signal_handled 留痕契约 ─────────────────────────────────────

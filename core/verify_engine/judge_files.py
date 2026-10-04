@@ -233,7 +233,7 @@ def build_requeue_manifest(
       "created_at": str,
     }
 
-    写失败静默降级（不影响既有流程）。
+    写失败降级为仅返回清单（不影响既有流程），但留痕告警。
     """
     requeue_list = get_requeue_scenarios(project_root, spec_name)
     # 条目缺 id 或 id 非字符串（judge 输出漂移/手工编辑）时跳过，避免 KeyError
@@ -277,8 +277,16 @@ def build_requeue_manifest(
         fd, tmp_path = tempfile.mkstemp(
             dir=str(path.parent), prefix=".requeue.", suffix=".json.tmp"
         )
-    except OSError:
-        # 目录创建/临时文件创建失败与写入失败同样静默降级，不影响主流程
+    except OSError as exc:
+        # 目录创建/临时文件创建失败与写入失败同样降级，不影响主流程；
+        # 但清单整体丢失比条目剔除后果更重（下轮回炉子集全丢），环境故障
+        # 须可从日志区分，沿用本文件「降级但留痕」口径告警
+        logger.warning(
+            "回炉清单写入前置失败（目录/临时文件创建），清单未落盘"
+            "（回炉子集可能丢失）: %s: %s",
+            path,
+            exc,
+        )
         return manifest
 
     try:
@@ -291,13 +299,18 @@ def build_requeue_manifest(
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
         _fsync_dir(path.parent)
-    except OSError:
+    except OSError as exc:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
-        # 写失败静默，不影响主流程
-        pass
+        # 写失败同样降级，不影响主流程；但清单整体丢失比条目剔除后果更重，
+        # 沿用本文件「降级但留痕」口径告警（带路径与异常摘要）
+        logger.warning(
+            "回炉清单写入/原子落盘失败，清单未生效（回炉子集可能丢失）: %s: %s",
+            path,
+            exc,
+        )
 
     return manifest
 

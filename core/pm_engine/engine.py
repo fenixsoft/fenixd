@@ -3980,6 +3980,30 @@ class PMEngine:
                             f"'{fresh.get('status')}'，跳过本轮恢复",
                         )
                         continue
+                    # code-review item b33341a8f31b：fast-track 分流——单 run 全包
+                    # 不设 verifier 车道（与 _on_spec_implemented 同一防线，
+                    # fasttrack-orphan-planner-race），回 implemented + 入队
+                    # verifier 会与 _fast_track_advance_to_verified 竞态、对已终态
+                    # spec 派出孤儿 planner run 白跑。走恢复重入收尾（testing 搁浅
+                    # 形态由 _fasttrack_recovery_reentry 判定并分派
+                    # _resume_fast_track_after_restart(already_testing=True)）；其
+                    # 三条件不全成立时维持短路（宁紧勿松），不得落入下方 verifier
+                    # 车道，留痕待下轮复查重评。
+                    from core.spec_mode import is_fast_track
+
+                    if is_fast_track(self.project_root, spec_name):
+                        if self._fasttrack_recovery_reentry(spec_name):
+                            self.register_recovery_watch(
+                                spec_name, f"auto-recovered from stuck {stuck_status}"
+                            )
+                        else:
+                            self.logger.info(
+                                "pm_engine",
+                                f"testing 卡死恢复跳过（fast-track 无 verifier 车道）:"
+                                f" '{spec_name}' ({b['elapsed_minutes']} min) — "
+                                f"恢复重入判据不全成立，维持短路待下轮复查",
+                            )
+                        continue
                     # code-review item 54075e1dda03：ocr join 停等豁免——entry 带
                     # ``_ocr_join_wait`` 且 ocr 车道在飞（``ocr_lane_busy``）时，
                     # spec 处于 queue._ocr_join_await_lane 承诺的「MUST 停止推进

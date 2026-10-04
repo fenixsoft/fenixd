@@ -1428,6 +1428,10 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
                 "tester_run": None,
                 "error": note,
                 "_inconclusive_attempts": attempts,
+                # 预算隔离（design D3，与 _handle_env_blocked_inconclusive
+                # 重验分支同语义）：本重验轮若触发 judge 派发，计入独立计数器
+                # 而非 _judge_rerun_count 生命周期账。
+                "_in_inconclusive_reverify": True,
             },
         )
         pipeline._context.enqueue(spec_name, "verifier")

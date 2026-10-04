@@ -222,21 +222,54 @@ class FamilyGovernor:
         """
         max_depth_raw = self._pm._get_config("pm.family.max_depth")
         max_width_raw = self._pm._get_config("pm.family.max_width")
-        # 非法配置值回退默认（对齐 engine._ready_stall_threshold_minutes 的
-        # 容错口径）：族谱门是 bug-found 主链路，配置写坏不得中断处置。
-        try:
-            max_depth = int(max_depth_raw if max_depth_raw is not None else 3)
-        except (TypeError, ValueError):
-            max_depth = 3
-        try:
-            max_width = int(max_width_raw if max_width_raw is not None else 2)
-        except (TypeError, ValueError):
-            max_width = 2
+        # 非法配置值回退默认并 WARNING 留痕（code-review item 4b349f62101e）：
+        # 族谱门是 bug-found 主链路，配置写坏不得中断处置；裸 int() 会把
+        # 布尔 True 静默截成 1、小数 2.5 截成 2，配置写坏为 true 时门限被
+        # 收紧到 1 且无痕拦截正常派生，故统一经类型守卫归一（bool 显式
+        # 排除、非整值拒绝回退缺省，对齐 config._normalize_transient_seconds
+        # 的裁决口径）。
+        max_depth = self._family_gate_int(max_depth_raw, 3, "pm.family.max_depth")
+        max_width = self._family_gate_int(max_width_raw, 2, "pm.family.max_width")
         depth = self._fix_prefix_depth(child_name)
         if depth > max_depth:
             return True
         width = self._family_width(child_name)
         return width >= max_width
+
+    def _family_gate_int(self, raw, default: int, key: str) -> int:
+        """族谱门整型配置归一：bool/非整值拒绝回退缺省，回退时 WARNING 留痕。
+
+        裸 ``int()`` 会把布尔 True 静默截成 1、小数 2.5 截成 2（code-review
+        item 4b349f62101e）——配置写坏为 ``true`` 时 max_depth/max_width 被
+        收紧到 1，族谱门对正常派生直接拦截且无任何留痕。归一口径对齐
+        config._normalize_transient_seconds / get_max_same_cause_redispatches
+        的既有裁决：bool 显式排除（bool 是 int 子类）、整值浮点（``3.0``）
+        按整数接受、非整值（含小数与非数字字符串）回退缺省并告警；
+        None 视为未配置沿用缺省、不留痕。
+        """
+        if raw is None:
+            return default
+        normalized = default
+        ok = False
+        if not isinstance(raw, bool):
+            if isinstance(raw, int):
+                normalized, ok = raw, True
+            elif isinstance(raw, float):
+                # 小数拒绝——int() 截断会静默收紧门限（同 item 4b349f62101e）。
+                normalized, ok = int(raw), raw.is_integer()
+            else:
+                try:
+                    normalized, ok = int(str(raw).strip()), True
+                except (TypeError, ValueError):
+                    pass
+        if ok:
+            return normalized
+        self._pm.logger.warning(
+            "pm_engine",
+            f"配置 {key} 非法（应为整数，布尔/小数/非数字均不合法）"
+            f": {raw!r}，回退缺省 {default}",
+        )
+        return default
 
     @staticmethod
     def _is_fix_spec(name: str) -> bool:

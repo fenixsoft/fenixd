@@ -1061,6 +1061,17 @@ class AssertionRunner:
         外部 API 真实请求，如 timeapi.io / open-meteo），net::ERR_ 等网络层
         错误视为测试环境网络不可达（外部服务端/环境因素，非产品缺陷），
         从失败集合中过滤；其余控制台错误（含签名/认证类）仍严格失败。
+
+        残余风险（code-review item a838fb53292c）：豁免按泛化子串 marker
+        匹配，无法区分「外部第三方服务不可达」与「被测应用自身请求失败」
+        ——应用自身接口宕机/5xx 时前端抛出的 "Failed to fetch"、应用自产
+        错误文案含 "NetworkError" 字样（如 console.error('NetworkError when
+        saving user')）同样被过滤出失败集合（假通过面，方向与第 1-3 层
+        「0 误判」承诺相反——该承诺约束假失败）。场景 schema 只携带布尔
+        external_net_errors_ok、无外部域名白名单字段，且存量场景依赖该豁免
+        过滤自身有意 mock 的非 2xx 资源加载日志，故无法在本函数内收窄为
+        「仅外部域」。被豁免条目的原始全文保留在结果 filtered_network 中，
+        judge 归因时须复核其中是否混有应用自身缺陷。
         """
         errors = a.get("_console_errors", [])
         allow_network = a.get("_external_net_errors_ok", False)

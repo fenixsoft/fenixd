@@ -859,7 +859,8 @@ def _run_tail_insights(
     run 节点据此展示失败/中止原因，无终态或成功 run 为空串。只读文件尾部
     tail_bytes 字节避免时间轴加载全量扫描；seek 产生的截断首行直接丢弃。
     marker 可能落在 attempt 大量输出之外（尾窗扫不到），此时按 256KB 块
-    向前回扫（上限 marker_scan_cap），仍无则留空。
+    向前回扫（上限 marker_scan_cap），仍无则留空；回扫把尾窗截断首行残段
+    与各块末尾不完整行残段逐轮拼接复原跨界行，避免边界行两侧同时解析失败。
     """
     try:
         size = run_file.stat().st_size
@@ -926,13 +927,21 @@ def _run_tail_insights(
         chunk = 262144
         floor = max(0, size - tail_bytes - marker_scan_cap)
         pos = size - tail_bytes
+        # 尾窗被 skip_first 丢弃的首行残段是跨越 size - tail_bytes 边界那行
+        # 的后半截，缓存给回扫首块拼接；否则边界行尾窗侧解析不了、回扫侧
+        # 又只是块末残段，两侧同时失败致 marker 丢失
+        carry = data.split("\n", 1)[0]
         try:
             with run_file.open("rb") as f:
                 while pos > floor and not llm:
                     start = max(floor, pos - chunk)
                     f.seek(start)
                     raw = f.read(pos - start).decode("utf-8", errors="replace")
-                    _, llm, _, _ = parse_chunk(raw, skip_first=start > 0)
+                    # 块末不完整行（跨上界边界的行头残段）缓存到下一轮与
+                    # 更早的块拼接复原，避免每块只丢块首残段、块末残段
+                    # json.loads 失败被静默跳过
+                    _, llm, _, _ = parse_chunk(raw + carry, skip_first=start > 0)
+                    carry = "" if raw.endswith("\n") else raw.rsplit("\n", 1)[-1]
                     pos = start
         except OSError:
             # 回扫期间文件可能被保留清理/归档动作并发移除：降级返回已得的
