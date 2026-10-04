@@ -588,6 +588,37 @@ def _error_fingerprint(component: str, message: str) -> str:
 # 尾部读上限：日志增长后每轮巡检只 seek 最近 256KB（3.5），避免全量 read_text
 _TAIL_ERROR_READ_BYTES = 256 * 1024
 
+# ── 孤儿处置收敛的生效核查（evo-add-admin-orphan-disposition-effect-check）──
+# global 占位记法归一：DISPOSITION 记录 spec="global"（daemon 级唤起写占位），
+# SIGNAL 记录 spec=None——unhandled_signal_for 严格相等匹配须先归一，否则对
+# 429 现场形态（信号 spec=null + 处置 spec="global"）永不命中。
+_ORPHAN_GLOBAL_SPEC_PLACEHOLDER = "global"
+# 组 spec=global/None 时的日志对账窗口松弛（秒）：处置组记录 created 邻域
+# 内的解冻族 Transition 留痕才算本组动作的生效证据（动作发生在唤起后、
+# 终态落账前，留痕时刻与记录 created 同源时钟，松弛只吸收写入次序抖动）。
+_ORPHAN_EFFECT_LOG_SLACK_SECONDS = 300
+# 解冻族留痕的「人为裁决」通道集：dashboard/admin 动作（manual）与恢复/解冻
+# 链路（recovery）。auto 通道的状态迁移不构成本判据的生效证据（自动链路
+# 本就受冻结剥离约束，且与「人工/处置动作已生效」的核查语义无关）。
+_ORPHAN_EFFECT_DELIBERATE_CHANNELS = frozenset({"manual", "recovery"})
+# 解冻族 Transition 留痕形态（_finish_transition 成功行：f"Transition: "
+# f"{spec} {old} → {new}"）；刻意不匹配 "Gate transition: " 前缀（门禁自动
+# 逃生门，非人为裁决证据）。
+_ORPHAN_UNFREEZE_TRANSITION_RE = re.compile(r"^Transition: (\S+) blocked → (\S+)\s*$")
+
+
+def _normalize_orphan_group_spec(spec):
+    """处置组 spec 记法归一（None↔"global"）：空值/占位 "global" → None。
+
+    SIGNAL 记录的 daemon 级形态是 spec=None，DISPOSITION 记录是
+    spec="global"——关联信号匹配（unhandled_signal_for）与全局形态判定
+    都以归一后的 None 为准。
+    """
+    s = str(spec or "").strip()
+    if not s or s.lower() == _ORPHAN_GLOBAL_SPEC_PLACEHOLDER:
+        return None
+    return spec
+
 
 # ── 无驱动判定（orphaned-state-signal R1 共用口径）──────────────────────
 # admin_monitor._detect_orphaned_state 与 event_bus._recover_one 的 testing
@@ -3846,6 +3877,14 @@ class AdminMonitor:
 
         for rid, info in by_run.items():
             if info["final"]:
+                # evo-add-admin-orphan-disposition-effect-check 1.1/1.2：final
+                # 组不再无条件 continue——「组已终态 ∧ 关联底层 SIGNAL 仍未
+                # 收口」是「动作已执行、终态未落账」窗口死亡（或回写门豁免
+                # 形态）的永久滞留，扫描对其做只读生效核查：动作已实际生效
+                # → 补记 resolved 并收口关联信号；未生效 → 维持滞留并走既有
+                # 升级（fail-closed）。健康组（信号已收口）等条件不合者在
+                # 分支内原样返回，行为与旧「直接 continue」一致。
+                self._converge_final_orphan_group(rid, info, records, now, grace)
                 continue
             pending = info["rec"]
             created = parse_ts(pending.get("created") or "")  # SPEC-B 批③收拢
@@ -4056,6 +4095,294 @@ class AdminMonitor:
                 "admin_monitor",
                 f"Orphaned admin disposition escalated to human: {rid}",
             )
+
+    # ── 孤儿处置收敛的生效核查补记（evo-add-admin-orphan-disposition-effect-check）──
+
+    def _converge_final_orphan_group(self, rid, info, records, now: float,
+                                     grace: int) -> None:
+        """final 处置组 ∧ 关联底层 SIGNAL 仍未收口 → 只读生效核查后收敛。
+
+        「组已 final（_merge_admin_runs 口径：任一非 pending 记录在场）∧
+        关联底层 SIGNAL 仍未收口（unhandled_signal_for 命中，escalated=true
+        口径；组 spec 记法先经 _normalize_orphan_group_spec 归一 None↔
+        "global"）」是「动作已执行、终态未落账」窗口死亡的永久滞留形态
+        （2026-10-03 429 现场：partially-resolved 终态 + pending 占位 +
+        信号 handled=false 滞留 21h+）。本分支按序设防：
+
+        1. 幂等：组内已存在补记记录（source=orphan-backfill）→ 跳过；
+        2. escalate=true 终结记录在场 → 升级人工是唯一出路（与回写门
+           escalate 豁免同口径），不进入收敛；
+        3. grace 门取组内最新记录时刻——刚落终态的组给 _worker 的回写窗口，
+           避免与在飞收尾竞态（回写紧随终态 append，秒级窗口由 grace 兜住）；
+        4. 健康组（信号已收口/已归档）在 unhandled_signal_for 未命中处
+           原样返回——行为与旧「直接 continue」一致；
+        5. 在飞互斥：同 spec 存在在飞 run（exclude_run_id=本组 rid）时信号
+           归在飞 run 认领，不抢先收口；
+        6. 生效核查通过 → append_orphan_backfill 补记 resolved（注明补记与
+           依据）+ mark_signal_handled 收口关联信号；不通过 → 不补记，维持
+           滞留并走既有孤儿升级路径（unhandled_for 已升级去重，fail-closed：
+           宁可滞留升级，不可假闭环）。
+
+        健康组不进入收敛分支的判据只用「关联 SIGNAL 未收口」——
+        disposition 自身 handled 字段无 mutator（恒 false）、组内滞留
+        pending 占位是健康组常态形，二者均不可作判据（design 判别锚点取证）。
+        """
+        group = [
+            r for r in records
+            if r.get("kind") == DISPOSITION and r.get("admin_run_id") == rid
+        ]
+        if not group:
+            return
+        # ① 幂等：已补记的组不再重复补记/收口（与信号已收口的天然幂等双保险
+        # ——补记后 mark_signal_handled 收口，后续轮次在下方未命中处返回）
+        if self.store.has_disposition_backfill(rid):
+            return
+        head = info["rec"] or {}
+        group_spec = head.get("spec")
+        sig_type = head.get("signal_type")
+        if not sig_type:
+            return
+        # ② 组内已有 escalate=true 终结记录：升级人工是唯一出路，不收敛
+        for r in group:
+            status = r.get("status") or r.get("result")
+            if status and status != "pending" and r.get("escalate"):
+                return
+        # ③ grace 门（组内最新记录时刻）：终态刚落账时 _worker 的信号回写
+        # 可能仍在途，此时收口会与在飞收尾竞态
+        created_ts = []
+        for r in group:
+            dt = parse_ts(str(r.get("created") or ""))
+            if dt is not None:
+                created_ts.append(dt.timestamp())
+        if not created_ts or now - max(created_ts) < grace:
+            return
+        # ④ 健康组/信号已归档：关联 SIGNAL 已收口 → 与旧「直接 continue」一致
+        sig_rec = self.store.unhandled_signal_for(
+            _normalize_orphan_group_spec(group_spec), sig_type
+        )
+        if sig_rec is None:
+            return
+        # ⑤ 在飞互斥：同 spec 在飞 run（排除本组 rid）在场时不抢先收口；
+        # spec 传组记录原形（"global" 占位参与精确过滤，None 哨兵退化为
+        # 宽口径——宁可漏收敛不可抢在飞 run 的信号，方向 fail-closed）
+        if self._has_active_admin_run_for_spec(group_spec, exclude_run_id=rid):
+            return
+        effective, evidence = self._orphan_group_effect_evidence(group, group_spec, now)
+        if not effective:
+            # ⑥ fail-closed：不补记，维持滞留，走既有孤儿升级路径
+            # （unhandled_for 已升级去重——升级告警未被人工处理前不重复成条）；
+            # 同时补 escalate=true 终结记录，本组此后整体进入 ② 豁免，
+            # 不因人工 handled 后失去去重锚点而逐轮重复升级
+            if self.store.unhandled_for(group_spec, sig_type) is None:
+                self.store.append(
+                    attach_trigger(
+                        {
+                            "kind": ESCALATION,
+                            "signal_type": sig_type,
+                            "spec": group_spec,
+                            "severity": "critical",
+                            "description": (
+                                f"Administrator 处置终态未收口（run {rid}）：处置组已终态但底层信号 "
+                                f"{sig_type} 仍未收口，生效核查未找到动作已实际生效的真实状态证据，"
+                                f"需人工介入"
+                            ),
+                            "evidence": (
+                                f"final disposition group admin_run_id={rid}；"
+                                f"关联信号未收口（escalated=true）；生效核查：{evidence}"
+                            ),
+                            "action_taken": (
+                                "AdminMonitor 孤儿处置收敛核查：生效核查未通过，"
+                                "不补记 resolved，升级人工（fail-closed）"
+                            ),
+                            "admin_run_id": rid,
+                            "recommended_action": (
+                                "人工核实处置动作是否实际生效：已生效可手动 resolve 收口信号，"
+                                "未生效请人工处置该信号"
+                            ),
+                        }
+                    )
+                )
+                self.store.append(
+                    {
+                        "kind": DISPOSITION,
+                        "status": "escalated",
+                        "signal_type": sig_type,
+                        "spec": group_spec,
+                        "admin_run_id": rid,
+                        "result": "escalated",
+                        # escalate=true 终结记录：本组此后进入 ② 豁免（升级
+                        # 人工是唯一出路，与回写门 escalate 豁免同口径）
+                        "escalate": True,
+                        "actions_taken": (
+                            "AdminMonitor 孤儿处置收敛核查：生效核查未通过，"
+                            "维持滞留并升级人工，终结收敛尝试"
+                        ),
+                        "description": (
+                            f"孤儿处置组（run {rid}）生效核查未通过，已升级人工"
+                        ),
+                        "evidence": evidence,
+                    }
+                )
+                self.logger.warning(
+                    "admin_monitor",
+                    f"Orphaned final disposition group not effective, escalated "
+                    f"to human: {rid} (signal {sig_type} still unhandled)",
+                )
+            return
+        # ⑦ 补记 resolved（append 新记录、注明补记与依据）+ 收口关联信号。
+        # 按 _close_signal_preprobed 先例：留痕失败不阻断收口本身（反方向：
+        # 收口失败也不回滚补记——补记是事实落账，信号下一轮仍会在此被重试）。
+        backfill = self.store.append_orphan_backfill(
+            rid,
+            sig_type,
+            group_spec,
+            actions_taken=(
+                "AdminMonitor 孤儿处置收敛：生效核查通过，补记 resolved "
+                "（evo-add-admin-orphan-disposition-effect-check）"
+            ),
+            description=(
+                f"孤儿处置组（run {rid}）动作经真实状态核查已实际生效，"
+                f"补记终态并收口关联信号 {sig_type}"
+            ),
+            evidence=evidence,
+        )
+        if backfill is None:
+            # 记录未落盘（文件损坏留底被拒写）：不收口信号，待下一轮重试
+            self.logger.error(
+                "admin_monitor",
+                f"Orphan disposition backfill not persisted (refused), "
+                f"signal left unhandled: {rid}",
+            )
+            return
+        handled = self.store.mark_signal_handled(
+            sig_rec.get("id"),
+            action_taken="orphan-backfill：生效核查通过，补记 resolved 收口",
+            result="resolved",
+        )
+        self.logger.info(
+            "admin_monitor",
+            f"Orphaned final disposition group backfilled resolved: {rid} "
+            f"(signal {sig_type} handled={'ok' if handled else '未命中'})",
+            {"evidence": evidence},
+        )
+
+    def _orphan_group_effect_evidence(self, group, group_spec, now: float):
+        """只读核查处置组动作是否已实际生效。返回 (effective: bool, evidence: str)。
+
+        证据源只看真实状态（禁止以处置记录文本自证——记录 summary 声称
+        「已计划/已执行」不构成证据，spec「生效核查不看记录自证」场景）：
+
+        - 组 spec 为具体 spec：STATE 的 frozen 标记与 status 推进——解冻类
+          动作生效签名 = frozen=False 且 status 离开 blocked（design D2）；
+          STATE 是该形态的持久真实状态源（日志轮转不丢），单源即可判定。
+        - 组 spec 为 global/None（无对应 SPEC 状态可读，如 429 现场）：
+          以 fenixd.log 对账为主——组记录 created 邻域时间窗内的解冻族
+          Transition 留痕（blocked → 其他，channel=manual/recovery）。
+        - 具体 spec 在 STATE 无条目（被并发软删等）→ 回退日志对账同门。
+
+        证据不足返回 False（宁可滞留升级，不可假闭环）。
+        """
+        sig_spec = _normalize_orphan_group_spec(group_spec)
+        if sig_spec is not None:
+            try:
+                entry = self.state_machine.read_one(sig_spec)
+            except Exception as e:  # noqa: BLE001 — 状态读取失败按无状态对账
+                self.logger.debug(
+                    "admin_monitor",
+                    f"orphan effect check: STATE read failed for '{sig_spec}': {e}",
+                )
+                entry = None
+            if entry:
+                frozen = bool(entry.get("frozen"))
+                status = str(entry.get("status") or "")
+                if not frozen and status and status != "blocked":
+                    return True, (
+                        f"STATE '{sig_spec}' frozen=False status={status}（已解冻推进）"
+                    )
+                return False, (
+                    f"STATE '{sig_spec}' frozen={frozen} "
+                    f"status={status or '缺失'}（未见解冻推进）"
+                )
+        # 日志对账窗（组记录 created 邻域）：下界 = 最早记录 − 松弛，上界 = now
+        starts = []
+        for r in group:
+            dt = parse_ts(str(r.get("created") or ""))
+            if dt is not None:
+                starts.append(dt.timestamp())
+        if not starts:
+            return False, "组记录无可解析 created 时刻，无法建立日志对账窗口"
+        window_start = min(starts) - _ORPHAN_EFFECT_LOG_SLACK_SECONDS
+        hits = self._read_recent_unfreeze_transitions(window_start, now)
+        if hits:
+            return True, (
+                f"fenixd.log 对账窗口内解冻族 Transition 留痕 {len(hits)} 条"
+                f"（首条：{hits[0]}）"
+            )
+        return False, (
+            f"fenixd.log 对账窗口内无解冻族 Transition 留痕"
+            f"（window_start={from_epoch(window_start).isoformat()}）"
+        )
+
+    def _read_recent_unfreeze_transitions(self, since_epoch: float,
+                                          until_epoch: float) -> list:
+        """fenixd.log 尾部（≤256KB）检索时间窗内解冻族 Transition 留痕。
+
+        匹配 _finish_transition 成功行形态 ``Transition: <spec> blocked →
+        <new>`` 且 context.channel ∈ {manual, recovery}（人为裁决通道）；
+        刻意不匹配 "Gate transition: " 前缀（门禁自动逃生门非人为证据）。
+        返回人类可读留痕摘要列表（日志时序序）；读取/解析失败按无证据返回
+        空列表（fail-closed：不补记，维持滞留升级）。
+        """
+        log_file = self.project_root / ".fenix" / "logs" / "fenixd.log"
+        if not log_file.exists():
+            return []
+        try:
+            size = log_file.stat().st_size
+            with log_file.open("rb") as f:
+                if size > _TAIL_ERROR_READ_BYTES:
+                    start = size - _TAIL_ERROR_READ_BYTES
+                    # 边界判定与 _read_tail_error_entries 同款（code-review
+                    # item 96293d84951d）：回看一字节保住完整行起点
+                    f.seek(start - 1)
+                    if f.read(1) == b"\n":
+                        f.seek(start - 1)
+                    else:
+                        f.seek(start)
+                    f.readline()  # 丢弃 seek 可能截断的首行
+                data = f.read().decode("utf-8", "replace")
+        except OSError:
+            return []
+        hits = []
+        for line in data.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("component") != "state_machine":
+                continue
+            if entry.get("level") != "INFO":
+                continue
+            m = _ORPHAN_UNFREEZE_TRANSITION_RE.match(str(entry.get("message") or ""))
+            if m is None:
+                continue
+            ctx = entry.get("context")
+            channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
+            if channel not in _ORPHAN_EFFECT_DELIBERATE_CHANNELS:
+                continue
+            ts = parse_ts(str(entry.get("timestamp") or ""))
+            if ts is None or not since_epoch <= ts.timestamp() <= until_epoch:
+                continue
+            note = ctx.get("note") if isinstance(ctx, dict) else None
+            hits.append(
+                f"{m.group(1)} blocked → {m.group(2)} "
+                f"(channel={channel}, note={note or ''})"
+            )
+        return hits
 
     def _run_has_interrupted_marker(self, admin_run_id: str) -> bool:
         """检查 admin_run_id 对应的 run 产物是否含 interrupted 标记（已知 daemon 中断）。
@@ -4345,6 +4672,12 @@ class AdminMonitor:
                 choice_failed = (
                     choice_outcome is not None and not choice_outcome.get("ok")
                 )
+                # evo-add-admin-orphan-disposition-effect-check 2.1（小步落账）：
+                # choice 动作执行完即落逐动作 DISPOSITION 事件并（整体 ok 时）
+                # 提前收口信号——缩短「执行成功→落账」窗口，run 在 final 落账
+                # 前死亡不再丢失已执行事实。失败/跳过不预写 resolved（2.2
+                # fail-closed 红线，见方法 docstring）。
+                self._persist_choice_step_records(signal, signal_rec, disp, choice_outcome)
                 # 处置记录 error 并入 choice 执行失败/跳过原因（2.2 留痕可溯源）
                 disp_error = disp.error or ""
                 if choice_failed:
@@ -5279,6 +5612,77 @@ class AdminMonitor:
         return {"ok": bool(result.get("ok")), "action": result.get("action"),
                 "error": result.get("error"),
                 "steps": result.get("steps") or []}
+
+    def _persist_choice_step_records(self, signal: dict, signal_rec, disp,
+                                     choice_outcome) -> None:
+        """结构化 choice 通道小步落账（evo-add-admin-orphan-disposition-effect-check 2.1）。
+
+        choice 执行返回后、final append 前落一条逐动作 DISPOSITION 事件
+        （含 action_taken 与结果）：run 在 final 落账前死亡时已执行事实不丢
+        （「执行成功→落账」窗口从秒级收敛到零）。两条硬约束：
+
+        - 事件 MUST NOT 携带 admin_run_id（循 _close_signal_preprobed 无
+          run_id 留痕先例）——携带会被 _merge_admin_runs 并入本组使组提前
+          final，破坏「在飞 = has_pending 且非 final」判据（
+          _spec_has_active_admin_run 的重派/节流护栏失守）；
+        - 提前收口以 choice 整体执行 ok 为准（outcome["ok"]=True 才
+          mark_signal_handled(result="resolved")），不按单动作成功收口；
+          任一步骤失败（整体非 ok）不收口、不预写 resolved（保
+          evo-fix-global-signal-choice-execution 2.2「信号保留待重审」的
+          fail-closed 语义），失败形态落 result=failed 审计事件（非
+          resolved，不触发任何回写门/静默期语义）。全局跳过形态
+          （skipped=True）未执行任何动作，不落事件。
+
+        落账/收口失败仅记日志，不阻塞 final 落账主链路。
+        """
+        if choice_outcome is None or choice_outcome.get("skipped"):
+            return
+        ok = bool(choice_outcome.get("ok"))
+        action = (
+            choice_outcome.get("action")
+            or str(getattr(disp, "choice_id", "") or "")
+            or ""
+        )
+        try:
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "signal_type": signal.get("signal_type"),
+                    "spec": signal.get("spec") or disp.spec,
+                    "severity": signal.get("severity"),
+                    "description": disp.problem or signal.get("description") or "",
+                    "action_taken": action,
+                    "result": "resolved" if ok else "failed",
+                    "error": "" if ok else str(choice_outcome.get("error") or "执行失败"),
+                    # 刻意不携带 admin_run_id：见 docstring 硬约束①
+                }
+            )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"choice 逐动作小步落账写入失败（不阻塞 final 落账）: {e}",
+            )
+        if not ok:
+            return
+        if signal_rec is not None:
+            try:
+                if self.store.mark_signal_handled(
+                    signal_rec.get("id"),
+                    action_taken=action,
+                    result="resolved",
+                ):
+                    self.logger.info(
+                        "admin_monitor",
+                        f"choice 整体执行 ok，已提前收口信号 handled=true"
+                        f"（id={signal_rec.get('id')}，"
+                        f"{signal.get('signal_type')}，action={action}）",
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"choice 提前收口信号失败（不阻塞 final 落账）: {e}",
+                    {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
+                )
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。
