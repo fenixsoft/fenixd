@@ -928,7 +928,18 @@ export default function SpecListPage() {
     if (expandedInitRef.current) return;
     if (tree.length === 0) return;
     expandedInitRef.current = true;
-    setExpandedKeys(tree.map((r) => r.name));
+    // 递归收集全树所有节点名（code-review item 6869f19d419c）：三层归并树
+    // （fix-fix-a→fix-a→a）只收根名会漏掉中间层，其子级默认折叠隐藏；叶子名
+    // 也要收——error 信息行走 expandedRowRender，同受这组 keys 控制。
+    const keys: Key[] = [];
+    const walk = (nodes: SpecSummaryNode[]) => {
+      nodes.forEach((n) => {
+        keys.push(n.name);
+        if (n.children) walk(n.children);
+      });
+    };
+    walk(tree);
+    setExpandedKeys(keys);
   }, [tree]);
 
   const handleClearError = async (record: SpecSummary) => {
