@@ -1144,6 +1144,9 @@ class TestSupervisorFuse(unittest.TestCase):
 
         共 4 次 start——验证「连续失败计数不跨存活边界继承」（首个 61s 存活把
         计数清零，后 3 次短命从 1 重新累计到阈值）。
+
+        alive_seconds 已改用 time.monotonic() 度量（682cf36c80ea），假时钟须
+        同时驱动 monotonic，否则存活时长恒为真实约 0s、61s 重置无法触发。
         """
         fake_state = {"t": 1_000_000.0}
         start_times = []
@@ -1178,6 +1181,8 @@ class TestSupervisorFuse(unittest.TestCase):
         with mock.patch.object(supervisor_mod, "start_daemon", _start), \
                 mock.patch.object(
                     supervisor_mod.time, "time", lambda: fake_state["t"]), \
+                mock.patch.object(
+                    supervisor_mod.time, "monotonic", lambda: fake_state["t"]), \
                 mock.patch.object(supervisor_mod.time, "sleep", _fake_sleep), \
                 mock.patch.object(supervisor_mod, "_write_fuse_alert"), \
                 mock.patch.object(supervisor_mod, "_write_supervisor_runtime"):
