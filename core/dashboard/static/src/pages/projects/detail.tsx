@@ -643,7 +643,11 @@ export default function SpecDetailPage() {
     // 事件、响应却晚于事件返回——仅 JSON 内容判等拦不住「内容确实变旧」的
     // 回写（详情视图短暂回跳旧态，需等下一条 SSE 或 30s 心跳才自愈）。SSE
     // 每次实际写入时前进序号，REST 响应落地前与发出时的基线比对，序号已
-    // 前进即整表丢弃本次快照（code-review item d5c13e7ab70c）
+    // 前进即整表丢弃本次快照（code-review item d5c13e7ab70c）。该守卫是单向
+    // 的：存在对称反向窗口——SSE 事件在服务端早于 REST 读取生成（内容较旧）
+    // 却更晚送达落地，更新的 REST 快照被同一条件误丢。前端无从判别两端数据
+    // 新旧（事件无时间戳），丢弃时经 scheduleRePull 补一次节流重拉收敛，
+    // 不再依赖下一条 SSE / 30s 心跳自愈（code-review item 63278f4244d9）
     let appliedSeq = 0;
     const applyDetail = (data: SpecDetail) => {
       const serialized = JSON.stringify(data);
@@ -671,7 +675,11 @@ export default function SpecDetailPage() {
         if (initial) setLoading(true);
         const data = await getSpecDetail(name, spec);
         if (cancelled) return;
+        // 丢弃分支见 appliedSeq 注释的反向窗口说明；scheduleRePull 声明在
+        // 本函数之后（下方 SSE 节流段）：仅 await 之后运行时求值，effect
+        // 同步体此时已执行完，与 loadSpecAlerts 的前向引用同一纪律
         if (appliedSeq === seqAtRequest) applyDetail(data);
+        else scheduleRePull();
         // 拉取成功即复位错误，不限首载：首载失败进入整页错误 Alert 后 SSE
         // 心跳触发的后台 load 仍在跑，若只在首载清错页面将永远停在错误页、
         // 无法随数据恢复自愈（code-review item f11b7ed7d05a）
@@ -700,6 +708,18 @@ export default function SpecDetailPage() {
       if (now - lastRefresh < REFRESH_THROTTLE_MS) return;
       lastRefresh = now;
       void load();
+    };
+    // REST 快照被时序守卫丢弃后的补偿重拉：单飞尾沿定时器，同一时刻至多一个
+    // 待决重拉——活跃 run 期间 SSE 连续落地导致的连续丢弃合并为一次，防重拉
+    // 风暴。与 throttledLoad 刻意不同必须设尾沿：refresh 类信号有事件流持续
+    // 到来自愈，而被丢弃的快照没有后续信号兜底，不补拉则旧态窗口退回 30s 心跳
+    let rePullTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRePull = () => {
+      if (rePullTimer !== null) return;
+      rePullTimer = setTimeout(() => {
+        rePullTimer = null;
+        void load();
+      }, REFRESH_THROTTLE_MS);
     };
     // SSE 端点走 services/dashboard 的 STREAM_URL 单源，不写字面量
     // （code-review item 2099376c1f44，同 list.tsx / QualityTab）
@@ -754,6 +774,7 @@ export default function SpecDetailPage() {
       cancelled = true;
       es.close();
       clearInterval(hb);
+      if (rePullTimer !== null) clearTimeout(rePullTimer);
     };
   }, [name, spec]);
 

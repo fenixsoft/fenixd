@@ -940,6 +940,13 @@ class TestBuiltinPushRestartDashboard(unittest.TestCase):
             eng.dispatch("s1", "verified", "pushed", {})
             self.assertTrue(_audit_has(
                 self.proot, BUILTIN_PUSH_RESTART_DASHBOARD_ID, STATUS_FAILURE))
+        # 审计可见 ≠ 告警已落：dispatch 异步线程在写审计（fsync 落盘）与
+        # store.append 之间可被调度打断，全量回归高负载下主线程会在两者之间
+        # 抢跑（实测 append Called 0 times）。与 _audit_has 同款轮询等告警
+        # 落地后再断言恰一次（恰一次强度保留，多次触发仍会被拦下）。
+        deadline = time.monotonic() + 3.0
+        while eng.admin_store.append.call_count < 1 and time.monotonic() < deadline:
+            time.sleep(0.05)
         eng.admin_store.append.assert_called_once()
         self.assertIn("hook 动作失败", eng.admin_store.append.call_args[0][0]["description"])
 

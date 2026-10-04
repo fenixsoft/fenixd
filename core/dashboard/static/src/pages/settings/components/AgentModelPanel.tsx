@@ -206,6 +206,16 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     setDirty(true);
   };
 
+  // 行参数指纹（provider + 生效模型串）：口径与 clearHealthRow / handlePaste
+  // staleKeys 的「provider/生效模型变化即清」一致（item 495527f13465）——
+  // provider 去空白，生效模型 = 行内 model → 角色级缺省。健康检测是慢请求
+  // （含网关往返超时），结论只对发起时的组合有效，写回前据此比对
+  const rowHealthFingerprint = (index: number, rIdx: number): string => {
+    const rv = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
+    const row = (rv?.rows || [])[rIdx];
+    return `${(row?.provider || '').trim()}|${(row?.model || '').trim() || (rv?.roleModel || '').trim()}`;
+  };
+
   // 行内健康检测：检测目标按运行期同款链解析（design D6 / spec「模型分配页签
   // 行内图标按钮」）——模型 = 行内模型 → 角色级默认 → Provider 默认；baseurl/
   // apikey 按行内所选 Provider 名解析。config.llm.providers（props，当前作用域
@@ -229,22 +239,50 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该行已有检测在飞，直接 return
     if (healthCheckInFlight.current.has(rowKey)) return;
     healthCheckInFlight.current.add(rowKey);
+    // 发起时捕获行参数指纹：await 返回后行配置可能已被改（原位改 provider/
+    // 模型、粘贴覆盖、删行），旧结论（可能是绿色「已验证」）不再代表当前
+    // 组合，写回前重算比对、不一致则丢弃（code-review item a62520ebd290）
+    const startFingerprint = rowHealthFingerprint(index, rIdx);
+    // 指纹不一致时的统一丢弃：不写结论、不播按旧参数的 toast；在飞条目可能
+    // 仍在（如角色级缺省模型输入不触发清条目），复位 loading 防按钮悬挂转圈
+    const discardStale = () => {
+      setHealthRows((m) => {
+        if (!(rowKey in m)) return m;
+        return { ...m, [rowKey]: { loading: false } };
+      });
+    };
     setHealthRows((m) => ({ ...m, [rowKey]: { loading: true } }));
     try {
       const r = await checkLlmHealth(resolved);
+      if (rowHealthFingerprint(index, rIdx) !== startFingerprint) {
+        discardStale();
+        return;
+      }
       const display = toHealthDisplay(r);
-      setHealthRows((m) => ({ ...m, [rowKey]: { loading: false, display } }));
+      setHealthRows((m) => {
+        // 条目在飞期间已被清（删行/粘贴覆盖/改配置）→ 丢弃，不复活过期徽标
+        if (!(rowKey in m)) return m;
+        return { ...m, [rowKey]: { loading: false, display } };
+      });
       if (r.ok) {
         message.success(`健康检测通过：${resolved.model} ${display.short}`);
       } else {
         message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
       }
     } catch (e) {
+      // 同成功路径：行配置在飞期间已变则丢弃异常结论（item a62520ebd290）
+      if (rowHealthFingerprint(index, rIdx) !== startFingerprint) {
+        discardStale();
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
-      setHealthRows((m) => ({
-        ...m,
-        [rowKey]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
-      }));
+      setHealthRows((m) => {
+        if (!(rowKey in m)) return m;
+        return {
+          ...m,
+          [rowKey]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
+        };
+      });
       message.error(`健康检测请求失败：${msg}`);
     } finally {
       healthCheckInFlight.current.delete(rowKey);

@@ -146,10 +146,15 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 每日 Agent 运行限额<span className="label-note">（agents.daily_run_limit，0 = 不限）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入每日运行限额' }, NON_NEGATIVE_INT_RULE]}
+            rules={[
+              { required: true, message: '请输入每日运行限额' },
+              NON_NEGATIVE_INT_RULE,
+              // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
+              { type: 'integer', min: 0, max: 100000, message: '每日运行限额须为 0-100000 的整数' },
+            ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={0} max={100000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。

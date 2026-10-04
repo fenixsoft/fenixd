@@ -537,7 +537,7 @@ class QQQueueMixin:
           implementing）、verifier（implemented/testing）；
         - 派发退避（``_dispatch_backoffed``）；
         - start_after 门控（``_start_after_blocks_entry``，debug 留痕）；
-        - 秒挂冷却（仅 implementer/fast-track/repair，debug 留痕并排程到期
+        - 秒挂冷却（仅 implementer/fast-track，debug 留痕并排程到期
           恢复）/ 信号死法冷却（全部 agent 类型，同款）——两处扫描经本落点
           统一记 debug（判定不变，仅日志口径统一）；
         - 在飞评审校验（``_should_defer_for_reviewer``，仅实现车道，置于
@@ -587,12 +587,15 @@ class QQQueueMixin:
                 f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
             )
             return False
-        # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
-        # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
+        # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track
+        # 派发（不耗预算、不起进程），并排程到期自动恢复。
+        # （code-review item 634bc08048e4：原列表含 "repair"，但 repair run 由
+        # repair_lane._dispatch_repair_lane 自起线程执行、不经队列（其冷却在
+        # repair_lane 内直查 _instant_fail_cooled），全仓无 "repair" 入队路径
+        # ——删除该口径分裂，防误入队条目经闸门放行后被 worker 静默吞掉。）
         if atype in (
             "implementer",
             "fast-track",
-            "repair",
         ) and self._pm._instant_fail_cooled(sname):
             self._pm.logger.debug(
                 "pm_engine",
@@ -2366,6 +2369,23 @@ class QQQueueMixin:
                         "pm_engine",
                         f"并行出题车道异常 '{spec_name}'（不影响实现车道）: {e}",
                     )
+
+            else:
+                # ── 未识别 agent_type 兜底（code-review item 634bc08048e4）──
+                # 旧 if/elif 链无兜底：误入队条目（拼写变体/未来新增车道）会正常
+                # pop、出锁段递增 _active_runs/_active_priority_counts 占用并发
+                # 槽位，本链匹配不到任何分支后直接走 finally 释放——零动作、零
+                # 日志，spec 滞留原状态且无痕迹可查。此处仅 ERROR 留痕，MUST NOT
+                # 调 _rollback_failed_dispatch：该方法对未识别 agent_type 无对应
+                # 分支（rollback.py 末段 else 仅 WARNING 留痕、无任何状态动作），
+                # 而 finally 的 else 兜底已释放本条目占用的槽位，再调回滚只会叠加
+                # 一层「已回滚」的误导语义；spec 滞留由既有 recovery/stuck 兜底
+                # 通道拾取（本条日志即对账锚点）。
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"未识别的 agent_type={agent_type!r}，worker 无对应车道分支，"
+                    f"条目已出队但不做任何派发：spec='{spec_name}' (P{priority})",
+                )
 
         except Exception as e:
             self._pm.logger.error("pm_engine", f"Agent run exception: {e}")

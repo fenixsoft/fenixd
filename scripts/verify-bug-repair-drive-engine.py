@@ -16,6 +16,7 @@ test_case:
 
 import json
 import os
+import re
 import sys
 import shutil
 import tempfile
@@ -278,6 +279,10 @@ if __name__ == "__main__":
     case, spec = sys.argv[1], sys.argv[2]
     if case not in COMMANDS:
         print(json.dumps({"error": f"unknown case: {case}", "cases": list(COMMANDS)}, ensure_ascii=False))
+        sys.exit(1)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
+        # spec_name 会被直接拼进 spec/changes/<name>：白名单拦截斜杠、.. 等越界路径
+        print(json.dumps({"error": f"invalid spec name: {spec}"}, ensure_ascii=False))
         sys.exit(1)
     try:
         COMMANDS[case](spec)

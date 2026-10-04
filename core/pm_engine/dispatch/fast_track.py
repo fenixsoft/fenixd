@@ -27,7 +27,10 @@ from core.fast_track_result import (
     get_scale_precheck_config,
 )
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD
-from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
+from core.agent_runner.provider_circuit import (
+    MODEL_CHAIN_UNAVAILABLE_MARKER,
+    PROVIDER_CIRCUIT_ERROR_MARKER,
+)
 
 
 def _normalize_int_config(value, default: int) -> int:
@@ -64,7 +67,11 @@ class FFastTrackMixin:
           不阻断派发），WARNING 留痕；异常不扩散（不抛）。
         - 日志含 spec、规模分、档位（任务 2.1「预留日志」）。
         """
-        if not self._scale_precheck_config()["enabled"]:
+        # 开关与阈值取同一份配置快照（code-review item 61bc711dab89）：
+        # 同一轮预检只读一次，避免两读之间设置保存新阈值时开关按旧值判过、
+        # tier 按新阈值算出的取值不一致窗口。
+        cfg = self._scale_precheck_config()
+        if not cfg["enabled"]:
             self._pm.logger.debug(
                 "pm_engine",
                 f"fast-track 规模预检已关闭，跳过 '{spec_name}'",
@@ -75,7 +82,6 @@ class FFastTrackMixin:
         tier = "normal"
         try:
             scale = int(estimate_spec_scale(spec_dir, logger=self._pm.logger))
-            cfg = self._scale_precheck_config()
             tier = budget_tier_for_scale(
                 scale,
                 higher_threshold=cfg["higher_threshold"],
@@ -1334,8 +1340,9 @@ class FFastTrackMixin:
         # 6e6259821f64）。任一车道新增/修改终态失败分支时 MUST 同步另一
         # 车道的对应段，禁止只改一处；对照定位用方法名/分支语义，勿写
         # 裸行号（行号会漂移）。
-        # provider 熔断拦截
-        if final_error and "provider circuit open" in final_error:
+        # provider 熔断拦截（code-review item 6cc1577c5086：子串匹配共用
+        # PROVIDER_CIRCUIT_ERROR_MARKER 常量，防上游文案调整使本消费点静默失配）
+        if final_error and PROVIDER_CIRCUIT_ERROR_MARKER in final_error:
             self._pm.state_machine.update_spec(spec_name, {"error": final_error})
             return
         # provider 瞬断终态延迟重派（code-review item 498a7c7432f1）：与 full 车道
