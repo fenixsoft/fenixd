@@ -21,6 +21,7 @@ class _FakeResponse:
 
     def __init__(self, body: bytes):
         self._body = body
+        self._pos = 0
 
     def __enter__(self):
         return self
@@ -29,7 +30,15 @@ class _FakeResponse:
         return False
 
     def read(self, size: int = -1) -> bytes:
-        return self._body
+        # 与生产 http.client 的 read(n) 契约同形：最多 n 字节、按消费递减、
+        # EOF 后返回 b""——探测读段已改为分段读循环，替身若恒返全量会被
+        # 反复读到 1MiB 封顶而误判超限
+        if self._pos >= len(self._body):
+            return b""
+        end = len(self._body) if size is None or size < 0 else min(len(self._body), self._pos + size)
+        chunk = self._body[self._pos : end]
+        self._pos = end
+        return chunk
 
 
 def _install_urlopen(monkeypatch, fn):
