@@ -175,9 +175,9 @@ def _save_findings_ledger(
     """疑点台账回写（持进程间文件锁 + 按指纹合并，对齐 BackfillLedger.save）。
 
     持锁重读盘上最新台账按指纹合并：仅一方持有的指纹直接纳入，两方都有的
-    指纹取 ``updated_at`` 较新的一方（仅日期粒度，同日平手按「有 verdicts
-    者为新」仲裁），合并后再整文件原子回写——并发的另一 run 刚落盘的判定
-    与豁免键不再被本方旧快照覆盖丢失。
+    指纹取 ``updated_at`` 较新的一方（仅日期粒度，同日平手仅在「盘上已带
+    裁决而本方未带」时保盘上，其余形态本方胜出），合并后再整文件原子回写
+    ——并发的另一 run 刚落盘的判定与豁免键不再被本方旧快照覆盖丢失。
     ``deleted_fingerprints``：本方已删除的指纹（仲裁消费段）。按指纹合并
     只并键不删键，不显式剔除会让盘上另一进程写入的同指纹条目复活被删条目，
     人工仲裁决定随之失效。
@@ -200,10 +200,15 @@ def _save_findings_ledger(
             # 同日平手：updated_at 由 _today() 生成、仅日期粒度，daemon 与
             # dashboard --serve 同日竞跑时本方可能仍持开局快照里的 suspected
             # 旧副本，而盘上另一 run 已为同指纹落盘裁决（updated_at 同为今天
-            # 不分先后）——平手按「有 verdicts 者为新」仲裁，已裁决的 no-conflict
-            # 判定与豁免键不被旧快照覆盖丢失（code-review e11faa0c441c）。
-            if _has_verdicts(entry) and not _has_verdicts(other):
-                merged[fp] = entry
+            # 不分先后）——平手仅当「盘上已带裁决而本方未带」时保盘上（已
+            # 裁决的 no-conflict 判定与豁免键不被旧快照覆盖丢失，code-review
+            # e11faa0c441c）；其余形态（两侧都有/都无裁决）本方胜出——本方是
+            # 本次 run 的最新视图，同一 run 此前落盘的中途副本也是更旧状态，
+            # 终态不得被回退（否则 run 的末次保存恒输给自己轮内的中途落盘，
+            # exempted_at/review_rounds/first_seen 等终态字段整体丢失）。
+            if _has_verdicts(other) and not _has_verdicts(entry):
+                continue
+            merged[fp] = entry
         atomic_write_text(
             Path(project_root) / FINDINGS_RELPATH,
             json.dumps(merged, ensure_ascii=False, indent=2) + "\n",

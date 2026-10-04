@@ -1219,20 +1219,20 @@ def _normalize_attribution(sc: dict) -> str:
     同时避免整段原文撑爆指纹）；断言 triage 的 assertion label 与 evidence
     保持原文进指纹（逐场景本就不同，保留即可区分）。
 
-    既无 ``first_failed_step`` 又无 triage 归因条目的场景返回空串：空归因
-    不构成「归因雷同 / 批量套用」嫌疑，调用方按空串跳过查重分组（与
-    「无归因不参与查重、视为保留」的既有口径一致），避免裸 ``cls=`` 指纹
-    把多个无归因场景坍缩同组判成假违规。
+    返回值恒非空（裸 ``cls=`` 片保底）：无归因文本场景按裸 ``cls=`` 指纹
+    参与同文分组而非跳过——级联豁免的锚点只能是框架结构化标记，无归因
+    形态不得绕过「≥3 同文照拒」的防套用闸（否则 judge 整体省略归因即可
+    逃避批量查重，test_signature_requires_structured_marker_not_text 钉死
+    该契约）；违规 reason 对「归因为空」与「归因文本雷同」两种形态分开
+    表述（code-review item de702496c0e5 方案②）。
     """
     parts = []
     classification = sc.get("classification") or ""
     parts.append(f"cls={classification}")
-    has_attribution = False
     evidence = sc.get("evidence") or {}
     if isinstance(evidence, dict):
         ffs = evidence.get("first_failed_step") or ""
         if isinstance(ffs, str) and ffs.strip():
-            has_attribution = True
             step = _extract_step_number(ffs)
             desc = _first_failed_step_desc(ffs)
             desc_digest = hashlib.sha256(_normalize_whitespace(desc).encode("utf-8")).hexdigest()[
@@ -1243,7 +1243,6 @@ def _normalize_attribution(sc: dict) -> str:
     if isinstance(triage, list):
         for t in triage:
             if isinstance(t, dict):
-                has_attribution = True
                 assertion = str(t.get("assertion") or "").strip()
                 cls = str(t.get("classification") or "").strip()
                 ev = t.get("evidence")
@@ -1254,10 +1253,6 @@ def _normalize_attribution(sc: dict) -> str:
                     # 等假值是有信息量回传（如退出码），不得被 or 吞成空串
                     ev = ("" if ev is None else str(ev)).strip()
                 parts.append(f"a={assertion}:c={cls}:e={ev}")
-    if not has_attribution:
-        # 无归因文本（无 first_failed_step、无 triage 条目）：返回空串，
-        # 让「无归因不参与查重」分支（调用侧 if not norm）真实可达
-        return ""
     normalized = " ".join(parts)
     return re.sub(r"\s+", " ", normalized).strip()
 
@@ -1417,10 +1412,10 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         if sc.get(ENGINE_CASCADE_EXEMPT_KEY) is True:
             cascade_exempt_ids.append(sid)
             continue
-        norm = _normalize_attribution(sc)
-        if not norm:
-            continue
-        groups.setdefault(norm, []).append(sid)
+        # norm 恒非空（cls 片保底）：无归因文本场景按裸 cls= 指纹参与同文
+        # 分组，≥3 同文照拒（item de702496c0e5 方案②，防「整体省略归因」
+        # 绕过批量查重）
+        groups.setdefault(_normalize_attribution(sc), []).append(sid)
 
     violations = []
     requeue_ids: List[str] = []
@@ -1429,17 +1424,22 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         if len(sids) < 3:
             accept_ids.extend(sids)
             continue
-        violations.append(
-            {
-                "scenario_ids": sids,
-                "reason": (
-                    f"{len(sids)} 个场景归因文本完全相同"
-                    f"（归一化后逐字相同），疑似批量套用硬编码归因："
-                    f"涉及场景 {', '.join(sids)}；"
-                    f"重复文本=[{norm_text[:200]}]"
-                ),
-            }
-        )
+        # 「归因为空」（仅分类相同，归一化后只剩裸 cls= 片）与「归因文本
+        # 雷同」两种形态分开表述（item de702496c0e5）：前者并无归因文本可
+        # 雷同，违规点是同批 ≥3 场景连归因都未提供，文案失真会误导仲裁
+        if all(part.startswith("cls=") for part in norm_text.split(" ")):
+            reason = (
+                f"{len(sids)} 个场景均无归因文本（仅分类相同），"
+                f"疑似批量套用/未做归因：涉及场景 {', '.join(sids)}"
+            )
+        else:
+            reason = (
+                f"{len(sids)} 个场景归因文本完全相同"
+                f"（归一化后逐字相同），疑似批量套用硬编码归因："
+                f"涉及场景 {', '.join(sids)}；"
+                f"重复文本=[{norm_text[:200]}]"
+            )
+        violations.append({"scenario_ids": sids, "reason": reason})
         if scenario_level:
             requeue_ids.extend(sids)
 
@@ -1468,16 +1468,8 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
     # 场景级：级联豁免场景视作保留（accept 复用，不进回炉）——豁免语义下
     # 其归因无套用嫌疑，MUST NOT 因豁免被回炉重写。
     accept_ids = cascade_exempt_ids + accept_ids
-    # 场景级：全部参与判定的 id（含无归因文本场景——无归因不参与查重，视为保留）
-    participating = set(accept_ids) | set(requeue_ids)
-    for sc in scenarios:
-        if not isinstance(sc, dict):
-            continue
-        if sc.get("status") in ("pass", "passed"):
-            continue
-        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
-        if sid not in participating:
-            accept_ids.append(sid)  # 无归因文本：不参与查重，保留
+    # 场景级：norm 恒非空、非 pass 场景全部进入分组，accept/requeue 已覆盖
+    # 全部参与判定的 id（含级联豁免场景），无需再补齐
     counts = {
         "total": len(accept_ids) + len(requeue_ids),
         "requeue": len(requeue_ids),
