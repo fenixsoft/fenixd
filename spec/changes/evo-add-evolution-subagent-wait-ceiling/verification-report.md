@@ -30,3 +30,10 @@
 | evolution-sniff-helper-edge-cases | 嗅探辅助函数边界（D3：MUST 只扫 type:stderr 行、MUST NOT 全文件 grep）：stderr 行签名命中、大小写不敏感命中、签名引用形态不误判、转录缺失静默跳过（返回 False）、单行损坏跳过不阻塞其余 stderr 行、非签名 stderr 行不命中。出处 core/agent_runner/maintenance_runs.py:1215（_evolution_bg_wait_ceiling_hit）、:1212（签名常量）、tests/test_evolution_bg_wait_ceiling.py:241（测试类） | pass | 0/8 | - |
 | evolution-bg-wait-ceiling-full-regression | 回归点：tests/test_evolution_bg_wait_ceiling.py 全套 12 用例通过（env 注入 3 + 归因 3 + 嗅探边界 6），退出码 0。出处 tests/test_evolution_bg_wait_ceiling.py | pass | 0/2 | - |
 | evolution-attribution-direct-probe | 归因直验探针（不经测试文件，异常路径）：构造含 600 秒签名 stderr 行与无签名的两种伪转录直接驱动 run_evolution——含签名时 result.error 附 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS 与 600 归因且 success=False；无签名时 error 保持「产物文件未写出」前缀且不含归因（归因不变，Req 3 场景 2）。出处 core/agent_runner/maintenance_runs.py:1048-1059（归因分支）、:1215（嗅探函数） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 7 个（第 1 轮）。
+
+- 首轮写入 7 个场景
+
