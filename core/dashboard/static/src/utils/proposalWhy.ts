@@ -14,8 +14,30 @@ export function extractProposalWhy(markdown: string): string | null {
   }
   if (start === -1) return null;
   const collected: string[] = [];
+  // 段界探测围栏感知（code-review item cc7049690387）：Why 区块可能贴含行首
+  // 「## 」的代码围栏示例，裸 /^##\s/ 会在围栏内第一个二级标题处提前截断——
+  // 逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配下一个二级标题
+  // （与 pm_engine/family.py _inject_verify_fix_task 同口径）。
+  let fenceChar = "";
+  let fenceLen = 0;
   for (let i = start; i < lines.length; i++) {
-    if (/^##\s/.test(lines[i])) break; // 下一个二级标题即段尾（### 子标题不影响）
+    const stripped = lines[i].trim();
+    if (fenceChar) {
+      // 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
+      if (
+        stripped.length >= fenceLen &&
+        stripped.split("").every((c) => c === fenceChar)
+      ) {
+        fenceChar = "";
+      }
+    } else if (stripped.startsWith("```") || stripped.startsWith("~~~")) {
+      fenceChar = stripped[0];
+      let run = 0;
+      while (run < stripped.length && stripped[run] === fenceChar) run++;
+      fenceLen = run;
+    } else if (/^##\s/.test(lines[i])) {
+      break; // 下一个二级标题即段尾（### 子标题不影响）
+    }
     collected.push(lines[i]);
   }
   const text = collected.join('\n').trim();
