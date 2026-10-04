@@ -669,42 +669,57 @@ class VAdjudicationMixin:
             True 表示已达 ``agents.max_retries`` 上限（调用方置 blocked，
             不再自动重派）。
         """
-        # 换路径判定读侧保留（同路径延续 streak、换路径重置）；递增本体收进
-        # bump_counters 锁内原子读改写（code-review item 3fd0da2d3385，对齐
-        # _redispatch_with_retry 的 _retry_count 同型修复 3dae7ab671a1）：原
-        # 「read_one 读 → 算 +1 → update_spec 写回」读与写分处两次 STATE 锁
-        # 临界区，与并发 _writeback_recur_reset 交错时可丢一次递增或把递增
-        # 清零，复发熔断晚一轮触发。
-        entry = self._pm.state_machine.read_one(spec_name) or {}
-        # STATE.md 行式存储读回值可能为任意字符串，裸 int() 遇非数字文本抛
-        # ValueError（code-review item 9a6271490cdd）：异常回退 0。
         try:
-            old_streak = int(entry.get("_writeback_recur_streak") or 0)
-        except (TypeError, ValueError):
-            old_streak = 0
-        same_path = entry.get("_writeback_recur_path") == path
-        # 换路径清零经「负 delta 补差」（delta = 1 - 旧值）与递增落在同一
-        # 临界区——bump_counters 负 delta 结果下限 0，串行下恒得 1（等价原
-        # 「先清零再 +1」），且不引入「清零被旧值覆盖」的窗口。
-        delta = 1 if same_path else 1 - old_streak
-        streak = self._pm.state_machine.bump_counters(
-            spec_name, {"_writeback_recur_streak": delta}
-        ).get("_writeback_recur_streak", 0)
-        if not same_path:
-            # 路径字段与递增分写（bump_counters 只收 int delta）：置后写，
-            # 写失败时下轮按「换路径」从 1 重计，不带旧路径 streak 误续。
-            self._pm.state_machine.update_spec(
-                spec_name, {"_writeback_recur_path": path}
+            # 换路径判定读侧保留（同路径延续 streak、换路径重置）；递增本体收进
+            # bump_counters 锁内原子读改写（code-review item 3fd0da2d3385，对齐
+            # _redispatch_with_retry 的 _retry_count 同型修复 3dae7ab671a1）：原
+            # 「read_one 读 → 算 +1 → update_spec 写回」读与写分处两次 STATE 锁
+            # 临界区，与并发 _writeback_recur_reset 交错时可丢一次递增或把递增
+            # 清零，复发熔断晚一轮触发。
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            # STATE.md 行式存储读回值可能为任意字符串，裸 int() 遇非数字文本抛
+            # ValueError（code-review item 9a6271490cdd）：异常回退 0。
+            try:
+                old_streak = int(entry.get("_writeback_recur_streak") or 0)
+            except (TypeError, ValueError):
+                old_streak = 0
+            same_path = entry.get("_writeback_recur_path") == path
+            # 换路径清零经「负 delta 补差」（delta = 1 - 旧值）与递增落在同一
+            # 临界区——bump_counters 负 delta 结果下限 0，串行下恒得 1（等价原
+            # 「先清零再 +1」），且不引入「清零被旧值覆盖」的窗口。
+            delta = 1 if same_path else 1 - old_streak
+            streak = self._pm.state_machine.bump_counters(
+                spec_name, {"_writeback_recur_streak": delta}
+            ).get("_writeback_recur_streak", 0)
+            if not same_path:
+                # 路径字段与递增分写（bump_counters 只收 int delta）：置后写，
+                # 写失败时下轮按「换路径」从 1 重计，不带旧路径 streak 误续。
+                self._pm.state_machine.update_spec(
+                    spec_name, {"_writeback_recur_path": path}
+                )
+            # 解析口径收敛进 _resolve_max_retries（code-review item
+            # f68ba79c3e07，三处共用防「文案轮数与实际熔断阈值一致」双写漂移）。
+            max_r = _resolve_max_retries(
+                self._pm._get_config("agents.max_retries", 3)
             )
-        # 解析口径收敛进 _resolve_max_retries（code-review item
-        # f68ba79c3e07，三处共用防「文案轮数与实际熔断阈值一致」双写漂移）。
-        max_r = _resolve_max_retries(self._pm._get_config("agents.max_retries", 3))
-        self._pm.logger.warning(
-            "pm_engine",
-            f"声明修正复发计数 '{spec_name}': {path} 第 {streak}/{max_r} 轮"
-            f"（独立字段 _writeback_recur_streak，不随 blocked→ready/恢复续做清零）",
-        )
-        return streak >= max_r
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明修正复发计数 '{spec_name}': {path} 第 {streak}/{max_r} 轮"
+                f"（独立字段 _writeback_recur_streak，不随 blocked→ready/恢复续做清零）",
+            )
+            return streak >= max_r
+        except Exception as e:
+            # STATE.md 瞬态 IO/锁异常不得穿透 dispute 裁决主体（code-review
+            # item 9aebf947d532）：主体已把 spec 置 blocked「LLM 终审进行中」，
+            # 异常穿透会让本轮裁决中断、spec 滞留该僵尸文案误导人工判读（对齐
+            # 373b4b302c80 姿态）。按「未达上限」放行本轮（非阻塞），后续打回
+            # 路径照常落终态，熔断最多晚一轮触发。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明修正复发计数失败 '{spec_name}': {path}"
+                f"（非阻塞，按未达上限继续）: {type(e).__name__}: {e}",
+            )
+            return False
 
     def _writeback_recur_reset(self, spec_name: str) -> None:
         """复发计数清零（Task 5.1）：typo 修正复检通过 / SPEC 退出本形态时调用。
@@ -725,10 +740,20 @@ class VAdjudicationMixin:
         if recur_streak or (
             entry.get("_writeback_recur_path") not in (None, "", "null")
         ):
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {"_writeback_recur_streak": 0, "_writeback_recur_path": None},
-            )
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {"_writeback_recur_streak": 0, "_writeback_recur_path": None},
+                )
+            except Exception as e:
+                # 清零写盘失败不阻塞调用方后续放行/改判流程（code-review item
+                # 9aebf947d532）：streak 残留下轮复检通过时再清，不影响本轮
+                # 终态落定。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"声明修正复发计数清零失败 '{spec_name}'（非阻塞）: "
+                    f"{type(e).__name__}: {e}",
+                )
 
     def _all_clear_proceed(self, spec_name: str, message: str) -> dict:
         """守卫重跑全清放行块（四预分类器共用样板）。
@@ -2395,22 +2420,16 @@ class VAdjudicationMixin:
             )
             return {"action": "handled"}
         if not remaining:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
-            )
             # Task 5.1：SPEC 退出本形态（守卫放行）→ 复发计数清零
             self._writeback_recur_reset(spec_name)
             # 终审期间置 blocked 属临时态：恢复 in-flight（implementing），
             # worker 合并路径的 implementing → implemented 转换才合法
-            self._pm.state_machine.update_spec(
+            # （放行块收敛复用 _all_clear_proceed——code-review item
+            # 6bc523df28ae，放行语义调整不再与本类四预分类器两处同步）
+            return self._all_clear_proceed(
                 spec_name,
-                {
-                    "status": "implementing",
-                    "error": None,
-                },
+                f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
             )
-            return {"action": "proceed"}
 
         # 规范化 remaining（list[dict]）为路径列表 + 保留条目供下游
         remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
