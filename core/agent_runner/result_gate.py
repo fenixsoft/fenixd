@@ -604,6 +604,11 @@ def _check_agent_result_artifact(
 # 校验体与自检 CLI 的 prompt 注入（正反例措辞）共用同一来源，禁止第二份同义词表。
 DISPOSITION_WHITELIST = ("fixed", "rejected", "deferred")
 
+# code_review 处置段键名别名清单（evo-spec-concurrency-flight-guard 容错键名）：
+# 硬门（_validate_code_review_report）与自检（_selfcheck_dispositions_violations）
+# 共用同一来源，新增别名只改此处即双侧同源生效，禁止各写一份字面量元组。
+_DISPOSITION_KEY_ALIASES = ("dispositions", "findings_summary")
+
 
 def _validate_disposition_entries(cr_dispositions, report_rel: str) -> str | None:
     """逐条 disposition 条目校验体（add-impl-selfcheck-model-probe 1.1 抽取）。
@@ -697,7 +702,7 @@ def _validate_code_review_report(
     # 对账语义不变（仍是逐条计数 + reason 强校验）。
     cr_dispositions = None
     _alias_hit = "dispositions"
-    for _alias in ("dispositions", "findings_summary"):
+    for _alias in _DISPOSITION_KEY_ALIASES:
         _val = code_review.get(_alias)
         if _val is not None:
             cr_dispositions = _val
@@ -1958,7 +1963,7 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
         return violations
     if isinstance(code_review, dict):
         cr_dispositions = None
-        for alias in ("dispositions", "findings_summary"):
+        for alias in _DISPOSITION_KEY_ALIASES:
             val = code_review.get(alias)
             if val is not None:
                 cr_dispositions = val
