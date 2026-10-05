@@ -240,3 +240,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-233](ADR-233-distill-trigger-single-funnel-commit-archive-move.md) | accepted | 蒸馏触发单点挂载归档共同漏斗 commit_archive_move：手工/自动归档/软删除三路径单点全生效，fail-open 不影响归档返回值，新增归档路径必须沿用漏斗否则视为放弃蒸馏 |
 | [ADR-234](ADR-234-backfill-distill-queue-ledger-registration-single-writer.md) | accepted | 回填期增量蒸馏排队=登记进回填台账而非内存队列/写者锁，spec/knowledge 单写者归零页级冲突，收敛（台账无 pending）后恢复即时派发，排队判定故障 fail-open 放行原派发 |
 | [ADR-235](ADR-235-cli-stderr-noise-single-source-triple-separation.md) | accepted | CLI stderr 噪声判别单源收口（具体枚举、行首锚定、逐行判别）与拒模型瞬态分类、error 归因降噪三源分离互不替代；留证层一律不过滤，降噪只作用摘要与归因消息 |
+| [ADR-236](ADR-236-api-timeout-salvage-at-failure-reuse-claim-never-consume.md) | accepted | code-fix API 超时签名判别收口 runner 层单源（两形态窄口径）、现场抢救挂失败判定当时（salvage 提交+legacy 保全+置复用标记）非清扫期、同链接续只走 reuse 认领 fail-open 禁 consume_legacy 回收端（删分支复刻悬空净损失），非该签名失败行为保形 |

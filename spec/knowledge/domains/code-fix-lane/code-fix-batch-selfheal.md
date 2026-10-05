@@ -1,15 +1,15 @@
 # 修复批失败自愈
 
-<!-- knowledge: capability=code-fix-batch-selfheal rev=1
-     sources=spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal -->
+<!-- knowledge: capability=code-fix-batch-selfheal rev=2
+     sources=spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage -->
 
 自动修复车道批次失败的自愈语义：失败批现场即弃与锁即释、批收尾三态与链自驱动、两层跳过与失败档案重试预算，使单批失败零人工、不堵塞车道。
 
 ## 规则
 
 ### 失败批现场即弃与锁释放
-- 凡已建树（`worktree_manager.create` 成功）的批失败路径，收尾前 MUST 清理 worktree（`_safe_cleanup`），不得保留现场等待人工；其中「两次回归均失败」与「合回冲突」两条路径 MUST 在 cleanup 前把 `branch` 与 `tip_sha`（分支末梢提交 SHA）写入失败档案记录。
-- `branch`/`tip_sha` 留作 git reflog 追溯线索，不承担恢复职责；已过回归的修复提交随 worktree 清理丢弃，由下轮重试重新生成。
+- 凡已建树（`worktree_manager.create` 成功）的批失败路径，收尾前 MUST 清理 worktree（`_safe_cleanup`），不得保留现场等待人工；唯一例外是 API 超时签名的失败——命中签名且工作区脏时改走现场抢救路径（salvage 提交 + legacy 保全 + 同链下一批接续，见 [code-fix 批 API 超时现场抢救](code-fix-api-timeout-salvage.md)），其余失败路径仍现场即弃。其中「两次回归均失败」与「合回冲突」两条路径 MUST 在 cleanup 前把 `branch` 与 `tip_sha`（分支末梢提交 SHA）写入失败档案记录。
+- `branch`/`tip_sha` 留作 git reflog 追溯线索，不承担恢复职责；已过回归的修复提交随 worktree 清理丢弃，由下轮重试重新生成（API 超时失败批的 WIP 除外——经抢救提交落批分支，被同链下一批接续）。
 - 失败批收尾后 `code-review-fix:code-fix` 进程内 spec 锁即释放，后续批次的 `create()` 不会因该锁被拒。
 
 ### 批收尾三态与链自驱动
@@ -33,3 +33,4 @@
 ## 溯源
 
 - 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 新建本页：失败批现场即弃与锁释放、批收尾三态与链自驱动条件、链内跳过集生命周期、失败档案 fail_count 重试预算与达上限一次性告警。
+- 2026-10-06 2026-10-06-evo-code-fix-api-timeout-salvage（spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage） — 修改本页：现场即弃规则收窄 API 超时签名例外（命中即走 salvage 保全与同链下一批接续，不再立即物理清理），其余失败路径行为不变。
