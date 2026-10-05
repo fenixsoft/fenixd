@@ -121,11 +121,13 @@ def _inconclusive_fail_signature(pipeline, spec_name: str, report: dict) -> str:
     """本轮 inconclusive 失败签名摘要（fix-env-exemption-exit-reachability 1.2/2.2）。
 
     从 report.json 场景表现算（MUST NOT 以 fail_history.json 为基准——其条目
-    仅存场景 id 集且仅在归因失败轮追加、inconclusive 轮不落台账）：
+    仅存场景 id 集且仅在归因失败轮追加、inconclusive 轮不落台账）。单场景
+    片段推导收拢至 ``state_machine.scenario_fail_signature`` 单源
+    （evo-fix-env-exemption-gate-conflict-…：豁免键的签名口径与本摘要一致，
+    grant 时落库、校验时重算共用同一推导，防双处漂移）：
 
-      - 非 pass 场景：首失败断言 ``type + _normalize_fail_signature(actual)``
-        摘要（归一化口径与 ``infra_classify._normalize_fail_signature`` 一致：
-        数字→N、去引号、折叠空白）；failed_assertions 缺失时兼容
+      - 非 pass 场景：首失败断言 ``type + 归一化 actual`` 摘要（数字→N、
+        去引号、折叠空白）；failed_assertions 缺失时兼容
         assertion_results / assertion 历史字段（verdict_check 同款兼容序），
         仍无则回退「场景级 classification + first_failed_step」；
       - blocked-env 场景（从未执行、无失败断言）：签名退化为
@@ -136,43 +138,67 @@ def _inconclusive_fail_signature(pipeline, spec_name: str, report: dict) -> str:
     一致性判定。签名同时用于 SIGNAL/告警 evidence 组装（供人工核对）与
     STATE ``_last_inconclusive_signature`` 跨轮比较基准回写。
     """
-    from core.pm_engine.verification.infra_classify import _normalize_fail_signature
+    from core.state_machine import scenario_fail_signature
 
     fragments: list = []
     blocked_count = 0
     for sc in (report or {}).get("scenarios") or []:
         if not isinstance(sc, dict):
             continue
-        status = sc.get("status")
-        if status in ("pass", "passed"):
+        if sc.get("status") in ("pass", "passed"):
             continue
-        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
-        if status == "blocked-env":
+        if sc.get("status") == "blocked-env":
             blocked_count += 1
-            fragments.append(f"{sid}:blocked-env")
-            continue
-        ev = sc.get("evidence") if isinstance(sc.get("evidence"), dict) else {}
-        fa = None
-        for key in ("failed_assertions", "assertion_results", "assertion"):
-            val = ev.get(key)
-            if isinstance(val, list) and val:
-                fa = val
-                break
-        first = fa[0] if fa and isinstance(fa[0], dict) else None
-        if first is not None:
-            head = str(first.get("type") or "?")
-            actual = str(first.get("actual") or "")
-        else:
-            head = "nosig"
-            actual = (
-                f"{sc.get('classification') or ''}|{ev.get('first_failed_step') or ''}"
-            )
-        fragments.append(f"{sid}:{head}+{_normalize_fail_signature(actual)[:120]}")
+        fragments.append(scenario_fail_signature(sc))
     if not fragments:
         return ""
     fragments.sort()
     head_note = f"blocked={blocked_count}" if blocked_count else ""
     return ";".join(fragments) + (f"|{head_note}" if head_note else "")
+
+
+def _load_frozen_scenario_hashes(project_root, spec_name: str) -> dict:
+    """读冻结场景定义文件算 ``{场景 id: 定义 hash}``（本 SPEC 1.4 失效锚点）。
+
+    实现单源在 ``core.state_machine.load_frozen_scenario_hashes``（grant 写入
+    与双门校验同引同一读取口径，防「写入 A 校验 B」的副本漂移）。
+    """
+    from core.state_machine import load_frozen_scenario_hashes
+
+    return load_frozen_scenario_hashes(project_root, spec_name)
+
+
+def _env_exemptions_cover(pipeline, spec_name: str, report: dict, entry: dict,
+                          hashes: dict) -> bool:
+    """本轮全部 env 失败场景是否都有有效 STATE 豁免命中（双门同源判定）。
+
+    调用前提：级二已命中（报告失败全部被裁决 env）——故逐个非 pass 场景查
+    有效豁免（场景 id+归一化失败签名+定义 hash+时效，
+    ``state_machine.find_env_exemption`` 同一纯函数），全部命中且至少一个
+    豁免对象即覆盖。任一未命中（含 STATE 读失败=无豁免，fail-closed）→
+    不覆盖。
+    """
+    from core.state_machine import find_env_exemption, scenario_fail_signature_body
+
+    scenarios = (report or {}).get("scenarios") or []
+    if not scenarios:
+        return False
+    covered = 0
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            return False
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        ex = find_env_exemption(
+            entry, sid, scenario_fail_signature_body(sc),
+            current_hash=str(hashes.get(sid) or ""),
+        )
+        if ex is None:
+            return False
+        covered += 1
+    return covered > 0
 
 
 def _escalate_inconclusive_parking(
@@ -459,7 +485,15 @@ def _env_whitewash_gate(pipeline, spec_name: str) -> bool:
     阻塞 spec → 自动呼叫 Administrator 处置环境 → 连续
     ENV_BLOCK_FREEZE_THRESHOLD 轮仍 env → 结构化冻结转人工。
     Returns: True=放行推进 verified；False=已升级处置（调用方直接 return）。
+
+    evo-fix-env-exemption-gate-conflict-…（1.2/1.3）：env 项违规先查 spec 级
+    STATE 豁免（与升级握手同一纯函数 ``find_env_exemption``，同源消除
+    「握手认可、门禁拒绝」矛盾）；命中有效豁免的 env 场景不计入违规。
+    豁免有效命中轮（仅剩 0-pass 等非 env 违规）升级时标记
+    ``exemption_effective``——不计入 ENV_BLOCK_FREEZE_THRESHOLD（豁免认可
+    不得仍滑向冻结；TTL 过期或场景变更失效后恢复计数，冻结兜底保留）。
     """
+    from core.state_machine import parse_env_exemptions
     from core.verdict_check import load_report, whitewash_violations
 
     scenarios = []
@@ -485,19 +519,37 @@ def _env_whitewash_gate(pipeline, spec_name: str) -> bool:
             scenarios = []
     if not scenarios:
         return True  # 无场景数据不拦（保守放行，交既有闸门兜底）
-    violations = whitewash_violations(scenarios, "verified")
+    # 双门同源豁免上下文：STATE 豁免清单 + 当前冻结场景定义 hash（读失败=
+    # 无失效证据，与 env_exemption_active 口径一致）
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    exemptions = parse_env_exemptions(entry)
+    hashes = _load_frozen_scenario_hashes(
+        pipeline._context.project_root, spec_name
+    ) if exemptions else {}
+    violations = whitewash_violations(
+        scenarios, "verified",
+        env_exemptions=exemptions, scenario_hashes=hashes,
+    )
     if not violations:
         return True
+    # 豁免有效判别：无豁免视角下 env 违规存在、豁免视角被摘除 → 豁免生效轮
+    exemption_effective = False
+    if exemptions:
+        raw_violations = whitewash_violations(scenarios, "verified")
+        exemption_effective = len(violations) < len(raw_violations)
     pipeline._context.logger.warning(
         "pm_engine",
         f"verified 洗白门禁拦截 '{spec_name}': {'；'.join(violations)}",
     )
-    pipeline._escalate_env_blocked(spec_name, violations)
+    pipeline._escalate_env_blocked(
+        spec_name, violations, exemption_effective=exemption_effective
+    )
     return False
 
 
 def _escalate_env_blocked(
-    pipeline, spec_name: str, violations: list, title: str = "验证环境阻塞"
+    pipeline, spec_name: str, violations: list, title: str = "验证环境阻塞",
+    exemption_effective: bool = False,
 ) -> None:
     """阻塞升级通道：阻塞 spec → 自动呼叫 Administrator → 达阈值冻结转人工。
 
@@ -506,6 +558,11 @@ def _escalate_env_blocked(
     重启/端口清理在其权限内），处置完成走既有重验证；连续 2 轮仍阻塞 →
     frozen 结构化冻结 + 人工升级告警——admin 权限也无法处理时唯一出口是
     人工介入。title 区分升级类别（验证环境阻塞 / 场景计划争议）。
+
+    evo-fix-env-exemption-gate-conflict-…（2.2）：``exemption_effective=True``
+    为豁免有效命中轮（洗白门禁判定）——阻塞轮**不计入**
+    ENV_BLOCK_FREEZE_THRESHOLD（不递增、不冻结：豁免认可不得仍滑向冻结；
+    TTL 过期或场景定义变更失效后恢复计数，冻结兜底保留）。
 
     冻结转人工（fix-frozen-scenario-orphan-reservoir D5）：告警描述追加
     上轮 planner run 实际成本（tokens/费用/时长）作为「删除冻结集重新出题」
@@ -530,28 +587,41 @@ def _escalate_env_blocked(
             )
         except Exception:
             pass  # 记账侧车，不阻断升级通道
-        try:
-            rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
-        except (TypeError, ValueError):
-            # 字段被外部工具写坏为非数字串时，int() 抛 ValueError 会被函数级
-            # except 吞成一条 WARNING，其后的阻塞落盘、admin 自动呼叫、人工
-            # 告警全部静默跳过——比照 _inconclusive_attempts 同款防御，
-            # 脏值按首轮阻塞处置，不让记账字段脏值瘫痪升级通道。
-            rounds = 1
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"'{spec_name}' {ENV_BLOCK_ROUNDS_FIELD} 字段脏值（非数字），"
-                f"已按首轮阻塞兜底",
-            )
-        frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
+        if exemption_effective:
+            # 豁免有效命中轮：轮次保持当前值（不递增），永不冻结
+            try:
+                rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0)
+            except (TypeError, ValueError):
+                rounds = 0
+            frozen = False
+        else:
+            try:
+                rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
+            except (TypeError, ValueError):
+                # 字段被外部工具写坏为非数字串时，int() 抛 ValueError 会被函数级
+                # except 吞成一条 WARNING，其后的阻塞落盘、admin 自动呼叫、人工
+                # 告警全部静默跳过——比照 _inconclusive_attempts 同款防御，
+                # 脏值按首轮阻塞处置，不让记账字段脏值瘫痪升级通道。
+                rounds = 1
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' {ENV_BLOCK_ROUNDS_FIELD} 字段脏值（非数字），"
+                    f"已按首轮阻塞兜底",
+                )
+            frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
         planner_cost = pipeline._last_planner_run_cost(spec_name) if frozen else ""
         cost_note = f"\n\n> 🪙 重新出题成本参考：{planner_cost}" if planner_cost else ""
+        exemption_note = (
+            "env 豁免有效命中（豁免期内不累计冻结轮次，TTL 过期或场景变更后恢复计数）— "
+            if exemption_effective
+            else ""
+        )
         error_msg = (
             f"{FREEZE_ERROR_PREFIX}{title}连续 {rounds} 轮，"
             f"admin 处置未奏效，转人工 — {'；'.join(violations[:3])}"
             f"{cost_note}"
             if frozen
-            else f"{title}（第 {rounds} 轮）：{'；'.join(violations[:3])}"
+            else f"{exemption_note}{title}（第 {rounds} 轮）：{'；'.join(violations[:3])}"
         )
         entry = {
             "status": "blocked",
@@ -1764,11 +1834,20 @@ def _verdict_env_exemption_level2(
     blocked_env 形态场景天然视为环境性（与级一判据同语义）。场景缺
     assertion_triage 时回退场景级 classification。
 
+    evo-fix-env-exemption-gate-conflict-…（2.3）：env 归因结论须附「送帧/
+    解码」两段证据引用（``admin_actions.env_attribution_evidence_gate``）——
+    声称帧管线类失败（提送帧/解码/相机等词汇）却只给一句现象描述的归因，
+    降级为 inconclusive（落 non_env，级二不命中）：既不触发豁免握手也不触发
+    升级语义，回归既有裁决车道。非媒体词汇的普通 env 归因不受此门约束。
+
     Returns:
         {"hit": bool, "env_entries": int, "blocked_env_scenarios": [sid],
          "non_env": [{"scenario", "classification", "source"}]}
     """
     from core.verdict_check import load_report, triage_entries
+
+    # 归因证据门（admin_actions 单源）：惰性 import 防模块加载环
+    from core.dashboard.data.admin_actions import env_attribution_evidence_gate
 
     if report is None:
         report = load_report(pipeline._context.project_root, spec_name)
@@ -1783,6 +1862,7 @@ def _verdict_env_exemption_level2(
             continue
         sid = str(sc.get("scenario_id") or sc.get("id") or "?")
         if status == "blocked-env":
+            # blocked-env 从未执行、无归因结论（infra 探针形态），不经证据门
             blocked_env_scenarios.append(sid)
             env_entries += 1
             continue
@@ -1790,7 +1870,20 @@ def _verdict_env_exemption_level2(
         if triage:
             for t in triage:
                 cls = t.get("classification")
-                if cls == "env":
+                # 证据门：媒体管线类 env 归因缺「送帧/解码」两段证据引用
+                # → 降级 inconclusive（不触发 env 豁免/升级语义）
+                gated = env_attribution_evidence_gate(
+                    cls, str(t.get("evidence") or "")
+                )
+                if cls == "env" and gated != "env":
+                    non_env.append(
+                        {
+                            "scenario": sid,
+                            "classification": str(gated),
+                            "source": "assertion",
+                        }
+                    )
+                elif cls == "env":
                     env_entries += 1
                 else:
                     non_env.append(
@@ -1802,7 +1895,23 @@ def _verdict_env_exemption_level2(
                     )
             continue
         cls = sc.get("classification")
-        if cls == "env":
+        ev = sc.get("evidence")
+        if isinstance(ev, dict):
+            evidence_text = "；".join(
+                str(v) for v in ev.values() if isinstance(v, (str, int, float))
+            )
+        else:
+            evidence_text = str(ev or "")
+        gated = env_attribution_evidence_gate(cls, evidence_text)
+        if cls == "env" and gated != "env":
+            non_env.append(
+                {
+                    "scenario": sid,
+                    "classification": str(gated),
+                    "source": "scenario",
+                }
+            )
+        elif cls == "env":
             env_entries += 1
         else:
             non_env.append(
@@ -1843,9 +1952,18 @@ def _handle_verdict_env_exemption_inconclusive(
          ``_last_inconclusive_signature``。
 
     **不 enqueue verifier 自动重验**——升级后停止自动重验，人工经 choices
-    处置（grant_env_exemption / manual_fixed_reverify / abandon）是唯一出路。
-    恒返回 True（调用方不得再落 verified）。
+    处置（grant_env_exemption / revise_scenario_reverify /
+    manual_fixed_reverify / abandon）是唯一出路。恒返回 True（调用方不得再
+    落 verified）。
+
+    evo-fix-env-exemption-gate-conflict-…（2.2）：修订 re-entry 先于升级——
+    入口先查 ``_scenario_revision_reverify_pending`` 旗标（场景修订执行器
+    置位），在位则消费旗标并放行一次重验（``_scenario_revision_reentry``），
+    给修订后的场景集一次收敛机会，本轮不升级停车。
     """
+    # 修订 re-entry 先于升级（2.2）：旗标在位先重验，本函数不停车
+    if pipeline._scenario_revision_reentry(spec_name):
+        return True
     summary = (report or {}).get("summary") or {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
@@ -1955,10 +2073,16 @@ def _handle_env_exemption_handshake(
     级二命中（裁决后失败全部为环境性，见 ``_verdict_env_exemption_level2``）
     时 MUST NOT 直接落 verified——豁免不得自我批准：
 
-      1. AdminStore 无该 SPEC 放行处置记录（kind=DISPOSITION，经
-         ``latest_resolved_disposition`` 按 spec 查询；dashboard/CLI 人工
-         放行动作落库后同一锚点可查）→ 转
-         ``_handle_verdict_env_exemption_inconclusive`` 升级停车
+      0. **spec 级 STATE 豁免（本 SPEC 1.3 主放行通道，唯一生效源）**：
+         本轮全部 env 失败场景命中有效豁免（场景 id+归一化失败签名+场景定义
+         hash+时效，``_env_exemptions_cover`` 经 ``find_env_exemption`` 同一
+         纯函数——与白化门禁同源，消除「握手认可、门禁拒绝」双门矛盾）→
+         报告保留豁免回链后返回 False，放行走既有 verified 链。STATE 读失败
+         =无豁免（fail-closed，绝不 fail-open 到 verified）。
+      1. 无有效 STATE 豁免：查 AdminStore 该 SPEC 放行处置记录（kind=
+         DISPOSITION，``latest_resolved_disposition`` 存量通道——切换后仅作
+         审计镜像，存量放行不做数据回填，新裁决一律经 grant 重建 STATE 豁免）
+         → 查无转 ``_handle_verdict_env_exemption_inconclusive`` 升级停车
          （fix-env-exemption-exit-reachability 1.1：**首次命中即升级**——
          SIGNAL + 带 choices 的人工告警、spec 停 implemented 等待人工豁免
          或修环境裁决、**不再自动重验**，人工经 choices 处置后重置重验），
@@ -1978,11 +2102,89 @@ def _handle_env_exemption_handshake(
     到 verified）——既有 fail-open 守卫语义零变更。
     """
     from core.admin_store import AdminStore
+    from core.state_machine import (
+        find_env_exemption,
+        parse_env_exemptions,
+        scenario_fail_signature_body,
+    )
     from core.verdict_check import load_report, save_report
 
     verdict = _verdict_env_exemption_level2(pipeline, spec_name, report)
     if not verdict["hit"]:
         return False
+
+    # ── 通道 0：spec 级 STATE 豁免（双门同源主放行）──────────────────
+    sm_entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    state_exemptions = parse_env_exemptions(sm_entry)
+    if state_exemptions:
+        hashes = _load_frozen_scenario_hashes(
+            pipeline._context.project_root, spec_name
+        )
+        rep0 = report if isinstance(report, dict) else load_report(
+            pipeline._context.project_root, spec_name
+        )
+        if _env_exemptions_cover(pipeline, spec_name, rep0, sm_entry, hashes):
+            matched = None
+            for sc in (rep0 or {}).get("scenarios") or []:
+                if not isinstance(sc, dict) or sc.get("status") in ("pass", "passed"):
+                    continue
+                sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+                matched = find_env_exemption(
+                    sm_entry, sid, scenario_fail_signature_body(sc),
+                    current_hash=str(hashes.get(sid) or ""),
+                )
+                if matched is not None:
+                    break
+            backlink = {
+                "anchor": "env_exemptions",
+                "signal_type": "inconclusive_loop",
+                "result": "resolved",
+                "granted_at": (matched or {}).get("granted_at"),
+                "scenario_id": (matched or {}).get("scenario_id"),
+                "id": (matched or {}).get("disposition_id"),
+                "action_taken": "grant_env_exemption",
+                "note": (
+                    "env 豁免经 spec 级 STATE 豁免字段生效"
+                    "（evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit："
+                    "握手与白化门禁同源消费）"
+                ),
+            }
+            rep = rep0 if isinstance(rep0, dict) else {}
+            backlink_note = "报告不可得，豁免回链未写入"
+            if rep:
+                rep["admin_disposition_backlink"] = backlink
+                backlink_note = "报告已保留豁免回链"
+                try:
+                    save_report(pipeline._context.project_root, spec_name, rep)
+                except OSError as e:
+                    backlink_note = "报告豁免回链写回失败（未保留）"
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"豁免回链写回 report.json 失败 '{spec_name}'"
+                        f"（不阻断放行）: {e}",
+                    )
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"env 豁免握手放行 '{spec_name}'：本轮全部 env 失败场景命中有效 "
+                f"STATE 豁免（场景 {backlink.get('scenario_id')}，"
+                f"granted_at={backlink.get('granted_at')}），{backlink_note}",
+            )
+            return False
+        # STATE 豁免在场但未覆盖本轮（场景定义修订致 hash 失效 / TTL 过期 /
+        # 失败签名漂移）：STATE 是唯一生效源，**不回退 disposition 存量通道**
+        # ——grant 会同时落 disposition 审计镜像，若该镜像仍可独立放行，
+        # 「场景变更即失效」被完全架空（回到本 SPEC 要消除的双门矛盾）。
+        # 转升级停车（修订 re-entry 旗标在停车入口先于升级消费）。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"env 豁免握手拦截 '{spec_name}'：STATE 豁免在场但对本轮全部 env "
+            f"失败场景未全部命中（场景定义修订/TTL 过期/签名漂移任一失效），"
+            f"STATE 为唯一生效源不回退 disposition 存量通道 — 转升级停车",
+        )
+        rep_fail = rep0 if isinstance(rep0, dict) else (report or {})
+        return _handle_verdict_env_exemption_inconclusive(
+            pipeline, spec_name, rep_fail, verdict
+        )
 
     store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
     try:

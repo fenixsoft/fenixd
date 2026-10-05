@@ -522,7 +522,9 @@ def is_scenario_exemptible(scenario: dict) -> bool:
     return not has_product_bug_assertion(scenario)
 
 
-def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
+def whitewash_violations(scenarios: list, verdict: str,
+                         env_exemptions=None, scenario_hashes=None,
+                         now=None) -> List[str]:
     """verified 洗白不变量（help-center 0/15 verified 事故的防线）。
 
     - 0 通过 + 有失败 → 不得 verified（无论失败分类为何——合成报告
@@ -544,6 +546,15 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
       并按 env 阻塞升级，与申报豁免语义不符；但 env 豁免仍计入 env 通道
       （help-center 事故防线：env 不得借豁免通道放行 verified）。
 
+    evo-fix-env-exemption-gate-conflict-…（1.2）：``env_exemptions`` 传入 spec
+    级 STATE 豁免清单（``state_machine.parse_env_exemptions`` 产物，与升级
+    握手同源）时，env 失败场景逐项查有效豁免（场景 id+归一化失败签名+场景
+    定义 hash+时效，``find_env_exemption`` 同一纯函数），命中则该项不计入
+    env 违规——豁免对场景级 env 不再是结构性死信（potplayer 2026-10-05：
+    握手认可、本门 43ms 后同因拒绝）。0-pass 不变量与 fail-closed 语义保持：
+    豁免只摘除 env 项，「0/N 通过（全部失败）」仍不得 verified；未传豁免
+    （None/空）行为与本表其余不变量零变化。
+
     仅约束 verdict=verified；bug-found 不受限。Returns: 违规说明列表（空=放行）。
     """
     if verdict != "verified":
@@ -558,6 +569,12 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
         # 空列表 0/0 表（code-review item ca52c2521b1f）：零有效场景不构成
         # 验证通过证据，不得静默放行
         return ["0/0 场景执行（空场景表）不得判 verified"]
+    # 豁免查询上下文（1.2）：与升级握手同源——场景定义 hash 表供「场景定义
+    # 变更即失效」判定，时钟供 TTL 校验（测试注入）。缺省无 hash 证据（冻结
+    # 文件不可得）不判失效，与 env_exemption_active 口径一致。
+    from core.state_machine import find_env_exemption, scenario_fail_signature_body
+
+    hashes = scenario_hashes if isinstance(scenario_hashes, dict) else {}
     total = len(scenarios)
     passed = 0
     env_failed: List[str] = []
@@ -584,11 +601,17 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
             # 0/15 事故防线），豁免合法性（非 product-bug）由
             # validate_fast_track_result 的豁免逃逸检查把关。
             if sc.get("classification") == "env":
-                env_failed.append(sid)
+                _collect_env_failed(
+                    sc, sid, env_failed, env_exemptions, hashes, now,
+                    find_env_exemption, scenario_fail_signature_body,
+                )
         else:
             has_failed = True
             if sc.get("classification") == "env":
-                env_failed.append(sid)
+                _collect_env_failed(
+                    sc, sid, env_failed, env_exemptions, hashes, now,
+                    find_env_exemption, scenario_fail_signature_body,
+                )
     violations: List[str] = []
     if invalid_idx:
         violations.append(
@@ -602,6 +625,28 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
             "env 失败场景不得判 verified（须升级 admin 处置）: " + "、".join(env_failed[:8])
         )
     return violations
+
+
+def _collect_env_failed(sc: dict, sid: str, env_failed: List[str],
+                        env_exemptions, hashes: dict, now,
+                        find_exemption, signature_body_fn) -> None:
+    """env 失败场景计入违规前的豁免查询（whitewash_violations 内部助手）。
+
+    无豁免上下文（env_exemptions 为空）零行为变化（既有口径原样计入）；
+    有上下文时以「场景 id+归一化失败签名+定义 hash+时效」查有效豁免
+    （与升级握手共享 find_env_exemption 同一纯函数），命中则该项豁免、
+    不计入 env 违规。
+    """
+    if not env_exemptions:
+        env_failed.append(sid)
+        return
+    hit = find_exemption(
+        env_exemptions, sid, signature_body_fn(sc),
+        current_hash=str(hashes.get(sid) or ""),
+        now=now,
+    )
+    if hit is None:
+        env_failed.append(sid)
 
 
 def validate_report(report: dict) -> dict:

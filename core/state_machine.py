@@ -9,6 +9,7 @@ Handles atomic reads/writes of STATE.md with file locking.
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -285,6 +286,239 @@ ENV_BLOCK_ROUNDS_FIELD = "_env_block_rounds"
 # 冻结阈值单点定义（与上面字段名同源防漂移）：连续达到该轮数仍 env 阻塞
 # → 结构化冻结转人工（判定在 pm_engine.verification 升级通道）。
 ENV_BLOCK_FREEZE_THRESHOLD = 2
+
+# ── env 豁免 STATE 结构化字段（evo-fix-env-exemption-gate-conflict-… 1.1/1.4）──
+# 豁免以「场景 id + 归一化失败签名」为键持久化到 spec 级 STATE 字段（结构常量
+# 单源定义，admin_actions / verdict_check / escalation 共用，防多点漂移）：
+#
+# - _env_exemptions：豁免清单，值存 JSON 字符串（STATE.md 行内可往返解析，
+#   IMPL_DIAGNOSIS_FIELD 同范式），元素形态
+#   {"scenario_id", "failure_signature", "scenario_hash", "granted_at",
+#    "disposition_id"}（scenario_hash/disposition_id 可空）。
+#   升级握手（escalation）与白化门禁（verdict_check）消费同一数据源——
+#   「握手认可、门禁拒绝」双门矛盾（potplayer 2026-10-05 事故：豁免只落
+#   AdminStore disposition，门禁读不到、43ms 后同因拒绝）由同源消除。
+#   切换后 STATE 为唯一生效源：存量 AdminStore disposition 不做数据回填
+#   （fail-closed——无 STATE 豁免即无豁免，受影响 spec 重走一次裁决即重建），
+#   disposition 自此仅作审计镜像。
+# - _scenario_revision_count：场景修订出口（revise_scenario_reverify）已执行
+#   次数（生命周期累计，达上限后修订请求转人工冻结）。
+# - _scenario_revision_reverify_pending：修订 re-entry 旗标。修订执行器置位；
+#   升级停车入口见旗标先于升级消费一次（修订 re-entry 先于升级），verified
+#   落定清除。
+ENV_EXEMPTIONS_FIELD = "_env_exemptions"
+SCENARIO_REVISION_COUNT_FIELD = "_scenario_revision_count"
+SCENARIO_REVISION_PENDING_FIELD = "_scenario_revision_reverify_pending"
+
+# 场景修订次数上限（evo-fix-env-exemption-gate-conflict-… 2.1，默认 2）：
+# 修订是「重写验证输入」的人工出口，无上限则场景不可行的问题被反复修订
+# 掩盖（预算焚烧的温和形态）。达上限后修订请求拒绝并冻结转人工。
+# 生命周期累计（跨验证复位保持，_RETRY_COUNTER_RESETS 不清此字段）。
+SCENARIO_REVISION_MAX_COUNT = 2
+
+# 豁免时效锚点：granted_at 起超过该小时数即失效（TTL 过期后恢复既有升级/
+# 冻结计数语义，冻结兜底保留）。
+ENV_EXEMPTION_TTL_HOURS = 72
+
+# 豁免清单条目上限：豁免随 grant 追加、随每次状态写盘整体重写，不设上限则
+# 长生命周期 spec 反复裁决时无界增长（REFUNDED_RUN_IDS_MAX_ANCHORS 同款
+# 封顶先例）；追加时截断保留最近 N 条。
+ENV_EXEMPTION_MAX_ENTRIES = 64
+
+
+def normalize_env_exemption_signature(text: str) -> str:
+    """归一化失败签名：数字→N、去引号、折叠空白（豁免签名匹配口径）。
+
+    与 ``infra_classify._normalize_fail_signature`` 同口径；不能直接 import——
+    infra_classify 反向 import 本模块常量（FROZEN_FIELD），会成环。两处口径
+    若演进 MUST 同步（此处注释即同步锚点）。
+    """
+    t = re.sub(r"\d+", "N", str(text or ""))
+    t = re.sub(r"['\"`]", "", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def scenario_fail_signature_body(sc: dict) -> str:
+    """单场景失败签名体（不含场景 id 前缀；豁免键的签名粒度）。
+
+    口径与 ``escalation._inconclusive_fail_signature`` 的单场景片段一致：
+      - blocked-env 场景（从未执行、无失败断言）：签名退化为 ``blocked-env``；
+      - 其余非 pass 场景：首失败断言 ``type + 归一化 actual``（failed_assertions
+        → assertion_results → assertion 兼容序），仍无则回退
+        ``classification|first_failed_step``；
+      - pass/passed 场景返回空串（无豁免对象）。
+    片段截断 120 字符（与既有签名摘要同口径，防 KB 级错误文本入库）。
+    """
+    if not isinstance(sc, dict):
+        return ""
+    status = sc.get("status")
+    if status in ("pass", "passed"):
+        return ""
+    if status == "blocked-env":
+        return "blocked-env"
+    ev = sc.get("evidence") if isinstance(sc.get("evidence"), dict) else {}
+    fa = None
+    for key in ("failed_assertions", "assertion_results", "assertion"):
+        val = ev.get(key)
+        if isinstance(val, list) and val:
+            fa = val
+            break
+    first = fa[0] if fa and isinstance(fa[0], dict) else None
+    if first is not None:
+        head = str(first.get("type") or "?")
+        actual = str(first.get("actual") or "")
+    else:
+        head = "nosig"
+        actual = f"{sc.get('classification') or ''}|{ev.get('first_failed_step') or ''}"
+    return f"{head}+{normalize_env_exemption_signature(actual)[:120]}"
+
+
+def scenario_fail_signature(sc: dict) -> str:
+    """单场景完整签名片段 ``<场景id>:<签名体>``（跨轮比较口径，与升级通道一致）。"""
+    if not isinstance(sc, dict):
+        return ""
+    sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+    return f"{sid}:{scenario_fail_signature_body(sc)}"
+
+
+def scenario_definition_hash(scenario_def) -> str:
+    """场景定义结构 hash（sort_keys JSON 的 sha256 前 16 位）。
+
+    豁免「场景定义变更即失效」的锚点：grant 时记当前定义 hash，校验时以冻结
+    场景文件中的当前定义重算比对——hash 变化即失效（场景被修订）。非 dict
+    入参返回空串（无定义可锚）。
+    """
+    if not isinstance(scenario_def, dict):
+        return ""
+    try:
+        payload = json.dumps(scenario_def, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def load_frozen_scenario_hashes(project_root, spec_name: str) -> dict:
+    """读冻结场景定义文件算 ``{场景 id: 定义 hash}``（本 SPEC 1.4 失效锚点）。
+
+    豁免记录 grant 时的场景定义 hash；校验时以冻结文件中的当前定义重算比对
+    ——hash 变化即「场景定义已修订」，豁免失效。读失败/文件缺失/格式损坏
+    一律返回 {}（无变更证据不判失效——grant→reset 重验会删场景文件、重规划
+    后才落回，此时豁免凭 id+签名+TTL 生效；env_exemption_active 同口径）。
+
+    单源定义在本层（state_machine），``escalation._load_frozen_scenario_hashes``
+    与 ``admin_actions._exec_grant_env_exemption`` 同引：grant 写入与双门校验
+    读到的 hash 口径必须逐字节一致，任何一侧私藏副本都会造成「写入 A 校验 B」。
+    """
+    path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / str(spec_name) / "test_scenarios.json"
+    )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(raw, list):
+        return {}
+    out: dict = {}
+    for item in raw:
+        if isinstance(item, dict) and item.get("id"):
+            out[str(item["id"])] = scenario_definition_hash(item)
+    return out
+
+
+def parse_env_exemptions(entry) -> list:
+    """STATE 条目读豁免清单（fail-closed：任何形状异常返回空清单=无豁免）。
+
+    值为 JSON 字符串（serialize 往返后恒为字符串；进程内直写形态可能是已
+    解析的 list，同样接受）。非 list / 元素非 dict / JSON 解析失败一律 []——
+    读失败=无豁免，绝不 fail-open 到放行。
+    """
+    raw = None
+    if isinstance(entry, dict):
+        raw = entry.get(ENV_EXEMPTIONS_FIELD)
+    elif isinstance(entry, (list, tuple)):
+        raw = entry  # 直接传清单（进程内形态）
+    elif isinstance(entry, str):
+        raw = entry
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, (list, tuple)):
+        items = raw
+    else:
+        try:
+            items = json.loads(str(raw))
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(items, list):
+        return []
+    return [it for it in items if isinstance(it, dict)]
+
+
+def serialize_env_exemptions(exemptions: list) -> str:
+    """豁免清单序列化为 STATE 字段值（JSON 字符串，紧凑分隔符防换行入行）。"""
+    return json.dumps(list(exemptions or []), ensure_ascii=False,
+                      separators=(",", ":"))
+
+
+def env_exemption_active(exemption: dict, scenario_id: str, failure_signature: str,
+                         current_hash: str = "", now=None) -> bool:
+    """单条豁免对（场景 id+签名+可选定义 hash）是否有效（双门共享的纯函数）。
+
+    失效条件（任一命中即无效）：
+      - 键不匹配：场景 id 或归一化失败签名不相等（签名空串不匹配，fail-closed）；
+      - 场景定义变更：豁免记录的 scenario_hash 与 current_hash **双方均非空且
+        不等**（场景被修订即失效）。current_hash 为空（冻结文件缺失/不可读，
+        无变更证据）不判失效——否则 grant→reset→重验（reset 会删场景文件、
+        重规划）会把合法豁免整体打死；
+      - 时效过期：granted_at 起超过 ``ENV_EXEMPTION_TTL_HOURS``（granted_at
+        缺失/不可解析按过期，fail-closed）。
+
+    ``now`` 供测试注入时钟；缺省取当前 UTC 时刻。
+    """
+    if not isinstance(exemption, dict):
+        return False
+    if str(exemption.get("scenario_id") or "") != str(scenario_id or ""):
+        return False
+    sig = normalize_env_exemption_signature(failure_signature)
+    if not sig or sig != normalize_env_exemption_signature(
+        str(exemption.get("failure_signature") or "")
+    ):
+        return False
+    recorded_hash = str(exemption.get("scenario_hash") or "")
+    if recorded_hash and current_hash and recorded_hash != str(current_hash):
+        return False
+    granted_raw = str(exemption.get("granted_at") or "")
+    if not granted_raw:
+        return False
+    try:
+        granted = datetime.fromisoformat(granted_raw)
+    except (ValueError, TypeError):
+        return False
+    if granted.tzinfo is None:
+        granted = granted.replace(tzinfo=timezone.utc)
+    now_dt = now if now is not None else datetime.now(timezone.utc)
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    return (now_dt - granted).total_seconds() < ENV_EXEMPTION_TTL_HOURS * 3600.0
+
+
+def find_env_exemption(entry, scenario_id: str, failure_signature: str,
+                       current_hash: str = "", now=None):
+    """在 STATE 条目的豁免清单中查找（场景 id+签名）命中的有效豁免。
+
+    Returns: 命中的豁免 dict（同场景 id 多条时取最近 granted_at），无命中返回
+    None（含清单缺省/读失败=fail-closed 无豁免）。
+    """
+    best = None
+    best_key = ""
+    for ex in parse_env_exemptions(entry):
+        if not env_exemption_active(ex, scenario_id, failure_signature,
+                                    current_hash=current_hash, now=now):
+            continue
+        key = str(ex.get("granted_at") or "")
+        if best is None or key > best_key:
+            best, best_key = ex, key
+    return best
 
 # ── 基础设施失败预算豁免侧车（evo-infra-failure-budget-exempt R2/R3）──
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
@@ -634,6 +868,11 @@ class StateParser:
                     # 先例）。
                     "_token_warn_80",
                     "_token_alert_100",
+                    # evo-fix-env-exemption-gate-conflict-… 2.2：场景修订待重验
+                    # 旗标——False 不转会读回 "False" 为 truthy，升级停车入口
+                    # 会把已消费的修订 re-entry 误判为仍在待重验（无限追加
+                    # 重验轮）。
+                    SCENARIO_REVISION_PENDING_FIELD,
                 ):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
