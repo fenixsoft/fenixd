@@ -77,10 +77,8 @@ type MessageItemProps = {
 };
 
 const MessageItem = memo(({ message, prevMessage, showThinking = false }: MessageItemProps) => {
-  const isGrouped =
-    prevMessage &&
-    prevMessage.type === message.type &&
-    ['assistant', 'user', 'tool', 'error', 'system'].includes(message.type);
+  // ChatMessageType 全部类型均参与相邻同类型分组，仅需相邻两条类型一致
+  const isGrouped = prevMessage && prevMessage.type === message.type;
 
   const formattedMessageContent = useMemo(
     () => formatUsageLimitText(String(message.content || '')),
