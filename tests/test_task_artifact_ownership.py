@@ -104,6 +104,21 @@ class TestOwnershipViolationMatrix:
         v = ownership_violations_for_task_line(line, "full")
         assert v == []
 
+    def test_no_violation_code_ext_adjacent_cjk(self):
+        """场景：代码扩展名后紧邻中文（路径不在代码前缀清单内）→ 仍算代码特征，放行。
+
+        code-review 068aaffb4310 回归钉：``\b`` 按 Unicode 词符判定、汉字属
+        词字符，「api.ts的」原不命中 _CODE_EXT_RE——代码文件不在
+        _CODE_PATH_PREFIXES 六前缀内（如前端仓库 ``src/api.ts``）时步骤 2
+        代码特征漏检，叠加产出动词即把合法任务行误判为归属违规。
+        """
+        line = (
+            "- [ ] 1.1 实现 src/api.ts的鉴权中间件，"
+            "写 .fenix/verify-progress/<spec>/report.json"
+        )
+        v = ownership_violations_for_task_line(line, "full")
+        assert v == []
+
     def test_no_violation_unrelated_task(self):
         """场景：与验证产物无关的任务 → 放行。"""
         line = "与验证产物无关的任务"

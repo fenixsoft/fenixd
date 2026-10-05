@@ -166,9 +166,15 @@ _VP_DIR_REF_RE = re.compile(
 )
 
 # 代码扩展名出现（遮蔽后扫描）——由 _CODE_EXTENSIONS 动态拼接（同
-# _VP_ARTIFACT_RE 做法），保持扩展名清单单一真相源
+# _VP_ARTIFACT_RE 做法），保持扩展名清单单一真相源。
+# 尾部不用 ``\b``（code-review 068aaffb4310）：Python 3 str 正则的 \b 按
+# Unicode 词符判定、汉字属词字符，扩展名后紧邻中文的形态（``api.ts的``/
+# ``api.ts后``）\b 失配 → 步骤 2 代码特征漏检，叠加产出动词即按归属违规
+# 误拦合法任务行。改用仅排除 ASCII 标识符续字符的负向预查：扩展名后接
+# 中文等非 ASCII 字符仍判命中；``.ts_x`` 这类标识符续字符形态与原 \b
+# 行为一致不命中（属更长标识符，非独立扩展名）。
 _CODE_EXT_RE = re.compile(
-    r"\.(?:" + "|".join(re.escape(ext[1:]) for ext in _CODE_EXTENSIONS) + r")\b"
+    r"\.(?:" + "|".join(re.escape(ext[1:]) for ext in _CODE_EXTENSIONS) + r")(?![A-Za-z0-9_])"
 )
 
 # 产出动词匹配（步骤 3）：单字动词以否定回顾排除改写/读取语义前缀
