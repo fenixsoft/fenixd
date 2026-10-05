@@ -62,7 +62,16 @@ def main():
         )
 
     args = parser.parse_args()
-    project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
+    try:
+        # 路径解析收口进 try（与 fenix_archive.py 同场景防护对齐）：expanduser
+        # 解析不出家目录抛 RuntimeError、含空字节路径在构造/resolve 阶段抛
+        # ValueError，裸抛会绕过 _run 的统一 JSON 兜底，进程以 traceback 收场。
+        project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
+    except (ValueError, OSError, RuntimeError) as e:
+        # 错误基座与 _run 各命令分支同形（new 带 path 键），下游按命令解析不缺字段
+        error_base = {"ok": False, "path": None} if args.command == "new" else {"ok": False}
+        _emit({**error_base, "error": str(e)}, ok=False)
+        return
     # 直接以框架 bin/ 路径调用时 PROJECT_ROOT 三级上溯会指到仓库父目录（其下无 spec/）。
     # new 是创建性命令，会在错误根下 mkdir 出错位脚手架（fenix_archive.py 对同场景
     # 是检测 spec/ 缺失即回退框架根），故在 new 分支内前置拒绝而非仅附报错提示；
