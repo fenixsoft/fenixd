@@ -917,7 +917,15 @@ class H0BaseMixin:
             if path.startswith("/api/"):
                 if path == "/api/stream":
                     if method == "GET":
-                        self._handle_sse()
+                        try:
+                            self._handle_sse()
+                        finally:
+                            # SSE 流终结后连接刻意复用（sse_routes 不置
+                            # close_connection），GET 携带 body（curl -X GET -d、
+                            # 部分代理）时残留字节会被下一请求当请求行解析
+                            # （BUG-01 同类缺口），与其余派发分支同口径排空；
+                            # 常规无 body 请求为 no-op 零开销
+                            self._drain_remaining_request_body()
                         return
                     # 排空 body 后再回 405（code-review item 265e22d75797）
                     self._drain_remaining_request_body()
