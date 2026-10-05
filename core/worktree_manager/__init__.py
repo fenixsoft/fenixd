@@ -31,44 +31,21 @@ from core.worktree_manager.artifact_paths import ArtifactPathMatcher
 # 避免 v2_dev_server 等模块 import 本模块造成循环依赖）。
 _is_claude_process = is_claude_process
 
-# ── 常量定义（design D1：8 常量，门面 re-export） ─────────────────────────────
+# ── 常量（design D1）：单源定义于 constants.py（code-review abf55539cf18：
+#    子模块改从 constants 导入，消除「常量定义须先于子模块导入」的隐式顺序）；
+#    此处 re-export 门面，既有 `from core.worktree_manager import X` 路径不变。
 
-# ── 锁治理（improve-run-lifecycle-governance D4）─────────────────────────────
-# 锁是内存集合 _spec_locks，daemon 重启即丢失；同时 attempt/resume 的孤儿子进程
-# 却可能在进程表中继续存活。两类场景都以「真实进程表」为唯一真相：
-#   - 在册锁扫描不到匹配进程、且对应 run 流文件停止增长超过该窗口 → 陈锁，回收
-#   - 无在册锁但进程表存在指向该 spec worktree 的存活进程 → 视为仍持锁
-STALE_LOCK_IDLE_SECONDS = 120
-# 恢复重派遗产宽限期（add-recovery-legacy-check D2）：跟随孤儿清扫周期的同族常量，
-# 不引入独立定时器。遗产注册后若后继 run 迟迟未 merge（如全链冷却），宽限期超时由
-# 清扫器兜底回收。与 STALE_LOCK_IDLE_SECONDS 同族，语义上即「孤儿清扫一轮能扫到的
-# 最大陈态窗口」，遗产在此窗口内保留、超时即视为无人收编而回收。
-LEGACY_GRACE_SECONDS = STALE_LOCK_IDLE_SECONDS
-# has_active_worktree 在派发热路径被高频调用，pgrep 每次数十毫秒；对同一 spec
-# 的进程表扫描做短缓存，避免派发风暴。缓存窗口内的进程消失/出现误差可接受。
-PROCESS_SCAN_CACHE_SECONDS = 5.0
-# pre-dispatch autostash 条目的消息前缀（fix-autostash-orphans）：周期巡检按此
-# 识别「框架自己 stash 的条目」——人工手工 stash 的条目不带此前缀，永不自动回收。
-AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
-# merge-back 前 WIP 重叠闸门收纳条目的消息前缀（evo-merge-back-wip-overlap-gate
-# D1）：MUST NOT 包含 AUTOSTASH_MSG_PREFIX 子串——reclaim_stale_autostash 以
-# 子串匹配栈顶并 pop（stash_guard.py），复用同前缀会让「故意保留待人工找回」的
-# 闸门条目被 60s 巡检抢走并沿用丢弃策略，去向记录随即失真。
-WIP_GATE_STASH_PREFIX = "fenix: wip-overlap gate stash"
-
-# dashboard 静态根（相对项目根）：构建产物目录（dist/、v3/dist/ 等层级变体）
-# 都在其下。产物冲突判定按目录层次容错——写死单一路径前缀会在主树重命名产物
-# 目录（如 v3/dist→dist，add-dashboard-incremental-data 事故）后，把冲突
-# rename 双胞胎的旧路径误判为语义冲突，自愈静默跳过。
-DASHBOARD_STATIC_ROOT = "core/dashboard/static/"
-
-# ── worktree 可用性三态（interrupt-recovery-preserve D5）────────────────────
-# is_available 的返回值：以 git 为真相（git worktree list + rev-parse --verify），
-# 不信任内存表（daemon 重启即失）。recovery 保留判定、resume 派发、复用认领
-# 三条链路共用同一查询，禁止各链路自行拼装目录/分支判断。
-WT_AVAILABLE = "available"  # 分支可解析 + 目录在场 + git worktree 注册有效 → 原地可用
-WT_REBUILDABLE = "rebuildable"  # 分支可解析但目录缺失/未注册 → 可在既有分支上重建
-WT_UNAVAILABLE = "unavailable"  # 分支不可解析（已并入/已清扫/typo）→ 不可用，调用方降级
+from core.worktree_manager.constants import (  # noqa: F401, E402
+    AUTOSTASH_MSG_PREFIX,
+    DASHBOARD_STATIC_ROOT,
+    LEGACY_GRACE_SECONDS,
+    PROCESS_SCAN_CACHE_SECONDS,
+    STALE_LOCK_IDLE_SECONDS,
+    WT_AVAILABLE,
+    WT_REBUILDABLE,
+    WT_UNAVAILABLE,
+    WIP_GATE_STASH_PREFIX,
+)
 
 
 # ── 数据类（design D1：types.py 原样保留，此处 re-export） ──────────────────
@@ -76,8 +53,12 @@ WT_UNAVAILABLE = "unavailable"  # 分支不可解析（已并入/已清扫/typo�
 from core.worktree_manager.types import MergeConflictInfo  # noqa: E402
 
 
-# ── 子模块 mixins（refactor-giant-classes 逐组摘出；常量已在上方定义，
-#    子模块经本包命名空间解析常量，无循环） ─────────────────────────────────
+# ── 子模块 mixins（refactor-giant-classes 逐组摘出）──────────────────────────
+# 常量单源在 constants.py：子模块直接从 constants 导入，不再依赖「本包常量
+# 定义先于子模块导入」的顺序——原注释声称「无循环」实为被定义顺序化解的
+# 循环导入（code-review abf55539cf18）。子模块仍经本包命名空间解析的名
+# （如上方 _is_claude_process 别名）必须在本块导入语句之前定义，这是仅存的
+# 顺序约束，新增包级符号供子模块引用时须遵守。
 
 from core.worktree_manager import dist_conflicts, legacy_registry, lifecycle, locks  # noqa: F401, E402
 from core.worktree_manager import mergeback, queries, repair_site, stale_sweep, stash_guard  # noqa: F401, E402

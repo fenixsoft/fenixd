@@ -587,7 +587,17 @@ class ApiRunner(VerifyRunner):
                 data_truncated = True
             events.append({"data": data, "event": event["event"]})
 
-        capture = {"type": "sse", "events": events, "duration": duration}
+        # 截断标注透出（口径对齐 http_request capture 的 truncated）：单事件
+        # data 超 64KB 或事件数触顶后，被截断的事件证据外观完整，若只拼进步
+        # 骤 detail 文案，sse_event_matches 等内容断言失败时 judge 无法区分
+        # 「事件内容不匹配」与「证据不完整」。
+        capture = {
+            "type": "sse",
+            "events": events,
+            "duration": duration,
+            "truncated": truncated,
+            "data_truncated": data_truncated,
+        }
         name = step.get("as") or ""
         if name == "_latest":
             # `_latest` 是框架保留键：场景 as 命名撞上会与未命名步骤的

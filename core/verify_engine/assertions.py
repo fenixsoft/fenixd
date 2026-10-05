@@ -16,6 +16,12 @@ import re
 import time
 from typing import Any
 
+# 词表 layer 表单一权威源在 scenarios.py（WEB_ASSERTION_LAYERS，同 api/cli
+# 侧从 scenarios 导入层词表的模式）：各 handler 内硬编码的 layer 是第二
+# 副本，run() 出口统一按词表覆盖（code-review item d2b223e5f4dc），任一侧
+# 调整层归属或新增断言类型时不再静默漂移。
+from .scenarios import WEB_ASSERTION_LAYERS
+
 # 第三方 regex 库（环境可用时）为 regex 模式提供 timeout 参数，防灾难性
 # 回溯正则挂起整个验证执行；库缺失时退回 stdlib re（无超时保护）。
 try:
@@ -125,6 +131,13 @@ class AssertionRunner:
                     result = await handler(page, assertion)
                     result.setdefault("type", a_type)
                     result.setdefault("layer", 0)
+                    # 层归属以 scenarios.WEB_ASSERTION_LAYERS 为单一权威源
+                    # 覆盖（code-review item d2b223e5f4dc）：消除 handler
+                    # 硬编码 layer 这第二副本的漂移面；词表未登记的类型保留
+                    # handler 原值（缺省 0，与未知类型回退口径一致）。
+                    result["layer"] = WEB_ASSERTION_LAYERS.get(
+                        a_type, result.get("layer", 0)
+                    )
                     # 统一补 label（code-review item 17bc55668597）：仅部分
                     # handler（element_visible/element_count/element_enabled/
                     # no_click_interception 等）在结果里自带 label，其余
@@ -815,7 +828,14 @@ class AssertionRunner:
 
             if time.monotonic() >= deadline:
                 break
-            await page.wait_for_timeout(interval_ms)
+            # 按剩余预算截断睡眠（code-review item 9ada803767ca）：全额睡
+            # interval_ms 时最坏时序为「读取挂满 interval + 睡 interval +
+            # 再读挂满 interval」，单条断言墙钟可达声明 timeout 的约 3 倍，
+            # 与 _clamp_poll_params 注释宣称的单条断言预算量级偏离；截断后
+            # 睡眠不会把下一轮读取起点推过 deadline，墙钟上界收敛回
+            # timeout + 单轮读取量级（deadline 为 monotonic 秒，换算毫秒）。
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            await page.wait_for_timeout(min(interval_ms, max(0, remaining_ms)))
 
         return {
             "type": "text_match",
@@ -837,6 +857,7 @@ class AssertionRunner:
 
         支持两种字段名: text 或 expected。
         如果提供了 selector，则在指定的任意一个匹配元素内查找文本。
+        结果 match_semantics 透出实际匹配分支与大小写口径（三条路径不同）。
         """
         text = a.get("text") or a.get("expected", "")
         selector = a.get("selector", "")
@@ -871,7 +892,14 @@ class AssertionRunner:
 
         # 逐元素取数触顶标注（页面级降级分支不产生），随结果 note 带出
         budget_note = ""
+        # 实际匹配口径透出（code-review item a60cce14f7b1）：有无 selector 的
+        # 两条路径（含页面级异常保底）大小写敏感性与空白归一不同，随结果
+        # match_semantics 透出实际分支与大小写口径供 judge 归因；判档本身
+        # 维持各分支既有语义不变——存量冻结场景依赖页面级 get_by_text 的
+        # 大小写不敏感匹配，统一改口径会翻转既有判定。
+        match_semantics = ""
         if selector:
+            match_semantics = "selector 元素文本子串比较（大小写敏感）"
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配
             try:
                 await page.locator(selector).first.wait_for(state="attached", timeout=3000)
@@ -938,8 +966,12 @@ class AssertionRunner:
                     )
                 except Exception:
                     pass
+                match_semantics = "页面级 get_by_text（大小写不敏感、空白归一）"
                 passed = await page.get_by_text(text).count() > 0
             except Exception:
+                match_semantics = (
+                    "页面级 page.content() 原始 HTML 子串保底（大小写敏感）"
+                )
                 content = await page.content()
                 passed = text in content
 
@@ -948,6 +980,7 @@ class AssertionRunner:
             "layer": 3,
             "text": text,
             "pass": passed,
+            "match_semantics": match_semantics,
             **({"note": budget_note} if budget_note else {}),
         }
 
@@ -1036,7 +1069,12 @@ class AssertionRunner:
                 break
             if time.monotonic() >= deadline:
                 break
-            await page.wait_for_timeout(interval_ms)
+            # 按剩余预算截断睡眠（code-review item 9ada803767ca，同 text_match
+            # 口径）：全额睡 interval_ms 的最坏墙钟可达声明 timeout 约 3 倍；
+            # 截断后睡眠不会把下一轮读取起点推过 deadline，墙钟上界收敛回
+            # timeout + 单轮读取量级（deadline 为 monotonic 秒，换算毫秒）。
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            await page.wait_for_timeout(min(interval_ms, max(0, remaining_ms)))
 
         return {
             "type": "attribute_match",

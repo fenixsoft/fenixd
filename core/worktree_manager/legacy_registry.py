@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from core.worktree_manager import (  # noqa: E402
+from core.worktree_manager.constants import (  # noqa: E402
     LEGACY_GRACE_SECONDS,
     WT_AVAILABLE,
 )

@@ -91,16 +91,27 @@ class G9RepairSiteMixin:
         """
         if not branch:
             return None, None
-        avail = self.is_available(branch=branch)
+        # code-review item f7623a814c4d：先查一次注册路径，命中即以
+        # known_registered 带入 is_available 复用同一次 ``git worktree list``
+        # 结果——AVAILABLE 分支不再二次 find_worktree_path 子进程（对齐
+        # e4d825bb770e 的重复子进程治理先例）；未命中不带入，保持原单源
+        # 查询语义（is_available 内部自行判定）。
+        existing = self.find_worktree_path(branch)
+        if existing is not None:
+            avail = self.is_available(branch=branch, known_registered=existing)
+        else:
+            avail = self.is_available(branch=branch)
         if avail == WT_UNAVAILABLE:
             return None, None
         if avail == WT_AVAILABLE:
-            existing = self.find_worktree_path(branch)
+            # known_registered 即三态判定所用的 registered：AVAILABLE 成立时
+            # 必非 None（注册在场且目录有效）；None 防御保留（两次查询间
+            # 的竞态窗口）→ 走下方重建分支，与原「意外返回 None」同语义。
             if existing is not None:
                 self._active_worktrees.add(str(existing))
                 self._wt_branches[str(existing)] = branch
                 return existing, branch
-        # WT_REBUILDABLE（或 WT_AVAILABLE 但 find_worktree_path 意外返回 None）
+        # WT_REBUILDABLE（或 WT_AVAILABLE 但注册路径意外为 None）
         wt = self.create_worktree_on_branch(spec_name, branch)
         if wt is None:
             return None, None

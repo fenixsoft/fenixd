@@ -127,7 +127,7 @@ class G8QueryMixin:
         except Exception:
             return False
 
-    def is_available(self, wt_path=None, branch=None) -> str:
+    def is_available(self, wt_path=None, branch=None, known_registered=None) -> str:
         """worktree 可用性三态单源查询（interrupt-recovery-preserve D5）。
 
         三态：
@@ -143,6 +143,11 @@ class G8QueryMixin:
             wt_path: 候选 worktree 路径（Path/str，可选）。提供时与 git 注册
                 结果核对：与注册不符的残留目录不视为可用（以 git 为准）。
             branch: 分支名（可选）。缺省时尝试从 wt_path 的 HEAD 解析分支。
+            known_registered: 调用方已持有的 ``find_worktree_path(branch)``
+                结果（Path，可选）。提供时直接复用、跳过内部重复的
+                ``git worktree list`` 子进程（code-review item f7623a814c4d）；
+                None（缺省）＝未提供，维持内部自行查询的原语义。调用方
+                MUST 仅在实际查询且命中（非 None）时传入。
 
         Returns: 三态字符串之一（WT_* 常量）。
         """
@@ -155,7 +160,11 @@ class G8QueryMixin:
                 return WT_UNAVAILABLE
         if not self.branch_exists(branch):
             return WT_UNAVAILABLE
-        registered = self.find_worktree_path(branch)
+        registered = (
+            known_registered
+            if known_registered is not None
+            else self.find_worktree_path(branch)
+        )
         if wt_path is not None:
             # 显式候选路径：以其自身目录存在性为「原地可用」判据——防止对
             # 已删目录盲派发（fix-resume-stale-worktree 同源缺口）。目录残留
@@ -636,22 +645,18 @@ class G8QueryMixin:
     def _wt_name_matches_spec(wt_name: str, spec_name: str) -> bool:
         """worktree 目录名是否精确对应 spec（``{impl,verify,repair,judge}-<spec>-<ts>``）。
 
-        从目录名解析出完整 spec 再与目标精确比较（分隔符边界锚定，禁止子串
-        包含）：``impl-fix-x-1`` 对 spec ``fix-x`` 命中、对 ``fix`` 不命中。
-        非本框架命名（前缀不识别/缺时间戳段）返回 False。前缀词表即模块级
-        ``_WT_NAME_PREFIXES``（与 _spec_from_worktree_name 单源，含 judge，
-        a800466bdff4）。
+        解析复用 :meth:`_spec_from_worktree_name`（目录名解析单源化，
+        code-review item 69dad304997f——剥离载体前缀 + 末段纯数字时间戳
+        的规则只此一份，任一侧边界规则调整不再静默漂移），再与目标精确
+        比较（分隔符边界锚定，禁止子串包含）：``impl-fix-x-1`` 对 spec
+        ``fix-x`` 命中、对 ``fix`` 不命中。非本框架命名（前缀不识别/
+        缺时间戳段）解析返回 None，比较结果 False。前缀词表即模块级
+        ``_WT_NAME_PREFIXES``（单源在 _spec_from_worktree_name 侧，含
+        judge，a800466bdff4）。
         """
         if not wt_name or not spec_name:
             return False
-        for prefix in _WT_NAME_PREFIXES:
-            if wt_name.startswith(f"{prefix}-"):
-                rest = wt_name[len(prefix) + 1 :]
-                parts = rest.rsplit("-", 1)
-                if len(parts) == 2 and parts[0] and parts[1].isdigit():
-                    return parts[0] == spec_name
-                return False
-        return False
+        return G8QueryMixin._spec_from_worktree_name(wt_name) == spec_name
 
     def has_pending_merge(self, spec_name: str) -> bool:
         """该 spec 是否存在待合并实现分支（未并入 main 的提交）。
@@ -876,11 +881,24 @@ class G8QueryMixin:
         归属判定与 :meth:`_wt_name_matches_spec` 同口径：解析出完整 spec
         名全等比较（分隔符边界锚定，禁止子串包含）——spec 名互为前缀时
         （``fix-x`` vs ``fix-x-y``）裸 ``startswith`` 会误取他人 worktree。
+
+        is_dir() 检查后 base_dir 被并发移除时 iterdir 抛
+        FileNotFoundError/NotADirectoryError——对齐 stale_sweep 清扫侧的
+        non-blocking 降级口径（code-review item bc23468839cf）：记 WARNING
+        并返回 None，不沿 repair 认领调用链上抛。
         """
         if not self.base_dir.is_dir():
             return None
         candidates = []
-        for d in self.base_dir.iterdir():
+        try:
+            entries = list(self.base_dir.iterdir())
+        except OSError as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Implementer worktree scan failed (non-blocking): {e}",
+            )
+            return None
+        for d in entries:
             if (
                 d.is_dir()
                 and d.name.startswith("impl-")
