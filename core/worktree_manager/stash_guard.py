@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -268,6 +269,28 @@ class G6StashGuardMixin:
             )
             return False, []
         if result.returncode == 0:
+            # pop 成功后核对被弹条目（对齐 reclaim 侧防插队口径，code-review
+            # item e61e122c2d36）：上方复核与本次 pop 之间仍留跨进程窗口
+            # （_main_tree_lock 只串行化本进程，dashboard 侧独立 WorktreeManager
+            # 或人工 push 不受其约束），窗口内栈顶被插队时 pop 弹的是他人条目。
+            # pop 输出含「Dropped refs/stash@{0} (<sha>)」，解析出的 sha 与
+            # pinned_sha 不一致即误弹，记 ERROR 供人工按 sha 排查；解析不到
+            # Dropped 行（输出形态变化）或 pin 为空时跳过核对不误报。仅补
+            # 观测，不改变 pop 成功的返回语义（同 reclaim_stale_autostash）。
+            dropped_sha = ""
+            m = re.search(
+                r"Dropped refs/stash@\{\d+\} \(([0-9a-f]+)\)",
+                result.stdout or "",
+            )
+            if m:
+                dropped_sha = m.group(1)
+            if pinned_sha and dropped_sha and dropped_sha != pinned_sha:
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stash popped a concurrent entry after merge (expected "
+                    f"{pinned_sha[:12]}, dropped {dropped_sha[:12]}); inspect "
+                    f"main tree and stash reflog",
+                )
             self.logger.info("worktree_manager", "Stash popped after merge")
             return True, []
 
