@@ -479,6 +479,7 @@ class H3SpecRoutesMixin:
         - project 不存在 → 404；spec 不在项目 STATE.md → 404
         - spec 未处于冻结态 → 409「冻结管理仅对冻结 spec 生效」
         - mode 非法 / scheduled 的 until 非法 ISO8601 → 400
+        - 写入失败（并发软删除/写入被拒）→ 409（STATE.md 零变更）
         - 成功 → 200 + {ok: true, mode, frozen_until, unfrozen?}
         """
         resolved = self._spec_query_or_error(query)
@@ -505,8 +506,11 @@ class H3SpecRoutesMixin:
         if result.get("invalid"):
             self._error(400, result.get("error") or "非法请求")
             return
-        if result.get("error") and not result.get("ok"):
-            self._error(409, result.get("error"))
+        if not result.get("ok"):
+            # 失败判定不依赖 error 键同时在场（item dc1e1a550b9a，对齐
+            # priority/budget 端点）：ok=False 而 error 缺失时也如实 409，
+            # 不再穿透为 ok:true 的成功响应误导前端刷新
+            self._error(409, result.get("error") or "冻结管理配置未生效")
             return
         self._json(
             {
