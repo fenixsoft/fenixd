@@ -1,20 +1,23 @@
 # 验证报告落盘即入库
-<!-- knowledge: capability=verification-report rev=2
-     sources=spec/archive/2026-10-05-evo-add-verification-report-commit-on-write,spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit -->
+<!-- knowledge: capability=verification-report rev=3
+     sources=spec/archive/2026-10-05-evo-add-verification-report-commit-on-write,spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit,spec/archive/2026-10-06-evo-verify-report-scenario-section-commit -->
 
-验证报告 `spec/changes/<spec>/verification-report.md` 的版本化入库能力：报告写盘成功即同步提交进版本库，使「落盘」与「入库」合一，验证结论在归档前就有版本化留痕。
+验证报告 `spec/changes/<spec>/verification-report.md` 的版本化入库能力：报告写盘成功即同步提交进版本库，使「落盘」与「入库」合一，验证结论（含场景集演进小节）在归档前就有版本化留痕。
 
 ## 现行规则
 
-- 入库时点：`ensure_verification_report`（`core/verify_report.py`）在报告文件写盘成功后，对该报告文件执行 pathspec 精确的 `git add` 与 `git commit`（两者同 pathspec），提交信息形态为 `[fenix] <spec>: verification-report 入库`。
+- 报告本体入库时点：`ensure_verification_report`（`core/verify_report.py`）在报告文件写盘成功后，对该报告文件执行 pathspec 精确的 `git add` 与 `git commit`（两者同 pathspec），提交信息形态为 `[fenix] <spec>: verification-report 入库`。
 - 两路生成均覆盖：验证 Agent 自写报告（闸门以 present 放行、框架未落盘但文件已在盘）与框架合成（`synthesize_verification_report` 落盘）两条路径都经 `ensure_verification_report` 单点汇聚；挂钩覆盖该函数全部成功出口，含 present 路径的提前返回出口——只挂合成写盘点会漏掉 Agent 自写主路径。
 - 提交范围严格单文件：pathspec 仅含本 spec 的 `verification-report.md`，不扩大到其它任何文件；禁止 `git add -A -- spec` 整目录提交（会卷入其它 spec 的在途草案）。
-- 失败语义：git 不可用、index.lock 争用等提交失败只落 WARNING 日志（附 stderr 摘要），报告文件保留在磁盘，验证主流程与函数返回值均不受影响；不重试、不阻塞。报告写盘成功的事实不被提交失败覆盖。
+- 场景段写盘即入库：验证裁决采纳流程（verified / bug-found 采纳）中，「本轮场景集变更」小节由渲染函数（`core/pm_engine/verification/scenario_gate.py`）原子写回报告成功后，立即经公开别名 `commit_verification_report` 复用同一单文件幂等提交器入库。该提交点位于报告闸门提交与状态 transition 之后，是采纳流程内报告的最后一个提交点；采纳流程结束后报告文件（含场景段）保证已入库。
+- 场景段每报告至多一段：报告已含「本轮场景集变更」标题即跳过渲染与提交——报告跨验证轮留存时不补写旧轮变更，Verifier 按报告闸门每轮重写报告后标题不复存在，新一轮变更小节照常补写。由此场景段带来的额外提交至多一次。
+- 失败语义：git 不可用、index.lock 争用等提交失败只落 WARNING 日志（附 stderr 摘要），报告文件保留在磁盘，验证主流程与函数返回值均不受影响；不重试、不阻塞，报告写盘成功的事实不被提交失败覆盖。非 git 项目静默跳过、零日志。场景段入库在提交器内建降级之外再兜意外异常（仅 WARNING），入库动作绝不影响渲染写盘结论与裁决采纳主流程。
 - 幂等：闸门在同一 spec 多轮验证、多次放行中反复进入；报告已入库且内容未再变化时静默跳过提交，不落 WARNING，不制造告警噪声。
 - 内容认可红线：入库动作不把 `verification-report.md` 计入 spec 内容认可（`spec_has_content`）判定——该判定刻意排除报告文件，防止已合并成果因报告在盘而被盲目重实现；入库只做版本化，不触碰该判定。
-- 入库挂点链：写盘入库是第一挂点；done→pushed 收口（`approve_push` 内、归档收口之前）对在盘未入库或有未提交修改的报告再做一次单文件入库，闭合「报告落盘晚于实现 merge」的窗口，规则详见 [push 收口报告入库](push-closeout-report-commit.md)；merge-back 与归档整目录搬迁仍是兜底防线。历史滞留报告不做主动回填，其入库由归档兜底在搬迁时完成。
+- 入库挂点链：报告本体写盘入库（闸门放行路径）→ 场景段渲染入库（采纳流程尾）→ done→pushed 收口（`approve_push` 内、归档收口之前）对在盘未入库或有未提交修改的报告再做一次单文件入库，规则详见 [push 收口报告入库](push-closeout-report-commit.md)；merge-back 与归档整目录搬迁仍是兜底防线。历史滞留报告与未入库场景段不做主动回填，其入库由归档兜底在搬迁时完成。
 
 ## 溯源
 
-- 2026-10-05 2026-10-05-evo-add-verification-report-commit-on-write（spec/archive/2026-10-05-evo-add-verification-report-commit-on-write） — 新增验证报告落盘即入库全部规则（写盘成功即单文件提交、present 与合成两路覆盖、git 失败仅 WARNING 不阻塞、重复放行幂等静默、内容认可判定不受影响、归档兜底保留）
+- 2026-10-05 evo-add-verification-report-commit-on-write（spec/archive/2026-10-05-evo-add-verification-report-commit-on-write） — 新增验证报告落盘即入库全部规则（写盘成功即单文件提交、present 与合成两路覆盖、git 失败仅 WARNING 不阻塞、重复放行幂等静默、内容认可判定不受影响、归档兜底保留）
 - 2026-10-06 evo-add-push-closeout-verification-report-commit（spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit） — 修改本页：入库挂点链规则补入 done→pushed 收口二次入库挂点（push 收口细则独立成页 [push-closeout-report-commit](push-closeout-report-commit.md)），兜底防线表述同步收敛
+- 2026-10-06 evo-verify-report-scenario-section-commit（spec/archive/2026-10-06-evo-verify-report-scenario-section-commit） — 修改本页：入库挂点链补入场景段写盘即入库挂点（采纳流程渲染写回后立即单文件幂等提交、跨模块消费走公开别名、失败仅 WARNING 不扰主流程、非 git 静默跳过、每报告至多一段故额外提交至多一次、存量不回填）

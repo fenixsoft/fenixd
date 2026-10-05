@@ -1,7 +1,7 @@
 # 审查手动触发受理回链
 
-<!-- knowledge: capability=code-review-trigger-ack rev=1
-     sources=spec/archive/2026-09-29-add-code-review-trigger-ack -->
+<!-- knowledge: capability=code-review-trigger-ack rev=2
+     sources=spec/archive/2026-09-29-add-code-review-trigger-ack,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume -->
 
 代码审查手动触发的受理结果回链：daemon 消费触发信号后把判定结果落盘为结果文件，POST 侧受理窗口守卫消灭假受理，前端按回链三态分派用户反馈。
 
@@ -14,7 +14,7 @@
 - daemon 侧所有丢弃/失败分支必须落结果文件并给出明确 reason，禁止只记日志静默丢弃：hosting_state 守卫拒绝（`daemon_not_running` / `daemon_unmanaged`）、payload 非法（`invalid_payload`）、单飞已在跑（`already_running`）、worker 池投递异常（`submit_error`）、manifest 收集异常（`manifest_error`）或为空（`manifest_empty`）。
 - 落结果不改变既有控制流：单飞旗标的置位/复位顺序保持不变。
 - 只读端点 `GET /api/code-review/run-result?project=<name>` 返回回链文件内容；文件缺失或 JSON 损坏时返回缺省态（`requested_at`/`status` 为 null 的空形态），不抛 500；项目不存在返回 404。
-- `POST /api/code-review/run` 的守卫序为：running 守卫 → 信号独占创建 → 受理窗口守卫。受理窗口守卫在四个条件同时成立时返回 409 稳定错误码 `code_review_ack_pending`：结果 `status=started`；`progress.running=false`（run 尚未开始）；结果 `finished_at` 距今不超过 900 秒（新鲜度窗口）；`progress.review_id` 内嵌 epoch 不大于 `finished_at`（受理后尚无新 run 启动过）。
+- `POST /api/code-review/run` 的守卫序为：全仓积压确认守卫（仅 `scope=full` 且未带 `confirm=true` 时生效，open 超阈值回 409 `code_review_open_backlog` 确认态，见 [repo-review-ratelimit-resume](repo-review-ratelimit-resume.md)）→ running 守卫 → 信号独占创建 → 受理窗口守卫。受理窗口守卫在四个条件同时成立时返回 409 稳定错误码 `code_review_ack_pending`：结果 `status=started`；`progress.running=false`（run 尚未开始）；结果 `finished_at` 距今不超过 900 秒（新鲜度窗口）；`progress.review_id` 内嵌 epoch 不大于 `finished_at`（受理后尚无新 run 启动过）。
 - epoch 判据与新鲜度窗口缺一不可：`started + running=false` 形态二义（「排队收集中」与「已跑完」完全相同），run 一旦启动即产生 epoch 大于 `finished_at` 的 review_id，凭此放行已跑完后的合法重触发；新鲜度窗口防陈旧结果永久锁死触发。
 - 窗口守卫读结果与 running 判定之间的竞态 fail-open：放行的重复信号由 daemon 单飞拒绝并落 `dropped/already_running` 结果，链路终点是有反馈的显式拒绝，无静默路径。
 - 既有守卫判定口径不变：`progress.running=true` 时仍由既有 running 守卫先命中返回 409 `code_review_running`；信号文件未被消费时仍被 O_EXCL 守卫以 409 拒绝——窗口守卫补的是「信号已消费、run 未开始」的空隙。
@@ -31,3 +31,4 @@
 ## 溯源
 
 - 2026-09-29 add-code-review-trigger-ack（spec/archive/2026-09-29-add-code-review-trigger-ack） — 新建本能力：daemon 写侧三态落盘（移植 code-fix 手动触发回链先例、键名随本车道信号 payload 用 `requested_at`）、GET run-result 只读端点、POST 受理窗口守卫（epoch 判据为评审修补）、前端受理等待态与三态分派反馈。
+- 2026-10-06 add-code-review-ratelimit-resume（spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume） — POST 守卫链最前新增全仓积压确认守卫（上一轮未消化完时手动 full 触发须二次确认）。
