@@ -40,7 +40,14 @@ from typing import Optional
 
 from core.timelib import from_epoch, now_local, parse_ts
 
-from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION, evidence_project
+from .admin_store import (
+    AdminStore,
+    SIGNAL,
+    ESCALATION,
+    DISPOSITION,
+    evidence_project,
+    _fsync_parent_dir,
+)
 from .alert_lifecycle import attach_trigger, find_resolvable
 
 # code-review a132ca295b06：family_explosion 放行 / infra 回拨的处置文本豁免
@@ -4111,14 +4118,16 @@ class AdminMonitor:
                 continue
             if due.timestamp() > now:
                 continue
-            # frozen spec 跳过（重试尊重人工冻结语义）
+            # frozen spec 跳过：三重判据单点 _is_intentionally_paused（同
+            # _handle_signal 唤起前复查），历史 error 文本表达冻结的存量 spec
+            # 同样不自动重试（人工等待态语义，见模块级 docstring）
             spec = rec.get("spec")
             if spec:
                 try:
                     entry = self.state_machine.read_one(spec) or {}
                 except Exception:
                     entry = {}
-                if entry.get("frozen"):
+                if _is_intentionally_paused(entry):
                     self.logger.info(
                         "admin_monitor",
                         f"Skipping dispatch retry for frozen SPEC '{spec}'",
@@ -4584,14 +4593,19 @@ class AdminMonitor:
             # ⑥ fail-closed：不补记，维持滞留，走既有孤儿升级路径
             # （unhandled_for 已升级去重——升级告警未被人工处理前不重复成条）；
             # 同时补 escalate=true 终结记录，本组此后整体进入 ② 豁免，
-            # 不因人工 handled 后失去去重锚点而逐轮重复升级
-            if self.store.unhandled_for(group_spec, sig_type) is None:
+            # 不因人工 handled 后失去去重锚点而逐轮重复升级。
+            # 去重查询与升级记录落盘统一经 _normalize_orphan_group_spec 归一
+            # （daemon 级写 spec=None，同 _detect_restart_failure 等升级路径口径，
+            # "global" 占位记录会被 unhandled_for(None,…) 等 daemon 级查询漏掉）；
+            # 组 DISPOSITION 保留 "global" 既有形态，不在归一范围
+            escal_spec = _normalize_orphan_group_spec(group_spec)
+            if self.store.unhandled_for(escal_spec, sig_type) is None:
                 self.store.append(
                     attach_trigger(
                         {
                             "kind": ESCALATION,
                             "signal_type": sig_type,
-                            "spec": group_spec,
+                            "spec": escal_spec,
                             "severity": "critical",
                             "description": (
                                 f"Administrator 处置终态未收口（run {rid}）：处置组已终态但底层信号 "
@@ -6571,6 +6585,9 @@ class AdminMonitor:
                 f.flush()
                 os.fsync(f.fileno())
             tmp_path.replace(self._history_path)
+            # rename 后刷父目录项（_write_unlocked 同款收尾）：目录项变更落盘，
+            # 掉电重启后不整体回退为旧历史
+            _fsync_parent_dir(self._history_path)
         finally:
             if tmp_path.exists():
                 try:
