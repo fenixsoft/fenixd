@@ -173,7 +173,9 @@ def _file_has_terminal_event(run_file: Path) -> bool:
 
 
 # 尾读字节窗口（fix-orphan-ready-recovery-liveness D2）：按字节窗口 seek 读末行，
-# 窗口首行是上一行的残段必须丢弃；窗口内无完整行时回退全量逐行读。64KB 与
+# 窗口起点位于行中间时首段是上一行的残段必须丢弃（起点前一字节恰为换行则首段
+# 是完整一行，保留，code-review item b89929148e58）；末行不完整（窗口末字节非
+# 换行 = 末行跨窗）或窗口内无完整行时回退全量逐行读。64KB 与
 # dashboard _READ_RUN_TAIL_WINDOW 同量级，覆盖常规产物尾部（result 终态行 4KB+）。
 _TAIL_READ_WINDOW = 64 * 1024
 
@@ -228,7 +230,10 @@ def _file_tail_is_terminal(run_file: Path) -> bool:
 
     读取范式照 ``core/dashboard/data/runs.py`` ``_read_run_lines`` 自实现（本包
     不反向 import core.dashboard.*，design D2）：先按字节窗口 seek 尾部读，窗口
-    首行是上一行残段必须丢弃；窗口内无完整行（末行超窗）时回退全量逐行读。
+    起点位于行中间时首段是上一行残段必须丢弃（起点前一字节恰为换行 = 起点恰落
+    行边界，首段是完整一行须保留，code-review item b89929148e58）；末行不完整
+    （窗口末字节非换行 = 末行跨窗被截断）或窗口内无完整行时回退全量逐行读——
+    回退方向保守，拿不准一律回退全量读。
     """
     try:
         size = run_file.stat().st_size
@@ -240,13 +245,27 @@ def _file_tail_is_terminal(run_file: Path) -> bool:
         return _last_line_is_terminal_full(run_file)
     try:
         with run_file.open("rb") as f:
-            f.seek(-_TAIL_READ_WINDOW, 2)
+            # 多读窗口起点前一字节（code-review item b89929148e58）：该字节是
+            # 换行 ⇒ 起点恰落行边界，首段是完整一行不得误丢；非换行 ⇒ 首段是
+            # 从上一行中间切入的残段，必须丢弃（对齐 admin_monitor
+            # _run_terminal_status 的 item 190881dd0168 边界判定范式）。
+            f.seek(-(_TAIL_READ_WINDOW + 1), 2)
             raw = f.read()
     except OSError:
         return False
-    text = raw.decode("utf-8", errors="replace")
-    # 窗口首行是从字节窗口切入的上一行残段，必须丢弃（见 _read_run_lines 注释）
-    lines = [ln for ln in text.split("\n")[1:] if ln.strip()]
+    starts_mid_line = raw[:1] != b"\n"
+    text = raw[1:].decode("utf-8", errors="replace")
+    # 窗口末字节非换行 ⇒ 末行被窗口末端截断（末行超窗或正在写入），窗口内任何
+    # 行都替代不了真实末行——若不回退，lines[-1] 是末行残段，JSON 解析失败会被
+    # fail-open 成「非终态」，已终态 run 被误判存活一个监督周期。回退全量读
+    # （append_run_line 保证每行以 \n 收尾，静止文件末字节必为换行）。
+    if not text.endswith("\n"):
+        return _last_line_is_terminal_full(run_file)
+    segments = text.split("\n")
+    if starts_mid_line:
+        # 窗口首行是从字节窗口切入的上一行残段，必须丢弃（见 _read_run_lines 注释）
+        segments = segments[1:]
+    lines = [ln for ln in segments if ln.strip()]
     if not lines:
         # 窗口内无完整行（末行超窗）→ 回退全量逐行读
         return _last_line_is_terminal_full(run_file)
@@ -345,7 +364,8 @@ class LivenessSupervisor:
            —— 在飞保护，权威源；
         ② mtime 停更 ≥ ``RUNTIME_SWEEP_IDLE_SECONDS`` —— 流停保护，先行短路
            免读文件（任何存活写入者都会刷新 mtime）；
-        ③ ``_file_has_terminal_event`` 为 False —— 全文件从未出现过终态事件
+        ③ ``_file_has_terminal_event`` 为 False（锁外预判，见下方临界区注释）
+           —— 全文件从未出现过终态事件
            （「全文件任一行」口径：历史上任一位置出现过终态即不补写，与
            ``_file_tail_is_terminal`` 的末行口径语义不同——如 result 之后追加
            superseded 的原地重试悬空文件，其尾部永久非终态，但按本口径不补写，
@@ -398,7 +418,19 @@ class LivenessSupervisor:
                 continue
             if idle_seconds < RUNTIME_SWEEP_IDLE_SECONDS:
                 continue
-            # 判据 ③ + 锁内成员复核 + 补写整体持 _run_finalize_lock（code-review
+            # 判据 ③ 预判在锁外（code-review item 970e0bb113fd）：全文件逐行读
+            # 对长转录（可达 MB 级）是慢操作，持 _run_finalize_lock 做全量扫描会
+            # 显著延长临界区、阻塞正常收尾路径（runner.py finally 段的注册表
+            # pop 需同一把锁才能弹出并落终态）。预判口径不变（仍是判据 ③ 的
+            # 「全文件从未出现终态事件」，出现过 → 入缓存，后续轮次零读取）；
+            # 锁内改做一次 _file_tail_is_terminal 尾读窗口短复核（64KB 有界），
+            # 兜住预判与取锁之间收尾线程完成「pop → result 落盘」的窗口——
+            # 末行已终态即让位既有收尾，不补写（防 interrupted 插到 result
+            # 之后成为文件末行）。
+            if _file_has_terminal_event(run_file):
+                self._terminal_verified.add(stem)
+                continue
+            # 锁内成员复核 + 尾读短复核 + 补写整体持 _run_finalize_lock（code-review
             # item 7947bc50ea39）：runner.py finally 段的顺序是「pop 注册表（持
             # 本锁）→ run_metrics 追加 → result 终态落盘」，pop 之后、终态落盘
             # 之前注册表已无该键且文件 mtime 尚未刷新——若三判据与补写在锁外
@@ -408,8 +440,8 @@ class LivenessSupervisor:
             # wait_for_running_agents 的临界区协议：若 run 线程尚未 pop，pop 被
             # 本锁挡到追加之后（其 result 严格后序，末行仍是 result）；若 pop
             # 已先行，锁内成员复核与终态复核使补写让位于既有收尾。锁内只做
-            # 单文件终态判定与追加，glob/mtime 等慢速扫描留在锁外，不与正常
-            # 收尾路径长互斥。
+            # 单文件终态短复核与追加，glob/mtime 与判据 ③ 全文件读等慢速扫描
+            # 留在锁外，不与正常收尾路径长互斥。
             with self._pm._run_finalize_lock:
                 # 成员复核（判据 ① 锁内重做）：判据 ① 快照取自锁外，取 snapshot
                 # 到本临界区之间注册表可能已变化，以锁内快照为追加前的最终判据
@@ -418,8 +450,9 @@ class LivenessSupervisor:
                     for key in list(self._pm._running_agents)
                 }:
                     continue
-                # 判据 ③：全文件从未出现终态事件（出现过 → 入缓存，后续轮次零读取）
-                if _file_has_terminal_event(run_file):
+                # 锁内终态短复核（末行口径，尾读窗口有界读）：预判后、取锁前
+                # 收尾线程可能已落 result/error 等终态，末行终态即让位
+                if _file_tail_is_terminal(run_file):
                     self._terminal_verified.add(stem)
                     continue
                 # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
