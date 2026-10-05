@@ -57,6 +57,10 @@ from core.agent_runner.result_gate import (  # noqa: F401
     _read_init_tools,
     classify_and_enrich_artifact_error,
     salvage_result_from_transcript,
+    _check_host_changes_summary_soft,
+    HOST_CHANGES_REGISTRY_NAME,
+    host_change_object_path,
+    parse_host_changes_registry,
 )
 # run 级 API 延迟统计纯函数与常量迁 core/agent_runner/latency.py（D4），
 # re-export 维持 bin/analyze_run_latency.py / tests/test_run_latency_stats.py 的
@@ -628,6 +632,9 @@ class AgentRunner:
         # add-quality-gates-visibility：quality-gates.json 宽松对账（仅 WARNING，
         # 零拦截——登记供门面转发，与其它 _check_* 同机制）
         "_check_quality_gates_soft": _check_quality_gates_soft,
+        # evo-add-host-change-governance 2.3：run-result host_changes 汇总字段
+        # 警告级校验（fail-open，缺失不拒绝结果）——同机制门面转发。
+        "_check_host_changes_summary_soft": _check_host_changes_summary_soft,
         "_check_success_completion": _check_success_completion,
         "_check_partial_consistency": _check_partial_consistency,
         "_check_taskupdate_crosscheck": _check_taskupdate_crosscheck,
@@ -3002,6 +3009,10 @@ class AgentRunner:
                     # 拦截非法 JSON，读侧按 parse 归因）。
                     self._copyback_run_result(spec_name, agent_type, wt_path)
                     self._copyback_verify_progress(wt_path, spec_name)
+                    # evo-add-host-change-governance 2.1：宿主变更登记拷回留痕
+                    # （result-bearing run 落主树 .fenix/host_changes/<spec>.json；
+                    # 登记缺失零动作，击杀类终止不经过此处——终态记录点直读 worktree）
+                    self._copyback_host_changes(spec_name, wt_path)
                     # add-judge-artifact-gate D1：planner 产物存在性硬门——成功判定
                     # 从「进程 exit 0」升级为「exit 0 且结果文件落盘且可解析」；
                     # 不满足抛 AgentArtifactGateError，落入下方瞬态退避重试通道
@@ -4470,6 +4481,9 @@ class AgentRunner:
         # fast-track 例外：成功不清理——硬校验/守卫在 dispatch 层判定，失败时
         # 保留 worktree 供重派继承（worktree-reuse）；通过则由 dispatch 在
         # merge 后统一清理。dev-server 随 dispatch 层处置一并回收。
+        # evo-add-host-change-governance 2.1：成功终态记录点（先于 worktree
+        # 清理读取，cleanup(success=True) 会删目录）——登记仅留痕不告警。
+        self._trace_host_changes_on_success(spec_name, wt_path)
         wt_dirty: list = []
         if agent_type in ("implementer", "fast-track"):
             # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
@@ -4658,6 +4672,14 @@ class AgentRunner:
             # 不再清工作树。dev-server 随之复用，不重复启停（复用分支的
             # 幂等 launch 兜底补启）。
             return False
+        # evo-add-host-change-governance 2.1：失败终态记录点（error/killed/
+        # 超时/轮次上限/判停/取消/冻结统一收尾段，先于 worktree 分型清理）——
+        # 读 worktree 根宿主变更登记，非空即派发回滚义务告警。击杀类终止无
+        # run-result，登记文件是唯一权威载体；worktree 在下方分型处置中可能
+        # 被 cleanup(success=False) 删除，MUST 先读。attempt 间重试等待
+        # （上方 return False）不经过此处，仅终态派发一次。
+        self._dispatch_host_change_rollback_on_failure(
+            spec_name, attempt_run_id, st.wt_path)
         self._v2_stop_for_worktree(st.wt_path)
         if shutdown_interrupted:
             # daemon 濒死：保留现场交 recovery/排水保全处置——
@@ -5043,6 +5065,114 @@ class AgentRunner:
                     _write_atomic(root_result, raw_bytes)
             except OSError:
                 pass
+
+    # ── evo-add-host-change-governance 2.1 ────────────────────────
+    # 宿主变更登记（worktree 根 host_changes.json）：result-bearing run 拷回
+    # 留痕 + 失败终态回滚义务告警 + 成功终态留痕。登记权威载体在 worktree
+    # （击杀类终止无 run-result，登记文件是唯一权威载体）；拷回仅为主树留痕
+    # 视图，不承担击杀场景（击杀时拷回不发生，终态记录点直接读 worktree）。
+
+    def _copyback_host_changes(self, spec_name: str, wt_path: Path) -> None:
+        """把 worktree 根宿主变更登记文件拷回主树留痕（result-bearing run）。
+
+        落点 `.fenix/host_changes/<spec>.json`：per-spec 文件而非共享单例，
+        防多 spec 并发收工互相覆盖留痕。mtime 守卫与 _copyback_verify_progress
+        同口径（主树缺失或 worktree 较新才拷，防复用 worktree 的陈旧登记回灌）；
+        登记不存在零动作零日志；任何 OSError 仅 WARNING，不阻断 run 收尾。
+        """
+        try:
+            wt_reg = Path(wt_path) / HOST_CHANGES_REGISTRY_NAME
+            if not wt_reg.is_file():
+                return
+            dst = (self.project_root / ".fenix" / "host_changes"
+                   / f"{spec_name}.json")
+            if (dst.exists()
+                    and wt_reg.stat().st_mtime_ns <= dst.stat().st_mtime_ns):
+                return
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(wt_reg, dst)
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"host_changes copyback failed for '{spec_name}' "
+                f"(evo-add-host-change-governance): {e}",
+            )
+
+    def _dispatch_host_change_rollback_on_failure(
+            self, spec_name: str, run_id: str, wt_path) -> None:
+        """失败终态记录点：读 worktree 根宿主变更登记，非空即派发回滚义务告警。
+
+        覆盖 error/killed/超时/轮次上限/判停（含取消/冻结）全部失败终态——
+        统一收尾段 _finalize_failure_keep 的终态分支调用，MUST 先于 worktree
+        清理：击杀类终止（无 CLI result）不存在 run-result，登记文件是唯一
+        权威载体，worktree 被 cleanup(success=False) 删除后即丢失。派发经
+        AdminStore.dispatch_host_change_rollback_alert（去重键=spec+变更对象
+        路径，只告警不执行回滚）；任何异常 fail-open 仅 WARNING——告警通道
+        故障不放大为终态路径的新失败面。
+        """
+        if wt_path is None:
+            return
+        try:
+            changes = parse_host_changes_registry(
+                Path(wt_path) / HOST_CHANGES_REGISTRY_NAME)
+            if not changes:
+                # 缺失/非法/空清单 → 零告警零开销（design 防护：无宿主变更
+                # 的 run 零新增开销）。
+                return
+            from core.admin_store import AdminStore
+
+            store = AdminStore(self.project_root, self.logger)
+            rec = store.dispatch_host_change_rollback_alert(
+                spec_name, changes, run_id=run_id)
+            if rec is not None:
+                self.logger.warning(
+                    "agent_runner",
+                    f"'{spec_name}' 失败终态且宿主变更登记非空（{len(changes)} 项）"
+                    f"— 已派发回滚义务告警 id={rec.get('id')}"
+                    f"（evo-add-host-change-governance，只告警不执行回滚）",
+                )
+            else:
+                # 在途去重命中或拒写：仅留痕，不重复派发
+                self.logger.info(
+                    "agent_runner",
+                    f"'{spec_name}' 失败终态宿主变更登记 {len(changes)} 项 — 回滚"
+                    f"义务告警已在途（去重未重复派发）或拒写（evo-add-host-change-"
+                    f"governance）",
+                )
+        except Exception as e:  # noqa: BLE001 — 告警通道故障 fail-open
+            self.logger.warning(
+                "agent_runner",
+                f"宿主变更回滚义务告警派发失败（fail-open，不阻断终态收口）"
+                f"'{spec_name}': {e}",
+            )
+
+    def _trace_host_changes_on_success(self, spec_name: str, wt_path) -> None:
+        """成功终态记录点：宿主变更登记仅留痕、不告警（成功终态不派发回滚义务）。
+
+        先于 worktree 清理读取（成功路径 cleanup(success=True) 会删目录）；
+        登记缺失/非法/空 → 零动作零开销。异常 fail-open 仅 DEBUG。
+        """
+        if wt_path is None:
+            return
+        try:
+            changes = parse_host_changes_registry(
+                Path(wt_path) / HOST_CHANGES_REGISTRY_NAME)
+            if not changes:
+                return
+            paths = ";".join(
+                p for p in (
+                    host_change_object_path(c) for c in changes
+                ) if p)
+            self.logger.info(
+                "agent_runner",
+                f"'{spec_name}' 成功终态，宿主变更登记 {len(changes)} 项留痕"
+                f"（不告警，回滚指引以登记文件与 run 结果汇总为准）: {paths}",
+            )
+        except Exception as e:  # noqa: BLE001 — 留痕读取故障 fail-open
+            self.logger.debug(
+                "agent_runner",
+                f"宿主变更登记留痕读取失败（fail-open）'{spec_name}': {e}",
+            )
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,

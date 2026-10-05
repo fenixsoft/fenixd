@@ -1304,7 +1304,118 @@ def _check_impl_result_artifact(
     if gate_err is None:
         # 门禁干净通过 → 清零任务完成度类拒绝计数（防陈旧计数日久误降级）。
         _clear_task_gate_rejections(runner, spec_name)
+
+    # evo-add-host-change-governance 2.3：host_changes 汇总字段警告级校验——
+    # 独立于上方判定：字段缺失零拦截，形态/一致性问题仅 WARNING 放行。
+    # 本调用 MUST NOT 影响返回值（无失败终态，不新增打回路径），与上方
+    # _check_quality_gates_soft 同机制。
+    runner._check_host_changes_summary_soft(spec_name, data, result_path, wt_path)
+
     return gate_err
+
+
+# ── 宿主变更登记与汇总对账（evo-add-host-change-governance 2.3）─────────────
+# 登记权威载体在 worktree 根 host_changes.json（与 .fenix-run-result.json 同级）：
+# 击杀类终止（超时/轮次上限/判停）无 run-result 时登记文件是唯一权威载体
+# （design「登记载体实测约束」），收尾才在 run 结果 host_changes 字段汇总，
+# 两处须一致。解析与常量在 result_gate 单点定义（runner 终态路径与软校验共引，
+# 禁止第二套解析）。
+
+# 登记文件名（worktree 根，与 .fenix-run-result.json 同级）。
+HOST_CHANGES_REGISTRY_NAME = "host_changes.json"
+
+# 汇总/登记元素的字段约定（design D3：对象路径/版本/备份位置/回滚指引）。
+HOST_CHANGE_FIELDS = ("object_path", "version", "backup", "rollback")
+
+
+def host_change_object_path(entry) -> str:
+    """取登记/汇总元素的对象路径（兼容 path 别名）；非 dict 或缺路径返回 ""。"""
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("object_path") or entry.get("path") or "").strip()
+
+
+def parse_host_changes_registry(path) -> "list | None":
+    """读取宿主变更登记文件（worktree 根 host_changes.json）。
+
+    返回登记条目列表；文件缺失/不可读/非法 JSON/顶层非数组 → ``None``（按
+    「无有效登记」处理，调用方零动作——登记文件是 agent 侧手写产物，解析
+    缺陷 MUST NOT 放大为终态/门禁路径的新失败面）。空数组是合法值（返回
+    ``[]``），与「文件缺失」可区分，供调用方按需留痕。
+    容忍 ``{"changes": [...]}`` 包装形态（agent 习惯元数据包裹的容错）。
+    """
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError：超深嵌套 JSON（非 ValueError 子类，同
+        # _check_artifact_json_file 先例）——登记是 agent 产物，不接住会
+        # 逸出到 runner 终态路径，违反 fail-open 契约。
+        return None
+    if isinstance(data, dict) and isinstance(data.get("changes"), list):
+        data = data["changes"]
+    if not isinstance(data, list):
+        return None
+    return data
+
+
+def _check_host_changes_summary_soft(
+    runner, spec_name: str, data, result_path, wt_path
+) -> None:
+    """run-result host_changes 汇总字段警告级校验（evo-add-host-change-governance 2.3）。
+
+    提示词契约：登记以 worktree 根 host_changes.json 为权威载体，收尾在 run
+    结果汇总且两处一致。本检查只做警告级机械对账，MUST NOT 产生任何失败终态/
+    打回/预算消耗（返回值恒 None、不参与门判定）：
+
+    - run 结果缺 ``host_changes`` 字段 → 零拦截零告警（历史 run、无宿主变更
+      的 run 零开销；「缺失不拒绝结果」的 fail-open 语义）；
+    - 字段在场但形态非法（非数组/元素缺对象路径）→ WARNING 放行；
+    - 与 worktree 登记文件两处不一致（登记在场但汇总缺字段、或对象路径集合
+      不等）→ WARNING 放行（权威载体是登记文件，汇总漂移只降级留痕质量）。
+
+    日志走模块标准通道 _logger（通道契约见 _logger 定义处：MUST NOT 走
+    runner.logger，测试替身无法被 caplog 捕获），与 quality-gates 软检查同型。
+    """
+    try:
+        if not isinstance(data, dict) or "host_changes" not in data:
+            return  # 字段缺失 → 零拦截（fail-open 语义锚点）
+        summary = data.get("host_changes")
+        rel = f"{result_path}#host_changes" if result_path is not None else "#host_changes"
+        if not isinstance(summary, list):
+            _logger.warning(
+                "run-result host_changes 汇总字段非法（须为数组，宽松对账仅告警"
+                "放行）: %s", rel,
+            )
+            return
+        bad = [e for e in summary if not host_change_object_path(e)]
+        if bad:
+            _logger.warning(
+                "run-result host_changes 汇总存在 %d 个缺对象路径的元素（宽松对账"
+                "仅告警放行）: %s", len(bad), rel,
+            )
+        # 两处一致对账：worktree 登记在场时，对象路径集合应与汇总一致。
+        reg = None
+        if wt_path is not None:
+            reg = parse_host_changes_registry(
+                Path(wt_path) / HOST_CHANGES_REGISTRY_NAME)
+        if reg is None:
+            return  # 登记缺失/非法：权威载体缺位，汇总无从对账 → 放行
+        summary_paths = {host_change_object_path(e) for e in summary} - {""}
+        reg_paths = {host_change_object_path(e) for e in reg} - {""}
+        if summary_paths != reg_paths:
+            _logger.warning(
+                "run-result host_changes 汇总与 worktree 登记不一致（宽松对账仅"
+                "告警放行；汇总=%s 登记=%s）: spec=%s",
+                sorted(summary_paths), sorted(reg_paths), spec_name,
+            )
+    except Exception as e:  # noqa: BLE001 — fail-open：软检查自身故障不阻断门禁
+        _logger.warning(
+            "host_changes 汇总软校验异常（fail-open 放行）: %s: %s",
+            type(e).__name__, e,
+        )
 
 
 # ── 转录末轮 fenced JSON 捞回（fix-impl-resultfile-contract-gap D4）────────────
@@ -1918,6 +2029,10 @@ class _SelfcheckShim:
         return None  # 见类 docstring：无 run 转录载体，fail-open 跳过
 
     def _check_quality_gates_soft(self, spec_name, wt_path):
+        return None  # 见类 docstring：纯 WARNING 审计，不进自证明细
+
+    def _check_host_changes_summary_soft(self, spec_name, data, result_path,
+                                         wt_path):
         return None  # 见类 docstring：纯 WARNING 审计，不进自证明细
 
 
