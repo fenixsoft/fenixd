@@ -43,6 +43,10 @@ ORPHAN_BACKFILL_SOURCE = "orphan-backfill"
 # 仅参与 latest_signal 窗口去重（见白名单）。
 INFO = "info"
 
+# evo-add-host-change-governance 2.2：宿主系统级变更「回滚义务」告警
+# signal_type。单点常量防漂移（runner 终态派发 / 消费面 / 测试断言共引）。
+HOST_CHANGE_ROLLBACK_SIGNAL_TYPE = "host_change_rollback_obligation"
+
 # 记录数上限（2026-09-01 用户决策）：任何写回时自动裁剪，只保留最近 150 条。
 # 消费方（latest_signal 冷却去重、auto_resolve 按 id 闭环）均只依赖近期记录，
 # 裁掉最旧历史不影响语义。
@@ -950,6 +954,95 @@ class AdminStore:
                 "description": description,
                 "evidence": evidence,
             }
+        )
+
+    # ── evo-add-host-change-governance 2.2 ────────────────────────
+
+    def dispatch_host_change_rollback_alert(
+        self,
+        spec: Optional[str],
+        host_changes,
+        run_id: Optional[str] = None,
+    ) -> "dict | None":
+        """宿主系统级变更「回滚义务」告警派发（evo-add-host-change-governance 2.2）。
+
+        run 终态为失败且宿主变更登记非空时由 runner 终态记录点调用——本方法
+        是存储层，不自行感知 run 终态；只告警、不执行任何回滚动作（自动
+        rmmod/depmod 在共享宿主上属越权高危：run 前基线不可靠判定、EBUSY
+        误伤并发 run、回滚自身失败无兜底），回滚执行由维护者/admin 人工裁决。
+
+        - kind=ESCALATION、severity=major：进人工待处理队列（HUMAN_SEVERITIES），
+          复用既有告警生命周期（mark_handled / unhandled_for / 横幅展示）。
+        - 去重键 = spec + 变更对象路径：append_if_absent 单锁内查重——同 spec
+          同 signal_type 的未处理记录已覆盖任一同名对象路径时不重复派发；
+          出现新对象路径（或既有告警已处理闭环）才落新条。
+        - host_changes 元素形态宽松容忍：非 dict / 无对象路径的元素跳过
+          （登记文件是 agent 侧手写产物，形态缺陷降级为告警内容缩水，不抛错
+          ——告警通道故障不得放大为 runner 终态路径的新失败面）。
+
+        返回落地的记录；登记为空/全部元素无效、在途去重命中、文件损坏留底
+        被拒写时返回 None——调用方按未落地处理，不把内存记录当成功。
+        """
+        if not isinstance(host_changes, list):
+            return None
+        changes = []
+        for ch in host_changes:
+            if not isinstance(ch, dict):
+                continue
+            obj_path = str(ch.get("object_path") or ch.get("path") or "").strip()
+            if not obj_path:
+                continue
+            changes.append({
+                "object_path": obj_path,
+                "version": str(ch.get("version") or "") or None,
+                "backup": str(ch.get("backup") or ch.get("backup_location") or "") or None,
+                "rollback": str(ch.get("rollback") or ch.get("rollback_guide") or "") or None,
+            })
+        if not changes:
+            return None
+        paths = [c["object_path"] for c in changes]
+        path_set = set(paths)
+        listing = "; ".join(
+            c["object_path"]
+            + (f"（原版本 {c['version']}）" if c["version"] else "")
+            + (f" 备份:{c['backup']}" if c["backup"] else "")
+            for c in changes
+        )
+        rollback_text = "；".join(
+            c["rollback"] for c in changes if c["rollback"]
+        ) or "登记未附回滚指引——按对象路径核对原版本（备份）后人工还原"
+        entry = {
+            "kind": ESCALATION,
+            "signal_type": HOST_CHANGE_ROLLBACK_SIGNAL_TYPE,
+            "spec": spec,
+            "severity": "major",
+            "description": (
+                f"spec '{spec}' 的 run（{run_id or 'run 未知'}）终态失败，"
+                f"但宿主变更登记仍有 {len(changes)} 项在位：{listing}。"
+                f"回滚义务不随 run 终态丢失，须人工裁决是否回滚。"
+            ),
+            "evidence": (
+                f"spec={spec}; run_id={run_id or 'unknown'}; "
+                f"host_change_count={len(changes)}; paths={','.join(paths)}"
+            ),
+            "recommended_action": f"按备份与指引回滚宿主变更：{rollback_text}",
+            # 去重身份的机器可读载体（is_inflight 依据；也供消费面直接取清单）
+            "host_change_paths": paths,
+        }
+
+        def _rec_paths(r) -> set:
+            rp = r.get("host_change_paths")
+            return set(rp) if isinstance(rp, list) else set()
+
+        return self.append_if_absent(
+            entry,
+            is_inflight=lambda r: (
+                r.get("kind") == ESCALATION
+                and r.get("signal_type") == HOST_CHANGE_ROLLBACK_SIGNAL_TYPE
+                and r.get("spec") == spec
+                and not r.get("handled")
+                and bool(path_set & _rec_paths(r))
+            ),
         )
 
     # ── admin-dispatch-failure-escalation D2 ──────────────────────
