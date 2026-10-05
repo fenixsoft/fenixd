@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.timelib import parse_ts
+from core.archive_commit import archive_residue_spec, scan_archive_residue
 from core.dashboard.data import (
     find_impl_run_file,
     get_runs,
@@ -2941,106 +2942,25 @@ class PMEngine:
     def _archive_move_residue(self) -> tuple:
         """检测 ``spec/changes/`` 下的归档移动残留（archive-auto-commit）。
 
-        归档移动（soft_delete_spec 用 shutil.move 把 spec 目录移入 archive）在 git
-        视角表现为两类残留：
-        - 被归档 spec 目录的**删除**：`spec/changes/<spec>/...` 的 D 状态行；
-        - **archive 下新增/修改**：`spec/archive/<spec>-<ts>/...` 的
-          未跟踪（??）/A/M 状态行（rename 检测 R 的行任一侧命中同样计入）。
-
-        返回三元组 ``(found: bool, spec_names: list[str], residue_paths:
-        list[str])``——spec_names 用于 commit message 标签；residue_paths 是
-        去重后的残留文件相对路径清单，调用方 _archive_auto_commit 据此收窄
-        git add 范围。判定失败时按「无残留」处理（fail-open：不因检测异常
-        阻塞 push 主流程）。
+        扫描实现已抽取为共享辅助 ``core.archive_commit.scan_archive_residue``
+        （evo-mergeback-archive-residue-selfheal 1.1：push 尾部归档收口与
+        merge-back 顺延链自愈评估共用同一特征扫描，避免两处判据漂移）；本方法
+        保留原三元组契约 ``(found, spec_names, residue_paths)``，engine 内既有
+        调用点（_archive_auto_commit）与测试零改动。判定失败时按「无残留」
+        处理（fail-open：不因检测异常阻塞 push 主流程）。
         """
-        try:
-            result = subprocess.run(
-                # -uall：未跟踪目录不折叠，逐文件列出，归档新增 spec 名才能解析；
-                # core.quotePath=false（code-review item e8342559acd3）：默认对含
-                # 非 ASCII/特殊字符路径按 C 风格加引号转义，下方 startswith
-                # spec/changes/、spec/archive/ 判定会失配致归档残留漏判
-                ["git", "-c", "core.quotePath=false", "status", "--porcelain", "-uall"],
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except Exception as e:
+        scan = scan_archive_residue(self.project_root)
+        if scan.error:
             self.logger.warning(
                 "pm_engine",
-                f"归档残留检测失败（按无残留处理，不阻塞 push）: {e}",
+                f"归档残留检测失败（按无残留处理，不阻塞 push）: {scan.error}",
             )
-            return False, [], []
-        if result.returncode != 0:
-            self.logger.warning(
-                "pm_engine",
-                f"git status 失败，按无归档残留处理: "
-                f"{(result.stderr or result.stdout).strip()[:200]}",
-            )
-            return False, [], []
-
-        names: list[str] = []
-        paths_out: list[str] = []
-        found = False
-        for line in result.stdout.splitlines():
-            if len(line) < 4:
-                continue
-            xy = line[:2]
-            rest = line[3:].strip()
-            # rename 行形态：`R  old -> new`，两侧都要参与归档判定
-            candidates = [rest]
-            if " -> " in rest:
-                candidates = [p.strip() for p in rest.split(" -> ")]
-            # R/C rename 行（code-review item e0d1dc8780aa）：已 staged 的归档移动
-            # 呈现为 `R  spec/changes/... -> spec/archive/...`，此前只认 D/??/A/M，
-            # 两侧候选均不满足导致残留漏判——old 侧视同删除、new 侧视同新增
-            renamed = xy.startswith(("R", "C")) and len(candidates) == 2
-            for idx, path in enumerate(candidates):
-                # 归档产物横跨两处：删除侧 spec/changes/<spec>/、新增侧 spec/archive/...
-                # （archive 已平级化到 spec/ 下，不再嵌套于 changes/）
-                in_changes = path.startswith("spec/changes/")
-                in_archive = path.startswith("spec/archive/")
-                if not (in_changes or in_archive):
-                    continue
-                deleted = "D" in xy or (renamed and idx == 0)
-                # 显式按 xy 字段位判定新增/修改（code-review item 2fc03362a40b）：
-                # 首位 A/M（staged）或次位 A/M（unstaged），不依赖「porcelain
-                # 状态字符集不含其它字母」的子串包含巧合，与 deleted 判定同口径。
-                added = (
-                    xy.startswith("??")
-                    or xy[0] in "AM"
-                    or xy[1] in "AM"
-                    or (renamed and idx == 1)
-                )
-                if deleted or (in_archive and added):
-                    found = True
-                    names.append(self._archive_residue_spec(path))
-                    paths_out.append(path)
-        return found, list(dict.fromkeys(n for n in names if n)), list(
-            dict.fromkeys(paths_out)
-        )
+        return scan.found, scan.spec_names, scan.residue_paths
 
     @staticmethod
     def _archive_residue_spec(rel_path: str) -> str:
-        """从 spec/changes/ 相对路径提取涉及 spec 名。
-
-        - 删除侧：`spec/changes/<spec>/...` → `<spec>`
-        - 归档新增侧：`spec/archive/.../...` → `<spec>`。归档目录命名两种：
-          软删除 `<spec>-<Unix秒>[-(ms|-n)]`（剥离尾部纯数字段）、
-          归档 `YYYY-MM-DD-<spec>`（剥离日期前缀）
-        """
-        if rel_path.startswith("spec/archive/"):
-            seg = rel_path[len("spec/archive/") :].split("/", 1)[0]
-            # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
-            m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
-            if m:
-                return m.group(1)
-            # 归档命名：YYYY-MM-DD-<spec>；剥离日期前缀
-            m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)$", seg)
-            return m.group(1) if m else seg
-        if rel_path.startswith("spec/changes/"):
-            return rel_path[len("spec/changes/") :].split("/", 1)[0]
-        return ""
+        """从 spec/changes/ / spec/archive/ 相对路径提取涉及 spec 名（委托共享辅助）。"""
+        return archive_residue_spec(rel_path)
 
     def _archive_auto_commit(self) -> None:
         """归档收口：push 流程尾部一次性提交 spec/changes/ 的归档移动残留。

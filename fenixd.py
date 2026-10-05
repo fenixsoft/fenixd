@@ -1025,6 +1025,18 @@ class FenixDaemon:
                         self.pm_engine._dispatcher._recheck_wip_deferred_merges()  # noqa: SLF001 — 周期消费者挂 Dispatcher（deliverable 声明面约束）
                     except Exception as e:
                         self.logger.error("fenixd", f"WIP defer merge recheck failed: {e}")
+                    # spec_dir_inflight 顺延周期消费者
+                    # （evo-mergeback-archive-residue-selfheal 1.3）：同一 120s
+                    # 节拍挂载，只接手已超熔断阈值、无 _wip_gate_deferred 标志且
+                    # 仍 _merge_retry_pending 的条目（Timer 链中断/进程重启后
+                    # 无人驱动的残留），merge-only 重试每条目至多一次；独立
+                    # 异常捕获，两消费者互不连坐。
+                    try:
+                        self.pm_engine._dispatcher._recheck_inflight_deferred_merges()  # noqa: SLF001 — 同上
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Inflight defer merge recheck failed: {e}",
+                        )
                 # verify-process-lifecycle（D4 周期清扫）：孤儿泄漏可见窗口
                 # ≤ 一个周期（600s）。覆盖 dev-server 与 servers.json 登记实例；
                 # 首轮启动清扫已处理存量，此后周期性兜底。
