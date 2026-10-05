@@ -21,6 +21,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 logger = logging.getLogger("fenixd.archive_commit")
 
@@ -218,3 +219,216 @@ def _has_tracked_files(proot: Path, pathspec: str) -> bool | None:
     if r.returncode != 0:
         return None
     return bool(r.stdout.strip())
+
+
+# ── 归档移动残留扫描（共享辅助，evo-mergeback-archive-residue-selfheal 1.1）──
+#
+# engine._archive_move_residue（push 尾部归档收口的特征扫描）与 merge-back
+# 顺延链的自愈评估（queue._assess_archive_residue_selfheal）共用同一扫描落点，
+# 避免两处特征漂移。engine 方法保留原三元组签名改为委托复用。
+
+
+class ArchiveResidueScan(NamedTuple):
+    """scan_archive_residue 的结构化结果。
+
+    - found / spec_names / residue_paths：engine._archive_move_residue 既有
+      三元组契约（委托复用零语义变化）；
+    - entries：逐条残留明细（自愈授权「同 spec 两侧成对」校验的数据源）；
+    - non_spec_dirty：spec/changes 与 spec/archive 两类路径之外的脏文件——
+      任一存在即判非归档残留（自愈否决证据，绝不自动触碰源码路径）；
+    - error：git status 探测失败信息（调用方按「无残留」fail-open 的依据）。
+    """
+
+    found: bool
+    spec_names: list
+    residue_paths: list
+    entries: list
+    non_spec_dirty: list
+    error: str | None = None
+
+
+def archive_residue_spec(rel_path: str) -> str:
+    """从 spec/changes/ 相对路径提取涉及 spec 名。
+
+    - 删除侧：`spec/changes/<spec>/...` → `<spec>`
+    - 归档新增侧：`spec/archive/.../...` → `<spec>`。归档目录命名两种：
+      软删除 `<spec>-<Unix秒>[-(ms|-n)]`（剥离尾部纯数字段）、
+      归档 `YYYY-MM-DD-<spec>`（剥离日期前缀）
+    """
+    if rel_path.startswith("spec/archive/"):
+        seg = rel_path[len("spec/archive/") :].split("/", 1)[0]
+        # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
+        m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
+        if m:
+            return m.group(1)
+        # 归档命名：YYYY-MM-DD-<spec>；剥离日期前缀
+        m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)$", seg)
+        return m.group(1) if m else seg
+    if rel_path.startswith("spec/changes/"):
+        return rel_path[len("spec/changes/") :].split("/", 1)[0]
+    return ""
+
+
+def scan_archive_residue(project_root) -> ArchiveResidueScan:
+    """只读扫描主树归档移动残留（宽判据：任一侧即算残留）。
+
+    归档移动（soft_delete_spec 用 shutil.move 把 spec 目录移入 archive）在 git
+    视角表现为两类残留：``spec/changes/<spec>/...`` 删除侧、
+    ``spec/archive/<dir>/...`` 新增/修改侧（rename 检测 R 的行任一侧命中同样
+    计入）。判定失败时 error 带回原因、按「无残留」处理（fail-open：不因
+    检测异常阻塞调用方主流程）。
+    """
+    try:
+        result = subprocess.run(
+            # -uall：未跟踪目录不折叠，逐文件列出，归档新增 spec 名才能解析；
+            # core.quotePath=false（code-review item e8342559acd3）：默认对含
+            # 非 ASCII/特殊字符路径按 C 风格加引号转义，下方 startswith
+            # spec/changes/、spec/archive/ 判定会失配致归档残留漏判
+            ["git", "-c", "core.quotePath=false", "status", "--porcelain", "-uall"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except Exception as e:
+        return ArchiveResidueScan(False, [], [], [], [], f"git status 异常: {e}")
+    if result.returncode != 0:
+        return ArchiveResidueScan(
+            False, [], [], [], [],
+            (result.stderr or result.stdout).strip()[:200]
+            or f"git status exit {result.returncode}",
+        )
+
+    names: list = []
+    paths_out: list = []
+    entries: list = []
+    non_spec_dirty: list = []
+    found = False
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        xy = line[:2]
+        rest = line[3:].strip()
+        # rename 行形态：`R  old -> new`，两侧都要参与归档判定
+        candidates = [rest]
+        if " -> " in rest:
+            candidates = [p.strip() for p in rest.split(" -> ")]
+        # R/C rename 行（code-review item e0d1dc8780aa）：已 staged 的归档移动
+        # 呈现为 `R  spec/changes/... -> spec/archive/...`，此前只认 D/??/A/M，
+        # 两侧候选均不满足导致残留漏判——old 侧视同删除、new 侧视同新增
+        renamed = xy.startswith(("R", "C")) and len(candidates) == 2
+        line_hits: list = []
+        for idx, path in enumerate(candidates):
+            # 归档产物横跨两处：删除侧 spec/changes/<spec>/、新增侧 spec/archive/...
+            # （archive 已平级化到 spec/ 下，不再嵌套于 changes/）
+            in_changes = path.startswith("spec/changes/")
+            in_archive = path.startswith("spec/archive/")
+            if not (in_changes or in_archive):
+                # 框架运行时目录（.fenix/STATE.md 等持续写动的元数据）豁免否决：
+                # 它永不进入补提交（add 限定精确残留路径）、也与 merge 无关
+                # （生产布局被 .gitignore 覆盖根本不出现；非 gitignore 项目下
+                # 若计入会把自愈永久否决成死车道）。
+                if path.startswith(".fenix/"):
+                    continue
+                # 两类路径之外的脏文件：宽判据不认（原语义跳过），结构化带回
+                # 供自愈授权否决（混合脏文件判非归档残留）
+                non_spec_dirty.append(path)
+                continue
+            deleted = "D" in xy or (renamed and idx == 0)
+            # 显式按 xy 字段位判定新增/修改（code-review item 2fc03362a40b）：
+            # 首位 A/M（staged）或次位 A/M（unstaged），不依赖「porcelain
+            # 状态字符集不含其它字母」的子串包含巧合，与 deleted 判定同口径。
+            added = (
+                xy.startswith("??")
+                or xy[0] in "AM"
+                or xy[1] in "AM"
+                or (renamed and idx == 1)
+            )
+            if deleted or (in_archive and added):
+                found = True
+                hit = {
+                    "path": path,
+                    "side": "changes" if in_changes else "archive",
+                    "deleted": deleted,
+                    "added": added,
+                    "renamed": renamed,
+                    "spec": archive_residue_spec(path),
+                    # rename 行两侧均在残留集合内时行末回填 True（天然成对）
+                    "pair_complete": False,
+                }
+                entries.append(hit)
+                line_hits.append(hit)
+                names.append(hit["spec"])
+                paths_out.append(path)
+        if renamed and len(line_hits) == 2:
+            # git R 重命名行天然成对（evo-mergeback-archive-residue-selfheal
+            # 判据：两侧同现即完整归档移动，免逐侧单侧配对校验）
+            for hit in line_hits:
+                hit["pair_complete"] = True
+    return ArchiveResidueScan(
+        found,
+        list(dict.fromkeys(n for n in names if n)),
+        list(dict.fromkeys(paths_out)),
+        entries,
+        non_spec_dirty,
+        None,
+    )
+
+
+def assess_archive_residue_selfheal(scan: ArchiveResidueScan) -> tuple:
+    """在宽判据之上做 merge-back 自愈授权校验（只读，本 SPEC 判据落点）。
+
+    helper 自身（scan_archive_residue）是「任一侧即算残留」的宽判据，自愈
+    授权必须在其上加两道收窄：
+
+    - 全部脏文件都落在 spec/changes 与 spec/archive 两类路径——任一例外即
+      「混合脏文件」，判非归档残留（绝不自动触碰/提交源码路径，非目标红线）；
+    - 残留按**同 spec 名两侧成对**：changes 删除侧与 archive 新增侧同 spec 名
+      同时在场（git R 重命名行两侧均命中时视为天然成对）；仅单侧的半提交
+      形态（如 archive 侧已提交、只剩 changes 删除态）不授权自动收尾，
+      防把来历不明的 spec/changes 删除误当残留提交。
+
+    Returns: (authorized: bool, reason: str)——reason 供日志与告警 evidence
+    留痕（判据命中与否）。
+    """
+    if scan.error:
+        return False, f"git status 探测失败: {scan.error}"
+    if scan.non_spec_dirty:
+        preview = "、".join(scan.non_spec_dirty[:5])
+        more = f" 等 {len(scan.non_spec_dirty)} 个" if len(scan.non_spec_dirty) > 5 else ""
+        return False, (
+            f"存在 spec/changes、spec/archive 两类路径之外的脏文件: {preview}{more}"
+        )
+    if not scan.found:
+        # 主树干净（无残留，或残留已被归档自身收口完成提交）：无可补提交，
+        # 直接授权重放 merge——design「收口已完成则跳过补提交直接重放」，
+        # 否则该场景会被熔断告警空烧一轮人工。否决集只含 error / 类外脏文件
+        # / 单侧不成对残留。
+        return True, "无归档移动残留（主树干净，跳过补提交直接重放合并）"
+    del_specs: set = set()
+    add_specs: set = set()
+    rename_paired: set = set()
+    strays: list = []
+    for hit in scan.entries:
+        if hit["renamed"] and hit["pair_complete"]:
+            # 天然成对的 rename 行按 changes 侧 spec 名记成对
+            if hit["side"] == "changes":
+                rename_paired.add(hit["spec"])
+            continue
+        if hit["side"] == "changes" and hit["deleted"]:
+            del_specs.add(hit["spec"])
+        elif hit["side"] == "archive" and hit["added"]:
+            add_specs.add(hit["spec"])
+        else:
+            strays.append(hit["path"])
+    if strays:
+        return False, f"存在不成对的归档残留形态: {'、'.join(strays[:5])}"
+    unpaired = del_specs ^ add_specs
+    if unpaired:
+        return False, (
+            "归档残留仅单侧（半提交形态，不授权自动收尾）: "
+            + "、".join(sorted(unpaired)[:5])
+        )
+    if not (rename_paired or del_specs):
+        return False, "无成对归档残留"
+    return True, "归档残留两侧成对且全部脏文件落 spec/ 两类路径"

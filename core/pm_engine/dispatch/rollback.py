@@ -552,7 +552,7 @@ class RRollbackMixin:
 
     def _report_mergeback_spec_dir_inflight_stuck(
         self, spec_name: str, merge_info, branch: str, merge_error: str,
-        retry_count: int, first_at: int,
+        retry_count: int, first_at: int, selfheal_evidence: str | None = None,
     ) -> None:
         """spec 目录在飞编辑顺延超限回落告警（evo-merge-back-spec-dir-inflight-guard D1a/D2）。
 
@@ -572,6 +572,10 @@ class RRollbackMixin:
 
         告警描述含找回/处置指引（提交主树 spec 目录后，人工可 reset 复位实现状态
         重新放行，或等待 daemon 恢复通道重试）。
+
+        ``selfheal_evidence``（evo-mergeback-archive-residue-selfheal 1.2）：熔断
+        出口前的归档残留自愈评估摘要（判据命中与否、补提交 hash、重放/失败
+        原因），非空时增补进告警 description 与 evidence，保持人工可见。
         """
         description = (
             f"SPEC '{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）："
@@ -582,6 +586,15 @@ class RRollbackMixin:
             f"含 spec 迭代修补），再把该 spec 复位 ready 重新放行 merge-back；"
             f"或等待 daemon 恢复通道（recovery）下一轮再试。"
         )
+        evidence = {
+            "retry_count": retry_count,
+            "first_at": first_at,
+            "branch": branch,
+            "merge_error": str(merge_error),
+        }
+        if selfheal_evidence:
+            description = f"{description} 自愈评估：{selfheal_evidence}。"
+            evidence["selfheal"] = selfheal_evidence
         self._emit_mergeback_alert(
             spec_name,
             "mergeback_spec_dir_inflight_stuck",
@@ -597,12 +610,7 @@ class RRollbackMixin:
                 f"重试，等待人工提交 spec 目录后重新放行（分支与产物保留）"
             ),
             description,
-            {
-                "retry_count": retry_count,
-                "first_at": first_at,
-                "branch": branch,
-                "merge_error": str(merge_error),
-            },
+            evidence,
             (
                 "提交主树 spec/changes/ 目录的未提交改动"
                 "（git add/commit，含 spec 迭代修补）后重新放行该 spec"

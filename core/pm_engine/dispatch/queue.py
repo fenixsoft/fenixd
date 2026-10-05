@@ -24,6 +24,11 @@ import time
 from pathlib import Path
 from typing import Dict
 
+from core.archive_commit import (
+    ArchiveResidueScan,
+    assess_archive_residue_selfheal,
+    scan_archive_residue,
+)
 from core.state_machine import (
     TASK_GATE_REJECTIONS_FIELD,
     start_after_blocks_promotion,
@@ -144,6 +149,19 @@ class QQQueueMixin:
         # 同款范式——merge-only 重试 Timer 链与实现 run 失败链双路并发时，
         # 防超限后重复发 major 告警）。
         self._spec_dir_inflight_stuck_notified: set = set()
+        # 归档残留自愈单次尝试记账（evo-mergeback-archive-residue-selfheal 1.1）：
+        # {spec_name}，daemon 生命周期内每条目至多自动尝试一次（对齐
+        # _spec_dir_inflight_stuck_notified 范式；重启后至多再试一次），避免
+        # 与归档自身重试互相踩踏。
+        self._archive_residue_selfheal_attempted: set = set()
+        # 自愈重放在飞守卫：{spec_name}，重放体（_retry_merge_back_only）失败链
+        # 会再入 _defer_merge_back 熔断分支，重入帧据此直接返回——告警与熔断
+        # 收口由外层自愈帧统一处置（防嵌套告警/递归）。
+        self._archive_selfheal_active: set = set()
+        # spec_dir_inflight 顺延周期消费者接手记账（本 SPEC 1.3）：{spec_name}，
+        # 每条目接手重试至多一次，失败维持既有熔断告警与人工通道，不无限节拍
+        # 重试。
+        self._inflight_defer_recheck_attempted: set = set()
 
     # ── 验证车道槽位豁免（add-verify-lane-throughput 2.1）──────────────────
     # 槽位豁免车道全集：spec-review（既有先例，fix-spec-review-blocking-dispatch）
@@ -2571,11 +2589,15 @@ class QQQueueMixin:
         超限 → 回落「告警 + 等待人工处置」通道
         （``_report_mergeback_spec_dir_inflight_stuck``），MUST NOT 无限顺延；
         上限 MUST 先于 ``agents.impl_run_budget``（缺省 6）耗尽收敛（D2 边界约定）。
+
+        自愈（evo-mergeback-archive-residue-selfheal 1.1）：熔断出口前先做归档
+        残留只读自愈评估（_assess_archive_residue_selfheal）——命中「同 spec 两侧
+        成对且全落 spec/ 两类路径」时补提交归档收尾并立即重放 merge-back，成功
+        则正常收尾（零 admin 会话）；未命中/失败走原路径熔断，告警 evidence 增补
+        自愈评估摘要。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         now = time.time()
-        grace_minutes = self._merge_retry_grace_minutes()
-        max_rounds = self._merge_retry_max_rounds()
         # first_at 非计数字段，沿用单一落点解析值（首阻缺省=now，自首次顺延
         # 起算窗口）；count 改走锁内原子递增（bump_counters 返回写后值，
         # code-review item 92e18d381825）：原先「read_one 读 → 算 +1 →
@@ -2606,8 +2628,24 @@ class QQQueueMixin:
                 "pm_engine",
                 f"顺延记账写入失败 '{spec_name}'（非阻塞）: {e}",
             )
-        window_exceeded = (now - first_f) / 60.0 >= grace_minutes
-        if window_exceeded or count >= max_rounds:
+        if self._inflight_defer_over_limit(count, first_f, now):
+            # 归档残留只读自愈评估（evo-mergeback-archive-residue-selfheal 1.1，
+            # 熔断出口前接入）：脏文件特征命中「归档残留」（同 spec 两侧成对且
+            # 全落 spec/ 两类路径）时由框架代为补提交归档收尾并立即重放
+            # merge-back，成功则正常收尾（零 admin 会话）；未命中/失败走原路径
+            # 熔断（告警 evidence 增补自愈评估摘要）。
+            if spec_name in self._archive_selfheal_active:
+                # 自愈重放在飞的重入帧：重放体（_retry_merge_back_only）失败链
+                # 会再入本分支——不评估、不告警、不再排 Timer，收口由外层自愈帧
+                # 统一处置（防嵌套告警与递归）。
+                return
+            replay_merged, selfheal_evidence = self._assess_archive_residue_selfheal(
+                spec_name, merge_info, branch, merge_error,
+            )
+            if replay_merged:
+                # 自动收尾 + 重放成功：_finalize_merge_success 已清顺延记账并
+                # 推进 implemented，不熔断、不发 stuck 告警。
+                return
             # 超限降级告警去重（code-review item 820ca0230859，与 WIP 车道
             # _report_wip_defer_stuck_once 同款）：daemon 生命周期内每条目至多
             # 一次（防周期节拍刷屏）——merge-only 重试 Timer 链与实现 run 失败链
@@ -2618,9 +2656,200 @@ class QQQueueMixin:
                 self._spec_dir_inflight_stuck_notified.add(spec_name)
                 self._report_mergeback_spec_dir_inflight_stuck(
                     spec_name, merge_info, branch, merge_error, count, int(first_f),
+                    selfheal_evidence=selfheal_evidence,
                 )
             return
         self._schedule_merge_retry(spec_name, self._merge_retry_delay_seconds())
+
+    def _inflight_defer_over_limit(self, count: int, first_f: float, now: float) -> bool:
+        """spec_dir_inflight 顺延熔断阈值判式（单一落点）。
+
+        窗口（``mergeback.spec_dir_inflight_grace_minutes``，自首阻起算）或连续
+        顺延轮数（``mergeback.spec_dir_inflight_max_rounds``）任一超限即熔断。
+        _defer_merge_back 熔断出口与周期消费者 _recheck_inflight_deferred_merges
+        （本 SPEC 1.3）共用本判式——两处 MUST 保持同一口径（周期消费者只接手
+        已超阈值条目，防与存活 Timer 链同拍双驱动）。
+        """
+        window_exceeded = (now - first_f) / 60.0 >= self._merge_retry_grace_minutes()
+        return window_exceeded or count >= self._merge_retry_max_rounds()
+
+    def _assess_archive_residue_selfheal(
+        self, spec_name: str, merge_info, branch: str, merge_error: str,
+    ) -> tuple:
+        """归档残留只读自愈评估（evo-mergeback-archive-residue-selfheal 1.1）。
+
+        熔断出口前调用：脏文件特征命中「归档残留」（共享辅助宽信号 + 同 spec
+        两侧成对校验，见 ``core.archive_commit.assess_archive_residue_selfheal``）
+        时由框架代为补提交归档收尾并立即重放既有 merge-back 路径。
+
+        - 补提交 add 限定为共享辅助返回的**精确残留路径清单**（对齐
+          _archive_auto_commit 的逐路径收窄，禁止退回 ``git add -- spec`` 双前缀
+          通配——会把其它 spec 在途草案卷进提交）；提交消息沿用归档收尾形态并
+          含目标 spec 名；
+        - 补提交前重查工作区（本评估内的扫描即新鲜状态）：残留已被归档自身
+          收口完成提交则跳过补提交直接重放 merge；
+        - 补提交只 commit 不 push：由重放成功的 merge-back push 携带入库，
+          重放失败与 _archive_auto_commit 同语义留待后续 push，不单独加推；
+        - 单条至多自动尝试一次（``_archive_residue_selfheal_attempted`` 进程内
+          集合记账，daemon 生命周期语义，重启后至多再试一次）；
+        - 全程写日志与证据留痕（判据命中与否、补提交 hash、重放结果）。
+
+        Returns: (replay_merged: bool, evidence: str)——replay_merged=True 表示
+        自动收尾+重放成功（调用方直接正常收尾）；evidence 为自愈评估摘要，
+        供熔断告警 evidence 增补。
+        """
+        if spec_name in self._archive_residue_selfheal_attempted:
+            return False, "自愈已尝试（单条至多一次），本轮不再评估"
+        self._archive_residue_selfheal_attempted.add(spec_name)
+        scan = scan_archive_residue(self._pm.project_root)
+        if scan.error:
+            reason = f"评估失败（git status 探测失败）: {scan.error}"
+            self._pm.logger.warning("pm_engine", f"归档残留自愈评估 '{spec_name}': {reason}")
+            return False, reason
+        authorized, reason = assess_archive_residue_selfheal(scan)
+        # 观测（本 SPEC 需求 6）：每次自愈评估（命中/未命中）落一条可检索日志
+        self._pm.logger.info(
+            "pm_engine",
+            f"归档残留自愈评估 '{spec_name}': 判据{'命中' if authorized else '未命中'}"
+            f"（{reason}）；残留路径 {len(scan.residue_paths)} 条、"
+            f"类外脏文件 {len(scan.non_spec_dirty)} 个",
+        )
+        if not authorized:
+            return False, f"判据未命中: {reason}"
+        self._archive_selfheal_active.add(spec_name)
+        try:
+            commit_hash = ""
+            if scan.found:
+                ok, err, commit_hash = self._heal_commit_archive_residue(scan)
+                if not ok:
+                    reason = f"判据命中、补提交失败: {err}"
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"归档残留自愈 '{spec_name}': {reason}（走原路径熔断等人工）",
+                    )
+                    return False, reason
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"归档残留自愈 '{spec_name}': 补提交成功 {commit_hash or '(hash 读取失败)'}"
+                    f"（{scan.residue_paths}），立即重放 merge-back",
+                )
+            # else：重查时残留已被归档自身收口完成提交（主树干净）——跳过补提交
+            # 直接重放 merge，避免与归档自身收口并发重复提交。
+            merged = self._retry_merge_back_only(spec_name)
+            if merged:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"归档残留自愈 '{spec_name}': 重放合并成功，正常收尾"
+                    f"（补提交 {commit_hash or '无需，收口已在场'} 由 merge push 携带入库）",
+                )
+                return True, (
+                    f"判据命中，补提交 {commit_hash or '无需（收口已在场）'}"
+                    f"后重放合并成功"
+                )
+            reason = (
+                f"判据命中，补提交 {commit_hash or '无需（收口已在场）'}"
+                f"后重放合并未成功（提交留待后续 push，与归档收口同语义）"
+            )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"归档残留自愈 '{spec_name}': {reason}",
+            )
+            return False, reason
+        finally:
+            self._archive_selfheal_active.discard(spec_name)
+
+    def _heal_commit_archive_residue(self, scan: ArchiveResidueScan) -> tuple:
+        """补提交归档收尾（只 commit 不 push）。Returns (ok, err, commit_hash)。
+
+        add/commit 限定**精确残留路径清单**（scan.residue_paths，共享辅助已收窄
+        到 changes 删除侧 + archive 新增侧，绝不卷入 spec/ 下其它在途草案）；
+        残留路径为空（理论不可达，authorized 蕴含 found）时回退 catalog 级
+        ``spec`` pathspec 兜底，对齐 _archive_auto_commit。
+
+        add 与 commit 的 pathspec 不同：已 staged 的归档移动呈 ``R`` rename 行，
+        旧侧路径已不在工作区也不在索引，``git add`` 对零匹配 pathspec 会 fatal
+        退出（git 实证）——add 清单按「工作区存在或索引可匹配」过滤；commit 的
+        pathspec 未命中只是过滤器不致命，保留全量清单以完整收录 rename 两侧
+        （只带新侧会把旧侧删除留在索引、收口不完整，git 实证）。commit 失败
+        best-effort reset 本次 pathspec，不留半状态索引。
+        """
+        paths = scan.residue_paths or ["spec"]
+        root = str(self._pm.project_root)
+        label = "、".join(scan.spec_names) if scan.spec_names else "spec"
+        commit_msg = f"[fenix] archive: {label} 归档入库"
+        addable = [
+            p for p in paths
+            if (self._pm.project_root / p).exists() or self._path_in_index(p)
+        ]
+        try:
+            if addable:
+                add = subprocess.run(
+                    ["git", "add", "--"] + addable,
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if add.returncode != 0:
+                    return False, add.stderr.strip() or f"git add exit {add.returncode}", ""
+            commit = subprocess.run(
+                ["git", "commit", "-m", commit_msg, "--"] + paths,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if commit.returncode != 0:
+                try:
+                    subprocess.run(
+                        ["git", "reset", "--"] + paths,
+                        cwd=root, capture_output=True, text=True, timeout=30,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort 清理
+                    pass
+                return (
+                    False,
+                    commit.stderr.strip() or f"git commit exit {commit.returncode}",
+                    "",
+                )
+        except subprocess.TimeoutExpired:
+            return False, "git commit timed out", ""
+        except Exception as e:  # noqa: BLE001 — 环境性异常按补提交失败处置
+            return False, str(e), ""
+        # pathspec 锚定读哈希（同 archive_commit.commit_archive_move 口径：
+        # 不用 rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上）
+        commit_hash = ""
+        try:
+            rev = subprocess.run(
+                ["git", "log", "-1", "--format=%H", "--"] + paths,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if rev.returncode == 0:
+                commit_hash = rev.stdout.strip()
+        except Exception:  # noqa: BLE001 — 哈希读取失败不影响提交本体已落库
+            pass
+        return True, "", commit_hash
+
+    def _path_in_index(self, rel_path: str) -> bool:
+        """pathspec 是否有索引条目（add 清单过滤：已 staged rename 的旧侧无条目）。
+
+        探测失败保守返回 True（把路径留在 add 清单里尝试）——add 对零匹配
+        pathspec 的 fatal 会按补提交失败安全落回熔断，不放大。
+        """
+        try:
+            ls = subprocess.run(
+                ["git", "ls-files", "--", rel_path],
+                cwd=str(self._pm.project_root),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return ls.returncode == 0 and bool(ls.stdout.strip())
+        except Exception:  # noqa: BLE001
+            return True
 
     def _merge_retry_grace_minutes(self) -> float:
         """顺延窗口（分钟）：``mergeback.spec_dir_inflight_grace_minutes``，缺省 30。"""
@@ -3177,6 +3406,73 @@ class QQQueueMixin:
                 f"Merge-back retry for '{spec_name}' "
                 f"(streak {streak}/{breaker_threshold})",
             )
+
+    # ── spec_dir_inflight 顺延周期消费者（evo-mergeback-archive-residue-selfheal 1.3）──
+
+    def _recheck_inflight_deferred_merges(self) -> None:
+        """周期复查 spec_dir_inflight 顺延条目（主循环 120 秒节拍调用，1.3）。
+
+        背景：超熔断阈值后 _defer_merge_back 提前 return 不再排 Timer，Timer 链
+        中断（含进程重启）后此类条目（``_merge_retry_pending`` 残留）无人接手，
+        只能烧 admin 会话等人工。本消费者仿 _recheck_wip_deferred_merges 范式
+        兜底接手。
+
+        筛选（防双驱动，MUST）：
+        - 只认**无** ``_wip_gate_deferred`` 标志的条目——带标志条目由 WIP 等待
+          周期消费者（_recheck_wip_deferred_merges）接手，两车道互不越界；
+        - 只接手**已超熔断阈值**（_inflight_defer_over_limit，与 _defer_merge_back
+          熔断出口同判式）且仍 ``_merge_retry_pending`` 的条目——未超阈值条目由
+          60 秒 merge-only Timer 链驱动（_defer_merge_back 尾部排程），消费者
+          跳过，否则与存活 Timer 链同拍双驱动重试同一分支，git index.lock 竞争
+          的失败会被 bump_counters 误计入顺延轮数提前熔断；
+        - status 非 implementing 的条目跳过（人工/admin 已推进，不重复合并）。
+
+        接手动作：merge-only 重试一次（_retry_merge_back_only）。重试失败链会
+        再入 _defer_merge_back：超阈值分支先做归档残留自愈评估（Timer 链缺失
+        场景下自愈由此间接生效），未命中/失败则重发 stuck 告警（去重幂等）——
+        即「重试或按既有通道维持熔断降级」。接手重试每条目至多一次
+        （_inflight_defer_recheck_attempted 记账），失败维持既有熔断告警与人工
+        通道，不无限节拍重试。
+
+        任何异常都不中断扫描（其余条目继续）。
+        """
+        try:
+            specs = self._pm.state_machine.read_all() or {}
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"spec_dir_inflight 顺延复查扫描失败（本轮跳过，非阻塞）: {e}",
+            )
+            return
+        now = time.time()
+        for name, entry in specs.items():
+            try:
+                if entry.get("_wip_gate_deferred"):
+                    # WIP 等待车道由 _recheck_wip_deferred_merges 接手，不越界
+                    continue
+                if not entry.get("_merge_retry_pending"):
+                    continue
+                if (entry.get("status") or "") != "implementing":
+                    continue  # 人工/admin 已推进，不重复合并（守卫 2.1a 同款）
+                count, first_f = self._parse_defer_accounting(entry, now)
+                if not self._inflight_defer_over_limit(count, first_f, now):
+                    # 未超阈值：60 秒 merge-only Timer 链驱动，跳过防双驱动
+                    continue
+                if name in self._inflight_defer_recheck_attempted:
+                    continue  # 接手重试每条目至多一次
+                self._inflight_defer_recheck_attempted.add(name)
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"spec_dir_inflight 顺延复查 '{name}'：已超熔断阈值且无 Timer 驱动"
+                    f"（{count} 轮，首阻 {int(first_f)}）—— 接手 merge-only 重试"
+                    f"（每条目至多一次）",
+                )
+                self._retry_merge_back_only(name)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"spec_dir_inflight 顺延复查异常 '{name}'（非阻塞）: {e}",
+                )
 
     def _finalize_merge_success(
         self, spec_name: str, run_id, branch: str, merge_info, conflict_files: list
