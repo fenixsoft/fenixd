@@ -97,7 +97,7 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     # 会把原始未校验名拼进路径，使 _SPEC_NAME_RE 白名单在这条消费链上失效
     # （含 ``../`` 片段的名字可落成目录外 tasks.md 读取）——非法名直接返回空
     # 结果，与 resolve_spec_dir/get_spec_doc 的防穿越口径对齐
-    if _facade._validated_spec_name(spec_name) is None:
+    if _facade.validated_spec_name(spec_name) is None:
         return []
     # 活跃优先、归档回退（fix-archived-spec-doc-readback D3）；归档 SPEC 的
     # tasks.md 从归档目录读取，详情页任务卡片不再空白
@@ -195,7 +195,7 @@ def tasks_note(project_root, spec_name, spec_status: str = "", groups=None):
 
     # 防穿越（code-review item 91ba50839948）：与 parse_tasks 同口径，非法名
     # 不经回退分支拼路径，直接返回 None（「无 tasks.md」语义）
-    if _facade._validated_spec_name(spec_name) is None:
+    if _facade.validated_spec_name(spec_name) is None:
         return None
     spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
     tasks_path = (spec_dir or Path(project_root) / "spec" / "changes" / spec_name) / "tasks.md"

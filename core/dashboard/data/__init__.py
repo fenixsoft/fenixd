@@ -217,6 +217,7 @@ from .spec_docs import (
     _SPEC_NAME_RE,
     _SPEC_DOC_WHITELIST,
     _validated_spec_name,
+    validated_spec_name,
     resolve_spec_dir,
     InvalidSpecName,
     InvalidSpecDoc,
