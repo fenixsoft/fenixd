@@ -996,8 +996,8 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
 
     分支形态举例（完整分支以函数体为准）：
     - hooks: 整体替换（patch 中存在即替换，不存在则保留原段）
-    - llm.providers: 整体替换（只动 providers，llm 段其余键保留——item
-      9a727bd02545）
+    - llm: providers 整体替换、段内其余键逐键替换（patch 只带 providers 时
+      llm 段其余键保留——item 9a727bd02545）
     - agents.models: 整体替换（只动 models，其它 agents 子键走各自分支）
     - agents.max_concurrent 等数值标量键: patch 提供即透传（合法性由
       write_config 前置校验把关）
@@ -1007,12 +1007,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
 
     # code-review item 9a727bd02545：providers 子键级合并（原整体替换会把项目级
     # llm 段内 providers 之外的键静默抹掉——「同步用户级设置」llm 页白名单只挑
-    # providers 构造 patch，与 agents.models 同款只动本键、保留段内其余键）
+    # providers 构造 patch，与 agents.models 同款只动本键、保留段内其余键）。
+    # 段内其余键仍须逐键替换（回归修复：只合并 providers 会让 patch 段内
+    # providers 之外的键被静默丢弃、write_config 仍返回 ok——与 promote_mode
+    # 等历史「缺合并分支被静默丢弃」同坑）
     if "llm" in patch and isinstance(patch["llm"], dict):
         if not isinstance(merged.get("llm"), dict):
             merged["llm"] = {}
-        if "providers" in patch["llm"]:
-            merged["llm"]["providers"] = copy.deepcopy(patch["llm"]["providers"])
+        for _llk, _llv in patch["llm"].items():
+            # providers 列表整体替换（不逐项合并）；其余键逐键替换
+            merged["llm"][_llk] = copy.deepcopy(_llv)
 
     if "agents" in patch and isinstance(patch["agents"], dict):
         if not isinstance(merged.get("agents"), dict):

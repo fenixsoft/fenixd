@@ -38,8 +38,17 @@ REPO_ROOT = _find_repo_root(Path(__file__).resolve().parent)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from core.state_machine import StateMachine
-from core.pm_engine import PMEngine
+try:
+    from core.state_machine import StateMachine
+    from core.pm_engine import PMEngine
+except Exception as _import_err:
+    # repo 定位失败（无 core/ 祖先）或 core 依赖缺失时保持既有失败输出契约：
+    # stdout JSON + exit 1（与 main 兜底分支同构），不让驱动方从 stdout 拿到空输入
+    print(json.dumps({
+        "error": f"{type(_import_err).__name__}: {_import_err}",
+        "traceback": traceback.format_exc(),
+    }, ensure_ascii=False))
+    sys.exit(1)
 
 
 def _setup_project(tmpdir: Path) -> Path:
