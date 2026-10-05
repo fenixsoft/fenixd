@@ -31,3 +31,8 @@
 | flaky-exemption-requires-parallel-context | flaky 豁免附并行上下文：planner-judge 提示词要求豁免条目附同窗并行场景清单（含有效并行度）；合成报告对缺该上下文的豁免条目落「证据不全」标记（场景级 flaky/env 分类行 + 断言级豁免清单，SPEC tasks 2.2 确定性实现路径），附上下文后零标记（正向对照）。交付物 core/agent_runner/prompt_builder.py + core/verify_report.py render_verification_report。【2026-10-06 裁决原地修复】原探针误指 core/verdict_check.py validate_report（交付物位置幻觉，validate_report 不承担该职责），改断 verify_report 合成层，正负对照断言语义不弱化。 | pass | 0/3 | - |
 | deliverable-mutex-test-suite-passes | 交付物测试：tasks.md 3.1 新增 tests/test_verify_scenario_resource_mutex.py 存在且全过（同组串行/跨组并行/未标记零变化/等待标记与有效并发度落报告/schema round-trip 与未知键兼容五类用例） | pass | 0/3 | - |
 | parallel-backoff-regression-guard | 并行度回归守卫：本 spec 改动 _execute_parallel 不得破坏既有 inconclusive 降档并行度语义（effective_parallel 报告与降档日志标记）——回归 tests/test_verify_parallel_backoff.py 全过 | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
