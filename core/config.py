@@ -155,6 +155,15 @@ _VALIDATE_SOFT_WARNED = set()
 # 反复调用，同一坏值只在首次告警；键取 repr(raw)，去重只作用于日志、回退行为不变。
 _TRANSIENT_BACKOFF_FALLBACK_WARNED = set()
 
+# agents.timeout_overrides 非法键值 ERROR 的进程级一次性去重（code-review item
+# 343d2ec54938，同 _SEGMENT_DIRTY_WARNED / _VALIDATE_SOFT_WARNED 范式）：
+# normalize_timeout_overrides 经 supervision_config_floor（resolve_config 每 30s
+# 热更新全量重跑）与 effective_run_timeout_seconds / judge_timeout_seconds（每 run
+# 派发读取）被反复调用，agents.timeout_overrides 含坏键时同一 ERROR 逐周期、逐 run
+# 重复打印。键取 (键名, repr(值))（未知键分支值记 None），同一坏键重复出现被去重、
+# 不同坏键互不压制；去重只作用于日志、忽略/回退行为不变。
+_TIMEOUT_OVERRIDE_INVALID_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -389,8 +398,14 @@ class ConfigLoader:
             # 列表形态与 _validate 的接受集对齐（code-review item da6a06e5b48d）：
             # 校验显式接受 list，而旧规范化对非 str 一律回落缺省——合法通过的
             # 列表配置在运行时被静默替换为缺省，校验与消费口径不一致。此处把
-            # 列表按逗号序列同口径规范化（元素须为正整数）。
-            raw = ",".join(str(x) for x in raw)
+            # 列表按逗号序列同口径规范化（元素须为正整数）。整值浮点先按 int
+            # 归一（code-review item c50c760f64e3，对应 _validate 护栏的放行集）：
+            # str(30.0)="30.0" 无法被下方 int() 解析，会让通过加载校验的列表
+            # 整条回退缺省。
+            raw = ",".join(
+                str(int(x)) if isinstance(x, float) and x.is_integer() else str(x)
+                for x in raw
+            )
         if not isinstance(raw, str):
             return cls._warn_backoff_schedule_fallback(raw_orig)
         if not raw.strip():
@@ -773,19 +788,24 @@ class ConfigLoader:
                 # 对 list 只查容器类型，[30, null] / [{}] / 嵌套 list 均放行，
                 # 运行期 join 后逐元素 int() 解析必然整体回退缺省——配置看似
                 # 合法加载、生效值被整条替换，加载阶段硬拒绝更早暴露。bool
-                # （int 子类，str(True)="True" 解析必败）与非有限浮点（.nan/
-                # .inf）同本文件既有护栏一并排除。
+                # （int 子类，str(True)="True" 解析必败）与非整值浮点（str
+                # (30.5)="30.5" 解析必败；.nan/.inf 的 is_integer() 恒 False，
+                # 一并拒绝）同本文件既有护栏排除；整值浮点（30.0）放行，由
+                # normalize_transient_backoff_schedule 按 int 归一（code-review
+                # item c50c760f64e3，与 _normalize_transient_seconds「整值浮点
+                # 按整数接受」同口径），使加载期接受集与运行期解析集一致。
                 for _el in schedule_val:
                     if (
                         _el is None
                         or isinstance(_el, bool)
                         or not isinstance(_el, (str, int, float))
-                        or (isinstance(_el, float) and not math.isfinite(_el))
+                        or (isinstance(_el, float) and not _el.is_integer())
                         or (isinstance(_el, str) and not _el.strip())
                     ):
                         raise ValueError(
                             "agents.transient_backoff_schedule list elements must "
-                            f"be non-empty scalars (str/int/float): {schedule_val!r}"
+                            f"be non-empty scalars (str/int/integer-valued float): "
+                            f"{schedule_val!r}"
                         )
 
         # Validate project type — 仅当（严格路径 或 显式提供 type）时校验。
@@ -2691,7 +2711,8 @@ class ConfigLoader:
           与 _normalize_transient_seconds 同口径；is_integer() 对 .nan/.inf 恒
           False，非有限浮点同被拒）；
         - 非法键值**整条忽略**（该键回退全局默认）并打 ERROR，其余合法键正常生效；
-          进程不得崩溃（调用方容错）。
+          进程不得崩溃（调用方容错）。ERROR 经进程级 (键名, repr(值)) 一次性去重
+          （见 _TIMEOUT_OVERRIDE_INVALID_WARNED），坏键在场时只在首次告警。
 
         Returns: 规范化后的覆盖表 {agent_type: seconds}。缺省/非 dict/空 → {}。
         """
@@ -2701,13 +2722,18 @@ class ConfigLoader:
             return {}
         out: Dict[str, int] = {}
         for key, val in raw.items():
+            # 三处 ERROR 均只在告警分支去重（code-review item 343d2ec54938）：
+            # 忽略/回退行为不变，同一 (键名, 值) 重复出现不再逐周期刷屏。
             if key not in cls.TIMEOUT_OVERRIDE_KEYS:
-                _logger.error(
-                    "agents.timeout_overrides 键 %r 非法（应为 %s 之一），"
-                    "该键被忽略并回退全局默认",
-                    key,
-                    sorted(cls.TIMEOUT_OVERRIDE_KEYS),
-                )
+                dedup_key = (key, None)
+                if dedup_key not in _TIMEOUT_OVERRIDE_INVALID_WARNED:
+                    _TIMEOUT_OVERRIDE_INVALID_WARNED.add(dedup_key)
+                    _logger.error(
+                        "agents.timeout_overrides 键 %r 非法（应为 %s 之一），"
+                        "该键被忽略并回退全局默认",
+                        key,
+                        sorted(cls.TIMEOUT_OVERRIDE_KEYS),
+                    )
                 continue
             # 整值浮点按整数接受（code-review item 01ae33baf2e6）：与
             # _normalize_transient_seconds / get_run_infra_breaker_config 同口径，
@@ -2718,21 +2744,27 @@ class ConfigLoader:
                 or not isinstance(val, (int, float))
                 or (isinstance(val, float) and not val.is_integer())
             ):
-                _logger.error(
-                    "agents.timeout_overrides.%s=%r 非法（应为整数秒），"
-                    "该键被忽略并回退全局默认",
-                    key,
-                    val,
-                )
+                dedup_key = (key, repr(val))
+                if dedup_key not in _TIMEOUT_OVERRIDE_INVALID_WARNED:
+                    _TIMEOUT_OVERRIDE_INVALID_WARNED.add(dedup_key)
+                    _logger.error(
+                        "agents.timeout_overrides.%s=%r 非法（应为整数秒），"
+                        "该键被忽略并回退全局默认",
+                        key,
+                        val,
+                    )
                 continue
             min_allowed = 1 if key == "supervision-judge" else cls.TIMEOUT_OVERRIDE_MIN_SECONDS
             if val < min_allowed:
-                _logger.error(
-                    "agents.timeout_overrides.%s=%s 低于下限 %ss，" "该键被忽略并回退全局默认",
-                    key,
-                    val,
-                    min_allowed,
-                )
+                dedup_key = (key, repr(val))
+                if dedup_key not in _TIMEOUT_OVERRIDE_INVALID_WARNED:
+                    _TIMEOUT_OVERRIDE_INVALID_WARNED.add(dedup_key)
+                    _logger.error(
+                        "agents.timeout_overrides.%s=%s 低于下限 %ss，" "该键被忽略并回退全局默认",
+                        key,
+                        val,
+                        min_allowed,
+                    )
                 continue
             out[key] = int(val)
         return out
@@ -2802,6 +2834,8 @@ class ConfigLoader:
         _UNKNOWN_PROVIDER_REF_WARNED.clear()
         _UNRESOLVED_CHAIN_MODEL_WARNED.clear()
         _VALIDATE_SOFT_WARNED.clear()
+        _TRANSIENT_BACKOFF_FALLBACK_WARNED.clear()
+        _TIMEOUT_OVERRIDE_INVALID_WARNED.clear()
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
