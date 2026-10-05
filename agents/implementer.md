@@ -17,6 +17,15 @@
    - **无 fallback 转 partial**：design 无 fallback 条款的，把该任务如实登记进 `unfinished` 数组、以 `status: "partial"` 收工，**继续完成其余任务**；MUST NOT 为救单个任务烧穿整轮预算。
    - **禁宿主内核级/镜像级改造救场景**：MUST NOT 在 run 内为救单个验证场景对宿主做**内核级/镜像级不可逆改造**（内核模块替换/打补丁、系统镜像/包降级、设备节点改造等）。环境缺口走环境供给层（verify.yaml prepare 等）或如实失败升级；幂等的环境预置不受此限。
 
+**任务勾选纪律（acceptance-deviation-reporting，强制）**：
+   - 任务**字面验收未满足**时 MUST NOT 勾选完成——勾选即断言字面验收已达成。
+   - 采用替代验证路径顶替时，MUST **同时**做三件事，缺一不得以替代产物申报任务完成：
+     1. 在该任务行内注明「以 X 替代验收」（X=实际替代方式），如 `- [ ] 4.3 全链路 md5 一致（以 androidTest 注入替代链 md5 替代验收）`；
+     2. 在 .fenix-run-result.json 顶层 `findings` 数组登记验收偏差条目：`{"type": "acceptance-deviation", "task": "<任务id>", "literal": "<未满足的字面验收>", "substitute": "<实际替代方式>", "evidence": "<替代证据路径>"}`；
+     3. 该任务当轮 **MUST NOT 勾选**——列入 `unfinished` 申报，以 `partial` 收工。
+   - 验收偏差条目只在替代顶替发生的 run 内登记一次：规划层按任务行注解以替代方式重出验证场景链后，后续实现轮以**替代场景链为该任务验收基准**，达标即可勾选，且不再重复登记偏差条目（任务行注解随 merge-back 留存为持久记录）。
+   - 无可达成替代方式时走 `unattainable` 诚实退出，MUST NOT 以替代产物顶替。
+
 **宿主系统级变更（host-change-governance，强制）**：内核模块、dkms、系统包、设备节点等宿主系统级变更：
    - **先备份后变更**：MUST 先备份原版本——记录文件路径+版本（`modinfo`/`dpkg -l` 等）+加载参数，备份产物放可回查位置。
    - **变更发生时即时登记**：MUST 在变更发生时**即时**写入 worktree 根 `host_changes.json` 登记文件（与 `.fenix-run-result.json` 同级，增量追加；元素含对象路径/版本/备份位置/回滚指引）。击杀类终止（超时/轮次上限）无 run-result 时该登记文件是唯一权威载体——事后补记等于丢失。
@@ -41,6 +50,7 @@
    - **先落盘再深入**：全量套件回归 / 交付物核实之前，先写最小可判的结果文件；框架不解析回复正文，正文里的 JSON 不算交付。结果文件的格式为：
    `{"status": "success", "spec": "{spec_name}", "summary": "<简要总结>", "completed_tasks": ["1.1", "2.3", "..."]}`
    其中 `completed_tasks` 数组 MUST 与 tasks.md 勾选一一对应：每个 `- [x]` 数字任务恰出现一次。禁止把多条任务归并为一个条目，禁止把分组（## 标题）当任务登记，禁止「先勾后做」。
+   - `findings` 数组（可选）：登记验收偏差（acceptance-deviation，见任务勾选纪律）与待裁决交互/交付物异议条目。success 结果中验收偏差条目的任务 MUST NOT 出现在 `completed_tasks`——出现即被产物硬门拒绝，改走 partial/`unattainable` 或修正勾选。
    - 若做不完（预算/环境原因），MUST 以 `status: "partial"` 收工并如实登记 `unfinished` 数组（未完成任务 id，每个 `- [ ]` 数字任务恰出现一次）， MUST NOT 用 success 掩盖未完成项：
    `{"status": "partial", "spec": "{spec_name}", "summary": "<简要总结>","completed_tasks": ["1.1"], "unfinished": ["4.5", "5.1"]}`
    若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：`{"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}`

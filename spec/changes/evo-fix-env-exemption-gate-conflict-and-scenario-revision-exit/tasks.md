@@ -30,8 +30,8 @@
 
 ## 2. 场景修订重验出口
 
-- [ ] 2.1 core/dashboard/data/adjudication_choices.py：新增 revise_scenario_reverify 执行器——仅允许场景定义文件与夹具供给层路径（白名单校验，产品代码路径拒绝），复用规划车道出修订场景，修订次数上限默认 2。
-- [ ] 2.2 core/pm_engine/verification/pipeline.py：修订重验生命周期——重验前从冻结集合摘除、修订 re-entry 先于升级、超限转人工冻结。
+- [ ] 2.1 core/dashboard/data/adjudication_choices.py：新增 revise_scenario_reverify 执行器——仅允许场景定义文件与夹具供给层路径（白名单校验，产品代码路径拒绝），复用规划车道出修订场景，修订次数上限默认 2。白名单路径以被验项目 project_root 锚定解析（拒绝绝对路径/穿越）；修订落盘同覆盖场景存储成对定义文件（test_scenarios.json 与 _scenarios_full.json）。
+- [ ] 2.2 core/pm_engine/verification/pipeline.py：修订重验生命周期——重验前从冻结集合摘除、修订 re-entry 先于升级、超限转人工冻结。豁免有效命中的 env 阻塞轮不计入 ENV_BLOCK_FREEZE_THRESHOLD，失效（TTL 过期/场景变更）后恢复计数。
 - [ ] 2.3 core/dashboard/data/admin_actions.py：env 归因证据要求——归因结论须附送帧/解码两段证据引用，缺失降级 inconclusive。
 
 ## 3. 测试

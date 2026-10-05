@@ -25,7 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.prompt_builder import (
+    ACCEPTANCE_DEVIATION_ANNOTATION,
+    ACCEPTANCE_DEVIATION_TYPE,
     impl_result_path,
+    IMPL_FINDINGS_TYPE_WHITELIST,
     planner_result_path,
     PLANNER_RESULT_STATUS_WHITELIST,
     spec_review_result_path,
@@ -35,6 +38,7 @@ from core.agent_runner.run_files import append_run_line
 from core.fast_track_result import parse_fast_track_verification
 from core.run_task_track import (
     find_impl_run_file,
+    is_task_id,
     parse_tasks_md,
     parse_unattainable,
     tasks_md_path,
@@ -1255,6 +1259,13 @@ def _check_impl_result_artifact(
             f"{result_path} {runner._format_gap_list(bogus)}"
         )
 
+    # evo-add-acceptance-deviation-reporting 2.1：findings 数组结构校验——字段
+    # 缺失零拦截（历史 run、无偏差 run 零开销）；形态非法 fail-closed（结构类
+    # 失败，不计数不降级）。implementer/fast-track 两车道共用本判据，同义生效。
+    findings_err = _validate_impl_findings(data, agent_type, result_path)
+    if findings_err is not None:
+        return findings_err
+
     # add-impl-ocr-parallel-lane（任务 2.2）：实现者产物硬门不再校验
     # code_review/dispositions 段——收尾 ocr 由框架侧异步车道承载，裁决点
     # 移至 testing 出口 join（core/pm_engine/dispatch/queue.py 的
@@ -1276,6 +1287,11 @@ def _check_impl_result_artifact(
         gate_err = runner._check_success_completion(
             spec_name, result_path, data, effective_all, checked_ids
         )
+        if gate_err is None:
+            # evo-add-acceptance-deviation-reporting 2.1：组合校验——success ∧
+            # 偏差任务 ∈ completed_tasks → 拒绝（结构类失败；partial/unattainable
+            # 路径不感知 findings，语义不变）。
+            gate_err = _check_acceptance_deviation_success(runner, data, result_path)
     else:
         gate_err = runner._check_partial_consistency(
             spec_name, result_path, data, all_ids, checked_ids,
@@ -1661,6 +1677,110 @@ def _invalid_completed_ids(items) -> list:
         if not is_task_id(it):
             bad.append(it)
     return bad
+
+
+def _validate_impl_findings(data: dict, agent_type: str, result_path) -> str | None:
+    """impl run 结果 findings 数组结构校验（evo-add-acceptance-deviation-reporting 2.1）。
+
+    findings 为可选字段：缺失 → 零拦截（历史 run、无偏差 run 零开销）。在场时
+    须为对象数组且逐条 ``type`` 在 IMPL_FINDINGS_TYPE_WHITELIST 内（白名单单源
+    在 prompt_builder，提示词契约与硬门共用）；acceptance-deviation 条目须含
+    三要素（``task`` 合法 id / ``literal`` / ``substitute`` 非空）与非空
+    ``evidence``（替代证据路径，防口头替代——design Open Question 首版必填裁定）。
+
+    违规返回**结构类**失败文案（无 TASK_GATE_ERROR_PREFIX 前缀 → runner 归
+    [artifact-structural]，不参与「只卡第一次」降级）：findings 形态是产物
+    结构问题，与任务完成度对账分属两类。implementer/fast-track 两车道共用
+    本判据（_check_impl_result_artifact 单点），同义生效。
+    """
+    findings = data.get("findings")
+    if findings is None:
+        return None
+    if not isinstance(findings, list):
+        return (
+            f"exit 0 但结果文件 findings 非数组（{agent_type} 产物硬门）: "
+            f"{result_path}"
+        )
+    for idx, item in enumerate(findings):
+        if not isinstance(item, dict):
+            return (
+                f"exit 0 但结果文件 findings[{idx}] 非对象（{agent_type} 产物硬门）: "
+                f"{result_path}"
+            )
+        ftype = item.get("type", "")
+        if ftype not in IMPL_FINDINGS_TYPE_WHITELIST:
+            return (
+                f"exit 0 但结果文件 findings[{idx}].type='{ftype}' 不在白名单"
+                f"（合法值: {'/'.join(IMPL_FINDINGS_TYPE_WHITELIST)}，"
+                f"{agent_type} 产物硬门）: {result_path}"
+            )
+        if ftype != ACCEPTANCE_DEVIATION_TYPE:
+            continue
+        if not is_task_id(item.get("task", "")):
+            return (
+                f"exit 0 但结果文件 findings[{idx}]（acceptance-deviation）"
+                f"task='{item.get('task', '')}' 非合法任务 id"
+                f"（{agent_type} 产物硬门）: {result_path}"
+            )
+        for key in ("literal", "substitute", "evidence"):
+            val = item.get(key, "")
+            if not isinstance(val, str) or not val.strip():
+                return (
+                    f"exit 0 但结果文件 findings[{idx}]（acceptance-deviation）"
+                    f"缺非空 {key}（三要素 task/literal/substitute + evidence "
+                    f"替代证据路径，{agent_type} 产物硬门）: {result_path}"
+                )
+    return None
+
+
+def impl_findings_deviation_tasks(data: dict) -> list:
+    """提取结果文件 findings 中验收偏差条目的任务 id（结构合法前提下调用）。
+
+    仅返回 ``type == acceptance-deviation`` 条目的 ``task``；字段缺失/形态
+    异常返回空列表（结构违规由 ``_validate_impl_findings`` 归因，本函数只做
+    组合判据的取值）。
+    """
+    findings = data.get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [
+        str(item.get("task"))
+        for item in findings
+        if isinstance(item, dict) and item.get("type") == ACCEPTANCE_DEVIATION_TYPE
+    ]
+
+
+def _check_acceptance_deviation_success(
+    runner, data: dict, result_path, agent_type: str = "implementer"
+) -> str | None:
+    """组合校验：success ∧ 偏差任务 ∈ completed_tasks → 拒绝（…2.1）。
+
+    验收偏差条目在场的任务当轮 MUST NOT 勾选（design 闭环语义：该轮经
+    unfinished 申报走 partial；规划层按任务行注解重出替代场景链后，后续
+    success 轮不再带偏差条目，自然过门——本门无状态，不感知轮次）。命中返回
+    结构类失败文案（无 TASK_GATE_ERROR_PREFIX 前缀 → runner 归
+    [artifact-structural]，不参与「只卡第一次」降级），文案指引 partial /
+    替代场景链 / unattainable 三条出路。partial/unattainable 路径不调用本
+    函数（语义不变）。
+    """
+    deviation_tasks = impl_findings_deviation_tasks(data)
+    if not deviation_tasks:
+        return None
+    raw_ct = data.get("completed_tasks")
+    ct = set(map(str, raw_ct)) if isinstance(raw_ct, list) else set()
+    hits = sorted(t for t in deviation_tasks if t in ct)
+    if not hits:
+        return None
+    return (
+        f"exit 0 但结果文件 success 携带验收偏差条目且对应任务出现在 "
+        f"completed_tasks（{agent_type} 产物硬门）: {result_path} "
+        f"偏差任务 {runner._format_gap_list(hits)}——偏差任务当轮 MUST NOT "
+        f"勾选：把它移出 completed_tasks 并在 tasks.md 取消勾选，列入 "
+        f"unfinished 申报走 partial；或按任务行内「以 X "
+        f"{ACCEPTANCE_DEVIATION_ANNOTATION}」注解经规划层重出替代场景链后，"
+        f"以替代场景链为验收基准达标再勾选（届时不再登记偏差条目）；无可达成"
+        f"替代方式时走 unattainable 诚实退出"
+    )
 
 
 def _check_success_completion(

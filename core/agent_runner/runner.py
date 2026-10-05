@@ -25,6 +25,7 @@ from typing import Optional, Dict, Any
 from core.git_base_branch import resolve_base_branch
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
+    planner_result_path,
     spec_review_result_path,
     SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
@@ -40,6 +41,7 @@ from core.agent_runner.result_gate import (  # noqa: F401
     FrozenTerminatedError,
     RunCancelledError,
     SelfReviewResult,
+    _ARTIFACT_ERR_STALE,
     _ARTIFACT_FRESHNESS_GRACE_SECONDS,
     _PLANREADY_STATUSES,
     _append_crosscheck_skipped,
@@ -1189,6 +1191,14 @@ class AgentRunner:
         if mode not in ("plan", "judge"):
             raise ValueError(f"mode 必须是 'plan' 或 'judge'，实际: {mode}")
         run_id = f"planner-{mode}-{spec_name}-{int(time.time())}"
+        if mode == "judge":
+            # evo-add-judge-result-predispatch-rename 1.1：派发前留档——上轮
+            # judge 结果文件残留会把 exit 0 的正常裁决轮整轮作废（2026-10-05
+            # potplayer-base 事故：新鲜度硬门拦陈旧残留 → superseded 整体重跑）。
+            # 硬门 fail-closed 语义不变，缺口在上游：轮与轮之间不留痕上轮裁决
+            # 产物。此处改名失败仅 WARNING 不阻断派发（节流/非节流两条派发
+            # 路径的汇合点，单点覆盖 pipeline.py 两个 run_planner 调用点）。
+            self._archive_prev_judge_result(spec_name)
         sem = self._planner_throttle_semaphore()
         if sem is None:
             # 未开启节流：直接派发（现状行为）
@@ -1224,6 +1234,67 @@ class AgentRunner:
         finally:
             # 取消/异常均释放信号量（不泄漏占位导致后续 spec 永久排队）
             sem.release()
+
+    def _archive_prev_judge_result(self, spec_name: str,
+                                   fallback_unlink: bool = False) -> bool:
+        """将 per-spec judge 结果文件原子改名 prev-judge-result.json 留档。
+
+        evo-add-judge-result-predispatch-rename：仿 core/pm_engine/family.py
+        prev-impl-result.json 先例（os.replace 原子改名）。两个消费点共用本
+        单一实现（MUST NOT 各写一份路径/改名逻辑漂移）：
+
+        - run_planner mode=="judge" 派发前留档（fallback_unlink=False：改名
+          失败仅 WARNING，归档语义下不删原文件）；
+        - _handle_artifact_gate_retry 命中陈旧残留进入原地重试前清理
+          （fallback_unlink=True：清理优先于归档，改名失败退化为删除，使
+          再败归因退化为「结果文件缺失」并防同一陈旧文件烧光重试预算）。
+
+        作用域收敛（2026-10-06 评审修补）：路径经
+        ``planner_result_path(root, spec, "planner-judge")`` 重建（与产物硬门
+        校验侧同源，MUST NOT 从 error 归因文案解析路径）；仅触碰该单文件，
+        跨 spec 共享根文件 ``.fenix/.fenix-run-result.json``（实现收尾契约
+        唯一落点）与 report.json/tokens.json 等跨轮产物一律不触碰。
+
+        Returns:
+            True=已改名（或退化删除）成功；False=无遗留文件或改名失败
+            （失败已 WARNING 留痕，调用方一律不阻断派发/重试）。
+        """
+        result_path = planner_result_path(self.project_root, spec_name,
+                                          "planner-judge")
+        archive_path = result_path.parent / "prev-judge-result.json"
+        try:
+            os.replace(result_path, archive_path)
+        except FileNotFoundError:
+            return False  # 无遗留文件属常态（零影响路径）
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"judge 结果文件改名留档失败 '{spec_name}'"
+                f"（不阻断派发/重试）: {result_path} → {archive_path} ({e})",
+            )
+            if not fallback_unlink:
+                return False
+            try:
+                result_path.unlink()
+            except OSError as e2:
+                self.logger.warning(
+                    "agent_runner",
+                    f"judge 陈旧结果文件删除失败 '{spec_name}'"
+                    f"（不阻断重试）: {result_path} ({e2})",
+                )
+                return False
+            self.logger.warning(
+                "agent_runner",
+                f"judge 陈旧结果文件已删除（改名失败后退化清理）"
+                f" '{spec_name}': {result_path}",
+            )
+            return True
+        self.logger.info(
+            "agent_runner",
+            f"judge 结果文件已改名留档 '{spec_name}': "
+            f"{result_path} → {archive_path}",
+        )
+        return True
 
     def run_dispute_judge(self, spec_name: str, judge_input: dict,
                           run_id: str | None = None) -> AgentRunResult:
@@ -4281,6 +4352,21 @@ class AgentRunner:
                 reason="task_gate", agent_type=agent_type,
             )
             return error, transient_retries, None, False, True
+        # evo-add-judge-result-predispatch-rename 1.2：陈旧残留重试前清理——
+        # 2026-10-05 potplayer-base 事故第二缺口：硬门命中「结果文件早于本轮
+        # 启动（陈旧残留）」后整体重跑路径不清理陈旧文件，最坏烧光全部原地
+        # 重试预算（每次都是整轮 $1 级重跑，同一文件反复命中）。此处进入原地
+        # 重试/预算耗尽回退 attempt 层之前同步改名（失败退化删除），使再败
+        # 归因退化为「结果文件缺失」。作用域收敛（2026-10-06 评审修补）：该
+        # 通道全 agent_type 通用（implementer/fast-track/spec-review/planner-plan
+        # 均流经），改名/删除仅当 agent_type=="planner-judge" 且路径经
+        # planner_result_path 重建（_archive_prev_judge_result 内单一实现，
+        # 不从 error 归因文案解析路径）；跨 spec 共享根文件
+        # .fenix/.fenix-run-result.json 及其他 agent_type 产物不受影响。
+        # 「陈旧」判定复用 result_gate 侧共享常量（消费方按同一常量判定的
+        # 既有约定），不新写字面量。
+        if agent_type == "planner-judge" and _ARTIFACT_ERR_STALE in error:
+            self._archive_prev_judge_result(spec_name, fallback_unlink=True)
         if transient_retries >= len(transient_budget):
             # 原地预算耗尽 → 退出 while，attempt 层继续重试。
             # add-timeline-gate-failure-display D2：同理追加门禁终态（结构类 →

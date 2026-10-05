@@ -13,6 +13,7 @@ planner-plan = test_scenarios.json。产物缺失/空/非法 JSON → AgentArtif
 """
 
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -442,7 +443,12 @@ class TestVerdictReadFailClosedGate:
 
     def test_stale_main_tree_artifact_freshness_rejected(self, tmp_path,
                                                          monkeypatch):
-        """主树残留上一轮合法文件 + 本轮零产出 → mtime 新鲜度拦截。"""
+        """主树残留上一轮合法文件 + 本轮零产出 → mtime 新鲜度拦截。
+
+        evo-add-judge-result-predispatch-rename 1.2 起拦截后处置升级：原地
+        重试前陈旧文件被改名留档 prev-judge-result.json，终态归因退化为
+        「结果文件缺失」（首次门禁失败仍归因「早于本轮启动」，见重试事件）。
+        """
         monkeypatch.setattr(time, "sleep", lambda _: None)
         runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
         wt = tmp_path / "wt"
@@ -457,14 +463,26 @@ class TestVerdictReadFailClosedGate:
         stale_path.write_text(json.dumps({"status": "verified", "summary": "old"}),
                               encoding="utf-8")
         old = time.time() - 3600
-        import os
         os.utime(stale_path, (old, old))
 
         runner._run_claude = MagicMock(
             return_value=("done", 1, "sess-gate", _usage_ok()))
         result = runner._execute_agent("spec-x", "planner-judge", "run-v3")
         assert result.success is False
-        assert "早于本轮启动" in (result.error or "")
+        # 首次门禁失败仍归因陈旧残留（重试事件留痕）
+        events = _run_file_events(tmp_path, "run-v3", "-a1")
+        stale_retries = [e for e in events
+                         if e.get("type") == "transient_retry"
+                         and "早于本轮启动" in (e.get("error") or "")]
+        assert stale_retries
+        # 清理生效：陈旧文件已改名留档，终态归因退化为「结果文件缺失」
+        archive_path = stale_path.parent / "prev-judge-result.json"
+        assert json.loads(
+            archive_path.read_text(encoding="utf-8")) == {
+            "status": "verified", "summary": "old"}
+        assert not stale_path.exists()
+        assert "结果文件缺失" in (result.error or "")
+        assert "早于本轮启动" not in (result.error or "")
 
     # ── ③ 顶层 status="success" → 白名单拦截 ─────────────────────────────
 
@@ -780,3 +798,216 @@ class TestGateBlockedBudgetAccounting:
         p = tmp_path / "impl-spec-x-1700000002-a1.jsonl"
         p.write_text("", encoding="utf-8")
         assert ImplBudget._run_file_died(p) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# evo-add-judge-result-predispatch-rename（Task 2.1）
+# 裁决结果文件派发前留档 + 陈旧残留重试前清理。
+# 背景：2026-10-05 potplayer-base 事故——上轮 .fenix-run-result.json 残留触发
+# 新鲜度硬门，把 exit 0 的正常裁决轮整轮作废；且重跑路径不清理陈旧文件，
+# 最坏烧光原地重试预算。
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _plant_judge_result(proot: Path, spec: str, payload: dict,
+                        age_seconds: float = 0.0) -> Path:
+    """预置 per-spec judge 结果文件（可选陈旧 mtime）。"""
+    p = planner_result_path(proot, spec, "planner-judge")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    if age_seconds:
+        past = time.time() - age_seconds
+        os.utime(p, (past, past))
+    return p
+
+
+def _flaky_replace_broken_for(dst_name: str):
+    """构造仅对目标文件名失败的 os.replace（其余委托真实现）。"""
+    real_replace = os.replace
+
+    def _replace(src, dst, *a, **k):
+        if Path(dst).name == dst_name:
+            raise OSError(f"rename blocked for {dst_name}")
+        return real_replace(src, dst, *a, **k)
+
+    return _replace
+
+
+class TestJudgeResultPredispatchRename:
+    """judge 派发前留档 + 陈旧残留重试前清理（evo-add-judge-result-predispatch-rename）。"""
+
+    def _mock_worktree(self, runner, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir(parents=True, exist_ok=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+        runner.worktree_manager.cleanup.return_value = None
+
+    def test_predispatch_stale_result_archived_and_gate_passes(self, tmp_path):
+        """预置上轮遗留文件 → run_planner("judge") 派发前已改名、本轮硬门放行、留档可回溯。"""
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        self._mock_worktree(runner, tmp_path)
+        prev_payload = {"status": "bug-found", "summary": "上一轮裁决结论"}
+        result_path = _plant_judge_result(tmp_path, "spec-x", prev_payload,
+                                          age_seconds=3600)
+        archive_path = result_path.parent / "prev-judge-result.json"
+
+        seen_at_dispatch = {}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
+            # agent 首次被调用时刻 = 派发后：原路径已腾空、留档内容可回溯
+            seen_at_dispatch["result_gone"] = not result_path.exists()
+            seen_at_dispatch["archive"] = (
+                json.loads(archive_path.read_text(encoding="utf-8"))
+                if archive_path.is_file() else None)
+            result_path.write_text(
+                json.dumps({"status": "verified", "summary": "本轮裁决"}),
+                encoding="utf-8")
+            return ("done", 1, "sess-ok", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_planner("spec-x", "judge")
+
+        assert result.success is True  # 本轮硬门放行（不再命中陈旧残留）
+        assert seen_at_dispatch["result_gone"] is True
+        assert seen_at_dispatch["archive"] == prev_payload
+        assert json.loads(
+            archive_path.read_text(encoding="utf-8")) == prev_payload
+
+    def test_predispatch_no_leftover_zero_impact(self, tmp_path):
+        """无遗留文件 → 派发行为零变化（不产生 prev-judge-result.json，run 成功）。"""
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        self._mock_worktree(runner, tmp_path)
+        result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
+        archive_path = result_path.parent / "prev-judge-result.json"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps({"status": "verified", "summary": "ok"}),
+                encoding="utf-8")
+            return ("done", 1, "sess-ok", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_planner("spec-x", "judge")
+
+        assert result.success is True
+        assert not archive_path.exists()
+
+    def test_predispatch_rename_failure_does_not_block(self, tmp_path,
+                                                       monkeypatch):
+        """改名失败（OSError）→ 仅 WARNING 留痕，派发照常、run 成功。"""
+        monkeypatch.setattr(runner_module.os, "replace",
+                            _flaky_replace_broken_for("prev-judge-result.json"))
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        self._mock_worktree(runner, tmp_path)
+        result_path = _plant_judge_result(
+            tmp_path, "spec-x", {"status": "bug-found", "summary": "prev"})
+        archive_path = result_path.parent / "prev-judge-result.json"
+        calls = {"n": 0}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
+            calls["n"] += 1
+            result_path.write_text(
+                json.dumps({"status": "verified", "summary": "本轮"}),
+                encoding="utf-8")
+            return ("done", 1, "sess-ok", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_planner("spec-x", "judge")
+
+        assert calls["n"] == 1  # 派发未被阻断
+        assert result.success is True
+        assert not archive_path.exists()  # 改名失败：无留档产物，agent 覆写原路径
+
+    def test_plan_mode_dispatch_does_not_archive(self, tmp_path, monkeypatch):
+        """mode="plan" 派发不触发留档（改名仅挂在 judge 分支）。"""
+        runner = _make_runner(tmp_path)
+        archived = []
+        monkeypatch.setattr(
+            runner, "_archive_prev_judge_result",
+            lambda spec, fallback_unlink=False: archived.append(spec))
+        monkeypatch.setattr(
+            runner, "_execute_agent",
+            lambda spec, atype, rid: "sentinel")
+
+        assert runner.run_planner("spec-x", "plan") == "sentinel"
+        assert archived == []
+        assert runner.run_planner("spec-x", "judge") == "sentinel"
+        assert archived == ["spec-x"]
+
+    def test_archive_helper_fallback_unlink_on_rename_failure(self, tmp_path,
+                                                              monkeypatch):
+        """重试前清理路径：改名失败退化为删除（再败归因退化为结果文件缺失）。"""
+        runner = _make_runner(tmp_path)
+        p = _plant_judge_result(tmp_path, "spec-x", {"status": "verified"})
+        monkeypatch.setattr(runner_module.os, "replace",
+                            _flaky_replace_broken_for("prev-judge-result.json"))
+
+        assert runner._archive_prev_judge_result(
+            "spec-x", fallback_unlink=True) is True
+        assert not p.exists()  # 原文件已删除（清理达成）
+        assert not (p.parent / "prev-judge-result.json").exists()
+
+        # 派发前留档路径（fallback_unlink=False）：改名失败不删原文件
+        p2 = _plant_judge_result(tmp_path, "spec-y", {"status": "verified"})
+        assert runner._archive_prev_judge_result("spec-y") is False
+        assert p2.exists()
+
+    def test_stale_artifact_retry_no_repeat_hit(self, tmp_path, monkeypatch):
+        """硬门命中陈旧残留 → 原地重试前已清理，再败归因不再是「陈旧残留」。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        self._mock_worktree(runner, tmp_path)
+        prev_payload = {"status": "bug-found", "summary": "上一轮裁决"}
+        result_path = _plant_judge_result(tmp_path, "spec-x", prev_payload,
+                                          age_seconds=3600)
+        archive_path = result_path.parent / "prev-judge-result.json"
+        # 跨 spec 共享根文件（实现收尾契约唯一落点）MUST NOT 被改名/删除
+        root_result = tmp_path / ".fenix" / ".fenix-run-result.json"
+        root_result.parent.mkdir(parents=True, exist_ok=True)
+        root_result.write_text(json.dumps({"status": "success"}),
+                               encoding="utf-8")
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
+            # 始终不写产物：第一次门禁命中预置陈旧文件，此后命中「结果文件缺失」
+            return ("done", 1, "sess-stale", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("spec-x", "planner-judge", "run-stale")
+
+        assert result.success is False
+        # 陈旧文件已被改名留档且内容可回溯（重试前清理生效）
+        assert json.loads(
+            archive_path.read_text(encoding="utf-8")) == prev_payload
+        assert not result_path.exists()
+        # 跨 spec 共享根文件未被触碰
+        assert json.loads(root_result.read_text(encoding="utf-8")) == {
+            "status": "success"}
+
+        # attempt-1 链路的重试事件：恰好一次「陈旧」归因，其余为「结果文件缺失」
+        events = _run_file_events(tmp_path, "run-stale", "-a1")
+        retries = [e for e in events
+                   if e.get("type") == "transient_retry"
+                   and e.get("reason") == "artifact_gate"]
+        assert [e for e in retries if "陈旧" in (e.get("error") or "")], \
+            "首次门禁失败应归因陈旧残留"
+        # 清理后重试不再重复命中同一陈旧文件
+        assert all("陈旧" not in (e.get("error") or "") for e in retries[1:]), \
+            "清理后的重试不得再命中陈旧残留"
+        assert all("结果文件缺失" in (e.get("error") or "") for e in retries[1:])
+        # 终态归因不再是陈旧残留
+        assert "陈旧" not in (result.error or "")
+        assert "结果文件缺失" in (result.error or "")
