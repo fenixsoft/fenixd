@@ -285,39 +285,44 @@ class FileWatcher:
         removed = set()
 
         seen = set()
-        if _is_dir(changes):
-            try:
-                entries = list(changes.iterdir())
-            except OSError as e:
-                # 瞬时失败（EACCES/EMFILE 等）MUST NOT 等同「目录被清空/移除」：
-                # seen 为空会把缓存里全部 spec 误判成 removed、广播整表
-                # summary:null 删除行，下轮恢复又全量推回。跳过本轮删除判定
-                # （缓存原样保留），告警按「扫描失败」同款节流（5 分钟一条）。
-                key = proot.as_posix()
-                now = time.monotonic()
-                last_warn = self._proj_scan_warn.get(key)
-                if last_warn is None or now - last_warn >= 300:
-                    self._proj_scan_warn[key] = now
-                    logger.warning(
-                        "dashboard watcher 枚举项目 %s spec/changes 目录失败，"
-                        "跳过本轮删除判定: %s: %s",
-                        proot,
-                        type(e).__name__,
-                        e,
-                    )
-                return set(), set()
-            for d in entries:
-                if not _is_dir(d):
-                    continue
-                sname = d.name
-                seen.add(sname)
-                dsig = _dir_sig(d)
-                if dsig is None:
-                    continue
-                prev_dsig = spec_dirs.get(sname)
-                spec_dirs[sname] = dsig
-                if prev_dsig is None or prev_dsig != dsig:
-                    changed.add(sname)
+        try:
+            entries = list(changes.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            # 目录确实不存在（ENOENT/ENOTDIR，含 changes 路径是文件）：seen 空
+            # 集触发全量 removed 是正确语义，MUST NOT 进下方「探测失败」分支。
+            entries = []
+        except OSError as e:
+            # 探测/枚举瞬时失败（EACCES/EMFILE 等）MUST NOT 等同「目录被清空/
+            # 移除」：seen 为空会把缓存里全部 spec 误判成 removed、广播整表
+            # summary:null 删除行，下轮恢复又全量推回。跳过本轮删除判定
+            # （缓存原样保留），告警按「扫描失败」同款节流（5 分钟一条）。
+            # 注意此处 MUST NOT 经 _is_dir 判断 changes：那会把探测失败也按
+            # 「非目录」吞成 seen 空集，绕开本守卫（同 iterdir 瞬时失败形态）。
+            key = proot.as_posix()
+            now = time.monotonic()
+            last_warn = self._proj_scan_warn.get(key)
+            if last_warn is None or now - last_warn >= 300:
+                self._proj_scan_warn[key] = now
+                logger.warning(
+                    "dashboard watcher 枚举项目 %s spec/changes 目录失败，"
+                    "跳过本轮删除判定: %s: %s",
+                    proot,
+                    type(e).__name__,
+                    e,
+                )
+            return set(), set()
+        for d in entries:
+            if not _is_dir(d):
+                continue
+            sname = d.name
+            seen.add(sname)
+            dsig = _dir_sig(d)
+            if dsig is None:
+                continue
+            prev_dsig = spec_dirs.get(sname)
+            spec_dirs[sname] = dsig
+            if prev_dsig is None or prev_dsig != dsig:
+                changed.add(sname)
         for stale in [k for k in spec_dirs if k not in seen]:
             del spec_dirs[stale]
             removed.add(stale)
