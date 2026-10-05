@@ -40,6 +40,12 @@ class H10StaticRoutesMixin:
     _gzip_payload_cache: Dict[tuple, bytes] = {}
 
     def _serve_static(self, filename: str):
+        # NUL 字节混入 Path 拼接后 .resolve() 抛 ValueError（embedded null
+        # byte，code-review item 747894f47c57），否则会穿透为不透明 500；
+        # 按本方法对非法路径的既有语义答 404。
+        if "\x00" in filename:
+            self._error(404, "Not Found")
+            return
         static_root = self.server.static_dir.resolve()
         target = (static_root / filename).resolve()
         # 防路径穿越：解析后必须仍在 static 目录内
@@ -90,6 +96,9 @@ class H10StaticRoutesMixin:
             or spec_norm in (".", "..")
             or ".." in spec_norm.split("/")
             or spec_norm.startswith("/")
+            # NUL 字节（%00 解码产物）会让下方 .resolve() 抛 ValueError
+            # （code-review item 747894f47c57）穿透为 500，一并拒绝
+            or "\x00" in spec
         ):
             self._error(403, "Forbidden")
             return
@@ -98,6 +107,12 @@ class H10StaticRoutesMixin:
         # 在网络上恒为 percent-encoded，不解码则合法图片 404。解码后可能还原
         # 出「..」，由下方 resolve + is_relative_to 包含检查兜底。
         file_part = urllib.parse.unquote("/".join(parts[4:]))
+        # 同上（code-review item 747894f47c57）：file_part 经 unquote 可能
+        # 还原出 NUL 字节，混入下方 Path 拼接后 .resolve() 抛 ValueError
+        # 穿透为不透明 500，按本文件对非法路径的既有语义答 403。
+        if "\x00" in file_part:
+            self._error(403, "Forbidden")
+            return
 
         project = self.server.project_by_name(project_name)
         if project is None or not project.get("exists"):
