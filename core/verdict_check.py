@@ -940,8 +940,15 @@ def compute_attribution_level(scenario: dict) -> str:
     labels = scenario.get("screenshot_labels") or {}
     if not isinstance(labels, dict):
         labels = {}
-    has_blank = labels.get("blank_screenshot", False)
-    has_low_contrast = labels.get("low_contrast", False)
+    # 严格 is True 判定（code-review item 94bf2c34ded9），与下方 first_frame_ok
+    # 的 is False 同款防伪造纪律：引擎侧（classify_screenshot）只写布尔 True、
+    # 缺标签即正常态；若按任意真值判定，judge 改写 report 把标签值伪造成任意
+    # 真值（"yes"/1）即可凑出 evidence-backed、旁路 should_suppress_bug_found
+    # 的 speculative 抑制门——且归因分级在门禁管线（_run_attribution_gate /
+    # _speculative_bug_found_gate）中先于 enforce_blank_screenshot_direction
+    # 执行，不存在下游强制改写兜底，防线只能在取值处闭合。
+    has_blank = labels.get("blank_screenshot") is True
+    has_low_contrast = labels.get("low_contrast") is True
     has_labels = bool(labels)
 
     # 截图健全性标签是最强证据：白屏/低对比度均有算法标签佐证
@@ -1296,13 +1303,15 @@ def is_engine_cascade_scenario(sc: dict) -> bool:
 def merge_engine_cascade_markers(report) -> list:
     """框架结构化透传（add-attribution-dedup-cascade-exemption 1.0）。
 
-    在查重门前把引擎执行结果条目的 dependency_skipped/skipped_depends_on
-    按 scenario_id 合并进 report 场景条目，归一为 gate-owned 豁免判据键
-    ``_engine_dependency_skipped``：条目携带引擎结构化级联签名 → 置 True；
-    否则清除该键（防 judge 上一轮写入的伪标/残留键经后续轮次洗白）。查重
-    豁免判据只认本函数写入的键——该键在每次查重前被本函数全量重算覆写，
-    judge 报告自行申报的 dependency_skipped 同名字段（无论写不写 gate-owned
-    键）都不构成豁免依据，防御在数据流层闭合。
+    函数名沿用的「merge」是历史设计措辞，实际语义是**在 report 自身场景条目
+    上归一 gate-owned 豁免判据键**（code-review item 629be6a8d312）：引擎在
+    执行期已把 dependency_skipped/skipped_depends_on 结构化写入 report 场景
+    条目自身，本函数不做任何跨数据源按 scenario_id 的合并/join——只在查重
+    门前逐条目检查引擎结构化级联签名并归一到 ``_engine_dependency_skipped``：
+    条目携带签名 → 置 True；否则清除该键（防 judge 上一轮写入的伪标/残留键
+    经后续轮次洗白）。查重豁免判据只认本函数写入的键——该键在每次查重前被
+    本函数全量重算覆写，judge 报告自行申报的 dependency_skipped 同名字段
+    （无论写不写 gate-owned 键）都不构成豁免依据，防御在数据流层闭合。
 
     原地修改 report 场景条目。返回置标的场景 id 列表（留痕用）。
     """
