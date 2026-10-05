@@ -26,12 +26,12 @@
 
 import fcntl
 import json
-import os
 import re
 import subprocess
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from core.fs_utils import atomic_write_text
 
 # 告警 signal_type（human-escalation-alerts 能力，.fenix/admin_alerts.json）
 SIGNAL_MISSING = "verify_report_missing"
@@ -59,40 +59,17 @@ _REPORT_COMMIT_TIMEOUT = 120
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """mkstemp 唯一临时文件 + fsync + os.replace 原子写（code_review._atomic_write 同款）。
+    """mkstemp 唯一临时文件 + fsync + os.replace 原子写（core.fs_utils 单一实现）。
 
-    固定 ``<name>.tmp`` 临时名在并发写同一目标时会互相截断：进程 A 完成 write_text
-    后、进程 B 在同一 .tmp 上截断改写，随后任一方的 replace 都可能把截断内容落盘。
-    唯一临时名保证并发写不可能产生截断产物——rename 前目标不变，rename 后内容完整。
-
-    mkstemp 以 0600 建临时文件，rename 前修复权限，口径对齐 deliverables
-    _atomic_write_text（item 7ec0cecc423d）：替换**既有**文件时继承其原权限——
-    运维若刻意把产物（verification-report.md / report.json / verdict_stability.json）
-    收紧为 0600，「Agent 手写 → 框架重合成覆盖」一轮不应被静默放宽；**新**文件
-    放宽到 0644，与常规 write_text 的 umask 缺省一致，避免跨用户读取（非 root
-    的辅助进程/人工其它账号）被拒。chmod 失败不阻断写入（权限是尽力而为的附属属性）。
+    权限口径（item 8b26fd7980ce 收口两份拷贝，本模块原语义不变）：替换**既有**
+    文件时继承其原权限——运维若刻意把产物（verification-report.md /
+    report.json / verdict_stability.json）收紧为 0600，「Agent 手写 → 框架重
+    合成覆盖」一轮不应被静默放宽；**新**文件放宽到 0644，与常规 write_text
+    的 umask 缺省一致。与 verify_scenarios 版「恒 0644」的差异由
+    ``atomic_write_text(inherit_existing_mode=...)`` 参数显式表达，不再各持
+    一份拷贝各自漂移（截断防护/收尾纪律见 core/fs_utils.py docstring）。
     """
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
-    tmp_path = Path(tmp_path_str)
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        try:
-            mode = os.stat(path).st_mode & 0o777 if path.exists() else 0o644
-            os.chmod(tmp_path, mode)
-        except OSError:
-            pass
-        os.replace(tmp_path, path)
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+    atomic_write_text(path, content, inherit_existing_mode=True)
 
 
 # ── 结构化数据读取 ────────────────────────────────────────────────
@@ -149,11 +126,25 @@ def _load_report_json(project_root, spec_name):
         # 采信「scenarios=0 + summary 全 0」这类损坏形态后 _derive_status 经
         # summary 分支推出 verified、verdict_failed_ids 对非列表 scenarios
         # 迭代得空失败集，合成「全部场景通过」的假通过报告
-        # （code-review cbea2bb63e40）。仅 scenarios 键缺失（None，合法旧
-        # 形态）保持放行。
+        # （code-review cbea2bb63e40）。
         if scenarios is not None:
             return None
-        return data
+        # scenarios 键缺失（None，合法旧形态）分支同口径收口（code-review
+        # item c0bc338cd2ea）：键缺失不等于豁免——「scenarios 缺失 + summary
+        # 声明 failed/errors=0（total 缺失/为 0）」的截断/占位报告同样可经
+        # _derive_status 的 summary 分支推出 verified、合成「全部场景通过」
+        # 的假通过报告，与上方两个相邻变体同按 fail-closed 拒收：仅 total>0
+        # 且显式声明 failed/errors 键（与列表分支同门槛）才采信。
+        try:
+            if (
+                int(summary.get("total") or 0) > 0
+                and "failed" in summary
+                and "errors" in summary
+            ):
+                return data
+        except (TypeError, ValueError):
+            pass
+        return None
     return None
 
 
@@ -1316,8 +1307,9 @@ def record_verdict_round(
     fcntl 伴生 ``.lock`` 范式）：同 spec 双活跃 run（manual-intervention 与
     blocked_stuck 各一）几乎同时采纳裁决时，两步无锁读改写会让后写者覆盖
     前写者丢一轮，稳定性判据退化（多跑一次 judge）。_atomic_write 只保证
-    文件不撕裂，不保证读-改-写原子。锁文件不可用时降级为无锁读改写——
-    缓存属尽力而为（同 write_verdict_stability 静默语义），不阻断裁决。
+    文件不撕裂，不保证读-改-写原子。锁文件不可用、或 open 成功而 flock 本身
+    抛 OSError（特殊文件系统不支持等）时，同样降级为无锁读改写——缓存属
+    尽力而为（同 write_verdict_stability 静默语义），不阻断裁决。
     """
     if stamp is None:
         stamp = compute_spec_stamp(project_root, spec_name)
@@ -1341,7 +1333,13 @@ def record_verdict_round(
         lf = None
     try:
         if lf is not None:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+            except OSError:
+                # flock 本身不可用（特殊文件系统不支持等）同样降级为无锁读
+                # 改写（docstring 契约：缓存尽力而为，不阻断裁决采纳流程），
+                # 不向上传播中断调用方。
+                lf = None
         data = read_verdict_stability(project_root, spec_name) or {}
         rounds = data.get("rounds") or []
         if not isinstance(rounds, list):
@@ -1361,7 +1359,11 @@ def record_verdict_round(
         return data
     finally:
         if lf is not None:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            # LOCK_UN 失败不掩盖原始异常（close 即隐式释放 flock）
+            try:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+            except OSError:
+                pass
             lf.close()
 
 

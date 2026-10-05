@@ -10,13 +10,17 @@
 - ``pid_alive_signal``：kill(pid, 0) 存在性判定（不区分僵尸态）；
 - ``find_free_port``：向系统申请一个临时空闲端口（bind 0 + getsockname）；
 - ``find_bound_socket``：保留已绑定 socket 的 contextmanager（消除 TOCTOU 竞态窗口，
-  concurrent-suite-isolation 4.1），绑定失败时按可重试策略重取。
+  concurrent-suite-isolation 4.1），绑定失败时按可重试策略重取；
+- ``kill_process_group``：start_new_session 进程组清扫纪律的单点实现
+  （SIGTERM 整组 → wait 宽限 → SIGKILL 补刀），收尸等差异化收尾留调用方。
 
 以下助手均只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
 import os
+import signal
 import socket
+import subprocess
 import time
 from contextlib import contextmanager
 from typing import List, Optional
@@ -194,3 +198,51 @@ def hold_free_port(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
         spawn(cmd_with_port)
     """
     return _bind_retry(host, retries)
+
+
+def kill_process_group(
+    popen: "subprocess.Popen",
+    term_grace: float = 5,
+    sigterm_only_if_alive: bool = False,
+) -> None:
+    """start_new_session 进程组清扫纪律的单点实现（SIGTERM→wait→SIGKILL 补刀）。
+
+    subprocess.run/Popen 的超时处理只 kill 直接子进程；shell 包装命令（npm 等）
+    收到 SIGTERM 即退时，忽略 SIGTERM 的孙进程（npm 派生的 node）仍残留组内
+    继续写产物目录，须按进程组收整组。该纪律此前在 verify_contract 四处逐字
+    复刻（prepare 步骤超时、validate_contract finally 的 proc 兜底、
+    CommandVerifyServer.stop、_run_npm_provision 超时），任一处修订都需同步
+    四处、历史上已多次多点修复（item 7168a8391e06/2c7a3051bb99/
+    020ba8771283）——收口为单一实现（code-review item 21d8a42c21c1）。
+
+    时序（与收口前四处逐字等价）：
+
+    1. pgid 提前取定（start_new_session=True 下即 popen.pid）——wait 回收
+       leader 后 getpgid 将失效，补刀须用此句柄；取不到回退 popen.pid；
+    2. SIGTERM 整组留优雅退出机会（``sigterm_only_if_alive=True`` 时仅
+       leader 尚存活才发——validate_contract finally 的 proc 兜底口径）；
+    3. wait(term_grace) 等优雅退出（leader 已被回收则立即返回）；
+    4. 无论 wait 成败都补一次组 SIGKILL；ProcessLookupError＝组已清空，
+       静默即可。
+
+    收尸（SIGKILL 补刀后的收尾）不在本助手内：PIPE 的 communicate 管道排空
+    与 DEVNULL 的 wait(timeout=2)、boot.log 句柄关闭是调用方差异化收尾，
+    留在调用方。
+    """
+    try:
+        pgid = os.getpgid(popen.pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = popen.pid
+    if not (sigterm_only_if_alive and popen.poll() is not None):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            popen.wait(timeout=term_grace)
+        except Exception:
+            pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
