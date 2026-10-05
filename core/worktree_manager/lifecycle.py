@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Set
 
-from core.worktree_manager import (  # noqa: E402
+from core.worktree_manager.constants import (  # noqa: E402
     STALE_LOCK_IDLE_SECONDS,
 )
 from core.worktree_manager.artifact_paths import (

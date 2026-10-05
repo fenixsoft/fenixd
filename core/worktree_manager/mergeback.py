@@ -24,7 +24,7 @@ from typing import Optional
 from core.timelib import now_local  # noqa: E402
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
-from core.worktree_manager import WIP_GATE_STASH_PREFIX  # noqa: E402
+from core.worktree_manager.constants import WIP_GATE_STASH_PREFIX  # noqa: E402
 
 # git quotePath 的字母短转义表（quote.c sq_lookup）：a/b/f/n/r/t/v 七个控制
 # 字符输出两字符字母转义（如 \n、\t），值为其单字节控制字符。

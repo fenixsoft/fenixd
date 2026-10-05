@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from core.worktree_manager import (  # noqa: E402
+from core.worktree_manager.constants import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
 )
 from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402

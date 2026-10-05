@@ -21,10 +21,10 @@ from pathlib import Path
 
 from core.agent_runner.run_files import run_spec_part  # noqa: E402
 
-from core.worktree_manager import (  # noqa: E402
+from core.worktree_manager import _is_claude_process  # noqa: E402
+from core.worktree_manager.constants import (  # noqa: E402
     PROCESS_SCAN_CACHE_SECONDS,
     STALE_LOCK_IDLE_SECONDS,
-    _is_claude_process,
 )
 
 
