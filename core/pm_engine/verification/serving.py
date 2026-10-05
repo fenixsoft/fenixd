@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.proc_utils import find_free_port
+from core.proc_utils import hold_free_port
 from core.serving_registry import ServingRegistry, pid_alive
 from core.verify_contract import (
     CommandVerifyServer,
@@ -259,7 +259,13 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         return pipeline._finalize_static(
             old["server"], contract, scenarios_path, "命令 worktree（复用）"
         )
-    port = find_free_port()
+    # 端口占位（code-review item eb7fb0c8d239）：find_free_port 探测即释放，
+    # 探测与 Popen 之间存在 TOCTOU 窗口（legacy 邻近快照/入口预检可达数秒），
+    # 端口被并发进程抢占会致实例启动失败。hold_free_port 占住端口直到下方
+    # Popen 前一刻才释放（任意 shell 命令无法经 fd 移交继承绑定，空窗收敛
+    # 到 close→spawn 一瞬；与 _serve_command_in_main 同构，两侧改动须同步）。
+    _port_holder = hold_free_port()
+    port = _port_holder.getsockname()[1]
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
     # 启动前监听快照（跳过既有实例端口）。cmd 引用 {port} 后两者皆不需要
     # （code-review 43f462839c68：以 {port} 引用为门跳过 legacy 解析与 pre
@@ -299,6 +305,12 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
+    # Popen 前一刻释放占位 socket（code-review item eb7fb0c8d239）：
+    # 端口分配与子进程绑定之间的竞态窗口收敛到 close→spawn 一瞬
+    try:
+        _port_holder.close()
+    except OSError:
+        pass
     # design D3：worktree 路径同样落盘 boot.log（非 DEVNULL 吞掉），
     # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
     boot_log = pipeline._open_boot_log(spec_name)
@@ -389,7 +401,13 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     手工 unregister + stop；code-review dbe41e3fd97b）。
     """
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
-    port = find_free_port()
+    # 端口占位（code-review item eb7fb0c8d239）：find_free_port 探测即释放，
+    # 探测与 Popen 之间存在 TOCTOU 窗口（legacy 邻近快照/入口预检可达数秒），
+    # 端口被并发进程抢占会致实例启动失败。hold_free_port 占住端口直到下方
+    # Popen 前一刻才释放（任意 shell 命令无法经 fd 移交继承绑定，空窗收敛
+    # 到 close→spawn 一瞬；与 _serve_command_in_worktree 同构，两侧改动须同步）。
+    _port_holder = hold_free_port()
+    port = _port_holder.getsockname()[1]
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
     # 启动前监听快照（跳过既有实例端口）。cmd 引用 {port} 后两者皆不需要
     # （code-review 43f462839c68：以 {port} 引用为门跳过 legacy 解析与 pre
@@ -424,6 +442,12 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
+    # Popen 前一刻释放占位 socket（code-review item eb7fb0c8d239）：
+    # 端口分配与子进程绑定之间的竞态窗口收敛到 close→spawn 一瞬
+    try:
+        _port_holder.close()
+    except OSError:
+        pass
     # design D3：主树路径同样落盘 boot.log（非 DEVNULL 吞掉），
     # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
     boot_log = pipeline._open_boot_log(spec_name)
@@ -1090,11 +1114,17 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # cmd 内 --port|-p 数字（commands.start 形态）。
     base_port = None
     injected_port = None
+    _port_holder = None
     # 入口存在性预检见原文（code-review 77e9753fae9c）：保留替换前的原 cmd，
     # {port} 替换只作用于 spawn 用的 start_cmd（与契约 spawn 路径同口径）
     orig_start_cmd = start_cmd
     if "{port}" in start_cmd:
-        injected_port = find_free_port()
+        # 端口占位（code-review item eb7fb0c8d239）：find_free_port 探测即
+        # 释放，预检到 Popen 之间存在 TOCTOU 窗口。hold_free_port 占住端口
+        # 直到下方 Popen 前一刻才释放（任意 shell 命令无法经 fd 移交继承
+        # 绑定，空窗收敛到 close→spawn 一瞬）。
+        _port_holder = hold_free_port()
+        injected_port = _port_holder.getsockname()[1]
         start_cmd = start_cmd.replace("{port}", str(injected_port))
         base_port = injected_port
     else:
@@ -1141,6 +1171,13 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     env = {**os.environ}
     if injected_port:
         env["FENIX_VERIFY_PORT"] = str(injected_port)
+    if _port_holder is not None:
+        # Popen 前一刻释放占位 socket（code-review item eb7fb0c8d239）：
+        # 端口分配与子进程绑定之间的竞态窗口收敛到 close→spawn 一瞬
+        try:
+            _port_holder.close()
+        except OSError:
+            pass
     try:
         proc = subprocess.Popen(
             start_cmd,

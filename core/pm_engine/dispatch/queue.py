@@ -34,8 +34,11 @@ from core.state_machine import (
     start_after_blocks_promotion,
     start_after_pending,
 )
-from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
-from core.pm_engine.dispatch.repair_lane import _merge_breaker_threshold
+from core.agent_runner.provider_circuit import (
+    MODEL_CHAIN_UNAVAILABLE_MARKER,
+    PROVIDER_CIRCUIT_ERROR_MARKER,
+)
+from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_threshold
 
 # ── WIP 延迟合回预算（evo-add-wip-defer-merge-retry-consumer 2.1/2.3）────────
 # 等待窗口（分钟，自首阻时刻起算）与自动 merge-only 重试轮数上限，对齐
@@ -1947,14 +1950,13 @@ class QQQueueMixin:
                             "蕴含 branch 非空」契约）：实现成果未经合并，按 merge "
                             "失败重派"
                         )
-                        try:
-                            # 配置侧 int() 归一（与通用失败分支同款）：字符串配置
-                            # 裸用于比较抛 TypeError 中断重派处置，非法值回退缺省。
-                            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-                            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-                        except (TypeError, ValueError):
-                            max_r = 3
-                        max_r = max(max_r, 1)
+                        # agents.max_retries 归一收敛三车道单一读取器（code-review
+                        # item 8b26fd7980ce，与通用失败分支同源）：None 判空/非法值
+                        # 回退缺省 3；**无 max(...,1) 下限**——0=不自动重试是合法
+                        # 语义（fast_track 既有注释口径），原下限使 full 车道同键
+                        # 行为与 fast-track/repair 分裂。统一口径见
+                        # repair_lane._max_retries。
+                        max_r = _max_retries(self._pm)
                         # _retry_count 锁内原子递增（写后值不再并入 update_spec，
                         # 对齐 _handle_merge_back_real_failure 防并发写回丢增量）。
                         # 本出口重派同样受 agents.max_retries 封顶（对齐 fast-track
@@ -2022,8 +2024,16 @@ class QQQueueMixin:
                     if result.branch:
                         merge_info = wm.merge_back_from_branch(result.branch)
                         merge_ok, merge_error = merge_info  # 兼容 (bool, str) 解包
-                        # guard 段内 pop 冲突自愈丢弃的用户改动清单（admin 告警用）
-                        conflict_files = list(wm.last_stash_pop_conflicts)
+                        # guard 段内 pop 冲突自愈丢弃的用户改动清单（admin 告警用）。
+                        # getattr 守卫（code-review item 8a0aae40bbf3，与
+                        # _retry_merge_back_only 消费点同型收口）：该属性是
+                        # WorktreeManager 生命周期中的后设属性（仅 stash pop
+                        # 实际发生冲突的时序后才保证可见），旧实例/替身实现
+                        # 裸读抛 AttributeError 会沿外层 except 把一轮已成功
+                        # 合入 main 的 merge 误回滚重派。
+                        conflict_files = list(
+                            getattr(wm, "last_stash_pop_conflicts", []) or []
+                        )
 
                     if not merge_ok:
                         # ── 预演语义冲突直通 repair（add-merge-tree-rehearsal D2）──
@@ -2152,14 +2162,22 @@ class QQQueueMixin:
                         # try/except，豁免失败仅 WARNING、按未生效继续走失败分类链。
                         # exempt_applied 标记：审计日志须携带豁免是否实际生效，
                         # 否则记账失败时对账会把未生效的豁免当作已豁免。
+                        # 结果判定（code-review item 1bc73e2352db，对齐
+                        # rollback.py _rollback_failed_dispatch 同名调用点的
+                        # 963d40154301 修复形态）：_exempt_dead_run_budget 对
+                        # 拒绝/幂等跳过/记账异常三条未生效路径均**静默 return
+                        # 指纹**、不抛异常，仅凭本处 except 判不出未生效——
+                        # 原先无条件置 True 会把 refused/跳过误记为已豁免。
+                        # 改按返回指纹是否 "applied" 置标记，指纹原样附进审计行。
                         exempt_applied = False
+                        exempt_result = None
                         try:
-                            self._pm._exempt_dead_run_budget(
+                            exempt_result = self._pm._exempt_dead_run_budget(
                                 spec_name,
                                 f"no run-result file (error={str(final_error)[:80]})",
                                 run_reason=str(final_error) if final_error else None,
                             )
-                            exempt_applied = True
+                            exempt_applied = exempt_result == "applied"
                         except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞失败分类
                             self._pm.logger.warning(
                                 "pm_engine",
@@ -2172,6 +2190,7 @@ class QQQueueMixin:
                             "pm_engine",
                             f"budget_exempt_audit: spec={spec_name}, "
                             f"impl_status=None, exempt_applied={exempt_applied}, "
+                            f"exempt_result={exempt_result}, "
                             f"final_error={str(final_error)[:120]}, "
                             f"run_reason={str(final_error)[:80] if final_error else ''}",
                         )
@@ -2190,7 +2209,11 @@ class QQQueueMixin:
                     # 不创建新 worktree/autostash（design D5）。spec 保持 implementing 原状，
                     # 由冷却结束后的既有轮询/事件机制自然重排；持续过久由 admin_monitor
                     # 按 stuck 规则唤起人工（充值/换模型）。
-                    if final_error and "provider circuit open" in final_error:
+                    # 子串匹配共用 PROVIDER_CIRCUIT_ERROR_MARKER 常量（code-review
+                    # item d16a7a20b9f9，与 fast_track.py _handle_fast_track_failure
+                    # 同型收口）：裸字符串在 provider_circuit.py 文案措辞调整时
+                    # 静默失配，熔断 spec 会被误当普通失败走重试链而非本分支。
+                    if final_error and PROVIDER_CIRCUIT_ERROR_MARKER in final_error:
                         self._pm.logger.warning(
                             "pm_engine",
                             f"Provider circuit open for '{spec_name}' — holding state, "
@@ -2259,15 +2282,13 @@ class QQQueueMixin:
                         retries = self._pm.state_machine.bump_counters(
                             spec_name, {"_retry_count": 1}
                         ).get("_retry_count", 0)
-                        try:
-                            # 配置侧 int() 归一（code-review item 84d793a3ac41，
-                            # 与 adjudication.py 同款）：字符串配置裸用于比较抛
-                            # TypeError 中断失败重派处置，非法值回退缺省。
-                            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-                            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-                        except Exception:
-                            max_r = 3
-                        max_r = max(max_r, 1)
+                        # agents.max_retries 归一收敛三车道单一读取器（code-review
+                        # item 84d793a3ac41 → 8b26fd7980ce 收敛）：字符串配置裸用于
+                        # 比较抛 TypeError 中断失败重派处置，非法值回退缺省 3；
+                        # **无 max(...,1) 下限**——0=不自动重试是合法语义（fast_track
+                        # 既有注释口径），原下限使 full 车道同键行为与
+                        # fast-track/repair 分裂。统一口径见 repair_lane._max_retries。
+                        max_r = _max_retries(self._pm)
                         # ── 同因重派熔断（fix-redispatch-loop-governance D3/3.3/3.4）──
                         # 现状（事故实证）：retries >= max_r 时清零 _retry_count 后
                         # 照样 _enqueue——「All retries exhausted」只是日志，无限热派。
@@ -3354,10 +3375,22 @@ class QQQueueMixin:
             # 熔断触发：blocked 后 repair 通道一并停止
             # （spec-merge-circuit-breaker：repair 不绕过熔断）。
             # fix-observability-gaps 2.2：merge 熔断 blocked（自动降级路径）
-            self._pm.state_machine.transition(
+            # transition 返回值校验（code-review item f3a8a1249ede，对齐
+            # fast_track.py _reconcile_and_merge 的 40292d21fd97 同型收口）：
+            # 并发冻结窗口内 transition 失败（目标态已被并发写者推进或
+            # freeze_for_human 冻结）时保留现场早退——否则下方清账照常落盘，
+            # 冻结 error（内嵌「原状态 X」供 parse_orig_status 解冻还原）被
+            # 覆盖后人工解冻无法还原原状态，_retry_count 清零抹掉现场计数。
+            if not self._pm.state_machine.transition(
                 spec_name, "blocked",
                 trigger_run_id=None, agent_type="implementer", channel="auto",
-            )
+            ):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"merge 熔断但 transition 到 blocked 失败（并发写者已推进/"
+                    f"冻结），保留计数与 error 现场待收口重试/审计: {spec_name}",
+                )
+                return
             # _retry_count: 0 是重置语义（绝对写，无丢增量面）；streak 已
             # bump 时不再并写（同上，防覆盖丢增量）。
             breaker_updates: dict = {
@@ -3399,6 +3432,13 @@ class QQQueueMixin:
             if not streak_bumped:
                 ready_updates["_merge_streak"] = streak
             self._pm.state_machine.update_spec(spec_name, ready_updates)
+            # 降级后显式重入队（code-review item f4679c0fabc1，对齐
+            # fast_track.py _reconcile_and_merge ready 分支的 6e6259821f64
+            # 收口——只翻状态不入队＝自动重试承诺落空，spec 悬挂 ready 只能
+            # 等周期性 full_scan 降级兜底（event_bus → _recover_one），恢复
+            # 延迟取决于 scan 周期）。full 车道 merge 失败重派对象是
+            # implementer（与本文件契约违反分支同款）。
+            self._enqueue_front(spec_name, "implementer")
             # 本分支重试不受 agents.max_retries 约束，仅由 _merge_streak
             # 同指纹熔断兜底——日志只报 streak/阈值，避免误导。
             self._pm.logger.warning(
@@ -3494,11 +3534,26 @@ class QQQueueMixin:
             "implementer",
             branch,
         )
-        self._pm.state_machine.transition(
+        # transition 返回值校验（code-review item f3a8a1249ede，对齐
+        # fast_track.py _reconcile_and_merge 的 40292d21fd97 同型收口）：
+        # 上方读态/fallback 与 implemented 转移之间存在窗口，并发写者可能已
+        # 把 spec 推进/冻结（非法转移返回 False）。失败时保留计数与 error
+        # 原样、不继续清字段并入队 verifier——否则清账照常落盘（freeze_for_
+        # human 写入的 error 内嵌「原状态 X」供 parse_orig_status 解冻还原，
+        # 被 None 覆盖后人工解冻无法还原原状态），且排入一条永不满足派发
+        # 前置的 verifier 条目。返回值不因转移失败翻转（既有契约），后续
+        # verified 推进由状态机拒绝自然拦截，错误现场留给收口重试/审计。
+        if not self._pm.state_machine.transition(
             spec_name, "implemented",
             trigger_run_id=run_id,
             agent_type="implementer", channel="auto",
-        )
+        ):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"merge 成功但 transition 到 implemented 失败，保留计数与 "
+                f"error 现场待收口重试/审计: {spec_name}",
+            )
+            return
         self._pm.state_machine.update_spec(
             spec_name,
             {

@@ -64,8 +64,9 @@ from typing import Iterable, List
 
 class _LenientLogAdapter:
     """轻量 logger 适配层：与 PMEngine.logger 接口一致（tag, msg 两参），
-    内部把 tag 拼到消息前缀，传给 stdlib Logger 的单 arg 接口，避免
-    stdlib 日志把 tag 当 format string 导致 TypeError。
+    内部把 tag 拼到消息前缀，恒以零格式参数下发给 stdlib Logger（多参调用
+    的 % 插值也在本层完成），避免 stdlib 日志把消息当 format string 解析
+    （tag 或消息文本中的字面 % 均会致 TypeError/输出错乱）。
 
     测试环境不启动 daemon 时 stdlib Logger 的 `warning(tag, msg)` 会触发
     ``"tag" % (msg,)`` → TypeError；生产环境 handler 未连接时不报错。
@@ -78,7 +79,20 @@ class _LenientLogAdapter:
             return "", []
         if len(args) == 1:
             return str(args[0]), []
-        return f"{args[0]}: {args[1]}", list(args[2:])
+        msg = f"{args[0]}: {args[1]}"
+        rest = args[2:]
+        if not rest:
+            return msg, []
+        # code-review item 5e5c14c19eb9：剩余格式参数由适配层自行插值，恒以
+        # 零格式参数下发。若照旧把 rest 交给 delegate 以 msg % args 形态格式
+        # 化，拼接后消息文本中的字面 %（如「100% 检查通过」）会被 stdlib
+        # logging 当格式符解析（TypeError/输出错乱）——恰是本适配层声称要
+        # 规避的形态。插值失败（消息含非法格式形态）降级为 str 拼接，保底不抛。
+        try:
+            msg = msg % rest
+        except (TypeError, ValueError, KeyError):
+            msg = f"{msg} | {'; '.join(str(a) for a in rest)}"
+        return msg, []
 
     def info(self, *a, **k):
         msg, args = self._fmt(a)
@@ -1389,12 +1403,16 @@ def register_relocation_credential(
     # 入口侧赋值是死代码、双处时间戳语义易漂移
     rec = {
         "spec": spec_name,
+        # 仅落契约键 trigger_run_id（code-review item e627ccba5eb3）：D6 记录
+        # 契约（core/admin_store.py DisputeAuditStore）只定义 trigger_run_id
+        # （实现 run）；无契约地位的 run_id 同值冗余键已删——消费方
+        # （_relocation_target_in_records 等）只读 type/old_path/new_path/
+        # verdicts，删键无消费面，且防两键后续只改其一时静默分叉。
         "trigger_run_id": run_id or "",
         "type": _RELOCATION_AUDIT_TYPE,
         "old_path": old_path,
         "new_path": new_path,
         "source": source,
-        "run_id": run_id or "",
     }
     if verdict:
         rec["verdicts"] = [

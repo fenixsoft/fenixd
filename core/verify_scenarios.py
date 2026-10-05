@@ -31,13 +31,16 @@ scenarios.json 结构（含来源轮次，便于增量审计）::
     }
 """
 
+import errno
+import fcntl
 import json
 import logging
-import os
 import re
-import tempfile
+import time
 from pathlib import Path
 from typing import Optional
+
+from core.fs_utils import atomic_write_text
 
 # 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
 # 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
@@ -199,6 +202,62 @@ def scenarios_path_for(project_root, spec_name: str) -> Path:
     return Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
 
 
+# 伴生写锁限时（秒）：diff→save 的读改写互斥用限时抢锁而非无限阻塞——持有方
+# 异常悬挂时不让另一活跃 run 的验证管线跟着悬挂，超时降级无锁继续（对齐
+# record_verdict_round「锁不可用不阻断」契约，item 2b598a6d5134）。
+_SCENARIOS_LOCK_WAIT = 10.0
+
+
+def _scenarios_lock_path(project_root, spec_name: str) -> Path:
+    """scenarios.json 伴生锁文件路径（record_verdict_round 的 ``.{name}.lock`` 范式）。"""
+    return scenarios_path_for(project_root, spec_name).parent / ".scenarios.json.lock"
+
+
+def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> bool:
+    """在已打开的锁文件上限时抢排他锁；抢不到/不支持 flock 返回 False（降级无锁）。"""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EAGAIN):
+                # 特殊文件系统不支持 flock 等：降级无锁（不阻断验证流程）
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
+def _release_scenarios_lock(lf) -> None:
+    """释放并关闭锁文件；LOCK_UN 失败只保证 close（关闭 fd 即隐式释放 flock）。"""
+    try:
+        fcntl.flock(lf, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        lf.close()
+    except OSError:
+        pass
+
+
+def _hold_scenarios_write_lock(project_root, spec_name: str):
+    """打开并限时抢占 scenarios.json 伴生排他锁；不可得返回 None（降级无锁）。
+
+    锁目录缺失（首轮、``.fenix/verify-progress/<spec>/`` 未建）时不代建目录
+    （mkdir 属写副作用，diff 是只读操作）按降级无锁处理——首轮写本就是全量
+    覆盖，无可丢失的并发合并基线。
+    """
+    try:
+        lf = open(_scenarios_lock_path(project_root, spec_name), "w")
+    except OSError:
+        return None
+    if not _acquire_scenarios_lock(lf):
+        _release_scenarios_lock(lf)
+        return None
+    return lf
+
+
 def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
     """读取持久化场景集；文件缺失/损坏返回 None（不抛出）。
 
@@ -267,29 +326,15 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
 
 
 def _atomic_write(path: Path, data: dict) -> None:
-    """原子写：临时文件写好后 rename 覆盖，避免半写文件（design D1 原子写）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".scenarios-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            f.truncate()
-            os.fsync(f.fileno())
-        # mkstemp 以 0600 建临时文件，rename 前放宽到 0644（verify_report
-        # ._atomic_write 同款）：否则 scenarios.json 恒 0600，非 root 辅助
-        # 进程/人工其它账号读取被拒；chmod 失败不阻断写入（尽力而为）。
-        try:
-            os.chmod(tmp_name, 0o644)
-        except OSError:
-            pass
-        Path(tmp_name).replace(path)
-    finally:
-        try:
-            if Path(tmp_name).exists():
-                Path(tmp_name).unlink()
-        except OSError:
-            pass
+    """原子写 scenarios.json（core.fs_utils.atomic_write_text 单一实现）。
+
+    权限口径（item 8b26fd7980ce 收口两份拷贝，本模块原语义不变）：恒 0644
+    （mkstemp 以 0600 建临时文件，rename 前放宽）——否则 scenarios.json 恒
+    0600，非 root 辅助进程/人工其它账号读取被拒。与 verify_report 版「替换
+    既有文件继承原 mode」的差异由 ``inherit_existing_mode`` 参数显式表达，
+    不再各持一份拷贝各自漂移（截断防护/收尾纪律见 core/fs_utils.py）。
+    """
+    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 # ── 持久化集条目结构校验（fix-frozen-scenario-orphan-reservoir D1/D4）────
@@ -334,6 +379,12 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     伪兜底转换出的裸 dict 无 ``to_dict``、写回阶段必崩，契约外类型不转换）。
     剔除只作用于落盘副本，不原地改写入参（code-review b94f527e8bb8）——
     调用方 save 后复用同一 ScenarioSet 拿到的仍是原集合，无隐性剪枝。
+
+    写盘在 scenarios.json 伴生 fcntl 排他锁内完成（item 2b598a6d5134 读-合
+    并-写原子）：入参集携带 ``_pending_write_lock``（diff_planner_output 移交）
+    时复用该锁、落盘即释放——同进程对同一锁文件二次 flock 会自锁，MUST NOT
+    重取；独立调用（测试、非 diff 链路写回）自取同一把锁。锁不可得降级无锁
+    落盘（不撕裂仍由 _atomic_write 保证），不阻断持久化。
     """
     clean_entries: list[ScenarioEntry] = []
     rejected: list[str] = []
@@ -369,7 +420,21 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
         display_declarations=scenario_set.display_declarations,
     )
     path = scenarios_path_for(project_root, scenario_set.spec)
-    _atomic_write(path, persist_set.to_dict())
+    pending_lock = getattr(scenario_set, "_pending_write_lock", None)
+    scenario_set._pending_write_lock = None  # 锁一次性消费，防二次 save 复用已关 fd
+    if pending_lock is not None:
+        try:
+            _atomic_write(path, persist_set.to_dict())
+        finally:
+            _release_scenarios_lock(pending_lock)
+        return path
+    # 独立写回（非 diff 链路）：自取伴生锁，与其余写方互斥
+    lock_file = _hold_scenarios_write_lock(project_root, scenario_set.spec)
+    try:
+        _atomic_write(path, persist_set.to_dict())
+    finally:
+        if lock_file is not None:
+            _release_scenarios_lock(lock_file)
     return path
 
 
@@ -546,6 +611,36 @@ def diff_planner_output(
     project_root, spec_name: str, state: Optional[dict], planner_scenarios: list, current_round: int
 ) -> DiffResult:
     """确定性 diff 校验：planner 产出 vs 持久化集。
+
+    读基线→合并全程持有 scenarios.json 伴生 fcntl 排他锁（record_verdict_round
+    的 ``.{name}.lock`` 范式，item 2b598a6d5134）：锁随返回集（scenario_set 的
+    私有属性 ``_pending_write_lock``）移交 ``save_scenario_set``、落盘后释放
+    ——「读基线→合并→整档覆写」对同 spec 双活跃 run（manual-intervention 与
+    blocked_stuck 各一）原子，后写者不再以自身读到的旧基线整档覆盖、丢掉先写
+    者新增/补齐的条目。锁不可得（锁文件打开失败/文件系统不支持 flock/限时未
+    抢到）降级无锁继续，不阻断验证；本函数异常退出时就地释放。
+    """
+    lock_file = _hold_scenarios_write_lock(project_root, spec_name)
+    try:
+        result = _diff_planner_output_impl(
+            project_root, spec_name, state, planner_scenarios, current_round
+        )
+    except BaseException:
+        if lock_file is not None:
+            _release_scenarios_lock(lock_file)
+        raise
+    if result.scenario_set is not None:
+        result.scenario_set._pending_write_lock = lock_file  # None＝已降级无锁
+    elif lock_file is not None:
+        # 无产出集（防御分支）：锁不得留待解释器 GC 兜底释放
+        _release_scenarios_lock(lock_file)
+    return result
+
+
+def _diff_planner_output_impl(
+    project_root, spec_name: str, state: Optional[dict], planner_scenarios: list, current_round: int
+) -> DiffResult:
+    """``diff_planner_output`` 的锁内实现。
 
     Args:
         project_root: 项目根（用于读取修复段 / 持久化集）。

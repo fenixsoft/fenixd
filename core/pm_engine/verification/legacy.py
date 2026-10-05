@@ -85,11 +85,15 @@ def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""
     )
     # evo-infra-failure-budget-exempt R2：结果文件「读错文件」（陈旧/异
     # spec 归属）属 infra，沿用既有 re-dispatch，同挂预算退款与记账
-    # （否则本路径白耗实现预算且无 infra 记账可观测）。
+    # （否则本路径白耗实现预算且无 infra 记账可观测）。退款锚点不传
+    # run_id（回退 implementer_run，与 escalation 的记账口径一致）——
+    # verifier attempt run id 作锚点会使每个 attempt 各自退款一次、按
+    # 实现 run 的幂等去重失效（code-review item 87cfffac1d3c）；attempt
+    # run id 经 ledger_run_id 只进失败台账，观测信息不丢。
     pipeline._record_infra_failure(
         spec_name,
         "stale/foreign verifier result replayed",
-        run_id=getattr(result, "run_id", "") or "",
+        ledger_run_id=getattr(result, "run_id", "") or "",
     )
     warn_note = f"（reason={warn_reason}）— " if warn_reason else " — "
     pipeline._context.logger.warning(
@@ -254,7 +258,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
         pipeline._record_infra_failure(
             spec_name,
             result.error,
-            run_id=getattr(result, "run_id", "") or "",
+            # 退款锚点回退 implementer_run（不传 run_id）；attempt run id
+            # 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+            ledger_run_id=getattr(result, "run_id", "") or "",
         )
         pipeline._context.logger.warning(
             "pm_engine",
@@ -471,7 +477,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 pipeline._record_infra_failure(
                     spec_name,
                     "infra at attribution entry (legacy)",
-                    run_id=getattr(result, "run_id", "") or "",
+                    # 退款锚点回退 implementer_run（不传 run_id）；attempt
+                    # run id 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+                    ledger_run_id=getattr(result, "run_id", "") or "",
                 )
                 return
             # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
@@ -713,7 +721,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
             pipeline._record_infra_failure(
                 spec_name,
                 "infra at attribution entry (legacy process-failure)",
-                run_id=getattr(result, "run_id", "") or "",
+                # 退款锚点回退 implementer_run（不传 run_id）；attempt
+                # run id 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+                ledger_run_id=getattr(result, "run_id", "") or "",
             )
             return
         # transition 返回值校验（与 bug-found/verified 分支同款）：前置守卫链

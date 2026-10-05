@@ -19,8 +19,9 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
+
+from core.timelib import now_utc, to_storage
 
 # ADMIN_INVOKE_REQUEST 常量（信号文件路径）
 ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
@@ -105,7 +106,7 @@ def request_admin_invoke(
             "error": "已有进行中的 Admin 处置",
         }
 
-    created = datetime.now(timezone.utc).isoformat()
+    created = to_storage(now_utc())
     payload = {"spec": spec, "source": "manual", "created": created}
     if prompt and prompt.strip():
         payload["prompt"] = prompt.strip()
@@ -219,7 +220,7 @@ def write_scheduling_kick(project_root, spec: str) -> dict:
     proot = Path(project_root)
     req_dir = proot / SCHEDULING_KICK_DIR
     req_path = req_dir / f"{spec}.json"
-    created = datetime.now(timezone.utc).isoformat()
+    created = to_storage(now_utc())
     payload = {"spec": spec, "action": "clear-start-after", "created": created}
 
     try:

@@ -30,10 +30,11 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
 - **resolved 只能由合回成功驱动**；skipped 条目保持 open。
 - **批失败自愈（add-code-fix-batch-failure-selfheal）**：批收尾三态
   `success`/`consumed`/`halt`——`success` 与 `consumed`（条目已离开可选池）
-  均自驱动推进下一批，仅 `halt`（环境性失败）终止链。确定性失败（两次回归
-  均失败/合回冲突）现场即弃：branch/tip_sha 入 `.fenix/code-review/
-  fix-failed.json` 失败档案（记录带 `fail_count` 自动重试预算）后清理
-  worktree 释放锁；新链启动自动释放 `fail_count < FAIL_RETRY_MAX` 的记录
+  均自驱动推进下一批，仅 `halt`（环境性失败）终止链。确定性失败（首轮及
+  targeted_retry_max 轮定向重试均失败/合回冲突）现场即弃：branch/tip_sha 入
+  `.fenix/code-review/fix-failed.json` 失败档案（记录带 `fail_count` 自动
+  重试预算）后清理 worktree 释放锁；新链启动自动释放
+  `fail_count < FAIL_RETRY_MAX` 的记录
   （打标墓碑不删除，fail_count 跨链续增，下轮自动重试），达上限永久跳过
   并一次性告警 + todo.md 登记待人工。
   瞬态失败（agent run 失败/重试 run 失败/零有效修复）只进进度快照
@@ -3820,7 +3821,23 @@ class CodeFixOrchestrator:
         self._in_flight = False
         fields = {}
         if chain_skip_ids is not None:
-            prev_ids = read_progress(self.project_root).get("chain_skipped") or []
+            # 字段形态守卫与 checkpoint 链级读侧同口径（code-review item
+            # 3f883a9ac93c / 959c61f66ce3）：chain_skipped 被外部写坏成非列表
+            # 标量时直接迭代会抛 TypeError，沿批 worker 兜底升级成 halt 终止
+            # 链；非空字符串则被逐字符拆成假 item_id 并入排除集。按「损坏不炸
+            # 主流程」纪律先判 isinstance(list) 再拷贝，非列表回退空列表
+            # （truthy 垃圾值 warning 留痕；None/空值静默回退）。
+            raw_ids = read_progress(self.project_root).get("chain_skipped")
+            if isinstance(raw_ids, list):
+                prev_ids = list(raw_ids)
+            else:
+                if raw_ids:
+                    self._log(
+                        "warning",
+                        "code-fix 进度 chain_skipped 字段形态异常（非列表："
+                        f"{type(raw_ids).__name__}），按空列表容错",
+                    )
+                prev_ids = []
             fields["chain_skipped"] = list(
                 dict.fromkeys(
                     [str(i) for i in prev_ids] + [str(i) for i in chain_skip_ids]

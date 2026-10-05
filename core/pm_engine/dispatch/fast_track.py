@@ -31,6 +31,7 @@ from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_ERROR_MARKER,
 )
+from core.pm_engine.dispatch.repair_lane import _max_retries
 
 
 def _normalize_int_config(value, default: int) -> int:
@@ -677,21 +678,38 @@ class FFastTrackMixin:
                     # （code-review item 9e02c14cb283）本车道 blocked 归因
                     # agent_type="fast-track"（与下方成功转移一致），避免审计/
                     # 告警误归 implementer 车道；agent_type 为自由字符串无枚举约束。
-                    self._pm.state_machine.transition(
+                    # transition 返回值校验（code-review item 89923bdcde3f，
+                    # 对齐同文件 implemented 转移的 40292d21fd97 同型收口）：
+                    # 并发冻结窗口内 transition 失败（并发写者已推进或
+                    # freeze_for_human 冻结；冻结保护只剥离自动链路对 status
+                    # 的改写，下方写入仍会落在冻结态上）时保留现场——否则
+                    # error 被本失败文案覆盖（冻结 error 内嵌「原状态 X」供
+                    # parse_orig_status 解冻还原的锚点被抹）、_retry_count
+                    # 清零抹掉冻结现场计数。
+                    if not self._pm.state_machine.transition(
                         spec_name, "blocked",
                         trigger_run_id=None, agent_type="fast-track", channel="auto",
-                    )
-                    # _retry_count: 0 是重置语义（绝对写，无丢增量面）；streak
-                    # 已由 bump_counters 原子递增落盘时不再并写（同上，防并发
-                    # 写回互相覆盖丢增量）。
-                    breaker_updates: dict = {
-                        "error": final_error,
-                        "_merge_fp": fp,
-                        "_retry_count": 0,
-                    }
-                    if not streak_bumped:
-                        breaker_updates["_merge_streak"] = streak
-                    self._pm.state_machine.update_spec(spec_name, breaker_updates)
+                    ):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"fast-track merge 熔断但 transition 到 blocked 失败"
+                            f"（并发写者已推进/冻结），保留计数与 error 现场待"
+                            f"收口重试/审计: {spec_name}",
+                        )
+                    else:
+                        # _retry_count: 0 是重置语义（绝对写，无丢增量面）；streak
+                        # 已由 bump_counters 原子递增落盘时不再并写（同上，防并发
+                        # 写回互相覆盖丢增量）。
+                        breaker_updates: dict = {
+                            "error": final_error,
+                            "_merge_fp": fp,
+                            "_retry_count": 0,
+                        }
+                        if not streak_bumped:
+                            breaker_updates["_merge_streak"] = streak
+                        self._pm.state_machine.update_spec(
+                            spec_name, breaker_updates
+                        )
                 elif self._pm._should_enter_repair(
                     spec_name, merge_info, streak, breaker_threshold
                 ):
@@ -754,7 +772,9 @@ class FFastTrackMixin:
             # 封顶：派发入口不读 _retry_count 设闸，持续性「success 但 branch 为空」
             # 若只递增重派会无限烧 fast-track run 预算——封顶判据与
             # _handle_fast_track_failure 同源，达阈冻结转人工、不再自动重派。
-            max_r = _normalize_int_config(self._pm._get_config("agents.max_retries", 3), 3)
+            # 归一收敛三车道单一读取器（code-review item 8b26fd7980ce，
+            # 0=不自动重试合法语义、无下限，见 repair_lane._max_retries）。
+            max_r = _max_retries(self._pm)
             if retries >= max_r:
                 fp = self._pm._redispatch_cause_fingerprint(contract_err)
                 orig_status = spec_entry.get("status") or "implementing"
@@ -1384,12 +1404,12 @@ class FFastTrackMixin:
         retries = self._pm.state_machine.bump_counters(
             spec_name, {"_retry_count": 1}
         ).get("_retry_count", 0)
-        # 配置侧 int() 归一（code-review item 74317ab4a77a）：字符串配置裸用于
-        # `retries >= max_r` 比较抛 TypeError 中断失败重派，非法值回退缺省；
-        # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
-        # 0（不自动重试）不被 or 吞成缺省 3。归一化单点工具
-        # （code-review item c832188fbbac）。
-        max_r = _normalize_int_config(self._pm._get_config("agents.max_retries", 3), 3)
+        # agents.max_retries 归一收敛三车道单一读取器（code-review item
+        # 8b26fd7980ce）：None 判空而非 or 兜底（code-review item c54ffbef69c5，
+        # 合法配置 0 不被吞成缺省 3）、非法值回退缺省 3（code-review item
+        # 74317ab4a77a）、0=不自动重试为合法语义（无 max(...,1) 下限）——
+        # 统一口径见 repair_lane._max_retries，full 车道同键同行为。
+        max_r = _max_retries(self._pm)
         # fix-redispatch-loop-governance 3.4（fast-track 车道对等）：retries 达
         # max_r 时真正终止自动重试——冻结转人工（freeze_for_human，error 内嵌
         # 「原状态 X」供 parse_orig_status 解冻还原）。原实现「清零 _retry_count

@@ -46,6 +46,18 @@ _JUDGE_FASTTRACK_HITS_FIELD = "_judge_fasttrack_hits"
 _JUDGE_REAL_DISPATCHES_FIELD = "_judge_real_dispatches"
 
 
+def _state_flag_true(entry: dict, field: str) -> bool:
+    """STATE 布尔字段的字符串归一读法（本模块唯一实现，多处共用）。
+
+    STATE 属性以字符串持久化（布尔落盘为 'True'/'False'）——不能用
+    bool() 直接包：bool('False') 为真，会把「未置位」误判成「已置位」
+    （历史上实际发生过的误判形态：误判「本轮已升级」吞掉告警/误分流）。
+    字面量口径（"true"/"1"）单点维护于此，扩展或修正只改本函数
+    （code-review item 014fae429662 单源化，防多处复制漂移）。
+    """
+    return str(entry.get(field) or "").strip().lower() in ("true", "1")
+
+
 def _judge_verify_round(pipeline, spec_name: str) -> int:
     """当前验证轮次（= ``_verify_fail_rounds``，首轮 0；读取异常按 0）。"""
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
@@ -143,10 +155,9 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
         "round": current_round,
         "real": _int_or(entry.get(_JUDGE_ROUND_REAL_FIELD)),
         "expanded": _int_or(entry.get(_JUDGE_ROUND_EXPANDED_FIELD)),
-        # STATE 属性以字符串持久化（布尔落盘为 'False'/'True'）——不能用
-        # bool() 直接包（bool('False') 为真会误判「本轮已升级」而吞掉告警）。
-        "escalated": str(entry.get(_JUDGE_ROUND_ESCALATED_FIELD, False)).strip().lower()
-        in ("true", "1"),
+        # STATE 布尔字段字符串归一读法（bool('False') 陷阱与字面量口径
+        # 单源于 _state_flag_true）。
+        "escalated": _state_flag_true(entry, _JUDGE_ROUND_ESCALATED_FIELD),
     }
 
 
@@ -438,17 +449,13 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
 def _inconclusive_reverify_flag_set(pipeline, spec_name: str) -> bool:
     """读 inconclusive 重验旗标（judge 预算分流的分流判据）。
 
-    STATE 属性可能以字符串持久化（布尔落盘 'True'/'False'）——不能用
-    bool() 直接包（bool('False') 为真会误分流）；与 _judge_round_state 的
-    escalated 读法同口径。
+    STATE 布尔字段字符串归一读法（含 bool('False') 陷阱与字面量口径）
+    单源于 _state_flag_true，与 _judge_round_state 的 escalated 同口径。
     """
     from core.state_machine import IN_INCONCLUSIVE_REVERIFY_FIELD
 
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    return str(entry.get(IN_INCONCLUSIVE_REVERIFY_FIELD) or "").strip().lower() in (
-        "true",
-        "1",
-    )
+    return _state_flag_true(entry, IN_INCONCLUSIVE_REVERIFY_FIELD)
 
 
 def _judge_inconclusive_dispatches_bump(pipeline, spec_name: str) -> int:
@@ -487,7 +494,7 @@ def _judge_inconclusive_cap_escalate(
     """
     dedup_field = "_judge_inconclusive_cap_escalated"
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    if str(entry.get(dedup_field) or "").strip().lower() in ("true", "1"):
+    if _state_flag_true(entry, dedup_field):
         pipeline._context.logger.info(
             "pm_engine",
             f"inconclusive 重验 judge 独立计数已到顶（本 episode 已升级）"

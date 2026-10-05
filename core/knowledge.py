@@ -1132,6 +1132,31 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
     return None
 
 
+def _dispatch_via_mgr(mgr: DistillManager, proot: Path, names: list) -> dict:
+    """派发壳层（单条/批量入口共用；code-review bc32bfabd7d9）。
+
+    ``mgr.dispatch`` + 成功日志 + 失败 warning/登重试台账在单点维护，消除
+    单条/批量两车道的观测与处置漂移（此前批量成功路径无任何成功日志、失败
+    日志缺异常类型）；``names`` 由调用方传新拷贝。测试环境守卫
+    （``_in_pytest``）留在各入口门控链之前——守卫先于门控是既有行为
+    （替身注入语境不做配置解析/回填登记等副作用）。
+    """
+    label = names[0] if len(names) == 1 else "批量 " + ", ".join(names)
+    try:
+        mgr.dispatch(proot, names)
+        logger.info("knowledge-distill 已派发（archive=%s）", label)
+        return {"dispatched": True, "reason": None}
+    except Exception as e:  # noqa: BLE001 — fail-open：不影响归档返回值
+        logger.warning(
+            "knowledge-distill 派发失败（archive=%s）: %s: %s",
+            label,
+            type(e).__name__,
+            e,
+        )
+        _register_todo_retry(proot, names, f"派发失败: {e}")
+        return {"dispatched": False, "reason": f"error: {e}"}
+
+
 def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=None) -> dict:
     """归档蒸馏派发入口（task 2.1；commit_archive_move 单点挂载的漏斗）。
 
@@ -1158,20 +1183,7 @@ def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=Non
     if gated is not None:
         return gated
 
-    mgr = dispatcher or _get_dispatcher()
-    try:
-        mgr.dispatch(proot, [archived_name])
-        logger.info("knowledge-distill 已派发（archive=%s）", archived_name)
-        return {"dispatched": True, "reason": None}
-    except Exception as e:  # noqa: BLE001 — fail-open：不影响归档返回值
-        logger.warning(
-            "knowledge-distill 派发失败（archive=%s）: %s: %s",
-            archived_name,
-            type(e).__name__,
-            e,
-        )
-        _register_todo_retry(proot, [archived_name], f"派发失败: {e}")
-        return {"dispatched": False, "reason": f"error: {e}"}
+    return _dispatch_via_mgr(dispatcher or _get_dispatcher(), proot, [archived_name])
 
 
 # 兼容批量入口：auto_archive_check 一轮归档多条时可合并为一次批量 run
@@ -1187,11 +1199,6 @@ def dispatch_distill_batch(project_root, archived_names: list, config=None, *, d
     gated = _gate_distill(proot, list(archived_names), config)
     if gated is not None:
         return gated
-    mgr = dispatcher or _get_dispatcher()
-    try:
-        mgr.dispatch(proot, list(archived_names))
-        return {"dispatched": True, "reason": None}
-    except Exception as e:  # noqa: BLE001
-        logger.warning("knowledge-distill 批量派发失败: %s", e)
-        _register_todo_retry(proot, list(archived_names), f"派发失败: {e}")
-        return {"dispatched": False, "reason": f"error: {e}"}
+    return _dispatch_via_mgr(
+        dispatcher or _get_dispatcher(), proot, list(archived_names)
+    )

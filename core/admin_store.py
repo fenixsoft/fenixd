@@ -603,9 +603,12 @@ class AdminStore:
 
         ``mark_handled`` 仅匹配 ESCALATION（既有人工告警闭环锚点，语义不可
         放宽），而配置裁决类信号（build_artifact_paths_missing）写 kind=SIGNAL
-        记录——alert-resolve 端点对其经本方法直接更新 handled 族字段。仅改写
-        handled/handled_at（与 mark_handled 同集，不伪造 handled_by），已处理
-        条目幂等返回 False。
+        记录——alert-resolve 端点对其经本方法直接更新 handled 族字段。缺省
+        调用（不传 action_taken/result）仅改写 handled/handled_at（与
+        mark_handled 同集，不伪造 handled_by），已处理条目幂等返回 False；
+        留痕字段（action_taken/result）非 None 时已处理条目仍会改写留痕
+        并返回 True（见下方 fix-global-signal-choice-execution 2.3 段），
+        重复执行返回 True 不代表「未命中任何记录」。
 
         fix-global-signal-choice-execution 2.3：留痕与闭环解耦——
         - ``action_taken`` / ``result`` 非 None 时一并写入告警记录（choice

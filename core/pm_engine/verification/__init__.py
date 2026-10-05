@@ -1,9 +1,16 @@
 """core.pm_engine.verification — 门面（facade）re-export。
 
 refactor-verification-module D8/D9：`verification.py` 单文件模块拆分为
-`verification/` 子包。本模块作为薄门面逐条 re-export `_legacy` 的全部既有
-公开与私有名字，保证既有调用路径（`from core.pm_engine.verification import X`
-与测试字符串路径 patch）零改动。
+`verification/` 子包。本模块作为薄门面 re-export 拆分后各子模块的既有
+门面契约名字（pipeline / branch_guard / infra_classify / report_gate，
+含下方 D9 六个 patch 缝隙），保证既有门面调用路径
+（`from core.pm_engine.verification import X` 与测试字符串路径 patch）
+零改动。
+
+不在本门面暴露的名字按需直引其所属子模块（如 legacy 侧
+`from core.pm_engine.verification.legacy import _run_legacy_verification`，
+code-review item 35fd435e992d：门面清单是白名单子集而非全量 re-export，
+勿据此外推「任意既有名字恒可经门面导入」）。
 
 _D9 约定_：`subprocess` / `probe_ready` / `ensure_main_tree_deps` /
 `run_prepare_steps` / `load_verify_contract` / `rewrite_scenarios_origin`

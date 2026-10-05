@@ -114,13 +114,13 @@ BASE_URL 注入范围扩展（design D4）：
 回退逻辑（该逻辑在场景失联时会漏判）。无实例形态下改写与注入为无害空操作。
 """
 
+import errno
 import fcntl
 import json
 import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -133,7 +133,7 @@ from urllib.request import Request, urlopen
 
 import yaml
 
-from core.proc_utils import find_free_port
+from core.proc_utils import find_free_port, kill_process_group
 
 CONTRACT_FILENAME = "verify.yaml"
 PREPARE_STEP_TIMEOUT = 600  # 单条构建步骤上限（秒）：构建慢是常态，600s 内完不成应修构建
@@ -546,7 +546,12 @@ def _load_verify_contract_with_raw(
         else:
             cmd = reg_data.get("cmd")
             output = reg_data.get("output")
-            fmt = reg_data.get("format") or "junit"
+            # format 显式区分「未声明」与「声明了非法值」（item 4eef70b2b25a）：
+            # 仅键缺失/显式 None 取缺省 junit；false/0 等 falsy 声明值不得经
+            # or 缺省静默映射成 junit 放行——design D2 边界「声明其它值时整段
+            # 视为无效」，交由下方 fmt != "junit" 分支记 WARNING 后按未配置处理。
+            raw_format = reg_data.get("format")
+            fmt = "junit" if raw_format is None else raw_format
             if not cmd or not output:
                 if logger:
                     logger.warning(
@@ -976,27 +981,14 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     pass
             elif proc is not None:
                 # 构造 CommandVerifyServer 失败（srv 仍为 None）的兜底：
-                # 进程组照常收掉，防孤儿服务（同上 item）。pgid 提前取定
-                # （start_new_session=True 下即 proc.pid）——wait 回收 leader
-                # 后 getpgid 将失效，补刀须用此句柄。
-                try:
-                    pgid = os.getpgid(proc.pid)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pgid = proc.pid
-                try:
-                    if proc.poll() is None:
-                        os.killpg(pgid, signal.SIGTERM)
-                        proc.wait(timeout=5)
-                except Exception:
-                    pass
-                # 组清扫补刀（code-review item 7168a8391e06）：同 stop 纪律——
-                # leader 退出（含 poll() 非 None 原本被整段跳过的形态）不代表
-                # 组内孙进程已清，补一次 SIGKILL；ProcessLookupError＝组已
-                # 清空，静默即可。
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
+                # 进程组照常收掉，防孤儿服务（同上 item）。组清扫纪律
+                # （SIGTERM→wait→SIGKILL 补刀）单点实现在
+                # core.proc_utils.kill_process_group（item 21d8a42c21c1 收口
+                # 四处逐字复刻）；sigterm_only_if_alive 保持本处「leader 已退
+                # 出（poll() 非 None）跳过 TERM 与宽限等待、仍补 SIGKILL」的
+                # 原有口径。stdout/stderr 走 DEVNULL 无管道可排空，收尸 wait
+                # 是本调用方差异化收尾，留在本处。
+                kill_process_group(proc, sigterm_only_if_alive=True)
                 # 收尸（code-review item 2c7a3051bb99，对齐 020ba8771283 收尸
                 # 纪律）：SIGKILL 补刀后补一次 wait 回收 leader 退出状态——
                 # stdout/stderr 走 DEVNULL 无管道可排空，wait 即可，不留
@@ -1251,30 +1243,11 @@ def _run_prepare_steps_unlocked(
         try:
             out, err = p.communicate(timeout=PREPARE_STEP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            # 先 SIGTERM 整组留优雅退出机会，wait(5) 未退再 SIGKILL（同 stop 纪律）。
-            # start_new_session=True 使 leader 即进程组长（pgid == p.pid），提前
-            # 取定句柄——wait 回收 leader 后 getpgid 将失效，组清扫补刀须用此
-            # 句柄（code-review item 7168a8391e06）。
-            try:
-                pgid = os.getpgid(p.pid)
-            except (ProcessLookupError, PermissionError, OSError):
-                pgid = p.pid
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            try:
-                p.wait(timeout=5)
-            except Exception:
-                pass
-            # 组清扫补刀（code-review item 7168a8391e06）：leader 退出不等于组
-            # 内已清——shell 包装的构建命令收到 SIGTERM 即退时，忽略 SIGTERM
-            # 的孙进程（npm 派生的 node）会残留继续写 dist。无论 wait 成败都
-            # 补一次 SIGKILL；ProcessLookupError＝组已清空，静默即可。
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            # 进程组清扫纪律（SIGTERM→wait→SIGKILL 补刀）单点实现在
+            # core.proc_utils.kill_process_group（item 21d8a42c21c1 收口四处
+            # 逐字复刻）。stdout/stderr 走 PIPE，收尸的管道排空是本调用方
+            # 差异化收尾，留在本处。
+            kill_process_group(p)
             # 收尸（code-review item 020ba8771283）：补一次 communicate 排空
             # stdout/stderr 管道并回收退出状态，不留 fd/僵尸窗口靠解释器 GC
             # 与下一次 Popen._cleanup 兜底。
@@ -1295,6 +1268,13 @@ def _find_free_port() -> int:
     return find_free_port()
 
 
+# 静态实例端口 bind 尝试上限：find_free_port（探测即释放）与 ThreadingHTTPServer
+# bind 之间存在端口被其他进程抢注的 TOCTOU 窗口（code-review item
+# 657a2e747992）——bind 撞 EADDRINUSE 时重新分配再试（有限次数）；仍失败才
+# 上抛，错误文案区分端口竞态与其他启动异常。
+_STATIC_PORT_BIND_ATTEMPTS = 5
+
+
 class StaticVerifyServer:
     """内置静态被测实例：服务 ``root`` 目录，可探活、可停止。
 
@@ -1308,8 +1288,26 @@ class StaticVerifyServer:
         handler = lambda *args, **kw: SimpleHTTPRequestHandler(  # noqa: E731
             *args, directory=str(self.root), **kw
         )
-        self._port = _find_free_port()
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", self._port), handler)
+        # 端口竞态防护（item 657a2e747992）：EADDRINUSE＝探测到的端口在 bind
+        # 前被抢注（HTTPServer 无法由既有 socket 构造接管，proc_utils 的
+        # find_bound_socket/hold_free_port 均不适用于本类自绑定形态），换新
+        # 端口重试；非竞态 OSError（权限等）不重试原样上抛，由 validate_contract
+        # 归类「serve 启动异常」且文案可区分。
+        last_err: Optional[OSError] = None
+        for _ in range(_STATIC_PORT_BIND_ATTEMPTS):
+            self._port = _find_free_port()
+            try:
+                self._httpd = ThreadingHTTPServer(("127.0.0.1", self._port), handler)
+                break
+            except OSError as e:
+                if e.errno != errno.EADDRINUSE:
+                    raise
+                last_err = e
+        else:
+            raise OSError(
+                f"静态实例端口连续 {_STATIC_PORT_BIND_ATTEMPTS} 次 bind 即被抢注"
+                f"（EADDRINUSE，端口竞态），最后尝试端口 {self._port}"
+            ) from last_err
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
@@ -1492,30 +1490,11 @@ class CommandVerifyServer:
         return self._port is not None and self._proc.poll() is None
 
     def stop(self):
-        # start_new_session=True 使 leader 即进程组长（pgid == pid），提前取定
-        # 句柄——wait 回收 leader 后 getpgid 将抛 ProcessLookupError，组清扫
-        # 补刀须用此句柄（code-review item 7168a8391e06）。
-        try:
-            pgid = os.getpgid(self._proc.pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            pgid = self._proc.pid
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        try:
-            self._proc.wait(timeout=5)
-        except Exception:
-            pass
-        # 组清扫补刀（code-review item 7168a8391e06）：wait 成功＝leader 已退，
-        # 但 shell 包装的 serve.cmd（npm start 等）下忽略 SIGTERM 的孙进程
-        # （node）仍在组内，原「仅 wait 超时才 SIGKILL」使其永远等不到补刀、
-        # 残留为占用端口的孤儿验证实例（陈旧实例污染验证同型）。无论 wait
-        # 成败都补一次组 SIGKILL；ProcessLookupError＝组已清空，静默即可。
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # 进程组清扫纪律（SIGTERM→wait→SIGKILL 补刀）单点实现在
+        # core.proc_utils.kill_process_group（item 21d8a42c21c1 收口四处逐字
+        # 复刻）；SIGKILL 补刀后的收尸 wait 与 boot.log 句柄关闭是本调用方
+        # 差异化收尾，留在本处。
+        kill_process_group(self._proc)
         # 收尸（code-review item 2c7a3051bb99，对齐 run_prepare_steps /
         # _run_npm_provision 的 020ba8771283 收尸纪律）：SIGKILL 补刀后被杀
         # leader 仍须 wait 回收退出状态——本类 stdout/stderr 走 DEVNULL 无管道
@@ -1604,25 +1583,11 @@ def _run_npm_provision(argv: list, cwd: Path) -> subprocess.CompletedProcess:
     try:
         out, err = p.communicate(timeout=NPM_PROVISION_TIMEOUT)
     except subprocess.TimeoutExpired:
-        try:
-            pgid = os.getpgid(p.pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            pgid = p.pid
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        try:
-            p.wait(timeout=5)
-        except Exception:
-            pass
-        # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
-        # （npm 派生的 node）会残留继续写 node_modules，无论 wait 成败都
-        # 补一次 SIGKILL；ProcessLookupError＝组已清空，静默即可。
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # 进程组清扫纪律（SIGTERM→wait→SIGKILL 补刀）单点实现在
+        # core.proc_utils.kill_process_group（item 21d8a42c21c1 收口四处
+        # 逐字复刻）。stdout/stderr 走 PIPE，收尸的管道排空是本调用方
+        # 差异化收尾，留在本处。
+        kill_process_group(p)
         # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
         try:
             p.communicate(timeout=5)

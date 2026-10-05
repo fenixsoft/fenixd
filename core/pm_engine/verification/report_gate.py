@@ -213,7 +213,11 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     try:
         require_role = result_path.resolve() == _shared.resolve()
     except OSError:
-        require_role = False
+        # resolve 失败（如父目录被并发删除）→ 无法确认路径归属时按更严的
+        # 共享文件口径要求 role=verifier（fail-closed，code-review item
+        # c82fa3056ecc）：宽松豁免会让 role 门在异常路径整体失效，与 R1
+        # 「共享文件 role≠verifier/缺 role 一律不采信」方向相反。
+        require_role = True
     ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=require_role)
     if not ok:
         return True

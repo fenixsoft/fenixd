@@ -16,6 +16,10 @@ from pathlib import Path
 
 from core.admin_store import AdminStore, DISPOSITION, SIGNAL
 
+# 冻结标记字段单源（code-review item 101a0ed85064）：与 branch_guard /
+# state_machine 同引 FROZEN_FIELD 常量，字面量在常量演进时会静默失配。
+from core.state_machine import FROZEN_FIELD
+
 # code-review item f882b509b227：provider 熔断判定文案与生产源（provider_circuit）
 # 共用同一导出常量（同 pipeline.py item 17e5cb41806e 惯例，防措辞漂移静默失配）。
 from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
@@ -135,7 +139,9 @@ def enrich_failure_class(
 # ── evo-infra-failure-budget-exempt R2：infra 失败统一记账 ─────────
 
 
-def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "") -> None:
+def _record_infra_failure(
+    pipeline, spec_name: str, reason: str, run_id: str = "", ledger_run_id: str = ""
+) -> None:
     """infra 失败统一记账（evo-infra-failure-budget-exempt R2/R3）。
 
     在 infra 判定命中时调用：预算事后补偿（delegate budget.py
@@ -144,7 +150,12 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
 
     幂等锚点=当前实现 run id（``implementer_run``，由调用方经 ``run_id``
     传入或缺失时内部读取）；同一实现 run 的多次 infra 判定仅首次退款，
-    后续只补计数与台账（预算侧独立记账由 budget.py 保证）。
+    后续只补计数与台账（预算侧独立记账由 budget.py 保证）。``run_id``
+    MUST 只传实现 run id——verifier/judge 等 attempt run id 会使每个
+    attempt 锚点各异、按实现 run 的幂等去重失效（同一实现 run 多退，
+    code-review item 87cfffac1d3c）；verifier 侧事件标识经
+    ``ledger_run_id`` 传入，仅落到失败台账的 run_id 字段（观测用），
+    不参与退款锚点，缺省回退退款锚点。
 
     本身异常不得抛穿调用方（记账属侧车，不阻断主流程）。
     """
@@ -154,6 +165,8 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
         if not refund_key:
             entry0 = pipeline._context.state_machine.read_one(spec_name) or {}
             refund_key = str(entry0.get("implementer_run") or "")
+        # 失败台账 run_id：事件标识（如 verifier attempt run），缺省回退退款锚点
+        ledger_key = ledger_run_id or refund_key
 
         # ── 预算事后补偿（退款 + _infra_failure_count，幂等）──
         # 核心实现收敛在 budget.py（对齐 _exempt_dead_run_budget），
@@ -190,7 +203,7 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
                 "infra",
                 [],
                 failure_class="infra",
-                run_id=refund_key,
+                run_id=ledger_key,
             )
         except Exception as e:
             pipeline._context.logger.warning(
@@ -653,7 +666,7 @@ def reclassify_infra_rounds(
     new_fail_rounds = current - applied
 
     # ── 目标状态判定（复用 resolve_env_blocked_reset_path 语义）──
-    if entry.get("status") == "blocked" and not entry.get("frozen"):
+    if entry.get("status") == "blocked" and not entry.get(FROZEN_FIELD):
         reset_path = resolve_env_blocked_reset_path(entry, project_root)
         # reset_path 原样采用（code-review item 800e1f308b9a）：None = 无合法
         # 复位转换——预检只排除了 frozen 结构化标记，而「人工冻结」是 frozen
