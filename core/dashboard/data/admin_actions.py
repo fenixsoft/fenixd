@@ -19,6 +19,17 @@ from core.state_machine import (
     parse_orig_status,
     START_AFTER_MANUAL,
     BUDGET_MANUAL_RESET_BASELINE_FIELD,
+    # env 豁免 STATE 字段与纯函数单源（evo-fix-env-exemption-gate-conflict-…
+    # 1.1/1.4：豁免写入、签名推导、场景定义 hash 与校验同源共用）
+    ENV_EXEMPTIONS_FIELD,
+    ENV_EXEMPTION_MAX_ENTRIES,
+    SCENARIO_REVISION_COUNT_FIELD,
+    SCENARIO_REVISION_MAX_COUNT,
+    SCENARIO_REVISION_PENDING_FIELD,
+    parse_env_exemptions,
+    scenario_definition_hash,
+    scenario_fail_signature_body,
+    serialize_env_exemptions,
 )
 
 # 跨组引用（D4：叶子→中枢，直接导入无环）
@@ -1695,6 +1706,11 @@ _RETRY_COUNTER_RESETS = {
     # 同字段 3.3：独立计数器到顶升级告警的去重标记——复位后新 episode
     # 再到顶应能再次告警。
     "_judge_inconclusive_cap_escalated": False,
+    # evo-fix-env-exemption-gate-conflict-… 2.2：场景修订待重验旗标——复位
+    # 视为验证链输入整体重置，滞留旗标会让复位后首次升级被误判为修订
+    # re-entry 追加重验轮。修订次数计数（_scenario_revision_count）**不清**：
+    # 生命周期累计语义（修订上限跨复位保持，防借复位刷修订预算）。
+    SCENARIO_REVISION_PENDING_FIELD: False,
 }
 
 # force_advance 允许的目标状态（design D4：校验目标可达性，不开放任意跳转）
@@ -2268,6 +2284,148 @@ def _exec_declare_no_artifacts(project_root, spec: str, note: str = "") -> dict:
     return {"ok": True, "steps": steps, "error": None}
 
 
+# ── env 归因证据门（evo-fix-env-exemption-gate-conflict-… 2.3）──
+# 媒体管线词汇：归因文本出现任一即视为「声称帧管线类失败」，须同时给出
+# 送帧侧与解码侧两段证据引用才维持 env 结论。
+ENV_ATTR_MEDIA_VOCAB = (
+    "帧", "frame", "feed", "解码", "decode", "编码", "encode",
+    "相机", "camera", "视频", "video", "推流", "采样", "sample", "md5",
+)
+# 送帧侧证据引用词形（提送/推流/喂帧链路实测记录）
+ENV_ATTR_FRAME_FEED_MARKERS = (
+    "送帧", "推帧", "喂帧", "提送", "推流", "已送", "send_frame",
+    "push_frame", "frame pushed", "frames sent", "frame_count",
+)
+# 解码侧证据引用词形（解码输出/解出帧/软硬解记录）
+ENV_ATTR_DECODE_MARKERS = (
+    "解码", "decode", "软解", "硬解", "解出", "yuv", "nv12", "rgb",
+)
+
+
+def env_attribution_evidence_gate(classification, evidence_text) -> str:
+    """env 归因结论的证据门（纯函数，级二判定调用；2.3）。
+
+    规则（fail-closed 只对 env 结论收紧，不做任何放行放宽）：
+      - classification != "env"：原样返回（非 env 归因与本门无关）；
+      - evidence_text 不含任何媒体管线词汇：原样返回——普通 env 归因
+        （端口失联、依赖缺失、served dist 为中间态构建等）不受此门约束，
+        既有裁决车道零行为变化；
+      - 含媒体词汇但**不同时具备**送帧侧与解码侧证据引用：降级返回
+        "inconclusive"——声称帧管线类失败却只给一句现象描述的归因不可
+        采信（2026-10-05 potplayer：归因一句「解码失败」，既无送帧计数
+        也无解码输出记录，级二据此整轮放行豁免属证据不足放行）。
+
+    Returns: "env"（维持）/ "inconclusive"（降级）。
+    """
+    cls = str(classification or "")
+    if cls != "env":
+        return cls
+    text = str(evidence_text or "")
+    if not any(word in text for word in ENV_ATTR_MEDIA_VOCAB):
+        return cls  # 非媒体词汇 env 归因不受此门约束
+    has_feed = any(m in text for m in ENV_ATTR_FRAME_FEED_MARKERS)
+    has_decode = any(m in text for m in ENV_ATTR_DECODE_MARKERS)
+    if has_feed and has_decode:
+        return "env"
+    return "inconclusive"
+
+
+def _env_exemption_candidates(project_root, spec: str, disposition_id) -> list:
+    """从验证报告非 pass 场景构建豁免候选清单（evo-fix-… 1.1）。
+
+    每条豁免键 = 场景 id + 归一化失败签名（``scenario_fail_signature_body``
+    与升级/门禁同口径）+ 场景定义 hash（``load_frozen_scenario_hashes`` 当前
+    冻结定义，单源在 state_machine）+ 时效锚点 granted_at。disposition 落
+    审计镜像（disposition_id 回链）。
+
+    report.json 缺位/无场景时返回 []（不臆造豁免对象——下游双门读空清单
+    fail-closed，放行退回 disposition 存量通道，行为与历史版本一致）。
+    """
+    from core.state_machine import (
+        load_frozen_scenario_hashes,
+        scenario_fail_signature_body,
+    )
+    from core.verdict_check import load_report
+
+    report = load_report(project_root, spec) or {}
+    scenarios = report.get("scenarios") or []
+    if not scenarios:
+        return []
+    hashes = load_frozen_scenario_hashes(project_root, spec)
+    granted_at = datetime.now(timezone.utc).isoformat()
+    out: list = []
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        # pass/paired 之外全部入豁免候选：含 fail/error/warning 与 blocked-env
+        # （judge 裁决「全部失败归 env」时 blocked-env 场景从未执行、无失败
+        # 断言，签名退化为 blocked-env——同样是豁免对象；NON_PASS_STATUSES
+        # 不含 blocked-env，不能用之作过滤，会整类漏授）。
+        if sc.get("status") in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "").strip()
+        if not sid:
+            continue
+        out.append({
+            "scenario_id": sid,
+            "failure_signature": scenario_fail_signature_body(sc),
+            "scenario_hash": hashes.get(sid, ""),
+            "granted_at": granted_at,
+            "disposition_id": str(disposition_id or ""),
+            "source": "grant_env_exemption",
+        })
+    return out
+
+
+def _write_env_exemptions_state(project_root, spec: str, disposition_id) -> str:
+    """把豁免清单写入 spec 级 STATE 字段（evo-fix-… 1.1 豁免生效主源）。
+
+    与既有 STATE 豁免按（场景 id, 失败签名）合并——同键刷新 granted_at/hash/
+    disposition_id（重授予即续期），异键追加；总量超 ``ENV_EXEMPTION_MAX_
+    ENTRIES`` 按 granted_at 保新截旧。写入经 ``update_spec``（flock 原子），
+    返回空串=成功、非空=错误文本（调用方 fail-closed 不执行重置）。
+    """
+    from core.state_machine import (
+        ENV_EXEMPTION_MAX_ENTRIES,
+        parse_env_exemptions,
+        serialize_env_exemptions,
+    )
+
+    try:
+        additions = _env_exemption_candidates(project_root, spec, disposition_id)
+        sm = _sm(project_root)
+        entry = sm.read_one(spec)
+        if entry is None:
+            return f"spec '{spec}' 不存在，无法写 STATE 豁免字段（fail-closed）"
+        merged: dict = {}
+        for item in parse_env_exemptions(entry):
+            key = (str(item.get("scenario_id") or ""),
+                   str(item.get("failure_signature") or ""))
+            merged[key] = item
+        for item in additions:
+            key = (str(item.get("scenario_id") or ""),
+                   str(item.get("failure_signature") or ""))
+            merged[key] = item  # 同键刷新（重授予=续期），异键追加
+        exemptions = sorted(
+            merged.values(),
+            key=lambda it: str(it.get("granted_at") or ""),
+        )
+        if len(exemptions) > ENV_EXEMPTION_MAX_ENTRIES:
+            exemptions = exemptions[-ENV_EXEMPTION_MAX_ENTRIES:]
+        ok = sm.update_spec(spec, {
+            ENV_EXEMPTIONS_FIELD: serialize_env_exemptions(exemptions),
+        })
+        if not ok:
+            return "STATE 豁免字段写入未生效（update_spec 拒绝，fail-closed）"
+        return ""
+    except Exception as e:
+        logger.warning(
+            "grant_env_exemption 写 STATE 豁免字段失败（spec=%s）: %s: %s",
+            spec, type(e).__name__, e,
+        )
+        return "STATE 豁免字段写入失败（fail-closed，不执行重置）"
+
+
 def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     """grant_env_exemption：人工授予 env 豁免（fix-env-exemption-exit-reachability 4.2）。
 
@@ -2276,14 +2434,17 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
          result 显式 env 豁免放行语义、note 落人工审计文本）——幂等锚点对齐
          既有 disposition 形态（``latest_resolved_disposition`` 按
          spec+signal_type+result∈{resolved, partially-resolved} 取最近一条）；
-      2. 调 ``reset_verification`` 复用既有清计数/清验证进度路径（signal_type
+      2. 写 spec 级 STATE 豁免字段（evo-fix-env-exemption-gate-conflict-… 1.1，
+         场景 id+归一化失败签名+定义 hash+时效锚点）——豁免**生效主源**，
+         升级握手与 verified 洗白门禁同源消费；disposition 自此为审计镜像
+         （存量放行查询通道保留作回退）；
+      3. 调 ``reset_verification`` 复用既有清计数/清验证进度路径（signal_type
          显式传入走 VERIFY_CHAIN_SIGNAL_TYPES 精确判别）。
 
-    DISPOSITION 写失败**不执行重置**（fail-closed）：握手守卫查不到放行记录
-    会把重验后的全 env 轮再次拦截回升级停车——「重置了却没放行」正是
-    2026-10-03 死循环的复发形态。放行 → 重置 → 重验 → 握手查得放行 →
-    合法 verified（报告带 admin_disposition_backlink 回链），全链零新机制
-    （DISPOSITION created 晚于 SIGNAL，天然通过时效校验）。
+    DISPOSITION 或 STATE 写失败**不执行重置**（fail-closed）：握手/门禁查不
+    到有效豁免会把重验后的全 env 轮再次拦截回升级停车——「重置了却没放行」
+    正是 2026-10-03 死循环与 2026-10-05 双门矛盾的复发形态。放行 → 重置 →
+    重验 → STATE 豁免命中放行 → 合法 verified（报告带回链）。
 
     Returns:
         {"ok": bool, "steps": [str], "target_status": str|null, "error": str|null,
@@ -2327,6 +2488,19 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
                 "error": "env 豁免放行记录未落盘（store 拒写，fail-closed 不执行重置）"}
     steps = [f"已落 env 豁免放行记录（id={rec.get('id')}，result=resolved，"
              f"豁免下轮 verified 合法生效带回链）"]
+    # ── evo-fix-env-exemption-gate-conflict-… 1.1：STATE 豁免字段写入 ──
+    # 豁免生效主源改 spec 级 STATE 字段（场景 id+失败签名+定义 hash+时效），
+    # 升级握手与 verified 洗白门禁同源消费——disposition 降为审计镜像。
+    # STATE 写失败不执行重置（fail-closed）：「重置了却没豁免」会让重验后
+    # 的全 env 轮被门禁重新拦截，正是本 SPEC 要消除的矛盾形态。
+    state_err = _write_env_exemptions_state(
+        project_root, spec, disposition_id=rec.get("id"),
+    )
+    if state_err:
+        return {"ok": False, "steps": steps, "target_status": None,
+                "disposition_id": rec.get("id"), "error": state_err}
+    steps.append("已写 spec 级 STATE 豁免字段（场景 id+失败签名+定义 hash+时效，"
+                 "握手与洗白门禁同源消费）")
     r = reset_verification(
         project_root, spec,
         note=f"授予 env 豁免后重置重验：{audit_note}" if note else "授予 env 豁免后重置重验",
@@ -2343,6 +2517,184 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     if not r.get("ok") and not merged["error"]:
         merged["error"] = "放行记录已落库，但验证重置未成功"
     return merged
+
+
+def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> dict:
+    """revise_scenario_reverify：场景修订重验出口（evo-fix-… 2.1）。
+
+    场景不可行/夹具缺供给时的人工修订通道：改写场景定义与夹具供给层文件
+    （仅白名单路径）后重置重验。执行序列（任一步失败即停，不留半改状态）：
+
+      1. 解析载荷：note 为 JSON
+         ``{"scenarios": [...], "reason": "...",
+            "fixture_files": [{"path": "...", "content": "..."}]}``，
+         scenarios 必填（修订后的完整场景集，整体替换而非增量）；
+      2. 修订预算前置：``_scenario_revision_count >= SCENARIO_REVISION_MAX_
+         COUNT``（默认 2）→ 拒绝执行并 ``freeze_spec`` 转人工冻结——修订
+         出口耗尽，继续修订只是把「场景设计不可行」往预算里藏；
+      3. 夹具路径白名单（``validate_scenario_revision_paths``）：绝对路径/
+         穿越/产品代码路径拒绝；
+      4. 场景结构预校验（``validate_scenario_dicts``）：非法场景不入盘；
+      5. 落盘：夹具文件按 project_root 锚定写入；场景集经
+         ``prepare_scenarios_for_write`` 盖版本戳后**成对同覆盖**
+         ``test_scenarios.json`` 与 ``_scenarios_full.json``（防对账回填旧
+         定义，fix-frozen-scenario-shell-truncation 同款成对纪律）；
+      6. STATE：修订计数 +1、置 ``_scenario_revision_reverify_pending``
+         （修订 re-entry 先于升级——下轮再失败时升级停车入口见旗标追加
+         一次重验而非直接升级）、清 env 阻塞/inconclusive 停车字段
+         （_RETRY_COUNTER_RESETS，含 ``_env_block_rounds`` 与退避窗）；
+      7. 解冻 + implemented→testing 门禁转换 + 写调度唤醒信号重派 verifier。
+
+    Returns:
+        {"ok": bool, "steps": [str], "error": str|null, "frozen_manual": bool}
+    """
+    from .adjudication_choices import validate_scenario_revision_paths
+    from core.pm_engine.verification.scenario_gate import atomic_write_text
+    from core.verify_engine.scenarios import (
+        prepare_scenarios_for_write,
+        validate_scenario_dicts,
+    )
+
+    proot = Path(project_root)
+    steps: list = []
+    # 1. 载荷解析（note 传 JSON；裸文本视为缺载荷拒绝——修订 MUST 以结构化
+    # 场景集为输入，凭一句「改一下」执行会让修订内容无据可查）
+    payload = None
+    try:
+        payload = json.loads(note) if note and note.strip() else None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict):
+        return {"ok": False, "steps": [], "error": (
+            "revise_scenario_reverify 需要 JSON 载荷：{\"scenarios\": [...], "
+            "\"reason\": \"...\", \"fixture_files\": [{\"path\", \"content\"}]}"
+        ), "frozen_manual": False}
+    scenarios = payload.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        return {"ok": False, "steps": [],
+                "error": "载荷 scenarios 缺失或为空（修订须给出完整场景集）",
+                "frozen_manual": False}
+    fixture_files = payload.get("fixture_files") or []
+    if not isinstance(fixture_files, list):
+        return {"ok": False, "steps": [], "error": "载荷 fixture_files 须为数组",
+                "frozen_manual": False}
+
+    # 2. 修订预算前置（超限转人工冻结）
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "steps": [], "error": f"spec not found: {spec}",
+                "frozen_manual": False}
+    entry = specs[spec]
+    try:
+        revision_count = int(entry.get(SCENARIO_REVISION_COUNT_FIELD) or 0)
+    except (TypeError, ValueError):
+        revision_count = 0
+    if revision_count >= SCENARIO_REVISION_MAX_COUNT:
+        fr = freeze_spec(
+            proot, spec,
+            reason=(f"场景修订次数达上限（{SCENARIO_REVISION_MAX_COUNT}）："
+                    "修订出口耗尽转人工——场景设计不可行须人工重审验证方案"),
+        )
+        steps.append(
+            f"修订次数已达上限（{revision_count}/{SCENARIO_REVISION_MAX_COUNT}），"
+            f"拒绝修订并冻结转人工（frozen={fr.get('frozen')}）"
+        )
+        return {"ok": False, "steps": steps,
+                "error": (f"场景修订次数达上限（{SCENARIO_REVISION_MAX_COUNT}），"
+                          "已冻结转人工"), "frozen_manual": True}
+
+    # 3. 夹具路径白名单（先校验全部路径再动盘——任一非法即整体拒绝）
+    fixture_paths = [str(f.get("path") or "") for f in fixture_files
+                     if isinstance(f, dict)]
+    whitelist_error = validate_scenario_revision_paths(proot, fixture_paths)
+    if whitelist_error:
+        return {"ok": False, "steps": steps, "error": whitelist_error,
+                "frozen_manual": False}
+
+    # 4. 场景结构预校验（validate_scenario_dicts 返回逐条错误清单）
+    errors = validate_scenario_dicts(scenarios)
+    if errors:
+        return {"ok": False, "steps": steps,
+                "error": "场景定义校验失败：" + "；".join(errors[:3]),
+                "frozen_manual": False}
+
+    # 5a. 夹具文件落盘（project_root 锚定；路径已过白名单）
+    for item in fixture_files:
+        rel = str(item.get("path") or "").strip()
+        target = proot / rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(target, str(item.get("content") or ""))
+            steps.append(f"已写夹具文件 {rel}")
+        except OSError as e:
+            logger.warning(
+                "revise_scenario_reverify 写夹具文件失败（spec=%s path=%s）: %s: %s",
+                spec, rel, type(e).__name__, e,
+            )
+            return {"ok": False, "steps": steps,
+                    "error": f"夹具文件写入失败：{rel}", "frozen_manual": False}
+
+    # 5b. 场景集成对落盘（同覆盖 test_scenarios.json 与 _scenarios_full.json）
+    versioned = prepare_scenarios_for_write(scenarios)
+    vp_dir = proot / ".fenix" / "verify-progress" / spec
+    try:
+        vp_dir.mkdir(parents=True, exist_ok=True)
+        body = json.dumps(versioned, ensure_ascii=False, indent=2)
+        atomic_write_text(vp_dir / "test_scenarios.json", body)
+        atomic_write_text(vp_dir / "_scenarios_full.json", body)
+    except (OSError, TypeError, ValueError) as e:
+        logger.warning(
+            "revise_scenario_reverify 场景落盘失败（spec=%s）: %s: %s",
+            spec, type(e).__name__, e,
+        )
+        return {"ok": False, "steps": steps,
+                "error": "修订场景集落盘失败（成对定义文件写入异常）",
+                "frozen_manual": False}
+    steps.append(f"已修订场景集（{len(versioned)} 条，成对覆盖 "
+                 "test_scenarios.json 与 _scenarios_full.json）")
+
+    # 6+7. STATE：计数 +1、置 re-entry 旗标、清停车字段、解冻、testing、唤醒
+    sm = _sm(proot)
+    updates = dict(_RETRY_COUNTER_RESETS)
+    updates.update({
+        SCENARIO_REVISION_COUNT_FIELD: revision_count + 1,
+        # 旗标在 _RETRY_COUNTER_RESETS 里被清 False，此处覆盖置位——顺序敏感
+        SCENARIO_REVISION_PENDING_FIELD: True,
+        "frozen": False,
+        "error": None,
+    })
+    if not sm.update_spec(spec, updates):
+        return {"ok": False, "steps": steps,
+                "error": "修订 STATE 写入未生效（update_spec 拒绝）",
+                "frozen_manual": False}
+    steps.append(f"已记修订次数（{revision_count + 1}"
+                 f"/{SCENARIO_REVISION_MAX_COUNT}）并置修订重验旗标")
+    old_status = entry.get("status")
+    if old_status == "testing":
+        steps.append("spec 已在 testing，无需状态转换")
+    elif old_status == "implemented":
+        if not sm.transition(spec, "testing", channel="manual"):
+            return {"ok": False, "steps": steps,
+                    "error": "修订后状态转换未生效（IMPLEMENTED→TESTING 被拒）",
+                    "frozen_manual": False}
+        steps.append("IMPLEMENTED→TESTING 门禁转换（channel=manual）")
+    else:
+        # 冻结/blocked 等形态经显式豁免通道直改（force_advance 同款：updates
+        # 自带 frozen 键过冻结剥离守卫），留 Transition 痕
+        if not sm.update_spec(spec, {"status": "testing"}):
+            return {"ok": False, "steps": steps,
+                    "error": f"状态 {old_status} → testing 直改未生效",
+                    "frozen_manual": False}
+        sm.logger.info(
+            "state_machine",
+            f"Transition: {spec} {old_status} → testing",
+            {"channel": "manual", "note": "场景修订重验出口（revise_scenario_reverify）"},
+        )
+        steps.append(f"{old_status} → testing 显式豁免通道（修订重验）")
+    steps.append("重派 verifier 重验" + _kick_step_suffix(proot, spec))
+    if payload.get("reason"):
+        steps.append(f"修订依据：{payload.get('reason')}")
+    return {"ok": True, "steps": steps, "error": None, "frozen_manual": False}
 
 
 def execute_adjudication_choice(project_root, spec: str, choice_id: str,
@@ -2411,6 +2763,10 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             # fix-env-exemption-exit-reachability 4.2：授予 env 豁免（DISPOSITION
             # 放行 + 重置重验）
             r = _exec_grant_env_exemption(project_root, spec, note)
+        elif action == "revise_scenario_reverify":
+            # evo-fix-env-exemption-gate-conflict-… 2.1：场景修订重验出口
+            # （白名单路径修订场景定义/夹具供给层 + 置 re-entry 旗标重验）
+            r = _exec_revise_scenario_reverify(project_root, spec, note)
         elif action == "force_advance":
             r = force_advance(project_root, spec, target_status="done", note=note)
         elif action == "skip_review_gate":

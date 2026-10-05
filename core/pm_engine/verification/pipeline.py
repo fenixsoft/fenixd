@@ -53,6 +53,10 @@ from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     VERIFY_INFRA_ROUNDS_FIELD,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
+    # env 豁免 STATE 字段/修订生命周期字段单源（evo-fix-env-exemption-gate-
+    # conflict-and-scenario-revision-exit：与 admin_actions/escalation 同源）
+    ENV_EXEMPTIONS_FIELD,
+    SCENARIO_REVISION_PENDING_FIELD,
     # judge-scenario-repair：修复预算单点定义在 state_machine（与 escalation.py 同源）
     _SCENARIO_REPAIR_MAX_ROUNDS,
 )
@@ -178,6 +182,49 @@ from core.pm_engine.verification.escalation import (
     _write_inconclusive_loop_signal,
 )
 from core.pm_engine.verification.legacy import _run_legacy_verification
+
+
+# ── 场景修订 re-entry（evo-fix-env-exemption-gate-conflict-… 2.2）────────
+# 定义于 pipeline 门面（消费 pipeline._context 的 enqueue/state_machine/logger，
+# 与其余 lifecycle 助手同范式），经下方绑定 dict 挂为 pipeline 方法供
+# escalation 升级停车入口调用（pipeline._scenario_revision_reentry）。
+def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
+    """修订 re-entry 先于升级：场景修订待重验时先放行一次重验，不升级停车。
+
+    ``revise_scenario_reverify`` 执行器落修订场景、置
+    ``SCENARIO_REVISION_PENDING_FIELD`` 旗标并重入验证车道；若修订后首轮仍
+    失败、再度到达升级停车入口（级二豁免握手停车），本守卫消费旗标并追加
+    一次重验——给修订后的场景集一次收敛机会（修订 re-entry 先于升级）。
+    旗标单次消费：追加轮再失败则正常升级停车（修订不无限续命）；verified
+    落定与人工复位同样清旗标。
+
+    Returns: True=已接管（调用方 MUST NOT 再停车/落 verdict）；False=无待
+    重验修订（调用方按既有路径继续）。
+    """
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    pending = str(entry.get(SCENARIO_REVISION_PENDING_FIELD) or "").strip().lower()
+    if pending not in ("true", "1", "yes"):
+        return False
+    pipeline._context.state_machine.update_spec(
+        spec_name,
+        {
+            SCENARIO_REVISION_PENDING_FIELD: False,
+            "status": "implemented",
+            "tester_run": None,
+            "error": (
+                "场景修订后重验仍未收敛：修订 re-entry 先于升级，"
+                "追加一次重验（再失败将升级停车转人工）"
+            ),
+            "_in_inconclusive_reverify": True,
+        },
+    )
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"'{spec_name}' 场景修订 re-entry 先于升级：消费待重验旗标，"
+        f"追加一次重验",
+    )
+    pipeline._context.enqueue(spec_name, "verifier")
+    return True
 from core.pm_engine.verification.verdict_evidence import (
     _clear_requeue_manifest,
     _clear_resynthesis_directive,
@@ -323,6 +370,9 @@ class VerificationPipeline:
             _handle_verdict_env_exemption_inconclusive
         ),
         "_handle_env_exemption_handshake": _handle_env_exemption_handshake,
+        # evo-fix-env-exemption-gate-conflict-… 2.2：场景修订 re-entry 先于
+        # 升级（升级停车入口消费待重验旗标）
+        "_scenario_revision_reentry": _scenario_revision_reentry,
         "_probe_dist_freshness": _probe_dist_freshness,
         "_dist_probe_block_report": _dist_probe_block_report,
         "_update_warning_streaks": _update_warning_streaks,
@@ -1335,6 +1385,13 @@ class VerificationPipeline:
                 # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
                 # 恢复/fix 链等中间转换不清零。
                 ENV_BLOCK_ROUNDS_FIELD: 0,
+                # evo-fix-env-exemption-gate-conflict-… 2.2：豁免生命周期随
+                # verified 落定收口——豁免只在被验周期内生效（场景级豁免若跨
+                # 周期残留，会把后续无关 env 失败在 TTL 窗口内一并洗白）；
+                # 修订待重验旗标同点清除（修订后场景已收敛，不再留给下一
+                # episode 的升级入口消费）。
+                ENV_EXEMPTIONS_FIELD: None,
+                SCENARIO_REVISION_PENDING_FIELD: False,
                 # minor-defect-fastlane：verified 收口同步清零 fastlane 连败计数
                 # （code-review item efbdab0801f3）。streak 此前仅在 fastlane
                 # 收敛点清零（fastlane.py：transition 与 _apply_verified 全部
