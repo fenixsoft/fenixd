@@ -605,6 +605,14 @@ def _render_assertion_exempt_section(report) -> list:
         return []
 
     rows = exempted_assertions(report)
+    # 场景 id → 同窗并行上下文在位性（evo-add-verify-scenario-resource-mutex
+    # 2.2）：豁免条目缺该上下文 → 归类列落「证据不全」标记。历史报告（字段
+    # 上线前）全部条目都会带标记——旧豁免确无并行证据，如实呈现而非粉饰。
+    ctx_missing: dict[str, bool] = {}
+    for sc in scenarios:
+        if isinstance(sc, dict):
+            sid = str(sc.get("scenario_id") or sc.get("id") or "-")
+            ctx_missing[sid] = not _has_parallel_context(sc)
     lines = ["", "## 断言级豁免清单", ""]
     lines.append(
         "以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核"
@@ -623,12 +631,32 @@ def _render_assertion_exempt_section(report) -> list:
         reason = _md_cell(r["reason"])
         scenario_id = _md_cell(r["scenario_id"])
         classification = _md_cell(r["classification"])
+        if ctx_missing.get(str(r["scenario_id"]), True):
+            classification += "（证据不全）"
         lines.append(
             f"| {scenario_id} | {assertion} | {classification} "
             f"| {reason} | {evidence} |"
         )
     lines.append("")
     return lines
+
+
+def _has_parallel_context(sc) -> bool:
+    """场景结果是否附引擎侧同窗并行上下文（evo-add-verify-scenario-resource-mutex 2.2）。
+
+    引擎对每个执行的场景附 ``parallel_context``（batch/peers/observed_parallel）；
+    字段上线前的历史报告、以及被依赖失败传播跳过的场景（未执行、无同窗概念）
+    均缺该字段——豁免条目引用场景时据此落「证据不全」标记。
+    """
+    if not isinstance(sc, dict):
+        return False
+    ctx = sc.get("parallel_context")
+    if not isinstance(ctx, dict):
+        return False
+    return (
+        isinstance(ctx.get("peers"), list)
+        and type(ctx.get("observed_parallel")) is int
+    )
 
 
 def _render_scenarios_table(report) -> list:
@@ -648,6 +676,11 @@ def _render_scenarios_table(report) -> list:
         if sc.get("status_corrected"):
             status += "（已修正）"
         classification = _md_cell(sc.get("classification") or "-")
+        # 豁免条目（flaky/env 分类）缺同窗并行上下文 → 落「证据不全」标记
+        # （evo-add-verify-scenario-resource-mutex 2.2 确定性实现路径：提示词
+        # 层要求豁免附并行清单，报告合成层对缺证据者可复核标记）
+        if classification in ("flaky", "env") and not _has_parallel_context(sc):
+            classification += "（证据不全）"
         lines.append(
             f"| {sid} | {desc} | {status} | {_failed_assertion_count(sc)} | {classification} |"
         )

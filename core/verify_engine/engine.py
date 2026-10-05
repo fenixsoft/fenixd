@@ -383,6 +383,10 @@ class VerifyEngine:
         batch_num = 0
         done_count = 0  # 逐场景完成计数（fix-verify-progress-granularity）
         total = len(scenarios)
+        # 资源组互斥（evo-add-verify-scenario-resource-mutex 1.2）：scenario_id
+        # → 同组在飞互斥顺延批次数。等待发生在 Runner.execute 启动之前（defer
+        # 只挪批），步骤级等待计时均从 execute 内部起步——等待不计入场景超时。
+        mutex_waits: dict[str, int] = {}
 
         while remaining:
             # 找出所有依赖已满足的场景
@@ -437,7 +441,33 @@ class VerifyEngine:
                     }
                 )
 
+            # ── 资源组在飞互斥（evo-add-verify-scenario-resource-mutex 1.2）──
+            # 同 resource_group 场景在飞互斥：本批已接受某组场景时，同组其余
+            # ready 场景顺延到下一批。defer 只挪批不改判失败归因——场景留在
+            # remaining，下轮就绪判定自然重入。组名空 = 不受限，无组场景直接
+            # 接受（扫描零改写、零开销）。批首场景的组必不在空集内 → 每批至少
+            # 接受一个场景，无活锁。
             if runnable:
+                inflight_groups: set[str] = set()
+                accepted: list[TestScenario] = []
+                deferred_now: list[TestScenario] = []
+                for s in runnable:
+                    grp = s.resource_group
+                    if grp and grp in inflight_groups:
+                        mutex_waits[s.id] = mutex_waits.get(s.id, 0) + 1
+                        deferred_now.append(s)
+                    else:
+                        if grp:
+                            inflight_groups.add(grp)
+                        accepted.append(s)
+                if deferred_now:
+                    self.logger.info(
+                        "verify_engine",
+                        f"⏳ 资源组互斥: {len(deferred_now)} 个同组场景顺延下一批"
+                        f"（{', '.join(s.id for s in deferred_now)}；"
+                        f"在飞组: {', '.join(sorted(inflight_groups))}）",
+                    )
+                runnable = accepted
                 ready = runnable
             elif dep_skipped:
                 # 本批全部为依赖失败跳过（进度与 completed_ids 均已推进），
@@ -450,9 +480,13 @@ class VerifyEngine:
                 ready = remaining
 
             batch_num += 1
+            # 实测并行度 = min(并行槽, 本批接受数)：批内 gather 逐个即取槽，
+            # 同批在飞上界即此值（互斥 defer 发生在批次划分期，不产生批内等待）。
+            batch_observed = min(self.max_parallel, len(ready))
             self.logger.info(
                 "verify_engine",
-                f"📦 批次{batch_num}: 并行执行 {len(ready)} 个场景",
+                f"📦 批次{batch_num}: 并行执行 {len(ready)} 个场景"
+                f"（实测并行度={batch_observed}）",
             )
 
             async def run_one(scenario: TestScenario) -> dict:
@@ -481,25 +515,38 @@ class VerifyEngine:
                 if isinstance(r, BaseException):  # 含 CancelledError，防异常对象漏进结果集
                     failed_ids.add(sid)
                     self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
-                    results.append(
-                        {
-                            "scenario_id": sid,
-                            "description": ready[i].description,
-                            "kind": ready[i].kind,
-                            "status": "error",
-                            "error": repr(r),
-                            "step_results": [],
-                            "assertion_results": [],
-                            "visual_results": [],
-                            "screenshots": [],
-                        }
-                    )
+                    r = {
+                        "scenario_id": sid,
+                        "description": ready[i].description,
+                        "kind": ready[i].kind,
+                        "status": "error",
+                        "error": repr(r),
+                        "step_results": [],
+                        "assertion_results": [],
+                        "visual_results": [],
+                        "screenshots": [],
+                    }
                 else:
                     # 依赖失败传播判定源：终态 fail/error 的 id 记入 failed_ids
                     # （warning 属非失败档，不阻断下游，与验收门语义一致）
                     if r.get("status") in TERMINAL_FAILURE_STATUSES:
                         failed_ids.add(sid)
-                    results.append(r)
+                # evo-add-verify-scenario-resource-mutex 1.2/2.2：同窗并行上下文
+                # （batch/peers/observed_parallel，豁免条目复核归因的确定性证据
+                # 源，正常与异常合成路径统一附加）与互斥等待标记（仅被顺延过的
+                # 场景）——全部新键承载，既有结果键不动。
+                grp = ready[i].resource_group
+                if grp:
+                    r["resource_group"] = grp
+                if sid in mutex_waits:
+                    r["mutex_waited"] = True
+                    r["mutex_wait_batches"] = mutex_waits[sid]
+                r["parallel_context"] = {
+                    "batch": batch_num,
+                    "peers": [o.id for o in ready if o.id != sid],
+                    "observed_parallel": batch_observed,
+                }
+                results.append(r)
 
             # 批次收尾不再重复写进度：批次内每个场景的逐场景写点已覆盖
 
@@ -690,7 +737,7 @@ class VerifyEngine:
         # 并以独立 blocked_env 字段供放行门禁换算（旧 report 无该字段读为 0）。
         warnings += blocked_env
 
-        return {
+        report = {
             "spec": self.spec_name,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             # add-verify-parallel-backoff / design D3：所有轮都写有效并行度
@@ -708,6 +755,27 @@ class VerifyEngine:
             },
             "scenarios": scenario_results,
         }
+        # evo-add-verify-scenario-resource-mutex 1.2：互斥等待标记与实测并发
+        # 用新键 resource_mutex 承载（deferred_total=全轮同组顺延累计批次数、
+        # observed_parallel=全轮最大批实测并发），既有顶层 effective_parallel
+        # 语义不变。仅当本轮存在资源组标记场景时写入：未标记轮 report 顶层
+        # 零新增键，与既有行为完全一致。
+        if any(r.get("resource_group") for r in scenario_results):
+            observed = [
+                r["parallel_context"]["observed_parallel"]
+                for r in scenario_results
+                if isinstance(r.get("parallel_context"), dict)
+                and type(r["parallel_context"].get("observed_parallel")) is int
+            ]
+            report["resource_mutex"] = {
+                "deferred_total": sum(
+                    int(r.get("mutex_wait_batches", 0)) for r in scenario_results
+                ),
+                "observed_parallel": (
+                    max(observed) if observed else getattr(self, "max_parallel", 5)
+                ),
+            }
+        return report
 
     def _write_progress(self, done: int, total: int, current: str):
         """写入实时进度文件，供仪表盘读取。
