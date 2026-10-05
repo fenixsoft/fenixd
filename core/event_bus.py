@@ -1017,6 +1017,15 @@ class EventBus:
         for hook_spec, hook_old, hook_new, hook_entry in hook_events:
             self._dispatch_hook(hook_spec, hook_old, hook_new, hook_entry)
 
+        # [fenix-ignore:c1490e8e6250] watch/全扫两线程锁外派发的跨线程乱序已被消费侧
+        # 既有迁移守卫吸收，过期事件无实害出口：队列层单一落点 _queue_entry_ready
+        # （dispatch/queue.py:579-597）按 STATE 当前 status 过滤车道（implementer/
+        # fast-track 限 ready/implementing、verifier 限 implemented/testing），判 False
+        # 即条目保留队列待重判、不派发不写 STATE；写入层 transition/transition_gate 受
+        # VALID_TRANSITIONS（state_machine.py:181-200，:2373-2378 原子校验）拒绝逆序
+        # 迁移；hook 侧（hook_engine.py:580-604）每 hook 一线程异步执行 + 按 hook_id
+        # 在飞去重，本就不承诺全序。且 _recover_one（:278 起）每轮 full_scan 本就按盘上
+        # 当前 status 例行重放同类事件，消费侧守卫正是为吸收多通道重复/过期事件而设。
         # Dispatch events to PM Engine
         for event_kind, spec_name, spec_entry in events:
             self.logger.info(
