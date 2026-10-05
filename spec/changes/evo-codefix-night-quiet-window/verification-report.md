@@ -34,3 +34,10 @@
 | nqw-default-config-window-active | 缺省窗生效：config 不含 night_quiet_window 键时走代码内缺省 "04:15-04:45"——探针按本地时刻自判期望分支（04:15-04:45 内被拦且 reason=night_quiet_window；窗外正常放行），两分支均确定性断言「不配置也有窗」（spec R2 缺省常量；锚点 core/code_fix.py:2646 同款缺省策略） | pass | 0/2 | - |
 | nqw-three-path-convergence-checkpoint | 三路触发单点收敛（spec R5 不变量）：同一窗内配置下，批收尾自驱动 _resubmit（:3369）、持有者终态回调 _make_holder_retry_callback（:3643）、event_bus full-scan 末尾兜底（core/event_bus.py:274，stub state_machine 直达兜底点）三条路径均真实驱动 checkpoint() 被窗拦并留武装告警；另以 inspect 源码锚固定三处调用点均汇入 checkpoint 单点 | pass | 0/6 | - |
 | nqw-adjacent-lanes-regression-green | 相邻车道回归：既有冷却车道测试（tests/test_codefix_conn_error_cooldown.py，37 例）与 api_timeout salvage 测试（tests/test_code_fix_api_timeout_salvage.py）全绿——固定非目标「不改 api_timeout 终局判定与 salvage、冷却语义不被静默窗分支破坏」（proposal 非目标；锚点 core/code_fix.py:2935-3010 同级新增不得扰动既有守卫） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
