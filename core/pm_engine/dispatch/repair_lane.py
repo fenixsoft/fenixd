@@ -79,6 +79,38 @@ def _merge_breaker_threshold(pm) -> int:
     return max(threshold, 1)
 
 
+def _max_retries(pm) -> int:
+    """``agents.max_retries`` 读取与归一（三条车道单一落点）。
+
+    归一规则（code-review item 8b26fd7980ce）：同一配置键的归一曾在三条
+    车道分裂——queue.py 两处读取点 int 归一后追加 ``max(..., 1)`` 下限，
+    本文件 ``_fallback_after_repair`` 与 fast_track.py 两处读取点均无下限，
+    配置写 0 时 full 车道按 1 生效（仍允许一轮重试）、fast-track/repair
+    按 0 生效（首次失败即冻结转人工），同键跨车道语义互相矛盾。收敛于此：
+
+    - None 判空回缺省 3，而非 ``or`` 兜底（合法配置 0 不被吞成缺省，
+      code-review item c54ffbef69c5）；
+    - 解析异常回退缺省 3（字符串/null 配置裸用于 ``retries >= max_r``
+      比较抛 TypeError，code-review item 74317ab4a77a；``except Exception``
+      宽口径沿用原 queue.py 通用失败分支与本文件 fallback 的防御姿态——
+      本读取器的消费点全在失败收尾链，异常会打断 update_spec/冻结收尾）；
+    - **下限策略：无下限**——0 的语义以 fast_track.py 既有注释为准
+      （0=不自动重试为合法语义，首次失败即冻结转人工），``max(..., 1)``
+      会违背之。归一规则调整只改此处，三条车道共用（queue/fast_track
+      经模块顶部导入本读取器，与 ``_merge_breaker_threshold`` 同型）。
+    """
+    try:
+        cfg_max_r = pm._get_config("agents.max_retries", 3)
+    except Exception:  # noqa: BLE001 —— 失败收尾链防御，回退缺省不抛穿
+        cfg_max_r = None
+    if cfg_max_r is None:
+        return 3
+    try:
+        return int(cfg_max_r)
+    except Exception:  # noqa: BLE001 —— 同上
+        return 3
+
+
 class PRepairLaneMixin:
     """P merge-back 修复车道（design D1 表 B P 组）。"""
 
@@ -595,11 +627,26 @@ class PRepairLaneMixin:
                         "repair",
                         branch,
                     )
-                    self._pm.state_machine.transition(
+                    # transition 返回值校验（code-review item a5e1c9319ad4，
+                    # 对齐 fast_track.py _reconcile_and_merge 的 40292d21fd97
+                    # 同型收口）：上方读态/fallback 与 implemented 转移之间存在
+                    # 窗口，并发写者可能已把 spec 推进/冻结（非法转移返回
+                    # False）。失败时保留计数与 error 原样、不继续清字段并入队
+                    # verifier——否则清账照常落盘（冻结 error 内嵌「原状态 X」
+                    # 供 parse_orig_status 解冻还原的锚点被 None 覆盖），且排入
+                    # 一条永不满足派发前置的 verifier 条目。
+                    if not self._pm.state_machine.transition(
                         spec_name, "implemented",
                         trigger_run_id=getattr(r, "run_id", None) or None,
                         agent_type="repair", channel="auto",
-                    )
+                    ):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"repair re-merge 成功但 transition 到 implemented "
+                            f"失败（并发写者已推进/冻结），保留计数与 error 现场"
+                            f"待收口重试/审计: {spec_name}",
+                        )
+                        return
                     self._pm.state_machine.update_spec(
                         spec_name,
                         {
@@ -919,10 +966,24 @@ class PRepairLaneMixin:
         breaker_threshold = _merge_breaker_threshold(self._pm)
         if streak >= breaker_threshold:
             # fix-observability-gaps 2.2：repair re-merge 熔断 blocked（自动降级路径）
-            self._pm.state_machine.transition(
+            # transition 返回值校验（code-review item a5e1c9319ad4，对齐
+            # fast_track.py _reconcile_and_merge 的 40292d21fd97 同型收口；
+            # 三车道 merge-back 失败处置家族 MUST 同步）：并发冻结窗口内
+            # transition 失败（目标态已被并发写者推进或 freeze_for_human 冻结）
+            # 时保留现场早退——否则下方清账照常落盘，冻结 error（内嵌
+            # 「原状态 X」供 parse_orig_status 解冻还原，state_machine 契约）
+            # 被覆盖后人工解冻无法还原原状态，_retry_count 清零抹掉现场计数。
+            if not self._pm.state_machine.transition(
                 spec_name, "blocked",
                 trigger_run_id=None, agent_type="repair", channel="auto",
-            )
+            ):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair re-merge 熔断但 transition 到 blocked 失败（并发"
+                    f"写者已推进/冻结），保留计数与 error 现场待收口重试/审计: "
+                    f"{spec_name}",
+                )
+                return False
             # streak 已由 bump_counters 原子递增落盘时不再并写该字段
             # （防并发写回互相覆盖丢增量），仅指纹切换重置路径补绝对写。
             breaker_updates: dict = {
@@ -1018,17 +1079,11 @@ class PRepairLaneMixin:
             )
         else:
             full_error = base_error
-        # 配置非法值防御（与 adjudication.py 的 agents.max_retries 读取同款）：
-        # 非数字字符串裸比较在下方 retries >= max_r 抛 TypeError，本方法是
+        # 配置归一收敛单一读取器（code-review item 8b26fd7980ce）：本方法是
         # repair 链三条失败路径的共同收尾（且可能运行在 worker 的 except 兜底
-        # 内），异常会打断 update_spec/blocked 收尾——回退默认值 3。
-        # None 判空而非 or 兜底（code-review item 4b339ba921f2）：合法配置 0
-        # （不自动重试）不被 or 吞成缺省 3。
-        try:
-            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-        except (TypeError, ValueError):
-            max_r = 3
+        # 内），解析异常会打断 update_spec/blocked 收尾——None 判空/非法值回退
+        # 缺省 3、0=不自动重试（无下限）的统一口径见模块级 _max_retries。
+        max_r = _max_retries(self._pm)
         # 收尾字段（不含 error/status）：冻结转人工路径经 freeze_for_human 的
         # extra_updates 并入同一原子写；ready 回退路径再并上 status/error 写。
         updates: dict = {

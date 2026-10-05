@@ -1823,16 +1823,23 @@ class VAdjudicationMixin:
         - 提交失败仅 WARNING：内容仍在工作区，派发前 ``ensure_spec_committed``
           兜底（与既有 ``_commit_softened_declaration`` 非阻塞语义一致）。
         """
-        branch = getattr(result, "branch", None)
-        if not branch:
-            return
         rel = f"spec/changes/{spec_name}/tasks.md"
         # 写回层判定（code-review item b306482f0d0e）：生效声明命中主树层时
         # 改写内容就在主树工作区，同层提交（commit 根 = project_root）。
+        # 主树层提交不依赖分支上下文，MUST 先于下方 `if not branch` 早退
+        # （code-review item 0455fd1dd3e0）：生效声明命中主树层（resolved
+        # source=main）而 result 无分支上下文时，无分支早退会静默跳过已
+        # 落盘改写的主树层提交——改写停留为无留痕的工作区脏改动，审计与
+        # 日志层面无法区分「已提交/提交失败/根本未尝试提交」，与同文件
+        # main 层既有口径（_apply_declaration_correction 543-556：提交失败
+        # 仅 WARNING、内容已生效、ensure_spec_committed 兜底）不一致。
         if (resolved or {}).get("source") == "main":
             self._commit_softened_declaration(
                 spec_name, element, repo_root=self._pm.project_root
             )
+            return
+        branch = getattr(result, "branch", None)
+        if not branch:
             return
         worktree_path = self._find_worktree_for(result)
         tmp_wt = None
