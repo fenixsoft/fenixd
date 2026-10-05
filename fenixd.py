@@ -3898,6 +3898,9 @@ class FenixDaemon:
         "dispatch_error": "自动修复投递失败，本批未投递（详见 daemon 日志）",
         "dispatch_exception": "自动修复消费异常，本批未投递（详见 daemon 日志）",
         "disabled": "自动修复开关处于关闭状态",
+        # evo-codefix-night-quiet-window 1.3：窗内手动触发回链文案（守卫对
+        # override_enabled=True 同样生效，窗末自动恢复投递）
+        "night_quiet_window": "当前处于每日夜间静默窗（默认 04:15-04:45），窗内暂缓投递自动修复，窗末自动恢复",
         # item 6cc24b51f6b9：停机积压旧信号（created 超时效阈值）仅消费不执行
         "stale_created": "触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需修复请重新发起",
     }

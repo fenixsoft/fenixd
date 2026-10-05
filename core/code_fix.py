@@ -157,6 +157,14 @@ FIX_PROGRESS_DEFAULT = {
     # 冷却起点（触发时刻 epoch 秒）：解除告警 evidence 的「实际推迟时长」度量
     # 基准（=首个通过守卫的 checkpoint 时刻 − 本字段）；随冷却态一并清除。
     "switch_cooldown_from": None,
+    # 夜间静默窗窗次标识（evo-codefix-night-quiet-window 1.2）：窗次含日期
+    # （形如 "2026-10-06"），同窗次武装/解除各至多一次、跨窗次自动重新武装；
+    # 残留标识不拦截投递（checkpoint 守卫惰性清理，沿冷却残留态清理先例）。
+    # 持久化（合并写）跨重启仍幂等。null=当前无窗次标识。
+    "night_quiet_armed_date": None,
+    # 武装时窗区间配置原文快照：解除告警 evidence 引用武装时的区间，配置中途
+    # 变更/关闭不使解除记录失真；随窗次标识一并清除。
+    "night_quiet_armed_text": None,
 }
 
 # phase 合法值（spec code-fix-progress）
@@ -2295,7 +2303,71 @@ def _epoch_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+# ── 每日夜间静默窗（evo-codefix-night-quiet-window 1.1）─────────────────────
+
+# 缺省窗区间（本地时刻）：死亡集中于 04:31-04:34，断窗本体 04:30:01-04:31:23
+# 加 DNS 余波；窗起点须早于批链典型批时长对应的最早在飞启动时刻。不在模板
+# 强配（与冷却 300 秒缺省同策略），空串/off 显式禁用。
+NIGHT_QUIET_WINDOW_DEFAULT = "04:15-04:45"
+
+_NIGHT_QUIET_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def _night_quiet_window_disabled(raw) -> bool:
+    """空串/off（大小写不敏感）＝显式禁用静默窗（合法值，非法告警不覆盖它）。"""
+    text = str(raw if raw is not None else "").strip().lower()
+    return text in ("", "off")
+
+
+def _parse_night_quiet_hhmm(fragment: str):
+    """"HH:MM" → 当日分钟数；非法返回 None（小时<24、分钟<60）。"""
+    m = _NIGHT_QUIET_HHMM_RE.match(fragment.strip())
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _parse_night_quiet_window(raw):
+    """解析 "HH:MM-HH:MM" → ``(start_min, end_min, text)``；禁用/非法返回 None。
+
+    首版只支持单日内区间（spec R1）：end<=start（含相等）逆序视为非法——本
+    场景不要求跨午夜；小时/分钟越界同样非法。本函数纯解析不告警，非法值的
+    WARNING 由调用方（``_night_quiet_window``）按「一次」纪律补。
+    """
+    text = str(raw if raw is not None else "").strip()
+    if _night_quiet_window_disabled(text):
+        return None
+    parts = text.split("-")
+    if len(parts) != 2:
+        return None
+    start = _parse_night_quiet_hhmm(parts[0])
+    end = _parse_night_quiet_hhmm(parts[1])
+    if start is None or end is None or end <= start:
+        return None
+    return (start, end, text)
+
+
+def _local_window_end_epoch(end_min: int) -> float:
+    """今日本地窗末时刻 → epoch 秒（静默窗「下一可投递时刻」比较/展示基准）。
+
+    以 ``time.localtime`` 当前本地日期 + 窗末时分构造（与守卫判定同源，不
+    引入第二个时钟面；DST 交由 mktime 按墙钟自行判定）。
+    """
+    lt = time.localtime()
+    return time.mktime((
+        lt.tm_year, lt.tm_mon, lt.tm_mday,
+        end_min // 60, end_min % 60, 0,
+        lt.tm_wday, lt.tm_yday, -1,
+    ))
+
+
 CODE_FIX_COOLDOWN_SIGNAL_TYPE = "code_fix_switch_window_deferred"
+
+# 夜间静默窗告警 signal_type（与冷却告警同 source/kind，独立类型便于过滤）
+CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE = "code_fix_night_quiet_window"
 
 
 def _write_switch_cooldown_alert(
@@ -2367,6 +2439,79 @@ def _write_switch_cooldown_release_alert(
     )
     if rec is None:
         _log_alert_rejected(logger, CODE_FIX_COOLDOWN_SIGNAL_TYPE)
+
+
+def _write_night_quiet_window_alert(
+    project_root, window_text: str, window_date: str, until_ts: float,
+    logger=None,
+) -> None:
+    """夜间静默窗武装告警（evo-codefix-night-quiet-window 1.1）。
+
+    形态对齐 ``_write_switch_cooldown_alert``：经 AdminStore 写 kind=SIGNAL
+    （signal_type=code_fix_night_quiet_window，source=code-fix-lane），
+    evidence 携带窗次（含日期）/窗区间/下一可投递时刻。「按窗次至多一次」
+    的幂等由调用方（checkpoint 守卫读 ``night_quiet_armed_date``）保证，
+    本函数纯写。AdminStore 拒写走 ``_log_alert_rejected`` 留痕。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
+            "spec": None,
+            "severity": "warning",
+            "description": (
+                "code-fix 批投递进入每日夜间静默窗，窗内暂停启动新批"
+                "（本机每日固定上游断窗的防御性投递闸）"
+            ),
+            "evidence": (
+                f"项目名={Path(project_root).name}; 窗次={window_date}; "
+                f"窗区间={window_text}; 下一可投递时刻={_epoch_iso(until_ts)}"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "静默窗窗末自动恢复投递，无需人工介入；如需关闭可将 "
+                "admin.code_review_fix.night_quiet_window 置 off"
+            ),
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE)
+
+
+def _write_night_quiet_window_release_alert(
+    project_root, window_text: str, window_date: str, logger=None,
+) -> None:
+    """静默窗解除告警（形态对齐 ``_write_switch_cooldown_release_alert``）。
+
+    无后台定时器写入口：由窗末/配置关闭后**首个通过守卫的 checkpoint** 补写
+    一条并清窗次标识（惰性清理，标识不拦截投递）；窗末后无后续 checkpoint
+    通过（台账清空空转）则不写解除。evidence 窗区间取武装时快照
+    （``night_quiet_armed_text``），配置中途变更不使解除记录失真。拒写留痕
+    同武装告警。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
+            "spec": None,
+            "severity": "warning",
+            "description": "code-fix 每日夜间静默窗结束，恢复同链下一批投递",
+            "evidence": (
+                f"项目名={Path(project_root).name}; 窗次={window_date}; "
+                f"窗区间={window_text or 'unknown'}"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": "静默窗已结束，同链下一批已恢复投递，无需操作",
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE)
 
 
 def _write_retry_exhausted_alert(
@@ -2581,6 +2726,8 @@ class CodeFixOrchestrator:
         self._executor = executor
         self._lock = threading.Lock()
         self._in_flight = False
+        # 静默窗非法配置「WARNING 一次」的去重记忆（值变更后重新告警）。
+        self._night_quiet_warned_raw = None
 
     # -- 基础 ------------------------------------------------------------
 
@@ -2668,6 +2815,92 @@ class CodeFixOrchestrator:
         if val != val or val < 0 or val == float("inf"):
             return float(PROVIDER_SWITCH_COOLDOWN_SECONDS)
         return val
+
+    def _night_quiet_window(self):
+        """解析每日静默窗配置（evo-codefix-night-quiet-window 1.1）。
+
+        读 ``admin.code_review_fix.night_quiet_window`` 点号键——沿
+        ``_switch_cooldown_seconds`` 既有模式走根形态 ``ConfigLoader.get``
+        （段读取器是白名单形态，未登记的新键会被剥掉，直接问段恒取缺省），
+        缺省 ``NIGHT_QUIET_WINDOW_DEFAULT``。空串/off（大小写不敏感）＝完全
+        禁用；格式非法（缺分隔符/非 HH:MM/小时分钟越界/end<=start 逆序——
+        本场景不要求跨午夜）按无窗处理并 WARNING 一次（防配置错误静默吞掉；
+        同实例对同一非法值只告警一次，值变更后重新告警）。
+
+        返回 ``(start_min, end_min, text)``；禁用/非法返回 None。
+        """
+        try:
+            raw = ConfigLoader.get(
+                self._get_root_config(),
+                "admin.code_review_fix.night_quiet_window",
+                NIGHT_QUIET_WINDOW_DEFAULT,
+            )
+        except (TypeError, ValueError):
+            return None
+        parsed = _parse_night_quiet_window(raw)
+        if parsed is None and not _night_quiet_window_disabled(raw):
+            if self._night_quiet_warned_raw != str(raw):
+                self._night_quiet_warned_raw = str(raw)
+                self._log(
+                    "warning",
+                    "code-fix 夜间静默窗配置非法（"
+                    f"{str(raw)!r}，须形如 HH:MM-HH:MM 且 end>start，"
+                    "off/空串关闭），按无窗处理",
+                )
+        return parsed
+
+    def _night_quiet_state(self):
+        """静默窗「当前本地时刻」状态快照；不在窗内返回 None。
+
+        判定显式走本地时区 ``time.localtime``（与断窗时刻对齐，spec R6，
+        MUST NOT 用 UTC）。命中返回 ``{text, date, end_ts}``：text 为配置
+        区间原文（告警 evidence 用），date 为窗次标识（本地日期，含日期故
+        跨窗次自动重新武装），end_ts 为今日本地窗末 epoch 秒＝下一可投递
+        时刻（窗末整点起放行：start<=cur<end 左闭右开，边界见测试四点）。
+        """
+        window = self._night_quiet_window()
+        if window is None:
+            return None
+        start_min, end_min, text = window
+        lt = time.localtime()
+        cur = lt.tm_hour * 60 + lt.tm_min
+        if not (start_min <= cur < end_min):
+            return None
+        return {
+            "text": text,
+            "date": time.strftime("%Y-%m-%d", lt),
+            "end_ts": _local_window_end_epoch(end_min),
+        }
+
+    def _arm_night_quiet_window(self, quiet_window, prev_armed_date) -> None:
+        """窗次武装（evo-codefix-night-quiet-window 1.2）：同窗次幂等。
+
+        窗次标识含日期（``night_quiet_armed_date``，形如 "2026-10-06"）连同
+        窗区间快照（``night_quiet_armed_text``）持久化于 fix-progress.json
+        （合并写，进程重启后仍幂等）；同窗次武装至多写一次告警，跨窗次自动
+        重新武装，残留标识不拦截投递（惰性清理见 checkpoint 守卫块）。告警/
+        写盘异常均不劫持拦截返回（对齐冷却守卫同款纪律）。
+        """
+        if prev_armed_date == quiet_window["date"]:
+            return
+        try:
+            _write_night_quiet_window_alert(
+                self.project_root,
+                window_text=quiet_window["text"],
+                window_date=quiet_window["date"],
+                until_ts=quiet_window["end_ts"],
+                logger=self._logger,
+            )
+        except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+            self._log("warning", f"code-fix 静默窗武装告警写盘异常: {e}")
+        try:
+            write_progress(
+                self.project_root,
+                night_quiet_armed_date=quiet_window["date"],
+                night_quiet_armed_text=quiet_window["text"],
+            )
+        except Exception as e:  # noqa: BLE001 — 武装态写盘失败下轮重试
+            self._log("warning", f"code-fix 静默窗武装态写盘异常: {e}")
 
     def _arm_switch_cooldown(self, result) -> None:
         """连接类失败收尾置同链冷却态（2.1/2.3）：持久化冷却字段 + 触发告警。
@@ -2964,28 +3197,54 @@ class CodeFixOrchestrator:
                 except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
                     self._log("warning", f"code-fix 冷却残留态清除写盘异常: {e}")
                 cooldown_until = 0.0
-            if cooldown_until > 0:
-                now_ts = time.time()
-                if now_ts < cooldown_until:
-                    # 冷却期内：拒投递，进度只刷提示文案（running/phase 链上
-                    # 状态不动——链仍 live，自驱动/兜底节拍到期后自然续跑）。
+            now_ts = time.time()
+            cooldown_active = cooldown_until > 0 and now_ts < cooldown_until
+
+            # 夜间静默窗守卫（evo-codefix-night-quiet-window 1.1/1.2）：与冷却
+            # 守卫同闸在本唯一共用投递入口——四路激活路径（批收尾自驱动
+            # _resubmit / full-scan 兜底 event_bus / 持有者终态回调 / 审查收尾
+            # 新条目激活 maintenance_runs）全部汇入 checkpoint()，单点判定即
+            # 全覆盖，分散判定反而引入不一致（该不变量由
+            # tests/test_code_fix_night_quiet_window.py 源码契约测试固定）；
+            # override_enabled=True 的手动触发同样生效（手动授权仅越过
+            # enabled 总开关，沿冷却现状）。判定显式走本地时区 time.localtime
+            # （与断窗时刻对齐，MUST NOT 用 UTC）。窗内返回 triggered=False、
+            # reason=night_quiet_window；与冷却同时命中取更晚可投递时刻
+            # （reason 取更晚者对应守卫），二者独立武装/解除、互不复位。
+            quiet_window = self._night_quiet_state()
+            quiet_armed_date = prev_chain.get("night_quiet_armed_date")
+            if not isinstance(quiet_armed_date, str):
+                quiet_armed_date = ""
+            if quiet_window is None and quiet_armed_date:
+                # 窗末/配置关闭后的残留窗次标识：惰性清理（沿上方冷却残留态
+                # 清理先例）——补写解除告警（一次）并清标识；标识本身不拦截
+                # 投递，清理失败只留痕（下一个 checkpoint 重试清理）。
+                try:
+                    _write_night_quiet_window_release_alert(
+                        root,
+                        window_text=str(
+                            prev_chain.get("night_quiet_armed_text") or ""
+                        ),
+                        window_date=quiet_armed_date,
+                        logger=self._logger,
+                    )
+                except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+                    self._log("warning", f"code-fix 静默窗解除告警写盘异常: {e}")
+                try:
                     write_progress(
                         root,
-                        reason="switch_cooldown",
-                        current=(
-                            "上游连接类失败冷却中，同链下一批暂缓派发至 "
-                            f"{_epoch_iso(cooldown_until)}"
-                        ),
+                        night_quiet_armed_date=None,
+                        night_quiet_armed_text=None,
+                        current="夜间静默窗已结束，恢复同链下一批投递",
+                        reason="",
                     )
-                    self._log(
-                        "info",
-                        "code-fix 冷却守卫拦截投递（"
-                        f"至 {_epoch_iso(cooldown_until)}）",
-                    )
-                    return {"triggered": False, "reason": "switch_cooldown"}
+                except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
+                    self._log("warning", f"code-fix 静默窗残留态清除写盘异常: {e}")
+            if cooldown_until > 0 and not cooldown_active:
                 # 到期：本 checkpoint 即「冷却到期后首个通过守卫的 checkpoint」
                 # ——补写解除告警（evidence 携带实际推迟时长）并清冷却态，
-                # 保证只发一次；告警/清态异常不阻断后续投递（同款纪律）。
+                # 保证只发一次；静默窗随后接管拦截时本解除照写（二者独立
+                # 武装/解除，互不复位）。告警/清态异常不阻断后续投递（同款纪律）。
                 try:
                     cooldown_from = float(
                         prev_chain.get("switch_cooldown_from")
@@ -3012,6 +3271,44 @@ class CodeFixOrchestrator:
                     )
                 except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
                     self._log("warning", f"code-fix 冷却态清除写盘异常: {e}")
+
+            if cooldown_active or quiet_window is not None:
+                # 二守卫同时命中：可投递时刻取更晚者，reason 取更晚者对应守卫
+                # （时刻相等归冷却；任意一方单命中即取该方）。
+                deliver_ts = max(
+                    (cooldown_until if cooldown_active else 0.0),
+                    (quiet_window["end_ts"] if quiet_window is not None else 0.0),
+                )
+                if cooldown_active and deliver_ts == cooldown_until:
+                    reason = "switch_cooldown"
+                else:
+                    reason = "night_quiet_window"
+                if quiet_window is not None:
+                    # 窗次武装（同窗次幂等）：首次进入本窗次才写武装告警与
+                    # 窗次标识；跨窗次自动重新武装，残留标识不拦截投递。
+                    self._arm_night_quiet_window(quiet_window, quiet_armed_date)
+                if reason == "switch_cooldown":
+                    current = (
+                        "上游连接类失败冷却中，同链下一批暂缓派发至 "
+                        f"{_epoch_iso(cooldown_until)}"
+                    )
+                    guard_label = "冷却"
+                else:
+                    current = (
+                        "每日夜间静默窗内，暂停启动新批至 "
+                        f"{_epoch_iso(deliver_ts)}"
+                        f"（窗区间 {quiet_window['text']}）"
+                    )
+                    guard_label = "静默窗"
+                # 拦截：进度只刷提示文案（running/phase 链上状态不动——链仍
+                # live，自驱动/兜底节拍到可投递时刻后自然续跑）。
+                write_progress(root, reason=reason, current=current)
+                self._log(
+                    "info",
+                    f"code-fix {guard_label}守卫拦截投递"
+                    f"（至 {_epoch_iso(deliver_ts)}）",
+                )
+                return {"triggered": False, "reason": reason}
 
             # 进度链身份（D8）：同链沿用 activation_id，新链重算。判定
             # 前移到选批之前（selfheal）：新链启动先释放预算内失败档案并重置

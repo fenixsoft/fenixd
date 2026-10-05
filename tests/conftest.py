@@ -90,6 +90,29 @@ def _zero_post_ready_settle():
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _night_quiet_window_default_off():
+    """测试进程把 code-fix 夜间静默窗缺省值压成 off（evo-codefix-night-quiet-window）。
+
+    生产缺省 ``NIGHT_QUIET_WINDOW_DEFAULT="04:15-04:45"`` 是本地墙钟敏感守卫：
+    套件按缺省跑时，每日 04:15-04:45 窗内执行的全量回归会让所有经 checkpoint()
+    期望 dispatched 的存量用例被静默窗拦截（reason=night_quiet_window）而假
+    失败——套件执行时刻不可控，不能引入按时刻翻转的 flakes。故会话级把缺省压
+    成 off（与 _zero_post_ready_settle 同款「模块常量会话级覆盖」范式）；用例
+    显式在 config 里配 night_quiet_window 的不受影响。静默窗自身行为由
+    tests/test_code_fix_night_quiet_window.py 在用例内显式配置/注入时钟覆盖，
+    缺省值本身由该文件 patch 常量断言。
+    """
+    from core import code_fix as _cf
+
+    saved = _cf.NIGHT_QUIET_WINDOW_DEFAULT
+    _cf.NIGHT_QUIET_WINDOW_DEFAULT = "off"
+    try:
+        yield
+    finally:
+        _cf.NIGHT_QUIET_WINDOW_DEFAULT = saved
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolated_basetemp_cleanup(request):
     """会话级：把 tmp_path 根隔离到项目 .fenix/，并在会话结束自清（清理方案 A+B）。
 
