@@ -848,6 +848,9 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     - pid 已消亡 → 仅摘登记（自然消亡/自灭，无进程可收割）；
     - pid 存活但 starttime 快照失配 → pid 已被复用，仅摘登记**不杀**（误杀
       无关进程的代价远高于漏清，同 serving_registry 身份核对纪律）；
+    - pid 存活但快照缺失/非法（如 register 时 proc 刚 spawn 即死，
+      proc_start_ticks 返回 None）→ 身份无法核实，仅摘登记**不杀**（同上
+      纪律，防 pid 复用后误杀无关进程）；
     - pid 存活且身份匹配 → 按登记 wt_path 判归属引用：worktree 已消失、或
       无存活引用进程 → 无主，收割进程并摘登记；有存活引用进程 → 在服 run
       跨重启存活，保留进程与登记（归因标记形态另受周期清扫 argv 判据保护，
@@ -872,11 +875,19 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
             if not _pid_alive(pid):
                 continue  # 已消亡：摘登记
             snapshot = entry.get("start_ticks")
-            if (
-                isinstance(snapshot, int)
-                and snapshot > 0
-                and proc_start_ticks(pid) != snapshot
-            ):
+            if not (isinstance(snapshot, int) and snapshot > 0):
+                # 快照缺失/非法：身份无法核实（eecd5c191ad7），与 pid 复用同
+                # 语义——摘登记不杀，防 pid 被复用后误杀无关进程。
+                if logger:
+                    logger.warning(
+                        "v2_dev_server",
+                        f"reconcile skip pid={pid} (wt={wt_text or '-'}) "
+                        f"start_ticks snapshot missing — identity "
+                        f"unverifiable; removed registry entry without "
+                        f"killing",
+                    )
+                continue  # 身份无法核实：摘登记不杀
+            if proc_start_ticks(pid) != snapshot:
                 if logger:
                     logger.warning(
                         "v2_dev_server",
