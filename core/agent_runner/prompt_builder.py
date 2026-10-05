@@ -2249,6 +2249,33 @@ class PromptBuilder:
             lines.append(
                 self._render_schema_type_line(action, {action: _specs}, "action", kind=kind)
             )
+        lines += [
+            "",
+            "### 场景顶层可选字段 resource_group（资源组互斥，"
+            "evo-add-verify-scenario-resource-mutex）",
+            "",
+            "权威源：`core/verify_engine/scenarios.py` 的 TestScenario.resource_group"
+            "（字段语义与写端归一口径均以此为准，MUST NOT 自造同义字段名）。",
+            "- 语义：并行执行时**同 resource_group 场景在飞互斥**——组内已有场景在飞"
+            "时，同组其余场景自动顺延到下一批执行（等待不计入场景超时）。缺省空串 = "
+            "不受限，未标记场景调度行为不变。",
+            "- 词表：任意非空字符串组名（建议 kebab-case，如 `heavy-build`、"
+            "`emulator`）。仅接受字符串形态；dict/bool/数字/null 会被写端归一为"
+            "空串（视为未标记），不会报错打回。",
+            "- 何时标记：重型场景**标记同一组**以互斥——交叉构建、模拟器、全量 "
+            "ctest、长视频编码等高负载场景同批并行会互相挤占资源（2026-10-05 "
+            "potplayer-base 交叉构建与 cfc 模拟器同批高负载下默认档 mp4 瞬时缺 "
+            "moov atom 被误判失败）。样例："
+            '`{"id": "win-cross-build", "resource_group": "heavy-build", ...}`。',
+            "",
+            "### flaky/env 豁免须附同窗并行上下文（强制）",
+            "",
+            "把失败场景归类 flaky/env（豁免）时，豁免理由 MUST 附**同窗并行场景"
+            "清单**（同批执行的场景 id）与**有效并行度**。引擎已在每个场景结果附 "
+            "`parallel_context`（batch/peers/observed_parallel），豁免 evidence "
+            "直接引用该字段即可；验证报告对缺该上下文的豁免条目自动落"
+            "「证据不全」标记（缺证据时复核归因无法排除高负载互扰）。",
+        ]
         lines.append("")
         return "\n".join(lines)
 

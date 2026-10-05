@@ -1071,6 +1071,11 @@ class TestScenario:
             涉及外部 API（如 timeapi.io / open-meteo）真实请求的场景置 True，
             no_console_error 断言将过滤 net::ERR_ 等网络层错误（视为环境因素），
             其余控制台错误（含签名/认证类）仍严格失败。
+        resource_group: 资源组标记（可选，缺省空串=不受限）。并行执行时同组
+            场景在飞互斥——组内已有场景在飞时，同组其余场景顺延到下一批
+            （evo-add-verify-scenario-resource-mutex：重型场景如交叉构建/
+            模拟器/全量 ctest 同批并行会互相挤占资源，2026-10-05 potplayer-base
+            高负载下 mp4 缺 moov atom 误判失败根因）。
     """
 
     id: str
@@ -1089,6 +1094,14 @@ class TestScenario:
     # 门控的移动端条件渲染（渐进披露等）在验证中永不出现，断言必然超时的
     # 伪失败被误判为产品缺陷。None = 沿用桌面缺省，存量场景行为不变。
     viewport: Optional[dict] = None
+    # 资源组标记（evo-add-verify-scenario-resource-mutex 1.1，沿 viewport 可选
+    # 字段扩展先例）：缺省空串=不受限，未标记场景调度行为零变化。版本评估结论：
+    # 纯可选字段加法、缺省值语义为「不受限」，新引擎读旧文件（缺键→空串）与
+    # 老引擎读新文件（未知键被 from_dict 忽略）双向兼容——不递增
+    # SCHEMA_VERSION/CURRENT_CONTRACT_VERSION（递增会让存量冻结场景集在下次
+    # 加载时触发无谓迁移），冻结场景集（test_scenarios.json/_scenarios_full.json）
+    # 无需同步变更（当前无场景需要标记组，字段缺省即既有行为）。
+    resource_group: str = ""
 
     def validate(self) -> list[str]:
         """验证场景定义的合法性，返回错误列表。
@@ -1125,6 +1138,8 @@ class TestScenario:
             d["external_net_errors_ok"] = True
         if self.viewport:
             d["viewport"] = self.viewport
+        if self.resource_group:
+            d["resource_group"] = self.resource_group
         return d
 
     @staticmethod
@@ -1179,7 +1194,17 @@ class TestScenario:
             ),
             kind=d.get("kind", "web"),
             viewport=cls._parse_viewport(d.get("viewport")),
+            resource_group=cls._parse_resource_group(d.get("resource_group")),
         )
+
+    @staticmethod
+    def _parse_resource_group(raw) -> str:
+        """顶层 resource_group 字段解析（沿 _parse_viewport 严格口径）：
+        仅接受字符串形态，非 str（dict/bool/数字/null）一律归一空串=不受限，
+        不制造新验收失败模式——错误形态的组名按「未标记」放行而非打回。"""
+        if not isinstance(raw, str):
+            return ""
+        return raw.strip()
 
 
 # ── per-kind 场景验收校验 ─────────────────────────────────────────
