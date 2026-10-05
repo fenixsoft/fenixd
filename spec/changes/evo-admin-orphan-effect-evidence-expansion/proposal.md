@@ -15,3 +15,4 @@ evo-add-admin-orphan-disposition-effect-check 落地后，孤儿处置组终态�
 - 不改 fail-closed 语义：证据不足仍升级，绝不假闭环。
 - 不改升级去重与冷却（记录级/信号级/指纹级三层去重现状工作正常）。
 - 不处理 global 组之外的归组逻辑，不动收口侧存储方法。
+- 不为已升级组翻案：组内已有 escalate=true 终结记录的组按既有守卫②（_converge_final_orphan_group，core/admin_monitor.py:4532-4536「升级人工是唯一出路」）豁免生效核查，本 SPEC 新增的证据家族不追溯。背景中的三条存量组已全部升级，落地后仍走人工 resolve 收口；本 SPEC 防的是后续同形态组再被误升级。
