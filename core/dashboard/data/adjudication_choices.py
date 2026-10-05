@@ -146,6 +146,23 @@ _ADJUDICATION_REGISTRY: dict = {
             "action": "grant_env_exemption",
             "spec_scoped": True,
         },
+        {
+            # evo-fix-env-exemption-gate-conflict-… 2.1：场景修订重验出口。
+            # 失败确属场景定义不可行/夹具供给缺失（judge 或人工诊断结论）
+            # 时，修订场景定义与夹具供给层文件并重置重验——先于升级的
+            # re-entry 通道（修订后的重验轮再失败才升级停车）。修订次数有
+            # 上限（SCENARIO_REVISION_MAX_COUNT，默认 2），超限拒绝并冻结
+            # 转人工。载荷经 note 传 JSON：{"scenarios": [...], "reason":
+            # "...", "fixture_files": [{"path", "content"}]}；文件路径仅限
+            # 夹具供给层白名单（validate_scenario_revision_paths），产品
+            # 代码路径拒绝。
+            "id": "revise_scenario_reverify",
+            "label": "修订场景·重验",
+            "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具"
+            "供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
+            "action": "revise_scenario_reverify",
+            "spec_scoped": True,
+        },
         _MANUAL_FIXED_REVERIFY,
         _ABANDON,
     ),
@@ -299,6 +316,71 @@ def is_global_spec(spec) -> bool:
     """spec 是否全局形态（空值或占位 'global'）——无具体 spec 可操作。"""
     s = str(spec or "").strip()
     return (not s) or s.lower() == GLOBAL_SPEC_PLACEHOLDER
+
+
+# ── 场景修订出口文件路径白名单（evo-fix-env-exemption-gate-conflict-… 2.1）──
+# 修订出口只允许写「场景定义文件 + 夹具供给层」，防借修订改产品代码把验证
+# 出口变成后门。场景定义文件（test_scenarios.json / _scenarios_full.json）由
+# 执行器按固定文件名成对落盘、不经路径参数；本白名单约束的是夹具供给层
+# 文件的相对路径（载荷 fixture_files[].path），以被验项目 project_root 锚定。
+# 白名单不是黑名单：新增供给层目录须显式扩表（review 可见）。
+SCENARIO_REVISION_ALLOWED_DIRS = (
+    ".fenix/fixtures",   # 项目夹具供给目录（verify.yaml prepare 层供给的夹具资源）
+    "fixtures",          # 被验项目自身夹具目录
+    "tests/fixtures",    # 测试夹具目录
+    "test/fixtures",
+)
+# 白名单内可直接改写的单文件（夹具供给层配置，非产品代码）
+SCENARIO_REVISION_ALLOWED_FILES = (
+    ".fenix/verify.yaml",
+)
+
+
+def validate_scenario_revision_paths(project_root, paths) -> str:
+    """修订出口文件路径白名单校验（2.1；返回空串=全部合法，非空=拒绝理由）。
+
+    规则（project_root 锚定，fail-closed）：
+      1. 空/非字符串路径拒绝；
+      2. 绝对路径（os.path.isabs，含 ``~`` 展开与 Windows 盘符形态）拒绝
+         ——不以 project_root 为锚的路径一概不收；
+      3. normpath 折叠后仍含 ``..`` 前导段（越出 project_root 的穿越）拒绝；
+      4. 落点不在白名单目录/文件内 → 产品代码路径，拒绝。
+
+    仅做路径形态判定，不做磁盘存在性检查（夹具文件可以是新建）；符号链接
+    落点由写端 ``open()`` 语义兜底，白名单只承诺「字面路径不可越出供给层」。
+    """
+    import os
+
+    base = os.path.abspath(str(project_root or ""))
+    for raw in paths or []:
+        p = str(raw or "").strip()
+        if not p:
+            return "夹具文件路径为空"
+        if p.startswith("~") or os.path.isabs(p) or ":" in p.split("/")[0]:
+            return f"拒绝绝对路径（修订仅允许项目内相对路径）：{p}"
+        norm = os.path.normpath(p)
+        if norm == "." or norm.startswith(".."):
+            return f"拒绝路径穿越（越出项目根）：{p}"
+        # project_root 锚定复核：base 拼接归一后必须仍落在 base 内（双重
+        # 保险——norm 已无前导 ``..``，此处防 project_root 形态异常）
+        anchored = os.path.abspath(os.path.join(base, norm))
+        if anchored != base and not anchored.startswith(base + os.sep):
+            return f"拒绝路径穿越（越出项目根）：{p}"
+        parts = [seg for seg in norm.split("/") if seg not in ("", ".")]
+        if not parts:
+            return f"路径为项目根本身：{p}"
+        posix_rel = "/".join(parts)
+        allowed = (
+            SCENARIO_REVISION_ALLOWED_DIRS + SCENARIO_REVISION_ALLOWED_FILES
+        )
+        if not any(
+            posix_rel == a or posix_rel.startswith(a + "/") for a in allowed
+        ):
+            return (
+                "路径不在夹具供给层白名单内（产品代码路径拒绝；仅允许 "
+                f"{', '.join(allowed)}）：{p}"
+            )
+    return ""
 
 
 def resolve_choice(choice_id, signal_type=""):

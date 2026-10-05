@@ -197,8 +197,21 @@ class TestLevel2FirstHitParking(unittest.TestCase):
         self.assertEqual(int(spec["_inconclusive_attempts"]), 2, "只重复停车计数")
 
 
+def _write_report(tmpdir, spec, report):
+    """裁决产物落盘（judge 增强后的 report.json 同位置）。"""
+    path = Path(tmpdir) / ".fenix" / "verify-progress" / spec / "report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 class TestGrantEnvExemptionExecutor(unittest.TestCase):
-    """Scenario: grant_env_exemption 落放行记录 + 重置 + 幂等放行闭环。"""
+    """Scenario: grant_env_exemption 落放行记录 + 重置 + 幂等放行闭环。
+
+    evo-fix-env-exemption-gate-conflict-…（3.2）：豁免生效主源改为 spec 级
+    STATE 字段（disposition 为审计镜像）——本组用例同时断言 STATE 字段
+    写入/读取镜像一致（``parse_state`` 往返 + ``parse_env_exemptions``）。
+    """
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -207,6 +220,9 @@ class TestGrantEnvExemptionExecutor(unittest.TestCase):
     def _park(self):
         engine, sm, _ = _mk_engine(self.tmpdir)
         report = _mixed_env_report()
+        # 生产时序：停车发生在 judge 裁决 report.json 落盘之后——grant 的
+        # STATE 豁免候选从盘上报告读取（场景 id+签名+hash），先落盘再停车
+        _write_report(self.tmpdir, "s1", report)
         self.assertTrue(
             engine._verification._handle_env_exemption_handshake("s1", report)
         )
@@ -234,8 +250,57 @@ class TestGrantEnvExemptionExecutor(unittest.TestCase):
         self.assertFalse(spec.get("_last_inconclusive_signature"), "签名基准应清")
         self.assertFalse(spec.get("_dispatch_backoff_until"), "退避窗应清")
 
+    def test_grant_writes_state_exemption_field_mirror(self):
+        """evo-fix-… 1.1/3.2：grant 写 STATE 豁免字段，读回镜像一致。
+
+        镜像一致性：parse_state 往返后 parse_env_exemptions 读出的条目
+        （场景 id / 失败签名 / granted_at / disposition_id 回链）与报告
+        场景逐一对应，签名与 ``scenario_fail_signature_body`` 重算同值。
+        """
+        from core.state_machine import (
+            normalize_env_exemption_signature,
+            parse_env_exemptions,
+            scenario_fail_signature_body,
+        )
+
+        report = _mixed_env_report()
+        self._park()
+        r = execute_adjudication_choice(
+            Path(self.tmpdir), "s1", "grant_env_exemption",
+            signal_type="inconclusive_loop",
+        )
+        self.assertTrue(r.get("ok"))
+        entry = _adjudication_entry(self.tmpdir, "s1")
+        exemptions = parse_env_exemptions(entry)
+        self.assertTrue(exemptions, "STATE 豁免字段应已写入且可读回")
+        by_sid = {str(e.get("scenario_id")): e for e in exemptions}
+        # 报告非 pass 场景全部入豁免（含 blocked-env），pass 场景不入
+        expected_sids = {
+            str(sc.get("scenario_id")) for sc in report["scenarios"]
+            if sc.get("status") not in ("pass", "passed")
+        }
+        self.assertEqual(set(by_sid), expected_sids)
+        for sc in report["scenarios"]:
+            sid = str(sc.get("scenario_id") or "")
+            if sid not in by_sid:
+                continue
+            item = by_sid[sid]
+            self.assertEqual(
+                normalize_env_exemption_signature(item.get("failure_signature") or ""),
+                normalize_env_exemption_signature(scenario_fail_signature_body(sc)),
+                f"{sid} 落库签名应与场景重算签名同值",
+            )
+            self.assertTrue(item.get("granted_at"), "时效锚点应落库")
+            self.assertEqual(item.get("disposition_id"), r.get("disposition_id"),
+                             "豁免应回链 disposition 审计镜像")
+
     def test_grant_then_reverify_release_with_backlink(self):
-        """授予豁免 → 重置重验 → 同结论再命中：握手放行（带回链）不升级。"""
+        """授予豁免 → 重置重验 → 同结论再命中：握手放行（带回链）不升级。
+
+        evo-fix-… 1.3：放行主通道为 STATE 豁免（anchor=env_exemptions），
+        disposition 降为审计镜像——回链 id/action_taken 仍指向 grant 落的
+        放行记录。
+        """
         engine, sm = self._park()
         r = execute_adjudication_choice(
             Path(self.tmpdir), "s1", "grant_env_exemption",
@@ -244,11 +309,12 @@ class TestGrantEnvExemptionExecutor(unittest.TestCase):
         self.assertTrue(r.get("ok"))
         report = _mixed_env_report()
         handled = engine._verification._handle_env_exemption_handshake("s1", report)
-        self.assertFalse(handled, "查得新鲜放行记录应放行走 verified 链")
+        self.assertFalse(handled, "查得有效 STATE 豁免应放行走 verified 链")
         saved = load_report(Path(self.tmpdir), "s1")
         backlink = saved.get("admin_disposition_backlink")
-        self.assertIsInstance(backlink, dict, "报告应保留处置回链")
-        self.assertEqual(backlink.get("anchor"), "admin_disposition")
+        self.assertIsInstance(backlink, dict, "报告应保留豁免回链")
+        self.assertEqual(backlink.get("anchor"), "env_exemptions",
+                         "STATE 主放行回链应锚 env_exemptions")
         self.assertEqual(backlink.get("signal_type"), "inconclusive_loop")
         self.assertEqual(backlink.get("result"), "resolved")
         self.assertEqual(backlink.get("id"), r.get("disposition_id"))

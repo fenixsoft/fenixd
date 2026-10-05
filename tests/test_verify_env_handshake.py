@@ -366,6 +366,186 @@ class TestEscalationAndGuard(unittest.TestCase):
         self.assertEqual(int(spec["_inconclusive_attempts"]), 2)
 
 
+# ── evo-fix-env-exemption-gate-conflict-… 3.1：双门一致性 ────────────────
+
+
+def _write_frozen_defs(tmpdir, spec, defs):
+    """冻结场景定义文件落盘（豁免 hash 锚点读取的同一文件）。"""
+    path = Path(tmpdir) / ".fenix" / "verify-progress" / spec / "test_scenarios.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(defs, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _frozen_defs_for_report(report):
+    """从报告场景构造最小冻结定义（id 对齐，供 hash 锚点计算）。"""
+    defs = []
+    for sc in report.get("scenarios") or []:
+        sid = str(sc.get("scenario_id") or sc.get("id") or "")
+        if sid:
+            defs.append({"id": sid, "name": f"场景 {sid}", "steps": [
+                {"action": "navigate", "value": "http://127.0.0.1:8787/x"},
+            ]})
+    return defs
+
+
+def _scenario_env_report(passed=19, failed=2, blocked=1):
+    """场景级 classification=env 形态（洗白门禁 env 检测的直接对象）。"""
+    scenarios = _pass_scenarios(passed)
+    for i in range(failed):
+        scenarios.append({
+            "scenario_id": f"sc-env-{i}",
+            "status": "failed",
+            "classification": "env",
+            "evidence": {
+                "first_failed_step": "打开列表页",
+                "failed_assertions": [
+                    {"type": "text_contains", "actual": f"HTTP 探测失联 {i}"},
+                ],
+            },
+        })
+    for i in range(blocked):
+        scenarios.append({
+            "scenario_id": f"blk-{i}",
+            "status": "blocked-env",
+            "env_probe_detail": "HTTP 探测失联",
+        })
+    return {
+        "summary": {
+            "total": len(scenarios), "passed": passed,
+            "warnings": blocked, "failed": failed, "errors": 0,
+            "blocked_env": blocked,
+        },
+        "scenarios": scenarios,
+    }
+
+
+class TestDualGateExemptionConsistency(unittest.TestCase):
+    """Scenario: STATE 豁免下升级握手与 verified 洗白门禁同判（3.1）。
+
+    双门同源是本 SPEC 的核心断言：同一份 STATE 豁免、同一失效条件
+    （场景定义 hash 变更 / TTL 过期），握手与门禁 MUST 同判——
+    「握手认可、43ms 后门禁拒绝」（potplayer 2026-10-05）不可复发；
+    0-pass 不变量不因豁免回退。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+    def _grant_state_exemption(self, report, defs=None):
+        """经真实 grant 执行器写 STATE 豁免，再回填重验产物（同签名/同定义）。
+
+        grant 内部 reset 会删 report.json 与场景文件——这里回填同一报告与
+        同一定义，模拟「重验后失败同签名复现」的合法豁免命中形态。
+        """
+        from core.dashboard.data.admin_actions import _exec_grant_env_exemption
+        from core.verdict_check import whitewash_violations
+
+        # 前置：无豁免视角下报告确有 env 违规（防用例空转假绿）
+        raw = whitewash_violations(report.get("scenarios") or [], "verified")
+        self.assertTrue(
+            any("env 失败场景" in v for v in raw),
+            f"前置：报告应含 env 违规，实得 {raw}",
+        )
+        engine, sm, _ = _mk_engine(self.tmpdir)
+        # grant 内 reset_verification 仅对冻结/blocked/停车形态开放
+        sm.update_spec("s1", {"status": "blocked", "error": "env 阻塞停车"})
+        if defs is None:
+            defs = _frozen_defs_for_report(report)
+        _write_frozen_defs(self.tmpdir, "s1", defs)
+        _write_report(self.tmpdir, "s1", report)
+        r = _exec_grant_env_exemption(self.tmpdir, "s1", note="内网依赖不可达")
+        self.assertTrue(r.get("ok"), f"grant 应成功：{r.get('error')}")
+        # 重验产物回填（同报告同定义）
+        _write_report(self.tmpdir, "s1", report)
+        _write_frozen_defs(self.tmpdir, "s1", defs)
+        return engine, sm
+
+    def test_valid_state_exemption_releases_both_gates(self):
+        """有效 STATE 豁免：握手放行（anchor=env_exemptions）+ 门禁放行，同判。"""
+        report = _scenario_env_report()
+        engine, sm = self._grant_state_exemption(report)
+        # 门：verified 洗白门禁——env 违规被豁免摘除 → True
+        self.assertTrue(
+            engine._verification._env_whitewash_gate("s1"),
+            "有效豁免下洗白门禁应放行（与握手同判）",
+        )
+        # 门：升级握手——STATE 豁免覆盖 → False（放行走 verified 链）
+        handled = engine._verification._handle_env_exemption_handshake("s1")
+        self.assertFalse(handled, "有效豁免下握手应放行（与门禁同判）")
+        saved = load_report(Path(self.tmpdir), "s1")
+        backlink = saved.get("admin_disposition_backlink")
+        self.assertIsInstance(backlink, dict)
+        self.assertEqual(backlink.get("anchor"), "env_exemptions",
+                         "STATE 主放行回链应锚 env_exemptions")
+
+    def test_scenario_revision_invalidates_both_gates(self):
+        """场景定义修订（hash 变更）：握手与门禁同判拒绝——disposition 镜像不回退。"""
+        report = _scenario_env_report()
+        engine, sm = self._grant_state_exemption(report)
+        # 场景修订：sc-env-0 定义变更 → hash 与豁免记录不再一致
+        defs = _frozen_defs_for_report(report)
+        target = next(d for d in defs if d["id"] == "sc-env-0")
+        target["steps"].append({"action": "wait", "value": "500"})
+        _write_frozen_defs(self.tmpdir, "s1", defs)
+        # 门：洗白门禁拒绝（env 违规复活）
+        self.assertFalse(
+            engine._verification._env_whitewash_gate("s1"),
+            "场景修订后洗白门禁应拒绝（豁免失效）",
+        )
+        # 门：握手拒绝——STATE 唯一生效源，grant 落的 disposition 审计镜像
+        # 不得独立放行（否则「场景变更即失效」被架空）
+        handled = engine._verification._handle_env_exemption_handshake("s1")
+        self.assertTrue(handled, "场景修订后握手应拒绝放行（同判）")
+        self.assertEqual(sm.read_one("s1")["status"], "implemented",
+                         "失效后应升级停车等待人工")
+
+    def test_expired_exemption_rejects_both_gates(self):
+        """TTL 过期：握手与门禁同判拒绝（豁免时效锚点生效）。"""
+        from core.state_machine import (
+            parse_env_exemptions,
+            serialize_env_exemptions,
+        )
+        from datetime import datetime, timedelta, timezone
+
+        report = _scenario_env_report()
+        engine, sm = self._grant_state_exemption(report)
+        # 时钟回拨：把豁免 granted_at 改到 TTL（72h）之前
+        exemptions = parse_env_exemptions(sm.read_one("s1"))
+        self.assertTrue(exemptions, "前置：grant 应已写 STATE 豁免")
+        old = (datetime.now(timezone.utc) - timedelta(hours=73)).isoformat()
+        for item in exemptions:
+            item["granted_at"] = old
+        sm.update_spec("s1", {"_env_exemptions": serialize_env_exemptions(exemptions)})
+        self.assertFalse(
+            engine._verification._env_whitewash_gate("s1"),
+            "TTL 过期后洗白门禁应拒绝",
+        )
+        self.assertTrue(
+            engine._verification._handle_env_exemption_handshake("s1"),
+            "TTL 过期后握手应拒绝（同判）",
+        )
+
+    def test_zero_pass_invariant_survives_exemption(self):
+        """0-pass 不变量：豁免只摘 env 项，「0/N 通过」仍不得 verified。"""
+        report = _scenario_env_report(passed=0, failed=2, blocked=1)
+        engine, _ = self._grant_state_exemption(report)
+        self.assertFalse(
+            engine._verification._env_whitewash_gate("s1"),
+            "全失败报告即使全部命中豁免也不得洗白 verified",
+        )
+        spec = sm_read_one(self.tmpdir, "s1")
+        self.assertIn("0/", str(spec.get("error") or ""),
+                      "升级现场应保留 0-pass 违规文案")
+
+
+def sm_read_one(tmpdir, spec):
+    """测试用 STATE 条目读取（与 _mk_engine 构造路径一致）。"""
+    sm = StateMachine(Path(tmpdir) / ".fenix" / "STATE.md", _FakeLogger())
+    return sm.read_one(spec) or {}
+
+
 # ── tasks 4.3：serving dist 新鲜度探针 ──────────────────────────────────
 
 
