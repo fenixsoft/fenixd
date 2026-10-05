@@ -357,3 +357,161 @@ class TestHonestExitConvergencePoint(unittest.TestCase):
         ):
             assert self._gap(payload) == Dispatcher._honest_exit_gap(
                 pm, self.spec, payload), payload
+
+
+# ── 验收偏差上报与硬门（evo-add-acceptance-deviation-reporting 3.1）──────────
+# 背景（proposal）：pack2-official-encoder 任务 4.3 字面验收从未通过、实现者以
+# 替代链 md5 顶替并勾选完成，偏差散落在 STATE 文本中无机器可读标记 → 环境阻塞
+# 被掩盖到验证阶段才暴露。硬门契约：success ∧ 偏差任务 ∈ completed_tasks →
+# 拒绝（结构类）；partial 携带偏差放行（经 unfinished 申报）；闭环——规划层
+# 按行内注解重出替代场景链后，后续 success 轮不再带偏差条目即可勾选通过。
+
+DEVIATION_FINDINGS = [
+    {"type": "acceptance-deviation", "task": "4.3",
+     "literal": "实跑 scripts/cfc-emulator-roundtrip.sh 全链路一遍、md5 一致",
+     "substitute": "androidTest 注入替代链 md5",
+     "evidence": ".fenix/verify-evidence/injection-verify.md5"},
+]
+
+# tasks.md：4.3 已按替代场景链验收勾选（闭环后续轮形态）
+ALL_CHECKED_TASKS = (
+    "# Tasks\n\n## 4. 验证\n\n- [x] 1.1 任务一\n- [x] 4.3 全链路 md5 一致\n"
+)
+
+
+class TestAcceptanceDeviationGate(unittest.TestCase):
+    """产物硬门：findings 验收偏差条目与 success 组合判据（…2.1/3.1）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        self.runner = make_runner(self.proot)
+        self.spec = "demo"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _gate(self, tasks_text, payload):
+        wt = _mk_worktree(self.proot, self.spec, tasks_text=tasks_text)
+        _write_result(wt, payload)
+        return self.runner._check_impl_result_artifact(self.spec, None, wt)
+
+    def test_success_with_deviation_in_completed_tasks_rejected(self):
+        """success ∧ 偏差任务 ∈ completed_tasks → 拒绝（本 SPEC 核心组合校验）。"""
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"], "findings": DEVIATION_FINDINGS},
+        )
+        assert err is not None
+        assert "验收偏差" in err
+        assert "4.3" in err
+
+    def test_success_deviation_rejection_is_structural_not_task_gate(self):
+        """组合拒绝走 [artifact-structural] 路径：无 [task-gate] 前缀（不降级）。"""
+        from core.agent_runner.result_gate import TASK_GATE_ERROR_PREFIX
+
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"], "findings": DEVIATION_FINDINGS},
+        )
+        assert err is not None
+        assert not err.startswith(TASK_GATE_ERROR_PREFIX)
+
+    def test_success_deviation_rejection_guides_partial_or_substitute(self):
+        """拒绝文案 MUST 指引出路：partial 申报 / 替代场景链 / unattainable。"""
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"], "findings": DEVIATION_FINDINGS},
+        )
+        assert "unfinished" in err
+        assert "替代" in err
+        assert "unattainable" in err
+
+    def test_partial_carrying_deviation_passes(self):
+        """partial 携带偏差条目（任务经 unfinished 申报）→ 放行（通道不感知）。"""
+        err = self._gate(
+            "# Tasks\n\n- [x] 1.1 任务一\n"
+            "- [ ] 4.3 全链路 md5 一致（以 androidTest 注入替代链 md5 替代验收）\n",
+            {"status": "partial", "spec": self.spec,
+             "completed_tasks": ["1.1"], "unfinished": ["4.3"],
+             "findings": DEVIATION_FINDINGS},
+        )
+        assert err is None, err
+
+    def test_no_deviation_zero_impact(self):
+        """无偏差条目（findings 缺省）→ 既有 success 判据零影响。"""
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"]},
+        )
+        assert err is None, err
+
+    def test_deviation_task_not_in_completed_tasks_passes(self):
+        """偏差条目任务不在 completed_tasks（越界 id 等）→ 组合判据不命中。"""
+        foreign = [dict(DEVIATION_FINDINGS[0], task="9.9")]
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"], "findings": foreign},
+        )
+        assert err is None, err
+
+    def test_closed_loop_late_success_without_deviation_entry_passes(self):
+        """闭环：partial 申报偏差后，规划层按注解重出替代场景链，后续轮以替代
+        场景链验收达标勾选 4.3、不再登记偏差条目 → success 放行（门无状态）。"""
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"]},
+        )
+        assert err is None, err
+
+    def test_findings_entry_with_unknown_type_rejected(self):
+        """findings 条目 type 不在白名单 → 结构类拒绝。"""
+        err = self._gate(
+            ALL_CHECKED_TASKS,
+            {"status": "success", "spec": self.spec,
+             "completed_tasks": ["1.1", "4.3"],
+             "findings": [{"type": "mystery", "task": "4.3"}]},
+        )
+        assert err is not None
+        assert "白名单" in err
+
+    def test_deviation_entry_missing_elements_rejected(self):
+        """偏差条目缺三要素/evidence → 结构类拒绝（防口头替代）。"""
+        base = {"status": "partial", "spec": self.spec,
+                "completed_tasks": ["1.1"], "unfinished": ["4.3"]}
+        for entry in (
+            {"type": "acceptance-deviation", "task": "4.3",
+             "literal": "l", "substitute": "s"},  # 缺 evidence
+            {"type": "acceptance-deviation", "task": "4.3",
+             "literal": "l", "evidence": "e"},  # 缺 substitute
+            {"type": "acceptance-deviation", "task": "not-a-task",
+             "literal": "l", "substitute": "s", "evidence": "e"},  # 非法 id
+        ):
+            err = self._gate(
+                "# Tasks\n\n- [x] 1.1 任务一\n- [ ] 4.3 任务二\n",
+                dict(base, findings=[entry]),
+            )
+            assert err is not None, entry
+
+    def test_fast_track_lane_same_semantics(self):
+        """findings 判据对 fast-track 车道同义生效（共用 _check_impl_result_
+        artifact 单点）：fast-track 模式 success∧偏差∈completed_tasks 同拒。"""
+        wt = _mk_worktree(
+            self.proot, self.spec,
+            tasks_text="- [x] 1.1 任务一\n- [x] 4.3 任务二\n")
+        _write_result(wt, {
+            "status": "success", "spec": self.spec, "mode": "fast-track",
+            "completed_tasks": ["1.1", "4.3"], "findings": DEVIATION_FINDINGS,
+            "verification": {"scenarios": [{
+                "scenario_id": "s1", "description": "d",
+                "status": "pass"}], "verdict": "verified"},
+        })
+        err = self.runner._check_impl_result_artifact(self.spec, None, wt)
+        assert err is not None
+        assert "验收偏差" in err
