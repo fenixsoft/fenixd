@@ -2725,6 +2725,8 @@ class PromptBuilder:
             "",
         ]
         for f in findings:
+            if not isinstance(f, dict):
+                continue
             lines.append(
                 f"- `{f.get('scenario_id')}` [{f.get('rule_id')} "
                 f"{f.get('location')}]: {f.get('message')}"
