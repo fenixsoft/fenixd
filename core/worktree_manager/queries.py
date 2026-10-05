@@ -127,7 +127,7 @@ class G8QueryMixin:
         except Exception:
             return False
 
-    def is_available(self, wt_path=None, branch=None) -> str:
+    def is_available(self, wt_path=None, branch=None, known_registered=None) -> str:
         """worktree 可用性三态单源查询（interrupt-recovery-preserve D5）。
 
         三态：
@@ -143,6 +143,11 @@ class G8QueryMixin:
             wt_path: 候选 worktree 路径（Path/str，可选）。提供时与 git 注册
                 结果核对：与注册不符的残留目录不视为可用（以 git 为准）。
             branch: 分支名（可选）。缺省时尝试从 wt_path 的 HEAD 解析分支。
+            known_registered: 调用方已持有的 ``find_worktree_path(branch)``
+                结果（Path，可选）。提供时直接复用、跳过内部重复的
+                ``git worktree list`` 子进程（code-review item f7623a814c4d）；
+                None（缺省）＝未提供，维持内部自行查询的原语义。调用方
+                MUST 仅在实际查询且命中（非 None）时传入。
 
         Returns: 三态字符串之一（WT_* 常量）。
         """
@@ -155,7 +160,11 @@ class G8QueryMixin:
                 return WT_UNAVAILABLE
         if not self.branch_exists(branch):
             return WT_UNAVAILABLE
-        registered = self.find_worktree_path(branch)
+        registered = (
+            known_registered
+            if known_registered is not None
+            else self.find_worktree_path(branch)
+        )
         if wt_path is not None:
             # 显式候选路径：以其自身目录存在性为「原地可用」判据——防止对
             # 已删目录盲派发（fix-resume-stale-worktree 同源缺口）。目录残留
