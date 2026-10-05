@@ -958,8 +958,13 @@ class BrowserManager:
                     # 场景可携带 "status"（如 409/500）模拟后端拒绝/异常分支。
                     # 此前硬编码 200，导致 4xx/5xx 场景的 mock 全部按成功返回，
                     # 错误 toast 断言必然失败 → 伪失败被记为产品 bug。
+                    # 仅 status 缺省（None）回退 200（code-review item
+                    # e0a4971e5701）：or 200 会把 falsy 的 0/"" 静默改写成
+                    # 200，显式脏值应走 invalid_mock_status 结构化失败（与
+                    # wait 的 invalid_wait_value 同口径）
+                    raw_status = step.get("status")
                     try:
-                        mock_status = int(step.get("status") or 200)
+                        mock_status = 200 if raw_status is None else int(raw_status)
                     except (TypeError, ValueError):
                         # 不静默回退 200（code-review 修）：场景意图的 4xx/5xx
                         # 分支若因 status 脏值被当成成功响应，错误提示类断言会
@@ -1094,8 +1099,13 @@ class BrowserManager:
 
             # 等待目标元素可交互（.first 避免 strict mode violation）
             locator = page.locator(target).first
-            await locator.wait_for(state="visible", timeout=5000)
-            await self._wait_stable(page)
+            # wait 动作跳过此前置等待（code-review item a7938c87ef82）：
+            # wait 分支用 wait_for_selector(state="visible", 10s) 自带同一
+            # 可见性等待，先做 5s locator.wait_for 会对同一条件双重等待，
+            # 元素不存在时最坏 15s 才报错；仅交互类动作需要此前置等待
+            if action != "wait":
+                await locator.wait_for(state="visible", timeout=5000)
+                await self._wait_stable(page)
 
             if action == "click":
                 # 支持 click 步骤携带 dialog 处理（accept/dismiss），
