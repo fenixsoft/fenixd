@@ -306,6 +306,18 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       });
     },
   });
+  // 清除单卡片健康检测条目（口径同 AgentModelPanel 行级清理 item 495527f13465）：
+  // 检测结论是特定 baseurl/apikey/model 组合的一次性结论，原位改任一项后旧徽标
+  // （可能是绿色「已验证」）不再代表当前配置，须清掉避免错配误导
+  const clearHealthCard = (key: number) => {
+    setHealthMap((m) => {
+      if (!(key in m)) return m;
+      const next = { ...m };
+      delete next[key];
+      return next;
+    });
+  };
+
   // 表单当前值直传（未保存修改即测）；Base URL / API Key / 默认模型名任一为空
   // 直接提示补齐、不发请求（spec「表单值不完整不发请求」）
   const runHealthCheck = async (field: { key: number; name: number }) => {
@@ -323,9 +335,32 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该卡片已有检测在飞，直接 return
     if (healthCheckInFlightRef.current.has(field.key)) return;
     healthCheckInFlightRef.current.add(field.key);
+    // 发起时捕获卡片身份串：await 返回后配置可能已被改（原位改 Base URL/API
+    // Key/模型名、同步回填覆盖），旧结论（可能是绿色「已验证」）不再代表当前
+    // 组合，写回前重算比对、不一致则丢弃（code-review item c761b15bf353，
+    // 口径同 AgentModelPanel.runRowHealthCheck 的行参数指纹）
+    const startIdentity = healthRowIdentity(
+      form.getFieldValue(['providers', field.name]) as ProviderRowValues | undefined,
+    );
+    // 身份不一致时的统一丢弃：不写结论、不播按旧参数的 toast；条目已在飞期间
+    // 被清（onChange/回填清理）则不复活，否则仅复位 loading 防按钮悬挂转圈
+    const discardStale = () => {
+      setHealthMap((m) => {
+        if (!(field.key in m)) return m;
+        return { ...m, [field.key]: { loading: false } };
+      });
+    };
     setHealthMap((m) => ({ ...m, [field.key]: { loading: true } }));
     try {
       const r = await checkLlmHealth({ baseurl, apikey, model });
+      if (
+        healthRowIdentity(
+          form.getFieldValue(['providers', field.name]) as ProviderRowValues | undefined,
+        ) !== startIdentity
+      ) {
+        discardStale();
+        return;
+      }
       const display = toHealthDisplay(r);
       setHealthMap((m) => ({ ...m, [field.key]: { loading: false, display } }));
       if (r.ok) {
@@ -334,6 +369,15 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
       }
     } catch (e) {
+      // 同成功路径：配置在飞期间已变则丢弃异常结论（item c761b15bf353）
+      if (
+        healthRowIdentity(
+          form.getFieldValue(['providers', field.name]) as ProviderRowValues | undefined,
+        ) !== startIdentity
+      ) {
+        discardStale();
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       setHealthMap((m) => ({
         ...m,
@@ -436,7 +480,12 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         wrapperCol={{ flex: '1 1 0%' }}
                         rules={[{ required: true, message: '请输入 Base URL' }]}
                       >
-                        <Input placeholder="https://api.openai.com/v1" />
+                        <Input
+                          // 改 Base URL 即检测目标变化，旧健康结论失效，清条目
+                          // （code-review item c761b15bf353）
+                          onChange={() => clearHealthCard(field.key)}
+                          placeholder="https://api.openai.com/v1"
+                        />
                       </Form.Item>
                     </Col>
                   </Row>
@@ -450,7 +499,12 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         wrapperCol={{ flex: '1 1 0%' }}
                         rules={[{ required: true, message: '请输入 API Key' }]}
                       >
-                        <Input.Password placeholder="sk-..." />
+                        <Input.Password
+                          // 改 API Key 即检测目标变化，旧健康结论失效，清条目
+                          // （code-review item c761b15bf353）
+                          onChange={() => clearHealthCard(field.key)}
+                          placeholder="sk-..."
+                        />
                       </Form.Item>
                     </Col>
                     <Col xs={24} md={12}>
@@ -461,7 +515,12 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         labelCol={{ flex: '0 0 96px' }}
                         wrapperCol={{ flex: '1 1 0%' }}
                       >
-                        <Input placeholder="deepseek-v4-flash" />
+                        <Input
+                          // 改默认模型名即检测目标变化，旧健康结论失效，清条目
+                          // （code-review item c761b15bf353）
+                          onChange={() => clearHealthCard(field.key)}
+                          placeholder="deepseek-v4-flash"
+                        />
                       </Form.Item>
                     </Col>
                   </Row>
