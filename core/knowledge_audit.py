@@ -1201,16 +1201,13 @@ def run_audit(
             f for f in semantic_all if _finding_fingerprint(f) not in escalated_fps
         ]
 
-        # 语义初筛截断显式留痕：溢出候选不静默丢弃，超出单轮转写上限的部分转入
-        # 待人工明细（报告呈现为「共 N 条、本轮仅转写前 10 条、其余人工核查」），
-        # 体检报告不再对被截断的矛盾/重复候选呈现为「无更多语义发现」。
-        semantic = semantic_pending[:MAX_SEMANTIC_RUNS]
-        if len(semantic_pending) > MAX_SEMANTIC_RUNS:
-            counts["pending_manual"] += 1
-            details["manual"].append(
-                f"语义初筛候选共 {len(semantic_pending)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
-                f"其余 {len(semantic_pending) - MAX_SEMANTIC_RUNS} 条请人工核查"
-            )
+        # 语义初筛候选消费序 = semantic_pending；单轮转写名额（MAX_SEMANTIC_RUNS）
+        # 由语义循环按实际派发 run 数消耗（游标/名额见语义循环处注释），此处
+        # 不再预切片——原「[:MAX_SEMANTIC_RUNS] 截断 + 循环前留痕」下，exempt
+        # （内容未变豁免）条目白占名额（循环内哈希比对后 continue 不 spawn
+        # run），豁免条目一多新候选当日零入账，与 escalated 占槽同构。
+        semantic_quota = MAX_SEMANTIC_RUNS
+        semantic_cursor = 0
 
         # escalated 报告留痕（1.1/1.2）：移出循环、明细折叠为单条聚合汇总
         # （条数 + 最长龄期，_render_report 专节渲染），不再逐条展开堆积。
@@ -1279,7 +1276,17 @@ def run_audit(
     # ── 语义转写（矛盾/重复 → 定向蒸馏 run；疑点台账接入豁免/去重/升级） ──
     # escalated 条目已在切片前剔除（1.1）：不进本循环、不占转写预算，也不再
     # 需要循环内 skip 分支；其留痕由循环前聚合汇总统一渲染。
-    for idx, finding in enumerate(semantic, 1):
+    # 转写名额（MAX_SEMANTIC_RUNS＝单轮转写 run 数上限）按实际派发 run 数
+    # 消耗：superseded-in-batch / exempt（内容未变豁免）两条 continue 出口
+    # 不 spawn run、不占额，名额自动回流给后续候选；豁免判定（两页哈希比对）
+    # 仍在循环内进行——切片点在机械段之前，提前剔除会拿到纠偏前的滞后哈希、
+    # 还会丢掉涉及页已纠偏时的 superseded-in-batch 分类。名额耗尽即停，剩余
+    # 候选由循环后的截断留痕转入待人工明细。
+    idx = 0
+    while semantic_cursor < len(semantic_pending) and semantic_quota > 0:
+        finding = semantic_pending[semantic_cursor]
+        semantic_cursor += 1
+        idx += 1
         fp = _finding_fingerprint(finding)
         entry = ledger.get(fp)
         if entry is None:
@@ -1346,6 +1353,9 @@ def run_audit(
             )
         entry["review_rounds"] = prev_rounds + 1
 
+        # 走到此处必然派发一个转写 run（superseded/豁免两条无 run 出口已在
+        # 上方 continue），在此消耗转写名额；失败 run 同样计额（run 已 spawn）。
+        semantic_quota -= 1
         # 写段取蒸馏锁（同机械段）：每次转写迭代的 spawn→validate→提交/回滚
         # 整体与 DistillManager / run_backfill 串行（与 run_backfill 批次同款
         # 粒度），转写产出在提交前不再可能被并发蒸馏 run 的 discard 清掉。
@@ -1465,6 +1475,18 @@ def run_audit(
             _save_findings_ledger(project_root, ledger)
             remediated_pages |= touched
 
+    # 语义初筛截断显式留痕（名额耗尽出口）：未被本轮消费的候选不静默丢弃，
+    # 转入待人工明细（报告呈现为「共 N 条、转写名额已用尽、其余人工核查」），
+    # 体检报告不再对被截断的矛盾/重复候选呈现为「无更多语义发现」。
+    semantic_overflow = semantic_pending[semantic_cursor:]
+    if semantic_overflow:
+        counts["pending_manual"] += 1
+        details["manual"].append(
+            f"语义初筛候选共 {len(semantic_pending)} 条，本轮转写名额 "
+            f"{MAX_SEMANTIC_RUNS} 个已用尽（豁免/已纠偏疑点不占额），"
+            f"其余 {len(semantic_overflow)} 条请人工核查"
+        )
+
     # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加（龄期逐日推进由
     # upsert 整行替换消化，聚合行不变成每日重述）；历史逐条行（旧前缀）一并
     # 清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯清理语义摘除残留。
@@ -1534,7 +1556,7 @@ def run_audit(
             scan["format"],
             scan["no_marker"],
             scan["adr"]["broken_chain"],
-            semantic,
+            semantic_pending,
         )
         if not v
     )
