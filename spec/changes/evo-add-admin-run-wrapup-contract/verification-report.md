@@ -30,3 +30,10 @@
 | administrator-prompt-hard-contract | agents/administrator.md 含三条硬终止契约（tasks.md 2.1 / spec.md Requirement 处置记录先行契约）：①诊断闭环判定后 MUST 先覆盖写最终处置记录再执行环境恢复/清理等长动作；②自建任务全部 completed 后 MUST NOT 开启新一轮实验；③最终处置记录不得留作最后一个动作。探针按段块共现做措辞容忍匹配，避免锁定实现者具体措辞 | pass | 0/2 | - |
 | agent-runner-turn-limit-regression | 既有轮数/墙钟监督测试套件全绿：test_turn_limit_lifecycle（turn extension 矩阵）、test_supervision_timeout_consistency（墙钟监督）、test_liveness_hang_discrimination——收尾宽限改动落在扩容封顶分支，既有续期/击杀路径不得回归（planner 基线实测三套件与邻位共 193 passed / 15.23s） | pass | 0/2 | - |
 | agent-runner-lane-datasource-regression | impl 车道与判据数据源邻位套件全绿：test_impl_run_budget_sizing / test_impl_wallclock_budget_sizing（design §4 与 D6 早停不互相触发、impl 车道不受影响）、test_task_track（run 产物 TaskCreate/TaskUpdate 解析单点，宽限判据数据源）、test_agent_runner_modules_contract——均基于 planner 基线实测全绿 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 7 个（第 1 轮）。
+
+- 首轮写入 7 个场景
+
