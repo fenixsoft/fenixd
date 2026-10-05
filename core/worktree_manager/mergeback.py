@@ -1827,8 +1827,11 @@ class G4MergebackMixin:
 
         1. `git diff --name-only --diff-filter=A HEAD...<branch>` 取分支**新增**文件路径集合
            —— untracked 冲突只会发生在新增路径上（修改既有 tracked 文件不与 untracked 冲突）。
-        2. 对每条新增路径，判断主树中该路径上的文件是否为 untracked：
-           `git ls-files --error-unmatch <path>` 失败（未被 index 跟踪）即视为 untracked。
+        2. 对主树存在同名路径的新增路径，批量判定是否 untracked：单条
+           `git ls-files -z -- <全部候选路径>`（`:(literal)` 禁 glob、`-z` 免
+           quotePath 转义）取 tracked 集合，不在集合中的即视为 untracked
+           （不在子进程循环里逐路径起进程，避免在 _main_tree_lock 内线性
+           放大主树全局合并锁的持锁时长）。
         3. 将命中的文件移入 `.fenix/merge-backup/<epoch秒>/`（保持仓库相对路径结构）。
 
         检测范围不限于 spec/changes/，覆盖任意产物路径（如 core/dashboard/static/v2/）。
@@ -1867,20 +1870,35 @@ class G4MergebackMixin:
         if not added_paths:
             return None
 
-        # 逐路径判断：主树中存在该路径、且未被 index 跟踪（untracked）才纳入备份。
-        rels = []
-        for rel in added_paths:
-            src = self.project_root / rel
-            if not src.exists():
-                continue
+        # 主树中存在该路径、且未被 index 跟踪（untracked）才纳入备份。
+        # 批量口径（code-review item d307bc3bd39e）：主树存在性是纯文件系统
+        # 操作，先行过滤；tracked 判定收敛为单条 git ls-files 子进程——
+        # 本函数在 merge_back_from_branch 持有 _main_tree_lock 期间执行，
+        # 逐路径 --error-unmatch 的子进程数量随新增路径线性增长会无谓拉长
+        # 主树全局合并锁持锁时长。（:(literal) 禁 pathspec 的 glob 通配、
+        # -z 免 core.quotePath 转义，与 code_review 全仓清单同口径。）
+        existing = [
+            rel for rel in added_paths
+            if (self.project_root / rel).exists()
+        ]
+        if not existing:
+            return None
+        try:
             ls = subprocess.run(
-                ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
+                ["git", "-C", str(self.project_root), "ls-files", "-z", "--"]
+                + [f":(literal){rel}" for rel in existing],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
-            if ls.returncode != 0:  # 0 = tracked；非 0 = untracked（含 ignored 以外）
-                rels.append(rel)
+        except (subprocess.TimeoutExpired, OSError):
+            # 同上方 diff 探测降级口径（item af581068b80d）：备份探测不可用
+            # 不上抛被调用方当成整次 merge-back 失败。
+            return None
+        if ls.returncode != 0:
+            return None
+        tracked = {p for p in ls.stdout.split("\0") if p}
+        rels = [rel for rel in existing if rel not in tracked]
 
         if not rels:
             return None
