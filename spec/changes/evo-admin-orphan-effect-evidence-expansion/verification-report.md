@@ -34,3 +34,10 @@
 | escalated-inflight-groups-untouched | 守卫语义回归（新增证据家族不改变守卫）：组内已有 escalate=true 终结记录的组被守卫②豁免——已升级组不因新增证据家族恢复自动收口（存量已升级组仍走人工 resolve 收口，proposal 非目标）；同 spec 存在在飞 admin run 被守卫⑤跳过；grace 门内新终态组不触碰（core/admin_monitor.py:4532-4536 守卫②先于证据核查）。回归用例 test_escalate_true_terminal_group_skipped / test_inflight_run_for_same_spec_skips / test_young_final_group_within_grace_untouched（pytest -v 实测 3 passed，PASSED 行形态照抄，tests/test_admin_orphan_disposition_effect_check.py::TestOrphanGroupConvergence） | pass | 0/4 | - |
 | spec-group-state-single-source | 具体 spec 组（组 spec 非 global 占位）STATE 单源判定：STATE 条目 frozen=False 且 status 离开 blocked → 动作已生效补记收口（test_spec_group_effective_via_state_backfills）；仍 frozen/未推进 → 判未生效维持升级（test_frozen_spec_not_effective_escalates）——STATE 是该形态持久真实状态源，日志轮转不丢（core/admin_monitor.py:4709-4729 具体组分支先于家族并集单源判定；pytest -v 实测 2 passed，PASSED 行形态照抄） | pass | 0/3 | - |
 | orphan-effect-regression-suite | 交付物全量回归门：效果核查测试文件 24 例全绿（含家族并集 10 例与既有收敛/幂等/守卫 14 例，tests/test_admin_orphan_disposition_effect_check.py -q 实测 '24 passed'）＋ admin 监控耦合子集 206 例全绿（admin 派发升级/处置失败上下文/处置重排/规格修订/核心 admin 五文件，实测 '206 passed'）——单点改造 core/admin_monitor.py 未破坏 admin_monitor 既有行为（tasks 2.1 收口；-q 实测输出照抄，-q 与 -v 不并列） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
