@@ -223,7 +223,8 @@ class ApiAssertionRunner:
     """执行结构化 API 断言。
 
     每个断言方法签名为: async def _assert_<type>(self, resp, assertion) -> dict
-    返回统一格式 dict: {type, layer, pass, ...}。
+    返回统一格式 dict: {type, pass, ...}；layer 不由 handler 携带，统一由
+    run() 从 ASSERTION_LAYERS（scenarios.py 权威词表）注入。
 
     ``resp`` 为响应捕获（status/headers/body/json/latency_ms 或 events）。
     """
@@ -308,7 +309,6 @@ class ApiAssertionRunner:
         passed = expected is not None and _numeric(actual) == _numeric(expected)
         result = {
             "type": "status_code",
-            "layer": 1,
             "expected": expected,
             "actual": actual,
             "pass": passed,
@@ -331,7 +331,6 @@ class ApiAssertionRunner:
         actual = len(events)
         result = {
             "type": "sse_event_count",
-            "layer": 1,
             "min": minimum,
             "actual": actual,
             "pass": minimum is not None and actual >= minimum,
@@ -356,7 +355,6 @@ class ApiAssertionRunner:
                 # 归因；SSE 事件内容断言应走 sse_event_matches
                 return {
                     "type": "json_path",
-                    "layer": 3,
                     "path": path,
                     "expected": expected,
                     "actual": None,
@@ -372,7 +370,6 @@ class ApiAssertionRunner:
                 # 「非合法 JSON」文案会把体积问题误归因为响应格式缺陷
                 return {
                     "type": "json_path",
-                    "layer": 3,
                     "path": path,
                     "expected": expected,
                     "actual": None,
@@ -381,7 +378,6 @@ class ApiAssertionRunner:
                 }
             return {
                 "type": "json_path",
-                "layer": 3,
                 "path": path,
                 "expected": expected,
                 "actual": None,
@@ -395,7 +391,6 @@ class ApiAssertionRunner:
             # 另一条路径静默求值、被判为产品缺陷
             return {
                 "type": "json_path",
-                "layer": 3,
                 "path": path,
                 "expected": expected,
                 "actual": None,
@@ -412,7 +407,6 @@ class ApiAssertionRunner:
         if expected is None or (expected == "" and mode in ("contains", "regex")):
             return {
                 "type": "json_path",
-                "layer": 3,
                 "path": path,
                 "expected": expected,
                 "actual": None,
@@ -459,7 +453,6 @@ class ApiAssertionRunner:
                 error = regex_error
         result = {
             "type": "json_path",
-            "layer": 3,
             "path": path,
             "expected": expected,
             "actual": actual,
@@ -509,7 +502,6 @@ class ApiAssertionRunner:
             error = f"响应头 '{header}' 不存在"
         result = {
             "type": "response_header",
-            "layer": 3,
             "header": header,
             "expected": expected,
             "actual": actual,
@@ -529,7 +521,6 @@ class ApiAssertionRunner:
         if expected is None or (expected == "" and mode in ("contains", "regex")):
             return {
                 "type": "body_contains",
-                "layer": 3,
                 "expected": expected,
                 "mode": mode,
                 "pass": False,
@@ -543,7 +534,6 @@ class ApiAssertionRunner:
         if resp.get("type") == "sse":
             return {
                 "type": "body_contains",
-                "layer": 3,
                 "expected": expected,
                 "mode": mode,
                 "pass": False,
@@ -573,7 +563,6 @@ class ApiAssertionRunner:
                 error = regex_error
         result = {
             "type": "body_contains",
-            "layer": 3,
             "expected": expected,
             "mode": mode,
             "pass": passed,
@@ -598,7 +587,6 @@ class ApiAssertionRunner:
         if not json_schema_available():
             return {
                 "type": "json_schema",
-                "layer": 3,
                 "pass": False,
                 "error": "json_schema 断言需要 jsonschema 库（验收期已打回，此处不应到达）",
             }
@@ -612,7 +600,6 @@ class ApiAssertionRunner:
             # schema 本身写错」
             return {
                 "type": "json_schema",
-                "layer": 3,
                 "pass": False,
                 "error": (
                     f"schema 非法: 须为 JSON Schema 对象（dict），"
@@ -637,17 +624,15 @@ class ApiAssertionRunner:
                 error = "响应体非合法 JSON，无法做 schema 校验"
             return {
                 "type": "json_schema",
-                "layer": 3,
                 "pass": False,
                 "error": error,
             }
         try:
             jsonschema.validate(payload, schema)
-            return {"type": "json_schema", "layer": 3, "pass": True}
+            return {"type": "json_schema", "pass": True}
         except jsonschema.ValidationError as e:
             return {
                 "type": "json_schema",
-                "layer": 3,
                 "pass": False,
                 "error": f"schema 校验失败: {e.message}（{e.json_path}）",
             }
@@ -656,7 +641,6 @@ class ApiAssertionRunner:
             # 属场景缺陷，与「响应不合 schema」须可区分
             return {
                 "type": "json_schema",
-                "layer": 3,
                 "pass": False,
                 "error": f"schema 非法: {e.message}",
             }
@@ -666,7 +650,6 @@ class ApiAssertionRunner:
             # 「断言执行异常」，与上方 SchemaError 分支同口径归一
             return {
                 "type": "json_schema",
-                "layer": 3,
                 "pass": False,
                 "error": f"schema 非法或校验器异常: {e}",
             }
@@ -681,7 +664,6 @@ class ApiAssertionRunner:
         if non_dict:
             return {
                 "type": "sse_event_matches",
-                "layer": 3,
                 "expected": a.get("expected", ""),
                 "mode": a.get("mode", "contains"),
                 "actual_hits": [],
@@ -702,7 +684,6 @@ class ApiAssertionRunner:
         if expected is None or (expected == "" and mode in ("contains", "regex")):
             return {
                 "type": "sse_event_matches",
-                "layer": 3,
                 "expected": expected,
                 "mode": mode,
                 "actual_hits": [],
@@ -734,15 +715,23 @@ class ApiAssertionRunner:
                 hits.append(data)
         result = {
             "type": "sse_event_matches",
-            "layer": 3,
             "expected": expected,
             "mode": mode,
             "actual_hits": hits[:5],
             "hit_count": len(hits),
             "pass": len(hits) > 0,
         }
+        # capture 截断标注透出（口径对齐 body_contains 的 body_truncated 专项
+        # error）：事件数触顶/单事件 data 超 64KB 后证据不完整，期望内容可能
+        # 位于截断点之后，judge 须能区分「事件内容不匹配」与「证据不完整」
+        evidence_truncated = bool(resp.get("truncated") or resp.get("data_truncated"))
         if error is not None:
             result["error"] = error
+        elif not result["pass"] and evidence_truncated:
+            result["error"] = (
+                "SSE 事件证据不完整（事件数触顶或单事件 data 超 64KB 已截断），"
+                "期望内容可能位于截断点之后；本失败不能单独作为产品缺陷证据"
+            )
         return result
 
     # ═══════════════════════════════════════════════════════════════
@@ -763,7 +752,6 @@ class ApiAssertionRunner:
         passed = limit is not None and actual is not None and actual < limit
         result = {
             "type": "latency_under",
-            "layer": 4,
             "expected": expected,
             "actual": actual,
             "pass": passed,
