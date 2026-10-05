@@ -636,22 +636,18 @@ class G8QueryMixin:
     def _wt_name_matches_spec(wt_name: str, spec_name: str) -> bool:
         """worktree 目录名是否精确对应 spec（``{impl,verify,repair,judge}-<spec>-<ts>``）。
 
-        从目录名解析出完整 spec 再与目标精确比较（分隔符边界锚定，禁止子串
-        包含）：``impl-fix-x-1`` 对 spec ``fix-x`` 命中、对 ``fix`` 不命中。
-        非本框架命名（前缀不识别/缺时间戳段）返回 False。前缀词表即模块级
-        ``_WT_NAME_PREFIXES``（与 _spec_from_worktree_name 单源，含 judge，
-        a800466bdff4）。
+        解析复用 :meth:`_spec_from_worktree_name`（目录名解析单源化，
+        code-review item 69dad304997f——剥离载体前缀 + 末段纯数字时间戳
+        的规则只此一份，任一侧边界规则调整不再静默漂移），再与目标精确
+        比较（分隔符边界锚定，禁止子串包含）：``impl-fix-x-1`` 对 spec
+        ``fix-x`` 命中、对 ``fix`` 不命中。非本框架命名（前缀不识别/
+        缺时间戳段）解析返回 None，比较结果 False。前缀词表即模块级
+        ``_WT_NAME_PREFIXES``（单源在 _spec_from_worktree_name 侧，含
+        judge，a800466bdff4）。
         """
         if not wt_name or not spec_name:
             return False
-        for prefix in _WT_NAME_PREFIXES:
-            if wt_name.startswith(f"{prefix}-"):
-                rest = wt_name[len(prefix) + 1 :]
-                parts = rest.rsplit("-", 1)
-                if len(parts) == 2 and parts[0] and parts[1].isdigit():
-                    return parts[0] == spec_name
-                return False
-        return False
+        return G8QueryMixin._spec_from_worktree_name(wt_name) == spec_name
 
     def has_pending_merge(self, spec_name: str) -> bool:
         """该 spec 是否存在待合并实现分支（未并入 main 的提交）。
@@ -876,11 +872,24 @@ class G8QueryMixin:
         归属判定与 :meth:`_wt_name_matches_spec` 同口径：解析出完整 spec
         名全等比较（分隔符边界锚定，禁止子串包含）——spec 名互为前缀时
         （``fix-x`` vs ``fix-x-y``）裸 ``startswith`` 会误取他人 worktree。
+
+        is_dir() 检查后 base_dir 被并发移除时 iterdir 抛
+        FileNotFoundError/NotADirectoryError——对齐 stale_sweep 清扫侧的
+        non-blocking 降级口径（code-review item bc23468839cf）：记 WARNING
+        并返回 None，不沿 repair 认领调用链上抛。
         """
         if not self.base_dir.is_dir():
             return None
         candidates = []
-        for d in self.base_dir.iterdir():
+        try:
+            entries = list(self.base_dir.iterdir())
+        except OSError as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Implementer worktree scan failed (non-blocking): {e}",
+            )
+            return None
+        for d in entries:
             if (
                 d.is_dir()
                 and d.name.startswith("impl-")
