@@ -34,3 +34,10 @@
 | result-gate-summary-soft-check-fail-open | run-result host_changes 汇总警告级校验 fail-open 语义（进程内装配探针）：结果缺 host_changes 字段零拦截零告警（历史 run/无宿主变更 run 零开销）；结果非 dict 零动作；字段非数组、元素缺对象路径、汇总与 worktree 登记对象路径集合不一致三种形态仅 WARNING 放行且恒返回 None（不产生失败终态/不参与门判定）；汇总与登记一致时零告警（spec 2.3；锚点 core/agent_runner/result_gate.py:1364-1418） | pass | 0/8 | - |
 | registry-parsing-tolerance | 登记文件解析容忍（进程内装配探针）：文件缺失/非法 JSON/顶层非列表（对象、字符串）均返回 None 按无有效登记处理；空数组是合法值返回 []（与缺失可区分）；{changes:[…]} 包装形态容忍；host_change_object_path 兼容 path 别名且 object_path 优先、非 dict 元素返回空串（spec 2.3 解析单点；锚点 core/agent_runner/result_gate.py:1331-1361） | pass | 0/10 | - |
 | copyback-main-tree-trace-and-mtime-guard | result-bearing run 登记拷回主树留痕（进程内装配探针）：_copyback_host_changes 把 worktree 根 host_changes.json 拷到 .fenix/host_changes/<spec>.json（per-spec 文件防并发互覆）、内容与登记一致；无登记零动作不建文件；mtime 守卫——主树已有较新留痕时不被 worktree 陈旧登记回灌覆盖（spec 2.1 拷回；锚点 core/agent_runner/runner.py:5075-5099） | pass | 0/7 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
