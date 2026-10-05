@@ -4,17 +4,17 @@
 
 core/code_fix.py 的 checkpoint()（:2813）已有守卫块（:2935-3010）处理 switch_cooldown（冷却中 return {"triggered": False, "reason": "switch_cooldown"}）。在紧邻位置增加静默窗分支：
 
-- 新增 _night_quiet_window() 辅助：读配置 night_quiet_window（点号键走与 :2646 相同的 config 访问路径），解析 "HH:MM-HH:MM"，用本地时间（time.localtime）判断当前是否在区间内；解析失败按无窗处理并 WARNING 一次（防配置错误静默吞掉）。
-- 窗内：与冷却路径同样 return {"triggered": False, "reason": "night_quiet_window"}；首次进入武装时写武装告警（形态对齐 :2301），窗末首个放行触发写解除告警（对齐 :2341），evidence 含窗区间与下一可投递时刻。
+- 新增 _night_quiet_window() 辅助：读配置 night_quiet_window（点号键走与 :2646 相同的 config 访问路径），解析 "HH:MM-HH:MM"（end<=start 逆序视为非法），用本地时间（time.localtime）判断当前是否在区间内；解析失败或逆序按无窗处理并 WARNING 一次（防配置错误静默吞掉）。
+- 窗内：与冷却路径同样 return {"triggered": False, "reason": "night_quiet_window"}；首次进入武装时写武装告警（形态对齐 :2301），窗末首个放行触发写解除告警（对齐 :2341），evidence 含窗区间与下一可投递时刻。告警按「窗次」幂等——窗次标识含日期（如 armed_window_date），同窗次武装/解除各至多一次，跨窗次自动重新武装；残留标识不拦截投递（沿冷却残留态清理先例 :2953-2968 惰性清理）。
 - 与冷却共存：两者同时命中取更晚可投递时刻，各自独立武装/解除，互不复位。
 
 ### 配置
 
-沿 _switch_cooldown_seconds（:2646）的既有模式：点号键 + 代码内缺省常量（缺省 "04:15-04:45"），不在模板强配（与冷却 300 秒缺省同策略）。
+沿 _switch_cooldown_seconds（:2646）的既有模式：点号键 + 代码内缺省常量（缺省 "04:15-04:45"），不在模板强配（与冷却 300 秒缺省同策略）。同步在 fenixd.py CODE_FIX_RESULT_MESSAGES（:3890）补 night_quiet_window 中文文案条目——手动触发回链消费方，缺项回退为原始 reason 串（:3914-3915），补条目属文案补全非正确性修复。
 
-### 为什么不改三路触发点
+### 为什么不改触发点（四路单点汇入）
 
-_resubmit（:3369）、event_bus full-scan 兜底（core/event_bus.py:274）、持有者回调（:3643）最终都调 checkpoint()，入口单点判定即全覆盖；分散判定反而引入不一致。
+_resubmit（:3370）、审查收尾新条目激活（core/agent_runner/maintenance_runs.py:1767）、event_bus full-scan 兜底（core/event_bus.py:274）、持有者回调（:3643）最终都调 checkpoint()（源码守卫注释 core/code_fix.py:2936-2939 自证其为全部激活路径的唯一共用投递入口），入口单点判定即全覆盖；分散判定反而引入不一致。守卫位于公共路径，对 override_enabled=True 手动触发同样生效（手动授权仅越过 enabled 总开关，:2820-2823 沿冷却现状），窗内手动触发回链如实返回 reason，属预期非回归。
 
 ### 风险
 
