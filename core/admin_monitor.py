@@ -639,6 +639,29 @@ _ORPHAN_EFFECT_DELIBERATE_CHANNELS = frozenset({"manual", "recovery"})
 # f"{spec} {old} → {new}"）；刻意不匹配 "Gate transition: " 前缀（门禁自动
 # 逃生门，非人为裁决证据）。
 _ORPHAN_UNFREEZE_TRANSITION_RE = re.compile(r"^Transition: (\S+) blocked → (\S+)\s*$")
+# ── 提交类旁证 / STATE 旁证（evo-admin-orphan-effect-evidence-expansion）──
+# 提交类旁证的 git 只读查询超时（对齐跨日复发检索 _CROSSDAY_SEARCH_TIMEOUT_
+# SECONDS；git 不可用/非仓库/超时按提交类家族无证据处理，fail-closed 不阻塞
+# 其余家族，通道参照 core/deliverables.py:1997、core/code_review.py:826 先例）。
+_ORPHAN_EFFECT_GIT_TIMEOUT_SECONDS = 30
+# 归档收尾提交的消息家族前缀：归档入库（[fenix] archive: <spec> 归档入库）
+# 与 admin 收尾动作（[fenix] admin: 提交 <spec> 归档删除收尾…）。
+_ORPHAN_EFFECT_FINALIZE_COMMIT_PREFIXES = ("[fenix] archive:", "[fenix] admin:")
+# 归档收尾提交的收尾关键词约束：admin 前缀消息可能提及 spec 名但非收尾动作，
+# 「前缀 ∧ 关键词 ∧ spec 名」三条件同时满足才命中（单一条件不命中防假阳性）。
+_ORPHAN_EFFECT_FINALIZE_COMMIT_KEYWORDS = ("归档", "收尾")
+# global 组 spec 名 token 提取（提取不到不猜）：≥3 段小写 kebab-case（本仓
+# spec 命名形态 evo-add-xxx / fix-xxx / add-xxx…）；过短英语复合词（merge-
+# back、code-review 等）不取。误取由 STATE 无条目/提交消息不匹配兜底
+# （fail-closed），仅作提取指针、不构成证据本身。
+_ORPHAN_SPEC_NAME_TOKEN_RE = re.compile(
+    r"(?<![\w-])([a-z0-9]+(?:-[a-z0-9]+){2,})(?![\w-])"
+)
+# 分支名尾部派发时间戳剥离（fenix/<spec>-<ts> → spec）：仅剥 ≥10 位纯数字
+# 尾段（epoch 秒/毫秒）；-7c1997 类十六进制短后缀是 spec 名组成部分，不剥。
+_ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE = re.compile(r"-[0-9]{10,}$")
+# 单组 spec 名候选上限（边界防失控文本产生的候选膨胀）。
+_ORPHAN_SPEC_NAME_TOKEN_LIMIT = 5
 
 
 def _normalize_orphan_group_spec(spec):
@@ -4554,7 +4577,9 @@ class AdminMonitor:
         # 宽口径——宁可漏收敛不可抢在飞 run 的信号，方向 fail-closed）
         if self._has_active_admin_run_for_spec(group_spec, exclude_run_id=rid):
             return
-        effective, evidence = self._orphan_group_effect_evidence(group, group_spec, now)
+        effective, evidence = self._orphan_group_effect_evidence(
+            group, group_spec, now, sig_rec=sig_rec
+        )
         if not effective:
             # ⑥ fail-closed：不补记，维持滞留，走既有孤儿升级路径
             # （unhandled_for 已升级去重——升级告警未被人工处理前不重复成条）；
@@ -4653,21 +4678,33 @@ class AdminMonitor:
             {"evidence": evidence},
         )
 
-    def _orphan_group_effect_evidence(self, group, group_spec, now: float):
+    def _orphan_group_effect_evidence(self, group, group_spec, now: float,
+                                      sig_rec=None):
         """只读核查处置组动作是否已实际生效。返回 (effective: bool, evidence: str)。
 
         证据源只看真实状态（禁止以处置记录文本自证——记录 summary 声称
-        「已计划/已执行」不构成证据，spec「生效核查不看记录自证」场景）：
+        「已计划/已执行」不构成证据，spec「生效核查不看记录自证」场景）。
+        证据为按处置动作类型的家族并集，依序尝试、任一家族命中即判定生效；
+        全部家族未命中维持 fail-closed（宁可滞留升级，不可假闭环）：
 
         - 组 spec 为具体 spec：STATE 的 frozen 标记与 status 推进——解冻类
           动作生效签名 = frozen=False 且 status 离开 blocked（design D2）；
           STATE 是该形态的持久真实状态源（日志轮转不丢），单源即可判定。
-        - 组 spec 为 global/None（无对应 SPEC 状态可读，如 429 现场）：
-          以 fenixd.log 对账为主——组记录 created 邻域时间窗内的解冻族
-          Transition 留痕（blocked → 其他，channel=manual/recovery）。
-        - 具体 spec 在 STATE 无条目（被并发软删等）→ 回退日志对账同门。
+          STATE 无条目（被并发软删等）→ 回退 global/None 同门（下方家族）。
+        - ①解冻留痕（日志候选集）：组记录 created 邻域时间窗内的解冻族
+          Transition 留痕（blocked → 其他，channel=manual/recovery），检索
+          面覆盖 fenixd.log 及轮转备份（evo-admin-orphan-effect-evidence-
+          expansion）。
+        - ②提交类旁证（新增）：对账窗口内 git log——merge commit 提交消息
+          含目标 spec 名（合并目标分支名），或归档收尾提交（非 merge，消息
+          同时含 spec 名、家族前缀与收尾关键词；单一条件不命中防假阳性）。
+        - ③STATE 旁证（新增，仅 global/None 组）：从组记录 actions_taken/
+          evidence 或关联 SIGNAL 记录提取明确 spec 名 token（提取不到不猜、
+          跳过本家族），回退 state_machine.read_one 按同门判据核查；STATE
+          无条目/读取失败按无证据处理（fail-closed）。
 
-        证据不足返回 False（宁可滞留升级，不可假闭环）。
+        处置记录文本仅可作提取 spec 名与建立对账窗口的指针，不构成生效
+        证据本身（「禁止记录自证」约束对新增家族同样适用）。
         """
         sig_spec = _normalize_orphan_group_spec(group_spec)
         if sig_spec is not None:
@@ -4699,76 +4736,247 @@ class AdminMonitor:
         if not starts:
             return False, "组记录无可解析 created 时刻，无法建立日志对账窗口"
         window_start = min(starts) - _ORPHAN_EFFECT_LOG_SLACK_SECONDS
+        # ① 解冻留痕（日志候选集：fenixd.log + 轮转备份）
         hits = self._read_recent_unfreeze_transitions(window_start, now)
         if hits:
             return True, (
-                f"fenixd.log 对账窗口内解冻族 Transition 留痕 {len(hits)} 条"
+                f"日志对账窗口内解冻族 Transition 留痕 {len(hits)} 条"
                 f"（首条：{hits[0]}）"
             )
+        # ②③ 提交类/STATE 旁证都以「目标 spec 名」为匹配锚点：先做不猜提取
+        # （组记录文本 → 关联 SIGNAL 记录）；具体 spec 组的 spec 名本身即锚点
+        spec_names = self._extract_orphan_group_spec_names(group, sig_rec)
+        if sig_spec is not None and sig_spec not in spec_names:
+            spec_names.insert(0, sig_spec)
+        if spec_names:
+            # ② 提交类旁证：merge commit / 归档收尾提交（git 只读查询）
+            commit_ev = self._orphan_commit_evidence(window_start, now, spec_names)
+            if commit_ev:
+                return True, commit_ev
+            # ③ STATE 旁证（仅 global/None 组：具体 spec 组上方已按单源判定）
+            if sig_spec is None:
+                state_ev = self._orphan_state_corroboration_evidence(spec_names)
+                if state_ev:
+                    return True, state_ev
+        miss = "对账窗口内无解冻族 Transition 留痕/提交类旁证/STATE 旁证"
+        if not spec_names:
+            miss += "（spec 名不可提取，STATE/提交家族无锚点跳过）"
         return False, (
-            f"fenixd.log 对账窗口内无解冻族 Transition 留痕"
-            f"（window_start={from_epoch(window_start).isoformat()}）"
+            f"{miss}（window_start={from_epoch(window_start).isoformat()}）"
         )
+
+    def _extract_orphan_group_spec_names(self, group, sig_rec=None) -> list:
+        """从组记录文本提取目标 spec 名候选（提取不到不猜，仅作匹配指针）。
+
+        提取顺序（design「spec 名提取」节）：组内 DISPOSITION 记录
+        actions_taken/evidence 文本 → 关联 SIGNAL 记录 description/evidence
+        文本。token 形态为 ≥3 段小写 kebab-case；fenix/<spec>-<ts> 分支记法
+        剥尾部 ≥10 位纯数字派发时间戳得 spec 名（-7c1997 类十六进制短后缀
+        是 spec 名组成部分，不剥）；admin-global-<ts> run id 剥 ts 后的占位
+        残渣丢弃。去重保序并截断到 _ORPHAN_SPEC_NAME_TOKEN_LIMIT。误取由
+        STATE 无条目/提交消息不匹配兜底（fail-closed），提取结果本身不构成
+        生效证据。
+        """
+        texts = []
+        for r in group:
+            texts.append(str(r.get("actions_taken") or ""))
+            texts.append(str(r.get("evidence") or ""))
+        if sig_rec is not None:
+            texts.append(str(sig_rec.get("description") or ""))
+            texts.append(str(sig_rec.get("evidence") or ""))
+        names = []
+        placeholder_residue = f"admin-{_ORPHAN_GLOBAL_SPEC_PLACEHOLDER}"
+        for text in texts:
+            for tok in _ORPHAN_SPEC_NAME_TOKEN_RE.findall(text):
+                name = _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE.sub("", tok)
+                if not name or name == placeholder_residue:
+                    continue
+                if name not in names:
+                    names.append(name)
+                if len(names) >= _ORPHAN_SPEC_NAME_TOKEN_LIMIT:
+                    return names
+        return names
+
+    @staticmethod
+    def _is_orphan_finalize_commit(subject: str, spec_name: str) -> bool:
+        """归档收尾提交判定：spec 名 ∧ 家族前缀 ∧ 收尾关键词三条件同时在场。
+
+        单一条件（仅 spec 名或仅前缀）不命中——防提交消息假阳性误收口
+        （spec「提交消息假阳性不误判」场景）。
+        """
+        if spec_name not in subject:
+            return False
+        if not any(p in subject for p in _ORPHAN_EFFECT_FINALIZE_COMMIT_PREFIXES):
+            return False
+        return any(k in subject for k in _ORPHAN_EFFECT_FINALIZE_COMMIT_KEYWORDS)
+
+    def _git_log_commit_subjects(self, extra_args: list) -> list:
+        """只读 git log（HEAD 历史），返回 [(committer_ts, subject)]；失败返回 []。
+
+        通道参照 core/code_review._git / core/deliverables._git_log_path_history
+        既有先例（subprocess git -C <project_root>，硬超时）；git 不可用/非
+        仓库/查询失败一律返回空列表（提交类家族按无证据处理，fail-closed）。
+        """
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self.project_root), "log",
+                 "--format=%ct%x1f%s"] + list(extra_args),
+                capture_output=True,
+                text=True,
+                timeout=_ORPHAN_EFFECT_GIT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self.logger.debug(
+                "admin_monitor",
+                f"orphan effect check: git log {extra_args} failed: {e}",
+            )
+            return []
+        if proc.returncode != 0:
+            self.logger.debug(
+                "admin_monitor",
+                f"orphan effect check: git log exit={proc.returncode} "
+                f"stderr={(proc.stderr or '').strip()[:200]}",
+            )
+            return []
+        out = []
+        for line in proc.stdout.splitlines():
+            ts_s, sep, subject = line.partition("\x1f")
+            if not sep or not ts_s.strip().isdigit():
+                continue
+            out.append((int(ts_s.strip()), subject))
+        return out
+
+    def _orphan_commit_evidence(self, window_start: float, now: float,
+                                spec_names: list):
+        """提交类旁证：对账窗口内 merge commit / 归档收尾提交（只读 git log）。
+
+        (a) merge commit：``git log --merges`` 窗口内提交且消息含目标 spec 名
+        （合并目标分支名）；(b) 归档收尾提交：非 merge 提交且消息同时含目标
+        spec 名与归档收尾家族前缀（+收尾关键词）。两类均须提交时间（committer
+        ts）落在对账窗内。命中返回证据字符串，全不命中/git 失败返回 None
+        （该家族按无证据处理，不阻塞其余家族，fail-closed）。
+        """
+        merges = self._git_log_commit_subjects(["--merges"])
+        finalizes = self._git_log_commit_subjects(["--no-merges"])
+        for name in spec_names:
+            for ts, subject in merges:
+                if window_start <= ts <= now and name in subject:
+                    return (
+                        f"对账窗口内 merge commit 提交消息含目标 spec 名 '{name}'"
+                        f"（{from_epoch(ts).isoformat()}：{subject[:120]}）"
+                    )
+            for ts, subject in finalizes:
+                if (window_start <= ts <= now
+                        and self._is_orphan_finalize_commit(subject, name)):
+                    return (
+                        f"对账窗口内归档收尾提交命中目标 spec 名 '{name}'"
+                        f"（{from_epoch(ts).isoformat()}：{subject[:120]}）"
+                    )
+        return None
+
+    def _orphan_state_corroboration_evidence(self, spec_names: list):
+        """STATE 旁证（global/None 组末位家族）：提取的 spec 名回退 read_one
+        按「frozen=False 且 status 离开 blocked」同门判据核查。
+
+        STATE 无条目/读取失败按无证据跳过该候选（不猜、不假闭环）；任一候选
+        命中返回证据字符串，全不命中返回 None。
+        """
+        for name in spec_names:
+            try:
+                entry = self.state_machine.read_one(name)
+            except Exception as e:  # noqa: BLE001 — 读取失败按无证据跳过
+                self.logger.debug(
+                    "admin_monitor",
+                    f"orphan effect check: STATE read failed for '{name}': {e}",
+                )
+                continue
+            if not entry:
+                continue
+            frozen = bool(entry.get("frozen"))
+            status = str(entry.get("status") or "")
+            if not frozen and status and status != "blocked":
+                return (
+                    f"STATE '{name}'（提取 spec 名旁证）frozen=False "
+                    f"status={status}（已解冻推进）"
+                )
+        return None
 
     def _read_recent_unfreeze_transitions(self, since_epoch: float,
                                           until_epoch: float) -> list:
-        """fenixd.log 尾部（≤256KB）检索时间窗内解冻族 Transition 留痕。
+        """日志候选集尾部（逐文件 ≤256KB）检索时间窗内解冻族 Transition 留痕。
+
+        候选集 = fenixd.log + fenixd.log.1.._LOG_ROTATION_BACKUPS（日志轮转
+        不丢证据：解冻留痕可能已轮转出当前日志尾部，落入备份文件，evo-admin-
+        orphan-effect-evidence-expansion）。按对账窗口过滤：mtime 早于窗口
+        起点的文件整体跳过（只含更老条目，与跨日复发检索 :3449 同款剪枝），
+        行级再按时间戳窗内截取；逐文件尾部限量（_TAIL_ERROR_READ_BYTES）与
+        单文件时代同语义，最坏成本与跨日复发检索同量级。
 
         匹配 _finish_transition 成功行形态 ``Transition: <spec> blocked →
         <new>`` 且 context.channel ∈ {manual, recovery}（人为裁决通道）；
         刻意不匹配 "Gate transition: " 前缀（门禁自动逃生门非人为证据）。
-        返回人类可读留痕摘要列表（日志时序序）；读取/解析失败按无证据返回
-        空列表（fail-closed：不补记，维持滞留升级）。
+        返回人类可读留痕摘要列表（日志时序序——轮转文件从最老 .N 起迭代）；
+        读取/解析失败按无证据返回空列表（fail-closed：不补记，维持滞留升级）。
         """
-        log_file = self.project_root / ".fenix" / "logs" / "fenixd.log"
-        if not log_file.exists():
-            return []
-        try:
-            size = log_file.stat().st_size
-            with log_file.open("rb") as f:
-                if size > _TAIL_ERROR_READ_BYTES:
-                    start = size - _TAIL_ERROR_READ_BYTES
-                    # 边界判定与 _read_tail_error_entries 同款（code-review
-                    # item 96293d84951d）：回看一字节保住完整行起点
-                    f.seek(start - 1)
-                    if f.read(1) == b"\n":
-                        f.seek(start - 1)
-                    else:
-                        f.seek(start)
-                    f.readline()  # 丢弃 seek 可能截断的首行
-                data = f.read().decode("utf-8", "replace")
-        except OSError:
-            return []
+        log_dir = self.project_root / ".fenix" / "logs"
+        # 轮转序倒序迭代（fenixd.log.5 最老 → … → .1 → 当前），命中摘要保持
+        # 日志时序序（首条 = 窗内最老留痕，与单文件时代语义一致）
+        candidates = [f"fenixd.log.{i}" for i in range(_LOG_ROTATION_BACKUPS, 0, -1)]
+        candidates.append("fenixd.log")
         hits = []
-        for line in data.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        for name in candidates:
+            log_file = log_dir / name
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+                st = log_file.stat()
+            except OSError:
+                continue  # 文件不存在/不可 stat：候选集按实际在场的文件算
+            if st.st_mtime < since_epoch:
+                continue  # mtime 剪枝：最后写入早于窗口起点 → 只含更老条目
+            try:
+                size = st.st_size
+                with log_file.open("rb") as f:
+                    if size > _TAIL_ERROR_READ_BYTES:
+                        start = size - _TAIL_ERROR_READ_BYTES
+                        # 边界判定与 _read_tail_error_entries 同款（code-review
+                        # item 96293d84951d）：回看一字节保住完整行起点
+                        f.seek(start - 1)
+                        if f.read(1) == b"\n":
+                            f.seek(start - 1)
+                        else:
+                            f.seek(start)
+                        f.readline()  # 丢弃 seek 可能截断的首行
+                    data = f.read().decode("utf-8", "replace")
+            except OSError:
                 continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("component") != "state_machine":
-                continue
-            if entry.get("level") != "INFO":
-                continue
-            m = _ORPHAN_UNFREEZE_TRANSITION_RE.match(str(entry.get("message") or ""))
-            if m is None:
-                continue
-            ctx = entry.get("context")
-            channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
-            if channel not in _ORPHAN_EFFECT_DELIBERATE_CHANNELS:
-                continue
-            ts = parse_ts(str(entry.get("timestamp") or ""))
-            if ts is None or not since_epoch <= ts.timestamp() <= until_epoch:
-                continue
-            note = ctx.get("note") if isinstance(ctx, dict) else None
-            hits.append(
-                f"{m.group(1)} blocked → {m.group(2)} "
-                f"(channel={channel}, note={note or ''})"
-            )
+            for line in data.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("component") != "state_machine":
+                    continue
+                if entry.get("level") != "INFO":
+                    continue
+                m = _ORPHAN_UNFREEZE_TRANSITION_RE.match(str(entry.get("message") or ""))
+                if m is None:
+                    continue
+                ctx = entry.get("context")
+                channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
+                if channel not in _ORPHAN_EFFECT_DELIBERATE_CHANNELS:
+                    continue
+                ts = parse_ts(str(entry.get("timestamp") or ""))
+                if ts is None or not since_epoch <= ts.timestamp() <= until_epoch:
+                    continue
+                note = ctx.get("note") if isinstance(ctx, dict) else None
+                hits.append(
+                    f"{m.group(1)} blocked → {m.group(2)} "
+                    f"(channel={channel}, note={note or ''})"
+                )
         return hits
 
     def _run_has_interrupted_marker(self, admin_run_id: str) -> bool:
