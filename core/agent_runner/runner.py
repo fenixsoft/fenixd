@@ -387,6 +387,39 @@ TURN_EXTENSION_WINDOW_SECONDS = 60.0
 # _salvage_impl_result 的实现车道判定同口径。
 IMPL_LANE_AGENT_TYPES = ("implementer", "fast-track")
 
+# 收尾宽限适用车道集合（evo-add-admin-run-wrapup-contract 1.1）：与上方
+# IMPL_LANE_AGENT_TYPES 平行的「非实现车道」枚举。轮数/墙钟末次扩容点对
+# 该集合内且 run 内自建任务全部 completed 的 run 发一次性收尾宽限（处置
+# 记录收尾保护——admin-pack2-official-encoder-1791196033 在写最终记录的
+# 瞬间被轮数上限击杀的事故修复）。实现车道（IMPL_LANE_AGENT_TYPES）不在
+# 其中：其预算/早停由 kill_early 与 sizing 管辖，两集合不相交（design
+# 「与 D6 早停不互相触发」）；impl-ocr 属实现族语义，同此理由有意排除。
+# 判据自带收窄：run 无 TaskCreate 记录（清单为空）不触发，故集合覆盖面
+# 宽于实际触发面（planner/verifier 等极少建任务的车道天然不触发）。
+WRAPUP_GRACE_AGENT_TYPES = (
+    "administrator",
+    "dispute-judge",
+    "spec-review",
+    "self-review",
+    "code-review",
+    "code-fix",
+    "verifier",
+    "tester",
+    "planner-plan",
+    "planner-judge",
+    "planner",
+    "repair",
+    "knowledge-distiller",
+)
+
+# 墙钟侧宽限折算下/上限（秒）（evo-add-admin-run-wrapup-contract 1.2）：
+# 发放量 = 宽限轮数 × 该 run 近期平均每轮墙钟，clamp 到本区间——下限防
+# 「每轮 3s 的快车道 run 折算出 60s 宽限」形同虚设，上限防慢车道折算出
+# 数小时级单笔宽限（总墙钟仍受 absolute_max + 一次性抬升约束，见
+# _supervision_deadline_action 的 grace lift 注记）。
+WRAPUP_GRACE_MIN_SECONDS = 300.0
+WRAPUP_GRACE_MAX_SECONDS = 3600.0
+
 
 def _bookkeeping_tool_share(tool_metrics: dict | None) -> float | None:
     """整 run 累计簿记占比（evo-add-impl-run-budget-sizing 2.2，design D5）。
@@ -2500,6 +2533,32 @@ class AgentRunner:
             return " | ".join(parts)
 
         if turn_extensions_used >= TURN_EXTENSION_MAX:
+            # ── 一次性收尾宽限（evo-add-admin-run-wrapup-contract 1.1）──
+            # 轮数末次扩容点：非实现车道且 run 内自建任务全部 completed 的
+            # run，先于既有击杀发一次性收尾宽限（默认 20 轮，可配）——处置/
+            # 评审车道在收尾写作阶段的最后一刻被击杀会丢整段处置结论，宽限
+            # 窗口专门留给「写完收尾产物」。判据与防重复都在
+            # _wrapup_grace_grant 单点；发放标记与墙钟侧共用同一状态槽。
+            # 发放失败/条件不满足 → 走既有击杀路径（evidence 逐字保留，
+            # budget._is_exemptable_reason 按 reason/evidence 子串匹配豁免
+            # 口径，宽限观测只经 _annotated 进 evidence 不改既有子串）。
+            _grant = self._wrapup_grace_grant(
+                agent_type, run_id, run_file, spec_name)
+            if _grant is not None:
+                _grace_turns = int(_grant["turns"])
+                return {
+                    **base,
+                    "action": "extend",
+                    "extension_index": turn_extensions_used,
+                    "evidence": _annotated(
+                        f"wrapup_grace granted: lane '{agent_type}' "
+                        f"run-created tasks all completed "
+                        f"({_grant['created']}/{_grant['created']}) — "
+                        f"one-time wrapup window +{_grace_turns} turns"),
+                    "new_turn_cap": (max_turns or 0)
+                    + turn_extensions_used * turn_step + _grace_turns,
+                    "remaining_tasks": remaining_tasks,
+                }
             return {
                 **base,
                 "action": "kill",
@@ -2685,6 +2744,115 @@ class AgentRunner:
             f">= {remaining_threshold} and run progress {progress:.2f} <= "
             f"{progress_floor} — renewal unlikely to finish remaining work; "
             f"salvage via WIP checkpoint")
+
+    # ── 一次性收尾宽限（evo-add-admin-run-wrapup-contract 1.1/1.2）────────
+    # 轮数侧（_turn_limit_action 扩容封顶分支）与墙钟侧
+    #（liveness._supervision_deadline_action 的 max_extensions 用满分支）共用
+    # 的发放判定/状态单点：车道 ∈ WRAPUP_GRACE_AGENT_TYPES（非实现车道）且
+    # run 内自建任务全部 completed 且该 run 未发放过。判据数据源 =
+    # run_task_track.parse_run_task_done（run 产物 TaskCreate/TaskUpdate 解析，
+    # D2 单点口径）；**禁用 spec tasks.md 的 remaining_tasks**——那是 impl
+    # 车道交付面观测，对 admin/评审 run 的在途收尾工作零对应（design 明示
+    # 数据源错位，evo-add-admin-run-wrapup-contract proposal 问题 1）。
+
+    def _wrapup_grace_state_entry(self, run_id: str) -> dict:
+        """收尾宽限共享状态槽（``_turn_branch_state[run_id]``，单点）。
+
+        「是否已发放」标记与发放量（wrapup_grace_seconds，墙钟侧 absolute_max
+        一次性抬升消费）都落本槽——轮数侧与墙钟侧共用同一状态（design 1.2），
+        任意一侧发放后另一侧不再重复发放。槽体复用轮次分支基线 dict（同一
+        run_id 键）：run 终态经 _turn_branch_state_forget 摘除、直调车道由既
+        有 24h 清理兜底，宽限状态不新增泄漏面。``__new__`` 绕过 ``__init__``
+        的测试实例按 _turn_limit_action 同款惰性回退建态/建锁。
+        """
+        self.__dict__.setdefault("_turn_branch_state", {})
+        self.__dict__.setdefault("_turn_branch_state_lock", threading.Lock())
+        with self._turn_branch_state_lock:
+            entry = self._turn_branch_state.setdefault(run_id, {})
+            entry.setdefault("created_ts", time.time())
+        return entry
+
+    def _run_created_tasks_all_completed(self, run_file) -> "tuple[bool, int]":
+        """run 内自建任务是否全部 completed（收尾宽限判据，1.1）。
+
+        数据源 = ``run_task_track.parse_run_task_done``（run 产物
+        TaskCreate/TaskUpdate 解析单点）：判据 = created_count > 0 且全部创建
+        下标均已 TaskUpdate completed。清单为空（run 无 TaskCreate 记录）→
+        ``(False, 0)``——不触发宽限，维持既有击杀（dispute-judge / spec-review
+        等不建任务的车道行为与引入前逐位一致）。解析/读文件异常 → 同样
+        ``(False, 0)``（观测面故障不改变既有击杀路径，fail-closed 不误发放）。
+
+        Returns:
+            (all_completed, created_count)
+        """
+        try:
+            from core.run_task_track import parse_run_task_done
+            done = parse_run_task_done(Path(run_file))
+            created = int(done.get("created_count") or 0)
+            flat_done = done.get("flat_done") or set()
+        except Exception:  # noqa: BLE001 — 观测面故障不改变既有击杀路径
+            return False, 0
+        if created <= 0:
+            return False, created
+        return len(flat_done) >= created, created
+
+    def _wrapup_grace_grant(self, agent_type: str | None, run_id: str,
+                            run_file, spec_name: str | None,
+                            avg_turn_seconds: float | None = None
+                            ) -> "dict | None":
+        """一次性收尾宽限发放判定（evo-add-admin-run-wrapup-contract 1.1/1.2）。
+
+        条件缺一不发（任一不满足返回 None → 调用方走既有击杀路径）：
+
+        - ``agents.wrapup_grace.enabled``（缺省开启，轮数/墙钟两侧共用同一
+          开关键）且 ``turns`` > 0；
+        - ``agent_type`` ∈ ``WRAPUP_GRACE_AGENT_TYPES``（非实现车道）；
+        - run 内自建任务全部 completed（``_run_created_tasks_all_completed``；
+          清单为空不发）；
+        - 该 run 未发放过（标记 ``wrapup_grace_granted`` 落
+          ``_turn_branch_state[run_id]``，与墙钟侧共用同一状态槽）。
+
+        Args:
+            avg_turn_seconds: 该 run 近期平均每轮墙钟（墙钟侧折算口径入参，
+              轮数侧不传）。有效时按「宽限轮数 × avg」折算发放秒数并 clamp
+              到 ``[WRAPUP_GRACE_MIN_SECONDS, WRAPUP_GRACE_MAX_SECONDS]``，
+              随发放标记落 ``wrapup_grace_seconds`` 供墙钟侧 absolute_max
+              一次性抬升（发放的宽限窗口必须真实可用）。
+
+        Returns:
+            None（不发放）或 ``{"turns": int, "created": int,
+            "seconds": float | None}``。
+        """
+        from core.fast_track_result import get_wrapup_grace_config
+        cfg = get_wrapup_grace_config(self.config)
+        if not cfg["enabled"] or cfg["turns"] <= 0:
+            return None
+        if agent_type not in WRAPUP_GRACE_AGENT_TYPES:
+            return None
+        all_done, created = self._run_created_tasks_all_completed(run_file)
+        if not all_done:
+            return None
+        entry = self._wrapup_grace_state_entry(run_id)
+        seconds: float | None = None
+        if avg_turn_seconds is not None and avg_turn_seconds > 0:
+            seconds = float(cfg["turns"]) * float(avg_turn_seconds)
+            seconds = min(max(seconds, WRAPUP_GRACE_MIN_SECONDS),
+                          WRAPUP_GRACE_MAX_SECONDS)
+        with self._turn_branch_state_lock:
+            if entry.get("wrapup_grace_granted"):
+                return None
+            entry["wrapup_grace_granted"] = True
+            entry["wrapup_grace_seconds"] = float(seconds or 0.0)
+        self.logger.info(
+            "agent_runner",
+            f"wrapup grace granted for '{spec_name}' ({run_id}): "
+            f"lane={agent_type}, run-created tasks all completed "
+            f"({created}/{created}), turns=+{cfg['turns']}"
+            + (f", seconds={seconds:.0f}" if seconds is not None else ""),
+            {"run_id": run_id},
+        )
+        return {"turns": int(cfg["turns"]), "created": created,
+                "seconds": seconds}
 
     def _turn_traffic_active(self, run_file: Path,
                              window_seconds: float = TURN_EXTENSION_WINDOW_SECONDS
@@ -5891,7 +6059,11 @@ class AgentRunner:
                         run_file, spec_name, run_id, started_at, extensions_used,
                         agent_type=agent_type,
                         remaining_tasks=self._remaining_tasks_now(spec_name),
-                        impl_scale=_wallclock_scale)
+                        impl_scale=_wallclock_scale,
+                        # 收尾宽限折算入参（evo-add-admin-run-wrapup-contract
+                        # 1.2）：assistant 轮次计数（读线程递增，GIL 可见），
+                        # 供「宽限轮数 × 近期平均每轮墙钟」折算。
+                        turn_count=turn_count[0])
                     if action["action"] == "extend":
                         extensions_used = int(action["extension_index"])
                         deadline += float(action["extension_seconds"])

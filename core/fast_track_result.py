@@ -464,6 +464,47 @@ def get_turn_budget_sizing_config(config: dict) -> dict:
     }
 
 
+# ── 收尾宽限配置（evo-add-admin-run-wrapup-contract 1.1/1.2）──────────────
+# admin/维护等非实现车道在轮数/墙钟末次扩容点的一次性收尾宽限：轮数侧发
+# turns 轮、墙钟侧按秒折算同一轮数（runner._wrapup_grace_grant 单点折算）。
+# 两侧共用同一配置开关键（design 1.2）。缺省开启——该机制是事故修复本体
+# （admin-pack2-official-encoder-1791196033 在最终处置记录落盘瞬间被 600 轮
+# 上限击杀），且发放条件三重收紧（车道 ∈ 非实现集合、run 内自建任务全部
+# completed、每 run 至多一次），误发放面与既有续期同级。
+WRAPUP_GRACE_CONFIG_KEY = "wrapup_grace"
+WRAPUP_GRACE_ENABLED_KEY = "enabled"
+WRAPUP_GRACE_TURNS_KEY = "turns"
+DEFAULT_WRAPUP_GRACE_ENABLED = True
+DEFAULT_WRAPUP_GRACE_TURNS = 20
+
+
+def get_wrapup_grace_config(config: dict) -> dict:
+    """归一化 ``agents.wrapup_grace`` 配置（读侧单点缺省，风格对齐
+    ``get_turn_budget_sizing_config``，非法值逐项回退缺省、不抛异常）：
+
+    - ``enabled``: 布尔，缺省 True（收尾宽限总开关，轮数/墙钟两侧共用）；
+    - ``turns``: 非负整数，缺省 20（宽限轮数；0 等价关闭）。
+
+    Returns:
+        ``{"enabled": bool, "turns": int}``
+    """
+    agents = config.get("agents") if isinstance(config, dict) else None
+    agents = agents if isinstance(agents, dict) else {}
+    section = agents.get(WRAPUP_GRACE_CONFIG_KEY)
+    section = section if isinstance(section, dict) else {}
+
+    enabled = section.get(WRAPUP_GRACE_ENABLED_KEY, DEFAULT_WRAPUP_GRACE_ENABLED)
+    if not isinstance(enabled, bool):
+        enabled = DEFAULT_WRAPUP_GRACE_ENABLED
+
+    turns = section.get(WRAPUP_GRACE_TURNS_KEY, DEFAULT_WRAPUP_GRACE_TURNS)
+    if isinstance(turns, bool) or not isinstance(turns, int) \
+            or not (0 <= turns <= TURN_BUDGET_INT_MAX):
+        turns = DEFAULT_WRAPUP_GRACE_TURNS
+
+    return {"enabled": enabled, "turns": int(turns)}
+
+
 def suggested_turn_cap_for_scale(base_turn_cap: int, scale: int, cfg: dict) -> int:
     """按规模分推算生效轮数上限（evo-add-impl-run-budget-sizing design D3）。
 

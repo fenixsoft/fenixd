@@ -1277,6 +1277,7 @@ class LivenessSupervisor:
         *,
         remaining_tasks: int | None = None,
         impl_scale: int | None = None,
+        turn_count: int | None = None,
     ) -> dict:
         """deadline 到点后的监督决策（D3）：续期 or 终止，封闭矩阵。
 
@@ -1297,6 +1298,12 @@ class LivenessSupervisor:
         参与下方 impl 车道档位抬升（幂等入参，禁止以 remaining_tasks 回算）。
         两参缺省 None（门面委托/既有直调兼容），None 等价「不抬升、观测
         unavailable」，行为与引入前逐位一致。
+
+        evo-add-admin-run-wrapup-contract 1.2：``turn_count``（assistant 轮次
+        计数，调用点从轮询环 turn_count[0] 传入）只作收尾宽限的折算入参——
+        「宽限轮数 × 近期平均每轮墙钟（elapsed/turn_count）」；缺省 None 时
+        以 extension_seconds 作每轮代理口径。仅消费于 max_extensions 用满
+        分支的一次性收尾宽限发放（见下方该分支注记）。
 
         Returns: {"action": "extend"|"kill", "reason", "extension_seconds"?,
                   "extension_index"?, "evidence", "settings", "remaining_tasks"}
@@ -1434,6 +1441,24 @@ class LivenessSupervisor:
             floor_absolute_max = run_timeout
         configured_abs_max = float(sup["absolute_max_seconds"])
         absolute_max = max(configured_abs_max, floor_absolute_max)
+        # ── 已发放收尾宽限的 absolute_max 一次性抬升（1.2）────────────────
+        # 发放的宽限窗口必须真实可用：floor 派生下 max_extensions 用满点已
+        # 贴近 absolute_max，若不抬升，branch 2（总墙钟上限）会在下一次
+        # deadline 判定把宽限窗口整体截断，墙钟侧宽限形同虚设。抬升量 =
+        # 已发放宽限秒数（随发放标记落共享状态 _turn_branch_state[run_id]
+        # 的 wrapup_grace_seconds；无标记/读不到即 0——既有 run 逐位不变）。
+        # 总墙钟仍有界：absolute_max + 一次性宽限，无周期性续抬入口
+        #（发放标记防重复，同一 run 至多抬一次）。
+        _grace_state_entry = getattr(self._pm, "_wrapup_grace_state_entry", None)
+        if callable(_grace_state_entry):
+            try:
+                _grace_lift = float(
+                    (_grace_state_entry(run_id) or {}).get(
+                        "wrapup_grace_seconds") or 0.0)
+            except (TypeError, ValueError):
+                _grace_lift = 0.0
+            if _grace_lift > 0:
+                absolute_max += _grace_lift
         if configured_abs_max < floor_absolute_max:
             # per-agent-timeout-override 3.2：生效超时（覆盖后）抬高 absolute_max 兜底时
             # ERROR 留痕（守护配置告警），每次 deadline 判定至多几次（续期轮次有界）。
@@ -1458,6 +1483,48 @@ class LivenessSupervisor:
                 "remaining_tasks": remaining_tasks,
             }
         if extensions_used >= max_extensions:
+            # ── 一次性收尾宽限（evo-add-admin-run-wrapup-contract 1.2）──
+            # 墙钟末次扩容点：非实现车道且 run 内自建任务全部 completed 的
+            # run，先于既有击杀发放一次性收尾宽限——与轮数侧共用同一配置
+            # 开关键（agents.wrapup_grace）与「是否已发放」状态（标记落
+            # runner._wrapup_grace_state_entry 单点）。发放量按秒折算：
+            # 宽限轮数 × 该 run 近期平均每轮墙钟（elapsed/turn_count；
+            # turn_count 不可用以 extension_seconds 作每轮代理），clamp 见
+            # WRAPUP_GRACE_MIN/MAX_SECONDS。发放经门面单点
+            # _wrapup_grace_grant；门面不可用（最小门面/测试替身缺方法）
+            # 或发放条件不满足 → 走既有击杀路径，行为与引入前逐位一致。
+            # reason/evidence 语义：发放走 extend（reason 新文案不进豁免
+            # 判定）；未发放的 kill reason 串逐字保留 "extension budget
+            # exhausted" 子串（budget.py _is_exemptable_reason 按子串匹配
+            # 判不可豁免，evo-add-impl-wallclock-budget-sizing 决策 5 复核
+            # 口径）；宽限观测只进 evidence。
+            _grace_seconds = None
+            _grant_fn = getattr(self._pm, "_wrapup_grace_grant", None)
+            if callable(_grant_fn):
+                try:
+                    _avg_turn = (
+                        (now - started_at) / turn_count
+                        if turn_count else extension_seconds)
+                    _grant = _grant_fn(
+                        agent_type, run_id, run_file, spec_name,
+                        avg_turn_seconds=_avg_turn)
+                    if isinstance(_grant, dict) and _grant.get("seconds"):
+                        _grace_seconds = float(_grant["seconds"])
+                except (TypeError, ValueError):
+                    _grace_seconds = None
+            if _grace_seconds and _grace_seconds > 0:
+                return {
+                    "action": "extend",
+                    "extension_seconds": _grace_seconds,
+                    "extension_index": extensions_used,
+                    "reason": "wrapup grace granted (final wrap-up window)",
+                    "evidence": _annotated(
+                        f"wrapup_grace: one-time wrapup window "
+                        f"{int(_grace_seconds)}s (lane '{agent_type}', "
+                        f"run-created tasks all completed)"),
+                    "settings": sup,
+                    "remaining_tasks": remaining_tasks,
+                }
             return {
                 "action": "kill",
                 "death_kind": DEATH_KIND_SUPERVISION,
