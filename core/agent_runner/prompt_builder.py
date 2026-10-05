@@ -218,6 +218,45 @@ SPEC_REVIEW_RESULT_STATUS_WHITELIST = (
     "rejected",
 )
 
+# ── 验收偏差上报契约（evo-add-acceptance-deviation-reporting 1.2/2.1）────────
+# impl run 结果 findings 类型白名单与勾选纪律措辞的**单源**：类型常量 / 白名单 /
+# 行内注解短语在此定义，result_gate 产物硬门经 import 共用（依赖方向
+# result_gate → prompt_builder，反向 import 会成环）。提示词注入段与硬门校验/
+# 拒绝文案引用同一常量，新增类型或字段只改此处即两侧同源生效，防漂移。
+ACCEPTANCE_DEVIATION_TYPE = "acceptance-deviation"
+
+IMPL_FINDINGS_TYPE_WHITELIST = (
+    ACCEPTANCE_DEVIATION_TYPE,  # 验收偏差：{task, literal, substitute, evidence}
+    "pending-interaction",  # 待裁决交互（交互契约）
+    "deliverable-dispute",  # 交付物异议（声明清单对账）
+)
+
+# 任务行内注解短语（1.1 勾选纪律）：替代验收时任务行内 MUST 注明「以 X 替代验收」。
+ACCEPTANCE_DEVIATION_ANNOTATION = "替代验收"
+
+
+def acceptance_deviation_discipline_section() -> str:
+    """实现者勾选纪律契约段（_result_gate_section 注入，result_gate 硬门同源）。
+
+    措辞引用模块常量（类型/白名单/注解短语），与 result_gate 的 findings 校验
+    及 success∧偏差∈completed_tasks 拒绝文案单源——改措辞只改本函数与常量。
+    """
+    findings_example = (
+        '{"type": "%s", "task": "<任务id>", "literal": "<未满足的字面验收>", '
+        '"substitute": "<实际替代方式>", "evidence": "<替代证据路径>"}'
+        % ACCEPTANCE_DEVIATION_TYPE
+    )
+    return (
+        "- **任务勾选纪律（acceptance-deviation-reporting，强制）**：任务字面"
+        "验收未满足时 MUST NOT 勾选完成。采用替代验证顶替时 MUST 在该任务行内"
+        f"注明「以 X {ACCEPTANCE_DEVIATION_ANNOTATION}」，并在结果文件顶层 "
+        f"`findings` 数组登记条目 `{findings_example}`，且该任务当轮 "
+        "**MUST NOT 勾选**——列入 `unfinished` 申报走 partial；success 结果中"
+        "偏差任务出现在 `completed_tasks` 会被产物硬门拒绝。规划层按行内注解以"
+        "替代方式重出验证场景链后，后续实现轮以替代场景链为该任务验收基准，"
+        "达标即可勾选且不再重复登记偏差条目。\n"
+    )
+
 
 def spec_review_result_path(project_root, spec_name: str) -> Path:
     """评审结果文件路径（add-spec-review-gate）。
@@ -2580,6 +2619,10 @@ class PromptBuilder:
                 "兜底。\n"
                 "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义"
                 "（建议以 `json.dump` 生成而非手工拼接文本）。\n"
+                # 任务勾选纪律 + findings 验收偏差契约（evo-add-acceptance-
+                # deviation-reporting 1.2）：措辞单源于模块级函数，result_gate
+                # 硬门共用同一常量（implementer/fast-track 两车道同义生效）。
+                + acceptance_deviation_discipline_section()
                 # 长任务后台等待契约句与 _long_task_wait_section 共用单一来源
                 # （此前两处手写重复、演进时单边漂移——2026-09-21 的能力事实
                 # 更正即只落了一处；code-review item c2a7b93f2bc8）
