@@ -20,7 +20,7 @@
  * 输出 JSON:
  *   {
  *     "success": true/false,
- *     "extensionLoaded": true/false,
+ *     "extensionLoaded": true/false/null,  // null = 超时收卷且一条 UI 测试都未跑，扩展加载未经任何验证（不确定态，非 false）
  *     "networkLog": [...],
  *     "anomalies": [...],
  *     "duration": <ms>,
