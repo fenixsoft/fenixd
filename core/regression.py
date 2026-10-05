@@ -446,7 +446,7 @@ def save_state(project_root, date_str: str) -> None:
             json.dumps(
                 {
                     "last_run_date": date_str,
-                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "updated_at": timelib.to_storage(timelib.now_utc()),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -488,7 +488,7 @@ def mark_running(project_root, timeout_seconds: int = 1800) -> None:
             path,
             json.dumps(
                 {
-                    "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "started_at": timelib.to_storage(timelib.now_utc()),
                     "timeout_seconds": int(timeout_seconds),
                 }
             ),
@@ -793,7 +793,7 @@ def run_regression(
     时间 + failures + long_tests（design D6）。
     """
     log = logger or _default_logger
-    now_iso = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_iso = lambda: timelib.to_storage(timelib.now_utc())
     cmd_display = spec.cmd if isinstance(spec.cmd, str) else " ".join(str(s) for s in spec.cmd)
     output_rel = str(spec.output)
     output_abs = Path(project_root) / output_rel
