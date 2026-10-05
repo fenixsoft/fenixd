@@ -551,6 +551,11 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
     return out
 
 
+# 公开访问面（code-review item c0c4df6ac475）：project_routes.py 跨组引用改用
+# 公开名（不跨组消费下划线私有名），与 _runs_by_spec_sigs 同一函数对象单源绑定。
+runs_by_spec_sigs = _runs_by_spec_sigs
+
+
 # ── 2.1a：STATE 条目指纹（fix-dashboard-read-path-performance D1） ──────────
 # spec_summary 输出大量直接由 STATE 条目字段决定（status/priority/created/
 # updated/error/reviewer_run/start_after/frozen_until/frozen/预算覆盖/_ 前缀
