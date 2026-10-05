@@ -877,7 +877,14 @@ class SpecReviewManager:
             pass
         return snapshot
 
-    def _verify_snapshot(self, spec_name: str, snapshot: dict) -> Optional[str]:
+    def _verify_snapshot(
+        self,
+        spec_name: str,
+        snapshot: dict,
+        *,
+        status: Optional[str] = None,
+        repair_paths: Optional[set] = None,
+    ) -> Optional[str]:
         """收工后比对快照，检出越界写入。
 
         Returns: None 表示通过，否则返回错误信息。
@@ -885,6 +892,11 @@ class SpecReviewManager:
         **只对可归因信号开硬门**（该变动有且仅有「评审者越界」一种解释）：
 
         - SPEC 目录内文件被删除——评审者只被授权就地修补，删除必为越界。
+
+        status 为 approved/rejected 时（契约上 repairs 必为空），SPEC 目录内文件
+        哈希变化且未登记对应 repairs 条目属不可归因为合法修补的改动——但并发
+        人工编辑同样命中、非归因，不作硬门，记 WARNING 留痕使越界写入可观测
+        （code-review item 2ab8c934d277）。
 
         工作区扫描（既存脏文件被改动、SPEC 目录外新增未跟踪文件）**不作为硬门**：
         评审 run 同步阻塞数分钟且 cwd = 主树，期间任何并发写者（人工编辑、其他
@@ -898,6 +910,7 @@ class SpecReviewManager:
             return f"SPEC 目录不存在: {spec_dir}"
 
         # 检查 SPEC 目录内文件哈希是否变化
+        modified_spec = []
         for rel, old_hash in snapshot.get("spec_files", {}).items():
             full = self.project_root / rel
             if not full.exists():
@@ -907,9 +920,26 @@ class SpecReviewManager:
                 new_hash = hashlib.md5(content).hexdigest()
                 if new_hash != old_hash:
                     # 文件被修改，这是允许的（repaired 状态）
-                    pass
+                    modified_spec.append(rel)
             except OSError:
                 return f"无法读取文件: {rel}"
+
+        # approved/rejected 契约上 repairs 必为空（_check_write_boundary 步骤 3），
+        # 此时 SPEC 目录内文件哈希变化且未登记对应 repairs 条目，不可归因为合法
+        # 修补——但并发人工编辑同样命中、非归因，不作硬门，仅 WARNING 留痕使
+        # 越界写入可观测（code-review item 2ab8c934d277）。
+        if status in ("approved", "rejected") and modified_spec:
+            unregistered = [
+                rel for rel in modified_spec
+                if repair_paths is None or rel not in repair_paths
+            ]
+            if unregistered:
+                self.logger.warning(
+                    "spec_review",
+                    f"评审结果 {status} 但 SPEC 目录内文件被改动（未登记对应 "
+                    f"repairs，非归因可能为并发编辑，留痕放行）: {spec_name}: "
+                    f"{', '.join(sorted(unregistered))}",
+                )
 
         # 工作区脏文件变动：非归因，仅留痕
         changed_dirty = []
@@ -1008,13 +1038,20 @@ class SpecReviewManager:
             if not resolved.exists():
                 return f"repairs 路径不存在: {path}"
 
+        # status 与 repairs 路径集合提前取出供步骤 2 快照比对消费（approved/
+        # rejected 伴随的 SPEC 目录改动须留痕，code-review item 2ab8c934d277）。
+        status = review_data.get("status")
+        repair_paths = {r["path"] for r in repairs}
+
         # 2. 快照比对（需要从临时文件加载派发前快照；读取/解析抽公共助手
         # _load_snapshot_or_none 与 _artifact_landed_valid 共用，不再各复制一份
         # ——code-review item ade5d0dfdc2b）
         snapshot, snap_err_type, snap_err_msg = self._load_snapshot_or_none(spec_name)
         if snapshot is not None:
             try:
-                snapshot_err = self._verify_snapshot(spec_name, snapshot)
+                snapshot_err = self._verify_snapshot(
+                    spec_name, snapshot, status=status, repair_paths=repair_paths
+                )
                 if snapshot_err:
                     return snapshot_err
             except TypeError as e:
@@ -1036,7 +1073,6 @@ class SpecReviewManager:
             )
 
         # 3. status 与改动一致性
-        status = review_data.get("status")
         if status == "approved" and repairs:
             return "approved 状态伴随文件改动"
         if status == "repaired" and not repairs:
@@ -1198,7 +1234,7 @@ class SpecReviewManager:
 
         - artifact：产物已落盘合法（调用 `_artifact_landed_valid`）；优先级最高；
         - infra：结构化归因命中（api_error_status ∈ {402,403,429} /
-          conn_error 真值——evo-fix-spec-review-infra-attribution-bridge 1.3，
+          conn_error 显式 True——evo-fix-spec-review-infra-attribution-bridge 1.3，
           优先于文本词表）或指纹匹配（403/402/429/quota/budget/余额/insufficient
           balance/ rate limit / 既有 provider 熔断信号 "provider circuit open" /
           "provider chain exhausted"——runner.py:2458/2473，供侧熔断同属 infra）
@@ -1214,7 +1250,8 @@ class SpecReviewManager:
                 AgentRunResult.api_error_status）；非 None 时优先消费，命中
                 _STRUCTURED_INFRA_API_STATUS 即判 infra。
             conn_error: 可选结构化归因（连接类标记，来自
-                AgentRunResult.conn_error）；真值即判 infra。
+                AgentRunResult.conn_error）；仅显式 True 判 infra（`is True`
+                严格等值，防 MagicMock 等替身对象误判，见实现处注释）。
 
         Returns: "artifact" | "infra" | "content"。
         """
