@@ -26,7 +26,9 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                          经门面解析；code-review 329a77d10a7e),
     read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9),
     cached_config_value (summary.py 公开别名，quality_gates.py 经门面解析；
-                         code-review 20ad589a3bc4)
+                         code-review 20ad589a3bc4),
+    runs_by_spec_sigs   (summary.py 公开别名，project_routes.py 经门面解析；
+                         code-review c0c4df6ac475)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
@@ -86,6 +88,7 @@ from .summary import (
     spec_summary,
     _stat_sig,
     _runs_by_spec_sigs,
+    runs_by_spec_sigs,
     _spec_dep_sigs,
     SummaryIndex,
     spec_detail,

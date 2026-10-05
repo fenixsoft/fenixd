@@ -404,7 +404,12 @@ const SuggestedImprovementsPanel = forwardRef<
       if (mountedRef.current && reqSeq === itemsReqSeqRef.current) {
         const msg = errText(e, '加载失败');
         setError(msg);
-        setItems([]);
+        // 刷新失败不清空已有列表（code-review item e735721e599d）：单条动作成功
+        // 后的刷新、切页签回来等场景一次瞬时失败不应清掉用户正在浏览（可能已
+        // 筛选、已勾选）的条目，只置错误提示（表格上方附「重试」按钮）。清空
+        // 降级仅限当前没有本作用域数据时——itemsScopeRef 只在成功回填时记录
+        // 归属键，与之不符说明是首次加载失败或跨作用域残留，仍整体清空。
+        if (itemsScopeRef.current !== (project ?? '')) setItems([]);
       }
       return [];
     } finally {
@@ -1291,7 +1296,16 @@ const SuggestedImprovementsPanel = forwardRef<
         </Button>
       </div>
 
-      {error && <div style={{ marginBottom: 12, color: '#ff4d4f' }}>加载失败：{error}</div>}
+      {error && (
+        <div style={{ marginBottom: 12, color: '#ff4d4f' }}>
+          加载失败：{error}
+          {/* 重试复用 loadItems（code-review item e735721e599d）：刷新失败保留
+              列表后，用户不必切作用域或刷新页面即可恢复数据 */}
+          <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => loadItems()}>
+            重试
+          </Button>
+        </div>
+      )}
       {/* scroll.x 保持 800：加复选框列后若上调（如 860），表格最小宽度 + 面板
           内边距会超过设置页面板可用宽度，把整页撑出横向滚动条 */}
       <Table

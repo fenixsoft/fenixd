@@ -16,6 +16,12 @@ import urllib.parse
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
+# 单文件数据源签名单点（code-review item c0c4df6ac475）：_overview_project_sig
+# 的单文件失效键改用 signature.file_sig 公开名（与原 summary._stat_sig 逐字
+# 等价，同为 (mtime_ns, size) / 不可 stat 返回 None），不再跨组消费下划线
+# 私有名。模块级导入无环：signature.py 顶部仅 stdlib，其对门面的引用均在
+# 函数内延迟解析（与 routes/base.py 的 ETag 签名链路同一模块来源）。
+from core.dashboard.data import signature
 # describe 端点 spawn claude 的 env 剔除与 architecture_routes 同源（code-review
 # item 0ea03763257b）：HTTP 线程内 subprocess.run 若不传 env，dashboard 进程环境
 # 里的 agent-run 专用键（FENIX_RUN_PROJECT_ROOT / FENIX_RUN_WORKTREE /
@@ -48,27 +54,31 @@ _OVERVIEW_CACHE_LOCK = threading.Lock()
 def _overview_project_sig(proot: Path) -> dict:
     """单项目数据源签名（stat-only，不解析内容）。
 
-    复用既有 (path, mtime_ns, size) 失效键模式（summary._stat_sig /
-    summary._runs_by_spec_sigs，不引入第二套扫描）。覆盖 overview 聚合的
-    文件型数据源：STATE.md（spec 清单/状态）、各 spec tasks.md（任务计数）、
+    复用既有 (path, mtime_ns, size) 失效键模式（signature.file_sig 单文件
+    签名单点 + summary 公开别名 runs_by_spec_sigs 的分组扫描，不引入第二套
+    扫描）。code-review item c0c4df6ac475 归一：docstring 原悬置的
+    「signature.py 落地后归一复用其导出」已兑现——单文件签名与本函数口径
+    逐字等价，直接复用其公开名；runs 按 spec 分组签名在 signature.py 无
+    等价导出（tree_sigs 为整树相对路径元组集，文件集与返回结构均不同），
+    维持 summary 单源、经公开别名引用。覆盖 overview 聚合的文件型数据源：
+    STATE.md（spec 清单/状态）、各 spec tasks.md（任务计数）、
     runs 目录（active_runs）、config.yaml（description）。daemon_health /
     hosting_state 等动态源不入签名，由 TTL 窗口兜底（陈旧与心跳节奏同量
-    级）。注：add-dashboard-paging-and-etag 若落地
-    core/dashboard/data/signature.py，本函数应归一复用其导出（合并时处理）。
+    级）。
     """
     sigs: dict = {}
     for p in (proot / ".fenix" / "STATE.md", proot / ".fenix" / "config.yaml"):
-        s = dashboard_data._stat_sig(p)
+        s = signature.file_sig(p)
         if s is not None:
             sigs[str(p)] = s
     try:
         for p in (proot / "spec" / "changes").glob("*/tasks.md"):
-            s = dashboard_data._stat_sig(p)
+            s = signature.file_sig(p)
             if s is not None:
                 sigs[str(p)] = s
     except OSError:
         pass
-    for by_spec in dashboard_data._runs_by_spec_sigs(proot).values():
+    for by_spec in dashboard_data.runs_by_spec_sigs(proot).values():
         sigs.update(by_spec)
     return sigs
 

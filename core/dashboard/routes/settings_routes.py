@@ -161,8 +161,10 @@ class H5SettingsRoutesMixin:
         else:
             result = dashboard_data.write_config(project["path"], body, scope="project")
 
+        # code-review item 71084192fc43：回执键一律 .get 容错（对齐下方
+        # sync-from-user 口径）——数据层契约演进缺键时 400 分支不退化为 500。
         if not result["ok"]:
-            self._error(400, result["error"] or "配置写入失败")
+            self._error(400, result.get("error") or "配置写入失败")
             return
 
         # 成功后返回最新配置（读回以确认）+ scope / 写入路径
@@ -172,8 +174,8 @@ class H5SettingsRoutesMixin:
             config = dashboard_data.read_effective_config(project["path"])
             config["project"] = project["name"]
         config["saved"] = True
-        config["scope"] = result["scope"]
-        config["path"] = result["path"]
+        config["scope"] = result.get("scope", "user" if project is None else "project")
+        config["path"] = result.get("path", "")
         self._json(config)
 
 

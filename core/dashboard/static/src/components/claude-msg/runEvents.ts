@@ -295,6 +295,11 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
       currentThinking.content = (currentThinking.content || '') + text;
       return;
     }
+    // 空文本短路（code-review item 657bb0c8610d）：无 currentThinking 时空片段
+    // 直接跳过，不创建只有折叠头没有内容的空 thinking 条目，也不打断相邻工具
+    // 调用的连续分组（与 text 分支仅在 trim 非空才入队的口径对齐）。只针对当前
+    // 空片段，不改任何状态，后续非空片段到达仍会正常建条。
+    if (!text.trim()) return;
     const msg: ChatMessage = { type: 'assistant', isThinking: true, content: text, timestamp };
     // 兜底强制渲染（design D4）：用户开关关闭但全流无非空正文时打标记，渲染层
     //（MessageItem / rendersNothing）据此豁免隐藏——只改转换层不传导标记会被

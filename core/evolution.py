@@ -218,12 +218,15 @@ def write_items(project_root, records: Iterable[dict]) -> None:
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str):
             continue
         recs[rec["id"]] = rec
-    content = "".join(json.dumps(recs[k], ensure_ascii=False) + "\n" for k in sorted(recs))
 
     path = items_path(project_root)
 
     def _do() -> None:
-        _atomic_write(path, content)
+        # 序列化口径（id 升序排序键、json.dumps 参数、逐条一行加换行）收口到
+        # _write_items_unlocked 单点定义，不再内联重复——否则改落盘格式需两处
+        # 同步，漏改其一即锁内/锁外写出口径分叉；本函数不加锁，锁语义仍由
+        # 外层 _with_lock 表达。
+        _write_items_unlocked(path, recs)
 
     _with_lock(path, _do)
 
@@ -463,7 +466,11 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
             _logger.debug("evolution: 项目 %s 无 self_review_state.json，不就绪", name)
             continue
         try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
+            # errors="replace"：坏 UTF-8 字节降级为替换符、由 json.loads 自然判
+            # 失败走下方 INFO 跳过分支——UnicodeDecodeError 非 OSError、不在捕获
+            # 列表内，裸穿透会中断整轮扫描（与 items.jsonl/todo.md 同口径，
+            # code-review 365a1932a94c）
+            state = json.loads(state_file.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError) as e:
             _logger.info(
                 "evolution: 项目 %s 的 self_review_state.json 不可读（不就绪）: %s", name, e
@@ -2153,8 +2160,9 @@ def read_contract(path) -> Dict[str, Any]:
     """解析分析 run 契约产物 JSON（3.8）。
 
     任一不满足 MUST 抛 ``ContractError`` 判整轮失败（不产生任何条目）：
-    - 文件存在（缺失报「产物文件未写出」）且 JSON 可解析（非法报
-      「产物 JSON 不可解析」，两者可判别归因）；
+    - 文件存在（缺失报「产物文件未写出」）且以 UTF-8 可解码（坏字节报
+      「产物文件非 UTF-8 编码」）且 JSON 可解析（非法报「产物 JSON 不可解析」，
+      三者可判别归因）；
     - JSON 可解析且为 dict；
     - 含 ``items`` 数组；
     - 每条含 ``project`` / ``date_section`` / ``title`` / ``verdict``(dict)
@@ -2174,6 +2182,11 @@ def read_contract(path) -> Dict[str, Any]:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as e:
         raise ContractError(f"产物文件未写出: {e}") from e
+    except UnicodeDecodeError as e:
+        # 坏 UTF-8 字节（如子代理以非 UTF-8 编码写出产物）既非 OSError 也非
+        # JSONDecodeError，裸穿透会击穿「任一不满足 MUST 抛 ContractError」的
+        # 契约；单列第三条文案，与「未写出 / JSON 语法坏」可判别归因（处置不同）。
+        raise ContractError(f"产物文件非 UTF-8 编码（含坏字节）: {e}") from e
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:

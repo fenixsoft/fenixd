@@ -24,8 +24,10 @@ MUST 经此处取基线，MUST NOT 各自硬编码或反向 import fenixd（会�
   （rev-list 等）自身维持，本模块不改变任何闸门方向。
 - 子进程统一带 timeout（缺省 15s，与 PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS
   口径一致）；恢复路径为启动一次性调用，无热路径压力。
-- 结果按 ``str(project_root)`` 进程内缓存（探测一次）；测试可经
-  :func:`reset_cache` 显式清空。
+- 探测**成功**的结果按 ``str(project_root)`` 进程内缓存（探测一次）；
+  测试可经 :func:`reset_cache` 显式清空。落到 fallback 的失败结果
+  **不写缓存**：瞬时故障（git 暂不可用/超时/IO 抖动）在下一次闸门
+  判定时重新探测自愈，不会把错误基线钉死到进程生命周期。
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ FALLBACK_BASE_BRANCH = "main"
 # git 子进程统一超时（秒）。
 DEFAULT_TIMEOUT_SECONDS = 15.0
 
-# 进程内缓存（按 project_root 探测一次；reset_cache() 供测试清空）。
+# 进程内缓存（仅存探测成功的结果；reset_cache() 供测试清空）。
 _cache: dict = {}
 
 
@@ -78,6 +80,8 @@ def resolve_base_branch(
 
     Returns:
         基线分支名（恒为非空 str，无 None 语义——见模块 docstring 契约）。
+        探测成功的结果按 ``str(project_root)`` 缓存；回退 ``fallback``
+        的失败结果不缓存，下次调用重新探测（瞬时故障可自愈）。
     """
     key = str(project_root)
     cached = _cache.get(key)
@@ -105,6 +109,13 @@ def resolve_base_branch(
                 branch = cand
                 break
     if branch is None:
-        branch = fallback
+        # 全部探测失败（git 暂不可用/超时/IO 抖动等瞬时故障）：仅本次回退
+        # fallback，MUST NOT 写缓存——否则一次启动期抖动即把错误基线钉死
+        # 到进程生命周期（重启前无法自愈，potplayer-base 同类事故的隐蔽
+        # 变体）。失败期间每次闸门判定重探：快失败路径（非 git 目录/
+        # 非零退出/OSError）毫秒级零成本，仅 git 真挂起时最坏 3×timeout；
+        # 调用方均为逐次闸门/恢复判定、无轮询热路径压力（见模块
+        # docstring），不值得为此引入负缓存退避。
+        return fallback
     _cache[key] = branch
     return branch

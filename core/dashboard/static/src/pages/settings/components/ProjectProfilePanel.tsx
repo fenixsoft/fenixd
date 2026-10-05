@@ -389,6 +389,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           onChange={(e) => setDescription(e.target.value)}
           placeholder="暂无简介"
           autoSize={{ minRows: 4, maxRows: 8 }}
+          // AI 重新生成在飞期间禁止编辑（code-review item 7c0c84106f76，与
+          // PromptsPanel cbd7e62160ec / SelfReviewPanel 5a7bb5de4335 同口径）：
+          // 生成成功落盘后 setDescription(result.description) 无条件覆盖草稿，
+          // 在飞键入的内容不在提交载荷里，会被静默丢失。
+          disabled={loading}
           style={{ marginTop: 12, marginBottom: 16 }}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -455,7 +460,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             data-testid="verify-yaml-textarea"
             value={yamlDraft}
             onChange={(e) => applyYamlDraft(e.target.value)}
-            disabled={yamlLoading}
+            // 保存/加载在飞期间禁止编辑（code-review item c7bebaae7eb7，与
+            // PromptsPanel cbd7e62160ec / SelfReviewPanel 5a7bb5de4335 同口径）：
+            // 在飞键入的内容不在本次提交里，静默回写仅靠草稿保护分支兜底，
+            // 会多出一条「已保留您的编辑」提示。
+            disabled={yamlLoading || yamlSaving}
             placeholder={'# 全注释 = 无契约。可点击「插入模板」开始配置。'}
             autoSize={{ minRows: 12, maxRows: 28 }}
             style={{ marginTop: 12, fontFamily: 'monospace' }}
@@ -520,6 +529,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
               <Button
                 style={{ marginLeft: 8 }}
                 onClick={() => loadVerifyYaml()}
+                // 加载/保存在飞期间禁用（code-review item c7bebaae7eb7）：在飞
+                // 重复加载会自增 yamlLoadSeq 使并发响应互相过期，与保存触发的
+                // 静默重载竞态；与同族面板在飞禁输口径对齐
+                disabled={yamlLoading || yamlSaving}
                 data-testid="verify-yaml-reload"
               >
                 重新加载
