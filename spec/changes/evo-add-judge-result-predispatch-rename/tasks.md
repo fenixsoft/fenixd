@@ -10,7 +10,7 @@
 ## 1. 派发前留档
 
 - [ ] 1.1 core/agent_runner/runner.py：run_planner 的 mode=="judge" 分支在派发前将已存在的 .fenix/verify-progress/<spec>/.fenix-run-result.json 原子改名为 prev-judge-result.json（仿 core/pm_engine/family.py prev-impl-result.json 先例；改名失败仅 WARNING 不阻断派发；不触碰 report.json/tokens.json 等跨轮产物）。
-- [ ] 1.2 core/agent_runner/runner.py：_handle_artifact_gate_retry 命中陈旧残留（artifact-structural）进入原地重试前，先改名/删除该陈旧文件，使再败归因退化为「结果文件缺失」并防烧光重试预算。
+- [ ] 1.2 core/agent_runner/runner.py：_handle_artifact_gate_retry 命中陈旧残留（artifact-structural）进入原地重试前，先改名/删除该陈旧文件，使再败归因退化为「结果文件缺失」并防烧光重试预算。仅限 agent_type=="planner-judge" 且路径经 planner_result_path(root, spec, "planner-judge") 重建（MUST NOT 解析 error 归因文案取路径）；该通道全 agent_type 通用，跨 spec 共享根文件 .fenix/.fenix-run-result.json 及其他 agent_type 产物不得改名/删除。
 
 ## 2. 测试
 
