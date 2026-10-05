@@ -9,6 +9,11 @@
 - **WHEN** 同一 resource_group 的多个场景被调度进同一批
 - **THEN** 仅一个在飞执行，其余顺延至后续批次，报告含等待标记
 
+#### Scenario: 跨组并行
+
+- **WHEN** 不同 resource_group 的场景（或与未标记场景混合）被调度进同一批
+- **THEN** 各组互不等待，同批并行执行，调度与并行度不受互斥影响
+
 #### Scenario: 未标记场景零变化
 
 - **WHEN** 场景未标记 resource_group
