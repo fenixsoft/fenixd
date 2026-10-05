@@ -34,3 +34,8 @@
 | selfheal-consumer-once-cap-and-stuck-alert | 消费者接手重试至多一次 + 失败维持熔断告警去重幂等（spec 需求 4：每条目接手重试至多一次、失败维持既有熔断告警与人工通道，去重对齐 _spec_dir_inflight_stuck_notified core/pm_engine/dispatch/queue.py:2617 范式）：两条超阈值 pending 条目接手重试均失败（recorder 返回 False）→ 各得一条 mergeback_spec_dir_inflight_stuck 告警；第二拍扫描不再二次接手（replay 计数不增长）、告警零增长（去重幂等）。 | pass | 0/5 | - |
 | selfheal-attempt-once-cap | 单条 merge-back 自动收尾至多尝试一次（spec 需求 5：进程内集合记账对齐 queue.py:2617 范式，避免与归档自身重试互相踩踏）：夹具 pre-commit hook 恒败并计数——第一次驱动熔断出口：判据命中 → git add → git commit 触发 hook（计数 1）失败 → 走熔断告警 + evidence 载明失败原因；第二次驱动同 spec：不再发起第二次提交尝试（hook 计数仍 1）→ 告警去重不刷屏、无提交落库、残留保持原状。 | pass | 0/6 | - |
 | selfheal-existing-lanes-regression | 既有顺延/WIP 车道零回归（spec 非目标：不改真内容冲突车道与既有顺延语义；需求 4 明确未超阈值条目仍由 60 秒 Timer 链驱动）：既有顺延守卫套件（tests/test_merge_back_spec_dir_guard.py，28 例）与 WIP 协调套件（tests/test_mergeback_wip_coordination.py，22 例）全绿——新自愈评估与周期消费者不得改变既有 _defer_merge_back 顺延记账、熔断降级、WIP 双层守卫行为。 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
