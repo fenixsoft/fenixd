@@ -1191,6 +1191,11 @@ class ProviderCircuit:
         以 0 表达「禁用」（回到到期即全量放行 / 错峰不节拍），必须保留 0 而非
         回缺省（_positive_number 把 0 归一为缺省会复活禁用的开关）。
         """
+        # bool 排除（code-review item 76e7fc3007a0）：同 _positive_number /
+        # _signal_kill_cooldown_after 的口径——float(True)=1.0 会让 yaml 误写布尔
+        # true 的 transient_unseal_* 键被收成 1，bool 按畸形回缺省，其余兜底不变。
+        if type(value) is bool:
+            return float(default)
         try:
             v = float(value)
         except (TypeError, ValueError):
@@ -2100,6 +2105,12 @@ class ProviderCircuit:
         非数值（字符串）会让滑窗过滤在失败路径抛 TypeError，0/负数则让熔断瞬间
         失效。此处统一钳制——不可解析或 <= 0 时回落常量缺省，保证熔断语义始终成立。
         """
+        # bool 排除（code-review item 76e7fc3007a0）：同 _signal_kill_cooldown_after
+        # 的口径——yaml 误写布尔 true 时 float(True)=1.0 会被当合法配置，把
+        # provider_circuit_*/transient_* 键收成 1（首个 4xx 即触发熔断），bool 按
+        # 畸形回缺省，其余兜底不变。
+        if type(value) is bool:
+            return float(default)
         try:
             v = float(value)
         except (TypeError, ValueError):

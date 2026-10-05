@@ -185,6 +185,13 @@ def _validated_spec_name(spec) -> str | None:
     return spec
 
 
+# 公开访问面（code-review item 8d7139bcb499）：tasks 组经门面消费本助手，
+# 此前只能引用下划线私有名——私有名不在公开契约内，本模块重命名/搬移即令
+# 消费方运行时 AttributeError。公开名与私有定义同一对象单源绑定（非复制定义），
+# 私有名与门面 re-export 面原样保留。
+validated_spec_name = _validated_spec_name
+
+
 def count_scenarios(project_root, spec_name) -> int:
     """统计 SPEC 各 spec.md 中 Scenario 数量。
 

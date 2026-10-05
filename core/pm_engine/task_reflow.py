@@ -138,8 +138,9 @@ def reflow_spec(
     #    新增通用原语属清单外改动），故取写回后重读校验的最小侵入修法：
     #    total_duration 是 done 落定的全库唯一残留写点（门禁放行转移成功后
     #    落盘），快照无而有即判「窗口内已 done」——状态仍为 ready（尚无并发
-    #    派发消费这个错误的 ready）则回写恢复 done；已推进则不回写干预、只
-    #    告警。两种异常路径均如实返回失败、不落 PROJECT_LOG 成功留痕（日志
+    #    派发消费这个错误的 ready）则回写恢复 done（恢复写失败亦如实告警，
+    #    不谎报已恢复）；已推进则不回写干预、只
+    #    告警。各异常路径均如实返回失败、不落 PROJECT_LOG 成功留痕（日志
     #    语义与真实状态一致，同 _stripped 分支口径）。
     post = state_machine.read_one(spec_name)
     post = dict(post) if isinstance(post, dict) else {}
@@ -165,15 +166,27 @@ def reflow_spec(
             # 仍是 ready → 我们的误覆盖就是当前态，回写恢复 done（有意盲写：
             # 任务已全部可确认完成、门禁已放行，done 是该 SPEC 的真实归宿）
             restored: dict = {}
-            state_machine.update_spec(
+            _restored = state_machine.update_spec(
                 spec_name, {"status": "done"}, applied_out=restored
             )
-            if "_stripped" in restored:
+            if not _restored:
+                # update_spec 仅在写成功后回填 applied_out（SPEC 被并发驱逐/
+                # 归档时返回 False 且 restored 保持空 dict）——不消费 bool 会
+                # 落入假成功分支（code-review 622e4ea865aa）
+                logger.warning(
+                    "pm_engine",
+                    f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
+                    f"done 的写回失败（SPEC 已不在 STATE.md，可能被并发驱逐/"
+                    f"归档）——回滚未生效，须人工核对状态",
+                )
+                _rollback_note = "（回滚未生效，须人工核对）"
+            elif "_stripped" in restored:
                 logger.warning(
                     "pm_engine",
                     f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
                     f"done 的写回又被并发冻结剥离——须人工核对状态",
                 )
+                _rollback_note = "（回滚未生效，须人工核对）"
             else:
                 logger.warning(
                     "pm_engine",
@@ -182,7 +195,7 @@ def reflow_spec(
                     f"误覆盖已交付状态（total_duration 残留证实）——已回写恢"
                     f"复 done，本次回炉不生效",
                 )
-            _rollback_note = "（已回写恢复 done）"
+                _rollback_note = "（已回写恢复 done）"
         else:
             # 已被并发写者推进（如派发立即消费了误覆盖的 ready）→ 不再盲写
             # 对打在飞转移，告警交人工对账

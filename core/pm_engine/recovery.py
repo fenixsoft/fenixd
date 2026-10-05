@@ -1169,7 +1169,7 @@ class RecoveryWatch:
                 f"dispatch_stalled dedup check failed '{spec_name}' (proceeding): {e}",
             )
         try:
-            store.append(
+            written = store.append(
                 {
                     "kind": SIGNAL,
                     "signal_type": "dispatch_stalled",
@@ -1187,6 +1187,13 @@ class RecoveryWatch:
                     "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
                 }
             )
+            if written is None:
+                # append 返回值必须接收（code-review item ecfbdf352681，对齐
+                # append 契约 item 2570ca391771）：文件损坏留底被下限保护拒写
+                # 时返回 None、记录未落盘，不得照记「signal recorded」成功日志
+                # ——抛出走下方既有失败分支（回滚指纹登记 + error 日志 +
+                # 返回 False），check_recovery_watch 恢复观察项守卫下轮重试。
+                raise RuntimeError("admin store 下限保护拒写（append 返回 None）")
             self._pm.logger.warning(
                 "pm_engine",
                 f"dispatch_stalled signal recorded for '{spec_name}'",

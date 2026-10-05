@@ -964,6 +964,38 @@ class AgentRunner:
             self._cancel_requested.discard(base_run_id)
             self._cancel_meta.pop(base_run_id, None)
 
+    def _cancel_flags_gc(self) -> None:
+        """取消旗标兜底回收（code-review item 6e26df18a720）。
+
+        not_running 分支登记的旗标，唯一清除入口 ``_cancel_clear`` 的全部
+        调用点都位于 run 复活后的执行路径上——被取消的 run 此后永不复活
+        （spec 归档 / run_id 不再重派 / epoch 不轮转回来）时，条目既不会
+        被清理也无 TTL 或容量上限，随管理员取消次数无界滞留。挂在本低频
+        管理入口（cancel_run）顺带淘汰 created_ts 超 24h 且无活跃 attempt
+        的陈旧条目（先例：_turn_limit_action / _stall_budget_state_for 的
+        「建态时顺带 24h 过期淘汰」；纯内存、不新起线程、不加周期扫描）。
+
+        「无活跃 attempt」门槛保证不摘任何在飞 run 仍待消费的旗标——含
+        epoch 键的启动守卫语义不变，仅回收确定无人消费的驻留条目。缺
+        created_ts 的条目（测试 ``__new__`` 直写 _cancel_meta 等）不淘汰。
+        """
+        now = time.time()
+        stale: list[str] = []
+        with self._cancel_requested_lock:
+            for k, v in self._cancel_meta.items():
+                ts = v.get("created_ts") if isinstance(v, dict) else None
+                if ts is None or now - float(ts) <= 86400.0:
+                    continue
+                # 仍有活跃 attempt（同 cancel_run 的 ``-`` 边界匹配口径）→
+                # 旗标随时会被轮询环/启动守卫消费并随收尾清理，不摘
+                if any(aid == k or aid.startswith(k + "-")
+                       for aid in list(self._running_agents.keys())):
+                    continue
+                stale.append(k)
+            for k in stale:
+                self._cancel_requested.discard(k)
+                self._cancel_meta.pop(k, None)
+
     # ── 人工取消原语（add-run-cancel D1）─────────────────────────
 
     def cancel_run(self, run_id: str, reason: str = "", by: str = "admin") -> dict:
@@ -987,6 +1019,11 @@ class AgentRunner:
         """
         base_id = self._normalize_run_id(run_id)
 
+        # 兜底回收（code-review item 6e26df18a720）：not_running 登记的旗标
+        # 清除入口全在复活路径上，永不复活的 run 条目无界滞留——借本低频
+        # 管理入口顺带按 created_ts 淘汰超 24h 且无活跃 attempt 的陈旧条目。
+        self._cancel_flags_gc()
+
         # 按基础 run_id 匹配所有活跃 attempt；带 ``-`` 边界（同 _run_id_in_flight
         # 口径）防 base id 前缀撞上其他更长 run_id 的 attempt（如 impl-x-100
         # 不得命中 impl-x-1000-a1）而误报 cancel_requested。
@@ -1006,7 +1043,8 @@ class AgentRunner:
             # 有序终止；在飞 attempt（若有）照常走轮询环取消，行为不变。
             with self._cancel_requested_lock:
                 self._cancel_requested.add(base_id)
-                self._cancel_meta[base_id] = {"reason": reason, "by": by}
+                self._cancel_meta[base_id] = {
+                    "reason": reason, "by": by, "created_ts": time.time()}
             self.logger.warning(
                 "agent_runner",
                 f"cancel_run: run '{base_id}' 无活跃 attempt，已登记取消旗标"
@@ -1022,7 +1060,8 @@ class AgentRunner:
         # 登记旗标（幂等——同一 base_id 多次调用不重复计数）
         with self._cancel_requested_lock:
             self._cancel_requested.add(base_id)
-            self._cancel_meta[base_id] = {"reason": reason, "by": by}
+            self._cancel_meta[base_id] = {
+                "reason": reason, "by": by, "created_ts": time.time()}
 
         self.logger.info(
             "agent_runner",

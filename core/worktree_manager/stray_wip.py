@@ -233,8 +233,10 @@ class MainTreeStrayWipSweeper:
         wm = self.worktree_manager
         # 1) tracked-only 脏判定（口径对齐 stash_guard._list_dirty_tracked_files，
         #    复用同一实现：porcelain 脏判定 / rename 两侧计入 / untracked 不计 /
-        #    路径反转义）。空集直接返回（顺手复位注册表——改动全部消失）。
-        status = self._git("status", "--porcelain")
+        #    路径反转义）。-uall 一次取全量 stdout 供 1.5 untracked 流共用同一
+        #    查询（tracked 解析跳过 ?? 行，口径不变），持锁临界区内同命令只跑
+        #    一遍。空集直接返回（顺手复位注册表——改动全部消失）。
+        status = self._git("status", "--porcelain", "-uall")
         if status is None:
             self._log(
                 "warning",
@@ -245,7 +247,7 @@ class MainTreeStrayWipSweeper:
         # 1.5) untracked 散件口径（2.1）：entry 级判定（porcelain -uall 逐文件
         #      展开），豁免 .fenix/ negation 放行项与已 ignore 路径。git 查询
         #      失败按放弃本轮（保守：条目保留，与 status 不可用同款处置）。
-        untracked = self._untracked_stray_entries()
+        untracked = self._untracked_stray_entries(status_stdout=status)
         if untracked is None:
             self._log(
                 "warning",
@@ -397,7 +399,9 @@ class MainTreeStrayWipSweeper:
 
     # ── untracked 散件口径（add-verify-evidence-placement-contract 2.1）──
 
-    def _untracked_stray_entries(self) -> "list[str] | None":
+    def _untracked_stray_entries(
+        self, status_stdout: "str | None" = None
+    ) -> "list[str] | None":
         """untracked 散件清单（entry 级，已豁免放行项与 ignore 路径）。
 
         - ``git status --porcelain -uall``：untracked 逐文件展开（目录不折叠
@@ -413,14 +417,22 @@ class MainTreeStrayWipSweeper:
         - 无任何忽略规则的 ``.fenix/`` 证据散件**不豁免**（design 风险条目：
           契约不依赖消费项目忽略规则成立，此类散件由本信号兜底可见性）。
 
+        Args:
+            status_stdout: 已取回的 ``git status --porcelain -uall`` stdout，
+                传入时跳过子进程直接解析——``_sweep_locked`` 持锁临界区内
+                tracked 流与 untracked 流共用同一次查询、同命令只跑一遍
+                （与 ``_list_dirty_tracked_files(status_stdout=...)`` 同款手法）。
+
         git 查询失败返回 None（调用方按放弃本轮处置，条目保留）。check-ignore
         以 --stdin 批量一次调用（散件多时避免逐路径子进程）；``-n
         --non-matching`` 保证每个输入路径都有输出行（未匹配输出 ``::\t路径``），
         按输出末列回映射、不依赖行序。
         """
-        out = self._git("status", "--porcelain", "-uall")
-        if out is None:
-            return None
+        if status_stdout is None:
+            status_stdout = self._git("status", "--porcelain", "-uall")
+            if status_stdout is None:
+                return None
+        out = status_stdout
         from core.worktree_manager.mergeback import _unquote_git_path
 
         paths: list = []
@@ -476,6 +488,7 @@ class MainTreeStrayWipSweeper:
             if "\t" not in line:
                 continue
             left, echoed = line.split("\t", 1)
+            # [fenix-ignore:6db071347e0f] source 含冒号致 pattern 段错位不改变结果：唯一消费方 _untracked_stray_entries 对「! 放行」与「非 ! 命中」均不计入散件（豁免①②同效），非空 pattern 恒走豁免，散件清单与告警可见性不受影响（实测错位/正确两种解析 entries 全等）。
             parts = left.split(":", 2)
             detail[echoed] = parts[2] if len(parts) == 3 else ""
         return detail

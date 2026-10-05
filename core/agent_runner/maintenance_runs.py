@@ -1109,12 +1109,18 @@ def run_evolution(
                 if partial:
                     # 部分恢复按失败落地：缺失数入 error、不触发水位推进
                     # （见上方收尾段说明；已落地条目由下轮幂等去重补齐）。
+                    # 先取 prev_error 再拼装（code-review item 7518cf52de53）：
+                    # CLI 非零退出的归因文本不丢，口径与上方 contract 为
+                    # None 分支一致。
                     run_ok = False
+                    prev_error = error
                     error = (
                         f"产物部分恢复: 仅 {len(items)}/{expected} 条，"
                         f"缺失 {expected - len(items)} 条"
                         f"（水位不推进，已落地条目由下轮幂等去重补齐）"
                     )
+                    if prev_error:
+                        error = f"{error}（CLI 退出异常: {prev_error}）"
                 elif not run_ok:
                     # CLI 非零退出但契约产物完整（直读或抢救合并恢复）。
                     # 空条目不翻转：无从证明恢复出完整契约，按失败落地。
@@ -2830,11 +2836,13 @@ def _read_ocr_cursor(cursor_path: Path) -> str | None:
     return commit if isinstance(commit, str) and commit else None
 
 
-def _write_ocr_cursor(cursor_path: Path, commit: str) -> None:
+def _write_ocr_cursor(cursor_path: Path, commit: str, run_id: str = "") -> None:
     """审查成功后推进游标（原子替换；失败静默——下次回退全量，不影响正确性）。"""
     try:
         cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cursor_path.with_name(".ocr-cursor.json.tmp")
+        # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下双实例
+        # 并发 write_text 可交错半写、被对方 os.replace 原子发布。
+        tmp = cursor_path.with_name(f".ocr-cursor-{run_id}.json.tmp")
         tmp.write_text(
             json.dumps(
                 {
@@ -3346,7 +3354,7 @@ def run_impl_ocr(
                     artifact["findings"] = findings
                     artifact["reason"] = ""
                     _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
-                    _write_ocr_cursor(cursor_path, head_commit)
+                    _write_ocr_cursor(cursor_path, head_commit, run_id)
     except Exception as e:  # noqa: BLE001 — 车道内部异常折算 unavailable（任务 3.3）
         artifact["status"] = "unavailable"
         artifact["reason"] = f"车道内部异常: {type(e).__name__}: {e}"
@@ -3373,7 +3381,9 @@ def run_impl_ocr(
     try:
         try:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = artifact_path.with_name(".code-review.json.tmp")
+            # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下
+            # 双实例并发 write_text 可交错半写、被对方 os.replace 原子发布。
+            tmp = artifact_path.with_name(f".code-review-{run_id}.json.tmp")
             tmp.write_text(
                 json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
             )

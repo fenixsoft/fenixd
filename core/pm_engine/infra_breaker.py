@@ -111,13 +111,19 @@ class InfraCircuitBreaker:
         """连续 infra 失败触发熔断的阈值（admin.run_infra_breaker.threshold）。
 
         范围守卫与 ConfigLoader.get_run_infra_breaker_config 一致（code-review
-        item 8c2855513307）：bool / 非数值 / ``< 1`` 一律回退缺省 3——仅 int()
-        截断会让 ``0.5`` 变 0（首次 infra 失败即熔断）、``true`` 变 1，阈值
-        保护被静默收紧。
+        item 8c2855513307）：bool / 非数值 / ``< 1`` / 非整值浮点一律回退缺省
+        3——仅 int() 截断会让 ``0.5`` 变 0（首次 infra 失败即熔断）、``true``
+        变 1、``2.5`` 变 2（与配置侧归一结果 3 分叉），阈值保护被静默收紧；
+        非整值浮点拒绝与配置侧同口径（code-review item f03d70778889）。
         """
         try:
             val = self._get_config("threshold", 3)
-            if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 1:
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, (int, float))
+                or val < 1
+                or (isinstance(val, float) and not val.is_integer())
+            ):
                 return 3
             return int(val)
         except (TypeError, ValueError, OverflowError):
