@@ -1,7 +1,7 @@
 # code-fix 选批亲和性聚类与回归两段式
 
-<!-- knowledge: capability=codefix-affinity-batching rev=1
-     sources=spec/archive/2026-10-04-add-codefix-affinity-batching -->
+<!-- knowledge: capability=codefix-affinity-batching rev=2
+     sources=spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-06-evo-add-codefix-test-targets-fallback-sanitization -->
 
 code-fix 车道的选批算法与批收尾回归分流：选批按文件亲和性贪心装箱（同文件条目永同批），批内并行波次上限随批规模自适应，批收尾回归按「链内是否末批」两段式（中间批定向、末批全量兜底）。
 
@@ -32,6 +32,7 @@ code-fix 车道的选批算法与批收尾回归分流：选批按文件亲和�
 - `{test_targets}` 占位符声明在 verify.yaml `regression.cmd` 中，框架替换为空格连接的测试路径列表（路径做 shell 引用包裹），同值导出 `FENIX_TEST_TARGETS` 环境变量（双轨）；str/list 两态 cmd 都支持，list 形态仅替换元素级占位符。cmd 无占位符 = 该项目不参与定向化，恒全量，存量项目零迁移。
 - 触碰面映射（纯函数，输入为本批产物 `fixed` 行的 `file` 集合）：测试文件（`tests/` 下或 `test_` 前缀/`_test` 后缀）直接入选；产品文件按「同目录 `tests/` 的 `test_<stem>.py` 命名匹配」∪「`tests/` 树内 import 该模块的文件」（单次 `grep -rl` 反查，MUST NOT 逐文件 Python 遍历）取并集；路径相对回归执行根（worktree）解析。
 - 定向回归复用 `run_regression` 既有机制（主机级套件锁、JUnit XML 解析、`timeout_seconds` 硬超时全继承），只缩小测试集、不新增执行通道。进度文案区分「定向回归」与「全量回归」。
+- 回退出口与定向重试轮的 `{test_targets}` 占位符消毒契约见 [codefix-test-targets-sanitization](codefix-test-targets-sanitization.md)。
 - 失败语义同轨：定向回归失败与末批全量失败均走回归失败处置路径（定向重试轮，见 [code-fix-lane](code-fix-lane.md)），MUST NOT 为定向失败另设处置分支。
 
 ### 配置键 targeted_regression
@@ -40,3 +41,4 @@ code-fix 车道的选批算法与批收尾回归分流：选批按文件亲和�
 ## 溯源
 
 - 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 新建本页：选批由时间序截前 N 改为文件组不可拆贪心装箱（batch_size 放宽为目标规模 T、硬上限 H=2T、同目录=直接父目录全等）；波次上限由模板固定常量改为按组数分档注入（4/6/8）；批收尾回归两段式（末批恒全量兜底、非末批 `{test_targets}` 定向、fail-open 回退全量）；新增 targeted_regression 配置键与设置页开关。
+- 2026-10-06 evo-add-codefix-test-targets-fallback-sanitization（spec/archive/2026-10-06-evo-add-codefix-test-targets-fallback-sanitization） — 追加交叉引用：回退出口与定向重试轮的占位符消毒契约拆分至 codefix-test-targets-sanitization 页
