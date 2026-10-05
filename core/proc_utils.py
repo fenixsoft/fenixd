@@ -174,3 +174,23 @@ def find_bound_socket(host: str = "127.0.0.1", retries: int = 3):
             s.close()
         except OSError:
             pass
+
+
+def hold_free_port(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
+    """返回一个已绑定匿名端口的占位 socket（调用方持有至 spawn 前再关闭）。
+
+    ``find_free_port`` 探测即释放，「探测 → 实际使用」之间存在 TOCTOU 窗口，
+    端口可被并发进程抢占；本助手返回的 socket 在被关闭前一直占住该端口，
+    把「分配端口 → 子进程绑定」之间的空窗压缩到 close→spawn 一瞬
+    （code-review item eb7fb0c8d239）。适用于进程为任意命令、无法经 fd
+    移交继承绑定的场景；可直接移交 socket 的场景用 ``find_bound_socket``。
+
+    Usage::
+
+        holder = hold_free_port()
+        port = holder.getsockname()[1]
+        ...  # 准备命令行/预检等耗时步骤，端口始终被占住
+        holder.close()
+        spawn(cmd_with_port)
+    """
+    return _bind_retry(host, retries)

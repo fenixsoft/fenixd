@@ -19,6 +19,9 @@ from core.state_machine import (
     # env 阻塞冻结阈值单点定义在 core.state_machine（与 ENV_BLOCK_ROUNDS_FIELD
     # 同源，防阈值语义漂移）
     ENV_BLOCK_FREEZE_THRESHOLD,
+    # 冻结标记字段单源（code-review item f7dc3c016004）：与 branch_guard /
+    # infra_classify 同引常量，字面量在字段演进时会静默写错键致冻结标记丢失
+    FROZEN_FIELD,
     FREEZE_ERROR_PREFIX,
     # judge-scenario-repair：judge 原地场景修复预算单点定义在 core.state_machine
     # （与 pipeline.py 同源，防两侧调参漂移）
@@ -556,7 +559,7 @@ def _escalate_env_blocked(
             ENV_BLOCK_ROUNDS_FIELD: rounds,
         }
         if frozen:
-            entry["frozen"] = True
+            entry[FROZEN_FIELD] = True
         pipeline._context.state_machine.update_spec(spec_name, entry)
         if frozen:
             pipeline._context.logger.error(

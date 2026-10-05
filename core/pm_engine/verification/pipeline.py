@@ -758,7 +758,8 @@ class VerificationPipeline:
 
         本段承载：warning streak 升级、_read_verdict 结构化三态读取、结果应用处
         最终状态核对（D6）、裁决不可读重派一次→二次仍不可读 blocked + critical
-        告警。任一失败路径返回 None（丢弃）；成功返回 (verifier_result, verifier_status)。
+        告警（重派 judge 的派发异常同样折算为二次不可读归因，不外溢）。
+        任一失败路径返回 None（丢弃）；成功返回 (verifier_result, verifier_status)。
         """
         # ── 阶段3+ warning 连续悬置追踪与升级（design D4 / D5）──
         # 裁决采纳处更新连续计数侧车；达 2 轮的 warning 场景发 triage 升级告警，
@@ -822,10 +823,26 @@ class VerificationPipeline:
                 # 与全局 5 次重裁决阈值。空 violations 必然落入 "real" 分支
                 # （记轮内 +1 与生命周期 _judge_real_dispatches）。
                 self._judge_charge_verdict_retry(spec_name, [])
-                retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
-                # 重派失败真实根因留痕（code-review item 6afab3e3a4d4）：非让位类
-                # 失败时承接 retry_judge.error，供下方 blocked error/evidence 归因。
-                retry_failure = ""
+                # 派发异常兜底（code-review item 8a3261d1caac）：run_planner 内部
+                # 抛错不得外溢到 engine 层 legacy 降级旁路——本方法 docstring 承诺
+                # 任一失败路径走 fail-closed 丢弃/blocked。与 verdict_evidence 同款
+                # 「dispatch_exception 归因，禁止复读旧产物」：retry_judge 置 None
+                # 跳过让位/复读分支，异常归因写入 retry_failure，复用下方既有
+                # retry_failure 留痕与 blocked 归因路径。
+                try:
+                    retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+                except Exception as e:
+                    retry_judge = None
+                    retry_failure = f"dispatch_exception: {type(e).__name__}: {e}"
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"重派 judge 派发异常 '{spec_name}' — 按二次不可读 "
+                        f"fail-closed 处置: {retry_failure}",
+                    )
+                else:
+                    # 重派失败真实根因留痕（code-review item 6afab3e3a4d4）：非让位类
+                    # 失败时承接 retry_judge.error，供下方 blocked error/evidence 归因。
+                    retry_failure = ""
                 # ── 结果侧让位（code-review item 93fa1398fed0）──
                 # 重派 judge 被冻结终止/人工取消/provider 熔断时按让位语义处置，
                 # 与 _dispatch_judge_or_reuse（frozen/cancelled/circuit-open）
@@ -834,7 +851,7 @@ class VerificationPipeline:
                 # blocked 写入、不发 critical 告警。冻结 hold 保持原
                 # status=testing，下方 != "testing" 守卫拦不住该覆写，须在此
                 # 显式让位（人工已接管不写 blocked 不发告警）。
-                if not retry_judge.success:
+                if retry_judge is not None and not retry_judge.success:
                     if getattr(retry_judge, "frozen_terminated", False) is True:
                         # 补 hold 标记（code-review item b7f86878b739）：与首次
                         # 派发路径 _dispatch_judge_or_reuse 的 frozen_terminated
@@ -902,7 +919,7 @@ class VerificationPipeline:
                         f"重派 judge 失败（非让位类）'{spec_name}' — 按二次不可读 "
                         f"fail-closed 处置，真实根因入 blocked 留痕: {retry_failure}",
                     )
-                if retry_judge.success:
+                if retry_judge is not None and retry_judge.success:
                     verifier_result = self._read_verdict(spec_name)
                     verifier_status = verifier_result.status if verifier_result.ok else None
                     # 重派成功且裁决可读同样须核对（code-review item
