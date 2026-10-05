@@ -1242,7 +1242,11 @@ class G1LifecycleMixin:
         # create 构建窗口豁免（双派发穿透原地修 2026-09-06）：流文件缺失时以锁龄
         # 二次确认——锁在 create() 拿到而 attempt 子进程与其流文件尚未产生（实测
         # 构建可达十几秒），年轻锁保守保留，防误释放后第二派穿透；超龄仍按陈锁
-        # 回收，孤儿清理语义不变。
+        # 回收，孤儿清理语义不变。此处豁免保持 spec 全量、不按家族过滤
+        # （code-review item 5d9601004a62）：下方陈锁释放按 spec 全摘（含他族
+        # 键），豁免须覆盖全部将被摘除的家族——按本族过滤会让他族年轻锁在全摘
+        # 中失去锁保护、重开双派发穿透窗口；家族过滤豁免仅适用于 refresh_locks
+        # 的单键回收路径。
         if mtime is None and self._lock_young(spec_name):
             return True
         # ── 恢复重派遗产（add-recovery-legacy-check D2，同 refresh_locks 口径）──
@@ -1308,8 +1312,12 @@ class G1LifecycleMixin:
                 continue
             if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
                 continue
-            if mtime is None and self._lock_young(spec):
-                continue  # create 构建窗口豁免（同 has_active_worktree，防误回收年轻锁）
+            if mtime is None and self._lock_young(spec, family=family):
+                # 构建窗口豁免只覆盖本族年轻锁（code-review item 5d9601004a62）：
+                # 与上方家族过滤判活同口径，本族陈锁不因他族年轻构建被庇护延后
+                # 回收；family=None（键解析不出 agent_type）时维持 spec 粒度保守
+                # 豁免，与同分支 alive/mtime 的退回口径一致。
+                continue
             # ── 恢复重派遗产（add-recovery-legacy-check D2）──
             # 陈锁释放的同一时刻：若该 spec 尚有未被清理的 implementer worktree（孤儿，
             # 如 daemon 重启后锁已失、但 worktree 目录仍在），注册为遗产兜底保留，

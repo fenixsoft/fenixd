@@ -117,8 +117,16 @@ class G3LockMixin:
                 self._lock_since.pop(k, None)
             return to_remove
 
-    def _lock_young(self, spec_name: str) -> bool:
+    def _lock_young(self, spec_name: str, family: str | None = None) -> bool:
         """该 spec 任一在册锁的锁龄 < STALE_LOCK_IDLE_SECONDS（create 构建窗口豁免）。
+
+        family（code-review item 5d9601004a62，refresh_locks 家族过滤回收专用）：
+        传入时只考察该家族前缀（_lock_family_prefix 口径：verify/impl）的在册
+        锁，使构建窗口豁免与家族过滤判活同口径——本族陈锁不因同 spec 他族恰有
+        年轻构建而被庇护跳过回收；None（缺省）保持 spec 全量扫描。
+        has_active_worktree 调用点维持 spec 粒度（不传 family）：其陈锁释放按
+        spec 全摘（含他族键），豁免须覆盖全部将被摘除的家族，按本族过滤会让
+        他族年轻锁在全摘中失去锁保护、重开双派发窗口。
 
         锁龄缺失（历史锁未登记时刻）按不年轻处理——豁免只对确定年轻的锁生效，
         失败方向保守（宁可走既有陈锁回收，不额外放行）。
@@ -131,6 +139,8 @@ class G3LockMixin:
         with self._spec_lock_th:
             for k in self._spec_locks:
                 if self._lock_spec_name(k) != spec_name:
+                    continue
+                if family is not None and self._lock_family_prefix(k) != family:
                     continue
                 since = self._lock_since.get(k)
                 if since is not None and (now - since) < STALE_LOCK_IDLE_SECONDS:
