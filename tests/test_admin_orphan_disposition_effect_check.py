@@ -14,6 +14,9 @@
 """
 
 import json
+import os
+import subprocess
+from datetime import datetime, timedelta, timezone
 
 from core.admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from core.admin_monitor import AdminMonitor, _merge_admin_runs, _spec_has_active_admin_run
@@ -66,7 +69,8 @@ def _append_signal(store, *, signal_type="daemon_errors", spec=None,
 
 
 def _append_disposition(store, *, run_id, status, result, signal_type,
-                        spec, escalate=None, created_ago_minutes=None):
+                        spec, escalate=None, created_ago_minutes=None,
+                        actions_taken=None, evidence=None):
     rec = store.append(
         {
             "kind": DISPOSITION,
@@ -76,6 +80,8 @@ def _append_disposition(store, *, run_id, status, result, signal_type,
             "spec": spec,
             "admin_run_id": run_id,
             **({"escalate": escalate} if escalate is not None else {}),
+            **({"actions_taken": actions_taken} if actions_taken else {}),
+            **({"evidence": evidence} if evidence else {}),
         }
     )
     if created_ago_minutes is not None:
@@ -101,7 +107,7 @@ def _backdate_group(store, run_id, minutes=130):
 
 
 def _write_log_transition(proot, spec, ts_iso, channel="manual",
-                          note="重派评审（人工裁决）"):
+                          note="重派评审（人工裁决）", filename="fenixd.log"):
     """写入一条 state_machine 解冻族 Transition 留痕（fenixd.log JSON 行）。"""
     log_dir = proot / ".fenix" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -112,19 +118,77 @@ def _write_log_transition(proot, spec, ts_iso, channel="manual",
         "message": f"Transition: {spec} blocked → reviewing",
         "context": {"channel": channel, "note": note},
     }
-    with (log_dir / "fenixd.log").open("a", encoding="utf-8") as f:
+    with (log_dir / filename).open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _make_final_group(store, *, run_id, spec, signal_type, final_result="partially-resolved",
-                      final_escalate=None):
-    """构造 429 现场镜像：pending 占位 + 终态记录（同 admin_run_id）。"""
+                      final_escalate=None, **final_extra):
+    """构造 429 现场镜像：pending 占位 + 终态记录（同 admin_run_id）。
+
+    final_extra 透传终态记录额外字段（如 actions_taken——spec 名提取指针）。
+    """
     _append_disposition(store, run_id=run_id, status="pending", result="pending",
                         signal_type=signal_type, spec=spec)
     _append_disposition(store, run_id=run_id, status=final_result,
                         result=final_result, signal_type=signal_type, spec=spec,
-                        escalate=final_escalate)
+                        escalate=final_escalate, **final_extra)
     _backdate_group(store, run_id)
+
+
+# ── git 只读旁证测试装置（evo-admin-orphan-effect-evidence-expansion）────
+
+
+class BoomSM(FakeSM):
+    """read_one 恒抛错的 STATE 旁证（模拟 STATE 读取失败）。"""
+
+    def read_one(self, name):
+        raise RuntimeError(f"STATE read failed: {name}")
+
+
+def _git(proot, *args, env_date=None):
+    env = dict(
+        os.environ,
+        GIT_AUTHOR_NAME="tester",
+        GIT_AUTHOR_EMAIL="tester@example.com",
+        GIT_COMMITTER_NAME="tester",
+        GIT_COMMITTER_EMAIL="tester@example.com",
+    )
+    if env_date:
+        env["GIT_AUTHOR_DATE"] = env_date
+        env["GIT_COMMITTER_DATE"] = env_date
+    proc = subprocess.run(
+        ["git", "-C", str(proot), *args],
+        capture_output=True, text=True, env=env,
+    )
+    assert proc.returncode == 0, (args, proc.stderr)
+
+
+def _init_git_repo(proot):
+    _git(proot, "init", "-q", "-b", "main")
+    (proot / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(proot, "add", ".")
+    _git(proot, "commit", "-q", "-m", "seed")
+
+
+def _commit(proot, msg, filename="f.txt", env_date=None):
+    (proot / filename).write_text("x\n", encoding="utf-8")
+    _git(proot, "add", ".")
+    _git(proot, "commit", "-q", "-m", msg, env_date=env_date)
+
+
+def _merge_branch(proot, branch, msg):
+    _git(proot, "checkout", "-q", "-b", branch)
+    (proot / "branch.txt").write_text("b\n", encoding="utf-8")
+    _git(proot, "add", ".")
+    _git(proot, "commit", "-q", "-m", "branch work")
+    _git(proot, "checkout", "-q", "main")
+    _git(proot, "merge", "--no-ff", "-q", "-m", msg, branch)
+
+
+def _hours_ago_iso(hours: float) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
 def _backfills(store):
@@ -328,6 +392,174 @@ class TestBackfillIdempotence:
         assert store.has_disposition_backfill("admin-spec-a-9") is True
         # 未补记的组探测为 False（幂等判据不误报）
         assert store.has_disposition_backfill("admin-other") is False
+
+
+# ── 证据家族扩展（evo-admin-orphan-effect-evidence-expansion）──────────
+
+
+class TestEffectEvidenceFamilyExpansion:
+    """global/None 组证据家族并集：①轮转日志解冻留痕 ②提交类旁证 ③STATE
+    旁证；任一命中收口，全空维持 fail-closed 升级，假阳性不误判。"""
+
+    def test_transition_in_rotated_backup_backfills(self, tmp_path):
+        """解冻留痕已轮转出当前日志、落在 fenixd.log.1 → 家族①命中收口。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-10", spec="global",
+                          signal_type="daemon_errors")
+        _write_log_transition(proot, "evo-rot-spec", iso_ago(60),
+                              filename="fenixd.log.1")
+        mon._recover_orphaned_dispositions()
+        bfs = _backfills(store)
+        assert len(bfs) == 1
+        assert "Transition" in (bfs[0].get("evidence") or "")
+        assert _signal_by_id(store, sig["id"])["handled"] is True
+
+    def test_rotated_file_mtime_before_window_pruned(self, tmp_path):
+        """fenixd.log.1 的 mtime 早于窗口起点 → 整文件剪枝（即便场内有窗内
+        时间戳行也不消费），维持 fail-closed 升级。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-18", spec="global",
+                          signal_type="daemon_errors")
+        rotated = proot / ".fenix" / "logs" / "fenixd.log.1"
+        _write_log_transition(proot, "evo-prune-spec", iso_ago(60),
+                              filename="fenixd.log.1")
+        old = (datetime.now(timezone.utc) - timedelta(hours=4)).timestamp()
+        os.utime(rotated, (old, old))  # 窗口下界 = 130min 前 − 5min 松弛
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
+
+    def test_merge_commit_heal_backfills(self, tmp_path):
+        """治愈动作为分支合并：窗口内 merge commit 消息含目标 spec 名（提取
+        自组记录的分支记法）→ 家族②命中收口。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-11", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken=(
+                              "已合并分支 fenix/evo-merge-spec-1791224944 放行 merge-back"
+                          ))
+        _init_git_repo(proot)
+        _merge_branch(
+            proot, "fenix/evo-merge-spec-1791224944",
+            "[fenix] merge implementer branch fenix/evo-merge-spec-1791224944",
+        )
+        mon._recover_orphaned_dispositions()
+        bfs = _backfills(store)
+        assert len(bfs) == 1
+        ev = bfs[0].get("evidence") or ""
+        assert "merge commit" in ev and "evo-merge-spec" in ev
+        assert _signal_by_id(store, sig["id"])["handled"] is True
+
+    def test_archive_finalize_commit_backfills(self, tmp_path):
+        """治愈动作为归档收尾提交：窗口内非 merge 提交消息同时含 spec 名、
+        家族前缀与收尾关键词 → 家族②命中收口。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-12", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="已完成 evo-arch-spec 归档收尾")
+        _init_git_repo(proot)
+        _commit(proot, "[fenix] archive: evo-arch-spec 归档入库")
+        mon._recover_orphaned_dispositions()
+        bfs = _backfills(store)
+        assert len(bfs) == 1
+        assert "归档收尾提交" in (bfs[0].get("evidence") or "")
+        assert _signal_by_id(store, sig["id"])["handled"] is True
+
+    def test_state_corroboration_with_extractable_spec_backfills(self, tmp_path):
+        """spec 名可提取且该 spec 在 STATE 已解冻推进 → 家族③命中收口
+        （无日志留痕、非 git 仓库提交家族按无证据处理不阻塞）。"""
+        proot, mon, store = make_monitor(
+            tmp_path, {"evo-state-spec": {"frozen": False, "status": "reviewing"}}
+        )
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-13", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="已人工核查 spec evo-state-spec 并重派推进")
+        mon._recover_orphaned_dispositions()
+        bfs = _backfills(store)
+        assert len(bfs) == 1
+        ev = bfs[0].get("evidence") or ""
+        assert "evo-state-spec" in ev and "frozen=False" in ev
+        assert _signal_by_id(store, sig["id"])["handled"] is True
+
+    def test_extractable_spec_without_state_entry_skips_and_escalates(self, tmp_path):
+        """spec 名可提取但 STATE 无条目 → STATE 家族按无证据跳过，三家族
+        全空维持升级（不假闭环）。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-14", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="已人工核查 spec evo-ghost-spec 并重派推进")
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
+
+    def test_state_read_failure_skips_state_family(self, tmp_path):
+        """STATE 读取失败 → STATE 家族按无证据跳过（不猜），维持升级。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        mon.state_machine = BoomSM({})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-19", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="已人工核查 spec evo-boom-spec 并重派推进")
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
+
+    def test_unextractable_spec_name_skips_state_family(self, tmp_path):
+        """提取不到明确 spec 名（记录纯样板文本）→ STATE 家族不猜跳过；
+        STATE 中在场的已解冻 spec 不被误当旁证（维持升级）。"""
+        proot, mon, store = make_monitor(
+            tmp_path, {"evo-unrelated-spec": {"frozen": False, "status": "reviewing"}}
+        )
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-15", spec="global",
+                          signal_type="daemon_errors")
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
+
+    def test_commit_false_positives_do_not_close(self, tmp_path):
+        """提交消息假阳性：仅含 spec 名的普通提交 / 不含目标 spec 名的归档
+        收尾提交 / 不含 spec 名的 merge commit，三者在场均不收口。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-16", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="目标 spec evo-fp-spec 处置")
+        _init_git_repo(proot)
+        _commit(proot, "[fenix] spec: evo-fp-spec", filename="a.txt")
+        _commit(proot, "[fenix] archive: evo-unrelated-thing 归档入库",
+                filename="b.txt")
+        _merge_branch(proot, "feature/other", "Merge branch 'feature/other'")
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
+
+    def test_commit_outside_window_not_credited(self, tmp_path):
+        """提交时间落在对账窗口外（早于窗口下界）→ 提交类家族不命中，
+        维持升级。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-17", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="已人工核查 spec evo-old-commit-spec 并归档")
+        _init_git_repo(proot)
+        _commit(proot, "[fenix] archive: evo-old-commit-spec 归档入库",
+                filename="old.txt", env_date=_hours_ago_iso(4))
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
 
 
 class _PendingThenDispRunner:
