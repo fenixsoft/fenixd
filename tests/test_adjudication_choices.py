@@ -44,7 +44,9 @@ _EXPECTED_CHOICE_IDS = {
     # fix-global-signal-choice-execution 1.3：桶尾追加非作用域收口 ack_self_heal
     "build_artifact_paths_missing": {"open_config", "declare_no_artifacts", "ack_self_heal"},
     # fix-env-exemption-exit-reachability 4.1：env 豁免握手 inconclusive 停车族
-    "inconclusive_loop": {"grant_env_exemption", "manual_fixed_reverify", "abandon"},
+    # evo-fix-env-exemption-gate-conflict-… 2.1：追加场景修订重验出口
+    "inconclusive_loop": {"grant_env_exemption", "revise_scenario_reverify",
+                          "manual_fixed_reverify", "abandon"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
