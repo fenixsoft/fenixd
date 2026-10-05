@@ -32,3 +32,10 @@
 | judge-stale-rejection-disposition-upgraded | 存量契约升级回归：主树残留上一轮合法文件 + 本轮零产出仍被新鲜度硬门拦截（首次门禁失败归因「早于本轮启动」），但拦截后处置升级——陈旧文件改名留档、终态归因退化为「结果文件缺失」且不含「早于本轮启动」（出处：tests/test_agent_runner_gate.py:444 存量用例按新契约更新；result_gate.py:489-520 硬门 fail-closed 语义不变） | pass | 0/2 | - |
 | judge-archive-independent-probe | 独立行为探针（不经仓库测试自证，直接驱动 _archive_prev_judge_result）：有遗留改名留档且内容可回溯 / 无遗留返回 False / 跨 spec 共享根文件不触碰 / 留档语义改名失败保留原文件 / 清理语义改名失败退化删除 / 留档路径形态 per-spec 目录（出处：core/agent_runner/runner.py:1238-1297 单一实现；core/agent_runner/prompt_builder.py:184-196 planner_result_path 路径形态） | pass | 0/5 | - |
 | judge-gate-file-full-regression | 回归点：tests/test_agent_runner_gate.py 整文件回归（含 6 个本 spec 新增用例与全部存量硬门/verdict/终态事件用例）全部通过，确认新增改名逻辑未破坏既有产物硬门行为（出处：tasks.md 2.1；tests/test_agent_runner_gate.py 全文件，本地实测 35 passed） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
