@@ -16,6 +16,7 @@ from typing import Optional
 from core.worktree_manager import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
 )
+from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
 
 
 def _collect_unmerged_paths(status_text: str) -> list:
@@ -810,7 +811,11 @@ class G5DistConflictsMixin:
             text = line.strip().lstrip("\t").strip()
             if not text or text.startswith(("Please commit", "Aborting", "error:", "Merge with")):
                 break
-            paths.append(text)
+            # code-review item 66c36ab8700a：core.quotePath 缺省开启，git 对
+            # 非 ASCII 阻塞路径输出带引号 C 转义形（LC_ALL=C 只固化文案语言，
+            # 不关 quotePath），不反转义则与工作区真实路径失配、下游自愈
+            # pathspec 静默不命中；无引号 ASCII 路径原样返回（幂等）。
+            paths.append(_unquote_git_path(text))
         return paths
 
     def _list_unmerged_files(self) -> list:
