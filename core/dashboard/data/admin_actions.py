@@ -553,6 +553,10 @@ def reclassify_infra_rounds(
     if not str(audit_reason or "").strip():
         return {"ok": False, "found": True, "error": "audit_reason 必填（审计留痕要求）"}
     sm = _sm(project_root)
+    if isinstance(n, bool):
+        # 布尔是 int 子类，须显式排除（与 set_spec_budget 的 isinstance(budget, bool)
+        # 拒绝同口径）：否则 JSON body 传 n=true 会被 int() 静默当 1 轮回拨。
+        return {"ok": False, "found": True, "error": "invalid n（回拨轮次参数无效）"}
     try:
         n_val = int(n)
     except (TypeError, ValueError) as e:
@@ -952,7 +956,7 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
         # 降级：共享判定已实际运行且给出「不可保留」结论 → 普通全新重派。
         # _resolve_preserved_branch 各失败层内已有 WARNING 留痕；此处写降级集
         # （不置 _recovery_resume），携带 status 即自动清保持标记。
-        sm.update_spec(spec, {
+        if not sm.update_spec(spec, {
             "status": "ready",
             "error": "Recovered from cancelled hold (no preserved branch — fresh dispatch)"
                      f"：原状态 {status}",
@@ -967,7 +971,20 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             "_merge_streak": 0,
             "_redispatch_same_cause_streak": 0,
             "_redispatch_cause_fp": None,
-        })
+        }):
+            # 与 activate_spec 同口径（写入必留痕）：parse_state 快照与落盘之间
+            # spec 被并发软删除/写入被拒时恢复未落盘，WARNING 留痕并如实返回
+            # 失败形状（对齐命中分支，不再宣称 degraded 成功）。
+            logger.warning(
+                "resume_cancelled_spec 恢复失败：spec 已并发删除或写入被拒，"
+                "恢复未落盘（spec=%s）",
+                spec,
+            )
+            return {
+                "ok": False,
+                "found": True,
+                "error": "spec 已并发删除或写入被拒，恢复未落盘",
+            }
         result = {
             "ok": True,
             "found": True,
