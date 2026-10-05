@@ -181,11 +181,15 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
 
     Returns: 成功清理的文件数；runs_dir 不存在或 spec_name 为空返回 0。
     """
-    # 空 spec 名防御（code-review item ace8422038ea）：维护类 run（admin-/
-    # code-review-/repair-/verify-/test- 前缀 + 纯时间戳）经 run_spec_part
-    # 归一后 spec 段为空串，与空 spec_name 精确匹配会把这批产物整批误删。
-    # 现有调用方（bin/fenix_archive.py / spec_archive.py）均传非空 spec 名，
-    # 此处仅挡畸形上游；记 WARNING 留痕，返回 0 不阻断归档主流程。
+    # 空 spec 名防御（code-review item ace8422038ea）：现有调用方（bin/
+    # fenix_archive.py / spec_archive.py）均传非空 spec 名，此处仅挡畸形
+    # 上游；记 WARNING 留痕，返回 0 不阻断归档主流程。
+    # 机制勘误（code-review item e3968bc0450c）：维护类 run（前缀+纯
+    # 时间戳，如 code-review-1791219794）经 run_spec_part 归一后 spec 段
+    # 并非空串——剥前缀后只剩纯时间戳，时间戳剥离正则 ^(.*)-\d{9,10}$
+    # 要求前置连字符故不剥，归一结果是时间戳串；空段仅在 run_id 呈
+    # 「前缀+空 spec 段+时间戳」双连字符形态（如 admin--<ts>）时出现。
+    # 守卫为防御性兜底，保留。
     if not spec_name:
         _logger.warning("archive_spec_runs: spec_name 为空，跳过清理（防止误删维护类 run 产物）")
         return 0
