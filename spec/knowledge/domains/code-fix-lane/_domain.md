@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-10-06 02:53 UTC+8
+> 最后更新：2026-10-06 03:23 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | [code-fix-lane](code-fix-lane.md) | 自动修复车道编排（两路激活/批循环/回归门合回/与审查车道调度解耦） | 2026-10-04 05:11 |
 | [codefix-affinity-batching](codefix-affinity-batching.md) | 选批文件亲和性装箱、波次上限自适应、批收尾回归两段式（中间批定向/末批全量兜底） | 2026-10-04 05:11 |
+| [codefix-digest-cost-metrics](codefix-digest-cost-metrics.md) | 消化链成本度量（run 工具构成指标 tool_uses/text_turns、链级 rollup 覆盖全部 run 不漏样本） | 2026-10-06 03:23 |
 | [code-fix-batch-parallel](code-fix-batch-parallel.md) | 批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底、边修复边提交收尾一次验证） | 2026-10-04 05:11 |
 | [code-fix-api-timeout-salvage](code-fix-api-timeout-salvage.md) | 批 run API 超时签名判别与失败现场抢救（salvage 提交保全、legacy 复用接续、非超时行为保形） | 2026-10-06 02:53 |
 | [code-fix-batch-selfheal](code-fix-batch-selfheal.md) | 修复批失败自愈（现场即弃〔API 超时例外走抢救〕、三态收尾、两层跳过与重试预算） | 2026-10-06 02:53 |
