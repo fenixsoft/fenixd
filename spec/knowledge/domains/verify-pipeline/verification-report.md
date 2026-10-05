@@ -1,5 +1,6 @@
 # 验证报告落盘即入库
-<!-- knowledge: capability=verification-report rev=1 sources=spec/archive/2026-10-05-evo-add-verification-report-commit-on-write -->
+<!-- knowledge: capability=verification-report rev=2
+     sources=spec/archive/2026-10-05-evo-add-verification-report-commit-on-write,spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit -->
 
 验证报告 `spec/changes/<spec>/verification-report.md` 的版本化入库能力：报告写盘成功即同步提交进版本库，使「落盘」与「入库」合一，验证结论在归档前就有版本化留痕。
 
@@ -11,8 +12,9 @@
 - 失败语义：git 不可用、index.lock 争用等提交失败只落 WARNING 日志（附 stderr 摘要），报告文件保留在磁盘，验证主流程与函数返回值均不受影响；不重试、不阻塞。报告写盘成功的事实不被提交失败覆盖。
 - 幂等：闸门在同一 spec 多轮验证、多次放行中反复进入；报告已入库且内容未再变化时静默跳过提交，不落 WARNING，不制造告警噪声。
 - 内容认可红线：入库动作不把 `verification-report.md` 计入 spec 内容认可（`spec_has_content`）判定——该判定刻意排除报告文件，防止已合并成果因报告在盘而被盲目重实现；入库只做版本化，不触碰该判定。
-- 兜底防线不变：merge-back 与归档整目录搬迁仍是报告入库的最后防线；机制生效前的历史滞留报告不做主动回填，其入库由归档兜底在搬迁时完成。
+- 入库挂点链：写盘入库是第一挂点；done→pushed 收口（`approve_push` 内、归档收口之前）对在盘未入库或有未提交修改的报告再做一次单文件入库，闭合「报告落盘晚于实现 merge」的窗口，规则详见 [push 收口报告入库](push-closeout-report-commit.md)；merge-back 与归档整目录搬迁仍是兜底防线。历史滞留报告不做主动回填，其入库由归档兜底在搬迁时完成。
 
 ## 溯源
 
 - 2026-10-05 2026-10-05-evo-add-verification-report-commit-on-write（spec/archive/2026-10-05-evo-add-verification-report-commit-on-write） — 新增验证报告落盘即入库全部规则（写盘成功即单文件提交、present 与合成两路覆盖、git 失败仅 WARNING 不阻塞、重复放行幂等静默、内容认可判定不受影响、归档兜底保留）
+- 2026-10-06 evo-add-push-closeout-verification-report-commit（spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit） — 修改本页：入库挂点链规则补入 done→pushed 收口二次入库挂点（push 收口细则独立成页 [push-closeout-report-commit](push-closeout-report-commit.md)），兜底防线表述同步收敛
