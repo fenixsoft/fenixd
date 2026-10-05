@@ -534,6 +534,99 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
     return {"done_ids": all_done, "tracked_ids": all_tracked, "created_count": max_created}
 
 
+class TaskCompletionWatcher:
+    """impl run 轮询路径的「run 内任务完成」增量观测器
+    （evo-add-impl-env-blocker-stop-loss 2.1）。
+
+    供 runner 轮询环维护「自最近一次 run 内任务完成起的轮数」：每轮
+    ``poll()`` 一次，只读上次位点之后**新追加的字节**（run 产物 O_APPEND
+    只增，单轮 IO = O(新增字节)），不重扫全文件——每轮全量重扫在 600 轮
+    run 上是 O(N²) IO，观测面自身不得成为轮询开销放大器（design D3）。
+
+    完成语义与 ``_scan_run_events`` 的 TaskUpdate 记账同源（禁止第二套
+    口径）：assistant 事件 content 内 ``tool_use`` 名为 ``TaskUpdate`` 且
+    ``input.status == "completed"`` 记该 ``taskId - 1`` 完成；按去重集合计
+    ``completed_count``——同一任务重复 completed 不增长计数，也就不会把
+    轮询环侧的停滞锚点反复重置（重复勾完成不是新进展）。
+
+    任何 IO/解析损坏都容错返回当前计数，不抛异常——观测面故障不得影响
+    轮询环与 run 终态。
+    """
+
+    def __init__(self, run_file):
+        self._path = Path(run_file)
+        self._offset = 0        # 已消费到的文件字节位点
+        self._pending = b""     # 末行不完整字节的持有缓冲（换行符为界）
+        self._completed_idx: set = set()
+
+    @property
+    def completed_count(self) -> int:
+        """当前观测到的已完成任务数（taskId 去重）。"""
+        return len(self._completed_idx)
+
+    def poll(self) -> int:
+        """增量消费 run 流新追加字节，返回当前 ``completed_count``。"""
+        try:
+            size = self._path.stat().st_size
+        except OSError:
+            return self.completed_count
+        if size < self._offset:
+            # 文件被截断/替换（run 产物只增，正常不发生）——整体复位重扫，
+            # 防位点超前导致永久读不到新字节。
+            self._offset = 0
+            self._pending = b""
+            self._completed_idx = set()
+        if size == self._offset:
+            return self.completed_count
+        try:
+            with self._path.open("rb") as f:
+                f.seek(self._offset)
+                chunk = f.read(size - self._offset)
+                self._offset += len(chunk)
+        except OSError:
+            return self.completed_count
+        if not chunk:
+            return self.completed_count
+        self._pending += chunk
+        if b"\n" not in self._pending:
+            return self.completed_count
+        *lines, self._pending = self._pending.split(b"\n")
+        for raw in lines:
+            self._consume_line(raw)
+        return self.completed_count
+
+    def _consume_line(self, raw: bytes) -> None:
+        """解析一条完整事件行，登记 TaskUpdate completed（容错不抛）。"""
+        line = raw.strip()
+        # 子串快筛（对齐 _scan_run_events 的 may_error 快筛惯例）：绝大多数
+        # 转录行不含该字面，免 JSON 解析直接跳过。
+        if not line or b"TaskUpdate" not in line:
+            return
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            return
+        msg = entry.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            return
+        for c in content:
+            if not isinstance(c, dict) or c.get("type") != "tool_use":
+                continue
+            if c.get("name") != "TaskUpdate":
+                continue
+            inp = c.get("input") or {}
+            if inp.get("status") != "completed":
+                continue
+            try:
+                n = int(str(inp.get("taskId")))  # 兼容 str/int
+            except (TypeError, ValueError):
+                continue
+            self._completed_idx.add(n - 1)
+
+
 # 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
 _parse_run_task_done = parse_run_task_done
 _find_impl_run_file = find_impl_run_file

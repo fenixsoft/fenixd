@@ -5362,6 +5362,37 @@ class AgentRunner:
         # 短路）。关闭态同样不建态、不采样（record_sample 首次调用才建）。
         stall_cfg = self._stall_budget_config()
 
+        # ── impl 任务进度停滞观测（evo-add-impl-env-blocker-stop-loss 2.1）──
+        # 「自最近 run 内任务完成起的轮数」观测态：仅 impl 车道
+        # （IMPL_LANE_AGENT_TYPES）+ 配置开启（缺省开启、可关闭）时建态，
+        # 其余 None 零开销短路。纯观测面——超阈 WARNING + finally run_metrics
+        # 注记，不参与续期/击杀判定；流内解析复用 run_task_track 单点
+        # （TaskCompletionWatcher 增量位点缓存 + read_init_tools 能力探测），
+        # 不做第二套 TaskUpdate 解析。
+        _task_stall_cfg = None
+        _task_stall_state = None
+        if agent_type in IMPL_LANE_AGENT_TYPES:
+            try:
+                from core.config import ConfigLoader as _CLTsCfg
+                _ts_cfg = _CLTsCfg.get_task_stall_warn_config(self.config)
+            except Exception:
+                _ts_cfg = None
+            if _ts_cfg and _ts_cfg.get("enabled"):
+                from core.run_task_track import TaskCompletionWatcher
+                _task_stall_cfg = _ts_cfg
+                _task_stall_state = {
+                    "watch": TaskCompletionWatcher(run_file),
+                    # 能力判定（惰性一次）：init 事件 tools 含 TaskUpdate
+                    # 才继续观测——无 Task 工具的 harness「无完成」不是停滞
+                    "cap_ready": False,
+                    "cap_ok": False,
+                    # 最近观测到的完成任务数与停滞锚点（完成时的轮数）
+                    "last_count": 0,
+                    "anchor_turn": 0,
+                    # 本停滞 episode 是否已 WARNING（新完成即重置可再预警）
+                    "warned": False,
+                }
+
         # ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
         # 纯读侧采集：`tool_result → 下一个 assistant` 间隔样本（API 往返等待）。
         # sample_state 被 _read_stream 子线程 append，主线程在 join 后读取，
@@ -5776,6 +5807,14 @@ class AgentRunner:
                             criterion=_sb_criterion, detail=_sb_stats)
                         break
 
+                # ── impl 任务进度停滞观测（evo-add-impl-env-blocker-stop-loss
+                # 2.1）：每轮增量消费 run 流，观测新任务完成/超阈 WARNING。
+                # 纯观测，不改变下方超时/轮次上限任何续期与击杀判定输入。
+                if _task_stall_state is not None:
+                    self._task_stall_observe(
+                        _task_stall_state, _task_stall_cfg, run_file, run_id,
+                        turn_count[0])
+
                 remaining = deadline - time.time()
                 # ── extension 末位窗口自动保全（add-fast-track-scale-precheck D3）──
                 # 剩余时间进入末位窗口（< EXTENSION_TAIL_WINDOW_SECONDS 且 >0）
@@ -6035,6 +6074,19 @@ class AgentRunner:
                         "transcript_bytes": _txb,
                         "turns": turn_count[0],
                     }
+                # ── impl 任务进度停滞观测注记（evo-add-impl-env-blocker-stop-loss
+                # 2.1）：观测态在场且能力判定通过时随 run_metrics 入账（warned
+                # 标记本 run 是否发生过超阈 WARNING）；未观测/能力缺失落 None，
+                # 与 remaining_tasks 缺失语义同型（观测字段不阻断终态落盘）。
+                _task_stall_note = None
+                if _task_stall_state is not None and _task_stall_state["cap_ok"]:
+                    _task_stall_note = {
+                        "stall_turns": max(
+                            0, turn_count[0] - _task_stall_state["anchor_turn"]),
+                        "threshold": int(_task_stall_cfg["turns"]),
+                        "completed_tasks": _task_stall_state["last_count"],
+                        "warned": bool(_task_stall_state["warned"]),
+                    }
                 # 指标行落盘（正常路径先于终态行，type 为 run_metrics）。
                 # [fenix-ignore:4782bd380bdd] 崩溃路径 run_metrics 行落在
                 # except 先写的 error 行之后是权威测试锁定的契约形态
@@ -6062,6 +6114,9 @@ class AgentRunner:
                     "latency_rounds": stall_latency["rounds"],
                     "latency_stalls": stall_latency["stalls"],
                     "latency_max": stall_latency["max"],
+                    # evo-add-impl-env-blocker-stop-loss 2.1：任务进度停滞
+                    # 注记（未观测/能力缺失为 None——与 remaining_tasks 同型）
+                    "task_stall": _task_stall_note,
                 }
                 if _usage_missing_note is not None:
                     _metrics_line["usage_missing"] = _usage_missing_note
@@ -6100,6 +6155,9 @@ class AgentRunner:
                         "latency_rounds": stall_latency["rounds"],
                         "latency_stalls": stall_latency["stalls"],
                         "latency_max": stall_latency["max"],
+                        # evo-add-impl-env-blocker-stop-loss 2.1：与档案行
+                        # 同源（未观测/能力缺失为 None）。
+                        "task_stall": _task_stall_note,
                     },
                 )
                 # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）
@@ -6773,6 +6831,61 @@ class AgentRunner:
         except Exception:
             return False
         return False
+
+    # ── impl 任务进度停滞观测（evo-add-impl-env-blocker-stop-loss 2.1）──
+
+    def _task_stall_observe(self, st: dict, cfg: dict, run_file, run_id: str,
+                            turns: int) -> None:
+        """轮询环单步观测：新任务完成重置停滞锚点；超阈 WARNING 一次。
+
+        纯观测面：只读写 st 观测态与打日志，MUST NOT 触碰续期/击杀判定的
+        任何输入（run_metrics 注记在 finally 统一消费 st）。步骤：
+
+        1. 能力判定（惰性一次，``read_init_tools`` 单点）：run 流 init 事件
+           tools 含 TaskUpdate 才继续观测——harness 无 Task 工具时「无完成」
+           不是停滞证据，fail-open 不观测（init 恒不可读 → 永不预警）。
+        2. 增量消费 run 流新增字节（``TaskCompletionWatcher``，单轮 IO =
+           O(新增字节)）：completed_count 增长即把停滞锚点重置到当前轮数，
+           并解除本 episode 的已预警标记（下个 episode 可再预警）。
+        3. 「当前轮数 − 锚点」≥ 阈值且本 episode 未预警 → WARNING 一次
+           （同 episode 不重复刷屏；不写 admin_alerts——观测面不触发
+           独立人工告警铁律）。
+        """
+        if not st.get("cap_ready"):
+            from core.run_task_track import read_init_tools
+            tools = read_init_tools(run_file)
+            if tools is None:
+                return  # init 未落盘/不可读：保持 unknown，下轮再试
+            st["cap_ready"] = True
+            st["cap_ok"] = "TaskUpdate" in tools
+        if not st["cap_ok"]:
+            # 无 TaskUpdate 能力（含 gate 判定后的每一轮）：永久静默——
+            # 「无完成」不是停滞证据，不得据此预警。
+            return
+        count = st["watch"].poll()
+        if count > st["last_count"]:
+            # 刚观测到新任务完成：锚点重置到当前轮数，本 episode 收敛
+            st["last_count"] = count
+            st["anchor_turn"] = turns
+            st["warned"] = False
+            return
+        if st["warned"]:
+            return
+        threshold = int(cfg.get("turns") or 0)
+        stall_turns = turns - int(st["anchor_turn"])
+        if stall_turns < threshold:
+            return
+        st["warned"] = True
+        self.logger.warning(
+            "agent_runner",
+            f"run {run_id}: 任务进度停滞预警：自最近 run 内任务完成起已 "
+            f"{stall_turns} 轮无任何任务完成（阈值 {threshold}，已完成 "
+            f"{st['last_count']} 个）——纯观测注记，不参与续期/击杀判定；"
+            f"若在深挖环境依赖，见提示词环境阻塞止损规则",
+            {"run_id": run_id, "event": "task_stall_warn",
+             "stall_turns": stall_turns, "threshold": threshold,
+             "completed_tasks": st["last_count"]},
+        )
 
     # ── run 停滞预算复合判停（evo-add-run-stop-loss 2.1，缺省关闭）──────
     # 判停统计与评估：reader 线程旁挂采样（单写者）+ 轮询环 mtime 进展

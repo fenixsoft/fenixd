@@ -332,6 +332,42 @@ class ConfigLoader:
         return {"enabled": enabled, "stalls": stalls,
                 "window_seconds": window_seconds}
 
+    # ── impl 任务进度停滞预警（evo-add-impl-env-blocker-stop-loss 2.2，
+    # 缺省开启）────────────────────────────────────────────────────────
+    # agents.task_stall_warn_* 两键：impl run「自最近 run 内任务完成起的
+    # 轮数」观测面的开关与预警阈值（数据源为 run 流内 TaskUpdate 观测）。
+    # 纯观测面（超阈 WARNING + run_metrics 注记），不参与续期/击杀判定；
+    # 缺省开启（proposal 实证：600 轮上限击杀前 275 轮零任务完成，观测
+    # 预警是唯一在途信号），可显式关闭。键风格沿 run_stall_budget_* 先例
+    # 归一化（_normalize_stall_budget_positive 单点）。
+    TASK_STALL_WARN_ENABLED_DEFAULT = True
+    TASK_STALL_WARN_TURNS_DEFAULT = 200  # 阈值 N 轮（design 标定值，按观测调参）
+
+    @classmethod
+    def get_task_stall_warn_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """读取并规范化任务进度停滞预警两键（缺省开启，非法值回退缺省）。
+
+        返回 ``{"enabled": bool, "turns": int}``：
+        - enabled：仅接受布尔；缺失/None/非法一律回退缺省 True（与
+          run_stall_budget 缺省关闭的灰度语义相反——本键只观测不判定，
+          开启无副作用，无需灰度）；
+        - turns：正整数（bool 排除、整值浮点接受），非法回退缺省 200
+          （design Open Question 标定值，实现后按观测调参）。
+
+        单点归一化：runner 轮询环消费与设置展示同一函数，展示与生效不脱节
+        （与 get_run_stall_budget_config 同模式）。
+        """
+        try:
+            raw_enabled = cls.get(config, "agents.task_stall_warn_enabled", None)
+        except Exception:
+            raw_enabled = None
+        enabled = raw_enabled if isinstance(raw_enabled, bool) \
+            else cls.TASK_STALL_WARN_ENABLED_DEFAULT
+        turns = cls._normalize_stall_budget_positive(
+            config, "agents.task_stall_warn_turns",
+            cls.TASK_STALL_WARN_TURNS_DEFAULT, integer=True)
+        return {"enabled": enabled, "turns": turns}
+
     @classmethod
     def _normalize_stall_budget_positive(cls, config: Dict[str, Any], key: str,
                                          default, integer: bool):
