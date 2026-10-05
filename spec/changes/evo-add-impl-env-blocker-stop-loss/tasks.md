@@ -25,4 +25,4 @@
 
 ## 3. 测试
 
-- [ ] 3.1 tests/test_impl_env_blocker_stop_loss.py：覆盖止损规则提示词文本契约、失败尝试计数与停滞预警触发、观测不改变续期/击杀判定、既有预算 sizing 行为不回退。
+- [ ] 3.1 tests/test_impl_env_blocker_stop_loss.py：覆盖止损规则提示词文本契约（约束文本在场，含「≥3 次按尝试计数、design fallback 优先、无 fallback 登记 unfinished 转 partial、禁宿主内核级/镜像级改造」四要素——失败尝试计数是提示词行为约定，框架侧无计数器交付项，不作框架行为测试）、停滞预警触发与注记、观测不改变续期/击杀判定、既有预算 sizing 行为不回退。

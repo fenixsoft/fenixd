@@ -16,7 +16,7 @@
 
 1. agents/implementer.md「约束」段追加止损规则（见 spec.md），并要求优先消费 design 的 fallback 条款。
 2. agents/planner-plan.md：环境依赖类任务在任务书标注「环境依赖、有/无 fallback」类别，供止损规则联动。
-3. core/agent_runner/runner.py：轮询路径加「自最近 TaskUpdate completed 起的轮数」计数（复用 run_task_track 流内解析），超阈（配置键沿 agents.run_stall_budget_* 先例归一化）打 WARNING + turn_extension/timeout evidence 注记。
+3. core/agent_runner/runner.py：轮询路径加「自最近 TaskUpdate completed 起的轮数」计数（复用 run_task_track 流内解析），超阈（配置键沿 agents.run_stall_budget_* 先例归一化）打 WARNING + turn_extension/timeout evidence 注记。每轮全量重扫 run 流文件在 600 轮 run 上是 O(N²) IO——须沿 run_task_track 既有 `_run_epoch`/增量位点缓存，仅在流文件变化时重扫，观测面自身不得成为轮询开销放大器。
 4. 与 kill_early / latency 停滞预算的边界：本观测只注记不判定，不与之互相触发。
 
 ## Open Questions
