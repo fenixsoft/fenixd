@@ -32,3 +32,8 @@
 | deviation-gate-pytest-hard-gate-suite | 产物硬门全用例套件（任务 3.1）：pytest 跑 tests/test_honest_exit_convergence.py::TestAcceptanceDeviationGate 十个用例全绿——success∧偏差∈completed_tasks 被拒、结构类路径、拒绝文案出路指引、partial 携带偏差放行、无偏差零影响、越界 id 不命中、闭环后续 success 轮放行、未知 type 白名单拒绝、缺三要素/evidence 拒绝、fast-track 车道同义生效。出处 tests/test_honest_exit_convergence.py:382-517 | pass | 0/8 | - |
 | discipline-prompt-contract-pytest-suite | 提示词契约套件（任务 3.2）：pytest 跑 tests/test_agent_prompt_files.py::TestAcceptanceDeviationDisciplinePrompt 六个用例全绿——implementer 模板含纪律段与条目形状、构建后 implementer/fast-track/planner-plan prompt 均注入对应措辞、result_gate 与 prompt_builder 措辞单源（常量对象同一+纪律段原样入 prompt+拒绝文案引用同一注解短语）。出处 tests/test_agent_prompt_files.py:912-991 | pass | 0/8 | - |
 | impl-result-contract-regression-green | 回归点（任务 3.1/3.2 周边）：两个测试文件全量 141 用例全绿——本 SPEC 新增 findings 字段与组合硬门未破坏既有诚实退出收敛判据（unattainable/partial/success 完成度对账）与既有提示词契约断言。出处 tests/test_honest_exit_convergence.py、tests/test_agent_prompt_files.py（全文件，2026-10-06 本机实测 141 passed） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
