@@ -904,3 +904,88 @@ class TestWorkdirSectionVerifyProgressDisambiguation:
         content = self._content(rel)
         legacy = "验证进度目录 `.fenix/verify-progress/`（框架已显式授权）"
         assert legacy not in content, f"{rel} 仍残留未限定的「验证进度目录」裸表述"
+
+
+# ── 验收偏差勾选纪律提示词契约（evo-add-acceptance-deviation-reporting 3.2）──
+
+
+class TestAcceptanceDeviationDisciplinePrompt:
+    """Scenario「替代验收行内注明」+「规划层消费偏差注解」的提示词契约。
+
+    implementer / planner-plan 模板与构建后 prompt 均须携带勾选纪律与替代注明
+    措辞；措辞与 result_gate 硬门单源（同一常量对象），防两侧漂移。
+    """
+
+    _DISCIPLINE_MARKS = (
+        "以 X 替代验收",  # 行内注解短语（ACCEPTANCE_DEVIATION_ANNOTATION 渲染）
+        "acceptance-deviation",  # findings 条目类型
+        "MUST NOT 勾选",  # 字面验收未满足不得勾选
+        '"task"',  # 条目三要素
+        '"literal"',
+        '"substitute"',
+    )
+
+    def test_implementer_template_contains_discipline(self):
+        """agents/implementer.md 模板含勾选纪律约束段与 findings 条目形状。"""
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["implementer"]).read_text(
+            encoding="utf-8")
+        for mark in self._DISCIPLINE_MARKS + ('"evidence"', "unattainable"):
+            assert mark in template, f"implementer.md 缺少勾选纪律措辞: {mark}"
+
+    def test_built_implementer_prompt_contains_discipline(self, tmp_path):
+        """构建后 implementer prompt 经 _result_gate_section 注入同款纪律段。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "implementer")
+        for mark in self._DISCIPLINE_MARKS:
+            assert mark in prompt, f"implementer prompt 缺少勾选纪律措辞: {mark}"
+
+    def test_built_fast_track_prompt_same_discipline(self, tmp_path):
+        """fast-track 车道注入同一纪律段（两车道同义生效）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "fast-track")
+        for mark in self._DISCIPLINE_MARKS:
+            assert mark in prompt, f"fast-track prompt 缺少勾选纪律措辞: {mark}"
+
+    def test_discipline_wording_single_source_with_result_gate(self, tmp_path):
+        """措辞单源：result_gate 引用 prompt_builder 同一常量对象，且组合拒绝
+        文案中的注解短语来自同一常量（改一处即两侧同源生效）。"""
+        import core.agent_runner.result_gate as rg
+        from core.agent_runner import prompt_builder as pb
+
+        assert rg.ACCEPTANCE_DEVIATION_TYPE is pb.ACCEPTANCE_DEVIATION_TYPE
+        assert rg.IMPL_FINDINGS_TYPE_WHITELIST is pb.IMPL_FINDINGS_TYPE_WHITELIST
+        assert rg.ACCEPTANCE_DEVIATION_ANNOTATION is pb.ACCEPTANCE_DEVIATION_ANNOTATION
+        # 纪律段措辞由单源函数渲染，注入 prompt 的文本与常量一致
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "implementer")
+        section = pb.acceptance_deviation_discipline_section()
+        assert section.strip() in prompt
+        # 硬门拒绝文案引用同一注解短语常量
+        err = rg._check_acceptance_deviation_success(
+            runner, {"findings": [{"type": "acceptance-deviation",
+                                   "task": "1.1"}],
+                     "completed_tasks": ["1.1"]}, Path("r.json"))
+        assert err is not None
+        assert f"以 X {pb.ACCEPTANCE_DEVIATION_ANNOTATION}" in err
+
+    def test_planner_plan_template_contains_substitute_planning_rule(self):
+        """agents/planner-plan.md 模板含「按注解的替代方式出题」规范。"""
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["planner-plan"]).read_text(
+            encoding="utf-8")
+        assert "以 X 替代验收" in template
+        assert "MUST NOT 按字面验收出场景链" in template
+
+    def test_built_planner_plan_prompt_contains_substitute_rule(self, tmp_path):
+        """构建后 planner-plan prompt 携带替代出题规范（模板是 prompt 唯一真相）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "planner-plan")
+        assert "以 X 替代验收" in prompt
+        assert "MUST NOT 按字面验收出场景链" in prompt
