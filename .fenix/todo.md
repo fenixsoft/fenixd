@@ -50,7 +50,7 @@
 
 ### 可改进
 - **孤儿处置生效核查认不出已生效动作，429信号滞留46小时连环升级3组**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：每个 global 类孤儿处置组终态后都会被升级「需人工介入」且无法自动收口，本窗口实测 4 小时余内 3 组连环升级（本地 06:58 / 10:17 / 11:12，1 组未处理），其中 10-03 的 429 冻结事件事实上早已解决、3 条信号记录却 handled=False 滞留约 46 小时，台账持续失真并持续吸引 admin 会话与人工注意力。
   - 证据：升级记录 5f2a40faa658、33ded63224d7、c17b04c9280b（daemon_errors 孤儿处置升级告警，分别对应处置组 admin-global-1791056118 / admin-global-1791144077 / admin-global-1791154704）结论同为「生效核查：fenixd.log 对账窗口内无解冻族 Transition 留痕」；而 429 解冻的 4 条留痕（「Transition: … blocked → …」，channel=manual 人工裁决通道）实测存在于 2026-10-03T19:40:21Z、已随轮转落入 fenixd.log.1（当前日志仅覆盖 10-04T18:54Z 起，且全文件 0 条 blocked→ 留痕）；core/admin_monitor.py 的 _read_recent_unfreeze_transitions 只读当前 fenixd.log 尾部 256KB（_TAIL_ERROR_READ_BYTES）且只认 blocked→X 手动解冻一种证据形态（_ORPHAN_UNFREEZE_TRANSITION_RE）。
   - 调查评估：在孤儿处置收敛机制（evo-add-admin-orphan-disposition-effect-check，merge e3843198，本地 10-05 02:38）首轮实弹时暴露，是 [2026-10-05#可改进#2] 落地后的残余缺口。已核实：机制按设计 fail-closed（宁可滞留升级、不假闭环）正常工作，但其 global 组（spec=global/None，如 429 冻结这类无单一 spec 对象的告警）唯一证据源存在两个结构性盲区——(a) 日志轮转盲区：429 处置组（run admin-global-1791056118）的解冻动作发生在 10-03T19:40:21Z，留痕已轮转进 fenixd.log.1，核查只扫当前文件尾部 256KB（本机约数小时日志量），对滞留超 1 天的组必然 0 证据；(b) 动作类型盲区：admin-global-1791144077 的实际生效动作是提交 spec 目录归档删除收尾解除 merge-back 阻塞（resolved 处置记录 ef184ed4a4b1），admin-global-1791154704 的是 code-review-fix 分支合并（10-04T23:20:56Z），两者都不产生 blocked→X 解冻留痕，核查同样判「无生效证据」。根因：证据源设计未考虑日志轮转与处置动作多样性，落地效果是「无限期 pending」变成「无限期 escalated」，[2026-10-05#可改进#2] 的台账收口目标未达成；而 3 条 open 信号（10-03T19:31-19:41Z 创建的 daemon_errors 同源告警）会继续被后续 global 组匹配，形成结构性复发。结论：确定性缺口、修法明确（代码与盲区均已定位），值得一次小专项。
