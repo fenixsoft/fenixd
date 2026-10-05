@@ -94,7 +94,7 @@ PRESERVE_SIDECAR = PROJECT_ROOT / ".fenix" / "interrupted_runs.json"
 # supervisor SIGKILL 等待相对排水窗口的固定余量（D2）：保证排水期不被截断。
 SUPERVISOR_KILL_MARGIN_SECONDS = 120
 # supervisor_runtime.started_at 漂移判定阈值（fix-daemon-lifecycle-races 3.2）：
-# 当前 daemon 启动时间戳（.fenix/daemon_started）早于 runtime.started_at 超过
+# runtime.started_at 早于当前 daemon 启动时间戳（.fenix/daemon_started）超过
 # 该值，视为 runtime 文件残留自此前 supervisor 进程（当前进程未刷新上报），按
 # 「未上报」处理打 WARNING。缺省 24h：daemon 自动重启循环（restart_request/
 # 崩溃自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值；长驻 supervisor
@@ -541,8 +541,14 @@ class FenixDaemon:
         # ValueError 会令 initialize FATAL 退出、supervisor 拉起即再崩
         raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
         try:
-            admin_workers = int(raw_workers or 0)
-        except (TypeError, ValueError):
+            _workers_num = raw_workers or 0
+            # .inf/.nan 是 YAML 合法标量：int(.inf) 抛 OverflowError、int(.nan)
+            # 抛 ValueError——非有限浮点先按 _shutdown_drain_seconds 范式预检
+            # 归一再 int()（code-review item 625a1341f928）
+            if isinstance(_workers_num, float) and not math.isfinite(_workers_num):
+                raise ValueError(f"non-finite: {_workers_num!r}")
+            admin_workers = int(_workers_num)
+        except (TypeError, ValueError, OverflowError):
             self.logger.error(
                 "fenixd",
                 f"admin.workers 非法（应为非负整数）: {raw_workers!r}，回退 2",
@@ -681,10 +687,19 @@ class FenixDaemon:
         # max(1, int(verify_redo_budget or 0)) 收敛到至少 1，显式 0 并不能表达
         # 「禁用预算」，故不改显式 None 判断（保守，不引入未验证的行为变化）。
         # [fenix-ignore:fc1f18a4eb95] 已修复（code-fix 批次 61dd54b8 落地）：下方 int() 已包 try/except (TypeError, ValueError)，非法值回退 3 并 ERROR 留痕，所指启动即崩不复存在
+        # 该标记理由未覆盖 .inf/.nan 形态（code-review item 625a1341f928）：
+        # int(.inf) 抛 OverflowError 不在 (TypeError, ValueError) 内——下方守卫
+        # 已补 isfinite 预检并扩捕获 OverflowError，启动即崩的该残留形态已闭合。
         raw_redo_budget = ConfigLoader.get(self.config, "agents.verify_redo_budget", 3)
         try:
-            _redo_budget = int(raw_redo_budget or 3)
-        except (TypeError, ValueError):
+            _budget_num = raw_redo_budget or 3
+            # .inf/.nan 是 YAML 合法标量：int(.inf) 抛 OverflowError、int(.nan)
+            # 抛 ValueError——非有限浮点先按 _shutdown_drain_seconds 范式预检
+            # 归一再 int()（code-review item 625a1341f928）
+            if isinstance(_budget_num, float) and not math.isfinite(_budget_num):
+                raise ValueError(f"non-finite: {_budget_num!r}")
+            _redo_budget = int(_budget_num)
+        except (TypeError, ValueError, OverflowError):
             self.logger.error(
                 "fenixd",
                 f"agents.verify_redo_budget 非法（应为正整数）: "
@@ -1092,6 +1107,18 @@ class FenixDaemon:
                         f"{raw_interval!r}，回退 5",
                     )
                     interval_minutes = 5.0
+                if not math.isfinite(interval_minutes):
+                    # .inf/.nan 是 YAML 合法标量、float() 不报错：inf/nan 令
+                    # 下方检查点节拍比较恒 False、自进化检查点（含条目保留
+                    # 清理 prune_items）静默停摆——同 _shutdown_drain_seconds
+                    # 范式按非法值回退缺省并留痕（code-review item
+                    # b80e1bf206f9）。
+                    self.logger.error(
+                        "fenixd",
+                        f"admin.interval_minutes 非法（应为有限数值分钟）: "
+                        f"{raw_interval!r}，回退 5",
+                    )
+                    interval_minutes = 5.0
                 evo_interval = max(interval_minutes, 0.5) * 60
                 if time.time() - evolution_check_ts >= evo_interval:
                     evolution_check_ts = time.time()
@@ -1208,8 +1235,17 @@ class FenixDaemon:
             raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
             workers = None
             try:
-                workers = int(raw_workers or 0)
-            except (TypeError, ValueError):
+                _workers_num = raw_workers or 0
+                # .inf/.nan 是 YAML 合法标量：int(.inf) 抛 OverflowError、
+                # int(.nan) 抛 ValueError——非有限浮点先按
+                # _shutdown_drain_seconds 范式预检归一再 int()
+                # （code-review item 625a1341f928）
+                if isinstance(_workers_num, float) and not math.isfinite(
+                    _workers_num
+                ):
+                    raise ValueError(f"non-finite: {_workers_num!r}")
+                workers = int(_workers_num)
+            except (TypeError, ValueError, OverflowError):
                 self.logger.error(
                     "fenixd",
                     f"admin.workers 非法（应为非负整数）: {raw_workers!r}，"
@@ -4832,8 +4868,10 @@ class FenixDaemon:
         对每个仍存活的 in-flight run，解析其 spec 名并从 STATE 取 branch，
         组装保全条目（spec/run_id/branch/worktree/ahead_commits/reason/timestamp）
         写入 ``.fenix/interrupted_runs.json``。写入失败降级 WARNING 不阻塞停机。
-        ``ahead_commits`` 以 ``git rev-list --count main..<branch>`` 为据（recovery
-        保留判定同口径）；worktree 以 git worktree 注册为据。
+        ``ahead_commits`` 以 ``git rev-list --count <基线分支>..<branch>`` 为据
+        （基线分支经 _preserve_base_branch() 动态解析，不再硬编码 main——
+        code-review item ec528621b2ec；recovery 保留判定同口径）；worktree 以
+        git worktree 注册为据。
 
         Returns: 已登记保全的 worktree 路径列表（供 cleanup_orphans 保护集）。
         """
