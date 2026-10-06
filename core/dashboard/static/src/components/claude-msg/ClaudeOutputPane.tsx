@@ -288,8 +288,12 @@ export default function ClaudeOutputPane({
       // 用户侧表现为点了没反应
       message.error(`加载更早事件失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      // [fenix-ignore:ca32b80a4ccc] loading 重置刻意只按 runId 宽口径（与 loadTail finally 同口径，宽于数据写回守卫）：跨项目 runId 重名切换时 runId 仍匹配、现状会正常重置 loadingMore 不滞留，补 project 比对反而关闭重置路径（loadOlder 开头 loadingMore 短路）致按钮永久 loading
-      if (isMountedRef.current && activeRunIdRef.current === reqRunId) {
+      // loading 重置与数据写回同一币值守卫（code-review item 612025308c19）：
+      // 跨项目同名 run 切换后，旧 run 迟到的分页 finally 若只按 runId 宽口径，
+      // 会误重置新一次点击触发的 loadingMore（按钮 loading 提前消失）；切 run
+      // 场景的复位已由 [runId, project] effect 无条件兜底（item 97dcdc581245），
+      // 此处收窄不关闭重置路径
+      if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
         setLoadingMore(false);
       }
     }
