@@ -461,12 +461,19 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     if (running) setAwaitingStart(false);
   }, [running]);
 
-  // 等待启动超时兜底：daemon 长时间未消费信号（如中途退出）不再无限等待
+  // 等待启动超时兜底：daemon 长时间未消费信号（如中途退出）不再无限等待。
+  // 超时退出同时补一次轻量提示（code-review item 1087d6a7eb1a）：受理成功
+  // 已弹「已受理」承诺，静默复位会让承诺悬空无任何「未启动」痕迹——口径对
+  // 齐 QualityTab 两段等待的超时提示（未收到启动确认 → 去 daemon 侧确认），
+  // 全量/定向子集两个入口共享本兜底，一处提示双双覆盖。
   useEffect(() => {
     if (!awaitingStart) return;
-    const t = window.setTimeout(() => setAwaitingStart(false), 120_000);
+    const t = window.setTimeout(() => {
+      setAwaitingStart(false);
+      message.info('回归已受理但未收到启动确认，请确认 daemon 运行中');
+    }, 120_000);
     return () => window.clearTimeout(t);
-  }, [awaitingStart]);
+  }, [awaitingStart, message]);
 
   // 等待启动窗口轮询：loadResult 的自轮询只在 running=true 时挂载，而受理
   // 到 daemon mark_running 之间有主循环消费时延——此窗口不轮询会让页面
