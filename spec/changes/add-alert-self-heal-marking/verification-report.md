@@ -37,3 +37,10 @@
 | web-settings-selfheal-quiet-field-default | 正向路径·设置页系统页签新增安静窗口字段并按缺省回填（tasks 5.2）：「系统」页签系统分组出现「告警自愈安静窗口」数字输入（SystemPanel ADMIN_ANNOTATIONS 声明式字段表新增项，沿用 system-field-*/system-control-* testid 约定），表单按当前配置 1440 回填（此链配置已被 api 场景恢复缺省）。出处 core/dashboard/static/src/pages/settings/app.tsx 无、settings/index.tsx:473（SystemPanel 挂载）、pageLabels.ts:24（系统页签）、core/dashboard/static/src/pages/settings/components/SystemPanel.tsx:21-118（ADMIN_ANNOTATIONS）、:133/:154/:160（system-field-*/system-control-* testid 约定）、app.tsx:133（#/settings 路由） | pass | 0/5 | - |
 | web-settings-selfheal-quiet-save-roundtrip | 交互流程·设置页安静窗口修改保存持久化（tasks 5.2「走既有面板脏检查与提交链路」）：系统页签安静窗口输入 720 → 保存 → 离开再重进 → 表单回显 720（用户级配置持久化生效；断言只在步骤全部结束后执行，故持久化断言取重进后的最终态）。出处 SystemPanel.tsx:521（system-save-btn）、settings/index.tsx:195/:216（系统页签保存链路与「保存成功」toast）、settings_routes.py:145-186（POST /api/config 用户级写盘） | pass | 0/5 | - |
 | web-settings-selfheal-quiet-restore-default | 回归点·安静窗口恢复缺省（自复位收尾）：把上一场景改写的 720 改回 1440 并保存重进确认——运行环境不遗留测试值，且「改回缺省值」的写盘路径与 720 等价可用。出处 SystemPanel.tsx:521、settings/index.tsx:216、settings_routes.py:145-186 | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 1 轮）。
+
+- 首轮写入 14 个场景
+
