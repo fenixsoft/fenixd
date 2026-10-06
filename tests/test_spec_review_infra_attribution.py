@@ -599,5 +599,184 @@ class TestReviewFreezePrefix(unittest.TestCase):
         self.assertEqual(entry.get("_review_attempts", 0), 0)
 
 
+# ── evo-add-review-failure-attribution 3.1：失败行归因留痕 ───────────
+
+
+def _mk_dispatch_project(tmpdir: Path, spec_name="spec"):
+    """真实 StateMachine + SPEC 目录（同 test_spec_review_agent._mk_project 形态）。"""
+    from core.state_machine import StateMachine
+
+    (tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
+    sm = StateMachine(tmpdir / ".fenix" / "STATE.md", MagicMock())
+    spec_dir = tmpdir / "spec" / "changes" / spec_name
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
+    sm.add_spec(spec_name, {"status": "reviewing", "priority": 5})
+    sm.update_spec(spec_name, {"reviewer_run": None})
+    return sm
+
+
+class _ScriptedReviewRunner:
+    """受控评审 runner：按脚本返回失败结果或抛异常（桥接上游形态）。"""
+
+    def __init__(self, result=None, exc=None):
+        self.result = result
+        self.exc = exc
+
+    def _check_agent_result_artifact(self, spec_name, agent_type,
+                                     run_started_at=None, wt_path=None):
+        return "结果文件缺失"
+
+    def run_spec_review(self, spec_name, run_id=None):
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+class TestRunnerBridgeAttribution(unittest.TestCase):
+    """run_spec_review 失败归因桥接（evo-add-review-failure-attribution 1.1/1.2）：
+    stderr_tail / exit_code 与既有 api_error_status 并列随 AgentRunResult 透出，
+    共享底座错误文本不改。"""
+
+    def setUp(self):
+        import tempfile
+
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _runner(self):
+        from core.agent_runner.runner import AgentRunner
+
+        r = AgentRunner.__new__(AgentRunner)
+        r.project_root = self.tmpdir
+        r.logger = MagicMock()
+        return r
+
+    def _wire(self, r, boom):
+        r._build_prompt = lambda *a, **k: "prompt"
+        r._get_agent_model_assignment = lambda agent_type: None
+        r._get_config = lambda key, default=None: default
+        r._run_claude = boom
+
+    def test_bridge_threads_stderr_tail_and_exit_code(self):
+        """限流失败异常：stderr_tail 摘要（原始 stderr_lines 尾行）与 exit_code
+        并列透出；error 保持 str(e) 原文（proposal Out of Scope 不改底座文本）。"""
+        r = self._runner()
+
+        def _boom(*a, **k):
+            exc = RuntimeError("claude CLI failed: Exit code: 1")
+            exc.stderr_lines = ["[claude-code:noise]", "Exit code: 1", ""]
+            exc.exit_code = 1
+            exc.api_error_status = 429
+            raise exc
+
+        self._wire(r, _boom)
+        res = r.run_spec_review("demo")
+        self.assertFalse(res.success)
+        self.assertEqual(res.api_error_status, 429)
+        self.assertEqual(res.exit_code, 1)
+        self.assertEqual(res.stderr_tail, "[claude-code:noise] | Exit code: 1")
+        self.assertEqual(res.error, "claude CLI failed: Exit code: 1")
+
+    def test_bridge_defaults_none_without_exception_attrs(self):
+        """非 API 错误异常（取消/冻结终止等）不携带属性：字段缺省 None 兼容。"""
+        r = self._runner()
+
+        def _boom(*a, **k):
+            raise RuntimeError("cancelled by admin")
+
+        self._wire(r, _boom)
+        res = r.run_spec_review("demo")
+        self.assertFalse(res.success)
+        self.assertIsNone(res.api_error_status)
+        # _stderr_tail_summary 契约：无 stderr_lines → 空串（追溯摘要形态，
+        # 与 code-fix 车道同源）；归因括注按 falsy 省略 stderr 段
+        self.assertEqual(res.stderr_tail, "")
+        self.assertIsNone(res.exit_code)
+
+
+class TestFailureLineAttribution(unittest.TestCase):
+    """评审失败 ERROR 行归因括注（evo-add-review-failure-attribution 1.3）：
+    形态对齐 code-fix 车道、键名 api_error_status；result 为 None 的异常子路径
+    括注整体省略。"""
+
+    def setUp(self):
+        import tempfile
+
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.logger = MagicMock()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _error_messages(self):
+        msgs = []
+        for call in self.logger.error.call_args_list:
+            args = call[0]
+            if len(args) >= 2:
+                msgs.append(str(args[1]))
+            elif args:
+                msgs.append(str(args[0]))
+        return msgs
+
+    def _mgr(self, runner):
+        sm = _mk_dispatch_project(self.tmpdir)
+        engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, self.logger)
+        return mgr, sm
+
+    def test_429_failure_line_carries_bracket(self):
+        """限流失败就地归因：ERROR 行含 api_error_status=429、exit_code 与
+        stderr_tail 摘要；:490 reason 侧（infra error 字段）同样携带括注。"""
+        result = SimpleNamespace(
+            success=False, error="claude CLI failed: Exit code: 1",
+            api_error_status=429, exit_code=1,
+            stderr_tail="Exit code: 1 | [claude-code:unrecognized_model]",
+            frozen_terminated=False,
+        )
+        mgr, sm = self._mgr(_ScriptedReviewRunner(result=result))
+        self.assertFalse(mgr.dispatch_review("spec"))
+        joined = "\n".join(self._error_messages())
+        self.assertIn(
+            "评审 run 执行失败: spec: claude CLI failed: Exit code: 1 "
+            "[api_error_status=429 exit_code=1 stderr_tail: "
+            "Exit code: 1 | [claude-code:unrecognized_model]]",
+            joined,
+        )
+        err_field = str(sm.read_one("spec").get("error") or "")
+        self.assertIn("spec-review-incomplete: infra failure: ", err_field)
+        self.assertIn("[api_error_status=429 exit_code=1 stderr_tail: ", err_field)
+
+    def test_exception_path_omits_bracket(self):
+        """result 为 None 的异常子路径（run_spec_review 抛异常）：无结构化字段
+        可读，括注整体省略不添噪。"""
+        mgr, sm = self._mgr(
+            _ScriptedReviewRunner(exc=RuntimeError("派发进程崩了"))
+        )
+        self.assertFalse(mgr.dispatch_review("spec"))
+        line = [m for m in self._error_messages() if "评审 run 执行失败" in m][0]
+        self.assertIn("评审 run 执行失败: spec: 派发进程崩了", line)
+        self.assertNotIn("[api_error_status=", line)
+        self.assertNotIn("stderr_tail:", line)
+
+    def test_plain_failure_without_fields_no_bracket(self):
+        """三元全空的普通失败结果：不添噪。"""
+        result = SimpleNamespace(
+            success=False, error="Exit code: 1", frozen_terminated=False,
+        )
+        mgr, sm = self._mgr(_ScriptedReviewRunner(result=result))
+        self.assertFalse(mgr.dispatch_review("spec"))
+        line = [m for m in self._error_messages() if "评审 run 执行失败" in m][0]
+        self.assertIn("评审 run 执行失败: spec: Exit code: 1", line)
+        self.assertNotIn("[api_error_status=", line)
+
+
 if __name__ == "__main__":
     unittest.main()

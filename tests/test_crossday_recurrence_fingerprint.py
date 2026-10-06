@@ -80,7 +80,7 @@ def _make_monitor(tmp_path, logger=None):
     return mon
 
 
-def _write_log(tmp_path, entries):
+def _write_log(tmp_path, entries, component="code-fix"):
     """写入 fenixd.log 形态的单行 JSON 序列（entries: [(level, msg, ts_epoch)]）。"""
     log = Path(tmp_path) / ".fenix" / "logs" / "fenixd.log"
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -89,11 +89,23 @@ def _write_log(tmp_path, entries):
         lines.append(json.dumps({
             "level": level,
             "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-            "component": "code-fix",
+            "component": component,
             "message": msg,
         }, ensure_ascii=False))
     log.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return log
+
+
+# spec_review 评审失败 ERROR 行实况形态（evo-add-review-failure-attribution 2.1：
+# spec_review.py 失败行 = 「评审 run 执行失败: <spec>: <run_err><归因括注>」，
+# run_err 的 latency 段携带 spec-review-<spec>-<hex6>-<ts> run-id token）。
+def _review_fail_msg(spec_name: str, run_id: int) -> str:
+    return (
+        f"评审 run 执行失败: {spec_name}: claude CLI failed: Exit code: 1 | "
+        f"latency: run spec-review-{spec_name}-a1b2c3-{run_id}: "
+        f"0 rounds（无 API 往返样本） "
+        f"[api_error_status=429 exit_code=1 stderr_tail: Exit code: 1]"
+    )
 
 
 class TestFingerprintNormalizationDecimalUnit(unittest.TestCase):
@@ -311,6 +323,96 @@ class TestCrossdayMemoryPersistence(unittest.TestCase):
         debugs = "\n".join(rec.debugs)
         self.assertIn("跨日回退定向检索", debugs, "检索成本/命中 MUST 留 debug 痕迹")
         self.assertIn("命中", debugs)
+
+
+class TestSpecReviewFingerprintSpecNameStrip(unittest.TestCase):
+    """spec_review 失败行 SPEC 名段剥离（evo-add-review-failure-attribution
+    2.1 / 3.2，design D1 按组件模板窄化）。"""
+
+    def test_different_specs_same_failure_same_fingerprint(self):
+        """两个不同 SPEC 的同型失败（限流 429）→ 剥离后同指纹。
+
+        SPEC 名双嵌点全覆盖：模板段（评审 run 执行失败: <spec>: …）与
+        run_err 内嵌的 spec-review run-id token。
+        """
+        from core.admin_monitor import _error_fingerprint, _normalize_error_message
+
+        m1 = _review_fail_msg("spec-alpha", 1790627269)
+        m2 = _review_fail_msg("spec-beta", 1790991234)
+        self.assertEqual(
+            _error_fingerprint("spec_review", m1),
+            _error_fingerprint("spec_review", m2),
+            "同型失败不同 SPEC MUST 聚到同指纹（跨 SPEC 聚合）",
+        )
+        normalized = _normalize_error_message(m1, "spec_review")
+        self.assertIn("评审 run 执行失败: ~: claude CLI failed", normalized)
+        self.assertNotIn("spec-alpha", normalized)
+        self.assertIn("run spec-review-~", normalized)
+
+    def test_other_components_skeleton_untouched(self):
+        """反例：其他组件（code-fix）同文字骨架不受影响——SPEC 名保留、
+        指纹仍随 SPEC 名不同而互异。"""
+        from core.admin_monitor import _error_fingerprint, _normalize_error_message
+
+        m1 = _review_fail_msg("spec-alpha", 1790627269)
+        m2 = _review_fail_msg("spec-beta", 1790991234)
+        self.assertNotEqual(
+            _error_fingerprint("code-fix", m1),
+            _error_fingerprint("code-fix", m2),
+            "非 spec_review 组件 MUST NOT 剥 SPEC 名（骨架不动）",
+        )
+        self.assertIn("spec-alpha", _normalize_error_message(m1, "code-fix"))
+
+    def test_prefix_without_spec_segment_not_stripped(self):
+        """同前缀但无 SPEC 名段的行（run_err 直接跟前缀）不得误剥。"""
+        from core.admin_monitor import _normalize_error_message
+
+        m = "评审 run 执行失败: claude CLI failed: Exit code: 1"
+        normalized = _normalize_error_message(m, "spec_review")
+        self.assertIn("评审 run 执行失败: claude CLI failed", normalized)
+        self.assertNotIn("评审 run 执行失败: ~:", normalized)
+
+    def test_skeleton_and_path_not_hit_by_runid_rule(self):
+        """run-id 规则不误伤骨架文字（spec-review-incomplete: 前缀）与
+        结果目录路径形态（spec-review/<spec>/）。"""
+        from core.admin_monitor import _normalize_error_message
+
+        skeleton = (
+            "spec-review-incomplete: infra failure: 评审 run 执行失败: "
+            "claude CLI failed: Exit code: 1"
+        )
+        normalized = _normalize_error_message(skeleton, "spec_review")
+        self.assertTrue(
+            normalized.startswith("spec-review-incomplete: infra failure:"),
+            f"spec-review-incomplete: 骨架 MUST NOT 被当 run-id token 剥离: {normalized}",
+        )
+        self.assertNotIn("spec-review-~", normalized)
+        path_msg = "结果目录 .fenix/spec-review/demo/.fenix-run-result.json 缺失"
+        self.assertIn(
+            ".fenix/spec-review/demo/", _normalize_error_message(path_msg, "spec_review"),
+            "结果路径形态 MUST NOT 被当 run-id token 剥离",
+        )
+
+    def test_crossday_escalation_with_different_specs(self):
+        """两个不同 SPEC 的同型失败跨夜连发 → 判跨日同刻复发升级（同指纹）。"""
+        from core.admin_monitor import _error_fingerprint
+
+        tmp = Path(_mkdtemp("xday-srev-"))
+        now = time.time()
+        fp = _error_fingerprint("spec_review", _review_fail_msg("spec-alpha", 1790627269))
+        mon = _make_monitor(tmp)
+        _write_log(tmp, [
+            ("ERROR", _review_fail_msg("spec-alpha", 1790627269), now - 24 * 3600 + 30),
+            ("ERROR", _review_fail_msg("spec-beta", 1790991234), now - 60),
+        ], component="spec_review")
+
+        signals = mon._detect_daemon_errors(now)
+
+        self.assertEqual(
+            len(signals), 1, "不同 SPEC 的同型失败跨夜 MUST 判跨日同刻复发升级"
+        )
+        self.assertEqual(signals[0]["_fp"], fp)
+        self.assertIn("跨日同刻复发", signals[0]["description"])
 
 
 if __name__ == "__main__":

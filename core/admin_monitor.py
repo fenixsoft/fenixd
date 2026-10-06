@@ -598,15 +598,44 @@ _DECIMAL_UNIT_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+\.\d+(?=[a-zA-Z])")
 # 独立数字 token（不被字母/下划线包围）——run_id、attempt 计数、epoch、超时秒数等
 _STANDALONE_NUMBER_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+(?![0-9a-zA-Z_])")
 
+# evo-add-review-failure-attribution 2.1（design D1 按组件模板窄化）：spec_review
+# 组件「评审 run 执行失败: <spec>: …」失败行模板（spec_review.py 失败 ERROR 行
+# 实况形态）。SPEC 名段呈仓库 spec 目录名形态（[0-9A-Za-z._-]+，无空格无冒号）；
+# 第二段非此形态（如 "评审 run 执行失败: claude CLI failed: …"，run_err 文本
+# 直接跟前缀、无 SPEC 名段）不匹配整条规则、原样保留——防止错误文本被误剥。
+# 剥离后 SPEC 名段替换为 `~`（与 UUID 占位同符，占位符集合不扩）。
+_SPEC_REVIEW_FAIL_SPECNAME_RE = re.compile(
+    r"^(评审 run 执行失败: )([0-9A-Za-z._-]+)(:.*)$", re.DOTALL
+)
+# SPEC 名第二嵌点：spec-review run-id token（spec_review.py 生成形态
+# ``spec-review-<spec>-<uuid4hex6>-<epoch10>``）。失败异常文本的 latency 段
+# 携带该 token（runner format_latency_summary 形态），仅剥模板段则 run_err
+# 内嵌 SPEC 名仍使跨 SPEC 指纹互异——同组件窄化补此条。锚定尾部
+# ``-<hex6>-<≥9 位数字>``：不匹配 "spec-review-incomplete:" 等骨架文字、
+# 不匹配 `.fenix/spec-review/<spec>/` 路径形态（后随 "/"）。
+_SPEC_REVIEW_RUNID_RE = re.compile(
+    r"\bspec-review-[0-9A-Za-z._-]+-[0-9a-f]{6}-\d{9,}\b"
+)
 
-def _normalize_error_message(message: str) -> str:
+
+def _normalize_error_message(message: str, component: str = "") -> str:
     """err message 归一化（improve-hot-reload-robustness D6 保守集）。
 
     顺序：先按 ISO 时间戳（含日期骨架）、UUID、hex 三类带字母形态替换，再替换
     「小数+单位字母」形态（1.1），最后替换独立数字序列——防止 hex 中的数字被
     先行拆散、防止整数先归一拆散小数形态。
+
+    evo-add-review-failure-attribution 2.1：component=="spec_review" 时先剥
+    「评审 run 执行失败: <spec>: …」模板的 SPEC 名段与失败文本内嵌的
+    spec-review run-id token——不同 SPEC 的同型失败（如限流 0 成功轮）聚到
+    同指纹、可跨日追踪；其余组件文字骨架一律不动（沿用上方保守集原则：
+    不做全局激进归一化，防不同骨架被误聚）。component 缺省空：既有调用方
+    （信号记录指纹等）行为不变。
     """
     msg = str(message)
+    if component == "spec_review":
+        msg = _SPEC_REVIEW_RUNID_RE.sub("spec-review-~", msg)
+        msg = _SPEC_REVIEW_FAIL_SPECNAME_RE.sub(r"\1~\3", msg)
     msg = _ISO_TS_RE.sub("@", msg)
     msg = _UUID_RE.sub("~", msg)
     msg = _HEX16_RE.sub("~", msg)
@@ -621,7 +650,7 @@ def _error_fingerprint(component: str, message: str) -> str:
     同一 source 同一错误骨架（仅内嵌时间戳/UUID/数字不同）→ 同指纹复现成立；
     不同错误 message 骨架不同 → 指纹不同、不聚合升级。
     """
-    raw = f"{component or ''}\x00{_normalize_error_message(message)}"
+    raw = f"{component or ''}\x00{_normalize_error_message(message, component)}"
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
 
 

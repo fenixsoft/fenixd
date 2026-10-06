@@ -13,13 +13,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine
+from core.pm_engine.infra_breaker import InfraCircuitBreaker
 from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS, MAX_REJECT_REDO
 
 
@@ -524,6 +527,162 @@ class TestArtifactFirstNoReentry(unittest.TestCase):
         self.assertFalse(ok2)
         self.assertEqual(sm.read_one("spec")["status"], "ready")
         engine._on_spec_ready.assert_called_once_with("spec")
+
+
+class _FailingReviewRunner:
+    """恒失败评审 runner：错误文本/结构化字段可注入（infra 分类构造用）。"""
+
+    def __init__(self, error="Rate limit exceeded", attrs=None):
+        self.error = error
+        self.attrs = attrs or {}
+
+    def _check_agent_result_artifact(self, spec_name, agent_type,
+                                     run_started_at=None, wt_path=None):
+        return "结果文件缺失"
+
+    def run_spec_review(self, spec_name, run_id=None):
+        return SimpleNamespace(
+            success=False, error=self.error, frozen_terminated=False, **self.attrs
+        )
+
+
+class TestBreakerCountSemantics(unittest.TestCase):
+    """评审链路熔断计数语义（evo-add-review-failure-attribution 2.2/2.3/3.3）：
+    成功收工清零（design D3「链路证明可用」）、失败窗口内连续递增、陈旧跨周
+    计数不再误触熔断。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _breaker(self):
+        return InfraCircuitBreaker(
+            self.tmpdir,
+            {"admin": {"run_infra_breaker": {"threshold": 3, "cooldown_minutes": 30}}},
+        )
+
+    def _mgr(self, runner, breaker, sm=None):
+        sm = sm or _mk_project(self.tmpdir)
+        sm.update_spec("spec", {"reviewer_run": None})
+        engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
+        engine.infra_breaker = breaker
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
+        return mgr, sm
+
+    def _ok_runner(self, sm):
+        return _RecordingRunner(sm, self.tmpdir, result={"status": "approved", "repairs": []})
+
+    def test_success_run_resets_infra_counter(self):
+        """run 跑通即清零：count 归零、state closed（2.2 接线）。"""
+        breaker = self._breaker()
+        breaker.record_failure("spec-review")
+        breaker.record_failure("spec-review")
+        self.assertEqual(breaker.get_state("spec-review")["count"], 2)
+        sm = _mk_project(self.tmpdir)
+        mgr, _ = self._mgr(self._ok_runner(sm), breaker, sm)
+        self.assertTrue(mgr.dispatch_review("spec"))
+        st = breaker.get_state("spec-review")
+        self.assertEqual(st["count"], 0)
+        self.assertEqual(st["state"], "closed")
+
+    def test_content_retry_after_run_ok_keeps_counter_zeroed(self):
+        """run 跑通但产物不合法走 content 重试：infra 计数已清零且不回增
+        （design D3：产物质量类失败不影响 infra 计数）。
+
+        产物不合法用白名单外 status 构造（gate 桩返回 None 走真实解析路径；
+        gate_err 与已落盘合法产物的桩组合会人为造出 artifact↔consume 循环，
+        生产侧两判定同源不分叉）。
+        """
+        breaker = self._breaker()
+        breaker.record_failure("spec-review")
+        sm = _mk_project(self.tmpdir)
+        runner = _RecordingRunner(sm, self.tmpdir, result={"status": "bogus"})
+        mgr, sm = self._mgr(runner, breaker, sm)
+        self.assertTrue(mgr.dispatch_review("spec"))
+        self.assertEqual(int(sm.read_one("spec").get("_review_attempts", 0)), 1,
+                         "产物不合法须走 content 重试（attempts 递增）")
+        st = breaker.get_state("spec-review")
+        self.assertEqual(st["count"], 0, "content 类失败不得回增 infra 计数")
+        self.assertEqual(st["state"], "closed")
+
+    def test_infra_failures_increment_within_window(self):
+        """失败后窗口内连续计数递增：1→2，未达阈值不熔断。"""
+        breaker = self._breaker()
+        runner = _FailingReviewRunner()
+        mgr, sm = self._mgr(runner, breaker)
+        self.assertFalse(mgr.dispatch_review("spec"))
+        self.assertEqual(breaker.get_state("spec-review")["count"], 1)
+        sm.update_spec("spec", {"reviewer_run": None})
+        self.assertFalse(mgr.dispatch_review("spec"))
+        self.assertEqual(breaker.get_state("spec-review")["count"], 2)
+        self.assertFalse(breaker.is_open("spec-review"))
+
+    def test_stale_crossweek_counter_not_false_tripped(self):
+        """陈旧跨周计数不再误触（spec Scenario）：上周残留计数 2 → 首次成功
+        收工清零 → 偶发 1 次失败从 0 起算，不触发熔断。"""
+        breaker = self._breaker()
+        breaker.record_failure("spec-review")
+        breaker.record_failure("spec-review")
+        self.assertEqual(breaker.get_state("spec-review")["count"], 2)
+        sm = _mk_project(self.tmpdir)
+        mgr, _ = self._mgr(self._ok_runner(sm), breaker, sm)
+        self.assertTrue(mgr.dispatch_review("spec"))
+        self.assertEqual(breaker.get_state("spec-review")["count"], 0)
+        # 清掉首次成功派发落盘的结果文件（陈旧残留会把 artifact 判定与
+        # gate 新鲜度门劈开成环——测试桩组合的人工分叉，非生产形态）
+        result_file = (
+            self.tmpdir / ".fenix" / "spec-review" / "spec" / ".fenix-run-result.json"
+        )
+        if result_file.exists():
+            result_file.unlink()
+        sm.update_spec("spec", {"status": "reviewing", "reviewer_run": None})
+        mgr2, _ = self._mgr(_FailingReviewRunner(), breaker, sm)
+        self.assertFalse(mgr2.dispatch_review("spec"))
+        st = breaker.get_state("spec-review")
+        self.assertEqual(st["count"], 1)
+        self.assertFalse(breaker.is_open("spec-review"))
+
+    def test_recovery_first_dispatch_success_resets_half_open_count(self):
+        """2.3 确认路径：冷却到期恢复后首次派发成功 → record_success 清零
+        半开残留计数（condition 恢复时 count 保留，靠成功路径清零）。"""
+        breaker = self._breaker()
+        for _ in range(3):
+            breaker.record_failure("spec-review")
+        self.assertTrue(breaker.is_open("spec-review"))
+        with breaker._lock:
+            breaker._cache["spec-review"]["until"] = time.time() - 1
+        self.assertEqual(breaker.condition("spec-review"), "recovered")
+        self.assertEqual(breaker.get_state("spec-review")["count"], 3,
+                         "半开探测语义：恢复时 count 保留")
+        sm = _mk_project(self.tmpdir)
+        mgr, _ = self._mgr(self._ok_runner(sm), breaker, sm)
+        self.assertTrue(mgr.dispatch_review("spec"))
+        st = breaker.get_state("spec-review")
+        self.assertEqual(st["count"], 0, "冷却到期后首次派发成功须清零残留计数")
+        self.assertEqual(st["state"], "closed")
+
+    def test_breaker_shortcircuit_dispatch_counts_nothing(self):
+        """熔断短路期间未实际派发的尝试不计成功/失败：dispatch 入口直接返回，
+        计数与熔断窗口不动（2.3）。"""
+        breaker = self._breaker()
+        for _ in range(3):
+            breaker.record_failure("spec-review")
+        before = breaker.get_state("spec-review")
+        sm = _mk_project(self.tmpdir)
+        ran = []
+
+        class _ProbeRunner(_FailingReviewRunner):
+            def run_spec_review(self, spec_name, run_id=None):
+                ran.append(run_id)
+                return super().run_spec_review(spec_name, run_id=run_id)
+
+        mgr, _ = self._mgr(_ProbeRunner(), breaker, sm)
+        self.assertFalse(mgr.dispatch_review("spec"))
+        self.assertEqual(ran, [], "熔断窗口内 MUST NOT 实际派发")
+        self.assertEqual(breaker.get_state("spec-review"), before)
 
 
 if __name__ == "__main__":

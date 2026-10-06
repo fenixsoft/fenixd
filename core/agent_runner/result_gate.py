@@ -153,6 +153,8 @@ class AgentRunResult:
         frozen_terminated: bool = False,
         api_error_status=None,
         conn_error=None,
+        stderr_tail=None,
+        exit_code=None,
     ):
         self.run_id = run_id
         self.spec_name = spec_name
@@ -194,6 +196,13 @@ class AgentRunResult:
         # 文本分类恒 False）。缺省 None：既有构造点不传即兼容。
         self.api_error_status = api_error_status
         self.conn_error = conn_error
+        # evo-add-review-failure-attribution 1.2：失败行归因括注素材（形态对齐
+        # api_error_status 的桥接回填先例）。stderr_tail = 异常原始 stderr_lines
+        # 的尾行摘要（maintenance_runs._stderr_tail_summary 单源，追溯用非判别
+        # 用）；exit_code = 进程退出码。二者随 spec-review 车道 catch-all 回填，
+        # 供失败 ERROR 行就地归因；缺省 None：既有构造点不传即兼容。
+        self.stderr_tail = stderr_tail
+        self.exit_code = exit_code
 
     def to_dict(self) -> dict:
         return {
