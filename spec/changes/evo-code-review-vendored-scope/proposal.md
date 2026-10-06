@@ -5,7 +5,7 @@ vendored 第三方示例 whirehair.py（thirdparty/libcimbar/…，public domain
 ## What Changes
 
 1. 出题面排除 vendored 目录：_EXCLUDED_TOP_DIRS/_EXCLUDED_DIRS 排除表加 thirdparty、third_party、vendor（目录段精确匹配；external 歧义大不收）；full/window 两档与 admin_monitor 侧共用消费点自动生效。
-2. 评审提示词如实化：agents/code-review.md「其中的路径是产品代码」改为如实描述（已排除测试/生成物/vendored 第三方目录），并把 :56-58 fenix-ignore 复核规则补强为「漏出排除表但带上游同步标注的文件不出题」的第二道防线。
+2. 评审提示词如实化：agents/code-review.md「其中的路径是产品代码」改为如实描述（已排除测试/生成物/vendored 第三方目录），并把 :56-58 fenix-ignore 复核规则补强为「漏出排除表但带上游同步标注的文件不上报缺陷条目（只记录不出账）」的第二道防线——评审侧 LLM 只能控制上报与否，「出题」属框架侧行为，提示词措辞以 tasks 1.2 为准。
 
 ## Out of Scope
 
