@@ -32,3 +32,8 @@
 | monitor-recommendation-three-tables | admin_monitor 三表登记基线（任务 2.3 摄取门前置）：SIGNAL_SEVERITY=major、SIGNAL_RECOMMENDATION 非空、STORED_SIGNAL_TYPES 收录 maintree_stray_wip_stale；姊妹信号 mergeback_wip_orphan_stuck 同族对账。出处 core/admin_monitor.py:436-441；tests/test_maintree_stray_wip_sweep.py:379-395 | pass | 0/2 | - |
 | probe-registry-contract-and-recommendation-sync | 直探注册表单源契约与双处文案同步（任务 1.1/2.3 直证，独立于项目测试套件）：choices_for(maintree_stray_wip_stale) 返回恰一选项 commit_stray_wip 且 spec_scoped=False、is_adjudicable 为真、resolve_choice 精确匹配可达且无拒绝原因；SIGNAL_RECOMMENDATION[maintree_stray_wip_stale] 带出选项 id 且与发射点 inline 文案含同文片段「或执行裁决选项 commit_stray_wip 一键提交信号清单内文件」（防双处漂移）；姊妹信号 maintree_untracked_stray_stale 有独立指引文案（对照，不受本选项污染）。stdout 纯 JSON，json_output 断言。出处 core/dashboard/data/adjudication_choices.py:311-343；core/admin_monitor.py:436-441 | pass | 0/11 | - |
 | probe-executor-e2e-temp-repo | 临时隔离仓端到端直证（SPEC 三执行场景全链，独立于项目测试套件，回归点=执行前后 HEAD/工作区对比）：①夹具按 tests/test_global_signal_choice_guard.py:208-262 同构——临时 git 仓基线提交后留散件 WIP（a.txt 改动 + 清单外 c.txt），AdminStore 播种含「文件清单(1): a.txt」段的 maintree_stray_wip_stale SIGNAL 记录；②execute_adjudication_choice 执行 → ok=True、commit_hash==当前 HEAD（head 前移）、steps 含 hash 留痕、a.txt 出脏区、清单外 c.txt 不被裹挟；③守卫四连——姊妹信号 maintree_untracked_stray_stale 拒绝（error 提及绑定信号名）且零 git 写、未注册信号拒绝、_exec_commit_stray_wip paths 显式收窄携清单外 evil.txt 拒绝零 git 写（HEAD 三次均不动）；④复执行因清单∩当刻改动为空返回「空提交」error 不空提交。出处 core/dashboard/data/admin_actions.py:2765-2879 | pass | 0/14 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
