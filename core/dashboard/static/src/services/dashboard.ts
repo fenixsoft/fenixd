@@ -1346,7 +1346,7 @@ export interface AdminConfig {
   enabled?: boolean;
   /** 自愈监视器巡检周期（分钟，缺省 5） */
   interval_minutes?: number;
-  /** 同 spec 同类困境信号的唤起冷却（分钟，缺省 15） */
+  /** 同 spec 同类困境信号的唤起冷却（分钟，缺省 60） */
   escalation_cooldown_minutes?: number;
   /** merge 熔断阈值（复用 agents.merge_breaker_threshold，缺省 2） */
   merge_breaker_threshold?: number;
