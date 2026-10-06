@@ -10,6 +10,7 @@
 // 静默是纯渲染侧行为，原始事件仍完整落盘可查（Non-Goals：不做后端过滤）。
 import type { RunEvent } from '@/services/dashboard';
 import type { ChatMessage, ToolResult } from './types';
+import { getIntrinsicMessageKey } from './messageKeys';
 
 // ── 事件分类表常量（design D1，实现与单测对齐此表） ──────────────────
 
@@ -276,7 +277,64 @@ export function thinkingPreviewText(text: string, max = 40): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+// ── 稳定引用复用（code-review item 69a0024ae919）────────────────────
+// 转换层每轮对全部已加载事件重建全新 ChatMessage 对象，SSE 每批增量到达时
+// ClaudeOutputPane 的 useMemo 重算 → MessageItem 的 memo 浅比较因 message 引用
+// 恒不等而失效，已加载窗口累积到数千条时流式期间每次增量都整列表重渲染（含
+// Markdown 解析与代码高亮 diff）。此处按消息内在键缓存上一轮对象：本轮产出与
+// 上轮同键消息逐字段浅等值时复用上轮引用，未变化消息的 memo 重新生效；只有
+// 真正新增/被回填突变的消息（toolResult、耗时、任务状态、thinking 增量等）
+// 保留新引用触发重渲染。等值判定保证语义等价才复用，键碰撞只会让判定失败
+// 回落新对象，不影响正确性。缓存每轮按本轮产出整体重建（只含当前列表），
+// 不跨轮累积；多个调用方（ClaudeOutputPane / SessionPanel）交替转换时会互踩
+// 缓存键，代价仅是复用未命中，仍正确。
+type MessageReferenceCache = Map<string, ChatMessage>;
+let previousMessageCache: MessageReferenceCache = new Map();
+
+// 字段值比较：引用相等直通过；toolResult 是转换层每轮新建的嵌套对象，按其
+// 字段（content 恒为字符串、isError 布尔）浅比较一层。更深的嵌套（如不同
+// 事件对象携带的 toolInput）引用不等即判不等，保守回落新引用。
+function chatMessageFieldEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const ra = a as Record<string, unknown>;
+    const rb = b as Record<string, unknown>;
+    const keys = Object.keys(ra);
+    if (keys.length !== Object.keys(rb).length) return false;
+    return keys.every((k) => ra[k] === rb[k]);
+  }
+  return false;
+}
+
+function chatMessageShallowEqual(a: ChatMessage, b: ChatMessage): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => chatMessageFieldEqual(a[k], b[k]));
+}
+
+function withStableMessageReferences(messages: ChatMessage[]): ChatMessage[] {
+  const cache: MessageReferenceCache = new Map();
+  const out = messages.map((msg) => {
+    const key = getIntrinsicMessageKey(msg);
+    if (key) {
+      const prev = previousMessageCache.get(key);
+      if (prev && chatMessageShallowEqual(prev, msg)) {
+        cache.set(key, prev);
+        return prev;
+      }
+      cache.set(key, msg);
+    }
+    return msg;
+  });
+  previousMessageCache = cache;
+  return out;
+}
+
 export function runEventsToChatMessages(events: RunEvent[], showThinking: boolean = true): ChatMessage[] {
+  return withStableMessageReferences(convertRunEvents(events, showThinking));
+}
+
+function convertRunEvents(events: RunEvent[], showThinking: boolean = true): ChatMessage[] {
   const out: ChatMessage[] = [];
   let currentThinking: ChatMessage | null = null;
   const toolIndexById = new Map<string, number>();
