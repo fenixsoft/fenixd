@@ -26,15 +26,6 @@
 ### 失误
 - （当日无）
 
-### 可改进
-- **admin run动作已执行但终态未落账即死，处置滞留pending**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：复发敞口：admin run（告警处置会话）在「动作已执行、终态未落账」窗口死亡时，处置记录永久滞留 pending、告警滞留 partially-resolved，台账无法反映已处置事实，后续会话可能重做诊断或误判信号未处理；本轮 pending 处置已滞留 21 小时以上无消费。
-  - 证据：run admin-global-1791056118（处置 429 冻结信号的全局 admin 会话）于 19:40:21Z 已执行三个被冻 spec 的解冻重派（channel=manual 人工裁决通道，note=重派评审（人工裁决），三 spec 现均已 pushed），但自身 19:44:56Z 死于 [claude-code:unrecognized_model]（共 36 轮）；其终态处置记录 827b4f2fe0c8 停在 result=partially-resolved、handled=False，摘要停留在「计划动作：……解冻重派评审，随后写最终处置记录」；占位记录 613d42266fdb（pending 处置，admin_run_id 指向已死 run）创建于 19:35:18Z，至今无任何后续日志。
-  - 调查评估：在处置限流冻结信号时暴露，与已闭环的 2026-10-04#失误#1 互补但不同层——那题守「失败不得误记 resolved」（evo-fix-global-signal-choice-execution 已修，merge 2bca125c），本题是「成功来不及记账」：choice（处置动作）执行与终态落账非原子，run 进程死亡时无人代写。已核实：动作本身全部生效（STATE 三 spec 均 pushed），仅台账失真；AdminMonitor（告警与处置监控组件）有孤儿处置升级机制，但该记录滞留 21 小时仍 pending，升级未见闭环消费。与存量工作关系：evo-signal-preprobe-handled-writeback（已归档）管唤起前预探写回，evo-add-adjudication-alert-narrative（在飞）管告警叙事，均不覆盖孤儿处置收敛。结论：低频（需恰死在动作后落账前）但属台账可信度缺口，可小专项解决。
-  - 建议：起草 SPEC：admin 收尾按 choice 粒度小步持久化（每执行一个动作即落一条处置事件）；AdminMonitor 收敛孤儿处置时核查「动作是否已实际生效」（如解冻已发生即补记 resolved 并注明补记），而非无限期滞留 pending。
-
-
 ## 2026-10-06
 
 ### 浪费
@@ -56,9 +47,46 @@
   - 调查评估：在孤儿处置收敛机制（evo-add-admin-orphan-disposition-effect-check，merge e3843198，本地 10-05 02:38）首轮实弹时暴露，是 [2026-10-05#可改进#2] 落地后的残余缺口。已核实：机制按设计 fail-closed（宁可滞留升级、不假闭环）正常工作，但其 global 组（spec=global/None，如 429 冻结这类无单一 spec 对象的告警）唯一证据源存在两个结构性盲区——(a) 日志轮转盲区：429 处置组（run admin-global-1791056118）的解冻动作发生在 10-03T19:40:21Z，留痕已轮转进 fenixd.log.1，核查只扫当前文件尾部 256KB（本机约数小时日志量），对滞留超 1 天的组必然 0 证据；(b) 动作类型盲区：admin-global-1791144077 的实际生效动作是提交 spec 目录归档删除收尾解除 merge-back 阻塞（resolved 处置记录 ef184ed4a4b1），admin-global-1791154704 的是 code-review-fix 分支合并（10-04T23:20:56Z），两者都不产生 blocked→X 解冻留痕，核查同样判「无生效证据」。根因：证据源设计未考虑日志轮转与处置动作多样性，落地效果是「无限期 pending」变成「无限期 escalated」，[2026-10-05#可改进#2] 的台账收口目标未达成；而 3 条 open 信号（10-03T19:31-19:41Z 创建的 daemon_errors 同源告警）会继续被后续 global 组匹配，形成结构性复发。结论：确定性缺口、修法明确（代码与盲区均已定位），值得一次小专项。
   - 建议：起草 SPEC：global 组生效核查证据源扩展——日志对账覆盖轮转文件（fenixd.log.N 按对账窗口检索）；证据家族按处置动作类型扩展（解冻→Transition 留痕、merge-back 放行→分支合并日志、归档收尾→commit 存在）；允许从处置组记录引用的 spec 名回退读 STATE 真实状态（frozen/status）作旁证。人工侧可先按已核实事实（4 个 spec 已于 10-03T19:40:21Z 经 manual 通道解冻且现已全部 pushed）登记补记，收口这 3 条滞留信号。
 
-- **evo merge-back撞在飞归档编辑，熔断停机15分钟烧admin会话收尾**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：复发敞口：任一 spec 归档/编辑未提交期间，其他 spec 的 merge-back（实现分支合回主树）必被 git 拒绝并烧完 60 秒×3 轮顺延后熔断停机、等人工，须 admin 会话收尾；本次实测阻塞 15 分钟（本地 03:41-03:56）、消耗 42+12 轮两个 admin run，并产生 3 条同指纹 ERROR 触发 daemon_errors 告警（同指纹错误聚合信号）。
-  - 证据：worktree_manager（工作树与合并管理组件）于 2026-10-04T19:41:23Z / 19:42:23Z / 19:43:24Z 三次 merge 失败（error: Your local changes … would be overwritten by merge: spec/changes/fix-knowledge-backfill-reconstruction/ 共 6 个文件）；pm_engine 19:43:24Z 报「merge-back 顺延超限（spec 目录在飞编辑）——已停止自动重试，等待人工提交 spec 目录后重新放行」；告警 75b55ecf7a5e（mergeback_spec_dir_inflight_stuck 信号）记录 retry_count=3；admin run admin-evo-add-todo-marker-commit-on-write-1791143080（42 轮，03:44:40-04:01:17，区间覆盖提交时刻）落收尾提交 ae3fe764（03:55:39「提交 fix-knowledge-backfill-reconstruction 归档删除收尾」），merge-back 88a7b37 于 03:56 成功。
-  - 调查评估：在 evo-add-todo-marker-commit-on-write 的 merge-back 与 fix-knowledge-backfill-reconstruction 的归档收尾并发时暴露。已核实：主树滞留的归档半程状态（knowledge distill 蒸馏入库已由 03b4abe5 于 03:50 提交、spec 目录删除却未提交）挡住了与己无关的 evo 分支合并——git merge 对工作区脏文件一律拒绝，pm_engine 顺延 3 轮即熔断等人工，全链无自愈手段；归档收尾为何中断（被杀/异常退出）未核实。与存量工作关系：code-fix 车道已有 evo-add-codefix-mergeback-conflict-salvage（真冲突整批救回，STATE pushed）但只覆盖内容冲突、不覆盖本形态（主树在飞编辑占位）；同型信号（mergeback_wip_overlap / mergeback_wip_defer_stuck / mergeback_spec_dir_inflight_stuck，均为主树脏文件挡 merge-back 家族）过去数周已多次发生（add-archive-state-migration、add-timelib-consolidation-layer、add-dashboard-paging-and-etag 等各有数条告警记录在案），属结构性并发协调缺口而非一次性失误。结论：单次代价一个 admin 会话（42+12 轮）加 15 分钟合回延迟，频次周级别，值得一次小专项把「必烧 admin 会话」降为自动放行。
-  - 建议：起草 SPEC：merge-back 顺延熔断前先做只读自愈评估——在飞编辑若为「归档/蒸馏类半程收尾」（spec 目录删除已 staged 且蒸馏已入库），由框架代为补提交收尾后重放 merge-back；或把归档流程的「目录删除提交」与 distill 入库合并为单原子 commit，消除半程窗口。两者取其一即可覆盖本形态。
+- **验证场景注册夹具显式传 fixture=false，绕过 ADR-163 噪音过滤假告警上主面板**
+  - 影响：复发敞口：任一验证场景手写 add_project(fixture=False) 注册夹具，其 seed/对照告警（severity 可为 critical）即进入人工告警横幅与跨项目聚合，每轮验证污染人工甄别面；实测 add-alert-self-heal-marking 验证轮（2026-10-06 16:53）夹具 selfheal-scratch-verify 的 critical 对照锚点（SELFHEAL-PENDING-CTL-MARKER）上主面板，用户误判为真实告警并发起排查。
+  - 证据：场景代码 .fenix/verify-progress/add-alert-self-heal-marking/test_scenarios.json 场景命令内显式 `reg.add_project(SROOT, name='selfheal-scratch-verify', fixture=False)`；ADR-163（spec/knowledge/adr/ADR-163-fixture-registry-flag-narrow-aggregation-filter.md）明定「噪音过滤收窄在缺省跨项目聚合分支，显式点名查询（?project=）零改动，验证场景依赖不回归」——fixture=True 对场景断言零影响，作者系误判（过度保守）；dashboard.yaml 该条目原值 fixture: false，2026-10-06 已人工改 true 止血（改后聚合面即清零，点名查询照常）。
+  - 调查评估：在 add-alert-self-heal-marking 验证场景直写 admin_alerts.json 造对照锚点时暴露。已核实：机制本身无缺口（ADR-163 窄口径设计按工作），缺口是场景未走夹具供给脚本、未按 ADR-163 打标——直写 admin_alerts.json 不经四点信号摄取抑制，唯一降噪面就是聚合分支的 fixture 标记，传 False 等于主动关掉它。属规范遵循缺口而非代码缺陷，修法集中在场景模板与可选机械守卫，值得一次小专项。
+  - 建议：起草小 SPEC：①验证场景模板/文档固化「场景注册夹具 MUST fixture=True（ADR-163：点名查询零改动）」；②机械守卫二选一——Registry.add_project 对 /tmp 扫描根外临时路径项目缺省强制 fixture=True（显式 override 才放行），或聚合/摄取层对 /tmp 路径项目按夹具兜底处理；③夹具复位脚本补写标记的既有机制（ADR-163 Consequences）确认覆盖此形态。
+
+
+## 2026-10-07
+
+### 浪费
+- **04:30断网窗三杀（恶化）：静默窗守卫已合入但当晚未生效**
+  - 影响：本地凌晨 04:30 断网窗同时击杀三个在跑 run——code-fix 夜间批（夜间批量修复 code-review 台账的车道）第 3 批 443 turns/211 轮 API 往返、fenixd 自进化分析重试 239 turns、一条告警处置 admin 会话派出约 2 分钟即死——是追踪以来首次三车道同窗三杀，另有凌晨 02:16 一场 5 失败/600 秒风暴触发全局派发冻结 599 秒；整链仍零蒸发，code-fix 6 批最终交付 resolved=81 条台账修复，下一批仅推迟 673 秒。
+  - 证据：内核日志实锤本机侧断窗：10-06 04:30:01 有线网卡 enp42s0 与无线 wlo1 同时 Lost carrier（链路中断），04:31:20 复降、04:31:22 恢复 1Gbps，与 code-fix-1791231027 死亡（fenixd.log 行 3161，20:31:22Z，api_timeout 即单轮 API 请求超时类终局，死因 ENOTFOUND 域名解析失败）秒级吻合，且同型 Link is Down 在 10-04/10-05 的 04:30:02 连日在场；告警 8f4e0ec5dade（code-fix 窗口冷却武装信号）记死因与 300 秒冷却，1eebbd93f8d7（冷却解除信号）记实际推迟 673 秒，链 rollup（整链收尾汇总）runs=6 resolved=81；告警 4c34b517a247（transient_break_storm 全局瞬断风暴信号）记 02:16 冻结 599 秒；工作区干净故按设计跳过 salvage（未提交现场抢救，fenixd.log 行 3162）。
+  - 调查评估：在 code-fix 夜间批与 evo 管线并行推进时暴露，是 [2026-10-06#浪费#1] 的延续、同刻第 8 个追踪夜命中（框架处置记录 faebe707a254 于 10-05 早晨已定根因为「本地 04:30 网络断供窗口、当时已连续 8 天」，本夜为该口径第 9 天）。已核实三点：(1) 根因在本机网络侧而非上游 provider——syslog 显示双接口同时掉 carrier 约 81 秒，指向局域网上游设备（路由器/交换机）每日定时动作，昨日条目要求的 syslog 对账已完成；(2) 守卫时序脱节：evo-codefix-night-quiet-window（夜间静默窗投递守卫，缺省 04:15-04:45 窗内顺延投递）已于当晚 02:42 合入（merge 00b54c5e），但 daemon 跑旧代码至 18:29 才重启，当晚全程未生效——冷却解除后下一批 04:42 派出，若守卫在场属窗内派出本应顺延到 04:45 后；(3) 即便守卫在场也救不了本夜主形态：第 3 批 03:50 派出、04:31 在飞被杀，属「窗前派出、窗中在飞」，不在「派发时刻是否落窗内」的判定覆盖内。与存量工作关系：冷却（evo-add-codefix-conn-error-cooldown）与 api_timeout 现场抢救（evo-code-fix-api-timeout-salvage，本夜无未提交现场可抢）均按设计工作；admin 会话派发（daemon_errors 即日志错误聚合信号召唤）无断窗避让，往窗口里派即烧，且死后其处置组于 06:39 被 fail-closed 升级人工（告警 6cea21da2e0b）至今滞留。结论：外部窗口仓内不可修，防线链保持零蒸发，但损失从「每晚 1 run」扩为「3 run + 1 组孤儿升级滞留」。
+  - 建议：维持冷却+salvage+跨日观测现状，等 10-07 夜静默窗守卫首个实战窗验证；对「窗前派出窗中在飞」盲区二选一立项：守卫升级为「预计跨窗」判定（派出时刻+同链近批均时长与 04:15-04:45 相交即顺延），或把夜间批起点错峰到断窗之后；给 admin 会话派发加瞬态冻结/断窗期避让；人工侧建议排查局域网设备每日 04:30 定时任务（双接口同掉指向上游设备而非本机网卡）。
+
+- **自进化产物小节枚举校验整轮拒绝，396轮无修复回路**
+  - 影响：fenixd 项目的自进化分析 run evo-1791224502 跑满 396 turns 后，仅因输出第 6 条目的小节名 '流程' 不在枚举内被整轮拒绝作废，合法条目一并丢弃（按窗口内 impl/planner 车道中位单轮成本约 0.06-0.07 美元/turn 折算约 25 美元量级）；接力重试又死于断网窗，当日增量材料的自进化加工最终缺席。
+  - 证据：fenixd.log 2026-10-05T19:59:34Z ERROR「自进化分析 run evo-1791224502 失败（水位不推进）: items[5].section 不在三值枚举内: '流程'」（水位不推进即自进化进度标记未前移、整轮不计入）；core/evolution.py:41 合法小节枚举 TODO_SECTIONS 仅（浪费/失误/可改进），:2206 产物校验对越界小节抛 ContractError 拒绝整份产物；.fenix/evolution/items.jsonl 中该 run 回收条目为 0 条，.fenix/evolution/state.json 的 fenixd 水位停在 evo-1791221198（01:26 完成的基线分析）；该 run 途中另有 13 次 API 停滞（最长 237.7 秒）。
+  - 调查评估：在凌晨 evo 管线对当日新材料做二轮分析时暴露（02:21 启动，触发器未核实）。已核实：输入侧读 todo.md 时对未知小节是「跳过+WARNING」的宽口径（evolution.py:535-580），输出侧产物校验却是整轮 fail-closed——模型从 todo.md 的自由小节名（如「知识真相源」）泛化出 '流程' 即触雷；校验失败后无「带错误回问修复」回路，已归档的产物部分回收机制（evo-add-evolution-product-salvage）只覆盖流式截断的 .parts 形态、不覆盖「产物已写出但校验拒绝」形态，故合法 items[0-4] 一同陪葬，0513 接力又死窗后当日未再重试。与存量工作关系：无在飞 SPEC 覆盖此形态。结论：校验拒绝本身正确（不放坏数据入库），但「整批陪葬」是确定性缺口、修法明确，枚举幻觉概率性触发决定其必然复发。
+  - 建议：起草小 SPEC：产物校验失败先走 1 次有界修复回问（把 ContractError 文本回喂令模型自改小节名，仍败再弃），或降级为「跳过非法条目、登记合法条目」的部分回收并与输入侧宽口径对齐；提示词同步补三值枚举的显式示例。
+
+- **评审车道0轮秒败5连熔断30分钟，根因无stderr留痕**
+  - 影响：评审车道（spec-review，SPEC 评审 run）在本地 05:20-05:50 连续 5 次 0 轮秒败（CLI 启动即退 exit 1、无任何 API 往返），触发链路熔断停摆 30 分钟，evo-add-acceptance-deviation-reporting 的评审顺延约 1 小时；单次成本近零，但该致命形态是 10-03 风暴后二度出现，且失败 stderr 未留痕、根因不可归因。
+  - 证据：告警 4b7b59085184（run_infra_failure 基础设施失败熔断信号，21:50:52Z）记「连续 infra 失败 5 次（阈值 3）已熔断、冷却 30 分钟」，样本错误为「claude CLI failed: Exit code: 1 | 0 rounds（无 API 往返样本）」；告警 dc23d55d482b（熔断冷却到期自动恢复信号）记 22:39:16Z 自恢复，其后评审链路正常交付（该 spec 当日 07:16 前后完成实现与验证入库）；内核日志在该时段无任何断网记录（排除本机网络侧）；10-03 同型风暴的人工收口记录（f63d10d2135b）已把该形态记为「spec_review 评审 run 集中秒败 Exit 1 0-rounds」。
+  - 调查评估：在 evo-add-acceptance-deviation-reporting 评审推进时暴露。已核实：熔断与自动恢复按设计工作（阈值 3 触发、30 分钟冷却、到期自恢复）；根因未核实——本时段无网络断窗佐证，候选为 10-03 同型的网关拒模型致命形态（0-rounds+exit 1），但评审车道级 ERROR 行不带 stderr_tail（code-fix 车道同类错误会附 stderr 尾巴），归因须逐个翻原始 run 文件；且错误消息内嵌 SPEC 名导致指纹互不相同，daemon_errors 的同指纹聚合观测对该形态失效（10-03 靠三指纹合并召唤、本夜一条未召唤）。与存量工作关系：无在飞 SPEC 覆盖「评审车道秒败的 stderr 留痕与跨日聚合」。结论：损失小但二度复发且不可归因，属观测缺口而非机制缺口。
+  - 建议：给 spec-review 等评审类车道的秒败补 stderr_tail 留痕（对齐 code-fix 车道形态）；把 0-rounds+exit 1 形态纳入 daemon_errors 聚合观测的指纹归一化（剥离错误消息中的 SPEC 名），使该形态可跨日追踪，与既有跨日同刻复发观测共用记忆。
+
+### 失误
+- （当日无）
+
+### 可改进
+- **散件WIP信号无注册处置选项，每复发重烧一个admin会话**
+  - 影响：复发敞口：主树散件 WIP 滞留信号（maintree_stray_wip_stale，主树 tracked 未提交改动超宽限无人认领）每次都烧一个 admin 会话从头裁决同一动作（核对归属→提交或 stash），本次实测约 11 分钟（run admin-fenixd-1791281576，10-06 18:12-18:24）；该信号型 10-02 以来已四度出现。
+  - 证据：处置记录 4a1464085660 的 suggested_choice 字段原话「注册表（桶 2 八类）未覆盖 maintree_stray_wip_stale，建议新增：id=commit_stray_wip」；本次处置产出提交 f70426c4（.gitignore 补 .pytest_cache/ 忽略并去重）与 17da1761（摘除误入库的 gh device-id）；同型信号 10-02T23:19、10-03T17:09、10-03T18:46 各一条（f1ee2c37f892/20d405cf724d/1dc9c20961e2，均已 handled 即各烧过一次处置）。
+  - 调查评估：在主树 .gitignore 散件改动滞留 30 分钟触发升级时暴露（改动来源不明，在飞实现车道分支 diff 零命中，疑交互会话遗留，未核实）。已核实：裁决选项注册表（adjudication choices，告警处置会话使用的标准动作桶）八个标准选项不含「直接提交散件 WIP」这一动作，admin 只能自由裁决——裁决本身正确高效（11 分钟收口、两个提交入库），缺口仅在每次重做同型诊断。与存量工作关系：信号的盘点来源（evo-add-maintree-stray-wip-sweep）与交互会话归因（evo-add-maintree-interactive-session-attribution）均已落地，但都不覆盖「注册处置选项」这一步。结论：确定性小缺口，登记一次选项即可把复发代价从「一个 admin 会话」降到近零。
+  - 建议：起草小 SPEC：给裁决选项注册表新增 commit_stray_wip（核对归属后直接提交散件 WIP 并在处置记录附提交 hash），并让 maintree_stray_wip_stale 的 recommended_action（建议动作字段）直接带出该选项。
+
+- **blocked_stuck信号主体已终态仍升级滞留3.5天**
+  - 影响：复发敞口：spec 级滞留信号不随主体终态收口——upgrade-narrative-to-investigation 的 blocked_stuck 信号（spec 卡 blocked 超阈值未处理的升级告警）在主体已转 pushed 后仍保持 escalated（已升级人工）/handled=False 状态挂 3.5 天，台账持续虚报一条需人工介入的升级，且会继续被后续同型匹配放大。
+  - 证据：信号 a90ebc0e80a8（blocked_stuck，2026-10-03T17:26:21Z 创建，escalated=True、handled=False 至今）；STATE.md 中该 spec 已于 10-03T17:48 记 status: pushed（updated 字段在案）；刚落地的自愈机制 add-alert-self-heal-marking（merge 92d49f61，10-06 16:48）其 SELF_HEAL_SIGNAL_TYPES 注册表仅含 daemon_errors/run_infra_failure/self-evolution 三类，不含 blocked_stuck。
+  - 调查评估：在 upgrade-narrative-to-investigation 评审受阻时触发信号、22 分钟后 spec 自行恢复 pushed，但信号生命周期无人消费。已核实：新落地的告警自愈闭环按设计只覆盖基础设施瞬态类信号，其判定锚是「签名安静」而非「主体对象已达终态」，对 blocked_stuck 这种主体已恢复的滞留信号不适用；既有信号卫生机制（tests/test_stuck_signal_hygiene.py 覆盖面）也未含主体终态收口。与存量工作关系：add-alert-self-heal-marking 形态最近邻且刚落地，扩展点现成。结论：台账可信度小缺口，修法集中单点（终态惰性收口通道）。
+  - 建议：起草小 SPEC：AdminMonitor（告警与处置监控组件）周期盘点时对「主体 spec 已 pushed/archived 的 open 信号」补惰性收口（标记 handled 并注明主体终态时刻），或把 blocked_stuck 纳入自愈注册表、以主体终态为收口锚。
