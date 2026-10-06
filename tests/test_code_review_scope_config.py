@@ -182,6 +182,9 @@ class TestDashboardWriteChainScope(unittest.TestCase):
                 "max_files": 500,
                 "scope": "window",
                 "stall_alert_minutes": 15,
+                # add-code-review-run-at：触发时点回显生效值（未配置=回退自省
+                # run_at 文档缺省 02:00）
+                "run_at": "02:00",
             },
         )
 

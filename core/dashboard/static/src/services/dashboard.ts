@@ -1317,6 +1317,9 @@ export interface CodeReviewConfig {
   scope?: 'window' | 'full';
   /** 停滞告警阈值（分钟，正整数，缺省 15；add-code-review-sharded-out） */
   stall_alert_minutes?: number;
+  /** 触发时点（add-code-review-run-at，HH:MM）：缺省回退 admin.self_review.run_at，
+   *  后端恒回显生效值（get_code_review_config 单源回退） */
+  run_at?: string;
 }
 
 /** 自动修复代码问题（admin.code_review_fix；add-code-review-auto-fix） */

@@ -195,6 +195,10 @@ _DEFAULT_CODE_REVIEW = {
     "max_files": 500,
     "scope": "window",
     "stall_alert_minutes": 15,
+    # add-code-review-run-at 4.1：触发时点缺省回显生效值——缺省回退自省
+    # run_at（单源 _DEFAULT_SELF_REVIEW，与 ConfigLoader.get_code_review_config
+    # 回退口径一致，read 路径经该助手归一化同值）
+    "run_at": _DEFAULT_SELF_REVIEW["run_at"],
 }
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
@@ -1209,6 +1213,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         sam = patch["code_review"].get("stall_alert_minutes")
         if isinstance(sam, int) and not isinstance(sam, bool) and sam > 0:
             cr["stall_alert_minutes"] = sam
+        # add-code-review-run-at 4.1：触发时点随受管段放行（合法 HH:MM 才合并，
+        # 脏值由 write_config 前置校验拒绝——对齐 self_review.run_at 同款合并
+        # 语义；is_valid_hhmm 对 None/非串均 False）
+        from core.config import ConfigLoader as _CL
+
+        if _CL.is_valid_hhmm(patch["code_review"].get("run_at")):
+            cr["run_at"] = patch["code_review"]["run_at"]
         merged["admin"]["code_review"] = cr
     # add-code-review-auto-fix：admin.code_review_fix 两键（enabled 严格 bool、
     # batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用合法值
@@ -1290,6 +1301,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             _sam = cr_sync.get("stall_alert_minutes")
             if isinstance(_sam, int) and not isinstance(_sam, bool) and _sam > 0:
                 merged_cr["stall_alert_minutes"] = _sam
+            # add-code-review-run-at 4.1：触发时点同口径合并（「同步用户级设置」
+            # 按用户级回显原样携带 run_at 键，非法值由 write_config 前置校验拒绝
+            # ——缺此步该键在合并阶段被静默丢弃，synced 与实际落盘不一致）
+            from core.config import ConfigLoader as _CL
+
+            if _CL.is_valid_hhmm(cr_sync.get("run_at")):
+                merged_cr["run_at"] = cr_sync["run_at"]
             merged["admin"]["code_review"] = merged_cr
         # add-code-review-auto-fix：「同步用户级设置」按 _SYNC_PAGE_KEYS 构造
         # {"admin": {"code_review_fix": {...}}} 形态的 patch 进入本分支（顶层
@@ -1537,6 +1555,14 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 return fail(
                     f"admin.code_review.stall_alert_minutes must be a positive "
                     f"integer: {sam!r}"
+                )
+        # add-code-review-run-at 4.1：触发时点前置校验（合法 HH:MM，非法直接
+        # 拒绝不落盘——对齐 self_review.run_at 同款「非 None 且非法 → fail」）
+        if "run_at" in cr_patch and cr_patch["run_at"] is not None:
+            if not ConfigLoader.is_valid_hhmm(cr_patch["run_at"]):
+                return fail(
+                    f"admin.code_review.run_at must be HH:MM (00:00-23:59): "
+                    f"{cr_patch['run_at']!r}"
                 )
 
     # add-code-review-auto-fix：前端提交的 code_review_fix patch 后端校验

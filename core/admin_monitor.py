@@ -1447,9 +1447,10 @@ class AdminMonitor:
     def _run_code_review_checkpoint(self) -> dict:
         """周期性代码审查调度检查点（add-code-review-agent-and-quality-tab）。
 
-        守卫与自省同源：``admin.code_review.enabled``、同自然日防重、
-        ``run_at`` 未到不跑；manifest 为空则跳过（不派发空 run）；已有
-        code-review run 在跑则跳过（单飞）。
+        守卫与自省同形：``admin.code_review.enabled``、同自然日防重、
+        生效 ``run_at``（独立键 admin.code_review.run_at，缺省回退自省，
+        add-code-review-run-at）未到不跑；manifest 为空则跳过（不派发空
+        run）；已有 code-review run 在跑则跳过（单飞）。
 
         派发经 ``_code_review_executor`` 投递后台 worker 执行完整 run（对齐
         fenixd._evolution_worker 形态），MUST NOT 在巡检线程内同步跑完整
@@ -1474,14 +1475,15 @@ class AdminMonitor:
         if not cr_cfg.get("enabled"):
             return {"triggered": False, "reason": "disabled"}
 
-        sr_cfg = ConfigLoader.get_self_review_config(self.config)
         # aware 本地当前时刻：_parse_run_at（self_review 批① aware 化）返回
         # aware，naive now 与之比较会抛 TypeError；now_local() 与原 naive
         # 同一瞬时，now.date() 本地自然日语义不变。
         now = now_local()
 
-        # run_at 未到不触发（与自省同口径）
-        if now < _parse_run_at(sr_cfg["run_at"], now.date()):
+        # run_at 未到不触发（add-code-review-run-at 2.1：改读独立键
+        # admin.code_review.run_at——回退解析由 get_code_review_config 单源
+        # 完成（缺省回退自省 run_at），此处 MUST NOT 二次解析）
+        if now < _parse_run_at(cr_cfg["run_at"], now.date()):
             return {"triggered": False, "reason": "before_run_at"}
 
         # 同自然日防重（独立状态文件，MUST NOT 复用 self_review_state.json 的

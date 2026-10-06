@@ -1,4 +1,5 @@
-import { Alert, App, Button, Card, Descriptions, Form, InputNumber, Select, Switch, Typography } from 'antd';
+import { Alert, App, Button, Card, Descriptions, Form, InputNumber, Select, Switch, TimePicker, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import { autodraftRegression, getOcrStatus, getRegressionConfig, installOcr } from '@/services/dashboard';
@@ -47,6 +48,9 @@ const QUALITY_DEFAULTS = {
   stallAlertMinutes: 15,
   fixBatchSize: 20,
   mode: 'gate',
+  // add-code-review-run-at：触发时点回填缺省（后端恒回显生效值——缺省回退
+  // admin.self_review.run_at，其文档缺省 02:00；仅作后端响应缺键的兜底）
+  runAt: '02:00',
 } as const;
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
@@ -124,6 +128,9 @@ const buildFormValues = (config: ConfigData) => {
     // 缺省同源）
     code_review_stall_alert_minutes:
       config.code_review?.stall_alert_minutes ?? QUALITY_DEFAULTS.stallAlertMinutes,
+    // add-code-review-run-at：触发时点（admin.code_review.run_at）回显生效值
+    //（后端 get_code_review_config 缺省回退自省 run_at 后恒有值）
+    code_review_run_at: dayjs(config.code_review?.run_at ?? QUALITY_DEFAULTS.runAt, 'HH:mm'),
     // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
     // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
     regression_enabled: config.regression?.enabled === true,
@@ -194,6 +201,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         // add-code-review-sharded-out 3.3：停滞告警阈值（表单回填后恒有值，
         // 正整数由表单校验把关，后端 write_config 权威兜底）
         stall_alert_minutes: values.code_review_stall_alert_minutes,
+        // add-code-review-run-at：触发时点序列化（TimePicker 恒有值；HH:MM
+        // 由控件格式约束，后端 write_config 权威兜底合法 HH:MM）
+        run_at: values.code_review_run_at?.format('HH:mm'),
       },
       // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled，
       // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
@@ -595,11 +605,39 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             </span>
           </div>
           <Text type="secondary">
-            开启后与每日自省同周期（admin.self_review.run_at 时点）自动派发
+            开启后于每日触发时点（admin.code_review.run_at，缺省同每日自省时点）自动派发
             code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
             .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
             手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
+          </Text>
+
+          {/* add-code-review-run-at 4.2：触发时点（admin.code_review.run_at，
+              HH:MM）——与自省时点解耦（错峰避免与自省链同刻齐发触发网关限流），
+              未显式配置时后端回退 admin.self_review.run_at（回显恒为生效值）。
+              与 SelfReviewPanel run_at 同形态：TimePicker HH:mm。 */}
+          <Form.Item
+            name="code_review_run_at"
+            label={
+              <>
+                触发时点<span className="label-note">（admin.code_review.run_at，HH:MM）</span>
+              </>
+            }
+            style={{ marginTop: 24 }}
+            data-testid="code-review-field-run_at"
+          >
+            <TimePicker
+              data-testid="code-review-run-at"
+              format="HH:mm"
+              allowClear={false}
+              placeholder="缺省同每日自省时点"
+              style={{ width: 160 }}
+            />
+          </Form.Item>
+          <Text type="secondary">
+            缺省同每日自省时点（admin.self_review.run_at）。独立配置可与自省错峰，
+            避免周期审查与自省（连带分析链）同刻齐发触发 LLM 网关限流；非法值由
+            后端拒绝不落盘。
           </Text>
 
           {/* add-code-review-scope-config：审查范围下拉（admin.code_review.scope）。
@@ -620,7 +658,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             </Select>
           </Form.Item>
           <Text type="secondary">
-            默认当期审查（{QUALITY_DEFAULTS.scope}）：只审自省窗口内变更的文件。全库审查（full）与
+            默认当期审查（{QUALITY_DEFAULTS.scope}）：只审窗口内变更的文件（窗口
+            起点优先审查自身水位，缺省回退自省，add-code-review-run-at）。全库审查（full）与
             项目页「全库审查」按钮同语义，审查全仓受控源码文件，同样受
             admin.code_review.max_files 上限约束（超限截断）；两档共用同一套
             调度守卫（同自然日防重 / run_at / 开关）。
