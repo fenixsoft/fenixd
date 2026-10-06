@@ -587,7 +587,14 @@ class SpecReviewManager:
         )
         if err is not None:
             self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
-            self._handle_review_failure(spec_name, err)
+            # allow_artifact=False（code-review item 6aca929144e4）：硬门失败本身
+            # 已判定产物不可信，artifact 回流无增益；且分类器 _artifact_landed_valid
+            # 与 runner 硬门 _check_agent_result_artifact 是两套独立实现，判据
+            # 分歧时回流会走 artifact 分类 → 再次 consume → 再次硬门失败 → 无限
+            # 递归（4b9f59b8717f 同形防递归口径，与上下两个失败分支同参形态）。
+            self._handle_review_failure(
+                spec_name, err, allow_artifact=False, run_started_at=run_started_at
+            )
             return False
 
         # 读取结果文件
@@ -882,7 +889,11 @@ class SpecReviewManager:
                 ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
                  "status", "--porcelain"],
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 2e49d64043c9）：text=True
+                # 严格解码下非 UTF-8 文件名（core.quotePath=false 原样输出）抛
+                # UnicodeDecodeError（ValueError 族）逃出下方 except 元组——
+                # 有损替换解码即可（core/regression.py 加固先例同款）。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -1007,7 +1018,11 @@ class SpecReviewManager:
                 ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
                  "status", "--porcelain"],
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 2e49d64043c9）：text=True
+                # 严格解码下非 UTF-8 文件名（core.quotePath=false 原样输出）抛
+                # UnicodeDecodeError（ValueError 族）逃出下方 except 元组——
+                # 有损替换解码即可（core/regression.py 加固先例同款）。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
             )
             if result.returncode == 0:
