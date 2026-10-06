@@ -32,3 +32,10 @@
 | judge-guard-families-probe | kind 门单源族判定与自愈通道不回归探针（core/alert_lifecycle.py:163-179 is_spec_attached_signal、:347-370 自愈分支与 kind 门、:427-456 find_self_healable）：签名安静族三类（daemon_errors/run_infra_failure/self-evolution）不走终态判定且安静超窗后仍被自愈通道收口，未登记族/人工 handled 保持原状，别名条件 spec_reach_terminal_or_unblocked 与回填口径语义不动 | pass | 0/15 | - |
 | store-auto-resolve-signal-probe | 写回端探针（core/admin_store.py:680-719 auto_resolve）：kind=signal 经 find_resolvable命中后写回 handled 族字段（handled/handled_by=auto-resolve/handled_at/resolve_note 含终态与时刻），信号本体字段 description/escalated 原样保留；幂等（二次判定零写回且 mtime 不变）；disposition 同 id 命中不经本路径写回；人工 handled=True 信号不被覆盖 | pass | 0/15 | - |
 | monitor-pending-channel-probe | 盘点通道探针（core/admin_monitor.py:2253-2287 _run_alert_lifecycle 通道一 pending 过滤）：未 handled 且属 spec 附着族的 kind=signal 记录被纳入 pending——主体 spec 仍 blocked 时信号保持原状（无 resolve_note），主体转 pushed 后下一轮盘点经 AdminStore.auto_resolve标记 handled（handled_by=auto-resolve）并附终态时刻注记 | pass | 0/8 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
