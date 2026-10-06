@@ -117,6 +117,11 @@ class G7StaleSweepMixin:
                     ["git", "-C", str(wt_dir), "rev-parse", "--abbrev-ref", "HEAD"],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（对齐 repair_site.py 惯例）：text=True 缺省按
+                    # locale 解码，非 UTF-8 locale 下非 ASCII 输出抛
+                    # UnicodeDecodeError，中断本应可完成的清理。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
                 if br.returncode == 0:
@@ -137,6 +142,9 @@ class G7StaleSweepMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if res.returncode != 0:
@@ -187,6 +195,9 @@ class G7StaleSweepMixin:
                             ["git", "-C", str(self.project_root), "branch", "-D", branch],
                             capture_output=True,
                             text=True,
+                            # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=10,
                         )
                         if del_res.returncode != 0:
@@ -220,6 +231,13 @@ class G7StaleSweepMixin:
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8 + errors="replace"（对齐 repair_site.py 惯例）：
+                # text=True 缺省按 locale 解码，非 UTF-8 locale 下非 ASCII 输出
+                # （本地化报错/含中文路径的 worktree 名）抛 UnicodeDecodeError
+                # （ValueError 子类），不被下方 except 元组接住会抛穿收尾清理；
+                # 固化编码后解码不再抛错，守卫元组维持原样即可。
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if prune_res.returncode != 0:
