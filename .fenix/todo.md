@@ -84,7 +84,7 @@
 
 ### 可改进
 - **散件WIP信号无注册处置选项，每复发重烧一个admin会话**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：主树散件 WIP 滞留信号（maintree_stray_wip_stale，主树 tracked 未提交改动超宽限无人认领）每次都烧一个 admin 会话从头裁决同一动作（核对归属→提交或 stash），本次实测约 11 分钟（run admin-fenixd-1791281576，10-06 18:12-18:24）；该信号型 10-02 以来已四度出现。
   - 证据：处置记录 4a1464085660 的 suggested_choice 字段原话「注册表（桶 2 八类）未覆盖 maintree_stray_wip_stale，建议新增：id=commit_stray_wip」；本次处置产出提交 f70426c4（.gitignore 补 .pytest_cache/ 忽略并去重）与 17da1761（摘除误入库的 gh device-id）；同型信号 10-02T23:19、10-03T17:09、10-03T18:46 各一条（f1ee2c37f892/20d405cf724d/1dc9c20961e2，均已 handled 即各烧过一次处置）。
   - 调查评估：在主树 .gitignore 散件改动滞留 30 分钟触发升级时暴露（改动来源不明，在飞实现车道分支 diff 零命中，疑交互会话遗留，未核实）。已核实：裁决选项注册表（adjudication choices，告警处置会话使用的标准动作桶）八个标准选项不含「直接提交散件 WIP」这一动作，admin 只能自由裁决——裁决本身正确高效（11 分钟收口、两个提交入库），缺口仅在每次重做同型诊断。与存量工作关系：信号的盘点来源（evo-add-maintree-stray-wip-sweep）与交互会话归因（evo-add-maintree-interactive-session-attribution）均已落地，但都不覆盖「注册处置选项」这一步。结论：确定性小缺口，登记一次选项即可把复发代价从「一个 admin 会话」降到近零。
