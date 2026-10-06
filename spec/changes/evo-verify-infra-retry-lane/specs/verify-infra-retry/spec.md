@@ -8,7 +8,7 @@
 
 ### Requirement: 预检失败 infra-retry 车道
 
-verify prepare 失败或可达性 fail-fast（0 场景执行即短路）MUST 优先归类为 infra-retry：不计 env 冻结轮（_env_block_rounds 不递增）、MUST NOT 触发 admin 呼叫，按 infra 失败台账限次（缺省 2 次）直接重派验证；重派仍失败达阈值后 MUST 恢复既有全价升级路径。
+verify prepare 失败或可达性 fail-fast（0 场景执行即短路）MUST 优先归类为 infra-retry：不计 env 冻结轮（_env_block_rounds 不递增）、MUST NOT 触发 admin 呼叫，按 infra-retry 专用台账（连续重派计数，缺省 2 次，与既有 _verify_infra_rounds 观测账分离）直接重派验证；重派仍失败达阈值后 MUST 恢复既有全价升级路径。
 
 #### Scenario: 预检失败廉价重试
 
