@@ -52,6 +52,7 @@ from .alert_lifecycle import (
     attach_trigger,
     find_resolvable,
     find_self_healable,
+    is_spec_attached_signal,
     DEFAULT_SELF_HEAL_QUIET_MINUTES,
 )
 
@@ -2218,6 +2219,12 @@ class AdminMonitor:
         在其排他锁内完成（不绕锁）。无未闭环告警时不做写回、无可闭环条目时
         零写回（admin_alerts.json mtime 不变）。返回实际闭环数量。
 
+        evo-add-signal-subject-terminal-close 2.1：通道一 pending 纳入未
+        handled 且属 spec 附着条件族的 kind=signal 记录（blocked_stuck 等，
+        落库形态 kind=signal），与 escalation 复用同一判定与写回——此前只收
+        kind=escalation，blocked_stuck 信号在主体 spec 终态/离开 blocked 后
+        永不收口，台账虚报人工升级。
+
         daemon 启动首轮扫描（_lifecycle_backfilled=False）附带存量回填：
         无 trigger 字段的 verify_fail_escalation / blocked_stuck 告警按
         signal_type 推断 condition 走同一判定路径，resolve_note 注明
@@ -2234,17 +2241,26 @@ class AdminMonitor:
         records = self.store.read_all()
         resolved_total = 0
 
-        # ── 通道一：既有 spec 附着条件判定（语义不变）────────────────
+        # ── 通道一：既有 spec 附着条件判定 ───────────────────────────
+        # evo-add-signal-subject-terminal-close 2.1：pending 过滤纳入未 handled
+        # 且属 spec 附着条件族的 kind=signal 记录（blocked_stuck 等，落库形态
+        # 是 kind=signal 而非 escalation，旧过滤结构性漏收），与 escalation 复用
+        # 同一终态判定与 auto_resolve 写回；族判定单源 is_spec_attached_signal
+        # （与判定端 kind 门同口径，签名安静族/未登记族仍不进入）。
         try:
+            backfill = not self._lifecycle_backfilled
             pending = [
                 r
                 for r in records
-                if r.get("kind") == ESCALATION and not r.get("handled")
+                if not r.get("handled")
+                and (
+                    r.get("kind") == ESCALATION
+                    or is_spec_attached_signal(r, backfill=backfill)
+                )
             ]
             if not pending:
                 self._lifecycle_backfilled = True  # 无待闭环告警：通道一零写回
             else:
-                backfill = not self._lifecycle_backfilled
                 self._lifecycle_backfilled = True
                 resolvable = find_resolvable(pending, specs, backfill=backfill)
                 if resolvable:

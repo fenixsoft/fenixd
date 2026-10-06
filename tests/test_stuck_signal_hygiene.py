@@ -15,6 +15,7 @@ import pytest
 
 from core.admin_store import AdminStore, SIGNAL, DISPOSITION
 from core.admin_monitor import AdminMonitor
+from core.alert_lifecycle import AUTO_RESOLVE_BY, attach_trigger
 from tests.helpers import FakeLogger, utcnow_iso, iso_ago
 
 
@@ -336,3 +337,70 @@ class TestDispositionSilence:
         )
         signals = mon.run_once()
         assert any(s["signal_type"] == "stuck" for s in signals)
+
+
+# ── evo-add-signal-subject-terminal-close 3.2：blocked_stuck 主体终态收口 ──
+
+class TestBlockedStuckSubjectTerminalClosure:
+    """blocked_stuck kind=signal 随主体 spec 终态/离开受阻态在盘点中收口：
+    spec 转 pushed 后下一轮盘点标记 handled（handled_by=auto-resolve）并附
+    主体终态时刻注记；主体未终态时保持原状（升级与派发行为不变）。
+    _detect_stuck 既有三块（进程存活反证/status_hash 去重/处置后静默期）
+    由上方既有测试类锁定，不回归。"""
+
+    def _seed_blocked_stuck_signal(self, mon: AdminMonitor, spec: str) -> dict:
+        """模拟 _signal_record 写入管道（attach_trigger 统一埋点）落一条
+        blocked_stuck kind=signal。"""
+        return mon.store.append(
+            attach_trigger(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "blocked_stuck",
+                    "spec": spec,
+                    "severity": "critical",
+                    "description": "blocked 悬置超阈值，唤起人工处置",
+                    "escalated": True,
+                }
+            )
+        )
+
+    def _monitor_with_blocked_spec(self, tmp_path):
+        # updated 拨近（5 分钟 < 熔断阈值）：避免本轮再触发 blocked_stuck
+        # 检测产生信号噪音，聚焦盘点收口行为本身
+        return _make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": iso_ago(5)},
+        }, runner=_FakeRunner([]))
+
+    def test_signal_open_while_spec_blocked(self, tmp_path):
+        """主体仍 blocked：信号保持原状，不收口。"""
+        _, mon = self._monitor_with_blocked_spec(tmp_path)
+        signal = self._seed_blocked_stuck_signal(mon, "spec-a")
+        mon.run_once()
+        rec = next(r for r in mon.store.read_all() if r["id"] == signal["id"])
+        assert rec["handled"] is False
+        assert "resolve_note" not in rec
+
+    def test_signal_closed_after_spec_pushed(self, tmp_path):
+        """spec 转 pushed：下一轮盘点标记 handled 并附终态时刻。"""
+        _, mon = self._monitor_with_blocked_spec(tmp_path)
+        signal = self._seed_blocked_stuck_signal(mon, "spec-a")
+        pushed_at = "2026-10-07T03:00:00+00:00"
+        mon.state_machine._specs["spec-a"] = {
+            "status": "pushed", "updated": pushed_at}
+        mon.run_once()
+        rec = next(r for r in mon.store.read_all() if r["id"] == signal["id"])
+        assert rec["handled"] is True
+        assert rec["handled_by"] == AUTO_RESOLVE_BY
+        assert "pushed" in rec["resolve_note"]
+        assert pushed_at in rec["resolve_note"]
+
+    def test_signal_closed_after_spec_left_blocked(self, tmp_path):
+        """spec 离开 blocked 但未终态（implementing）：同样收口，中性注记。"""
+        _, mon = self._monitor_with_blocked_spec(tmp_path)
+        signal = self._seed_blocked_stuck_signal(mon, "spec-a")
+        mon.state_machine._specs["spec-a"] = {
+            "status": "implementing", "updated": "2026-10-07T03:00:00+00:00"}
+        mon.run_once()
+        rec = next(r for r in mon.store.read_all() if r["id"] == signal["id"])
+        assert rec["handled"] is True
+        assert "已非 blocked" in rec["resolve_note"]

@@ -16,6 +16,11 @@ alert_lifecycle.py — 告警生命周期闭环（add-alert-auto-resolve）。
   - 无 ``trigger`` 字段的存量告警按 signal_type ∈ {verify_fail_escalation,
     blocked_stuck} + spec 字段存在推断为同一 condition（存量回填，design D4），
     resolve_note 注明「存量回填」。
+  - evo-add-signal-subject-terminal-close：spec 附着条件族的 kind=signal
+    记录（blocked_stuck 等）同样走上述主体终态判定——盘点 pending 过滤与
+    auto_resolve 写回的 kind 门同步打开（design D2：按条件族白名单而非全部
+    kind=signal，防「主体终态但仍需人工关注的信号」被误收口）；签名安静族
+    （SELF_HEAL_SIGNAL_TYPES）仍按签名安静判定，语义不变。
 
 自愈闭环语义（add-alert-self-heal-marking，infra_transient_self_healed 条件）：
   - 覆盖族注册表 ``SELF_HEAL_SIGNAL_TYPES``（daemon_errors / run_infra_failure /
@@ -155,6 +160,25 @@ def _recognized(condition) -> bool:
     )
 
 
+def is_spec_attached_signal(alert: dict, backfill: bool = False) -> bool:
+    """kind=signal 记录是否属 spec 附着条件族（evo-add-signal-subject-terminal-close D2）。
+
+    口径与 escalation 判定端同一：trigger 条件已识别（_recognized），或
+    （存量回填模式）无 trigger 且 signal_type ∈ BACKFILL_SIGNAL_TYPES。
+    其余 kind=signal（签名安静自愈族、未登记族）不属本族——终态判定门不放行，
+    仍归自愈通道或人工闭环。供 evaluate_alert kind 门与盘点通道 pending 过滤
+    共用，防两侧口径漂移。
+    """
+    if not isinstance(alert, dict) or alert.get("kind") != "signal":
+        return False
+    trigger = alert.get("trigger")
+    if isinstance(trigger, dict) and trigger and _recognized(trigger.get("condition")):
+        return True
+    return bool(
+        backfill and not trigger and alert.get("signal_type") in BACKFILL_SIGNAL_TYPES
+    )
+
+
 # ── 自愈判定助手（add-alert-self-heal-marking 1.1）────────────────────────
 
 
@@ -253,14 +277,25 @@ def _evaluate_self_heal(
 
 
 def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> str:
-    """spec_terminal_or_unblocked 条件下的解除依据描述（spec.md：含 spec 名与终态说明）。"""
-    status = str((entry or {}).get("status") or "")
+    """spec_terminal_or_unblocked 条件下的解除依据描述（spec.md：含 spec 名与终态说明）。
+
+    evo-add-signal-subject-terminal-close 1.1：解除依据附主体终态/解除时刻，
+    供审计回查（blocked_stuck 信号「主体已恢复仍虚报升级」事故的根因之一是
+    收口记录无时刻可对账）。数据源为 specs 状态表 entry 的 ``updated`` 字段
+    ——最后状态变更时刻，非精确终态时间戳；字段缺失时保持既有表述（不硬造
+    时刻）。终态/非终态两分支的中性表述语义均不动。
+    """
+    entry = entry or {}
+    status = str(entry.get("status") or "")
     if status in TERMINAL_SPEC_STATUSES:
         reason = f"spec {spec_name} 已到达终态 {status}"
     else:
         # 中性表述：此分支对从未 blocked 的 spec（如 ready/in_progress）同样
         # 命中，不宜断言「已离开 blocked」；空/缺失 status 兜底显示 unknown。
         reason = f"spec {spec_name} 当前状态 {status or 'unknown'}，已非 blocked（视为解除）"
+    updated = str(entry.get("updated") or "")
+    if updated:
+        reason += f"（状态变更时刻 {updated}）"
     return f"存量回填：{reason}" if backfill else reason
 
 
@@ -285,7 +320,8 @@ def evaluate_alert(
     返回 resolve_note 字符串表示可闭环；返回 None 表示保持原状。保持原状
     的情形（保守默认）：
       - 已 handled（人工记录不可覆盖）
-      - 非 escalation 告警（自愈族另收 kind=signal，需注入 now）
+      - 非 escalation 且非 spec 附着族的 kind=signal（spec 附着族随主体终态
+        收口，evo-add-signal-subject-terminal-close；自愈族另收，需注入 now）
       - 无 spec 字段，或 spec 在状态表中不存在（无法关联 spec）
       - trigger.condition 未识别（存量回填模式下 signal_type 不在
         BACKFILL_SIGNAL_TYPES 中同理）
@@ -325,7 +361,12 @@ def evaluate_alert(
                 backfill=not has_trigger,
             )
 
-    if kind != "escalation":
+    # kind 门（evo-add-signal-subject-terminal-close 1.1）：escalation 一律走
+    # 既有路径；kind=signal 仅当属 spec 附着条件族（trigger 条件已识别，或
+    # 回填模式按 signal_type ∈ BACKFILL_SIGNAL_TYPES 推断）才放行，与
+    # escalation 复用同一终态判定（下方 blocked 拦截与中性表述均不动）；
+    # 签名安静族与其余未登记 signal 形态不在此列，语义不动。
+    if kind != "escalation" and not is_spec_attached_signal(alert, backfill):
         return None
     spec_name = alert.get("spec")
     if not spec_name:
