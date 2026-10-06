@@ -6355,9 +6355,15 @@ class AgentRunner:
                 # 尾行非终态的读侧风险有界——liveness 存活判定带 mtime 冷却
                 # 门、运行期清扫器按全文件终态口径（error 行在场即不补写
                 # interrupted）——故按误报处置，维持照写。
+                # evo-add-night-window-inflight-guard 1.2：run 墙钟时长入账
+                # （轮询起点 :5898 started_at → 收尾时刻；code-fix 夜间静默窗
+                # 「预计跨窗」估计的数据源）。与下方日志侧行同源共用一值，
+                # 历史行缺该字段由读取侧按缺样跳过（fail-open）。
+                _duration_s = max(0.0, time.time() - started_at)
                 _metrics_line = {
                     "type": "run_metrics",
                     "run_id": run_id,
+                    "duration_s": _duration_s,
                     "turns": _turns,
                     "input_tokens": _inp,
                     "cache_read_input_tokens": _cr,
@@ -6399,6 +6405,8 @@ class AgentRunner:
                     {
                         "metric_type": "run_metrics",
                         "run_id": run_id,
+                        # evo-add-night-window-inflight-guard 1.2：与归档行同源
+                        "duration_s": _duration_s,
                         "turns": _turns,
                         "input_tokens": _inp,
                         "cache_read_input_tokens": _cr,

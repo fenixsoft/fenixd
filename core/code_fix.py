@@ -45,6 +45,7 @@ import calendar
 import dataclasses
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -2311,6 +2312,11 @@ def _epoch_iso(ts: float) -> str:
 # 强配（与冷却 300 秒缺省同策略），空串/off 显式禁用。
 NIGHT_QUIET_WINDOW_DEFAULT = "04:15-04:45"
 
+# 「预计跨窗」时长估计样本数（evo-add-night-window-inflight-guard 1.1，design
+# D1）：取同链最近 N 批 run_metrics ``duration_s`` 均值作预计批时长——近批
+# 实测对慢批次自适应，均值对快/慢批折中保守；无有效样本回退仅判派发时刻。
+NIGHT_QUIET_DURATION_SAMPLE_LIMIT = 3
+
 _NIGHT_QUIET_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 
@@ -2850,14 +2856,54 @@ class CodeFixOrchestrator:
                 )
         return parsed
 
-    def _night_quiet_state(self):
-        """静默窗「当前本地时刻」状态快照；不在窗内返回 None。
+    def _chain_recent_duration_mean(self, chain_run_ids):
+        """同链近批实测时长均值（秒）；无有效样本返回 None（fail-open 依据）。
+
+        样本源：链级 run 清单（chain_run_ids）最近
+        ``NIGHT_QUIET_DURATION_SAMPLE_LIMIT`` 批的 run 归档末条 run_metrics
+        行 ``duration_s``（evo-add-night-window-inflight-guard 1.2 补记字段）。
+        历史行缺该字段/归档两处皆缺/负值/非有限数值一律剔除——「近批无有效
+        样本」（新链冷启动/历史行未记时长）即回退既有「仅判派发时刻落窗」
+        判定（design D1，MUST NOT 因缺样阻塞投递）。取均值而非最快样本：
+        对慢批次保守自适应。
+        """
+        if not isinstance(chain_run_ids, list):
+            return None
+        samples: list = []
+        for rid in list(chain_run_ids)[-NIGHT_QUIET_DURATION_SAMPLE_LIMIT:]:
+            rec = _read_run_metrics(self.project_root, str(rid))
+            try:
+                dur = float(rec.get("duration_s"))
+            except (TypeError, ValueError):
+                continue
+            if dur < 0 or not math.isfinite(dur):
+                continue
+            samples.append(dur)
+        if not samples:
+            return None
+        return sum(samples) / len(samples)
+
+    def _night_quiet_state(self, chain_run_ids=None):
+        """静默窗状态快照：真实窗内态 + 预计跨窗态；两态皆不命中返回 None。
 
         判定显式走本地时区 ``time.localtime``（与断窗时刻对齐，spec R6，
-        MUST NOT 用 UTC）。命中返回 ``{text, date, end_ts}``：text 为配置
-        区间原文（告警 evidence 用），date 为窗次标识（本地日期，含日期故
-        跨窗次自动重新武装），end_ts 为今日本地窗末 epoch 秒＝下一可投递
-        时刻（窗末整点起放行：start<=cur<end 左闭右开，边界见测试四点）。
+        MUST NOT 用 UTC）。两级判定：
+
+        - 真实窗内态（既有，evo-codefix-night-quiet-window）：当前本地时刻
+          落 ``[start, end)``（左闭右开，边界见测试四点）即命中；
+        - 预计跨窗态（evo-add-night-window-inflight-guard 1.1）：窗前派出
+          （cur < start）且「当前时刻 + 同链近批实测时长均值」越过窗起点
+          （预计在飞区间与窗区间相交）即命中——覆盖「窗前派出、窗中在飞」
+          形态；近批无有效时长样本（``_chain_recent_duration_mean`` 返回
+          None）回退仅判派发时刻，不阻塞投递；今日窗已过（cur >= end）不
+          预测明日窗（窗解析单日语义，design 同款边界）。
+
+        命中返回 ``{text, date, end_ts, predicted, est_duration_s}``：text
+        为配置区间原文（告警 evidence 用），date 为窗次标识（本地日期，含
+        日期故跨窗次自动重新武装），end_ts 为今日本地窗末 epoch 秒＝下一
+        可投递时刻；predicted 标预计跨窗态——与真实窗内态共用同一窗次标识
+        与武装告警语义（同窗次幂等，「预测态→真实窗内态」迁移不重复武装）；
+        est_duration_s 仅预测态携带（秒，进度文案展示用）。
         """
         window = self._night_quiet_window()
         if window is None:
@@ -2865,12 +2911,27 @@ class CodeFixOrchestrator:
         start_min, end_min, text = window
         lt = time.localtime()
         cur = lt.tm_hour * 60 + lt.tm_min
+        predicted = False
+        est_duration_s = None
         if not (start_min <= cur < end_min):
-            return None
+            if cur >= end_min:
+                return None
+            est = self._chain_recent_duration_mean(chain_run_ids)
+            if est is None:
+                return None
+            cur_s = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+            # 区间相交（左闭右开对左开）：预计结束恰好压线窗起点（<=）视作
+            # 不相交——批次在窗起点整点前收尾，不与窗共存。
+            if cur_s + est <= start_min * 60:
+                return None
+            predicted = True
+            est_duration_s = est
         return {
             "text": text,
             "date": time.strftime("%Y-%m-%d", lt),
             "end_ts": _local_window_end_epoch(end_min),
+            "predicted": predicted,
+            "est_duration_s": est_duration_s,
         }
 
     def _arm_night_quiet_window(self, quiet_window, prev_armed_date) -> None:
@@ -3209,10 +3270,19 @@ class CodeFixOrchestrator:
             # tests/test_code_fix_night_quiet_window.py 源码契约测试固定）；
             # override_enabled=True 的手动触发同样生效（手动授权仅越过
             # enabled 总开关，沿冷却现状）。判定显式走本地时区 time.localtime
-            # （与断窗时刻对齐，MUST NOT 用 UTC）。窗内返回 triggered=False、
+            # （与断窗时刻对齐，MUST NOT 用 UTC）。evo-add-night-window-
+            # inflight-guard 1.1 起判定升级为「真实窗内态 + 预计跨窗态」两
+            # 级：窗前派出但预计结束时刻落窗同样拦截——两态共用 reason、窗
+            # 次标识与武装告警语义（同窗次幂等，预测态→真实窗内态迁移不重
+            # 复武装）。窗内返回 triggered=False、
             # reason=night_quiet_window；与冷却同时命中取更晚可投递时刻
             # （reason 取更晚者对应守卫），二者独立武装/解除、互不复位。
-            quiet_window = self._night_quiet_state()
+            # evo-add-night-window-inflight-guard 1.1：预计跨窗升级——判定
+            # 入参带链级 run 清单（窗前派出时以近批实测时长估预计结束时刻，
+            # 与窗区间相交即顺延到窗末；prev_chain 可能被外部写坏成非列表，
+            # 估计器按非列表回退无样本，fail-open 不阻塞投递）。
+            quiet_window = self._night_quiet_state(
+                prev_chain.get("chain_run_ids"))
             quiet_armed_date = prev_chain.get("night_quiet_armed_date")
             if not isinstance(quiet_armed_date, str):
                 quiet_armed_date = ""
@@ -3295,12 +3365,24 @@ class CodeFixOrchestrator:
                     )
                     guard_label = "冷却"
                 else:
-                    current = (
-                        "每日夜间静默窗内，暂停启动新批至 "
-                        f"{_epoch_iso(deliver_ts)}"
-                        f"（窗区间 {quiet_window['text']}）"
-                    )
-                    guard_label = "静默窗"
+                    if quiet_window.get("predicted"):
+                        # 预计跨窗态（evo-add-night-window-inflight-guard
+                        # 1.1）：批次预计结束时刻落窗，窗前顺延——文案区分
+                        # 预测/真实以便审计对账，拦截语义与窗内态一致。
+                        current = (
+                            "预计本批跨夜间静默窗（近批均时长 "
+                            f"{quiet_window['est_duration_s']:.0f} 秒），"
+                            f"暂停启动新批至 {_epoch_iso(deliver_ts)}"
+                            f"（窗区间 {quiet_window['text']}）"
+                        )
+                        guard_label = "静默窗(预计)"
+                    else:
+                        current = (
+                            "每日夜间静默窗内，暂停启动新批至 "
+                            f"{_epoch_iso(deliver_ts)}"
+                            f"（窗区间 {quiet_window['text']}）"
+                        )
+                        guard_label = "静默窗"
                 # 拦截：进度只刷提示文案（running/phase 链上状态不动——链仍
                 # live，自驱动/兜底节拍到可投递时刻后自然续跑）。
                 write_progress(root, reason=reason, current=current)

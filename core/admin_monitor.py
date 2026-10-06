@@ -5228,6 +5228,59 @@ class AdminMonitor:
         )
         return ["restart_failed"]
 
+    def _night_dispatch_block_reasons(self) -> list:
+        """admin 唤起避让判定（evo-add-night-window-inflight-guard 2.1）。
+
+        两不派条件（design D2，与信号死法冷却同位、同样作用于人工显式
+        触发——本闸语义是「保护 run 不进必死窗口」而非「抑制噪音召唤」，
+        断窗/冻结期内人工唤起同样必死）：
+
+        - provider 瞬断冻结态：复用
+          ``agent_runner.is_global_transient_break_active``（
+          provider_circuit.is_global_transient_break 的委托别名）；替身缺
+          该方法/调用异常按未冻结处理（fail-open，替身/半初始化实例不误伤）。
+        - 夜间断窗期：窗配置与解析复用 core.code_fix 单源（design D3，不
+          引入第二份窗配置），键 ``admin.code_review_fix.night_quiet_window``
+          （与 code-fix 车道同键同缺省）；本地时区当前时刻落 ``[start, end)``
+          即命中；空串/off 显式禁用窗则不避让。配置读取/解析/导入异常一律
+          按无窗处理——观测失败 MUST NOT 阻断唤起主路径。
+
+        返回命中原因短语列表（空＝不避让）。只判定不落痕——落痕由调用方
+        ``_invoke_administrator`` 按通道形态补（自动路径补 DISPOSITION、
+        人工路径仅日志）；跳过 MUST NOT 增 retry_count、MUST NOT 落升级告警。
+        """
+        reasons: list = []
+        try:
+            frozen = (
+                callable(getattr(
+                    self.agent_runner, "is_global_transient_break_active", None))
+                and self.agent_runner.is_global_transient_break_active() is True
+            )
+        except Exception:
+            frozen = False
+        if frozen:
+            reasons.append("provider 瞬断冻结态")
+        try:
+            from .code_fix import (
+                NIGHT_QUIET_WINDOW_DEFAULT,
+                _parse_night_quiet_window,
+            )
+
+            raw = self._get_config(
+                "admin.code_review_fix.night_quiet_window",
+                NIGHT_QUIET_WINDOW_DEFAULT,
+            )
+            parsed = _parse_night_quiet_window(raw)
+            if parsed is not None:
+                start_min, end_min, text = parsed
+                lt = time.localtime()
+                cur = lt.tm_hour * 60 + lt.tm_min
+                if start_min <= cur < end_min:
+                    reasons.append(f"夜间静默窗内（窗区间 {text}）")
+        except Exception:
+            pass
+        return reasons
+
     def invoke_manual(self, signal: dict):
         """手动唤起入口（fenixd 主循环拾取 .fenix/admin_invoke_request.json）。
 
@@ -5239,6 +5292,10 @@ class AdminMonitor:
         导致用户反复手动重呼（2026-08-29 v2-cutover-main-entry 三连呼实证）。
 
         不检查 enabled：用户显式呼叫应始终响应（enabled 只约束自动巡检）。
+        唯一例外是夜间断窗/provider 瞬断冻结避让闸（
+        evo-add-night-window-inflight-guard 2.1，design D2）：断窗/冻结期内
+        唤起注定被断网/熔断击杀，人工呼叫同样避让本轮跳过，窗末/解冻后
+        重新呼叫即生效。
         """
         self._invoke_administrator(signal, None)
 
@@ -5330,6 +5387,56 @@ class AdminMonitor:
                     self.logger.error(
                         "admin_monitor",
                         f"Failed to persist cooldown-skip disposition for "
+                        f"'{signal.get('spec') or 'daemon'}': {e}",
+                    )
+            return
+
+        # evo-add-night-window-inflight-guard 2.1：夜间断窗/provider 瞬断冻结
+        # 避让（design D2）——与上方信号死法冷却同位并列，同样作用于人工显式
+        # 触发（先例：code-fix 静默窗对手动触发同样生效，手动授权仅越过
+        # enabled 总开关）。跳过属非失败路径：MUST NOT 增 retry_count、
+        # MUST NOT 落升级告警，仅留痕原因；spec 保持原状，下一轮盘点/检测
+        # 循环自然重试。
+        try:
+            _block_reasons = self._night_dispatch_block_reasons()
+        except Exception:
+            _block_reasons = []
+        if _block_reasons:
+            _reason_text = "、".join(_block_reasons)
+            self.logger.info(
+                "admin_monitor",
+                f"夜间断窗/瞬断冻结避让，跳过 Administrator 唤起 "
+                f"'{signal.get('spec') or 'daemon'}'（{_reason_text}）——"
+                "留待下一轮盘点重试"
+                "（evo-add-night-window-inflight-guard）",
+            )
+            # 对齐上方冷却跳过的落痕纪律：自动巡检路径唤起前 _handle_signal
+            # 已落 escalated=True 的 signal 记录（虚报「已唤起」锚点），本路径
+            # 实际未派发——补写说明性处置记录（result="skipped" 不命中任何
+            # result 消费分支、不参与 unhandled_for 节流）。人工通道
+            # （signal_rec=None）无该虚报锚点，仅日志留痕。
+            if signal_rec is not None:
+                try:
+                    self.store.append(
+                        {
+                            "kind": DISPOSITION,
+                            "signal_type": signal.get("signal_type"),
+                            "spec": signal.get("spec"),
+                            "severity": signal.get("severity"),
+                            "description": signal.get("description"),
+                            "action_taken": (
+                                "夜间断窗/瞬断冻结避让，跳过 Administrator 唤起"
+                                f"（{_reason_text}）——实际未派发，留待下一轮"
+                                "盘点/检测循环自然重试"
+                                "（evo-add-night-window-inflight-guard）"
+                            ),
+                            "result": "skipped",
+                        }
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "admin_monitor",
+                        f"Failed to persist window-avoidance disposition for "
                         f"'{signal.get('spec') or 'daemon'}': {e}",
                     )
             return
