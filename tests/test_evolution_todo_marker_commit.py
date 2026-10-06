@@ -7,6 +7,10 @@
 
 另覆盖批末合并提交（tasks 1.3）：ingest_item 批量路径不逐条提交，由
 ``commit_todo_marker`` 对一轮涉及的项目各合并提交一次。
+
+evo-evolution-accept-marker-batching：自动接受批路径同范式——
+auto_accept_pending 逐条 defer、批末对本项目恰一枚合并提交且消息附条目 id
+明细；dashboard 手动单条接受（缺省开关）保持写后即时提交不回归。
 """
 import subprocess
 import sys
@@ -17,8 +21,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.evolution import (  # noqa: E402
+    accept_item,
+    auto_accept_pending,
     commit_todo_marker,
+    draft_dir,
     ingest_item,
+    upsert_item,
     write_todo_marker,
 )
 
@@ -81,6 +89,16 @@ def _tracked_repo(tmp_path: Path) -> Path:
 
 def _commit_count(repo: Path) -> int:
     out = _git(repo, "rev-list", "--count", "--all").stdout.strip()
+    return int(out) if out.isdigit() else 0
+
+
+def _todo_commit_count(repo: Path) -> int:
+    """仅统计触碰 ``.fenix/todo.md`` 的提交数。
+
+    accept 路径另有 spec/changes 立项提交（逐条一次，属立项语义不属标记
+    噪声），断言标记提交数必须按 pathspec 过滤，不能用全量提交数。
+    """
+    out = _git(repo, "rev-list", "--count", "HEAD", "--", ".fenix/todo.md").stdout.strip()
     return int(out) if out.isdigit() else 0
 
 
@@ -255,6 +273,115 @@ class TestBatchMergedCommit:
 
         # 非 git 仓库：合并提交跳过且不抛错
         assert commit_todo_marker(project_path=proj) is False
+
+
+class TestAutoAcceptBatchMergedCommit:
+    """evo-evolution-accept-marker-batching：接受批批末恰一枚合并提交。"""
+
+    def _seed_pending(self, repo: Path, eid: str, title: str, spec_name: str, section: str) -> None:
+        """建一条 pending 条目 + 草稿目录（标题须命中 todo.md 既有条目）。"""
+        upsert_item(repo, {
+            "id": eid, "project": "proj", "date_section": "2026-09-13",
+            "section": section, "title": title, "impact": "i", "evidence": "e",
+            "analysis": "a", "suggestion": "s",
+            "verdict": {"worth_spec": True, "problem_exists": "yes",
+                        "suggestion_sound": "yes", "rationale": "r"},
+            "analysis_md": "md",
+            "spec": {"name": spec_name, "capability": "evo-test",
+                     "proposal_md": "# P", "design_md": "# D",
+                     "spec_md": "# S",
+                     "tasks_md": "## Deliverables\n\n- path: a.txt\n  kind: new\n"},
+            "spec_summary": "", "degraded": None,
+            "created_at": "2026-09-13T00:00:00Z", "decided_at": None,
+            "decided_by": None, "spec_name": None,
+            "violations": None, "draft_failed_reason": None,
+            "status": "pending",
+        })
+        d = draft_dir(repo, eid)
+        d.mkdir(parents=True)
+        (d / "proposal.md").write_text("p", encoding="utf-8")
+
+    def test_auto_accept_batch_produces_single_commit_with_ids(self, tmp_path, monkeypatch):
+        """场景：一批接受 N（≥2）条 → 恰一枚 todo.md 提交且消息含 id 明细。"""
+        repo = _tracked_repo(tmp_path)
+        monkeypatch.setattr(
+            "core.evolution._resolve_project_path_by_name", lambda name: repo
+        )
+        self._seed_pending(repo, "aaaa1111aaaa", "问题甲", "batch-a", "浪费")
+        self._seed_pending(repo, "bbbb2222bbbb", "问题乙", "batch-b", "可改进")
+        base = _todo_commit_count(repo)
+
+        summary = auto_accept_pending(repo, None)
+
+        assert summary == dict(summary, total=2, accepted=2, failed=0)
+        # 逐条 defer + 批末合并：标记翻转只收进恰一枚提交（spec/changes
+        # 立项提交逐条一次但按 pathspec 限定，不触碰 todo.md）
+        assert _todo_commit_count(repo) == base + 1
+        assert _head_files(repo) == [".fenix/todo.md"]
+        body = _git(repo, "log", "-1", "--pretty=%B").stdout
+        assert "- aaaa1111aaaa" in body
+        assert "- bbbb2222bbbb" in body
+        assert body.startswith("[fenix] evolution: 自进化标记回写 ")
+        text = (repo / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert text.count("自进化：") == 2
+
+    def test_auto_accept_empty_batch_skips_batch_commit(self, tmp_path, monkeypatch):
+        """批内无可接受条目（含全部失败）：不调批末合并提交（良性 no-op 免日志）。"""
+        repo = _tracked_repo(tmp_path)
+        monkeypatch.setattr(
+            "core.evolution._resolve_project_path_by_name", lambda name: repo
+        )
+        base = _commit_count(repo)
+
+        summary = auto_accept_pending(repo, None)
+
+        assert summary["total"] == 0
+        assert _commit_count(repo) == base
+
+    def test_defer_commit_switch_writes_without_commit(self, tmp_path, monkeypatch):
+        """defer_commit=True：标记落写但不逐条提交，批末合并补一枚带明细的提交。"""
+        repo = _tracked_repo(tmp_path)
+        monkeypatch.setattr(
+            "core.evolution._resolve_project_path_by_name", lambda name: repo
+        )
+        self._seed_pending(repo, "cccc3333cccc", "问题甲", "defer-a", "浪费")
+        base = _todo_commit_count(repo)
+
+        result = accept_item(
+            "cccc3333cccc", repo, None, decided_by="auto", defer_commit=True
+        )
+
+        assert result["ok"] is True
+        # 逐条 defer：写后无 todo.md 提交
+        assert _todo_commit_count(repo) == base
+        # 批末合并提交：恰一枚，消息附条目 id 明细
+        assert commit_todo_marker(
+            project_path=repo,
+            message_suffix="接受条目（1 条）:\n- cccc3333cccc",
+        ) is True
+        assert _todo_commit_count(repo) == base + 1
+        assert _head_files(repo) == [".fenix/todo.md"]
+        assert "- cccc3333cccc" in _git(repo, "log", "-1", "--pretty=%B").stdout
+
+    def test_manual_single_accept_still_commits_immediately(self, tmp_path, monkeypatch):
+        """场景：dashboard 手动单条接受（缺省 defer_commit=False）维持写后即时提交。"""
+        repo = _tracked_repo(tmp_path)
+        monkeypatch.setattr(
+            "core.evolution._resolve_project_path_by_name", lambda name: repo
+        )
+        self._seed_pending(repo, "d4d4d4d4d4d4", "问题甲", "manual-a", "浪费")
+        base = _todo_commit_count(repo)
+
+        # 与 evolution_routes 手动端点同形态调用（不传 defer_commit）
+        result = accept_item("d4d4d4d4d4d4", repo, None, decided_by="manual")
+
+        assert result["ok"] is True
+        assert _todo_commit_count(repo) == base + 1
+        assert _head_files(repo) == [".fenix/todo.md"]
+        msg = _git(repo, "log", "-1", "--pretty=%B").stdout
+        assert msg.startswith("[fenix] evolution: 自进化标记回写 ")
+        # 缺省单条路径消息不带条目 id 明细正文（形态与既有行为一致）
+        assert "d4d4d4d4d4d4" not in msg
 
 
 @pytest.mark.parametrize("kwargs", [{"project_name": "ghost"}, {}])
