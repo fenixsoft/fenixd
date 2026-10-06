@@ -11,7 +11,9 @@
 //   {blocked, failed} 才停止（code-review item 62f764043d88：仅看 running=false
 //   会把常驻挂载期的缺省 idle 首帧当收尾而永久停轮询，之后新启动的修复链
 //   无人观察——后端 `_finish("failed", …)` 不回写 running，失败链仍须靠
-//   phase 收口）；QualityTab 触发成功经 restartKey 重启轮询；
+//   phase 收口）；另设缺省态空转兜底（item 98a306558aa9）：从未观察到在跑且
+//   连续 5 轮 running=false 也停——链在 tick 间隔内完整跑完时该判据永不成立；
+//   QualityTab 触发成功经 restartKey 重启轮询；
 // - `active` 门控：分面未选中零请求（本组件在 QualityTab 内常驻挂载）；
 // - blocked/failed 展示原因（**与 running 无关**：后端 blocked 置
 //   running=false，若按 running 过滤则该分支永不渲染）；
@@ -51,6 +53,10 @@ const STOP_PHASES: ReadonlySet<CodeReviewFixProgress['phase']> =
 // 回退（宁严勿松，reason 漂移不静默）。
 // 连续读取失败上限：达到即停轮询（无退避的 2s 空转无意义）
 const MAX_CONSECUTIVE_ERRORS = 3;
+// 缺省态空转上限（code-review item 98a306558aa9）：从未观察到链在跑且连续
+// 多轮 running=false 即停轮询——链在 tick 间隔内完整跑完时收尾判据永不成立，
+// 2s 轮询将无感知空转（卡片不渲染）。
+const MAX_IDLE_ROUNDS = 5;
 // 阶段中文名（模块作用域：不随每次渲染重建）。键与后端 FIX_PHASES 同源。
 const PHASE_LABELS: Record<CodeReviewFixProgress['phase'], string> = {
   idle: '空闲',
@@ -149,6 +155,9 @@ export default function CodeFixProgressCard(
     // 区分开——后者不应触发父组件刷新（否则每次挂载/切项目都白打一次
     // getCodeReviewItems，与 QualityTab 自身 mount 加载重复）。
     let sawRunning = false;
+    // 连续「未观察到在跑且非终止态」轮数：随 effect 重启自动归零（restartKey/
+    // retryKey/切项目都会重开一轮观察），不会残留旧计数造成过早停轮询。
+    let idleRounds = 0;
 
     const tick = async () => {
       let settled = false;
@@ -166,6 +175,18 @@ export default function CodeFixProgressCard(
         // failed）不受 sawRunning 门限（失败链 running 可能恒 true，且挂在
         // 陈旧终态上持续 2s 空转无意义）。
         settled = (sawRunning && p.running === false) || STOP_PHASES.has(p.phase);
+        // 缺省态空转兜底（code-review item 98a306558aa9；62f764043d88 防误停
+        // 取舍的缺省态兜底）：若链在本轮询两次 tick 间隔内完整启动并收尾，首帧
+        // 起就只见 running=false/phase=idle，上式 settled 永不成立，2s 轮询将
+        // 无限空转（卡片因不渲染而用户无感知）。连续 MAX_IDLE_ROUNDS 轮仍未
+        // 观察到在跑即认定当下无链可观察，停轮询收口——不回调刷新（缺省态
+        // 刷新与 QualityTab mount 加载重复），新链仍由 restartKey/retryKey
+        // 重启接管。走到此分支时 settled 只可能来自 STOP_PHASES（sawRunning
+        // 为 false 时首支不成立），故 !settled 即 !STOP_PHASES。
+        if (!settled && !sawRunning && p.running === false) {
+          idleRounds += 1;
+          settled = idleRounds >= MAX_IDLE_ROUNDS;
+        }
         // 仅在观察到链收尾（sawRunning）或进入终止态时通知刷新
         notify = sawRunning || STOP_PHASES.has(p.phase);
       } catch {
