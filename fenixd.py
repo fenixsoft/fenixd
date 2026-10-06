@@ -264,6 +264,8 @@ def _ahead_commit_count(branch: str) -> int:
              f"{_preserve_base_branch()}..{branch}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS,
         )
         if res.returncode == 0:
@@ -322,6 +324,26 @@ def code_files_changed_since(baseline_ns: int, files) -> bool:
         except OSError:
             continue
     return False
+
+
+def _spec_delete_result_failed(result) -> bool:
+    """判定 spec_delete 结果是否为失败（code-review item 86c950655ace）。
+
+    soft_delete_spec（core/dashboard/data/spec_archive.py）的返回契约只产出
+    found/running/archived/archive_path/error/pending/stopped（成功路径另带
+    committed/commit_warning），从不写 ok 键；只有
+    _soft_delete_with_bounded_wait 自身构造的等待超时路径才带 ok=False。
+    因此失败判定 MUST 同时识别生产者真实失败字段：归档移动/STATE 剔除等
+    OSError 失败形态（error 非空）与删除窗口内新 run 在跑（running=True），
+    否则全部失败会被误判成功。
+    """
+    if not isinstance(result, dict):
+        return True
+    return (
+        result.get("ok") is False
+        or bool(result.get("error"))
+        or result.get("running") is True
+    )
 
 
 class FenixDaemon:
@@ -3221,7 +3243,7 @@ class FenixDaemon:
             try:
                 result = self._soft_delete_with_bounded_wait(
                     spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
-                if result is not None and result.get("ok") is False:
+                if _spec_delete_result_failed(result):
                     self.logger.warning(
                         "fenixd",
                         f"spec_delete 停止/删除未完成 spec='{spec}'："
@@ -3327,7 +3349,7 @@ class FenixDaemon:
         try:
             result = self._soft_delete_with_bounded_wait(
                 spec, stop_callback, total_timeout)
-            if result is not None and result.get("ok") is False:
+            if _spec_delete_result_failed(result):
                 self.logger.warning(
                     "fenixd",
                     f"spec_delete 停止/删除未完成 spec='{spec}'："
