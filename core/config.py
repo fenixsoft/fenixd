@@ -2107,6 +2107,14 @@ class ConfigLoader:
         - stall_alert_minutes: 15（add-code-review-sharded-out：事中零进度
           停滞告警阈值，分钟；消费方 core.code_review.check_progress_stall。
           非法值（非正整数/类型错误/bool）回退缺省）
+        - run_at: 回退 admin.self_review.run_at（add-code-review-run-at D1：
+          周期审查触发时点独立键，本地时间 HH:MM）。cr 段存在且恰能被
+          _HHMM_RE（与 _validated_run_at / _parse_run_at 同一格式口径）解析
+          为合法 HH:MM 才生效；其余一切（键缺失/非法字面量/非字符串类型）
+          回退 get_self_review_config(config)["run_at"]——缺省路径零行为
+          变化（用户定调「暂不挪时点，仅解耦配置能力」，与自省同刻的现状
+          保持，时点后续可在 Dashboard 设置页自行调整错峰）。巡检路径
+          MUST NOT 因配置脏值中断（对齐 scope 白名单回退口径）。
         """
         # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
@@ -2154,12 +2162,19 @@ class ConfigLoader:
             or manual_full_open_warn < 0
         ):
             manual_full_open_warn = 30
+        # 触发时点（add-code-review-run-at D1）：合法 HH:MM 才生效，其余一切
+        # （键缺失/非法字面量/非字符串类型）回退自省 run_at——缺省＝历史行为
+        # 逐位一致；_HHMM_RE 与 self_review._parse_run_at 的格式口径同源。
+        cr_run_at = cr.get("run_at")
+        if not (isinstance(cr_run_at, str) and _HHMM_RE.match(cr_run_at)):
+            cr_run_at = cls.get_self_review_config(config)["run_at"]
         return {
             "enabled": enabled,
             "max_files": int(max_files),
             "scope": scope,
             "stall_alert_minutes": int(stall_alert_minutes),
             "manual_full_open_warn": int(manual_full_open_warn),
+            "run_at": cr_run_at,
         }
 
     @classmethod
