@@ -326,6 +326,12 @@ def collapse_wip_commits(
             return False
         message, ok = _collapse_message(project_root, commits, logger, timeout=timeout)
         if not ok:
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP collapse for branch '{branch}' failed to read final "
+                f"commit message — merge-back continues on uncollapsed "
+                f"branch (non-blocking)",
+            )
             return False
         ct = subprocess.run(
             [
