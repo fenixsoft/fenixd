@@ -37,3 +37,10 @@
 | probe-night-quiet-state-three-modes | 实现探针（独立于交付测试文件，直接驱动 _night_quiet_state，core/code_fix.py:2886）：真实窗内态返回 predicted=False；窗前派出 04:10 + 近批均值 1800s → 预测跨窗态 predicted=True 且 est_duration_s=1800；预计不跨窗 03:00+1800s、压线 04:10+300s（恰等窗起点）、无有效样本 → 均返回 None（fail-open）。run_metrics 样本写真实 .fenix/runs/<run_id>.jsonl 归档（core/code_fix.py:495 双路径读取的顶层路径），时钟注入 patch core.code_fix.time.localtime | pass | 0/10 | - |
 | probe-admin-block-reasons-modes | 实现探针（独立于交付测试文件，直接驱动 _night_dispatch_block_reasons，core/admin_monitor.py:5232）：冻结态命中原因含「瞬断冻结」；断窗期 04:30 命中原因含「静默窗」；窗外 10:00、窗配置 off、runner 缺冻结探针方法（fail-open）均返回空（不避让）。AdminMonitor 最小替身装配与 tests/test_admin_dispatch_window_avoidance.py:70 _make_monitor 同构，时钟注入 patch core.admin_monitor.time.localtime | pass | 0/7 | - |
 | guard-suite-full-regression | 守卫套件全量回归：tests/test_code_fix_night_quiet_window.py 与 tests/test_admin_dispatch_window_avoidance.py 两文件全量 pytest 零失败（32 passed + 14 subtests passed 基线，2026-10-07 实测 1.94s），防预计跨窗新判定破坏既有窗/冷却共存认知（tasks 3.1/3.2 整体回归点） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 1 轮）。
+
+- 首轮写入 14 个场景
+
