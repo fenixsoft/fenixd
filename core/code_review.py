@@ -845,9 +845,18 @@ def _git(project_root, args: List[str]) -> str:
             ["git", "-C", str(project_root)] + args,
             capture_output=True,
             text=True,
+            # 固化解码（对齐 worktree_manager/repair_site.py 惯例）：默认走
+            # locale 首选编码 + 严格模式，非 locale 可解码字节的路径/stderr
+            # 会抛 UnicodeDecodeError；errors="replace" 保证解码不炸。
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        # ValueError 兜 UnicodeDecodeError（对齐 git_base_branch._git_output），
+        # 保证「失败返回空串」降级契约在解码故障下同样闭合，不沿
+        # collect_manifest 冒泡中断周期审查的清单收集。
+        # code-review item d8eec4681080。
         _logger.warning("code_review: git %s 执行失败: %s", args[0], e)
         return ""
     if proc.returncode != 0:
