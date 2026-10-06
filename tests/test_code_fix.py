@@ -1986,8 +1986,14 @@ assert orch.checkpoint() == {"triggered": False, "reason": "disabled"}, "disable
     json.dumps({"item_id": "a", "status": "open", "file": "x.py", "line": 1,
                 "severity": "major", "category": "correctness", "title": "t",
                 "description": "d", "suggestion": "s"}) + "\n", encoding="utf-8")
+# night_quiet_window 显式 off：缺省窗 04:15-04:45（NIGHT_QUIET_WINDOW_DEFAULT），
+# 回归若落在窗内，checkpoint 会先被静默窗守卫拦截（reason=night_quiet_window，
+# 守卫先于回归契约检查），本用例断言的是 regression_contract_missing 路径，
+# 须钉死无窗才具时间确定性。
 orch2 = CodeFixOrchestrator(FakeRunner(), td,
-                            config={"admin": {"code_review_fix": {"enabled": True}}},
+                            config={"admin": {"code_review_fix": {
+                                "enabled": True,
+                                "night_quiet_window": "off"}}},
                             logger=None)
 res = orch2.checkpoint()
 assert res == {"triggered": False, "reason": "regression_contract_missing"}, res
