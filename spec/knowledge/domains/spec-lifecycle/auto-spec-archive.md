@@ -9,7 +9,6 @@
 - 配置键 `archive.auto_threshold`（用户级与项目级均可设置，项目级优先，参与配置热更新）：done/pushed 终态 SPEC 的未归档数量超过阈值时触发自动归档；缺省 50；设为 0 表示禁用。
 - daemon 主循环以独立低频计时（分钟级）周期检查每个项目：统计状态为 done/pushed 且未归档（`spec/changes/<name>/` 目录仍存在）的 SPEC 数量。
 - 完成时间取 `STATE.md` 条目的 `updated` 字段（终态 SPEC 的 entry 恒定不变，`updated` 即完成时间）。
-- 超过阈值时按完成时间从最久到最新依次归档（调用与手动归档相同的移动逻辑：目录移入 `spec/archive/YYYY-MM-DD-<name>/`），直到未归档终态数量降至阈值以内。
 - 每条归档成功后同步迁出该 SPEC 的 STATE.md 条目至归档清单 `.fenix/STATE.archive.md`（`archived_by=auto`）；迁出失败降级为告警，条目留待存量回填下一轮迁出；已迁出条目在后续轮次不再计入阈值统计。
 - 阈值为 0 时跳过检查，不做任何归档迁出；未配置时按缺省 50 生效。存量回填不受该开关约束（先回填后阈值归档）。
 - 非终态（如 implementing）与已归档条目不计入阈值统计。

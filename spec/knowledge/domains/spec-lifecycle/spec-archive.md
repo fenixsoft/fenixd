@@ -6,7 +6,6 @@
 
 ## 规则
 
-- `bin/fenix_archive.py <name>` 将 `spec/changes/<name>/` 移动到 `spec/archive/YYYY-MM-DD-<name>`（YYYY-MM-DD 为当天日期），输出 JSON 含 `ok` 与移动前后路径。
 - 目录移动成功后，若 STATE.md 存在该 change 条目则迁出至归档清单 `.fenix/STATE.archive.md`（`archived_by=cli`，含 `archived_at` 溯源）；迁出失败降级为输出中的告警字段，目录移动不回滚。STATE.md 无条目（如手工创建目录的 change）仍可归档，输出含迁出未找到的说明性信息，不报错。
 - 目标归档目录已存在时返回错误并提示改名或换日期，不得覆盖（原目录与 STATE.md 条目均不变）；对 `spec/changes/` 下不存在的名称返回错误并提示该 change 不存在。
 - `fenix-archive` skill：列出 `spec/changes/` 下未归档的 change，由用户选择后调用 `bin/fenix_archive.py <name>` 执行归档并展示结果（归档路径与条目迁出结果）。

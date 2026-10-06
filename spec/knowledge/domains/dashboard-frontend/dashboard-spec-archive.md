@@ -5,7 +5,6 @@ SPEC 的界面归档操作与已归档视图：归档 API 语义、archived 双�
 
 ## 规则
 
-- 归档 API 后端语义：`POST /api/spec-archive?project=<name>&spec=<name>` 将 `spec/changes/<name>/` 目录移动到 `spec/archive/YYYY-MM-DD-<name>/`（与 `bin/fenix_archive.py` 同一命名规则）；仅终态可归档（非终态拒绝），目标归档路径已存在返回错误且不覆盖，不存在的 spec 返回 404 语义错误；归档成功后发出项目活动事件（供活动页/概览展示）。
 - 归档成功即迁出：目录移动成功后该 SPEC 的 STATE.md 条目迁出至归档清单 `.fenix/STATE.archive.md`（`archived_by=ui`）；迁出失败降级为响应中的告警字段，不回滚目录移动，条目保留在 STATE.md 等待存量回填下一轮迁出。
 - 归档判定双源合取：`GET /api/specs` 为每个 SPEC 返回 `archived` 布尔——活跃目录 `spec/changes/<name>/` 不存在，且（活跃 STATE.md 或归档清单）有该条目，即判定已归档（与归档由界面、CLI skill、daemon 自动归档还是手动移动产生无关）；条目已迁出（仅清单有）的 SPEC 继续返回且 archived=true；活跃 STATE.md 与清单均无条目的名称（软删除残留）不返回。
 - 归档确认与反馈：归档操作先弹确认框（说明 SPEC 将移入归档目录、可随时在「已归档」视图查看）；成功则提示并刷新列表（该 SPEC 从未归档视图消失、已归档视图可见），失败展示错误原因；取消无任何副作用。
