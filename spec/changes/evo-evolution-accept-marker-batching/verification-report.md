@@ -31,3 +31,10 @@
 | ingest-batch-path-unchanged-regression | ingest 批量路径语义不变（Out-of-Scope 保护）：既有 ingest 侧批末合并提交回归用例（test_ingest_batch_defers_commit_to_orchestrator / test_ingest_pending_batch_defers_commit）仍全部通过 | pass | 0/4 | - |
 | todo-marker-commit-test-suite-green | 回归套件全绿：tests/test_evolution_todo_marker_commit.py 全文件 pytest 运行通过，覆盖新用例（auto_accept 批次恰一枚提交 / defer 开关 / 手动单条即时提交）与既有用例共存无回归 | pass | 0/5 | - |
 | commit-todo-marker-edge-returns-false | commit_todo_marker 边界返回值：无未提交改动时良性 no-op 返回 False，项目参数缺失与项目名解析失败（未注册名）时返回 False 且不抛错 | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+
