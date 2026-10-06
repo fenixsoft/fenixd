@@ -37,3 +37,10 @@
 | stray-untrack-remediation-test-suite | 交付物测试套件（tasks 3.2）：新建 tests/test_stray_untrack_remediation.py（临时仓库端到端：seed 生成物→执行选项→脱离索引/.gitignore 增行且重复执行不重复写/独立提交/结果含清单与提交号；复发计数：同文件两次告警后 evidence 含「已 2 度处置」）全绿——-v 输出含 passed 汇总且退出码 0 | pass | 0/2 | - |
 | commit-stray-wip-regression | 回归点：新增 untrack 选项后既有 commit_stray_wip 一键提交路径不回归（evo-add-commit-stray-wip-choice 既有行为）——清单内散件正常提交、工作区收敛干净、结果附提交 hash | pass | 0/3 | - |
 | untrack-closes-recurrence-loop | 根治闭环回归点（spec.md Scenario 1 尾句「此后该文件改动不再产生 maintree 散件告警」）：真实盘点流全链路——sweep（宽限 0）发射告警→untrack 根治→同文件再改动→复扫 clean、信号记录数不增：检测面零改动下由 untrack+.gitignore 自然止损（tasks 1.2+2.1；锚 core/worktree_manager/stray_wip.py:195-224 sweep、:270-374 tracked 流） | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 1 轮）。
+
+- 首轮写入 14 个场景
+
