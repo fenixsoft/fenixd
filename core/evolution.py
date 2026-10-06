@@ -929,13 +929,17 @@ def write_todo_marker(
     return outcome["ok"]
 
 
-def _commit_todo_marker(proot) -> bool:
+def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
     """对项目 ``.fenix/todo.md`` 的标记改动就地 add + commit + push（ADR-060）。
 
     命令形态与 ``self_review._commit_todo`` 一致（``git add -- .fenix/todo.md``
     与同样带 pathspec 限定的 ``git commit -- .fenix/todo.md``）：commit 不带
     pathspec 会把索引里并发暂存的其他内容（merge-back、交付物守卫等自动化
     产物）卷进本提交并随 push 外泄。git 子命令各 30s 超时。
+
+    ``message_suffix``：非空时作为提交消息正文附在固定主题行之后（空行分隔，
+    主题行保持不变）——批末合并提交用其携带本批条目 id 明细（design D3），
+    使合并提交的 git 历史仍可对账到逐条条目。
 
     - todo.md 未被 git 跟踪（含 ls-files 非零退出——目录非 git 仓库）→ 跳过
       提交，行为与不提交时一致，不报错；
@@ -981,6 +985,8 @@ def _commit_todo_marker(proot) -> bool:
         )
         return False
     msg = f"[fenix] evolution: 自进化标记回写 {timelib.now_local().strftime('%Y-%m-%d')}"
+    if message_suffix:
+        msg = f"{msg}\n\n{message_suffix}"
     try:
         commit = subprocess.run(
             git + ["commit", "-m", msg, "--", todo_rel],
@@ -1018,13 +1024,15 @@ def _commit_todo_marker(proot) -> bool:
     return True
 
 
-def commit_todo_marker(project_path=None, project_name=None) -> bool:
+def commit_todo_marker(project_path=None, project_name=None, message_suffix=None) -> bool:
     """按项目触发一次 todo.md 标记合并提交（编排层批末入口）。
 
     ingest_item 批量路径的标记回写不逐条 commit（避免提交风暴），由编排层在
     一轮 ingest 循环结束后对本轮涉及的每个项目各调用一次本函数合并提交；
-    单点写路径（accept / reject / delete）经 ``write_todo_marker`` 的缺省
-    提交开关即时提交，不走本入口。
+    自动接受批路径（``auto_accept_pending``）逐条 defer 后同样经本入口对本
+    项目合并提交一次，``message_suffix`` 携带本批条目 id 明细。仅 dashboard
+    手动单条接受与单点写路径（reject / delete）经 ``write_todo_marker`` 的
+    缺省提交开关即时提交，不走本入口。
 
     ``project_path`` 与 ``project_name`` 均未提供、或名称经 registry 解析
     失败时返回 False。提交失败降级日志，不向调用方抛错。
@@ -1037,7 +1045,7 @@ def commit_todo_marker(project_path=None, project_name=None) -> bool:
         _logger.warning("evolution: todo.md 批量提交跳过——项目路径未解析: %s", project_name)
         return False
     try:
-        return _commit_todo_marker(proot)
+        return _commit_todo_marker(proot, message_suffix=message_suffix)
     except Exception as e:  # noqa: BLE001 —— 提交失败不向调用方抛错
         _logger.warning("evolution: todo.md 提交异常（已跳过，写入不回滚）: %s", e)
         return False
@@ -1529,8 +1537,15 @@ def accept_item(
     state_machine,
     decided_by: str = "manual",
     start_after: Optional[str] = None,
+    defer_commit: bool = False,
 ) -> dict:
     """接受路径（人工同意与自动接受共用实现，design D6；3.5）。
+
+    ``defer_commit``：置真时接受成功的标记回写不触发 git 提交（
+    ``write_todo_marker`` 以 ``commit=False`` 落写），由批循环消费方在批末
+    对本项目调 ``commit_todo_marker`` 合并提交一次（evo-evolution-accept-
+    marker-batching design D2，当前唯一消费方 ``auto_accept_pending``）；
+    缺省 False 保持「写后即提交」（dashboard 手动单条路径语义不变）。
 
     顺序固定：前置状态校验 → resolve_spec_name → 复制到 spec/changes →
     仅 add 该目录并提交 → add_spec(drafted, priority=5[, start_after]) →
@@ -1790,7 +1805,11 @@ def accept_item(
         rec["spec_name"] = name
         rec.pop("residue", None)  # 立项成功复位残留标记（code-review item afe111a45d02）
         _persist(rec)
-        write_todo_marker(rec, disposition=_disposition_from_status(rec["status"]))
+        write_todo_marker(
+            rec,
+            disposition=_disposition_from_status(rec["status"]),
+            commit=not defer_commit,
+        )
         return {"ok": True, "status": rec["status"], "spec_name": name, "error": None}
 
     return _with_lock(path, _do)
@@ -2111,6 +2130,13 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     逐条独立捕获异常：单条失败置 ``accept_failed`` 并写告警，不影响其余。
     MUST NOT 触碰 ``analyzed`` / ``draft_failed`` / 已决定条目。
 
+    批末合并提交（evo-evolution-accept-marker-batching design D1/D3）：逐条
+    接受以 ``defer_commit=True`` 关闭标记回写的即时提交，循环结束后对本项目
+    调一次 ``commit_todo_marker`` 合并提交，消息附本批接受条目的 id 明细。
+    生产者-scoped 收集（只合并本循环自己的写入），不做文件级时间窗去抖——
+    ``.fenix/todo.md`` 另有 self_review 生产者，时间窗会把对方滞留改动卷进
+    错误消息的提交。
+
     ``spec_run_at``：``self_evolution.spec_run_at`` 配置原值（"HH:mm" 或 None），
     经 ``next_spec_run_at`` 换算为 UTC ISO 的 ``start_after``。同一批条目共用
     一次换算结果——它们是同一次巡检同时立项的，排到同一时刻才对得上「每日该
@@ -2122,10 +2148,16 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     pending = [rec for rec in items.values() if rec.get("status") == "pending"]
     start_after = next_spec_run_at(spec_run_at)
     summary = {"total": len(pending), "accepted": 0, "failed": 0, "details": []}
+    accepted_ids: List[str] = []
     for rec in pending:
         try:
             result = accept_item(
-                rec["id"], project_root, state_machine, decided_by="auto", start_after=start_after
+                rec["id"],
+                project_root,
+                state_machine,
+                decided_by="auto",
+                start_after=start_after,
+                defer_commit=True,
             )
         except Exception as e:
             _logger.error("evolution: 自动接受条目 %s 异常: %s", rec["id"], e)
@@ -2135,6 +2167,10 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
             continue
         if result.get("ok"):
             summary["accepted"] += 1
+            # 只有本循环内真正走完立项成功分支的条目写了标记（幂等返回的
+            # 现状条目不写），明细只收这些 id
+            if result.get("status") == "auto_accepted":
+                accepted_ids.append(rec["id"])
         else:
             summary["failed"] += 1
         summary["details"].append(
@@ -2145,6 +2181,12 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
                 "spec_name": result.get("spec_name"),
                 "error": result.get("error"),
             }
+        )
+    if accepted_ids:
+        detail = "\n".join(f"- {eid}" for eid in accepted_ids)
+        commit_todo_marker(
+            project_path=project_root,
+            message_suffix=f"接受条目（{len(accepted_ids)} 条）:\n{detail}",
         )
     return summary
 
