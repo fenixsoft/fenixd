@@ -182,10 +182,12 @@ class TestSweepLifecycle(unittest.TestCase):
 
         # evo-add-commit-stray-wip-choice 3.3：记录附 choices 快照（发射点
         # 快照，注册表缺键回退不适用于本桶）、recommended_action 带出选项 id
+        # evo-recurring-stray-remediation 1.1：桶内追加 untrack_stray_wip 根治项
         choices = rec.get("choices")
         self.assertIsInstance(choices, list)
         self.assertEqual(
-            [c.get("id") for c in choices], ["commit_stray_wip"],
+            [c.get("id") for c in choices],
+            ["commit_stray_wip", "untrack_stray_wip"],
         )
         self.assertFalse(choices[0]["spec_scoped"])
         self.assertIn("commit_stray_wip", rec.get("recommended_action") or "")

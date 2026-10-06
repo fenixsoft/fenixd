@@ -2238,11 +2238,13 @@ class TestRunAdministrator:
 
         assert len(prompts) == 1
         prompt = prompts[0]
-        # 中途持久化 + 最终写入两处都指向实例路径；旧全局路径不再出现
-        assert prompt.count(".fenix/admin_disposition-") == 2
+        # 实例路径贯穿全部写入指引（≥2：中途持久化 + 最终写入是下限；铁律区
+        # 演进会增补 {disp_path} 槽位——5abb0254 铁律 7/9 后模板共 4 处，逐字
+        # 计数断言会随模板措辞漂移）；旧全局路径不再出现才是本意。
+        assert prompt.count(".fenix/admin_disposition-") >= 2
         assert "admin_disposition.json" not in prompt
         injected = admin_disposition_path(proot, disp.run_id).name
-        assert prompt.count(injected) == 2
+        assert prompt.count(injected) >= 2
         # runner 读到的是写入自身实例文件的结果
         assert disp.result == "resolved"
         assert disp.problem == "注入链路"

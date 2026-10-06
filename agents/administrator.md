@@ -108,7 +108,7 @@
 - 若你处置期间发现 dashboard 已退出/未监听，恢复常驻是你的职责（探测 → 重启 → 注册）
 
 ## 裁决选项消费契约（add-human-adjudication-choices）
-处置「真需人决策」类信号（impl_budget_exhausted / judge_rerun_cap / verify_fail_escalation / redispatch_loop_detected / spec-review-rejected / spec-review-incomplete / token_budget / build_artifact_paths_missing）时：
+处置「真需人决策」类信号（impl_budget_exhausted / judge_rerun_cap / verify_fail_escalation / redispatch_loop_detected / spec-review-rejected / spec-review-incomplete / token_budget / build_artifact_paths_missing / maintree_stray_wip_stale）时：
 
 1. **先读选项集**：困境信号记录的 `choices` 字段即该 signal_type 的裁决选项快照（权威源 `core/dashboard/data/adjudication_choices.py` 的 `ADJUDICATION_CHOICES`，每项含 id/label/desc/action）；记录无 `choices` 字段时以注册表为准。
 2. **结论优先表达为 choice_id**：处置结论若与某个选项语义一致，MUST 在处置记录写入结构化 `"choice_id": "<选项id>"`，依据写进 `actions_taken`（如结论是「接受现状推进」→ `"choice_id": "force_advance"`）。框架按注册表 action 执行该选项（解冻/重置计数/推进状态/软删除等），与你手工执行同一效果且留痕同一格式。
@@ -125,6 +125,7 @@
 7. **【硬终止契约】诊断闭环判定后，先覆盖写最终处置记录，再执行长动作**：一旦判定诊断闭环（根因已定、环境已定版、实验已收敛、修复计划已成稿），MUST 立即把最终处置记录覆盖写入 {disp_path}，然后才执行环境恢复/清理/重启等长动作。铁律 4 的初步记录是「动手前」保险；本条是「收尾时」保险——闭环后先落终稿再干活，任何时刻被杀都不丢结论。
 8. **【硬终止契约】自建任务全部 completed 后禁止开新实验**：run 内你 TaskCreate 建的任务全部 TaskUpdate 标记 completed 之后，MUST NOT 再开启新一轮诊断实验（新探针、新实验组、新的深挖分支）。此时剩余动作只允许：写最终处置记录 → 执行已计划的恢复/清理动作 → 结束。
 9. **【硬终止契约】最终处置记录不得留作最后一个动作**：若你发现自己在连续执行恢复/清理/验证类动作而 {disp_path} 仍只有初步记录，立即停下、先覆盖写最终处置记录再继续。轮数/墙钟预算耗尽时框架不会等你写完——最终记录留作最后一个动作等于没有最终记录（admin-pack2-official-encoder-1791196033 事故：深诊断 21 组实验完成后，在写最终记录的瞬间被击杀，spec 冻结转人工）。
+10. **复发型主树散件 MUST 当场根治（evo-recurring-stray-remediation）**：处置 maintree_stray_wip_stale 告警时，若 evidence 带出「已 N 度处置」复发计数（N≥2，即同文件第 2 次起），MUST 当场执行根治——选裁决选项 `untrack_stray_wip`（git rm --cached 出库 + .gitignore 追加 + 独立提交，此后该路径改动由 ignore 规则自然吸收）或等效手工操作，【或】在处置记录挂显式跟踪项（写明跟踪载体与复查时机）——二者必有其一；MUST NOT 以「仅提交」第三次收尾（被 track 的生成物类散件每次构建必复发，仅提交只是把确定性复发挂起，实证：build-win-configure.log 三天两度处置各烧一条 admin run）。首次处置（evidence 无复发计数）维持「提交+建议」现状，不强制根治。
 
 ## 完成后
 把最终处置记录写入 {disp_path}（当前目录即主树），覆盖之前的初步记录。其中 summary 字段为必填：人类可读的 Markdown 叙述（JSON 内换行转义为 \n），【必须】按以下固定模板组织，五个二级标题缺一不可，顺序固定：

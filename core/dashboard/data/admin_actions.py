@@ -2762,6 +2762,29 @@ def _git_status_paths(project_root) -> set:
     return paths
 
 
+def _latest_stray_wip_manifest(project_root, signal_type: str) -> list:
+    """store 内最新一条含可解析清单的 signal_type SIGNAL 记录 → 文件清单。
+
+    strays 执行器（commit/untrack）共用的清单单源：read_all 倒序返回，取
+    最新可解析记录；无匹配记录 / store 不可读 → 空列表（调用方按「无清单
+    不执行 git 写」处置）。
+    """
+    from core.admin_store import SIGNAL, AdminStore
+
+    try:
+        records = AdminStore(Path(project_root), logger=None).read_all()
+    except Exception:
+        return []
+    for rec in records:
+        if (rec.get("kind") != SIGNAL
+                or rec.get("signal_type") != signal_type):
+            continue
+        manifest = parse_stray_wip_manifest(rec.get("evidence"))
+        if manifest:
+            return manifest
+    return []
+
+
 def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                            paths=None) -> dict:
     """commit_stray_wip：提交主树信号清单内的散件 WIP（全局信号专用）。
@@ -2796,20 +2819,8 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         }
 
     proot = Path(project_root)
-    # 清单单源：信号记录 evidence 清单段（拒任意路径）。read_all 倒序返回，
-    # 取最新可解析记录。
-    manifest: list = []
-    try:
-        records = AdminStore(proot, logger=None).read_all()
-    except Exception:
-        records = []
-    for rec in records:
-        if (rec.get("kind") != SIGNAL
-                or rec.get("signal_type") != COMMIT_STRAY_WIP_SIGNAL_TYPE):
-            continue
-        manifest = parse_stray_wip_manifest(rec.get("evidence"))
-        if manifest:
-            break
+    # 清单单源：信号记录 evidence 清单段（拒任意路径）。
+    manifest = _latest_stray_wip_manifest(proot, COMMIT_STRAY_WIP_SIGNAL_TYPE)
     if not manifest:
         return {
             "ok": False, "steps": [],
@@ -2873,6 +2884,247 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         "ok": True, "steps": steps, "error": None,
         "commit_hash": commit_hash,
         "committed_files": to_commit,
+    }
+
+
+# ── 主树复发型散件根治 untrack（evo-recurring-stray-remediation 1.2）──────
+
+# signal_type 绑定守卫单源：与 commit_stray_wip 同一信号（design D4 同款
+# 收口逻辑——resolve_choice 非作用域全表反查通道对本动作同样可达，执行器
+# MUST 校验 signal_type 后才落 git 写）。
+UNTRACK_STRAY_WIP_SIGNAL_TYPE = COMMIT_STRAY_WIP_SIGNAL_TYPE
+
+
+def _path_already_ignored(proot, path: str) -> bool:
+    """path 是否已被既有 ignore 规则覆盖（check-ignore --no-index 口径）。
+
+    tracked 文件的普通 check-ignore 恒为非忽略（误报，stash_guard 同款教训），
+    ``--no-index`` 只按 ignore 规则判定。git 不可用/超时按「未忽略」处理
+    （保守追加，去重由字面行比对兜底）。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(proot), "check-ignore", "--no-index", "-q", "--", path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return r.returncode == 0
+
+
+def _append_gitignore_entries(proot, paths) -> list:
+    """把 paths 逐条追加进 .gitignore（去重），返回实际新增条目列表。
+
+    去重双重口径：条目字面行已在 .gitignore → 不重复写（幂等重入不增行）；
+    ``check-ignore --no-index`` 判定已被既有规则覆盖（如通配 ``*.log``）→
+    追加亦冗余，不写。.gitignore 不存在则新建。
+    """
+    gi = Path(proot) / ".gitignore"
+    existing = gi.read_text(encoding="utf-8", errors="replace") if gi.exists() else ""
+    have_lines = {ln.strip() for ln in existing.splitlines()}
+    appended: list = []
+    for p in paths:
+        if p in have_lines or _path_already_ignored(proot, p):
+            continue
+        appended.append(p)
+        have_lines.add(p)
+    if appended:
+        sep = "" if (not existing or existing.endswith("\n")) else "\n"
+        gi.write_text(existing + sep + "\n".join(appended) + "\n", encoding="utf-8")
+    return appended
+
+
+def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
+                            paths=None) -> dict:
+    """untrack_stray_wip：主树复发型散件当场根治（git rm --cached + .gitignore）。
+
+    对告警指认文件清单执行出库 + ignore 规则追加 + 独立提交（design D4：
+    untrack 与 .gitignore 追加原子成一批独立提交，不与处置中其他改动混合，
+    可整体 revert 回滚）。约束：
+
+    - signal_type 绑定守卫（design D4，同 _exec_commit_stray_wip）：仅
+      maintree_stray_wip_stale 可触达，其余一律拒绝、零 git 写；
+    - 文件来源 MUST 限信号记录 evidence「文件清单(N):」段（拒任意路径）；
+      与当刻 git status 与索引求交——已不在 status 的跳过（清单陈旧）；仍在
+      status 但已脱离索引的视为已根治过，跳过不报错（幂等重入）；可执行
+      集合为空返回明确 error、不产生空提交；
+    - 复用 stash_guard staged 子集守卫/回滚骨架：rm 循环 → staged 子集守卫
+      （口径与 ``_untrack_index_paths`` 一致，额外放行 .gitignore——根治
+      提交的另一半；staged 名单同源反转义）→ 裸 commit；回滚段复用
+      ``G6StashGuardMixin._reset_index_paths``（经 _UntrackGuardProbe 最小
+      宿主），追加的 .gitignore 一并还原（暂存态 reset + 文件内容恢复），
+      任何中止分支不残留半程改动。不打开 stash_guard「check-ignore 全须
+      忽略」前置门（design D1）。不能用 ``commit -- <paths>`` 限定：路径已
+      被 rm --cached 移出 index，pathspec 解析必 fatal（stash_guard 同款
+      教训），故裸 commit + staged 子集守卫。
+
+    paths 仅供程序化调用方显式收窄作用面（MUST 为清单子集，清单外拒绝，
+    零 git 写）；缺省取 store 内最新一条含可解析清单的 maintree_stray_wip_stale
+    SIGNAL 记录（execute_adjudication_choice 契约不携带告警 id，同
+    commit 执行器按记录自取）。结果记录 untrack 文件清单（untracked_files）、
+    .gitignore 实际新增条目（gitignore_appended）与提交号（commit_hash）。
+    """
+    # D4 绑定守卫：在任何 git 读/写之前 fail-closed。
+    sig = str(signal_type or "").strip()
+    if sig != UNTRACK_STRAY_WIP_SIGNAL_TYPE:
+        return {
+            "ok": False, "steps": [],
+            "error": (f"signal_type '{sig or '缺失'}' 不可执行 untrack_stray_wip"
+                      f"（仅限 {UNTRACK_STRAY_WIP_SIGNAL_TYPE}；git 写暴露面"
+                      f"收口到本信号，design D4）"),
+        }
+
+    proot = Path(project_root)
+    # 清单单源：信号记录 evidence 清单段（拒任意路径）。
+    manifest = _latest_stray_wip_manifest(proot, UNTRACK_STRAY_WIP_SIGNAL_TYPE)
+    if not manifest:
+        return {
+            "ok": False, "steps": [],
+            "error": ("未找到含可解析文件清单的 maintree_stray_wip_stale 信号"
+                      "记录（清单解析自记录 evidence「文件清单(N):」段），"
+                      "不执行 git 写"),
+        }
+
+    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）。
+    if paths is not None:
+        requested = [str(p).strip() for p in paths if str(p).strip()]
+        outside = [p for p in requested if p not in manifest]
+        if outside:
+            return {
+                "ok": False, "steps": [],
+                "error": ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
+                          f"design D2）：{', '.join(outside)}；"
+                          f"信号清单({len(manifest)}): {', '.join(manifest)}"),
+            }
+        candidates = requested
+    else:
+        candidates = list(manifest)
+
+    # 与当刻 git status / 索引求交：三态分流。
+    try:
+        dirty = _git_status_paths(proot)
+        indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
+    except RuntimeError as e:
+        return {"ok": False, "steps": [], "error": f"读取 git 状态失败: {e}"}
+    to_untrack = [p for p in candidates if p in dirty and p in indexed]
+    skipped_stale = [p for p in candidates if p not in dirty]
+    already_untracked = [p for p in candidates if p in dirty and p not in indexed]
+    if not to_untrack:
+        return {
+            "ok": False, "steps": [],
+            "error": ("信号清单内文件均已不在 git 索引（已根治过或已删除），"
+                      f"无需重复执行 untrack；清单({len(manifest)}): "
+                      f"{', '.join(manifest)}"),
+        }
+
+    gi_path = proot / ".gitignore"
+    gi_backup = gi_path.read_bytes() if gi_path.exists() else None
+
+    # 复用 stash_guard 回滚子函数的最小宿主（code_fix._main_tree_dirty_files
+    # 的 ``_Probe(G6StashGuardMixin)`` 先例：完整 WorktreeManager 装配是死重；
+    # 函数级 import 规避装载环）。不打开 stash_guard「check-ignore 全须忽略」
+    # 前置门（design D1：目标生成物文件本就不被 ignore，独立执行器作用面
+    # 限告警指认清单，误伤面最小）。
+    from core.worktree_manager.stash_guard import G6StashGuardMixin
+    from core.worktree_manager.mergeback import _unquote_git_path
+
+    class _StashGuardTagLogger:
+        """标准 logging → stash_guard ``(tag, msg)`` 双参口径适配。
+
+        stash_guard 自愈骨架以 ``self.logger.warning("worktree_manager", msg)``
+        双参口径写日志（Fenix 项目 logger 形态）；本模块 logger 是标准
+        logging，直传会把 msg 当 % 参数——适配器折回单参格式化。
+        """
+
+        def __init__(self, base):
+            self._base = base
+
+        def warning(self, tag, msg):
+            self._base.warning("%s: %s", tag, msg)
+
+    class _UntrackGuardProbe(G6StashGuardMixin):
+        """仅承载 project_root/logger 的守卫探针壳（回滚子函数宿主）。"""
+
+        def __init__(self, pr, base_logger):
+            self.project_root = Path(pr)
+            self.logger = _StashGuardTagLogger(base_logger)
+
+    probe = _UntrackGuardProbe(proot, logger)
+    processed: list = []   # 已成功 rm --cached 的路径（中止按此回滚索引态）
+    appended: list = []    # 已写入 .gitignore 的条目（中止一并还原）
+
+    def _abort(reason: str) -> dict:
+        rollback = list(processed)
+        if appended:
+            rollback.append(".gitignore")
+        # 回滚段复用 stash_guard 骨架（_reset_index_paths：只重置索引不动
+        # 工作区；尽力而为，失败仅记 warning 不掩盖原始原因）。
+        probe._reset_index_paths(rollback)
+        if appended:
+            if gi_backup is None:
+                gi_path.unlink(missing_ok=True)
+            else:
+                gi_path.write_bytes(gi_backup)
+        return {"ok": False, "steps": [],
+                "error": f"untrack 根治中止已回滚（主树状态已还原）: {reason}"}
+
+    try:
+        for path in to_untrack:
+            _git_out(proot, "rm", "-f", "--cached", "--", path)
+            processed.append(path)
+        appended = _append_gitignore_entries(proot, to_untrack)
+        if appended:
+            _git_out(proot, "add", "--", ".gitignore")
+        # staged 子集守卫（stash_guard._untrack_index_paths 同口径）：裸
+        # commit 会把索引里其它 staged 条目连带入库，校验暂存集 ⊆ 本次
+        # untrack 路径 ∪ {.gitignore}，越界先回滚再放弃。名单反转义：diff
+        # --cached 对非 ASCII 路径默认输出 C-quoted 转义形。
+        staged_out = _git_out(proot, "diff", "--cached", "--name-only", "HEAD")
+        staged_set = {_unquote_git_path(ln) for ln in staged_out.splitlines()}
+        allowed = set(to_untrack) | ({".gitignore"} if appended else set())
+        if not staged_set <= allowed:
+            return _abort(
+                "索引存在本次作用面之外的暂存条目: "
+                f"{sorted(staged_set - allowed)}"
+            )
+        msg = (f"[fenix] admin: 根治主树复发型散件"
+               f"（untrack_stray_wip 出库 {len(to_untrack)} 文件）")
+        if note:
+            msg += f"\n\n裁决依据：{note}"
+        _git_out(proot, "commit", "-m", msg)
+        commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return _abort(f"git 执行异常: {e}")
+    except RuntimeError as e:
+        return _abort(str(e))
+
+    steps = [
+        f"untrack 出库 {len(to_untrack)} 个文件（信号清单∩当刻改动∩索引）："
+        f"{', '.join(to_untrack)}",
+    ]
+    if appended:
+        steps.append(f".gitignore 追加 {len(appended)} 条（去重后实际新增）: "
+                     f"{', '.join(appended)}")
+    else:
+        steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
+    steps.append(f"提交 hash: {commit_hash}")
+    if skipped_stale:
+        steps.append(
+            f"清单内已不在当刻改动、跳过 {len(skipped_stale)} 个: "
+            f"{', '.join(skipped_stale)}"
+        )
+    if already_untracked:
+        steps.append(
+            f"清单内已脱离索引（已根治过）、跳过 {len(already_untracked)} 个: "
+            f"{', '.join(already_untracked)}"
+        )
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {
+        "ok": True, "steps": steps, "error": None,
+        "commit_hash": commit_hash,
+        "untracked_files": to_untrack,
+        "gitignore_appended": appended,
     }
 
 
@@ -2990,6 +3242,11 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             # design D4——resolve_choice 非作用域全表反查通道对未注册信号
             # 可达本动作，执行器收口后任意其它 signal_type 零 git 写）。
             r = _exec_commit_stray_wip(project_root, note, signal_type)
+        elif action == "untrack_stray_wip":
+            # evo-recurring-stray-remediation 1.2：复发型主树散件当场根治
+            # （第二个主树 git 写动作；signal_type 绑定守卫同款在执行器内
+            # fail-closed，design D4 收口逻辑一致）。
+            r = _exec_untrack_stray_wip(project_root, note, signal_type)
         else:
             r = {"ok": False, "steps": [],
                  "error": f"注册表 action '{action}' 无执行器映射"}

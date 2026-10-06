@@ -107,6 +107,25 @@ _COMMIT_STRAY_WIP = {
     "spec_scoped": False,
 }
 
+# evo-recurring-stray-remediation 1.1：主树散件的当场根治动作。被 track 的
+# 生成物类散件（build 日志等）每次构建必然重新出现，「仅提交」只是把确定性
+# 复发挂起（potplayer-base build-win-configure.log 三天两度处置实证）；
+# untrack 断根：git rm --cached 出库 + .gitignore 追加（去重）+ 独立提交，
+# 此后该路径改动由 ignore 规则自然吸收、不再产生散件告警。与 _COMMIT_STRAY_WIP
+# 并存不互斥（提交留基线、untrack 断根，由处置者按复发形态选择）。
+# spec_scoped=False + 执行端 signal_type 绑定守卫双保险，沿 _COMMIT_STRAY_WIP
+# 同款先例（design D4：resolve_choice 非作用域全表反查通道对本动作同样可达，
+# git 写暴露面由执行器收口到 maintree_stray_wip_stale）。
+_UNTRACK_STRAY_WIP = {
+    "id": "untrack_stray_wip",
+    "label": "根治·散件出库",
+    "desc": "复发型散件当场断根：对信号清单内文件执行 git rm --cached 出库、"
+            ".gitignore 追加条目（已存在则不重复写）并以独立提交落地"
+            "（结果附 untrack 清单与提交 hash；全局信号可执行）",
+    "action": "untrack_stray_wip",
+    "spec_scoped": False,
+}
+
 _ADJUDICATION_REGISTRY: dict = {
     # ── 验证循环耗尽族 ────────────────────────────────────────────
     "impl_budget_exhausted": (
@@ -291,6 +310,7 @@ _ADJUDICATION_REGISTRY: dict = {
     # 四度同型裁决全部 choice_id=None 自由处置，登记一次即塌缩复发裁决代价。
     "maintree_stray_wip_stale": (
         _COMMIT_STRAY_WIP,
+        _UNTRACK_STRAY_WIP,
     ),
 }
 

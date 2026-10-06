@@ -48,7 +48,8 @@ _EXPECTED_CHOICE_IDS = {
     "inconclusive_loop": {"grant_env_exemption", "revise_scenario_reverify",
                           "manual_fixed_reverify", "abandon"},
     # evo-add-commit-stray-wip-choice 1.1：主树散件 WIP 提交（全局信号桶）
-    "maintree_stray_wip_stale": {"commit_stray_wip"},
+    # evo-recurring-stray-remediation 1.1：追加复发型散件当场根治 untrack 选项
+    "maintree_stray_wip_stale": {"commit_stray_wip", "untrack_stray_wip"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -144,6 +145,7 @@ class TestRegistry:
         assert nonscoped == {
             "ignore", "raise_budget", "open_config",
             "declare_no_artifacts", "ack_self_heal", "commit_stray_wip",
+            "untrack_stray_wip",
         }
 
     def test_unregistered_returns_empty_tuple(self):
@@ -167,7 +169,10 @@ class TestStrayWipCommitChoice:
     def test_choice_shape_and_semantics(self):
         """四字段齐备 + spec_scoped=False 硬约束（design D1：全局信号
         spec 恒 None，spec_scoped 动作会被全局信号守卫拒、永远执行不了）。"""
-        (choice,) = choices_for("maintree_stray_wip_stale")
+        choice = next(
+            c for c in choices_for("maintree_stray_wip_stale")
+            if c["id"] == "commit_stray_wip"
+        )
         assert choice["id"] == "commit_stray_wip"
         assert choice["action"] == "commit_stray_wip"
         assert choice["label"].strip() and choice["desc"].strip()
@@ -198,6 +203,71 @@ class TestStrayWipCommitChoice:
         choice, reason = resolve_choice("commit_stray_wip", "maintree_untracked_stray_stale")
         assert reason == ""
         assert choice["action"] == "commit_stray_wip"
+
+
+class TestStrayWipUntrackChoice:
+    """evo-recurring-stray-remediation 3.1：maintree_stray_wip_stale 桶扩
+    untrack_stray_wip（复发型散件当场根治）。"""
+
+    def test_bucket_registered_and_adjudicable(self):
+        assert is_adjudicable("maintree_stray_wip_stale") is True
+        assert "untrack_stray_wip" in {c["id"] for c in choices_for("maintree_stray_wip_stale")}
+
+    def test_choice_shape_and_semantics(self):
+        """四字段齐备 + spec_scoped=False 硬约束（全局信号 spec 恒 None，
+        spec_scoped 动作会被全局信号守卫拒、永远执行不了）。"""
+        by_id = {c["id"]: c for c in choices_for("maintree_stray_wip_stale")}
+        choice = by_id["untrack_stray_wip"]
+        assert choice["action"] == "untrack_stray_wip"
+        assert choice["label"].strip() and choice["desc"].strip()
+        assert choice["spec_scoped"] is False
+        # 出库提交可整体 revert 回溯，非 destructive（不需要前端二次确认门）
+        assert choice.get("destructive", False) is False
+        # 语义：git rm --cached + .gitignore 根治
+        assert "rm --cached" in choice["desc"]
+        assert "gitignore" in choice["desc"]
+
+    def test_resolve_choice_in_bucket_exact_match(self):
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        choice, reason = resolve_choice("untrack_stray_wip", "maintree_stray_wip_stale")
+        assert reason == ""
+        assert choice is not None
+        assert choice["action"] == "untrack_stray_wip"
+        assert choice["spec_scoped"] is False
+
+    def test_coexists_with_commit_choice_without_conflict(self):
+        """与 _COMMIT_STRAY_WIP 并存不冲突：同桶两项、id/action 各自唯一、
+        提交与根治语义可区分（提交留基线 / untrack 断根）。"""
+        choices = choices_for("maintree_stray_wip_stale")
+        ids = [c["id"] for c in choices]
+        assert ids == ["commit_stray_wip", "untrack_stray_wip"]
+        actions = [c["action"] for c in choices]
+        assert len(set(actions)) == len(actions) == 2
+        commit_c = next(c for c in choices if c["id"] == "commit_stray_wip")
+        untrack_c = next(c for c in choices if c["id"] == "untrack_stray_wip")
+        assert commit_c["spec_scoped"] is False and untrack_c["spec_scoped"] is False
+
+    def test_signal_type_binding_guard_rejects_other_signals(self):
+        """非 maintree_stray_wip_stale 信号（姊妹 info 信号/未注册信号）拒绝
+        执行且零 git 写——resolve_choice 非作用域全表反查通道对任意未注册
+        信号可达本动作，git 写暴露面由执行器绑定守卫收口（design D4 同款）。
+        守卫在任何 git 读/写之前 fail-closed，非 git 目录即可断言零副作用。"""
+        import tempfile
+
+        from core.dashboard.data.admin_actions import execute_adjudication_choice
+
+        tmp = Path(tempfile.mkdtemp(prefix="untrack-guard-", dir=str(
+            Path(__file__).resolve().parent.parent / ".history" / "tmp"
+        )))
+        for st in ("maintree_untracked_stray_stale", "daemon_errors",
+                   "random_unregistered", ""):
+            r = execute_adjudication_choice(
+                str(tmp), None, "untrack_stray_wip", signal_type=st,
+            )
+            assert r["ok"] is False, f"signal_type={st!r} 应拒绝"
+            assert "仅限" in r["error"]
+            assert r["action"] == "untrack_stray_wip"
 
 
 # ── 2. 告警记录 choices 写入与无字段兼容 ─────────────────────────────────
