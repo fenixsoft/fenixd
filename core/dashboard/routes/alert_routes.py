@@ -476,11 +476,27 @@ class H6AlertRoutesMixin:
 
             # handled 标记：kind 差异约定（ESCALATION→mark_handled，
             # SIGNAL→mark_signal_handled 直接更新 handled 字段）
-            marked = (
-                store.mark_signal_handled(alert_id)
-                if alert.get("kind") == SIGNAL
-                else store.mark_handled(alert_id)
-            )
+            try:
+                marked = (
+                    store.mark_signal_handled(alert_id)
+                    if alert.get("kind") == SIGNAL
+                    else store.mark_handled(alert_id)
+                )
+            except Exception:
+                # mark 失败兜底（code-review item 07598f6d04ef）：此步做文件 IO +
+                # flock，异常裸逃会破坏端点结构化错误契约，且此时映射动作已执行
+                # 成功——客户端若按既有「可重试裁决」文案重试，会把 abandon/
+                # force_advance/raise_budget 等动作再执行一遍（per-alert 锁只防
+                # 并发 double-apply，防不了这种错误路径上的顺序重放）。返回结构化
+                # 错误并如实告知「动作已执行但 handled 标记未落盘」（对齐留痕失败
+                # 分支 896c7e54dafd 的如实告知口径），不外泄裸异常文本。
+                logger.exception("alert-resolve handled 标记写入异常 alert=%s", alert_id)
+                self._error(
+                    500,
+                    "动作已执行成功，但 handled 标记写入失败"
+                    "（告警仍显示未处理；请勿直接重试裁决，以免动作重复执行）",
+                )
+                return
 
             # 处置留痕：DISPOSITION 记录（choice_id/note/动作步骤摘要，
             # 对 dashboard admin 活动区可见，作为裁决审计轨迹）
