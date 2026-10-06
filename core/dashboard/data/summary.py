@@ -51,6 +51,7 @@ def daemon_health(project_root) -> str:
         # D8：经门面延迟解析（_facade 替换时 patch("core.dashboard.data._is_running") 生效）
         import core.dashboard.data as _facade
 
+        # [fenix-ignore:5d821006cf18] _is_running 是门面 D8 登记且被表征测试锁定的 patch 缝名（底层 core.fenix_session.is_running 本就公开），改公开名会使全部既有 patch 目标静默失效
         status = "running" if _facade._is_running(key) else "stopped"
     except Exception:
         status = "stopped"
@@ -210,8 +211,8 @@ def _cached_config_value(project_root, cache: dict, cache_max: int, parse):
     # 时缓存不失效、持续吐旧值。文件缺失时 _config_file_sig 恒返回 None，稳定。
     cache_key = (
         str(proot.resolve()),
-        _facade._config_file_sig(_facade.USER_CONFIG_PATH),
-        _facade._config_file_sig(proot / ".fenix" / "config.yaml"),
+        _facade.config_file_sig(_facade.USER_CONFIG_PATH),
+        _facade.config_file_sig(proot / ".fenix" / "config.yaml"),
     )
     cached = cache.get(cache_key)
     if cached is not None:

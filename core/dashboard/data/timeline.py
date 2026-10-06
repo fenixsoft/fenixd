@@ -704,3 +704,6 @@ def _cost_summary_from_timeline(timeline: list) -> dict:
 timeline_with_retry = _timeline_with_retry
 load_billing_config = _load_billing_config
 cost_summary_from_timeline = _cost_summary_from_timeline
+# 公开访问面（code-review item 19f8899fac87）：runs.py 跨组消费改用公开名，
+# 与 _parse_iso_ts 同一函数对象单源绑定。
+parse_iso_ts = _parse_iso_ts
