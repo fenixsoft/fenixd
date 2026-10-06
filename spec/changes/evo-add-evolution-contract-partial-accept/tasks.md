@@ -14,7 +14,7 @@
 ## 1. 校验宽口径（输出侧对齐输入侧）
 
 - [ ] 1.1 core/evolution.py：read_contract（:2159-2222）对单条目契约错误（section 越界等）改为收集 per-item 错误并跳过该条、合法条目照常返回（返回形态附错误清单或新增 lenient 参数，默认行为对既有调用方兼容）；全部条目非法仍整体抛 ContractError。
-- [ ] 1.2 core/agent_runner/maintenance_runs.py：:1052-1070 的 except ContractError 分支对齐 :1088-1105 既有 partial 语义——有合法条目即落库合法条目、run_ok=False、水位不推进（下检查点幂等补齐）；失败现场产物文件留档不再被 finally 清理删除。
+- [ ] 1.2 core/agent_runner/maintenance_runs.py：混合产物在宽口径 read_contract（1.1）下不再抛异常，落库侧走 ``contract is not None`` 常规分支、复用 :1109-1123 既有 partial 语义——有合法条目即落库合法条目、run_ok=False、水位不推进（下检查点幂等补齐）；:1048-1068 except ContractError 分支仅保留全非法与文件级错误；失败现场产物文件按 design D4 在 :1150-1159 finally 清理前改名 ``<原路径>.failed`` 留档，错误文案附留档路径。
 
 ## 2. 测试
 

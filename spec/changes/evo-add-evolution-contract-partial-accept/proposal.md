@@ -1,6 +1,6 @@
 ## Why
 
-自进化产物校验对单条目契约错误（小节名越界三值枚举等）是整份 raise ContractError 拒绝：合法条目陪葬、约 19 美元的 396 turns 白烧、下检查点全量重跑。输入侧读 todo.md 对未知小节是「跳过+WARNING」的宽口径（core/evolution.py:550-558），既有部分恢复语义也只覆盖「条目不足」（core/agent_runner/maintenance_runs.py:1088-1105 的 partial 分支）与流式截断 .parts（evo-add-evolution-product-salvage），单条非法恰无任何中间路径，失败现场产物文件还被清理删除。本次实际损失已由自动重试全额自愈（$27.36 重跑浪费、无材料缺席），但全量重跑浪费在每次枚举幻觉时必然复现。
+自进化产物校验对单条目契约错误（小节名越界三值枚举等）是整份 raise ContractError 拒绝：合法条目陪葬、约 19 美元的 396 turns 白烧、下检查点全量重跑。输入侧读 todo.md 对未知小节是「跳过+WARNING」的宽口径（core/evolution.py:550-558），既有部分恢复语义也只覆盖「条目不足」（core/agent_runner/maintenance_runs.py:1109-1123 的 partial 分支）与流式截断 .parts（evo-add-evolution-product-salvage），单条非法恰无任何中间路径，失败现场产物文件还被清理删除。本次实际损失已由自动重试全额自愈（$27.36 重跑浪费、无材料缺席），但全量重跑浪费在每次枚举幻觉时必然复现。
 
 ## What Changes
 
