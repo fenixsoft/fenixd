@@ -182,6 +182,8 @@ class MainTreeStrayWipSweeper:
                 ["git", "-C", str(self.project_root), *args],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -477,6 +479,8 @@ class MainTreeStrayWipSweeper:
                 input="\n".join(paths) + "\n",
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
