@@ -32,3 +32,10 @@
 | run-evolution-partial-accept-no-pending-still-partial | 部分接受与待分析条目数无关：pending_entries=None（expected 未知）时 2 条混合产物（1 条越界）仍按「有逐条契约错误即 partial」处理——合法 1 条落库、success=False、error 含「部分接受」「水位不推进」、.failed 留档含 2 条、watermarks 不变（出处 core/agent_runner/maintenance_runs.py:1078-1083 partial 判定 bool(item_errors) 短路分支）。环境依赖：无（stub _run_claude） | pass | 0/9 | - |
 | run-evolution-all-invalid-fail-closed-no-archive | run 级全非法仍 fail-closed 且不扩大留档面：run_evolution 消费 2 条全非法产物 → success=False、items_ingested=0、error 含「全部 2 条条目契约非法」「整份拒绝」、无 .failed 留档、无 items.jsonl、原产物按既有清理删除、watermarks 不变（design D3/D4「不扩大留档面」；出处 core/agent_runner/maintenance_runs.py:1052-1072 except 分支与 :1177-1186 finally 清理）。环境依赖：无（stub _run_claude） | pass | 0/9 | - |
 | repo-tests-partial-accept-regression | 回归点：仓库自身测试套件对本次交付的两个用例类全量通过——tests/test_evolution_product_salvage.py::TestPartialAcceptContract（部分接受/全拒绝/留档，tasks 2.1）与 tests/test_self_evolution.py::TestEvolutionReadContract（read_contract 宽口径返回形态，tasks 2.2），-v 逐用例 PASSED 且汇总 11 passed（出处 tests/test_evolution_product_salvage.py:275、tests/test_self_evolution.py:735；实测输出行照抄，无 parametrize 后缀）。环境依赖：无 | pass | 0/8 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
