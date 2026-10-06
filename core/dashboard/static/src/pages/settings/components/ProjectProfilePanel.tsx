@@ -216,6 +216,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 首次加载未完成（草稿还是空串）或期间已切换项目（草稿仍是上一个项目的
   // 内容）时拒绝保存，防止以当前项目名把旧契约/空串写盘覆盖既有契约。
   const yamlDraftSourceRef = useRef<{ project: string; seq: number } | null>(null);
+  // project prop 的渲染期镜像（比照 onConsumedRef 口径）：保存往返期间用户切换
+  // 项目时，保存回调闭包里的 project 已过期，handleYamlSave 据此判定是否跳过
+  // 保存成功后的视图对账（code-review item 916d9186a619）
+  const projectRef = useRef(project);
+  projectRef.current = project;
   // 草稿保护：镜像当前草稿值（加载回调是异步闭包，读不到最新 state）+
   // 最近一次服务器返回内容基线。静默回写（保存后重载）前比对——草稿既不
   // 等于基线也不等于服务器新内容，说明有未保存的用户修改，保留草稿并提示，
@@ -318,6 +323,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     try {
       await saveVerifyYaml(project, yamlDraft);
       message.success('verify.yaml 已保存');
+      // 跨项目视图串扰守卫（code-review item 916d9186a619）：保存往返期间用户
+      // 已切换项目时，保存成功后的视图对账只属于点击时刻的旧项目——以过期闭包
+      // project 发起静默重载会自增 seq，把切项目 effect 已发出的新项目加载响应
+      // 顶成过期丢弃，旧项目契约内容与归属随之写进当前项目的草稿视图（写盘侧
+      // 归属守卫保证不会跨项目落盘，但视图须手动「重新加载」才能纠正）。跳过
+      // 存在性标记/基线同步/静默重载与归属推进，把视图让给切项目 effect 的加载。
+      if (projectRef.current !== project) return;
       setYamlExists(true);
       // 已落盘草稿不再是「未保存改动」（code-review item 4815d4896312）：
       // 无需（也不能）手动清整面板脏标记——简介草稿的脏态须保留。先把基线
