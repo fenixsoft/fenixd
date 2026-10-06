@@ -105,6 +105,18 @@ def _max_retries(pm) -> int:
         cfg_max_r = None
     if cfg_max_r is None:
         return 3
+    # bool 显式拒绝（code-review item 637ed7beaee1，与 _merge_breaker_threshold
+    # 同族归一）：裸 int() 把 true/false 截成 1/0 静默生效——true 使重试上限
+    # 变 1（首次失败即冻结转人工）、false 得 0，配置写坏被无声采信且无留痕。
+    if isinstance(cfg_max_r, bool):
+        logger = getattr(pm, "logger", None)
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                "配置 agents.max_retries 非法（布尔不合法），"
+                f"回退缺省 3: {cfg_max_r!r}",
+            )
+        return 3
     try:
         return int(cfg_max_r)
     except Exception:  # noqa: BLE001 —— 同上

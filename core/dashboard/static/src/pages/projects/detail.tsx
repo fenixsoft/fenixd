@@ -799,6 +799,10 @@ export default function SpecDetailPage() {
 
   // 任务背景描述懒加载（proposal ## Why），spec 切换时重取
   useEffect(() => {
+    // 下拉快速切换 SPEC 不重挂载本组件，旧描述会残留渲染到新响应返回才被
+    // 覆盖：随 [name, spec] 变更先复位（与主 effect 的 scenarioFilter 复位
+    // 同口径，code-review item 0947e28834f6）
+    setProposalWhy(null);
     let cancelled = false;
     if (!name || !spec) return;
     fetchProposalWhy(name, spec).then((text) => {
@@ -812,6 +816,10 @@ export default function SpecDetailPage() {
   // 下拉快速切换数据源：项目变化时拉一次 SPEC 列表（复用列表页 getSpecs）。
   // 下拉是低频辅助信息，不为其建立 SSE 通道；失败时静默保持为空（箭头不展示），不影响详情页主体。
   useEffect(() => {
+    // 切换项目先清上一项目的 SPEC 列表：残留期间展开切换下拉会列出旧项目
+    // SPEC，点选产生 /projects/新项目/旧SPEC 无效组合（code-review item
+    // 0947e28834f6）
+    setSpecList([]);
     let cancelled = false;
     if (!name) return;
     getSpecs(name)

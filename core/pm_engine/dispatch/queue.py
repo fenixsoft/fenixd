@@ -1570,11 +1570,28 @@ class QQQueueMixin:
                             "implementer",
                             getattr(result, "branch", None),
                         )
-                        self._pm.state_machine.transition(
+                        # transition 返回值校验（code-review item
+                        # de738e0aadd7，对齐 _finalize_merge_success 的
+                        # f3a8a1249ede 同型收口）：_merge_ready_fallback 补记与
+                        # implemented 转移之间存在窗口，并发写者（评审收尾竞态/
+                        # admin 处置/freeze_for_human）可能已把 spec 推进/冻结
+                        # （非法转移返回 False）。失败时保留计数与 error 原样
+                        # 早退——否则 error 被覆写为 None（冻结 error 内嵌
+                        # 「原状态 X」供 parse_orig_status 解冻还原的锚点被抹掉）、
+                        # _zero_change_attempts 清零，且排入一条 status 不满足
+                        # (implemented, testing) 前置、永不派发的 verifier 条目。
+                        if not self._pm.state_machine.transition(
                             spec_name, "implemented",
                             trigger_run_id=result.run_id,
                             agent_type="implementer", channel="auto",
-                        )
+                        ):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"确认型 no-op 收口但 transition 到 implemented "
+                                f"失败（并发写者已推进/冻结），保留计数与 error "
+                                f"现场待收口重试/审计: {spec_name}",
+                            )
+                            return
                         self._pm.state_machine.update_spec(
                             spec_name,
                             {
@@ -2528,6 +2545,17 @@ class QQQueueMixin:
         except (TypeError, ValueError):
             return False
 
+    # 可重试 merge-back 失败的三类成因（code-review item a9a96d9d650e）：
+    # 顺延 error 文案与超限 stuck 告警此前按「spec 目录在飞编辑」单一成因
+    # 写死——主树脏/锁冲突形态下人工按告警指引去提交 spec 目录，处置对象
+    # 错误。key 随调用链传入 _defer_merge_back / rollback 告警，value 为
+    # 人工可读标签（rollback 侧按标签前缀选差异化处置指引）。
+    _MERGEBACK_DEFER_CAUSES = {
+        "spec_dir_inflight": "spec 目录在飞编辑",
+        "main_tree_dirty": "主树 tracked 文件脏（git merge 拒绝覆写/丢失改动）",
+        "dispatch_lock_conflict": "dispatch 锁冲突退避未到期",
+    }
+
     def _handle_retryable_mergeback_failure(
         self, spec_name: str, merge_info, merge_error: str, branch: str
     ) -> bool:
@@ -2543,13 +2571,20 @@ class QQQueueMixin:
         调用方继续既有指纹熔断/repair/ready 通道（fail-open）。
         """
         if getattr(merge_info, "spec_dir_inflight", False):
-            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            self._defer_merge_back(
+                spec_name, merge_info, branch, merge_error, cause="spec_dir_inflight"
+            )
             return True
         if self._retryable_merge_error_text(merge_error):
-            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            self._defer_merge_back(
+                spec_name, merge_info, branch, merge_error, cause="main_tree_dirty"
+            )
             return True
         if self._dispatch_lock_conflict_pending(spec_name):
-            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            self._defer_merge_back(
+                spec_name, merge_info, branch, merge_error,
+                cause="dispatch_lock_conflict",
+            )
             return True
         return False
 
@@ -2602,8 +2637,15 @@ class QQQueueMixin:
             first_f = now
         return count, first_f
 
-    def _defer_merge_back(self, spec_name: str, merge_info, branch: str, merge_error: str) -> None:
+    def _defer_merge_back(
+        self, spec_name: str, merge_info, branch: str, merge_error: str,
+        cause: str = "spec_dir_inflight",
+    ) -> None:
         """可重试 merge-back 失败：顺延等待，仅重试合并（D1a/D2）。
+
+        ``cause``（code-review item a9a96d9d650e）：三类可重试成因键
+        （``_MERGEBACK_DEFER_CAUSES``），落进 STATE error 文案与超限 stuck
+        告警，人工可按真实成因处置（不再一律指向「提交 spec 目录」）。
 
         语义（逐项点名，MUST）：spec 保持 **implementing**（不降级 ready，避免
         落入「新轮次派发清除旧锚点」）；保留 branch/implementer_run 锚点；逐项
@@ -2637,6 +2679,9 @@ class QQQueueMixin:
         count = self._pm.state_machine.bump_counters(
             spec_name, {"_merge_retry_count": 1}
         ).get("_merge_retry_count", 0)
+        # 成因标签（code-review item a9a96d9d650e）：未知键原样透传，不因映射
+        # 缺项吞掉成因信息。置于 try 外——超限 stuck 告警（try 之外）也要消费。
+        cause_label = self._MERGEBACK_DEFER_CAUSES.get(cause, cause)
         try:
             self._pm.state_machine.update_spec(
                 spec_name,
@@ -2647,7 +2692,8 @@ class QQQueueMixin:
                     "_merge_retry_first_at": int(first_f),
                     "error": (
                         f"merge-back 顺延等待 spec 目录提交动作解除"
-                        f"（{count} 轮，首轮 {int(first_f)}）: {merge_error}"
+                        f"（{count} 轮，首轮 {int(first_f)}；成因: {cause_label}）"
+                        f": {merge_error}"
                     ),
                 },
             )
@@ -2684,7 +2730,7 @@ class QQQueueMixin:
                 self._spec_dir_inflight_stuck_notified.add(spec_name)
                 self._report_mergeback_spec_dir_inflight_stuck(
                     spec_name, merge_info, branch, merge_error, count, int(first_f),
-                    selfheal_evidence=selfheal_evidence,
+                    selfheal_evidence=selfheal_evidence, cause_label=cause_label,
                 )
             return
         self._schedule_merge_retry(spec_name, self._merge_retry_delay_seconds())
@@ -2816,6 +2862,8 @@ class QQQueueMixin:
                     cwd=root,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=60,
                 )
                 if add.returncode != 0:
@@ -2825,13 +2873,16 @@ class QQQueueMixin:
                 cwd=root,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
             if commit.returncode != 0:
                 try:
                     subprocess.run(
                         ["git", "reset", "--"] + paths,
-                        cwd=root, capture_output=True, text=True, timeout=30,
+                        cwd=root, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=30,
                     )
                 except Exception:  # noqa: BLE001 — best-effort 清理
                     pass
@@ -2853,6 +2904,8 @@ class QQQueueMixin:
                 cwd=root,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if rev.returncode == 0:
@@ -2873,6 +2926,8 @@ class QQQueueMixin:
                 cwd=str(self._pm.project_root),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             return ls.returncode == 0 and bool(ls.stdout.strip())
@@ -3587,6 +3642,16 @@ class QQQueueMixin:
                 # WIP 等待标志清账（evo-add-wip-defer-merge-retry-consumer
                 # 1.2）：merge 成功即解除等待态（三条清除写点之一）。
                 "_wip_gate_deferred": False,
+                # repair 车道「待 re-merge」标记清账（code-review item
+                # 032abeec9d71）：repair 顺延路径（spec_dir_inflight /
+                # wip_gate_blocked 形态，repair_lane.py 明确 MUST NOT 消费）
+                # 原样保留标记，成功后统一经本方法清账——不清则合并已完成的
+                # spec 带标记进入 implemented，boot recovery
+                # _recovery_remerge_pending 会对 implementing+标记+branch 条目
+                # 直接 re-merge 旧分支（spec 此后重回 implementing 且 daemon
+                # 在新轮派发清锚点前重启时，按陈旧标记把已合并分支再次收口）。
+                # 与 _wip_gate_deferred 同款「合并成功即解除等待态」语义。
+                "_repair_awaiting_remerge": False,
             },
         )
         # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
@@ -3657,7 +3722,8 @@ class QQQueueMixin:
         try:
             r = subprocess.run(
                 ["git", "-C", str(self._pm.project_root), "merge-base", "main", branch],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=15,
             )
             if r.returncode == 0:
                 return r.stdout.strip() or None
@@ -3670,7 +3736,8 @@ class QQQueueMixin:
         try:
             r = subprocess.run(
                 ["git", "-C", str(self._pm.project_root), "rev-parse", ref],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=15,
             )
             if r.returncode == 0:
                 return r.stdout.strip() or None
@@ -3933,11 +4000,25 @@ class QQQueueMixin:
         """
         sm = self._pm.state_machine
         lane_run_id = str(artifact.get("run_id") or "")
-        sm.transition(
+        # transition 返回值校验（code-review item ae6b0dae38cb，对齐三车道
+        # merge 失败处置家族 f3a8a1249ede / a5e1c9319ad4 同型守卫）：上游 join
+        # 读态（status==testing）与本转移之间若被并发冻结/推进，transition 返回
+        # False——失败时保留现场直接返回（不打回、不写 _ocr_fix_rounds、不清
+        # pending），否则冻结 error（内嵌「原状态 X」供 parse_orig_status 解冻
+        # 还原）被覆写、修复轮计数被改写、打回链照常启动，冻结保护被绕过。
+        # 返回 "defer"（调用方语义=停止推进）：spec 已归并发写者所有，gate 侧
+        # 不再动作。
+        if not sm.transition(
             spec_name, "bug-found",
             trigger_run_id=entry.get("tester_run") or None,
             agent_type="planner-judge", channel="auto",
-        )
+        ):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join gate 打回但 transition 到 bug-found 失败（并发写者"
+                f"已推进/冻结），保留现场不做打回: {spec_name}",
+            )
+            return "defer"
         sm.update_spec(
             spec_name,
             {

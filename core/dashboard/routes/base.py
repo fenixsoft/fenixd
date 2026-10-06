@@ -169,24 +169,40 @@ def _sig_alerts(s, q, m):
 
 
 def _sig_admin_activities(s, q, m):
+    from pathlib import Path
+
+    from core.dashboard.data import signature as _sig
+
     # ?archived=1 数据源切换为归档旁路文件（admin_alerts_archive.jsonl，见
     # _api_admin_activities），签名须与响应数据源对齐（code-review item
     # 3da93afce0c9）：归档文件独立变化（活跃写回失败、人工/外部改动归档）
     # 时 ETag 必须翻转，否则携带 If-None-Match 的归档页假 304。archived
     # 判定与 _api_admin_activities 同一字面口径，两处不得分叉。
     if (q.get("archived", [None])[0] or "").lower() in ("1", "true"):
-        from pathlib import Path
-
-        from core.dashboard.data import signature as _sig
-
         project = _resolve_project_for_sig(s, q)
         if project is not None:
-            return _sig.admin_alerts_archive_signature(Path(project["path"]))
-        # 跨项目聚合：与 _sig_alerts 聚合分支同一循环（单点 _aggregate_alerts_sig）
-        return _aggregate_alerts_sig(s, _sig.admin_alerts_archive_signature)
-    # 活跃路径：数据源与 /api/alerts 同一文件（admin_alerts.json）；?spec=
-    # 过滤发生在读取之后，不改变签名源
-    return _sig_alerts(s, q, m)
+            base = _sig.admin_alerts_archive_signature(Path(project["path"]))
+        else:
+            # 跨项目聚合：与 _sig_alerts 聚合分支同一循环（单点 _aggregate_alerts_sig）
+            base = _aggregate_alerts_sig(s, _sig.admin_alerts_archive_signature)
+    else:
+        # 活跃路径：数据源与 /api/alerts 同一文件（admin_alerts.json）。
+        # 本端点响应表示还随 ?spec=（服务端过滤）/?page=/?page_size=（切片）
+        # 变化，/api/alerts 不消费这些参数（_sig_alerts 故不并入），见末尾。
+        base = _sig_alerts(s, q, m)
+    # 签名与响应表示一一对应（code-review item 4522e48e239d）：spec/page/
+    # page_size 的原始值并入稳定串后组合——原始值直入哈希（非法值归一属更细
+    # 粒度方向：语义等价变体宁少 304，不可跨变体假 304）；缺省时该串恒定，
+    # 无参请求仍共享同一 ETag。archived 分支响应同样随这三参变化，统一并入。
+    return _sig.combine(
+        [
+            base,
+            "|".join(
+                f"{k}={q.get(k, [''])[0] or ''}"
+                for k in ("spec", "page", "page_size")
+            ),
+        ]
+    )
 
 
 def _sig_config(s, q, m):

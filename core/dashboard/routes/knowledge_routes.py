@@ -22,10 +22,11 @@ from pathlib import Path
 logger = logging.getLogger("fenixd.dashboard.routes.knowledge_routes")
 
 # ADR 头部字段（模块级编译，_parse_adr_head / _adr_titles_from_index 用）
-# [fenix-ignore:70b607ae7630] 展示层有意宽松取原值下发：前端 KnowledgeTab 仅按
-# 是否等于 'superseded' 二分支渲染，非法值同落 green 分支，归一 unknown 无渲染
-# 差别且抹掉拼写错误信息；与 core/knowledge.py 校验器（accepted|superseded）口径
-# 分工不同，归一属行为变更且需前端联动，收益不成比例。
+# [fenix-ignore:8d914361107d] 展示层有意宽松取原值下发：前端已无 adrs[].status
+# 消费方（KnowledgeTab.tsx 全文无 .status 引用，ADR 清单视图已移除，仅保留
+# adr/index.md 内容展示与 adrs[].title 面包屑），status 原值下发后无渲染影响；
+# 按 core/knowledge.py 校验器（accepted|superseded）口径归一属行为变更，
+# 留待 ADR 视图重构时一并处理。
 _ADR_STATUS_RE = re.compile(r"^status:\s*(\S+)\s*$", re.M)
 _ADR_SUPERSEDED_BY_RE = re.compile(r"^Superseded by:\s*(\S+)\s*$", re.M)
 # ADR 首标题：'# ADR-NNN: <标题>' / '# ADR-NNN：<标题>'（distill.md 契约）

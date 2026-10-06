@@ -252,7 +252,11 @@ def validate_knowledge(project_root) -> list:
 
     def _check_links(text: str, rel_dir: Path, label: str) -> None:
         """index/_domain/adr 链接可解析且不越出真相源目录。"""
-        for m in _LINK_RE.finditer(text):
+        # 先剔除围栏代码块与行内代码 span（code-review 648908c58646）：两通道
+        # 同口径，避免文档里代码块内的示例链接被严格通道误报为死链。
+        scrubbed = re.sub(r"```.*?```", "", text, flags=re.S)
+        scrubbed = re.sub(r"`[^`\n]+`", "", scrubbed)
+        for m in _LINK_RE.finditer(scrubbed):
             target = m.group(1)
             if target.startswith(("http://", "https://", "mailto:")):
                 continue
@@ -272,14 +276,18 @@ def validate_knowledge(project_root) -> list:
         # 空白与右括号，目标含空格/嵌套括号的链接整体不参与上方越界/存在性
         # 检查——死链静默通过校验落库。对「形如链接但目标含空格或括号」显式
         # 报一条格式违规（此类目标对应的文件名违反 kebab-case 契约，落库必
-        # 是死链）。先剔除围栏代码块与行内代码 span，避免文档里的示例链接
-        # 文本误报。外链与上方口径一致不参与检查。
-        scrubbed = re.sub(r"```.*?```", "", text, flags=re.S)
-        scrubbed = re.sub(r"`[^`\n]+`", "", scrubbed)
+        # 是死链）。外链与上方口径一致不参与检查。扫描基于上方已剔除代码块
+        # 与行内代码的 scrubbed，避免文档里的示例链接文本误报。
         for m in _LINK_LOOSE_RE.finditer(scrubbed):
             target = m.group(1)
             if not target or not re.search(r"[\s(]", target):
                 continue  # 空目标无路径语义；合法形态已由 _LINK_RE 检查
+            # <目标> 尖括号完整包裹为合法 markdown 形态（code-review
+            # cc2ca6fe60b1）：此类目标正含空格/括号才落到本兜底，按报错文案
+            # 承诺放行，不再判格式违规。_LINK_LOOSE_RE 原样捕获尖括号，此处
+            # 只放行不参与后续检查，无去括号需求。
+            if target.startswith("<") and target.endswith(">"):
+                continue
             if target.startswith(("http://", "https://", "mailto:")):
                 continue
             violations.append(
@@ -592,11 +600,17 @@ def _register_todo_retry(proot: Path, archived_names: list, reason: str) -> None
 
 
 def _git(proot: Path, args: list, timeout: int = 60):
+    # encoding/errors 固化（code-review 0f9cddb901b2）：裸 text=True 走 locale
+    # 编码 + strict 解码，git status -z 对工作区非 UTF-8 文件名原样输出字节时
+    # 抛 UnicodeDecodeError（ValueError 而非 OSError），穿透调用方
+    # except (OSError, subprocess.TimeoutExpired) 捕获口径。对齐 _default_spawn。
     return subprocess.run(
         ["git"] + args,
         cwd=str(proot),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 

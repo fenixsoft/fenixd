@@ -185,28 +185,36 @@ def _write_signal_exclusive(req_path, payload):
             raise _SignalWriteError(str(oexc)) from oexc
         f = None
         try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                # fdopen 失败路径显式关 fd（同上方 71d502440d3b 先例）；
+                # close 静默兜底（item 885b6ebbff70）：close 失败交外层
+                # except 统一清 req_path 并包装，与主路径异常契约一致，
+                # 不再以裸 OSError 逃逸
+                if f is not None:
+                    try:
+                        f.close()
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
         except Exception as wexc:
-            # 回退路径写中途失败：轮询路径上的半写文件若残留，daemon 重启
-            # 时会被误消费成一次用户并未请求的触发——best effort 清掉后
-            # 照常上报（fd 尚在 finally 关闭，unlink 打开中的文件合法）
+            # 回退路径写中途失败（含 close 失败）：轮询路径上的半写文件若
+            # 残留，daemon 重启时会被误消费成一次用户并未请求的触发——
+            # best effort 清掉后照常上报（fd 尚在内层 finally 关闭，unlink
+            # 打开中的文件合法）
             try:
                 os.unlink(str(req_path))
             except OSError:
                 pass
             raise _SignalWriteError(str(wexc)) from wexc
-        finally:
-            # fdopen 失败路径显式关 fd（同上方 71d502440d3b 先例）
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
     finally:
         # 链接成功/失败临时文件均无存在必要（成功后内容已由 link 名可见）
         try:

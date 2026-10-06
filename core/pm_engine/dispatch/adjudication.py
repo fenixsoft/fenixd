@@ -490,8 +490,12 @@ class VAdjudicationMixin:
         主树「兜底」、MUST NOT 静默判修正成功。
 
         Returns:
-            ``(ok, detail, diff)``：``ok`` 为「改写已落命中层且已提交」；
-            ``diff`` 为改写函数返回的条目级 diff（异常时 None）。
+            ``(ok, detail, diff)``：``ok`` 为「改写已生效于守卫读取基准层」
+            （**非**「已提交」——提交成败按写回层分叉：main 层提交失败仍返回
+            ``ok=True``，守卫读取基准即主树工作区、内容已生效，由
+            ensure_spec_committed 派发前兜底提交；worktree 层提交失败则返回
+            ``ok=False`` 并回滚半写残留）；``diff`` 为改写函数返回的条目级
+            diff（异常时 None）。
         """
         if not wb.get("writable") or not wb.get("spec_dir"):
             return False, f"写回层不可写（source={wb.get('source')}）", None
@@ -606,6 +610,7 @@ class VAdjudicationMixin:
     def _audit_deferred_correction(
         self, spec_name: str, elements: list, *, verdict: str, reason: str,
         actual_paths: "dict | None" = None,
+        trigger_run_id: str = "", judge_run_id: str = "",
     ) -> None:
         """不可写层（分支命中）修正的裁决落册（Task 2.1/2.2 留册要求）。
 
@@ -618,6 +623,10 @@ class VAdjudicationMixin:
         ``relocation_credential_target``（Task 4.1）据 verdicts 中
         ``element``/``verdict == "typo"``/``actual_path`` 三元组识别凭据，缺
         ``actual_path`` 的落册无法被守卫核销（Task 4.2），留册即空转。
+
+        ``trigger_run_id`` / ``judge_run_id``（可选，缺省空串）：judge 裁决执行
+        路径（``_adjudicate_deliverable_missing``）透传当轮 run id 供 dispute
+        审计溯源；预分类路径维持空串缺省。
         """
         if not elements:
             return
@@ -628,8 +637,8 @@ class VAdjudicationMixin:
             DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
                 {
                     "spec": spec_name,
-                    "trigger_run_id": "",
-                    "judge_run_id": "",
+                    "trigger_run_id": trigger_run_id,
+                    "judge_run_id": judge_run_id,
                     "verdicts": [
                         {
                             "element": e,
@@ -2257,6 +2266,8 @@ class VAdjudicationMixin:
                                     f"主树，转打回/凭据通道: {detail_w}"
                                 ),
                                 actual_paths={m: actual_path},
+                                trigger_run_id=getattr(result, "run_id", "") or "",
+                                judge_run_id=judge_run_id,
                             )
                             deferred_typo_elements.append(m)
                             continue
@@ -2331,6 +2342,8 @@ class VAdjudicationMixin:
                                 f"（source={wb.get('source')}），MUST NOT 软化主树，"
                                 f"转打回/凭据通道: {detail_w}"
                             ),
+                            trigger_run_id=getattr(result, "run_id", "") or "",
+                            judge_run_id=judge_run_id,
                         )
                         continue
                     diff_by_element[m] = diff

@@ -8,6 +8,7 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 import threading
@@ -419,14 +420,26 @@ class H2ProjectRoutesMixin:
         if project is None:
             self._error(400, "项目不存在或未监控")
             return
-        # 与启停动作共享生命周期锁：delete 内含 stop_daemon，并发 install/stop
-        # 时不得绕过串行（fix-supervisor-hosting-chain 验证修复）
-        if project.get("exists"):
-            with _server_mod._project_lifecycle_lock(project["path"]) as _acquired:
-                if not _acquired:
-                    self._json({"ok": False, "error": "该项目正有另一启停操作进行中，请稍后重试"})
-                    return
-                errors = []
+        # 与启停动作共享生命周期锁：delete 内含 stop_daemon + 注册表移除/忽略
+        # 写入，并发 install/stop 时不得绕过串行（fix-supervisor-hosting-chain
+        # 验证修复）。移除与忽略写入同置锁内（code-review item d66d3a9f717a）：
+        # 若留在锁外，等待同一把锁的 start/install-hosting 会在删除方释放锁后、
+        # 忽略写入前抢锁拉起 daemon，删除方随后照常注销+忽略并返回 ok——最终
+        # 留下一个对 dashboard 不可见、不再被监控的孤儿 daemon。缺失项目（目录
+        # 已不存在）无 daemon 可停，走 nullcontext 跳过锁：锁实现会在缺失目录
+        # 创建 .fenix/，不得为已删项目复活目录。
+        errors = []
+        exists = bool(project.get("exists"))
+        lock_cm = (
+            _server_mod._project_lifecycle_lock(project["path"])
+            if exists
+            else contextlib.nullcontext(True)
+        )
+        with lock_cm as _acquired:
+            if not _acquired:
+                self._json({"ok": False, "error": "该项目正有另一启停操作进行中，请稍后重试"})
+                return
+            if exists:
                 try:
                     stop_result = _server_mod.stop_daemon(project["path"])
                     if not stop_result.get("ok"):
@@ -445,37 +458,35 @@ class H2ProjectRoutesMixin:
                 if errors:
                     self._json({"ok": False, "error": "；".join(errors)})
                     return
-        else:
-            errors = []
-        # 2) 停止显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
-        try:
-            self.server.registry.remove_project(project["path"])
-        except Exception as e:
-            # 移除失败留痕（code-review item de01de91d3a7）：忽略优先语义下
-            # 不阻断删除，但项目可能残留于显式注册列表，须可追查。
-            logger.warning(
-                "移除显式注册项失败（path=%s）: %s: %s",
-                project["path"],
-                type(e).__name__,
-                e,
-            )
-        try:
-            add_result = self.server.registry.add_ignored(project["path"])
-            if not add_result[0]:
-                errors.append(add_result[1])
-        except Exception as e:
-            # 不外泄裸异常文本（code-review item 1825f4bcd251）：同停止 daemon
-            # 分支，客户端收固定文案，异常详情经服务端日志留痕。
-            logger.warning(
-                "写入忽略列表异常（path=%s）: %s: %s",
-                project["path"],
-                type(e).__name__,
-                e,
-            )
-            errors.append("写入忽略列表失败")
-        if errors:
-            self._json({"ok": False, "error": "；".join(errors)})
-            return
+            # 2) 移除显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
+            try:
+                self.server.registry.remove_project(project["path"])
+            except Exception as e:
+                # 移除失败留痕（code-review item de01de91d3a7）：忽略优先语义下
+                # 不阻断删除，但项目可能残留于显式注册列表，须可追查。
+                logger.warning(
+                    "移除显式注册项失败（path=%s）: %s: %s",
+                    project["path"],
+                    type(e).__name__,
+                    e,
+                )
+            try:
+                add_result = self.server.registry.add_ignored(project["path"])
+                if not add_result[0]:
+                    errors.append(add_result[1])
+            except Exception as e:
+                # 不外泄裸异常文本（code-review item 1825f4bcd251）：同停止 daemon
+                # 分支，客户端收固定文案，异常详情经服务端日志留痕。
+                logger.warning(
+                    "写入忽略列表异常（path=%s）: %s: %s",
+                    project["path"],
+                    type(e).__name__,
+                    e,
+                )
+                errors.append("写入忽略列表失败")
+            if errors:
+                self._json({"ok": False, "error": "；".join(errors)})
+                return
         # 成功：失效 projects() 缓存（settle 后首次 /api/overview 立即反映真值，
         # 否则 TTL 内的旧缓存让已删项目「消失→重现→10s 后再消失」），再广播 refresh
         try:

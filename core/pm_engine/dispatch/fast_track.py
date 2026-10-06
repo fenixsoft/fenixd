@@ -1052,11 +1052,24 @@ class FFastTrackMixin:
         # 不经本方法直连收尾段，门禁只挂在本方法 transition testing 之前时
         # 该路径绕过门禁——下沉到两路径共用的收尾段入口使门禁位点唯一。
         # fix-observability-gaps 2.2：fast-track 自动连跳（同一 run 触发两次转换）
-        self._pm.state_machine.transition(
+        # transition 返回值校验（code-review item f1bc51eeb3d9，对齐同文件
+        # implemented/blocked 转移的 40292d21fd97/89923bdcde3f 同型收口）：
+        # 并发冻结/外部改态使转移失败（missing/invalid/冻结剥离均返回 False）
+        # 时保留现场直接 return——否则收尾段照常执行，冻结 error（含
+        # freeze_for_human 内嵌「原状态 X」供 parse_orig_status 解冻还原的
+        # 锚点）被清零点 update 覆写为 None、验证计数误清零。幂等自迁移短路
+        # 返回 True，重入路径（车道完成回调重入时 spec 已在 testing）语义不变。
+        if not self._pm.state_machine.transition(
             spec_name, "testing",
             trigger_run_id=getattr(result, "run_id", None) or None,
             agent_type="fast-track", channel="auto",
-        )
+        ):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track transition 到 testing 失败（并发写者已推进/冻结），"
+                f"保留计数与 error 现场待收口重试/审计: {spec_name}",
+            )
+            return
         # add-impl-ocr-parallel-lane（任务 4.1/4.2）：fast-track 出口 join 门禁
         # ——插在 testing 转移之后、verified 之前：defer 时 spec 停留 testing
         # （车道完成回调经 _resume_verified_after_ocr 重入本方法，同状态转移
@@ -1088,11 +1101,23 @@ class FFastTrackMixin:
         ocr_decision = self._ocr_join_gate(spec_name, "fast-track")
         if ocr_decision != "pass":
             return
-        self._pm.state_machine.transition(
+        # transition 返回值校验（code-review item f1bc51eeb3d9）：testing→verified
+        # 窗口内并发冻结/外部改态使转移失败时保留现场直接 return——不执行下方
+        # 清零点 update（error 覆写为 None 抹掉解冻还原锚点、
+        # _inconclusive_attempts/_verify_fail_rounds/ENV_BLOCK_ROUNDS 等计数
+        # 误清零）与非 verified 态上的 ``_on_spec_verified``（避免触发后续
+        # 门禁写盘）。幂等自迁移短路返回 True 不受影响，重入路径语义不变。
+        if not self._pm.state_machine.transition(
             spec_name, "verified",
             trigger_run_id=getattr(result, "run_id", None) or None,
             agent_type="fast-track", channel="auto",
-        )
+        ):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track transition 到 verified 失败（并发写者已推进/冻结），"
+                f"保留计数与 error 现场待收口重试/审计: {spec_name}",
+            )
+            return
         self._pm.state_machine.update_spec(
             spec_name,
             {
@@ -1143,11 +1168,21 @@ class FFastTrackMixin:
         entry = self._pm.state_machine.read_one(spec_name) or {}
         implementer_run = entry.get("implementer_run") or None
         if not already_testing:
-            self._pm.state_machine.transition(
+            # transition 返回值校验（code-review item f1bc51eeb3d9，与收尾段
+            # 同口）：并发冻结/外部改态使转移失败时保留现场直接 return，不再
+            # 进入收尾段——否则清零点 update 照常落盘、错误现场被抹。
+            if not self._pm.state_machine.transition(
                 spec_name, "testing",
                 trigger_run_id=implementer_run,
                 agent_type="fast-track", channel="auto",
-            )
+            ):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 重启恢复 transition 到 testing 失败"
+                    f"（并发写者已推进/冻结），保留计数与 error 现场待收口"
+                    f"重试/审计: {spec_name}",
+                )
+                return
         from types import SimpleNamespace
 
         self._fast_track_finalize_after_testing(

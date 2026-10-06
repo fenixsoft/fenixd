@@ -553,6 +553,7 @@ class RRollbackMixin:
     def _report_mergeback_spec_dir_inflight_stuck(
         self, spec_name: str, merge_info, branch: str, merge_error: str,
         retry_count: int, first_at: int, selfheal_evidence: str | None = None,
+        cause_label: str = "spec 目录在飞编辑",
     ) -> None:
         """spec 目录在飞编辑顺延超限回落告警（evo-merge-back-spec-dir-inflight-guard D1a/D2）。
 
@@ -576,21 +577,58 @@ class RRollbackMixin:
         ``selfheal_evidence``（evo-mergeback-archive-residue-selfheal 1.2）：熔断
         出口前的归档残留自愈评估摘要（判据命中与否、补提交 hash、重放/失败
         原因），非空时增补进告警 description 与 evidence，保持人工可见。
+
+        ``cause_label``（code-review item a9a96d9d650e）：可重试成因的人工可读
+        标签（queue.py ``_MERGEBACK_DEFER_CAUSES``）。三类成因（spec 目录在飞
+        编辑 / 主树脏 / dispatch 锁冲突）共用本告警站点，description 与处置指引
+        不再按「spec 目录在飞编辑」单一成因写死——标签前缀选差异化指引，未识别
+        标签回落 spec 目录指引（保守方向：提交 spec 目录对主树脏/锁冲突无害）。
         """
+        # 成因差异化处置指引（前缀匹配 queue.py 标签文本，两处文案同源）
+        if cause_label.startswith("主树"):
+            fix_hint = (
+                "处置指引：提交或 stash 主树与分支重叠的未提交改动"
+                "（git add/commit 或 git stash push，重叠文件清单见 merge_error），"
+                "等待自动 merge-only 重试；或人工复位 ready 重放 merge-back。"
+            )
+            recommended_action = (
+                "提交或 stash 主树与分支重叠的未提交改动（git add/commit 或 "
+                "git stash push）后重新放行该 spec 继续 merge-back；分支与已"
+                "成功实现保留"
+            )
+        elif cause_label.startswith("dispatch"):
+            fix_hint = (
+                "处置指引：等待 dispatch 锁退避（_dispatch_backoff_until）到期后"
+                "自动 merge-only 重试；长时间不解除排查锁冲突根因，或人工复位 "
+                "ready 重放 merge-back。"
+            )
+            recommended_action = (
+                "等待 dispatch 锁退避到期自动重试，或排查锁冲突根因后人工复位 "
+                "该 spec 继续 merge-back；分支与已成功实现保留"
+            )
+        else:
+            fix_hint = (
+                f"处置指引：提交主树 spec/changes/{spec_name}/ 目录的未提交改动"
+                f"（git add/commit，含 spec 迭代修补），再把该 spec 复位 ready "
+                f"重新放行 merge-back；或等待 daemon 恢复通道（recovery）下一轮再试。"
+            )
+            recommended_action = (
+                "提交主树 spec/changes/ 目录的未提交改动"
+                "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
+                "（ready 重派）继续 merge-back；分支与已成功实现保留"
+            )
         description = (
-            f"SPEC '{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）："
+            f"SPEC '{spec_name}' merge-back 顺延超限（{cause_label}）："
             f"自首轮顺延（{first_at}）起已连续 {retry_count} 轮仍未解除"
             f"（窗口/轮数上限已到），已停止自动重试等待人工处置。分支 "
-            f"'{branch}' 保留（已成功实现、仅剩合并）。处置指引：提交主树 "
-            f"spec/changes/{spec_name}/ 目录的未提交改动（git add/commit，"
-            f"含 spec 迭代修补），再把该 spec 复位 ready 重新放行 merge-back；"
-            f"或等待 daemon 恢复通道（recovery）下一轮再试。"
+            f"'{branch}' 保留（已成功实现、仅剩合并）。{fix_hint}"
         )
         evidence = {
             "retry_count": retry_count,
             "first_at": first_at,
             "branch": branch,
             "merge_error": str(merge_error),
+            "cause": cause_label,
         }
         if selfheal_evidence:
             description = f"{description} 自愈评估：{selfheal_evidence}。"
@@ -606,16 +644,12 @@ class RRollbackMixin:
             },
             f"mergeback spec_dir_inflight_stuck 状态上报失败 '{spec_name}'（非阻塞）",
             (
-                f"'{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）—— 已停止自动"
-                f"重试，等待人工提交 spec 目录后重新放行（分支与产物保留）"
+                f"'{spec_name}' merge-back 顺延超限（{cause_label}）—— 已停止自动"
+                f"重试，等待人工处置后重新放行（分支与产物保留）"
             ),
             description,
             evidence,
-            (
-                "提交主树 spec/changes/ 目录的未提交改动"
-                "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
-                "（ready 重派）继续 merge-back；分支与已成功实现保留"
-            ),
+            recommended_action,
         )
 
     def _report_mergeback_wip_defer_stuck(

@@ -163,7 +163,7 @@ class H5SettingsRoutesMixin:
 
         # code-review item 71084192fc43：回执键一律 .get 容错（对齐下方
         # sync-from-user 口径）——数据层契约演进缺键时 400 分支不退化为 500。
-        if not result["ok"]:
+        if not result.get("ok"):
             self._error(400, result.get("error") or "配置写入失败")
             return
 
@@ -243,7 +243,7 @@ class H5SettingsRoutesMixin:
         else:
             result = dashboard_data.sync_config_from_user(project["path"], page)
             cleared_field, fail_word = "synced", "同步"
-        if not result["ok"]:
+        if not result.get("ok"):
             self._error(400, result.get("error") or f"{fail_word}失败")
             return
         config = dashboard_data.read_effective_config(project["path"])
