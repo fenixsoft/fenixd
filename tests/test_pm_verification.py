@@ -19,7 +19,13 @@ from unittest.mock import MagicMock, patch, PropertyMock, AsyncMock
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS
+from core.state_machine import (
+    StateMachine,
+    StateParser,
+    SpecStatus,
+    VALID_TRANSITIONS,
+    VERIFY_INFRA_ROUNDS_FIELD,
+)
 from core.pm_engine.verification import VerdictReadResult
 
 
@@ -404,8 +410,15 @@ class TestUnreachableFailFast(unittest.TestCase):
                 patch("core.verify_engine.VerifyEngine", fake_engine):
             self.engine._run_three_stage_verification("demo-spec")
 
-    def test_probe_timeout_failfast_zero_scenarios_blocked(self):
-        """就绪探针超时（reachable=False, user_blocked=False）→ 短路：0 场景 + blocked + admin 呼叫。"""
+    def test_probe_timeout_failfast_zero_scenarios_redispatch(self):
+        """就绪探针超时（reachable=False, user_blocked=False）→ infra-retry 廉价重派。
+
+        evo-verify-infra-retry-lane：fail-fast 短路轮不再直接全价升级
+        （blocked + admin 呼叫 + env 冻结轮），改判 infra-retry 限次车道——
+        首轮短路失败不计 env 冻结轮、不呼叫 admin，经既有 verifier 派发入口
+        廉价重派；超预算后恢复全价（见 test_env_block_frozen_error…）。
+        0 场景执行短路语义不变。
+        """
         reach_note = (
             "就绪探针超时（120s）: http://127.0.0.1:50555/api/projects — timed out"
         )
@@ -416,51 +429,57 @@ class TestUnreachableFailFast(unittest.TestCase):
         self.engine._verification._write_verify_contract_missing = MagicMock(
             side_effect=AssertionError(
                 "短路路径不得再次写入 verify_contract_missing 信号"))
+        schedule = MagicMock()
+        self.engine._verification._context.schedule_infra_retry_redispatch = schedule
         runs = []
         self._run_pipeline(self._tracking_engine(runs))
 
         # 场景执行数=0：不创建、不运行 VerifyEngine
         self.assertEqual(runs, [], "自愈失败轮不得创建/运行 VerifyEngine")
         entry = self.sm.read_one("demo-spec")
-        self.assertEqual(entry["status"], "blocked")
-        self.assertIn("验证环境阻塞（应用不可达）", str(entry.get("error")))
-        self.assertIn("就绪探针超时", str(entry.get("error")))
-        self.assertEqual(entry["_env_block_rounds"], "1")
-        # 自动呼叫 Administrator：文件信号已就位
+        # 廉价重试车道：不写 blocked/status、不计 env 冻结轮、不呼叫 admin
+        self.assertEqual(entry["status"], "testing")
+        self.assertEqual(int(entry.get("_env_block_rounds", 0) or 0), 0)
+        self.assertIsNone(entry.get("error"))
         invoke_path = Path(self.tmpdir) / ".fenix" / "admin_invoke_request.json"
-        self.assertTrue(invoke_path.exists(), "应产生 admin 自动呼叫请求文件")
-        # 升级链收尾：human escalation 告警按 warning（未达冻结阈值）书写
-        self.engine._send_human_escalation_alert.assert_called_once_with(
-            spec_name="demo-spec",
-            signal_type="verify_env_blocked",
-            severity="warning",
-            description=unittest.mock.ANY,
-            evidence=unittest.mock.ANY,
-            recommended_action=unittest.mock.ANY,
-        )
+        self.assertFalse(invoke_path.exists(), "廉价重试轮不得产生 admin 呼叫请求")
+        self.engine._send_human_escalation_alert.assert_not_called()
+        # 限内重派已排程（D5：经既有 verifier 派发入口）
+        schedule.assert_called_once_with("demo-spec")
+        # 专用计数 +1；观测账照常入账（两车道唯一入账点）
+        self.assertEqual(int(entry.get("_verify_infra_retry_streak", 0)), 1)
+        self.assertEqual(int(entry.get(VERIFY_INFRA_ROUNDS_FIELD, 0)), 1)
 
-    def test_prepare_failure_also_short_circuits(self):
-        """契约 prepare 失败（同 (False, False, note)）→ 与探针超时同款短路。"""
+    def test_prepare_failure_also_lanes_into_infra_retry(self):
+        """契约 prepare 失败（同 (False, False, note)）→ 与探针超时同款廉价重派。"""
         self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(False, False, "验证契约 prepare 失败: npm ERR! exit 1"))
+        schedule = MagicMock()
+        self.engine._verification._context.schedule_infra_retry_redispatch = schedule
         runs = []
         self._run_pipeline(self._tracking_engine(runs))
         self.assertEqual(runs, [], "prepare 失败轮不得创建/运行 VerifyEngine")
         entry = self.sm.read_one("demo-spec")
-        self.assertEqual(entry["status"], "blocked")
-        self.assertIn("prepare 失败", str(entry.get("error")))
+        self.assertEqual(entry["status"], "testing", "prepare 失败首轮走廉价重派不升级")
+        schedule.assert_called_once_with("demo-spec")
+        self.assertEqual(int(entry.get("_verify_infra_retry_streak", 0)), 1)
 
     def test_env_block_frozen_error_matches_freeze_prefix(self):
-        """第 2 轮 env 阻塞 → frozen 冻结，error 须以 FREEZE_ERROR_PREFIX 开头。
+        """预算耗尽后的全价轮达冻结阈值 → frozen，error 须以 FREEZE_ERROR_PREFIX 开头。
 
         回归：此前文案写作「用户指令冻结（…」——全角括号，与常量
         「用户指令冻结：」不匹配，实测 ``startswith`` 为 False，导致按文本契约
         判定冻结态的消费方（dashboard spec 冻结态/解冻入口）全部漏判；结构化
         frozen 字段虽已写入，但文本契约断裂本身是陷阱。
+
+        evo-verify-infra-retry-lane：预设专用计数已达预算（streak=2，本轮 +1=3>2）
+        → 决议 escalate 落穿全价路径，沿既有 _env_block_rounds 计数冻结。
         """
         from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
-        # 上一轮 env 阻塞已累计 1 轮 → 本轮（rounds=2）达冻结阈值
-        self.sm.update_spec("demo-spec", {"_env_block_rounds": 1})
+        # infra-retry 预算已耗尽（两轮廉价重派已发）+ 上一轮全价 env 阻塞已计 1 轮
+        # → 本轮决议 escalate，全价轮 rounds=2 达冻结阈值
+        self.sm.update_spec("demo-spec", {"_verify_infra_retry_streak": 2,
+                                          "_env_block_rounds": 1})
         self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(False, False, "就绪探针超时（120s）: http://127.0.0.1:1 — timed out"))
         runs = []

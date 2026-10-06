@@ -80,6 +80,46 @@
 # prepare:
 #   - run: npm run build            # 字符串=经 shell 执行；列表=argv 直接执行
 #     cwd: .                        # 相对项目根的工作目录，缺省=项目根
+#
+# ── 宿主预检样板（evo-verify-infra-retry-lane 2.1，可选）──────────────────
+# 验证宿主被多轮验证反复复用，上一轮遗留的僵尸模拟器/陈旧锁会把下一轮
+# prepare/可达性探针直接打死（0 场景执行短路）。建议把「环境自检+自愈」
+# 作为 prepare 首个步骤声明在构建命令之前；预检命令须**幂等**（每轮验证
+# 都会执行）且失败即非零退出——prepare 失败会走 infra-retry 廉价重试车道
+# （不升级、不冻结：框架自动限次重派验证，缺省 2 次；超限才恢复既有
+# 全价升级）。因此预检应把「可自动修复的环境问题」在宿主侧修掉，把
+# 「修不掉的」以非零退出如实上报，不要吞错退 0（假绿会把环境故障推迟
+# 到场景执行期，错过廉价重试窗口）。
+#
+# 预检清单参考（按被测项目实际依赖取舍）：
+#
+# ① 无主 qemu/emulator 进程扫描清理：只清理 ppid=1（父进程已死、无人
+#    回收）**且可归属到已完成 run** 的模拟器进程；清理前记录被杀 pid
+#    便于事后追因。MUST NOT 全量清杀——同宿主可能在跑其它活跃 run 的
+#    模拟器（按进程启动时间与 run 时间窗归属，归属不了的不动）。
+#    示例（按项目改写；qemu-system / emulator 进程名按实际替换）：
+# - run: |
+#     for pid in $(pgrep -f 'qemu-system|emulator' || true); do
+#       [ "$(ps -o ppid= -p "$pid" | tr -d ' ')" = "1" ] || continue
+#       echo "killing orphan emulator pid=$pid" >> .fenix/preflight-killed.log
+#       kill "$pid" || true
+#     done
+#
+# ② 残留 AVD 锁清理：模拟器崩溃后 hardware/qemu/ *.lock 会卡死下一轮
+#    启动。只删明确属于本项目 AVD 目录的锁文件：
+# - run: find "$HOME/.android/avd" -name '*.lock' -delete 2>/dev/null || true
+#
+# ③ KVM/内存水位检查：/dev/kvm 不可用、内存水位过低时尽早失败（此时
+#    失败=廉价重试窗口内可观测），不要拖到模拟器启动超时：
+# - run: test -w /dev/kvm && free -m | awk 'NR==2{exit !(($7)>512)}'
+#
+# ④ 场景特异冒烟探针：被测项目依赖的重量级运行时（如 OpenCV init、
+#    GPU/驱动探测）在 prepare 末尾加一条最小可运行性探针，把「依赖缺失/
+#    版本不兼容」前移到构建前暴露：
+# - run: python3 -c "import cv2; cv2.setNumThreads(0)"
+#
+# 说明：以上命令均为示例形态，请按被测项目实际宿主依赖改写；全部保持
+# 注释即整段不生效（与模板其余段落同约定）。
 
 # ── 被测实例示例一：静态目录（框架内置服务器，自动分配端口）──
 # serve:

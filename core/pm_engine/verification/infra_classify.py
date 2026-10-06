@@ -136,12 +136,72 @@ def enrich_failure_class(
     return "unknown"
 
 
+# ── evo-verify-infra-retry-lane：infra-retry 车道判定与限次 ─────────
+
+# infra-retry 廉价重派预算缺省值（design D2）：与 ENV_BLOCK_FREEZE_THRESHOLD=2
+# 同量级，防预检失败被无限重试烧预算。语义=同一 spec 连续 prepare/可达性短路
+# 失败最多廉价重派 N 次（专用计数 1..N 落「重派」决议），第 N+1 次短路失败
+# 恢复既有全价升级。最坏多烧 N 次短路轮（0 场景执行成本），远低于一次全价
+# 升级（admin run + 冻结轮）。
+INFRA_RETRY_MAX_DEFAULT = 2
+
+
+def _read_infra_retry_max(pipeline) -> int:
+    """infra-retry 重派预算读取（``verify_engine.infra_retry_max``，缺省 2）。
+
+    None 显式判空回退缺省、非数字回退缺省（口径对齐 escalation._read_int_config
+    同款防御）；非正值非法，同样回退缺省（0/负值会使「重派」决议不可达）。
+    """
+    try:
+        value = pipeline._context.config_reader(
+            "verify_engine.infra_retry_max", INFRA_RETRY_MAX_DEFAULT
+        )
+        if value is None:
+            return INFRA_RETRY_MAX_DEFAULT
+        n = int(value)
+    except (TypeError, ValueError):
+        return INFRA_RETRY_MAX_DEFAULT
+    return n if n > 0 else INFRA_RETRY_MAX_DEFAULT
+
+
+def resolve_infra_retry_decision(pipeline, spec_name: str) -> str:
+    """infra-retry 限次决议：专用连续重派计数 +1 后与预算比较（design D2）。
+
+    专用计数（``_verify_infra_retry_streak``）与既有 ``_verify_infra_rounds``
+    （纯观测）严格分离——后者被 ``_escalate_env_blocked`` 既有挂钩点在每个
+    全价 env 阻塞轮递增，历史轮会吃掉重试预算、使「缺省 2 次」承诺不可达；
+    本计数清零点=验证 PASS（对齐 _verify_fail_rounds 唯一归零点）+
+    unfreeze_spec 清零清单。两本账互不递增对方的判定。
+
+    Returns:
+        "redispatch"：未超预算，廉价重派（不计 env 冻结轮、不呼叫 admin）；
+        "escalate"：达预算，恢复既有全价升级。计数失败时保守返回 "escalate"
+        （决议不可得时不无限重试）。
+    """
+    try:
+        streak = pipeline._context.state_machine.bump_verify_infra_retry_streak(
+            spec_name, +1
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"infra-retry 专用计数失败（保守走全价升级）'{spec_name}': "
+            f"{type(e).__name__}: {e}",
+        )
+        return "escalate"
+    max_retry = _read_infra_retry_max(pipeline)
+    if streak <= max_retry:
+        return "redispatch"
+    return "escalate"
+
+
 # ── evo-infra-failure-budget-exempt R2：infra 失败统一记账 ─────────
 
 
 def _record_infra_failure(
-    pipeline, spec_name: str, reason: str, run_id: str = "", ledger_run_id: str = ""
-) -> None:
+    pipeline, spec_name: str, reason: str, run_id: str = "", ledger_run_id: str = "",
+    retry_gate: bool = False,
+) -> str | None:
     """infra 失败统一记账（evo-infra-failure-budget-exempt R2/R3）。
 
     在 infra 判定命中时调用：预算事后补偿（delegate budget.py
@@ -157,9 +217,24 @@ def _record_infra_failure(
     ``ledger_run_id`` 传入，仅落到失败台账的 run_id 字段（观测用），
     不参与退款锚点，缺省回退退款锚点。
 
-    本身异常不得抛穿调用方（记账属侧车，不阻断主流程）。
+    evo-verify-infra-retry-lane D6：``retry_gate=True``（仅
+    ``_escalate_env_blocked`` 的 prepare/可达性 fail-fast 入口传入）时在记账
+    之外先咨询 infra-retry 限次决议（``resolve_infra_retry_decision``，专用
+    计数 +1）。记账照常执行（``_verify_infra_rounds`` 观测账两车道照常递增、
+    归零点不变），两分支共用本调用作为唯一入账点——调用方 MUST NOT 在
+    "escalate" 决议后二次调用本函数（观测账/退款会双计）。
+
+    Returns:
+        ``retry_gate=False`` 恒 ``None``（既有调用方零感知）；
+        ``retry_gate=True`` 返回 "redispatch"（未达预算，调用方走旁路）或
+        "escalate"（达预算，调用方落穿既有全价路径）。决议/记账异常时保守
+        返回 "escalate"。本身异常不得抛穿调用方（记账属侧车，不阻断主流程）。
     """
+    decision: str | None = None
     try:
+        # ── infra-retry 限次决议先行（retry_gate 车道；D6 决策单点）──
+        if retry_gate:
+            decision = resolve_infra_retry_decision(pipeline, spec_name)
         # ── 幂等锚点：优先取给入 run_id，否则回读当前实现 run ──
         refund_key = run_id
         if not refund_key:
@@ -214,13 +289,18 @@ def _record_infra_failure(
 
         pipeline._context.logger.info(
             "pm_engine",
-            f"infra 记账完成 '{spec_name}': _verify_infra_rounds={rounds}",
+            f"infra 记账完成 '{spec_name}': _verify_infra_rounds={rounds}"
+            + (f", infra_retry_decision={decision}" if retry_gate else ""),
         )
+        return decision
     except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",
             f"infra 记账异常（不阻断主流程）'{spec_name}': {e}",
         )
+        # retry_gate 车道决议不可得（记账/决议中途异常）：保守按「达预算」
+        # 处置，调用方落穿既有全价升级，不无限廉价重试
+        return "escalate" if retry_gate else None
 
 
 def _reset_uniform_fail_streak(pipeline, spec_name: str) -> None:
