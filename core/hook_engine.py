@@ -196,6 +196,34 @@ def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
     return _truncate("\n".join(p.strip() for p in parts)[-DETAIL_LIMIT:], DETAIL_LIMIT)
 
 
+def _terminate_proc_group(proc: subprocess.Popen) -> Tuple[str, str]:
+    """超时强杀进程组并回收（_run_git 与 _action_shell 共享的收尾实现）。
+
+    killpg(SIGKILL) 连孙进程一并回收（ProcessLookupError/PermissionError 回退
+    proc.kill）；复杀后 communicate 仍超时——守护化孙进程（setsid 脱离进程组）
+    继承管道且杀不掉——则关闭读端放弃读取，保证执行线程必然返回。返回已收集
+    的 (out, err)，管道被放弃时为 ("", "")。
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+    try:
+        return proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        for _stream in (proc.stdout, proc.stderr):
+            try:
+                if _stream:
+                    _stream.close()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        return "", ""
+
+
 def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
     """在项目根执行 git 子命令（统一超时 60s，不消费 hook 的 timeout_seconds 配置）。
 
@@ -204,10 +232,11 @@ def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
     消费配置超时会使总时长无界）。
 
     有界 spawn 口径对齐 _action_shell：start_new_session 使 git 为新进程组首，
-    超时 killpg 连项目级 hook / credential helper / gpg pinentry 等孙进程一并
-    回收，复杀仍超时再关流兜底——否则孙进程继承 stdout/stderr 管道可致
-    hook 执行线程挂死、在飞标记永不释放。超时仍抛 TimeoutExpired（与
-    subprocess.run 同契约，调用方按 SubprocessError 记失败）。
+    超时经 _terminate_proc_group 强杀进程组回收（连项目级 hook / credential
+    helper / gpg pinentry 等孙进程一并收掉，复杀仍超时再关流兜底）——否则孙
+    进程继承 stdout/stderr 管道可致 hook 执行线程挂死、在飞标记永不释放。
+    超时仍抛 TimeoutExpired（与 subprocess.run 同契约，调用方按
+    SubprocessError 记失败）。
     """
     proc = subprocess.Popen(
         ["git"] + args,
@@ -224,25 +253,7 @@ def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
     try:
         out, err = proc.communicate(timeout=60)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        try:
-            proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            # 守护化孙进程（setsid 脱离进程组）继承管道且杀不掉：关闭读端
-            # 放弃读取，保证执行线程必然返回
-            for _stream in (proc.stdout, proc.stderr):
-                try:
-                    if _stream:
-                        _stream.close()
-                except OSError:
-                    pass
-            try:
-                proc.wait(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate_proc_group(proc)
         raise
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
@@ -753,7 +764,13 @@ class HookEngine:
         if scope == "global":
             candidates = hooks.get("global") or []
         else:
-            candidates = (hooks.get("specs") or {}).get(spec) or []
+            # specs 段类型守卫：与 match_hooks 同口径——非 dict（如手改 YAML
+            # 写成非空列表）按空处理；否则对 list 调 .get 抛 AttributeError，
+            # 在飞跳过路径本调用位于 try 保护之外，异常将无审计终结线程
+            spec_hooks = hooks.get("specs")
+            candidates = (
+                (spec_hooks.get(spec) or []) if isinstance(spec_hooks, dict) else []
+            )
         for h in candidates:
             if isinstance(h, dict) and h.get("id") == hook_id:
                 return h
@@ -1439,26 +1456,8 @@ class HookEngine:
             try:
                 out, err = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    proc.kill()
-                try:
-                    out, err = proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    # 守护化孙进程（setsid 脱离进程组）继承管道且杀不掉：
-                    # 关闭读端放弃读取，保证执行线程必然返回、在飞标记必然释放
-                    for _stream in (proc.stdout, proc.stderr):
-                        try:
-                            if _stream:
-                                _stream.close()
-                        except OSError:
-                            pass
-                    try:
-                        proc.wait(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    out, err = "", ""
+                # 强杀+回收兜底收敛到共享实现（含守护化孙进程关流兜底）
+                out, err = _terminate_proc_group(proc)
                 detail = f"shell 超时（>{timeout:.0f}s）已按进程组强杀"
                 tail = _tail_combined(out or "", err or "")
                 return STATUS_FAILURE, f"{detail}{('：' + tail) if tail else ''}"
