@@ -2156,7 +2156,7 @@ class ContractError(ValueError):
     """分析 run 契约产物不合法（调用方判整轮失败，3.8）。"""
 
 
-def read_contract(path) -> Dict[str, Any]:
+def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     """解析分析 run 契约产物 JSON（3.8）。
 
     任一不满足 MUST 抛 ``ContractError`` 判整轮失败（不产生任何条目）：
@@ -2172,7 +2172,16 @@ def read_contract(path) -> Dict[str, Any]:
       该条目每轮复现同一异常成永久阻塞（code-review item a29d89428f7f），
       故在契约层整轮拒绝。
 
-    解析成功后由调用方删除产物文件。返回 {"run_id", "degraded", "items"}。
+    单条目契约错误（上面后三条）默认（``lenient=False``）保持整份拒绝，
+    既有调用方行为不变；``lenient=True``（evo-add-evolution-contract-
+    partial-accept 1.1，仅 evolution 落库链路启用）改为收集该条错误并跳过、
+    合法条目照常通过——拒绝粒度从「整份」细化到「单条」，与输入侧
+    todo.md 未知小节「跳过+WARNING」宽口径对齐。文件级错误与「全部条目
+    非法」（模型大面积跑偏，D3）仍整体抛 ContractError。
+
+    解析成功后由调用方删除产物文件。返回 {"run_id", "degraded", "items",
+    "errors"}：``items`` 为通过校验的条目；``errors`` 为
+    ``[{"index", "message"}]`` 逐条错误记录（严格口径恒为空列表）。
     """
     # 失败归因分级（evo-add-evolution-product-salvage）：「产物文件未写出」
     # 与「产物 JSON 不可解析」拆成两个可判别的 ContractError 文案——告警与
@@ -2196,27 +2205,52 @@ def read_contract(path) -> Dict[str, Any]:
     items = data.get("items")
     if not isinstance(items, list):
         raise ContractError("产物缺 items 数组")
-    for idx, item in enumerate(items):
+
+    def _validate_item(item, idx: int):
+        """单条目契约校验：通过返回 None，否则返回可归因错误文案。"""
         if not isinstance(item, dict):
-            raise ContractError(f"items[{idx}] 不是对象")
+            return f"items[{idx}] 不是对象"
         for field in ("project", "date_section", "title"):
             if not isinstance(item.get(field), str) or not item.get(field):
-                raise ContractError(f"items[{idx}] 缺必填字段 {field}")
+                return f"items[{idx}] 缺必填字段 {field}"
         if item.get("section") not in TODO_SECTIONS:
-            raise ContractError(f"items[{idx}].section 不在三值枚举内: {item.get('section')!r}")
+            return f"items[{idx}].section 不在三值枚举内: {item.get('section')!r}"
         verdict = item.get("verdict")
         if not isinstance(verdict, dict):
-            raise ContractError(f"items[{idx}] 缺 verdict 对象")
+            return f"items[{idx}] 缺 verdict 对象"
         if "worth_spec" not in verdict or not isinstance(verdict.get("worth_spec"), bool):
-            raise ContractError(f"items[{idx}].verdict.worth_spec 非法")
+            return f"items[{idx}].verdict.worth_spec 非法"
         # code-review item a29d89428f7f：缺失/空串回落 item_id 复算；非字符串
         # 真值 id（如数字）会在 upsert_item 锁内 sorted() 混排 str/int 键抛
         # TypeError，条目永久落不了库（调用方逐条跳过 → 每轮重试同一异常）。
         raw_id = item.get("id")
         if raw_id is not None and not isinstance(raw_id, str):
-            raise ContractError(f"items[{idx}].id 非字符串: {raw_id!r}")
+            return f"items[{idx}].id 非字符串: {raw_id!r}"
+        return None
+
+    valid_items: list = []
+    item_errors: List[Dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        msg = _validate_item(item, idx)
+        if msg is None:
+            valid_items.append(item)
+        elif lenient:
+            # 宽口径：单条非法只牺牲该条，错误清单随返回值上交落库侧归因。
+            item_errors.append({"index": idx, "message": msg})
+        else:
+            raise ContractError(msg)
+
+    if lenient and items and not valid_items:
+        # D3 全非法仍 fail-closed：单条跳过的宽口径不适用于「模型大面积
+        # 跑偏」，防坏数据入库的原始动机保留，整份拒绝。
+        raise ContractError(
+            f"产物全部 {len(items)} 条条目契约非法，整份拒绝"
+            f"（首条: {item_errors[0]['message']}）"
+        )
+
     return {
         "run_id": data.get("run_id"),
         "degraded": data.get("degraded"),
-        "items": items,
+        "items": valid_items,
+        "errors": item_errors,
     }

@@ -784,6 +784,57 @@ class TestEvolutionReadContract(unittest.TestCase):
         with self.assertRaises(ContractError):
             read_contract(self._write_contract(data))
 
+    # ── 宽口径返回形态（evo-add-evolution-contract-partial-accept 2.2）──
+
+    def test_lenient_mixed_items_partial_accept(self):
+        """宽口径：单条非法跳过并收集错误，合法条目照常通过。"""
+        data = {"run_id": "evo-1", "degraded": None, "items": [
+            self._valid_item(title="甲"),
+            self._valid_item(title="越界", section="流程"),
+            self._valid_item(title="乙"),
+        ]}
+        result = read_contract(self._write_contract(data), lenient=True)
+        self.assertEqual([it["title"] for it in result["items"]], ["甲", "乙"])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["index"], 1)
+        self.assertIn("三值枚举", result["errors"][0]["message"])
+
+    def test_lenient_all_invalid_still_raises(self):
+        """宽口径不放大到全非法：全部条目非法仍整体拒绝（D3 fail-closed）。"""
+        data = {"run_id": "e", "items": [
+            self._valid_item(section="流程"),
+            self._valid_item(title=None),
+        ]}
+        with self.assertRaises(ContractError) as ctx:
+            read_contract(self._write_contract(data), lenient=True)
+        self.assertIn("全部 2 条条目契约非法", str(ctx.exception))
+
+    def test_lenient_per_error_kinds_collected(self):
+        """宽口径逐条错误收集：多类单条错误（缺 verdict/缺 title/id 非串）。"""
+        data = {"run_id": "e", "items": [
+            self._valid_item(title="好条目"),
+            {"project": "p", "date_section": "d", "section": "浪费",
+             "title": "t"},
+            {"project": "p", "date_section": "d", "section": "浪费",
+             "verdict": {"worth_spec": False}},
+            self._valid_item(title="坏id", id=3),
+        ]}
+        result = read_contract(self._write_contract(data), lenient=True)
+        self.assertEqual([it["title"] for it in result["items"]], ["好条目"])
+        self.assertEqual([e["index"] for e in result["errors"]], [1, 2, 3])
+        self.assertIn("verdict", result["errors"][0]["message"])
+        self.assertIn("title", result["errors"][1]["message"])
+        self.assertIn("id", result["errors"][2]["message"])
+
+    def test_default_call_behavior_unchanged(self):
+        """默认口径行为不变：同一混合产物默认调用整份拒绝、lenient 返回。"""
+        data = {"run_id": "e", "items": [
+            self._valid_item(), self._valid_item(section="流程")]}
+        with self.assertRaises(ContractError):
+            read_contract(self._write_contract(data))
+        result = read_contract(self._write_contract(data), lenient=True)
+        self.assertEqual(len(result["items"]), 1)
+
 
 class TestEvolutionSpecSummary(unittest.TestCase):
     """_spec_summary 摘要辅助。"""
