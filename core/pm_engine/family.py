@@ -245,6 +245,8 @@ class FamilyGovernor:
         config._normalize_transient_seconds / get_max_same_cause_redispatches
         的既有裁决：bool 显式排除（bool 是 int 子类）、整值浮点（``3.0``）
         按整数接受、非整值（含小数与非数字字符串）回退缺省并告警；
+        非有限浮点（YAML ``.nan``/``.inf``）同样回退（code-review item
+        bd02b5155058）——``int()`` 对其抛 ValueError/OverflowError；
         None 视为未配置沿用缺省、不留痕。
         """
         if raw is None:
@@ -256,7 +258,15 @@ class FamilyGovernor:
                 normalized, ok = raw, True
             elif isinstance(raw, float):
                 # 小数拒绝——int() 截断会静默收紧门限（同 item 4b349f62101e）。
-                normalized, ok = int(raw), raw.is_integer()
+                # 非有限浮点（YAML .nan/.inf）在 int() 处抛 ValueError/
+                # OverflowError 且不被任何捕获覆盖、穿透族谱门中断
+                # bug-found 主链（item bd02b5155058），故先以 is_integer()
+                # 短路取整——该谓词对非有限值恒 False（文档口径 finite
+                # with integral value），脏值落 WARNING 回退缺省，同构
+                # infra_breaker cooldown_minutes 的 isfinite 裁决。
+                ok = raw.is_integer()
+                if ok:
+                    normalized = int(raw)
             else:
                 try:
                     normalized, ok = int(str(raw).strip()), True
