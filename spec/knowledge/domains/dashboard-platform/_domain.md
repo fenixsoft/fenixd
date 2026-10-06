@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-10-07 02:15 UTC+8
+> 最后更新：2026-10-07 02:25 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建与按需生成类任务。
 
@@ -10,7 +10,7 @@
 | [dashboard-server](dashboard-server.md) | dashboard 服务端 | 2026-10-03 04:59 |
 | [fenix-dashboard-skill](fenix-dashboard-skill.md) | dashboard 技能入口 | 2026-10-03 04:59 |
 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（看门狗） | 2026-10-03 04:59 |
-| [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-03 04:59 |
+| [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-07 02:25 |
 | [v2-sse-bridge](v2-sse-bridge.md) | v2 SSE 桥（已随壳层退役） | 2026-10-03 04:59 |
 | [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher | 2026-10-03 04:59 |
 | [dashboard-log-offset-index](dashboard-log-offset-index.md) | 日志偏移索引 | 2026-10-03 04:59 |
@@ -18,6 +18,8 @@
 | [dashboard-data-modules](dashboard-data-modules.md) | 数据读取模块化 | 2026-10-03 04:59 |
 | [dashboard-read-path-performance](dashboard-read-path-performance.md) | 读路径性能优化 | 2026-10-06 07:44 |
 | [dashboard-overview-cache](dashboard-overview-cache.md) | /api/overview 结果缓存（TTL∨签名） | 2026-10-07 02:15 |
+| [dashboard-conditional-get](dashboard-conditional-get.md) | GET 读端点条件请求（ETag/304） | 2026-10-07 02:25 |
+| [dashboard-server-paging](dashboard-server-paging.md) | 读端点服务端分页 | 2026-10-07 02:25 |
 | [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 | 2026-10-03 04:59 |
 | [dashboard-live-session](dashboard-live-session.md) | 实时会话视图 | 2026-10-03 04:59 |
 | [session-composer](session-composer.md) | 会话输入控件（补全/草稿/键盘适配） | 2026-10-03 04:59 |

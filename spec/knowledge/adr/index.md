@@ -249,3 +249,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-241](ADR-241-archive-eviction-manifest-first-dual-source.md) | accepted | 归档条目迁出固定「先清单后活跃」顺序不变量（崩溃窗口只允许双源中间态、禁丢条目态），STATE.md 收敛为活跃集+归档清单 `.fenix/STATE.archive.md` 第二真源，已归档判定与全部读侧消费方双源合取活跃优先，统计恒活跃口径 |
 | [ADR-242](ADR-242-escalation-narrative-write-entry-pure-enhancement-fail-open.md) | accepted | 转人工裁决叙事挂告警写入口作纯增强字段（三段结构、不改结构化语义、机器消费方零感知），机械闸门零 LLM、失败 fail-open 至多一次硬超时——叙事是增强不是门禁，后续告警 LLM 增强必须沿用此边界 |
 | [ADR-243](ADR-243-llm-assist-single-shot-via-spawn-channel-no-direct-gateway.md) | accepted | 特性级 LLM 单发调用一律复用 agent spawn 通道（模型回退链+硬超时+依赖注入假通道测试），禁直连网关 HTTP 第二套凭据/UA/代理面、禁传高危旗标；高频批量场景须另立条目不得私开 HTTP 客户端 |
+| [ADR-244](ADR-244-dashboard-conditional-get-datasource-signature-dispatch-short-circuit.md) | accepted | dashboard GET 读端点条件请求通道：ETag=数据源全集 (mtime_ns,size) 签名哈希（禁响应体哈希、禁不完整签名）、协商短路在表驱动分派层先于 handler（兼容自含响应 handler）、签名缺失/抛错降级无条件 200（宁缺 304 不假 304+发头前复核防两趟读取错标）；后续新增 GET 端点必须注册签名函数，文件签名禁跨请求 memo stat |
