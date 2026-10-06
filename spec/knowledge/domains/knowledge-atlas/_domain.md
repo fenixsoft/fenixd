@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-06 07:29 UTC+8
+> 最后更新：2026-10-07 03:55 UTC+8
 
 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线、ADR 决策索引、项目知识页签与配置开关等机制能力，加存量回填、周期体检、Graphify 关系图等维护车道。归档 SPEC 承担历史职责，真相源只装当前生效的业务规则，两者以溯源链接互指。本域能力页清单如下。
 
@@ -15,5 +15,5 @@
 | [knowledge-backfill](knowledge-backfill.md) | 存量归档批量回填车道（域骨架自举、双维度台账断点、批间校验提交、回填期单写者） | 2026-10-05 03:38 |
 | [knowledge-backfill-chain-aggregation](knowledge-backfill-chain-aggregation.md) | 回填聚合蒸馏语义（链索引、能力一次成文最终态、台账 v2、增量排队） | 2026-10-05 03:38 |
 | [knowledge-prehistoric-bootstrap](knowledge-prehistoric-bootstrap.md) | 史前能力复原（git 考古求差、史前页形态、marker origin 契约） | 2026-10-05 03:38 |
-| [knowledge-audit](knowledge-audit.md) | 周期 audit 体检（五类病灶、机械自修/语义转写分级处置、疑点台账与内容豁免、二轮升级、规模趋势） | 2026-10-06 07:29 |
+| [knowledge-audit](knowledge-audit.md) | 周期 audit 体检（五类病灶、机械自修/语义转写分级处置、疑点台账与内容豁免、二轮升级、超龄 disputed 注记、仲裁清单当日消费、规模趋势） | 2026-10-07 03:55 |
 | [knowledge-graph](knowledge-graph.md) | Graphify 关系图每日生成（fail-open、探测端点点亮、graph/ 三件套） | 2026-10-05 03:02 |
