@@ -48,7 +48,12 @@ from .admin_store import (
     evidence_project,
     _fsync_parent_dir,
 )
-from .alert_lifecycle import attach_trigger, find_resolvable
+from .alert_lifecycle import (
+    attach_trigger,
+    find_resolvable,
+    find_self_healable,
+    DEFAULT_SELF_HEAL_QUIET_MINUTES,
+)
 
 # code-review a132ca295b06：family_explosion 放行 / infra 回拨的处置文本豁免
 # 解析（_WAIVER_* / _RECLASSIFY_* 常量 + 纯判定）单源在 admin_monitor_text_rules，
@@ -2215,31 +2220,89 @@ class AdminMonitor:
         无 trigger 字段的 verify_fail_escalation / blocked_stuck 告警按
         signal_type 推断 condition 走同一判定路径，resolve_note 注明
         「存量回填」。
+
+        add-alert-self-heal-marking 3.1 双通道扩展：既有 spec 附着判定不变
+        （通道一）；新通道（通道二）把全量告警（含 spec-less）与当前时刻
+        注入自愈判定（alert_lifecycle.find_self_healable），产出 resolutions
+        经 AdminStore.auto_self_heal 写回——spec-less 瞬态族签名安静超窗后
+        标「已自愈」。两通道互斥不双重判定（find_self_healable 跳过既有
+        条件在册条目）；各自 try 兜底，一段失败不阻断另一段与巡检（对齐
+        同函数既有风格）。
         """
         records = self.store.read_all()
-        pending = [r for r in records if r.get("kind") == ESCALATION and not r.get("handled")]
-        if not pending:
-            self._lifecycle_backfilled = True
-            return 0  # 无待闭环告警：零写回
-        backfill = not self._lifecycle_backfilled
-        self._lifecycle_backfilled = True
-        resolvable = find_resolvable(pending, specs, backfill=backfill)
-        if not resolvable:
-            return 0
-        resolved = self.store.auto_resolve(resolvable)
-        for item in resolvable:
-            self.logger.info(
-                "admin_monitor",
-                f"alert auto-resolved: id={item.get('id')} "
-                f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
-            )
-        if resolved:
+        resolved_total = 0
+
+        # ── 通道一：既有 spec 附着条件判定（语义不变）────────────────
+        try:
+            pending = [
+                r
+                for r in records
+                if r.get("kind") == ESCALATION and not r.get("handled")
+            ]
+            if not pending:
+                self._lifecycle_backfilled = True  # 无待闭环告警：通道一零写回
+            else:
+                backfill = not self._lifecycle_backfilled
+                self._lifecycle_backfilled = True
+                resolvable = find_resolvable(pending, specs, backfill=backfill)
+                if resolvable:
+                    resolved = self.store.auto_resolve(resolvable)
+                    for item in resolvable:
+                        self.logger.info(
+                            "admin_monitor",
+                            f"alert auto-resolved: id={item.get('id')} "
+                            f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
+                        )
+                    if resolved:
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"alert lifecycle: auto-resolved {resolved}/{len(resolvable)} "
+                            f"stale alert(s)" + ("（存量回填）" if backfill else ""),
+                        )
+                    resolved_total += resolved
+        except Exception as e:
             self.logger.warning(
-                "admin_monitor",
-                f"alert lifecycle: auto-resolved {resolved}/{len(resolvable)} "
-                f"stale alert(s)" + ("（存量回填）" if backfill else ""),
+                "admin_monitor", f"alert lifecycle spec 附着通道失败（跳过）: {e}"
             )
-        return resolved
+
+        # ── 通道二：spec-less 瞬态族自愈（add-alert-self-heal-marking）──
+        try:
+            healable = find_self_healable(
+                records, time.time(), self._self_heal_quiet_minutes()
+            )
+            if healable:
+                healed = self.store.auto_self_heal(healable)
+                for item in healable:
+                    self.logger.info(
+                        "admin_monitor",
+                        f"alert self-healed: id={item.get('id')} "
+                        f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
+                    )
+                if healed:
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"alert lifecycle: self-healed {healed}/{len(healable)} "
+                        f"transient alert(s)（已自愈）",
+                    )
+                resolved_total += healed
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor", f"alert lifecycle 自愈通道失败（跳过）: {e}"
+            )
+        return resolved_total
+
+    def _self_heal_quiet_minutes(self) -> int:
+        """告警自愈安静窗口（分钟，add-alert-self-heal-marking 3.2）。
+
+        取 ``admin.self_heal_quiet_minutes``（get_admin_config 已归一：缺省
+        1440、脏值回退）；此处再兜一层——缺失/bool/非 int/≤0 一律回退
+        1440，巡检路径 MUST NOT 因脏值中断（与 ``_review_stall_minutes``
+        同款容错口径）。
+        """
+        raw = self.admin_cfg.get("self_heal_quiet_minutes")
+        if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+            return DEFAULT_SELF_HEAL_QUIET_MINUTES
+        return raw
 
     # ── 检测规则 ────────────────────────────────────────────────
 
@@ -3738,17 +3801,26 @@ class AdminMonitor:
 
     @staticmethod
     def _signal_record(signal: dict, escalated: bool) -> dict:
-        """构造待落库的 signal 记录（_handle_signal 两处 append 共用的字段集）。"""
-        return {
-            "kind": SIGNAL,
-            "signal_type": signal.get("signal_type"),
-            "spec": signal.get("spec"),
-            "severity": signal.get("severity"),
-            "description": signal.get("description"),
-            "evidence": signal.get("evidence"),
-            "recommended_action": signal.get("recommended_action"),
-            "escalated": escalated,
-        }
+        """构造待落库的 signal 记录（_handle_signal 两处 append 共用的字段集）。
+
+        add-alert-self-heal-marking 4.1：经 attach_trigger 统一埋点——
+        daemon_errors 等在册类型的 signal 记落 trigger，自愈判定以 trigger
+        与注册表双轨识别；未注册类型 attach_trigger 原样返回（无感知）。
+        merge_signal 既有 last_seen 复现刷新逻辑不受影响（合并仅改写
+        last_seen，不动 trigger）。
+        """
+        return attach_trigger(
+            {
+                "kind": SIGNAL,
+                "signal_type": signal.get("signal_type"),
+                "spec": signal.get("spec"),
+                "severity": signal.get("severity"),
+                "description": signal.get("description"),
+                "evidence": signal.get("evidence"),
+                "recommended_action": signal.get("recommended_action"),
+                "escalated": escalated,
+            }
+        )
 
     def _fixture_invocation_suppressed(self, signal: dict) -> bool:
         """fixture 标记项目的自动召唤抑制（alert-noise-governance 5.1）。

@@ -49,8 +49,23 @@ export function AlertTitle({
         {SEV_LABEL[item.severity || ''] || item.severity || '未知'}
       </Tag>
       {resolved ? (
-        <Tag style={{ marginInlineEnd: 0 }} color={item.handled_by === 'auto-resolve' ? 'cyan' : 'geekblue'}>
-          {item.handled_by === 'auto-resolve' ? '🤖 自动解决' : '👤 人工处理'}
+        <Tag
+          style={{ marginInlineEnd: 0 }}
+          color={
+            item.handled_by === 'auto-resolve'
+              ? 'cyan'
+              : item.handled_by === 'auto-self-heal'
+                ? 'green'
+                : 'geekblue'
+          }
+        >
+          {/* add-alert-self-heal-marking 5.3：auto-self-heal（自愈闭环）独立
+              徽标文案，区别于既有 auto-resolve（自动解决） */}
+          {item.handled_by === 'auto-resolve'
+            ? '🤖 自动解决'
+            : item.handled_by === 'auto-self-heal'
+              ? '♻️ 已自愈'
+              : '👤 人工处理'}
         </Tag>
       ) : null}
       {item.project ? <Tag style={{ marginInlineEnd: 0 }}>{item.project}</Tag> : null}

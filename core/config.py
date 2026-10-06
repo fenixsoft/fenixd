@@ -13,6 +13,8 @@ import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .alert_lifecycle import DEFAULT_SELF_HEAL_QUIET_MINUTES
+
 # 用户级配置目录：与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定
 USER_CONFIG_DIR = Path.home() / ".fenix"
 
@@ -1696,6 +1698,8 @@ class ConfigLoader:
           网关 stall 实测 p90≈55s、max≈188s，60s 把长尾全判死）
         - narrative_model: None（叙事模型，None=回退链 admin.agent_model →
           框架默认）
+        - self_heal_quiet_minutes: 1440（瞬态告警签名安静多久后标「已自愈」，
+          add-alert-self-heal-marking；bool/非 int/≤0 回缺省）
         """
         admin = cls._segment_or_empty(config, "admin")
         # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
@@ -1781,6 +1785,26 @@ class ConfigLoader:
             if narrative_timeout is None or narrative_timeout <= 0:
                 narrative_timeout = 180
 
+        # add-alert-self-heal-marking 3.2：告警自愈安静窗口（分钟）——瞬态
+        # 告警签名安静多久后标「已自愈」。缺省 1440（design D4：盖过跨日
+        # 同刻复发节律）；bool / 负数 / 零 / 非 int / 非整值浮点回缺省，与
+        # 上方 narrative_timeout 同口径（整值浮点仍按整数接受）。
+        self_heal_quiet_raw = admin.get("self_heal_quiet_minutes")
+        if isinstance(self_heal_quiet_raw, bool) or (
+            isinstance(self_heal_quiet_raw, float)
+            and not self_heal_quiet_raw.is_integer()
+        ):
+            self_heal_quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
+        else:
+            self_heal_quiet_minutes = _num(
+                self_heal_quiet_raw, DEFAULT_SELF_HEAL_QUIET_MINUTES, int
+            )
+            if (
+                self_heal_quiet_minutes is None
+                or self_heal_quiet_minutes <= 0
+            ):
+                self_heal_quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
+
         return {
             "enabled": enabled,
             "interval_minutes": _num(admin.get("interval_minutes"), 5.0, float),
@@ -1834,6 +1858,9 @@ class ConfigLoader:
             "narrative_enabled": narrative_enabled,
             "narrative_timeout_seconds": narrative_timeout,
             "narrative_model": admin.get("narrative_model") or None,
+            # add-alert-self-heal-marking 3.2：瞬态告警自愈安静窗口（分钟，
+            # 缺省 1440，脏值回退——见上方取值段）
+            "self_heal_quiet_minutes": self_heal_quiet_minutes,
         }
 
     # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────

@@ -76,17 +76,26 @@ def get_unhandled_alerts(project_root) -> list:
 def get_resolved_alerts(project_root, limit: int = 50) -> list:
     """读取项目已处理的升级告警（最新在前，add-alert-auto-resolve D5）。
 
-    供管理员视图「已解决」折叠区展示：含 handled_by（区分自动解决/人工处理）、
-    resolve_note（解除/处置依据）与 handled_at。仍走 AdminStore.read_all 既有
-    读取路径（不绕锁、不改存储格式）。已解决告警同样合并侧车 narrative
-    （历史完整性：人工已处置后补叙照常落盘，3.2）。
+    供管理员视图「已解决」折叠区展示：含 handled_by（区分自动解决/人工处理/
+    已自愈）、resolve_note（解除/处置依据）与 handled_at。仍走
+    AdminStore.read_all 既有读取路径（不绕锁、不改存储格式）。已解决告警同样
+    合并侧车 narrative（历史完整性：人工已处置后补叙照常落盘，3.2）。
+
+    add-alert-self-heal-marking 5.3：自愈收口的 signal 条目一并透出（
+    handled_by="auto-self-heal" 才纳入——人工 mark_signal_handled 的信号不进
+    本视图，不扩既有语义），配合待处理视图的既有 handled 过滤实现「待处理
+    不再出现已自愈条目、已处理视图自然收纳」。
     """
-    from core.admin_store import AdminStore, ESCALATION
+    from core.admin_store import AdminStore, AUTO_SELF_HEAL_BY, ESCALATION, SIGNAL
 
     resolved = [
         r
         for r in AdminStore(project_root).read_all()
-        if r.get("kind") == ESCALATION and r.get("handled")
+        if r.get("handled")
+        and (
+            r.get("kind") == ESCALATION
+            or (r.get("kind") == SIGNAL and r.get("handled_by") == AUTO_SELF_HEAL_BY)
+        )
     ]
     return _merge_narrative_sidecars(project_root, resolved[:limit])
 
