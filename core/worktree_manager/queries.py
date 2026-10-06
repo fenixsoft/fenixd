@@ -109,6 +109,13 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "ls-tree", "-z", branch, "--", rel_path],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（同包 repair_site.py 惯例，本文件全部 text=True
+                # 子进程统一固化）：text=True 缺省按 locale 解码，非 UTF-8
+                # locale 下非 ASCII 输出（refname/worktree 路径等）抛
+                # UnicodeDecodeError（ValueError 子类），逃逸各调用点
+                # (TimeoutExpired, OSError) 守卫沿调度/停机链路抛穿。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if kind.returncode != 0 or not kind.stdout:
@@ -222,6 +229,8 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if verify.returncode != 0:
@@ -239,6 +248,8 @@ class G8QueryMixin:
                     ["git", "-C", str(self.project_root), "worktree", "prune"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
             except (subprocess.TimeoutExpired, OSError):
@@ -255,6 +266,8 @@ class G8QueryMixin:
                     ["git", "-C", str(self.project_root), "worktree", "add", str(wt_path), branch],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                     # 仅本命令固化 C locale：git gettext 在非 C locale 下会把
                     # "already exists" 翻译成本地化文案，下面的子串匹配落空
@@ -310,6 +323,8 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -358,6 +373,8 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -440,6 +457,8 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -527,6 +546,8 @@ class G8QueryMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=15,
                 )
                 if res.returncode != 0:
@@ -600,6 +621,8 @@ class G8QueryMixin:
                         ],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=15,
                     )
                     if ahead.returncode != 0:
@@ -723,6 +746,8 @@ class G8QueryMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -744,6 +769,8 @@ class G8QueryMixin:
                     ["git", "-C", str(self.project_root), "rev-list", "--count", f"{base}..{cand}"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=15,
                 )
             except (subprocess.TimeoutExpired, OSError):
@@ -769,6 +796,8 @@ class G8QueryMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=15,
                 )
             except (subprocess.TimeoutExpired, OSError):
@@ -842,6 +871,8 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             return verify.returncode == 0
@@ -863,6 +894,8 @@ class G8QueryMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if rev.returncode != 0:
