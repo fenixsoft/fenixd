@@ -1214,19 +1214,27 @@ def read_code_review_state(project_root) -> dict:
 
 
 def save_code_review_state(project_root, date_str: str) -> None:
-    """写入 ``.fenix/code_review_state.json`` 的 last_run_date（同日防重）。
+    """写入 ``.fenix/code_review_state.json``（同日防重 + 窗口水位）。
 
     与自省状态文件解耦（MUST NOT 复用 self_review_state.json 的
     last_run_date——会被同轮自省检查点写为今天导致本车道永不派发）。
+
+    add-code-review-run-at 3.1：新增 ``last_run_at``（本轮审查调度收尾时刻，
+    aware ISO8601 本地时区表述，与 ``self_review_state.last_run_at`` 一致，
+    读侧 ``_iso_to_aware_dt`` 直读）——审查窗口水位归审查车道自身，
+    ``compute_window`` 优先读它（解耦触发时点后防「自省先跑覆写窗口」的
+    覆盖缺口）；兼容保留 ``last_run_date`` 自然日防重字段。
     """
     path = _code_review_state_path(project_root)
+    now = now_local()
     try:
         _atomic_write(
             path,
             json.dumps(
                 {
                     "last_run_date": date_str,
-                    "updated_at": now_local().isoformat(),  # SPEC-B 批④收拢
+                    "last_run_at": now.isoformat(),  # add-code-review-run-at 3.1 水位
+                    "updated_at": now.isoformat(),  # SPEC-B 批④收拢
                 },
                 ensure_ascii=False,
                 indent=2,
