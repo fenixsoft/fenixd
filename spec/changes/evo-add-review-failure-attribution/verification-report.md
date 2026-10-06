@@ -35,3 +35,10 @@
 | breaker-cooldown-expiry-first-success-clears | tasks 2.3：『冷却到期后首次派发成功』路径 record_success 清零生效——condition() 契约（infra_breaker.py）半开恢复保留 count（恢复后首个失败会立即重新熔断），首个成功经 record_success 清零才恢复『连续』语义。探针以 cooldown_minutes=0.0001（6ms，合法正值；<=0 被范围守卫回退 30）触发真实到期恢复→派发成功→断言保留计数清零。变更前预期 FAIL（count 保留 3）。 | pass | 0/5 | - |
 | breaker-shortcircuit-no-spurious-success | tasks 2.3/design D3 守卫：熔断窗口内派发被短路（spec_review.py:251-266『评审派发熔断短路』）时未实际派发——不得调用 record_success（短路尝试不计成功）、不清零、不解除 broken。变更前 PASS（现状无 record_success 调用），接线后必须保持 PASS（防止接线误落到 dispatch 入口）。 | pass | 0/5 | - |
 | existing-review-lane-suites-regression | tasks 3.1-3.3 修改三个既有测试文件后的回归门：评审车道既有锁定行为全量不回退（基线 58 passed，1.55s 实测）。断言锚点为 pytest -v 真实输出形态『<node-id> PASSED』（unittest 用例无 parametrize 后缀，实测照抄）：结构化字段携带/429 熔断阈值/跨夜指纹归一/run 失败收口四个本 SPEC 邻接锁定用例。 | pass | 0/6 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
