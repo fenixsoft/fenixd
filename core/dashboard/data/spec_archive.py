@@ -50,9 +50,11 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
       spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
     - 目录移动失败（OSError）：返回含 ``error``（``归档移动失败: ...``）的
       失败 dict（不裸抛异常）；STATE.md 尚未改动、目录留在原位。
-    - STATE 剔除失败（OSError 或其他异常）：尽力把已归档目录移回
-      ``spec/changes/<name>`` 并返回含 ``error`` 的失败 dict（不裸抛异常）；
-      回滚亦失败时 ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
+    - STATE 剔除失败（OSError 或其他异常）：STATE 条目尚未删成功时尽力把
+      已归档目录移回 ``spec/changes/<name>`` 并返回含 ``error`` 的失败 dict
+      （不裸抛异常）；条目已删成功而仅清单小节移除失败时目录保持在 archive
+      （与已删条目自洽，重试可完成清单清理），不回滚。回滚亦失败时
+      ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
     - 归档同名冲突（极小概率）：在名字追加微秒后缀重试，直至成功。
 
     Returns:
@@ -214,12 +216,19 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             # 清单写入同锁，避免并发竞态，design D6）
             sm.remove_archived_entry(spec)
     # 非 OSError 异常（STATE.md 解析/flock 等环节，异常面同 auto_archive_check
-    # 兜底注释的确认）同样不能裸抛：目录此时可能已移入 archive，任何异常路径
-    # 都先尽力回滚目录，再以结构化 error dict 告知调用方（code-review item
-    # f9e4288dd75f）
+    # 兜底注释的确认）同样不能裸抛：目录此时可能已移入 archive，STATE 条目
+    # 未删成功时尽力回滚目录，再以结构化 error dict 告知调用方（code-review
+    # item f9e4288dd75f）
     except Exception as e:
         rollback_err = None
-        if archived:
+        # 仅在 STATE 条目未删成功时回滚目录（code-review item f7777b34d0fc）：
+        # remove_spec 已成功而清单小节移除失败时，把目录移回活跃区会卡进
+        # 「STATE 无条目 + 目录在 changes/ + 清单小节残留」的不可收敛半态
+        # （引擎按 STATE 派发不触及该 spec，auto_archive_check/backfill 只遍历
+        # parse_state 收敛不了，is_spec_archived 因活跃目录存在判 False）；
+        # 目录留在 archive 与已删条目、清单旧条目的可见性口径自洽，重试即可
+        # 完成清单清理。
+        if archived and not state_entry_removed:
             try:
                 shutil.move(archive_path, str(spec_dir))
                 archived = False
