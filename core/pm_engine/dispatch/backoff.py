@@ -101,16 +101,23 @@ class BBackoffMixin:
         from core.timelib import from_epoch
 
         until_iso = from_epoch(until).isoformat()
+        # 本轮写入值提为局部变量（code-review item 802d5955dd68）：序列耗尽分支
+        # 组装 dispatch_stalled 证据时取本轮值，而非 read_one 的更新前旧快照
+        # （旧快照取到的是上一轮冲突时间与上一轮退避文案）。
+        conflict_at = _dt.now(_tz.utc).isoformat()
+        error_text = (
+            f"worktree already active (lock conflict); backoff until {until_iso}"
+        )
 
         # 不翻转状态：spec 保持 ready，仅记录退避元数据
         self._pm.state_machine.update_spec(
             spec_name,
             {
-                "error": f"worktree already active (lock conflict); backoff until {until_iso}",
+                "error": error_text,
                 # _lock_conflict_count 已由上方 bump_counters 原子递增落盘，
                 # 此处不再并写（防并发写回互相覆盖丢增量）
                 "_dispatch_backoff_until": until,
-                "_last_lock_conflict_at": _dt.now(_tz.utc).isoformat(),
+                "_last_lock_conflict_at": conflict_at,
             },
         )
 
@@ -123,8 +130,8 @@ class BBackoffMixin:
             # orphaned_state 等滞留探测随之静默；error 文案亦按等待人工口径记录。
             evidence = (
                 f"lock conflicts={count} (backoff schedule {list(schedule)}s exhausted), "
-                f"last conflict at {spec.get('_last_lock_conflict_at') or 'n/a'}, "
-                f"error={str(spec.get('error') or '')[:120]}"
+                f"last conflict at {conflict_at}, "
+                f"error={error_text[:120]}"
             )
             self._pm.logger.error(
                 "pm_engine",
