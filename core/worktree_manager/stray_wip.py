@@ -669,6 +669,36 @@ class MainTreeStrayWipSweeper:
 
     # ── 告警（core/code_fix._write_defer_orphan_alert 同型）─────────────
 
+    def _prior_stray_rounds(self, files) -> int:
+        """同文件历史 maintree_stray_wip_stale 告警/处置轮数（D2 复发计数）。
+
+        evo-recurring-stray-remediation 2.1：以 AdminStore 既有 SIGNAL 记录
+        为台账（design D2 不另建台账文件）——逐条解析 evidence「文件清单(N):」
+        段（与 admin_actions.parse_stray_wip_manifest 同一段级口径，单源复用
+        防 manifest 形态漂移后双处解析失配），与本次告警文件清单求交，非空即
+        记一轮。store 不可读/解析链不可用按 0 处理——退化为「首次处置」语义，
+        不阻断告警发射（复发检索是增强信息，不是告警门槛）。
+        """
+        if not files:
+            return 0
+        from core.admin_store import SIGNAL, AdminStore
+
+        try:
+            from core.dashboard.data.admin_actions import parse_stray_wip_manifest
+
+            records = AdminStore(self.project_root, logger=None).read_all()
+        except Exception:  # noqa: BLE001 — 复发检索失败不阻断告警发射
+            return 0
+        cur = {str(f) for f in files}
+        rounds = 0
+        for rec in records:
+            if (rec.get("kind") != SIGNAL
+                    or rec.get("signal_type") != SIGNAL_TYPE):
+                continue
+            if cur.intersection(parse_stray_wip_manifest(rec.get("evidence"))):
+                rounds += 1
+        return rounds
+
     def _write_alert(self, entry, fp, info, grace, elapsed_min) -> bool:
         """宽限耗尽升级的一次性 major 告警（经 AdminStore.append 落盘）。
 
@@ -697,12 +727,47 @@ class MainTreeStrayWipSweeper:
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
             f"告警发出前后主树工作区状态未变"
         )
+        # evo-recurring-stray-remediation 2.1：复发识别（design D2）——同文件
+        # 历史 maintree_stray_wip_stale 告警/处置计数随 evidence 下发，使
+        # 「第 2 度处置起必须根治」的义务在处置时点可判定，而非依赖 admin
+        # 自行考古历史记录。
+        prior_rounds = self._prior_stray_rounds(files)
+        if prior_rounds >= 1:
+            evidence += (
+                f"; 复发注记: 同文件 maintree_stray_wip_stale 已 "
+                f"{prior_rounds + 1} 度处置（历史告警/处置 {prior_rounds} 轮，"
+                "本条为复发再告警）——复发型主树散件，第 2 度处置起 MUST 当场"
+                "根治：执行裁决选项 untrack_stray_wip（git rm --cached 出库 + "
+                ".gitignore 追加 + 独立提交，此后该路径改动由 ignore 规则自然"
+                "吸收、不再产生散件告警）或等效操作，或在处置记录挂显式跟踪项"
+                "（写明跟踪载体与复查时机）；MUST NOT 再以仅提交收尾"
+            )
         store = AdminStore(self.project_root, logger=None)
         # evo-add-commit-stray-wip-choice 2.2：发射点快照 choices（照
         # mergeback.py 先例）。注册表为单源（缺键回退），告警是历史事实，
         # 注册表演进不回写历史告警的选项集。局部导入避免模块级环依赖。
         from core.dashboard.data.adjudication_choices import choices_for
 
+        if prior_rounds >= 1:
+            # 复发型：recommended_action 换根治优先口径（铁律义务随告警
+            # 下发，administrator.md 铁律区同源约束）。
+            recommended = (
+                "复发型主树散件（同文件第 2 度处置起）：MUST 当场执行根治——"
+                "执行裁决选项 untrack_stray_wip 一键出库（git rm --cached + "
+                ".gitignore 追加 + 独立提交）或等效操作，或在处置记录挂显式"
+                "跟踪项；MUST NOT 以仅提交第三次收尾。文件清单与复发计数见 "
+                "evidence。同指纹一次性告警，改动消失后盘点状态自动复位"
+            )
+        else:
+            recommended = (
+                "人工核对主树这些未提交改动的归属后，提交（git add/commit）"
+                "或 stash（git stash push）主树这些改动；或执行裁决选项 "
+                "commit_stray_wip 一键提交信号清单内文件（与 stash 类动作"
+                "互斥，处置记录附提交 hash）。文件清单与滞留起点见 "
+                "evidence（worktree 分支型在飞车道之外的主树直改形态会被"
+                "按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后"
+                "盘点状态自动复位"
+            )
         rec = store.append(
             {
                 "kind": SIGNAL,
@@ -718,15 +783,7 @@ class MainTreeStrayWipSweeper:
                 ),
                 "evidence": evidence,
                 "source": "maintree-stray-wip-sweep",
-                "recommended_action": (
-                    "人工核对主树这些未提交改动的归属后，提交（git add/commit）"
-                    "或 stash（git stash push）主树这些改动；或执行裁决选项 "
-                    "commit_stray_wip 一键提交信号清单内文件（与 stash 类动作"
-                    "互斥，处置记录附提交 hash）。文件清单与滞留起点见 "
-                    "evidence（worktree 分支型在飞车道之外的主树直改形态会被"
-                    "按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后"
-                    "盘点状态自动复位"
-                ),
+                "recommended_action": recommended,
             }
         )
         if rec is None:
