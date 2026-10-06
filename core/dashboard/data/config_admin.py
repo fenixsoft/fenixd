@@ -780,6 +780,11 @@ def _config_file_sig(path: Path):
         return None
     return (st.st_mtime_ns, st.st_size)
 
+
+# 公开访问面（code-review item 5d821006cf18）：summary.py 跨组引用改用公开名，
+# 与 _config_file_sig 同一函数对象单源绑定。
+config_file_sig = _config_file_sig
+
 def read_effective_config(project_root) -> dict:
     """项目模式有效配置视图：受管键取 resolve_config 有效合并值 + sources 标注。
 
@@ -2416,6 +2421,11 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 yaml.safe_dump(
                     merged, f, allow_unicode=True, default_flow_style=False, sort_keys=False
                 )
+                # code-review item f264136fda60：replace 前 flush+fsync（仓库原子
+                # 写惯例，与 _atomic_write_text / _atomic_write_request 同口径），
+                # 防掉电后 rename 落盘空/半截 yaml 成正式配置
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, config_path)
         except Exception:
             try:
@@ -2645,6 +2655,45 @@ _SYNC_PAGE_APPLY_PREDICATES = {
     },
 }
 
+def _pred_hhmm(v) -> bool:
+    """run_at 谓词（延迟 import，与合并分支内局部 import 同款）。"""
+    from core.config import ConfigLoader
+
+    return ConfigLoader.is_valid_hhmm(v)
+
+
+# code-review item 002d3c8a7fb0：sync 以整段子 dict 构 patch 的键
+# （verify.serving_reclaim / admin.code_review / admin.code_review_fix），
+# _deep_merge_managed 对应合并分支只应用表内白名单子键——段内未知键、
+# 显式 null 不落盘，synced 回执若原样返回构造 patch 即虚报已同步
+# （fd7178c8666c / 46a887dedf6a / b331b2c9ae73 同款「synced 与实际落盘
+# 不一致」假成功的残余面）。谓词与对应合并分支逐键同口径，synced 回执
+# 按本表裁剪（在 write_config 之后裁：已知子键非法值仍由其前置校验
+# 直接拒绝，不改变「不剔除、不假成功」语义）。其余受管键均为标量键或
+# 整体替换（llm.providers / agents.models），回执天然与落盘一致，不入表。
+_SYNC_DICT_SUBKEY_APPLY = {
+    ("verify", "serving_reclaim"): {
+        "enabled": lambda v: isinstance(v, bool),
+    },
+    ("admin", "code_review"): {
+        "enabled": lambda v: isinstance(v, bool),
+        "max_files": lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+        "scope": lambda v: v in ("window", "full"),
+        "stall_alert_minutes": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0
+        ),
+        "run_at": _pred_hhmm,
+    },
+    ("admin", "code_review_fix"): {
+        "enabled": lambda v: isinstance(v, bool),
+        "batch_size": lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+        "targeted_retry_max": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 5
+        ),
+        "targeted_regression": lambda v: isinstance(v, bool),
+    },
+}
+
 def sync_config_from_user(project_root, page: str) -> dict:
     """把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级配置。
 
@@ -2721,6 +2770,20 @@ def sync_config_from_user(project_root, page: str) -> dict:
         }
 
     result = write_config(project_root, patch, scope="project")
+    if result["ok"]:
+        # code-review item 002d3c8a7fb0：synced 回执按 _deep_merge_managed 实际
+        # 应用口径逐键裁剪整段子对象（段内未知键、显式 null 不落盘，原样回执
+        # 即虚报已同步）。裁剪在 write_config 成功后进行，不影响其前置校验
+        # （已知子键非法值仍被直接拒绝，不剔除、不假成功）。
+        for _sec, _keys_patch in patch.items():
+            for _pk in _keys_patch:
+                _sub_apply = _SYNC_DICT_SUBKEY_APPLY.get((_sec, _pk))
+                if _sub_apply is not None and isinstance(_keys_patch[_pk], dict):
+                    _keys_patch[_pk] = {
+                        _sk: _sv
+                        for _sk, _sv in _keys_patch[_pk].items()
+                        if _sk in _sub_apply and _sub_apply[_sk](_sv)
+                    }
     return {
         "ok": result["ok"],
         "error": result.get("error"),
@@ -2796,6 +2859,10 @@ def clear_project_page_keys(project_root, page: str) -> dict:
                     yaml.safe_dump(
                         raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False
                     )
+                    # code-review item f264136fda60：replace 前 flush+fsync（仓库
+                    # 原子写惯例，与 write_config 同口径），防掉电后半截 yaml 换入
+                    f.flush()
+                    os.fsync(f.fileno())
                 os.replace(tmp_path, config_path)
             except Exception:
                 try:
