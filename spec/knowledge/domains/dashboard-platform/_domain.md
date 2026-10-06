@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-10-06 07:44 UTC+8
+> 最后更新：2026-10-07 02:15 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建与按需生成类任务。
 
@@ -17,6 +17,7 @@
 | [dashboard-spec-summary-index](dashboard-spec-summary-index.md) | SPEC 摘要索引 | 2026-10-03 04:59 |
 | [dashboard-data-modules](dashboard-data-modules.md) | 数据读取模块化 | 2026-10-03 04:59 |
 | [dashboard-read-path-performance](dashboard-read-path-performance.md) | 读路径性能优化 | 2026-10-06 07:44 |
+| [dashboard-overview-cache](dashboard-overview-cache.md) | /api/overview 结果缓存（TTL∨签名） | 2026-10-07 02:15 |
 | [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 | 2026-10-03 04:59 |
 | [dashboard-live-session](dashboard-live-session.md) | 实时会话视图 | 2026-10-03 04:59 |
 | [session-composer](session-composer.md) | 会话输入控件（补全/草稿/键盘适配） | 2026-10-03 04:59 |
