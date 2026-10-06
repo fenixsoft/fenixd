@@ -3241,11 +3241,23 @@ class AdminMonitor:
                 continue
             # run 在飞判定：run 文件写活动在宽限窗内，或 worktree agent 进程
             # 存活（长工具调用窗口内 run 文件可数分钟不落笔，进程判据兜住——
-            # 与 spec_is_undriven 的 ①② 条同源判据，口径不漂移）。
-            if not _has_recent_spec_run(
-                self.project_root, name, now, ORPHANED_RUN_GRACE_SECONDS
-            ) and not _pgrep_live_worktree(name):
-                continue
+            # 与 spec_is_undriven 的 ①② 条同源判据，口径不漂移）。判定消费每轮
+            # runs 快照与 pgrep 缓存（code-review item 6937d0f31901，与
+            # _detect_orphaned_state 同款消费形态）：目录 glob+stat 与 pgrep
+            # 子进程派生同轮内与 _detect_stuck/_detect_orphaned_state 共用，
+            # 不再逐 spec 重复全量扫描；pgrep 仍惰性派生（run 判据命中即免），
+            # 命中缓存后同轮同 spec 幂等（spec_is_undriven 同款写法）。
+            if not _runs_activity_recent(
+                self._round_runs_activity(), name, now, ORPHANED_RUN_GRACE_SECONDS
+            ):
+                pgrep_cache = self._round_pgrep_cache()
+                if name in pgrep_cache:
+                    alive = pgrep_cache[name]
+                else:
+                    alive = _pgrep_live_worktree(name)
+                    pgrep_cache[name] = alive
+                if not alive:
+                    continue
             try:
                 from core.worktree_manager.mergeback import (
                     detect_spec_amended_inflight,
@@ -3376,6 +3388,17 @@ class AdminMonitor:
         # 记录指纹上次唤起时间戳（3.1「生命周期内用内存时间戳」）
         for fp, *_ in escalating:
             self._daemon_fp_escalated_at[fp] = now
+        # 容量上限（code-review item e6516ce88dc9）：与姊妹记忆
+        # _daemon_fp_last_failure 同款封顶（DAEMON_ERROR_FP_MEMORY_LIMIT，超限
+        # 按插入序淘汰最早一半）——本 dict 此前任何路径都不淘汰，长驻 daemon
+        # 遇大量不同骨架的瞬时错误时单调增长（实例内存防无界增长，与跨日记忆
+        # 治理口径一致）；「已知指纹」判定（_daemon_fp_known 成员查询）语义
+        # 不变，被淘汰的老指纹冷却对账回落 store 既有记录路径（fail-open：
+        # 最坏重启冷却窗内多召唤一次）。
+        escalated_at = self._daemon_fp_escalated_at
+        if len(escalated_at) > DAEMON_ERROR_FP_MEMORY_LIMIT:
+            for k in list(escalated_at)[: DAEMON_ERROR_FP_MEMORY_LIMIT // 2]:
+                escalated_at.pop(k, None)
         if len(escalating) == 1:
             return [self._make_daemon_error_signal(*escalating[0])]
         # 同轮孪生/成对指纹合并（3.2）：一条召唤信号、一次 Administrator run
@@ -4396,7 +4419,16 @@ class AdminMonitor:
                 continue
             spec = pending.get("spec")
             sig_type = pending.get("signal_type")
-            if self.store.unhandled_for(spec, sig_type) is not None:
+            # 组 spec 记法先归一（code-review item eec0928bc868，同
+            # _converge_final_orphan_group 既有口径）：daemon 级孤儿组的
+            # DISPOSITION 记 spec="global"、SIGNAL/其余 daemon 级写入记
+            # spec=None，unhandled_for/unhandled_signal_for 严格相等匹配都以
+            # 归一后的 None 为准——不归一则重派通道对 daemon 级信号恒不命中
+            # （回落「终结 interrupted」静默失效）、本分支升级去重也看不见
+            # spec=None 的既有未处理升级。组 DISPOSITION 落盘保留原形，不在
+            # 归一范围（同 _converge_final_orphan_group 的既有写法）。
+            sig_query = _normalize_orphan_group_spec(spec)
+            if self.store.unhandled_for(sig_query, sig_type) is not None:
                 continue
 
             # 死亡证据门（2026-09-18 误报取证修复，与 fix-graceful-shutdown-agents
@@ -4458,7 +4490,9 @@ class AdminMonitor:
             # 且重派未超限时，重新入队 admin run 而非静默终结；超限则升级人工。
             # 信号未找到 / 信号重建失败 / 已有在飞 run → 回落原「终结 interrupted」逻辑。
             if self._run_has_interrupted_marker(rid):
-                sig_rec = self.store.unhandled_signal_for(spec, sig_type)
+                # 归一后查询（code-review item eec0928bc868）：daemon 级信号
+                # 记录 spec=None，传原形 "global" 恒不命中 → 重派通道静默失效。
+                sig_rec = self.store.unhandled_signal_for(sig_query, sig_type)
                 if sig_rec is not None:
                     next_count = self._reschedule_count_for(spec, sig_type) + 1
                     if next_count > self.reschedule_max:
@@ -4471,7 +4505,11 @@ class AdminMonitor:
                                 {
                                     "kind": ESCALATION,
                                     "signal_type": sig_type,
-                                    "spec": spec,
+                                    # daemon 级升级落归一后值（None，其余 daemon 级
+                                    # 写入口径），"global" 占位会被
+                                    # unhandled_for(None,…) 类 daemon 级消费漏看
+                                    # （code-review item eec0928bc868）
+                                    "spec": sig_query,
                                     "severity": "critical",
                                     "description": (
                                         f"Administrator 处置反复中断（run {rid}）：底层信号 "
@@ -4601,7 +4639,11 @@ class AdminMonitor:
                     {
                         "kind": ESCALATION,
                         "signal_type": sig_type,
-                        "spec": spec,
+                        # daemon 级升级落归一后值（None，其余 daemon 级写入口径），
+                        # "global" 占位会被 unhandled_for(None,…) 类 daemon 级消费
+                        # 漏看、_converge_final_orphan_group 随后再补一条重复升级
+                        # （code-review item eec0928bc868）
+                        "spec": sig_query,
                         "severity": "critical",
                         "description": (
                             f"Administrator 处置中断（run {rid}）：被唤起后未在 "
