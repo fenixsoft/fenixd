@@ -332,5 +332,62 @@ class TestWindowWatermark(unittest.TestCase):
         self.assertEqual(kind, "last_run")
 
 
+# ── 4. 设置页保存链（config_admin）────────────────────────────────
+
+
+class TestDashboardRunAtField(unittest.TestCase):
+    """run_at 读回退展示生效值 / 写合法值落盘 / 非法值拒绝（task 4.3）。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="cr-runat-cfg-"))
+        (self.tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(str(self.tmpdir), ignore_errors=True)
+
+    def test_read_echo_falls_back_to_effective_value(self):
+        # 未配置 run_at：回显生效值（缺省 02:00；自省配置 03:30 时回显 03:30）
+        from core.dashboard.data import read_config
+
+        self.assertEqual(read_config(self.tmpdir)["code_review"]["run_at"], "02:00")
+        import yaml
+
+        (self.tmpdir / ".fenix" / "config.yaml").write_text(
+            yaml.safe_dump({"admin": {"self_review": {"run_at": "03:30"}}}),
+            encoding="utf-8",
+        )
+        self.assertEqual(read_config(self.tmpdir)["code_review"]["run_at"], "03:30")
+
+    def test_write_valid_run_at_persists_and_echoes(self):
+        from core.dashboard.data import read_config, write_config
+
+        result = write_config(self.tmpdir, {"code_review": {"run_at": "13:00"}})
+        self.assertTrue(result["ok"], result)
+        import yaml
+
+        raw = yaml.safe_load((self.tmpdir / ".fenix" / "config.yaml").read_text())
+        self.assertEqual(raw["admin"]["code_review"]["run_at"], "13:00")
+        self.assertEqual(read_config(self.tmpdir)["code_review"]["run_at"], "13:00")
+        # 嵌套 admin.code_review 形态（「同步用户级设置」路径）同口径落盘
+        result2 = write_config(
+            self.tmpdir, {"admin": {"code_review": {"run_at": "04:30"}}}
+        )
+        self.assertTrue(result2["ok"], result2)
+        raw = yaml.safe_load((self.tmpdir / ".fenix" / "config.yaml").read_text())
+        self.assertEqual(raw["admin"]["code_review"]["run_at"], "04:30")
+
+    def test_write_invalid_run_at_rejected_no_partial_write(self):
+        from core.dashboard.data import read_config, write_config
+
+        for bad in ("25:00", "abc", 123, True, "7:00"):
+            result = write_config(self.tmpdir, {"code_review": {"run_at": bad}})
+            self.assertFalse(result["ok"], f"bad={bad!r}")
+            self.assertIn("run_at", result.get("error", ""), f"bad={bad!r}")
+        # 拒绝不半写：config.yaml 不产生 code_review 段，回显仍为回退生效值
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["code_review"]["run_at"], "02:00")
+        self.assertEqual(echoed["code_review"]["enabled"], False)
+
+
 if __name__ == "__main__":
     unittest.main()
