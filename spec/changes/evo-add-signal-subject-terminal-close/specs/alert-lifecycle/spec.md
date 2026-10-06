@@ -15,6 +15,11 @@ spec 附着型信号（如 blocked_stuck）在主体 spec 达到终态（pushed/
 - **WHEN** blocked_stuck 信号 open 且其 spec 已转 pushed
 - **THEN** 下一轮盘点将其标记 handled，handled_by 为自动收口署名，注记含 spec 终态时刻
 
+#### Scenario: 离开受阻态但未终态收口
+
+- **WHEN** blocked_stuck 信号 open 且其 spec 已离开 blocked（如 ready/implementing）但未达终态
+- **THEN** 下一轮盘点将其标记 handled，注记采用中性解除表述（不断言该 spec 的历史 blocked 路径）
+
 #### Scenario: 主体未终态不收口
 
 - **WHEN** blocked_stuck 信号 open 且其 spec 仍处 blocked
