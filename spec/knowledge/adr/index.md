@@ -254,3 +254,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-246](ADR-246-naive-timestamps-interpret-local-parse-ts-single-entry.md) | accepted | naive 时间戳唯一解读=本地时区（存量 naive 实测多产自本地 now()），全框架只许 timelib.parse_ts 一种 naive 解释、任何模块不得实现第二种，时间产生/解析/序列化/渲染收拢 timelib 六函数单源，AST 守卫棘轮（白名单只许收缩+僵尸条目报失败）防回潮；后续全仓调用点迁移必须消费同一冻结契约 |
 | [ADR-247](ADR-247-hhmm-schedule-semantic-boundary-local-wallclock-to-aware-utc.md) | accepted | HH:MM 调度语义边界：本地墙钟解析后立即转 aware UTC、配置字面值不变、窗口计算全程 aware 比较，后续 HH:MM 类调度配置一律沿用此换算、不得保留 naive 气泡也不得按 UTC 解读字面值 |
 | [ADR-248](ADR-248-untracked-deploy-copy-manual-refresh-no-mergeback.md) | accepted | 未跟踪部署副本（.fenix/bin）不随 merge-back 落地：bin 真身修改后的人工刷新登记为必备交付项，agent 不可交付部署副本、禁纳跟踪绕过，真身与副本漂移排查先于「改了没生效」归因 |
+| [ADR-249](ADR-249-subset-evidence-invisible-to-fullscope-gates.md) | accepted | 定向子集证据对全量口径门禁不可见：口径标记（run_scope）仅在子集实际生效时落，门读侧数据源内部 fail-open 回落不吸收口径差距，后续新增部分范围产物源必须携带口径标记并同步读侧判定 |

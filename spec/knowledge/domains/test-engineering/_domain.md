@@ -1,5 +1,5 @@
 # 测试工程
-> 最后更新：2026-10-03 05:13 UTC+8
+> 最后更新：2026-10-07 03:30 UTC+8
 
 测试工程：测试套件自身的结构、隔离与守卫，以及全量回归的声明、执行与展示。本域能力页清单如下。
 
@@ -17,5 +17,6 @@
 | [regression-coverage](regression-coverage.md) | 语义回归覆盖 | 2026-10-03 04:59 |
 | [test-regression-declaration](test-regression-declaration.md) | 回归声明 | 2026-10-03 04:59 |
 | [test-regression-execution](test-regression-execution.md) | 回归执行 | 2026-10-03 04:59 |
-| [test-regression-view](test-regression-view.md) | 回归视图页签 | 2026-10-03 04:59 |
+| [test-regression-view](test-regression-view.md) | 回归视图页签 | 2026-10-07 03:30 |
+| [regression-issues-rerun](regression-issues-rerun.md) | 定向子集回归触发链（错误/长耗时重跑） | 2026-10-07 03:30 |
 | [callsite-arity-guard](callsite-arity-guard.md) | 校验函数调用点参数守卫 | 2026-10-03 04:59 |
