@@ -23,7 +23,7 @@
 ## 2. 拒收路径最小修复
 
 - [ ] 2.1 core/verify_engine/scenarios.py：load_scenarios（:1524 起）旁新增顶层拯救助手——入参顶层为 dict 且含 scenarios 数组时解包返回数组，其余形态原样报错；load_scenarios 本体语义不改（拯救由验收路径显式调用，见 2.2）。
-- [ ] 2.2 core/pm_engine/verification/pipeline.py：验收失败归因点（:2097-2105）在判定失败前先走拯救助手——「dict 且含 scenarios 数组」则解包重过全部场景校验，通过即以解包结果落地并留痕（记录解包前顶层键与条目数）；仍失败照常进入 replan。REPLAN_FEEDBACK 写点（:2748-2754）按失败类别生成文案：格式类给「最小修复」指引（错误类别+修复动作），仅内容类缺失保留「重新输出全部场景」。
+- [ ] 2.2 core/pm_engine/verification/pipeline.py：验收失败归因点（:2097-2105）在判定失败前先走拯救助手——「dict 且含 scenarios 数组」则解包重过全部场景校验，通过即以解包后的纯数组**原子重写 test_scenarios.json**（非仅内存采纳，否则 fastlane.py:429/466、verdict_evidence.py:1310、pipeline.py:1619/2150 等其余读端与冻结层顶层读端后续仍撞非数组形态）并留痕（记录解包前顶层键与条目数）；仍失败照常进入 replan。其余 load_scenarios 读端一律不接拯救助手（拯救单点接入验收归因点，靠落地重写传播）。REPLAN_FEEDBACK 写点（:2748-2754）按失败类别生成文案：格式类给「最小修复」指引（错误类别+修复动作），仅内容类缺失保留「重新输出全部场景」；分类按失败发生阶段判定（见 design D3），不解析错误文本。
 
 ## 3. 测试
 

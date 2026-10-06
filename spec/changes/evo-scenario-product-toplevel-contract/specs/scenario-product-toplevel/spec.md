@@ -22,12 +22,12 @@ planner-plan 的交付要求 MUST 显式声明 test_scenarios.json 顶层为纯 
 
 ### Requirement: 可拯救形态机械解包
 
-验收器对顶层非数组的 test_scenarios.json MUST 先尝试机械拯救：顶层为 dict 且含 scenarios 数组时，解包后按既有全部场景校验重验，通过则以解包结果落地并留痕（记录解包前顶层键与条目数）；解包后仍不合法 MUST 照常拒收，其余非数组顶层不拯救。
+验收器对顶层非数组的 test_scenarios.json MUST 先尝试机械拯救：顶层为 dict 且含 scenarios 数组时，解包后按既有全部场景校验重验，通过则以解包后的纯数组原子重写 test_scenarios.json（落地非仅内存采纳，保证其余读端与冻结层顶层读端按既有语义恢复）并留痕（记录解包前顶层键与条目数）；解包后仍不合法 MUST 照常拒收，其余非数组顶层不拯救。拯救 MUST 仅接入验收归因路径单点，其余 load_scenarios 读端不接助手。
 
 #### Scenario: dict 包裹产物被解包采纳
 
 - **WHEN** test_scenarios.json 顶层为 {"scenarios":[…]} 且解包后通过全部场景校验
-- **THEN** 以解包后的数组落地并通过验收，留解包留痕，不触发重派
+- **THEN** 以解包后的纯数组原子重写 test_scenarios.json 并通过验收，留解包留痕，不触发重派，且其余读端（fastlane/verdict_evidence/冻结装载）与冻结层顶层读端后续按既有语义可见纯数组
 
 #### Scenario: 解包后仍非法照常拒收
 
