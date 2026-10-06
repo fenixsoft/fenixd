@@ -7,6 +7,11 @@
    - 先写入骨架：全部场景的 id/kind/description（合法 JSON 数组，此时 steps/assertions 可为空数组）
    - 之后每完成约 1/3 场景，就把**完整文件整体重写**一次（始终全量重写、保持合法 JSON 数组，不做增量追加）
    - 最后一轮落盘必须包含全部场景的完整 steps/assertions
+
+   **顶层交付契约（硬约束，违反即整份拒收退回）**：{scenarios_path} 顶层必须是**纯 JSON 数组**，MUST NOT 包裹 `{"scenarios": […]}` 之类 dict——读端对顶层非数组直接抛「场景文件格式错误」整份拒收。
+   - 正例：`[{"id": "login-ok", "description": "…", "steps": […], "assertions": […]}, …]`
+   - 反例（拒收）：`{"spec": "…", "scenarios": [{"id": "login-ok", …}, …]}`
+   - 同目录 `scenarios.json`（场景持久化集）形状**相反**：其顶层是 dict（读端要求含 `"scenarios"` 键）。两个文件形状不得互抄——写 test_scenarios.json 时 MUST NOT 参照 scenarios.json 的 dict 形态。
 4. 将运行结果写入 {result_path}（绝对路径，与场景文件同目录，不要写别处）：`{"status":"plan-ready","spec":"{spec_name}"}`
 
 ## 场景覆盖规则
