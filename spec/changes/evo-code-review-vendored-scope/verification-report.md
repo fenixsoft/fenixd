@@ -31,3 +31,10 @@
 | prompt-fenix-ignore-second-line | 评审提示词第二道防线：对漏出排除表但带 fenix-ignore 标注且理由为保持上游同步的文件，复核规则指示只记录不上报缺陷条目、findings 置空数组（spec「漏出文件按标注不出题」的规则面，tasks 1.2；出处 agents/code-review.md:63 第二道防线段） | pass | 0/5 | - |
 | pytest-vendored-exclusion-cases | 交付物测试：tests/test_code_review.py 的 vendored 排除用例（full 档 test_excludes_vendored_dirs + window 档 test_window_scope_excludes_vendored_dirs）在交付树上全部通过（tasks 2.1；出处 tests/test_code_review.py:1152/:1178） | pass | 0/4 | - |
 | pytest-legacy-exclusion-regression | 回归点：既有排除语义用例（tests/ 目录排除 test_excludes_tests、生成物排除 test_excludes_generated_artifacts）在 vendored 排除合入后仍通过，排除表扩展不破坏既有排除（出处 tests/test_code_review.py:1144/:1191） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+
