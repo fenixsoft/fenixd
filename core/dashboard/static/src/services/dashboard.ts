@@ -1355,6 +1355,9 @@ export interface AdminConfig {
   /** stuck 处置后静默期（分钟，缺省 120）：result=resolved/partially-resolved
    *  处置后同 (spec, signal_type) 在窗口内不产信号（0=不静默） */
   stuck_silence_minutes?: number;
+  /** 告警自愈安静窗口（分钟，add-alert-self-heal-marking，缺省 1440）：基础设施
+   *  瞬态族告警签名安静多久后自动标「已自愈」转已处理 */
+  self_heal_quiet_minutes?: number;
 }
 
 // add-stale-code-selfheal：代码陈旧自愈配置节（enabled 缺省 true /

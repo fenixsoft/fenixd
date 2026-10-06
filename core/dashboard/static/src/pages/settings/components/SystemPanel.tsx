@@ -110,6 +110,18 @@ const ADMIN_ANNOTATIONS: {
     label: '叙事模型',
     note: '告警叙事使用的模型名：留空按回退链复用 admin.agent_model，仍为空时复用框架默认网关模型。',
   },
+  {
+    key: 'self_heal_quiet_minutes',
+    label: '告警自愈安静窗口',
+    unit: '分钟',
+    note: '基础设施瞬态族告警（daemon_errors 指纹风暴 / run_infra_failure 熔断 / evo 分析失败 / 处置收敛升级）签名安静多久后自动标「已自愈」转已处理（缺省 1440，盖过跨日同刻复发节律）。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        Number.isInteger(v) && (v as number) > 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为正整数')),
+    }],
+  },
 ];
 
 // 系统分组单字段控件形态（code-review item 4b4856254978）：旧实现以嵌套三元链选择
@@ -302,6 +314,7 @@ interface SystemFormValues {
   narrative_enabled: boolean;
   narrative_timeout_seconds: number;
   narrative_model: string;
+  self_heal_quiet_minutes: number;
   transient_backoff_schedule: string;
   transient_redispatch_delay_seconds: number;
   transient_break_threshold: number;
@@ -329,6 +342,9 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
     narrative_enabled: admin.narrative_enabled ?? true,
     narrative_timeout_seconds: admin.narrative_timeout_seconds ?? 60,
     narrative_model: admin.narrative_model ?? '',
+    // add-alert-self-heal-marking 5.2：告警自愈安静窗口（缺省与后端
+    // _ADMIN_DEFAULTS / config.template.yaml 同源 1440）
+    self_heal_quiet_minutes: admin.self_heal_quiet_minutes ?? 1440,
     transient_backoff_schedule: agentsSection.transient_backoff_schedule ?? '30,60,120',
     transient_redispatch_delay_seconds: agentsSection.transient_redispatch_delay_seconds ?? 600,
     transient_break_threshold: agentsSection.transient_break_threshold ?? 3,
@@ -375,6 +391,9 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           typeof values.narrative_model === 'string'
             ? values.narrative_model.trim()
             : String(values.narrative_model ?? ''),
+        // add-alert-self-heal-marking 5.2：自愈安静窗口走既有保存通道
+        // （后端 config_admin 受管键白名单：回显/合并/校验/同步四处已同步）
+        self_heal_quiet_minutes: values.self_heal_quiet_minutes,
       },
       agents: {
         transient_backoff_schedule:

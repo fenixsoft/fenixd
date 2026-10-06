@@ -78,6 +78,7 @@ from core.admin_store import (
     SIGNAL,
     severity_needs_human,
 )
+from core.alert_lifecycle import attach_trigger
 from core.admin_monitor import AdminMonitor, DISPOSITION_AUTO_RESET_SIGNAL_TYPES
 from core.hook_engine import HookEngine
 from core.pm_engine import PMEngine
@@ -4369,13 +4370,15 @@ class FenixDaemon:
         try:
             if self.admin_store is not None:
                 self.admin_store.append(
-                    {
-                        "kind": ESCALATION,
-                        "severity": "major",
-                        "signal_type": "self-evolution",
-                        "spec": None,
-                        "description": message,
-                    }
+                    attach_trigger(
+                        {
+                            "kind": ESCALATION,
+                            "severity": "major",
+                            "signal_type": "self-evolution",
+                            "spec": None,
+                            "description": message,
+                        }
+                    )
                 )
         except Exception as e:
             self.logger.warning("fenixd", f"自进化 admin 告警写入失败（降级）: {e}")

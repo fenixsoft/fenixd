@@ -413,6 +413,11 @@ admin:
   # 叙事使用的模型名（缺省空=回退链 admin.agent_model，仍为空时复用框架默认
   # cc-switch 网关模型）。
   narrative_model: ""
+  # 告警自愈安静窗口（分钟，add-alert-self-heal-marking，缺省 1440）：基础设施
+  # 瞬态族告警（daemon_errors 指纹风暴 / run_infra_failure 熔断 / evo 分析失败 /
+  # 处置收敛升级）签名安静多久后自动标「已自愈」转已处理。1440 盖过跨日同刻
+  # 复发节律（最后一次复发后一整个复发周期无复现才收口）。非法值回退缺省。
+  self_heal_quiet_minutes: 1440
   # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
   escalation_cooldown_minutes: 60
   # 合回 WIP overlap 无主宽限（分钟，add-mergeback-wip-active-coordination 2.3）：

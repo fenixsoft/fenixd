@@ -17,9 +17,24 @@ alert_lifecycle.py — 告警生命周期闭环（add-alert-auto-resolve）。
     blocked_stuck} + spec 字段存在推断为同一 condition（存量回填，design D4），
     resolve_note 注明「存量回填」。
 
-本模块不读写文件、不依赖锁——写回由 AdminStore.auto_resolve 在排他锁内完成
-（design D6）。
+自愈闭环语义（add-alert-self-heal-marking，infra_transient_self_healed 条件）：
+  - 覆盖族注册表 ``SELF_HEAL_SIGNAL_TYPES``（daemon_errors / run_infra_failure /
+    self-evolution）——基础设施瞬态族「底层故障自愈型」告警按**签名安静判定**
+    收口：条目（或收敛升级的底层信号）最近复现时刻距当前时刻 ≥ 安静窗口
+    （默认 1440 分钟）即视为已自愈。
+  - 判定输入（告警列表、当前时刻）全部由调用方注入（``now`` / ``records``
+    参数）；未注入 ``now``（既有调用方）不启用自愈判定，既有路径零变化。
+  - 收敛升级（spec-less escalation 带 ``admin_run_id``）取双源锚点（D2）：
+    ``admin_run_id`` 名下 disposition ＋ 同 signal_type 未收口 signal——
+    MUST NOT 只锚 disposition created，否则底层风暴仍在复现时会被提前收口。
+  - inconclusive_loop（env 豁免握手族）刻意不在注册表，永不自愈闭环；
+    spec 附着族命中既有条件枚举时不做自愈判定（不双重判定）。
+
+本模块不读写文件、不依赖锁——写回由 AdminStore.auto_resolve /
+AdminStore.auto_self_heal 在排他锁内完成（design D6 / D3）。
 """
+
+from .timelib import from_epoch, parse_ts, to_storage
 
 # spec 终态（与 admin_monitor._TERMINAL_SPEC_STATUSES 同口径）
 TERMINAL_SPEC_STATUSES = ("done", "pushed")
@@ -42,6 +57,30 @@ CONDITION_SPEC_DELIVERED_ADJUDICATED = "spec_delivered_adjudicated"
 
 # 存量回填（design D4）：无 trigger 字段的存量告警按 signal_type 推断 condition
 BACKFILL_SIGNAL_TYPES = ("verify_fail_escalation", "blocked_stuck")
+
+# ── 基础设施瞬态告警自愈闭环（add-alert-self-heal-marking）────────────────
+
+# 自愈闭环条件（specs/alert-lifecycle ADDED）：签名安静判定
+CONDITION_INFRA_TRANSIENT_SELF_HEALED = "infra_transient_self_healed"
+
+# 覆盖族注册表（design D2）：基础设施瞬态族「底层故障自愈型」信号——
+#   daemon_errors        fenixd 日志指纹风暴（admin_monitor._detect_daemon_errors）
+#   run_infra_failure    spec-review 链路 infra 熔断（pm_engine 熔断告警）
+#   self-evolution       evo 分析 run 失败（fenixd._evolution_warn 写入点实际常量）
+# 收敛升级（「处置终态未收口」）signal_type 复制底层类型（daemon_errors 等），
+# 已在注册表内，经 admin_run_id 双源锚点规则覆盖。
+# 注册表外 signal_type 永不自愈闭环（保守缺省不变）；inconclusive_loop（env
+# 豁免握手族）刻意不在册——其出口是人工裁决（与 _SIGNAL_CONDITIONS 处注释
+# 同口径），无论安静多久都不自动收口。
+SELF_HEAL_SIGNAL_TYPES = ("daemon_errors", "run_infra_failure", "self-evolution")
+
+# 默认安静窗口（design D4）：1440 分钟盖过跨日同刻复发节律（实证指纹以
+# ≈24h 间隔复发一次）——「最后一次复发后一整个复发周期无复现」才收口，
+# 避免收口后立即重开。可配 admin.self_heal_quiet_minutes（脏值回退本缺省）。
+DEFAULT_SELF_HEAL_QUIET_MINUTES = 1440
+
+# 自愈写回独立标识（design D3）：并列既有 AUTO_RESOLVE_BY，不复用不改其语义
+AUTO_SELF_HEAL_BY = "auto-self-heal"
 
 # 自动闭环标注（design D3）
 AUTO_RESOLVE_BY = "auto-resolve"
@@ -68,6 +107,14 @@ _SIGNAL_CONDITIONS = {
     "blocked_stuck": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "spec_content_missing": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "spec_delivered_no_content": CONDITION_SPEC_DELIVERED_ADJUDICATED,
+    # 自愈族（add-alert-self-heal-marking 1.2）：登记进枚举使既有
+    # attach_trigger 写入点自动埋点（daemon_errors 升级、run_infra_failure
+    # 熔断、self-evolution）。该 condition 在既有 _recognized 集合之外——
+    # 既有 spec 附着判定路径不会误消费它，evaluate_alert 内由自愈分支承接
+    # （spec 附着族命中既有条件枚举时不双重判定）。
+    "daemon_errors": CONDITION_INFRA_TRANSIENT_SELF_HEALED,
+    "run_infra_failure": CONDITION_INFRA_TRANSIENT_SELF_HEALED,
+    "self-evolution": CONDITION_INFRA_TRANSIENT_SELF_HEALED,
 }
 
 
@@ -108,6 +155,103 @@ def _recognized(condition) -> bool:
     )
 
 
+# ── 自愈判定助手（add-alert-self-heal-marking 1.1）────────────────────────
+
+
+def _entry_epoch(entry: dict, allow_last_seen: bool = True):
+    """条目最近复现时刻 → epoch 秒；``last_seen`` 缺失回落 ``created``。
+
+    signal 族复现时刷新 last_seen（merge_signal 既有行为）；escalation /
+    disposition 不参与合并，实际回落 created。均缺失/非法/解析失败返回
+    None（调用方按无锚点处理，保守不闭环）。
+    """
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("last_seen") if allow_last_seen else None
+    if not raw:
+        raw = entry.get("created")
+    if not isinstance(raw, str):
+        return None
+    dt = parse_ts(raw)
+    return dt.timestamp() if dt is not None else None
+
+
+def _self_heal_anchor(alert: dict, records) -> "float | None":
+    """自愈判定的安静锚点 = 全部候选复现时刻的最新值（epoch 秒）。
+
+    默认锚点：条目自身 ``last_seen`` 回落 ``created``（D1——安静证据取条目
+    自身时间戳，不读日志）。
+
+    收敛升级形态（kind=escalation 且带 ``admin_run_id``）取 D2 双源锚点：
+      ① ``admin_run_id`` 名下 disposition 条目（处置记录不带 last_seen，
+        回落 created）；
+      ② 同 signal_type 的未收口 signal 条目——signal 记录不携带
+        admin_run_id，按 signal_type＋spec 同域匹配（收敛升级 spec 为空，
+        匹配 spec 同为空的 daemon 级信号）。
+    锚点取全部候选（含条目自身）的最新时刻：MUST NOT 只锚 disposition
+    created，否则底层风暴仍在复现（signal last_seen 持续刷新）时 escalation
+    会被提前收口，违背 D4 的复发节律覆盖。
+    """
+    candidates = [_entry_epoch(alert)]
+    rid = alert.get("admin_run_id")
+    if rid and alert.get("kind") == "escalation":
+        alert_spec = alert.get("spec")
+        for rec in records or []:
+            if not isinstance(rec, dict):
+                continue
+            rec_kind = rec.get("kind")
+            if rec_kind == "disposition":
+                if rec.get("admin_run_id") == rid:
+                    candidates.append(_entry_epoch(rec, allow_last_seen=False))
+            elif rec_kind == "signal":
+                if rec.get("handled"):
+                    continue  # 已收口信号不构成复现证据
+                if rec.get("signal_type") != alert.get("signal_type"):
+                    continue
+                rec_spec = rec.get("spec")
+                if alert_spec:
+                    if rec_spec != alert_spec:
+                        continue
+                elif rec_spec:
+                    continue  # spec 空匹配：per-spec 信号不归收敛升级锚定
+                candidates.append(_entry_epoch(rec))
+    valid = [c for c in candidates if c is not None]
+    return max(valid) if valid else None
+
+
+def _evaluate_self_heal(
+    alert: dict, now, records, quiet_minutes: int, backfill: bool
+):
+    """infra_transient_self_healed 条件判定：签名安静 ≥ 窗口 → 自愈 note。
+
+    返回「已自愈：…」resolve_note（附安静时长与最近复现时刻；存量回填在
+    尾注注明，保持「已自愈：」前缀字面）；窗口内复现 / 无时间锚点 / 脏
+    窗口值一律返回 None（保守不闭环）。
+    """
+    if isinstance(quiet_minutes, bool) or not isinstance(quiet_minutes, int):
+        quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
+    if quiet_minutes <= 0:
+        quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
+    anchor = _self_heal_anchor(alert, records)
+    if anchor is None:
+        return None  # 无可用时间锚点：无法判定，保持原状
+    try:
+        now_epoch = float(now)
+    except (TypeError, ValueError):
+        return None
+    elapsed = now_epoch - anchor
+    if elapsed < quiet_minutes * 60:
+        return None  # 窗口内仍复现：保持待处理
+    note = (
+        f"已自愈：{alert.get('signal_type')} 签名已安静 "
+        f"{int(elapsed // 60)} 分钟（≥ 窗口 {quiet_minutes} 分钟），"
+        f"最近复现 {to_storage(from_epoch(anchor))}"
+    )
+    if backfill:
+        note += "（存量回填）"
+    return note
+
+
 def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> str:
     """spec_terminal_or_unblocked 条件下的解除依据描述（spec.md：含 spec 名与终态说明）。"""
     status = str((entry or {}).get("status") or "")
@@ -120,42 +264,81 @@ def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> 
     return f"存量回填：{reason}" if backfill else reason
 
 
-def evaluate_alert(alert: dict, specs: dict, backfill: bool = False):
+def evaluate_alert(
+    alert: dict,
+    specs: dict,
+    backfill: bool = False,
+    now=None,
+    records=None,
+    quiet_minutes: int = DEFAULT_SELF_HEAL_QUIET_MINUTES,
+):
     """判定单条告警的触发条件是否已解除。
 
     specs 为当轮扫描读取的 STATE.md 状态表（name → entry）；判定所需的
     spec 状态以此为准，不额外读文件（design D3）。
 
+    自愈判定（add-alert-self-heal-marking）仅在调用方显式注入 ``now``
+    （epoch 秒）时启用；``records`` 为全量告警记录（收敛升级双源锚点需
+    关联 disposition 与 signal 条目），``quiet_minutes`` 为安静窗口（脏值
+    回退默认 1440）。既有调用方（不传 now）行为零变化。
+
     返回 resolve_note 字符串表示可闭环；返回 None 表示保持原状。保持原状
     的情形（保守默认）：
-      - 非 escalation 告警 / 已 handled（人工记录不可覆盖）
+      - 已 handled（人工记录不可覆盖）
+      - 非 escalation 告警（自愈族另收 kind=signal，需注入 now）
       - 无 spec 字段，或 spec 在状态表中不存在（无法关联 spec）
       - trigger.condition 未识别（存量回填模式下 signal_type 不在
         BACKFILL_SIGNAL_TYPES 中同理）
       - 关联 spec 仍处于 blocked（条件未解除）
+      - 自愈族：signal_type 未注册 / 形态不符 / 窗口内仍复现 / 无时间锚点
     """
     specs = specs if isinstance(specs, dict) else {}  # 非 dict（如 STATE.md 扫描失败传 None）按空表处理
     if not isinstance(alert, dict):
         return None
-    if alert.get("kind") != "escalation":
-        return None
     if alert.get("handled"):
         return None  # 人工/既有处理记录不可覆盖
+    kind = alert.get("kind")
+    signal_type = alert.get("signal_type")
+    trigger = alert.get("trigger")
+    has_trigger = isinstance(trigger, dict) and trigger
+    condition = trigger.get("condition") if has_trigger else None
+
+    # ── 自愈分支（add-alert-self-heal-marking 1.2）────────────────────
+    # 以 signal_type 注册表为门：注册表外类型（含 inconclusive_loop env
+    # 握手族）永不自愈。spec 附着族命中既有条件枚举（trigger 已识别，或
+    # 回填模式下 signal_type ∈ BACKFILL_SIGNAL_TYPES）→ 既有条件判定，
+    # 不双重判定（specs/alert-lifecycle 排除项）。
+    if (
+        now is not None
+        and kind in ("escalation", "signal")
+        and signal_type in SELF_HEAL_SIGNAL_TYPES
+    ):
+        existing_applies = (has_trigger and _recognized(condition)) or (
+            not has_trigger and backfill and signal_type in BACKFILL_SIGNAL_TYPES
+        )
+        if not existing_applies:
+            return _evaluate_self_heal(
+                alert,
+                now=now,
+                records=records,
+                quiet_minutes=quiet_minutes,
+                backfill=not has_trigger,
+            )
+
+    if kind != "escalation":
+        return None
     spec_name = alert.get("spec")
     if not spec_name:
         return None  # 无 spec 字段：无法关联，保持原状
 
-    trigger = alert.get("trigger")
-    has_trigger = isinstance(trigger, dict) and trigger
     if has_trigger:
-        condition = trigger.get("condition")
         if not _recognized(condition):
             return None  # 未识别 condition：永不自动闭环
     else:
         # 存量回填（design D4）：无 trigger 字段 → 按 signal_type 推断
         if not backfill:
             return None
-        if alert.get("signal_type") not in BACKFILL_SIGNAL_TYPES:
+        if signal_type not in BACKFILL_SIGNAL_TYPES:
             return None
 
     entry = specs.get(spec_name)
@@ -188,6 +371,51 @@ def find_resolvable(alerts: list, specs: dict, backfill: bool = False) -> list:
     results = []
     for alert in alerts or []:
         note = evaluate_alert(alert, specs, backfill=backfill)
+        if note is None:
+            continue
+        results.append(
+            {
+                "id": alert.get("id"),
+                "spec": alert.get("spec"),
+                "resolve_note": note,
+            }
+        )
+    return results
+
+
+def find_self_healable(
+    records: list, now, quiet_minutes: int = DEFAULT_SELF_HEAL_QUIET_MINUTES
+) -> list:
+    """批量自愈判定：返回可自愈收口条目 [{'id', 'spec', 'resolve_note'}]。
+
+    供 AdminStore.auto_self_heal 消费（写回在其排他锁内完成）。``records``
+    为全量告警记录（signal / escalation / disposition——收敛升级双源锚点
+    需要关联信号与处置条目）；``now`` 为当前时刻（epoch 秒），判定输入全部
+    由调用方注入（纯函数，不读时钟）。
+
+    仅产出自愈族结果（既有 spec 附着条件族仍由 find_resolvable 承接，两
+    通道互斥不重复）。无可自愈条目返回 []（调用方零写回，mtime 不变）。
+    """
+    results = []
+    for alert in records or []:
+        if not isinstance(alert, dict):
+            continue
+        if alert.get("handled"):
+            continue
+        if alert.get("kind") not in ("escalation", "signal"):
+            continue
+        if alert.get("signal_type") not in SELF_HEAL_SIGNAL_TYPES:
+            continue
+        trigger = alert.get("trigger")
+        if isinstance(trigger, dict) and trigger and _recognized(trigger.get("condition")):
+            continue  # 既有条件在册：归 find_resolvable 通道，不双重判定
+        note = _evaluate_self_heal(
+            alert,
+            now=now,
+            records=records,
+            quiet_minutes=quiet_minutes,
+            backfill=not (isinstance(trigger, dict) and trigger),
+        )
         if note is None:
             continue
         results.append(

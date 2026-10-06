@@ -78,6 +78,8 @@ _SOURCE_KEYS = [
     "admin.narrative_enabled",
     "admin.narrative_timeout_seconds",
     "admin.narrative_model",
+    # add-alert-self-heal-marking 5.2：告警自愈安静窗口（分钟）
+    "admin.self_heal_quiet_minutes",
     "verify.static_scope",
     "verify.deps_mode",
     # add-impl-code-review-gate：实现阶段末尾代码质量审查开关
@@ -339,6 +341,9 @@ def _managed_key_sources(raw: dict) -> dict:
             "narrative_enabled",
             "narrative_timeout_seconds",
             "narrative_model",
+            # add-alert-self-heal-marking 5.2：来源标注三键对齐（缺此键时项目级
+            # 显式配置后 sources 仍回 "user"，设置页徽标恒错）
+            "self_heal_quiet_minutes",
         ):
             if _k in admin_raw:
                 sources[f"admin.{_k}"] = "project"
@@ -397,6 +402,9 @@ _ADMIN_DEFAULTS = {
     "narrative_enabled": True,
     "narrative_timeout_seconds": 60,
     "narrative_model": "",
+    # add-alert-self-heal-marking 5.2：自愈安静窗口缺省（与
+    # ConfigLoader.get_admin_config / config.template.yaml 同源 1440）
+    "self_heal_quiet_minutes": 1440,
 }
 
 def _managed_admin_keys(config: dict) -> dict:
@@ -1256,6 +1264,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             "narrative_enabled",
             "narrative_timeout_seconds",
             "narrative_model",
+            # add-alert-self-heal-marking 5.2：自愈安静窗口合并分支（缺此步
+            # 「界面可填、保存被静默吞掉」——本函数 docstring 的同款事故）
+            "self_heal_quiet_minutes",
         ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
@@ -1765,6 +1776,17 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             return fail(
                 f"admin.narrative_model must be a string: {adm['narrative_model']!r}"
             )
+        # add-alert-self-heal-marking 5.2：自愈安静窗口正整数校验（非法值直接
+        # 拒绝不落盘，同其它 admin 数值键）
+        if (
+            "self_heal_quiet_minutes" in adm
+            and adm["self_heal_quiet_minutes"] is not None
+        ):
+            sq = adm["self_heal_quiet_minutes"]
+            if not isinstance(sq, int) or isinstance(sq, bool) or sq <= 0:
+                return fail(
+                    f"admin.self_heal_quiet_minutes must be a positive integer: {sq!r}"
+                )
 
     # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode）
     if isinstance(config_patch.get("gates"), dict):
@@ -2298,6 +2320,12 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     "narrative_model",
                     lambda v: isinstance(v, str),
                 ),
+                # add-alert-self-heal-marking 5.2：自愈安静窗口合并视图校验
+                # （兜底防绕过前置校验的直连调用，规则同前置）
+                (
+                    "self_heal_quiet_minutes",
+                    lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+                ),
             ):
                 if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
                     raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
@@ -2451,6 +2479,8 @@ _SYNC_PAGE_KEYS = {
             "narrative_enabled",
             "narrative_timeout_seconds",
             "narrative_model",
+            # add-alert-self-heal-marking 5.2：自愈安静窗口随系统页签同步
+            "self_heal_quiet_minutes",
         ],
         "agents": [
             "transient_backoff_schedule",
@@ -2581,6 +2611,10 @@ _SYNC_PAGE_APPLY_PREDICATES = {
         "narrative_model": (
             lambda v: isinstance(v, str),
             "must be a string",
+        ),
+        "self_heal_quiet_minutes": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+            "must be a positive integer",
         ),
     },
 }

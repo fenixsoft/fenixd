@@ -4230,6 +4230,9 @@ class PMEngine:
                     "evidence": evidence,
                     "recommended_action": "后续若再次连续 infra 失败将重新熔断",
                 }
+                # add-alert-self-heal-marking 4.1：triggered 分支已埋点，
+                # recovered SIGNAL 档补齐同一埋点（自愈族在册类型）
+                attach_trigger(entry)
                 written = store.append(entry)
                 if written is not None:
                     self.logger.info(
