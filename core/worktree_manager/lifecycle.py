@@ -971,6 +971,8 @@ class G1LifecycleMixin:
                      "--exclude-standard"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=15,
                 )
                 if others.returncode != 0:
@@ -985,6 +987,8 @@ class G1LifecycleMixin:
                         input="\0".join(ut_paths) + "\0",
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=30,
                     )
                     if hashed.returncode != 0:
