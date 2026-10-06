@@ -247,7 +247,7 @@ def _verdict_from_run_result(project_root, spec_name) -> dict:
             if isinstance(scenarios, list):
                 for sc in scenarios:
                     status = sc.get("status") if isinstance(sc, dict) else None
-                    if status == "pass":
+                    if status in ("pass", "passed"):
                         summary["passed"] += 1
                     elif status in ("fail", "failed"):
                         summary["failed"] += 1

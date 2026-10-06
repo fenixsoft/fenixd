@@ -24,6 +24,10 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     timeline_with_retry, load_billing_config, cost_summary_from_timeline,
     split_llm_marker    (timeline.py/runs.py 公开别名，summary.py、timeline.py
                          经门面解析；code-review 329a77d10a7e),
+    parse_iso_ts        (timeline.py 公开别名，runs.py 经门面解析；
+                         code-review 19f8899fac87),
+    config_file_sig     (config_admin.py 公开别名，summary.py 经门面解析；
+                         code-review 5d821006cf18),
     read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9),
     cached_config_value (summary.py 公开别名，quality_gates.py 经门面解析；
                          code-review 20ad589a3bc4),
@@ -112,6 +116,7 @@ from .timeline import (
     get_spec_timeline,
     _collapse_timeline,
     _parse_iso_ts,
+    parse_iso_ts,
     _timeline_sort_key,
     _ts_delta,
     _timeline_with_retry,
@@ -339,6 +344,7 @@ from .config_admin import (
     _EFFECTIVE_CONFIG_CACHE,
     _EFFECTIVE_CONFIG_CACHE_MAX,
     _config_file_sig,
+    config_file_sig,
     read_effective_config,
     _deep_merge_managed,
     write_config,

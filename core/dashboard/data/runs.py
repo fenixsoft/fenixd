@@ -386,7 +386,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
     故扫描前 200 行、命中即停；全部无样本返回 None（调用方回退 run_id 内嵌
     时间戳）。
     """
-    # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
+    # 跨组引用（timeline 组公开别名 parse_iso_ts）经门面延迟解析（D4）
     import core.dashboard.data as _facade
 
     try:
@@ -403,7 +403,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
                 except json.JSONDecodeError:
                     continue
                 ts = ev.get("timestamp") if isinstance(ev, dict) else None
-                if ts and _facade._parse_iso_ts(str(ts)) is not None:
+                if ts and _facade.parse_iso_ts(str(ts)) is not None:
                     return str(ts)
     except OSError:
         return None
@@ -483,10 +483,10 @@ def _run_meta_cached(p: Path, stat, now: float,
     # 故扫描前 200 行、命中即停；全部无样本返回 None（调用方回退 run_id 内嵌
     # 时间戳）。
     real_start = _first_run_event_ts(p)
-    # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
+    # 跨组引用（timeline 组公开别名 parse_iso_ts）经门面延迟解析（D4）
     import core.dashboard.data as _facade
 
-    real_dt = _facade._parse_iso_ts(real_start) if real_start else None
+    real_dt = _facade.parse_iso_ts(real_start) if real_start else None
     if real_dt is not None:
         started = real_dt.astimezone(timezone.utc).isoformat()
         duration_seconds = max(0, int(stat.st_mtime - real_dt.timestamp()))

@@ -177,8 +177,15 @@ class FileWatcher:
                 self._scan_project(proj["name"], Path(proj["path"]))
             except Exception as e:  # 单项目失败不拖垮整轮；低频节流告警（同 _loop 5 分钟纪律）
                 now = time.monotonic()
-                # 键统一为项目路径（同 _prune_stale_caches 口径）；缺 path 跳过记账
-                key = Path(proj["path"]).as_posix() if proj.get("path") else None
+                # 键统一为项目路径（同 _prune_stale_caches 口径）；path 缺失/非法
+                # 时退化用 name 记账并照常告警（MUST NOT 把本项目异常吞成静默，
+                # 同本文件「瞬时失败不再静默」纪律）。name 键不在 live 路径集、
+                # 当轮即被 _prune_stale_caches 清退不残留，故此形态每轮留痕一条——
+                # 属配置形态异常，持续可见符合预期。
+                try:
+                    key = Path(proj["path"]).as_posix()
+                except Exception:
+                    key = proj.get("name")
                 last_warn = self._proj_scan_warn.get(key) if key else None
                 if key and (last_warn is None or now - last_warn >= 300):
                     self._proj_scan_warn[key] = now

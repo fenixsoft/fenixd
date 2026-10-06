@@ -153,6 +153,13 @@ class SessionManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # 显式 UTF-8 + replace（code-review item 9b6d72e47c71）：
+                # text=True 缺省按 locale 编码且 strict 解码，坏字节会在
+                # 读线程逐行迭代时抛 UnicodeDecodeError 终止读循环，进程
+                # 仍存活但 stdout 不再被消费、写满管道后挂死；与仓库
+                # subprocess 编码惯例对齐（session_routes / hook_engine）。
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 cwd=str(project_path),
                 env=env,

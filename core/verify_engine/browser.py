@@ -87,6 +87,13 @@ def _make_handler(directory: str):
 # 断言结果的 errors 字段整表进入 report.json 与 judge 归因上下文
 _MAX_COLLECTED_ERRORS = 200
 
+# 无 target wait 步骤的暂停毫秒数上限（code-review item 03121e3f15f4）：
+# planner 误写（毫秒/秒混用、或 "1e9" 这类超大有限值）会被 float() 正常
+# 解析并传给 wait_for_timeout 如实等待，而引擎对单场景没有超时包裹，该
+# 场景会持续占用并行信号量槽与浏览器 context 直至外部监督超时介入，整轮
+# 验证窗口被单条场景声明占满。10 分钟覆盖合法长等待，超过按配置错误拦截
+_MAX_WAIT_MS = 600_000
+
 
 def _capped_append(bucket: list[str], entry: str) -> None:
     """向错误收集列表追加一条，达到 _MAX_COLLECTED_ERRORS 后截断。
@@ -866,6 +873,20 @@ class BrowserManager:
                         "action": action,
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（毫秒数不能为负且必须有限）: {value!r}",
+                    }
+                # 超大有限值同款拦截（code-review item 03121e3f15f4）：
+                # planner 误写（毫秒/秒混用写成 "6000000"，或 "1e9"）会被
+                # float() 正常解析并如实等待；引擎 _execute_parallel 对单场景
+                # 没有超时包裹，该场景持续占用并行信号量槽与浏览器 context，
+                # 直至外部监督超时介入，整轮验证窗口被单条场景声明占满。
+                # 上限 _MAX_WAIT_MS（10 分钟），超过按配置错误结构化失败并
+                # 附原始值，与上方负值/非有限值拦截同口径
+                elif timeout_ms > _MAX_WAIT_MS:
+                    return {
+                        "success": False,
+                        "action": action,
+                        "error_type": "invalid_wait_value",
+                        "error": f"wait 值非法（毫秒数不能超过 {_MAX_WAIT_MS}）: {value!r}",
                     }
                 # 纯计时器不抛 timeout 类异常（code-review item 2d93bf93df4e）：
                 # 此前的 try/except 实际不可达，且真触发时（页面/浏览器关闭等

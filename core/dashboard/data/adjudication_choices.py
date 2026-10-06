@@ -394,8 +394,13 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
       3. normpath 折叠后仍含 ``..`` 前导段（越出 project_root 的穿越）拒绝；
       4. 落点不在白名单目录/文件内 → 产品代码路径，拒绝。
 
-    仅做路径形态判定，不做磁盘存在性检查（夹具文件可以是新建）；符号链接
-    落点由写端 ``open()`` 语义兜底，白名单只承诺「字面路径不可越出供给层」。
+    仅做路径形态判定，不做磁盘存在性检查（夹具文件可以是新建）。符号链接
+    语义由写端实际机制决定：唯一写端 ``_exec_revise_scenario_reverify`` 经
+    ``scenario_gate.atomic_write_text`` 落盘（mkstemp 临时文件 + os.replace）
+    ——落点**末段**为符号链接时 rename 整体替换链接本身、不跟随写入；但
+    **中间目录**若为指向项目外的符号链接，写端 ``mkdir`` 与 ``mkstemp`` 均
+    跟随、夹具内容可落到白名单之外（现状不设防）。白名单只承诺「字面路径
+    不可越出供给层」，末段替换与中间目录跟随均属写端语义，非本校验兜底。
     """
     import os
 

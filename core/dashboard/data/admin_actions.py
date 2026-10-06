@@ -566,9 +566,11 @@ def reclassify_infra_rounds(
     if not str(audit_reason or "").strip():
         return {"ok": False, "found": True, "error": "audit_reason 必填（审计留痕要求）"}
     sm = _sm(project_root)
-    if isinstance(n, bool):
-        # 布尔是 int 子类，须显式排除（与 set_spec_budget 的 isinstance(budget, bool)
-        # 拒绝同口径）：否则 JSON body 传 n=true 会被 int() 静默当 1 轮回拨。
+    if isinstance(n, (bool, float)):
+        # 布尔是 int 子类、浮点会被 int() 静默截断，均须显式排除（与
+        # set_spec_budget 的 isinstance(budget, bool) 拒绝同口径）：否则 JSON body
+        # 传 n=true 会被静默当 1 轮回拨，n=1.5 也会被静默截断为 1 执行（实际生效
+        # 轮次与用户请求不一致且无任何提示）。
         return {"ok": False, "found": True, "error": "invalid n（回拨轮次参数无效）"}
     try:
         n_val = int(n)
@@ -2579,6 +2581,13 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
     fixture_files = payload.get("fixture_files") or []
     if not isinstance(fixture_files, list):
         return {"ok": False, "steps": [], "error": "载荷 fixture_files 须为数组",
+                "frozen_manual": False}
+    # 非 dict 项须整体拒绝：夹具白名单步骤会静默跳过非 dict 项，而写盘循环对
+    # 所有 item 调 .get——非 dict 项混入时会在前面的夹具已落盘后才抛
+    # AttributeError，留下半改状态（违背「任一步失败即停，不留半改状态」）。
+    if not all(isinstance(f, dict) for f in fixture_files):
+        return {"ok": False, "steps": [],
+                "error": "载荷 fixture_files 每项须为对象（{\"path\", \"content\"}）",
                 "frozen_manual": False}
 
     # 2. 修订预算前置（超限转人工冻结）

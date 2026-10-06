@@ -305,6 +305,16 @@ class PMEngine:
         "_dispatch_backoff_schedule": ("_dispatcher", "_dispatch_backoff_schedule"),
         "_handle_dispatch_lock_conflict": ("_dispatcher", "_handle_dispatch_lock_conflict"),
         "_schedule_backoff_retry": ("_dispatcher", "_schedule_backoff_retry"),
+        # 评审 content 短退避接线（code-review item f5dde260460c）：
+        # SpecReviewManager._enqueue_review_retry 经门面 getattr 取这两个名字，
+        # 未注册则恒得 None、退避链路死置（生产回到秒级连发烧光重试预算）。
+        # 判重集合挂 _dispatcher（QQQueueMixin.__init__ 初始化）存续，排程器
+        # 在 BBackoffMixin——与 _enqueue/_process_queue 同款注册表转发。
+        "_schedule_recovery_timer": ("_dispatcher", "_schedule_recovery_timer"),
+        "_review_content_backoff_timers": (
+            "_dispatcher",
+            "_review_content_backoff_timers",
+        ),
         "_get_spec_priority": ("_dispatcher", "_get_spec_priority"),
         "_enqueue": ("_dispatcher", "_enqueue"),
         "_enqueue_front": ("_dispatcher", "_enqueue_front"),
@@ -947,11 +957,27 @@ class PMEngine:
         p = self._parallel_plan_marker_path(spec_name)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_name(p.name + ".tmp")
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+            # mkstemp 唯一临时名（code-review item bd99064af8ee）：固定 .tmp 名下
+            # 并行出题车道 worker 与验证管线 write_marker（verification/context）
+            # 两写方交错 open+write 会互相截断/混写，原子 rename 落盘损坏 JSON
+            # 且读侧 fail-open 丢标记——对齐 _write_impl_result_snapshot 同款
+            # tempfile + fsync + os.replace 手法。
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent)
             )
-            tmp.replace(p)
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, ensure_ascii=False, indent=1))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(p))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
         except (OSError, ValueError) as e:
             self.logger.warning(
                 "pm_engine",
@@ -2286,7 +2312,10 @@ class PMEngine:
                 ["git", "status", "--porcelain"],
                 cwd=str(self.project_root),
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=30,
             )
             if result.returncode != 0:
@@ -2311,7 +2340,10 @@ class PMEngine:
                 ["git", "add", "--"] + paths,
                 cwd=root,
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=60,
             )
             if add.returncode != 0:
@@ -2320,7 +2352,10 @@ class PMEngine:
                 ["git", "commit", "-m", message, "--"] + paths,
                 cwd=root,
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=120,
             )
             if commit.returncode != 0:
@@ -2745,7 +2780,10 @@ class PMEngine:
                 ["git", "ls-remote", "origin", ref],
                 cwd=str(self.project_root),
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=30,
             )
             if result.returncode == 0:
@@ -2764,7 +2802,10 @@ class PMEngine:
                 ["git", "rev-parse", "refs/heads/" + branch],
                 cwd=str(self.project_root),
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -2783,7 +2824,10 @@ class PMEngine:
                 ["git", "push", "origin", ref],
                 cwd=str(self.project_root),
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=120,
             )
             if result.returncode == 0:
@@ -3018,7 +3062,10 @@ class PMEngine:
             # 显式判 None（code-review item 95c429d664e3）：`or 3` 会把合法的 0
             # （首次失败即停止自动重试）吞成默认 3，仅缺省时才回退默认值。
             max_retries = 3 if raw_max_retries is None else int(raw_max_retries)
-        except (TypeError, ValueError):
+        # 补捕 OverflowError（code-review item e09138583cd4）：.inf 解析为 float
+        # 后 int() 抛 OverflowError 不在原元组，异常仍从 _push_lock 内穿透
+        # approve_push 炸到 _on_spec_done——与 infra_breaker 归一先例同口径。
+        except (TypeError, ValueError, OverflowError):
             max_retries = 3
         backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
         cfg_backoff = self._get_config("pm.push.retry_backoff_seconds")
@@ -3030,7 +3077,9 @@ class PMEngine:
             # （reporting.py 按 next_retry_at=(\d+) 正则解析）。
             try:
                 backoff_seconds = [int(x) for x in cfg_backoff]
-            except (TypeError, ValueError):
+            # 补捕 OverflowError（code-review item e09138583cd4）：元素为 .inf 时
+            # int() 抛 OverflowError，同上从 _push_lock 内穿透中断退避记账。
+            except (TypeError, ValueError, OverflowError):
                 backoff_seconds = [300, 900]
 
         attempts = self._get_push_retry_count(spec) + 1
@@ -3283,7 +3332,10 @@ class PMEngine:
                 ],
                 cwd=str(self.project_root),
                 capture_output=True,
-                text=True,
+                # errors="replace"（code-review item 022c2e4ced2a，与
+                # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时
+                # 严格解码抛 UnicodeDecodeError 逃出宽 except，误判推送/工作树。
+                text=True, encoding="utf-8", errors="replace",
                 timeout=30,
             )
             if res.returncode == 0:
@@ -4176,7 +4228,10 @@ class PMEngine:
                 # 显式判 None（code-review item 95c429d664e3）：`or 30` 会把
                 # 合法的 cooldown_minutes=0（不冷却）吞成默认 30，仅缺省才回退。
                 cooldown_minutes = 30 if raw_cooldown is None else int(raw_cooldown)
-            except (TypeError, ValueError):
+            # 补捕 OverflowError（code-review item e09138583cd4）：.inf 配置
+            # int() 抛 OverflowError 不在原元组，异常从 recovered 分支穿透
+            # _on_spec_reviewing 中断当轮评审入队（infra_breaker 先例同口径）。
+            except (TypeError, ValueError, OverflowError):
                 cooldown_minutes = 30
             now_epoch = time.time()
             window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
