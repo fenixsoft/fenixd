@@ -1,42 +1,6 @@
-// 迁移自 claudecodeui src/components/chat/utils/messageKeys.ts（原样）
-
-import type { ChatMessage } from './types';
-
-const toMessageKeyPart = (value: unknown): string | null => {
-  if (typeof value !== 'string' && typeof value !== 'number') {
-    return null;
-  }
-
-  const normalized = String(value).trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
-export const getIntrinsicMessageKey = (message: ChatMessage): string | null => {
-  const candidates = [
-    message.id,
-    message.messageId,
-    message.toolId,
-    message.toolCallId,
-    message.blobId,
-    message.rowid,
-    message.sequence,
-  ];
-
-  for (const candidate of candidates) {
-    const keyPart = toMessageKeyPart(candidate);
-    if (keyPart) {
-      return `message-${message.type}-${keyPart}`;
-    }
-  }
-
-  const timestamp = new Date(message.timestamp).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return null;
-  }
-
-  // [fenix-ignore:13bb53979ae9] content 在本仓库类型即 string|undefined（types.ts），唯一生产方 runEventsToChatMessages 已把块数组规范化为逐条字符串消息，数组形态到不了本函数，空串仅对应无正文的 tool 等消息
-  const contentPreview = typeof message.content === 'string' ? message.content.slice(0, 48) : '';
-  const toolName = typeof message.toolName === 'string' ? message.toolName : '';
-  // [fenix-ignore:0209ad3f1986] 撞键边界一句话：仅当七个身份字段全缺失且同毫秒同型同前 48 字符前缀才可能撞键，上游 claudecodeui 原样迁移；本仓库唯一调用方 ClaudeMessageList 的 messageKeyMap 已按出现序号 __n 消歧，裸用本函数仍可能撞键
-  return `message-${message.type}-${timestamp}-${toolName}-${contentPreview}`;
-};
+// 迁移自 claudecodeui src/components/chat/utils/messageKeys.ts。
+// getIntrinsicMessageKey 的定义本体收敛到 runEvents.ts（与消息稳定引用复用层
+// 同处）：node:test 直载 .ts 单测按 ESM 解析 runEvents.ts，无扩展名运行时相对
+// 导入无法解析（ERR_MODULE_NOT_FOUND），故 runEvents.ts 不得反向 import 本模块。
+// 本文件保留再导出，ClaudeMessageList 等消费方导入路径不变。
+export { getIntrinsicMessageKey } from './runEvents';

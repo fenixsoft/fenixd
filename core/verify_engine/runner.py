@@ -130,6 +130,7 @@ def determine_scenario_status(
     - 任何第1-3层断言失败 → "fail"
     - 仅第4层断言失败 → "warning"
     - 视觉差异超阈值 → "warning"
+    - 视觉对比不可用（error / size_mismatch）→ "warning"
     - 全部通过 → "pass"
 
     失败断言的 layer 缺失或越 1-4 界（上游畸形结果，如未知断言类型
@@ -181,11 +182,24 @@ def determine_scenario_status(
     # 未满足（步骤/断言存在失败）时本轮不固化、不产生比对结论——与
     # baseline_created 同属「非判定性视觉状态」，不计为视觉失败（不落
     # warning/failed），场景按 DOM 断言正常判档；judge 侧随即按非打回依据
-    # 处理（同 flaky/env 待遇）。此处无需特判：非三档（rejected/diff/warning）
-    # 即自然放行至层 4 断言与 pass 判定。
+    # 处理（同 flaky/env 待遇）。此处无需特判：非五档（rejected/diff/warning/
+    # error/size_mismatch，后两档见下方并入说明）即自然放行至层 4 断言与
+    # pass 判定。
     if any(v.get("status") == "diff_detected" for v in visual_results):
         return "warning"
     if any(v.get("status") == "warning" for v in visual_results):
+        return "warning"
+    # error（截图解码失败/0 像素图/对比异常兜底，visual_diff._compare_once）
+    # 与 size_mismatch（基线与当前截图尺寸失配）同为 pass=False 的「对比未
+    # 能产生结论」形态：视觉断言本轮实际不可用。若放行，持续性不可用（如
+    # 基线与视口尺寸漂移后每轮 size_mismatch、基线损坏每轮 error）不反映
+    # 到场景状态，且不存在 diff_detected 那样的连续轮 suspicious 侦测兜底，
+    # 只能靠 judge 阅读 report 的 visual_results 才能发现——与上方非 dict
+    # 畸形条目按 warning 兜底的取向（避免静默放行为 pass）矛盾，故并入
+    # warning 档（code-review item b4c2ca41e4c2）。skipped（PIL 不可用主动
+    # 跳过，pass=True）与 baseline_deferred/created 同属非判定性视觉状态，
+    # 自然放行。
+    if any(v.get("status") in ("error", "size_mismatch") for v in visual_results):
         return "warning"
 
     if has_layer_4_fail:

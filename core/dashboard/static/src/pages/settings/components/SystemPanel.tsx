@@ -36,7 +36,9 @@ const ADMIN_ANNOTATIONS: {
     note: '自愈监视器巡检周期：每这么久扫描一次困境信号；也参与卡顿判定的宽限期计算（间隔×2）。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
-        v != null && v > 0 ? Promise.resolve() : Promise.reject(new Error('须为正数')),
+        Number.isInteger(v) && (v as number) > 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为正整数')),
     }],
   },
   {
@@ -46,7 +48,9 @@ const ADMIN_ANNOTATIONS: {
     note: '同一 SPEC 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
-        v != null && v >= 0 ? Promise.resolve() : Promise.reject(new Error('须为非负数')),
+        Number.isInteger(v) && (v as number) >= 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为非负整数')),
     }],
   },
   {
@@ -56,7 +60,9 @@ const ADMIN_ANNOTATIONS: {
     note: 'stuck 信号成功处置（resolved / partially-resolved）后的静默窗口：窗口内同 SPEC stuck 信号不复发，避免处置成功后短期反复触发。0=不静默。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
-        v != null && v >= 0 ? Promise.resolve() : Promise.reject(new Error('须为非负数')),
+        Number.isInteger(v) && (v as number) >= 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为非负整数')),
     }],
   },
   {

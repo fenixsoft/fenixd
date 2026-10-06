@@ -10,6 +10,10 @@ import ProjectCards from './components/ProjectCards';
 
 // dashboard-sse-refresh 3.3：overview 轮询 2s → 30s 心跳校准 + visibilitychange 补刷
 const HEARTBEAT_MS = 30000;
+// SSE 告警事件合帧窗口：AdminMonitor/watcher 批量升级告警、巡检集中写入时会在
+// 短时间连发多个 alerts/admin_activities 事件，逐事件 tick 会让 AlertBanner 逐
+// 事件各发一次 GET /api/alerts 形成重拉风暴；窗口内合并为一次横幅刷新
+const ALERTS_TICK_COALESCE_MS = 500;
 
 export default function OverviewPage() {
   const [data, setData] = useState<OverviewData | null>(null);
@@ -21,10 +25,22 @@ export default function OverviewPage() {
   const { setInitialState } = useModel('@@initialState');
   // 在飞删除的项目名（ref：load 回调闭包读取，不进依赖避免重建 load→重挂 effect）
   const deletingRef = useRef<Set<string>>(new Set());
+  // item 332c514d9d76：SSE 告警事件合帧定时器句柄（ref 供 onmessage 与卸载清理共用，
+  // 同 activities 页 refreshTimerRef 惯例）
+  const alertsTickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // item 370293e2857d: load 自增请求序号——30s 心跳、visibilitychange 补刷、
+  // ProjectCards onChanged 多处触发的 load 可并发在飞，响应到达顺序不保证，较早
+  // 发出的响应后到会把旧 projects/totals 与 setInitialState 菜单写回覆盖新数据。
+  // 仿 AlertBanner（fix 9e69e892b7e5）/activities 页（fix 01635701025b）loadSeqRef：
+  // 仅最新一次请求允许落状态，过期响应（含其失败与收尾置位）直接丢弃
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const d = await getOverview();
+      // 写回前复核序号：过期请求不改写任何状态（data 与菜单均不覆盖）
+      if (seq !== loadSeqRef.current) return;
       // 删除在飞期间（后端 stop_daemon 轮询可达 30s）overview 仍返回该项目，
       // 心跳/visibilitychange 补刷会把它刷回列表——过滤在飞删除项，
       // 直到删除落定（settleProjectLocal）后才恢复采用服务端真值
@@ -49,11 +65,15 @@ export default function OverviewPage() {
       });
       setError('');
     } catch (e) {
+      // 过期请求的失败同样不落状态，防旧错误提示覆盖新请求结果
+      if (seq !== loadSeqRef.current) return;
       // fix-dashboard-fault-isolation 3.1：请求失败 MUST NOT 清空已成功加载的
       // data——错误提示叠加在既有数据之上，刷新失败不清空已展示的项目卡片与 totals
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      // 收尾置 false 同样纳入序号守卫（对齐 activities 页 fix 9fc948945fc7）：
+      // 旧请求后完成时不抢在并发中的新请求之前撤掉加载指示
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [setInitialState]);
 
@@ -96,7 +116,17 @@ export default function OverviewPage() {
       // alerts/admin_activities 事件均驱动横幅刷新（跨项目告警聚合，与 30s 心跳解耦）：
       // AdminMonitor 新写入的升级告警走 admin_alerts.json 变更，watcher 只广播
       // type=admin_activities（无 alerts 事件），不同驱则停留页面期间新告警不上屏
-      if (msg.type === 'alerts' || msg.type === 'admin_activities') setAlertsTick((t) => t + 1);
+      if (msg.type === 'alerts' || msg.type === 'admin_activities') {
+        // item 332c514d9d76：时间窗合帧——首个事件排程 ALERTS_TICK_COALESCE_MS 后的
+        // 一次 tick，窗口内后续事件并入不再排程，逐事件重拉风暴收敛为每窗至多一次
+        // GET /api/alerts（横幅仍与 30s 心跳解耦，只是合帧降频）
+        if (alertsTickTimerRef.current === null) {
+          alertsTickTimerRef.current = setTimeout(() => {
+            alertsTickTimerRef.current = null;
+            setAlertsTick((t) => t + 1);
+          }, ALERTS_TICK_COALESCE_MS);
+        }
+      }
       // state/refresh/run_meta 不触发 overview 重拉：由 30s 心跳统一校准
     };
     // 卸载必须关闭，防 EventSource 连接泄漏
@@ -104,6 +134,11 @@ export default function OverviewPage() {
       es.close();
       clearInterval(hb);
       document.removeEventListener('visibilitychange', onVisible);
+      // 合帧定时器随卸载清理，防卸载后仍触发 tick（同 activities 页统一清理惯例）
+      if (alertsTickTimerRef.current !== null) {
+        clearTimeout(alertsTickTimerRef.current);
+        alertsTickTimerRef.current = null;
+      }
     };
   }, [load]);
 

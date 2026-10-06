@@ -433,6 +433,12 @@ def _bookkeeping_tool_share(tool_metrics: dict | None) -> float | None:
     hist = (tool_metrics or {}).get("tool_uses")
     if not isinstance(hist, dict):
         return None
+    # code-review item 7923d95ae87d：先快照再迭代——stdout 读线程会并发向该
+    # 直方图插入新工具名键（_run_claude 读侧 tool_uses 累计处），边迭代边被
+    # 他线程插新键会抛 RuntimeError(dictionary changed size during iteration)，
+    # 落入轮询环 except 把健康 run 误判为 run thread crashed。单次 dict 拷贝
+    # 由 GIL 保证原子，快照后的迭代与写侧解耦。
+    hist = dict(hist)
     total = sum(v for v in hist.values() if isinstance(v, (int, float)))
     if total <= 0:
         return None
@@ -3355,7 +3361,11 @@ class AgentRunner:
                     # 跨边界 return（让位）/ continue（原地重试）/ break（预算耗尽）
                     # 经返回值驱动，调用者据此决策（D2）。
                     output = ""
-                    turns = 0
+                    # code-review item d178a0386584：turns 保留 _run_claude 实测值
+                    #（两处 gate 抛出点均在 _run_claude 返回之后，turns 已是本轮
+                    # 实测）——与 usage_info 同口径（_handle_artifact_gate_retry：
+                    # usage 保留实测值，区别于早期抛错按 0 计），消除同一 metrics
+                    # 行 turns=0 而 usage 非 0 的双口径矛盾。
                     success = False
                     (error, transient_retries, _gate_yielded,
                      _gate_retry, _gate_break) = self._handle_artifact_gate_retry(
@@ -6240,6 +6250,19 @@ class AgentRunner:
                     f"run {run_id}: stdout 读线程 join 5s 超时仍存活——终态观测"
                     f"不可靠，跳过 last_result 消费（unobserved）",
                 )
+            # code-review item 8e5399221795：stderr 读线程同口径判活——join 超时
+            # 仍存活（如单行落盘阻塞）时，「join 后读取天然 happens-before」的
+            # 前提对 stderr_lines deque 同样不成立，主线程的迭代（_denoise_stderr
+            # 过滤 / list() 快照）与其 append 交错会抛 deque mutated during
+            # iteration，顶替 rc!=0 的真实死因且丢失异常上的结构化归因属性。
+            # 置位后 rc!=0 收口按「stderr 不可观测」跳过 deque 迭代。
+            stderr_reader_stuck = t_err.is_alive()
+            if stderr_reader_stuck:
+                self.logger.warning(
+                    "agent_runner",
+                    f"run {run_id}: stderr 读线程 join 5s 超时仍存活——跳过 "
+                    f"stderr_lines deque 迭代（stderr 不可观测）",
+                )
             # code-review item 183ded7b526a：pop 持 _run_finalize_lock，与
             # wait_for_running_agents 停机写 interrupted 标记的「成员复核 +
             # 末行复核 + 追加」临界区互斥（其后同线程的 result 等终态落盘
@@ -6595,7 +6618,20 @@ class AgentRunner:
             # 噪音行（v2.1.233+ 每请求写入 `[claude-code:...]`、与死因无关），避免
             # 死因被系统性误标。过滤后无剩余内容 → 回退 `Exit code: {returncode}`。
             # run 产物 jsonl 的 stderr 原始事件保持不过滤（取证现场完整）。
-            effective_lines, error_msg = self._denoise_stderr(stderr_lines, returncode)
+            if stderr_reader_stuck:
+                # code-review item 8e5399221795：stderr 读线程未退出时不迭代共享
+                # deque（与上方 last_result 的 reader_stuck 同口径）——按空 stderr
+                # 收口并在文本注明读线程未退出，防 deque mutated during iteration
+                # 顶替真实 rc!=0 死因。空列表对齐超时/强杀路径「不携带 stderr」
+                # 的既有形态。
+                effective_lines = []
+                error_msg = (
+                    f"Exit code: {returncode} "
+                    f"(stderr reader thread did not exit; stderr unobservable)"
+                )
+            else:
+                effective_lines, error_msg = self._denoise_stderr(
+                    stderr_lines, returncode)
             try:
                 append_run_error(run_file, error_msg, returncode)
             except OSError as e:
@@ -6611,7 +6647,8 @@ class AgentRunner:
             # error 文本反推（unrecognized_model 已被过滤），必须用原始信号。
             # 超时/强杀路径（timeout_error/turn_limit_error）不携带（空列表），
             # 保证超时卡死不被误判为瞬断。
-            exc.stderr_lines = list(stderr_lines)
+            exc.stderr_lines = (
+                [] if stderr_reader_stuck else list(stderr_lines))
             exc.has_result = bool(observed_result)
             exc.exit_code = returncode
             # evo-code-fix-api-timeout-salvage 1.1：api_timeout 布尔标记挂异常

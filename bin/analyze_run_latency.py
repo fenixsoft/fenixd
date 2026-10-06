@@ -19,6 +19,7 @@ latency_stats / format_latency_summary，见 design D3「复用公共解析函�
 """
 
 import argparse
+import glob
 import json
 import sys
 from pathlib import Path
@@ -81,8 +82,6 @@ def expand_globs(paths) -> list:
             out.append(p)
             continue
         # 尝试 glob（含递归）
-        import glob
-
         matched = sorted(Path(m) for m in glob.glob(str(p)))
         if not matched:
             # 既不存在也无 glob 匹配：向 stderr 告警后跳过，与文档一致

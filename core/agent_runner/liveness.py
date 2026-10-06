@@ -9,12 +9,15 @@ from pathlib import Path
 # 本模块经类内 staticmethod 别名委托复用（与 runner.py 同型），不保留本地副本。
 from core.timelib import from_epoch
 from core.agent_runner.latency import _entry_is_tool_result
-from core.agent_runner.run_files import append_run_line, run_spec_part
+from core.agent_runner.run_files import (
+    append_run_line,
+    run_spec_part,
+    strip_run_id_suffixes,
+)
 from datetime import datetime, timezone
 import json
 import logging
 import os
-import re
 import signal
 import subprocess
 import time
@@ -400,14 +403,14 @@ class LivenessSupervisor:
             # 以 base run_id 预生成 <run_id>.jsonl 并在等待期写心跳，attempt 启动后以
             # <run_id>-a1.jsonl 落盘并注册 _running_agents（键=attempt run_id），base
             # 文件自此无写入——其 stem 与注册表键不同形，仅 mtime 停更越阈就会被误补
-            # interrupted。先按 _normalize_run_id 同款正则（本地最小复制，避免跨模块
-            # import 环）剥离 -a<n>/-r<n> 后缀，归一化后的 base 键命中注册表归一化键
-            # 集合 → 该 run 仍存活，跳过补写与「悬空 run」告警。幂等：无后缀键归一
-            # 后为自身，覆盖原精确成员判定。
-            base_stem = re.sub(r"(?:-a\d+|-r\d+)+$", "", stem)
+            # interrupted。经 run_files.strip_run_id_suffixes（后缀剥离唯一解析
+            # 来源，1.2 约束，与 _normalize_run_id 同口径）剥离 -a<n>/-r<n> 后缀，
+            # 归一化后的 base 键命中注册表归一化键集合 → 该 run 仍存活，跳过补写
+            # 与「悬空 run」告警。幂等：无后缀键归一后为自身，覆盖原精确成员判定。
+            base_stem = strip_run_id_suffixes(stem)
             # 注册表会被 run 收尾线程并发 pop，先取快照避免迭代中 dict 变化
             if base_stem in {
-                re.sub(r"(?:-a\d+|-r\d+)+$", "", key)
+                strip_run_id_suffixes(key)
                 for key in list(self._pm._running_agents)
             }:
                 continue
@@ -446,7 +449,7 @@ class LivenessSupervisor:
                 # 成员复核（判据 ① 锁内重做）：判据 ① 快照取自锁外，取 snapshot
                 # 到本临界区之间注册表可能已变化，以锁内快照为追加前的最终判据
                 if base_stem in {
-                    re.sub(r"(?:-a\d+|-r\d+)+$", "", key)
+                    strip_run_id_suffixes(key)
                     for key in list(self._pm._running_agents)
                 }:
                     continue

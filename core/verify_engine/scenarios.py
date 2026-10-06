@@ -25,6 +25,13 @@ CURRENT_CONTRACT_VERSION = 2
 
 CONTRACT_VERSION_FIELD = "contract_version"
 
+# ── step timeout 量级上限（code-review item 9fdde9c28d89）──────────
+# 负值/非有限值已有双层拦截，但有限大值（如 planner 以毫秒语义误写
+# "600000"≈7 天）能过两道拦截并作为 wait_for/请求超时如实等待，单场景
+# 占住并行槽挂起整轮验证，后果与 inf 被拦相同。定义在校验层、运行层
+# （cli_runner._execute_run）共用同一常量防口径漂移。
+MAX_STEP_TIMEOUT = 1800.0  # 30 分钟
+
 
 # ── 旧 schema 字段迁移（frozen-scenario-schema-migration D1/D2）────
 # 冻结文件（frozen test_scenarios.json）可能以旧字段形态生成：
@@ -1348,6 +1355,15 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         elif step.timeout is not None and not math.isfinite(step.timeout):
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: timeout 须为有限数字（秒），收到 {step.timeout}"
+            )
+        # 有限大值量级拦截（code-review item 9fdde9c28d89）：负值/非有限值
+        # 拦截覆盖不到毫秒语义误写（"600000"≈7 天），运行层 wait_for 会如实
+        # 等待、单场景占住并行槽挂起整轮验证。口径对齐上方 timeout 分支：
+        # elif 只补超过 MAX_STEP_TIMEOUT 的有限大值，不重复报错
+        elif step.timeout > MAX_STEP_TIMEOUT:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: timeout 超过上限"
+                f" {MAX_STEP_TIMEOUT:g} 秒（30 分钟），收到 {step.timeout}"
             )
         # sse_connect duration 负值同款拦截（code-review item c0d449652c16）：
         # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场，报错

@@ -116,6 +116,11 @@ export default function HookManager({
 }: HookManagerProps) {
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  // Modal 提交本地 pending（code-review item 336b12c207dc）：confirmLoading 只在
+  // 父组件 saving 回写后才生效，点击到回写之间存在窗口，双击保存会以同一份 hooks
+  // prop 各自计算 next 调两次 onSave，落盘两条内容相同的 hook。本地状态在提交
+  // 入口同步置位闸门，不依赖父组件回写时机（React 离散事件间必先 flush 渲染）
+  const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
   const { message } = App.useApp();
   const isMobile = useIsMobile();
@@ -191,6 +196,10 @@ export default function HookManager({
   );
 
   const handleSubmit = () => {
+    // 防重复提交门控（code-review item 336b12c207dc）：首次提交立即置位，
+    // 窗口内的再次 onOk 直接丢弃
+    if (submitting) return;
+    setSubmitting(true);
     form.validateFields().then(async (values) => {
       const entry: HookConfig = {
         id: editIdx !== null ? hooks[editIdx].id : shortId(),
@@ -216,9 +225,13 @@ export default function HookManager({
         setModalOpen(false);
       } catch (e) {
         message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      } finally {
+        // 落盘成功或失败都解除门控（失败保持 Modal 打开可重试）
+        setSubmitting(false);
       }
     })
     .catch((e) => {
+      setSubmitting(false);
       // 校验不通过时 validateFields 会 reject（带 errorFields 属性，错误已由表单字段提示），
       // 静默吞掉避免 unhandled rejection；其余为 .then 回调内的运行时异常（如弹窗打开期间
       // hooks prop 收缩致 editIdx 越界），不能同路静默——补日志并给出保存失败提示（口径对齐 handleDelete/handleToggle）
@@ -512,8 +525,8 @@ export default function HookManager({
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
-        okText={saving ? '保存中...' : '保存'}
-        confirmLoading={saving}
+        okText={saving || submitting ? '保存中...' : '保存'}
+        confirmLoading={saving || submitting}
         destroyOnHidden
         width={520}
       >

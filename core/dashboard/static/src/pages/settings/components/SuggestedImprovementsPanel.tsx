@@ -491,6 +491,9 @@ const SuggestedImprovementsPanel = forwardRef<
 
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
+  // 在飞的具体批量动作：转圈只应出现在真正执行的那个按钮上（否则执行批量拒绝
+  // 时转圈的会是「批量同意」，动作错位）
+  const [batchAction, setBatchAction] = useState<BatchAction | null>(null);
   // 「清理所有项目自省内容」：全局动作，与条目多选/批量无关，单独一个在飞标志
   const [clearingTodo, setClearingTodo] = useState(false);
 
@@ -767,6 +770,7 @@ const SuggestedImprovementsPanel = forwardRef<
       cancelText: '取消',
       okButtonProps: isDestructive ? { danger: true } : undefined,
       onOk: async () => {
+        setBatchAction(action);
         setBatchRunning(true);
         let succeeded = 0;
         // 携带 item.id 作 key（code-review item 4d4f1e78b97b）：不同项目条目的
@@ -786,7 +790,10 @@ const SuggestedImprovementsPanel = forwardRef<
           // unmount 守卫（code-review item ab67eda51983）：批量运行中用户导航
           // 离开（面板卸载）时，多 await 之后的 state 更新不得打到已卸载组件
           // ——与 loadItems/loadView 的 mountedRef 口径一致。
-          if (mountedRef.current) setBatchRunning(false);
+          if (mountedRef.current) {
+            setBatchRunning(false);
+            setBatchAction(null);
+          }
         }
         if (mountedRef.current) setSelectedRowKeys([]);
         await loadItems();
@@ -1267,7 +1274,7 @@ const SuggestedImprovementsPanel = forwardRef<
         <span style={{ flex: 1 }} />
         <Button
           disabled={selectedRowKeys.length === 0 || batchRunning}
-          loading={batchRunning}
+          loading={batchRunning && batchAction === 'accept'}
           onClick={() => runBatch('accept')}
           style={{ minWidth: 96 }}
           data-testid="evolution-batch-accept"
@@ -1277,6 +1284,7 @@ const SuggestedImprovementsPanel = forwardRef<
         <Button
           danger
           disabled={selectedRowKeys.length === 0 || batchRunning}
+          loading={batchRunning && batchAction === 'reject'}
           onClick={() => runBatch('reject')}
           style={{ minWidth: 96 }}
           data-testid="evolution-batch-reject"
@@ -1288,6 +1296,7 @@ const SuggestedImprovementsPanel = forwardRef<
           type="primary"
           danger
           disabled={selectedRowKeys.length === 0 || batchRunning}
+          loading={batchRunning && batchAction === 'delete'}
           onClick={() => runBatch('delete')}
           style={{ minWidth: 96 }}
           data-testid="evolution-batch-delete"
