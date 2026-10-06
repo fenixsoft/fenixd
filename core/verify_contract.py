@@ -1231,7 +1231,15 @@ def _run_prepare_steps_unlocked(
                 cwd=str(cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                # encoding/errors 固化（code-review item 3dc91dd631ad）：裸
+                # text=True 按 locale 首选编码严格解码，构建输出含非 UTF-8
+                # 字节（或 C/POSIX locale 下任何非 ASCII）时 communicate()
+                # 抛 UnicodeDecodeError（ValueError 族）冲出本函数仅捕
+                # TimeoutExpired 的 try，违背「prepare 失败返回人类可读错误
+                # 串」契约——与 core/regression.py 同口径有损替换解码。
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 start_new_session=True,
             )
         # ValueError 与 OSError 同捕（code-review item c9a11de9d009）：cmd/cwd
@@ -1577,7 +1585,14 @@ def _run_npm_provision(argv: list, cwd: Path) -> subprocess.CompletedProcess:
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        # encoding/errors 固化（code-review item 3dc91dd631ad）：裸 text=True
+        # 严格解码，npm 输出含非 UTF-8 字节时 communicate() 抛
+        # UnicodeDecodeError（ValueError 族），调用方只捕
+        # (SubprocessError, OSError) 接不住，异常冲出供给入口——与
+        # core/regression.py 同口径有损替换解码。
         text=True,
+        encoding="utf-8",
+        errors="replace",
         start_new_session=True,
     )
     try:
@@ -2113,6 +2128,12 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     PosixPath('/prj/dist/server.js')
     >>> resolve_entry_path("node -r ./missing.js", Path("/prj")) is None
     True
+    >>> resolve_entry_path("node $APP_DIR/server.js", Path("/prj")) is None
+    True
+    >>> resolve_entry_path("node ${SRC}/main.ts", Path("/prj")) is None
+    True
+    >>> resolve_entry_path("node ~/server.js", Path("/prj")) is None
+    True
     """
     if not cmd or not isinstance(cmd, str):
         return None
@@ -2148,6 +2169,12 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
         if arg.startswith("-"):
             i += 1  # --flag=value 形态或无独立取值的 flag
             continue
+        # $VAR/${VAR}/~ 形态（code-review item 836709d3af31）：serve.cmd 走
+        # shell=True 启动时由 shell 展开，本可命中真实文件，静态存在性检查
+        # 对字面路径必然落空——按「无法静态解析」跳过预检，与引号不配对
+        # 分支同口径（零误杀，spawn 后交给既有探活兜底）。
+        if "$" in arg or arg.startswith("~"):
+            return None
         # 名单之外的未知取值 flag 兜底：非脚本扩展名结尾的候选无法机械判定
         # 为入口 → 跳过预检（零误杀）
         if Path(arg).suffix.lower() not in _SCRIPT_ENTRY_SUFFIXES:
