@@ -91,7 +91,7 @@
   - 建议：起草小 SPEC：给裁决选项注册表新增 commit_stray_wip（核对归属后直接提交散件 WIP 并在处置记录附提交 hash），并让 maintree_stray_wip_stale 的 recommended_action（建议动作字段）直接带出该选项。
 
 - **blocked_stuck信号主体已终态仍升级滞留3.5天**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：spec 级滞留信号不随主体终态收口——upgrade-narrative-to-investigation 的 blocked_stuck 信号（spec 卡 blocked 超阈值未处理的升级告警）在主体已转 pushed 后仍保持 escalated（已升级人工）/handled=False 状态挂 3.5 天，台账持续虚报一条需人工介入的升级，且会继续被后续同型匹配放大。
   - 证据：信号 a90ebc0e80a8（blocked_stuck，2026-10-03T17:26:21Z 创建，escalated=True、handled=False 至今）；STATE.md 中该 spec 已于 10-03T17:48 记 status: pushed（updated 字段在案）；刚落地的自愈机制 add-alert-self-heal-marking（merge 92d49f61，10-06 16:48）其 SELF_HEAL_SIGNAL_TYPES 注册表仅含 daemon_errors/run_infra_failure/self-evolution 三类，不含 blocked_stuck。
   - 调查评估：在 upgrade-narrative-to-investigation 评审受阻时触发信号、22 分钟后 spec 自行恢复 pushed，但信号生命周期无人消费。已核实：新落地的告警自愈闭环按设计只覆盖基础设施瞬态类信号，其判定锚是「签名安静」而非「主体对象已达终态」，对 blocked_stuck 这种主体已恢复的滞留信号不适用；既有信号卫生机制（tests/test_stuck_signal_hygiene.py 覆盖面）也未含主体终态收口。与存量工作关系：add-alert-self-heal-marking 形态最近邻且刚落地，扩展点现成。结论：台账可信度小缺口，修法集中单点（终态惰性收口通道）。
