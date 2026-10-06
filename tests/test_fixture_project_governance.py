@@ -607,3 +607,156 @@ class TestFixtureInvocationSuppression:
         mon._handle_signal(_daemon_error_signal(fp))
 
         assert len(runner.calls) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# verify-fixture-guard：场景夹具注册静态扫描情报 + 规范固化存在性断言
+# ═══════════════════════════════════════════════════════════════════
+
+from core.verify_engine.scenario_static_check import (  # noqa: E402
+    PATTERN_TABLE,
+    scan_scenarios,
+)
+
+KNOWLEDGE_DOC_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "spec" / "knowledge" / "domains" / "test-engineering"
+    / "fixture-project-governance.md"
+)
+PLANNER_PLAN_PATH = (
+    Path(__file__).resolve().parents[1] / "agents" / "planner-plan.md"
+)
+
+
+def _fixture_reg_scenario(command=None, stdin_text=None, kind="cli", sid="fx-scan-1"):
+    """构造含场景命令注册夹具的 cli 场景（run 步骤）。"""
+    step = {"action": "run"}
+    if command is not None:
+        step["command"] = command
+    if stdin_text is not None:
+        step["stdin"] = stdin_text
+    return {"id": sid, "kind": kind, "steps": [step]}
+
+
+class TestUnmarkedFixtureAddProjectScan:
+    """tasks.md 3.1：add_project( 未带 fixture=True 产出静态扫描情报。"""
+
+    def _findings(self, sc, serving_port="6000"):
+        return [
+            f for f in scan_scenarios([sc], serving_port=serving_port)
+            if f.rule_id == "unmarked_fixture_add_project"
+        ]
+
+    def test_explicit_fixture_false_detected(self):
+        # 本次事故形态：显式 fixture=False（selfheal-scratch-verify 同型）
+        sc = _fixture_reg_scenario(
+            stdin_text=(
+                'import reg\n'
+                'reg.add_project(SROOT, name="selfheal-scratch-verify", '
+                'fixture=False)\n'
+            ),
+        )
+        finds = self._findings(sc)
+        assert len(finds) == 1
+        assert finds[0].scenario_id == "fx-scan-1"
+        assert finds[0].location == "steps[0].stdin"
+        assert "fixture=True" in finds[0].message
+        assert "fixture=False" in finds[0].message  # 情报引用原调用片段
+
+    def test_default_omitted_detected(self):
+        # 缺省不传 fixture：Registry.add_project 缺省 False，同属未打标
+        sc = _fixture_reg_scenario(
+            command="python3 -c \"import reg; reg.add_project('/tmp/probe')\"",
+        )
+        finds = self._findings(sc)
+        assert len(finds) == 1
+        assert finds[0].location == "steps[0].command"
+
+    def test_explicit_fixture_true_not_flagged(self):
+        sc = _fixture_reg_scenario(
+            stdin_text='reg.add_project(SROOT, name="probe", fixture=True)\n',
+        )
+        assert self._findings(sc) == []
+
+    def test_fixture_true_with_spaces_not_flagged(self):
+        # fixture = True（等号带空白）同认已打标，不产误报
+        sc = _fixture_reg_scenario(
+            stdin_text="reg.add_project( SROOT, name='probe', fixture = True )\n",
+        )
+        assert self._findings(sc) == []
+
+    def test_mark_fixture_call_not_flagged(self):
+        # mark_fixture 补标调用不是 add_project 注册，不产情报
+        sc = _fixture_reg_scenario(
+            stdin_text="reg.mark_fixture(SROOT, fixture=True)\n",
+        )
+        assert self._findings(sc) == []
+
+    def test_list_command_form_joined_and_scanned(self):
+        # cli command 支持 str/list 双形态：argv 逐项拼接后扫（同
+        # stale_literal_port 手法），argv 项内嵌调用不漏报
+        sc = _fixture_reg_scenario(
+            command=[
+                "python3", "-c",
+                "reg.add_project(SROOT, name='p', fixture=False)",
+            ],
+        )
+        finds = self._findings(sc)
+        assert len(finds) == 1
+        assert finds[0].location == "steps[0].command"
+
+    def test_web_kind_not_scanned(self):
+        # kinds 只覆盖 cli（本次事故形态）；web 场景无场景命令注册面
+        sc = _fixture_reg_scenario(
+            stdin_text="reg.add_project(SROOT, fixture=False)\n", kind="web",
+        )
+        assert self._findings(sc) == []
+
+    def test_runs_without_serving_port(self):
+        # need_port=False：serving 端口未知（None）时本规则仍执行
+        sc = _fixture_reg_scenario(
+            stdin_text="reg.add_project(SROOT, fixture=False)\n",
+        )
+        finds = self._findings(sc, serving_port=None)
+        assert len(finds) == 1
+
+    def test_pattern_table_entry_contract(self):
+        # 表项约定：kinds 至少覆盖 cli；need_port=False（与端口无关）
+        entry = next(
+            r for r in PATTERN_TABLE
+            if r["rule_id"] == "unmarked_fixture_add_project"
+        )
+        assert "cli" in entry["kinds"]
+        assert entry["need_port"] is False
+
+
+class TestGovernanceDocMustEntry:
+    """领域文档新增 MUST 条目的存在性断言（沿用领域文档断言惯例）。"""
+
+    def _doc_text(self):
+        return KNOWLEDGE_DOC_PATH.read_text(encoding="utf-8")
+
+    def test_must_rule_present(self):
+        text = self._doc_text()
+        assert "## 现行规则" in text
+        assert "MUST" in text
+        assert "fixture=True" in text
+        assert "Registry.add_project" in text
+
+    def test_rationale_and_incident_reference_present(self):
+        text = self._doc_text()
+        # 依据与降噪面两个依据点都要在场：ADR-163 + 直写不经摄取抑制、
+        # 聚合分支 fixture 过滤是唯一降噪面
+        assert "ADR-163" in text
+        assert "摄取抑制" in text
+        assert "唯一降噪面" in text
+        assert "selfheal-scratch-verify" in text
+        assert "arch-scratch-verify" in text
+
+    def test_planner_prompt_carries_rule_with_examples(self):
+        # 出题端触达（spec：规范可被出题端与知识层触达）：planner-plan.md
+        # 载明 MUST 规则与正反示例
+        text = PLANNER_PLAN_PATH.read_text(encoding="utf-8")
+        assert "fixture=True" in text
+        assert "MUST" in text
+        assert "reg.add_project(SROOT" in text  # 正例/反例调用形态

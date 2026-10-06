@@ -115,6 +115,11 @@
 - 移动端/响应式行为场景在场景 JSON 顶层声明 `"viewport": {"width": 390, "height": 844}`（引擎按声明视口渲染，`useIsMobile` 等 matchMedia 门控的移动端条件渲染可被真实驱动）；桌面行为场景不声明该字段（缺省 1280×800）。断言的选择器/文案必须与目标视口下实际渲染的结构一致（桌面表格与移动卡片列表结构不同）。
 - **铁律：禁止 mock 本 SPEC 交付物包含的 API 端点。** mock_api 仅允许用于与交付物无关的辅助/壳层接口（如页面骨架依赖的 /api/overview）。本 SPEC 实现/修改的端点必须打真实实例——mock 掉被测对象等于只测了前端对夹具数据的渲染，后端契约零覆盖（假阴性放大器：场景"通过"而功能未验证，help-center 事故实证）。若被测实例形态无法支撑真实端点，在场景中如实失败，由框架按环境问题升级处置，不得以 mock 掩盖。
 
+## 场景夹具注册规范（fixture=True 硬约束）
+- 验证场景在场景命令内自注册探针夹具项目（/tmp 扫描根外的临时路径）时，MUST 以 `fixture=True` 调用 `Registry.add_project`：夹具 seed/对照告警直写项目 `.fenix/admin_alerts.json`，绕开摄取抑制，只有缺省跨项目聚合分支的 fixture 过滤能降噪（ADR-163：显式点名查询 `?project=` 零改动、打标对场景断言零影响，放心打标）。
+- 正例：`reg.add_project(SROOT, name="scratch-verify", fixture=True)`
+- 反例（add-alert-self-heal-marking / add-alerts-archive-and-overview-cache 事故形态，禁止）：`reg.add_project(SROOT, name="scratch-verify", fixture=False)` 或缺省不传 `reg.add_project(SROOT)`——夹具 critical 对照告警直通人工告警聚合横幅，引发用户误排查。
+
 ## 环境依赖场景标注（env-blocker-stop-loss 联动）
 - 场景依赖外部环境（模拟器、相机桥、硬件设备、驱动、外部服务等）时，在该场景 description 末尾标注「**环境依赖**」类别，并依 design.md 的 fallback 条款注明**有无 fallback**：有则写「有 fallback: <回退方式>」，无则写「无 fallback」。
 - 该标注与实现者提示词的环境阻塞止损规则联动：实现者对同一环境依赖**连续 ≥3 次失败尝试**即冻结任务，有 fallback 先走 fallback，无 fallback 登记 unfinished 转 partial——开局标注让实现者先识别止损对象，不把环境问题当可深挖修复问题。
