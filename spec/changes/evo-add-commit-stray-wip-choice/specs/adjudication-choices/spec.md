@@ -17,7 +17,7 @@
 
 ### Requirement: 执行器受清单约束
 
-commit_stray_wip 执行 MUST 只提交信号清单内（或当刻 git status 中匹配信号描述）的文件，拒绝任意路径；执行结果 MUST 在处置记录附提交 hash。
+commit_stray_wip 执行 MUST 只提交信号清单内（或当刻 git status 中匹配信号描述）的文件，拒绝任意路径；执行结果 MUST 在处置记录附提交 hash。执行 MUST 仅接受 signal_type=maintree_stray_wip_stale（其余信号类型——含未注册信号——一律拒绝，不经非作用域全表反查通道触达本动作）。
 
 #### Scenario: 清单外文件拒绝
 
@@ -28,6 +28,11 @@ commit_stray_wip 执行 MUST 只提交信号清单内（或当刻 git status 中
 
 - **WHEN** 对清单内散件改动执行该选项
 - **THEN** 产生一个提交且处置记录含提交 hash
+
+#### Scenario: 跨信号触达拒绝
+
+- **WHEN** 以 maintree_stray_wip_stale 之外的 signal_type（含未注册信号）请求执行 commit_stray_wip
+- **THEN** 执行被拒绝且不产生任何 git 写
 
 ### Requirement: 发射点带出选项
 
