@@ -670,9 +670,27 @@ def validate_report(report: dict) -> dict:
         }
 
     scenarios = report.get("scenarios")
-    if not isinstance(scenarios, list):
-        # 无场景条目：视为无待校验对象，合规（不阻塞 verified 路径）
+    if scenarios is None:
+        # 缺 scenarios 键（旧格式 report.json）：无待校验对象，合规不变
+        # （不阻塞 verified 路径）
         return {"ok": True, "violations": [], "classified": []}
+    if not isinstance(scenarios, list):
+        # 非 list 场景表（dict/非空字符串等真值）属结构损坏：与「场景 #N
+        # 非对象」同款 fail-closed 记 violation 驱动 judge 重试（code-review
+        # item 1575055d3bda），与 whitewash_violations（item c4f79c5c5fe9）
+        # 口径一致——损坏输入不得比空表更宽；ok=True 放行会让重试链跳过
+        # 证据校验，直到 whitewash 门才升级 admin 而非一次廉价重判
+        return {
+            "ok": False,
+            "violations": [
+                {
+                    "scenario_id": None,
+                    "status": None,
+                    "reason": "场景表非列表（结构损坏）",
+                }
+            ],
+            "classified": [],
+        }
 
     violations: List[dict] = []
     classified: List[str] = []
@@ -1589,7 +1607,15 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
         has_real_screenshots = isinstance(ev_screenshots, list) and any(
             isinstance(s, str) and s.strip() for s in ev_screenshots
         )
-        has_relevant_labels = labels.get("blank_screenshot") or labels.get("low_contrast")
+        # 严格 is True 判定（code-review item a9b61778a7ec）：与
+        # compute_attribution_level（item 94bf2c34ded9）同款防伪造纪律——
+        # 引擎侧只写布尔 True、缺标签即正常态；真值判定下 judge 改写缓存
+        # 命中场景的标签为任意真值（"yes"/1）即可跳过纯缓存归因降级
+        # speculative，违反 D3「纯缓存归因按 speculative 口径参与门禁」
+        has_relevant_labels = (
+            labels.get("blank_screenshot") is True
+            or labels.get("low_contrast") is True
+        )
         if not (has_real_screenshots or has_relevant_labels):
             # 纯缓存归因 → 降级 speculative（无论原级别：设计 D3
             # 规定纯缓存归因按 speculative 口径参与 2.2 门禁，
