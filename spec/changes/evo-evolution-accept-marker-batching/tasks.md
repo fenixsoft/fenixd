@@ -9,7 +9,7 @@
 
 ## 1. 接受循环批末合并提交
 
-- [ ] 1.1 core/evolution.py：accept_item（:1526，回写点 :1793 write_todo_marker 缺省 commit=True）加 defer_commit 开关形参（缺省不变，dashboard 手动单条路径 core/dashboard/routes/evolution_routes.py:137 保持即时提交）；auto_accept_pending（:2108，循环体 :2125-2149）改为逐条 defer、批末对本项目调一次 commit_todo_marker 合并提交（_commit_todo_marker :932 传条目 id 明细消息后缀）。
+- [ ] 1.1 core/evolution.py：accept_item（:1526，回写点 :1793 write_todo_marker 缺省 commit=True）加 defer_commit 开关形参（缺省不变，dashboard 手动单条路径 core/dashboard/routes/evolution_routes.py:137 保持即时提交）；auto_accept_pending（:2108，循环体 :2125-2149）改为逐条 defer、批末对本项目调一次 commit_todo_marker 合并提交（_commit_todo_marker :932 现消息写死 :991，新增可选消息后缀形参并经 commit_todo_marker :1021 透传条目 id 明细；同步更新 commit_todo_marker docstring 中「accept 不走本入口」的表述——自动接受批路径接入后该句仅对 dashboard 手动单条路径成立）。
 
 ## 2. 测试
 

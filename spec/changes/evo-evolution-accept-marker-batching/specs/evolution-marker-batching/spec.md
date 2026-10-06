@@ -4,7 +4,7 @@
 
 自进化接受循环的标记回写从「逐条一提交」改为「批末单次提交」，消除按条目数放大的提交噪声；不引入跨生产者的合并窗口风险。
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: 接受循环批末合并提交
 
