@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-# 桶 2 真裁决类信号的裁决选项集（proposal 信号表全量 8 类）。
+# 桶 2 真裁决类信号的裁决选项集（初始覆盖 proposal 信号表 8 类，随演进按需
+# 追加桶——勿引用本注释的计数作断言，覆盖清单以 registered_signal_types()
+# 与测试 _EXPECTED_CHOICE_IDS 为准）。
 # 每个选项四字段：
 #   id     稳定字符串（同信号内唯一）
 #   label  中文短标签（下拉框显示）
@@ -84,6 +86,24 @@ _ACK_SELF_HEAL = {
     "desc": "确认信号属瞬时/自愈或暂不需处置：仅留痕并关闭本条信号，"
             "不触碰任何 spec 状态机（全局信号可执行）",
     "action": "ack_self_heal",
+    "spec_scoped": False,
+}
+
+# evo-add-commit-stray-wip-choice 1.1：主树散件 WIP 的提交动作（全局信号，
+# spec 恒 None）。语义按处置记录 4c8be9a8ea40 / 4a1464085660 两次回填的
+# suggested_choice 原文：核对归属后直接提交信号清单内散件改动、与 stash 类
+# 动作互斥（提交后清单内文件不再滞留，stash 语义已被取代）、处置记录附提交
+# hash。spec_scoped=False 硬约束（design D1）：maintree_stray_wip_stale 是
+# 全局信号，全局信号守卫会拒 spec_scoped 选项——漏声明则选项永远执行不了。
+# 执行端另受 signal_type 绑定守卫收口（admin_actions._exec_commit_stray_wip，
+# design D4：resolve_choice 非作用域全表反查通道会把本动作暴露给任意未注册
+# 信号，执行器 MUST 校验 signal_type 后才落 git 写）。
+_COMMIT_STRAY_WIP = {
+    "id": "commit_stray_wip",
+    "label": "提交散件 WIP",
+    "desc": "核对归属后直接提交主树信号清单内的散件改动（与 stash 类动作"
+            "互斥，处置记录附提交 hash；全局信号可执行）",
+    "action": "commit_stray_wip",
     "spec_scoped": False,
 }
 
@@ -263,6 +283,14 @@ _ADJUDICATION_REGISTRY: dict = {
         # 本桶末位追加 _ACK_SELF_HEAL：该桶 spec 允许为空串（可能全局形态的
         # 已注册桶，见 _ACK_SELF_HEAL 处注释），非作用域收口动作声明于此，
         # 供未注册 signal_type 经全表反查到达（fix-global-signal-choice-execution 1.3）。
+    ),
+    # ── 主树散件 WIP 滞留族（evo-add-commit-stray-wip-choice 1.1）──────
+    # 全局信号（spec 恒 None，core/worktree_manager/stray_wip.py 周期盘点发射）。
+    # 消费通道为 ESCALATION 语义的告警区下拉（STORED_SIGNAL_TYPES 已收录，
+    # Administrator 自动唤起与 Dashboard 人工点击双通道并存）。10-02 以来
+    # 四度同型裁决全部 choice_id=None 自由处置，登记一次即塌缩复发裁决代价。
+    "maintree_stray_wip_stale": (
+        _COMMIT_STRAY_WIP,
     ),
 }
 

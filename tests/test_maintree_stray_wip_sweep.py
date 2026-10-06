@@ -180,6 +180,16 @@ class TestSweepLifecycle(unittest.TestCase):
         self.assertIn("未执行 stash/checkout/clean/reset", evidence)
         self.assertIn("git add/commit", rec.get("recommended_action") or "")
 
+        # evo-add-commit-stray-wip-choice 3.3：记录附 choices 快照（发射点
+        # 快照，注册表缺键回退不适用于本桶）、recommended_action 带出选项 id
+        choices = rec.get("choices")
+        self.assertIsInstance(choices, list)
+        self.assertEqual(
+            [c.get("id") for c in choices], ["commit_stray_wip"],
+        )
+        self.assertFalse(choices[0]["spec_scoped"])
+        self.assertIn("commit_stray_wip", rec.get("recommended_action") or "")
+
         # 重复盘点不重复告警（同指纹一次性去重）
         r3 = sw.sweep()
         self.assertEqual(r3["status"], "orphan-timed")

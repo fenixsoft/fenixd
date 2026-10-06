@@ -15,6 +15,7 @@ fix-global-signal-choice-execution 3.2：覆盖
 """
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -25,7 +26,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from core.admin_monitor import AdminMonitor
 from core.admin_store import AdminStore, DISPOSITION, ESCALATION, SIGNAL
 from core.agent_runner.result_gate import AdminDisposition
-from core.dashboard.data.admin_actions import execute_adjudication_choice
+from core.dashboard.data.admin_actions import (
+    _exec_commit_stray_wip,
+    execute_adjudication_choice,
+)
 
 
 # ── 夹具（与 test_adjudication_choices 同构收编）─────────────────────────
@@ -192,6 +196,159 @@ class TestExecutorScopeGuard(_TempProjCase):
             signal_type="spec-review-incomplete",
         )
         self.assertTrue(r["ok"], r.get("error"))
+
+
+# ── 1.5 commit_stray_wip 执行路径与守卫（evo-add-commit-stray-wip-choice 3.2）──
+
+# git 仓夹具用仓库内 .history/tmp（gitignored；/tmp 可能被外部清扫，同
+# test_maintree_stray_wip_sweep 规避），MUST NOT 改写全局 tempfile.tempdir。
+_HISTORY_TMP = pathlib.Path(__file__).resolve().parent.parent / ".history" / "tmp"
+_HISTORY_TMP.mkdir(parents=True, exist_ok=True)
+
+_BOUND_SIGNAL_TYPE = "maintree_stray_wip_stale"
+
+
+def _git(*args, cwd, check=True):
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd), check=check, capture_output=True, text=True,
+    )
+
+
+def _make_wip_repo() -> pathlib.Path:
+    """主树仓 + .fenix 状态目录：基线提交后留散件 WIP（a.txt 已改、
+    c.txt 为清单外新文件——反例对照，永不被裹挟提交）。仓库本地配置
+    提交身份（执行器自起 git 子进程，不经 -c 旗标）。"""
+    base = pathlib.Path(tempfile.mkdtemp(prefix="stray-commit-", dir=str(_HISTORY_TMP)))
+    repo = base / "proj"
+    repo.mkdir(parents=True)
+    _git("init", "-q", cwd=repo)
+    _git("config", "user.email", "t@t", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    (repo / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+    for name in ("a.txt", "b.txt"):
+        (repo / name).write_text("base", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "init", cwd=repo)
+    (repo / ".fenix").mkdir()
+    (repo / "a.txt").write_text("stray wip", encoding="utf-8")
+    (repo / "c.txt").write_text("off-manifest", encoding="utf-8")
+    return repo
+
+
+def _seed_stale_signal(repo, files, signal_type=_BOUND_SIGNAL_TYPE):
+    """写入一条带「文件清单(N):」段的散件 WIP SIGNAL 记录（发射点同款 evidence）。"""
+    return AdminStore(repo).append({
+        "kind": SIGNAL,
+        "signal_type": signal_type,
+        "spec": None,
+        "severity": "major",
+        "description": "主树散件 WIP 滞留",
+        "evidence": (
+            "项目名=proj; first_seen=2026-10-07T00:00:00+00:00; "
+            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            "零触碰注记: 本盘点只读"
+        ),
+        "recommended_action": "",
+    })
+
+
+def _head(repo) -> str:
+    return _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+
+
+def _status(repo) -> str:
+    return _git("status", "--porcelain", cwd=repo).stdout
+
+
+class TestCommitStrayWipExecutor(_TempProjCase):
+    """commit_stray_wip 执行路径（全局信号放行 / 清单约束 / D4 绑定守卫）。"""
+
+    def test_global_signal_commit_stray_wip_executes_with_hash(self):
+        """全局信号（spec=None）× commit_stray_wip 放行；只提交清单内文件，
+        处置结果附提交 hash；清单外 c.txt 不被裹挟。"""
+        repo = _make_wip_repo()
+        _seed_stale_signal(repo, ["a.txt"])
+        before_head = _head(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "commit_stray_wip", signal_type=_BOUND_SIGNAL_TYPE,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["action"], "commit_stray_wip")
+        self.assertEqual(r["commit_hash"], _head(repo))
+        self.assertNotEqual(r["commit_hash"], before_head)
+        self.assertEqual(r["committed_files"], ["a.txt"])
+        status = _status(repo)
+        self.assertNotIn("a.txt", status)
+        self.assertIn("c.txt", status)
+        # 提交 hash 在 steps 留痕（处置记录附提交 hash 语义）
+        self.assertTrue(any(r["commit_hash"] in s for s in r["steps"]))
+
+    def test_manifest_stale_entries_skipped_silently(self):
+        """清单中已不在当刻 status 的文件跳过不报错（同指纹一次性告警，清单陈旧）。"""
+        repo = _make_wip_repo()
+        _seed_stale_signal(repo, ["a.txt", "gone.txt"])
+        r = execute_adjudication_choice(
+            str(repo), None, "commit_stray_wip", signal_type=_BOUND_SIGNAL_TYPE,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["committed_files"], ["a.txt"])
+        self.assertTrue(any("gone.txt" in s for s in r["steps"]))
+
+    def test_empty_intersection_returns_error_no_empty_commit(self):
+        """交集为空返回明确 error，不产生空提交。"""
+        repo = _make_wip_repo()
+        _seed_stale_signal(repo, ["gone.txt"])
+        before_head, before_status = _head(repo), _status(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "commit_stray_wip", signal_type=_BOUND_SIGNAL_TYPE,
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("不产生空提交", r["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+
+    def test_out_of_manifest_path_rejected_zero_git_write(self):
+        """清单外路径拒绝并返回原因，不做任何 git 写。"""
+        repo = _make_wip_repo()
+        _seed_stale_signal(repo, ["a.txt"])
+        before_head, before_status = _head(repo), _status(repo)
+        r = _exec_commit_stray_wip(
+            str(repo), signal_type=_BOUND_SIGNAL_TYPE, paths=["c.txt"],
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("清单外", r["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+
+    def test_signal_type_binding_guard_blocks_all_other_types(self):
+        """design D4：resolve_choice 非作用域全表反查通道把本 git 写动作暴露
+        给任意未注册信号——执行器校验 signal_type 后才落 git 写，姊妹 info
+        信号 maintree_untracked_stray_stale 与未注册信号一律拒绝且零 git 写。"""
+        repo = _make_wip_repo()
+        _seed_stale_signal(repo, ["a.txt"])
+        before_head, before_status = _head(repo), _status(repo)
+        for st in ("maintree_untracked_stray_stale", "daemon_errors",
+                   "random_unregistered", ""):
+            r = execute_adjudication_choice(
+                str(repo), None, "commit_stray_wip", signal_type=st,
+            )
+            self.assertFalse(r["ok"], f"signal_type={st!r} 应拒绝")
+            self.assertIn("仅限", r["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+
+    def test_missing_signal_record_rejected_before_git_write(self):
+        """无可解析清单的信号记录：明确 error，不执行 git 写。"""
+        repo = _make_wip_repo()
+        before_head, before_status = _head(repo), _status(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "commit_stray_wip", signal_type=_BOUND_SIGNAL_TYPE,
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("文件清单", r["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
 
 
 # ── 2. 消费端守卫与终态回写纠偏 ──────────────────────────────────────────
