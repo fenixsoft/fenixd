@@ -157,10 +157,14 @@ def current_lane_fingerprint(project_root, entry=None) -> "dict | None":
 
     def _git(*args) -> str:
         try:
+            # errors="replace"（code-review item ed5653c45147）：对齐
+            # regression.py current_repo_fingerprint，不依赖 except ValueError
+            # 恰好兜住 UnicodeDecodeError 的隐式巧合
             out = subprocess.run(
                 ["git", "-C", str(project_root), *args],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=15,
             )
         except (OSError, subprocess.TimeoutExpired, ValueError):
