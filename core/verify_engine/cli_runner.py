@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 from ._evidence import _EVIDENCE_LIMIT, _truncate, _interpolate_env  # 共享证据工具（符号出口保持）
 from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .cli_assertions import CliAssertionRunner
-from .scenarios import validate_scenario
+from .scenarios import MAX_STEP_TIMEOUT, validate_scenario
 
 DEFAULT_RUN_TIMEOUT = 60.0
 
@@ -250,6 +250,19 @@ class CliRunner(VerifyRunner):
                 "action": "run",
                 "error_level": "error",
                 "error": f"timeout 须为有限数字（秒）: {step_dict.get('timeout')!r}",
+            }
+        if timeout > MAX_STEP_TIMEOUT:
+            # 有限大值（如 planner 以毫秒语义误写 "600000"≈7 天）能过负值/
+            # 非有限值两道拦截，作为 wait_for 秒数如实等待，单场景占住并行
+            # 槽直至外部监督介入，与上方 inf 被拦所防的后果相同：超量级上限
+            # 按结构化失败打回，文案附原始值（code-review item 9fdde9c28d89，
+            # 词表校验层 scenarios._validate_typed 已同拦量级）
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": f"timeout 超过上限 {MAX_STEP_TIMEOUT:g} 秒（30 分钟）"
+                f": {step_dict.get('timeout')!r}",
             }
         name = str(step_dict.get("as") or "")
         if name == "_latest":
