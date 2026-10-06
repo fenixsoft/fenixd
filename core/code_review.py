@@ -727,18 +727,27 @@ def _iso_to_aware_dt(iso_str: Optional[str]) -> Optional[datetime]:
 
 
 def compute_window(project_root, now: Optional[datetime] = None) -> Tuple[datetime, str]:
-    """周期窗口起点：读 ``.fenix/self_review_state.json`` 的 ``last_run_at``。
+    """周期窗口起点：三态水位（add-code-review-run-at 3.2）。
 
-    与 ``core/self_review.py`` 的窗口计算同源口径（MUST NOT 另立周期逻辑）：
-    ``last_run_at`` 存在 → 窗口起点为该时刻；缺失（首跑/旧格式）→ 回退
-    ``now - 24h``。返回 ``(window_start, window_kind)``，window_kind 为
-    ``"last_run"`` 或 ``"fallback"``（供日志/审计区分）。SPEC-B 批④起
-    ``window_start`` 为 aware（瞬时与原 naive 本地一致；时区表述随输入——
-    naive 串按本地、aware 串保留原时区）。消费侧 ``collect_manifest`` 的
-    ``git log --since``（ISO 串带偏移，git 按偏移解读）与 prompt/元数据
-    ``isoformat()`` 均瞬时等价。
+    优先读 ``.fenix/code_review_state.json`` 的 ``last_run_at``（审查车道
+    自身水位——触发时点与自省解耦后，窗口必须跟审查自身节奏，否则审查
+    时点晚于自省时窗口被当晨自省覆写、两段审查之间的变更滑出所有窗口，
+    静默覆盖缺口）；缺失（首跑/存量状态）回退读
+    ``.fenix/self_review_state.json`` 的 ``last_run_at``（＝历史行为逐位
+    一致）；再缺失回退 ``now - 24h``。
+
+    ``window_kind`` 二值映射不变：读到任一 ``last_run_at``（审查自身或自省
+    回退）返回 ``"last_run"``，双缺失回退 24h 返回 ``"fallback"``（消费方
+    日志/审计口径不受三态水位影响）。``window_start`` 为 aware（瞬时与原
+    naive 本地一致；时区表述随输入——naive 串按本地、aware 串保留原时区）。
+    消费侧 ``collect_manifest`` 的 ``git log --since``（ISO 串带偏移，git
+    按偏移解读）与 prompt/元数据 ``isoformat()`` 均瞬时等价。
     """
     now = now or now_local()
+    cr_state = _read_json_file(_code_review_state_path(project_root))
+    last_run_at = _iso_to_aware_dt(cr_state.get("last_run_at"))
+    if last_run_at is not None:
+        return last_run_at, "last_run"
     state = _read_json_file(Path(project_root) / ".fenix" / "self_review_state.json")
     last_run_at = _iso_to_aware_dt(state.get("last_run_at"))
     if last_run_at is not None:
