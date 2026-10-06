@@ -355,6 +355,13 @@ def _knowledge_dirty_files(project_root: Path) -> set[str]:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # errors="replace"：locale strict 解码遇非 UTF-8 文件名字节会抛
+            # UnicodeDecodeError（OSError/TimeoutExpired 接不住，且本函数在
+            # run_backfill 批次 try 之外，异常会掀翻整轮回填）；字节级反转义
+            # 的 _decode_git_quoted_path 按 replace 后文本仍可工作，仅畸形
+            # 路径的回滚精度受损
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -851,9 +858,14 @@ def default_spawn(project_root: Path) -> SpawnFn:
         # 直传会令子 claude 误判自身运行上下文
         for key in AGENT_RUN_BANNED_ENV_KEYS:
             env.pop(key, None)
+        # 提示词经 stdin 传入（对齐 core.knowledge._default_spawn /
+        # agent_runner 口径）：argv 全文驻留 /proc/<pid>/cmdline 对同机其他
+        # 用户可见，且单参数受 MAX_ARG_STRLEN≈128KB 约束——回填提示词内嵌
+        # 各能力史前基线全文，超限即 spawn 以 E2BIG 失败且批次恒失败
         proc = subprocess.Popen(
-            ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
+            ["claude", "-p", "--permission-mode", "bypassPermissions"],
             cwd=str(project_root),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -864,7 +876,7 @@ def default_spawn(project_root: Path) -> SpawnFn:
             start_new_session=True,
         )
         try:
-            stdout, stderr = proc.communicate(timeout=SPAWN_TIMEOUT_SECONDS)
+            stdout, stderr = proc.communicate(prompt, timeout=SPAWN_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 - 超时/通信异常统一 killpg 清场再抛
             _kill_process_group(proc)
             raise
