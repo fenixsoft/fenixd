@@ -624,6 +624,10 @@ class TaskCompletionWatcher:
                 n = int(str(inp.get("taskId")))  # 兼容 str/int
             except (TypeError, ValueError):
                 continue
+            if n < 1:
+                # 畸形 taskId（<=0 → 负下标）不入集合：本观测面无生产端
+                # created_count 边界过滤兜底，负下标会直接虚增 completed_count。
+                continue
             self._completed_idx.add(n - 1)
 
 
