@@ -1132,6 +1132,12 @@ class TestManifestScope(unittest.TestCase):
         (gen / "bundle.min.js").write_text("x\n")
         (gen / "types.d.ts").write_text("export {};\n")
         (self.repo / "core" / "ok.tsx").write_text("export default 1\n")
+        # vendored 第三方目录（evo-code-review-vendored-scope）：三段目录名
+        # 均须排除，其余源码收集行为不变。
+        for vendored in ("thirdparty/x/a.py", "third_party/y/b.py", "vendor/z/c.py"):
+            p = self.repo / vendored
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("q=1\n")
         _git(self.repo, "add", "-A")
         _git(self.repo, "commit", "-qm", "more")
 
@@ -1142,6 +1148,45 @@ class TestManifestScope(unittest.TestCase):
         self.assertNotIn("tests/test_x.py", files)
         self.assertNotIn("tests/fixtures/demo/f.py", files)
         self.assertTrue(all(not f.startswith("tests/") for f in files))
+
+    def test_excludes_vendored_dirs(self):
+        """vendored 第三方目录不入 manifest（evo-code-review-vendored-scope）。
+
+        vendored 文件由上游同步流程承接（文件内自带上游同步注释与
+        fenix-ignore 标注），入审查面只会逐轮全价重审。目录段精确匹配
+        thirdparty / third_party / vendor；非 vendored 路径收集行为不变。
+        """
+        from core.code_review import collect_manifest
+
+        files = collect_manifest(self.repo, "full", None)
+        self.assertNotIn("thirdparty/x/a.py", files)
+        self.assertNotIn("third_party/y/b.py", files)
+        self.assertNotIn("vendor/z/c.py", files)
+        self.assertTrue(
+            all(
+                not f.startswith(("thirdparty/", "third_party/", "vendor/"))
+                and "/thirdparty/" not in f
+                and "/third_party/" not in f
+                and "/vendor/" not in f
+                for f in files
+            )
+        )
+        # 非 vendored 路径收集行为不变
+        self.assertIn("core/a.py", files)
+        self.assertIn("core/ok.tsx", files)
+
+    def test_window_scope_excludes_vendored_dirs(self):
+        """window 档收集同样排除 vendored 目录（共用 _is_source_file 消费点）。"""
+        from datetime import datetime, timedelta
+
+        from core.code_review import collect_manifest
+
+        window_start = datetime.now().astimezone() - timedelta(hours=1)
+        files = collect_manifest(self.repo, "window", window_start)
+        self.assertNotIn("thirdparty/x/a.py", files)
+        self.assertNotIn("third_party/y/b.py", files)
+        self.assertNotIn("vendor/z/c.py", files)
+        self.assertIn("core/a.py", files)
 
     def test_excludes_generated_artifacts(self):
         from core.code_review import collect_manifest

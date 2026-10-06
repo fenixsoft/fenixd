@@ -781,6 +781,15 @@ _EXCLUDED_TOP_DIRS = (
     # 逐文件 LLM 审查既稀释了产品代码的注意力预算，也让 manifest 规模失去意义。
     # 测试自身的质量由测试套件自身把关。
     "tests",
+    # vendored 第三方目录不作为审查对象（evo-code-review-vendored-scope）：
+    # vendored 文件由上游同步流程承接（文件内自带上游同步注释与 fenix-ignore
+    # 标注），入审查面只会逐轮全价重审——potplayer-base 的 whirehair.py
+    # （thirdparty 下唯一 .py）5 轮被出题 17 item、两轮 fix batch 实测
+    # $2.38/$2.03。目录段精确匹配；external 歧义大（仓内自有代码也可能叫
+    # external）不收。vendored 内确需审查的文件走上游同步窗口人工触发专项评审。
+    "thirdparty",
+    "third_party",
+    "vendor",
 )
 # 任意层级的排除目录名（不限于顶层）：顶层表 ∪ 依赖/缓存/归档目录。
 # 注：多段路径（如 'static/dist'）不能放入此集合——判定按 ``p.split("/")``
@@ -806,7 +815,8 @@ _GENERATED_SUFFIXES = (".d.ts",)
 def _is_source_file(path_str: str) -> bool:
     """判定是否为受控产品源码文件（排除测试/文档/生成物/运行时产物）。
 
-    排除维度：目录前缀（spec/docs/dist/.fenix/tests）、路径中出现的排除目录名、
+    排除维度：目录前缀（spec/docs/dist/.fenix/tests 与 vendored 第三方目录
+    thirdparty/third_party/vendor）、路径中出现的排除目录名、
     扩展名白名单、以及生成物文件名判据（``.gen.`` / ``.min.`` / ``.d.ts``）。
     """
     p = path_str.replace("\\", "/")
