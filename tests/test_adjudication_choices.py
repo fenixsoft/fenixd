@@ -47,6 +47,8 @@ _EXPECTED_CHOICE_IDS = {
     # evo-fix-env-exemption-gate-conflict-… 2.1：追加场景修订重验出口
     "inconclusive_loop": {"grant_env_exemption", "revise_scenario_reverify",
                           "manual_fixed_reverify", "abandon"},
+    # evo-add-commit-stray-wip-choice 1.1：主树散件 WIP 提交（全局信号桶）
+    "maintree_stray_wip_stale": {"commit_stray_wip"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -105,9 +107,9 @@ def _entry(proot: Path, spec: str) -> dict:
 
 
 class TestRegistry:
-    def test_covers_exactly_9_signal_types(self):
+    def test_covers_exactly_10_signal_types(self):
         assert set(registered_signal_types()) == set(_EXPECTED_CHOICE_IDS)
-        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 9
+        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 10
 
     def test_per_signal_choice_id_sets(self):
         for sig, expected in _EXPECTED_CHOICE_IDS.items():
@@ -134,14 +136,14 @@ class TestRegistry:
         # spec 作用域（动作语义针对具体 spec 状态机）：retry_review 等
         assert choices_for("spec-review-incomplete")[0]["spec_scoped"] is True
         assert choices_for("impl_budget_exhausted")[3]["spec_scoped"] is True  # abandon
-        # 非作用域（仅确认/观察/写项目配置）：全局信号唯一可执行面
+        # 非作用域（仅确认/观察/写项目配置/主树 git 写）：全局信号唯一可执行面
         nonscoped = {
             c["action"] for chs in ADJUDICATION_CHOICES.values() for c in chs
             if not c["spec_scoped"]
         }
         assert nonscoped == {
             "ignore", "raise_budget", "open_config",
-            "declare_no_artifacts", "ack_self_heal",
+            "declare_no_artifacts", "ack_self_heal", "commit_stray_wip",
         }
 
     def test_unregistered_returns_empty_tuple(self):
@@ -153,6 +155,49 @@ class TestRegistry:
 
     def test_signal_channel_only_build_artifact_paths_missing(self):
         assert SIGNAL_CHANNEL_SIGNAL_TYPES == ("build_artifact_paths_missing",)
+
+
+class TestStrayWipCommitChoice:
+    """evo-add-commit-stray-wip-choice 3.1：maintree_stray_wip_stale 桶登记。"""
+
+    def test_bucket_registered_and_adjudicable(self):
+        assert is_adjudicable("maintree_stray_wip_stale") is True
+        assert choices_for("maintree_stray_wip_stale") != ()
+
+    def test_choice_shape_and_semantics(self):
+        """四字段齐备 + spec_scoped=False 硬约束（design D1：全局信号
+        spec 恒 None，spec_scoped 动作会被全局信号守卫拒、永远执行不了）。"""
+        (choice,) = choices_for("maintree_stray_wip_stale")
+        assert choice["id"] == "commit_stray_wip"
+        assert choice["action"] == "commit_stray_wip"
+        assert choice["label"].strip() and choice["desc"].strip()
+        assert choice["spec_scoped"] is False
+        assert choice.get("destructive", False) is False  # 提交可回溯，非 destructive
+        # 语义按处置记录 suggested_choice 原文：与 stash 类动作互斥、附提交 hash
+        assert "stash" in choice["desc"]
+        assert "hash" in choice["desc"]
+
+    def test_resolve_choice_in_bucket_exact_match(self):
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        choice, reason = resolve_choice("commit_stray_wip", "maintree_stray_wip_stale")
+        assert reason == ""
+        assert choice is not None
+        assert choice["action"] == "commit_stray_wip"
+        assert choice["spec_scoped"] is False
+
+    def test_resolve_choice_reverse_lookup_reachable_then_guarded(self):
+        """design D4：未注册信号可经非作用域全表反查解析到本动作（解析层
+        放行通道存在），git 写暴露面由执行器 signal_type 绑定守卫收口。"""
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        # 注册桶内其它 id 不跨信号放行（对照）
+        choice, reason = resolve_choice("retry_review", "maintree_stray_wip_stale")
+        assert choice is None and reason == "not-in-bucket"
+        # 未注册 signal_type 经反查可解析（非作用域动作）——执行器守卫兜底
+        choice, reason = resolve_choice("commit_stray_wip", "maintree_untracked_stray_stale")
+        assert reason == ""
+        assert choice["action"] == "commit_stray_wip"
 
 
 # ── 2. 告警记录 choices 写入与无字段兼容 ─────────────────────────────────

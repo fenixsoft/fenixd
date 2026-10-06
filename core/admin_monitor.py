@@ -433,7 +433,10 @@ SIGNAL_RECOMMENDATION = {
     # evo-add-maintree-stray-wip-sweep 1.4：主树散件 WIP 处置指引——项目级
     # 盘点信号无 spec 可重派，指向人工提交/stash（姊妹信号
     # mergeback_wip_orphan_stuck 同款批语义适配）。
-    "maintree_stray_wip_stale": "主树散件 WIP 滞留宽限耗尽（周期盘点归因在飞实现车道零命中，无人认领）：人工核对主树未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树这些改动；文件清单与滞留起点见 evidence（含盲区注记——worktree 分支型在飞车道之外的主树直改形态会被按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后盘点状态自动复位",
+    # evo-add-commit-stray-wip-choice 2.3：带出裁决选项 commit_stray_wip，
+    # 与 worktree_manager/stray_wip._write_alert 的 inline recommended_action
+    # 同文（文案变更两处同步，防双处漂移）。
+    "maintree_stray_wip_stale": "主树散件 WIP 滞留宽限耗尽（周期盘点归因在飞实现车道零命中，无人认领）：人工核对主树未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树这些改动；或执行裁决选项 commit_stray_wip 一键提交信号清单内文件（与 stash 类动作互斥，处置记录附提交 hash）。文件清单与滞留起点见 evidence（含盲区注记——worktree 分支型在飞车道之外的主树直改形态会被按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后盘点状态自动复位",
     # add-verify-evidence-placement-contract 2.2：untracked 散件处置指引——
     # 复制 maintree_stray_wip_stale「只告警不处置」模板：info 级不唤起人工、
     # 不派生自动处置，本信号只增可见性（豁免注记与证据落位约定见 evidence）。

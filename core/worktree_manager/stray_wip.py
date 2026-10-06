@@ -675,7 +675,8 @@ class MainTreeStrayWipSweeper:
         ``signal_type=maintree_stray_wip_stale``（admin_monitor 三表已登记：
         SIGNAL_SEVERITY=major / SIGNAL_RECOMMENDATION / STORED_SIGNAL_TYPES，
         漏登记则记录落 store 后无人摄取、Administrator 不唤起）。evidence 含
-        文件清单/first_seen/归因证据/BLIND_SPOT_NOTE 与零触碰注记；
+        文件清单/first_seen/归因证据/BLIND_SPOT_NOTE 与零触碰注记；记录附
+        choices 快照（evo-add-commit-stray-wip-choice 2.2，commit_stray_wip），
         recommended_action 指向人工提交或 stash（无 spec 可重派，姊妹信号
         ``mergeback_wip_orphan_stuck`` 同款批语义适配）。AdminStore 拒写时
         返回 False（escalated_at 不落、下轮重试），不让告警静默蒸发。
@@ -697,10 +698,16 @@ class MainTreeStrayWipSweeper:
             f"告警发出前后主树工作区状态未变"
         )
         store = AdminStore(self.project_root, logger=None)
+        # evo-add-commit-stray-wip-choice 2.2：发射点快照 choices（照
+        # mergeback.py 先例）。注册表为单源（缺键回退），告警是历史事实，
+        # 注册表演进不回写历史告警的选项集。局部导入避免模块级环依赖。
+        from core.dashboard.data.adjudication_choices import choices_for
+
         rec = store.append(
             {
                 "kind": SIGNAL,
                 "signal_type": SIGNAL_TYPE,
+                "choices": list(choices_for(SIGNAL_TYPE)),
                 "spec": None,
                 "severity": "major",
                 "description": (
@@ -713,10 +720,12 @@ class MainTreeStrayWipSweeper:
                 "source": "maintree-stray-wip-sweep",
                 "recommended_action": (
                     "人工核对主树这些未提交改动的归属后，提交（git add/commit）"
-                    "或 stash（git stash push）主树这些改动；文件清单与滞留"
-                    "起点见 evidence（worktree 分支型在飞车道之外的主树直改"
-                    "形态会被按无主升级，升级仅为告警）。同指纹一次性告警，"
-                    "改动消失后盘点状态自动复位"
+                    "或 stash（git stash push）主树这些改动；或执行裁决选项 "
+                    "commit_stray_wip 一键提交信号清单内文件（与 stash 类动作"
+                    "互斥，处置记录附提交 hash）。文件清单与滞留起点见 "
+                    "evidence（worktree 分支型在飞车道之外的主树直改形态会被"
+                    "按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后"
+                    "盘点状态自动复位"
                 ),
             }
         )

@@ -8,6 +8,8 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 写操作职责
 import json
 import logging
 import os
+import re
+import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -2697,6 +2699,183 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
     return {"ok": True, "steps": steps, "error": None, "frozen_manual": False}
 
 
+# ── 主树散件 WIP 提交（evo-add-commit-stray-wip-choice 2.1）──────────────
+
+# signal_type 绑定守卫单源（design D4）：commit_stray_wip 是 admin_actions
+# 首个对主树执行 git 写的执行器（现存执行器只动 spec 状态机/配置），而
+# resolve_choice 对未注册信号存在「非 spec_scoped 动作全表反查放行」通道
+# （adjudication_choices.resolve_choice 解析序 2）——注册为非作用域动作后，
+# 任意未注册 signal_type（含姊妹 info 信号 maintree_untracked_stray_stale）
+# 都能解析到它。执行器 MUST 校验 signal_type 与本常量全等，其余一律拒绝
+# （零 git 写），把 git 写暴露面收口到 maintree_stray_wip_stale。
+COMMIT_STRAY_WIP_SIGNAL_TYPE = "maintree_stray_wip_stale"
+
+
+def parse_stray_wip_manifest(evidence) -> list:
+    """从信号记录 evidence 解析「文件清单(N):」段（stray_wip 内嵌 prose）。
+
+    stray_wip._write_alert 把清单以 ``文件清单(N): a, b;`` 形态内嵌进 evidence
+    文本（无结构化字段），本函数按段解析：返回清单内相对路径列表（保序
+    去重）；无清单段 / 清单为「无」→ 空列表。只做段级文本解析，不做路径
+    合法性裁决（合法性由调用方以「清单 ∩ 当刻 git status」求交保证）。
+    """
+    m = re.search(r"文件清单\(\d+\):\s*([^;]+)", str(evidence or ""))
+    if not m:
+        return []
+    raw = m.group(1).strip()
+    if not raw or raw == "无":
+        return []
+    out: list = []
+    for item in raw.split(","):
+        p = item.strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _git_out(project_root, *args: str) -> str:
+    """在 project_root 跑 git 命令，返回 stdout；非零退出抛 RuntimeError。"""
+    r = subprocess.run(
+        ["git", "-C", str(project_root), *args],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:300])
+    return r.stdout
+
+
+def _git_status_paths(project_root) -> set:
+    """当刻 ``git status --porcelain -z`` 涉及路径集（-z 免引号；含 rename 双侧）。"""
+    tokens = _git_out(project_root, "status", "--porcelain", "-z").split("\0")
+    paths: set = set()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        i += 1
+        # porcelain v1 行形态 ``XY <path>``（XY 两状态字符 + 空格）；rename/
+        # copy 的 orig path 跟随在独立 NUL 字段（无 XY 前缀），显式消费。
+        if len(tok) >= 4 and tok[2] == " ":
+            paths.add(tok[3:])
+            if tok[0] in ("R", "C") and i < len(tokens):
+                paths.add(tokens[i])
+                i += 1
+    return paths
+
+
+def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
+                           paths=None) -> dict:
+    """commit_stray_wip：提交主树信号清单内的散件 WIP（全局信号专用）。
+
+    约束（design D2/D4）：
+    - signal_type 绑定守卫：仅 maintree_stray_wip_stale 可触达（其余信号类型
+      ——含未注册信号与姊妹信号 maintree_untracked_stray_stale——一律拒绝，
+      零 git 写）；
+    - 文件来源 MUST 限信号记录 evidence 的「文件清单(N):」段与当刻
+      ``git status --porcelain`` 的交集，拒任意路径；清单中已不在当刻 status
+      的文件跳过不报错（同指纹一次性告警，清单会陈旧）；交集为空返回明确
+      error、不产生空提交；
+    - 非 destructive（提交可回溯），无需确认门；成功结果附提交 hash。
+
+    paths 仅供程序化调用方显式收窄提交范围（MUST 为清单子集，清单外路径
+    拒绝，零 git 写）；缺省从 store 内最新一条含可解析清单的
+    maintree_stray_wip_stale SIGNAL 记录解析（同指纹一次性告警语义下在途
+    记录至多一条；execute_adjudication_choice 契约不携带告警 id，故按记录
+    自取）。提交经 pathspec 形态（``git commit -- <paths>``）：只落清单内
+    路径的工作区内容，不裹挟索引中其它暂存改动。
+    """
+    from core.admin_store import SIGNAL, AdminStore
+
+    # D4 绑定守卫：在任何 git 读/写之前 fail-closed。
+    sig = str(signal_type or "").strip()
+    if sig != COMMIT_STRAY_WIP_SIGNAL_TYPE:
+        return {
+            "ok": False, "steps": [],
+            "error": (f"signal_type '{sig or '缺失'}' 不可执行 commit_stray_wip"
+                      f"（仅限 {COMMIT_STRAY_WIP_SIGNAL_TYPE}；git 写暴露面"
+                      f"收口到本信号，design D4）"),
+        }
+
+    proot = Path(project_root)
+    # 清单单源：信号记录 evidence 清单段（拒任意路径）。read_all 倒序返回，
+    # 取最新可解析记录。
+    manifest: list = []
+    try:
+        records = AdminStore(proot, logger=None).read_all()
+    except Exception:
+        records = []
+    for rec in records:
+        if (rec.get("kind") != SIGNAL
+                or rec.get("signal_type") != COMMIT_STRAY_WIP_SIGNAL_TYPE):
+            continue
+        manifest = parse_stray_wip_manifest(rec.get("evidence"))
+        if manifest:
+            break
+    if not manifest:
+        return {
+            "ok": False, "steps": [],
+            "error": ("未找到含可解析文件清单的 maintree_stray_wip_stale 信号"
+                      "记录（清单解析自记录 evidence「文件清单(N):」段），"
+                      "不执行 git 写"),
+        }
+
+    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）。
+    if paths is not None:
+        requested = [str(p).strip() for p in paths if str(p).strip()]
+        outside = [p for p in requested if p not in manifest]
+        if outside:
+            return {
+                "ok": False, "steps": [],
+                "error": ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
+                          f"design D2）：{', '.join(outside)}；"
+                          f"信号清单({len(manifest)}): {', '.join(manifest)}"),
+            }
+        candidates = requested
+    else:
+        candidates = list(manifest)
+
+    # 与当刻 git status 求交：清单中已不在当刻 status 的文件跳过不报错。
+    try:
+        dirty = _git_status_paths(proot)
+    except RuntimeError as e:
+        return {"ok": False, "steps": [], "error": f"读取 git status 失败: {e}"}
+    to_commit = [p for p in candidates if p in dirty]
+    skipped = [p for p in candidates if p not in dirty]
+    if not to_commit:
+        return {
+            "ok": False, "steps": [],
+            "error": ("信号清单内文件已全部不在当刻工作区改动中（同指纹一次性"
+                      "告警，清单陈旧），不产生空提交；"
+                      f"清单({len(manifest)}): {', '.join(manifest)}"),
+        }
+
+    try:
+        msg = (f"[fenix] admin: 提交主树散件 WIP"
+               f"（{COMMIT_STRAY_WIP_SIGNAL_TYPE} 信号清单内 "
+               f"{len(to_commit)} 文件）")
+        if note:
+            msg += f"\n\n裁决依据：{note}"
+        _git_out(proot, "commit", "-m", msg, "--", *to_commit)
+        commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+    except RuntimeError as e:
+        return {"ok": False, "steps": [], "error": f"git 提交失败: {e}"}
+    steps = [
+        f"提交主树散件 WIP {len(to_commit)} 个文件（信号清单∩当刻改动）："
+        f"{', '.join(to_commit)}",
+        f"提交 hash: {commit_hash}",
+    ]
+    if skipped:
+        steps.append(
+            f"清单内已不在当刻改动、跳过 {len(skipped)} 个：{', '.join(skipped)}"
+        )
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {
+        "ok": True, "steps": steps, "error": None,
+        "commit_hash": commit_hash,
+        "committed_files": to_commit,
+    }
+
+
 def execute_adjudication_choice(project_root, spec: str, choice_id: str,
                                 note: str = "", signal_type: str = "") -> dict:
     """choice_id → 后端动作统一映射执行器（add-human-adjudication-choices 4.1/4.2）。
@@ -2805,6 +2984,12 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
                            "worktree.has_build_artifacts / build_artifact_paths"
                            "（本动作仅确认，不代填配置）"],
                  "error": None}
+        elif action == "commit_stray_wip":
+            # evo-add-commit-stray-wip-choice 2.1：提交主树散件 WIP（全局信号
+            # 唯一 git 写动作；signal_type 绑定守卫在执行器内 fail-closed，
+            # design D4——resolve_choice 非作用域全表反查通道对未注册信号
+            # 可达本动作，执行器收口后任意其它 signal_type 零 git 写）。
+            r = _exec_commit_stray_wip(project_root, note, signal_type)
         else:
             r = {"ok": False, "steps": [],
                  "error": f"注册表 action '{action}' 无执行器映射"}
