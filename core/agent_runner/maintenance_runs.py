@@ -1487,9 +1487,7 @@ def run_code_review(
         # 即向自身 jsonl 标注 redispatch_of（写失败仅丢留痕不阻断）。
         if redispatch_of:
             try:
-                from core.agent_runner.run_files import append_run_line as _arl
-
-                _arl(
+                append_run_line(
                     runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl",
                     {
                         "type": "ratelimit_redispatch",
