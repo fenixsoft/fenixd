@@ -1009,6 +1009,12 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8：core.quotePath=false 输出原样非 ASCII 路径，
+                # text=True 缺省按 locale strict 解码，坏字节目录名抛
+                # UnicodeDecodeError（ValueError 子类，逃逸下方 except；
+                # 对齐 repair_site.py 同款惯例）
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1889,6 +1895,11 @@ class G4MergebackMixin:
                 + [f":(literal){rel}" for rel in existing],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8：-z 输出原始字节路径不转义，text=True 缺省按
+                # locale strict 解码，坏字节文件名抛 UnicodeDecodeError
+                # （ValueError 子类，逃逸下方 except；对齐 repair_site.py 同款惯例）
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
