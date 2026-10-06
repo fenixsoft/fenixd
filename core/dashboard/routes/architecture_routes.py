@@ -214,11 +214,16 @@ def _repo_head(proot: Path) -> str | None:
     detached HEAD / 非 git 项目 / 命令异常一律返回 None（读侧判不匹配，
     每次 refresh 重新探索）。"""
     try:
+        # 显式 UTF-8（item 6abe46a70f88，两处同）：text=True 缺省按 locale
+        # 解码，LC_ALL=C 启动的 daemon 下非 ASCII 输出会 UnicodeDecodeError
+        # 穿透下方 except 清单（同 _run_stage / ocr_status 先例）
         rev = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         if rev.returncode != 0:
@@ -229,6 +234,8 @@ def _repo_head(proot: Path) -> str | None:
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
