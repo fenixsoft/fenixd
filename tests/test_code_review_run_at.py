@@ -15,6 +15,7 @@ code_review_executor=None 同步执行）；全部文件落 tempfile 临时目�
 不触真实用户级配置。
 """
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -250,6 +251,85 @@ class TestCheckpointRunAt(unittest.TestCase):
             h.save_mock.assert_not_called()
         finally:
             h.dispose()
+
+
+# ── 3. 窗口水位三态 ────────────────────────────────────────────────
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+class TestWindowWatermark(unittest.TestCase):
+    def setUp(self):
+        from core.code_review import _iso_to_aware_dt
+
+        self._iso = _iso_to_aware_dt
+        self.repo = Path(tempfile.mkdtemp(prefix="cr-win-"))
+        (self.repo / ".fenix").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(str(self.repo), ignore_errors=True)
+
+    def test_cr_watermark_wins_over_self_review(self):
+        # 有自身水位取自身：自省 01:00 已覆写自身 last_run_at 也不影响——
+        # 两轮审查之间的全部变更被覆盖，不因自省先跑出现覆盖缺口
+        from core.code_review import compute_window
+
+        cr_t = datetime(2026, 10, 5, 13, 0, 0).astimezone()
+        sr_t = datetime(2026, 10, 6, 1, 0, 0).astimezone()  # 自省更晚（次日 01:00）
+        _write_json(self.repo / ".fenix" / "code_review_state.json", {"last_run_at": cr_t.isoformat()})
+        _write_json(self.repo / ".fenix" / "self_review_state.json", {"last_run_at": sr_t.isoformat()})
+        window_start, kind = compute_window(self.repo)
+        self.assertEqual(window_start, cr_t)
+        self.assertEqual(kind, "last_run")
+
+    def test_fallback_to_self_review_watermark(self):
+        # 自身水位缺失（存量状态/首跑）回退自省 last_run_at——与现状路径
+        # 逐位一致
+        from core.code_review import compute_window
+
+        sr_t = datetime(2026, 10, 6, 1, 0, 0).astimezone()
+        _write_json(self.repo / ".fenix" / "code_review_state.json", {"last_run_date": "2026-10-05"})
+        _write_json(self.repo / ".fenix" / "self_review_state.json", {"last_run_at": sr_t.isoformat()})
+        window_start, kind = compute_window(self.repo)
+        self.assertEqual(window_start, sr_t)
+        self.assertEqual(kind, "last_run")
+        # code_review_state.json 整个不存在同样回退
+        shutil.rmtree(self.repo / ".fenix")
+        (self.repo / ".fenix").mkdir()
+        _write_json(self.repo / ".fenix" / "self_review_state.json", {"last_run_at": sr_t.isoformat()})
+        window_start, kind = compute_window(self.repo)
+        self.assertEqual(window_start, sr_t)
+        self.assertEqual(kind, "last_run")
+
+    def test_both_missing_fallback_24h(self):
+        # 双缺失回退 now - 24h，window_kind 仍为 "fallback"（二值映射不变）
+        from core.code_review import compute_window
+
+        now = datetime(2026, 10, 6, 9, 0, 0).astimezone()
+        window_start, kind = compute_window(self.repo, now=now)
+        self.assertEqual(window_start, now - timedelta(hours=24))
+        self.assertEqual(kind, "fallback")
+        # 存量 code_review_state（仅 last_run_date）+ 自省状态也无 last_run_at
+        _write_json(self.repo / ".fenix" / "code_review_state.json", {"last_run_date": "2026-10-05"})
+        _write_json(self.repo / ".fenix" / "self_review_state.json", {})
+        window_start, kind = compute_window(self.repo, now=now)
+        self.assertEqual(window_start, now - timedelta(hours=24))
+        self.assertEqual(kind, "fallback")
+
+    def test_save_then_compute_roundtrip(self):
+        # save 后 compute 读回一致：水位写入即窗口起点（本车道节奏接管）
+        from core.code_review import compute_window, save_code_review_state
+
+        save_code_review_state(self.repo, "2026-10-06")
+        state = json.loads((self.repo / ".fenix" / "code_review_state.json").read_text())
+        # 兼容保留自然日防重字段
+        self.assertEqual(state["last_run_date"], "2026-10-06")
+        self.assertIsNotNone(self._iso(state["last_run_at"]))
+        window_start, kind = compute_window(self.repo)
+        self.assertEqual(window_start, self._iso(state["last_run_at"]))
+        self.assertEqual(kind, "last_run")
 
 
 if __name__ == "__main__":
