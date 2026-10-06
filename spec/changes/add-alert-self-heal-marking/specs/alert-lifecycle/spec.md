@@ -2,8 +2,8 @@
 
 ### Requirement: 基础设施瞬态告警自愈闭环
 
-- 覆盖族注册表 `SELF_HEAL_SIGNAL_TYPES` 初始 MUST 含 `daemon_errors`、`run_infra_failure` 及 evo 分析 run 失败告警的 signal_type（写入点 `.fenix` 部署源 `fenixd.py` 的 `_evolution_warn`，注册表以仓库交付源 `fenixd.py` 为准）；注册表外 signal_type 永不自愈闭环（保守缺省不变）。
-- 自愈判定（签名安静）：条目最近复现时刻取条目自身 `last_seen`，缺失回落 `created`；收敛升级条目（`kind=escalation` 且 `spec` 为空且带 `admin_run_id`）取其 `admin_run_id` 名下底层 signal/disposition 条目的最新 `last_seen`/`created`。判定满足：`now − 最近复现时刻 ≥ admin.self_heal_quiet_minutes`（默认 1440）。
+- 覆盖族注册表 `SELF_HEAL_SIGNAL_TYPES` 初始 MUST 含 `daemon_errors`、`run_infra_failure`、`self-evolution`（evo 分析 run 失败，写入点仓库交付源 `fenixd.py` `_evolution_warn` 的实际 signal_type 常量）；注册表外 signal_type 永不自愈闭环（保守缺省不变）。
+- 自愈判定（签名安静）：条目最近复现时刻取条目自身 `last_seen`，缺失回落 `created`。spec-less escalation 分两形态：收敛升级条目（`kind=escalation` 且 `spec` 为空且带 `admin_run_id`）取「`admin_run_id` 名下 disposition 条目」与「同 signal_type 的未收口 signal 条目」（signal 记录不携带 `admin_run_id`，按 signal_type 匹配）两者的最新 `last_seen`/`created`；裸升级条目（`kind=escalation`、`spec` 为空、signal_type ∈ 注册表且无 `admin_run_id`，如 evo 分析失败 `self-evolution`）按条目自身 `last_seen`（缺失回落 `created`）判定。判定满足：`now − 最近复现时刻 ≥ admin.self_heal_quiet_minutes`（默认 1440）。
 - 判定输入（告警列表、当前时刻）MUST 全部由调用方注入；`alert_lifecycle` 模块 MUST 保持纯函数，不读写文件、不依赖锁（既有架构约束）。
 - 写回 MUST 走独立标识 `handled_by="auto-self-heal"`，`resolve_note` MUST 以「已自愈：」前缀并附安静证据（安静时长与最近复现时刻）；MUST NOT 改写 disposition 记录本体（AdminMonitor 生效核查 fail-closed 契约不破）；`handled=True` 条目 MUST NOT 覆盖。
 - 收敛升级条目自愈收口后，若底层故障复发，由既有信号冷却/去重机制自然产生新条目，MUST NOT 重开已收口条目。
@@ -11,7 +11,7 @@
 
 #### Scenario: 安静超窗的 daemon_errors 信号自动自愈
 
-- **WHEN** 某 `kind=signal`、`signal_type=daemon_errors` 的条目 `last_seen` 距今 ≥ 1440 分钟，且其名下收敛 escalation 同样安静
+- **WHEN** 某 `kind=signal`、`signal_type=daemon_errors` 的条目 `last_seen` 距今 ≥ 1440 分钟，且同批巡检中对应的收敛 escalation（同签名组）也满足安静判定
 - **THEN** 下一轮巡检两者同批写回 `handled=True`、`handled_by=auto-self-heal`、note 前缀「已自愈：」，离开待处理队列进入已处理视图
 
 #### Scenario: 窗口内仍复现则保持待处理

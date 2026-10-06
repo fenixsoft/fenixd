@@ -31,10 +31,10 @@
 
 ## 1. 评估器扩展（纯函数）
 
-- [ ] 1.1 `core/alert_lifecycle.py` 新增常量与判定：`CONDITION_INFRA_TRANSIENT_SELF_HEALED`、`SELF_HEAL_SIGNAL_TYPES`（daemon_errors / run_infra_failure / evo 分析失败 signal_type，写入点常量核对后登记）、安静时刻解析（条目 `last_seen` 回落 `created`；收敛升级按 `admin_run_id` 关联名下条目取最新）
-- [ ] 1.2 `core/alert_lifecycle.py` `evaluate_alert` 扩展：spec-less 条目（spec 为空）＋`kind ∈ {signal, escalation}` 走自愈分支——签名安静 ≥ 窗口分钟返回「已自愈：…」note（含安静时长与最近复现时刻）；未注册 signal_type / 形态不符 / 窗口内复现 / `handled=True` 一律 None；`build_trigger`/`_SIGNAL_CONDITIONS` 登记新族使既有 `attach_trigger` 写入点自动埋点
+- [ ] 1.1 `core/alert_lifecycle.py` 新增常量与判定：`CONDITION_INFRA_TRANSIENT_SELF_HEALED`、`SELF_HEAL_SIGNAL_TYPES`（daemon_errors / run_infra_failure / `self-evolution`——`fenixd.py` `_evolution_warn` 写入点实际常量）、安静时刻解析（条目 `last_seen` 回落 `created`；收敛升级按 D2 双源锚点：`admin_run_id` 名下 disposition ＋ 同 signal_type 未收口 signal）
+- [ ] 1.2 `core/alert_lifecycle.py` `evaluate_alert` 扩展：spec-less 条目（spec 为空）＋`kind ∈ {signal, escalation}` 走自愈分支（escalation 两形态 MUST 都覆盖：带 `admin_run_id` 的收敛升级走 D2 双源锚点；`self-evolution` 等裸升级无 `admin_run_id` 走条目自身时间戳）——签名安静 ≥ 窗口分钟返回「已自愈：…」note（含安静时长与最近复现时刻）；未注册 signal_type / 形态不符 / 窗口内复现 / `handled=True` 一律 None；`build_trigger`/`_SIGNAL_CONDITIONS` 登记新族使既有 `attach_trigger` 写入点自动埋点
 - [ ] 1.3 存量回填：无 trigger 的 spec-less 条目按 `signal_type ∈ SELF_HEAL_SIGNAL_TYPES` 推断（与既有 `BACKFILL_SIGNAL_TYPES` 机制并列，note 注明存量回填）
-- [ ] 1.4 `tests/test_alert_self_heal.py`：安静超窗闭环 / 窗口内复现保持 / env 握手族排除 / spec 附着族不双重判定 / handled 不覆盖 / 回填推断六组用例
+- [ ] 1.4 `tests/test_alert_self_heal.py`：安静超窗闭环 / 窗口内复现保持 / env 握手族排除 / spec 附着族不双重判定 / handled 不覆盖 / 回填推断 / evo 裸升级（self-evolution 无 admin_run_id）超窗闭环 / 收敛升级双源锚点（底层 signal 仍复现则 escalation 保持）八组用例
 
 ## 2. 存储写回
 

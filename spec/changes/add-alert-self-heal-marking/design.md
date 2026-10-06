@@ -13,11 +13,16 @@
 
 ### D1 安静证据取条目自身时间戳，不读日志
 
-signal 族条目复现时刷新 `last_seen`（既有行为，实证：9-29 条目 last_seen 晚于 created）；escalation/disposition 族回落 `created`；收敛升级经 `admin_run_id` 关联名下底层条目取最新复现时刻。判定输入全部调用方注入（`now`＋告警列表），模块保持纯函数——**不读 fenixd.log**（日志轮转会让证据不稳定，条目时间戳由框架写入链维护，口径单一）。
+signal 族条目复现时刷新 `last_seen`（既有行为，实证：9-29 条目 last_seen 晚于 created）；escalation/disposition 族回落 `created`；收敛升级取双源锚点（`admin_run_id` 名下 disposition ＋ 同 signal_type 未收口 signal——signal 记录不携带 `admin_run_id`，关联规则见 D2）。判定输入全部调用方注入（`now`＋告警列表），模块保持纯函数——**不读 fenixd.log**（日志轮转会让证据不稳定，条目时间戳由框架写入链维护，口径单一）。
 
 ### D2 覆盖族注册表＋保守缺省
 
-`SELF_HEAL_SIGNAL_TYPES` 注册表初始成员：daemon_errors、run_infra_failure、evo 分析失败 signal_type（以 `_evolution_warn` 写入链实际常量为准）。收敛升级 escalation 无独立 signal_type（复制底层 daemon_errors），按条目形态识别（`kind=escalation`＋`spec` 空＋`admin_run_id` 存在）。未注册类型、形态不符一律不闭环——「未识别永不自动闭环」契约原样保留。
+`SELF_HEAL_SIGNAL_TYPES` 注册表初始成员：daemon_errors、run_infra_failure、`self-evolution`（evo 分析 run 失败，写入点 `fenixd.py` `_evolution_warn` 实际常量）。spec-less escalation 按两种形态判定，MUST 都覆盖：
+
+- **收敛升级**（`kind=escalation`＋`spec` 空＋`admin_run_id` 存在，如「处置终态未收口」）：signal_type 复制底层 sig_type；安静锚点取「`admin_run_id` 名下 disposition 条目（处置记录不带 last_seen，回落 created）」与「同 signal_type 的未收口 signal 条目」两者的最新复现时刻。signal 记录不携带 `admin_run_id`（merge_signal 仅按 (spec, signal_type, status_hash) 沉淀；admin_run_id 只出现在 escalation/disposition 写入链），按 signal_type＋spec 空匹配——MUST NOT 只锚 disposition created，否则底层风暴仍在复现（signal 条目 last_seen 持续刷新）时 escalation 会被提前收口，违背 D4 的复发节律覆盖。
+- **裸升级**（`kind=escalation`＋`spec` 空＋signal_type ∈ 注册表＋无 `admin_run_id`，即 evo 族）：按条目自身 `last_seen` 判定——merge 不作用于 escalation（`AdminStore.merge_signal` 明示 escalation/disposition 永不参与合并），实际回落 created。
+
+未注册类型、形态不符一律不闭环——「未识别永不自动闭环」契约原样保留。
 
 ### D3 写回独立标识，双 kind 支持
 
