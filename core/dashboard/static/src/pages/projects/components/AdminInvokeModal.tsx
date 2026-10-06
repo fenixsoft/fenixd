@@ -169,12 +169,14 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const handleRunStatus = (status: string) => {
     // interrupted/cancelled：终态但非崩溃（daemon 停机/人工取消），同样解除
     // 「处置进行中」——否则被取消的 admin run 会把按钮永久锁死。
-    // frozen-terminated（item ce8a84164320）：spec 冻结终止的原始 classify 串
-    // ——REST 初载 / hello 重同步路径直报后端 classify status，不经
-    // TERMINAL_EVENT_STATUS 转译，不识别会把冻结终止的 admin run 锁死弹窗
+    // frozen-terminated（item ce8a84164320）/stall-budget-terminated（item
+    // 87adf6f381d5，与 ClaudeOutputPane 的 TERMINAL_RUN_STATUSES 口径一致）：
+    // spec 冻结终止、停滞判停终止的原始 classify 串——REST 初载 / hello 重同步
+    // 路径直报后端 classify status，不经 TERMINAL_EVENT_STATUS 转译，不识别会
+    // 把冻结终止/停滞判停终止的 admin run 锁死弹窗
     if (status === 'done' || status === 'error' || status === 'interrupted'
       || status === 'cancelled' || status === 'missing'
-      || status === 'frozen-terminated') {
+      || status === 'frozen-terminated' || status === 'stall-budget-terminated') {
       setRunDone(true);
       // 只在 runDone false→true 迁移时清空一次（code-review item b165d0c1b6da）：
       // 同一终态会被 ClaudeOutputPane 反复上报（初载 loadTail、SSE 重连后的 hello

@@ -544,6 +544,35 @@ def load_failed_batches(project_root) -> list:
     return []
 
 
+def _record_item_ids(rec, logger=None, where="") -> list:
+    """失败档案/延迟台账记录 ``item_ids`` 字段形态守卫（code-review item
+    c669b83acf2c）。
+
+    外部直改坏档（``item_ids`` 被写成非列表标量，如 int）直接迭代会抛
+    TypeError——``_failed_item_ids`` 在 select_batch 的调用点、
+    ``_deferred_item_ids`` 在 checkpoint 的调用点均无兜底，异常上穿会中断
+    本轮投递（车道停摆直至档案修复）；被写成非空字符串则被逐字符拆成假
+    item_id 并入排除集。比照同文件 chain_skipped/chain_run_ids 守卫
+    （item 3f883a9ac93c / 959c61f66ce3）同款「先判 isinstance(list) 再拷贝」
+    纪律：非列表回退空列表，truthy 垃圾值经 ``logger``（AdminStore 风格
+    ``logger.warning(channel, msg)``，可 None）留痕后丢弃——无 logger 的
+    读侧调用形态静默回退（与 load_failed_batches 损坏按空列表同哲学）。
+    """
+    raw = rec.get("item_ids")
+    if isinstance(raw, list):
+        return list(raw)
+    if raw and logger is not None:
+        try:
+            logger.warning(
+                "code-fix",
+                f"code-fix {where}item_ids 字段形态异常（非列表："
+                f"{type(raw).__name__}），按空列表容错",
+            )
+        except Exception:  # noqa: BLE001 — 留痕失败不影响容错主流程
+            pass
+    return []
+
+
 def _failed_item_ids(project_root) -> set:
     """失败保留集合中**在档**记录的全部 item_id 并集（select_batch 排除源）。
 
@@ -555,7 +584,7 @@ def _failed_item_ids(project_root) -> set:
     for rec in load_failed_batches(project_root):
         if rec.get("released"):
             continue
-        for iid in rec.get("item_ids") or []:
+        for iid in _record_item_ids(rec):
             if isinstance(iid, str):
                 ids.add(iid)
     return ids
@@ -630,7 +659,7 @@ def record_failed_batch(
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         target = None
         for rec in records:
-            if {str(i) for i in rec.get("item_ids") or []} == key:
+            if {str(i) for i in _record_item_ids(rec, logger=logger, where="失败档案记录 ")} == key:
                 target = rec
                 break
         if target is not None:
@@ -1134,7 +1163,7 @@ def _deferred_item_ids(project_root) -> set:
     """
     ids: set = set()
     for rec in load_deferred_batches(project_root):
-        for iid in rec.get("item_ids") or []:
+        for iid in _record_item_ids(rec):
             if isinstance(iid, str):
                 ids.add(iid)
     return ids
@@ -4286,7 +4315,22 @@ class CodeFixOrchestrator:
             # 仍被阻断：本次确有实际 merge_back 尝试 → defer_count +1（2.3）；
             # first_deferred_at 不动（超时判定只看它）；达次数门降级，否则
             # 台账原样保留等下一边界。
-            defer_count = int(entry.get("defer_count") or 0) + 1
+            # defer_count 容错解析（code-review item 601861075cf9，对齐
+            # _fail_count_int 同款口径）：被外部写坏成非数值时裸 int() 抛
+            # ValueError，会被 _process_deferred_merges 的单条兜底吞成
+            # warning——defer_count 永不递增，DEFER_RETRY_MAX 次数门对该条目
+            # 永久失效（只剩 90 分钟时间门兜底降级）。非数值按缺省 0 递增，
+            # truthy 垃圾值 warning 留痕。
+            try:
+                prev_defer = int(entry.get("defer_count") or 0)
+            except (TypeError, ValueError):
+                self._log(
+                    "warning",
+                    "code-fix 延迟台账 defer_count 字段形态异常（非数值："
+                    f"{type(entry.get('defer_count')).__name__}），按 0 递增容错",
+                )
+                prev_defer = 0
+            defer_count = prev_defer + 1
             _patch_deferred_entry(root, item_ids, defer_count=defer_count)
             if defer_count >= DEFER_RETRY_MAX:
                 self._downgrade_deferred(
@@ -4720,13 +4764,16 @@ class CodeFixOrchestrator:
         if not conflict_paths:
             return _give_up("冲突文件集不可得（无法判定提交可回收性）")
         cp_set = set(conflict_paths)
-        recoverable, still = [], []
+        # still 列表已删（code-review item 6e9772d3f9ae）：只写不读的死变量，
+        # 仍冲突提交的出账实际走下方「pending_ids 中未被 recovered_ids 覆盖
+        # 者整体入失败档案」的保守口径，与逐提交记录无关。
+        recoverable: list = []
         for sha in commits:
             paths = _commit_changed_paths(wt, sha)
             if paths is None or (set(paths) & cp_set):
-                still.append(sha)
-            else:
-                recoverable.append(sha)
+                # 仍触碰冲突文件/变更集不可得：该提交组不入回收集。
+                continue
+            recoverable.append(sha)
         self._log(
             "info",
             f"code-fix 第 {batch_no} 批组粒度回收：冲突文件 {len(cp_set)} 个，"
@@ -4751,12 +4798,10 @@ class CodeFixOrchestrator:
             # skip 失败则 abort 放弃回收（整批兜底）。
             skip = _git_try(wt, ["cherry-pick", "--skip"], timeout=120)
             if skip is None or skip.returncode != 0:
-                still.extend(sha for sha in recoverable if sha not in picked)
                 return _give_up(
                     f"cherry-pick 冲突且跳过失败（{(cp.stderr or '').strip()[:120] if cp else 'git 不可用'}）",
                     carrier=carrier,
                 )
-            still.append(sha)
         if not picked:
             return _give_up("零提交组被回收", carrier=carrier)
         write_progress(
@@ -5208,7 +5253,12 @@ class CodeFixOrchestrator:
                 created_sha = _worktree_head(wt)
                 if created_sha:
                     break
-        commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
+        # 建树点重试耗尽仍为空串（code-review item b0c5cf011d29）：提交数判据
+        # 同样不可得，按 None 归入下方 commits is None 的 halt 口径——「git
+        # 判据不可得 ≠ 确认零提交」（同 item e992bc1af898 立论），按 0 计入
+        # 零有效修复判定会把已提交修复的有效批误判拒合回、弃置成果（改动已
+        # 全部提交时 salvage 不触发，整批有效修复被误判）。
+        commits = _worktree_commit_count(wt, created_sha) if created_sha else None
         if commits is None:
             # git 判据不可用 ≠ 确认零提交（code-review item e992bc1af898）：
             # 按 no_effective_fix 链内跳过会弃置可能已提交的整批修复成果，

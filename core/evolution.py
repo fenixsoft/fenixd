@@ -21,16 +21,15 @@ import fcntl
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from core import fs_utils
 from core import timelib
 
 _logger = logging.getLogger("fenixd.evolution")
@@ -99,30 +98,6 @@ def item_id(project: str, date_section: str, section: str, title: str) -> str:
 
 
 # ── 原子读写原语（与 StateMachine.write_all 同范式）────────────────
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """tempfile + fsync + os.replace 原子替换（StateMachine._write_all_locked 同式）。
-
-    目录不存在时自动创建。写坏（中间被替换的文件内容）在系统层面不可能出现：
-    rename 前文件不完整，rename 后旧内容消失。
-    """
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
-    tmp_path = Path(tmp_path_str)
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp_path), str(path))
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
 
 
 def _with_lock(path: Path, fn):
@@ -290,7 +265,7 @@ def _write_items_unlocked(path: Path, records: Dict[str, dict]) -> None:
     改口径不再四处同步。
     """
     content = "".join(json.dumps(records[k], ensure_ascii=False) + "\n" for k in sorted(records))
-    _atomic_write(path, content)
+    fs_utils.atomic_write_text(path, content)
 
 
 # ── 任务 2.3：水位 state.json 读写 ──────────────────────────────────
@@ -350,7 +325,7 @@ def write_watermarks(project_root, data: Dict[str, dict]) -> None:
     content = json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
 
     def _do() -> None:
-        _atomic_write(path, content)
+        fs_utils.atomic_write_text(path, content)
 
     _with_lock(path, _do)
 
@@ -380,7 +355,7 @@ def advance_watermark(project_root, project: str, snapshot_at: str, run_id: str)
             "last_run_id": run_id,
         }
         content = json.dumps(current, ensure_ascii=False, indent=2) + "\n"
-        _atomic_write(path, content)
+        fs_utils.atomic_write_text(path, content)
 
     _with_lock(path, _do)
 
@@ -857,7 +832,7 @@ def clear_todo(project_path) -> dict:
     outcome["existed"] = True
 
     def _do() -> None:
-        _atomic_write(todo, "")
+        fs_utils.atomic_write_text(todo, "")
         outcome["ok"] = True
 
     try:
@@ -915,7 +890,7 @@ def write_todo_marker(
                 item.get("section"),
             )
             return
-        _atomic_write(todo, "\n".join(lines) + "\n")
+        fs_utils.atomic_write_text(todo, "\n".join(lines) + "\n")
         outcome["ok"] = True
 
     try:

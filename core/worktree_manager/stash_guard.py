@@ -52,9 +52,11 @@ class G6StashGuardMixin:
                     ["git", "-C", str(self.project_root), "status", "--porcelain"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
-            except (subprocess.TimeoutExpired, OSError):
+            except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
                 return []
             if result.returncode != 0:
                 return []
@@ -120,6 +122,8 @@ class G6StashGuardMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 # 仅本命令固化 C locale（对齐 queries.create_worktree_on_branch
                 # 的 LC_ALL=C 手法）：下方依赖英文子串 "No local changes" 判定
@@ -131,7 +135,7 @@ class G6StashGuardMixin:
                 # 目录，输出恒为英文。
                 env={**os.environ, "LC_ALL": "C"},
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # git 超时/不可用：按「未 stash」降级（与 returncode!=0 同路径），
             # guard 以 stashed=False 跳过 finally 的 restore，不让异常穿出
             self.logger.warning(
@@ -194,9 +198,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # git 超时/不可用：钉不住 sha = 无法证明栈顶未动，与下方复核阶段
             # 同口径放弃本轮绝不弹（条目保留交 reclaim_stale_autostash 巡检兜底）
             self.logger.warning(
@@ -253,6 +259,8 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "stash", "pop"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 # 仅本命令固化 C locale（同 ensure_clean_tree 的 stash push）：
                 # 下方依赖英文子串 "No stash entries"（无 stash 可恢复的正常跳过）
@@ -260,7 +268,7 @@ class G6StashGuardMixin:
                 # 破坏 guard finally 链的恢复语义。
                 env={**os.environ, "LC_ALL": "C"},
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # 本方法常在 guard 的 finally 中执行，绝不能外抛（会吞掉业务原始
             # 异常并中断清理链）——按旧版非冲突失败语义降级，stash 条目保留
             self.logger.warning(
@@ -383,9 +391,11 @@ class G6StashGuardMixin:
                  "--verify", "stash@{0}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
             return None
         return rev.returncode, rev.stdout
 
@@ -415,7 +425,7 @@ class G6StashGuardMixin:
                     capture_output=True,
                     timeout=30,
                 )
-            except (subprocess.TimeoutExpired, OSError):
+            except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
                 return None
             if cat.returncode != 0:
                 return None
@@ -452,7 +462,7 @@ class G6StashGuardMixin:
             if mf.returncode != 0:
                 return None
             return mf.stdout
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
             return None
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -504,9 +514,11 @@ class G6StashGuardMixin:
                     ["git", "-C", str(self.project_root), "add", "--", f],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
-            except (subprocess.TimeoutExpired, OSError) as e:
+            except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
                 # 本调用链常在 guard 的 finally 中执行，绝不能外抛（会吞掉已
                 # 成功的 merge 结果并中断清理链）——超时/不可用按态 1 失败处置
                 # 进态 2（与 returncode!=0 同路径）
@@ -539,9 +551,11 @@ class G6StashGuardMixin:
                     ["git", "-C", str(self.project_root), "checkout", "--theirs", "--", f],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
-            except (subprocess.TimeoutExpired, OSError) as e:
+            except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
                 # 本调用链常在 guard 的 finally 中执行，绝不能外抛（会吞掉已
                 # 成功的 merge 结果并中断清理链）——超时/不可用按态 3 兜底降级
                 # （同下方对态 2 恢复 commit 的处置口径）：stash 版仍在 index
@@ -568,6 +582,8 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "add", "--", *conflict_files],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if add.returncode != 0:
@@ -589,6 +605,8 @@ class G6StashGuardMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if cmt.returncode != 0:
@@ -597,7 +615,7 @@ class G6StashGuardMixin:
                     f"{(cmt.stderr or cmt.stdout).strip()}"
                 )
             return 2, f"recovery commit: {cmt.stdout.splitlines()[0] if cmt.stdout else ''}"
-        except (subprocess.TimeoutExpired, RuntimeError, OSError) as exc:
+        except (subprocess.TimeoutExpired, RuntimeError, OSError, UnicodeDecodeError) as exc:
             # ── 态 3 兜底：stash 版内容已在工作区（--theirs 落盘），显式登记
             # disposition，绝不静默丢弃（条目保留、信号照发）。OSError 同归
             # 态 3（code-review item 6234a624bb5d）：subprocess.run 自身的
@@ -674,9 +692,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # git 超时/不可用：本轮放弃回收（条目保留交下轮巡检），不让异常穿出
             self.logger.warning(
                 "worktree_manager",
@@ -699,9 +719,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "stash", "list", "-n", "1"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"Stale autostash reclaim skipped (git unavailable): {e}",
@@ -716,9 +738,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"Stale autostash reclaim skipped (git unavailable): {e}",
@@ -733,9 +757,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # 防插队复核失败（超时/不可用）无法证明栈顶未动：放弃本轮绝不弹
             self.logger.warning(
                 "worktree_manager",
@@ -762,9 +788,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"Stale autostash reclaim skipped (git unavailable): {e}",
@@ -785,9 +813,11 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "stash", "pop", "stash@{0}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # git 超时/不可用：与非冲突失败同语义，stash 条目保留交下轮巡检
             self.logger.warning(
                 "worktree_manager",
@@ -838,9 +868,11 @@ class G6StashGuardMixin:
                         ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=30,
                     )
-                except (subprocess.TimeoutExpired, OSError):
+                except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
                     # git 超时/不可用：核不了 sha，按「栈顶已动」降级（不 drop）
                     cur = None
                 if (
@@ -853,9 +885,11 @@ class G6StashGuardMixin:
                             ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=30,
                         )
-                    except (subprocess.TimeoutExpired, OSError):
+                    except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
                         # git 超时/不可用：核不了 drop 结果，条目保留交下轮巡检
                         dropped = None
                     if dropped is not None and dropped.returncode == 0:
@@ -899,6 +933,8 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "reset", "--", *paths],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if reset.returncode != 0:
@@ -907,7 +943,7 @@ class G6StashGuardMixin:
                     f"Self-heal index rollback failed: "
                     f"{(reset.stderr or reset.stdout).strip()}",
                 )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"Self-heal index rollback failed: {e}",
@@ -941,6 +977,8 @@ class G6StashGuardMixin:
                     ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if rm.returncode != 0:
@@ -980,6 +1018,8 @@ class G6StashGuardMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             staged_set = {
@@ -1015,6 +1055,8 @@ class G6StashGuardMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if commit.returncode != 0:
@@ -1026,7 +1068,7 @@ class G6StashGuardMixin:
                 self._reset_index_paths(processed)
                 return False
             return True
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self._reset_index_paths(processed)
             self.logger.warning("worktree_manager", f"{log_ctx} failed: {e}")
             return False
@@ -1067,6 +1109,8 @@ class G6StashGuardMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if chk.returncode != 0:
@@ -1076,7 +1120,7 @@ class G6StashGuardMixin:
                         f"— not a runtime draft",
                     )
                     return False
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
             return False
         ok = self._untrack_index_paths(
             paths,
@@ -1177,6 +1221,8 @@ class G6StashGuardMixin:
                 ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", *identical],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if co.returncode != 0:
@@ -1186,7 +1232,7 @@ class G6StashGuardMixin:
                     f"{(co.stderr or co.stdout).strip()}",
                 )
                 return False
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"Self-heal (identical) failed: {e}",
@@ -1226,6 +1272,8 @@ class G6StashGuardMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if diff.returncode != 0 or not diff.stdout.strip():
@@ -1243,6 +1291,8 @@ class G6StashGuardMixin:
                     ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if ls.returncode != 0:
@@ -1260,6 +1310,8 @@ class G6StashGuardMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if chk.returncode == 0:
@@ -1275,9 +1327,33 @@ class G6StashGuardMixin:
                     "worktree_manager",
                     f"Purged ignored drafts brought in by merge: {', '.join(victims)}",
                 )
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             self._reset_index_paths(victims)
             self.logger.warning("worktree_manager", f"Purge ignored brought-in failed: {e}")
+
+    def _abort_pending_merge_best_effort(self) -> None:
+        """就地尽力执行一次 ``git merge --abort``，自身异常一律吸收。
+
+        供 _resolve_ignored_modify_delete_conflicts 的各失败出口共用
+        （code-review item c5248bd14a6e）：rm / check-ignore / commit 失败，
+        或子进程 TimeoutExpired、OSError（含解码异常）中途抛出时，索引可能
+        已滞留部分 DU 路径的 staged 删除、其余路径仍 UU、MERGE_HEAD 未消
+        ——各失败出口统一就地 abort，不把半合并态留给调用方兜底（口径同
+        code-review item af9f0b134011）。abort 幂等，调用方兜底重复 abort
+        无害；无挂起 merge 时 abort 以非 0 退出被静默忽略。abort 自身再失败
+        （git 卡死/不可用）不掩盖原始失败原因，交调用方既有失败路径处置。
+        """
+        try:
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "merge", "--abort"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+            pass
 
     def _resolve_ignored_modify_delete_conflicts(self) -> bool:
         """在 merge 冲突挂起状态下自愈 modify/delete 冲突（仅限被忽略的路径）。
@@ -1289,10 +1365,11 @@ class G6StashGuardMixin:
         步骤：存在 DU 冲突且**无其它类型冲突**时，先逐个 ``git rm -f --cached``
         采纳删除（工作区副本保留，供运行时继续使用）——此刻路径已 untracked，
         ``check-ignore`` 判定才可靠（unmerged 条目会被视为 tracked 而误报）；
-        再校验全部路径确被 .gitignore 忽略。rm 失败或任何一条不满足均就地
-        ``merge --abort`` 回到调用方原有失败路径（分支内容仍可从分支提交找回，
-        不丢数据；abort 幂等，调用方兜底重复 abort 无害）；全部通过则
-        ``git commit --no-edit`` 完成 merge。
+        再校验全部路径确被 .gitignore 忽略。rm / commit 失败、任何一条校验不
+        满足或子进程超时、不可用，均经 ``_abort_pending_merge_best_effort``
+        就地 ``merge --abort``（code-review item c5248bd14a6e）回到调用方原有
+        失败路径（分支内容仍可从分支提交找回，不丢数据；abort 幂等，调用方
+        兜底重复 abort 无害）；全部通过则 ``git commit --no-edit`` 完成 merge。
 
         Returns: True 表示冲突已全部解决且 merge 已提交。
         """
@@ -1314,6 +1391,8 @@ class G6StashGuardMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if status.returncode != 0:
@@ -1336,6 +1415,8 @@ class G6StashGuardMixin:
                     ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if rm.returncode != 0:
@@ -1348,18 +1429,15 @@ class G6StashGuardMixin:
                     # item af9f0b134011）：此刻索引已滞留部分 DU 路径的 staged
                     # 删除、其余路径仍 UU、MERGE_HEAD 未消，不能把半合并态留给
                     # 调用方兜底；abort 幂等，调用方重复 abort 无害。
-                    subprocess.run(
-                        ["git", "-C", str(self.project_root), "merge", "--abort"],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
+                    self._abort_pending_merge_best_effort()
                     return False
             for path in du_paths:
                 chk = subprocess.run(
                     ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if chk.returncode != 0:
@@ -1369,17 +1447,14 @@ class G6StashGuardMixin:
                         f"Self-heal aborted: conflicted path '{path}' is not "
                         f"gitignored — not a runtime draft",
                     )
-                    subprocess.run(
-                        ["git", "-C", str(self.project_root), "merge", "--abort"],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
+                    self._abort_pending_merge_best_effort()
                     return False
             commit = subprocess.run(
                 ["git", "-C", str(self.project_root), "commit", "--no-edit"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if commit.returncode != 0:
@@ -1388,7 +1463,16 @@ class G6StashGuardMixin:
                     f"Self-heal: merge commit failed: "
                     f"{(commit.stderr or commit.stdout).strip()}",
                 )
+                # 与上方 rm / check-ignore 失败分支同口径：此刻全部 DU 路径已
+                # staged 删除、MERGE_HEAD 未消，commit 失败同样不把半合并态
+                # 留给调用方兜底（code-review item c5248bd14a6e）。
+                self._abort_pending_merge_best_effort()
                 return False
             return True
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+            # TimeoutExpired / OSError（含解码异常）可能发生在 rm / check-ignore
+            # 循环中途（git 卡死超时的场景恰易出现在这里）：与上方各失败分支
+            # 同口径先尽力就地 abort，不把同类半合并态滞留给调用方
+            # （code-review item c5248bd14a6e）。
+            self._abort_pending_merge_best_effort()
             return False

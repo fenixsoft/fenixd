@@ -391,6 +391,17 @@ def current_round_fingerprint(project_root, spec_name):
         try:
             if not run_result_path.is_file():
                 continue
+            # 可用性判据与 _load_run_result 同款（解析成功且为对象）：专属副本
+            # 在场但为空 JSON/损坏时 _load_run_result 会跳过它、继续回退共享
+            # 文件，指纹若仍只盯专属副本 mtime，后续轮次仅共享文件更新（如
+            # fast-track 全绿只写 run-result）时指纹保持不变，上一轮合成报告
+            # 被误判为本轮 present 放行（code-review 9e616773371c）。
+            try:
+                data = json.loads(run_result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
             if shared:
                 # 共享文件须 spec 戳显式归属本 spec 才纳入指纹——与
                 # _load_run_result 的严格口径一致（采信谁就盯谁）：非本 spec
@@ -398,13 +409,14 @@ def current_round_fingerprint(project_root, spec_name):
                 # 本 spec 的轮次身份，否则其它 spec 每轮重写共享文件都会翻转
                 # 本 spec 指纹，把仍是本回合结论的报告误判为上一轮残留而重合成
                 # （专属副本缺失形态下与归属声明相悖，code-review ad0ebe488d64）。
-                try:
-                    data = json.loads(run_result_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                stamped = data.get("spec") if isinstance(data, dict) else None
+                stamped = data.get("spec")
                 if not (isinstance(stamped, str) and stamped == spec_name):
                     continue
+            elif not (data.get("status") or data.get("bugs")):
+                # 专属副本 status/bugs 均空 → _load_run_result 不采信它、
+                # 继续回退共享文件；此处同款 continue 落到共享候选，与
+                # 「采信谁就盯谁」的归属声明真正对齐。
+                continue
             parts.append(f"run-result@mtime{run_result_path.stat().st_mtime_ns}")
             break
         except OSError:
@@ -1000,11 +1012,18 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
     try:
         # 非 git 仓库：入库机制不适用，静默跳过（每轮验证都进闸门，
         # 对无 git 的被管项目逐轮刷 WARNING 纯属噪声）
+        # 显式 UTF-8：text=True 缺省按 locale strict 解码，stdout/stderr 含
+        # 非 ASCII 字节（如 index.lock 争用信息引用中文路径、非 C locale 的
+        # 本地化文案）时抛 UnicodeDecodeError（ValueError 子类），逃逸下方
+        # except、击穿「任何失败仅 WARNING」契约（同包 repair_site.py 同款
+        # 惯例；code-review b7a5e058f945）。下方全部 git 子进程同此。
         probe = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_REPORT_PROBE_TIMEOUT,
         )
         if probe.returncode != 0 or probe.stdout.strip() != "true":
@@ -1014,6 +1033,8 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_REPORT_ADD_TIMEOUT,
         )
         if add.returncode != 0:
@@ -1029,6 +1050,8 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_REPORT_PROBE_TIMEOUT,
         )
         if unchanged.returncode == 0:
@@ -1042,6 +1065,8 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_REPORT_COMMIT_TIMEOUT,
         )
         if commit.returncode != 0:
@@ -1060,6 +1085,8 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
                 cwd=str(proot),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=_REPORT_PROBE_TIMEOUT,
             )
             _warn(f"git commit 失败: {output or f'exit {commit.returncode}'}")
@@ -1068,7 +1095,7 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
                     f"git reset 回滚暂存失败（报告仍以 staged 态残留索引）: "
                     f"{reset.stderr.strip() or f'exit {reset.returncode}'}"
                 )
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as e:
         _warn(f"git 入库异常: {e}")
 
 

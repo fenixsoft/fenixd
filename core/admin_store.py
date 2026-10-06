@@ -114,6 +114,73 @@ def _fsync_parent_dir(path: Path) -> None:
         os.close(dfd)
 
 
+def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
+    """JSONL 滚动裁剪的唯一实现（调用方须已持有该文件的排他锁）。
+
+    记录数超 ``keep`` 时保留末尾 ``keep`` 行：整文件读入 → 过滤空行 →
+    mkstemp 临时文件重写 + rename 原子替换 + 父目录 fsync，中途崩溃不丢
+    既有记录。裁剪幂等：未超限零写动作。读取/写失败（OSError/非法
+    UTF-8）按无文件处理，静默返回不抛出。
+
+    AdminStore._trim_archive_unlocked（归档旁路文件）与
+    DisputeAuditStore._trim_unlocked（dispute 审计）共用，仅路径/上限/
+    临时文件前缀不同（code-review item 3edc4ceba2af：单点实现防复制
+    粘贴漂移）。
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return
+    lines = [ln for ln in lines if ln.strip()]
+    if len(lines) <= keep:
+        return
+    fd, tmp_str = tempfile.mkstemp(
+        prefix=tmp_prefix,
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for ln in lines[-keep:]:
+                f.write(ln + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(str(tmp_path), str(path))
+        _fsync_parent_dir(path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _read_jsonl_locked(path: Path) -> list:
+    """逐行解析 JSONL 全部记录（调用方须已持有该文件的排他锁）。
+
+    存储原序返回（最新在末尾，不做排序——排序语义归调用方）。容错：空行
+    跳过、损坏行（JSONDecodeError）跳过、非 dict 行跳过；调用方负责
+    exists 预检与 OSError/UnicodeDecodeError 兜底（与各自的读路径一致）。
+
+    AdminStore.read_archive 与 DisputeAuditStore.read_all 共用的解析循环
+    （code-review item 3edc4ceba2af）。
+    """
+    out: list = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(d, dict):
+                out.append(d)
+    return out
+
+
 class AdminStore:
     """读写 .fenix/admin_alerts.json 的存储层。
 
@@ -364,36 +431,12 @@ class AdminStore:
 
     def _trim_archive_unlocked(self) -> None:
         """归档自身滚动裁剪（调用方须已持有排他锁）：记录数超
-        MAX_ARCHIVE_RECORDS 时保留末尾 N 行（整文件重写，临时文件 + rename
-        原子替换，与 DisputeAuditStore._trim_unlocked 同模式）。裁剪幂等：
-        未超限零写动作。读取/写失败按无归档处理（不抛出）。"""
-        try:
-            lines = self.archive_path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            return
-        lines = [ln for ln in lines if ln.strip()]
-        if len(lines) <= MAX_ARCHIVE_RECORDS:
-            return
-        fd, tmp_str = tempfile.mkstemp(
-            prefix=".admin_alerts_archive.",
-            suffix=".tmp",
-            dir=str(self.archive_path.parent),
+        MAX_ARCHIVE_RECORDS 时保留末尾 N 行。实现收敛到模块级
+        _rotate_jsonl_locked（与 DisputeAuditStore._trim_unlocked 共用，
+        code-review item 3edc4ceba2af）。读取/写失败按无归档处理（不抛出）。"""
+        _rotate_jsonl_locked(
+            self.archive_path, MAX_ARCHIVE_RECORDS, ".admin_alerts_archive."
         )
-        tmp_path = Path(tmp_str)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                for ln in lines[-MAX_ARCHIVE_RECORDS:]:
-                    f.write(ln + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.rename(str(tmp_path), str(self.archive_path))
-            _fsync_parent_dir(self.archive_path)
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
 
     def read_archive(self) -> list:
         """读取归档文件全部记录（存储原序：时间正序，最新在末尾）。
@@ -411,17 +454,7 @@ class AdminStore:
                 with self._lock() as lf:
                     fcntl.flock(lf, fcntl.LOCK_EX)
                     try:
-                        with self.archive_path.open(encoding="utf-8") as f:
-                            for line in f:
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                try:
-                                    d = json.loads(line)
-                                except json.JSONDecodeError:
-                                    continue
-                                if isinstance(d, dict):
-                                    out.append(d)
+                        out = _read_jsonl_locked(self.archive_path)
                     finally:
                         fcntl.flock(lf, fcntl.LOCK_UN)
         except (OSError, UnicodeDecodeError):
@@ -1203,43 +1236,18 @@ class DisputeAuditStore:
         """写回前裁剪到最近 MAX_AUDIT_RECORDS 条（调用方须已持有排他锁）。
 
         jsonl 是追加写，无法像 AdminStore 在内存数组里删头，超限时整文件
-        读入、保留末尾 N 行（含刚追加的最新一条），经临时文件 + rename
-        原子替换，中途崩溃不丢既有审计。裁剪幂等：未超限不做任何写动作。
+        读入、保留末尾 N 行（含刚追加的最新一条），中途崩溃不丢既有审计。
+        实现收敛到模块级 _rotate_jsonl_locked（与 AdminStore.
+        _trim_archive_unlocked 共用，code-review item 3edc4ceba2af）。
         """
-        try:
-            lines = self.audit_path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            return
-        lines = [ln for ln in lines if ln.strip()]
-        if len(lines) <= MAX_AUDIT_RECORDS:
-            return
-        fd, tmp_str = tempfile.mkstemp(
-            prefix=".dispute_audits.",
-            suffix=".tmp",
-            dir=str(self.audit_path.parent),
-        )
-        tmp_path = Path(tmp_str)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                for ln in lines[-MAX_AUDIT_RECORDS:]:
-                    f.write(ln + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.rename(str(tmp_path), str(self.audit_path))
-            _fsync_parent_dir(self.audit_path)
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
+        _rotate_jsonl_locked(self.audit_path, MAX_AUDIT_RECORDS, ".dispute_audits.")
 
     def read_all(self) -> list:
         """读取全部审计记录（最新的在前）。损坏/缺失返回空列表。
 
         与 append 一致在 _thread_lock + flock 排他锁内读取：单条记录
         （verdicts 全文 + diff）可能超出单次 write 原子性，无锁并发读会
-        观察到半行 JSON 而被下方 JSONDecodeError 静默跳过。
+        观察到半行 JSON 而被 JSONDecodeError 静默跳过。
         """
         if not self.audit_path.exists():
             return []
@@ -1249,17 +1257,7 @@ class DisputeAuditStore:
                 with self._lockfile.open("w", encoding="utf-8") as lf:
                     fcntl.flock(lf, fcntl.LOCK_EX)
                     try:
-                        with self.audit_path.open(encoding="utf-8") as f:
-                            for line in f:
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                try:
-                                    d = json.loads(line)
-                                except json.JSONDecodeError:
-                                    continue
-                                if isinstance(d, dict):
-                                    out.append(d)
+                        out = _read_jsonl_locked(self.audit_path)
                     finally:
                         fcntl.flock(lf, fcntl.LOCK_UN)
         except (OSError, UnicodeDecodeError):

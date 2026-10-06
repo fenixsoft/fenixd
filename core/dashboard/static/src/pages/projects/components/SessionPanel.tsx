@@ -168,7 +168,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 读不到窗口内 SSE 增量——经本 ref 读取替换前的实时列表，供快照合并补回。
   // events state 仅有 syncEvents / appendEvents 两个变更点，两处同步维护本 ref。
   const eventsRef = useRef<SessionEvent[]>([]);
-  const eventSourceRef = useRef<EventSource | null>(null);
   // cid 由服务端在 SSE hello 中分配（design D3：自造 cid 会静默失效）。初值必须为
   // null——分面未激活时无任何订阅可注销；若预置自造 cid，下方 [active] 清理
   // effect 会在挂载当帧发出 DELETE /api/session/watch（服务端查不到该 cid 对应
@@ -528,7 +527,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     void loadAll();
 
     const es = new EventSource(STREAM_URL);
-    eventSourceRef.current = es;
     // 连接（重新）建立：清除断流失败态并停兜底轮询（2303508d27ff 的恢复路径）
     es.onopen = () => {
       if (disposed) return;
@@ -580,7 +578,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       stopStreamFallback();
       clearWatchRetryTimer();
       es.close();
-      eventSourceRef.current = null;
     };
   }, [active, project]);
 

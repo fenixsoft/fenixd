@@ -486,15 +486,27 @@ def _pid_recently_started(pid: int, grace_seconds: float = 60.0) -> bool:
 def _kill_pids(pids: list, logger=None) -> int:
     """对 PID 列表逐个 SIGTERM，短暂轮询 /proc 确认退出，仍存活补 SIGKILL。
 
-    与 _kill 同走 os.kill 信号直发，不经外部 kill 二进制（其缺失会使清扫
-    静默退化为空操作）。返回确认已终止的进程数（单个 pid 操作失败——权限
+    与 _kill 同走信号直发、不经外部 kill 二进制（其缺失会使清扫静默退化
+    为空操作）；同守 D2 进程组杀树纪律——pgrep 命中的可能是 shell/npm 包装
+    链形态的组长，单 pid 直发杀掉包装 shell 后 node 孙进程仍存活，故先取
+    pgid 按组发信号整树终止，取组失败（恰已亡/权限不足）退回单 pid 直发。
+    返回确认已终止的进程数（单个 pid 操作失败——权限
     不足/竞态消失——按未终止计，忽略继续）。等待有界：SIGTERM 后至多 ~2s、
     SIGKILL 后至多 ~1s，不阻塞调用方（启动清扫/周期清扫均可容忍秒级）。
     """
     killed = 0
     for pid in pids:
         try:
-            os.kill(pid, signal.SIGTERM)
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            continue  # 恰已退出（竞态），按未终止计
+        except (PermissionError, OSError):
+            pgid = None  # 取组失败：退回单 pid 直发（同 _kill 兜底口径）
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             continue  # 恰已退出（竞态），按未终止计
         except OSError as e:
@@ -510,7 +522,10 @@ def _kill_pids(pids: list, logger=None) -> int:
             time.sleep(0.1)
         else:  # 仍存活（如 node 卡死不响应 SIGTERM）→ SIGKILL 兜底
             try:
-                os.kill(pid, signal.SIGKILL)
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass  # 竞态消失/权限不足，交由末尾 _pid_alive 判定
             for _ in range(10):  # ~1s 上限等待 SIGKILL 生效
