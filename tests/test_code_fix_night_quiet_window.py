@@ -12,7 +12,12 @@
   降级为无窗并 WARNING 一次；
 - spec R5 四路触发经 checkpoint() 单点全覆盖（源码契约固定）；
 - spec R7 / 1.3 窗内手动触发 checkpoint(override_enabled=True) 同被拦
-  （守卫在公共路径），fenixd CODE_FIX_RESULT_MESSAGES 登记中文文案。
+  （守卫在公共路径），fenixd CODE_FIX_RESULT_MESSAGES 登记中文文案；
+- evo-add-night-window-inflight-guard 1.1/3.1 预计跨窗顺延（窗前派出、
+  近批均时长使预计结束落窗→顺延到窗末；不跨窗/压线照常投递；无有效样本
+  回退仅判派发时刻；预测态→真实窗内态迁移不重复武装；窗末释放同路径）；
+- evo-add-night-window-inflight-guard 1.2 run_metrics duration_s 两处同源
+  写入（runner.py 源码契约）。
 
 时间注入沿 tests/test_code_fix.py 既有形态 patch 模块 time 属性
 （core.code_fix.time.localtime / time.time）。MUST NOT 真跑 agent——
@@ -512,6 +517,208 @@ class TestSingleEntryInvariant(unittest.TestCase):
 
         msg = fenixd.FenixDaemon.CODE_FIX_RESULT_MESSAGES["night_quiet_window"]
         self.assertIn("静默窗", msg)
+
+
+class TestPredictedCrossWindow(unittest.TestCase):
+    """预计跨窗顺延（evo-add-night-window-inflight-guard 1.1 / tasks 3.1）。
+
+    预计结束时刻 = 派出时刻 + 同链近批（最近
+    NIGHT_QUIET_DURATION_SAMPLE_LIMIT=3 批）run_metrics ``duration_s`` 均值；
+    与窗区间相交即顺延到窗末。样本自 1.2 补记字段读取，历史行缺字段按缺样
+    剔除；近批无有效样本回退仅判派发时刻落窗（fail-open）。预测态与真实
+    窗内态共用窗次标识与武装告警语义（同窗次幂等）。
+    """
+
+    def _orch(self, proot, config=None):
+        from core.code_fix import CodeFixOrchestrator
+
+        return CodeFixOrchestrator(
+            _GateRunner(proot, config), proot,
+            config=config if config is not None else _WINDOW_CFG,
+            logger=None)
+
+    def _write_chain(self, proot, run_specs):
+        """写链级 run 清单与对应 run 归档 run_metrics 行。
+
+        run_specs：``[(run_id, duration_s 或 None)]``——None 模拟历史行未记
+        时长（1.2 之前落盘的行）。
+        """
+        from core.code_fix import write_progress
+
+        runs_dir = Path(proot) / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        ids = []
+        for rid, dur in run_specs:
+            ids.append(rid)
+            line = {"type": "run_metrics", "run_id": rid, "turns": 2}
+            if dur is not None:
+                line["duration_s"] = dur
+            (runs_dir / f"{rid}.jsonl").write_text(
+                json.dumps(line, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_progress(proot, chain_run_ids=ids)
+
+    def test_predicted_cross_defers_to_window_end(self):
+        """窗前派出（04:10）+ 近批均时长使预计结束落窗（04:10+20m=04:30）→
+        顺延到窗末：拦截、armed 标识、武装告警（下一可投递时刻=04:45）。"""
+        from core.code_fix import _epoch_iso, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        self._write_chain(proot, [("run-a", 1200.0)])
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 10)):
+            res = orch.checkpoint()
+        self.assertEqual(
+            res, {"triggered": False, "reason": "night_quiet_window"})
+        prog = read_progress(proot)
+        self.assertEqual(prog["reason"], "night_quiet_window")
+        self.assertIn("预计本批跨夜间静默窗", prog["current"],
+                      "预测态进度文案须可审计区分于真实窗内态")
+        self.assertIn("1200 秒", prog["current"])
+        self.assertEqual(prog["night_quiet_armed_date"], "2026-10-06")
+        alerts = _window_alerts(proot)
+        self.assertEqual(len(alerts), 1, "预测态首次武装恰一条告警")
+        ev = str(alerts[0].get("evidence") or "")
+        self.assertIn("窗次=2026-10-06", ev)
+        self.assertIn(
+            f"下一可投递时刻={_epoch_iso(_local_epoch(4, 45))}", ev)
+
+    def test_predicted_not_crossing_dispatches(self):
+        """预计结束早于窗起点 → 照常投递；恰好压线窗起点（=）视作不相交。"""
+        for dur, note in [(120.0, "预计结束 04:12 早于窗起点"),
+                          (300.0, "预计结束恰压 04:15 窗起点")]:
+            with self.subTest(duration=dur, note=note):
+                proot = _make_project_root()
+                _write_items(proot, {"a": _item("a")})
+                _write_verify_yaml(proot)
+                self._write_chain(proot, [("run-a", dur)])
+                orch = self._orch(proot)
+                with mock.patch("core.code_fix.time.localtime",
+                                return_value=_local(4, 10)):
+                    res = orch.checkpoint()
+                self.assertEqual(
+                    res, {"triggered": True, "reason": "dispatched"},
+                    f"{note}，MUST NOT 引入额外延迟")
+                self.assertEqual(_window_alerts(proot), [])
+
+    def test_recent_limit_takes_last_n_batches(self):
+        """样本窗取最近 N=3 批均值：更早批的超长样本（已滚出窗口）不参与。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        self._write_chain(proot, [
+            ("run-old", 10 ** 7),   # 远古超长批：不在最近 3 批样本窗内
+            ("run-b", 120.0),
+            ("run-c", 120.0),
+            ("run-d", 120.0),
+        ])
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 10)):
+            res = orch.checkpoint()
+        self.assertEqual(
+            res, {"triggered": True, "reason": "dispatched"},
+            "近 3 批均值 120s 不跨窗，远古样本不参与估计")
+
+    def test_no_valid_samples_falls_back_to_dispatch_time_check(self):
+        """近批无有效时长样本（历史行缺 duration_s/归档缺失/无链清单）→
+        回退仅判派发时刻落窗：窗前照常投递；窗内仍拦截（既有判定不失效）。"""
+        cases = [
+            ("历史行未记时长", [("run-a", None), ("run-b", None)]),
+            ("run 归档缺失", []),
+        ]
+        for note, specs in cases:
+            with self.subTest(case=note):
+                proot = _make_project_root()
+                _write_items(proot, {"a": _item("a")})
+                _write_verify_yaml(proot)
+                self._write_chain(proot, specs)
+                orch = self._orch(proot)
+                with mock.patch("core.code_fix.time.localtime",
+                                return_value=_local(4, 10)):
+                    res = orch.checkpoint()
+                self.assertEqual(
+                    res, {"triggered": True, "reason": "dispatched"},
+                    f"{note}：缺样 MUST NOT 阻塞投递（fail-open）")
+                self.assertEqual(_window_alerts(proot), [])
+        # 负对照：同样无样本，真实窗内时刻仍按既有判定拦截
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            res = orch.checkpoint()
+        self.assertEqual(
+            res, {"triggered": False, "reason": "night_quiet_window"},
+            "无样本只回退预测级，既有「仅判派发时刻」判定不失效")
+
+    def test_predicted_to_real_transition_does_not_rearm(self):
+        """「预测态→真实窗内态」迁移共用窗次标识：武装告警恰一条（同窗次
+        幂等），reason 保持 night_quiet_window 不变。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        self._write_chain(proot, [("run-a", 1200.0)])
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 10)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        self.assertEqual(
+            len(_window_alerts(proot)), 1,
+            "预测态→真实窗内态迁移 MUST NOT 重复武装")
+
+    def test_predicted_block_releases_at_window_end(self):
+        """预测态拦截后窗末首个 checkpoint：照常放行 + 补解除告警 + 清残留
+        窗次标识（消费侧与真实窗内态同一条释放路径）。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        self._write_chain(proot, [("run-a", 1200.0)])
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 10)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 45)):
+            self.assertEqual(
+                orch.checkpoint(), {"triggered": True, "reason": "dispatched"})
+        from core.code_fix import read_progress
+
+        prog = read_progress(proot)
+        self.assertIsNone(prog["night_quiet_armed_date"], "窗末须清窗次标识")
+        alerts = _window_alerts(proot)
+        self.assertEqual(len(alerts), 2, "武装 + 解除各一条")
+        release = [r for r in alerts if "结束" in str(r.get("description"))]
+        self.assertEqual(len(release), 1)
+
+
+class TestRunMetricsDurationField(unittest.TestCase):
+    """run_metrics duration_s 补记（evo-add-night-window-inflight-guard 1.2）。
+
+    归档行（``_metrics_line``）与日志侧 ``metric_type=run_metrics`` 行两处
+    同源写入同一 ``_duration_s``（单次计算、双写点引用）——沿
+    TestSingleEntryInvariant 源码契约形态固定（真跑 ``_run_claude`` 需假
+    Popen 全套替身，该写点路径的运行时回归由 test_run_stall_accounting 覆盖，
+    本处不重复取证）。读取侧缺样跳过行为由 TestPredictedCrossWindow
+    「历史行未记时长」用例功能性覆盖。
+    """
+
+    def test_duration_s_written_at_both_metrics_sites(self):
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "core" / "agent_runner" / "runner.py").read_text(
+            encoding="utf-8")
+        self.assertEqual(
+            src.count("_duration_s = max(0.0, time.time() - started_at)"), 1,
+            "墙钟时长须单源计算一次")
+        self.assertEqual(
+            src.count('"duration_s": _duration_s'), 2,
+            "归档行与日志侧行两处同源写入")
 
 
 if __name__ == "__main__":
