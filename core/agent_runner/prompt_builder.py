@@ -2779,7 +2779,12 @@ class PromptBuilder:
             entry = cache.get(str(sc.get("scenario_id")))
             if not isinstance(entry, dict):
                 continue
-            if entry.get("fingerprint") != scenario_fingerprint(sc):
+            # 空指纹按未命中处理（fail-open，code-review item 369dcba19363，
+            # 与 tag_cached_attributions 的空指纹守卫同口径）：两侧空串相等
+            # 会把「无法计算指纹」误判成「失败复现一致」，向 judge 下发免复现
+            # 注入。
+            fp = entry.get("fingerprint") or ""
+            if not fp or fp != scenario_fingerprint(sc):
                 continue
             hits.append((str(sc.get("scenario_id")), entry))
         if not hits:
