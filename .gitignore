@@ -27,6 +27,7 @@ Thumbs.db
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
 .playwright-cli/
+.pytest_cache/
 dist/
 
 # 例外：状态文件随仓库入库（todo.md 自省条目 / verify.yaml 验证契约 / config 模板）
