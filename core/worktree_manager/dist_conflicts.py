@@ -239,6 +239,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if res.returncode != 0:
@@ -272,6 +274,8 @@ class G5DistConflictsMixin:
                         ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", p],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=60,
                     )
                     if co.returncode != 0:
@@ -296,6 +300,8 @@ class G5DistConflictsMixin:
                         ],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=30,
                     )
                     if rm.returncode != 0:
@@ -327,6 +333,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if staged.returncode == 0:
@@ -342,6 +350,8 @@ class G5DistConflictsMixin:
                         ["git", "-C", str(self.project_root), "rm", "-q", "-f", "--", p],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=30,
                     )
                     if rm.returncode != 0:
@@ -378,6 +388,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             remaining = _collect_unmerged_paths(res2.stdout) if res2.returncode == 0 else []
@@ -405,6 +417,8 @@ class G5DistConflictsMixin:
                 ["git", "-C", str(self.project_root), "commit", "--no-edit"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if commit.returncode != 0:
@@ -417,6 +431,8 @@ class G5DistConflictsMixin:
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 return False
@@ -437,6 +453,8 @@ class G5DistConflictsMixin:
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
             except Exception:
@@ -484,6 +502,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if diff.returncode != 0:
@@ -538,6 +558,8 @@ class G5DistConflictsMixin:
                 ["git", "-C", str(self.project_root), "add", "-A", "--", DASHBOARD_STATIC_ROOT],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if add.returncode != 0:
@@ -567,6 +589,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if not staged.stdout.strip():
@@ -610,6 +634,8 @@ class G5DistConflictsMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 return
@@ -629,6 +655,8 @@ class G5DistConflictsMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 self.logger.warning(
@@ -641,6 +669,8 @@ class G5DistConflictsMixin:
                 ["git", "-C", str(self.project_root), "commit", "--amend", "--no-edit"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if amend.returncode != 0:
@@ -661,6 +691,8 @@ class G5DistConflictsMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 subprocess.run(
@@ -675,6 +707,8 @@ class G5DistConflictsMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=60,
                 )
                 self.logger.error(
@@ -764,6 +798,8 @@ class G5DistConflictsMixin:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if ls.returncode != 0:
@@ -844,6 +880,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.SubprocessError, OSError):
@@ -884,6 +922,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.SubprocessError, OSError):
@@ -911,6 +951,8 @@ class G5DistConflictsMixin:
                     ["git", "-C", str(self.project_root), "checkout", "-f", "HEAD", "--", f],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
             except (subprocess.SubprocessError, OSError) as e:
@@ -952,6 +994,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.SubprocessError, OSError) as e:
