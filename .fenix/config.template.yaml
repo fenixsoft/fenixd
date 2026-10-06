@@ -441,8 +441,9 @@ admin:
   # ---- 周期性代码审查（add-code-review-agent-and-quality-tab，可选）----
   # 设置页「质量」页签提供该开关（读/写 GET/POST /api/config 的
   # admin.code_review.enabled；2026-09-19 从项目页「质量」分面迁来——分面只保留
-  # 结果展示与手动触发）。开启后与每日自省同周期（admin.self_review.run_at
-  # 时点）派发 code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
+  # 结果展示与手动触发）。开启后于每日触发时点（admin.code_review.run_at，
+  # 缺省同 admin.self_review.run_at）派发 code-review agent，审查窗口内开发
+  # SPEC 的产品代码质量，问题沉淀到
   # .fenix/code-review/items.jsonl 台账供「质量」分面展示与消费。
   # code_review:
   #   # 是否启用周期性代码审查（缺省 false；手动触发不受此开关约束）
@@ -451,7 +452,7 @@ admin:
   #   # 全量审查耗时过长/烧钱。窗口审查按窗口收集，也受此上限约束。
   #   max_files: 500
   #   # 审查范围（add-code-review-scope-config）：window（缺省）= 当期审查
-  #   #   （只审自省窗口内变更文件，窗口起点同源 admin.self_review）；
+  #   #   （只审窗口内变更文件，窗口起点优先审查自身水位，缺省回退自省）；
   #   #   full = 全库审查（与项目页「全库审查」手动按钮同语义）。
   #   #   非法值（含缺失/非字符串）一律回退 window，巡检不因脏配置中断；
   #   #   full 档同样受上方 max_files 上限约束（超限截断）。
@@ -462,6 +463,11 @@ admin:
   #   # 收工模式」归因提示；单 run 至多一条，去重键 code-review-stall-<run_id>）。
   #   # 缺失/非法/非正整数一律回退 15。
   #   stall_alert_minutes: 15
+  #   # 触发时点（add-code-review-run-at，本地时间 HH:MM）：与每日自省时点解耦，
+  #   # 错峰派发避免周期审查与自省（连带分析链）同刻齐发触发 LLM 网关限流；
+  #   # 缺省回退 admin.self_review.run_at（未配置时行为与历史逐位一致），
+  #   # 非法值（格式/越界时分/非字符串）同样回退，巡检不因脏配置中断。
+  #   # run_at: "03:30"
 
   # ---- 审查 run stall 看门狗（decouple-codefix-review-lanes 3.1）----
   # 周期审查 run 无产出超阈值（分钟，正整数，缺省 30）时自动取消该 run 并走
