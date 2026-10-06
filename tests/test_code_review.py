@@ -727,6 +727,8 @@ class TestGetCodeReviewConfig(unittest.TestCase):
                 # evo-add-code-review-ratelimit-resume 4.1：手动 full 叠加防护
                 # 阈值缺省 30（0 = 关闭守卫）
                 "manual_full_open_warn": 30,
+                # add-code-review-run-at：触发时点缺省回退自省 run_at（文档缺省 02:00）
+                "run_at": "02:00",
             },
         )
 
@@ -762,6 +764,8 @@ class TestGetCodeReviewConfig(unittest.TestCase):
                 "scope": "window",
                 "stall_alert_minutes": 30,
                 "manual_full_open_warn": 30,
+                # add-code-review-run-at：键缺失回退自省 run_at 文档缺省
+                "run_at": "02:00",
             },
         )
 
@@ -906,6 +910,9 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
                 "stall_alert_minutes": 30,
                 # evo-add-code-review-ratelimit-resume 4.1：新键缺省回显
                 "manual_full_open_warn": 30,
+                # add-code-review-run-at：触发时点回显生效值（键未配置=回退自省
+                # run_at 文档缺省 02:00）
+                "run_at": "02:00",
             },
         )
         # 与 self_review 同形态：code_review 不在受管 admin 键集内
