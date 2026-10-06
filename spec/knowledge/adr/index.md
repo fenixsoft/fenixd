@@ -250,3 +250,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-242](ADR-242-escalation-narrative-write-entry-pure-enhancement-fail-open.md) | accepted | 转人工裁决叙事挂告警写入口作纯增强字段（三段结构、不改结构化语义、机器消费方零感知），机械闸门零 LLM、失败 fail-open 至多一次硬超时——叙事是增强不是门禁，后续告警 LLM 增强必须沿用此边界 |
 | [ADR-243](ADR-243-llm-assist-single-shot-via-spawn-channel-no-direct-gateway.md) | accepted | 特性级 LLM 单发调用一律复用 agent spawn 通道（模型回退链+硬超时+依赖注入假通道测试），禁直连网关 HTTP 第二套凭据/UA/代理面、禁传高危旗标；高频批量场景须另立条目不得私开 HTTP 客户端 |
 | [ADR-244](ADR-244-dashboard-conditional-get-datasource-signature-dispatch-short-circuit.md) | accepted | dashboard GET 读端点条件请求通道：ETag=数据源全集 (mtime_ns,size) 签名哈希（禁响应体哈希、禁不完整签名）、协商短路在表驱动分派层先于 handler（兼容自含响应 handler）、签名缺失/抛错降级无条件 200（宁缺 304 不假 304+发头前复核防两趟读取错标）；后续新增 GET 端点必须注册签名函数，文件签名禁跨请求 memo stat |
+| [ADR-245](ADR-245-builtin-default-behavior-read-side-injection.md) | accepted | 零配置默认行为进代码：hook_config() 读侧向返回副本注入内置 hook 条目（同 id 用户条目优先），禁原地 mutate 入参、禁持久化进 gitignored 运行时配置（落盘则逃生键失效），注入条目走与用户条目同一执行链无旁路；后续零配置默认行为一律沿用此形态 |

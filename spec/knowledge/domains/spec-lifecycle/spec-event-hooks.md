@@ -1,6 +1,6 @@
 # SPEC 事件钩子（状态变化触发自定义动作）
-<!-- knowledge: capability=spec-event-hooks rev=1
-     sources=spec/archive/2026-09-12-add-spec-hooks -->
+<!-- knowledge: capability=spec-event-hooks rev=2
+     sources=spec/archive/2026-09-12-add-spec-hooks,spec/archive/2026-10-07-add-push-restart-dashboard-hook -->
 
 SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作（重启、git、webhook、shell），后台异步执行、审计留痕、失败告警不重试。
 
@@ -11,7 +11,7 @@ SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作
 - 每条 hook 配置：`events`（非空，十状态枚举内）、`action`（七种动作枚举）、`enabled` 布尔开关——`enabled=false` 时被有意跳过，不执行动作、不告警，审计状态记 `skipped`。
 - 七种动作：
   - `restart-daemon`：创建 `.fenix/restart_request` 请求文件复用 supervisor 优雅重启协议；创建成功即动作成功，不得由 hook 执行器直接杀 daemon 进程。
-  - `restart-dashboard`：以 `tmux respawn-window -k` 重启目标会话（可选参数 `target`，缺省 `fenix-dashboard`），命令满足 `env -u CLAUDE_PID` 且保持 8787 端口与原工作目录；重启后探测端口恢复可服务定成败，超时记失败。
+  - `restart-dashboard`：以 `tmux respawn-window -k` 重启目标会话（可选参数 `target`，缺省 `fenix-dashboard`），命令满足 `env -u CLAUDE_PID` 且保持 8787 端口与原工作目录；重启后探测端口恢复可服务定成败。动作三态返回（success/failure/skipped）直接映射审计状态：60s 去抖窗口内（进程内最近一次成功重启时间戳）重复触发幂等跳过记 skipped，失败不写时间戳故窗口内可重试；目标会话不存在或 tmux 不可用按环境态静默跳过记 skipped，不产 failure 审计；会话存在但 respawn/端口探测失败才记 failure。
   - `commit`：`git add -A` 后按提交信息模板执行 `git commit`（变量 `{spec}`、`{event}`，缺省 `[fenix] hook: {spec} {event}`）；工作区无变更视为 no-op 成功（审计记 `noop`，不告警）。
   - `push`：执行 `git push`（跟随当前分支 upstream）。
   - `commit-push`：先 commit 后 push；commit 为 no-op 时仍执行 push；push 失败不回滚已产生的本地提交。
@@ -20,9 +20,10 @@ SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作
 - 异步执行：分发与动作执行在 daemon 后台线程，不阻塞状态机写路径与 PM Engine 调度；单个慢动作（如不可达 webhook）不延迟其他 hook、不阻塞后续状态转换事件。
 - 失败处理：写 status=failure 审计记录 + 经 admin_store 发一条 `hook_failure` 站内告警（含 spec、事件、动作、错误摘要）；不自动重试；告警不做去重降噪（hook 失败是真实信号，每次可见）。
 - 审计：每次触发向 `.fenix/hook_audit.jsonl` 追加一条 JSON（ts、spec、event、from_status、to_status、hook_id、action、scope、status（success/failure/noop/skipped）、detail ≤2KB、duration_ms），文件 append-only；`GET /api/hooks/audit` 按 spec 过滤、limit（缺省 20）返回尾部倒序记录。
-- 配置持久化于 `.fenix/config.yaml` 的 `hooks` 段（`hooks.global` + `hooks.specs.<spec名>`），经配置热更新（30s mtime）生效；`POST /api/config` 保存时校验（events 枚举、动作枚举、webhook 必填 url、shell 必填 command），违规返回 400；无 `hooks` 段 = 空订阅、零行为。
+- 配置持久化于 `.fenix/config.yaml` 的 `hooks` 段（`hooks.global` + `hooks.specs.<spec名>`），经配置热更新（30s mtime）生效；`POST /api/config` 保存时校验（events 枚举、动作枚举、webhook 必填 url、shell 必填 command），违规返回 400；无 `hooks` 段 = 无用户订阅，内置默认条目仍由 `hook_config()` 读侧注入（pushed → restart-dashboard，逃生键见 `dashboard-push-restart` 能力页），用户配置文件不出现注入实体。
 - Dashboard：SPEC 详情页「失败截图」页签之后提供「Hook」页签——生效中的 hooks（合并全局与 spec 级，来源列标「全局/本 spec」）、本 spec hooks 的增删改与启停（表单按动作类型显隐参数字段）、最近执行审计列表；设置页「Hook」面板提供全局 hooks 管理与跨 SPEC 审计尾部。
 
 ## 溯源
 
 - 2026-09-12 2026-09-12-add-spec-hooks（spec/archive/2026-09-12-add-spec-hooks） — 新增事件钩子：全局状态观察者与事件发布、两级订阅与七种动作、异步执行与失败告警不重试、hook_audit 审计与查询 API、配置契约与 Dashboard 两个管理面
+- 2026-10-07 add-push-restart-dashboard-hook（spec/archive/2026-10-07-add-push-restart-dashboard-hook） — restart-dashboard 动作改三态返回并加 60s 去抖与无会话静默跳过；hook_config 引入内置默认条目读侧注入（逃生键与注入纪律归 dashboard-push-restart 能力页）

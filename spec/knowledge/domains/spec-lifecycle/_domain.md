@@ -1,5 +1,5 @@
 # SPEC 生命周期
-> 最后更新：2026-10-06 17:00 UTC+8
+> 最后更新：2026-10-07 02:36 UTC+8
 
 SPEC 生命周期。本域能力页清单如下。
 
@@ -20,7 +20,7 @@ SPEC 生命周期。本域能力页清单如下。
 | [start-after-scope-config](start-after-scope-config.md) | start_after 拾取范围配置 | 2026-10-03 04:59 |
 | [spec-concurrency-governance](spec-concurrency-governance.md) | 同 SPEC 在飞并发治理 | 2026-10-03 04:59 |
 | [spec-content-integrity-gate](spec-content-integrity-gate.md) | SPEC 内容完整性门 | 2026-10-03 04:59 |
-| [spec-event-hooks](spec-event-hooks.md) | SPEC 事件钩子 | 2026-10-03 04:59 |
+| [spec-event-hooks](spec-event-hooks.md) | SPEC 事件钩子 | 2026-10-07 02:36 |
 | [spec-archive](spec-archive.md) | SPEC 归档（手动/查询/自动） | 2026-10-06 17:00 |
 | [auto-spec-archive](auto-spec-archive.md) | SPEC 自动归档 | 2026-10-06 17:00 |
 | [archive-state-relocation](archive-state-relocation.md) | STATE.md 条目迁出与归档清单 | 2026-10-06 17:00 |

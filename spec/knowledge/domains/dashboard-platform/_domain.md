@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-10-07 02:25 UTC+8
+> 最后更新：2026-10-07 02:36 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建与按需生成类任务。
 
@@ -10,6 +10,7 @@
 | [dashboard-server](dashboard-server.md) | dashboard 服务端 | 2026-10-03 04:59 |
 | [fenix-dashboard-skill](fenix-dashboard-skill.md) | dashboard 技能入口 | 2026-10-03 04:59 |
 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（看门狗） | 2026-10-03 04:59 |
+| [dashboard-push-restart](dashboard-push-restart.md) | pushed 终态自动重启 dashboard（内置 hook/去抖/静默跳过/逃生键） | 2026-10-07 02:36 |
 | [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-07 02:25 |
 | [v2-sse-bridge](v2-sse-bridge.md) | v2 SSE 桥（已随壳层退役） | 2026-10-03 04:59 |
 | [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher | 2026-10-03 04:59 |
