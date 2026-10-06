@@ -854,3 +854,146 @@ class TestInteractionContractRejectionDenoise:
             assert "bad" in vpipe._last_freeze_rejected
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── 顶层契约注入 + 顶层拯救接线 + 反馈分类（evo-scenario-product-toplevel-contract 3.2）──
+
+class TestTopLevelContractInjection:
+    """顶层纯数组交付契约仅注入 planner-plan（D2 双保险）；
+    planner-judge / fast-track 等其他 agent_type 既有内容不变。"""
+
+    def test_planner_plan_injects_top_level_contract(self, tmp_path):
+        """planner-plan 注入含顶层纯数组契约句、dict 包裹反例与正例。"""
+        pb = TestSchemaInjectionCoverage._make_prompt_builder(tmp_path)
+        prompt = TestSchemaInjectionCoverage._build(None, pb, "planner-plan")
+        assert "顶层交付契约" in prompt
+        assert "纯 JSON 数组" in prompt
+        # dict 包裹反例 + 纯数组正例各一行
+        assert '{"scenarios"' in prompt
+        assert '[{"id": "login-ok"' in prompt
+
+    def test_planner_plan_distinguishes_scenarios_json_dict_shape(self, tmp_path):
+        """注入含 scenarios.json（dict 形态持久化集）形状相反的区分说明。"""
+        pb = TestSchemaInjectionCoverage._make_prompt_builder(tmp_path)
+        prompt = TestSchemaInjectionCoverage._build(None, pb, "planner-plan")
+        assert "scenarios.json" in prompt
+        assert "相反" in prompt
+
+    def test_planner_judge_not_injected_top_level_contract(self, tmp_path):
+        """planner-judge 不注入顶层契约条目，schema 段既有内容不变。"""
+        pb = TestSchemaInjectionCoverage._make_prompt_builder(tmp_path)
+        prompt = TestSchemaInjectionCoverage._build(None, pb, "planner-judge")
+        assert "顶层交付契约" not in prompt
+        assert "场景断言/操作必填字段" in prompt  # 既有注入不变
+
+    def test_fast_track_not_injected_top_level_contract(self, tmp_path):
+        """fast-track 不注入顶层契约条目（既有内容不变）。"""
+        pb = TestSchemaInjectionCoverage._make_prompt_builder(tmp_path)
+        prompt = TestSchemaInjectionCoverage._build(None, pb, "fast-track")
+        assert "顶层交付契约" not in prompt
+        assert "场景断言/操作必填字段" in prompt
+
+
+class TestReplanFeedbackClassifiedText:
+    """REPLAN_FEEDBACK 按失败类别生成文案（2.2）：格式类给最小修复指引，
+    内容类保留「重新输出全部场景」全量重建指示。"""
+
+    @staticmethod
+    def _make_vpipe(tmpdir: Path):
+        vp = tmpdir / ".fenix" / "verify-progress" / "spec-demo"
+        vp.mkdir(parents=True, exist_ok=True)
+        pm, sm = _make_pm(tmpdir)
+        sm.add_spec("spec-demo", {"priority": 5})
+        sm.update_spec("spec-demo", {"status": "testing", "_verify_fail_rounds": 0})
+        return VerificationPipeline(pm), vp
+
+    def test_format_class_has_minimal_repair_no_full_rebuild(self, tmp_path):
+        """格式类拒收：文案含最小修复指引，不含「重新输出全部场景」。"""
+        vpipe, _ = self._make_vpipe(tmp_path)
+        vpipe._replan_error_format_class = True
+        text = vpipe._replan_feedback_text(
+            "场景文件验收失败: 场景文件格式错误: 期望JSON数组，实际为 dict")
+        assert text.startswith("# 场景验收反馈")
+        assert "最小修复" in text
+        assert "格式类" in text
+        assert "重新输出全部场景" not in text
+        # 修复动作指明顶层契约
+        assert "纯 JSON 数组" in text
+
+    def test_content_class_keeps_full_rebuild(self, tmp_path):
+        """内容类缺失：保留全量重建指示，既有行为不回归。"""
+        vpipe, _ = self._make_vpipe(tmp_path)
+        vpipe._replan_error_format_class = False
+        text = vpipe._replan_feedback_text("场景写前预校验整批拒绝：本轮产出全部非法")
+        assert "重新输出全部场景" in text
+        assert "navigate 的 value 必须为绝对 URL" in text
+
+    def test_sidecar_defaults_to_content_class(self, tmp_path):
+        """侧车缺省 False：未经历 stage2 的路径照旧全量重建文案。"""
+        vpipe, _ = self._make_vpipe(tmp_path)
+        assert vpipe._replan_feedback_text("x").count("重新输出全部场景") == 1
+
+
+class TestStage2TopLevelSalvageWiring:
+    """验收归因点拯救接线（2.2）：dict 包裹解包落地不退回；格式类侧车置位。"""
+
+    @staticmethod
+    def _make_vpipe(tmpdir: Path):
+        vp = tmpdir / ".fenix" / "verify-progress" / "spec-demo"
+        vp.mkdir(parents=True, exist_ok=True)
+        pm, sm = _make_pm(tmpdir)
+        sm.add_spec("spec-demo", {"priority": 5})
+        sm.update_spec("spec-demo", {"status": "testing", "_verify_fail_rounds": 0})
+        return VerificationPipeline(pm), vp
+
+    @staticmethod
+    def _logger_text(vpipe, attr: str) -> str:
+        return " ".join(
+            " ".join(str(a) for a in args)
+            for args, _kw in getattr(vpipe._context.logger, attr)
+        )
+
+    def test_salvage_success_skips_replan_and_lands_pure_array(self, tmp_path):
+        """dict 包裹产物解包采纳：不按验收失败退回，纯数组原子重写落地并留痕。"""
+        vpipe, vp = self._make_vpipe(tmp_path)
+        entries = [_valid_web("w1")]
+        p = vp / "test_scenarios.json"
+        p.write_text(
+            json.dumps({"spec": "demo", "scenarios": entries},
+                       ensure_ascii=False),
+            encoding="utf-8")
+        # 不可达 fail-fast 作测试切点：拯救后流程短路退出，断言拯救已落地
+        with patch.object(vpipe, "_ensure_app_reachable",
+                          return_value=(False, False, "不可达")), \
+             patch.object(vpipe, "_escalate_env_blocked"):
+            env_error, _report, _r, _n, aborted = vpipe._execute_stage2(
+                "spec-demo", vp, p)
+        assert env_error is None  # 拯救成功：不再按「场景文件验收失败」退回
+        assert aborted is True
+        on_disk = json.loads(p.read_text(encoding="utf-8"))
+        assert isinstance(on_disk, list)
+        assert on_disk[0] == entries[0]  # 原始条目零丢失
+        # D4 留痕：解包前顶层键与条目数
+        warn_text = self._logger_text(vpipe, "warnings")
+        assert "顶层拯救" in warn_text
+        assert "['scenarios', 'spec']" in warn_text
+        assert "1 条场景" in warn_text
+
+    def test_unsalvageable_failure_sets_format_class_sidecar(self, tmp_path):
+        """不可拯救形态照常按原错误退回，且格式类侧车置位驱动最小修复文案。"""
+        vpipe, vp = self._make_vpipe(tmp_path)
+        p = vp / "test_scenarios.json"
+        p.write_text(
+            json.dumps([_valid_web("w1")], ensure_ascii=False),
+            encoding="utf-8")
+        with patch(
+            "core.verify_engine.scenarios.load_scenarios",
+            side_effect=ValueError(
+                "场景文件格式错误: 期望JSON数组，实际为 dict"),
+        ):
+            env_error, *_ = vpipe._execute_stage2("spec-demo", vp, p)
+        assert env_error and "场景文件验收失败" in env_error
+        assert vpipe._replan_error_format_class is True
+        text = vpipe._replan_feedback_text(env_error)
+        assert "最小修复" in text
+        assert "重新输出全部场景" not in text

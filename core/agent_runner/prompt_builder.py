@@ -528,7 +528,9 @@ class PromptBuilder:
             prompt += self._result_gate_section(spec_name)
             # evo-planner-scenario-schema-alignment 2.1：断言/操作 schema 单源注入
             # （planner-plan 是第一条会重写 test_scenarios.json 断言/操作结构的车道）
-            prompt += self._scenario_schema_section()
+            # evo-scenario-product-toplevel-contract 1.2：顶层纯数组交付契约
+            # 随段注入（仅 planner-plan 生效，与 agents/planner-plan.md 双保险）
+            prompt += self._scenario_schema_section(include_top_level_contract=True)
         elif agent_type == "planner-judge":
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._triage_recheck_section(spec_name)
@@ -2242,7 +2244,7 @@ class PromptBuilder:
         ]
         return "\n".join(lines)
 
-    def _scenario_schema_section(self) -> str:
+    def _scenario_schema_section(self, include_top_level_contract: bool = False) -> str:
         """断言/操作必填字段 schema 注入段（evo-planner-scenario-schema-alignment 2.1）。
 
         三条会重写 ``test_scenarios.json`` 断言/操作结构的 agent 分支共用：
@@ -2256,6 +2258,12 @@ class PromptBuilder:
         ACTION_REQUIRED_FIELDS 单源表运行时渲染（每类型必填字段说明 + 合法 JSON
         样例）——与写端校验天然同源，改单源表即在此处生效，MUST NOT 手改任何
         prompt 文件（4.1/4.4 一致性回归锁定：改常量 → 注入文本随之变化）。
+
+        ``include_top_level_contract``（evo-scenario-product-toplevel-contract 1.2）：
+        仅 planner-plan 会话传 True——在段首注入 test_scenarios.json 顶层纯数组
+        交付契约（正反例 + 与同目录 scenarios.json 的 dict 形态区分），与
+        agents/planner-plan.md 静态模板互为双保险（D2）；fast-track / planner-judge
+        等其他写入车道既有内容不变。
         """
         from core.verify_engine.scenarios import (
             ASSERTION_REQUIRED_FIELDS,
@@ -2268,6 +2276,24 @@ class PromptBuilder:
             "",
             "## 场景断言/操作必填字段（schema 单源，运行时渲染，强制）",
             "",
+        ]
+        if include_top_level_contract:
+            lines += [
+                "### test_scenarios.json 顶层交付契约（强制，违反即整份拒收）",
+                "",
+                "test_scenarios.json 顶层必须是**纯 JSON 数组**，MUST NOT 用 "
+                '{"scenarios": […]} 之类 dict 包裹——读端对顶层非数组直接抛'
+                "「场景文件格式错误」整份拒收。",
+                '- 正例：`[{"id": "login-ok", "description": "…", '
+                '"steps": […], "assertions": […]}, …]`',
+                '- 反例（拒收）：`{"spec": "…", "scenarios": '
+                '[{"id": "login-ok", …}, …]}`',
+                "- 同目录 `scenarios.json`（场景持久化集）形状**相反**：其顶层是 "
+                'dict（读端要求含 "scenarios" 键）。两个文件形状不得互抄——写 '
+                "test_scenarios.json 时 MUST NOT 参照 scenarios.json 的 dict 形态。",
+                "",
+            ]
+        lines += [
             "以下必填字段规则由 `core/verify_engine/scenarios.py` 的单源表"
             "（ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS）运行时渲染，"
             "与写端结构校验（validate_scenario_dicts）天然同源——缺必填字段的"

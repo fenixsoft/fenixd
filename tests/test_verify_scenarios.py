@@ -351,3 +351,115 @@ class TestScenarioEntryKind:
         assert diff.ok is False  # s1 无理由缺失 → 补齐
         by_id = {e.id: e.kind for e in diff.scenario_set.scenarios}
         assert by_id == {"s1": "cli", "other": "web"}
+
+
+# ── 顶层门与拯救助手（evo-scenario-product-toplevel-contract 3.1）───────────
+
+import pytest
+
+from core.verify_engine.scenarios import (
+    load_scenarios,
+    salvage_scenarios_file,
+    unwrap_scenarios_dict,
+)
+
+
+def _engine_valid_web(sid: str) -> dict:
+    """引擎读端（load_scenarios 校验链）认可的最小合法 web 场景。"""
+    return {
+        "id": sid, "description": f"场景{sid}", "kind": "web",
+        "steps": [{"action": "navigate", "value": "http://127.0.0.1:8000/"},
+                  {"action": "click", "target": f"#{sid}"}],
+        "assertions": [{"type": "element_visible", "selector": f"#{sid}"}],
+    }
+
+
+def _write_scenarios_file(obj) -> Path:
+    d = Path(tempfile.mkdtemp())
+    p = d / "test_scenarios.json"
+    p.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+class TestTopLevelGateAndSalvage:
+    """test_scenarios.json 顶层非数组硬门 + dict 包裹拯救助手（3.1）。"""
+
+    def test_non_array_top_level_rejected_by_load_scenarios(self):
+        """顶层 {"spec":…,"scenarios":[…]} dict 被 load_scenarios 整份拒收。"""
+        p = _write_scenarios_file(
+            {"spec": "demo", "scenarios": [_engine_valid_web("s1")]})
+        with pytest.raises(ValueError, match="期望JSON数组"):
+            load_scenarios(p)
+
+    def test_string_top_level_rejected_by_load_scenarios(self):
+        """其余非数组顶层（字符串等）照常拒收，不拯救。"""
+        p = _write_scenarios_file("not-a-list")
+        with pytest.raises(ValueError, match="期望JSON数组"):
+            load_scenarios(p)
+
+    def test_pure_array_input_unaffected(self):
+        """纯数组顶层照常加载（load_scenarios 本体语义不变）。"""
+        p = _write_scenarios_file(
+            [_engine_valid_web("s1"), _engine_valid_web("s2")])
+        scenarios = load_scenarios(p)
+        assert [s.id for s in scenarios] == ["s1", "s2"]
+
+    def test_unwrap_salvageable_dict_returns_array(self):
+        """{"scenarios":[…]} 唯一形态解包返回数组。"""
+        entries = [_engine_valid_web("s1"), _engine_valid_web("s2")]
+        assert unwrap_scenarios_dict(
+            {"spec": "demo", "scenarios": entries}) == entries
+
+    def test_unwrap_rejects_dict_without_scenarios_key(self):
+        with pytest.raises(ValueError, match="不可解包"):
+            unwrap_scenarios_dict({"spec": "demo", "entries": []})
+
+    def test_unwrap_rejects_non_list_scenarios_value(self):
+        with pytest.raises(ValueError, match="不可解包"):
+            unwrap_scenarios_dict({"scenarios": {"a": 1}})
+
+    def test_unwrap_rejects_empty_scenarios_array(self):
+        with pytest.raises(ValueError, match="不可解包"):
+            unwrap_scenarios_dict({"scenarios": []})
+
+    def test_unwrap_rejects_non_dict_top_level(self):
+        """非 dict 顶层（数组/标量）无解包面，原样报错。"""
+        with pytest.raises(ValueError, match="非 dict 包裹形态"):
+            unwrap_scenarios_dict([_engine_valid_web("s1")])
+        with pytest.raises(ValueError, match="非 dict 包裹形态"):
+            unwrap_scenarios_dict("just-a-string")
+
+    def test_salvage_rewrites_pure_array_and_reports_info(self):
+        """解包 → 重验通过 → 原子重写为纯数组落地，留痕 info 齐全。"""
+        entries = [_engine_valid_web("s1")]
+        p = _write_scenarios_file({"spec": "demo", "scenarios": entries})
+        scenarios, info = salvage_scenarios_file(p)
+        assert [s.id for s in scenarios] == ["s1"]
+        assert info["top_keys"] == ["scenarios", "spec"]
+        assert info["entry_count"] == 1
+        assert info["rewritten"] is True
+        # 落地为纯数组：其余 load_scenarios 读端按既有语义直接可读，
+        # 且原始条目字段零丢失（raw 落地而非 to_dict 回环）
+        on_disk = json.loads(p.read_text(encoding="utf-8"))
+        assert isinstance(on_disk, list)
+        assert on_disk[0] == entries[0]
+        assert [s.id for s in load_scenarios(p)] == ["s1"]
+
+    def test_salvage_rejects_invalid_unwrapped_entries_without_rewrite(self):
+        """解包后条目未过既有校验 → 原样拒收，不落地。"""
+        p = _write_scenarios_file(
+            {"scenarios": [{"id": "bad", "description": "非法"}]})
+        with pytest.raises(ValueError):
+            salvage_scenarios_file(p)
+        assert isinstance(json.loads(p.read_text(encoding="utf-8")), dict)
+
+    def test_salvage_rejects_non_salvageable_shapes(self):
+        """缺 scenarios 键 / scenarios 非数组 / 标量 / 列表套标量均不拯救。"""
+        for obj in ({"spec": "demo"}, {"scenarios": {}}, "string", [1, 2]):
+            p = _write_scenarios_file(obj)
+            with pytest.raises(ValueError):
+                salvage_scenarios_file(p)
+
+    def test_salvage_missing_file_raises_file_not_found(self):
+        with pytest.raises(FileNotFoundError):
+            salvage_scenarios_file(Path(tempfile.mkdtemp()) / "nope.json")

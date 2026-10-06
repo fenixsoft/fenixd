@@ -2051,6 +2051,73 @@ class VerificationPipeline:
     # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
     # D4：VerifyEngine / load_scenarios 的 import 保留在本方法体内（运行时函数体内），
     # 测试靠 patch("core.verify_engine.VerifyEngine") 在本方法执行时生效。
+    def _salvage_top_level_dict(self, scenarios_path):
+        """顶层 dict 包裹形态机械拯救（evo-scenario-product-toplevel-contract 2.2）。
+
+        验收失败归因点专用单点接入：test_scenarios.json 顶层为「dict 且含
+        scenarios 数组」时解包 → 重过既有全部场景校验 → 以解包后的纯数组
+        原子重写落地（非仅内存采纳——fastlane/verdict_evidence/冻结装载等
+        其余 load_scenarios 读端与冻结层顶层读端按既有语义自然恢复，故其余
+        读端一律不接本助手）。解包前顶层键与条目数 WARNING 留痕（design D4：
+        解包属框架改写 agent 产物，须可审计；契约已双侧明示，dict 包裹即
+        agent 违约，解包只作一次性止损，不弱化契约约束）。
+
+        不可拯救 / 解包后仍非法 / 落地写失败 → 返回 None，调用方照常按原
+        错误进入 replan（design D1：解包后仍不合法 MUST 照常拒收）。
+        """
+        from core.verify_engine.scenarios import salvage_scenarios_file
+
+        try:
+            scenarios, info = salvage_scenarios_file(scenarios_path)
+        except (ValueError, OSError) as e:
+            # 不可拯救形态留 info 痕（早退路径不零痕迹），调用方按原错误走 replan
+            self._context.logger.info(
+                "pm_engine",
+                f"场景文件顶层拯救不适用 '{scenarios_path}': "
+                f"{type(e).__name__}: {str(e)[:200]}",
+            )
+            return None
+        self._context.logger.warning(
+            "pm_engine",
+            f"场景文件顶层拯救 '{scenarios_path}': 解包前顶层键 "
+            f"{info['top_keys']}、{info['entry_count']} 条场景解包重验通过，"
+            "已以纯数组原子重写落地（顶层 dict 包裹违反顶层交付契约，"
+            "机械解包仅一次性止损）",
+        )
+        return scenarios
+
+    def _replan_feedback_text(self, replan_feedback: str) -> str:
+        """渲染 REPLAN_FEEDBACK.md 全文（evo-scenario-product-toplevel-contract 2.2）。
+
+        按失败类别生成收尾指引：格式类（场景文件顶层形状/条目结构非法，
+        经 _replan_error_format_class 侧车按失败发生阶段判定，不解析错误
+        文本——design D3）给「最小修复」指引（错误类别 + 修复动作），
+        MUST NOT 指示全量重建——「一层包裹错误放大成 25 场景全量重建」即
+        本 SPEC 要杜绝的浪费形态；内容类缺失（场景整体缺失等）保留
+        「重新输出全部场景」既有指示，行为不回归。
+        """
+        if getattr(self, "_replan_error_format_class", False):
+            tail = (
+                "\n\n本轮失败类别：**格式类**（场景文件顶层形状或条目结构非法）。\n"
+                "最小修复：保持已合法的场景条目原样，只修正上方逐条错误指向的"
+                "顶层形状或报错条目——test_scenarios.json 顶层必须是纯 JSON 数组，"
+                'MUST NOT 用 {"scenarios": […]} 之类 dict 包裹；修正后整体重写'
+                "文件一次（保持合法 JSON 数组），MUST NOT 全量重建场景；"
+                "navigate 的 value 必须为绝对 URL。\n"
+            )
+        else:
+            tail = "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n"
+        return (
+            "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
+            + replan_feedback
+            + tail
+        )
+
+    # ── B3: 阶段2 引擎执行段（等价搬移，不含 env_error 回写段）──────
+    # D1 B3 段落（D2：引擎执行段可提，env_error 回写段含 continue/break 留循环体）。
+    # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
+    # D4：VerifyEngine / load_scenarios 的 import 保留在本方法体内（运行时函数体内），
+    # 测试靠 patch("core.verify_engine.VerifyEngine") 在本方法执行时生效。
     def _execute_stage2(self, spec_name: str, verify_dir, scenarios_path,
                         skip_prune: bool = False):
         """阶段2 引擎执行段（等价搬移自循环体内 B3）。
@@ -2096,13 +2163,27 @@ class VerificationPipeline:
 
         # 场景文件验收失败（相对 URL/结构非法）＝ 明确的环境错误：
         # 退回 plan 阶段重新生成，不走 raise 穿透、更不判 bug-found。
+        # 格式类失败分类侧车（evo-scenario-product-toplevel-contract 2.2）：仿
+        # _stage2_user_blocked 先例经实例属性携带（五元组返回契约冻结）——
+        # 场景文件结构验收阶段（顶层形状/条目结构 ValueError）为格式类，
+        # REPLAN_FEEDBACK 据此给「最小修复」指引；分类按失败发生阶段判定，
+        # 不解析错误文本（design D3）。
+        self._replan_error_format_class = False
         try:
             if scenarios_override is not None:
                 scenarios = scenarios_override
             else:
                 scenarios = load_scenarios(scenarios_path)
         except ValueError as e:
-            env_error = f"场景文件验收失败: {e}"
+            # 顶层拯救助手（evo-scenario-product-toplevel-contract 2.2）：判定
+            # 失败前先尝试「dict 且含 scenarios 数组」唯一形态的机械解包——
+            # 解包重过全部校验通过即以纯数组原子重写落地（其余读端与冻结层
+            # 顶层读端按既有语义自然恢复）并留痕，本次验收视同通过；其余形态
+            # 照常按原错误进入 replan。拯救单点接入本归因点，其余读端不接助手。
+            scenarios = self._salvage_top_level_dict(scenarios_path)
+            if scenarios is None:
+                env_error = f"场景文件验收失败: {e}"
+                self._replan_error_format_class = True
 
         if env_error is None:
             # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
@@ -2150,6 +2231,10 @@ class VerificationPipeline:
                     scenarios = load_scenarios(scenarios_path)
                 except ValueError as e:
                     env_error = f"自愈改写后场景文件验收失败: {e}"
+                    # 同属场景文件结构验收阶段 → 格式类（design D3 按失败
+                    # 发生阶段判定；该读点文件已过首载拯救/校验，一般仅
+                    # 自愈改写引入的形状损伤会走到这里）。
+                    self._replan_error_format_class = True
 
         if env_error is None:
             # ── 场景静态缺陷扫描（add-scenario-defect-triage-gate D3）──
@@ -2748,10 +2833,11 @@ class VerificationPipeline:
                     fb = verify_dir / "REPLAN_FEEDBACK.md"
                     try:
                         fb.parent.mkdir(parents=True, exist_ok=True)
+                        # 按失败类别生成收尾指引（evo-scenario-product-toplevel-
+                        # contract 2.2）：格式类给「最小修复」指引，内容类保留
+                        # 「重新输出全部场景」（见 _replan_feedback_text）。
                         fb.write_text(
-                            "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
-                            + replan_feedback
-                            + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
+                            self._replan_feedback_text(replan_feedback),
                             encoding="utf-8",
                         )
                     except OSError as e:
@@ -2944,6 +3030,9 @@ class VerificationPipeline:
                     )
                     if replan_left > 0:
                         replan_feedback = fb_text
+                        # 内容类缺失（写前预校验整批拒绝，design D3）：保留
+                        # 全量重建指示，不按格式类生成最小修复指引。
+                        self._replan_error_format_class = False
                         replan_left -= 1
                         self._context.logger.error(
                             "pm_engine",

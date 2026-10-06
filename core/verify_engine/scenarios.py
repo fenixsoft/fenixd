@@ -1546,6 +1546,25 @@ def load_scenarios(filepath) -> list[TestScenario]:
     if not isinstance(raw, list):
         raise ValueError(f"场景文件格式错误: 期望JSON数组，实际为 {type(raw).__name__}")
 
+    # ── 校验段提取为 validated_scenarios_from_array（evo-scenario-product-
+    #    toplevel-contract 2.1）：load_scenarios 与顶层拯救助手共用同一校验链
+    #    （schema 版本迁移 + 条目解析校验，报错格式不变），本体语义不变——
+    #    顶层非数组仍在此处直接抛，拯救由验收路径显式调用（单点接入
+    #    pipeline._salvage_top_level_dict），其余读端不接助手。
+    return validated_scenarios_from_array(raw)
+
+
+def validated_scenarios_from_array(raw: list) -> list[TestScenario]:
+    """对已解包的纯数组执行既有全部场景校验（evo-scenario-product-toplevel-contract 2.1）。
+
+    load_scenarios 校验段原样提取（行为零变化）：schema 版本路由迁移
+    （frozen-scenario-schema-migration D2）+ 条目解析校验（读端与写端 schema
+    门同源，fix-frozen-scenario-orphan-reservoir D1）。顶层拯救助手复用本函数
+    ——解包后必须重过既有全部校验才可落地（design D1：等价于零成本重验）。
+
+    Raises:
+        ValueError: 场景定义不合法（报错格式「场景文件包含 N 个错误」不变）
+    """
     # ── schema 版本路由迁移（frozen-scenario-schema-migration D2）──
     # 无版本字段 → 旧 schema 走迁移（value→command / value→expected）；
     # 当前版本 → 迁移天然零干扰（目标字段已存在，直通语义）；
@@ -1568,6 +1587,107 @@ def load_scenarios(filepath) -> list[TestScenario]:
         raise ValueError(f"场景文件包含 {len(all_errors)} 个错误:\n" + detail)
 
     return parsed
+
+
+def unwrap_scenarios_dict(raw) -> list:
+    """顶层拯救助手（evo-scenario-product-toplevel-contract 2.1）：dict 包裹形态解包。
+
+    入参顶层为 dict 且含非空 ``scenarios`` 数组时解包返回该数组——round-3
+    实锤的唯一无歧义形态（{"spec":…,"scenarios":[…]} 包裹）；其余形态原样
+    报 ValueError，拯救助手不扩大拯救面（design D1：字符串/数字/列表套列表、
+    dict 缺 scenarios 键、scenarios 非数组或为空均照常拒收）。解包仅做形状
+    归位，不代替内容校验（重验见 validated_scenarios_from_array）。
+
+    Raises:
+        ValueError: 顶层非 dict，或不含非空 scenarios 数组
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"场景文件格式错误: 期望JSON数组，实际为 {type(raw).__name__}"
+            "（非 dict 包裹形态，无 scenarios 解包面）"
+        )
+    entries = raw.get("scenarios")
+    if not isinstance(entries, list) or not entries:
+        keys = "、".join(str(k) for k in sorted(raw.keys(), key=str)) or "<空>"
+        raise ValueError(
+            "场景文件格式错误: 顶层 dict 但不含非空 scenarios 数组"
+            f"（顶层键: {keys}），不可解包"
+        )
+    return entries
+
+
+def write_scenarios_array(entries: list, filepath) -> None:
+    """把原始场景条目数组原子写回 JSON 文件（save_scenarios 的 raw 版）。
+
+    顶层拯救助手落地用（evo-scenario-product-toplevel-contract 2.2）：写
+    解包后的原始条目而非 to_dict 回环——未知顶层字段零丢失、schema 迁移
+    保持读时行为；原子写惯例与 save_scenarios 一致（同目录临时文件 +
+    ``os.replace``），进程写入中途被杀不会留下截断的场景 JSON。
+    """
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def salvage_scenarios_file(filepath) -> tuple[list[TestScenario], dict]:
+    """顶层 dict 包裹形态机械拯救（evo-scenario-product-toplevel-contract 2.2）。
+
+    仅拯救「顶层 dict 且含非空 scenarios 数组」唯一无歧义形态（design D1
+    round-3 实锤形态）：解包（unwrap_scenarios_dict）→ 重过既有全部场景校验
+    （validated_scenarios_from_array，与 load_scenarios 同源）→ 通过则以解包后
+    的纯数组原子重写原文件（落地非仅内存采纳——fastlane.py:429/466、
+    verdict_evidence.py:1310、pipeline.py:1619/2150 等其余 load_scenarios 读端
+    与冻结层顶层读端按既有语义自然恢复，故其余读端不接助手）。
+
+    Returns:
+        (scenarios, info)：scenarios 为重验通过的 TestScenario 列表；info 含
+        留痕字段 top_keys（解包前顶层键）/ entry_count（解包条目数）/ rewritten。
+
+    Raises:
+        FileNotFoundError: 场景文件不存在（同 load_scenarios）
+        ValueError: 不可拯救形态，或解包后未通过既有全部校验（不落地）
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(filepath)
+    if not path.exists():
+        raise FileNotFoundError(f"场景文件不存在: {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError(f"场景文件格式错误: JSON 解析失败: {e}") from e
+
+    entries = unwrap_scenarios_dict(raw)
+    info = {"top_keys": sorted((str(k) for k in raw.keys())), "entry_count": len(entries)}
+
+    # 解包后重过既有全部校验：仍不合法 → 原样上抛，不落地（design D1：
+    # 「解包后仍不合法 MUST 照常拒收」，调用方按原错误进入 replan）。
+    scenarios = validated_scenarios_from_array(entries)
+
+    write_scenarios_array(entries, path)
+    info["rewritten"] = True
+    return scenarios, info
 
 
 def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
