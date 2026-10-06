@@ -19,8 +19,8 @@
 
 若只挪触发时点、窗口仍读自省水位：审查时点晚于自省时（如 13:00 vs 01:00），`window_start` 被当晨自省覆写为当日 01:00，昨夜「前次审查→当晨自省」段的变更滑出所有窗口——静默覆盖缺口。故：
 
-- 调度收尾在 `code_review_state.json` 写 `last_run_at`（本轮审查完成时刻，aware ISO8601 UTC；保留 `last_run_date`）。
-- `compute_window` 优先读 `code_review_state.last_run_at`；缺失（首跑/存量）回退自省 `last_run_at`，再缺失回退 `now - 24h`。
+- 调度收尾在 `code_review_state.json` 写 `last_run_at`（本轮审查完成时刻，aware ISO8601 本地时区表述，与 `self_review_state.last_run_at` 一致；保留 `last_run_date`）。
+- `compute_window` 优先读 `code_review_state.last_run_at`；缺失（首跑/存量）回退自省 `last_run_at`，再缺失回退 `now - 24h`。`window_kind` 二值映射不变（读到任一水位→`"last_run"`，双缺失→`"fallback"`），消费方日志/审计口径不受三态水位影响。
 - 存量部署首轮回退自省＝现状逐位一致；自第二轮起窗口跟审查自身节奏，语义严格更正确（「审上次审查之后的变化」）。
 
 ### D3 检查点时序约束保留

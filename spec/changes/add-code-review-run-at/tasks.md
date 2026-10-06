@@ -26,13 +26,13 @@
 
 ## 2. 检查点换源
 
-- [ ] 2.1 `core/admin_monitor.py` `_run_code_review_checkpoint` 触发判定改读 `cr_cfg["run_at"]`（删除 `sr_cfg` 依赖仅保留窗口侧既有用途），同步注释：`run_at 未到不触发` 的「与自省同口径」表述改为「独立键＋缺省回退（get_code_review_config 单源）」
+- [ ] 2.1 `core/admin_monitor.py` `_run_code_review_checkpoint` 触发判定改读 `cr_cfg["run_at"]`（实测该函数内 `sr_cfg` 仅用于 run_at 判定、无窗口侧用途——窗口水位由 `compute_window` 内部读状态文件，不经此变量——换源后整行删除，勿留死变量），同步注释：`run_at 未到不触发` 的「与自省同口径」表述改为「独立键＋缺省回退（get_code_review_config 单源）」
 - [ ] 2.2 `tests/test_code_review_run_at.py`：检查点触发用例——独立时点 "13:00" 时 01:00 轮 `reason=before_run_at` 不派发、13:00 后轮正常派发；缺省回退时 01:00 正常派发；`enabled=false` 全链路零动作（既有语义回归）
 
 ## 3. 窗口水位归审查车道
 
-- [ ] 3.1 `core/code_review.py` `save_code_review_state` 扩展：周期审查收尾写入 `last_run_at`（本轮审查完成时刻，aware ISO8601 UTC；兼容保留 `last_run_date` 自然日防重字段）
-- [ ] 3.2 `core/code_review.py` `compute_window`：`window_start` 优先读 `code_review_state.last_run_at`；字段缺失回退读 `self_review_state.last_run_at`；再缺失回退 `now - 24h`（三态口径）
+- [ ] 3.1 `core/code_review.py` `save_code_review_state` 扩展：周期审查收尾写入 `last_run_at`（本轮审查完成时刻，aware ISO8601 本地时区表述，与 `self_review_state.last_run_at` 一致，读侧 `_iso_to_aware_dt` 直读；兼容保留 `last_run_date` 自然日防重字段）
+- [ ] 3.2 `core/code_review.py` `compute_window`：`window_start` 优先读 `code_review_state.last_run_at`；字段缺失回退读 `self_review_state.last_run_at`；再缺失回退 `now - 24h`（三态口径）。`window_kind` 二值映射不变：读到任一 `last_run_at`（审查自身或自省回退）返回 `"last_run"`，双缺失返回 `"fallback"`（消费方日志/审计口径不变）
 - [ ] 3.3 `tests/test_code_review_run_at.py`：水位三态用例——有 `last_run_at` 取自身（自省已覆写也不受影响）/ 缺失回退自省 / 双缺失回退 24h；及 save 后 compute 读回一致
 
 ## 4. Dashboard 设置字段
