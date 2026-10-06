@@ -10,7 +10,6 @@
 // 静默是纯渲染侧行为，原始事件仍完整落盘可查（Non-Goals：不做后端过滤）。
 import type { RunEvent } from '@/services/dashboard';
 import type { ChatMessage, ToolResult } from './types';
-import { getIntrinsicMessageKey } from './messageKeys';
 
 // ── 事件分类表常量（design D1，实现与单测对齐此表） ──────────────────
 
@@ -311,6 +310,50 @@ function chatMessageShallowEqual(a: ChatMessage, b: ChatMessage): boolean {
   if (keys.length !== Object.keys(b).length) return false;
   return keys.every((k) => chatMessageFieldEqual(a[k], b[k]));
 }
+
+// ── 消息内在键（定义本体自 messageKeys.ts 收敛至此，与其再导出保持单一来源）──
+// node:test 直载 .ts 单测（tests/sessionEvents.test.mjs 等）按 ESM 解析本文件，
+// 无扩展名运行时相对导入无法解析（ERR_MODULE_NOT_FOUND），故本模块不得新增
+// 运行时相对导入；messageKeys.ts 改为再导出本实现，ClaudeMessageList 不受影响。
+
+const toMessageKeyPart = (value: unknown): string | null => {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+export const getIntrinsicMessageKey = (message: ChatMessage): string | null => {
+  const candidates = [
+    message.id,
+    message.messageId,
+    message.toolId,
+    message.toolCallId,
+    message.blobId,
+    message.rowid,
+    message.sequence,
+  ];
+
+  for (const candidate of candidates) {
+    const keyPart = toMessageKeyPart(candidate);
+    if (keyPart) {
+      return `message-${message.type}-${keyPart}`;
+    }
+  }
+
+  const timestamp = new Date(message.timestamp).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  // [fenix-ignore:13bb53979ae9] content 在本仓库类型即 string|undefined（types.ts），唯一生产方 runEventsToChatMessages 已把块数组规范化为逐条字符串消息，数组形态到不了本函数，空串仅对应无正文的 tool 等消息
+  const contentPreview = typeof message.content === 'string' ? message.content.slice(0, 48) : '';
+  const toolName = typeof message.toolName === 'string' ? message.toolName : '';
+  // [fenix-ignore:0209ad3f1986] 撞键边界一句话：仅当七个身份字段全缺失且同毫秒同型同前 48 字符前缀才可能撞键，上游 claudecodeui 原样迁移；本仓库唯一调用方 ClaudeMessageList 的 messageKeyMap 已按出现序号 __n 消歧，裸用本函数仍可能撞键
+  return `message-${message.type}-${timestamp}-${toolName}-${contentPreview}`;
+};
 
 function withStableMessageReferences(messages: ChatMessage[]): ChatMessage[] {
   const cache: MessageReferenceCache = new Map();
