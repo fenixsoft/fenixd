@@ -34,3 +34,8 @@
 | replan-feedback-classified-minimal-repair | 「拒收反馈按类别给最小修复指引」（tasks 2.2，design D3）：_replan_feedback_text 在格式类侧车置位时给「最小修复」指引（含失败类别「格式类」、修复动作指明顶层纯数组契约与 dict 反例、保留 navigate 绝对 URL 规则），MUST NOT 含「重新输出全部场景」，并模拟 REPLAN_FEEDBACK.md 写盘点验证落盘文件即分类文案；内容类缺失保留「重新输出全部场景」全量重建指示；侧车缺省 False（未经历 stage2 的路径）照旧全量重建文案，既有行为不回归。 | pass | 0/7 | - |
 | pytest-toplevel-gate-salvage-suite | 测试回归（tasks 3.1）：pytest 跑 tests/test_verify_scenarios.py::TestTopLevelGateAndSalvage 全部 12 用例——非数组顶层被 load_scenarios 拒绝、拯救助手对 {"scenarios":[…]} 解包成功、缺 scenarios 键/非数组值/空数组/非 dict 原样报错、解包后非法不落地、纯数组输入不受影响、文件缺失 FileNotFoundError。命令只带 -v（不带 -q，保 PASSED 行输出），断言逐用例照抄真实输出行。 | pass | 0/16 | - |
 | pytest-injection-feedback-wiring-suite | 测试回归（tasks 3.2 + 2.2）：pytest 跑 tests/test_planner_scenario_schema_alignment.py 三个测试类共 9 用例——TestTopLevelContractInjection（planner-plan 注入顶层契约与 scenarios.json dict 形态区分、judge/fast-track 不注入）、TestReplanFeedbackClassifiedText（格式类最小修复不含全量重建、内容类保留、侧车缺省）、TestStage2TopLevelSalvageWiring（拯救成功跳过 replan 落地纯数组留痕、不可拯救置格式类侧车）。命令只带 -v（不带 -q，保 PASSED 行输出），断言逐用例照抄真实输出行。 | pass | 0/13 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
