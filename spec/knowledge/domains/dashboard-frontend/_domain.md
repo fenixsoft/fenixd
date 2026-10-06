@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-06 17:00 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [dashboard-ui](dashboard-ui.md) | 仪表盘基础界面 | 2026-10-03 04:59 |
 | [dashboard-overview](dashboard-overview.md) | 项目总览页 | 2026-10-03 04:59 |
-| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格 | 2026-10-03 04:59 |
+| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格 | 2026-10-06 17:00 |
 | [spec-table-improvements](spec-table-improvements.md) | SPEC 列表体验改进 | 2026-10-03 04:59 |
 | [spec-list-filter-stickiness](spec-list-filter-stickiness.md) | 列表过滤条件保持 | 2026-10-03 04:59 |
 | [add-spec-context-menu](add-spec-context-menu.md) | SPEC 列表右键菜单 | 2026-10-03 04:59 |
@@ -26,7 +26,7 @@
 | [quality-gates-progress](quality-gates-progress.md) | 质量门禁进度呈现 | 2026-10-03 04:59 |
 | [activity-records-tabs](activity-records-tabs.md) | 活动记录页签 | 2026-10-03 04:59 |
 | [project-page-tabs](project-page-tabs.md) | 项目详情页签 | 2026-10-03 04:59 |
-| [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-03 04:59 |
+| [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-06 17:00 |
 | [ui-theme](ui-theme.md) | 主题切换 | 2026-10-03 04:59 |
 | [v2-overview-page](v2-overview-page.md) | v2 总览页 | 2026-10-03 04:59 |
 | [v2-project-list-page](v2-project-list-page.md) | v2 项目列表页 | 2026-10-03 04:59 |

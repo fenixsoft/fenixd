@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-review rev=3 sources=spec/archive/2026-09-22-evo-self-review-result-based-classification,spec/archive/2026-09-25-evo-self-review-runs-archive-stats,spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples -->
+<!-- knowledge: capability=self-review rev=4 sources=spec/archive/2026-09-22-evo-self-review-result-based-classification,spec/archive/2026-09-25-evo-self-review-runs-archive-stats,spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive -->
 
 # 自省聚合口径（run 统计与失败判定）
 
@@ -16,13 +16,14 @@
 - marker= 命中不纳入守卫：daemon 对正常 result 收尾本就记 terminal=success，marker 命中（假成功抓取——进程正常收尾但业务声明失败）是既定真实失败检出，照常计入失败统计与失败样本，不产生幻影告警；error 终态失败同样照常计入，不查终态。
 - 索引缺失不改判：metric 索引中查不到该 run 的终态记录（如日志已轮转出窗）时维持现状计入失败，宁可不拦不可误伤真实失败样本，不因缺数据改判。
 - 真失败不丢：result 文本命中业务失败标记、或终态为 error 的 run 维持 failed 分类，失败样本与统计不变。
-- 统计源为并集：`collect_runs_stats` 的统计源 = `.fenix/runs/` 当前目录 `*.jsonl` ∪ 归档目录 `*.jsonl`（归档目录缺失时退化为仅当前目录）——终态 run 即时移入归档（runs.keep=50）后仍计入窗口统计，摘要数字与归档实际一致。
+- 统计源为并集：`collect_runs_stats` 的统计源 = `.fenix/runs/` 当前目录 `*.jsonl` ∪ 归档目录 `*.jsonl`（归档目录缺失时退化为仅当前目录）——终态 run 即时移入归档后仍计入窗口统计，摘要数字与归档实际一致。
 - 窗口归属按 run_id 内嵌开始时间戳判定（缺失回退文件 mtime），复用既有辅助函数；同一并集口径覆盖失败样本通道 `collect_failed_run_samples`——计数与样本同源，不得计数含归档而样本只看当前目录。
 - 保持排除 `review-` 前缀（自省自身 run；区别于 spec-review-/code-review- 前缀）；只读遍历、不触发写操作；counts 键固定为 total/succeeded/failed/instant_hang/timeout/dropped/running，不含成本字段（成本归因由 `.fenix/cost/` 独立类目承担）。
-- 边界：不改变归档时机与 runs.keep 阈值（早于窗口且已被清理的 run 不回溯可见）；不改变 `_classify_run` 的失败/超时/秒挂分类语义。
+- 边界：不改变归档时机与产物清理时机（早于窗口且已被清理的 run 不回溯可见）；不改变 `_classify_run` 的失败/超时/秒挂分类语义。
 
 ## 溯源
 
 - 2026-09-22 evo-self-review-result-based-classification（spec/archive/2026-09-22-evo-self-review-result-based-classification） — 失败判定定为以 run 终态为准，废除聚合层对成功终态的全文件信号词降级；信号扫描限非成功终态且仅作归因摘要（治「失败 7 中 5 个误报」）
 - 2026-09-25 evo-self-review-runs-archive-stats（spec/archive/2026-09-25-evo-self-review-runs-archive-stats） — 统计源扩为当前目录 ∪ 归档目录并集，窗口归属按 run_id 内嵌时间戳，失败样本通道同源对齐（治「窗口内完成 run 归档即消失、摘要总 run 数失真」）
 - 2026-10-03 evo-fix-self-review-phantom-failed-samples（spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples） — 信号证据剥除终态邻近窗口内的 assistant 收工叙事回声行，成功 run 正文提及失败词不再被判失败；聚合侧新增与 daemon run_metrics 终态的双源交叉守卫，漏网幻影改计成功并出 self_review_phantom_failure 告警（marker 命中与索引缺失维持原判）
+- 2026-10-06 fix-run-cleanup-attach-spec-archive（spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive） — 摘除本页对 runs.keep=50 保留口径的引用（该配置已取消），统计并集与边界语义不变

@@ -244,3 +244,6 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-237](ADR-237-ratelimit-attribution-dual-source-shared-quota-shaved-resume.md) | accepted | 限流重派闭环双车道化：终态归因双源（异常文本先行、result 事件兜底）、手动+周期共享配额统一消费入口、剃余续跑只跑剩余文件、快照核销覆盖完整性门宁锁勿白洗（修订单消费方与全量重跑前提，ADR-202 有界例外裁定延续） |
 | [ADR-238](ADR-238-codefix-regression-placeholder-sanitize-fallback-exits-periodic-exempt.md) | accepted | code-fix 回归占位符消毒挂全部回退执行路径（三类回退出口+定向重试轮两态，缺省 tests/、零迁移），判别读原件执行用消毒副本禁入口盲替，周期回归通道显式豁免（参数位占位符属配置错误由模板警示兜底，定向化须另立条目） |
 | [ADR-239](ADR-239-run-jsonl-read-topline-then-retention-archive-fallback.md) | accepted | run 转录聚合/对账读取一律双路径回退（顶层 .fenix/runs/ → retention 归档副本 .fenix/runs/archive/，并存取顶层即最新副本），缺失语义按「两处皆缺」判定、零贡献 fail-open 禁中断链终局；单路径只读顶层被排除——retention 300s 移档×长时段链跨数小时，链终局多数 run 已移档，漏样本归零（chain rollup 恒零实测根因，同类缺陷两度复发） |
+
+| [ADR-240](ADR-240-run-artifact-lifecycle-bound-to-spec-archive-no-capacity-trim.md) | accepted | run 产物生命周期单轨绑定 SPEC 归档（归档即两处清理、唯一入口不新增第三入口），归档目录禁设容量上限、以「SPEC 归档清理+无主产物 14 天兜底」双机制保证有界，无主判定现算+扫描失败 fail-closed 防误删，删除必逐文件审计+批次上限，禁再立 keep 类容量裁剪 |
+| [ADR-241](ADR-241-archive-eviction-manifest-first-dual-source.md) | accepted | 归档条目迁出固定「先清单后活跃」顺序不变量（崩溃窗口只允许双源中间态、禁丢条目态），STATE.md 收敛为活跃集+归档清单 `.fenix/STATE.archive.md` 第二真源，已归档判定与全部读侧消费方双源合取活跃优先，统计恒活跃口径 |

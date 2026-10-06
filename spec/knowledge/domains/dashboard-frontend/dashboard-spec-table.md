@@ -1,4 +1,4 @@
-<!-- knowledge: capability=dashboard-spec-table rev=6 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation -->
+<!-- knowledge: capability=dashboard-spec-table rev=7 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration -->
 
 # SPEC 列表表格
 
@@ -6,6 +6,7 @@
 
 ## 现行规则
 
+- 归档清单条目合并：`/api/specs` 在活跃 STATE.md 条目之外合并归档清单 `.fenix/STATE.archive.md` 的条目（并集，同名单活跃侧优先，不产生重复行），使条目已迁出的已归档 SPEC 继续出现在列表中且 archived=true；清单条目透迁出前的既有字段（status、created、updated、优先级等）与 `archived_at`/`archived_by` 溯源字段。「已归档」视图对这些行复用既有渲染（状态、任务进度、文档按钮等，文档与进度经归档目录回退读取）；默认「未归档」视图不出现清单条目；概览统计口径不受本合并影响（统计只算活跃）。
 - 列表数据与默认排序：`/api/specs` 每个 SPEC 摘要项含 `created` 与 `updated` 字段（取 STATE.md 条目的 ISO 时间，缺失为 null）；列表以 created 倒序（新在前）为默认排序，缺失创建时间的排最后；默认排序仅在用户未选择任何表头排序时生效。
 - 表格化展示：以带表头的表格呈现，表头逐列说明含义（状态/名称/优先级/创建时间/任务进度/验证等）；每行保留点击进详情、状态 pill、进度条等既有视觉；无创建时间或验证进度的行显示占位符「—」。
 - 前端过滤：名称关键字输入框（大小写不敏感、包含匹配）与状态下拉框（「全部状态」或指定状态）；过滤作用于已排序的列表、保留排序顺序，纯前端实现不发起新的服务端请求；过滤后为空展示「无匹配的 SPEC」空态（区别于「该项目暂无 SPEC」）。
@@ -28,3 +29,4 @@
 - 2026-09-02 add-spec-list-hover-hint（spec/archive/2026-09-02-add-spec-list-hover-hint） — 新增名称 hover Why 提示（div 悬浮 + 按需缓存），并以信息子行替换「错误」列
 - 2026-09-02 add-spec-type-filter（spec/archive/2026-09-02-add-spec-type-filter） — 新增类型过滤（全部/仅需求/仅问题，fix- 树层级保持）
 - 2026-09-23 add-spec-manual-activation（spec/archive/2026-09-23-add-spec-manual-activation） — 新增「待激活」「前置依赖」状态列标记与 depends_on 规范化摘要字段（纳入指纹字段集）
+- 2026-10-06 add-archive-state-migration（spec/archive/2026-10-06-add-archive-state-migration） — 新增列表合并归档清单条目（并集、同名单活跃侧优先、透传 archived_at/archived_by 溯源字段）；已归档视图对已迁出条目仍可见可进详情，未归档视图不含清单条目
