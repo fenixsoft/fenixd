@@ -17,7 +17,7 @@
 
 {manifest}
 
-请对 **manifest 中的每一个文件** 逐文件审查。文件数为 {total_files}。其中的路径是**产品代码**（框架侧已排除测试/manifest 外文档/构建产物）。
+请对 **manifest 中的每一个文件** 逐文件审查。文件数为 {total_files}。manifest 收集的是**产品代码**——框架侧收集时已排除测试代码、文档、构建生成物与 vendored 第三方目录（thirdparty / third_party / vendor；vendored 文件的缺陷由上游同步流程承接，不逐轮审查）。
 
 ## 审查路径（LLM 逐文件审查）
 
@@ -59,6 +59,8 @@
 
 - 有且理由仍适用 → **MUST NOT 上报**该问题。
 - 理由已因代码演进失效（前提不成立）→ 正常上报，并在 description 末尾注明「原标记理由已失效：<简述>」。
+
+**第二道防线（vendored 上游同步标注）**：框架出题面已排除 vendored 第三方目录（thirdparty / third_party / vendor），但非标准布局可能漏出排除表。对漏出的文件，你拟上报缺陷前仍 MUST 先判明其是否属 vendored 第三方维护——典型特征是文件内（头部或缺陷位置附近）带 fenix-ignore 标注且理由为「保持上游同步」类语义，或自带上游同步注释/上游仓库路径。判明属 vendored 的，该文件的缺陷由上游同步流程承接：你 MUST **只记录这一事实、不上报缺陷条目**——该文件仍按「manifest 全覆盖」义务落一行结果，但该行 `findings` MUST 置空数组，MUST NOT 以任何严重度为它产出缺陷条目（vendored 代码的修复不归本仓库，上报只会触发一轮注定以「fenix-ignore 标注保持上游同步」结案的 fix batch，白烧评审与修复预算）。
 
 ## 输出契约
 
