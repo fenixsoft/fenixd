@@ -534,6 +534,13 @@ def find_env_exemption(entry, scenario_id: str, failure_signature: str,
 #   infra 预算退款幂等锚点，避免同一验证轮重复扣减（退款一次/轮）。
 INFRA_FAILURE_COUNT_FIELD = "_infra_failure_count"
 VERIFY_INFRA_ROUNDS_FIELD = "_verify_infra_rounds"
+# - _verify_infra_retry_streak：infra-retry 车道专用连续重派计数
+#   （evo-verify-infra-retry-lane D2）。**不复用** _verify_infra_rounds 作重试
+#   预算：该账被 _escalate_env_blocked 既有挂钩点在每个全价 env 阻塞轮递增，
+#   历史 env 轮会吃掉重试预算、使「缺省 2 次」承诺不可达——限次判定只读本
+#   专用计数。清零点：验证 PASS（对齐 _verify_fail_rounds 唯一归零点，
+#   pipeline._apply_verified 同段）+ unfreeze_spec 清零清单（同一原子写）。
+VERIFY_INFRA_RETRY_STREAK_FIELD = "_verify_infra_retry_streak"
 INFRA_REFUNDED_RUN_IDS_FIELD = "_infra_refunded_run_ids"
 # - _dead_refunded_run_ids：JSON 字符串数组（已退款死亡 run_id）；
 #   死亡 run 预算豁免退款幂等锚点——同一死亡 run 的并发豁免判定（如
@@ -1612,6 +1619,15 @@ class StateMachine:
         """
         return self._bump_counter(spec_name, VERIFY_INFRA_ROUNDS_FIELD, delta)
 
+    def bump_verify_infra_retry_streak(self, spec_name: str, delta: int = 1) -> int:
+        """infra-retry 专用连续重派计数原子增减（evo-verify-infra-retry-lane D2）。
+
+        与 ``_verify_infra_rounds``（纯观测）严格分离：限次判定只读本计数，
+        历史全价 env 轮不污染廉价重试预算。清零点：验证 PASS（pipeline
+        _apply_verified 同段）+ unfreeze_spec 清零清单。返回增减后的值。
+        """
+        return self._bump_counter(spec_name, VERIFY_INFRA_RETRY_STREAK_FIELD, delta)
+
     def bump_verify_redo_count(self, spec_name: str, delta: int = 1) -> int:
         """重启重验计数原子增减（``_verify_redo_count``）。
 
@@ -2101,6 +2117,11 @@ class StateMachine:
         # 人工解冻清零同款，同一原子写）。其余中间转换（admin 处置复位、daemon
         # 恢复、fix 链）一律不清零，保证「第 2 次阻塞即冻结转人工」可达。
         updates[ENV_BLOCK_ROUNDS_FIELD] = 0
+        # evo-verify-infra-retry-lane D2：infra-retry 专用连续重派计数随人工解冻
+        # 清零——否则达预算升级冻结→人工解冻后首轮 prepare 失败即立即再升级，
+        # 「缺省 2 次廉价重派」预算不可再得（与 ENV_BLOCK_ROUNDS_FIELD 同款
+        # 「同一原子写清零」；其余中间转换一律不清零）。
+        updates[VERIFY_INFRA_RETRY_STREAK_FIELD] = 0
         # fix-redispatch-loop-governance D3.5：同因重派熔断计数随人工解冻清零——
         # 人工处置后同因重试从零起算（与 VERIFY_REDO_COUNT_FIELD /
         # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款「同一原子写清零」）。

@@ -549,8 +549,8 @@ def _env_whitewash_gate(pipeline, spec_name: str) -> bool:
 
 def _escalate_env_blocked(
     pipeline, spec_name: str, violations: list, title: str = "验证环境阻塞",
-    exemption_effective: bool = False,
-) -> None:
+    exemption_effective: bool = False, infra_retry: bool = False,
+) -> str | None:
     """阻塞升级通道：阻塞 spec → 自动呼叫 Administrator → 达阈值冻结转人工。
 
     help-center 事故语义（0/15 verified 被全量 env 豁免后推成 pushed）：
@@ -564,9 +564,24 @@ def _escalate_env_blocked(
     ENV_BLOCK_FREEZE_THRESHOLD（不递增、不冻结：豁免认可不得仍滑向冻结；
     TTL 过期或场景定义变更失效后恢复计数，冻结兜底保留）。
 
+    evo-verify-infra-retry-lane D6：``infra_retry=True``（全仓唯一传点=
+    pipeline 可达性 fail-fast 短路）为 prepare/可达性短路轮的 infra-retry
+    车道标记——决策点**单点收敛在本函数入口**：先经
+    ``_record_infra_failure(retry_gate=True)`` 咨询 infra_classify 限次决议，
+    - 未达预算 → 旁路早退返回 ``"redispatch"``：不递增 _env_block_rounds、
+      不写 blocked/status/error、不呼叫 admin（下方 request_admin_invoke /
+      escalation_notifier 写点全不经过）、不落 verify_env_blocked 信号；
+      调用点据返回值经既有 verifier 派发入口廉价重派（D5）。
+    - 达预算 → 落穿既有全价路径（计冻结轮、按 ENV_BLOCK_FREEZE_THRESHOLD
+      升级）；入账已在 retry_gate 调用完成，不再二次记账。
+    调用点 MUST NOT 绕开本函数另起入账路径（双决策点双重入账、口径漂移）。
+
     冻结转人工（fix-frozen-scenario-orphan-reservoir D5）：告警描述追加
     上轮 planner run 实际成本（tokens/费用/时长）作为「删除冻结集重新出题」
     的裁决参考。
+
+    Returns: "redispatch"（infra-retry 未达预算，已旁路收口）| None（既有
+    全价路径已处置完毕，含 infra_retry=True 落穿全价的轮）。
     """
     try:
         # 函数入口归一：violations 不可为 None（code-review 671b6c3c2e48），
@@ -580,13 +595,32 @@ def _escalate_env_blocked(
         # infra 归类**只在其上补预算退款与 _verify_infra_rounds 记账**，
         # MUST 保持 env 通道 blocked 语义——「env 失败绝不放行」是既有刻意设计。
         # 归类挂钩点在 env 判定处（env 分支早退，归因入口不可达）。
+        # evo-verify-infra-retry-lane D6：infra_retry=True 时本调用兼任车道
+        # 决议（retry_gate，返回 "redispatch"/"escalate"）；False 时返回
+        # None、行为与既有挂钩点逐位一致。
+        infra_retry_decision: str | None = None
         try:
-            pipeline._record_infra_failure(
+            infra_retry_decision = pipeline._record_infra_failure(
                 spec_name,
                 f"env blocked: {'; '.join(str(v) for v in (violations or [])[:3])}",
+                retry_gate=infra_retry,
             )
         except Exception:
-            pass  # 记账侧车，不阻断升级通道
+            # 记账侧车失败：infra-retry 车道保守按「达预算」走全价升级
+            if infra_retry:
+                infra_retry_decision = "escalate"
+        if infra_retry and infra_retry_decision == "redispatch":
+            # ── infra-retry 旁路（D6）：不计 env 冻结轮、不写 blocked/status、
+            # 不呼叫 admin、不落 verify_env_blocked 信号——函数在此返回，
+            # 下方全部全价写点（blocked 落盘 / request_admin_invoke /
+            # escalation_notifier）均不经过。重派机械路径由调用点触发（D5：
+            # 经既有 verifier 派发入口重新入队，不绕派发队列直调）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' {title}命中 infra-retry 廉价重试车道：不计 env "
+                f"冻结轮、不呼叫 admin，直接重派验证（超预算后恢复全价升级）",
+            )
+            return "redispatch"
         if exemption_effective:
             # 豁免有效命中轮：轮次保持当前值（不递增），永不冻结
             try:

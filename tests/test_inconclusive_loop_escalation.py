@@ -557,3 +557,76 @@ class TestOrphanedStateRepairAwaitingRemergeExempt(unittest.TestCase):
         with mock.patch("core.admin_monitor.spec_is_undriven", return_value=True):
             signals = mon._detect_orphaned_state({"s1": entry}, time.time())
         self.assertEqual(signals, [])
+
+
+class TestInconclusiveLaneIsolation(unittest.TestCase):
+    """infra-retry 车道（evo-verify-infra-retry-lane 3.2）不影响既有裁决回归。
+
+    车道只覆盖 prepare/可达性 fail-fast 短路轮（0 场景执行，唯一传点在
+    pipeline._execute_stage2）；场景执行期的 env 阻塞（blocked-env 判据，
+    _handle_env_blocked_inconclusive）与无车道标记的
+    _escalate_env_blocked 调用 MUST 仍走既有全价路径：计数、SIGNAL、
+    blocked 逐位不变，且车道专用计数（_verify_infra_retry_streak）不被
+    这些路径污染。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+
+    def test_scenario_execution_env_blocked_still_legacy_path(self):
+        """场景执行期 blocked-env：_inconclusive_attempts 照常计数、车道专用计数零污染。"""
+        engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=4)
+        for expected_round in (1, 2):
+            report = _all_blocked_report(sid=f"s-iso-{expected_round}")
+            handled = engine._verification._handle_env_blocked_inconclusive("s1", report)
+            self.assertTrue(handled, f"第 {expected_round} 轮仍应按 inconclusive 处理")
+            self.assertEqual(
+                int(sm.read_one("s1")["_inconclusive_attempts"]), expected_round)
+            entry = sm.read_one("s1")
+            # 车道专用计数不被场景执行期路径触碰（只挂在 fail-fast 唯一传点）
+            self.assertEqual(
+                int(entry.get("_verify_infra_retry_streak", 0) or 0), 0,
+                "inconclusive 处理不得递增 infra-retry 专用计数")
+            self.assertEqual(entry["status"], "implemented")
+
+    def test_bare_escalate_env_blocked_still_full_price(self):
+        """无 infra_retry 标记的 _escalate_env_blocked：仍 blocked + env 轮 + admin 呼叫。"""
+        engine, sm, _ = _mk_engine(self.tmpdir)
+        sm.update_spec("s1", {"status": "testing"})
+        decision = engine._verification._escalate_env_blocked(
+            "s1", ["prepare 失败: npm ERR! exit 1"],
+            title="验证环境阻塞（应用不可达）",
+        )
+        self.assertIsNone(decision, "无标记调用不走车道旁路（返回 None）")
+        entry = sm.read_one("s1")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertEqual(int(entry.get("_env_block_rounds", 0) or 0), 1)
+        self.assertTrue(
+            (Path(self.tmpdir) / ".fenix" / "admin_invoke_request.json").exists(),
+            "全价路径仍应产生 admin 自动呼叫请求")
+        # infra 记账（R2）照常，但车道专用计数不被无标记调用递增
+        self.assertEqual(int(entry.get("_verify_infra_rounds", 0) or 0), 1)
+        self.assertEqual(int(entry.get("_verify_infra_retry_streak", 0) or 0), 0)
+
+    def test_lane_bypass_does_not_disturb_inconclusive_ledger(self):
+        """车道旁路（infra_retry=True）返回 redispatch：不动 status 与 inconclusive 台账。"""
+        engine, sm, _ = _mk_engine(self.tmpdir)
+        sm.update_spec("s1", {"status": "testing"})
+        decision = engine._verification._escalate_env_blocked(
+            "s1", ["prepare 失败: npm ERR! exit 1"],
+            title="验证环境阻塞（应用不可达）",
+            infra_retry=True,
+        )
+        self.assertEqual(decision, "redispatch", "首轮短路失败应获廉价重派决议")
+        entry = sm.read_one("s1")
+        self.assertEqual(entry["status"], "testing", "旁路不改写状态")
+        self.assertEqual(int(entry.get("_env_block_rounds", 0) or 0), 0)
+        self.assertEqual(int(entry.get("_inconclusive_attempts", 0) or 0), 0,
+                         "车道旁路不得污染 inconclusive 循环计数")
+        sigs = _signals(self.tmpdir)
+        self.assertEqual(
+            [s for s in sigs if s.get("signal_type") == "inconclusive_loop"], [],
+            "车道旁路不得写入 inconclusive_loop SIGNAL")
+        self.assertFalse(
+            (Path(self.tmpdir) / ".fenix" / "admin_invoke_request.json").exists())

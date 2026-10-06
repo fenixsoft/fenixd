@@ -434,3 +434,76 @@ class BBackoffMixin:
             f"Transient recovery fired for '{spec_name}' — resuming dispatch "
             f"(fix-provider-transient-backoff)",
         )
+
+    # ── evo-verify-infra-retry-lane（D5）：infra-retry 廉价重派排程 ────────
+    # 仿瞬断恢复（transient recovery）定时器模式：prepare 失败/可达性 fail-fast
+    # 短路轮经 infra-retry 车道决议 "redispatch" 后，延迟经既有 verifier 派发
+    # 入口重新入队。定时器延迟（缺省 5s、下限 2s）盖过 worker finally 摘除
+    # ``_active_verifies`` 单飞登记的窗口——worker 在飞期间直接 _enqueue 会被
+    # 单飞守卫拒绝。与 _transient_timers 独立——两条恢复通道各自排程、互不覆盖。
+    # MUST NOT 增减 _redispatch_same_cause_streak / _redispatch_cause_fp
+    # （同因重派记账归既有链路，infra-retry 重派不是同因重派语义）。
+
+    def _infra_retry_redispatch_delay(self, spec_name: str) -> float:
+        """infra-retry 重派等待秒数（``verify.infra_retry_redispatch_delay_seconds``）。
+
+        配置容错（与 _transient_redispatch_delay 同口径）：非法配置值回退缺省
+        5s，不得中断重派排程。``spec_name`` 仅用于对齐 ``resolve_delay`` 签名
+        （该通道等待时长与 spec 无关）。
+        """
+        try:
+            val = float(
+                self._pm._get_config("verify.infra_retry_redispatch_delay_seconds", 5)
+            )
+        except (TypeError, ValueError):
+            return 5.0
+        if not math.isfinite(val):
+            return 5.0
+        return val
+
+    def _schedule_infra_retry_redispatch(
+        self, spec_name: str, lock_held: bool = False
+    ) -> None:
+        """infra-retry 车道决议 "redispatch" 后排程廉价重派（evo-verify-infra-retry-lane）。
+
+        幂等：``_infra_retry_timers`` 集合判重（同 spec 同时至多一个待到期
+        重派定时器，对齐 _schedule_recovery_timer 三条冷却通道同款形态）。
+        到期回调 **不经** ``_on_spec_ready``（该入口只入队 implementer/
+        fast-track，不适用 verifier 重派）——专用回调直接经既有派发入口
+        ``_enqueue(spec, "verifier")`` 重新入队。
+
+        ``lock_held``：调用方已持 ``_queue_lock`` 时为 True，跳过内部再取锁
+        （threading.Lock 非重入，双重获取会死锁）。
+        """
+        self._schedule_recovery_timer(
+            spec_name,
+            timers=self._infra_retry_timers,
+            resolve_delay=self._infra_retry_redispatch_delay,
+            min_delay=2.0,  # 下限盖过 worker finally 摘除单飞登记的窗口
+            callback=self._on_infra_retry_redispatch,
+            scheduled_log=(
+                "Infra-retry redispatch scheduled for '{spec_name}' in {delay}s "
+                "(evo-verify-infra-retry-lane: cheap lane, no env-freeze round)"
+            ),
+            lock_held=lock_held,
+        )
+
+    def _on_infra_retry_redispatch(self, spec_name: str) -> None:
+        """infra-retry 廉价重派到期回调：verifier 重新入队 + process_queue。
+
+        MUST NOT 走 ``_fire_recovery_callback``（其重入 ``_on_spec_ready``，
+        只入队 implementer/fast-track）；verifier 重派直接经既有派发入口
+        ``_enqueue``。enqueue 拒绝（单飞守卫仍持登记等边缘时序）不重试——
+        周期扫描兜底恢复，与既有冷却通道同口径。
+        """
+        with self._queue_lock:
+            self._infra_retry_timers.discard(spec_name)
+        self._pm.logger.info(
+            "pm_engine",
+            f"Infra-retry redispatch fired for '{spec_name}' — re-enqueueing "
+            f"verifier (evo-verify-infra-retry-lane)",
+        )
+        try:
+            self._pm._enqueue(spec_name, "verifier")
+        finally:
+            self._pm._process_queue()

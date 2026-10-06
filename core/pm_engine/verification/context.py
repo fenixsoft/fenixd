@@ -100,6 +100,10 @@ class PipelineContext:
                               origin) → "pass"/"defer"/"reject"
                               （add-impl-ocr-parallel-lane：Dispatcher 未组合
                               的桩 pm 缺省恒放行，见 _ocr_join_gate_disabled）
+        schedule_infra_retry_redispatch  委托 pm._dispatcher._schedule_infra_
+                              retry_redispatch(spec_name)（evo-verify-infra-
+                              retry-lane D5 廉价重派触发器；未组合 Dispatcher
+                              的桩 pm 回落 pm._enqueue(spec_name, "verifier")
     """
 
     # ── D1 核心成员 ─────────────────────────────────────────────────────────
@@ -135,6 +139,15 @@ class PipelineContext:
     # 有缺省：桩 context 不提供即视为车道不可派发（消费侧按接线故障记账
     # 回落整轮）；测试可整体覆写该成员（SimpleNamespace 桩同源可用）。
     agent_runner: Any = field(default=None, repr=False)
+
+    # ── evo-verify-infra-retry-lane D5：infra-retry 廉价重派触发器。经
+    # Dispatcher 恢复定时器（延迟盖过 verifier 单飞登记摘除窗口）回既有
+    # verifier 派发入口重新入队——MUST NOT 绕过派发队列直调 worker。有缺省
+    # （None）：桩 context 不提供即视为重派通道未接线，消费侧 fail-open 回落
+    # 直接 enqueue；测试可覆写捕获重派意图。
+    schedule_infra_retry_redispatch: Callable[[str], None] = field(
+        default=None, repr=False
+    )
 
     # ── 便捷构造（从 PMEngine 实例一键创建）─────────────────────────────────
 
@@ -220,6 +233,17 @@ class PipelineContext:
                 return "pass"
             return dispatcher._ocr_join_gate(spec_name, origin)
 
+        def _schedule_infra_retry_redispatch(spec_name: str) -> None:
+            # evo-verify-infra-retry-lane D5：属性访问推迟到调用时（同惯例）。
+            # 组合了 Dispatcher 的 pm 走恢复定时器（BBackoffMixin，延迟盖过
+            # worker finally 摘除 _active_verifies 登记的窗口）；桩 pm 未组合
+            # Dispatcher 时退化为直接入队（在飞期可能被单飞守卫拒绝——消费侧
+            # fail-open 记账，不阻断本轮收口）。
+            dispatcher = getattr(pm, "_dispatcher", None)
+            if dispatcher is None:
+                return pm._enqueue(spec_name, "verifier")
+            return dispatcher._schedule_infra_retry_redispatch(spec_name)
+
         return cls(
             logger=pm.logger,
             project_root=pm.project_root,
@@ -235,5 +259,6 @@ class PipelineContext:
             ocr_join_gate=_ocr_join_gate,
             parallel_plan_lane=_parallel_plan_lane(pm),
             agent_runner=_agent_runner_lane(pm),
+            schedule_infra_retry_redispatch=_schedule_infra_retry_redispatch,
             env_infra_markers=getattr(pm, "_ENV_INFRA_MARKERS", ()),
         )

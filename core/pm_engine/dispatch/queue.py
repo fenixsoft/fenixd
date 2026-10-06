@@ -130,6 +130,13 @@ class QQQueueMixin:
         # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
         # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
         self._transient_timers: set = set()
+        # evo-verify-infra-retry-lane（D5）：infra-retry 廉价重派定时器判重集合：
+        # {spec_name}。prepare 失败/可达性 fail-fast 短路轮经 infra-retry 车道
+        # 决议 "redispatch" 后，按 `verify.infra_retry_redispatch_delay_seconds`
+        # （缺省 5s、下限 2s）延迟经既有 verifier 派发入口重新入队（延迟盖过
+        # worker finally 摘除 _active_verifies 单飞登记的窗口）。与
+        # _transient_timers 独立——两条恢复通道各自排程，互不覆盖。
+        self._infra_retry_timers: set = set()
         # 评审 content 失败重派短退避定时器判重集合（evo-fix-spec-review-
         # infra-attribution-bridge 3.1）：{spec_name}，幂等排程防重复定时器。
         # 由 SpecReviewManager._enqueue_review_retry 经 _schedule_recovery_timer

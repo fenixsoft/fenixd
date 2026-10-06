@@ -52,6 +52,7 @@ from core.state_machine import (
     ENV_BLOCK_ROUNDS_FIELD,
     FREEZE_ERROR_PREFIX,
     VERIFY_INFRA_ROUNDS_FIELD,
+    VERIFY_INFRA_RETRY_STREAK_FIELD,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
     # env 豁免 STATE 字段/修订生命周期字段单源（evo-fix-env-exemption-gate-
     # conflict-and-scenario-revision-exit：与 admin_actions/escalation 同源）
@@ -1385,6 +1386,10 @@ class VerificationPipeline:
                 # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
                 # 恢复/fix 链等中间转换不清零。
                 ENV_BLOCK_ROUNDS_FIELD: 0,
+                # evo-verify-infra-retry-lane D2：infra-retry 专用连续重派计数
+                # 随验证 PASS 清零（D2 两个清零点之一，与上面 env 阻塞轮同点同
+                # 生命周期；另一清零点=unfreeze_spec 清零清单，同一原子写）。
+                VERIFY_INFRA_RETRY_STREAK_FIELD: 0,
                 # evo-fix-env-exemption-gate-conflict-… 2.2：豁免生命周期随
                 # verified 落定收口——豁免只在被验周期内生效（场景级豁免若跨
                 # 周期残留，会把后续无关 env 失败在 TTL 窗口内一并洗白）；
@@ -2124,17 +2129,52 @@ class VerificationPipeline:
             # add-verify-preflight-gate D3 内嵌 boot.log 尾部）。user_blocked 守卫：
             # 「需用户参与（收验证码/登录）」预留判定位恒 False，将来实现后不得被
             # 短路自动判 blocked，故显式含 not user_blocked。
+            #
+            # evo-verify-infra-retry-lane：本调用点是 infra_retry 标记的**全仓
+            # 唯一传点**（D6 决策单点化）——prepare 失败/可达性 fail-fast（0 场景
+            # 执行短路）在升级通道入口先咨询 infra-retry 限次决议：未达缺省 2 次
+            # 预算即旁路返回 "redispatch"（不计 env 冻结轮、不写 blocked/status、
+            # 不呼叫 admin），经既有 verifier 派发入口（D5）廉价重派；超预算落穿
+            # 恢复全价升级。场景执行期的 env 阻塞（_handle_env_blocked_inconclusive）
+            # 不带此标记，仍走既有全价升级——车道只覆盖 0 场景执行的确定性短路轮。
             if not app_reachable and not user_blocked:
                 self._context.logger.error(
                     "pm_engine",
                     f"[阶段2] 应用不可达，本轮 fail-fast（场景执行数=0）'{spec_name}': "
                     f"{reach_note}",
                 )
-                self._escalate_env_blocked(
+                decision = self._escalate_env_blocked(
                     spec_name,
                     [reach_note],
                     title="验证环境阻塞（应用不可达）",
+                    infra_retry=True,
                 )
+                if decision == "redispatch":
+                    # ── infra-retry 车道收口（D5）：经既有 verifier 派发入口
+                    # 重新入队，不绕派发队列直调。接线缺失（schedule_infra_
+                    # retry_redispatch=None）或派发异常 fail-open 回落 context
+                    # 直接 enqueue——本轮仍按 aborted 收口，记账/决议已在上游
+                    # 完成，不因机械路径故障升级为全价轮。
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"[阶段2] infra-retry 车道命中，廉价重派验证 '{spec_name}'"
+                        f"（{reach_note}）",
+                    )
+                    schedule = getattr(
+                        self._context, "schedule_infra_retry_redispatch", None
+                    )
+                    try:
+                        if schedule is not None:
+                            schedule(spec_name)
+                        else:
+                            self._context.enqueue(spec_name, "verifier")
+                    except Exception as exc:
+                        self._context.logger.error(
+                            "pm_engine",
+                            f"[阶段2] infra-retry 重派触发失败，回落直接入队 "
+                            f"'{spec_name}': {exc}",
+                        )
+                        self._context.enqueue(spec_name, "verifier")
                 return None, None, False, "", True
 
             # 自愈可能改写场景文件端口（场景声明端口 → 框架分配端口）：
