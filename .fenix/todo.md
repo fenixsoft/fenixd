@@ -48,7 +48,7 @@
   - 建议：起草 SPEC：global 组生效核查证据源扩展——日志对账覆盖轮转文件（fenixd.log.N 按对账窗口检索）；证据家族按处置动作类型扩展（解冻→Transition 留痕、merge-back 放行→分支合并日志、归档收尾→commit 存在）；允许从处置组记录引用的 spec 名回退读 STATE 真实状态（frozen/status）作旁证。人工侧可先按已核实事实（4 个 spec 已于 10-03T19:40:21Z 经 manual 通道解冻且现已全部 pushed）登记补记，收口这 3 条滞留信号。
 
 - **验证场景注册夹具显式传 fixture=false，绕过 ADR-163 噪音过滤假告警上主面板**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：任一验证场景手写 add_project(fixture=False) 注册夹具，其 seed/对照告警（severity 可为 critical）即进入人工告警横幅与跨项目聚合，每轮验证污染人工甄别面；实测 add-alert-self-heal-marking 验证轮（2026-10-06 16:53）夹具 selfheal-scratch-verify 的 critical 对照锚点（SELFHEAL-PENDING-CTL-MARKER）上主面板，用户误判为真实告警并发起排查。
   - 证据：场景代码 .fenix/verify-progress/add-alert-self-heal-marking/test_scenarios.json 场景命令内显式 `reg.add_project(SROOT, name='selfheal-scratch-verify', fixture=False)`；ADR-163（spec/knowledge/adr/ADR-163-fixture-registry-flag-narrow-aggregation-filter.md）明定「噪音过滤收窄在缺省跨项目聚合分支，显式点名查询（?project=）零改动，验证场景依赖不回归」——fixture=True 对场景断言零影响，作者系误判（过度保守）；dashboard.yaml 该条目原值 fixture: false，2026-10-06 已人工改 true 止血（改后聚合面即清零，点名查询照常）。
   - 调查评估：在 add-alert-self-heal-marking 验证场景直写 admin_alerts.json 造对照锚点时暴露。已核实：机制本身无缺口（ADR-163 窄口径设计按工作），缺口是场景未走夹具供给脚本、未按 ADR-163 打标——直写 admin_alerts.json 不经四点信号摄取抑制，唯一降噪面就是聚合分支的 fixture 标记，传 False 等于主动关掉它。属规范遵循缺口而非代码缺陷，修法集中在场景模板与可选机械守卫，值得一次小专项。
