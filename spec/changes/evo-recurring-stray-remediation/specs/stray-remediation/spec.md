@@ -4,7 +4,7 @@
 
 主树复发型散件从「循环提交」转向「当场根治」：同文件第二次被处置起，admin 有义务执行 untrack 类根治或显式挂账跟踪，消除确定性复发的处置敞口；根治路径一键可达且留痕。
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: untrack 裁决选项
 

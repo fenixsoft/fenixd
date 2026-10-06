@@ -1,6 +1,6 @@
 ## Why
 
-同一 tracked 构建日志（build-win-configure.log）三天内两度触发 maintree_stray_wip_stale 并各烧一条 admin 处置 run（10-04 run admin-potplayer-base-1791048866 实测 $0.78/12 轮、10-06 run admin-potplayer-base-1791275605 实测 $0.92/11 轮/约 7 分钟）；10-04 处置正文（commit 5935771）已逐字写明根治方案（git rm --cached + .gitignore）却以「留给人类决策，本次不擅动」收尾，无人值守框架里该决策不会到来，10-06 原样复发（commit 95a0c01 循先例再入库）。且 potplayer-base 10-04 自省已把同主题条目标「✓ 值得立项 · 处理：接受」（.fenix/todo.md:105-111），挂账三天无人落 SPEC——被动挂账与「留给人类」同样不被消费。框架现状：检测→告警→一键提交闭环齐全（evo-add-maintree-stray-wip-sweep 检测、evo-add-commit-stray-wip-choice 一键提交），唯独缺「复发→根治」一环：裁决空间 maintree 桶只有 commit 一项（core/dashboard/data/adjudication_choices.py:101-108），admin 处置契约（agents/administrator.md）对主树散件根治只字未提，告警也不携带复发计数。
+同一 tracked 构建日志（build-win-configure.log）三天内两度触发 maintree_stray_wip_stale 并各烧一条 admin 处置 run（10-04 run admin-potplayer-base-1791048866 实测 $0.78/12 轮、10-06 run admin-potplayer-base-1791275605 实测 $0.92/11 轮/约 7 分钟）；10-04 处置正文（commit 5935771）已逐字写明根治方案（git rm --cached + .gitignore）却以「留给人类决策，本次不擅动」收尾，无人值守框架里该决策不会到来，10-06 原样复发（commit 95a0c01 循先例再入库）。且 potplayer-base 10-04 自省已把同主题条目标「✓ 值得立项 · 处理：接受」（potplayer-base 仓 .fenix/todo.md:105-111），挂账三天无人落 SPEC——被动挂账与「留给人类」同样不被消费。框架现状：检测→告警→一键提交闭环齐全（evo-add-maintree-stray-wip-sweep 检测、evo-add-commit-stray-wip-choice 一键提交），唯独缺「复发→根治」一环：裁决空间 maintree 桶只有 commit 一项（core/dashboard/data/adjudication_choices.py:101-108），admin 处置契约（agents/administrator.md）对主树散件根治只字未提，告警也不携带复发计数。
 
 ## What Changes
 

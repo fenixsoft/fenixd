@@ -18,7 +18,7 @@
 ## 1. untrack 裁决选项与执行器
 
 - [ ] 1.1 core/dashboard/data/adjudication_choices.py：maintree 桶（:292-294）新增 UNTRACK_STRAY_WIP 选项，沿 _COMMIT_STRAY_WIP（:101-108）的 spec_scoped=False + signal_type 绑定守卫先例，绑定 maintree_stray_wip_stale，语义「git rm --cached + .gitignore 根治」。
-- [ ] 1.2 core/dashboard/data/admin_actions.py：execute_adjudication_choice（:2700 附近）新增 _exec_untrack_stray_wip 执行器——对告警指认文件清单执行 git rm --cached、.gitignore 追加（已存在则去重）、独立提交；复用 core/worktree_manager/stash_guard.py 的 staged 子集守卫/回滚子函数（:918/:1034 骨架），不打开其「check-ignore 全须忽略」前置门；结果记录 untrack 文件清单与提交号。
+- [ ] 1.2 core/dashboard/data/admin_actions.py：execute_adjudication_choice（:2879）新增 _exec_untrack_stray_wip 执行器——对告警指认文件清单执行 git rm --cached、.gitignore 追加（已存在则去重）、独立提交；复用 core/worktree_manager/stash_guard.py 的 staged 子集守卫/回滚子函数（:916/:1034 骨架；宿主装配沿 code_fix.py:2704-2706 的 `_Probe(G6StashGuardMixin)` 最小宿主先例，无需完整守卫实例），不打开其「check-ignore 全须忽略」前置门；结果记录 untrack 文件清单与提交号。
 
 ## 2. 复发识别与处置契约
 
