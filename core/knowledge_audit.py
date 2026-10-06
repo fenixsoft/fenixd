@@ -88,6 +88,9 @@ TODO_ESCALATED_LEGACY_PREFIX = "audit 疑点升级待人工："
 _DISPUTED_RE = re.compile(r"<!--\s*disputed:\s*(.*?)-->")
 
 _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
+# 史前锚点形态（与 core.knowledge._GIT_ANCHOR_RE 同一定义，单一来源在该处；
+# _scan_pages 无 core 语境，扫描侧只做形态校验，起始 ref 解析仍归校验器）
+_GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
 _ADR_NAME_RE = re.compile(r"ADR-(\d{3})")
 _STATUS_WORD_RE = re.compile(r"\b(accepted|superseded)\b")
@@ -755,7 +758,16 @@ def _scan_pages(project_root: Path) -> dict:
         missing_sources: list[str] = []
         if marker and marker.get("sources"):
             names = [s for s in re.split(r"[,，]", marker["sources"]) if s]
-            missing_sources = [s for s in names if _source_base(s) not in archives]
+            if (marker.get("origin") or "archive") == "prehistoric":
+                # 史前页 sources 是 git 区间锚点（origin=prehistoric，core.knowledge
+                # 校验器支持，无对应归档目录）：按锚点形态校验，与
+                # validate_knowledge 的 prehistoric 分支同口径（起始 ref 是否可解析
+                # 由校验器带预算降级处理，扫描侧不查）。仍按归档基名比对会把每个
+                # 合法锚点判悬空，_apply_mechanical 保留原值后逐日产「marker
+                # sources 全部悬空待人工」误报并推高 pending_manual。
+                missing_sources = [s for s in names if not _GIT_ANCHOR_RE.match(s.strip())]
+            else:
+                missing_sources = [s for s in names if _source_base(s) not in archives]
         # marker 跨度行不进 drop_lines（code-review 0b78fcd778e3）：marker 的
         # sources 项是全路径 ``spec/archive/<名>``（core.knowledge 校验器强制
         # 该前缀），归档目录被删后 marker 行自身就会命中 _ARCHIVE_REF_RE；若
@@ -886,6 +898,12 @@ def _scan_adrs(project_root: Path) -> dict:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # 固定 UTF-8 + replace（仓库 subprocess 惯例）：text=True 缺省走
+            # locale strict 解码，ADR 目录混入非 UTF-8 文件名时
+            # UnicodeDecodeError 会穿透本函数与 run_audit，令当日体检与语义
+            # 转写整体停摆且每 300s 检查点恒失败刷屏。
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
         if proc.returncode == 0 and proc.stdout.strip():
@@ -1499,9 +1517,9 @@ def run_audit(
 
     # 超龄注记（2.1）：escalated 超过阈值天数 → 涉事页顶 disputed 注记（机器
     # 可读 HTML 注释、不含 knowledge: 前缀、不引用 archive 路径、写前查 150
-    # 行硬顶）。写段取蒸馏锁（同机械段/转写段），写完走既有 [fenix] knowledge
-    # 提交路径自提交——框架自己的注记改动不留工作区，避免成为下一轮 audit
-    # 的 dirty carryover 告警源。
+    # 行硬顶）。写盘与提交同取蒸馏锁（同机械段/转写段/仲裁消费段口径），写完
+    # 走既有 [fenix] knowledge 提交路径自提交——框架自己的注记改动不留工作区，
+    # 避免成为下一轮 audit 的 dirty carryover 告警源。
     stale_days = cfg.get("escalated_stale_days", ESCALATED_STALE_DAYS)
     desired = _disputed_targets(escalated, stale_days)
     annotated = {p["rel"] for p in scan["pages"] if _DISPUTED_RE.search(p["text"])}
@@ -1509,20 +1527,23 @@ def run_audit(
         changed, note_skipped = _sync_disputed_annotations(
             project_root, desired, restrict_pages=set(desired) | annotated
         )
+        # 提交留在临界区内：锁外提交的窗口期里，并发蒸馏 run 会把刚落盘未提交
+        # 的注记当 carryover，其全目录 pathspec 提交还会把注记卷进蒸馏提交
+        # （污染提交归属），或与注记提交撞 git index.lock 走 fail-open 告警。
+        if changed:
+            try:
+                commit(
+                    project_root,
+                    [KNOWLEDGE_DIR],
+                    f"[fenix] knowledge: audit disputed 注记同步（{len(changed)} 页）",
+                )
+            except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
+                log.warning("knowledge", f"disputed 注记提交失败（fail-open）：{e}")
     if note_skipped:
         counts["pending_manual"] += 1
         details["manual"].append(
             f"disputed 注记写入跳过（页超 {LINE_CAP} 行硬顶）：{'、'.join(note_skipped)}"
         )
-    if changed:
-        try:
-            commit(
-                project_root,
-                [KNOWLEDGE_DIR],
-                f"[fenix] knowledge: audit disputed 注记同步（{len(changed)} 页）",
-            )
-        except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
-            log.warning("knowledge", f"disputed 注记提交失败（fail-open）：{e}")
 
     leftover = knowledge_dirty_files(project_root)
     if leftover:
