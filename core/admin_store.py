@@ -685,6 +685,12 @@ class AdminStore:
           handled=True、handled_by="auto-resolve"、handled_at=解除时刻、
           resolve_note=解除依据。不触碰其余字段，不伪造人工处理记录。
 
+        evo-add-signal-subject-terminal-close 2.2：kind 门放宽到
+        escalation+signal——spec 附着条件族的 kind=signal 记录（blocked_stuck
+        等）随主体终态收口经同一写回路径落账，handled_by 沿用既有
+        AUTO_RESOLVE_BY；收口注记由判定端随 resolve_note 传入（含主体终态/
+        解除时刻），本端只透传不另造内容。
+
         MUST 跳过 handled=True 条目（人工记录不可覆盖）；单次排他锁内完成
         读-改-写（复用既有原子写与 .lock）；无可闭环条目时零写回（mtime 不变）。
         返回实际闭环数量。
@@ -699,8 +705,8 @@ class AdminStore:
             for rec in records:
                 if rec.get("id") not in notes:
                     continue
-                if rec.get("kind") != ESCALATION:
-                    continue
+                if rec.get("kind") not in (ESCALATION, SIGNAL):
+                    continue  # disposition 等其余 kind 不经本路径写回
                 if rec.get("handled"):
                     continue  # 人工/既有处理记录不可覆盖
                 rec["handled"] = True

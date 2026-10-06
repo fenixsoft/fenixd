@@ -14,7 +14,7 @@
 import time
 from pathlib import Path
 
-from core.admin_store import AdminStore, ESCALATION
+from core.admin_store import AdminStore, ESCALATION, SIGNAL, DISPOSITION
 from core.admin_monitor import AdminMonitor
 from core.alert_lifecycle import (
     AUTO_RESOLVE_BY,
@@ -102,11 +102,13 @@ class TestEvaluateAlert:
                  "handled": False, "trigger": triggered("fake-spec")}
         assert find_resolvable([alert], {"other": {"status": "pushed"}}) == []
 
-    def test_non_escalation_skipped(self):
+    def test_non_escalation_signal_spec_attached_now_resolves(self):
+        """evo-add-signal-subject-terminal-close：kind=signal 且属 spec 附着
+        条件族不再被 kind 门一刀切拒绝（旧行为：一律保持原状）。"""
         alert = {"id": "a", "kind": "signal", "spec": "v2-x", "handled": False,
                  "signal_type": "blocked_stuck",
                  "trigger": triggered("v2-x", "blocked_stuck")}
-        assert find_resolvable([alert], {"v2-x": {"status": "pushed"}}) == []
+        assert find_resolvable([alert], {"v2-x": {"status": "pushed"}})
 
     def test_build_trigger_shape(self):
         t = build_trigger("verify_fail_escalation", "v2-x")
@@ -114,6 +116,82 @@ class TestEvaluateAlert:
                      "condition": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED}
         # 未接入枚举的 signal_type 不写 trigger
         assert build_trigger("token_budget", "v2-x") is None
+
+
+# ── evo-add-signal-subject-terminal-close 3.1：kind=signal 随主体终态收口 ──
+
+_PUSHED_AT = "2026-10-07T03:00:00+00:00"
+_PUSHED_SPECS = {"v2-x": {"status": "pushed", "updated": _PUSHED_AT}}
+
+
+class TestSignalSubjectTerminalClosure:
+    """kind=signal 且属 spec 附着条件族 → 走既有主体终态判定；收口注记附
+    主体终态/解除时刻（specs 状态表 entry 的 updated 字段）。"""
+
+    def _signal(self, signal_type="blocked_stuck", spec="v2-x", handled=False,
+                trigger=True):
+        alert = {"id": "a", "kind": "signal", "spec": spec, "handled": handled,
+                 "signal_type": signal_type}
+        if trigger:
+            alert["trigger"] = triggered(spec, signal_type)
+        return alert
+
+    def test_terminal_pushed_resolves_with_moment(self):
+        notes = find_resolvable([self._signal()], _PUSHED_SPECS)
+        assert len(notes) == 1
+        note = notes[0]["resolve_note"]
+        assert "v2-x" in note and "pushed" in note
+        assert _PUSHED_AT in note  # 注记含终态时刻
+
+    def test_terminal_done_resolves_with_moment(self):
+        notes = find_resolvable(
+            [self._signal()], {"v2-x": {"status": "done", "updated": _PUSHED_AT}})
+        assert len(notes) == 1
+        assert "done" in notes[0]["resolve_note"]
+        assert _PUSHED_AT in notes[0]["resolve_note"]
+
+    def test_left_blocked_neutral_note(self):
+        """离开 blocked 但未终态（ready）→ 可收口，注记中性解除表述
+        （不断言历史 blocked 路径）+ 时刻。"""
+        notes = find_resolvable(
+            [self._signal()], {"v2-x": {"status": "ready", "updated": _PUSHED_AT}})
+        assert len(notes) == 1
+        note = notes[0]["resolve_note"]
+        assert "已非 blocked" in note
+        assert "已离开 blocked" not in note
+        assert _PUSHED_AT in note
+
+    def test_missing_updated_keeps_existing_wording(self):
+        """状态表无 updated 字段：保持既有表述，不硬造时刻。"""
+        notes = find_resolvable([self._signal()], {"v2-x": {"status": "pushed"}})
+        assert len(notes) == 1
+        assert "状态变更时刻" not in notes[0]["resolve_note"]
+
+    def test_still_blocked_not_resolved(self):
+        assert find_resolvable(
+            [self._signal()], {"v2-x": {"status": "blocked"}}) == []
+
+    def test_handled_stays(self):
+        assert find_resolvable([self._signal(handled=True)], _PUSHED_SPECS) == []
+
+    def test_self_heal_family_signals_stay(self):
+        """签名安静族三类 kind=signal 不走终态判定（语义不动，归自愈通道）。"""
+        for st in ("daemon_errors", "run_infra_failure", "self-evolution"):
+            assert find_resolvable(
+                [self._signal(signal_type=st)], _PUSHED_SPECS) == []
+
+    def test_unregistered_signal_without_trigger_stays(self):
+        alert = self._signal(signal_type="manual-intervention", trigger=False)
+        assert find_resolvable([alert], _PUSHED_SPECS) == []
+
+    def test_triggerless_blocked_stuck_signal_backfill_only(self):
+        """无 trigger 的存量 blocked_stuck 信号：常态扫描不推断，仅回填轮收口。"""
+        alert = self._signal(trigger=False)
+        assert find_resolvable([alert], _PUSHED_SPECS) == []
+        notes = find_resolvable([alert], _PUSHED_SPECS, backfill=True)
+        assert len(notes) == 1
+        assert notes[0]["resolve_note"].startswith("存量回填")
+        assert _PUSHED_AT in notes[0]["resolve_note"]
 
 
 # ── 1.3/3.1 auto_resolve 写回 ───────────────────────────
@@ -164,6 +242,38 @@ class TestAutoResolve:
         assert store.auto_resolve([]) == 0
         assert store.auto_resolve(None) == 0
         assert not (tmp_path / ".fenix" / "admin_alerts.json").exists()
+
+    def test_resolves_signal_record_with_fields(self, tmp_path):
+        """evo-add-signal-subject-terminal-close 2.2：kind=signal 写回路径打开，
+        handled_by 沿用 AUTO_RESOLVE_BY，注记由判定端透传（含终态时刻）；
+        仅改写 handled 族字段，信号本体字段原样保留。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        rec = store.append({"kind": SIGNAL, "signal_type": "blocked_stuck",
+                            "spec": "v2-x", "severity": "critical",
+                            "description": "blocked 悬置超阈值",
+                            "escalated": True,
+                            "trigger": triggered("v2-x", "blocked_stuck")})
+        resolvable = find_resolvable(store.read_all(), _PUSHED_SPECS)
+        assert store.auto_resolve(resolvable) == 1
+        after = next(r for r in store.read_all() if r["id"] == rec["id"])
+        assert after["handled"] is True
+        assert after["handled_by"] == AUTO_RESOLVE_BY
+        assert after["handled_at"]
+        assert "pushed" in after["resolve_note"]
+        assert _PUSHED_AT in after["resolve_note"]
+        assert after["description"] == "blocked 悬置超阈值"
+        assert after["escalated"] is True
+
+    def test_auto_resolve_skips_disposition_kind(self, tmp_path):
+        """kind 门放宽不波及 disposition：同 id 命中也不经本路径写回。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        store.append({"kind": DISPOSITION, "signal_type": "blocked_stuck",
+                      "spec": "v2-x", "result": "resolved"})
+        rec = store.read_all()[0]
+        assert store.auto_resolve(
+            [{"id": rec["id"], "resolve_note": "x"}]) == 0
+        # append 归一化默认 handled=False；此处断言未被置真
+        assert not store.read_all()[0].get("handled")
 
 
 # ── 2.1/3.2 存量回填 ────────────────────────────────────
