@@ -63,7 +63,7 @@ export const isPageAnchor = (href: string): boolean =>
 
 // 自定义链接组件：非白名单协议不输出可点击链接
 // （导出供帮助中心等其它 markdown 场景的链接兜底复用，保持协议白名单口径一致）
-export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
+export const SafeLink: Components['a'] = ({ node: _node, href, children, ...props }) => {
   if (!href) {
     return <span>{children}</span>;
   }
@@ -170,7 +170,7 @@ export const markdownComponents: Components = {
   a: SafeLink,
   // react-markdown v10 无 inline prop：以 className（language-*）或内容含换行
   // 判围栏块（CommonMark 围栏内容恒以换行结尾），其余按内联 chip 渲染
-  code: ({ className, children, ...props }) => {
+  code: ({ node: _node, className, children, ...props }) => {
     const isBlock =
       (typeof className === 'string' && className.includes('language-')) ||
       /\n/.test(String(children));
@@ -183,7 +183,7 @@ export const markdownComponents: Components = {
     }
     return <code style={codeChipStyle}>{children}</code>;
   },
-  pre: ({ children, ...props }) => (
+  pre: ({ node: _node, children, ...props }) => (
     <pre
       style={{
         background: '#f6f8fa',
@@ -210,7 +210,7 @@ export const markdownComponents: Components = {
   // antd reset 去掉了表格默认边框，这里补齐：通宽 + 灰色细线网格。
   // 知识真相源表格（指纹命中）加 table-layout:fixed——auto layout 下 th width
   // 只是提示（如总和 105% 会被浏览器重分配），fixed 才能按定义精确控宽
-  table: ({ children, ...props }) => {
+  table: ({ node: _node, children, ...props }) => {
     const head = collectTableText(children);
     const hit = KNOWLEDGE_TABLE_WIDTHS.find((w) => w.fingerprint.every((k) => head.includes(k)));
     return (
@@ -230,7 +230,7 @@ export const markdownComponents: Components = {
     );
   },
   // 列宽经 TableWidthContext 由所在 table 下发（td 跟随所在列宽，无需单设）
-  th: ({ children, ...props }) => {
+  th: ({ node: _node, children, ...props }) => {
     const widths = useContext(TableWidthContext);
     const width =
       typeof children === 'string' && widths ? widths[children.trim()] : undefined;
@@ -250,7 +250,7 @@ export const markdownComponents: Components = {
       </th>
     );
   },
-  td: ({ children, ...props }) => (
+  td: ({ node: _node, children, ...props }) => (
     <td style={{ border: '1px solid #e8e8e8', padding: '8px 12px', fontSize: 14 }} {...props}>
       {children}
     </td>
