@@ -430,7 +430,36 @@ class SpecReviewManager:
         except Exception as e:  # noqa: BLE001 — 派发异常须收口锚点，不得留残余
             run_ok, run_err = False, str(e)
         if not run_ok:
-            self.logger.error("spec_review", f"评审 run 执行失败: {spec_name}: {run_err}")
+            # evo-add-review-failure-attribution 1.3：失败行归因括注——形态对齐
+            # code-fix 车道（maintenance_runs.py 括注结构与 stderr_tail 位置），
+            # 键名用 api_error_status 而非 code-fix 的 api_timeout（评审车道无
+            # salvage 语义）。素材读失败结果的结构化字段（runner 桥接 1.1 从
+            # 异常回填）；result 为 None 的异常子路径（run_spec_review 抛异常，
+            # 上方 429-430）无结构化字段可读，三元全空整体省略不添噪。
+            # 属性读回按严格形态校验（与下方 frozen_terminated 的 `is True`
+            # 同款纪律）：MagicMock 等替身结果在属性访问时自动生成 truthy
+            # 子对象，非预期形态一律按缺省处理，防替身 repr 里的十六进制
+            # 地址段被误当归因。
+            _api_err = getattr(result, "api_error_status", None)
+            if isinstance(_api_err, bool) or not isinstance(_api_err, (int, str)):
+                _api_err = None
+            _exit_code = getattr(result, "exit_code", None)
+            if isinstance(_exit_code, bool) or not isinstance(_exit_code, int):
+                _exit_code = None
+            _stderr_tail = getattr(result, "stderr_tail", None)
+            if not isinstance(_stderr_tail, str):
+                _stderr_tail = ""
+            _attribution = ""
+            if _api_err is not None or _exit_code is not None or _stderr_tail:
+                _attribution = (
+                    f" [api_error_status={_api_err} exit_code={_exit_code}"
+                    + (f" stderr_tail: {_stderr_tail}" if _stderr_tail else "")
+                    + "]"
+                )
+            self.logger.error(
+                "spec_review",
+                f"评审 run 执行失败: {spec_name}: {run_err}{_attribution}",
+            )
 
             # ③0 add-freeze-stop-inflight-agents 3.5：冻结终止在失败分类之前拦截——
             # 评审 run 因 spec 冻结被终止（frozen_terminated=True）：写
@@ -487,12 +516,22 @@ class SpecReviewManager:
             # catch-all 从异常回填），分类层优先消费——异常路径 result=None 时
             # getattr 缺省 None，自然回退文本分类。
             self._handle_review_failure(
-                spec_name, f"评审 run 执行失败: {run_err}",
+                spec_name, f"评审 run 执行失败: {run_err}{_attribution}",
                 api_error_status=getattr(result, "api_error_status", None),
                 conn_error=getattr(result, "conn_error", None),
             )
             return False
         self.logger.info("spec_review", f"评审 run 已收工: {spec_name} run_id={run_id}")
+        # evo-add-review-failure-attribution 2.2（design D3）：评审 run 跑通即
+        # 「链路证明可用」——成功收工路径清零连续 infra 失败计数，恢复
+        # 「连续 ≥3 次」语义（陈旧跨周计数不再凭一次真实失败误触熔断）。
+        # 落点在 consume 之前：run 跑通但产物不合法、走 content 类重试的分支
+        # 同样经过此处——产物质量类失败不影响 infra 计数。熔断短路期间未
+        # 实际派发的尝试（dispatch_review 入口 condition()=="broken" 直接
+        # 返回）到不了本行，不计成功。
+        _breaker = getattr(self.pm_engine, "infra_breaker", None)
+        if _breaker is not None:
+            _breaker.record_success("spec-review")
 
         # ③b 结果捞回（2026-09-15 事故修复）：评审 run 正常收工但从未调用 Write，
         # 把结果 JSON 当正文 fenced 代码块吐出。此处从转录代写落盘，避免整轮白烧

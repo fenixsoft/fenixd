@@ -137,6 +137,7 @@ from core.agent_runner.maintenance_runs import (
     _read_admin_disposition,
     _read_code_review_out,
     _read_self_review_out,
+    _stderr_tail_summary,
     _unique_code_review_run_id,
     admin_disposition_path,
     run_administrator,
@@ -1637,6 +1638,14 @@ class AgentRunner:
                 # 自然回退文本分类，行为不变。
                 api_error_status=getattr(e, "api_error_status", None),
                 conn_error=getattr(e, "conn_error", None),
+                # evo-add-review-failure-attribution 1.1：失败行归因括注素材
+                # 并列透出——stderr_tail 复用 maintenance_runs._stderr_tail_
+                # summary 读异常原始 stderr_lines（降噪前原文，追溯用非判别
+                # 用），exit_code 读异常退出码（对齐 exc.exit_code 挂载先例）。
+                # 不改共享底座错误文本（error=str(e) 原样保留，proposal
+                # Out of Scope：全车道指纹骨架不动）。
+                stderr_tail=_stderr_tail_summary(getattr(e, "stderr_lines", None)),
+                exit_code=getattr(e, "exit_code", None),
             )
 
     def _planner_throttle_semaphore(self) -> Optional[threading.BoundedSemaphore]:

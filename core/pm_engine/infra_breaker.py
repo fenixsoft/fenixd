@@ -387,6 +387,14 @@ class InfraCircuitBreaker:
         """成功 run：清零计数，重置为正常状态。
 
         落实「连续 ≥3 次」语义：熔断前/恢复后任意成功均清零。
+
+        evo-add-review-failure-attribution 2.2/2.3 接线确认：spec-review 链路
+        的调用点在 spec_review.py 评审 run 成功收工处（run_ok=True 即清零，
+        「链路证明可用」语义——run 跑通但产物不合法走 content 类重试的分支
+        同样经过；产物质量类失败不影响 infra 计数）。熔断短路期间未实际
+        派发的尝试在 dispatch_review 入口 condition()=="broken" 即返回，
+        到不了该调用点，不计成功/失败；「冷却到期后首次派发成功」路径下
+        condition() 恢复时保留的半开残留 count 由此处清零。
         """
         with self._lock:
             self._ensure_link(link)

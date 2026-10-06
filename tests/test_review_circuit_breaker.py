@@ -397,7 +397,10 @@ class TestDispatchReviewShortCircuit:
         pm._emit_infra_breaker_event.assert_called_once()
         args = pm._emit_infra_breaker_event.call_args
         assert args[0][0] == "recovered"
-        assert breaker.get_state("spec-review")["count"] == 3
+        # evo-add-review-failure-attribution 2.2（design D3）：成功收工路径接线
+        # record_success——半开残留计数（3）在首次派发成功后被清零，恢复
+        # 「连续 ≥3 次」语义（陈旧计数不再凭一次真实失败误触熔断）
+        assert breaker.get_state("spec-review")["count"] == 0
 
 
 # ── PMEngine 级集成测试 ─────────────────────────────────────────────
