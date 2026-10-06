@@ -432,12 +432,14 @@ class TestJudgeFindingsInjection:
 # ── 9. 模式表结构（design D4）──────────────────────────────────────
 
 class TestPatternTable:
-    def test_initial_three_rules(self):
+    def test_pattern_rule_ids(self):
+        # verify-fixture-guard 新增第四条：unmarked_fixture_add_project
         ids = {rule["rule_id"] for rule in PATTERN_TABLE}
         assert ids == {
             "stale_literal_port",
             "stale_navigate_port",
             "double_han_text_selector",
+            "unmarked_fixture_add_project",
         }
 
     def test_port_rules_require_port(self):
@@ -452,6 +454,7 @@ class TestPatternTable:
         assert kinds["stale_literal_port"] == {"cli", "api"}
         assert kinds["stale_navigate_port"] == {"web"}
         assert kinds["double_han_text_selector"] == {"web"}
+        assert kinds["unmarked_fixture_add_project"] == {"cli"}
 
 
 if __name__ == "__main__":

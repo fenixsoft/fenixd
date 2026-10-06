@@ -10,11 +10,14 @@ fail-open 边界（design D3/D4）：
 - serving 端口未知（None/空串）时端口比对类模式整体跳过，纯文本模式仍执行。
 
 模式表（design D4）：模块级数据结构（rule_id / 适用 kind / 匹配函数），
-新增模式 = 增加表项，不动扫描器主体。初始钉死三条：
+新增模式 = 增加表项，不动扫描器主体。初始钉死四条：
   1. ``stale_literal_port``   — cli/api 场景 command/stdin/env/url/headers 字面端口 ≠ serving 端口
   2. ``stale_navigate_port``  — web navigate URL 字面端口 ≠ serving 端口
   3. ``double_han_text_selector`` — 双汉字文本选择器（antd autoInsertSpace
      渲染为「X X」，二字断言文本必失配的历史坑）
+  4. ``unmarked_fixture_add_project`` — cli 场景命令内 add_project( 注册
+     探针夹具未带 fixture=True（verify-fixture-guard：夹具告警直写
+     admin_alerts.json 绕开摄取抑制、直通人工聚合横幅的历史坑）
 """
 
 from __future__ import annotations
@@ -360,6 +363,94 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
     return findings
 
 
+# ── 场景夹具注册未打标模式（verify-fixture-guard）──────────────────
+# 场景命令内 add_project( 调用：Registry.add_project / reg.add_project 等
+# 接收者形态均命中（左边界 (?<!\w) 只排除 _add_project 复合词，点号后仍
+# 匹配）；打标判定只认关键字实参 ``fixture=True`` 字面形态——变量传参等
+# 非字面写法按设计接受漏报（情报定位非硬闸，漏报成本低于误报）。
+_ADD_PROJECT_CALL_RE = re.compile(r"(?<!\w)add_project\s*\(")
+_FIXTURE_TRUE_RE = re.compile(r"fixture\s*=\s*True\b")
+
+
+def _unmarked_add_project_snippets(text: str) -> list[str]:
+    """提取文本中实参未含 fixture=True 的 add_project( 调用片段（保序去重）。
+
+    括号配平提取实参跨度（嵌套括号安全）；命令截断等未闭合形态取剩余
+    文本判。实参含 fixture=True 即视为已打标——显式 fixture=False 与缺省
+    不传均未打标（本次两起事故根因形态）。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _ADD_PROJECT_CALL_RE.finditer(text):
+        start = m.end()  # 左括号之后
+        depth = 1
+        i = start
+        n = len(text)
+        while i < n and depth:
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+        # depth 归零时 i 已越过右括号一位；未闭合时 i == n（截断形态）
+        args = text[start : i - 1] if depth == 0 else text[start:i]
+        if _FIXTURE_TRUE_RE.search(args):
+            continue
+        snippet = text[m.start() : i].strip()
+        if snippet not in seen:
+            seen.add(snippet)
+            out.append(snippet)
+    return out
+
+
+def _rule_unmarked_fixture_add_project(
+    scenario: dict, serving_port: str | None
+) -> list[StaticFinding]:
+    """④ cli 场景命令内 add_project( 注册探针夹具未带 fixture=True（情报级）。
+
+    verify-fixture-guard 事故根因：验证场景在场景命令内自注册探针夹具
+    （/tmp 扫描根外临时路径）时未打 fixture=True——夹具 seed/对照告警
+    （severity 可为 critical）直写项目 admin_alerts.json 完全绕开摄取抑制
+    （alert-noise-governance 5.1 只覆盖 AdminMonitor 捞取路径），缺省聚合
+    分支 fixture 过滤是唯一降噪面，未打标即直通人工告警聚合横幅
+    （selfheal-scratch-verify / arch-scratch-verify 两度实证）。只情报不拦截：
+    不改 Registry.add_project 缺省值（ADR-163 Decision 禁按路径/名字推导
+    夹具身份），避免误伤合法的真实项目注册。cli 场景扫 command（str/list
+    双形态拼接后扫，同 stale_literal_port）与 stdin；与端口无关
+    （need_port=False），serving 端口未知时仍执行。
+    """
+    sid = str(scenario.get("id") or "?")
+    findings: list[StaticFinding] = []
+    for i, step in enumerate(scenario.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        for field in ("command", "stdin"):
+            text = step.get(field)
+            if isinstance(text, (list, tuple)):
+                text = " ".join(str(item) for item in text)
+            if not isinstance(text, str) or not text:
+                continue
+            for snippet in _unmarked_add_project_snippets(text):
+                shown = snippet if len(snippet) <= 120 else snippet[:117] + "..."
+                findings.append(
+                    StaticFinding(
+                        scenario_id=sid,
+                        rule_id="unmarked_fixture_add_project",
+                        location=f"steps[{i}].{field}",
+                        message=(
+                            f"场景 {field} 内 add_project( 注册探针夹具未带 "
+                            f"fixture=True：`{shown}`。验证场景自注册的探针夹具"
+                            f"MUST fixture=True（ADR-163）——夹具 seed/对照告警直写 "
+                            f"admin_alerts.json 绕开摄取抑制，未打标会直通人工告警"
+                            f"聚合横幅污染甄别面；打标对场景断言零影响、点名查询"
+                            f"零改动，请补 fixture=True。"
+                        ),
+                    )
+                )
+    return findings
+
+
 # ── 模式表（模块级数据结构，design D4：新增模式 = 增加表项）──────────
 # need_port=True 的表项在 serving 端口未知时整体跳过。
 PATTERN_TABLE: list[dict] = [
@@ -380,6 +471,12 @@ PATTERN_TABLE: list[dict] = [
         "kinds": {"web"},
         "need_port": False,
         "match": _rule_double_han_text_selector,
+    },
+    {
+        "rule_id": "unmarked_fixture_add_project",
+        "kinds": {"cli"},
+        "need_port": False,
+        "match": _rule_unmarked_fixture_add_project,
     },
 ]
 
