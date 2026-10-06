@@ -4,7 +4,7 @@
 
 让验证场景自注册的探针夹具一律带 fixture 标记，杜绝夹具假告警进入人工告警聚合横幅；规范触达出题端（提示词）、知识层（领域文档）与守卫层（静态扫描情报）三处。
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: 场景夹具注册必须打 fixture 标记
 

@@ -18,7 +18,7 @@
 
 ## 2. 机械守卫（静态扫描，不动 Registry 语义）
 
-- [ ] 2.1 core/verify_engine/scenario_static_check.py：按既有表驱动模式新增一条扫描模式——场景命令出现 add_project( 调用而实参未含 fixture=True 即产出 judge 情报（只情报不拦截，对齐既有 stale_literal_port 同型）；不改 Registry.add_project 缺省值，避免与 ADR-163 Decision「禁按路径/名字推导」冲突。
+- [ ] 2.1 core/verify_engine/scenario_static_check.py：按既有表驱动模式新增一条扫描模式——场景命令出现 add_project( 调用而实参未含 fixture=True 即产出 judge 情报（只情报不拦截，对齐既有 stale_literal_port 同型）；不改 Registry.add_project 缺省值，避免与 ADR-163 Decision「禁按路径/名字推导」冲突。模式表项约定：kinds 至少覆盖本次事故形态（cli 场景，扫 step 的 command/stdin 文本，cli command 支持 str/list 双形态同 stale_literal_port 拼接后扫），need_port=False（本规则与端口无关，serving 端口未知时仍须执行）。
 
 ## 3. 测试
 
