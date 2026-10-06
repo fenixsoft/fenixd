@@ -6,7 +6,9 @@
   皆空、产物不可解析但有分片、分片条目数不足按失败落地（水位不推进）；
 - _salvage_evolution_out 合并配方单元行为（sorted(glob)、损坏分片跳过、
   产物可解析不覆盖）；
-- read_contract「产物文件未写出」与「产物 JSON 不可解析」文案分级。
+- read_contract「产物文件未写出」与「产物 JSON 不可解析」文案分级；
+- 单条非法宽口径部分接受 / 全非法整体拒绝 / 失败现场留档
+  （evo-add-evolution-contract-partial-accept 2.1）。
 
 run_evolution 级测试以 __new__ 绕过 __init__ 的最小 AgentRunner 替身驱动
 （同 tests/test_self_evolution.py::_FakeEvolutionRunner 形态），_run_claude
@@ -269,6 +271,63 @@ class TestRunEvolutionSalvage(_SalvageCase):
         result = self._run(runner, pending_entries=pending)
         self.assertTrue(result.success)
         self.assertEqual(result.items_ingested, 2)
+
+
+class TestPartialAcceptContract(_SalvageCase):
+    """evo-add-evolution-contract-partial-accept 任务 2.1：单条非法宽口径。
+
+    run_evolution 以 lenient read_contract 读取：单条契约错误只牺牲该条，
+    合法条目照常落库但按失败落地（水位不推进）；失败现场产物文件按
+    design D4 改名 ``.failed`` 留档；全部条目非法仍整体拒绝。
+    """
+
+    def test_single_invalid_section_partial_accept(self):
+        """单条非法小节：跳该条、其余登记落库、按失败落地水位不推进。"""
+        invalid = {**_item("越界条目"), "section": "流程"}
+        runner = _SalvageRunner(
+            self.proot, write_out=True,
+            out_items=[_item("甲"), invalid, _item("乙")],
+        )
+        before = self._watermark_snapshot()
+        result = self._run(
+            runner,
+            pending_entries=[{"id": "e1"}, {"id": "e2"}, {"id": "e3"}],
+        )
+        # 合法条目照常落库，非法条目不登记
+        self.assertEqual(result.items_ingested, 2)
+        self.assertEqual(sorted(self._ingested_titles(self.proot)), ["乙", "甲"])
+        # 按失败落地：run_ok=False、错误附逐条原因（下检查点幂等补齐）
+        self.assertFalse(result.success)
+        self.assertIn("部分接受", result.error)
+        self.assertIn("items[1]", result.error)
+        self.assertIn("三值枚举", result.error)
+        # 失败现场留档（design D4）：原产物改名 .failed 同目录保留且内容完整
+        failed_path = Path(f"{self.out_path}.failed")
+        self.assertTrue(failed_path.exists())
+        self.assertFalse(self.out_path.exists())
+        self.assertIn(str(failed_path), result.error)
+        failed = json.loads(failed_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(failed["items"]), 3)
+        # 水位不推进：watermarks 文件在 run 前后不变
+        self.assertEqual(self._watermark_snapshot(), before)
+
+    def test_all_items_invalid_still_rejected(self):
+        """全部条目非法：仍整体拒绝（D3 fail-closed），现场不留档。"""
+        runner = _SalvageRunner(
+            self.proot, write_out=True,
+            out_items=[
+                {**_item("甲"), "section": "流程"},
+                {**_item("乙"), "verdict": None},
+            ],
+        )
+        result = self._run(runner)
+        self.assertFalse(result.success)
+        self.assertEqual(result.items_ingested, 0)
+        self.assertIn("全部 2 条条目契约非法", result.error)
+        # 全非法拒绝路径行为与现状一致（design D4：不扩大留档面，含清理）
+        self.assertFalse(self.out_path.exists())
+        self.assertFalse(Path(f"{self.out_path}.failed").exists())
+        self.assertFalse((self.evo_dir / "items.jsonl").exists())
 
 
 class TestSalvageHelper(_SalvageCase):

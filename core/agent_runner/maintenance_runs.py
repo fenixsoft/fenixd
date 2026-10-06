@@ -1043,8 +1043,12 @@ def run_evolution(
             salvaged = _salvage_evolution_out(out_path)
 
             contract = None
+            item_errors: list = []
             try:
-                contract = read_contract(out_path)
+                # 宽口径（evo-add-evolution-contract-partial-accept 1.2）：
+                # 单条目契约错误收集跳过、合法条目照常返回，不再整份拒绝；
+                # 本 except 分支仅剩文件级错误与「全部条目非法」（D3）。
+                contract = read_contract(out_path, lenient=True)
             except ContractError as e:
                 # 失败归因分级（任务 1.2）：「产物文件未写出」与「产物
                 # JSON 不可解析」可判别；CLI 自身异常原因附注保留归因。
@@ -1069,8 +1073,14 @@ def run_evolution(
 
             if contract is not None:
                 items = contract.get("items") or []
+                item_errors = contract.get("errors") or []
                 expected = len(pending_entries) if pending_entries else None
-                partial = expected is not None and len(items) < expected
+                # 校验拒绝的部分接受与「条目不足」同判 partial（
+                # evo-add-evolution-contract-partial-accept 1.2）：有逐条
+                # 契约错误即按失败落地，与 expected 是否已知无关。
+                partial = bool(item_errors) or (
+                    expected is not None and len(items) < expected
+                )
                 degraded = contract.get("degraded")
                 marker_projects = set()
                 for item in items:
@@ -1114,11 +1124,28 @@ def run_evolution(
                     # None 分支一致。
                     run_ok = False
                     prev_error = error
-                    error = (
-                        f"产物部分恢复: 仅 {len(items)}/{expected} 条，"
-                        f"缺失 {expected - len(items)} 条"
-                        f"（水位不推进，已落地条目由下轮幂等去重补齐）"
-                    )
+                    if item_errors:
+                        # 校验拒绝的部分接受（evo-add-evolution-contract-
+                        # partial-accept 1.2）：与「条目不足」同一 partial
+                        # 语义（合法条目已落库、run_ok=False、水位不推进，
+                        # 下检查点幂等补齐）；错误文案附逐条原因与失败现场
+                        # 留档路径（design D4）供归因。
+                        failed_path = _archive_failed_evolution_out(out_path)
+                        error = (
+                            f"产物部分接受: 跳过 {len(item_errors)} 条"
+                            f"契约非法条目（"
+                            f"{'；'.join(err['message'] for err in item_errors)}），"
+                            f"合法 {len(items)} 条已落库"
+                            f"（水位不推进，下检查点幂等补齐）"
+                        )
+                        if failed_path:
+                            error += f"，失败现场留档: {failed_path}"
+                    else:
+                        error = (
+                            f"产物部分恢复: 仅 {len(items)}/{expected} 条，"
+                            f"缺失 {expected - len(items)} 条"
+                            f"（水位不推进，已落地条目由下轮幂等去重补齐）"
+                        )
                     if prev_error:
                         error = f"{error}（CLI 退出异常: {prev_error}）"
                 elif not run_ok:
@@ -1188,6 +1215,25 @@ def _delete_evolution_parts_dir(out_path: Path):
         shutil.rmtree(Path(f"{out_path}.parts"), ignore_errors=True)
     except OSError:
         pass
+
+
+def _archive_failed_evolution_out(out_path: Path) -> str | None:
+    """失败现场产物文件留档（evo-add-evolution-contract-partial-accept D4）。
+
+    仅「有合法条目的部分接受」路径在 finally 清理前调用：产物文件改名为
+    ``<原路径>.failed`` 同目录保留供逐条归因回查（run_id 每轮递增不碰撞）；
+    改名后 ``_delete_evolution_out`` 对原路径 missing_ok 幂等安全。改名失败
+    （OSError）返回 None——留档尽力而为非正确性依赖，不阻塞部分接受收尾。
+
+    Returns:
+        留档后的路径字符串；改名失败返回 None。
+    """
+    try:
+        failed_path = Path(f"{out_path}.failed")
+        out_path.rename(failed_path)
+        return str(failed_path)
+    except OSError:
+        return None
 
 
 def _salvage_evolution_out(out_path: Path) -> int | None:
