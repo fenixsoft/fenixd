@@ -688,7 +688,7 @@ export default function SpecListPage() {
   const [adminInvoke, setAdminInvoke] = useState<{ spec: string } | null>(null);
 
   // add-spec-scheduling-controls：设置拾取时间弹窗（非终态 spec）
-  const [startAfterEdit, setStartAfterEdit] = useState<{ spec: string } | null>(null);
+  const [startAfterEdit, setStartAfterEdit] = useState<{ spec: string; manual?: boolean } | null>(null);
   const [saDate, setSaDate] = useState<dayjs.Dayjs | null>(null);
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
@@ -1046,7 +1046,9 @@ export default function SpecListPage() {
     if (record.start_after === 'manual') {
       setSaDate(null);
       message.info('该 SPEC 当前为待激活态（start_after: manual）——请用「修改状态」弹窗的「激活」按钮，或在此重新选择时间');
-      setStartAfterEdit({ spec: record.name });
+      // manual 标记：未选时间直接「确定」须被拦截，MUST NOT 静默把哨兵清成
+      // null（code-review item 3371bb27c96a）
+      setStartAfterEdit({ spec: record.name, manual: true });
       return;
     }
     // 预填既有定时（ISO → 本地时区展示）；无定时则为 null（清除路径）
@@ -1057,6 +1059,13 @@ export default function SpecListPage() {
   const handleStartAfterOk = async () => {
     if (!startAfterEdit) return;
     try {
+      // manual 哨兵态未选时间直接确定会以 null 提交，静默清除哨兵并立即恢复
+      // 被 daemon 拾取（code-review item 3371bb27c96a）——提交侧拦截，退出
+      // 待激活态只能走「修改状态」弹窗的「激活」或在此重新选择时间
+      if (startAfterEdit.manual && !saDate) {
+        message.error('待激活 SPEC 须先选择拾取时间；退出待激活态请用「修改状态」弹窗的「激活」按钮');
+        return;
+      }
       // DatePicker 输入为本地时区；dayjs.toISOString() 输出 UTC ISO8601（Z 后缀）
       // 哨兵安全降级：非法/不存在日期 MUST NOT 静默把哨兵清成 null，拒绝提交并提示
       if (saDate && !saDate.isValid()) {
@@ -1572,6 +1581,9 @@ export default function SpecListPage() {
       <Modal
         title="设置拾取时间"
         open={!!startAfterEdit}
+        // manual 哨兵态未选定时间前禁用「确定」，防误点静默清除哨兵（提交侧
+        // handleStartAfterOk 另有拦截兜底）
+        okButtonProps={{ disabled: !!startAfterEdit?.manual && !saDate }}
         onOk={() => void handleStartAfterOk()}
         onCancel={() => setStartAfterEdit(null)}
         okText="确定"
