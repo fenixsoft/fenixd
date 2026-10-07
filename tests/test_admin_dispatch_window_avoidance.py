@@ -73,9 +73,9 @@ class _RetrySpyStore(AdminStore):
         super().__init__(*a, **k)
         self.bump_calls = []
 
-    def bump_dispatch_retry(self, *a, **k):
-        self.bump_calls.append(a)
-        return super().bump_dispatch_retry(*a, **k)
+    def bump_dispatch_retry(self, alert_id: str, max_retries: int = 1) -> bool:
+        self.bump_calls.append((alert_id, max_retries))
+        return super().bump_dispatch_retry(alert_id, max_retries=max_retries)
 
 
 _WINDOW_CFG = {
