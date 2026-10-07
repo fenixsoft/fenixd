@@ -40,3 +40,10 @@
 | hook-wiring-present | 核销挂钩接线回归：core/code_fix.py 中统一挂点 _consume_failed_registrations 在批收尾/合回核销点与新链启动簿记块至少 4 处调用、挂点内部调用 consume_resolved_failed_batches、release_failed_batch 无条件调用 _append_release_trace、留痕路径常量正确（出处 core/code_fix.py :3943/:4748/:5810/:5968 挂钩点） | pass | 0/8 | - |
 | closeout-testsuite-passes | 交付物测试套件全绿：新增 tests/test_codefix_failure_registration_closeout.py 的 14 个用例（全终态核销+告警收口+todo 重写、部分终态 open_remaining、二次对账 resync、重复核销幂等、台账读失败 fail-open、前缀条目集不误收口、多批登记块隔离、裸标题残骸兜底、release 留痕三形态、复燃清核销记账）全部通过（出处 tests/test_codefix_failure_registration_closeout.py:77-409，输出行为 2026-10-08 实测照抄） | pass | 0/7 | - |
 | codefix-lockrace-regression-passes | test_code_fix.py 登记写者锁竞争回归子集：todo 登记写入在 evolution 写者并发窗口下存活（.todo.md.lock 同锁契约）、核销重写等待被持有的 todo 锁、复燃清核销记账三用例全部通过（出处 tests/test_code_fix.py TestRegistrationCloseoutLockRace :2760/:2776 与 TestRetryBudget :2698，输出行为 2026-10-08 实测照抄） | pass | 0/6 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 17 个（第 1 轮）。
+
+- 首轮写入 17 个场景
+
