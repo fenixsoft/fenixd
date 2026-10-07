@@ -35,3 +35,10 @@
 | mwl-runid-cross-module-chain | R3×R2 交互链：make_maintenance_run_id 生成的 run id 经真源表归属 maintenance、经 admin_monitor._spec_from_run_id 还原 scope、再经 list_entries_for_run 反查到登记条目——告警归因→台账复盘引用的关联闭环（出处 core/maintenance_ledger.py:79-93、core/agent_runner/run_files.py:75-86、core/admin_monitor.py:6703） | pass | 0/5 | - |
 | mwl-pytest-ledger-suite | 验收回归：tests/test_maintenance_ledger.py 全量通过——R1 追加/读取/空文件创建/坏行容错/超长行 + R3 run_id 关联共 7 例（-v 逐例 PASSED、汇总 7 passed）（出处 tests/test_maintenance_ledger.py） | pass | 0/4 | - |
 | mwl-pytest-admin-prefix-suite | 验收回归：tests/test_admin.py::TestFailurePrefixSubset 全量通过——maintenance- 两处前缀表识别（真源表成员 + _RUN_PREFIXES 成员与 scope 还原）与裸 planner-/test- 排除边界共 4 例（出处 tests/test_admin.py:1356-1386） | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
