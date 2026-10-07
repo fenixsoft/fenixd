@@ -6,9 +6,9 @@
 
 ## What Changes
 
-- run 取消路径补 WIP checkpoint：取消旗标在轮询环内被确认命中（worktree 在手）时，先经既有 _wip_checkpoint_commit_safe 以新锚点 cancel 保全现场，失败仅 WARNING 降级、绝不阻断取消收口；attempt 间隙（无 worktree）跳过；RunCancelledError 收口分支兜底。
+- run 取消路径补 WIP checkpoint：取消旗标在轮询环内被确认命中（worktree 在手）时，先经既有强杀保全助手 _wip_checkpoint_on_forced_kill（自带 exclude_main_tree=True 主树车道排除）以新锚点 cancel 保全现场，失败仅 WARNING 降级、绝不阻断取消收口；attempt 间隙（无 worktree）跳过；RunCancelledError 收口分支兜底。
 - QualityTab「取消」按钮补确认弹窗（danger 标识），确认后才调用取消 API。
-- 修正取消审计告警 recommended_action 文案，如实描述 legacy 保留语义。
+- 修正取消审计告警 recommended_action 文案：替换「取消路径不做 WIP checkpoint / 未提交工作将随 cleanup(success=False) 丢弃」失实句，如实描述 checkpoint 保全结果与 worktree 目录按车道去向（legacy 保留语义仅适用于 fast-track/transient 等车道，implementer 取消终态无 legacy 登记分支）。
 
 ## Impact
 

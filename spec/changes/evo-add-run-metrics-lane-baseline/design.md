@@ -6,9 +6,9 @@ core/self_review.py：MIDFLIGHT_OUTLIER_MULTIPLIER=3（:690）、MIDFLIGHT_MIN_G
 
 ## 方案
 
-1. 读侧兜底（最小改动恢复七车道分组）：_collect_metrics_outliers 分组键优先 metric.agent_type，缺失时 infer_run_agent_type(run_id)[0] 推断（run_id 恒可得）；RUN_ID_AGENT_PREFIXES 补 ("evo-", "evolution")（注意 evo- 无子串冲突），该表为唯一真源、dashboard/get_runs 同源受益，须回归时间线归属。
+1. 读侧兜底（最小改动恢复七车道分组）：_collect_metrics_outliers 分组键优先 metric.agent_type，缺失时 infer_run_agent_type(run_id)[0] 推断（run_id 恒可得）；RUN_ID_AGENT_PREFIXES 补 ("evo-", "evolution")（注意 evo- 无子串冲突），该表为唯一真源、dashboard/get_runs 同源受益，须回归时间线归属。消费方核对以全仓引用为准（不止 dashboard/get_runs）：dashboard/data/runs.py get_runs 时间线归属（agent→evolution，预期修复）；run_files.run_spec_part——evo-<epoch> 剥时间戳从伪 spec「evo」变为裸 epoch 段，两侧均不等于真实 spec 名，全等守卫不变；admin_monitor 驱动判定（:785-791，两侧均 False）与 _merge_admin_runs 归一（两侧均 None）；pm_engine._cancel_lane_runs/_spec_has_recent_run_activity——evo-<epoch> 不携带 spec 段，glob/全等守卫不新增命中；前端 IntroduceRow.tsx AGENT_CATS 值域归族——「agent」与「evolution」同落「其它」，展示不变。
 2. 数据源补齐（二选一，消除成本失明）：写侧——maintenance 三车道收尾补 _log_run_metrics 富指标行（含 agent_type/cost_usd），context metrics 兜底行补 agent_type（可得时补 cost_usd）；或读侧——初筛对无成本样本的行交叉读 .fenix/cost/*_tokens.json 台账。优先写侧（一次写入多方受益），读侧为兜底。
-3. 车道基线降噪：code-fix 等批量相关车道 turns 基线改用组内近期批分布（如同链/近 N 批 P90，样本不足回退窗口中位）；定向重试轮（run_id/产物可辨）单独标注或排除出基线样本。注意实测：仅分组（组内中位 49×3=147）消不掉本窗口旗标，本步是降噪主力。
+3. 车道基线降噪：code-fix 等批量相关车道 turns 基线改用组内近期批分布（如同链/近 N 批 P90，样本不足回退窗口中位）；定向重试轮单独标注或排除出基线样本。参数约定：基线默认取同车道窗口内最近 N=10 个有效批（不含当前 run，按时间倒序）；有效样本 < MIDFLIGHT_MIN_GROUP_SAMPLES 回退窗口中位；「同链」为可选增强（run_id 可解析 spec 段时优先），不作为默认依赖；重试轮辨识沿用既有 run_id 后缀约定（-r<n>/-a<n>，与 core/dashboard/data/runs.py 剥后缀同口径），无后缀不可辨时不排除、保守入基线。注意实测：仅分组（组内中位 49×3=147）消不掉本窗口旗标，本步是降噪主力。
 4. 明确不动：越线倍数（3）与最小样本（3）常量、第六节渲染格式、evo-split-self-review-stderr-noise-count 的 stderr 计数口径（同节协调顺序落地）。
 
 ## 测试与验收

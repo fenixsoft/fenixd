@@ -23,6 +23,7 @@ import fenixd
 from core.state_machine import StateMachine
 from core.worktree_manager import WorktreeManager
 from core.wip_checkpoint import (
+    ANCHOR_CANCEL,
     ANCHOR_DRAIN_PRESERVE,
     ANCHOR_TRANSIENT_BACKOFF,
     ANCHOR_TURN_LIMIT,
@@ -640,3 +641,82 @@ class TestAnchorC:
         msgs = branch_log(root, branch)
         assert msgs[0].startswith(
             f"{WIP_COMMIT_PREFIX} checkpoint {ANCHOR_TURN_LIMIT} demo")
+
+
+# ── 锚点 D：取消路径 WIP 保全（add-run-cancel-wip-checkpoint 3.1） ──────────
+
+
+class TestAnchorCancel:
+    def test_cancel_anchor_checkpoint_branch_ahead(self, tmp_path):
+        """dirty worktree 取消收口 → fenix(wip): checkpoint cancel <spec> 提交，
+        未提交现场进入 attempt 分支（用户取消但现场已保全）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        (wt / "wip.py").write_text("WIP-CANCEL\n", encoding="utf-8")
+        assert ahead_count(root, branch) == 0
+
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill(
+            "demo", wt, anchor=ANCHOR_CANCEL)
+
+        assert ahead_count(root, branch) == 1
+        msgs = branch_log(root, branch)
+        assert msgs[0].startswith(
+            f"{WIP_COMMIT_PREFIX} checkpoint {ANCHOR_CANCEL} demo")
+        # 现场内容完整入提交
+        assert git(root, "show", f"{branch}:wip.py").stdout == "WIP-CANCEL\n"
+
+    def test_cancel_anchor_helper_failure_does_not_block(
+            self, monkeypatch, tmp_path):
+        """helper 失败（git 超时桩）→ 仅 WARNING 降级：不抛错、无提交、未提交
+        现场原样保留在 worktree——取消收口流程不被阻断。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        (wt / "work.py").write_text("WIP-X\n", encoding="utf-8")
+
+        import core.agent_runner.runner as runner_mod
+
+        def _boom(*a, **k):
+            raise subprocess.TimeoutExpired("git status --porcelain", 15)
+
+        monkeypatch.setattr(runner_mod, "commit_wip_checkpoint", _boom)
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill(
+            "demo", wt, anchor=ANCHOR_CANCEL)  # 不得抛错
+        assert ahead_count(root, branch) == 0, "失败降级不产生提交"
+        assert (wt / "work.py").read_text(encoding="utf-8") == "WIP-X\n", \
+            "未提交现场保留在 worktree（未被破坏）"
+
+    def test_cancel_anchor_attempt_gap_skip(self, tmp_path):
+        """attempt 间隙（无 worktree 载体：None/失效路径）→ 跳过，不抛错。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill(
+            "demo", None, anchor=ANCHOR_CANCEL)  # 不得抛错
+        runner._wip_checkpoint_on_forced_kill(
+            "demo", root / "nonexistent", anchor=ANCHOR_CANCEL)  # 不得抛错
+        assert git(root, "log", "--format=%s", "main").stdout.strip() == "[fenix] base"
+
+    def test_cancel_anchor_main_tree_lane_skipped(self, tmp_path):
+        """主树车道（cwd=project_root，无专属 worktree）→ exclude_main_tree
+        语义跳过：不对主树执行 WIP 提交，主树无关脏状态不进入主分支历史。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "unrelated.py").write_text("MAIN-DIRTY\n", encoding="utf-8")
+
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill(
+            "demo", root, anchor=ANCHOR_CANCEL)
+
+        assert ahead_count(root, "main") == 0, "主树车道不得产生 WIP 提交"
+        assert git(root, "log", "--format=%s", "main").stdout.strip() == "[fenix] base"
+        assert (root / "unrelated.py").read_text(
+            encoding="utf-8") == "MAIN-DIRTY\n", \
+            "主树脏状态保持未提交（未被卷进主分支历史）"

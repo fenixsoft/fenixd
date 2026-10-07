@@ -9,7 +9,7 @@ run 指标离群初筛（add-self-review-midflight-signals，已归档）设计�
 - 分组键兜底：_collect_metrics_outliers 在指标行缺 agent_type 时用 run_id 前缀推断（infer_run_agent_type）分组；RUN_ID_AGENT_PREFIXES 补 evo- 前缀，保持该表唯一真源。
 - 数据源补齐：maintenance_runs 三车道（run_evolution/run_code_review/run_code_fix）收尾补 _log_run_metrics 富指标行（含 agent_type/cost_usd），context metrics 兜底行补 agent_type；或初筛侧交叉读 .fenix/cost/*_tokens.json 台账补成本维度（二选一），消除成本维度失明。
 - 车道基线降噪：对 code-fix 等批量相关车道引入组内历史批分布基线（如同链/近 N 批 turns P90）替代窗口中位，或对定向重试轮单独标注。
-- 验收：落地后复核一个完整窗口的第六节清单噪音率（基线：本窗口 12/12 全误报）。
+- 验收：落地后同窗口重放复核第六节清单（基线：本窗口 12/12 全误报）——修复前后旗标集合 diff 逐条可解释：消除项与新基线一致，保留/新标项须为超分布异常批或重试轮标注；evo-1791224502 型真实离群仍在榜且不被同车道噪音稀释。
 
 ## Impact
 
