@@ -773,7 +773,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   };
 
   // ── 取消（5.5） ───────────────────────────────────────────────
-  const handleCancel = async () => {
+  // 二次确认（add-run-cancel-wip-checkpoint 2.1）：取消会终止在飞审查 run，
+  // 不确认直发易误触。复用同文件 modal.confirm 先例 + okButtonProps danger
+  // 标识（同 SpecStatusModal / ProjectCards 形态）；确认后才调 cancelRun。
+  // 错误处理沿用 ApiError.code 稳定错误码分支（cancel 409 冲突由后端
+  // _coded_error 下发 code，不对展示文案做子串匹配）。
+  const handleCancel = () => {
     // review_id 为空时给出可见反馈而非静默 return（code-review item 133cba8a5748：
     // 旧实现在按钮已渲染（progress.running 为真）却 review_id 缺失时什么都不做）。
     if (!progress?.review_id) {
@@ -781,15 +786,33 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       return;
     }
     if (actionPending) return;
-    setActionPending(true);
-    try {
-      await cancelRun(project, progress.review_id);
-      message.success('已受理取消请求，审查将停止');
-    } catch (e) {
-      message.error(`取消失败: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setActionPending(false);
-    }
+    // 弹窗停留期间 progress 可能被 SSE/轮询刷新：onOk 用开框前捕获的
+    // reviewId，不再读闭包里的 progress（同 handleGenerate 的 ref 复核思路，
+    // 取消目标在确认时已锁定）。
+    const reviewId = progress.review_id;
+    modal.confirm({
+      title: '取消进行中的审查？',
+      content: '将终止当前审查 run：未提交的中间现场按取消路径尽力保全（WIP checkpoint），审查不再继续。',
+      okText: '确认取消',
+      cancelText: '不取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setActionPending(true);
+        try {
+          await cancelRun(project, reviewId);
+          message.success('已受理取消请求，审查将停止');
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          if (e instanceof ApiError && e.code === 'cancel_run_request_pending') {
+            message.warning(errMsg);
+          } else {
+            message.error(`取消失败: ${errMsg}`);
+          }
+        } finally {
+          setActionPending(false);
+        }
+      },
+    });
   };
 
   // ── 生成修复 SPEC（5.6；2026-09-20 用户要求加确认框 + 执行时间） ──────

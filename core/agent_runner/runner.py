@@ -110,6 +110,7 @@ from core.agent_runner.run_files import (
 from core.agent_runner.token_budget import TokenAccountant
 from core.agent_runner.v2_server import V2ServerManager
 from core.wip_checkpoint import (
+    ANCHOR_CANCEL,
     ANCHOR_EXTENSION_TAIL,
     ANCHOR_FREEZE_HOLD,
     ANCHOR_TRANSIENT_BACKOFF,
@@ -1141,9 +1142,12 @@ class AgentRunner:
                 "recommended_action": (
                     "run 已登记取消旗标，由持有线程完成 terminate/kill 与 cancelled "
                     "终态落盘；spec 保持原状态，由 stuck 检测/恢复扫描按既有节奏接管。"
-                    "注意：取消路径不做 WIP checkpoint（与 freeze/超时/turn-limit "
-                    "强杀路径不同），attempt 的未提交工作将随 cleanup(success=False) "
-                    "丢弃——需保全现场请先在 worktree 提交或改用 freeze"
+                    "取消收口前已尽力执行 WIP checkpoint（锚点 cancel）：attempt 的"
+                    "未提交改动以 'fenix(wip): checkpoint cancel <spec>' 提交进入 "
+                    "attempt 分支，可从分支恢复；无 worktree 载体（attempt 间隙）或"
+                    "主树车道则无保全。worktree 目录去向按车道：fast-track/transient "
+                    "等车道经 keep_for_reuse 登记为复用遗产保留（宽限期后回收），"
+                    "其余车道维持既有收口处置，分支与 wip 提交不受影响"
                 ),
             })
         except Exception as e:
@@ -3306,6 +3310,13 @@ class AgentRunner:
                     # 不触发 provider 链切换，直接返回 cancelled=True 失败结果。
                     # 取消旗标已在 _run_claude 轮询环内确认并清理 _running_agents，
                     # 此处只负责结果收口。
+                    # 兜底保全（add-run-cancel-wip-checkpoint 1.2）：轮询环锚点
+                    # cancel 已在 kill 序列后提交过；此处 wt_path 尚在作用域且早于
+                    # 循环后任何分型清理，可得则再补一次（空变更自动跳过，幂等；
+                    # 助手自带 exclude_main_tree=True，主树车道跳过；失败仅
+                    # WARNING 降级、不阻断取消收口）。
+                    self._wip_checkpoint_on_forced_kill(
+                        spec_name, wt_path, anchor=ANCHOR_CANCEL)
                     output = ""
                     turns = 0
                     success = False
@@ -6026,6 +6037,14 @@ class AgentRunner:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             pass
+                    # 取消收口前的 WIP 保全（锚点 cancel，add-run-cancel-
+                    # wip-checkpoint 1.2）：时序对齐 turn-limit 强杀语义——
+                    # terminate/grace/kill 序列完成、agent 可证明不再写盘后再
+                    # 提交。经 forced_kill 助手执行（自带 exclude_main_tree=
+                    # True）：无 worktree 载体（attempt 间隙）与主树车道自动
+                    # 跳过；失败仅 WARNING 降级、绝不阻断取消收口。
+                    self._wip_checkpoint_on_forced_kill(
+                        spec_name, cwd, anchor=ANCHOR_CANCEL)
                     returncode = -15  # SIGTERM 对应语义
                     cancel_error = RunCancelledError(reason=reason, by=by)
                     break

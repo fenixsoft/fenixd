@@ -12,6 +12,10 @@ wip_checkpoint.py — WIP checkpoint 提交与 merge-back 塌缩（add-impl-wip-
     执行终止（kill 序列）后、异常收口（append_run_error + raise）前，对当前
     attempt 的 worktree 提交——保全零提交型强杀现场（add-turn-limit-anchor-c
     D1：builtin a1 84min 未提交工作滞留 worktree 的事故补位）。
+  - 锚点 D（cancel）：run 取消路径——取消旗标在轮询环内确认命中、
+    terminate/grace/kill 序列完成后、收口异常构造前，对当前 attempt 的
+    worktree 提交（RunCancelledError 收口分支再兜底一次；add-run-cancel-
+    wip-checkpoint：用户取消但现场已保全，审计可区分取消与损失）。
 
 消息契约（D5）：``fenix(wip): checkpoint <anchor> <spec>``，机器可识别前缀
 供 merge-back 前塌缩（D4）扫描与人工审计。塌缩（D4）把 merge-base 到分支
@@ -35,6 +39,7 @@ ANCHOR_TRANSIENT_BACKOFF = "transient-backoff"
 ANCHOR_TURN_LIMIT = "turn-limit"
 ANCHOR_EXTENSION_TAIL = "extension-tail"
 ANCHOR_FREEZE_HOLD = "freeze-hold"
+ANCHOR_CANCEL = "cancel"
 
 
 # ── 锚点提交（锚点 A / B 共用，D5/D6）───────────────────────────────────────
