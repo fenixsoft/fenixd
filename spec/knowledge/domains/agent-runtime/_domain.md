@@ -1,5 +1,5 @@
 # Agent 运行时
-> 最后更新：2026-10-03 04:59 UTC+8
+> 最后更新：2026-10-08 02:22 UTC+8
 
 Agent 运行时：agent 进程托管与信号处理、非交互运行契约、提示词文件化、run 产物留存、超时与轮次上限生命周期、提示词层效率治理。本域能力页清单如下。
 
@@ -19,5 +19,6 @@ Agent 运行时：agent 进程托管与信号处理、非交互运行契约、�
 | [long-task-foreground-wait](long-task-foreground-wait.md) | 长任务前台等待策略 | 2026-10-03 04:59 |
 | [subagent-model-availability](subagent-model-availability.md) | 子代理模型可用性 | 2026-10-03 04:59 |
 | [tool-result-stream-detection](tool-result-stream-detection.md) | 工具结果流事件识别 | 2026-10-03 04:59 |
-| [turn-limit-lifecycle](turn-limit-lifecycle.md) | 轮次上限与生命周期锚定 | 2026-10-03 04:59 |
+| [turn-limit-lifecycle](turn-limit-lifecycle.md) | 轮次上限与生命周期锚定 | 2026-10-08 02:22 |
+| [impl-run-budget-sizing](impl-run-budget-sizing.md) | 实现 run 轮数预算规模推算 | 2026-10-08 02:22 |
 | [per-agent-timeout-override](per-agent-timeout-override.md) | 按 agent 类型超时覆盖 | 2026-10-03 04:59 |

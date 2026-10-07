@@ -258,3 +258,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-250](ADR-250-contract-signal-window-bifurcation-closing-semantics-follow-window.md) | accepted | 契约信号按触发窗口二分互斥（ready/implementing 巡检前置 vs testing 后消费期 fail-fast），处置收尾语义随窗口而非随信号类型（前置=起草落位勿复位 spec、消费期=复位 ready 重验证），新增触发点必须归窗并携带匹配收尾指引 |
 | [ADR-251](ADR-251-project-level-artifact-signal-singleton-no-spec-fanout.md) | accepted | 项目级产物（一份/项目）的检测信号必须项目级单例、禁按命中 spec 数量放大唤起（(spec, signal_type) 节流对不同 spec 不互斥），spec 字段只是唤起挂靠点不代表处置对象 |
 | [ADR-252](ADR-252-api-stall-observe-only-no-intervention-no-jsonl-contract-growth.md) | accepted | 子进程内 API 停滞只读侧观测（期内 WARNING 留现场 + run_metrics 字段入账），不做 kill/重派/自动重试/人工告警等任何期内干预（黑盒不可重连、合法长轮与真停滞转录不可区分），观测产物不向 run jsonl 注入新事件类型，结构化出口只走字段与日志检索两条 |
+| [ADR-253](ADR-253-run-budget-observe-judgment-separation-default-off-guard.md) | accepted | run 预算轴新证据维度一律只观测不改判（观测面恒开、故障记 unavailable），活性矩阵收窄只许缺省关闭+多条件合取+仅实现车道+复用既有 kill/WIP 收口的守卫形态（封顶语义优先、关闭逐位一致），预算推算只抬不压（override>推算>base、解析单点） |
