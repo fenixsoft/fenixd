@@ -705,9 +705,10 @@ def record_failed_batch(
     """
     path = _failed_path(project_root)
     hit_max = False
+    budget = FAIL_RETRY_MAX
 
     def _do() -> None:
-        nonlocal hit_max
+        nonlocal hit_max, budget
         records = load_failed_batches(project_root)
         key = {str(i) for i in item_ids}
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -741,22 +742,43 @@ def record_failed_batch(
         target["tip_sha"] = tip_sha
         target["detail_ref"] = detail_ref
         target["failed_at"] = now
+        # 触顶判定按生效预算分档（evo-add-codefix-anomaly-redispatch-budget
+        # 1.2）：anomaly 记录预算 1——首记 fail_count=1 即触顶（登记待人工 +
+        # 此后不再自动重派），否则记录悬为「墓碑保留但永不重派」的无告警
+        # 悬挂态。分档切换（历史 mapped 计数被合档保留、最近一次失败转
+        # anomaly，fail_count 已越顶）时 == 判定不可达 → 超调兜底：未发过
+        # 触顶告警（budget_alerted 一次性标记）即补触发一次，防同款悬挂。
+        budget = _effective_retry_budget(target)
+        already_alerted = bool(target.get("budget_alerted"))
+        hit_max = (
+            target["fail_count"] == budget
+            or (target["fail_count"] > budget and not already_alerted)
+        )
+        if hit_max and not already_alerted:
+            # 触顶告警一次性标记（判重在本记录上）：既有告警通道与
+            # AdminStore 去重白名单均无对相关 signal_type 的指纹去重，
+            # 超调兜底 MUST 依赖记录标记防重复触发。锁内置位、随本写入
+            # 原子落盘，告警本体在锁外发送（AdminStore/todo 异锁）。
+            target["budget_alerted"] = True
         _atomic_write(
             path,
             json.dumps(records, ensure_ascii=False, indent=2),
         )
-        hit_max = target["fail_count"] == FAIL_RETRY_MAX
 
     # 锁内只有本文件读-改-写（MUST NOT 重入同一把锁）；告警/todo 写走
     # AdminStore/todo 通道（异锁），保持锁外。
     _with_lock(path, _do)
     if hit_max:
-        # 递增至预算上限的「那次入档」才告警 + 登记 todo（一次性，D4）；
-        # 预算内入档可自动重试，不产生人工项。
+        # 递增至生效预算的「那次入档」才告警 + 登记 todo（一次性，D4）；
+        # 预算内入档可自动重试，不产生人工项。文案按生效预算动态呈现
+        # （anomaly 分档为 1，不误导为 FAIL_RETRY_MAX 轮）。
         _write_retry_exhausted_alert(
-            project_root, item_ids, reason, branch, tip_sha, logger=logger
+            project_root, item_ids, reason, branch, tip_sha,
+            budget=budget, logger=logger
         )
-        _append_todo_entry(project_root, item_ids, reason, branch, tip_sha)
+        _append_todo_entry(
+            project_root, item_ids, reason, branch, tip_sha, budget=budget
+        )
 
 
 # ── 回归失败明细结构化落盘（add-codefix-targeted-retry 1.1/1.2）──────────
@@ -1033,11 +1055,14 @@ def _render_targeted_retry_brief(items) -> str:
 
 
 def release_retryable_failed_batches(project_root) -> int:
-    """释放 ``fail_count < FAIL_RETRY_MAX`` 的失败档案记录（selfheal D3）。
+    """释放生效预算内（``fail_count < 生效预算``）的失败档案记录（selfheal D3）。
 
     新链启动时调用（等效原人工 ``release_failed_batch`` 的预算内自动化）：
-    预算内条目回到可选池实现下轮自动重试；``fail_count >= FAIL_RETRY_MAX``
-    的记录保持跳过（达上限永久跳过）。返回释放的记录条数（供日志/进度文案）。
+    预算内条目回到可选池实现下轮自动重试；``fail_count >= 生效预算`` 的
+    记录保持跳过（达上限永久跳过）。预算按 ``reg_form`` 分档
+    （evo-add-codefix-anomaly-redispatch-budget）：anomaly 记录取
+    ``ANOMALY_FAIL_RETRY_MAX``（1）、mapped（含缺键兼容）取 ``FAIL_RETRY_MAX``。
+    返回释放的记录条数（供日志/进度文案）。
 
     释放是**打标墓碑**而非删除（code-review item 931df4af59cc）：置
     ``released=true`` + ``released_at``，``fail_count`` 原样保留。删除式释放
@@ -1059,10 +1084,13 @@ def release_retryable_failed_batches(project_root) -> int:
         released = 0
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         for rec in records:
-            # fail_count 容错解析（_fail_count_int 单源，非数值按缺省 1）。
+            # fail_count 容错解析（_fail_count_int 单源，非数值按缺省 1）；
+            # 预算按 reg_form 分档（evo-add-codefix-anomaly-redispatch-budget
+            # 1.2）——不改则新链启动会把预算已耗尽的 anomaly 记录当预算内
+            # 释放回池，分档被旁路。
             if rec.get("released") or _fail_count_int(
                 rec.get("fail_count")
-            ) >= FAIL_RETRY_MAX:
+            ) >= _effective_retry_budget(rec):
                 continue
             rec["released"] = True
             rec["released_at"] = now
@@ -1342,11 +1370,15 @@ def _fmt_overlap(overlap) -> str:
     return shown
 
 
-def _append_todo_entry(project_root, item_ids, reason="", branch="", tip_sha="") -> None:
+def _append_todo_entry(
+    project_root, item_ids, reason="", branch="", tip_sha="",
+    budget: int = FAIL_RETRY_MAX,
+) -> None:
     """达重试上限的失败批在 .fenix/todo.md 追加待人工排查项（一次性，D4）。
 
     现场即弃语义下 worktree 已清理，指引按 ``branch``/``tip_sha`` 追溯
     （丢弃的修复提交可经 git reflog 找回）；MUST NOT 再引用 worktree 路径。
+    ``budget``：生效自动重派预算（调用方按记录分档传入），文案如实呈现。
     """
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     ids_txt = ", ".join(str(i) for i in item_ids)
@@ -1354,7 +1386,7 @@ def _append_todo_entry(project_root, item_ids, reason="", branch="", tip_sha="")
         "\n## [code-fix] 失败批已达自动重试上限，待人工排查"
         "（add-code-fix-batch-failure-selfheal）\n\n"
         f"- 记录时间：{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-        f"- 失败原因：{reason or 'unknown'}（自动重试 {FAIL_RETRY_MAX} 轮均失败，"
+        f"- 失败原因：{reason or 'unknown'}（自动重试 {budget} 轮均失败，"
         "已停止自动重派）\n"
         f"- 追溯线索：branch=`{branch}`、tip_sha=`{tip_sha}`（worktree 已清理，"
         "丢弃的修复提交可经 git reflog 按 tip_sha 找回）\n"
@@ -2642,11 +2674,13 @@ def _write_night_quiet_window_release_alert(
 
 
 def _write_retry_exhausted_alert(
-    project_root, item_ids, reason, branch, tip_sha, logger=None
+    project_root, item_ids, reason, branch, tip_sha, logger=None,
+    budget: int = FAIL_RETRY_MAX,
 ) -> None:
-    """失败档案条目集 fail_count 达 FAIL_RETRY_MAX 时的一次性 warning 告警（D4）。
+    """失败档案条目集 fail_count 达生效预算时的一次性 warning 告警（D4）。
 
     点名录条目集与历次失败原因；此后该记录不再被释放、不再触发新告警。
+    ``budget``：生效自动重派预算（调用方按记录分档传入），文案如实呈现。
     ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕——本告警仅
     fail_count 恰好递增至上限的那次入档发送、无重发机制，拒写即永久丢失。
     """
@@ -2660,7 +2694,7 @@ def _write_retry_exhausted_alert(
             "spec": None,
             "severity": "warning",
             "description": (
-                f"code-fix 失败批自动重试已达上限（{FAIL_RETRY_MAX} 轮），"
+                f"code-fix 失败批自动重试已达上限（{budget} 轮），"
                 "停止自动重派，待人工排查"
             ),
             "evidence": (
@@ -3645,7 +3679,8 @@ class CodeFixOrchestrator:
                             (ledger.get(str(i)) or {}).get("status") == "open"
                             for i in rec.get("item_ids") or []
                         )
-                        and _fail_count_int(rec.get("fail_count")) >= FAIL_RETRY_MAX
+                        and _fail_count_int(rec.get("fail_count"))
+                        >= _effective_retry_budget(rec)
                         for rec in load_failed_batches(root)
                     )
                     if deferred_msg:
