@@ -30,3 +30,8 @@
 | cli-run-cancel-integration-checkpoint-before-closeout | 取消收口前已产 checkpoint 集成用例（tasks 1.2/3.2，tests/test_run_cancel.py:786-866 TestCancelWipCheckpoint::test_polling_cancel_produces_cancel_anchor_checkpoint）：真实引擎轮询环命中取消旗标 → terminate/grace/kill 序列完成后、RunCancelledError 构造前，对 attempt worktree 提交锚点 cancel 的 WIP 提交（subjects[0] == fenix(wip): checkpoint cancel x、现场内容入提交）；cancelled 终态行照常落盘（保全不阻断收口）；RunCancelledError 收口分支幂等兜底不产空提交。命令实测输出：1 passed | pass | 0/4 | - |
 | cli-run-cancel-audit-copy-honest | 取消审计告警文案如实描述现场去向（tasks 1.3/3.2，tests/test_run_cancel.py:868-916 test_cancel_audit_recommended_action_describes_checkpoint）：recommended_action 含「取消收口前已尽力执行 WIP checkpoint」「fenix(wip): checkpoint cancel」「可从分支恢复」「复用遗产保留」「分支与 wip 提交不受影响」；三条失实表述（「取消路径不做 WIP checkpoint」「cleanup(success=False)」「登记为 legacy 保留」）不再出现；旗标登记句「run 已登记取消旗标」「按既有节奏接管」原样保留（runner.py:1141-1148 文案修正）。命令实测输出：1 passed | pass | 0/4 | - |
 | cli-run-cancel-wip-checkpoint-regression | 回归点：取消/WIP checkpoint 相关测试套件零回归（impact 既有测试）：tests/test_impl_wip_checkpoint.py + tests/test_run_cancel.py + tests/test_agent_runner.py 全量 83 条全绿（命令实测 83 passed in 6.04s），确认 ANCHOR_CANCEL 锚点新增（core/wip_checkpoint.py:42）、runner.py 取消旗标接入点（:6047）与 RunCancelledError 收口分支兜底（:3319）未引入回归 | pass | 0/3 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
