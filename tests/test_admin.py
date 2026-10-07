@@ -2241,6 +2241,7 @@ class TestRunAdministrator:
         # 实例路径贯穿全部写入指引（≥2：中途持久化 + 最终写入是下限；铁律区
         # 演进会增补 {disp_path} 槽位——5abb0254 铁律 7/9 后模板共 4 处，逐字
         # 计数断言会随模板措辞漂移）；旧全局路径不再出现才是本意。
+        # [fenix-ignore:db9e755f4ed8] 回归已由 a9198e9a 修复（== 2 过期计数改 ≥2 保意图），当前树不复现
         assert prompt.count(".fenix/admin_disposition-") >= 2
         assert "admin_disposition.json" not in prompt
         injected = admin_disposition_path(proot, disp.run_id).name
