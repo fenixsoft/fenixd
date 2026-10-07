@@ -636,6 +636,7 @@ class TestTargetedRetryLoop(unittest.TestCase):
     def test_exhausted_rounds_discard_with_detail_ref(self):
         """4.4：耗尽 3 轮 → 现场即弃（档案含 branch/tip_sha/最后一轮明细引用）。"""
         from core.code_fix import (load_failed_batches, read_progress,
+                                   release_retryable_failed_batches,
                                    write_fix_reg_failures)
         from core.code_review import read_items
 
@@ -678,6 +679,15 @@ class TestTargetedRetryLoop(unittest.TestCase):
         self.assertTrue(rec.get("detail_ref"), "档案 MUST 含最后一轮明细引用")
         self.assertIn("fix-reg-failures-regression-fake-4.json", rec["detail_ref"])
         self.assertTrue((proot / rec["detail_ref"]).is_file())
+        # reg_form 入档（evo-add-codefix-anomaly-redispatch-budget 1.1）：耗尽
+        # 轮有真实失败面 → mapped；重试收敛事实快照随档留存
+        self.assertEqual(rec["reg_form"], "mapped")
+        self.assertEqual(rec["reg_detail"],
+                         {"anomaly_streak": 0, "retry_rounds": 3,
+                          "breaker_triggered": False})
+        # 既有行为回归（1.2）：mapped 保持 FAIL_RETRY_MAX 预算——fail_count=1
+        # 预算内 → 新链启动照常自动释放（下轮自动重试，分档不改变 mapped 行为）
+        self.assertEqual(release_retryable_failed_batches(proot), 1)
         prog = read_progress(proot)
         self.assertEqual(prog["phase"], "blocked")
         self.assertIn("下轮自动重试", prog["current"])
@@ -750,7 +760,8 @@ class TestRegressionAnomalyBreaker(unittest.TestCase):
         一次且 retry_rounds=实际执行轮数（1）。
         """
         from core.admin_store import AdminStore
-        from core.code_fix import load_failed_batches, read_progress
+        from core.code_fix import (load_failed_batches, read_progress,
+                                   release_retryable_failed_batches)
         from core.code_review import read_items
 
         proot = _make_project_root()
@@ -780,6 +791,15 @@ class TestRegressionAnomalyBreaker(unittest.TestCase):
         self.assertIn("regression-fake-2", failed[0].get("detail_ref") or "",
                       "档案含最后一轮（异常轮）明细引用")
         self.assertTrue((proot / failed[0]["detail_ref"]).is_file())
+        # reg_form 入档（evo-add-codefix-anomaly-redispatch-budget 1.1）：熔断
+        # 收口档案标注异常形态（零失败面），重试收敛事实快照随档
+        self.assertEqual(failed[0]["reg_form"], "anomaly")
+        self.assertEqual(failed[0]["reg_detail"],
+                         {"anomaly_streak": 2, "retry_rounds": 1,
+                          "breaker_triggered": True})
+        # 分档预算=1（1.2）：fail_count=1 已耗尽 → 新链启动不再自动释放
+        # （既有单 run 熔断行为本身逐位不动，仅入档形态与预算分档变化）
+        self.assertEqual(release_retryable_failed_batches(proot), 0)
         alerts = self._alerts(proot)
         # 常规收口告警 + anomaly 预算停派告警并存（复用同一通道、同类型）：
         # 熔断收口档案 reg_form=anomaly，fail_count=1 即达分档预算
