@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-10-08 02:32 UTC+8
+> 最后更新：2026-10-08 02:52 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -29,7 +29,7 @@
 | [state-transition-idempotency](state-transition-idempotency.md) | 状态迁移幂等 | 2026-10-03 04:59 |
 | [state-write-atomicity](state-write-atomicity.md) | 状态写入原子性 | 2026-10-03 04:59 |
 | [stuck-timeout-single-source](stuck-timeout-single-source.md) | stuck 阈值单源 | 2026-10-03 04:59 |
-| [orphaned-state-signal](orphaned-state-signal.md) | 孤儿状态信号 | 2026-10-03 04:59 |
+| [orphaned-state-signal](orphaned-state-signal.md) | 孤儿状态信号 | 2026-10-08 02:52 |
 | [baseline-blocked-gate](baseline-blocked-gate.md) | 回归基线失败挂起门 | 2026-10-03 04:59 |
 | [lifecycle-hygiene](lifecycle-hygiene.md) | run 生命周期卫生 | 2026-10-03 04:59 |
 | [cli-retry-backoff](cli-retry-backoff.md) | CLI 退避重试 | 2026-10-03 04:59 |
