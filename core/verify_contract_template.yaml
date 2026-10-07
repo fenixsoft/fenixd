@@ -146,3 +146,11 @@
 # SPEC 名替换）。.fenix/ 被消费项目忽略规则覆盖，不产生 untracked 噪声。
 # 声明其它相对路径时以其为准；绝对路径/含 ".." 段等非法值回退缺省并告警。
 # evidence_dir: .fenix/verify-evidence/<spec>/
+#
+# ── 验证证据分级留存（verify-evidence-tiered-retention，可选）────────────
+# 超过阈值（缺省 10485760 即 10MB）的二进制证据不入 git：改落 sha256
+# sidecar + 复现命令 + 存放路径登记文件（与报告同目录），哈希与登记信息
+# 即可支撑「逐字节一致」核查；文本/JSON/哈希/小日志不受限，直接入库。
+# 缺失或非法值（负数/非整数/bool）静默回退缺省，不报错、不阻断契约加载。
+# evidence_retention:
+#   max_binary_bytes: 10485760       # 缺省 10MB；声明其它正整数时以其为准

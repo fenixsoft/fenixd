@@ -153,6 +153,12 @@ DEFAULT_DEPS_MODE = "hardlink"
 # （.fenix/verify-progress/<spec>/report.json）一致。
 DEFAULT_EVIDENCE_DIR_TEMPLATE = ".fenix/verify-evidence/{spec}"
 
+# 验证证据分级留存阈值（verify-evidence-tiered-retention 1.2）：超过该字节数
+# 的二进制证据不入 git，改以 sha256 sidecar + 复现命令 + 存放路径登记替代；
+# 文本/JSON/哈希/小日志不受限直接入库。缺省 10485760（10MB）取保守值，且
+# 可由契约 evidence_retention.max_binary_bytes 覆盖。
+DEFAULT_EVIDENCE_MAX_BINARY_BYTES = 10485760
+
 
 def default_evidence_dir(spec_name: str) -> str:
     """spec 的缺省证据目录（相对项目根的路径，POSIX 分隔符）。
@@ -268,6 +274,11 @@ class VerifyContract:
     # .fenix/verify-evidence/<spec>/，见 default_evidence_dir）。加载层对
     # 非法值（绝对路径/".." 段/非字符串）记 warning 后回退缺省。
     evidence_dir: str = ""
+    # 验证证据分级留存阈值（verify-evidence-tiered-retention 1.2）：契约
+    # evidence_retention.max_binary_bytes 的解析结果，字节为单位。加载层按
+    # _positive_int_or_default 回退范式消费——缺失/非法值（负数/非整数/bool）
+    # 静默回退 DEFAULT_EVIDENCE_MAX_BINARY_BYTES，不报错、不阻断契约加载。
+    evidence_max_binary_bytes: int = DEFAULT_EVIDENCE_MAX_BINARY_BYTES
 
     def resolve_evidence_dir(self, spec_name: str) -> str:
         """该 spec 的证据目录（**相对项目根**的路径；落点语义=主树）。
@@ -529,6 +540,21 @@ def _load_verify_contract_with_raw(
                 )
         else:
             evidence_dir = cand
+    # evidence_retention.max_binary_bytes（verify-evidence-tiered-retention
+    # 1.2）：可选分级声明。缺失/非法值（负数/非整数/bool，含 evidence_retention
+    # 整段非映射形态）一律经 _positive_int_or_default 静默回退缺省
+    # 10485760——不报错、不阻断契约加载（spec 场景 2「非法值回退缺省」逐字
+    # 语义）；解析结果落在 contract.evidence_max_binary_bytes，供落位指引
+    # 渲染消费（load_verify_contract 与 validate_contract 经同一 loader 单源
+    # 生效，后者不重复解析）。
+    evidence_retention = data.get("evidence_retention")
+    if isinstance(evidence_retention, dict):
+        evidence_max_binary_bytes = _positive_int_or_default(
+            evidence_retention.get("max_binary_bytes"),
+            DEFAULT_EVIDENCE_MAX_BINARY_BYTES,
+        )
+    else:
+        evidence_max_binary_bytes = DEFAULT_EVIDENCE_MAX_BINARY_BYTES
     # regression 段（design D1/D2）：可选。缺段 → regression=None（未配置回归，
     # 分面引导态、周期检查点跳过、触发端点 400，存量项目零迁移）。缺 cmd/output
     # 或 format 非 junit 均视整段无效 → None + WARNING——MUST NOT 静默按 junit
@@ -601,6 +627,7 @@ def _load_verify_contract_with_raw(
         deps_mode=deps_mode,
         regression=regression,
         evidence_dir=evidence_dir,
+        evidence_max_binary_bytes=evidence_max_binary_bytes,
     ), data
 
 

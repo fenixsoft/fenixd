@@ -1032,8 +1032,10 @@ class PromptBuilder:
         路径」，防验证 agent 在 worktree 内自发落位、run 结束即失联。
         """
         rel_dir = ""
+        max_binary_bytes = 0
         try:
             from core.verify_contract import (
+                DEFAULT_EVIDENCE_MAX_BINARY_BYTES,
                 default_evidence_dir,
                 load_verify_contract,
             )
@@ -1041,10 +1043,14 @@ class PromptBuilder:
             contract = load_verify_contract(self._pm.project_root, logger=None)
             if contract is not None:
                 rel_dir = contract.resolve_evidence_dir(spec_name)
+                max_binary_bytes = contract.evidence_max_binary_bytes
             if not rel_dir:
                 rel_dir = default_evidence_dir(spec_name)
+            if not max_binary_bytes:
+                max_binary_bytes = DEFAULT_EVIDENCE_MAX_BINARY_BYTES
         except Exception:  # noqa: BLE001 — prompt 软约束 fail-open
             rel_dir = ""
+            max_binary_bytes = 0
         if not rel_dir:
             # 最终兜底（code-review item e2d71bbe1a6a）：core.verify_contract
             # 模块级导入/加载整体失败时不再让 ImportError 冒泡中止 _build_prompt
@@ -1052,6 +1058,18 @@ class PromptBuilder:
             # TEMPLATE（".fenix/verify-evidence/{spec}"）字面等价，任何导入路径
             # 失败都只回退缺省 rel_dir。
             rel_dir = f".fenix/verify-evidence/{spec_name}"
+        if not max_binary_bytes:
+            # 最终兜底（与上方 rel_dir 兜底同族）：模块级导入/加载整体失败时
+            # 取缺省 10MB（与 verify_contract.DEFAULT_EVIDENCE_MAX_BINARY_BYTES
+            # 字面等价），分级条款照常渲染、派发不因软约束失败中止。
+            max_binary_bytes = 10485760
+
+        def _fmt_bytes(n: int) -> str:
+            if n % (1024 * 1024) == 0:
+                return f"{n // (1024 * 1024)}MB"
+            return f"{n} 字节"
+
+        threshold_text = _fmt_bytes(max_binary_bytes)
         abs_dir = Path(self._pm.project_root) / rel_dir
         return (
             "\n\n## 验证证据落位（.fenix/verify-evidence/<spec>/，强制）\n"
@@ -1067,6 +1085,11 @@ class PromptBuilder:
             f"`{rel_dir}/<文件名>`），供 run 结束后人工核查回查。\n"
             "- 写入前先以 mkdir -p 语义创建目录；`.fenix/` 已被消费项目忽略"
             "规则覆盖，不产生 git status 噪声。\n"
+            "- **分级留存**（阈值随验证契约 "
+            "`evidence_retention.max_binary_bytes` 联动，当前 "
+            f"{threshold_text}）：文本/JSON/哈希/小日志直接入库；超过阈值的"
+            "二进制证据 MUST NOT 入 git，改落 sha256 sidecar + 复现命令 + "
+            "存放路径登记文件（与报告同目录）。\n"
         )
 
     def _selfcheck_section(self, spec_name: str, wt_path: Path | None = None) -> str:
