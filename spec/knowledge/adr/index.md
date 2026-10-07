@@ -257,3 +257,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-249](ADR-249-subset-evidence-invisible-to-fullscope-gates.md) | accepted | 定向子集证据对全量口径门禁不可见：口径标记（run_scope）仅在子集实际生效时落，门读侧数据源内部 fail-open 回落不吸收口径差距，后续新增部分范围产物源必须携带口径标记并同步读侧判定 |
 | [ADR-250](ADR-250-contract-signal-window-bifurcation-closing-semantics-follow-window.md) | accepted | 契约信号按触发窗口二分互斥（ready/implementing 巡检前置 vs testing 后消费期 fail-fast），处置收尾语义随窗口而非随信号类型（前置=起草落位勿复位 spec、消费期=复位 ready 重验证），新增触发点必须归窗并携带匹配收尾指引 |
 | [ADR-251](ADR-251-project-level-artifact-signal-singleton-no-spec-fanout.md) | accepted | 项目级产物（一份/项目）的检测信号必须项目级单例、禁按命中 spec 数量放大唤起（(spec, signal_type) 节流对不同 spec 不互斥），spec 字段只是唤起挂靠点不代表处置对象 |
+| [ADR-252](ADR-252-api-stall-observe-only-no-intervention-no-jsonl-contract-growth.md) | accepted | 子进程内 API 停滞只读侧观测（期内 WARNING 留现场 + run_metrics 字段入账），不做 kill/重派/自动重试/人工告警等任何期内干预（黑盒不可重连、合法长轮与真停滞转录不可区分），观测产物不向 run jsonl 注入新事件类型，结构化出口只走字段与日志检索两条 |
