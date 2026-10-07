@@ -6414,6 +6414,10 @@ class AgentRunner:
                 _metrics_line = {
                     "type": "run_metrics",
                     "run_id": run_id,
+                    # evo-add-run-metrics-lane-baseline 1.3：兜底行补车道归属
+                    # （缺 agent_type 的行在离群初筛侧整体折进混合组）。None
+                    # 时读侧按 run_id 前缀推断兜底。
+                    "agent_type": agent_type,
                     "duration_s": _duration_s,
                     "turns": _turns,
                     "input_tokens": _inp,
@@ -6456,6 +6460,9 @@ class AgentRunner:
                     {
                         "metric_type": "run_metrics",
                         "run_id": run_id,
+                        # evo-add-run-metrics-lane-baseline 1.3：兜底行补车道
+                        # 归属（同转录行；None 时读侧按 run_id 前缀推断）。
+                        "agent_type": agent_type,
                         # evo-add-night-window-inflight-guard 1.2：与归档行同源
                         "duration_s": _duration_s,
                         "turns": _turns,

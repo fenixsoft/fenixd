@@ -920,6 +920,46 @@ def _unique_evolution_run_id(runner) -> str:
         return candidate
 
 
+def _log_lane_run_metrics(
+    runner,
+    *,
+    run_id: str,
+    spec_name: str,
+    agent_type: str,
+    started_monotonic: float,
+    turns: int,
+    usage_info: dict,
+    run_ok: bool,
+    provider_name: str | None,
+) -> None:
+    """maintenance 车道收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）。
+
+    三车道（run_evolution/run_code_review/run_code_fix）此前从不写带
+    agent_type 的终态富指标行（_log_run_metrics 仅覆盖 _execute_agent 家族
+    路径），离群初筛把它们整体折进 unknown 混合组、成本维度 0 样本失明
+    （turns 2114 / cost 85.68 美元的全仓扫描从未被成本维度看见）。本 helper
+    在车道 run 真正终态（_run_claude 返回/抛出后）的收尾点统一补写：字段与
+    runner._log_run_metrics 同源（含 agent_type/cost_usd），落盘失败由其内部
+    吞掉不阻断收尾。组装期早退（run 未派发、_run_claude 从未进入）不落本行
+    ——零 turns/零时长行只污染指标索引，对初筛零贡献。打桩 runner 缺该方法
+    时静默跳过（车道单测免随行打桩，与 getattr(runner, "logger", None) 同
+    防御口径）。
+    """
+    log_metrics = getattr(runner, "_log_run_metrics", None)
+    if log_metrics is None:
+        return
+    log_metrics(
+        run_id=run_id,
+        spec_name=spec_name,
+        agent_type=agent_type,
+        duration_seconds=max(0.0, time.monotonic() - started_monotonic),
+        turns=int(turns or 0),
+        usage_info=usage_info or {},
+        terminal="success" if run_ok else "error",
+        provider=provider_name,
+    )
+
+
 def run_evolution(
     runner, ready_projects: list, pending_entries: list | None = None
 ) -> EvolutionResult:
@@ -957,6 +997,9 @@ def run_evolution(
         pending_entries: 待分析条目（含 id），None 由调用方传入。
     """
     run_id = _unique_evolution_run_id(runner)
+    # 富指标行墙钟计时起点（evo-add-run-metrics-lane-baseline 1.3，与
+    # runner.py run_metrics 行同口径：monotonic 差值，不受系统对钟影响）
+    _started = time.monotonic()
     out_path = runner.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
     prompt = runner._build_prompt(
         run_id,
@@ -986,8 +1029,10 @@ def run_evolution(
     assignment = runner._get_agent_model_assignment(
         "self-review"
     ) or runner._get_agent_model_assignment("administrator")
+    provider_name = None
     if assignment:
         provider, model_override = assignment[0]
+        provider_name = provider.get("name")
         _apply_provider_env(env_overrides, provider, model_override, runner)
         # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
         # 车道观测口径一致；写失败不阻断，见助手 docstring）
@@ -997,6 +1042,7 @@ def run_evolution(
     else:
         model_override = runner._get_admin_model()
 
+    turns = 0  # _run_claude 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:
         output, turns, _session_id, usage_info = runner._run_claude(
             prompt,
@@ -1185,6 +1231,21 @@ def run_evolution(
         # 缺失即跳过，run 失败且从未写出时幂等安全。
         runner._delete_evolution_out(out_path)
         _delete_evolution_parts_dir(out_path)
+
+    # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
+    # cost_usd，离群初筛按车道分组与成本维度自此可见。收尾段重排/抢救已定
+    # 型 run_ok 后才落行，终态与判定一致。
+    _log_lane_run_metrics(
+        runner,
+        run_id=run_id,
+        spec_name="evolution",
+        agent_type="evolution",
+        started_monotonic=_started,
+        turns=turns,
+        usage_info=usage_info,
+        run_ok=run_ok,
+        provider_name=provider_name,
+    )
 
     return EvolutionResult(
         run_id=run_id,
@@ -1449,6 +1510,8 @@ def run_code_review(
             manifest JSON 与 run jsonl 均标注重派缘由（取证可见）。
     """
     run_id = runner._unique_code_review_run_id()
+    # 富指标行墙钟计时起点（evo-add-run-metrics-lane-baseline 1.3）
+    _started = time.monotonic()
     mpath = runner.project_root / ".fenix" / "code-review" / f"manifest-{run_id}.json"
     opath = runner.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
     # 申领占位收尾清理（对齐 run_regression item e6a103d93b91 的 finally 形态）：
@@ -1565,6 +1628,7 @@ def run_code_review(
     # 异常绑定即删，后续意图登记只能读这里存的值。
     claude_api_error_status = None
     claude_result_text = ""
+    turns = 0  # _run_claude 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:
         output, turns, _session_id, usage_info = runner._run_claude(
             prompt,
@@ -1849,6 +1913,21 @@ def run_code_review(
                         "code-review",
                         f"ratelimit_redispatch 意图登记失败（run {run_id}）: {e}",
                     )
+
+    # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
+    # cost_usd，离群初筛按车道分组与成本维度自此可见（全仓扫描的大 turns/
+    # 大成本 run 不再失明）。产物硬门/抢救/重派意图已定型 run_ok 后才落行。
+    _log_lane_run_metrics(
+        runner,
+        run_id=run_id,
+        spec_name="code-review",
+        agent_type="code-review",
+        started_monotonic=_started,
+        turns=turns,
+        usage_info=usage_info,
+        run_ok=run_ok,
+        provider_name=provider_name,
+    )
 
     result = CodeReviewResult(
         run_id=run_id,
@@ -2498,6 +2577,8 @@ def run_code_fix(
         failure_summary: 重试轮注入的失败用例摘要（首轮为空）。
     """
     run_id = run_id or _unique_code_fix_run_id(runner)
+    # 富指标行墙钟计时起点（evo-add-run-metrics-lane-baseline 1.3）
+    _started = time.monotonic()
     wt = Path(worktree_root)
     out_path = wt / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
 
@@ -2539,8 +2620,10 @@ def run_code_fix(
             or runner._get_agent_model_assignment("self-review")
             or runner._get_agent_model_assignment("administrator")
         )
+        provider_name = None
         if assignment:
             provider, model_override = assignment[0]
+            provider_name = provider.get("name")
             _apply_provider_env(env_overrides, provider, model_override, runner)
             # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条
             # 维护车道观测口径一致；写失败不阻断，见助手 docstring）
@@ -2595,12 +2678,14 @@ def run_code_fix(
         api_timeout = False
         exit_code = None
         stderr_summary = ""
+        # _run_claude 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
+        turns = 0
         # evo-add-codefix-conn-error-cooldown 1.3：连接类签名同纪律（非
         # _run_claude 失败异常恒 False/空，硬门/计数失败路径不携带）。
         conn_error = False
         result_text = ""
         try:
-            output, _turns, _session_id, usage_info = runner._run_claude(
+            output, turns, _session_id, usage_info = runner._run_claude(
                 prompt,
                 wt,
                 run_id,
@@ -2683,6 +2768,21 @@ def run_code_fix(
                     fixed += 1
                 elif rec.get("status") == "skipped":
                     skipped += 1
+
+        # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
+        # cost_usd，离群初筛按车道分组与成本维度自此可见。产物硬门/计数读取
+        # 已定型 run_ok 后才落行，终态与判定一致。
+        _log_lane_run_metrics(
+            runner,
+            run_id=run_id,
+            spec_name="code-review-fix",
+            agent_type="code-fix",
+            started_monotonic=_started,
+            turns=turns,
+            usage_info=usage_info,
+            run_ok=run_ok,
+            provider_name=provider_name,
+        )
 
         return CodeFixResult(
             run_id=run_id,

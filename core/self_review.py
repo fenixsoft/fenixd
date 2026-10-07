@@ -684,9 +684,11 @@ def collect_failed_run_samples(
 # 扫描策略 = run_metrics 量化初筛（零事件流读取）+ 离群 run 事件流深扫 +
 # 编排层救回痕迹归集。只进自省摘要，不新增 admin 告警（降噪铁律）。
 
-# 初筛离群倍数（design D1）：run 指标 > 同 agent_type 窗口组中位数 × 3 即离群
-# （成功与失败 run 同口径）。×3 与 LATENCY_STALL_SECONDS 同为保守倍数，宁漏勿
-# 噪；固定绝对阈值被否——阈值随模型/车道配置漂移失效。实测偏松/偏紧调此常量。
+# 初筛离群倍数（design D1）：run 指标 > 同 agent_type 组基线 × 3 即离群
+# （成功与失败 run 同口径；基线默认组中位，批量车道 turns 维为近期批分布
+# P90，见 MIDFLIGHT_BATCH_BASELINE_LANES）。×3 与 LATENCY_STALL_SECONDS 同为
+# 保守倍数，宁漏勿噪；固定绝对阈值被否——阈值随模型/车道配置漂移失效。
+# 实测偏松/偏紧调此常量。
 MIDFLIGHT_OUTLIER_MULTIPLIER = 3
 
 # 初筛最小组样本数（design D1）：组内某维度有效样本 < 3 时该维度跳过（2 个
@@ -695,6 +697,43 @@ MIDFLIGHT_MIN_GROUP_SAMPLES = 3
 
 # 初筛维度（proposal）：turns / cost_usd / duration_seconds 三维度。
 MIDFLIGHT_OUTLIER_DIMS = ("turns", "cost_usd", "duration_seconds")
+
+# 批量相关车道（evo-add-run-metrics-lane-baseline 方案 3）：这些车道的 turns
+# 规模由批大小（fix 批条目数 / 审查 manifest 文件数）驱动，窗口中位基线会把
+# 「正常长批」误判离群——2026-10-08 窗口实测 code-fix 组 12/12 全误报（组内
+# 中位 49×3=147 < 正常批 158）。仅对 turns 维改用组内近期批分布 P90 基线
+# （cost/duration 与批大小弱相关，维持窗口中位）；实测偏松/偏紧调此清单。
+MIDFLIGHT_BATCH_BASELINE_LANES = ("code-fix", "code-review")
+
+# 近期批分布基线窗口（evo-add-run-metrics-lane-baseline 方案 3）：基线取同
+# 车道窗口内最近 N 个有效批（不含当前 run、排除重试轮，按时间倒序）。
+MIDFLIGHT_BASELINE_RECENT_BATCHES = 10
+
+# 重试轮 run_id 后缀（evo-add-run-metrics-lane-baseline 方案 3）：与
+# core/dashboard/data/runs.py _strip_run_attempt_suffix 同口径——-a<n>
+# attempt / -r<n> 原地重试，可叠加（<base>-a1-r1）。无后缀不可辨时不排除、
+# 保守入基线。
+_MIDFLIGHT_RETRY_SUFFIX_RE = re.compile(r"(?:-[ra]\d+)+$")
+
+
+def _is_retry_run(run_id: str) -> bool:
+    """重试/attempt 轮辨识：run_id 以 -r<n>/-a<n>（可叠加）结尾。
+
+    run_id 内嵌开始时间戳（-<unix秒>）不命中（数字前无 r/a），spec 名以
+    -a2/-r3 结尾属极边界（与 _RUN_TS_RE 同族限制，接受项）。
+    """
+    return bool(_MIDFLIGHT_RETRY_SUFFIX_RE.search(run_id))
+
+
+def _recent_batch_p90(values: List[float]) -> float:
+    """最近秩 P90：升序第 ⌈0.9·n⌉ 个（1 基，下标 ⌈0.9·n⌉-1）。
+
+    不用 statistics.quantiles（插值法小样本外推出界、基线可超最大样本），
+    最近秩基线恒 ≤ 最大样本，「近 N 批第 9 大」解释直白可复核。
+    """
+    ordered = sorted(values)
+    idx = max(0, -(-len(ordered) * 9 // 10) - 1)
+    return float(ordered[idx])
 
 # 深扫行数上限（design D2）：窗口长尾 run 实测量级上界，超限多为异常残留转录；
 # 与「仅离群 run 深扫」双闸限制自省自身开销。
@@ -795,18 +834,32 @@ def _collect_metrics_outliers(
 
     经 core.dashboard.data.runs 公共访问器（延迟导入，对齐 _run_terminal_success
     先例）按 run 查 run_metrics 指标（进程内索引缓存，仅首查扫日志）；按
-    agent_type 分组对 turns/cost_usd/duration_seconds 三维度做「组中位数 ×
+    agent_type 分组对 turns/cost_usd/duration_seconds 三维度做「组基线 ×
     MIDFLIGHT_OUTLIER_MULTIPLIER」离群判定，成功与失败 run 同口径。组内某维度
     有效样本 < MIDFLIGHT_MIN_GROUP_SAMPLES（含全组 0/缺失）时该维度跳过。
+
+    分组键兜底（evo-add-run-metrics-lane-baseline 1.1）：指标行缺 agent_type
+    （maintenance 三车道与 context metrics 兜底行的历史形态）时以 run_id 前缀
+    经 infer_run_agent_type 推断车道归属，不再落入 unknown 混合组（混合组中位
+    把 code-fix 正常长批全员误判离群——2026-10-08 窗口实测 12/12 全误报）。
+
+    批量车道 turns 基线（同 spec 方案 3）：批量相关车道
+    （MIDFLIGHT_BATCH_BASELINE_LANES）的 turns 基线改用组内近期批分布 P90
+    （最近 N=MIDFLIGHT_BASELINE_RECENT_BATCHES 个有效批，不含当前 run、排除
+    重试轮）；有效批样本 < MIDFLIGHT_MIN_GROUP_SAMPLES 回退窗口中位。其余
+    维度与其余车道维持窗口中位。
 
     Args:
         window_end: 窗口上界；调用侧（collect_daily_summary）传入口冻结快照，
             对齐 collect_runs_stats 快照化契约。None 时入口冻结兜底（直调兼容）。
 
     Returns: [{run_id, path, agent_type, terminal, outliers: {维度: {value,
-        median}}}]；path 为事件流文件路径（_collect_run_files 并集），供深扫
-        环节复用。索引查不到的 run（旧日志轮转出窗）跳过初筛，不视为离群也
-        不报错；索引访问异常同样按缺失跳过。
+        median[, baseline_kind]}}}]；path 为事件流文件路径（_collect_run_files
+        并集），供深扫环节复用。median 为该 run 实际参与判定的组基线（批量
+        车道 turns 维为 P90，其余为组中位），非中位口径时附 baseline_kind 注
+        明；渲染侧仅消费 value/median，既有键名不变。索引查不到的 run（旧
+        日志轮转出窗）跳过初筛，不视为离群也不报错；索引访问异常同样按缺
+        失跳过。
     """
     if window_end is None:
         window_end = now_utc()  # 快照化兜底：直调时入口冻结
@@ -814,17 +867,27 @@ def _collect_metrics_outliers(
         from core.dashboard.data.runs import load_run_metric  # noqa: PLC0415
     except Exception:
         return []
+    try:
+        from core.agent_runner.run_files import infer_run_agent_type  # noqa: PLC0415
+    except Exception:  # 前缀表不可用：退回 unknown 混合组（初筛不失明）
+        infer_run_agent_type = None
 
     grouped: Dict[str, list] = {}
-    for run_id, path, _ts in _iter_window_runs(project_root, window_start, window_end):
+    for run_id, path, ts in _iter_window_runs(project_root, window_start, window_end):
         try:
             metric = load_run_metric(project_root, run_id)
         except Exception:
             continue  # 索引异常按缺失跳过，不报错
         if not isinstance(metric, dict):
             continue
-        agent_type = str(metric.get("agent_type") or "unknown")
-        grouped.setdefault(agent_type, []).append((run_id, path, metric))
+        agent_type = str(metric.get("agent_type") or "").strip()
+        if not agent_type:
+            agent_type = (
+                infer_run_agent_type(run_id)[0]
+                if infer_run_agent_type is not None
+                else "unknown"
+            )
+        grouped.setdefault(agent_type, []).append((run_id, path, ts, metric))
 
     outliers: List[Dict[str, Any]] = []
     for agent_type, runs in grouped.items():
@@ -832,7 +895,7 @@ def _collect_metrics_outliers(
         for dim in MIDFLIGHT_OUTLIER_DIMS:
             values = [
                 dims[dim]
-                for _, _, m in runs
+                for _, _, _, m in runs
                 if dim in (dims := _metrics_outlier_dims(m))
             ]
             if len(values) < MIDFLIGHT_MIN_GROUP_SAMPLES:
@@ -840,13 +903,43 @@ def _collect_metrics_outliers(
             medians[dim] = statistics.median(values)
         if not medians:
             continue
-        for run_id, path, metric in runs:
+        batch_lane = agent_type in MIDFLIGHT_BATCH_BASELINE_LANES
+        # 近期批分布样本（批量车道 turns 基线，同 spec 方案 3）：排除重试轮
+        # （重试轮 turns 被前序半成品抬高，入基线会抬高 P90 放跑真离群），
+        # 按时间倒序排列；逐 run 取基线时再排除当前 run 自身并截取最近 N 个
+        # （「最近 N=10 个有效批（不含当前 run）」）。
+        recent_batches: list = []
+        if batch_lane:
+            for rid, _p, rts, m in sorted(runs, key=lambda r: r[2], reverse=True):
+                if _is_retry_run(rid):
+                    continue
+                d = _metrics_outlier_dims(m)
+                if "turns" in d:
+                    recent_batches.append((rid, d["turns"]))
+        for run_id, path, _ts, metric in runs:
             dims = _metrics_outlier_dims(metric)
-            hit = {
-                dim: {"value": v, "median": medians[dim]}
-                for dim, v in dims.items()
-                if dim in medians and v > medians[dim] * MIDFLIGHT_OUTLIER_MULTIPLIER
-            }
+            hit: Dict[str, Dict[str, Any]] = {}
+            for dim, v in dims.items():
+                if dim not in medians:
+                    continue
+                baseline = medians[dim]
+                kind = "median"
+                if batch_lane and dim == "turns":
+                    peers = [
+                        val
+                        for rid, val in recent_batches
+                        if rid != run_id
+                    ][:MIDFLIGHT_BASELINE_RECENT_BATCHES]
+                    if len(peers) >= MIDFLIGHT_MIN_GROUP_SAMPLES:
+                        baseline = _recent_batch_p90(peers)
+                        kind = "p90_recent_batches"
+                if v > baseline * MIDFLIGHT_OUTLIER_MULTIPLIER:
+                    # baseline_kind 仅在基线口径非组中位（批量车道 turns P90）
+                    # 时附加：缺省即组中位，与既有行形态/既有断言兼容。
+                    entry = {"value": v, "median": baseline}
+                    if kind != "median":
+                        entry["baseline_kind"] = kind
+                    hit[dim] = entry
             if hit:
                 outliers.append(
                     {

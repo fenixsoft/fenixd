@@ -96,25 +96,32 @@ def _write_run_file(runs_dir: Path, run_id: str, lines) -> Path:
 
 def _append_metric(log_path: Path, run_id: str, agent_type="implementer", turns=10,
                    cost=None, duration=100.0, terminal="success") -> None:
-    """向 fenixd.log 追加一条 run_metrics 指标行（runner._log_run_metrics 同形态）。"""
+    """向 fenixd.log 追加一条 run_metrics 指标行（runner._log_run_metrics 同形态）。
+
+    agent_type=None 时省略该字段——evo-add-run-metrics-lane-baseline 1.3 之前
+    maintenance 三车道与 context metrics 兜底行的历史形态，供 run_id 前缀推断
+    分组用例使用。
+    """
+    context = {
+        "metric_type": "run_metrics",
+        "run_id": run_id,
+        "spec": f"spec-{run_id}",
+        "duration_seconds": duration,
+        "turns": turns,
+        "input_tokens": 1000,
+        "output_tokens": 2000,
+        "cost_usd": cost,
+        "terminal": terminal,
+        "provider": "test-provider",
+    }
+    if agent_type is not None:
+        context["agent_type"] = agent_type
     entry = {
         "timestamp": datetime.now().isoformat(),
         "level": "INFO",
         "component": "agent_runner",
         "message": f"run metrics: {agent_type} {terminal} 'spec-{run_id}'",
-        "context": {
-            "metric_type": "run_metrics",
-            "run_id": run_id,
-            "spec": f"spec-{run_id}",
-            "agent_type": agent_type,
-            "duration_seconds": duration,
-            "turns": turns,
-            "input_tokens": 1000,
-            "output_tokens": 2000,
-            "cost_usd": cost,
-            "terminal": terminal,
-            "provider": "test-provider",
-        },
+        "context": context,
     }
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -600,3 +607,178 @@ class TestMidflightScanRowNoiseAnnotation:
         ])
         assert f"- {rid}: stall=0 中途stderr=1" in summary
         assert "已知 CLI 启动噪声" not in summary
+
+
+# ── evo-add-run-metrics-lane-baseline：分组兜底与车道基线 ──────────────
+
+
+class TestLaneGroupingBaseline:
+    """1.1/2.1：缺 agent_type 行按 run_id 前缀归组 + 批量车道 P90 基线。"""
+
+    def test_mixed_window_grouped_by_run_id_prefix(self, env):
+        """无 agent_type 指标行 + code-fix/evo/spec-review 混合窗口：各组按
+        前缀推断/显式字段归组判定，不再落 unknown 混合组。"""
+        now_ts = datetime.now().timestamp()
+        # code-fix 组（无 agent_type 字段，前缀推断）：3 样本有效批，其中
+        # 400 的近批 peers 仅 2 个 < 3 → 回退窗口中位 50 → 400 > 150 旗标
+        for i, t in enumerate([48, 50, 400]):
+            rid = f"code-fix-m{i}-{int(now_ts) - 60 * (i + 1)}"
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=t)
+        # evolution 组（evo- 前缀推断，非批量车道 → 窗口中位）：中位 12×3=36
+        for i, t in enumerate([10, 12, 200]):
+            rid = f"evo-{int(now_ts) - 60 * (10 + i)}"
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=t)
+        # spec-review 组（显式 agent_type，既有行为不回退）：中位 9×3=27
+        for i, t in enumerate([8, 9, 100]):
+            rid = f"spec-review-s{i}-{int(now_ts) - 60 * (20 + i)}"
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type="spec-review", turns=t)
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        by_type = {o["agent_type"] for o in outliers}
+        assert by_type == {"code-fix", "evolution", "spec-review"}
+        # evo- 前缀推断断言：evolution 组旗标 run 确为 evo- 前缀产物
+        evo = next(o for o in outliers if o["agent_type"] == "evolution")
+        assert evo["run_id"].startswith("evo-")
+        # 非批量车道基线仍为窗口中位（无 baseline_kind 注记），形态不回退
+        assert evo["outliers"]["turns"] == {"value": 200, "median": 12}
+        # spec-review 显式 agent_type 行为不变
+        sr = next(o for o in outliers if o["agent_type"] == "spec-review")
+        assert sr["run_id"].startswith("spec-review-")
+        assert sr["outliers"]["turns"] == {"value": 100, "median": 9}
+        # code-fix 组：peers < 3 回退窗口中位（基线 50，无 baseline_kind）
+        cf = next(o for o in outliers if o["agent_type"] == "code-fix")
+        assert cf["run_id"].startswith("code-fix-")
+        assert cf["outliers"]["turns"] == {"value": 400, "median": 50}
+
+    def test_small_group_skip_after_prefix_inference(self, env):
+        """前缀推断后组内样本 < 3 仍跳过（跳过语义不回退）。"""
+        now_ts = datetime.now().timestamp()
+        for i in range(2):
+            rid = f"code-fix-s{i}-{int(now_ts) - 60 * (i + 1)}"
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type=None,
+                           turns=1000 if i else 3)
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        assert outliers == []
+
+    def test_p90_baseline_normal_long_batch_not_flagged(self, env):
+        """code-fix 正常长批不再越线（近 10 批 P90 基线），超分布异常批仍被
+        标出且附 baseline_kind 注记。
+
+        实景对应 proposal 基线：组内中位 49×3=147 < 正常批 158 全员误报；
+        P90 基线下 158 落分布内、3000 仍超 P90×3。"""
+        now_ts = datetime.now().timestamp()
+        turns = [45, 48, 49, 50, 50, 52, 55, 58, 60]
+        ids = {}
+        for i, t in enumerate(turns):
+            rid = f"code-fix-b{i}-{int(now_ts) - 60 * (i + 2)}"
+            ids[rid] = t
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=t)
+        long_id = f"code-fix-long-{int(now_ts) - 120}"
+        _write_run_file(env["runs_dir"], long_id, [])
+        _append_metric(env["log_path"], long_id, agent_type=None, turns=158)
+        bad_id = f"code-fix-bad-{int(now_ts) - 60}"
+        _write_run_file(env["runs_dir"], bad_id, [])
+        _append_metric(env["log_path"], bad_id, agent_type=None, turns=3000)
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        flagged = {o["run_id"]: o for o in outliers}
+        # 正常长批 158 不再越线（中位 49×3=147 的旧误报消除）
+        assert long_id not in flagged
+        # 异常批仍被标出：基线 = 近 10 批 P90（排除自身后的近批样本）
+        assert set(flagged) == {bad_id}
+        entry = flagged[bad_id]["outliers"]["turns"]
+        assert entry["value"] == 3000
+        assert entry["baseline_kind"] == "p90_recent_batches"
+        # bad 的 peers = 全部非自身有效批按时间倒序取 10 = [158,60,58,55,52,
+        # 50,50,49,48,45] → 最近秩 P90 = 升序第 9 个 = 60
+        assert entry["median"] == 60
+
+    def test_retry_run_excluded_from_baseline_sample(self, env):
+        """重试轮（-r/-a 后缀，与 runs.py 剥后缀同口径）不入基线样本：
+        排除后 P90 取正常批分布，重试轮自身仍按同基线参与判定。"""
+        now_ts = int(datetime.now().timestamp())
+        # 9 个正常批（turns 40）+ 1 个大批（base stem + -r2 重试 stem 共享
+        # 基础 id 指标，形态对齐生产：指标日志记基础 run_id、产物按 attempt
+        # 分文件）+ 候选批 200。
+        # 若重试 stem 不排除：peers 含两个 500 → P90=500 → 200 不旗标；
+        # 排除后 peers=10 → P90=40 → 200 > 120 旗标（断言翻转靠排除成立）。
+        for i in range(9):
+            rid = f"code-fix-n{i}-{now_ts - 60 * (i + 3)}"
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=40)
+        big = f"code-fix-big-{now_ts - 120}"
+        big_retry = f"{big}-r2"
+        for stem in (big, big_retry):
+            _write_run_file(env["runs_dir"], stem, [])
+        _append_metric(env["log_path"], big, agent_type=None, turns=500)
+        cand = f"code-fix-cand-{now_ts - 60}"
+        _write_run_file(env["runs_dir"], cand, [])
+        _append_metric(env["log_path"], cand, agent_type=None, turns=200)
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        flagged = {o["run_id"]: o for o in outliers}
+        assert cand in flagged
+        assert flagged[cand]["outliers"]["turns"]["median"] == 40
+
+    def test_cost_dim_visible_for_lane_via_rich_row(self, env):
+        """maintenance 车道成本维度可观测（spec「未分组车道的成本维度可观测」）：
+        design 二选一取写侧——三车道收尾补 _log_run_metrics 富指标行（含
+        cost_usd）后，无 agent_type 行的成本样本参与组基线判定（85.68 美元型
+        全仓扫描不再失明）。"""
+        now_ts = datetime.now().timestamp()
+        costs = [1.0, 1.2, 30.0]
+        for i, c in enumerate(costs):
+            rid = f"code-fix-c{i}-{int(now_ts) - 60 * (i + 1)}"
+            _write_run_file(env["runs_dir"], rid, [])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=50, cost=c)
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        assert len(outliers) == 1
+        assert outliers[0]["outliers"]["cost_usd"] == {"value": 30.0, "median": 1.2}
+
+
+# ── evo-add-run-metrics-lane-baseline 3.2：前缀表同源行为回归 ──────────
+
+
+class TestRunFilesPrefixTableSameSource:
+    """RUN_ID_AGENT_PREFIXES 补 evo- 后，dashboard/get_runs 时间线归属与
+    run_spec_part 语义不回退（同一前缀表唯一真源的同源消费方）。"""
+
+    def test_get_runs_attributes_evo_run_to_evolution(self, tmp_path):
+        """时间线归属 agent→evolution（预期修复，此前退化为泛型 "agent"）。"""
+        from core.dashboard.data.runs import get_runs
+
+        runs_dir = tmp_path / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "evo-1791395158.jsonl").write_text(
+            '{"type": "result"}\n', encoding="utf-8"
+        )
+        rows = get_runs(str(tmp_path))
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == "evo-1791395158"
+        assert rows[0]["agent_type"] == "evolution"
+
+    def test_run_spec_part_evo_epoch_yields_bare_epoch_segment(self):
+        """evo-<epoch> 的 run_spec_part = 裸 epoch 段（此前为伪 spec「evo」）：
+        两侧均不等于真实 spec 名，全等守卫不回退。"""
+        from core.agent_runner.run_files import infer_run_agent_type, run_spec_part
+
+        assert infer_run_agent_type("evo-1791395158") == ("evolution", "1791395158")
+        spec_part = run_spec_part("evo-1791395158")
+        assert spec_part == "1791395158"
+        # 不得解析出真实 spec 名（新旧行为均非真实 spec 名，守卫语义不变）
+        assert spec_part != "evo"

@@ -39,6 +39,15 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     # add-code-review-auto-fix：code-fix- 独立前缀（与 code-review- 无子串
     # 冲突，顺序无关，放 code-review- 相邻处便于横向检索）
     ("code-fix-", "code-fix"),
+    # evo-add-run-metrics-lane-baseline 1.2：evo- 独立前缀（run_evolution 的
+    # evo-<epoch> run_id，与既有前缀无子串冲突，顺序无关）——此前缺条目使
+    # evolution run 在时间线/初筛分组退化为泛型 "agent"。消费方核对（design
+    # 方案 1）：get_runs 时间线归属 agent→evolution（预期修复）；run_spec_part
+    # 剥时间戳从伪 spec「evo」变为裸 epoch 段（两侧均非真实 spec 名，全等
+    # 守卫不变）；admin_monitor 驱动判定/归一两侧 False/None；pm_engine 归属
+    # /取消/活动判定不新增命中（evo-<epoch> 不携带 spec 段）；前端 AGENT_CATS
+    # 「agent」与「evolution」同落「其它」，展示不变。
+    ("evo-", "evolution"),
     ("planner-judge-", "planner-judge"),
     ("planner-plan-", "planner-plan"),
     ("planner-", "planner"),
