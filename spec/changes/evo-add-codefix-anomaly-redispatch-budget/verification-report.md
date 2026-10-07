@@ -31,3 +31,10 @@
 | anomaly-derate-alert-via-existing-channel | anomaly 降档/停派告警复用既有 write_regression_failed_alert 通道（signal_type=code_fix_regression_failed）：告警 evidence 登记 branch、tip_sha 与被跳过条目，告警文案带 reg_form；不新增告警类型（core/code_fix.py:2316，tasks 1.3；「同一失败记录生命周期内只发一次」由 impl-tests 场景的实现者自测覆盖） | pass | 0/5 | - |
 | anomaly-budget-exhaustion-registers-manual-todo | anomaly 预算耗尽走既有触顶路径：.fenix/todo.md 登记「待人工排查」+被跳过条目清单，code_fix_retry_budget_exhausted 告警恰好 1 条（一次性，后续再失败不再新增），signal_type 不新增（core/code_fix.py:688 hit_max 分支、:2584 触顶告警、:1285 todo 登记；spec 场景「预算耗尽后登记待人工排查并跳过条目」） | pass | 0/6 | - |
 | mapped-budget-full-lifecycle-unchanged | mapped 形态预算保持 FAIL_RETRY_MAX=3 全生命周期回归：fail_count=1/2 入档不触顶（无告警、无 todo 登记）、第 3 次入档触发一次性告警 + todo 登记、release_retryable_failed_batches 不再释放（core/code_fix.py:87/:688/:975；spec 场景「mapped 形态失败批保持既有预算」） | pass | 0/7 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+
