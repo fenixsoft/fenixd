@@ -928,6 +928,37 @@ def _ingest_failure_round(root, reg, cumulative, exec_root):
     return fail_items, mapped, detail_rel, cumulative
 
 
+# 回归异常熔断阈值（add-codefix-parse-error-breaker D2）：同批内回归异常类
+# 失败（parse_error，或 failed 且无可用明细）连续达到该次数即提前终止定向
+# 重试循环。熔断是防烧钱的保守兜底而非调优旋钮，按项目约定不进受管配置
+# （新增配置键须连带 Dashboard 界面）；与 targeted_retry_max 轮数上限正交
+# ——未触发时既有轮数上限行为逐位不变。
+REGRESSION_ANOMALY_BREAKER_THRESHOLD = 2
+
+
+def _is_regression_anomaly(reg, fail_items) -> bool:
+    """回归异常判据（add-codefix-parse-error-breaker D1）：回归未产出可用明细。
+
+    ``parse_error``（junit 缺失/不可解析，``fail_items`` 恒空）或 ``failed``
+    且明细为空（junit 可解析但零失败记录，同样不可注入）→ True；真实测试
+    失败（``failed`` 且明细非空）→ False——MUST NOT 进熔断计数（调用方
+    同时清零计数）。
+    """
+    status = getattr(reg, "status", "")
+    if status == "parse_error":
+        return True
+    return status == "failed" and not fail_items
+
+
+def _anomaly_round_form(reg, mapped, fail_items) -> str:
+    """熔断日志用单轮明细形态标签（tasks 2.1：WARNING 含各轮触发判据）。"""
+    form = (
+        f"明细 {len(fail_items)} 例"
+        if mapped and fail_items else "无可用明细（fallback_full）"
+    )
+    return f"status={getattr(reg, 'status', '')}，{form}"
+
+
 def _render_targeted_retry_brief(items) -> str:
     """定向轮注入文本（2.2/2.3）：累计失败明细 + 只修失败相关的硬指令。"""
     lines = [
@@ -5041,6 +5072,14 @@ class CodeFixOrchestrator:
             cumulative: list[dict] = []   # 轮间累计明细注入集（2.3）
             last_detail_ref = ""          # 最后一轮明细引用（入失败档案，4.4）
             exhausted = False
+            # 回归异常熔断计数（add-codefix-parse-error-breaker 1.2/1.3）：
+            # 同批连续异常计数，首轮与每个定向轮回归都进计数窗口；真实测试
+            # 失败（有明细）清零不计数、回归 passed 天然离开循环；批 worker
+            # 局部变量——跨批/跨链不累计（D4）。anomaly_rounds 留各异常轮的
+            # status 与明细形态，供熔断 WARNING 日志呈现触发判据（2.1）。
+            anomaly_streak = 0
+            anomaly_rounds: list[str] = []
+            breaker_triggered = False
             for attempt in range(1, retry_max + 1):
                 # ① 失败明细提取 + 合并 + 落盘（1.1/1.2/2.3）：本轮注入的
                 # reg 为上一轮回归结果；映射失败（非 pytest 形态、classname
@@ -5050,6 +5089,17 @@ class CodeFixOrchestrator:
                     root, reg, cumulative, wt)
                 if detail_rel:
                     last_detail_ref = detail_rel
+                # 首轮回归计数（1.3）：此处 reg 即首轮回归、fail_items 即其
+                # 提取明细，与定向轮同口径（1.2）。阈值 ≥ 2 下首轮单次计数
+                # 不可能达阈值，无需在此短路。
+                if attempt == 1:
+                    if _is_regression_anomaly(reg, fail_items):
+                        anomaly_streak += 1
+                        anomaly_rounds.append(
+                            _anomaly_round_form(reg, mapped, fail_items))
+                    else:
+                        anomaly_streak = 0
+                        anomaly_rounds.clear()
                 # ③ 定向轮 run_id 预生成 + 进度刷新（沿用 5.6 机制）：exclude
                 # 排除首轮与本批此前各轮（同 worktree 内主树残留判据覆盖不到，
                 # 同秒撞名会复用 out 文件）。
@@ -5128,6 +5178,37 @@ class CodeFixOrchestrator:
                     )
                 if reg.status == "passed":
                     break
+                # 定向轮回归计数（1.3，passed-break 的对偶位置）：本轮明细
+                # 尚未进 ① 的提取点（那是在为下一轮注入准备本轮之前的明细），
+                # 按本轮 snapshot 现提取，与首轮计数同口径（1.2）。
+                round_items, round_mapped = _map_junit_failures_to_nodeids(
+                    (getattr(reg, "snapshot", None) or {}).get("failures") or [],
+                    exec_root=wt)
+                if _is_regression_anomaly(reg, round_items):
+                    anomaly_streak += 1
+                    anomaly_rounds.append(
+                        _anomaly_round_form(reg, round_mapped, round_items))
+                    if anomaly_streak >= REGRESSION_ANOMALY_BREAKER_THRESHOLD:
+                        # 熔断（add-codefix-parse-error-breaker 2.1）：不再
+                        # 派发下一轮定向 run 与全量回归，以 exhausted 等价
+                        # 状态进入既有现场即弃收口块（入档/清理/告警零分叉
+                        # 复用）。WARNING 含各异常轮 status 与明细形态。
+                        breaker_triggered = True
+                        exhausted = True
+                        self._log(
+                            "warning",
+                            f"code-fix 第 {batch_no} 批回归异常熔断触发"
+                            f"（连续 {anomaly_streak} 次未产出可用失败明细："
+                            f"{'；'.join(anomaly_rounds)}），提前终止定向重试"
+                            f"（已执行 {len(attempt_run_ids)}/{retry_max} 轮），"
+                            "不再派发下一轮 run 与全量回归",
+                        )
+                        break
+                else:
+                    # 真实测试失败（有明细）不进熔断计数且清零（D1）——
+                    # 「偶发一次异常后恢复正常」不应累积误杀。
+                    anomaly_streak = 0
+                    anomaly_rounds.clear()
             else:
                 exhausted = True
             if exhausted:
@@ -5145,8 +5226,14 @@ class CodeFixOrchestrator:
                 # consumed：条目已入档案（离开可选池），链继续推进下一批。
                 self._log(
                     "error",
-                    f"code-fix 第 {batch_no} 批定向重试 {retry_max} 轮耗尽仍失败，"
-                    f"现场即弃（branch/tip_sha/明细引用入档案，worktree 清理: {wt}）",
+                    (
+                        f"code-fix 第 {batch_no} 批回归异常熔断收口（连续 "
+                        f"{anomaly_streak} 次未产出可用失败明细，实际执行 "
+                        f"{len(attempt_run_ids)}/{retry_max} 轮定向重试）"
+                        if breaker_triggered else
+                        f"code-fix 第 {batch_no} 批定向重试 {retry_max} 轮耗尽仍失败"
+                    )
+                    + f"，现场即弃（branch/tip_sha/明细引用入档案，worktree 清理: {wt}）",
                 )
                 summary2 = _failure_summary(reg)
                 tip_sha = _worktree_head(wt)
@@ -5188,8 +5275,14 @@ class CodeFixOrchestrator:
                     record_failed_batch(
                         root, open_ids, wt,
                         # "regression_failed_twice" 是历史兼容名（定向重试上线前的
-                        # 两次全量回归语义）：存量档案与告警检索依赖此标识，不改名。
-                        reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
+                        # 两次全量回归语义）：存量档案与告警检索依赖此标识，不改名；
+                        # 熔断收口取新名 "regression_parse_error_breaker"
+                        # （add-codefix-parse-error-breaker 2.2，消费侧无
+                        # regression_failed_twice 全等匹配依赖，tasks 2.3 已核）。
+                        reason=(
+                            "regression_parse_error_breaker" if breaker_triggered
+                            else "regression_failed_twice"
+                        ), branch=branch, tip_sha=tip_sha,
                         detail_ref=last_detail_ref, logger=self._logger,
                     )
                     # 告警写盘失败不得劫持 consumed 收尾（code-review item
@@ -5199,7 +5292,10 @@ class CodeFixOrchestrator:
                         write_regression_failed_alert(
                             root, open_ids, wt, summary2,
                             branch=branch, tip_sha=tip_sha, logger=self._logger,
-                            retry_rounds=retry_max,
+                            # 实际执行轮数（add-codefix-parse-error-breaker
+                            # 2.3）：耗尽路径 = retry_max（行为不变）；熔断
+                            # 路径 < retry_max，按实际执行轮数如实传入。
+                            retry_rounds=len(attempt_run_ids),
                         )
                     except Exception as e:  # noqa: BLE001 — 告警失败只留痕
                         self._log(
@@ -5207,12 +5303,24 @@ class CodeFixOrchestrator:
                             f"code-fix 回归失败告警写盘异常（收尾不受影响）: {e}",
                         )
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
+                # 收口 reason 按熔断标志分流（add-codefix-parse-error-breaker
+                # 2.2）：轮数耗尽路径 "regression_failed_twice: <status>" 逐字
+                # 不变；熔断路径取 "regression_parse_error_breaker"。
                 self._consumed_progress(
                     current=(
-                        f"第 {batch_no} 批失败已跳过（回归 {retry_max} 轮定向重试未通过）"
-                        f"— 继续后续批次"
+                        f"第 {batch_no} 批失败已跳过（"
+                        + (
+                            f"回归异常熔断（连续 {anomaly_streak} 次 "
+                            "parse_error/无明细）"
+                            if breaker_triggered else
+                            f"回归 {retry_max} 轮定向重试未通过"
+                        )
+                        + f"）— 继续后续批次"
                     ),
-                    reason=f"regression_failed_twice: {reg.status}",
+                    reason=(
+                        "regression_parse_error_breaker" if breaker_triggered
+                        else "regression_failed_twice"
+                    ) + f": {reg.status}",
                 )
                 return "consumed"
 

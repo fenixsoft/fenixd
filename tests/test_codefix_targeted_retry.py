@@ -727,5 +727,134 @@ class TestTargetedRetryLoop(unittest.TestCase):
         self.assertEqual(load_failed_batches(proot)[0]["item_ids"], ["a"])
 
 
+class TestRegressionAnomalyBreaker(unittest.TestCase):
+    """回归异常熔断（add-codefix-parse-error-breaker 3.1-3.3）。"""
+
+    def _orch(self, runner, proot, **cfg_extra):
+        from core.code_fix import CodeFixOrchestrator
+
+        cfg = {"admin": {"code_review_fix": dict(_CFG_ON["admin"]["code_review_fix"],
+                                                 **cfg_extra)}}
+        return CodeFixOrchestrator(runner, proot, config=cfg, logger=None)
+
+    def _alerts(self, proot):
+        from core.admin_store import AdminStore
+
+        return [r for r in AdminStore(proot, logger=None).read_all()
+                if r.get("signal_type") == "code_fix_regression_failed"]
+
+    def test_breaker_after_two_parse_errors(self):
+        """3.1：连续 2 轮 parse_error → 熔断提前终止（第 3 轮 run 不派发）。
+
+        现场即弃收口、档案 reason=regression_parse_error_breaker、告警恰好
+        一次且 retry_rounds=实际执行轮数（1）。
+        """
+        from core.code_fix import load_failed_batches, read_progress
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["parse_error", "parse_error"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        # 首轮 parse_error（计数 1）→ 定向轮 1 回归 parse_error（计数 2 达
+        # 阈值）→ 熔断：下一轮 run 与全量回归 MUST NOT 再派发
+        self.assertEqual(len(runner.fix_calls), 2, "首轮 + 定向轮 1，熔断短路")
+        self.assertEqual(len(runner.regression_calls), 2, "熔断后不再跑回归")
+        self.assertEqual(runner.worktree_manager.merge_calls, [],
+                         "现场即弃 MUST NOT 合回")
+        self.assertEqual(len(runner.worktree_manager.cleanup_calls), 1)
+        self.assertFalse(runner.worktree_manager.cleanup_calls[0][1],
+                         "现场即弃 cleanup（success=False）")
+        self.assertEqual(read_items(proot)["a"]["status"], "open", "条目保持 open")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason"], "regression_parse_error_breaker")
+        self.assertTrue(failed[0]["branch"] and failed[0]["tip_sha"],
+                        "branch/tip_sha 追溯线索在场")
+        self.assertIn("regression-fake-2", failed[0].get("detail_ref") or "",
+                      "档案含最后一轮（异常轮）明细引用")
+        self.assertTrue((proot / failed[0]["detail_ref"]).is_file())
+        alerts = self._alerts(proot)
+        self.assertEqual(len(alerts), 1, "告警恰好一次（与轮数耗尽共用调用点）")
+        self.assertIn("1 轮定向重试", alerts[0]["description"],
+                      "retry_rounds 按实际执行轮数（1）如实传入")
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertIn("下轮自动重试", prog["current"])
+
+    def test_breaker_on_empty_detail_failures(self):
+        """3.1 变体：failed 但明细为空（junit 可解析零失败记录）同属异常
+        形态 → 连续 2 次熔断。"""
+        from core.code_fix import load_failed_batches
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["failed", "failed"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        self.assertEqual(len(runner.fix_calls), 2, "熔断短路（第 3 轮不派发）")
+        failed = load_failed_batches(proot)
+        self.assertEqual(failed[0]["reason"], "regression_parse_error_breaker")
+
+    def test_real_failures_reset_streak_exhaust_normally(self):
+        """3.2：parse_error 后跟有明细真实失败 → 计数清零、走满既有轮数、
+        收口 reason 仍为 regression_failed_twice。"""
+        from core.code_fix import load_failed_batches
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        fails = [_failure("tests.test_x", "test_a")]
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["parse_error", "failed", "failed", "failed"],
+            failure_sets=[[], fails, fails, fails],
+        )
+        self._orch(runner, proot).checkpoint()
+        self.assertEqual(len(runner.fix_calls), 4, "1 首轮 + 3 定向轮走满（未熔断）")
+        self.assertEqual(len(runner.regression_calls), 4)
+        self.assertEqual(read_items(proot)["a"]["status"], "open")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason"], "regression_failed_twice",
+                         "真实失败清零计数 → 轮数耗尽收口语义逐字不变")
+        alerts = self._alerts(proot)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("3 轮定向重试", alerts[0]["description"],
+                      "retry_rounds=3（走满轮数）")
+
+    def test_regression_passed_after_anomaly_merges_normally(self):
+        """3.3：任一轮回归 passed → 正常合回核销与现状逐字一致，熔断零参与
+        （窗口内单次 parse_error 不影响既有通过路径）。"""
+        from core.code_fix import load_failed_batches, read_progress
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["parse_error", "passed"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        self.assertEqual(len(runner.fix_calls), 2, "首轮 + 1 定向轮")
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 1, "正常合回")
+        self.assertEqual(read_items(proot)["a"]["status"], "resolved")
+        self.assertEqual(read_progress(proot)["done"], 1)
+        self.assertEqual(load_failed_batches(proot), [], "无失败档案（熔断零参与）")
+        self.assertEqual(self._alerts(proot), [], "通过路径零告警")
+
+
 if __name__ == "__main__":
     unittest.main()

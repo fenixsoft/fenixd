@@ -712,6 +712,14 @@ class _FakeWM:
         if self._create_result is None:
             return None
         repo = _make_git_repo()
+        # 模拟被修项目的测试模块（nodeid 映射的存在性判定需要）：失败明细
+        # 可映射 = 真实测试失败形态，不进回归异常熔断计数
+        # （add-codefix-parse-error-breaker）——本文件的回归失败用例意在
+        # 覆盖「轮数耗尽现场即弃」路径，夹具须可映射。
+        tests = repo / "tests"
+        tests.mkdir(exist_ok=True)
+        (tests / "test_x.py").write_text(
+            "def test_a():\n    assert True\n", encoding="utf-8")
         if self._enforce_lock:
             self._active.add(str(repo))
         return repo
