@@ -24,7 +24,7 @@
 #### Scenario: 人工解除跳过留痕
 
 - **When** release_failed_batch 被调用（无论经 daemon 内路径还是带外脚本）
-- **Then** 写一行结构化日志（释放记录数与 item_ids 摘要），使带外经 daemon 的调用可追溯
+- **Then** 写一行结构化留痕（释放记录数与 item_ids 摘要，追加到 `.fenix/code-review/fix-failed-release.jsonl`，不经 daemon logger 亦可追溯）；调用方传入 logger 时另写一行 daemon 日志
 
 #### Scenario: 台账读取失败不阻断主流程
 
