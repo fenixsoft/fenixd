@@ -1,5 +1,5 @@
 # 工作树与版本控制
-> 最后更新：2026-10-04 05:40 UTC+8
+> 最后更新：2026-10-08 02:46 UTC+8
 
 实现工作树（worktree）的隔离、播种、回读与卫生，实现分支合回主树与推送的完整生命周期纪律。
 
@@ -17,6 +17,7 @@
 | [merge-back-precheck](merge-back-precheck.md) | merge-back 预检（WIP 交集升级拦截） | 2026-10-03 04:59 |
 | [wip-defer-merge-retry](wip-defer-merge-retry.md) | WIP 阻断延迟合回（等待标志 + 周期自动合回） | 2026-10-03 04:59 |
 | [mergeback-wip-active-coordination](mergeback-wip-active-coordination.md) | 合回 WIP 占用者识别与事件驱动重试（无主宽限升级） | 2026-10-03 05:45 |
+| [spec-amendment-watch](spec-amendment-watch.md) | 主树 spec 目录在飞修订探测与预警（merge-back + 周期扫描双入口） | 2026-10-08 02:46 |
 | [merge-circuit-breaker](merge-circuit-breaker.md) | merge 熔断（失败指纹） | 2026-10-03 04:59 |
 | [merge-rehearsal](merge-rehearsal.md) | 合并预演与语义冲突直通修复 | 2026-10-03 04:59 |
 | [merge-untracked-guard](merge-untracked-guard.md) | 未跟踪文件合并守卫 | 2026-10-03 04:59 |
