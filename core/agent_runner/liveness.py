@@ -41,6 +41,7 @@ LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
 # 与 supervision_floor 派生共用，禁止两处各自手写常数）；本模块 import 后 re-export，
 # 保持 ``from core.agent_runner.liveness import SUPERVISION_DEFAULTS`` 路径可用。
 from core.config import SUPERVISION_DEFAULTS  # noqa: E402
+from core.proc_utils import guard_killpg  # noqa: E402
 # 活性判定 LLM 单轮调用的超时秒数（D2）：judge 卡死不能拖住监督循环
 JUDGE_TIMEOUT_SECONDS = 120
 # 活性快照 last_output 片段截断字符数（D1）
@@ -1051,18 +1052,25 @@ class LivenessSupervisor:
             except subprocess.TimeoutExpired:
                 # 超时整组清场：先整组 SIGTERM 给短暂优雅窗口，未退再 SIGKILL
                 # 整组，末尾收割直接子进程并弃管道——不留僵尸、不让逃出进程组
-                # 的孙进程悬挂管道。killpg 失败（进程组已退出）静默吞掉。
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except OSError:
-                    pass  # 进程组已不存在
+                # 的孙进程悬挂管道。击杀最后一跳经自保护守卫（add-killpg-
+                # self-guard）：start_new_session 下 pgid==pid，组长 pid 直传
+                # （resolve=False）；守卫拒绝（自身组/非正 pgid）与组已退出
+                # 同样静默吞掉。
+                guard_killpg(
+                    proc.pid,
+                    signal.SIGTERM,
+                    caller="liveness._judge_liveness_once",
+                    resolve=False,
+                )
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except OSError:
-                        pass  # 进程组已不存在
+                    guard_killpg(
+                        proc.pid,
+                        signal.SIGKILL,
+                        caller="liveness._judge_liveness_once",
+                        resolve=False,
+                    )
                 try:
                     proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
                 except subprocess.TimeoutExpired:

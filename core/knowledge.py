@@ -47,6 +47,7 @@ from core.knowledge_backfill import (
     register_archive_pending,
 )
 from core.timelib import now_local
+from core.proc_utils import guard_killpg
 
 logger = logging.getLogger("fenixd.knowledge")
 
@@ -538,14 +539,13 @@ def _default_spawn(cmd: list, cwd: str):
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
+    # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝（自身组/
+    # 非正 pgid）与组已不存在同样静默——MUST NOT 降级单 pid proc.kill
+    # （pid=0 经 os.kill 折算同为调用者自身组广播）；既有 ESRCH 场景该降级
+    # 本就 no-op（目标已亡），收口后行为不变。
+    guard_killpg(
+        proc.pid, signal.SIGKILL, caller="knowledge._kill_process_group", resolve=True
+    )
     try:
         proc.communicate(timeout=10)
     except subprocess.TimeoutExpired:

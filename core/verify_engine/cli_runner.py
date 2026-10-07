@@ -33,6 +33,7 @@ from ._evidence import _EVIDENCE_LIMIT, _truncate, _interpolate_env  # 共享证
 from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .cli_assertions import CliAssertionRunner
 from .scenarios import MAX_STEP_TIMEOUT, validate_scenario
+from ..proc_utils import guard_killpg
 
 DEFAULT_RUN_TIMEOUT = 60.0
 
@@ -581,15 +582,19 @@ class CliRunner(VerifyRunner):
 
     @staticmethod
     def _kill_process_group(proc):
-        """强杀整个进程组（SIGKILL）。"""
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        """强杀整个进程组（SIGKILL）。
+
+        击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
+        （自身组/非正 pgid）与组已不存在同样静默——不降级单 pid proc.kill
+        （pid=0 经 os.kill 折算同为调用者自身组广播），既有 ESRCH 场景该
+        降级本就 no-op（目标已亡），收口后行为不变。
+        """
+        guard_killpg(
+            proc.pid,
+            signal.SIGKILL,
+            caller="verify_engine.cli_runner._kill_process_group",
+            resolve=True,
+        )
 
     @staticmethod
     async def _drain_after_kill(stream) -> bytes:

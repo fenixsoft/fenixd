@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .admin_store import AdminStore, ESCALATION
 from .state_machine import SpecStatus, StateParser
+from .proc_utils import guard_killpg
 
 # ── 常量 ───────────────────────────────────────────────────────────
 
@@ -204,10 +205,12 @@ def _terminate_proc_group(proc: subprocess.Popen) -> Tuple[str, str]:
     继承管道且杀不掉——则关闭读端放弃读取，保证执行线程必然返回。返回已收集
     的 (out, err)，管道被放弃时为 ("", "")。
     """
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        proc.kill()
+    # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：getpgid 内联点
+    # 收口；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默——MUST NOT
+    # 降级单 pid proc.kill（pid=0 经 os.kill 折算同为调用者自身组广播）。
+    guard_killpg(
+        proc.pid, signal.SIGKILL, caller="hook_engine._terminate_proc_group", resolve=True
+    )
     try:
         return proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:

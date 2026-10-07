@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path
 
-from core.proc_utils import pid_alive_signal, proc_start_ticks
+from core.proc_utils import guard_killpg, pid_alive_signal, proc_start_ticks
 
 SERVERS_FILENAME = "servers.json"
 
@@ -318,11 +318,12 @@ def kill_process_group(pid: int, logger=None) -> bool:
     except OSError:
         pgid = None
     if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGTERM)
+        # 击杀经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；守卫拒绝
+        # （自身组/非正 pgid）与组已不存在同样静默（sent 维持 False）。
+        if guard_killpg(
+            pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
+        ):
             sent = True
-        except (PermissionError, OSError):
-            pass
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         # 就绪判据针对进程组而非组长：shell 形态命令后台化实例后组长可先于
@@ -354,14 +355,13 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 pass  # 组非空但无权探测 → 按存活继续等待
         time.sleep(0.2)
     if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-            # 组长已亡、pgid 由 None 被接管为 pid 的孤儿组路径此前从未向组
-            # 发过信号，此处发出成功同样置位，保证返回值与「是否向进程组
-            # 发出过信号」的契约一致（sweep 的 harvested 计数依赖它）。
+        # 组长已亡、pgid 由 None 被接管为 pid 的孤儿组路径此前从未向组
+        # 发过信号，此处发出成功同样置位，保证返回值与「是否向进程组
+        # 发出过信号」的契约一致（sweep 的 harvested 计数依赖它）。
+        if guard_killpg(
+            pgid, signal.SIGKILL, caller="serving_registry.kill_process_group", resolve=False
+        ):
             sent = True
-        except (PermissionError, OSError):
-            pass
     return sent
 
 

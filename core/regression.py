@@ -63,6 +63,8 @@ from typing import Any, Dict, List, Optional, Union
 from core import timelib
 from core.verify_contract import RegressionSpec
 
+from core.proc_utils import guard_killpg
+
 _logger = logging.getLogger("fenixd.regression")
 
 
@@ -734,9 +736,14 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """
     try:
         pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, OSError):
         return  # 进程组已不存在
+    # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
+    # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默返回，序列语义不变。
+    if not guard_killpg(
+        pgid, signal.SIGTERM, caller="regression._kill_process_group", resolve=False
+    ):
+        return  # 进程组已不存在（或守卫拒绝发出）
     # 给 SIGTERM 窗口（直接子进程未退则等到超时）
     try:
         proc.wait(timeout=5)
@@ -749,10 +756,9 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         os.killpg(pgid, 0)
     except (ProcessLookupError, OSError):
         return
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        pass
+    guard_killpg(
+        pgid, signal.SIGKILL, caller="regression._kill_process_group", resolve=False
+    )
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:

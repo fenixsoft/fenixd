@@ -24,6 +24,8 @@ import signal
 import subprocess
 import threading
 
+from core.proc_utils import guard_killpg
+
 # 安装命令的包名（固定字面量，不拼接任何用户输入）
 OCR_NPM_PACKAGE = "@alibaba-group/open-code-review"
 
@@ -162,10 +164,11 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
             pgid = os.getpgid(p.pid)
         except (ProcessLookupError, PermissionError, OSError):
             pgid = p.pid
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定
+        # 直传；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默。
+        guard_killpg(
+            pgid, signal.SIGTERM, caller="ocr_status._run_npm_install", resolve=False
+        )
         try:
             p.wait(timeout=5)
         except Exception:
@@ -173,10 +176,9 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
         # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
         # （npm 派生的 node）会残留继续写全局前缀，无论 wait 成败都补一次
         # SIGKILL；ProcessLookupError＝组已清空，静默即可。
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        guard_killpg(
+            pgid, signal.SIGKILL, caller="ocr_status._run_npm_install", resolve=False
+        )
         # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
         try:
             p.communicate(timeout=5)

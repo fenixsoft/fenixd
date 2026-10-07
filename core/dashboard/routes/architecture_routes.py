@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+from core.proc_utils import guard_killpg
 
 # ── 模块级 logger（code-review item 967909e7db47：refresh 先前以
 # getattr(self, 'logger', None) 取值恒为 None（handler 未定义 logger
@@ -530,14 +531,12 @@ class ArchitectureManager:
         with self._guard:
             procs = list(self._procs.values())
         for proc in procs:
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                try:
-                    proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+            # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
+            # （自身组/非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill
+            # （pid=0 经 os.kill 折算同为调用者自身组广播）。
+            guard_killpg(
+                proc.pid, signal.SIGKILL, caller="architecture_routes.reap_all", resolve=True
+            )
 
     def refresh(
         self, proot: Path, project_name: str, logger=None
@@ -673,14 +672,12 @@ class ArchitectureManager:
         except subprocess.TimeoutExpired:
             # 进程组击杀（autodraft 同款）：claude 派生的 bash/写文件孙进程
             # 一并终止，锁释放后无在途写者
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                try:
-                    proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+            # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
+            # （自身组/非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill
+            # （pid=0 经 os.kill 折算同为调用者自身组广播）。
+            guard_killpg(
+                proc.pid, signal.SIGKILL, caller="architecture_routes._run_stage", resolve=True
+            )
             try:
                 # 短上限排干（_REAP_DRAIN_TIMEOUT_SECONDS）：超时说明有孙进程
                 # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）
@@ -705,14 +702,12 @@ class ArchitectureManager:
             # 锁后留下仍在飞的生成进程组——残留进程稍后自行写 evidence.md /
             # diagram.html 会造成「已报 failed 但产物事后出现」，并与用户
             # 重试的新生成进程并发写同一产物（正是单飞锁要防的踩踏）
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                try:
-                    proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+            # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
+            # （自身组/非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill
+            # （pid=0 经 os.kill 折算同为调用者自身组广播）。
+            guard_killpg(
+                proc.pid, signal.SIGKILL, caller="architecture_routes._run_stage", resolve=True
+            )
             try:
                 # 短上限排干（_REAP_DRAIN_TIMEOUT_SECONDS）：超时说明有孙进程
                 # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）

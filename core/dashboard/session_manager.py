@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+from core.proc_utils import guard_killpg
 
 logger = logging.getLogger("fenixd.dashboard.session_manager")
 
@@ -338,16 +339,13 @@ class SessionManager:
             session.proc.wait(timeout=SESSION_TERMINATE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             # code-review item 46ca71736389：killpg 收割整个进程组，与
-            # core.knowledge._kill_process_group 同式（getpgid 失败/进程已消失
-            # 时回退单进程 kill，ProcessLookupError 容错）。
-            try:
-                pgid = os.getpgid(pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                try:
-                    session.proc.kill()
-                except Exception:
-                    pass
+            # core.knowledge._kill_process_group 同式。击杀经自保护守卫
+            # （add-killpg-self-guard，resolve 型）：守卫拒绝（自身组/非正
+            # pgid）与组已不存在同样静默，不降级单进程 kill（pid=0 经 os.kill
+            # 折算同为调用者自身组广播）。
+            guard_killpg(
+                pid, signal.SIGKILL, caller="session_manager._terminate", resolve=True
+            )
             try:
                 session.proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -400,14 +398,14 @@ class SessionManager:
             return
         except subprocess.TimeoutExpired:
             pass
-        try:
-            pgid = os.getpgid(session.proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            try:
-                session.proc.kill()
-            except Exception:
-                pass
+        # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
+        # （自身组/非正 pgid）与组已不存在同样静默，不降级单进程 kill。
+        guard_killpg(
+            session.proc.pid,
+            signal.SIGKILL,
+            caller="session_manager._reap_claimed_session",
+            resolve=True,
+        )
         try:
             session.proc.wait(timeout=2)
         except subprocess.TimeoutExpired:

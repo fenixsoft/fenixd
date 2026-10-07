@@ -686,14 +686,22 @@ class TestArchitectureRefreshAPI:
             srv.stop()
 
     def test_stage1_timeout_kills_process_group(self, tmp_path, monkeypatch):
-        """阶段1 communicate 超时 → 进程组击杀（fake pid 不可查时 kill 兜
-        底），failed 且 error 含阶段前缀，不 spawn 阶段2。"""
+        """阶段1 communicate 超时 → 进程组击杀（守卫收口后的 killpg 跳），
+        failed 且 error 含阶段前缀，不 spawn 阶段2。"""
         proot = make_project(tmp_path)
         seen = _fake_popen(
             monkeypatch,
             explore=_Stage(
                 raise_exc=subprocess.TimeoutExpired(cmd="claude", timeout=720)
             ),
+        )
+        # 击杀哨对齐 add-killpg-self-guard 收口后的最后一跳：清场经
+        # guard_killpg 落 killpg（test_dashboard_quality_ocr 同款 recorder）；
+        # 不可达 pid 的 proc.kill() 单 pid 降级已按守卫契约（D1）移除。
+        killed = []
+        monkeypatch.setattr(arch_routes.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            arch_routes.os, "killpg", lambda pgid, sig: killed.append((sig.name, pgid))
         )
         srv = _server(tmp_path, proot)
         try:
@@ -702,19 +710,26 @@ class TestArchitectureRefreshAPI:
             assert final["state"] == "failed", final
             assert "阶段1 探索超时" in (final["error"] or "")
             assert "720" in (final["error"] or "")
-            assert seen.get("killed") is True
+            assert ("SIGKILL", 999_999_999) in killed
             assert "author_cmd" not in seen
         finally:
             srv.stop()
 
     def test_stage2_timeout_kills_process_group(self, tmp_path, monkeypatch):
-        """阶段2 communicate 超时 → 进程组击杀，failed 且 error 含阶段前缀。"""
+        """阶段2 communicate 超时 → 进程组击杀（守卫收口后的 killpg 跳），
+        failed 且 error 含阶段前缀。"""
         proot = make_project(tmp_path)
         seen = _fake_popen(
             monkeypatch,
             author=_Stage(
                 raise_exc=subprocess.TimeoutExpired(cmd="claude", timeout=1080)
             ),
+        )
+        # 击杀哨对齐 add-killpg-self-guard 收口后的最后一跳（同 stage1）。
+        killed = []
+        monkeypatch.setattr(arch_routes.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            arch_routes.os, "killpg", lambda pgid, sig: killed.append((sig.name, pgid))
         )
         srv = _server(tmp_path, proot)
         try:
@@ -723,7 +738,7 @@ class TestArchitectureRefreshAPI:
             assert final["state"] == "failed", final
             assert "阶段2 出图超时" in (final["error"] or "")
             assert "1080" in (final["error"] or "")
-            assert seen.get("killed") is True
+            assert ("SIGKILL", 999_999_999) in killed
             assert seen["stage_cmds"] == ["explore", "author"]
         finally:
             srv.stop()

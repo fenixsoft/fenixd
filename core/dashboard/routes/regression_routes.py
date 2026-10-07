@@ -51,6 +51,7 @@ from core.dashboard.routes.code_review_routes import (
 # 消费方守卫（hosting_state 判据）与 code_review 族共用同一实现（item
 # fcadb893a1c8：run/fix 两端点此前各内联一份同构守卫，规则变化需多点同修）。
 from core.dashboard.routes.hosting_guard import _guard_hosting_state
+from core.proc_utils import guard_killpg
 
 # 模块级 logger（函数内免外传；handler 无 logger 属性，getattr 恒 None 会使
 # 失败留痕永不生效，见 code-review item 3f7d5ad37689）
@@ -201,14 +202,15 @@ def reap_all_autodraft() -> None:
     with _AUTODRAFT_PROCS_GUARD:
         procs = list(_AUTODRAFT_PROCS)
     for proc in procs:
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001
-                pass
+        # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
+        # （自身组/非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill
+        # （pid=0 经 os.kill 折算同为调用者自身组广播）。
+        guard_killpg(
+            proc.pid,
+            signal.SIGKILL,
+            caller="regression_routes.reap_all_autodraft",
+            resolve=True,
+        )
 
 
 def _reap_autodraft_proc(proc) -> None:
@@ -236,14 +238,14 @@ def _reap_autodraft_proc(proc) -> None:
     """
     if proc is None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        try:
-            proc.kill()
-        except Exception:
-            pass
+    # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝（自身组/
+    # 非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill。
+    guard_killpg(
+        proc.pid,
+        signal.SIGKILL,
+        caller="regression_routes._reap_autodraft_proc",
+        resolve=True,
+    )
     try:
         proc.communicate(  # 回收已杀进程、排干管道
             timeout=_AUTODRAFT_REAP_TIMEOUT_SECONDS
