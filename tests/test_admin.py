@@ -20,6 +20,7 @@ from core.admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from core.admin_monitor import AdminMonitor, _RUN_PREFIXES, _pgrep_live_worktree, spec_is_undriven
 from core.agent_runner import AdminDisposition, AgentRunner
 from core.agent_runner.runner import admin_disposition_path
+from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES, infer_run_agent_type
 from core.dashboard.registry import Registry
 from core.dashboard.server import DashboardHTTPServer, find_free_port
 from tests.helpers import FakeLogger, utcnow_iso, iso_ago
@@ -1369,6 +1370,23 @@ class TestFailurePrefixSubset:
         assert "planner-judge-" in _RUN_PREFIXES
         assert "impl-" in _RUN_PREFIXES
         assert "verify-" in _RUN_PREFIXES
+        assert "maintenance-" in _RUN_PREFIXES    # maintenance-work-ledger 2.2：登记型仍计
+
+    def test_maintenance_prefix_identified_in_both_tables(self):
+        """maintenance-work-ledger 3.2：登记型前缀两处可识别。
+
+        真源全量表含 ("maintenance-", "maintenance") 映射（infer 归属
+        maintenance，不再退化为泛型 agent）；失败计数子集 _RUN_PREFIXES
+        已同步（成员断言，非精确集锁定），归一时可还原 scope 供告警归因。
+        """
+        assert ("maintenance-", "maintenance") in RUN_ID_AGENT_PREFIXES
+        assert infer_run_agent_type("maintenance-hotfix-x-1780000001") == (
+            "maintenance", "hotfix-x-1780000001")
+        assert AdminMonitor._spec_from_run_id(
+            "maintenance-hotfix-x-1780000001", _RUN_PREFIXES) == "hotfix-x"
+        # 无时间戳尾段（非 <prefix><scope>-<ts> 形态）不强行归属 spec
+        assert AdminMonitor._spec_from_run_id(
+            "maintenance-orphan", _RUN_PREFIXES) is None
 
     def test_repeated_failures_excludes_bare_planner_and_test(self, tmp_path):
         """裸 planner- / test- 失败 run 不得触发 repeated_failures。
