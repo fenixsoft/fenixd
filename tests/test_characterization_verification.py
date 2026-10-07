@@ -231,8 +231,10 @@ class TestEnvWhitewashGate:
                 mock_wv.return_value = ["无真实通过场景"]
                 result = pipe._env_whitewash_gate("my-spec")
             assert result is False
+            # exemption_effective：豁免有效命中轮标记（evo-fix-env-exemption-gate-conflict
+            # 1.3/2.2）——本用例 STATE 无豁免登记 → False（既有的计冻结轮语义不变）
             pipe._escalate_env_blocked.assert_called_once_with(
-                "my-spec", ["无真实通过场景"]
+                "my-spec", ["无真实通过场景"], exemption_effective=False
             )
             # logger.warning 被调用（洗白拦截）
             assert any("洗白门禁拦截" in str(c) for c in lg.warnings)
