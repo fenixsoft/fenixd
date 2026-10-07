@@ -179,6 +179,10 @@ class TestRunClaudeCancelPolling:
         orig_popen = runner_module.subprocess.Popen
 
         def fake_popen(cmd, **kw):
+            # git 探针放行（WIP checkpoint 保全链路的 rev-parse/status 走真
+            # git）：仅劫持 agent CLI 子进程为长 sleep 替身
+            if cmd and cmd[0] == "git":
+                return orig_popen(cmd, **kw)
             kw.pop("text", None)
             kw.pop("bufsize", None)
             kw.pop("env", None)
@@ -253,6 +257,10 @@ class TestTransientRetryCancel:
         orig_popen = runner_module.subprocess.Popen
 
         def fake_popen(cmd, **kw):
+            # git 探针放行（WIP checkpoint 保全链路的 rev-parse/status 走真
+            # git）：仅劫持 agent CLI 子进程为长 sleep 替身
+            if cmd and cmd[0] == "git":
+                return orig_popen(cmd, **kw)
             kw.pop("text", None)
             kw.pop("bufsize", None)
             kw.pop("env", None)
@@ -741,3 +749,155 @@ class TestRunCancelAPI:
         # 第二次请求（已有未消费文件）→ 409
         status2, data2 = srv.post("/api/run-cancel?project=proj&run_id=impl-x-456")
         assert status2 == 409
+
+
+# ════════════════════════════════════════════════════════════════════
+# add-run-cancel-wip-checkpoint：取消收口前的锚点 cancel WIP 保全
+# ════════════════════════════════════════════════════════════════════
+
+
+class TestCancelWipCheckpoint:
+    """取消收口前已产 checkpoint 的集成用例与取消审计文案断言（3.2）。"""
+
+    @staticmethod
+    def _git(root: Path, *args):
+        result = subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True)
+        assert result.returncode == 0, \
+            f"git {' '.join(args)} failed: {result.stderr}"
+        return result
+
+    def _make_worktree_lane(self, tmp_path: Path):
+        """主仓库 + 链接 worktree（独立仓库会被 _is_main_worktree 判为主树）。"""
+        main = tmp_path / "mainrepo"
+        main.mkdir()
+        self._git(main, "init", "-q")
+        self._git(main, "config", "user.email", "test@fenix.local")
+        self._git(main, "config", "user.name", "Fenix Test")
+        self._git(main, "config", "commit.gpgsign", "false")
+        (main / "base.py").write_text("BASE\n", encoding="utf-8")
+        self._git(main, "add", "-A")
+        self._git(main, "commit", "-q", "-m", "[fenix] base")
+        self._git(main, "branch", "-M", "main")
+        wt = tmp_path / "impl-lane"
+        self._git(main, "worktree", "add", "-b", "impl-demo", str(wt))
+        return wt
+
+    def test_polling_cancel_produces_cancel_anchor_checkpoint(
+            self, tmp_path, monkeypatch):
+        """取消收口前已产 checkpoint：轮询环命中旗标 → terminate/grace/kill
+        序列完成后、收口异常构造前，对 attempt worktree 提交锚点 cancel 的
+        WIP 提交；cancelled 终态行照常落盘（保全不阻断收口）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        runner = make_runner(proot)
+        runner.config = {"agents": {"run_timeout_seconds": 3600}}
+        wt = self._make_worktree_lane(tmp_path)
+        # 未提交现场：分支零 ahead + 脏文件
+        (wt / "wip.py").write_text("WIP-INFLIGHT\n", encoding="utf-8")
+        ahead0 = self._git(
+            wt, "rev-list", "--count", "main..impl-demo").stdout.strip()
+        assert ahead0 == "0"
+
+        orig_popen = runner_module.subprocess.Popen
+
+        def fake_popen(cmd, **kw):
+            # git 探针放行（WIP checkpoint 保全链路的 rev-parse/status 走真
+            # git）：仅劫持 agent CLI 子进程为长 sleep 替身
+            if cmd and cmd[0] == "git":
+                return orig_popen(cmd, **kw)
+            kw.pop("text", None)
+            kw.pop("bufsize", None)
+            kw.pop("env", None)
+            kw.pop("cwd", None)
+            return orig_popen(["python3", "-c", "import time; time.sleep(30)"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        monkeypatch.setattr(runner_module.subprocess, "Popen", fake_popen)
+
+        outcome = {}
+
+        def worker():
+            try:
+                runner._run_claude(
+                    "prompt", wt, "impl-x-123-a1",
+                    model_override="m", max_turns=50,
+                    spec_name="x", agent_type="implementer",
+                )
+                outcome["result"] = "returned"
+            except RunCancelledError as e:
+                outcome["result"] = "cancelled"
+                outcome["reason"] = e.reason
+                outcome["by"] = e.by
+            except Exception as e:  # noqa: BLE001
+                outcome["result"] = f"err:{e}"
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        deadline = time.time() + 5
+        while time.time() < deadline and \
+                "impl-x-123-a1" not in runner._running_agents:
+            time.sleep(0.05)
+        assert "impl-x-123-a1" in runner._running_agents
+
+        result = runner.cancel_run("impl-x-123", reason="测试取消", by="admin")
+        assert result["status"] == "cancel_requested"
+
+        t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 5)
+        assert outcome.get("result") == "cancelled"
+
+        # 取消收口前 checkpoint 已产：分支 ahead≥1、消息含锚点 cancel 与 spec、
+        # 现场内容入提交
+        subjects = [l for l in self._git(
+            wt, "log", "--format=%s", "main..impl-demo"
+        ).stdout.splitlines() if l.strip()]
+        assert subjects, "取消收口前应有 WIP checkpoint 提交"
+        assert subjects[0] == "fenix(wip): checkpoint cancel x"
+        show = self._git(wt, "show", "impl-demo:wip.py")
+        assert show.stdout == "WIP-INFLIGHT\n"
+        # cancelled 终态行照常落盘（保全失败也不阻断的收口路径未受影响）
+        lines = read_run_file(proot, "impl-x-123-a1")
+        assert lines[-1]["type"] == "cancelled"
+        assert lines[-1]["reason"] == "测试取消"
+
+        # 幂等兜底：RunCancelledError 收口分支对已干净 worktree 再补一次不产
+        # 空提交（ahead 恒 1）
+        assert self._git(
+            wt, "rev-list", "--count", "main..impl-demo").stdout.strip() == "1"
+
+    def test_cancel_audit_recommended_action_describes_checkpoint(
+            self, tmp_path):
+        """取消审计告警 recommended_action 如实描述 checkpoint 保全结果与
+        worktree 车道去向；三条失实表述不再出现，旗标登记描述句保留。"""
+        from core.admin_store import AdminStore
+
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = make_runner(proot)
+        # 命中活跃 attempt（cancel_requested 路径才写审计）
+        proc = spawn_sleep(30)
+        runner._running_agents["impl-x-123-a1"] = proc
+        try:
+            result = runner.cancel_run(
+                "impl-x-123", reason="审计文案", by="admin")
+            assert result["status"] == "cancel_requested"
+        finally:
+            proc.kill()  # 测试自清理（cancel_run 不做跨线程 kill）
+
+        records = [r for r in AdminStore(proot).read_all()
+                   if r.get("signal_type") == "run_cancelled"]
+        assert records, "取消审计告警应已落盘"
+        act = records[-1]["recommended_action"]
+        # 如实描述：已尽力 checkpoint + 分支可恢复 + 无载体/主树无保全
+        assert "取消收口前已尽力执行 WIP checkpoint" in act
+        assert "fenix(wip): checkpoint cancel" in act
+        assert "可从分支恢复" in act
+        assert "复用遗产保留" in act
+        assert "分支与 wip 提交不受影响" in act
+        # 失实表述不再出现（spec Scenario 明令废除的三条）
+        assert "取消路径不做 WIP checkpoint" not in act
+        assert "cleanup(success=False)" not in act
+        assert "登记为 legacy 保留" not in act
+        # 旗标登记/收口描述句原样保留
+        assert "run 已登记取消旗标" in act
+        assert "按既有节奏接管" in act
