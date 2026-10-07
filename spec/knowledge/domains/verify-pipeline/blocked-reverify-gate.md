@@ -1,5 +1,6 @@
 # BLOCKED 重验直通道
 <!-- knowledge: capability=blocked-reverify-gate rev=1 sources=spec/archive/2026-09-18-add-blocked-reverify-lane -->
+<!-- disputed: since=2026-09-30 fps=870d8568 -->
 
 环境阻塞类冻结的 spec 在 admin 处置完成后的复位路径裁定：实现分支已合并时直通重验（跳过全量重实现），否则回 ready 重派实现。
 

@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=impl-code-review-tuning rev=2
      sources=spec/archive/2026-09-24-add-impl-code-review-tuning,spec/archive/2026-09-26-add-impl-ocr-parallel-lane -->
+<!-- disputed: since=2026-09-30 fps=4eb78e98,ee9114d2 -->
 
 实现期收尾审查三个调优参数（单请求超时 / 并发 / 力度）的配置读取、run 级注入与设置页编辑。
 

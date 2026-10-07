@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=code-fix-manual-trigger rev=1
      sources=spec/archive/2026-09-27-add-code-fix-manual-trigger -->
+<!-- disputed: since=2026-09-30 fps=1ac71b79,20c771a2 -->
 
 质量页签「立即自动修复」：信号文件触发 + 整链授权 + 判定结果回链。
 

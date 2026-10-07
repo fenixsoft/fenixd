@@ -1,6 +1,7 @@
 <!-- knowledge: capability=stale-selfheal-cooldown rev=1 sources=spec/archive/2026-09-25-evo-stale-selfheal-restart-cooldown -->
 
 # 自愈重启冷却与自触发升级
+<!-- disputed: since=2026-09-30 fps=75ac1be8 -->
 
 陈旧自愈的连续重启保护：滑动窗口计数进入冷却锁存，重启后短期复现的陈旧只告警不再重启，防「重启→检测→重启」正反馈循环。
 

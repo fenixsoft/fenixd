@@ -1,6 +1,7 @@
 <!-- knowledge: capability=task-progress-phase-display rev=2 sources=spec/archive/2026-09-11-add-task-progress-verify-phase,spec/archive/2026-09-26-add-quality-gates-visibility -->
 
 # 任务进度按阶段呈现
+<!-- disputed: since=2026-09-30 fps=d04dd512 -->
 
 SPEC 列表「任务进度」列的阶段感知展示：impl（蓝）/ verify（绿）/ gates（橙）三阶段，判定单点在后端。
 

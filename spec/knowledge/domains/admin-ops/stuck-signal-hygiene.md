@@ -1,6 +1,7 @@
 <!-- knowledge: capability=stuck-signal-hygiene rev=1 sources=spec/archive/2026-09-21-evo-stuck-signal-hygiene -->
 
 # stuck 信号活跃度预检与处置后静默
+<!-- disputed: since=2026-09-30 fps=75ac1be8 -->
 
 stuck 信号的误报降噪：进程存活反证优先于文件活跃判据、resolved 处置后设静默期、真 stuck 照常成条。
 

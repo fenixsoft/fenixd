@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=v2-legacy-coexist rev=2
      sources=spec/archive/2026-09-05-fix-fix-v2-shell-hash-router -->
+<!-- disputed: since=2026-09-30 fps=712c4b3d -->
 
 老版 dashboard 与 v2 壳并存互不影响的存在性契约与确定性回归锁定。
 

@@ -1,6 +1,7 @@
 <!-- knowledge: capability=long-task-foreground-wait rev=1 sources=spec/archive/2026-09-25-fix-agent-lane-efficiency -->
 
 # 长任务前台等待策略
+<!-- disputed: since=2026-09-30 fps=870d8568 -->
 
 可能超过工具单次调用时限的长任务的等待编排契约：一次后台启动、有界等待，两类后台能力严格区分。
 

@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=v2-sdk-vendor rev=2
      sources=spec/archive/2026-09-04-v2-vendor-amis-sdk -->
+<!-- disputed: since=2026-09-30 fps=aefd0f80 -->
 
 AMIS SDK 的静态产物 vendored 落盘契约：不依赖运行时安装与 CDN，构建产物随库分发。
 

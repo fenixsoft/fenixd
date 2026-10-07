@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=code-fix-config rev=3
      sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-04-add-codefix-affinity-batching -->
+<!-- disputed: since=2026-09-30 fps=ab9ffbf3,ee9114d2 -->
 
 `admin.code_review_fix.*` 配置段：自动修复总开关、批大小、定向重试轮上限与批收尾回归分流开关，含校验、缺省语义、Dashboard 读写与设置页 UI。
 

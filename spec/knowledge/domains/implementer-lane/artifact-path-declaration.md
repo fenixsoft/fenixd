@@ -1,6 +1,7 @@
 <!-- knowledge: capability=artifact-path-declaration rev=1 sources=spec/archive/2026-09-23-fix-artifact-paths-hardcoded-default -->
 
 # 构建产物路径判定契约
+<!-- disputed: since=2026-09-30 fps=d04dd512 -->
 
 构建产物路径判定的配置驱动契约：判定器无内置默认路径，产物语义完全由项目配置两键表达，未裁决与显式无产物是不同状态。
 

@@ -1,6 +1,7 @@
 <!-- knowledge: capability=dispatch-concurrency-tuning rev=1 sources=spec/archive/2026-09-27-add-pipeline-throughput-governance -->
 
 # 派发并发度调优
+<!-- disputed: since=2026-09-30 fps=4eb78e98,ab9ffbf3 -->
 
 派发队列的并发槽位规模治理：缺省值、模板推荐值与回归互斥前提的统一口径。
 

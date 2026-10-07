@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=code-review-trigger-ack rev=2
      sources=spec/archive/2026-09-29-add-code-review-trigger-ack,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume -->
+<!-- disputed: since=2026-09-30 fps=1ac71b79,20c771a2 -->
 
 代码审查手动触发的受理结果回链：daemon 消费触发信号后把判定结果落盘为结果文件，POST 侧受理窗口守卫消灭假受理，前端按回链三态分派用户反馈。
 

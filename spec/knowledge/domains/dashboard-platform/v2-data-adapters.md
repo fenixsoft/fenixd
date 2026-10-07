@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=v2-data-adapters rev=3
      sources=spec/archive/2026-09-05-v2-data-adapters -->
+<!-- disputed: since=2026-09-30 fps=712c4b3d,aefd0f80 -->
 
 后端 API JSON 到 AMIS/视图模型的纯函数适配集：生命周期排序、fix 树分组、三级回退与链校验。
 
