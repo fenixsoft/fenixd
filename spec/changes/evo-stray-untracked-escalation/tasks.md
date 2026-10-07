@@ -18,11 +18,11 @@
 ## 1. 体积采集与第二档升级
 
 - [ ] 1.1 core/worktree_manager/stray_wip.py：_untracked_stray_entries（约 404 行）采集滞留集合条目体积（字节），随注册表与告警 evidence 字段输出
-- [ ] 1.2 core/worktree_manager/stray_wip.py：untracked 盘点流（约 504-565 行）加第二档升级判定——滞留 elapsed≥24h 或集合体积≥阈值（缺省 524288000 即 500MB，仿 :81 untracked_stray_threshold 的可配范式）时发出新信号 maintree_untracked_stray_escalated（severity major，按 :611 写告警处参数化），注册表（约 157 行）支持双档 escalated 标记保证同一集合只升级一次；同步修订 :31-35 的 MUST NOT 收录注释表述（info 信号维持不收录、升级信号除外）
+- [ ] 1.2 core/worktree_manager/stray_wip.py：untracked 盘点流（约 504-565 行）加第二档升级判定——滞留 elapsed≥24h 或集合体积≥阈值（缺省 524288000 即 500MB，仿 :81 untracked_stray_threshold 的可配范式；体积判定独立于 elapsed，每轮对已告警在册集合计算体积，MUST NOT 以 elapsed 达标为体积计算前置，否则体积路径被 24h 门控）时发出新信号 maintree_untracked_stray_escalated（severity major，按 :611 写告警处参数化），注册表（约 157 行）支持双档 escalated 标记保证同一集合只升级一次；同步修订 :31-35 的 MUST NOT 收录注释表述（info 信号维持不收录、升级信号除外）
 
 ## 2. 自动唤起接线
 
-- [ ] 2.1 core/admin_monitor.py：SIGNAL_SEVERITY（约 290 行）登记 maintree_untracked_stray_escalated=major；STORED_SIGNAL_TYPES（约 481 行）收录新类型；_detect_family_explosion 的项目名解析清单（约 2519 行旁）覆盖新类型，防 evidence 无项目名的记录被丢弃致唤起静默落空
+- [ ] 2.1 core/admin_monitor.py：SIGNAL_SEVERITY（约 290 行）登记 maintree_untracked_stray_escalated=major；SIGNAL_RECOMMENDATION（约 390 行）登记处置指引文案（写入方 _write_alert 与唤起记录 recommended_action :2708 查表取值，漏登则告警无指引）；STORED_SIGNAL_TYPES（约 481 行）收录新类型；_detect_family_explosion 的项目名解析清单（约 2519 行旁）覆盖新类型，防 evidence 无项目名的记录被丢弃致唤起静默落空
 
 ## 3. untracked 认领执行器
 
