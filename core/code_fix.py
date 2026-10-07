@@ -672,6 +672,13 @@ def record_failed_batch(
             # 达上限告警/todo/永久跳过永不发生（确定性失败批无限重试）。
             target.pop("released", None)
             target.pop("released_at", None)
+            # 复燃同时清核销记账（add-codefix-failure-registration-closeout
+            # 1.1）：记录重新活跃即回到未核销——否则已核销标记与再次失败
+            # 事实矛盾，且对账因 consumed_at 在场跳过该记录（open_remaining
+            # 永不再同步）。
+            target.pop("consumed_at", None)
+            target.pop("consumed_note", None)
+            target.pop("open_remaining", None)
         else:
             target = {"item_ids": list(item_ids), "fail_count": 1}
             records.append(target)
@@ -1017,7 +1024,7 @@ def release_retryable_failed_batches(project_root) -> int:
     return _with_lock(path, _do)
 
 
-def release_failed_batch(project_root, item_ids) -> int:
+def release_failed_batch(project_root, item_ids, logger=None) -> int:
     """人工清理后解除失败保留（从 fix-failed.json 移除命中的 item_id）。
 
     返回解除的记录条数（供人工/审计确认；未命中返回 0）。
@@ -1029,36 +1036,289 @@ def release_failed_batch(project_root, item_ids) -> int:
     对齐同文件 ``write_progress`` 先例）：人工 release 与链边界自动操作
     （新链启动释放/批收尾入档）并发交叠会把人工解除结果整份覆盖回去
     （条目卡在跳过）。
-    """
-    target = set(item_ids)
-    if not target:
-        return 0
-    path = _failed_path(project_root)
 
-    def _do() -> int:
-        records = load_failed_batches(project_root)
-        kept = []
-        released = 0
-        changed = 0
-        for rec in records:
-            ids = [i for i in rec.get("item_ids") or [] if i not in target]
-            if len(ids) == len(rec.get("item_ids") or []):
-                kept.append(rec)  # 无交集，原样保留
-            elif ids:
-                rec["item_ids"] = ids
-                kept.append(rec)  # 部分解除，保留余量
-                changed += 1
+    结构化留痕（add-codefix-failure-registration-closeout 1.3）：调用
+    **无条件**追加一行到 ``.fenix/code-review/fix-failed-release.jsonl``
+    （释放时刻+释放记录数+item_ids 摘要）——带外 ``python3 -c`` 直调
+    （todo 登记正文列为官方解除指引）不经 daemon logger、此前零留痕
+    （proposal 实证 2026-10-07 释放 13 条仅会话考古可见），留痕文件是
+    唯一权威追溯载体；``logger``（可选）传入时另写一行 daemon 日志
+    （补充通道，留痕失败不阻断解除本身）。
+    """
+    requested = [str(i) for i in (item_ids or [])]
+    released = 0
+    if set(requested):
+        target = set(requested)
+        path = _failed_path(project_root)
+
+        def _do() -> int:
+            records = load_failed_batches(project_root)
+            kept = []
+            released = 0
+            changed = 0
+            for rec in records:
+                ids = [i for i in rec.get("item_ids") or [] if i not in target]
+                if len(ids) == len(rec.get("item_ids") or []):
+                    kept.append(rec)  # 无交集，原样保留
+                elif ids:
+                    rec["item_ids"] = ids
+                    kept.append(rec)  # 部分解除，保留余量
+                    changed += 1
+                else:
+                    released += 1  # 整批解除
+            # [fenix-ignore:513aabee5028] 无变化不写盘守卫已在先前 code-fix 批次落地（changed/released 计数条件写盘，docstring 同步声明），条目所指「无命中仍无条件重写、凭空创建空档案」已不存在。
+            if changed or released:  # 无变化不写盘（对齐同模块守卫惯例）
+                _atomic_write(
+                    path,
+                    json.dumps(kept, ensure_ascii=False, indent=2),
+                )
+            return released
+
+        released = _with_lock(path, _do)
+    # 留痕锁外写（异文件，不占 fix-failed 锁；无条件含零命中调用）。
+    _append_release_trace(project_root, released, requested, logger=logger)
+    return released
+
+
+# ── 失败登记闭环核销（add-codefix-failure-registration-closeout 1.1-1.3）──
+# 达自动重试上限的失败批登记（fix-failed.json 记录 + 一次性告警 + todo 待
+# 人工项）此前是一次性写入、永不更新：被跳过条目后续被他批修复而全部终态
+# 后，登记与告警仍挂着「待人工排查」（proposal 实证：两条告警挂了一天以上
+# handled=false）。本段补消费侧闭环：周期对账（批收尾/合回核销点 + 新链
+# 启动簿记块）发现被跳过条目全部终态即核销并收口告警/todo 登记。
+
+
+# release_failed_batch 结构化留痕文件（1.3）：带外 python3 -c 直调不经
+# daemon logger，此文件是唯一权威追溯载体。
+RELEASE_TRACE_REL = ".fenix/code-review/fix-failed-release.jsonl"
+
+# todo.md 登记块定位锚（与 _append_todo_entry 写入格式逐字对齐）。
+_TODO_ENTRY_TITLE = "## [code-fix] 失败批已达自动重试上限，待人工排查"
+_TODO_ENTRY_IDS_LINE = "- 被跳过的条目集合（保持 open）："
+
+
+def _append_release_trace(project_root, released_records, item_ids, logger=None) -> None:
+    """release_failed_batch 的结构化留痕追加（1.3）。
+
+    追加一行 JSON（释放时刻+释放记录数+请求解除的 item_ids 摘要）到
+    ``RELEASE_TRACE_REL``；OSError 容错与 _append_todo_entry 同口径（留痕
+    失败不阻断解除本身）。``logger``（可选）传入时另写一行 daemon 日志
+    （补充通道；日志失败无副作用）。
+    """
+    entry = {
+        "released_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "released_records": int(released_records),
+        "item_ids": [str(i) for i in (item_ids or [])],
+    }
+    try:
+        trace_path = Path(project_root) / RELEASE_TRACE_REL
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with trace_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+    if logger is not None:
+        try:
+            logger.info(
+                "code-fix",
+                f"code-fix 失败批解除留痕：释放 {released_records} 条记录，"
+                f"item_ids={entry['item_ids']}（{RELEASE_TRACE_REL}）",
+            )
+        except Exception:  # noqa: BLE001 — 日志失败不影响解除
+            pass
+
+
+def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> int:
+    """核销时收口对应 code_fix_retry_budget_exhausted 告警（1.2）。
+
+    告警记录无结构化 item_ids/branch/tip_sha 字段（_write_retry_exhausted_alert
+    仅 evidence 文本含 ``item_ids=<清单>``），经 read_all 过滤 signal_type 后按
+    evidence 内 ``item_ids=<清单>;`` 精确子串匹配——带分号后缀避免条目集
+    前缀的批间误命中（``item_ids=a, b`` 是 ``item_ids=a, b, c`` evidence 的
+    前缀子串）。action_taken 附终态分布注记；已 handled 告警跳过（重复核销
+    幂等）。告警收口失败不回滚核销记账（核销为只增记账动作），仅 logger
+    （可选）留痕。返回收口条数。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    needle = f"item_ids={', '.join(str(i) for i in item_ids)};"
+    closed = 0
+    try:
+        store = AdminStore(project_root, logger=None)
+        for rec in store.read_all():
+            if rec.get("kind") != SIGNAL:
+                continue
+            if rec.get("signal_type") != "code_fix_retry_budget_exhausted":
+                continue
+            if rec.get("handled"):
+                continue
+            if needle not in str(rec.get("evidence") or ""):
+                continue
+            if store.mark_signal_handled(
+                rec.get("id"),
+                action_taken=(
+                    "失败登记已自动核销（被跳过条目全部终态：" f"{note}）"
+                ),
+            ):
+                closed += 1
+    except Exception as e:  # noqa: BLE001 — 收口失败不阻断核销主流程
+        if logger is not None:
+            try:
+                logger.warning(
+                    "code-fix", f"code-fix 失败登记核销的告警收口失败: {e}"
+                )
+            except Exception:  # noqa: BLE001 — 留痕失败不影响
+                pass
+    return closed
+
+
+def _rewrite_todo_entry_consumed(project_root, item_ids, note, consumed_at) -> bool:
+    """核销时把 todo.md 对应登记块重写为单行核销注记（1.3，消费侧弱化）。
+
+    定位口径：登记标题（_append_todo_entry）不含 item_ids，按块体「被跳过
+    的条目集合（保持 open）：<清单>」行精确定位**本记录对应块**、只重写该
+    块（多个失败批的登记块可共存，MUST NOT 波及他批登记块）；块体已损毁成
+    裸标题（proposal 所述残骸，无 item_ids 行可定位）时按标题行兜底移除。
+    持 ``.fenix/.todo.md.lock`` 同锁（与 _append_todo_entry / evolution 写者
+    同锁契约，code-review item 28c473f92809）经 _atomic_write 整文件重写，
+    不依赖原位追加注记；OSError 容错与 _append_todo_entry 同口径（todo 消费
+    失败不阻断核销主流程）。块不存在（已消费/未登记）返回 False。
+    """
+    todo_path = Path(project_root) / ".fenix" / "todo.md"
+    ids_txt = ", ".join(str(i) for i in item_ids)
+    ids_needle = f"{_TODO_ENTRY_IDS_LINE}{ids_txt}"
+    replacement = (
+        f"- [x] [code-fix] 失败批登记已于 {consumed_at} 核销"
+        f"（被跳过条目全部终态：{note}），对应告警已收口\n"
+    )
+
+    def _rewrite_locked() -> bool:
+        try:
+            text = todo_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        lines = text.splitlines(keepends=True)
+        out: list = []
+        changed = False
+        i = 0
+        n = len(lines)
+        while i < n:
+            line = lines[i]
+            if _TODO_ENTRY_TITLE not in line:
+                out.append(line)
+                i += 1
+                continue
+            # 登记块 = 标题行起至下一个 "## " 标题行前（不含）。
+            j = i + 1
+            while j < n and not lines[j].lstrip().startswith("## "):
+                j += 1
+            block = lines[i:j]
+            body = block[1:]
+            if any(ids_needle in b for b in body):
+                out.append(replacement)  # 本记录登记块 → 重写式核销
+                changed = True
+            elif body and any(b.strip() for b in body):
+                out.extend(block)  # 他批完整登记块（ids 不匹配），原样保留
             else:
-                released += 1  # 整批解除
-        # [fenix-ignore:513aabee5028] 无变化不写盘守卫已在先前 code-fix 批次落地（changed/released 计数条件写盘，docstring 同步声明），条目所指「无命中仍无条件重写、凭空创建空档案」已不存在。
-        if changed or released:  # 无变化不写盘（对齐同模块守卫惯例）
+                changed = True  # 裸标题空壳残骸：兜底移除
+            i = j
+        if changed:
+            _atomic_write(todo_path, "".join(out))
+        return changed
+
+    try:
+        return _with_lock(todo_path, _rewrite_locked)
+    except OSError:
+        return False
+
+
+def consume_resolved_failed_batches(project_root, logger=None) -> int:
+    """失败登记闭环核销：被跳过条目全部终态即核销并收口（1.1/1.2）。
+
+    对 fix-failed.json 中未核销记录（缺 ``consumed_at`` 视为未核销，向后
+    兼容）的被跳过条目做台账逐 id 对账：
+
+    - 全部终态（resolved/ignored）→ 锁内置 ``consumed_at``/``consumed_note``
+      （终态分布注记）/``open_remaining=0``，锁外收口对应
+      code_fix_retry_budget_exhausted 告警（mark_signal_handled，action_taken
+      附终态分布）并重写 todo.md 登记块；
+    - 部分终态 → 只更新 ``open_remaining``（值不变不写盘），不核销、
+      不收口；台账中查不到的条目视为非终态（无法证明终态，保守不核销）；
+    - 台账读取失败（OSError 降级，degraded_out 出参检出）按空集 fail-open
+      **跳过本轮核销**，不阻断批收尾/链启动主流程。降级检测不可省：
+      read_items 口径把读失败吞成空集，而核销语义与核销写点相反（空集=
+      全部条目非 open=全终态），误当空集会把全部未核销记录误判核销。
+
+    读-改-写全程持 flock（``_with_lock``，锁内不重入）；告警/todo 写走
+    异锁通道、保持锁外。幂等：已核销记录（有 consumed_at）跳过不重写，
+    已 handled 告警不再收口。返回本轮核销的记录数。
+
+    对账范围含预算内记录与墓碑：其条目被他批修复而终态时同样闭环（核销为
+    只增记账动作，不改变 ``_failed_item_ids`` 的选批排除语义）。
+    """
+    path = _failed_path(project_root)
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    degraded: list = []
+
+    def _do() -> list:
+        records = load_failed_batches(project_root)
+        pending = [rec for rec in records if not rec.get("consumed_at")]
+        if not pending:
+            return []
+        ledger = None
+        try:
+            ledger = _read_items_unlocked(
+                items_path(project_root), degraded_out=degraded
+            )
+        except Exception:  # noqa: BLE001 — 台账读失败按空集（跳过本轮核销）
+            degraded.append(True)
+        if degraded or ledger is None:
+            return []
+        changed = False
+        consumed: list = []
+        for rec in pending:
+            ids = [
+                str(i)
+                for i in _record_item_ids(
+                    rec, logger=logger, where="失败档案记录 "
+                )
+            ]
+            if not ids:
+                continue
+            statuses = [
+                str((ledger.get(i) or {}).get("status") or "") for i in ids
+            ]
+            terminal_n = sum(1 for s in statuses if s in ("resolved", "ignored"))
+            if terminal_n != len(ids):
+                # 部分终态：只同步剩余 open 数，不收口告警、不标记核销。
+                remaining = len(ids) - terminal_n
+                if rec.get("open_remaining") != remaining:
+                    rec["open_remaining"] = remaining
+                    changed = True
+                continue
+            note = (
+                f"{statuses.count('resolved')} resolved / "
+                f"{statuses.count('ignored')} ignored"
+            )
+            rec["consumed_at"] = now
+            rec["consumed_note"] = note
+            rec["open_remaining"] = 0
+            changed = True
+            consumed.append((ids, note))
+        if changed:
             _atomic_write(
                 path,
-                json.dumps(kept, ensure_ascii=False, indent=2),
+                json.dumps(records, ensure_ascii=False, indent=2),
             )
-        return released
+        return consumed
 
-    return _with_lock(path, _do)
+    consumed = _with_lock(path, _do)
+    # 告警收口与 todo 消费走异锁通道，保持锁外（对齐 record_failed_batch
+    # 锁外写告警/todo 的惯例）；核销记账已落盘，收口失败只留痕不回滚。
+    for ids, note in consumed:
+        _close_retry_exhausted_alerts(project_root, ids, note, logger=logger)
+        _rewrite_todo_entry_consumed(project_root, ids, note, consumed_at=now)
+    return len(consumed)
 
 
 # ── 延迟合回台账（fix-codefix-wipgate-defer 1.2/D2）──────────────────
@@ -3530,6 +3790,10 @@ class CodeFixOrchestrator:
                         f"code-fix 新链启动：释放 {released} 条预算内失败档案"
                         "（下轮自动重试）",
                     )
+                # 失败登记闭环核销（add-codefix-failure-registration-closeout
+                # 1.1）：新链启动簿记块周期兜底——批收尾/合回核销点错过的
+                # 全终态登记在此收敛。
+                self._consume_failed_registrations(root)
                 # 换链/重启再认领（fix-codefix-wipgate-defer D5/4.1）：台账核对
                 # 磁盘——worktree 目录仍在且 tip_sha 可解析的条目原样保留
                 # （defer_count/first_deferred_at 不重置，链边界重试照常覆盖）；
@@ -3865,6 +4129,30 @@ class CodeFixOrchestrator:
                 write_progress(root, **fields)
         except Exception as e:  # noqa: BLE001 — 计数失败不阻断批收尾
             self._log("warning", f"code-fix 链级核销计数更新失败: {e}")
+
+    def _consume_failed_registrations(self, root) -> int:
+        """失败登记闭环核销的统一挂点（add-codefix-failure-registration-closeout
+        1.1）：批收尾/合回核销点（mark_ignored/mark_resolved 及延迟批合回）
+        后即时检查 + 新链启动簿记块周期兜底，各挂点共用本方法。fail-open：
+        对账/写盘异常只留痕，MUST NOT 阻断批收尾与链启动主流程。返回本轮
+        核销的记录数。
+        """
+        try:
+            consumed = consume_resolved_failed_batches(
+                root, logger=self._logger
+            )
+        except Exception as e:  # noqa: BLE001 — 核销失败不阻断主流程
+            self._log(
+                "warning", f"code-fix 失败登记核销对账异常（跳过本轮）: {e}"
+            )
+            return 0
+        if consumed:
+            self._log(
+                "info",
+                f"code-fix 失败登记核销：{consumed} 条登记的被跳过条目已全部"
+                "终态，已收口对应告警与 todo 登记",
+            )
+        return consumed
 
     def _chain_rollup_snapshot(self) -> dict:
         """按链级累积值汇总 rollup 快照（纯读侧，2.1/2.2）。
@@ -4306,6 +4594,9 @@ class CodeFixOrchestrator:
             # 跳过，code-review item 3776b9915001）。
             if hit:
                 self._chain_bump(root, chain_resolved=hit)
+            # 失败登记闭环核销（add-codefix-failure-registration-closeout
+            # 1.1）：延迟批合回核销点即时检查（与主路径同口径）。
+            self._consume_failed_registrations(root)
             if ledger_read_failed:
                 # 已合回但核销状态未知（code-review item 5905398dbbcb）：MUST
                 # NOT 此刻清理现场/移除台账——fixed_ids 随台账删除而丢失，下链
@@ -5350,6 +5641,10 @@ class CodeFixOrchestrator:
         # 台账核销一致），rollup 时点读出。
         if ignored:
             self._chain_bump(root, chain_ignored=ignored)
+        # 失败登记闭环核销（add-codefix-failure-registration-closeout 1.1）：
+        # ignored 终态可能补齐某失败登记的全终态判定，核销点即时检查
+        # （fail-open，不阻断批收尾主流程）。
+        self._consume_failed_registrations(root)
         ignore_set = set(ignore_ids)
         pending_ids = [iid for iid in item_ids if iid not in ignore_set]
         # 建树点瞬时失败兜底（code-review item e992bc1af898）：created_sha 为
@@ -5504,6 +5799,9 @@ class CodeFixOrchestrator:
         # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准。
         if hit:
             self._chain_bump(root, chain_resolved=hit)
+        # 失败登记闭环核销（add-codefix-failure-registration-closeout 1.1）：
+        # resolved 终态可能补齐某失败登记的全终态判定，核销点即时检查。
+        self._consume_failed_registrations(root)
         _safe_cleanup(wm, wt, success=True, logger=self._logger)
         new_done = done + hit
         # 链末批合回即链终局（2.1）：rollup 汇总 + 一行结构化日志，随本写点

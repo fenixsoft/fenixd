@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -2656,6 +2657,106 @@ class TestRetryBudget(unittest.TestCase):
         self.assertNotIn("/tmp/wt-final", todo, "现场即弃后 MUST NOT 引用 worktree 路径")
         self.assertNotIn("保留 worktree", todo)
         self.assertNotIn("车道不再自动重派", todo)
+
+    def test_revive_clears_consumed_bookkeeping(self):
+        """复燃清核销记账（add-codefix-failure-registration-closeout 1.1）：
+        已核销记录同条目集再次失败即回到未核销——否则已核销标记与再次失败
+        事实矛盾，且对账因 consumed_at 在场跳过该记录（open_remaining 永不
+        再同步）。"""
+        from core.code_fix import (FAIL_RETRY_MAX, consume_resolved_failed_batches,
+                                   load_failed_batches, record_failed_batch)
+
+        proot = _make_project_root()
+        for i in range(FAIL_RETRY_MAX):
+            record_failed_batch(proot, ["a"], f"/tmp/wt-{i}", reason="r",
+                                branch="br", tip_sha=f"s{i}")
+        _write_items(proot, {"a": _item("a", status="resolved")})
+        self.assertEqual(consume_resolved_failed_batches(proot), 1)
+        rec = load_failed_batches(proot)[0]
+        self.assertTrue(rec.get("consumed_at"))
+        # 条目重新 open 且同条目集再次失败：复燃清核销记账
+        _write_items(proot, {"a": _item("a", status="open")})
+        record_failed_batch(proot, ["a"], "/tmp/wt-again", reason="r",
+                            branch="br", tip_sha="s-again")
+        rec = load_failed_batches(proot)[0]
+        self.assertNotIn("consumed_at", rec, "复燃 MUST 清核销记账")
+        self.assertNotIn("consumed_note", rec)
+        self.assertNotIn("open_remaining", rec)
+        self.assertEqual(rec["fail_count"], FAIL_RETRY_MAX + 1)
+        # 复燃后对账恢复：open 条目未终态 → open_remaining 同步、不核销
+        self.assertEqual(consume_resolved_failed_batches(proot), 0)
+        rec = load_failed_batches(proot)[0]
+        self.assertEqual(rec.get("open_remaining"), 1)
+
+
+class TestRegistrationCloseoutLockRace(unittest.TestCase):
+    """登记写入/核销改写与 evolution 写者的锁竞争回归
+    （add-codefix-failure-registration-closeout 2.2）。
+
+    evolution 侧对 todo.md 的读-改-写（write_todo_marker / clear_todo）持
+    ``.fenix/.todo.md.lock`` 后整文件替换写回；本车道侧的登记追加
+    （_append_todo_entry）与核销重写（consume → _rewrite_todo_entry_consumed）
+    MUST 持同一把锁，否则落在对方「读后写前」窗口内的行会被整文件替换吞掉
+    （code-review item 28c473f92809 同款契约的核销侧延伸）。
+    """
+
+    def _spawn_evolution_writer(self, todo_path, hold_seconds=0.3):
+        """后台线程模拟 evolution 写者：持同锁读全文 → 整文件替换追加一段。"""
+        import fcntl
+
+        lock_path = todo_path.parent / f".{todo_path.name}.lock"
+
+        def _writer():
+            with open(lock_path, "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                time.sleep(hold_seconds)
+                text = todo_path.read_text(encoding="utf-8")
+                todo_path.write_text(
+                    text + "\n## [evolution] 段\n", encoding="utf-8")
+                fcntl.flock(lf, fcntl.LOCK_UN)
+
+        t = threading.Thread(target=_writer)
+        t.start()
+        time.sleep(0.05)  # 让写者先拿锁，主线程随后必然撞上持锁窗口
+        return t
+
+    def test_append_todo_entry_survives_evolution_writer_window(self):
+        """登记追加持同锁：写者「读后写前」窗口内的登记行不被整文件替换吞掉。"""
+        from core.code_fix import _append_todo_entry
+
+        proot = _make_project_root()
+        todo_path = proot / ".fenix" / "todo.md"
+        todo_path.write_text("# todo\n", encoding="utf-8")
+        t = self._spawn_evolution_writer(todo_path)
+        _append_todo_entry(proot, ["a"], reason="r", branch="b", tip_sha="s")
+        t.join(timeout=5)
+        todo = todo_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "被跳过的条目集合（保持 open）：a", todo, "登记行 MUST 落盘")
+        self.assertIn(
+            "[evolution] 段", todo, "写者窗口内的整文件替换 MUST NOT 吞登记行")
+
+    def test_consume_rewrite_waits_for_held_todo_lock(self):
+        """核销重写持同锁：写者持锁窗口内的 evolution 行不被核销重写吞掉，
+        核销注记在锁释放后落盘。"""
+        from core.code_fix import (FAIL_RETRY_MAX, consume_resolved_failed_batches,
+                                   record_failed_batch)
+
+        proot = _make_project_root()
+        for i in range(FAIL_RETRY_MAX):
+            record_failed_batch(proot, ["a"], f"/tmp/wt-{i}", reason="r",
+                                branch="br", tip_sha=f"s{i}")
+        todo_path = proot / ".fenix" / "todo.md"
+        t = self._spawn_evolution_writer(todo_path)
+        _write_items(proot, {"a": _item("a", status="resolved")})
+        self.assertEqual(consume_resolved_failed_batches(proot), 1)
+        t.join(timeout=5)
+        todo = todo_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "[evolution] 段", todo, "核销重写 MUST NOT 吞写者窗口内的行")
+        self.assertIn("核销", todo)
+        self.assertNotIn(
+            "被跳过的条目集合（保持 open）", todo, "核销后登记条目行已消费")
 
 
 class TestChainSkippedLifecycle(unittest.TestCase):
