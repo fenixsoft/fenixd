@@ -1,7 +1,7 @@
 # 工作树与版本控制
-> 最后更新：2026-10-08 02:46 UTC+8
+> 最后更新：2026-10-08 04:02 UTC+8
 
-实现工作树（worktree）的隔离、播种、回读与卫生，实现分支合回主树与推送的完整生命周期纪律。
+实现工作树（worktree）的隔离、播种、回读与卫生，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律。
 
 ## 能力页
 
@@ -25,3 +25,4 @@
 | [mergeback-stashpop-self-heal](mergeback-stashpop-self-heal.md) | stash pop 自愈 | 2026-10-03 04:59 |
 | [stashpop-conflict-treatment](stashpop-conflict-treatment.md) | stash pop 冲突处置 | 2026-10-03 04:59 |
 | [push-ref-hygiene](push-ref-hygiene.md) | 推送引用生命周期卫生 | 2026-10-03 04:59 |
+| [恢复续做基线分支可移植解析](resume-base-branch-portability.md) | 分支相对基线提交数判定单源经共享解析器（origin/HEAD → main → master → 回退 main） | 2026-10-08 04:02 |

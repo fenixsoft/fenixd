@@ -1,4 +1,4 @@
-<!-- knowledge: capability=recovery-branch-anchor rev=1 sources=spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree -->
+<!-- knowledge: capability=recovery-branch-anchor rev=2 sources=spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree,spec/archive/2026-10-08-evo-fix-resume-base-branch-portability -->
 
 # 恢复分支锚点
 
@@ -12,11 +12,12 @@
 - 失效理由（约束性）：锚点解析链第一层是 STATE.`branch`，优先于第二层（在册 worktree）；上一轮锚点残留而新一轮在飞时重启恢复，会按第一层选中已放弃的上一轮分支并重建载体整轮续做，把新一轮在飞成果整轮晾掉。
 - 三层回落解析（任一环节命中即停止）：① STATE 的 `branch` 字段；② worktree_manager 的 spec → 在册 worktree 事实查询（`git worktree list --porcelain` + worktree 命名约定）；③ git 分支命名空间枚举 `refs/heads/<prefix>/<spec>-*`。
 - 枚举前缀与分支创建端同源：创建端硬编码 `fenix/`（`core/worktree_manager.py:223/226`），故 `<prefix>` 取 `fenix/` 或「配置 `worktree.implement_branch_prefix` ∪ `fenix/`」并集，不得仅凭配置值取前缀——非 `fenix` 配置下创建端仍产出 `fenix/<spec>-<ts>`，仅按配置枚举会扫空命名空间、该层静默失效。枚举不依赖内存表（`_active_worktrees`/`_wt_branches`），worktree 已被清理不放弃该回落——实现 run 成功收口会清理其 worktree，此时分支仅以 refs 形式存在。
-- 候选排序：先取 `main` 为其祖先者（`git merge-base --is-ancestor main <branch>` 成立，即已含 main 的合并）中 committerdate 最新者；无「已含合并」候选时取 `git rev-list --count main..<branch>` 最大者。命中多个候选且无法唯一确定时，取排序最优者并打 WARNING 列出全部候选，不静默取首个。
+- 候选排序的基线经共享基线解析器单源解析（`core/git_base_branch::resolve_base_branch`，见 resume-base-branch-portability 能力页），不得硬编码主干名：先取基线为其祖先者（`git merge-base --is-ancestor <基线> <branch>` 成立，即已含基线的合并）中 committerdate 最新者；无「已含合并」候选时取 `git rev-list --count <基线>..<branch>` 最大者。命中多个候选且无法唯一确定时，取排序最优者并打 WARNING 列出全部候选，不静默取首个。
 - 候选清单按「完整 spec 名 + 分隔符边界」全等比较生成：分支名去掉 `<prefix>/` 后按最后一个 `-` 分段，末段须为纯数字时间戳、其前段须与 spec 名全等（口径与 `worktree_manager._wt_name_matches_spec` 一致）；不满足者不入候选。不得把 `<prefix>/<spec>-*` 的前缀 glob 命中集合直接当候选——spec 名可互为前缀（如 `fix-x` 与 `fix-x-y`），glob 会把 `fix-x-y` 的实现分支算作 `fix-x` 的候选、跨 spec 误配；`<prefix>/verify-<spec>-*` 形态的验证分支不是实现分支，不入候选。
-- 零提交闸门先于排序：第三层候选与第一/二层同口径过「`main..branch` 非空」闸门；零提交候选（含分支 tip 与 main 同点——`main` 恰为其祖先不构成「已含未合并成果」，repair 已把 main 合入分支的形态必然 `main..branch` 非空）自候选清单剔除、不参与排序，避免其在排序中胜出又过不了闸门，把本可保留的其它候选误判为锚点不可得。全部候选零提交或无候选时，锚点判定不可得，走零提交清空重建路径。
+- 零提交闸门先于排序：第三层候选与第一/二层同口径过「`<基线>..branch` 非空」闸门（基线同上经共享解析器解析）；零提交候选（含分支 tip 与基线同点——基线恰为其祖先不构成「已含未合并成果」，repair 已把基线合入分支的形态必然 `<基线>..branch` 非空）自候选清单剔除、不参与排序，避免其在排序中胜出又过不了闸门，把本可保留的其它候选误判为锚点不可得。全部候选零提交或无候选时，锚点判定不可得，走零提交清空重建路径。
 - 强制留痕：恢复链在无任何锚点而走清空重建路径时打 WARNING，内容含 spec 名与命名空间枚举结果（候选分支名清单，无命中则显式标注为空），不得以无日志的早退结束判定；锚点已解析出分支但 `is_available` 三态判定载体不可用时，在既有降级 WARNING 中一并打出该分支名与降级原因，不额外引入无锚点结论。
 
 ## 溯源
 
 - 2026-09-19 fix-recovery-branch-anchor-without-worktree（spec/archive/2026-09-19-fix-recovery-branch-anchor-without-worktree） — 新增成功即落锚点与新轮次失效旧锚点、三层回落解析（含命名空间枚举、创建端同源前缀与全等边界）、零提交闸门先于排序与锚点不可得强制留痕
+- 2026-10-08 evo-fix-resume-base-branch-portability（spec/archive/2026-10-08-evo-fix-resume-base-branch-portability） — 候选排序与零提交闸门的基线由硬编码 main 改为经共享基线解析器单源解析

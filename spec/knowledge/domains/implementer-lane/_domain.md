@@ -1,5 +1,5 @@
 # 实现车道与交付物
-> 最后更新：2026-10-04 05:37 UTC+8
+> 最后更新：2026-10-08 04:02 UTC+8
 
 实现车道与交付物。本域能力页清单如下。
 
@@ -10,7 +10,7 @@
 | [implementer-task-protocol](implementer-task-protocol.md) | implementer 任务协议与进度登记 | 2026-10-03 04:59 |
 | [implementer-deliverable-gate](implementer-deliverable-gate.md) | 交付物声明硬门 | 2026-10-03 04:59 |
 | [impl-tasks-completion-gate](impl-tasks-completion-gate.md) | tasks.md 完成勾选门 | 2026-10-03 04:59 |
-| [impl-terminal-nocommit-gate](impl-terminal-nocommit-gate.md) | 终态零提交拦截门 | 2026-10-03 04:59 |
+| [impl-terminal-nocommit-gate](impl-terminal-nocommit-gate.md) | 终态零提交拦截门 | 2026-10-08 04:02 |
 | [impl-resultfile-contract](impl-resultfile-contract.md) | 实现结果文件契约 | 2026-10-03 04:59 |
 | [impl-result-gate](impl-result-gate.md) | 实现结果产物硬门（run 末校验） | 2026-10-04 05:37 |
 | [impl-result-selfcheck](impl-result-selfcheck.md) | 实现结果自检 | 2026-10-03 04:59 |
