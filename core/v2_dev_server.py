@@ -23,6 +23,7 @@ from typing import Dict, Optional, Tuple
 
 from core.proc_utils import (
     find_free_port,
+    guard_killpg,
     is_claude_process,
     pid_alive_stat,
     proc_start_ticks,
@@ -371,20 +372,16 @@ def _kill(proc: subprocess.Popen) -> None:
         pgid = None
     # 1) 进程组 SIGTERM → 等待退出
     if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
+        # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默，序列语义不变。
+        guard_killpg(pgid, signal.SIGTERM, caller="v2_dev_server._kill", resolve=False)
         try:
             proc.wait(timeout=5)
             # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
             # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
             # 成立；组已空（全员随 SIGTERM 退出）抛 ProcessLookupError，属
             # 常态按已清算处理。
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
             return
         except subprocess.TimeoutExpired:
             pass
@@ -392,10 +389,7 @@ def _kill(proc: subprocess.Popen) -> None:
             return
     # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
     if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
         try:
             proc.wait(timeout=5)
             return
@@ -504,7 +498,13 @@ def _kill_pids(pids: list, logger=None) -> int:
             pgid = None  # 取组失败：退回单 pid 直发（同 _kill 兜底口径）
         try:
             if pgid is not None:
-                os.killpg(pgid, signal.SIGTERM)
+                # 自保护守卫（add-killpg-self-guard）：拒绝（自身组/非正 pgid）
+                # 与组已不存在同样按竞态消失计，不得降级单 pid 直发（os.kill(0)
+                # 经折算同为调用者自身组广播）。
+                if not guard_killpg(
+                    pgid, signal.SIGTERM, caller="v2_dev_server._kill_pids", resolve=False
+                ):
+                    continue
             else:
                 os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -523,7 +523,10 @@ def _kill_pids(pids: list, logger=None) -> int:
         else:  # 仍存活（如 node 卡死不响应 SIGTERM）→ SIGKILL 兜底
             try:
                 if pgid is not None:
-                    os.killpg(pgid, signal.SIGKILL)
+                    if not guard_killpg(
+                        pgid, signal.SIGKILL, caller="v2_dev_server._kill_pids", resolve=False
+                    ):
+                        continue
                 else:
                     os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):

@@ -17,6 +17,7 @@ from core.worktree_manager.constants import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
 )
 from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
+from core.proc_utils import guard_killpg  # noqa: E402
 
 
 def _collect_unmerged_paths(status_text: str) -> list:
@@ -155,10 +156,11 @@ def run_dist_build(
                 pgid = os.getpgid(p.pid)
             except (ProcessLookupError, PermissionError, OSError):
                 pgid = p.pid
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前
+            # 取定直传；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默。
+            guard_killpg(
+                pgid, signal.SIGTERM, caller="dist_conflicts.run_dist_build", resolve=False
+            )
             try:
                 p.wait(timeout=5)
             except Exception:
@@ -166,10 +168,9 @@ def run_dist_build(
             # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
             # （npm 派生的 node）会残留继续写 dist，无论 wait 成败都补一次
             # SIGKILL；ProcessLookupError＝组已清空，静默即可。
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            guard_killpg(
+                pgid, signal.SIGKILL, caller="dist_conflicts.run_dist_build", resolve=False
+            )
             # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
             try:
                 p.communicate(timeout=5)

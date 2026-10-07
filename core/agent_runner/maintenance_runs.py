@@ -48,6 +48,7 @@ from core.code_review import (
 )
 from core.agent_runner.result_gate import _check_repo_code_review_artifact
 from core.agent_runner.run_files import append_run_line
+from core.proc_utils import guard_killpg
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
 # 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
@@ -3095,21 +3096,31 @@ def _kill_ocr_process_group(proc: subprocess.Popen) -> None:
     """
     if proc is None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except OSError:
-        return  # 进程组已不存在（组长已自行退出），交还调用方 communicate 收尸
+    # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：start_new_session 下
+    # pgid==pid，组长 pid 直传（resolve=False）；守卫拒绝（自身组/非正 pgid）
+    # 与组已不存在同样静默，组长收尸与管道排空仍由调用方的 communicate 负责。
+    if not guard_killpg(
+        proc.pid,
+        signal.SIGTERM,
+        caller="maintenance_runs._kill_ocr_process_group",
+        resolve=False,
+    ):
+        return  # 组已不存在（组长已自行退出）/守卫拒绝，交还调用方 communicate 收尸
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass  # 进程组已不存在
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
-        pass  # 组已空/已不存在（ESRCH），静默
+        guard_killpg(
+            proc.pid,
+            signal.SIGKILL,
+            caller="maintenance_runs._kill_ocr_process_group",
+            resolve=False,
+        )
+    guard_killpg(
+        proc.pid,
+        signal.SIGKILL,
+        caller="maintenance_runs._kill_ocr_process_group",
+        resolve=False,
+    )
 
 
 def run_impl_ocr(

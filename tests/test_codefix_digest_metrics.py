@@ -68,10 +68,20 @@ class _FakeLogger:
 class _FakeProc:
     """假 Popen：stdout 预载脚本化转录（StringIO 逐行 readline），秒退。"""
 
+    # 不可达 pid 取正值越界（2**22 > Linux 默认 pid_max=4194304），对齐
+    # add-killpg-self-guard 对本替身的口径：本替身流入组长直传型清场点
+    # （maintenance_runs/_kill_ocr_process_group、liveness 的 killpg 直传跳），
+    # test_knowledge_backfill.py 先例的 -1 在该语境不成立（os.killpg(-1) 经
+    # kill(-pgid) 折算 ≡ kill(1) 误投递、pid=-1 直传同样命中负值折算），故
+    # 不可达性以「正但不可能存在」达成。守卫 pgid<=0 拒绝分支是第二道防线，
+    # 守卫未落地前 pid=0 曾使 killpg(0) 折算为 kill(0)＝调用者自身进程组
+    # 广播，全量回归被团灭（2026-10-07 事故形态）。
+    UNREACHABLE_PID = 2**22
+
     def __init__(self, out_lines):
         self.stdout = io.StringIO("".join(line + "\n" for line in out_lines))
         self.stderr = io.StringIO("")
-        self.pid = 0
+        self.pid = _FakeProc.UNREACHABLE_PID
 
     def poll(self):
         return 0

@@ -58,6 +58,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from core.proc_utils import guard_killpg
+
 # 日志组件名（logger.warning(component, message) 口径）
 COMPONENT = "adjudication_narrative"
 
@@ -264,9 +266,17 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """
     try:
         pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, OSError):
         pgid = None  # 进程组已不存在（直接子进程已消亡），仅剩管道清理尾巴
+    # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
+    # 守卫拒绝（自身组/非正 pgid）＝组不可投递，与组已不存在同样跳过探活补刀。
+    if pgid is not None and not guard_killpg(
+        pgid,
+        signal.SIGTERM,
+        caller="adjudication_narrative._kill_process_group",
+        resolve=False,
+    ):
+        pgid = None
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -281,10 +291,12 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         except (ProcessLookupError, OSError):
             pgid = None  # 组已清空，无需 SIGKILL 补刀
         else:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass  # 进程组已不存在
+            guard_killpg(
+                pgid,
+                signal.SIGKILL,
+                caller="adjudication_narrative._kill_process_group",
+                resolve=False,
+            )
     try:
         proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
     except subprocess.TimeoutExpired:

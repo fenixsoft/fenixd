@@ -45,6 +45,7 @@ from typing import Any, Callable, Optional
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
 from core.timelib import now_local
+from core.proc_utils import guard_killpg
 
 
 # spawn 注入缝：run 内单测用 fake spawn 替身；生产用 _default_spawn（claude -p）。
@@ -812,14 +813,16 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     收割，避免常驻进程内每次超时清场残留一个僵尸子进程（code-review
     209d7134dc52）。
     """
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
+    # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝（自身组/
+    # 非正 pgid）与组已不存在同样静默——MUST NOT 降级单 pid proc.kill
+    # （pid=0 经 os.kill 折算同为调用者自身组广播）；既有 ESRCH 场景该降级
+    # 本就 no-op（目标已亡），收口后行为不变。
+    guard_killpg(
+        proc.pid,
+        signal.SIGKILL,
+        caller="knowledge_backfill._kill_process_group",
+        resolve=True,
+    )
     try:
         proc.communicate(timeout=10)
     except subprocess.TimeoutExpired:
