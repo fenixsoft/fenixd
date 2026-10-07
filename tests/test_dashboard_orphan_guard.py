@@ -213,6 +213,52 @@ def test_watchdog_loop_fires_on_pid_reuse_starttime_mismatch():
             stranger.wait()
 
 
+def test_watchdog_stop_event_prevents_on_death():
+    """stop_event 置位 → 裸退出，MUST NOT 触发 on_death（2026-10-07 团灭防线）。
+
+    收割口拆除的是「自杀扳机」：被停的 watchdog 即使随后目标进程死亡
+    /proc 读取失败，也不得再执行判死分支。
+    """
+    victim = subprocess.Popen(["sleep", "30"])
+    try:
+        st = _proc_starttime(victim.pid)
+        fired = threading.Event()
+        stop = threading.Event()
+        t = threading.Thread(
+            target=_claude_watchdog_loop,
+            args=(victim.pid, st),
+            kwargs={"interval": 0.05, "on_death": fired.set, "stop_event": stop},
+            daemon=True,
+        )
+        t.start()
+        stop.set()
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "stop 后线程应在一个轮询间隔内退出"
+        # 目标死亡：已停的 watchdog 不得再触发 on_death（裸退出语义）
+        victim.kill()
+        victim.wait()
+        assert not fired.wait(timeout=0.3), "已收割的 watchdog 不得再执行 on_death"
+    finally:
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait()
+
+
+def test_stop_all_claude_watchdogs_reaps_started_threads(monkeypatch):
+    """收割口：_start_claude_watchdog 装配的线程经 stop_all 后退出且不再判死。"""
+    monkeypatch.setenv("FENIX_DASHBOARD_DETACH", "1")
+    monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    monkeypatch.setattr("core.dashboard.server._is_tmux_hosted", lambda ppid=None: False)
+    assert _start_claude_watchdog() is True
+    leaked = _wait_thread("claude-watchdog")
+    assert leaked is not None, "装配后应有 watchdog 线程"
+    from core.dashboard.server import stop_all_claude_watchdogs
+
+    assert stop_all_claude_watchdogs() >= 1, "收割口应至少收割本用例装配的线程"
+    leaked.join(timeout=6.0)
+    assert not leaked.is_alive(), "收割后线程应在一个轮询间隔内退出"
+
+
 # ── 显式长驻判据：_is_tmux_hosted（2026-09-22 8787 误杀事故）──────────
 
 

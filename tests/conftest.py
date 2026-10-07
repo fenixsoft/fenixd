@@ -112,6 +112,29 @@ def _night_quiet_window_default_off():
         _cf.NIGHT_QUIET_WINDOW_DEFAULT = saved
 
 
+@pytest.fixture(autouse=True)
+def _reap_claude_watchdogs_after_each_test():
+    """用例边界收割本进程内全部 claude-watchdog 线程（2026-10-07 团灭事故防线）。
+
+    test_dashboard_orphan_guard 的 CLAUDE_PID 绑定用例经 _start_claude_watchdog
+    装配**盯住 pytest 自身 pid** 的真 daemon 线程（name=claude-watchdog），
+    monkeypatch 恢复 env 不影响已起的线程——用例一多即泄漏成族（全量实证
+    89 个）。泄漏线程在套件收尾的负载窗口可能因「/proc 连续 3 次读取失败」
+    误判目标死亡，集体执行 _terminate 的 os.kill(自身, SIGTERM) 团灭宿主
+    （-15 变体；与 -9 的替身 pid=0 killpg 变体同构）。此处在每个用例
+    teardown 拆除全部扳机：watchdog 线程最迟一个轮询间隔（5s）内裸退出，
+    MUST NOT 再执行 on_death。惰性导入 + 吞异常：收割失败不得影响用例
+    结果判定。
+    """
+    yield
+    try:
+        from core.dashboard.server import stop_all_claude_watchdogs
+
+        stop_all_claude_watchdogs()
+    except Exception:
+        pass
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolated_basetemp_cleanup(request):
     """会话级：把 tmp_path 根隔离到项目 .fenix/，并在会话结束自清（清理方案 A+B）。

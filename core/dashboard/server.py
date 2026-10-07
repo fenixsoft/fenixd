@@ -302,8 +302,16 @@ def _proc_starttime(pid: int) -> int | None:
         return None
 
 
-def _claude_watchdog_loop(pid: int, starttime: int, on_death, interval: float = 5.0) -> None:
+def _claude_watchdog_loop(
+    pid: int, starttime: int, on_death, interval: float = 5.0, stop_event=None
+) -> None:
     """轮询目标进程（默认每 5s）； starttime 变化或消失 → on_death() 一次后返回。
+
+    stop_event 置位即停止轮询（既不判死也不触发 on_death）——测试环境装配的
+    watchdog 由收割口（stop_all_claude_watchdogs / conftest autouse）在用例
+    边界停掉，MUST NOT 让泄漏线程在套件收尾阶段执行 on_death 自杀扳机
+    （2026-10-07 团灭事故：89 个泄漏 watchdog 在负载窗口误判死亡，齐射
+    os.kill(自身, SIGTERM) 团灭全量回归）。
 
     code-review item 2086ce927c5e：区分「进程不存在」与「/proc 读取失败」。
     _proc_starttime 在 OSError（如 /proc 重挂载、fd 耗尽）下也返回 None，原实现
@@ -315,7 +323,11 @@ def _claude_watchdog_loop(pid: int, starttime: int, on_death, interval: float = 
     read_failures = 0
     warned = False
     while True:
-        time.sleep(interval)
+        if stop_event is not None:
+            if stop_event.wait(interval):
+                return  # 收割停止：不判死、不触发 on_death
+        else:
+            time.sleep(interval)
         cur = _proc_starttime(pid)
         if cur == starttime:
             read_failures = 0
@@ -409,6 +421,32 @@ def _parent_is_tmux_server(pid: int) -> bool:
     return False
 
 
+# 本进程内全部在飞 claude-watchdog 的停止口（(stop_event, thread) 注册表）。
+# 收割口 stop_all_claude_watchdogs 消费；serve() 优雅停机链与 tests/conftest
+# 的用例边界收割 fixture 各自调用。锁保护注册/收割的并发（watchdog 装配点
+# 在请求线程/测试线程，收割在停机线程/conftest）。
+_ACTIVE_WATCHDOG_STOPS: list = []
+_ACTIVE_WATCHDOG_LOCK = threading.Lock()
+
+
+def stop_all_claude_watchdogs() -> int:
+    """停掉本进程内全部 claude-watchdog 线程（置 stop_event，不 join 阻塞）。
+
+    返回本次收割的线程数。收割语义是「拆除自杀扳机」：被停的 watchdog MUST
+    NOT 再执行 on_death（stop_event.wait 返回 True 即裸退出，见
+    _claude_watchdog_loop）——泄漏线程在套件收尾阶段的判死误自杀正是
+    2026-10-07 团灭事故的根因。不 join：调用方（serve finally / conftest
+    teardown）不应被 5s 轮询间隔拖住，线程最迟一个 interval 内自行退出。
+    """
+    with _ACTIVE_WATCHDOG_LOCK:
+        entries, _ACTIVE_WATCHDOG_STOPS[:] = _ACTIVE_WATCHDOG_STOPS[:], []
+    stopped = 0
+    for event, thread in entries:
+        event.set()
+        stopped += 1
+    return stopped
+
+
 def _start_claude_watchdog(env=None) -> bool:
     """CLAUDE_PID 生命周期绑定（agent 豁免通道的防泄漏阀，2026-09-04 8790 泄漏）。
 
@@ -447,13 +485,17 @@ def _start_claude_watchdog(env=None) -> bool:
         # 不再依赖默认处置的「立即终止、不展开 Python 帧」。
         os.kill(os.getpid(), signal.SIGTERM)
 
-    threading.Thread(
+    _stop = threading.Event()
+    thread = threading.Thread(
         target=_claude_watchdog_loop,
         args=(pid, starttime),
-        kwargs={"on_death": _terminate},
+        kwargs={"on_death": _terminate, "stop_event": _stop},
         daemon=True,
         name="claude-watchdog",
-    ).start()
+    )
+    thread.start()
+    with _ACTIVE_WATCHDOG_LOCK:
+        _ACTIVE_WATCHDOG_STOPS.append((_stop, thread))
     return True
 
 
@@ -695,6 +737,14 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     except KeyboardInterrupt:
         print("\nDashboard 已退出")
     finally:
+        # 首先拆除 claude-watchdog 自杀扳机（2026-10-07 团灭事故防线）：
+        # 本进程装配的 watchdog 线程在停机阶段若仍在轮询，负载窗口的
+        # /proc 读取失败可能误判目标死亡而齐射 os.kill(自身, SIGTERM)，
+        # 与下方清理链并发。收割失败不得阻断后续清理（同下方逐项纪律）。
+        try:
+            stop_all_claude_watchdogs()
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f"dashboard 退出收割 claude-watchdog 失败: {e}\n")
         # 收割路由侧在飞 claude 起草子进程（code-review item dffc01af10fa）：
         # architecture/refresh 与 regression/autodraft 在 HTTP 线程内以
         # start_new_session=True 拉起的 claude 处于独立会话组，不随本进程
