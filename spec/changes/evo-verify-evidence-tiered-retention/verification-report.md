@@ -34,3 +34,10 @@
 | retention-end-to-end-template-to-prompt | 跨层联动回归：从模板文本出发模拟项目声明（取消注释并把阈值改为 2097152 即 2MB）→ 写入临时项目 .fenix/verify.yaml → load_verify_contract 解析出 2097152 → _evidence_placement_section 渲染含分级条款且阈值渲染为 2MB——契约声明逐层驱动落位指引（spec 目标 1+2 串接；出处 core/verify_contract_template.yaml:155-157 → core/verify_contract.py:550-557 → core/agent_runner/prompt_builder.py:1046、1072、1088-1092） | pass | 0/4 | - |
 | retention-tests-contract-three-states | 解析三态测试套件在案且通过（tasks 3.1）：pytest -k TestEvidenceRetentionContract 跑 tests/test_verify_contract.py，三个用例（test_declared_value_wins / test_illegal_values_silently_fall_back_to_default / test_absent_section_falls_back_to_default）全部 PASSED、退出码 0（出处 tests/test_verify_contract.py:105-152，unittest 类无 parametrize 无后缀） | pass | 0/5 | - |
 | retention-tests-placement-clause-rendering | 落位指引分级条款测试套件在案且通过（tasks 3.2）：pytest -v -k 表达式跑 tests/test_verify_evidence_placement.py，覆盖 test_template_declares_evidence_retention_tiering、test_retention_clause_rendered_with_declared_threshold、test_retention_clause_rendered_with_default_threshold、test_retention_clause_survives_contract_load_failure、test_injection_wiring_covers_impl_and_verify_lanes 全部 PASSED、退出码 0（-k 的 template_declares 词干同时命中相邻用例 test_template_declares_evidence_dir_in_comments，实测选中 6 用例、末行 6 passed，断言按实测形态落盘；出处 tests/test_verify_evidence_placement.py:245、546、562、576、589） | pass | 0/7 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
