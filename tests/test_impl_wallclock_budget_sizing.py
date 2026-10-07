@@ -584,6 +584,9 @@ class TestWallclockSizingRunLoop:
             lambda snapshot, spec, rid: dict(_ADVANCING))
         return runner
 
+    # [fenix-ignore:ebe2fd4b1f9e] 5.02s 系修复前基线（轮询环 5×1s 真实 sleep 的指纹），
+    # HEAD c749d120 已注入 _VirtualTime 虚拟墙钟（sleep 仅真实让拍 0.01s 推进虚拟
+    # 偏移，runner.py:6215 唯一 sleep 已被拦截），当前耗时已压缩至亚秒级。
     def test_kill_loop_extends_lifted_budget_and_notes_usage(
             self, monkeypatch, tmp_path):
         proot = tmp_path / "proj"
