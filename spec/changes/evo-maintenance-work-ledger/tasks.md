@@ -15,7 +15,7 @@
 
 ## 1. 维护登记台账
 
-- [ ] 1.1 core/maintenance_ledger.py（新建）：append_maintenance_entry(project, scope, actor, evidence, note, run_id=None) 按行追加 JSON 到项目 .fenix/maintenance_log.jsonl（字段 ts/scope/actor/evidence/note/run_id），文件不存在则创建、写入用追加模式；list_maintenance_entries(project) 读取全量条目并对坏行容错跳过
+- [ ] 1.1 core/maintenance_ledger.py（新建）：append_maintenance_entry(project, scope, actor, evidence, note, run_id=None) 按行追加 JSON 到项目 .fenix/maintenance_log.jsonl（字段 ts/scope/actor/evidence/note/run_id），文件不存在则创建、写入用追加模式并沿用 run_files.py 的原子追加约定（单行单次写入；行超 _ATOMIC_APPEND_LINE_BYTES=4096 时走二进制 os.write，先例 item 29df176ff441）；list_maintenance_entries(project) 读取全量条目并对坏行容错跳过
 - [ ] 1.2 core/maintenance_ledger.py：登记条目的 run_id 字段与 maintenance- 前缀 run 关联的读写辅助，供告警归因与盘点引用
 
 ## 2. 前缀识别同步
@@ -26,4 +26,4 @@
 ## 3. 测试
 
 - [ ] 3.1 tests/test_maintenance_ledger.py（新建）：覆盖追加/读取/空文件自动创建/坏行容错/run_id 关联字段读写
-- [ ] 3.2 tests/test_admin.py：覆盖 maintenance- 前缀在 RUN_ID_AGENT_PREFIXES 与 _RUN_PREFIXES 两处的类型识别
+- [ ] 3.2 tests/test_admin.py：覆盖 maintenance- 前缀在 RUN_ID_AGENT_PREFIXES 与 _RUN_PREFIXES 两处的类型识别（_RUN_PREFIXES 成员断言补入既有 TestFailurePrefixSubset，tests/test_admin.py:1357；该测试为成员断言非精确集锁定，新增成员不破坏既有断言）
