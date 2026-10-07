@@ -33,10 +33,12 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
   均自驱动推进下一批，仅 `halt`（环境性失败）终止链。确定性失败（首轮及
   targeted_retry_max 轮定向重试均失败/合回冲突）现场即弃：branch/tip_sha 入
   `.fenix/code-review/fix-failed.json` 失败档案（记录带 `fail_count` 自动
-  重试预算）后清理 worktree 释放锁；新链启动自动释放
-  `fail_count < FAIL_RETRY_MAX` 的记录
-  （打标墓碑不删除，fail_count 跨链续增，下轮自动重试），达上限永久跳过
-  并一次性告警 + todo.md 登记待人工。
+  重试预算与 `reg_form` 回归终局形态）后清理 worktree 释放锁；新链启动自动
+  释放预算内记录（打标墓碑不删除，fail_count 跨链续增，下轮自动重试），达
+  生效预算永久跳过并一次性告警 + todo.md 登记待人工。自动重派预算按
+  `reg_form` 分档（evo-add-codefix-anomaly-redispatch-budget）：有真实失败
+  面（mapped）保持 `FAIL_RETRY_MAX`，零失败面（anomaly，parse_error 或
+  failed 无明细）降为 `ANOMALY_FAIL_RETRY_MAX`（1）——整批重派无证据价值。
   瞬态失败（agent run 失败/重试 run 失败/零有效修复）只进进度快照
   `chain_skipped`（链内跳过，新链启动重置），不烧跨轮重试预算。
 """
@@ -85,6 +87,21 @@ DEFERRED_REL = ".fenix/code-review/fix-deferred.json"
 # 那次入档发一次性 warning 告警并登记 todo 待人工项，此后不再自动重试。
 # 模块常量、不新增配置键（预算语义无需按项目调节）。
 FAIL_RETRY_MAX = 3
+
+# 异常形态失败批重派预算（evo-add-codefix-anomaly-redispatch-budget）：回归
+# 终局为零失败面（reg_form=anomaly，parse_error 或 failed 无明细）的失败
+# 记录，定向轮无可注入明细、整批重派只会复现同一异常（2026-10-07 夜间
+# 24 轮回归全 parse_error、18 个重试轮零收敛实证），预算降为 1——首次入档
+# 即达触顶「登记待人工+跳过条目」路径；有真实失败面（mapped，fail_items
+# 非空）保持 FAIL_RETRY_MAX。取值单源 _effective_retry_budget，全部
+# fail_count 预算比较点 MUST 经它取值。
+ANOMALY_FAIL_RETRY_MAX = 1
+
+# 失败记录 reg_form 合法值（evo-add-codefix-anomaly-redispatch-budget）：
+# anomaly=回归零失败面（parse_error 或 failed 无明细）；mapped=有真实失败
+# 面（回归 fail_items 非空）。历史记录缺键按 mapped（向后兼容，无迁移）。
+REG_FORM_ANOMALY = "anomaly"
+REG_FORM_MAPPED = "mapped"
 
 # 延迟批预算双门（fix-codefix-wipgate-defer D6，先到为准）：first_deferred_at
 # 起超过 90 分钟，或链边界重试仍被阻断使 defer_count 递增达 6。时间门兜住
@@ -602,6 +619,33 @@ def _fail_count_int(value) -> int:
         return 1
 
 
+def _record_reg_form(rec) -> str:
+    """失败记录回归终局形态归一化（evo-add-codefix-anomaly-redispatch-budget）。
+
+    合法值 ``anomaly``（零失败面）/ ``mapped``（有真实失败面）；缺键（本
+    spec 上线前的历史记录）或外部直改的非法值一律按 ``mapped``——旧档案
+    沿用既有 FAIL_RETRY_MAX 预算，不因缺键报错、不分档（design：读取兼容）。
+    """
+    form = str(rec.get("reg_form") or "")
+    return form if form in (REG_FORM_ANOMALY, REG_FORM_MAPPED) else REG_FORM_MAPPED
+
+
+def _effective_retry_budget(rec) -> int:
+    """失败记录按回归终局形态取生效自动重派预算（分档单源）。
+
+    anomaly → ``ANOMALY_FAIL_RETRY_MAX``（1）；mapped（含缺键兼容）→
+    ``FAIL_RETRY_MAX``。全部 fail_count 预算比较点（record_failed_batch
+    触顶、release 释放、链收敛 maxed 判定）MUST 经本函数取值：release 侧
+    缺分档会把预算已耗尽的 anomaly 记录当预算内释放回池（分档被旁路）；
+    触顶侧缺分档会让 anomaly 记录悬为「墓碑保留但永不重派」且无人工项。
+    """
+    return (
+        ANOMALY_FAIL_RETRY_MAX
+        if _record_reg_form(rec) == REG_FORM_ANOMALY
+        else FAIL_RETRY_MAX
+    )
+
+
 def _open_ids_for_archive(root, item_ids) -> list:
     """失败档案入档前的未终态条目过滤（code-review item be772fa66cb7，收口
     c94a1770a477 在各失败收尾路径的同口径要求）：只收 ``status=="open"``
@@ -622,7 +666,7 @@ def _open_ids_for_archive(root, item_ids) -> list:
 
 def record_failed_batch(
     project_root, item_ids, worktree, reason="", branch="", tip_sha="",
-    detail_ref="", logger=None,
+    detail_ref="", logger=None, reg_form="", reg_detail=None,
 ) -> None:
     """把确定性失败批落盘到 fix-failed.json（原子写；同条目集复用记录）。
 
@@ -630,10 +674,20 @@ def record_failed_batch(
     ``fail_count``——首记 1；同条目集（item_id 集合相同）再次入档时复用既有
     记录递增并刷新 ``reason``/``branch``/``tip_sha``/``failed_at``（不追加
     重复记录）。新链启动经 ``release_retryable_failed_batches`` 自动释放
-    ``fail_count < FAIL_RETRY_MAX`` 的记录（打标墓碑、预算保留，下轮自动
-    重试）；同条目集此后再次失败即复燃墓碑并续增——``fail_count`` 递增至
-    ``FAIL_RETRY_MAX`` 的那次入档发一条一次性 warning 告警并在 todo.md 登记
-    待人工项，此后永久跳过、不再重试/告警。
+    预算内记录（打标墓碑、预算保留，下轮自动重试）；同条目集此后再次失败
+    即复燃墓碑并续增——``fail_count`` 递增至生效预算的那次入档发一条一次性
+    warning 告警并在 todo.md 登记待人工项，此后永久跳过、不再重试/告警。
+    预算按 ``reg_form`` 分档（evo-add-codefix-anomaly-redispatch-budget）：
+    anomaly 取 ``ANOMALY_FAIL_RETRY_MAX``、mapped 取 ``FAIL_RETRY_MAX``，
+    取值单源 ``_effective_retry_budget``。
+
+    ``reg_form``（可选）：回归终局形态（``anomaly``=parse_error 或 failed
+    无明细、零失败面；``mapped``=回归 fail_items 非空）。调用方提供合法值
+    即刷新——同条目集复燃合档以最近一次失败为准（修复质量好转后自动回到
+    mapped 预算）；未提供（如 ``merge_back_conflict`` 收口，非回归终局）
+    不写键，读取侧按 mapped 兼容（历史记录缺键同口径，不分档不报错）。
+    ``reg_detail``（可选）：入档时刻的重试收敛事实快照（anomaly_streak、
+    实际执行定向轮数、是否熔断触发），随最近一次失败整体刷新。
 
     ``reason``/``branch``/``tip_sha`` 为可选关键字参数（缺省空串，兼容既有
     调用点）；``branch``/``tip_sha`` 是现场即弃后修复提交的 git 追溯线索。
@@ -675,6 +729,12 @@ def record_failed_batch(
         else:
             target = {"item_ids": list(item_ids), "fail_count": 1}
             records.append(target)
+        # 回归终局形态入档（分档预算依据，evo-add-codefix-anomaly-redispatch-
+        # budget）：仅合法值刷新（未提供不写键），合档以最近一次失败为准。
+        if reg_form in (REG_FORM_ANOMALY, REG_FORM_MAPPED):
+            target["reg_form"] = reg_form
+        if reg_detail:
+            target["reg_detail"] = dict(reg_detail)
         target["worktree"] = None
         target["reason"] = reason
         target["branch"] = branch
@@ -5214,8 +5274,10 @@ class CodeFixOrchestrator:
             if exhausted:
                 # 最后一轮（耗尽轮）的回归失败明细补落盘（1.1：每个定向轮
                 # 回归非 passed 时各落一份——循环顶部的提取点覆盖不到它），
-                # 随后该轮明细引用随现场即弃入失败档案。
-                _, _, detail_rel, _ = _ingest_failure_round(root, reg, cumulative, wt)
+                # 随后该轮明细引用随现场即弃入失败档案。最终轮明细同时是
+                # reg_form 判定源（零失败面=anomaly，有真实失败面=mapped）。
+                final_fail_items, _, detail_rel, _ = _ingest_failure_round(
+                    root, reg, cumulative, wt)
                 if detail_rel:
                     last_detail_ref = detail_rel
                 # 耗尽 targeted_retry_max 轮仍失败 → 现场即弃（selfheal D2
@@ -5284,6 +5346,19 @@ class CodeFixOrchestrator:
                             else "regression_failed_twice"
                         ), branch=branch, tip_sha=tip_sha,
                         detail_ref=last_detail_ref, logger=self._logger,
+                        # 回归终局形态入档（evo-add-codefix-anomaly-redispatch-
+                        # budget 1.1）：按最后一轮（耗尽轮）回归判定；重试收敛
+                        # 事实快照（批 worker 局部计数的终值）随档留存供审计。
+                        reg_form=(
+                            REG_FORM_ANOMALY
+                            if _is_regression_anomaly(reg, final_fail_items)
+                            else REG_FORM_MAPPED
+                        ),
+                        reg_detail={
+                            "anomaly_streak": anomaly_streak,
+                            "retry_rounds": len(attempt_run_ids),
+                            "breaker_triggered": breaker_triggered,
+                        },
                     )
                     # 告警写盘失败不得劫持 consumed 收尾（code-review item
                     # 2ab1bb5633f0，同 _defer_merge_back 手法）：异常上穿会经
