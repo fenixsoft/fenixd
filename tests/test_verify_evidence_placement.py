@@ -28,6 +28,7 @@ from core.admin_monitor import (
 )
 from core.admin_store import AdminStore, SIGNAL
 from core.verify_contract import (
+    DEFAULT_EVIDENCE_MAX_BINARY_BYTES,
     VerifyContract,
     default_evidence_dir,
     load_verify_contract,
@@ -240,6 +241,33 @@ class TestTemplateDeclaration(unittest.TestCase):
             VerifyContract().resolve_evidence_dir("spec-a"),
             ".fenix/verify-evidence/spec-a",
         )
+
+    def test_template_declares_evidence_retention_tiering(self):
+        """分级留存声明（verify-evidence-tiered-retention 1.1）：注释化字段
+        + 分级规则注释在案；缺省 10485760；取消注释后按声明值加载。"""
+        text = self.TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn("evidence_retention", text)
+        self.assertIn("max_binary_bytes", text)
+        self.assertIn("10485760", text)
+        # 分级规则注释：文本直接入库 + 超阈值二进制以 sidecar/登记替代
+        self.assertIn("sha256", text)
+        for line in text.splitlines():
+            self.assertFalse(
+                line.startswith("evidence_retention:"),
+                f"模板出现了未注释的 evidence_retention 声明: {line}",
+            )
+        patched = text.replace(
+            "# evidence_retention:",
+            "evidence_retention:",
+        ).replace(
+            "#   max_binary_bytes: 10485760",
+            "  max_binary_bytes: 10485760",
+        )
+        repo = _make_repo()
+        (repo / ".fenix").mkdir(exist_ok=True)
+        (repo / ".fenix" / "verify.yaml").write_text(patched, encoding="utf-8")
+        c = load_verify_contract(repo)
+        self.assertEqual(c.evidence_max_binary_bytes, DEFAULT_EVIDENCE_MAX_BINARY_BYTES)
 
 
 class TestUntrackedSignal(unittest.TestCase):
@@ -514,6 +542,45 @@ class TestEvidencePlacementPrompt(unittest.TestCase):
 
         section = PromptBuilder(_PmStub(repo))._evidence_placement_section("spec-a")
         self.assertIn(str(repo / ".fenix" / "verify-evidence" / "spec-a"), section)
+
+    def test_retention_clause_rendered_with_declared_threshold(self):
+        """契约声明自定义阈值 → 指引含分级条款且阈值取声明值（tiered-retention
+        Acceptance Scenario 4）。"""
+        repo = _make_repo()
+        (repo / ".fenix").mkdir(exist_ok=True)
+        (repo / ".fenix" / "verify.yaml").write_text(
+            "evidence_retention:\n  max_binary_bytes: 2048\n", encoding="utf-8"
+        )
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        section = PromptBuilder(_PmStub(repo))._evidence_placement_section("spec-a")
+        self.assertIn("分级留存", section)
+        self.assertIn("sha256 sidecar", section)
+        self.assertIn("MUST NOT", section)
+        self.assertIn("2048", section)  # 阈值取契约声明值
+
+    def test_retention_clause_rendered_with_default_threshold(self):
+        """契约未声明阈值（缺省 10MB）→ 指引同样含分级条款（Scenario 5）。"""
+        repo = _make_repo()
+        (repo / ".fenix").mkdir(exist_ok=True)
+        (repo / ".fenix" / "verify.yaml").write_text(
+            "deps_mode: hardlink\n", encoding="utf-8"
+        )
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        section = PromptBuilder(_PmStub(repo))._evidence_placement_section("spec-a")
+        self.assertIn("分级留存", section)
+        self.assertIn("sha256 sidecar", section)
+        self.assertIn(str(DEFAULT_EVIDENCE_MAX_BINARY_BYTES // (1024 * 1024)), section)
+
+    def test_retention_clause_survives_contract_load_failure(self):
+        """契约整体缺失（软约束 fail-open）→ 分级条款以缺省阈值照常渲染。"""
+        repo = _make_repo()  # 无 .fenix/verify.yaml
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        section = PromptBuilder(_PmStub(repo))._evidence_placement_section("spec-a")
+        self.assertIn("分级留存", section)
+        self.assertIn("10MB", section)
 
     def test_injection_wiring_covers_impl_and_verify_lanes(self):
         """注入点在案：implementer/fast-track/verifier 三车道统一收尾处。"""

@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.verify_contract import (
     DEFAULT_DEPS_MODE,
+    DEFAULT_EVIDENCE_MAX_BINARY_BYTES,
     ReadyProbe,
     StaticVerifyServer,
+    VerifyContract,
     load_verify_contract,
     probe_ready,
     provision_worktree_node_modules,
@@ -99,6 +101,54 @@ class TestLoadContract(unittest.TestCase):
         self.assertEqual(c.serve.root, "site")
         self.assertEqual(c.ready.expect, 200)
         self.assertEqual(c.ready.timeout, 30)
+
+
+class TestEvidenceRetentionContract(unittest.TestCase):
+    """evidence_retention.max_binary_bytes 解析三态（verify-evidence-tiered-retention 3.1）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_declared_value_wins(self):
+        """声明合法正整数 → 解析取声明值（Acceptance Scenario 1）。"""
+        _write(
+            self.tmp,
+            ".fenix/verify.yaml",
+            "evidence_retention:\n  max_binary_bytes: 1048577\n",
+        )
+        c = load_verify_contract(self.tmp)
+        self.assertEqual(c.evidence_max_binary_bytes, 1048577)
+        # dataclass 缺省独立于加载层：未声明字段时构造体取缺省 10MB
+        self.assertEqual(
+            VerifyContract().evidence_max_binary_bytes,
+            DEFAULT_EVIDENCE_MAX_BINARY_BYTES,
+        )
+
+    def test_illegal_values_silently_fall_back_to_default(self):
+        """负数/非整数/bool/整段非映射 → 静默回退缺省，不报错（Scenario 2）。"""
+        for bad in (
+            "evidence_retention:\n  max_binary_bytes: -5\n",
+            "evidence_retention:\n  max_binary_bytes: abc\n",
+            "evidence_retention:\n  max_binary_bytes: 10mb\n",
+            "evidence_retention:\n  max_binary_bytes: true\n",
+            "evidence_retention: not-a-map\n",
+            "evidence_retention:\n  max_binary_bytes: 0\n",
+        ):
+            with self.subTest(bad=bad):
+                _write(self.tmp, ".fenix/verify.yaml", bad)
+                c = load_verify_contract(self.tmp)
+                self.assertIsNotNone(c)  # 不阻断契约加载
+                self.assertEqual(
+                    c.evidence_max_binary_bytes,
+                    DEFAULT_EVIDENCE_MAX_BINARY_BYTES,
+                )
+
+    def test_absent_section_falls_back_to_default(self):
+        """未声明 evidence_retention → 缺省 10485760（Acceptance Scenario 3）。"""
+        _write(self.tmp, ".fenix/verify.yaml", FULL_CONTRACT)
+        c = load_verify_contract(self.tmp)
+        self.assertEqual(c.evidence_max_binary_bytes, 10485760)
 
 
 class TestPrepareSteps(unittest.TestCase):
