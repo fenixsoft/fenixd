@@ -1,7 +1,7 @@
 # CLI stderr 诊断噪声统一判别与降噪
 
-<!-- knowledge: capability=cli-stderr-noise-filtering rev=1
-     sources=spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution -->
+<!-- knowledge: capability=cli-stderr-noise-filtering rev=2
+     sources=spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count -->
 
 claude CLI 启动期诊断噪声行（`[claude-code:unrecognized_model]` 等，非 Anthropic 模型名 run 每 run 恒 1 条、与失败/停滞零区分度）的框架级判别与降噪：判别收口单源，自省深扫与回填失败归因等消费端共用同一常量，防止无害诊断行挤占真实故障证据。
 
@@ -22,4 +22,5 @@ claude CLI 启动期诊断噪声行（`[claude-code:unrecognized_model]` 等，�
 
 ## 溯源
 
-- 2026-10-05 evo-reduce-cli-stderr-noise-attribution（spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution） — 新增噪声判别单源常量与入口、深扫首条 stderr 摘要跳噪与全噪声置空、回填失败归因过滤回退 stdout、admin 证据字段 stderr_tail 豁免；深扫 stderr 计数其后由已实现未归档变更 evo-split-self-review-stderr-noise-count 调整为噪声分离双计数，本页按最终态记载
+- 2026-10-05 evo-reduce-cli-stderr-noise-attribution（spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution） — 新增噪声判别单源常量与入口、深扫首条 stderr 摘要跳噪与全噪声置空、回填失败归因过滤回退 stdout、admin 证据字段 stderr_tail 豁免
+- 2026-10-08 evo-split-self-review-stderr-noise-count（spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count） — 修订自省深扫消费端的 stderr 计数口径：`stderr_count` 只计非噪声行、噪声行单列 `stderr_noise_count`（取代「stderr 计数保留全量」的计数条款）
