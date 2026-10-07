@@ -30,6 +30,7 @@ _HISTORY_TMP.mkdir(parents=True, exist_ok=True)
 
 _BOUND_SIGNAL_TYPE = "maintree_stray_wip_stale"
 _SIBLING_INFO_SIGNAL = "maintree_untracked_stray_stale"
+_UNTRACKED_ESCALATED = "maintree_untracked_stray_escalated"
 
 
 def _mkdtemp(prefix: str) -> Path:
@@ -406,6 +407,328 @@ class TestRecurrenceCount(unittest.TestCase):
         alerts = _stale_alerts(repo)
         self.assertEqual(len(alerts), 2)
         self.assertNotIn("度处置", alerts[0]["evidence"])   # 最新一条（异文件）
+
+
+def _seed_escalation_signal(repo, files) -> None:
+    """写入一条 untracked 升级 SIGNAL 记录（evidence 段级口径与发射点同款）。"""
+    AdminStore(repo).append({
+        "kind": SIGNAL,
+        "signal_type": _UNTRACKED_ESCALATED,
+        "spec": None,
+        "severity": "major",
+        "description": "主树 untracked 散件滞留升级",
+        "evidence": (
+            "项目名=proj; first_seen=2026-10-07T00:00:00+00:00; "
+            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            "升级触发: 集合体积≥阈值"
+        ),
+        "recommended_action": "",
+    })
+
+
+def _write_untracked_stray(repo: Path, files) -> None:
+    """制造 untracked 散件（纯新增文件，不触碰 tracked 基线）。"""
+    for f in files:
+        p = repo / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"stray-{time.time_ns()}", encoding="utf-8")
+
+
+class TestUntrackedClaimExecutor(unittest.TestCase):
+    """untracked 散件认领执行器（evo-stray-untracked-escalation 4.2）：
+    tracked 桶信号拒绝零 git 写 + 归档/ignore/删除三裁决落盘行为。"""
+
+    STRAYS = ["stray_dump.log", "sub/nested.log"]
+
+    def _repo_with_strays(self, seed=True) -> Path:
+        repo = _make_repo()
+        _write_untracked_stray(repo, self.STRAYS)
+        if seed:
+            _seed_escalation_signal(repo, self.STRAYS)
+        return repo
+
+    # ── D4 绑定守卫：tracked 桶 / info / 未注册信号一律拒绝零写 ──────────
+
+    def test_tracked_and_info_signals_rejected_zero_git_write(self):
+        """spec 验收场景 1：以 tracked 桶信号调用认领执行器，在任何 git
+        读/写之前 fail-closed 拒绝，零 git 写零文件触碰。三执行器逐一覆盖。"""
+        from core.dashboard.data.admin_actions import (
+            _exec_archive_untracked_stray,
+            _exec_delete_untracked_stray,
+            _exec_ignore_untracked_stray,
+        )
+
+        repo = self._repo_with_strays()
+        # 同清单升级记录在册：拒绝只能来自绑定守卫，不能是「无记录」分支
+        _seed_escalation_signal(repo, self.STRAYS)
+        before_head, before_status = _head(repo), _status(repo)
+        for st in (_BOUND_SIGNAL_TYPE, _SIBLING_INFO_SIGNAL,
+                   "daemon_errors", "random_unregistered", ""):
+            for exec_fn, cid in (
+                (_exec_archive_untracked_stray, "archive_untracked_stray"),
+                (_exec_ignore_untracked_stray, "ignore_untracked_stray"),
+                (_exec_delete_untracked_stray, "delete_untracked_stray"),
+            ):
+                r = exec_fn(str(repo), signal_type=st)
+                self.assertFalse(r["ok"], f"{cid} signal_type={st!r} 应拒绝")
+                self.assertIn("仅限", r["error"])
+        # 零 git 写（HEAD/status 逐字节一致）+ 零文件触碰
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+        for f in self.STRAYS:
+            self.assertTrue((repo / f).exists(), f)
+
+    def test_dispatch_level_guards(self):
+        """dispatch 层双守卫：tracked 桶信号（已注册桶）在 resolve_choice
+        阶段即拒 not-in-bucket；未注册信号经非作用域全表反查可达执行器，
+        由执行器白名单收口（design D4 同款双层）。"""
+        repo = self._repo_with_strays()
+        before_head, before_status = _head(repo), _status(repo)
+        # tracked 桶已注册桶内无本动作：resolve 层拒（错误含「不在信号」）
+        r = execute_adjudication_choice(
+            str(repo), None, "archive_untracked_stray",
+            signal_type=_BOUND_SIGNAL_TYPE,
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("选项集", r["error"])
+        # 未注册信号反查可达：执行器白名单收口（错误含「仅限」）
+        r2 = execute_adjudication_choice(
+            str(repo), None, "delete_untracked_stray",
+            signal_type="random_unregistered",
+        )
+        self.assertFalse(r2["ok"])
+        self.assertIn("仅限", r2["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+        self.assertTrue((repo / self.STRAYS[0]).exists())
+
+    # ── 裁决① 显式归档 ──────────────────────────────────────────────
+
+    def test_archive_moves_files_into_registered_dir(self):
+        repo = self._repo_with_strays()
+        before_head = _head(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "archive_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["action"], "archive_untracked_stray")
+        # 移入登记目录时间戳子目录，保留相对路径结构
+        arch = repo / r["archive_dir"]
+        self.assertTrue(arch.is_dir())
+        self.assertTrue((arch / "stray_dump.log").is_file())
+        self.assertTrue((arch / "sub" / "nested.log").is_file())
+        for f in self.STRAYS:
+            self.assertFalse((repo / f).exists())
+        # 登记目录已被 .fenix/ 既有规则覆盖：去重不追加、无提交（HEAD 不动）
+        self.assertEqual(r["gitignore_appended"], [])
+        self.assertEqual(r["commit_hash"], "")
+        self.assertEqual(_head(repo), before_head)
+        self.assertIn(".fenix/stray-archive/", str(r["archive_dir"]))
+        # 归档产物不计入后续 untracked 盘点（登记目录已被 ignore 覆盖）
+        sw = _make_sweeper(repo)
+        sweep = sw.sweep()
+        self.assertNotIn("untracked", sweep)
+
+    def test_archive_registers_dir_when_not_covered_by_rules(self):
+        """无忽略规则项目：登记目录追加 .gitignore 并以 pathspec 独立提交
+        （归档产物 MUST NOT 再进 untracked 盘点——裁决不自我循环）。"""
+        repo = self._repo_with_strays(seed=False)
+        _git("rm", "-q", "--cached", ".gitignore", cwd=repo)  # .gitignore 出库
+        (repo / ".gitignore").unlink()
+        _git("commit", "-q", "-am", "drop gitignore", cwd=repo)
+        _seed_escalation_signal(repo, self.STRAYS)
+        before_head = _head(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "archive_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        # 登记目录追加 + 独立提交落地
+        self.assertEqual(r["gitignore_appended"], [".fenix/stray-archive/"])
+        self.assertNotEqual(r["commit_hash"], before_head)
+        self.assertTrue(any("独立提交" in s for s in r["steps"]))
+        gi_lines = (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(gi_lines.count(".fenix/stray-archive/"), 1)
+        # 归档产物不再计入 untracked 盘点（登记目录 ignore 生效；.fenix/
+        # 状态目录散件不在本用例豁免范围、按 below-threshold 计入属预期）
+        sw = _make_sweeper(repo)
+        sweep = sw.sweep()
+        u = sweep.get("untracked") or {}
+        self.assertNotIn(
+            f"{r['archive_dir']}/stray_dump.log", u.get("files") or [],
+        )
+
+    def test_archive_stale_manifest_entries_skipped(self):
+        """清单内已不在磁盘的文件跳过不报错（同指纹一次性告警，清单陈旧）。"""
+        repo = self._repo_with_strays(seed=False)
+        _seed_escalation_signal(repo, self.STRAYS + ["gone.txt"])
+        r = execute_adjudication_choice(
+            str(repo), None, "archive_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["archived_files"], self.STRAYS)
+        self.assertTrue(any("gone.txt" in s for s in r["steps"]))
+
+    def test_archive_all_missing_rejected(self):
+        repo = self._repo_with_strays(seed=False)
+        _seed_escalation_signal(repo, ["gone.txt"])
+        r = execute_adjudication_choice(
+            str(repo), None, "archive_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("均已不在磁盘", r["error"])
+
+    # ── 裁决② 追加 .gitignore ────────────────────────────────────────
+
+    def test_ignore_verdict_appends_dedups_and_commits(self):
+        repo = self._repo_with_strays()
+        before_head = _head(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "ignore_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["action"], "ignore_untracked_stray")
+        # 去重追加（清单两路径各恰一条）+ 独立提交落地
+        self.assertEqual(r["gitignore_appended"], self.STRAYS)
+        self.assertNotEqual(r["commit_hash"], before_head)
+        gi_lines = (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for f in self.STRAYS:
+            self.assertEqual(gi_lines.count(f), 1, f)
+        # 此后散件被 ignore 吸收：不再计入 untracked 盘点（.fenix/ 状态
+        # 目录散件不在本用例豁免范围，仍按 below-threshold 计入属预期）
+        sw = _make_sweeper(repo)
+        u = (sw.sweep().get("untracked") or {})
+        for f in self.STRAYS:
+            self.assertNotIn(f, u.get("files") or [])
+        # 幂等重入：再次执行无新增、无空提交
+        _seed_escalation_signal(repo, self.STRAYS)
+        r2 = execute_adjudication_choice(
+            str(repo), None, "ignore_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r2["ok"], r2.get("error"))
+        self.assertEqual(r2["gitignore_appended"], [])
+        self.assertTrue(any("无需追加" in s for s in r2["steps"]))
+        self.assertEqual(_head(repo), r["commit_hash"])   # 无空提交
+
+    def test_ignore_verdict_wildcard_covered_not_duplicated(self):
+        """既有通配规则已覆盖：不重复写（check-ignore 口径去重）。"""
+        repo = _make_repo(gitignore_extra="*.log\n")
+        _write_untracked_stray(repo, ["stray_dump.log"])
+        _seed_escalation_signal(repo, ["stray_dump.log"])
+        r = execute_adjudication_choice(
+            str(repo), None, "ignore_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["gitignore_appended"], [])
+        self.assertEqual(
+            (repo / ".gitignore").read_text(encoding="utf-8").splitlines().count("*.log"),
+            1,
+        )
+
+    # ── 裁决③ 删除 ──────────────────────────────────────────────────
+
+    def test_delete_verdict_removes_files_only(self):
+        repo = self._repo_with_strays(seed=False)
+        _seed_escalation_signal(repo, self.STRAYS + ["gone.txt"])
+        before_head = _head(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "delete_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertEqual(r["action"], "delete_untracked_stray")
+        self.assertEqual(r["deleted_files"], self.STRAYS)
+        for f in self.STRAYS:
+            self.assertFalse((repo / f).exists())
+        # 陈旧清单条目跳过；清单外 tracked 文件不裹挟
+        self.assertTrue(any("gone.txt" in s for s in r["steps"]))
+        self.assertTrue((repo / "keep.txt").exists())
+        # 零 git 写：HEAD 不动（删除 untracked 文件本就不经 git，status 的
+        # 变化即裁决自身的落盘效果——散件行消失、keep.txt 无改动行）
+        self.assertEqual(_head(repo), before_head)
+        after = _status(repo)
+        self.assertNotIn("stray_dump.log", after)
+        self.assertNotIn("nested.log", after)
+        self.assertNotIn("keep.txt", after)
+
+    def test_delete_rejects_non_regular_file(self):
+        """防御性收口：清单命中目录时拒绝删除（仅普通文件，不 rmtree）。"""
+        from core.dashboard.data.admin_actions import _exec_delete_untracked_stray
+
+        repo = self._repo_with_strays(seed=False)
+        _seed_escalation_signal(repo, ["sub"])
+        before_status = _status(repo)
+        r = _exec_delete_untracked_stray(str(repo), signal_type=_UNTRACKED_ESCALATED)
+        self.assertFalse(r["ok"])
+        self.assertIn("非普通文件", r["error"])
+        self.assertTrue((repo / "sub").is_dir())
+        self.assertEqual(_status(repo), before_status)
+
+    def test_delete_all_missing_rejected(self):
+        repo = self._repo_with_strays(seed=False)
+        _seed_escalation_signal(repo, ["gone.txt"])
+        before_head = _head(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "delete_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("均已不在磁盘", r["error"])
+        self.assertEqual(_head(repo), before_head)
+
+    # ── 共用前置守卫 ─────────────────────────────────────────────────
+
+    def test_out_of_manifest_paths_rejected(self):
+        """程序化 paths 收窄：清单外路径拒绝，零 git 写零文件触碰。"""
+        from core.dashboard.data.admin_actions import _exec_delete_untracked_stray
+
+        repo = self._repo_with_strays()
+        before_head, before_status = _head(repo), _status(repo)
+        r = _exec_delete_untracked_stray(
+            str(repo), signal_type=_UNTRACKED_ESCALATED, paths=["keep.txt"],
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("清单外", r["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+        self.assertTrue((repo / "keep.txt").exists())
+
+    def test_missing_signal_record_rejected_before_any_write(self):
+        """无可解析清单的升级记录：明确 error，不执行任何写。"""
+        repo = self._repo_with_strays(seed=False)
+        before_head, before_status = _head(repo), _status(repo)
+        r = execute_adjudication_choice(
+            str(repo), None, "archive_untracked_stray",
+            signal_type=_UNTRACKED_ESCALATED,
+        )
+        self.assertFalse(r["ok"])
+        self.assertIn("文件清单", r["error"])
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(_status(repo), before_status)
+        self.assertTrue((repo / self.STRAYS[0]).exists())
+
+    def test_escalation_choices_registered(self):
+        """升级桶登记三裁决（注册表单源）：id/action 齐备、删除项 destructive、
+        全部 spec_scoped=False（全局信号硬约束）。"""
+        by_id = {c["id"]: c for c in choices_for(_UNTRACKED_ESCALATED)}
+        self.assertEqual(
+            sorted(by_id),
+            ["archive_untracked_stray", "delete_untracked_stray",
+             "ignore_untracked_stray"],
+        )
+        for c in by_id.values():
+            self.assertTrue(c["label"].strip() and c["desc"].strip())
+            self.assertFalse(c["spec_scoped"])
+            self.assertEqual(c["action"], c["id"])
+        self.assertTrue(by_id["delete_untracked_stray"].get("destructive") is True)
+        self.assertFalse(by_id["archive_untracked_stray"].get("destructive", False))
+        self.assertFalse(by_id["ignore_untracked_stray"].get("destructive", False))
 
 
 if __name__ == "__main__":

@@ -126,6 +126,41 @@ _UNTRACK_STRAY_WIP = {
     "spec_scoped": False,
 }
 
+# evo-stray-untracked-escalation 3.2：untracked 散件认领三裁决（全局信号，
+# spec 恒 None）。tracked 桶的 commit/untrack 不可复用：git rm --cached 对
+# untracked 路径无语义、git add/commit 会把散件转正式 tracked 内容——认领
+# 语义是「显式归档 / 补 ignore / 删除」三选一。spec_scoped=False 硬约束同款
+# （全局信号守卫拒 spec_scoped 选项）；执行端 signal_type 绑定白名单双保险
+# （admin_actions.UNTRACKED_CLAIM_SIGNAL_TYPES 仅收录 maintree_untracked_stray_
+# escalated，姊妹 info 信号与 tracked 桶信号拒绝、零 git 写零文件触碰，
+# design D4：resolve_choice 非作用域全表反查通道对本组动作同样可达）。
+_ARCHIVE_UNTRACKED_STRAY = {
+    "id": "archive_untracked_stray",
+    "label": "认领·归档散件",
+    "desc": "显式归档：把信号清单内 untracked 散件移入登记目录 "
+            ".fenix/stray-archive/<时间戳>/（保留相对路径，登记目录追加 "
+            "ignore 规则并以独立提交落地，不再触发盘点告警）",
+    "action": "archive_untracked_stray",
+    "spec_scoped": False,
+}
+_IGNORE_UNTRACKED_STRAY = {
+    "id": "ignore_untracked_stray",
+    "label": "认领·追加 ignore",
+    "desc": "把信号清单内 untracked 路径追加进 .gitignore（去重：条目已存在"
+            "或既有规则已覆盖的不重复写，独立提交落地）",
+    "action": "ignore_untracked_stray",
+    "spec_scoped": False,
+}
+_DELETE_UNTRACKED_STRAY = {
+    "id": "delete_untracked_stray",
+    "label": "认领·删除散件",
+    "desc": "删除信号清单内的 untracked 散件文件（不可逆，仅普通文件，"
+            "执行前二次确认）",
+    "action": "delete_untracked_stray",
+    "destructive": True,
+    "spec_scoped": False,
+}
+
 _ADJUDICATION_REGISTRY: dict = {
     # ── 验证循环耗尽族 ────────────────────────────────────────────
     "impl_budget_exhausted": (
@@ -311,6 +346,15 @@ _ADJUDICATION_REGISTRY: dict = {
     "maintree_stray_wip_stale": (
         _COMMIT_STRAY_WIP,
         _UNTRACK_STRAY_WIP,
+    ),
+    # ── 主树 untracked 散件滞留升级族（evo-stray-untracked-escalation 3.2）──
+    # 全局信号（spec 恒 None，stray_wip 第二档升级发射）。姊妹 info 信号
+    # maintree_untracked_stray_stale 维持无桶（只告警不处置）——本桶仅登记
+    # 在升级信号上，三裁决由认领执行器消费（绑定白名单收口）。
+    "maintree_untracked_stray_escalated": (
+        _ARCHIVE_UNTRACKED_STRAY,
+        _IGNORE_UNTRACKED_STRAY,
+        _DELETE_UNTRACKED_STRAY,
     ),
 }
 

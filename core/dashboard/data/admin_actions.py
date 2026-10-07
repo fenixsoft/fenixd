@@ -9,8 +9,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3137,6 +3139,262 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     }
 
 
+# ── 主树 untracked 散件认领（evo-stray-untracked-escalation 3.1）──────────
+
+# signal_type 绑定白名单单源（design D4 同款收口逻辑）：认领执行器是主树
+# git 写/文件删除的暴露面，白名单仅收录升级信号——姊妹 info 信号
+# （maintree_untracked_stray_stale）与 tracked 桶信号（maintree_stray_wip_stale
+# 等）一律拒绝、零 git 写零文件触碰。evidence 清单段解析复用
+# parse_stray_wip_manifest（升级信号 evidence 与 info 前身同段级格式，仅指
+# 解析器复用，不将 info 信号放行为执行目标）。
+UNTRACKED_CLAIM_SIGNAL_TYPES = ("maintree_untracked_stray_escalated",)
+
+# 显式归档登记目录（相对 project_root）：归档裁决把清单内散件移入该目录的
+# UTC 时间戳子目录（保留清单内相对路径结构），并把登记目录本身追加进
+# .gitignore——归档是「已认领存放」语义，登记目录 MUST NOT 计入后续
+# untracked 盘点（无忽略规则的项目否则会把归档产物再当散件告警，裁决自我
+# 循环）；.gitignore 追加以 pathspec 独立提交落地（可整体 revert）。
+UNTRACKED_STRAY_ARCHIVE_DIR = ".fenix/stray-archive"
+
+
+def _claim_untracked_manifest(project_root, signal_type: str, paths=None) -> dict:
+    """认领执行器共用前置：绑定守卫 → 清单单源 → 显式 paths 白名单校验。
+
+    binding 守卫在任何 git 读/写之前 fail-closed（spec「tracked 信号拒绝零
+    git 写」验收口径）；manifest 解析只读 AdminStore（零 git 零文件触碰）。
+    paths 仅供程序化调用方显式收窄作用面（MUST 为清单子集，清单外拒绝），
+    语义对齐 commit/untrack 执行器同款 D2 约束。
+
+    Returns: {"manifest": [...], "candidates": [...], "error": str}
+    error 非空时调用方原样返回失败结果（零 git 写、零文件触碰）。
+    """
+    sig = str(signal_type or "").strip()
+    if sig not in UNTRACKED_CLAIM_SIGNAL_TYPES:
+        return {
+            "manifest": [], "candidates": [],
+            "error": (f"signal_type '{sig or '缺失'}' 不可执行 untracked 散件"
+                      f"认领（白名单仅限 {', '.join(UNTRACKED_CLAIM_SIGNAL_TYPES)}；"
+                      "tracked 桶与 info 信号零 git 写零文件触碰，design D4）"),
+        }
+    proot = Path(project_root)
+    manifest = _latest_stray_wip_manifest(proot, UNTRACKED_CLAIM_SIGNAL_TYPES[0])
+    if not manifest:
+        return {
+            "manifest": [], "candidates": [],
+            "error": ("未找到含可解析文件清单的 maintree_untracked_stray_escalated "
+                      "信号记录（清单解析自记录 evidence「文件清单(N):」段），"
+                      "不执行认领写"),
+        }
+    if paths is not None:
+        requested = [str(p).strip() for p in paths if str(p).strip()]
+        outside = [p for p in requested if p not in manifest]
+        if outside:
+            return {
+                "manifest": [], "candidates": [],
+                "error": ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
+                          f"design D2）：{', '.join(outside)}；"
+                          f"信号清单({len(manifest)}): {', '.join(manifest)}"),
+            }
+        candidates = requested
+    else:
+        candidates = list(manifest)
+    return {"manifest": manifest, "candidates": candidates, "error": ""}
+
+
+def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
+    """追加 .gitignore 并以 pathspec 独立提交落地（认领裁决共用）。
+
+    pathspec 形态（``git commit -- .gitignore``，commit_stray_wip 同款）：
+    只落 .gitignore 的工作区内容，不裹挟索引中其它暂存改动——认领裁决
+    MUST NOT 制造「索引被裹挟」的新散件。.gitignore 尚未入库时先 add 再
+    pathspec 提交（新文件须在索引内 pathspec 才可解析）。提交失败时尽力
+    还原追加行（不残留半程改动；还原失败保留现状不掩盖原始原因）。
+
+    Returns: {"appended": [...], "commit_hash": str, "error": str}
+    """
+    appended = _append_gitignore_entries(proot, entries)
+    if not appended:
+        return {"appended": [], "commit_hash": "", "error": ""}
+    try:
+        tracked = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
+        if ".gitignore" not in tracked:
+            _git_out(proot, "add", "--", ".gitignore")
+        msg = f"[fenix] admin: {header}（{len(appended)} 条）"
+        _git_out(proot, "commit", "-m", msg, "--", ".gitignore")
+        commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+    except RuntimeError as e:
+        try:
+            gi = proot / ".gitignore"
+            kept = [
+                ln for ln in
+                gi.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                if ln.strip() not in set(appended)
+            ]
+            gi.write_text("".join(kept), encoding="utf-8")
+        except OSError:
+            pass
+        return {"appended": [], "commit_hash": "",
+                "error": f".gitignore 追加提交失败（已尽力还原追加行）: {e}"}
+    return {"appended": appended, "commit_hash": commit_hash, "error": ""}
+
+
+def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str = "",
+                                  paths=None) -> dict:
+    """archive_untracked_stray：显式归档——清单内散件移入登记目录（全局信号专用）。
+
+    约束（design D4 同款收口）：
+    - signal_type 绑定白名单（UNTRACKED_CLAIM_SIGNAL_TYPES）：仅
+      maintree_untracked_stray_escalated 可触达，tracked 桶与 info 信号一律
+      拒绝，零 git 写零文件触碰；
+    - 文件来源 MUST 限信号记录 evidence「文件清单(N):」段（拒任意路径）；
+    - 归档落点 .fenix/stray-archive/<UTC时间戳>/（保留相对路径结构）；登记
+      目录先追加 .gitignore 并独立提交（幂等，重入去重），再逐文件移动——
+      已移动文件不回拉（移动是逐文件原子操作，留在登记目录属已认领态），
+      失败如实上报、重试续移剩余文件；
+    - 清单内已不在磁盘的文件跳过不报错（同指纹一次性告警，清单会陈旧）；
+      可归档集合为空返回明确 error。
+    """
+    pre = _claim_untracked_manifest(project_root, signal_type, paths)
+    if pre["error"]:
+        return {"ok": False, "steps": [], "error": pre["error"]}
+    proot = Path(project_root)
+    existing, skipped = [], []
+    for p in pre["candidates"]:
+        (existing if (proot / p).is_file() else skipped).append(p)
+    if not existing:
+        return {
+            "ok": False, "steps": [],
+            "error": ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
+                      f"无可归档文件；清单({len(pre['manifest'])}): "
+                      f"{', '.join(pre['manifest'])}"),
+        }
+    gi = _append_gitignore_and_commit(
+        proot, [f"{UNTRACKED_STRAY_ARCHIVE_DIR}/"], "登记 untracked 散件归档目录",
+    )
+    if gi["error"]:
+        return {"ok": False, "steps": [], "error": gi["error"]}
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    dest_root = proot / UNTRACKED_STRAY_ARCHIVE_DIR / stamp
+    moved, failed = [], ""
+    try:
+        for p in existing:
+            dest = dest_root / p
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(proot / p), str(dest))
+            moved.append(p)
+    except OSError as e:
+        failed = f"归档移动失败（已移动 {len(moved)} 个留在登记目录，重试续移）: {e}"
+    steps = []
+    if gi["appended"]:
+        steps.append(
+            f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 追加 ignore 并独立提交"
+            f"（{gi['commit_hash'][:12]}）"
+        )
+    else:
+        steps.append(f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 已在 ignore 规则内，无需追加")
+    steps.append(
+        f"归档 {len(moved)} 个 untracked 散件至 {UNTRACKED_STRAY_ARCHIVE_DIR}/{stamp}/"
+        f"（保留相对路径）: {', '.join(moved)}"
+    )
+    if skipped:
+        steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if note:
+        steps.append(f"裁决依据：{note}")
+    if failed:
+        steps.append(failed)
+        return {"ok": False, "steps": steps, "error": failed}
+    return {
+        "ok": True, "steps": steps, "error": None,
+        "archived_files": moved,
+        "archive_dir": f"{UNTRACKED_STRAY_ARCHIVE_DIR}/{stamp}",
+        "gitignore_appended": gi["appended"],
+        "commit_hash": gi["commit_hash"],
+    }
+
+
+def _exec_ignore_untracked_stray(project_root, note: str = "", signal_type: str = "",
+                                 paths=None) -> dict:
+    """ignore_untracked_stray：清单内 untracked 路径追加 .gitignore（去重）。
+
+    约束同认领族（白名单守卫/清单单源/pathspec 独立提交）。去重双重口径
+    复用 _append_gitignore_entries：条目字面行已存在或既有规则（含通配）
+    已覆盖的不重复写。清单内路径无须仍在磁盘（ignore 规则对路径生效）。
+    """
+    pre = _claim_untracked_manifest(project_root, signal_type, paths)
+    if pre["error"]:
+        return {"ok": False, "steps": [], "error": pre["error"]}
+    proot = Path(project_root)
+    gi = _append_gitignore_and_commit(
+        proot, pre["candidates"], "追加 untracked 散件 ignore 规则",
+    )
+    if gi["error"]:
+        return {"ok": False, "steps": [], "error": gi["error"]}
+    steps = []
+    if gi["appended"]:
+        steps.append(
+            f".gitignore 追加 {len(gi['appended'])} 条（去重后实际新增）: "
+            f"{', '.join(gi['appended'])}"
+        )
+        steps.append(f"独立提交 hash: {gi['commit_hash']}")
+    else:
+        steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {
+        "ok": True, "steps": steps, "error": None,
+        "gitignore_appended": gi["appended"],
+        "commit_hash": gi["commit_hash"],
+    }
+
+
+def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str = "",
+                                 paths=None) -> dict:
+    """delete_untracked_stray：删除清单内 untracked 散件文件（destructive）。
+
+    约束同认领族。只删普通文件（is_file 门，防御性收口——目录与特殊文件
+    拒绝，不 rmtree）；已不在磁盘的跳过不报错，全不存在时明确 error。
+    零 git 写（untracked 文件删除不经 git；ignore/登记需求走其它两裁决），
+    空目录残留不进 git status、无再告警面，不顺手清理（零额外触碰）。
+    """
+    pre = _claim_untracked_manifest(project_root, signal_type, paths)
+    if pre["error"]:
+        return {"ok": False, "steps": [], "error": pre["error"]}
+    proot = Path(project_root)
+    targets, skipped = [], []
+    for p in pre["candidates"]:
+        f = proot / p
+        if not f.exists():
+            skipped.append(p)
+        elif not f.is_file():
+            return {
+                "ok": False, "steps": [],
+                "error": f"拒绝删除非普通文件（防御性收口，仅文件删除）: {p}",
+            }
+        else:
+            targets.append(p)
+    if not targets:
+        return {
+            "ok": False, "steps": [],
+            "error": ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
+                      f"无可删除文件；清单({len(pre['manifest'])}): "
+                      f"{', '.join(pre['manifest'])}"),
+        }
+    try:
+        for p in targets:
+            (proot / p).unlink()
+    except OSError as e:
+        return {"ok": False, "steps": [], "error": f"删除失败: {e}"}
+    steps = [f"删除 {len(targets)} 个 untracked 散件文件: {', '.join(targets)}"]
+    if skipped:
+        steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {
+        "ok": True, "steps": steps, "error": None,
+        "deleted_files": targets,
+    }
+
+
 def execute_adjudication_choice(project_root, spec: str, choice_id: str,
                                 note: str = "", signal_type: str = "") -> dict:
     """choice_id → 后端动作统一映射执行器（add-human-adjudication-choices 4.1/4.2）。
@@ -3256,6 +3514,20 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             # （第二个主树 git 写动作；signal_type 绑定守卫同款在执行器内
             # fail-closed，design D4 收口逻辑一致）。
             r = _exec_untrack_stray_wip(project_root, note, signal_type)
+        elif action == "archive_untracked_stray":
+            # evo-stray-untracked-escalation 3.1：untracked 散件显式归档
+            # （主树文件移动 + 登记目录 ignore；signal_type 绑定白名单在
+            # 执行器内 fail-closed，design D4 收口逻辑一致——tracked 桶与
+            # info 信号零 git 写零文件触碰）。
+            r = _exec_archive_untracked_stray(project_root, note, signal_type)
+        elif action == "ignore_untracked_stray":
+            # evo-stray-untracked-escalation 3.1：untracked 路径追加 .gitignore
+            # （去重 + pathspec 独立提交；绑定白名单同款收口）。
+            r = _exec_ignore_untracked_stray(project_root, note, signal_type)
+        elif action == "delete_untracked_stray":
+            # evo-stray-untracked-escalation 3.1：untracked 散件文件删除
+            # （destructive，仅普通文件；绑定白名单同款收口，零 git 写）。
+            r = _exec_delete_untracked_stray(project_root, note, signal_type)
         else:
             r = {"ok": False, "steps": [],
                  "error": f"注册表 action '{action}' 无执行器映射"}

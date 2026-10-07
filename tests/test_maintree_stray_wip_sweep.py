@@ -20,8 +20,12 @@ from pathlib import Path
 from core.admin_store import AdminStore, SIGNAL
 from core.worktree_manager.stray_wip import (
     SIGNAL_TYPE,
+    UNTRACKED_ESCALATED_SIGNAL_TYPE,
+    UNTRACKED_SIGNAL_TYPE,
     MainTreeStrayWipSweeper,
     grace_minutes,
+    untracked_stray_size_threshold_bytes,
+    untracked_stray_threshold,
 )
 
 # /tmp 可能被外部清扫进程周期性清空（test_code_fix 同款规避）。统一用仓库内
@@ -375,6 +379,253 @@ class TestZeroTouch(unittest.TestCase):
         self.assertEqual(_git("rev-parse", "HEAD", cwd=repo).stdout, head_before)
 
 
+def _make_untracked_repo(names, sizes=None):
+    """主树仓：tracked 干净 + names 列出的 untracked 散件（sizes 逐文件字节）。
+
+    evo-stray-untracked-escalation 升级链路现场：a.tsx 已提交无改动，散件
+    全部以 untracked 形态在场；.gitignore 兜住 .fenix/（AdminStore 状态目录
+    不污染盘点口径）。
+    """
+    base = Path(_mkdtemp("stray-unesc-"))
+    repo = base / "proj"
+    repo.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", cwd=repo)
+    (repo / "a.tsx").write_text("base", encoding="utf-8")
+    (repo / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "init", cwd=repo)
+    for n in names:
+        size = int((sizes or {}).get(n, 32))
+        (repo / n).write_text("x" * size, encoding="utf-8")
+    return repo
+
+
+def _make_untracked_sweeper(repo, grace=30.0, threshold=None, size_threshold=None):
+    admin = {"maintree_stray_wip_grace_minutes": grace}
+    if threshold is not None:
+        admin["maintree_untracked_stray_threshold"] = threshold
+    if size_threshold is not None:
+        admin["maintree_untracked_stray_size_threshold_bytes"] = size_threshold
+    return MainTreeStrayWipSweeper(
+        repo, _WmProbe(repo), config={"admin": admin}, logger=None,
+    )
+
+
+def _escalation_alerts(repo) -> list:
+    """第二档升级信号记录（read_all 倒序 → 最新在前）。"""
+    return [
+        r
+        for r in AdminStore(repo).read_all()
+        if r.get("kind") == SIGNAL
+        and r.get("signal_type") == UNTRACKED_ESCALATED_SIGNAL_TYPE
+    ]
+
+
+def _untracked_info_alerts(repo) -> list:
+    return [
+        r
+        for r in AdminStore(repo).read_all()
+        if r.get("kind") == SIGNAL
+        and r.get("signal_type") == UNTRACKED_SIGNAL_TYPE
+    ]
+
+
+class TestUntrackedEscalation(unittest.TestCase):
+    """第二档升级链路（evo-stray-untracked-escalation 4.1）：
+    24h 触发 / 体积阈值独立触发 / 只升级一次 / info 信号维持一次性。"""
+
+    NAMES = [f"stray_{i}.log" for i in range(6)]
+
+    def test_stale_24h_triggers_escalation_once_info_stays_one_shot(self):
+        repo = _make_untracked_repo(self.NAMES)
+        before = _status(repo)
+        sw = _make_untracked_sweeper(repo, grace=30.0)
+
+        # 第一轮：越过 entry 阈值建档计时，宽限未到不告警；体积随注册表输出
+        r1 = sw.sweep()
+        u1 = r1["untracked"]
+        self.assertEqual(u1["status"], "timed")
+        self.assertEqual(_untracked_info_alerts(repo), [])
+        self.assertEqual(_escalation_alerts(repo), [])
+        fp = u1["fingerprint"]
+        entry = sw._untracked_registry[fp]
+        self.assertGreater(u1["total_bytes"], 0)
+        self.assertEqual(entry["total_bytes"], u1["total_bytes"])
+        self.assertEqual(
+            entry["sizes_bytes"],
+            {n: (repo / n).stat().st_size for n in self.NAMES},
+        )
+
+        # 回拨 first_seen 25 小时：一轮内 info 一次性告警 + 24h 路径升级同发
+        entry["first_seen"] = time.time() - 25 * 3600
+        r2 = sw.sweep()
+        self.assertEqual(r2["untracked"]["status"], "escalated")
+        info, esc = _untracked_info_alerts(repo), _escalation_alerts(repo)
+        self.assertEqual(len(info), 1)   # info 信号仍一次性（未被升级替代）
+        self.assertEqual(len(esc), 1)
+        rec = esc[0]
+        self.assertEqual(rec["severity"], "major")
+        self.assertIsNone(rec["spec"])
+        evidence = rec.get("evidence") or ""
+        self.assertTrue(evidence.startswith("项目名=proj"))
+        self.assertIn("体积合计=", evidence)
+        self.assertIn("文件清单(6):", evidence)
+        self.assertIn("滞留时长≥24小时", evidence)
+        # 升级记录附三裁决 choices 快照（发射点快照，注册表单源）
+        self.assertEqual(
+            [c.get("id") for c in rec.get("choices") or []],
+            ["archive_untracked_stray", "ignore_untracked_stray",
+             "delete_untracked_stray"],
+        )
+        recommended = rec.get("recommended_action") or ""
+        for cid in ("archive_untracked_stray", "ignore_untracked_stray",
+                    "delete_untracked_stray"):
+            self.assertIn(cid, recommended)
+        self.assertIn("24 小时", rec.get("description") or "")
+        # 注册表双档标记：escalated_signal_at 落档
+        self.assertTrue(sw._untracked_registry[fp].get("escalated_signal_at"))
+
+        # 重复盘点：升级与 info 均不重复（同指纹一次性）
+        r3 = sw.sweep()
+        self.assertEqual(r3["untracked"]["status"], "timed")
+        self.assertEqual(len(_escalation_alerts(repo)), 1)
+        self.assertEqual(len(_untracked_info_alerts(repo)), 1)
+        # 零触碰：全流程主树状态逐字节一致
+        self.assertEqual(_status(repo), before)
+
+    def test_size_threshold_triggers_independent_of_elapsed(self):
+        """体积路径独立判定：elapsed≈0（未达 24h、宽限未到、info 未发）时
+        体积超阈值即升级——MUST NOT 被 24h 门控（spec 验收场景 2）。"""
+        repo = _make_untracked_repo(
+            ["big_dump.bin", "big_dump2.bin", "small.log"],
+            sizes={"big_dump.bin": 2048, "big_dump2.bin": 2048, "small.log": 8},
+        )
+        sw = _make_untracked_sweeper(
+            repo, grace=30.0, threshold=2, size_threshold=1024,
+        )
+        r = sw.sweep()
+        u = r["untracked"]
+        # 首轮即升级：elapsed ≈ 0 < 24h，体积路径未被滞留时长门控
+        self.assertEqual(u["status"], "escalated")
+        self.assertLess(u["elapsed_minutes"], 60)
+        self.assertEqual(u["total_bytes"], 2048 + 2048 + 8)
+        self.assertEqual(u["size_threshold_bytes"], 1024)
+        esc = _escalation_alerts(repo)
+        self.assertEqual(len(esc), 1)
+        self.assertIn("集合体积≥1024字节", esc[0].get("evidence") or "")
+        # info 信号未发（宽限未到）——升级不以 info 告警为前置
+        self.assertEqual(_untracked_info_alerts(repo), [])
+        # 只升级一次
+        r2 = sw.sweep()
+        self.assertEqual(r2["untracked"]["status"], "timed")
+        self.assertEqual(len(_escalation_alerts(repo)), 1)
+
+    def test_fingerprint_disappearance_resets_escalation(self):
+        """指纹消失复位：同一集合再现视为新滞留集合，可再次升级。"""
+        repo = _make_untracked_repo(self.NAMES)
+        sw = _make_untracked_sweeper(repo, grace=30.0)
+        r1 = sw.sweep()
+        sw._untracked_registry[r1["untracked"]["fingerprint"]]["first_seen"] -= 25 * 3600
+        self.assertEqual(sw.sweep()["untracked"]["status"], "escalated")
+        self.assertEqual(len(_escalation_alerts(repo)), 1)
+        # 散件全部消失 → 注册表复位
+        for n in self.NAMES:
+            (repo / n).unlink()
+        r2 = sw.sweep()
+        self.assertNotIn("untracked", r2)
+        self.assertEqual(sw._untracked_registry, {})
+        # 再现 → 新集合重新起算并可再升级（旧 escalated_signal_at 不拖新集合）
+        for n in self.NAMES:
+            (repo / n).write_text("y" * 32, encoding="utf-8")
+        r3 = sw.sweep()
+        fp3 = r3["untracked"]["fingerprint"]
+        sw._untracked_registry[fp3]["first_seen"] -= 25 * 3600
+        r4 = sw.sweep()
+        self.assertEqual(r4["untracked"]["status"], "escalated")
+        self.assertEqual(len(_escalation_alerts(repo)), 2)
+
+    def test_below_threshold_set_neither_alerts_nor_escalates(self):
+        """entry 阈值之下：降噪闸门兜底——不 info 告警也不升级（成本 containment）。"""
+        repo = _make_untracked_repo(["a.log", "b.log"])
+        sw = _make_untracked_sweeper(repo, grace=0.0, size_threshold=1)
+        r = sw.sweep()
+        self.assertEqual(r["untracked"]["status"], "below-threshold")
+        self.assertEqual(_untracked_info_alerts(repo), [])
+        self.assertEqual(_escalation_alerts(repo), [])
+
+
+class TestEscalationSizeThresholdConfig(unittest.TestCase):
+    """体积阈值配置解析（ConfigLoader 点号键，守卫回退对齐 entry 阈值范式）。"""
+
+    def test_default_and_fallbacks(self):
+        self.assertEqual(untracked_stray_size_threshold_bytes({}), 524288000)
+        self.assertEqual(untracked_stray_size_threshold_bytes(None), 524288000)
+        for bad in (0, -1, "abc", None, float("inf"), float("nan"), 0.5):
+            self.assertEqual(
+                untracked_stray_size_threshold_bytes(
+                    {"admin": {"maintree_untracked_stray_size_threshold_bytes": bad}}
+                ),
+                524288000,
+                msg=f"bad={bad!r}",
+            )
+
+    def test_valid_values(self):
+        self.assertEqual(
+            untracked_stray_size_threshold_bytes(
+                {"admin": {"maintree_untracked_stray_size_threshold_bytes": 1024}}
+            ),
+            1024,
+        )
+        self.assertEqual(
+            untracked_stray_size_threshold_bytes(
+                {"admin": {"maintree_untracked_stray_size_threshold_bytes": "2048"}}
+            ),
+            2048,
+        )
+
+    def test_entry_threshold_reader_unchanged(self):
+        """既有 entry 阈值读取器不回归（升级建设不改动 info 降噪口径）。"""
+        self.assertEqual(untracked_stray_threshold({}), 5)
+
+
+class _MonitorSMStub:
+    """AdminMonitor 测试用最小 StateMachine 替身（test_inconclusive_loop
+    _MonitorSM 同款：read_one 返回 status 条目）。"""
+
+    def __init__(self, statuses=None):
+        self._statuses = statuses or {}
+
+    def read_one(self, spec):
+        return {"status": self._statuses.get(spec, "")}
+
+
+class _IngestStoreStub:
+    """AdminStore 轻量替身：记录 append/mark_escalated 调用（摄取测试用）。"""
+
+    def __init__(self, records):
+        self.records = [dict(r, id=f"rec-{i}") for i, r in enumerate(records)]
+        self.escalated = []
+
+    def read_all(self):
+        return [dict(r) for r in self.records]
+
+    def mark_escalated(self, alert_id):
+        self.escalated.append(alert_id)
+        for r in self.records:
+            if r.get("id") == alert_id:
+                r["escalated"] = True
+                return True
+        return False
+
+
+class _FakeMonitorLogger:
+    def info(self, tag, msg, extra=None):
+        pass
+
+    def warning(self, tag, msg, extra=None):
+        pass
+
+
 class TestAdminMonitorRegistration(unittest.TestCase):
     """三表登记完备性（防摄取门漏登记回归：漏 STORED_SIGNAL_TYPES 则落空）。"""
 
@@ -395,6 +646,18 @@ class TestAdminMonitorRegistration(unittest.TestCase):
             SIGNAL_SEVERITY[SIGNAL_TYPE],
             SIGNAL_SEVERITY["mergeback_wip_orphan_stuck"],
         )
+        # evo-stray-untracked-escalation 2.1：第二档升级信号三表同步——
+        # severity major、处置指引非空、STORED_SIGNAL_TYPES 收录接入自动唤起
+        self.assertEqual(
+            SIGNAL_SEVERITY[UNTRACKED_ESCALATED_SIGNAL_TYPE], "major",
+        )
+        self.assertTrue(
+            SIGNAL_RECOMMENDATION[UNTRACKED_ESCALATED_SIGNAL_TYPE].strip(),
+        )
+        self.assertIn(UNTRACKED_ESCALATED_SIGNAL_TYPE, STORED_SIGNAL_TYPES)
+        # 姊妹 info 信号维持两表登记、不收录（降噪裁定不因升级建设破防）
+        self.assertEqual(SIGNAL_SEVERITY[UNTRACKED_SIGNAL_TYPE], "info")
+        self.assertNotIn(UNTRACKED_SIGNAL_TYPE, STORED_SIGNAL_TYPES)
 
     def test_alert_record_ingestible_shape(self):
         """落盘记录满足摄取门前提：kind=SIGNAL、signal_type 收录、证据带项目名。"""
@@ -410,6 +673,67 @@ class TestAdminMonitorRegistration(unittest.TestCase):
         from core.admin_store import evidence_project
 
         self.assertEqual(evidence_project(rec["evidence"]), "proj")
+
+    def test_escalation_alert_ingestible_shape(self):
+        """升级记录满足摄取门前提：kind=SIGNAL、证据带项目名、清单段可解析。"""
+        names = [f"stray_{i}.log" for i in range(6)]
+        repo = _make_untracked_repo(names)
+        sw = _make_untracked_sweeper(repo, grace=30.0)
+        r = sw.sweep()
+        sw._untracked_registry[r["untracked"]["fingerprint"]]["first_seen"] -= 25 * 3600
+        sw.sweep()
+        esc = _escalation_alerts(repo)
+        self.assertEqual(len(esc), 1)
+        rec = esc[0]
+        self.assertEqual(rec["signal_type"], UNTRACKED_ESCALATED_SIGNAL_TYPE)
+        self.assertEqual(rec["severity"], "major")
+        self.assertTrue((rec.get("evidence") or "").startswith("项目名="))
+        from core.admin_store import evidence_project
+        from core.dashboard.data.admin_actions import parse_stray_wip_manifest
+
+        self.assertEqual(evidence_project(rec["evidence"]), "proj")
+        # 清单段解析兼容（认领执行器清单单源，parse_stray_wip_manifest 复用）
+        self.assertEqual(parse_stray_wip_manifest(rec["evidence"]), names)
+
+    def test_escalation_ingestion_resolves_project_and_invokes(self):
+        """摄取唤起端到端（design 风险条目回归）：项目名解析清单漏加新类型
+        → spec=None 记录被丢弃、唤起静默落空。升级记录（spec=None，evidence
+        带「项目名=」）须被 _detect_family_explosion 摄取、解析出项目名并
+        唤起 Administrator 恰一次。"""
+        from unittest import mock
+
+        from core.admin_monitor import AdminMonitor
+
+        store = _IngestStoreStub([
+            {
+                "kind": SIGNAL,
+                "signal_type": UNTRACKED_ESCALATED_SIGNAL_TYPE,
+                "spec": None,
+                "severity": "major",
+                "description": "主树 untracked 散件滞留升级",
+                "evidence": (
+                    "项目名=proj; first_seen=2026-10-07T00:00:00Z; "
+                    "文件清单(1): a.log; 升级触发: 滞留时长≥24小时"
+                ),
+                "recommended_action": "认领处置",
+            }
+        ])
+        mon = AdminMonitor(
+            {}, _MonitorSMStub({}), Path(_mkdtemp("stray-mon-")),
+            _FakeMonitorLogger(),
+            store=store, agent_runner=mock.MagicMock(),
+        )
+        with mock.patch.object(
+            mon, "_invoke_administrator", return_value=None,
+        ) as invoke:
+            raw = mon._detect_family_explosion()
+        self.assertEqual(len(raw), 1, "升级记录应被摄取（项目名解析出 spec）")
+        self.assertEqual(raw[0]["signal_type"], UNTRACKED_ESCALATED_SIGNAL_TYPE)
+        self.assertEqual(raw[0]["spec"], "proj")
+        self.assertEqual(len(store.escalated), 1)
+        self.assertEqual(invoke.call_count, 1)
+        # 二次摄取不重复（已 escalated）
+        self.assertEqual(mon._detect_family_explosion(), [])
 
 
 class TestSessionAttributionDowngrade(unittest.TestCase):

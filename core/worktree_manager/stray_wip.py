@@ -41,7 +41,22 @@ SIGNAL_TYPE = "maintree_stray_wip_stale"
 # SIGNAL_RECOMMENDATION），**MUST NOT 收录 STORED_SIGNAL_TYPES**——摄取循环
 # 对收录类型无条件唤起、无 severity 过滤，收录即把 info 留痕升级为人工唤起，
 # 与降噪意图相抵（可见性由 AdminStore 留痕与 Dashboard 承载）。
+# evo-stray-untracked-escalation 显式修订上述裁定的适用边界：**info 信号本身
+# 维持不收录，第二档升级信号（下常量）除外**——滞留时长或体积触顶时以
+# major 升级并接入自动唤起，本信号的一次性 info 留痕语义不变。
 UNTRACKED_SIGNAL_TYPE = "maintree_untracked_stray_stale"
+
+# untracked 散件第二档升级信号（evo-stray-untracked-escalation 1.2）：severity
+# major、经 admin_monitor 三表登记接入自动唤起（SIGNAL_SEVERITY /
+# SIGNAL_RECOMMENDATION / STORED_SIGNAL_TYPES + 摄取项目名解析清单）。
+UNTRACKED_ESCALATED_SIGNAL_TYPE = "maintree_untracked_stray_escalated"
+
+# 第二档升级滞留时长阈值（分钟）：24 小时（proposal 验收口径）。
+UNTRACKED_ESCALATION_STALE_MINUTES = 24 * 60.0
+
+# 第二档升级体积阈值缺省（字节）：500MB，可配（见
+# untracked_stray_size_threshold_bytes）。
+DEFAULT_UNTRACKED_ESCALATION_BYTES = 524288000
 
 # untracked 散件告警阈值缺省（entry 个数）：info 级降噪起步，低于阈值不计
 # 时不告警——构建型项目散件天然多，阈值兜噪声（design 风险条目）。
@@ -103,6 +118,32 @@ def untracked_stray_threshold(config) -> int:
     return int(val)
 
 
+def untracked_stray_size_threshold_bytes(config) -> int:
+    """untracked 散件第二档升级体积阈值（字节）：
+    ``admin.maintree_untracked_stray_size_threshold_bytes``。
+
+    经 ConfigLoader 点号键读取，缺省 524288000（500MB，proposal 验收口径，
+    仿 ``untracked_stray_threshold`` 的可配范式）：解析失败/负值/NaN/inf/
+    小于 1 一律回退缺省——阈值是升级降噪闸门，``0`` 会把任意体积的滞留
+    集合都升级成 major 唤起、等同关闭降噪，按配置事故回退处理（与
+    untracked_stray_threshold 同款守卫哲学）。
+    """
+    from core.config import ConfigLoader
+
+    try:
+        raw = ConfigLoader.get(
+            config, "admin.maintree_untracked_stray_size_threshold_bytes",
+            DEFAULT_UNTRACKED_ESCALATION_BYTES,
+        )
+        val = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_UNTRACKED_ESCALATION_BYTES
+    # NaN 由 val != val 判别；<1（含 0/负值）按配置事故回退，见 docstring。
+    if val != val or val < 1 or val == float("inf"):
+        return DEFAULT_UNTRACKED_ESCALATION_BYTES
+    return int(val)
+
+
 # 会话归因散件的盘点动作（evo-add-maintree-interactive-session-attribution 2.1）：
 # ``info``＝降级 info 留痕（不派 major、不触发 admin 代查）；``keep``＝现状
 # 行为（按无主走既有宽限升级）。
@@ -154,6 +195,10 @@ class MainTreeStrayWipSweeper:
         # 升级为追加逐文件内容 sha256 的完整指纹——untracked 不进 git diff
         # HEAD），与 tracked 注册表分账独立：
         # tracked 侧各分支按「当前 tracked 指纹集」复位，混账会被他侧清空。
+        # 双档 escalated 标记（evo-stray-untracked-escalation 1.2）：
+        # ``escalated_at``＝info 一次性告警标记；``escalated_signal_at``＝
+        # 第二档升级信号标记——同一集合只升级一次。体积采集随注册表输出
+        # （``sizes_bytes`` 逐条目字节 / ``total_bytes`` 集合合计）。
         self._untracked_registry: dict = {}
 
     # ── 基础 ────────────────────────────────────────────────────────────
@@ -549,13 +594,39 @@ class MainTreeStrayWipSweeper:
             }
         grace = grace_minutes(self._config)
         elapsed_min = (now - entry["first_seen"]) / 60.0
+        # 体积采集（evo-stray-untracked-escalation 1.1）：越过阈值后在册集合
+        # 每轮 stat 级采集体积（design 成本 containment：不在全量散件上每轮
+        # du——entry 阈值门控后在册集合规模小，stat 成本可负担）。采集独立于
+        # 滞留时长：MUST NOT 以 elapsed 达标为体积计算前置（否则体积超限的
+        # 集合被额外门控在 24h 之内，与「elapsed 或体积」的或语义相抵）。
+        sizes = self._untracked_entry_sizes(entries)
+        total_bytes = sum(sizes.values())
+        entry["sizes_bytes"] = sizes
+        entry["total_bytes"] = total_bytes
         alerted = False
         if elapsed_min >= grace and not entry.get("escalated_at"):
             if self._write_untracked_alert(entry, fp, threshold, grace, elapsed_min):
                 entry["escalated_at"] = self._iso(now)
                 alerted = True
+        # 第二档升级判定（1.2）：滞留时长 ≥24h 或集合体积 ≥阈值，或语义——
+        # 两路径每轮独立评估、互不为前置；双档标记（escalated_signal_at）
+        # 保证同一集合只升级一次（AdminStore 拒写不计标记，下轮重试）。
+        size_threshold = untracked_stray_size_threshold_bytes(self._config)
+        stale_hit = elapsed_min >= UNTRACKED_ESCALATION_STALE_MINUTES
+        size_hit = total_bytes >= size_threshold
+        escalation_fired = False
+        if (stale_hit or size_hit) and not entry.get("escalated_signal_at"):
+            if self._write_untracked_escalated_alert(
+                entry, fp, threshold, total_bytes, size_threshold,
+                elapsed_min, stale_hit, size_hit,
+            ):
+                entry["escalated_signal_at"] = self._iso(now)
+                escalation_fired = True
         return {
-            "status": "alerted" if alerted else "timed",
+            "status": (
+                "escalated" if escalation_fired
+                else ("alerted" if alerted else "timed")
+            ),
             "files": list(entries),
             "count": count,
             "threshold": threshold,
@@ -563,6 +634,9 @@ class MainTreeStrayWipSweeper:
             "first_seen_iso": entry["first_seen_iso"],
             "grace_minutes": grace,
             "elapsed_minutes": round(elapsed_min, 3),
+            "total_bytes": total_bytes,
+            "size_threshold_bytes": size_threshold,
+            "escalated_signal": bool(entry.get("escalated_signal_at")),
         }
 
     def _untracked_fingerprint(self, entries: list, include_content: bool = True) -> str:
@@ -601,6 +675,22 @@ class MainTreeStrayWipSweeper:
             h.update(b"\x00")
         return h.hexdigest()
 
+    def _untracked_entry_sizes(self, entries: list) -> dict:
+        """逐 entry 体积（字节，evo-stray-untracked-escalation 1.1）：stat 级
+        读元数据，不读内容。
+
+        不可读（竞态删除/权限）按 0 计——体积是升级判定的增强数据源，单条目
+        不可读 MUST NOT 放大成本轮放弃（与指纹的 unreadable 占位语义不同：
+        指纹占位参与哈希使下轮自然重计，体积只参与阈值比较）。
+        """
+        sizes: dict = {}
+        for rel in entries:
+            try:
+                sizes[str(rel)] = (self.project_root / rel).stat().st_size
+            except OSError:
+                sizes[str(rel)] = 0
+        return sizes
+
     def _reset_untracked_registry_absent(self, current_fingerprints: set) -> None:
         """清除指纹不再出现的 untracked 注册表条目（指纹消失自动复位）。"""
         for fp in [
@@ -614,18 +704,23 @@ class MainTreeStrayWipSweeper:
         ``signal_type=maintree_untracked_stray_stale``：admin_monitor 仅两表
         登记（SIGNAL_SEVERITY=info / SIGNAL_RECOMMENDATION「只告警不处置」
         模板），**MUST NOT 收录 STORED_SIGNAL_TYPES**——摄取循环对收录类型
-        无条件唤起、无 severity 过滤，收录即把 info 留痕升级为人工唤起。
-        可见性由 AdminStore 留痕与 Dashboard 承载。AdminStore 拒写时返回
-        False（escalated_at 不落、下轮重试），不让告警静默蒸发。
+        无条件唤起、无 severity 过滤，收录即把 info 留痕升级为人工唤起
+        （evo-stray-untracked-escalation 修订适用边界：info 信号维持不收录、
+        升级信号除外）。可见性由 AdminStore 留痕与 Dashboard 承载；evidence
+        含集合体积合计（1.1，逐条目体积随注册表 ``sizes_bytes`` 同源可查）。
+        AdminStore 拒写时返回 False（escalated_at 不落、下轮重试），不让告警
+        静默蒸发。
         """
         from core.admin_store import AdminStore, SIGNAL
 
         files = list(entry.get("files") or [])
+        total_bytes = int(entry.get("total_bytes") or 0)
         evidence = (
             f"项目名={self.project_root.name}; "
             f"first_seen={entry.get('first_seen_iso') or '?'}; "
             f"滞留={round(elapsed_min, 1)}分钟; 宽限={grace:g}分钟; "
-            f"阈值={threshold}个entry; 指纹={fp[:16]}; "
+            f"阈值={threshold}个entry; 体积合计={total_bytes}字节; "
+            f"指纹={fp[:16]}; "
             f"文件清单({len(files)}): {', '.join(files) or '无'}; "
             f"计时口径: 内容指纹（untracked 路径排序集 + 逐文件内容 sha256"
             f"——untracked 不进 git diff HEAD，不可复用 tracked 指纹形态）; "
@@ -668,6 +763,90 @@ class MainTreeStrayWipSweeper:
             f"{UNTRACKED_SIGNAL_TYPE}: 主树 untracked 散件超阈值滞留"
             f"（{len(files)} entry，first_seen={entry.get('first_seen_iso')}）"
             f"已发一次性 info 告警: {', '.join(files)}",
+        )
+        return True
+
+    def _write_untracked_escalated_alert(
+        self, entry, fp, threshold, total_bytes, size_threshold,
+        elapsed_min, stale_hit, size_hit,
+    ) -> bool:
+        """untracked 散件第二档升级 major 告警（evo-stray-untracked-escalation）。
+
+        ``signal_type=maintree_untracked_stray_escalated``：admin_monitor 三表
+        登记接入自动唤起（SIGNAL_SEVERITY=major / SIGNAL_RECOMMENDATION /
+        STORED_SIGNAL_TYPES + 摄取项目名解析清单）——info 前身信号「MUST NOT
+        收录」裁定的显式修订载体（info 信号维持不收录、升级信号除外）。触发
+        路径（滞留时长/体积，可双命中）随 evidence 下发；evidence 含「项目名=」
+        段（无 spec 形态摄取解析单源 evidence_project）与「文件清单(N):」段
+        （认领执行器清单单源，parse_stray_wip_manifest 同段级口径复用）。
+        AdminStore 拒写时返回 False（escalated_signal_at 不落、下轮重试），
+        不让升级静默蒸发。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+        from core.dashboard.data.adjudication_choices import choices_for
+
+        files = list(entry.get("files") or [])
+        triggers = []
+        if stale_hit:
+            triggers.append(
+                f"滞留时长≥{UNTRACKED_ESCALATION_STALE_MINUTES / 60:g}小时"
+            )
+        if size_hit:
+            triggers.append(f"集合体积≥{size_threshold}字节")
+        sizes = entry.get("sizes_bytes") or {}
+        evidence = (
+            f"项目名={self.project_root.name}; "
+            f"first_seen={entry.get('first_seen_iso') or '?'}; "
+            f"滞留={round(elapsed_min, 1)}分钟; "
+            f"entry阈值={threshold}个; 体积合计={int(total_bytes)}字节; "
+            f"体积阈值={size_threshold}字节; 指纹={fp[:16]}; "
+            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"升级触发: {' + '.join(triggers) or '无'}; "
+            f"条目体积(字节): "
+            f"{', '.join(f'{k}={v}' for k, v in sorted(sizes.items())) or '无'}; "
+            f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入; "
+            f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
+            f"告警发出前后主树工作区状态未变"
+        )
+        store = AdminStore(self.project_root, logger=None)
+        rec = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": UNTRACKED_ESCALATED_SIGNAL_TYPE,
+                "choices": list(choices_for(UNTRACKED_ESCALATED_SIGNAL_TYPE)),
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    "主树 untracked 散件滞留升级（周期盘点第二档，major）："
+                    f"{len(files)} 个 untracked entry（体积合计 "
+                    f"{int(total_bytes)} 字节）滞留时长超 24 小时或集合体积"
+                    "超阈值。本升级信号接入自动唤起，等待认领处置"
+                    "（归档/追加 .gitignore/删除）"
+                ),
+                "evidence": evidence,
+                "source": "maintree-stray-wip-sweep",
+                "recommended_action": (
+                    "核对主树这些 untracked 文件归属后，执行裁决选项 "
+                    "archive_untracked_stray 显式归档（移入登记目录）、"
+                    "ignore_untracked_stray 追加 .gitignore 或 "
+                    "delete_untracked_stray 删除；文件清单、体积与滞留起点见 "
+                    "evidence。同一集合只升级一次，指纹消失后盘点状态自动复位"
+                ),
+            }
+        )
+        if rec is None:
+            self._log(
+                "warning",
+                f"{UNTRACKED_ESCALATED_SIGNAL_TYPE}: 升级告警写入被拒"
+                f"（AdminStore 拒写），未落盘——本轮不计升级标记，下轮盘点重试",
+            )
+            return False
+        self._log(
+            "warning",
+            f"{UNTRACKED_ESCALATED_SIGNAL_TYPE}: 主树 untracked 散件滞留升级"
+            f"（{len(files)} entry / {int(total_bytes)} 字节，"
+            f"触发: {' + '.join(triggers)}）已发一次性 major 升级告警: "
+            f"{', '.join(files)}",
         )
         return True
 

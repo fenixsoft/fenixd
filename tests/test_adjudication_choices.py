@@ -50,6 +50,11 @@ _EXPECTED_CHOICE_IDS = {
     # evo-add-commit-stray-wip-choice 1.1：主树散件 WIP 提交（全局信号桶）
     # evo-recurring-stray-remediation 1.1：追加复发型散件当场根治 untrack 选项
     "maintree_stray_wip_stale": {"commit_stray_wip", "untrack_stray_wip"},
+    # evo-stray-untracked-escalation 3.2：untracked 散件认领三裁决（全局信号
+    # 桶；姊妹 info 信号维持无桶——只告警不处置）
+    "maintree_untracked_stray_escalated": {
+        "archive_untracked_stray", "ignore_untracked_stray", "delete_untracked_stray",
+    },
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -108,9 +113,9 @@ def _entry(proot: Path, spec: str) -> dict:
 
 
 class TestRegistry:
-    def test_covers_exactly_10_signal_types(self):
+    def test_covers_exactly_11_signal_types(self):
         assert set(registered_signal_types()) == set(_EXPECTED_CHOICE_IDS)
-        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 10
+        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 11
 
     def test_per_signal_choice_id_sets(self):
         for sig, expected in _EXPECTED_CHOICE_IDS.items():
@@ -146,6 +151,9 @@ class TestRegistry:
             "ignore", "raise_budget", "open_config",
             "declare_no_artifacts", "ack_self_heal", "commit_stray_wip",
             "untrack_stray_wip",
+            # evo-stray-untracked-escalation 3.2：untracked 散件认领三裁决
+            "archive_untracked_stray", "ignore_untracked_stray",
+            "delete_untracked_stray",
         }
 
     def test_unregistered_returns_empty_tuple(self):

@@ -354,7 +354,14 @@ SIGNAL_SEVERITY = {
     # 收录 STORED_SIGNAL_TYPES**：摄取循环对收录类型无条件唤起、无 severity
     # 过滤，收录即把 info 留痕升级为人工唤起，与降噪意图相抵（info 级 +
     # 阈值 + 同指纹一次性三重兜底，观察误报率后再调）。
+    # evo-stray-untracked-escalation 显式修订上述裁定适用边界：info 信号本身
+    # 维持不收录，第二档升级信号（下条）除外。
     "maintree_untracked_stray_stale": "info",
+    # evo-stray-untracked-escalation 2.1：untracked 散件第二档升级信号——
+    # 滞留时长 ≥24h 或集合体积 ≥阈值（缺省 500MB）时由 stray_wip 盘点直发，
+    # severity major、STORED_SIGNAL_TYPES 收录接入自动唤起（认领执行器：
+    # 归档/追加 .gitignore/删除三裁决）。
+    "maintree_untracked_stray_escalated": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -442,6 +449,11 @@ SIGNAL_RECOMMENDATION = {
     # 复制 maintree_stray_wip_stale「只告警不处置」模板：info 级不唤起人工、
     # 不派生自动处置，本信号只增可见性（豁免注记与证据落位约定见 evidence）。
     "maintree_untracked_stray_stale": "主树 untracked 散件超阈值滞留（周期盘点，info 级只告警不处置，不唤起人工）：本告警不派生任何自动处置；人工按需核对主树这些 untracked 文件归属后自行决定挪入证据落位目录 .fenix/verify-evidence/<spec>/、补 ignore 规则或删除；文件清单、阈值与滞留起点见 evidence（.fenix/ negation 放行项与已 ignore 路径不计入）。同指纹一次性告警，指纹消失后盘点状态自动复位",
+    # evo-stray-untracked-escalation 2.1：第二档升级处置指引——与
+    # worktree_manager/stray_wip._write_untracked_escalated_alert 的 inline
+    # recommended_action 同文（文案变更两处同步，防双处漂移）；带出三裁决
+    # 选项 id（admin_actions 认领执行器，signal_type 绑定白名单仅收本信号）。
+    "maintree_untracked_stray_escalated": "主树 untracked 散件滞留升级（滞留时长超 24 小时或集合体积超阈值，major）：核对主树这些 untracked 文件归属后，执行裁决选项 archive_untracked_stray 显式归档（移入登记目录 .fenix/stray-archive/）、ignore_untracked_stray 追加 .gitignore 或 delete_untracked_stray 删除；文件清单、体积与滞留起点见 evidence（.fenix/ negation 放行项与已 ignore 路径不计入）。同一集合只升级一次，指纹消失后盘点状态自动复位",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
@@ -535,6 +547,13 @@ STORED_SIGNAL_TYPES = (
     # AdminStore.append）——未收录则记录落 store 后无人摄取、Administrator
     # 不唤起，「修订落地后一个扫描周期内告警」目标落空。
     "spec_amendment_inflight",
+    # evo-stray-untracked-escalation 2.1：主树 untracked 散件第二档升级告警由
+    # worktree_manager.stray_wip 周期盘点直发——未收录则记录落 store 后无人
+    # 摄取、Administrator 不唤起，「滞留时长/体积触顶升级为人工处置」出口
+    # 静默落空。记录无 spec（项目级盘点），证据含「项目名=」供无 spec 形态
+    # 解析（姊妹 info 信号维持不收录，收录即降噪破防——placement contract
+    # 裁定适用边界修订：info 信号维持不收录、升级信号除外）。
+    "maintree_untracked_stray_escalated",
 )
 
 # 前置探测白名单（evo-signal-preprobe-handled-writeback R1）：请求型
@@ -2517,6 +2536,11 @@ class AdminMonitor:
                 # spec=None → 被下方丢弃、记录落 store 后无人唤起，告警浮出
                 # 目标静默落空（与三表漏登记同款落空模式）。
                 "maintree_stray_wip_stale",
+                # evo-stray-untracked-escalation 2.1：untracked 散件第二档
+                # 升级信号同为项目级盘点（无 spec），同款「项目名=」解析——
+                # 漏加则升级记录被丢弃、自动唤起静默落空（源码注释点名的
+                # 同款坑，以测试钉住）。
+                "maintree_untracked_stray_escalated",
             ):
                 # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）。
                 # 「项目名=」字段解析单源：core.admin_store.evidence_project
