@@ -51,6 +51,9 @@ class TestSystemAdminReadBack(unittest.TestCase):
                 "narrative_enabled": True,
                 "narrative_timeout_seconds": 60,
                 "narrative_model": "",
+                # add-alert-self-heal-marking 5.2：自愈安静窗口缺省 1440 分钟
+                # （与 _ADMIN_DEFAULTS / ConfigLoader.get_admin_config 同源）
+                "self_heal_quiet_minutes": 1440,
             },
         )
         # 缺省来源标注为 user（未在本文件定义）
@@ -114,7 +117,9 @@ class TestSystemAdminReadBack(unittest.TestCase):
              "merge_breaker_threshold", "shutdown_drain_seconds", "bug_repair_mode",
              "stuck_silence_minutes",
              # add-adjudication-alert-narrative：叙事三键（受管回显白名单）
-             "narrative_enabled", "narrative_timeout_seconds", "narrative_model"},
+             "narrative_enabled", "narrative_timeout_seconds", "narrative_model",
+             # add-alert-self-heal-marking 5.2：自愈安静窗口（受管回显白名单）
+             "self_heal_quiet_minutes"},
         )
         self.assertNotIn("self_review", echoed["admin"])
 

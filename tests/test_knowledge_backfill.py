@@ -743,14 +743,25 @@ def _fake_popen_proc(returncode: int, stdout: str, stderr: str):
     """default_spawn 的 Popen+communicate 替身（spawn 进程组化后的新缝）。"""
 
     class _Proc:
-        pid = 0
+        # pid=-1：os.getpgid(-1) 确定性抛 ProcessLookupError——替身进程组查询
+        # 永远失败、清场走 proc.kill() 兜底（下方 no-op），绝不解析到真实进程
+        # 组。此前 pid=0 会让 getpgid(0) 解析到 pytest 自身进程组，killpg 清场
+        # 直接团灭整个测试运行（全量回归在 51% 处 -9 暴毙、junit 缺失 →
+        # parse_error 的根因，2026-10-07）。
+        pid = -1
 
         def __init__(self, rc, out, err):
             self.returncode = rc
             self._io = (out, err)
 
-        def communicate(self, timeout=None):
+        # 签名对齐真实 Popen.communicate(prompt, timeout=...)：此前缺 prompt
+        # 形参，真实调用以 TypeError 落入 spawn 的异常清场分支，走不到本替身
+        # 想模拟的「退出码 1 + stderr 噪声」归因路径。
+        def communicate(self, prompt, timeout=None):
             return self._io
+
+        def kill(self):
+            pass
 
     return _Proc(returncode, stdout, stderr)
 

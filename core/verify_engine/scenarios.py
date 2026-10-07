@@ -1359,8 +1359,10 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         # 有限大值量级拦截（code-review item 9fdde9c28d89）：负值/非有限值
         # 拦截覆盖不到毫秒语义误写（"600000"≈7 天），运行层 wait_for 会如实
         # 等待、单场景占住并行槽挂起整轮验证。口径对齐上方 timeout 分支：
-        # elif 只补超过 MAX_STEP_TIMEOUT 的有限大值，不重复报错
-        elif step.timeout > MAX_STEP_TIMEOUT:
+        # elif 只补超过 MAX_STEP_TIMEOUT 的有限大值，不重复报错。None 守卫
+        # 必须保留：timeout 缺省（None）时前两支均不命中，无守卫会在
+        # `None > float` 上抛 TypeError（回归 2026-10-07，8 例全量失败根因）
+        elif step.timeout is not None and step.timeout > MAX_STEP_TIMEOUT:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: timeout 超过上限"
                 f" {MAX_STEP_TIMEOUT:g} 秒（30 分钟），收到 {step.timeout}"

@@ -490,12 +490,12 @@ def env_exemption_active(exemption: dict, scenario_id: str, failure_signature: s
     granted_raw = str(exemption.get("granted_at") or "")
     if not granted_raw:
         return False
-    try:
-        granted = datetime.fromisoformat(granted_raw)
-    except (ValueError, TypeError):
+    # 解析收拢 parse_utc（内核 timelib.parse_ts，唯一入口）：非法/空返回
+    # None → 按过期处理（fail-closed，与原 fromisoformat 异常路径同语义）。
+    # 写侧（admin_actions.grant）恒产出 aware UTC 串，aware 值折算时刻恒等。
+    granted = parse_utc(granted_raw)
+    if granted is None:
         return False
-    if granted.tzinfo is None:
-        granted = granted.replace(tzinfo=timezone.utc)
     now_dt = now if now is not None else datetime.now(timezone.utc)
     if now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=timezone.utc)

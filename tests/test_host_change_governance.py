@@ -156,7 +156,11 @@ class TestKilledTerminalDispatch(GovBase):
             def __init__(self, *a, **k):
                 pass
 
-            def dispatch_host_change_rollback_alert(self, *a, **k):
+            # 替身保真守卫（tests/test_fake_double_fidelity.py）：显式对齐
+            # AdminStore.dispatch_host_change_rollback_alert 生产签名，不得用
+            # *a/**k 宽容替身静默吸收实参；fail-open 语义不变（任何调用仍炸）。
+            def dispatch_host_change_rollback_alert(
+                    self, spec, host_changes, run_id=None):
                 raise RuntimeError("store broken")
 
         import core.admin_store as admin_store
@@ -264,7 +268,10 @@ class TestFailureTerminalDispatchAndDedup(GovBase):
 class TestSuccessTerminalTraceOnly(GovBase):
     """成功终态仅留痕不告警；无登记文件零动作。"""
 
-    def _finalize_success(self):
+    # 驱动 helper（非替身）：内部真实调用生产 AgentRunner._finalize_success。
+    # 不与生产 seam 同名，避免替身保真守卫「同名即同 seam」把本 helper 误判为
+    # 必填不足的宽容替身（fake=(0,...) < prod=(15,...)）。
+    def _run_success_terminal_finalize(self):
         from core.agent_runner.result_gate import AgentRunResult
 
         cleaned = []
@@ -300,7 +307,7 @@ class TestSuccessTerminalTraceOnly(GovBase):
 
     def test_success_with_registry_traces_without_alert(self):
         self.write_registry()
-        cleaned = self._finalize_success()
+        cleaned = self._run_success_terminal_finalize()
         # 仅留痕（INFO），零告警
         assert self.escalations() == []
         assert any("留痕" in i["message"] and "不告警" in i["message"]
@@ -312,7 +319,7 @@ class TestSuccessTerminalTraceOnly(GovBase):
         assert not self.wt.exists()
 
     def test_success_without_registry_zero_alerts(self):
-        cleaned = self._finalize_success()
+        cleaned = self._run_success_terminal_finalize()
         assert self.escalations() == []
         assert not any("宿主变更登记" in i["message"]
                        for i in self.logger.infos)
