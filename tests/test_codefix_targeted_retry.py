@@ -749,6 +749,7 @@ class TestRegressionAnomalyBreaker(unittest.TestCase):
         现场即弃收口、档案 reason=regression_parse_error_breaker、告警恰好
         一次且 retry_rounds=实际执行轮数（1）。
         """
+        from core.admin_store import AdminStore
         from core.code_fix import load_failed_batches, read_progress
         from core.code_review import read_items
 
@@ -780,12 +781,33 @@ class TestRegressionAnomalyBreaker(unittest.TestCase):
                       "档案含最后一轮（异常轮）明细引用")
         self.assertTrue((proot / failed[0]["detail_ref"]).is_file())
         alerts = self._alerts(proot)
-        self.assertEqual(len(alerts), 1, "告警恰好一次（与轮数耗尽共用调用点）")
-        self.assertIn("1 轮定向重试", alerts[0]["description"],
+        # 常规收口告警 + anomaly 预算停派告警并存（复用同一通道、同类型）：
+        # 熔断收口档案 reg_form=anomaly，fail_count=1 即达分档预算
+        # （ANOMALY_FAIL_RETRY_MAX=1）→ 停派告警随入档发一次。
+        self.assertEqual(len(alerts), 2,
+                         "常规收口告警 + 预算停派告警各一条（并存不互斥）")
+        regular = [a for a in alerts if "定向重试" in a["description"]]
+        budget = [a for a in alerts if a["description"].startswith(
+            "code-fix 批回归终局为零失败面")]
+        self.assertEqual(len(regular), 1, "常规收口告警恰一条")
+        self.assertIn("1 轮定向重试", regular[0]["description"],
                       "retry_rounds 按实际执行轮数（1）如实传入")
+        self.assertEqual(len(budget), 1, "anomaly 预算停派告警恰一条")
+        self.assertIn("reg_form=anomaly", budget[0]["evidence"])
+        self.assertIn("停止自动重派", budget[0]["description"])
+        # anomaly 首记即达分档预算：既有触顶机制同步登记待人工（todo + 触顶告警）
+        exhausted = [r for r in AdminStore(proot, logger=None).read_all()
+                     if r.get("signal_type") == "code_fix_retry_budget_exhausted"]
+        self.assertEqual(len(exhausted), 1, "触顶告警恰一条（预算 1 即达上限）")
+        self.assertIn("（1 轮）", exhausted[0]["description"],
+                      "触顶文案按生效预算动态呈现")
+        todo_path = proot / ".fenix" / "todo.md"
+        self.assertTrue(todo_path.exists(), "达分档预算 MUST 登记 todo 人工项")
+        self.assertIn("自动重试 1 轮均失败", todo_path.read_text(encoding="utf-8"))
         prog = read_progress(proot)
         self.assertEqual(prog["phase"], "blocked")
-        self.assertIn("下轮自动重试", prog["current"])
+        self.assertIn("需人工排查", prog["current"],
+                      "收敛文案按分档预算判 maxed（anomaly 已耗尽）")
 
     def test_breaker_on_empty_detail_failures(self):
         """3.1 变体：failed 但明细为空（junit 可解析零失败记录）同属异常

@@ -706,9 +706,10 @@ def record_failed_batch(
     path = _failed_path(project_root)
     hit_max = False
     budget = FAIL_RETRY_MAX
+    fire_budget_alert = False
 
     def _do() -> None:
-        nonlocal hit_max, budget
+        nonlocal hit_max, budget, fire_budget_alert
         records = load_failed_batches(project_root)
         key = {str(i) for i in item_ids}
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -760,6 +761,9 @@ def record_failed_batch(
             # 超调兜底 MUST 依赖记录标记防重复触发。锁内置位、随本写入
             # 原子落盘，告警本体在锁外发送（AdminStore/todo 异锁）。
             target["budget_alerted"] = True
+            if _record_reg_form(target) == REG_FORM_ANOMALY:
+                # anomaly 形态降档/停派一次性告警（1.3）在锁外补发。
+                fire_budget_alert = True
         _atomic_write(
             path,
             json.dumps(records, ensure_ascii=False, indent=2),
@@ -778,6 +782,14 @@ def record_failed_batch(
         )
         _append_todo_entry(
             project_root, item_ids, reason, branch, tip_sha, budget=budget
+        )
+    if fire_budget_alert:
+        # 异常形态降档/停派一次性告警（evo-add-codefix-anomaly-redispatch-
+        # budget 1.3）：复用 write_regression_failed_alert 通道，一次性由
+        # 上方锁内置位的 budget_alerted 记录标记判重；与既有每次失败的
+        # 常规收口告警（批收尾按次发送）并存。
+        _write_anomaly_budget_alert(
+            project_root, item_ids, reason, branch, tip_sha, logger=logger
         )
 
 
@@ -2409,6 +2421,7 @@ def write_regression_failed_alert(
     project_root, item_ids, worktree, failures_summary: str,
     branch="", tip_sha="", logger=None,
     retry_rounds: int = TARGETED_RETRY_MAX_DEFAULT,
+    reg_form: str = "", reason: str = "",
 ) -> None:
     """回归多轮（首轮 + 定向重试）耗尽仍失败丢弃批时写失败告警。
 
@@ -2416,12 +2429,50 @@ def write_regression_failed_alert(
     （缺省 TARGETED_RETRY_MAX_DEFAULT），文案按「首轮 + N 轮重试」如实
     描述回归轮数——历史文案「两次全量回归均未通过」已随定向重试机制
     漂移（add-codefix-targeted-retry），不再使用。
+    ``reg_form``（可选，evo-add-codefix-anomaly-redispatch-budget 1.3）：
+    ``anomaly`` 时切换为异常形态降档/停派文案（零失败面、预算降档耗尽、
+    停止自动重派）——signal_type 不变（复用既有通道，不新增告警类型），
+    一次性判重由调用方以失败档案记录上的 ``budget_alerted`` 标记承担
+    （本通道与 AdminStore 去重白名单均无对此类型的指纹去重）。
+    ``reason``（可选）：失败档案 reason 标识，随 evidence 留痕供检索。
     ``worktree`` 形参保留兼容既有签名，但现场即弃后 worktree 已清理，
     evidence 改以 ``branch``/``tip_sha`` 作为追溯线索（git reflog 可找回）。
     ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
     from core.admin_store import AdminStore, SIGNAL
 
+    if reg_form == REG_FORM_ANOMALY:
+        description = (
+            "code-fix 批回归终局为零失败面（reg_form=anomaly：parse_error 或 "
+            f"failed 无明细），自动重派预算按分档降为 {ANOMALY_FAIL_RETRY_MAX} "
+            "且已耗尽，停止自动重派，待人工排查"
+        )
+        recommended = (
+            "零失败面整批重派无证据价值，已停止自动重派；按 branch/tip_sha 经 "
+            "git reflog 追溯丢弃的修复提交，人工排查后调用 "
+            "core.code_fix.release_failed_batch 解除该批条目的跳过"
+        )
+    else:
+        # [fenix-ignore:eebdeefa1bc6] 告警文案已随定向重试机制改为「首轮 + N 轮定向重试」如实描述（retry_rounds 由调用方按生效上限传入），「两次全量回归」旧文案已废除；reason 标识 regression_failed_twice 保持历史兼容名并已在批收尾 record_failed_batch 调用处加注。
+        description = (
+            f"code-fix 批首轮及 {retry_rounds} 轮定向重试共 "
+            f"{retry_rounds + 1} 轮回归均未通过，已跳过（未合回、条目保持 open，"
+            "worktree 已清理，下轮自动重试）"
+        )
+        recommended = (
+            "已跳过，下轮自动重试（达重试上限后需人工介入）；丢弃的修复提交"
+            "可按 branch/tip_sha 经 git reflog 追溯"
+        )
+    evidence = (
+        f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+        f"tip_sha={tip_sha or 'unknown'}; "
+    )
+    if reg_form:
+        evidence += f"reg_form={reg_form}; "
+    evidence += f"item_ids={', '.join(str(i) for i in item_ids)}; "
+    if reason:
+        evidence += f"失败原因: {reason}; "
+    evidence += f"失败用例摘要: {failures_summary[:2000]}"
     store = AdminStore(project_root, logger=None)
     rec = store.append(
         {
@@ -2429,27 +2480,32 @@ def write_regression_failed_alert(
             "signal_type": "code_fix_regression_failed",
             "spec": None,
             "severity": "warning",
-            # [fenix-ignore:eebdeefa1bc6] 告警文案已随定向重试机制改为「首轮 + N 轮定向重试」如实描述（retry_rounds 由调用方按生效上限传入），「两次全量回归」旧文案已废除；reason 标识 regression_failed_twice 保持历史兼容名并已在批收尾 record_failed_batch 调用处加注。
-            "description": (
-                f"code-fix 批首轮及 {retry_rounds} 轮定向重试共 "
-                f"{retry_rounds + 1} 轮回归均未通过，已跳过（未合回、条目保持 open，"
-                "worktree 已清理，下轮自动重试）"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
-                f"tip_sha={tip_sha or 'unknown'}; "
-                f"item_ids={', '.join(str(i) for i in item_ids)}; "
-                f"失败用例摘要: {failures_summary[:2000]}"
-            ),
+            "description": description,
+            "evidence": evidence,
             "source": "code-fix-lane",
-            "recommended_action": (
-                "已跳过，下轮自动重试（达重试上限后需人工介入）；丢弃的修复提交"
-                "可按 branch/tip_sha 经 git reflog 追溯"
-            ),
+            "recommended_action": recommended,
         }
     )
     if rec is None:
         _log_alert_rejected(logger, "code_fix_regression_failed")
+
+
+def _write_anomaly_budget_alert(
+    project_root, item_ids, reason, branch, tip_sha, logger=None
+) -> None:
+    """anomaly 形态降档/停派一次性告警（evo-add-codefix-anomaly-redispatch-budget 1.3）。
+
+    复用 ``write_regression_failed_alert`` 通道（signal_type
+    ``code_fix_regression_failed`` 不变，不新增告警类型），文案登记
+    reg_form 与被跳过条目；一次性判重由 ``record_failed_batch`` 锁内置于
+    失败记录的 ``budget_alerted`` 标记承担（拒写即丢失与既有触顶告警同
+    口径）。与既有每次失败的常规收口告警并存（后者仍在批收尾按次发送）。
+    """
+    write_regression_failed_alert(
+        project_root, item_ids, "", "",
+        branch=branch, tip_sha=tip_sha, logger=logger,
+        reg_form=REG_FORM_ANOMALY, reason=reason,
+    )
 
 
 def _epoch_iso(ts: float) -> str:
