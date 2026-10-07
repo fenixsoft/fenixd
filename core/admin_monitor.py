@@ -566,6 +566,10 @@ PREPROBE_SIGNAL_TYPES = (
 # `planner-judge-` 属既有 planner 细前缀、自初版即计（同测试锁定）；`admin-`
 # 自初版收录——run_id 形如 admin-<spec>-<ts>（core/agent_runner/
 # maintenance_runs.py），处置 run 失败同样还原到被处置 spec 计数。
+# maintenance-work-ledger 2.2：maintenance- 同步收录——登记型 run
+# （maintenance-<scope>-<ts>，core/maintenance_ledger）在失败计数中还原到
+# scope 计数，归因/盘点视图识别为有名主体而非泛型无主 agent；与真源其余
+# 前缀无子串冲突（顺序无关）。
 # [fenix-ignore:847c916d468e] design 1 拆分约束口径即「裸 planner-/test- 不计、细前缀 planner-plan-/planner-judge- 自初版即计」（TestFailurePrefixSubset 锁定），上方注释已逐项区分并写明 admin- 收录理由，注释与代码一致
 _RUN_PREFIXES = (
     "impl-",
@@ -576,6 +580,7 @@ _RUN_PREFIXES = (
     "dispute-judge-",
     "spec-review-",
     "admin-",
+    "maintenance-",
 )
 
 # ── daemon-error-escalation D6：错误指纹归一化（保守集）────────────

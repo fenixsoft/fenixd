@@ -51,6 +51,16 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("planner-judge-", "planner-judge"),
     ("planner-plan-", "planner-plan"),
     ("planner-", "planner"),
+    # maintenance-work-ledger 2.1：maintenance- 独立前缀（core/
+    # maintenance_ledger.make_maintenance_run_id 的 maintenance-<scope>-<ts>
+    # run_id，登记型/延伸型工作台账 run），与既有前缀无子串冲突（顺序无关，
+    # 放此处便于横向检索）。消费方核对（design 风险节，仿
+    # evo-add-run-metrics-lane-baseline 先例）：get_runs 时间线归属
+    # agent→maintenance；run_spec_part 剥出的中段为 scope（非真实 spec 名），
+    # run_task_track/liveness 等按真实 spec 名全等匹配的消费方不会误命中
+    # （同 evo- 裸 epoch 段先例）；admin_monitor._RUN_PREFIXES 已同步（失败
+    # 计数）；pm_engine 归属/取消/活动判定不新增命中。
+    ("maintenance-", "maintenance"),
     # add-impl-ocr-parallel-lane（任务 3.5）：impl-ocr- 独立前缀，MUST 排在
     # 其子串前缀 impl- 之前（顺序敏感，首个命中即止）——否则车道 run 在
     # 时间线上会退化为 implementer 归属。
