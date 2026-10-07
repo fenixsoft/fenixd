@@ -1,8 +1,10 @@
 # code-fix-lane 变更
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: 失败批自动重派预算按回归终局形态分档
+
+本 Requirement 为 code-fix-lane 新增要求，对既有「回归失败的自动重试与丢弃」Requirement（含 add-codefix-parse-error-breaker delta）中统一跨链预算 `fail_count ≥ FAIL_RETRY_MAX` 的上限语义做分档修正：分档规则与该 Requirement 冲突时以本 Requirement 为准。
 
 失败批（现场即弃入档）的自动重派预算必须区分回归终局形态：有真实失败面（mapped，回归 fail_items 非空）的保持既有 FAIL_RETRY_MAX 预算；零失败面（anomaly，parse_error 或 failed 无明细）的预算降为 1，耗尽后走既有触顶「登记待人工排查+跳过条目」路径。
 
@@ -29,4 +31,4 @@
 #### Scenario: 异常形态降档/停派发一次性告警
 
 - **When** anomaly 形态触发预算降档或停派
-- **Then** 经既有 write_regression_failed_alert 通道发出一次告警（登记 branch、reg_form 与被跳过条目），同一失败记录生命周期内只发一次，不新增告警类型
+- **Then** 经既有 write_regression_failed_alert 通道发出一次告警（登记 branch、reg_form 与被跳过条目），不新增告警类型；「同一失败记录生命周期内只发一次」以失败档案记录上的告警标记判重实现（既有通道与 AdminStore 去重白名单均无对此类型的指纹去重；现场即弃收口的常规失败告警照旧并存）
