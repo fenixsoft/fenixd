@@ -30,6 +30,12 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
     mkstemp 以 0600 建临时文件，rename 前按 ``inherit_existing_mode`` 修复
     权限（语义见模块 docstring）；chmod 失败不阻断写入（权限是尽力而为的
     附属属性）。
+
+    rename 后尽力而为 fsync 父目录（code-review item f19b8ef57ce6）：fsync
+    临时文件只保证文件内容持久，目录项改动（rename 本身）须 fsync 父目录
+    才在整机断电/内核崩溃后有持久化保证，否则可能出现「写成功但重启后回到
+    旧内容」。进程被 kill 的场景 page cache 仍在、无影响；目录 fsync 失败
+    不阻断写入（与 chmod 同为尽力而为的附属纪律）。
     """
     path = Path(path)
     parent = path.parent
@@ -50,6 +56,16 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
         except OSError:
             pass
         os.replace(tmp_path, path)
+        # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
+        # 失败不阻断主流程
+        try:
+            dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
     finally:
         if tmp_path.exists():
             try:

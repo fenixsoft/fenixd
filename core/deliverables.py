@@ -51,7 +51,6 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, List
@@ -854,49 +853,27 @@ def verify_correction_readback(
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
-    """mkstemp 同目录临时文件 + ``os.replace`` 原子写（对齐 judge_files 纪律）。
+    """mkstemp 唯一临时文件 + fsync + ``os.replace`` 原子写（薄委托 fs_utils 收口版）。
 
-    与 ``core/verify_engine/judge_files.py:save_attribution`` 同形态：临时文件
-    名随机唯一（同 spec 并发写不再交错污染，code-review item a8cdbacd2897）、
-    写入后 flush + fsync 再原子替换，进程中途崩溃/被杀不会留下截断的目标文件
-    （code-review item 5b69a4a517cd——tasks.md 声明段改写曾用
-    ``write_text`` 直接覆盖，中断即丢声明段、守卫回退正则语境猜测）。
-    写失败清理临时文件后原样上抛，由调用方按各自 fail-safe 语义处置。
+    code-review item e42aabcf003a：本模块曾自持一份与 ``core/fs_utils.py``
+    收口版双向漂移的私有实现（继承既有权限 + 目录 fsync），收口为薄委托
+    ``core.fs_utils.atomic_write_text``（保留函数名以防外部/测试引用），
+    mkstemp + fsync + os.replace 纪律（含目录 fsync，item f19b8ef57ce6）
+    单点维护于 fs_utils。历史动机留档：临时文件名随机唯一（同 spec 并发写
+    不再交错污染，item a8cdbacd2897）、进程中途崩溃/被杀不留下截断的目标
+    文件（item 5b69a4a517cd——tasks.md 声明段改写曾用 ``write_text`` 直接
+    覆盖，中断即丢声明段、守卫回退正则语境猜测）。
+
+    ``inherit_existing_mode=True``：替换既有文件时继承其权限（item
+    80a6ae8b6492——跨用户只读巡检/备份不被 mkstemp 0600 静默收窄）。
+    与旧私有版的唯一行为差异：**新**文件从 mkstemp 缺省 0600 放宽为 0644
+    （与同一动机一致，避免新落盘产物被调用方「读取失败回退/降级」分支掩盖
+    成解析回退）。写失败清理临时文件后原样上抛，由调用方按各自 fail-safe
+    语义处置。
     """
-    target = Path(target)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        # 替换既有文件时继承其权限（item 80a6ae8b6492）：mkstemp 固定 0600，
-        # os.replace 后目标从常规 0644 静默收窄为 0600，跨用户读取（只读巡检/
-        # 备份任务）会 PermissionError，且被调用方各处「读取失败回退/降级」
-        # 分支掩盖成解析回退而非权限错误；新文件（目标不存在）保持 mkstemp
-        # 默认语义不变。尽力而为，失败不阻断主流程
-        try:
-            os.chmod(tmp_path, os.stat(target).st_mode & 0o777)
-        except OSError:
-            pass
-        os.replace(tmp_path, target)
-        # 尽力而为 fsync 父目录（rename 目录项持久化）；失败不阻断主流程
-        try:
-            dir_fd = os.open(str(target.parent), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    from core.fs_utils import atomic_write_text
+
+    atomic_write_text(target, content, inherit_existing_mode=True)
 
 
 def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | None":
@@ -1451,6 +1428,14 @@ def _declared_kind_line(lines, path_idx, end):
     留在段内，声明段 yaml 解析失败、守卫静默回退正则语境猜测）。窗口
     内遇下一条件目的列表项起始行即停（防跨条目误中其 kind 行）。
 
+    kind 值大小写不敏感（code-review item e736d5cf0def）：解析层
+    （_declared_entries_from_text / lint_declared）对 kind 做
+    ``.strip().lower()`` 后校验，``kind: Modify`` 等非全小写声明能通过
+    晋升 lint 并被守卫正常对账——改写通道若只认小写，同字段合法性判定
+    即与解析口径不一致，软化/删除/替换通道对大写声明静默退化为人工兜底。
+    注意 group(2) 保持原行大小写形态：调用方做 kind 值比较/判定时 MUST
+    先 ``.lower()`` 归一（写入新 kind 行时用小写）。
+
     Returns:
         (kind_idx, kind_match)；窗口内无 kind 行返回 (None, None)。
     """
@@ -1460,6 +1445,7 @@ def _declared_kind_line(lines, path_idx, end):
         m = re.match(
             r"^(\s*)kind\s*:\s*(new|modify|delete|reference)(\s*(#.*)?)$",
             lines[i],
+            re.IGNORECASE,
         )
         if m:
             return i, m
@@ -1592,10 +1578,12 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
             # 为软校验（code-review item 1a98aed80b98）
             elem_kind_idx, elem_kind_m = _declared_kind_line(lines, elem_idx, end)
             dup_kind_m = _declared_kind_line(lines, dup_idx, end)[1]
+            # kind 一致性按 .lower() 归一比较（item e736d5cf0def）：大小写
+            # 形态不同的同一 kind（如 Modify / modify）不算不一致
             if (
                 elem_kind_m is None
                 or dup_kind_m is None
-                or elem_kind_m.group(2) != dup_kind_m.group(2)
+                or elem_kind_m.group(2).lower() != dup_kind_m.group(2).lower()
             ):
                 raise ValueError(
                     f"声明段已存在 {actual_path} 但 kind 不一致"
@@ -1659,7 +1647,9 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
         kind_idx, kind_match = _declared_kind_line(lines, path_idx, end)
         if kind_idx is None or kind_match is None:
             raise ValueError(f"条目 {element} 无 kind 行可软化")
-        if kind_match.group(2) == "delete":
+        # kind 值大小写不敏感（item e736d5cf0def）：group(2) 保持原行形态，
+        # 判定须 .lower() 归一——否则 kind: Delete 绕过防洗白防线被软化
+        if kind_match.group(2).lower() == "delete":
             # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求静默
             # 消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性拒绝并上抛
             # （调用方等价 unclear 转人工，不静默改写声明段）。
