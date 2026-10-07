@@ -2658,6 +2658,43 @@ class TestRetryBudget(unittest.TestCase):
         self.assertNotIn("保留 worktree", todo)
         self.assertNotIn("车道不再自动重派", todo)
 
+    def test_reg_form_recorded_with_backward_compat(self):
+        """reg_form/reg_detail 入档（evo-add-codefix-anomaly-redispatch-budget
+        1.1）：合法值落盘；未提供不写键（merge_back_conflict 收口非回归终局）
+        ——读取侧按 mapped 兼容，历史记录缺键同口径。"""
+        from core.code_fix import (_record_reg_form, load_failed_batches,
+                                   record_failed_batch)
+
+        proot = _make_project_root()
+        record_failed_batch(
+            proot, ["a"], "/tmp/wt-1", reason="regression_parse_error_breaker",
+            reg_form="anomaly",
+            reg_detail={"anomaly_streak": 2, "retry_rounds": 1,
+                        "breaker_triggered": True})
+        record_failed_batch(proot, ["b"], "/tmp/wt-2", reason="merge_back_conflict")
+        recs = {r["item_ids"][0]: r for r in load_failed_batches(proot)}
+        self.assertEqual(recs["a"]["reg_form"], "anomaly")
+        self.assertEqual(recs["a"]["reg_detail"]["anomaly_streak"], 2)
+        self.assertNotIn("reg_form", recs["b"], "未提供 reg_form MUST NOT 写键")
+        self.assertNotIn("reg_detail", recs["b"])
+        self.assertEqual(_record_reg_form(recs["b"]), "mapped",
+                         "缺键按 mapped（向后兼容，非回归终局收口不分档）")
+
+    def test_reg_form_merge_takes_latest_failure(self):
+        """复燃合档 reg_form 以最近一次失败为准（1.2）：转 mapped 回到既有预算。"""
+        from core.code_fix import (_effective_retry_budget, load_failed_batches,
+                                   record_failed_batch)
+
+        proot = _make_project_root()
+        record_failed_batch(proot, ["c"], "/tmp/wt-1", reason="r", reg_form="anomaly")
+        record_failed_batch(proot, ["c"], "/tmp/wt-2",
+                            reason="regression_failed_twice", reg_form="mapped")
+        recs = load_failed_batches(proot)
+        self.assertEqual(len(recs), 1, "复燃沿用合档语义（不追加记录）")
+        self.assertEqual(recs[0]["reg_form"], "mapped", "以最近一次失败为准")
+        self.assertEqual(_effective_retry_budget(recs[0]), 3,
+                         "修复质量好转（有真实失败面）回到 mapped 预算")
+
     def test_revive_clears_consumed_bookkeeping(self):
         """复燃清核销记账（add-codefix-failure-registration-closeout 1.1）：
         已核销记录同条目集再次失败即回到未核销——否则已核销标记与再次失败
