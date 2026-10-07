@@ -76,6 +76,11 @@ def spawn_token_proc(argv0, tokens, sleep=20):
 
     返回前自旋等待 argv[0] 就位（execv 完成），替身身份未就位按夹具失败上报
     （同 tests/test_v2_dev_server.py 的既有助手口径）。
+
+    start_new_session=True 对齐生产 spawn 语义（v2_dev_server 起停 dev-server
+    均独立成组）：不独立成组时替身与 pytest 同组，收割路径的 killpg 命中的
+    是调用者自身所在进程组——守卫（add-killpg-self-guard）按契约拒绝，且守卫
+    落地前这正是 2026-10-07 -15 信号变体团灭全量回归的事故形态。
     """
     launcher = ("import os, sys\n"
                 "os.execv(sys.argv[1], [sys.argv[2]] + sys.argv[3:])\n")
@@ -83,6 +88,7 @@ def spawn_token_proc(argv0, tokens, sleep=20):
         [sys.executable, "-c", launcher, sys.executable, argv0,
          "-c", f"import time; time.sleep({sleep})", *tokens],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     deadline = time.time() + 5.0
     while time.time() < deadline:
