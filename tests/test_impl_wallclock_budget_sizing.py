@@ -541,6 +541,30 @@ def _patch_popen(monkeypatch, proc):
     return ns
 
 
+class _VirtualTime:
+    """runner 模块级 time 替身：``sleep`` 把秒数计入虚拟偏移（真实仅让拍
+    ``cap`` 秒给读线程），``time`` 返回真实时间 + 虚拟偏移——墙钟 deadline
+    逐窗到点但不消耗真实墙钟。其余 time.* 委托真实模块（同构
+    tests/test_impl_env_blocker_stop_loss.py 的 _FastTime，差异仅在虚拟推进）。
+    liveness 决策侧自持真实 time.time()，其 mtime 新鲜度 / 事件窗口判定不受
+    虚拟偏移影响。"""
+
+    def __init__(self, real, cap: float = 0.01):
+        self._real = real
+        self._cap = cap
+        self._offset = 0.0
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def time(self):
+        return self._real.time() + self._offset
+
+    def sleep(self, seconds):
+        self._offset += float(seconds)
+        self._real.sleep(self._cap)
+
+
 class TestWallclockSizingRunLoop:
     """端到端：墙钟 deadline 判定按 sizing 抬续期预算、事件/证据携带
     remaining_tasks、击杀且无 CLI result 落用量缺失注记。"""
@@ -568,6 +592,11 @@ class TestWallclockSizingRunLoop:
         runner = self._sized_runner(proot)
         events = [_now_evt("tool_result"), _now_tool_result_evt()]
         _patch_popen(monkeypatch, _BurstFakeProc(events))
+        # 提速：轮询环 sleep 改为推进虚拟墙钟（1s 基础窗 + 4×1s 续期窗不消耗
+        # 真实时间）。deadline 仍逐窗到点、extend/kill 记账语义逐位不变，
+        # extension_seconds 事件值仍为配置地板 1.0，断言全部保持原期望。
+        import core.agent_runner.runner as rmod
+        monkeypatch.setattr(rmod, "time", _VirtualTime(time))
 
         with pytest.raises(RuntimeError) as cm:
             runner._run_claude(
