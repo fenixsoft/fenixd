@@ -2476,6 +2476,12 @@ class ConfigLoader:
         global _DEPRECATED_STUCK_WARNED
         if _DEPRECATED_STUCK_WARNED:
             return
+        # config 本体同款守卫（code-review item da95c072831b）：非 dict config
+        # 按空配置降级，与 _segment_or_empty / _supervision_segment 的既有容错
+        # 口径一致——本助手是 effective_stuck_threshold_seconds 的第一站（早于
+        # 其 _segment_or_empty 读取），config=None 时此处 config.get 先抛
+        # AttributeError，击穿同族「非 dict config 也不再抛 AttributeError」降级。
+        config = config if isinstance(config, dict) else {}
         schedule = config.get("schedule")
         # schedule 段与 admin 同款守卫：真值非 dict（如手改 YAML schedule: 3）
         # 按空段降级，否则下方 in 成员测试对标量会 TypeError。

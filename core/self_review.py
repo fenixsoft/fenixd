@@ -76,6 +76,11 @@ def _atomic_write_text(path: Path, content: str) -> None:
     kill 时会留下截断文件（丢既有全部条目 / 增量窗口锚点）；临时文件落在
     目标同目录（保证同一文件系统），rename 原子替换。并发保护仍由调用方
     的 flock 负责，本函数不加锁。
+
+    差异于 ``core/fs_utils.atomic_write_text`` 收口版（code-review item
+    e42aabcf003a 指认，刻意保留）：无 chmod（mkstemp 落盘即 0600，todo.md
+    属个人日审产物、维持私有权限取向）、无目录 fsync（断电时 rename 目录项
+    可能未持久化，属可接受的取舍），且用 ``os.rename`` 而非 ``os.replace``。
     """
     fd, tmp_str = tempfile.mkstemp(
         prefix=f".{path.name}.",
