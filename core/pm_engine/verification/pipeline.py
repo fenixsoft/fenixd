@@ -1185,13 +1185,6 @@ class VerificationPipeline:
                 run_id=getattr(judge_result, "run_id", "") or "",
             )
             return
-        # 守卫二前置快照（code-review item bc89ea6fee12）：transition 落定后状态
-        # 恒为 bug-found，守卫二的 ready/implementing 判据须读 transition 前的
-        # 状态，否则 spawn 抑制永不触发（原 verification.py 等价搬移的既有顺序
-        # 缺陷；抑制语义：transition 前仍 ready/implementing 即跳过派生子 fix）。
-        _pre_transition_status = (
-            self._context.state_machine.read_one(spec_name) or {}
-        ).get("status", "")
         # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
         # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
         # 前置守卫链与 transition 之间存在 TOCTOU 窗口（报告闸门/洗白门禁/
@@ -1228,26 +1221,14 @@ class VerificationPipeline:
             "pm_engine",
             f"Verifier found bugs in '{spec_name}', transitioning to bug-found",
         )
-        # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
-        # 被验对象为 fix spec 且自身 ready/implementing（重实现已在飞）时，
-        # 跳过派生子 fix——由在飞重实现承载修复。
-        if self._context.is_fix_spec(spec_name):
-            # 用 transition 前快照判定（code-review item bc89ea6fee12）：transition
-            # 之后读取状态恒为 bug-found，判据形同虚设。
-            cur = _pre_transition_status
-            if cur in ("ready", "implementing"):
-                self._context.logger.info(
-                    "pm_engine",
-                    f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
-                    f"（重实现在飞）——跳过派生子 fix",
-                )
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": "修复由在飞重实现承载，跳过派生子 fix",
-                    },
-                )
-                return
+        # ── 守卫二（fix-repair-lane-dedup / design 守卫二）spawn 抑制已移除
+        # （code-review item e1d3410c1e73，原「跳过派生子 fix」死分支）：其
+        # ready/implementing 判据在现行状态机下结构性不可达——VALID_TRANSITIONS
+        # 中 bug-found 的唯一入边是 TESTING（另有 bug-found→bug-found 幂等短路
+        # 返回 True），transition(spec_name, "bug-found") 返回 True 时转移前
+        # 状态只可能是 testing 或 bug-found，与 ready/implementing（重实现在飞）
+        # 在单 spec 语义下互斥，分支永不执行；原「读 transition 前状态使抑制
+        # 生效」的快照与注释同与状态机现实不符，一并移除。
         # 到达 bug-found 归因（全部门禁已过、归因已前置到 transition 之前
         # 且非 infra）＝ product 类——unknown 按 product 保守处置，台账
         # failure_class 记 product。
@@ -1809,6 +1790,13 @@ class VerificationPipeline:
                 cwd=str(self._context.project_root),
                 capture_output=True,
                 text=True,
+                # 固化解码口径（code-review item de067b5e1d70）：随 locale 的
+                # 默认编码遇非 ASCII 路径（core.quotepath=false 原样输出字节）
+                # 抛 UnicodeDecodeError，不在下方 (OSError, SubprocessError)
+                # 捕获清单内——穿透兜底使裁剪静默退化全量。与仓库既有
+                # encoding="utf-8", errors="replace" 惯例对齐。
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
             if out.returncode == 0:
@@ -2189,6 +2177,16 @@ class VerificationPipeline:
             if scenarios is None:
                 env_error = f"场景文件验收失败: {e}"
                 self._replan_error_format_class = True
+        # ── 空集独立拒绝（code-review item cc5036090a52）──
+        # load_scenarios 对空数组验收通过并返回 []（不拒空集），空集防线此前
+        # 完全依赖 _apply_scenario_freeze 的 aborted 结构化信号；freeze 异常被
+        # 调用点吞为 None（fail-open 放行）时防线缺席——0 场景经 engine.run([])
+        # 产出无 env_error 的全绿报告，会被洗白门 fail-open 放行判 verified。
+        # 此处不依赖 freeze 返回值，对加载结果独立拒绝：空集同走 env_error →
+        # replan / 预算耗尽显式结束通道（与 freeze aborted 消费口径一致），
+        # 空集任何情况下不进引擎执行。
+        if env_error is None and isinstance(scenarios, list) and not scenarios:
+            env_error = "场景文件验收通过但为空集（0 场景）— 拒绝以空集进入阶段2 执行"
 
         if env_error is None:
             # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
@@ -2275,6 +2273,12 @@ class VerificationPipeline:
                     # 发生阶段判定；该读点文件已过首载拯救/校验，一般仅
                     # 自愈改写引入的形状损伤会走到这里）。
                     self._replan_error_format_class = True
+                # 空集独立拒绝（code-review item cc5036090a52）：同首载点，
+                # 自愈改写后重读得空集（0 场景）同样 MUST NOT 进引擎执行。
+                if env_error is None and isinstance(scenarios, list) and not scenarios:
+                    env_error = (
+                        "自愈改写后场景文件为空集（0 场景）— 拒绝以空集进入阶段2 执行"
+                    )
 
         if env_error is None:
             # ── 场景静态缺陷扫描（add-scenario-defect-triage-gate D3）──
