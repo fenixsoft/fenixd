@@ -8,10 +8,10 @@
 
 | 形态 | 文件:行 |
 |------|---------|
-| getpgid 解析型（传成员 pid） | `core/regression.py:737,753`、`core/proc_utils.py:238,246`、`core/adjudication_narrative.py:267,285`、`core/v2_dev_server.py:375,385,396`、`core/knowledge_backfill.py:817`、`core/knowledge.py:543`、`core/worktree_manager/dist_conflicts.py:159,170`、`core/dashboard/ocr_status.py:166,177`、`core/dashboard/routes/architecture_routes.py:535,678,710`、`core/dashboard/session_manager.py:345,405`、`core/hook_engine.py:208`（getpgid 内联） |
-| 组长直传型（传独立成组组长 pid） | `core/agent_runner/liveness.py:1056,1063`、`core/agent_runner/maintenance_runs.py:3099,3106,3110` |
+| getpgid 解析型（传成员 pid） | `core/regression.py:737,753`、`core/proc_utils.py:238,246`、`core/adjudication_narrative.py:267,285`、`core/v2_dev_server.py:375,385,396,507,526`、`core/knowledge_backfill.py:817`、`core/knowledge.py:543`、`core/worktree_manager/dist_conflicts.py:159,170`、`core/dashboard/ocr_status.py:166,177`、`core/dashboard/routes/architecture_routes.py:535,678,710`、`core/dashboard/session_manager.py:345,405`、`core/hook_engine.py:208`（getpgid 内联）、`core/verify_engine/cli_runner.py:587`、`core/dashboard/routes/regression_routes.py:206,241` |
+| 组长直传型（传独立成组组长 pid / 已解析 pgid 直传） | `core/agent_runner/liveness.py:1056,1063`、`core/agent_runner/maintenance_runs.py:3099,3106,3110`、`core/serving_registry.py:322,358`（getpgid 解析或孤儿组接管 `pgid=pid` 后手上已持 pgid） |
 
-探活 `os.killpg(pgid, 0)`（adjudication_narrative/serving_registry/regression 收尾探活）**不在守卫范围**。
+探活 `os.killpg(pgid, 0)`（`core/regression.py:749`、`core/adjudication_narrative.py:280`、`core/serving_registry.py:341,350`）**不在守卫范围**；`core/dashboard/server.py:704` 处 killpg 仅为注释引用，非调用。
 
 ## Goals / Non-Goals
 
@@ -32,8 +32,8 @@ def guard_killpg(target_pid, sig, *, caller: str, resolve: bool = False) -> bool
     """
 ```
 
-- 解析失败的既有语义分支（ProcessLookupError/OSError → 清场函数按「组已不存在」静默返回）保持——守卫**只新增**「解析结果 == `os.getpgid(0)`」这一个拒绝分支。
-- 守卫拒绝时 WARNING 日志（含 caller 标识与目标 pgid），返回 False；调用方对 False 的处理与既有 ESRCH 分支一致（各点已有），不新增控制流。
+- 解析失败的既有语义分支（ProcessLookupError/OSError → 清场函数按「组已不存在」静默返回）保持——守卫**只新增**两个拒绝分支：① 解析结果 == `os.getpgid(0)`（调用者自身组）；② 非正 pgid（`pgid <= 0`，仅直传型可达）：`os.killpg(0, sig)` 经 `kill(-pgid)` 折算等价 `kill(0, sig)`＝向调用者自身进程组广播，数值上 `0 != os.getpgid(0)` 会被分支①漏过——恰是替身 `pid=0` 流入组长直传型清场点的事故形态；负值 pgid 折算为对任意正 pid 的误投递（如 `killpg(-1)` ≡ `kill(1)`）。两分支均记 WARNING（含 caller 与目标 pgid）后按 ESRCH 语义返回 False。
+- 守卫拒绝时 WARNING 日志（含 caller 标识与目标 pgid），返回 False；调用方对 False 一律按「组已不存在」静默返回，**MUST NOT 再触发 `proc.kill()` 单 pid 降级**（`cli_runner.py:587`、`regression_routes.py:206,241` 等既有 ESRCH 分支含该降级；`os.kill(0, sig)` 同样是自身组广播，替身怪值 pid 不得经由降级流入 `os.kill`）。既有 ESRCH 场景下该降级本就 no-op（目标已亡），收口后行为不变。
 
 ### D2. 收口是机械替换，语义逐位不变
 
@@ -43,7 +43,7 @@ def guard_killpg(target_pid, sig, *, caller: str, resolve: bool = False) -> bool
 
 1. **M1 守卫助手 + 高危面**：`proc_utils.py` 助手 + `regression.py`/`proc_utils.py` 自身收口（全量回归门正是受害者路径）+ 守卫单测 + `test_codefix_digest_metrics.py` 怪值修正。
 2. **M2 agent_runner 面**：`liveness.py`、`maintenance_runs.py`（组长直传型收口）+ 对应用例。
-3. **M3 其余面 + 全量验证**：`v2_dev_server`/`adjudication_narrative`/`knowledge*`/`dist_conflicts`/`ocr_status`/`architecture_routes`/`session_manager`/`hook_engine` + grep 断言测试（core 下清场击杀点 MUST 全部经守卫）+ 全量回归绿。
+3. **M3 其余面 + 全量验证**：`v2_dev_server`/`adjudication_narrative`/`knowledge*`/`dist_conflicts`/`ocr_status`/`architecture_routes`/`session_manager`/`hook_engine`/`serving_registry`/`verify_engine/cli_runner`/`dashboard/routes/regression_routes` + grep 断言测试（core 下清场击杀点 MUST 全部经守卫）+ 全量回归绿。
 
 ### D4. 守卫测试用真实进程组验证
 
