@@ -82,12 +82,14 @@
 
 ### 浪费
 - **回归遭自毒化测试拖累，同批8条目连烧10run 5.6小时**
+  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：code-fix 车道（夜间批量修复 code-review 台账的车道）同一组 8 个条目在 10-08 白天连烧 10 个 run、合计 12.84 美元、占用车道 5.6 小时（10:06-15:40）零收敛，其中熔断前 7 轮定向重试全部空转；8 条目延后到晚间批（20:45-22:21）才由人工根治测试后修复收口。
   - 证据：告警 07a39cc42d5a、7d5491693dd9、164873bc01b8（code_fix_regression_failed 批修复回归失败信号，12:18/14:40/15:40）与 f5752da81f14、7e431ab4f5c7（code_fix_retry_budget_exhausted 重试达上限停派信号，15:40）指向 branch fenix/code-review-fix-1791424850、1791433426、1791442427，失败用例摘要均为「status=timeout/parse_error（无失败用例明细）」；成本出自 .fenix/cost/code_fix_tokens.json（10 个 run：2.80+0.62+0.74+0.80+2.40+0.65+0.92+0.61+2.64+0.66=12.84 美元）；根治提交 844a3312（10-08 16:35，fix: test_run_stop_loss 进程级全局 Popen 补丁异常安全复原）自述「2026-10-08 code-fix 回归自毒化死循环根治：两个判停用例把全局 subprocess.Popen 换成 sleep(60) fake，复原不在 try/finally，被 pytest-timeout 10s SIGALRM 打断时 fake 泄漏，其后 85+ 用例连坐超时、1800s 撞死（total=0 零明细）」；8 个条目（557b3726aad6 等）于 2026-10-08T13:13:11Z 全部 resolved（items.jsonl，resolution=code-fix-auto），与晚间合回 83d08c78、be5d2f1b 同刻。
   - 调查评估：在 code-fix 车道消化 10-08 凌晨例行扫描（code-review-1791396245）新增条目时暴露，是 [2026-10-08#浪费#1]（前窗 6 批回归失败现场即弃）的延续且当窗再度发生 3 批，故按恶化重述。已核实事实：(1) 可回收的回归失败明细文件（fix-reg-failures-regression-*.json，即批修复失败时留存的失败清单档）10-08 午间 8 份全部 items 为空、fallback_full 为 true——回归（合回前跑全量 pytest 套件的门禁）撞 1800 秒墙钟时 total=0，定向重试（失败批自动重试轮）在拿不到失败测试清单的情况下整批盲跑；每轮 impl 约 10 分钟加回归 30 分钟超时，与 10 个 run 的时间戳节奏逐一吻合。(2) 根因不在模型修复质量而在测试自毒化：test_run_stop_loss（09-28 f4d38f96 引入）泄漏全局 Popen fake，844a3312 于 16:35 根治，晚间批随即全过。(3) 防线按设计但触发偏晚：回归异常熔断（连续多次零失败面即停止自动重派的收口，add-codefix-parse-error-breaker 与 evo-add-codefix-anomaly-redispatch-budget，后者于当日 02:14 a26dbe88 合入）在第 3 批才收口（告警 7e431ab4f5c7 原文「零失败面整批重派无证据价值，已停止自动重派」），前两批各烧满 3 轮。(4) 残余：20:56 仍有一次零面明细（fix-reg-failures-regression-1791463749，items 空），该批最终在合回时限内收敛，说明 1800 秒全量回归墙钟处于余量边缘、零面形态还会零星出现。与存量工作关系：昨日条目建议的「失败面预检重跑」对本形态无效（重跑同样撞死，见 mistakes 条），实际落地的是 anomaly 预算=1 的熔断方向，方向正确；self-review 的 run 级统计把 3 个失败批记为 0 失败 run（失败只见于 ERROR 聚合与告警），对账时须以后者为准。结论：损失主因是一次性测试缺陷叠加重试策略对零面形态收敛过慢，熔断方向已落地，残余为调参问题。
   - 建议：零失败面（timeout/total=0）回归首记即按 anomaly 预算 1 收口（当轮 0-1 轮重试即停），不再等「连续 2 次」计数在第三批才熔断——本次 7 轮空转中 6 轮可省；回归 total=0 时在明细档留存末段慢测试进度（如最后完成的用例名/耗时 top）便于直接定位毒化源；复核 1800 秒墙钟在全量套件当前规模下的余量，必要时分片跑。
 
 - **出题竞态双输：胜者run悬挂57分钟，串行重出已合并spec**
+  - 自进化：问题部分成立 / 建议不合理 / — 不需要
   - 影响：evo-add-codefix-failure-registration-closeout（失败批登记核销机制 spec）的出题链出现双输竞态：已交付 plan 的 planner run 悬挂 57 分钟后被取消，串行重出花 3.08 美元、58 分钟给一个 15 分钟前就已合并的 spec 重出题，重出产物纯浪费。
   - 证据：告警 33f5ce86deb1（run_cancelled，run 取消信号，10-08 02:26）记「base_run_id=planner-plan-evo-add-codefix-failure-registration-closeout-1791396563; attempts=1; reason=并行出题等待超时，取消后转串行重出; by=parallel-plan-lane」；run 档案 planner-plan-…-1791396563-a1.jsonl（483KB，末事件 cancelled）与 planner-plan-…-1791397578-a1.jsonl（700KB，末事件 result success，total_cost_usd=3.077，mtime 02:44）；该 spec 合并于 07592e49（10-08 02:11:14），早于取消（02:26）与串行重出完成（02:44）；被取消 run 的产物实际已被消费——04:18 重启时清理的 impl worktree 即 impl-evo-add-codefix-failure-registration-closeout-1791396563。
   - 调查评估：在复核 evo-add-codefix-failure-registration-closeout 交付链时暴露（该 spec 是对 [2026-10-08#可改进#1] 的修复）。已核实时间线：planner-plan-1791396563 约 01:29 启动、其 plan-ready（出题产物就绪文件）被消费并派生 impl、spec 于 02:11 合并；该 planner run 本体未随交付退出，parallel-plan（并行出题：两条 planner 车道同题竞速）的等待计时器于 02:26 超时将其取消并转串行重出；串行重出 run（1791397578）01:46 启动、02:44 才以成功终态收场——对已合并 spec 重出题。损失为取消 run 约 57 分钟悬挂墙钟加串行重出 3.08 美元与 58 分钟，无产物损坏（权威方案未被覆盖，仲裁按既有竞态约定消化了僵尸方）。与存量工作关系：并行出题仲裁竞态有既有处置经验（plan-ready 已存在即僵尸方勿覆盖），但「串行重出前不查 spec 是否已 implemented/merged」与「planner 落盘产物后悬挂不退出」两个缺口均未覆盖；evo-add-run-cancel-wip-checkpoint（取消路径 WIP checkpoint，7dfc426e 当日 02:02 合并）不覆盖 planner 车道取消（该告警建议文案仍明示取消路径不做 checkpoint，本例无现场可保、损失在重复重出本身）。结论：低频但确定性的编排浪费，修法明确，值得并入出题链竞态专项而非单独立项。
@@ -95,6 +97,7 @@
 
 ### 失误
 - **昨日自省把零面回归归因模型质量，10-07明细证实全系零失败面**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口：[2026-10-08#浪费#1] 写下「直接根因是模型修复质量（修 A 破 B 的回归）」并建议「失败面预检重跑」，但可回收的 9 份 10-07 回归失败明细全部为 items 空、fallback_full 为 true 的零失败面形态，与今日证实的测试自毒化形态完全一致；若按昨日建议立项预检重跑，对 timeout 形态无效（重跑同样 1800 秒撞死），将烧掉一个 spec 预算却不解决问题。
   - 证据：fix-reg-failures-regression-1791347773/1791350169/1791350657/1791351045/1791351558/1791354250/1791355016/1791356185/1791357031.json（10-07T04:42Z-07:16Z 的 9 份回归失败明细档）全部 items=[]、fallback_full=true；根治提交 844a3312（10-08 16:35）自述该日回归死循环系 test_run_stop_loss 自毒化（全局 Popen fake 泄漏致 1800s 撞死 total=0），10-08 午间 8 份明细同形态；昨日条目自己已注明「回归失败清单 items 为空时 fallback_full=true（无法定位失败面）」，却在结论给出确定性归因。
   - 调查评估：在为本窗回归死循环条目做对账时发现。已核实：零失败面（回归 total=0 拿不到失败测试清单）形态在 10-07 与 10-08 两窗全部可回收明细中 17 份无一例外；10-08 的根因已由 844a3312 实锤为测试自毒化，10-07 同形态是否同根因未直接核实（毒化测试自 09-28 f4d38f96 在场，推断成立但不写死）。根因归属：自省分析在证据不足以区分「模型改坏代码」与「测试自身毒化」时给出了倾向性确定性归因——明细 items 为空恰恰说明当时不掌握任何失败面证据。与存量工作关系：幸运的是 evo lane 未走预检方向，实际落地的 evo-add-codefix-anomaly-redispatch-budget（零面形态预算 1 即熔断，a26dbe88 合并）方向与根因无关、天然正确，故本次错误归因未造成实际浪费。结论：自省条目在「无法定位失败面」事实在场时，结论必须退到「根因未定、两假说并存」，不得给出单因叙事；已按此口径更正本窗 waste 条目的表述。
@@ -102,12 +105,14 @@
 
 ### 可改进
 - **失败批登记遭带外解除后成孤儿块，核销机制按记录驱动够不着**
+  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口：带外解除（人工按 todo 登记指引执行 release_failed_batch，即失败批跳过的人工解除接口）会整批删除 fix-failed.json（失败批注册表）记录，而核销机制 consume_resolved_failed_batches（被跳过条目全部终态即回写登记的对账器）按注册表记录驱动——记录已删，对应 todo.md 登记块永远无人核销；本窗实例：1791442427 批登记的 8 个条目已于 21:13 全部 resolved，登记块至 10-09 00:11 仍原样挂着「保持 open」，人工照其排查将白查一遍已终态条目（上次同类排查实测成本约为一个专项会话）。
   - 证据：留痕文件 .fenix/code-review/fix-failed-release.jsonl 唯一一行：released_at=2026-10-08T12:41:45Z、released_records=1、item_ids 全 8 条（带外 python3 -c 直调不经 daemon logger，fenixd.log 中 release_failed_batch 调用 0 行，与 closeout spec 1.3 的设计一致）；fix-failed.json 现仅存 3 条 9 月老记录（已于 08:48 核销），1791442427 记录已不在册；items.jsonl 中 557b3726aad6 等 8 条 resolved_at=2026-10-08T13:13:11Z；todo.md 登记块（记录时间 2026-10-08T07:40:32Z）无任何核销注记。
   - 调查评估：在验证 evo-add-codefix-failure-registration-closeout（失败批登记核销，07592e49 当日 02:11 合并）实战效果时发现。已核实：机制本身工作正常——08:48:18 首次实战即核销 3 条遗留登记（日志「code-fix 失败登记核销：3 条登记的被跳过条目已全部终态，已收口对应告警与 todo 登记」，注册表三条记录 consumed_at=2026-10-08T00:48:17Z）；缺口在新登记的 Consuming 前置条件被带外解除截断：release 路径删记录、核销路径按记录找 todo 块，两路径对「已解除但未核销」的登记块无交接。根因归属：closeout spec 的设计盲区（release 与 consume 两条生命周期终点未对齐），非执行失误。与存量工作关系：add-code-fix-batch-failure-selfheal（登记/跳过/解除三件套）与 closeout（核销回路）合起来仍缺「解除即同步核销登记块」一环。结论：确定性小缺口，修法明确，值得一次小专项或并入 closeout 的后续修订。
   - 建议：release_failed_batch 在删除注册表记录的同一锁内同步核销/注记 todo.md 对应登记块（注明解除时刻与留痕文件行）；或改为解除时打 consumed 标记而非删除记录，让既有核销对账自然收口；并在 fix-failed-release.jsonl 留痕行补充 todo 块处理结果字段。
 
 - **主树散件归因同指纹每分钟重复打info，占当前日志37%**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：观测噪音：主树散件 WIP（主树流水线外 tracked 未提交改动）被归因到活交互会话后，周期盘点每分钟重复打印同一条 info 留痕，本窗约 1200 行；当前 fenixd.log 共 13227 行中 4899 行（37%）为同一文案，自 10-05 02:54 起每小时约 60 行连续不断，抬高日志检索与轮转成本，且盖淡其他组件信号。
   - 证据：fenixd.log 按小时聚合：10-08 全天每小时 43-60 行（如 05-23 时均约 60 行/时），窗口内（10-08 00:26 起）合计约 1200 行，文案恒为「主树散件 WIP 归因到主树活交互会话，降级 info 留痕（不派 major 不触发 admin 代查）: spec/knowledge/adr/index.md, spec/knowledge/domains/worktree-vc/_domain.md, …」——文件清单与 git status 未提交集合全程未变。
   - 调查评估：在核对本窗 admin 告警（maintree_stray_wip_stale，主树散件 WIP 滞留信号，告警 27e2826cff8c 于 00:56 major 升级、其 commit_stray_wip 一键提交选项 01:05 正确拒绝空提交）的处置链时发现。已核实：归因机制本身工作正确且刚完成升级——evo-add-maintree-interactive-session-attribution（主树散件归因到活交互会话，04:18 stale_code 陈旧代码自愈重启后装载）把本会误升级的散件降级为 info 留痕，设计要点已由本窗沉淀的 ADR-258（主树散件盘点为只读观察者车道，占用归因单源复用 identify_wip_occupant）固化；噪音纯粹是「指纹未变仍逐次打印」的留痕策略问题（分钟级巡检 cadence 本身符合 maintree-stray-wip-sweep 知识的分钟级检出设计）。根因归属：机制缺去重，非新缺陷。与存量工作关系：信号侧已有「同指纹一次性告警」惯例，日志侧无对应惯例。结论：低风险体验型缺口，一行去重守卫可解，不值得独立立项，可搭车其他 admin/观察者车道改动顺带修。
