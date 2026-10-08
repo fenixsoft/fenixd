@@ -565,6 +565,13 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <Badge color={TONE_DOT[m.tone]} text={m.label} />
                 <StatusWaitGroup record={record} />
+                {/* 模式标记与桌面「模式」列同源判据、同款 Tag：存量无 mode
+                    字段的 spec 按缺省 full 展示「完整模式」等价标记 */}
+                {record.mode === 'fast-track' ? (
+                  <Tag color="cyan" style={{ marginInlineEnd: 0 }}>快速模式</Tag>
+                ) : (
+                  <Tag style={{ marginInlineEnd: 0 }}>完整模式</Tag>
+                )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <SpecNameCell project={project} record={record} />
                 </div>
