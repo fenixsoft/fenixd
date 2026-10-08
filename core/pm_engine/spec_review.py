@@ -942,6 +942,9 @@ class SpecReviewManager:
         **只对可归因信号开硬门**（该变动有且仅有「评审者越界」一种解释）：
 
         - SPEC 目录内文件被删除——评审者只被授权就地修补，删除必为越界。
+        - status 为 repaired 时 repairs 条目指向的快照文件哈希未变化——声称的
+          修补未实际发生（repairs 由评审器自报，归因明确；code-review item
+          d012f86680b9）。
 
         status 为 approved/rejected 时（契约上 repairs 必为空），SPEC 目录内文件
         哈希变化且未登记对应 repairs 条目属不可归因为合法修补的改动——但并发
@@ -973,6 +976,26 @@ class SpecReviewManager:
                     modified_spec.append(rel)
             except OSError:
                 return f"无法读取文件: {rel}"
+
+        # repaired 契约上 repairs 须指向实际被修改的文件（code-review item
+        # d012f86680b9）：repairs 由评审器自报、归因明确，条目指向快照中存在但
+        # 哈希未变化的文件说明声称的修补未实际发生——一份指向未触碰文件的
+        # repairs 清单即可按 repaired 收口转 ready，写入边界硬门对该形态失守。
+        # 故作硬门（_check_write_boundary 对本函数返回错误按边界错误收口走
+        # _handle_review_failure）；快照中不存在的路径（评审期间新增文件）不在
+        # 比对范围；快照缺失/损坏时本函数不被调用、检查随之降级跳过（见
+        # _check_write_boundary 的读取失败口径）。
+        if status == "repaired" and repair_paths is not None:
+            unmodified = sorted(
+                path for path in repair_paths
+                if path in snapshot.get("spec_files", {})
+                and path not in modified_spec
+            )
+            if unmodified:
+                return (
+                    "repaired 状态 repairs 指向的文件未发生实际改动: "
+                    f"{', '.join(unmodified)}"
+                )
 
         # approved/rejected 契约上 repairs 必为空（_check_write_boundary 步骤 3），
         # 此时 SPEC 目录内文件哈希变化且未登记对应 repairs 条目，不可归因为合法
@@ -1640,6 +1663,15 @@ class SpecReviewManager:
         )
         if not success:
             return False, "状态转移失败"
+
+        # 清零遗留评审尝试计数（code-review item 95dc60d625f3）：经旧语义（尝试
+        # 耗尽转 blocked，error=spec-review-incomplete）遗留、attempts 已达
+        # MAX_REVIEW_ATTEMPTS 的 spec，人工重评后首次 dispatch_review 即在尝试闸
+        # 再次 freeze_for_human，重评动作被吞掉一轮（冻结 extra_updates 会清零、
+        # 解冻后自愈，但多一次冻结/解冻往返）。与 responsible_release 的
+        # update_spec 清字段口径对齐；须先于下方入队落盘——派发闸按 STATE 计数
+        # 判定。
+        self.state_machine.update_spec(spec_name, {"_review_attempts": 0})
 
         # 派发新评审（fix-spec-review-blocking-dispatch 2.7：改投队列）——
         # agent_runner 为 None 的 CLI 场景跳过派发，由 daemon full_scan
