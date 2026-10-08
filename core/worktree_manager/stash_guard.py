@@ -398,10 +398,11 @@ class G6StashGuardMixin:
         return True, conflict_files
 
     def _rev_parse_stash_top(self) -> tuple[int, str] | None:
-        """pop 前「栈顶复核」共享 helper（code-review item f12db94635ff）：
+        """「栈顶复核」共享 helper（code-review item f12db94635ff）：
         ``git rev-parse --verify stash@{0}``，供 restore_after_merge 的
-        pinned / 未 pinned 两分支复用同一子进程调用与容错，分支各自只留
-        returncode 判定方向与文案。
+        pinned / 未 pinned 两分支与 _reclaim_stale_autostash_locked 的
+        sha 钉取/防插队/drop 前复核三处复用同一子进程调用与容错，分支
+        各自只留 returncode 判定方向与文案。
 
         Returns: ``(rc, stdout)``；git 超时/不可用返回 None（调用方按
         「guard 不可用」口径放弃本轮绝不弹）。本调用链位于 guard 的
@@ -756,42 +757,29 @@ class G6StashGuardMixin:
         top = lst.stdout.strip() if lst.returncode == 0 else ""
         if AUTOSTASH_MSG_PREFIX not in top:
             return False
-        try:
-            rev = subprocess.run(
-                ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
+        rev = self._rev_parse_stash_top()
+        if rev is None:
+            # git 超时/不可用：本轮放弃回收（条目保留交下轮巡检），不让异常穿出
             self.logger.warning(
                 "worktree_manager",
-                f"Stale autostash reclaim skipped (git unavailable): {e}",
+                "Stale autostash reclaim skipped (git unavailable)",
             )
             return False
-        sha_before = rev.stdout.strip() if rev.returncode == 0 else ""
+        rev_rc, rev_out = rev
+        sha_before = rev_out.strip() if rev_rc == 0 else ""
         # pop 前以 sha_before 复核栈顶：与 drop 侧「sha 仍在栈顶」防插队核对同
         # 口径；其间若有新条目插到栈顶（人工 stash push 等）则放弃本轮，绝不弹
         # 非目标条目。
-        try:
-            guard = subprocess.run(
-                ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
+        guard = self._rev_parse_stash_top()
+        if guard is None:
             # 防插队复核失败（超时/不可用）无法证明栈顶未动：放弃本轮绝不弹
             self.logger.warning(
                 "worktree_manager",
-                f"Stale autostash reclaim skipped (git unavailable): {e}",
+                "Stale autostash reclaim skipped (git unavailable)",
             )
             return False
-        if guard.returncode != 0 or guard.stdout.strip() != sha_before:
+        guard_rc, guard_out = guard
+        if guard_rc != 0 or guard_out.strip() != sha_before:
             self.logger.error(
                 "worktree_manager",
                 f"Stale autostash reclaim aborted: stash top moved "
@@ -906,22 +894,12 @@ class G6StashGuardMixin:
                 return False
             drop_sha = ""
             if sha_before:
-                try:
-                    cur = subprocess.run(
-                        ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=30,
-                    )
-                except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
-                    # git 超时/不可用：核不了 sha，按「栈顶已动」降级（不 drop）
-                    cur = None
+                # git 超时/不可用返回 None：核不了 sha，按「栈顶已动」降级（不 drop）
+                cur = self._rev_parse_stash_top()
                 if (
                     cur is not None
-                    and cur.returncode == 0
-                    and cur.stdout.strip() == sha_before
+                    and cur[0] == 0
+                    and cur[1].strip() == sha_before
                 ):
                     try:
                         dropped = subprocess.run(
@@ -1224,7 +1202,10 @@ class G6StashGuardMixin:
                     self.logger.warning(
                         "worktree_manager",
                         f"Self-heal (identical) aborted: '{path}' differs from "
-                        f"branch content — possible real local work",
+                        f"branch content — possible real local work "
+                        f"(byte-level compare; a mismatch may also be eol "
+                        f"normalization only, e.g. core.autocrlf or "
+                        f".gitattributes eol rules)",
                     )
                     return False
                 identical.append(path)
