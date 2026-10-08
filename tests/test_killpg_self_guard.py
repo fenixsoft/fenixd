@@ -289,7 +289,9 @@ class TestRealSessionGroupCleanupUnchanged:
             pgid = os.getpgid(proc.pid)
             assert pgid == proc.pid  # start_new_session：独立成组
             with _warning_capture() as log:
-                kill_process_group(proc)
+                # 子进程刻意忽略 SIGTERM，wait 必然耗满宽限；断言针对全序列
+                # （SIGTERM→宽限→SIGKILL 补刀）而非宽限时长本身，缩窗不改变判定。
+                kill_process_group(proc, term_grace=0.2)
             _wait_reaped(proc)
             assert proc.poll() is not None
             assert proc.returncode == -signal.SIGKILL  # SIGTERM 被忽略 → SIGKILL 补刀
