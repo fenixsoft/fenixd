@@ -285,16 +285,23 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 残留 status=success/error / 旧格式遗留），修复 _verifier_result_is_stale
         # 的 run_id fail-open（run_id 不匹配 ``-\d{10,}-a\d+$`` 时旧行为
         # 不判陈旧，残留仍落 blocked 分支——add-web-ui 误判链实证）。
-        verifier_result = pipeline._read_verdict(spec_name)
-        verifier_status = verifier_result.status if verifier_result.ok else None
         # 陈旧/归属护栏所需路径（与 _read_verdict 同源解析：primary
         # 优先，缺失回退共享文件——_verifier_result_is_stale 据此检测
         # mtime 陈旧/spec 戳不符）。fix-deferred-findings 整洁类：路径解析
         # 经 _verify_progress_result_paths 收敛（与 report_gate 同源）。
+        # code-review item f8ad8f7cd7ae：解析 MUST 前置到 _read_verdict 之前
+        # 只做一次——原顺序（先读裁决、后 primary.exists() 重新解析）两次
+        # 解析之间 primary 出现/消失时，护栏与 blocked evidence 的
+        # result_file 会与实际裁决来源错位（护栏判错对象、人工排障被
+        # evidence 误导）。彻底消除残余观测窗须 _read_verdict 回传实际
+        # 采信来源路径（涉及 report_gate.py，本条目文件边界外），此处按
+        # 建议前置收敛，护栏/evidence 与裁决读取共用同一观测序。
         from core.pm_engine.verification.report_gate import _verify_progress_result_paths
 
         primary, fallback = _verify_progress_result_paths(pipeline, spec_name)
         run_result_path = primary if primary.exists() else fallback
+        verifier_result = pipeline._read_verdict(spec_name)
+        verifier_status = verifier_result.status if verifier_result.ok else None
         # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
         # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
         # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性
@@ -487,6 +494,12 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 修复由在飞重实现承载。MUST 在 bug-found transition 之前：命中即
             # 不流转、直接 return（若先流转再抑制，spec 已迁入 bug-found，
             # 状态与「由在飞重实现承载」语义不一致）。
+            # 与主路径的决策差异（code-review item f18ca78e5203）：主路径
+            # _apply_bug_found 已按 e1d3410c1e73 将本守卫整段移除（transition
+            # 返回 True 后状态只可能 testing/bug-found，ready/implementing
+            # 结构性不可达）；legacy 此处读的是 transition 前状态，该论证不
+            # 直接迁移，防御性判据保留成本为零，故不同步移除、仅收敛其写点
+            # 复核（见下）。
             if pipeline._context.is_fix_spec(spec_name):
                 cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
                 if cur in ("ready", "implementing"):
@@ -495,6 +508,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
                         f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
                         f"（重实现在飞）——跳过派生子 fix（legacy 路径）",
                     )
+                    # cur 读取与本 update_spec 之间存在 TOCTOU 窗口：窗口内
+                    # spec 被并发拨回/冻结时，本次 error 覆写会抹掉冻结标记性
+                    # error（本文件多处注释承认的同款事故风险）→ 与其余写点
+                    # 同款，复核收敛于 _discard_if_not_testing（code-review
+                    # item f18ca78e5203——此前全文件唯一未复核写点）。
+                    if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
+                        return
                     pipeline._context.state_machine.update_spec(
                         spec_name,
                         {
@@ -502,6 +522,15 @@ def _run_legacy_verification(pipeline, spec_name: str):
                         },
                     )
                     return
+            # fix-env-exemption-exit-reachability D3（legacy 同语义，code-review
+            # item 5ab0a792d828）：守卫链全过、即将按 bug-found 路由 → 清除
+            # inconclusive 重验旗标恢复 judge 生命周期正计。legacy 车道入口
+            # _handle_env_blocked_inconclusive 置位的旗标此前在本分支无清除点，
+            # 后续轮 judge 派发持续分流 _judge_inconclusive_dispatches 独立
+            # 计数器、_judge_rerun_count 生命周期账不累计。与主路径
+            # _apply_bug_found 入口清除点同序；存在才写盘、写失败仅 WARNING，
+            # 收口见 escalation._clear_inconclusive_reverify_flag。
+            pipeline._clear_inconclusive_reverify_flag(spec_name)
             # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
             # 前置守卫链与 transition 之间存在 TOCTOU 窗口，窗口内 spec 被
             # 人工冻结/并发接管致非法转移被拒时，保留原状——不覆写 error/
@@ -612,6 +641,15 @@ def _run_legacy_verification(pipeline, spec_name: str):
             if _discard_if_not_testing(pipeline, spec_name, result, "verified"):
                 return
 
+            # fix-env-exemption-exit-reachability D3（legacy 同语义，code-review
+            # item 5ab0a792d828）：verified 放行 = judge 申报结论非全 env 之一 →
+            # 清除 inconclusive 重验旗标恢复 judge 生命周期正计（legacy 车道入口
+            # 置位的旗标此前在本分支无清除点，judge 派发持续分流
+            # _judge_inconclusive_dispatches 独立计数器、_judge_rerun_count 不
+            # 累计）。与主路径 _apply_verified 清除点同序——同在 env 豁免握手
+            # 之后（级二命中握手提前 return，旗标保留到人工处置）；存在才写盘、
+            # 写失败仅 WARNING，收口见 escalation._clear_inconclusive_reverify_flag。
+            pipeline._clear_inconclusive_reverify_flag(spec_name)
             # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
             # 前置守卫链与 transition 之间存在 TOCTOU 窗口（进度核对/报告闸门/
             # 洗白门禁多次读文件），窗口内 spec 被人工冻结/并发接管致非法转移
@@ -688,17 +726,19 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 f"裁决不按通过收口（status={verifier_status}），保持 testing 待重验",
             )
     else:
-        # ── verified 一次性放行门（judge-rerun-stability R2）──
-        # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
-        if pipeline._verified_gate_refuses(spec_name, "bug-found"):
-            return
         # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
         # 进程失败分支与上两个分支（bug-found/verified）同款复核：入口
         # testing 判据之后 run_verifier 期间状态已漂移（拨回 implemented/
         # 并发接管）→ DEBUG 丢弃陈旧失败结果，不 transition bug-found、
         # 不覆盖 error/tester_run。判据与文案单点收敛于
-        # _discard_if_not_testing（05d216e0182d）。
+        # _discard_if_not_testing（05d216e0182d）。复核先行、verified 放行门
+        # 在后，与其余三分支（bug-found/verified/unknown-status/unreadable）
+        # 同构（code-review item 60077ba8eaae；命中时均 return，终局等价）。
         if _discard_if_not_testing(pipeline, spec_name, result, "process-failure"):
+            return
+        # ── verified 一次性放行门（judge-rerun-stability R2）──
+        # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
+        if pipeline._verified_gate_refuses(spec_name, "bug-found"):
             return
         # ── 统一失败归因入口（code-review 0d478d8f37ce，与 verdict bug-found
         # 分支对齐）──
