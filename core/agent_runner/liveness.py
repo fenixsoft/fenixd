@@ -1022,6 +1022,10 @@ class LivenessSupervisor:
             "充分依据——持续产出心跳事件仅表明进程仍存活，不代表任务推进；\n"
             "4. 同参数工具调用反复失败、长时间无新输出 → stagnant。"
         )
+        # 先置 None（code-review item 241dd5ccd41c）：下方外层 except 兜底清场
+        # 据此区分「Popen 自身失败（子进程组未建立，无可清理）」与「communicate
+        # 等后置异常（start_new_session 子进程组已在跑，必须清场）」。
+        proc: subprocess.Popen | None = None
         try:
             # 提示词经 stdin 管道传入（对齐 runner._run_claude 的约定）：argv
             # 全文驻留 /proc/<pid>/cmdline（同机用户可读 judge 上下文），且超长
@@ -1109,6 +1113,33 @@ class LivenessSupervisor:
                 ),
             }
         except Exception as e:
+            # code-review item 241dd5ccd41c：非超时异常路径的兜底清场。上方
+            # TimeoutExpired 分支有整组清场，但 communicate 抛非超时异常（如
+            # 管道 OSError）时 judge 已由 start_new_session 独立成组——不补
+            # 击杀会让整组 claude 进程无监督继续运行并消耗 LLM 配额，且 proc
+            # 永不被 wait（僵尸）。与超时分支同型的兜底：SIGKILL 整组 + 有界
+            # wait 收割 + 关管道，清扫路径失败一律静默吞掉，stagnant 证据
+            # 语义不变。
+            if proc is not None:
+                try:
+                    guard_killpg(
+                        proc.pid,
+                        signal.SIGKILL,
+                        caller="liveness._judge_liveness_once",
+                        resolve=False,
+                    )
+                except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
+                    pass
+                try:
+                    proc.wait(timeout=5)  # 收割直接子进程，不留僵尸
+                except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
+                    pass
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    try:
+                        if stream is not None:
+                            stream.close()
+                    except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
+                        pass
             return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
 
     @staticmethod
@@ -1234,6 +1265,14 @@ class LivenessSupervisor:
              ``HANG_ZERO_GROWTH_WINDOW_SECONDS``（跨采样记忆判定）；
           3. 窗口内 ``tool_completions_in_window`` < ``HANG_MIN_TOOL_COMPLETIONS``。
 
+        code-review item 5b1eb553f47c：``background_calls`` 只由 task_started /
+        TaskOutput 事件写入，全仓无后台任务完成事件的消费点（完成态不可建立），
+        故补第 4 道守卫——仅当 ``started_at`` 与输出文件 mtime **同落当前判定
+        窗口**（``snapshot["window_seconds"]``）内才参与短路；否则视为已完成的
+        历史后台调用（其「阻塞时长」只是墙钟年龄、输出零增长只是文件定型），
+        不得据此误杀进入合法低频工具阶段（收尾写总结、长分析等：窗口内有实质
+        事件但完成数 < 3）的 run。
+
         任一条件不成立（尤其输出文件不可观测）→ 返回 None（走既有 LLM 判定路径）。
         本判定基于「被等待的子进程」的可观测信号，不依赖转录形态——纯转录启发式
         分不清「挂起」与「合法慢」（design Context 方法论结论）。
@@ -1244,6 +1283,15 @@ class LivenessSupervisor:
         calls = snapshot.get("background_calls") or {}
         if not calls:
             return None
+        # 判定窗口不可知（snapshot 非经 _liveness_snapshot 构造）→ 下方同窗校验
+        # 无从建立，MUST NOT 短路（回退 LLM 判定路径，fail-open 不误杀）。
+        try:
+            window_seconds = float(snapshot.get("window_seconds") or 0.0)
+        except (TypeError, ValueError):
+            window_seconds = 0.0
+        if window_seconds <= 0:
+            return None
+        window_cutoff = now - window_seconds
         for task_id, call in calls.items():
             output_file = call.get("output_file")
             started_at = call.get("started_at")
@@ -1255,6 +1303,10 @@ class LivenessSupervisor:
                 continue
             if blocked_seconds < HANG_BLOCKED_CALL_SECONDS:
                 continue
+            # item 5b1eb553f47c 同窗校验（一）：started_at 落在当前判定窗口之外
+            # → 历史后台调用（大概率早已完成），不参与短路。
+            if started_at < window_cutoff:
+                continue
             path = Path(output_file)
             size = None
             mtime = None
@@ -1265,6 +1317,11 @@ class LivenessSupervisor:
                     mtime = st.st_mtime
             except OSError:
                 size = None
+            # item 5b1eb553f47c 同窗校验（二）：输出文件 mtime 亦须落在当前判定
+            # 窗口内——早已定型的历史输出文件满足「零增长」只说明任务已结束，
+            # 不说明本 run 仍被其阻塞。
+            if mtime is not None and mtime < window_cutoff:
+                continue
             zero_growth = self._output_zero_growth_seconds(task_id, size, now, mtime)
             if zero_growth is None or zero_growth < HANG_ZERO_GROWTH_WINDOW_SECONDS:
                 continue
