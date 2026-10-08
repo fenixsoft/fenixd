@@ -188,7 +188,9 @@ def _read_existing_config(project_root: Path) -> dict | None:
     if not cfg_path.is_file():
         return None
     try:
-        content = cfg_path.read_text(encoding="utf-8")
+        # errors="replace" 同 detect 路径 package.json 分支：非 UTF-8 编码（如 GBK）
+        # 的 config.yaml 解码不抛 UnicodeDecodeError（ValueError 族不在下方 except 内）
+        content = cfg_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     # 简单 YAML 解析：找到 worktree: 段并提取 has_build_artifacts / build_artifact_paths
@@ -273,7 +275,10 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         import yaml  # PyYAML（fenix-setup 步骤 1 已确保安装）
 
         try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
+            # errors="replace"：非 UTF-8 编码的 config.yaml 在读取层解码不抛
+            # UnicodeDecodeError（ValueError 族不在下方 except 内）；替换后若
+            # 解析失败仍落 yaml.YAMLError 分支中止写入，错误载荷契约不破
+            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
                 config = yaml.safe_load(f) or {}
         except FileNotFoundError:
             config = {}  # 文件尚不存在，空配置起步不损失任何内容
@@ -335,7 +340,9 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     old_lines = []
     if cfg_path.is_file():
         try:
-            old_lines = cfg_path.read_text(encoding="utf-8").splitlines()
+            # errors="replace" 同 _read_existing_config：非 UTF-8 编码不抛
+            # UnicodeDecodeError（ValueError 族不在下方 except 内）
+            old_lines = cfg_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as e:
             # 读取失败即中止写入：以空列表起步组装新内容会把用户既有配置整份
             # 清成仅含 worktree 两键，与 PyYAML 路径「无法解析即中止写入」对齐

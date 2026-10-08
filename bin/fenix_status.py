@@ -142,8 +142,13 @@ def _collect_signals(
         else:
             s = summaries.get(name)
         if s:
-            used = int(s.get("budget_used") or 0)
-            effective = int(s.get("budget_effective") or 0)
+            try:
+                used = int(s.get("budget_used") or 0)
+                effective = int(s.get("budget_effective") or 0)
+            except (TypeError, ValueError):
+                # 预算字段被人工直写成非数字时不中断报告，取中性缺省 0
+                # （effective 为 0 时该信号自然跳过；与 fenix_process.py 同口径）
+                used = effective = 0
             if effective:
                 if used >= effective:
                     signals.append(
