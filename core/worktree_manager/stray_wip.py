@@ -19,17 +19,28 @@ major 告警。设计决策：
   参与 ``_main_tree_lock`` 互斥，锁忙（merge-back 的 stash→merge→pop 临界
   区进行中）即放弃本轮——绝不与写临界区并发，也不阻塞调用方主循环。临界
   区内只调只读 git（status/diff）与不取锁的识别函数。
-- D5 first_seen 注册表为 daemon 内存态，重启即重置宽限：散件仍在场会重新
-  起算并最终再告警，损失仅是时效；不引入新的持久化状态文件。
+- D5 first_seen 注册表原为 daemon 内存态，重启即重置宽限：散件仍在场会重新
+  起算并最终再告警，损失仅是时效；不引入新的持久化状态文件。**该决策自
+  evo-persist-stray-escalation-clock 起对 untracked 注册表被显式取代**：
+  实证 daemon 重启间隔（最长约 11 小时）远短于 24 小时滞留升级阈值，
+  重启重置使升级永不触发、同指纹一次性告警被击穿成重复多条——untracked
+  注册表现落盘 ``.fenix/`` 运行时状态区（``_untracked_registry_path``），
+  重启后恢复 first_seen 与双档升级标记，跨重启连续计时/去重；tracked 流
+  维持内存态（决策原文对 tracked 流继续有效，重启重置宽限的损失仅时效）。
 - 全程零触碰：不 stash、不 checkout、不 clean、不 reset，tracked 工作区
   内容不变——盘点/告警前后 ``git status --porcelain`` 的 tracked 行逐字节
-  一致（唯一落盘是 AdminStore 告警记录，属框架运行时状态目录，非主树触碰）。
+  一致（落盘仅两处，均属框架运行时状态目录、非主树触碰：AdminStore 告警
+  记录，与 untracked 注册表持久化文件——后者在 ``.fenix/`` 忽略区内，
+  不入库、也不计入 untracked 散件盘点）。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -67,6 +78,27 @@ DEFAULT_GRACE_MINUTES = 30.0
 
 # 合理宽限上限（一天）：超限等同「无限期静默等待」，回退缺省。
 _MAX_GRACE_MINUTES = 24 * 60
+
+# untracked 注册表持久化文件（相对 project_root，evo-persist-stray-escalation
+# 1.1）：.fenix/ 运行时状态区（与 restart_history.jsonl 同区）。消费仓库
+# .gitignore 均有 ``.fenix/*``（或 ``.fenix/``）规则——文件不入库、也不被
+# untracked 盘点计入散件（已 ignore 路径豁免，``_untracked_stray_entries``
+# 豁免②）。文件缺失/损坏回退空表重新宽限（fail-open，不阻断主盘点）。
+UNTRACKED_REGISTRY_RELPATH = ".fenix/stray_untracked_registry.json"
+
+# 持久化条目字段白名单：与现行内存条目同构（first_seen/first_seen_iso/
+# files/escalated_at/escalated_signal_at）。``sizes_bytes``/``total_bytes``
+# 是每轮盘点的现采值，不持久化（design 1：落盘只承载时钟与标记，体积
+# 升级判定用当轮现采数据）。双档标记 MUST 随注册表持久化：升级标记若丢
+# 失，恢复的 first_seen（往往已 ≥24h）会在重启后首轮盘点重复发出升级信号，
+# 违背「同一集合只升级一次」语义。
+_UNTRACKED_PERSISTED_FIELDS = (
+    "first_seen",
+    "first_seen_iso",
+    "files",
+    "escalated_at",
+    "escalated_signal_at",
+)
 
 
 def grace_minutes(config) -> float:
@@ -199,7 +231,13 @@ class MainTreeStrayWipSweeper:
         # ``escalated_at``＝info 一次性告警标记；``escalated_signal_at``＝
         # 第二档升级信号标记——同一集合只升级一次。体积采集随注册表输出
         # （``sizes_bytes`` 逐条目字节 / ``total_bytes`` 集合合计）。
+        # 本注册表随 evo-persist-stray-escalation 落盘持久化（D5 取代注记）：
+        # ``_untracked_registry_loaded`` 守卫每进程只载入一次（盘点开始时），
+        # 内存态此后为单源；``_untracked_persisted_payload`` 缓存上次落盘
+        # 序列化结果，盘点收尾无变更不重写。
         self._untracked_registry: dict = {}
+        self._untracked_registry_loaded = False
+        self._untracked_persisted_payload: "str | None" = None
 
     # ── 基础 ────────────────────────────────────────────────────────────
 
@@ -262,7 +300,18 @@ class MainTreeStrayWipSweeper:
             )
             return None
         try:
-            return self._sweep_locked(running_run_ids)
+            # 持久化时钟（evo-persist-stray-escalation 1.1/1.2）：盘点开始时
+            # 载入（每进程一次，重启恢复 first_seen 与双档升级标记）；收尾
+            # （含本轮放弃路径）惰性清理失效路径后按变更原子落盘。载入失败
+            # fail-open（回退空表告警），落盘失败仅告警——持久化缺陷 MUST
+            # NOT 放大成本轮盘点失败。内层 finally 先于锁释放执行（落盘在
+            # 持锁临界区内完成，写的是 .fenix/ 忽略区运行时文件，零触碰）。
+            self._load_untracked_registry()
+            try:
+                return self._sweep_locked(running_run_ids)
+            finally:
+                self._prune_untracked_registry_stale_paths()
+                self._persist_untracked_registry()
         finally:
             lock.release()
 
@@ -576,6 +625,9 @@ class MainTreeStrayWipSweeper:
                 "first_seen_iso": self._iso(now),
                 "files": list(entries),
                 "escalated_at": "",
+                # 双档标记建条即占位（evo-persist-stray-escalation 1.1：
+                # 持久化条目与内存条目同构，空串＝未标记）。
+                "escalated_signal_at": "",
             }
             self._untracked_registry[fp] = entry
         else:
@@ -697,6 +749,141 @@ class MainTreeStrayWipSweeper:
             k for k in self._untracked_registry if k not in current_fingerprints
         ]:
             del self._untracked_registry[fp]
+
+    # ── untracked 注册表持久化（evo-persist-stray-escalation 1.1/1.2）────
+
+    def _untracked_registry_path(self) -> Path:
+        """注册表持久化文件落点（.fenix/ 运行时状态区，见模块常量注记）。"""
+        return self.project_root / UNTRACKED_REGISTRY_RELPATH
+
+    def _load_untracked_registry(self) -> None:
+        """盘点开始时载入持久化注册表（每进程一次），重启恢复时钟。
+
+        文件缺失＝首启/无历史（正常形态，空表起步不告警）；JSON 损坏/形态
+        非法回退空表并留一条告警（fail-open，不阻断主盘点——损失仅为重新
+        宽限，与 D5 决策被取代前的重启行为一致）。条目级形态守卫：非 dict
+        指纹段 / 缺 first_seen 数值 / files 非列表的条目剔除（部分损坏不
+        株连完好条目）。载入后内存态为单源（``_untracked_registry_loaded``
+        守卫），文件此后只是收尾落盘的镜像。
+        """
+        if self._untracked_registry_loaded:
+            return
+        self._untracked_registry_loaded = True
+        path = self._untracked_registry_path()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            self._log(
+                "warning",
+                f"untracked 注册表持久化文件读取失败，回退空表重新宽限"
+                f"（fail-open，不阻断主盘点）: {path}: {exc}",
+            )
+            return
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError(f"registry payload is not an object: {type(data)}")
+            restored: dict = {}
+            for fp, item in data.items():
+                if not isinstance(item, dict):
+                    continue
+                first_seen = item.get("first_seen")
+                files = item.get("files")
+                if not isinstance(first_seen, (int, float)) or not isinstance(
+                    files, list
+                ):
+                    continue
+                entry = {
+                    "first_seen": float(first_seen),
+                    "first_seen_iso": str(
+                        item.get("first_seen_iso") or self._iso(float(first_seen))
+                    ),
+                    "files": [str(p) for p in files],
+                    "escalated_at": str(item.get("escalated_at") or ""),
+                    "escalated_signal_at": str(
+                        item.get("escalated_signal_at") or ""
+                    ),
+                }
+                restored[str(fp)] = entry
+        except (ValueError, TypeError) as exc:
+            self._untracked_registry = {}
+            self._log(
+                "warning",
+                f"untracked 注册表持久化文件损坏，回退空表重新宽限"
+                f"（fail-open，不阻断主盘点）: {path}: {exc}",
+            )
+            return
+        self._untracked_registry.update(restored)
+        self._prune_untracked_registry_stale_paths()
+
+    def _prune_untracked_registry_stale_paths(self) -> None:
+        """惰性清理（1.2）：剔除盘上已消失路径，集合为空的指纹整条删除。
+
+        载入时与每轮盘点收尾各执行一次，使历史路径不当作存活散件参与计时
+        与升级（已归档/删除的散件处置后不复燃）。逐路径 ``exists()`` 探测
+        开销与在册条目数线性（注册表规模小），不读内容。
+        """
+        root = self.project_root
+        for fp in list(self._untracked_registry):
+            entry = self._untracked_registry[fp]
+            files = entry.get("files") or []
+            alive = [p for p in files if (root / p).exists()]
+            if len(alive) == len(files):
+                continue
+            if alive:
+                entry["files"] = alive
+            else:
+                del self._untracked_registry[fp]
+
+    def _persist_untracked_registry(self) -> None:
+        """注册表变更时原子落盘（tempfile + os.replace，沿 core/signals.py
+        既有原子写范式）。
+
+        序列化结果与上次落盘 payload 逐字节相同即跳过（无变更不写盘）。
+        条目经字段白名单投影（``_UNTRACKED_PERSISTED_FIELDS``）：时钟与双档
+        标记入库，sizes_bytes/total_bytes 等现采值不入。任何写盘失败仅告警
+        （fail-open）：持久化缺失的代价是重启后重新宽限（D5 被取代前行为），
+        MUST NOT 放大成本轮盘点失败。临时文件放同目录（os.replace 原子换入）
+        且以点前缀命名，避免被任何 ``*.json`` 扫描谓词命中并发写入中的半程
+        文件。
+        """
+        payload = {
+            str(fp): {k: entry[k] for k in _UNTRACKED_PERSISTED_FIELDS
+                      if k in entry}
+            for fp, entry in self._untracked_registry.items()
+        }
+        text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        if text == self._untracked_persisted_payload:
+            return
+        path = self._untracked_registry_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent),
+                prefix=".stray_untracked_registry.json.tmp.",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(text)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            self._log(
+                "warning",
+                f"untracked 注册表持久化写入失败（fail-open，内存态不受影响，"
+                f"重启后回退重新宽限）: {path}: {exc}",
+            )
+            return
+        self._untracked_persisted_payload = text
 
     def _write_untracked_alert(self, entry, fp, threshold, grace, elapsed_min) -> bool:
         """untracked 散件滞留一次性 info 告警（经 AdminStore.append 落盘）。

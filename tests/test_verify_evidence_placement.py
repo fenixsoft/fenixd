@@ -10,12 +10,19 @@
 - admin_monitor 断言（severity=info 与文案两表登记在册、STORED_SIGNAL_TYPES
   不含 maintree_untracked_stray_stale）
 - prompt_builder 证据落位契约段（绝对路径渲染/契约覆盖/非法回退）
+- untracked 注册表持久化（evo-persist-stray-escalation-clock 2.1）：重启
+  模拟（清内存→重载注册表→elapsed 连续累计并命中升级）、合成旧时间戳
+  驱动升级路径、同指纹跨重启不重复告警、已升级集合跨重启不重复发升级
+  信号（escalated_signal_at 持久化）、持久化文件损坏回退降级、失效路径
+  惰性清理后不复燃
 """
 
 import inspect
+import json
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -35,6 +42,8 @@ from core.verify_contract import (
 )
 from core.worktree_manager.stray_wip import (
     SIGNAL_TYPE,
+    UNTRACKED_ESCALATED_SIGNAL_TYPE,
+    UNTRACKED_REGISTRY_RELPATH,
     UNTRACKED_SIGNAL_TYPE,
     MainTreeStrayWipSweeper,
     grace_minutes,
@@ -589,6 +598,216 @@ class TestEvidencePlacementPrompt(unittest.TestCase):
         src = inspect.getsource(PromptBuilder._build_prompt)
         self.assertIn("_evidence_placement_section", src)
         self.assertIn('"implementer", "fast-track", "verifier"', src)
+
+
+class TestUntrackedRegistryPersistence(unittest.TestCase):
+    """untracked 注册表持久化（evo-persist-stray-escalation-clock 2.1）。
+
+    重启以「新 sweeper 实例＝新进程内存态」模拟：内存注册表清零，持久化
+    文件是跨重启唯一时钟载体——与 daemon 重启后 sweeper 重新装配的形态
+    同构。旧时间戳注入落点为持久化文件（spec 验收口径：合成旧时间戳的
+    注册表驱动升级路径命中）。
+    """
+
+    def _registry_path(self, repo) -> Path:
+        return repo / UNTRACKED_REGISTRY_RELPATH
+
+    def _inject_first_seen(self, repo, fp: str, epoch: float) -> None:
+        """向持久化文件注入旧 first_seen（spec「合成时钟命中升级」口径）。"""
+        data = json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
+        self.assertIn(fp, data)
+        data[fp]["first_seen"] = epoch
+        data[fp]["first_seen_iso"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch)
+        )
+        self._registry_path(repo).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def _escalated_alerts(self, repo) -> list:
+        return [
+            r
+            for r in AdminStore(repo).read_all()
+            if r.get("kind") == SIGNAL
+            and r.get("signal_type") == UNTRACKED_ESCALATED_SIGNAL_TYPE
+        ]
+
+    def test_restart_continuity_hits_escalation(self):
+        """重启模拟：清内存→重载注册表→elapsed 连续累计命中升级信号。
+
+        first_seen 自持久化文件恢复（注入早于 24h），重启后首轮盘点即以
+        恢复时钟计算 elapsed ≥1440 分钟并触发 maintree_untracked_stray_
+        escalated——不因中途重启而重新宽限（Requirement 重启后滞留计时
+        连续 + 滞留升级触发有效性）。
+        """
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        sw = _make_sweeper(repo, grace=30.0)
+        r1 = sw.sweep()
+        fp = r1["untracked"]["fingerprint"]
+        # 首轮已把注册表落盘（first_seen≈now、无任何升级标记）
+        persisted = json.loads(
+            self._registry_path(repo).read_text(encoding="utf-8")
+        )
+        self.assertIn(fp, persisted)
+        self.assertEqual(set(persisted[fp]), {
+            "first_seen", "first_seen_iso", "files",
+            "escalated_at", "escalated_signal_at",
+        })  # 白名单同构：sizes_bytes/total_bytes 现采值不持久化
+        # 合成旧时间戳注入持久化注册表 → 新 sweeper＝daemon 重启
+        self._inject_first_seen(
+            repo, fp, time.time() - (24 * 60 + 5) * 60
+        )
+        sw2 = _make_sweeper(repo, grace=30.0)
+        r2 = sw2.sweep()
+        self.assertGreaterEqual(
+            r2["untracked"]["elapsed_minutes"], 24 * 60
+        )  # 时钟连续：以恢复的 first_seen 计时
+        self.assertEqual(r2["untracked"]["status"], "escalated")
+        self.assertTrue(r2["untracked"]["escalated_signal"])
+        alerts = self._escalated_alerts(repo)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("项目名=proj", alerts[0].get("evidence") or "")
+
+    def test_same_fingerprint_no_duplicate_info_alert_across_restart(self):
+        """同指纹跨重启不重复告警：重启后集合未变化不产生第二条新告警。"""
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        sw = _make_sweeper(repo, grace=30.0)
+        fp = sw.sweep()["untracked"]["fingerprint"]
+        self.assertEqual(_untracked_alerts(repo), [])
+        # 注入超宽限但未达 24h 升级的旧时钟 → 重启后首轮触发一次性 info
+        self._inject_first_seen(repo, fp, time.time() - 2 * 3600)
+        r2 = _make_sweeper(repo, grace=30.0).sweep()
+        self.assertEqual(r2["untracked"]["status"], "alerted")
+        self.assertEqual(len(_untracked_alerts(repo)), 1)
+        # 第二次重启：escalated_at 已随注册表恢复，同指纹不再重复告警
+        r3 = _make_sweeper(repo, grace=30.0).sweep()
+        self.assertEqual(r3["untracked"]["status"], "timed")
+        self.assertEqual(len(_untracked_alerts(repo)), 1)
+
+    def test_escalated_marker_persists_no_reescalation(self):
+        """已升级集合跨重启不重复发升级信号（escalated_signal_at 持久化）。"""
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        sw = _make_sweeper(repo, grace=30.0)
+        fp = sw.sweep()["untracked"]["fingerprint"]
+        self._inject_first_seen(
+            repo, fp, time.time() - (24 * 60 + 5) * 60
+        )
+        r2 = _make_sweeper(repo, grace=30.0).sweep()
+        self.assertEqual(r2["untracked"]["status"], "escalated")
+        self.assertEqual(len(self._escalated_alerts(repo)), 1)
+        # 重启后恢复的条目带 escalated_signal_at → 再次命中滞留阈值也不重发
+        persisted = json.loads(
+            self._registry_path(repo).read_text(encoding="utf-8")
+        )
+        self.assertTrue(persisted[fp]["escalated_signal_at"])
+        r3 = _make_sweeper(repo, grace=30.0).sweep()
+        self.assertNotEqual(r3["untracked"]["status"], "escalated")
+        self.assertEqual(len(self._escalated_alerts(repo)), 1)
+        self.assertEqual(len(_untracked_alerts(repo)), 1)
+
+    def test_corrupt_registry_file_falls_back_without_blocking(self):
+        """持久化文件损坏 → 回退空表＋留一条告警，主盘点不阻断。"""
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        self._registry_path(repo).parent.mkdir(parents=True, exist_ok=True)
+        self._registry_path(repo).write_text(
+            "{not-valid-json!!", encoding="utf-8"
+        )
+        logger = _LoggerProbe()
+        cfg = {"admin": {"maintree_stray_wip_grace_minutes": 30.0}}
+        sw = MainTreeStrayWipSweeper(repo, _WmProbe(repo), config=cfg, logger=logger)
+        r = sw.sweep()  # 不抛异常＝主盘点未阻断
+        self.assertIsNotNone(r)
+        self.assertEqual(r["untracked"]["status"], "timed")  # 重新宽限起算
+        registry_warnings = [
+            m for _, m in logger.warnings if "回退空表" in m
+        ]
+        self.assertEqual(len(registry_warnings), 1)  # 恰留一条告警
+        # 后续轮次不再重复告警（每进程一次载入），且落盘自愈为合法形态
+        sw.sweep()
+        registry_warnings_after = [
+            m for _, m in logger.warnings if "回退空表" in m
+        ]
+        self.assertEqual(len(registry_warnings_after), 1)
+        json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
+
+    def test_stale_paths_pruned_and_no_reignition(self):
+        """失效路径惰性清理：已删除散件条目载入即清、指纹不复燃。
+
+        条目整条删除（集合为空）与部分剔除（存活文件保留）两形态都覆盖；
+        清理后的历史指纹不参与后续去重与升级（Requirement 失效路径惰性
+        清理：已清理散件不复燃）。
+        """
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        sw = _make_sweeper(repo, grace=30.0)
+        live_fp = sw.sweep()["untracked"]["fingerprint"]
+        # 注入历史条目：gone_fp 全部文件已消失（已被处置删除/归档形态）
+        gone_fp = "a" * 64
+        data = json.loads(
+            self._registry_path(repo).read_text(encoding="utf-8")
+        )
+        data[gone_fp] = {
+            "first_seen": time.time() - (24 * 60 + 5) * 60,
+            "first_seen_iso": "2026-10-01T00:00:00Z",
+            "files": ["verify-evidence/gone-a.md", "verify-evidence/gone-b.md"],
+            "escalated_at": "",
+            "escalated_signal_at": "",
+        }
+        self._registry_path(repo).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        sw2 = _make_sweeper(repo, grace=30.0)
+        r2 = sw2.sweep()
+        self.assertEqual(r2["untracked"]["fingerprint"], live_fp)
+        self.assertEqual(r2["untracked"]["status"], "timed")  # 历史时钟不复燃
+        self.assertNotIn(gone_fp, sw2._untracked_registry)  # 载入即清
+        after = json.loads(
+            self._registry_path(repo).read_text(encoding="utf-8")
+        )
+        self.assertNotIn(gone_fp, after)  # 清理结果随落盘收敛
+        self.assertEqual(set(after), {live_fp})
+
+    def test_prune_partial_removal_keeps_alive_paths(self):
+        """部分剔除形态：条目内消失路径剔除、存活文件保留（集合非空不删）。"""
+        repo = _make_repo()
+        _write_strays(repo, ["verify-evidence/keep.md"])
+        sw = _make_sweeper(repo, grace=30.0)
+        sw._untracked_registry["f" * 64] = {
+            "first_seen": time.time() - 3600,
+            "first_seen_iso": "2026-10-02T00:00:00Z",
+            "files": ["verify-evidence/keep.md", "verify-evidence/gone.md"],
+            "escalated_at": "",
+            "escalated_signal_at": "",
+        }
+        sw._prune_untracked_registry_stale_paths()
+        self.assertEqual(
+            sw._untracked_registry["f" * 64]["files"],
+            ["verify-evidence/keep.md"],
+        )
+        # 全部消失 → 整条删除
+        sw._untracked_registry["f" * 64]["files"] = ["verify-evidence/gone.md"]
+        sw._prune_untracked_registry_stale_paths()
+        self.assertNotIn("f" * 64, sw._untracked_registry)
+
+    def test_persist_failure_fails_open(self):
+        """落盘失败（目录不可写）仅告警 fail-open，盘点结果不受影响。"""
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        # 预建同名目录占位：os.replace 到目录路径必失败（OSError）
+        self._registry_path(repo).mkdir(parents=True)
+        logger = _LoggerProbe()
+        cfg = {"admin": {"maintree_stray_wip_grace_minutes": 30.0}}
+        sw = MainTreeStrayWipSweeper(repo, _WmProbe(repo), config=cfg, logger=logger)
+        r = sw.sweep()
+        self.assertIsNotNone(r)  # 盘点照常完成
+        self.assertIn("untracked", r)
+        self.assertTrue(
+            any("持久化写入失败" in m for _, m in logger.warnings)
+        )
 
 
 if __name__ == "__main__":
