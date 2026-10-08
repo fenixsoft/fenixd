@@ -125,6 +125,10 @@ def request_admin_invoke(
         placeholder_fd = os.open(
             req_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
         )
+        # 经 fd 留存自家占位 inode（code-review item 02d635e05daf）：
+        # 若走 close 后的 req_path.stat()，消费侧在此间隙 rename 走占位、
+        # 他人 O_EXCL 重建占位时会记下他人 inode，比对照样误删。
+        placeholder_ino = os.fstat(placeholder_fd).st_ino
         os.close(placeholder_fd)
     except FileExistsError:
         # 冲突时同样回读既有 created（对齐同族冲突语义）；并发空占位或
@@ -158,9 +162,11 @@ def request_admin_invoke(
             os.unlink(tmp_path)
         except OSError:
             pass
-        # 写失败时尽力清掉自己占的位（仅当仍是空占位，避免误删他人请求）
+        # 写失败时尽力清掉自己占的位（仅当路径上仍是自家占位 inode，
+        # 避免误删他人请求/占位；占位被消费侧 rename 走后 stat 抛
+        # FileNotFoundError，一并走 OSError 吞掉）
         try:
-            if req_path.stat().st_size == 0:
+            if req_path.stat().st_ino == placeholder_ino:
                 req_path.unlink()
         except OSError:
             pass
