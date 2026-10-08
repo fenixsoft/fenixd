@@ -11,12 +11,14 @@
     默认（无 --write）：探测并输出候选产物路径 JSON，不修改任何文件。
     --write：探测结果写入项目主树的 .fenix/config.yaml（幂等，不覆盖已显式配置的项目）。
 
-探测信息源（按优先级）：
-    1. package.json 的 scripts.build / scripts.dist / scripts.release / scripts.bundle
-    2. pyproject.toml 的 [build-system]（poetry setuptools 等 → 检查 dist/）
-    3. 项目目录结构：根级 dist/、build/、out/ 目录（独立信息源，仅项目根级，
-       不递归子级；Python 项目不列 build/）、release-*.zip 等命名的产物文件（写入具体文件名）
-    4. Fenix 框架项目（core/dashboard/static/dist/ 存在时自动包含）
+探测信息源（按代码实际执行顺序，各源独立探测、候选取并集，无短路）：
+    1. Fenix 框架项目：core/dashboard/static/dist/ 存在且非空时自动包含
+    2. package.json 的 scripts.build / scripts.dist / scripts.release / scripts.bundle：
+       仅记入 sources 供展示，不产生候选路径、不参与 has_build_artifacts 判定
+    3. pyproject.toml（含 [build-system] 或 [tool.poetry]）→ 检查根级 dist/、_build/
+    4. 项目目录结构：根级 dist/、build/、out/ 目录（独立信息源，仅项目根级，
+       不递归子级；Python 项目不列 build/；dist/ 已由 pyproject 分支归因时不重复记源）
+    5. 根级产物文件：release-*.zip、*.tar.gz 等命名的产物文件（写入具体文件名）
 
 输出（JSON）：
     {
