@@ -1779,9 +1779,9 @@ class SelfReviewScheduler:
                 timeout=15,
             )
         except (OSError, subprocess.TimeoutExpired):
-            return [f"- （git log 读取失败）"]
+            return ["- （git log 读取失败）"]
         if proc.returncode != 0:
-            return [f"- （git log 读取失败）"]
+            return ["- （git log 读取失败）"]
         commits = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
         if not commits:
             return [f"- （近 {days} 日无提交）"]
@@ -1994,14 +1994,14 @@ class SelfReviewScheduler:
     def _render_entry_lines(item) -> List[str]:
         """单条目 → 渲染行列表（2026-09-08 用户改版：短标题 + 嵌套明细）。
 
-              dict 条目（结构化契约 {title, impact, evidence, analysis?, suggestion}）
-              渲染为「- **标题**」+ 嵌套「  - 影响：…／  - 证据：…／  - 调查评估：…／
+        dict 条目（结构化契约 {title, impact, evidence, analysis?, suggestion}）
+        渲染为「- **标题**」+ 嵌套「  - 影响：…／  - 证据：…／  - 调查评估：…／
         - 建议：…」bullet 块；title 缺省省略标题行（历史输出兼容），空字段
-              跳行；str 条目先经 dict-repr 抢救（_rescue_structured_entry，旧解析
-              层产物兼容），未命中则按旧行内格式单行透传。空渲染返回 []。条目间
-              空行由 _append_todo 负责（同小节块间 join 空行）。含换行的值续行
-              统一加两空格缩进、空行丢弃（条目块保持「- 」行 + 缩进续行的封闭
-              形态，供闭环移除的块解析正确消费）。
+        跳行；str 条目先经 dict-repr 抢救（_rescue_structured_entry，旧解析
+        层产物兼容），未命中则按旧行内格式单行透传。空渲染返回 []。条目间
+        空行由 _append_todo 负责（同小节块间 join 空行）。含换行的值续行
+        统一加两空格缩进、空行丢弃（条目块保持「- 」行 + 缩进续行的封闭
+        形态，供闭环移除的块解析正确消费）。
         """
         if isinstance(item, str):
             item = _rescue_structured_entry(item) or item
