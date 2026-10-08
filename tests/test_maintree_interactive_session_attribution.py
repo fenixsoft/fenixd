@@ -114,9 +114,14 @@ def _make_empty_home():
 
 
 def _write_transcript(repo: Path, body: str, age_seconds: float = 0.0, name="s1.jsonl") -> Path:
-    """在被重定向的 HOME 下写交互会话 transcript（Claude Code 惯例布局）。"""
+    """在被重定向的 HOME 下写交互会话 transcript（Claude Code 惯例布局）。
+
+    目录名 munge 与 Claude Code 实际惯例一致：``/`` 与 ``.`` 均替换为 ``-``
+    （code-review item cca768cc0ceb）——夹具仓库路径含 ``.claude`` 点号时，
+    旧的单字符替换会拼出与真实目录命名不符的目录名使探测恒落空。
+    """
     home = Path(os.environ["HOME"])
-    tdir = home / ".claude" / "projects" / str(repo).replace("/", "-")
+    tdir = home / ".claude" / "projects" / str(repo).replace("/", "-").replace(".", "-")
     tdir.mkdir(parents=True, exist_ok=True)
     p = tdir / name
     p.write_text(body, encoding="utf-8")
