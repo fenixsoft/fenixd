@@ -853,7 +853,13 @@ class VAdjudicationMixin:
 
         # 缺件入参兼容两种形态：守卫返回 list[dict]（path/kind/violation）与
         # 既有调用/测试的 list[str]。统一规范化为路径列表（匹配逻辑只认路径）。
-        missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
+        # 缺 path 键的畸形条目兜底空串（code-review item fc62a0cdb4c3，与
+        # _redispatch_for_missing 的 .get 取值口径对齐）：单条畸形数据不得以
+        # KeyError 放大为整批裁决降级；空串不命中任何声明条目、留在 remaining
+        # 交守卫重跑对账（fail-closed，不静默丢弃缺件）。
+        missing_paths = [
+            m.get("path", "") if isinstance(m, dict) else str(m) for m in missing
+        ]
 
         # 分类：确定性命中 → deterministic；声明段无该条目或不命中 → 留在 remaining
         deterministic: list = []
@@ -1987,8 +1993,13 @@ class VAdjudicationMixin:
         # remaining 是预分类后仍存在的缺件清单；若预分类全清则 proceed，
         # 否则剩余项带入后续 judge 流程（judge 输入只含剩余项）。
         remaining = preclassify_result.get("remaining", missing)
-        # 将 remaining 规范化为路径列表（兼容 list[str] 与 list[dict]）
-        remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
+        # 将 remaining 规范化为路径列表（兼容 list[str] 与 list[dict]）；
+        # 缺 path 键的畸形条目兜底空串（code-review item fc62a0cdb4c3，与
+        # _redispatch_for_missing 的 .get 取值口径对齐），单条畸形数据不得
+        # 以 KeyError 放大为整批终审裁决降级。
+        remaining_paths = [
+            r.get("path", "") if isinstance(r, dict) else str(r) for r in remaining
+        ]
         # 空缺件早退（code-review item af1bab4a33c7）：预分类后剩余缺件为空清单
         # （上游守卫复检异常返回空 remaining / 调用方直入空 missing）MUST NOT 置
         # blocked 空「缺件 []」误导文案并派空输入 judge run（白烧一次 LLM 终审）
@@ -2022,8 +2033,12 @@ class VAdjudicationMixin:
                 )
             # 复检仍有缺件 → 以守卫权威清单续走终审（不空派 judge）
             remaining = gate_recheck
+            # 与上方规范化同口径：缺 path 键兜底空串（code-review item
+            # fc62a0cdb4c3）——复检权威清单同源同型，畸形条目不得令整批
+            # 裁决降级。
             remaining_paths = [
-                r["path"] if isinstance(r, dict) else str(r) for r in remaining
+                r.get("path", "") if isinstance(r, dict) else str(r)
+                for r in remaining
             ]
         # kind 映射：供 judge 输入携带 kind（4.5）及 delete 防洗白（4.3）。
         # 经统一解析入口取生效声明条目（add-declaration-relocation-protocol
@@ -2279,6 +2294,28 @@ class VAdjudicationMixin:
                             spec_name, result, m, kind=kind_m
                         )
                         if not rb_ok:
+                            # 改写已落写回层但复检失败：改写事实仍须可追溯、
+                            # 复发计数不漏计（code-review item 0fcdd3476318）——
+                            # 同型复用 _audit_deferred_correction 落 readback-
+                            # failed 标注记录（否则该条不进 executed_verdicts，
+                            # dispute 审计块对其失明），并并入
+                            # deferred_typo_elements 使「修正未生效于读取基准」
+                            # 复发形态对 D5 熔断可见。verdict 仍转 unclear
+                            # （守卫重跑按仍缺件走打回）。
+                            self._audit_deferred_correction(
+                                spec_name,
+                                [m],
+                                verdict="typo",
+                                reason=(
+                                    f"judge-typo-readback-failed: 改写已落写回层"
+                                    f"（source={wb.get('source')}）但复检失败，"
+                                    f"修正未生效于读取基准: {_rb_detail}"
+                                ),
+                                actual_paths={m: actual_path},
+                                trigger_run_id=getattr(result, "run_id", "") or "",
+                                judge_run_id=judge_run_id,
+                            )
+                            deferred_typo_elements.append(m)
                             verdict_by_element[m] = {"verdict": "unclear"}
                             continue
                         # Task 5.1：typo 修正复检通过 → 复发计数清零
@@ -2353,6 +2390,23 @@ class VAdjudicationMixin:
                         spec_name, result, m, kind=kind_m
                     )
                     if not rb_ok:
+                        # 软化已落写回层但复检失败：该条裁决落 dispute 审计流
+                        # （readback-failed 标注）使已落盘的软化事实可追溯
+                        #（code-review item 0fcdd3476318，与 typo 分支同型——
+                        # 不落 executed_verdicts 时 dispute 审计块对其失明）。
+                        # verdict 仍转 unclear（守卫重跑按仍缺件走打回）。
+                        self._audit_deferred_correction(
+                            spec_name,
+                            [m],
+                            verdict="reference",
+                            reason=(
+                                f"judge-reference-readback-failed: 软化已落写回层"
+                                f"（source={wb.get('source')}）但复检失败，修正"
+                                f"未生效于读取基准: {_rb_detail}"
+                            ),
+                            trigger_run_id=getattr(result, "run_id", "") or "",
+                            judge_run_id=judge_run_id,
+                        )
                         verdict_by_element[m] = {"verdict": "unclear"}
                         continue
                     executed_verdicts.append({"element": m, **v})
@@ -2451,8 +2505,13 @@ class VAdjudicationMixin:
                 f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
             )
 
-        # 规范化 remaining（list[dict]）为路径列表 + 保留条目供下游
-        remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
+        # 规范化 remaining（list[dict]）为路径列表 + 保留条目供下游；
+        # 缺 path 键兜底空串（code-review item fc62a0cdb4c3，.get 取值口径
+        # 与 _redispatch_for_missing 对齐）——本处位于守卫重跑 try/except
+        # 之外，畸形条目不得以 KeyError 逃逸令复发对账整批降级。
+        remaining_paths = [
+            r.get("path", "") if isinstance(r, dict) else str(r) for r in remaining
+        ]
 
         # fix-relocation-writeback-layer D5（Task 5.1/5.2）：typo 修正后同路径
         # 复发熔断。守卫重跑（读取基准）仍判**旧路径** missing ⇔「修正未生效于
