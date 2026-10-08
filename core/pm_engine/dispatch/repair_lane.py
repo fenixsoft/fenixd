@@ -117,6 +117,21 @@ def _max_retries(pm) -> int:
                 f"回退缺省 3: {cfg_max_r!r}",
             )
         return 3
+    # 小数显式拒绝（code-review item b5544dd00582，对齐 _merge_breaker_threshold
+    # 的 float 分支）：裸 int() 把 2.5 截成 2 静默采信且无留痕，而字符串
+    # "2.5" 走下方异常分支回退缺省 3——同值不同型行为分裂。整值浮点
+    # （2.0）按整数接受，非整值 WARNING 留痕回退缺省 3。
+    if isinstance(cfg_max_r, float):
+        if cfg_max_r.is_integer():
+            return int(cfg_max_r)
+        logger = getattr(pm, "logger", None)
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                "配置 agents.max_retries 非法（应为整数，小数不合法），"
+                f"回退缺省 3: {cfg_max_r!r}",
+            )
+        return 3
     try:
         return int(cfg_max_r)
     except Exception:  # noqa: BLE001 —— 同上
