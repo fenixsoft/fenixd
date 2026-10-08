@@ -20,4 +20,4 @@
 
 - [ ] 3.1 /root/potplayer-base/.fenix/verify.yaml 显式声明 evidence_retention（语法参照 /root/fenixd/core/verify_contract_template.yaml），接线已实现的分级留存字段
 - [ ] 3.2 potplayer-base 活跃 spec tasks.md 中 7 处根 verify-evidence/ 落位路径改写为 .fenix/verify-evidence/<spec>/（spec/changes/neutralize-pack-static-fingerprints/tasks.md:10/12/169/199、spec/changes/pack2-official-encoder/tasks.md:56/58/65）
-- [ ] 3.3 potplayer-base 存量未跟踪散件（约 92 项、485MB）经已上线的 archive_untracked_stray / ignore_untracked_stray 裁决执行器清债（core/dashboard/data/admin_actions.py:3230，归档落 .fenix/stray-archive/），不新写迁移脚本；已入库的 689MB 历史清除涉及 filter-repo 重写，仅在处置记录留方案待人类决策
+- [x] 3.3 potplayer-base 存量未跟踪散件（约 92 项、485MB）经已上线的 archive_untracked_stray / ignore_untracked_stray 裁决执行器清债（core/dashboard/data/admin_actions.py:3230，归档落 .fenix/stray-archive/），不新写迁移脚本；已入库的 689MB 历史清除涉及 filter-repo 重写，仅在处置记录留方案待人类决策
