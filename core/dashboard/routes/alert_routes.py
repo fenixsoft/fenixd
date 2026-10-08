@@ -195,6 +195,9 @@ class H6AlertRoutesMixin:
             proot = Path(project["path"])
             activities = dashboard_data.get_admin_activities(proot, spec=spec_name)
             if page is None:
+                # 非分页分支同分页口径：透出前也做时间戳归一排序，保证同
+                # 端点两种模式记录顺序一致（code-review item 00d16b77fc6c）
+                _sort_activities_frontend(activities)
                 return {
                     "project": project["name"],
                     "spec": spec_name or "",
@@ -258,6 +261,9 @@ class H6AlertRoutesMixin:
             acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
             for a in acts:
                 a["project"] = p["name"]
+            # 非分页分支同分页口径：组内也做时间戳归一排序（组序仍按项目
+            # 枚举序，code-review item 00d16b77fc6c）
+            _sort_activities_frontend(acts)
             projects_out.append({"name": p["name"], "activities": acts})
         return {"projects": projects_out}
 
