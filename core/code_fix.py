@@ -37,8 +37,9 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
   释放预算内记录（打标墓碑不删除，fail_count 跨链续增，下轮自动重试），达
   生效预算永久跳过并一次性告警 + todo.md 登记待人工。自动重派预算按
   `reg_form` 分档（evo-add-codefix-anomaly-redispatch-budget）：有真实失败
-  面（mapped）保持 `FAIL_RETRY_MAX`，零失败面（anomaly，parse_error 或
-  failed 无明细）降为 `ANOMALY_FAIL_RETRY_MAX`（1）——整批重派无证据价值。
+  面（mapped）保持 `FAIL_RETRY_MAX`，零失败面（anomaly，parse_error、
+  failed 无明细或 timeout 无明细）降为 `ANOMALY_FAIL_RETRY_MAX`（1）——
+  整批重派无证据价值。
   瞬态失败（agent run 失败/重试 run 失败/零有效修复）只进进度快照
   `chain_skipped`（链内跳过，新链启动重置），不烧跨轮重试预算。
 """
@@ -89,7 +90,8 @@ DEFERRED_REL = ".fenix/code-review/fix-deferred.json"
 FAIL_RETRY_MAX = 3
 
 # 异常形态失败批重派预算（evo-add-codefix-anomaly-redispatch-budget）：回归
-# 终局为零失败面（reg_form=anomaly，parse_error 或 failed 无明细）的失败
+# 终局为零失败面（reg_form=anomaly，parse_error、failed 无明细、timeout
+# 无明细——枚举单源 _is_regression_anomaly）的失败
 # 记录，定向轮无可注入明细、整批重派只会复现同一异常（2026-10-07 夜间
 # 24 轮回归全 parse_error、18 个重试轮零收敛实证），预算降为 1——首次入档
 # 即达触顶「登记待人工+跳过条目」路径；有真实失败面（mapped，fail_items
@@ -98,8 +100,9 @@ FAIL_RETRY_MAX = 3
 ANOMALY_FAIL_RETRY_MAX = 1
 
 # 失败记录 reg_form 合法值（evo-add-codefix-anomaly-redispatch-budget）：
-# anomaly=回归零失败面（parse_error 或 failed 无明细）；mapped=有真实失败
-# 面（回归 fail_items 非空）。历史记录缺键按 mapped（向后兼容，无迁移）。
+# anomaly=回归零失败面（parse_error、failed 无明细、timeout 无明细）；
+# mapped=有真实失败面（回归 fail_items 非空）。历史记录缺键按 mapped
+# （向后兼容，无迁移）。
 REG_FORM_ANOMALY = "anomaly"
 REG_FORM_MAPPED = "mapped"
 
@@ -681,8 +684,9 @@ def record_failed_batch(
     anomaly 取 ``ANOMALY_FAIL_RETRY_MAX``、mapped 取 ``FAIL_RETRY_MAX``，
     取值单源 ``_effective_retry_budget``。
 
-    ``reg_form``（可选）：回归终局形态（``anomaly``=parse_error 或 failed
-    无明细、零失败面；``mapped``=回归 fail_items 非空）。调用方提供合法值
+    ``reg_form``（可选）：回归终局形态（``anomaly``=parse_error、failed
+    无明细或 timeout 无明细、零失败面；``mapped``=回归 fail_items 非空）。
+    调用方提供合法值
     即刷新——同条目集复燃合档以最近一次失败为准（修复质量好转后自动回到
     mapped 预算）；未提供（如 ``merge_back_conflict`` 收口，非回归终局）
     不写键，读取侧按 mapped 兼容（历史记录缺键同口径，不分档不报错）。
@@ -843,7 +847,8 @@ def _prune_fix_reg_failures(project_root) -> None:
         return
 
 
-def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool) -> str:
+def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool,
+                           long_tests=None, progress_log_tail=None) -> str:
     """回归失败用例明细落盘（返回相对路径引用，1.1/1.2）。
 
     写入点 = 每轮回归非 passed 时（首轮全量与每个定向轮子集回归各落一份，
@@ -852,6 +857,13 @@ def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool
     映射失败时 ``fallback_full=True``（items 尽力保留原始摘要、无 nodeid 映射
     结果即空列表），重试侧据此回退全量（fail-closed）。落盘失败只记日志不炸
     批（审计辅助件，非门禁）。
+
+    进度证据可选键（evo-codefix-zero-face-regression-hardening 1.3，向后
+    兼容——仅在证据在场时写入，既有消费方 items/fallback_full 不受影响）：
+    ``long_tests``（超阈值用例名+耗时，来自回归快照）与
+    ``progress_log_tail``（junit.xml.log 尾段，long_tests 缺失时的次选）。
+    timeout/total=0 形态的明细档借此保留毒化源定位线索，worktree 清理后
+    证据仍可回收。
     """
     payload = {
         "items": list(items or []),
@@ -859,6 +871,10 @@ def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool
         "created_at": _now_iso(),
         "fallback_full": bool(fallback_full),
     }
+    if long_tests:
+        payload["long_tests"] = list(long_tests)
+    if progress_log_tail:
+        payload["progress_log_tail"] = str(progress_log_tail)
     rel = fix_reg_failures_relpath(run_id)
     path = Path(project_root) / rel
     try:
@@ -1014,15 +1030,70 @@ def _merge_failure_items(cumulative, items):
     return list(merged.values())
 
 
+# junit.xml.log 尾段留存上限（evo-codefix-zero-face-regression-hardening
+# 1.3）：逐用例进度日志只取尾部窗口——毒化源信息集中在收尾段（最后进度
+# 标记/中止点），防超长日志撑爆明细档。
+REG_PROGRESS_LOG_TAIL_BYTES = 8192
+
+
+def _collect_reg_progress_evidence(reg, exec_root):
+    """回归进度证据提取（evo-codefix-zero-face-regression-hardening 1.3）。
+
+    timeout/total=0 形态的明细档本无 items 可看，毒化源定位全靠根治提交
+    事后自述——把 regression 侧已采集的进度证据并入明细档，使其在
+    worktree 清理（``_safe_cleanup`` 物理销毁快照与日志）后仍可回收：
+
+    - 首选快照 ``long_tests``（regression.extract_long_tests 已在
+      timeout/failed 路径采集：超阈值用例名+耗时，含通过的），规整为
+      ``{name, time}`` 列表（字段缺失容错：非 dict/缺 name 的条目跳过）；
+    - 缺失或为空时次选 junit.xml.log 尾段（逐用例进度日志，路径由快照
+      ``output`` 相对 ``exec_root`` 推导、XML 同名 + ``.log``）。
+
+    返回 ``(long_tests, log_tail)``：两者皆缺 → ``(None, None)``——明细档
+    保持现形态（不新增空键，向后兼容）；全程 MUST NOT 抛异常（审计辅助
+    件，非门禁）。
+    """
+    snapshot = getattr(reg, "snapshot", None) or {}
+    raw = snapshot.get("long_tests")
+    if isinstance(raw, list) and raw:
+        long_tests = []
+        for t in raw:
+            if not isinstance(t, dict):
+                continue
+            name = str(t.get("name") or "").strip()
+            if not name:
+                continue
+            long_tests.append({"name": name, "time": t.get("time")})
+        if long_tests:
+            return long_tests, None
+    output_rel = str(snapshot.get("output") or "")
+    if output_rel and exec_root:
+        log_path = Path(exec_root) / (output_rel + ".log")
+        try:
+            with log_path.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - REG_PROGRESS_LOG_TAIL_BYTES))
+                tail = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            tail = ""
+        if tail:
+            return None, tail
+    return None, None
+
+
 def _ingest_failure_round(root, reg, cumulative, exec_root):
     """单轮回归失败明细的提取 → 累计合并 → 落盘（1.1/1.2/2.3）。
 
     写入点 = 每轮回归非 passed 时（首轮全量与每个定向轮子集回归各一份）。
     返回 ``(fail_items, mapped, detail_rel, cumulative)``：``mapped=False``
     表示映射失败/无明细（fallback_full，重试侧回退全量）；``detail_rel``
-    为落盘文件相对路径（落盘失败为空串）。
+    为落盘文件相对路径（落盘失败为空串）。落盘同时并入回归进度证据
+    （long_tests，缺失时次选 junit.xml.log 尾段）——必须在 worktree 清理
+    前完成，清理后证据物理销毁。
     """
-    raw_failures = (getattr(reg, "snapshot", None) or {}).get("failures") or []
+    snapshot = getattr(reg, "snapshot", None) or {}
+    raw_failures = snapshot.get("failures") or []
     fail_items, mapped = _map_junit_failures_to_nodeids(raw_failures, exec_root=exec_root)
     if mapped and fail_items:
         cumulative = _merge_failure_items(cumulative, fail_items)
@@ -1030,33 +1101,55 @@ def _ingest_failure_round(root, reg, cumulative, exec_root):
         # 映射失败，或无结构化明细（timeout/parse_error/零 failure 记录）：
         # 子集无从谈起，按 fallback_full 走全量 + 旧式摘要注入。
         mapped = False
+    long_tests, log_tail = _collect_reg_progress_evidence(reg, exec_root)
     detail_rel = write_fix_reg_failures(
         root, getattr(reg, "run_id", "") or "unknown",
         fail_items if mapped else [], fallback_full=not mapped,
+        long_tests=long_tests, progress_log_tail=log_tail,
     )
     return fail_items, mapped, detail_rel, cumulative
 
 
 # 回归异常熔断阈值（add-codefix-parse-error-breaker D2）：同批内回归异常类
-# 失败（parse_error，或 failed 且无可用明细）连续达到该次数即提前终止定向
+# 失败（parse_error、failed 且无可用明细，及 evo-codefix-zero-face-regression-
+# hardening 1.1 起的 timeout 无明细）连续达到该次数即提前终止定向
 # 重试循环。熔断是防烧钱的保守兜底而非调优旋钮，按项目约定不进受管配置
 # （新增配置键须连带 Dashboard 界面）；与 targeted_retry_max 轮数上限正交
-# ——未触发时既有轮数上限行为逐位不变。
+# ——未触发时既有轮数上限行为逐位不变。阈值按形态取值（1.2）：timeout
+# 经 _anomaly_breaker_threshold 取 1，parse_error/failed 维持本值。
 REGRESSION_ANOMALY_BREAKER_THRESHOLD = 2
+
+# timeout 零失败面熔断阈值（evo-codefix-zero-face-regression-hardening 1.2）：
+# 该形态单轮固定烧满回归墙钟（本项目 1800s，2026-10-08 三批 10 轮每轮恰好
+# 相差 1800s 实证）且产不出任何证据，盲跑重试期望损失为负——首记即收口
+# （阈值 1）；parse_error/failed 保留阈值 2（形态在批内第二轮才定位，保守
+# 兜底语义不变）。取值单源 _anomaly_breaker_threshold，两个计数点（首轮
+# 全量回归与定向轮回归）MUST 经它取阈值。
+ANOMALY_BREAKER_TIMEOUT_THRESHOLD = 1
+
+
+def _anomaly_breaker_threshold(status: str) -> int:
+    """按回归形态取熔断阈值（1.2）：timeout 首记即收口，其余维持既有阈值。"""
+    return (
+        ANOMALY_BREAKER_TIMEOUT_THRESHOLD
+        if status == "timeout" else REGRESSION_ANOMALY_BREAKER_THRESHOLD
+    )
 
 
 def _is_regression_anomaly(reg, fail_items) -> bool:
     """回归异常判据（add-codefix-parse-error-breaker D1）：回归未产出可用明细。
 
-    ``parse_error``（junit 缺失/不可解析，``fail_items`` 恒空）或 ``failed``
-    且明细为空（junit 可解析但零失败记录，同样不可注入）→ True；真实测试
-    失败（``failed`` 且明细非空）→ False——MUST NOT 进熔断计数（调用方
-    同时清零计数）。
+    ``parse_error``（junit 缺失/不可解析，``fail_items`` 恒空）、``failed``
+    且明细为空（junit 可解析但零失败记录，同样不可注入）、或 ``timeout``
+    且无可用明细（evo-codefix-zero-face-regression-hardening 1.1：硬超时
+    中止，整批重派只会复现同一异常且无证据价值）→ True；真实测试失败
+    （``failed``/``timeout`` 且明细非空）→ False——MUST NOT 进熔断计数
+    （调用方同时清零计数）。
     """
     status = getattr(reg, "status", "")
     if status == "parse_error":
         return True
-    return status == "failed" and not fail_items
+    return status in ("failed", "timeout") and not fail_items
 
 
 def _anomaly_round_form(reg, mapped, fail_items) -> str:
@@ -2732,9 +2825,9 @@ def write_regression_failed_alert(
 
     if reg_form == REG_FORM_ANOMALY:
         description = (
-            "code-fix 批回归终局为零失败面（reg_form=anomaly：parse_error 或 "
-            f"failed 无明细），自动重派预算按分档降为 {ANOMALY_FAIL_RETRY_MAX} "
-            "且已耗尽，停止自动重派，待人工排查"
+            "code-fix 批回归终局为零失败面（reg_form=anomaly：parse_error、"
+            f"failed 无明细或 timeout 无明细），自动重派预算按分档降为 "
+            f"{ANOMALY_FAIL_RETRY_MAX} 且已耗尽，停止自动重派，待人工排查"
         )
         recommended = (
             "零失败面整批重派无证据价值，已停止自动重派；按 branch/tip_sha 经 "
@@ -5570,8 +5663,13 @@ class CodeFixOrchestrator:
                 if detail_rel:
                     last_detail_ref = detail_rel
                 # 首轮回归计数（1.3）：此处 reg 即首轮回归、fail_items 即其
-                # 提取明细，与定向轮同口径（1.2）。阈值 ≥ 2 下首轮单次计数
-                # 不可能达阈值，无需在此短路。
+                # 提取明细，与定向轮同口径（1.2）。evo-codefix-zero-face-
+                # regression-hardening 1.2：阈值按形态取值后，timeout 形态
+                # 首轮单次计数即达阈值，须在此接同款短路判断——否则首轮全量
+                # 回归即 timeout 零失败面（2026-10-08 批 1 实际形态）时仍会
+                # 先派 1 个定向 run 并再烧一轮 1800s 全量回归才熔断，违背
+                # 「首记即收口」。parse_error/failed 阈值 2 下首轮不可能达
+                # 阈值，判断对它们是零开销直通。
                 if attempt == 1:
                     if _is_regression_anomaly(reg, fail_items):
                         anomaly_streak += 1
@@ -5580,6 +5678,22 @@ class CodeFixOrchestrator:
                     else:
                         anomaly_streak = 0
                         anomaly_rounds.clear()
+                    if anomaly_streak >= _anomaly_breaker_threshold(
+                            getattr(reg, "status", "")):
+                        # 首记即收口：显式置位再 break（for-else 语义——
+                        # break 跳过 else 分支，exhausted 不会自动置位，下方
+                        # 耗尽收口块依赖它）。首轮命中 → 未派任何定向 run、
+                        # 不再烧第二轮全量回归。
+                        breaker_triggered = True
+                        exhausted = True
+                        self._log(
+                            "warning",
+                            f"code-fix 第 {batch_no} 批回归异常熔断触发"
+                            f"（连续 {anomaly_streak} 次未产出可用失败明细："
+                            f"{'；'.join(anomaly_rounds)}），首轮全量回归即收口"
+                            f"（0/{retry_max} 轮定向重试，不再派发）",
+                        )
+                        break
                 # ③ 定向轮 run_id 预生成 + 进度刷新（沿用 5.6 机制）：exclude
                 # 排除首轮与本批此前各轮（同 worktree 内主树残留判据覆盖不到，
                 # 同秒撞名会复用 out 文件）。
@@ -5668,7 +5782,10 @@ class CodeFixOrchestrator:
                     anomaly_streak += 1
                     anomaly_rounds.append(
                         _anomaly_round_form(reg, round_mapped, round_items))
-                    if anomaly_streak >= REGRESSION_ANOMALY_BREAKER_THRESHOLD:
+                    # 阈值按形态取值（evo-codefix-zero-face-regression-
+                    # hardening 1.2）：timeout 首记即收口（1），其余维持 2。
+                    if anomaly_streak >= _anomaly_breaker_threshold(
+                            getattr(reg, "status", "")):
                         # 熔断（add-codefix-parse-error-breaker 2.1）：不再
                         # 派发下一轮定向 run 与全量回归，以 exhausted 等价
                         # 状态进入既有现场即弃收口块（入档/清理/告警零分叉
@@ -5806,7 +5923,7 @@ class CodeFixOrchestrator:
                         f"第 {batch_no} 批失败已跳过（"
                         + (
                             f"回归异常熔断（连续 {anomaly_streak} 次 "
-                            "parse_error/无明细）"
+                            "未产出可用失败明细）"
                             if breaker_triggered else
                             f"回归 {retry_max} 轮定向重试未通过"
                         )

@@ -11,12 +11,22 @@
 - 复燃合档：reg_form 与 fail_count 以最近一次失败为准（mapped 复燃转
   anomaly 即按分档预算触顶，不悬为无告警墓碑）
 - 降档/停派告警一次性：budget_alerted 记录标记判重，复燃再败不重复触发
+
+evo-codefix-zero-face-regression-hardening 扩展（TestTimeoutZeroFaceAnomaly
+Hardening）：timeout 无明细进 anomaly 判据与分档、两个计数点首记即收口
+（timeout 阈值 1）、parse_error/failed 阈值 2 不回归——批 worker 级用例
+复用定向重试套件的编排替身（tests.test_codefix_targeted_retry），零分叉
+harness。
 """
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.test_codefix_targeted_retry import (_CFG_ON, _FakeRunner, _item,
+                                               _make_project_root,
+                                               _write_items, _write_verify_yaml)
 
 
 def _mkdtemp(prefix: str) -> str:
@@ -233,6 +243,189 @@ class TestAnomalyRedispatchBudget(unittest.TestCase):
         todo = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         self.assertEqual(todo.count("## [code-fix]"), 1,
                          "todo 登记一次性（不随复燃重复追加）")
+
+
+class TestTimeoutZeroFaceAnomalyHardening(unittest.TestCase):
+    """timeout 零失败面判据扩展与首记即收口（evo-codefix-zero-face-regression-hardening）。
+
+    2026-10-08 白天实证：``_is_regression_anomaly`` 只认 parse_error/failed
+    无明细，timeout 恒 False——前两批 6 轮全部 timeout（每轮恰好烧满 1800s
+    墙钟），异常计数从未起表，a26dbe88 的 anomaly 分档（预算 1、一次性降档
+    告警）对该形态完全失效。锁定：timeout 无明细进 anomaly 分档、两个计数
+    点首记即收口、parse_error/failed 阈值 2 不回归。
+
+    批 worker 级用例复用定向重试套件的编排替身（同一批收尾循环、同一
+    fake runner 契约），MUST NOT 为本 spec 另起一套分叉 harness。
+    """
+
+    def _orch(self, runner, proot, **cfg_extra):
+        from core.code_fix import CodeFixOrchestrator
+
+        cfg = {"admin": {"code_review_fix": dict(
+            _CFG_ON["admin"]["code_review_fix"], **cfg_extra)}}
+        return CodeFixOrchestrator(runner, proot, config=cfg, logger=None)
+
+    def _signals(self, proot, signal_type):
+        from core.admin_store import AdminStore
+
+        return [r for r in AdminStore(proot, logger=None).read_all()
+                if r.get("signal_type") == signal_type]
+
+    def test_timeout_zero_face_judged_anomaly(self):
+        """1.1：timeout 且无可用明细 → anomaly；timeout 有真实失败面 → 非。"""
+        from types import SimpleNamespace
+
+        from core.code_fix import _is_regression_anomaly
+
+        self.assertTrue(_is_regression_anomaly(
+            SimpleNamespace(status="timeout"), []),
+            "timeout 无明细（junit 缺失/未产出一个用例）判 anomaly")
+        self.assertFalse(_is_regression_anomaly(
+            SimpleNamespace(status="timeout"),
+            [{"nodeid": "tests/test_x.py::test_a"}]),
+            "timeout 但映射出明细 = 有真实失败面，MUST NOT 进异常分档")
+        # 既有形态不回归（add-codefix-parse-error-breaker D1 原语义）
+        self.assertTrue(_is_regression_anomaly(
+            SimpleNamespace(status="parse_error"), []))
+        self.assertTrue(_is_regression_anomaly(
+            SimpleNamespace(status="failed"), []))
+        self.assertFalse(_is_regression_anomaly(
+            SimpleNamespace(status="failed"),
+            [{"nodeid": "tests/test_x.py::test_a"}]))
+        self.assertFalse(_is_regression_anomaly(
+            SimpleNamespace(status="passed"), []))
+
+    def test_breaker_threshold_per_form(self):
+        """1.2：阈值按形态取值——timeout=1（首记即收口），其余维持 2。"""
+        from core.code_fix import (ANOMALY_BREAKER_TIMEOUT_THRESHOLD,
+                                   REGRESSION_ANOMALY_BREAKER_THRESHOLD,
+                                   _anomaly_breaker_threshold)
+
+        self.assertEqual(ANOMALY_BREAKER_TIMEOUT_THRESHOLD, 1)
+        self.assertEqual(REGRESSION_ANOMALY_BREAKER_THRESHOLD, 2)
+        self.assertEqual(_anomaly_breaker_threshold("timeout"), 1)
+        self.assertEqual(_anomaly_breaker_threshold("parse_error"), 2)
+        self.assertEqual(_anomaly_breaker_threshold("failed"), 2)
+        self.assertEqual(_anomaly_breaker_threshold("passed"), 2,
+                         "未知/其它形态保守回落既有阈值")
+
+    def test_timeout_first_hit_stops_batch_without_targeted_run(self):
+        """1.2：首轮全量回归即 timeout 零失败面 → 首记即收口，不派任何定向 run。
+
+        （2026-10-08 批 1 实际形态：改前首轮 timeout 后仍派 1 个定向 run
+        并再烧一轮 1800s 全量回归才可能熔断。）
+        """
+        from core.code_fix import (load_failed_batches, read_progress,
+                                   release_retryable_failed_batches)
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["timeout", "timeout"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        # 首轮 timeout 零失败面即收口：不派定向 run、不再烧第二轮全量回归
+        self.assertEqual(len(runner.fix_calls), 1, "仅首轮 run，未派任何定向轮")
+        self.assertEqual(len(runner.regression_calls), 1, "不再执行第二轮回归")
+        self.assertEqual(runner.worktree_manager.merge_calls, [],
+                         "现场即弃 MUST NOT 合回")
+        self.assertEqual(len(runner.worktree_manager.cleanup_calls), 1)
+        self.assertFalse(runner.worktree_manager.cleanup_calls[0][1],
+                         "现场即弃 cleanup（success=False）")
+        self.assertEqual(read_items(proot)["a"]["status"], "open", "条目保持 open")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason"], "regression_parse_error_breaker")
+        self.assertEqual(failed[0]["reg_form"], "anomaly",
+                         "timeout 无明细入档 anomaly 分档（1.1 判据自动生效）")
+        self.assertEqual(failed[0]["reg_detail"],
+                         {"anomaly_streak": 1, "retry_rounds": 0,
+                          "breaker_triggered": True},
+                         "首记即收口：streak=1、实际执行 0 轮定向重试")
+        self.assertTrue(failed[0].get("detail_ref"))
+        self.assertTrue((proot / failed[0]["detail_ref"]).is_file())
+        # anomaly 分档（预算 1）+ 一次性降档告警随新判据自动生效（重派侧零改动）
+        self.assertEqual(release_retryable_failed_batches(proot), 0,
+                         "anomaly 预算首记即耗尽，不再自动释放")
+        budget = [r for r in self._signals(proot, "code_fix_regression_failed")
+                  if r["description"].startswith("code-fix 批回归终局为零失败面")]
+        self.assertEqual(len(budget), 1, "一次性降档/停派告警恰一条")
+        self.assertIn("停止自动重派", budget[0]["description"])
+        self.assertIn("reg_form=anomaly", budget[0]["evidence"])
+        exhausted = self._signals(proot, "code_fix_retry_budget_exhausted")
+        self.assertEqual(len(exhausted), 1, "触顶告警恰一条（预算 1 即达上限）")
+        self.assertIn("（1 轮）", exhausted[0]["description"])
+        todo = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        self.assertIn("自动重试 1 轮均失败", todo)
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertIn("需人工排查", prog["current"])
+
+    def test_timeout_in_targeted_round_breaks_immediately(self):
+        """1.2：定向轮回归才 timeout 零失败面 → 同样首记即收口（第二计数点）。"""
+        from core.code_fix import load_failed_batches
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["parse_error", "timeout"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        # 首轮 parse_error（计数 1 < 阈值 2）→ 定向轮 1 照常派发；其回归
+        # timeout 零失败面（阈值 1）→ 当轮终止，不再第二轮
+        self.assertEqual(len(runner.fix_calls), 2, "首轮 + 定向轮 1，随后收口")
+        self.assertEqual(len(runner.regression_calls), 2)
+        failed = load_failed_batches(proot)
+        self.assertEqual(failed[0]["reason"], "regression_parse_error_breaker")
+        self.assertEqual(failed[0]["reg_form"], "anomaly")
+        self.assertEqual(failed[0]["reg_detail"],
+                         {"anomaly_streak": 2, "retry_rounds": 1,
+                          "breaker_triggered": True})
+
+    def test_parse_error_threshold_stays_two(self):
+        """1.2 不回归项：parse_error 形态维持阈值 2——首记不收口。"""
+        from core.code_fix import load_failed_batches
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["parse_error", "parse_error"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        self.assertEqual(len(runner.fix_calls), 2,
+                         "首轮计数 1 不达阈值 2 → 定向轮 1 照常派发")
+        self.assertEqual(len(runner.regression_calls), 2)
+        failed = load_failed_batches(proot)
+        self.assertEqual(failed[0]["reason"], "regression_parse_error_breaker")
+        self.assertEqual(failed[0]["reg_detail"]["anomaly_streak"], 2,
+                         "第二轮才达阈值熔断（批 3 实际行为逐位不变）")
+
+    def test_failed_zero_detail_threshold_stays_two(self):
+        """1.2 不回归项：failed 无明细形态阈值 2（2026-10-08 批 3 形态）。"""
+        from core.code_fix import load_failed_batches
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a", first_seen_at="2026-01-01T00:00:00Z")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["failed", "failed"],
+            failure_sets=[[]],
+        )
+        self._orch(runner, proot).checkpoint()
+        self.assertEqual(len(runner.fix_calls), 2, "failed 无明细首记不收口")
+        failed = load_failed_batches(proot)
+        self.assertEqual(failed[0]["reg_detail"]["anomaly_streak"], 2)
 
 
 if __name__ == "__main__":
