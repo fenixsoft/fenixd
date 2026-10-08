@@ -113,7 +113,21 @@ def _sig_specs(s, q, m):
     project = _resolve_project_for_sig(s, q)
     if project is None:
         return None
-    return s.server.summary_index.invalidation_signature(Path(project["path"]))
+    # 签名与响应表示一一对应（code-review item ba4a1e3c3386）：_api_specs
+    # 消费 page/page_size 做服务端切片（带 page 响应追加 total/page/
+    # page_size/has_more），不并入则携带 If-None-Match 的客户端翻页时签名
+    # 仍命中旧 ETag，_dispatch_table 在 handler 之前写 304 空体，后续页取
+    # 不回。page/page_size 原始值直入稳定串后组合（与 _sig_admin_activities
+    # 同一范式：非法值归一属更细粒度方向，宁少 304 不可跨变体假 304）；
+    # 缺省时该串恒定，无参请求仍共享同一 ETag。
+    return _sig.combine(
+        [
+            s.server.summary_index.invalidation_signature(Path(project["path"])),
+            "|".join(
+                f"{k}={q.get(k, [''])[0] or ''}" for k in ("page", "page_size")
+            ),
+        ]
+    )
 
 
 def _sig_spec_detail(s, q, m):
