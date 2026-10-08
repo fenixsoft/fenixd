@@ -13,8 +13,8 @@
 
 #### Scenario: timeout 零失败面首记即收口
 
-- **When** 同一批定向重试中出现首记 timeout 零失败面
-- **Then** 不再等待连续 2 次计数，当轮即提前终止本批定向重试并按 anomaly 预算停止自动重派；parse_error/failed 形态的既有熔断阈值维持 2 不变
+- **When** 同一批中出现首记 timeout 零失败面（无论落在首轮全量回归还是任一定向轮回归）
+- **Then** 不再等待连续 2 次计数，该轮即提前终止本批定向重试（首轮命中则不派任何定向 run）并按 anomaly 预算停止自动重派；parse_error/failed 形态的既有熔断阈值维持 2 不变
 
 #### Scenario: 明细档留存慢测试进度
 
