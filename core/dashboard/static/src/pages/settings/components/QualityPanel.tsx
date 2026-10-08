@@ -476,6 +476,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           >
             <InputNumber
               min={1}
+              precision={0}
               style={{ width: '100%' }}
               addonAfter="秒"
               data-testid="impl-code-review-timeout"
@@ -500,6 +501,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           >
             <InputNumber
               min={1}
+              precision={0}
               style={{ width: '100%' }}
               addonAfter="个"
               data-testid="impl-code-review-concurrency"
@@ -529,6 +531,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           >
             <InputNumber
               min={1}
+              precision={0}
               style={{ width: '100%' }}
               addonAfter="个"
               data-testid="repo-code-review-concurrency"
