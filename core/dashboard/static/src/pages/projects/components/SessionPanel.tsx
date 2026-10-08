@@ -154,8 +154,15 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 实时更新不可用失败态（code-review items 2303508d27ff / a67da3eb2778 共用
   // 提示位）：SSE 断流（含 503 永久停止重连）或 watch 注册重试耗尽时置位，
   // 面板顶部提示「实时更新不可用」；恢复路径（SSE onopen / watch 注册成功）
-  // 复位。effect 重建（切回分面/切项目）时无条件复位。
+  // 复位（watch 注册成功路径仅 SSE 处于连接态时复位，见下方 sseConnectedRef）。
+  // effect 重建（切回分面/切项目）时无条件复位。
   const [streamDown, setStreamDown] = useState(false);
+  // SSE 连接态镜像（code-review item 32630a523c16）：streamDown 两个置位根因
+  // （SSE 断流 / watch 注册重试耗尽）的恢复信号不同——SSE 的恢复只有 onopen。
+  // onerror/onopen 各自写入本 ref，watch 重试成功路径读它决定能否清失败态：
+  // 失败态若先由 onerror 置位（SSE 仍断流、兜底轮询在跑），随后的 REST 注册
+  // 成功不代表事件通道恢复，不得清除提示，等 onopen 再清。
+  const sseConnectedRef = useRef(false);
   // 补全候选（add-session-composer 3.1/3.2）：端点封装已吞错降级为空数组
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
@@ -375,6 +382,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     if (!active || !project) return;
     let disposed = false;
     setStreamDown(false);
+    // 新连接在 onopen 前不算连接态（跨 effect 运行残留的 true 会让 watch 重试
+    // 成功路径误判 SSE 已恢复而提前清失败态）
+    sseConnectedRef.current = false;
 
     // ── SSE 断流降级（code-review item 2303508d27ff）──
     // onerror 只靠「原生自动重连」不够：非 200 响应（连接数满 503 等）会让
@@ -445,7 +455,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
             watchRegisteredRef.current = true;
             if (disposed) return;
             watchRetryCount = 0;
-            setStreamDown(false);
+            // 仅 SSE 处于连接态才清失败态（code-review item 32630a523c16）：
+            // 失败态若先由 onerror 置位（SSE 仍断流、兜底轮询在跑），REST 注册
+            // 成功不代表事件通道恢复，无条件清除会抹掉降级提示、与「已降级为
+            // 低频刷新」的告知语义相悖——保持失败态与轮询，等 onopen（SSE 真恢复
+            // 信号）再清；失败态纯由 watch 重试置位（SSE 连接正常）时照旧立即清除。
+            if (sseConnectedRef.current) setStreamDown(false);
             const again = await getSession(projectRef.current);
             if (disposed) return;
             if (again.session) applySnapshotCarried(again);
@@ -540,6 +555,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // 连接（重新）建立：清除断流失败态并停兜底轮询（2303508d27ff 的恢复路径）
     es.onopen = () => {
       if (disposed) return;
+      sseConnectedRef.current = true;
       setStreamDown(false);
       stopStreamFallback();
     };
@@ -578,6 +594,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 永久停止重连——置失败态并降级低频快照轮询兜底（2303508d27ff），
       // 连接恢复由 onopen 清除失败态并停轮询
       if (disposed) return;
+      sseConnectedRef.current = false;
       setStreamDown(true);
       startStreamFallback();
     };
