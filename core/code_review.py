@@ -402,6 +402,55 @@ def write_items(project_root, records) -> None:
     _with_lock(path, _do)
 
 
+def _mutate_items_unlocked(
+    path: Path,
+    mutator,
+    *,
+    degraded_note: Optional[str] = None,
+    strict_degraded: bool = False,
+) -> None:
+    """锁内使用的 items.jsonl 读-改-写单源（六处写路径共用样板）。
+
+    upsert_findings / resolve_snapshot / set_item_status / _mark_in_spec /
+    mark_resolved / mark_ignored 的同构闭包（锁内读取 → 守卫过滤 → sorted
+    回写损坏行 → _atomic_write）收敛于此：``mutator(current) -> bool`` 对
+    ``item_id → 记录 dict`` 原地施展各自的守卫过滤逻辑，返回是否需要落盘
+    （False 即零命中不重写，对齐 9ec5d0c097ca 的 changed 短路）；True 则
+    sorted 序列化 + JSON 损坏行原样回写保留（9a358bba128c：不静默丢弃）+
+    原子替换。
+
+    读降级（OSError 类）口径按各写路径既有行为逐路复刻、不借机统一：
+    - ``strict_degraded=True``（须与 ``degraded_note`` 同传）：记 WARNING 后
+      上抛 ``OSError``（_mark_in_spec 专属——SPEC 此刻已提交并注册，静默
+      跳过会让 generate_fix_spec 误判置位成功、条目留在 open 下轮重复立项，
+      8e0e362859de；上抛复用其置位写失败错误通道）；
+    - 仅传 ``degraded_note``：记 WARNING（含该后缀文案）后拒绝本次全量替换
+      保持台账原样（9a358bba128c——瞬时读故障窗口内的全量替换会把台账整体
+      清空），mutator 不执行；
+    - 二者皆缺省：不单独处置，降级读得空集后 mutator 照常执行
+      （resolve_snapshot 靠零变更短路、set_item_status 走「条目不存在」，
+      均为既有天然 no-op 口径）。
+
+    MUST NOT 在此再加锁（_with_lock 契约禁止在 fn 内重入同一把锁）。
+    """
+    corrupted: List[str] = []
+    read_degraded: List[bool] = []
+    current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
+    if read_degraded:
+        if strict_degraded:
+            _logger.warning("code_review: items.jsonl 读取降级，%s", degraded_note)
+            raise OSError(f"items.jsonl 读取降级，{degraded_note}（{path}）")
+        if degraded_note is not None:
+            _logger.warning("code_review: items.jsonl 读取降级，%s", degraded_note)
+            return
+    if not mutator(current):
+        return
+    content = "".join(json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current))
+    # JSON 损坏行原样回写保留（code-review item 9a358bba128c：不静默丢弃）
+    content += "".join(raw + "\n" for raw in corrupted)
+    _atomic_write(path, content)
+
+
 # ── 指纹与归一化 ─────────────────────────────────────────────────────
 
 
@@ -752,17 +801,8 @@ def upsert_findings(
     # （升档晋级按当日批处置）。
     gate = severity_gate_config(project_root)
 
-    def _do() -> None:
+    def _apply(current: Dict[str, dict]) -> bool:
         nonlocal inserted, updated
-        corrupted: List[str] = []
-        read_degraded: List[bool] = []
-        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
-        if read_degraded:
-            # 读降级（OSError 类）：台账完整性未知，拒绝本次全量替换保持
-            # 台账原样——瞬时读故障窗口内的全量替换会把既有条目整体清掉
-            #（code-review item 9a358bba128c）
-            _logger.warning("code_review: items.jsonl 读取降级，本轮审查发现跳过落账")
-            return
         by_fp: Dict[str, dict] = {}
         for rec in current.values():
             fp = rec.get("fingerprint")
@@ -822,14 +862,12 @@ def upsert_findings(
                 # 锚（同指纹合并沿既有分支，不新增立项路径）
                 apply_severity_gate_marker(rec, gate)
                 updated += 1
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        # JSON 损坏行原样回写保留（code-review item 9a358bba128c：不静默丢弃）
-        content += "".join(raw + "\n" for raw in corrupted)
-        _atomic_write(path, content)
+        # upsert 语义即全量重写（无零变更短路）：空 findings 也按现序重排落盘
+        return True
 
-    _with_lock(path, _do)
+    # 读降级拒写（code-review item 9a358bba128c）：台账完整性未知，拒绝本次
+    # 全量替换保持台账原样——瞬时读故障窗口内的全量替换会把既有条目整体清掉
+    _with_lock(path, lambda: _mutate_items_unlocked(path, _apply, degraded_note="本轮审查发现跳过落账"))
     return {"inserted": inserted, "updated": updated}
 
 
@@ -849,10 +887,8 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
     path = items_path(project_root)
     resolved_count = 0
 
-    def _do_locked() -> None:
+    def _apply(current: Dict[str, dict]) -> bool:
         nonlocal resolved_count
-        corrupted: List[str] = []
-        current = _read_items_unlocked(path, corrupted_out=corrupted)
         changed = False
         for rec in current.values():
             if rec.get("status") != "open":
@@ -865,15 +901,10 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
             # last_seen_at 保持最后观测时刻不动（核销时刻由 resolved_at 承载）
             changed = True
             resolved_count += 1
-        if changed:
-            content = "".join(
-                json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-            )
-            # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
-            content += "".join(raw + "\n" for raw in corrupted)
-            _atomic_write(path, content)
+        return changed
 
-    _with_lock(path, _do_locked)
+    # 读降级不单独处置（既有口径）：降级读得空集 → 零变更短路天然不落盘
+    _with_lock(path, lambda: _mutate_items_unlocked(path, _apply))
     return resolved_count
 
 
@@ -894,38 +925,34 @@ def set_item_status(project_root, item_id: str, status: str, spec_name: Optional
             "error": f"状态 {status!r} 不可经人工流转置入（仅 open/ignored）",
         }
     path = items_path(project_root)
+    result: dict = {}
 
-    def _impl() -> dict:
-        corrupted: List[str] = []
-        current = _read_items_unlocked(path, corrupted_out=corrupted)
+    def _apply(current: Dict[str, dict]) -> bool:
         rec = current.get(item_id)
         if rec is None:
-            return {
+            result.update({
                 "ok": False,
                 "item_id": item_id,
                 "status": status,
                 "error": f"条目不存在: {item_id}",
-            }
+            })
+            return False
         prev = rec.get("status")
         if prev == status:
             # 幂等：重复标记同一状态不报错、无副作用
-            return {"ok": True, "item_id": item_id, "status": status, "error": None, "idempotent": True}
+            result.update({"ok": True, "item_id": item_id, "status": status, "error": None, "idempotent": True})
+            return False
         rec["status"] = status
         if status == "open" and prev == "in_spec":
             # 清除归属：in_spec → open 时清空 spec_name
             rec["spec_name"] = None
         if spec_name is not None:
             rec["spec_name"] = spec_name
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
-        content += "".join(raw + "\n" for raw in corrupted)
-        _atomic_write(path, content)
-        return {"ok": True, "item_id": item_id, "status": status, "error": None}
+        result.update({"ok": True, "item_id": item_id, "status": status, "error": None})
+        return True
 
-    result = {}
-    _with_lock(path, lambda: result.update(_impl()))
+    # 读降级不单独处置（既有口径）：降级读得空集 → 走「条目不存在」错误且不落盘
+    _with_lock(path, lambda: _mutate_items_unlocked(path, _apply))
     return result
 
 
@@ -1873,19 +1900,7 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
     """
     path = items_path(project_root)
 
-    def _do() -> None:
-        corrupted: List[str] = []
-        read_degraded: List[bool] = []
-        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
-        if read_degraded:
-            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
-            #（code-review item 9a358bba128c）。MUST 上抛而非静默 return：
-            # SPEC 此刻已提交并注册，静默跳过会让 generate_fix_spec 以
-            # ok=True 收尾，条目留在 open、下轮对同一批问题重复立项
-            #（code-review item 8e0e362859de）。上抛 OSError 复用调用方
-            # 置位写失败的既有错误通道（SPEC 已生成、勿重试、需人工核对）。
-            _logger.warning("code_review: items.jsonl 读取降级，in_spec 置位未落盘")
-            raise OSError(f"items.jsonl 读取降级，in_spec 置位未落盘（{path}）")
+    def _apply(current: Dict[str, dict]) -> bool:
         changed = False
         for iid in item_ids:
             rec = current.get(iid)
@@ -1901,18 +1916,18 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
             rec.pop(SEVERITY_DEFERRED_FIELD, None)
             rec.pop(SEVERITY_DEFERRED_SINCE_FIELD, None)
             changed = True
-        if not changed:
-            # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
-            # 无意义写放大与 mtime 抖动（code-review item 9ec5d0c097ca）
-            return
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
-        content += "".join(raw + "\n" for raw in corrupted)
-        _atomic_write(path, content)
+        return changed
 
-    _with_lock(path, _do)
+    # 读降级 MUST 上抛而非静默 return（code-review item 8e0e362859de）：
+    # SPEC 此刻已提交并注册，静默跳过会让 generate_fix_spec 以 ok=True
+    # 收尾，条目留在 open、下轮对同一批问题重复立项；上抛 OSError 复用
+    # 调用方置位写失败的既有错误通道（SPEC 已生成、勿重试、需人工核对）。
+    _with_lock(
+        path,
+        lambda: _mutate_items_unlocked(
+            path, _apply, degraded_note="in_spec 置位未落盘", strict_degraded=True
+        ),
+    )
 
 
 def mark_resolved(project_root, item_ids: List[str]) -> int:
@@ -1941,16 +1956,8 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
     hit = 0
     now = _now_iso()
 
-    def _do() -> None:
+    def _apply(current: Dict[str, dict]) -> bool:
         nonlocal hit
-        corrupted: List[str] = []
-        read_degraded: List[bool] = []
-        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
-        if read_degraded:
-            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
-            #（code-review item 9a358bba128c）
-            _logger.warning("code_review: items.jsonl 读取降级，resolved 核销跳过落盘")
-            return
         for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
             rec = current.get(iid)
             if rec is None or rec.get("status") != "open":  # 同 mark_ignored 守卫
@@ -1963,18 +1970,10 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
             rec.pop(SEVERITY_DEFERRED_FIELD, None)
             rec.pop(SEVERITY_DEFERRED_SINCE_FIELD, None)
             hit += 1
-        if not hit:
-            # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
-            # 无意义写放大与 mtime 抖动（code-review item 9ec5d0c097ca）
-            return
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
-        content += "".join(raw + "\n" for raw in corrupted)
-        _atomic_write(path, content)
+        return bool(hit)
 
-    _with_lock(path, _do)
+    # 读降级拒写（code-review item 9a358bba128c）：保持台账原样
+    _with_lock(path, lambda: _mutate_items_unlocked(path, _apply, degraded_note="resolved 核销跳过落盘"))
     return hit
 
 
@@ -2010,16 +2009,8 @@ def mark_ignored(
     now = _now_iso()
     reason_map = reasons or {}
 
-    def _do() -> None:
+    def _apply(current: Dict[str, dict]) -> bool:
         nonlocal hit
-        corrupted: List[str] = []
-        read_degraded: List[bool] = []
-        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
-        if read_degraded:
-            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
-            #（code-review item 9a358bba128c）
-            _logger.warning("code_review: items.jsonl 读取降级，ignored 置位跳过落盘")
-            return
         for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
             rec = current.get(iid)
             if rec is None or rec.get("status") != "open":
@@ -2029,18 +2020,10 @@ def mark_ignored(
             rec["ignored_reason"] = reason_map.get(iid, "")
             rec["ignored_at"] = now
             hit += 1
-        if not hit:
-            # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
-            # 无意义写放大与 mtime 抖动（code-review item 9ec5d0c097ca）
-            return
-        content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
-        )
-        # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
-        content += "".join(raw + "\n" for raw in corrupted)
-        _atomic_write(path, content)
+        return bool(hit)
 
-    _with_lock(path, _do)
+    # 读降级拒写（code-review item 9a358bba128c）：保持台账原样
+    _with_lock(path, lambda: _mutate_items_unlocked(path, _apply, degraded_note="ignored 置位跳过落盘"))
     return hit
 
 
