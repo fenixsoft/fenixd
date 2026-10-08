@@ -85,9 +85,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   }, [config]);
 
   // onConsumed 的 ref 镜像：聚焦 effect 的依赖只保留信号本身，父级内联
-  // 箭头每渲染换新身份也不会重跑聚焦
+  // 箭头每渲染换新身份也不会重跑聚焦。写 ref 须落 effect、渲染保持纯净
+  // （比照 list.tsx specMapRef：渲染期写 ref 在并发渲染/StrictMode 下可能
+  // 带上被丢弃渲染的值）（code-review item 2ff25e77442c）
   const onConsumedRef = useRef(onConsumed);
-  onConsumedRef.current = onConsumed;
+  useEffect(() => {
+    onConsumedRef.current = onConsumed;
+  }, [onConsumed]);
 
   // 聚焦信号到达：滚到 verify.yaml 卡片并把光标送入编辑框（延迟等待页签
   // 切换后本面板真正挂载渲染完成）
@@ -216,11 +220,15 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 首次加载未完成（草稿还是空串）或期间已切换项目（草稿仍是上一个项目的
   // 内容）时拒绝保存，防止以当前项目名把旧契约/空串写盘覆盖既有契约。
   const yamlDraftSourceRef = useRef<{ project: string; seq: number } | null>(null);
-  // project prop 的渲染期镜像（比照 onConsumedRef 口径）：保存往返期间用户切换
+  // project prop 的镜像（比照 onConsumedRef 口径）：保存往返期间用户切换
   // 项目时，保存回调闭包里的 project 已过期，handleYamlSave 据此判定是否跳过
-  // 保存成功后的视图对账（code-review item 916d9186a619）
+  // 保存成功后的视图对账（code-review item 916d9186a619）。写 ref 落在 effect
+  // 内、渲染保持纯净（与 list.tsx specMapRef 同一纪律，
+  // code-review item 2ff25e77442c）
   const projectRef = useRef(project);
-  projectRef.current = project;
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
   // 草稿保护：镜像当前草稿值（加载回调是异步闭包，读不到最新 state）+
   // 最近一次服务器返回内容基线。静默回写（保存后重载）前比对——草稿既不
   // 等于基线也不等于服务器新内容，说明有未保存的用户修改，保留草稿并提示，
