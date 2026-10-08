@@ -365,7 +365,14 @@ class RecoveryWatch:
         """
         raised = []
         now = time.time()
-        for spec_name, item in list(self._recovery_watch.items()):
+        # items 快照采集持锁（code-review item 6a997d8c3ad8）：并发
+        # register_recovery_watch 插入新键恰逢 list() 迭代 dict 视图时抛
+        # "dictionary changed size during iteration"，异常逃出本方法将中止
+        # 整轮复查（升级信号静默丢失一轮）。仅快照持锁，条目内字段的后续
+        # 读改写仍按下方既有口径逐条持锁，不在锁内做重活。
+        with self._watch_lock:
+            pending = list(self._recovery_watch.items())
+        for spec_name, item in pending:
             # due 字段类型守卫（code-review item a4b93d0d0bd7）：recovery_watch.json
             # 被手工编辑或部分损坏时（_load_recovery_watch 只过滤非 dict 条目，
             # 不校验字段类型）due 可为非数值字符串，裸 float() 抛 ValueError
