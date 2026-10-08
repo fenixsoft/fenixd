@@ -67,16 +67,27 @@ class G8QueryMixin:
         实现 death 时据分支名回推 spec（cleanup 注册遗产用）。与 _spec_from_worktree_name
         对称：取 ``fenix/`` 之后、末段 ``-<ts>`` 之前的部分。verifier 分支含 ``verify-``
         前缀，去掉前缀后同样取到 spec。段数不足返回 None。
+
+        解析骨架与 :meth:`_impl_branch_owned_by_spec` 同一（code-review item
+        abf1ff801bd1 对偶约束）：去命名空间前缀、末段 MUST 为纯数字时间戳，
+        再按前段形态判别。两链对「前段形如 ``verify-<spec>``」的选边解释相反
+        且为既定取舍——分支名对「verify- 开头 spec 的实现分支」与「验证分支」
+        天然不可区分：本回推链按**验证分支语义**剥 ``verify-`` 得 ``<spec>``
+        （verifier 分支是本 helper 的活调用方，lifecycle 收尾锁释放以分支反推
+        spec 依赖 verify→spec 映射，翻转选边会把 verifier 锁解析到错误键）；
+        归属判定链按**实现分支语义**前段与 spec 名整体全等。对 spec 名不以
+        ``verify-`` 开头的常规分支，两链与历史口径结果一致。
         """
         if not branch or not branch.startswith("fenix/"):
             return None
-        rest = branch[len("fenix/") :]
-        if rest.startswith("verify-"):
-            rest = rest[len("verify-") :]
-        parts = rest.rsplit("-", 1)
-        if len(parts) == 2 and parts[0] and parts[1].isdigit():
-            return parts[0]
-        return None
+        parts = branch[len("fenix/") :].rsplit("-", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1].isdigit():
+            return None
+        front = parts[0]
+        if front.startswith("verify-"):
+            # 验证分支语义选边：剥 verify- 得 <spec>（空段退化形态返回 None）
+            return front[len("verify-") :] or None
+        return front
 
     def file_exists_on_branch(self, branch: str, rel_path: str) -> bool:
         """校验某相对路径在分支 HEAD 提交中是否存在（交付物守卫校验基准）。
@@ -411,7 +422,10 @@ class G8QueryMixin:
         # is_available 三态单源校验：非 available/rebuildable 候选不作为依据
         valid: list = []
         for path, branch in candidates:
-            state = self.is_available(path, branch)
+            # known_registered=候选自身：上方 porcelain 解析即注册命中证据，
+            # 复用之以免 is_available 内部对同一清单重复跑 git worktree list
+            # 子进程（code-review item 7a197ebd354a，契约同 repair_site）
+            state = self.is_available(path, branch, known_registered=Path(path))
             if state in (WT_AVAILABLE, WT_REBUILDABLE):
                 valid.append((path, branch))
             else:
@@ -824,7 +838,11 @@ class G8QueryMixin:
         「分支名去命名空间前缀 + 末段纯数字时间戳 + 前段与 spec 名全等」边界
         解析统一走本方法。MUST NOT 复用 ``_spec_from_branch``（它剥
         ``verify-`` 前缀，会把 ``<prefix>/verify-<spec>-<ts>`` 验证分支误算作
-        本 spec 的实现分支）。
+        本 spec 的实现分支）。对偶约束（code-review item abf1ff801bd1）：
+        两者共享同一结构判别骨架，但对前段 ``verify-<spec>`` 选边解释相反——
+        回推链按验证分支语义剥 ``verify-``（verifier 分支是其活调用方，
+        lifecycle 收尾锁释放依赖该映射），本方法按实现分支语义整体全等；
+        改任一侧选边 MUST 同步复核另一侧全部调用方。
 
         判别规则：
 
