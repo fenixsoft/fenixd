@@ -4,7 +4,13 @@
 
 ### Requirement: 发现分级处置门限
 
-code-review-fix 车道 SHALL 按发现的 severity 分流处置：severity 达到 min_immediate_severity（缺省 major）的条目保持既有当日批序；低于门限的条目（minor/info）延后累积，仅在 minor_batch_cadence（缺省 weekly）定义的周批窗口进入修复批。
+code-review-fix 车道 SHALL 按发现的 severity 分流处置：severity 达到 min_immediate_severity（缺省 major）的条目保持既有当日批序；低于门限的条目（minor/info）延后累积，仅在 minor_batch_cadence（天数，缺省 7）定义的周批窗口进入修复批。分级门限 SHALL NOT 作用于 category 以 `regression-` 为前缀的回归来源条目——回归复发保持既有当日重修语义（add-regression-auto-fix）。
+
+#### Scenario: 回归来源条目豁免门限
+
+- **WHEN** 一轮选批同时含 code-review 来源 minor 条目与 regression- 来源复发条目
+- **THEN** regression- 来源条目照常进入当日批
+- **AND** 仅 code-review 来源 minor/info 条目被挂起
 
 #### Scenario: 混合严重度选批分流
 
@@ -29,7 +35,7 @@ code-review-fix 车道 SHALL 按发现的 severity 分流处置：severity 达�
 
 ### Requirement: deferred 与链收敛对账
 
-deferred 条目 SHALL NOT 被链收敛判据误判为 chain_skipped 或被指纹重开（reopen，core/code_fix.py:2528）机制重复立项；同一指纹在 deferred 期间被再次报出 SHALL 合并而非新增。
+deferred 条目 SHALL NOT 被链收敛判据（chain_skipped 对账与链末批判定）误判为 skipped/lost；同一指纹在 deferred 期间被再次报出 SHALL 沿既有台账 upsert 合并分支（core/code_review.py upsert_findings）刷新而非新增，分级门限 MUST NOT 引入重复立项路径。severity 挂起台账 MUST 与既有 WIP-defer 延迟合回台账（core/code_fix.py fix-deferred.json / _deferred_item_ids / first_deferred_at）保持独立命名与独立载体，互不串写。
 
 #### Scenario: deferred 不误判收敛
 
@@ -39,7 +45,7 @@ deferred 条目 SHALL NOT 被链收敛判据误判为 chain_skipped 或被指纹
 
 ### Requirement: 门限配置回退缺省
 
-admin.code_review_fix.min_immediate_severity 与 minor_batch_cadence SHALL 沿既有严格校验+回退缺省范式：非法值回退缺省（major / weekly）并告警，不阻断评审与修复主链。
+admin.code_review_fix.min_immediate_severity 与 minor_batch_cadence SHALL 沿既有严格校验+回退缺省范式：非法值回退缺省（major / 7）并告警，不阻断评审与修复主链。
 
 #### Scenario: 非法配置回退
 

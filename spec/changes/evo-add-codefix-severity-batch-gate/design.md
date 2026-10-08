@@ -20,8 +20,9 @@ get_code_review_fix_config 增加两键：
 
 在 checkpoint 选批处（_select_batch_order_key 消费侧）加 severity 过滤：
 - severity >= 门限：保持既有当日批序（first_seen_at 排序不变）。
-- severity < 门限：跳过并置 deferred 标记（含 deferred_since 时间戳）；当 now - 首个 deferred_since >= minor_batch_cadence 天时放行整组。
-- deferred 条目在链收敛统计与 chain_skipped 对账中按「挂起」计，不计为 skipped/lost；指纹重开（:2528）命中 deferred 条目时合并（刷新 last_seen_at）而非新开条目。
+- severity < 门限：跳过并置挂起标记（字段名用 severity_deferred / severity_deferred_since，与既有 WIP-defer 延迟合回台账 fix-deferred.json 的 _deferred_item_ids/first_deferred_at 显式区分——两机制不共载体、不共放行判据）；当 now - 首个 severity_deferred_since >= minor_batch_cadence 天时放行整组。
+- regression- 前缀条目（回归来源，severity 为 high/medium/low 值域）豁免门限，保持既有当日处置；「未知档位按低于门限」仅适用于 code-review 来源。
+- deferred 条目在链收敛统计、chain_skipped 对账与 is_chain_last_batch 排除口径中按「挂起」计，不计为 skipped/lost（is_chain_last_batch 既有 exclude 集已含 WIP-defer 的 _deferred_item_ids，须扩入 severity 挂起集，与 checkpoint 选批门限同口径）；同指纹重复发现由台账 upsert_findings 既有合并分支免费满足（刷新 last_seen_at 而非新开；reopen_regression_items 仅作用 regression- 前缀条目、与 deferred 主体无关），不新增合并代码；重复发现把 severity 刷到达门限档位时按当日批处置并清除挂起标记。
 - 过滤关闭路径：门限缺省 major 且词表含 info/minor/major，min_immediate_severity 配成最低档时行为与现状完全一致（空窗零差异），保证可灰度回退。
 
 ### 3. 候选层（core/code_review.py）
@@ -37,4 +38,5 @@ generate_fix_spec 的候选筛选（:1422-1428 status==open 之上）应用同�
 ### 5. 风险
 
 - deferred 与指纹重开/链收敛的交互是最大风险点：测试须覆盖 deferred 期间重复发现、deferred 跨周批晋级、门限回退三条路径。
-- 词表硬编码 severity 的评审来源若未来出现新档位，须显式映射后才能进入选批（未知档位按低于门限处理并告警，fail-open 挂起而非误修）。
+- severity 词表实测为四档 critical|major|minor|info（core/code_review.py:427-431，normalize_severity 把 high/medium→major、low→minor 归一）；门限比较按档位序 info<minor<major<critical，min_immediate_severity 配成最低档 info 时与现状零差异。
+- 词表硬编码 severity 的评审来源若未来出现新档位，须显式映射后才能进入选批（code-review 来源未知档位按低于门限处理并告警，fail-open 挂起而非误修；regression- 来源条目豁免门限，不受该规则影响）。
