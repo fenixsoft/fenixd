@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-07 04:01 UTC+8
+> 最后更新：2026-10-09 03:14 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -41,7 +41,7 @@
 | [interaction-contract](interaction-contract.md) | 交互契约与逐断言分诊 | 2026-10-03 04:59 |
 | [visual-baseline-integrity](visual-baseline-integrity.md) | 视觉校验基线完整性 | 2026-10-03 04:59 |
 | [visual-capture-robustness](visual-capture-robustness.md) | 视觉采集稳健性 | 2026-10-03 04:59 |
-| [inconclusive-parallel-backoff](inconclusive-parallel-backoff.md) | 无结论重验并行降档 | 2026-10-03 04:59 |
+| [inconclusive-parallel-backoff](inconclusive-parallel-backoff.md) | 无结论重验并行降档（含降档覆盖字段 int/None 类型契约） | 2026-10-09 03:14 |
 | [blocked-reverify-gate](blocked-reverify-gate.md) | BLOCKED 重验直通道 | 2026-10-03 04:59 |
 | [verification-completion-gate](verification-completion-gate.md) | 验证完成门 | 2026-10-03 04:59 |
 | [verify-report-gate](verify-report-gate.md) | 验证报告门 | 2026-10-03 04:59 |
