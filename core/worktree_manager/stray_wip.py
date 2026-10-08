@@ -51,6 +51,17 @@ UNTRACKED_SIGNAL_TYPE = "maintree_untracked_stray_stale"
 # SIGNAL_RECOMMENDATION / STORED_SIGNAL_TYPES + 摄取项目名解析清单）。
 UNTRACKED_ESCALATED_SIGNAL_TYPE = "maintree_untracked_stray_escalated"
 
+# 白名单脱落信号（evo-whitelist-tracked-patrol 1.1）：被 .gitignore `!`
+# 放行规则显式放行（＝声明了入库意图）却不在 git 索引中的路径——白名单
+# 约定「状态文件随仓库入库」的机械反差，几乎必然是脱落事故（实证：c91213f
+# 误删 .fenix/verify.yaml 后盘上 untracked 副本掩盖问题 6 天——negation
+# 豁免让散件流正确地不计入它，豁免之后零机制反向核查 tracked 状态）。
+# severity major、admin_monitor 三表登记接入自动唤起（对齐
+# maintree_untracked_stray_escalated 先例）；即时发射无阈值无宽限（脱落
+# 无「滞留容忍」语义）；不自动执行 git add 类修复动作，信号只唤起人工/裁决
+# 处置（处置二选一：git add 恢复入库，或删除放行规则承认其为运行时文件）。
+WHITELIST_UNTRACKED_SIGNAL_TYPE = "whitelist_untracked"
+
 # 第二档升级滞留时长阈值（分钟）：24 小时（proposal 验收口径）。
 UNTRACKED_ESCALATION_STALE_MINUTES = 24 * 60.0
 
@@ -173,6 +184,25 @@ def session_attribution_action(config) -> str:
     return val if val in _SESSION_ATTRIBUTION_ACTIONS else "keep"
 
 
+def _porcelain_untracked_paths(status_stdout: str) -> list:
+    """``git status --porcelain -uall`` 的 untracked 逐文件路径清单。
+
+    untracked 散件流与白名单脱落流的共同候选源（两流共用同一份 porcelain
+    解析，``-uall`` 保证目录不折叠成 ``dir/``、entry 级判定成立）。``?? ``
+    行按「反转义后末列」取路径（quoted-form 还原，与 mergeback 同款）。
+    """
+    from core.worktree_manager.mergeback import _unquote_git_path
+
+    paths: list = []
+    for line in status_stdout.splitlines():
+        if not line.startswith("?? "):
+            continue
+        raw = line[3:].strip()
+        if raw:
+            paths.append(_unquote_git_path(raw))
+    return paths
+
+
 class MainTreeStrayWipSweeper:
     """主树散件 WIP 周期盘点器：只读建档 + 宽限升级，零触碰。
 
@@ -200,6 +230,13 @@ class MainTreeStrayWipSweeper:
         # 第二档升级信号标记——同一集合只升级一次。体积采集随注册表输出
         # （``sizes_bytes`` 逐条目字节 / ``total_bytes`` 集合合计）。
         self._untracked_registry: dict = {}
+        # 白名单脱落注册表（evo-whitelist-tracked-patrol 1.1）：形态同上，
+        # 指纹语义＝放行-未跟踪路径排序集 + 逐文件内容 sha256（复用
+        # ``_untracked_fingerprint``，untracked 不可复用 tracked 指纹形态的
+        # 同款论证适用）。与 tracked/untracked 注册表分账独立：各流按「当前
+        # 指纹集」复位，混账会被他侧清空。``rules`` 键随条目留存 check-ignore
+        # 放行规则快照，供告警 evidence 取证。
+        self._whitelist_registry: dict = {}
 
     # ── 基础 ────────────────────────────────────────────────────────────
 
@@ -294,7 +331,24 @@ class MainTreeStrayWipSweeper:
         # 1.5) untracked 散件口径（2.1）：entry 级判定（porcelain -uall 逐文件
         #      展开），豁免 .fenix/ negation 放行项与已 ignore 路径。git 查询
         #      失败按放弃本轮（保守：条目保留，与 status 不可用同款处置）。
-        untracked = self._untracked_stray_entries(status_stdout=status)
+        #      check-ignore 批量通道一次取回、untracked 流与白名单脱落流
+        #      （evo-whitelist-tracked-patrol 1.1）共用同一次查询——持锁临界
+        #      区内同命令只跑一遍（与 status 共用同款纪律），两流各取各的
+        #      判定（放行项此处豁免不计散件、彼处恰是检测目标），互不污染。
+        stray_paths = _porcelain_untracked_paths(status)
+        check_detail = (
+            self._git_check_ignore_detail(stray_paths) if stray_paths else {}
+        )
+        if stray_paths and check_detail is None:
+            self._log(
+                "warning",
+                "Stray WIP sweep skipped (check-ignore inventory unavailable; "
+                "conservative abandon, entries kept)",
+            )
+            return None
+        untracked = self._untracked_stray_entries(
+            status_stdout=status, detail=check_detail
+        )
         if untracked is None:
             self._log(
                 "warning",
@@ -308,6 +362,13 @@ class MainTreeStrayWipSweeper:
             # tracked 侧放弃本轮（diff 失败/识别器缺失）：untracked 条目同轮
             # 保留交下轮，注册表均不复位（保守不告警）。
             return None
+        # 1.6) 白名单脱落口径（evo-whitelist-tracked-patrol 1.1）：`!` 放行 +
+        #      不在索引＝白名单脱落。插桩在 untracked 空集早退**之前**（与
+        #      untracked 流插桩理由同款：早退不得吞掉本流判定），结果以附加键
+        #      ``whitelist_untracked`` 并入返回。
+        result["whitelist_untracked"] = self._whitelist_signal(
+            stray_paths, check_detail
+        )
         if not untracked:
             self._reset_untracked_registry_absent(set())
             return result
@@ -447,7 +508,9 @@ class MainTreeStrayWipSweeper:
     # ── untracked 散件口径（add-verify-evidence-placement-contract 2.1）──
 
     def _untracked_stray_entries(
-        self, status_stdout: "str | None" = None
+        self,
+        status_stdout: "str | None" = None,
+        detail: "dict[str, str] | None" = None,
     ) -> "list[str] | None":
         """untracked 散件清单（entry 级，已豁免放行项与 ignore 路径）。
 
@@ -469,6 +532,10 @@ class MainTreeStrayWipSweeper:
                 传入时跳过子进程直接解析——``_sweep_locked`` 持锁临界区内
                 tracked 流与 untracked 流共用同一次查询、同命令只跑一遍
                 （与 ``_list_dirty_tracked_files(status_stdout=...)`` 同款手法）。
+            detail: 已取回的 check-ignore 批量明细（``_git_check_ignore_detail``
+                返回形态）——``_sweep_locked`` 内 untracked 流与白名单脱落流
+                共用同一次 check-ignore 查询（同命令只跑一遍）；缺省 None 时
+                自行查询（独立调用形态保持可用）。
 
         git 查询失败返回 None（调用方按放弃本轮处置，条目保留）。check-ignore
         以 --stdin 批量一次调用（散件多时避免逐路径子进程）；``-n
@@ -479,21 +546,13 @@ class MainTreeStrayWipSweeper:
             status_stdout = self._git("status", "--porcelain", "-uall")
             if status_stdout is None:
                 return None
-        out = status_stdout
-        from core.worktree_manager.mergeback import _unquote_git_path
-
-        paths: list = []
-        for line in out.splitlines():
-            if not line.startswith("?? "):
-                continue
-            raw = line[3:].strip()
-            if raw:
-                paths.append(_unquote_git_path(raw))
+        paths = _porcelain_untracked_paths(status_stdout)
         if not paths:
             return []
-        detail = self._git_check_ignore_detail(paths)
         if detail is None:
-            return None
+            detail = self._git_check_ignore_detail(paths)
+            if detail is None:
+                return None
         entries = []
         for p in paths:
             pattern = detail.get(p)
@@ -697,6 +756,200 @@ class MainTreeStrayWipSweeper:
             k for k in self._untracked_registry if k not in current_fingerprints
         ]:
             del self._untracked_registry[fp]
+
+    # ── 白名单脱落口径（evo-whitelist-tracked-patrol 1.1）────────────────
+
+    def _whitelist_untracked_entries(
+        self, paths: list, detail: "dict[str, str] | None"
+    ) -> "list[str] | None":
+        """白名单脱落候选清单：命中 ``!`` 放行规则且不在 git 索引中的路径。
+
+        判定两段（design 1）：
+        - ``detail``（check-ignore 批量明细，与 untracked 散件流共用同一次
+          查询）筛出规则以 ``!`` 开头的放行路径——放行即「声明入库意图」的
+          机械判据，零 .gitignore 自解析（与豁免①同一查询的镜像消费：
+          散件流对放行项豁免不计，本流恰以放行项为检测目标，两流互不污染）；
+        - ``git ls-files`` 全量索引一次取回求交，不在索引中的放行路径即脱落
+          候选（design 明示的第二段确认查询：候选源当前仅 porcelain ``??``
+          路径时两段判定天然同真，ls-files 求交保持判定自洽、不依赖候选源
+          恰为 untracked 的前提）。
+
+        Args:
+            paths: porcelain ``??`` 候选路径（``_porcelain_untracked_paths``）。
+            detail: check-ignore 批量明细（``_git_check_ignore_detail`` 形态）。
+
+        ls-files 查询失败返回 None（调用方按放弃本流处置：不告警不复位，
+        注册表条目保留交下轮——保守语义与 tracked/untracked 流同款）。
+        """
+        if detail is None:
+            return None
+        released = [
+            p for p in paths if (detail.get(p) or "").startswith("!")
+        ]
+        if not released:
+            return []
+        indexed = self._git_indexed_paths()
+        if indexed is None:
+            return None
+        return sorted(p for p in released if p not in indexed)
+
+    def _git_indexed_paths(self) -> "set[str] | None":
+        """``git ls-files -z`` 全量索引路径集（只读，一次子进程）。
+
+        全量取回而非逐路径查询：ls-files 实参按 pathspec 语义解析（glob/
+        ``:`` magic），直传文件名有误读风险；-z 输出无引号包装，与 porcelain
+        反转义路径直接可比。仅在放行候选非空时才被调用（常态零开销）。
+        """
+        out = self._git("ls-files", "-z")
+        if out is None:
+            return None
+        return {p for p in out.split("\0") if p}
+
+    def _whitelist_signal(
+        self, paths: list, detail: "dict[str, str] | None"
+    ) -> dict:
+        """白名单脱落信号流（evo-whitelist-tracked-patrol 1.1）。
+
+        即时发射（无阈值无宽限——「放行+未跟踪＝异常」，脱落没有滞留容忍
+        语义，c91213f 事故 6 天未察实证等待机制不可用）；去重沿用 untracked
+        流同款指纹注册表口径（``_whitelist_registry`` 分账独立 + 同指纹只发
+        一次 + 指纹消失自动复位），指纹取放行-未跟踪路径排序集 + 逐文件内容
+        sha256（复用 ``_untracked_fingerprint``：untracked 不可复用 tracked
+        ``git diff HEAD`` 指纹形态的同款论证适用）。只告警不处置：不自动执行
+        git add 类修复动作，信号唤起人工/裁决二选一（恢复入库或删除放行规则）。
+
+        Returns: 子 dict（并入 sweep 返回的 ``whitelist_untracked`` 键）：
+        status 取 ``clean`` / ``alerted`` / ``recorded`` / ``abandoned``。
+        """
+        entries = self._whitelist_untracked_entries(paths, detail)
+        if entries is None:
+            # ls-files/check-ignore 明细不可用：放弃本流（不告警不复位，条目
+            # 保留交下轮）；散件流与 tracked 流不受影响（各自判定已在前序
+            # 步骤完成，互不污染）。
+            self._log(
+                "warning",
+                "Whitelist patrol skipped (git inventory unavailable; "
+                "conservative abandon, entries kept)",
+            )
+            return {"status": "abandoned"}
+        if not entries:
+            self._reset_whitelist_registry_absent(set())
+            return {"status": "clean", "files": [], "count": 0}
+        fp = self._untracked_fingerprint(entries)
+        now = time.time()
+        entry = self._whitelist_registry.get(fp)
+        if entry is None:
+            entry = {
+                "first_seen": now,
+                "first_seen_iso": self._iso(now),
+                "files": list(entries),
+                "rules": {},
+                "escalated_at": "",
+            }
+            self._whitelist_registry[fp] = entry
+        else:
+            # 指纹不变沿用原 first_seen（与 tracked/untracked 流同款）；
+            # 仅刷新文件与放行规则快照供告警 evidence 取最新清单。
+            entry["files"] = list(entries)
+        entry["rules"] = {
+            p: (detail or {}).get(p, "") for p in entries
+        }
+        self._reset_whitelist_registry_absent({fp})
+        alerted = False
+        if not entry.get("escalated_at"):
+            if self._write_whitelist_untracked_alert(entry, fp):
+                entry["escalated_at"] = self._iso(now)
+                alerted = True
+        return {
+            "status": "alerted" if alerted else "recorded",
+            "files": list(entries),
+            "count": len(entries),
+            "fingerprint": fp,
+            "first_seen_iso": entry["first_seen_iso"],
+        }
+
+    def _reset_whitelist_registry_absent(self, current_fingerprints: set) -> None:
+        """清除指纹不再出现的白名单注册表条目（指纹消失自动复位）。"""
+        for fp in [
+            k for k in self._whitelist_registry if k not in current_fingerprints
+        ]:
+            del self._whitelist_registry[fp]
+
+    def _write_whitelist_untracked_alert(self, entry, fp) -> bool:
+        """白名单脱落一次性 major 告警（经 AdminStore.append 落盘）。
+
+        ``signal_type=whitelist_untracked``：admin_monitor 三表登记接入自动
+        唤起（SIGNAL_SEVERITY=major / SIGNAL_RECOMMENDATION /
+        STORED_SIGNAL_TYPES + 摄取项目名解析清单，对齐
+        maintree_untracked_stray_escalated 先例）。evidence 含「项目名=」段
+        （无 spec 形态摄取解析单源 evidence_project）与「文件清单(N):」段，
+        另附放行规则快照（人工处置时免二次考古 .gitignore）。AdminStore 拒写
+        时返回 False（escalated_at 不落、下轮重试），不让告警静默蒸发。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+
+        files = list(entry.get("files") or [])
+        rules = entry.get("rules") or {}
+        evidence = (
+            f"项目名={self.project_root.name}; "
+            f"first_seen={entry.get('first_seen_iso') or '?'}; "
+            f"指纹={fp[:16]}; "
+            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"放行规则: "
+            f"{', '.join(f'{k}={v}' for k, v in sorted(rules.items())) or '无'}; "
+            f"判定口径: negation 放行即声明入库意图，放行+未跟踪＝白名单脱落"
+            f"（check-ignore -v 以 ! 规则命中且 git ls-files 不含该路径）; "
+            f"计时口径: 内容指纹（放行-未跟踪路径排序集 + 逐文件内容 sha256）"
+            f"——untracked 不进 git diff HEAD，不可复用 tracked 指纹形态; "
+            f"豁免注记: 本信号不改变散件流豁免语义（放行项不计入散件，两流"
+            f"分账）; "
+            f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset/add），"
+            f"告警发出前后主树工作区状态未变"
+        )
+        store = AdminStore(self.project_root, logger=None)
+        rec = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": WHITELIST_UNTRACKED_SIGNAL_TYPE,
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    "白名单文件脱落（周期盘点，major）：negation 放行即声明"
+                    f"入库意图，放行+未跟踪＝白名单脱落——{len(files)} 个被 "
+                    ".gitignore ! 规则放行的路径不在 git 索引中，几乎必然是"
+                    "脱落事故（入库意图已声明、文件却未入库，只能等 fresh "
+                    "clone 或新开 worktree 断链才暴露）。本信号接入自动唤起，"
+                    "等待人工二选一处置（恢复入库或删除放行规则），不自动"
+                    "执行 git add 类修复动作"
+                ),
+                "evidence": evidence,
+                "source": "maintree-stray-wip-sweep",
+                "recommended_action": (
+                    "negation 放行即声明入库意图，放行+未跟踪＝白名单脱落，"
+                    "二选一处置：① git add 恢复入库（白名单状态文件应随仓库"
+                    "入库，如 .fenix/verify.yaml / todo.md / "
+                    "config.template.yaml）；② 删除 .gitignore 对应放行规则、"
+                    "承认其为运行时文件（确保整体 ignore 规则覆盖）。文件清单"
+                    "与放行规则见 evidence。同指纹一次性告警，指纹消失后盘点"
+                    "状态自动复位"
+                ),
+            }
+        )
+        if rec is None:
+            self._log(
+                "warning",
+                f"{WHITELIST_UNTRACKED_SIGNAL_TYPE}: 告警写入被拒"
+                f"（AdminStore 拒写），未落盘——本轮不计升级标记，下轮盘点重试",
+            )
+            return False
+        self._log(
+            "warning",
+            f"{WHITELIST_UNTRACKED_SIGNAL_TYPE}: 白名单文件脱落"
+            f"（{len(files)} 个放行-未跟踪路径，"
+            f"first_seen={entry.get('first_seen_iso')}）已发一次性 major 告警"
+            f": {', '.join(files)}",
+        )
+        return True
 
     def _write_untracked_alert(self, entry, fp, threshold, grace, elapsed_min) -> bool:
         """untracked 散件滞留一次性 info 告警（经 AdminStore.append 落盘）。
