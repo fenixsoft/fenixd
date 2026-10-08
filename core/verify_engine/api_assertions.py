@@ -319,6 +319,21 @@ class ApiAssertionRunner:
 
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内事件数不少于下限（第1层存在性）。"""
+        # 定向提示：http_request 捕获（{status, headers, body, json, latency_ms}）
+        # 无 events，事件计数挂在普通捕获上会恒按 0 事件失败且无 error，judge
+        # 须能区分「场景把断言挂错捕获类型」与真实「事件数不足」（反向形态，
+        # 口径对齐 json_path / latency_under 的 SSE 定向归因）
+        if resp.get("type") != "sse":
+            return {
+                "type": "sse_event_count",
+                "min": a.get("min", 1),
+                "actual": None,
+                "pass": False,
+                "error": (
+                    "sse_event_count 断言不支持 http_request 捕获（无 events）；"
+                    "事件计数请引用 sse_connect 捕获"
+                ),
+            }
         events = resp.get("events") or []
         raw_min = a.get("min", 1)
         # fail-closed：min 非数字时不得让 int() 抛 ValueError 被 run() 包成
@@ -704,7 +719,10 @@ class ApiAssertionRunner:
                 error = regex_error
         hits = []
         for ev in events:
-            data = str(ev.get("data") or "")
+            # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""，
+            # 导致 contains "0" 对 data=0 的事件漏匹配（口径对齐 _assert_json_path
+            # contains 分支）
+            data = str(v) if (v := ev.get("data")) is not None else ""
             if mode == "exact":
                 matched = data.strip() == str(expected).strip()
             elif mode == "contains":
