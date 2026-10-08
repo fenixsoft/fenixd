@@ -139,8 +139,9 @@ class G1LifecycleMixin:
         self._state_reader = state_reader
         # 锁龄登记（双派发穿透原地修 2026-09-06）：key -> 拿锁时刻。run 流文件由
         # attempt 子进程启动后才创建，而锁在 create() 内即持有（worktree add + seed +
-        # node_modules 供给实测可达十几秒）——「无进程且无流文件」无法区分 create
-        # 构建中与孤儿死锁，陈锁判定按锁龄豁免构建窗口（见 _lock_young）。
+        # node_modules 供给实测可达十几秒）——重派 spec 按名 glob 必命中上一轮残留
+        # 旧流，「无进程」时新旧流皆无法区分 create 构建中与孤儿死锁，陈锁判定按
+        # 锁龄豁免构建窗口、不以流文件缺失为前提（见 _lock_young）。
         self._lock_since: Dict[str, float] = {}
         # 锁治理（D4）：进程表扫描函数，默认 pgrep 实现；测试可注入替身。
         # 签名 (spec_name) -> bool，表示进程表中是否存在指向该 spec worktree 的进程。
@@ -1197,8 +1198,8 @@ class G1LifecycleMixin:
 
         锁治理（improve-run-lifecycle-governance D4）：先以进程表校验在册锁——
         锁在册但扫描不到进程、且 run 流文件停止增长超过 STALE_LOCK_IDLE_SECONDS
-        时判定为陈锁并回收（孤儿 attempt 已死，锁放行后续派发）；锁在册且进程
-        存活（或流仍新鲜）则照常视为持锁。
+        时判定为陈锁并回收（孤儿 attempt 已死，锁放行后续派发；年轻锁按锁龄豁免
+        回收，见下方豁免分支）；锁在册且进程存活（或流仍新鲜）则照常视为持锁。
 
         daemon 重启后内存锁丢失、但进程表仍存在指向该 spec worktree 的存活
         agent 进程时，同样返回 True（重建登记），防止创建第二个并发 worktree。
@@ -1243,15 +1244,18 @@ class G1LifecycleMixin:
         mtime = self._latest_stream_mtime(spec_name)
         if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
             return True  # 进程扫描未命中但流仍在增长：保守视为持锁
-        # create 构建窗口豁免（双派发穿透原地修 2026-09-06）：流文件缺失时以锁龄
-        # 二次确认——锁在 create() 拿到而 attempt 子进程与其流文件尚未产生（实测
-        # 构建可达十几秒），年轻锁保守保留，防误释放后第二派穿透；超龄仍按陈锁
+        # create 构建窗口豁免（双派发穿透原地修 2026-09-06）：以锁龄二次确认——
+        # 锁在 create() 拿到而 attempt 子进程与其流文件尚未产生（实测构建可达十几
+        # 秒）。豁免按锁龄独立生效、不以「无流文件」为前提（code-review item
+        # ee35ee5b3e5b）：流文件按 spec 名 glob 命中全部轮次并逐轮留存，重派 spec
+        # 必有上一轮残留旧流（mtime 早超阈值），若仅无流才豁免，构建窗口内的年轻
+        # 锁会被当陈锁摘除、重开双派发穿透窗口。年轻锁保守保留；超龄仍按陈锁
         # 回收，孤儿清理语义不变。此处豁免保持 spec 全量、不按家族过滤
         # （code-review item 5d9601004a62）：下方陈锁释放按 spec 全摘（含他族
         # 键），豁免须覆盖全部将被摘除的家族——按本族过滤会让他族年轻锁在全摘
         # 中失去锁保护、重开双派发穿透窗口；家族过滤豁免仅适用于 refresh_locks
         # 的单键回收路径。
-        if mtime is None and self._lock_young(spec_name):
+        if self._lock_young(spec_name):
             return True
         # ── 恢复重派遗产（add-recovery-legacy-check D2，同 refresh_locks 口径）──
         # 陈锁释放的同一时刻为孤儿 implementer worktree 注册遗产兜底
@@ -1283,6 +1287,8 @@ class G1LifecycleMixin:
           - 无匹配进程且对应 run 流文件 mtime 距今超过 STALE_LOCK_IDLE_SECONDS
             （或根本没有流文件）→ 陈锁，释放放行后续派发
           - 无匹配进程但流仍在增长 → 保守保留（进程扫描可能受窗口/权限影响）
+          - 年轻锁（_lock_since 距今不足阈值）→ 保守保留（create 构建窗口豁免，
+            按锁龄独立生效、不以流文件缺失为前提）
 
         Returns: 被回收的锁 key 列表（审计/测试用）。
         """
@@ -1316,11 +1322,14 @@ class G1LifecycleMixin:
                 continue
             if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
                 continue
-            if mtime is None and self._lock_young(spec, family=family):
-                # 构建窗口豁免只覆盖本族年轻锁（code-review item 5d9601004a62）：
-                # 与上方家族过滤判活同口径，本族陈锁不因他族年轻构建被庇护延后
-                # 回收；family=None（键解析不出 agent_type）时维持 spec 粒度保守
-                # 豁免，与同分支 alive/mtime 的退回口径一致。
+            if self._lock_young(spec, family=family):
+                # 构建窗口豁免按锁龄独立生效、不以「无流文件」为前提（同
+                # has_active_worktree 口径，code-review item ee35ee5b3e5b）：重派
+                # spec 的上一轮残留旧流不使豁免失效。豁免只覆盖本族年轻锁
+                # （code-review item 5d9601004a62）：与上方家族过滤判活同口径，
+                # 本族陈锁不因他族年轻构建被庇护延后回收；family=None（键解析不
+                # 出 agent_type）时维持 spec 粒度保守豁免，与同分支 alive/mtime 的
+                # 退回口径一致。
                 continue
             # ── 恢复重派遗产（add-recovery-legacy-check D2）──
             # 陈锁释放的同一时刻：若该 spec 尚有未被清理的 implementer worktree（孤儿，

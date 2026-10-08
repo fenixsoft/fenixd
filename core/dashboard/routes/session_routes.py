@@ -15,6 +15,9 @@ logger = logging.getLogger("fenixd.dashboard.session_routes")
 # ── add-session-composer 1.2：files 端点模块常量（不新增受管配置键） ──────
 SESSION_FILES_LIMIT = 5000           # 返回条数上限，超出截断
 GIT_LS_FILES_TIMEOUT_SECONDS = 10    # git ls-files 子进程超时保护
+# f6396e93c224：status 端点回传子进程 stderr 尾部行数上限（排障出口），
+# 取环形缓冲 200 行的尾部，避免全量拖大响应。
+SESSION_STDERR_TAIL_LIMIT = 50
 
 
 class H_SessionRoutesMixin:
@@ -89,8 +92,12 @@ class H_SessionRoutesMixin:
         # code-review item 79d40459a39e：锁内快照——deque 迭代期间被读线程
         # 并发 append 会抛 RuntimeError(deque mutated during iteration)，快照
         # 与写端 append 共用 session.lock 互斥（写端四处 append 均已持锁）。
+        # f6396e93c224：锁内同拍快照 stderr_tail 尾部——写端 _stderr_reader
+        # append 已同锁互斥，防 deque mutated during iteration（同 79d40459a39e
+        # 纪律）；随状态端点暴露子进程 stderr 排障出口（此前只写不读）。
         with session.lock:
             events = list(session.events)
+            stderr_tail = list(session.stderr_tail)[-SESSION_STDERR_TAIL_LIMIT:]
         from core.dashboard.session_manager import SESSION_EVENT_BUFFER
         truncated = len(events) >= SESSION_EVENT_BUFFER
         self._json({
@@ -102,6 +109,7 @@ class H_SessionRoutesMixin:
             },
             "events": events,
             "truncated": truncated,
+            "stderr_tail": stderr_tail,
         })
 
     def _api_session_send(self, query):

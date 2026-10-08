@@ -1545,7 +1545,12 @@ class SpecReviewManager:
                     REVIEW_CONTENT_RETRY_BACKOFF_SECONDS,
                 )
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # code-review item 851ba3eeed41：巨大 int（YAML 任意精度）送 float()
+            # 抛 OverflowError，同按脏值回退缺省——不拦截会沿 _enqueue_review_retry
+            # → _handle_review_failure（content 分支）→ consume_review_result
+            # 上抛打断本轮评审失败收口（口径同 infra_breaker threshold，
+            # item 8c2855513307）。
             return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
         # 负值/非有限浮点（.inf/.nan）按脏值回退缺省——同 backoff.py 对
         # transient_redispatch_delay 的守卫口径（item e2d87491cc64）。

@@ -1221,11 +1221,12 @@ class G4MergebackMixin:
         """候选③：交互会话 transcript 活跃信号（活跃窗 + 路径提及）。
 
         transcript 目录按 Claude Code 惯例（``~/.claude/projects/<主树路径
-        munge>``，munge=``/``→``-``）；目录不存在/无活跃 transcript/尾部无
+        munge>``，munge=``/``与``.``均替换为``-``）；目录不存在/无活跃
+        transcript/尾部无
         散件路径提及均返回 None（源缺失或相关性不足，fail-open 回无主）。
         """
         home = Path.home()
-        munged = str(root).replace("/", "-")
+        munged = str(root).replace("/", "-").replace(".", "-")
         tdir = home / ".claude" / "projects" / munged
         if not tdir.is_dir():
             return None

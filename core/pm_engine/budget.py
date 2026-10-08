@@ -133,7 +133,7 @@ class ImplBudget:
         1. spec_name 非空且 STATE 条目 ``impl_run_budget_override`` 存在且可解析为
            整数 → 同口径夹紧 [1, max] 使用（per-spec 覆盖）；
         2. 否则回退全局配置 ``agents.impl_run_budget``（现状逻辑）；
-        3. 全局缺失/非法 → DEFAULT_IMPL_RUN_BUDGET。
+        3. 全局缺失/非法 → DEFAULT_IMPL_RUN_BUDGET（同样夹紧到 [1, max]）。
 
         范围约束 [1, max]（``agents.impl_run_budget_max``，缺省 100，
         open-impl-budget-ceiling）；配置越界时夹紧到合法区间，避免极端配置使
@@ -147,7 +147,11 @@ class ImplBudget:
             if override is not None:
                 return override
         raw = self._pm._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
-        return clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
+        # item a6d1b8d8e38b：缺省回退同样经上限夹紧（clamp 不会返回 0，or 链安全），
+        # max 配得比缺省 6 小时闸门不得越过 [1, max]（与 Dashboard 可设范围同口径）。
+        return clamp_impl_run_budget(raw, max_value) or clamp_impl_run_budget(
+            DEFAULT_IMPL_RUN_BUDGET, max_value
+        )
 
     def _increment_impl_run_budget_used(self, spec_name: str) -> int:
         """实现 run 启动时递增并持久化 ``_impl_run_budget_used``。
@@ -820,6 +824,7 @@ class ImplBudget:
         if start > 0 and chunk[:1] != b"\n":
             lines = lines[1:]
         last = _last_valid_entry(lines)
+        # [fenix-ignore:242efc66f026] 误报：尾窗截断残行必居窗口头部，窗口内任何有效 dict 行在文件序上都晚于该残行——末条有效行被截断时窗口内必无有效 dict 行（last is None）必触发下方全量回退，判定与全量读一致（真实实现 803 组含 3 倍窗口超长行模糊对拍零分歧）
         if last is None and start > 0:
             # 尾部窗口内无有效 dict 行：末条有效行可能在窗口之外——回退
             # 全量读，判定与全量逐行读完全一致。

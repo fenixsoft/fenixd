@@ -1151,6 +1151,11 @@ def _degraded_project(p: dict, error: str) -> dict:
     }
 
 
+# 公开访问面（code-review item 850b89f106d6）：project_routes.py 跨组引用改用
+# 公开名（不跨组消费下划线私有名），与 _degraded_project 同一函数对象单源绑定。
+degraded_project = _degraded_project
+
+
 def overview(registry_projects: list) -> dict:
     """跨项目概览（/api/overview）。registry_projects 为 registry.discover() 结果。
 

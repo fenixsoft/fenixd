@@ -2121,6 +2121,8 @@ export interface SessionState {
   events: SessionEvent[];
   truncated?: boolean;
   error?: string;
+  // f6396e93c224：子进程 stderr 尾部行（claude 子进程排障出口，status 端点回传）
+  stderr_tail?: string[];
 }
 
 export async function startSession(project: string): Promise<{ session: SessionInfo }> {

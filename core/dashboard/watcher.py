@@ -220,7 +220,19 @@ class FileWatcher:
             del self._run_base[k]
 
     def _scan_project(self, name: str, proot: Path):
-        top_sigs = self._top_sigs.setdefault(proot.as_posix(), {})
+        skey = proot.as_posix()
+        top_sigs = self._top_sigs.setdefault(skey, {})
+        # 分发前基线快照（code-review item c7a66eed1049）：下方基线都是「先
+        # 提交、后分发」，若 _handle_state_change 等处理器抛异常（由 scan_once
+        # 捕获、本轮分发终止），留在本轮新值的基线会让下轮签名比对不再触发、
+        # 该轮变更就此丢失——与 run 通道「先读增量、成功后才推进基线」
+        # （item 522789f55ab8）的纪律不一致。异常时按快照回滚（见分发段
+        # except），成功路径不进该分支、行为不变；spec_dirs 快照同覆盖
+        # _scan_spec_dirs 内逐 spec 的目录签名提交与删除。
+        prev_top_sigs = dict(top_sigs)
+        spec_dirs = self._spec_dirs.setdefault(skey, {})
+        prev_spec_dirs = dict(spec_dirs)
+        prev_summaries = self._last_summaries.get(skey)
         admin_changed = False
 
         # ── 第一级：顶层数据源签名（O(少数) stat） ──
@@ -253,29 +265,47 @@ class FileWatcher:
 
         # 汇总分发
         #   spec 内容/存在相关信号 → SummaryIndex 文件级 diff（新增/变更/删除）
-        cur = None
-        if state_changed or vp_changed or spec_dir_changed or spec_removed:
-            cur = self._handle_state_change(name, proot, removed=spec_removed)
-        #   仅日志变化 → 轻量空增量（前端不刷新列表；跑马灯等靠心跳校准）
-        elif logs_changed:
-            self.hub.broadcast(
-                {
-                    "project": name,
-                    "type": "state",
-                    "specs": [],
-                    "details": {},
-                    "overview": None,
-                }
-            )
-        # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）；
-        # 传入本轮 _handle_state_change 已解析的 cur 复用（spec_dir_changed 非空
-        # 时该 handler 必已执行，cur 非 None），避免 O(N) 次全量重解析
-        for spec in spec_dir_changed:
-            self._handle_spec_change(name, proot, spec, cur=cur)
-        for run_id in run_changed:
-            self._handle_run_change(name, proot, run_id)
-        if admin_changed:
-            self._handle_admin_change(name)
+        try:
+            cur = None
+            if state_changed or vp_changed or spec_dir_changed or spec_removed:
+                cur = self._handle_state_change(name, proot, removed=spec_removed)
+            #   仅日志变化 → 轻量空增量（前端不刷新列表；跑马灯等靠心跳校准）
+            elif logs_changed:
+                self.hub.broadcast(
+                    {
+                        "project": name,
+                        "type": "state",
+                        "specs": [],
+                        "details": {},
+                        "overview": None,
+                    }
+                )
+            # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）；
+            # 传入本轮 _handle_state_change 已解析的 cur 复用（spec_dir_changed 非空
+            # 时该 handler 必已执行，cur 非 None），避免 O(N) 次全量重解析
+            for spec in spec_dir_changed:
+                self._handle_spec_change(name, proot, spec, cur=cur)
+            for run_id in run_changed:
+                self._handle_run_change(name, proot, run_id)
+            if admin_changed:
+                self._handle_admin_change(name)
+        except Exception:
+            # 回滚本轮已提交的基线（code-review item c7a66eed1049）：否则下轮
+            # 签名与已提交基线相同、不再触发，本轮未推送成功的变更就此丢失。
+            # 连带回滚 _last_summaries（_handle_state_change 内先提交 diff 基线
+            # 后广播，只回滚签名的话重触发轮会 diff 出空集、变更内容仍丢）。
+            # 异常原样上抛，留痕与节流仍归 scan_once 的「瞬时失败不再静默」
+            # 通道；已成功推送的通道被连带回滚时下轮重推同内容，前端本地归并
+            # 幂等。
+            top_sigs.clear()
+            top_sigs.update(prev_top_sigs)
+            spec_dirs.clear()
+            spec_dirs.update(prev_spec_dirs)
+            if prev_summaries is None:
+                self._last_summaries.pop(skey, None)
+            else:
+                self._last_summaries[skey] = prev_summaries
+            raise
 
     # ── 第二级：spec 目录签名跳层 ────────────────────────────
 

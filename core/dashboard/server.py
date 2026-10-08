@@ -146,14 +146,17 @@ def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
         return
     acquired = False
     try:
-        deadline = time.time() + max(0.0, timeout)
+        # code-review item 2cec7f58ab54：deadline 用 monotonic 时钟（秒，语义
+        # 不变）——墙上时钟回拨会延长 flock 竞争等待，令 HTTP 线程持等逼近
+        # 客户端 30s 超时线；与 serve() 接管等待的时钟选择对齐。
+        deadline = time.monotonic() + max(0.0, timeout)
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
                 break
             except OSError:
-                if time.time() > deadline:
+                if time.monotonic() > deadline:
                     break
                 time.sleep(0.2)
         yield acquired
@@ -551,7 +554,10 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
       （父进程为 tmux server，见 _parent_is_tmux_server）→ 不发任何信号，
       打印含 PID 与 --port 换端口指引的错误后非 0 退出（2026-09-29 事故）；
     - 占用者为其它进程（非 dashboard 实例）→ 打印占用信息后非 0 退出；
-    - 任何启动失败 MUST 在 5 秒内退出，不留僵尸实例。
+    - 启动失败退出时限（code-review item a5c3c97d255b）：非接管失败立即
+      退出；非 tmux 旧实例接管路径在 SIGTERM 后等待旧实例退出最长 9 秒、
+      重绑仍失败才 exit(1)，最坏 ~9 秒——依赖「5 秒内失败」时限的调用方
+      （agent 自适应换端口、探活脚本）勿按 5 秒判断。均不留僵尸实例。
     仅对最终确定的单一端口做上述占用检测（不再自动上探）。
 
     父子生命周期绑定（孤儿实例防护）：非豁免调用（FENIX_DASHBOARD_DETACH

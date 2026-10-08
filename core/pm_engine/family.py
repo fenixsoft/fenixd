@@ -434,7 +434,8 @@ class FamilyGovernor:
         """判定 spec 是否已存在同根非终态子 fix（守卫一/二共用，design D4 子终态解封）。
 
         返回承载修复的子 fix 名；无则空串。子 fix 指更深一层的 fix- 前缀 SPEC
-        （fix-{spec} 自身或 fix-fix-{spec} 等），非终态 = 非 done/pushed。
+        （fix-{spec} 自身或 fix-fix-{spec} 等），非终态 = 非 _FIX_SPEC_TERMINAL
+        （done/verified/pushed，与 _resolve_fix_spec_name 的派生判定同源）。
         """
         child = f"fix-{spec_name}"
         specs = self._pm.state_machine.read_all() or {}
@@ -465,7 +466,7 @@ class FamilyGovernor:
                     continue
                 break
             status = (entry or {}).get("status", "")
-            if status in ("done", "pushed"):
+            if status in _FIX_SPEC_TERMINAL:
                 # 该层终态：不承载，但允许检查更深一层是否仍在飞
                 deeper = f"fix-{candidate}"
                 if deeper in specs:

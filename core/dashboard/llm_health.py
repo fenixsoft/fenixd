@@ -66,13 +66,16 @@ class _NoCrossHostRedirectHandler(urllib.request.HTTPRedirectHandler):
     urllib 默认跟随 301/302 且除 content-length/content-type 外原样转发请求头，
     x-api-key / Authorization: Bearer 会发往 Location 指向的新主机——baseurl/apikey
     由表单直传，跨主机重定向（误配 http→https、开放重定向等）会把探测密钥泄漏
-    给第三方。同主机重定向照常放行。
+    给第三方。同主机重定向照常放行，但 https 降级为明文协议（http/ftp）除外——
+    降级后同一密钥以明文重发，链路上被动观察者可见；http→https 升级无泄漏，维持放行。
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        origin = urllib.parse.urlsplit(req.full_url).netloc.lower()
-        target = urllib.parse.urlsplit(newurl).netloc.lower()
-        if origin != target:
+        origin = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if origin.netloc.lower() != target.netloc.lower():
+            return None
+        if origin.scheme == "https" and target.scheme != "https":
             return None
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 

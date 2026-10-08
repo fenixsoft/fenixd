@@ -129,7 +129,7 @@ class H2ProjectRoutesMixin:
                     type(exc).__name__,
                     exc,
                 )
-                projects.append(dashboard_data._degraded_project(p, "摘要计算失败"))
+                projects.append(dashboard_data.degraded_project(p, "摘要计算失败"))
         return {"projects": projects}
 
 
