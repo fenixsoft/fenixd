@@ -346,6 +346,17 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 pass  # 组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
             else:
                 pgid = pid
+                # 孤儿组仍存活：接管 pgid 后补发一次 SIGTERM 再进入就绪
+                # 等待——本路径因 getpgid 解析不到组长跳过了顶部投递，
+                # 组内存活成员从未收到优雅终止信号，直接升级 SIGKILL 会
+                # 硬杀被测实例（未 flush 的状态/日志丢失）；补发后「SIGTERM
+                # → 短等待 → SIGKILL 兜底」三段式契约同样覆盖孤儿组。
+                # 仅在接管时刻发这一次（后续轮次走 pgid 已知分支纯探活），
+                # 不与正常路径重复投递；守卫拒绝/组已消失同样静默。
+                if guard_killpg(
+                    pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
+                ):
+                    sent = True
         else:
             try:
                 os.killpg(pgid, 0)
@@ -355,9 +366,9 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 pass  # 组非空但无权探测 → 按存活继续等待
         time.sleep(0.2)
     if pgid is not None:
-        # 组长已亡、pgid 由 None 被接管为 pid 的孤儿组路径此前从未向组
-        # 发过信号，此处发出成功同样置位，保证返回值与「是否向进程组
-        # 发出过信号」的契约一致（sweep 的 harvested 计数依赖它）。
+        # SIGKILL 实际发出成功同样置位（守卫拒绝/组已不存在则静默，sent
+        # 维持原值），保证返回值与「是否向进程组发出过信号」的契约一致
+        # （sweep 的 harvested 计数依赖它）。
         if guard_killpg(
             pgid, signal.SIGKILL, caller="serving_registry.kill_process_group", resolve=False
         ):
