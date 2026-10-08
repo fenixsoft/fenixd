@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import functools
 import json
+import re
 import subprocess
 import time
 
@@ -62,10 +63,10 @@ from core.state_machine import (
     _SCENARIO_REPAIR_MAX_ROUNDS,
 )
 
-# refactor-verification-module 阶段3.3：infra 失败归因/历史/回拨组已迁 infra_classify.py，
-# reclassify_infra_rounds（模块级函数）与类内方法以薄委托保留在门面（见类内同名方法）。
+# refactor-verification-module 阶段3.3：infra 失败归因/历史/回拨组已迁 infra_classify.py。
+# reclassify_infra_rounds 由 verification/__init__ 从 infra_classify 再导出，门面
+# 不保留类内委托（消费方走 engine.py 同名方法）。
 from core.pm_engine.verification.infra_classify import (
-    RECLASSIFY_SIGNAL_TYPE,
     _append_fail_history,
     _clear_fail_history,
     _detect_uniform_verify_failure,
@@ -77,7 +78,6 @@ from core.pm_engine.verification.infra_classify import (
     _scenario_classification_distribution,
     _verifier_error_is_infra,
     enrich_failure_class,
-    reclassify_infra_rounds,
 )
 
 # refactor-verification-module 阶段3.4：场景冻结/交互契约/静态检查组已迁 scenario_gate.py，
@@ -183,49 +183,6 @@ from core.pm_engine.verification.escalation import (
     _write_inconclusive_loop_signal,
 )
 from core.pm_engine.verification.legacy import _run_legacy_verification
-
-
-# ── 场景修订 re-entry（evo-fix-env-exemption-gate-conflict-… 2.2）────────
-# 定义于 pipeline 门面（消费 pipeline._context 的 enqueue/state_machine/logger，
-# 与其余 lifecycle 助手同范式），经下方绑定 dict 挂为 pipeline 方法供
-# escalation 升级停车入口调用（pipeline._scenario_revision_reentry）。
-def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
-    """修订 re-entry 先于升级：场景修订待重验时先放行一次重验，不升级停车。
-
-    ``revise_scenario_reverify`` 执行器落修订场景、置
-    ``SCENARIO_REVISION_PENDING_FIELD`` 旗标并重入验证车道；若修订后首轮仍
-    失败、再度到达升级停车入口（级二豁免握手停车），本守卫消费旗标并追加
-    一次重验——给修订后的场景集一次收敛机会（修订 re-entry 先于升级）。
-    旗标单次消费：追加轮再失败则正常升级停车（修订不无限续命）；verified
-    落定与人工复位同样清旗标。
-
-    Returns: True=已接管（调用方 MUST NOT 再停车/落 verdict）；False=无待
-    重验修订（调用方按既有路径继续）。
-    """
-    entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    pending = str(entry.get(SCENARIO_REVISION_PENDING_FIELD) or "").strip().lower()
-    if pending not in ("true", "1", "yes"):
-        return False
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            SCENARIO_REVISION_PENDING_FIELD: False,
-            "status": "implemented",
-            "tester_run": None,
-            "error": (
-                "场景修订后重验仍未收敛：修订 re-entry 先于升级，"
-                "追加一次重验（再失败将升级停车转人工）"
-            ),
-            "_in_inconclusive_reverify": True,
-        },
-    )
-    pipeline._context.logger.warning(
-        "pm_engine",
-        f"'{spec_name}' 场景修订 re-entry 先于升级：消费待重验旗标，"
-        f"追加一次重验",
-    )
-    pipeline._context.enqueue(spec_name, "verifier")
-    return True
 from core.pm_engine.verification.verdict_evidence import (
     _clear_requeue_manifest,
     _clear_resynthesis_directive,
@@ -292,6 +249,62 @@ from core.pm_engine.verification.serving import (
 # 自文件末尾上移至顶部 import 区与 serving 常量同址集中，末尾只留模块级
 # 常量定义）
 from core.pm_engine.verification.branch_guard import ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS
+
+
+# ── 冻结场景损坏升级文案单源（code-review item 928d8348a5be）────────────
+def _corrupt_freeze_options(spec_name: str, extra: str = "") -> str:
+    """「冻结场景文件损坏或验收失败」处置选项文案（_load_frozen_or_escalate
+    五个升级点复用单源，防内联复制漂移）；extra 拼接在②之后的附加条目
+    （如迁移轮的第③条回退指引）。
+    """
+    return (
+        "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+        f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+        "批准重新出题；② 文件可修复 → 修复后保持冻结。" + extra
+    )
+
+
+# ── 场景修订 re-entry（evo-fix-env-exemption-gate-conflict-… 2.2）────────
+# 定义于 pipeline 门面（消费 pipeline._context 的 enqueue/state_machine/logger，
+# 与其余 lifecycle 助手同范式），经下方绑定 dict 挂为 pipeline 方法供
+# escalation 升级停车入口调用（pipeline._scenario_revision_reentry）。
+def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
+    """修订 re-entry 先于升级：场景修订待重验时先放行一次重验，不升级停车。
+
+    ``revise_scenario_reverify`` 执行器落修订场景、置
+    ``SCENARIO_REVISION_PENDING_FIELD`` 旗标并重入验证车道；若修订后首轮仍
+    失败、再度到达升级停车入口（级二豁免握手停车），本守卫消费旗标并追加
+    一次重验——给修订后的场景集一次收敛机会（修订 re-entry 先于升级）。
+    旗标单次消费：追加轮再失败则正常升级停车（修订不无限续命）；verified
+    落定与人工复位同样清旗标。
+
+    Returns: True=已接管（调用方 MUST NOT 再停车/落 verdict）；False=无待
+    重验修订（调用方按既有路径继续）。
+    """
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    pending = str(entry.get(SCENARIO_REVISION_PENDING_FIELD) or "").strip().lower()
+    if pending not in ("true", "1", "yes"):
+        return False
+    pipeline._context.state_machine.update_spec(
+        spec_name,
+        {
+            SCENARIO_REVISION_PENDING_FIELD: False,
+            "status": "implemented",
+            "tester_run": None,
+            "error": (
+                "场景修订后重验仍未收敛：修订 re-entry 先于升级，"
+                "追加一次重验（再失败将升级停车转人工）"
+            ),
+            "_in_inconclusive_reverify": True,
+        },
+    )
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"'{spec_name}' 场景修订 re-entry 先于升级：消费待重验旗标，"
+        f"追加一次重验",
+    )
+    pipeline._context.enqueue(spec_name, "verifier")
+    return True
 
 
 class VerificationPipeline:
@@ -1419,7 +1432,6 @@ class VerificationPipeline:
         # _reload_verify_engine_modules 的 reload 清单内，函数体内调用时解析
         # 才能拿到最新模块）
         from core.verify_engine.scenarios import (
-            CONTRACT_VERSION_FIELD,
             CURRENT_CONTRACT_VERSION,
             TestScenario,
             frozen_contract_version,
@@ -1438,8 +1450,10 @@ class VerificationPipeline:
         # 步骤 4 产出的内存 frozen 若只用于验收，_execute_stage2 仍无条件
         # load_scenarios 读盘，本轮消费的还是未迁移旧集。经实例属性携带
         # （返回二元组契约被测试解包消费，扩元组属签名变更）、stage2 一次性
-        # 读取消费，见 _execute_stage2 消费点。
-        self._stage2_scenarios_override = None
+        # 读取消费，见 _execute_stage2 消费点。以 spec_name 键控 dict 承载
+        # （code-review item e1b9182aa7dc：watch/scan 线程锁外派发，同一
+        # pipeline 实例可并发跑不同 spec 的验证轮，标量属性会跨轮串扰）。
+        self.__dict__.setdefault("_stage2_scenarios_override", {})[spec_name] = None
 
         # ── 场景冻结复用（scenario-reuse-on-reenter，2026-09-04）──
         # 冻结集一经生成即跨轮一致的量尺：重入验证（打回/修复轮/重试）直接
@@ -1463,9 +1477,7 @@ class VerificationPipeline:
             self._escalate_env_blocked(
                 spec_name,
                 [
-                    "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
-                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    _corrupt_freeze_options(spec_name),
                     f"解析异常：{type(e).__name__}: {str(e)[:300]}",
                 ],
                 title="场景计划争议",
@@ -1476,9 +1488,7 @@ class VerificationPipeline:
             self._escalate_env_blocked(
                 spec_name,
                 [
-                    "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
-                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    _corrupt_freeze_options(spec_name),
                     f"场景文件格式错误: 期望 JSON 数组，实际为 {type(raw).__name__}",
                 ],
                 title="场景计划争议",
@@ -1535,9 +1545,7 @@ class VerificationPipeline:
                 self._escalate_env_blocked(
                     spec_name,
                     [
-                        "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
-                        f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                        "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                        _corrupt_freeze_options(spec_name),
                         f"契约迁移无可用路径（contract_version={set_version} → "
                         f"{CURRENT_CONTRACT_VERSION} 未登记迁移段，fail-closed）",
                     ],
@@ -1600,7 +1608,7 @@ class VerificationPipeline:
                 frozen = [TestScenario.from_dict(item) for item in raw_mem]
                 # 写回失败轮随行携带内存迁移集（item 4f886aa7c126）：阶段2
                 # 本轮消费它而非盘上未迁移旧集（消费点见 _execute_stage2）。
-                self._stage2_scenarios_override = frozen
+                self.__dict__.setdefault("_stage2_scenarios_override", {})[spec_name] = frozen
             else:
                 frozen = load_scenarios(path)
         except ValueError as e:
@@ -1608,11 +1616,7 @@ class VerificationPipeline:
             # corrupt → env_blocked；迁移过的集附第③条回退指引（D4 风险：
             # MUST NOT 静默吞掉或再自动重出题，可能掩盖真实场景缺陷）。
             detail = str(e)
-            base_opts = (
-                "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
-                f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                "批准重新出题；② 文件可修复 → 修复后保持冻结。"
-            )
+            base_opts = _corrupt_freeze_options(spec_name)
             if migrated:
                 base_opts += (
                     "③ 如需恢复迁移前集合：删除 "
@@ -1637,9 +1641,7 @@ class VerificationPipeline:
             self._escalate_env_blocked(
                 spec_name,
                 [
-                    "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
-                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    _corrupt_freeze_options(spec_name),
                     f"load_scenarios 非验收路径异常: {type(e).__name__}: {e}",
                 ],
                 title="场景计划争议",
@@ -1784,6 +1786,12 @@ class VerificationPipeline:
     # 其余场景采信缓存判定（合成报告时标注 cached_source）。
     def _fix_diff_files(self, head_at_write: str):
         """head_at_write..HEAD 的修复 diff 文件集；无法计算返回 None（fail-closed）。"""
+        # commit 形态校验（code-review item 2a2c27eff327）：head_at_write 来自
+        # .fenix 下可写的 verdict 缓存 _meta，直接拼 git argv 会被形如
+        # --output=/path 的值当作选项解析（受限任意路径写）。非 commit 形态按
+        # 「无法计算」返回 None，与既有 fail-closed 语义一致。
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", head_at_write):
+            return None
         try:
             out = subprocess.run(
                 ["git", "diff", "--name-only", f"{head_at_write}..HEAD"],
@@ -2079,7 +2087,7 @@ class VerificationPipeline:
         )
         return scenarios
 
-    def _replan_feedback_text(self, replan_feedback: str) -> str:
+    def _replan_feedback_text(self, replan_feedback: str, spec_name: str) -> str:
         """渲染 REPLAN_FEEDBACK.md 全文（evo-scenario-product-toplevel-contract 2.2）。
 
         按失败类别生成收尾指引：格式类（场景文件顶层形状/条目结构非法，
@@ -2087,9 +2095,10 @@ class VerificationPipeline:
         文本——design D3）给「最小修复」指引（错误类别 + 修复动作），
         MUST NOT 指示全量重建——「一层包裹错误放大成 25 场景全量重建」即
         本 SPEC 要杜绝的浪费形态；内容类缺失（场景整体缺失等）保留
-        「重新输出全部场景」既有指示，行为不回归。
+        「重新输出全部场景」既有指示，行为不回归。侧车按 spec_name 键控
+        读取（code-review item e1b9182aa7dc 并发验证轮隔离）。
         """
-        if getattr(self, "_replan_error_format_class", False):
+        if self.__dict__.get("_replan_error_format_class", {}).get(spec_name, False):
             tail = (
                 "\n\n本轮失败类别：**格式类**（场景文件顶层形状或条目结构非法）。\n"
                 "最小修复：保持已合法的场景条目原样，只修正上方逐条错误指向的"
@@ -2139,8 +2148,10 @@ class VerificationPipeline:
         # user_blocked 侧车（code-review item ad95fc9cdbdd）：B4 应用不可达门禁
         # 须与本处 fail-fast 共享同一「需用户参与」预留判定位。返回五元组契约
         # 已被 fastlane 子集重验解包消费，扩元组属跨文件签名变更（超本组边界），
-        # 故经实例属性携带、门禁调用点读取（缺省 False 兜底）。
-        self._stage2_user_blocked = False
+        # 故经实例属性携带、门禁调用点读取（缺省 False 兜底）。以 spec_name
+        # 键控 dict 承载（code-review item e1b9182aa7dc：并发验证轮隔离，
+        # 理由同 _stage2_scenarios_override 注）。
+        self.__dict__.setdefault("_stage2_user_blocked", {})[spec_name] = False
 
         # 写回失败轮消费内存迁移集（code-review item 4f886aa7c126）：
         # _load_frozen_or_escalate 契约迁移写回失败时盘上仍是未迁移旧集，
@@ -2148,8 +2159,9 @@ class VerificationPipeline:
         # 完整轮——该轮改消费随行携带的内存迁移集（已过同源验收 + from_dict
         # 解析，与 load_scenarios 产物同构）。一次性读取即清位，防 replan
         # 循环后续轮误消费陈旧 override。
-        scenarios_override = getattr(self, "_stage2_scenarios_override", None)
-        self._stage2_scenarios_override = None
+        _override_cache = self.__dict__.setdefault("_stage2_scenarios_override", {})
+        scenarios_override = _override_cache.get(spec_name)
+        _override_cache[spec_name] = None  # 一次性读取即清位
 
         # ── 阶段2: 验证引擎执行 ──
         self._context.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
@@ -2160,8 +2172,9 @@ class VerificationPipeline:
         # _stage2_user_blocked 先例经实例属性携带（五元组返回契约冻结）——
         # 场景文件结构验收阶段（顶层形状/条目结构 ValueError）为格式类，
         # REPLAN_FEEDBACK 据此给「最小修复」指引；分类按失败发生阶段判定，
-        # 不解析错误文本（design D3）。
-        self._replan_error_format_class = False
+        # 不解析错误文本（design D3）。以 spec_name 键控 dict 承载
+        # （code-review item e1b9182aa7dc：并发验证轮隔离，理由同上）。
+        self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = False
         try:
             if scenarios_override is not None:
                 scenarios = scenarios_override
@@ -2176,7 +2189,7 @@ class VerificationPipeline:
             scenarios = self._salvage_top_level_dict(scenarios_path)
             if scenarios is None:
                 env_error = f"场景文件验收失败: {e}"
-                self._replan_error_format_class = True
+                self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = True
         # ── 空集独立拒绝（code-review item cc5036090a52）──
         # load_scenarios 对空数组验收通过并返回 []（不拒空集），空集防线此前
         # 完全依赖 _apply_scenario_freeze 的 aborted 结构化信号；freeze 异常被
@@ -2193,7 +2206,7 @@ class VerificationPipeline:
             # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
             # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
             app_reachable, user_blocked, reach_note = self._ensure_app_reachable(spec_name)
-            self._stage2_user_blocked = user_blocked
+            self.__dict__.setdefault("_stage2_user_blocked", {})[spec_name] = user_blocked
             self._context.logger.info(
                 "pm_engine",
                 f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
@@ -2272,7 +2285,7 @@ class VerificationPipeline:
                     # 同属场景文件结构验收阶段 → 格式类（design D3 按失败
                     # 发生阶段判定；该读点文件已过首载拯救/校验，一般仅
                     # 自愈改写引入的形状损伤会走到这里）。
-                    self._replan_error_format_class = True
+                    self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = True
                 # 空集独立拒绝（code-review item cc5036090a52）：同首载点，
                 # 自愈改写后重读得空集（0 场景）同样 MUST NOT 进引擎执行。
                 if env_error is None and isinstance(scenarios, list) and not scenarios:
@@ -2881,7 +2894,7 @@ class VerificationPipeline:
                         # contract 2.2）：格式类给「最小修复」指引，内容类保留
                         # 「重新输出全部场景」（见 _replan_feedback_text）。
                         fb.write_text(
-                            self._replan_feedback_text(replan_feedback),
+                            self._replan_feedback_text(replan_feedback, spec_name),
                             encoding="utf-8",
                         )
                     except OSError as e:
@@ -3076,7 +3089,7 @@ class VerificationPipeline:
                         replan_feedback = fb_text
                         # 内容类缺失（写前预校验整批拒绝，design D3）：保留
                         # 全量重建指示，不按格式类生成最小修复指引。
-                        self._replan_error_format_class = False
+                        self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = False
                         replan_left -= 1
                         self._context.logger.error(
                             "pm_engine",
@@ -3271,7 +3284,7 @@ class VerificationPipeline:
         # ── B4: 阶段2 门禁 + 全绿快道（见 _run_stage2_gates）──
         fail_count, judge_result, _gates_aborted = self._run_stage2_gates(
             spec_name, report, app_reachable, reach_note,
-            user_blocked=getattr(self, "_stage2_user_blocked", False),
+            user_blocked=self.__dict__.get("_stage2_user_blocked", {}).get(spec_name, False),
         )
         if _gates_aborted:
             return

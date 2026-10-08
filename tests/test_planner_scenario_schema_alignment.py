@@ -910,9 +910,10 @@ class TestReplanFeedbackClassifiedText:
     def test_format_class_has_minimal_repair_no_full_rebuild(self, tmp_path):
         """格式类拒收：文案含最小修复指引，不含「重新输出全部场景」。"""
         vpipe, _ = self._make_vpipe(tmp_path)
-        vpipe._replan_error_format_class = True
+        vpipe._replan_error_format_class = {"spec-demo": True}
         text = vpipe._replan_feedback_text(
-            "场景文件验收失败: 场景文件格式错误: 期望JSON数组，实际为 dict")
+            "场景文件验收失败: 场景文件格式错误: 期望JSON数组，实际为 dict",
+            "spec-demo")
         assert text.startswith("# 场景验收反馈")
         assert "最小修复" in text
         assert "格式类" in text
@@ -923,15 +924,16 @@ class TestReplanFeedbackClassifiedText:
     def test_content_class_keeps_full_rebuild(self, tmp_path):
         """内容类缺失：保留全量重建指示，既有行为不回归。"""
         vpipe, _ = self._make_vpipe(tmp_path)
-        vpipe._replan_error_format_class = False
-        text = vpipe._replan_feedback_text("场景写前预校验整批拒绝：本轮产出全部非法")
+        vpipe._replan_error_format_class = {"spec-demo": False}
+        text = vpipe._replan_feedback_text(
+            "场景写前预校验整批拒绝：本轮产出全部非法", "spec-demo")
         assert "重新输出全部场景" in text
         assert "navigate 的 value 必须为绝对 URL" in text
 
     def test_sidecar_defaults_to_content_class(self, tmp_path):
         """侧车缺省 False：未经历 stage2 的路径照旧全量重建文案。"""
         vpipe, _ = self._make_vpipe(tmp_path)
-        assert vpipe._replan_feedback_text("x").count("重新输出全部场景") == 1
+        assert vpipe._replan_feedback_text("x", "spec-demo").count("重新输出全部场景") == 1
 
 
 class TestStage2TopLevelSalvageWiring:
@@ -993,7 +995,7 @@ class TestStage2TopLevelSalvageWiring:
         ):
             env_error, *_ = vpipe._execute_stage2("spec-demo", vp, p)
         assert env_error and "场景文件验收失败" in env_error
-        assert vpipe._replan_error_format_class is True
-        text = vpipe._replan_feedback_text(env_error)
+        assert vpipe._replan_error_format_class["spec-demo"] is True
+        text = vpipe._replan_feedback_text(env_error, "spec-demo")
         assert "最小修复" in text
         assert "重新输出全部场景" not in text
