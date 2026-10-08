@@ -121,6 +121,17 @@ export function _clearEtagCache(): void {
   etagCache.clear();
 }
 
+/** 结构化拷贝 + 环境兜底（code-review item c344db17617f）：structuredClone 需
+    Chrome 98+/Safari 15.4+/Node 17+，与上方 isAbort 的环境放宽同理——旧 Safari、
+    部分 fetch polyfill、SSR 下的老版 undici 缺失该 API 时裸调用每次都抛
+    ReferenceError。退回 JSON 往返：缓存数据恒为 JSON.parse 产物（纯 JSON 值），
+    往返无损。200 写缓存（item 7974604e6c4b）与 304 命中两处共用本函数单源。 */
+function cloneCached<T>(value: T): T {
+  return typeof structuredClone === 'function'
+    ? structuredClone(value)
+    : (JSON.parse(JSON.stringify(value)) as T);
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
@@ -186,9 +197,9 @@ async function request<T>(
       // 304 返回结构化拷贝（code-review item e4a589e90e6c）：缓存条目是共享
       // 单例，直接返回引用会让调用方的原地变异（push/sort/改字段）写进
       // etagCache，其后该键每次 304 命中都拿到被污染数据且存活到淘汰。缓存
-      // 数据恒为 JSON.parse 产物（纯 JSON 值），structuredClone 必然可克隆，
+      // 数据恒为 JSON.parse 产物（纯 JSON 值），cloneCached 必然可拷贝，
       // 且与 200 路径「每次拿全新对象」的透明度对齐。
-      return structuredClone(cachedEntry.data) as T;
+      return cloneCached(cachedEntry.data) as T;
     }
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
@@ -251,7 +262,12 @@ async function request<T>(
           const oldest = etagCache.keys().next().value;
           if (oldest !== undefined) etagCache.delete(oldest);
         }
-        etagCache.set(path, { etag, data });
+        // 存克隆副本而非 data 本体（code-review item 7974604e6c4b）：返回值
+        // 与缓存条目共享引用时，调用方的原地变异（push/sort/改字段）会写进
+        // 缓存单例，其后该键每次 304 命中经 cloneCached 返回的都是被污染
+        // 数据且存活到淘汰——与文件头「调用方原地变异不会污染缓存」的声明
+        // 相悖。存克隆、返回原对象，200/304 两条路径均与缓存解耦。
+        etagCache.set(path, { etag, data: cloneCached(data) });
       }
     }
     return data;
