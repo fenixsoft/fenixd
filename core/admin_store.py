@@ -134,13 +134,14 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
     lines = [ln for ln in lines if ln.strip()]
     if len(lines) <= keep:
         return
-    fd, tmp_str = tempfile.mkstemp(
-        prefix=tmp_prefix,
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    tmp_path = Path(tmp_str)
+    tmp_path = None
     try:
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=tmp_prefix,
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        tmp_path = Path(tmp_str)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             for ln in lines[-keep:]:
                 f.write(ln + "\n")
@@ -148,8 +149,13 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
             os.fsync(f.fileno())
         os.rename(str(tmp_path), str(path))
         _fsync_parent_dir(path)
+    except OSError:
+        # 写失败与读路径同款兜底：按无文件处理静默返回（与 docstring
+        # 承诺一致）。两个调用方都把裁剪放在各自软失败边界之外——活跃
+        # 文件已写回成功后才裁剪，上抛会把已持久化的操作伪装成失败
+        return
     finally:
-        if tmp_path.exists():
+        if tmp_path is not None and tmp_path.exists():
             try:
                 tmp_path.unlink()
             except OSError:
