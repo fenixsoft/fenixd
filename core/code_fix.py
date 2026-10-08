@@ -60,6 +60,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.code_review import (  # noqa: F401
+    _logger,
     _now_iso,
     _read_items_unlocked,
     _with_lock,
@@ -320,7 +321,7 @@ def _preset_run_id(runner, exclude=()) -> str:
     return _unique_code_fix_run_id(runner, exclude=exclude)
 
 
-def _synthesize_item_progress(project_root, progress: dict) -> None:
+def _synthesize_item_progress(project_root, progress: dict) -> list:
     """条级进度实时合成（add-code-fix-item-level-progress D1/D3/D4）。
 
     D5 实证结论（task 1.1；观察方法：最小夹具批 2 条 item，stub `_run_claude`
@@ -2573,7 +2574,14 @@ def reopen_regression_items(project_root, live_fps) -> int:
 
     def _do() -> None:
         nonlocal reopened
-        current = _read_items_unlocked(path)
+        corrupted: list = []
+        read_degraded: list = []
+        current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
+        if read_degraded:
+            # 读降级（OSError 类）：拒绝本次全量替换，保持台账原样
+            #（code-review item 9a358bba128c）
+            _logger.warning("code_review: items.jsonl 读取降级，regression 重开跳过落盘")
+            return
         changed = False
         for rec in current.values():
             if not str(rec.get("category") or "").startswith(REGRESSION_CATEGORY_PREFIX):
@@ -2591,6 +2599,8 @@ def reopen_regression_items(project_root, live_fps) -> int:
             content = "".join(
                 json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
             )
+            # JSON 损坏行原样回写保留（code-review item 9a358bba128c）
+            content += "".join(raw + "\n" for raw in corrupted)
             _atomic_write(path, content)
 
     _with_lock(path, _do)
