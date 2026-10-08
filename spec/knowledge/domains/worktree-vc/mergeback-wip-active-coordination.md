@@ -1,7 +1,7 @@
 # 合回 WIP 占用者识别与事件驱动重试
 
-<!-- knowledge: capability=mergeback-wip-active-coordination rev=2
-     sources=spec/archive/2026-10-03-add-mergeback-wip-active-coordination -->
+<!-- knowledge: capability=mergeback-wip-active-coordination rev=3
+     sources=spec/archive/2026-10-03-add-mergeback-wip-active-coordination,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution -->
 
 修复批合回被主树 WIP 重叠挡住后的主动协调：机械识别占用者（在飞车道或无主陈旧 WIP）、以持有者 run 终态事件驱动秒级重试、无主限期升级人工——替代固定长间隔被动轮询。
 
@@ -11,7 +11,8 @@
 
 - 合回被 WIP overlap 挡住时，把 overlap 文件集与在飞实现车道（implementer/code-fix run 的 worktree 分支相对主树 HEAD 的改动文件集，三点式 diff）求交：存在命中即在飞持有者（run/spec/分支/命中文件可追溯），零命中即无主陈旧 WIP；结果随台账 owner_* 字段与进度 current 落盘留痕。
 - 识别数据源纯机械（worktree 注册表 `git worktree list --porcelain`、在飞 run 列表、分支 diff），MUST NOT 使用 LLM 推导路径名；在飞车道按 run 前缀过滤（impl-/code-fix-，planner/verifier/admin 不参与），code-fix run_id 无 spec 段经固定 spec 名桥接（code-fix-* → code-review-fix）纳入识别。
-- 已知盲区随识别证据留痕：识别只覆盖 worktree 分支型在飞车道；持有者直接改主树不入分支的形态（admin/人工会话、主树内构建产物）分支 diff 必零命中，一律按无主走宽限升级（升级仅为告警，误判影响有界），MUST NOT 为覆盖盲区引入主树写探测。
+- 车道归因零命中后归因器追加主树活交互会话只读探测（源与相关性门见 [maintree-wip-attribution](maintree-wip-attribution.md)）：会话归因受 `admin.maintree_session_attribution_action` 采信——info（缺省）记 owner_kind=holder 且宽限计时清零，keep 视同零命中走 orphan 宽限升级流（evidence 仍透传会话线索）；会话归因 holders 无 run_ids，终态回调注册自然缺席，事件驱动重试缺席由既有轮询兜底，延迟批维持 defer 等待不升级。
+- 已知盲区随识别证据留痕：活交互会话之外的主树直改形态（非活跃会话遗留、主树内构建产物）分支 diff 仍零命中，一律按无主走宽限升级（升级仅为告警，误判影响有界），MUST NOT 为覆盖盲区引入主树写探测。
 
 ### 事件驱动合回重试
 
@@ -32,3 +33,4 @@
 ## 溯源
 
 - 2026-10-03 2026-10-03-add-mergeback-wip-active-coordination（spec/archive/2026-10-03-add-mergeback-wip-active-coordination） — 新建本页：占用者机械识别（求交 + run 前缀过滤 + code-fix spec 桥接 + 盲区注记留痕）、per-run 终态监听（agent_runner 终态收口注册、已终态立即触发、attempt 归一、重复注册覆盖与回调异常兜底）、持有者事件驱动重试（复用单一重试入口、锁占用让位）、无主宽限升级（`mergeback_wip_orphan_stuck` major、宽限可配置、禁动主树改动）。
+- 2026-10-09 evo-add-maintree-interactive-session-attribution（spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution） — 修改本页：识别盲区收窄——车道归因零命中后归因器追加主树活交互会话只读探测，defer 侧按 `admin.maintree_session_attribution_action` 采信（info 记 owner_kind=holder 清宽限计时、keep 视同零命中走 orphan 升级流），会话归因无 run 终态可订阅由轮询兜底。

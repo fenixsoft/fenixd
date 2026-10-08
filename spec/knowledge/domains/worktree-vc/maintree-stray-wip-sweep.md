@@ -1,7 +1,7 @@
 # 主树散件 WIP 周期盘点与滞留升级
 
-<!-- knowledge: capability=maintree-stray-wip-sweep rev=1
-     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep -->
+<!-- knowledge: capability=maintree-stray-wip-sweep rev=2
+     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution -->
 
 daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件），机械归因持有者，无主且宽限耗尽时以一次性 major 告警浮出——散件滞留由分钟级机械巡检检出，而非 LLM 复盘车道的偶然检出。
 
@@ -20,8 +20,9 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 
 ### 占用者机械归因
 
-- 复用合回 WIP 协调的既有机械归因器（`identify_wip_occupant` / `WipOccupantInfo`，见 [ADR-258](../../adr/ADR-258-stray-sweep-readonly-observer-attribution-single-source.md)），禁重造求交逻辑：改动文件集与在飞实现车道 worktree 分支相对主树 HEAD 的改动集求交，命中即持有者在飞——不计时不告警；零命中即无主，自指纹首次出现时刻起算宽限。
-- 归因盲区随证据留痕：识别只覆盖 worktree 分支型在飞车道；人工/管理员会话等主树直改形态必零命中，一律按无主走宽限升级，升级仅为告警、误判影响有界，禁为覆盖盲区引入主树写探测。
+- 复用合回 WIP 协调的既有机械归因器（`identify_wip_occupant` / `WipOccupantInfo`，见 [ADR-258](../../adr/ADR-258-stray-sweep-readonly-observer-attribution-single-source.md)），禁重造求交逻辑：改动文件集先与在飞实现车道 worktree 分支相对主树 HEAD 的改动集求交，车道归因零命中后归因器追加只读活交互会话探测——归因源全集、相关性门与 fail-open 规则见 [maintree-wip-attribution](maintree-wip-attribution.md)。
+- 归因三分支：在飞车道命中 → status=holder 不计时不告警；活交互会话归因命中 → 受 `admin.maintree_session_attribution_action` 采信，缺省 info 降级 status=session-attributed 留痕（不计时、不派 major、不触发 admin 代查），keep 则视同零命中；真零命中 → 无主，自指纹首次出现时刻起算宽限。
+- 归因盲区随证据留痕：活交互会话之外的主树直改形态（非活跃会话遗留、主树内构建产物）仍零命中，一律按无主走宽限升级，升级仅为告警、误判影响有界，禁为覆盖盲区引入主树写探测。
 - 持有者命中期间持续 defer 不告警（与合回 WIP 协调的事件驱动等待同语义），在飞车道长期不终态不构成升级条件。
 
 ### 宽限与一次性升级告警
@@ -38,8 +39,9 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 
 ## 关键行为
 
-- 单轮盘点流程：非阻塞取主树锁（忙则弃轮返回）→ `git status --porcelain` 取 tracked 改动（空集即 status=clean 零产出）→ 构造指纹并与注册表比对（新增档记 first_seen / 同指纹沿用 / 消失清除）→ 传入飞实现车道 run_ids 归因分流（holder 不计时 / 无主按宽限计时）→ 无主且在场超宽限且同指纹未升级过 → 写 AdminStore 告警并记升级标记。
+- 单轮盘点流程：非阻塞取主树锁（忙则弃轮返回）→ `git status --porcelain` 取 tracked 改动（空集即 status=clean 零产出）→ 构造指纹并与注册表比对（新增档记 first_seen / 同指纹沿用 / 消失清除）→ 传入飞实现车道 run_ids 归因三分流（车道命中不计时 / 会话归因默认 info 留痕 / 无主按宽限计时）→ 无主且在场超宽限且同指纹未升级过 → 写 AdminStore 告警并记升级标记。
 
 ## 溯源
 
 - 2026-10-08 evo-add-maintree-stray-wip-sweep（spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep） — 新建本页：主树 tracked 散件 WIP 周期只读盘点（60s 节拍、主树锁非阻塞互斥、tracked-only 口径）、内容指纹滞留计时（mtime 免疫）、复用 `identify_wip_occupant` 机械归因、宽限耗尽一次性 `maintree_stray_wip_stale` major 告警（admin_monitor 三表登记接入唤起）、全链零触碰仅报告。
+- 2026-10-09 evo-add-maintree-interactive-session-attribution（spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution） — 修改本页：占用归因由二分支扩为三分支——车道归因零命中后归因器追加主树活交互会话只读探测，会话归因散件缺省降级 status=session-attributed info 留痕（不派 major 不触发代查），`admin.maintree_session_attribution_action=keep` 回退现状无主宽限升级；归因源与采信规则收敛至 maintree-wip-attribution 页。
