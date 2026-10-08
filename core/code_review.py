@@ -1017,13 +1017,18 @@ def _latest_review_run(project_root) -> Optional[str]:
     旧正则要求名字**以** 9~10 位数字结尾，这类带退避后缀的 run 会被跳过，
     使 read_progress 取到更旧的一次 run（total/done 全错、running 恒 false，
     并让 409 重复触发守卫失效）。故匹配「epoch 后可跟多个 -<n> 段」的形态，
-    取首个 epoch 段排序（code-review item ab5d3b4c3fa9）。
+    取首个 epoch 段排序（code-review item ab5d3b4c3fa9）。同秒撞名退避
+    （手动+同秒周期双触发）会产出 ``code-review-<epoch>`` 与
+    ``code-review-<epoch>-<n>`` 两份真实 run 并存，epoch 平局时以名字
+    字典序为确定性次键取更大者——退避 run 由 _unique_code_review_run_id
+    在基础候选被申领后才生成（创建序更晚），字典序更大即更新，消除对
+    glob 目录序的依赖（code-review item f7b084c51199）。
     """
     d = code_review_dir(project_root)
     if not d.is_dir():
         return None
     latest: Optional[str] = None
-    latest_ts = -1
+    latest_key: Optional[tuple] = None
     try:
         for p in d.glob("manifest-*.json"):
             name = p.name[len("manifest-") : -len(".json")]
@@ -1031,8 +1036,9 @@ def _latest_review_run(project_root) -> Optional[str]:
             if not m:
                 continue
             ts = int(m.group(1))
-            if ts > latest_ts:
-                latest_ts = ts
+            key = (ts, name)
+            if latest_key is None or key > latest_key:
+                latest_key = key
                 latest = name
     except OSError:
         pass
