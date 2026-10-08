@@ -27,3 +27,8 @@
 | prompt-builder-selfreview-loadchain | 装载链路确认（tasks.md 2.1）：python 探针直调 core/agent_runner/prompt_builder.py:1719 _build_self_review_prompt 装载改后模板——纪律文本直达最终 prompt、五个占位符（review_date/daily_summary/todo_md_content/todo_entries/out_path）填充无残留、非交互契约段在位追加、模板缺失 fail-fast 映射（agent_prompt_path 对未知类型抛 ValueError，prompt_builder.py:307-314）不被触发且机制在场。出处：core/agent_runner/prompt_builder.py:1719-1778、:307 | pass | 0/17 | - |
 | prompts-api-serves-selfreview-discipline | 服务侧模板下发验收：GET /api/prompts 返回的 self-review 条目携带归因证据边界纪律全文（origin 由框架改写到验证实例）；json_schema 校验 12 个 agent 模板全部非空可读（模板缺失 fail-fast 未触发、读失败转 500 的服务侧可观测口径）。出处：core/dashboard/routes/base.py:576（/api/prompts GET 注册）、core/dashboard/routes/settings_routes.py:256（handler 遍历 AGENT_PROMPT_FILES 读模板） | pass | 0/13 | - |
 | prompts-panel-shows-selfreview-discipline | UI 展示链路验收：设置页（/#/settings，hash 路由）→「提示词」页签 → Agent 下拉切到 Self-Review（自省）→ 通用提示词只读区渲染归因证据边界纪律全文与既有核实纪律。出处：core/dashboard/static/config/config.ts:15（history hash）、core/dashboard/static/config/routes.ts:31（/settings）、core/dashboard/static/src/pages/settings/pageLabels.ts:11（提示词页签）、PromptsPanel.tsx:283（prompts-agent-switcher）、:301（prompts-generic-content） | pass | 0/12 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
