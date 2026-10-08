@@ -642,8 +642,15 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # spec_review_mode / start_after_scope）会在此分支后被丢弃（实测复现）。
         # 改为单键赋值，保留其余键（对齐其余分支写法）。
         result.setdefault("gates", {})["approve_mode"] = gates_raw["approve_mode"]
-    # add-draft-promotion-gate：promote_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底）
-    if isinstance(gates_raw, dict) and gates_raw.get("promote_mode") in ("auto", "manual"):
+    # add-draft-promotion-gate：promote_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底；
+    # code-review item 47a9bd170bc6：枚举集改引 ConfigLoader.VALID_PROMOTE_MODES
+    # 单源，对齐上方 approve_mode 的常量写法，杜绝枚举扩充时硬编码处先漂移）
+    from core.config import ConfigLoader as _CLPM
+
+    if (
+        isinstance(gates_raw, dict)
+        and gates_raw.get("promote_mode") in _CLPM.VALID_PROMOTE_MODES
+    ):
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["promote_mode"] = gates_raw["promote_mode"]
@@ -795,7 +802,9 @@ def read_effective_config(project_root) -> dict:
 
     配置解析缓存（D4）：以 (项目根路径, 用户级 config.yaml 签名, 项目级
     config.yaml 签名) 为键缓存解析结果（签名为 (mtime_ns, size)，路径维度
-    防不同项目同签名撞键）；命中直接返回深拷贝，不重读文件。
+    防不同项目同签名撞键）；命中直接返回深拷贝，不重读文件。仅解析成功
+    （error 为 None）的结果写缓存，错误视图每次现读现返回（code-review
+    item a8ffe3b6a8ae）。
     """
     from core.config import ConfigLoader
 
@@ -835,10 +844,10 @@ def read_effective_config(project_root) -> dict:
     try:
         effective = ConfigLoader.resolve_config(proot)
     except Exception as e:
+        # code-review item a8ffe3b6a8ae：错误视图不写缓存——缓存键只含文件
+        # (mtime_ns, size) 签名，错误结果入缓存后瞬时故障在文件未变更期间
+        # 持续命中；错误视图每次现读现返回，下次请求自然恢复。
         result["error"] = f"有效配置解析失败: {e}"
-        if len(_EFFECTIVE_CONFIG_CACHE) > _EFFECTIVE_CONFIG_CACHE_MAX:
-            _EFFECTIVE_CONFIG_CACHE.clear()
-        _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
         return result
 
     # 提取受管键（有效合并值）
@@ -884,22 +893,16 @@ def read_effective_config(project_root) -> dict:
         from core.fast_track_result import get_scale_precheck_config as _get_sp_eff
 
         result["agents"]["scale_precheck"] = _get_sp_eff(effective)
-    gates_eff = effective.get("gates")
     # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
     # （同 read_config 既有缺陷——其余 gates 键在分支后丢失），单键赋值。
     # code-review item 775c04d26905：经 get_approve_mode 生效值归一（缺失/非法
     # 值回退 manual，回显与运行时生效值一致——对齐同段 spec_review_mode /
     # start_after_scope 的 getter 单点写法），杜绝手工脏值直显。
     result.setdefault("gates", {})["approve_mode"] = ConfigLoader.get_approve_mode(effective)
-    # add-draft-promotion-gate：草稿晋升模式回显（缺省 auto）
-    if isinstance(gates_eff, dict) and "promote_mode" in gates_eff:
-        val = gates_eff["promote_mode"]
-        if val in ("auto", "manual"):
-            if "gates" not in result:
-                result["gates"] = {}
-            result["gates"]["promote_mode"] = val
-    elif "promote_mode" not in result.get("gates", {}):
-        result["gates"]["promote_mode"] = "auto"
+    # add-draft-promotion-gate：草稿晋升模式回显（code-review item 47a9bd170bc6：
+    # 改经 get_promote_mode 生效值归一，缺失/非法回退缺省 auto——对齐同段
+    # approve_mode 的 getter 单点写法，不再硬编码枚举元组手工判定）
+    result.setdefault("gates", {})["promote_mode"] = ConfigLoader.get_promote_mode(effective)
     # add-spec-review-gate：方案评审模式回显（经 get_spec_review_mode 生效值，
     # 非法值/缺失回退缺省 auto——与 ConfigLoader 单点同源，回显与生效值一致）
     if "gates" not in result:
@@ -990,9 +993,13 @@ def read_effective_config(project_root) -> dict:
     else:
         result["description"] = ""
 
-    if len(_EFFECTIVE_CONFIG_CACHE) > _EFFECTIVE_CONFIG_CACHE_MAX:
-        _EFFECTIVE_CONFIG_CACHE.clear()
-    _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
+    # code-review item a8ffe3b6a8ae：仅解析成功（error 为 None）才写缓存；
+    # 项目文件读取/解析失败的错误视图不缓存（错误视图每次现读现返回，
+    # 瞬时故障在下一次请求自然恢复，不被文件签名钉死）
+    if result["error"] is None:
+        if len(_EFFECTIVE_CONFIG_CACHE) > _EFFECTIVE_CONFIG_CACHE_MAX:
+            _EFFECTIVE_CONFIG_CACHE.clear()
+        _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
     return result
 
 def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
@@ -1442,12 +1449,19 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         try:
             with config_path.open("r", encoding="utf-8") as f:
                 loaded = yaml.safe_load(f)
-            if isinstance(loaded, dict):
-                raw = loaded
         except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
             # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛，缺则成 500
             # （code-review item eeec7a6f3ff5）
             return fail(f"读取现有配置失败: {e}")
+        # code-review item 2108d49c5ea8：顶层非 dict（list/标量）时与读路径
+        # read_config 同款报错（提示先手工修正），不再静默按空配置合并——否则
+        # 合并受管键后整文件覆盖写回，无提示销毁存量内容（含非受管数据）。
+        # 空文件（None）仍按空配置处理，对齐读路径 `or {}` 口径。
+        if loaded is None:
+            loaded = {}
+        if not isinstance(loaded, dict):
+            return fail("配置文件顶层不是对象，请先手工修正 config.yaml")
+        raw = loaded
 
     # 非 dict 的 agents patch 直接拒绝（对齐 self_evolution 同款「must be an
     # object」；非 dict 在下方守卫与 _deep_merge_managed 中均被跳过，若放行到
@@ -1819,16 +1833,18 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     f"admin.self_heal_quiet_minutes must be a positive integer: {sq!r}"
                 )
 
-    # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode）
+    # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode；
+    # code-review item 47a9bd170bc6：枚举集改引 ConfigLoader.VALID_PROMOTE_MODES 单源）
     if isinstance(config_patch.get("gates"), dict):
         g_patch = config_patch["gates"]
         if (
             "promote_mode" in g_patch
             and g_patch["promote_mode"] is not None
-            and g_patch["promote_mode"] not in ("auto", "manual")
+            and g_patch["promote_mode"] not in ConfigLoader.VALID_PROMOTE_MODES
         ):
             return fail(
-                f"gates.promote_mode must be one of ['auto', 'manual']: {g_patch['promote_mode']!r}"
+                f"gates.promote_mode must be one of {ConfigLoader.VALID_PROMOTE_MODES}: "
+                f"{g_patch['promote_mode']!r}"
             )
         # add-spec-review-gate：gates.spec_review_mode 前置校验（枚举拒绝，
         # 与 promote_mode 同模式；None 视为「未提交」，不校验）
