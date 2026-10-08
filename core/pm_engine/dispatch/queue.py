@@ -172,6 +172,13 @@ class QQQueueMixin:
         # 每条目接手重试至多一次，失败维持既有熔断告警与人工通道，不无限节拍
         # 重试。
         self._inflight_defer_recheck_attempted: set = set()
+        # 评审在飞达上限顺延留痕去重集合（code-review item 5b303fdcd1fb）：
+        # {spec_name}，daemon 生命周期内每条目至多 INFO 一次（对齐
+        # _wip_defer_degrade_notified 范式）——批量晋升多条评审条目且在飞达
+        # 上限时，_process_queue 每轮扫描都会对每个滞留条目各打一条 INFO，
+        # 不去重会以条目数×扫描轮数刷屏；重复滞留降 DEBUG，首条 INFO 保留
+        # 闸门可见性。
+        self._review_inflight_cap_notified: set = set()
 
     # ── 验证车道槽位豁免（add-verify-lane-throughput 2.1）──────────────────
     # 槽位豁免车道全集：spec-review（既有先例，fix-spec-review-blocking-dispatch）
@@ -347,13 +354,12 @@ class QQQueueMixin:
             self._run_queue = [
                 e for e in self._run_queue if not (e[1] == spec_name and e[2] == agent_type)
             ]
-            # 插入到同优先级档的最前面（保持同一档内的顺序）
+            # 插入到同优先级档的最前面（保持同一档内的顺序）：落在同档队首/
+            # 更高档之前（code-review item 80516624eaa2：原 ==/＞ 两分支动作
+            # 逐字相同，合并为一个 >= 判断，语义不变）。
             insert_idx = 0
             for i, e in enumerate(self._run_queue):
-                if e[0] == priority:
-                    insert_idx = i
-                    break
-                if e[0] > priority:
+                if e[0] >= priority:
                     insert_idx = i
                     break
                 insert_idx = i + 1
@@ -489,11 +495,23 @@ class QQQueueMixin:
         # 廉价集合计数短路，超载时不做后续 reviewer_in_flight 进程表/流文件探测。
         # INFO 留痕（生产日志全库 0 条 DEBUG，闸门静默不可见曾是事故复盘要点）。
         if self._review_inflight_count() >= self._review_inflight_cap():
-            self._pm.logger.info(
-                "pm_engine",
-                f"评审在飞达上限（{self._review_inflight_count()} ≥ "
-                f"{self._review_inflight_cap()}），派发顺延（条目保留队列）: {sname}",
-            )
+            # 去重留痕（code-review item 5b303fdcd1fb，对齐
+            # _wip_defer_degrade_notified 范式，集合见 __init__）：每条目至多
+            # INFO 一次，重复滞留降 DEBUG——批量晋升多条评审条目滞留时防
+            # 周期扫描逐条目×逐轮刷屏，闸门可见性由首条 INFO 保留。
+            if sname in self._review_inflight_cap_notified:
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"评审在飞达上限（{self._review_inflight_count()} ≥ "
+                    f"{self._review_inflight_cap()}），派发顺延（条目保留队列）: {sname}",
+                )
+            else:
+                self._review_inflight_cap_notified.add(sname)
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"评审在飞达上限（{self._review_inflight_count()} ≥ "
+                    f"{self._review_inflight_cap()}），派发顺延（条目保留队列）: {sname}",
+                )
             return False
         # 过渡在飞判据（code-review item e3d1d53906cb）：见 docstring。成员读
         # 不加锁（对齐 engine.is_review_in_flight 对 _active_reviews 的裸读先例）。
@@ -771,6 +789,10 @@ class QQQueueMixin:
         while True:
             entry_to_dispatch = None
 
+            # [fenix-ignore:05a33bfdc92c] 跨轮缓存会让出锁段窗口（闸门检查/线程
+            # 启动）内并发写者的状态推进对派发判定不可见（stale 判定派发，打破
+            # 状态守卫/冻结保护），既有修复 806ba20de85f 已刻意选择「每轮重建、
+            # 不跨轮」保守口径；锁外 read_one 属大重构，修复风险大于收益。
             with self._queue_lock:
                 now = time.time()
                 # 槽位闸门（fix-spec-review-blocking-dispatch 1.5b / design D2
@@ -2424,6 +2446,13 @@ class QQQueueMixin:
                                     "_redispatch_same_cause_streak": streak,
                                 },
                             )
+                            # 置 ready 后显式重入队（code-review item
+                            # fdc175ea758f，对齐同文件零变更哨/契约违反/merge
+                            # 失败降级三个失败出口的收口——只翻状态不入队＝
+                            # 重派退化为周期 full_scan 兜底拾取，延迟一个扫描
+                            # 周期且与「Retry x/y」日志承诺不符）。_enqueue 自带
+                            # (spec, agent) 去重，无双派风险。
+                            self._enqueue_front(spec_name, "implementer")
                             self._pm.logger.warning(
                                 "pm_engine",
                                 f"Retry {retries}/{max_r} for '{spec_name}'"
@@ -3096,10 +3125,36 @@ class QQQueueMixin:
             return False
         branch = entry.get("branch")
         if not branch:
-            self._pm.logger.error(
-                "pm_engine",
-                f"merge 重试 '{spec_name}' 无分支锚点 — 无法仅重试合并，"
-                f"保持 implementing 等待人工处置（既有告警/巡检可见）",
+            # 结构化告警落盘（code-review item 3e5c9573a30c）：对齐 stuck 通道
+            # （_report_mergeback_spec_dir_inflight_stuck / _report_mergeback_wip_
+            # defer_stuck）的 admin store 可见性，消除「日志即告警」依赖。状态
+            # 不动（保持 implementing 等待，分支锚点缺失无记账可写），
+            # state_updates 传空 dict＝零字段更新；任何异常由骨架吞并仅 WARNING
+            # （非阻塞）。
+            self._emit_mergeback_alert(
+                spec_name,
+                "mergeback_branch_anchor_missing",
+                {},
+                "mergeback 分支锚点缺失状态更新跳过（零字段，非阻塞）",
+                (
+                    f"merge 重试 '{spec_name}' 无分支锚点 — 无法仅重试合并，"
+                    f"保持 implementing 等待人工处置（已写 admin 告警）"
+                ),
+                (
+                    f"SPEC '{spec_name}' merge-only 重试无分支锚点（branch 字段"
+                    f"缺失）：无法仅重试合并，保持 implementing 等待人工处置"
+                    f"（_merge_retry_count="
+                    f"{entry.get('_merge_retry_count', 0)}）。"
+                    f"周期消费者对该条目的自动接手至多一次，此后静默悬置。"
+                ),
+                {
+                    "branch": None,
+                    "_merge_retry_count": entry.get("_merge_retry_count", 0),
+                },
+                (
+                    "确认该 spec 实现分支是否落盘（worktree 已清理仅留分支）；"
+                    "人工完成合并，或复位 ready 重新放行实现车道"
+                ),
             )
             return False
         # 预算闸门（D2/task 2.6）：同派发前闸门，阻塞则不再尝试（闸门自身置 blocked+告警）
@@ -4003,11 +4058,13 @@ class QQQueueMixin:
         # transition 返回值校验（code-review item ae6b0dae38cb，对齐三车道
         # merge 失败处置家族 f3a8a1249ede / a5e1c9319ad4 同型守卫）：上游 join
         # 读态（status==testing）与本转移之间若被并发冻结/推进，transition 返回
-        # False——失败时保留现场直接返回（不打回、不写 _ocr_fix_rounds、不清
-        # pending），否则冻结 error（内嵌「原状态 X」供 parse_orig_status 解冻
-        # 还原）被覆写、修复轮计数被改写、打回链照常启动，冻结保护被绕过。
-        # 返回 "defer"（调用方语义=停止推进）：spec 已归并发写者所有，gate 侧
-        # 不再动作。
+        # False——失败时不打回、不写 _ocr_fix_rounds，直接返回 defer。现场已不
+        # 含停等标记（code-review item 20efa7a80bfb）：pending 由 _ocr_join_gate
+        # completed 分支入口的 _ocr_join_clear_pending 统一清理（先于本方法），
+        # transition 失败路径无需也不会再清——spec 已归并发写者所有，pending
+        # 残留反而更糟。否则冻结 error（内嵌「原状态 X」供 parse_orig_status
+        # 解冻还原）被覆写、修复轮计数被改写、打回链照常启动，冻结保护被绕过。
+        # 返回 "defer"（调用方语义=停止推进）：gate 侧不再动作。
         if not sm.transition(
             spec_name, "bug-found",
             trigger_run_id=entry.get("tester_run") or None,
