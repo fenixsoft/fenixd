@@ -104,6 +104,10 @@ class TestRewriteScenarioPortCharacterization(unittest.TestCase):
         self.logger = MagicMock()
         self.engine = make_engine(self.tmpdir, config={})
         self.engine.logger = self.logger
+        # _rewrite_scenario_port 走 pipeline._context.logger（from_pm 构造时
+        # 值捕获 pm.logger，构造后替换 engine.logger 不传导）——调用计数断言
+        # 须注入 pipeline 实际读取点
+        self.engine._verification._context.logger = self.logger
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

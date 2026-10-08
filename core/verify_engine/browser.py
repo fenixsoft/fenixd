@@ -286,9 +286,11 @@ class BrowserManager:
         # 独立 HTML 入口点支持
         self._use_verify_html: bool = False
 
-        # 最近一次注册、可能尚未被消费的 dialog 一次性处理器（_register_dialog_handler
-        # 持引用以便注册前摘除残留，code-review item 4c32769cc34e）
-        self._pending_dialog_handler = None
+        # （dialog 待摘一次性处理器亦记录在 page 对象属性
+        # _fenix_pending_dialog_handler 上——并发场景共享本管理器，实例级
+        # 单槽会摘错别的场景页面的处理器并让本页旧 mode 残留与新处理器同响
+        # 一次对话框，见 _register_dialog_handler（code-review item
+        # 557b3726aad6）。）
 
         # （SSE 拦截标记现记录在 page 对象属性 _fenix_sse_blocked 上——
         # mock 场景必须隔离活体推流，见 mock_api 分支；勿用 id(page) 集合，
@@ -729,15 +731,19 @@ class BrowserManager:
         # 注册前先摘除上一轮残留的未消费 once 处理器（code-review item
         # 4c32769cc34e）：声明的 dialog 步骤之后 click 实际未弹框时，once
         # 处理器不会自动移除，会按旧 mode 吞掉后续步骤触发的对话框；摘除后
-        # 同页至多挂一个处理器，也消除一次对话框同时唤醒多个 once 回调的问题
-        stale = self._pending_dialog_handler
+        # 同页至多挂一个处理器，也消除一次对话框同时唤醒多个 once 回调的问题。
+        # 待摘引用挂在 page 对象上（与 _fenix_sse_blocked 同款页面对象属性
+        # 惯例，code-review item 557b3726aad6）：并发场景共享同一
+        # BrowserManager（每场景独立 context/page），实例级单槽会摘到别的
+        # 场景页面上的处理器、放走本页旧 mode 残留
+        stale = getattr(page, "_fenix_pending_dialog_handler", None)
         if stale is not None:
             try:
                 page.remove_listener("dialog", stale)
             except Exception:
                 pass
         page.once("dialog", _handle)
-        self._pending_dialog_handler = _handle
+        page._fenix_pending_dialog_handler = _handle
 
     async def execute_action(self, page, step: dict) -> dict:
         """执行单个用户操作。

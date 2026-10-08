@@ -465,6 +465,9 @@ class TestDeliverableGateTyped(_GateFixture):
         self.wm.file_exists_on_branch.return_value = False
         capturing = _CapturingLogger()
         self.engine.logger = capturing
+        # 守卫审计走 pipeline._context.logger（from_pm 构造时值捕获 pm.logger，
+        # 构造后替换 engine.logger 不传导）——须注入 pipeline 实际读取点
+        self.engine._verification._context.logger = capturing
 
         result = self.engine._deliverable_gate_missing("s1", self.make_result())
 

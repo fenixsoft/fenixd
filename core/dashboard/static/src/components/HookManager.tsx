@@ -201,6 +201,16 @@ export default function HookManager({
     if (submitting) return;
     setSubmitting(true);
     form.validateFields().then(async (values) => {
+      // 编辑目标越界兜底（code-review item eb7f14194f39）：Modal 打开期间 hooks
+      // prop 收缩时 editIdx 可能已指向不存在的下标，此时是数据已被外部删除而非
+      // 保存失败——直接关闭 Modal 并给出准确提示，避免笼统的「保存失败」文案
+      // （口径对齐 handleEdit 的越界兜底）
+      if (editIdx !== null && !hooks[editIdx]) {
+        setModalOpen(false);
+        message.warning('该 Hook 已被删除');
+        setSubmitting(false);
+        return;
+      }
       const entry: HookConfig = {
         id: editIdx !== null ? hooks[editIdx].id : shortId(),
         enabled: values.enabled !== false,

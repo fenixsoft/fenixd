@@ -8188,8 +8188,14 @@ class AgentRunner:
         """
         usage = usage_info or {}
         latency = latency or {}
+        # logger 未装配（最小装配替身/降级态）时整体跳过：指标落盘是纯观测，
+        # 且 except 分支再调 self.logger.warning 会对 None 二次抛 AttributeError
+        # 穿透 run 收尾——违背本方法「绝不阻断 run 收尾」契约
+        logger = self.logger
+        if logger is None:
+            return
         try:
-            self.logger.info(
+            logger.info(
                 "agent_runner",
                 f"run metrics: {agent_type} {terminal} '{spec_name}'",
                 {
@@ -8216,10 +8222,13 @@ class AgentRunner:
                 },
             )
         except Exception as e:  # 指标落盘失败不得阻断 run 收尾
-            self.logger.warning(
-                "agent_runner",
-                f"run metrics 落盘失败 '{spec_name}' ({run_id}): {e}",
-            )
+            try:
+                logger.warning(
+                    "agent_runner",
+                    f"run metrics 落盘失败 '{spec_name}' ({run_id}): {e}",
+                )
+            except Exception:
+                pass  # warning 通道同样失效时放弃留痕，收尾契约优先
 
     @property
     def _extension_baselines(self):

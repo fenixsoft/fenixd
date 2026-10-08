@@ -198,6 +198,9 @@ export default function CommandMenu({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen, onClose, triggerRef]);
 
+  // 滚动对齐同时依赖 selectedIndex 与 commands（code-review item b85b7d503d3b）：
+  // 搜索过滤使 commands 重排而 selectedIndex 数值不变时，选中行 ref 虽重新挂上
+  // 却不会触发滚动对齐，键盘首键可能落在视口外选项上
   useEffect(() => {
     if (!selectedItemRef.current || !menuRef.current) {
       return;
@@ -207,7 +210,7 @@ export default function CommandMenu({
     if (itemRect.bottom > menuRect.bottom || itemRect.top < menuRect.top) {
       selectedItemRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
-  }, [selectedIndex]);
+  }, [commands, selectedIndex]);
 
   if (!isOpen) {
     return null;
