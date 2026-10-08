@@ -36,3 +36,10 @@
 | consume-ledger-read-failure-fail-open | 台账读取失败不阻断主流程：items.jsonl 位置替换为目录（read 抛 OSError→降级检出）时按空集 fail-open 跳过本轮核销——不误判全终态、不写 consumed_at、告警保持未 handled、不抛异常（spec/code-fix-batch-selfheal/spec.md:49-52；core/code_fix.py:1575-1583） | pass | 0/5 | - |
 | consume-needle-exact-line-prefix-regression | 核销 needle 整行锚加固同惠既有 consume 路径（回归点）：记录 [a] 与 [a,b] 共存、仅 a 终态时 consume 只核销 [a] 登记块，[a,b] 块原样保留且 open_remaining 同步为 1，前缀扩展清单不被误重写（design.md 决策 5；core/code_fix.py:1522-1524） | pass | 0/8 | - |
 | closeout-test-suite-green | 测试交付物回归：pytest -v 运行 tests/test_codefix_failure_registration_closeout.py 全绿（exit 0、21 passed），本 SPEC 新增用例（整批解除核销/部分解除不核销/前缀锚不误命中/auto-budget 留痕/todo 写失败容错/裸标题壳兜底/带外留痕字段）在列且 PASSED（tasks.md 2.1） | pass | 0/9 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 13 个（第 1 轮）。
+
+- 首轮写入 13 个场景
+
