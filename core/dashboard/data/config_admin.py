@@ -203,12 +203,16 @@ _DEFAULT_CODE_REVIEW = {
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
 # batch_size 缺省 20；targeted_retry_max 缺省 3，add-codefix-targeted-retry；
-# targeted_regression 缺省 True，add-codefix-affinity-batching）
+# targeted_regression 缺省 True，add-codefix-affinity-batching；
+# min_immediate_severity 缺省 major / minor_batch_cadence 缺省 7，
+# evo-add-codefix-severity-batch-gate）
 _DEFAULT_CODE_REVIEW_FIX = {
     "enabled": False,
     "batch_size": 20,
     "targeted_retry_max": 3,
     "targeted_regression": True,
+    "min_immediate_severity": "major",
+    "minor_batch_cadence": 7,
 }
 # add-test-regression-tab：admin.regression 缺省（与 ConfigLoader.get_regression_config
 # 一致：enabled 缺省 false——周期全量回归开关缺省关闭零动作）
@@ -1255,6 +1259,14 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         #（严格 bool 才合并——非法值由 write_config 前置校验拒绝）
         if isinstance(patch["code_review_fix"].get("targeted_regression"), bool):
             crf["targeted_regression"] = patch["code_review_fix"]["targeted_regression"]
+        # evo-add-codefix-severity-batch-gate：severity 门限两键随受管段放行
+        #（词表白名单/正整数才合并——非法值由 write_config 前置校验拒绝）
+        mis = patch["code_review_fix"].get("min_immediate_severity")
+        if mis in ("critical", "major", "minor", "info"):
+            crf["min_immediate_severity"] = mis
+        mbc = patch["code_review_fix"].get("minor_batch_cadence")
+        if isinstance(mbc, int) and not isinstance(mbc, bool) and mbc > 0:
+            crf["minor_batch_cadence"] = mbc
         merged["admin"]["code_review_fix"] = crf
     # add-test-regression-tab：admin.regression 键（enabled 严格 bool；非法值
     # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
@@ -1631,6 +1643,29 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 "admin.code_review_fix.targeted_regression must be a boolean: "
                 f"{crf_patch['targeted_regression']!r}"
             )
+        # evo-add-codefix-severity-batch-gate：severity 门限词表白名单（非法
+        # 直接拒绝不落盘——与 ConfigLoader 读取器回退口径一致但写侧更严：
+        # 界面可填值全部合法，脏值只可能来自手工编辑）
+        if (
+            "min_immediate_severity" in crf_patch
+            and crf_patch["min_immediate_severity"] is not None
+        ):
+            mis = crf_patch["min_immediate_severity"]
+            if mis not in ("critical", "major", "minor", "info"):
+                return fail(
+                    "admin.code_review_fix.min_immediate_severity must be one of "
+                    f"critical/major/minor/info: {mis!r}"
+                )
+        if (
+            "minor_batch_cadence" in crf_patch
+            and crf_patch["minor_batch_cadence"] is not None
+        ):
+            mbc = crf_patch["minor_batch_cadence"]
+            if isinstance(mbc, bool) or not isinstance(mbc, int) or mbc <= 0:
+                return fail(
+                    "admin.code_review_fix.minor_batch_cadence must be a positive "
+                    f"integer: {mbc!r}"
+                )
 
     # add-test-regression-tab：前端提交的 regression patch 后端校验（enabled
     # 严格 bool，非法直接拒绝、不静默忽略——同 code_review 模式）

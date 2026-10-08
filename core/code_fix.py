@@ -68,6 +68,10 @@ from core.code_review import (  # noqa: F401
     mark_ignored,
     mark_resolved,
     read_items,
+    severity_deferred_open_ids,
+    severity_gate_from_config_segment,
+    severity_gate_open,
+    severity_gate_release_due,
 )
 from core.agent_runner.provider_circuit import PROVIDER_SWITCH_COOLDOWN_SECONDS
 from core.config import ConfigLoader
@@ -2007,7 +2011,7 @@ def _pack_first_batch(groups: list, target: int) -> list:
     return batch
 
 
-def select_batch(project_root, batch_size: int, exclude_ids=None) -> list:
+def select_batch(project_root, batch_size: int, exclude_ids=None, severity_gate=None) -> list:
     """从台账选下一批：文件亲和性聚类装箱（add-codefix-affinity-batching 1.1）。
 
     open 条目按 ``file`` 字段归并为文件组（组不可拆），组间按组内最早
@@ -2020,6 +2024,12 @@ def select_batch(project_root, batch_size: int, exclude_ids=None) -> list:
     selfheal：链内跳过集 chain_skipped，瞬态失败条目本链不再选批；缺省
     None 向后兼容，既有调用点零改动）。台账读失败返回空列表（fail-closed）。
 
+    severity 分级门限（evo-add-codefix-severity-batch-gate 2.1）：``severity_gate``
+    非空时低于门限且未到周批窗口的 code-review 来源条目不入批（regression-
+    前缀豁免；谓词经 ``severity_gate_open`` 单一函数，与 generate_fix_spec
+    候选层同门）。挂起条目仍为 open（挂起计，不计 skipped/lost）；周批窗口
+    到期后由本谓词放行整组。None 向后兼容（无门限过滤）。
+
     返回条目 record 列表（含 item_id/file/line/severity/category/title/
     description/suggestion 等 prompt 注入字段）。
     """
@@ -2028,18 +2038,29 @@ def select_batch(project_root, batch_size: int, exclude_ids=None) -> list:
     except Exception:  # noqa: BLE001 — 台账读失败按无条目处理（fail-closed）
         return []
     excluded = _failed_item_ids(project_root) | set(exclude_ids or ())
-    open_items = [
+    pool = [
         rec
         for rec in items.values()
         if isinstance(rec, dict)
         and rec.get("status") == "open"
         and rec.get("item_id") not in excluded
     ]
-    if not open_items:
+    if not pool:
+        return []
+    if severity_gate is not None:
+        # 组放行窗口（evo-add-codefix-severity-batch-gate）：挂起集中最早锚
+        # 距今达 cadence 天 → 低于门限条目整组放行（非逐条到期逐条放行）
+        release = severity_gate_release_due(pool, severity_gate)
+        pool = [
+            rec
+            for rec in pool
+            if severity_gate_open(rec, severity_gate, release_due=release)
+        ]
+    if not pool:
         return []
     target = int(batch_size) if isinstance(batch_size, int) and batch_size > 0 else 20
-    open_items.sort(key=_select_batch_order_key)
-    return _pack_first_batch(_group_open_items_by_file(open_items), target)
+    pool.sort(key=_select_batch_order_key)
+    return _pack_first_batch(_group_open_items_by_file(pool), target)
 
 
 def count_open_items(project_root) -> int:
@@ -2055,13 +2076,19 @@ def count_open_items(project_root) -> int:
     )
 
 
-def is_chain_last_batch(project_root, batch_item_ids, chain_skipped=None) -> bool:
+def is_chain_last_batch(
+    project_root, batch_item_ids, chain_skipped=None, severity_gate=None
+) -> bool:
     """链末批判定（add-codefix-affinity-batching 3.1，供批收尾回归分流）。
 
     与链收敛出口同判据：以链选批同口径排除（失败档案 ∪ ``chain_skipped`` ∪
-    延迟台账）后、再排除本批 ``batch_item_ids``，``select_batch`` 返回空 →
-    本批为末批。MUST 在核销**前**调用（核销会改变 open 集）；本批条目集合
-    从既有批上下文取得（ctx["item_ids"]）。
+    延迟台账 ∪ severity 挂起集）后、再排除本批 ``batch_item_ids``，
+    ``select_batch`` 返回空 → 本批为末批。MUST 在核销**前**调用（核销会
+    改变 open 集）；本批条目集合从既有批上下文取得（ctx["item_ids"]）。
+
+    severity 挂起集（evo-add-codefix-severity-batch-gate 2.1）：排除口径
+    经 ``severity_gate`` 并入——select_batch 以同一门限过滤挂起条目（与
+    checkpoint 选批门限同口径），挂起条目不阻链末批判定、不计 skipped/lost。
 
     MUST NOT 用裸 ``count_open_items`` 排除本批判定：其计数含失败档案/
     跳过/延迟等被排除 open 条目（``count_open_items`` docstring），链最后
@@ -2074,7 +2101,9 @@ def is_chain_last_batch(project_root, batch_item_ids, chain_skipped=None) -> boo
         | _deferred_item_ids(project_root)
     )
     # batch_size=1：装箱目标不影响空/非空判据（任一可选 open 条目都返回非空）
-    return not select_batch(project_root, 1, exclude_ids=exclude)
+    return not select_batch(
+        project_root, 1, exclude_ids=exclude, severity_gate=severity_gate
+    )
 
 
 # ── 批内波次上限自适应（add-codefix-affinity-batching 2.1）────────────
@@ -3473,6 +3502,16 @@ class CodeFixOrchestrator:
         """解析 admin.code_review_fix 生效值（根形态 → 段读取器）。"""
         return ConfigLoader.get_code_review_fix_config(self._get_root_config())
 
+    def _severity_gate(self) -> dict:
+        """severity 分级门限生效值（evo-add-codefix-severity-batch-gate 2.1）。
+
+        经 ``_get_config()`` 段读取器（新键已登记白名单）取
+        min_immediate_severity / minor_batch_cadence；测试替身 config 段
+        未走读取器的形态由 ``severity_gate_from_config_segment`` 同一归一
+        兜底（与 code_review.severity_gate_config 磁盘解析路径共用）。
+        """
+        return severity_gate_from_config_segment(self._get_config())
+
     def _targeted_retry_max(self) -> int:
         """定向重试轮上限（add-codefix-targeted-retry 2.2/2.4）。
 
@@ -4181,11 +4220,17 @@ class CodeFixOrchestrator:
             # （失败档案并集由 select_batch 内部经 _failed_item_ids 并入，不在
             # 本变量）——defer 条目在合回成功前始终是 open 且不在失败档案，不
             # 排除则下一边界 earliest-first 立即重选同批、重跑 agent。
+            # severity 分级门限（evo-add-codefix-severity-batch-gate 2.1）：
+            # 低于门限且未到周批窗口的条目由 select_batch 同一谓词过滤（不进
+            # exclude_ids——挂起集是「暂缓」而非本链排除，周批窗口到期后须
+            # 自然回流可选池），regression- 前缀条目豁免。
+            severity_gate = self._severity_gate()
             exclude_ids = set(chain_skipped) | _deferred_item_ids(root)
             batch = select_batch(
                 root,
                 cfg.get("batch_size", 20),
                 exclude_ids=exclude_ids,
+                severity_gate=severity_gate,
             )
             if not batch:
                 # open 条目全被排除（失败档案 ∪ chain_skipped）→ consumed 链的
@@ -4229,6 +4274,29 @@ class CodeFixOrchestrator:
                         >= _effective_retry_budget(rec)
                         for rec in load_failed_batches(root)
                     )
+                    # severity 挂起集对账（evo-add-codefix-severity-batch-gate
+                    # 2.1）：选批为空若因「剩余 open 条目全部低于门限挂起」
+                    # 所致，按「挂起」收敛而非 skipped/lost（spec「deferred
+                    # 不误判收敛」）——链内跳过/失败档案在档条目不属挂起集，
+                    # 混合场景仍走下方既有分级文案并附加挂起注记。
+                    sev_deferred_ids = severity_deferred_open_ids(
+                        root, gate=severity_gate
+                    )
+                    open_ids_now = {
+                        str(iid)
+                        for iid, rec in ledger.items()
+                        if isinstance(rec, dict) and rec.get("status") == "open"
+                    }
+                    sev_note = (
+                        f"；另 {len(sev_deferred_ids)} 条低于门限条目挂起至周批"
+                        if sev_deferred_ids
+                        else ""
+                    )
+                    sev_pure = (
+                        bool(sev_deferred_ids)
+                        and bool(open_ids_now)
+                        and open_ids_now <= sev_deferred_ids
+                    )
                     if deferred_msg:
                         # 延迟批仍在场（本轮重试刚尝试过、仍被阻断）：收敛文案
                         # 以 defer 语义为主（D7），reason 同步 wip_gate_blocked
@@ -4237,34 +4305,66 @@ class CodeFixOrchestrator:
                             "；含已达自动重试上限条目，需人工排查"
                             if maxed
                             else "；其余跳过条目下轮自动重试"
-                        )
+                        ) + sev_note
                         reason = "wip_gate_blocked"
                     elif maxed:
                         current = (
                             "open 条目均已跳过（含已达自动重试上限的条目，需人工排查）；"
-                            "其余条目下轮自动重试"
+                            "其余条目下轮自动重试" + sev_note
                         )
                         # 含达上限条目=需人工，与纯自愈等待（failed_batch_retained）
                         # reason 区分：前端按 reason 渲染中性等待态 vs 红色需人工态
                         # （reason 漂移时前端按需人工回退，宁严勿松）。
                         reason = "failed_batch_maxed"
+                    elif sev_pure:
+                        # 纯挂起收敛（健康等待态）：phase=idle 与「无 open 条目」
+                        # 收敛同态，reason 单列供前端透传；周批窗口到期后下一
+                        # checkpoint 自然放行整组重投。
+                        current = (
+                            f"剩余 {len(sev_deferred_ids)} 条 open 条目均低于严重度"
+                            f"门限（min_immediate_severity="
+                            f"{severity_gate.get('min_immediate_severity')}），"
+                            "挂起至周批窗口（minor_batch_cadence="
+                            f"{severity_gate.get('minor_batch_cadence')} 天）"
+                            "后统一修复"
+                        )
+                        reason = "severity_deferred"
                     else:
-                        current = "open 条目均已跳过（链内跳过/预算内失败），下轮自动重试"
+                        current = (
+                            "open 条目均已跳过（链内跳过/预算内失败），下轮自动重试"
+                            + sev_note
+                        )
                         reason = "failed_batch_retained"
-                    write_progress(
-                        root,
-                        running=False,
-                        phase="blocked",
-                        reason=reason,
-                        current=current,
-                        worktree=None,
-                        run_id=None,
-                        batch_total=None,
-                        manual_authorized=False,
-                        chain_skipped=chain_skipped,
-                        # 跳批终局（2.1「链中途终局（失败/跳批）同样输出累计值」）
-                        **self._chain_terminal_fields("chain_exhausted"),
-                    )
+                    if reason == "severity_deferred":
+                        write_progress(
+                            root,
+                            running=False,
+                            phase="idle",
+                            reason=reason,
+                            current=current,
+                            worktree=None,
+                            run_id=None,
+                            batch_total=None,
+                            manual_authorized=False,
+                            chain_skipped=chain_skipped,
+                            # 纯挂起收敛＝链正常收敛出口（周批窗口到期重投）
+                            **self._chain_terminal_fields("chain_converged"),
+                        )
+                    else:
+                        write_progress(
+                            root,
+                            running=False,
+                            phase="blocked",
+                            reason=reason,
+                            current=current,
+                            worktree=None,
+                            run_id=None,
+                            batch_total=None,
+                            manual_authorized=False,
+                            chain_skipped=chain_skipped,
+                            # 跳批终局（2.1「链中途终局（失败/跳批）同样输出累计值」）
+                            **self._chain_terminal_fields("chain_exhausted"),
+                        )
                 return {"triggered": False, "reason": "no_open_items"}
 
             # 选批前 WIP 重叠预检（evo-add-codefix-batch-wip-precheck 1.1）：
@@ -5702,9 +5802,14 @@ class CodeFixOrchestrator:
 
         # 批收尾回归两段式分流（add-codefix-affinity-batching 3.4）：链末批
         # （核销前判定，3.1）恒全量；非末批按开关/占位符/映射三分支分流
-        # （fail-open 回退全量——定向化是优化不是门槛）。
+        # （fail-open 回退全量——定向化是优化不是门槛）。severity 门限随
+        # 选批同口径传入（evo-add-codefix-severity-batch-gate 2.1）：挂起
+        # 条目不阻链末批判定、不计 skipped/lost。
         is_last_batch = is_chain_last_batch(
-            root, item_ids, chain_skipped=ctx.get("chain_skipped")
+            root,
+            item_ids,
+            chain_skipped=ctx.get("chain_skipped"),
+            severity_gate=self._severity_gate(),
         )
         eff_spec, targeted, targets = self._resolve_batch_regression_spec(
             reg_spec, wt, run_id, batch_no=batch_no, is_last_batch=is_last_batch

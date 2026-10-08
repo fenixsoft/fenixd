@@ -317,8 +317,11 @@ class TestGenerateFixSpec(unittest.TestCase):
         self.read_items = read_items
         self.sm = _FakeSM()
         self.upsert(self.repo, [
+            # severity 用 major：本组用例覆盖 SPEC 生成机制而非 severity 门限
+            #（evo-add-codefix-severity-batch-gate 起低于缺省门限 major 的
+            # minor/info 条目在候选层挂起，会改写本组断言的候选集）
             {"file": "core/a.py", "category": "unused-import", "title": "Unused import os",
-             "severity": "minor", "description": "d", "suggestion": "s", "evidence": "e", "line": 1},
+             "severity": "major", "description": "d", "suggestion": "s", "evidence": "e", "line": 1},
             {"file": "core/b.py", "category": "correctness", "title": "None deref",
              "severity": "major", "description": "d", "suggestion": "s", "evidence": "e", "line": 2},
             {"file": "core/missing.py", "category": "perf", "title": "Missing file issue",
@@ -436,7 +439,10 @@ class TestGenerateFixSpecContent(unittest.TestCase):
              "suggestion": "Guard with a None check.",
              "evidence": "core/a.py:7（ocr scan）"},
             {"file": "core/b.py", "category": "perf", "title": "Repeated IO",
-             "severity": "minor", "line": 3,
+             # severity 用 major：本组覆盖 SPEC 正文内容渲染而非 severity 门限
+             #（evo-add-codefix-severity-batch-gate 起低于缺省门限的条目在
+             # 候选层挂起，会改写本组断言的候选集）
+             "severity": "major", "line": 3,
              "description": "File is read once per iteration.",
              "suggestion": "",  # suggestion 可为空：缺失时整段 MUST NOT 渲染
              "evidence": "core/b.py:3"},

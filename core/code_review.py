@@ -451,6 +451,225 @@ def normalize_severity(value) -> str:
     return _SEVERITY_NORMALIZE.get(raw, raw)
 
 
+# ── severity 分级门限（evo-add-codefix-severity-batch-gate）────────────
+#
+# 谓词单一函数供给 code_review.generate_fix_spec（候选层）与
+# code_fix.select_batch / checkpoint（选批层）两处导入，避免规则漂移
+# （design §3「双入口同门」）。门限比较按档位序 info < minor < major <
+# critical；regression- 前缀条目（回归来源）豁免门限，保持既有当日重修
+# 语义；code-review 来源未知档位按低于门限处理（fail-open 挂起而非误修）。
+
+SEVERITY_GATE_MIN_DEFAULT = "major"
+MINOR_BATCH_CADENCE_DEFAULT = 7
+
+# 挂起标记字段名（evo-add-codefix-severity-batch-gate 2.1）：与既有
+# WIP-defer 延迟合回台账（core/code_fix.py fix-deferred.json /
+# _deferred_item_ids / first_deferred_at）显式区分——两机制不共载体、
+# 不共放行判据（spec「deferred 与链收敛对账」Requirement）。
+SEVERITY_DEFERRED_FIELD = "severity_deferred"
+SEVERITY_DEFERRED_SINCE_FIELD = "severity_deferred_since"
+
+# 档位序（低 → 高）：周批窗口与门限比较共用同一排序基准
+_SEVERITY_GATE_TIERS = ("info", "minor", "major", "critical")
+_SEVERITY_GATE_RANK = {tier: rank for rank, tier in enumerate(_SEVERITY_GATE_TIERS)}
+
+# 周批窗口换算基数（秒/天）
+_SEVERITY_GATE_DAY_SECONDS = 86400
+
+
+def severity_gate_rank(value) -> int:
+    """severity 档位序：info(0) < minor(1) < major(2) < critical(3)。
+
+    未知/缺失档位回 -1（低于任何门限）：词表硬编码 severity 的评审来源
+    若未来出现新档位，须显式映射后才能进入选批（design §5）；缺失档位同
+    口径处理（写侧 upsert_findings 经 normalize_severity 恒产词表值，缺失
+    只可能来自外部直写的台账记录）。
+    """
+    return _SEVERITY_GATE_RANK.get(str(value or ""), -1)
+
+
+def is_regression_finding(rec) -> bool:
+    """regression- 前缀条目判别：回归来源豁免 severity 门限。
+
+    回归复发（add-regression-auto-fix）保持既有当日重修语义，不参与
+    minor/info 延后累积；「未知档位按低于门限」规则亦不作用于本来源
+    （其 severity 为 high/medium/low 值域，design §2）。
+    """
+    return str((rec or {}).get("category") or "").startswith("regression-")
+
+
+def severity_meets_gate(rec, gate) -> bool:
+    """达门限判别（不含周批窗口）：regression- 豁免恒真。
+
+    severity 档位序达到 ``min_immediate_severity`` 即为真；未知/缺失档位
+    （rank -1）低于任何门限恒假（fail-open 挂起）。
+    """
+    if is_regression_finding(rec):
+        return True
+    min_sev = (gate or {}).get("min_immediate_severity") or SEVERITY_GATE_MIN_DEFAULT
+    return severity_gate_rank((rec or {}).get("severity")) >= severity_gate_rank(min_sev)
+
+
+def severity_gate_from_config_segment(seg) -> dict:
+    """从 ``get_code_review_fix_config`` 段读取器输出取门限生效值。
+
+    段读取器已做词表/正整数校验回退（core/config.py 1.1），此处对「测试
+    替身 config 段未走读取器」的形态做同款兜底归一；checkpoint 选批与
+    severity_gate_config（磁盘解析路径）共用本归一，避免双处漂移。
+    """
+    min_sev = (seg or {}).get("min_immediate_severity")
+    if not (isinstance(min_sev, str) and min_sev in _SEVERITY_GATE_RANK):
+        min_sev = SEVERITY_GATE_MIN_DEFAULT
+    cadence = (seg or {}).get("minor_batch_cadence")
+    if (
+        not isinstance(cadence, int)
+        or isinstance(cadence, bool)
+        or cadence <= 0
+    ):
+        cadence = MINOR_BATCH_CADENCE_DEFAULT
+    return {"min_immediate_severity": min_sev, "minor_batch_cadence": cadence}
+
+
+def severity_gate_config(project_root) -> dict:
+    """解析 severity 门限生效值（模块级调用方路径，磁盘配置 fail-open）。
+
+    沿 ``_stall_alert_minutes`` 同款范式：配置层任何异常回退缺省，不中断
+    评审与修复主链。
+    """
+    try:
+        from core.config import ConfigLoader
+
+        seg = ConfigLoader.get_code_review_fix_config(
+            ConfigLoader.resolve_config(project_root)
+        )
+    except Exception:  # noqa: BLE001 — 配置层任何异常回退缺省
+        seg = {}
+    return severity_gate_from_config_segment(seg)
+
+
+def _parse_gate_ts(value) -> Optional[float]:
+    """挂起时间锚解析（epoch 秒）：ISO8601；解析失败回 None（窗口按未到）。"""
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def severity_gate_open(rec, gate=None, now_ts=None, release_due=False) -> bool:
+    """severity 谓词（单一函数）：条目当前是否可进当日修复批。
+
+    - regression- 前缀条目豁免门限（恒可进当日批）；
+    - severity 达 ``min_immediate_severity``：当日批；
+    - 低于门限：挂起，距挂起锚（``severity_deferred_since``，缺位回退
+      ``first_seen_at``——存量条目零回填）达 ``minor_batch_cadence`` 天的
+      周批窗口时放行；``release_due=True``（组放行窗口到期，由
+      ``severity_gate_release_due`` 判定）时低于门限条目整组放行。
+    """
+    if severity_meets_gate(rec, gate):
+        return True
+    if release_due:
+        return True
+    cadence = (gate or {}).get("minor_batch_cadence")
+    if not isinstance(cadence, int) or isinstance(cadence, bool) or cadence <= 0:
+        cadence = MINOR_BATCH_CADENCE_DEFAULT
+    anchor = _parse_gate_ts(
+        (rec or {}).get(SEVERITY_DEFERRED_SINCE_FIELD)
+        or (rec or {}).get("first_seen_at")
+    )
+    if anchor is None:
+        return False
+    if now_ts is None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+    return (now_ts - anchor) >= cadence * _SEVERITY_GATE_DAY_SECONDS
+
+
+def severity_gate_release_due(recs, gate=None, now_ts=None) -> bool:
+    """周批组放行窗口判定：挂起集中最早锚距今达 ``minor_batch_cadence`` 天。
+
+    「整组放行」（design §2）：窗口到期时累积的全部低于门限条目一并进入
+    当批（非逐条到期逐条放行）。锚取每条 ``severity_deferred_since``（缺位
+    回退 ``first_seen_at``）的最早值；达门限/豁免条目不参与挂起组。挂起集
+    为空或锚均不可解析 → False（窗口未到）。
+    """
+    cadence = (gate or {}).get("minor_batch_cadence")
+    if not isinstance(cadence, int) or isinstance(cadence, bool) or cadence <= 0:
+        cadence = MINOR_BATCH_CADENCE_DEFAULT
+    earliest = None
+    for rec in recs or ():
+        if not isinstance(rec, dict) or severity_meets_gate(rec, gate):
+            continue
+        anchor = _parse_gate_ts(
+            rec.get(SEVERITY_DEFERRED_SINCE_FIELD) or rec.get("first_seen_at")
+        )
+        if anchor is not None and (earliest is None or anchor < earliest):
+            earliest = anchor
+    if earliest is None:
+        return False
+    if now_ts is None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+    return (now_ts - earliest) >= cadence * _SEVERITY_GATE_DAY_SECONDS
+
+
+def apply_severity_gate_marker(rec, gate) -> bool:
+    """按门限维护条目挂起标记（原位改写，返回是否有改动；落盘由调用方
+    在既有读-改-写锁内完成）。
+
+    - 达门限 / regression- 豁免：清挂起标记——重复发现把 severity 刷到
+      达门限档位时按当日批处置并清除挂起标记（design §2）；
+    - 低于门限：置标记；``severity_deferred_since`` 保留首个锚（同指纹
+      重复发现刷新展示字段时不重置，周批窗口以首挂起时刻起算）。
+    """
+    if severity_meets_gate(rec, gate):
+        if rec.get(SEVERITY_DEFERRED_FIELD) is None and rec.get(
+            SEVERITY_DEFERRED_SINCE_FIELD
+        ) is None:
+            return False
+        rec.pop(SEVERITY_DEFERRED_FIELD, None)
+        rec.pop(SEVERITY_DEFERRED_SINCE_FIELD, None)
+        return True
+    sev = str(rec.get("severity") or "")
+    if sev and sev not in _SEVERITY_NORMALIZE:
+        # 未知档位告警（design §5）：fail-open 挂起而非误修
+        _logger.warning(
+            "code_review: 条目 %s severity %r 非 severity 词表值，"
+            "按低于门限挂起（周批窗口后放行）",
+            rec.get("item_id"),
+            sev,
+        )
+    changed = False
+    if rec.get(SEVERITY_DEFERRED_FIELD) is None:
+        rec[SEVERITY_DEFERRED_FIELD] = True
+        changed = True
+    if rec.get(SEVERITY_DEFERRED_SINCE_FIELD) is None:
+        rec[SEVERITY_DEFERRED_SINCE_FIELD] = _now_iso()
+        changed = True
+    return changed
+
+
+def severity_deferred_open_ids(project_root, gate=None, now_ts=None) -> set:
+    """open 且低于门限且未到周批窗口的条目 id 集（链收敛对账的挂起集）。
+
+    组放行窗口到期时挂起集为空（整组已可进批，选批层将自然放行）。
+    台账读失败按空集 fail-open（对账面只影响收敛文案分级，不影响选批）。
+    """
+    try:
+        items = read_items(project_root)
+    except Exception:  # noqa: BLE001 — 读失败按空集（不误判收敛语义）
+        return set()
+    g = gate or severity_gate_config(project_root)
+    pool = [rec for rec in items.values() if isinstance(rec, dict)]
+    release = severity_gate_release_due(pool, g, now_ts=now_ts)
+    return {
+        str(rec.get("item_id"))
+        for rec in pool
+        if rec.get("status") == "open"
+        and not severity_gate_open(rec, g, now_ts=now_ts, release_due=release)
+    }
+
+
 def _item_id(project: str, file: str, fp: str) -> str:
     """条目稳定 id：``sha1(project|file|fingerprint)[:12]``。
 
@@ -526,6 +745,12 @@ def upsert_findings(
     path = items_path(project_root)
     inserted = 0
     updated = 0
+    # severity 门限生效值（evo-add-codefix-severity-batch-gate 2.1）：锁外
+    # 解析（磁盘配置读取不进 flock 临界区）。挂起标记随落账维护——低于
+    # 门限条目首次观测即带挂起锚（首个 severity_deferred_since），选批/
+    # 候选两层凭同一谓词判周批窗口；severity 刷到达门限档位时清标记
+    # （升档晋级按当日批处置）。
+    gate = severity_gate_config(project_root)
 
     def _do() -> None:
         nonlocal inserted, updated
@@ -579,6 +804,7 @@ def upsert_findings(
                     "last_seen_at": now,
                 }
                 rec.update(base)
+                apply_severity_gate_marker(rec, gate)
                 current[rec["item_id"]] = rec
                 by_fp[fp] = rec
                 inserted += 1
@@ -591,6 +817,10 @@ def upsert_findings(
                 rec["reviewed_at"] = now
                 if not rec.get("spec_name") and spec_map.get(fp):
                     rec["spec_name"] = spec_map[fp]
+                # 挂起标记随 severity 刷新维护（evo-add-codefix-severity-
+                # batch-gate）：升档清标记晋级当日批、持续低于门限保留首个
+                # 锚（同指纹合并沿既有分支，不新增立项路径）
+                apply_severity_gate_marker(rec, gate)
                 updated += 1
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
@@ -1406,6 +1636,15 @@ def generate_fix_spec(
         }
 
     items = read_items(project_root)
+    # severity 门限（evo-add-codefix-severity-batch-gate 2.2）：候选层与
+    # code_fix.select_batch 应用同一谓词（severity_gate_open 单一函数），
+    # Dashboard 手工触发与 scheduled 触发走同门——未到周批窗口的纯
+    # minor/info 触发按空批处理并说明原因。组放行窗口对全 open 池判定
+    #（与选批层同口径：窗口到期累积的挂起条目整组放行）。
+    gate = severity_gate_config(project_root)
+    release = severity_gate_release_due(
+        [rec for rec in items.values() if isinstance(rec, dict)], gate
+    )
     candidates: List[dict] = []
     skipped: List[dict] = []
     in_spec_names: set = set()
@@ -1425,6 +1664,9 @@ def generate_fix_spec(
         if not rec.get("file"):
             skipped.append({"item_id": item_id, "reason": "缺 file 字段"})
             continue
+        if not severity_gate_open(rec, gate, release_due=release):
+            skipped.append({"item_id": item_id, "reason": "severity_deferred"})
+            continue
         candidates.append(rec)
 
     if not candidates:
@@ -1438,11 +1680,22 @@ def generate_fix_spec(
                 "start_after": normalized_sa,
                 "idempotent": True,
             }
+        if any(s.get("reason") == "severity_deferred" for s in skipped):
+            # 纯 minor/info（或含此类条目）未到周批窗口：按空批处理并说明
+            # 原因（spec「手工通道绕过被拒」Scenario），非错误态文案分级
+            error = (
+                "选中条目均低于严重度门限（min_immediate_severity="
+                f"{gate['min_immediate_severity']}），已挂起待周批窗口"
+                f"（minor_batch_cadence={gate['minor_batch_cadence']} 天）"
+                "统一修复"
+            )
+        else:
+            error = "无有效的 open 条目可生成"
         return {
             "ok": False,
             "spec_name": None,
             "skipped": skipped,
-            "error": "无有效的 open 条目可生成",
+            "error": error,
             "start_after": None,
         }
 
@@ -1642,6 +1895,11 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
                 continue
             rec["status"] = "in_spec"
             rec["spec_name"] = spec_name
+            # 周批晋级条目立项即清挂起标记（evo-add-codefix-severity-batch-
+            # gate：spec「批完成后 deferred 标记清除」——in_spec 立项是批次
+            # 生效时点，标记不再参与任何判定，残留只会污染台账展示）
+            rec.pop(SEVERITY_DEFERRED_FIELD, None)
+            rec.pop(SEVERITY_DEFERRED_SINCE_FIELD, None)
             changed = True
         if not changed:
             # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免
@@ -1700,6 +1958,10 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
             rec["status"] = "resolved"
             rec["resolution"] = "code-fix-auto"
             rec["resolved_at"] = now  # 同 mark_ignored 的 ignored_at / resolve_snapshot 的 resolved_at
+            # 核销即批次完成（evo-add-codefix-severity-batch-gate）：清挂起
+            # 标记，与 _mark_in_spec 同口径
+            rec.pop(SEVERITY_DEFERRED_FIELD, None)
+            rec.pop(SEVERITY_DEFERRED_SINCE_FIELD, None)
             hit += 1
         if not hit:
             # 零命中不重写：对齐 resolve_snapshot 的 changed 短路，避免

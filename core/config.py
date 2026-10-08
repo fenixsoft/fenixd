@@ -2228,6 +2228,14 @@ class ConfigLoader:
           批收尾回归两段式：true=链内非末批按触碰面定向回归 + 链末批恒
           全量兜底，false=全批全量。严格 bool，非法值回退缺省 True 并记
           warning——不抛异常中断批链）
+        - min_immediate_severity: "major"（evo-add-codefix-severity-batch-gate
+          1.1；发现分级处置门限：severity 达门限的条目保持当日批序，低于
+          门限的延后累积至周批。severity 契约词表四档 critical|major|minor|
+          info，词表外取值（含历史漂移值域 high/medium/low——配置侧不做
+          归一，避免误把写侧漂移当合法门限）回退缺省并记 warning）
+        - minor_batch_cadence: 7（evo-add-codefix-severity-batch-gate 1.1；
+          周批节奏天数：低于门限条目挂起距首挂起锚达该天数后整组放行。
+          正整数；bool/非整数/非正值回退缺省并记 warning）
         段缺失或非 dict 时整体视为缺省，不抛异常。
         """
         # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
@@ -2262,11 +2270,37 @@ class ConfigLoader:
                 targeted_regression,
             )
             targeted_regression = True
+        # severity 分级门限（evo-add-codefix-severity-batch-gate 1.1）：词表
+        # 白名单回退（对齐 scope 的白名单口径）；非法值不阻断评审与修复主链。
+        min_immediate_severity = crf.get("min_immediate_severity", "major")
+        if min_immediate_severity not in ("critical", "major", "minor", "info"):
+            _logger.warning(
+                "admin.code_review_fix.min_immediate_severity 非法值 %r"
+                "（severity 词表外），回退缺省 major",
+                min_immediate_severity,
+            )
+            min_immediate_severity = "major"
+        # 周批节奏天数：严格正整数（bool 是 int 子类显式排除，与 batch_size
+        # 同款守卫）；非法回退缺省不抛异常。
+        minor_batch_cadence = crf.get("minor_batch_cadence", 7)
+        if (
+            not isinstance(minor_batch_cadence, int)
+            or isinstance(minor_batch_cadence, bool)
+            or minor_batch_cadence <= 0
+        ):
+            _logger.warning(
+                "admin.code_review_fix.minor_batch_cadence 非法值 %r"
+                "（非正整数），回退缺省 7",
+                minor_batch_cadence,
+            )
+            minor_batch_cadence = 7
         return {
             "enabled": enabled,
             "batch_size": int(batch_size),
             "targeted_retry_max": int(targeted_retry_max),
             "targeted_regression": targeted_regression,
+            "min_immediate_severity": min_immediate_severity,
+            "minor_batch_cadence": int(minor_batch_cadence),
         }
 
     @classmethod
