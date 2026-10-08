@@ -1418,6 +1418,16 @@ def register_relocation_credential(
         return None
 
 
+# kind 行匹配模式由 _DECLARED_KINDS 动态构造（code-review item
+# 5f0016fa172d）：常量为唯一权威源，白名单扩充/拼写调整时本正则自动跟随，
+# 消除双源漂移（否则改写通道把新 kind 条目当「无 kind 行」上抛转人工，与
+# 解析层口径不一致）。各 kind 词互不为前缀，交替顺序无关语义，保持常量原序。
+_DECLARED_KIND_LINE_RE = re.compile(
+    r"^(\s*)kind\s*:\s*(%s)(\s*(#.*)?)$" % "|".join(_DECLARED_KINDS),
+    re.IGNORECASE,
+)
+
+
 def _declared_kind_line(lines, path_idx, end):
     """在声明条目 path 行之后定位 kind 行（+1..+2 两行窗口，单点助手）。
 
@@ -1442,11 +1452,7 @@ def _declared_kind_line(lines, path_idx, end):
     for i in range(path_idx + 1, min(end, path_idx + 3)):
         if re.match(r"^\s*-\s", lines[i]):
             break
-        m = re.match(
-            r"^(\s*)kind\s*:\s*(new|modify|delete|reference)(\s*(#.*)?)$",
-            lines[i],
-            re.IGNORECASE,
-        )
+        m = _DECLARED_KIND_LINE_RE.match(lines[i])
         if m:
             return i, m
     return None, None
@@ -1811,17 +1817,19 @@ def _path_is_outside_root(project_root, candidates) -> bool:
     return False
 
 
-def classify_unsatisfiable(entry, project_root) -> bool:
-    """判定声明条目是否命中确定性不可交付模式（design D1）。
+def _classify_unsatisfiable_reason(entry, project_root):
+    """判定声明条目命中的确定性不可交付信号类别（``classify_unsatisfiable``
+    的归因单点，design D1）。
 
     ``kind ∈ {new, modify}`` 且（``_path_is_gitignored`` 或
-    ``_path_is_outside_root`` 命中）→ True。``reference`` 恒 False（它就是软化
-    终点）；``delete`` 恒 False（add-deliverable-delete-kind D4：soften 的语义
-    是降级为仅审计 reference 软校验，对 delete 即等于删除要求静默消失——复刻
-    本 SPEC 要消灭的形态，故 delete 的不可交付形态已在 lint 阶段（规则 7-10）
+    ``_path_is_outside_root`` 命中）→ 返回先命中的信号类别；
+    ``reference`` 恒 None（它就是软化终点）；``delete`` 恒 None
+    （add-deliverable-delete-kind D4：soften 的语义是降级为仅审计
+    reference 软校验，对 delete 即等于删除要求静默消失——复刻本 SPEC
+    要消灭的形态，故 delete 的不可交付形态已在 lint 阶段（规则 7-10）
     拒绝，走到软化说明声明本身有问题，应升级人工而非自动降级）；entry 缺
-    path/kind、path/kind 非法或判定异常均返回 False（fail-open，交由后续 lint
-    照常拒绝兜底）。
+    path/kind、path/kind 非法或判定异常均返回 None（fail-open，交由后续
+    lint 照常拒绝兜底）。
 
     排除规则 1-4 形态（design D1：这四种不软化，维持既有拒绝语义——需 path
     修正非 kind 修正）：
@@ -1837,40 +1845,63 @@ def classify_unsatisfiable(entry, project_root) -> bool:
         project_root: 项目根（判定基准）。
 
     Returns:
-        命中不可交付模式返回 True；其余（含 reference、缺字段、判定不可用、
-        规则 1-4 形态）返回 False。
+        命中不可交付模式返回 ``"gitignored"`` / ``"outside-root"``（先命中
+        者优先）；其余（含 reference、缺字段、判定不可用、规则 1-4 形态）
+        返回 ``None``。
     """
     if not isinstance(entry, dict):
-        return False
+        return None
     path = str(entry.get("path") or "").strip()
     kind = str(entry.get("kind") or "").strip().lower()
     if not path or kind not in _DECLARED_KINDS:
-        return False
+        return None
     if kind not in ("new", "modify"):
-        # reference 恒 False（软化终点，无需求再软化）；delete 恒 False
+        # reference 恒 None（软化终点，无需求再软化）；delete 恒 None
         # （软化即删除要求静默消失，D4 防洗白——见本函数 docstring）
-        return False
+        return None
     # ── 排除规则 1-4 形态（不软化，维持既有拒绝语义）──
     # 规则 1：占位符路径（软化会掩盖声明格式问题）
     if "<" in path or ">" in path:
-        return False
+        return None
     # 规则 2：目录路径（软化为 reference 后 lint 不再拦截，但目录不可交付）
     if kind == "modify":
         # .fenix 归一化已退役（恒等映射），目录判定按字面路径单候选
         pr = Path(project_root)
         if pr.joinpath(path).is_dir():
-            return False
+            return None
     # ── 正向命中判定（.fenix 归一化已退役 → 单候选=原路径）──
     candidates = [path]
     if _path_is_gitignored(project_root, candidates):
-        return True
-    return _path_is_outside_root(project_root, candidates)
+        return "gitignored"
+    if _path_is_outside_root(project_root, candidates):
+        return "outside-root"
+    return None
+
+
+def classify_unsatisfiable(entry, project_root) -> bool:
+    """判定声明条目是否命中确定性不可交付模式（design D1）。
+
+    bool 薄包装：判定语义与命中信号类别见 ``_classify_unsatisfiable_reason``
+    （单点实现，code-review item 13fbdcae0f25——软化侧复用同一判定的归因
+    返回值，不再二次跑 git check-ignore 反推 reason）。本函数保持既有 bool
+    返回契约不变（外部调用方与测试均按真值断言）。
+
+    Args:
+        entry: 声明条目 dict（含 ``path`` / ``kind``）。
+        project_root: 项目根（判定基准）。
+
+    Returns:
+        命中不可交付模式返回 True；其余（含 reference、缺字段、判定不可用、
+        规则 1-4 形态）返回 False。
+    """
+    return _classify_unsatisfiable_reason(entry, project_root) is not None
 
 
 def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
     """晋升前软化命中不可交付模式的 new/modify 声明（design D1/D2）。
 
-    逐条 ``classify_unsatisfiable``，命中即 ``soften_declared_kind``
+    逐条走 ``_classify_unsatisfiable_reason``（与 ``classify_unsatisfiable``
+    同源单点），命中即取其信号类别作 reason 并 ``soften_declared_kind``
     （kind → reference 确定性文本改写）；单条改写异常（并发改写/格式漂移）
     跳过该条记 warning 不中断（fail-safe，交由后续 lint 拒绝兜底）。
     ``kind: delete`` 条目显式跳过（add-deliverable-delete-kind D4 防御性防线：
@@ -1902,17 +1933,13 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
                 f"软化，见 add-deliverable-delete-kind D4）",
             )
             continue
-        if not classify_unsatisfiable(e, project_root):
+        # 判定 + 归因一步到位（code-review item 13fbdcae0f25）：直接消费
+        # classify 同源单点的命中信号类别，不再二次跑 git check-ignore
+        # 反推 reason（原二次判定在路径同时 gitignored 且仓库外时恒记
+        # "gitignored"，outside-root 信号被掩盖，归因失真）。
+        reason = _classify_unsatisfiable_reason(e, project_root)
+        if reason is None:
             continue
-        # 判定 reason（供审计 reasoning 区分 gitignored / outside-root）
-        reason = "gitignored"
-        try:
-            # .fenix 归一化已退役 → 单候选=原路径，与 classify 同源
-            candidates = [path]
-            if not _path_is_gitignored(project_root, candidates):
-                reason = "outside-root"
-        except Exception:
-            reason = "outside-root"  # 判定异常保守取 outside-root
         try:
             soften_declared_kind(spec_dir, path)
         except Exception as exc:

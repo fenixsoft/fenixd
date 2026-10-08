@@ -323,10 +323,24 @@ def _atomic_write(path: Path, content: str) -> None:
     )
     tmp_path = Path(tmp_path_str)
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 scenario_gate._atomic_write_text /
+        # verdict_evidence._write_verdict_violations 先例 cbb57806fbfd，
+        # code-review item 5021154cf4ff）：with 的 close 只在 fdopen 成功后
+        # 才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
         os.replace(str(tmp_path), str(path))
     finally:
         if tmp_path.exists():

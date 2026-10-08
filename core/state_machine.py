@@ -1248,50 +1248,20 @@ class StateMachine:
         锁内完成 读→改→写→回读校验；回读不匹配时重试一次并记审计日志。
         结果下限 0（delta=-1 时不会把计数打成负数）。
 
+        单字段薄封装（code-review 9b32a0d20a16）：本方法与 ``bump_counters``
+        的锁内流程逐行同型（读→逐字段钳零改写→落盘→回读校验→不匹配重试
+        一次→SPEC-not-found 带出锁外告警），此前各持一份约 50 行实现，回读
+        校验口径、重试次数、下限钳零等语义调整须双点同步、漏改一侧即行为
+        漂移（同 ``_refund_run_once`` 的收敛理由）。收敛为委托
+        ``bump_counters`` 单字段 dict，语义单点维护：返回值取返回 dict 中的
+        单值，三个出口（匹配→新值 / SPEC 缺失→0 / 重试后仍不匹配→磁盘值）
+        与旧实现逐一等价；verify 不匹配与 SPEC-not-found 两处告警改由
+        ``bump_counters`` 输出，触发条件/级别/次数不变，仅字段标签渲染为
+        单元素列表（``bump ['<field>'] …``）。
+
         Returns: 最终生效值；spec 不存在时记 warning 并返回 0。
         """
-        lock_path = self._lockfile
-        verify = 0
-        missing = False
-        for attempt in (1, 2):
-            with open(lock_path, "w") as lock_f:
-                fcntl.flock(lock_f, fcntl.LOCK_EX)
-                try:
-                    specs = self.read_all()
-                    if spec_name not in specs:
-                        # 锁内不落日志（持锁窗口不含 I/O，见 _log_update_applied
-                        # docstring），SPEC-not-found 告警带出锁外再记
-                        missing = True
-                        break
-                    try:
-                        current = int(specs[spec_name].get(field, 0) or 0)
-                    except (TypeError, ValueError):
-                        current = 0
-                    new_value = max(0, current + delta)
-                    specs[spec_name][field] = new_value
-                    specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
-                    self._write_all_locked(specs)
-                    # 回读校验：确认增量真正落盘（防并发写覆盖丢增量）
-                    verify = int((self.read_all().get(spec_name) or {}).get(field, 0) or 0)
-                finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
-            if verify == new_value:
-                return new_value
-            self.logger.warning(
-                "state_machine",
-                f"bump {field} verify mismatch for '{spec_name}' "
-                f"(attempt {attempt}): wrote {new_value}, read back {verify} — "
-                f"并发写覆盖，已重试",
-            )
-        # SPEC-not-found 告警带出锁外再记（锁内不输出日志）
-        if missing:
-            self.logger.warning(
-                "state_machine",
-                f"bump {field} failed: SPEC not found: {spec_name}",
-            )
-            return 0
-        # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
-        return verify
+        return self.bump_counters(spec_name, {field: delta})[field]
 
     def bump_counters(self, spec_name: str, deltas: Dict[str, int]) -> Dict[str, int]:
         """多字段计数器锁内原子读改写（``_bump_counter`` 的多字段版）。
@@ -1658,13 +1628,33 @@ class StateMachine:
         ``applied_out``（code-review b7a0f425b6bb）：可选收集 dict，写成功后
         回填本次实际生效字段（含 ``_stripped`` 剥离留痕，语义同
         ``_apply_updates_entry.applied``）。冻结剥离时本函数仍返回 True
-        （写本身成功），调用方须自行核对 ``_stripped`` 才能判知 status 写
-        未生效——只消费 bool 返回值的既有调用方不受影响。
+        （调用方须自行核对 ``_stripped`` 才能判知 status 写未生效——只消费
+        bool 返回值的既有调用方不受影响）；剥离/拒绝后零字段生效时不落盘
+        （code-review c8881a2031f0，与 ``_transition_atomic`` 的 45dc313473ef
+        零写入口径对齐），此时连 ``updated`` 时间戳也不刷新。
         """
         applied: dict = {}
 
         def _mutate(specs):
             found = self._apply_updates_entry(specs, spec_name, updates, applied)
+            if found:
+                # 零写入（code-review c8881a2031f0，对齐 _transition_atomic 在
+                # 45dc313473ef 的既有口径）：applied = local 生效字段 ∪ 留痕键
+                # （_stripped / _rejected_verify_parallel_override /
+                # _dropped_keys），故「applied 仅含留痕键」⟺「剥离/拒绝后
+                # local 为空、零字段生效」——唯一残留副作用只剩
+                # _apply_updates_entry 的 updated 时间戳刷新，改返回
+                # changed=False 跳过全量落盘（避免仅 updated 变化的 STATE.md
+                # 回写与 EventBus 空 diff 噪声）；留痕键伴随有效字段时（如
+                # 非法形状 _verify_parallel_override 被拒、其余更新照常应用）
+                # local 非空，照常落盘。
+                effective = [
+                    k for k in applied
+                    if k not in ("_stripped", "_rejected_verify_parallel_override",
+                                 "_dropped_keys")
+                ]
+                if not effective:
+                    return found, False
             return found, found
 
         if not self._mutate_locked(_mutate):

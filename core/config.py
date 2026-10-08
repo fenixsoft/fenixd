@@ -166,6 +166,13 @@ _TRANSIENT_BACKOFF_FALLBACK_WARNED = set()
 # 不同坏键互不压制；去重只作用于日志、忽略/回退行为不变。
 _TIMEOUT_OVERRIDE_INVALID_WARNED = set()
 
+# verify 段正整数键非法值 WARNING 的进程级一次性去重（code-review item
+# 4a67fbffa917，同 _SEGMENT_DIRTY_WARNED / _TRANSIENT_BACKOFF_FALLBACK_WARNED
+# 范式）：_positive_int_reader 经 get_impl_code_review_* 被派发链与 30s 热更新
+# 反复调用，键取 (键名, repr(值))，同一坏值只在首次告警；去重只作用于日志、
+# 回退缺省行为不变。
+_VERIFY_POSITIVE_INT_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -1978,17 +1985,16 @@ class ConfigLoader:
         enabled = section.get("enabled", cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT)
         if not isinstance(enabled, bool):
             enabled = cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT
-        seconds = section.get("idle_confirm_seconds", cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT)
-        # code-review d9e9a238696f：.nan 穿透 isinstance 与 <=0 比较，int(nan)
-        # 抛 ValueError（docstring 承诺不抛异常）——非有限浮点回退缺省
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or (isinstance(seconds, float) and not math.isfinite(seconds))
-            or seconds <= 0
-        ):
-            seconds = cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
-        seconds = int(seconds)
+        # 与同段五个正整数键（cooldown_threshold 等）共用 _stale_selfheal_
+        # positive_int 归一口径（code-review item 44ca4611627e）：旧内联分支缺
+        # 「非整值浮点回退缺省」，0.5 经 int() 截断成 0 秒确认窗、陈旧自愈在
+        # 首个空闲 tick 立即触发。非有限浮点（.nan/.inf）同由 helper 排除，
+        # d9e9a238696f 的「不抛异常」契约保持不变。
+        seconds = cls._stale_selfheal_positive_int(
+            section,
+            "idle_confirm_seconds",
+            cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT,
+        )
         if seconds > cls.STALE_CODE_SELFHEAL_MAX_SECONDS:
             _logger.warning(
                 "stale_code_selfheal.idle_confirm_seconds 过大 (%ss，建议 ≤ %s)："
@@ -2094,7 +2100,9 @@ class ConfigLoader:
         # 与 get_admin_config 及同族 admin.* 读取器对齐——真值非 dict 段 ERROR
         # 降级，非 dict config 本身也不再抛 AttributeError。
         admin = cls._segment_or_empty(config, "admin")
-        sr = admin.get("self_review") if isinstance(admin, dict) else None
+        # admin 已由助手归一、契约恒返回 dict（code-review item 8dd876b76689），
+        # 不再重复 isinstance 防御
+        sr = admin.get("self_review")
         if not isinstance(sr, dict):
             sr = {}
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
@@ -2147,7 +2155,7 @@ class ConfigLoader:
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
         # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
         admin = cls._segment_or_empty(config, "admin")
-        cr = admin.get("code_review") if isinstance(admin, dict) else None
+        cr = admin.get("code_review")
         if not isinstance(cr, dict):
             cr = {}
         max_files = cr.get("max_files", 500)
@@ -2226,7 +2234,7 @@ class ConfigLoader:
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
         # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
         admin = cls._segment_or_empty(config, "admin")
-        crf = admin.get("code_review_fix") if isinstance(admin, dict) else None
+        crf = admin.get("code_review_fix")
         if not isinstance(crf, dict):
             crf = {}
         enabled = crf.get("enabled", False)
@@ -2334,7 +2342,7 @@ class ConfigLoader:
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
         # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
         admin = cls._segment_or_empty(config, "admin")
-        reg = admin.get("regression") if isinstance(admin, dict) else None
+        reg = admin.get("regression")
         if not isinstance(reg, dict):
             reg = {}
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
@@ -2990,9 +2998,13 @@ class ConfigLoader:
     def _positive_int_reader(cls, config: Dict[str, Any], key: str, default: int) -> int:
         """verify 段正整数键读取助手（get_impl_code_review_* 正整数同族共用）。
 
-        仅接受**正整数 int**（``bool`` 是 int 子类，显式排除）；其余（键缺失 /
-        verify 节缺失或非 dict / str / float / ``<= 0``）一律回退缺省（fail-open，
-        脏值不中断派发）。
+        接受**正整数 int** 及整值浮点（``300.0`` 按整数接受，code-review item
+        4a67fbffa917，与 _normalize_transient_seconds / _stale_selfheal_positive_int
+        同口径）（``bool`` 是 int 子类，显式排除）；其余（键缺失 / verify 节缺失
+        或非 dict / str / 非整值浮点 / ``<= 0``）一律回退缺省（fail-open，脏值
+        不中断派发）。「配置了但非法」的值回退前打 WARNING 留痕（进程级一次性
+        去重，同 _TRANSIENT_BACKOFF_FALLBACK_WARNED 范式；键缺失/None 静默回退，
+        不打日志噪声），不再静默替换。
 
         注意：经本助手读取的键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表
         ——缺省只由各读取器单点提供（与 ``get_impl_code_review_enabled`` 同款，
@@ -3006,6 +3018,24 @@ class ConfigLoader:
             return default
         if isinstance(val, int) and val > 0:
             return val
+        # 整值浮点按整数接受（code-review item 4a67fbffa917）：YAML ``300.0``
+        # 解析为 float，旧实现判非法静默回缺省；.nan/.inf 的 is_integer() 恒
+        # False，自然落入下方非法分支。
+        if isinstance(val, float) and val.is_integer() and val > 0:
+            return int(val)
+        # 「配置了但非法」回退缺省前 WARNING 留痕（违背「回退必告警」哲学的
+        # 旧静默路径，对照 _warn_backoff_schedule_fallback）；进程级去重防 30s
+        # 热更新刷屏。
+        if val is not None:
+            dedup_key = ("verify." + key, repr(val))
+            if dedup_key not in _VERIFY_POSITIVE_INT_WARNED:
+                _VERIFY_POSITIVE_INT_WARNED.add(dedup_key)
+                _logger.warning(
+                    "verify.%s 非法值 %r（应为正整数），回退缺省 %s",
+                    key,
+                    val,
+                    default,
+                )
         return default
 
     @classmethod

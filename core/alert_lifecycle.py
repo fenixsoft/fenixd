@@ -249,8 +249,9 @@ def _evaluate_self_heal(
     """infra_transient_self_healed 条件判定：签名安静 ≥ 窗口 → 自愈 note。
 
     返回「已自愈：…」resolve_note（附安静时长与最近复现时刻；存量回填在
-    尾注注明，保持「已自愈：」前缀字面）；窗口内复现 / 无时间锚点 / 脏
-    窗口值一律返回 None（保守不闭环）。
+    尾注注明，保持「已自愈：」前缀字面）；窗口内复现 / 无时间锚点返回
+    None（保守不闭环）；脏窗口值回退 DEFAULT_SELF_HEAL_QUIET_MINUTES
+    （与模块常量注释同口径）。
     """
     if isinstance(quiet_minutes, bool) or not isinstance(quiet_minutes, int):
         quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES

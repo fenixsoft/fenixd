@@ -31,7 +31,7 @@ from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_ERROR_MARKER,
 )
-from core.pm_engine.dispatch.repair_lane import _max_retries
+from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_threshold
 
 
 def _normalize_int_config(value, default: int) -> int:
@@ -41,8 +41,11 @@ def _normalize_int_config(value, default: int) -> int:
     吞 0」归一化的单一落点：字符串配置裸用于比较会抛 TypeError，非法值
     回退缺省（code-review item 74317ab4a77a）；``None`` 判空而非 ``or``
     兜底，合法配置 0 不被吞成缺省（code-review item c54ffbef69c5）。
-    供 merge_breaker_threshold / max_retries 等整型配置键共用，新副本
-    不再复制 try/except 形态。
+    merge_breaker_threshold 已迁往 repair_lane._merge_breaker_threshold
+    单一读取器（code-review item b45d9375b2d4，与 full/repair 车道同源，
+    bool/非整浮点显式拒绝、max(...,1) 下限、WARNING 留痕），max_retries
+    已迁往 repair_lane._max_retries；本工具现无调用点，保留供后续整型
+    配置归一复用，新副本不再复制 try/except 形态。
     """
     if value is None:
         return default
@@ -667,11 +670,10 @@ class FFastTrackMixin:
                 # _budget_exempt_alert_threshold 同款）：字符串配置裸用于比较抛
                 # TypeError 中断 merge 失败处置，非法值回退缺省；None 判空而非
                 # or 兜底（code-review item c54ffbef69c5）：合法配置 0（每次
-                # merge 失败立即熔断）不被 or 吞成缺省 2。归一化单点工具
-                # （code-review item c832188fbbac）。
-                breaker_threshold = _normalize_int_config(
-                    self._pm._get_config("agents.merge_breaker_threshold", 2), 2
-                )
+                # merge 失败立即熔断）不被 or 吞成缺省 2。归一统一落
+                # repair_lane._merge_breaker_threshold 单一读取器（code-review
+                # item b45d9375b2d4，与 full/repair 车道同源）。
+                breaker_threshold = _merge_breaker_threshold(self._pm)
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                 if streak >= breaker_threshold:
                     # fix-observability-gaps 2.2：repair/fast-track merge 熔断 blocked

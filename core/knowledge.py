@@ -37,6 +37,7 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -264,6 +265,14 @@ def validate_knowledge(project_root) -> list:
             path_part = target.split("#", 1)[0]
             if not path_part:
                 continue  # 纯页内锚点
+            # %xx 转义解码（code-review 868d1925dbca）：兜底通道格式违规文案
+            # 建议「%20 转义或 <目标> 尖括号包裹」自愈，若本通道不解码就判
+            # 存在性，按文案修正后的合法产出反而报「链接目标不存在」，两通
+            # 道裁决自相矛盾、2 轮修正耗尽后合法产出被 _give_up 回滚。无转
+            # 义时 unquote 恒等、行为不变；解码可能引入 .. /绝对路径形态，
+            # 故下方越界判定作用于解码后的值（先行复核），转义形态不得绕出
+            # 真相源目录。
+            path_part = urllib.parse.unquote(path_part)
             resolved = (rel_dir / path_part).resolve()
             try:
                 resolved.relative_to(kroot.resolve())

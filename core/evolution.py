@@ -1830,6 +1830,7 @@ def reject_item(item_id_: str, project_root) -> dict:
     """
     now = datetime.now(timezone.utc).isoformat()
     path = items_path(project_root)
+    marker_item: Dict[str, Any] = {}
 
     def _do() -> dict:
         items = _read_items_unlocked(path)
@@ -1865,10 +1866,20 @@ def reject_item(item_id_: str, project_root) -> dict:
         current = _read_items_unlocked(path)
         current[rec["id"]] = rec
         _write_items_unlocked(path, current)
-        write_todo_marker(rec, disposition="拒绝")
+        marker_item.update(rec)
         return {"ok": True, "status": "rejected", "error": None}
 
-    return _with_lock(path, _do)
+    outcome = _with_lock(path, _do)
+    # 标记回写移到 items.jsonl 锁释放之后（code-review item c3bd82b14eed）：
+    # compare-and-set 的状态写回已在锁内完成，todo.md 写入与 git 提交子进程
+    # 不参与 CAS，放锁内只会无谓拉长持锁窗口（与 write_todo_marker 自身
+    # 「git 子命令不得放入锁内」的纪律一致）。
+    if outcome.get("ok") and marker_item:
+        try:
+            write_todo_marker(marker_item, disposition="拒绝")
+        except Exception as e:  # noqa: BLE001 —— 回写失败不影响已成功的拒绝
+            _logger.warning("evolution: 标记回写异常（已跳过）: %s", e)
+    return outcome
 
 
 def delete_item(item_id_: str, project_root) -> dict:
@@ -1887,6 +1898,7 @@ def delete_item(item_id_: str, project_root) -> dict:
     """
     path = items_path(project_root)
     outcome: Dict[str, Any] = {}
+    marker_item: Dict[str, Any] = {}
 
     def _do() -> None:
         current = _read_items_unlocked(path)
@@ -1913,14 +1925,26 @@ def delete_item(item_id_: str, project_root) -> dict:
 
         current.pop(item_id_, None)
         _write_items_unlocked(path, current)
-        # 删除成功后回写标记（保留删除前的处理意见 + 删除：是）；回写失败不影响删除
-        write_todo_marker(rec, disposition=_disposition_from_status(status), deleted=True)
+        marker_item.update(rec)
         outcome.update({"ok": True, "status": status, "error": None})
 
     try:
         _with_lock(path, _do)
     except Exception as e:  # noqa: BLE001 —— 存储异常收敛为错误对象，不抛穿
         return {"ok": False, "status": None, "error": f"条目删除失败: {e}"}
+    # 删除成功后回写标记（保留删除前的处理意见 + 删除：是）；回写失败不影响
+    # 删除。移到 items.jsonl 锁释放之后（code-review item c3bd82b14eed）：
+    # todo.md 写入与 git 提交子进程不参与 compare-and-set，放锁内只会无谓
+    # 拉长持锁窗口。
+    if outcome.get("ok") and marker_item:
+        try:
+            write_todo_marker(
+                marker_item,
+                disposition=_disposition_from_status(outcome["status"]),
+                deleted=True,
+            )
+        except Exception as e:  # noqa: BLE001 —— 回写失败不影响已成功的删除
+            _logger.warning("evolution: 标记回写异常（已跳过）: %s", e)
     return outcome
 
 

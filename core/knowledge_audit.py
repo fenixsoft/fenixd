@@ -76,8 +76,9 @@ ESCALATED_STALE_DAYS = 7
 # （仅 todo.md/verify.yaml/config.template.yaml 白名单入库），人工本地裁决
 # 不入库；条目形态 {fingerprint, decision, decided_at, note}。
 ARBITRATION_RELPATH = ".fenix/knowledge_audit_arbitration.json"
-# 仲裁决定合法值：no-conflict → exempt（豁免键随 _record_verdict 重建）；
-# fixed / false-positive → fixed（纠偏语义）。复用 _record_verdict 状态迁移。
+# 仲裁决定合法值：no-conflict / false-positive → 判无矛盾语义、fixed → 纠偏
+# 语义。消费段删条目即恢复自动复核（条目缺席，无豁免键留存），判定与 note
+# 落状态文件 arbitration_history 留痕。
 ARBITRATION_DECISIONS = ("fixed", "no-conflict", "false-positive")
 # todo.md 升级登记聚合行固定前缀（同前缀替换不追加，1.3）与历史逐条行前缀
 # （首跑 upsert 一并替换清理）
@@ -509,8 +510,9 @@ def consume_arbitration(
 
     由 knowledge_daily_check 在 audit_enabled 门控后、自然日防重短路前调用：
     不依赖当日体检是否已跑，每次 300s 检查点都执行，人工写入当日生效。命中
-    台账 escalated 指纹且 decision 合法 → _record_verdict 状态迁移（复用既有
-    轮次清零）→ 删台账条目（条目缺席即恢复该页对自动复核，既有
+    台账 escalated 指纹且 decision 合法 → 判定与人工 note 落状态文件历史留痕
+    （arbitration_history，条目随即删除、_record_verdict 的就地变更不落持久层，
+    故不调用）→ 删台账条目（条目缺席即恢复该页对自动复核，既有
     _new_finding_entry 重建语义，零新机制）→ 摘涉事页 disputed 注记并走既有
     ``[fenix] knowledge`` 提交路径自提交（摘除残留不成为下一轮 carryover
     告警源）。非法 decision / 未知指纹 / 非 escalated 状态：跳过留痕，不抛错
@@ -544,9 +546,11 @@ def consume_arbitration(
             )
             kept.append(item)
             continue
-        # 状态迁移入账（轮次清零）后即删条目：消费 = 台账条目删除，缺席即
-        # 恢复自动复核（页对矛盾仍在时下一轮 audit 以新 suspected 条目重开）
-        _record_verdict(entry, decision)
+        # 删条目前不留状态迁移：条目随即删除且 _save_findings_ledger 按
+        # deleted_fingerprints 显式剔除同指纹，_record_verdict 的就地变更不落
+        # 任何持久层（死调用）；判定与人工 note 改落状态文件历史留痕（见下）。
+        # 消费 = 台账条目删除，缺席即恢复自动复核（页对矛盾仍在时下一轮 audit
+        # 以新 suspected 条目重开）
         pages_touched |= {
             p for p in (entry.get("pages") or []) if isinstance(p, str)
         }
@@ -554,10 +558,30 @@ def consume_arbitration(
         consumed.append(item)
         log.info(
             "knowledge",
-            f"仲裁清单消费：fp={fp[:8]} decision={decision}，台账条目已删除，恢复自动复核",
+            f"仲裁清单消费：fp={fp[:8]} decision={decision} "
+            f"note={item.get('note')!r}，台账条目已删除，恢复自动复核",
         )
     if not consumed:
         return {"triggered": False, "consumed": 0, "skipped": len(kept)}
+    # 仲裁判定留痕：台账条目与清单条目均已删除，_record_verdict 的判定不落盘
+    # ——判定/人工 note/指纹落状态文件历史（封顶 50 条最旧先出），裁决依据
+    # 事后可审计追溯。后续写方（run_audit / daily_check 回写段）均先重读盘上
+    # 状态再回写，该键不会被同轮体检覆盖丢失。
+    state = _read_state(project_root)
+    hist = state.get("arbitration_history")
+    hist = [e for e in hist if isinstance(e, dict)] if isinstance(hist, list) else []
+    hist.extend(
+        {
+            "fingerprint": str(item.get("fingerprint") or ""),
+            "decision": str(item.get("decision") or ""),
+            "note": item.get("note"),
+            "decided_at": item.get("decided_at"),
+            "consumed_at": _today(),
+        }
+        for item in consumed
+    )
+    state["arbitration_history"] = hist[-50:]
+    _write_state(project_root, state)
     _save_findings_ledger(
         project_root,
         ledger,
@@ -1050,7 +1074,13 @@ def _apply_mechanical(
                 # 串不在修复前违规快照里，属本轮新违规，会令整轮机械自修被回滚；
                 # 保留原值时悬空 sources 违规已在对基快照里，不会拦截提交。
                 return mm.group(0)
-            removed_sources += len(names) - len(kept_names)
+            removed = len(names) - len(kept_names)
+            if not removed:
+                # 无剔除时原样返回：marker 契约允许跨行/空白排版差异（_MARKER_RE
+                # \s* 宽松前缀 + DOTALL），重建单行规范形态会把仅排版差异当改写，
+                # 触发写盘并产出「删除悬空溯源 0 行」的误导计数。
+                return mm.group(0)
+            removed_sources += removed
             new_fields = fields[: sm.start(1)] + ",".join(kept_names) + fields[sm.end(1) :]
             return f"<!-- knowledge: {new_fields}-->"
 
