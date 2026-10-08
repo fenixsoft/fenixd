@@ -89,6 +89,14 @@ DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10
 # killpg 收不掉，communicate 会因管道未关闭无限阻塞
 SHELL_KILL_REAP_TIMEOUT_SECONDS = 5
 
+# timeout_seconds 量级上限（code-review item afb00545e096）：bool/非正/非有限
+# 值已有校验层与执行侧 _num 双层拦截，但有限大值（如毫秒语义误写
+# 86400000≈1000 天）可穿透 v > 0 守卫，shell communicate(timeout) 会如实阻塞
+# 该时长——在飞标记不释放、同 id hook 后续事件被在飞去重静默跳过、线程长期
+# 泄漏。校验层超限按配置非法拒绝、执行层超限收敛到上限，分层防线口径对齐
+# scenarios.MAX_STEP_TIMEOUT（量级取宽松一档：单次 hook 允许到小时级）。
+MAX_HOOK_TIMEOUT_SECONDS = 3600  # 1 小时
+
 # webhook url scheme 白名单：urlopen 支持 file://ftp:// 等 scheme，放行会把
 # 本地/内网资源读入审计记录（响应体截 2KB 落 hook_audit.jsonl）——仅允许
 # http/https，校验（validate_hook_entry）与执行侧（_action_webhook）双检。
@@ -173,7 +181,7 @@ def _truncate(text: str, limit: int = DETAIL_LIMIT) -> str:
 
 
 def _num(value, default: float) -> float:
-    """数值兜底：非法/非正数回退缺省。"""
+    """数值兜底：非法/非正数回退缺省，超上限收敛到 MAX_HOOK_TIMEOUT_SECONDS。"""
     # 排除 bool（bool 是 int 子类，显式前判，对齐 _positive_int_or_default
     # 范式；否则 True 会被 float() 变 1.0 → 1 秒超时，False 被静默吞掉）
     if isinstance(value, bool):
@@ -186,7 +194,13 @@ def _num(value, default: float) -> float:
     # float() 变 inf，可穿透 v > 0 守卫），否则 shell/webhook timeout=inf
     # 永不超时、在飞标记不释放（对齐 config.py 的 .nan/.inf 守卫先例；
     # nan 已被 v > 0 排除，此处一并兜住）
-    return v if v > 0 and math.isfinite(v) else default
+    if not (v > 0 and math.isfinite(v)):
+        return default
+    # 量级上限（code-review item afb00545e096）：有限大值可穿透上方守卫，
+    # communicate(timeout)/urlopen(timeout) 会如实阻塞该时长、在飞标记长期
+    # 不释放——收敛到上限（收敛 ≠ 报错，直改 config.yaml 的存量配置不因
+    # 执行侧硬失败）；超限留痕由 _action_webhook/_action_shell 记 debug 日志
+    return min(v, MAX_HOOK_TIMEOUT_SECONDS)
 
 
 def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
@@ -344,8 +358,10 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
       fenix-dashboard）——非字符串（如手改 config.yaml 写成数字）会在执行
       侧 (target or "").strip() 抛 AttributeError，被兜底误记为「hook 执行
       异常」告警，故在配置层按「配置非法（不执行）」拦截；
-    - 可选 timeout_seconds：正的有限数值（秒），bool/非有限值（.inf 等非法，
-      防手改 config.yaml 绕过执行侧 _num 守卫）——仅对 shell/webhook 生效；
+    - 可选 timeout_seconds：正的有限数值（秒）且 ≤ MAX_HOOK_TIMEOUT_SECONDS，
+      bool/非有限值（.inf 等非法，防手改 config.yaml 绕过执行侧 _num 守卫）
+      与超上限的有限大值（执行侧会如实阻塞该时长、在飞标记不释放）均按配置
+      非法——仅对 shell/webhook 生效；
       commit/push/commit-push 走 _run_git 固定 60s 超时，不消费该字段（给
       git 动作配更长超时不会被采纳，勿据此排期长耗时 git 操作）。
 
@@ -418,6 +434,15 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
             return f"timeout_seconds 必须为正的有限数值（秒），收到 {timeout!r}"
         if not math.isfinite(timeout_v) or timeout_v <= 0:
             return f"timeout_seconds 必须为正的有限数值（秒），收到 {timeout!r}"
+        # 量级上限（code-review item afb00545e096）：有限大值（如毫秒语义误写
+        # 86400000≈1000 天）穿透上方守卫后，hook 线程会如实阻塞该时长、在飞
+        # 标记不释放，同 id hook 后续事件被在飞去重静默跳过（执行侧 _num 同
+        # 源收敛兜底，此处按配置非法拒绝）
+        if timeout_v > MAX_HOOK_TIMEOUT_SECONDS:
+            return (
+                f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒"
+                f"（1 小时），收到 {timeout!r}"
+            )
     return None
 
 
@@ -1391,6 +1416,12 @@ class HookEngine:
             "project": self.project_name,
         }
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_WEBHOOK_TIMEOUT_SECONDS)
+        # 超上限收敛留痕（afb00545e096）：_num 已收敛，此处仅对原始配置超限
+        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）
+        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and cfg.get("timeout_seconds") != timeout:
+            self._log_debug(
+                f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
+            )
         # 执行侧复检 scheme（校验只把守配置写入路径，直改 config.yaml 可绕过）
         scheme = urllib.parse.urlparse(url).scheme.lower()
         if scheme not in WEBHOOK_ALLOWED_SCHEMES:
@@ -1438,6 +1469,12 @@ class HookEngine:
         """bash -c <command>，注入事件环境变量，超时按进程组强杀。"""
         command = (cfg.get("command") or "").strip()
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_SHELL_TIMEOUT_SECONDS)
+        # 超上限收敛留痕（afb00545e096）：_num 已收敛，此处仅对原始配置超限
+        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）
+        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and cfg.get("timeout_seconds") != timeout:
+            self._log_debug(
+                f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
+            )
         env = dict(os.environ)
         env["FENIX_HOOK_EVENT"] = to_status
         env["FENIX_HOOK_SPEC"] = spec
