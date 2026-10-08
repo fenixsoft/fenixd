@@ -6512,10 +6512,10 @@ class AgentRunner:
                 # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）
                 if _turns >= 5 and _per_turn > 0:
                     from core.config import ConfigLoader as _CLT
-                    _threshold = _CLT.get(
-                        self.config, "verify.context_cost_per_turn_threshold",
-                        200000,
-                    )
+                    # 缺省经 ConfigLoader 单点读取器取（code-review item
+                    # 431081458861，与 dashboard 缺省回显视图同源）——勿再内联
+                    # 字面量 200000 构成双源镜像
+                    _threshold = _CLT.get_context_cost_per_turn_threshold(self.config)
                     if isinstance(_threshold, (int, float)) and _per_turn > _threshold:
                         self.logger.warning(
                             "agent_runner",

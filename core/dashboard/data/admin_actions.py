@@ -2853,7 +2853,13 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         if note:
             msg += f"\n\n裁决依据：{note}"
         _git_out(proot, "commit", "-m", msg, "--", *to_commit)
-        commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+        # pathspec 锚定读哈希（code-review item 7fe327348b37，同
+        # archive_commit.commit_archive_move / queue.py 既有口径：不用
+        # rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上，审计
+        # 追溯失真）。
+        commit_hash = _git_out(
+            proot, "log", "-1", "--format=%H", "--", *to_commit,
+        ).strip()
     except RuntimeError as e:
         return {"ok": False, "steps": [], "error": f"git 提交失败: {e}"}
     steps = [
@@ -3092,7 +3098,14 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         if note:
             msg += f"\n\n裁决依据：{note}"
         _git_out(proot, "commit", "-m", msg)
-        commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+        # pathspec 锚定读哈希（code-review item 7fe327348b37，同
+        # _exec_commit_stray_wip / archive_commit.commit_archive_move 口径）：
+        # 提交本体因 rm --cached 后 pathspec 解析必 fatal 而只能裸 commit
+        # （stash_guard 同款教训），读哈希按被出库路径锚定，同样防
+        # commit→读取窗口内并发提交记到别人头上。
+        commit_hash = _git_out(
+            proot, "log", "-1", "--format=%H", "--", *to_untrack,
+        ).strip()
     except (subprocess.TimeoutExpired, OSError) as e:
         return _abort(f"git 执行异常: {e}")
     except RuntimeError as e:
@@ -3204,14 +3217,26 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
     appended = _append_gitignore_entries(proot, entries)
     if not appended:
         return {"appended": [], "commit_hash": "", "error": ""}
+    # .gitignore 入库态快照（code-review item 8db336608775）：新文件场景 add
+    # 已把 .gitignore 暂存，失败还原分支除回滚工作区内容外还须撤销暂存，
+    # 否则残留 staged 半程改动。ls-files 失败时入库态未知，按「已跟踪」保守
+    # 处理（不补 reset——git 已异常，再补写只会放大）。
+    gitignore_untracked = False
     try:
         tracked = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
-        if ".gitignore" not in tracked:
+        gitignore_untracked = ".gitignore" not in tracked
+        if gitignore_untracked:
             _git_out(proot, "add", "--", ".gitignore")
         msg = f"[fenix] admin: {header}（{len(appended)} 条）"
         _git_out(proot, "commit", "-m", msg, "--", ".gitignore")
-        commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+        # pathspec 锚定读哈希（code-review item 7fe327348b37，同
+        # _exec_commit_stray_wip / archive_commit.commit_archive_move 口径：
+        # 不用 rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上）。
+        commit_hash = _git_out(
+            proot, "log", "-1", "--format=%H", "--", ".gitignore",
+        ).strip()
     except RuntimeError as e:
+        restore_note = ""
         try:
             gi = proot / ".gitignore"
             kept = [
@@ -3219,12 +3244,53 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
                 gi.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
                 if ln.strip() not in set(appended)
             ]
-            gi.write_text("".join(kept), encoding="utf-8")
+            # 原子写回（code-review item 8db336608775，与
+            # _append_gitignore_entries 走 atomic_write_text 同口径）：裸
+            # write_text 非原子，还原时刻恰逢进程被杀/磁盘满会留下截断的
+            # .gitignore（仓库忽略规则整体丢失面）。
+            from core.pm_engine.verification.scenario_gate import atomic_write_text
+
+            atomic_write_text(gi, "".join(kept))
         except OSError:
-            pass
+            restore_note = "；.gitignore 还原写回失败（保留现状）"
+        if gitignore_untracked:
+            try:
+                _git_out(proot, "reset", "-q", "--", ".gitignore")
+            except RuntimeError as reset_err:
+                restore_note += f"；撤销 .gitignore 暂存失败: {reset_err}"
         return {"appended": [], "commit_hash": "",
-                "error": f".gitignore 追加提交失败（已尽力还原追加行）: {e}"}
+                "error": (f".gitignore 追加提交失败（已尽力还原追加行"
+                          f"{restore_note}）: {e}")}
     return {"appended": appended, "commit_hash": commit_hash, "error": ""}
+
+
+def _stray_manifest_path_escapes(proot, paths) -> list:
+    """清单路径「相对且不越出项目根」纵深校验，返回不合规条目（空=全部合法）。
+
+    清单解析自告警 evidence 文本段（parse_stray_wip_manifest 只做段级文本
+    解析，不做路径合法性裁决），绝对路径条目会使 ``proot / p`` 整体替换基准
+    路径、含 ``..`` 条目可指向项目根之外（code-review item a2e84e9e166c）。
+    同模块先例防线：夹具写入走 validate_scenario_revision_paths 白名单、
+    spec 名拼路径走 kebab-case 正则；散件路径散布全仓、不在任何目录白名单
+    内，故只取其绝对路径/穿越规则做同型校验，白名单目录约束不适用。
+    """
+    base = os.path.realpath(os.path.abspath(str(proot)))
+    bad: list = []
+    for raw in paths or []:
+        p = str(raw or "").strip()
+        if not p or p.startswith("~") or os.path.isabs(p) or ":" in p.split("/")[0]:
+            bad.append(p)
+            continue
+        norm = os.path.normpath(p)
+        if norm == "." or norm.startswith(".."):
+            bad.append(p)
+            continue
+        # realpath 前缀断言：解析后必须仍落在项目根之内（顺带挡住中间目录为
+        # 指向项目外符号链接的形态）。
+        anchored = os.path.realpath(os.path.join(base, norm))
+        if anchored != base and not anchored.startswith(base + os.sep):
+            bad.append(p)
+    return bad
 
 
 def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str = "",
@@ -3241,22 +3307,42 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
       已移动文件不回拉（移动是逐文件原子操作，留在登记目录属已认领态），
       失败如实上报、重试续移剩余文件；
     - 清单内已不在磁盘的文件跳过不报错（同指纹一次性告警，清单会陈旧）；
-      可归档集合为空返回明确 error。
+      可归档集合为空返回明确 error。移动前 ls-files 复核 untracked 身份
+      （code-review item 6715a1facae4，同 commit/untrack 执行器）并对清单
+      条目做相对路径/越界校验（code-review item a2e84e9e166c）：已变
+      tracked 与绝对路径/穿越条目一并跳过（tracked 文件移动＝git 可见删改）。
     """
     pre = _claim_untracked_manifest(project_root, signal_type, paths)
     if pre["error"]:
         return {"ok": False, "steps": [], "error": pre["error"]}
     proot = Path(project_root)
+    # 路径纵深校验（code-review item a2e84e9e166c，_stray_manifest_path_escapes
+    # 同型防线）：不合规条目剔除、不阻断其余合规条目。
+    escapes = _stray_manifest_path_escapes(proot, pre["candidates"])
+    compliant = [p for p in pre["candidates"] if p not in escapes]
     existing, skipped = [], []
-    for p in pre["candidates"]:
+    for p in compliant:
         (existing if (proot / p).is_file() else skipped).append(p)
+    # tracked 复核防线（code-review item 6715a1facae4，同 commit/untrack 执行器
+    # 的 ls-files 求交）：清单+磁盘存在不代表仍 untracked——同指纹一次性告警的
+    # 清单会陈旧，文件可能在告警后已被 commit_stray_wip 等途径提交跟踪（同一
+    # 信号下并排裁决动作的先后组合）；对 tracked 路径执行移动会制造 git 可见
+    # 的删改，违背「零 git 写、只动 untracked」契约。
+    try:
+        indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
+    except RuntimeError as e:
+        return {"ok": False, "steps": [], "error": f"读取 git 索引失败: {e}"}
+    newly_tracked = [p for p in existing if p in indexed]
+    existing = [p for p in existing if p not in indexed]
     if not existing:
-        return {
-            "ok": False, "steps": [],
-            "error": ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
-                      f"无可归档文件；清单({len(pre['manifest'])}): "
-                      f"{', '.join(pre['manifest'])}"),
-        }
+        err = ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
+               f"无可归档文件；清单({len(pre['manifest'])}): "
+               f"{', '.join(pre['manifest'])}")
+        if newly_tracked:
+            err += f"；其中 {len(newly_tracked)} 个已变 tracked（不执行归档移动）"
+        if escapes:
+            err += f"；其中 {len(escapes)} 条路径不合规已剔除"
+        return {"ok": False, "steps": [], "error": err}
     gi = _append_gitignore_and_commit(
         proot, [f"{UNTRACKED_STRAY_ARCHIVE_DIR}/"], "登记 untracked 散件归档目录",
     )
@@ -3287,6 +3373,16 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     )
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if newly_tracked:
+        steps.append(
+            f"清单内已变 tracked、跳过 {len(newly_tracked)} 个（告警后已被提交"
+            f"跟踪，不执行归档移动）: {', '.join(newly_tracked)}"
+        )
+    if escapes:
+        steps.append(
+            f"清单内 {len(escapes)} 条路径不合规（绝对路径/越出项目根），"
+            f"跳过不触碰: {', '.join(escapes)}"
+        )
     if note:
         steps.append(f"裁决依据：{note}")
     if failed:
@@ -3342,15 +3438,23 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
 
     约束同认领族。只删普通文件（is_file 门，防御性收口——目录与特殊文件
     拒绝，不 rmtree）；已不在磁盘的跳过不报错，全不存在时明确 error。
-    零 git 写（untracked 文件删除不经 git；ignore/登记需求走其它两裁决），
-    空目录残留不进 git status、无再告警面，不顺手清理（零额外触碰）。
+    删除前 ls-files 复核 untracked 身份（code-review item 6715a1facae4，同
+    archive 执行器）并对清单条目做相对路径/越界校验（code-review item
+    a2e84e9e166c）：已变 tracked 与绝对路径/穿越条目跳过不删。零 git 写
+    （untracked 文件删除不经 git，ls-files 为只读复核；ignore/登记需求走
+    其它两裁决），空目录残留不进 git status、无再告警面，不顺手清理
+    （零额外触碰）。
     """
     pre = _claim_untracked_manifest(project_root, signal_type, paths)
     if pre["error"]:
         return {"ok": False, "steps": [], "error": pre["error"]}
     proot = Path(project_root)
+    # 路径纵深校验（code-review item a2e84e9e166c，同 archive 执行器）：
+    # 不合规条目剔除、不阻断其余合规条目。
+    escapes = _stray_manifest_path_escapes(proot, pre["candidates"])
+    compliant = [p for p in pre["candidates"] if p not in escapes]
     targets, skipped = [], []
-    for p in pre["candidates"]:
+    for p in compliant:
         f = proot / p
         if not f.exists():
             skipped.append(p)
@@ -3361,13 +3465,24 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
             }
         else:
             targets.append(p)
+    # tracked 复核防线（code-review item 6715a1facae4，同 commit/untrack/
+    # archive 执行器的 ls-files 求交）：告警后已被提交跟踪的路径不再删除，
+    # 否则会把 tracked 文件的工作区副本直接 unlink 制造 git 可见删改。
+    try:
+        indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
+    except RuntimeError as e:
+        return {"ok": False, "steps": [], "error": f"读取 git 索引失败: {e}"}
+    newly_tracked = [p for p in targets if p in indexed]
+    targets = [p for p in targets if p not in indexed]
     if not targets:
-        return {
-            "ok": False, "steps": [],
-            "error": ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
-                      f"无可删除文件；清单({len(pre['manifest'])}): "
-                      f"{', '.join(pre['manifest'])}"),
-        }
+        err = ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
+               f"无可删除文件；清单({len(pre['manifest'])}): "
+               f"{', '.join(pre['manifest'])}")
+        if newly_tracked:
+            err += f"；其中 {len(newly_tracked)} 个已变 tracked（不执行删除）"
+        if escapes:
+            err += f"；其中 {len(escapes)} 条路径不合规已剔除"
+        return {"ok": False, "steps": [], "error": err}
     try:
         for p in targets:
             (proot / p).unlink()
@@ -3376,6 +3491,16 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
     steps = [f"删除 {len(targets)} 个 untracked 散件文件: {', '.join(targets)}"]
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if newly_tracked:
+        steps.append(
+            f"清单内已变 tracked、跳过 {len(newly_tracked)} 个（告警后已被提交"
+            f"跟踪，不执行删除）: {', '.join(newly_tracked)}"
+        )
+    if escapes:
+        steps.append(
+            f"清单内 {len(escapes)} 条路径不合规（绝对路径/越出项目根），"
+            f"跳过不触碰: {', '.join(escapes)}"
+        )
     if note:
         steps.append(f"裁决依据：{note}")
     return {

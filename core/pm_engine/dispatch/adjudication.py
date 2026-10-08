@@ -1562,8 +1562,12 @@ class VAdjudicationMixin:
         )
 
         branch = getattr(result, "branch", None)
+        # 缺 path 键的畸形条目兜底空串（code-review item 7183c1a30d0b，与
+        # _preclassify_missing 的 .get 取值口径对齐）：单条畸形数据不得以
+        # KeyError 经入口 fail-open 放大为整批预分类降级；空串不命中任何
+        # 声明条目、按下方 entry is None 同款保留进 remaining。
         missing_paths = [
-            m["path"] if isinstance(m, dict) else str(m) for m in missing
+            m.get("path", "") if isinstance(m, dict) else str(m) for m in missing
         ]
         if not missing_paths:
             return {"action": "continue", "remaining": missing}
@@ -2150,8 +2154,14 @@ class VAdjudicationMixin:
         for m in remaining_paths:
             v = _verdict_of(m)
             verdict = v.get("verdict")
-            kind_m = kind_by_path.get(m, "new")
-            entry = eff_by_path.get(m) or {"path": m, "kind": kind_m}
+            entry = eff_by_path.get(m)
+            # kind 权威取生效声明条目（eff_by_path，二次读取已就位），
+            # kind_by_path 尽力读取（try/except pass，首读异常即整表为空）
+            # 仅作回退（code-review item 97196707901c）：防洗白闸门与
+            # _readback_correction 复检须用同一权威 kind，首读异常而次读
+            # 成功时 delete 条目不得误判 "new" 绕过闸门软化声明。
+            kind_m = (entry or {}).get("kind") or kind_by_path.get(m, "new")
+            entry = entry or {"path": m, "kind": kind_m}
             try:
                 if verdict == "typo":
                     actual_path = str(v.get("actual_path") or "").strip()

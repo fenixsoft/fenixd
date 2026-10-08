@@ -192,6 +192,7 @@ class InfraCircuitBreaker:
                     continue
                 count = st.get("count", 0)
                 until = st.get("until", 0.0)
+                state = st.get("state", "closed")
                 if not (
                     _is_valid_state_number(count, nonneg=True)
                     and _is_valid_state_number(until, nonneg=False)
@@ -208,10 +209,25 @@ class InfraCircuitBreaker:
                     )
                     self._cache[link] = {"count": 0, "until": 0.0, "state": "closed"}
                     continue
+                if state not in ("broken", "closed"):
+                    # 非法 state（手改/版本代差写入未知值）→ 与上方数值脏值分支
+                    # 同口径记 warning 并复位 closed（code-review item
+                    # 4479f82451c7）：未知值使 condition() 的 =="broken" 判定恒
+                    # False，熔断保护被静默禁用且无留痕。写入点均为小写字面量、
+                    # 判定大小写敏感，故不做 lower() 归一放行，异形值按脏值
+                    # fail-open 处理。
+                    self._log(
+                        "warning",
+                        "infra_breaker",
+                        f"熔断状态含非法 state（link={link}），fail-open 复位为"
+                        f" closed: {self._state_path}",
+                    )
+                    self._cache[link] = {"count": 0, "until": 0.0, "state": "closed"}
+                    continue
                 self._cache[link] = {
                     "count": int(count),
                     "until": float(until),
-                    "state": str(st.get("state", "closed")),
+                    "state": str(state),
                 }
         except (OSError, json.JSONDecodeError, ValueError, TypeError, OverflowError) as e:
             self._log(

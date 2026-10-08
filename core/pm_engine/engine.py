@@ -3994,7 +3994,9 @@ class PMEngine:
                                 f"恢复重入判据不全成立，维持短路待下轮复查",
                             )
                         continue
-                    # code-review item 54075e1dda03：ocr join 停等豁免——entry 带
+                    # code-review item 54075e1dda03：ocr join 停等豁免——fresh
+                    # （上方写前重读快照，item 923637148926：轮首 entry 快照
+                    # 可能滞后于标记落盘致豁免判据为假、误走重置）带
                     # ``_ocr_join_wait`` 且 ocr 车道在飞（``ocr_lane_busy``）时，
                     # spec 处于 queue._ocr_join_await_lane 承诺的「MUST 停止推进
                     # （tester 不重派）」停等态，此处 reset implemented+重派
@@ -4015,7 +4017,7 @@ class PMEngine:
                     # 分支阈值超时收尾并触发回调/停等清账；运行方若把车道超时配到
                     # ≥ stuck 阈值，停等 spec 会在超阈值后被本分支每轮 defer，
                     # 直到车道硬超时兜底为止。
-                    if entry.get("_ocr_join_wait"):
+                    if fresh.get("_ocr_join_wait"):
                         try:
                             _lane_busy = self.ocr_lane_busy(spec_name)
                         except Exception:  # noqa: BLE001 — 判定异常按在飞（宁紧勿松）
@@ -4232,7 +4234,6 @@ class PMEngine:
         try:
             store = AdminStore(self.project_root, self.logger)
             count = int(state.get("count", 0)) if state else 0
-            until = state.get("until") or 0.0
             # 冷却总时长（秒→分钟，取整）
             # 配置非法值防御（code-review item e3e50d960b1b，与 _handle_push_failure
             # 的 max_retries 同款）：非数字字符串裸 int() 抛 ValueError/TypeError，
