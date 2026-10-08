@@ -490,12 +490,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
     }
 
 
-# ── 失败历史侧车（fix-verdict-retry-misattribution D6）────────────────
-# `.fenix/verify-progress/<spec>/fail_history.json`：每轮裁决采纳失败时原子
-# 追加 {round, cause_type, failed_scenarios}；spec 进入 verified 终态或升级
-# 闸门告警消费后清空。写盘失败静默降级（缺侧车 → 升级告警分型 unknown），
-# 不阻断升级闸门。
-_FAIL_HISTORY_FILENAME = "fail_history.json"
+# 失败历史侧车（fail_history.json，fix-verdict-retry-misattribution D6）的
+# 读写/清理实现及 _FAIL_HISTORY_FILENAME 常量均归属 infra_classify.py。
 
 
 def _verdict_violations_evidence(pipeline, spec_name: str, violations: list) -> str:
