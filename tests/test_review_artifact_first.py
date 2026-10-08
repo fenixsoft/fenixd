@@ -135,13 +135,26 @@ class TestArtifactFirstConsumption(unittest.TestCase):
         self.assertEqual(runner.run_calls, 1)
 
     def test_exit1_with_repaired_artifact_consumes(self):
-        """2.1 补充：repaired 产物同样按产物消费。"""
+        """2.1 补充：repaired 产物同样按产物消费。
+
+        repairs 声称的文件须在 run 期间真实改动（写入边界硬门
+        d012f86680b9：指向快照中哈希未变化文件的 repairs 按越界收口走重试），
+        故经 on_run 在快照采集（dispatch_review 入口）之后实际改写 tasks.md，
+        使产物是真实的 repaired 而非声称态。
+        """
         sm = self._fresh()
+
+        def _apply_repair():
+            (self.tmpdir / "spec" / "changes" / "spec" / "tasks.md").write_text(
+                "# Tasks\n- [x] 1.1 do it\n", encoding="utf-8"
+            )
+
         runner = _FailingRunner(
             self.tmpdir, error="boom",
             result={"status": "repaired",
                     "repairs": [{"path": "spec/changes/spec/tasks.md",
-                                 "summary": "fixed"}]})
+                                 "summary": "fixed"}]},
+            on_run=_apply_repair)
         mgr, _, engine = self._manager(sm, runner)
         self.assertTrue(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")

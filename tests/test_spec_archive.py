@@ -263,9 +263,10 @@ class TestAutoArchiveThresholdConfig(unittest.TestCase):
     def test_invalid_write_ignored(self):
         from core.dashboard.data import read_effective_config, write_config
         write_config(self.root, {"archive": {"auto_threshold": 30}})
-        # 负值被 _deep_merge_managed 白名单过滤（保留原配置）
+        # 负值被前置校验直接拒绝不落盘（item 379475db5d40，D7 fail-closed：
+        # 非负整数 0=禁用，非法值 ok:False），非法写被忽略、存量配置保持不变
         r = write_config(self.root, {"archive": {"auto_threshold": -5}})
-        self.assertTrue(r["ok"])
+        self.assertFalse(r["ok"])
         self.assertEqual(read_effective_config(self.root)["archive"]["auto_threshold"], 30)
 
     def test_effective_helper_defaults_and_fallback(self):

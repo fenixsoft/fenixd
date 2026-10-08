@@ -111,8 +111,12 @@ class FakeSM:
         entry = self.entries.get(spec_name)
         return dict(entry) if entry else None
 
-    def update_spec(self, spec_name, patch):
+    def update_spec(self, spec_name, patch) -> bool:
+        # 返回值对齐生产 StateMachine.update_spec（成功 True）：打回记账写点
+        # （item ffcee35add49）消费该 bool 判写入是否生效，替身缺返回值会被
+        # 误判为写入失败走 defer 分支
         self.entries.setdefault(spec_name, {}).update(patch)
+        return True
 
     def transition(self, spec_name, to, *, trigger_run_id=None,
                    agent_type=None, channel="auto") -> bool:
