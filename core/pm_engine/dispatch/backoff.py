@@ -235,7 +235,10 @@ class BBackoffMixin:
             val = float(
                 self._pm._get_config("agents.transient_redispatch_delay_seconds", 600)
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # code-review item 851ba3eeed41：巨大 int（YAML 任意精度）送 float()
+            # 抛 OverflowError 同按脏值回退缺省（口径同 infra_breaker threshold，
+            # item 8c2855513307）。
             return 600.0
         # code-review item e2d87491cc64：非有限浮点（.inf/.nan）穿透按脏值回退
         # 缺省——``.inf`` 使瞬断重派 Timer 永不到期（恢复通道失去唯一驱动），
