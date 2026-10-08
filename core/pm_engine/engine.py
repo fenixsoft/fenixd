@@ -451,6 +451,23 @@ class PMEngine:
 
         self.infra_breaker = InfraCircuitBreaker(self.project_root, self.config, self.logger)
 
+        # 组合组件预热（code-review item 97824267c225）：六个惰性 property 的
+        # 「__dict__ 判空 → 构造 → 回写」两步之间无锁，属非原子 check-then-act。
+        # __init__ 只显式触达了 _recovery（上方 _load_recovery_watch），_dispatcher
+        # 等的首次触达落在多线程运行期（EventBus 监听线程先于 initial full_scan
+        # 启动，可与主循环并发首触同一 property）——双线程各建一个实例时后写者
+        # 覆盖 __dict__ 缓存而先到者继续持旧实例，两实例的 _queue_lock/_run_queue
+        # 互不同一：入队进旧列表即丢失、锁互斥失效（同型于 5ecd0d3047d1 收敛的
+        # check-then-act 分离竞态）。对齐 _recovery 预热先例，在单线程 __init__
+        # 期逐一显式触达一次完成构造；property 的惰性路径保留，测试以
+        # PMEngine.__new__ 绕过 __init__ 的实例仍安全。
+        self._family
+        self._budget
+        self._spec_integrity
+        self._verification
+        self._dispatcher
+        self._reporting
+
     # ── Event Handlers ─────────────────────────────────────────────
 
     def handle_event(self, event_kind: str, spec_name: str, spec_entry: dict):
@@ -4593,7 +4610,11 @@ class PMEngine:
         runner = self.agent_runner
         wm = runner.worktree_manager
         running = getattr(runner, "_running_agents", None) or {}
-        run_ids = [str(rid) for rid in running.keys()]
+        # list(...) 快照迭代（code-review item d1351000e5b5，对齐
+        # _cancel_lane_runs 的快照口径）：登记表由 worker 线程并发登记/收口，
+        # 活视图迭代遇字典变长抛 RuntimeError 中断本轮盘点——sweep 刻意不设
+        # 空闲预检、恰以在飞车道为归因对象，最需盘点的时刻最易触发。
+        run_ids = [str(rid) for rid in list(running.keys())]
         sweeper = self._stray_wip_sweeper
         if sweeper is None or getattr(sweeper, "worktree_manager", None) is not wm:
             from core.worktree_manager.stray_wip import MainTreeStrayWipSweeper
