@@ -16,10 +16,9 @@ cli_assertions.py — CLI 结构化断言库（spec multi-kind-scenario-model「
 """
 
 import json
-import re
 from pathlib import Path
 
-from .api_assertions import _MISSING, evaluate_json_path
+from .api_assertions import _MISSING, _compile_regex, evaluate_json_path
 from .scenarios import CLI_ASSERTION_LAYERS
 
 # 文件内容断言读取上限（MB 级）：场景断言 path 误指向构建产物/日志等大文件时，
@@ -212,9 +211,9 @@ class CliAssertionRunner:
             text = actual if isinstance(actual, str) else str(actual)
             if mode == "regex":
                 # 高危形态预检：灾难性回溯正则（嵌套量词类）可在 MB 级文本上
-                # 长时间占住断言协程——CLI run 步骤有 timeout 兜底而断言侧
-                # 没有任何时限。显式拒绝走断言异常通道而非静默执行（与下方
-                # 非法正则的口径对齐；预检保守宁少拦不误拦，见函数 docstring）
+                # 长时间占住断言协程。显式拒绝走断言异常通道而非静默执行（与
+                # 下方非法正则的口径对齐；预检保守宁少拦不误拦，见函数
+                # docstring）
                 if _has_nested_quantifier(str(expected)):
                     raise ValueError(
                         f"正则含嵌套量词高危形态（组内变长量词再被无上界量词"
@@ -222,13 +221,18 @@ class CliAssertionRunner:
                         f"改写建议：把无上界量词上提为顶层有界重复，如 "
                         f"(?:\\d{{1,3}}\\.)* → (?:[0-9]{{1,3}}\\.){{0,20}}"
                     )
-                try:
-                    m = bool(re.search(str(expected), text))
-                except re.error as e:
+                # 复用 api 侧 _compile_regex/_TimeoutRegex 包装匹配：regex 库
+                # 可用时 search 带 1s 时限，预检刻意漏拦的不典型回溯形态（如
+                # 重叠分支）由超时收口而非无限占住断言协程（超时按 re.error
+                # fail-closed，走下方非法正则同一异常通道）；库缺失时回退
+                # stdlib re，行为同无防护版
+                pattern, regex_error = _compile_regex(str(expected))
+                if regex_error is not None:
                     # 非法正则是场景编写缺陷，显式走断言异常通道（与
                     # _assert_exit_code 对非法 expected 对齐），不令 m=False
                     # 掩盖——negate 场景会静默假绿
-                    raise ValueError(f"非法正则表达式: {expected!r}（{e}）") from e
+                    raise ValueError(f"非法正则表达式: {expected!r}（{regex_error}）")
+                m = bool(pattern.search(text))
             else:  # contains（缺省）
                 m = str(expected) in text
         return (not m) if negate else m
@@ -646,7 +650,7 @@ class CliAssertionRunner:
                 "layer": 3,
                 "step": a.get("step"),
                 "path": path,
-                "expected": expected,
+                "expected": None if expected is _MISSING else expected,
                 "actual": None,
                 "mode": mode,
                 "pass": False,

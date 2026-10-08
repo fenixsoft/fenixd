@@ -10,6 +10,7 @@ import json
 import re
 import threading
 import time
+from core.admin_store import ESCALATION
 from core.agent_runner.run_files import append_run_line
 from core.timelib import from_epoch, parse_ts
 from datetime import datetime, timezone
@@ -1811,7 +1812,7 @@ class ProviderCircuit:
             return None
         cutoff = time.time() - anchor_minutes * 60
         for rec in store.read_all():
-            if rec.get("kind") != "escalation":
+            if rec.get("kind") != ESCALATION:
                 continue
             if rec.get("signal_type") != "transient_break_storm":
                 continue
