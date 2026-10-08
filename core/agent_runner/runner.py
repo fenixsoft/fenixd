@@ -263,8 +263,9 @@ AGENT_TYPE_TO_ROLE = {
 _PLANNER_SEMAPHORE: threading.BoundedSemaphore | None = None
 _PLANNER_SEMAPHORE_LIMIT: int = 0
 _PLANNER_SEMAPHORE_LOCK = threading.Lock()
-# 排队等待保活事件节流：每秒至多写一次 throttled-wait（run 流保持新鲜，
-# 防 recovery watch 把「已派发、在持槽等待」误判为 stuck/dispatch_stalled）。
+# 排队等待保活事件节流：每 THROTTLED_WAIT_HEARTBEAT_SECONDS（60 秒）至多写
+# 一次 throttled-wait（run 流保持新鲜，防 recovery watch 把「已派发、在持槽
+# 等待」误判为 stuck/dispatch_stalled）。
 THROTTLED_WAIT_HEARTBEAT_SECONDS = 60.0
 
 # 主树 verify-progress 目录非其工作区的车道（fix-impl-code-review-writepath D2）：
@@ -1124,7 +1125,6 @@ class AgentRunner:
             from core.admin_store import AdminStore, SIGNAL
             store = AdminStore(self.project_root, self.logger)
             # 从 run_id 推断 spec（与 run_spec_part 同逻辑）；解析失败留空不强解
-            from core.agent_runner.run_files import run_spec_part
             spec_name = run_spec_part(base_id)
             store.append({
                 "kind": SIGNAL,
@@ -1379,10 +1379,24 @@ class AgentRunner:
         input_path = vp_dir / "dispute_judge_input.json"
         try:
             vp_dir.mkdir(parents=True, exist_ok=True)
-            input_path.write_text(
-                json.dumps(judge_input or {}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            # 原子替换（mkstemp + os.replace，与模块内 config 落盘 /
+            # _copyback_run_result 同款手法）：写盘中途崩溃/掉电不留半截
+            # dispute_judge_input.json 被下一轮 judge 或读取侧误消费。
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".dispute_judge_input.", suffix=".tmp", dir=str(vp_dir))
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(
+                        json.dumps(
+                            judge_input or {}, ensure_ascii=False, indent=2))
+                os.replace(tmp_path, input_path)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
         except OSError as e:
             return AgentRunResult(
                 run_id, spec_name, "dispute-judge",
