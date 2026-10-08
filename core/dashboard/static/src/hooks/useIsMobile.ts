@@ -13,6 +13,8 @@ export function useIsMobile(): boolean {
     const mql = window.matchMedia(QUERY);
     const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
     mql.addEventListener('change', onChange);
+    // 订阅挂上前发生的媒体变更收不到 change 事件，挂载后再同步一次对齐
+    setIsMobile(mql.matches);
     return () => mql.removeEventListener('change', onChange);
   }, []);
 
