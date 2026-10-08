@@ -75,6 +75,10 @@ ESCALATED_STALE_DAYS = 7
 # 人工仲裁清单（本 SPEC 2.2：人工仲裁唯一入口）。.fenix/ 整体 gitignore
 # （仅 todo.md/verify.yaml/config.template.yaml 白名单入库），人工本地裁决
 # 不入库；条目形态 {fingerprint, decision, decided_at, note}。
+# 白名单入库意图由 stray_wip 白名单脱落巡检机械核查（evo-whitelist-tracked-
+# patrol 2.2：whitelist_untracked 信号，core/worktree_manager/stray_wip.py）
+# ——被 ! 规则放行却不在 git 索引中即发 major 告警，「白名单应入库」约定与
+# 执行机制互为引用，后来者可从任一侧找到另一侧。
 ARBITRATION_RELPATH = ".fenix/knowledge_audit_arbitration.json"
 # 仲裁决定合法值：no-conflict / false-positive → 判无矛盾语义、fixed → 纠偏
 # 语义。消费段删条目即恢复自动复核（条目缺席，无豁免键留存），判定与 note
