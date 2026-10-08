@@ -781,7 +781,8 @@ export default function SpecListPage() {
     }
   }, [flushPatches]);
 
-  // SSE 增量驱动：state 事件入 patch 队列；run_meta/refresh 仅做节流兜底重拉
+  // SSE 增量驱动：state 事件入 patch 队列；run_meta 节流兜底重拉；refresh 不
+  // 处理（由 30s 心跳兜底）
   useEffect(() => {
     void load();
     const es = new EventSource(STREAM_URL);
@@ -923,6 +924,10 @@ export default function SpecListPage() {
     // 失败时）表格、「共 N 个 SPEC」计数与移动端卡片一直显示上一项目的 SPEC。
     // 函数式守卫避免首挂载空表时的无谓 re-render（同 flushPatches 惯例）。
     setSpecMap((prev) => (Object.keys(prev).length > 0 ? {} : prev));
+    // 上一项目的加载失败提示不残留到新项目（code-review item 8685bdb6a737）：
+    // load 的失败分支只 setError 不清，切换后 A 的错误 Alert 会一直显示到
+    // 新项目响应落地。
+    setError('');
   }, [name]);
   useEffect(() => {
     if (expandedInitRef.current) return;
