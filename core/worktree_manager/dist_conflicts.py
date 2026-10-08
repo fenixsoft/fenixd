@@ -666,8 +666,22 @@ class G5DistConflictsMixin:
                     "working tree only, amend skipped",
                 )
                 return
+            # pathspec 限定 amend 作用域（code-review item fde5d41d1130）：不带
+            # pathspec 的 amend 提交整个 index，static 根之外若已有暂存内容
+            # （stash 降级残留被后续操作暂存、并发组件写入 index）会被一并折进
+            # 合并提交——与上方守卫检查面（-- DASHBOARD_STATIC_ROOT）及 unstage
+            # 分支同口径，语义同 _commit_verification_report 的 --only。
             amend = subprocess.run(
-                ["git", "-C", str(self.project_root), "commit", "--amend", "--no-edit"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "commit",
+                    "--amend",
+                    "--no-edit",
+                    "--",
+                    DASHBOARD_STATIC_ROOT,
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -749,6 +763,12 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # encoding/errors（code-review item 09184c397108）：text=True
+                # 缺省按 locale strict 解码，非 ASCII upstream 名会抛
+                # UnicodeDecodeError（不在下方 except 捕获范围）——与本文件
+                # 其余采集点同口径。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if upstream.returncode != 0 or not upstream.stdout.strip():
@@ -765,6 +785,8 @@ class G5DistConflictsMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             return ancestor.returncode == 0
@@ -855,11 +877,14 @@ class G5DistConflictsMixin:
             paths.append(_unquote_git_path(text))
         return paths
 
-    def _list_unmerged_files(self) -> list:
+    def _list_unmerged_files(self) -> list | None:
         """枚举主树中全部 UU 未合并文件（merge 冲突 / stash pop 冲突残留）。
 
         ``git ls-files -u`` 对每个冲突文件输出 1~3 行（stage 1/2/3），行末为路径；
-        去重后返回排序后的路径列表。命令失败返回空列表（不阻塞自愈）。
+        去重后返回排序后的路径列表。命令失败（子进程异常/非零返回）返回
+        ``None``（code-review item f636712de58a）：与「rc=0 且无输出＝确无 UU
+        文件」的空列表可区分，调用方在 pop CONFLICT 分支据此走保守分支处置，
+        不得把枚举失败当作「无冲突/自愈完成」。
 
         路径不转义：``-c core.quotePath=false``（与 ``_collect_conflict_paths``
         的采集点同口径）让非 ASCII 路径按原样输出——路径原样传给
@@ -886,8 +911,11 @@ class G5DistConflictsMixin:
                 timeout=30,
             )
         except (subprocess.SubprocessError, OSError):
-            return []
-        if ls.returncode != 0 or not ls.stdout.strip():
+            return None
+        if ls.returncode != 0:
+            # 非零返回＝枚举失败，不得与「rc=0 且无输出＝确无 UU 文件」混淆
+            return None
+        if not ls.stdout.strip():
             return []
         paths: set = set()
         for line in ls.stdout.splitlines():
