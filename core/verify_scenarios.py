@@ -670,7 +670,10 @@ def _diff_planner_output_impl(
                 kind=_kind_of(s),
             )
             for s in planner_scenarios
-            if isinstance(s, dict) and s.get("id")
+            # 移除声明条目（remove_reason 非空的不可执行形态）不入集，与
+            # 下方有持久化集分支的 sid in reasons 跳过同口径——否则首轮
+            # 写进 scenarios.json 成幽灵条目，下一轮被判无理由缺失。
+            if isinstance(s, dict) and s.get("id") and not s.get("remove_reason")
         ]
         result.scenario_set = ScenarioSet(
             spec_name,
