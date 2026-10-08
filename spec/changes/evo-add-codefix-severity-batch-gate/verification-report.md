@@ -31,3 +31,10 @@
 | user-config-scope-window-flip | 运维收尾核对（tasks 4.1）：用户级 /root/.fenix/config.yaml 的 admin.code_review.scope 由 full 回拨后，经 core.config.ConfigLoader.get_code_review_config 读取的生效值为 window（读取器口径：仅字符串 full 生效为 full，其余一律回退 window）。仅覆盖配置翻转；「次日核对评审 manifest 仅含窗口内变更文件」属次日动作，不在本轮验收。出处：core/config.py:2125 get_code_review_config scope 两档词表、core/admin_monitor.py:1538 生产读取点。 | pass | 0/2 | - |
 | regression-code-review-suite | 回归点（code_review 侧）：core/code_review.py 改动（generate_fix_spec 候选谓词）不得破坏既有套件 tests/test_code_review.py——含 TestGenerateFixSpec 既有成功/幂等/skip 语义。 | pass | 0/2 | - |
 | regression-code-fix-suite | 回归点（code_fix 侧）：core/code_fix.py 改动（选批 severity 分流）不得破坏既有套件 tests/test_code_fix.py（含 get_code_review_fix_config 既有键回退矩阵）与 tests/test_code_fix_affinity_batching.py（select_batch/is_chain_last_batch 既有选批与链末判语义）。 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+
