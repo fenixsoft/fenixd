@@ -328,7 +328,7 @@ interface SystemFormValues {
   transient_break_cooldown_seconds: number;
 }
 
-// admin.* + agents.transient_* 十二字段表单映射单源（config 取值 ?? 缺省）：
+// admin.* + agents.transient_* 全字段表单映射单源（config 取值 ?? 缺省）：
 // initialValues 与回填 effect 共用，避免两份映射漏改一处导致初值与回填值分叉
 function buildSystemFormValues(config: ConfigData): SystemFormValues {
   const admin = config.admin ?? {};
