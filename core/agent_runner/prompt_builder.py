@@ -1028,7 +1028,7 @@ class PromptBuilder:
         ``.fenix/verify-evidence/<spec>/``，验证契约 ``evidence_dir`` 显式
         声明时以其为准（``resolve_evidence_dir`` 单源解析）。契约加载失败
         回退缺省——prompt 软约束 fail-open，不阻断派发（与 quality-gates
-        同族模式，prompt_builder.py:910 先例）。指引须写明「主树根绝对
+        同族模式，``_quality_gates_section`` 先例）。指引须写明「主树根绝对
         路径」，防验证 agent 在 worktree 内自发落位、run 结束即失联。
         """
         rel_dir = ""
@@ -1237,6 +1237,7 @@ class PromptBuilder:
             return ""
         if progress is None:
             return ""
+        # [fenix-ignore:aec6c50f26ae] 读侧 _read_verify_progress 已强校验 total 恒为非布尔 int（缺失/非法即移除进度文件并返回 None，本段随之零注入），total=None 注入不可达
         total = progress.get("total")
         done = progress.get("done") or 0
         current = progress.get("current") or ""
@@ -1291,13 +1292,13 @@ class PromptBuilder:
         fix-impl-resultfile-contract-gap 2.2：诊断以 JSON 字符串存储，解析失败
         （非法 JSON）降级为原文截断呈现而非抛错；attribution / conclusion 渲染
         各自截断（500 / 800 字）避免重试轮提示词膨胀。`error` 原文内含 attribution
-        子串系两字段同源（均取自 final_error，dispatch.py:1319-1333/1538-1603），
-        不计为重复渲染（字段级判据，D3）。
+        子串系两字段同源（均取自 final_error，写侧单点
+        ``adjudication._record_impl_diagnosis``），不计为重复渲染（字段级判据，D3）。
         """
         diag_raw = ""
         try:
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            diag_raw = entry.get("_impl_diagnosis") or "" if isinstance(entry, dict) else ""
+            diag_raw = (entry.get("_impl_diagnosis") or "") if isinstance(entry, dict) else ""
         except Exception:
             return ""
         if not isinstance(diag_raw, str) or not diag_raw.strip():
