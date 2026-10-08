@@ -3150,6 +3150,36 @@ class ConfigLoader:
         return cls._positive_int_reader(config, "impl_code_review_lane_timeout_sec", 2400)
 
     @classmethod
+    def get_context_cost_per_turn_threshold(
+        cls, config: Dict[str, Any], default: int = 200000
+    ) -> int:
+        """读取 ``verify.context_cost_per_turn_threshold``：上下文经济性告警阈值（0=关闭），缺省 200000，仅非负整数 int（fix-agent-lane-efficiency D3）。
+
+        单点读取器（code-review item 431081458861）：dashboard 缺省回显视图与
+        agent_runner 运行时告警双侧均经本读取器取值——该键缺省曾以手写字面量
+        双处镜像（config_admin._default_echo_view 与 runner 内联 `get(..., 200000)`），
+        构成会实际漂移的双源。非法值回落缺省（bool 是 int 子类显式排除），与
+        effective_auto_archive_threshold 同口径；WARNING 经 _VERIFY_POSITIVE_INT_WARNED
+        同款进程级去重（运行时逐 run 调用，防同一坏值刷屏）。
+        """
+        verify = cls._segment_or_empty(config, "verify")
+        val = verify.get("context_cost_per_turn_threshold")
+        if val is None:
+            return default
+        if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+            dedup_key = ("verify.context_cost_per_turn_threshold", repr(val))
+            if dedup_key not in _VERIFY_POSITIVE_INT_WARNED:
+                _VERIFY_POSITIVE_INT_WARNED.add(dedup_key)
+                _logger.warning(
+                    "verify.context_cost_per_turn_threshold 非法值 %r（应为非负整数，"
+                    "0=关闭），回退缺省 %s",
+                    val,
+                    default,
+                )
+            return default
+        return val
+
+    @classmethod
     def get_subagent_model_override(cls, config: Dict[str, Any]) -> str:
         """读取 ``agents.subagent_model_override``（fix-agent-lane-efficiency D1）。
 

@@ -446,7 +446,18 @@ def _managed_admin_keys(config: dict) -> dict:
             out[key] = val if isinstance(val, str) else default
         else:
             # 数值键：非数值/布尔一律回退缺省（写路径校验保证合法值才能落盘）
-            if not isinstance(val, (int, float)) or isinstance(val, bool):
+            # code-review item b4e719c0ad3a：写路径仅接受严格 int 的三键
+            # （shutdown_drain_seconds / narrative_timeout_seconds /
+            # self_heal_quiet_minutes）回显同口径——float 曾照常回显，用户基于
+            # 回显保存却被 400 拒绝（「显示合法却存不进去」死胡同）
+            if key in (
+                "shutdown_drain_seconds",
+                "narrative_timeout_seconds",
+                "self_heal_quiet_minutes",
+            ):
+                if not _is_int_not_bool(val):
+                    val = default
+            elif not isinstance(val, (int, float)) or isinstance(val, bool):
                 val = default
             out[key] = val
     return out
@@ -500,8 +511,11 @@ def _default_echo_view(scope: str) -> dict:
                    "impl_code_review_mode": _CLICRT.get_impl_code_review_mode({}),
                    # ocr 审查 finding#1：车道级硬超时同样纳入缺省回显（2400）
                    "impl_code_review_lane_timeout_sec": _CLICRT.get_impl_code_review_lane_timeout_sec({}),
-                   # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）
-                   "context_cost_per_turn_threshold": 200000},
+                   # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）。
+                   # 缺省经 ConfigLoader 读取器取（code-review item 431081458861，
+                   # 与上方三运行参数同款单源——运行时 runner.py 曾内联同一字面量
+                   # 200000 构成双源镜像，勿再手写）
+                   "context_cost_per_turn_threshold": _CLICRT.get_context_cost_per_turn_threshold({})},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-knowledge-atlas：知识真相源总开关（缺省 true，与 ConfigLoader 缺省
@@ -554,6 +568,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
     """
     import core.dashboard.data as _facade
 
+    # 单点导入（code-review item 96d66b60fdd0）：对齐 read_effective_config 写法
+    # ——原函数体内以 _CL/_CLAM/_CLPM 等约九个别名重复局部导入同一个
+    # ConfigLoader，别名与用途的对应全靠猜缩写，纯命名噪音（局部导入有缓存，
+    # 无性能差异）；统一函数头一次导入后全函数用本名。
+    from core.config import ConfigLoader
+
     config_path = (
         _facade.USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
     )
@@ -592,13 +612,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if isinstance(agents_raw.get("models"), dict):
             # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
             # 回显视图（str/list/对象统一为对象数组 + resolved model）
-            from core.config import ConfigLoader as _CL
-
             llm_raw = raw.get("llm")
             llm_providers = (
                 (llm_raw.get("providers") or []) if isinstance(llm_raw, dict) else []
             )
-            agents_result["models"] = _CL.normalize_agent_models(
+            agents_result["models"] = ConfigLoader.normalize_agent_models(
                 agents_raw["models"], llm_providers
             )
         agents_result.update(_echo_agents_int_keys(agents_raw))
@@ -608,14 +626,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         )
         # 同因重派熔断阈值回显（agents.max_same_cause_redispatches）——经
         # ConfigLoader 单点归一化（正整数 1–100，非法回退缺省 3）
-        from core.config import ConfigLoader as _CLMSC
-
-        agents_result["max_same_cause_redispatches"] = _CLMSC.get_max_same_cause_redispatches(raw)
+        agents_result["max_same_cause_redispatches"] = ConfigLoader.get_max_same_cause_redispatches(raw)
         # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
         # （缺省填充，语义与 read_effective_config 的 get_transient_config 一致）
-        from core.config import ConfigLoader as _CLT
-
-        _transient = _CLT.get_transient_config(raw)
+        _transient = ConfigLoader.get_transient_config(raw)
         for _tk in (
             "transient_backoff_schedule",
             "transient_redispatch_delay_seconds",
@@ -638,9 +652,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # 兜底，与运行时 get_approve_mode 回退 manual 口径一致；对齐同段 promote_mode
     # / spec_review_mode / start_after_scope 的过滤写法），杜绝手工脏值直显。
     # 枚举集与 write_config 校验同源（ConfigLoader.VALID_APPROVE_MODES）。
-    from core.config import ConfigLoader as _CLAM
-
-    if isinstance(gates_raw, dict) and gates_raw.get("approve_mode") in _CLAM.VALID_APPROVE_MODES:
+    if isinstance(gates_raw, dict) and gates_raw.get("approve_mode") in ConfigLoader.VALID_APPROVE_MODES:
         # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
         # ——项目级显式配置 approve_mode 时其余 gates 键（promote_mode /
         # spec_review_mode / start_after_scope）会在此分支后被丢弃（实测复现）。
@@ -649,11 +661,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # add-draft-promotion-gate：promote_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底；
     # code-review item 47a9bd170bc6：枚举集改引 ConfigLoader.VALID_PROMOTE_MODES
     # 单源，对齐上方 approve_mode 的常量写法，杜绝枚举扩充时硬编码处先漂移）
-    from core.config import ConfigLoader as _CLPM
-
     if (
         isinstance(gates_raw, dict)
-        and gates_raw.get("promote_mode") in _CLPM.VALID_PROMOTE_MODES
+        and gates_raw.get("promote_mode") in ConfigLoader.VALID_PROMOTE_MODES
     ):
         if "gates" not in result:
             result["gates"] = {}
@@ -687,30 +697,28 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # add-impl-code-review-tuning：三运行参数恒回显——缺省段已含 600/2/low，
         # 此处读回显式定义值覆盖（读取器对非法值回退缺省，回显与生效值一致；
         # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
-        from core.config import ConfigLoader as _CLICRT
-
         result["verify"]["impl_code_review_timeout_sec"] = (
-            _CLICRT.get_impl_code_review_timeout_sec(raw)
+            ConfigLoader.get_impl_code_review_timeout_sec(raw)
         )
         result["verify"]["impl_code_review_concurrency"] = (
-            _CLICRT.get_impl_code_review_concurrency(raw)
+            ConfigLoader.get_impl_code_review_concurrency(raw)
         )
         # add-code-review-concurrency-and-429-resilience：全仓审查并发生效值回显
         result["verify"]["repo_code_review_concurrency"] = (
-            _CLICRT.get_repo_code_review_concurrency(raw)
+            ConfigLoader.get_repo_code_review_concurrency(raw)
         )
         result["verify"]["impl_code_review_effort"] = (
-            _CLICRT.get_impl_code_review_effort(raw)
+            ConfigLoader.get_impl_code_review_effort(raw)
         )
         # add-impl-ocr-parallel-lane：join 双档模式生效值回显（读取器对非法值
         # 回退缺省 gate，回显与生效值一致；与三运行参数「缺省回显」同款）
         result["verify"]["impl_code_review_mode"] = (
-            _CLICRT.get_impl_code_review_mode(raw)
+            ConfigLoader.get_impl_code_review_mode(raw)
         )
         # ocr 审查 finding#1：车道级硬超时生效值回显（读取器对非法值回退
         # 缺省 2400，与 timeout_sec 同款正整数语义）
         result["verify"]["impl_code_review_lane_timeout_sec"] = (
-            _CLICRT.get_impl_code_review_lane_timeout_sec(raw)
+            ConfigLoader.get_impl_code_review_lane_timeout_sec(raw)
         )
         # fix-agent-lane-efficiency D3：上下文经济性告警阈值回显（正整数才回显，
         # 缺省 200000 由缺省段兜底；0 = 关闭告警）
@@ -722,26 +730,20 @@ def read_config(scope_root, scope: str = "project") -> dict:
             result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
     archive_raw = raw.get("archive")
     if isinstance(archive_raw, dict):
-        from core.config import ConfigLoader as _CL
-
-        result["archive"] = {"auto_threshold": _CL.effective_auto_archive_threshold(raw)}
+        result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(raw)}
     # add-knowledge-atlas：knowledge 段回显（段在文件中显式出现才覆盖缺省，
     # 与 archive 同型——避免未配置段以回显形态伪装成已配置）；合并后段内键
     # 共存（enabled 蒸馏总开关 + audit_enabled 维护车道），
     # 各经生效助手归一（非法值回落缺省）
     if isinstance(raw.get("knowledge"), dict):
-        from core.config import ConfigLoader as _CLK
-
         result["knowledge"] = {
-            **_CLK.get_knowledge_lane_config(raw),
-            **_CLK.get_knowledge_config(raw),
+            **ConfigLoader.get_knowledge_lane_config(raw),
+            **ConfigLoader.get_knowledge_config(raw),
         }
     # add-daily-self-review：admin.self_review 三键（经 ConfigLoader 生效值回显）
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict):
-        from core.config import ConfigLoader as _CL
-
-        result["self_review"] = _CL.get_self_review_config(raw)
+        result["self_review"] = ConfigLoader.get_self_review_config(raw)
         # add-code-review-agent-and-quality-tab：admin.code_review 两键
         # （经 ConfigLoader 生效值回显，与 self_review 同形态：顶层独立子键、
         # 不进 _managed_admin_keys 键集）
@@ -761,14 +763,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         result["hooks"] = hooks_raw
     # add-stale-code-selfheal：陈旧自愈节回显（经 ConfigLoader 生效值——非法值
     # 回退缺省，回显与生效值一致）
-    from core.config import ConfigLoader as _CLSC
-
-    result["stale_code_selfheal"] = _CLSC.get_stale_code_selfheal_config(raw)
+    result["stale_code_selfheal"] = ConfigLoader.get_stale_code_selfheal_config(raw)
     # add-framework-self-evolution：self_evolution 节回显（经 get_self_evolution_config
     # 生效值——非法值回退缺省，回显与生效值一致；用户级全局键）
-    from core.config import ConfigLoader as _CLSE
-
-    result["self_evolution"] = _CLSE.get_self_evolution_config(raw)
+    result["self_evolution"] = ConfigLoader.get_self_evolution_config(raw)
     # evo-merge-back-wip-artifact-scope：产物路径回显（worktree_config_view，
     # 非法形态回显空列表 = 未配置，与解析侧 fail-safe 一致）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
@@ -1527,6 +1525,19 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 f"(0=关闭): {_tbm!r}"
             )
 
+    # code-review item 379475db5d40：agents.subagent_model_override 前置校验
+    # （仅 str，None 沿用本文件「视为未提交」口径放行）——合并分支以
+    # isinstance str 为前置对非 str 静默跳过、merged 视图校验只看被跳过后仍
+    # 合法的存量值，缺此校验时 write_config 仍返回 ok:true 而提交被无声丢弃
+    # （D7 同款缺口；与下方 merged 视图校验同口径）
+    if isinstance(config_patch.get("agents"), dict):
+        _sro_patch = config_patch["agents"].get("subagent_model_override")
+        if _sro_patch is not None and not isinstance(_sro_patch, str):
+            return fail(
+                f"agents.subagent_model_override must be a string "
+                f"(model name or empty): {_sro_patch!r}"
+            )
+
     # add-daily-self-review：前端提交的 self_review patch 后端校验（非法直接拒绝，
     # 不静默忽略——spec「非法输入（如 25:00）被前端与后端双重校验拒绝」）。
     if isinstance(config_patch.get("self_review"), dict):
@@ -2032,6 +2043,20 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             if _ke is not None and not isinstance(_ke, bool):
                 return fail(f"knowledge.{_kkey} must be a boolean: {_ke!r}")
 
+    # code-review item 379475db5d40：archive.auto_threshold 前置校验（非负整数
+    # 0=禁用，bool 是 int 子类显式排除）——合并分支带形态条件对非法值静默跳过，
+    # merged 视图校验只看被跳过后仍合法的存量值，缺此校验时 write_config 返回
+    # ok:true 而提交被吞（D7 同款缺口；sync 路径已由 _SYNC_PAGE_APPLY_PREDICATES
+    # 同口径谓词预检，此处补齐设置页直写路径；段形态已由上方容器守卫拒绝）
+    if isinstance(config_patch.get("archive"), dict):
+        _at = config_patch["archive"].get("auto_threshold")
+        if _at is not None and (
+            isinstance(_at, bool) or not isinstance(_at, int) or _at < 0
+        ):
+            return fail(
+                f"archive.auto_threshold must be a non-negative integer (0=disabled): {_at!r}"
+            )
+
     # 嵌套形态同口径：「同步用户级设置」经 _SYNC_PAGE_KEYS 把用户级 admin 段以
     # {"admin": {"code_review": ...}} 形态送入（值取自用户级文件原文，手工脏数据
     # 会原样透传），非 dict 子段在合并分支（isinstance dict 前置）被静默跳过致
@@ -2069,7 +2094,24 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             # 非 dict 真值（如误当标量开关写的 knowledge: true）在下方
             # `键 in knowledge_m` 成员测试对 bool/int 抛 TypeError 致 500——
             # 纳入同款容器段守卫转 400
-            for _seg in ("llm", "gates", "verify", "archive", "admin", "knowledge"):
+            # code-review item a2b46547c3d6：hooks / stale_code_selfheal 的
+            # merged 视图校验以 isinstance dict 为前置、self_evolution 与
+            # worktree 无 merged 视图校验——存量非 dict 真值被静默保留并原样
+            # 回写（运行时靠读取器 fail-safe 回落缺省），纳入本守卫统一报
+            # 「存量非法段请先修正 config.yaml」（段形态均不受本次 patch 影响：
+            # 非 dict patch 已由前置「must be an object」守卫拒绝）
+            for _seg in (
+                "llm",
+                "gates",
+                "verify",
+                "archive",
+                "admin",
+                "knowledge",
+                "hooks",
+                "stale_code_selfheal",
+                "self_evolution",
+                "worktree",
+            ):
                 _seg_v = merged.get(_seg)
                 if _seg_v is not None and not isinstance(_seg_v, dict):
                     raise ValueError(
@@ -2879,12 +2921,20 @@ def clear_project_page_keys(project_root, page: str) -> dict:
         try:
             with config_path.open("r", encoding="utf-8") as f:
                 loaded = yaml.safe_load(f)
-            if isinstance(loaded, dict):
-                raw = loaded
         except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
             # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛，缺则成 500
             # （code-review item eeec7a6f3ff5）
             return fail(f"读取现有配置失败: {e}")
+        # code-review item 3fc70edaec8c：顶层非 dict（list/标量）时与写路径
+        # write_config 同款报错（code-review item 2108d49c5ea8 口径：提示先手工
+        # 修正），不再静默按空配置处理——否则循环无键可删、返回 ok:true 且
+        # cleared 为空，用户得到「没有可清空键」假象而实际配置文件已损坏。
+        # 空文件（None）仍按空配置处理，对齐写路径 `or {}` 口径。
+        if loaded is None:
+            loaded = {}
+        if not isinstance(loaded, dict):
+            return fail("配置文件顶层不是对象，请先手工修正 config.yaml")
+        raw = loaded
 
         cleared = {}
         for section, keys in _SYNC_PAGE_KEYS[page].items():
