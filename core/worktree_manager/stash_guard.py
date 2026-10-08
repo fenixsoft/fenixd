@@ -167,12 +167,15 @@ class G6StashGuardMixin:
           ``_triage_stash_pop_conflicts``）。
         - ``(False, [file, ...])``：三态自愈后复查 ``git ls-files -u`` 仍有 UU
           残留（如态 2 checkout --theirs 失败的态 3 分支只登记 disposition、
-          未消解 unmerged 条目）——主树仍半合并，交人工处置（与
-          ``reclaim_stale_autostash`` 的复查口径一致）。
+          未消解 unmerged 条目；或复查枚举失败，无法证明已消解，同口径
+          处置）——主树仍半合并，交人工处置（与 ``reclaim_stale_autostash``
+          的复查口径一致）。
         - ``(False, [])``：pop 失败且非冲突类（如其它 git 错误），stash 保留；调用方按
           旧版 False 语义处理（主树可能仍半合并，需人工处置）。pop 前钉 sha
           超时/不可用同口径放弃本轮也返回此值——主树已合并完、仅本方条目
-          滞留栈顶，交 reclaim_stale_autostash 巡检兜底。
+          滞留栈顶，交 reclaim_stale_autostash 巡检兜底。pop 输出含 CONFLICT
+          但 UU 枚举失败（``_list_unmerged_files`` 返回 None，code-review
+          item f636712de58a）也返回此值——无法证明冲突已消解，保守交人工。
 
         **三态自愈（evo-stash-pop-conflict-triage D1/D2）**：当 pop 返回非 0 且输出
         含 ``CONFLICT`` 时，主树会陷入 UU 半合并状态、index.lock 满，导致后续所有
@@ -320,6 +323,16 @@ class G6StashGuardMixin:
 
         # ── pop 冲突：进入三态重试（evo-stash-pop-conflict-triage D1/D2） ──
         conflict_files = self._list_unmerged_files()
+        if conflict_files is None:
+            # UU 枚举失败（code-review item f636712de58a）：空列表与枚举失败
+            # 不可再混淆——无法证明冲突已自行消解，按半合并保守处置交人工
+            # （stash 条目保留），不谎报「主树回到可写状态」
+            self.logger.error(
+                "worktree_manager",
+                f"Stash pop conflict reported but UU enumeration failed; "
+                f"stash preserved: {output.strip()}",
+            )
+            return False, []
         if conflict_files:
             # 三态重试：态 1 三方合并 → 态 2 恢复 commit → 态 3 兜底。
             # 自愈口径由「checkout -f HEAD 覆盖丢弃 stash 版」改为下述三态，
@@ -357,6 +370,16 @@ class G6StashGuardMixin:
             # 条目——半合并 UU 残留会让后续 git 写操作持续失败，仍有残留时
             # 按 False 返回交人工，不再谎报「主树回到可写状态」。
             residual = self._list_unmerged_files()
+            if residual is None:
+                # 复查枚举失败（同 item f636712de58a）：无法证明 UU 已消解，
+                # 与「仍有残留」同口径按 False 交人工，不谎报主树可写
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stash pop conflict triage residual check failed "
+                    f"(mode={mode}); unmerged state unverifiable, stash "
+                    f"entry preserved (recover via: {recover_cmds})",
+                )
+                return False, conflict_files
             if residual:
                 self.logger.error(
                     "worktree_manager",
@@ -843,6 +866,15 @@ class G6StashGuardMixin:
         output = (pop.stderr or "") + (pop.stdout or "")
         if "CONFLICT" in output:
             conflict_files = self._list_unmerged_files()
+            if conflict_files is None:
+                # UU 枚举失败（code-review item f636712de58a）：拿不到名单，
+                # 跳过 heal，交下方残留复查兜底（复查再失败则条目保留不 drop）
+                self.logger.warning(
+                    "worktree_manager",
+                    "Stale autostash pop conflict UU enumeration failed; "
+                    "skip self-heal and fall through to residual recheck",
+                )
+                conflict_files = []
             if conflict_files:
                 # 自愈语义是统一回退 HEAD 版本：下列文件上的 stash/冲突态改动
                 # 全部丢弃（并非「保留 merge 结果」），此处明示丢弃面。
@@ -852,7 +884,18 @@ class G6StashGuardMixin:
                     f"on: {', '.join(conflict_files)}",
                 )
                 self._heal_unmerged_files(conflict_files)
-            if self._list_unmerged_files():
+            residual = self._list_unmerged_files()
+            if residual is None:
+                # 残留复查枚举失败（同 item f636712de58a）：无法证明自愈完成，
+                # 条目保留交下轮巡检/人工，绝不 drop
+                self.logger.error(
+                    "worktree_manager",
+                    "Stale autostash pop conflict heal unverifiable (UU "
+                    "enumeration failed); stash entry preserved "
+                    "(recover via git stash show)",
+                )
+                return False
+            if residual:
                 # 自愈未完成（checkout 超时等）：条目保留交人工，绝不 drop
                 self.logger.error(
                     "worktree_manager",
