@@ -88,17 +88,6 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
         # 不作为豁免依据。
         merge_engine_cascade_markers(report)
         dedup = check_batch_attribution_dedup_scenario(report)
-        # 豁免决策留痕（add-attribution-dedup-cascade-exemption 1.2）：豁免=
-        # 无 violations、不触发拒绝收口链 _rejection_closure（仅对 violations
-        # 非空执行），留痕只走 info 日志与查重结果豁免段（组清单＋原因），
-        # 与既有违规 reason 体系区分，可事后审计豁免是否被滥用。
-        for exemption in (dedup or {}).get("exemptions") or []:
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"批量归因查重豁免{lane_label}'{spec_name}': "
-                f"{exemption.get('reason')}，场景 "
-                f"{', '.join(exemption.get('scenario_ids') or [])}",
-            )
     except Exception as e:
         # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
         # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
@@ -108,6 +97,26 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
             f"（不阻断裁决）: {type(e).__name__}: {e}",
         )
         return None
+    # 豁免决策留痕（add-attribution-dedup-cascade-exemption 1.2）：豁免=
+    # 无 violations、不触发拒绝收口链 _rejection_closure（仅对 violations
+    # 非空执行），留痕只走 info 日志与查重结果豁免段（组清单＋原因），
+    # 与既有违规 reason 体系区分，可事后审计豁免是否被滥用。
+    # 留痕是纯日志环节，单独兜住只记 warning：其失败 MUST NOT 丢弃已算出的
+    # dedup（与下方缓存打标段同口径，code-review item 2b2f709eafe4）。
+    try:
+        for exemption in (dedup or {}).get("exemptions") or []:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"批量归因查重豁免{lane_label}'{spec_name}': "
+                f"{exemption.get('reason')}，场景 "
+                f"{', '.join(exemption.get('scenario_ids') or [])}",
+            )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"批量归因查重豁免留痕异常{lane_label}'{spec_name}'"
+            f"（纯日志失败，查重结果照常返回）: {type(e).__name__}: {e}",
+        )
     # 跨轮缓存归因打标（design D3）是纯效率增益：其失败 MUST NOT 丢弃已
     # 算出的 dedup（查重可能已判拒绝，按「dedup=None 跳过分级照常采纳」
     # 返回会静默放行带病采纳、查重门失效）——单独兜住只记 warning，dedup

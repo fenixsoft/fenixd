@@ -51,7 +51,13 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         server 生命周期（启动/复用/停止）由调用方按 mode 管理。
     """
     serve_root = Path(pipeline._context.project_root) / ".fenix" / "verify-serving"
-    serve_root.mkdir(parents=True, exist_ok=True)
+    # code-review 214ffd2f4934：mkdir 的 OSError（磁盘满/父目录权限/只读 fs）
+    # 不再炸穿验证主流程，走既有 (None, None, err) 失败路径——与下方
+    # rev-parse/worktree add/provision 各失败点同口径
+    try:
+        serve_root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return None, None, f"serving 目录创建失败: {e}", False
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
     # D9：经包命名空间延迟解析，使 patch("core.pm_engine.verification.run_prepare_steps") 生效
     import core.pm_engine.verification as _facade
@@ -326,6 +332,23 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         )
     except Exception as e:
         boot_log.close()
+        # code-review 8e1342b22228：补齐与预检失败/启动即死两分支同口径的
+        # 收尾——本轮新建 serving worktree 随 spawn 异常清理（复用态不动），
+        # 不再等 serving_reclaim 600s 周期兜底；重启分支的旧实例 unregister
+        # + stop 不因 spawn 异常延后（stop 对已死进程安全）
+        if created:
+            pipeline._remove_serving_worktree(wt)
+        if old is not None:
+            old_server = old.get("server")
+            if isinstance(old_server, CommandVerifyServer):
+                pipeline._unregister_serving_instance(spec_name, old_server)
+            try:
+                old_server.stop()
+            except Exception as stop_err:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"停止旧 serving 实例 '{spec_name}' 失败（不影响失败返回）: {stop_err}",
+                )
         return False, False, f"验证命令实例启动失败: {e}"
     srv = CommandVerifyServer(
         proc,
