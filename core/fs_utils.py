@@ -11,9 +11,14 @@ verify_report 与 verify_scenarios 此前各持一份近乎相同的 ``_atomic_w
 - ``inherit_existing_mode=False``（verify_scenarios 口径，缺省）：无条件
   chmod 0644，产物对非 root 辅助进程/人工其它账号可读。
 
+另收口跨模块共用的 flock 互斥原语 ``with_file_lock``：evolution 与
+self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
+``_with_lock`` 被外部 import，提升于此公共归属（item 1a8a9328767b）。
+
 只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
+import fcntl
 import os
 import tempfile
 from pathlib import Path
@@ -72,3 +77,24 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+def with_file_lock(path: Path, fn):
+    """在 path 同目录的 ``.<name>.lock`` 文件上加 flock 互斥后执行 fn。
+
+    调用方（daemon 主线程 / dashboard server 线程）可能同时写同一存储；
+    flock 提供跨进程与跨线程互斥（与 StateMachine.write_all 同范式）。
+    MUST NOT 在 fn 内再次加同一把锁（同进程二次 flock 自阻塞）。
+
+    原 evolution 私有 ``_with_lock``，self_review 三处跨模块 import 以共用
+    todo.md 锁，提升于此公共归属（item 1a8a9328767b）；evolution 侧以
+    ``as _with_lock`` 别名引用，内部调用面与锁文件布局不变。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.parent / f".{path.name}.lock"
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            return fn()
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)

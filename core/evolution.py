@@ -17,7 +17,6 @@ evolution.py — 框架自进化链路（add-framework-self-evolution spec）。
 接受路径是唯一例外，且必须「先提交后注册」（design D6）。
 """
 
-import fcntl
 import hashlib
 import json
 import logging
@@ -31,6 +30,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from core import fs_utils
 from core import timelib
+from core.fs_utils import with_file_lock as _with_lock  # 锁原语公共归属 fs_utils（item 1a8a9328767b），别名保留内部调用面
 
 _logger = logging.getLogger("fenixd.evolution")
 
@@ -44,6 +44,12 @@ TODO_SECTIONS = ("浪费", "失误", "可改进")
 # 去重每次调用重建，todo.md 持续存在非法小节时会周期性刷屏；对齐
 # core/config.py:_UNKNOWN_AGENT_MODEL_KEYS_WARNED 的模块级生命周期去重范式。
 _UNKNOWN_TODO_SECTIONS_WARNED: set = set()
+
+# 孤立处理标记行 WARNING 去重集（进程生命周期每行文本一次，code-review item
+# e113b2af9b63）：parse_todo_entries / strip_processed_entries 同在就绪巡检
+# 热路径上被高频调用，todo.md 残留孤立标记行时会周期性刷屏；对齐上方
+# _UNKNOWN_TODO_SECTIONS_WARNED 的模块级生命周期去重范式。
+_ORPHAN_TODO_MARKERS_WARNED: set = set()
 
 # todo.md 结构标题正则：## YYYY-MM-DD 日期节 / ### 小节 / - **标题** 条目
 _TODO_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
@@ -68,6 +74,11 @@ _FIELD_LABELS = (
     ("调查评估", "analysis"),
     ("建议", "suggestion"),
 )
+# 标签集合/映射的模块级预计算（code-review item 31af97a4ec41）：
+# parse_todo_entries 在就绪巡检热路径上逐条候选字段行引用，_FIELD_LABELS 是
+# 模块级不可变常量，循环内重复推导集合/构建字典纯属浪费。
+_FIELD_LABEL_SET = frozenset(label for label, _k in _FIELD_LABELS)
+_FIELD_LABEL_MAP = dict(_FIELD_LABELS)
 _FIELD_RE = re.compile(r"^ {2,}-\s+([^：]+)：(.*)$")
 
 # SPEC 名 / capability 合法性（fenix-new 同源正则）
@@ -95,26 +106,6 @@ def item_id(project: str, date_section: str, section: str, title: str) -> str:
         f"{project}\x1f{date_section}\x1f{section}\x1f{title}".encode("utf-8")
     ).hexdigest()
     return digest[:12]
-
-
-# ── 原子读写原语（与 StateMachine.write_all 同范式）────────────────
-
-
-def _with_lock(path: Path, fn):
-    """在 path 同目录的 ``.<name>.lock`` 文件上加 flock 互斥后执行 fn。
-
-    调用方（daemon 主线程 / dashboard server 线程）可能同时写同一存储；
-    flock 提供跨进程与跨线程互斥（与 StateMachine.write_all 同范式）。
-    MUST NOT 在 fn 内再次加同一把锁（同进程二次 flock 自阻塞）。
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.parent / f".{path.name}.lock"
-    with open(lock_path, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            return fn()
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
 
 
 # ── 任务 2.2：items.jsonl 读写 ──────────────────────────────────────
@@ -499,6 +490,14 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
 # ── 任务 2.5：todo.md 条目解析 ──────────────────────────────────────
 
 
+def _warn_orphan_todo_marker_once(message: str, line_text: str) -> None:
+    """孤立处理标记行告警（按行文本进程生命周期去重，热路径防刷屏）。"""
+    if line_text in _ORPHAN_TODO_MARKERS_WARNED:
+        return
+    _ORPHAN_TODO_MARKERS_WARNED.add(line_text)
+    _logger.warning(message, line_text)
+
+
 def parse_todo_entries(text: str) -> List[dict]:
     """解析 todo.md 为条目列表（2.5）。
 
@@ -589,7 +588,7 @@ def parse_todo_entries(text: str) -> List[dict]:
             if current_entry is not None and not current_fields:
                 current_entry["_processed"] = True
             else:
-                _logger.warning(
+                _warn_orphan_todo_marker_once(
                     "evolution: todo.md 孤立处理标记行（未紧跟条目标题行），已忽略: %s",
                     stripped,
                 )
@@ -601,9 +600,9 @@ def parse_todo_entries(text: str) -> List[dict]:
 
         # 四字段嵌套行：  - 影响：…
         m = _FIELD_RE.match(raw_line)
-        if m and m.group(1).strip() in {label for label, _k in _FIELD_LABELS}:
+        if m and m.group(1).strip() in _FIELD_LABEL_SET:
             label = m.group(1).strip()
-            key = dict(_FIELD_LABELS).get(label)
+            key = _FIELD_LABEL_MAP.get(label)
             if key:
                 if key in current_fields:
                     current_fields[key] += f"\n{m.group(2).strip()}"
@@ -754,7 +753,7 @@ def strip_processed_entries(text: str) -> str:
             if block and all(not l.strip() for l in block[1:]):
                 block.append(line)
             else:
-                _logger.warning(
+                _warn_orphan_todo_marker_once(
                     "evolution: todo.md 孤立处理标记行（未紧跟条目标题行），已剔除: %s",
                     line.strip(),
                 )
@@ -1547,6 +1546,7 @@ def accept_item(
     """
     now = datetime.now(timezone.utc).isoformat()
     path = items_path(project_root)
+    marker_item: Dict[str, Any] = {}
 
     def _persist(rec: dict) -> None:
         # 锁内单条写回收口到 _write_items_unlocked；MUST NOT 再走
@@ -1780,14 +1780,24 @@ def accept_item(
         rec["spec_name"] = name
         rec.pop("residue", None)  # 立项成功复位残留标记（code-review item afe111a45d02）
         _persist(rec)
-        write_todo_marker(
-            rec,
-            disposition=_disposition_from_status(rec["status"]),
-            commit=not defer_commit,
-        )
+        marker_item.update(rec)
         return {"ok": True, "status": rec["status"], "spec_name": name, "error": None}
 
-    return _with_lock(path, _do)
+    outcome = _with_lock(path, _do)
+    # 标记回写移到 items.jsonl 锁释放之后（code-review item c3bd82b14eed，与
+    # reject_item/delete_item 同纪律）：compare-and-set 的状态写回已在锁内完成，
+    # todo.md 写入与 git 提交子进程不参与 CAS，放锁内只会无谓拉长持锁窗口
+    # （与 write_todo_marker 自身「git 子命令不得放入锁内」的纪律一致）。
+    if outcome.get("ok") and marker_item:
+        try:
+            write_todo_marker(
+                marker_item,
+                disposition=_disposition_from_status(outcome["status"]),
+                commit=not defer_commit,
+            )
+        except Exception as e:  # noqa: BLE001 —— 回写失败不影响已成功的接受
+            _logger.warning("evolution: 标记回写异常（已跳过）: %s", e)
+    return outcome
 
 
 # ── 任务 3.6：拒绝路径 ─────────────────────────────────────────────

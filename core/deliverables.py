@@ -830,12 +830,20 @@ def verify_correction_readback(
         spec_name: spec 名。
         corrected_path: 被修正的旧路径（typo 元素 / 软化条目）。
         kind: 可选；限定「原 kind」比对（None = 任何 kind 命中即算未修正）。
+            入参先 ``.strip().lower()`` 归一再比对（code-review item
+            24889c877ae3，与解析层/check_declaration_shrinkage 口径一致）。
         branch / worktree_path / project_root: 解析上下文（与守卫同参）。
 
     Returns:
         True 表示旧路径已不在生效声明中（复检通过）；False 表示仍读到旧路径 /
         无读取基准。
     """
+    # kind 归一先于比对（code-review item 24889c877ae3）：生效条目的 kind 由
+    # 解析层（_declared_entries_from_text）.strip().lower() 落库，未归一的
+    # 入参（如 yaml 原文 "Modify"）恒失配 →「仍读到旧条目」被误判为修正
+    # 生效。归一口径与 check_declaration_shrinkage 对基线条目一致；空串视同
+    # None（任何 kind 命中即算未修正，fail-safe 不静默销账）。
+    kind = (kind or "").strip().lower() or None
     resolved = resolve_effective_declaration(
         spec_name,
         branch=branch,

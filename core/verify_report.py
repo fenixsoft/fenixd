@@ -1317,7 +1317,8 @@ def verdict_failed_ids(report) -> list:
         st = str(sc.get("status") or "")
         if st not in ("pass", "passed"):
             sid = sc.get("scenario_id") or sc.get("id")
-            ids.add(str(sid) if sid is not None else f"__index_{i}")
+            # 真值判空：空串 id 同样以序号占位，多个缺 id 失败场景不坍缩
+            ids.add(str(sid) if sid else f"__index_{i}")
     return sorted(ids)
 
 

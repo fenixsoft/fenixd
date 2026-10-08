@@ -309,10 +309,12 @@ def scan_archive_residue(project_root) -> ArchiveResidueScan:
             continue
         xy = line[:2]
         rest = line[3:].strip()
-        # rename 行形态：`R  old -> new`，两侧都要参与归档判定
+        # rename 行形态：`R  old -> new`，两侧都要参与归档判定。取最后一个
+        # 「 -> 」分隔符：路径名可字面含该子串（quotePath=false 下 git 不加
+        # 引号转义），从左拆会碎成 >2 段使 renamed 判定失效、两侧候选错位
         candidates = [rest]
         if " -> " in rest:
-            candidates = [p.strip() for p in rest.split(" -> ")]
+            candidates = [p.strip() for p in rest.rsplit(" -> ", 1)]
         # R/C rename 行（code-review item e0d1dc8780aa）：已 staged 的归档移动
         # 呈现为 `R  spec/changes/... -> spec/archive/...`，此前只认 D/??/A/M，
         # 两侧候选均不满足导致残留漏判——old 侧视同删除、new 侧视同新增

@@ -627,6 +627,10 @@ class MainTreeStrayWipSweeper:
             res = subprocess.run(
                 [
                     "git", "-C", str(self.project_root),
+                    # -c core.quotePath=false（code-review item 17e26b92199c）：
+                    # 非 ASCII 路径回显原样（与 porcelain 解析 + _unquote_git_path
+                    # 的口径对齐），否则回显带引号 C 转义形、末列回映射恒失配。
+                    "-c", "core.quotePath=false",
                     "check-ignore", "-v", "-n", "--non-matching", "--stdin",
                 ],
                 input="\n".join(paths) + "\n",

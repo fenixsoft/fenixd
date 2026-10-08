@@ -120,6 +120,33 @@ def _write_state(project_root: Path, state: dict) -> None:
     )
 
 
+@contextmanager
+def _state_write_lock(project_root: Path):
+    """状态文件读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_state.lock``）。
+
+    同 _findings_write_lock 口径：atomic_write_text 只保证单次写不撕裂，不保证
+    读改写原子性——daemon 与 dashboard --serve 两进程并发收尾（消费段写
+    arbitration_history / run_audit 写 last_scale / daily_check 写
+    last_audit_date）时各持开局快照，后写者会用旧内存 state 整体覆盖先写者
+    刚落盘的键：丢 last_audit_date 当日体检重复跑（语义 run 成本翻倍），丢
+    arbitration_history 违反裁决事后可审计追溯。写方一律持锁重读盘上状态
+    合并后再回写。锁文件自身无内容语义。
+    """
+    import fcntl
+
+    lock_dir = Path(project_root) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge_audit_state.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def _today() -> str:
     return time.strftime("%Y-%m-%d")
 
@@ -569,23 +596,29 @@ def consume_arbitration(
         return {"triggered": False, "consumed": 0, "skipped": len(kept)}
     # 仲裁判定留痕：台账条目与清单条目均已删除，_record_verdict 的判定不落盘
     # ——判定/人工 note/指纹落状态文件历史（封顶 50 条最旧先出），裁决依据
-    # 事后可审计追溯。后续写方（run_audit / daily_check 回写段）均先重读盘上
-    # 状态再回写，该键不会被同轮体检覆盖丢失。
-    state = _read_state(project_root)
-    hist = state.get("arbitration_history")
-    hist = [e for e in hist if isinstance(e, dict)] if isinstance(hist, list) else []
-    hist.extend(
-        {
-            "fingerprint": str(item.get("fingerprint") or ""),
-            "decision": str(item.get("decision") or ""),
-            "note": item.get("note"),
-            "decided_at": item.get("decided_at"),
-            "consumed_at": _today(),
-        }
-        for item in consumed
-    )
-    state["arbitration_history"] = hist[-50:]
-    _write_state(project_root, state)
+    # 事后可审计追溯。持 _state_write_lock 重读盘上状态再合并回写（对齐
+    # _save_findings_ledger 口径）：daemon 与 dashboard --serve 两进程并发
+    # 消费/收尾时，后写者的开局快照不覆盖先写者刚落盘的历史与其他键。
+    with _state_write_lock(project_root):
+        state = _read_state(project_root)
+        hist = state.get("arbitration_history")
+        hist = (
+            [e for e in hist if isinstance(e, dict)]
+            if isinstance(hist, list)
+            else []
+        )
+        hist.extend(
+            {
+                "fingerprint": str(item.get("fingerprint") or ""),
+                "decision": str(item.get("decision") or ""),
+                "note": item.get("note"),
+                "decided_at": item.get("decided_at"),
+                "consumed_at": _today(),
+            }
+            for item in consumed
+        )
+        state["arbitration_history"] = hist[-50:]
+        _write_state(project_root, state)
     _save_findings_ledger(
         project_root,
         ledger,
@@ -690,12 +723,14 @@ def knowledge_daily_check(
             "knowledge-core-unavailable",
             "no-knowledge-dir",
         ):
-            # 回写前重读盘上状态合并（本 SPEC 3.2）：车道内部（run_audit）可能
-            # 已写 last_scale 等键，本地 state 是检查点开头的陈旧副本，直接回写
-            # 会把它覆盖丢失（规模趋势「上次 X 行」基线随之失效）。
-            state = _read_state(project_root)
-            state["last_audit_date"] = today
-            _write_state(project_root, state)
+            # 回写前持 _state_write_lock 重读盘上状态合并（本 SPEC 3.2）：车道
+            # 内部（run_audit）可能已写 last_scale 等键，本地 state 是检查点
+            # 开头的陈旧副本，直接回写会把它覆盖丢失（规模趋势「上次 X 行」
+            # 基线随之失效）；持锁重读再改写，另一进程并发落盘的键同样不丢。
+            with _state_write_lock(project_root):
+                state = _read_state(project_root)
+                state["last_audit_date"] = today
+                _write_state(project_root, state)
 
     return {"triggered": bool(results), "today": today, "results": results}
 
@@ -1649,8 +1684,13 @@ def run_audit(
         escalated_summary=details.get("escalated_summary"),
     )
     atomic_write_text(project_root / REPORT_RELPATH, report)
-    state["last_scale"] = scale
-    _write_state(project_root, state)
+    # 收尾回写持 _state_write_lock 重读盘上状态再只写 last_scale：体检期读下
+    # 的开局快照到收尾之间，另一进程的消费段/日戳回写可能已落盘其他键，直接
+    # 回写陈旧快照会整体覆盖（仲裁留痕丢失、当日日戳丢失致体检重复跑）。
+    with _state_write_lock(project_root):
+        state = _read_state(project_root)
+        state["last_scale"] = scale
+        _write_state(project_root, state)
     log.info(
         "knowledge",
         f"audit 体检完成：修 {counts['fixed']} / 转写 {counts['rewritten']} / "

@@ -317,6 +317,12 @@ def validate_knowledge(project_root) -> list:
                 violations.append(f"{label}: 读取失败: {e}")
                 continue
             if page.name == "_domain.md":
+                # 布局契约：_domain.md 须位于域目录内（domains/<域>/_domain.md），
+                # 散落在 domains 根下或更深层级均不合法（code-review 86eab4ae8b64）
+                if len(rel.parts) != 3:
+                    violations.append(
+                        f"{label}: 目录结构违规（_domain.md 须位于 domains/<域>/ 域目录内）"
+                    )
                 lines = text.splitlines()
                 # 更新时间盖戳：紧随 H1（第 2 行），格式 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`
                 if len(lines) < 2 or not _STAMP_LINE_RE.match(lines[1]):
@@ -345,6 +351,13 @@ def validate_knowledge(project_root) -> list:
                             )
                 _check_links(text, page.parent, label)
                 continue
+            # 布局契约：能力页须为 domains/<域>/<能力>.md 三级结构（code-review
+            # 86eab4ae8b64）——domains 根目录名本身恰为 kebab 合法值，仅靠 kebab
+            # 检查拦不住直放 domains 根下（缺域层级）或更深嵌套的能力页
+            if len(rel.parts) != 3:
+                violations.append(
+                    f"{label}: 目录结构违规（能力页须为 domains/<域>/<能力>.md 三级布局）"
+                )
             # 域/文件名 kebab 合法性
             if not _KEBAB_RE.match(page.parent.name) or not _KEBAB_RE.match(page.stem):
                 violations.append(f"{label}: 域目录名或文件名非 kebab-case")

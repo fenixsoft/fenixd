@@ -2880,23 +2880,33 @@ class StateMachine:
                 # 有提交分支 → 保留 branch/implementer_run 并按 resume 续做；
                 # 三态载体处置（在场/重建/降级）经 worktree_manager 单源查询
                 # （is_available）。零提交/分支缺失/载体不可用 → 现行清空路径。
+                # 回落原因带出（code-review 4d27cebacfa8）：保留判定未通过的
+                # 真实原因有多类（锚点缺失/零提交/分支不可解析/载体不可用），
+                # 经出参 dict 透传——STATE.branch 在场时不再被统一文案误报为
+                # 「三处锚点均不可得」。
+                _preserve_reason: dict = {}
                 preserved = self._recovery_preserve_spec(
-                    name, entry, project_root, worktree_manager
+                    name, entry, project_root, worktree_manager,
+                    reason_out=_preserve_reason,
                 )
                 if preserved:
                     recovered.append(name)
                     continue
-                # 锚点不可得强制留痕（fix-recovery-branch-anchor E/7.2）：
-                # 清空重建路径在写出清空状态时打 WARNING——三处锚点（STATE
-                # branch / 在册 worktree / 分支命名空间枚举）均不可得时，
-                # 权限内无任何可保留载体，本次恢复将清空重派（零留痕的静默
-                # 早退正是本 SPEC 事故环 4 的根因之一）。
+                # 清空重建路径强制留痕（fix-recovery-branch-anchor E/7.2），
+                # 按真实回落原因分流（与 _resolve_preserved_branch 内部分层
+                # WARNING 口径对齐）：锚点缺失才报「三处锚点均不可得」，零提交
+                # 报「分支已含基线、无未合并提交」，载体不可用报「分支已解析
+                # 但无可用载体」（零留痕的静默早退正是本 SPEC 事故环 4 的根因
+                # 之一）。出参无原因 = 判定主体解析已通过、本写在锚点复核
+                # （不一致/并发删除）出口被放弃——该两处已有专属 WARNING，
+                # 此处中性留痕。
+                clear_reason = _preserve_reason.get(
+                    "reason", "保留判定未通过（锚点复核不一致或 SPEC 已被并发删除）",
+                )
                 self.logger.warning(
                     "state_machine",
-                    f"Recovery clear-and-rebuild '{name}': 三处锚点均不可得 "
-                    f"（STATE.branch 缺失、在册 worktree 无命中、分支命名空间"
-                    f"枚举无候选）——清空状态走全新派发（零提交/分支缺失"
-                    f"形态，任务书既有豁免）",
+                    f"Recovery clear-and-rebuild '{name}': {clear_reason}"
+                    f"——清空状态走全新派发（任务书既有豁免）",
                 )
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
@@ -3120,6 +3130,7 @@ class StateMachine:
     def _resolve_preserved_branch(
         self, name: str, entry: dict, project_root=None, worktree_manager=None,
         *, context: str = "Recovery preserve",
+        reason_out: Optional[dict] = None,
     ) -> tuple:
         """共享保留判定主体（add-freeze-stop-inflight-agents 2.4）。
 
@@ -3143,8 +3154,20 @@ class StateMachine:
         基线有未合并提交、载体可用）；``(branch, None)`` 分支可解析且有未合并
         提交但载体三态暂不可用（Task 7.2：锚点不丢，交调用方重建载体）；
         ``(None, None)`` 判定不通过（锚点不可得/分支缺失/零提交）。
+        ``reason_out``（可选出参，code-review 4d27cebacfa8）：回落路径经
+        ``reason_out["reason"]`` 带出真实原因短句（锚点缺失/分支不可解析/
+        零提交/rev-list 异常/载体不可用），供调用方按原因分流留痕——此前
+        多类回落在调用方共用同一文案，STATE.branch 在场时被误报为三处锚点
+        均不可得；判定通过时不写该键。
         """
+        def _set_reason(text: str) -> None:
+            # 回落原因带出（code-review 4d27cebacfa8）：文案单源留在本方法，
+            # 调用方只按真实原因留痕，不另持第二份平行口径。
+            if reason_out is not None:
+                reason_out["reason"] = text
+
         if project_root is None or worktree_manager is None:
+            _set_reason("续做上下文不可得（project_root/worktree_manager 缺失）")
             return None, None
         branch = entry.get("branch")
         ns_candidates: list = []
@@ -3176,6 +3199,8 @@ class StateMachine:
                 )
         if not branch:
             # 锚点不可得早退：强制留痕（tasks 7.1）
+            _set_reason("三处锚点均不可得（STATE.branch 缺失、在册 worktree "
+                        "无命中、分支命名空间枚举无候选）")
             self.logger.warning(
                 "state_machine",
                 f"{context}: spec '{name}' 三处锚点均不可得——"
@@ -3198,14 +3223,19 @@ class StateMachine:
                 timeout=15,
             )
             if ahead.returncode != 0:
+                _set_reason(f"分支不可解析（rev-list {base}..{branch} 非零退出）")
                 return None, None
             try:
                 ahead_commits = int(ahead.stdout.strip() or "0")
             except ValueError:
+                _set_reason("分支不可解析（rev-list 输出非整数）")
                 return None, None
             if ahead_commits <= 0:
+                # 分支与锚点俱在、工作已全部合并进基线：非「锚点不可得」形态
+                _set_reason("分支已含基线、无未合并提交")
                 return None, None
         except (subprocess.TimeoutExpired, OSError):
+            _set_reason("rev-list 超时/系统错误（git 子进程不可用）")
             return None, None
         # 三态载体处置：在场原地 / 缺失重建 / 不可用降级
         wt, resolved_branch = worktree_manager.resolve_resume_site(name, branch)
@@ -3216,6 +3246,7 @@ class StateMachine:
             # 续做分支 + _recovery_resume，由 dispatch 按三态重建载体。
             # 兼容性：_recovery_preserve_spec 以 ``wt is None`` 判定不通过，
             # 行为不变；unfreeze_spec 据第二元是否为 None 分流。
+            _set_reason(f"分支 '{branch}' 已解析但无可用载体（三态判定失败）")
             self.logger.warning(
                 "state_machine",
                 f"{context} unavailable for '{name}': branch '{branch}' "
@@ -3225,7 +3256,8 @@ class StateMachine:
         return resolved_branch, wt
 
     def _recovery_preserve_spec(
-        self, name: str, entry: dict, project_root=None, worktree_manager=None
+        self, name: str, entry: dict, project_root=None, worktree_manager=None,
+        *, reason_out: Optional[dict] = None,
     ) -> bool:
         """实现中断的恢复保留判定与三态载体处置（interrupt-recovery-preserve D4/D5）。
 
@@ -3246,11 +3278,14 @@ class StateMachine:
         Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）；
         False 表示判定未通过、锚点复核不一致（并发改写），或 SPEC 已在本方法
         的 git 窗口内被并发删除（code-review 1b4fc51aac73，不计入 recovered）。
+        ``reason_out``（可选出参）原样透传 ``_resolve_preserved_branch`` 的回落
+        原因（仅判定未通过/载体不可用路径），供调用方按真实原因分流留痕；
+        锚点复核不一致/并发删除出口不写该键。
         """
         if project_root is None or worktree_manager is None:
             return False
         resolved_branch, wt = self._resolve_preserved_branch(
-            name, entry, project_root, worktree_manager)
+            name, entry, project_root, worktree_manager, reason_out=reason_out)
         if wt is None:
             return False
         self.logger.warning(

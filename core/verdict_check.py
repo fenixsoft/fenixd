@@ -1087,16 +1087,14 @@ def compute_attribution_level(scenario: dict) -> str:
     if _has_visual_assertions(scenario):
         return ATTRIBUTION_LEVEL_PENDING_VISUAL
 
-    # 有 first_failed_step 但无失败断言归因 → 纯推理链 → speculative
-    if isinstance(first_failed_step, str) and first_failed_step.strip():
-        if not _scenario_has_failed_assertion_evidence(scenario):
-            return ATTRIBUTION_LEVEL_SPECULATIVE
-
     # 末端收口合取（code-review item 87289dd96917）：实质证据仅剩在场信号
-    # （截图在场/弱标签/非 env 的 first_frame_ok）而 assertion_triage 无逐条
-    # 归因证据时，不得按 evidence-backed 收尾——validate_attribution_levels
-    # 与 validate_report 是两个独立入口，先打标后校验或只打标时 speculative
-    # 抑制门不被在场证据旁路（正常管线 triage 覆盖且带证据不受影响）
+    # （截图在场/弱标签/非 env 的 first_frame_ok）或纯推理链（含
+    # first_failed_step 无佐证归因）而 assertion_triage 无逐条归因证据时，
+    # 不得按 evidence-backed 收尾——validate_attribution_levels 与
+    # validate_report 是两个独立入口，先打标后校验或只打标时 speculative
+    # 抑制门不被在场证据旁路（正常管线 triage 覆盖且带证据不受影响）。
+    # 有 first_failed_step 而无失败断言归因的「纯推理链」单独分支曾与此处
+    # 等价返回 speculative，已并入本收口（code-review item e8f173ec0962）。
     if not _scenario_has_failed_assertion_evidence(scenario):
         return ATTRIBUTION_LEVEL_SPECULATIVE
 

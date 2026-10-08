@@ -4360,6 +4360,44 @@ class AdminMonitor:
             # ——抑制非派发失败，下轮巡检到期仍会重评（窗内维持阻断）。
             if self._fixture_invocation_suppressed(signal):
                 continue
+            # 信号死法冷却与夜间断窗/provider 瞬断冻结的预判：两条跳过在
+            # _invoke_administrator 内部均声明「非失败路径 MUST NOT 增
+            # retry_count」，而下方占锚 bump 已先抬满 retry_count——bump 后
+            # 才在其内部命中跳过则配额无回滚，下轮巡检 retry_count >=
+            # DISPATCH_RETRY_MAX 永久跳过，断窗/冷却结束后的唯一一次自动
+            # 重派静默丢失。与上方互斥/fixture 抑制同款：在 bump 之前
+            # continue，不消耗重试配额，下轮到期重评（判定复用
+            # _invoke_administrator 既有口径，预判未命中仍由其内部同判定
+            # 把关；命中仅日志留痕，同互斥守卫不落处置痕）。
+            try:
+                _sig_spec = signal.get("spec")
+                _sig_cooled = (
+                    bool(_sig_spec)
+                    and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
+                    and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
+                )
+            except Exception:
+                _sig_cooled = False
+            if _sig_cooled:
+                self.logger.info(
+                    "admin_monitor",
+                    f"Skipping dispatch retry for '{_sig_spec}' (signal "
+                    f"{signal.get('signal_type')}): signal-kill cooldown "
+                    f"active (escalation {rec.get('id')})",
+                )
+                continue
+            try:
+                _block_reasons = self._night_dispatch_block_reasons()
+            except Exception:
+                _block_reasons = []
+            if _block_reasons:
+                self.logger.info(
+                    "admin_monitor",
+                    f"Skipping dispatch retry for '{spec or 'daemon'}' (signal "
+                    f"{signal.get('signal_type')}): night window/provider "
+                    f"break avoidance (escalation {rec.get('id')})",
+                )
+                continue
             self.logger.warning(
                 "admin_monitor",
                 f"Dispatch failure retry due: re-invoking Administrator for "

@@ -1546,6 +1546,14 @@ class ConfigLoader:
                         (n if m is None else {"provider": n, "model": m}) for (n, m) in norm_rows
                     ] or None
             else:
+                # code-review item fa355f2a1afd：str/list 之外的形态（如 tuple）
+                # 此前静默丢弃且不留日志，配置丢失无从排查——落 WARNING 使降级
+                # 可观测（对齐 _segment_or_empty 的脏值告警口径），行为不变。
+                _logger.warning(
+                    "agents.models[%s].provider 形态未知（%s），该角色 provider 配置已丢弃",
+                    agent_type,
+                    type(rows).__name__,
+                )
                 provider_out = None
 
             entry: Dict[str, Any] = {}

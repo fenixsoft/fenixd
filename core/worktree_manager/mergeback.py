@@ -25,62 +25,9 @@ from core.timelib import now_local  # noqa: E402
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager.constants import WIP_GATE_STASH_PREFIX  # noqa: E402
-
-# git quotePath 的字母短转义表（quote.c sq_lookup）：a/b/f/n/r/t/v 七个控制
-# 字符输出两字符字母转义（如 \n、\t），值为其单字节控制字符。
-_LETTER_ESCAPES = {
-    "a": 0x07,
-    "b": 0x08,
-    "f": 0x0C,
-    "n": 0x0A,
-    "r": 0x0D,
-    "t": 0x09,
-    "v": 0x0B,
-}
-
-
-def _unquote_git_path(p: str) -> str:
-    """反转义 git 文本输出中 core.quotePath 的 C 风格带引号路径。
-
-    `git diff --name-only` 等文本输出对含非 ASCII/特殊字符的路径默认输出带
-    引号八进制转义形（如 "docs/\\346\\226\\207.txt"）。不反转义则 `Path.exists()`
-    恒 False（untracked 备份移开失效）、路径集合交集比对失真。带引号行按 C
-    规则解码：反斜杠 + 3 位八进制数字还原为一个字节，反斜杠 + 引号/反斜杠
-    还原字面字符，a b f n r t v 七个控制字符按两字符字母转义还原单字节
-    （git quote.c sq_lookup 表，仅其余控制/高位字节才用八进制），字节流按
-    UTF-8 解码（失败退回 latin-1）；无引号行原样返回（对 ASCII 路径幂等
-    零开销）。
-    """
-    if len(p) < 2 or not p.startswith('"') or not p.endswith('"'):
-        return p
-    body = p[1:-1]
-    raw = bytearray()
-    i = 0
-    n = len(body)
-    while i < n:
-        c = body[i]
-        if c == "\\" and i + 1 < n:
-            nxt = body[i + 1]
-            if nxt in ('"', "\\"):
-                raw += nxt.encode("ascii")
-                i += 2
-                continue
-            letter = _LETTER_ESCAPES.get(nxt)
-            if letter is not None:
-                raw.append(letter)
-                i += 2
-                continue
-            octal = body[i + 1 : i + 4]
-            if len(octal) == 3 and all(d in "01234567" for d in octal):
-                raw.append(int(octal, 8))
-                i += 4
-                continue
-        raw += c.encode("utf-8")
-        i += 1
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1")
+# quotePath 反转义唯一实现在 core.git_text（本模块原持有一份独立实现，已收敛
+# 委托，code-review 3e99a584fdf5）；别名沿用旧名，调用点零改动。
+from core.git_text import unquote_git_path as _unquote_git_path  # noqa: E402
 
 
 def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
