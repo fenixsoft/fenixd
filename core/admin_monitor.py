@@ -589,8 +589,15 @@ PREPROBE_SIGNAL_TYPES = (
 # （maintenance-<scope>-<ts>，core/maintenance_ledger）在失败计数中还原到
 # scope 计数，归因/盘点视图识别为有名主体而非泛型无主 agent；与真源其余
 # 前缀无子串冲突（顺序无关）。
+# code-review item e5ea5fb4b0d1：impl-ocr- 同步收录（OCR 实现车道失败计入
+# 失败统计，同 repair- 实现通道先例）——缺失时 impl-ocr-<spec>-<ts> 回落
+# 命中 "impl-"，被误还原为 STATE 中不存在的幽灵 spec "ocr-<spec>"（30 分钟
+# 窗口累计 3 次即触发 repeated_failures 唤起去处置不存在的 spec）。MUST 排
+# 在其子串前缀 "impl-" 之前（_spec_from_run_id 首命中即止，同真源顺序敏感
+# 约束），口径由 tests/test_admin.py::TestFailurePrefixSubset 锁定。
 # [fenix-ignore:847c916d468e] design 1 拆分约束口径即「裸 planner-/test- 不计、细前缀 planner-plan-/planner-judge- 自初版即计」（TestFailurePrefixSubset 锁定），上方注释已逐项区分并写明 admin- 收录理由，注释与代码一致
 _RUN_PREFIXES = (
+    "impl-ocr-",
     "impl-",
     "verify-",
     "repair-",
@@ -2648,32 +2655,25 @@ class AdminMonitor:
                     memo = self._family_intake_mutex_skip_memo = set()
                 if rec.get("id") not in memo:
                     memo.add(rec.get("id"))
-                    try:
-                        self.store.append(
-                            {
-                                "kind": DISPOSITION,
-                                "signal_type": stype,
-                                "spec": spec,
-                                "severity": rec.get("severity")
-                                or SIGNAL_SEVERITY.get(stype, "major"),
-                                "description": rec.get("description")
-                                or SIGNAL_RECOMMENDATION.get(stype, ""),
-                                "action_taken": (
-                                    "已有在飞 admin run，跳过本次摄取唤起"
-                                    "（fix-recovery-path-blockers D2b 互斥守卫）——"
-                                    "实际未派发，源记录未消费，在飞处置完成后"
-                                    "由摄取循环自然重评"
-                                ),
-                                "result": "skipped",
-                            }
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "admin_monitor",
-                            f"Failed to persist mutex-skip disposition for "
-                            f"'{spec}': {e}",
-                            {"record_id": rec.get("id"), "spec": spec},
-                        )
+                    # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
+                    # （item 4d50570fd394）：signal_type/severity/description
+                    # 均源自 rec（stype == rec.get("signal_type")），兜底形态
+                    # 经显式传参原样保留，action_taken 文案不变。
+                    self._persist_skipped_disposition(
+                        rec,
+                        (
+                            "已有在飞 admin run，跳过本次摄取唤起"
+                            "（fix-recovery-path-blockers D2b 互斥守卫）——"
+                            "实际未派发，源记录未消费，在飞处置完成后"
+                            "由摄取循环自然重评"
+                        ),
+                        spec=spec,
+                        severity=rec.get("severity")
+                        or SIGNAL_SEVERITY.get(stype, "major"),
+                        description=rec.get("description")
+                        or SIGNAL_RECOMMENDATION.get(stype, ""),
+                        error_context={"record_id": rec.get("id"), "spec": spec},
+                    )
                 continue
             # code-review 9e031d3e7c7f：缺 description 的兜底文案不再用三元链
             # 硬编码——三元链仅覆盖 family_explosion/dispatch_stalled/
@@ -4049,6 +4049,20 @@ class AdminMonitor:
         signal_rec, _ = self.store.merge_signal(
             self._signal_record(signal, escalated=True), status_hash
         )
+        # code-review item 4907de93dfb3：损坏留底拒写判别与节流分支同款——
+        # merge_signal 返回 (None, False) 说明锚点未落盘，若仍以 signal_rec=None
+        # 传入 _invoke_administrator，会被按人工通道语义处理：派发失败升级不带
+        # next_retry_at/retry_count（不自动重试）、处置终态不回写信号 handled，
+        # 本次自动唤起的后半链路在 store 单点故障下整体降级。记 ERROR 留痕后
+        # 按未送达丢弃（裸 return，即本方法 docstring 的「落库拒写」出口）。
+        if signal_rec is None:
+            self.logger.error(
+                "admin_monitor",
+                f"Signal anchor persist refused (store write-guard), "
+                f"dropping auto-invocation: {signal_type} "
+                f"for '{spec or 'daemon'}'（item 4907de93dfb3）",
+            )
+            return
         # fix-recovery-path-blockers D2b：唤起前与在飞 admin run 互斥——D1 生效后
         # 处置中的 spec 会在冷却窗（缺省 60 分钟）过期后重新成条，无本守卫即产生
         # 与在飞处置**并行**的第二个 Administrator run（写同一批 STATE/
@@ -4067,28 +4081,17 @@ class AdminMonitor:
             # 假象，审计/看板失真。比照信号死法冷却路径补写说明性处置记录；
             # result="skipped" 不命中任何 result 消费分支，DISPOSITION 不参与
             # unhandled_for 节流——不阻断在飞处置完成后的自然重评。
-            try:
-                self.store.append(
-                    {
-                        "kind": DISPOSITION,
-                        "signal_type": signal_type,
-                        "spec": spec,
-                        "severity": signal.get("severity"),
-                        "description": signal.get("description"),
-                        "action_taken": (
-                            "已有在飞 admin run，跳过重复唤起"
-                            "（fix-recovery-path-blockers D2b 互斥守卫）——"
-                            "实际未派发，在飞处置完成后由检测循环自然重评"
-                        ),
-                        "result": "skipped",
-                    }
-                )
-            except Exception as e:
-                self.logger.error(
-                    "admin_monitor",
-                    f"Failed to persist mutex-skip disposition for "
-                    f"'{spec or 'daemon'}': {e}",
-                )
+            # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
+            # （item 4d50570fd394），文案与字段不变。
+            self._persist_skipped_disposition(
+                signal,
+                (
+                    "已有在飞 admin run，跳过重复唤起"
+                    "（fix-recovery-path-blockers D2b 互斥守卫）——"
+                    "实际未派发，在飞处置完成后由检测循环自然重评"
+                ),
+                spec=spec,
+            )
             return
         self.logger.warning(
             "admin_monitor",
@@ -5017,6 +5020,26 @@ class AdminMonitor:
             return False
         return any(k in subject for k in _ORPHAN_EFFECT_FINALIZE_COMMIT_KEYWORDS)
 
+    @staticmethod
+    def _is_orphan_merge_commit(subject: str, spec_name: str) -> bool:
+        """merge commit 家族锚点判定（code-review item f12f9a282a95）。
+
+        裸 ``name in subject`` 子串匹配在 spec 名互为前缀（fix-x vs fix-x-y）
+        时，窗口内合并的是另一 spec 的分支（"Merge branch 'fenix/fix-x-y-…'"
+        含 "fix-x" 子串）也会命中本组——被当「处置动作已实际生效」的提交类
+        旁证收口底层信号，正是本机制 fail-closed 要防的假闭环。此处对齐
+        _ORPHAN_SPEC_NAME_TOKEN_RE 的负向前后视做 token 边界匹配，仅放宽名后
+        紧跟 ``-<≥10 位数字>``（分支记法 fenix/<name>-<派发时间戳> 的既有形态，
+        纯 token 边界会把真实 merge-back 误拒；≥10 位口径与
+        _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE 一致，-7c1997 类十六进制短后缀仍算
+        spec 名组成部分、不误放行）。不命中由调用方回落其余家族，fail-closed
+        取向不变。
+        """
+        return re.search(
+            r"(?<![\w-])" + re.escape(spec_name) + r"(?!\w|-(?!\d{10}))",
+            subject,
+        ) is not None
+
     def _git_log_commit_subjects(self, extra_args: list) -> list:
         """只读 git log（HEAD 历史），返回 [(committer_ts, subject)]；失败返回 []。
 
@@ -5058,7 +5081,8 @@ class AdminMonitor:
         """提交类旁证：对账窗口内 merge commit / 归档收尾提交（只读 git log）。
 
         (a) merge commit：``git log --merges`` 窗口内提交且消息含目标 spec 名
-        （合并目标分支名）；(b) 归档收尾提交：非 merge 提交且消息同时含目标
+        （合并目标分支名；token 边界锚定见 _is_orphan_merge_commit，item
+        f12f9a282a95）；(b) 归档收尾提交：非 merge 提交且消息同时含目标
         spec 名与归档收尾家族前缀（+收尾关键词）。两类均须提交时间（committer
         ts）落在对账窗内。命中返回证据字符串，全不命中/git 失败返回 None
         （该家族按无证据处理，不阻塞其余家族，fail-closed）。
@@ -5067,7 +5091,8 @@ class AdminMonitor:
         finalizes = self._git_log_commit_subjects(["--no-merges"])
         for name in spec_names:
             for ts, subject in merges:
-                if window_start <= ts <= now and name in subject:
+                if (window_start <= ts <= now
+                        and self._is_orphan_merge_commit(subject, name)):
                     return (
                         f"对账窗口内 merge commit 提交消息含目标 spec 名 '{name}'"
                         f"（{from_epoch(ts).isoformat()}：{subject[:120]}）"
@@ -5402,6 +5427,50 @@ class AdminMonitor:
         """
         self._invoke_administrator(signal, None)
 
+    def _persist_skipped_disposition(
+        self, signal: dict, action_taken: str, spec=None,
+        severity=None, description=None, error_label: str = "mutex-skip",
+        error_context: dict = None,
+    ) -> None:
+        """补写 result="skipped" 说明性 DISPOSITION（「实际未派发」留痕单点）。
+
+        四处近似重复块（_detect_family_explosion 在飞互斥 / _handle_signal
+        在飞互斥 / _invoke_administrator 信号死法冷却与夜间断窗避让）的公共
+        字段拼装与异常留痕集中于此（code-review item 4d50570fd394）：调用点
+        只传差异化 action_taken 文案与 error_label。result="skipped" 不命中
+        任何 result 消费分支，DISPOSITION 不参与 unhandled_for 节流。
+
+        severity/description 显式传参则覆盖 signal 同名字段（_detect_family_
+        explosion 的源记录兜底形态）；spec 缺省回落 signal.get("spec")；
+        error_label 用于落盘失败日志文案区分（mutex-skip / cooldown-skip /
+        window-avoidance）；error_context 为落盘失败日志附加上下文。
+        """
+        try:
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "signal_type": signal.get("signal_type"),
+                    "spec": spec if spec is not None else signal.get("spec"),
+                    "severity": (
+                        severity if severity is not None
+                        else signal.get("severity")
+                    ),
+                    "description": (
+                        description if description is not None
+                        else signal.get("description")
+                    ),
+                    "action_taken": action_taken,
+                    "result": "skipped",
+                }
+            )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"Failed to persist {error_label} disposition for "
+                f"'{spec or 'daemon'}': {e}",
+                error_context,
+            )
+
     def _invoke_administrator(self, signal: dict, signal_rec: dict):
         """唤起 Administrator 处置；失败或升级时落升级告警。
 
@@ -5470,28 +5539,17 @@ class AdminMonitor:
             # DISPOSITION 不参与 unhandled_for 节流——不阻断冷却到期后的自然恢复。
             # 人工通道（signal_rec=None）无该虚报锚点，不补痕。
             if signal_rec is not None:
-                try:
-                    self.store.append(
-                        {
-                            "kind": DISPOSITION,
-                            "signal_type": signal.get("signal_type"),
-                            "spec": signal.get("spec"),
-                            "severity": signal.get("severity"),
-                            "description": signal.get("description"),
-                            "action_taken": (
-                                "信号死法冷却中，跳过 Administrator 唤起"
-                                "（evo-sigterm-source-tracking-cooldown）——"
-                                "实际未派发，冷却到期由恢复定时器/检测循环自然恢复"
-                            ),
-                            "result": "skipped",
-                        }
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        "admin_monitor",
-                        f"Failed to persist cooldown-skip disposition for "
-                        f"'{signal.get('spec') or 'daemon'}': {e}",
-                    )
+                # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
+                # （item 4d50570fd394），文案与字段不变。
+                self._persist_skipped_disposition(
+                    signal,
+                    (
+                        "信号死法冷却中，跳过 Administrator 唤起"
+                        "（evo-sigterm-source-tracking-cooldown）——"
+                        "实际未派发，冷却到期由恢复定时器/检测循环自然恢复"
+                    ),
+                    error_label="cooldown-skip",
+                )
             return
 
         # evo-add-night-window-inflight-guard 2.1：夜间断窗/provider 瞬断冻结
@@ -5519,29 +5577,18 @@ class AdminMonitor:
             # result 消费分支、不参与 unhandled_for 节流）。人工通道
             # （signal_rec=None）无该虚报锚点，仅日志留痕。
             if signal_rec is not None:
-                try:
-                    self.store.append(
-                        {
-                            "kind": DISPOSITION,
-                            "signal_type": signal.get("signal_type"),
-                            "spec": signal.get("spec"),
-                            "severity": signal.get("severity"),
-                            "description": signal.get("description"),
-                            "action_taken": (
-                                "夜间断窗/瞬断冻结避让，跳过 Administrator 唤起"
-                                f"（{_reason_text}）——实际未派发，留待下一轮"
-                                "盘点/检测循环自然重试"
-                                "（evo-add-night-window-inflight-guard）"
-                            ),
-                            "result": "skipped",
-                        }
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        "admin_monitor",
-                        f"Failed to persist window-avoidance disposition for "
-                        f"'{signal.get('spec') or 'daemon'}': {e}",
-                    )
+                # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
+                # （item 4d50570fd394），文案与字段不变。
+                self._persist_skipped_disposition(
+                    signal,
+                    (
+                        "夜间断窗/瞬断冻结避让，跳过 Administrator 唤起"
+                        f"（{_reason_text}）——实际未派发，留待下一轮"
+                        "盘点/检测循环自然重试"
+                        "（evo-add-night-window-inflight-guard）"
+                    ),
+                    error_label="window-avoidance",
+                )
             return
 
         # 巡检线程 MUST NOT 同步等待 admin run：处置实测可跑百轮/小时级（152

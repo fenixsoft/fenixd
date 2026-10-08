@@ -1371,6 +1371,18 @@ class TestFailurePrefixSubset:
         assert "impl-" in _RUN_PREFIXES
         assert "verify-" in _RUN_PREFIXES
         assert "maintenance-" in _RUN_PREFIXES    # maintenance-work-ledger 2.2：登记型仍计
+        assert "impl-ocr-" in _RUN_PREFIXES       # OCR 实现车道仍计（item e5ea5fb4b0d1，同 repair- 先例）
+        # 顺序敏感：impl-ocr- 必须先于其子串前缀 impl-（首命中即止），否则
+        # OCR 车道失败 run 回落 impl- 被误还原为幽灵 spec "ocr-<spec>"
+        assert _RUN_PREFIXES.index("impl-ocr-") < _RUN_PREFIXES.index("impl-")
+
+    def test_impl_ocr_prefix_restores_real_spec(self):
+        """item e5ea5fb4b0d1：impl-ocr- 车道失败 run 还原到真实 spec，
+        不再回落 impl- 误归因为 STATE 中不存在的幽灵 spec "ocr-<spec>"。"""
+        assert AdminMonitor._spec_from_run_id(
+            "impl-ocr-spec-a-1780000001", _RUN_PREFIXES) == "spec-a"
+        assert AdminMonitor._spec_from_run_id(
+            "impl-ocr-spec-a-1780000001-a1", _RUN_PREFIXES) == "spec-a"
 
     def test_maintenance_prefix_identified_in_both_tables(self):
         """maintenance-work-ledger 3.2：登记型前缀两处可识别。
