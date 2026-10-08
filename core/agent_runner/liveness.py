@@ -1466,7 +1466,15 @@ class LivenessSupervisor:
                 _grace_lift = float(
                     (_grace_state_entry(run_id) or {}).get(
                         "wrapup_grace_seconds") or 0.0)
-            except (TypeError, ValueError):
+            except Exception as e:
+                # 容错口径与上方 fast-track 预检/impl wallclock sizing 对齐
+                #（code-review item 3bc2f44ed013）：门面异常全捕降级为 0，
+                # 不让替身缺属性/配置段结构异常等沿监督判定主路径向上冒泡
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"wrapup grace state entry read failed for run "
+                    f"'{run_id}' — keeping absolute_max unchanged: {e}",
+                )
                 _grace_lift = 0.0
             if _grace_lift > 0:
                 absolute_max += _grace_lift
@@ -1521,7 +1529,18 @@ class LivenessSupervisor:
                         avg_turn_seconds=_avg_turn)
                     if isinstance(_grant, dict) and _grant.get("seconds"):
                         _grace_seconds = float(_grant["seconds"])
-                except (TypeError, ValueError):
+                except Exception as e:
+                    # 容错口径与同函数 fast-track 预检/impl wallclock sizing
+                    # 对齐（code-review item 3bc2f44ed013）：门面异常全捕并
+                    # WARNING 留痕，_grace_seconds=None 落既有击杀路径
+                    #（注释承诺的「门面不可用 → 走既有击杀路径」对任意异常
+                    # 类型成立），不让非数值类异常沿监督主路径冒泡。
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"wrapup grace grant facade failed for "
+                        f"'{spec_name or 'unknown'}' ({run_id}) — falling "
+                        f"back to existing kill path: {e}",
+                    )
                     _grace_seconds = None
             if _grace_seconds and _grace_seconds > 0:
                 return {
