@@ -17,10 +17,11 @@ export default function ProgressBarTile(
     strokeColor?: string;
   },
 ) {
-  const p = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const p = total > 0 ? Math.min(100, Math.max(0, Math.round((done / total) * 100))) : 0;
   // done 超过 total 时文本同样钳到 total / total：与上方百分比钳制口径一致，
   // 避免进度条满格 100% 却显示「12 / 10」的矛盾信号（上游重复计数/统计滞后）。
-  const shownDone = Math.min(done, total);
+  // 负值对称钳到 [0, total]：防御统计口径异常，避免渲染出负百分比/负计数。
+  const shownDone = Math.max(0, Math.min(done, total));
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
