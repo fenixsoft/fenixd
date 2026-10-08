@@ -267,7 +267,13 @@ class TestCodeFixManualTriggerConsume:
         assert _read_result(proot) == first
 
     def test_corrupt_signal_deleted_without_result(self, monkeypatch):
-        """损坏 JSON 信号 → 删除防卡死，MUST NOT 产出结果文件。"""
+        """损坏 JSON 信号 → 删除防卡死 + 落 invalid_payload 结果不静默。
+
+        item 3ae81f8b6d0b：payload 归因时信号已被消费删除、不会再重试，
+        比照 code_review 车道（item 94618d6567ee）落结果文件不静默——
+        payload 损坏无 created 可回链（request_created 落空串），前端据
+        结果文件如实展示「触发信号内容非法」。
+        """
         proot = _make_project_root()
         runner = _FakeRunner(orchestrator=_SpyOrch())
         daemon = _make_daemon(proot, runner)
@@ -277,7 +283,12 @@ class TestCodeFixManualTriggerConsume:
         _consume(monkeypatch, proot, daemon)
 
         assert not req.exists(), "损坏信号 MUST 删除防每轮卡死"
-        assert _read_result(proot) == {}
+        res = _read_result(proot)
+        assert res["triggered"] is False
+        assert res["reason"] == "invalid_payload"
+        assert res["request_created"] == "", "payload 损坏无 created 可回链"
+        assert res["message"]
+        assert res["finished_at"]
 
     def test_missing_signal_noop(self, monkeypatch):
         """无信号 → 纯 no-op（不建结果文件、不触碰编排器）。"""

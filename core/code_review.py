@@ -597,13 +597,14 @@ def severity_gate_config(project_root) -> dict:
 
 
 def _parse_gate_ts(value) -> Optional[float]:
-    """挂起时间锚解析（epoch 秒）：ISO8601；解析失败回 None（窗口按未到）。"""
-    try:
-        dt = datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
+    """挂起时间锚解析（epoch 秒）：ISO8601；解析失败回 None（窗口按未到）。
+
+    走 timelib.parse_ts 唯一解析入口（naive 串按本地时区解读——全仓唯一
+    策略；本模块挂起锚写入侧经 to_storage 落 Z 后缀 aware 串，不受影响）。
+    """
+    dt = parse_ts(str(value))
+    if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
 
 
