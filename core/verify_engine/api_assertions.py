@@ -676,11 +676,13 @@ class ApiAssertionRunner:
                 ),
             }
         events = [dict(e) for e in raw_events]
-        expected = a.get("expected", "")
+        expected = a.get("expected")
         mode = a.get("mode", "contains")
-        # fail-closed：缺 expected 时 contains 空串恒真、regex 空串恒匹配，
-        # 窗口内有任一事件即假通过；与 web 侧 text_match 缺参显式失败口径
-        # 一致（exact 空串是合法期望，不在拦截之列）
+        # fail-closed：缺 expected（None 哨兵，与本文件 _assert_json_path 口径
+        # 一致）时一律显式失败——contains 空串恒真、regex 空串恒匹配、exact
+        # 空串会误命中窗口内的空/纯空白 data 事件（keep-alive 常见形态）；与
+        # web 侧 text_match 缺参显式失败口径一致（显式设置的空串 exact 期望
+        # 仍照常放行）（code-review item d6f5b0adcfc6）
         if expected is None or (expected == "" and mode in ("contains", "regex")):
             return {
                 "type": "sse_event_matches",

@@ -1247,6 +1247,9 @@ def _validate_web(scenario: TestScenario) -> list[str]:
                 f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
                 f"支持: {_supported_assertions('web')}"
             )
+            # 未知类型跳过后续必填字段校验（code-review item b6c4516d120e）：
+            # 口径与 _validate_typed 一致，不混入跨 kind 的必填提示误导修文件
+            continue
         if a.type in ASSERTIONS_REQUIRING_SELECTOR and not a.selector:
             errors.append(f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 selector")
         # web 断言必填字段与 cli/api 同源：查 ASSERTION_REQUIRED_FIELDS 单源表
