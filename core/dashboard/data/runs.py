@@ -860,7 +860,7 @@ def _run_tail_insights(
     tail_bytes 字节避免时间轴加载全量扫描；seek 产生的截断首行直接丢弃。
     marker 可能落在 attempt 大量输出之外（尾窗扫不到），此时按 256KB 块
     向前回扫（上限 marker_scan_cap），仍无则留空；回扫把尾窗截断首行残段
-    与各块末尾不完整行残段逐轮拼接复原跨界行，避免边界行两侧同时解析失败。
+    与各块首行的行尾残段逐轮拼接复原跨界行，避免边界行两侧同时解析失败。
     """
     try:
         size = run_file.stat().st_size
@@ -937,11 +937,16 @@ def _run_tail_insights(
                     start = max(floor, pos - chunk)
                     f.seek(start)
                     raw = f.read(pos - start).decode("utf-8", errors="replace")
-                    # 块末不完整行（跨上界边界的行头残段）缓存到下一轮与
-                    # 更早的块拼接复原，避免每块只丢块首残段、块末残段
-                    # json.loads 失败被静默跳过
+                    # carry 是上界 pos 处被截断行的行尾残段：该行的行头在本
+                    # 块末尾，raw + carry 复原整行，避免边界行两侧同时解析
+                    # 失败被静默跳过
                     _, llm, _, _ = parse_chunk(raw + carry, skip_first=start > 0)
-                    carry = "" if raw.endswith("\n") else raw.rsplit("\n", 1)[-1]
+                    # 下一轮的 carry 取本轮 raw 首行（跨下界 start 边界那行
+                    # 的行尾残段）：行头在更早块末尾，须靠它拼接复原；
+                    # start 恰落在行边界时 raw 首行是完整行，拼接只会重复
+                    # 解析一次、无害，故 start > 0 恒下传，不依赖块尾是否
+                    # 以换行收尾
+                    carry = raw.split("\n", 1)[0]
                     pos = start
         except OSError:
             # 回扫期间文件可能被保留清理/归档动作并发移除：降级返回已得的

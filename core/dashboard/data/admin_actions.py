@@ -121,6 +121,74 @@ def _atomic_write_request(req_path: Path, payload: dict, tmp_prefix: str) -> tup
     return True, payload["created"]
 
 
+def _request_signal_with_guards(
+    proot: Path,
+    req_path: Path,
+    payload: dict,
+    tmp_prefix: str,
+    extra_fields: dict,
+    unmanaged_error: str,
+    conflict_error: str,
+) -> dict:
+    """request_* 信号函数共用的托管态校验 + 冲突检查 + 原子写 + 返回形状。
+
+    抽取 request_run_cancel / request_spec_delete / request_spec_approve_push
+    三处逐字重复段（code-review item 75cb80eb1783）：_hosting_state
+    try/except → unmanaged/daemon_down 两组拒绝形状 → ``req_path.exists()``
+    冲突检查（读既有 created）→ _atomic_write_request → won=False 冲突返回
+    → 成功返回。三函数差异只剩文案（unmanaged_error/conflict_error）与差异
+    字段（extra_fields：run_cancel 的 missing_run_id、approve_push 的
+    found+terminal，spec_delete 无），新增字段或调整形状只改本处
+    （历史上 2e9c8ab94e5d 即需三处各修一遍的教训）。
+    """
+    # 消费方判据：信号唯一消费方是 daemon 主循环，unmanaged（进程在跑但无
+    # supervisor）或 stopped 时信号无人消费——静默滞留既让用户误以为请求
+    # 已受理，又让后续请求持续 409，前置拦截不写信号。
+    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
+    try:
+        state = _hosting_state(proot)
+    except Exception:
+        state = "stopped"
+    if state == "unmanaged":
+        return {**extra_fields, "ok": False, "conflict": False,
+                "unmanaged": True, "daemon_down": False,
+                "file": None, "created": None, "error": unmanaged_error}
+    if state != "managed":
+        return {**extra_fields, "ok": False, "conflict": False,
+                "unmanaged": False, "daemon_down": True,
+                "file": None, "created": None,
+                "error": "daemon 未运行，请先启动 daemon"}
+
+    # 已有未消费请求 → 冲突（409），读既有 created 供返回
+    if req_path.exists():
+        try:
+            existing = json.loads(req_path.read_text(encoding="utf-8"))
+            existing_created = (
+                existing.get("created") if isinstance(existing, dict) else None
+            )
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            existing_created = None
+        return {**extra_fields, "ok": False, "conflict": True,
+                "unmanaged": False, "daemon_down": False,
+                "file": str(req_path), "created": existing_created,
+                "error": conflict_error}
+
+    won, current_created = _atomic_write_request(
+        req_path, payload, tmp_prefix=tmp_prefix
+    )
+    if not won:
+        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
+        # 先写请求将丢失无迹，按既有冲突语义返回
+        return {**extra_fields, "ok": False, "conflict": True,
+                "unmanaged": False, "daemon_down": False,
+                "file": str(req_path), "created": current_created,
+                "error": conflict_error}
+    return {**extra_fields, "ok": True, "conflict": False,
+            "unmanaged": False, "daemon_down": False,
+            "file": str(req_path), "created": payload["created"],
+            "error": None}
+
+
 def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
     """写入 run 取消的文件信号（.fenix/cancel_run_request.json）。
 
@@ -153,63 +221,6 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         }
 
     proot = Path(project_root)
-
-    # 消费方判据（对齐 request_spec_delete / request_spec_approve_push）：
-    # 信号唯一消费方是 daemon 主循环，unmanaged（进程在跑但无 supervisor）
-    # 或 stopped 时信号无人消费——静默滞留既让用户误以为取消已受理，又
-    # 让后续取消请求持续 409，前置拦截不写信号。
-    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
-    try:
-        state = _hosting_state(proot)
-    except Exception:
-        state = "stopped"
-    if state == "unmanaged":
-        return {
-            "ok": False,
-            "conflict": False,
-            "missing_run_id": False,
-            "unmanaged": True,
-            "daemon_down": False,
-            "file": None,
-            "created": None,
-            "error": (
-                "本项目 daemon 未受 supervisor 托管，取消信号不会被消费。"
-                "经 Dashboard 项目页「安装托管」或 /fenix-setup 恢复"
-                "supervisor 托管后重试"
-            ),
-        }
-    if state != "managed":
-        return {
-            "ok": False,
-            "conflict": False,
-            "missing_run_id": False,
-            "unmanaged": False,
-            "daemon_down": True,
-            "file": None,
-            "created": None,
-            "error": "daemon 未运行，请先启动 daemon",
-        }
-
-    req_path = proot / CANCEL_RUN_REQUEST
-
-    # 已有未消费请求 → 冲突（409）
-    if req_path.exists():
-        try:
-            existing = json.loads(req_path.read_text(encoding="utf-8"))
-            existing_created = existing.get("created") if isinstance(existing, dict) else None
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            existing_created = None
-        return {
-            "ok": False,
-            "conflict": True,
-            "missing_run_id": False,
-            "unmanaged": False,
-            "daemon_down": False,
-            "file": str(req_path),
-            "created": existing_created,
-            "error": "已有进行中的取消请求",
-        }
-
     created = datetime.now(timezone.utc).isoformat()
     payload = {
         "run_id": run_id.strip(),
@@ -217,32 +228,22 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         "source": "dashboard",
         "created": created,
     }
-    won, current_created = _atomic_write_request(
-        req_path, payload, tmp_prefix=".cancel_run_request."
+    # 托管态校验 + 冲突检查 + 原子写 + 返回形状统一走
+    # _request_signal_with_guards（与 request_spec_delete /
+    # request_spec_approve_push 同一实现点，差异仅文案与差异字段）
+    return _request_signal_with_guards(
+        proot,
+        proot / CANCEL_RUN_REQUEST,
+        payload,
+        tmp_prefix=".cancel_run_request.",
+        extra_fields={"missing_run_id": False},
+        unmanaged_error=(
+            "本项目 daemon 未受 supervisor 托管，取消信号不会被消费。"
+            "经 Dashboard 项目页「安装托管」或 /fenix-setup 恢复"
+            "supervisor 托管后重试"
+        ),
+        conflict_error="已有进行中的取消请求",
     )
-    if not won:
-        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
-        # 先写请求将丢失无迹，按既有冲突语义返回
-        return {
-            "ok": False,
-            "conflict": True,
-            "missing_run_id": False,
-            "unmanaged": False,
-            "daemon_down": False,
-            "file": str(req_path),
-            "created": current_created,
-            "error": "已有进行中的取消请求",
-        }
-    return {
-        "ok": True,
-        "conflict": False,
-        "missing_run_id": False,
-        "unmanaged": False,
-        "daemon_down": False,
-        "file": str(req_path),
-        "created": created,
-        "error": None,
-    }
 
 
 def is_spec_frozen(entry: dict) -> bool:
@@ -353,56 +354,6 @@ def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
          "error"}
     """
     proot = Path(project_root)
-    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
-
-    try:
-        state = _hosting_state(proot)
-    except Exception:
-        state = "stopped"
-    if state == "unmanaged":
-        return {
-            "ok": False,
-            "conflict": False,
-            "unmanaged": True,
-            "daemon_down": False,
-            "file": None,
-            "created": None,
-            "error": (
-                "本项目 daemon 未受 supervisor 托管，删除信号不会被消费。"
-                "经 Dashboard 项目页「安装托管」或 /fenix-setup 恢复"
-                "supervisor 托管后重试"
-            ),
-        }
-    if state != "managed":
-        return {
-            "ok": False,
-            "conflict": False,
-            "unmanaged": False,
-            "daemon_down": True,
-            "file": None,
-            "created": None,
-            "error": "daemon 未运行，请先启动 daemon",
-        }
-
-    req_path = proot / SPEC_DELETE_REQUEST
-    if req_path.exists():
-        existing_created = None
-        try:
-            existing = json.loads(req_path.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                existing_created = existing.get("created")
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            pass
-        return {
-            "ok": False,
-            "conflict": True,
-            "unmanaged": False,
-            "daemon_down": False,
-            "file": str(req_path),
-            "created": existing_created,
-            "error": "已有进行中的删除请求",
-        }
-
     created = datetime.now(timezone.utc).isoformat()
     payload = {
         "spec": spec,
@@ -410,30 +361,22 @@ def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
         "created": created,
         "stopping": int(stopping or 0),
     }
-    won, current_created = _atomic_write_request(
-        req_path, payload, tmp_prefix=".spec_delete_request."
+    # 托管态校验 + 冲突检查 + 原子写 + 返回形状统一走
+    # _request_signal_with_guards（同 request_run_cancel /
+    # request_spec_approve_push 实现点）
+    return _request_signal_with_guards(
+        proot,
+        proot / SPEC_DELETE_REQUEST,
+        payload,
+        tmp_prefix=".spec_delete_request.",
+        extra_fields={},
+        unmanaged_error=(
+            "本项目 daemon 未受 supervisor 托管，删除信号不会被消费。"
+            "经 Dashboard 项目页「安装托管」或 /fenix-setup 恢复"
+            "supervisor 托管后重试"
+        ),
+        conflict_error="已有进行中的删除请求",
     )
-    if not won:
-        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
-        # 先写请求将丢失无迹，按既有冲突语义返回
-        return {
-            "ok": False,
-            "conflict": True,
-            "unmanaged": False,
-            "daemon_down": False,
-            "file": str(req_path),
-            "created": current_created,
-            "error": "已有进行中的删除请求",
-        }
-    return {
-        "ok": True,
-        "conflict": False,
-        "unmanaged": False,
-        "daemon_down": False,
-        "file": str(req_path),
-        "created": created,
-        "error": None,
-    }
 
 
 def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
@@ -621,6 +564,8 @@ def promote_spec(project_root, spec_name: str) -> dict:
     - spec 不存在 → {ok: False, found: False, error: ...}
     - spec 非 drafted → {ok: False, found: True, ok: False, reason: ...}
     - lint 违规 → {ok: False, found: True, violations: [...], error: ...}
+    - 转移被拒（promote_drafted 后 spec 被并发改写/软删除/转移非法）→
+      {ok: False, found: True, error: ...}（spec 实际停留 drafted）
     - 成功 → {ok: True, found: True, violations: []}
     """
     specs = parse_state(project_root)
@@ -644,10 +589,22 @@ def promote_spec(project_root, spec_name: str) -> dict:
         # 与 _on_spec_drafted 收尾语义一致，MUST NOT 硬编码 ready（全通道覆盖）。
         next_status = result.get("next_status", "ready")
         # fix-observability-gaps 2.2：dashboard 人工晋升来源（channel=manual）
-        sm.transition(
+        # 转移结果如实回报（与 reset_verification 同口径）：promote_drafted 与
+        # transition 之间存在并发窗口（STATE 被并发改写/软删除/转移非法），
+        # 转移未落盘时 spec 实际停留在 drafted，不得向调用方宣称晋升成功。
+        if not sm.transition(
             spec_name, next_status,
             trigger_run_id=None, agent_type=None, channel="manual",
-        )
+        ):
+            logger.warning(
+                "promote_spec 转移未生效：→%s 转换被拒或未落盘，"
+                "spec 仍滞留 drafted（spec=%s）",
+                next_status, spec_name,
+            )
+            return {"ok": False, "found": True, "violations": [],
+                    "next_status": next_status,
+                    "error": (f"转移未生效：→{next_status} 转换被拒或未落盘，"
+                              "spec 仍滞留 drafted")}
         return {"ok": True, "found": True, "violations": [], "next_status": next_status}
     # 失败
     if "reason" in result:
@@ -859,6 +816,8 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
       禁止绕过）
     - ``_cancelled_hold`` 非 true → ``{ok: False, reason}``（幂等拒绝，
       STATE 零变更）
+    - 命中但写入失败（前置校验后 spec 被并发软删除/写入被拒）→
+      ``{ok: False, found: True, error}``（WARNING 留痕，不写 kick）
     """
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -950,24 +909,35 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             return found, found
 
         if not sm._mutate_locked(_mutate):
-            # 与旧 update_spec 盲写同契约（spec 已并发删除不改变返回结构），
-            # 仅按「写入必留痕」补锁外 WARNING。
+            # 写入必留痕 + 如实返回失败形状（对齐本函数降级分支与
+            # activate_spec/reset_verification 同口径）：spec 在前置校验后
+            # 被并发软删除/写入被拒时恢复未落盘，不再沿用旧 update_spec 盲写
+            # 契约宣称成功——不写 kick、不置 degraded。
             sm.logger.warning("state_machine", f"SPEC not found: {spec}")
-        else:
-            sm._log_update_applied(spec, applied)
-            if anchor_recheck:
-                _snap = anchor_recheck["snapshot"]
-                _fresh = anchor_recheck["fresh"]
-                sm.logger.warning(
-                    "state_machine",
-                    f"Cancel-hold anchor recheck: spec '{spec}' 的 branch/"
-                    f"implementer_run 锚点在续做判定后被并发改写（快照 branch="
-                    f"{_snap.get('branch')!r}/implementer_run="
-                    f"{_snap.get('implementer_run')!r} → 最新 branch="
-                    f"{_fresh.get('branch')!r}/implementer_run="
-                    f"{_fresh.get('implementer_run')!r}）——放弃锚点回写，"
-                    f"防陈旧锚点复活",
-                )
+            logger.warning(
+                "resume_cancelled_spec 恢复失败：spec 已并发删除或写入被拒，"
+                "恢复未落盘（spec=%s）",
+                spec,
+            )
+            return {
+                "ok": False,
+                "found": True,
+                "error": "spec 已并发删除或写入被拒，恢复未落盘",
+            }
+        sm._log_update_applied(spec, applied)
+        if anchor_recheck:
+            _snap = anchor_recheck["snapshot"]
+            _fresh = anchor_recheck["fresh"]
+            sm.logger.warning(
+                "state_machine",
+                f"Cancel-hold anchor recheck: spec '{spec}' 的 branch/"
+                f"implementer_run 锚点在续做判定后被并发改写（快照 branch="
+                f"{_snap.get('branch')!r}/implementer_run="
+                f"{_snap.get('implementer_run')!r} → 最新 branch="
+                f"{_fresh.get('branch')!r}/implementer_run="
+                f"{_fresh.get('implementer_run')!r}）——放弃锚点回写，"
+                f"防陈旧锚点复活",
+            )
         result = {"ok": True, "found": True, "spec": spec, "degraded": False}
     else:
         # 降级：共享判定已实际运行且给出「不可保留」结论 → 普通全新重派。
@@ -1395,94 +1365,25 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
         }
 
     # 消费方判据（D8）：托管态为准——unmanaged 拒绝（信号无人消费）、
-    # stopped 维持既有 daemon_down 文案、managed 放行。
-    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
-    try:
-        state = _hosting_state(proot)
-    except Exception:
-        state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
-    if state == "unmanaged":
-        return {
-            "ok": False,
-            "found": True,
-            "terminal": False,
-            "daemon_down": False,
-            "unmanaged": True,
-            "conflict": False,
-            "file": None,
-            "created": None,
-            "error": (
-                "本项目 daemon 未受 supervisor 托管，审批推送信号"
-                "不会被消费。经 Dashboard 项目页「安装托管」或 "
-                "/fenix-setup 恢复 supervisor 托管后重试"
-            ),
-        }
-    if state != "managed":
-        # stopped（或判定异常兜底）：维持既有 daemon_down 文案逐字不变
-        return {
-            "ok": False,
-            "found": True,
-            "terminal": False,
-            "daemon_down": True,
-            "unmanaged": False,
-            "conflict": False,
-            "file": None,
-            "created": None,
-            "error": "daemon 未运行，请先启动 daemon",
-        }
-
-    req_path = proot / APPROVE_PUSH_REQUEST
-    if req_path.exists():
-        # 读既有 created 供返回（对齐 request_run_cancel 冲突语义）
-        existing_created = None
-        try:
-            existing = json.loads(req_path.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                existing_created = existing.get("created")
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            pass
-        return {
-            "ok": False,
-            "found": True,
-            "terminal": False,
-            "daemon_down": False,
-            "unmanaged": False,
-            "conflict": True,
-            "file": str(req_path),
-            "created": existing_created,
-            "error": "已有进行中的审批推送请求",
-        }
-
+    # stopped 维持既有 daemon_down 文案、managed 放行。托管态校验 + 冲突
+    # 检查 + 原子写 + 返回形状统一走 _request_signal_with_guards（同
+    # request_run_cancel / request_spec_delete 实现点）；found/terminal 已
+    # 定值随 extra_fields 透传。
     created = datetime.now(timezone.utc).isoformat()
     payload = {"spec": spec, "source": "dashboard", "created": created}
-    won, current_created = _atomic_write_request(
-        req_path, payload, tmp_prefix=".approve_push_request."
+    return _request_signal_with_guards(
+        proot,
+        proot / APPROVE_PUSH_REQUEST,
+        payload,
+        tmp_prefix=".approve_push_request.",
+        extra_fields={"found": True, "terminal": False},
+        unmanaged_error=(
+            "本项目 daemon 未受 supervisor 托管，审批推送信号"
+            "不会被消费。经 Dashboard 项目页「安装托管」或 "
+            "/fenix-setup 恢复 supervisor 托管后重试"
+        ),
+        conflict_error="已有进行中的审批推送请求",
     )
-    if not won:
-        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
-        # 先写请求将丢失无迹，按既有冲突语义返回
-        return {
-            "ok": False,
-            "found": True,
-            "terminal": False,
-            "daemon_down": False,
-            "unmanaged": False,
-            "conflict": True,
-            "file": str(req_path),
-            "created": current_created,
-            "error": "已有进行中的审批推送请求",
-        }
-    return {
-        "ok": True,
-        "found": True,
-        "terminal": False,
-        "daemon_down": False,
-        "unmanaged": False,
-        "conflict": False,
-        "file": str(req_path),
-        "created": created,
-        "error": None,
-    }
 
 
 def clear_spec_error(project_root, spec: str) -> dict:
@@ -2544,7 +2445,9 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
       5. 落盘：夹具文件按 project_root 锚定写入；场景集经
          ``prepare_scenarios_for_write`` 盖版本戳后**成对同覆盖**
          ``test_scenarios.json`` 与 ``_scenarios_full.json``（防对账回填旧
-         定义，fix-frozen-scenario-shell-truncation 同款成对纪律）；
+         定义，fix-frozen-scenario-shell-truncation 同款成对纪律）。
+         逐文件写前快照，任一步失败按快照回滚本轮已写文件（不留半改状态
+         与成对撕裂对，code-review item 97da350709f7）；
       6. STATE：修订计数 +1、置 ``_scenario_revision_reverify_pending``
          （修订 re-entry 先于升级——下轮再失败时升级停车入口见旗标追加
          一次重验而非直接升级）、清 env 阻塞/inconclusive 停车字段
@@ -2631,35 +2534,73 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
                 "error": "场景定义校验失败：" + "；".join(errors[:3]),
                 "frozen_manual": False}
 
+    # 5. 落盘公共骨架（写前快照 + 失败回滚，item 97da350709f7）：docstring
+    # 承诺「任一步失败即停，不留半改状态」——夹具与场景成对文件写入前逐
+    # 文件快照，任一步失败按快照回滚本轮已写文件（仿 _exec_untrack_stray_wip
+    # 的 gi_backup/_abort 骨架），不留半改夹具与「新一个旧一个」成对撕裂对。
+    written: list = []  # 本轮已落盘 (Path, 写前 bytes|None)，失败按此回滚
+
+    def _rollback_written() -> int:
+        n = len(written)
+        for path, snap in reversed(written):
+            try:
+                if snap is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(snap)
+            except OSError as e:
+                # 回滚尽力而为：失败仅留痕，不掩盖原始失败原因
+                logger.warning(
+                    "revise_scenario_reverify 回滚 %s 失败: %s: %s",
+                    path, type(e).__name__, e,
+                )
+        written.clear()
+        return n
+
     # 5a. 夹具文件落盘（project_root 锚定；路径已过白名单）
     for item in fixture_files:
         rel = str(item.get("path") or "").strip()
         target = proot / rel
         try:
+            snap = target.read_bytes() if target.exists() else None
             target.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(target, str(item.get("content") or ""))
+            written.append((target, snap))
             steps.append(f"已写夹具文件 {rel}")
         except OSError as e:
             logger.warning(
                 "revise_scenario_reverify 写夹具文件失败（spec=%s path=%s）: %s: %s",
                 spec, rel, type(e).__name__, e,
             )
+            rolled = _rollback_written()
+            if rolled:
+                steps.append(f"夹具写入失败，已回滚本轮已写文件（{rolled} 个）")
             return {"ok": False, "steps": steps,
                     "error": f"夹具文件写入失败：{rel}", "frozen_manual": False}
 
-    # 5b. 场景集成对落盘（同覆盖 test_scenarios.json 与 _scenarios_full.json）
+    # 5b. 场景集成对落盘（同覆盖 test_scenarios.json 与 _scenarios_full.json）。
+    # 两次独立原子写按「先 _scenarios_full 后 test_scenarios」固定顺序（对账
+    # 回填以 test_scenarios.json 为权威源，后写使中断撕裂对收敛回旧一致态而
+    # 非触发既有回填缺陷）；第二次写失败时按快照回滚成对两文件。
     versioned = prepare_scenarios_for_write(scenarios)
     vp_dir = proot / ".fenix" / "verify-progress" / spec
     try:
         vp_dir.mkdir(parents=True, exist_ok=True)
         body = json.dumps(versioned, ensure_ascii=False, indent=2)
-        atomic_write_text(vp_dir / "test_scenarios.json", body)
-        atomic_write_text(vp_dir / "_scenarios_full.json", body)
+        for pair_path in (vp_dir / "_scenarios_full.json",
+                          vp_dir / "test_scenarios.json"):
+            snap = pair_path.read_bytes() if pair_path.exists() else None
+            atomic_write_text(pair_path, body)
+            written.append((pair_path, snap))
     except (OSError, TypeError, ValueError) as e:
         logger.warning(
             "revise_scenario_reverify 场景落盘失败（spec=%s）: %s: %s",
             spec, type(e).__name__, e,
         )
+        rolled = _rollback_written()
+        if rolled:
+            steps.append(f"场景落盘失败，已回滚本轮已写文件（{rolled} 个，"
+                         "含成对定义文件，不留撕裂对）")
         return {"ok": False, "steps": steps,
                 "error": "修订场景集落盘失败（成对定义文件写入异常）",
                 "frozen_manual": False}
@@ -2745,11 +2686,25 @@ def parse_stray_wip_manifest(evidence) -> list:
 
 
 def _git_out(project_root, *args: str) -> str:
-    """在 project_root 跑 git 命令，返回 stdout；非零退出抛 RuntimeError。"""
-    r = subprocess.run(
-        ["git", "-C", str(project_root), *args],
-        capture_output=True, text=True,
-    )
+    """在 project_root 跑 git 命令，返回 stdout；非零退出抛 RuntimeError。
+
+    固化解码口径 + 超时（code-review item f4c753f87e84）：text=True 缺省按
+    随 locale 的默认编码解码，消费面含 ``status --porcelain -z`` /
+    ``ls-files -z``（-z 对非 ASCII 路径原样输出字节），非 UTF-8 locale 下
+    抛 UnicodeDecodeError——pipeline._fix_diff_files 同形态实测事故，修法
+    对齐其 code-review item de067b5e1d70（encoding="utf-8"+errors="replace"）；
+    无 timeout 时索引锁被占/hook 挂起会无限阻塞调用线程（alert-resolve/
+    admin 处置端点所在线程），取 30s（与 _path_already_ignored 同口径），
+    超时抛 RuntimeError 由各调用方既有 except 分支兜底。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_root), *args],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"git 命令超时（30s）: {' '.join(args[:2])}") from e
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout).strip()[:300])
     return r.stdout
@@ -2806,8 +2761,9 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
       零 git 写）；
     - 文件来源 MUST 限信号记录 evidence 的「文件清单(N):」段与当刻
       ``git status --porcelain`` 的交集，拒任意路径；清单中已不在当刻 status
-      的文件跳过不报错（同指纹一次性告警，清单会陈旧）；交集为空返回明确
-      error、不产生空提交；
+      的文件跳过不报错（同指纹一次性告警，清单会陈旧）；交集内未跟踪条目
+      不随本动作提交（pathspec 提交对未跟踪文件必 fatal），提示走
+      untrack_stray_wip；交集为空返回明确 error、不产生空提交；
     - 非 destructive（提交可回溯），无需确认门；成功结果附提交 hash。
 
     paths 仅供程序化调用方显式收窄提交范围（MUST 为清单子集，清单外路径
@@ -2870,6 +2826,26 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                       f"清单({len(manifest)}): {', '.join(manifest)}"),
         }
 
+    # 未跟踪分流（code-review item 48fc7cf0837c）：porcelain 交集自然混入
+    # 未跟踪（??）条目，而 ``git commit -- <path>`` 对未跟踪文件报 fatal
+    # 「pathspec did not match any file(s) known to git」，任一未跟踪项即
+    # 整批提交放弃。tracked/未跟踪两态分流：只提交 tracked 子集；未跟踪
+    # 散件按分工走 untrack_stray_wip（出库+ignore 根治，对已脱离索引条目
+    # 幂等跳过），此处提示不报错。
+    try:
+        indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
+    except RuntimeError as e:
+        return {"ok": False, "steps": [], "error": f"读取 git 索引失败: {e}"}
+    untracked = [p for p in to_commit if p not in indexed]
+    to_commit = [p for p in to_commit if p in indexed]
+    if not to_commit:
+        return {
+            "ok": False, "steps": [],
+            "error": ("信号清单∩当刻改动内文件均未被 git 跟踪（未跟踪散件按"
+                      "分工应走 untrack_stray_wip），不产生提交；"
+                      f"清单({len(manifest)}): {', '.join(manifest)}"),
+        }
+
     try:
         msg = (f"[fenix] admin: 提交主树散件 WIP"
                f"（{COMMIT_STRAY_WIP_SIGNAL_TYPE} 信号清单内 "
@@ -2888,6 +2864,12 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     if skipped:
         steps.append(
             f"清单内已不在当刻改动、跳过 {len(skipped)} 个：{', '.join(skipped)}"
+        )
+    if untracked:
+        steps.append(
+            f"清单内未跟踪散件 {len(untracked)} 个不随本动作提交"
+            f"（pathspec 提交仅限 tracked；走 untrack_stray_wip 根治）："
+            f"{', '.join(untracked)}"
         )
     if note:
         steps.append(f"裁决依据：{note}")
@@ -2941,7 +2923,14 @@ def _append_gitignore_entries(proot, paths) -> list:
         have_lines.add(p)
     if appended:
         sep = "" if (not existing or existing.endswith("\n")) else "\n"
-        gi.write_text(existing + sep + "\n".join(appended) + "\n", encoding="utf-8")
+        # 原子写回（code-review item c971a8de0638）：裸 write_text 非原子，
+        # 进程中断/磁盘满可留下截断的 .gitignore（仓库忽略规则整体丢失面）
+        # ——gi_backup 只覆盖 _abort 显式回滚路径，不覆盖写半程中断。改走
+        # scenario_gate.atomic_write_text（tmp+replace，模块内其余文件写入
+        # 同款）。
+        from core.pm_engine.verification.scenario_gate import atomic_write_text
+
+        atomic_write_text(gi, existing + sep + "\n".join(appended) + "\n")
     return appended
 
 

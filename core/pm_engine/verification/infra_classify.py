@@ -406,7 +406,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     )
     store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
     try:
-        store.append(
+        rec = store.append(
             {
                 "kind": SIGNAL,
                 "signal_type": "verify_uniform_failure",
@@ -422,6 +422,18 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 ),
             }
         )
+        # code-review item 551c66ae82db：文件损坏留底被下限保护拒写时 append
+        # 返回 None（core/admin_store.py append 契约，item 2570ca391771：记录
+        # 未落盘，按未落地处理）——未达阈值轮该 SIGNAL 是 Administrator 的
+        # 唯一通知面，拒写后实际收不到信号，不得落进下方成功路径日志误导
+        # 排查（与 family._signal_family_explosion 判空口径一致，item
+        # 17c3e99da9b7 / ae509e1816f3）。
+        if rec is None:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"verify_uniform_failure 信号未落盘（store 拒写，按未落地处理）: "
+                f"'{spec_name}' 第 {attempts} 次呼叫 admin 未送达",
+            )
     except Exception as e:
         pipeline._context.logger.error("pm_engine", f"verify_uniform_failure 信号写入失败: {e}")
     if attempts >= _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD:
@@ -761,12 +773,16 @@ def reclassify_infra_rounds(
         target_status = None
 
     # ── 审计留痕（admin_store DISPOSITION，幂等由 reclassify_key 去重）──
-    # 先落幂等键再扣减：append 失败（如 OSError）时状态尚未被改动，调用方
-    # 重试会重新走完整流程且只扣一次；若先扣减后写审计，append 失败时幂等
-    # 键未落盘，重试会二次扣减（超出 admin 声明的 n 轮上限）。反向窗口
-    # （append 成功后扣减失败）由 already_applied 幂等短路兜底——fail_rounds
-    # 保持偏高（预算偏紧，不放大重试预算）。
-    store.append(
+    # 先落幂等键再扣减：append 拒写（文件损坏留底被下限保护，返回 None，
+    # 见 core/admin_store.py append 契约 item 2570ca391771）时幂等键未落盘，
+    # 直接返回失败、不执行扣减——否则重试在 already_applied 检查中找不到
+    # 键会二次扣减，超出 admin 声明的 n 轮上限（code-review item
+    # b0d51bd553d4）；append 抛异常（如 OSError）时状态尚未被改动，调用方
+    # 重试会重新走完整流程且只扣一次。若先扣减后写审计，append 失败时幂等
+    # 键未落盘，重试同样会二次扣减。反向窗口（append 成功后扣减失败）由
+    # already_applied 幂等短路兜底——fail_rounds 保持偏高（预算偏紧，不放大
+    # 重试预算）。
+    rec = store.append(
         {
             "kind": DISPOSITION,
             "signal_type": RECLASSIFY_SIGNAL_TYPE,
@@ -784,6 +800,13 @@ def reclassify_infra_rounds(
             "reclassify_key": reclassify_key,
         }
     )
+    if rec is None:
+        return {
+            "ok": False,
+            "reason": "audit append rejected",
+            "fail_rounds": current,
+            "applied": 0,
+        }
 
     # ── 原子写入 ──
     updates = {"_verify_fail_rounds": new_fail_rounds}

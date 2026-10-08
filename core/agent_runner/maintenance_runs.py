@@ -1694,7 +1694,10 @@ def run_code_review(
 
             shards = len(_cr_shard_paths(runner.project_root, run_id))
             findings = runner._read_code_review_out(runner.project_root, run_id)
-        except OSError as e:
+        except Exception as e:
+            # 宽口径与同函数落账段/抢救段对齐：产物读取链的非 OSError 异常
+            # （聚合读侧行级处理等）同样折算失败信封，不向调用方穿透
+            # （code-review item 6c04e4e5fbc9）。
             run_ok = False
             error = f"读取审查产物失败: {e}"
             findings = []

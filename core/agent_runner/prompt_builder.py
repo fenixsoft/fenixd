@@ -1110,8 +1110,11 @@ class PromptBuilder:
             result_path = str(impl_result_path(wt_path))
         else:
             result_path = ".fenix-run-result.json（worktree 根目录）"
-        from core.agent_runner.runner import AgentRunner
-        from core.agent_runner.result_gate import DISPOSITION_WHITELIST
+        try:
+            from core.agent_runner.runner import AgentRunner
+            from core.agent_runner.result_gate import DISPOSITION_WHITELIST
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入不阻断派发
+            return ""
 
         statuses = " / ".join(f'`"{s}"`' for s in AgentRunner._IMPL_RESULT_STATUSES)
         dispositions = " / ".join(f'`"{d}"`' for d in DISPOSITION_WHITELIST)
@@ -1184,7 +1187,10 @@ class PromptBuilder:
         Returns:
             prompt 段字符串（含导航信息时）或空串（fail-open / 无地图）。
         """
-        from core.agent_runner.runner import ROUTE_MAP_REL
+        try:
+            from core.agent_runner.runner import ROUTE_MAP_REL
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入
+            return ""
 
         project_root = self._pm.project_root
         map_path: Path | None = None
@@ -1349,6 +1355,15 @@ class PromptBuilder:
             prev_error = ""
         if not prev_error:
             return ""
+        # 截断守卫（code-review item 1cf7f4fb4e17）：与 _impl_diagnosis_section
+        # 对 attribution/conclusion 的截断同口径——上轮 error 可能携带大段日志/
+        # 堆栈/网关错误原文，全文注入会让重派轮 prompt 随之线性膨胀。保留头部
+        # 2000 字并在段内注明已截断，保持重派轮提示词尺寸有界。
+        if len(prev_error) > 2000:
+            prev_error = (
+                f"{prev_error[:2000]}\n"
+                f"…（上轮 error 原文共 {len(prev_error)} 字，已尾部截断防提示词膨胀）"
+            )
         if lane == "review":
             lead = (
                 "The previous review attempt was rejected and this is a re-review. "
@@ -2288,12 +2303,15 @@ class PromptBuilder:
         agents/planner-plan.md 静态模板互为双保险（D2）；fast-track / planner-judge
         等其他写入车道既有内容不变。
         """
-        from core.verify_engine.scenarios import (
-            ASSERTION_REQUIRED_FIELDS,
-            ACTION_REQUIRED_FIELDS,
-            CLI_ASSERTIONS,
-            API_ASSERTIONS,
-        )
+        try:
+            from core.verify_engine.scenarios import (
+                ASSERTION_REQUIRED_FIELDS,
+                ACTION_REQUIRED_FIELDS,
+                CLI_ASSERTIONS,
+                API_ASSERTIONS,
+            )
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入
+            return ""
 
         lines = [
             "",
@@ -2781,7 +2799,10 @@ class PromptBuilder:
         既有结论原样写回 report.json（确定性校验器仍要求全量字段在位，写回
         不可省）。无缓存/零命中/读取异常 → 返回空串（零注入，prompt 回退）。
         """
-        from core.verdict_check import load_verdict_cache, scenario_fingerprint
+        try:
+            from core.verdict_check import load_verdict_cache, scenario_fingerprint
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入
+            return ""
 
         report_path = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
@@ -2836,7 +2857,10 @@ class PromptBuilder:
         再裁决」。findings 缺失/为空/损坏 → 返回空串（零注入，prompt 与现状
         逐字节一致）。
         """
-        from core.verify_engine.scenario_static_check import load_findings
+        try:
+            from core.verify_engine.scenario_static_check import load_findings
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入
+            return ""
 
         findings = load_findings(self._pm.project_root, spec_name)
         if not findings:

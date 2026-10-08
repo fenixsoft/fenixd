@@ -1540,20 +1540,26 @@ def salvage_result_from_transcript(
     matches = _FENCED_JSON_RE.findall(last_text)
     if not matches:
         return False
-    payload = None
-    for block in reversed(matches):
-        try:
-            candidate = json.loads(block)
-        except (json.JSONDecodeError, RecursionError):
-            # fenced 块来自 agent 完全可控的末轮 assistant text，超深嵌套 JSON
-            # 会让 json.loads 抛 RecursionError（非 JSONDecodeError 子类，同
-            # _check_artifact_json_file 先例）——按「抽不出合法 JSON」同口径
-            # continue，守住本函数「转录缺失/不可读 → 不抛异常」契约。
-            continue
-        if isinstance(candidate, dict) and candidate.get("status") in whitelist:
-            payload = candidate
-            break
-    if payload is None:
+    # code-review item 5513a0971a0a：fail-closed 对齐 docstring——只认末轮
+    # 最后一个 fenced 块。旧实现倒序扫全部块取首个白名单命中，末块为白名单
+    # 外形态（总结性/异构 JSON）时会把更早位置的历史草稿载荷捞出代写为结果
+    # 文件，与「末轮终态」契约相悖；现在末块不合规即整体放弃（返回 False），
+    # 交由既有重试/归因通道处置。
+    try:
+        payload = json.loads(matches[-1])
+    except (json.JSONDecodeError, RecursionError):
+        # fenced 块来自 agent 完全可控的末轮 assistant text，超深嵌套 JSON
+        # 会让 json.loads 抛 RecursionError（非 JSONDecodeError 子类，同
+        # _check_artifact_json_file 先例）——按「抽不出合法 JSON」口径放弃，
+        # 守住本函数「转录缺失/不可读 → 不抛异常」契约。
+        payload = None
+    if not isinstance(payload, dict) or payload.get("status") not in whitelist:
+        _logger.warning(
+            "%s 结果捞回放弃：转录末轮最后一个 fenced JSON 非合法结果载荷"
+            "（status=%r 不在白名单或块不可解析），不代写 spec=%s run_id=%s",
+            agent_type,
+            payload.get("status") if isinstance(payload, dict) else None,
+            spec_name, run_id)
         return False
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

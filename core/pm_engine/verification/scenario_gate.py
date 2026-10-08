@@ -370,11 +370,28 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         backup_map = {}
         if backup.exists():
             try:
-                for s in json.loads(backup.read_text(encoding="utf-8")):
-                    if isinstance(s, dict) and s.get("id"):
-                        backup_map[s["id"]] = s
+                backup_data = json.loads(backup.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 backup_map = {}
+            else:
+                # code-review e2441291ebbb：备份可能被外部损坏成「合法 JSON 但
+                # 根为非可迭代标量」（null/数字等），直接 for 迭代会抛 TypeError
+                # 炸穿整个 _apply_scenario_freeze——连坐跳过 3.2 合法子集写回，
+                # planner 原始文件（可能含非法条目）将原样进入阶段2。与上方
+                # test_scenarios.json 顶层非列表同口径：WARNING 留痕后置空，
+                # 缺失场景走「定义不可恢复」剔除。
+                if not isinstance(backup_data, list):
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"场景备份不可用 '{spec_name}'（_scenarios_full.json 顶层"
+                        f"非列表，实际为 {type(backup_data).__name__}，缺场景补齐"
+                        f"将按「定义不可恢复」剔除）",
+                    )
+                    backup_map = {}
+                else:
+                    for s in backup_data:
+                        if isinstance(s, dict) and s.get("id"):
+                            backup_map[s["id"]] = s
         # D3：备份缺定义 → 改弃场景（不再写 {"id","description"} 占位）。
         # 备份取回的条目可能来自旧备份（未经写端门），统一过下方
         # 收编写回 schema 门剔除坏条目；备份缺定义的条目登记「定义不可恢复」
