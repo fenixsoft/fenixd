@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=7
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching -->
+<!-- knowledge: capability=code-fix-lane rev=8
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -41,6 +41,15 @@
 - 零有效修复拒合回：批内产物行无一条 `fixed`，或 worktree 分支相对建树点无任何提交**且 salvage 检测无可提交的未提交改动**（见「先 commit 再验证与收尾 salvage」）时，不合回、不置任何条目 `resolved`（防止全 `skipped` 的批被白洗成 `resolved`）；收尾清理 worktree，该批条目写入 `chain_skipped`，进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批——零产物批按 `halt` 终止链会使最早队列头永久堵塞车道。
 - worktree 内回归快照随执行根落盘于 worktree，不作为主树「测试回归」分面的数据源。
 
+### 合回冲突定向救回
+- 合回预演出真冲突时先救回再即弃：检出真冲突后、清理现场前执行一次定向救回——解析当前基线分支（`resolve_base_branch`）→ 批分支 rebase 到基线 → 重跑批回归（与既有批回归同执行根同锁语义）→ 通过则重走 merge_back；救回至多尝试 1 次，任一步失败不重试、降级走组粒度回收。
+- rebase 仍冲突时组粒度回收：先 abort 还原批分支，从当前基线新建承载分支，以「提交是否触碰冲突文件集」逐组 cherry-pick 回收非冲突提交，回收集重跑批回归，通过后重走 merge_back 出账；二次回归仍不过则放弃回收、整批兜底入失败档案（与无救回时同口径）。
+- 条目归属以提交 body 的 `items:` 清单解析为准（commit 契约的 body 结构化标注，仅新批生效）；旧契约提交解析不出清单时，无法归属到非冲突组的剩余未出账条目保守整体随兜底入失败档案，MUST NOT 做无据归属。仍冲突提交对应条目入失败档案计 fail_count，保持 open 走既有重试预算。
+- 冲突文件集单源来自合回预演的 `MergeConflictInfo`（merge-tree 预演产出），不重造第二套冲突面判定。
+- 救回时序与保真：救回发生在 `_safe_cleanup` 之前、单轮闭环，MUST NOT 依赖分支/worktree/tip_sha 跨轮存活（即弃后分支被删、worktree 被回收，tip_sha 仅 GC 前可用）；rebase/cherry-pick 改写批分支历史安全的前提是分支独立且尚未合回。
+- 留痕：救回各阶段（rebase/二次回归/cherry-pick/终局）按成败记 INFO/WARNING 日志，终局单行汇总（整批救回/部分回收/兜底全弃）。
+- defer 路径不触发救回：`wip_gate_blocked`（主树未提交 WIP 预检阻断）继续走 defer 零预算路径，不消耗救回次数与 fail_count 预算；救回重走合回若命中 `wip_gate_blocked`，同样按 defer 零预算处理，不计救回失败、不触发组粒度回收。
+
 ### 先 commit 再验证与收尾 salvage
 - 提示词契约（`agents/code-fix.md` 契约段，软约束）：每修复一条立即 `git commit`（分支上 commit 廉价且可回退）；后台/定向验证 MUST NOT 作为 commit 的前置条件；回合结束前 worktree 工作区必须干净（全部改动已 commit）。机械保障由收尾 salvage 承担。
 - 收尾 salvage 三元组检测：批收尾判定「分支相对建树点无提交」时，编排 MUST 先检测三元组——产物行存在 `status == "fixed"` ∧ 分支无提交 ∧ worktree 存在未提交改动（`git status --porcelain` 非空）。三元组同时满足 → 自动以 `orchestrator-salvage: batch <批号> run <run_id>` message 把未提交改动提交到批分支，随后按正常路径继续回归/合回裁决，MUST NOT 直接按 `no_effective_fix` 拒合回。
@@ -72,3 +81,4 @@
 - 2026-10-03 2026-10-03-add-codefix-commit-first-contract（spec/archive/2026-10-03-add-codefix-commit-first-contract） — 零有效修复拒合回新增 salvage 前置分支：批收尾「分支无提交」判定先过 salvage 三元组检测（fixed 行 ∧ 无提交 ∧ porcelain 非空），命中即 `orchestrator-salvage:` 自动提交后继续回归/合回裁决，真零改动维持拒合回、禁空提交；新增 `agents/code-fix.md`「先 commit 再验证」软契约（逐条即 commit、验证不阻塞 commit、收尾工作区干净），机械保障由 salvage 承担。
 - 2026-10-03 2026-10-03-decouple-codefix-review-lanes（spec/archive/2026-10-03-decouple-codefix-review-lanes） — 新增「与审查车道的调度解耦」：守卫链无审查在飞条件、物理冲突只剩回归主机级套件锁自然串行；延迟批合回自驱动推进语义固化（defer 按 consumed 收尾照常推进、延迟台账合回核销同检查点继续选批）；同归档另建审查 run 停滞看门狗能力页（code-review-lane/review-run-stall-watchdog），其取消收场急救落账不激活修复链。
 - 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 选批由「最早优先截前 batch_size 条」改写为文件亲和性贪心装箱（batch_size 放宽为目标规模 T、硬上限 2T）；回归门范围由「首轮恒全量」改写为两段式（非末批定向、末批恒全量兜底），定向失败与全量失败同走既有定向重试轮；算法与分流细则独立成页 codefix-affinity-batching。
+- 2026-10-09 evo-add-codefix-mergeback-conflict-salvage（spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage） — 新增「合回冲突定向救回」：真冲突整批即弃前先 rebase 基线+重跑批回归救回（至多 1 次）、失败降级组粒度 cherry-pick 回收（items: 清单归属、无据保守兜底入档）、救回挂 cleanup 前单轮闭环；defer 路径零预算语义不变。

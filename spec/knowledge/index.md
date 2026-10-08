@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-09 02:02 UTC+8
+> 最后更新：2026-10-09 02:10 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -17,7 +17,7 @@
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 50 | 2026-10-07 04:01 |
 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 21 | 2026-10-06 03:13 |
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 18 | 2026-10-06 07:14 |
-| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 25 | 2026-10-06 07:40 |
+| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 25 | 2026-10-09 02:10 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 15 | 2026-10-08 02:22 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 28 | 2026-10-08 02:52 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-10-08 04:02 |
@@ -28,7 +28,7 @@
 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 32 | 2026-10-07 03:30 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 22 | 2026-10-07 02:45 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
-| [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 26 | 2026-10-09 02:02 |
+| [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 27 | 2026-10-09 02:10 |
 | [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 10 | 2026-10-08 02:32 |
 | [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 13 | 2026-10-07 03:30 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
