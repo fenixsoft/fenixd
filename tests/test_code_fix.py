@@ -3270,3 +3270,121 @@ class TestWipGateDeferred(unittest.TestCase):
         _time.sleep(1.1)  # 分支名含秒级时间戳（create 端硬编码），隔秒防同名撞分支
         wt2 = wm.create(spec_name="code-review-fix", agent_type="code-fix")
         self.assertIsNotNone(wt2, "放锁后同键 create 可成功（下一批建树不再被拒）")
+
+
+class TestRegressionProgressEvidence(unittest.TestCase):
+    """明细档进度证据留存（evo-codefix-zero-face-regression-hardening 1.3/2.2）。
+
+    timeout/total=0 形态明细档本无 items 可看，毒化源定位全靠根治提交事后
+    自述——回归侧已采集的进度证据（快照 long_tests / junit.xml.log 尾段）
+    必须在 worktree 清理前并入明细档。锁定：证据键存在且为「用例名+耗时」、
+    long_tests 缺失时回退现形态不报错、既有消费方（items/fallback_full）
+    不受新增可选键影响。
+    """
+
+    def _ingest(self, root, snapshot, exec_root=None, run_id="regression-fake-9",
+                status="timeout"):
+        from types import SimpleNamespace
+
+        from core.code_fix import _ingest_failure_round
+
+        reg = SimpleNamespace(run_id=run_id, status=status, snapshot=snapshot)
+        return _ingest_failure_round(root, reg, [], exec_root)
+
+    def _payload(self, root, detail_rel):
+        return json.loads((root / detail_rel).read_text(encoding="utf-8"))
+
+    def test_detail_includes_long_tests_name_and_time(self):
+        """timeout 明细档并入快照 long_tests（规整为用例名+耗时可选键）。"""
+        root = _make_project_root()
+        fail_items, mapped, detail_rel, cumulative = self._ingest(root, {
+            "failures": [],
+            "long_tests": [
+                {"name": "tests/test_slow.py::test_big", "time": 30.5,
+                 "file": "tests/test_slow.py", "line": 3,
+                 "classname": "tests.test_slow"},
+                {"name": "tests/test_slow.py::test_huge", "time": 12.0,
+                 "file": "tests/test_slow.py", "line": 9,
+                 "classname": "tests.test_slow"},
+            ],
+            "output": ".fenix/regression/junit.xml",
+        })
+        self.assertFalse(mapped, "timeout 无失败明细 → fallback_full")
+        self.assertEqual(cumulative, [])
+        payload = self._payload(root, detail_rel)
+        self.assertTrue(payload["fallback_full"])
+        self.assertEqual(payload["long_tests"], [
+            {"name": "tests/test_slow.py::test_big", "time": 30.5},
+            {"name": "tests/test_slow.py::test_huge", "time": 12.0},
+        ], "规整为 {name, time}——只留定位毒化源所需最小字段")
+        self.assertNotIn("progress_log_tail", payload,
+                         "long_tests 在场时不再取日志尾段（次选语义）")
+
+    def test_missing_long_tests_falls_back_to_junit_log_tail(self):
+        """快照无 long_tests 时次选 junit.xml.log 尾段（exec_root 相对推导）。"""
+        from core.code_fix import REG_PROGRESS_LOG_TAIL_BYTES
+
+        root = _make_project_root()
+        wt = Path(_mkdtemp("cfix-ev-wt-"))
+        log = wt / ".fenix" / "regression" / "junit.xml.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(
+            "tests/test_a.py ....\n" * 100
+            + "tests/test_slow.py .....\n", encoding="utf-8")
+        _, _, detail_rel, _ = self._ingest(
+            root, {"failures": [], "output": ".fenix/regression/junit.xml"},
+            exec_root=wt)
+        payload = self._payload(root, detail_rel)
+        self.assertIn("tests/test_slow.py .....", payload["progress_log_tail"],
+                      "尾段含最后进度（毒化源集中在中止点附近）")
+        self.assertNotIn("long_tests", payload)
+        self.assertLessEqual(
+            len(payload["progress_log_tail"].encode("utf-8")),
+            REG_PROGRESS_LOG_TAIL_BYTES, "尾段窗口封顶，不整读超长日志")
+
+    def test_no_evidence_keeps_current_shape(self):
+        """旧快照无 long_tests 且日志不在盘 → 明细档保持现形态（零新增键）。"""
+        root = _make_project_root()
+        _, _, detail_rel, _ = self._ingest(root, {"failures": []}, exec_root=None)
+        payload = self._payload(root, detail_rel)
+        self.assertEqual(
+            set(payload),
+            {"items", "source_run_id", "created_at", "fallback_full"},
+            "证据缺席时 schema 与旧形态逐键一致（不新增空键）")
+
+    def test_malformed_long_tests_entries_tolerated(self):
+        """字段缺失容错：非 dict/缺 name 条目跳过，不抛异常。"""
+        root = _make_project_root()
+        fail_items, mapped, detail_rel, _ = self._ingest(root, {
+            "failures": [],
+            "long_tests": ["junk", 42, {"time": 1.0}, {"name": ""},
+                           {"name": "tests/test_x.py::test_ok", "time": 9.0}],
+        })
+        self.assertFalse(mapped)
+        payload = self._payload(root, detail_rel)
+        self.assertEqual(payload["long_tests"],
+                         [{"name": "tests/test_x.py::test_ok", "time": 9.0}])
+
+    def test_mapped_round_keeps_items_semantics_alongside_new_key(self):
+        """定向重试消费路径不受新增可选键影响：mapped 轮 items/fallback_full
+        语义不变，long_tests 键并存（重试注入仍读累计 items）。"""
+        root = _make_project_root()
+        wt = Path(_mkdtemp("cfix-ev-wt2-"))
+        tests = wt / "tests"
+        tests.mkdir(parents=True, exist_ok=True)
+        (tests / "test_x.py").write_text("x=1", encoding="utf-8")
+        fail_items, mapped, detail_rel, cumulative = self._ingest(root, {
+            "failures": [{"classname": "tests.test_x", "name": "test_a",
+                          "file": "", "line": 1, "time": 0.1, "kind": "failure",
+                          "message": "boom"}],
+            "long_tests": [{"name": "tests/test_x.py::test_slow", "time": 30.0}],
+        }, exec_root=wt, run_id="regression-fake-3", status="failed")
+        self.assertTrue(mapped)
+        self.assertEqual([i["nodeid"] for i in cumulative],
+                         ["tests/test_x.py::test_a"], "重试注入集不受影响")
+        payload = self._payload(root, detail_rel)
+        self.assertFalse(payload["fallback_full"])
+        self.assertEqual([i["nodeid"] for i in payload["items"]],
+                         ["tests/test_x.py::test_a"], "既有 items 消费方语义不变")
+        self.assertEqual(payload["long_tests"],
+                         [{"name": "tests/test_x.py::test_slow", "time": 30.0}])
