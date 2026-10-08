@@ -378,7 +378,32 @@ def _load_verify_contract_with_raw(
         # 按下方「记 warning 忽略该步」惯例处理。list 形态的逐元素校验见
         # _prepare_run_valid（item 8a6f8440804e）。
         elif isinstance(step, dict) and _prepare_run_valid(step.get("run")):
-            prepare.append(PrepareStep(run=step["run"], cwd=str(step.get("cwd") or "")))
+            # cwd 守卫（code-review item 39bd14b1b0d0）：绝对路径或含 ".." 段
+            # 会让消费方 ``Path(项目根) / cwd``（_run_prepare_steps_unlocked、
+            # npm 依赖预装）静默漂移到项目根之外执行构建，产物落点与
+            # PrepareStep「cwd 相对项目根」的约定不符（对齐下方 serve.root/
+            # evidence_dir 同款守卫口径与理由）——记 warning 后按空 cwd 回退
+            # 项目根；prepare.run 本为任意 shell 命令，此非安全边界，只为保住
+            # 失败归因与产物定位。
+            raw_cwd = step.get("cwd")
+            cand_cwd = raw_cwd.strip() if isinstance(raw_cwd, str) else ""
+            bad_cwd_reason = ""
+            if cand_cwd.startswith("/"):
+                bad_cwd_reason = "绝对路径（须为相对项目根的路径）"
+            elif ".." in cand_cwd.split("/"):
+                bad_cwd_reason = '含 ".." 段（不得逃出项目根）'
+            if bad_cwd_reason and logger:
+                logger.warning(
+                    "verify_contract",
+                    f"verify.yaml prepare 第 {i} 步 cwd 非法（{bad_cwd_reason}，"
+                    f"按空 cwd 回退项目根）: {raw_cwd!r}",
+                )
+            prepare.append(
+                PrepareStep(
+                    run=step["run"],
+                    cwd="" if bad_cwd_reason else str(raw_cwd or ""),
+                )
+            )
         elif logger:
             logger.warning(
                 "verify_contract",
