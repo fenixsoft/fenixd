@@ -19,7 +19,7 @@
 
 ### Requirement: 信号接入唤起
 
-whitelist_untracked 信号 SHALL 登记为可唤起类型（severity major，对齐 maintree_untracked_stray_escalated 先例），文案 SHALL 说明 negation 放行即声明入库意图、放行+未跟踪约等于脱落事故。
+whitelist_untracked 信号 SHALL 完成三表登记（SIGNAL_SEVERITY=severity major、SIGNAL_RECOMMENDATION、收录 STORED_SIGNAL_TYPES——三者缺一即不唤起，对齐 maintree_untracked_stray_escalated 先例），文案 SHALL 说明 negation 放行即声明入库意图、放行+未跟踪约等于脱落事故。
 
 #### Scenario: 信号唤起与裁决
 

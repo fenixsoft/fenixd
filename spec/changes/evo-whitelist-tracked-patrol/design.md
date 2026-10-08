@@ -14,10 +14,12 @@
 - 复用既有 _git_check_ignore_detail 批量通道，跑 check-ignore -v -n --non-matching 拿到 negation 放行规则命中的路径；
 - 对放行路径批量查 git ls-files，不在索引中的即为 whitelist_untracked 候选；
 - `!` 放行 + untracked 即异常，无需新增 git 查询形态；豁免判据（放行不计散件）保持不变，两流互不污染。
+- 去重沿用 untracked 流同款指纹注册表口径（``_untracked_registry`` + 指纹消失自动复位，stray_wip.py:202、:695-699），指纹取放行-未跟踪路径排序集 + 逐文件内容 sha256（untracked 不可复用 tracked 指纹形态，同 :725-726 口径），同集合只发一次。
 
 ### 2. 信号登记（core/admin_monitor.py）
 
-- SIGNAL_SEVERITY（:359）与 SIGNAL_RECOMMENDATION（:451）两表登记新信号：severity major 接入唤起（对齐 maintree_untracked_stray_escalated 先例，不进 STORED_SIGNAL_TYPES 之外的第三态）；
+- **三表登记**（对齐 maintree_untracked_stray_escalated 先例，stray_wip.py:775-777 明文「三表登记接入自动唤起」）：SIGNAL_SEVERITY（表头 :290，先例项 :364）登记 severity major；SIGNAL_RECOMMENDATION（表头 :397，先例项 :456）登记文案与处置建议；**并收录 STORED_SIGNAL_TYPES（表头 :493，先例项 :556）**——两表不够：摄取循环只对收录类型无条件唤起（admin_monitor.py:354 注释、:500-502），未收录则记录落 store 后无人摄取、信号石沉大海（verify_uniform_failure 事故先例 :537-544）；
+- 发信号时 evidence 须含「项目名=」段（无 spec 形态摄取解析单源，对齐 _write_untracked_escalated_alert :779-781 同款）与「文件清单(N):」段；
 - 文案写明「negation 放行即声明入库意图」，处置建议二选一：git add 恢复入库，或删除放行规则承认其为运行时文件。
 
 ### 3. 约定互引（core/knowledge_audit.py）
