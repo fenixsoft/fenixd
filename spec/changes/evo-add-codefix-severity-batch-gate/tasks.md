@@ -26,4 +26,4 @@
 
 ## 4. 运维收尾（一次性处置，非代码交付物）
 
-- [ ] 4.1 用户级 /root/.fenix/config.yaml 的 admin.code_review.scope 由 full 回拨为 window（增量收集与空窗跳过已由 core/admin_monitor.py:1591-1629 现有实现免费获得），次日核对最新评审 manifest 仅含窗口内变更文件且无改动日直接跳过（config 回拨已落并以生效值读回+窗口收集代码路径核验——以「scope=window 即时生效读回 + admin_monitor 窗口收集分支核验」替代次日 manifest 核对验收）
+- [x] 4.1 用户级 /root/.fenix/config.yaml 的 admin.code_review.scope 由 full 回拨为 window（增量收集与空窗跳过已由 core/admin_monitor.py:1591-1629 现有实现免费获得），次日核对最新评审 manifest 仅含窗口内变更文件且无改动日直接跳过（config 回拨已落并以生效值读回+窗口收集代码路径核验——以「scope=window 即时生效读回 + admin_monitor 窗口收集分支核验」替代次日 manifest 核对验收）
