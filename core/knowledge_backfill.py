@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+from core.git_text import unquote_git_path
 from core.timelib import now_local
 from core.proc_utils import guard_killpg
 
@@ -183,7 +184,7 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     line = re.sub(r"\s*\n\s*", " ", line).strip()
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
-        text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
+        text = todo_path.read_text(encoding="utf-8", errors="replace") if todo_path.exists() else ""
         # 幂等判定逐行精确比较（落盘形态为 "- {line}"）：子串包含会把前缀重叠
         # 的不同待办（动态尾串差异）误判为已存在而吞掉（code-review 599700eee421）
         if f"- {line}" in text.splitlines():
@@ -220,7 +221,7 @@ def upsert_todo_line(
     line = re.sub(r"\s*\n\s*", " ", line).strip()
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
-        text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
+        text = todo_path.read_text(encoding="utf-8", errors="replace") if todo_path.exists() else ""
         # 落盘形态为 "- {内容}"，前缀匹配对齐该形态
         match_idx = [
             i
@@ -282,21 +283,6 @@ def commit_pathspec(project_root: Path, paths: list[str], message: str) -> bool:
     return True
 
 
-# git porcelain 引号路径的 C 风格短转义表（quote.c 同款；其余特殊字节走
-# \NNN 八进制形式）
-_GIT_SHORT_ESCAPES = {
-    '"': '"',
-    "\\": "\\",
-    "a": "\a",
-    "b": "\b",
-    "f": "\f",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "v": "\v",
-}
-
-
 def _decode_git_quoted_path(rel: str) -> str:
     """解码 git porcelain 引号路径（C 风格转义）为盘上真实路径。
 
@@ -304,40 +290,11 @@ def _decode_git_quoted_path(rel: str) -> str:
     字符（``\\"``、``\\\\``、``\\t`` 等短转义与 ``\\NNN`` 八进制字节转义）；
     只剥外层引号会把转义序列留在字面量里，得到的 relpath 与盘上真实路径
     不一致——该文件既回滚不掉也不计入 touched（code-review 36eb21ca1661 /
-    38ce9b967142）。字节级反转义后按文件系统同款 utf-8 + surrogateescape
-    解码（``core.quotepath=false`` 下非 ASCII 字节原样输出，八进制转义只
-    来自控制字符等特殊字节）；未知转义序列原样保留，不臆造映射。
+    38ce9b967142）。反转义与解码口径已统一收敛到 ``core.git_text``（与
+    mergeback 的 ``_unquote_git_path`` 同一实现，code-review 3e99a584fdf5），
+    本函数保留为薄委托以维持既有调用点命名。
     """
-    if len(rel) < 2 or rel[0] != '"' or rel[-1] != '"':
-        return rel
-    body = rel[1:-1]
-    raw = bytearray()
-    i = 0
-    n = len(body)
-    while i < n:
-        ch = body[i]
-        if ch != "\\" or i + 1 >= n:
-            raw.extend(ch.encode("utf-8"))
-            i += 1
-            continue
-        nxt = body[i + 1]
-        if nxt in _GIT_SHORT_ESCAPES:
-            raw.extend(_GIT_SHORT_ESCAPES[nxt].encode("utf-8"))
-            i += 2
-            continue
-        if nxt in "01234567":
-            digits = ""
-            j = i + 1
-            while j < n and len(digits) < 3 and body[j] in "01234567":
-                digits += body[j]
-                j += 1
-            raw.append(int(digits, 8))
-            i = j
-            continue
-        # 未知转义序列：反斜杠与后随字符原样保留
-        raw.extend(ch.encode("utf-8"))
-        i += 1
-    return raw.decode("utf-8", "surrogateescape")
+    return unquote_git_path(rel)
 
 
 def _knowledge_dirty_files(project_root: Path) -> set[str]:
@@ -769,17 +726,33 @@ def register_archive_pending(project_root: Path, archive_name: str) -> bool:
       永不落页；条目不存在则新建 pending。
 
     台账在盘、原子回写，重启安全；回写经 ``BackfillLedger.save`` 的进程间文件锁
-    + 按条合并落盘，与回填 run 的并发整文件回写互斥、不互相覆盖。
+    + 按条合并落盘，与回填 run 的并发整文件回写互斥、不互相覆盖。台账/specs
+    目录不可读时 fail-open 返回 False 并登记 todo（对齐 ``ledger_has_pending``
+    口径），不阻断派发漏斗。
     Returns: 是否发生登记/重置。
     """
     root = Path(project_root)
-    ledger = BackfillLedger.load(root / LEDGER_RELPATH)
-    specs = root / "spec" / "archive" / archive_name / "specs"
-    caps = (
-        sorted(p.name for p in specs.iterdir() if p.is_dir())
-        if specs.is_dir()
-        else []
-    )
+    try:
+        ledger = BackfillLedger.load(root / LEDGER_RELPATH)
+        specs = root / "spec" / "archive" / archive_name / "specs"
+        caps = (
+            sorted(p.name for p in specs.iterdir() if p.is_dir())
+            if specs.is_dir()
+            else []
+        )
+    except (OSError, ValueError):
+        # 台账/归档 specs 在盘但不可读（权限/EIO/坏字节）时 fail-open 零动作
+        # 退出，不让单次登记故障沿派发漏斗调用链上抛（对齐 ledger_has_pending
+        # / run_backfill 的防护，code-review 1b907a3d581e / d18f3604a4ab）。
+        # 本函数无 logger 入参，留痕走 todo.md；todo 写失败不再外抛，保持零动作。
+        try:
+            append_todo_line(
+                project_root,
+                f"回填登记 {archive_name} 失败（台账或 specs 目录读取异常），请人工检查后重试",
+            )
+        except OSError:
+            pass
+        return False
     changed = False
     adr_key = ADR_PREFIX + archive_name
     if adr_key not in ledger.entries:
