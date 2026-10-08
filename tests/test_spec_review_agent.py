@@ -407,13 +407,27 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         self.assertFalse(seen["second"])
 
     def test_repaired_result_consumed_to_ready(self):
-        """根因回归：run 收工后结果必须被消费（repaired → ready + 派发实现）。"""
+        """根因回归：run 收工后结果必须被消费（repaired → ready + 派发实现）。
+
+        d012f86680b9 写入边界硬门：repairs 须指向实际被修改的文件，故 run
+        期间真实改动修补目标后方可按 repaired 收口（原装置未触碰文件，属
+        硬门要拦的「虚假修补」形态）。
+        """
         sm = self._fresh()
         engine = MagicMock()
         engine.is_review_in_flight = MagicMock(return_value=False)
+        repair_target = Path(self.tmpdir) / "spec" / "changes" / "spec" / "tasks.md"
+
+        def apply_repair():
+            repair_target.write_text(
+                repair_target.read_text(encoding="utf-8") + "\n<!-- repaired -->\n",
+                encoding="utf-8",
+            )
+
         runner = _RecordingRunner(sm, self.tmpdir, result={
             "status": "repaired",
-            "repairs": [{"path": "spec/changes/spec/tasks.md", "summary": "x"}]})
+            "repairs": [{"path": "spec/changes/spec/tasks.md", "summary": "x"}]},
+            on_run=apply_repair)
         mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
         self.assertTrue(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
