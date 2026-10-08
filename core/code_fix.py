@@ -1196,12 +1196,20 @@ def release_retryable_failed_batches(project_root) -> int:
     读-改-写全程持 flock（``_with_lock``，code-review item fd1dc2a59820，
     对齐同文件 ``write_progress`` 先例）：与批收尾 ``record_failed_batch``
     的并发交叠会丢更新（丢一条失败档案）。
+
+    结构化留痕（codefix-release-consume-todo-block 1.2）：释放经
+    _append_release_trace 写 fix-failed-release.jsonl（released_by=
+    auto-budget 区分人工/自动）——解除回池动作此前零审计痕迹。**不接
+    todo 核销动作**：本路径自 0eb2745a 起是打标墓碑而非删记录，记录
+    保留在册、既有 consume 闭环对账范围天然覆盖（docstring 明言含墓碑），
+    且预算内记录 fail_count < 生效预算、从未达登记阈值本无登记块。
     """
     path = _failed_path(project_root)
 
-    def _do() -> int:
+    def _do() -> tuple:
         records = load_failed_batches(project_root)
         released = 0
+        released_ids: list = []
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         for rec in records:
             # fail_count 容错解析（_fail_count_int 单源，非数值按缺省 1）；
@@ -1215,14 +1223,26 @@ def release_retryable_failed_batches(project_root) -> int:
             rec["released"] = True
             rec["released_at"] = now
             released += 1
+            # 坏档形态守卫（_record_item_ids 单源）：非列表 item_ids 静默
+            # 回退空列表，不留痕垃圾值（无 logger 的读侧调用形态）。
+            released_ids.extend(str(i) for i in _record_item_ids(rec))
         if released:
             _atomic_write(
                 path,
                 json.dumps(records, ensure_ascii=False, indent=2),
             )
-        return released
+        return released, released_ids
 
-    return _with_lock(path, _do)
+    released, released_ids = _with_lock(path, _do)
+    # 留痕锁外写（异文件，不占 fix-failed 锁；released_records>0 才有
+    # 释放动作，但留痕无条件与人工路径同口径——幂等空轮同样留一行痕，
+    # 审计「新链启动跑过释放」）。todo_result 恒 not_found：不接 todo
+    # 核销（见 docstring），非异常。
+    _append_release_trace(
+        project_root, released, released_ids,
+        released_by="auto-budget", todo_result="not_found",
+    )
+    return released
 
 
 def release_failed_batch(project_root, item_ids, logger=None) -> int:
@@ -1238,25 +1258,44 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
     （新链启动释放/批收尾入档）并发交叠会把人工解除结果整份覆盖回去
     （条目卡在跳过）。
 
+    整批解除同步核销登记块（codefix-release-consume-todo-block 1.1）：
+    整批删除注册表记录成功后的**同一调用序列内** best-effort 核销
+    todo.md 对应登记块（复用 _rewrite_todo_entry_consumed 重写式核销，
+    注记写明解除时刻与 fix-failed-release.jsonl 留痕行）——记录已删即
+    永远够不着既有 consume 闭环（:1379 pending 过滤按在册记录驱动），
+    不核销则登记块成孤儿（proposal 实证 2026-10-08：带外解除删记录后
+    登记块无人核销、正文损毁成裸标题壳）。核销 needle 整行精确匹配，
+    防同批子集与「清单为其前缀扩展」的他批登记块误命中。仅整批删除
+    触发核销；部分解除（收缩）剩余条目仍在册仍跳过，登记块留待既有
+    consume 闭环。fix-failed 锁与 todo 锁是两把锁、不嵌套（核销在
+    _with_lock 返回、fix-failed 锁已释放后执行）；核销 best-effort、
+    OSError 容错同 _append_todo_entry 口径（失败不阻断解除主流程），
+    后果由留痕行 todo_result 字段审计。登记块已损毁成裸标题壳时由
+    _rewrite_todo_entry_consumed 既有兜底移除（不新造、不波及他批块）。
+
     结构化留痕（add-codefix-failure-registration-closeout 1.3）：调用
     **无条件**追加一行到 ``.fenix/code-review/fix-failed-release.jsonl``
-    （释放时刻+释放记录数+item_ids 摘要）——带外 ``python3 -c`` 直调
-    （todo 登记正文列为官方解除指引）不经 daemon logger、此前零留痕
-    （proposal 实证 2026-10-07 释放 13 条仅会话考古可见），留痕文件是
-    唯一权威追溯载体；``logger``（可选）传入时另写一行 daemon 日志
-    （补充通道，留痕失败不阻断解除本身）。
+    （释放时刻+释放记录数+item_ids 摘要+todo 块处理结果）——带外
+    ``python3 -c`` 直调（todo 登记正文列为官方解除指引）不经 daemon
+    logger、此前零留痕（proposal 实证 2026-10-07 释放 13 条仅会话考古
+    可见），留痕文件是唯一权威追溯载体；``logger``（可选）传入时另写
+    一行 daemon 日志（补充通道，留痕失败不阻断解除本身）。
     """
     requested = [str(i) for i in (item_ids or [])]
     released = 0
+    released_batches: list = []
+    todo_consumed = False
+    released_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if set(requested):
         target = set(requested)
         path = _failed_path(project_root)
 
-        def _do() -> int:
+        def _do() -> tuple:
             records = load_failed_batches(project_root)
             kept = []
             released = 0
             changed = 0
+            batches: list = []
             for rec in records:
                 # item_ids 形态守卫（code-review item 3bf751ec88d9，对齐
                 # _record_item_ids 先判后拷纪律）：坏档非列表标量直接迭代
@@ -1273,17 +1312,49 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
                     changed += 1
                 else:
                     released += 1  # 整批解除
+                    # 记录整批删除 → 收集其实际条目清单（非请求超集）：
+                    # 核销 needle 按它整行精确匹配登记块 ids 行。
+                    batches.append([str(i) for i in rec_ids])
             # [fenix-ignore:513aabee5028] 无变化不写盘守卫已在先前 code-fix 批次落地（changed/released 计数条件写盘，docstring 同步声明），条目所指「无命中仍无条件重写、凭空创建空档案」已不存在。
             if changed or released:  # 无变化不写盘（对齐同模块守卫惯例）
                 _atomic_write(
                     path,
                     json.dumps(kept, ensure_ascii=False, indent=2),
                 )
-            return released
+            return released, batches
 
-        released = _with_lock(path, _do)
-    # 留痕锁外写（异文件，不占 fix-failed 锁；无条件含零命中调用）。
-    _append_release_trace(project_root, released, requested, logger=logger)
+        released, released_batches = _with_lock(path, _do)
+        # 整批删除成功 → 同一调用序列内 best-effort 核销 todo 登记块
+        # （1.1）。此刻 fix-failed 锁已随 _with_lock 返回释放，todo 锁
+        # （.fenix/.todo.md.lock）独立持有，两把锁不嵌套、无锁序风险；
+        # OSError 已由 _rewrite_todo_entry_consumed 内部容错（返回 False
+        # 不上穿）。多批同轮整批删除时逐块核销，任一块未核销成功即按
+        # not_found 审计（不静默吞掉部分失败）。
+        todo_consumed = bool(released_batches)
+        for rec_ids in released_batches:
+            if not _rewrite_todo_entry_consumed(
+                project_root,
+                rec_ids,
+                note="",
+                consumed_at=released_at,
+                replacement=(
+                    f"- [x] [code-fix] 失败批登记已于 {released_at} 人工解除核销"
+                    f"（整批出册，解除留痕见 {RELEASE_TRACE_REL}）\n"
+                ),
+            ):
+                todo_consumed = False
+    # 留痕锁外写（异文件，不占 fix-failed 锁；无条件含零命中调用），
+    # todo_result 携核销结果（1.3）：consumed=整批解除且登记块已核销 /
+    # not_found=未核销（含零命中、部分解除不触发核销、块缺失、todo 写
+    # 失败）——「解除未核销」可从留痕审计。
+    _append_release_trace(
+        project_root,
+        released,
+        requested,
+        logger=logger,
+        released_at=released_at,
+        todo_result="consumed" if todo_consumed else "not_found",
+    )
     return released
 
 
@@ -1304,18 +1375,35 @@ _TODO_ENTRY_TITLE = "## [code-fix] 失败批已达自动重试上限，待人工
 _TODO_ENTRY_IDS_LINE = "- 被跳过的条目集合（保持 open）："
 
 
-def _append_release_trace(project_root, released_records, item_ids, logger=None) -> None:
-    """release_failed_batch 的结构化留痕追加（1.3）。
+def _append_release_trace(
+    project_root, released_records, item_ids, logger=None,
+    released_at=None, todo_result="not_found", released_by="manual",
+) -> None:
+    """解除写点的结构化留痕追加（closeout 1.3；release-consume 1.2/1.3）。
 
-    追加一行 JSON（释放时刻+释放记录数+请求解除的 item_ids 摘要）到
-    ``RELEASE_TRACE_REL``；OSError 容错与 _append_todo_entry 同口径（留痕
-    失败不阻断解除本身）。``logger``（可选）传入时另写一行 daemon 日志
-    （补充通道；日志失败无副作用）。
+    追加一行 JSON（释放时刻+释放记录数+item_ids 摘要+来源+todo 块处理
+    结果）到 ``RELEASE_TRACE_REL``；OSError 容错与 _append_todo_entry 同
+    口径（留痕失败不阻断解除本身）。``logger``（可选）传入时另写一行
+    daemon 日志（补充通道；日志失败无副作用）。
+
+    ``released_by``：manual=人工 release_failed_batch（缺省）/
+    auto-budget=新链启动预算内自动释放（release-consume 1.2，此前该写点
+    零审计痕迹）。``todo_result``：consumed=本次解除已同步核销 todo 登记
+    块 / not_found=未核销（含部分解除不触发核销、预算内释放本无登记块、
+    块缺失、todo 写失败）——「解除未核销」审计口径：released_records>0
+    且 todo_result=not_found 的行按 released_by 判读（manual 整批解除
+    not_found 即登记块成孤儿，须人工核查 todo.md 残留）。
+    ``released_at``（可选）外部传入解除时刻（release 路径与 todo 核销注记
+    同一时刻值，注记-留痕可互相对账）；缺省取当前时刻。
     """
     entry = {
-        "released_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "released_at": released_at or time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        ),
         "released_records": int(released_records),
         "item_ids": [str(i) for i in (item_ids or [])],
+        "released_by": released_by,
+        "todo_result": todo_result,
     }
     try:
         trace_path = Path(project_root) / RELEASE_TRACE_REL
@@ -1379,25 +1467,35 @@ def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> 
     return closed
 
 
-def _rewrite_todo_entry_consumed(project_root, item_ids, note, consumed_at) -> bool:
+def _rewrite_todo_entry_consumed(
+    project_root, item_ids, note, consumed_at, replacement=None
+) -> bool:
     """核销时把 todo.md 对应登记块重写为单行核销注记（1.3，消费侧弱化）。
 
     定位口径：登记标题（_append_todo_entry）不含 item_ids，按块体「被跳过
-    的条目集合（保持 open）：<清单>」行精确定位**本记录对应块**、只重写该
-    块（多个失败批的登记块可共存，MUST NOT 波及他批登记块）；块体已损毁成
-    裸标题（proposal 所述残骸，无 item_ids 行可定位）时按标题行兜底移除。
+    的条目集合（保持 open）：<清单>」行**整行精确匹配**定位**本记录对应
+    块**、只重写该块（多个失败批的登记块可共存，MUST NOT 波及他批登记
+    块）。整行锚（行尾等值比对，codefix-release-consume-todo-block 1.1）
+    防前缀子串误命中：本批清单行是他批「清单为其前缀扩展」行的前缀子串
+    （needle「：a, b」⊂「：a, b, c」），对齐 _close_retry_exhausted_alerts
+    分号后缀锚的既有先例。块体已损毁成裸标题（proposal 所述残骸，无
+    item_ids 行可定位）时按标题行兜底移除。
     持 ``.fenix/.todo.md.lock`` 同锁（与 _append_todo_entry / evolution 写者
     同锁契约，code-review item 28c473f92809）经 _atomic_write 整文件重写，
     不依赖原位追加注记；OSError 容错与 _append_todo_entry 同口径（todo 消费
     失败不阻断核销主流程）。块不存在（已消费/未登记）返回 False。
+    ``replacement``（可选）定制核销注记整行（release 路径写明解除时刻与
+    fix-failed-release.jsonl 留痕行指引；缺省为消费侧「全部终态+告警已收口」
+    文案，既有 consume 路径调用契约不变）。
     """
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     ids_txt = ", ".join(str(i) for i in item_ids)
     ids_needle = f"{_TODO_ENTRY_IDS_LINE}{ids_txt}"
-    replacement = (
-        f"- [x] [code-fix] 失败批登记已于 {consumed_at} 核销"
-        f"（被跳过条目全部终态：{note}），对应告警已收口\n"
-    )
+    if replacement is None:
+        replacement = (
+            f"- [x] [code-fix] 失败批登记已于 {consumed_at} 核销"
+            f"（被跳过条目全部终态：{note}），对应告警已收口\n"
+        )
 
     def _rewrite_locked() -> bool:
         try:
@@ -1421,7 +1519,9 @@ def _rewrite_todo_entry_consumed(project_root, item_ids, note, consumed_at) -> b
                 j += 1
             block = lines[i:j]
             body = block[1:]
-            if any(ids_needle in b for b in body):
+            # 整行精确匹配（行尾锚）：子串包含会把同批子集请求、以及「清单
+            # 为本批前缀扩展」的他批登记块一并误命中重写。
+            if any(b.rstrip("\r\n") == ids_needle for b in body):
                 out.append(replacement)  # 本记录登记块 → 重写式核销
                 changed = True
             elif body and any(b.strip() for b in body):

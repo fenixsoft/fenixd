@@ -8,6 +8,13 @@
   时另写 daemon 日志、零命中无条件留痕）、todo 登记块重写式核销、多批登记
   块隔离、裸标题残骸兜底移除。
 
+覆盖 codefix-release-consume-todo-block（解除路径对齐）：
+- 1.1: 人工整批解除→登记块同步核销（注记含解除时刻与留痕行指引）、部分
+  解除不核销且他批块原样保留、核销 needle 整行精确匹配（前缀扩展清单不
+  误命中）、todo 写失败不阻断解除、裸标题壳兜底移除。
+- 1.2: 预算内自动释放留痕（released_by=auto-budget）且不触 todo 登记块。
+- 1.3: 留痕行携 todo 块处理结果字段（consumed / not_found）。
+
 MUST NOT 真跑 agent——临时目录直调模块函数。
 """
 
@@ -370,6 +377,190 @@ class TestReleaseTrace(unittest.TestCase):
         _, rows = _read_trace_rows(proot)
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[-1]["item_ids"], ["nope"])
+
+
+class TestReleaseConsumesTodoBlock(unittest.TestCase):
+    """解除路径对齐（codefix-release-consume-todo-block）：整批删除注册表
+    记录后的同一调用序列内 best-effort 核销 todo.md 登记块。"""
+
+    def _register_maxed(self, proot, item_ids):
+        from core.code_fix import FAIL_RETRY_MAX, record_failed_batch
+
+        for i in range(FAIL_RETRY_MAX):
+            record_failed_batch(
+                proot, list(item_ids), f"/tmp/wt-{i}",
+                reason="regression_failed_twice", branch="br-x",
+                tip_sha=f"sha-{i}")
+
+    def _todo(self, proot):
+        return (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+
+    def test_manual_full_release_consumes_todo_block(self):
+        """整批解除→登记块同步核销：注记含解除时刻与留痕行指引，
+        留痕记 consumed；带外不传 logger 亦照常核销+留痕。"""
+        from core.code_fix import load_failed_batches, release_failed_batch
+
+        proot = _make_project_root()
+        self._register_maxed(proot, ["a", "b"])
+        # 带外形态：不传 logger（todo 登记正文的官方解除指引即此形态）
+        self.assertEqual(release_failed_batch(proot, ["a", "b"]), 1)
+        self.assertEqual(load_failed_batches(proot), [], "整批解除后档案为空")
+        todo = self._todo(proot)
+        self.assertNotIn(
+            "被跳过的条目集合（保持 open）：a, b", todo, "登记块已被核销")
+        self.assertIn("人工解除核销", todo, "核销注记 MUST 写明解除动作")
+        self.assertIn(
+            "fix-failed-release.jsonl", todo, "核销注记 MUST 指向留痕行")
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(rows[-1]["todo_result"], "consumed")
+        # 注记与留痕行同一解除时刻值（可互相对账）
+        self.assertIn(rows[-1]["released_at"], todo)
+
+    def test_partial_release_keeps_todo_block_and_other_batch(self):
+        """部分解除（收缩）→登记块不核销（剩余条目仍在册仍跳过），
+        他批块原样保留；留痕记 not_found。"""
+        from core.code_fix import (
+            _TODO_ENTRY_TITLE,
+            load_failed_batches,
+            release_failed_batch,
+        )
+
+        proot = _make_project_root()
+        self._register_maxed(proot, ["a", "b"])
+        self._register_maxed(proot, ["c"])
+        self.assertEqual(release_failed_batch(proot, ["a"]), 0, "收缩不计整批")
+        recs = load_failed_batches(proot)
+        self.assertEqual(len(recs), 2)
+        self.assertIn(["b"], [r["item_ids"] for r in recs], "余量仍在册")
+        todo = self._todo(proot)
+        self.assertIn("被跳过的条目集合（保持 open）：a, b", todo,
+                      "收缩批登记块 MUST 原样保留（留待既有 consume 闭环）")
+        self.assertIn("被跳过的条目集合（保持 open）：c", todo,
+                      "他批登记块 MUST 原样保留")
+        self.assertEqual(todo.count(_TODO_ENTRY_TITLE), 2)
+        self.assertNotIn("人工解除核销", todo, "部分解除 MUST NOT 核销登记块")
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(rows[-1]["todo_result"], "not_found")
+
+    def test_needle_not_false_matched_on_prefix_extended_block(self):
+        """核销 needle 整行精确匹配：本批 [a] 与他批 [a, b]（清单为本批的
+        前缀扩展）共存，解除 [a] 只核销本批块，他批块不被子串误命中。"""
+        from core.code_fix import (
+            _TODO_ENTRY_TITLE,
+            load_failed_batches,
+            release_failed_batch,
+        )
+
+        proot = _make_project_root()
+        self._register_maxed(proot, ["a"])
+        self._register_maxed(proot, ["a", "b"])
+        self.assertEqual(release_failed_batch(proot, ["a"]), 1)
+        recs = load_failed_batches(proot)
+        self.assertEqual(
+            [r["item_ids"] for r in recs], [["b"]], "他批收缩为 [b] 在册")
+        todo = self._todo(proot)
+        # 子串包含口径下 needle「：a」会同时命中「：a, b」块并误重写；
+        # 整行锚后本批块核销、他批块原样保留。
+        self.assertIn("被跳过的条目集合（保持 open）：a, b", todo,
+                      "前缀扩展的他批登记块 MUST NOT 被误命中")
+        self.assertEqual(
+            todo.count(_TODO_ENTRY_TITLE), 1, "仅本批块被核销移除")
+        self.assertEqual(todo.count("人工解除核销"), 1)
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(rows[-1]["todo_result"], "consumed")
+
+    def test_auto_budget_release_traces_without_touching_todo(self):
+        """预算内自动释放：留痕 released_by=auto-budget、不触 todo 登记块
+        （墓碑在册，既有 consume 闭环覆盖；预算内记录本无登记块）。"""
+        from core.code_fix import (
+            load_failed_batches,
+            record_failed_batch,
+            release_retryable_failed_batches,
+        )
+
+        proot = _make_project_root()
+        self._register_maxed(proot, ["a"])  # 达上限：有登记块，不属预算内
+        record_failed_batch(proot, ["c"], "/tmp/wt-c", reason="r",
+                            branch="br", tip_sha="sha-c")  # 预算内，无登记块
+        self.assertEqual(release_retryable_failed_batches(proot), 1)
+        recs = {r["item_ids"][0]: r for r in load_failed_batches(proot)}
+        self.assertTrue(recs["c"].get("released"), "预算内记录打墓碑释放")
+        self.assertFalse(recs["a"].get("released"), "达上限记录保持跳过")
+        todo = self._todo(proot)
+        self.assertIn("被跳过的条目集合（保持 open）：a", todo,
+                      "自动释放 MUST NOT 触达他批登记块")
+        self.assertNotIn("人工解除核销", todo)
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["released_records"], 1)
+        self.assertEqual(rows[0]["released_by"], "auto-budget")
+        self.assertEqual(rows[0]["item_ids"], ["c"])
+        self.assertEqual(rows[0]["todo_result"], "not_found")
+
+    def test_todo_write_failure_not_blocking_trace_not_found(self):
+        """todo 写失败（todo.md 为目录→OSError）不阻断解除主流程，
+        留痕记 not_found 保证「解除未核销」可审计。"""
+        from core.code_fix import load_failed_batches, release_failed_batch
+
+        proot = _make_project_root()
+        self._register_maxed(proot, ["a"])
+        todo_path = proot / ".fenix" / "todo.md"
+        todo_path.unlink()
+        todo_path.mkdir()  # todo 写入/读取必 OSError
+        self.assertEqual(release_failed_batch(proot, ["a"]), 1,
+                         "todo 失败 MUST NOT 阻断解除")
+        self.assertEqual(load_failed_batches(proot), [], "解除已落盘")
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(rows[-1]["todo_result"], "not_found")
+        self.assertEqual(rows[-1]["released_records"], 1)
+
+    def test_bare_title_shell_removed_on_release_keeps_other_batch(self):
+        """登记块已损毁成裸标题壳：解除核销时按既有兜底移除残骸，
+        他批完整块原样保留。"""
+        from core.code_fix import (
+            _TODO_ENTRY_TITLE,
+            release_failed_batch,
+        )
+
+        proot = _make_project_root()
+        self._register_maxed(proot, ["a"])
+        self._register_maxed(proot, ["c"])
+        todo_path = proot / ".fenix" / "todo.md"
+        # 把批1 的块体替换为裸标题（复刻 proposal 残骸场景），批2 保持完整
+        text = todo_path.read_text(encoding="utf-8")
+        head, _, tail = text.partition(_TODO_ENTRY_TITLE)
+        _, _, rest = tail.partition("## ")
+        todo_path.write_text(
+            head + _TODO_ENTRY_TITLE + "（add-code-fix-batch-failure-selfheal）\n\n"
+            "## " + rest,
+            encoding="utf-8",
+        )
+        self.assertEqual(release_failed_batch(proot, ["a"]), 1)
+        todo = todo_path.read_text(encoding="utf-8")
+        self.assertEqual(
+            todo.count(_TODO_ENTRY_TITLE), 1,
+            "裸标题残骸被兜底移除，他批块标题保留")
+        self.assertIn("被跳过的条目集合（保持 open）：c", todo)
+        self.assertNotIn(
+            "待人工排查（add-code-fix-batch-failure-selfheal）\n\n## ", todo,
+            "批1 裸标题残骸 MUST 被移除")
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(rows[-1]["released_records"], 1)
+        self.assertEqual(rows[-1]["todo_result"], "consumed")
+
+    def test_trace_without_logger_contains_todo_result_field(self):
+        """带外无 logger 调用留痕照写，且行内含 todo 处理结果与来源字段
+        （零命中未触发核销 → not_found / manual）。"""
+        from core.code_fix import release_failed_batch
+
+        proot = _make_project_root()
+        self.assertEqual(release_failed_batch(proot, []), 0)
+        _, rows = _read_trace_rows(proot)
+        self.assertEqual(len(rows), 1, "带外不传 logger 亦 MUST 留痕")
+        self.assertEqual(rows[0]["item_ids"], [])
+        self.assertEqual(rows[0]["todo_result"], "not_found")
+        self.assertEqual(rows[0]["released_by"], "manual")
+        self.assertTrue(rows[0]["released_at"])
 
 
 class TestReviveClearsConsumedBookkeeping(unittest.TestCase):
