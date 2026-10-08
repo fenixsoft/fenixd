@@ -32,3 +32,10 @@
 | detail-file-items-consumers-unaffected | 既有消费方不受新增可选键影响（SPEC 1.3 回归点）：可映射失败明细（classname 主导 nodeid 重构）与 long_tests 并存时，_ingest_failure_round 返回 mapped=true 与正确 nodeid（tests/test_probe_mod.py::test_a），明细档 items/fallback_full 既有键语义不变（定向重试按 items 注入子集），long_tests 作为新增键与其共存。探针在临时 exec_root 落真实模块文件以满足模块边界在盘判定。出处 core/code_fix.py:891-910（classname 主导重构）、:1095-1110（并存透传） | pass | 0/6 | - |
 | verify-yaml-timeout-margin-review | 复核项（proposal 随本 spec 核实、design 决策 4「1800 秒墙钟不调」）：.fenix/verify.yaml 回归 timeout_seconds 必须维持 1800 不被顺手调参；余量结论按修后基线 8077 用例/449.59 秒（.fenix/regression/last-run.json，2026-10-09 00:11）约为 4 倍（≥2 倍即安全），结论由本场景输出留档供 verification 记录，同时确保实现未借机改动墙钟配置。出处 .fenix/verify.yaml:116 | pass | 0/4 | - |
 | code-fix-test-suite-green | 任务 2.2 单测验收与回归安全网：tests/test_code_fix.py 扩展（TestRegressionProgressEvidence：test_detail_includes_long_tests_name_and_time/test_missing_long_tests_falls_back_to_junit_log_tail/test_no_evidence_keeps_current_shape/test_malformed_long_tests_entries_tolerated/test_mapped_round_keeps_items_semantics_alongside_new_key）后须全绿——该文件 125 用例是 _map_junit_failures_to_nodeids/write_fix_reg_failures/_ingest_failure_round 等被改路径的既有回归安全网，扩展与改动不得打破任何既有用例。出处 spec/changes/evo-codefix-zero-face-regression-hardening/tasks.md 任务 2.2 | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
