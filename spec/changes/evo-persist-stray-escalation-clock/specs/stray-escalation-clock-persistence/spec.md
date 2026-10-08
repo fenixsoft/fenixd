@@ -46,3 +46,9 @@
 - **WHEN** 注册表被注入 first_seen 早于 24 小时的条目并触发盘点
 - **THEN** maintree_untracked_stray_escalated 信号产生
 - **AND** 其后的归档/忽略/删除裁决执行器可正常消费该信号
+
+#### Scenario: 重启后不重复升级
+
+- **WHEN** 已触发过 maintree_untracked_stray_escalated 的散件集合经历 daemon 重启且集合指纹未变
+- **THEN** 重启后的盘点不再次产生 maintree_untracked_stray_escalated 信号
+- **AND** 升级标记（escalated_signal_at）随注册表恢复保持置位

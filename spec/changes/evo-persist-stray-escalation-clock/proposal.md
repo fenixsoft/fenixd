@@ -4,7 +4,7 @@
 
 potplayer-base 主树 90+ 个验证证据散件滞留多日、maintree_untracked_stray_stale 告警 34 次零处置，且证据两次被整包入库（c91213f、6f1042e），HEAD 树 verify-evidence/ 已达 689MB。回源核实发现框架侧三项机制已先行合并：evo-add-verify-evidence-placement-contract（缺省落位 .fenix/verify-evidence/{spec}）、evo-verify-evidence-tiered-retention（max_binary_bytes 缺省 10MB + sha256 sidecar）、evo-stray-untracked-escalation（major 升级 + archive/ignore/delete 三裁决）。但机制实际未闭环，残余缺陷有二：
 
-1. 升级时钟被 daemon 重启击穿：/root/fenixd/core/worktree_manager/stray_wip.py:202 的 _untracked_registry 为纯内存 dict 无持久化，restart_history.jsonl 8 次重启且每条告警 first_seen 都落在重启后约 70 秒——24 小时滞留升级（elapsed≥1440 分钟）在重启间隔最长约 11 小时的现状下永不触发，escalated 信号至今 0 条，「同指纹一次性告警」也被击穿成重复 4 条。
+1. 升级时钟被 daemon 重启击穿：/root/fenixd/core/worktree_manager/stray_wip.py:202 的 _untracked_registry 为纯内存 dict 无持久化，restart_history.jsonl 现存 3 条重启记录（2026-10-07/08）且每条告警 first_seen 都落在重启后约 70 秒——24 小时滞留升级（elapsed≥1440 分钟）在重启间隔最长约 11 小时的现状下永不触发，escalated 信号至今 0 条，「同指纹一次性告警」也被击穿成重复 4 条。
 2. 项目侧未接线：potplayer-base 的 .fenix/verify.yaml 未声明 evidence_retention，活跃 spec tasks.md 仍有 7 处路径指向根 verify-evidence/，存量未跟踪 485MB 散件未清债。
 
 ## 目标

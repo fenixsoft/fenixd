@@ -4,16 +4,17 @@
 
 - 事故面：potplayer-base 主树 92 个未跟踪散件（现值）、告警 34 条零处置、HEAD 树 verify-evidence/ 689.1MB（67 文件），两次整包入库（c91213f、6f1042e）。
 - 机制现状：落位契约（core/verify_contract.py:154 DEFAULT_EVIDENCE_DIR_TEMPLATE）、分级留存（evidence_retention.max_binary_bytes 缺省 10MB）、升级告警（maintree_untracked_stray_escalated：滞留≥24h 或体积≥500MB，stray_wip.py:52-58）均已合并；升级裁决三执行器已上线（admin_actions.py:3146/3230/3506）。
-- 缺陷实锤：stray_wip.py:202 _untracked_registry 纯内存 dict；restart_history.jsonl 8 次重启，4 条同指纹告警的 first_seen 均落在重启后约 70 秒——一次性告警与 24h 升级双双被重启击穿；escalated 0 条、体积升级差 2.9%（509,103,122 字节 < 524,288,000）未触发属巧合。
+- 缺陷实锤：stray_wip.py:202 _untracked_registry 纯内存 dict；restart_history.jsonl 现存 3 条重启记录（2026-10-07/08），4 条同指纹告警的 first_seen 均落在重启后约 70 秒——一次性告警与 24h 升级双双被重启击穿；escalated 0 条、体积升级差 2.9%（509,103,122 字节 < 524,288,000）未触发属巧合。
 
 ## 方案
 
 ### 1. 注册表持久化（core/worktree_manager/stray_wip.py）
 
-- 落位：.fenix/ 下运行时状态文件（与既有 stray 通道状态同区），内容为指纹→{first_seen, paths, last_alerted_at} 映射；
+- 落位：.fenix/ 下运行时状态文件（与 restart_history.jsonl 同区；两仓库 .gitignore 均有 `.fenix/*` 规则，文件不入库、也不会被 untracked 盘点计入散件——已 ignore 路径豁免），内容为指纹→条目映射，条目字段与现行内存条目同构（first_seen/first_seen_iso/files/escalated_at/escalated_signal_at；sizes_bytes/total_bytes 每轮盘点现采、不持久化）。**escalated_signal_at MUST 随注册表持久化**：该标记若丢失，恢复的 first_seen（往往已≥24h）会在重启后首轮盘点重复发出 maintree_untracked_stray_escalated，违背「同一集合只升级一次」的双档标记语义（stray_wip.py `_untracked_signal`）；
 - 写时机：每轮盘点完成且注册表变更时原子落盘（临时文件+rename，沿框架既有原子写范式）；
 - 读时机：盘点开始时载入，与内存态合并；文件缺失/损坏回退空表并告警（fail-open，不阻断主盘点）；
 - 惰性清理：载入与每轮盘点时剔除盘上已消失的路径，集合为空的指纹整条删除。
+- 范围界定：仅持久化 untracked 注册表（本次事故面）；tracked 注册表维持内存态（模块 docstring D5 现状，重启重置宽限的损失仅为时效）。实现须同步改写 D5 注记：「不引入新的持久化状态文件」的决策对 untracked 注册表由本 SPEC 显式取代，tracked 流维持内存态。
 
 ### 2. 语义保持
 
