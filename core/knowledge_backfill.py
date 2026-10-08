@@ -253,11 +253,17 @@ def upsert_todo_line(
 
 
 def _git(project_root: Path, *args: str) -> str:
+    # encoding/errors 固化（对齐 core.knowledge._git，code-review 383ecbbb8927）：
+    # 裸 text=True 走 locale strict 解码，git 输出含非 UTF-8 字节（quotePath
+    # 转义覆盖不了的畸形文件名字节等）时抛 UnicodeDecodeError（ValueError 而
+    # 非 OSError），穿透 commit_pathspec / first_commit_ref 调用方捕获口径。
     proc = subprocess.run(
         ["git", *args],
         cwd=str(project_root),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     if proc.returncode != 0:
@@ -405,6 +411,7 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
     log = log or _NullLogger()
     failed: list[str] = []
     clean_err = ""
+    clean_ok = False
     for rel in rels:
         try:
             proc = subprocess.run(
@@ -435,6 +442,19 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
             # clean 整体失败时未跟踪残留全部未清、无法细化到单路径，全量留痕
             failed.extend(rels)
             clean_err = proc.stderr.strip()[:200]
+        else:
+            clean_ok = True
+    if failed and clean_ok:
+        # 复核盘上残留（code-review 24c92bd4e926）：未跟踪新路径的 restore 必
+        # 然非零（pathspec 不匹配整条报错），但这批路径若已被上面成功的 clean
+        # 清除就不再滞留——按盘上事实过滤 failed，仅仍有残留的才告警，避免对
+        # 未跟踪产出的每次回滚都发与盘面相反的误导告警；clean 失败/不可用/超
+        # 时（clean_ok=False）时盘面复核不可信，维持全量留痕。
+        failed = [
+            rel
+            for rel in failed
+            if os.path.lexists(str(Path(project_root) / rel))
+        ]
     if failed:
         log.warning(
             "knowledge",
