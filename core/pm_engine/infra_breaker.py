@@ -139,15 +139,22 @@ class InfraCircuitBreaker:
         0/负数会使 until <= now，熔断即建即恢复，保护静默失效。非有限浮点
         （.nan/.inf）同样回退（code-review item d0a328355581）：``.inf`` 使
         until 永不到期（熔断永久），``.nan`` 使 now>=until 恒 False 同样永续
-        熔断。
+        熔断。巨大 int（YAML 任意精度）穿透类型守卫后送 math.isfinite 内部
+        转 float 抛 OverflowError，同样按脏值回退缺省（口径同 threshold 与
+        _is_valid_state_number）。
         """
-        val = self._get_config("cooldown_minutes", 30)
-        if not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0:
+        try:
+            val = self._get_config("cooldown_minutes", 30)
+            if not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0:
+                return 30.0
+            if not math.isfinite(val):
+                # 非有限浮点（.nan/.inf）穿透范围比较时按脏值回退缺省（同 threshold）
+                return 30.0
+            return float(val)
+        except (TypeError, ValueError, OverflowError):
+            # 巨大 int 送 math.isfinite 内部转 float 抛 OverflowError → 按脏值
+            # 回退缺省（不抛，同 threshold）
             return 30.0
-        if not math.isfinite(val):
-            # 非有限浮点（.nan/.inf）穿透范围比较时按脏值回退缺省（同 threshold）
-            return 30.0
-        return float(val)
 
     def _get_config(self, key: str, default):
         """取 admin.run_infra_breaker 段配置值（key 为段内字段名）。
