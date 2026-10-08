@@ -31,3 +31,8 @@
 | wl-patrol-unit-suite-green | 交付单测套件全绿（tasks.md 3.1）：python3 -m pytest tests/test_stray_whitelist_untracked.py -v --tb=short 8 例全通过——不误报/必报不计散件/同指纹一次性演化复位/求交门/保守放弃/三表登记/落盘记录可摄取形态/摄取唤起端到端（断言文案照抄 -v 实测输出行，无 -q 不并存）。出处：tests/test_stray_whitelist_untracked.py（用例名经实测核对，非 parametrize 无后缀） | pass | 0/10 | - |
 | wl-patrol-knowledge-audit-crossref | 约定互引（tasks.md 2.2）：core/knowledge_audit.py 白名单注释补指向 whitelist_untracked 巡检——「白名单入库意图由 stray_wip 白名单脱落巡检机械核查（evo-whitelist-tracked-patrol 2.2：whitelist_untracked 信号，core/worktree_manager/stray_wip.py）」，使「白名单应入库」约定与执行机制互为引用（断言文案取自实测 grep 行，注释跨行处拆为单行稳定子串）。出处：core/knowledge_audit.py:78-79（裁决修复 2026-10-08：xref 步骤 grep -n → grep -n -A1——注释跨行 78-79，原命令仅回显匹配行 78 致续行 79 上的 whitelist_untracked/stray_wip.py 断言永不命中；扩取样面，5 条断言不变） | pass | 0/5 | - |
 | wl-patrol-potplayer-verify-yaml-restored | 一次性处置回归（tasks.md 4.1）：/root/potplayer-base 的 .fenix/verify.yaml 处于 git 索引（ls-files --error-unmatch 退出 0），恢复提交留痕 c91213f 回归链（log 含「恢复 .fenix/verify.yaml 入库」），白名单其余文件 .fenix/todo.md 保持 tracked。环境依赖；无 fallback（处置目标为固定主机路径 /root/potplayer-base，实现轮提交 0bfcc8f 实测） | pass | 0/5 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
