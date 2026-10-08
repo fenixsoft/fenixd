@@ -2484,9 +2484,10 @@ class FenixDaemon:
         code-review item 94618d6567ee：outcome 为可选 dict 出参，记录返回 None
         的归因——"absent"=信号不在场或已被并发取走；"io"=mkstemp/rename 阶段
         IO 异常（磁盘满/权限等），信号**未被消费**仍留盘待下轮重试；
-        "payload"=信号已消费但内容非法/不可读。消费方（code_review 车道）据此
-        区分「payload 非法」与「IO 异常」，后者不落 invalid_payload 结果。
-        其余调用方不传 outcome，返回形态与行为完全不变。
+        "payload"=信号已消费但内容非法/不可读。消费方据此区分「payload 非法」
+        与「IO 异常」，后者不落 invalid_payload 结果、仅记日志待下轮重试。
+        各车道调用方现均传 outcome（item 3ae81f8b6d0b：payload 非法已被消费、
+        不会再重试，其余车道亦须留痕）；不传 outcome 时返回形态与行为完全不变。
         """
         if outcome is None:
             outcome = {}
@@ -2608,8 +2609,18 @@ class FenixDaemon:
         admin_store 记录原因，供前端时间线/告警可见，且请求文件已删避免反复重试。
         """
         req_path = PROJECT_ROOT / ".fenix" / "admin_invoke_request.json"
-        payload = self._consume_request_file(req_path)
+        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "admin_invoke 信号 payload 非法/损坏，信号已消费并丢弃，"
+                    "本次唤起未执行",
+                )
             return
 
         spec = payload.get("spec")
@@ -2728,8 +2739,18 @@ class FenixDaemon:
         被旧请求重放」的风险，故豁免并在此留痕。
         """
         req_path = PROJECT_ROOT / ".fenix" / "cancel_run_request.json"
-        payload = self._consume_request_file(req_path)
+        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "cancel_run 信号 payload 非法/损坏，信号已消费并丢弃，"
+                    "本次取消未执行",
+                )
             return
 
         run_id = payload.get("run_id")
@@ -3105,8 +3126,18 @@ class FenixDaemon:
         时效只决定「是否执行推送」。
         """
         req_path = PROJECT_ROOT / ".fenix" / "approve_push_request.json"
-        payload = self._consume_request_file(req_path)
+        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "approve_push 信号 payload 非法/损坏，信号已消费并丢弃，"
+                    "本次推送未执行",
+                )
             return
 
         spec = payload.get("spec")
@@ -3191,8 +3222,18 @@ class FenixDaemon:
             # 再消费（去重门，item dc0563435ba5）
             return
         req_path = PROJECT_ROOT / ".fenix" / "spec_delete_request.json"
-        payload = self._consume_request_file(req_path)
+        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "spec_delete 信号 payload 非法/损坏，信号已消费并丢弃，"
+                    "本次删除未执行",
+                )
             return
 
         spec = payload.get("spec")
@@ -3794,8 +3835,18 @@ class FenixDaemon:
             for rid in list(getattr(self.agent_runner, "_running_agents", None) or {})
         ):
             return
-        payload = self._consume_request_file(req_path)
+        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "regression 信号 payload 非法/损坏，信号已消费并丢弃，"
+                    "本次回归未执行",
+                )
             return
 
         # 时效分档（item 117044e0ae4a）：与 approve_push / code_fix 同判据
@@ -3949,6 +4000,8 @@ class FenixDaemon:
         "night_quiet_window": "当前处于每日夜间静默窗（默认 04:15-04:45），窗内暂缓投递自动修复，窗末自动恢复",
         # item 6cc24b51f6b9：停机积压旧信号（created 超时效阈值）仅消费不执行
         "stale_created": "触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需修复请重新发起",
+        # item 3ae81f8b6d0b：信号 payload 非法/损坏（已消费、无 created 可回链）
+        "invalid_payload": "触发信号内容非法，本次触发已丢弃",
     }
 
     def _write_code_fix_request_result(self, result_path, request_created, triggered,
@@ -4026,12 +4079,26 @@ class FenixDaemon:
         checkpoint（手动授权语义锚定点击时刻）；created 缺失/非法保守按陈旧处理。
         """
         req_path = PROJECT_ROOT / ".fenix" / "code_fix_request.json"
-        payload = self._consume_request_file(req_path)
+        result_path = PROJECT_ROOT / ".fenix" / "code_fix_request_result.json"
+        # 「信号在场但 payload 非法」探测（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 比照 code_review 落 invalid_payload 结果不静默（payload 已损坏、无
+        # created 可回链，request_created 落空串）；absent（每轮稀疏常态）与
+        # io（信号未消费留盘待下轮重试，不误标 payload 非法）归因维持静默
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "code_fix 触发信号 payload 非法/损坏，信号已消费并落 "
+                    "invalid_payload 结果",
+                )
+                self._write_code_fix_request_result(
+                    result_path, "", False, "invalid_payload")
             return
 
         request_created = str(payload.get("created") or "")
-        result_path = PROJECT_ROOT / ".fenix" / "code_fix_request_result.json"
         self.logger.info("fenixd", f"消费 code-fix 手动触发信号：created={request_created}")
 
         # 时效分档（item 6cc24b51f6b9）：与 scheduling_kick / approve_push
@@ -4153,12 +4220,27 @@ class FenixDaemon:
         from core.regression import read_result
 
         req_path = PROJECT_ROOT / ".fenix" / "regression_fix_request.json"
-        payload = self._consume_request_file(req_path)
+        result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
+        # 「信号在场但 payload 非法」探测（item 3ae81f8b6d0b，对齐 code_review
+        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
+        # 比照 code_review 落 invalid_payload 结果不静默（payload 已损坏、无
+        # created 可回链，request_created 落空串）；absent（每轮稀疏常态）与
+        # io（信号未消费留盘待下轮重试，不误标 payload 非法）归因维持静默
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning(
+                    "fenixd",
+                    "regression_fix 触发信号 payload 非法/损坏，信号已消费并落 "
+                    "invalid_payload 结果",
+                )
+                self._write_result_message(
+                    result_path, "", False, "invalid_payload",
+                    self.REGRESSION_FIX_RESULT_MESSAGES)
             return
 
         request_created = str(payload.get("created") or "")
-        result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
         self.logger.info(
             "fenixd", f"消费 regression-fix 手动触发信号：created={request_created}")
 
