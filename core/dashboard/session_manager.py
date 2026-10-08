@@ -388,8 +388,9 @@ class SessionManager:
         shutdown 专用：认领方（idle 扫描线程）是 daemon 线程，dashboard 进程
         退出不会等待它，宽限窗内被硬杀则其 killpg 永不执行。等待上限取认领方
         _terminate 的最长收割时长（宽限 + kill 后 wait）；超时按 _terminate
-        同式（getpgid 失败/进程已消失回退单进程 kill）再 killpg 一次——
-        SIGKILL 幂等，与认领方重复 kill 无害；终态广播与映射摘除仍归认领方，
+        同式再 killpg 一次（守卫契约：解析失败/组已不存在即静默返回，不回退
+        单进程 kill）。SIGKILL 幂等，与认领方重复 kill 无害；终态广播与
+        映射摘除仍归认领方，
         此处不碰（避免同会话两条终态事件）。不持锁等待：认领方收尾需取
         self._lock 与 session.lock。
         """
@@ -564,7 +565,11 @@ class SessionManager:
             for line in session.proc.stderr:
                 line = line.rstrip("\n")
                 if line:
-                    session.stderr_tail.append(line)
+                    # f6396e93c224：读端 session_routes 锁内快照 stderr_tail，
+                    # 写端 append 须同锁互斥（否则并发 append 下迭代抛
+                    # RuntimeError(deque mutated during iteration)）。
+                    with session.lock:
+                        session.stderr_tail.append(line)
         except Exception:
             # code-review item bbb0cd968a89：与 _stdout_reader 的留痕纪律对齐
             logger.exception("stderr reader error: session=%s", session.session_id)
