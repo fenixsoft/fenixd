@@ -168,25 +168,28 @@ def _load_frozen_scenario_hashes(project_root, spec_name: str) -> dict:
     return load_frozen_scenario_hashes(project_root, spec_name)
 
 
-def _env_exemptions_cover(pipeline, spec_name: str, report: dict, entry: dict,
-                          hashes: dict) -> bool:
-    """本轮全部 env 失败场景是否都有有效 STATE 豁免命中（双门同源判定）。
+def _env_exemption_matches(pipeline, spec_name: str, report: dict, entry: dict,
+                           hashes: dict) -> list:
+    """逐个非 pass 场景查有效 STATE 豁免，返回全部命中豁免清单。
 
-    调用前提：级二已命中（报告失败全部被裁决 env）——故逐个非 pass 场景查
-    有效豁免（场景 id+归一化失败签名+定义 hash+时效，
-    ``state_machine.find_env_exemption`` 同一纯函数），全部命中且至少一个
-    豁免对象即覆盖。任一未命中（含 STATE 读失败=无豁免，fail-closed）→
-    不覆盖。
+    ``_env_exemptions_cover`` 与握手豁免回链共用的判定内核
+    （code-review 9fc208d8395a：覆盖判定与回链组装走同一循环，防两处
+    谓词漂移）：调用前提级二已命中（报告失败全部被裁决 env）——任一非
+    pass 场景未命中有效豁免（场景 id+归一化失败签名+定义 hash+时效，
+    ``state_machine.find_env_exemption`` 同一纯函数；含 STATE 读失败=
+    无豁免，fail-closed）即未全覆盖 → 返回空清单；全部命中 → 按场景序
+    返回命中豁免对象（含 granted_at / scenario_id / disposition_id，
+    供回链与日志组装）。
     """
     from core.state_machine import find_env_exemption, scenario_fail_signature_body
 
     scenarios = (report or {}).get("scenarios") or []
     if not scenarios:
-        return False
-    covered = 0
+        return []
+    matches: list = []
     for sc in scenarios:
         if not isinstance(sc, dict):
-            return False
+            return []
         status = sc.get("status")
         if status in ("pass", "passed"):
             continue
@@ -196,9 +199,22 @@ def _env_exemptions_cover(pipeline, spec_name: str, report: dict, entry: dict,
             current_hash=str(hashes.get(sid) or ""),
         )
         if ex is None:
-            return False
-        covered += 1
-    return covered > 0
+            return []
+        matches.append(ex)
+    return matches
+
+
+def _env_exemptions_cover(pipeline, spec_name: str, report: dict, entry: dict,
+                          hashes: dict) -> bool:
+    """本轮全部 env 失败场景是否都有有效 STATE 豁免命中（双门同源判定）。
+
+    调用前提：级二已命中（报告失败全部被裁决 env）。判定内核收拢至
+    ``_env_exemption_matches``——全部命中且至少一个豁免对象即覆盖，
+    任一未命中（fail-closed）→ 不覆盖。
+    """
+    return bool(_env_exemption_matches(
+        pipeline, spec_name, report, entry, hashes
+    ))
 
 
 def _escalate_inconclusive_parking(
@@ -1535,6 +1551,12 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
                 "tester_run": None,
                 "error": note,
                 "_inconclusive_attempts": attempts,
+                # 本形态无签名比较基准，显式按空串回写（与本函数升级分支注释
+                # 声明一致，code-review de2568acfdf3）：两种 inconclusive 形态
+                # 共用 _inconclusive_attempts 计数，不回写会残留 blocked-env 轮
+                # 旧签名，下轮 blocked-env 同签名复现时被误判「环境未变化」
+                # 提前升级停车（跨形态非相邻两轮的误配）。
+                "_last_inconclusive_signature": "",
                 # 预算隔离（design D3，与 _handle_env_blocked_inconclusive
                 # 重验分支同语义）：本重验轮若触发 judge 派发，计入独立计数器
                 # 而非 _judge_rerun_count 生命周期账。
@@ -2136,11 +2158,7 @@ def _handle_env_exemption_handshake(
     到 verified）——既有 fail-open 守卫语义零变更。
     """
     from core.admin_store import AdminStore
-    from core.state_machine import (
-        find_env_exemption,
-        parse_env_exemptions,
-        scenario_fail_signature_body,
-    )
+    from core.state_machine import parse_env_exemptions
     from core.verdict_check import load_report, save_report
 
     verdict = _verdict_env_exemption_level2(pipeline, spec_name, report)
@@ -2157,30 +2175,36 @@ def _handle_env_exemption_handshake(
         rep0 = report if isinstance(report, dict) else load_report(
             pipeline._context.project_root, spec_name
         )
-        if _env_exemptions_cover(pipeline, spec_name, rep0, sm_entry, hashes):
-            matched = None
-            for sc in (rep0 or {}).get("scenarios") or []:
-                if not isinstance(sc, dict) or sc.get("status") in ("pass", "passed"):
-                    continue
-                sid = str(sc.get("scenario_id") or sc.get("id") or "?")
-                matched = find_env_exemption(
-                    sm_entry, sid, scenario_fail_signature_body(sc),
-                    current_hash=str(hashes.get(sid) or ""),
-                )
-                if matched is not None:
-                    break
+        # 覆盖判定与回链同源（code-review 9fc208d8395a）：命中清单由
+        # _env_exemption_matches 一次算得，不再内联重跑逐场景豁免匹配。
+        # 多豁免命中时回链顶层字段取首个命中（兼容既有回链形态），全部
+        # 命中项列 matched_exemptions 供人工按回链核对完整放行依据。
+        matched_list = _env_exemption_matches(
+            pipeline, spec_name, rep0, sm_entry, hashes
+        )
+        if matched_list:
+            matched = matched_list[0]
             backlink = {
                 "anchor": "env_exemptions",
                 "signal_type": "inconclusive_loop",
                 "result": "resolved",
-                "granted_at": (matched or {}).get("granted_at"),
-                "scenario_id": (matched or {}).get("scenario_id"),
-                "id": (matched or {}).get("disposition_id"),
+                "granted_at": matched.get("granted_at"),
+                "scenario_id": matched.get("scenario_id"),
+                "id": matched.get("disposition_id"),
                 "action_taken": "grant_env_exemption",
+                "matched_exemptions": [
+                    {
+                        "scenario_id": ex.get("scenario_id"),
+                        "granted_at": ex.get("granted_at"),
+                        "id": ex.get("disposition_id"),
+                    }
+                    for ex in matched_list
+                ],
                 "note": (
                     "env 豁免经 spec 级 STATE 豁免字段生效"
                     "（evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit："
-                    "握手与白化门禁同源消费）"
+                    "握手与白化门禁同源消费）；顶层字段为首项命中，"
+                    "全部命中项见 matched_exemptions"
                 ),
             }
             rep = rep0 if isinstance(rep0, dict) else {}
@@ -2200,7 +2224,8 @@ def _handle_env_exemption_handshake(
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"env 豁免握手放行 '{spec_name}'：本轮全部 env 失败场景命中有效 "
-                f"STATE 豁免（场景 {backlink.get('scenario_id')}，"
+                f"STATE 豁免（命中场景 "
+                f"{'、'.join(str(ex.get('scenario_id')) for ex in matched_list)}，"
                 f"granted_at={backlink.get('granted_at')}），{backlink_note}",
             )
             return False
