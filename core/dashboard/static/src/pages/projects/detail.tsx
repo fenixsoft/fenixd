@@ -1508,7 +1508,13 @@ export default function SpecDetailPage() {
                           const ok = a.pass !== false;
                           return (
                             <div
-                              key={aIdx}
+                              // SSE 增量刷新可能在既有条目间增删（重跑），索引 key
+                              // 会按位置错位复用节点（Tooltip 悬停态等内部状态串到
+                              // 语义已变的条目）。后端断言无稳定 id，取类型+内容
+                              // 复合稳定前缀，索引仅作同型重复条目 tie-breaker
+                              // （对齐 Bug 卡片口径 code-review item 9c754a9839af，
+                              // 本条 2c4fbd8964f8）
+                              key={`assertion-${a.type || ''}-${a.label || a.message || a.detail || ''}-${aIdx}`}
                               style={{
                                 padding: '4px 8px',
                                 marginBottom: 4,
