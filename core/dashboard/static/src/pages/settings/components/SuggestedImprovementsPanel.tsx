@@ -45,16 +45,34 @@ import {
 
 const { Text } = Typography;
 
-/** 状态排序次序：待人工处理的排前，终态排后（非字母序）。 */
-const STATUS_SORT_ORDER: Record<string, number> = {
-  pending: 0,
-  draft_failed: 1,
-  accept_failed: 2,
-  analyzed: 3,
-  accepted: 4,
-  auto_accepted: 5,
-  rejected: 6,
+/**
+ * 状态轴单源（code-review item 315ccdc0f28f）：排序、状态列配色、决策动作
+ * 可执行性与批量跳过原因收敛一处，新增状态只改这里；文案沿用 services 的
+ * EVOLUTION_STATUS_LABELS。
+ */
+type EvolutionStatusMeta = {
+  /** 语义序：待人工处理的排前，终态排后（非字母序）。 */
+  order: number;
+  /** 状态列 Tag 配色。 */
+  color: string;
+  /** 仍可执行的决策动作；缺省 = 不可同意也不可拒绝（终态）。 */
+  decidable?: readonly ('accept' | 'reject')[];
+  /** 决策动作被禁用时批量跳过汇报的原因；未登记状态回落 UNKNOWN_STATUS_DISABLED_REASON。 */
+  disabledReason?: string;
 };
+
+const STATUS_META: Record<string, EvolutionStatusMeta> = {
+  pending: { order: 0, color: 'gold', decidable: ['accept', 'reject'] },
+  draft_failed: { order: 1, color: 'error', decidable: ['reject'], disabledReason: '草稿生成失败' },
+  accept_failed: { order: 2, color: 'error', decidable: ['accept', 'reject'] },
+  analyzed: { order: 3, color: 'default', disabledReason: '不需要立项（无草稿）' },
+  accepted: { order: 4, color: 'success', disabledReason: '已决策' },
+  auto_accepted: { order: 5, color: 'success', disabledReason: '已决策' },
+  rejected: { order: 6, color: 'default', disabledReason: '已决策' },
+};
+
+/** 后端新增终态而前端未同步（版本代差）时的决策禁用原因。 */
+const UNKNOWN_STATUS_DISABLED_REASON = '状态未登记，暂不可决策';
 
 /** 类别列 Tag 配色（参考 SPEC 列表页「模式」列的 Tag 写法）。 */
 const SECTION_TAG_COLORS: Record<string, string> = {
@@ -78,9 +96,7 @@ function actionDisabledReason(status: string, action: BatchAction): string | nul
   if (action === 'delete') return null; // 删除不设状态门：任意状态可删
   const dis = getActionDisabled(status);
   if (!dis[action]) return null;
-  if (status === 'analyzed') return '不需要立项（无草稿）';
-  if (status === 'draft_failed') return '草稿生成失败';
-  return '已决策';
+  return STATUS_META[status]?.disabledReason ?? UNKNOWN_STATUS_DISABLED_REASON;
 }
 
 /** 从当前数据现算去重选项——避免出现「选了必然 0 条」的死选项。 */
@@ -281,18 +297,16 @@ function viewEmptyTextFor(tab: ViewTab, docSource: EvolutionItem['doc_source']):
 function getActionDisabled(status: string): Record<string, boolean> {
   // 「查看」不设状态门：分析结论恒可查看，有无草稿由弹窗自行分支（原「查看
   // SPEC 草稿」在 analyzed / draft_failed 下禁用，合并后该门随之取消）；
-  // analyzed（不需要立项）：仅可查看，禁用「同意」「拒绝」；
-  // draft_failed：无草稿可立项，禁用「同意」，仍可拒绝；
-  // accepted / auto_accepted / rejected：禁用「同意」与「拒绝」；
-  // pending / accept_failed：全部可用（accept_failed 可重试同意、可拒绝）。
   // delete 不设状态门（任意状态可删），恒可用。
-  const analyzed = status === 'analyzed';
-  const draftFailed = status === 'draft_failed';
-  const decided = status === 'accepted' || status === 'auto_accepted' || status === 'rejected';
+  // 「同意」「拒绝」按 STATUS_META[status].decidable 放行——fail-closed
+  // （code-review item 315ccdc0f28f）：仅对登记为可决策的状态开放（pending /
+  // accept_failed 全可，draft_failed 仅可拒绝），未知状态（后端新增终态而
+  // 前端未同步的版本代差）默认禁用，不靠后端接口报错兜底。
+  const decidable = STATUS_META[status]?.decidable;
   return {
     view: false,
-    accept: analyzed || draftFailed || decided,
-    reject: analyzed || decided,
+    accept: !decidable?.includes('accept'),
+    reject: !decidable?.includes('reject'),
     delete: false,
   };
 }
@@ -1006,19 +1020,10 @@ const SuggestedImprovementsPanel = forwardRef<
       title: '状态', dataIndex: 'status', key: 'status', width: 110,
       // 语义序（待处理在前、终态在后）而非字母序；未知状态排最后
       sorter: (a: EvolutionItem, b: EvolutionItem) =>
-        (STATUS_SORT_ORDER[a.status] ?? 99) - (STATUS_SORT_ORDER[b.status] ?? 99),
-      render: (s: string) => {
-        const colorMap: Record<string, string> = {
-          pending: 'gold',
-          analyzed: 'default',
-          draft_failed: 'error',
-          accepted: 'success',
-          auto_accepted: 'success',
-          rejected: 'default',
-          accept_failed: 'error',
-        };
-        return <Tag color={colorMap[s] || 'default'}>{EVOLUTION_STATUS_LABELS[s] || s}</Tag>;
-      },
+        (STATUS_META[a.status]?.order ?? 99) - (STATUS_META[b.status]?.order ?? 99),
+      render: (s: string) => (
+        <Tag color={STATUS_META[s]?.color || 'default'}>{EVOLUTION_STATUS_LABELS[s] || s}</Tag>
+      ),
     },
     {
       title: '操作', key: 'actions', width: 80,
