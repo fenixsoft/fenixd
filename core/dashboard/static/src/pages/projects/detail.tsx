@@ -611,6 +611,12 @@ export default function SpecDetailPage() {
   useEffect(() => {
     nameSpecRef.current = { name, spec };
   }, [name, spec]);
+  // applyDetail 通道（含 lastDetailRef 内容判等 + appliedSeq 时序守卫）定义在
+  // 主 effect 内，组件级刷新（handleClearInfo / 告警裁决 onResolved）够不到——
+  // 直接 setDetail 不推进序号，清除落地后在飞旧 REST 快照仍能通过序号比对把
+  // 已清除的信息条写回。以 ref 提升到组件作用域，两类写入共享同一防回跳守卫
+  // （code-review item bb989e8b9dff）
+  const applyDetailRef = useRef<(data: SpecDetail) => void>(() => {});
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -656,6 +662,8 @@ export default function SpecDetailPage() {
       appliedSeq += 1;
       setDetail(data);
     };
+    // effect 随 [name, spec] 重挂载时同步换成新闭包（序号/判等基线随 SPEC 归零）
+    applyDetailRef.current = applyDetail;
 
     // SPEC 下拉快速切换时本 effect 重挂载，cancelled 丢弃被取代作用的迟到
     // 响应，防止旧 SPEC 的详情经 getSpecDetail 写入新页面状态（同文件
@@ -1009,7 +1017,9 @@ export default function SpecDetailPage() {
       const fresh = await getSpecDetail(name, spec);
       // 迟到响应守卫：等待期间已切换到另一 SPEC → 丢弃旧详情，不串页
       if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
-      setDetail(fresh);
+      // 经 applyDetail 通道直写：推进 appliedSeq + 更新内容判等基线，使清除落地
+      // 前发出的在飞旧快照被序号守卫整表丢弃（code-review item bb989e8b9dff）
+      applyDetailRef.current(fresh);
     } catch (err) {
       message.warning(`已清除，但刷新详情失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1872,7 +1882,8 @@ export default function SpecDetailPage() {
                                 .then((d) => {
                                   // 迟到响应守卫：等待期间已切换 SPEC → 丢弃旧详情，不串页
                                   if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
-                                  setDetail(d);
+                                  // 经 applyDetail 通道直写，同 handleClearInfo（code-review item bb989e8b9dff）
+                                  applyDetailRef.current(d);
                                 })
                                 .catch(() => {});
                             }}
@@ -1897,11 +1908,37 @@ export default function SpecDetailPage() {
                 action={
                   <Space size={12}>
                     {hasContent && (
-                      <a onClick={() => toggleAlert(a.id)} title={expanded ? '收起' : '展开'}>
+                      <a
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => toggleAlert(a.id)}
+                        onKeyDown={(e) => {
+                          // 键盘可达（code-review item 5c90f027199a）：裸 a 无 href
+                          // 不进焦点序，比照 SPEC 切换行（item cadf21251f15）补
+                          // role/tabIndex/onKeyDown，preventDefault 防空格滚动页面
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleAlert(a.id);
+                          }
+                        }}
+                        title={expanded ? '收起' : '展开'}
+                      >
                         <DownOutlined rotate={expanded ? 180 : 0} />
                       </a>
                     )}
-                    <Typography.Link onClick={() => void handleMarkAlertHandled(a)} title="清除">
+                    <Typography.Link
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => void handleMarkAlertHandled(a)}
+                      onKeyDown={(e) => {
+                        // 键盘可达（code-review item 5c90f027199a）：同上口径
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          void handleMarkAlertHandled(a);
+                        }
+                      }}
+                      title="清除"
+                    >
                       <CloseOutlined />
                     </Typography.Link>
                   </Space>
@@ -1916,7 +1953,19 @@ export default function SpecDetailPage() {
               icon={<InfoCircleFilled style={{ fontSize: 16 }} />}
               message={<span style={{ fontSize: 14 }}>信息：{detail.error}</span>}
               action={
-                <Typography.Link onClick={() => void handleClearInfo()} title="清除">
+                <Typography.Link
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => void handleClearInfo()}
+                  onKeyDown={(e) => {
+                    // 键盘可达（code-review item 5c90f027199a）：同告警清除口径
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      void handleClearInfo();
+                    }
+                  }}
+                  title="清除"
+                >
                   <CloseOutlined />
                 </Typography.Link>
               }
@@ -2104,8 +2153,10 @@ export default function SpecDetailPage() {
                 {detail.report.degrade_annotation.duration_seconds != null
                   ? `${(detail.report.degrade_annotation.duration_seconds / 60).toFixed(1)}min`
                   : '时长未知'}
+                {/* 金额口径复用 formatUsd 单源（< $0.01 显三位小数，避免降级轮次
+                    小额成本显示 $0.00，code-review item a01ad2aa3fa8） */}
                 {detail.report.degrade_annotation.cost_usd != null
-                  ? ` / $${detail.report.degrade_annotation.cost_usd.toFixed(2)}`
+                  ? ` / ${formatUsd(detail.report.degrade_annotation.cost_usd)}`
                   : ''}
                 ）
               </span>
