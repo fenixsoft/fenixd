@@ -43,6 +43,12 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   // 定位阶段超时：超过 LOCATE_TIMEOUT_MS 仍未发现本次处置的 run，停止轮询、
   // 等待层改报超时并恢复输入可用
   const [locateTimedOut, setLocateTimedOut] = useState(false);
+  // 「处置进行中」（inProgress = invoked && !runDone && !locateTimedOut）的同步
+  // 镜像：回车延后触发的 handleSend 回调持有按键那帧的闭包，读 state 拿到的是
+  // 旧值——终态事件恰在按键与回调之间被处理时，守卫会按旧值误判「处置进行中」
+  // 把本次发送无声吞掉；ref 随下方各迁移点同步维护，守卫入口只读 ref
+  // （与 sendingRef 同型，code-review item 37dba271763e）
+  const inProgressRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 在飞标志（同步防重入）：回车经 setTimeout 延后触发，同帧连发的第二次回车
   // 调度出的回调读 sending state 拿到的仍是旧闭包值，守卫会被绕过；ref 跨渲染
@@ -51,7 +57,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const sendingRef = useRef(false);
   // 本轮发起的服务端时刻锚点（ms，取 invoke 响应携带的 created）：轮询只采用此后
   // 产生的 run，避免 daemon 尚未落 pending 时取到历史 run；409（已有处置进行中）
-  // 时放宽为接受现有最新 run。
+  // 时放宽为接受现有最新 run。容差只留 1 秒（两侧 created 同为 daemon 主机时钟，
+  // run 落盘恒晚于 invoke 受理，1 秒仅覆盖记录写入顺序抖动与小幅时钟回拨）：
+  // 加宽到数秒会把上一 run 秒败后快速重发场景下的历史 run 误认成本次 run，
+  // 定位随即终止、新处置全程不可见（code-review item 42fa874cf957）
   const invokeTimeRef = useRef(0);
   const acceptAnyRunRef = useRef(false);
   // 回车发送经 setTimeout 延后触发（等下拉选中项的 onChange 回写），
@@ -97,6 +106,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     setQueued(false);
     setRunDone(false);
     runDoneRef.current = false;
+    inProgressRef.current = false;
     invokeTimeRef.current = 0;
     acceptAnyRunRef.current = false;
     // 自动重连：最新处置记录为 pending 时直接接管其输出流，避免误关弹窗后
@@ -111,6 +121,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         if (latest?.admin_run_id && latest?.status === 'pending') {
           acceptAnyRunRef.current = true;
           setInvoked(true);
+          inProgressRef.current = true;
           setRunId(latest.admin_run_id);
         }
       } catch {
@@ -130,7 +141,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     const poll = async () => {
       // 定位超时：停止轮询，等待层改报超时、输入恢复可用（可重新发起）
       if (Date.now() - startAt >= LOCATE_TIMEOUT_MS) {
-        if (!stopped) setLocateTimedOut(true);
+        if (!stopped) {
+          inProgressRef.current = false;
+          setLocateTimedOut(true);
+        }
         return;
       }
       try {
@@ -138,7 +152,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         const latest = (d.activities || [])[0];
         const rid = latest?.admin_run_id;
         const createdMs = latest?.created ? new Date(latest.created).getTime() : 0;
-        if (rid && (acceptAnyRunRef.current || createdMs >= invokeTimeRef.current - 5000)) {
+        if (rid && (acceptAnyRunRef.current || createdMs >= invokeTimeRef.current - 1000)) {
           if (!stopped) {
             setRunId(rid);
             setQueued(false);
@@ -177,6 +191,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     if (status === 'done' || status === 'error' || status === 'interrupted'
       || status === 'cancelled' || status === 'missing'
       || status === 'frozen-terminated' || status === 'stall-budget-terminated') {
+      inProgressRef.current = false;
       setRunDone(true);
       // 只在 runDone false→true 迁移时清空一次（code-review item b165d0c1b6da）：
       // 同一终态会被 ClaudeOutputPane 反复上报（初载 loadTail、SSE 重连后的 hello
@@ -202,8 +217,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       return;
     }
     // 处置进行中不允许重复发起（按钮已禁用，此处拦住回车路径）；
-    // 定位超时例外——输入已恢复可用，允许直接重新发起
-    if (invoked && !runDone && !locateTimedOut) return;
+    // 定位超时例外——输入已恢复可用，允许直接重新发起。
+    // 读 ref 不读 state：延后回调可能持有按键那帧的闭包，state 旧值会把恰在
+    // 按键与回调之间到终态的处置误判为仍在进行（code-review item 37dba271763e）
+    if (inProgressRef.current) return;
     sendingRef.current = true;
     setSending(true);
     try {
@@ -225,6 +242,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       runDoneRef.current = false;
       setLocateTimedOut(false);
       setInvoked(true);
+      inProgressRef.current = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // 已有处置进行中优先按结构化字段判定（code-review item bfc474d8431a）：
@@ -244,6 +262,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         runDoneRef.current = false;
         setLocateTimedOut(false);
         setInvoked(true);
+        inProgressRef.current = true;
       } else {
         message.error(`发起失败：${msg}`);
       }
