@@ -10,8 +10,9 @@
 
 1. **同调用序列而非同锁**：条目建议「同一锁内」字面不成立也不必要——fix-failed 锁与 todo 锁是两把锁，嵌套引入锁序风险；在删除成功后、同一函数调用序列内做 todo 重写（best-effort、OSError 容错）。崩溃窗口仅剩「已解除未核销」退回现状，不比今天更差，且留痕行的 todo 处理结果字段保证可审计。
 2. **不采用「打 consumed 标记保留记录」**：字面不可行——:1379 pending 过滤跳过带 consumed_at 的记录，须另立 released_at 字段并改 pending 过滤，改动面更大，且与既有「解除=出册」语义冲突；仅当实现中发现 needle 定位失效率超预期时再评估该方向。
-3. **自动释放路径一并接入**：release_retryable_failed_batches 是 release_failed_batch 的自动化等效路径，不接则缺口只修一半；留痕行增 released_by 字段区分人工/自动，released_records/item_ids 结构沿用。
+3. **自动释放路径只补留痕、不接核销**（评审修正 2026-10-09，原「一并接入核销」的前提已过时）：release_retryable_failed_batches 自 0eb2745a（2026-09-23，code-review item 931df4af59cc）起是打标墓碑而非删记录——置 released=true 保留在册（:1094-1101），consume_resolved_failed_batches 的 pending 过滤（:1379，缺 consumed_at 即在册）天然覆盖墓碑（docstring :1370-1371 明言「对账范围含预算内记录与墓碑」），在档 3 条 released=true 记录均已 consumed_at、闭环实证可达；且预算内记录 fail_count < 生效预算才释放（:1118-1121）、从未达登记阈值，本无登记块可核销。若强行接入无条件核销，预算分档漂移（如 FAIL_RETRY_MAX 上调）使带块记录被释放时，反而会提前抹掉仍在跳条目的人工排查登记。该路径仅补 fix-failed-release.jsonl 留痕（released_by=auto-budget 区分人工/自动，released_records/item_ids 结构沿用）——解除回池动作此前零审计痕迹，留痕价值独立成立。
 4. **裸标题壳兜底复用既有逻辑**：:1336-1337 已有按标题移除残骸的实现（目前只在某条记录被核销时搭便车触发），本变更让 release 路径也能走到它，不新造。
+5. **核销范围与定位口径（评审补充）**：仅整批删除（released 计数分支 :1181-1182）触发登记块核销；部分解除（收缩 :1177-1180）不核销——剩余条目仍在册仍跳过，登记块由既有 consume 闭环在剩余条目全部终态时核销。复用 _rewrite_todo_entry_consumed 时 needle 须整行精确匹配（ids 行尾锚）：该函数现状为子串包含（:1331），传同批子集或整批全集都会前缀误命中「清单为其前缀扩展」的他批登记块——对齐 _close_retry_exhausted_alerts :1258 分号后缀锚防前缀误命中的既有先例；该加固同惠既有 consume 路径、不改调用契约。
 
 ## 权衡
 
