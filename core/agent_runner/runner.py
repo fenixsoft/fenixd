@@ -6374,14 +6374,24 @@ class AgentRunner:
                     except Exception:
                         _remaining_tasks = None
                 # ── 用量缺失注记（evo-add-impl-wallclock-budget-sizing 2.2）──
-                # 击杀类终止（超时/轮次上限/判停 SIGKILL）且无 CLI result 时，
+                # 击杀类终止（超时/轮次上限/判停 SIGKILL；code-review
+                # 6ee64b4a3619 起扩至取消/冻结终止——同样 terminate/kill、
+                # 同样无 CLI result，用量黑洞口径一致）且无 CLI result 时，
                 # 聚合 usage 随 result 事件落盘的通道同时失联（provider 逐轮
-                # usage 恒零、SIGKILL 无 result），token/cost 从此无从回溯——
-                # 显式注记消除静默黑洞：原因 + transcript 字节数/轮数粗估维度，
-                # 不臆造 cost 数值。成功路径（result 在场）不落本注记，行为不变。
+                # usage 恒零、terminate/kill 无 result），token/cost 从此无从
+                # 回溯——显式注记消除静默黑洞：原因（source= 区分终止来源）
+                # + transcript 字节数/轮数粗估维度，不臆造 cost 数值。成功路径
+                #（result 在场）不落本注记，行为不变。
                 _usage_missing_note = None
-                if ((timeout_error is not None or turn_limit_error is not None
-                        or stall_error is not None)
+                # 五类终止互斥置位（轮询环命中即 break），if/elif 链取唯一来源
+                _kill_source = (
+                    "timeout" if timeout_error is not None
+                    else "turn_limit" if turn_limit_error is not None
+                    else "stall" if stall_error is not None
+                    else "cancel" if cancel_error is not None
+                    else "frozen" if frozen_error is not None
+                    else None)
+                if (_kill_source is not None
                         and (not last_result or reader_stuck)):
                     _txb = None
                     try:
@@ -6390,7 +6400,8 @@ class AgentRunner:
                         _txb = None
                     _usage_missing_note = {
                         "reason": (
-                            "killed_without_cli_result: 聚合 usage 仅随 CLI "
+                            f"killed_without_cli_result(source={_kill_source}"
+                            "): 聚合 usage 仅随 CLI "
                             "result 事件落盘，击杀后不可得；provider 逐轮 "
                             "usage 未上报，token/cost 无从回溯（粗估维度见 "
                             "transcript_bytes/turns）"),
