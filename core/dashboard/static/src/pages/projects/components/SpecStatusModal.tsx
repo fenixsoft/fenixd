@@ -31,7 +31,7 @@ import {
   Typography,
 } from 'antd';
 import dayjs from 'dayjs';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   approveSpecPush,
   archiveSpec,
@@ -89,7 +89,11 @@ export default function SpecStatusModal({
   onDone,
 }: SpecStatusModalProps) {
   const { message, modal: appModal } = App.useApp();
-  const [loading, setLoading] = useState(false);
+  // 各区块按钮的 pending 动作 key（单值：同一时刻弹窗内只有一个确认动作在跑），
+  // 按钮按 key 判定自身 loading——此前是单一 loading 被所有区块共用，多个区块
+  // 同时渲染（done 态同显审批推送+归档；taskGapStuck/cancelledHold 非终态同显
+  // 回炉或恢复+冻结+调度）时点任一按钮会让其余区块按钮一起转圈。
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   // 预算区状态
   const [budgetOverride, setBudgetOverride] = useState<number | null>(null);
   const [budgetSaving, setBudgetSaving] = useState(false);
@@ -109,20 +113,26 @@ export default function SpecStatusModal({
   // 的「恢复运行」区块渲染判据——终态之外才可恢复。
   const cancelledHold = summary?.cancelled_hold === true;
 
-  // 打开时初始化预算覆盖值
+  // 打开时初始化预算覆盖值。仅在 open false→true 的瞬间执行：summary 来自 SSE
+  // 增量 patch 的 specMap，弹窗开着期间 frozen_until/budget_override 因后台动作
+  // 变化会触发依赖更新，若随依赖重跑初始化会把用户未保存的预算编辑打回服务端
+  // 值、并清空正在阅读的晋升 lint 违规明细。
+  const prevOpenRef = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    setBudgetOverride(summary?.budget_override ?? null);
-    setPromoteViolations(null);
-    // 初始化冻结管理状态
-    if (summary?.frozen_until) {
-      setFreezeMode('scheduled');
-      setFreezeUntil(dayjs(summary.frozen_until));
-    } else {
-      setFreezeMode('permanent');
-      setFreezeUntil(null);
+    if (open && !prevOpenRef.current) {
+      setBudgetOverride(summary?.budget_override ?? null);
+      setPromoteViolations(null);
+      // 初始化冻结管理状态
+      if (summary?.frozen_until) {
+        setFreezeMode('scheduled');
+        setFreezeUntil(dayjs(summary.frozen_until));
+      } else {
+        setFreezeMode('permanent');
+        setFreezeUntil(null);
+      }
     }
-  }, [open, summary?.budget_override, summary?.frozen_until]);
+    prevOpenRef.current = open;
+  }, [open, summary]);
 
   // ── 归档（终态 done/pushed） ───────────────────────
   const handleArchive = useCallback(() => {
@@ -140,7 +150,7 @@ export default function SpecStatusModal({
       okText: '归档',
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('archive');
         try {
           await archiveSpec(project, spec);
           message.success(`SPEC「${spec}」已归档`);
@@ -148,7 +158,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`归档失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -167,7 +177,7 @@ export default function SpecStatusModal({
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('freeze');
         try {
           // add-freeze-stop-inflight-agents 6.3：冻结成功后若返回
           // stopped_agents > 0 提示已停止的在跑 agent 计数与续做语义；
@@ -184,7 +194,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`冻结失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -198,7 +208,7 @@ export default function SpecStatusModal({
       okText: '解冻',
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('unfreeze');
         try {
           await setSpecFreezeConfig(project, spec, 'unfreeze');
           message.success(`SPEC「${spec}」已解冻`);
@@ -206,7 +216,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`解冻失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -214,17 +224,17 @@ export default function SpecStatusModal({
 
   // ── 切换冻结模式（永久↔定时） ─────────────────────
   const handleFreezeConfig = useCallback(async () => {
-    setLoading(true);
+    setPendingAction('freeze-config');
     try {
       if (freezeMode === 'scheduled') {
         if (!freezeUntil) {
           message.error('请选择定时解冻时间');
-          setLoading(false);
+          setPendingAction(null);
           return;
         }
         if (freezeUntil.isBefore(dayjs())) {
           message.error('解冻时间不能早于当前时刻，请重新选择');
-          setLoading(false);
+          setPendingAction(null);
           return;
         }
         await setSpecFreezeConfig(project, spec, 'scheduled', freezeUntil.toISOString());
@@ -237,7 +247,7 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setLoading(false);
+      setPendingAction(null);
     }
   }, [project, spec, freezeMode, freezeUntil, onDone, message]);
 
@@ -255,7 +265,7 @@ export default function SpecStatusModal({
       okText: '晋升',
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('promote');
         try {
           const result = await promoteSpec(project, spec);
           if (result.ok) {
@@ -276,7 +286,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`晋升失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -303,7 +313,7 @@ export default function SpecStatusModal({
       okText: '审批推送',
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('approve-push');
         try {
           await approveSpecPush(project, spec);
           message.success('已提交推送，daemon 执行中');
@@ -311,7 +321,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`审批推送失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -345,7 +355,7 @@ export default function SpecStatusModal({
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('reflow');
         try {
           const result = await reflowSpec(project, spec);
           if (result.ok) {
@@ -359,7 +369,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`回炉失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -388,7 +398,7 @@ export default function SpecStatusModal({
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('resume');
         try {
           const result = await resumeSpec(project, spec);
           if (result.ok) {
@@ -411,7 +421,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`恢复失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -419,7 +429,6 @@ export default function SpecStatusModal({
 
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
-    setLoading(true);
     setBudgetSaving(true);
     try {
       await setSpecBudget(project, spec, budgetOverride);
@@ -428,13 +437,11 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setLoading(false);
       setBudgetSaving(false);
     }
   }, [project, spec, budgetOverride, onDone, message]);
 
   const handleBudgetReset = useCallback(async () => {
-    setLoading(true);
     setBudgetSaving(true);
     try {
       await setSpecBudget(project, spec, null);
@@ -444,7 +451,6 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setLoading(false);
       setBudgetSaving(false);
     }
   }, [project, spec, onDone, message]);
@@ -465,7 +471,7 @@ export default function SpecStatusModal({
       okButtonProps: { type: 'primary' },
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('activate');
         try {
           const result = await activateSpec(project, spec);
           if (result.ok) {
@@ -483,7 +489,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`激活失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -502,7 +508,7 @@ export default function SpecStatusModal({
       okText: '设为待激活',
       cancelText: '取消',
       onOk: async () => {
-        setLoading(true);
+        setPendingAction('set-manual');
         try {
           await setSpecStartAfter(project, spec, 'manual');
           message.success(`SPEC「${spec}」已设为待激活，daemon 停止自动调度`);
@@ -510,7 +516,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
-          setLoading(false);
+          setPendingAction(null);
         }
       },
     });
@@ -541,7 +547,7 @@ export default function SpecStatusModal({
             <Button
               type="primary"
               onClick={handleApprovePush}
-              loading={loading}
+              loading={pendingAction === 'approve-push'}
             >
               审批推送
             </Button>
@@ -558,7 +564,7 @@ export default function SpecStatusModal({
               分支时在保留分支上续做（已提交成果不丢失）；无可保留分支时降级为
               全新重派。恢复会消耗一次实现尝试预算。
             </Typography.Paragraph>
-            <Button danger onClick={handleResume} loading={loading}>
+            <Button danger onClick={handleResume} loading={pendingAction === 'resume'}>
               恢复运行
             </Button>
           </div>
@@ -578,7 +584,7 @@ export default function SpecStatusModal({
                 缺口结论：{summary.error}
               </Typography.Paragraph>
             )}
-            <Button danger onClick={handleReflow} loading={loading}>
+            <Button danger onClick={handleReflow} loading={pendingAction === 'reflow'}>
               回炉并重新派发实现
             </Button>
           </div>
@@ -593,7 +599,7 @@ export default function SpecStatusModal({
             </Typography.Paragraph>
             <Button
               onClick={handleArchive}
-              loading={loading}
+              loading={pendingAction === 'archive'}
             >
               归档 SPEC
             </Button>
@@ -610,7 +616,7 @@ export default function SpecStatusModal({
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
                   未冻结。冻结后 daemon 停止调度该 SPEC，直到手动解冻。
                 </Typography.Paragraph>
-                <Button danger onClick={handleFreeze} loading={loading}>
+                <Button danger onClick={handleFreeze} loading={pendingAction === 'freeze'}>
                   冻结 SPEC
                 </Button>
               </>
@@ -637,7 +643,7 @@ export default function SpecStatusModal({
                 )}
                 <Space direction="vertical" style={{ width: '100%' }} size={8}>
                   <Space>
-                    <Button danger onClick={handleUnfreeze} loading={loading}>
+                    <Button danger onClick={handleUnfreeze} loading={pendingAction === 'unfreeze'}>
                       立即解冻
                     </Button>
                   </Space>
@@ -658,13 +664,13 @@ export default function SpecStatusModal({
                         onChange={(d) => setFreezeUntil(d)}
                         placeholder="选择自动解冻时间"
                       />
-                      <Button type="primary" onClick={() => void handleFreezeConfig()} loading={loading}>
+                      <Button type="primary" onClick={() => void handleFreezeConfig()} loading={pendingAction === 'freeze-config'}>
                         应用
                       </Button>
                     </Space>
                   )}
                   {freezeMode === 'permanent' && summary.frozen_until && (
-                    <Button onClick={() => void handleFreezeConfig()} loading={loading}>
+                    <Button onClick={() => void handleFreezeConfig()} loading={pendingAction === 'freeze-config'}>
                       切换为永久冻结
                     </Button>
                   )}
@@ -688,7 +694,7 @@ export default function SpecStatusModal({
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
                   该 SPEC 当前为待激活态（start_after: manual），daemon 不会自动调度。
                 </Typography.Paragraph>
-                <Button type="primary" onClick={handleActivate} loading={loading}>
+                <Button type="primary" onClick={handleActivate} loading={pendingAction === 'activate'}>
                   激活（立即调度）
                 </Button>
               </>
@@ -698,7 +704,7 @@ export default function SpecStatusModal({
                   将 start_after 设为 manual，daemon 停止自动调度，直到手动激活。
                   不影响正在执行的 run（与冻结一致，只挡后续派发）。
                 </Typography.Paragraph>
-                <Button onClick={handleSetManual} loading={loading}>
+                <Button onClick={handleSetManual} loading={pendingAction === 'set-manual'}>
                   设为待激活
                 </Button>
               </>
@@ -734,7 +740,7 @@ export default function SpecStatusModal({
                 }
               />
             )}
-            <Button onClick={handlePromote} loading={loading}>
+            <Button onClick={handlePromote} loading={pendingAction === 'promote'}>
               晋升 ready
             </Button>
           </div>
