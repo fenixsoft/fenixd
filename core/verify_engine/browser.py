@@ -372,18 +372,25 @@ class BrowserManager:
 
         # 扫描主 JS 文件: index.html-{hash}.js
         # 文件名 hash 与构建时间无关，按 mtime 降序取最新，
-        # 避免 dist 残留多份历史 bundle 时字典序选中旧版本
-        js_files = sorted(
-            assets_dir.glob("index.html-*.js"),
-            key=lambda p: (p.stat().st_mtime, p.name),
-            reverse=True,
-        )
-        # 扫描主 CSS 文件: index-{hash}.css
-        css_files = sorted(
-            assets_dir.glob("index-*.css"),
-            key=lambda p: (p.stat().st_mtime, p.name),
-            reverse=True,
-        )
+        # 避免 dist 残留多份历史 bundle 时字典序选中旧版本。
+        # glob 枚举与 stat 之间存在文件系统竞态（并发构建清理/替换、
+        # 临时文件消失）：单文件 stat 失败跳过该候选，不因个别文件消失
+        # 整体降级回退 index.html——候选全部不可 stat（列表为空）才走
+        # 回退分支，与 serving._probe_dist_freshness 的容错口径对齐
+        # （code-review item c2ca81061541）。
+        def _mtime_desc(candidates):
+            """预 stat 每个候选（失败跳过），按 (mtime, name) 降序返回。"""
+            stats = []
+            for p in candidates:
+                try:
+                    stats.append((p.stat().st_mtime, p.name, p))
+                except OSError:
+                    continue
+            stats.sort(key=lambda t: (t[0], t[1]), reverse=True)
+            return [t[2] for t in stats]
+
+        js_files = _mtime_desc(assets_dir.glob("index.html-*.js"))
+        css_files = _mtime_desc(assets_dir.glob("index-*.css"))
 
         if not js_files:
             self._log("warning", "未找到 index.html-*.js 文件，回退到 index.html")

@@ -177,10 +177,23 @@ def save_attribution(
 
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".judge_attr.", suffix=".json.tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（同 maintenance_runs._append_token_run 的
+        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
+        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, path)
         _fsync_dir(path.parent)
     except Exception:
@@ -290,13 +303,26 @@ def build_requeue_manifest(
         return manifest
 
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（同 maintenance_runs._append_token_run 的
+        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
+        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(manifest, f, ensure_ascii=False, indent=2)
             f.flush()
             # 与 save_attribution 同纪律：replace 前刷数据落盘，防掉电后
             # rename 到位而内容为空/截断（清单驱动下轮回炉子集，丢失后果
             # 是回炉信息缺失）
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, path)
         _fsync_dir(path.parent)
     except OSError as exc:

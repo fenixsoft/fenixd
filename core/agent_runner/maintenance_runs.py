@@ -2206,14 +2206,20 @@ def _unique_regression_run_id(runner) -> str:
 
 # pytest 中需要独立参数值（空格分隔形态）的选项（add-codefix-targeted-retry 2.1）：
 # 收集目标判定时这些选项的**值**不是收集目标。``--opt=value`` 等号形态天然是
-# 单 token 且以 ``-`` 开头，不进此判定。覆盖常见声明形态；未收录选项的空格
-# 形态值可能被误判为收集目标——项目契约（verify.yaml regression.cmd）形态
-# 稳定（``python3 -m pytest tests/ -q --junit-xml=...``），超出清单时映射侧
-# 以 fail-closed 兜底（宁回全量不错替换）。
+# 单 token 且以 ``-`` 开头，不进此判定。排除类选项（值形似收集目标的
+# nodeid/路径/glob）MUST 收录：漏收会把值误判为收集目标，首个「目标」（实为
+# 选项值）被替换成失败 nodeids、真实收集目标被删除，K=1 时命令变成
+# ``pytest --deselect <失败用例>`` 反向排除失败用例 → 回归假通过（code-review
+# item a6e2fcc99c8a）。此为已知局限而非已兜底：未收录选项的空格形态值同样会
+# 被误判，映射侧没有命令形态 fail-closed（mapped 只看
+# _map_junit_failures_to_nodeids 的 nodeid 重构成败，core/code_fix.py），
+# 仅当误判值非法时由 pytest 参数解析失败兜住——值形似收集目标的带值选项
+# 一律收录进本清单。
 _PYTEST_VALUE_OPTIONS = frozenset({
     "-c", "--config", "-o", "--override-ini", "-k", "-m", "-p", "-r", "-W",
     "--junit-xml", "--junit-prefix", "--result-log", "--basetemp",
     "--rootdir", "--durations", "--maxfail", "--html", "--css", "--tb",
+    "--deselect", "--ignore", "--ignore-glob",
 })
 
 # shell 控制操作符：命令 token 化后含任一即视为复杂 shell 形态，

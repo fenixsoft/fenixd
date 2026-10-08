@@ -1323,6 +1323,10 @@ def _check_impl_result_artifact(
                 f"Artifact gate '{spec_name}' task 类失败已达阈值 —— 降级为警告"
                 f"放行（只卡第一次）: {gate_err}",
             )
+            # 降级放行与自然通过同为「成功姿态过门」，此处补跑 host_changes 汇总
+            # 软校验（纯 WARNING 留痕，MUST NOT 影响返回值），使两条放行路径的
+            # 软审计覆盖一致，与下方注释声明对齐（code-review item 7f2bff4c4adc）。
+            runner._check_host_changes_summary_soft(spec_name, data, result_path, wt_path)
             return None
         return gate_err
 

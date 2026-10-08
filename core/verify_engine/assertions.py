@@ -898,11 +898,17 @@ class AssertionRunner:
         # 维持各分支既有语义不变——存量冻结场景依赖页面级 get_by_text 的
         # 大小写不敏感匹配，统一改口径会翻转既有判定。
         match_semantics = ""
+        # 实际检查的元素计数（仅 selector 分支填充，code-review item
+        # 4d31aefb1f81）：取数中断时保持 None，随结果透出供 judge 归因。
+        checked_elements = None
         if selector:
             match_semantics = "selector 元素文本子串比较（大小写敏感）"
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配
+            # wait_for 是否命中随结果透出（code-review item 4d31aefb1f81）。
+            selector_attached = False
             try:
                 await page.locator(selector).first.wait_for(state="attached", timeout=3000)
+                selector_attached = True
             except Exception:
                 pass
             try:
@@ -948,6 +954,10 @@ class AssertionRunner:
                         # e82503f5caf5）。
                         continue
                 passed = any(text in (t or "") for t in texts)
+                # 元素计数透出（code-review item 4d31aefb1f81）：零命中与
+                # 「渲染了但文本不含期望值」此前同为无 error 的 pass=False，
+                # judge 无法区分配置性失败与内容缺陷。
+                checked_elements = len(texts)
             except Exception:
                 passed = False
         else:
@@ -975,7 +985,7 @@ class AssertionRunner:
                 content = await page.content()
                 passed = text in content
 
-        return {
+        result = {
             "type": "text_contains",
             "layer": 3,
             "text": text,
@@ -983,12 +993,36 @@ class AssertionRunner:
             "match_semantics": match_semantics,
             **({"note": budget_note} if budget_note else {}),
         }
+        if selector:
+            # 零命中归因（code-review item 4d31aefb1f81）：texts 长度随结果
+            # 透出，零命中附 error 提示与 note（含 wait_for attached 是否
+            # 命中），供 judge 区分「元素从未渲染」的场景前置/配置性失败与
+            # 「渲染但文本不含期望值」的内容失败——同文件 text_match/
+            # attribute_match 对元素缺失均有 error 归因或存在性预检。
+            result["checked_elements"] = checked_elements
+            if checked_elements == 0:
+                result["error"] = "选择器未匹配到任何元素"
+                zero_note = (
+                    "元素零命中（wait_for attached 未命中，元素从未渲染）"
+                    if not selector_attached
+                    else "元素零命中（wait_for attached 已命中，读取时元素数为 0）"
+                )
+                result["note"] = (
+                    f"{budget_note}；{zero_note}" if budget_note else zero_note
+                )
+        return result
 
     async def _assert_attribute_match(self, page, a: dict) -> dict:
         """断言元素属性值等于期望值。"""
         selector = a["selector"]
         attr = a.get("attribute", "")
-        expected = a.get("expected", "")
+        # 「未设置」哨兵是 None 而非空串（code-review item ef4b26f85ce3，同
+        # text_match 口径）：空串是断言「属性值为空」的合法期望值；若缺省
+        # 空串，场景漏写 expected 键会进轮询与真实属性值比较直到超时、按
+        # 普通失败收场且无配置错误归因，judge 易把 planner 漏参误判为产品
+        # 缺陷。漏写与显式 null 统一命中下方缺参检查，确需断言空属性值的
+        # 场景显式写 expected: ""。
+        expected = a.get("expected", None)
         if not attr or expected is None:
             # 显式失败而非空转（与 text_match/z_index_order 缺参口径一致）：
             # attribute 缺参时 get_attribute("") 每轮抛错被轮询吞掉重试、

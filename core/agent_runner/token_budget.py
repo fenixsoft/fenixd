@@ -40,10 +40,13 @@ def _to_int(value) -> int:
     STATE 条目可能被人工编辑或由历史版本写入非数值字符串（如 '12abc'），
     裸 int() 抛 ValueError 会从 _accumulate_token_usage 冒泡打断收工累计；
     容错口径与同函数 _cost_usd 的 try/except (TypeError, ValueError) 对齐。
+    code-review item c7706d3ad78d：int(float("inf")) 抛的是 OverflowError
+    （usage_info 经 json 往返或网关畸形回传可携带 inf），一并入捕、回退 0，
+    口径与同包 maintenance_runs._safe_int（dc8f109b8b60）对齐。
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -189,13 +192,18 @@ class TokenAccountant:
         # warning 留痕；bool（true）经 float(True)=1.0 被误读为 1M 预算。比照
         # 同模块 _positive_number 的 NaN/inf 兜底与 _record_daily_provider_attempt
         # 的 bool 排除口径统一钳制：畸形值记 warning 并回退缺省 50。
+        # code-review item 858e28e2e186：config 被写成巨大整型（YAML 任意精度，
+        # 如 10**400）时 float(budget) 抛 OverflowError，不在 (TypeError,
+        # ValueError) 捕获范围内，同样会沿收工路径冒泡中断其后的验证链侧车。
+        # 入捕后统一走 budget_ok=False 回退缺省 50，口径与 infra_breaker.
+        # threshold/cooldown_minutes 的同类守卫一致。
         budget_ok = True
         if type(budget) is bool:
             budget_ok = False
         else:
             try:
                 budget = float(budget)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 budget_ok = False
             else:
                 if budget != budget or budget in (float("inf"), float("-inf")):

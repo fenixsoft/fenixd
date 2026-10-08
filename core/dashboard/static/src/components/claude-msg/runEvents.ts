@@ -441,6 +441,13 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
           const idx = toolIndexById.get(toolUseId);
           if (idx !== undefined && out[idx]) {
             out[idx].toolResult = result;
+          } else {
+            // 无匹配工具卡片（卡片被分页窗口截断、上游 tool_use_id 形态漂移）时
+            // 兜底为系统条，不静默丢失（item ea030ea275c2）：与下方 task_started/
+            // task_notification 分支同一「不静默丢失」口径；content 类型标注为
+            // unknown，经 resultContentToText 文本化再截断
+            const digest = truncateText(resultContentToText(result.content), 80);
+            pushSystem(`工具结果：${digest}`, timestamp);
           }
         }
         // tool_result 消息不再渲染文本行（除非另有文本内容）
@@ -686,6 +693,10 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
     const t = parseTimestampMs(ev.timestamp);
     if (t !== null) assistantTimes.push(t);
   }
+  // 估算前排序（item 253eea758896）：assistantTimes 按事件流序收集，流内时间戳
+  // 非单调（回放拼接、生产者时钟抖动）时 find 取到数组序首个更大值而非最小更
+  // 大值，(next - t) 偏大导致「已思考 N 秒」高估；排序消除对流序单调的隐式假设
+  assistantTimes.sort((a, b) => a - b);
   // 同事件工具观测耗时汇总（item 5828e59782f2）：thinking 与同消息的 tool_use
   // 块共享同一事件 timestamp，下方差值会把工具执行耗时计入（工具耗时长时
   // 「已思考 N 秒」显著夸大）。按 timestamp 汇总心跳观测到的工具耗时，从差值

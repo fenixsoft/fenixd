@@ -1385,6 +1385,17 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: duration 须为有限数字（秒），收到 {step.duration}"
             )
+        # 有限大值量级拦截（code-review item ee8105751ecb）：负值/非有限值
+        # 拦截覆盖不到毫秒语义误写（"600000"≈7 天），运行层 sse_connect 的
+        # 收集窗口 deadline 与 httpx read 超时均由 duration 派生，会如实等待
+        # 整个窗口、单场景占住并行槽挂起整轮验证，与 timeout 防线后果相同。
+        # 口径对齐上方 timeout 分支：elif 只补超过 MAX_STEP_TIMEOUT 的有限
+        # 大值，复用同一常量防口径漂移，不重复报错。
+        elif step.duration is not None and step.duration > MAX_STEP_TIMEOUT:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: duration 超过上限"
+                f" {MAX_STEP_TIMEOUT:g} 秒（30 分钟），收到 {step.duration}"
+            )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in KIND_ASSERTIONS.get(kind, set()):
@@ -1431,7 +1442,17 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
     """按场景 kind 分派 per-kind 词表校验（Runner.validate 与
     TestScenario.validate 的公共入口，词表权威源唯一）。"""
     errors: list[str] = []
-    if not scenario.id or not scenario.id.strip():
+    # 场景 id 非字符串形态守卫（code-review item 1e73e60d5260）：from_dict 对
+    # id 原样透传（d["id"] 无 str 归一），冻结文件被手工修坏成 dict/数字等
+    # 真值非法形态时，id.strip() 抛 AttributeError，被 _parse_and_validate_
+    # scenario_dicts 包成不含字段定位的笼统「解析失败」，与 kind 的非 str
+    # 守卫（c74c42575c7c）口径漂移。非 str 一律字段级报错后立即返回（id 已坏
+    # 时下游错误消息无法用其定位），字符串路径不变；None 同样走本分支（与
+    # engine 验收门「场景 id 必须为字符串」同口径）。
+    if not isinstance(scenario.id, str):
+        errors.append(f"场景ID必须为字符串，收到 {type(scenario.id).__name__}")
+        return errors
+    if not scenario.id.strip():
         errors.append("场景ID不能为空")
     # depends_on 列表类型验收（code-review item 301443cb108c）：非列表形态
     # （str/dict）会被逐字符/逐键迭代，原样放行要拖到 engine 编排期才暴露。
