@@ -1192,7 +1192,8 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         boot_log.close()
         return False, False, f"启动验证目标应用失败: {e}"
     # verify-process-lifecycle D6：兜底 spawn 同登记纳入管理
-    # （pid/spec/worktree 空、端口先按 hint，实际可达端口由探测修正）
+    # （pid/spec/worktree 空、端口先按 hint；若服务实际监听在邻近端口，
+    # 由下方端口上探分支按探测结果修正登记，code-review ce8aa74526a7）
     pipeline._register_serving_instance(spec_name, proc, hint_port=base_port)
 
     for _ in range(LEGACY_START_PROBE_ATTEMPTS):
@@ -1272,6 +1273,24 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
             ]
             if all(_probe(u, http_error_ok=True) for u in urls_new):
+                # code-review ce8aa74526a7：登记端口按探测结果修正——上方
+                # 以 hint_port=base_port 登记，实际监听端口是 port；不修正
+                # 的话 _current_instance_base_url（无契约形态）按登记端口
+                # 拼 base_url 分发给 runner，请求打向已无服务监听的
+                # base_port，与改写后的场景 URL 形成两套不一致的实例地址。
+                # 先 remove 再 register（同 (pid,spec) 幂等跳过，直接
+                # register 不会改端口）；spec 在飞期 sweep 不会收割，两次
+                # 持锁间隙丢登记仅损失收割效率，不制造新失败。
+                try:
+                    reg = ServingRegistry(
+                        pipeline._context.project_root, pipeline._context.logger
+                    )
+                    reg.remove(proc.pid, spec_name)
+                    reg.register(proc.pid, port, spec_name, "")
+                except Exception as e:
+                    pipeline._context.logger.warning(
+                        "pm_engine", f"serving 登记端口修正失败 '{spec_name}'（非阻塞）: {e}"
+                    )
                 # code-review c0637b767434：持久化失败时成功文案降级为可判别
                 # 的警告性 note（reachable 判定不变）
                 persisted = pipeline._rewrite_scenario_port(
