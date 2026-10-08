@@ -249,7 +249,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 引用未初始化的 ref。
   usePanelDirty(
     () =>
-      description !== (config.description || '') ||
+      // 简介比对已保存基线而非 config prop（code-review item 620661f0e2ff）：
+      // config 要等保存触发的父级重载回填才更新，比对基线（保存成功与 effect
+      // 回填两处均已同步）消除回填窗口内的误报脏（切页签误弹丢弃确认），
+      // 与 yaml 侧 yamlDraftRef/yamlLoadedContentRef 同口径
+      description !== descriptionSourceRef.current.baseline ||
       yamlDraftRef.current !== yamlLoadedContentRef.current,
   );
 
@@ -311,6 +315,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     yamlDraftRef.current = '';
     yamlLoadedContentRef.current = '';
     setYamlLoadError(false); // 清上一个项目残留的失败标记
+    // 存在性标记同复位：yamlExists 残留会让加载完成前的「AI 自动生成」按钮
+    // 按上一项目的存在性决定 overwrite 语义（false=起草 / true=覆盖既有契约）
+    setYamlExists(false);
     loadVerifyYaml();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
@@ -374,6 +381,15 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     if (!project) return;
     if (autodraftInFlight.current) return; // 竞态窗口内重复触发：同步锁拦截
     autodraftInFlight.current = true;
+    // 存在性守卫（比照 handleYamlSave 的草稿归属守卫口径）：加载失败或草稿
+    // 归属不指向当前项目（切项目的加载往返窗口内残留）时，overwrite 依据的
+    // yamlExists 可能是上一项目的残留值——拒绝触发并提示先重试加载确认。
+    const src = yamlDraftSourceRef.current;
+    if (yamlLoadError || !src || src.project !== project) {
+      autodraftInFlight.current = false; // 未进入在飞段，就地释放锁
+      message.warning('verify.yaml 尚未加载确认（加载失败或已切换项目），请重新加载后再自动生成');
+      return;
+    }
     setAutodraftLoading(true);
     try {
       const result = await autodraftVerifyYaml(project, overwrite);
