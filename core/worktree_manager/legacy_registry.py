@@ -160,11 +160,22 @@ class G2LegacyRegistryMixin:
         self._kill_worktree_strays(wt_path.name)
         self.register_legacy(spec_name, wt_path, branch)
         rec = self._legacy.get(spec_name)
-        if rec is not None:
+        # 登记生效判定（code-review item a35088c8bdbb）：不能只凭 rec 非 None——
+        # 同 spec 已有更早遗产记录（如前次死亡登记后经 resolve_resume_site 续做/
+        # mark_reused 路径复用，两者均不出册 _legacy）且本次 branch 双兜底皆空时，
+        # register_legacy 对空分支直接早退、不触碰 _legacy，rec 会取到旧记录
+        # （path 指向别的 worktree）：误盖 reuse=True 会让 _take_reusable_worktree
+        # 认领旧 path，落入正常收尾分支又会把当前 wt_path 误摘活动集成无登记
+        # 孤儿。按 path 归属校验取到的确属本次登记才置 reuse，否则归入下方的
+        # 登记未生效出口（置 None 复用同一判定，正常/告警两出口结构不变）。
+        if rec is not None and rec.get("path") == wt_str:
             rec["reuse"] = True
+        else:
+            rec = None
         if rec is None:
             # 登记未生效（_wt_branches 与 _guess_branch_from_worktree 双兜底皆空，
-            # register_legacy 对空分支直接 return）：本应受清扫豁免与 reuse 认领
+            # register_legacy 对空分支直接 return；rec 非 None 时为同 spec 更早的
+            # 旧遗产记录，未被本次登记覆盖）：本应受清扫豁免与 reuse 认领
             # 保护的现场会变成无登记孤儿、可被孤儿清扫回收。留痕并保留活动集
             # 成员身份使豁免仍生效；锁照常释放（run 已终结，扣锁会阻塞重派），
             # 仅降级说明 reuse 认领不可用（code-review item 431f12115971）。
