@@ -237,8 +237,14 @@ def main():
 
     result = validate_contract(project_root)
 
-    # 输出 prepare 结果
-    print(f"[prepare] {'✓ 通过' if result.prepare_ok else '✗ 失败'}", end="")
+    # 输出 prepare 结果。prepare 未实际执行时（serve 段结构非法被跳过等路径下
+    # prepare_ok 只是初始 True）显示「未执行」而非「通过」，不谎报未执行的段
+    # 已通过（code-review item f295bff223a0；退出码判定不受影响，仍按
+    # prepare_ok，与 serve_ran/ready_ran 同口径）。
+    if result.prepare_ran:
+        print(f"[prepare] {'✓ 通过' if result.prepare_ok else '✗ 失败'}", end="")
+    else:
+        print("[prepare] 未执行", end="")
     # 声明步数（非实际执行步数——prepare_steps_run 在执行前赋值，第 1 步即
     # 失败时仍为全部声明步数；code-review item 69f20b76f5a2），避免误读。
     if result.prepare_steps_run > 0:

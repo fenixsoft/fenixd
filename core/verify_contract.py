@@ -403,6 +403,31 @@ def _load_verify_contract_with_raw(
             )
         serve_data = None
     if isinstance(serve_data, dict) and serve_data.get("kind") in ("static", "command"):
+        # serve.root 守卫（code-review item 6e6a1c4d4f7a）：kind=static 且 root
+        # 为绝对路径或含 ".." 段时，消费方 ``Path(项目根) / root`` 会静默漂移到
+        # 项目根之外（对齐上方 evidence_dir 同款守卫口径与理由）——记 warning
+        # 后按空 root 处理：static 模式缺 root 由既有链路大声失败
+        # （validate_contract 经 _raw_serve_section_errors 报「serve.root 为空」
+        # 走 FAIL_SERVE_INVALID，selfcheck_contract_light 同文案自证失败且
+        # fail-fast 阻断场景执行），不再进入静态服务。就地写回使 raw_data 与
+        # 解析结果同口径（serve_data 即 data["serve"] 同一对象）。
+        if serve_data["kind"] == "static":
+            raw_root = serve_data.get("root")
+            cand = raw_root.strip() if isinstance(raw_root, str) else ""
+            bad_reason = ""
+            if cand.startswith("/"):
+                bad_reason = "绝对路径（须为相对项目根的路径）"
+            elif ".." in cand.split("/"):
+                bad_reason = '含 ".." 段（不得逃出项目根）'
+            if bad_reason:
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        f"verify.yaml serve.root 非法（{bad_reason}，按空 root "
+                        f"处理——static 模式缺 root 走 serve 段非法失败路径）: "
+                        f"{raw_root!r}",
+                    )
+                serve_data["root"] = ""
         # port 是可选 legacy 端口提示：非正整数（如 port: auto）按无提示
         # 回退 None，不得从 load_verify_contract 抛 ValueError——违背
         # 「解析失败按无契约回退」约定（复用 _positive_int_or_default 范式）。
@@ -730,6 +755,13 @@ class ValidateResult:
     # 置 True，未执行段由 CLI 显示「未启动」；退出码与总体失败判定仍按
     # serve_ok，不受本标志影响。
     serve_ran: bool = False
+    # prepare 构建步骤是否实际执行（code-review item f295bff223a0）：serve 段
+    # 结构非法时 prepare 被跳过以省构建成本（item 82187038c510），而 prepare_ok
+    # 保持初始 True——CLI 按其打印「✓ 通过」会向用户谎报从未执行的 prepare 段
+    # 已通过（与 serve_ran/ready_ran 已修复的同一问题形态）。prepare 段实际
+    # 执行过才置 True，未执行段由 CLI 显示「未执行」；退出码与总体失败判定
+    # 仍按 prepare_ok，不受本标志影响。
+    prepare_ran: bool = False
     # 本次校验实际加载的契约对象（code-review item 73047bb4e140）：随结果一并
     # 返回，调用方（fenix_verify_contract.py CLI）全程复用同一份契约做跳过
     # 判定与 regression 自证，消除两次读取之间 verify.yaml 被改写导致「三段
@@ -839,6 +871,8 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # 3. 执行 prepare 构建步骤
     prepare_ok = True
     prepare_error = ""
+    # prepare 段是否实际执行（供 CLI 区分「未执行」与「通过」，item f295bff223a0）
+    prepare_ran = False
     # prepare_steps_run 记录「声明步数」（code-review item 69f20b76f5a2）：
     # run_prepare_steps 签名仅返回错误串、无法回传实际执行到的步数（改签名
     # 会波及 serving/dist_conflicts 等调用方），CLI 据此显示「声明 N 步」，
@@ -854,6 +888,10 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # 就不等于已执行步数）；serve/ready 段随既有 serve_ok 守卫与 base_url 判空
     # 自然跳过，返回结构不变。
     if contract.prepare and serve_ok:
+        # prepare 段实际执行过——serve 段结构非法/无 prepare 步骤时跳过，
+        # prepare_ran 保持 False，CLI 据此显示「未执行」而非「✓ 通过」
+        # （item f295bff223a0）
+        prepare_ran = True
         err = run_prepare_steps(contract, project_root, logger)
         if err:
             prepare_ok = False
@@ -1041,6 +1079,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         ready_expect=ready_expect,
         serve_ran=serve_ran,
         ready_ran=ready_ran,
+        prepare_ran=prepare_ran,
         contract=contract,
     )
 
