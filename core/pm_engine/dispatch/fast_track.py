@@ -1397,9 +1397,16 @@ class FFastTrackMixin:
         # 6e6259821f64）。任一车道新增/修改终态失败分支时 MUST 同步另一
         # 车道的对应段，禁止只改一处；对照定位用方法名/分支语义，勿写
         # 裸行号（行号会漂移）。
+        # 终态分类判据（code-review item a67c798e5e9c）：与上方豁免判据同源——
+        # 调用方显式传 run_reason（run 真实终态归因）时按其匹配四段终态指纹，
+        # 缺省/空回退 final_error（既有行为不变）。缺失结果文件入口的
+        # final_error 是固定人文案，永不命中熔断/[provider-transient]/模型链
+        # 指纹，会把网关熔断期的死亡 run 误走重试计数链（full 车道 queue.py
+        # 同场景 final_error 即真实归因、能命中熔断分支）。
+        classify_error = run_reason or final_error
         # provider 熔断拦截（code-review item 6cc1577c5086：子串匹配共用
         # PROVIDER_CIRCUIT_ERROR_MARKER 常量，防上游文案调整使本消费点静默失配）
-        if final_error and PROVIDER_CIRCUIT_ERROR_MARKER in final_error:
+        if classify_error and PROVIDER_CIRCUIT_ERROR_MARKER in classify_error:
             self._pm.state_machine.update_spec(spec_name, {"error": final_error})
             return
         # provider 瞬断终态延迟重派（code-review item 498a7c7432f1）：与 full 车道
@@ -1408,7 +1415,7 @@ class FFastTrackMixin:
         # _retry_count 递增/清零路径，改按 transient_redispatch_delay_seconds
         # 排程等待后重派，避免把网关瞬断计入重试并快速重派。缺此分支会使
         # fast-track 车道与全车道语义不一致。
-        if final_error and "[provider-transient]" in final_error:
+        if classify_error and "[provider-transient]" in classify_error:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track provider transient '{spec_name}' — scheduling "
@@ -1421,7 +1428,7 @@ class FFastTrackMixin:
         # 对等）：链尾拒模型是确定性失败，同因重派必然撞同一拒模型链——不重派、
         # 不增 retry、不翻转状态机，error 落盘供 dashboard/admin 可见。摘除拒模型
         # 条目后恢复属人工运维（docs/help/12-faq.md）。
-        if final_error and MODEL_CHAIN_UNAVAILABLE_MARKER in final_error:
+        if classify_error and MODEL_CHAIN_UNAVAILABLE_MARKER in classify_error:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track model chain unavailable '{spec_name}' — holding "
