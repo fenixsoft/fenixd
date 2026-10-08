@@ -14,4 +14,14 @@
 #   - nodeid: tests/test_something.py::TestFoo::test_bar
 #     timeout_seconds: 30
 #     reason: 该用例起真实子进程并等待 20s 排水窗口，10s 不够
-entries: []
+entries:
+  # 2026-10-08 全量回归自毒化事故（test_run_stop_loss 全局 Popen 补丁泄漏）：
+  # 两个判停用例含 3s 观察窗 + AGENT_TERMINATE_GRACE_SECONDS=10s 宽限 join，
+  # 正常 2-4s 完成，负载下贴近/越过 10s 全局门（当日实证零号超时源）。
+  # 30s 与用例自身 elapsed < GRACE+20 的断言上限同口径。
+  - nodeid: tests/test_run_stop_loss.py::TestStallBudgetCriteria::test_polling_loop_kills_stalled_run
+    timeout_seconds: 30
+    reason: 判停强杀路径含 3s 观察窗与 10s 终止宽限 join，负载下超出 10s 全局门
+  - nodeid: tests/test_run_stop_loss.py::TestStallBudgetCriteria::test_polling_loop_disabled_does_not_kill
+    timeout_seconds: 30
+    reason: 观察窗 3s + cancel 收尾 10s 宽限 join，天然贴近 10s 全局门（2026-10-08 实证超时源）

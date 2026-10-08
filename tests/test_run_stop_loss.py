@@ -505,37 +505,44 @@ class TestStallBudgetCriteria:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         runner_module.subprocess.Popen = fake_popen
-        # 判据一已达标（连续 3 次慢往返），轮询环首个评估周期即命中
-        seed_stall_samples(runner, "sb-x-123", [150.0, 180.0, 130.0])
+        try:
+            # 判据一已达标（连续 3 次慢往返），轮询环首个评估周期即命中
+            seed_stall_samples(runner, "sb-x-123", [150.0, 180.0, 130.0])
 
-        outcome = {}
+            outcome = {}
 
-        def worker():
-            try:
-                runner._run_claude(
-                    "prompt", proot, "sb-x-123-a1",
-                    model_override="m", max_turns=50,
-                    spec_name="x", agent_type="implementer",
-                )
-                outcome["result"] = "returned"
-            except RunStallBudgetExceededError as e:
-                outcome["result"] = "stall"
-                outcome["criterion"] = e.criterion
-                outcome["detail"] = e.detail
-            except Exception as e:  # noqa: BLE001
-                outcome["result"] = f"err:{e}"
+            def worker():
+                try:
+                    runner._run_claude(
+                        "prompt", proot, "sb-x-123-a1",
+                        model_override="m", max_turns=50,
+                        spec_name="x", agent_type="implementer",
+                    )
+                    outcome["result"] = "returned"
+                except RunStallBudgetExceededError as e:
+                    outcome["result"] = "stall"
+                    outcome["criterion"] = e.criterion
+                    outcome["detail"] = e.detail
+                except Exception as e:  # noqa: BLE001
+                    outcome["result"] = f"err:{e}"
 
-        t0 = time.time()
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        # 判停命中快于进程注册可见（首轮评估即杀），等 outcome 即可
-        deadline = time.time() + 5
-        while time.time() < deadline and not outcome and \
-                "sb-x-123-a1" not in runner._running_agents:
-            time.sleep(0.01)
-        t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 30)
-        elapsed = time.time() - t0
-        runner_module.subprocess.Popen = orig_popen
+            t0 = time.time()
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            # 判停命中快于进程注册可见（首轮评估即杀），等 outcome 即可
+            deadline = time.time() + 5
+            while time.time() < deadline and not outcome and \
+                    "sb-x-123-a1" not in runner._running_agents:
+                time.sleep(0.01)
+            t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 30)
+            elapsed = time.time() - t0
+        finally:
+            # 异常安全复原（2026-10-08 全量回归自毒化事故）：补丁落在**进程级
+            # 全局** subprocess.Popen，用例被 pytest-timeout 的 SIGALRM 打断时
+            # 尾部显式复原到不了，fake（一切子进程→sleep(60)）泄漏给其后所有
+            # 用例——每个 subprocess.run 挂满 10s 超时，全量回归 1800s 撞死
+            # （total=0 无明细）。finally 保证失败/超时路径同样复原。
+            runner_module.subprocess.Popen = orig_popen
 
         assert outcome.get("result") == "stall", outcome
         assert outcome["criterion"] == "consecutive_slow_rounds"
@@ -574,40 +581,45 @@ class TestStallBudgetCriteria:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         runner_module.subprocess.Popen = fake_popen
-        seed_stall_samples(runner, "sb-y-456", [150.0, 180.0, 130.0])
+        try:
+            seed_stall_samples(runner, "sb-y-456", [150.0, 180.0, 130.0])
 
-        outcome = {}
+            outcome = {}
 
-        def worker():
-            try:
-                runner._run_claude(
-                    "prompt", proot, "sb-y-456-a1",
-                    model_override="m", max_turns=50,
-                    spec_name="y", agent_type="implementer",
-                )
-                outcome["result"] = "returned"
-            except RunCancelledError as e:
-                outcome["result"] = "cancelled"
-                outcome["reason"] = e.reason
-            except Exception as e:  # noqa: BLE001
-                outcome["result"] = f"err:{e}"
+            def worker():
+                try:
+                    runner._run_claude(
+                        "prompt", proot, "sb-y-456-a1",
+                        model_override="m", max_turns=50,
+                        spec_name="y", agent_type="implementer",
+                    )
+                    outcome["result"] = "returned"
+                except RunCancelledError as e:
+                    outcome["result"] = "cancelled"
+                    outcome["reason"] = e.reason
+                except Exception as e:  # noqa: BLE001
+                    outcome["result"] = f"err:{e}"
 
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        deadline = time.time() + 5
-        while time.time() < deadline and \
-                "sb-y-456-a1" not in runner._running_agents:
-            time.sleep(0.05)
-        assert "sb-y-456-a1" in runner._running_agents
-        # 观察窗内（3 个轮询周期）未被强杀
-        time.sleep(3.0)
-        assert outcome.get("result") is None, outcome
-        proc = runner._running_agents.get("sb-y-456-a1")
-        assert proc is not None and proc.poll() is None
-        # 确定性收尾：走既有取消路径终止，且无判停终态
-        runner.cancel_run("sb-y-456", reason="收尾", by="test")
-        t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 10)
-        runner_module.subprocess.Popen = orig_popen
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            deadline = time.time() + 5
+            while time.time() < deadline and \
+                    "sb-y-456-a1" not in runner._running_agents:
+                time.sleep(0.05)
+            assert "sb-y-456-a1" in runner._running_agents
+            # 观察窗内（3 个轮询周期）未被强杀
+            time.sleep(3.0)
+            assert outcome.get("result") is None, outcome
+            proc = runner._running_agents.get("sb-y-456-a1")
+            assert proc is not None and proc.poll() is None
+            # 确定性收尾：走既有取消路径终止，且无判停终态
+            runner.cancel_run("sb-y-456", reason="收尾", by="test")
+            t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 10)
+        finally:
+            # 同上：进程级全局补丁必须异常安全复原（2026-10-08 自毒化事故，
+            # 本用例即当日零号超时源——观察窗+宽限 join 贴近 10s 门被
+            # SIGALRM 打断后复原被跳过，全场子进程用例连坐）。
+            runner_module.subprocess.Popen = orig_popen
         assert outcome.get("result") == "cancelled"
         lines = read_run_file(proot, "sb-y-456-a1")
         assert not any(
