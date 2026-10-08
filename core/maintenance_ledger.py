@@ -60,7 +60,7 @@ def list_maintenance_entries(project) -> list:
     """
     try:
         text = _ledger_path(project).read_text(encoding="utf-8")
-    except (FileNotFoundError, NotADirectoryError):
+    except (OSError, UnicodeDecodeError):
         return []
     entries = []
     for line in text.splitlines():
