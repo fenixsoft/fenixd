@@ -169,6 +169,16 @@ class TestHasNonTerminalChildFix(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "done"})
         self.assertEqual(self.engine._family._has_non_terminal_child_fix("fix-x"), "")
 
+    def test_verified_child_returns_empty(self):
+        """子 fix 已 verified（终态集成员）时同样解封返回空串。
+
+        守卫一的终态判定与 _FIX_SPEC_TERMINAL 同源：verified 属已收敛成员，
+        不得被误判非终态而持续阻塞父 SPEC 的 derive 派生。
+        """
+        self.sm.add_spec("fix-x", {"status": "bug-found"})
+        self.sm.add_spec("fix-fix-x", {"status": "verified"})
+        self.assertEqual(self.engine._family._has_non_terminal_child_fix("fix-x"), "")
+
     def test_non_terminal_child_returns_name(self):
         """非终态子 fix 存在时返回其名称。"""
         self.sm.add_spec("fix-x", {"status": "bug-found"})
