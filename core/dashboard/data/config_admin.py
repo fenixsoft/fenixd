@@ -747,14 +747,14 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # add-code-review-agent-and-quality-tab：admin.code_review 两键
         # （经 ConfigLoader 生效值回显，与 self_review 同形态：顶层独立子键、
         # 不进 _managed_admin_keys 键集）
-        result["code_review"] = _CL.get_code_review_config(raw)
+        result["code_review"] = ConfigLoader.get_code_review_config(raw)
         # add-code-review-auto-fix：admin.code_review_fix 两键（经 ConfigLoader
         # 生效值回显，与 code_review 同形态：顶层独立子键）
-        result["code_review_fix"] = _CL.get_code_review_fix_config(raw)
+        result["code_review_fix"] = ConfigLoader.get_code_review_fix_config(raw)
         # add-test-regression-tab：admin.regression 键（经 ConfigLoader 生效值
         # 回显，与 code_review 同形态：顶层独立子键、不进 _managed_admin_keys
         # 键集——未知 admin 键由白名单狭窄回显，读不懂写入值）
-        result["regression"] = _CL.get_regression_config(raw)
+        result["regression"] = ConfigLoader.get_regression_config(raw)
         # add-settings-system-tab：受管 admin 键提取（含缺省填充，不透传未知键）
         result["admin"] = _managed_admin_keys(raw)
     # add-spec-hooks：hooks 段原样透传（读回 UI 编辑视图）
