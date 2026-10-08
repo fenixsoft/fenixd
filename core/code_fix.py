@@ -885,7 +885,8 @@ def _map_junit_failures_to_nodeids(failures, exec_root=None):
     - 模块边界判定：``exec_root`` 提供时以 ``<modpath>.py`` 文件存在性为准
       （回归刚在该根跑过、测试文件必然在盘）；唯一边界命中才可映射，多个
       前缀同时命中（如 ``a.py`` 与 ``a/b.py`` 并存）视为歧义。``exec_root``
-      缺省 None 时退化启发式（首个大写开头段起为类链，无则整段为模块）。
+      缺省 None 时退化启发式（首个大写开头段起为类链，无则整段为模块；
+      首段即大写视为无模块段、判映射失败）。
     - ``file`` 属性存在（非空）时参与一致性校验：与重构文件路径不一致 →
       该用例映射失败。
     - classname 缺失/空、非 Python 模块形态、歧义、任一用例映射失败 →
@@ -926,6 +927,13 @@ def _map_junit_failures_to_nodeids(failures, exec_root=None):
                 if s[:1].isupper():
                     boundary = i
                     break
+            if boundary == 0:
+                # 首段即大写（classname 无模块段，如 "TestFoo"）：模块文件
+                # 段为空会把 nodeid 拼成 ".py::TestFoo::..." 畸形形态，进
+                # subset_nodeids 会使子集回归收集失败——与「非 Python 模块
+                # 形态」分支同口径判映射失败，调用方回退全量（fail-closed）。
+                # （code-review item 05c09cc68333）
+                return [], False
 
         rel_file = _mod_file(segs[:boundary])
         cls_chain = segs[boundary:]
@@ -1157,8 +1165,14 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
             released = 0
             changed = 0
             for rec in records:
-                ids = [i for i in rec.get("item_ids") or [] if i not in target]
-                if len(ids) == len(rec.get("item_ids") or []):
+                # item_ids 形态守卫（code-review item 3bf751ec88d9，对齐
+                # _record_item_ids 先判后拷纪律）：坏档非列表标量直接迭代
+                # 会抛 TypeError 中断人工解除；按空列表容错、记录原样保留
+                # （不误整批解除、不改写坏档）。
+                raw = rec.get("item_ids")
+                rec_ids = raw if isinstance(raw, list) else []
+                ids = [i for i in rec_ids if i not in target]
+                if len(ids) == len(rec_ids):
                     kept.append(rec)  # 无交集，原样保留
                 elif ids:
                     rec["item_ids"] = ids
@@ -1479,7 +1493,10 @@ def record_deferred_batch(
         key = {str(i) for i in item_ids}
         target = None
         for rec in entries:
-            if {str(i) for i in rec.get("item_ids") or []} == key:
+            raw = rec.get("item_ids")
+            # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档非列表
+            # 标量判不命中（幂等复用退化为新记一条，不炸 defer 登记）。
+            if isinstance(raw, list) and {str(i) for i in raw} == key:
                 target = rec
                 break
         if target is None:
@@ -1515,7 +1532,10 @@ def _patch_deferred_entry(project_root, item_ids, **fields) -> None:
         key = {str(i) for i in item_ids}
         hit = False
         for rec in entries:
-            if {str(i) for i in rec.get("item_ids") or []} == key:
+            raw = rec.get("item_ids")
+            # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档非列表
+            # 标量判不命中、跳过 patch（不炸 defer_count 递增路径）。
+            if isinstance(raw, list) and {str(i) for i in raw} == key:
                 rec.update(fields)
                 hit = True
         if hit:
@@ -1535,10 +1555,15 @@ def _remove_deferred_batch(project_root, item_ids) -> None:
     def _do() -> None:
         entries = load_deferred_batches(project_root)
         key = {str(i) for i in item_ids}
+        # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档非列表标量
+        # 判不命中、原样保留（MUST NOT 让 TypeError 上穿炸掉移除路径）。
         kept = [
             rec
             for rec in entries
-            if {str(i) for i in rec.get("item_ids") or []} != key
+            if not (
+                isinstance(rec.get("item_ids"), list)
+                and {str(i) for i in rec["item_ids"]} == key
+            )
         ]
         if len(kept) != len(entries):
             _save_deferred_batches(project_root, kept)
@@ -1623,9 +1648,13 @@ def _has_expired_archive(project_root, item_ids) -> bool:
     """
     key = {str(i) for i in item_ids}
     for rec in load_failed_batches(project_root):
+        raw = rec.get("item_ids")
         if (
             rec.get("reason") == "wip_gate_blocked_expired"
-            and {str(i) for i in rec.get("item_ids") or []} == key
+            # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档非列表
+            # 标量判不命中（去重指纹退化为可能重复告警，不炸降级路径）。
+            and isinstance(raw, list)
+            and {str(i) for i in raw} == key
         ):
             return True
     return False
@@ -3993,11 +4022,15 @@ class CodeFixOrchestrator:
                         ledger = read_items(root)
                     except Exception:  # noqa: BLE001 — 台账读失败按空集（maxed 判 False）
                         ledger = {}
+                    # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档
+                    # 非列表标量的记录不计 maxed，MUST NOT 让 TypeError 上穿
+                    # 炸掉本轮投递的「选批为空」收敛出口。
                     maxed = any(
                         not rec.get("released")
+                        and isinstance(rec.get("item_ids"), list)
                         and any(
                             (ledger.get(str(i)) or {}).get("status") == "open"
-                            for i in rec.get("item_ids") or []
+                            for i in rec["item_ids"]
                         )
                         and _fail_count_int(rec.get("fail_count"))
                         >= _effective_retry_budget(rec)
@@ -4676,7 +4709,11 @@ class CodeFixOrchestrator:
     def _retry_one_deferred(self, wm, entry) -> tuple:
         """单条延迟批重试，结果四分派（D4/2.1）。返回 ``(核销数, 结果文案)``。"""
         root = self.project_root
-        item_ids = [str(i) for i in entry.get("item_ids") or []]
+        # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档非列表标量
+        # 按空列表容错（后续移出/降级路径不炸；空集使 _remove_deferred_batch
+        # 无命中，坏档滞留由时间门/磁盘对账兜底）。
+        _raw_ids = entry.get("item_ids")
+        item_ids = [str(i) for i in _raw_ids] if isinstance(_raw_ids, list) else []
         fixed_ids = [str(i) for i in entry.get("fixed_ids") or []]
         wt = Path(str(entry.get("worktree") or ""))
         branch = str(entry.get("branch") or "")
@@ -5411,6 +5448,7 @@ class CodeFixOrchestrator:
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             raise
 
+    # [fenix-ignore:5afcd68672ca] 各失败收尾点的顺序约定各不相同（档案入档先于 cleanup、salvage reuse 标记夹在 cleanup 与进度写点之间、连接冷却在进度之后）且多处正确性由历史补丁注释锚定，不存在可纯机械抽取的统一「三元组」形态；部分抽取只覆盖少数干净分支、漂移面反而扩大，修复风险大于收益。
     def _run_batch_created(self, wm, wt: Path, created_sha, ctx: dict, run_id: str) -> str:
         """执行已建树批次的主体（首次/重试 run、回归、守卫、合回核销清理）。
 
