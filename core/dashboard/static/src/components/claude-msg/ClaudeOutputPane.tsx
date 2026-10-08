@@ -172,9 +172,11 @@ export default function ClaudeOutputPane({
   // 初载响应仍可正常兜底。
   const tailSnapSeqRef = useRef(0);
   const tailSnapAppliedRef = useRef(0);
-  // watch 注册重试的在途退避定时器句柄（code-review item 11f787b2d13c）：SSE
-  // effect 清理时统一撤销，卸载/切 run 后不再触发在途重试
-  const watchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // watch 注册重试的在途退避定时器句柄集合（code-review item 11f787b2d13c）：SSE
+  // effect 清理时统一撤销，卸载/切 run 后不再触发在途重试。Set 收集（code-review
+  // item c8d342a52519）：同连接自动重连后的 hello 会再触发一轮注册重试，单句柄
+  // 会被后一轮覆盖、先到的退避定时器失去撤销保护——逐句柄登记/摘除，清理时全撤。
+  const watchRetryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -237,7 +239,11 @@ export default function ClaudeOutputPane({
           setError(e instanceof Error ? e.message : String(e));
         }
       } finally {
-        if (isMountedRef.current && activeRunIdRef.current === reqRunId) {
+        // loading 复位与数据写回同一三重币值守卫（code-review item 6a3e881e5091）：
+        // 跨项目同名 run 切换后，旧 run 迟到的初载 finally 若只按 runId 宽口径，
+        // 会提前复位新 run 仍在途请求的 loading（界面闪「等待输出…」空态）；新
+        // run 初载自身的 finally 会复位 loading，此处收窄不关闭复位路径
+        if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
           setLoading(false);
         }
       }
@@ -313,7 +319,7 @@ export default function ClaudeOutputPane({
     // hello 补注册，live run 增量从此静默丢失（面板冻结在注册失败时刻的快照）。
     // 故按 1s/2s/4s 退避至多重试 MAX_WATCH_RETRIES 次；重试经挂载/币值守卫，
     // 耗尽或已卸载/切 run 时保持既有 console.error 口径并返回（不抛出，调用方
-    // 照旧走尾部重拉兜底）。定时器句柄记入 watchRetryTimerRef 供 effect 清理撤销。
+    // 照旧走尾部重拉兜底）。定时器句柄记入 watchRetryTimersRef 供 effect 清理撤销。
     const registerWatchWithRetry = async (cid: string): Promise<void> => {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -331,7 +337,13 @@ export default function ClaudeOutputPane({
           }
           console.error(`Failed to register run watch (attempt ${attempt + 1}), retrying:`, e);
           await new Promise<void>((resolve) => {
-            watchRetryTimerRef.current = setTimeout(resolve, 1000 * 2 ** attempt);
+            // 句柄登记入 Set（item c8d342a52519）：并发多轮注册重试互不覆盖，
+            // 到期自摘防集合无界增长
+            const timer = setTimeout(() => {
+              watchRetryTimersRef.current.delete(timer);
+              resolve();
+            }, 1000 * 2 ** attempt);
+            watchRetryTimersRef.current.add(timer);
           });
         }
       }
@@ -451,11 +463,12 @@ export default function ClaudeOutputPane({
 
     return () => {
       // 撤销在途的 watch 注册重试定时器（code-review item 11f787b2d13c）：
-      // 卸载/切 run 后不再触发在途重试
-      if (watchRetryTimerRef.current !== null) {
-        clearTimeout(watchRetryTimerRef.current);
-        watchRetryTimerRef.current = null;
+      // 卸载/切 run 后不再触发在途重试；逐句柄撤销（item c8d342a52519），
+      // 并发多轮注册重试的退避定时器一并清掉
+      for (const timer of watchRetryTimersRef.current) {
+        clearTimeout(timer);
       }
+      watchRetryTimersRef.current.clear();
       eventSource.close();
     };
     // reportStatus 刻意不入依赖（code-review item aa6c0683def4，理由同初载
