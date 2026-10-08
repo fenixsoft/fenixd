@@ -543,6 +543,12 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     setTriggering(true);
     try {
       await triggerRegression(project);
+      // 受理副作用前核对项目身份（对齐 handleFix 的 f538e7f059ec 守卫口径）：
+      // POST 往返期间切换项目后，受理提示、started_at 基线与 awaitingStart
+      // 过渡态会落在切换后项目的视图上——新项目触发按钮被「等待启动」禁用至
+      // 120s 超时并弹误导提示，目标项目也从未真正跑过回归。身份已变化即直接
+      // 返回（finally 仍复位 triggering）
+      if (projectRef.current !== project) return;
       message.success('已受理，daemon 将开始执行全量回归');
       // 受理成功 → 等待启动过渡态（动画条即时反馈，running 置位后由
       // 真实进度接管；见 awaitingStart 注释）。记录受理时刻快照基线，供
@@ -659,6 +665,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     setIssuesTriggering(true);
     try {
       await triggerRegressionIssues(project);
+      // 受理副作用前核对项目身份（同 handleTrigger 的 f538e7f059ec 守卫口径）：
+      // POST 往返期间切换项目即直接返回，受理提示/started_at 基线/过渡态/刷新
+      // 均不落在切换后项目的视图上（finally 仍复位 issuesTriggering）
+      if (projectRef.current !== project) return;
       message.success('已受理，daemon 将只重跑失败/错误/长耗时的用例（无法定向时自动回退全量）');
       // 受理成功 → 等待启动过渡态（同 handleTrigger，running 置位后由真实
       // 进度接管；受理时刻快照基线同 handleTrigger）；经 ref 调最新闭包
