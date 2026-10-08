@@ -192,14 +192,11 @@ def _write_signal_exclusive(req_path, payload):
                 os.fsync(f.fileno())
             finally:
                 # fdopen 失败路径显式关 fd（同上方 71d502440d3b 先例）；
-                # close 静默兜底（item 885b6ebbff70）：close 失败交外层
-                # except 统一清 req_path 并包装，与主路径异常契约一致，
-                # 不再以裸 OSError 逃逸
+                # close 失败不吞（item 885b6ebbff70）：交外层 except 统一
+                # 清 req_path 并包装，与主路径异常契约一致，不再以裸
+                # OSError 逃逸
                 if f is not None:
-                    try:
-                        f.close()
-                    except OSError:
-                        pass
+                    f.close()
                 else:
                     try:
                         os.close(fd)
