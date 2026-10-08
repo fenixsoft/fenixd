@@ -731,6 +731,21 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
                         f"code-fix 修复已执行（run {run_id}），回落整轮"
                     ),
                 })
+            # 回落整轮前回写上一轮全量报告：merged 报告已先于本转换链落盘规范
+            # report.json（上方 save_report），转换失败 spec 滞留 bug-found/
+            # implemented 按整轮处置，不回写则读侧（_failed_scenario_ids/
+            # _detect_uniform_verify_failure/dashboard 展示）在窗口内读到与状态
+            # 失真的乐观全绿报告（与子集重验失败回落、门禁拒绝回落两处对称）。
+            # prev_report 为 None（本就无报告/不可读）按无报告语义跳过写盘；
+            # 回写失败不阻断回落记账（整轮验证随后会重写报告）。
+            if prev_report is not None:
+                try:
+                    save_report(ctx.project_root, spec_name, prev_report)
+                except OSError as e:
+                    ctx.logger.warning(
+                        "pm_engine",
+                        f"fastlane 转换失败回落回写上一轮报告失败 '{spec_name}': {e!r}",
+                    )
             return _bump_fail_streak(
                 f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
             )
@@ -740,19 +755,25 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     )
     # _apply_verified 内部六处门禁静默 early-return（env 豁免握手/进度核对/
     # 报告闸门/洗白门禁/ocr join 门禁/verified transition 被拒），返回值恒为
-    # None、成败不可观测——回读状态机实况判定收敛是否真落定：仅 status 确为
-    # verified 才清零 streak 并落盘 fastlane-converged。门禁拒绝时 spec 实际
-    # 滞留 testing 未收口，若照旧清零连败计数并上报 converged=True，调用方
-    # （pipeline._do_spec_bug_found）见 dispatched=True 即 return，不派生修复、
-    # 不计失败轮，FASTLANE_MAX_CONSECUTIVE_FAILURES 熔断在该路径永久失效。
-    # 故非 verified 按 fastlane 本轮失败回落整轮（_bump_fail_streak 留痕）：
-    # 返回 dispatched=False，调用方随即走 on_spec_bug_found 既有整轮处置
-    # （inplace 原地打回直写 status / derive 派生 fix SPEC，均不经 transition
-    # 合法性校验，对滞留 testing 无副作用矛盾）。
+    # None、成败不可观测——回读状态机实况判定收敛是否真落定：仅 status 落在
+    # 收敛集 {verified, done, pushed} 才清零 streak 并落盘 fastlane-converged。
+    # 注意 verified 之后并非只有门禁拒绝一条出路：_apply_verified 尾部
+    # on_spec_verified 会同步触发 verified→done→pushed 事件链（auto-push），
+    # 本方法回读前 spec 可能已被推进到 done/pushed——同属真实收敛，不得与
+    # 「门禁拒绝滞留 testing」混为一谈，否则对已终态 spec 虚增失败轮并令调用
+    # 方走 bug-found 整轮处置（inplace 会把终态 spec 打回 implementing）。
+    # 门禁拒绝时 spec 实际滞留 testing 未收口，若照旧清零连败计数并上报
+    # converged=True，调用方（pipeline._do_spec_bug_found）见 dispatched=True
+    # 即 return，不派生修复、不计失败轮，FASTLANE_MAX_CONSECUTIVE_FAILURES
+    # 熔断在该路径永久失效。故 status 不在收敛集按 fastlane 本轮失败回落整轮
+    # （_bump_fail_streak 留痕）：返回 dispatched=False，调用方随即走
+    # on_spec_bug_found 既有整轮处置（inplace 原地打回直写 status / derive
+    # 派生 fix SPEC，均不经 transition 合法性校验，对滞留 testing 无副作用
+    # 矛盾）。
     # status 缺失（不可观测，如无 status 字段的桩 store）按既有收敛行为放行：
     # 生产 STATE 记录恒带 status，「缺失」不构成门禁拒绝的证据，不据此误回落。
     _applied_status = str((sm.read_one(spec_name) or {}).get("status", "") or "")
-    if _applied_status and _applied_status != "verified":
+    if _applied_status and _applied_status not in ("verified", "done", "pushed"):
         # 门禁拒绝回落整轮前回写上一轮全量报告：与子集重验失败回落（上方
         # 682-689）对称——merged 报告（实跑子集全 pass + carried-over 沿用）
         # 已落盘规范 report.json，而 spec 实际滞留 testing 按 bug-found 走整轮
@@ -770,7 +791,7 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
                 )
         return _bump_fail_streak(
             f"fastlane 收敛门禁未通过（_apply_verified 后 status={_applied_status}"
-            f"≠verified，spec 未收口），回落整轮"
+            f"∉{{verified, done, pushed}}，spec 未收口），回落整轮"
         )
     # 真正收敛点（两次 transition 与 _apply_verified 全部成功之后）才清零
     # 连续失败计数：清零若前置到状态转换前，transition 被拒走

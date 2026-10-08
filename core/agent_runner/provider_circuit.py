@@ -1956,47 +1956,39 @@ class ProviderCircuit:
         with self._signal_kill_lock:
             self._signal_kill.pop(spec_name, None)
 
-    def _signal_kill_cooldown_after(self) -> int:
-        """信号冷却阈值（agents.signal_kill_cooldown_after，缺省 3）。"""
-        raw = self._pm._get_config(
-            "agents.signal_kill_cooldown_after", SIGNAL_KILL_COOLDOWN_AFTER)
-        # bool 排除（code-review item ea68d5727ca3）：对齐同文件
-        # _record_daily_provider_attempt 的口径——yaml 误写布尔 true 时
-        # int(True)=1 会把阈值收成 1（首个信号死法立即触发冷却），bool 按畸形
-        # 回缺省；0（or 兜缺省）/负数（max(1) 钳 1）/非法串（except 兜缺省）
-        # 的既有兜底行为不变。
+    def _positive_int_config(self, key, default) -> int:
+        """读取整型配置并按「0 归缺省 + max(1) 下限」口径钳制（信号冷却键共用）。
+
+        与 _positive_number / _nonneg_number 的参数化先例同思路（code-review
+        item 9cd4f1ca9539）：bool 排除、字符串 "0" 归一、or 兜缺省、int 转换、
+        max(1) 钳制五段此前在信号冷却两键各手写一份，收口到此处单边维护。
+        """
+        raw = self._pm._get_config(key, default)
+        # bool 排除（code-review item ea68d5727ca3）：yaml 误写布尔 true 时
+        # int(True)=1 会被当合法配置收成 1，bool 按畸形回缺省，其余兜底不变。
         if type(raw) is bool:
-            return SIGNAL_KILL_COOLDOWN_AFTER
+            return default
         # 字符串 "0" 归一（code-review item 0a1086a801e0）：yaml 引号写法 "0"
         # 为真值、绕过下方 or 兜缺省，int("0")=0 后被 max(1) 钳成 1——与数值
-        # 0 的「兜缺省」语义分叉（首个信号死法即触发 600s spec 冷却）。显式
-        # 0 一律归缺省，两写法同口径；其余兜底（负数钳 1/非法串兜缺省）不变。
+        # 0 的「兜缺省」语义分叉。显式 0 一律归缺省，两写法同口径；其余兜底
+        # （负数钳 1/非法串兜缺省）不变。
         if raw == 0 or raw == "0":
             raw = 0
         try:
-            v = int(raw or SIGNAL_KILL_COOLDOWN_AFTER)
+            v = int(raw or default)
         except (TypeError, ValueError):
-            v = SIGNAL_KILL_COOLDOWN_AFTER
+            v = default
         return max(1, v)
+
+    def _signal_kill_cooldown_after(self) -> int:
+        """信号冷却阈值（agents.signal_kill_cooldown_after，缺省 3）。"""
+        return self._positive_int_config(
+            "agents.signal_kill_cooldown_after", SIGNAL_KILL_COOLDOWN_AFTER)
 
     def _signal_kill_cooldown_seconds(self) -> int:
         """信号冷却时长（agents.signal_kill_cooldown_seconds，缺省 600）。"""
-        raw = self._pm._get_config(
+        return self._positive_int_config(
             "agents.signal_kill_cooldown_seconds", SIGNAL_KILL_COOLDOWN_SECONDS)
-        # bool 排除（code-review item ea68d5727ca3）：同 _signal_kill_cooldown_after
-        # ——int(True)=1 会把冷却时长收成 1 秒，bool 按畸形回缺省，其余兜底不变。
-        if type(raw) is bool:
-            return SIGNAL_KILL_COOLDOWN_SECONDS
-        # 字符串 "0" 归一（code-review item 0a1086a801e0）：同
-        # _signal_kill_cooldown_after——"0" 绕过 or 兜缺省后被 max(1) 钳成
-        # 1 秒冷却，与数值 0 的「兜缺省」语义分叉，显式 0 一律归缺省。
-        if raw == 0 or raw == "0":
-            raw = 0
-        try:
-            v = int(raw or SIGNAL_KILL_COOLDOWN_SECONDS)
-        except (TypeError, ValueError):
-            v = SIGNAL_KILL_COOLDOWN_SECONDS
-        return max(1, v)
 
     def _alert_signal_kill_storm(self, spec_name: str, count: int,
                                  cooldown_seconds: int) -> None:
