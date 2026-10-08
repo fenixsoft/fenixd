@@ -461,6 +461,21 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     if (running) setAwaitingStart(false);
   }, [running]);
 
+  // 快照 started_at 推进 → 过渡态结束（code-review item 1502e18f9add）：daemon
+  // 可能在两次轮询之间完成启动并跑完全程，快照 running 恒未置位、直接落到有
+  // 结果态——上面的 running 清除与 120s 超时兜底都接不住，「等待启动」条会与
+  // 已完成结果并存且概览三键被禁至超时。以 started_at 相对受理时刻基线是否
+  // 推进判定本次回归已实际启动（任务 5.6 判据同口径；两端同源服务端时钟，
+  // 字符串比对即可），推进即退出过渡态。
+  const baselineStartedAtRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!awaitingStart || running) return;
+    const startedAt = snapshot?.started_at ?? null;
+    if (startedAt !== null && startedAt !== baselineStartedAtRef.current) {
+      setAwaitingStart(false);
+    }
+  }, [awaitingStart, running, snapshot]);
+
   // 等待启动超时兜底：daemon 长时间未消费信号（如中途退出）不再无限等待。
   // 超时退出同时补一次轻量提示（code-review item 1087d6a7eb1a）：受理成功
   // 已弹「已受理」承诺，静默复位会让承诺悬空无任何「未启动」痕迹——口径对
@@ -530,7 +545,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       await triggerRegression(project);
       message.success('已受理，daemon 将开始执行全量回归');
       // 受理成功 → 等待启动过渡态（动画条即时反馈，running 置位后由
-      // 真实进度接管；见 awaitingStart 注释）
+      // 真实进度接管；见 awaitingStart 注释）。记录受理时刻快照基线，供
+      // started_at 推进清除 effect 判定本次回归已启动
+      baselineStartedAtRef.current = snapshot?.started_at ?? null;
       setAwaitingStart(true);
       // 触发成功立即刷新：新一轮运行中态（running=true）由服务端 marker 提供，
       // 轮询接管（task 5.6）。经 ref 调最新闭包（code-review item 7a7ce4f87987）：
@@ -644,7 +661,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       await triggerRegressionIssues(project);
       message.success('已受理，daemon 将只重跑失败/错误/长耗时的用例（无法定向时自动回退全量）');
       // 受理成功 → 等待启动过渡态（同 handleTrigger，running 置位后由真实
-      // 进度接管）；经 ref 调最新闭包（7a7ce4f87987，切项目防旧闭包后发先至）
+      // 进度接管；受理时刻快照基线同 handleTrigger）；经 ref 调最新闭包
+      // （7a7ce4f87987，切项目防旧闭包后发先至）
+      baselineStartedAtRef.current = snapshot?.started_at ?? null;
       setAwaitingStart(true);
       void loadResultRef.current();
     } catch (e) {
