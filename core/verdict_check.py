@@ -108,10 +108,20 @@ def _evidence_present(evidence: Any) -> bool:
     """
     if not isinstance(evidence, dict):
         return False
-    # 失败断言列表：优先 failed_assertions，兼容 assertion_results / assertion
+    # 失败断言列表：优先 failed_assertions，兼容 assertion_results / assertion。
+    # 元素有效性比照 screenshots 口径（code-review item 58726f4b6b33）：至少
+    # 一个非空 dict 或非空字符串元素才算证据——[null]/[{}] 等垃圾元素清单
+    # 不得满足「至少一个证据维度」，防 judge 凑证据旁路抑制门（与同模块
+    # screenshots 逐元素校验 / screenshot_labels·first_frame_ok 严格判定同防伪造口径）
     for key in ("failed_assertions", "assertion_results", "assertion"):
         val = evidence.get(key)
-        if isinstance(val, list) and val:
+        if not isinstance(val, list):
+            continue
+        if any(
+            (isinstance(item, dict) and item)
+            or (isinstance(item, str) and item.strip())
+            for item in val
+        ):
             return True
     # 截图路径
     shots = evidence.get("screenshots")
@@ -1481,6 +1491,10 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         if status in ("pass", "passed"):
             continue
         sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        # [fenix-ignore:90c920fc9a9d] status=exempt 仅存在于 fast-track 结果文件
+        # （走 validate_fast_track_result 校验，不经查重门）；本函数唯一消费链
+        # _run_attribution_gate 只喂引擎 report.json，引擎/judge 均不产 exempt
+        # 状态，「≥3 同分类 exempt 场景被误判回炉」前提不可达，无需增设豁免通道
         if sc.get(ENGINE_CASCADE_EXEMPT_KEY) is True:
             cascade_exempt_ids.append(sid)
             continue
