@@ -1440,7 +1440,7 @@ class SelfReviewScheduler:
         # 读-改-写整段置于 todo.md 同一把 flock 内（同 _append_todo 的加锁
         # 契约）：core.evolution.write_todo_marker 是 todo.md 的第二个写入者，
         # 裸读裸写会用陈旧副本覆盖并发落下的更新。
-        from core.evolution import _with_lock  # noqa: PLC0415 —— 共用同一把锁
+        from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 evolution 共用同一把锁
 
         def _do() -> None:
             try:
@@ -1457,7 +1457,7 @@ class SelfReviewScheduler:
             except OSError as e:
                 self.logger.warning("self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
 
-        _with_lock(todo, _do)
+        with_file_lock(todo, _do)
         self._commit_todo(today)
         self._save_state(today)
         self.logger.info(
@@ -1871,7 +1871,7 @@ class SelfReviewScheduler:
         # 读-匹配-重写整段置于 todo.md 同一把 flock 内（同 _append_todo 的
         # 加锁契约）：core.evolution.write_todo_marker 是 todo.md 的第二个
         # 写入者，先读后写不加锁会用陈旧副本覆盖并发落下的更新。
-        from core.evolution import _with_lock  # noqa: PLC0415 —— 共用同一把锁
+        from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 evolution 共用同一把锁
 
         def _do() -> List[Dict[str, str]]:
             try:
@@ -1977,7 +1977,7 @@ class SelfReviewScheduler:
                 return []
             return [{"id": eid, "reason": targets[eid]} for eid in sorted(matched_ids)]
 
-        return _with_lock(todo, _do)
+        return with_file_lock(todo, _do)
 
     def _apply_todo_update(self, today: str, result, entries: List[Dict[str, str]]) -> Path:
         """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。"""
@@ -2064,7 +2064,7 @@ class SelfReviewScheduler:
         # 读-改-写整段置于 todo.md 同一把 flock 内：自进化标记回写
         # （core.evolution.write_todo_marker）是 todo.md 的第二个写入者，
         # 不加锁时先读后写会用陈旧副本覆盖掉刚落下的处理标记。
-        from core.evolution import _with_lock  # noqa: PLC0415 —— 共用同一把锁
+        from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 evolution 共用同一把锁
 
         def _do() -> None:
             existing = ""
@@ -2086,7 +2086,7 @@ class SelfReviewScheduler:
             todo.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_text(todo, existing + body)
 
-        _with_lock(todo, _do)
+        with_file_lock(todo, _do)
         return todo
 
     def _commit_todo(self, date_str: str) -> bool:
