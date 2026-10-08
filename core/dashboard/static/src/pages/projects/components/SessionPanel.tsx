@@ -184,6 +184,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 暴露给 error 分支「重试」按钮——旧实现只清 error，不重跑失败的加载，
   // 用户掉回空/旧面板而无任何重试发生。
   const reloadRef = useRef<(() => void) | null>(null);
+  // watch 注册失败重试入口（code-review item 87c796fb6050）：effect 内的
+  // scheduleWatchRetry 闭包经本 ref 暴露给组件级 handleStart——空态启动会话
+  // 后的补注册失败只记日志的话，EventSource 不断线则 hello 不再来，本连接
+  // 内再无注册机会，本会话事件静默丢失。与 afterHello 失败共用同一有限次
+  // 退避重试（重试目标取注册时刻的 cidRef.current，即当前连接 hello 分配的
+  // cid，非失效闭包捕获）。
+  const scheduleWatchRetryRef = useRef<(() => void) | null>(null);
   // 分面激活态镜像（code-review item 58ec4693e77c）：handleStart 等事件回调
   // 跨 await 续跑时，闭包捕获的 active 是点击当帧快照——用户点「开始会话」后
   // 立即切离分面，切离清理 effect 已清空 sessionIdRef/ended 等状态并释放订阅，
@@ -450,6 +457,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         });
       }, WATCH_RETRY_INTERVAL_MS);
     };
+    // 经 ref 暴露给组件级回调（code-review item 87c796fb6050）：handleStart
+    // 空态补注册失败与 afterHello 同口径走有限次退避重试
+    scheduleWatchRetryRef.current = scheduleWatchRetry;
 
     // 快照加载串行化（code-review item 112623f4c6ed）：挂载时 loadAll 与
     // hello 触发的 afterHello 重载并发执行、各自带全量快照调 syncEvents、无
@@ -575,6 +585,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     return () => {
       disposed = true;
       reloadRef.current = null;
+      scheduleWatchRetryRef.current = null;
       stopStreamFallback();
       clearWatchRetryTimer();
       es.close();
@@ -657,6 +668,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           watchRegisteredRef.current = true;
         } catch (e) {
           console.error('Failed to register session watch:', e);
+          // 补注册失败与 afterHello 同口径重试（code-review item 87c796fb6050）：
+          // EventSource 不断线则 hello 不再来，只记日志则本连接内再无注册
+          // 机会，本会话事件静默丢失；经主 effect 暴露的共享重试入口有限次
+          // 退避重试（重试目标取注册时刻 cidRef.current，耗尽降级轮询兜底）。
+          // effect 未挂载（分面未激活）时入口为 null，可选调用静默跳过。
+          scheduleWatchRetryRef.current?.();
         }
       }
       // carried 合并而非整表替换（code-review item b2ce2f362979）：startSession
