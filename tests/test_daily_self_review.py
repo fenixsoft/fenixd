@@ -615,9 +615,11 @@ class TestDashboardSelfReview:
         from core.dashboard.data import read_effective_config, write_config
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True)
-        # 缺省（run_at 缺省 02:00）
+        # 缺省（run_at 缺省 02:00；todo_head_restore 缺省 True，
+        # evo-self-review-todo-head-restore）
         assert read_effective_config(proot)["self_review"] == {
             "enabled": False, "run_at": "02:00", "read_todo": False,
+            "todo_head_restore": True,
         }
         res = write_config(proot, {"self_review": {
             "enabled": True, "run_at": "23:30", "read_todo": True,
@@ -626,6 +628,7 @@ class TestDashboardSelfReview:
         cfg = read_effective_config(proot)
         assert cfg["self_review"] == {
             "enabled": True, "run_at": "23:30", "read_todo": True,
+            "todo_head_restore": True,
         }
         # sources 标注（项目级显式定义）
         assert cfg["sources"].get("admin.self_review") == "project"
@@ -699,7 +702,8 @@ class TestDashboardSelfReview:
             status, data = request("GET", "/api/config?project=proj-api")
             assert status == 200
             assert data["self_review"] == {"enabled": True, "run_at": "23:30",
-                                           "read_todo": True}
+                                           "read_todo": True,
+                                           "todo_head_restore": True}
             # 非法 run_at → 400（后端双重校验）
             status, data = request("POST", "/api/config?project=proj-api",
                                    {"self_review": {"run_at": "25:00"}})
