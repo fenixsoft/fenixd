@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-09 03:14 UTC+8
+> 最后更新：2026-10-09 14:19 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -55,5 +55,6 @@
 | [scenario-mock-and-seed-actions](scenario-mock-and-seed-actions.md) | 场景 seed 预置与 mock_api 离线拦截 | 2026-09-27 17:23 |
 | [external-api-network-exemption](external-api-network-exemption.md) | 外部 API 网络错误豁免（external_net_errors_ok） | 2026-09-27 17:23 |
 | [verify-late-result-terminal-guard](verify-late-result-terminal-guard.md) | 迟到验证结果终态丢弃守卫（非 testing 一律零副作用丢弃） | 2026-10-03 04:59 |
+| [verify-dispatch-single-flight](verify-dispatch-single-flight.md) | verify 车道派发单飞（同 spec 在飞集合拒重、prepare 构建互斥、竞争类降级分流） | 2026-10-09 14:19 |
 | [verify-inflight-lane-reclaim](verify-inflight-lane-reclaim.md) | verified 终态在飞验证车道回收（摘队列 + 按完整 run id 取消） | 2026-10-03 04:59 |
 | [verify-result-stamp-contract](verify-result-stamp-contract.md) | 机械快道裁决产物的 role 来源戳契约 | 2026-10-03 04:59 |
