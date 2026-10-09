@@ -24,6 +24,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-persist-stray-escalation-clock/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/evo-persist-stray-escalation-clock/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：stray-clock-corrupt-state-fallback 属真实产品 Bug——tasks.md 1.1 与 spec.md「持久化损坏降级」要求损坏容错覆盖字节层与 JSON 层两类，而 `stray_wip.py:837` read_text utf-8 解码失败在 json.loads 之前上穿、except 仅覆盖 FileNotFoundError/OSError；场景断言与产品应有行为相符）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（产品代码修复：`_load_untracked_registry` 读取段 except 补 `UnicodeDecodeError`（ValueError 子类、非 OSError），docstring 同步字节层/JSON 层两类容错表述；补回归钉子 `test_corrupt_registry_bytes_falls_back_without_blocking`）
+- [x] 修复后重跑验证确认通过（tests/test_verify_evidence_placement.py 全量 40 passed 含新钉子、stray_wip 消费方 5 文件 129 passed、场景口径进程级探针 SCENE4_PASS exit 0——损坏注册表回退空表、留降级告警、主盘点不阻断；全量回归由验证链执行）

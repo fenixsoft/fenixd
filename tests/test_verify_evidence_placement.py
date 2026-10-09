@@ -734,6 +734,38 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         self.assertEqual(len(registry_warnings_after), 1)
         json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
 
+    def test_corrupt_registry_bytes_falls_back_without_blocking(self):
+        """字节层损坏（非法 UTF-8）→ 回退空表＋留一条告警，主盘点不阻断。
+
+        半截写入/磁盘错误的典型损坏形态：读码层（read_text utf-8 解码）即
+        抛 UnicodeDecodeError，先于 json.loads 发生——异常处理须在读取段
+        显式捕获（ValueError 子类、非 OSError），否则上穿 sweep() 主盘点
+        整体崩溃（验证轮 BUG-01 回归钉子）。
+        """
+        repo = _make_repo()
+        _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        self._registry_path(repo).parent.mkdir(parents=True, exist_ok=True)
+        self._registry_path(repo).write_bytes(
+            b"\xff\xfe{not-utf8-at-all:\x00\xff}"
+        )
+        logger = _LoggerProbe()
+        cfg = {"admin": {"maintree_stray_wip_grace_minutes": 30.0}}
+        sw = MainTreeStrayWipSweeper(repo, _WmProbe(repo), config=cfg, logger=logger)
+        r = sw.sweep()  # 不抛异常＝主盘点未阻断（BUG-01 曾在此 exit 1）
+        self.assertIsNotNone(r)
+        self.assertEqual(r["untracked"]["status"], "timed")  # 重新宽限起算
+        registry_warnings = [
+            m for _, m in logger.warnings if "回退空表" in m
+        ]
+        self.assertEqual(len(registry_warnings), 1)  # 恰留一条降级告警
+        # 后续轮次不再重复告警，且落盘自愈为合法形态
+        sw.sweep()
+        registry_warnings_after = [
+            m for _, m in logger.warnings if "回退空表" in m
+        ]
+        self.assertEqual(len(registry_warnings_after), 1)
+        json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
+
     def test_stale_paths_pruned_and_no_reignition(self):
         """失效路径惰性清理：已删除散件条目载入即清、指纹不复燃。
 
