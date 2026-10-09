@@ -14,7 +14,8 @@
 
 - 不改散件宽限/升级处置管线本身。
 - 不新增 AdminStore signal_type（模块既有约束，见 stray_wip.py 注释），不进人工队列。
-- 不做跨重启持久化：允许重启后首轮重复一条，与 tracked 流 first_seen 内存态同一取舍。
+- 不做跨重启持久化：允许重启后首轮重复一条，与 tracked 流 first_seen 内存态同一取舍（stray_wip.py:28-29：D5 持久化仅取代 untracked 注册表，tracked 流维持内存态）。
+- 不收敛 keep 回退态的逐轮回退说明日志（496-500 行）：缺省 action=info 不触发该行，keep 仅配置事故/人工回退保守向暂态，留待实际成为问题时另立 SPEC。
 
 ## 方案概要
 
