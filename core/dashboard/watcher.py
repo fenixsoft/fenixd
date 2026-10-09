@@ -297,6 +297,10 @@ class FileWatcher:
             # 异常原样上抛，留痕与节流仍归 scan_once 的「瞬时失败不再静默」
             # 通道；已成功推送的通道被连带回滚时下轮重推同内容，前端本地归并
             # 幂等。
+            # _log_sigs 有意豁免回滚（code-review item e16e86a9c266）：日志通道
+            # 是轻量空增量广播（前端不刷新列表，跑马灯等靠心跳校准），回滚须在
+            # _scan_logs 前多备一份逐项目快照并连带 stale 删除分支，复杂度不成
+            # 比例；广播失败仅丢一次跑马灯刷新，心跳全量校准兜底。
             top_sigs.clear()
             top_sigs.update(prev_top_sigs)
             spec_dirs.clear()
@@ -671,5 +675,5 @@ class FileWatcher:
     @staticmethod
     def _classify(run_file: Path) -> str:
         """按产物最后几行判定运行终态（与 data.get_runs 一致，只读尾部 4KB）。"""
-        lines = dashboard_data._read_run_lines(run_file, max_lines=3)
+        lines = dashboard_data.read_run_lines(run_file, max_lines=3)
         return dashboard_data.classify_run(lines)

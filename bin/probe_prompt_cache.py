@@ -110,7 +110,16 @@ def _post_once(provider: dict, body: dict) -> tuple:
         raw = resp.read().decode("utf-8", errors="replace")
     # 解析异常一并上抛（code-review item c744bef56b6d）：JSONDecodeError 由
     # probe() 的 except 分支按既有网络/HTTP 异常同款归入失败轮，裁决落 unknown。
-    return json.loads(raw), raw
+    parsed = json.loads(raw)
+    # 顶层非对象同款归一（code-review item e83ef211a67e）：网关异常时可能返回
+    # 合法 JSON 的标量/数组/字符串，probe() else 分支的 parsed.get 会抛
+    # AttributeError 且不在 try 覆盖内，裸 traceback 破坏「确定性 JSON 判据」
+    # 契约；转 ValueError 走同一失败轮路径，裁决落 unknown。
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"响应体顶层不是 JSON 对象（{type(parsed).__name__}）"
+        )
+    return parsed, raw
 
 
 def probe(provider_name: str, config_path: Path) -> dict:

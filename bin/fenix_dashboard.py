@@ -414,7 +414,6 @@ def render_event_feed(specs):
         comp = ev.get("component", "")[:15]
         icon = component_icons.get(comp, "  ")
         msg = ev.get("message", "")
-        ctx = ev.get("context", {})
 
         # 高亮活跃 SPEC（code-review item c4a66079060e）：按名称长度降序
         # 匹配——互为前缀的 SPEC 名（如 add-test-foo / add-test-foobar）会让

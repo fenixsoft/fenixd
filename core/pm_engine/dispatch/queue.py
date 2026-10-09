@@ -2585,6 +2585,17 @@ class QQQueueMixin:
         "dispatch_lock_conflict": "dispatch 锁冲突退避未到期",
     }
 
+    # 顺延 error 主文案按成因分列（code-review item a24373eed992）：前缀此前
+    # 写死「spec 目录提交动作」单一语义，main_tree_dirty / dispatch_lock_conflict
+    # 形态下人工按前缀去等 spec 目录提交动作永远等不到解除，下游按前缀归因
+    # 也会进错成因桶。与 _MERGEBACK_DEFER_CAUSES 同源按 cause 反查；未知键
+    # 回落成因中性文案（不吞成因信息，括号内 cause_label 兜底）。
+    _MERGEBACK_DEFER_WAIT_TEXT = {
+        "spec_dir_inflight": "merge-back 顺延等待 spec 目录提交动作解除",
+        "main_tree_dirty": "merge-back 顺延等待主树恢复干净",
+        "dispatch_lock_conflict": "merge-back 顺延等待派发锁释放",
+    }
+
     def _handle_retryable_mergeback_failure(
         self, spec_name: str, merge_info, merge_error: str, branch: str
     ) -> bool:
@@ -2711,6 +2722,11 @@ class QQQueueMixin:
         # 成因标签（code-review item a9a96d9d650e）：未知键原样透传，不因映射
         # 缺项吞掉成因信息。置于 try 外——超限 stuck 告警（try 之外）也要消费。
         cause_label = self._MERGEBACK_DEFER_CAUSES.get(cause, cause)
+        # 顺延主文案按成因反查（code-review item a24373eed992）：未知键回落
+        # 成因中性文案，前缀不再与括号内 cause_label 矛盾。
+        defer_wait_text = self._MERGEBACK_DEFER_WAIT_TEXT.get(
+            cause, "merge-back 顺延重试中"
+        )
         try:
             self._pm.state_machine.update_spec(
                 spec_name,
@@ -2720,7 +2736,7 @@ class QQQueueMixin:
                     # 此处不再并写（防并发写回互相覆盖丢增量）
                     "_merge_retry_first_at": int(first_f),
                     "error": (
-                        f"merge-back 顺延等待 spec 目录提交动作解除"
+                        f"{defer_wait_text}"
                         f"（{count} 轮，首轮 {int(first_f)}；成因: {cause_label}）"
                         f": {merge_error}"
                     ),
@@ -4076,23 +4092,43 @@ class QQQueueMixin:
                 f"已推进/冻结），保留现场不做打回: {spec_name}",
             )
             return "defer"
-        sm.update_spec(
-            spec_name,
-            {
-                "error": (
-                    f"ocr 收尾审查发现 {len(actionable)} 条未裁决 findings"
-                    f"（gate 档打回，修复轮 {rounds + 1}/1）"
-                ),
-                # _ocr_fix_rounds 绝对写回而非 bump_counters 原子递增（code-review
-                # item 99ba2e45e362）：修复轮上限硬编码为 1（gate 侧 rounds < 1 即
-                # 打回、directive max_rounds=1、>=1 转台账放行），两路并发各持同一
-                # 旧值写回最多丢一次递增，影响被「>=1 即终止」封顶。前提钉死：若
-                # 放宽修复轮上限，MUST 先改用 bump_counters 锁内原子递增取写后值
-                # （对齐 _retry_count/_merge_streak 同型站点），防丢增量。
-                "_ocr_fix_rounds": rounds + 1,
-                **self._ocr_join_pending_cleared(),
-            },
-        )
+        # 记账写点收口（code-review item ffcee35add49，对齐上方 transition
+        # 失败分支同款处置）：update_spec 被并发写者拒绝（返回 False）或抛错
+        # 时，spec 已停在 bug-found 但 error 未写、修复轮未记账、pending 清账
+        # 未落——此时不写 directive、不打回成功日志，WARNING 留痕后返回
+        # "defer"（调用方语义=停止推进，下轮重入 join 门）。
+        try:
+            updated = sm.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"ocr 收尾审查发现 {len(actionable)} 条未裁决 findings"
+                        f"（gate 档打回，修复轮 {rounds + 1}/1）"
+                    ),
+                    # _ocr_fix_rounds 绝对写回而非 bump_counters 原子递增（code-review
+                    # item 99ba2e45e362）：修复轮上限硬编码为 1（gate 侧 rounds < 1 即
+                    # 打回、directive max_rounds=1、>=1 转台账放行），两路并发各持同一
+                    # 旧值写回最多丢一次递增，影响被「>=1 即终止」封顶。前提钉死：若
+                    # 放宽修复轮上限，MUST 先改用 bump_counters 锁内原子递增取写后值
+                    # （对齐 _retry_count/_merge_streak 同型站点），防丢增量。
+                    "_ocr_fix_rounds": rounds + 1,
+                    **self._ocr_join_pending_cleared(),
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join gate 打回记账写入异常 '{spec_name}'（保留现场不做"
+                f"打回，下轮重入 join 门）: {type(e).__name__}: {e}",
+            )
+            return "defer"
+        if not updated:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join gate 打回记账写入未生效 '{spec_name}'（并发写者已"
+                f"拒绝/条目不在册，保留现场不做打回，下轮重入 join 门）",
+            )
+            return "defer"
         self._write_ocr_findings_directive(spec_name, actionable, rounds + 1)
         self._pm.logger.warning(
             "pm_engine",

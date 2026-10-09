@@ -10,6 +10,13 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 不随响应透出——OSError 文本含服务器绝对路径，对齐 base.py 500 兜底
 「不外泄裸异常文本」（item 1a2a0bd78662）。UnicodeDecodeError / YAML
 语法错误的详情不含内部路径且对用户自修有用，仍随响应透出。
+
+豁免范围（code-review item 884ee75483ef）：本口径只约束 HTTP 响应体，
+不约束 AdminStore 记录（管理通道 / UI 运维页）——verify-yaml-autodraft
+端点有意把契约解析异常摘要（含 OSError 时可携带的绝对路径）写入
+signal 的 evidence 字段供 Administrator 定位成因（code-review item
+d190fab69dc9，见 _api_verify_yaml_autodraft_post 的「契约状态=」分支），
+该透出面属上述豁免的一部分，非纪律违反。
 """
 
 from __future__ import annotations
