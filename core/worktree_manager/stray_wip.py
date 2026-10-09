@@ -434,7 +434,7 @@ class MainTreeStrayWipSweeper:
         if not untracked:
             self._reset_untracked_registry_absent(set())
             return result
-        result["untracked"] = self._untracked_signal(untracked)
+        result["untracked"] = self._untracked_signal(untracked, running_run_ids)
         return result
 
     def _tracked_sweep_locked(
@@ -724,7 +724,7 @@ class MainTreeStrayWipSweeper:
             detail[echoed] = parts[2] if len(parts) == 3 else ""
         return detail
 
-    def _untracked_signal(self, entries: list) -> dict:
+    def _untracked_signal(self, entries: list, running_run_ids=()) -> dict:
         """untracked 散件滞留信号流（2.1）：阈值闸门 + 宽限计时 + 一次性告警。
 
         记账/复位复用 tracked 形态（first_seen 注册表、同指纹一次性、指纹
@@ -737,8 +737,21 @@ class MainTreeStrayWipSweeper:
         （同族同语义，不膨胀配置面）。只告警不处置：info 级 AdminStore 留痕，
         不派 major、不唤起人工。
 
+        越阈归因探测（evo-stray-untracked-session-attribution 1.1）：越过
+        阈值后、宽限判定前调用 ``identify_wip_occupant``（与 tracked 流同一
+        归因器、同一判据），命中即复位宽限计时、降级留痕、不升级——交互
+        会话在写的 untracked WIP 不再与真散件同流；低于阈值早退分支不调用
+        归因器（零子进程开销）。
+
+        Args:
+            entries: untracked 散件路径清单。
+            running_run_ids: 在飞 run_id 列表，透传给越阈后的归因探测（与
+                tracked 流同一入参口径；低于阈值时不消费）。
+
         Returns: 子 dict（并入 sweep 返回的 ``untracked`` 键）：status 取
-        ``below-threshold`` / ``timed`` / ``alerted``。
+        ``below-threshold`` / ``timed`` / ``alerted`` / ``escalated`` /
+        ``session-attributed`` / ``holder-attributed``（后两个归因命中态
+        复位计时、不进宽限告警与升级判定）。
         """
         threshold = untracked_stray_threshold(self._config)
         count = len(entries)
@@ -777,6 +790,15 @@ class MainTreeStrayWipSweeper:
                 "threshold": threshold,
                 "fingerprint": fp,
             }
+        # 越阈归因探测（evo-stray-untracked-session-attribution 1.1）：命中
+        # （会话归因 / 在飞车道 holder）即复位计时并返回命中态，本轮不进宽限
+        # 告警与升级判定；零命中（含 keep 回退）返回注记，维持现状宽限升级
+        # 流，注记随升级 evidence 下发供 admin 处置侧判读。
+        attributed, attribution_note = self._untracked_attribution_probe(
+            entries, fp, threshold, running_run_ids
+        )
+        if attributed is not None:
+            return attributed
         grace = grace_minutes(self._config)
         elapsed_min = (now - entry["first_seen"]) / 60.0
         # 体积采集（evo-stray-untracked-escalation 1.1）：越过阈值后在册集合
@@ -804,6 +826,7 @@ class MainTreeStrayWipSweeper:
             if self._write_untracked_escalated_alert(
                 entry, fp, threshold, total_bytes, size_threshold,
                 elapsed_min, stale_hit, size_hit,
+                attribution_note=attribution_note,
             ):
                 entry["escalated_signal_at"] = self._iso(now)
                 escalation_fired = True
@@ -823,6 +846,90 @@ class MainTreeStrayWipSweeper:
             "size_threshold_bytes": size_threshold,
             "escalated_signal": bool(entry.get("escalated_signal_at")),
         }
+
+    def _untracked_attribution_probe(
+        self, entries: list, fp: str, threshold: int, running_run_ids=()
+    ) -> "tuple[dict | None, str]":
+        """untracked 越阈集合的会话归因探测（evo-stray-untracked-session-attribution）。
+
+        与 tracked 流同一归因器（``identify_wip_occupant``）、同一判据（近窗
+        提交路径交/活跃 transcript 路径提及）。返回 ``(命中处置, 升级注记)``，
+        归因器三态各自约定处置、无未定义态：
+
+        - 命中会话归因且 ``admin.maintree_session_attribution_action != keep``
+          （缺省 info）：pop 计时条目（宽限时钟复位——复位而非永久豁免，会话
+          离场后 re-建档自然重新起算）、info 留痕，返回 ``(session-attributed
+          结果, "")``；
+        - 命中在飞实现车道 holder（非会话归因；机制可达：车道分支 git add 了
+          与主树 untracked 同名的路径后三点 diff 与集合求交命中）：同样 pop
+          计时、不告警，返回 ``(holder-attributed 结果, "")``——对齐 tracked
+          流 holder 分支「归属期间不算滞留」，MUST NOT 视同零命中走宽限升级
+          （否则对仍在飞 run 名下的文件发射 major）；
+        - 零命中：返回 ``(None, 零命中注记)``，维持现状宽限升级流；
+        - 命中会话归因但配置 keep：返回 ``(None, keep 回退注记)``，视同零命中
+          （注记 MUST NOT 误述为零命中，误导 admin 判读）；
+        - 归因器缺失：返回 ``(None, 未执行注记)``，fail-open 维持现状流（与
+          主树会话探测「源缺失回无主」同方向，升级仅告警、误判影响有界）。
+
+        pop 单独执行即可（absent 复位语义是清除「消失」指纹，pop 不属消失态
+        ——由调用点的 ``_reset_untracked_registry_absent`` 在建档后处理），
+        下轮指纹重建档 first_seen 重起即「复位时钟」；持久化注册表收尾落盘
+        镜像自然不含被 pop 条目，无需额外落盘处理。
+        """
+        identify = getattr(self.worktree_manager, "identify_wip_occupant", None)
+        if not callable(identify):
+            self._log(
+                "warning",
+                "untracked 散件归因探测跳过（identify_wip_occupant 不可用；"
+                "fail-open 维持现状宽限流）",
+            )
+            return None, "归因探测未执行（归因器不可用，维持现状宽限流）"
+        info = identify(entries, list(running_run_ids or []))
+        session_attributed = info.holder and info.is_session_attribution()
+        if info.holder and not session_attributed:
+            self._untracked_registry.pop(fp, None)
+            return {
+                "status": "holder-attributed",
+                "files": list(entries),
+                "count": len(entries),
+                "threshold": threshold,
+                "fingerprint": fp,
+                "holder_run_ids": info.holder_run_ids(),
+            }, ""
+        if session_attributed and session_attribution_action(self._config) != "keep":
+            # 降级 info 留痕（与 tracked 流会话归因分支同型）：pop 计时条目；
+            # 留痕走既有日志通道，MUST NOT 新增 AdminStore signal_type（免
+            # admin_monitor 三表登记缺口——漏登记则落 store 后无人摄取）。
+            self._untracked_registry.pop(fp, None)
+            session = next(iter(info.holders), {}).get("session") or {}
+            self._log(
+                "info",
+                f"主树 untracked 散件归因到主树活交互会话，复位宽限计时（不"
+                f"升级不处置）: {', '.join(entries)}; {info.describe()}",
+            )
+            return {
+                "status": "session-attributed",
+                "files": list(entries),
+                "count": len(entries),
+                "threshold": threshold,
+                "fingerprint": fp,
+                "session_signals": list(session.get("signals") or []),
+            }, ""
+        if session_attributed:
+            # keep 回退守卫与 tracked 流同键（运维心智单一）：视同零命中走
+            # 无主宽限升级，注记如实区分「命中但回退」与「零命中」。
+            self._log(
+                "info",
+                "untracked 散件会话归因按 "
+                "admin.maintree_session_attribution_action=keep 回退现状行为"
+                "（视同零命中走无主宽限升级）",
+            )
+            return None, "归因探测已执行，命中但配置 keep 回退（视同零命中）"
+        return (
+            None,
+            "归因探测已执行，零命中（判据：近窗提交路径交/活跃 transcript "
+            "路径提及）",
+        )
 
     def _untracked_fingerprint(self, entries: list, include_content: bool = True) -> str:
         """untracked 散件指纹（2.1）：路径排序集（+ 可选逐文件内容 sha256）。
@@ -1288,7 +1395,7 @@ class MainTreeStrayWipSweeper:
 
     def _write_untracked_escalated_alert(
         self, entry, fp, threshold, total_bytes, size_threshold,
-        elapsed_min, stale_hit, size_hit,
+        elapsed_min, stale_hit, size_hit, attribution_note: str = "",
     ) -> bool:
         """untracked 散件第二档升级 major 告警（evo-stray-untracked-escalation）。
 
@@ -1299,6 +1406,9 @@ class MainTreeStrayWipSweeper:
         路径（滞留时长/体积，可双命中）随 evidence 下发；evidence 含「项目名=」
         段（无 spec 形态摄取解析单源 evidence_project）与「文件清单(N):」段
         （认领执行器清单单源，parse_stray_wip_manifest 同段级口径复用）。
+        归因探测注记段（evo-stray-untracked-session-attribution 1.2）：措辞
+        按探测结果分档（零命中 / 命中但配置 keep 回退），供 admin 处置侧判读
+        归因探测已执行（对齐 tracked 流告警归因证据段形态）。
         AdminStore 拒写时返回 False（escalated_signal_at 不落、下轮重试），
         不让升级静默蒸发。
         """
@@ -1328,6 +1438,8 @@ class MainTreeStrayWipSweeper:
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
             f"告警发出前后主树工作区状态未变"
         )
+        if attribution_note:
+            evidence += f"归因探测: {attribution_note}; "
         store = AdminStore(self.project_root, logger=None)
         rec = store.append(
             {
