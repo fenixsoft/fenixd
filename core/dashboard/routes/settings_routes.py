@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -97,6 +98,33 @@ def _atomic_write_text(target: Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _warn_if_todo_overwrite_empties(target: Path, content: str) -> None:
+    """todo.md 覆空留痕：覆写为空内容而 HEAD 版非空时落 WARNING（尽力而为）。
+
+    与 daemon 侧回写前自愈同形态检测（evo-self-review-todo-head-restore R3），
+    但 dashboard 覆写以 UI 提交内容为准、只留痕不回退——覆盖前 git show
+    HEAD:.fenix/todo.md（30 秒超时，与 self_review._commit_todo 同口径），
+    失败（项目非 git 仓库/无 HEAD 版本/超时）跳过对比，不阻塞保存。
+    """
+    if content.strip():
+        return
+    project_root = target.parent.parent
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(project_root), "show", "HEAD:.fenix/todo.md"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if head.returncode == 0 and head.stdout.strip():
+        logger.warning(
+            "dashboard 覆写 todo.md 为空内容而 HEAD 版非空（%d 字节），台账历史可能丢失；"
+            "如系误操作可自 git 恢复",
+            len(head.stdout),
+        )
 
 
 def _validate_verify_yaml(content: str) -> str | None:
@@ -410,6 +438,13 @@ class H5SettingsRoutesMixin:
 
         validate：可选写前校验钩子（同形端点的差异点，如 verify.yaml 的
         _validate_verify_yaml），返回错误文案则 400 拒绝保存、返回 None 放行。
+
+        todo.md 目标（evo-self-review-todo-head-restore R3）：与 daemon 回写
+        持同一把 with_file_lock（.<name>.lock），成功写入落 INFO 留痕（路径
+        +字节数），覆写为空内容而 HEAD 版非空时落 WARNING——此前整文件覆写
+        不持锁、成功零日志，是未留痕写者中风险最高的一处。留痕尽力而为：
+        git show 失败跳过 HEAD 对比、照常保存，不阻塞写入。非 todo.md 目标
+        行为不变。
         """
         if validate is not None:
             err = validate(content)
@@ -417,12 +452,33 @@ class H5SettingsRoutesMixin:
                 self._error(400, err)
                 return
         target = Path(project["path"]) / ".fenix" / what
-        try:
+        is_todo = what == "todo.md"
+        if is_todo:
+            _warn_if_todo_overwrite_empties(target, content)
+
+        def _write() -> None:
             _atomic_write_text(target, content)
+
+        try:
+            if is_todo:
+                # 与 daemon 回写（self_review/evolution 共用 fs_utils）同一把
+                # flock：裸写会用陈旧副本覆盖并发落下的自省追加/处理标记
+                from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 daemon 回写共用同一把锁
+
+                with_file_lock(target, _write)
+            else:
+                _write()
         except OSError as e:
             logger.warning("%s 保存失败（%s）: %s", what, project["name"], e)
             self._error(500, f"{what} 保存失败")
             return
+        if is_todo:
+            logger.info(
+                "dashboard 覆写 %s（%s，%d 字节）",
+                what,
+                target,
+                len(content.encode("utf-8")),
+            )
         self._json({"ok": True, "project": project["name"], "path": str(target)})
 
     def _api_todo_get(self, query) -> None:

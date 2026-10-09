@@ -1234,6 +1234,49 @@ def parse_todo_blocks(text: str) -> Tuple[List[str], List[Tuple[str, List[str]]]
     return preamble, blocks
 
 
+def _load_existing_with_head_rescue(
+    todo_path: Path, project_root: Path, restore_enabled: bool, logger
+) -> str:
+    """读 todo.md 工作树现状；为空/缺失而 HEAD 版非空时自 HEAD 恢复基线。
+
+    回写前自愈（evo-self-review-todo-head-restore R1）：台账曾被整文件清空
+    而 daemon 回写路径读到空文件直接按空基线写，历史内容即从工作树与 HEAD
+    双重缺席（2026-10-09 实证）。_append_todo/_skip_review/_remove_resolved
+    取基线统一改经本助手：git show HEAD:.fenix/todo.md 读回基线并 WARNING
+    留痕；恢复+写在调用方既有的 with_file_lock 同一把锁内完成，原子落盘。
+    git 口径与 _commit_todo 一致（subprocess 只读、30 秒超时）。
+
+    失败静默回退：git show 失败（非 git 仓库/无 HEAD 版本/超时/OSError）与
+    工作树读异常均按现状回退（空串/现状文本），台账写入主路径永不因防护
+    而失败。restore_enabled=false（todo_head_restore 开关关闭，有意清空
+    豁免）跳过恢复且不落恢复 WARNING。
+    """
+    existing = ""
+    if todo_path.is_file():
+        try:
+            existing = todo_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+    if not restore_enabled or existing.strip():
+        return existing
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(project_root), "show", "HEAD:.fenix/todo.md"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return existing
+    if head.returncode == 0 and head.stdout.strip():
+        logger.warning(
+            "self_review",
+            "todo.md 工作树为空而 HEAD 版非空，回写前自 HEAD 恢复基线"
+            f"（{len(head.stdout)} 字节）；如系有意清空请复核或设 todo_head_restore=false",
+        )
+        return head.stdout.decode("utf-8", "replace")
+    return existing
+
+
 # read_todo=false 时 {todo_entries} 段的显式未收集陈述
 # （evo-add-self-review-todo-fallback-honesty）：归因 read_todo 关闭，
 # 与 render_todo_entries 空清单的「（近3日窗口内无既有条目）」（真收集后
@@ -1362,7 +1405,7 @@ class SelfReviewScheduler:
             self.project_root, window_start, pre_classified=classified_runs
         )
         if stats["total"] == 0:
-            return self._skip_review(today)
+            return self._skip_review(today, todo_head_restore=sr.get("todo_head_restore", True))
 
         daily_summary = self.collect_daily_summary(
             window_start, pre_classified=classified_runs, window_end=window_end
@@ -1403,7 +1446,10 @@ class SelfReviewScheduler:
             }
 
         try:
-            written = self._apply_todo_update(today, result, cleanup_entries)
+            written = self._apply_todo_update(
+                today, result, cleanup_entries,
+                todo_head_restore=sr.get("todo_head_restore", True),
+            )
         except Exception as e:
             self._record_failure_alert(f"{today}: todo.md 追加失败: {e}")
             self._save_state(today, advance_anchor=False)
@@ -1426,7 +1472,17 @@ class SelfReviewScheduler:
 
     # ── 零活动防护（2026-09-05 用户决策） ─────────────────────
 
-    def _skip_review(self, today: str) -> dict:
+    def _todo_head_restore_enabled(self) -> bool:
+        """todo_head_restore 生效值（evo-self-review-todo-head-restore R2）。
+
+        调度链经 _execute_review 显式下传 sr 生效值；未显式下传（直调）
+        时自查 self.config，与调度判定同源同缺省（True）。
+        """
+        from .config import ConfigLoader
+
+        return ConfigLoader.get_self_review_config(self.config).get("todo_head_restore", True)
+
+    def _skip_review(self, today: str, todo_head_restore: Optional[bool] = None) -> dict:
         """窗口零 SPEC 活动跳过：不发起 run（不唤醒 admin），仅在 todo.md
         记一句占位，照常提交 + 写状态文件（当日不再重试）。
 
@@ -1436,6 +1492,8 @@ class SelfReviewScheduler:
         时不重复追加。占位写入失败仅记 WARNING，不影响跳过语义。
         """
         todo = self.project_root / ".fenix" / "todo.md"
+        if todo_head_restore is None:
+            todo_head_restore = self._todo_head_restore_enabled()
 
         # 读-改-写整段置于 todo.md 同一把 flock 内（同 _append_todo 的加锁
         # 契约）：core.evolution.write_todo_marker 是 todo.md 的第二个写入者，
@@ -1444,9 +1502,10 @@ class SelfReviewScheduler:
 
         def _do() -> None:
             try:
-                existing = ""
-                if todo.is_file():
-                    existing = todo.read_text(encoding="utf-8", errors="replace")
+                # 空文件/缺失而 HEAD 版非空时自 HEAD 恢复基线（回写前自愈）
+                existing = _load_existing_with_head_rescue(
+                    todo, self.project_root, todo_head_restore, self.logger
+                )
                 if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
                     block = f"## {today}\n\n- 自上次自省以来无 SPEC 活动，跳过自省。\n"
                     if existing.strip():
@@ -1846,7 +1905,10 @@ class SelfReviewScheduler:
         return entries
 
     def _remove_resolved(
-        self, entries: List[Dict[str, str]], resolved: list
+        self,
+        entries: List[Dict[str, str]],
+        resolved: list,
+        todo_head_restore: Optional[bool] = None,
     ) -> List[Dict[str, str]]:
         """按 resolved 清单从 todo.md 移除已闭环条目；返回实际移除清单。
 
@@ -1859,6 +1921,8 @@ class SelfReviewScheduler:
         规范化重渲染）。
         """
         todo = self.project_root / ".fenix" / "todo.md"
+        if todo_head_restore is None:
+            todo_head_restore = self._todo_head_restore_enabled()
         if not todo.is_file() or not resolved or not entries:
             return []
         by_id = {e["id"]: e for e in entries}
@@ -1874,10 +1938,13 @@ class SelfReviewScheduler:
         from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 evolution 共用同一把锁
 
         def _do() -> List[Dict[str, str]]:
-            try:
-                text = todo.read_text(encoding="utf-8", errors="replace")
-            except OSError as e:
-                self.logger.warning("self_review", f"闭环移除读取 todo.md 失败: {e}")
+            # 同 _append_todo/_skip_review：空文件而 HEAD 版非空时先恢复基线
+            # （同型复用 _load_existing_with_head_rescue），移除在恢复后的
+            # 基线上匹配，恢复+重写仍在本锁内原子完成
+            text = _load_existing_with_head_rescue(
+                todo, self.project_root, todo_head_restore, self.logger
+            )
+            if not text:
                 return []
             # (日期, 小节, 原文快照) -> 待核销 id 队列（code-review item
             # ff0901b2eba8）：同键同文重复条目全部入队，按收集序（即文件序）
@@ -1979,14 +2046,20 @@ class SelfReviewScheduler:
 
         return with_file_lock(todo, _do)
 
-    def _apply_todo_update(self, today: str, result, entries: List[Dict[str, str]]) -> Path:
+    def _apply_todo_update(
+        self,
+        today: str,
+        result,
+        entries: List[Dict[str, str]],
+        todo_head_restore: Optional[bool] = None,
+    ) -> Path:
         """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。"""
         resolved = getattr(result, "resolved", None) or []
-        removed = self._remove_resolved(entries, resolved)
+        removed = self._remove_resolved(entries, resolved, todo_head_restore=todo_head_restore)
         if removed:
             detail = "；".join(f"{r['id']}（{r['reason'][:60]}）" for r in removed)
             self.logger.info("self_review", f"闭环移除 {len(removed)} 条: {detail}")
-        return self._append_todo(today, result)
+        return self._append_todo(today, result, todo_head_restore=todo_head_restore)
 
     # ── todo.md 结构化追加（spec「todo.md 结构化追加」） ────────
 
@@ -2032,7 +2105,7 @@ class SelfReviewScheduler:
         str_lines = [ln for ln in item_str.splitlines() if ln.strip()]
         return [f"- {str_lines[0]}"] + [f"  {ln}" for ln in str_lines[1:]]
 
-    def _append_todo(self, date_str: str, result) -> Path:
+    def _append_todo(self, date_str: str, result, todo_head_restore: Optional[bool] = None) -> Path:
         """把自省结果按固定结构追加到 .fenix/todo.md（首次写入创建文件）。
 
         结构：``## YYYY-MM-DD`` 分节 + 「浪费」「失误」「可改进」三个小节。
@@ -2041,6 +2114,8 @@ class SelfReviewScheduler:
         （历史格式兼容）。历史分节不变（追加在尾部）。返回 todo.md 路径。
         """
         todo = self.project_root / ".fenix" / "todo.md"
+        if todo_head_restore is None:
+            todo_head_restore = self._todo_head_restore_enabled()
         sections: List[str] = []
         for title, items in (
             ("浪费", result.waste or []),
@@ -2067,12 +2142,11 @@ class SelfReviewScheduler:
         from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 evolution 共用同一把锁
 
         def _do() -> None:
-            existing = ""
-            if todo.is_file():
-                try:
-                    existing = todo.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    existing = ""
+            # 空文件/缺失而 HEAD 版非空时自 HEAD 恢复基线（回写前自愈，
+            # 与 _skip_review 同口径）；读异常按空串回退
+            existing = _load_existing_with_head_rescue(
+                todo, self.project_root, todo_head_restore, self.logger
+            )
             # 与 _skip_review 同防护：当日节已存在（状态文件丢失重跑）不重复
             # 追加，否则重复日期节使同小节条目 id（日期#小节#序号）撞车，
             # 闭环移除按 id 匹配产生歧义。

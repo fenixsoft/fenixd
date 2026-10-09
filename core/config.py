@@ -2100,6 +2100,7 @@ class ConfigLoader:
         - enabled: False（纯增量，用户显式开启后才调度）
         - run_at: "02:00"（每晚时间点，HH:MM）
         - read_todo: False（不注入既有 todo.md 上下文）
+        - todo_head_restore: True（回写前 HEAD 自愈，evo-self-review-todo-head-restore）
 
         run_at 经 ``_validated_run_at`` 兜底：非法值（类型错误/格式错误/越界
         时分）打 ERROR 并按 "02:00" 回退生效，保证调度判定永远拿到合法 HH:MM。
@@ -2123,10 +2124,18 @@ class ConfigLoader:
         read_todo = sr.get("read_todo", False)
         if not isinstance(read_todo, bool):
             read_todo = False
+        # todo_head_restore：回写前 HEAD 自愈开关（evo-self-review-todo-head-
+        # restore R2），缺省 true（清空丢历史是已兑现事故形态，防护默认在）；
+        # 非 bool 回退缺省，同 read_todo 既有严格 bool 范式。false 供有意清空
+        # 台账时豁免——跳过恢复且不落恢复 WARNING。
+        todo_head_restore = sr.get("todo_head_restore", True)
+        if not isinstance(todo_head_restore, bool):
+            todo_head_restore = True
         return {
             "enabled": enabled,
             "run_at": cls._validated_run_at(sr.get("run_at")),
             "read_todo": read_todo,
+            "todo_head_restore": todo_head_restore,
         }
 
     @classmethod
