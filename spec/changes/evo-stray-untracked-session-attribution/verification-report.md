@@ -31,3 +31,10 @@
 | untracked-attr-exemption-clock-reset | tasks 1.3 豁免=时钟复位非永久：stub 归因器三轮换轨（零命中→会话命中→零命中），grace=0 下第一轮 alerted（info 一次性落档）、第二轮 session-attributed 且条目 pop、第三轮重新建档计时再次 alerted（info 告警恰两条）——若豁免是永久保留条目则第三轮不会重复告警。出处：design.md 边界与取舍「豁免=复位而非永久」、core/worktree_manager/stray_wip.py:478（tracked 流 pop 同型） | pass | 0/4 | - |
 | untracked-attr-deliverable-test-file | tasks 2.1/2.2 交付物：tests/test_stray_untracked_session_attribution.py 在位且全量通过（四态+evidence 注记覆盖由该文件承载，行为级验收由其余探针场景独立兜底）。出处：spec/changes/evo-stray-untracked-session-attribution/tasks.md Deliverables | pass | 0/3 | - |
 | untracked-attr-legacy-regression | R4 tracked 流零改动+回归：tests/test_maintree_stray_wip_sweep.py 与 tests/test_stray_whitelist_untracked.py 既有用例全量通过。出处：spec 验收 5、tasks 2.3 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 8 个（第 1 轮）。
+
+- 首轮写入 8 个场景
+
