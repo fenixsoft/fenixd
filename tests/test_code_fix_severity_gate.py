@@ -267,11 +267,13 @@ class TestGateConfigFallback(_UserConfigIsolated):
 class TestMixedSeveritySplit(unittest.TestCase):
     def _ledger(self):
         return {
-            "a": _item("a", first_seen_at="2026-10-01T00:00:00+00:00"),
+            # 挂起锚用相对偏移（写死日历日期会随墙钟越过 cadence 线翻转
+            # release_due，2026-10-09 起恒红实证）
+            "a": _item("a", first_seen_at=_iso_offset(days=-3)),
             "m": _item("m", severity="minor",
-                       first_seen_at="2026-10-02T00:00:00+00:00"),
+                       first_seen_at=_iso_offset(days=-2)),
             "i": _item("i", severity="info",
-                       first_seen_at="2026-10-03T00:00:00+00:00"),
+                       first_seen_at=_iso_offset(days=-1)),
         }
 
     def test_below_gate_items_not_selected_but_stay_open(self):
@@ -329,9 +331,9 @@ class TestRegressionExemption(unittest.TestCase):
         proot = _make_project_root()
         _write_items(proot, {
             "r": _item("r", severity="minor", category="regression-timeout",
-                       first_seen_at="2026-10-01T00:00:00+00:00"),
+                       first_seen_at=_iso_offset(days=-3)),
             "m": _item("m", severity="minor",
-                       first_seen_at="2026-10-02T00:00:00+00:00"),
+                       first_seen_at=_iso_offset(days=-2)),
         })
         batch = select_batch(proot, 20, severity_gate=_GATE_DEFAULT)
         self.assertEqual([r["item_id"] for r in batch], ["r"],
