@@ -278,24 +278,26 @@ class _FakeResp:
 
 
 class TestProbeHttpHealth(unittest.TestCase):
+    # 替身打在 _DIRECT_OPENER.open（item 58da54c017a9 后探针的实调点），
+    # 不再打 urllib.request.urlopen——直连 opener 绕开 urlopen 缺省代理路由。
     def test_healthy_endpoint(self):
-        with mock.patch("urllib.request.urlopen", return_value=_FakeResp(200)):
+        with mock.patch.object(eg._DIRECT_OPENER, "open", return_value=_FakeResp(200)):
             self.assertTrue(eg.probe_http_health("http://127.0.0.1:8080", timeout=0.5))
 
     def test_all_endpoints_down(self):
-        with mock.patch("urllib.request.urlopen", side_effect=OSError("refused")):
+        with mock.patch.object(eg._DIRECT_OPENER, "open", side_effect=OSError("refused")):
             self.assertFalse(eg.probe_http_health("http://127.0.0.1:8080", timeout=0.5))
 
     def test_redirect_counts_healthy(self):
-        with mock.patch("urllib.request.urlopen", return_value=_FakeResp(302)):
+        with mock.patch.object(eg._DIRECT_OPENER, "open", return_value=_FakeResp(302)):
             self.assertTrue(eg.probe_http_health("https://example.com", timeout=0.5))
 
     def test_http_error_status_is_down(self):
-        with mock.patch("urllib.request.urlopen", return_value=_FakeResp(500)):
+        with mock.patch.object(eg._DIRECT_OPENER, "open", return_value=_FakeResp(500)):
             self.assertFalse(eg.probe_http_health("http://127.0.0.1:8080", timeout=0.5))
 
     def test_extension_scheme_conservatively_healthy(self):
-        with mock.patch("urllib.request.urlopen") as m:
+        with mock.patch.object(eg._DIRECT_OPENER, "open") as m:
             self.assertTrue(
                 eg.probe_http_health("chrome-extension://abc123/index.html", timeout=0.5)
             )
