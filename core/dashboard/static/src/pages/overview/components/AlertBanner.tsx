@@ -3,7 +3,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
 import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
 // 告警标题/明细展示单源（code-review item 5478d16d70c7，SEV 常量与 fmtDate 同源收敛）
-import { AlertLines, AlertTitle } from '@/components/alert-shared';
+import {
+  AlertActionColumn,
+  AlertLines,
+  AlertReportButton,
+  AlertTitle,
+  hasNarrativeReport,
+} from '@/components/alert-shared';
 // 裁决交互收敛共享 hook（code-review item f86171cc149d）：状态四元组、结果
 // 文案、destructive 二次确认门与 SPEC 详情页同源，本组件只注入刷新回调
 import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
@@ -197,16 +203,21 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
               return (
                 <List.Item
                   actions={[
-                    adjudicable ? (
-                      /* 执行按钮（含 destructive 二次确认门）经共享控件，
-                         确认门与详情页同源（item f86171cc149d）；裁决成功后
-                         重拉横幅数据 */
-                      <AlertAdjudicationExec key="exec" alert={a} adj={adj} onResolved={() => void load()} />
-                    ) : null,
-                    <Button key="handled" size="small" onClick={() => void handleOne(a)}>
-                      标记已处理
-                    </Button>,
-                  ].filter(Boolean)}
+                    /* 操作按钮竖排列（查看调查报告/执行/标记已处理同列、随最宽者
+                       等宽）：调查报告入口与处置动作同列，先读报告再裁决 */
+                    <AlertActionColumn key="ops">
+                      {hasNarrativeReport(a) && <AlertReportButton text={a.narrative!.text} />}
+                      {adjudicable && (
+                        /* 执行按钮（含 destructive 二次确认门）经共享控件，
+                           确认门与详情页同源（item f86171cc149d）；裁决成功后
+                           重拉横幅数据 */
+                        <AlertAdjudicationExec alert={a} adj={adj} onResolved={() => void load()} />
+                      )}
+                      <Button size="small" onClick={() => void handleOne(a)}>
+                        标记已处理
+                      </Button>
+                    </AlertActionColumn>,
+                  ]}
                 >
                   <List.Item.Meta
                     title={<AlertTitle item={a} variant="banner" />}
@@ -272,7 +283,19 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                     size="small"
                     dataSource={resolved}
                     renderItem={(a) => (
-                      <List.Item>
+                      <List.Item
+                        /* 已解决告警保留调查报告入口（处置后补叙照常落盘，
+                           历史完整性）；无报告时不传 actions，不出空壳列 */
+                        actions={
+                          hasNarrativeReport(a)
+                            ? [
+                                <AlertActionColumn key="report">
+                                  <AlertReportButton text={a.narrative!.text} />
+                                </AlertActionColumn>,
+                              ]
+                            : undefined
+                        }
+                      >
                         <List.Item.Meta
                           title={<AlertTitle item={a} resolved variant="banner" />}
                           description={<AlertLines item={a} variant="banner" />}

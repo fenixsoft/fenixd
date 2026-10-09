@@ -31,7 +31,14 @@ import type {
 import { useIsMobile } from '@/hooks/useIsMobile';
 // 告警标题/明细/SEV 常量与 fmtDate 收敛单源（code-review item 5478d16d70c7；
 // variant="page" 保留本页既有布局：spec 蓝标签、明细字段分行、完整年月日）
-import { AlertLines, AlertTitle, fmtDate } from '@/components/alert-shared';
+import {
+  AlertActionColumn,
+  AlertLines,
+  AlertReportButton,
+  AlertTitle,
+  fmtDate,
+  hasNarrativeReport,
+} from '@/components/alert-shared';
 
 const REFRESH_THROTTLE_MS = 500;
 
@@ -270,9 +277,14 @@ function AlertPanel({
         renderItem={(a) => (
           <List.Item
             actions={[
-              <Button key="handled" size="small" onClick={() => onMarkHandled(a)}>
-                标记已处理
-              </Button>,
+              /* 操作按钮竖排列（查看调查报告/标记已处理同列、随最宽者等宽），
+                 与 overview 横幅同形态（该页无裁决选择题，执行按钮在横幅侧） */
+              <AlertActionColumn key="ops">
+                {hasNarrativeReport(a) && <AlertReportButton text={a.narrative!.text} />}
+                <Button size="small" onClick={() => onMarkHandled(a)}>
+                  标记已处理
+                </Button>
+              </AlertActionColumn>,
             ]}
           >
             <List.Item.Meta title={<AlertTitle item={a} variant="page" />} description={<AlertLines item={a} variant="page" />} />
@@ -292,7 +304,19 @@ function AlertPanel({
                   size="small"
                   dataSource={resolved}
                   renderItem={(a) => (
-                    <List.Item>
+                    <List.Item
+                      /* 已解决告警保留调查报告入口（处置后补叙照常落盘，
+                         历史完整性）；无报告时不传 actions，不出空壳列 */
+                      actions={
+                        hasNarrativeReport(a)
+                          ? [
+                              <AlertActionColumn key="report">
+                                <AlertReportButton text={a.narrative!.text} />
+                              </AlertActionColumn>,
+                            ]
+                          : undefined
+                      }
+                    >
                       <List.Item.Meta
                         title={<AlertTitle item={a} resolved variant="page" />}
                         description={<AlertLines item={a} variant="page" />}

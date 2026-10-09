@@ -1,10 +1,13 @@
 import dayjs from 'dayjs';
-import { Space, Tag, Typography } from 'antd';
+import { useState } from 'react';
+import type { ReactNode } from 'react';
+import { Button, Modal, Space, Tag, Typography } from 'antd';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AlertItem } from '@/services/dashboard';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import { fmtEvidence } from '@/utils/evidence';
+import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 
 /**
  * 告警展示单源（code-review item 5478d16d70c7）：SEV 常量、告警标题、明细字段
@@ -77,40 +80,76 @@ export function AlertTitle({
   );
 }
 
+/** 该告警是否携带正式调查报告（sidecar model 有值；null=失败/熔断终态机械说明） */
+export function hasNarrativeReport(item: AlertItem): boolean {
+  return !!(item.narrative?.text && item.narrative.model);
+}
+
 /**
- * 三段式叙事区块（add-adjudication-alert-narrative 4.1）：在证据之前渲染
- * narrative.text（Markdown、默认展开），标注「建议倾向仅供参考」。
- * - 纯展示、不可交互（叙事仅为可读性增强，不承载任何机器语义）；
- * - 无 narrative 字段时不渲染任何容器（DOM 与现状一致，无空壳区块）；
- * - 长文本按既有容器规则滚动展示（maxHeight + overflowY auto），不横向溢出、
- *   不遮挡 choices 操作区；
+ * 告警操作按钮竖排列（查看调查报告 / 执行 / 标记已处理同列）：竖向排布、
+ * 按钮随最宽者拉伸等宽（align-items stretch），作为单个元素传入 antd
+ * List.Item 的 actions（antd 本身只做横向排布，竖排语义由本容器承载）。
+ */
+export function AlertActionColumn({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        alignItems: 'stretch',
+        minWidth: 88,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * 调查报告弹窗入口（原三段式内联叙事区块，add-adjudication-alert-narrative 4.1
+ * → 弹窗化改造）：四段式调查报告动辄数千字，内联 320px 小框滚动不利于阅读，
+ * 改为「查看调查报告」入口按钮 + 居中 Modal 全文阅读。
+ * - 按钮纯文字无图标（与执行/标记已处理同列竖排、等宽，见 AlertActionColumn）；
+ * - Modal 默认即视口 80% × 80%（width 80vw / body 高 80vh），可最大化占满
+ *   视口、移动端自动全屏（useMaximizeModal 既有模式）；
+ * - 纯展示、Modal 内不可交互（报告仅为可读性增强，不承载任何机器语义）；
  * - 安全前提：narrative.text 为 AI 生成内容，无注入风险依赖 react-markdown
  *   默认不执行原始 HTML（跳过 raw HTML 节点、链接经 SafeLink 渲染），且共享
  *   映射 markdownComponents（SpecDocModal）不放行 raw HTML——后者不得引入
- *   rehype-raw，否则静默放开 HTML 注入面。
+ *   rehype-raw，否则静默放开 HTML 注入面；
+ * - AI 免责声明移入弹窗底部随全文同读（入口按钮窄空间不重复占位）。
  */
-function AlertNarrative({ text }: { text: string }) {
+export function AlertReportButton({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const { modalProps, maximizeButton } = useMaximizeModal({
+    defaultWidth: '80vw',
+    defaultBodyHeight: '80vh',
+    centered: true,
+    extraBodyStyle: { overflowY: 'auto' },
+  });
   return (
-    <div data-testid="alert-narrative" style={{ margin: '4px 0' }}>
-      <div
-        style={{
-          maxHeight: 320,
-          overflowY: 'auto',
-          border: '1px solid #f0f0f0',
-          borderRadius: 6,
-          padding: '6px 8px',
-          background: '#fafafa',
-          fontSize: 12,
-        }}
+    <>
+      <Button size="small" onClick={() => setOpen(true)}>
+        查看调查报告
+      </Button>
+      <Modal
+        open={open}
+        onCancel={() => setOpen(false)}
+        footer={null}
+        title={<MaximizeTitle text="调查报告" button={maximizeButton} />}
+        {...modalProps}
       >
-        <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-          {text}
-        </Markdown>
-      </div>
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        以上叙事由 AI 生成，建议倾向仅供参考，最终由你决定。
-      </Typography.Text>
-    </div>
+        <div style={{ fontSize: 13 }}>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {text}
+          </Markdown>
+        </div>
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
+          以上调查报告由 AI 生成，建议倾向仅供参考，最终由你决定。
+        </Typography.Text>
+      </Modal>
+    </>
   );
 }
 
@@ -135,6 +174,8 @@ function AlertNarrativePending() {
  * 告警明细字段区（描述/叙事/证据/处置/建议/解决依据），六段行单源只写一份，
  * 布局差异按 variant 保留、isPage 仅在真实差异点分支（两变体渲染输出逐字等价）：
  * - 描述行：page 有描述才独占一行渲染，banner 恒渲染并入 📌 spec 前缀；
+ * - 叙事行：仅承载失败终态机械说明与「调查生成中」占位；正式调查报告的
+ *   「查看调查报告」入口在操作按钮列（AlertReportButton + AlertActionColumn）；
  * - 证据行：page 外包一层 div，banner 直接内联；
  * - 处置/建议：page 文案在 Typography 外作同级文本节点，banner 并入 Typography 内。
  */
@@ -160,11 +201,17 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
     // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
     <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
       {descriptionLine}
-      {item.narrative?.text ? (
-        <AlertNarrative text={item.narrative.text} />
-      ) : item.narrative_pending ? (
-        <AlertNarrativePending />
+      {item.narrative?.text && !hasNarrativeReport(item) ? (
+        // 终态机械说明（生成失败/熔断跳过，sidecar model=null，一句话）：
+        // 内联灰字即可，不值得一次弹窗点击。正式调查报告的「查看调查报告」
+        // 入口在操作按钮列（AlertReportButton），不在明细区渲染。
+        <div data-testid="alert-narrative-failed" style={{ margin: '4px 0' }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {item.narrative.text}
+          </Typography.Text>
+        </div>
       ) : null}
+      {item.narrative_pending ? <AlertNarrativePending /> : null}
       {isPage ? (evidenceLine ? <div>{evidenceLine}</div> : null) : evidenceLine}
       {item.action_taken ? (
         <div>
