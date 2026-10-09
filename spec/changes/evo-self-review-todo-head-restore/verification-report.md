@@ -34,3 +34,10 @@
 | r3-api-todo-write-lock-roundtrip | R3 dashboard 端点写路径端到端（夹具项目 todo-head-restore-fx）：POST /api/todo?project=… 提交 Markdown 正文→200 且 ok=true、project 回显、path 为字符串；随后 GET /api/todo?project=…→200、exists=true 且 content 与提交逐字一致（整文件覆写经 with_file_lock 原子落盘、写后即读可见）。出处 core/dashboard/routes/base.py:641（POST /api/todo 路由）、core/dashboard/routes/settings_routes.py:440-483（_write_project_doc 持锁+INFO 留痕）、485-512（GET/POST handler）。 | pass | 0/7 | - |
 | r3-api-todo-negative-inputs | R3 端点异常路径四例：content 非字符串（数字）→400 且 error 含「content 必须为字符串」；未知项目名 POST→404 且 error 为 project not found；未知项目名 GET→同判 404；缺 project 参数→400 且 error 含「缺少 project 参数」。错误响应为 JSON（ensure_ascii=False，中文断言确定性命中）。出处 core/dashboard/routes/settings_routes.py:497-512、core/dashboard/routes/project_routes.py:193-206（缺参 400/未知 404 共用校验）。 | pass | 0/7 | - |
 | r3-api-todo-empty-overwrite-nonblocking | R3 覆空留痕不回退语义：POST /api/todo 提交空 content→200 且 ok=true（覆空 WARNING 留痕尽力而为、不阻塞保存，dashboard 以 UI 提交内容为准）；GET 回读 exists=true 且 content 为空串——覆空生效、不被 R1 恢复逻辑回退（dashboard 侧只留痕不回退，与 daemon 回写前自愈的「恢复回写」语义可分辨；HEAD 基线仍在 git 中可追）。出处 core/dashboard/routes/settings_routes.py:103-127（_warn_if_todo_overwrite_empties）、440-483。 | pass | 0/4 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 11 个（第 1 轮）。
+
+- 首轮写入 11 个场景
+
