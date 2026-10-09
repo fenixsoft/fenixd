@@ -127,6 +127,39 @@ def _stale_alerts(repo) -> list:
     ]
 
 
+class _CaptureLogger:
+    """盘点器日志通道捕获（_log 以 getattr(logger, level)(channel, msg) 调用）。"""
+
+    def __init__(self):
+        self.infos: list = []
+        self.warnings: list = []
+
+    def info(self, channel, msg):
+        self.infos.append(msg)
+
+    def warning(self, channel, msg):
+        self.warnings.append(msg)
+
+
+def _make_session_repo_fixture():
+    """主树仓：近窗提交（作者=本仓配置身份 isess <isess@t>，触碰 a.tsx）+ a.tsx 散件。"""
+    repo, _wt = _make_repo()
+    subprocess.run(["git", "config", "user.name", "isess"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "isess@t"], cwd=str(repo), check=True, capture_output=True)
+    # 近窗提交必须以仓库配置身份落作者（-c 注入会覆盖，归因身份判据失配）
+    (repo / "a.tsx").write_text("session committed work", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "session work"], cwd=str(repo),
+        check=True, capture_output=True,
+    )
+    # 恢复散件脏态（与 _make_repo 后同内容：a.tsx 主树直改未提交）
+    (repo / "a.tsx").write_text("main wip", encoding="utf-8")
+    return repo
+
+
 class TestGraceConfig(unittest.TestCase):
     """宽限配置解析（ConfigLoader 点号键，对齐 code_fix._orphan_grace_minutes）。"""
 
@@ -744,22 +777,7 @@ class TestSessionAttributionDowngrade(unittest.TestCase):
     """
 
     def _make_session_repo(self):
-        """主树仓：近窗提交（作者=本仓配置身份 isess <isess@t>，触碰 a.tsx）+ a.tsx 散件。"""
-        repo, _wt = _make_repo()
-        subprocess.run(["git", "config", "user.name", "isess"], cwd=str(repo), check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "isess@t"], cwd=str(repo), check=True, capture_output=True)
-        # 近窗提交必须以仓库配置身份落作者（-c 注入会覆盖，归因身份判据失配）
-        (repo / "a.tsx").write_text("session committed work", encoding="utf-8")
-        subprocess.run(
-            ["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-q", "-m", "session work"], cwd=str(repo),
-            check=True, capture_output=True,
-        )
-        # 恢复散件脏态（与 _make_repo 后同内容：a.tsx 主树直改未提交）
-        (repo / "a.tsx").write_text("main wip", encoding="utf-8")
-        return repo
+        return _make_session_repo_fixture()
 
     def _sweeper(self, repo, grace=30.0, action=None):
         admin = {"maintree_stray_wip_grace_minutes": grace}
@@ -798,6 +816,114 @@ class TestSessionAttributionDowngrade(unittest.TestCase):
         sw = self._sweeper(repo, grace=0.0, action="bogus")
         self.assertEqual(sw.sweep()["status"], "alerted")
         self.assertEqual(len(_stale_alerts(repo)), 1)
+
+
+class TestSessionAttributionLogDedup(unittest.TestCase):
+    """会话归因留痕去重（evo-maintree-stray-attribution-log-dedup 2.1）。
+
+    三态留痕状态机：首次/状态变化落全量行、稳定期小时聚合行、解除闭环。
+    60 分钟窗口用 ``_attr_last_log_ts`` 回拨注入（进程内内存态，免真实等待）。
+    """
+
+    def _sweeper(self, repo, grace=30.0):
+        logger = _CaptureLogger()
+        sw = MainTreeStrayWipSweeper(
+            repo,
+            _WmProbe(repo),
+            config={"admin": {"maintree_stray_wip_grace_minutes": grace}},
+            logger=logger,
+        )
+        return sw, logger
+
+    @staticmethod
+    def _attribution_lines(log):
+        return [m for m in log.infos if "归因到主树活交互会话" in m]
+
+    @staticmethod
+    def _release_lines(log):
+        return [m for m in log.infos if "会话归因解除" in m]
+
+    def test_stable_attribution_logs_once_then_silent(self):
+        """同文件同占用者连续多轮盘点仅首轮 1 条留痕（R1）。"""
+        repo = _make_session_repo_fixture()
+        sw, log = self._sweeper(repo)
+        for _ in range(3):
+            self.assertEqual(sw.sweep()["status"], "session-attributed")
+        self.assertEqual(len(self._attribution_lines(log)), 1)
+
+    def test_hour_window_emits_single_aggregate_with_count(self):
+        """跨 60 分钟窗口后恰 1 条聚合行且含正确重复计数，随后窗口重置（R2）。"""
+        repo = _make_session_repo_fixture()
+        sw, log = self._sweeper(repo)
+        sw.sweep()  # 首轮全量行
+        sw.sweep()  # 稳定轮：静默计数（count=1）
+        sw._attr_last_log_ts -= 3600  # 回拨跨窗（内存态注入，免真实等待）
+        sw.sweep()  # 聚合行：N=2（自上次留痕起含本轮的归因观测轮数）
+        agg = [m for m in log.infos if "重复归因" in m]
+        self.assertEqual(len(agg), 1)
+        self.assertIn("近 1h 重复归因 2 次", agg[0])
+        self.assertIn("a.tsx", agg[0])
+        # 窗口重置：随后稳定轮无任何新增行
+        marked = len(log.infos)
+        sw.sweep()
+        self.assertEqual(len(log.infos), marked)
+
+    def test_file_set_change_logs_new_full_line(self):
+        """文件集变化（散件增员）触发一条新全量行（R1 状态变化）。"""
+        repo = _make_session_repo_fixture()
+        sw, log = self._sweeper(repo)
+        sw.sweep()
+        (repo / "b.tsx").write_text("more wip", encoding="utf-8")
+        self.assertEqual(sw.sweep()["status"], "session-attributed")
+        full = self._attribution_lines(log)
+        self.assertEqual(len(full), 2)
+        self.assertIn("b.tsx", full[1])
+
+    def test_occupier_change_logs_new_full_line(self):
+        """占用者会话标识变化触发一条新全量行（R1 状态变化，归因保持）。"""
+        repo = _make_session_repo_fixture()
+        sw, log = self._sweeper(repo)
+        sw.sweep()
+        # 仅改 email：name 不变仍与近窗提交作者匹配（任一字段相等即算），
+        # 归因保持而 identity（占用者会话标识）变化
+        subprocess.run(
+            ["git", "config", "user.email", "isess2@t"],
+            cwd=str(repo), check=True, capture_output=True,
+        )
+        self.assertEqual(sw.sweep()["status"], "session-attributed")
+        self.assertEqual(len(self._attribution_lines(log)), 2)
+
+    def test_release_on_files_disappeared_no_repeat(self):
+        """归因解除（文件消失）：clean 轮恰 1 条解除行，且不逐轮重复（R3）。"""
+        repo = _make_session_repo_fixture()
+        sw, log = self._sweeper(repo)
+        sw.sweep()
+        self.assertEqual(len(self._attribution_lines(log)), 1)
+        subprocess.run(
+            ["git", "checkout", "--", "a.tsx"],
+            cwd=str(repo), check=True, capture_output=True,
+        )
+        self.assertEqual(sw.sweep()["status"], "clean")
+        self.assertEqual(len(self._release_lines(log)), 1)
+        marked = len(log.infos)
+        sw.sweep()
+        self.assertEqual(len(log.infos), marked)  # 解除行不逐轮重写
+
+    def test_release_on_occupier_cleared_then_reattribute(self):
+        """占用者清空触发解除行；解除后同会话再归因落新全量行（R3 闭环）。"""
+        repo = _make_session_repo_fixture()
+        sw, log = self._sweeper(repo)
+        sw.sweep()
+        # 占用者清空：name/email 全改，无任何近窗提交匹配 → 零命中走无主宽限
+        subprocess.run(["git", "config", "user.name", "other"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "other@t"], cwd=str(repo), check=True, capture_output=True)
+        self.assertEqual(sw.sweep()["status"], "orphan-timed")
+        self.assertEqual(len(self._release_lines(log)), 1)
+        # 解除后恢复原身份：键与解除前同值，仍必须落新全量行（不得被抑制吞掉）
+        subprocess.run(["git", "config", "user.name", "isess"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "isess@t"], cwd=str(repo), check=True, capture_output=True)
+        self.assertEqual(sw.sweep()["status"], "session-attributed")
+        self.assertEqual(len(self._attribution_lines(log)), 2)
 
 
 if __name__ == "__main__":

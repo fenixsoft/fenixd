@@ -275,6 +275,19 @@ class MainTreeStrayWipSweeper:
         # 指纹集」复位，混账会被他侧清空。``rules`` 键随条目留存 check-ignore
         # 放行规则快照，供告警 evidence 取证。
         self._whitelist_registry: dict = {}
+        # 会话归因留痕去重状态（evo-maintree-stray-attribution-log-dedup 1.1）：
+        # 进程内内存态，不落 AdminStore（模块注释明令不新增 signal_type）。
+        # ``_last_session_attr``＝上次留痕键 (路径排序文件集, 占用者会话
+        # identity)：路径排序对齐 ``_fingerprint``「路径排序集」惯例，防调用方
+        # 文件顺序抖动击穿去重；会话标识取 info.holders 首项 session 字典的
+        # identity 字段（mergeback 会话 clue 构造同名、types.describe 渲染
+        # 「会话=」同源），取不到用空串占位。``_attr_suppress_count``＝自上次
+        # 留痕起被抑制的轮数；``_attr_last_log_ts``＝上次留痕时间戳
+        # （time.time() 单调比较）。不做跨重启持久化：重启丢状态仅损失重启后
+        # 首轮一条重复留痕，与 tracked 流 first_seen 内存态同一取舍（上方 D5）。
+        self._last_session_attr: "tuple | None" = None
+        self._attr_suppress_count = 0
+        self._attr_last_log_ts = 0.0
 
     # ── 基础 ────────────────────────────────────────────────────────────
 
@@ -430,6 +443,9 @@ class MainTreeStrayWipSweeper:
         """tracked 散件流（现行行为逐字节不变）：调用方必须已持有主树锁。"""
         wm = self.worktree_manager
         if not files:
+            # 归因解除判定先行（文件消失迁移）：clean 早退到不了归因分支，
+            # 见 _release_session_attr_if_gone（1.3 单点判定的消失分支调用）。
+            self._release_session_attr_if_gone(False, files)
             self._reset_registry_absent(set())
             return {"status": "clean", "files": [], "fingerprint": ""}
 
@@ -461,6 +477,13 @@ class MainTreeStrayWipSweeper:
         info = identify(files, list(running_run_ids or []))
         now = time.time()
         session_attributed = info.holder and info.is_session_attribution()
+        # 归因解除单点判定（1.3）：挂在归因分支之前，MUST NOT 依赖归因分支
+        # 被执行——占用者整体清空时 info.holder 为假（session_attributed=
+        # False）、归因迁至在飞车道时 is_session_attribution() 为假，两种
+        # 迁移归因分支都不进入、键比较不发生；宽限升级处置接管前必经「归因
+        # 消失轮」（会话归因散件每轮被 pop/复位、不入 first_seen 注册表，
+        # 自身永不升级），由本判定覆盖。
+        self._release_session_attr_if_gone(bool(session_attributed), files)
         if info.holder and not session_attributed:
             self._registry.pop(fp, None)
             self._reset_registry_absent({fp})
@@ -478,12 +501,35 @@ class MainTreeStrayWipSweeper:
             self._registry.pop(fp, None)
             self._reset_registry_absent({fp})
             session = next(iter(info.holders), {}).get("session") or {}
-            self._log(
-                "info",
-                f"主树散件 WIP 归因到主树活交互会话，降级 info 留痕（不派"
-                f" major 不触发 admin 代查）: {', '.join(files)}; "
-                f"{info.describe()}",
+            # 留痕三态（1.2，evo-maintree-stray-attribution-log-dedup）：键＝
+            # (路径排序文件集, 占用者会话 identity)。键变化（首次/文件集变化/
+            # 占用者变化）落全量行（沿用现文案）；键稳定且距上次留痕满 60
+            # 分钟落 1 条聚合行（含重复计数）；其余轮次静默计数——归因结论
+            # 稳定时不再逐轮重写同一行（5 天 5267 条、字节占比 57.9% 实证）。
+            # 计数先行自增：聚合行 N＝自上次留痕以来的归因观测轮数（含本轮）。
+            key = (
+                tuple(sorted(str(p) for p in files)),
+                str(session.get("identity") or ""),
             )
+            self._attr_suppress_count += 1
+            if key != self._last_session_attr:
+                self._last_session_attr = key
+                self._attr_suppress_count = 0
+                self._attr_last_log_ts = now
+                self._log(
+                    "info",
+                    f"主树散件 WIP 归因到主树活交互会话，降级 info 留痕（不派"
+                    f" major 不触发 admin 代查）: {', '.join(files)}; "
+                    f"{info.describe()}",
+                )
+            elif now - self._attr_last_log_ts >= 3600:
+                self._log(
+                    "info",
+                    f"近 1h 重复归因 {self._attr_suppress_count} 次，归因未变: "
+                    f"{', '.join(files)}",
+                )
+                self._attr_suppress_count = 0
+                self._attr_last_log_ts = now
             return {
                 "status": "session-attributed",
                 "files": files,
@@ -532,6 +578,30 @@ class MainTreeStrayWipSweeper:
             "grace_minutes": grace,
             "elapsed_minutes": round(elapsed_min, 3),
         }
+
+    def _release_session_attr_if_gone(
+        self, session_attributed: bool, files: list
+    ) -> None:
+        """会话归因解除单点判定（evo-maintree-stray-attribution-log-dedup 1.3）。
+
+        上轮已留痕而本轮归因不在场（not session_attributed 或 files 为空）→
+        补一条解除行并清去重状态（``_last_session_attr`` 置空、抑制计数清
+        零）；解除后同会话再归因键与解除前同值，因键已清判「与上次不同」，
+        自然按首次落全量行（R3 闭环，防被抑制计数吞掉）。files 为空的 clean
+        早退到不了归因分支，该分支以 ``session_attributed=False`` 先行调用
+        （文件消失迁移）；调用点共两处，判定条件单点在本方法。
+        """
+        if self._last_session_attr is None:
+            return
+        if session_attributed and files:
+            return
+        self._log(
+            "info",
+            "主树散件 WIP 会话归因解除（文件集消失/占用者清空/归因迁移，"
+            f"去重状态复位）: {', '.join(self._last_session_attr[0])}",
+        )
+        self._last_session_attr = None
+        self._attr_suppress_count = 0
 
     # ── 指纹 / 注册表 ───────────────────────────────────────────────────
 
