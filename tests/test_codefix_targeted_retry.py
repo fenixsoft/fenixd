@@ -407,6 +407,102 @@ class TestMapSnapshotIssuesToNodeids(unittest.TestCase):
         self.assertEqual(nodeids, [])
 
 
+class TestSnapshotFailuresForMapping(unittest.TestCase):
+    """映射输入归一（喂侧剥离 file 键）与 code-fix 内部路径钉子。
+
+    快照 ``file`` 是 ``parse_junit_xml`` 的点分 classname 兜底，原样喂
+    ``_map_junit_failures_to_nodeids`` 会被 file 一致性校验恒判失败
+    （fix-codefix-mapping-dotted-file-poison：定向重试恒回全量、真实失败
+    被伪装成 anomaly 的根因）。
+    """
+
+    def _root_with_tests(self):
+        root = Path(_mkdtemp("cfix-mapnorm-"))
+        (root / "tests").mkdir()
+        (root / "tests" / "test_x.py").write_text("x=1", encoding="utf-8")
+        return root
+
+    def test_ingest_failure_round_dotted_file_maps_ok(self):
+        """2.1：点分 file 兜底形态经 _ingest_failure_round 映射成功——
+        mapped=True、落盘明细 fallback_full=False 且 items 非空、nodeid
+        为 tests/test_x.py::TestFoo::test_bar（子集语义恢复）。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        reg = types.SimpleNamespace(
+            run_id="regression-dotted-1", status="failed",
+            snapshot={"failures": [
+                {"name": "test_bar", "classname": "tests.test_x.TestFoo",
+                 "file": "tests.test_x", "line": 1, "time": 0.1,
+                 "kind": "failure", "message": "boom"},
+            ]})
+        items, mapped, detail_rel, cumulative = cf._ingest_failure_round(
+            root, reg, [], exec_root=root)
+        self.assertTrue(mapped, "file 键已剥离，MUST NOT 触发一致性校验失败")
+        self.assertEqual(
+            [i["nodeid"] for i in items],
+            ["tests/test_x.py::TestFoo::test_bar"])
+        self.assertTrue(detail_rel)
+        payload = json.loads((root / detail_rel).read_text(encoding="utf-8"))
+        self.assertFalse(payload["fallback_full"])
+        self.assertTrue(payload["items"])
+        self.assertEqual(payload["items"], items)
+        self.assertEqual(cumulative, items, "明细进轮间累计集（定向轮可注入）")
+
+    def test_normalize_does_not_mutate_input_snapshot(self):
+        """2.2：归一入口不改原快照——新列表 + 逐条浅拷贝，传入列表及条目
+        file 键处理后原样保留（快照同源供展示/落盘）。"""
+        import core.code_fix as cf
+
+        failures = [
+            {"name": "test_bar", "classname": "tests.test_x.TestFoo",
+             "file": "tests.test_x", "line": 1, "time": 0.1,
+             "kind": "failure", "message": "boom"},
+            "not-a-dict",
+        ]
+        snapshot = {"failures": failures}
+        before = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+
+        entries = cf._snapshot_failures_for_mapping(failures)
+
+        # 新列表 + dict 条目为浅拷贝（非原条目对象）
+        self.assertIsNot(entries, failures)
+        self.assertIsNot(entries[0], failures[0])
+        self.assertEqual(
+            entries[0],
+            {k: v for k, v in failures[0].items() if k != "file"},
+            "归一结果剥离 file 键")
+        # 非 dict 条目原样透传
+        self.assertEqual(entries[1], "not-a-dict")
+        # 传入列表及条目逐字原样（file 键仍在场）
+        self.assertEqual(
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True), before)
+        self.assertIn("file", failures[0])
+
+    def test_real_failure_with_dotted_file_not_anomaly(self):
+        """2.4：真实测试失败（status=failed + 点分 file 可映射明细）经
+        _is_regression_anomaly 判 False——不进熔断计数；对照非 dict 条目 /
+        缺 classname 形态仍判 True（fail-closed 口径不变）。"""
+        import core.code_fix as cf
+
+        root = self._root_with_tests()
+        reg = types.SimpleNamespace(run_id="r", status="failed", snapshot={})
+        dotted = {"name": "test_bar", "classname": "tests.test_x.TestFoo",
+                  "file": "tests.test_x", "message": "boom"}
+        items, mapped = cf._map_junit_failures_to_nodeids(
+            cf._snapshot_failures_for_mapping([dotted]), exec_root=root)
+        self.assertTrue(mapped)
+        self.assertFalse(cf._is_regression_anomaly(reg, items),
+                         "真实测试失败 MUST NOT 进熔断计数")
+        for bad in (["not-a-dict"], [{"name": "test_bar"}]):
+            bad_items, bad_ok = cf._map_junit_failures_to_nodeids(
+                cf._snapshot_failures_for_mapping(bad), exec_root=root)
+            self.assertFalse(bad_ok, f"{bad!r} 形态映射 fail-closed")
+            self.assertTrue(
+                cf._is_regression_anomaly(reg, bad_items),
+                f"{bad!r} 形态无可用明细仍计 anomaly（口径不变）")
+
+
 class TestApplyPytestSubset(unittest.TestCase):
     """门面子集命令替换（2.1，D2）：取代既有收集位置参数，MUST NOT 尾部追加。"""
 
@@ -609,6 +705,31 @@ class TestTargetedRetryLoop(unittest.TestCase):
             [i["nodeid"] for i in payload["items"]],
             ["tests/test_x.py::test_a", "tests/test_x.py::TestFoo::test_bar"],
         )
+
+    def test_round_items_dotted_file_not_anomaly_breaker(self):
+        """2.3：定向轮 round_items 提取点（第二调用点）同形态映射成功——
+        点分 file 真实失败不再被误计 anomaly：修复前回归 2/3 的 round_items
+        恒空、两连即熔断现场即弃（fix_calls=2、无合回）；修复后链按轮数
+        上限推进至 passed 合回。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        fails = [{"name": "test_bar", "classname": "tests.test_x.TestFoo",
+                  "file": "tests.test_x.TestFoo", "line": 1, "time": 0.1,
+                  "kind": "failure", "message": "boom"}]
+        runner = _FakeRunner(
+            proot,
+            regression_statuses=["failed", "failed", "failed", "passed"],
+            failure_sets=[fails],
+        )
+        self._orch(runner, proot).checkpoint()
+        self.assertEqual(len(runner.fix_calls), 4,
+                         "首轮 + 3 个定向轮（两连真实失败 MUST NOT 触发熔断）")
+        self.assertEqual(
+            runner.subset_calls,
+            [None] + [["tests/test_x.py::TestFoo::test_bar"]] * 3,
+            "各定向轮均按首轮失败子集回归（映射成功、非 fallback_full）")
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 1, "合回一次")
 
     def test_fix_scope_test_marked_on_out_row(self):
         """4.3：修测试路径——产物行 ``fix_scope=test`` 标注经编排读取透传保留。"""
