@@ -25,6 +25,7 @@ daemon 对自省台账 .fenix/todo.md 的全部写入路径具备「工作树被
 - 不改动 read_todo 语义与缺省。
 - git 依赖限于 subprocess 只读调用（git show），与 self_review 既有 _commit_todo 同口径。
 - 恢复仅回放 HEAD 版本基线，不尝试合并工作树中并存的其他未提交内容。
+- evolution 的 write_todo_marker（第四个持锁写者）不在恢复接入范围：其写入以当前文本中定位到条目为前置，空/缺文件上定位不到即跳过不写，非内容损失路径。dashboard 侧 git show 失败（项目非 git 仓库/超时）时跳过 HEAD 对比，不阻塞保存。
 
 ## 验收
 

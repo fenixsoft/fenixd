@@ -30,11 +30,12 @@ def _load_existing_with_head_rescue(todo_path: Path, project_root: Path, restore
 
 ## dashboard 端点（settings_routes.py）
 
-- _write_project_doc 对 todo.md 目标包 with_file_lock（fs_utils 同一把 .todo.md.lock）；写成功后 logger.info 落「dashboard 覆写 todo.md（N 字节）」；content 为空而 HEAD 版非空时 logger.warning。非 todo.md 目标行为不变。
+- _write_project_doc 对 todo.md 目标包 with_file_lock（fs_utils 同一把 .todo.md.lock）；写成功后 logger.info 落「dashboard 覆写 todo.md（N 字节）」；content 为空而 HEAD 版非空时 logger.warning；git show 失败（项目非 git 仓库/超时）时跳过 HEAD 对比、按现状写、不落 WARNING——留痕尽力而为，不阻塞保存。非 todo.md 目标行为不变。
 
 ## 边界与取舍
 
 - 不翻转 read_todo 缺省：全局成本/行为变更且已有 fallback-honesty 诚实陈述兜底，独立成题。
-- 恢复基线取 HEAD 而非最后一个非空提交：HEAD 即 daemon 上次回写结果（回写后即时入库，见 evo-add-todo-marker-commit-on-write），语义最简；历史提交 0a17382 的一次性数据修复（并入 10-10 节）走人工运维。
+- 恢复基线取 HEAD 而非最后一个非空提交：HEAD 即 daemon 上次回写结果（回写后即时入库，见 evo-add-todo-marker-commit-on-write），语义最简；历史提交 e5001d9f（2026-10-09 最后完整版，119 行/8 日期节）的一次性数据修复（并入 10-10 节）走人工运维。
+- 第四个持锁写入者 core.evolution.write_todo_marker 不接入恢复：其写入以「当前文本中定位到条目」为前置（evolution.py write_todo_marker._do，定位不到条目即跳过不写），空/缺文件上天然 no-op，不构成空基线覆写路径。「全部写入路径」指全部内容损失型回写路径（self_review 三处 + dashboard 覆写端点）。
 - 恢复与「有意清空」的冲突由 R2 开关+WARNING 双保险：默认恢复可能复活用户刚清掉的文件，但留痕明示了恢复动作与豁免路径，不静默吞掉任何一方意图。
 - subprocess 失败/超时全部静默回退，保证台账写入主路径永不因防护而失败。
