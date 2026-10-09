@@ -3175,6 +3175,7 @@ class TestAccidentScenarioSimulation:
 
         # 配置校验降级告警走 Python logging（fenixd.config logger），挂 handler 捕获
         cfg_logger = _logging.getLogger("fenixd.config")
+        _old_cfg_level = cfg_logger.level
         cfg_logger.setLevel(_logging.ERROR)
         cfg_records = []
         _handler = _logging.Handler()
@@ -3208,6 +3209,10 @@ class TestAccidentScenarioSimulation:
             daemon._maybe_reload_config()
             assert len(stale) == 1  # 不重复
         finally:
+            # 全局 logger 级别必须复原：core/config 的 _logger 即本 logger，
+            # 不复原会把 ERROR 级别泄漏给全场后续用例（全量序态污染实证
+            # 2026-10-09：severity-gate 配置回退两例 assertLogs 恒空）
+            cfg_logger.setLevel(_old_cfg_level)
             cfg_logger.removeHandler(_handler)
             _CL.reset_stuck_threshold_state()
 
