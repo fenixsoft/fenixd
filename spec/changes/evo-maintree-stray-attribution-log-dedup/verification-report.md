@@ -35,3 +35,10 @@
 | probe-r4-restart-state-loss-first-round | R4 重启丢状态：同仓新建第二个 sweeper 实例（模拟进程重启，去重状态为进程内内存态不持久化）→ 首轮按首次落全量行（fresh_attr_lines=1，允许一条重复，与 tracked 流 first_seen 内存态同一取舍）。出处：core/worktree_manager/stray_wip.py:286-290；spec R4。 | pass | 0/5 | - |
 | probe-r4-info-level-and-adminstore-clean | R4 约束：连续 3 轮会话归因留痕期间 AdminStore 零新增记录（不派 major、不进人工队列）、capture logger 零 warning（日志级别维持 info，留痕行全走 info 通道）。出处：core/worktree_manager/stray_wip.py:496-524（降级 info 留痕、MUST NOT 新增 AdminStore signal_type）；spec R4。 | pass | 0/6 | - |
 | probe-r4-keep-fallback-boundary-regression | 非目标边界回归钉：action=keep 回退态不进三态去重——散件按无主宽限升级（grace=0 首轮 alerted 恰 1 条 major、次轮 orphan-timed），去重全量行/聚合行/解除行均零落（dedup_full_lines=0、dedup_agg_lines=0），keep 回退说明行逐轮照旧 2 条（非目标不收敛）。预期锚为实测行为。出处：core/worktree_manager/stray_wip.py:496、541-546；proposal.md 非目标。 | pass | 0/7 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
