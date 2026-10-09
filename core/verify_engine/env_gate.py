@@ -24,6 +24,13 @@ import urllib.request
 
 _logger = logging.getLogger("fenixd.verify.env_gate")
 
+# 直连 opener（code-review item 58da54c017a9，对齐 api_runner 的 trust_env=False
+# 铁律）：urlopen 缺省按 HTTP(S)_PROXY/ALL_PROXY 环境变量构建代理路由，daemon
+# 进程携带代理变量时探针请求会被路由进代理——代理不可达或拒绝回源本机实例即抛
+# URLError 判失联，finalize_scenario_status 随即把真实产品缺陷洗白为
+# blocked-env。显式空 ProxyHandler 强制直连被测实例；构建零 I/O，模块级一次。
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 # 纯等待超时特征指纹（Playwright / 引擎 wait 步骤）。裸「超时」「exceeded」
 # 已收窄（code-review 2084e503bd60）：业务型超时文案（「请求后端接口超时」
 # 「deadline exceeded」）不得混入候选。引擎 wait 步骤封装统一带「wait 超时」
@@ -212,7 +219,7 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
             # [fenix-ignore:1d928f301673] 同步阻塞为设计契约：全部调用点
             # （engine/web_runner/api_runner）均已 asyncio.to_thread 放线程池，
             # 事件循环内不存在直调。
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _DIRECT_OPENER.open(req, timeout=timeout) as resp:
                 if resp.status < 400:
                     return True
         except urllib.error.HTTPError:
