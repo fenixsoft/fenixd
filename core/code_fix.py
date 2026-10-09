@@ -972,6 +972,30 @@ def _map_junit_failures_to_nodeids(failures, exec_root=None):
     return items, True
 
 
+def _snapshot_failures_for_mapping(failures):
+    """回归快照 failures 的映射输入归一（喂侧剥离 ``file`` 键）。
+
+    快照 ``file`` 是 ``parse_junit_xml``/``_resolve_file`` 的点分 classname
+    兜底（pytest junitxml 不产 file 属性属预期形态），原样喂
+    ``_map_junit_failures_to_nodeids`` 会被其 file 一致性校验判不一致、
+    映射恒失败（点分 ≠ 路径 → 整体 ``ok=False`` → fallback_full）——对齐
+    ``map_snapshot_issues_to_nodeids`` 已验证的规避方式：喂映射前剥离
+    ``file`` 键（属性缺失即免检，零信息损失；真 file 属性形态本就不存在
+    于本项目回归快照，非 Python 标识符 classname 仍走既有 fail-closed）。
+
+    - 逐条浅拷贝返回**新列表**，MUST NOT 原地修改传入列表及其条目
+      （快照同源供展示/落盘）。
+    - 非 dict 条目原样透传，交由映射函数既有 fail-closed 判。
+    """
+    entries = []
+    for e in failures or []:
+        if not isinstance(e, dict):
+            entries.append(e)
+            continue
+        entries.append({k: v for k, v in e.items() if k != "file"})
+    return entries
+
+
 def map_snapshot_issues_to_nodeids(snapshot, exec_root=None):
     """回归快照异常用例 → 定向子集 nodeids（add-regression-issues-rerun 1.3）。
 
@@ -1099,7 +1123,10 @@ def _ingest_failure_round(root, reg, cumulative, exec_root):
     """
     snapshot = getattr(reg, "snapshot", None) or {}
     raw_failures = snapshot.get("failures") or []
-    fail_items, mapped = _map_junit_failures_to_nodeids(raw_failures, exec_root=exec_root)
+    # 喂映射前经归一入口剥离点分 file 兜底（fix-codefix-mapping-dotted-
+    # file-poison 1.2）：原样喂会被 file 一致性校验恒判失败 → fallback_full。
+    fail_items, mapped = _map_junit_failures_to_nodeids(
+        _snapshot_failures_for_mapping(raw_failures), exec_root=exec_root)
     if mapped and fail_items:
         cumulative = _merge_failure_items(cumulative, fail_items)
     else:
@@ -5991,7 +6018,11 @@ class CodeFixOrchestrator:
                 # 尚未进 ① 的提取点（那是在为下一轮注入准备本轮之前的明细），
                 # 按本轮 snapshot 现提取，与首轮计数同口径（1.2）。
                 round_items, round_mapped = _map_junit_failures_to_nodeids(
-                    (getattr(reg, "snapshot", None) or {}).get("failures") or [],
+                    # 同经归一入口（fix-codefix-mapping-dotted-file-poison
+                    # 1.2）：点分 file 兜底不毒化熔断计数口径——真实失败
+                    # （有明细）MUST NOT 被误计 anomaly。
+                    _snapshot_failures_for_mapping(
+                        (getattr(reg, "snapshot", None) or {}).get("failures") or []),
                     exec_root=wt)
                 if _is_regression_anomaly(reg, round_items):
                     anomaly_streak += 1
