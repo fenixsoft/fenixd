@@ -822,12 +822,16 @@ class MainTreeStrayWipSweeper:
     def _load_untracked_registry(self) -> None:
         """盘点开始时载入持久化注册表（每进程一次），重启恢复时钟。
 
-        文件缺失＝首启/无历史（正常形态，空表起步不告警）；JSON 损坏/形态
-        非法回退空表并留一条告警（fail-open，不阻断主盘点——损失仅为重新
-        宽限，与 D5 决策被取代前的重启行为一致）。条目级形态守卫：非 dict
-        指纹段 / 缺 first_seen 数值 / files 非列表的条目剔除（部分损坏不
-        株连完好条目）。载入后内存态为单源（``_untracked_registry_loaded``
-        守卫），文件此后只是收尾落盘的镜像。
+        文件缺失＝首启/无历史（正常形态，空表起步不告警）；损坏容错覆盖
+        字节层与 JSON 层两类（半截写入/磁盘错误的典型损坏形态）：字节层
+        （非法 UTF-8，``read_text`` 解码即抛 ``UnicodeDecodeError``）与
+        JSON 层（坏 JSON/形态非法，``json.loads`` 抛 ``ValueError``/
+        ``TypeError``）均回退空表并留一条告警（fail-open，不阻断主盘点
+        ——损失仅为重新宽限，与 D5 决策被取代前的重启行为一致）。条目级
+        形态守卫：非 dict 指纹段 / 缺 first_seen 数值 / files 非列表的
+        条目剔除（部分损坏不株连完好条目）。载入后内存态为单源
+        （``_untracked_registry_loaded`` 守卫），文件此后只是收尾落盘的
+        镜像。
         """
         if self._untracked_registry_loaded:
             return
@@ -837,11 +841,13 @@ class MainTreeStrayWipSweeper:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError 是 ValueError 子类、非 OSError，须显式列出
+            # 才能在 json.loads 之前拦住字节层损坏（evo 验证 BUG-01）。
             self._log(
                 "warning",
-                f"untracked 注册表持久化文件读取失败，回退空表重新宽限"
-                f"（fail-open，不阻断主盘点）: {path}: {exc}",
+                f"untracked 注册表持久化文件读取失败或字节层损坏，回退空表"
+                f"重新宽限（fail-open，不阻断主盘点）: {path}: {exc}",
             )
             return
         try:
