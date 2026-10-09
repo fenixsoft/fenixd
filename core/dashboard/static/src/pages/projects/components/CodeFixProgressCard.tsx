@@ -123,8 +123,16 @@ export default function CodeFixProgressCard(
     onRunningChangeRef.current = onRunningChange;
   }, [onRunningChange]);
   // 运行态变化上抛（2026-09-24「自动修复」按钮门控）：readFailed 停轮询视为
-  // 非运行——停轮询后进度本就不再可信，按钮解禁回到用户可控。
-  const fixRunning = !readFailed && Boolean(progress?.running);
+  // 非运行——停轮询后进度本就不再可信，按钮解禁回到用户可控。终态（blocked/
+  // failed）同样视为非运行（code-review item 1ac7448c8e1d）：失败链 running
+  // 可能恒 true（后端 _finish 不回写 running，见 core/code_fix.py），STOP_PHASES
+  // 收口停轮询后不再有新帧，末帧 running=true 已上抛 onRunningChange(true) 会把
+  // QualityTab「自动修复」按钮永久灰置——而灰置又阻止触发成功递增 restartKey
+  // 重启轮询自愈，形成死锁，仅能靠切项目/刷新恢复。
+  const fixRunning =
+    !readFailed &&
+    !(progress && STOP_PHASES.has(progress.phase)) &&
+    Boolean(progress?.running);
   useEffect(() => {
     onRunningChangeRef.current?.(fixRunning);
   }, [fixRunning]);
