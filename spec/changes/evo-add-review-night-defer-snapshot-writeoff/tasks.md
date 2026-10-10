@@ -38,3 +38,4 @@
 - [ ] 4.1 tests/test_code_fix_night_quiet_window.py：补多窗用例——多窗配置命中第二窗取该窗末、单窗配置行为与现状逐字节一致、混合非法片段整体无窗并 WARNING 一次、多窗同中取最晚 end；时间注入沿文件内既有 patch 形态。
 - [ ] 4.2 tests/test_code_review_night_defer.py：覆盖跨窗顺延——样本均值推得预计区间压窗时 reason=night_quiet_window_deferred 且同日防重状态未写、单飞标志已复位；无样本回退仅判派发时刻；预计区间与窗不相交时照常派发；归档读取异常降级不阻断。
 - [ ] 4.3 tests/test_code_review_salvage_writeoff.py：覆盖——error 抢救写锚；scheduled 全仓 run 成功且累计覆盖完整时解锁核销（resolved>0）并清锚；agent 静默少审（累计覆盖不全）时核销锁定、open 不动；窗口档 scheduled 与 error 收场绝不核销；完成日志含待核销标注。
+- [ ] 4.4 全量回归核对既有源码契约断言：tests/test_code_fix_night_quiet_window.py 以 read_text 文本契约固定 code_fix.py 常量文本（:153 `NIGHT_QUIET_WINDOW_DEFAULT = "04:15-04:45"`）、checkpoint 单点不变量与「maintenance_runs.py 零 night_quiet_window 字样」（:497-510）——本 SPEC 对 code_fix.py 守卫/常量与 maintenance_runs.py 核销条件的改写触碰契约文本时同步更新对应断言，MUST NOT 静默放宽契约。

@@ -18,7 +18,7 @@
 
 ### Requirement: 周期审查派发跨窗顺延
 
-周期代码审查检查点在派发前 SHALL 以「派发时刻 + 近几轮 code-review run 实测时长估计」得预计结束时刻；预计区间与任一静默窗相交时本轮不派发、不写同日防重状态、单飞标志不复位污染，仅留日志（reason=night_quiet_window_deferred），窗末后的首轮巡检自然重新触发。无有效时长样本时回退为仅判派发时刻是否落窗。
+周期代码审查检查点在派发前 SHALL 以「派发时刻 + 近几轮 code-review run 实测时长估计」得预计结束时刻；预计区间与任一静默窗相交时本轮不派发、不写同日防重状态、单飞标志 SHALL 复位（对齐空 manifest 分支既有复位口径——标志滞留会使后续巡检恒命中 already_running 而静默停摆），仅留日志（reason=night_quiet_window_deferred），窗末后的首轮巡检自然重新触发。无有效时长样本时回退为仅判派发时刻是否落窗。
 
 #### Scenario: 01:00 起跑预计压窗即顺延
 

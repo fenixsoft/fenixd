@@ -2,7 +2,7 @@
 
 2026-10-10 03:00 链路抖动（kern.log：03:00:01 Down→03:01:23 恢复）击杀了跑满 118 分钟的周期全仓审查 run code-review-1791565480（868 轮、828 次工具调用、名义成本约 69.6 美元），error 收场抢救落账仅保住 92 条发现，90 条 open 条目滞留台账。两个系统性缺口：
 
-1. 周期审查车道派发无夜间窗避让。`_run_code_review_checkpoint`（core/admin_monitor.py:1533）守卫链只有 enabled→run_at→同日防重→单飞→manifest 非空，`_night_dispatch_block_reasons`（admin_monitor.py:5421）只挂在派发重试（:4390）与 Administrator 唤起（:5624）两处；该车道 01:00 起跑（config.yaml:304）、实测约 2 小时，落点必然压在 03:00-04:45 的任一断窗上。
+1. 周期审查车道派发无夜间窗避让。`_run_code_review_checkpoint`（core/admin_monitor.py:1533）守卫链只有 enabled→run_at→同日防重→单飞→manifest 非空，`_night_dispatch_block_reasons`（admin_monitor.py:5421）只挂在派发重试（:4390）与 Administrator 唤起（:5624）两处；该车道 01:00 起跑（.fenix/config.yaml:304）、实测约 2 小时，落点必然压在 03:00-04:45 的任一断窗上。
 2. 抢救落账后无 partial 痕、全仓快照核销对 scheduled 车道永不发生。error 收场抢救（core/agent_runner/maintenance_runs.py:1839）只 upsert 且红线禁核销（正确），但成功路径核销资格门是 `run_ok and review_kind == "manual_full"`（maintenance_runs.py:1721），而周期审查恒传 `review_kind="scheduled"`（admin_monitor.py:1660）——实证近四轮成功完成行 resolved 全为 0（fenixd.log 行 3046/7744/10513/14378）。过期 open 条目因此只能等人工 manual_full 或 fix 车道逐条命中，会被后续 fix 批次重复消费。
 
 离窗抖动并非单点：kern.log 保留期内 04:30 窗外已现 6 次（10-02 18:45、10-03 03:00、10-03 06:29、10-06 20:25、10-10 03:00、10-10 04:39），单窗模型对这类形态无覆盖。
