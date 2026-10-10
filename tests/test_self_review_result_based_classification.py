@@ -27,16 +27,20 @@ _signal_evidence 即计为 succeeded，不引入成功语义文本白名单（�
 """
 
 import json
+import os
+import re
 from datetime import datetime
 
 import pytest
 
+from core.dashboard.data.runs import RUN_STALE_SECONDS, RUN_TERMINAL_STATUS_MAP
 from core.self_review import (
     _MARKER_DECLARATION_WINDOW,
     _business_fail_marker,
     _classify_run,
     _read_run_tail,
     _scan_run_signals,
+    SelfReviewScheduler,
     collect_failed_run_samples,
     collect_runs_stats,
 )
@@ -431,3 +435,163 @@ class TestMarkerWindowConvergence:
         samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert [s["run_id"] for s in samples] == [run_id]
         assert samples[0]["detail"] == "marker=预算已耗尽"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# evo-fix-self-review-phantom-running：终态词表对齐与第 2 节渲染
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestTerminalVocabularyAlignment:
+    """3.1：_classify_run 终态词表对齐（phantom-running-guard D2）。
+
+    词表单源 = core.dashboard.data.runs.RUN_TERMINAL_STATUS_MAP 键集；
+    liveness.RUN_TERMINAL_EVENT_TYPES 故意排除 superseded（防退避窗口双派发，
+    存活判定语义），统计侧不得消费——superseded 末行在本侧必须独立成桶，
+    不再落入「非 error 即 running」的旧分支（2026-10-11 日报 8 幻影根因）。
+    """
+
+    def test_superseded_tail_classified_superseded(self):
+        """夹具取 2026-10-09T19:01Z 实拍形态：末两行 transient_retry +
+        superseded（原地重试弃置旧产物，runner._in_place_retry_backoff_yield
+        补写内核落盘）→ category=superseded，detail 沿用 type 原词。"""
+        run_id = "impl-evo-self-review-todo-head-restore-1791572223-a1"
+        lines = [
+            _line(type="assistant", message={"role": "assistant",
+                                             "content": [{"type": "text", "text": "推进中"}]}),
+            _line(type="transient_retry", spec="evo-self-review-todo-head-restore",
+                  provider="claude", backoff_seconds=5, retry_number=1),
+            _line(type="superseded", spec="evo-self-review-todo-head-restore",
+                  provider="claude"),
+        ]
+        category, detail = _classify_run(run_id, lines)
+        assert category == "superseded"
+        assert detail == "superseded"
+
+    @pytest.mark.parametrize(
+        "terminal", ["interrupted", "cancelled", "frozen-terminated", "gate-blocked"]
+    )
+    def test_other_terminal_types_classified_ended(self, terminal):
+        """已终结但非成功交付的终态 → ended，detail 含原 type 词。"""
+        category, detail = _classify_run("impl-x-1791572223", [_line(type=terminal)])
+        assert category == "ended"
+        assert terminal in detail
+
+    @pytest.mark.parametrize(
+        "terminal", sorted(set(RUN_TERMINAL_STATUS_MAP) - {"result", "error"})
+    )
+    def test_every_vocabulary_terminal_never_running(self, terminal):
+        """词表演进单点生效：RUN_TERMINAL_STATUS_MAP 任一非 result/error 键
+        （含未来新增）都不得误计 running——映射新增条目后本侧无需改动。"""
+        category, _ = _classify_run("impl-x-1791572223", [_line(type=terminal)])
+        assert category in {"superseded", "ended"}
+
+    def test_unknown_type_still_running_and_liveness_set_not_consumed(self):
+        """未知 type 维持 running；superseded 在 RUN_TERMINAL_STATUS_MAP 中而
+        被 liveness 集合排除——两套词表差异不被「统一口径」抹平，本侧只认
+        RUN_TERMINAL_STATUS_MAP（superseded 末行仍独立成桶）。"""
+        from core.agent_runner.liveness import RUN_TERMINAL_EVENT_TYPES  # noqa: PLC0415
+
+        assert _classify_run("impl-x-1791572223", [_line(type="future-unknown")]) == (
+            "running",
+            "no-terminal",
+        )
+        assert "superseded" in set(RUN_TERMINAL_STATUS_MAP)
+        assert "superseded" not in set(RUN_TERMINAL_EVENT_TYPES)
+        assert _classify_run("impl-x-1791572223", [_line(type="superseded")])[0] == "superseded"
+
+
+class _RenderFakeSM:
+    """state machine 形状替身（collect_daily_summary 不消费其终态数据）。"""
+
+    def read_all(self):
+        return {}
+
+
+class _RenderFakeLogger:
+    """logger 形状替身：吞掉降级通道输出。"""
+
+    def warning(self, component, message):
+        pass
+
+    def info(self, component, message):
+        pass
+
+    def error(self, component, message):
+        pass
+
+
+class TestDailySummarySection2Buckets:
+    """3.4：日报第 2 节口径透明（phantom-running-guard 渲染 Requirement）。
+
+    以 2026-10-11 日报 8 幻影同构小样本回归：4× -a1 首试 + 4× -a1-r1 原地
+    重试、末行均 superseded——旧词表下 8 个全落「在跑/无终态」（36% 幻影
+    口径），新词表下同形态夹具在跑计数 8 → 0、弃置/重试件 = 8。
+    """
+
+    @staticmethod
+    def _superseded_run(root, run_id):
+        _make_run(root, run_id, [
+            _line(type="assistant", message={"role": "assistant", "content": []}),
+            _line(type="transient_retry", backoff_seconds=5, retry_number=1),
+            _line(type="superseded"),
+        ])
+
+    def test_section2_bucket_rows_and_phantom_cohort(self, tmp_path):
+        root = tmp_path / "proj"
+        root.mkdir()
+        # 8 幻影同构：-a1 首试 ×4 + -a1-r1 原地重试 ×4（2026-10-09 实拍 id 形态）
+        for i in range(4):
+            self._superseded_run(root, f"impl-evo-phantom-{1791572220 + i}-a1")
+            self._superseded_run(root, f"impl-evo-phantom-{1791572220 + i}-a1-r1")
+        # 其余四类并存：result 成功 / ended（cancelled）/ stale（陈旧断尾）/ running（新鲜）
+        _make_run(root, "impl-evo-ok-1791572300", [
+            _line(type="result", result="任务完成，验证通过", num_turns=3),
+        ])
+        _make_run(root, "impl-evo-end-1791572301", [
+            _line(type="system", subtype="tool_call", tool="Bash", argument="pytest"),
+            _line(type="cancelled"),
+        ])
+        stale_p = _make_run(root, "impl-evo-stale-orphan", [
+            _line(type="system", subtype="start"),
+            _line(type="assistant", message="in flight"),
+        ])
+        _make_run(root, "impl-evo-fresh-run", [
+            _line(type="system", subtype="start"),
+            _line(type="assistant", message="in flight"),
+        ])
+        # 窗口上界在夹具落盘后冻结（对齐生产调度侧「一次冻结、全节共用」
+        # 契约）；stale 夹具 mtime 以 os.utime 注入（测试不 sleep）
+        window_end = datetime.now().astimezone()
+        stale_mtime = window_end.timestamp() - RUN_STALE_SECONDS - 60
+        os.utime(stale_p, (stale_mtime, stale_mtime))
+
+        sched = SelfReviewScheduler(
+            {}, root, _RenderFakeLogger(), _RenderFakeSM(), agent_runner=None, store=None
+        )
+        summary = sched.collect_daily_summary(
+            datetime(2000, 1, 1, 0, 0).astimezone(), window_end=window_end
+        )
+        section2 = summary.split("## 2. runs 统计（窗口内）", 1)[1].split("## 3.", 1)[0]
+
+        rows, order = {}, []
+        for ln in section2.splitlines():
+            m = re.match(r"^- (.+): (\d+)$", ln)
+            if m:
+                rows[m.group(1)] = int(m.group(2))
+                order.append(m.group(1))
+
+        assert rows["总 run 数"] == 12
+        # 新三行存在且计数正确：弃置/重试件 = 8（8 幻影同构件全部离场）
+        assert rows["弃置/重试件"] == 8
+        assert rows["其他终态"] == 1
+        assert rows["无终态残留"] == 1
+        # 「在跑/无终态」不含 superseded（同形态夹具下在跑 8 → 0，仅剩真实新鲜在跑）
+        assert rows["在跑/无终态"] == 1
+        assert rows["成功"] == 1
+        assert rows["失败"] == 0
+        assert rows["丢弃/空"] == 0
+        # 各行计数之和等于总 run 数（聚合过程无异常、无漏计）
+        assert sum(v for k, v in rows.items() if k != "总 run 数") == rows["总 run 数"]
+        # 三新行插于「丢弃/空」与「在跑/无终态」之间（design D5 增量加行）
+        assert order[-4:] == ["弃置/重试件", "其他终态", "无终态残留", "在跑/无终态"]
