@@ -1,0 +1,39 @@
+# 能力规约：知识蒸馏批次持久化与崩溃续跑
+
+## 目标
+
+蒸馏批次从「派发即内存态、重启即蒸发」变为「派发即落盘、崩溃可续跑、在飞不被自愈击杀」，使入库提交断流不再依赖散件巡检事后兜底。
+
+## 需求
+
+### R1 pending 台账落盘
+
+- DistillManager 每次入队（dispatch/dispatch_distill/dispatch_distill_batch 共用路径）必须把本批归档名持久化到 `<project>/.fenix/knowledge-distill-pending.json`，写入须原子（临时文件 + os.replace）。
+- 台账文件缺失、损坏或不可读时按空表处理（fail-open），不得阻断派发主流程。
+- 台账条目须含归档名与入队时间戳；同批多归档合并为一条。
+
+### R2 条目生命周期与批次收尾对账
+
+- 批次成功收尾（_commit_output 返回非 None，含「无变更可提交」）后必须移除对应条目。
+- _give_up 清理确认完成（_discard_output 返回 True）后必须移除对应条目。
+- 「校验通过但自动提交失败」「执行异常」「run 失败且回滚未确认」路径必须保留条目（保持「未完成」状态，交 R3 恢复或人工兜底），不得静默清除。
+- 回填期排队（backfill-queued）与派发门控拒绝路径不得写入台账（未入队不算在途）。
+
+### R3 daemon 启动恢复
+
+- FenixDaemon.initialize 末尾扫描 pending 台账；存在条目即调用 DistillManager 恢复入口重新入队，并清空台账文件（条目转回内存队列，由 R2 生命周期接管）。
+- 恢复重派必须落日志（含恢复批次数），恢复动作本身不执行蒸馏（实际 run 仍走既有 flock 单飞与 worker 串行消费）。
+- dashboard --serve 进程不做恢复（避免双进程竞争），恢复入口仅由 daemon 启动路径调用。
+
+### R4 自愈空闲判定补蒸馏维度
+
+- fenixd.py _is_idle 新增维度：蒸馏 worker 线程存活或进程内队列非空 → 非空闲。
+- 该维度读取须容错（getattr 链，DistillManager 缺失/异常时按既有维度口径处理），与既有五维度风格一致。
+- 维度注释须写明有界性依据：RUN_TIMEOUT_SECONDS 硬超时保证 worker 至多 3 轮 × 1800s 后退出，空闲判定不会因此永久失效。
+
+## 验收
+
+- 派发一批后 pending 文件存在且含该归档名；完成后（或放弃清理后）文件中该条目消失。
+- 构造「校验通过但提交失败」：条目保留 + todo 台账照旧。
+- 构造「daemon 重启」：新进程 initialize 后该批次被重新派发并完成入库提交，日志含恢复记录。
+- 蒸馏 worker 在飞时 _is_idle 返回 False；DistillManager 为替身/缺失时不抛异常。
