@@ -820,6 +820,12 @@ class G6StashGuardMixin:
             )
             return False
         try:
+            # 仅本命令固化 C locale（对齐上方 ensure_clean_tree/restore_after_merge
+            # 的 LC_ALL=C 手法）：下方依赖英文子串 "CONFLICT" 判定是否进入 UU 自愈，
+            # 本地化 git（如 zh_CN 装了 translation）会把冲突输出翻译为译文、子串
+            # 匹配落空 → pop 冲突被当成非冲突失败处理，主树滞留半合并 UU 状态且
+            # stash 条目不 drop，巡检每轮因主树脏而放弃。C locale 无翻译目录，
+            # 输出恒为英文。
             pop = subprocess.run(
                 ["git", "-C", str(self.project_root), "stash", "pop", "stash@{0}"],
                 capture_output=True,
@@ -827,6 +833,7 @@ class G6StashGuardMixin:
                 encoding="utf-8",
                 errors="replace",
                 timeout=30,
+                env={**os.environ, "LC_ALL": "C"},
             )
         except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
             # git 超时/不可用：与非冲突失败同语义，stash 条目保留交下轮巡检
