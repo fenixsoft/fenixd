@@ -1,4 +1,36 @@
 
 ## 2026-10-10
 ### 知识真相源
-- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 10 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
+- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 11 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
+
+
+## 2026-10-11
+
+### 浪费
+- **03:00 断网抖动击杀全仓审查收尾，2 小时扫描核销段蒸发**
+  - 影响：周期全仓代码审查 run code-review-1791565480（21 个分片子代理全部完成）跑满 1 小时 58 分（868 轮、828 次工具调用、CLI 计账输入 513 万 + 缓存读 4780 万 + 输出 80 万 tokens、名义成本约 69.6 美元）后在收尾聚合段被断网击杀 Exit 1，抢救落账只保住 92 条发现，全仓快照核销顺延到 10-11 01:04 下一轮。同窗 4 个 evo run 首试失败靠原位重试救回，全局派发冻结 600 秒 + 解封观察 60 秒，3 个排队派发被 hold 约 12 分钟。
+  - 证据：归档产物 .fenix/runs/archive/code-review-1791565480.jsonl 尾部 terminal_reason=api_error、result 为「API Error: Can't reach the API server (ENOTFOUND)」（DNS 解析失败）；journalctl 内核日志 Oct 10 03:00:01–03:01:23 enp42s0 链路抖动（Down→10Mbps 半双工→Down→1Gbps），与每日 04:30 窗签名一致；fenixd.log 本地 03:01–03:03 共 5 次 provider 瞬断触发全局冻结（fix-provider-transient-backoff D4），03:02:41 日志行「error 收场抢救落账 inserted=92 updated=0（部分覆盖，未做全仓快照核销）」。
+  - 调查评估：问题源：全仓代码审查周期车道（夜间 01:04 起跑、实测约 2 小时）在收尾阶段暴露。已核实事实：失败直接根因是链路断供（ENOTFOUND 与内核 Link Down 时间重合，可定单一根因），21 个分片结果经 salvage（error 收场把已完成分片结果先入台账的兜底步）无丢失；4 个 evo run 靠 in-place retry（同 run 原位重试）救回并全部合并（f9728272/b894a060/961b54b3，即三个 evo spec 的实现分支合并提交）。与存量工作关系：活跃 SPEC evo-add-night-window-inflight-guard（夜间断窗在飞保护，覆盖 code-fix 预计跨窗顺延与 admin 派发避让）不含审查车道且窗模型锁死 04:15-04:45；活跃 SPEC evo-add-review-failure-attribution（评审失败行归因与熔断计数）只补 spec-review 车道，均与本例互补不重复。结论：外部断网非框架缺陷，但审查车道夜间长 run 无跨窗避让是系统性残余；且 04:30 单窗模型今日被证伪——kern.log 显示 10-04 以来 03:00 抖动首见、10-10 另有 04:39 短抖，是否常态化未定，窗模型宜改多窗/抖动探测而非锁死单点。
+  - 建议：周期审查派发加跨窗避让（起跑时刻 + 近次实测时长约 2 小时，与断窗区间相交即顺延），窗模型从单点 04:30 扩为可配置多窗；salvage 对未做全仓快照核销（按全仓快照把未再观测到的 open 条目置 resolved 的清理步）的 run 打 partial 标记并在下一轮完整覆盖时优先补核销，避免过期 open 条目被后续 fix 批次重复消费。
+
+- **验证报告收尾同秒双提交，3 个 spec 各多一次冗余提交**
+  - 影响：10-10 凌晨 3 个 evo spec 收尾时 verification-report.md（验证报告）各被提交两次（同秒、同一文件、同一消息模板），白耗 3 次 git 提交流水并给历史溯源多加一层；单次代价小，但 3/3 全中属系统性形态，每收尾一个 spec 复发一次。
+  - 证据：同秒提交对：d25ea5ca（+36 行场景表）与 fc10ec42（+7 行「本轮场景集变更」段）均 03:35:16 提交 spec/changes/evo-self-review-todo-head-restore/verification-report.md；同型对还有 ebc92e8b/8b02de71（03:25:54，evo-maintree-stray-attribution-log-dedup 收尾）与 f495d7df/0eb04a5d（03:23:49，evo-stray-untracked-session-attribution 收尾）。
+  - 调查评估：问题源：三个 evo spec（自省 todo 回写自愈 / 主树散件留痕去重 / untracked 散件会话归因）的验证收尾流水线。已核实事实：第一笔提交落验证场景表，0 秒后第二笔追加场景集变更段，两笔共用同一「verification-report 入库」模板——报告写手与场景集更新步骤各自触发提交、未合并为单次原子提交；内容无丢失。根因归属：系统性缺口（3/3 复现），非一次性失误。与存量工作关系：spec/changes 活跃区 52 项中 commit/stray/atomic 相关命名均属散件治理族，未检索到覆盖收尾提交合并的条目。结论：小而确定的流水线去重机会。
+  - 建议：场景集变更段追加并入首次报告提交（同一次 commit），或第二笔改用区分性消息模板，消除同秒同消息双提交。
+
+### 失误
+- （当日无）
+
+### 可改进
+- **知识蒸馏尾段中断无续跑，27.6 小时无入库靠巡检兜底**
+  - 影响：知识蒸馏（归档 spec 提炼知识页的管线）的入库提交断流 27.6 小时（10-09 03:31 至 10-10 07:09），三个批次的 8 个知识文件（含 3 个 untracked 新页，滞留期间有丢失风险）堆在主树，最终靠散件巡检升级 major 告警、消耗一个 admin run（07:05:46 派发至 07:10:19，约 4.5 分钟会话）才兜底入库；下一批蒸馏复现时将再烧一次同等成本。
+  - 证据：最后一次蒸馏提交 14107f52（10-09 03:31「knowledge: distill 2026-10-09-evo-add-maintree-interactive-session-attribution」）；窗口内日志仅 3 条「knowledge-distill 已派发」（本地 03:26:26 两条、03:36:27 一条）、零完成、03:40 重启后零重派；admin 提交 5a4e95a3（07:09「commit_stray_wip 散件知识库批次入库」）一次入库 8 文件；处置记录 75eb319811cc（result=resolved）与 choice 幂等拒绝失败记录 a56f63013fab 同秒落账。
+  - 调查评估：问题源：admin 车道处置 maintree_stray_wip_stale（主树无主未提交散件滞留升级）信号时暴露。已核实事实：蒸馏写入段实际在跑（3 个新页内容完整成文，_domain.md 与 index.md 计数同步已改）而入库提交段未跑，滞留横跨 10-09 11:16 起的三个归档批次；03:40:30 的 stale-code 自愈重启（daemon 检测到代码比进程新后等空闲重启装载）与 03:26/03:36 派发时间链吻合，是 10-10 批次中断的头号嫌疑，但 10-09 两批中断原因无日志可查——尾段中断根因未定、多假说并存（重启击杀 / 提交步自身失败）。与存量工作关系：散件治理族 SPEC（evo-recurring-stray-remediation、evo-add-commit-stray-wip-choice 等活跃项）覆盖检测与处置且本次按设计工作，缺口在蒸馏自身的完成性。结论：值得立项蒸馏完成性守卫，把兜底从巡检事后升级前移到管线内。
+  - 建议：蒸馏管线加完成性守卫：每批收尾校验「知识页写入 + 入库提交」成对存在、缺失即本轮重试提交；daemon 重启后扫描未完成批次自动重派，不再依赖散件巡检 30 分钟宽限 + 升级告警的事后兜底。
+
+- **日报把 8 个已完成 run 计为在跑，卡死信号被幻影稀释**
+  - 影响：本窗口 22 个 run 中 8 个（36%）被日聚合计为「在跑/无终态」，但核实时刻（00:03）机器上除本次自省外无任何 agent 子进程，且窗口内全部实质工作均已收尾——真有 run 卡死时会混在这批幻影里不可分辨；该口径缺口每日复发。
+  - 证据：数据摘要第 2 节「在跑/无终态: 8」；fenixd.log 的 run_metrics（run 起止打点行）中无终态回写的样本：3 个 evo spec 的首试与重试 attempt（-r1/-r2 后缀新记账而原 id 无终态，19:01–19:23Z）、spec-review 3 例（18:54–18:57Z）、上日自省 review-2026-10-10（16:14Z）、admin run admin-fenixd-1791587146（23:10Z）；而这些工作实际全部完成：三 spec 已合并（f9728272/b894a060/961b54b3）且报告入库（fc10ec42 等），admin 处置 result=resolved（记录 75eb319811cc），上日自省已提交（65a30cee）。
+  - 调查评估：问题源：日聚合 runs 统计在自省数据面暴露。已核实事实：分类器（core/self_review.py:390 _classify_run，run 产物终态分类函数）把「有事件但末行非 result 终态」记为 running（注释自述「在跑或异常残留」），而本窗口无真实在跑（ps 核实）。根因：记账缺终态的成因未定、多假说并存——in-place retry 为重试生成 -rN 后缀新记账而原 attempt 不回写终态是主要嫌疑，但 spec-review 与自省 run 也无终态打点，可能是多车道普遍缺终态回写。与存量工作关系：活跃 SPEC evo-add-run-metrics-lane-baseline（run 指标车道基线）未覆盖终态回写完整性；聚合侧已有幻影失败守卫（_is_phantom_signal_failure 函数）而无幻影在跑对账。结论：观测口径缺口，应先取证再修。
+  - 建议：两步走：先取证——抽 2-3 个无终态 run 比对产物与记账链路（retry attempt 与普通完成各取其一），定位缺终态回写的共用缺口；再兜底——日报聚合对「在跑/无终态」按子进程树/活跃 run 注册表做活性对账，纯记账缺失单列 stale-bookkeeping，不与真实在跑混计。
