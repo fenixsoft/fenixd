@@ -35,3 +35,10 @@
 | targeted-test-files-full-regression | 回归点：本 SPEC 两个交付测试文件全量 pytest 通过（46 例，含既有 result/error/marker/timeout/instant_hang/空文件语义不回归 + 新词表/混合夹具/stale 四态/第 2 节渲染全部用例），exit_code=0。output_match 断言文案照抄实测 -v 输出行；命令只带 -v 不带 -q（-q 会吞 PASSED 行致断言恒失败）。出处 tests/test_self_review_result_based_classification.py、tests/test_self_review_terminal_crosscheck.py。 | pass | 0/13 | - |
 | legacy-failure-semantics-byte-stable | 异常路径与既有语义回归：_classify_run 的 result/error 分支业务失败语义逐字节不动——result 无标记→succeeded、result 声明窗口内命中业务失败标记→failed(detail=marker=词)、终态邻近独立事件行失败信号→failed(detail=signal=词)、error 超时签名→timeout、error 秒挂签名（unrecognized_model）→instant_hang、error 普通文本→failed(detail=原文)；空文件/无事件→dropped、尾行非 dict 畸形行→running。出处 core/self_review.py:433-478、core/self_review.py:128-131（_INSTANT_FAIL_PATTERNS）、core/self_review.py:134+（_BUSINESS_FAIL_PATTERNS）。 | pass | 0/13 | - |
 | vocabulary-import-failure-fallback | 异常路径：终态词表读取失败时分类退回原行为、不因词表导入失败制造改判——毒化 core.dashboard.data.runs 模块缓存使延迟导入抛 ImportError 后，_terminal_status_types() 返回空集，superseded 末行退回 (running, no-terminal)（与既有 running 分支逐字节一致），result/error 分支不依赖词表、语义不受影响。出处 core/self_review.py:398-406（导入失败返回空集的约定 docstring）。 | pass | 0/6 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
