@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-11 02:08 UTC+8
+> 最后更新：2026-10-11 03:27 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -28,7 +28,7 @@
 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 32 | 2026-10-07 03:30 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 22 | 2026-10-07 02:45 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
-| [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 27 | 2026-10-09 02:10 |
+| [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 28 | 2026-10-11 03:27 |
 | [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 11 | 2026-10-11 01:53 |
 | [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 13 | 2026-10-07 03:30 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
