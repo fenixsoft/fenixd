@@ -4,7 +4,7 @@
 
 ## What Changes
 
-1. 静态检查补交叉规则：scan_contract 入参补场景 kind 集合，serve 段缺失（serve 为 None）且 kind 集含 api/web 时产出 serve 缺失 finding——须解除 :654 serve-None 早退对该规则的屏蔽（serve 缺失时既有三条规则维持早退，避免对历史纯 CLI 契约误报）。
+1. 静态检查补交叉规则：scan_contract 入参补场景 kind 集合与 commands.start 兜底形态，serve 段缺失（serve 为 None）且 kind 集含 api/web 且 commands.start 无有效兜底（空或占位哨兵，口径同 core/pm_engine/verification/serving.py:1098-1099——非占位 start 属执行期既有兜底，存量零迁移）时产出 serve 缺失 finding——须解除 :654 serve-None 早退对该规则的屏蔽（serve 缺失时既有三条规则维持早退，避免对历史纯 CLI 契约误报）。
 2. 挂载补全：契约静态检查挂进冻结场景复用与并行出题产物消费路径（现仅新鲜出题验收路径挂载），任一路径产物都过同一检查。
 3. 前置探测收紧：verify_contract_missing 的 pre-probe 满足判定从「契约可解析」收紧为「serve 段存在或 commands.start 非占位（OR），且能力可覆盖在途场景 kind 需求」，能力缺口未补齐不 auto-resolve。
 4. 兜底：纯 cli 场景 + 无 serve 契约维持合法（cimbar-airgap-transfer 历史形态不回归）。

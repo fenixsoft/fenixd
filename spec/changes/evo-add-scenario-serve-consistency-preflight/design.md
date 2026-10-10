@@ -9,7 +9,7 @@
 
 ## Decisions
 
-- D1 扩展既有 scan_contract 规则表而非新建预检：serve-None 早退（scenario_static_check.py:654）只对新交叉规则放开——serve 缺失且 kind 集含 api/web 时产出 serve 缺失 finding，其余三条规则维持早退（避免对无 serve 契约的历史项目误报既有类别）。
+- D1 扩展既有 scan_contract 规则表而非新建预检：serve-None 早退（scenario_static_check.py:654）只对新交叉规则放开——serve 缺失且 kind 集含 api/web 且 commands.start 无有效兜底（空或占位哨兵 `echo 'No start command configured yet'`，判定口径与 serving.py:1098-1099 旧行为完全一致）时产出 serve 缺失 finding，其余三条规则维持早退（避免对无 serve 契约的历史项目误报既有类别）。能力谓词（serve 段 OR 非占位 start）与本 SPEC 前置探测（D3）及 verify_contract.py:97「serve 段（或 commands.start 兜底）必须有效」的契约文档语义三方同口径：serve 缺失但 start 非占位的项目形态执行期本就靠 commands.start 旧行为兜底（serving.py:1097「无契约路径……直接回退 commands.start」），静态检查若单看 serve 段会把该存量可用形态误打回，且与 D3 谓词自相矛盾（同一状态一处打回一处放行）。
 - D2 kind 集来源：静态检查入参补场景 kind 集合（从出题产物/冻结场景文件按执行 kind 原样统计），不做应用运行状态探测——那是执行期 _ensure_app_reachable 的职责，两层各司其职。
 - D3 preprobe 谓词从「可解析」改为「能力覆盖」：serve 段存在或 start 非占位取 OR（todo 原文写 AND——本次实际修复恰是保留 start 占位、只加 serve 段，按 AND 会把合法修复态判为不合格），且须覆盖在途场景 kind 需求。
 - D4 todo 次级建议（无 serve 配置从 infra 退款分类分拆）不入本 SPEC：env 阻塞属 infra 是 escalation.py:611-620 的明文设计（evo-infra-failure-budget-exempt R2），本窗口零实际损失，分类颗粒度复核另议。

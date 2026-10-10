@@ -8,17 +8,22 @@
 
 ### Requirement: 契约静态检查覆盖 serve 缺失与非 cli 场景的交叉形态
 
-契约静态检查（scan_contract）MUST 支持在契约 serve 段缺失（serve 为 None）时检查场景 kind 集合：场景集含 api 或 web 场景而 serve 缺失 MUST 报 serve 缺失 finding；serve 段存在时既有三条规则（serve_entry_missing / vs_start_mismatch / no_port_injection）语义不变。
+契约静态检查（scan_contract）MUST 支持在契约 serve 段缺失（serve 为 None）时检查场景 kind 集合与 commands.start 兜底：场景集含 api 或 web 场景、serve 缺失且 commands.start 无有效兜底（空或占位哨兵，判定口径与验证执行期 serving.py:1098-1099 旧行为一致）MUST 报 serve 缺失 finding；serve 缺失但 commands.start 非占位（执行期 commands.start 旧行为可兜底的存量形态）MUST NOT 报；serve 段存在时既有三条规则（serve_entry_missing / serve_entry_vs_start_mismatch / serve_entry_no_port_injection）语义不变。
 
 #### Scenario: api/web 场景遇无 serve 契约
 
-- **WHEN** 出题产物场景 kind 集合含 api 或 web，且契约无 serve 段
+- **WHEN** 出题产物场景 kind 集合含 api 或 web，且契约无 serve 段、commands.start 无有效兜底（空或占位哨兵）
 - **THEN** 静态检查报 serve 缺失 finding，出题产物验收不通过、打回补契约
 
 #### Scenario: 纯 cli 场景维持合法
 
 - **WHEN** 出题产物场景全为 cli 且契约无 serve 段（历史纯 CLI 项目形态）
 - **THEN** 不报 serve 缺失，检查通过（cimbar-airgap-transfer 形态不回归）
+
+#### Scenario: start 非占位的无 serve 存量形态维持合法
+
+- **WHEN** 出题产物场景 kind 集含 api 或 web，契约无 serve 段，但 config commands.start 为非占位命令（执行期 commands.start 旧行为可兜底）
+- **THEN** 不报 serve 缺失（与验证执行期「serve（或 commands.start 兜底）必须有效」口径一致，存量零迁移）
 
 ### Requirement: 静态检查挂载覆盖冻结复用与并行产物路径
 
