@@ -154,9 +154,11 @@ class TestWindowParse(unittest.TestCase):
         self.assertIn('NIGHT_QUIET_WINDOW_DEFAULT = "04:15-04:45"', src)
         proot = _make_project_root()
         with mock.patch.object(cf, "NIGHT_QUIET_WINDOW_DEFAULT", "04:15-04:45"):
+            # evo-add-review-night-defer-snapshot-writeoff 1.2：返回形态由单窗
+            # 元组升级为窗列表（缺省单窗 → 单元素列表），非契约放宽
             self.assertEqual(
                 self._orch(proot, _cfg())._night_quiet_window(),
-                (255, 285, "04:15-04:45"))
+                [(255, 285, "04:15-04:45")])
 
     def test_off_and_empty_disable(self):
         """空串/off（大小写不敏感）完全禁用：解析返回 None。"""
@@ -719,6 +721,214 @@ class TestRunMetricsDurationField(unittest.TestCase):
         self.assertEqual(
             src.count('"duration_s": _duration_s'), 2,
             "归档行与日志侧行两处同源写入")
+
+
+class TestMultiWindowParse(unittest.TestCase):
+    """多窗解析（evo-add-review-night-defer-snapshot-writeoff 1.1）。
+
+    逗号/分号分隔多窗列表；任一段非法整体返回 None（宁缺毋错）；
+    ``_parse_night_quiet_window`` 改薄包装（取首窗）后单窗行为逐字节不变。
+    """
+
+    def test_single_window_parse_unchanged(self):
+        from core.code_fix import _parse_night_quiet_window, _parse_night_quiet_windows
+
+        self.assertEqual(
+            _parse_night_quiet_windows("04:15-04:45"),
+            [(255, 285, "04:15-04:45")])
+        self.assertEqual(
+            _parse_night_quiet_window("04:15-04:45"),
+            (255, 285, "04:15-04:45"))
+        # 禁用/非法：复数版与单窗版同 None（禁用语义不变）
+        for raw in ("off", "OFF", "", "   ", None, "04:45-04:15",
+                    "04:15-04:15", "25:00-26:00", "04:15", "abc",
+                    "04:15-04:45-05:00"):
+            self.assertIsNone(_parse_night_quiet_windows(raw), f"{raw!r}")
+            self.assertIsNone(_parse_night_quiet_window(raw), f"{raw!r}")
+
+    def test_multi_window_semicolon_and_spaces(self):
+        from core.code_fix import _parse_night_quiet_windows
+
+        self.assertEqual(
+            _parse_night_quiet_windows("03:00-03:15,04:15-04:45"),
+            [(180, 195, "03:00-03:15"), (255, 285, "04:15-04:45")])
+        # 分号分隔同效；段内外空白容忍（段文本取 strip 后形态，窗次文本稳定）
+        self.assertEqual(
+            _parse_night_quiet_windows("03:00-03:15; 04:15-04:45"),
+            [(180, 195, "03:00-03:15"), (255, 285, "04:15-04:45")])
+        self.assertEqual(
+            _parse_night_quiet_windows(" 03:00-03:15 ,04:15-04:45 "),
+            [(180, 195, "03:00-03:15"), (255, 285, "04:15-04:45")])
+
+    def test_mixed_invalid_segment_whole_none(self):
+        from core.code_fix import _parse_night_quiet_windows
+
+        for raw in ("03:00-03:15,bad", "03:00-03:15,04:45-04:15",
+                    "03:00-03:15,04:15-04:15", "03:00-03:15,04:15-04:45,",
+                    "03:00-03:15,,04:15-04:45", "03:00-03:15,25:00-26:00",
+                    "03:00-03:15,04:15-04:45-05:00"):
+            self.assertIsNone(
+                _parse_night_quiet_windows(raw),
+                f"{raw!r} 任一段非法须整体无窗（不部分生效）")
+
+
+class TestMultiWindowGate(unittest.TestCase):
+    """多窗守卫（evo-add-review-night-defer-snapshot-writeoff 1.2）。
+
+    命中判定「任一窗 start<=cur<end」；多窗同中取最晚窗末（下一可投递
+    时刻与窗次文本随最晚窗）；窗次幂等键含命中窗文本（同日多窗各自武装
+    一次）；单窗配置行为与现状逐字节一致。
+    """
+
+    _MW_CFG = _cfg(night_quiet_window="03:00-03:15,04:15-04:45")
+
+    def _orch(self, proot, config=None, logger=None):
+        from core.code_fix import CodeFixOrchestrator
+
+        return CodeFixOrchestrator(
+            _GateRunner(proot, config), proot,
+            config=config if config is not None else self._MW_CFG,
+            logger=logger)
+
+    def test_second_window_hit_takes_that_end(self):
+        """多窗配置命中第二窗取该窗末：拦截、窗次文本=第二窗、下一可投递
+        时刻=第二窗末（非首窗末）。"""
+        from core.code_fix import _epoch_iso, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            res = orch.checkpoint()
+        self.assertEqual(
+            res, {"triggered": False, "reason": "night_quiet_window"})
+        prog = read_progress(proot)
+        self.assertEqual(
+            prog["night_quiet_armed_text"], "04:15-04:45",
+            "窗次文本须为命中窗（第二窗）")
+        alerts = _window_alerts(proot)
+        self.assertEqual(len(alerts), 1)
+        ev = str(alerts[0].get("evidence") or "")
+        self.assertIn("窗次=2026-10-06", ev)
+        self.assertIn("窗区间=04:15-04:45", ev)
+        self.assertIn(
+            f"下一可投递时刻={_epoch_iso(_local_epoch(4, 45))}", ev)
+
+    def test_overlapping_windows_take_latest_end(self):
+        """多窗同中取最晚 end：拦截至最晚窗末，窗次文本随最晚窗。"""
+        from core.code_fix import _epoch_iso, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        orch = self._orch(
+            proot, _cfg(night_quiet_window="03:00-04:30,04:00-04:45"))
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 10)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        prog = read_progress(proot)
+        self.assertEqual(
+            prog["night_quiet_armed_text"], "04:00-04:45",
+            "多窗同中取最晚窗末，文本随最晚窗")
+        alerts = _window_alerts(proot)
+        self.assertEqual(len(alerts), 1)
+        ev = str(alerts[0].get("evidence") or "")
+        self.assertIn("窗区间=04:00-04:45", ev)
+        self.assertIn(
+            f"下一可投递时刻={_epoch_iso(_local_epoch(4, 45))}", ev)
+
+    def test_between_windows_no_samples_dispatches(self):
+        """两窗之间的空档且无链样本：既不在窗内也无预计跨窗 → 照常投递。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(3, 30)):
+            self.assertEqual(
+                orch.checkpoint(),
+                {"triggered": True, "reason": "dispatched"})
+        self.assertEqual(_window_alerts(proot), [])
+
+    def test_same_day_two_windows_arm_per_window(self):
+        """同日两窗各自武装一次（窗次幂等键含窗文本），evidence 窗区间各异。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(3, 5)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 20)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        alerts = _window_alerts(proot)
+        self.assertEqual(
+            len(alerts), 2, "同日两窗是两个窗次，各自武装一次")
+        texts = sorted(str(r.get("evidence") or "") for r in alerts)
+        self.assertIn("窗区间=03:00-03:15", texts[0])
+        self.assertIn("窗区间=04:15-04:45", texts[1])
+
+    def test_same_second_window_arms_once(self):
+        """第二窗内多次 checkpoint：同窗次（同日同窗文本）不重复武装。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        orch = self._orch(proot)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 20)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 40)):
+            self.assertEqual(
+                orch.checkpoint()["reason"], "night_quiet_window")
+        self.assertEqual(
+            len(_window_alerts(proot)), 1, "同窗次不重复武装")
+
+    def test_single_window_byte_identical_behavior(self):
+        """单窗配置行为与现状逐字节一致：返回 dict / 窗次标识 / 告警
+        evidence 三要素与多窗化前完全相同。"""
+        from core.code_fix import _epoch_iso, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        orch = self._orch(proot, _WINDOW_CFG)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            res = orch.checkpoint()
+        self.assertEqual(
+            res, {"triggered": False, "reason": "night_quiet_window"})
+        prog = read_progress(proot)
+        self.assertEqual(prog["night_quiet_armed_date"], "2026-10-06")
+        self.assertEqual(prog["night_quiet_armed_text"], "04:15-04:45")
+        alerts = _window_alerts(proot)
+        self.assertEqual(len(alerts), 1)
+        ev = str(alerts[0].get("evidence") or "")
+        self.assertIn("窗次=2026-10-06", ev)
+        self.assertIn("窗区间=04:15-04:45", ev)
+        self.assertIn(
+            f"下一可投递时刻={_epoch_iso(_local_epoch(4, 45))}", ev)
+
+    def test_mixed_invalid_config_warns_once_and_dispatches(self):
+        """混合非法片段（首段合法+次段坏）整体无窗：窗内时刻照常放行并
+        WARNING 一次。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        cap = _CapturingLogger()
+        orch = self._orch(
+            proot, _cfg(night_quiet_window="03:00-03:15,bad"), logger=cap)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            self.assertEqual(
+                orch.checkpoint(),
+                {"triggered": True, "reason": "dispatched"})
+        warns = [r for r in cap.records
+                 if r[0] == "warning" and "静默窗" in r[2]]
+        self.assertEqual(
+            len(warns), 1, "混合非法片段整体无窗并 WARNING 一次")
 
 
 if __name__ == "__main__":

@@ -1604,6 +1604,24 @@ class AdminMonitor:
         # except 中复位单飞标志，对齐空 manifest 分支与 submit 失败分支的既有
         # 复位口径。
         try:
+            # 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff
+            # 2.1）：派发时刻加近几轮归档 code-review run 实测时长均值得预计
+            # 在飞区间，与任一夜间静默窗相交即本轮不派发——周期审查实测约 2
+            # 小时、01:00 起跑落点必然压在 03:00-04:45 断窗带上（2026-10-10
+            # 03:00 断窗击杀 118 分钟 run 实证），窗前顺延留待窗末后巡检自然
+            # 触发。判定 MUST 先于 manifest 收集与同日防重写入（二者均有副
+            # 作用：收集走 git 子进程、防重写入会使顺延当日永不跑）；命中即
+            # 复位单飞标志（对齐下方空 manifest 分支口径）后返回。
+            defer_note = self._code_review_night_window_defer_note()
+            if defer_note is not None:
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
+                self.logger.info("admin_monitor", defer_note)
+                return {
+                    "triggered": False,
+                    "reason": "night_quiet_window_deferred",
+                }
+
             # 审查范围（add-code-review-scope-config task 2.1）：读配置缺省回退已由
             # get_code_review_config 统一兜底（此处恒拿到 "window"/"full" 二值）。
             # scope 只改变「收集什么」（full 档 window_start=None），不改变「何时
@@ -1675,6 +1693,7 @@ class AdminMonitor:
                         f"code-review 周期审查完成：run_id={result.run_id}, "
                         f"inserted={result.inserted}, updated={result.updated}, "
                         f"resolved={result.resolved}, shards={result.shards}"
+                        + self._pending_writeoff_note()
                         + (f", error={result.error}" if result.error else ""),
                     )
                     # 429 打死 run 的自动重派消费侧（add-code-review-concurrency-
@@ -1736,6 +1755,159 @@ class AdminMonitor:
                 f"code-review 周期审查异常（单飞标志已复位）: {e}",
             )
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
+
+    # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
+
+    def _code_review_archive_duration_mean(self) -> Optional[float]:
+        """归档 code-review run 实测时长均值（秒）；无有效样本返回 None。
+
+        样本源（design D2）：``.fenix/runs/archive/code-review-*.jsonl`` 尾部
+        run_metrics 行 ``duration_s``，按归档新→旧取最近
+        ``NIGHT_QUIET_DURATION_SAMPLE_LIMIT``（=3，core.code_fix 单源导入，
+        对齐 code-fix 同名常量的样本策略）轮均值；历史行缺字段/负值/非有限
+        数值一律剔除。尾部读取按 512KB 窗（run_metrics 行落 run 收尾段，全
+        量转录可达数十 MB，整读无谓）；窗内截断/损坏行跳过。归档目录缺失/
+        列举或读取异常一律按无样本处理——顺延判定 fail-open 依据，MUST NOT
+        因取样阻断派发主路径。
+        """
+        from .code_fix import NIGHT_QUIET_DURATION_SAMPLE_LIMIT
+
+        archive_dir = Path(self.project_root) / ".fenix" / "runs" / "archive"
+        samples: list = []
+        try:
+            candidates = sorted(
+                archive_dir.glob("code-review-*.jsonl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for path in candidates:
+                if len(samples) >= NIGHT_QUIET_DURATION_SAMPLE_LIMIT:
+                    break
+                try:
+                    with path.open(encoding="utf-8", errors="replace") as fh:
+                        fh.seek(0, 2)
+                        size = fh.tell()
+                        fh.seek(max(0, size - 524288))
+                        tail = fh.read()
+                except OSError:
+                    continue
+                last: dict = {}
+                for line in tail.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (isinstance(rec, dict)
+                            and rec.get("type") == "run_metrics"):
+                        last = rec
+                try:
+                    dur = float(last.get("duration_s"))
+                except (TypeError, ValueError):
+                    continue
+                if dur < 0 or not math.isfinite(dur):
+                    continue
+                samples.append(dur)
+        except Exception:  # noqa: BLE001 — 取样失败按无样本回退（fail-open）
+            return None
+        if not samples:
+            return None
+        return sum(samples) / len(samples)
+
+    def _code_review_night_window_defer_note(self) -> Optional[str]:
+        """周期审查跨窗顺延判定：顺延返回日志文案，不顺延返回 None。
+
+        判定（design D2）：派发时刻加近几轮归档 code-review run 实测时长
+        均值（``_code_review_archive_duration_mean``；无有效样本回退仅判
+        派发时刻落窗）得预计在飞区间，与任一夜间静默窗相交即顺延——本轮
+        不派发、不写同日防重状态，留待窗末后巡检自然触发。窗配置与解析
+        复用 core.code_fix 单源（``_parse_night_quiet_windows``，键
+        ``admin.code_review_fix.night_quiet_window``，与 code-fix 车道同键
+        同缺省），MUST NOT 引入第二份窗配置。多窗与预计区间相交取最晚窗末
+        为「下一可派发时刻」（仅日志文案，实际派发交由巡检自然到达）。与
+        provider 瞬断冻结不复用：冻结态已有全局冻结闸（
+        ``_night_dispatch_block_reasons``），本判定只管窗相交。
+
+        配置读取/解析/取样异常一律按不顺延处理——观测失败 MUST NOT 阻断
+        派发主路径。调用方职责（契约）：命中时 MUST NOT 写同日防重状态
+        （否则顺延当日永不跑）、MUST 复位单飞标志（对齐空 manifest 分支
+        口径）。
+        """
+        try:
+            from .code_fix import (
+                NIGHT_QUIET_WINDOW_DEFAULT,
+                _epoch_iso,
+                _local_window_end_epoch,
+                _parse_night_quiet_windows,
+            )
+
+            raw = self._get_config(
+                "admin.code_review_fix.night_quiet_window",
+                NIGHT_QUIET_WINDOW_DEFAULT,
+            )
+            windows = _parse_night_quiet_windows(raw)
+            if not windows:
+                return None
+            lt = time.localtime()
+            cur = lt.tm_hour * 60 + lt.tm_min
+            est = self._code_review_archive_duration_mean()
+            if est is None:
+                crossing = [w for w in windows if w[0] <= cur < w[1]]
+                sample_note = "无实测样本，仅判派发时刻落窗"
+            else:
+                cur_s = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+                # 相交判定对齐 code-fix 守卫口径：派发时刻已落窗（任一窗
+                # start<=cur<end）或预计结束越过尚未开始的窗起点（严格
+                # 大于——恰压线视作不相交，批次在窗起点整点前收尾）。
+                crossing = [
+                    w for w in windows
+                    if (w[0] <= cur < w[1])
+                    or (cur < w[0] and cur_s + est > w[0] * 60)
+                ]
+                sample_note = f"近几轮实测均时长 {est:.0f} 秒"
+            if not crossing:
+                return None
+            cur_clock = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
+            if est is None:
+                span = f"{cur_clock}（派发时刻）"
+            else:
+                end_s = cur_s + int(est)
+                span = (
+                    f"{cur_clock}-"
+                    f"{(end_s // 3600) % 24:02d}:{(end_s % 3600) // 60:02d}"
+                )
+            next_ts = _local_window_end_epoch(max(w[1] for w in crossing))
+            return (
+                "code-review: 预计审查区间与夜间静默窗相交，本轮顺延不派发"
+                f"（预计区间 {span}，{sample_note}；窗区间 "
+                f"{', '.join(w[2] for w in crossing)}；下一可派发时刻="
+                f"{_epoch_iso(next_ts)}），同日防重未写、窗末后巡检自然触发"
+            )
+        except Exception:  # noqa: BLE001 — 判定失败按不顺延处理（fail-open）
+            return None
+
+    def _pending_writeoff_note(self) -> str:
+        """pending-writeoff 锚在侧 → 完成日志追加「部分覆盖待核销」标注。
+
+        evo-add-review-night-defer-snapshot-writeoff 3.3：error 收场抢救落账
+        会写待核销锚（``.fenix/code-review/writeoff-pending.json``，见
+        ``core.code_review.write_pending_writeoff``），审查完成日志两处落账
+        文案读到锚即追加标注（观测走日志，不加告警、不进 dashboard 新页，
+        design D4）。读取异常按无锚处理——标注缺失 MUST NOT 影响完成日志
+        主路径。
+        """
+        try:
+            from core.code_review import read_pending_writeoff
+
+            pending = read_pending_writeoff(self.project_root)
+        except Exception:  # noqa: BLE001 — 标注失败不影响完成日志主路径
+            return ""
+        if not pending:
+            return ""
+        rid = str(pending.get("run_id") or "unknown")
+        return f"，部分覆盖待核销（run_id={rid}）"
 
     # ── 429 限流重派消费侧（add-code-review-concurrency-and-429-resilience D4，task 5.3）──
     def _schedule_ratelimit_redispatch(self, manifest, review_kind, window_start,
@@ -1917,6 +2089,7 @@ class AdminMonitor:
                     f"run_id={result.run_id}, inserted={result.inserted}, "
                     f"updated={result.updated}, shards={result.shards}"
                     f"（剃余续跑 {len(shaved_manifest)}/{len(manifest)} 文件）"
+                    + self._pending_writeoff_note()
                     + (f", error={result.error}" if result.error else ""),
                 )
             except Exception as e:
@@ -5431,8 +5604,10 @@ class AdminMonitor:
           该方法/调用异常按未冻结处理（fail-open，替身/半初始化实例不误伤）。
         - 夜间断窗期：窗配置与解析复用 core.code_fix 单源（design D3，不
           引入第二份窗配置），键 ``admin.code_review_fix.night_quiet_window``
-          （与 code-fix 车道同键同缺省）；本地时区当前时刻落 ``[start, end)``
-          即命中；空串/off 显式禁用窗则不避让。配置读取/解析/导入异常一律
+          （与 code-fix 车道同键同缺省）；本地时区当前时刻落任一窗
+          ``[start, end)`` 即命中；多窗列表（evo-add-review-night-defer-
+          snapshot-writeoff 1.3）命中任一窗即避让，原因短语含全部命中窗
+          区间；空串/off 显式禁用窗则不避让。配置读取/解析/导入异常一律
           按无窗处理——观测失败 MUST NOT 阻断唤起主路径。
 
         返回命中原因短语列表（空＝不避让）。只判定不落痕——落痕由调用方
@@ -5453,20 +5628,21 @@ class AdminMonitor:
         try:
             from .code_fix import (
                 NIGHT_QUIET_WINDOW_DEFAULT,
-                _parse_night_quiet_window,
+                _parse_night_quiet_windows,
             )
 
             raw = self._get_config(
                 "admin.code_review_fix.night_quiet_window",
                 NIGHT_QUIET_WINDOW_DEFAULT,
             )
-            parsed = _parse_night_quiet_window(raw)
-            if parsed is not None:
-                start_min, end_min, text = parsed
+            windows = _parse_night_quiet_windows(raw)
+            if windows:
                 lt = time.localtime()
                 cur = lt.tm_hour * 60 + lt.tm_min
-                if start_min <= cur < end_min:
-                    reasons.append(f"夜间静默窗内（窗区间 {text}）")
+                hits = [w for w in windows if w[0] <= cur < w[1]]
+                if hits:
+                    joined = ", ".join(w[2] for w in hits)
+                    reasons.append(f"夜间静默窗内（窗区间 {joined}）")
         except Exception:
             pass
         return reasons
