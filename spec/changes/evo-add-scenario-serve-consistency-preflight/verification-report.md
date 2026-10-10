@@ -32,3 +32,10 @@
 | preprobe-capability-gap-not-satisfied | 前置探测收紧·能力缺口侧（task 2.1，spec.md Scenario「契约可解析但能力未补」）：P1 契约可解析但无 serve 段 + commands.start 为占位 echo + 在途场景含 api/web → _preprobe_signal_satisfied 判不满足（信号保持 open 不 auto-resolve）；P5 契约文件缺失（load 返回 None）→ 维持 False 既有行为（出处 core/admin_monitor.py:2949 _preprobe_signal_satisfied、OR 关系见 design D3） | pass | 0/2 | - |
 | preprobe-capability-restored-satisfied | 前置探测收紧·能力补齐侧（task 2.1，spec.md Scenario「契约补齐后免唤起恢复」）：P2 契约补齐 serve 段（start 仍占位，验证 OR 关系而非 AND，design D3 实证形态） + 在途 api/web → 判满足；P3 无 serve + commands.start 非占位 + 在途全 cli → 判满足；P4 无 serve + start 非占位 + 在途含 api/web → 判满足（commands.start 兜底覆盖非 cli kind，出处 core/verify_contract.py:97 语义要点） | pass | 0/2 | - |
 | existing-contract-preflight-regression | 既有行为回归门：契约静态检查/前置探测/并行车道的既有测试文件在本 SPEC 改动后全绿（tasks 1.1 既有三规则不回归、1.2 新鲜出题验收路径既有行为不回归、2.1 免唤起既有语义一致）——test_verify_preflight_gate.py（scan_contract 机制） + test_signal_preprobe_handled_writeback.py（前置探测闭环） + test_verify_contract_template_preflight.py（模板态前置检出） + test_verify_lane_throughput.py（并行出题产物消费） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+
