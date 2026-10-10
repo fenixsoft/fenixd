@@ -1105,7 +1105,7 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
 commit_verification_report = _commit_verification_report
 
 
-def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
+def ensure_verification_report(project_root, spec_name, logger=None, pre_commit=None) -> dict:
     """验证报告产物闸门：裁决放行前调用。
 
     返回 {"ok": True, "action": "present"|"synthesized"|"resynthesized"} 表示放行；
@@ -1116,12 +1116,35 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     不改变放行结论。本动作只做 git 入库，不触碰 spec_has_content 内容认可
     判定（verification-report.md 保持不计入名单）。
 
+    pre_commit（evo-verification-report-closeout-single-commit）：可选无参
+    callable，三个放行出口（present/resynthesized/synthesized）均在
+    ``_commit_verification_report`` 之前执行——供闸门消费方（report_gate）
+    把「本轮场景集变更」小节渲染合并进同一次提交，采纳流程内报告相关提交
+    由两次收敛至多一次。回调异常仅落 WARNING、不阻断放行与后续提交（对齐
+    「git 失败仅 WARNING」失败语义）；默认 None 时行为与无回调逐字等价
+    （push 收口等未传回调的调用方零影响）。
+
     action=resynthesized：既有报告属上一轮残留（``_report_is_superseded``），
     已用本轮结构化数据重新合成覆盖。既有报告在场但不可读（OSError/
     UnicodeDecodeError）或可读但为空白（0 字节/纯空白，如 agent 写报告
     截断后崩溃）时同样走重新合成——残缺报告不得以 present 放行。
     """
     out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
+
+    def _run_pre_commit() -> None:
+        # pre-commit 挂点：仅回调异常兜底（渲染/入库自身的降级由回调内建），
+        # 放行结论只由报告闸门数据决定，挂点绝不反向阻断。
+        if pre_commit is None:
+            return
+        try:
+            pre_commit()
+        except Exception as e:
+            if logger is not None:
+                logger.warning(
+                    "verify_report",
+                    f"验证报告 pre-commit 回调失败 '{spec_name}': {e}",
+                )
+
     unreadable = False
     if out_path.exists():
         try:
@@ -1140,6 +1163,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
         if not unreadable and not _report_is_superseded(project_root, spec_name, existing):
             # Agent 已写报告且与本轮裁决一致：原样保留，不覆盖、不改 mtime；
             # 文件既已在盘，落盘即入库（present 是验证 Agent 自写报告的主路径）
+            _run_pre_commit()
             _commit_verification_report(project_root, spec_name, logger)
             return {"ok": True, "action": "present"}
         result = synthesize_verification_report(project_root, spec_name)
@@ -1157,6 +1181,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                         f"验证报告闸门：'{spec_name}' 报告属上一轮残留"
                         f"（本轮裁决已变更），已重新合成覆盖",
                     )
+            _run_pre_commit()
             _commit_verification_report(project_root, spec_name, logger)
             return {"ok": True, "action": "resynthesized"}
         error = result.get("error") or "验证报告缺失且无法合成"
@@ -1199,6 +1224,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                 "verify_report",
                 f"验证报告闸门：'{spec_name}' 报告缺失，已由框架合成",
             )
+        _run_pre_commit()
         _commit_verification_report(project_root, spec_name, logger)
         return {"ok": True, "action": "synthesized"}
 

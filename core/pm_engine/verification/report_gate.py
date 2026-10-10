@@ -92,14 +92,31 @@ def _ensure_verification_report(pipeline, spec_name: str) -> str | None:
 
     返回 None 表示放行（报告已存在或合成成功）；返回非空字符串为阻断原因，
     调用方须阻止状态推进并把原因写入 error 字段。
+
+    evo-verification-report-closeout-single-commit：注入场景段渲染回调——
+    闸门放行的单次提交同时含报告本体与「本轮场景集变更」小节，采纳流程内
+    报告相关提交由两次收敛至多一次；pipeline._apply_verified / _apply_bug_found
+    与 legacy 两个采纳调用点共用本函数，注入一处即全覆盖。末尾渲染点
+    （pipeline 采纳尾段）保留为兜底，报告已含小节标题时按幂等判定零成本跳过。
     """
     from core.verify_report import ensure_verification_report
+
+    def _render_scenario_section_pre_commit() -> None:
+        # 函数内延迟导入为本包防循环导入惯例（本模块禁顶层 import 包内兄弟
+        # 模块）；渲染函数自身已兜渲染/入库异常（仅 WARNING、不阻断），此处
+        # 不再额外包装——闸门放行结论只由报告闸门数据决定。
+        from core.pm_engine.verification.scenario_gate import (
+            _render_scenario_change_section_to_report,
+        )
+
+        _render_scenario_change_section_to_report(pipeline, spec_name)
 
     try:
         result = ensure_verification_report(
             pipeline._context.project_root,
             spec_name,
             logger=pipeline._context.logger,
+            pre_commit=_render_scenario_section_pre_commit,
         )
     except Exception as e:
         # 合成器自身异常等同数据不可用：fail-closed，不凭空放行
