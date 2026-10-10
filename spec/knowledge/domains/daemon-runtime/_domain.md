@@ -1,5 +1,5 @@
 # 守护进程平台
-> 最后更新：2026-10-04 04:01 UTC+8
+> 最后更新：2026-10-11 02:02 UTC+8
 
 守护进程平台域：daemon 进程生命周期、单例与托管链、启动序列与排水语义。
 
@@ -11,7 +11,8 @@
 | [daemon-health](daemon-health.md) | daemon 健康监控 | 2026-10-03 04:59 |
 | [daemon-watcher-startup](daemon-watcher-startup.md) | Agent 派发异步化与 watcher 启动 | 2026-10-03 04:59 |
 | [daemon-drain-integrity](daemon-drain-integrity.md) | 启动终态补写与排水一致性自检（告警窗口去重） | 2026-10-04 04:01 |
-| [daemon-error-escalation](daemon-error-escalation.md) | daemon 错误升级上报 | 2026-10-03 04:59 |
+| [daemon-error-escalation](daemon-error-escalation.md) | daemon 错误升级上报 | 2026-10-11 02:02 |
+| [crossday-recurrence-detection](crossday-recurrence-detection.md) | daemon 错误跨日同刻复发检测（只读聚合观测） | 2026-10-11 02:02 |
 | [graceful-restart-drain](graceful-restart-drain.md) | 优雅重启排水窗口 | 2026-10-03 04:59 |
 | [supervisor-hosting](supervisor-hosting.md) | supervisor 托管链 | 2026-10-03 04:59 |
 | [state-watch-event-bus](state-watch-event-bus.md) | STATE.md 变更监视与事件派发总线 | 2026-09-27 17:23 |

@@ -1,4 +1,4 @@
-<!-- knowledge: capability=daemon-error-escalation rev=2 sources=spec/archive/2026-09-11-improve-hot-reload-robustness,spec/archive/2026-09-29-evo-alert-noise-governance -->
+<!-- knowledge: capability=daemon-error-escalation rev=3 sources=spec/archive/2026-09-11-improve-hot-reload-robustness,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization -->
 
 # daemon 错误升级上报
 
@@ -7,7 +7,7 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 ## 现行规则
 
 - 升级口径：最近 10 分钟窗口内同指纹 ERROR 复现 ≥2 次，且最近两次同指纹条目间隔 ≤5 分钟，产生 `daemon_errors` critical signal；中间被 INFO/WARNING 或其他错误打断不影响同指纹复现计数。
-- 错误指纹为 component 与归一化 message 的组合 hash。归一化采用保守集：ISO-8601 时间戳、UUID、≥16 位 hex 串、纯数字序列替换为占位符；路径与文字骨架不归一化。非 JSON 格式日志行回退为 raw 行归一化 hash，解析失败不崩溃。
+- 错误指纹为 component 与归一化 message 的组合 hash。归一化采用保守集：ISO-8601 时间戳、UUID、≥16 位 hex 串、纯数字序列、「数字.数字+单位字母」形态（延迟数值如 23.4s）替换为占位符——仅延迟数值不同的同形错误行指纹一致；路径与文字骨架不归一化。非 JSON 格式日志行回退为 raw 行归一化 hash，解析失败不崩溃。
 - 防抖边界：单次错误不升级；同指纹两次出现间隔 >5 分钟不升级（视为孤立抖动）；较早一次超出 10 分钟窗口不升级——恢复靠窗口滑动自然过期，无需显式清零。
 - timestamp 缺失或解析失败的 ERROR 行仍计入指纹桶（间隔约束按满足处理），方向为宁可多告警不漏告警。
 - 升级命中继续经过既有同 (spec, signal_type) 冷却节流，冷却期内再次满足升级条件仅记录、不重复唤起 administrator。
@@ -20,3 +20,4 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 
 - 2026-09-11 improve-hot-reload-robustness（spec/archive/2026-09-11-improve-hot-reload-robustness） — 错误升级改为指纹复现口径，固化指纹归一化、防抖边界、缺 timestamp fail-closed 与阈值不配置化
 - 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 新增指纹级重启冷却（重启后首扫回放的已知指纹 30 分钟窗内不升级不召唤，窗后/全新指纹照常）与同轮孪生指纹合并召唤（多指纹一轮只产一条信号一次 run）
+- 2026-10-11 evo-fix-crossday-recurrence-fingerprint-normalization（spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization） — 归一化保守集补「数字.数字+单位字母」形态，仅延迟数值不同的同形错误行归并为同指纹（计数分组输入变化方向保守：同形聚合计数只增不减）；跨日复发维度另立 [crossday-recurrence-detection](crossday-recurrence-detection.md)

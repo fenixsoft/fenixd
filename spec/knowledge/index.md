@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-11 01:53 UTC+8
+> 最后更新：2026-10-11 02:02 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -22,7 +22,7 @@
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 28 | 2026-10-08 02:52 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-10-08 04:02 |
 | [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 21 | 2026-10-11 01:47 |
-| [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 12 | 2026-10-04 04:01 |
+| [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 13 | 2026-10-11 02:02 |
 | [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 19 | 2026-10-06 07:14 |
 | [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 14 | 2026-10-07 14:39 |
 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 32 | 2026-10-07 03:30 |
