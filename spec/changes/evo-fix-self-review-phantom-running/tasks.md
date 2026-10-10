@@ -18,7 +18,7 @@
 
 ## 2. 残余无终态的 stale 对账
 
-- [ ] 2.1 core/self_review.py：对 _classify_run 判 running 的 run 在 collect_runs_stats 计数前做对账（或下沉进 _iter_window_classified_runs 单点，二选一，保持与 collect_failed_run_samples 口径一致）——产物 mtime 距 window_end 超 RUN_STALE_SECONDS（延迟导入 core.dashboard.data.runs.RUN_STALE_SECONDS，runs.py:327）且 _run_terminal_success（self_review.py:469，含 attempt 后缀对齐）查无终态 → 改计 stale；查得 terminal=success → 改计 succeeded；mtime 新鲜或查无数据 → 维持 running 不改判（宁可不拦不可误伤）；对账仅触达 running 判定的 run。
+- [ ] 2.1 core/self_review.py：对 _classify_run 判 running 的 run 在 collect_runs_stats 计数前做对账（或下沉进 _iter_window_classified_runs 单点，二选一，保持与 collect_failed_run_samples 口径一致）——产物 mtime 距 window_end 超 RUN_STALE_SECONDS（延迟导入 core.dashboard.data.runs.RUN_STALE_SECONDS，runs.py:327）且 _run_terminal_success（self_review.py:469，含 attempt 后缀对齐）未返回 True（None=指标索引查无；False=查得非 success 终态，值域含 failure/frozen/cancelled/circuit，runner.py:8226/:3660/:4649/:4691/:5096）→ 改计 stale；查得 terminal=success → 改计 succeeded；mtime 新鲜 → 维持 running 不改判（宁可不拦不可误伤）；非 success 终态 MUST NOT 按成功提升、MUST NOT 改计 failed（失败样本归因以产物 marker/信号为源，防计数与失败样本口径分叉）；pre_classified 直调路径（window_end=None）时 stale 基准以入口冻结 now_utc() 兜底（self_review.py:584-585 既有约定）；对账仅触达 running 判定的 run。
 - [ ] 2.2 core/self_review.py：stale 桶渲染（1.4 已含）与 docstring 补「无终态残留」释义；确认 collect_failed_run_samples 对 stale 亦不入选。
 
 ## 3. 测试

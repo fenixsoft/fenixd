@@ -30,6 +30,7 @@ todo 建议的「子进程树/活跃 run 注册表活性对账」不采纳：归
 
 1. _run_terminal_success（self_review.py:469-491）：run_metrics 指标 terminal 查询，已含 attempt 后缀对齐与轮转回退——产物断尾但指标记 terminal=success（daemon 崩溃截断收尾）的 run 按 succeeded 计。
 2. RUN_STALE_SECONDS（runs.py:327 公开名，1800s）：mtime 停更阈值，取自 dashboard 读侧同款判据（runs.py:464/:511，跨包消费先例 core/code_review.py:1488-1489）——超阈值且查无指标终态 → stale；不足阈值 → 维持 running（真实在跑或近瞬状态，宁可不拦不可误伤）。
+3. 「查无指标终态」契约：_run_terminal_success 返回 Optional[bool]（True=success / False=查得非 success 终态 / None=索引查无），未返回 True（None 与 False）一律同走 stale 通道——run_metrics 的 terminal 值域实测含 failure/frozen/cancelled/circuit（写入点 runner.py:8226，各值写入 :3660/:4649/:4691/:5096），非 success 终态不按成功提升、不改计 failed（失败样本归因以产物 marker/信号为源，指标侧无归因 detail，强行改计会造成 counts 与失败样本口径分叉）。pre_classified 直调路径（window_end=None，self_review.py:566-569）时 stale 的 mtime 基准沿用既有入口冻结 now_utc() 兜底（self_review.py:584-585 同款约定）。
 
 对账仅对 running 判定的 run 触发（终态 run 零额外 IO）；mtime 以统计时刻（window_end 快照）为基准。
 

@@ -12,7 +12,7 @@
 
 ## Impact
 
-- Affected specs: 无既有 capability 覆盖（新建 phantom-running-guard）；与活跃 SPEC evo-add-run-metrics-lane-baseline 互补（其修指标行分组/成本维度，本条修读侧终态分类）。
+- Affected specs: 无既有 capability 覆盖（新建 phantom-running-guard）；与活跃 SPEC evo-add-run-metrics-lane-baseline 互补（其修指标行分组/成本维度，本条修读侧终态分类）。两者均修改 core/self_review.py 但辖区互斥（对方改第六节指标渲染与 MIDFLIGHT 常量，本条改 _classify_run 词表/counts/第 2 节渲染），按框架 SPEC 串行流转，后落地方基于先落地方合入后的实现续改。
 - Affected code: core/self_review.py——_classify_run 词表、collect_runs_stats 计数桶、collect_failed_run_samples 口径锁定、collect_daily_summary 第 2 节渲染、stale 对账。
 - Tests: tests/test_self_review_result_based_classification.py 扩展；tests/test_self_review_terminal_crosscheck.py 扩展。
 - 风险：低——新增桶位与对账均为读侧增量；主要回归点是 counts dict 缺新键时 counts[category] += 1 KeyError（任务锁定）；产物写侧零改动。

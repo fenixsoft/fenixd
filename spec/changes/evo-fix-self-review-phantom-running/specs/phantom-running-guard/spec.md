@@ -33,12 +33,17 @@ _classify_run 的终态识别集合 MUST 引用 core.dashboard.data.runs.RUN_TER
 
 ### Requirement: 残余无终态的 stale 对账
 
-对末行非任何已知终态（running 判定）的 run，统计侧 MUST 按双源对账细分：产物 mtime 距统计时刻超过 RUN_STALE_SECONDS 且 _run_terminal_success 查无终态指标 → 计 stale（无终态残留）；查得 terminal=success → 计 succeeded；mtime 新鲜或指标查无 → 维持 running 不改判。对账遵循「宁可不拦不可误伤」：数据缺失不改判。
+对末行非任何已知终态（running 判定）的 run，统计侧 MUST 按双源对账细分：产物 mtime 距统计时刻超过 RUN_STALE_SECONDS 且 _run_terminal_success 未返回 True → 计 stale（无终态残留）；查得 terminal=success → 计 succeeded；mtime 新鲜 → 维持 running 不改判。「未返回 True」= None（指标索引查无）或 False（查得非 success 终态——run_metrics 的 terminal 值域为 success/failure/frozen/cancelled/circuit，runner.py:8226 写入，:3660/:4649/:4691/:5096 为各非 success 值写入点）；非 success 终态 MUST NOT 按成功提升，MUST NOT 改计 failed（失败样本口径以产物 marker/信号为归因源，指标侧无归因 detail，改计将造成计数与失败样本分叉），同走 stale 通道。对账遵循「宁可不拦不可误伤」：数据缺失不改判。
 
 #### Scenario: 陈旧断尾产物单列为 stale
 
 - **WHEN** 某 run 产物末行非终态、mtime 停更超 1800s、fenixd.log run_metrics 无该 run 终态
 - **THEN** 该 run 计入 stale 桶，日报渲染为「无终态残留」
+
+#### Scenario: 指标记非 success 终态而产物断尾按 stale 通道处理
+
+- **WHEN** 某 run 产物末行非终态、mtime 停更超 RUN_STALE_SECONDS、run_metrics 记 terminal="failure"（或 cancelled/frozen/circuit）
+- **THEN** 该 run 计入 stale 桶，MUST NOT 改计 failed，MUST NOT 按成功提升计 succeeded
 
 #### Scenario: 指标有终态而产物断尾按终态计
 
