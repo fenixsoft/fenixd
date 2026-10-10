@@ -33,3 +33,8 @@
 | salvage-source-contract-probe | 源码契约探针（tasks 4.4「MUST NOT 静默放宽契约」的独立复核）：maintenance_runs.py 零 night_quiet_window 字样（顺延判定不进收尾模块）；核销资格放宽条件文本 'review_kind == "scheduled" and window_start is None' 在场且既有 manual_full 资格保持；窗口档「只增不核销」与 error 收场「绝不核销」红线注释固定在场；_writeoff_coverage_guard 仍在解锁链（宁锁勿白洗）；锚写/清调用均在收尾模块；admin_monitor 完成日志读锚（read_pending_writeoff）与「部分覆盖待核销」标注文案在场；顺延分支行序先于 compute_window/同日防重 save_code_review_state（副作用前移约束）；顺延分支内复位单飞标志 | pass | 0/10 | - |
 | regression-affected-contract-suites | 回归点：本 SPEC 改写的四个模块（code_fix/admin_monitor/code_review/maintenance_runs）波及的既有契约面测试套件全绿（实现者声明的 8 个受影响区域对应 9 个测试文件：dispatch_window_avoidance/review_decoupling/run_at/scope_config/provider_failover/severity_gate/failure_registration_closeout/code_review/code_fix）。退出码 0 仲裁全部通过；输出含 'passed in' 确认套件正常收尾 | pass | 0/2 | - |
 | full-suite-collect-zero-error | 回归点：全仓测试收集零错误（pytest --collect-only -q，实现者声明 8207+ 例收集零错误）。收集期 import 错误/夹具装配错误会让 pytest 退出码非 0 或输出 errors——以退出码 0 + 'tests collected in' 仲裁。修复注记：8246 例用例 ID 行使输出远超引擎 64KB stdout 捕获窗口，摘要行被截掉致断言必失败；命令改为全量落盘 .history/collect-full-suite.txt 后 stdout 仅回显尾 5 行（tail -5），exit_code 经 exit $ec 传回 pytest 真实退出码，两条断言均原样保留未弱化 | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+场景集与持久化集一致，无变更。
+
