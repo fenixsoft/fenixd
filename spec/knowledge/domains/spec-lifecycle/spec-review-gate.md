@@ -1,6 +1,6 @@
 # 方案评审门（reviewing 状态与晋升分流）
-<!-- knowledge: capability=spec-review-gate rev=1
-     sources=spec/archive/2026-09-19-add-spec-review-gate -->
+<!-- knowledge: capability=spec-review-gate rev=2
+     sources=spec/archive/2026-09-19-add-spec-review-gate,spec/archive/2026-10-11-evo-fix-spec-review-infra-attribution-bridge -->
 
 drafted 晋升前的方案评审门：`reviewing` 第 11 状态、评审模式开关、跳过白名单与四条晋升通道的同语义分流。
 
@@ -20,8 +20,9 @@ drafted 晋升前的方案评审门：`reviewing` 第 11 状态、评审模式�
 - 事件与调度接入：`_status_to_event` 映射 `reviewing → spec_reviewing`；engine 事件处理器表注册 `_on_spec_reviewing`；`check_scheduling_deadlines` 对 `reviewing` 走评审派发路径；`_recover_one` 对 `reviewing` 做评审派发恢复。四条晋升触发路径（`spec_drafted` 事件、`start_after` 到期唤起、full_scan recovery re-trigger、外部 drafted 写入 / scheduling_kick）在分流判定「需评审」时均能进入 `reviewing` 并被派发。
 - 重派竞态被阻断：SPEC 已处 `reviewing` 且评审 run 在飞时，PM Engine 不重复派发第二个评审 run（判据见 spec-concurrency-governance 能力）。
 - `reviewing` 属中断态，与 `implementing` / `testing` 同口径：daemon 重启时回退到 `drafted`，清空评审 run 引用并重置评审尝试计数，重新进入晋升链（软化与两道 lint 幂等，分流重新判定——若此时命中白名单则直通 ready）；回退不丢失评审者对 SPEC 目录已作出的修补。
-- 评审 run 经派发队列异步执行，不占用实现并发槽位、不设评审并发上限（评审次数稀疏，每 SPEC 晋升时一次）；在飞登记与实现派发顺延的并发治理见 spec-concurrency-governance 能力。
+- 评审 run 经派发队列异步执行，不占用实现并发槽位；在飞并发受可配上限约束（缺省 2-3，批量晋升时保留队列削峰，见 [spec-review-infra-attribution](spec-review-infra-attribution.md)）；在飞登记与实现派发顺延的并发治理见 spec-concurrency-governance 能力。
 
 ## 溯源
 
 - 2026-09-19 2026-09-19-add-spec-review-gate（spec/archive/2026-09-19-add-spec-review-gate） — 新增评审门：reviewing 状态与转移边、spec_review_mode 配置、四条全中跳过白名单（evo- 硬否决）、晋升链四通道分流、事件/调度/恢复接入、中断回退与并发闸门
+- 2026-10-11 evo-fix-spec-review-infra-attribution-bridge（spec/archive/2026-10-11-evo-fix-spec-review-infra-attribution-bridge） — 废除「不设评审并发上限」，改为可配在飞上限（缺省 2-3）
