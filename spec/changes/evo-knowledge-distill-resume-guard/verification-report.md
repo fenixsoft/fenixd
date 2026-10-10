@@ -37,3 +37,10 @@
 | r3-initialize-wiring-daemon-only | R3 接线·恢复入口仅 daemon 启动路径接入：FenixDaemon.initialize 源码末尾经 core.knowledge 模块单例访问器调用 recover_pending，异常降级 WARNING（non-blocking）不阻塞 daemon 启动；恢复数>0 落「台账恢复重派 N 批」日志；dashboard --serve 入口（bin/fenix_dashboard.py）与 core/dashboard 全树零 recover_pending 引用（避免双进程竞争）；recover_pending docstring 写明「先清空后入队」顺序与 dashboard 不接入口径。出处 fenixd.py:654-678（接入点+non-blocking 兜底）、core/knowledge.py:1226-1236（先清空后入队 docstring）、tasks 2.2、SPEC R3「dashboard --serve 进程不做恢复」 | pass | 0/9 | - |
 | r4-is-idle-distill-dimension | R4 行为矩阵·_is_idle 第六维度（蒸馏在飞保护）：基线空闲；蒸馏 worker 在飞（批次 run 阻塞中）→ 非空闲；消费完恢复空闲；进程内队列非空（worker 未起窗口）→ 非空闲；死台账在场（无 worker/队列）→ 仍空闲（死台账不钉住自愈）；管理器替身缺属性 → 按空闲不抛异常；内部状态不可读（非 AttributeError）→ 按非空闲（宁紧勿松）；管理器访问失败 → 按空闲；_is_idle 注释写明有界性依据（RUN_TIMEOUT_SECONDS×(1+MAX_FIX_ROUNDS)）与死台账口径。出处 fenixd.py:1632-1646（⑥蒸馏维度）、:1648-1678（_distill_lane_busy 容错分流）、tasks 2.3、SPEC 验收「蒸馏 worker 在飞时 _is_idle 返回 False；DistillManager 为替身/缺失时不抛异常」 | pass | 0/13 | - |
 | deliverable-test-suite-green | 交付物测试套件全绿（tasks 3.1-3.4 用例载体）：pytest 运行交付物新测试文件 tests/test_knowledge_distill_resume.py（Deliverables kind: new）17 个用例全量通过——覆盖台账生命周期/容错与并发/恢复路径/_is_idle 蒸馏维度四组。命令只用 -v（禁与 -q 并列：pytest 9 下 -q 覆盖 -v 不打印 PASSED）；输出断言用实测稳定子串（<用例名> PASSED 与汇总行 17 passed，落盘前已实测照抄）。出处 spec/changes/evo-knowledge-distill-resume-guard/tasks.md Deliverables、tests/test_knowledge_distill_resume.py | pass | 0/11 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 1 轮）。
+
+- 首轮写入 14 个场景
+
