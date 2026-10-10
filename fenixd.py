@@ -651,6 +651,32 @@ class FenixDaemon:
         self._code_files = code_tracked_files(FENIX_DIR)
         self._code_baseline_ns = max_code_mtime_ns(self._code_files)
 
+        # 9. 知识蒸馏 pending 台账恢复（evo-knowledge-distill-resume-guard R3，
+        #    design D3）：daemon 专属——dashboard --serve 进程不接入（双进程并存
+        #    时恢复只等 daemon 下次启动，蒸馏本就非紧急车道）。恢复动作只重新
+        #    入队（先清空台账再逐条走既有门控链，门控放行条目由 dispatch 写点
+        #    重新落盘），不执行蒸馏——实际 run 走既有 flock 单飞与 worker 串行
+        #    消费。恢复明细日志（含批次数与归档名）由 recover_pending 经
+        #    knowledge-distill 日志落盘；此处异常降级 WARNING 不阻塞 daemon
+        #    启动（台账故障退回「批次重启蒸发」现状而非更糟）。
+        try:
+            from core import knowledge as _knowledge_mod
+
+            _recovered_batches = (
+                _knowledge_mod._get_dispatcher().recover_pending(PROJECT_ROOT)  # noqa: SLF001 — 模块单例访问器（既有归属，daemon 不持独立成员）
+            )
+            if _recovered_batches > 0:
+                self.logger.info(
+                    "fenixd",
+                    f"knowledge-distill pending 台账恢复重派 {_recovered_batches} 批"
+                    "（明细见 knowledge-distill 日志）",
+                )
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"knowledge-distill pending 台账恢复失败 (non-blocking): {e}",
+            )
+
     def start(self):
         """Start the daemon main loop."""
         self.running = True
@@ -1549,10 +1575,12 @@ class FenixDaemon:
         implementer / verifier / judge 全部 run 形态）**且** ②不存在未收口的在飞
         评审 run **且** ③``agent_runner._running_agents`` 为空 **且** ④admin 处置
         worker 池无在途任务 **且** ⑤无在飞 impl-ocr 车道（fix-fasttrack-implemented-
-        deadstate 2.2，``pm_engine.ocr_lane_busy()`` 为假）。任一非空即判非空闲；
-        ``_admin_executor`` 为 None（admin.workers=0 同步回退）时该维度视为空闲。
-        admin 池在途数 = submitted - completed - failed（``_admin_pool_stats`` 计数，
-        独立成法便于单测隔离）。
+        deadstate 2.2，``pm_engine.ocr_lane_busy()`` 为假）**且** ⑥无在飞知识蒸馏
+        批次（evo-knowledge-distill-resume-guard R4，``_distill_lane_busy`` 为假
+        ——worker 线程存活或进程内队列非空，容错口径见该方法）。任一非空即判
+        非空闲；``_admin_executor`` 为 None（admin.workers=0 同步回退）时该维度
+        视为空闲。admin 池在途数 = submitted - completed - failed（
+        ``_admin_pool_stats`` 计数，独立成法便于单测隔离）。
 
         ②为加强项（fix-state-atomicity-and-selfheal-restart D3）：评审 run
         **从不计入 ``_active_runs``**（``dispatch/queue.py`` 对 spec-review 派发
@@ -1601,7 +1629,53 @@ class FenixDaemon:
                 stats = dict(self._admin_pool_stats)
             if stats["submitted"] - stats["completed"] - stats["failed"] > 0:
                 return False
+        # ⑥ evo-knowledge-distill-resume-guard R4：蒸馏在飞维度。蒸馏 worker
+        # spawn 的 claude 子进程不进 _active_runs / _running_agents / 评审车道
+        # / admin 池 / impl-ocr 车道（前五维度全盲），缺本维度时「派发后 1-14
+        # 分钟内的陈旧自愈重启」会击杀在飞批次（2026-10-09/10 三起入库断流
+        # 事故链）。有界性：RUN_TIMEOUT_SECONDS=1800 硬超时 killpg 保证**单批**
+        # 至多 (1+MAX_FIX_ROUNDS)=3 轮 × 1800s 必然收尾退出；worker 整体存活
+        # 上界 = 待消费批次数 × 单批上界（另含跨进程 flock 阻塞等待，属正常
+        # 串行）——积压消化期自愈重启被推迟属期望行为（在飞保护正是本维度
+        # 目的），队列单调收敛、消费完即恢复空闲判定，不是「评审车道失明致
+        # 自愈永久不触发」类永久失明。判据只看进程内活体状态（worker 线程/
+        # 队列），不读 .fenix/knowledge-distill-pending.json——死台账不钉住
+        # 自愈（恢复前窗口 worker 未起不判非空闲）。
+        if self._distill_lane_busy():
+            return False
         return True
+
+    def _distill_lane_busy(self) -> bool:
+        """蒸馏车道在飞判定（evo-knowledge-distill-resume-guard R4/design D4）。
+
+        进程内蒸馏管理器（core.knowledge 模块单例，daemon 不持独立成员）的
+        worker 线程存活或 pending 队列非空 → 忙。容错与既有维度同款：
+        - 模块不可用 / 管理器缺属性（裸对象、测试替身）→ 按空闲（「缺属性
+          视为空」同款，MUST NOT 抛异常——本方法若抛会被 _is_idle 的「异常按
+          非空闲」口径吞成永久非空闲）；注意属性**缺失**（AttributeError）
+          与属性**不可读**（其他异常）分流；
+        - 内部状态不可读（非 AttributeError 异常）→ 按非空闲（宁紧勿松，
+          对齐「内部状态不可读按非空闲」）。
+        """
+        try:
+            from core import knowledge as _knowledge_mod
+
+            mgr = _knowledge_mod._get_dispatcher()  # noqa: SLF001 — 模块单例访问器
+        except Exception:  # noqa: BLE001 — 模块不可用按空闲（无法判定不钉自愈）
+            return False
+        try:
+            workers = mgr._workers  # noqa: SLF001 — 既有内部状态复用（同 pm_engine._active_runs）
+            queues = mgr._queues
+        except AttributeError:
+            return False  # 替身缺属性按空闲（与③「缺属性视为空」同款）
+        except Exception:  # noqa: BLE001 — 内部状态不可读按非空闲（宁紧勿松）
+            return True
+        try:
+            if any(w.is_alive() for w in workers.values()):
+                return True
+            return any(queues.values())
+        except Exception:  # noqa: BLE001 — 活体判定异常按非空闲（宁紧勿松）
+            return True
 
     def _ocr_lane_selfheal_block(self) -> bool:
         """在飞 impl-ocr 车道自愈阻断判定（fix-fasttrack-implemented-deadstate 2.2）。
