@@ -43,6 +43,7 @@ from core.agent_runner.result_gate import (
     SelfReviewResult,
 )
 from core.code_review import (
+    clear_pending_writeoff,
     resolve_snapshot,
     upsert_findings,
 )
@@ -1484,8 +1485,11 @@ def run_code_review(
       ``.fenix/code-review/manifest-<run_id>.json``，并注入 prompt；
     - agent 逐文件审查、每审完一个文件向 ``.fenix/code-review/out-<run_id>
       .jsonl`` 追加一行（增量落盘，进度 done 来源）；
-    - run 结束读增量产物并 ``upsert_findings`` 入台账；``manual_full``
-      收尾再 ``resolve_snapshot`` 全仓核销（D5 只增不核销的例外）；
+    - run 结束读增量产物并 ``upsert_findings`` 入台账；全仓收集（
+      ``manual_full``，或 evo-add-review-night-defer-snapshot-writeoff 3.2
+      放宽的全仓 scheduled＝window_start None）收尾再 ``resolve_snapshot``
+      全仓核销（D5 只增不核销的例外；解锁仍由覆盖完整性守卫把关）；error
+      收场抢救落账则写 pending-writeoff 锚（部分覆盖待核销现场）；
     - token 归账到独立类目 ``.fenix/cost/code_review_tokens.json``
       （MUST NOT 走 _accumulate_token_usage——审查 run 无 spec 维度）；
     - 模型解析链：agents.models.code-review 分配优先 → 回退
@@ -1718,7 +1722,26 @@ def run_code_review(
                 # 落账异常不应穿透；整轮视为失败带原因
                 run_ok = False
                 error = f"审查落账异常: {e}"
-            if run_ok and review_kind == "manual_full":
+            # ── 全仓快照核销资格门（evo-add-review-night-defer-snapshot-
+            # writeoff 3.2 放宽）────────────────────────────────────────
+            # 从「仅 manual_full」放宽为「manual_full 或全仓收集的 scheduled
+            # （window_start=None）」：周期审查 scope=full 档同样全仓收集，
+            # 核销资格却恒被 review_kind="scheduled" 挡住（admin_monitor 恒传
+            # scheduled），过期 open 条目只能等人工 manual_full 逐条核销——
+            # 近四轮成功完成行 resolved 全为 0 实证。放宽后解锁仍由既有
+            # _writeoff_coverage_guard（累计覆盖 ⊇ 完整 manifest，下方两分支
+            # 原样生效）+ observed 非空门把关，agent 静默少审（09-19 事故
+            # 形态）同样被锁，不白洗。
+            # 绝不核销红线（不变量，注释固定）：①窗口档 scheduled
+            # （window_start 非 None，含 manual_window）只增不核销——窗口
+            # 审查只见窗口内文件，部分覆盖下核销必白洗（模块头声明的
+            # 「窗口审查只增不核销」不变量，core/code_review.py）；②一切
+            # error 收场绝不核销（下方 else 抢救分支只 upsert + 写
+            # pending-writeoff 锚，resolve_snapshot 不在该路径可达）。
+            if run_ok and (
+                review_kind == "manual_full"
+                or (review_kind == "scheduled" and window_start is None)
+            ):
                 # 全仓快照核销：本轮未再观测到的 open 项置 resolved（D5）。
                 # 空集保护（code-review item 69166b2235fd）：旧实现以 `if findings:`
                 # 为门，但 `observed` 取的 `fingerprint` 字段 agent 从不产出（指纹由
@@ -1730,16 +1753,16 @@ def run_code_review(
                 #
                 # ── 覆盖完整性守卫（evo-add-code-review-ratelimit-resume 3.3）──
                 # 剃余重派 run（redispatch_of 非空）以**剩余** manifest 跑，若
-                # 原样按 manual_full 收尾且 findings 非空，未覆盖文件的存量条目
+                # 原样按全仓收尾且 findings 非空，未覆盖文件的存量条目
                 # 会被误置 resolved（部分覆盖白洗——与下方 :1288 抢救红线同族
-                # 事故）；普通 manual_full run 同理——存在性产物门只查「任一
-                # 来源有一行有效行」，agent 静默只审 manifest 子集（自行切批
-                # 少审漏审）时同样部分覆盖白洗。解锁门：「本轮累计覆盖（原 run
-                # 及其重派链产物 file 字段并集）⊇ 完整原 manifest」才核销，
-                # 否则维持抢救红线。守卫唯一实现点在本收尾段（重派/普通两
-                # 分支同语义；design 核销门挂点二选一：此处按覆盖判定，消费
-                # 侧 admin_monitor 不重复核销解锁）。原 manifest 缺失/损坏或
-                # 守卫异常一律按未覆盖处理（宁锁勿白洗）。
+                # 事故）；普通全仓 run（manual_full 或全仓 scheduled）同理——
+                # 存在性产物门只查「任一来源有一行有效行」，agent 静默只审
+                # manifest 子集（自行切批少审漏审）时同样部分覆盖白洗。解锁
+                # 门：「本轮累计覆盖（原 run 及其重派链产物 file 字段并集）
+                # ⊇ 完整原 manifest」才核销，否则维持抢救红线。守卫唯一实现
+                # 点在本收尾段（重派/普通两分支同语义；design 核销门挂点二选
+                # 一：此处按覆盖判定，消费侧 admin_monitor 不重复核销解锁）。
+                # 原 manifest 缺失/损坏或守卫异常一律按未覆盖处理（宁锁勿白洗）。
                 writeoff_locked = False
                 locked_detail = ""
                 if redispatch_of:
@@ -1768,7 +1791,8 @@ def run_code_review(
                         writeoff_locked = True
                         locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
                 else:
-                    # 普通 manual_full run（非重派）同语义守卫（item 0372755b5bb3）：
+                    # 普通全仓 run（manual_full 或全仓 scheduled，非重派）同
+                    # 语义守卫（item 0372755b5bb3）：
                     # 存在性产物门只查「任一来源有一行有效行」，agent 静默只审
                     # manifest 子集（自行切批少审漏审，09-19 事故的 agent 不听话
                     # 形态）时 run_ok=True 且 observed 非空，未审文件的存量条目
@@ -1835,6 +1859,23 @@ def run_code_review(
                         _log = getattr(runner, "logger", None)
                         if _log is not None:
                             _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
+                if not writeoff_locked:
+                    # pending-writeoff 锚清除（evo-add-review-night-defer-
+                    # snapshot-writeoff 3.2）：覆盖完整成功收尾（核销解锁分支
+                    # 走完）即清除——锚标记的「部分覆盖待核销」现场已由本轮
+                    # 全仓覆盖接手；resolved>0 的核销执行同在此清除口径内
+                    # （核销只是完整覆盖收尾的加强结果，不单列分支）。锁定
+                    # 分支（部分覆盖）保持锚在位，等剩余文件重派补齐。清除
+                    # 失败只留痕，不使整轮失败。
+                    try:
+                        clear_pending_writeoff(runner.project_root)
+                    except Exception as e:  # noqa: BLE001 — 清锚失败不改变收尾
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            _log.warning(
+                                "code-review",
+                                f"pending-writeoff 锚清除失败（run {run_id}）: {e}",
+                            )
     else:
         # ── error 收场抢救（2026-09-24 429 事故）────────────────────────────
         # run 中途死亡（网关 429 / 超时 / 强杀）≠ 零产出：分片直写模式下死前
@@ -1862,6 +1903,31 @@ def run_code_review(
                         f"{error}；error 收场抢救落账 inserted={inserted} "
                         f"updated={updated}（部分覆盖，未做全仓快照核销）"
                     )
+                    # pending-writeoff 锚（evo-add-review-night-defer-
+                    # snapshot-writeoff 3.2）：部分覆盖抢救落账后记待核销现场
+                    # （覆盖写，新事故顶旧锚——只留最近一次待核销现场）。锚只
+                    # 承载「有部分覆盖待核销」观测事实（供完成日志标注与核销
+                    # 清除联动），核销解锁仍由全仓收尾的覆盖完整性守卫把关，
+                    # 本锚不参与解锁判定。写锚失败只留痕，不改变抢救既有语义。
+                    try:
+                        from core.code_review import write_pending_writeoff
+
+                        write_pending_writeoff(
+                            runner.project_root,
+                            {
+                                "run_id": run_id,
+                                "inserted": inserted,
+                                "updated": updated,
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                    except Exception as e:  # noqa: BLE001 — 写锚失败不改变失败终态
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            _log.warning(
+                                "code-review",
+                                f"pending-writeoff 锚写入失败（run {run_id}）: {e}",
+                            )
                     _log = getattr(runner, "logger", None)
                     if _log is not None:
                         _log.warning(

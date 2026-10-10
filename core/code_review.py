@@ -12,6 +12,9 @@ daemon/admin_monitor 层）。
 - 存储独立于 evolution 的 items.jsonl（语义不同，D2）；
 - 指纹去重：``sha1(file|category|normalize_title(title))[:12]``；
 - ``manual_full`` 全仓快照核销（D5），窗口审查只增不核销；
+  evo-add-review-night-defer-snapshot-writeoff 3.2 起全仓收集的 scheduled
+  （window_start=None，scope=full 周期审查档）同样具备核销资格（解锁仍由
+  覆盖完整性守卫把关）；
 - 并发写复用 evolution 的 flock + 原子替换形态（_with_lock/_atomic_write）。
 
 日志通道（code-review item 87d7bf7e7ba4）：本模块运维告警（分片目录列举
@@ -875,8 +878,10 @@ def upsert_findings(
 def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str] = None) -> int:
     """全仓快照核销：open 且本轮未再观测到的条目置 resolved。
 
-    调用方保证仅在 ``review_kind == "manual_full"`` 时调用（本函数不做
-    review_kind 判定，核销职责在 run_code_review 收尾分支）。
+    调用方保证仅在 ``review_kind == "manual_full"`` 或全仓收集的 scheduled
+    （window_start=None，evo-add-review-night-defer-snapshot-writeoff 3.2
+    放宽）收尾时调用（本函数不做 review_kind 判定，核销资格与覆盖完整性
+    职责在 run_code_review 收尾分支）。
 
     核销语义：台账中 ``status == "open"`` 且 fingerprint 不在
     ``observed_fingerprints`` 中的条目置 ``resolved``（记录 resolved_at）；
@@ -1534,6 +1539,44 @@ def save_code_review_state(project_root, date_str: str) -> None:
         )
     except OSError as e:
         _logger.warning("code_review: code_review_state.json 写入失败: %s", e)
+
+
+# ── pending-writeoff 锚（evo-add-review-night-defer-snapshot-writeoff 3.1）──
+
+
+def pending_writeoff_path(project_root) -> Path:
+    """pending-writeoff 锚文件（error 收场抢救落账后、全仓核销解锁前的待办标记）。"""
+    return code_review_dir(project_root) / "writeoff-pending.json"
+
+
+def write_pending_writeoff(project_root, payload: dict) -> None:
+    """覆盖写 pending-writeoff 锚（flock + 原子替换，与 items.jsonl 同风格）。
+
+    写入点在 run_code_review 的 error 收场抢救段：inserted/updated > 0 时
+    记 ``{run_id, inserted, updated, at}`` 待核销现场。覆盖写——新事故顶旧
+    锚，只留最近一次待核销现场；清除点见 ``clear_pending_writeoff``。
+    """
+    path = pending_writeoff_path(project_root)
+
+    def _do() -> None:
+        _atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+    _with_lock(path, _do)
+
+
+def read_pending_writeoff(project_root) -> dict:
+    """读 pending-writeoff 锚；缺失/损坏返回空 dict（＝无待核销现场）。"""
+    return _read_json_file(pending_writeoff_path(project_root))
+
+
+def clear_pending_writeoff(project_root) -> None:
+    """清除 pending-writeoff 锚（核销执行且 resolved>0，或覆盖完整成功收尾）。"""
+    path = pending_writeoff_path(project_root)
+
+    def _do() -> None:
+        path.unlink(missing_ok=True)
+
+    _with_lock(path, _do)
 
 
 # ── 修复 SPEC 生成（复用 evolution 链路，分组 6） ──────────────────

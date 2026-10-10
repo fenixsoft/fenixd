@@ -3093,24 +3093,48 @@ def _parse_night_quiet_hhmm(fragment: str):
     return hour * 60 + minute
 
 
-def _parse_night_quiet_window(raw):
-    """解析 "HH:MM-HH:MM" → ``(start_min, end_min, text)``；禁用/非法返回 None。
+def _parse_night_quiet_windows(raw):
+    """解析多窗列表 → ``[(start_min, end_min, text), …]``；禁用/非法返回 None。
 
-    首版只支持单日内区间（spec R1）：end<=start（含相等）逆序视为非法——本
-    场景不要求跨午夜；小时/分钟越界同样非法。本函数纯解析不告警，非法值的
-    WARNING 由调用方（``_night_quiet_window``）按「一次」纪律补。
+    多窗化（evo-add-review-night-defer-snapshot-writeoff 1.1）：上游断窗并非
+    单点（kern.log 保留期内 04:30 窗外已现 6 次散布断窗），单窗模型对
+    "03:00-03:15,04:15-04:45" 形态无覆盖——升级为逗号/分号分隔的多窗列表，
+    命中任一窗即避让。每段走既有单段校验（``_parse_night_quiet_hhmm``，
+    ``HH:MM-HH:MM``；end<=start 含相等逆序非法——本场景不要求跨午夜，小时/
+    分钟越界同样非法）；空段（如 ``"04:15-04:45,,"``）同按非法。任一段非法
+    → 整体返回 None（宁缺毋错，不部分生效）。空串/off 禁用语义与单窗版一致
+    （返回 None；禁用不触发 WARNING 由调用方以
+    ``_night_quiet_window_disabled`` 区分）。本函数纯解析不告警。
     """
     text = str(raw if raw is not None else "").strip()
     if _night_quiet_window_disabled(text):
         return None
-    parts = text.split("-")
-    if len(parts) != 2:
+    windows = []
+    for fragment in text.replace(";", ",").split(","):
+        fragment = fragment.strip()
+        parts = fragment.split("-")
+        if len(parts) != 2:
+            return None
+        start = _parse_night_quiet_hhmm(parts[0])
+        end = _parse_night_quiet_hhmm(parts[1])
+        if start is None or end is None or end <= start:
+            return None
+        windows.append((start, end, fragment))
+    return windows or None
+
+
+def _parse_night_quiet_window(raw):
+    """解析 "HH:MM-HH:MM" → ``(start_min, end_min, text)``；禁用/非法返回 None。
+
+    单窗薄包装（evo-add-review-night-defer-snapshot-writeoff 1.1）：内部改调
+    多窗版取首窗，保持旧签名与旧返回值（既有消费方/测试逐字节兼容）；多窗
+    列表解析见 ``_parse_night_quiet_windows``。本函数纯解析不告警，非法值的
+    WARNING 由调用方（``_night_quiet_window``）按「一次」纪律补。
+    """
+    windows = _parse_night_quiet_windows(raw)
+    if not windows:
         return None
-    start = _parse_night_quiet_hhmm(parts[0])
-    end = _parse_night_quiet_hhmm(parts[1])
-    if start is None or end is None or end <= start:
-        return None
-    return (start, end, text)
+    return windows[0]
 
 
 def _local_window_end_epoch(end_min: int) -> float:
@@ -3592,17 +3616,20 @@ class CodeFixOrchestrator:
         return val
 
     def _night_quiet_window(self):
-        """解析每日静默窗配置（evo-codefix-night-quiet-window 1.1）。
+        """解析每日静默窗配置（evo-codefix-night-quiet-window 1.1；多窗化
+        evo-add-review-night-defer-snapshot-writeoff 1.2）。
 
         读 ``admin.code_review_fix.night_quiet_window`` 点号键——沿
         ``_switch_cooldown_seconds`` 既有模式走根形态 ``ConfigLoader.get``
         （段读取器是白名单形态，未登记的新键会被剥掉，直接问段恒取缺省），
         缺省 ``NIGHT_QUIET_WINDOW_DEFAULT``。空串/off（大小写不敏感）＝完全
-        禁用；格式非法（缺分隔符/非 HH:MM/小时分钟越界/end<=start 逆序——
-        本场景不要求跨午夜）按无窗处理并 WARNING 一次（防配置错误静默吞掉；
-        同实例对同一非法值只告警一次，值变更后重新告警）。
+        禁用；格式非法（缺分隔符/非 HH:MM/小时分钟越界/end<=start 逆序/
+        多窗列表中任一段坏——本场景不要求跨午夜）按无窗处理并 WARNING 一次
+        （防配置错误静默吞掉；同实例对同一非法值只告警一次，值变更后重新
+        告警）。
 
-        返回 ``(start_min, end_min, text)``；禁用/非法返回 None。
+        返回窗元组列表 ``[(start_min, end_min, text), …]``；禁用/非法返回
+        None。
         """
         try:
             raw = ConfigLoader.get(
@@ -3612,15 +3639,15 @@ class CodeFixOrchestrator:
             )
         except (TypeError, ValueError):
             return None
-        parsed = _parse_night_quiet_window(raw)
+        parsed = _parse_night_quiet_windows(raw)
         if parsed is None and not _night_quiet_window_disabled(raw):
             if self._night_quiet_warned_raw != str(raw):
                 self._night_quiet_warned_raw = str(raw)
                 self._log(
                     "warning",
                     "code-fix 夜间静默窗配置非法（"
-                    f"{str(raw)!r}，须形如 HH:MM-HH:MM 且 end>start，"
-                    "off/空串关闭），按无窗处理",
+                    f"{str(raw)!r}，须形如 HH:MM-HH:MM（多窗以逗号分隔）"
+                    "且各段 end>start，off/空串关闭），按无窗处理",
                 )
         return parsed
 
@@ -3667,22 +3694,30 @@ class CodeFixOrchestrator:
           预测明日窗（窗解析单日语义，design 同款边界）。
 
         命中返回 ``{text, date, end_ts, predicted, est_duration_s}``：text
-        为配置区间原文（告警 evidence 用），date 为窗次标识（本地日期，含
-        日期故跨窗次自动重新武装），end_ts 为今日本地窗末 epoch 秒＝下一
+        为命中窗配置区间原文（告警 evidence 用），date 为窗次标识（本地日期，
+        含日期故跨窗次自动重新武装），end_ts 为今日本地窗末 epoch 秒＝下一
         可投递时刻；predicted 标预计跨窗态——与真实窗内态共用同一窗次标识
         与武装告警语义（同窗次幂等，「预测态→真实窗内态」迁移不重复武装）；
         est_duration_s 仅预测态携带（秒，进度文案展示用）。
+
+        多窗化（evo-add-review-night-defer-snapshot-writeoff 1.2）：命中判定
+        为「任一窗 start<=cur<end」；多窗同中取最晚窗末（拦截至最晚 end，
+        text 随该命中窗）；真实窗内态不命中时对今日尚未开始的窗做预计跨窗
+        判定（已过的窗不预测），预计区间与任一未来窗相交即命中该窗。
         """
-        window = self._night_quiet_window()
-        if window is None:
+        windows = self._night_quiet_window()
+        if not windows:
             return None
-        start_min, end_min, text = window
         lt = time.localtime()
         cur = lt.tm_hour * 60 + lt.tm_min
         predicted = False
         est_duration_s = None
-        if not (start_min <= cur < end_min):
-            if cur >= end_min:
+        hits = [w for w in windows if w[0] <= cur < w[1]]
+        if not hits:
+            # 真实窗内态不命中：今日已过的窗剔除，仅对尚未开始的窗预测
+            # （窗解析单日语义，design 同款边界——不预测明日窗）。
+            future = [w for w in windows if cur < w[0]]
+            if not future:
                 return None
             est = self._chain_recent_duration_mean(chain_run_ids)
             if est is None:
@@ -3690,10 +3725,14 @@ class CodeFixOrchestrator:
             cur_s = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
             # 区间相交（左闭右开对左开）：预计结束恰好压线窗起点（<=）视作
             # 不相交——批次在窗起点整点前收尾，不与窗共存。
-            if cur_s + est <= start_min * 60:
+            hits = [w for w in future if cur_s + est > w[0] * 60]
+            if not hits:
                 return None
             predicted = True
             est_duration_s = est
+        # 多窗命中取最晚窗末：下一可投递时刻以最晚 end 为准（多窗同中或
+        # 预计区间跨多窗时一次拦到底），窗次文本随该命中窗。
+        start_min, end_min, text = max(hits, key=lambda w: w[1])
         return {
             "text": text,
             "date": time.strftime("%Y-%m-%d", lt),
@@ -3702,7 +3741,8 @@ class CodeFixOrchestrator:
             "est_duration_s": est_duration_s,
         }
 
-    def _arm_night_quiet_window(self, quiet_window, prev_armed_date) -> None:
+    def _arm_night_quiet_window(self, quiet_window, prev_armed_date,
+                                prev_armed_text=None) -> None:
         """窗次武装（evo-codefix-night-quiet-window 1.2）：同窗次幂等。
 
         窗次标识含日期（``night_quiet_armed_date``，形如 "2026-10-06"）连同
@@ -3710,8 +3750,14 @@ class CodeFixOrchestrator:
         （合并写，进程重启后仍幂等）；同窗次武装至多写一次告警，跨窗次自动
         重新武装，残留标识不拦截投递（惰性清理见 checkpoint 守卫块）。告警/
         写盘异常均不劫持拦截返回（对齐冷却守卫同款纪律）。
+
+        多窗化（evo-add-review-night-defer-snapshot-writeoff 1.2）起窗次
+        幂等键含命中窗文本：同日多窗各自武装一次（03:00-03:15 与
+        04:15-04:45 是两个窗次），配置变更当日新旧窗文本亦视为不同窗次
+        （告警按窗次幂等、不拦截投递，design 已知可接受偏差）。
         """
-        if prev_armed_date == quiet_window["date"]:
+        if (prev_armed_date == quiet_window["date"]
+                and prev_armed_text == quiet_window["text"]):
             return
         try:
             _write_night_quiet_window_alert(
@@ -4048,12 +4094,17 @@ class CodeFixOrchestrator:
             # evo-add-night-window-inflight-guard 1.1：预计跨窗升级——判定
             # 入参带链级 run 清单（窗前派出时以近批实测时长估预计结束时刻，
             # 与窗区间相交即顺延到窗末；prev_chain 可能被外部写坏成非列表，
-            # 估计器按非列表回退无样本，fail-open 不阻塞投递）。
+            # 估计器按非列表回退无样本，fail-open 不阻塞投递）。多窗配置
+            # （evo-add-review-night-defer-snapshot-writeoff 1.2）命中任一窗
+            # 即拦截，多窗同中取最晚窗末为可投递时刻，窗次幂等含窗文本。
             quiet_window = self._night_quiet_state(
                 prev_chain.get("chain_run_ids"))
             quiet_armed_date = prev_chain.get("night_quiet_armed_date")
             if not isinstance(quiet_armed_date, str):
                 quiet_armed_date = ""
+            quiet_armed_text = prev_chain.get("night_quiet_armed_text")
+            if not isinstance(quiet_armed_text, str):
+                quiet_armed_text = ""
             if quiet_window is None and quiet_armed_date:
                 # 窗末/配置关闭后的残留窗次标识：惰性清理（沿上方冷却残留态
                 # 清理先例）——补写解除告警（一次）并清标识；标识本身不拦截
@@ -4125,7 +4176,9 @@ class CodeFixOrchestrator:
                 if quiet_window is not None:
                     # 窗次武装（同窗次幂等）：首次进入本窗次才写武装告警与
                     # 窗次标识；跨窗次自动重新武装，残留标识不拦截投递。
-                    self._arm_night_quiet_window(quiet_window, quiet_armed_date)
+                    # 多窗化起幂等键含命中窗文本（同日多窗各自武装一次）。
+                    self._arm_night_quiet_window(
+                        quiet_window, quiet_armed_date, quiet_armed_text)
                 if reason == "switch_cooldown":
                     current = (
                         "上游连接类失败冷却中，同链下一批暂缓派发至 "
