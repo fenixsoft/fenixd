@@ -705,6 +705,70 @@ def _error_fingerprint(component: str, message: str) -> str:
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
 
 
+# ── evo-add-daemon-signal-spec-attribution-dedup 1.1/1.2：daemon 级信号 ──
+# evidence 原文摘录与 spec 归属提取 ─────────────────────────────────────
+# 1.1：daemon_errors 升级信号 evidence 附带的「最近一次同指纹 ERROR 原文摘录」
+# 截断限长（字符）。摘录是 1.2 归属提取的基底；限长防超长 traceback 撑爆
+# evidence/prompt，折叠空白后取头部（组件名+错误首行承载 spec/分支线索概率
+# 最高）。
+DAEMON_ERROR_EXCERPT_MAX_CHARS = 300
+# 1.2：分支名归属线索正则——fenix/<spec>-<时间戳> 形态（WorktreeManager 派生
+# 分支命名；时间戳为收尾的 10-13 位纯数字）。spec 名段非贪婪回溯到「末段纯
+# 数字」之前，spec 名内嵌数字段不会被误截；误捕窗口再由互斥侧「该 spec 确有
+# 在飞 run 才跳过」二次收窄（design Risks：误判最坏退化为先后各派一次，等于
+# 现状，无额外损失）。
+_DAEMON_SIGNAL_BRANCH_SPEC_RE = re.compile(
+    r"fenix/([0-9A-Za-z._-]+?)-(\d{10,13})(?![\w-])"
+)
+# 1.3：跳过语义仅适用于「具检测循环重发生命周期」的 daemon 级信号类型（design
+# D3——指纹过冷却窗再升级即重发，跳过后有确定的自然重评通路）。当前唯一
+# spec=None 形态为 daemon_errors；未来新增无重发生命周期的 None-spec 信号
+# 类型 MUST NOT 加入本集合（否则跳过后被静默吞掉且无重评），届时须先补该
+# 类型的重评通路。
+DAEMON_ATTRIBUTABLE_SIGNAL_TYPES = frozenset({"daemon_errors"})
+# 1.3：跳过注记固定文案片段（spec.md「被在飞 run 覆盖、待重评」）——跳过日志
+# 与 skipped 处置留痕双处消费，单点维护。
+DAEMON_SIGNAL_COVERED_NOTE = "被在飞 run 覆盖、待重评"
+
+
+def _format_error_excerpt(component, message) -> str:
+    """最近一次同指纹 ERROR 原文摘录（1.1）：``[组件名] message``，超长截断。
+
+    摘录含组件名（spec 线索常在组件/路径上下文）；message 折叠空白（logger
+    保证单行 JSON，但 json.loads 还原后的 traceback 多行文本会重新带入换行，
+    折叠保 evidence 单行形态）；截断取头部。纯文本整形，不影响 ``_fp``
+    （指纹由 _error_fingerprint 在摘录之前独立计算）。
+    """
+    comp = str(component or "unknown")
+    text = " ".join(str(message or "").split())
+    excerpt = f"[{comp}] {text}".rstrip()
+    if len(excerpt) > DAEMON_ERROR_EXCERPT_MAX_CHARS:
+        excerpt = excerpt[:DAEMON_ERROR_EXCERPT_MAX_CHARS].rstrip() + "…"
+    return excerpt
+
+
+def _extract_spec_attribution_from_text(text, known_specs=()) -> str:
+    """从证据文本（ERROR 原文摘录等）提取 spec 归属（1.2，双线索任一命中）。
+
+    线索一（强模式）：实现分支名 fenix/<spec>-<时间戳> 正则；线索二：已知
+    spec 名直接匹配（长名优先——短名是长名前缀时不被短名抢先归属）。命中
+    返回 spec 名；无线索（含空文本）返回空串，调用方兜底现状派发（1.4，
+    行为不变）。
+    """
+    if not text:
+        return ""
+    text = str(text)
+    m = _DAEMON_SIGNAL_BRANCH_SPEC_RE.search(text)
+    if m:
+        return m.group(1)
+    for name in sorted(
+        (str(s) for s in known_specs if s), key=len, reverse=True
+    ):
+        if name in text:
+            return name
+    return ""
+
+
 # evo-fix-crossday-recurrence-fingerprint-normalization 1.2（design D1 备选
 # 路径裁决）：api_timeout 类失败终态「结构化签名（api_timeout 布尔 + stderr_tail
 # 骨架哈希）替代整行指纹」为可选路径，本 SPEC 不采用——上方 _DECIMAL_UNIT_RE
@@ -3559,15 +3623,20 @@ class AdminMonitor:
         max_gap = DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES * 60
 
         by_fp: dict = {}
+        # 1.1：逐指纹最近一次 ERROR 原文（日志时序序逐条覆盖 → 末条即最近），
+        # 升级时经 _format_error_excerpt 附入信号 evidence（归属提取基底）。
+        last_err: dict = {}
         for ts, component, message in self._read_tail_error_entries(log_file):
-            by_fp.setdefault(_error_fingerprint(component, message), []).append(ts)
+            fp = _error_fingerprint(component, message)
+            by_fp.setdefault(fp, []).append(ts)
+            last_err[fp] = (component, message)
 
         cooldown = DAEMON_ERROR_RESTART_COOLDOWN_MINUTES * 60
         # __new__ 直构（单测）无 _started_at：按「刚启动」处理（冷却窗生效），
         # 与真实 daemon 启动后的首扫行为一致
         in_restart_window = (now - getattr(self, "_started_at", now)) < cooldown
 
-        escalating = []  # [(fp, count, last_str, missing_ts, crossday)]
+        escalating = []  # [(fp, count, last_str, missing_ts, crossday, excerpt)]
         # 跨日同刻复发判别（evo-add-codefix-conn-error-cooldown 3.1，D6）：
         # 先于逐指纹升级判定独立成判（记忆更新独立于升级与否），命中者绕过
         # 已知指纹冷却窗。
@@ -3607,7 +3676,12 @@ class AdminMonitor:
                 from_epoch(last_ts).isoformat() if last_ts else "无可用时间戳"
             )
             missing_ts = sum(1 for t in in_window if t is None)
-            escalating.append((fp, count, last_str, missing_ts, cd))
+            # 六元组末位（1.1）：最近一次同指纹 ERROR 原文摘录，随信号构造
+            # 附入 evidence（_make_daemon_error_signal / _merged 消费）。
+            escalating.append((
+                fp, count, last_str, missing_ts, cd,
+                _format_error_excerpt(*last_err[fp]),
+            ))
 
         if not escalating:
             return []
@@ -3923,14 +3997,50 @@ class AdminMonitor:
             pass
         return False, ""
 
+    def _extract_daemon_signal_spec(self, signal: dict) -> str:
+        """daemon 级信号（spec 为空）派发判定前的 spec 归属提取（1.2）。
+
+        只对 DAEMON_ATTRIBUTABLE_SIGNAL_TYPES 白名单类型生效（1.3：跳过语义
+        仅适用于具检测循环重发生命周期的 daemon 级信号类型，其余 None-spec
+        类型不套用）；从 evidence（1.1 补齐的 ERROR 原文摘录为主基底）做
+        「分支名 fenix/<spec>-<时间戳> 正则 + 已知 spec 名直接匹配」双线索
+        归属（模块级 _extract_spec_attribution_from_text 单源），任一命中即
+        返回 spec 名。evidence 无摘录的存量形态 / 无线索 / 状态读取失败一律
+        返回空串——兜底与现状完全一致（1.4）；已有 spec 的信号原样返回自身
+        spec（调用方 ``spec or …`` 短路，既有互斥行为不变）。本提取只读，
+        不改写信号任何字段。
+        """
+        spec = signal.get("spec")
+        if spec:
+            return spec
+        if signal.get("signal_type") not in DAEMON_ATTRIBUTABLE_SIGNAL_TYPES:
+            return ""
+        evidence = signal.get("evidence")
+        if evidence is not None and not isinstance(evidence, str):
+            try:
+                evidence = json.dumps(evidence, ensure_ascii=False)
+            except (TypeError, ValueError):
+                evidence = str(evidence)
+        try:
+            known = list(self.state_machine.read_all().keys())
+        except Exception:  # noqa: BLE001 — 状态读取失败按无已知 spec 兜底（fail-open）
+            known = []
+        return _extract_spec_attribution_from_text(evidence, known)
+
     def _make_daemon_error_signal(self, fp: str, count, last_str, missing_ts,
-                                  crossday=None) -> dict:
+                                  crossday=None, excerpt=None) -> dict:
         """单指纹 daemon_errors 信号（文案与治理前保持一致，语义回归）。
 
         ``crossday``（可选，evo-add-codefix-conn-error-cooldown 3.1）：跨日同刻
         复发命中的 (prev_ts, last_ts) 二元组——description 追加复发判定（保留
         「指纹 <fp[:8]>」前缀子串，跨重启已知指纹对账依赖它），evidence 注明
         前次时刻明细。
+
+        ``excerpt``（可选，evo-add-daemon-signal-spec-attribution-dedup 1.1）：
+        最近一次同指纹 ERROR 原文摘录（_format_error_excerpt 产物，含组件名、
+        截断限长）——附入 evidence 作为 daemon 级信号 spec 归属提取的基底
+        （不补则提取恒空、归属能力 no-op）；description 的「指纹 <fp[:8]>」
+        前缀子串与 ``_fp`` 判据保持不变。
         """
         crossday_desc = ""
         crossday_evidence = ""
@@ -3953,7 +4063,9 @@ class AdminMonitor:
             f"同指纹 ERROR 复现 {count} 次（最近一次 {last_str}"
             + (f"；{missing_ts} 条缺时间戳按窗口内计入" if missing_ts else "")
             + f"）；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
-            f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟" + crossday_evidence,
+            f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟" + crossday_evidence
+            # 1.1：原文摘录附 evidence 尾部；缺省 None（存量直构形态）不追加
+            + (f"；最近一次 ERROR 原文摘录：{excerpt}" if excerpt else ""),
         )
         # admin-signal-consolidation D1：daemon 级信号（spec=None）的
         # status_hash 回退判据 = 稳定错误指纹（_signal_status_hash 消费，
@@ -3967,12 +4079,17 @@ class AdminMonitor:
         description 对每个指纹保留「指纹 <fp[:8]>」文案——跨重启已知指纹对账
         （_daemon_fp_known 对 store 记录的 description 前缀匹配）依赖该子串，
         合并形态下逐指纹仍可命中；evidence 另载各指纹复现明细。
+
+        escalating 元组形态（evo-add-daemon-signal-spec-attribution-dedup 1.1
+        扩至六元组）：(fp, count, last_str, missing_ts, crossday, excerpt)——
+        excerpt 为该指纹最近一次 ERROR 原文摘录，逐指纹附入 evidence（归属
+        提取基底）。
         """
         fp_summary = "、".join(
             f"指纹 {fp[:8]}（复现 {count} 次）" for fp, count, *_ in escalating
         )
         crossday_fps = [
-            fp for fp, _, _, _, cd in escalating if cd is not None
+            fp for fp, _, _, _, cd, _ex in escalating if cd is not None
         ]
         crossday_desc = (
             f"（其中指纹 {'、'.join(f[:8] for f in crossday_fps)} 判定跨日同刻"
@@ -3991,7 +4108,9 @@ class AdminMonitor:
                     f"；跨日同刻复发：前次 {from_epoch(cd[0]).isoformat()}"
                     if cd is not None else ""
                 )
-                for fp, count, last_str, _, cd in escalating
+                # 1.1：逐指纹原文摘录（缺省空串不追加，存量直构形态不变）
+                + (f"；最近一次 ERROR 原文摘录：{excerpt}" if excerpt else "")
+                for fp, count, last_str, _, cd, excerpt in escalating
             )
             + f"；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
             f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
@@ -4266,28 +4385,70 @@ class AdminMonitor:
         # test_scenarios.json）。守卫按 spec 单键聚合、覆盖**任意** signal_type
         # （admin 处置的 signal_type 不只有 orphaned_state）。为真 → 跳过
         # 本次唤起（信号仍按既有沉淀/节流语义落 store，不丢痕）并记 WARNING。
-        if spec and self._has_active_admin_run_for_spec(spec):
+        #
+        # evo-add-daemon-signal-spec-attribution-dedup 1.2/1.3：daemon 级信号
+        # （spec=None，白名单=DAEMON_ATTRIBUTABLE_SIGNAL_TYPES——具检测循环重生
+        # 命周期）派发判定前先按 evidence 原文摘录提取 spec 归属再互查，消除
+        # 同源阻塞事件与 spec 级信号的双派。提取不到/归属 spec 无在飞 run 时
+        # _mutex_spec 退化为 spec 本身，与现状完全一致（1.4 兜底）；既有
+        # spec 键互斥分支的日志/留痕文案与字段逐字不动。
+        _mutex_spec = spec or self._extract_daemon_signal_spec(signal)
+        if _mutex_spec and self._has_active_admin_run_for_spec(_mutex_spec):
+            if spec:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"已有在飞处置，跳过重复唤起 '{spec}'（signal {signal_type}）"
+                    f"— fix-recovery-path-blockers D2b",
+                    {"signal": signal},
+                )
+                # code-review item 64cd854cebbb：上行 merge_signal 已落 escalated=True
+                # 的冷却锚点，本路径实际未派发——不补痕则 store 永久留存「已唤起」
+                # 假象，审计/看板失真。比照信号死法冷却路径补写说明性处置记录；
+                # result="skipped" 不命中任何 result 消费分支，DISPOSITION 不参与
+                # unhandled_for 节流——不阻断在飞处置完成后的自然重评。
+                # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
+                # （item 4d50570fd394），文案与字段不变。
+                self._persist_skipped_disposition(
+                    signal,
+                    (
+                        "已有在飞 admin run，跳过重复唤起"
+                        "（fix-recovery-path-blockers D2b 互斥守卫）——"
+                        "实际未派发，在飞处置完成后由检测循环自然重评"
+                    ),
+                    spec=spec,
+                )
+                return
+            # 1.3：daemon 级信号按归属互查命中——跳过本次派发。信号保持未消费
+            # （不 mark handled / 不 mark_escalated；上方 merge_signal 冷却锚点
+            # 照旧落库、不丢痕），按 _persist_skipped_disposition 既有形态补写
+            # result="skipped" 注记（DISPOSITION 不参与 unhandled_for 节流，
+            # 不阻断自然重评）：在飞 run 终态后，阻塞 ERROR 持续则同指纹过冷却
+            # 窗再升级重发；诉求已被在飞 run 满足则错误止息不再升级（等效
+            # pre-probe 闭环）。留痕 spec 记归属 spec（该 spec 的处置历史下可
+            # 查），无 admin_run_id 不会被 _merge_admin_runs 误并在飞组。
             self.logger.warning(
                 "admin_monitor",
-                f"已有在飞处置，跳过重复唤起 '{spec}'（signal {signal_type}）"
-                f"— fix-recovery-path-blockers D2b",
-                {"signal": signal},
+                f"daemon 级信号 {signal_type} 按 evidence 归属 spec "
+                f"'{_mutex_spec}'，该 spec 已有在飞 admin run——跳过本次派发，"
+                f"{DAEMON_SIGNAL_COVERED_NOTE}"
+                "（evo-add-daemon-signal-spec-attribution-dedup 1.3）",
+                {"signal": signal, "attribution": _mutex_spec},
             )
-            # code-review item 64cd854cebbb：上行 merge_signal 已落 escalated=True
-            # 的冷却锚点，本路径实际未派发——不补痕则 store 永久留存「已唤起」
-            # 假象，审计/看板失真。比照信号死法冷却路径补写说明性处置记录；
-            # result="skipped" 不命中任何 result 消费分支，DISPOSITION 不参与
-            # unhandled_for 节流——不阻断在飞处置完成后的自然重评。
-            # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
-            # （item 4d50570fd394），文案与字段不变。
             self._persist_skipped_disposition(
                 signal,
                 (
-                    "已有在飞 admin run，跳过重复唤起"
-                    "（fix-recovery-path-blockers D2b 互斥守卫）——"
-                    "实际未派发，在飞处置完成后由检测循环自然重评"
+                    f"daemon 级信号按 evidence 归属 spec '{_mutex_spec}'，"
+                    f"该 spec 已有在飞 admin run——{DAEMON_SIGNAL_COVERED_NOTE}"
+                    "（evo-add-daemon-signal-spec-attribution-dedup 1.3）："
+                    "实际未派发，信号保持未消费，在飞 run 终态后由检测循环"
+                    "自然重评"
                 ),
-                spec=spec,
+                spec=_mutex_spec,
+                error_label="mutex-skip",
+                error_context={
+                    "signal_type": signal_type,
+                    "attribution": _mutex_spec,
+                },
             )
             return
         self.logger.warning(
@@ -4520,12 +4681,28 @@ class AdminMonitor:
             # dispatch：注释中「另一信号类型或人工通道」的危害至此被真正守住；
             # 本路径无既有 run 可排除，不传 exclude_run_id）。为真 → 跳过本轮
             # 重试，不 bump retry_count（互斥非派发失败，下轮到期仍会重评）。
-            if spec and self._has_active_admin_run_for_spec(spec):
+            # evo-add-daemon-signal-spec-attribution-dedup 1.2/1.3：daemon 级
+            # 升级记录（spec=None，如 daemon_errors 派发失败重试）同样先按
+            # evidence 归属再互查——否则归属 spec 的在飞 run 收口前，到期重派
+            # 会与其并行双开（同源阻塞双派的派发失败重试变体）。spec 键记录
+            # （spec or … 短路）行为逐字不变；互斥非派发失败：不 bump
+            # retry_count，下轮到期仍会重评；重试车道按既有惯例不落处置痕
+            # （同下方 fixture 抑制块「命中仅日志留痕，同互斥守卫不落处置痕」）。
+            _retry_mutex_spec = spec or self._extract_daemon_signal_spec(signal)
+            if _retry_mutex_spec and self._has_active_admin_run_for_spec(
+                _retry_mutex_spec
+            ):
                 self.logger.info(
                     "admin_monitor",
-                    f"Skipping dispatch retry for '{spec}' (signal "
+                    f"Skipping dispatch retry for '{_retry_mutex_spec}' (signal "
                     f"{signal.get('signal_type')}): active admin run already in "
-                    f"flight (escalation {rec.get('id')})",
+                    f"flight (escalation {rec.get('id')})"
+                    + (
+                        f"——daemon 级信号按 evidence 归属，"
+                        f"{DAEMON_SIGNAL_COVERED_NOTE}"
+                        "（evo-add-daemon-signal-spec-attribution-dedup 1.3）"
+                        if not spec else ""
+                    ),
                 )
                 continue
             # fixture 项目抑制（alert-noise-governance 5.1）：到期重派同属
