@@ -387,17 +387,42 @@ def _scan_run_signals(path: Path) -> Optional[str]:
     return None
 
 
+def _terminal_status_types() -> set:
+    """终态词表单源（phantom-running-guard：core.dashboard.data.runs 的
+    RUN_TERMINAL_STATUS_MAP 键集）。
+
+    延迟导入对齐本模块风格（参照 _run_terminal_success，避免加载序副作用）；
+    词表演进以该映射为单源，本侧 MUST NOT 复制定义第四套词表，MUST NOT
+    消费 core.agent_runner.liveness.RUN_TERMINAL_EVENT_TYPES（该集合故意
+    排除 superseded 防退避窗口双派发，语义为存活判定而非事后统计）。导入
+    失败返回空集——分类退回原行为（result/error 之外的 type 一律 running），
+    不因词表读取失败制造改判。
+    """
+    try:
+        from core.dashboard.data.runs import RUN_TERMINAL_STATUS_MAP  # noqa: PLC0415
+
+        return set(RUN_TERMINAL_STATUS_MAP)
+    except Exception:
+        return set()
+
+
 def _classify_run(run_id: str, lines: list) -> tuple:
     """按产物终态分类一条 run：返回 (category, detail)。
 
-    category ∈ {succeeded, failed, instant_hang, timeout, dropped, running}。
+    category ∈ {succeeded, failed, instant_hang, timeout, dropped, running,
+    superseded, ended}。
     - succeeded: 终态 result 且文本无业务失败标记/信号
     - failed:    业务失败（result 文本命中标记或事件序列含失败信号）或
                  终态 error 且非超时/秒挂
     - timeout:   终态 error 且文本含超时信号
     - instant_hang: 终态 error 且文本命中秒挂签名
     - dropped:   空文件 / 无任何事件
-    - running:   有事件但无终态（在跑或异常残留）
+    - superseded: 终态 superseded（弃置/重试件——同一逻辑 run 的中间弃置
+                 分片，最终结果活在后续分片，不算 running 也不算成功）
+    - ended:     其他已知终态（interrupted/cancelled/frozen-terminated/
+                 gate-blocked 及词表未来新增者）——已终结但非成功交付
+    - running:   有事件但末行非任何已知终态（真实在跑或异常残留；聚合侧
+                 另有 stale 对账细分，见 _reconcile_running_run）
     """
     if not lines:
         return "dropped", "empty"
@@ -434,6 +459,16 @@ def _classify_run(run_id: str, lines: list) -> tuple:
             return "failed", signal
         return "succeeded", ""
     if t != "error":
+        # 终态词表对齐（phantom-running-guard D2）：result/error 之外的已知
+        # 终态按词表分流——superseded 判弃置/重试件（原地重试弃置旧分片，
+        # 最终结果活在后续分片），其余已知终态判 ended；词表新增终态无需改
+        # 本侧即落 ended，不误计 running。result/error 分支的业务失败语义
+        # 不在此列，逐字节保持。
+        terminal_types = _terminal_status_types()
+        if t in terminal_types:
+            if t == "superseded":
+                return "superseded", "superseded"
+            return "ended", str(t)
         return "running", "no-terminal"
     text = str(last.get("error") or "")
     if "Timeout after" in text or "run timeout" in text:
@@ -550,8 +585,19 @@ def collect_runs_stats(
     window_end: Optional[datetime] = None,
 ) -> Dict[str, int]:
     """[window_start, window_end] 窗口（调度侧为 [last_run_at, now] 增量，
-    首跑回退 24h）runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
-    self-review run 自身。
+    首跑回退 24h）runs 统计（成功/失败/秒挂/超时/丢弃/在跑/弃置重试件/
+    其他终态/无终态残留），排除 self-review run 自身。
+
+    桶位（phantom-running-guard D3，counts 初始 dict 与 _classify_run 的
+    category 枚举同步扩展，未知 category 落 counts 即 KeyError——这是本条
+    最大回归点，测试锁定）：superseded=弃置/重试件（同一逻辑 run 的中间
+    弃置分片，最终结果活在后续分片）；ended=其他已知终态（interrupted/
+    cancelled/frozen-terminated/gate-blocked，已终结但非成功交付）；
+    stale=无终态残留（D4 对账产物：末行非任何已知终态、产物 mtime 停更超
+    RUN_STALE_SECONDS 且指标查无 success 终态）。running 在共享分类产出
+    （_iter_window_classified_runs）内已完成 stale 对账细分，本函数不再
+    改判——「在跑/无终态」因此收窄为真实在跑/近期无终态，不再被弃置件
+    稀释。
 
     窗口 = [window_start, window_end]，其中 window_end 为调用侧贯穿传入的
     冻结快照值（code-review item bf3b2bc56a05：调度侧一次冻结后全节共用，
@@ -576,6 +622,11 @@ def collect_runs_stats(
         "timeout": 0,
         "dropped": 0,
         "running": 0,
+        # phantom-running-guard 1.2：新桶位预先入 dict，防 counts[category]
+        # += 1 对新 category 抛 KeyError（本条最大回归点，测试锁定）
+        "superseded": 0,
+        "ended": 0,
+        "stale": 0,
     }
     if pre_classified is not None:
         runs = pre_classified
@@ -616,7 +667,11 @@ def collect_failed_run_samples(
     可追溯输出。
 
     返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
-    结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选。
+    结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选——
+    phantom-running-guard 1.3/2.2 注释锁定：superseded（弃置/重试件）/ended
+    （其他终态）/stale（无终态残留，D4 对账产物）等新桶位与 running/
+    succeeded/dropped 同样不入选，失败样本口径以产物 marker/信号为归因源，
+    不随新桶位扩展而分叉。
     窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属；
     window_end 为调用侧贯穿传入的冻结快照值（code-review item
     bf3b2bc56a05），None 时函数入口冻结 now_utc() 兜底（直调兼容）。
@@ -648,6 +703,9 @@ def collect_failed_run_samples(
             window_end = now_utc()
         runs = _iter_window_classified_runs(project_root, window_start, window_end)
     for run_id, p, ts, category, detail in runs:
+        # 仅 category=="failed" 入选（现状保持，无代码分支新增）：
+        # superseded/ended/stale/running/succeeded/dropped 天然不入失败样本
+        # （phantom-running-guard 1.3/2.2，docstring 与本注释双重锁定）。
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
         # result 分支判定结果为准（不引入成功语义文本白名单），成功终态不入选
         # 失败样本；接受项边界：终态邻近 3 行之外的主题词不再翻转分类。
@@ -789,6 +847,38 @@ def _iter_window_runs(project_root, window_start: datetime, window_end: datetime
             yield run_id, p, ts
 
 
+def _reconcile_running_run(project_root, run_id: str, p: Path, window_end: datetime) -> tuple:
+    """残余 running 判定的双源对账（phantom-running-guard D4，宁可不拦不可误伤）。
+
+    对 _classify_run 判 running（末行非任何已知终态）的 run 细分；仅 running
+    判定触发（终态 run 零额外 IO），mtime 以统计时刻（window_end 快照）为基准：
+    - 产物 mtime 距 window_end 超 RUN_STALE_SECONDS（core.dashboard.data.runs
+      单源，dashboard 读侧同款判据；延迟导入对齐本模块风格）且
+      _run_terminal_success（含 attempt 后缀对齐）未返回 True（None=指标索引
+      查无；False=查得非 success 终态，run_metrics terminal 值域含 failure/
+      frozen/cancelled/circuit）→ stale（无终态残留）。非 success 终态 MUST
+      NOT 按成功提升、MUST NOT 改计 failed——失败样本归因以产物 marker/信号
+      为源，指标侧无归因 detail，强行改计会造成 counts 与失败样本口径分叉。
+    - 查得 terminal=success → succeeded（run 实际收尾、产物断尾——daemon
+      崩溃截断收尾形态，指标已记终态）。
+    - mtime 新鲜（真实在跑或近瞬状态）或数据缺失（stat 失败/阈值单源导入
+      失败）→ 维持 running 不改判。
+    """
+    try:
+        from core.dashboard.data.runs import RUN_STALE_SECONDS  # noqa: PLC0415
+    except Exception:
+        return "running", "no-terminal"
+    try:
+        age_seconds = window_end.timestamp() - p.stat().st_mtime
+    except OSError:
+        return "running", "no-terminal"
+    if age_seconds <= RUN_STALE_SECONDS:
+        return "running", "no-terminal"
+    if _run_terminal_success(project_root, run_id) is True:
+        return "succeeded", "terminal=success"
+    return "stale", "no-terminal"
+
+
 def _iter_window_classified_runs(project_root, window_start: datetime, window_end: datetime):
     """窗口内 run 的分类产出，collect_runs_stats 与 collect_failed_run_samples
     共用的单一口径源（code-review item 45181d22b901）：yield (run_id, 产物
@@ -803,6 +893,12 @@ def _iter_window_classified_runs(project_root, window_start: datetime, window_en
     扫描捕获）；实证上盲派空 spec run 的失败凭据是 result 文本命中 marker
     （marker 路径保留），不依赖全文件扫描。
 
+    残余无终态的 stale 对账（phantom-running-guard 2.1）下沉本单点：仅
+    _classify_run 判 running 的 run 追加双源对账（_reconcile_running_run），
+    统计与失败样本两侧消费同一份产出，口径天然一致（pre_classified 直调
+    路径消费的即对账后产出；直调时 window_end 为 None 的兜底冻结沿用调用
+    侧既有约定——物化点冻结后贯穿，本函数入参恒为具体快照值）。
+
     双源交叉守卫不在此收口：collect_failed_run_samples 在分类后、守卫前还有
     一次 failed 空 detail 的全文件信号回填（_scan_run_signals），守卫判定须按
     各自回填后的 detail 执行（_is_phantom_signal_failure）——若守卫前先行回填，
@@ -810,6 +906,9 @@ def _iter_window_classified_runs(project_root, window_start: datetime, window_en
     """
     for run_id, p, ts in _iter_window_runs(project_root, window_start, window_end):
         category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+        if category == "running":
+            # 对账仅触达 running 判定的 run（终态 run 零额外 IO）
+            category, detail = _reconcile_running_run(project_root, run_id, p, window_end)
         yield run_id, p, ts, category, detail
 
 
@@ -1588,6 +1687,12 @@ class SelfReviewScheduler:
         lines.append(f"- 秒挂: {stats['instant_hang']}")
         lines.append(f"- 超时: {stats['timeout']}")
         lines.append(f"- 丢弃/空: {stats['dropped']}")
+        # phantom-running-guard 1.4（design D5）：三新桶行插于「丢弃/空」与
+        # 「在跑/无终态」之间，形态为增量加行、不改既有行文案；「在跑/无终
+        # 态」保留、语义收窄为真实在跑/近期无终态，不再被弃置件稀释。
+        lines.append(f"- 弃置/重试件: {stats['superseded']}")
+        lines.append(f"- 其他终态: {stats['ended']}")
+        lines.append(f"- 无终态残留: {stats['stale']}")
         lines.append(f"- 在跑/无终态: {stats['running']}")
         # 失败样本可追溯：run_id + 命中标记/信号摘要（spec 可追溯要求）。
         # 不以守卫后的 failed 计数为门：全部失败皆幻影时 stats["failed"]==0，

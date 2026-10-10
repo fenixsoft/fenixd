@@ -18,11 +18,12 @@ daemon 不可消除。本文件锁定：
 """
 
 import json
+import os
 from datetime import datetime
 
 import pytest
 
-from core.dashboard.data.runs import load_run_metric
+from core.dashboard.data.runs import RUN_STALE_SECONDS, load_run_metric
 from core.self_review import (
     _MARKER_DECLARATION_WINDOW,
     _business_fail_marker,
@@ -359,3 +360,148 @@ class TestLoadRunMetricAccessor:
         assert load_run_metric(root, "impl-sfx-1790244033-a2-r1")["terminal"] == "success"
         assert load_run_metric(root, "") is None
         assert load_run_metric(root, "impl-sfx-1790244033") is not None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# evo-fix-self-review-phantom-running：新桶位计数与残余 stale 对账
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestNewBucketMixedWindow:
+    """3.2：collect_runs_stats 混合夹具（result/superseded/ended/running 各一）。
+
+    counts 初始 dict 缺新键即 counts[category] += 1 KeyError（本条最大回归点）；
+    失败样本列表不含 superseded/ended/running 类 run（口径锁定）。
+    """
+
+    def test_mixed_window_counts_and_no_keyerror(self, tmp_path):
+        root = tmp_path / "proj"
+        root.mkdir()
+        # 1. result 成功
+        _make_run(root, "impl-new-ok-1791500000", [
+            _line(type="result", result="任务完成，验证通过", num_turns=2),
+        ])
+        # 2. superseded（原地重试弃置件：末两行 transient_retry + superseded 实拍形态）
+        _make_run(root, "impl-new-sup-1791500001-a1", [
+            _line(type="transient_retry", backoff_seconds=5, retry_number=1),
+            _line(type="superseded"),
+        ])
+        # 3. ended（取消路径最后落盘）
+        _make_run(root, "impl-new-end-1791500002", [
+            _line(type="system", subtype="tool_call", tool="Bash", argument="pytest"),
+            _line(type="cancelled"),
+        ])
+        # 4. running（新鲜 mtime，无终态）
+        _make_run(root, "impl-new-run-1791500003", [
+            _line(type="system", subtype="start"),
+            _line(type="assistant", message="in flight"),
+        ])
+
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["total"] == 4
+        assert stats["succeeded"] == 1
+        assert stats["superseded"] == 1  # 新桶落计数无 KeyError
+        assert stats["ended"] == 1
+        assert stats["running"] == 1
+        assert stats["stale"] == 0
+        assert stats["failed"] == 0
+
+        # 失败样本不含 superseded/ended/running 类 run
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert samples == []
+
+
+class TestStaleReconciliation:
+    """3.3：残余无终态的 stale 对账四态（phantom-running-guard D4）。
+
+    mtime 以 os.utime 注入控制（测试不 sleep）；window_end 显式贯穿（对齐
+    生产调度侧「一次冻结、全节共用」契约，夹具落盘后冻结）。对账仅触达
+    running 判定的 run；「宁可不拦不可误伤」：数据缺失不按成功提升。
+    """
+
+    @staticmethod
+    def _running_run(root, run_id):
+        return _make_run(root, run_id, [
+            _line(type="system", subtype="start"),
+            _line(type="assistant", message="in flight"),
+        ])
+
+    @staticmethod
+    def _backdate(p, window_end, seconds_past_stale=60):
+        mtime = window_end.timestamp() - RUN_STALE_SECONDS - seconds_past_stale
+        os.utime(p, (mtime, mtime))
+
+    def test_stale_mtime_without_terminal_counts_stale(self, tmp_path):
+        """mtime 陈旧 + 指标索引查无（fenixd.log 无该 run 终态，_run_terminal_success
+        返回 None=未返回 True）→ stale（无终态残留），不维持 running。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        p = self._running_run(root, "impl-stale-orphan")
+        window_end = datetime.now().astimezone()
+        self._backdate(p, window_end)
+
+        stats = collect_runs_stats(
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), window_end=window_end
+        )
+        assert stats["stale"] == 1
+        assert stats["running"] == 0
+        assert stats["succeeded"] == 0
+        assert stats["failed"] == 0
+
+    def test_stale_mtime_non_success_terminal_still_stale(self, tmp_path):
+        """mtime 陈旧 + 指标 terminal=failure（查得非 success 终态，False 路径）
+        → 同走 stale 通道：MUST NOT 按成功提升计 succeeded、MUST NOT 改计
+        failed（失败样本归因以产物 marker/信号为源，防计数与失败样本分叉）。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "impl-stale-failure"
+        p = self._running_run(root, run_id)
+        _make_metric_log(root, {run_id: "failure"})
+        window_end = datetime.now().astimezone()
+        self._backdate(p, window_end)
+
+        stats = collect_runs_stats(
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), window_end=window_end
+        )
+        assert stats["stale"] == 1
+        assert stats["failed"] == 0
+        assert stats["succeeded"] == 0
+
+        # 失败样本同样不入选（stale 不入失败样本口径锁定）
+        samples = collect_failed_run_samples(
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), window_end=window_end
+        )
+        assert samples == []
+
+    def test_stale_mtime_terminal_success_promotes_succeeded(self, tmp_path):
+        """mtime 陈旧 + 指标 terminal=success → succeeded（run 实际收尾、产物
+        断尾——daemon 崩溃截断收尾形态），不混入在跑也不落 stale。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "impl-stale-but-done"
+        p = self._running_run(root, run_id)
+        _make_metric_log(root, {run_id: "success"})
+        window_end = datetime.now().astimezone()
+        self._backdate(p, window_end)
+
+        stats = collect_runs_stats(
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), window_end=window_end
+        )
+        assert stats["succeeded"] == 1
+        assert stats["stale"] == 0
+        assert stats["running"] == 0
+
+    def test_fresh_mtime_without_terminal_stays_running(self, tmp_path):
+        """mtime 新鲜（刚写入）+ 无终态 → 维持 running 不改判（真实在跑或
+        近瞬状态，宁可不拦不可误伤）。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        self._running_run(root, "impl-fresh-running")
+        window_end = datetime.now().astimezone()
+
+        stats = collect_runs_stats(
+            root, datetime(2000, 1, 1, 0, 0).astimezone(), window_end=window_end
+        )
+        assert stats["running"] == 1
+        assert stats["stale"] == 0
+        assert stats["succeeded"] == 0

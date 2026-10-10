@@ -204,6 +204,11 @@ class TestArchiveReviewExclusionAndMissing:
             "timeout": 0,
             "dropped": 0,
             "running": 0,
+            # evo-fix-self-review-phantom-running 1.2：新桶位预先入 dict
+            # （弃置/重试件 / 其他终态 / 无终态残留）
+            "superseded": 0,
+            "ended": 0,
+            "stale": 0,
         }
 
 
