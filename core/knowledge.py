@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -44,6 +45,7 @@ from pathlib import Path
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
 from core.knowledge_backfill import (
     append_todo_line,
+    atomic_write_text,
     ledger_has_pending,
     register_archive_pending,
 )
@@ -848,6 +850,73 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
         return None
 
 
+# ── pending 台账（evo-knowledge-distill-resume-guard R1，design D1）──────
+
+# 台账文件：``<proot>/.fenix/knowledge-distill-pending.json``，与既有
+# knowledge-distill.lock 同目录不同文件、互不阻塞。结构
+# ``{"batches": [{"names": [...], "queued_at": "<ISO8601>"}]}``（同批多归档
+# 合并为一条）。
+PENDING_LEDGER_NAME = "knowledge-distill-pending.json"
+
+# 保留 pending 条目的三类滞留路径（提交失败/执行异常/回滚未确认）在既有
+# todo 台账文案中统一追加的接管口径（R2：条目保留交 R3 恢复或人工兜底，
+# 不得静默清除）。
+_RESUME_TAKEOVER_NOTE = "pending 台账条目保留，将由 daemon 重启续跑接管"
+
+
+def _pending_ledger_path(proot: Path) -> Path:
+    return Path(proot) / ".fenix" / PENDING_LEDGER_NAME
+
+
+def _read_pending_ledger(proot: Path) -> list:
+    """读 pending 台账（缺失/损坏/不可读按空表 fail-open，R1）。
+
+    宁可丢台账不可阻归档：台账丢失的后果是批次退回「内存态重启蒸发」的
+    现状而非更糟（design D1）。条目须为 ``{"names": [非空 str, ...]}`` 形态，
+    形态不合规的条目跳过（不影响其余条目）。
+    """
+    try:
+        raw = _pending_ledger_path(proot).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        logger.warning("knowledge-distill pending 台账读取失败，按空表处理: %s", e)
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.warning("knowledge-distill pending 台账损坏（非法 JSON），按空表处理")
+        return []
+    batches = data.get("batches") if isinstance(data, dict) else None
+    if not isinstance(batches, list):
+        return []
+    out = []
+    for item in batches:
+        if not isinstance(item, dict):
+            continue
+        names = item.get("names")
+        if not isinstance(names, list):
+            continue
+        names = [n for n in names if isinstance(n, str) and n]
+        if not names:
+            continue
+        out.append({"names": names, "queued_at": str(item.get("queued_at") or "")})
+    return out
+
+
+def _write_pending_ledger(proot: Path, batches: list) -> None:
+    """整文件原子回写（tmp + os.replace，复用 knowledge_backfill 同款手法）。
+
+    Raises:
+        OSError 等写异常原样上抛——调用方（持 ``_guard`` 的单写者）按各自
+        路径 fail-open（dispatch/清除）或放弃恢复（recover_pending）。
+    """
+    atomic_write_text(
+        _pending_ledger_path(proot),
+        json.dumps({"batches": batches}, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
 class DistillManager:
     """蒸馏 run 管理器（进程内单例）。
 
@@ -855,6 +924,10 @@ class DistillManager:
       积压条目合并为一次批量 run（spec 允许的实现裁量）。
     - 跨进程互斥：``.fenix/knowledge-distill.lock`` flock（daemon 与 dashboard
       --serve 分属两进程时仍保证同时至多一个蒸馏 run 在写 spec/knowledge/）。
+    - 崩溃续跑（evo-knowledge-distill-resume-guard）：入队即落盘
+      ``.fenix/knowledge-distill-pending.json`` pending 台账（R1），批次收尾
+      对账清除/保留（R2）；daemon 重启经 ``recover_pending`` 先清空台账再逐条
+      重派（R3，dashboard --serve 不接入）。
     - spawn 可注入替身（task 2.4 单测 fake spawn 三支路）。
     """
 
@@ -873,6 +946,12 @@ class DistillManager:
             queue = self._queues.setdefault(key, [])
             worker = self._workers.get(key)
             queue.extend(names)
+            # R1（evo-knowledge-distill-resume-guard）：入队即落盘 pending 台账。
+            # 写点收在 dispatch 单点（单条/批量入口经 _dispatch_via_mgr 汇聚于
+            # 此）；回填期排队与各门控拒绝路径不达此处，天然不写台账（R2）。
+            # 单写者 = 持 self._guard 的本线程（追加与 worker 收尾清除都在锁内），
+            # 进程内竞态窗口由此消除；台账写失败 fail-open 不阻派发。
+            self._ledger_append(proot, names)
             if worker is None or not worker.is_alive():
                 worker = threading.Thread(
                     target=self._worker,
@@ -887,6 +966,45 @@ class DistillManager:
     def pending(self, proot: Path) -> int:
         with self._guard:
             return len(self._queues.get(str(Path(proot).resolve()), []))
+
+    # ── pending 台账读写（evo-knowledge-distill-resume-guard R1/R2）──
+    # 两者都 MUST 在持 self._guard 时调用（单写者口径，design D1）。
+    def _ledger_append(self, proot: Path, names: list) -> None:
+        """入队追加台账条目（读-改-原子回写；fail-open 不阻派发）。"""
+        try:
+            batches = _read_pending_ledger(proot)
+            batches.append(
+                {
+                    "names": list(names),
+                    "queued_at": now_local().isoformat(timespec="seconds"),
+                }
+            )
+            _write_pending_ledger(proot, batches)
+        except Exception as e:  # noqa: BLE001 — 宁可丢台账不可阻归档
+            logger.warning(
+                "knowledge-distill pending 台账追加失败（fail-open，不影响派发）: %s",
+                e,
+            )
+
+    def _ledger_remove(self, proot: Path, archived_names: list) -> None:
+        """按本批 names 并集匹配移除台账条目（读-过滤-原子回写；fail-open）。
+
+        整文件重读-过滤-回写而非「删一条重写全量快照」：避免并发归档入队的
+        追加被整文件覆盖丢条目（design D2）。并集交集匹配一次清除多条——
+        worker 把同项目积压整体摘下合并为一次 run 时，只清「最后一条」会漏清
+        先入队条目，陈旧条目会在重启恢复时对已入库归档触发重蒸。
+        """
+        try:
+            batches = _read_pending_ledger(proot)
+            kept = [
+                b for b in batches if not (set(b["names"]) & set(archived_names))
+            ]
+            if len(kept) != len(batches):
+                _write_pending_ledger(proot, kept)
+        except Exception as e:  # noqa: BLE001 — 清除失败退回现状，不阻主流程
+            logger.warning(
+                "knowledge-distill pending 台账清除失败（fail-open）: %s", e
+            )
 
     # ── worker：串行消费 + 批量合并 ─────────────────────────────────
     def _worker(self, proot: Path, key: str) -> None:
@@ -910,7 +1028,11 @@ class DistillManager:
                     type(e).__name__,
                     e,
                 )
-                _register_todo_retry(proot, batch, f"执行异常: {e}")
+                _register_todo_retry(
+                    proot,
+                    batch,
+                    f"执行异常: {e}（{_RESUME_TAKEOVER_NOTE}）",
+                )
 
     def _acquire_file_lock(self, proot: Path):
         """跨进程单飞锁（flock，阻塞等待——并发归档事件排队串行）。"""
@@ -980,6 +1102,9 @@ class DistillManager:
                 if commit is not None:
                     result["ok"] = True
                     result["commit"] = commit
+                    # R2：成功收尾（commit 含空串=无变更可提交）即移除 pending
+                    # 条目——按本批 names 并集一次清除（合并批次防漏清陈旧条目）
+                    self._ledger_remove(proot, archived_names)
                     logger.info(
                         "knowledge-distill 完成（%s，第 %d 轮，commit=%s）",
                         names,
@@ -1002,7 +1127,8 @@ class DistillManager:
                     proot,
                     archived_names,
                     "校验通过但自动提交失败，产出滞留工作区未落库"
-                    "（请人工提交；注意后续放弃产出的清理会回滚工作区）",
+                    "（请人工提交；注意后续放弃产出的清理会回滚工作区；"
+                    f"{_RESUME_TAKEOVER_NOTE}）",
                 )
                 _audit_stray_writes(proot, status_before, names)
                 return result
@@ -1067,6 +1193,9 @@ class DistillManager:
         """放弃产出：清理半成品 + 登重试台账（``before`` = run 前基线快照）。"""
         discarded = _discard_output(proot, before)
         if discarded:
+            # R2：清理确认（_discard_output=True）后 pending 条目即移除——
+            # 该批已诚实收尾（无产出），重启续跑无意义
+            self._ledger_remove(proot, archived_names)
             _register_todo_retry(proot, archived_names, reason)
             logger.warning(
                 "knowledge-distill 放弃产出（%s）: %s；已清理 spec/knowledge/ 半成品并登重试台账",
@@ -1076,11 +1205,14 @@ class DistillManager:
         else:
             # code-review 37565545ea29：回滚未确认（保守跳过 / restore、clean
             # 失败 / 残留复查不可用或仍有残留）时，台账 reason 同步带上该口径，
-            # 人工排查不会误以为工作区已清理干净
+            # 人工排查不会误以为工作区已清理干净。
+            # R2/design D2：pending 条目保留——工作区可能有残留半成品，重启
+            # 续跑让校验链重新裁决比留死条目诚实。
             _register_todo_retry(
                 proot,
                 archived_names,
-                f"{reason}（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查）",
+                f"{reason}（spec/knowledge/ 回滚未确认，半成品滞留工作区，"
+                f"请人工核查；{_RESUME_TAKEOVER_NOTE}）",
             )
             logger.warning(
                 "knowledge-distill 放弃产出（%s）: %s；spec/knowledge/ 回滚未确认"
@@ -1089,6 +1221,65 @@ class DistillManager:
                 ", ".join(archived_names),
                 reason,
             )
+
+    # ── daemon 启动恢复（evo-knowledge-distill-resume-guard R3，design D3）─
+    def recover_pending(self, proot: Path) -> int:
+        """重启恢复：读 pending 台账 → **先清空台账** → 逐条重派，返回恢复数。
+
+        顺序 MUST 为「先清空后入队」：台账写点收在 dispatch 单点（R1），恢复
+        重派本身会把门控放行的条目重新落盘；若先入队后清空，清空会把刚重写
+        的条目一并抹掉，恢复 run 期间台账裸奔（此时崩溃即重演本 SPEC 要修的
+        批次丢失）。先清空后：门控放行条目由 R1 立即重新落盘（生命周期交 R2
+        接管——收尾前始终在册，运行中崩溃可再次恢复）；门控拒绝条目（归档
+        目录缺失/disabled/回填期排队）随清空消失、不复活。清空与逐条重派之间
+        的残差窗口（毫秒级）与读损坏 fail-open 同口径，不为该窗口引入跨文件
+        事务。
+
+        仅由 daemon 启动路径调用（dashboard --serve 不接入，避免双进程竞争）。
+        本方法不执行蒸馏——实际 run 仍走既有 flock 单飞与 worker 串行消费。
+
+        Returns:
+            恢复重派的批次数（门控拒绝与派发失败条目不计）。
+        """
+        proot = Path(proot)
+        batches = _read_pending_ledger(proot)
+        if not batches:
+            return 0
+        try:
+            _write_pending_ledger(proot, [])
+        except Exception as e:  # noqa: BLE001 — 清空失败则放弃恢复（避免裸奔放大）
+            logger.warning(
+                "knowledge-distill 恢复放弃（pending 台账清空失败，"
+                "避免恢复期台账裸奔）: %s",
+                e,
+            )
+            return 0
+        recovered = 0
+        labels = []
+        for item in batches:
+            names = list(item.get("names") or [])
+            if not names:
+                continue
+            gated = _gate_distill(proot, names)
+            if gated is not None:
+                logger.info(
+                    "knowledge-distill 恢复跳过（%s）: %s",
+                    ", ".join(names),
+                    gated.get("reason"),
+                )
+                continue
+            # 门控放行：经既有派发壳重入队（R1 写点随即把条目重新落盘）。
+            # 派发失败（_dispatch_via_mgr except 分支）已登 todo 重试台账兜底，
+            # 此处不计数——与运行期派发失败既有口径一致。
+            res = _dispatch_via_mgr(self, proot, names)
+            if res.get("dispatched"):
+                recovered += 1
+                labels.append(", ".join(names))
+        if recovered:
+            logger.info(
+                "knowledge-distill 恢复重派（%d 批：%s）", recovered, "; ".join(labels)
+            )
+        return recovered
 
 
 # 进程内单例（daemon / dashboard --serve 各进程一份；跨进程由 flock 兜底互斥）
