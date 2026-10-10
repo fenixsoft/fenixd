@@ -844,30 +844,125 @@ def _run_scenario_static_check(pipeline, spec_name: str) -> None:
     )
 
 
-def _run_contract_static_check(pipeline, spec_name: str) -> None:
-    """契约只读一致性检查挂点（planner-contract-findings，design D4）。
+def _run_contract_static_check(pipeline, spec_name: str) -> bool:
+    """契约只读一致性检查 + serve 一致性门（出题产物消费期统一挂点）。
 
-    在 planner-plan 产物验收通过后（出题完成处）调用：对验证契约做只读
-    一致性检查（入口存在性/与 start script 一致性/端口注入），findings
-    覆盖写 ``contract_findings.json`` 供 admin 处置 prompt 注入。
-    **只做情报不拦截出题**，任何异常记 WARNING 不阻断（fail-open）。
-    写盘与分布日志骨架共用 _emit_static_findings。
+    三个出题产物路径统一经过本挂点（evo-add-scenario-serve-consistency-preflight
+    1.2，任一路径产物不得绕过 serve 一致性检查）：
+
+    - 新鲜出题验收路径：planner-plan 产物验收通过后（pipeline.py 出题完成处）；
+    - 冻结场景复用路径：``_load_frozen_or_escalate`` 消费前；
+    - 并行出题产物消费路径：``_consume_parallel_plan_product`` 消费后、冻结
+      加载前（产物在盘即先过检查再消费）。
+
+    检查内容：对验证契约做只读一致性检查（入口存在性/与 start script 一致性/
+    端口注入 + serve 缺失×场景 kind 交叉规则），findings 覆盖写
+    ``contract_findings.json`` 供 admin 处置 prompt 注入。打回机制对齐
+    selfcheck 先例（pipeline.py 契约消费期轻量自证段）：serve 缺失 cross
+    finding 走 ``_write_verify_contract_missing`` 通道阻断场景执行、派发
+    Administrator 起草，**不触发 planner replan**（重排出题无助于契约缺口）；
+    既有三条规则维持留痕不阻断；检查器异常沿用 scan_contract 既有 fail-open
+    不阻断验证。
+
+    Returns:
+        True = serve 缺失 cross finding 已打回（调用方 MUST return 终止本轮
+        验证流水线）；False = 放行（含产物缺失/无 finding/检查器异常 fail-open）。
     """
     from core.verify_engine.scenario_static_check import (
+        SERVE_MISSING_RULE_ID,
         scan_contract,
+        start_fallback_valid,
         write_contract_findings,
     )
 
-    def _scan():
-        findings = scan_contract(pipeline._context.project_root)
-        return findings, f"契约静态检查 '{spec_name}' "
+    scenarios_path = (
+        pipeline._context.project_root
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "test_scenarios.json"
+    )
 
-    _emit_static_findings(
+    def _scan():
+        if not scenarios_path.exists():
+            # 产物未落盘（纯新鲜出题轮的消费前挂点）：零情报零阻断，主路径
+            # 挂点在出题验收后兜底。
+            return None, ""
+        try:
+            data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            # 解析失败留痕后跳过 kind 相关交叉规则（load_scenarios 验收与
+            # 执行期门禁各自有既有处置，此处不重复拦截）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"契约静态检查跳过 kind 统计 '{spec_name}'（场景文件不可解析）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return None, ""
+        if not isinstance(data, list):
+            return None, ""
+        # kind 集按执行 kind 原样统计（口径同 serving.py:960，缺失 kind 缺省 web）
+        kinds = {str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)}
+        start_cmd = str(pipeline._context.config_reader("commands.start", "") or "")
+        findings = scan_contract(
+            pipeline._context.project_root,
+            scenario_kinds=kinds,
+            start_cmd=start_cmd,
+        )
+        info_head = (
+            f"契约静态检查 '{spec_name}'（kind 集 {','.join(sorted(kinds)) or '空'}，"
+            f"start 兜底{'有效' if start_fallback_valid(start_cmd) else '缺失/占位'}）"
+        )
+        return findings, info_head
+
+    try:
+        findings, info_head = _scan()
+        if findings is None:
+            return False
+        write_contract_findings(pipeline._context.project_root, spec_name, findings)
+        if findings:
+            from collections import Counter
+
+            dist = dict(Counter(f["rule_id"] for f in findings))
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"{info_head}检出 {len(findings)} 条情报: {dist}",
+            )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"契约静态检查跳过 '{spec_name}'（fail-open，不阻断验证）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return False
+    serve_missing = [f for f in findings if f.get("rule_id") == SERVE_MISSING_RULE_ID]
+    if not serve_missing:
+        return False
+    # ── serve 缺失打回（对齐 selfcheck 先例：信号通道 + env 阻塞升级 + return）──
+    finding = serve_missing[0]
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"契约 serve 一致性门打回 '{spec_name}' — fail-fast 阻断场景执行"
+        f"（不触发 planner replan，重排出题无助于契约缺口）: {finding.get('message')}",
+    )
+    _write_verify_contract_missing(
         pipeline,
         spec_name,
-        scan_fn=_scan,
-        write_fn=write_contract_findings,
-        rule_id_of=lambda f: f["rule_id"],
-        check_name="契约静态检查",
-        log_label="不阻断出题",
+        (
+            f"{finding.get('message')}（契约静态检查 serve 缺失交叉规则命中，"
+            f"出题产物消费期打回，场景执行数为 0）"
+        ),
+        str(finding.get("evidence") or ""),
+        recommended_action=(
+            "Administrator 起草 .fenix/verify.yaml 验证契约 serve 段："
+            "检查项目构建命令、静态目录、服务启动方式与端口注入；"
+            "草稿写临时路径 → bin/fenix_verify_contract.py 自证 → "
+            "全通才落位 → git 提交 → spec 复位 ready 触发重验证"
+        ),
     )
+    pipeline._escalate_env_blocked(
+        spec_name,
+        [str(finding.get("message") or "")],
+        title="验证环境阻塞（契约 serve 缺失）",
+    )
+    return True

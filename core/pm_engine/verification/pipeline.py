@@ -2856,6 +2856,15 @@ class VerificationPipeline:
         if not self._consume_parallel_plan_product(spec_name, verify_dir):
             return
 
+        # ── 契约 serve 一致性门（evo-add-scenario-serve-consistency-preflight 1.2）──
+        # 消费前统一挂点，覆盖冻结复用与并行产物两条短路路径：test_scenarios.json
+        # 在盘（冻结集或并行产物）即先过契约静态检查再消费，kind 集与契约能力
+        # 不匹配时 serve 缺失打回（_write_verify_contract_missing 信号通道 +
+        # env 阻塞升级，返回 True → 终止本轮流水线，不触发 planner replan）。
+        # 产物未落盘（纯新鲜出题轮）此处零情报放行，主路径挂点在出题验收后。
+        if self._run_contract_static_check(spec_name):
+            return
+
         # ── 场景冻结加载 + 损坏升级（见 _load_frozen_or_escalate）──
         frozen, _frozen_aborted = self._load_frozen_or_escalate(spec_name, verify_dir)
         if _frozen_aborted:
@@ -3052,11 +3061,16 @@ class VerificationPipeline:
                 # 正常报告（成功时才清理，失败/重验路径历史留痕）。
                 self._clear_degrade_context(spec_name)
 
-                # ── 契约只读一致性检查（planner-contract-findings，design D4）──
+                # ── 契约 serve 一致性门（planner-contract-findings D4 +
+                # evo-add-scenario-serve-consistency-preflight 1.2）──
                 # planner-plan 产物验收通过后（出题完成处）：对验证契约做只读
-                # 一致性检查并落盘 contract_findings.json（fail-open，不阻断
-                # 出题——契约检查与场景生成相互独立）。
-                self._run_contract_static_check(spec_name)
+                # 一致性检查并落盘 contract_findings.json（既有三条规则 fail-open
+                # 留痕不阻断出题）；serve 缺失 cross finding 打回——走
+                # _write_verify_contract_missing 通道阻断场景执行、派发
+                # Administrator 起草，不触发 planner replan（重排出题无助于
+                # 契约缺口）。
+                if self._run_contract_static_check(spec_name):
+                    return
 
                 # ── 场景集冻结（add-verify-scenario-freeze）──
                 # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。

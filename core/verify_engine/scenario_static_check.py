@@ -621,7 +621,35 @@ def _package_start_entry(project_root: Path) -> str | None:
     return start.strip()
 
 
-def scan_contract(project_root: Path) -> list[dict]:
+# ── commands.start 兜底有效性判定（evo-add-scenario-serve-consistency-preflight）──
+# 占位哨兵与执行期 serving.py:1098-1099 旧行为同口径：config commands.start 为
+# 空（无自启）或 fenix-init 写入的占位 echo 时，视为「无有效兜底」——场景集含
+# api/web 时验证执行期将 fail-fast「应用不可达」。非占位 start 属执行期既有
+# 兜底形态（serve 缺失仍可服务，serving.py:1097「直接回退 commands.start」），
+# 存量零迁移。
+START_FALLBACK_PLACEHOLDER = "echo 'No start command configured yet'"
+
+# 场景 kind 集含这些 kind 时需被验证应用可服务（serving.py:958-959 同口径：
+# 含 web/api 场景 → serve（或 commands.start 兜底）必须有效；纯 cli 无实例形态）。
+SERVE_REQUIRED_KINDS = frozenset({"api", "web"})
+
+SERVE_MISSING_RULE_ID = "serve_missing_for_scenario_kinds"
+
+
+def start_fallback_valid(start_cmd: str | None) -> bool:
+    """commands.start 兜底有效性判定（口径同 serving.py:1098-1099 执行期判定）。
+
+    空串/None/占位哨兵（strip 后比对）= 无有效兜底；其余非空命令 = 有效兜底。
+    """
+    text = str(start_cmd or "").strip()
+    return bool(text) and text != START_FALLBACK_PLACEHOLDER
+
+
+def scan_contract(
+    project_root: Path,
+    scenario_kinds: set[str] | Sequence[str] | None = None,
+    start_cmd: str | None = None,
+) -> list[dict]:
     """契约只读一致性检查（planner 出题期，零 token 纯机械）。
 
     初始规则表（design D4，机械可查、误报即删）：
@@ -631,6 +659,22 @@ def scan_contract(project_root: Path) -> list[dict]:
     3. ``serve_entry_no_port_injection``（info）：cmd 无 {port} 且无
        FENIX_VERIFY_PORT 引用（$VAR/${VAR} 形态均计；较 load 侧 warning 略宽
        以容 shell 花括号引用，补落盘让 admin 可见）。
+
+    交叉规则（evo-add-scenario-serve-consistency-preflight D1，仅当调用方传入
+    ``scenario_kinds`` 时启用）：
+    4. ``serve_missing_for_scenario_kinds``（high）：契约 serve 段缺失且场景
+       kind 集含 api/web（需被验证应用可服务）且 commands.start 无有效兜底
+       （空或占位哨兵，判定口径同 serving.py:1098-1099）——验证执行期将
+       fail-fast「应用不可达」，出题产物消费期打回补契约。serve 缺失但 start
+       非占位的存量形态（执行期 commands.start 旧行为可兜底）与纯 cli 场景集
+       （无实例形态）不报；serve 缺失时既有三条规则维持早退（不误报历史纯
+       CLI 契约）。既有单参调用方（不传 kind 集）行为与现状一致。
+
+    Args:
+        project_root: 项目根目录。
+        scenario_kinds: 出题产物场景 kind 集合（按执行 kind 原样统计，口径同
+            serving.py:960）。None（缺省）= 跳过交叉规则。
+        start_cmd: config commands.start 兜底形态（原样传入，strip 后判定）。
 
     Returns:
         findings 列表（每条 {rule_id, severity, message, evidence}）；
@@ -647,8 +691,34 @@ def scan_contract(project_root: Path) -> list[dict]:
         project_root = Path(project_root)
         contract = load_verify_contract(project_root)
         serve = contract.serve if contract is not None else None
-        if serve is None or serve.kind != "command" or not serve.cmd.strip():
-            return findings  # 非 command 形态 / 无契约：契约检查不适用
+        if serve is None:
+            # ── 交叉规则：serve 缺失 × 场景 kind 需求（本 SPEC）──
+            # 仅当调用方传入场景 kind 集时启用；kind 集含 api/web 且 start
+            # 无有效兜底 → 报 serve 缺失。既有三条规则全部依赖 serve.cmd，
+            # 维持早退（对历史纯 CLI 契约与 start 兜底存量形态零误报）。
+            kinds = {str(k) for k in (scenario_kinds or ())}
+            if kinds & SERVE_REQUIRED_KINDS and not start_fallback_valid(start_cmd):
+                kinds_label = "、".join(sorted(kinds))
+                findings.append(
+                    dict(
+                        rule_id=SERVE_MISSING_RULE_ID,
+                        severity="high",
+                        message=(
+                            f"场景 kind 集含 {kinds_label}（需被验证应用可服务），"
+                            f"但 .fenix/verify.yaml 无 serve 段且 config "
+                            f"commands.start 无有效兜底（空或占位哨兵）——验证"
+                            f"执行期将 fail-fast「应用不可达」。请补 verify.yaml "
+                            f"serve 段（或非占位 commands.start 兜底）"
+                        ),
+                        evidence=(
+                            f"scenario_kinds={kinds_label}; serve=None; "
+                            f"commands.start={str(start_cmd or '').strip()!r}"
+                        ),
+                    )
+                )
+            return findings  # 无契约 / serve 缺失：既有三条契约检查不适用
+        if serve.kind != "command" or not serve.cmd.strip():
+            return findings  # 非 command 形态：契约检查不适用
         cmd = serve.cmd.strip()
         entry = resolve_entry_path(cmd, project_root)
         # ① 入口存在性（与预检同源解析器，出题期提前暴露）

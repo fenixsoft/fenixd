@@ -148,8 +148,16 @@ class TestPreprobeSatisfiedNoInvocation(_TempProjCase):
         self.assertEqual(len(disps2), 1, "下一 tick 不得重复追加留痕")
 
     def test_contract_missing_probe_pass_closes(self):
-        """verify_contract_missing：契约文件已存在即免唤起。"""
-        proot = _make_proj(self.tmpdir, VERIFY_YAML_WITH_REGRESSION)
+        """verify_contract_missing：契约 serve/start 能力已补即免唤起。
+
+        evo-add-scenario-serve-consistency-preflight 2.1 收紧：满足判定从
+        「契约可解析」改为「serve 段存在或 commands.start 非占位，且能力可覆盖
+        在途场景 kind 需求」——夹具契约须带 serve 段才判满足。
+        """
+        proot = _make_proj(
+            self.tmpdir,
+            VERIFY_YAML_WITH_REGRESSION + "serve:\n  kind: static\n  root: dist\n",
+        )
         mon, store, _ = _make_monitor(proot)
         rec = _seed_signal(store, "verify_contract_missing")
         with mock.patch.object(mon, "_invoke_administrator") as mock_invoke:
@@ -157,6 +165,21 @@ class TestPreprobeSatisfiedNoInvocation(_TempProjCase):
             self.assertEqual(mock_invoke.call_count, 0)
         recs = {r["id"]: r for r in store.read_all()}
         self.assertTrue(recs[rec["id"]].get("handled"))
+
+    def test_contract_missing_serveless_still_invokes(self):
+        """verify_contract_missing：契约可解析但无 serve 段且 start 占位 → 照常唤起。
+
+        2026-10-10 事故形态（三条在途信号被「可解析即满足」宽松探测错误闭环）
+        的回归锁定：能力缺口未补齐不 auto-resolve。
+        """
+        proot = _make_proj(self.tmpdir, VERIFY_YAML_WITH_REGRESSION)
+        mon, store, _ = _make_monitor(proot)
+        rec = _seed_signal(store, "verify_contract_missing")
+        with mock.patch.object(mon, "_invoke_administrator") as mock_invoke:
+            mon._detect_family_explosion()
+            self.assertEqual(mock_invoke.call_count, 1, "能力缺口未补应照常唤起")
+        recs = {r["id"]: r for r in store.read_all()}
+        self.assertFalse(recs[rec["id"]].get("handled"), "不得 pre-probe 闭环")
 
     def test_artifact_paths_probe_pass_closes(self):
         """build_artifact_paths_missing：产物路径配置非空即免唤起。"""
