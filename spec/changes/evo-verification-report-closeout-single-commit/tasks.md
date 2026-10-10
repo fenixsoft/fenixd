@@ -22,5 +22,5 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_verification_report_commit.py：新增合并形态用例——synthesized 与 present 出口下闸门放行后提交计数恰 +1，HEAD 内容同时含报告本体与「本轮场景集变更」，pathspec 严格单文件、其它 spec staged 草案与无关修改不被卷入；pre_commit 回调抛异常时闸门仍放行、报告本体照常入库、WARNING 恰一条；闸门放行后模拟采纳尾段二次渲染，提交计数不增、WARNING 零新增。
+- [ ] 2.1 tests/test_verification_report_commit.py：新增合并形态用例——synthesized 与 present 出口下闸门放行后提交计数恰 +1，HEAD 内容同时含报告本体与「本轮场景集变更」，pathspec 严格单文件、其它 spec staged 草案与无关修改不被卷入；pre_commit 回调抛异常时（用例以 present 出口为载体——该出口闸门自身零 WARNING，故 WARNING 恰一条即回调异常本身；resynthesized/synthesized 出口闸门已有自带 WARNING，勿用于此断言）闸门仍放行、报告本体照常入库；闸门放行后模拟采纳尾段二次渲染，提交计数不增、WARNING 零新增。
 - [ ] 2.2 tests/test_verification_report_commit.py：既有 TestScenarioSectionCommit（直调渲染单文件提交、幂等跳过）与 TestNonGitProjectSilentSkip 全部保持通过；tests/test_push_closeout_report_commit.py 全绿（push 收口路径零回归）。

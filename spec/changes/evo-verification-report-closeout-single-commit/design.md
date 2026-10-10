@@ -4,6 +4,7 @@
 
 - core/verify_report.py `ensure_verification_report(project_root, spec_name, logger=None, pre_commit=None)`：`pre_commit` 为无参 callable；三个放行出口（现 :1143/:1160/:1202）在 `_commit_verification_report(...)` 之前以 try/except Exception 调用（异常仅 WARNING，日志通道 verify_report）。默认 None 时行为逐字等价现状——push 收口等未传回调的调用方零影响。
 - core/pm_engine/verification/report_gate.py `_ensure_verification_report`(:85)：函数内延迟导入 `_render_scenario_change_section_to_report` 并以 lambda/闭包（捕获 pipeline、spec_name）注入 pre_commit；外层再兜一层 try/except 返回阻断文案不必要——渲染回调自身已兜异常，闸门放行结论只由报告闸门数据决定。
+- legacy 车道语义说明：legacy.py(:408/:603) 两调用点现状**无**末尾场景段渲染（`_render_scenario_change_section_to_report` 仅由 pipeline.py:1232/:1408 调用，见 scenario_gate.py 提交器注释「pipeline._apply_bug_found / _apply_verified 内」），故回调注入对 legacy 采纳是行为扩展——其报告首次获得场景段小节（闭合 legacy 车道场景段缺失缝隙），非现状保持；回调失败仅 WARNING 的降级语义使该扩展无阻断风险。
 
 ## D2 渲染数据时点
 
