@@ -1,6 +1,6 @@
 # 验证报告落盘即入库
-<!-- knowledge: capability=verification-report rev=4
-     sources=spec/archive/2026-10-05-evo-add-verification-report-commit-on-write,spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit,spec/archive/2026-10-06-evo-verify-report-scenario-section-commit,spec/changes/evo-verification-report-closeout-single-commit -->
+<!-- knowledge: capability=verification-report rev=5
+     sources=spec/archive/2026-10-05-evo-add-verification-report-commit-on-write,spec/archive/2026-10-06-evo-add-push-closeout-verification-report-commit,spec/archive/2026-10-06-evo-verify-report-scenario-section-commit -->
 
 验证报告 `spec/changes/<spec>/verification-report.md` 的版本化入库能力：报告写盘成功即同步提交进版本库，使「落盘」与「入库」合一，验证结论（含场景集演进小节）在归档前就有版本化留痕。
 

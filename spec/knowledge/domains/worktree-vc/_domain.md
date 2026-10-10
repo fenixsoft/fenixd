@@ -1,5 +1,5 @@
 # 工作树与版本控制
-> 最后更新：2026-10-09 14:19 UTC+8
+> 最后更新：2026-10-11 01:47 UTC+8
 
 实现工作树（worktree）的隔离、播种、回读与卫生，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律，主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级。
 
@@ -12,7 +12,7 @@
 | [worktree-result-readback](worktree-result-readback.md) | worktree 结果回读 | 2026-10-03 04:59 |
 | [worktree-hygiene](worktree-hygiene.md) | worktree 卫生与复用 | 2026-10-03 04:59 |
 | [run-isolation](run-isolation.md) | run 工作树隔离与冲突恢复 | 2026-09-27 22:14 |
-| [worktree-acquire](worktree-acquire.md) | worktree 获取退避等待与降级计数（自适应预算封顶 + 竞争类降级分流留痕） | 2026-10-09 14:19 |
+| [worktree-acquire](worktree-acquire.md) | worktree 获取退避等待与降级计数（自适应预算封顶 + 竞争类降级分流留痕） | 2026-10-11 01:47 |
 | [merge-back](merge-back.md) | merge-back 合并回主树 | 2026-10-03 04:59 |
 | [merge-back-precheck](merge-back-precheck.md) | merge-back 预检（WIP 交集升级拦截） | 2026-10-03 04:59 |
 | [wip-defer-merge-retry](wip-defer-merge-retry.md) | WIP 阻断延迟合回（等待标志 + 周期自动合回） | 2026-10-03 04:59 |

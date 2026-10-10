@@ -1,12 +1,12 @@
 # worktree 获取退避等待与降级计数
-<!-- knowledge: capability=worktree-acquire rev=2 sources=spec/archive/2026-10-04-evo-add-worktree-acquire-backoff,spec/archive/2026-10-09-evo-add-verify-dispatch-single-flight-7c1997 -->
+<!-- knowledge: capability=worktree-acquire rev=3 sources=spec/archive/2026-10-04-evo-add-worktree-acquire-backoff,spec/archive/2026-10-09-evo-add-verify-dispatch-single-flight-7c1997,spec/archive/2026-10-11-evo-add-verify-dispatch-single-flight -->
 
 agent run 启动取 worktree 时对「同 spec:agent_type 锁被并行 run 持有」的退避等待与人工接管让路规则，以及新验证流程降级 WARNING 的累计计数口径。
 
 ## 规则
 
 - 锁活跃退避等待重试：worktree 创建返回 None 且原因是同 spec:agent_type 锁被并行 run 持有（`has_active_lock` 探针命中）时，在 run 获取层（agent_runner `_prepare_worktree`）内同步等待重试，等持锁方排空；等待重试不消耗 attempt 重试额度、不写 STATE 退避字段。锁释放后下一轮创建即取得 worktree，run 正常启动，不触发新验证流程降级。
-- 退避预算自适应：等待预算 = max（固定退避序列 30s/60s/120s，按锁龄 `_lock_since`/`has_active_lock` 推算的 peer run 剩余时长估计），并受配置封顶。碰撞时锁已持有远超固定总预算的场景（如 peer run 预计数百秒）在自适应上限内继续等待；超封顶快速放弃并结构化留痕。
+- 退避预算自适应：等待预算 = max（固定退避序列 30s/60s/120s，按锁龄 `_lock_since`/`has_active_lock` 推算的 peer run 剩余时长估计），并受配置封顶。锁龄不可知（无 `_lock_since` 登记）时保持固定序列，此为零回退基线锚点。碰撞时锁已持有远超固定总预算的场景（如 peer run 预计数百秒）在自适应上限内继续等待；超封顶快速放弃并结构化留痕。
 - 预算耗尽走既有放弃通道：预算耗尽仍锁活跃，返回既有 gave up 终态，错误文案签名保持 `Failed to create worktree (gave up: parallel run or manual freeze)` 不变，走既有降级路径。
 - 人工接管立即让位（不可自动穿越）：frozen、`_cancelled_hold`、status 迁出预期态三种让路原因保持立即放弃——创建失败即返回既有错误，零等待、不进退避。退避循环每轮重探创建前复查三种人工接管态；等待期间出现任一（含并行 run 完成后的状态迁移）即立即让位，不得在锁释放后照常取得 worktree。
 - 非锁失败不进退避：非锁、非人工接管的创建失败（git 命令失败等其它原因）保持既有 attempt 层重试语义（attempt 未达上限时短 sleep 后继续）；退避等待中锁已释放但创建仍失败，即按其它失败原因返回，不空转退避。
@@ -17,3 +17,4 @@ agent run 启动取 worktree 时对「同 spec:agent_type 锁被并行 run 持�
 
 - 2026-10-04 evo-add-worktree-acquire-backoff（spec/archive/2026-10-04-evo-add-worktree-acquire-backoff） — 新增本页：锁活跃创建失败由「sleep 5 秒一次即放弃」改为获取层短退避等待重试（不消耗 attempt 额度），人工接管三态立即让位且退避每轮复查、非锁失败保持 attempt 层语义，新验证流程降级 WARNING 附模块级累计计数
 - 2026-10-09 evo-add-verify-dispatch-single-flight-7c1997（spec/archive/2026-10-09-evo-add-verify-dispatch-single-flight-7c1997） — 退避预算改为自适应（按锁龄推算 peer 剩余时长、配置封顶、超封顶快速放弃留痕，取代固定序列定额耗尽即放弃）；降级分支按竞争类分流（竞争类先重试新流程一次再降级，降级计数与 degrade_context 留痕保留）
+- 2026-10-11 evo-add-verify-dispatch-single-flight（spec/archive/2026-10-11-evo-add-verify-dispatch-single-flight） — 补充自适应判据锚点：锁龄不可知（无 _lock_since 登记）时保持固定退避序列，为既有退避语义零回退基线
