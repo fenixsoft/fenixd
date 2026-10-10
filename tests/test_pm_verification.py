@@ -235,6 +235,10 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
             return_value=VerdictReadResult.success("plan-ready"))
         self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        # evo-add-scenario-serve-consistency-preflight：契约 serve 一致性门在
+        # 本类无 serve 夹具下必打回（行为专属覆盖见 test_scenario_serve_consistency），
+        # 此处放行以保持本类原有可达性自愈关注点
+        self.engine._verification._run_contract_static_check = MagicMock(return_value=False)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -367,6 +371,10 @@ class TestUnreachableFailFast(unittest.TestCase):
         )
         self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        # evo-add-scenario-serve-consistency-preflight：契约 serve 一致性门在
+        # 本类无 serve 夹具下必打回（行为专属覆盖见 test_scenario_serve_consistency），
+        # 此处放行以保持本类原有短路/守卫关注点
+        self.engine._verification._run_contract_static_check = MagicMock(return_value=False)
         self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
@@ -567,6 +575,10 @@ class TestJudgeScenarioRepair(unittest.TestCase):
         )
         self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        # evo-add-scenario-serve-consistency-preflight：契约 serve 一致性门在
+        # 本类无 serve 夹具下必打回（行为专属覆盖见 test_scenario_serve_consistency），
+        # 此处放行以保持本类原有场景修复重入关注点
+        self.engine._verification._run_contract_static_check = MagicMock(return_value=False)
         self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })

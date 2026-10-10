@@ -271,6 +271,9 @@ class TestParallelBackoffClearPoints(unittest.TestCase):
                                          run_id="planner-judge-1"))
         self.engine._verification._apply_scenario_freeze = mock.MagicMock(return_value={})
         self.engine._verification._apply_interaction_contract = mock.MagicMock(return_value=None)
+        # evo-add-scenario-serve-consistency-preflight：契约 serve 一致性门在
+        # 本用例无 serve 夹具下必打回，此处放行以保持原有关注点
+        self.engine._verification._run_contract_static_check = mock.MagicMock(return_value=False)
         self.engine._verification._verify_verdict_evidence = mock.MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
@@ -343,6 +346,9 @@ class TestParallelBackoffRead(unittest.TestCase):
                                          run_id="planner-judge-1"))
         self.engine._verification._apply_scenario_freeze = mock.MagicMock(return_value={})
         self.engine._verification._apply_interaction_contract = mock.MagicMock(return_value=None)
+        # evo-add-scenario-serve-consistency-preflight：契约 serve 一致性门在
+        # 本类无 serve 夹具下必打回，此处放行以保持读端关注点
+        self.engine._verification._run_contract_static_check = mock.MagicMock(return_value=False)
         self.engine._verification._verify_verdict_evidence = mock.MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })

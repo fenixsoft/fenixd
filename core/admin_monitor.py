@@ -2807,7 +2807,9 @@ class AdminMonitor:
             # 免对已被满足的诉求白唤起一次 admin 处置 run（LLM 调用）。
             if stype in PREPROBE_SIGNAL_TYPES:
                 try:
-                    satisfied = self._preprobe_signal_satisfied(stype)
+                    # spec 直传（evo-add-scenario-serve-consistency-preflight 2.1）：
+                    # verify_contract_missing 的能力覆盖判定需按在途场景 kind 统计
+                    satisfied = self._preprobe_signal_satisfied(stype, spec)
                 except Exception as e:
                     # R4 fail-open：探测异常按原路径继续唤起，不静默吞信号
                     self.logger.warning(
@@ -2934,13 +2936,43 @@ class AdminMonitor:
             "recommended_action": SIGNAL_RECOMMENDATION.get(signal_type, ""),
         }
 
-    def _preprobe_signal_satisfied(self, stype: str) -> bool:
+    def _inflight_scenario_kinds(self, spec: str | None) -> set[str]:
+        """在途场景 kind 集按执行 kind 原样统计（evo-add-scenario-serve-consistency-preflight 2.1）。
+
+        读 ``verify-progress/<spec>/test_scenarios.json``，口径与验证执行期
+        serving.py:960 完全一致（``str(sc.get("kind", "web"))``，缺失 kind
+        缺省 web）。文件缺失/不可解析/根非数组 → 空集（调用方退化为 serve/
+        start 存在性判定）。只读探测：任何异常按空集处理，不落盘不抛出。
+        """
+        if not spec:
+            return set()
+        path = (
+            Path(self.project_root) / ".fenix" / "verify-progress" / str(spec)
+            / "test_scenarios.json"
+        )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return set()
+            return {str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)}
+        except Exception:  # noqa: BLE001 — 只读探测，缺失/损坏一律按空集
+            return set()
+
+    def _preprobe_signal_satisfied(self, stype: str, spec: str | None = None) -> bool:
         """只读探测：PREPROBE_SIGNAL_TYPES 内请求型信号的诉求是否已被满足。
 
         evo-signal-preprobe-handled-writeback R2：全部谓词只读——仅检查目标
         产物/配置的存在性，不写项目文件、不触发构建或网络访问。探测谓词与
         诉求满足是同一事实（段/文件/配置已存在），语义等价故可免唤起。
         返回 False = 诉求未满足（调用方照常唤起）；异常由调用方 fail-open。
+
+        evo-add-scenario-serve-consistency-preflight 2.1：verify_contract_missing
+        的满足判定从「契约可解析」收紧为「serve 段存在或 commands.start 非占位
+        （OR），且能力可覆盖在途场景 kind 需求」——2026-10-10 事故形态：契约
+        可解析但无 serve 能力，三条在途信号被批量 pre-probe 错误闭环。能力缺口
+        未补齐 → False，信号保持 open 走正常唤起。``spec`` 形参承载在途场景
+        kind 统计的定位（调用方持 rec/spec 直传；缺省 None 时 kind 集按空集
+        退化，判定同文件缺失形态）。
         """
         if stype in ("verify_regression_missing", "verify_contract_missing"):
             # 复用契约装载做存在性判断（缺文件/解析失败返回 None，本身不落盘、
@@ -2951,10 +2983,23 @@ class AdminMonitor:
             contract = load_verify_contract(self.project_root, None)
             if contract is None:
                 return False
-            if stype == "verify_contract_missing":
+            if stype == "verify_regression_missing":
+                # 共用分支语义不变：regression 段存在性（缺段 regression=None）
+                return contract.regression is not None
+            # ── verify_contract_missing：serve/start 能力覆盖判定（本 SPEC）──
+            from core.verify_engine.scenario_static_check import start_fallback_valid
+
+            kinds = self._inflight_scenario_kinds(spec)
+            if kinds and kinds <= {"cli"}:
+                # 纯 cli 在途场景集：执行期为无实例形态（serving.py 纯 cli 白名单，
+                # serve/ready 全省），不消费 serve/start 能力——契约可解析即诉求
+                # 满足（proposal 兜底条款：纯 cli + 无 serve 契约维持合法）。
                 return True
-            # verify_regression_missing：regression 段存在性（缺段 regression=None）
-            return contract.regression is not None
+            # api/web 在途（或 kind 集空 = 文件缺失/不可解析，退化为存在性判定）：
+            # serve 段存在或 commands.start 非占位（OR，口径同 serving.py:1098-1099
+            # 哨兵）——二者任一有效即执行期可兜底，能力缺口未补齐不 auto-resolve。
+            start_cmd = str(self._get_config("commands.start", "") or "")
+            return contract.serve is not None or start_fallback_valid(start_cmd)
         if stype == "build_artifact_paths_missing":
             paths = self._get_config("worktree.build_artifact_paths", None)
             if paths:
