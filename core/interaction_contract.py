@@ -47,8 +47,10 @@ _CARDS_LOOP_RE = re.compile(
 # href / link 字段模式（design D1：href/link 字样）
 _HREF_FIELD_RE = re.compile(r"[\"']?(href|link)[\"']?\s*[:=]", re.IGNORECASE)
 
-# token 形态：字母开头，含字母/数字/连字符/下划线
-_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_-]+\b")
+# token 形态：字母开头，含字母/数字/连字符/下划线。不用 \b 边界：Python 正则中
+# 中文字符属 \w，\b 在中文与英文字母间不成立（「点击button后」会整体漏检），
+# 改用显式 ASCII 边界（两端不得紧邻 ASCII 字母/数字/连字符/下划线）。
+_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z][A-Za-z0-9_-]+(?![A-Za-z0-9_-])")
 
 # 纯展示声明标记（SPEC 元素定义处 / planner declared_display）
 DISPLAY_DECL_RE = re.compile(r"纯展示|不可交互|declared-display|display-only")

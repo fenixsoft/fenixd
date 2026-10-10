@@ -5740,7 +5740,16 @@ class AgentRunner:
                                 and entry.get("subtype") == "thinking_tokens"):
                             continue
                         if entry.get("type") == "assistant":
-                            turn_count[0] += 1
+                            # turn_count 不在此递增：后移到本事件转录行落盘
+                            # 之后（下方 os.write 返回处）——停滞观测
+                            # （_task_stall_observe）以转录文件为增量源
+                            # （TaskCompletionWatcher 逐位点读盘），先计数后
+                            # 落盘留出「turn_count 已计入完成轮、完成行尚未
+                            # 写盘」窗口，主循环在该窗口观测会以 last_count=0
+                            # 提前预警（高负载 GIL 切换放大窗口，全量回归
+                            # 可复现），随后消费完成重置锚点再警一次，破坏
+                            # episode 内恰一次。落盘后递增保证「轮次 N 可见
+                            # ⇒ 事件 N 已在盘上」，观测面先 poll 必先消费。
                             # fix-agent-lane-efficiency D3：逐轮累计 usage
                             # 指标（纯读侧旁路）。来源：assistant 事件的
                             # message.usage（与转录同源），不用 CLI
@@ -5902,6 +5911,8 @@ class AgentRunner:
                             _line = _line[os.write(_fd, _line):]
                     finally:
                         os.close(_fd)
+                    if entry.get("type") == "assistant":
+                        turn_count[0] += 1
             except Exception as e:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取。
                 # 但不零痕迹（code-review item 2fffcc8e3be1）：与模块内「失败记
