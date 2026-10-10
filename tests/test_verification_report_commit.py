@@ -9,6 +9,10 @@
   5. 场景段写盘即入库（evo-verify-report-scenario-section-commit）：
      渲染写回后复用同一提交器补上次序缝（HEAD 含小节、pathspec 干净、
      隔离与幂等）
+  6. 场景段渲染合并进闸门 pre-commit 挂点
+     （evo-verification-report-closeout-single-commit）：闸门放行单次提交
+     即含报告本体与「本轮场景集变更」（采纳流程内报告相关提交至多一次）、
+     回调异常仅 WARNING 不阻断放行、放行后尾段二次渲染幂等零成本跳过
 
 合成夹具沿用 add-verify-report-gate 的真实 report.json / .fenix-run-result.json。
 """
@@ -359,6 +363,168 @@ class TestScenarioSectionCommit(_CommitTestBase):
         self._render()
 
         self.assertEqual(self._commit_count(), count1)
+        self.assertEqual(len(self.logger.records), records_before)
+        self.assertEqual(self.logger.warnings(contains="入库失败"), [])
+
+
+@unittest.skipIf(shutil.which("git") is None, "git 不可用")
+class TestGateMergedScenarioSectionCommit(_CommitTestBase):
+    """场景6：场景段渲染合并进闸门 pre-commit 挂点
+    （evo-verification-report-closeout-single-commit）。
+
+    经真实闸门链路（report_gate._ensure_verification_report 注入闭包 →
+    ensure_verification_report 执行回调）驱动，桩 pipeline 形态同
+    TestScenarioSectionCommit；采纳流程内报告相关提交收敛至多一次。
+    """
+
+    def _make_pipeline(self, diff):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            _context=SimpleNamespace(
+                project_root=self.project_root, logger=self.logger
+            ),
+            _last_scenario_diff=diff,
+            _last_freeze_owner=SPEC,
+        )
+
+    def _seed_diff(self):
+        """真实 diff（照抄 TestScenarioSectionCommit._seed_diff 夹具）。"""
+        from core.verify_scenarios import (
+            ScenarioEntry,
+            ScenarioSet,
+            diff_planner_output,
+            save_scenario_set,
+        )
+
+        save_scenario_set(
+            self.project_root,
+            ScenarioSet(
+                SPEC,
+                1,
+                [
+                    ScenarioEntry(id="s1", description="场景一", added_in_round=1),
+                    ScenarioEntry(id="s2", description="场景二", added_in_round=1),
+                ],
+            ),
+        )
+        return diff_planner_output(
+            self.project_root,
+            SPEC,
+            {"_verify_fail_rounds": 1},
+            [{"id": "s1"}, {"id": "s2"}, {"id": "s3"}],
+            2,
+        )
+
+    def _gate_via_report_gate(self, pipeline):
+        """走 report_gate 真实注入路径放行（返回 None=放行）。"""
+        from core.pm_engine.verification.report_gate import (
+            _ensure_verification_report,
+        )
+
+        return _ensure_verification_report(pipeline, SPEC)
+
+    def test_synthesized_gate_single_commit_includes_section(self):
+        _seed_progress(self.project_root)
+        pipeline = self._make_pipeline(self._seed_diff())
+        count_before = self._commit_count()
+
+        self.assertIsNone(self._gate_via_report_gate(pipeline))
+
+        # 闸门放行后提交计数恰 +1：合并提交（本体+场景段）成功、外层提交器
+        # 对已入库 pathspec 幂等静默跳过，不再产生第二次提交
+        self.assertEqual(self._commit_count(), count_before + 1)
+        subject, files = self._head_commit()
+        self.assertEqual(subject, f"[fenix] {SPEC}: verification-report 入库")
+        self.assertEqual(files, [self._report_rel()])
+        head_content = self._git("show", f"HEAD:{self._report_rel()}").stdout
+        self.assertIn("## 结论", head_content)  # 报告本体（合成产物）
+        self.assertIn("## 本轮场景集变更", head_content)
+        self.assertIn("拦截 planner 超发", head_content)
+        # 报告不再滞留工作区
+        status = self._git("status", "--porcelain").stdout
+        self.assertNotIn(self._report_rel(), status)
+
+    def test_present_gate_single_commit_includes_section(self):
+        # present 主路径：Agent 已写报告在盘，闸门回调渲染场景段后一并入库
+        self._report_path().parent.mkdir(parents=True, exist_ok=True)
+        self._report_path().write_text("## 结论：✅ 通过\n\nAgent 叙述。\n", encoding="utf-8")
+        pipeline = self._make_pipeline(self._seed_diff())
+        count_before = self._commit_count()
+
+        self.assertIsNone(self._gate_via_report_gate(pipeline))
+
+        self.assertEqual(self._commit_count(), count_before + 1)
+        _subject, files = self._head_commit()
+        self.assertEqual(files, [self._report_rel()])
+        head_content = self._git("show", f"HEAD:{self._report_rel()}").stdout
+        self.assertIn("Agent 叙述", head_content)  # Agent 报告本体未被覆盖
+        self.assertIn("## 本轮场景集变更", head_content)
+        status = self._git("status", "--porcelain").stdout
+        self.assertNotIn(self._report_rel(), status)
+
+    def test_merged_commit_is_pathspec_isolated(self):
+        _seed_progress(self.project_root)
+        # 其它 spec 的在途草案（staged）+ 已跟踪文件未暂存修改
+        other_dir = self.project_root / "spec" / "changes" / "other-spec-wip"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        (other_dir / "tasks.md").write_text("WIP draft\n", encoding="utf-8")
+        self._git("add", "--", "spec/changes/other-spec-wip/tasks.md")
+        (self.project_root / "README.md").write_text("modified\n", encoding="utf-8")
+
+        self.assertIsNone(self._gate_via_report_gate(self._make_pipeline(self._seed_diff())))
+
+        _subject, files = self._head_commit()
+        self.assertEqual(files, [self._report_rel()])
+        status = self._git("status", "--porcelain").stdout
+        self.assertIn("A  spec/changes/other-spec-wip/tasks.md", status)
+        self.assertIn(" M README.md", status)
+
+    def test_pre_commit_exception_degrades_to_warning_still_passes(self):
+        # 回调异常契约（present 出口载体：闸门自身零 WARNING → WARNING 恰
+        # 一条即回调异常本身）：闸门仍放行、报告本体照常入库
+        self._report_path().parent.mkdir(parents=True, exist_ok=True)
+        self._report_path().write_text("## 结论：✅ 通过\n\nAgent 叙述。\n", encoding="utf-8")
+        count_before = self._commit_count()
+
+        def _boom():
+            raise RuntimeError("场景段渲染爆炸")
+
+        from core.verify_report import ensure_verification_report
+
+        result = ensure_verification_report(
+            self.project_root, SPEC, self.logger, pre_commit=_boom
+        )
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("action"), "present")
+        self.assertEqual(self._commit_count(), count_before + 1)
+        _subject, files = self._head_commit()
+        self.assertEqual(files, [self._report_rel()])
+        head_content = self._git("show", f"HEAD:{self._report_rel()}").stdout
+        self.assertIn("Agent 叙述", head_content)
+        self.assertNotIn("## 本轮场景集变更", head_content)
+        warns = self.logger.warnings(contains="pre-commit 回调失败")
+        self.assertEqual(len(warns), 1)
+        self.assertIn("场景段渲染爆炸", warns[0])
+
+    def test_tail_rerender_after_gate_no_new_commit_no_warning(self):
+        # 末尾渲染点兜底幂等：闸门已合并提交后，采纳尾段二次渲染按「标题已
+        # 存在即跳过」零成本跳过——提交计数不增、WARNING 零新增
+        _seed_progress(self.project_root)
+        pipeline = self._make_pipeline(self._seed_diff())
+        self._gate_via_report_gate(pipeline)
+        count1 = self._commit_count()
+        records_before = len(self.logger.records)
+
+        from core.pm_engine.verification.scenario_gate import (
+            _render_scenario_change_section_to_report,
+        )
+
+        _render_scenario_change_section_to_report(pipeline, SPEC)
+
+        self.assertEqual(self._commit_count(), count1)
+        # records 计数不变即零新增（synthesized 出口闸门自带「报告缺失已合成」
+        # WARNING 在放行前已计入 records_before，不算尾段渲染的新增）
         self.assertEqual(len(self.logger.records), records_before)
         self.assertEqual(self.logger.warnings(contains="入库失败"), [])
 
