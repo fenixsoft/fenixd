@@ -35,3 +35,10 @@
 | four-adoption-callpoints-callback-injected | 四个采纳调用点回调注入静态取证：pipeline._apply_bug_found（core/pm_engine/verification/pipeline.py:1150）、_apply_verified（:1316）、legacy 两处（core/pm_engine/verification/legacy.py:408/:603）均经 pipeline._ensure_verification_report(spec_name) 进入 report_gate 注入路径（同一函数、同一 pre_commit 闭包），且 report_gate.py 确以 pre_commit= 注入渲染回调、pipeline.py:1232/:1408 尾段渲染点保留为兜底。需求2。源码证据：core/pm_engine/verification/report_gate.py:85/:104/:119、core/pm_engine/verification/pipeline.py:216/:327（函数注册为 pipeline 成员，legacy 共用同一入口）。 | pass | 0/7 | - |
 | existing-test-suites-regression-green | 既有用例回归：tests/test_verification_report_commit.py（含既有 TestScenarioSectionCommit 直调渲染单文件提交、幂等跳过，TestNonGitProjectSilentSkip，以及本 spec 新增 TestGateMergedScenarioSectionCommit 合并形态五用例）与 tests/test_push_closeout_report_commit.py（push 收口路径）全量通过，退出码 0、25 passed。需求3/验收5。取证：2026-10-11 实跑「python3 -m pytest tests/test_verification_report_commit.py tests/test_push_closeout_report_commit.py -v --tb=short」输出「25 passed, 5 warnings in 2.25s」。 | pass | 0/8 | - |
 | knowledge-doc-rules-rewritten | 知识库同步：spec/knowledge/domains/verify-pipeline/verification-report.md 已改写「场景段写盘即入库」与「入库挂点链」两条规则为「场景段渲染合并进闸门 pre-commit 挂点、采纳流程内报告相关提交至多一次」，溯源段补记本 spec（2026-10-11 evo-verification-report-closeout-single-commit），头部 sources 与 rev 元信息已更新。需求4。取证：文件实测含「场景段渲染合并进闸门 pre-commit 挂点」「采纳流程内报告相关提交至多一次」及溯源条目。 | pass | 0/6 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 12 个（第 1 轮）。
+
+- 首轮写入 12 个场景
+
