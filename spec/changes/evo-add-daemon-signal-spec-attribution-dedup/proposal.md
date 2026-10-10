@@ -4,7 +4,7 @@
 
 ## What Changes
 
-1. spec 归属提取：daemon 级信号（spec 为空）进入派发判定前，从 evidence 的 ERROR 原文提取 spec 归属——分支名（fenix/<spec>-<时间戳> 形态）正则与 spec 名直接匹配双线索，任一命中即归属。
+1. spec 归属提取：daemon 级信号（spec 为空）进入派发判定前，从 evidence 的 ERROR 原文提取 spec 归属——分支名（fenix/<spec>-<时间戳> 形态）正则与 spec 名直接匹配双线索，任一命中即归属。前置依赖：daemon_errors 信号组装点（`_make_daemon_error_signal` / `_make_daemon_error_signal_merged`）须先把最近一次同指纹 ERROR 原文摘录（含组件名）附入 evidence——评审实测现状 evidence 仅含指纹摘要/计数/时间戳（core/admin_monitor.py:3948-3962、:3982-4008），无任何 spec 线索，不补摘录则提取恒空、本能力必成 no-op；description 的「指纹 <fp[:8]>」前缀子串保持不变（跨重启已知指纹对账依赖它，:3968-3970 注释）。
 2. 在飞互查扩展：提取到 spec 归属且该 spec 已有在飞 admin run 时跳过本次派发——信号保持未消费（不 mark handled），附「被在飞 run 覆盖、待重评」注记，在飞 run 终态后按既有再武装范式自然重评（core/admin_monitor.py:2826-2830 注释所述形态）。
 3. 兜底不变：提取不到归属或归属 spec 无在飞 run 时，派发行为与现状完全一致。
 
