@@ -62,3 +62,9 @@ todo.txt
 # 漂移、周期性复发 maintree_stray_wip_stale 散件告警（2026-10-08 首次处置
 # 仅提交未断根、2026-10-11 复发后按 untrack_stray_wip 断根出库）
 core/dashboard/static/src/components/claude-msg/tailwind.gen.css
+
+# receiver 真机调试产物不入库：dump-*.png 帧存与 receiver-<pid>.log 落于
+# .debug/ 会话子目录，每次真机调试都新增（曾以 51MB untracked 两度触发
+# maintree_untracked_stray_stale 散件告警，2026-10-12 前置免疫断根——
+# 散件判定只认无 ignore 规则命中，目录级一条覆盖全部未来会话）
+.debug/
