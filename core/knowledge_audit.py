@@ -206,6 +206,7 @@ def _save_findings_ledger(
     project_root: Path,
     ledger: dict,
     deleted_fingerprints: Optional[set[str]] = None,
+    own_fingerprints: Optional[set[str]] = None,
 ) -> None:
     """疑点台账回写（持进程间文件锁 + 按指纹合并，对齐 BackfillLedger.save）。
 
@@ -216,12 +217,22 @@ def _save_findings_ledger(
     ``deleted_fingerprints``：本方已删除的指纹（仲裁消费段）。按指纹合并
     只并键不删键，不显式剔除会让盘上另一进程写入的同指纹条目复活被删条目，
     人工仲裁决定随之失效。
+    ``own_fingerprints``：本方本次真正动过的「己方指纹键」，传入后合并只取
+    caller 台账里这些键，其余指纹一律不参与并集——run_audit 语义循环持开局
+    快照反复回写（单轮最多 MAX_SEMANTIC_RUNS 个转写 run，可持续很久），循环
+    期间他方仲裁消费可能已把快照里仍持有的 escalated 指纹从盘上台账删除；
+    整快照并集会因盘上缺席（other is None）把它原样写回复活，只并己方键则
+    无从复活。
     """
     with _findings_write_lock(project_root):
         merged = dict(_load_findings_ledger(project_root))
         for fp in tuple(deleted_fingerprints or ()):
             merged.pop(fp, None)
-        for fp, entry in ledger.items():
+        if own_fingerprints is None:
+            items = ledger.items()
+        else:
+            items = ((fp, ledger[fp]) for fp in own_fingerprints if fp in ledger)
+        for fp, entry in items:
             other = merged.get(fp)
             if other is None:
                 merged[fp] = entry
@@ -1379,7 +1390,7 @@ def run_audit(
         if entry is None:
             entry = _new_finding_entry(finding)
             ledger[fp] = entry
-            _save_findings_ledger(project_root, ledger)
+            _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
         pages = [finding["a"]["page"], finding["b"]["page"]]
 
         # 同批快照滞后去重（2.3）：疑点清单在扫描开始一次性快照，涉及页在本批
@@ -1388,7 +1399,7 @@ def run_audit(
         if pages[0] in remediated_pages or pages[1] in remediated_pages:
             entry["status"] = "superseded-in-batch"
             entry["updated_at"] = _today()
-            _save_findings_ledger(project_root, ledger)
+            _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
             counts["superseded"] += 1
             details["superseded"].append(
                 f"{finding['kind']}（{pages[0]} × {pages[1]}）：涉及页本批已纠偏，跳过"
@@ -1407,7 +1418,7 @@ def run_audit(
             ):
                 entry["exempted_at"] = _today()
                 entry["updated_at"] = entry["exempted_at"]
-                _save_findings_ledger(project_root, ledger)
+                _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
                 counts["exempt"] += 1
                 details["exempt"].append(
                     f"{finding['kind']}（{pages[0]} × {pages[1]}）：两页内容未变，豁免复核"
@@ -1416,12 +1427,12 @@ def run_audit(
             entry["status"] = "suspected"
             entry["review_rounds"] = 0
             entry["updated_at"] = _today()
-            _save_findings_ledger(project_root, ledger)
+            _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
         elif entry.get("status") in ("fixed", "superseded-in-batch"):
             # 存量已纠偏/已跳过条目再次被扫出：真相源仍有该疑点，重开复核
             entry["status"] = "suspected"
             entry["updated_at"] = _today()
-            _save_findings_ledger(project_root, ledger)
+            _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
 
         # 进入复核：升级轮次 +1（连续 N 轮无确定性判定即升级，N 见配置）。
         # review_rounds 人工编辑/旧版本可能写坏为非数字：就地归零重计走正常
@@ -1510,8 +1521,7 @@ def run_audit(
                     # 为循环后单条聚合行（1.3），此处只留本 run 升级事件明细。
                     entry["status"] = "escalated"
                     entry["updated_at"] = _today()
-                    _save_findings_ledger(project_root, ledger)
-                    escalated[fp] = entry  # 计入本轮聚合（todo 行 / 注记 / 报告汇总）
+                    _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
                     details["manual"].append(
                         f"{finding['kind']}（{pages[0]} × {pages[1]}）：连续 "
                         f"{entry['review_rounds']} 轮复核无确定性判定，升级待人工（escalated）"
@@ -1526,7 +1536,7 @@ def run_audit(
                     f"audit 语义项转写失败：{finding['kind']}"
                     f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
                 )
-                _save_findings_ledger(project_root, ledger)  # 升级轮次入账
+                _save_findings_ledger(project_root, ledger, own_fingerprints={fp})  # 升级轮次入账
                 continue
             if not touched:
                 # 「判无矛盾」零改动收场：以本 run 新触达为准——转写 run 把修正落
@@ -1545,7 +1555,7 @@ def run_audit(
                         rel: _page_hash(project_root, rel) for rel in dict.fromkeys(pages)
                     },
                 )
-                _save_findings_ledger(project_root, ledger)
+                _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
                 continue
             summary = f"{finding['kind']} {finding['a']['page']} × {finding['b']['page']}"
             commit_msg = f"[fenix] knowledge: audit rewrite {summary}"
@@ -1565,7 +1575,7 @@ def run_audit(
             # 后续涉及同页的疑点走快照滞后去重（按实际触达而非疑点对全页标记——
             # 未被改动的另一页快照仍有效，其疑点照常复核）
             _record_verdict(entry, "fixed", commit=commit_msg)
-            _save_findings_ledger(project_root, ledger)
+            _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
             remediated_pages |= touched
 
     # 语义初筛截断显式留痕（名额耗尽出口）：未被本轮消费的候选不静默丢弃，
@@ -1579,6 +1589,15 @@ def run_audit(
             f"{MAX_SEMANTIC_RUNS} 个已用尽（豁免/已纠偏疑点不占额），"
             f"其余 {len(semantic_overflow)} 条请人工核查"
         )
+
+    # escalated 视图收尾渲染前从盘上台账重读（对齐语义循环回写的己方指纹键
+    # 口径）：循环内每次回写只落本方指纹键，盘上台账已是此刻权威视图——开局
+    # 快照里的 escalated 条目可能在循环期间（最多 MAX_SEMANTIC_RUNS 个转写
+    # run）被 consume_arbitration 消费删除（dashboard --serve / 300s 检查点），
+    # 若仍以开局快照渲染 todo 聚合行、disputed 注记与报告汇总，已消费条目会
+    # 以待仲裁形态复活，人工仲裁决定被静默作废。本轮循环内新升级的条目升级
+    # 时已按己方键落盘，重读自然计入。
+    escalated = _escalated_entries(_load_findings_ledger(project_root))
 
     # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加（龄期逐日推进由
     # upsert 整行替换消化，聚合行不变成每日重述）；历史逐条行（旧前缀）一并
@@ -1681,9 +1700,10 @@ def run_audit(
 
     # escalated 汇总渲染前重算（code-review 373cc9019334 / 1e00c2c85434）：
     # details["escalated_summary"] 在语义循环前由当时台账快照定格，循环内新升级
-    # 的条目（escalated[fp] = entry）此前只进 todo 聚合行与 disputed 注记——报告
-    # 汇总少计本轮新升级条目，报告/todo/注记三个出口口径不一致。用最终 escalated
-    # 重算覆盖（escalated 为空时 _escalated_summary 返回 None，汇总节照旧不出）。
+    # 的条目（已随收尾前的盘上重读计入 escalated）此前只进 todo 聚合行与
+    # disputed 注记——报告汇总少计本轮新升级条目，报告/todo/注记三个出口口径
+    # 不一致。用最终 escalated 重算覆盖（escalated 为空时 _escalated_summary
+    # 返回 None，汇总节照旧不出）。
     details["escalated_summary"] = _escalated_summary(escalated)
 
     report = _render_report(
