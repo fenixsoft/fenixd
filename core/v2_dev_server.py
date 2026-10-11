@@ -535,6 +535,16 @@ def _kill_pids(pids: list, logger=None) -> int:
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.1)
+        # 组级 SIGKILL 收尾（与 _kill 的收尾口径对称，0b5d32a67584）：组长
+        # （受检 pid）消亡≠组清算完毕——忽略 SIGTERM 的组员（node 卡死的
+        # 孙进程形态）会残留为孤儿，无条件对已解析 pgid 补一次 SIGKILL；
+        # 组已空（全员随 SIGTERM 退出）按已清算静默处理（守卫对 ESRCH/
+        # 自身组/非正 pgid 返回 False 不抛）。pgid 解析失败的单 pid 直发
+        # 路径无组可补。
+        if pgid is not None:
+            guard_killpg(
+                pgid, signal.SIGKILL, caller="v2_dev_server._kill_pids", resolve=False
+            )
         if not _pid_alive(pid):
             killed += 1
     return killed
@@ -590,6 +600,7 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     # 免被当作模式语法解释。pgrep 调用与解析复用 _pgrep_dev_servers
     # （pgrep 不可用/超时/无命中返回空列表 → any 恒 False，与原内联
     # 实现的错误语义等价）。
+    # [fenix-ignore:d60a0053fec3] 裸 name 匹配系有意取舍：全路径收窄（re.escape(str(wt_root))）与豁免替身的裸 token 契约冲突，且引用 argv 路径形态漂移时豁免落空＝误杀在服 run，代价高于本条 info 级漏清（ppid 自灭兜底仍在）。
     pids = _pgrep_dev_servers(
         rf"worktrees/{re.escape(wt_root.name)}(/|[[:space:]]|$)"
     )
@@ -755,15 +766,31 @@ def v2_servers_registry_path(project_root) -> Path:
     return Path(project_root) / ".fenix" / "v2-serving" / V2_SERVERS_FILENAME
 
 
-def load_v2_server_entries(project_root) -> list:
-    """读登记条目（文件缺失/损坏返回空；非 dict 条目剔除）。"""
+def load_v2_server_entries(project_root, logger=None) -> list:
+    """读登记条目（文件缺失/损坏返回空；非 dict 条目剔除）。
+
+    文件缺失（从未登记）与内容损坏同返回空，但对账语义不同：损坏＝重启前
+    在册条目的收割线索丢失（对账覆盖缺口），传 logger 时输出 WARNING 留痕
+    （e0a3a75d196f，不传保持静默、既有调用形态兼容）；下次 register 重写
+    文件自愈。
+    """
+    path = v2_servers_registry_path(project_root)
     try:
-        data = json.loads(
-            v2_servers_registry_path(project_root).read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError):
-        return []
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []  # 缺失/不可读：非损坏，无需留痕
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
     if not isinstance(data, list):
+        if logger:
+            logger.warning(
+                "v2_dev_server",
+                f"v2 server registry file corrupt (invalid JSON/list), "
+                f"treating as empty: {path} — 重启前在册条目线索丢失，"
+                f"对账覆盖缺口留痕（下次 register 重写自愈）",
+            )
         return []
     return [e for e in data if isinstance(e, dict)]
 
@@ -864,8 +891,10 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     core/serving_registry.py:351-394）：
 
     - pid 已消亡 → 仅摘登记（自然消亡/自灭，无进程可收割）；
-    - pid 存活但 starttime 快照失配 → pid 已被复用，仅摘登记**不杀**（误杀
-      无关进程的代价远高于漏清，同 serving_registry 身份核对纪律）；
+    - pid 存活但 starttime 快照失配 → 先复查判活（a9776777a028）：判活与
+      starttime 读取窗口内进程恰好退出属竞态消失，静默摘登记；复查仍存活
+      才是 pid 已被复用，告警留痕后仅摘登记**不杀**（误杀无关进程的代价
+      远高于漏清，同 serving_registry 身份核对纪律）；
     - pid 存活但快照缺失/非法（如 register 时 proc 刚 spawn 即死，
       proc_start_ticks 返回 None）→ 身份无法核实，仅摘登记**不杀**（同上
       纪律，防 pid 复用后误杀无关进程）；
@@ -874,6 +903,13 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
       跨重启存活，保留进程与登记（归因标记形态另受周期清扫 argv 判据保护，
       终态回收后条目由下次对账按 pid 消亡摘除）。
 
+    锁分段（2e23776e7c27）：持锁段只做登记读与摘登记回写（文件 I/O），
+    身份/归属判定与 _kill_pids 均在锁外执行——单 pid 击杀最长约 3s
+    （SIGTERM 等 2s + SIGKILL 等 1s）、pgrep 归属探测每次至多 5s，多无主
+    条目时持锁时间线性放大并阻塞派发/终态回收路径的 register/unregister。
+    回写以重读登记为基线仅剔除已判定摘除的条目键，锁外窗口内并发 register
+    落入的新条目不丢。
+
     与 cleanup_orphans 互补：本函数覆盖「argv 不可归因但登记在册」的存量
     回退形态进程——登记 wt_path 补上了 argv 缺失的归属线索。启动宽限豁免
     （<60s）同样适用：引用进程可能在 dev-server 落地后才 spawn（TOCTOU 防
@@ -881,67 +917,95 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     """
     killed = 0
     with _registry_io_lock:
-        entries = load_v2_server_entries(project_root)
-        if not entries:
-            return 0
-        kept = []
-        for entry in entries:
-            pid = entry.get("pid")
-            wt_text = str(entry.get("wt_path") or "")
-            if not isinstance(pid, int) or pid <= 0:
-                continue  # 形状非法条目：丢弃
-            if not _pid_alive(pid):
-                continue  # 已消亡：摘登记
-            snapshot = entry.get("start_ticks")
-            if not (isinstance(snapshot, int) and snapshot > 0):
-                # 快照缺失/非法：身份无法核实（eecd5c191ad7），与 pid 复用同
-                # 语义——摘登记不杀，防 pid 被复用后误杀无关进程。
-                if logger:
-                    logger.warning(
-                        "v2_dev_server",
-                        f"reconcile skip pid={pid} (wt={wt_text or '-'}) "
-                        f"start_ticks snapshot missing — identity "
-                        f"unverifiable; removed registry entry without "
-                        f"killing",
-                    )
-                continue  # 身份无法核实：摘登记不杀
-            if proc_start_ticks(pid) != snapshot:
-                if logger:
-                    logger.warning(
-                        "v2_dev_server",
-                        f"reconcile skip pid={pid} (wt={wt_text or '-'}) "
-                        f"start_ticks mismatch — pid likely reused; removed "
-                        f"registry entry without killing",
-                    )
-                continue  # pid 复用：摘登记不杀
-            wt_root = Path(wt_text) if wt_text else None
-            owned = (
-                wt_root is not None
-                and wt_root.is_dir()
-                and _worktree_has_live_referencing_process(wt_root, pid)
-            )
-            if owned or _pid_recently_started(pid):
-                # 有主（在服 run 跨重启存活）或启动宽限窗内：保留进程与登记
-                kept.append(entry)
-                continue
-            # 无主：worktree 已消失 / 无引用进程 / 登记无 wt_path → 收割。
-            # 杀失败（权限/竞态）也摘登记：保留条目只会每轮重试同一失败，
-            # 摘除后交由周期清扫的 argv 判据兜底。
-            if _kill_pids([pid], logger=logger) >= 1:
-                killed += 1
-                if logger:
-                    logger.warning(
-                        "v2_dev_server",
-                        f"reconcile harvested unowned dev-server pid={pid} "
-                        f"(wt={wt_text or '-'}) — left unowned across daemon "
-                        f"restart",
-                    )
-        if not _rewrite_v2_server_entries(project_root, kept) and logger:
-            logger.warning(
-                "v2_dev_server",
-                f"v2 server registry write failed (non-blocking): "
-                f"{v2_servers_registry_path(project_root)}",
-            )
+        entries = load_v2_server_entries(project_root, logger=logger)
+    if not entries:
+        return 0
+    # 身份/归属判定在锁外执行（锁分段，2e23776e7c27）：只读 /proc 与 pgrep
+    # 探测，不触登记文件，无需占锁。
+    kept = []
+    harvest = []
+    for entry in entries:
+        pid = entry.get("pid")
+        wt_text = str(entry.get("wt_path") or "")
+        if not isinstance(pid, int) or pid <= 0:
+            continue  # 形状非法条目：丢弃
+        if not _pid_alive(pid):
+            continue  # 已消亡：摘登记
+        snapshot = entry.get("start_ticks")
+        if not (isinstance(snapshot, int) and snapshot > 0):
+            # 快照缺失/非法：身份无法核实（eecd5c191ad7），与 pid 复用同
+            # 语义——摘登记不杀，防 pid 被复用后误杀无关进程。
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"reconcile skip pid={pid} (wt={wt_text or '-'}) "
+                    f"start_ticks snapshot missing — identity "
+                    f"unverifiable; removed registry entry without "
+                    f"killing",
+                )
+            continue  # 身份无法核实：摘登记不杀
+        if proc_start_ticks(pid) != snapshot:
+            # 竞态复查（a9776777a028）：判活（上方 _pid_alive）与 starttime
+            # 读取之间的窗口内进程恰好退出时读取返回 None（与快照失配），
+            # 真实根因是进程消失而非 pid 复用——复查已消亡则静默摘登记
+            # （与上方已消亡分支同口径），仅复查仍存活才报 pid reused，
+            # 避免告警文案把按指纹排障的方向带偏。
+            if _pid_alive(pid) and logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"reconcile skip pid={pid} (wt={wt_text or '-'}) "
+                    f"start_ticks mismatch — pid likely reused; removed "
+                    f"registry entry without killing",
+                )
+            continue  # pid 复用/竞态消失：摘登记不杀
+        wt_root = Path(wt_text) if wt_text else None
+        owned = (
+            wt_root is not None
+            and wt_root.is_dir()
+            and _worktree_has_live_referencing_process(wt_root, pid)
+        )
+        if owned or _pid_recently_started(pid):
+            # 有主（在服 run 跨重启存活）或启动宽限窗内：保留进程与登记
+            kept.append(entry)
+            continue
+        # 无主：worktree 已消失 / 无引用进程 / 登记无 wt_path → 待收割（在
+        # 锁外执行）。杀失败（权限/竞态）也摘登记：保留条目只会每轮重试
+        # 同一失败，摘除后交由周期清扫的 argv 判据兜底。
+        harvest.append((pid, wt_text))
+    # 击杀在锁外执行（锁分段，2e23776e7c27）：单 pid 最长约 3s，不占
+    # register/unregister 的登记临界区；逐条收割保留单 pid 告警语义。
+    for pid, wt_text in harvest:
+        if _kill_pids([pid], logger=logger) >= 1:
+            killed += 1
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"reconcile harvested unowned dev-server pid={pid} "
+                    f"(wt={wt_text or '-'}) — left unowned across daemon "
+                    f"restart",
+                )
+    # 摘登记回写（重新持锁）：以重读登记为基线仅剔除已判定摘除的条目键，
+    # 不整表覆写判定时快照——击杀窗口内并发 register 落入的新条目不丢
+    # （last-writer-wins 下整表覆写会吞并发登记）。pid 分量取 repr：畸形
+    # 条目的 pid 可能是 dict/list 等不可哈希值，repr 恒可哈希且 int/str
+    # 形态不混同。
+    removed_keys = {
+        (str(e.get("wt_path") or ""), repr(e.get("pid"))) for e in entries
+    } - {(str(e.get("wt_path") or ""), repr(e.get("pid"))) for e in kept}
+    with _registry_io_lock:
+        fresh = load_v2_server_entries(project_root)
+        merged = [
+            e for e in fresh
+            if (str(e.get("wt_path") or ""), repr(e.get("pid")))
+            not in removed_keys
+        ]
+        if len(merged) != len(fresh):
+            if not _rewrite_v2_server_entries(project_root, merged) and logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"v2 server registry write failed (non-blocking): "
+                    f"{v2_servers_registry_path(project_root)}",
+                )
     if killed and logger:
         logger.warning(
             "v2_dev_server",
