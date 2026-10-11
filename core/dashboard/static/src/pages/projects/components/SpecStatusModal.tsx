@@ -93,10 +93,11 @@ export default function SpecStatusModal({
   // 按钮按 key 判定自身 loading——此前是单一 loading 被所有区块共用，多个区块
   // 同时渲染（done 态同显审批推送+归档；taskGapStuck/cancelledHold 非终态同显
   // 回炉或恢复+冻结+调度）时点任一按钮会让其余区块按钮一起转圈。
+  // 在飞期间其余写动作按钮统一 disabled（code-review item 4011bc5fcc60），使
+  // 「同一时刻只有一个确认动作在跑」在 UI 层成立而非仅注释声明。
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  // 预算区状态
+  // 预算区状态（预算动作同样走 pendingAction 单值，防与冻结等并发写竞速）
   const [budgetOverride, setBudgetOverride] = useState<number | null>(null);
-  const [budgetSaving, setBudgetSaving] = useState(false);
   // 冻结管理状态
   const [freezeMode, setFreezeMode] = useState<'permanent' | 'scheduled'>('permanent');
   const [freezeUntil, setFreezeUntil] = useState<dayjs.Dayjs | null>(null);
@@ -434,7 +435,7 @@ export default function SpecStatusModal({
 
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
-    setBudgetSaving(true);
+    setPendingAction('budget-save');
     try {
       await setSpecBudget(project, spec, budgetOverride);
       message.success(budgetOverride !== null ? '已保存预算覆盖' : '已恢复跟随全局');
@@ -442,12 +443,12 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setBudgetSaving(false);
+      setPendingAction(null);
     }
   }, [project, spec, budgetOverride, onDone, message]);
 
   const handleBudgetReset = useCallback(async () => {
-    setBudgetSaving(true);
+    setPendingAction('budget-reset');
     try {
       await setSpecBudget(project, spec, null);
       setBudgetOverride(null);
@@ -456,7 +457,7 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setBudgetSaving(false);
+      setPendingAction(null);
     }
   }, [project, spec, onDone, message]);
 
@@ -553,6 +554,7 @@ export default function SpecStatusModal({
               type="primary"
               onClick={handleApprovePush}
               loading={pendingAction === 'approve-push'}
+              disabled={pendingAction !== null && pendingAction !== 'approve-push'}
             >
               审批推送
             </Button>
@@ -569,7 +571,12 @@ export default function SpecStatusModal({
               分支时在保留分支上续做（已提交成果不丢失）；无可保留分支时降级为
               全新重派。恢复会消耗一次实现尝试预算。
             </Typography.Paragraph>
-            <Button danger onClick={handleResume} loading={pendingAction === 'resume'}>
+            <Button
+              danger
+              onClick={handleResume}
+              loading={pendingAction === 'resume'}
+              disabled={pendingAction !== null && pendingAction !== 'resume'}
+            >
               恢复运行
             </Button>
           </div>
@@ -589,7 +596,12 @@ export default function SpecStatusModal({
                 缺口结论：{summary.error}
               </Typography.Paragraph>
             )}
-            <Button danger onClick={handleReflow} loading={pendingAction === 'reflow'}>
+            <Button
+              danger
+              onClick={handleReflow}
+              loading={pendingAction === 'reflow'}
+              disabled={pendingAction !== null && pendingAction !== 'reflow'}
+            >
               回炉并重新派发实现
             </Button>
           </div>
@@ -605,6 +617,7 @@ export default function SpecStatusModal({
             <Button
               onClick={handleArchive}
               loading={pendingAction === 'archive'}
+              disabled={pendingAction !== null && pendingAction !== 'archive'}
             >
               归档 SPEC
             </Button>
@@ -621,7 +634,12 @@ export default function SpecStatusModal({
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
                   未冻结。冻结后 daemon 停止调度该 SPEC，直到手动解冻。
                 </Typography.Paragraph>
-                <Button danger onClick={handleFreeze} loading={pendingAction === 'freeze'}>
+                <Button
+                  danger
+                  onClick={handleFreeze}
+                  loading={pendingAction === 'freeze'}
+                  disabled={pendingAction !== null && pendingAction !== 'freeze'}
+                >
                   冻结 SPEC
                 </Button>
               </>
@@ -648,7 +666,12 @@ export default function SpecStatusModal({
                 )}
                 <Space direction="vertical" style={{ width: '100%' }} size={8}>
                   <Space>
-                    <Button danger onClick={handleUnfreeze} loading={pendingAction === 'unfreeze'}>
+                    <Button
+                      danger
+                      onClick={handleUnfreeze}
+                      loading={pendingAction === 'unfreeze'}
+                      disabled={pendingAction !== null && pendingAction !== 'unfreeze'}
+                    >
                       立即解冻
                     </Button>
                   </Space>
@@ -669,13 +692,22 @@ export default function SpecStatusModal({
                         onChange={(d) => setFreezeUntil(d)}
                         placeholder="选择自动解冻时间"
                       />
-                      <Button type="primary" onClick={() => void handleFreezeConfig()} loading={pendingAction === 'freeze-config'}>
+                      <Button
+                        type="primary"
+                        onClick={() => void handleFreezeConfig()}
+                        loading={pendingAction === 'freeze-config'}
+                        disabled={pendingAction !== null && pendingAction !== 'freeze-config'}
+                      >
                         应用
                       </Button>
                     </Space>
                   )}
                   {freezeMode === 'permanent' && summary.frozen_until && (
-                    <Button onClick={() => void handleFreezeConfig()} loading={pendingAction === 'freeze-config'}>
+                    <Button
+                      onClick={() => void handleFreezeConfig()}
+                      loading={pendingAction === 'freeze-config'}
+                      disabled={pendingAction !== null && pendingAction !== 'freeze-config'}
+                    >
                       切换为永久冻结
                     </Button>
                   )}
@@ -699,7 +731,12 @@ export default function SpecStatusModal({
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
                   该 SPEC 当前为待激活态（start_after: manual），daemon 不会自动调度。
                 </Typography.Paragraph>
-                <Button type="primary" onClick={handleActivate} loading={pendingAction === 'activate'}>
+                <Button
+                  type="primary"
+                  onClick={handleActivate}
+                  loading={pendingAction === 'activate'}
+                  disabled={pendingAction !== null && pendingAction !== 'activate'}
+                >
                   激活（立即调度）
                 </Button>
               </>
@@ -709,7 +746,11 @@ export default function SpecStatusModal({
                   将 start_after 设为 manual，daemon 停止自动调度，直到手动激活。
                   不影响正在执行的 run（与冻结一致，只挡后续派发）。
                 </Typography.Paragraph>
-                <Button onClick={handleSetManual} loading={pendingAction === 'set-manual'}>
+                <Button
+                  onClick={handleSetManual}
+                  loading={pendingAction === 'set-manual'}
+                  disabled={pendingAction !== null && pendingAction !== 'set-manual'}
+                >
                   设为待激活
                 </Button>
               </>
@@ -745,7 +786,11 @@ export default function SpecStatusModal({
                 }
               />
             )}
-            <Button onClick={handlePromote} loading={pendingAction === 'promote'}>
+            <Button
+              onClick={handlePromote}
+              loading={pendingAction === 'promote'}
+              disabled={pendingAction !== null && pendingAction !== 'promote'}
+            >
               晋升 ready
             </Button>
           </div>
@@ -782,14 +827,15 @@ export default function SpecStatusModal({
                 <Button
                   type="primary"
                   onClick={() => void handleBudgetSave()}
-                  loading={budgetSaving}
+                  loading={pendingAction === 'budget-save'}
+                  disabled={pendingAction !== null && pendingAction !== 'budget-save'}
                 >
                   保存
                 </Button>
                 <Button
                   onClick={() => void handleBudgetReset()}
-                  disabled={budgetOverride === null}
-                  loading={budgetSaving}
+                  disabled={budgetOverride === null || (pendingAction !== null && pendingAction !== 'budget-reset')}
+                  loading={pendingAction === 'budget-reset'}
                 >
                   恢复跟随全局
                 </Button>
