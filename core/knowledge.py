@@ -729,9 +729,23 @@ def _discard_output(proot: Path, before=None) -> bool:
 # 直跑，「写路径限定 spec/knowledge/」仅由提示词承载，validate_knowledge 与
 # _discard_output 也只覆盖 KNOWLEDGE_DIR——run 越界改动主树其他路径（如被归档
 # spec 内容提示注入后改产品代码）既不会被校验拦截也不会被回滚。蒸馏车道合法
-# 写面 = 产出本体（KNOWLEDGE_DIR）+ .fenix/ 下框架运行时文件（distill flock
-# 锁、todo.md 重试台账），对账时排除以免误报。
-_STRAY_AUDIT_IGNORE_PREFIXES = (KNOWLEDGE_DIR + "/", ".fenix/")
+# 写面 = 产出本体（KNOWLEDGE_DIR）+ .fenix/ 下逐项列举的框架运行时文件，对账时
+# 排除以免误报。豁免按具体文件路径而非 .fenix/ 整目录前缀（code-review
+# d688334e0113）：整目录豁免会让 run 越界改写 .fenix/ 下其他文件（如入库的
+# verify.yaml / config.template.yaml）不留任何 WARNING，监控承诺失真。列举口径：
+# - .fenix/knowledge-distill.lock：跨进程单飞 flock 锁（_acquire_file_lock）
+# - .fenix/knowledge-distill-pending.json：pending 台账（dispatch/收尾清除）
+# - .fenix/todo.md 与伴生锁 .fenix/.todo.md.lock：todo.md 重试台账
+#   （_register_todo_retry → append_todo_line）
+# 这些运行时文件被 .gitignore 的 .fenix/* 规则忽略、本不进 git status，仍逐项
+# 列出以固化真实写面（gitignore 规则变动时不静默变成误报源）。
+_STRAY_AUDIT_IGNORE_PREFIXES = (
+    KNOWLEDGE_DIR + "/",
+    ".fenix/knowledge-distill.lock",
+    ".fenix/knowledge-distill-pending.json",
+    ".fenix/todo.md",
+    ".fenix/.todo.md.lock",
+)
 
 
 def _git_status_paths(proot: Path):
@@ -793,8 +807,8 @@ def _audit_stray_writes(proot: Path, before, label: str) -> None:
     if strays:
         logger.warning(
             "knowledge-distill 越界写面告警（%s）: run 在蒸馏车道合法写面"
-            "（%s、.fenix/）之外新增主树改动，未回滚（避免吞掉用户未提交改动），"
-            "请人工核查: %s",
+            "（%s 及 .fenix/ 下蒸馏运行时文件）之外新增主树改动，未回滚"
+            "（避免吞掉用户未提交改动），请人工核查: %s",
             label,
             KNOWLEDGE_DIR,
             ", ".join(strays),
@@ -821,7 +835,14 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
             # nothing to commit ≠ 提交失败：蒸馏判定无需新增/修改页面（如重复
             # 蒸馏同批归档），按无变更视为 ok，避免误报「产出滞留」+ 误登重试
             # 台账（code-review 1e83848b80f1）。
-            status = _git(proot, ["status", "--porcelain", "--", KNOWLEDGE_DIR])
+            # --no-optional-locks（code-review 4df445fc71e3）：本探测与归档主线程
+            # commit_archive_move 的 git add 并发（同 _git_status_paths 场景），
+            # status 的机会式索引刷新撞 index.lock 退出非零时会把「无变更可提交」
+            # 误判为提交失败，走 reset + warning + None，白耗一轮重试并可能误登
+            # 台账。只读探测不应写索引。
+            status = _git(
+                proot, ["--no-optional-locks", "status", "--porcelain", "--", KNOWLEDGE_DIR]
+            )
             if status.returncode == 0 and not status.stdout.strip():
                 logger.info("knowledge-distill 无变更可提交（%s），跳过空提交", names)
                 return ""
@@ -933,7 +954,12 @@ class DistillManager:
 
     def __init__(self, spawn=None, max_fix_rounds: int = MAX_FIX_ROUNDS):
         self._spawn = spawn or _default_spawn
-        self._max_fix_rounds = max_fix_rounds
+        # 负值归一为 0（code-review 225bc28ee061）：max_fix_rounds 是公开构造
+        # 参数，传负值会使 range(1 + max_fix_rounds) 为空循环，控制流落到循环
+        # 外的 _audit_stray_writes(proot, status_before, ...) 时引用未赋值的
+        # status_before 抛 NameError（被 _worker 兜底 except 捕获后误导性登记
+        # 「执行异常」台账）。归一后循环至少执行一轮 run，循环不变式成立。
+        self._max_fix_rounds = max(0, max_fix_rounds)
         self._guard = threading.Lock()
         self._queues: dict = {}
         self._workers: dict = {}
