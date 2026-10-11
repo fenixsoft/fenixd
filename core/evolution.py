@@ -1285,6 +1285,7 @@ def ingest_item(item: dict, project_root) -> str:
         "spec_name": None,
         "violations": None,
         "draft_failed_reason": None,
+        "worth_gate_reason": None,
     }
 
     if not worth_spec:
@@ -1292,6 +1293,55 @@ def ingest_item(item: dict, project_root) -> str:
         upsert_item(project_root, base)
         write_todo_marker(base, commit=False)
         return "analyzed"
+
+    # ── 立项价值闸门（2026-10-11 判定收紧，用户定调 A+B）──────────────
+    # B1 verdict 一致性：worth_spec=true 的必要条件 = problem_exists=yes
+    # 且 suggestion_sound=yes。分析侧提示词（agents/evolution.md）同款收紧
+    # （A 层）；此处机械校验防提示词漂移——partial 组合（问题/建议只部分
+    # 成立）2026-10-04~10 一周 50 条自动接受里占 80%，事后实证含负价值
+    # 样本（anomaly-redispatch-budget 熔断放大）与方案和用户意图相反
+    # 样本（severity-batch-gate 被迫缺省翻转）。字段缺失按 partial 同拦
+    #（fail-closed）。拦截置 analyzed（非 draft_failed——这是设计内过滤
+    # 而非故障），记 worth_gate_reason 供前端/日志呈现。
+    v = verdict if isinstance(verdict, dict) else {}
+    if v.get("problem_exists") != "yes" or v.get("suggestion_sound") != "yes":
+        base["status"] = "analyzed"
+        base["worth_gate_reason"] = (
+            "verdict 闸门：worth_spec=true 要求 problem_exists=yes 且 "
+            "suggestion_sound=yes（双 yes），实得 "
+            f"problem_exists={v.get('problem_exists')!r} / "
+            f"suggestion_sound={v.get('suggestion_sound')!r}——问题或建议"
+            "只部分成立的不自动立项"
+        )
+        _logger.info(
+            "evolution: 条目 %s 被立项价值闸门拦下（verdict 非双 yes）: %s",
+            eid, base["worth_gate_reason"],
+        )
+        upsert_item(project_root, base)
+        write_todo_marker(base, commit=False)
+        return "analyzed"
+
+    # B2 同名在途：spec/changes/evo-<name>/ 已存在 → 同一问题域重复立项
+    # （曾以 -<6hex> 后缀照样立项，一周内散件族 8 个、codefix 族 10 个）
+    # → analyzed 记原因。归档同名不挡（修复无效场景重新立项合法）；
+    # STATE 在途同名由接受路径 resolve_spec_name 既有防御兜底。
+    spec_obj = item.get("spec") if isinstance(item.get("spec"), dict) else {}
+    spec_name = str(spec_obj.get("name") or "")
+    if _KEBAB_RE.match(spec_name):
+        inflight = f"evo-{spec_name}"
+        if (Path(project_root) / "spec" / "changes" / inflight).is_dir():
+            base["status"] = "analyzed"
+            base["worth_gate_reason"] = (
+                f"同名 SPEC 在途：spec/changes/{inflight} 已存在——"
+                "同主题重复立项被闸门拦下，先观察在途 SPEC 的效果"
+            )
+            _logger.info(
+                "evolution: 条目 %s 被同名在途闸门拦下: spec/changes/%s",
+                eid, inflight,
+            )
+            upsert_item(project_root, base)
+            write_todo_marker(base, commit=False)
+            return "analyzed"
 
     d, reason = materialize_draft(base, project_root)
     if d is None:

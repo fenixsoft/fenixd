@@ -1872,6 +1872,110 @@ class TestEvolutionIngestDraftFailed(unittest.TestCase):
         self.assertFalse(draft_dir(self.proot, item["id"]).exists())
         self.assertEqual(list((self.proot / "spec" / "changes").iterdir()), [])
 
+
+class TestEvolutionWorthGate(unittest.TestCase):
+    """立项价值闸门（2026-10-11 判定收紧，用户定调 A+B）。
+
+    B1 verdict 一致性：``worth_spec=true`` 的必要条件 = problem_exists=yes
+    且 suggestion_sound=yes（双 partial / 单 partial / 字段缺失 → analyzed
+    不建草稿）。B2 同名在途：``spec/changes/evo-<name>/`` 已存在 → analyzed
+    不建草稿（消灭 -<6hex> 后缀撞名重复立项）；归档同名不挡（修复无效
+    场景重新立项合法）。两闸门都记 ``worth_gate_reason`` 供前端/日志呈现。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        (self.proot / "spec" / "changes").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _item(self, problem="yes", sound="yes", worth=True, name="add-evo-x"):
+        from core.evolution import item_id as _id
+        item = {
+            "project": "proj", "date_section": "2026-10-11", "section": "浪费",
+            "title": "闸门测试条目", "impact": "i", "evidence": "e",
+            "analysis": "a", "suggestion": "s",
+            "verdict": {"problem_exists": problem, "suggestion_sound": sound,
+                        "worth_spec": worth, "rationale": "证据: t.py:1"},
+            "analysis_md": "## 分析",
+        }
+        if worth:
+            item["spec"] = {
+                "name": name, "capability": "evo-cap",
+                "proposal_md": "# P", "design_md": "# D", "spec_md": "# S",
+                "tasks_md": (
+                    "## Deliverables\n\n"
+                    "```yaml\n- path: a.txt\n  kind: new\n```\n\n"
+                    "## 1. 实现\n\n"
+                    "- [ ] 1.1 落地功能\n"),
+            }
+        else:
+            item["spec"] = None
+        item["id"] = _id(item["project"], item["date_section"],
+                         item["section"], item["title"])
+        return item
+
+    def test_double_yes_still_pending(self):
+        """(yes, yes) 双强判定 → 照常建草稿 pending（回归保护）。"""
+        from core.evolution import ingest_item, read_items
+        status = ingest_item(self._item(), self.proot)
+        self.assertEqual(status, "pending")
+        rec = read_items(self.proot)[self._item()["id"]]
+        self.assertIsNone(rec.get("worth_gate_reason"))
+
+    def test_partial_partial_gated(self):
+        """双 partial 照 worth_spec=true → 闸门拦下置 analyzed，无草稿。"""
+        from core.evolution import ingest_item, read_items, draft_dir
+        item = self._item(problem="partial", sound="partial")
+        status = ingest_item(item, self.proot)
+        self.assertEqual(status, "analyzed")
+        rec = read_items(self.proot)[item["id"]]
+        self.assertEqual(rec["status"], "analyzed")
+        self.assertIn("双 yes", rec.get("worth_gate_reason") or "")
+        self.assertFalse(draft_dir(self.proot, item["id"]).exists())
+
+    def test_yes_partial_gated(self):
+        """问题成立但建议 partial → 同样拦下（partial 建议不该自动立项）。"""
+        from core.evolution import ingest_item
+        status = ingest_item(self._item(sound="partial"), self.proot)
+        self.assertEqual(status, "analyzed")
+
+    def test_missing_verdict_fields_gated_fail_closed(self):
+        """problem_exists/suggestion_sound 缺失 → 按 partial 同拦（fail-closed）。"""
+        from core.evolution import ingest_item
+        item = self._item()
+        del item["verdict"]["problem_exists"]
+        self.assertEqual(ingest_item(item, self.proot), "analyzed")
+
+    def test_worth_false_unchanged_no_gate_reason(self):
+        """worth_spec=false 的既有 analyzed 路径不写闸门原因（非闸门拦截）。"""
+        from core.evolution import ingest_item, read_items
+        item = self._item(worth=False)
+        self.assertEqual(ingest_item(item, self.proot), "analyzed")
+        rec = read_items(self.proot)[item["id"]]
+        self.assertIsNone(rec.get("worth_gate_reason"))
+
+    def test_same_name_inflight_gated(self):
+        """spec/changes/ 已有同名 evo-<name> 在途 → analyzed 不建草稿。"""
+        from core.evolution import ingest_item, read_items, draft_dir
+        (self.proot / "spec" / "changes" / "evo-add-evo-x").mkdir()
+        item = self._item()
+        status = ingest_item(item, self.proot)
+        self.assertEqual(status, "analyzed")
+        rec = read_items(self.proot)[item["id"]]
+        self.assertIn("同名 SPEC 在途", rec.get("worth_gate_reason") or "")
+        self.assertIn("evo-add-evo-x", rec.get("worth_gate_reason") or "")
+        self.assertFalse(draft_dir(self.proot, item["id"]).exists())
+
+    def test_archived_same_name_not_gated(self):
+        """归档同名不挡重新立项（修复无效场景重新立项合法）。"""
+        from core.evolution import ingest_item
+        arch = self.proot / "spec" / "archive" / "2026-09-01-evo-add-evo-x"
+        arch.mkdir(parents=True)
+        self.assertEqual(ingest_item(self._item(), self.proot), "pending")
+
     def test_read_contract_valid_and_invalid(self):
         """契约解析正常/非法分支。"""
         from core.evolution import ContractError
