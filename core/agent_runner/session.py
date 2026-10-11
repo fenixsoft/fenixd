@@ -11,10 +11,13 @@ def _to_int(value) -> int:
     try/except (TypeError, ValueError) 容错转换，收敛为单一助手消除重复；
     ``value or 0`` 假值兜底与异常捕获口径和原四段逐字等价，容错思路与
     同包 token_budget._to_int / maintenance_runs._safe_int 一致（各自独立，不跨模块收敛）。
+    code-review item 578ff5ba74ea：``int(float("inf"))`` 抛的是 OverflowError
+    （畸形 usage 经网关回传或 JSON 往返可携带 Infinity），一并入捕、回退 0，
+    口径与 token_budget._to_int（c7706d3ad78d）/ maintenance_runs._safe_int（dc8f109b8b60）对齐。
     """
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
