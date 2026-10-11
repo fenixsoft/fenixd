@@ -34,6 +34,7 @@ def _collect_unmerged_paths(status_text: str) -> list:
         if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
             continue
         path = line[3:].strip()
+        # [fenix-ignore:5df180a3c6f5] 歧义成立但触发面趋零（文件名含 " -> " 且恰处 unmerged rename 条目且恰走产物自愈）且失败走语义冲突降级道非静默腐蚀；切 -z 须同改本文件 3 处 git 采集命令并把本唯一口径的输入契约改为 NUL 形态（调用方误喂行形态会静默采空致自愈整体失效），且与仓内 stash_guard/archive_commit/knowledge_backfill/spec_review 等其余行形态 " -> " 解析点割裂成格式孤岛，改动面与回归风险超出 info 级病态输入影响面
         if " -> " in path:
             paths.extend(p.strip() for p in path.split(" -> "))
         else:
