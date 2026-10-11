@@ -265,9 +265,13 @@ class TestStrayWipUntrackChoice:
 
         from core.dashboard.data.admin_actions import execute_adjudication_choice
 
-        tmp = Path(tempfile.mkdtemp(prefix="untrack-guard-", dir=str(
+        history_tmp = (
             Path(__file__).resolve().parent.parent / ".history" / "tmp"
-        )))
+        )
+        # 自供给（fresh worktree 无主树残留的 .history/tmp）：目录由仓库约定
+        # 提供不入库，测试不得假设其已存在
+        history_tmp.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="untrack-guard-", dir=str(history_tmp)))
         for st in ("maintree_untracked_stray_stale", "daemon_errors",
                    "random_unregistered", ""):
             r = execute_adjudication_choice(

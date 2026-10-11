@@ -2997,6 +2997,18 @@ class PMEngine:
             branch = self._resolve_push_branch(spec_name, spec)
             self._push_branch_best_effort(spec_name, branch)
 
+            # ── 陈旧代码预检（evo-add-key-path-stale-code-preflight 2.1）──
+            # 收尾步以进程内代码执行；磁盘代码较进程新（_code_stale）时在此
+            # 请求重启（一条 WARNING + daemon 侧 .fenix/restart_request 防重），
+            # 把修复装载延迟从小时级压到分钟级。收尾本身照常完成——预检不改
+            # 变返回值与产物，重启由 supervisor 通道（2s 轮询）异步进行。
+            from core.code_stale_flag import request_restart
+
+            request_restart(
+                lambda msg: self.logger.warning("pm_engine", msg),
+                "verification-report 收尾提交",
+            )
+
             # ── push 收口报告入库（evo-add-push-closeout-verification-report-commit）──
             # 闭合「报告落盘 ∈ (实现 merge, pushed)」入库窗口：验证裁决放行出口的
             # commit-on-write 在 merge 之前已跑完，晚于 merge 落盘（或落盘后有修改）
