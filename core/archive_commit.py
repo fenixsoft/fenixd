@@ -144,6 +144,9 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
             timeout=_ADD_TIMEOUT,
         )
         if add.returncode != 0:
+            # add 部分命中失败（如个别路径被忽略/消失）时其余路径可能已写入
+            # 索引，回滚口径同下方 commit 失败/异常两分支，避免残留半状态。
+            _unstage(proot, paths)
             return _fail(f"git add 失败: {add.stderr.strip() or f'exit {add.returncode}'}")
         commit = subprocess.run(
             ["git", "commit", "-m", commit_msg, "--"] + paths,
