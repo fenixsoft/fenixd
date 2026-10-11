@@ -184,8 +184,10 @@ def tasks_note(project_root, spec_name, spec_status: str = "", groups=None):
 
     tasks.md 存在但 ``parse_tasks`` 返回空列表 → 返回提示文本（前端据此在
     任务清单 Card 显示 warning 空态，与「无 tasks.md 文件」的 secondary
-    空态可区分）；否则返回 ``None``。与 ``tasks`` 字段共用同一次解析语义
-    （implementing 状态同样优先读 worktree 内的 tasks.md）。
+    空态可区分）；否则返回 ``None``。与 ``tasks`` 字段共用同一次解析语义。
+    注意：worktree 优先仅发生在下方委托 ``parse_tasks`` 的解析路径（groups
+    缺省时）；本函数的存在性预检只看主树路径——implementing 且 tasks.md
+    仅存在于 worktree 时按「无 tasks.md」返回 None（不提示，属良性）。
     groups: 调用侧已解析的 ``parse_tasks`` 结果，与 ``tasks`` 字段共享同一份
         解析（详情请求对 tasks.md 只做一遍 IO，code-review item 6d2eca146f3c）；
         缺省时保持旧行为自行解析。
