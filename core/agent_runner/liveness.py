@@ -1778,19 +1778,32 @@ class LivenessSupervisor:
         if not running:
             return
 
-        # 第一步：统一 SIGTERM，并行通知所有在跑 agent 收尾
+        # 第一步：统一 SIGTERM，并行通知所有在跑 agent 收尾。
+        # code-review item 28640d6b8b35：整组清场而非单进程信号——_run_claude 已
+        # 以 start_new_session=True 独立成组（pgid==pid），claude 派生的工具孙进程
+        # （bash/node 等）与直接子进程同组，只 SIGTERM 直接子进程时孙进程残留为
+        # 孤儿（与 _judge_liveness_once 因同类问题改整组清场同形态）。经
+        # guard_killpg 自保护守卫按组长 pid 直传整组投递（resolve=False，复用
+        # _judge_liveness_once 范式）；返回 False（组已不存在＝进程已退出的竞态，
+        # 或守卫拒绝）按既有 ProcessLookupError 语义清理登记后跳过。
         for name, proc in running:
             try:
-                proc.terminate()  # SIGTERM：让 claude 关会话/flush 输出
-                self._pm.logger.info("agent_runner", f"Sent SIGTERM to running agent: {name}")
-            except ProcessLookupError:
-                # 进程已退出（竞态），标记清理后跳过。code-review item
-                # 292556ba9499：pop 持 _run_finalize_lock，对齐 runner.py finally
-                # 段确立的注册表变更单一协议（与停机写 interrupted 标记的
-                # 「成员复核 + 末行复核 + 追加」临界区互斥）；本处为函数第一步，
-                # 早于第二步标记临界区且不嵌套于任何持锁调用链，无重入死锁风险。
-                with self._pm._run_finalize_lock:
-                    self._pm._running_agents.pop(name, None)
+                if guard_killpg(
+                    proc.pid,
+                    signal.SIGTERM,
+                    caller="liveness.wait_for_running_agents",
+                    resolve=False,
+                ):
+                    self._pm.logger.info("agent_runner", f"Sent SIGTERM to running agent: {name}")
+                else:
+                    # 组已不存在（进程已退出竞态，等价原 ProcessLookupError 分支）：
+                    # 标记清理后跳过。code-review item 292556ba9499：pop 持
+                    # _run_finalize_lock，对齐 runner.py finally 段确立的注册表
+                    # 变更单一协议（与停机写 interrupted 标记的「成员复核 +
+                    # 末行复核 + 追加」临界区互斥）；本处为函数第一步，早于第二步
+                    # 标记临界区且不嵌套于任何持锁调用链，无重入死锁风险。
+                    with self._pm._run_finalize_lock:
+                        self._pm._running_agents.pop(name, None)
             except Exception as e:  # pragma: no cover - 防御性
                 self._pm.logger.warning("agent_runner", f"SIGTERM failed for agent {name}: {e}")
 
@@ -1849,24 +1862,37 @@ class LivenessSupervisor:
                 if not alive:
                     break
                 time.sleep(min(0.2, remaining))
-            # 缓冲窗口结束仍未退出的，强制 SIGKILL（标记已写入，不依赖优雅退出）
+            # 缓冲窗口结束仍未退出的，强制 SIGKILL（标记已写入，不依赖优雅退出）。
+            # item 28640d6b8b35：整组 SIGKILL 兜底（对齐上方 SIGTERM 与
+            # _judge_liveness_once 范式）；guard_killpg 对组已不存在（退出竞态）
+            # 返回 False 静默，等价原 ProcessLookupError 分支。
             for name, proc in list(self._pm._running_agents.items()):
                 if proc.poll() is None:
                     self._pm.logger.warning(
                         "agent_runner", f"Agent did not exit within {grace}s, SIGKILL: {name}"
                     )
                     try:
-                        proc.kill()
+                        guard_killpg(
+                            proc.pid,
+                            signal.SIGKILL,
+                            caller="liveness.wait_for_running_agents",
+                            resolve=False,
+                        )
                     except ProcessLookupError:
                         pass
                     except Exception as e:  # pragma: no cover - 防御性
                         self._pm.logger.warning("agent_runner", f"SIGKILL failed for {name}: {e}")
         else:
-            # grace=0：直接 SIGKILL 兜底
+            # grace=0：直接 SIGKILL 兜底（整组清场，同上 item 28640d6b8b35）
             for name, proc in list(self._pm._running_agents.items()):
                 if proc.poll() is None:
                     try:
-                        proc.kill()
+                        guard_killpg(
+                            proc.pid,
+                            signal.SIGKILL,
+                            caller="liveness.wait_for_running_agents",
+                            resolve=False,
+                        )
                     except ProcessLookupError:
                         pass
 
