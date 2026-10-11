@@ -2058,7 +2058,21 @@ def _unique_code_review_run_id(runner) -> str:
             continue
         except OSError:
             return candidate
-        _write_claim_placeholder(fd)
+        try:
+            _write_claim_placeholder(fd)
+        except BaseException:
+            # 占位写失败（磁盘满等，item 96ce97853f55）：O_CREAT|O_EXCL 已创建
+            # 的申领文件就此残留半写占位，而调用点 run_code_review 的 try/finally
+            # 占位清理区起于本函数返回之后、够不着这条路径——此处 unlink 退痕后
+            # 原样上抛（「申领即落好占位」或「无痕上抛」二者其一，对齐 item
+            # e6a103d93b91 的占位收尾清理约定）。不退避下一候选：占位写失败多为
+            # ENOSPC 类持续故障，逐候选退避会无界空转。fd 生命周期由
+            # _write_claim_placeholder 的 finally 接管，此处不重复 close。
+            try:
+                os.unlink(cr_dir / f"manifest-{candidate}.json")
+            except OSError:
+                pass
+            raise
         return candidate
 
 
@@ -2266,7 +2280,21 @@ def _unique_regression_run_id(runner) -> str:
             continue
         except OSError:
             return candidate
-        _write_claim_placeholder(fd)
+        try:
+            _write_claim_placeholder(fd)
+        except BaseException:
+            # 占位写失败（磁盘满等，item 96ce97853f55）：O_CREAT|O_EXCL 已创建
+            # 的申领文件就此残留半写占位，而调用点 run_regression 的 try/finally
+            # 占位清理区起于本函数返回之后、够不着这条路径——此处 unlink 退痕后
+            # 原样上抛（「申领即落好占位」或「无痕上抛」二者其一，对齐 item
+            # e6a103d93b91 的占位收尾清理约定）。不退避下一候选：占位写失败多为
+            # ENOSPC 类持续故障，逐候选退避会无界空转。fd 生命周期由
+            # _write_claim_placeholder 的 finally 接管，此处不重复 close。
+            try:
+                os.unlink(reg_dir / f"run-{candidate}.json")
+            except OSError:
+                pass
+            raise
         return candidate
 
 
@@ -2581,7 +2609,21 @@ def _unique_code_fix_run_id(runner, exclude=()) -> str:
             continue
         except OSError:
             return candidate
-        _write_claim_placeholder(fd)
+        try:
+            _write_claim_placeholder(fd)
+        except BaseException:
+            # 占位写失败（磁盘满等，item 96ce97853f55）：O_CREAT|O_EXCL 已创建
+            # 的申领文件就此残留半写占位，而调用点 run_code_fix 的 try/finally
+            # 占位清理区起于本函数返回之后、够不着这条路径——此处 unlink 退痕后
+            # 原样上抛（「申领即落好占位」或「无痕上抛」二者其一，对齐 item
+            # e6a103d93b91 的占位收尾清理约定）。不退避下一候选：占位写失败多为
+            # ENOSPC 类持续故障，逐候选退避会无界空转。fd 生命周期由
+            # _write_claim_placeholder 的 finally 接管，此处不重复 close。
+            try:
+                os.unlink(cr_dir / f"fix-out-{candidate}.jsonl")
+            except OSError:
+                pass
+            raise
         return candidate
 
 

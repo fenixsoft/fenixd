@@ -192,7 +192,7 @@ export default function SettingsPage() {
     }
   };
 
-  // 处理保存操作（返回是否成功：系统页签保存成功后还会连带提交 todo.md）
+  // 处理保存操作（返回是否成功：自省页签（SelfReviewPanel）保存成功后还会连带提交 todo.md）
   // 保存与重载分离（code-review item f51b1468ca4f）：重载移出保存 try——
   // 瞬态重载失败不得把已成功的保存误报为「保存失败」，只给非致命刷新提示；
   // 重载完成时经 scopeRef/projectRef 比对币值，await 期间用户切换作用域/

@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from .path_safety import safe_component
+
 logger = logging.getLogger("fenixd.verify_engine.scenario_static_check")
 
 # ── 端口相关确定性模式（D4：纯正则）─────────────────────────────
@@ -557,7 +559,7 @@ def write_findings(project_root: Path, spec_name: str, findings: Sequence[Static
         Path(project_root)
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "scenario_static_findings.json"
     )
     try:
@@ -580,7 +582,7 @@ def load_findings(project_root: Path, spec_name: str) -> list[dict]:
         Path(project_root)
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "scenario_static_findings.json"
     )
     try:
@@ -739,8 +741,11 @@ def scan_contract(
                 )
             )
         # ② serve.cmd 入口 vs package.json start script 入口
-        start_cmd = _package_start_entry(project_root)
-        start_entry = resolve_entry_path(start_cmd, project_root) if start_cmd else None
+        # 局部变量名用 pkg_start_cmd（code-review item 70373796537a）：与形参
+        # start_cmd（config commands.start 兜底，仅上方 serve is None 分支
+        # 使用）语义不同，不得遮蔽覆盖同名形参。
+        pkg_start_cmd = _package_start_entry(project_root)
+        start_entry = resolve_entry_path(pkg_start_cmd, project_root) if pkg_start_cmd else None
         # [fenix-ignore:d7e96e83281a] 两侧均出自 resolve_entry_path 唯一非 None 返回路径 (cwd/arg).resolve()，比较前已绝对化并归一软链，'./x' 与 'x' 形态差异不可能存活到此处
         if entry is not None and start_entry is not None and Path(entry) != Path(start_entry):
             findings.append(
@@ -753,7 +758,7 @@ def scan_contract(
                         f"为构建产物形态），仅提示；若本意一致建议对齐"
                     ),
                     evidence=(
-                        f"serve.cmd={cmd!r}; package.json start={start_cmd!r}; "
+                        f"serve.cmd={cmd!r}; package.json start={pkg_start_cmd!r}; "
                         f"pkg 入口={start_entry}"
                     ),
                 )

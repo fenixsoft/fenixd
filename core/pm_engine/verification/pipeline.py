@@ -182,7 +182,10 @@ from core.pm_engine.verification.escalation import (
     _warning_stale_triage_alert,
     _write_inconclusive_loop_signal,
 )
-from core.pm_engine.verification.legacy import _run_legacy_verification
+from core.pm_engine.verification.legacy import (
+    _discard_if_not_testing,
+    _run_legacy_verification,
+)
 from core.pm_engine.verification.verdict_evidence import (
     _clear_requeue_manifest,
     _clear_resynthesis_directive,
@@ -887,17 +890,6 @@ class VerificationPipeline:
         # bug-found、不派生 fix。重试前复用入口状态判据（非 testing 丢弃，与
         # stale-result 防护同构，不新增竞态面）。
         if not verifier_result.ok:
-            # evidence 的 result_file 取真实来源路径（code-review item
-            # 359da5d900bd）：_read_verdict 在 primary 缺失时回退主树共享文件，
-            # 硬编码 primary 路径在共享回退文件损坏场景下指向不存在的位置，
-            # 误导人工排障——复用统一解析助手按 primary.exists() 选择实际
-            # 读取路径（与 legacy 同款函数内 import 先例）。
-            from core.pm_engine.verification.report_gate import (
-                _verify_progress_result_paths,
-            )
-
-            _vfp_primary, _vfp_shared = _verify_progress_result_paths(self, spec_name)
-            verdict_result_path = _vfp_primary if _vfp_primary.exists() else _vfp_shared
             retry_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
             if retry_status == "testing":
                 self._context.logger.warning(
@@ -967,11 +959,32 @@ class VerificationPipeline:
                     # _dispatch_judge_or_reuse 同口径：防 MagicMock 替身
                     # 自动生成 truthy 属性误判让位）。
                     if getattr(retry_judge, "cancelled", False) is True:
+                        # 人工取消 hold-state（add-run-cancel D4，重派 judge 同语义）
+                        # 补取消保持标记（code-review item 5ee56fc13640）：与
+                        # 上方 frozen 分支（b7f86878b739）及首次派发路径
+                        # _dispatch_judge_or_reuse 的 cancelled 分支
+                        # （fix-cancel-holdstate-recovery D1）同口径——只留
+                        # testing 原状不落 _cancelled_hold，恢复链路
+                        # （event_bus 派发早退 / admin_monitor）不按取消保持
+                        # 语义处置，重派轮恰逢人工取消时现场降级普通 testing
+                        # 续派。
+                        c_err = retry_judge.error or ""
+                        cancelled_err = (
+                            f"run 被人工取消：{c_err}" if c_err else "run 被人工取消"
+                        )
+                        self._context.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": cancelled_err,
+                                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                                "_cancelled_hold": True,
+                            },
+                        )
                         self._context.logger.info(
                             "pm_engine",
                             f"重派 judge run 被人工取消 '{spec_name}' — 让位："
-                            f"保持 testing 原状，不写 blocked、不发告警: "
-                            f"{retry_judge.error or ''}",
+                            f"写取消保持标记（保持 testing），不写 blocked、"
+                            f"不发告警: {c_err}",
                         )
                         return None
                     if PROVIDER_CIRCUIT_ERROR_MARKER in (retry_judge.error or ""):
@@ -1097,13 +1110,12 @@ class VerificationPipeline:
                         ),
                     },
                 )
-                # result_file 与裁决复读共用同一观测序（code-review item
-                # ff325de4988d）：verdict_result_path 在重派 judge 前解析
-                # （primary 缺失时取主树共享回退路径）；重派窗口内 primary
-                # 产物可能已被写出但裁决仍不可读——evidence 若沿用重派前
-                # 路径即与实际不可读产物位置错位（item 359da5d900bd 的修复
-                # 被重派窗口打穿）。此处重新解析一次再生成 evidence；重派前
-                # 那次解析保留不动（前道使用点语义不变）。
+                # result_file 取实际读取路径（code-review item ff325de4988d /
+                # 359da5d900bd）：_read_verdict 在 primary 缺失时回退主树共享
+                # 文件，evidence 若硬编码 primary 路径，在共享回退文件损坏或
+                # 重派窗口内 primary 产物刚被写出的场景下即与实际不可读产物
+                # 位置错位、误导人工排障——blocked 写点处按 primary.exists()
+                # 现场解析一次再生成 evidence（本函数唯一解析点）。
                 from core.pm_engine.verification.report_gate import (
                     _verify_progress_result_paths,
                 )
@@ -3398,6 +3410,15 @@ class VerificationPipeline:
         # 上方专门分支消费，此守卫只拦 plan-ready，落到此后的平铺尾段即纯
         # verified。
         if verifier_status == "plan-ready":
+            # 写点前状态复核（code-review item 07b2d311e10d，与 legacy
+            # 「验证未完成」分支同口径收敛于 _discard_if_not_testing）：
+            # _read_verdict_failclosed 入口核对到本写点之间隔着证据校验/
+            # 不可读重派（judge 重派常态 15-50 分钟）与场景修复通道等长
+            # 耗时步骤，窗口内 spec 可能被人工复位/冻结接管/并发 attempt
+            # 接管——非 testing 时 DEBUG 丢弃，不覆写较新状态的
+            # error/tester_run。
+            if _discard_if_not_testing(self, spec_name, judge_result, verifier_status):
+                return
             self._context.state_machine.update_spec(
                 spec_name,
                 {

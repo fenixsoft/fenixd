@@ -3357,3 +3357,65 @@ class ConfigLoader:
             else:
                 return default
         return value
+
+    # ── 数值型配置统一读取守卫（code-review item 2513848b87c2）──────────
+    # fenixd.py 曾四处复制「读原始值 → or 缺省 → 非有限浮点预检 → int/float()
+    # → except (TypeError, ValueError, OverflowError) 回退缺省并 ERROR 留痕」
+    # 守卫（admin.workers 启动读取、agents.verify_redo_budget、admin.
+    # interval_minutes 主循环读取、_maybe_reload_config 的 workers 比对），
+    # 同一模式先后修了五轮评审缺陷（8f6bf8446388/625a1341f928/b80e1bf206f9/
+    # fc1f18a4eb95/0c251f8d00a5），复制式守卫再遇新非法值形态时漏改一处即
+    # 复发。收口为本助手：内部完成 or 缺省、非有限浮点预检（转换前后各一道，
+    # int/float 两种 conv 都覆盖）、转换与统一捕获集回退；各处回退动作差异
+    # （回缺省 / 返回哨兵跳过比对）由 fallback 表达，留痕文案与去重策略由
+    # on_invalid 回调承接（本助手自身不告警、不去重，保持各处既有行为）。
+    @classmethod
+    def get_finite_number(
+        cls,
+        config: Dict[str, Any],
+        dotted_key: str,
+        *,
+        conv,
+        get_default=None,
+        or_default=None,
+        fallback=None,
+        on_invalid=None,
+    ):
+        """按点分键读取数值型配置并归一，非法回退 ``fallback``。
+
+        语义（与被收口的四处守卫逐格等价）：
+        - ``cls.get(config, dotted_key, get_default)`` 取原始值（缺键 / 中途
+          None → ``get_default``）；
+        - ``or_default`` 非 None 时做既有「``raw or X``」假值映射（0/""/False
+          等 → X，如 admin.workers 的空值映射 0 = 关闭后台池）；None 表示不
+          做 or 映射、原样转换；
+        - 非有限浮点（.inf/.nan，YAML 合法标量）按非法值处理：int(.inf) 抛
+          OverflowError、int(.nan) 抛 ValueError、float() 不抛但令比较恒
+          False——故转换前后各一道 isfinite 预检；
+        - ``conv`` 转换，``except (TypeError, ValueError, OverflowError)`` 时
+          调 ``on_invalid(raw, reason)`` 留痕（reason："convert" 转换失败 /
+          "non-finite" 非有限值）并返回 ``fallback``；``on_invalid`` 为 None
+          时静默回退。
+
+        与 get_admin_config._num 的口径差异（有意保留，勿「统一」）：本助手
+        **不排除 bool**——bool 是 int 子类，四处被收口守卫的既有行为矩阵中
+        ``int(True)=1`` / ``float(True)=1.0`` 直接生效；收口以行为逐格等价为
+        先决条件，改 bool 去向属语义变更，须独立评审项决策。
+        """
+        raw = cls.get(config, dotted_key, get_default)
+
+        def _fallback(reason: str):
+            if on_invalid is not None:
+                on_invalid(raw, reason)
+            return fallback
+
+        try:
+            value = (raw or or_default) if or_default is not None else raw
+            if isinstance(value, float) and not math.isfinite(value):
+                return _fallback("non-finite")
+            result = conv(value)
+            if isinstance(result, float) and not math.isfinite(result):
+                return _fallback("non-finite")
+            return result
+        except (TypeError, ValueError, OverflowError):
+            return _fallback("convert")

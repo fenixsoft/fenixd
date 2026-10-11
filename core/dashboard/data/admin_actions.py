@@ -2289,8 +2289,12 @@ def _write_env_exemptions_state(project_root, spec: str, disposition_id) -> str:
 
     与既有 STATE 豁免按（场景 id, 失败签名）合并——同键刷新 granted_at/hash/
     disposition_id（重授予即续期），异键追加；总量超 ``ENV_EXEMPTION_MAX_
-    ENTRIES`` 按 granted_at 保新截旧。写入经 ``update_spec``（flock 原子），
-    返回空串=成功、非空=错误文本（调用方 fail-closed 不执行重置）。
+    ENTRIES`` 按 granted_at 保新截旧。读-合并-写整体收进 ``_mutate_locked``
+    锁内回调（code-review item 1cf6a07fa28d，同模块 resume_cancelled_spec
+    先例：合并基线取锁内最新条目，消除 read_one→update_spec 跨调用窗口在
+    dashboard 与 daemon/admin 通道并发授予时后写者按陈旧快照覆盖先写者
+    条目的丢更新面），返回空串=成功、非空=错误文本（调用方 fail-closed
+    不执行重置）。
     """
     from core.state_machine import (
         ENV_EXEMPTION_MAX_ENTRIES,
@@ -2299,31 +2303,41 @@ def _write_env_exemptions_state(project_root, spec: str, disposition_id) -> str:
     )
 
     try:
+        # 候选构建（报告/冻结定义读取）保持在锁外（resume_cancelled_spec 同款
+        # 口径：锁内只做纯内存合并与落盘）。
         additions = _env_exemption_candidates(project_root, spec, disposition_id)
         sm = _sm(project_root)
-        entry = sm.read_one(spec)
-        if entry is None:
+        applied: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(spec)
+            if fresh is None:
+                return False, False
+            merged: dict = {}
+            for item in parse_env_exemptions(fresh):
+                key = (str(item.get("scenario_id") or ""),
+                       str(item.get("failure_signature") or ""))
+                merged[key] = item
+            for item in additions:
+                key = (str(item.get("scenario_id") or ""),
+                       str(item.get("failure_signature") or ""))
+                merged[key] = item  # 同键刷新（重授予=续期），异键追加
+            exemptions = sorted(
+                merged.values(),
+                key=lambda it: str(it.get("granted_at") or ""),
+            )
+            if len(exemptions) > ENV_EXEMPTION_MAX_ENTRIES:
+                exemptions = exemptions[-ENV_EXEMPTION_MAX_ENTRIES:]
+            found = sm._apply_updates_entry(
+                specs, spec,
+                {ENV_EXEMPTIONS_FIELD: serialize_env_exemptions(exemptions)},
+                applied,
+            )
+            return found, found
+
+        if not sm._mutate_locked(_mutate):
             return f"spec '{spec}' 不存在，无法写 STATE 豁免字段（fail-closed）"
-        merged: dict = {}
-        for item in parse_env_exemptions(entry):
-            key = (str(item.get("scenario_id") or ""),
-                   str(item.get("failure_signature") or ""))
-            merged[key] = item
-        for item in additions:
-            key = (str(item.get("scenario_id") or ""),
-                   str(item.get("failure_signature") or ""))
-            merged[key] = item  # 同键刷新（重授予=续期），异键追加
-        exemptions = sorted(
-            merged.values(),
-            key=lambda it: str(it.get("granted_at") or ""),
-        )
-        if len(exemptions) > ENV_EXEMPTION_MAX_ENTRIES:
-            exemptions = exemptions[-ENV_EXEMPTION_MAX_ENTRIES:]
-        ok = sm.update_spec(spec, {
-            ENV_EXEMPTIONS_FIELD: serialize_env_exemptions(exemptions),
-        })
-        if not ok:
-            return "STATE 豁免字段写入未生效（update_spec 拒绝，fail-closed）"
+        sm._log_update_applied(spec, applied)
         return ""
     except Exception as e:
         logger.warning(
@@ -3115,9 +3129,13 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         commit_hash = _git_out(
             proot, "log", "-1", "--format=%H", "--", *to_untrack,
         ).strip()
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except OSError as e:
         return _abort(f"git 执行异常: {e}")
     except RuntimeError as e:
+        # subprocess.TimeoutExpired 不可达（code-review item 87fd1a921031）：
+        # try 内全部 git 调用经 _git_out（内部已把超时归一为 RuntimeError
+        # 抛出），.gitignore 判定的 _path_already_ignored 自吞
+        # TimeoutExpired/OSError——超时由本 RuntimeError 分支兜底。
         return _abort(str(e))
 
     steps = [

@@ -826,6 +826,12 @@ def _escalate_dedup_resynthesis(
     # 接管周期「永久累计」而非「连续 2 轮」）；同时避免 stale 指令被
     # judge prompt 注入段误读。合规采纳路径的清除语义不变。
     pipeline._clear_resynthesis_directive(spec_name)
+    # code-review 2aa137fa6fcb：同点同 fail-open 口径清回炉清单——否则
+    # blocked 解除后新一轮 judge 派发经 prompt_builder._requeue_manifest_section
+    # 仍被上一 episode 的「只重做 requeue 子集、其余场景 MUST NOT 重写」约束
+    # （该段逐轮无条件注入），与 directive 侧 stale 隐患同型同治；
+    # _adopt_report 采纳路径本就两者同清。
+    pipeline._clear_requeue_manifest(spec_name)
     pipeline._context.state_machine.update_spec(
         spec_name,
         {

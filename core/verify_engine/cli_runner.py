@@ -79,12 +79,29 @@ class CliRunner(VerifyRunner):
         # 调用等命令副作用已真实落地而命名结果被整体丢弃，可能污染同一环
         # 境上后续场景的执行前提——前移到验收期在执行前拒绝，与 api_runner
         # 同款对称；_execute_run 运行期检查保留为兜底。
+        # as 命名查重（code-review item e3a53dde9242）：同名步骤按 _execute_run
+        # 的直接赋值语义后者静默覆盖前者，引用该名的断言实际仲裁的是最后一
+        # 步输出——同样在验收期拒绝（fail-fast），口径照保留键先例报结构化
+        # 错误。
+        first_as_step: dict[str, int] = {}
         for i, step in enumerate(scenario.steps):
-            if step.action == "run" and step.as_ == "_latest":
+            if step.action != "run":
+                continue
+            if step.as_ == "_latest":
                 errors.append(
                     f"场景'{scenario.id}'步骤{i}: "
                     f"as 命名 '_latest' 是框架保留键，请改用其他名称"
                 )
+                continue
+            if step.as_:
+                if step.as_ in first_as_step:
+                    errors.append(
+                        f"场景'{scenario.id}'步骤{i}: "
+                        f"as 命名 '{step.as_}' 与步骤{first_as_step[step.as_]} 重复，"
+                        f"前一步骤命名结果会被静默覆盖，请改用其他名称"
+                    )
+                else:
+                    first_as_step[step.as_] = i
         return errors
 
     # ── 生命周期 ───────────────────────────────────────────────

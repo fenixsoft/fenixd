@@ -243,7 +243,13 @@ export function Markdown({ children, className, breaks = false }: MarkdownProps)
       ...markdownComponents,
       a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
         const linkText = childrenToText(linkChildren);
-        const fileRef = looksLikeFilePath(href) ? href : looksLikeFilePath(linkText) ? linkText : undefined;
+        // fileRef 回退链展开（项目清单禁嵌套三元，code-review item 1a1bff97634f）
+        let fileRef: string | undefined;
+        if (looksLikeFilePath(href)) {
+          fileRef = href;
+        } else if (looksLikeFilePath(linkText)) {
+          fileRef = linkText;
+        }
 
         if (fileRef && !/^(https?:|mailto:|tel:|data:)/i.test(href || '')) {
           // 工作区文件引用：dashboard 无编辑器跳转能力，渲染为带路径提示的链接样式

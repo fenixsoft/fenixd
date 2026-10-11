@@ -6,7 +6,13 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
-from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, VERIFY_INFRA_ROUNDS_FIELD
+from core.state_machine import (
+    ENV_BLOCK_ROUNDS_FIELD,
+    ENV_EXEMPTIONS_FIELD,
+    SCENARIO_REVISION_PENDING_FIELD,
+    VERIFY_INFRA_RETRY_STREAK_FIELD,
+    VERIFY_INFRA_ROUNDS_FIELD,
+)
 from core.pm_engine.verification.fastlane import FASTLANE_STREAK_FIELD
 
 
@@ -216,6 +222,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 不流转 bug-found、不入队重派。
         v_err = result.error or ""
         cancelled_err = f"run 被人工取消：{v_err}" if v_err else "run 被人工取消"
+        # ── 在飞 verify 结果状态判据（与本文件其余写点对齐）──
+        # run 被取消期间 spec 可能已被并发 attempt 推进到终态或拨回
+        # implemented：直接写会把「run 被人工取消」覆写到漂移后状态的 error、
+        # 并在非 testing 的 spec 上留下 _cancelled_hold 持久标记，干扰后续
+        # cancel-holdstate recovery 判定。判据单点收敛于 _discard_if_not_testing。
+        if _discard_if_not_testing(pipeline, spec_name, result, "cancelled"):
+            return
         pipeline._context.state_machine.update_spec(
             spec_name,
             {
@@ -419,10 +432,6 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 )
                 return
 
-            # verified 洗白门禁（help-center 0/15 verified 事故防线）：
-            # 0 通过或 env 失败不得放行，升级 admin 处置
-            if not pipeline._env_whitewash_gate(spec_name):
-                return
             # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
             # 结果应用前 spec 已非 testing（stale-result 防护拨回 implemented /
             # 并发新 attempt 已接管 / 其它状态漂移）→ DEBUG 丢弃，不走失败迁移
@@ -679,6 +688,14 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     "_verify_redo_count": 0,
                     # add-blocked-reverify-lane D3：env 阻塞轮次清零点（legacy 同语义）。
                     ENV_BLOCK_ROUNDS_FIELD: 0,
+                    # evo-verify-infra-retry-lane D2：infra-retry 专用连续重派计数
+                    # 随验证 PASS 清零（legacy 路径同语义，与 _apply_verified 同点）。
+                    VERIFY_INFRA_RETRY_STREAK_FIELD: 0,
+                    # evo-fix-env-exemption-gate-conflict-… 2.2：豁免生命周期随
+                    # verified 落定收口——豁免只在被验周期内生效，跨周期残留会把
+                    # 后续无关 env 失败洗白；修订待重验旗标同点清除（legacy 同语义）。
+                    ENV_EXEMPTIONS_FIELD: None,
+                    SCENARIO_REVISION_PENDING_FIELD: False,
                     # minor-defect-fastlane：verified 收口同步清零 fastlane 连败
                     # 计数（code-review item bfe2b17dcfe2，与 _apply_verified 的
                     # efbdab0801f3 同款）：正常整轮 verified 不经 fastlane 收敛点，
@@ -692,6 +709,8 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 失败历史侧车随 verified 终态清空（legacy 同语义，
             # fix-verdict-retry-misattribution D6）
             pipeline._clear_fail_history(spec_name)
+            # 本轮场景集变更小节追加到验证报告（spec 需求 2.3，legacy 同语义）
+            pipeline._render_scenario_change_section_to_report(spec_name)
             pipeline._context.on_spec_verified(spec_name)
         else:
             # code-review 06ca08e65666：plan-ready / scenario-repaired（及其它

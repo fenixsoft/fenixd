@@ -2624,13 +2624,31 @@ _SYNC_PAGE_KEYS = {
     },
 }
 
+def _pred_approve_mode(v) -> bool:
+    """approve_mode 谓词（延迟 import 引 ConfigLoader.VALID_APPROVE_MODES
+    单源，与 write_config 前置校验同口径；延迟 import 形态同 _pred_hhmm）。"""
+    from core.config import ConfigLoader
+
+    return v in ConfigLoader.VALID_APPROVE_MODES
+
+
+def _pred_promote_mode(v) -> bool:
+    """promote_mode 谓词（延迟 import 引 ConfigLoader.VALID_PROMOTE_MODES
+    单源，同上）。"""
+    from core.config import ConfigLoader
+
+    return v in ConfigLoader.VALID_PROMOTE_MODES
+
+
 # 「同步用户级设置」逐键形态谓词（code-review item b4686d41625c，前身是
 # fd7178c8666c 的段内复合值键白名单）：sync 以用户级文件原值构造 patch，部分
 # 形态（枚举/布尔键显式 null、serving_reclaim 为 dict 但缺 enabled 布尔）能通过
 # write_config 前置校验（None 视为「未提交」放行），却在 _deep_merge_managed
 # 对应合并分支的形态条件处被静默跳过不落盘，键仍照常计入 synced 回执——
 # fd7178c8666c / 46a887dedf6a 同款「synced 与实际落盘不一致」假成功的残余面
-# （触发条件为手工编辑的用户级配置）。本表列出合并分支带形态条件的键，谓词与
+# （触发条件为手工编辑的用户级配置）。本表列出合并分支带形态条件的键
+# （gates 四键为例外：其合并分支无形态条件、值原样落盘，登记谓词是为拦截
+# write_config 视为「未提交」而放行的显式 null，见该段注释），谓词与
 # 对应 _deep_merge_managed 分支同口径（逐键核对），拾取后预检不命中直接报错
 # 拒绝（不剔除、不假成功）。agents.models 与 admin.code_review /
 # admin.code_review_fix 不在表内：非 dict 已由 write_config 的「must be an
@@ -2747,6 +2765,30 @@ _SYNC_PAGE_APPLY_PREDICATES = {
         "self_heal_quiet_minutes": (
             lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
             "must be a positive integer",
+        ),
+    },
+    # code-review item bf995a56f571：approval 页 gates 四键补登记——gates 合并
+    # 分支（_deep_merge_managed）对值无 is not None 守卫，write_config 前置
+    # 校验又把 None 视为「未提交」跳过，用户级手工写成显式 null 的键原样落进
+    # 项目级文件且 synced 回执照含该键（fd7178c8666c / b331b2c9ae73 同款
+    # 「synced 与实际落盘不一致」假成功的残余面）。谓词与 write_config 前置
+    # 枚举同口径（None 即拒绝）。
+    "gates": {
+        "promote_mode": (
+            _pred_promote_mode,
+            "must be one of ['auto', 'manual']",
+        ),
+        "approve_mode": (
+            _pred_approve_mode,
+            "must be one of ['manual', 'auto']",
+        ),
+        "spec_review_mode": (
+            lambda v: v in ("auto", "never"),
+            "must be one of ['auto', 'never']",
+        ),
+        "start_after_scope": (
+            lambda v: v in ("full", "dispatch"),
+            "must be one of ['full', 'dispatch']",
         ),
     },
 }

@@ -748,7 +748,11 @@ class PromptBuilder:
             return ""
         try:
             findings = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(findings, list) or not findings:
             return ""
@@ -935,7 +939,9 @@ class PromptBuilder:
         try:
             raw = directive_path.read_text(encoding="utf-8")
             data = json.loads(raw)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
+            # RecursionError：超深嵌套 JSON 非 ValueError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2462,7 +2468,11 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(recheck_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, list) or not data:
             return ""
@@ -2501,7 +2511,11 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(rejection_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, list) or not data:
             return ""
@@ -2580,7 +2594,11 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(directive_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2642,7 +2660,11 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2795,7 +2817,11 @@ class PromptBuilder:
         )
         try:
             data = json.loads(report_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2842,7 +2868,11 @@ class PromptBuilder:
         )
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(report, dict):
             return ""
@@ -2949,7 +2979,11 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(directive_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (
+            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+        ):
+            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
+            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
             return ""
         if not isinstance(data, dict):
             return ""

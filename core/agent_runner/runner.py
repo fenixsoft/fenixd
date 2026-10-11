@@ -816,9 +816,12 @@ class AgentRunner:
         同样安全，对齐 _turn_branch_state 的惰性回退惯例）。
         """
         registry = self.__dict__.get("_running_agents") or {}
+        # 迭代前取 list() 快照（对齐 _running_agents 其余消费点惯例）：并发 run
+        # 在 _run_claude spawn 成功后向同一登记表写入新键，迭代中途字典变长会抛
+        # RuntimeError，使无害的判活查询异常上抛。
         return any(
             isinstance(aid, str) and aid.startswith(run_id_prefix)
-            for aid in registry
+            for aid in list(registry)
         )
 
     # ── 取消旗标惰性 property（add-run-cancel）────────────────────
@@ -1585,6 +1588,18 @@ class AgentRunner:
                 success=False, duration_seconds=time.time() - start_time,
                 error=str(e),
                 provider_used=provider_name, model_used=model_override,
+                # 归因桥接（对齐 run_spec_review catch-all 同口径）：_run_claude
+                # 失败路径已在异常上挂 api_error_status / conn_error（挂载先例见
+                # _run_claude 的 exc 挂载段），catch-all 从异常对象回填，不再只落
+                # error=str(e)——stderr 经降噪后文本分类对瞬态归因不可靠，结构化
+                # 字段是失败分类层唯一可靠的供给来源。stderr_tail 复用
+                # maintenance_runs._stderr_tail_summary 读异常原始 stderr_lines
+                # （降噪前原文），exit_code 读异常退出码。非 API 错误异常不携带
+                # 这些属性，getattr 缺省 None 自然回退文本分类，行为不变。
+                api_error_status=getattr(e, "api_error_status", None),
+                conn_error=getattr(e, "conn_error", None),
+                stderr_tail=_stderr_tail_summary(getattr(e, "stderr_lines", None)),
+                exit_code=getattr(e, "exit_code", None),
             )
 
     def run_spec_review(self, spec_name: str, run_id: str | None = None) -> AgentRunResult:
@@ -5752,6 +5767,13 @@ class AgentRunner:
             bufsize=1,  # 行缓冲，保证实时可读
             env=env,
             cwd=str(cwd),
+            # code-review item 28640d6b8b35：独立进程组启动（对齐
+            # liveness._judge_liveness_once 的 start_new_session=True 同款）。
+            # claude 派生的工具孙进程（bash/node 等）随本子进程同组，停机/
+            # 超时清场才能经 guard_killpg 整组收割（liveness.wait_for_running_
+            # agents）；本函数轮询环与既有清扫路径的 proc.terminate()/kill()
+            # 仍按直接子进程 pid 投递，语义不变。
+            start_new_session=True,
         )
         self._running_agents[run_id] = proc
 
