@@ -4362,9 +4362,10 @@ class AdminMonitor:
     def _handle_signal(self, signal: dict):
         """处理单条信号：状态沉淀记录 + 节流判定 + 唤起 Administrator。
 
-        返回 True 仅当信号通过全部守卫、抵达唤起（code-review item
+        返回 True 仅当信号通过全部守卫且唤起未被跳过（code-review item
         78eb37d3b06b）；各守卫丢弃路径（节流/冻结/夹具抑制/在飞互斥/
-        落库拒写）为裸 return（None = 未送达），供 run_once 回滚
+        落库拒写）为裸 return（None = 未送达），invoke 阶段的信号死法冷却/
+        夜间断窗跳过同样透传 None（item 05825b6fe4e0），供 run_once 回滚
         spec_amendment_inflight 的指纹备忘。
         """
         spec = signal.get("spec")
@@ -4527,7 +4528,14 @@ class AdminMonitor:
             f"Distress detected, invoking Administrator: {signal_type} for '{spec or 'daemon'}'",
             {"signal": signal},
         )
-        self._invoke_administrator(signal, signal_rec)
+        # code-review item 05825b6fe4e0：invoke 阶段的信号死法冷却/夜间断窗
+        # 跳过（False）同为「未送达」——透传 None，与上方各守卫丢弃路径同
+        # 口径，供 run_once 回滚 spec_amendment_inflight 指纹备忘，冷却到期/
+        # 断窗结束后同修订提交集合仍可再次成条（is False 严格比对：invoke
+        # 其余路径返回 None、测试桩替换的 MagicMock 均不影响既有「已送达」
+        # 判定）。
+        if self._invoke_administrator(signal, signal_rec) is False:
+            return None
         # code-review item 78eb37d3b06b：唯一送达出口——上方各守卫丢弃路径
         # 均为裸 return（None），run_once 据此区分「已唤起」与「被丢弃」。
         return True
@@ -5713,6 +5721,14 @@ class AdminMonitor:
         路径解析复用 `_admin_run_file`（含 archive 回退）——run 被「runs 保留」规则
         移入 `archive/` 后，只看顶层会漏掉标记，使已知中断被误判为疑似崩溃。
 
+        code-review item 346ecee6af03：只做尾部限量读（``_RUN_TAIL_READ_WINDOW``
+        窗口，边界判定范式同 ``_run_terminal_status``）——标记由 daemon 退出路径
+        O_APPEND 追加，其后 run 进程已死不再有新写入（启动补写扫描只对**无**终态
+        事件的文件追加，含标记的文件不会被再写），标记恒在文件尾部。孤儿巡检每轮
+        对每个超宽限 pending 组各调一次，全量逐行读的 IO 开销随转录体积（admin
+        处置实测数十 MB）线性增长，无必要。窗口未命中 → False，仍走「疑似崩溃 →
+        升级兜底」的既有保守方向，不损失正确性。
+
         Args:
             admin_run_id: admin disposition 的 admin_run_id（形如 admin-<spec>-<ts>）。
         """
@@ -5720,19 +5736,34 @@ class AdminMonitor:
         if run_file is None:
             return False
         try:
-            with run_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(entry, dict) and entry.get("type") == "interrupted":
-                        return True
+            size = run_file.stat().st_size
+            first_line_truncated = False
+            with run_file.open("rb") as f:
+                if size > _RUN_TAIL_READ_WINDOW:
+                    start = size - _RUN_TAIL_READ_WINDOW
+                    # 边界判定（code-review item 190881dd0168 同款，对齐
+                    # _run_terminal_status）：回看 start 前一字节，恰为换行说明
+                    # start 本身是完整行的起点，该行须保留；仅 mid-line 切入时
+                    # 丢截断残段（残段 JSON 解析失败本就跳过，显式丢弃不靠
+                    # 解析失败兜底）。
+                    f.seek(start - 1)
+                    first_line_truncated = f.read(1) != b"\n"
+                tail = f.read().decode("utf-8", "replace")
         except OSError:
             return False
+        lines = tail.split("\n")
+        if first_line_truncated:
+            lines = lines[1:]
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and entry.get("type") == "interrupted":
+                return True
         return False
 
     def _admin_run_file(self, admin_run_id: str):
@@ -5972,6 +6003,11 @@ class AdminMonitor:
         线程不同步等待小时级 admin run，否则 run_once 同线程的审查看门狗等
         检查点停摆）；executor 不可用（测试/禁用态）回退同步执行，返回即
         落痕完成。
+
+        返回值约定（code-review item 05825b6fe4e0）：信号死法冷却与夜间断窗/
+        瞬断冻结两个跳过路径返回 False（实际未派发 = 未送达，供 _handle_signal
+        透传 None 触发 run_once 的指纹备忘回滚）；其余路径（正常投递、
+        agent_runner 缺失升级、守卫拒写）维持返回 None，语义不变。
         """
         if self.agent_runner is None:
             # admin-dispatch-failure-escalation D2：重试派发遇 agent_runner 不
@@ -6044,7 +6080,10 @@ class AdminMonitor:
                     ),
                     error_label="cooldown-skip",
                 )
-            return
+            # code-review item 05825b6fe4e0：向调用方回传「未送达」——否则
+            # 被冷却跳过的修订告警在冷却期内不再成条，违背上方「冷却到期
+            # 自然恢复」文案的承诺。
+            return False
 
         # evo-add-night-window-inflight-guard 2.1：夜间断窗/provider 瞬断冻结
         # 避让（design D2）——与上方信号死法冷却同位并列，同样作用于人工显式
@@ -6083,7 +6122,10 @@ class AdminMonitor:
                     ),
                     error_label="window-avoidance",
                 )
-            return
+            # code-review item 05825b6fe4e0：向调用方回传「未送达」——否则
+            # 被断窗跳过的修订告警到窗末/下一轮盘点仍不再成条，违背上方
+            # 「留待下一轮盘点/检测循环自然重试」文案的承诺。
+            return False
 
         # 巡检线程 MUST NOT 同步等待 admin run：处置实测可跑百轮/小时级（152
         # 轮/63 分钟），同步执行会令 run_once 同线程的 code-review stall 检查、
