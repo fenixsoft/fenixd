@@ -561,22 +561,23 @@ class FenixDaemon:
         # admin.workers=0 → 不启用后台池，回退主循环内同步执行（逃生门）。
         # 非法值（非数字字符串等）回退缺省并留痕（code-review item
         # 8f6bf8446388，同 _shutdown_drain_seconds 范式）：裸 int() 抛
-        # ValueError 会令 initialize FATAL 退出、supervisor 拉起即再崩
-        raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
-        try:
-            _workers_num = raw_workers or 0
-            # .inf/.nan 是 YAML 合法标量：int(.inf) 抛 OverflowError、int(.nan)
-            # 抛 ValueError——非有限浮点先按 _shutdown_drain_seconds 范式预检
-            # 归一再 int()（code-review item 625a1341f928）
-            if isinstance(_workers_num, float) and not math.isfinite(_workers_num):
-                raise ValueError(f"non-finite: {_workers_num!r}")
-            admin_workers = int(_workers_num)
-        except (TypeError, ValueError, OverflowError):
-            self.logger.error(
+        # ValueError 会令 initialize FATAL 退出、supervisor 拉起即再崩。
+        # 守卫样板已收口为 ConfigLoader.get_finite_number（code-review item
+        # 2513848b87c2）：or 0 语义（显式 0/空值 → 不启用后台池）、非有限浮点
+        # 预检与 (TypeError, ValueError, OverflowError) 回退均由助手内部表达，
+        # 留痕文案保持原样。
+        admin_workers = ConfigLoader.get_finite_number(
+            self.config,
+            "admin.workers",
+            conv=int,
+            get_default=2,
+            or_default=0,
+            fallback=2,
+            on_invalid=lambda raw, _reason: self.logger.error(
                 "fenixd",
-                f"admin.workers 非法（应为非负整数）: {raw_workers!r}，回退 2",
-            )
-            admin_workers = 2
+                f"admin.workers 非法（应为非负整数）: {raw!r}，回退 2",
+            ),
+        )
         if admin_workers > 0:
             self._admin_executor = ThreadPoolExecutor(
                 max_workers=admin_workers,
@@ -741,26 +742,24 @@ class FenixDaemon:
         # item fc1f18a4eb95）。「or 3」语义保留：下游 state_machine 以
         # max(1, int(verify_redo_budget or 0)) 收敛到至少 1，显式 0 并不能表达
         # 「禁用预算」，故不改显式 None 判断（保守，不引入未验证的行为变化）。
-        # [fenix-ignore:fc1f18a4eb95] 已修复（code-fix 批次 61dd54b8 落地）：下方 int() 已包 try/except (TypeError, ValueError)，非法值回退 3 并 ERROR 留痕，所指启动即崩不复存在
+        # [fenix-ignore:fc1f18a4eb95] 已修复（code-fix 批次 61dd54b8 落地）：非法值已回退 3 并 ERROR 留痕（守卫后收口为 ConfigLoader.get_finite_number，item 2513848b87c2），所指启动即崩不复存在
         # 该标记理由未覆盖 .inf/.nan 形态（code-review item 625a1341f928）：
-        # int(.inf) 抛 OverflowError 不在 (TypeError, ValueError) 内——下方守卫
-        # 已补 isfinite 预检并扩捕获 OverflowError，启动即崩的该残留形态已闭合。
-        raw_redo_budget = ConfigLoader.get(self.config, "agents.verify_redo_budget", 3)
-        try:
-            _budget_num = raw_redo_budget or 3
-            # .inf/.nan 是 YAML 合法标量：int(.inf) 抛 OverflowError、int(.nan)
-            # 抛 ValueError——非有限浮点先按 _shutdown_drain_seconds 范式预检
-            # 归一再 int()（code-review item 625a1341f928）
-            if isinstance(_budget_num, float) and not math.isfinite(_budget_num):
-                raise ValueError(f"non-finite: {_budget_num!r}")
-            _redo_budget = int(_budget_num)
-        except (TypeError, ValueError, OverflowError):
-            self.logger.error(
+        # int(.inf) 抛 OverflowError 不在 (TypeError, ValueError) 内——守卫
+        # （现为 get_finite_number）已补 isfinite 预检并扩捕获 OverflowError，
+        # 启动即崩的该残留形态已闭合。守卫样板收口为该统一助手（item
+        # 2513848b87c2）。
+        _redo_budget = ConfigLoader.get_finite_number(
+            self.config,
+            "agents.verify_redo_budget",
+            conv=int,
+            get_default=3,
+            or_default=3,
+            fallback=3,
+            on_invalid=lambda raw, _reason: self.logger.error(
                 "fenixd",
-                f"agents.verify_redo_budget 非法（应为正整数）: "
-                f"{raw_redo_budget!r}，回退 3",
-            )
-            _redo_budget = 3
+                f"agents.verify_redo_budget 非法（应为正整数）: {raw!r}，回退 3",
+            ),
+        )
         # 恢复期 re-merge-back 收口回调（fix-recovery-branch-anchor D4/4.2）：
         # recover_interrupted 内 re-merge 成功后的 PMEngine 侧副作用
         # （_clear_dispatch_conflict / _sync_task_progress / _reconcile_impl_budget
@@ -1152,28 +1151,32 @@ class FenixDaemon:
                 # 8f6bf8446388，同 _shutdown_drain_seconds 范式）：裸 float() 在
                 # 主循环体直接抛出会越过逐任务异常隔离与 except KeyboardInterrupt，
                 # 经 finally shutdown 后以 FATAL 结束（supervisor 拉起即再崩）
-                raw_interval = ConfigLoader.get(self.config, "admin.interval_minutes", 5)
-                try:
-                    interval_minutes = float(raw_interval or 5)
-                except (TypeError, ValueError):
-                    self.logger.error(
+                # 守卫样板已收口为 ConfigLoader.get_finite_number（code-review
+                # item 2513848b87c2），float 两段式回退语义以 reason 参数表达：
+                # "convert"（非数字串等转换失败）与 "non-finite"（.inf/.nan 是
+                # YAML 合法标量、float() 不报错，令下方检查点节拍比较恒 False、
+                # 自进化检查点含条目保留清理 prune_items 静默停摆——code-review
+                # item b80e1bf206f9）各自保留原有留痕文案，回退缺省 5.0。
+                interval_minutes = ConfigLoader.get_finite_number(
+                    self.config,
+                    "admin.interval_minutes",
+                    conv=float,
+                    get_default=5,
+                    or_default=5,
+                    fallback=5.0,
+                    on_invalid=lambda raw, reason: self.logger.error(
                         "fenixd",
-                        f"admin.interval_minutes 非法（应为数值分钟）: "
-                        f"{raw_interval!r}，回退 5",
-                    )
-                    interval_minutes = 5.0
-                if not math.isfinite(interval_minutes):
-                    # .inf/.nan 是 YAML 合法标量、float() 不报错：inf/nan 令
-                    # 下方检查点节拍比较恒 False、自进化检查点（含条目保留
-                    # 清理 prune_items）静默停摆——同 _shutdown_drain_seconds
-                    # 范式按非法值回退缺省并留痕（code-review item
-                    # b80e1bf206f9）。
-                    self.logger.error(
-                        "fenixd",
-                        f"admin.interval_minutes 非法（应为有限数值分钟）: "
-                        f"{raw_interval!r}，回退 5",
-                    )
-                    interval_minutes = 5.0
+                        (
+                            f"admin.interval_minutes 非法（应为有限数值分钟）: "
+                            f"{raw!r}，回退 5"
+                        )
+                        if reason == "non-finite"
+                        else (
+                            f"admin.interval_minutes 非法（应为数值分钟）: "
+                            f"{raw!r}，回退 5"
+                        ),
+                    ),
+                )
                 evo_interval = max(interval_minutes, 0.5) * 60
                 if time.time() - evolution_check_ts >= evo_interval:
                     evolution_check_ts = time.time()
@@ -1287,25 +1290,23 @@ class FenixDaemon:
         # 非法时跳过比对，保证快照刷新与对齐持久化总能走到。
         # [fenix-ignore:0950743a8143] 已修复（code-fix 批次 61dd54b8 落地）：下方 int() 已包 try/except (TypeError, ValueError)，非法值记 ERROR 跳过比对，_config_snapshot 刷新与对齐持久化总能走到，所指裸 int() 不复存在
         if self._admin_executor is not None:
-            raw_workers = ConfigLoader.get(self.config, "admin.workers", 2)
-            workers = None
-            try:
-                _workers_num = raw_workers or 0
-                # .inf/.nan 是 YAML 合法标量：int(.inf) 抛 OverflowError、
-                # int(.nan) 抛 ValueError——非有限浮点先按
-                # _shutdown_drain_seconds 范式预检归一再 int()
-                # （code-review item 625a1341f928）
-                if isinstance(_workers_num, float) and not math.isfinite(
-                    _workers_num
-                ):
-                    raise ValueError(f"non-finite: {_workers_num!r}")
-                workers = int(_workers_num)
-            except (TypeError, ValueError, OverflowError):
-                self.logger.error(
+            # 守卫样板已收口为 ConfigLoader.get_finite_number（code-review item
+            # 2513848b87c2）：此处回退动作与启动路径不同——非法时返回 None
+            # （fallback=None）跳过比对而非回缺省，保证快照刷新与对齐持久化
+            # 总能走到，留痕文案保持原样。
+            workers = ConfigLoader.get_finite_number(
+                self.config,
+                "admin.workers",
+                conv=int,
+                get_default=2,
+                or_default=0,
+                fallback=None,
+                on_invalid=lambda raw, _reason: self.logger.error(
                     "fenixd",
-                    f"admin.workers 非法（应为非负整数）: {raw_workers!r}，"
+                    f"admin.workers 非法（应为非负整数）: {raw!r}，"
                     "跳过 worker 池大小比对",
-                )
+                ),
+            )
             if workers is not None and workers != self._admin_executor._max_workers:  # noqa: SLF001 只读探测
                 self.logger.info(
                     "fenixd",
