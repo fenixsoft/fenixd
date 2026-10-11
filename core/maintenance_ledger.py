@@ -59,7 +59,7 @@ def list_maintenance_entries(project) -> list:
     jsonl，半行交错（写侧已按原子约定防）或手工编辑损伤不应让全量读取失败。
     """
     try:
-        text = _ledger_path(project).read_text(encoding="utf-8")
+        text = _ledger_path(project).read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError):
         return []
     entries = []
