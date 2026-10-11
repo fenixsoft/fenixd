@@ -132,7 +132,7 @@ def has_live_process(wt_path: Path) -> bool:
                     for arg in cmdline.split("\0")
                 ):
                     return True
-            except (OSError, PermissionError):
+            except OSError:
                 pass
             # cwd check
             cwd_file = pid_dir / "cwd"
@@ -140,7 +140,7 @@ def has_live_process(wt_path: Path) -> bool:
                 cwd_link = os.readlink(str(cwd_file))
                 if cwd_link == target or cwd_link.startswith(target + "/"):
                     return True
-            except (OSError, PermissionError):
+            except OSError:
                 pass
         return False
     except Exception:
