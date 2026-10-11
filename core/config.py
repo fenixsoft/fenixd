@@ -805,6 +805,21 @@ class ConfigLoader:
                         "empty value): remove the line to use the consumer "
                         "default, or set a positive integer"
                     )
+                # 整值浮点按整数接受（code-review item 2f24ce55d6f6，同
+                # _normalize_transient_seconds / _positive_int_reader 口径，
+                # 判别式同款 ``is_integer() and > 0``）：YAML ``max_turns: 400.0``
+                # 此前被 ``not isinstance(val, int)`` 硬拒，整份配置加载/热更新
+                # 失败、旧值锁死；而同函数 schedule.poll_interval_minutes 接受
+                # 30.0，且三键各读取端（queue int() / repair_lane is_integer 分支
+                # / adjudication / runner int() 钳制）均已按整值浮点归一——同类值
+                # 在同文件两种命运。就地 int() 归一（同 _check_supervision_
+                # consistency 校验层自动对齐的原地写范式）：三键无本模块归一层，
+                # maintenance_runs 直传 _run_claude 的读取点不钳型，放行不归一会
+                # 让浮点漏进轮询环。is_integer() 对 .nan/.inf 恒 False，非有限
+                # 浮点与正负零判别同落入下方硬拒分支。
+                if isinstance(val, float) and val.is_integer() and val > 0:
+                    val = int(val)
+                    agents[field] = val
                 # 排除 bool（bool 是 int 子类，code-review item e9c679fb1bb3）
                 if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
