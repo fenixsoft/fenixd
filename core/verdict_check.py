@@ -1006,6 +1006,38 @@ def _has_visual_assertions(scenario: dict) -> bool:
     return False
 
 
+def _flatten_screenshot_labels(labels) -> dict:
+    """归一 screenshot_labels 的引擎嵌套形态为扁平标签并集。
+
+    引擎侧（core/verify_engine/web_runner.py）写入场景级
+    screenshot_labels 的形态是「{截图路径: 标签dict}」嵌套 dict——
+    classify_screenshot 对正常截图也恒含量化指标（pixel_std /
+    dominant_color_pct / width / height），仅判定异常时返回空 dict；
+    而本模块消费点按扁平标签 dict 取值，嵌套形态下
+    blank_screenshot / low_contrast 恒取 None/False，白屏/低对比度
+    证据链路（compute_attribution_level 快速通道、
+    enforce_blank_screenshot_direction 方向强制改写、
+    tag_cached_attributions 纯缓存降级豁免）整体失灵
+    （code-review item fdd31d3d542d）。
+
+    规则：值为 dict 的键视为路径键、合并其标签；标量值键视为扁平标签
+    原样保留（兼容混合形态）；全部值为标量（已是扁平形态）原样返回。
+    非 dict 输入按空 dict 处理（沿用 item 6151f22ae34d / acc304e9e5c4
+    的非 dict 防御口径，防 .get 抛 AttributeError 被门禁「异常不阻断」吞掉）。
+    """
+    if not isinstance(labels, dict):
+        return {}
+    if not any(isinstance(v, dict) for v in labels.values()):
+        return labels
+    flat: dict = {}
+    for key, value in labels.items():
+        if isinstance(value, dict):
+            flat.update(value)
+        else:
+            flat[key] = value
+    return flat
+
+
 def compute_attribution_level(scenario: dict) -> str:
     """框架侧机械计算归因级别（design D2 / Task 2.1）。
 
@@ -1028,12 +1060,11 @@ def compute_attribution_level(scenario: dict) -> str:
     if classification in (None, "pass"):
         return ATTRIBUTION_LEVEL_EVIDENCE_BACKED  # pass 场景不需要归因
 
-    # screenshot_labels 非 dict 按空处理（code-review item 6151f22ae34d，与
-    # evidence 同款防御：非 dict 真值 .get 抛 AttributeError 会被门禁
-    # 「异常不阻断」吞掉而旁路归因分级）。
-    labels = scenario.get("screenshot_labels") or {}
-    if not isinstance(labels, dict):
-        labels = {}
+    # 归一引擎嵌套形态（{路径: 标签dict}）为扁平标签并集（code-review item
+    # fdd31d3d542d）：web_runner 写入按截图路径嵌套，扁平直读使
+    # blank_screenshot/low_contrast 恒取 None，白屏/低对比度快速通道恒不
+    # 触发；非 dict 按空处理的既有防御（item 6151f22ae34d）已并入助手。
+    labels = _flatten_screenshot_labels(scenario.get("screenshot_labels"))
     # 严格 is True 判定（code-review item 94bf2c34ded9），与下方 first_frame_ok
     # 的 is False 同款防伪造纪律：引擎侧（classify_screenshot）只写布尔 True、
     # 缺标签即正常态；若按任意真值判定，judge 改写 report 把标签值伪造成任意
@@ -1163,12 +1194,11 @@ def enforce_blank_screenshot_direction(scenario: dict) -> Optional[str]:
     Returns:
         新的 classification（需要改写时）或 None（不需改写）。
     """
-    # screenshot_labels 非 dict 按空处理（code-review item acc304e9e5c4，与
-    # compute_attribution_level 同款防御：非 dict 真值 .get 抛 AttributeError
-    # 会被门禁「异常不阻断」吞掉而旁路白屏方向强制改写）。
-    labels = scenario.get("screenshot_labels") or {}
-    if not isinstance(labels, dict):
-        labels = {}
+    # 归一引擎嵌套形态为扁平标签并集（code-review item fdd31d3d542d，与
+    # compute_attribution_level 同款）：嵌套形态下 blank_screenshot 恒取
+    # False，白屏方向强制改写恒不命中；非 dict 按空处理的既有防御
+    # （item acc304e9e5c4）已并入助手。
+    labels = _flatten_screenshot_labels(scenario.get("screenshot_labels"))
     if not labels.get("blank_screenshot", False):
         return None
     classification = scenario.get("classification") or ""
@@ -1624,11 +1654,12 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
             sc["cached_source_round"] = cached_round
         # 纯缓存归因（无本轮新增 evidence-backed 证据）→ 按 speculative 口径
         level = sc.get("attribution_level") or ATTRIBUTION_LEVEL_EVIDENCE_BACKED
-        # screenshot_labels 非 dict 按空处理（code-review item 6151f22ae34d，
-        # 与 compute_attribution_level 同款防御，防 AttributeError 被门禁吞掉）。
-        labels = sc.get("screenshot_labels") or {}
-        if not isinstance(labels, dict):
-            labels = {}
+        # 归一引擎嵌套形态为扁平标签并集（code-review item fdd31d3d542d，与
+        # compute_attribution_level 同款）：嵌套形态下 blank_screenshot/
+        # low_contrast 恒取 None，缓存命中场景借白屏/低对比度强标签豁免
+        # 纯缓存降级的通道恒不命中；非 dict 按空处理的既有防御
+        # （item 6151f22ae34d）已并入助手。
+        labels = _flatten_screenshot_labels(sc.get("screenshot_labels"))
         # evidence 非 dict 按空处理（与 _scenario_has_substantive_evidence /
         # compute_attribution_level 的 item 803f6a23f662 防御同口径：非 dict
         # 真值 .get 抛 AttributeError 会被门禁「异常不阻断」吞掉，跨轮缓存
