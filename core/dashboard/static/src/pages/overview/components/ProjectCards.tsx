@@ -126,6 +126,10 @@ export default function ProjectCards({
       onChanged();
     } catch (err) {
       message.error(`项目「${name}」操作失败：${err instanceof Error ? err.message : String(err)}`);
+      // 失败也校准（code-review item 081eba8b7d85）：统一 30s 超时下失败响应可能实际
+      // 已生效（如响应超时但 start 已完成），与 delete 分支「失败也经 onChanged()
+      // 回滚/校准」口径对齐，立即用服务端真值刷新而非等 30s 心跳
+      onChanged();
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
@@ -236,6 +240,9 @@ export default function ProjectCards({
         itemLayout="horizontal"
         dataSource={filtered}
         rowKey={(p) => p.name}
+        // 过滤无命中也要有空态（code-review item 4cc2d91e005b）：上方 !projects.length
+        // 只覆盖项目全集为空；搜索关键词/状态筛选把 filtered 清空时由此占位提示
+        locale={{ emptyText: '无匹配项目，请调整搜索关键词或状态筛选' }}
         renderItem={(project) => {
           // fix-dashboard-fault-isolation 3.3：项目级错误态——摘要携带非空 error 时
           // 呈现警示色错误卡片（不渲染 daemon 徽标 / 状态 Tag / 进度数字），
