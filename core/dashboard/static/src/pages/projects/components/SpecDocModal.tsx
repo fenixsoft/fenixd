@@ -137,16 +137,22 @@ const codeChipStyle: CSSProperties = {
   fontSize: '0.9em',
 };
 
-// 从表格 children 的表头子树（thead/tr/th）递归收集文本，用于表头指纹识别。
-// 只下钻表头元素：remark-gfm 把 GFM 表格首行渲染为 <thead><tr><th>、表体在
-// <tbody> 内，指纹特征词必须落在表头才算命中——若连表体全文一起匹配，普通
-// 表格正文恰好出现「编号」「摘要」等特征词就会被误套知识表定宽布局
+// 从表格 children 的表头子树（thead/tr/th）递归收集文本，用于表头指纹识别与
+// th 定宽查找（同一取文本口径）。只下钻表头元素：remark-gfm 把 GFM 表格首行
+// 渲染为 <thead><tr><th>、表体在 <tbody> 内，指纹特征词必须落在表头才算命中
+// ——若连表体全文一起匹配，普通表格正文恰好出现「编号」「摘要」等特征词就会
+// 被误套知识表定宽布局。表头内的行内格式元素（`code`、**strong** 等 GFM 内联
+// 语法产物及 SafeLink 降级 span）同样下钻取纯文本，含格式的表头不失宽。
+const HEADER_TEXT_ELEMENTS = new Set([
+  'thead', 'tr', 'th',
+  'code', 'strong', 'em', 'del', 'a', 'span', 'br',
+]);
 const collectTableText = (node: ReactNode): string => {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(collectTableText).join('');
   if (isValidElement(node)) {
     const el = node as ReactElement<{ children?: ReactNode }>;
-    if (el.type !== 'thead' && el.type !== 'tr' && el.type !== 'th') return '';
+    if (!HEADER_TEXT_ELEMENTS.has(String(el.type))) return '';
     return collectTableText(el.props.children);
   }
   return '';
@@ -229,11 +235,11 @@ export const markdownComponents: Components = {
       </TableWidthContext.Provider>
     );
   },
-  // 列宽经 TableWidthContext 由所在 table 下发（td 跟随所在列宽，无需单设）
+  // 列宽经 TableWidthContext 由所在 table 下发（td 跟随所在列宽，无需单设）；
+  // 取文本与 table 指纹识别同口径（collectTableText），行内格式表头不失宽
   th: ({ node: _node, children, ...props }) => {
     const widths = useContext(TableWidthContext);
-    const width =
-      typeof children === 'string' && widths ? widths[children.trim()] : undefined;
+    const width = widths ? widths[collectTableText(children).trim()] : undefined;
     return (
       <th
         style={{
