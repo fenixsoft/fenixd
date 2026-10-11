@@ -113,26 +113,12 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     if not spec_records:
         return []
 
-    # 按 admin_run_id 归并 disposition（轻量 best_by_run 语义）：
-    # 非 pending 优先于 pending；同为非 pending 取最新；无 admin_run_id 独立。
-    best_by_run: dict = {}
-    for rec in spec_records:
-        if rec.get("kind") != DISPOSITION:
-            continue
-        rid = rec.get("admin_run_id") or f"run-{id(rec)}"
-        status = rec.get("status") or rec.get("result")  # 与单源 _merge_admin_runs（core/admin_monitor.py）同款 status 优先，勿二次漂移
-        is_pending = status == "pending"
-        existing = best_by_run.get(rid)
-        if existing is None:
-            best_by_run[rid] = (is_pending, rec)
-            continue
-        if is_pending and not existing[0]:
-            continue  # 已有最终处置，pending 被替代
-        if not is_pending and existing[0]:
-            best_by_run[rid] = (False, rec)
-        # [fenix-ignore:e40a6011ce77] created 写侧恒一：AdminStore 三个写口共用 _normalize_entry 的 setdefault("created", _utcnow_iso())（UTC +00:00 单一后缀族），全部写入点核实无显式传值/改写，同后缀族字典序即时间序
-        elif (rec.get("created") or "") > (existing[1].get("created") or ""):
-            best_by_run[rid] = (is_pending, rec)
+    # 按 admin_run_id 归并 disposition：委托共享 merge_dispositions_by_run
+    # （与运维记录页 get_admin_activities 同源单点；非 pending 优先于
+    # pending、同态取 created 最新、无 admin_run_id 独立成组）。
+    import core.dashboard.data as _facade
+
+    best_by_run = _facade.merge_dispositions_by_run(spec_records)
 
     nodes: list[dict] = []
     for rec in spec_records:
@@ -188,6 +174,13 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
 
 
 _DAEMON_LOG_RE = re.compile(r"fenixd.*\.log(?:\.(\d+))?")
+# 日期命名历史产物（fenixdYYYY-MM-DD.log，旧版 logger 非轮转命名）：
+# 统一排到最旧端——code-review item 691c672d8ad5
+_DATE_NAMED_LOG_RE = re.compile(r"fenixd\d{4}-\d{2}-\d{2}\.log$")
+# 日期命名序位哨兵：轮转序号 |N| 有界（backupCount=5），取远小于其下界的
+# 常量即恒排任何轮转备份之前；组内 (seq, name) 的 name 含 YYYY-MM-DD，
+# 字典序即时间 旧→新。
+_DATE_NAMED_SEQ = -(10**9)
 
 
 def _rotated_log_files(logs_dir: Path) -> list:
@@ -201,17 +194,26 @@ def _rotated_log_files(logs_dir: Path) -> list:
     缺失。故按正则枚举全部轮转产物并按 旧→新 排序——跨文件拼接窗口保持时间
     单调，且「开始验证」行靠遍历序取最后一轮（verify_start_ts），旧→新遍历下
     最后赋值恰为时间最新。正则同时保留原 glob 的日期命名全集
-    （fenixdYYYY-MM-DD.log 等非轮转历史产物，与基底同序位、按文件名排序），
-    不使历史日志脱离枚举；非日志命名（fenixd.log.lock 等伴随文件）不命中
-    正则，跳过。
+    （fenixdYYYY-MM-DD.log 等非轮转历史产物，旧版 logger 命名），不使历史日志
+    脱离枚举；其序位统一排最旧端（比任何轮转备份更旧，组内按文件名内日期
+    旧→新）——旧实现与基底同序位（seq=0）时按文件名排序（'.'<'2'）排在基底
+    之后，遍历序里被当「最新」文件，其中的陈旧「开始验证」行会按末次赋值
+    覆盖 verify_start_ts（item 691c672d8ad5）。非日志命名（fenixd.log.lock
+    等伴随文件）不命中正则，跳过。
     """
     out: list[tuple[int, str, Path]] = []
     for lf in logs_dir.iterdir():
         m = _DAEMON_LOG_RE.fullmatch(lf.name)
         if m is None:
             continue
-        # 基底序 0（最新）；备份序号 N 越大越旧 → 取 -N 使升序即 旧→新
-        seq = -int(m.group(1)) if m.group(1) else 0
+        # 基底序 0（最新）；备份序号 N 越大越旧 → 取 -N 使升序即 旧→新；
+        # 日期命名历史产物统一排最旧端（组内文件名日期字典序 旧→新）
+        if m.group(1):
+            seq = -int(m.group(1))
+        elif _DATE_NAMED_LOG_RE.fullmatch(lf.name):
+            seq = _DATE_NAMED_SEQ
+        else:
+            seq = 0
         out.append((seq, lf.name, lf))
     out.sort(key=lambda t: (t[0], t[1]))
     return [t[2] for t in out]
