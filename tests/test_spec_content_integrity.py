@@ -636,12 +636,23 @@ class TestFrozenReplayGuards(unittest.TestCase):
         self.assertEqual(self._escalations(), [])
 
     def test_non_frozen_dispatch_unchanged(self):
-        """2.3 语义回归：非冻结 ready spec 派发守卫链行为不变（正常入队）。"""
+        """2.3 语义回归：非冻结 ready spec 派发守卫链行为不变（正常入队）。
+
+        add-verify-lane-throughput 1.1 起 _on_spec_ready 成功入队 implementer
+        后默认触发并行出题（verify.parallel_planning 缺省开启），对无场景集的
+        ready spec 追加一条 planner-plan 条目；本守卫的核心语义是实现车道恰好
+        入队一次，故按角色过滤断言（planner-plan 契约由
+        test_verify_lane_throughput 专项覆盖）。
+        """
         _mk_spec_dir(self.project_root, "ready-spec", ["tasks.md"])
         self.sm.add_spec("ready-spec", {"status": "ready"})
         self.engine._enqueue = MagicMock()
         self.engine._on_spec_ready("ready-spec")
-        self.engine._enqueue.assert_called_once_with("ready-spec", "implementer")
+        impl_calls = [
+            c.args for c in self.engine._enqueue.call_args_list
+            if c.args == ("ready-spec", "implementer")
+        ]
+        self.assertEqual(impl_calls, [("ready-spec", "implementer")])
 
 
 if __name__ == "__main__":
