@@ -278,11 +278,28 @@ def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
     return candidates[0][1]
 
 
+def _copy_run_task_done(result: dict) -> dict:
+    """外返拷贝：缓存原件（含各 set/list 字段）不出内部，消费方改写不回污缓存。
+
+    code-review item 0409481a4a86：parse_run_task_done 命中 memo 缓存时若
+    原样返回同一 dict/set/list 引用，任一消费方原地改写（``done_ids.add()``
+    等）会在 mtime/size 不变期间持续污染后续所有读取且无任何报错。int 等
+    不可变字段直接共享，可变容器逐字段复制。
+    """
+    return {
+        k: (set(v) if isinstance(v, set) else list(v) if isinstance(v, list) else v)
+        for k, v in result.items()
+    }
+
+
 def parse_run_task_done(run_file: Path) -> dict:
     """解析 impl run 产物的 harness 任务完成状态（容错：任何损坏都不抛异常）。
 
     该函数为 dashboard 实时叠加与 pm_engine 写侧回写共用的解析核心，
     避免两套正则漂移。详见 _parse_run_task_done 历史语义说明。
+
+    返回值为独立拷贝（缓存原件不外泄），消费方可安全原地改写而不污染缓存
+    （item 0409481a4a86）。
 
     TaskCreate 的 input.subject 内嵌 tasks.md id（如 "Task 1.1: ..."）；
     TaskUpdate 的 taskId 为 1 基创建序（tool_result 形如 "Task #1 created ..."）。
@@ -302,7 +319,7 @@ def parse_run_task_done(run_file: Path) -> dict:
         return {"done_ids": set(), "created_count": 0, "flat_done": set(), "in_progress_ids": []}
     cached = _RUN_TASK_CACHE.get(key)
     if cached is not None:
-        return cached
+        return _copy_run_task_done(cached)
 
     # Task 事件解析循环收敛到 _scan_task_create_update 单点（含 last_update_status），
     # 禁止在此再造第二套循环。其 OSError 容错返回空三元组 → 空结果继续（与原
@@ -338,7 +355,7 @@ def parse_run_task_done(run_file: Path) -> dict:
     if len(_RUN_TASK_CACHE) > 64:
         _RUN_TASK_CACHE.clear()
     _RUN_TASK_CACHE[key] = result
-    return result
+    return _copy_run_task_done(result)
 
 
 # impl run 文件名中的派发 epoch（同一 dispatch 链的 a1/a2/a3、-rN 重试共享）。
