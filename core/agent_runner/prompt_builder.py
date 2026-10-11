@@ -136,6 +136,12 @@ def _fill_and_scan_placeholders(
     不阻断派发。边界注记（评审修补）：注入值字面量与模板真漂移同键时，残差
     扣除 template_leftover 会把该字面量一并归入模板通道——仅多计一条
     WARNING，无 INFO 漏报，亦不影响返回值，保守方向可接受，不预置消歧机制。
+    另一边界（code-review item 72a80eb4d715）：注入值文本内嵌与本次填充键
+    同名的占位符字面量时（如 evidence 值含「{result_path}」且该键本轮确被
+    填充），单趟替换后该字面量原样残留，却被 value_keys 作差减掉——通道一/
+    二双双失明。下方对注入值原始文本单独扫描求交，命中键以 INFO
+    （injected_literal_shadowed）留痕补口；仍不进 WARNING、不影响返回值
+    （残留是注入值合法组成，方向保守）。
     """
     out = _single_pass_replace(template, values)
     value_keys = set(values)
@@ -177,6 +183,24 @@ def _fill_and_scan_placeholders(
             label,
             context_id,
             len(injected_literals),
+        )
+    # 盲区补口（code-review item 72a80eb4d715）：注入值原始文本内嵌与填充键
+    # 同名的占位符字面量时，单趟替换后原样残留却被上方 value_keys 作差减掉
+    # ——通道一/二均不可见。对注入值原始文本单独扫描与 value_keys 求交，
+    # 命中键以 INFO 留痕；方向保守，不计 WARNING、不影响返回值。
+    shadowed: set = set()
+    for _raw in values.values():
+        if isinstance(_raw, str):
+            shadowed |= value_keys.intersection(_PLACEHOLDER_RE.findall(_raw))
+    if shadowed:
+        _logger.info(
+            "提示词注入值字面量与填充键同名（injected_literal_shadowed，残留原样保留，仅留痕）: "
+            "agent=%s template=%s %s=%s shadowed=%s",
+            agent_type,
+            template_name,
+            label,
+            context_id,
+            sorted(shadowed),
         )
     return out
 
@@ -407,25 +431,30 @@ class PromptBuilder:
             except Exception:  # noqa: BLE001 — 注入失败不得阻断派发
                 _prev_rej = ""
             values["{prev_review_rejection}"] = _prev_rej
-        values.update(
-            {
-                # 信号字段统一走 _str_field（历史/直发记录可能是结构化值，非字符串
-                # 到达 str.replace 抛 TypeError 中止整个提示词构建——归一不对称防回归）。
-                "{sig_type}": _str_field(sig.get("signal_type")) or "unknown",
-                "{sig_spec}": _str_field(sig.get("spec")) or spec_name,
-                # 严重度缺失显式标记 unknown（与 sig_type 缺省口径一致）——
-                # 不伪造 "major"，避免向 administrator 注入未经证实的优先级。
-                "{severity}": _str_field(sig.get("severity")) or "unknown",
-                "{description}": _str_field(sig.get("description")),
-                "{evidence}": _str_field(sig.get("evidence")),
-                "{recommendation}": _str_field(sig.get("recommended_action")),
-                # 旧全局路径 .fenix/admin_disposition.json 已废弃不再读写
-                # （maintenance_runs.py），无 disposition_path 时留空——兜底指向
-                # 废弃位置会把管理员导向永不被告知读取的写入点。
-                "{disp_path}": _str_field(sig.get("disposition_path")),
-                "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
-            }
-        )
+        # 信号键与路径键同白名单纪律（code-review item 5fb2eb7040e2）：八个信号
+        # 键仅 administrator 模板引用（agents/*.md 逐一核对），只对 administrator
+        # 装配——其余类型不预填，未来非 admin 模板误写 {description} 等键时自然
+        # 落入残留扫描告警，不再被静默填成空串（模板漂移告警不被永久静音）。
+        if agent_type == "administrator":
+            values.update(
+                {
+                    # 信号字段统一走 _str_field（历史/直发记录可能是结构化值，非字符串
+                    # 到达 str.replace 抛 TypeError 中止整个提示词构建——归一不对称防回归）。
+                    "{sig_type}": _str_field(sig.get("signal_type")) or "unknown",
+                    "{sig_spec}": _str_field(sig.get("spec")) or spec_name,
+                    # 严重度缺失显式标记 unknown（与 sig_type 缺省口径一致）——
+                    # 不伪造 "major"，避免向 administrator 注入未经证实的优先级。
+                    "{severity}": _str_field(sig.get("severity")) or "unknown",
+                    "{description}": _str_field(sig.get("description")),
+                    "{evidence}": _str_field(sig.get("evidence")),
+                    "{recommendation}": _str_field(sig.get("recommended_action")),
+                    # 旧全局路径 .fenix/admin_disposition.json 已废弃不再读写
+                    # （maintenance_runs.py），无 disposition_path 时留空——兜底指向
+                    # 废弃位置会把管理员导向永不被告知读取的写入点。
+                    "{disp_path}": _str_field(sig.get("disposition_path")),
+                    "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
+                }
+            )
         # 一次性多模式替换（code-review item 7975ab14dbe7）：逐键 str.replace 会把
         # 上一轮结果作为下一键的替换对象——注入值（信号 evidence 常嵌入 run 产物
         # 路径与提示词片段）本身含 {result_path} 等占位符字面量时被后续键二次
@@ -1401,7 +1430,10 @@ class PromptBuilder:
         Returns:
             快照 dict 或 None。
         """
-        from core.deliverables import match_basename_in_tree, resolve_effective_declaration
+        try:
+            from core.deliverables import match_basename_in_tree, resolve_effective_declaration
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _selfcheck_section/_route_map_section 同族）：模块级导入失败仅置 None 跳过注入，不中止派发
+            return None
 
         # 分支/worktree 上下文：派发时从 spec 状态与 worktree_manager 解析
         branch = None
