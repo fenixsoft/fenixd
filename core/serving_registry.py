@@ -32,6 +32,22 @@ def servers_path(project_root) -> Path:
     return Path(project_root) / ".fenix" / "verify-serving" / SERVERS_FILENAME
 
 
+def _pid_eq(stored, pid) -> bool:
+    """登记 pid 严格比对（两侧都须为真整型）。
+
+    bool 是 int 子类：手改 servers.json 写入的 ``{"pid": true}`` 在纯 ``==``
+    比对下会与整型 pid=1 互相匹配（True == 1），导致 register 幂等误命中、
+    remove 误摘合法条目——此处双侧都排除 bool 后才允许值比较。
+    """
+    return (
+        isinstance(stored, int)
+        and not isinstance(stored, bool)
+        and isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and stored == pid
+    )
+
+
 class ServingRegistry:
     """servers.json 登记表：进程内互斥 + 跨进程 fcntl 文件锁。"""
 
@@ -112,7 +128,7 @@ class ServingRegistry:
 
         def _fn(records):
             for r in records:
-                if r.get("pid") == pid and r.get("spec") == spec:
+                if _pid_eq(r.get("pid"), pid) and r.get("spec") == spec:
                     # pid 复用防护：身份快照过期（cur 与快照不一致）说明登记
                     # 的已是另一个进程实例，沿用旧快照会让 sweep 收割时
                     # _harvest_identity_ok 必然失配——只摘登记不杀组，新实例
@@ -162,10 +178,12 @@ class ServingRegistry:
             before = len(records)
             if spec:
                 records[:] = [
-                    r for r in records if not (r.get("pid") == pid and r.get("spec") == spec)
+                    r
+                    for r in records
+                    if not (_pid_eq(r.get("pid"), pid) and r.get("spec") == spec)
                 ]
             else:
-                records[:] = [r for r in records if r.get("pid") != pid]
+                records[:] = [r for r in records if not _pid_eq(r.get("pid"), pid)]
             return len(records) != before
 
         try:
@@ -392,10 +410,12 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
     malformed = []
     for entry in reg.entries():
         pid = entry.get("pid")
-        if not isinstance(pid, int) or pid <= 0:
-            # 畸形条目（手改文件/旧格式残留）既不可收割也无 pid 可供 remove
-            # 匹配，直接跳过会让它在 servers.json 永久滞留、每轮清扫重复
-            # 跳过——记入待摘名单，收尾统一摘除保证登记表可自清。
+        if not (isinstance(pid, int) and not isinstance(pid, bool)) or pid <= 0:
+            # 畸形条目（手改文件/旧格式残留，含 bool 形态——bool 是 int 子类，
+            # {"pid": true} 若放行会被当作 pid=1 走收割路径：pid_alive(1) 恒
+            # 存活，进而对 pgid 1 投递 SIGTERM/SIGKILL）既不可收割也无 pid 可
+            # 供 remove 匹配，直接跳过会让它在 servers.json 永久滞留、每轮
+            # 清扫重复跳过——记入待摘名单，收尾统一摘除保证登记表可自清。
             malformed.append(entry)
             continue
         spec = str(entry.get("spec") or "")
@@ -421,11 +441,18 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
         reg.remove(pid, spec)
     if malformed:
         # 按值相等匹配（entries() 快照与 _mutate 内重读是两次独立 json 解析，
-        # 对象身份必然不同）；畸形条目 pid 非法，不可能与合法条目（pid 恒为
-        # 正 int）值相等，无误摘风险，并发 register 的新条目同样不受波及。
+        # 对象身份必然不同）；pid 须类型精确一致——bool 是 int 子类，畸形
+        # {"pid": true} 与合法 pid=1 值相等，纯值匹配会把合法条目一并误摘，
+        # 类型锚定后无误摘风险，并发 register 的新条目同样不受波及。
         def _purge(records):
             before = len(records)
-            records[:] = [r for r in records if r not in malformed]
+            records[:] = [
+                r
+                for r in records
+                if not any(
+                    type(r.get("pid")) is type(m.get("pid")) and r == m for m in malformed
+                )
+            ]
             return len(records) != before
 
         try:
