@@ -22,11 +22,11 @@
 
 ## 2. 关键路径执行前预检
 
-- [ ] 2.1 core/pm_engine/engine.py 收尾提交路径：verification-report 入库的 git commit 执行前查询 is_stale()；陈旧则记一条 WARNING（含「代码陈旧，已请求重启」语义）并确保 .fenix/restart_request 存在（已存在不重复写、不刷 mtime），随后照常完成提交，不改变返回值与产物。
-- [ ] 2.2 core/knowledge.py 蒸馏派发路径：dispatch 入队前同款预检（WARNING + restart_request 防重 + 照常派发）。
+- [ ] 2.1 core/pm_engine/engine.py 收尾提交路径：verification-report 入库的 git commit 执行前查询 is_stale()；陈旧则记一条 WARNING（含「代码陈旧，已请求重启」语义）并确保 .fenix/restart_request 存在（已存在不重复写、不刷 mtime），随后照常完成提交，不改变返回值与产物。插桩位于收尾步内调用 _commit_verification_report 的调用点之前（engine.py:3014-3016 语境），不进 verify_report.py 本体（不在交付清单）；restart_request 路径锚点为 daemon 自身仓库的 .fenix/restart_request（与 supervisor RESTART_REQUEST 同一文件），不得按 project_root 相对解析。
+- [ ] 2.2 core/knowledge.py 蒸馏派发路径：预检收在 DistillManager.dispatch 单汇聚点（单条 dispatch_distill / 批量 dispatch_distill_batch 均经 _dispatch_via_mgr 到达该单点，两处入口不得重复插桩），入队前同款预检（WARNING + restart_request 防重 + 照常派发）。
 - [ ] 2.3 core/admin_monitor.py choice 执行路径：_apply_choice_execution 调 execute_adjudication_choice 前同款预检（WARNING + restart_request 防重 + 照常执行）。
 
 ## 3. 测试
 
-- [ ] 3.1 tests/test_key_path_stale_preflight.py：覆盖注册/查询/未注册 fail-open 三态；三个关键路径在旗标置位时各产生 WARNING、restart_request 被创建且动作返回值与产物和 不预检时一致；restart_request 已存在时不重复写；旗标未置位时零新增副作用。
+- [ ] 3.1 tests/test_key_path_stale_preflight.py：覆盖注册/查询/未注册 fail-open 三态；三个关键路径在旗标置位时各产生 WARNING、restart_request 被创建且动作返回值与产物和 不预检时一致；restart_request 已存在时不重复写；旗标未置位时零新增副作用；蒸馏单条与批量路径各只产生一条预检 WARNING（单汇聚点不重复插桩）。
 - [ ] 3.2 回归确认 tests/test_stale_code_selfheal.py 全量通过（自愈触发、空闲阈值、悬空超时、告警分级行为不变）。

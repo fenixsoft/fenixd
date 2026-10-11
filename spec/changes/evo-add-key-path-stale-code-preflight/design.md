@@ -6,14 +6,16 @@
 - self._code_stale 目前仅被自愈与告警消费，关键路径零消费。
 - supervisor（.fenix/bin/fenixd_supervisor.py:842-846）每 2 秒轮询 restart_request，命中即 SIGTERM → daemon 排水（50 秒窗）→ 重启；生产已消费 351 次，通道成熟。
 - 三个插入点（均在主树语境执行，无 worktree HEAD 误配）：
-  - 收尾提交：core/pm_engine/engine.py 收尾步 → core/verify_report.py 的 _commit_verification_report；
+  - 收尾提交：core/pm_engine/engine.py 收尾步内、调用 core/verify_report.py 的 _commit_verification_report 的调用点之前（engine.py:3014-3016 语境；verify_report.py 本体不改、不在交付清单）；
   - 蒸馏派发：core/knowledge.py 的 DistillManager.dispatch / dispatch_distill；
   - admin choice：core/admin_monitor.py 的 _apply_choice_execution → core/dashboard/data/admin_actions.py 的 execute_adjudication_choice。
 
 ## 方案
 
 1. 新增模块级陈旧旗标注册表（core/code_stale_flag.py）：daemon 启动初始化与每 30 秒检测点把 _code_stale 同步进注册表；core/ 关键路径模块 import 查询。import 方向必须 core←daemon 单向，故注册表落在 core/ 侧，daemon 只写入。线程安全：daemon 检测线程写、车道线程读。
-2. 预检语义（三个插入点同款）：动作开始前查询；陈旧 → logger.WARNING 一条 + 确保 restart_request 存在（已存在不写、不刷 mtime）+ 照常执行动作。不阻塞、不自我中断。
+2. 预检语义（三个插入点同款）：动作开始前查询；陈旧 → logger.WARNING 一条 + 确保 restart_request 存在（已存在不写、不刷 mtime）+ 照常执行动作。不阻塞、不自我中断。两条实现约定（评审补充）：
+   - (a) restart_request 路径必须解析为 daemon 自身仓库的 .fenix/restart_request（与 supervisor 的 RESTART_REQUEST 同一文件，fenixd_supervisor.py:52），MUST NOT 按 project_root 相对解析；
+   - (b) 蒸馏插桩收在 DistillManager.dispatch 单汇聚点（单条/批量入口均经 _dispatch_via_mgr，core/knowledge.py:1388，到达该单点；「写点收在 dispatch 单点」为该文件既有惯例 core/knowledge.py:976），避免 dispatch_distill 单条路径双重告警。
 3. fail-open：注册表未注册（单测/冷启动）返回 False，关键路径零感知。
 
 ## 设计决策点（实现者须保持）
