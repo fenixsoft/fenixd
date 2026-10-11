@@ -10,7 +10,7 @@ import json
 import re
 import threading
 import time
-from core.admin_store import ESCALATION
+from core.admin_store import AdminStore, ESCALATION
 from core.agent_runner.run_files import append_run_line
 from core.timelib import from_epoch, parse_ts
 from datetime import datetime, timezone
@@ -623,11 +623,15 @@ class ProviderCircuit:
         """
         if not provider_name:
             return False
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return False
-        now = self._pm._now() if now is None else now
-        return st["cooldown_until"] > now
+        # 读侧同纪律（code-review item 63ff3c6e0d87）：与 _record_provider_4xx /
+        # _record_provider_probe / _record_switch_cooldown 的记账临界区互斥。
+        # 全部调用点（runner 链选择/派发拦截）都在写临界区外，无同线程重入。
+        with self._provider_circuit_lock:
+            st = self.provider_circuits.get(provider_name)
+            if st is None:
+                return False
+            now = self._pm._now() if now is None else now
+            return st["cooldown_until"] > now
 
     def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
         """判断某 provider 当前是否处于「切换类冷却」态（链路选择跳过）。
@@ -637,11 +641,14 @@ class ProviderCircuit:
         """
         if not provider_name:
             return False
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return False
-        now = self._pm._now() if now is None else now
-        return st.get("switch_cooldown_until", 0.0) > now
+        # 读侧同纪律（code-review item 63ff3c6e0d87）：与 _record_switch_cooldown
+        # 的写临界区互斥；调用点（runner 链选择）在写临界区外，无同线程重入。
+        with self._provider_circuit_lock:
+            st = self.provider_circuits.get(provider_name)
+            if st is None:
+                return False
+            now = self._pm._now() if now is None else now
+            return st.get("switch_cooldown_until", 0.0) > now
 
     def switch_cooldown_until(self, provider_name: str) -> float:
         """返回某 provider 当前 switch/限流冷却的到期时刻（monotonic 单调秒，
@@ -653,13 +660,18 @@ class ProviderCircuit:
         """
         if not provider_name:
             return 0.0
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return 0.0
-        until = float(st.get("switch_cooldown_until", 0.0) or 0.0)
+        # 读侧同纪律（code-review item 63ff3c6e0d87）：与 _record_switch_cooldown
+        # 的写临界区互斥；调用点（ratelimit_redispatch 重派排程）在写临界区外，
+        # 无同线程重入。
+        with self._provider_circuit_lock:
+            st = self.provider_circuits.get(provider_name)
+            if st is None:
+                return 0.0
+            until = float(st.get("switch_cooldown_until", 0.0) or 0.0)
         if until <= self._pm._now():
-            # 到期探针只做逻辑复位（不清 state 键）：此处按语义归零，
-            # 保证消费侧 delay = max(0, until - now) 不拿到过期时间戳。
+            # 到期后不回写状态键（本读路径持锁只读，MUST NOT 在此回写），保留
+            # 原时间戳供诊断；仅对本查询返回 0.0，使消费侧
+            # delay = max(0, until - now) 归零、不拿到过期时间戳。
             return 0.0
         return until
 
@@ -1099,6 +1111,10 @@ class ProviderCircuit:
                 # 解封次数记忆 + post-unseal hold（evo-fix-transient-break-unseal-
                 # backoff 1.1/D2）：到期解封该指纹次数 +1（稳定窗衰减后），hold =
                 # 基数×解封后次数（多指纹取最大）、封顶；hold 期满只放单条探针。
+                # [fenix-ignore:adb881074970] 到期聚合不按窗口滑出陈旧事件属现行有意保守
+                # 行为（hold 偏长/摘要偏多方向）：预过滤会翻转
+                # test_transient_unseal_backoff 的冻结契约（多用例断言超窗事件计入
+                # unseal/hold），行为变更须随冻结测试同批调整，超出本组最小改动边界。
                 expired_involved = {
                     fp for fp, evs in self._transient_break_events.items() if evs
                 }
@@ -1664,8 +1680,6 @@ class ProviderCircuit:
         仍列出真实 provider/run_id）。清单有界（N=20，超出追加 truncated）。
         """
         try:
-            from core.admin_store import AdminStore, ESCALATION
-
             store = AdminStore(self._pm.project_root, self._pm.logger)
             if (
                 store.latest_signal(
@@ -1683,6 +1697,20 @@ class ProviderCircuit:
                 return
             summary_json = json.dumps(attempt_summary or [], ensure_ascii=False)
             truncated_suffix = f"; truncated={truncated}" if truncated else ""
+            # cooldown_seconds 取配置冷却时长而非剩余秒数（code-review item
+            # eaefb1d01701）：原写法是 _transient_break_until 与当前时刻的差——
+            # 语义为「剩余秒数」却挂在 cooldown 字段名下，且为锁外直读，与并发
+            # 解封/重冻结交错时可为负值或反映他线程刚置位的新冻结。与
+            # _auto_resolve_transient_storm 同口径读配置钳制。
+            cooldown_seconds = int(
+                self._positive_number(
+                    self._pm._get_config(
+                        "agents.transient_break_cooldown_seconds",
+                        TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                    ),
+                    TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                )
+            )
             store.append(
                 {
                     "kind": ESCALATION,
@@ -1698,7 +1726,7 @@ class ProviderCircuit:
                     "evidence": (
                         f"fingerprint={fingerprint}; count={count}; "
                         f"window_seconds={int(window)}; "
-                        f"cooldown_seconds={int(self._transient_break_until - self._pm._now())}; "
+                        f"cooldown_seconds={cooldown_seconds}; "
                         f"failed_attempts={summary_json}{truncated_suffix}"
                     ),
                     "recommended_action": (
@@ -1745,8 +1773,6 @@ class ProviderCircuit:
         闸门查询路径调用，core/pm_engine/dispatch/queue.py:172）。
         """
         try:
-            from core.admin_store import AdminStore
-
             store = AdminStore(self._pm.project_root, self._pm.logger)
             # 数值容错（与同键既有消费点 record_transient_error/_finish_probe 的
             # _positive_number 钳制口径统一）：裸 int(... or 0) 遇非数值配置抛
@@ -1935,18 +1961,25 @@ class ProviderCircuit:
 
     def signal_kill_cooldown_until(self, spec_name: str) -> float:
         """该 spec 信号死法冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""
-        st = self._signal_kill.get(spec_name)
-        if not st:
-            return 0.0
-        try:
-            return float(st.get("cooldown_until") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
+        # 读侧同纪律（code-review item 63ff3c6e0d87）：与 record_signal_kill /
+        # is_signal_kill_cooldown / reset_signal_kill 的记账临界区互斥；调用点
+        # （backoff 恢复排程 / engine 委托）在记账临界区外，无同线程重入。
+        with self._signal_kill_lock:
+            st = self._signal_kill.get(spec_name)
+            if not st:
+                return 0.0
+            try:
+                return float(st.get("cooldown_until") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
 
     def signal_kill_counts(self, spec_name: str) -> int:
         """当前连续信号死法次数（测试/观测辅助）。"""
-        st = self._signal_kill.get(spec_name)
-        return int(st.get("count", 0)) if st else 0
+        # 读侧同纪律（code-review item 63ff3c6e0d87）：同 signal_kill_cooldown_until，
+        # 与记账临界区互斥；测试/观测调用点在临界区外，无同线程重入。
+        with self._signal_kill_lock:
+            st = self._signal_kill.get(spec_name)
+            return int(st.get("count", 0)) if st else 0
 
     def reset_signal_kill(self, spec_name: str) -> None:
         """成功 / 冷却到期：清除该 spec 的信号死法连续计数与冷却态。"""
@@ -1999,7 +2032,6 @@ class ProviderCircuit:
         (spec, signal_type) 在窗口内查重，窗口内已有同信号则不发第二条。
         """
         try:
-            from core.admin_store import AdminStore, ESCALATION
             store = AdminStore(self._pm.project_root, self._pm.logger)
             if store.latest_signal(spec_name, "signal_kill_storm",
                                    SIGNAL_KILL_ALERT_THROTTLE_MINUTES) is not None:
@@ -2040,7 +2072,6 @@ class ProviderCircuit:
         与 _alert_signal_kill_storm 同构：15 分钟节流去重。
         """
         try:
-            from core.admin_store import AdminStore, ESCALATION
             store = AdminStore(self._pm.project_root, self._pm.logger)
             if store.latest_signal(spec_name, "signal_kill_recovered",
                                    SIGNAL_KILL_ALERT_THROTTLE_MINUTES) is not None:
@@ -2074,11 +2105,15 @@ class ProviderCircuit:
         含 provider 名、HTTP code、次数与冷却剩余/到期信息，经 error → STATE.md /
         admin_monitor / dashboard 链路可见，便于区分「provider 故障」与「spec 自身问题」。
         """
-        st = self.provider_circuits.get(provider_name) or {}
         now = self._pm._now() if now is None else now
-        code = st.get("code") or "?"
-        count = st.get("count") or 0
-        cooldown_until = st.get("cooldown_until") or 0.0
+        # 读侧同纪律（code-review item 63ff3c6e0d87）：code/count/cooldown_until
+        # 三连读收进与写路径同一把锁取同代快照；本方法仅构造拦截文案（展示用），
+        # 调用点（runner 派发拦截）在记账临界区外，无同线程重入。
+        with self._provider_circuit_lock:
+            st = self.provider_circuits.get(provider_name) or {}
+            code = st.get("code") or "?"
+            count = st.get("count") or 0
+            cooldown_until = st.get("cooldown_until") or 0.0
         remaining = max(0, int(cooldown_until - now))
         if remaining > 0:
             cooldown_info = f"cooldown {remaining}s remaining"
