@@ -190,7 +190,9 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
   const slugCounts = new Map<string, number>();
   return {
     ...markdownComponents,
-    code({ className, children, ...props }: ComponentProps<'code'> & ExtraProps) {
+    // node 同 pre：react-markdown 开启 passNode，hast 元数据须剔除后再透传，
+    // 否则落到 DOM 元素上触发 React 未知属性告警（与 markdownComponents 同款写法）
+    code({ node: _node, className, children, ...props }: ComponentProps<'code'> & ExtraProps) {
       // 普通代码块：保持等宽字体展示；language-mermaid 围栏块不会到达这里
       // （remark-rehype 恒以 pre 包裹围栏块，mermaid 已在其覆盖层拦截）
       return (
@@ -223,7 +225,8 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
     h4: headingComponent('h4', { fontSize: 14, fontWeight: 400 }, slugCounts),
     h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }, slugCounts),
     h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }, slugCounts),
-    a({ href, children, ...rest }: ComponentProps<'a'> & ExtraProps) {
+    // node 剔除同 code/pre（passNode 注入的 hast 元数据不透传到 <a>/SafeLink）
+    a({ node: _node, href, children, ...rest }: ComponentProps<'a'> & ExtraProps) {
       // 纯锚点（#xxx，排除 SPA 路由 #/）：当前文档页内滚动。判定条件复用 SafeLink
       // 的 isPageAnchor 单一口径源；分支不删、不能交由兜底 SafeLinkComp 承接——
       // 其管线不给标题生成 id，锚点分支仅拦截原生跳转不做滚动定位（见 SpecDocModal
