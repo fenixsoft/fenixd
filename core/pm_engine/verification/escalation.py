@@ -28,12 +28,14 @@ from core.state_machine import (
     _SCENARIO_REPAIR_MAX_ROUNDS,
 )
 
-# tmp+replace 原子写助手（scenario_gate 公开别名，与 fastlane.py 写盘惯例同源）：
+# tmp+replace 原子写助手（core/fs_utils 单点实现；code-review 45390e0eb835：
+# 此前引 scenario_gate 同名助手，全仓存在两套同名不同行为的 tmp+replace
+# 原子写，持久性/权限语义随导入路径漂移——收敛到 fs_utils 单点实现）：
 # 本模块会被回读的状态侧车 JSON 落盘点（triage_recheck 追加与剪枝 /
 # scenario_reroute_stoploss / scenario_reroute_directive）统一原子写——裸写
 # 中途被杀会留截断文件，已积累的复核清单/止损留存静默丢失
 # （code-review ef9941a3a42b）。
-from core.pm_engine.verification.scenario_gate import atomic_write_text
+from core.fs_utils import atomic_write_text
 from core.timelib import parse_ts
 
 # fix-recovery-path-blockers D3：预算耗尽重验延时常量（30 分钟，
@@ -659,19 +661,38 @@ def _escalate_env_blocked(
                     f"已按首轮阻塞兜底",
                 )
             frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
-        planner_cost = pipeline._last_planner_run_cost(spec_name) if frozen else ""
-        cost_note = f"\n\n> 🪙 重新出题成本参考：{planner_cost}" if planner_cost else ""
+        # blocked 落盘前的非关键计算单独容错（code-review ad6e029c0827）：
+        # 成本查询含 planner run 产物磁盘 IO，一旦抛异常会被函数级 except
+        # 吞成一条 WARNING，其后的 update_spec blocked 落盘被跳过——整轮
+        # 升级静默降级（ENV_BLOCK_ROUNDS_FIELD 不递增、spec 不写 blocked、
+        # admin 不被呼叫）。失败按无成本参考降级，保证 blocked 落盘不被
+        # 非关键异常跳过。
+        try:
+            planner_cost = pipeline._last_planner_run_cost(spec_name) if frozen else ""
+        except Exception as e:
+            planner_cost = ""
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' planner run 成本查询失败（降级为无成本参考）: {e}",
+            )
+        # 纯文本前缀（code-review 9249ef7f583b：emoji 装饰符在终端/日志通道
+        # 渲染不一，且与同文件升级文案纯文本风格不一致）
+        cost_note = f"\n\n> [成本参考] 重新出题成本：{planner_cost}" if planner_cost else ""
         exemption_note = (
             "env 豁免有效命中（豁免期内不累计冻结轮次，TTL 过期或场景变更后恢复计数）— "
             if exemption_effective
             else ""
         )
+        # violations 拼接统一 str(v) 归一（code-review ad6e029c0827，对齐上方
+        # _record_infra_failure 调用与函数入口归一注释的口径）：非 str 元素
+        # 不再抛 TypeError 击穿函数级 except 跳过 blocked 落盘。
         error_msg = (
             f"{FREEZE_ERROR_PREFIX}{title}连续 {rounds} 轮，"
-            f"admin 处置未奏效，转人工 — {'；'.join(violations[:3])}"
+            f"admin 处置未奏效，转人工 — {'；'.join(str(v) for v in violations[:3])}"
             f"{cost_note}"
             if frozen
-            else f"{exemption_note}{title}（第 {rounds} 轮）：{'；'.join(violations[:3])}"
+            else f"{exemption_note}{title}（第 {rounds} 轮）："
+            f"{'；'.join(str(v) for v in violations[:3])}"
         )
         entry = {
             "status": "blocked",
@@ -916,7 +937,7 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
             ]
             if len(pruned) != len(data):  # 无变化不写盘（避免每轮无谓写）
                 try:
-                    # 原子写（共用 scenario_gate.atomic_write_text 助手）：剪枝
+                    # 原子写（共用 fs_utils.atomic_write_text 助手）：剪枝
                     # 结果会被回读，裸写中途被杀留截断文件丢已积累复核清单。
                     atomic_write_text(
                         recheck_path,
@@ -1021,7 +1042,7 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             except (json.JSONDecodeError, OSError):
                 existing = []
         merged = list(dict.fromkeys(existing + sids))
-        # 原子写（共用 scenario_gate.atomic_write_text 助手）：优先复核清单会被
+        # 原子写（共用 fs_utils.atomic_write_text 助手）：优先复核清单会被
         # planner prompt 回读，裸写中途被杀留截断文件会静默丢失已积累清单。
         atomic_write_text(
             recheck_path,
@@ -1076,7 +1097,7 @@ def _write_scenario_reroute_stoploss(
     path = _scenario_reroute_stoploss_path(pipeline, spec_name)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # 原子写（共用 scenario_gate.atomic_write_text 助手）：改道止损留存会被
+        # 原子写（共用 fs_utils.atomic_write_text 助手）：改道止损留存会被
         # 回读，裸写中途被杀留截断文件会让失败集留存静默丢失。
         atomic_write_text(
             path,
@@ -1184,7 +1205,7 @@ def _scenario_defect_reroute_gate(
     )
     try:
         directive_path.parent.mkdir(parents=True, exist_ok=True)
-        # 原子写（共用 scenario_gate.atomic_write_text 助手）：改道指令会被
+        # 原子写（共用 fs_utils.atomic_write_text 助手）：改道指令会被
         # prompt_builder 回读，裸写中途被杀留截断文件会让指令静默丢失。
         atomic_write_text(
             directive_path,
@@ -1196,18 +1217,25 @@ def _scenario_defect_reroute_gate(
             f"改道指令文件写失败 '{spec_name}'（仍重派 judge）: {e}",
         )
 
-    # 轮内重裁决记账（与 pipeline.py 裁决不可读重派、verdict_evidence
-    # 违规重派两条绕 gate 路径同口径）：本路径直接 run_planner 不经
-    # _judge_dispatch_gate，若不记账可绕过轮内 2 次与全局 5 次重裁决
-    # 阈值。空 violations 必然落入 "real" 分支（记轮内 +1 与生命周期
-    # _judge_real_dispatches，并刷新判定上下文键）。
-    pipeline._judge_charge_verdict_retry(spec_name, [])
     # 改道重派 judge：经 pipeline._pm 门面回引（design D3 规则 3）——
     # context 的 agent_runner 车道仅包装 _execute_agent（fastlane 轻量修复
     # 派发），未承载 run_planner 委托成员，故此处为车道外的显式豁免，
     # MUST NOT 从 _context 取；agent_runner 接线方式变化时须与
     # _schedule_scenario_repair_reverify 的门面回引豁免双处同步。
     try:
+        # 轮内重裁决记账（与 pipeline.py 裁决不可读重派、verdict_evidence
+        # 违规重派两条绕 gate 路径同口径）：本路径直接 run_planner 不经
+        # _judge_dispatch_gate，若不记账可绕过轮内 2 次与全局 5 次重裁决
+        # 阈值。空 violations 必然落入 "real" 分支（记轮内 +1 与生命周期
+        # _judge_real_dispatches，并刷新判定上下文键）。
+        # 记账含 STATE 读写磁盘 IO，MUST 与 run_planner 同处本 try 作用域
+        # （code-review f9c6dda068a8）：此前记账在 try 外，一旦抛异常（磁盘
+        # 满/权限等）下方 finally 的指令文件清理不会执行——残留
+        # scenario_reroute_directive.json 会被 prompt_builder 只判存在即注入
+        # 「MUST 申报 scenario-repaired」定向指令，把同 spec 后续任意正常
+        # judge 派发劫持为改道轮；异常还会沿调用方上抛中断本轮裁决。移入后
+        # 由既有 except 兜底（保持 testing + finally 清理指令文件）。
+        pipeline._judge_charge_verdict_retry(spec_name, [])
         reroute_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
     except Exception as e:
         pipeline._context.logger.error(
@@ -1902,7 +1930,14 @@ def _verdict_env_exemption_level2(
     """
     from core.verdict_check import load_report, triage_entries
 
-    # 归因证据门（admin_actions 单源）：惰性 import 防模块加载环
+    # 归因证据门（admin_actions 单源）：惰性 import 防模块加载环。
+    # [层次环锚点，code-review 375b09e1dc26] env_attribution_evidence_gate
+    # 是纯判定函数 (classification, evidence_text) -> str（无状态无 IO）；
+    # 本模块（验证引擎核心）与 core.dashboard.data.admin_actions（dashboard
+    # 处置层）构成已知双向环——admin_actions 侧亦多处惰性 import 本包，
+    # 函数级延迟 import 只是对加载序的规避而非解除环本身。验证引擎核心
+    # 反向依赖处置层属层次倒置：函数若下沉到中性模块（如
+    # core/verdict_check），两侧引用须同步迁移。
     from core.dashboard.data.admin_actions import env_attribution_evidence_gate
 
     if report is None:
