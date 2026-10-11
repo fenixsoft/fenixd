@@ -306,13 +306,19 @@ export default function SessionComposer({
 
               {hasInput && (
                 <Tooltip title="清空输入">
-                  <Button
-                    icon={<ClearOutlined />}
-                    onClick={composer.handleClearInput}
-                    disabled={disabled}
-                    className="hidden sm:inline-block"
-                    aria-label="清空输入"
-                  />
+                  {/* disabled 按钮不派发鼠标事件、禁用态 Tooltip 永不弹出
+                      （PromptInput.tsx 头注同款坑），外包 span 承载悬停
+                      （同 RegressionTab span 承载范式）；inline-flex 使包装
+                      不改变按钮在 flex 行内的尺寸与对齐。响应式隐藏迁到
+                      span，避免小屏留下空占位参与 flex gap。 */}
+                  <span className="hidden sm:inline-flex">
+                    <Button
+                      icon={<ClearOutlined />}
+                      onClick={composer.handleClearInput}
+                      disabled={disabled}
+                      aria-label="清空输入"
+                    />
+                  </span>
                 </Tooltip>
               )}
             </PromptInputTools>
