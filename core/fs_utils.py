@@ -19,9 +19,12 @@ self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
 """
 
 import fcntl
+import logging
 import os
 import tempfile
 from pathlib import Path
+
+_logger = logging.getLogger("fenixd.fs_utils")
 
 
 def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -> None:
@@ -54,12 +57,19 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
             os.fsync(f.fileno())
         try:
             if inherit_existing_mode:
-                mode = os.stat(path).st_mode & 0o777 if path.exists() else 0o644
+                # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
+                # 「其他 OSError→跳过 chmod 留 debug 日志」；先 exists() 再
+                # stat() 的双探测在两步间目标被并发删除时会连带跳过 chmod，
+                # 产物静默保持 0600（item 7b94b65d0f0c）
+                try:
+                    mode = os.stat(path).st_mode & 0o777
+                except FileNotFoundError:
+                    mode = 0o644
             else:
                 mode = 0o644
             os.chmod(tmp_path, mode)
-        except OSError:
-            pass
+        except OSError as exc:
+            _logger.debug("atomic_write_text: best-effort chmod skipped for %s: %s", path, exc)
         os.replace(tmp_path, path)
         # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
         # 失败不阻断主流程
