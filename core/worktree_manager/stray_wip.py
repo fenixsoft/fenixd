@@ -288,6 +288,12 @@ class MainTreeStrayWipSweeper:
         self._last_session_attr: "tuple | None" = None
         self._attr_suppress_count = 0
         self._attr_last_log_ts = 0.0
+        # keep 回退注记去重状态（两流各一槽，防互相抑制）：回退注记为静态
+        # 文案（无文件身份），键去重不适用、按 60 分钟窗聚合即可；独立于
+        # 上方三态留痕状态——那套被 ``_release_session_attr_if_gone`` 复位且
+        # 与 R3 闭环绑定，混入回退态会在归因消失轮误触「解除」行。
+        self._keep_fallback_tracked_ts = 0.0
+        self._keep_fallback_untracked_ts = 0.0
 
     # ── 基础 ────────────────────────────────────────────────────────────
 
@@ -539,11 +545,16 @@ class MainTreeStrayWipSweeper:
         # 落入无主流形的两种情况共用既有宽限升级流：真零命中，或会话归因被
         # 配置 keep 回退（视同零命中走现状行为——配置事故/人工回退保守方向）。
         if session_attributed:
-            self._log(
-                "info",
-                "会话归因散件按 admin.maintree_session_attribution_action=keep "
-                "回退现状行为（视同零命中走无主宽限升级）",
-            )
+            # keep 回退注记按 60 分钟窗聚合（与 2.1 三态留痕同题同纪律）：
+            # 配置 keep 且散件持续被归因时不再逐轮重写同一行，配置事故日志
+            # 量由线性放大变有界。
+            if now - self._keep_fallback_tracked_ts >= 3600:
+                self._keep_fallback_tracked_ts = now
+                self._log(
+                    "info",
+                    "会话归因散件按 admin.maintree_session_attribution_action=keep "
+                    "回退现状行为（视同零命中走无主宽限升级）",
+                )
 
         entry = self._registry.get(fp)
         if entry is None:
@@ -917,13 +928,17 @@ class MainTreeStrayWipSweeper:
             }, ""
         if session_attributed:
             # keep 回退守卫与 tracked 流同键（运维心智单一）：视同零命中走
-            # 无主宽限升级，注记如实区分「命中但回退」与「零命中」。
-            self._log(
-                "info",
-                "untracked 散件会话归因按 "
-                "admin.maintree_session_attribution_action=keep 回退现状行为"
-                "（视同零命中走无主宽限升级）",
-            )
+            # 无主宽限升级，注记如实区分「命中但回退」与「零命中」。注记为
+            # 静态文案，按 60 分钟窗聚合（与 tracked 流回退注记同款纪律），
+            # 不再逐轮重写同一行；返回值不受门控（探测三态契约不变）。
+            if time.time() - self._keep_fallback_untracked_ts >= 3600:
+                self._keep_fallback_untracked_ts = time.time()
+                self._log(
+                    "info",
+                    "untracked 散件会话归因按 "
+                    "admin.maintree_session_attribution_action=keep 回退现状行为"
+                    "（视同零命中走无主宽限升级）",
+                )
             return None, "归因探测已执行，命中但配置 keep 回退（视同零命中）"
         return (
             None,
@@ -1249,6 +1264,7 @@ class MainTreeStrayWipSweeper:
         ]:
             del self._whitelist_registry[fp]
 
+    # [fenix-ignore:83fec06ee6d1] 白名单流未执行归因探测、调用点 scope 内无可传注记，补段需给该流新增探测行为非最小修复（suggestion 自允维持现状）
     def _write_whitelist_untracked_alert(self, entry, fp) -> bool:
         """白名单脱落一次性 major 告警（经 AdminStore.append 落盘）。
 
