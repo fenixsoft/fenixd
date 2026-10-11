@@ -1940,6 +1940,11 @@ class SelfReviewScheduler:
                 ],
                 capture_output=True,
                 text=True,
+                # errors="replace"（code-review item 352bb02e157c，同
+                # regression.py current_repo_fingerprint 先例）：text=True 严格
+                # 解码遇非 UTF-8 提交主题抛 UnicodeDecodeError（ValueError），
+                # 逃出下方 except 兜底击穿当日自省——有损替换解码即可（仅展示）。
+                errors="replace",
                 timeout=15,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -2281,6 +2286,7 @@ class SelfReviewScheduler:
                 git + ["add", "--", ".fenix/todo.md"],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -2304,6 +2310,7 @@ class SelfReviewScheduler:
                 ],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -2330,6 +2337,7 @@ class SelfReviewScheduler:
                 git + ["push"],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:

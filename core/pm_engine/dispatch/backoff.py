@@ -465,7 +465,9 @@ class BBackoffMixin:
             val = float(
                 self._pm._get_config("verify.infra_retry_redispatch_delay_seconds", 5)
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # 巨大 int（YAML 任意精度）送 float() 抛 OverflowError 同按脏值回退
+            # 缺省（口径同 _transient_redispatch_delay，item 851ba3eeed41）。
             return 5.0
         if not math.isfinite(val):
             return 5.0

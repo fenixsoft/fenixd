@@ -389,9 +389,14 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
     """
     reg = ServingRegistry(project_root, logger)
     harvested = 0
+    malformed = []
     for entry in reg.entries():
         pid = entry.get("pid")
         if not isinstance(pid, int) or pid <= 0:
+            # 畸形条目（手改文件/旧格式残留）既不可收割也无 pid 可供 remove
+            # 匹配，直接跳过会让它在 servers.json 永久滞留、每轮清扫重复
+            # 跳过——记入待摘名单，收尾统一摘除保证登记表可自清。
+            malformed.append(entry)
             continue
         spec = str(entry.get("spec") or "")
         alive = pid_alive(pid)
@@ -414,6 +419,19 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                     f"without killing",
                 )
         reg.remove(pid, spec)
+    if malformed:
+        # 按值相等匹配（entries() 快照与 _mutate 内重读是两次独立 json 解析，
+        # 对象身份必然不同）；畸形条目 pid 非法，不可能与合法条目（pid 恒为
+        # 正 int）值相等，无误摘风险，并发 register 的新条目同样不受波及。
+        def _purge(records):
+            before = len(records)
+            records[:] = [r for r in records if r not in malformed]
+            return len(records) != before
+
+        try:
+            reg._mutate(_purge)
+        except OSError:
+            pass  # 非阻塞：写盘失败下轮清扫再清（同 register/remove 口径）
     if harvested and logger:
         logger.warning(
             "serving_registry",

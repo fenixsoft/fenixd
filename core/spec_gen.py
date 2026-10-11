@@ -199,8 +199,14 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
     """计算 change 的 artifact 完成状态，输出状态 JSON（与上游 vendored schema 的 `status --json` 同构）。
 
     Raises:
-        ValueError: change 不存在。
+        ValueError: 名称非 kebab-case，或 change 不存在。
     """
+    # 与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
+    # 路径，含 ../ 时 change_dir 可越出项目根。
+    error = _validate_name(name)
+    if error:
+        raise ValueError(error)
+
     change_dir = project_root / "spec" / "changes" / name
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")
@@ -268,8 +274,14 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
     """返回指定 artifact 的生成指引（模板 + 指令 + 依赖信息）。
 
     Raises:
-        ValueError: change 不存在或 artifact 不在 schema 中。
+        ValueError: 名称非 kebab-case，change 不存在或 artifact 不在 schema 中。
     """
+    # 与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
+    # 路径，含 ../ 时 change_dir 可越出项目根。
+    error = _validate_name(name)
+    if error:
+        raise ValueError(error)
+
     change_dir = project_root / "spec" / "changes" / name
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")

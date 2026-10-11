@@ -1391,6 +1391,11 @@ class QQQueueMixin:
                 wm = self._pm.agent_runner.worktree_manager
                 # 派发前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）：
                 # 消除「spec 在主树 untracked + 分支 commit 同名路径」导致的 merge-back 冲突。
+                # [fenix-ignore:913ea6eef2d3] 前提不成立：ensure_spec_committed 全函数体被内部
+                # try/except 兜底（git 锁=returncode!=0 → return False；OSError/TimeoutExpired
+                # → WARNING + return False，见 lifecycle.py），裸调不会抛异常中止派发、
+                # 不进 _rollback_failed_dispatch、不消耗死亡 run 豁免重派，与 fast-track
+                # 车道实际失败语义一致（其 try/except 对这类失败同为不可达死代码）。
                 wm.ensure_spec_committed(spec_name)
                 # ── 中断恢复保留续做（interrupt-recovery-preserve D4/D5）──
                 # recovery 保留的 spec（_recovery_resume 标记 + 保留分支）：在既有
@@ -2361,16 +2366,36 @@ class QQQueueMixin:
                         # _retry_count 封顶四条通道的失败 MUST NOT 增减它。
                         fp = self._pm._redispatch_cause_fingerprint(final_error)
                         prev_fp = spec_entry.get("_redispatch_cause_fp")
-                        prev_streak = self._parse_int_field(
-                            spec_entry, "_redispatch_same_cause_streak", 0
-                        )
-                        streak = prev_streak + 1 if prev_fp == fp else 1
+                        # _redispatch_same_cause_streak 走锁内原子递增（bump_counters
+                        # 返回写后值参与阈值判定，对齐上方 _retry_count 与
+                        # _handle_merge_back_real_failure 对 _merge_streak 的同型收口，
+                        # code-review item 2af555993036）：原「_parse_int_field 读 →
+                        # 算 +1 → 随 update_spec 绝对写回」两段式读与写分处两次 STATE
+                        # 锁临界区，同 spec 双 worker / admin 并发触发时各持相同旧值
+                        # 写回、丢一次递增、同因熔断晚一轮触发。指纹是否相同的比较
+                        # 保留在读取侧；指纹切换属重置语义（绝对写 1，无丢增量面），
+                        # 不 bump、随后续写回落盘（streak_bumped=True 时各分支不再
+                        # 并写该字段）。
+                        if prev_fp == fp:
+                            streak = self._pm.state_machine.bump_counters(
+                                spec_name, {"_redispatch_same_cause_streak": 1}
+                            ).get("_redispatch_same_cause_streak", 0)
+                            streak_bumped = True
+                        else:
+                            streak = 1
+                            streak_bumped = False
                         from core.config import ConfigLoader as _CL_breaker
 
                         breaker_threshold = _CL_breaker.get_max_same_cause_redispatches(
                             self._pm.config
                         )
                         orig_status = (spec_entry or {}).get("status") or "implementing"
+                        # 各出口对 streak 的并写策略（对齐 _merge_streak 同型收口）：
+                        # bump 已原子递增落盘的不再并写（防并发写回互相覆盖丢增量），
+                        # 仅指纹切换重置路径经 streak_updates 补绝对写。
+                        streak_updates: dict = (
+                            {} if streak_bumped else {"_redispatch_same_cause_streak": streak}
+                        )
                         if streak >= breaker_threshold:
                             # 同因熔断：冻结转人工（error 内嵌「原状态 X」供
                             # parse_orig_status 解冻还原 + 含指纹/轮数供人工审计）
@@ -2400,10 +2425,12 @@ class QQQueueMixin:
                                 ),
                                 alert_callback=self._pm._send_human_escalation_alert,
                                 # 冻结瞬间持久化最终同因计数（供冻结态审计 /
-                                # 解冻前可读；解冻时统一清零）
+                                # 解冻前可读；解冻时统一清零）；bump 已原子递增
+                                # 落盘时不再并写（防并发写回互相覆盖丢增量），
+                                # 仅指纹切换重置路径补绝对写
                                 extra_updates={
                                     "_redispatch_cause_fp": fp,
-                                    "_redispatch_same_cause_streak": streak,
+                                    **streak_updates,
                                 },
                             )
                             self._pm.logger.error(
@@ -2449,10 +2476,12 @@ class QQQueueMixin:
                                 {
                                     "status": "ready",
                                     "error": final_error,
-                                    # _retry_count 已由上方 bump_counters 原子递增
-                                    # 落盘，此处不再并写（防并发写回互相覆盖丢增量）
+                                    # _retry_count / _redispatch_same_cause_streak 均已由
+                                    # 上方 bump_counters 原子递增落盘，此处不再并写
+                                    # （防并发写回互相覆盖丢增量）；streak 仅指纹切换
+                                    # 重置路径经 streak_updates 补绝对写
                                     "_redispatch_cause_fp": fp,
-                                    "_redispatch_same_cause_streak": streak,
+                                    **streak_updates,
                                 },
                             )
                             # 置 ready 后显式重入队（code-review item

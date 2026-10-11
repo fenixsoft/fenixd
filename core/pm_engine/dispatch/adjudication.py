@@ -1048,8 +1048,9 @@ class VAdjudicationMixin:
            代码（剩余项仍带 dispute 异议 → 调用方 blocked 待人工；无异议项 →
            既有 ``_adjudicate_deliverable_missing`` LLM 终审），不得因「已判过
            一批孤儿」就整段跳过；
-        5. 任一环节异常 → 全量回退既有 blocked 待人工路径（fail-open，不因
-           预分类故障改变处置）。
+        5. 判定/删除/提交环节异常 → 全量回退既有 blocked 待人工路径（fail-open，
+           不因预分类故障改变处置）；守卫重跑异常 → 剔除已删条目续走（对齐
+           _preclassify_missing 口径，见 impl）。
 
         Returns:
             {"action": "proceed"} → 全部孤儿声明已删除，守卫重跑通过（调用方
@@ -1246,11 +1247,27 @@ class VAdjudicationMixin:
         except Exception as e:
             self._pm.logger.error(
                 "pm_engine",
-                f"孤儿删除后守卫重跑异常 '{spec_name}'（回退 blocked）: {e}",
+                f"孤儿删除后守卫重跑异常 '{spec_name}'（已删项剔除后续走）: {e}",
             )
-            # 异常回退：声明已删除无法回滚，但处置维持 blocked 待人工
-            # （fail-open 不改既有处置：剩余缺件全部按未预分类处理）
-            return {"action": "fallback"}
+            # code-review item d653d8709445：删除已写盘无法回滚，已删条目
+            # （deleted）在生效声明中已不存在——MUST NOT 全量 fallback 令调用方
+            # 以原始 disputed 全量 blocked 待人工（对已自愈声明做人工升级，白耗
+            # 一次人工裁决）。对齐 _preclassify_missing（e3ea5719971e）/
+            # _preclassify_stale（b543b7fa73f6）口径：剔除已删条目续走——
+            # remaining_missing 取 missing 去除 deleted（守卫重跑不可用时的最佳
+            # 已知清单），其中仍带异议的项（non_orphans 与 deleted 不相交）走
+            # blocked、无异议项走既有 LLM 终审。
+            deleted_set = set(deleted)
+            return {
+                "action": "continue",
+                "remaining_missing": [
+                    g
+                    for g in missing
+                    if (g["path"] if isinstance(g, dict) else str(g))
+                    not in deleted_set
+                ],
+                "remaining_disputed": list(non_orphans),
+            }
 
         if not gate_result:
             # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐
@@ -1301,8 +1318,9 @@ class VAdjudicationMixin:
             {"action": "continue", "remaining_missing": [...], "remaining_disputed": [...]}
             → 仍有缺件：remaining_missing 为守卫重跑后的缺件清单，remaining_disputed
             为其中仍带异议的项（非空 → 调用方 blocked 待人工，空 → 交既有 LLM 终审）；
-            {"action": "fallback"} → 无可对齐条目 / 判定·改写·提交·守卫重跑任一
-            环节异常，全量回退既有 blocked 待人工路径（missing 不变）。
+            {"action": "fallback"} → 无可对齐条目 / 判定·改写·提交环节异常，全量
+            回退既有 blocked 待人工路径（missing 不变）；守卫重跑异常除外——
+            已对齐条目剔除后 continue 续走（对齐姊妹通道口径，见 impl）。
         """
         try:
             return self._preclassify_drift_impl(
@@ -1437,11 +1455,31 @@ class VAdjudicationMixin:
         except Exception as e:
             self._pm.logger.error(
                 "pm_engine",
-                f"漂移对齐后守卫重跑异常 '{spec_name}'（回退 blocked）: {e}",
+                f"漂移对齐后守卫重跑异常 '{spec_name}'（已对齐项剔除后续走）: {e}",
             )
-            # 异常回退：声明已改写无法回滚，但处置维持 blocked 待人工
-            # （fail-open 不改既有处置：剩余缺件全部按未预分类处理）
-            return {"action": "fallback"}
+            # code-review item d653d8709445：改写已写盘无法回滚，已对齐旧路径
+            # （aligned_old）在生效声明中已不存在——MUST NOT 全量 fallback 令
+            # 调用方以原始 disputed 全量 blocked 待人工（对已自愈声明做人工升级，
+            # 白耗一次人工裁决）。对齐 _preclassify_missing（e3ea5719971e）/
+            # _preclassify_stale（b543b7fa73f6）口径：剔除已对齐条目续走——
+            # remaining_missing 取 missing 去除 aligned_old（守卫重跑不可用时的
+            # 最佳已知清单），其中仍带异议的项走 blocked、无异议项走既有 LLM 终审。
+            aligned_set = set(aligned_old)
+            remaining_missing = [
+                g
+                for g in missing
+                if (g["path"] if isinstance(g, dict) else str(g)) not in aligned_set
+            ]
+            remaining_paths = [
+                g["path"] if isinstance(g, dict) else str(g) for g in remaining_missing
+            ]
+            return {
+                "action": "continue",
+                "remaining_missing": remaining_missing,
+                "remaining_disputed": [
+                    r for r in remaining_paths if r in (disputed + remaining)
+                ],
+            }
 
         if not gate_result:
             # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐

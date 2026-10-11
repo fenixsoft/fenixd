@@ -11,14 +11,16 @@ worktree_manager — Git worktree lifecycle management.
 （design D3）继续生效——调用点经包命名空间延迟解析。
 """
 
-# ── 标准库与依赖导入（D3 patch 缝隙：subprocess/time 必须暴露在包命名空间） ──
+# ── 标准库与依赖导入（D3 patch 缝隙：必须暴露在包命名空间，供
+#    `patch("core.worktree_manager.subprocess.run")` 等字符串路径 patch；
+#    os/shutil/signal/threading 同为缝隙名，勿按未引用清理） ──
 
-import os
-import shutil
-import signal
-import subprocess
-import threading
-import time
+import os  # noqa: F401
+import shutil  # noqa: F401
+import signal  # noqa: F401
+import subprocess  # noqa: F401
+import threading  # noqa: F401
+import time  # noqa: F401
 
 from pathlib import Path
 

@@ -375,6 +375,12 @@ class G2LegacyRegistryMixin:
                 ["git", "-C", str(wt_path), "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（code-review item 3847fde03f79）：text=True 缺省按
+                # locale strict 解码，非 ASCII 分支名在非 UTF-8 locale 下抛
+                # UnicodeDecodeError 使分支解析静默降级——与包内 dist_conflicts.py /
+                # verify_report.py / repair_site.py 采集点同口径。
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if br.returncode == 0:
@@ -384,7 +390,10 @@ class G2LegacyRegistryMixin:
                 # branch != "HEAD" 守卫在源头对齐，过滤为空串交由调用方
                 # `if not branch` 守卫承接，避免 "HEAD" 作为分支名入册误导。
                 return "" if branch == "HEAD" else branch
-        except Exception:
+        # 收窄捕获（code-review item 3847fde03f79）：subprocess.run 只会抛
+        # SubprocessError（含 TimeoutExpired）或 OSError；解码异常已由上方
+        # errors="replace" 消除，不再吞其他意外异常掩盖真实缺陷。
+        except (subprocess.SubprocessError, OSError):
             pass
         return ""
 
@@ -472,6 +481,11 @@ class G2LegacyRegistryMixin:
                     ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
                     capture_output=True,
                     text=True,
+                    # encoding/errors（code-review item 3847fde03f79）：缺省按
+                    # locale strict 解码，非 ASCII 路径会使解码异常被下方 except
+                    # 误判为 remove 失败——与 _guess_branch_from_worktree 同口径。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if res.returncode != 0 and wt.exists():
@@ -517,6 +531,8 @@ class G2LegacyRegistryMixin:
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if res.returncode != 0:
@@ -553,6 +569,8 @@ class G2LegacyRegistryMixin:
                         ["git", "-C", str(self.project_root), "branch", "-D", branch],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=10,
                     )
                     if res.returncode != 0:

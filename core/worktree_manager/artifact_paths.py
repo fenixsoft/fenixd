@@ -221,7 +221,11 @@ class ArtifactPathMatcher:
                 → 判定短路恒假（忽略 patterns）；True → 按 patterns 判定。
                 非布尔值按 None（缺省）处理（MUST NOT 让判定变宽）。
         """
-        self._has_build_artifacts = has_build_artifacts
+        # 非布尔值在构造时即规范化为 None（缺省），使 docstring 承诺成为既成事实
+        # 而非下游 `is False` 比较的副产物（MUST NOT 让判定变宽）。
+        self._has_build_artifacts = (
+            has_build_artifacts if isinstance(has_build_artifacts, bool) else None
+        )
         self._patterns: List[Tuple[str, str]] = list(patterns or [])
         self._prefixes: List[str] = []
         self._globs: List[str] = []

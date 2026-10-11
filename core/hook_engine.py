@@ -558,7 +558,12 @@ def read_hook_audit(project_root, spec: Optional[str] = None, limit: int = 20) -
                 out.append(d)
     except (OSError, UnicodeDecodeError):
         return []
-    out.sort(key=lambda e: e.get("ts", ""), reverse=True)
+    # ts 非字符串（手工编辑/外部写入数字）按 "" 参与排序：str 与 int 比较会抛
+    # TypeError，且此处位于上方 try 保护之外，会令整个读取接口崩溃
+    out.sort(
+        key=lambda e: e.get("ts") if isinstance(e.get("ts"), str) else "",
+        reverse=True,
+    )
     if limit and limit > 0:
         out = out[:limit]
     return out
@@ -1290,7 +1295,14 @@ class HookEngine:
 
         Returns: (status, detail)，status ∈ success/failure/skipped。
         """
-        target = (cfg.get("target") or "").strip() or DEFAULT_DASHBOARD_SESSION
+        # 执行侧复检 target 类型（校验只把守配置写入路径，直改 config.yaml 可
+        # 绕过）：非字符串会在下方 (target or "").strip() 抛 AttributeError、穿
+        # 通用兜底致归因降级，按「配置非法（不执行）」记 failure，口径对齐
+        # validate_hook_entry 与 _action_webhook 的 url 复检
+        target = cfg.get("target")
+        if target is not None and not isinstance(target, str):
+            return STATUS_FAILURE, f"restart-dashboard target 配置非法（必须为字符串）: {target!r}"
+        target = (target or "").strip() or DEFAULT_DASHBOARD_SESSION
         now = time.monotonic()
         # 临界区一次完成「去抖检查 + 认领重启中」：并发 hook 线程只有首个
         # 认领成功者继续执行动作，其余按 skipped 跳过——两段式 check-then-act
@@ -1402,7 +1414,13 @@ class HookEngine:
         self, cfg: dict, spec: str, from_status: Optional[str], to_status: str, entry: dict
     ) -> Tuple[str, str]:
         """POST JSON 通知（含审计）；2xx = 成功，响应体截断 2KB 记审计。"""
-        url = (cfg.get("url") or "").strip()
+        # 执行侧复检 url 类型（校验只把守配置写入路径，直改 config.yaml 可绕过）：
+        # 非字符串会在下方 .strip() 抛 AttributeError、穿通用兜底致归因降级，按
+        # 「配置非法（不执行）」记 failure，与 validate_hook_entry 口径一致
+        url = cfg.get("url")
+        if url is not None and not isinstance(url, str):
+            return STATUS_FAILURE, f"webhook url 配置非法（必须为字符串）: {url!r}"
+        url = (url or "").strip()
         payload = {
             "event": to_status,
             "spec": spec,
@@ -1491,6 +1509,10 @@ class HookEngine:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # 非 UTF-8 输出以替换符容错解码（对齐 _run_git）：解码异常不被
+                # 下方 except OSError 捕获，会穿到通用兜底、使审计归因降级为
+                # 「hook 执行异常」而非具体 shell 失败
+                errors="replace",
                 start_new_session=True,
             )
             try:

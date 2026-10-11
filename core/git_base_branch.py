@@ -3,7 +3,8 @@
 框架所有「分支相对基线的未合并提交数」类判定的基线来源单点。解析顺序：
 
 1. ``git symbolic-ref --short refs/remotes/origin/HEAD``（``origin/<branch>``
-   形态，去前缀取本地分支名，兼容含 ``/`` 的分支名）；
+   形态，去前缀取本地分支名并 ``rev-parse --verify`` 校验本地存在，缺失则
+   落入下述候选，兼容含 ``/`` 的分支名）；
 2. 本地存在 ``main``（``git rev-parse --verify --quiet main``，退出码判定）；
 3. 本地存在 ``master``（同法）；
 4. 回退常量 ``"main"``（与既有 PRESERVE_AHEAD_BASE_BRANCH 一致）。
@@ -98,7 +99,15 @@ def resolve_base_branch(
     )
     if ref and ref.startswith("origin/"):
         name = ref[len("origin/"):].strip()
-        if name:
+        # origin/HEAD 只保证符号引用可解析，不保证去前缀后的分支在本地
+        # 可解析（remote 默认分支改名后未建本地分支、单分支 fetch 配置等
+        # 环境下 refs/heads/<name> 缺失）：与下方 main/master 候选同法
+        # rev-parse --verify 校验本地存在，失败继续走候选与 fallback——
+        # 调用方拿裸分支名拼 rev-list，DWIM 解析不到 refs/remotes/origin/
+        # <name>，返回本地不存在的基线即 potplayer-base 同型事故。
+        if name and _git_output(
+            project_root, ["rev-parse", "--verify", "--quiet", name], timeout,
+        ) is not None:
             branch = name
     # 2)/3) 本地 main → master（--verify --quiet 退出码判定，一次子进程）。
     if branch is None:

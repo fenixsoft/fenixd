@@ -773,8 +773,13 @@ class TestPreclassifyContinuationContract(_OrphanDispatchFixture):
             )
         self.assertEqual(outcome["action"], "fallback")
 
-    def test_gate_rerun_exception_falls_back(self):
-        """3.6 用例：gate 重跑异常 → 全量回退 blocked 待人工。"""
+    def test_gate_rerun_exception_continues_excluding_deleted(self):
+        """3.6 用例：gate 重跑异常 → 剔除已删条目 continue 续走。
+
+        对齐 _preclassify_missing 口径（code-review item d653d8709445）：
+        删除已写盘不可回滚，全量 fallback 会令调用方以原始 disputed 把
+        已自愈声明再送人工裁决。
+        """
         self.write_spec_dir(
             "- path: tests/orphan_gate_err.py\n  kind: new\n",
         )
@@ -787,8 +792,16 @@ class TestPreclassifyContinuationContract(_OrphanDispatchFixture):
             "s1", result, {}, ["tests/orphan_gate_err.py"], missing,
         )
         self.assertEqual(
-            outcome["action"], "fallback",
-            "gate 重跑异常应 fallback 到 blocked 待人工",
+            outcome["action"], "continue",
+            "gate 重跑异常应剔除已删条目 continue 续走（删除已写盘不可回滚）",
+        )
+        self.assertEqual(
+            outcome["remaining_missing"], [],
+            "已删条目应从 remaining_missing 剔除",
+        )
+        self.assertEqual(
+            outcome["remaining_disputed"], [],
+            "已删孤儿不应进人工裁决文案",
         )
 
 

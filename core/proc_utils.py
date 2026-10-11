@@ -236,7 +236,20 @@ def kill_process_group(
     """
     try:
         pgid = os.getpgid(popen.pid)
-    except (ProcessLookupError, PermissionError, OSError):
+    except ProcessLookupError:
+        # leader pid 已被 reap。ESRCH 只证明 pid 空闲，组内孤儿仍可能存活，
+        # 故按 start_new_session 口径回退 popen.pid 补刀（语义不变）；但记
+        # WARNING 留取证线索——若该 pid 在 reap 后被 OS 复用且新进程独立成
+        # 组，killpg 会误杀无关组（guard_killpg 只拦自身组与非正 pgid）。
+        _logger.warning(
+            "kill_process_group: getpgid(%d) ProcessLookupError（leader 已被"
+            " reap），回退 pgid=pid 补刀整组 — 存在 pid 复用误杀他人组的极窄"
+            "窗口",
+            popen.pid,
+        )
+        pgid = popen.pid
+    except (PermissionError, OSError):
+        # 权限不可判等情形：目标大概率仍在，回退口径同上。
         pgid = popen.pid
     if not (sigterm_only_if_alive and popen.poll() is not None):
         # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定

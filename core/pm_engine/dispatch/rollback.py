@@ -79,11 +79,30 @@ class RRollbackMixin:
         可配 ``pm.dispatch_rollback_backoff_seconds``，默认 300s
         （code-review item 7b281a0886ea：原硬编码 +300 与可配置的
         ``pm.dispatch_backoff_schedule`` 双源不统一，调参/行为诊断困难）。
-        非正数/非法值回退缺省。
+        非正数/非法值回退缺省；布尔显式拒绝（对齐 repair_lane
+        ``_merge_breaker_threshold`` 归一口径）。
         """
         default = 300
         try:
-            v = float(self._pm._get_config("pm.dispatch_rollback_backoff_seconds", default))
+            cfg = self._pm._get_config("pm.dispatch_rollback_backoff_seconds", default)
+        except (TypeError, ValueError):
+            return default
+        # bool 显式拒绝（code-review item f56862fd7372）：float() 把 YAML 布尔
+        # true 折算成 1.0，绕过下方非正/NaN/inf 全部守卫，防振荡窗被静默从
+        # 缺省 300s 缩成 1s；false 走 v<=0 回退缺省，true/false 行为不对称。
+        # 非法值 WARNING 留痕回退缺省（logger getattr 守卫，兼容仅注入
+        # _get_config 的测试替身）。
+        if isinstance(cfg, bool):
+            logger = getattr(self._pm, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "pm_engine",
+                    "配置 pm.dispatch_rollback_backoff_seconds 非法（布尔不合法），"
+                    f"回退缺省 {default}: {cfg!r}",
+                )
+            return default
+        try:
+            v = float(cfg)
         except (TypeError, ValueError):
             return default
         if v != v or v in (float("inf"), float("-inf")) or v <= 0:
