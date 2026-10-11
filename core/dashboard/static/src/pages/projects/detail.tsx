@@ -193,15 +193,17 @@ function assertionDetail(a: AssertionResultItem): string {
     case 'file_content':
       return `文件内容匹配「${a.expected ?? ''}」${a.negate ? '（取反）' : ''}`;
     case 'json_output': {
+      const expected = a.expected !== undefined ? ` 期望「${JSON.stringify(a.expected)}」` : '';
       const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual)}」` : '';
-      return `JSON ${a.path || '?'} 期望「${JSON.stringify(a.expected)}」${actual}`;
+      return `JSON ${a.path || '?'}${expected}${actual}`;
     }
     // ── api ──
     case 'status_code':
       return `期望状态码 ${a.expected ?? '?'}，实际 ${a.actual ?? '?'}`;
     case 'json_path': {
+      const expected = a.expected !== undefined ? ` 期望「${JSON.stringify(a.expected)}」` : '';
       const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual)}」` : '';
-      return `路径 ${a.path || '?'} 期望「${JSON.stringify(a.expected)}」${actual}`;
+      return `路径 ${a.path || '?'}${expected}${actual}`;
     }
     case 'response_header':
       return `头 ${a.header || '?'} 期望「${a.expected ?? ''}」，实际「${a.actual ?? ''}」`;
@@ -1127,17 +1129,20 @@ export default function SpecDetailPage() {
             const sev = String(item.severity || '');
             // severity 着色复用运维记录页语义：critical 红 / major 橙 / 其余灰
             const sevColor = sev === 'critical' ? 'red' : sev === 'major' ? 'orange' : 'default';
-            // 状态 Tag：disposition 终态（resolved 等）绿「已解决」、pending 蓝「处置中」；
+            // 状态 Tag：disposition 终态（resolved 等）绿「已解决」、pending 蓝「处置中」、
+            // result 缺失中性「未知状态」（状态不明不宣示已解决）；
             // escalation handled 绿「已处理」、未处理橙
             const dispResult = String(item.result || '');
-            const dispDone = dispResult !== 'pending';
+            const dispDone = !!dispResult && dispResult !== 'pending';
             const statusTag = isEscalation
               ? (item.handled
                 ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已处理</Tag>
                 : <Tag color="orange" style={{ marginInlineEnd: 0 }}>未处理</Tag>)
               : (dispDone
                 ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已解决</Tag>
-                : <Tag color="blue" style={{ marginInlineEnd: 0 }}>处置中</Tag>);
+                : dispResult
+                  ? <Tag color="blue" style={{ marginInlineEnd: 0 }}>处置中</Tag>
+                  : <Tag style={{ marginInlineEnd: 0 }}>未知状态</Tag>);
             return {
               color: 'blue',
               children: (
@@ -1267,7 +1272,7 @@ export default function SpecDetailPage() {
                   {item.cost_usd != null && (
                     <Tag color="green" style={{ marginInlineEnd: 0 }}>{formatUsd(item.cost_usd)}</Tag>
                   )}
-                  {!!item.retry_count && item.retry_count > 0 && (
+                  {(item.retry_count ?? 0) > 0 && (
                     <Tag color="orange" style={{ marginInlineEnd: 0 }}>
                       重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
                     </Tag>
@@ -1439,9 +1444,10 @@ export default function SpecDetailPage() {
                 return (
                   <Card
                     // SSE 增量刷新可能在既有条目之间增删（场景重跑），索引 key 会
-                    // 按位置错位复用节点；kind 缺省按 web 拼前缀保证跨 kind 唯一
+                    // 按位置错位复用节点；kind 缺省按 web 拼前缀保证跨 kind 唯一，
+                    // 索引仅作同型重复条目 tie-breaker
                     // （code-review item 92d9f4c54ba9）
-                    key={`${scenario.kind || 'web'}-${scenario.scenario_id}`}
+                    key={`${scenario.kind || 'web'}-${scenario.scenario_id}-${idx}`}
                     size="small"
                     style={{ marginBottom: 12 }}
                     title={
@@ -1763,10 +1769,14 @@ export default function SpecDetailPage() {
             <span>P{detail?.priority ?? '?'}</span>
           </Descriptions.Item>
           <Descriptions.Item label="创建时间">
-            {detail?.created ? dayjs(detail.created).format('YYYY-MM-DD HH:mm:ss') : '—'}
+            {detail?.created && dayjs(detail.created).isValid()
+              ? dayjs(detail.created).format('YYYY-MM-DD HH:mm:ss')
+              : (detail?.created || '—')}
           </Descriptions.Item>
           <Descriptions.Item label="更新时间">
-            {detail?.updated ? dayjs(detail.updated).format('YYYY-MM-DD HH:mm:ss') : '—'}
+            {detail?.updated && dayjs(detail.updated).isValid()
+              ? dayjs(detail.updated).format('YYYY-MM-DD HH:mm:ss')
+              : (detail?.updated || '—')}
           </Descriptions.Item>
           <Descriptions.Item label="依赖">
             {detail?.depends_on || '无依赖'}
