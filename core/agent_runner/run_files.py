@@ -39,6 +39,19 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     # add-code-review-auto-fix：code-fix- 独立前缀（与 code-review- 无子串
     # 冲突，顺序无关，放 code-review- 相邻处便于横向检索）
     ("code-fix-", "code-fix"),
+    # code-review item 179415601d64：review- 独立前缀（每日自省车道
+    # _unique_self_review_run_id 的 review-<date> run_id，同日重跑退避为
+    # review-<date>-<n>，core/agent_runner/maintenance_runs.py），与既有前缀
+    # 无子串冲突（startswith 语义下与 spec-review- 互不吞并，顺序无关）——
+    # 此前缺条目使自省 run 在时间线/初筛分组退化为泛型 "agent"、spec 列残留
+    # 整个 run_id。消费方核对（仿 evo-/maintenance- 先例）：get_runs 时间线
+    # 归属 agent→self-review（预期修复）；run_spec_part 剥出的伪 spec 段为
+    # <date>[-<n>]（时间戳正则 -\d{9,10}$ 不吞 -YYYY-MM-DD），非真实 spec 名、
+    # 全等守卫不受影响；admin_monitor._RUN_PREFIXES 失败计数不同步收录
+    # （run_id 不携带 spec 段、无 spec 失败可还原，同 evo- 口径）；pm_engine
+    # 活动/归属判定按 review-<spec>-* glob + run_spec_part 全等，review-<date>
+    # 不新增误命中。
+    ("review-", "self-review"),
     # evo-add-run-metrics-lane-baseline 1.2：evo- 独立前缀（run_evolution 的
     # evo-<epoch> run_id，与既有前缀无子串冲突，顺序无关）——此前缺条目使
     # evolution run 在时间线/初筛分组退化为泛型 "agent"。消费方核对（design
@@ -115,6 +128,14 @@ def append_run_line(run_file: Path, entry: dict) -> None:
     文本的截断，终态行不再可能被并发追加撕裂成读侧跳过的半行 JSON。
     """
     line = json.dumps(entry, ensure_ascii=False) + "\n"
+    # 编码防御（code-review item 3644eb85f017）：entry 由调用方整条透传
+    # （runner.py 转录事件 json.loads 后原样落盘），可携带 ``\udXXX`` 转义
+    # 解析出的孤立代理符——dumps(ensure_ascii=False) 本身成功，而 UTF-8 编码
+    # 抛 UnicodeEncodeError 并沿调用链上抛（可终止 runner 的 stdout 读线程、
+    # 丢终态行）。此处一次性把 line 预清洗为合法 UTF-8 文本（不可编码符降级
+    # 为 U+FFFD），文本路径与二进制路径共用同一 line/data，两处同时免疫；
+    # 不改变「整行原子落盘」契约。
+    line = line.encode("utf-8", "replace").decode("utf-8")
     data = line.encode("utf-8")
     if len(data) <= _ATOMIC_APPEND_LINE_BYTES:
         with run_file.open("a", encoding="utf-8") as f:

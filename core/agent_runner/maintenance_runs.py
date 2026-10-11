@@ -2280,7 +2280,11 @@ def _unique_regression_run_id(runner) -> str:
 # 被误判，映射侧没有命令形态 fail-closed（mapped 只看
 # _map_junit_failures_to_nodeids 的 nodeid 重构成败，core/code_fix.py），
 # 仅当误判值非法时由 pytest 参数解析失败兜住——值形似收集目标的带值选项
-# 一律收录进本清单。
+# 一律收录进本清单。附着形态重定向 token（``2>&1``/``2>/dev/null``/``&>file``
+# 等，附着在数字/文件名上）不属本清单职责：shlex 切分后是不以 ``-`` 开头的
+# 单 token、会被收集目标判定误收，由 _apply_pytest_subset 的「token 含
+# ``>``/``<`` 字符即 fail-closed」检查拦截（code-review item 5f9b00a4802c），
+# 不在本局限范围内。
 _PYTEST_VALUE_OPTIONS = frozenset({
     "-c", "--config", "-o", "--override-ini", "-k", "-m", "-p", "-r", "-W",
     "--junit-xml", "--junit-prefix", "--result-log", "--basetemp",
@@ -2308,7 +2312,8 @@ def _apply_pytest_subset(cmd, subset_nodeids):
     - 命令 MUST 为 pytest 形态（token 序列含 pytest/py.test 可执行名，
       ``python -m pytest`` 形态天然命中）——否则返回 None（回退全量）。
     - 收集目标 = pytest 之后、非旗标、且不紧跟在带值选项后的 token；
-      含 shell 控制操作符、或不存在任何收集目标 → 返回 None（fail-closed）。
+      含 shell 控制操作符（含附着重定向/命令替换记号）、或不存在任何收集
+      目标 → 返回 None（fail-closed）。
     - 替换：首个收集目标位置放全部 nodeids，其余收集目标删除（保持
       「收集目标并集」语义下的精确子集）；旗标（``-q``/``--junit-xml`` 等）
       逐字保留。
@@ -2338,6 +2343,14 @@ def _apply_pytest_subset(cmd, subset_nodeids):
     # 'tests/)']，反引号形态同理），上面的 token 精确匹配拦不住；任一 token
     # 含替换记号即按复杂 shell 形态 fail-closed（回退全量）。
     if any("$(" in t or "`" in t for t in tokens):
+        return None
+    # 附着形态重定向记号（item 5f9b00a4802c）：``2>&1``/``2>/dev/null``/
+    # ``&>file`` 等重定向附着在数字/文件名 token 上，shlex 切分后既不命中
+    # _SHELL_OPERATORS 的独立 token 精确匹配、也不含替换记号，且不以 ``-``
+    # 开头会被下方收集目标判定误收——替换时或被删（静默丢重定向语义），或
+    # 挤掉真实收集目标。任一 token 含 ``>``/``<`` 字符即按复杂 shell 形态
+    # fail-closed（回退全量）。
+    if any(">" in t or "<" in t for t in tokens):
         return None
 
     target_indexes = []
@@ -2714,7 +2727,34 @@ def run_code_fix(
         # 背景：glm-5.3-flash thinking 生成是回合耗时大头（09-24 批实测 117/357
         # 消息带 thinking、均 1614 字符、工具执行≈0）。实验定案后若保留须补
         # Dashboard 设置项（fenix-new-config-needs-dashboard-ui）。
-        agent_env = (((getattr(runner, "config", {}) or {}).get("agents") or {}).get("agent_env") or {}).get("code-fix") or {}
+        # code-review item 83f9e745e19e：config→agents→agent_env 链逐段
+        # isinstance(dict) 校验——中间段被 yaml 误写成真值标量/列表（缩进错误
+        # 的常见形态）时，链式 .get 对 str/list 裸调 .get 在最内层 isinstance
+        # 兜底之前就抛 AttributeError；外层 try 只有 finally 无 except，异常
+        # 穿透 run_code_fix 使整批 code-fix 启动失败。非 dict 段记 WARNING
+        # 按空映射继续，使「不阻断维护 run 主流程」的降级口径完整（键缺失/
+        # None 仍静默按空映射，同原 ``or {}`` 口径）。
+        _cfg = getattr(runner, "config", {}) or {}
+        _agents_cfg = _cfg.get("agents") if isinstance(_cfg, dict) else None
+        _env_cfg = (
+            _agents_cfg.get("agent_env") if isinstance(_agents_cfg, dict) else None
+        )
+        agent_env = (
+            _env_cfg.get("code-fix") if isinstance(_env_cfg, dict) else None
+        ) or {}
+        for _name, _seg in (
+            ("config", _cfg),
+            ("config.agents", _agents_cfg),
+            ("config.agents.agent_env", _env_cfg),
+        ):
+            if _seg is not None and not isinstance(_seg, dict):
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "code-fix",
+                        f"{_name} 配置段类型错误（期望 dict，实际 "
+                        f"{type(_seg).__name__}），忽略 agent_env 注入",
+                    )
         if not isinstance(agent_env, dict):
             # code-review item 21e3783270a2：``or {}`` 只兜住键缺失/None，yaml 误写为
             # 字符串/数字/列表时裸调 .items() 抛 AttributeError，且本处位于任何 try
