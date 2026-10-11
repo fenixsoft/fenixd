@@ -985,21 +985,21 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   };
 
-  // 实际渲染行：status/severity 过滤已下沉 server-side（2026-09-24 分页配套，
-  // 台账上千行不再全量拉取），本地不再二次过滤——渲染行即当页行；幽灵选中
-  // 清理随之与当页行求交（翻页/过滤收窄即清掉不可见旧选中，语义与原先一致）。
-  const filteredItems = items;
+  // 渲染行即 items（当页行）：status/severity 过滤已下沉 server-side
+  // （2026-09-24 分页配套，台账上千行不再全量拉取），本地不再二次过滤；
+  // 幽灵选中清理随之与当页行求交（翻页/过滤收窄即清掉不可见旧选中，
+  // 语义与原先一致）。
 
   // 选中项与**实际渲染行**求交（code-review item 01f6207c6b11 + a4922e615ddf）：
   // 后端流转为 resolved/in_spec、或过滤/翻页后，旧选中 key 会残留为「幽灵选中」，
   // 使「已选 N 条」计数错误、并把不可见 item_id 提交给后端。
   useEffect(() => {
     setSelectedKeys((prev) => {
-      const visible = new Set(filteredItems.map((it) => String(it.item_id)));
+      const visible = new Set(items.map((it) => String(it.item_id)));
       const next = prev.filter((k) => visible.has(String(k)));
       return next.length === prev.length ? prev : next;
     });
-  }, [filteredItems]);
+  }, [items]);
 
   const columns: ColumnsType<CodeReviewItem> = isMobile
     ? [
@@ -1207,7 +1207,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       <Table<CodeReviewItem>
         rowKey="item_id"
         loading={loading}
-        dataSource={filteredItems}
+        dataSource={items}
         columns={columns}
         size="small"
         // tableLayout=fixed（2026-09-26 用户要求）：ignored 等过滤下存在 120 字符
