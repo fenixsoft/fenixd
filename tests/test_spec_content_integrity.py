@@ -649,7 +649,7 @@ class TestFrozenReplayGuards(unittest.TestCase):
         self.engine._enqueue = MagicMock()
         self.engine._on_spec_ready("ready-spec")
         impl_calls = [
-            c for c in self.engine._enqueue.call_args_list
+            c.args for c in self.engine._enqueue.call_args_list
             if c.args == ("ready-spec", "implementer")
         ]
         self.assertEqual(impl_calls, [("ready-spec", "implementer")])
