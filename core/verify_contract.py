@@ -409,7 +409,12 @@ def _load_verify_contract_with_raw(
             prepare.append(
                 PrepareStep(
                     run=step["run"],
-                    cwd="" if bad_cwd_reason else str(raw_cwd or ""),
+                    # 回写去空格 cand（code-review item 3f109de20d2e）：守卫按
+                    # 去空格口径判定，通过后若保留未 strip 的原值，带首尾空白
+                    # 的 cwd 会在消费方 ``Path(项目根) / cwd`` 处按字面空格路径
+                    # 解析（npm 预装/步骤执行报与根因无关的启动失败）——与
+                    # 下方 evidence_dir 分支回写 cand 同口径。
+                    cwd="" if bad_cwd_reason else cand_cwd,
                 )
             )
         elif logger:
@@ -478,6 +483,14 @@ def _load_verify_contract_with_raw(
                         f"{raw_root!r}",
                     )
                 serve_data["root"] = ""
+            else:
+                # 回写去空格 cand（code-review item 3f109de20d2e）：守卫按去空
+                # 格口径判定，通过后保留未 strip 原值会让带首尾空白的 root 在
+                # 消费方 ``Path(项目根) / root`` 处按字面空格路径解析（误报
+                # 「serve.root 不存在」），纯空白值还会凭 truthy 绕过
+                # _raw_serve_section_errors 的「为空」拦截——与上方 evidence_dir
+                # 分支回写 cand 同口径，就地写回兼使 raw_data 与解析结果一致。
+                serve_data["root"] = cand
         # port 是可选 legacy 端口提示：非正整数（如 port: auto）按无提示
         # 回退 None，不得从 load_verify_contract 抛 ValueError——违背
         # 「解析失败按无契约回退」约定（复用 _positive_int_or_default 范式）。
