@@ -27,6 +27,10 @@
 //   驱动）。补 visibilitychange 监听：回前台即重置 retryKey 重启轮询
 //   （effect 入口本就 setReadFailed(false) 并重置错误计数），顺带获得回前台
 //   立即补刷一帧（对齐 list.tsx/overview 的 visibilitychange 补刷模式）。
+//   「已观察到在跑」的记忆（sawRunningRef）跨该重启保留（item 43f494acd283）：
+//   链在切后台期间收尾时，回前台首帧 running=false 仍凭记忆判收尾并回调
+//   onSettled——记忆若随 effect 局部变量清零，收尾只能落到不回调刷新的
+//   MAX_IDLE_ROUNDS 空转兜底，条目表格要等用户手动刷新。
 import { useEffect, useRef, useState } from 'react';
 import { Card, Space, Typography } from 'antd';
 import ProgressBarTile from './ProgressBarTile';
@@ -137,6 +141,12 @@ export default function CodeFixProgressCard(
     onRunningChangeRef.current?.(fixRunning);
   }, [fixRunning]);
 
+  // 「本次观察周期内已看到修复链在跑」的记忆（code-review item 43f494acd283）：
+  // 存组件级 ref 而非轮询 effect 局部变量——retryKey/restartKey 重启轮询时
+  // 保留，使切后台/停轮询期间收尾的链在重启后首帧 running=false 仍能判收尾
+  // 并回调 onSettled；观察到收尾后清除（防重复回调），project 切换在下方
+  // 清态 effect 复位（旧项目的运行记忆不得污染新项目）。
+  const sawRunningRef = useRef(false);
   // 跨项目切换清态（code-review item 1d0b747da6b2）：本组件随 Tab 常驻挂载，
   // project 变化只重启轮询 effect、不卸载组件，组件级 progress 会保留上一项目
   // 最后一帧——新项目首个 tick 返回前（约 2s + 请求耗时）卡片按旧项目的
@@ -149,6 +159,9 @@ export default function CodeFixProgressCard(
   useEffect(() => {
     setProgress(null);
     setReadFailed(false);
+    // sawRunningRef 一并复位（item 43f494acd283）：记忆已提为 ref、跨轮询重启
+    // 保留，切项目不复位会拿旧项目的「在跑」记忆给新项目首帧误判收尾。
+    sawRunningRef.current = false;
   }, [project]);
   useEffect(() => {
     // active 门控（对齐 QualityTab/SessionPanel 的「未选中零请求」约定）：项目页
@@ -159,10 +172,11 @@ export default function CodeFixProgressCard(
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let errors = 0;
-    // 本次挂载是否观察到修复链在跑：用于把「链收尾」与「从未激活的缺省态」
-    // 区分开——后者不应触发父组件刷新（否则每次挂载/切项目都白打一次
-    // getCodeReviewItems，与 QualityTab 自身 mount 加载重复）。
-    let sawRunning = false;
+    // 是否观察到修复链在跑：用于把「链收尾」与「从未激活的缺省态」区分开——
+    // 后者不应触发父组件刷新（否则每次挂载/切项目都白打一次
+    // getCodeReviewItems，与 QualityTab 自身 mount 加载重复）。记忆本体在
+    // sawRunningRef（组件级，见上）：retryKey/restartKey 重启 effect 不清零，
+    // 本 effect 内只做帧级快照与更新。
     // 连续「未观察到在跑且非终止态」轮数：随 effect 重启自动归零（restartKey/
     // retryKey/切项目都会重开一轮观察），不会残留旧计数造成过早停轮询。
     let idleRounds = 0;
@@ -174,7 +188,9 @@ export default function CodeFixProgressCard(
         const p = await getCodeReviewFixProgress(project);
         if (!alive) return;
         errors = 0;
-        if (p.running) sawRunning = true;
+        if (p.running) sawRunningRef.current = true;
+        // 本帧快照（含此前 effect 运行累计的记忆，item 43f494acd283）
+        const sawRunning = sawRunningRef.current;
         setProgress(p);
         // 收尾判据（code-review item 62f764043d88）：running=false **且**本轮
         // 曾观察到在跑（sawRunning）才停——首个 tick 的缺省 idle 态（组件常驻
@@ -183,6 +199,11 @@ export default function CodeFixProgressCard(
         // failed）不受 sawRunning 门限（失败链 running 可能恒 true，且挂在
         // 陈旧终态上持续 2s 空转无意义）。
         settled = (sawRunning && p.running === false) || STOP_PHASES.has(p.phase);
+        // 收尾落定即清除记忆（防重复回调，item 43f494acd283）：后续 retryKey/
+        // restartKey 重启不得再凭旧记忆对已收尾的链补发 onSettled。读取失败
+        // 路径（catch）的 settled 不经此处——链可能仍在跑，记忆须留给回前台
+        // 后的首帧收尾判定。
+        if (settled) sawRunningRef.current = false;
         // 缺省态空转兜底（code-review item 98a306558aa9；62f764043d88 防误停
         // 取舍的缺省态兜底）：若链在本轮询两次 tick 间隔内完整启动并收尾，首帧
         // 起就只见 running=false/phase=idle，上式 settled 永不成立，2s 轮询将
@@ -291,12 +312,11 @@ export default function CodeFixProgressCard(
 
   // 进度条显示口径（用户 2026-09-23）：链级 done 只在合回核销后增长，修复中
   // 恒 0%，与「本批已处置 x/y」实时明细割裂——修复中把本批实时处置数并入
-  // （封顶 total 防溢出）；合回收尾时 item_done 让位为 null，口径无缝切回
-  // done/total，不双计。
-  const liveDone = Math.min(
-    total > 0 ? total : Number.MAX_SAFE_INTEGER,
-    done + (typeof itemDone === 'number' ? itemDone : 0),
-  );
+  // （封顶 total 防溢出；total=0 缺省态无上限可封，直接取实时和——item
+  // c57148311d1d：不以 MAX_SAFE_INTEGER 哨兵表达「无上限」）；合回收尾时
+  // item_done 让位为 null，口径无缝切回 done/total，不双计。
+  const donePlusItems = done + (typeof itemDone === 'number' ? itemDone : 0);
+  const liveDone = total > 0 ? Math.min(total, donePlusItems) : donePlusItems;
 
   // 次级文案段：已处置条数已由 ProgressBarTile 头部「已完成 x / y」承载，这里
   // 保留当前文件/条级进度/终止原因/读取失败提示（段间「 · 」连接）。条级进度
