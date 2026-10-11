@@ -172,7 +172,10 @@ def gap_from_result(data, project_root, spec_name) -> "list[str]":
     """
     unfinished = (data or {}).get("unfinished")
     if isinstance(unfinished, list) and unfinished:
-        return [str(t) for t in unfinished]
+        # code-review item 727f910f1344：去重保序，与下方 completed_tasks 反推
+        # 分支（item a13b782d263d）同口径——结果文件 unfinished 含重复 id 时
+        # 缺口清单不得带重复条目进日志/人工待办告警。
+        return list(dict.fromkeys(str(t) for t in unfinished))
     completed = (data or {}).get("completed_tasks")
     if isinstance(completed, list):
         # code-review item 9afc80c852c8：all_ids 取自主树 tasks.md——三处消费点
