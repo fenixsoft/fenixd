@@ -2253,6 +2253,11 @@ class ConfigLoader:
         - minor_batch_cadence: 7（evo-add-codefix-severity-batch-gate 1.1；
           周批节奏天数：低于门限条目挂起距首挂起锚达该天数后整组放行。
           正整数；bool/非整数/非正值回退缺省并记 warning）
+        - severity_batch_gate_enabled: False（2026-10-11；severity 分级门限
+          总开关。缺省关闭＝当天发现的所有内容当天处理（不挂起、不积累
+          周批），关闭语义在 gate 解析层（severity_gate_from_config_segment
+          返回 None）整体旁路。严格 bool：非 bool 值回退 False 并记
+          warning）
         段缺失或非 dict 时整体视为缺省，不抛异常。
         """
         # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
@@ -2311,6 +2316,17 @@ class ConfigLoader:
                 minor_batch_cadence,
             )
             minor_batch_cadence = 7
+        # severity 分级门限总开关（2026-10-11）：缺省关闭（当天内容当天
+        # 处理）；严格 bool，非法回退 False（视同关闭）。
+        severity_batch_gate_enabled = crf.get(
+            "severity_batch_gate_enabled", False)
+        if not isinstance(severity_batch_gate_enabled, bool):
+            _logger.warning(
+                "admin.code_review_fix.severity_batch_gate_enabled 非法值 %r"
+                "（非 bool），回退 False（视同关闭）",
+                severity_batch_gate_enabled,
+            )
+            severity_batch_gate_enabled = False
         return {
             "enabled": enabled,
             "batch_size": int(batch_size),
@@ -2318,6 +2334,7 @@ class ConfigLoader:
             "targeted_regression": targeted_regression,
             "min_immediate_severity": min_immediate_severity,
             "minor_batch_cadence": int(minor_batch_cadence),
+            "severity_batch_gate_enabled": severity_batch_gate_enabled,
         }
 
     @classmethod

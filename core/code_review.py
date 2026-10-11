@@ -562,17 +562,28 @@ def severity_meets_gate(rec, gate) -> bool:
     return severity_gate_rank((rec or {}).get("severity")) >= severity_gate_rank(min_sev)
 
 
-def severity_gate_from_config_segment(seg) -> dict:
+def severity_gate_from_config_segment(seg) -> Optional[dict]:
     """从 ``get_code_review_fix_config`` 段读取器输出取门限生效值。
 
     段读取器已做词表/正整数校验回退（core/config.py 1.1），此处对「测试
     替身 config 段未走读取器」的形态做同款兜底归一；checkpoint 选批与
     severity_gate_config（磁盘解析路径）共用本归一，避免双处漂移。
+
+    总开关（2026-10-11）：``severity_batch_gate_enabled`` 缺省关闭——
+    关闭时返回 ``None``（门限/周批整体旁路，当天发现的所有内容当天
+    处理）；仅显式 ``True`` 时返回门限 dict。非 bool 值视同关闭（与
+    读取器严格 bool 口径一致，测试替身段兜底）。
     """
-    min_sev = (seg or {}).get("min_immediate_severity")
+    segd = seg or {}
+    enabled = segd.get("severity_batch_gate_enabled", False)
+    if not isinstance(enabled, bool):
+        enabled = False
+    if not enabled:
+        return None
+    min_sev = segd.get("min_immediate_severity")
     if not (isinstance(min_sev, str) and min_sev in _SEVERITY_GATE_RANK):
         min_sev = SEVERITY_GATE_MIN_DEFAULT
-    cadence = (seg or {}).get("minor_batch_cadence")
+    cadence = segd.get("minor_batch_cadence")
     if (
         not isinstance(cadence, int)
         or isinstance(cadence, bool)
@@ -582,11 +593,12 @@ def severity_gate_from_config_segment(seg) -> dict:
     return {"min_immediate_severity": min_sev, "minor_batch_cadence": cadence}
 
 
-def severity_gate_config(project_root) -> dict:
+def severity_gate_config(project_root) -> Optional[dict]:
     """解析 severity 门限生效值（模块级调用方路径，磁盘配置 fail-open）。
 
     沿 ``_stall_alert_minutes`` 同款范式：配置层任何异常回退缺省，不中断
-    评审与修复主链。
+    评审与修复主链。总开关关闭（缺省）时返回 ``None``＝门限旁路
+    （severity_gate_from_config_segment 2026-10-11 缺省翻转）。
     """
     try:
         from core.config import ConfigLoader
@@ -620,7 +632,12 @@ def severity_gate_open(rec, gate=None, now_ts=None, release_due=False) -> bool:
       ``first_seen_at``——存量条目零回填）达 ``minor_batch_cadence`` 天的
       周批窗口时放行；``release_due=True``（组放行窗口到期，由
       ``severity_gate_release_due`` 判定）时低于门限条目整组放行。
+
+    ``gate`` 为 ``None``（总开关关闭，2026-10-11）：恒 True＝全放行
+    当日批（无门限即无挂起）。
     """
+    if gate is None:
+        return True
     if severity_meets_gate(rec, gate):
         return True
     if release_due:
@@ -646,7 +663,13 @@ def severity_gate_release_due(recs, gate=None, now_ts=None) -> bool:
     当批（非逐条到期逐条放行）。锚取每条 ``severity_deferred_since``（缺位
     回退 ``first_seen_at``）的最早值；达门限/豁免条目不参与挂起组。挂起集
     为空或锚均不可解析 → False（窗口未到）。
+
+    ``gate`` 为 ``None``（总开关关闭）：恒 False＝无挂起组（窗口恒未到）。
+    ``recs`` 由调用方限定 open 池（resolved/ignored 条目的残留老锚
+    MUST NOT 参与窗口判定——2026-10-11 口径修复，与 select_batch 同池）。
     """
+    if gate is None:
+        return False
     cadence = (gate or {}).get("minor_batch_cadence")
     if not isinstance(cadence, int) or isinstance(cadence, bool) or cadence <= 0:
         cadence = MINOR_BATCH_CADENCE_DEFAULT
@@ -674,7 +697,13 @@ def apply_severity_gate_marker(rec, gate) -> bool:
       达门限档位时按当日批处置并清除挂起标记（design §2）；
     - 低于门限：置标记；``severity_deferred_since`` 保留首个锚（同指纹
       重复发现刷新展示字段时不重置，周批窗口以首挂起时刻起算）。
+
+    ``gate`` 为 ``None``（总开关关闭，2026-10-11）：不改标记返回 False
+    （挂起标记留存量无害——读侧 ``gate`` 关闭时不消费；重开开关时周批
+    窗口仍以首挂起锚起算）。
     """
+    if gate is None:
+        return False
     if severity_meets_gate(rec, gate):
         if rec.get(SEVERITY_DEFERRED_FIELD) is None and rec.get(
             SEVERITY_DEFERRED_SINCE_FIELD
@@ -702,24 +731,42 @@ def apply_severity_gate_marker(rec, gate) -> bool:
     return changed
 
 
-def severity_deferred_open_ids(project_root, gate=None, now_ts=None) -> set:
+def severity_deferred_open_ids(project_root, gate=None, now_ts=None,
+                               exclude_ids=None) -> set:
     """open 且低于门限且未到周批窗口的条目 id 集（链收敛对账的挂起集）。
 
     组放行窗口到期时挂起集为空（整组已可进批，选批层将自然放行）。
     台账读失败按空集 fail-open（对账面只影响收敛文案分级，不影响选批）。
+
+    口径（2026-10-11 误报修复）：与 ``select_batch`` 同池判定——池限定
+    open 条目并排除 ``exclude_ids``（调用方传链内跳过集/失败档案并集，
+    与选批排除同口径）；组放行窗口基于同池计算。resolved/ignored 条目的
+    残留挂起锚 MUST NOT 参与窗口判定（曾令 release_due 误判到期 → 挂起
+    集恒空 → blocked 误落 failed_batch_retained「链内跳过/预算内失败」
+    文案而非 severity_deferred 健康等待态）。
+
+    ``gate`` 为 ``None``（总开关关闭）：恒空集（无门限无挂起）。
     """
+    g = gate if gate is not None else severity_gate_config(project_root)
+    if g is None:
+        return set()
     try:
         items = read_items(project_root)
     except Exception:  # noqa: BLE001 — 读失败按空集（不误判收敛语义）
         return set()
-    g = gate or severity_gate_config(project_root)
-    pool = [rec for rec in items.values() if isinstance(rec, dict)]
+    excluded = set(str(i) for i in (exclude_ids or ()))
+    pool = [
+        rec
+        for rec in items.values()
+        if isinstance(rec, dict)
+        and rec.get("status") == "open"
+        and str(rec.get("item_id")) not in excluded
+    ]
     release = severity_gate_release_due(pool, g, now_ts=now_ts)
     return {
         str(rec.get("item_id"))
         for rec in pool
-        if rec.get("status") == "open"
-        and not severity_gate_open(rec, g, now_ts=now_ts, release_due=release)
+        if not severity_gate_open(rec, g, now_ts=now_ts, release_due=release)
     }
 
 
@@ -1710,11 +1757,14 @@ def generate_fix_spec(
     # severity 门限（evo-add-codefix-severity-batch-gate 2.2）：候选层与
     # code_fix.select_batch 应用同一谓词（severity_gate_open 单一函数），
     # Dashboard 手工触发与 scheduled 触发走同门——未到周批窗口的纯
-    # minor/info 触发按空批处理并说明原因。组放行窗口对全 open 池判定
-    #（与选批层同口径：窗口到期累积的挂起条目整组放行）。
+    # minor/info 触发按空批处理并说明原因。组放行窗口对 open 池判定
+    #（与选批层同口径：窗口到期累积的挂起条目整组放行；resolved/
+    # ignored 条目的残留老锚不参与——2026-10-11 口径修复）。gate 关闭
+    #（缺省）时谓词恒放行，此处零分支旁路。
     gate = severity_gate_config(project_root)
     release = severity_gate_release_due(
-        [rec for rec in items.values() if isinstance(rec, dict)], gate
+        [rec for rec in items.values()
+         if isinstance(rec, dict) and rec.get("status") == "open"], gate
     )
     candidates: List[dict] = []
     skipped: List[dict] = []

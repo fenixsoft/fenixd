@@ -1347,6 +1347,16 @@ export interface CodeReviewFixConfig {
   /** 定向回归开关（缺省 true——配置缺席或非法均视为开；读侧按 !== false
    *  归一口径，与 QualityPanel 4.3 注释一致；add-codefix-affinity-batching） */
   targeted_regression?: boolean;
+  /** severity 分级门限总开关（缺省 false = 关闭：当天发现的所有内容当天
+   *  处理，不按严重度挂起；evo-add-codefix-severity-batch-gate，2026-10-11
+   *  补缺省翻转与 Dashboard 界面） */
+  severity_batch_gate_enabled?: boolean;
+  /** 发现分级处置门限（词表 critical/major/minor/info，缺省 major；仅
+   *  severity_batch_gate_enabled 开启时生效） */
+  min_immediate_severity?: string;
+  /** 周批节奏天数（正整数，缺省 7；仅 severity_batch_gate_enabled 开启时
+   *  生效——低于门限条目挂起距首挂起锚达该天数后整组放行） */
+  minor_batch_cadence?: number;
 }
 
 /** 周期性全量回归（admin.regression；add-test-regression-tab） */

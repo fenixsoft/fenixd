@@ -213,6 +213,8 @@ _DEFAULT_CODE_REVIEW_FIX = {
     "targeted_regression": True,
     "min_immediate_severity": "major",
     "minor_batch_cadence": 7,
+    # 2026-10-11：severity 分级门限总开关（缺省关闭＝当天内容当天处理）
+    "severity_batch_gate_enabled": False,
 }
 # add-test-regression-tab：admin.regression 缺省（与 ConfigLoader.get_regression_config
 # 一致：enabled 缺省 false——周期全量回归开关缺省关闭零动作）
@@ -1265,6 +1267,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         mbc = patch["code_review_fix"].get("minor_batch_cadence")
         if isinstance(mbc, int) and not isinstance(mbc, bool) and mbc > 0:
             crf["minor_batch_cadence"] = mbc
+        # 2026-10-11：severity-batch-gate 总开关随受管段放行（严格 bool 才
+        # 合并——非法值由 write_config 前置校验拒绝）
+        if isinstance(patch["code_review_fix"].get("severity_batch_gate_enabled"), bool):
+            crf["severity_batch_gate_enabled"] = patch["code_review_fix"]["severity_batch_gate_enabled"]
         merged["admin"]["code_review_fix"] = crf
     # add-test-regression-tab：admin.regression 键（enabled 严格 bool；非法值
     # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
@@ -1677,6 +1683,17 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     "admin.code_review_fix.minor_batch_cadence must be a positive "
                     f"integer: {mbc!r}"
                 )
+        # 2026-10-11：severity-batch-gate 总开关严格 bool（非法直接拒绝不落盘
+        #——同 enabled/targeted_regression 同款契约）
+        if (
+            "severity_batch_gate_enabled" in crf_patch
+            and crf_patch["severity_batch_gate_enabled"] is not None
+            and not isinstance(crf_patch["severity_batch_gate_enabled"], bool)
+        ):
+            return fail(
+                "admin.code_review_fix.severity_batch_gate_enabled must be a "
+                f"boolean: {crf_patch['severity_batch_gate_enabled']!r}"
+            )
 
     # add-test-regression-tab：前端提交的 regression patch 后端校验（enabled
     # 严格 bool，非法直接拒绝、不静默忽略——同 code_review 模式）

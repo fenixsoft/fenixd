@@ -9,7 +9,10 @@
 6. 链末批判定含挂起集时不计 skipped/lost（is_chain_last_batch 同口径）；
 7. 挂起台账与 WIP-defer 台账（fix-deferred.json/_deferred_item_ids）互不串扰；
 8. 非法配置回退缺省（major / 7 并告警）；
-9. 门限配为最低档 info 时与现状零差异。
+9. 门限配为最低档 info 时与现状零差异；
+10. 总开关 severity_batch_gate_enabled 缺省关闭（2026-10-11：当天内容
+    当天处理）；挂起集对账与选批同池（open 过滤 + exclude_ids 同口径，
+    修 blocked 误落 failed_batch_retained 文案的口径分裂）。
 
 注：spec delta 场景「配置写入 min_immediate_severity: critical（非 severity
 词表值）→ 回退 major」的括号注记与 design.md §5 相矛盾——design 实测词表为
@@ -248,16 +251,20 @@ class TestGateConfigFallback(_UserConfigIsolated):
     def test_segment_normalizer_defaults_garbage(self):
         from core.code_review import severity_gate_from_config_segment
 
-        self.assertEqual(severity_gate_from_config_segment({}), _GATE_DEFAULT)
-        self.assertEqual(severity_gate_from_config_segment(None), _GATE_DEFAULT)
+        # 开关缺省关闭（2026-10-11）：段缺省/None → None（旁路）
+        self.assertIsNone(severity_gate_from_config_segment({}))
+        self.assertIsNone(severity_gate_from_config_segment(None))
+        _on = {"severity_batch_gate_enabled": True}
         self.assertEqual(
             severity_gate_from_config_segment(
-                {"min_immediate_severity": "high", "minor_batch_cadence": -1}),
+                dict(_on, min_immediate_severity="high",
+                     minor_batch_cadence=-1)),
             _GATE_DEFAULT)
         # 测试替身 config 段未走读取器的形态同款兜底
         self.assertEqual(
             severity_gate_from_config_segment(
-                {"min_immediate_severity": "minor", "minor_batch_cadence": 3}),
+                dict(_on, min_immediate_severity="minor",
+                     minor_batch_cadence=3)),
             {"min_immediate_severity": "minor", "minor_batch_cadence": 3})
 
 
@@ -408,6 +415,17 @@ class TestWeeklyPromotion(_UserConfigIsolated):
 
 
 class TestDeferredUpsertMerge(_UserConfigIsolated):
+    @staticmethod
+    def _enable_gate(proot):
+        """写项目级 config 显式开 severity-batch-gate（缺省已改为关闭）。"""
+        cfg = Path(proot) / ".fenix" / "config.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(
+            "admin:\n"
+            "  code_review_fix:\n"
+            "    severity_batch_gate_enabled: true\n",
+            encoding="utf-8")
+
     def _finding(self, severity="minor", description="d"):
         return {
             "file": "core/a.py", "category": "perf", "title": "Slow loop",
@@ -419,6 +437,7 @@ class TestDeferredUpsertMerge(_UserConfigIsolated):
         from core.code_review import read_items, upsert_findings
 
         proot = _make_project_root()
+        self._enable_gate(proot)
         r1 = upsert_findings(proot, [self._finding()], "code-review-1",
                              "scheduled")
         self.assertEqual(r1, {"inserted": 1, "updated": 0})
@@ -450,6 +469,7 @@ class TestDeferredUpsertMerge(_UserConfigIsolated):
         from core.code_fix import select_batch
 
         proot = _make_project_root()
+        self._enable_gate(proot)
         upsert_findings(proot, [self._finding()], "code-review-1", "scheduled")
         item_id = next(iter(read_items(proot)))
         self.assertEqual(
@@ -472,6 +492,7 @@ class TestDeferredUpsertMerge(_UserConfigIsolated):
         from core.code_review import read_items, upsert_findings
 
         proot = _make_project_root()
+        self._enable_gate(proot)
         finding = self._finding(severity="minor")
         finding["category"] = "regression-timeout"
         upsert_findings(proot, [finding], "code-review-1", "scheduled")
@@ -483,6 +504,7 @@ class TestDeferredUpsertMerge(_UserConfigIsolated):
         from core.code_review import read_items, upsert_findings
 
         proot = _make_project_root()
+        self._enable_gate(proot)
         finding = self._finding(severity="high")
         # 模拟外部直写绕过归一的台账形态：upsert 写侧会归一 high→major，
         # 故直接注入未知档位验证告警分支（design §5 fail-open 挂起）
@@ -560,6 +582,14 @@ class TestGenerateFixSpecSameGate(_UserConfigIsolated):
         self.sm = _FakeSM()
         from core.code_review import upsert_findings
 
+        # 显式开 severity-batch-gate（缺省已改为关闭：2026-10-11）
+        cfg = self.repo / ".fenix" / "config.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(
+            "admin:\n"
+            "  code_review_fix:\n"
+            "    severity_batch_gate_enabled: true\n",
+            encoding="utf-8")
         upsert_findings(self.repo, [
             {"file": "core/a.py", "category": "correctness", "title": "None deref",
              "severity": "major", "description": "d", "suggestion": "s",
@@ -649,6 +679,7 @@ class TestGenerateFixSpecSameGate(_UserConfigIsolated):
         cfg.write_text(
             "admin:\n"
             "  code_review_fix:\n"
+            "    severity_batch_gate_enabled: true\n"
             "    min_immediate_severity: info\n",
             encoding="utf-8")
         from core.code_review import generate_fix_spec
@@ -664,9 +695,11 @@ class TestGenerateFixSpecSameGate(_UserConfigIsolated):
 
 class TestCheckpointSeverityConverged(unittest.TestCase):
     def _cfg(self):
-        # night_quiet_window=off：测试与每日静默窗（04:15-04:45）解耦
+        # night_quiet_window=off：测试与每日静默窗（04:15-04:45）解耦；
+        # severity_batch_gate_enabled=true：显式开门限（缺省已改为关闭）
         return {"admin": {"code_review_fix": {
-            "enabled": True, "batch_size": 20, "night_quiet_window": "off"}}}
+            "enabled": True, "batch_size": 20, "night_quiet_window": "off",
+            "severity_batch_gate_enabled": True}}}
 
     def test_pure_deferred_converges_as_idle_not_blocked(self):
         from core.code_fix import (CodeFixOrchestrator, read_progress,
@@ -705,6 +738,142 @@ class TestCheckpointSeverityConverged(unittest.TestCase):
         self.assertEqual(prog["running"], False)
         self.assertIsNone(prog.get("worktree"))
         self.assertEqual(runner.fix_calls, [], "挂起态 MUST NOT 派批")
+
+
+# ── 总开关缺省关闭（10. 2026-10-11：当天内容当天处理）────────────────
+
+
+class TestGateSwitchDefaultOff(_UserConfigIsolated):
+    """severity-batch-gate 总开关（severity_batch_gate_enabled）缺省 False。
+
+    关闭语义：门限/周批整体旁路——gate 解析为 None，所有条目当日批；
+    非法值（非 bool）视同关闭回退并留配置告警。
+    """
+
+    def test_config_default_off_and_strict_bool(self):
+        from core.config import ConfigLoader
+
+        cfg = ConfigLoader.get_code_review_fix_config(
+            {"admin": {"code_review_fix": {}}})
+        self.assertIs(cfg["severity_batch_gate_enabled"], False,
+                      "缺省关闭：当天内容当天处理")
+        for bad in ("true", 1, None, [], {}):
+            cfg = ConfigLoader.get_code_review_fix_config(
+                {"admin": {"code_review_fix": {
+                    "severity_batch_gate_enabled": bad}}})
+            self.assertIs(cfg["severity_batch_gate_enabled"], False,
+                          f"{bad!r} 非法值视同关闭")
+
+    def test_segment_returns_none_when_disabled(self):
+        from core.code_review import severity_gate_from_config_segment
+
+        self.assertIsNone(severity_gate_from_config_segment({}),
+                          "段缺省=开关关 → None（旁路）")
+        self.assertIsNone(severity_gate_from_config_segment(None))
+        self.assertIsNone(severity_gate_from_config_segment(
+            {"min_immediate_severity": "major", "minor_batch_cadence": 7}),
+            "未显式开开关时门限配置不生效")
+        self.assertIsNone(severity_gate_from_config_segment(
+            {"severity_batch_gate_enabled": "yes"}),
+            "开关非法值视同关闭")
+        self.assertEqual(
+            severity_gate_from_config_segment(
+                {"severity_batch_gate_enabled": True}),
+            _GATE_DEFAULT)
+        self.assertEqual(
+            severity_gate_from_config_segment(
+                {"severity_batch_gate_enabled": True,
+                 "min_immediate_severity": "minor",
+                 "minor_batch_cadence": 3}),
+            {"min_immediate_severity": "minor", "minor_batch_cadence": 3})
+
+    def test_none_gate_predicates_bypass(self):
+        from core.code_review import (apply_severity_gate_marker,
+                                      severity_gate_open,
+                                      severity_gate_release_due)
+
+        m = _item("m", severity="minor")
+        self.assertTrue(severity_gate_open(m, None),
+                        "无门限=全放行（当日批）")
+        self.assertFalse(severity_gate_release_due([m], None),
+                         "无门限=无挂起组（窗口恒未到）")
+        self.assertFalse(apply_severity_gate_marker(m, None),
+                         "无门限=不维护挂起标记")
+        self.assertIsNone(m.get("severity_deferred"),
+                          "无门限不置新挂起标记")
+        self.assertIsNone(m.get("severity_deferred_since"))
+        # 留存量不动（重开开关时周批窗口仍以首挂起锚起算）
+        m2 = _item("m2", severity="minor",
+                   severity_deferred=True,
+                   severity_deferred_since=_iso_offset(days=-30))
+        self.assertFalse(apply_severity_gate_marker(m2, None))
+        self.assertTrue(m2.get("severity_deferred"))
+        self.assertIsNotNone(m2.get("severity_deferred_since"))
+
+    def test_disk_default_none_and_daily_batch(self):
+        """磁盘缺省（键缺席）→ gate=None → minor 直接进当日批。"""
+        from core.code_review import severity_gate_config
+        from core.code_fix import select_batch
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "m": _item("m", severity="minor",
+                       first_seen_at=_iso_offset(days=-1)),
+        })
+        self.assertIsNone(severity_gate_config(proot))
+        batch = select_batch(proot, 20, severity_gate=None)
+        self.assertEqual([r["item_id"] for r in batch], ["m"],
+                         "开关关闭时 minor 当日批（当天内容当天处理）")
+
+
+# ── 挂起集对账口径（2026-10-11 blocked 误报修复）──────────────────────
+
+
+class TestSeverityDeferredOpenIdsPoolScope(unittest.TestCase):
+    """severity_deferred_open_ids 与 select_batch 同池判定（open 过滤）。
+
+    误报形态：resolved/ignored 条目残留老锚参与组放行判定 → release_due
+    误判到期 → 挂起集恒空 → 选批为空时 blocked 误落 failed_batch_retained
+    （「链内跳过/预算内失败」）而非 severity_deferred 健康等待态。
+    """
+
+    def test_resolved_stale_anchor_not_pollute_release(self):
+        from core.code_review import severity_deferred_open_ids
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "old": _item("old", status="resolved", severity="minor",
+                         severity_deferred_since=_iso_offset(days=-30)),
+            "m": _item("m", severity="minor",
+                       severity_deferred_since=_iso_offset(days=-1)),
+        })
+        self.assertEqual(
+            severity_deferred_open_ids(proot, gate=_GATE_DEFAULT), {"m"},
+            "resolved 条目老锚 MUST NOT 令组放行窗口误判到期")
+
+    def test_exclude_ids_same_scoping_as_select_batch(self):
+        from core.code_review import severity_deferred_open_ids
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "m": _item("m", severity="minor",
+                       severity_deferred_since=_iso_offset(days=-1)),
+            "n": _item("n", severity="minor",
+                       severity_deferred_since=_iso_offset(days=-2)),
+        })
+        self.assertEqual(
+            severity_deferred_open_ids(proot, gate=_GATE_DEFAULT,
+                                       exclude_ids={"n"}), {"m"},
+            "exclude_ids（失败档案/链内跳过集）与选批排除同口径")
+
+    def test_none_gate_empty_set(self):
+        from core.code_review import severity_deferred_open_ids
+
+        proot = _make_project_root()
+        _write_items(proot, {"m": _item("m", severity="minor")})
+        self.assertEqual(
+            severity_deferred_open_ids(proot, gate=None), set(),
+            "开关关闭（gate=None）＝无挂起集")
 
 
 if __name__ == "__main__":

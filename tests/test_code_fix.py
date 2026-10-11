@@ -77,22 +77,27 @@ class TestCodeReviewFixConfig(unittest.TestCase):
         # add-codefix-affinity-batching 4.1：新增 targeted_regression 键
         # （严格 bool 缺省 True），精确等值断言同步补键；
         # evo-add-codefix-severity-batch-gate 1.1：新增 min_immediate_severity
-        # （词表白名单缺省 major）与 minor_batch_cadence（正整数缺省 7）两键
+        # （词表白名单缺省 major）与 minor_batch_cadence（正整数缺省 7）两键；
+        # 2026-10-11：新增 severity_batch_gate_enabled（严格 bool 缺省 False
+        # ＝当天内容当天处理）
         self.assertEqual(cfg, {"enabled": False, "batch_size": 20,
                                "targeted_retry_max": 3, "targeted_regression": True,
                                "min_immediate_severity": "major",
-                               "minor_batch_cadence": 7})
+                               "minor_batch_cadence": 7,
+                               "severity_batch_gate_enabled": False})
         cfg2 = ConfigLoader.get_code_review_fix_config({"admin": {}})
         self.assertEqual(cfg2, {"enabled": False, "batch_size": 20,
                                 "targeted_retry_max": 3, "targeted_regression": True,
                                 "min_immediate_severity": "major",
-                                "minor_batch_cadence": 7})
+                                "minor_batch_cadence": 7,
+                                "severity_batch_gate_enabled": False})
         # 段非 dict 视为缺省
         cfg3 = ConfigLoader.get_code_review_fix_config({"admin": {"code_review_fix": "x"}})
         self.assertEqual(cfg3, {"enabled": False, "batch_size": 20,
                                 "targeted_retry_max": 3, "targeted_regression": True,
                                 "min_immediate_severity": "major",
-                                "minor_batch_cadence": 7})
+                                "minor_batch_cadence": 7,
+                                "severity_batch_gate_enabled": False})
 
     def test_invalid_batch_size_falls_back(self):
         from core.config import ConfigLoader
@@ -122,7 +127,8 @@ class TestCodeReviewFixConfig(unittest.TestCase):
         self.assertEqual(cfg, {"enabled": True, "batch_size": 30,
                                "targeted_retry_max": 3, "targeted_regression": True,
                                "min_immediate_severity": "major",
-                               "minor_batch_cadence": 7})
+                               "minor_batch_cadence": 7,
+                               "severity_batch_gate_enabled": False})
 
     def test_targeted_retry_max_bounds(self):
         """targeted_retry_max 约束 1-5：合法保留，bool/非整数/越界回退 3。"""
@@ -2060,10 +2066,10 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
              patch("core.dashboard.data.USER_CONFIG_PATH",
                    proot / ".user-none" / "config.yaml"):
             rc = read_config(proot)
-            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7})
+            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7, "severity_batch_gate_enabled": False})
             self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
             eff = read_effective_config(proot)
-            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7})
+            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7, "severity_batch_gate_enabled": False})
 
     def test_write_read_roundtrip(self):
         from core.dashboard.data import read_config, write_config
@@ -2072,7 +2078,7 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         r = write_config(proot, {"code_review_fix": {"enabled": True, "batch_size": 30}})
         self.assertIsNone(r.get("error"), r)
         rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7})
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7, "severity_batch_gate_enabled": False})
         self.assertEqual(rc["sources"]["admin.code_review_fix"], "project")
 
     def test_invalid_batch_size_rejected_no_half_write(self):
@@ -2093,7 +2099,7 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         self.assertIn("boolean", r["error"])
         # 落盘值保持原值（不半写）
         rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7})
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7, "severity_batch_gate_enabled": False})
 
 
 # ── add-code-fix-batch-failure-selfheal：三态收尾 / 锁释放 / 重试预算 / 链内跳过 ──

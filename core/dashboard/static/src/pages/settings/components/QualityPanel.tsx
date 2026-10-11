@@ -51,9 +51,16 @@ const QUALITY_DEFAULTS = {
   // add-code-review-run-at：触发时点回填缺省（后端恒回显生效值——缺省回退
   // admin.self_review.run_at，其文档缺省 02:00；仅作后端响应缺键的兜底）
   runAt: '02:00',
+  // severity 分级门限缺省（与后端 get_code_review_fix_config 同源，
+  // evo-add-codefix-severity-batch-gate；2026-10-11 总开关缺省翻转）
+  minSeverity: 'major',
+  minorCadence: 7,
 } as const;
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
+
+// severity 门限词表（与后端 _SEVERITY_GATE_RANK 同源，四档）
+const SEVERITY_OPTIONS = ['critical', 'major', 'minor', 'info'] as const;
 
 // 长耗时用例阈值缺省（与 core/verify_contract.py RegressionSpec 及项目页
 // RegressionTab 的同名常量同源）：帮助文案引用单源，避免数值再漂移
@@ -141,6 +148,14 @@ const buildFormValues = (config: ConfigData) => {
     code_review_fix_batch_size: config.code_review_fix?.batch_size ?? QUALITY_DEFAULTS.fixBatchSize,
     code_review_fix_targeted_regression:
       config.code_review_fix?.targeted_regression !== false,
+    // severity 分级门限（2026-10-11）：总开关缺省关闭（当天内容当天处理）；
+    // 门限/节奏两键后端恒回显缺省（读侧 fail-open 归一），前端回填同源
+    code_review_fix_severity_gate:
+      config.code_review_fix?.severity_batch_gate_enabled === true,
+    code_review_fix_min_severity:
+      config.code_review_fix?.min_immediate_severity ?? QUALITY_DEFAULTS.minSeverity,
+    code_review_fix_minor_cadence:
+      config.code_review_fix?.minor_batch_cadence ?? QUALITY_DEFAULTS.minorCadence,
   };
 };
 
@@ -219,6 +234,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         enabled: values.code_review_fix_enabled === true,
         batch_size: values.code_review_fix_batch_size,
         targeted_regression: values.code_review_fix_targeted_regression === true,
+        // severity 分级门限三键（2026-10-11）：Switch/Select/InputNumber 表单
+        // 回填后恒有值（枚举由 Select 选项约束、正整数由校验把关，后端
+        // write_config 权威兜底）
+        severity_batch_gate_enabled: values.code_review_fix_severity_gate === true,
+        min_immediate_severity: values.code_review_fix_min_severity,
+        minor_batch_cadence: values.code_review_fix_minor_cadence,
       },
     }),
   });
@@ -226,6 +247,10 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // 就绪时若把开关一律禁用，已配 verify.impl_code_review:true 的项目从此无法
   // 在 UI 关掉该 gate（禁用开关不可切换，handleSave 还会原样重提 true）。
   const implCodeReviewOn = Form.useWatch('impl_code_review', form) === true;
+  // severity 分级门限总开关（2026-10-11）：关闭时门限/节奏两控件置灰
+  //（值仍随表单提交，后端在开关关闭时不消费——与 implCodeReviewOn 的
+  //「只拦开启」不同：这里两键离开关无意义，置灰防误配）
+  const severityGateOn = Form.useWatch('code_review_fix_severity_gate', form) === true;
   // ocr 环境探测状态：null=加载中；未安装时开关置灰并给出「一键安装」
   const [ocr, setOcr] = useState<OcrStatus | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -767,6 +792,85 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             时自动回退全量回归）；链内末批恒走全量回归兜底。关闭后全部批次均走
             全量回归。
           </Text>
+
+          {/* severity 分级门限（evo-add-codefix-severity-batch-gate；2026-10-11
+              总开关缺省翻转为关 + 补 Dashboard 界面）。与上方开关同形态：
+              switch-inline-row + 说明文案；门限/节奏两控件随开关置灰。 */}
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
+            <Form.Item
+              name="code_review_fix_severity_gate"
+              valuePropName="checked"
+              noStyle
+            >
+              <Switch data-testid="code-review-fix-severity-gate-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              按严重度分级修复
+              <span className="label-note">
+                （admin.code_review_fix.severity_batch_gate_enabled）
+              </span>
+            </span>
+          </div>
+          <Text type="secondary">
+            关闭（缺省）：当天发现的所有审查条目当天进入修复批，不按严重度
+            挂起。开启后：severity 达到下方门限的条目保持当日批，低于门限的
+            延后挂起、距首挂起锚达周批节奏天数后整组放行统一修复。
+          </Text>
+          <Form.Item
+            name="code_review_fix_min_severity"
+            label={
+              <>
+                立即修复门限
+                <span className="label-note">
+                  （admin.code_review_fix.min_immediate_severity）
+                </span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: string | undefined | null) =>
+                  v && (SEVERITY_OPTIONS as readonly string[]).includes(v)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为 critical/major/minor/info')),
+              },
+            ]}
+            style={{ marginTop: 24 }}
+          >
+            <Select
+              options={SEVERITY_OPTIONS.map((s) => ({ value: s, label: s }))}
+              disabled={!severityGateOn}
+              data-testid="code-review-fix-min-severity"
+            />
+          </Form.Item>
+          <Form.Item
+            name="code_review_fix_minor_cadence"
+            label={
+              <>
+                周批节奏
+                <span className="label-note">
+                  （admin.code_review_fix.minor_batch_cadence）
+                </span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: number | undefined | null) =>
+                  typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 90
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为 1–90 的整数（天）')),
+              },
+            ]}
+          >
+            <InputNumber
+              min={1}
+              max={90}
+              precision={0}
+              style={{ width: '100%' }}
+              addonAfter="天"
+              disabled={!severityGateOn}
+              data-testid="code-review-fix-minor-cadence"
+            />
+          </Form.Item>
         </Card>
         {/* 回归测试：标题与说明置于卡片外，与上方「代码质量」节同构 */}
         <h3 style={{ marginTop: 32 }}>回归测试</h3>

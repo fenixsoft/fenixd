@@ -3563,13 +3563,17 @@ class CodeFixOrchestrator:
         """解析 admin.code_review_fix 生效值（根形态 → 段读取器）。"""
         return ConfigLoader.get_code_review_fix_config(self._get_root_config())
 
-    def _severity_gate(self) -> dict:
+    def _severity_gate(self):
         """severity 分级门限生效值（evo-add-codefix-severity-batch-gate 2.1）。
 
         经 ``_get_config()`` 段读取器（新键已登记白名单）取
         min_immediate_severity / minor_batch_cadence；测试替身 config 段
         未走读取器的形态由 ``severity_gate_from_config_segment`` 同一归一
         兜底（与 code_review.severity_gate_config 磁盘解析路径共用）。
+
+        总开关关闭（severity_batch_gate_enabled 缺省 False，2026-10-11）：
+        返回 ``None``＝门限整体旁路（select_batch 的既有 None 兼容分支
+        不过滤，当天发现的所有内容当天处理）。
         """
         return severity_gate_from_config_segment(self._get_config())
 
@@ -4369,8 +4373,15 @@ class CodeFixOrchestrator:
                     # 所致，按「挂起」收敛而非 skipped/lost（spec「deferred
                     # 不误判收敛」）——链内跳过/失败档案在档条目不属挂起集，
                     # 混合场景仍走下方既有分级文案并附加挂起注记。
+                    # 挂起集与 select_batch 同池同排除（2026-10-11 误报
+                    # 修复）：exclude_ids 并失败档案并集＝选批内部排除
+                    # 口径，且池限定 open（resolved/ignored 条目残留老锚
+                    # 不参与组放行判定——曾令挂起集恒空、blocked 误落
+                    # failed_batch_retained「链内跳过/预算内失败」文案）。
                     sev_deferred_ids = severity_deferred_open_ids(
-                        root, gate=severity_gate
+                        root,
+                        gate=severity_gate,
+                        exclude_ids=exclude_ids | _failed_item_ids(root),
                     )
                     open_ids_now = {
                         str(iid)
