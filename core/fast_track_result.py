@@ -268,7 +268,19 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
             declared = extract_declared(spec_path)
             if declared is None:
                 declared = extract_paths_typed(spec_path)
-        file_count = len((declared or {}).get("deliverables") or [])
+        _deliverables = (declared or {}).get("deliverables")
+        # 类型漂移防御（code-review item 3d2f5380eeb7）：deliverables 契约漂移为
+        # str/dict 时 len 会静默返回字符数/键数、虚高规模分偏向 full 档降级——
+        # 非 list 视同缺键，与下方 KeyError 分支同语义显式记「疑似上游契约
+        # 漂移」并置 0，避免掩盖上游断裂。
+        if _deliverables is not None and not isinstance(_deliverables, list):
+            _warn(
+                "fast-track 规模预估交付物声明结构类型漂移"
+                f"（deliverables 应为 list，实际 {type(_deliverables).__name__}，"
+                "疑似上游契约漂移，低档放行）"
+            )
+            _deliverables = None
+        file_count = len(_deliverables or [])
     except KeyError as e:
         # 契约漂移类异常与 IO/解析失败区分记录（不同 message），便于发现上游断裂
         _warn(f"fast-track 规模预估交付物声明结构缺键（疑似上游契约漂移，低档放行）: {e}")
