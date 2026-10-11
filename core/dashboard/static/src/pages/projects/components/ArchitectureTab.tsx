@@ -27,6 +27,10 @@ import {
 } from '../../../services/dashboard';
 import type { ArchitectureStatus } from '../../../services/dashboard';
 import { useIsMobile } from '../../../hooks/useIsMobile';
+import {
+  PAGE_CHROME_OFFSET_DESKTOP as FRAME_OFFSET_DESKTOP,
+  PAGE_CHROME_OFFSET_MOBILE as FRAME_OFFSET_MOBILE,
+} from '../../../utils/pageChrome';
 
 interface ArchitectureTabProps {
   project: string;
@@ -35,11 +39,8 @@ interface ArchitectureTabProps {
 
 // ── 模块级命名常量（对齐 RegressionTab 5130098995b7 范式）────────────
 const POLL_INTERVAL_MS = 3000;
-// 分面高度 = 视口 − 页面 chrome（SessionPanel 同款实测常数：桌面 222 =
-// 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16 + 底部 32；
-// 移动端 234 按 390×844 实测校准）。超短视口由 minHeight 保底。
-const FRAME_OFFSET_DESKTOP = 222;
-const FRAME_OFFSET_MOBILE = 234;
+// 分面高度 = 视口 − 页面 chrome（偏移常数与 SessionPanel 同源共享，
+// 推导见 utils/pageChrome.ts）。超短视口由 minHeight 保底。
 const FRAME_MIN_HEIGHT = 320;
 
 function fmtTime(iso?: string | null) {
