@@ -12,6 +12,7 @@
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -1009,6 +1010,31 @@ class TestSnapshotBeforeDelete:
         self._mock_snapshot(wm, calls, existed)
         wm.cleanup(wt, success=False)
         assert len(calls) == 1, "cleanup 内不得重复留档"
+
+    def test_snapshot_archives_untracked_real_git(self, tmp_path):
+        """未跟踪 WIP 文件补档真实可用：blob 入对象库、cat-file 可还原。
+
+        真实 git 仓库、全程不经 mock——回归 code-review item 9734ebf6c937：
+        git hash-object 无 -z 开关，原 NUL 分隔输入必以 unknown switch 失败，
+        未跟踪文件从未真正归档。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        (wt / "wip_untracked.txt").write_text("precious wip\n", encoding="utf-8")
+        # tracked 改动保证 stash create 产出快照 commit（stash 不含 untracked）
+        (wt / "shared.py").write_text("DIRTY\n", encoding="utf-8")
+        msgs: list[str] = []
+        wm.logger = SimpleNamespace(warning=lambda *a: msgs.append(a[-1]))
+        snap = wm._snapshot_dirty_worktree(wt)
+        assert snap, "dirty worktree 必须产出快照 commit SHA"
+        archived = [m for m in msgs if "Pre-rmtree untracked files archived" in m]
+        assert archived, "未跟踪文件留档日志缺失——hash-object 补档路径未生效"
+        m = re.search(r"wip_untracked\.txt -> ([0-9a-f]{40,64})", archived[0])
+        assert m, "留档日志缺 path -> blob SHA 清单"
+        restored = git(root, "cat-file", "-p", m.group(1)).stdout
+        assert restored == "precious wip\n", "未跟踪文件内容须能从对象库还原"
 
 
 # ── 10. 端到端：首轮在飞 run 排水强杀 → 保全 → 重启恢复续做 ──────────────────

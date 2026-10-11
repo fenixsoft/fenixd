@@ -104,6 +104,9 @@ def _real_runner(root: Path) -> AgentRunner:
     r.project_root = root
     r.logger = FakeLogger()
     r._running_agents = {}
+    # 与 runner.__init__ 同形：wait_for_running_agents 停机写 interrupted 标记
+    # 的临界区锁（缺失则 AttributeError 被静默吞掉、标记不落盘）。
+    r._run_finalize_lock = threading.Lock()
     return r
 
 
@@ -158,10 +161,14 @@ def _make_daemon(monkeypatch, root: Path, run_drain: float, runner) -> fenixd.Fe
 
 def _spawn_run(seconds: float) -> subprocess.Popen:
     """在飞 run 替身进程（sleep 型，SIGTERM 可终止且返回码可判别）。"""
+    # start_new_session=True 才是 _run_claude 同形态（独立成组 pgid==pid）：
+    # 替身与 pytest 同组时，超窗有序终止的 guard_killpg 自保护守卫按
+    # 「目标组=调用者自身组」拒绝击杀，替身失真。
     return subprocess.Popen(
         [sys.executable, "-c", f"import time; time.sleep({seconds})"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
 
 

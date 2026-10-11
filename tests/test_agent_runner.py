@@ -7,6 +7,7 @@
 
 import json
 import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,15 +33,22 @@ def make_runner(proot: Path) -> AgentRunner:
     runner.project_root = proot
     runner.logger = FakeLogger()
     runner._running_agents = {}
+    # 与 runner.__init__ 同形（wait_for_running_agents 停机写 interrupted 标记
+    # 的临界区锁）：缺失会让标记写入抛 AttributeError 被静默跳过。
+    runner._run_finalize_lock = threading.Lock()
     return runner
 
 
 def spawn_sleep(seconds: float) -> subprocess.Popen:
     """起一个长 sleep 子进程，模拟在跑 agent。"""
+    # start_new_session=True 对齐 _run_claude 的真实 spawn 纪律（agent 独立成
+    # 组 pgid==pid）：替身与 pytest 同组时，wait_for_running_agents 的
+    # guard_killpg 自保护守卫按「目标组=调用者自身组」拒绝击杀，替身失真。
     return subprocess.Popen(
         ["python3", "-c", f"import time; time.sleep({seconds})"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
 
 
@@ -216,6 +224,7 @@ class TestWaitForRunningAgents:
              "time.sleep(30)"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,  # 同 spawn_sleep：独立成组，守卫才放行 killpg
         )
         runner._running_agents[run_id] = proc
 

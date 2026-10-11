@@ -939,6 +939,15 @@ export default function SpecListPage() {
     // 落地前表格/移动端卡片/「共 N 个 SPEC」会以无 Spin 空态呈现，被误读为
     // 新项目没有 SPEC。置 true 由 load 的 finally 收口（币值守卫保证只归最新请求）。
     setLoading(true);
+    // 各弹窗状态随项目切换一并复位（code-review item f1753df2b38b）：本路由组件
+    // 在 /projects/:name 下复用不重挂载，弹窗状态不复位则切换到新项目后残留的
+    // open 弹窗（statusModal 等）因数据为 null 暂时不可见，一旦新项目存在同名
+    // spec（或用户再导航回原项目）就会未经用户操作自动重现。
+    setStatusModal(null);
+    setDocView(null);
+    setPriorityEdit(null);
+    setStartAfterEdit(null);
+    setAdminInvoke(null);
   }, [name]);
   useEffect(() => {
     if (expandedInitRef.current) return;

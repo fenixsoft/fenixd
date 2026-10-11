@@ -1099,6 +1099,13 @@ class G4MergebackMixin:
                 ["git", "-C", str(self.project_root), *args],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item edcc8c256b5b，对齐 _worktree_name_branch_pairs
+                # 先例）：config user.name/log --name-only（quotePath 关闭）输出
+                # 原样非 ASCII，text=True 缺省按 locale strict 解码，坏字节抛
+                # UnicodeDecodeError（ValueError 子类）逃逸下方 except、被
+                # _maintree_session_holders 外层吞掉致候选②主源整体失效。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):

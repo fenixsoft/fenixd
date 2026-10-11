@@ -216,7 +216,16 @@ def main():
     args = parser.parse_args()
     # expanduser（code-review item 4c3d33c2b64a）：引号包裹传入的 ~ 开头路径
     # 按字面落盘会误报「项目根目录不存在」，口径对齐 bin/fenix_detect_artifacts.py
-    project_root = Path(args.project_root).expanduser().resolve()
+    try:
+        # 路径解析收口进 try（与 fenix_detect_artifacts.py/fenix_archive.py/
+        # fenix_spec.py 同场景防护对齐）：expanduser 解析不出家目录抛
+        # RuntimeError、含空字节路径在构造/resolve 阶段抛 ValueError，裸抛会
+        # 绕过下方「项目根目录不存在」分支的 stderr 错误输出与 sys.exit(1)，
+        # 进程以 traceback 收场、退出码不符 docstring 契约
+        project_root = Path(args.project_root).expanduser().resolve()
+    except (ValueError, OSError, RuntimeError) as e:
+        print(f"错误: 项目根目录无法解析: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # 检查项目根是否存在
     if not project_root.is_dir():

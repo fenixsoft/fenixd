@@ -1388,6 +1388,13 @@ export interface AdminConfig {
   /** stuck 处置后静默期（分钟，缺省 120）：result=resolved/partially-resolved
    *  处置后同 (spec, signal_type) 在窗口内不产信号（0=不静默） */
   stuck_silence_minutes?: number;
+  /** 告警叙事总开关（add-adjudication-alert-narrative，缺省 true）：与后端
+   *  _ADMIN_DEFAULTS 同源，非 bool 回退缺省 */
+  narrative_enabled?: boolean;
+  /** 告警叙事 LLM 单请求超时（秒，add-adjudication-alert-narrative，缺省 60） */
+  narrative_timeout_seconds?: number;
+  /** 告警叙事模型（add-adjudication-alert-narrative，缺省 ''=回退链） */
+  narrative_model?: string;
   /** 告警自愈安静窗口（分钟，add-alert-self-heal-marking，缺省 1440）：基础设施
    *  瞬态族告警签名安静多久后自动标「已自愈」转已处理 */
   self_heal_quiet_minutes?: number;
