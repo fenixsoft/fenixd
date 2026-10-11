@@ -67,6 +67,15 @@ def request_admin_invoke(
     Returns:
         {"ok": bool, "found": bool, "conflict": bool,
          "file": str|null, "created": str|null, "error": str|null}
+
+    错误契约（与 write_scheduling_kick 有意分叉，不统一）：可预期失败
+    （spec 不存在 / 已有进行中请求）以返回值表达；占位成功后的临时文件
+    写入/换入失败则清理后原样 re-raise，不转 ok:false。既有两个调用方
+    （dashboard spec_routes invoke 端点、pm_engine escalation 自动呼叫）
+    均已 try/except 包裹并各自兜底（前者回 500、后者降级 warning 日志）；
+    若改转 ok:false，调用方须同改判 ok 才能恢复同等失败可见性
+    （spec_routes 现只判 found/conflict 不判 ok，单方面切换契约会让
+    写失败静默假成功），故维持抛出契约。
     """
     # parse_state：STATE.md 解析（纯函数，无 dashboard.data 内反向依赖）。
     # 延迟导入避免与 dashboard.data 门面的循环依赖（门面 artifacts 亦
@@ -156,6 +165,37 @@ def request_admin_invoke(
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        # 成功路径复核（code-review item d150f1541f22）：O_EXCL 占位只保证
+        # 「检查+占位」原子，不封锁到 os.replace 为止——若自家占位已被消费
+        # 侧 rename 走、他人 O_EXCL 重建占位/换入内容，此处盲 replace 会
+        # 覆盖他人请求（对方已向其调用方返回 ok 却被静默丢弃）。stat 复核
+        # inode：路径已消失（占位被消费、通道空闲，下一轮扫描拾取换入的
+        # 完整内容）或仍是自家 inode → 安全换入；是他家 inode → 不覆盖，
+        # unlink 临时文件按 conflict 返回（回读 created 对齐同族冲突语义）。
+        try:
+            current_ino = req_path.stat().st_ino
+        except OSError:
+            current_ino = None
+        if current_ino is not None and current_ino != placeholder_ino:
+            existing_created = None
+            try:
+                existing = json.loads(req_path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    existing_created = existing.get("created")
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return {
+                "ok": False,
+                "found": True,
+                "conflict": True,
+                "file": str(req_path),
+                "created": existing_created,
+                "error": "已有进行中的 Admin 处置",
+            }
         os.replace(tmp_path, req_path)
     except Exception:
         try:
@@ -217,7 +257,11 @@ def write_scheduling_kick(project_root, spec: str) -> dict:
 
     Returns:
         {"ok": bool, "file": str|null, "error": str|null}
-        任何异常不外抛，一律转为 ok:false + 非空 error。
+        任何异常不外抛，一律转为 ok:false + 非空 error（与
+        request_admin_invoke 的「写失败 re-raise」有意分叉：本函数全部
+        消费方——_write_scheduling_kick_signal 及其上游——只按返回值
+        分派、直接索引 ok 字段，无异常兜底路径，外抛会打穿 HTTP 处理栈；
+        request_admin_invoke 的调用方则均已 try/except 兜底）。
     """
     name_err = validate_scheduling_kick_spec(spec)
     if name_err is not None:
