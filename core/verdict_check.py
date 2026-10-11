@@ -479,29 +479,38 @@ def triage_violation(scenario: dict) -> Optional[str]:
             f"的 {len(ev_failed)} 条（MUST 逐条归类全部失败断言）"
         )
 
-    # 漏条目检测③（同条目 fail-closed）：既无引擎断言清单（assertion_results
-    # 缺失/非列表/空表）也无自申报失败断言清单，而场景仍存在失败步骤/驱动视觉
-    # 结论等失败信号 → 由失败信号派生缺省 failed_assertions 清单
-    # （verdict-step-failure-evidence-derivation D1），以派生清单为基准执行
-    # triage 覆盖校验：归因未逐条覆盖派生清单仍判违规并列出派生条目（fail-closed
-    # 不弱化，不给「任意 1 条合规 triage 即放行」留口）；逐条覆盖 → 合规——
-    # 空表不再空转驳回，重试轮 judge 有应申报条目可依。
-    if not (isinstance(ars, list) and ars) and not (isinstance(ev_failed, list) and ev_failed):
+    # 漏条目检测③（同条目 fail-closed）：引擎断言清单不可作失败基准
+    # （assertion_results 缺失/非列表/空表；或非空但失败条目数为 0——
+    # code-review item 17d7a090967f：零失败条目使 failed_count=0、检测①
+    # 失效且检测②需自申报清单，若不并入本检测，该形态与 status=fail 及失败
+    # 步骤/驱动视觉信号自相矛盾却绕过派生覆盖核对，逐条归因硬门退化为
+    # 「任意 1 条形状合规的 triage 即放行」；引擎侧「步骤失败即跳过断言」使
+    # 该形态不可能自然产出，仅 judge 改写可达）也无自申报失败断言清单，而
+    # 场景仍存在失败步骤/驱动视觉结论等失败信号 → 由失败信号派生缺省
+    # failed_assertions 清单（verdict-step-failure-evidence-derivation D1），
+    # 以派生清单为基准执行 triage 覆盖校验：归因未逐条覆盖派生清单仍判违规
+    # 并列出派生条目（fail-closed 不弱化，不给「任意 1 条合规 triage 即放行」
+    # 留口）；逐条覆盖 → 合规——空表不再空转驳回，重试轮 judge 有应申报
+    # 条目可依。
+    # failed_count 仅在 ars 为含失败条目的列表时才 >0，==0 即涵盖缺失/非列表/
+    # 空表/零失败条目四种「清单不可作失败基准」形态。
+    ars_unusable_as_baseline = failed_count == 0
+    if ars_unusable_as_baseline and not (isinstance(ev_failed, list) and ev_failed):
         if _scenario_has_failure_signal(scenario):
             derived = derive_default_failed_assertions(scenario)
             if not derived:
                 # 防御兜底：有失败信号却派生不出条目（畸形条目形态）→ 沿用
                 # 原清单缺失文案（fail-closed 不放行）
                 return (
-                    "assertion_results 断言清单缺失，无法逐条核验归因完整性"
-                    "（场景仍存在失败信号）：须在 evidence.failed_assertions 逐条列出"
-                    "失败断言并逐条归类"
+                    "assertion_results 断言清单缺失或零失败条目，"
+                    "无法逐条核验归因完整性（场景仍存在失败信号）："
+                    "须在 evidence.failed_assertions 逐条列出失败断言并逐条归类"
                 )
             uncovered = _uncovered_derived_entries(derived, triage)
             if uncovered:
                 listed = "；".join(f"{d.get('type')}[{d.get('selector')}]" for d in uncovered)
                 return (
-                    "assertion_results 断言清单缺失（场景存在失败信号），"
+                    "assertion_results 断言清单缺失或零失败条目（场景存在失败信号），"
                     f"assertion_triage 未逐条覆盖框架派生的失败清单"
                     f"（未覆盖 {len(uncovered)}/{len(derived)} 条：{listed}）："
                     "须在 evidence.failed_assertions 逐条申报上述派生条目"
@@ -768,6 +777,9 @@ def enforce_status_mapping(report: dict) -> dict:
       - 逐断言归因（add-interaction-contract-and-per-assert-triage D3）：
         assertion_triage 中任一断言归类 ∈ {product-bug, test-defect} 但场景
         status != failed → 强制 failed（单条 product-bug 断言阻止场景级豁免）。
+      - pass/passed 场景不参与强制改写（code-review item 5f76fe78291f）：
+        正常产物 pass 场景不带 triage 与 FORCE_FAILED_CLASSES 分类，残留条目
+        与 pass 状态自相矛盾，不据此把通过场景改写为 failed。
       - 其余（flaky / env 允许 warning，或已是 failed）→ 不动。
 
     返回：
@@ -789,6 +801,15 @@ def enforce_status_mapping(report: dict) -> dict:
             continue
         classification = sc.get("classification")
         status = sc.get("status")
+        # pass 场景不设防会误伤（code-review item 5f76fe78291f）：跨轮增量
+        # 归因复用/judge 整体改写留下的 assertion_triage·classification 残留
+        # 与 pass 状态自相矛盾，不得据此把通过场景改写为 failed（人为制造
+        # 失败、误触发下游 whitewash_violations 的 0-pass 不变量打回）。仅
+        # 豁免通过态（"pass"/"passed" 双词表，与 whitewash_violations /
+        # tag_cached_attributions 同口径）；exempt 等其余状态维持既有改写——
+        # 「单条 product-bug 断言阻止场景级豁免」（D3）不因本条放宽。
+        if status in ("pass", "passed"):
+            continue
         # 逐断言归因优先：失败断言级 product-bug/test-defect 强制 failed
         offending = None
         for t in triage_entries(sc):
@@ -1628,7 +1649,17 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
             labels.get("blank_screenshot") is True
             or labels.get("low_contrast") is True
         )
-        if not (has_real_screenshots or has_relevant_labels):
+        # 降级条件（code-review item 492b67e36689）：截图/强标签仅在场而
+        # assertion_triage 无非空归因证据时不构成佐证（与 compute_attribution_level
+        # item a9b84150d10f 的佐证口径对齐）——否则缓存命中场景（上轮
+        # evidence-backed、本轮 evidence.screenshots 非空但 triage 无归因证据）
+        # 借在场截图逃逸降级，speculative 抑制门被旁路，违反 D3「纯缓存归因
+        # 按 speculative 口径参与门禁」（与 b96e297ffdaf/a9b61778a7ec 防逃逸
+        # 纪律一致）。
+        if not (
+            (has_real_screenshots or has_relevant_labels)
+            and _scenario_has_failed_assertion_evidence(sc)
+        ):
             # 纯缓存归因 → 降级 speculative（无论原级别：设计 D3
             # 规定纯缓存归因按 speculative 口径参与 2.2 门禁，
             # 防止跨轮缓存归因逃逸推测级抑制）
