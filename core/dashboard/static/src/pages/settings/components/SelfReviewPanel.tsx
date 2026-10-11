@@ -45,6 +45,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   // 追加的历史回顾静默丢失）——失败态须与在飞态同样拦截保存；作用域变化
   // 重新加载时复位（见下方加载 effect）
   const [todoLoadFailed, setTodoLoadFailed] = useState(false);
+  // todoDraft 内容归属的 project（code-review item 9b004f2237fc）：作用域切换
+  // 的提交与「清空草稿/置加载中」effect 执行之间存在旧渲染快照窗口，此刻
+  // handleSave 闭包里 project 已是新项目而 todoDraft/todoLoading 仍是旧快照，
+  // todoLoading=false 守卫放行，且 projectAtStart 取到新 project 使 projectRef
+  // 对账也判等通过，await 后 saveTodo(新项目, 旧项目草稿) 造成跨项目整文件
+  // 覆写。与 savingRef 同口径以 ref 同帧写读为权威：草稿归属在加载成功回填时
+  // 才认领、清空即摘除，归属未认领到当前作用域一律拦截 todo.md 提交
+  const todoDraftOwnerRef = useRef<string | undefined>(undefined);
 
   // todo.md 视图页签：预览在前且为默认（先看渲染效果，需要改动再切编辑）；
   // 切换纯前端状态，两页签共享草稿无损
@@ -84,6 +92,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // 静默数据破坏）；加载失败路径不回填，保持已复位的空状态
     setTodoDraft('');
     setTodoExists(false);
+    // 清空即摘除草稿归属（code-review item 9b004f2237fc）：归属在下方加载
+    // 成功回填时才重新认领，加载在飞/失败/切换窗口期内保存一律拦截
+    todoDraftOwnerRef.current = undefined;
     const load = async () => {
       setTodoLoading(true);
       try {
@@ -91,6 +102,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         if (!cancelled) {
           setTodoDraft(d.content);
           setTodoExists(d.exists);
+          // 回填即认领归属（code-review item 9b004f2237fc）：此刻草稿才真正
+          // 属于本作用域，保存放行以该 ref 对账为准
+          todoDraftOwnerRef.current = project;
         }
       } catch (e) {
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
@@ -141,6 +155,16 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     if (todoLoading) {
       return;
     }
+    // 草稿归属对账（code-review item 9b004f2237fc）：作用域切换的提交与清空/
+    // 置位 effect 执行之间，闭包里 project 已是新项目而 todoDraft/todoLoading
+    // 仍是旧渲染快照，上方 todoLoading 守卫放行，且 projectAtStart 取到新
+    // project 使下方 projectRef 对账也判等通过——按 ref 同帧拦截：草稿归属
+    // 尚未认领到当前作用域（切换窗口/加载在飞/加载失败）即不得提交 todo.md。
+    // 仅项目级作用域对账：用户级不提交 todo.md（下方 !project 短路），不拦截
+    // 纯配置保存
+    if (project && todoDraftOwnerRef.current !== project) {
+      return;
+    }
     // 加载失败态同样短路（code-review item e092a8069ea2）：失败路径不回填、
     // todoDraft 保持空串，此刻提交会以空串整文件覆写磁盘上真实存在的 todo.md，
     // 静默丢失夜间自省追加的历史回顾
@@ -189,6 +213,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       // 不再以过期 project 调 saveTodo/getTodo（新作用域面板由其自身的
       // 加载 effect 负责，见上方 cancelled 守卫）
       if (projectRef.current !== projectAtStart) return;
+      // await 期间草稿归属已失效（作用域切换重载摘除归属）同样中止：
+      // 不以过期草稿覆写 todo.md（code-review item 9b004f2237fc）
+      if (todoDraftOwnerRef.current !== project) return;
       try {
         await saveTodo(project, todoDraft);
       } catch (e) {
