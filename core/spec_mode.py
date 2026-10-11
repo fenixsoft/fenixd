@@ -43,7 +43,9 @@ def read_spec_mode(project_root, spec_name: str) -> str:
         st = yaml_path.stat()
         key = (str(yaml_path.resolve()), st.st_mtime_ns, st.st_size)
     except OSError:
-        key = (str(yaml_path.resolve()), None)
+        # resolve() 在祖先目录符号链接成环（ELOOP）等罕见 FS 异常下自身也会抛
+        # OSError，兜底退回原始路径作缓存键，保证读侧容错「不抛异常」契约。
+        key = (str(yaml_path), None)
     cached = _SPEC_MODE_CACHE.get(key)
     if cached is not None:
         return cached
