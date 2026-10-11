@@ -4759,6 +4759,10 @@ class FenixDaemon:
             )
             return 1800
         if value < 0:
+            self.logger.error(
+                "fenixd",
+                f"admin.shutdown_drain_seconds 非法（应为非负数值，收到负值）: {raw!r}，回退 1800",
+            )
             return 1800
         if not math.isfinite(value):
             # .nan/.inf 是 YAML 合法标量、float() 不报错：nan 令后续比较恒
