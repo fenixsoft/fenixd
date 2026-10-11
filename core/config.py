@@ -173,6 +173,15 @@ _TIMEOUT_OVERRIDE_INVALID_WARNED = set()
 # 回退缺省行为不变。
 _VERIFY_POSITIVE_INT_WARNED = set()
 
+# 配置读取器非法值告警的进程级一次性去重（code-review item 50dac34fe569，同
+# _SEGMENT_DIRTY_WARNED / _VERIFY_POSITIVE_INT_WARNED 范式）：同族读取器
+# （effective_auto_archive_threshold / get_knowledge_config /
+# get_knowledge_lane_config / get_code_review_fix_config）被 30s 热更新与周期
+# 消费路径（spec_archive 定时扫描、knowledge_audit 维护车道、Dashboard 设置页
+# 回显）反复调用，坏值未修复期间同一告警逐次重复打印。键取 (键路径, repr(值))，
+# 同一坏点只在首次告警；去重只作用于日志、回退缺省行为不变。
+_CONFIG_READER_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -712,6 +721,25 @@ class ConfigLoader:
         return {}
 
     @classmethod
+    def _warn_reader_once(cls, key: str, value, log, msg: str, *args) -> None:
+        """配置读取器非法值告警的进程级一次性去重（code-review item 50dac34fe569）。
+
+        同族读取器（effective_auto_archive_threshold / get_knowledge_config /
+        get_knowledge_lane_config / get_code_review_fix_config）被 30s 热更新与
+        周期消费路径（spec_archive 定时扫描、knowledge_audit 维护车道、
+        Dashboard 设置页回显）反复调用，坏值未修复期间同一告警逐次重复打印，
+        与本文件既有去重纪律（_SEGMENT_DIRTY_WARNED 范式）不一致。键取
+        (键路径, repr(值))，同一坏点只在首次告警；去重只作用于日志，回退缺省
+        行为不变。``log`` 传各调用点原有的 ``_logger.error`` / ``_logger.warning``，
+        保留原级别与文案。
+        """
+        dedup_key = (key, repr(value))
+        if dedup_key in _CONFIG_READER_WARNED:
+            return
+        _CONFIG_READER_WARNED.add(dedup_key)
+        log(msg, *args)
+
+    @classmethod
     def _validate(cls, config: Dict[str, Any], require_project: bool = True):
         """Validate configuration structure and values.
 
@@ -738,6 +766,19 @@ class ConfigLoader:
         # 非有限浮点同拒（code-review item a61ee2b2031e，范式先例 d9e9a238696f）：
         # nan 使 <=0 比较恒 False 可穿透校验，event_bus 周期扫描读到 nan 后
         # time.sleep(nan) 抛 ValueError 冲出扫描线程循环。
+        # 显式 null 语义（code-review item 23468c4eba86）：本键与下方 agents
+        # 三键对「键存在但值为 null」（YAML 冒号留空）硬拒绝，而 admin/gates/
+        # transient 族 `is not None` 短路按缺省跳过——同一写法两类行为，且
+        # 「must be positive: None」文案指向取值而非真实问题（写法）。不统一为
+        # 「null=缺省跳过」：读取端对 None 不兜底（event_bus 对 schedule 直读
+        # dict.get，缺省只在键缺失时生效），放行会把加载期报错变成运行期
+        # TypeError。故对 None 单独报错指明写法问题，与「值非法」文案区分。
+        if poll is None:
+            raise ValueError(
+                "schedule.poll_interval_minutes is explicitly null (key present "
+                "with empty value): remove the line to use the default 30, or "
+                "set a positive number of minutes"
+            )
         if (
             isinstance(poll, bool)
             or not isinstance(poll, (int, float))
@@ -755,6 +796,15 @@ class ConfigLoader:
         for field in ["max_concurrent", "max_retries", "max_turns"]:
             if field in agents:
                 val = agents[field]
+                # 显式 null 单独报错（code-review item 23468c4eba86，同上方
+                # schedule.poll_interval_minutes 口径）：文案指明「键显式留空」
+                # 的写法问题，而非误导向取值非法。
+                if val is None:
+                    raise ValueError(
+                        f"agents.{field} is explicitly null (key present with "
+                        "empty value): remove the line to use the consumer "
+                        "default, or set a positive integer"
+                    )
                 # 排除 bool（bool 是 int 子类，code-review item e9c679fb1bb3）
                 if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
@@ -839,7 +889,7 @@ class ConfigLoader:
                 # normalize_transient_backoff_schedule 按 int 归一（code-review
                 # item c50c760f64e3，与 _normalize_transient_seconds「整值浮点
                 # 按整数接受」同口径），使加载期接受集与运行期解析集一致。
-                for _el in schedule_val:
+                for _idx, _el in enumerate(schedule_val):
                     if (
                         _el is None
                         or isinstance(_el, bool)
@@ -852,6 +902,26 @@ class ConfigLoader:
                             f"be non-empty scalars (str/int/integer-valued float): "
                             f"{schedule_val!r}"
                         )
+                    # str 元素补一道与运行期同口径的预检（code-review item
+                    # 5f872daea086）：上方只要求非空，"abc"/"30.0" 等不可被
+                    # int() 解析的串会合法通过加载，运行期
+                    # normalize_transient_backoff_schedule 解析失败才把整条
+                    # schedule 回退缺省——正是本段注释要靠加载期硬拒绝消除的
+                    # 「看似合法加载、生效值被整条替换」形态。与 normalize 的
+                    # 逐元素 int() 解析同口径：strip 后须解析为正整数，非法串
+                    # 在加载/保存阶段即报错并指明下标。
+                    if isinstance(_el, str):
+                        try:
+                            _seconds = int(_el.strip())
+                        except ValueError:
+                            _seconds = 0
+                        if _seconds <= 0:
+                            raise ValueError(
+                                "agents.transient_backoff_schedule list elements "
+                                "must be positive integers (str elements parsed "
+                                f"like the runtime normalizer): element #{_idx} "
+                                f"{_el!r} in {schedule_val!r}"
+                            )
 
         # Validate project type — 仅当（严格路径 或 显式提供 type）时校验。
         # 段入口经 _segment_or_empty 归一（code-review item b72e37e34e3b）：
@@ -2286,7 +2356,10 @@ class ConfigLoader:
             targeted_retry_max = 3
         targeted_regression = crf.get("targeted_regression", True)
         if not isinstance(targeted_regression, bool):
-            _logger.warning(
+            cls._warn_reader_once(
+                "admin.code_review_fix.targeted_regression",
+                targeted_regression,
+                _logger.warning,
                 "admin.code_review_fix.targeted_regression 非法值 %r（非 bool），"
                 "回退缺省 True",
                 targeted_regression,
@@ -2296,7 +2369,10 @@ class ConfigLoader:
         # 白名单回退（对齐 scope 的白名单口径）；非法值不阻断评审与修复主链。
         min_immediate_severity = crf.get("min_immediate_severity", "major")
         if min_immediate_severity not in ("critical", "major", "minor", "info"):
-            _logger.warning(
+            cls._warn_reader_once(
+                "admin.code_review_fix.min_immediate_severity",
+                min_immediate_severity,
+                _logger.warning,
                 "admin.code_review_fix.min_immediate_severity 非法值 %r"
                 "（severity 词表外），回退缺省 major",
                 min_immediate_severity,
@@ -2310,7 +2386,10 @@ class ConfigLoader:
             or isinstance(minor_batch_cadence, bool)
             or minor_batch_cadence <= 0
         ):
-            _logger.warning(
+            cls._warn_reader_once(
+                "admin.code_review_fix.minor_batch_cadence",
+                minor_batch_cadence,
+                _logger.warning,
                 "admin.code_review_fix.minor_batch_cadence 非法值 %r"
                 "（非正整数），回退缺省 7",
                 minor_batch_cadence,
@@ -2321,7 +2400,10 @@ class ConfigLoader:
         severity_batch_gate_enabled = crf.get(
             "severity_batch_gate_enabled", False)
         if not isinstance(severity_batch_gate_enabled, bool):
-            _logger.warning(
+            cls._warn_reader_once(
+                "admin.code_review_fix.severity_batch_gate_enabled",
+                severity_batch_gate_enabled,
+                _logger.warning,
                 "admin.code_review_fix.severity_batch_gate_enabled 非法值 %r"
                 "（非 bool），回退 False（视同关闭）",
                 severity_batch_gate_enabled,
@@ -2368,7 +2450,10 @@ class ConfigLoader:
         ):
             val = knowledge.get(key, default)
             if not isinstance(val, bool):
-                _logger.warning(
+                cls._warn_reader_once(
+                    f"knowledge.{key}",
+                    val,
+                    _logger.warning,
                     "knowledge.%s 非法值 %r（非 bool），回退缺省 %s",
                     key,
                     val,
@@ -2380,7 +2465,10 @@ class ConfigLoader:
         # bool 是 int 子类：True/False 不当轮次数（与 regression.enabled 的严格
         # bool 同理，防 YAML 引号串/布尔值被静默当 1/0）
         if not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 1:
-            _logger.warning(
+            cls._warn_reader_once(
+                "knowledge.escalate_after_rounds",
+                rounds,
+                _logger.warning,
                 "knowledge.escalate_after_rounds 非法值 %r（非正整数），回退缺省 2",
                 rounds,
             )
@@ -2389,7 +2477,10 @@ class ConfigLoader:
         stale = knowledge.get("escalated_stale_days", 7)
         # 同 escalate_after_rounds 口径：bool 是 int 子类不当天数
         if not isinstance(stale, int) or isinstance(stale, bool) or stale < 1:
-            _logger.warning(
+            cls._warn_reader_once(
+                "knowledge.escalated_stale_days",
+                stale,
+                _logger.warning,
                 "knowledge.escalated_stale_days 非法值 %r（非正整数），回退缺省 7",
                 stale,
             )
@@ -2996,6 +3087,7 @@ class ConfigLoader:
         _VALIDATE_SOFT_WARNED.clear()
         _TRANSIENT_BACKOFF_FALLBACK_WARNED.clear()
         _TIMEOUT_OVERRIDE_INVALID_WARNED.clear()
+        _CONFIG_READER_WARNED.clear()
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
@@ -3010,7 +3102,10 @@ class ConfigLoader:
         if at is None:
             return default
         if isinstance(at, bool) or not isinstance(at, int) or at < 0:
-            _logger.error(
+            cls._warn_reader_once(
+                "archive.auto_threshold",
+                at,
+                _logger.error,
                 "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，回落默认 %s",
                 at,
                 default,
@@ -3036,7 +3131,10 @@ class ConfigLoader:
         if enabled is None:
             return {"enabled": True}
         if not isinstance(enabled, bool):
-            _logger.error(
+            cls._warn_reader_once(
+                "knowledge.enabled",
+                enabled,
+                _logger.error,
                 "knowledge.enabled 非法（应为布尔）：%r，回退缺省 true；"
                 "其余配置照常生效",
                 enabled,
