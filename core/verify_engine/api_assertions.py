@@ -58,6 +58,16 @@ except ImportError:  # pragma: no cover - 环境相关分支
 _REGEX_MATCH_TIMEOUT_SECONDS = 1.0
 
 
+class TimeoutRegexError(re.error):
+    """regex 库匹配超时（疑似灾难性回溯）的定向异常。
+
+    继承 re.error 以保住调用方既有 ``except re.error`` 捕获面（超时沿
+    原异常面传播、run() 归一为带定向归因的断言失败），同时让「匹配
+    超时」在类型层可判别——调用点无须再依赖文案区分超时与真正的
+    非法正则（非法正则在 _compile_regex 预检期返回、不以此类型抛出）。
+    """
+
+
 class _TimeoutRegex:
     """re.Pattern 的回溯安全包装：search 走 regex 库（带 timeout）防阻塞。
 
@@ -79,10 +89,11 @@ class _TimeoutRegex:
                     is not None
                 )
             except TimeoutError:
-                # 超时按确定性配置失败 fail-closed：借 re.error 沿调用点既有
-                # 异常面传播（run() 归一为带定向归因的断言失败），防 judge
-                # 把场景正则缺陷误归因为产品缺陷
-                raise re.error(
+                # 超时按确定性配置失败 fail-closed：沿 TimeoutRegexError（
+                # re.error 子类）传播，调用点既有 except re.error 捕获面不变
+                # （run() 归一为带定向归因的断言失败），防 judge 把场景正则
+                # 缺陷误归因为产品缺陷
+                raise TimeoutRegexError(
                     f"正则匹配超时（>{_REGEX_MATCH_TIMEOUT_SECONDS}s，"
                     f"疑似灾难性回溯）: {self._source!r}"
                 ) from None
@@ -399,6 +410,21 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": "响应体非合法 JSON（或 JSON 根为 null），无 JSON 载荷可求值",
             }
+        # fail-closed：path 缺失/空串时 evaluate_json_path 按缺省语义返回整棵
+        # 文档，exact 拿整文档对比且无定向 error（与「未知 mode」「缺少
+        # expected」口径不一致，judge 难归因）；非字符串 path 同样不静默
+        # str() 归一求值。口径对齐 cli 侧 file_exists 的「缺少 path 字段」
+        # （验收期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住
+        # 运行期自愈/绕过验收的调用路径）
+        if not isinstance(path, str) or not path:
+            return {
+                "type": "json_path",
+                "path": path,
+                "expected": expected,
+                "actual": None,
+                "pass": False,
+                "error": "缺少 path 字段",
+            }
         try:
             actual = evaluate_json_path(payload, path, missing=_MISSING)
         except ValueError as e:
@@ -466,11 +492,21 @@ class ApiAssertionRunner:
                 # 非法正则显式报错：与「内容确实不匹配」可区分，judge
                 # 不把场景配置错误误归因为产品缺陷
                 error = regex_error
+        # 结果体积界：actual 指向大 JSON 子树（path 命中容器节点）时原样
+        # 塞进结果 dict 会让报告体积失控，超长截断为 200 字符 snippet（口径
+        # 对齐 body_contains 的 actual_snippet 上限；dashboard/judge 侧仅作
+        # 证据展示，渲染本就走 JSON.stringify）；pass 判定已在上方完成，
+        # 截断不影响结论
+        shown_actual = actual
+        if isinstance(shown_actual, str):
+            shown_actual = shown_actual[:200]
+        elif isinstance(shown_actual, (dict, list)):
+            shown_actual = json.dumps(shown_actual, ensure_ascii=False)[:200]
         result = {
             "type": "json_path",
             "path": path,
             "expected": expected,
-            "actual": actual,
+            "actual": shown_actual,
             "pass": passed,
         }
         if error is not None:
