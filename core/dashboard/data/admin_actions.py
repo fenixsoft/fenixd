@@ -3070,7 +3070,16 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
             if gi_backup is None:
                 gi_path.unlink(missing_ok=True)
             else:
-                gi_path.write_bytes(gi_backup)
+                # 原子写回（code-review item 55aaffc3e33b，与
+                # _append_gitignore_entries / _append_gitignore_and_commit
+                # 走 atomic_write_text 同口径）：裸 write_bytes 非原子，
+                # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore
+                # （仓库忽略规则整体丢失面）。
+                from core.pm_engine.verification.scenario_gate import atomic_write_text
+
+                atomic_write_text(
+                    gi_path, gi_backup.decode("utf-8", errors="replace"),
+                )
         return {"ok": False, "steps": [],
                 "error": f"untrack 根治中止已回滚（主树状态已还原）: {reason}"}
 
@@ -3320,9 +3329,18 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     # 同型防线）：不合规条目剔除、不阻断其余合规条目。
     escapes = _stray_manifest_path_escapes(proot, pre["candidates"])
     compliant = [p for p in pre["candidates"] if p not in escapes]
-    existing, skipped = [], []
+    # 三态分流（code-review item f7c915465d1d，与 delete 执行器的显式非普通
+    # 文件分支对齐）：在盘但非普通文件（目录等）单列跳过原因，不落入「已不
+    # 在磁盘」口径——条目实际在盘，只是不满足普通文件归档条件。
+    existing, skipped, not_plain = [], [], []
     for p in compliant:
-        (existing if (proot / p).is_file() else skipped).append(p)
+        f = proot / p
+        if not f.exists():
+            skipped.append(p)
+        elif not f.is_file():
+            not_plain.append(p)
+        else:
+            existing.append(p)
     # tracked 复核防线（code-review item 6715a1facae4，同 commit/untrack 执行器
     # 的 ls-files 求交）：清单+磁盘存在不代表仍 untracked——同指纹一次性告警的
     # 清单会陈旧，文件可能在告警后已被 commit_stray_wip 等途径提交跟踪（同一
@@ -3340,6 +3358,8 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
                f"{', '.join(pre['manifest'])}")
         if newly_tracked:
             err += f"；其中 {len(newly_tracked)} 个已变 tracked（不执行归档移动）"
+        if not_plain:
+            err += f"；其中 {len(not_plain)} 个在盘但非普通文件（跳过不触碰）"
         if escapes:
             err += f"；其中 {len(escapes)} 条路径不合规已剔除"
         return {"ok": False, "steps": [], "error": err}
@@ -3373,6 +3393,11 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     )
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if not_plain:
+        steps.append(
+            f"清单内在盘但非普通文件（目录等）、跳过不触碰 {len(not_plain)} 个"
+            f"（不执行归档移动）: {', '.join(not_plain)}"
+        )
     if newly_tracked:
         steps.append(
             f"清单内已变 tracked、跳过 {len(newly_tracked)} 个（告警后已被提交"
@@ -3483,12 +3508,17 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
         if escapes:
             err += f"；其中 {len(escapes)} 条路径不合规已剔除"
         return {"ok": False, "steps": [], "error": err}
+    deleted, failed = [], ""
     try:
         for p in targets:
             (proot / p).unlink()
+            deleted.append(p)
     except OSError as e:
-        return {"ok": False, "steps": [], "error": f"删除失败: {e}"}
-    steps = [f"删除 {len(targets)} 个 untracked 散件文件: {', '.join(targets)}"]
+        # 部分删除如实回传（code-review item a527df01d2de，与 archive 执行器
+        # 「已移动 N 个、重试续移」的部分进度口径对齐）：本轮已删清单并入
+        # steps，不留对操作者不可见的半程删除状态。
+        failed = f"删除失败（已删除 {len(deleted)} 个，重试续删剩余）: {e}"
+    steps = [f"删除 {len(deleted)} 个 untracked 散件文件: {', '.join(deleted)}"]
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
     if newly_tracked:
@@ -3503,9 +3533,12 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
         )
     if note:
         steps.append(f"裁决依据：{note}")
+    if failed:
+        steps.append(failed)
+        return {"ok": False, "steps": steps, "error": failed}
     return {
         "ok": True, "steps": steps, "error": None,
-        "deleted_files": targets,
+        "deleted_files": deleted,
     }
 
 
