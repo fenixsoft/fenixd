@@ -20,6 +20,55 @@ from core.worktree_manager import (  # noqa: E402
 from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
 
 
+def _split_rename_sides(field: str) -> list:
+    """按 C-quote 感知方式拆分 porcelain rename 行的 "old -> new" 载荷。
+
+    porcelain v1 对 rename 两侧**各自独立** C-quote，且路径含空格即强制
+    引号（wt-status 的 QUOTE_PATH_QUOTE_SP），故文件名自含「 -> 」时该侧
+    恒带引号（如 ``R  "a -> b.txt" -> c.txt``）。朴素 ``split(" -> ")`` 会把
+    引号内路径自含的「 -> 」一并切开成 3 段，逐段反转义产出错误路径，脏
+    tracked 清单失真（code-review item f2804188bd68）。
+
+    只把**引号外**的「 -> 」视为分隔符：引号内的字符原样归入当前侧
+    （``\\"``/``\\\\`` 等转义序列成对跳过，不误判引号闭合），两侧各自保留
+    引号形交由调用方 ``_unquote_git_path`` 反转义。无引号载荷的切分结果
+    与旧 ``split(" -> ")`` 逐字节一致（git ≥ 2.25 起含空格路径必带引号，
+    无引号却含「 -> 」的载荷仅见于更老 git，彼时文本本身不可判定）。
+    """
+    sides: list = []
+    buf: list = []
+    in_quote = False
+    i = 0
+    n = len(field)
+    while i < n:
+        ch = field[i]
+        if in_quote:
+            buf.append(ch)
+            if ch == "\\" and i + 1 < n:
+                # 转义序列两字符一并收入（\\" 不算闭合、\\\\ 不算转义起始）
+                buf.append(field[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_quote = False
+            i += 1
+            continue
+        if ch == '"':
+            in_quote = True
+            buf.append(ch)
+            i += 1
+            continue
+        if field.startswith(" -> ", i):
+            sides.append("".join(buf).strip())
+            buf = []
+            i += 4
+            continue
+        buf.append(ch)
+        i += 1
+    sides.append("".join(buf).strip())
+    return sides
+
+
 class G6StashGuardMixin:
     """G6 主树还原/autostash 治理（design D1 表 A G6）。"""
 
@@ -69,9 +118,11 @@ class G6StashGuardMixin:
                 continue
             path = line[3:].strip()
             if " -> " in path:
-                # porcelain 对 rename 两侧各自 C-quote，按段逐个反转义
+                # porcelain 对 rename 两侧各自 C-quote，按段逐个反转义；
+                # 切分须 C-quote 感知——引号内路径自含「 -> 」不参与切分
+                # （code-review item f2804188bd68），无引号载荷行为不变
                 files.extend(
-                    _unquote_git_path(p.strip()) for p in path.split(" -> ")
+                    _unquote_git_path(p) for p in _split_rename_sides(path)
                 )
             else:
                 files.append(_unquote_git_path(path))
