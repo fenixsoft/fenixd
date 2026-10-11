@@ -207,6 +207,13 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
         return True
     if not base:
         return True
+    if not base.startswith(("http://", "https://")):
+        # scheme 缺失（如 "127.0.0.1:8787"，配置写法漂移即可出现）时无法完成
+        # 探测：urllib 对裸串抛 unknown url type 全候选 continue，最终误判
+        # 失联并批量降级 blocked-env——与空值/chrome-extension 分支同款保守
+        # 健康口径（code-review 769ac7589733）。
+        _logger.warning("env_probe base_url 缺 scheme，跳过探测（保守健康）: %s", base)
+        return True
     candidates.append(base + "/")
     if base.startswith(("http://", "https://")):
         for ep in ("/api/state", "/api/overview"):
