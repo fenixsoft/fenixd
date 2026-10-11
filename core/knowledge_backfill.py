@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+from core.fs_utils import atomic_write_text as _fs_atomic_write_text
 from core.git_text import unquote_git_path
 from core.timelib import now_local
 from core.proc_utils import guard_killpg
@@ -103,19 +104,24 @@ def load_knowledge_core():
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    """整文件原子回写（tmp + os.replace）：裸 write_text 截断重写在进程中途
-    被打断会留半截文件（self_review 同款教训），台账/报告/域清单共用。
+    """整文件原子回写：薄委托仓库收口单点 ``core.fs_utils.atomic_write_text``。
 
-    tmp 名掺入 pid：恒定 ``<name>.tmp`` 下，无锁并发回写（如 daemon 与
-    dashboard --serve 两进程同日竞跑体检收尾，audit 的 _write_state/
-    _save_findings_ledger 调本函数时不持锁）会交替截断同一 tmp 再 replace，
-    落盘交错/半旧内容（code-review a0df618ce06b）；tmp 源各自独立后
-    replace 的原子性才成立。
+    本模块原自持 pid 后缀 tmp + os.replace 的弱版本——裸 write_text 截断
+    重写在进程中途被打断会留半截文件（self_review 同款教训）；tmp 名掺入
+    pid 解决无锁并发回写交替截断同一 tmp 再 replace 落盘交错/半旧内容
+    （code-review a0df618ce06b）。但该版本无任何 fsync，而 core.knowledge/
+    knowledge_audit 均 import 本函数写 pending 台账、todo.md 与审计状态/
+    报告，掉电/SIGKILL 下最新写入无持久化保证，与仓库纪律相悖
+    （code-review 9348b05556b1）；现统一到 fs_utils 的 mkstemp 唯一临时名
+    （并发截断问题同被其唯一性覆盖）+ 内容 fsync + 权限修复 + 父目录
+    fsync 纪律。
+
+    签名沿用历史形态 ``(path, text) -> None``，既有 import 方
+    （knowledge/knowledge_audit）零改动；fs_utils 的
+    ``inherit_existing_mode`` 参数不在本门面暴露，沿用其缺省口径
+    （新文件 chmod 0644），需继承既有权限的调用方直接 import core.fs_utils。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    _fs_atomic_write_text(path, text)
 
 
 @contextmanager
