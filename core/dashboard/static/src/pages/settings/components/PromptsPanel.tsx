@@ -77,12 +77,18 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // loadedForRef 口径以 ref 同帧记录当前 agent，回填前对账。
   const activeAgentRef = useRef<string>('implementer');
 
+  // 判脏口径单点（code-review item 5836b8df59e9）：面板当前内容相对服务端是否
+  // 有未保存改动，供 usePanelDirty 探针、项目切换确认 effect、handleAgentChange
+  // 三处复用，任一处调整口径只改此处，避免「切页签弹确认、切 agent 不弹」的
+  // 漂移不一致。data 为空时以「草稿非空即脏」兜底（加载失败/未加载时草稿不
+  // 代表服务端现值）；data 为空时 projectExtraOf 恒返回 ''，与该兜底分支等价。
+  const isDirty = () =>
+    data ? extraDraft !== projectExtraOf(data, activeAgent) : extraDraft !== '';
+
   // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持草稿
   // 而非 antd Form，按既有判脏口径（同下方项目切换确认）向 index 注册探针，
   // 切页签前由 index 统一弹确认；切项目确认（f2830281595d）保持原位不动。
-  usePanelDirty(() =>
-    data ? extraDraft !== projectExtraOf(data, activeAgent) : extraDraft !== '',
-  );
+  usePanelDirty(isDirty);
 
   useEffect(() => {
     // 项目切换丢弃确认（code-review item f2830281595d）：与 handleAgentChange
@@ -93,9 +99,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     // 加载失败场景（code-review item c542789d7297）：data 为 null 时 extra
     // 输入框仍渲染可编辑，仅以 data 判脏会跳过确认、静默丢弃用户键入的
     // 草稿——data 为空但草稿非空同样视为脏。
-    const dirty = data
-      ? extraDraft !== projectExtraOf(data, activeAgent)
-      : extraDraft !== '';
+    const dirty = isDirty();
     if (dirty && !window.confirm('当前项目的修改尚未保存，切换将丢弃，确定继续？')) {
       return;
     }
@@ -174,7 +178,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   };
 
   const handleAgentChange = (atype: string) => {
-    if (extraDraft !== serverDraftFor(activeAgent) && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
+    if (isDirty() && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
       return;
     }
     // 镜像 ref 在切换事件里同步更新（code-review item cd7f269ddd5f）：保存
