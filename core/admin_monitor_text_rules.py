@@ -109,6 +109,17 @@ _RECLASSIFY_NEGATION_PHRASES = (
     "不必回拨",
     "not reclassify",
     "不适用回拨",
+    # 委婉/完成时否定变体（code-review 2ebeb5e657bb）：比照 _WAIVER_NEGATION_
+    # PHRASES 的 不/未/勿/暂不/不予/无需/无须/不必 口径补齐——此前缺「未回拨/
+    # 勿回拨/不再回拨/不须回拨」，「本次勿回拨 3 轮，仅记录在案」这类委婉拒绝
+    # 否定检查不命中、反被「回拨 N 轮」模式当成本次回拨声明误减 fail_rounds
+    # （与 ce4fad2d751e 的「无需回拨」误判同型）。「不再回拨」非「不回拨」的
+    # 连续子串（与 _WAIVER_NEGATION_PHRASES 补「不再放行」同理）；「暂不回拨」
+    # 含「不回拨」连续子串已被覆盖，不另列。
+    "未回拨",
+    "勿回拨",
+    "不再回拨",
+    "不须回拨",
 )
 # 「本次处置」同句限定词（infra 回拨版）：与 _WAIVER_CURRENT_MARKERS 单源同
 # 口径（code-review 666155d105ae）——命中句须含其一（或与本次 spec 名同现）
@@ -150,6 +161,7 @@ def family_waiver_granted(text: str, spec: str) -> bool:
     # spec 防御（code-review 21a00a6ef714）：None/非 str 会使 in 判定抛
     # TypeError、空串使 `'' in sent` 恒真架空同现限定——非法时回退为仅靠
     # _WAIVER_CURRENT_MARKERS 限定词判定。
+    # [fenix-ignore:7516b1d39baa] info 级启发式固有局限：「限定词或 spec 名同现」的或关系确有历史放行叙述同句残余窗口，但按 suggestion 补历史时态否定会把「已设置 _family_waiver=true」「此前失败 N 轮、本次同意放行」「此前已放行一次、本次延续豁免」等真放行句一并误杀（中文「已/了」兼表本次已完成动作的报道体），误杀代价大于此窗口收益，留观察。
     waived = any(
         any(m in sent for m in _WAIVER_CURRENT_MARKERS)
         or (isinstance(spec, str) and spec and spec in sent)
