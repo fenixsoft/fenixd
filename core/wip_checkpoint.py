@@ -275,8 +275,30 @@ def collapse_wip_commits(
         if mb.returncode != 0 or not mb.stdout.strip():
             return False
         mb_sha = mb.stdout.strip()
+        # CAS 旧值：先读分支 tip commit sha（非 tree sha），供 update-ref
+        # 比较并交换——塌缩窗口内分支被写入新提交时 CAS 失败、放弃塌缩。
+        # tip 必须先于区间 log 读取，log 以该 tip sha（而非 branch 符号名）
+        # 取数：WIP 判定、消息选择、tree、CAS 旧值全部锚定同一 tip 时点，
+        # 闭合两读窗口——否则 log 与 tip 之间新落的提交会被 CAS 放行折叠
+        # 丢失其提交消息，或使 WIP 判定按旧区间漏判（仅窗口内有 WIP 时
+        # 零动作放行，wip 前缀提交进入主树合并历史）。
+        tip = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        if tip.returncode != 0 or not tip.stdout.strip():
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP collapse for branch '{branch}' failed to resolve tip — "
+                f"merge-back continues on uncollapsed branch (non-blocking)",
+            )
+            return False
         log = subprocess.run(
-            ["git", "-C", str(project_root), "log", "--format=%H\t%s", f"{mb_sha}..{branch}"],
+            ["git", "-C", str(project_root), "log", "--format=%H\t%s", f"{mb_sha}..{tip.stdout.strip()}"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -294,24 +316,6 @@ def collapse_wip_commits(
             return False
         if not any(s.startswith(WIP_COMMIT_PREFIX) for _h, s in commits):
             return False  # 无 WIP：零动作
-
-        # CAS 旧值：先读分支 tip commit sha（非 tree sha），供 update-ref
-        # 比较并交换——塌缩窗口内分支被写入新提交时 CAS 失败、放弃塌缩。
-        tip = subprocess.run(
-            ["git", "-C", str(project_root), "rev-parse", f"refs/heads/{branch}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        if tip.returncode != 0 or not tip.stdout.strip():
-            logger.warning(
-                "wip_checkpoint",
-                f"WIP collapse for branch '{branch}' failed to resolve tip — "
-                f"merge-back continues on uncollapsed branch (non-blocking)",
-            )
-            return False
         # 树以该 tip 解析而非现读 branch^{tree}：树与 CAS 旧值同一时点，
         # 否则两读之间新落的提交会被「旧树+新 tip 旧值」的 CAS 放行整笔丢弃。
         tree = subprocess.run(
