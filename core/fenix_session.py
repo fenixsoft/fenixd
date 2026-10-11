@@ -141,7 +141,7 @@ def _argv_script_token(argv):
     出现 -c（代码串）/ -m（模块，本函数不支持 "-m xxx" 形式）时返回 None——
     否则 `python3 -c "...; time.sleep(30)" fenixd_supervisor` 这种「命令行里
     提到脚本名」的进程会被误判成正在执行该脚本（子串假阳性事故）。
-    合并短选项写法（-uc / -im / 附着参数的 -c"<code>"）同样按 -c/-m 调用
+    合并短选项写法（-uc / -xc / -im / 附着参数的 -c"<code>"）同样按 -c/-m 调用
     处理返回 None，堵住经合并写法绕过检测的旁路。分离式取参旗标的参数
     （`python3 -X faulthandler <script>` / `python3 -W ignore <script>` 中的
     faulthandler / ignore）按 Python 选项语义消费、不当作脚本 token。
@@ -167,13 +167,15 @@ def _argv_script_token(argv):
                 # -Wignore）参数附着在旗标后，无需跳过。
                 if token in ("-W", "-X") and i + 1 < len(rest):
                     i += 1
-                # 短选项簇内可能藏着 -c/-m（如 -uc / -im / -c"<code>"）：按 Python
+                # 短选项簇内可能藏着 -c/-m（如 -xc / -uc / -im / -c"<code>"）：按 Python
                 # 选项解析语义逐字符扫旗标，见 c/m 即代码串/模块调用；遇取参旗标
-                # （W/x/X）即止——其余字符是它的参数（如 -Ximporttime），不算旗标。
+                # （W/X）即止——其余字符是它的参数（如 -Ximporttime），不算旗标。
+                # -x（跳过源码首行）是布尔旗标、不取参，须继续向后扫 c/m
+                # （code-review item 5110e20da1dd：否则 -xc/-xm 绕过 -c/-m 判定）。
                 for ch in token[1:]:
                     if ch in ("c", "m"):
                         return None
-                    if ch in ("W", "x", "X"):
+                    if ch in ("W", "X"):
                         break
             i += 1
             continue
@@ -562,6 +564,7 @@ def start_daemon(root: str | None = None) -> dict:
         start_cmds.append(cmd.strip())
         if pid_txt.isdigit() and "fenixd_supervisor.py" in cmd:
             supervisor_pane_pids.append(int(pid_txt))
+    # [fenix-ignore:020fa14cdb13] 本宽容分支只在 is_running 主判定（全 /proc 结构化 argv 锚定扫描）整个探测窗口失败后才可达，换成 _is_supervisor_proc 判据对窗格 pid 几乎必败（唯一命中间是秒级竞态）、等价于把「宁可宽容成功」的降级路径整体改判失败，且 pane_start_command 是 shell 命令串非 argv 列表、结构化判据结构上不适用；误报面（残留会话+pid 复用+cmdline 恰提脚本名）远窄于漏报风险。
     if start_cmds and not any("fenixd_supervisor.py" in cmd for cmd in start_cmds):
         return {
             "ok": False,
