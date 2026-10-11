@@ -70,13 +70,25 @@ export function isSelfhealWait(reason: string | null | undefined): boolean {
 }
 
 /**
+ * 是否已知 blocked reason：非空且命中 BLOCKED_REASONS 表。blockedReasonInfo
+ * 与 blockedReasonDisplay 共用的已知性判定（口径改动只改这一处）。
+ * hasOwnProperty 排除 Object.prototype 继承键（constructor/toString 等），
+ * 避免未知 reason 误入「已知」分支后取不到 label/guidance。
+ */
+function isKnownReason(reason: string | null | undefined): reason is string {
+  return (
+    reason != null &&
+    reason !== '' &&
+    Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason)
+  );
+}
+
+/**
  * reason → 展示信息；未知 reason 宁严勿松回退（原码 + 需人工排查），
  * 与 isSelfhealWait 对未知/空 reason 判 false 的「漂移不静默」口径一致。
  */
 export function blockedReasonInfo(reason: string | null | undefined): BlockedReasonInfo {
-  // hasOwnProperty 排除 Object.prototype 继承键（constructor/toString 等），
-  // 避免未知 reason 误入「已知」分支后取不到 label/guidance。
-  if (reason && Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason)) {
+  if (isKnownReason(reason)) {
     return BLOCKED_REASONS[reason];
   }
   return { label: reason || '未知原因', guidance: '需人工排查' };
@@ -87,10 +99,7 @@ export function blockedReasonInfo(reason: string | null | undefined): BlockedRea
  * 未知 reason 原样回显（此时 label 即原码，不重复括注）。
  */
 export function blockedReasonDisplay(reason: string | null | undefined): string {
-  const known =
-    reason != null &&
-    reason !== '' &&
-    Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason);
+  const known = isKnownReason(reason);
   if (!reason) {
     return '未知原因';
   }

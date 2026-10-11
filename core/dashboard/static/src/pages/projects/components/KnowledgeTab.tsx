@@ -67,6 +67,10 @@ export function resolveKnowledgePath(
     out.push(seg);
   }
   const resolved = out.join('/');
+  // 站内导航前缀白名单：与后端 core/dashboard/routes/knowledge_routes.py 的
+  // _ALLOWED_PREFIXES 互为对端硬编码副本（后端是完整校验链，此处仅导航便利层）。
+  // 后端新增/调整前缀时 MUST 同步此处，否则新前缀的真相源链接会被静默降级为
+  // SafeLink 外链白名单导航而非站内拉取。
   if (
     !resolved.startsWith('domains/') &&
     !resolved.startsWith('adr/')

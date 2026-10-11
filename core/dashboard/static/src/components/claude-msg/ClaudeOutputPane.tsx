@@ -115,9 +115,9 @@ const TERMINAL_EVENT_STATUS = new Map<string, string>([
 // REST 拉取返回的 run status 终态集合（空态分支判定用），与 onRunStatus 契约
 // 词表对齐：frozen-terminated（item ce8a84164320 扩展）REST 初载/重同步直报原
 // 始串——不入集则零事件冻结终止 run 恒停在「等待输出」转圈（外层
-// AdminInvokeModal 已按同一串解锁按钮，两处口径须一致）：
+// AdminInvokeModal 直接导入本集合解锁按钮，单一出处无口径漂移）：
 // 空态分支据其区分「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）
-const TERMINAL_RUN_STATUSES = new Set([
+export const TERMINAL_RUN_STATUSES = new Set([
   'done',
   'error',
   'interrupted',

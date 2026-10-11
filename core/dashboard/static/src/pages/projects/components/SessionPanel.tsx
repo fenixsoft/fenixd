@@ -32,6 +32,10 @@ import type { SessionEvent } from '@/services/dashboard';
 import { ClaudeMessageList, runEventsToChatMessages } from '@/components/claude-msg';
 import { SessionComposer } from '@/components/claude-composer';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import {
+  PAGE_CHROME_OFFSET_DESKTOP,
+  PAGE_CHROME_OFFSET_MOBILE,
+} from '@/utils/pageChrome';
 
 // SSE 断流兜底轮询间隔（code-review item 2303508d27ff）：服务端连接数满时
 // /api/stream 返回 503（core/dashboard/routes/sse_routes.py
@@ -68,7 +72,7 @@ interface SessionPanelProps {
 const PANEL_LAYOUT_STYLE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  height: 'calc(100vh - 222px)',
+  height: `calc(100vh - ${PAGE_CHROME_OFFSET_DESKTOP}px)`,
   minHeight: 320,
 };
 const PANEL_LAYOUT_STYLE_MOBILE: CSSProperties = {
@@ -77,7 +81,7 @@ const PANEL_LAYOUT_STYLE_MOBILE: CSSProperties = {
   // 390×844 实测（Task 4.1，playwright + stub claude serve 实例）：详情页
   // 头部+分面页签在移动端占 222px，留 12px 底部呼吸 → 234。首版推定 168
   // 实测偏小，页面出现 54px 纵向溢出（898 vs 844）。
-  height: 'calc(100dvh - 234px)',
+  height: `calc(100dvh - ${PAGE_CHROME_OFFSET_MOBILE}px)`,
   minHeight: 320,
 };
 // 空态/错误分支的紧凑呈现容器（add-session-composer 3.2：弃用视口垂直+水平

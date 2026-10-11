@@ -41,6 +41,10 @@ _H1_TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
 KNOWLEDGE_DIR = "spec/knowledge"
 
 # /api/knowledge/file 白名单前缀：能力页树 + ADR（index.md 走 /index 端点）
+# 对端副本：前端 core/dashboard/static/src/pages/projects/components/
+# KnowledgeTab.tsx 的 resolveKnowledgePath 亦持同一前缀白名单（仅站内导航
+# 便利层）。新增/调整前缀时 MUST 两处同步，否则前端会把对应链接静默降级为
+# SafeLink 外链导航而非站内拉取。
 _ALLOWED_PREFIXES = ("domains/", "adr/")
 
 

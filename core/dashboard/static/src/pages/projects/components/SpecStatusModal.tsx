@@ -232,6 +232,11 @@ export default function SpecStatusModal({
           setPendingAction(null);
           return;
         }
+        if (!freezeUntil.isValid()) {
+          message.error('解冻时间无效，请重新选择');
+          setPendingAction(null);
+          return;
+        }
         if (freezeUntil.isBefore(dayjs())) {
           message.error('解冻时间不能早于当前时刻，请重新选择');
           setPendingAction(null);

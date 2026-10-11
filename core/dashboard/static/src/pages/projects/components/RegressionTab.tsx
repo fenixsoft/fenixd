@@ -346,6 +346,24 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
   return rows;
 }
 
+// 业务拒绝稳定错误码 → warning 文案表（code-review item d478b034d5c3）：
+// handleTrigger / handleFix / handleTriggerIssues 三个 rejection 分支共用，
+// 新增错误码或改措辞只动这一处。错误码由后端 _coded_error 下发、
+// ApiError.code 承载（934af264345f 范式：不做中文消息子串匹配）。
+const REGRESSION_REJECT_MESSAGES: Record<string, string> = {
+  regression_already_running: '已有回归在进行中',
+  regression_not_configured: '该项目未配置全量回归（verify.yaml regression 段）',
+  regression_never_run: '最近一次回归快照缺失或不可解析，请先执行一次全量回归',
+  regression_no_issues: '最近一次回归无异常用例，无需修复',
+  regression_request_pending: '已有未消费的回归触发请求（请稍后重试）',
+};
+
+// run-issues 端点专属措辞覆盖（handleTriggerIssues 原分支文案逐字保留，
+// no_issues 结尾动词与全量触发/自动修复语义不同）
+const ISSUES_REJECT_MESSAGE_OVERRIDES: Record<string, string> = {
+  regression_no_issues: '最近一次回归无异常用例，无需定向重跑',
+};
+
 export default function RegressionTab({ project, active }: RegressionTabProps) {
   const { message } = App.useApp();
   // <768 窄屏布局切换（hook 须在早退 return 之前调用）：异常用例表从
@@ -533,6 +551,21 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     };
   }, []);
 
+  // 业务拒绝共享分支（code-review item d478b034d5c3）：ApiError 且 code 命中
+  // 文案表（overrides 优先）即 warning 并返回 true；命中 already_running 时
+  // 额外立即刷新（running 已由服务端置位，轮询接管——7a7ce4f87987 口径：
+  // 经 ref 取最新闭包，POST 往返期间切换项目后旧闭包后发先至，seq 守卫拦
+  // 不住，刷新目标跟随当前 active/project）。未命中返回 false，由调用方按
+  // 各自前缀走通用 error 兜底。
+  const rejectWithWarning = (e: unknown, overrides?: Record<string, string>): boolean => {
+    if (!(e instanceof ApiError) || e.code === undefined) return false;
+    const text = overrides?.[e.code] ?? REGRESSION_REJECT_MESSAGES[e.code];
+    if (text === undefined) return false;
+    message.warning(text);
+    if (e.code === 'regression_already_running') void loadResultRef.current();
+    return true;
+  };
+
   // ── 手动触发（spec「手动触发按钮」Scenario）──────────────────────
   const handleTrigger = async () => {
     // 交叉 pending 门控（code-review item 5cbfc2119f5a，对齐 QualityTab
@@ -562,17 +595,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // loadResultRef 取最新闭包，刷新目标始终跟随当前 active/project。
       void loadResultRef.current();
     } catch (e) {
-      // 业务拒绝按稳定错误码分支（code-review item 934af264345f）：旧实现
-      // 对后端中文消息做子串匹配，措辞/locale 改动静默落入通用错误分支。
-      // 错误码由后端 _coded_error 下发、ApiError.code 承载。
-      if (e instanceof ApiError && e.code === 'regression_already_running') {
-        message.warning('已有回归在进行中');
-        // 同 7a7ce4f87987：经 ref 取最新闭包，POST 往返期间切换项目后旧闭包
-        // 后发先至，seq 守卫拦不住——刷新目标跟随当前 active/project
-        void loadResultRef.current();
-      } else if (e instanceof ApiError && e.code === 'regression_not_configured') {
-        message.warning('该项目未配置全量回归（verify.yaml regression 段）');
-      } else {
+      // 业务拒绝按稳定错误码分支（code-review item 934af264345f：旧实现
+      // 对后端中文消息做子串匹配，措辞/locale 改动静默落入通用错误分支；
+      // 文案与刷新副作用已收拢至共享 rejectWithWarning / 文案表）
+      if (!rejectWithWarning(e)) {
         const errMsg = e instanceof Error ? e.message : String(e);
         message.error(`触发失败: ${errMsg}`);
       }
@@ -640,12 +666,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       }
     } catch (e) {
       // 业务拒绝按稳定错误码分支（对齐既有 triggerRegression 范式，
-      // code-review item 934af264345f：不做中文消息子串匹配）
-      if (e instanceof ApiError && e.code === 'regression_never_run') {
-        message.warning('最近一次回归快照缺失或不可解析，请先执行一次全量回归');
-      } else if (e instanceof ApiError && e.code === 'regression_no_issues') {
-        message.warning('最近一次回归无异常用例，无需修复');
-      } else {
+      // code-review item 934af264345f：不做中文消息子串匹配；文案收拢至
+      // 共享 rejectWithWarning / 文案表）
+      if (!rejectWithWarning(e)) {
         const errMsg = e instanceof Error ? e.message : String(e);
         message.error(`自动修复失败: ${errMsg}`);
       }
@@ -677,18 +700,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       setAwaitingStart(true);
       void loadResultRef.current();
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'regression_already_running') {
-        message.warning('已有回归在进行中');
-        void loadResultRef.current();
-      } else if (e instanceof ApiError && e.code === 'regression_not_configured') {
-        message.warning('该项目未配置全量回归（verify.yaml regression 段）');
-      } else if (e instanceof ApiError && e.code === 'regression_never_run') {
-        message.warning('最近一次回归快照缺失或不可解析，请先执行一次全量回归');
-      } else if (e instanceof ApiError && e.code === 'regression_no_issues') {
-        message.warning('最近一次回归无异常用例，无需定向重跑');
-      } else if (e instanceof ApiError && e.code === 'regression_request_pending') {
-        message.warning('已有未消费的回归触发请求（请稍后重试）');
-      } else {
+      // run-issues 端点专属五码 + 通用兜底；no_issues 结尾动词与全量触发/
+      // 自动修复语义不同，经 ISSUES_REJECT_MESSAGE_OVERRIDES 覆盖
+      if (!rejectWithWarning(e, ISSUES_REJECT_MESSAGE_OVERRIDES)) {
         const errMsg = e instanceof Error ? e.message : String(e);
         message.error(`触发失败: ${errMsg}`);
       }

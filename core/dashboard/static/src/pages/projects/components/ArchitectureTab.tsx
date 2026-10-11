@@ -27,6 +27,10 @@ import {
 } from '../../../services/dashboard';
 import type { ArchitectureStatus } from '../../../services/dashboard';
 import { useIsMobile } from '../../../hooks/useIsMobile';
+import {
+  PAGE_CHROME_OFFSET_DESKTOP as FRAME_OFFSET_DESKTOP,
+  PAGE_CHROME_OFFSET_MOBILE as FRAME_OFFSET_MOBILE,
+} from '../../../utils/pageChrome';
 
 interface ArchitectureTabProps {
   project: string;
@@ -35,11 +39,8 @@ interface ArchitectureTabProps {
 
 // ── 模块级命名常量（对齐 RegressionTab 5130098995b7 范式）────────────
 const POLL_INTERVAL_MS = 3000;
-// 分面高度 = 视口 − 页面 chrome（SessionPanel 同款实测常数：桌面 222 =
-// 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16 + 底部 32；
-// 移动端 234 按 390×844 实测校准）。超短视口由 minHeight 保底。
-const FRAME_OFFSET_DESKTOP = 222;
-const FRAME_OFFSET_MOBILE = 234;
+// 分面高度 = 视口 − 页面 chrome（偏移常数与 SessionPanel 同源共享，
+// 推导见 utils/pageChrome.ts）。超短视口由 minHeight 保底。
 const FRAME_MIN_HEIGHT = 320;
 
 function fmtTime(iso?: string | null) {
@@ -64,6 +65,13 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // 请求序号守卫（对齐 QualityTab/RegressionTab）：轮询与手动刷新并发时
   // 较慢的早期响应不得覆盖较新数据。
   const seqRef = useRef(0);
+  // 在飞去重标志（code-review item 7756f9675f6a）：generating 轮询的 3s
+  // interval 每 tick 原本无条件发起请求，统一请求超时 30s 下后端挂起时在飞
+  // 请求最多堆积约 10 个（seq 守卫只拦过期响应写状态，不拦请求堆积本身）。
+  // loadStatus 入口置位、finally 复位，interval tick 见在飞则跳过本轮，等
+  // 上一请求落定后再发下一轮。用 ref 而非 state：不参与渲染，卸载/切离
+  // 清理路径无需额外复位（在飞响应本就被 seq/active 守卫丢弃）。
+  const loadInFlightRef = useRef(false);
   // active 快照（模式同 loadStatusRef）：await 返回后闭包里的 active 可能
   // 已过期（请求在途时切离分面），离面复核以 ref 中的最新值为准。
   const activeRef = useRef(active);
@@ -74,6 +82,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   const loadStatus = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++seqRef.current;
+    loadInFlightRef.current = true;
     try {
       const data = await getArchitectureStatus(project);
       // seq 之外再复核最新 active：请求在途时切离分面则直接放弃，否则
@@ -87,6 +96,9 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       if (data.state === 'generating') {
         if (pollTimerRef.current === null) {
           pollTimerRef.current = window.setInterval(() => {
+            // 在飞去重（7756f9675f6a）：上一轮请求未落定则跳过本轮 tick，
+            // 避免后端挂起时在飞请求随 interval 堆积
+            if (loadInFlightRef.current) return;
             void loadStatusRef.current();
           }, POLL_INTERVAL_MS);
         }
@@ -110,6 +122,10 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       const errMsg = e instanceof Error ? e.message : String(e);
       setReadError(errMsg);
       message.error(`加载失败: ${errMsg}`);
+    } finally {
+      // 成功/失败两条路径都复位在飞标志（7756f9675f6a）：失败路径止损会停
+      // 定时器，复位仅影响后续手动重试读取；成功路径复位后下一 tick 恢复放行。
+      loadInFlightRef.current = false;
     }
   }, [active, project, message]);
 
