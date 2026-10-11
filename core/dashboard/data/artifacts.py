@@ -298,7 +298,11 @@ def parse_verdict(project_root, spec_name) -> dict:
     try:
         content = path.read_text(encoding="utf-8")
     except Exception:
-        content = ""
+        # 读取/解码失败（权限抖动、编码异常、并发截断窗口）与「md 缺失」共用
+        # 同一兜底（code-review item 409a469e4156）：置空串照常解析会返回
+        # exists=True 且 status/summary 全空的结论（前端空面板），而 run-result
+        # 里明明有可用裁决数据——读失败的降级方向不能比缺失更差。
+        return _verdict_from_run_result(project_root, spec_name)
 
     summary = {
         "passed": None,
