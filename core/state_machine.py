@@ -1667,11 +1667,17 @@ class StateMachine:
         （调用方须自行核对 ``_stripped`` 才能判知 status 写未生效——只消费
         bool 返回值的既有调用方不受影响）；剥离/拒绝后零字段生效时不落盘
         （code-review c8881a2031f0，与 ``_transition_atomic`` 的 45dc313473ef
-        零写入口径对齐），此时连 ``updated`` 时间戳也不刷新。
+        零写入口径对齐），此时连 ``updated`` 时间戳也不刷新；留痕日志同口径
+        记 no-op 而非「Updated SPEC」（code-review 0f755914db2b，见
+        ``_log_update_applied`` 的 ``persisted`` 参数）。
         """
         applied: dict = {}
+        # 零写入判定带出锁外（_mutate_locked 对回调恰调一次，无重入污染），
+        # 供锁外留痕日志区分「真实落盘」与「零字段生效未落盘」。
+        persisted = True
 
         def _mutate(specs):
+            nonlocal persisted
             found = self._apply_updates_entry(specs, spec_name, updates, applied)
             if found:
                 # 零写入（code-review c8881a2031f0，对齐 _transition_atomic 在
@@ -1690,13 +1696,18 @@ class StateMachine:
                                  "_dropped_keys")
                 ]
                 if not effective:
+                    persisted = False
                     return found, False
             return found, found
 
         if not self._mutate_locked(_mutate):
             self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
             return False
-        self._log_update_applied(spec_name, applied)
+        # 零写入分支（code-review 0f755914db2b）：changed=False 未落盘时留痕
+        # 日志按 no-op 记——「有写必有 Updated SPEC 记录」是审计与观测链的
+        # 依据，零写入记「已更新」会把未落盘的写当真、也可能掩盖真正的写入
+        # 缺失；_stripped / _rejected 等 warning 不受影响。
+        self._log_update_applied(spec_name, applied, persisted=persisted)
         if applied_out is not None:
             applied_out.clear()
             applied_out.update(applied)
@@ -1783,13 +1794,21 @@ class StateMachine:
             applied["_dropped_keys"] = dropped
         return True
 
-    def _log_update_applied(self, spec_name: str, applied: dict) -> None:
+    def _log_update_applied(self, spec_name: str, applied: dict,
+                            *, persisted: bool = True) -> None:
         """update_spec / 原子转换路径共用的锁外留痕日志（「写入必留痕」）。
 
         MUST 在原子写成功后调用：锁内日志会让持锁窗口包含 I/O，故留痕在
         落盘之后输出（update_spec 既有约定）。含 frozen 剥离 warning 与
         「Updated SPEC」info（含 spec 名与本次所改字段键，``updated`` /
         ``_stripped`` 内部键不入日志）。
+
+        ``persisted``（code-review 0f755914db2b）：本次写是否真实落盘。
+        仅 update_spec 的零写入分支（剥离/拒绝后零字段生效，changed=False）
+        传 False——不发「Updated SPEC」info（零写入记「已更新」会把未落盘
+        的写当真、误导审计），改记「Update no-op」与实际落盘行为对齐；
+        ``_stripped`` / ``_rejected`` 等 warning 照常输出。默认 True，其余
+        调用点（真实落盘路径）行为不变。
         """
         if "_stripped" in applied:
             self.logger.warning(
@@ -1819,6 +1838,15 @@ class StateMachine:
                 f"（契约 int|None：降档并行度 int 或复位 null）——已拒绝该字段"
                 f"写入，不序列化进 STATE.md；其余更新照常应用",
             )
+        if not persisted:
+            # 零写入（code-review 0f755914db2b）：无字段生效、STATE.md 未回写，
+            # 细节已由上方 _stripped / _rejected warning 覆盖，不再复述。
+            self.logger.info(
+                "state_machine",
+                f"Update no-op: SPEC '{spec_name}' "
+                f"(zero fields effective, nothing persisted)",
+            )
+            return
         self.logger.info(
             "state_machine",
             f"Updated SPEC '{spec_name}'",
