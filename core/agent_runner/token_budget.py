@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime, timezone
+import math
 import threading
 
 # code-review item 7f6062e65ecb：_accumulate_token_usage 的「read_one 读旧值 →
@@ -146,8 +147,8 @@ class TokenAccountant:
             if cost is not None:
                 try:
                     prev_cost = float(entry.get("_cost_usd", 0) or 0)
-                    updates["_cost_usd"] = prev_cost + float(cost)
-                except (TypeError, ValueError):
+                    total_cost = prev_cost + float(cost)
+                except (TypeError, ValueError, OverflowError):
                     # code-review item 918342f2200f：既有 _cost_usd（或本轮 cost）
                     # 为非法值时不能静默吞掉——本轮合法成本被丢弃且损坏值原样
                     # 滞留，之后每一轮合法成本都会在同一分支继续被丢弃、成本观测
@@ -155,12 +156,33 @@ class TokenAccountant:
                     # （1cacd875677d）的留痕口径：记 warning（含 spec 名与双方
                     # 实际值形态）后跳过本轮成本累计；token 分项不受影响，仍正常
                     # 写回。
+                    # code-review item 864a2142f6f3：cost 或既有 _cost_usd 为超大
+                    # 整数（JSON/YAML 任意精度往返，如 10**400）时 float() 抛
+                    # OverflowError，同样沿收尾调用链冒泡中断累计路径——入捕，
+                    # 口径与同模块 _to_int（c7706d3ad78d）/预算读取
+                    # （858e28e2e186）对齐。
                     self._pm.logger.warning(
                         "agent_runner",
                         f"token 累计成本值非法 '{spec_name}'"
                         f"（既有 _cost_usd={entry.get('_cost_usd')!r}，"
                         f"本轮 cost={cost!r}），跳过本轮成本累计",
                     )
+                else:
+                    # code-review item 864a2142f6f3：inf/nan 经 float() 转换成功、
+                    # 穿透上方 except，静默写入 _cost_usd 会因 inf/NaN 的吸收性
+                    # 持续污染后续每一轮求和。非有限值比照 _check_token_budget
+                    # （b75b390dd579）的 NaN/inf 兜底口径：记 warning 后跳过本轮
+                    # 成本累计，不写 _cost_usd；token 分项不受影响。
+                    if not math.isfinite(total_cost):
+                        self._pm.logger.warning(
+                            "agent_runner",
+                            f"token 累计成本值非有限 '{spec_name}'"
+                            f"（既有 _cost_usd={entry.get('_cost_usd')!r}，"
+                            f"本轮 cost={cost!r}，累计结果={total_cost!r}），"
+                            f"跳过本轮成本累计",
+                        )
+                    else:
+                        updates["_cost_usd"] = total_cost
             try:
                 self._pm.state_machine.update_spec(spec_name, updates)
             except Exception as e:

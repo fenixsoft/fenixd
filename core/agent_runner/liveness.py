@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -539,7 +540,14 @@ class LivenessSupervisor:
         # 期内可数分钟不写流，漏扫会让 has_live_attempt 误判无存活子进程，
         # auto-recovery / 孤儿 ready 白名单对仍在修复中的 spec 重置状态。
         for prefix in ("impl", "verify", "repair"):
-            pattern = f"worktrees/{prefix}-{spec_name}-"
+            # code-review item e9a2001542af：spec 名可能含 + ? ( ) [ ] | 等正则
+            # 元字符，pgrep -f 按 ERE 解释模式，不转义时字面目录匹配不到（该
+            # 前缀漏扫后仅剩 120s 流新鲜度回退，长工具执行期不写流的进程被误判
+            # 无存活 attempt，auto-recovery / 孤儿 ready 恢复会重置仍在跑的
+            # spec）；re.escape 的反斜杠转义为 ERE 兼容。过匹配形态（他 spec 名
+            # 恰为转义后前缀的匹配）由下方 /proc cmdline 的 run_spec_part 全等
+            # 复核挡住。
+            pattern = f"worktrees/{prefix}-{re.escape(spec_name)}-"
             try:
                 res = subprocess.run(
                     ["pgrep", "-f", pattern],
@@ -1658,8 +1666,16 @@ class LivenessSupervisor:
         # 度自清理同思路）；_zero_output_assessment 只消费本 snapshot 的
         # background_calls，清理其不涉及的条目不影响本轮判定。
         _live_calls = snapshot.get("background_calls") or {}
+        # code-review item 85098e54f245：先快照再迭代（对齐 runner.py
+        # _bookkeeping_tool_share 的既有范式）——LivenessSupervisor 为全 run
+        # 共享单例，多 run 并发监督时他 run 轮询线程的 _output_zero_growth_
+        # seconds 会并发向 _output_tracking 插新键 / pop 旧键，边迭代边被改
+        # 抛 RuntimeError(dictionary changed size during iteration)，沿
+        # runner.py 轮询环逸出按 run thread crashed 落 error 终态，把健康 run
+        # 误判为线程崩溃并终止。单次 list 拷贝由 GIL 保证原子，快照后的迭代
+        # 与并发写侧解耦。
         for _stale_task_id in [
-            tid for tid in self._output_tracking if tid not in _live_calls
+            tid for tid in list(self._output_tracking) if tid not in _live_calls
         ]:
             self._output_tracking.pop(_stale_task_id, None)
         # 1.2 fix-run-hang-amplification：零事件守卫按**实质事件**判定——
@@ -1753,6 +1769,11 @@ class LivenessSupervisor:
             timeout: 缓冲窗口秒数（子类/测试可覆写短值避免真实等待）。
         """
         grace = max(0, timeout)
+        # code-review item 9aed00cf9ac7：关闭起点时刻。收割 deadline 相对本点
+        # 计算（而非从收割开始时刻再计整个 grace），使总终止时长上界回到
+        # docstring 承诺的 ≈ grace + 5s——否则最坏 2×grace + 5s，调大
+        # AGENT_TERMINATE_GRACE_SECONDS 后会突破 supervisor 60s SIGKILL 窗口。
+        shutdown_started = time.time()
         running = list(self._pm._running_agents.items())
         if not running:
             return
@@ -1763,8 +1784,13 @@ class LivenessSupervisor:
                 proc.terminate()  # SIGTERM：让 claude 关会话/flush 输出
                 self._pm.logger.info("agent_runner", f"Sent SIGTERM to running agent: {name}")
             except ProcessLookupError:
-                # 进程已退出（竞态），标记清理后跳过
-                self._pm._running_agents.pop(name, None)
+                # 进程已退出（竞态），标记清理后跳过。code-review item
+                # 292556ba9499：pop 持 _run_finalize_lock，对齐 runner.py finally
+                # 段确立的注册表变更单一协议（与停机写 interrupted 标记的
+                # 「成员复核 + 末行复核 + 追加」临界区互斥）；本处为函数第一步，
+                # 早于第二步标记临界区且不嵌套于任何持锁调用链，无重入死锁风险。
+                with self._pm._run_finalize_lock:
+                    self._pm._running_agents.pop(name, None)
             except Exception as e:  # pragma: no cover - 防御性
                 self._pm.logger.warning("agent_runner", f"SIGTERM failed for agent {name}: {e}")
 
@@ -1849,7 +1875,9 @@ class LivenessSupervisor:
         # 突破 grace 乃至 supervisor 60s SIGKILL 窗口——改为整体 deadline 有界
         # 等待（grace + 5s 上限），逐 agent 只等剩余额度；额度耗尽后不再等待，
         # 注册表照常 pop（残留进程的僵尸回收交由内核/init 兜底，不阻塞关闭）。
-        harvest_deadline = time.time() + grace + 5
+        # item 9aed00cf9ac7：deadline 相对关闭起点计算，缓冲轮询已消耗的时长
+        # 从收割额度中扣除（缓冲轮询确认全部退出即提前进入收割的语义不变）。
+        harvest_deadline = shutdown_started + grace + 5
         for name, proc in list(self._pm._running_agents.items()):
             remaining = harvest_deadline - time.time()
             if remaining > 0:

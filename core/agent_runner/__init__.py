@@ -12,7 +12,7 @@
 - liveness.py          LivenessSupervisor：存活探测/判活/超时监督（阶段 3）
 - session.py           SessionTracker：session id 与 usage 提取（阶段 3）
 - latency.py           延迟统计纯函数：run 级 API 往返延迟采样与直方图摘要
-- maintenance_runs.py  维护型 run：Administrator/每日自省/框架自进化三类运维 run
+- maintenance_runs.py  维护型 run：Administrator/自省/自进化/代码审查/回归/自动修复/impl-ocr 等运维车道
 - result_gate.py       结果数据结构与产物门：结果/门面异常与产物门族
 
 对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：

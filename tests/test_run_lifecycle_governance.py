@@ -205,6 +205,39 @@ class TestHasLiveAttempt:
             "worktrees/repair-s1-",
         ]
 
+    def test_pgrep_escapes_spec_name_metacharacters(self, tmp_path):
+        """spec 名含正则元字符时 pgrep 模式按字面转义（code-review e9a2001542af）。
+
+        pgrep -f 按 ERE 解释模式：未转义的 ``+`` 等元字符使模式匹配不到字面
+        worktree 目录，该前缀漏扫后仅剩流新鲜度回退，长工具执行期不写流的
+        进程被误判无存活 attempt。
+        """
+        seen = []
+
+        class FakeCompleted:
+            def __init__(self, rc, out):
+                self.returncode = rc
+                self.stdout = out
+                self.stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd[cmd.index("-f") + 1])
+            return FakeCompleted(1, "")
+
+        runner = self.make_runner(tmp_path)
+        import core.agent_runner as ar
+        original = ar.subprocess.run
+        ar.subprocess.run = fake_run
+        try:
+            assert runner._liveness._pgrep_live_attempt("a+b(c)[d]|e") is False
+        finally:
+            ar.subprocess.run = original
+        assert seen == [
+            r"worktrees/impl-a\+b\(c\)\[d\]\|e-",
+            r"worktrees/verify-a\+b\(c\)\[d\]\|e-",
+            r"worktrees/repair-a\+b\(c\)\[d\]\|e-",
+        ]
+
     # ── fix-orphan-ready-recovery-liveness 3.1/3.2/3.3 ──────────────
 
     @pytest.mark.parametrize(

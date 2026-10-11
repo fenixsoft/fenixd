@@ -580,6 +580,9 @@ def _check_agent_result_artifact(
         # 双产物叠加校验：test_scenarios.json（既有，保持不变）+
         # .fenix-run-result.json（add-planready-artifact-gate，新增）。
         scenarios_path = planner_result_path(runner.project_root, spec_name, "planner-plan")
+        # planner-judge 标签 = 共享 .fenix-run-result.json 路径；planner-plan 标签
+        # 返回的是场景集 test_scenarios.json 路径，故此处借 planner-judge 取本车道
+        # 的结果文件路径做叠加校验（勿改成 planner-plan——那会拿场景集当结果文件）。
         result_path = planner_result_path(runner.project_root, spec_name, "planner-judge")
         err, _data = runner._check_artifact_json_file(scenarios_path, agent_type, run_started_at)
         if err is not None:
@@ -1233,6 +1236,11 @@ def _check_impl_result_artifact(
     # 防线（_hard_check_fast_track）同一 schema。本函数被 full 车道共用，故以
     # 结果文件自报 mode 字段为车道判据：partial/error（诚实退出，本就不含
     # verification 段）与 mode 非 fast-track 的结果一律不触发，full 车道不变。
+    # 取舍（code-review item 35216f232507）：车道事实（runner 侧 lane）未传入
+    # 本门，判据依赖结果文件自白——fast-track 车道 run 成功收尾但漏写 mode 时
+    # 本段静默不触发，属有时效损耗的 fail-open，由 merge 前 dispatch 侧
+    # _hard_check_fast_track 第二道网兜底拒收；反之 full 车道误写
+    # mode=fast-track 被强制要求携带合法 verification 段（fail-closed 方向）。
     if (
         status == "success"
         and data.get("mode") == "fast-track"
@@ -1689,8 +1697,6 @@ def _invalid_completed_ids(items) -> list:
     字母后缀是 planner 产出补充任务时的正常形态，判为非法会让实现者
     如实上报被硬门拒绝（2026-09-15 事故，见 run_task_track 模块 docstring）。
     """
-    from core.run_task_track import is_task_id
-
     bad = []
     for it in items:
         if not is_task_id(it):
@@ -1845,6 +1851,17 @@ def _check_success_completion(
             f"（{agent_type} 产物硬门）: {result_path} {runner._format_gap_list(bad)}"
         )
     ct_set = set(raw_ct)
+    # completed_tasks 契约：每个任务 id 恰出现一次（code-review item
+    # c4de694c2059）。重复条目此前经 set 去重静默放行，会原样流入后续
+    # taskupdate 交叉核对与状态回写链路——按结构违规拒收。置于非法 id 检查
+    # 之后，此处元素已全为合法 id 字符串。
+    dupes = sorted({tid for tid in raw_ct if raw_ct.count(tid) > 1})
+    if dupes:
+        return (
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 completed_tasks 含重复条目"
+            f"（每个任务 id 须恰出现一次，{agent_type} 产物硬门）: {result_path} "
+            f"{runner._format_gap_list(dupes)}"
+        )
     missing = sorted(checked_ids - ct_set)
     extra = sorted(ct_set - checked_ids)
     if missing or extra:

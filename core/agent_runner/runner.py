@@ -1527,6 +1527,54 @@ class AgentRunner:
                 turns_used=turns, output=output or "",
                 provider_used=provider_name, model_used=model_override,
             )
+        except RunCancelledError as e:
+            # code-review item b5f807775ab0：人工取消专用收口（对齐主车道
+            # _execute_agent_inner 的 R9 三型收口）——置位结构化 cancelled=True，
+            # 不再降级为普通失败令 dispatch 消费侧只能靠 error 文本间接区分
+            # 「被人工终止」与「真失败」。
+            self.logger.warning(
+                "agent_runner",
+                f"dispute judge run 被人工取消 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=time.time() - start_time,
+                error=CANCELLED_BY_ADMIN_ERROR_PREFIX
+                + (f": {e.reason}" if e.reason else ""),
+                cancelled=True,
+                provider_used=provider_name, model_used=model_override,
+            )
+        except FrozenTerminatedError as e:
+            # code-review item b5f807775ab0：冻结终止专用收口——独立
+            # frozen_terminated 结构化字段（主车道 dispatch 据此写 _frozen_hold
+            # 而非 _cancelled_hold），与取消通道并列、互不读写。
+            self.logger.warning(
+                "agent_runner",
+                f"dispute judge run 因 spec 冻结被终止 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=time.time() - start_time,
+                error=FROZEN_TERMINATED_ERROR_PREFIX
+                + (f": {e.reason}" if e.reason else ""),
+                frozen_terminated=True,
+                provider_used=provider_name, model_used=model_override,
+            )
+        except RunStallBudgetExceededError as e:
+            # code-review item b5f807775ab0：停滞判停止损专用收口——AgentRunResult
+            # 无独立字段，对齐主车道「前缀即语义标签」约定（[run-stall-budget]
+            # 供终态日志机械识别），不再混入普通失败文本。
+            self.logger.warning(
+                "agent_runner",
+                f"dispute judge run 停滞判停止损 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=time.time() - start_time,
+                error=RUN_STALL_BUDGET_ERROR_PREFIX
+                + f" 命中判据 {e.criterion}: {e.detail}",
+                provider_used=provider_name, model_used=model_override,
+            )
         except Exception as e:
             self.logger.warning(
                 "agent_runner",
@@ -1639,6 +1687,57 @@ class AgentRunner:
                 run_id, spec_name, "spec-review",
                 success=True, duration_seconds=time.time() - start_time,
                 turns_used=turns, output=output or "",
+                provider_used=provider_name, model_used=model_override,
+            )
+        except RunCancelledError as e:
+            # code-review item b5f807775ab0：人工取消专用收口（对齐主车道
+            # _execute_agent_inner 的 R9 三型收口）——置位结构化 cancelled=True，
+            # 不再降级为普通失败令 dispatch 消费侧只能靠 error 文本间接区分
+            # 「被人工终止」与「真失败」。
+            self.logger.warning(
+                "agent_runner",
+                f"spec review run 被人工取消 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
+                success=False, duration_seconds=time.time() - start_time,
+                error=CANCELLED_BY_ADMIN_ERROR_PREFIX
+                + (f": {e.reason}" if e.reason else ""),
+                cancelled=True,
+                provider_used=provider_name, model_used=model_override,
+            )
+        except FrozenTerminatedError as e:
+            # code-review item b5f807775ab0：冻结终止专用收口——独立
+            # frozen_terminated 结构化字段（主车道 dispatch 据此写 _frozen_hold
+            # 而非 _cancelled_hold），与取消通道并列、互不读写。
+            self.logger.warning(
+                "agent_runner",
+                f"spec review run 因 spec 冻结被终止 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
+                success=False, duration_seconds=time.time() - start_time,
+                error=FROZEN_TERMINATED_ERROR_PREFIX
+                + (f": {e.reason}" if e.reason else ""),
+                frozen_terminated=True,
+                provider_used=provider_name, model_used=model_override,
+            )
+        except RunStallBudgetExceededError as e:
+            # code-review item b5f807775ab0：停滞判停止损专用收口——AgentRunResult
+            # 无独立字段，对齐主车道「前缀即语义标签」约定（[run-stall-budget]
+            # 供终态日志机械识别），不再混入普通失败文本。下方 catch-all 的
+            # api_error_status/conn_error 透传（evo-fix-spec-review-infra-
+            # attribution-bridge 1.2）不受影响：三类终止异常本就不携带这两个
+            # 属性，专用分支先行命中后 catch-all 只收真正的失败通道。
+            self.logger.warning(
+                "agent_runner",
+                f"spec review run 停滞判停止损 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
+                success=False, duration_seconds=time.time() - start_time,
+                error=RUN_STALL_BUDGET_ERROR_PREFIX
+                + f" 命中判据 {e.criterion}: {e.detail}",
                 provider_used=provider_name, model_used=model_override,
             )
         except Exception as e:
@@ -4098,8 +4197,16 @@ class AgentRunner:
         # result 事件由轮询环原样落盘（dict(last_result)），429 文案就在其中；
         # 无 result 事件（崩溃/强杀）恒 False——回退不伪造归因。
         run_file = self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        # code-review item 088031da0670：与 _turn_traffic_active /
+        # SessionTracker._extract_session_id 同口径改尾部 64KiB 窗口读取——
+        # result 事件由轮询环恒落在文件末行附近，长 run 转录（数十 MB）全量
+        # 读入属无谓的内存/IO 尖峰；窗口内取「末个」result 事件语义等价。
         try:
-            raw = run_file.read_text(encoding="utf-8", errors="replace")
+            size = run_file.stat().st_size
+            with run_file.open("rb") as f:
+                if size > 65536:
+                    f.seek(size - 65536)
+                raw = f.read().decode("utf-8", "replace")
         except OSError:
             return False
         last_event = None
@@ -4175,8 +4282,15 @@ class AgentRunner:
                 # UnicodeDecodeError（ValueError 族，不被下方 except 捕获），
                 # 沿 code-review 车道调用链上抛打断意图登记——本函数设计意图
                 # 是所有失败仅丢留痕不阻断。
-                for line in run_file.read_text(
-                        encoding="utf-8", errors="replace").splitlines():
+                # code-review item 088031da0670：幂等标注行由本函数 append、
+                # 恒在文件尾部，尾部 64KiB 窗口读取（与 _ratelimit_terminal_hit
+                # / _turn_traffic_active 同口径）语义等价，免去长 run 全量重读。
+                size = run_file.stat().st_size
+                with run_file.open("rb") as f:
+                    if size > 65536:
+                        f.seek(size - 65536)
+                    tail = f.read().decode("utf-8", "replace")
+                for line in tail.splitlines():
                     if '"type": "ratelimit_redispatch"' in line:
                         return None
         except OSError:
@@ -5523,6 +5637,13 @@ class AgentRunner:
             _extract_usage_info）；强杀等无 result 终态事件的路径四数值键全 0 且置
             unobserved=True（观测兜底而非确认为零，语义见 _extract_usage_info）。
             失败/异常路径直接抛 RuntimeError，不返回。
+
+        结构注记（code-review item e843f8818ea2）：本函数有意保持单体内联——
+        子进程生命周期、五路监督收口（超时/轮次上限/取消/冻结/判停）与多路
+        观测旁路共享大量终态局部状态，任何一处旁路调整都需通读全文确认终态行
+        次序等隐含契约（如 run_metrics 行与终态行的次序由权威测试
+        test_run_claude_poll_loop_crash_writes_error_terminal 锁定）；改动前
+        先跑对应权威测试确认行序契约，勿在此函数内做顺带重构。
         """
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。
@@ -5619,6 +5740,15 @@ class AgentRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # code-review item a3a9c83e189e：显式 UTF-8 + replace——管道解码
+            # 不再随 daemon 进程 locale 漂移（C/ASCII locale 下 stream-json
+            # 转录与 stderr 的非 ASCII 内容会令读线程 readline 即抛
+            # UnicodeDecodeError：stdout 线程死亡触发 proc.kill() 快速失败、
+            # 全部带中文输出的 run 被系统性误判失败）；errors="replace" 与读侧
+            # 尾部窗口 decode（_extract_session_id/_turn_traffic_active）的
+            # 容错口径对齐。
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,  # 行缓冲，保证实时可读
             env=env,
             cwd=str(cwd),
@@ -6275,6 +6405,31 @@ class AgentRunner:
             # 原样 re-raise 保持 attempt 循环既有失败处理（预算计数/STATE
             # 转换/异常通道）语义不变。
             append_run_error(run_file, f"run thread crashed: {e!r}", returncode)
+            # code-review item adbf13a82678：轮询环崩溃即收口存活子进程（与
+            # stdout 读线程异常的 proc.kill() 快速失败治理对齐）——否则 claude
+            # 孤儿继续消耗 API token，attempt 层 sleep(10) 重派下一 attempt 复用
+            # 同一 worktree 时还将与其并行读写；worktree_manager.kill_strays
+            # 显式豁免 claude，此处是唯一兜底点。对齐取消/冻结路径既有的
+            # terminate→grace→kill 收口顺序。整体异常保护：收口自身失败
+            # （如崩溃源正是 proc 方法）不顶替原始异常，原样 re-raise 语义不变。
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        self.logger.warning(
+                            "agent_runner",
+                            f"run {run_id}: 轮询环崩溃后 grace 窗口内未退出，"
+                            f"SIGKILL",
+                        )
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+            except Exception:  # noqa: BLE001 — 收口失败不遮蔽原始崩溃异常
+                pass
             raise
         finally:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
