@@ -388,6 +388,25 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 滞留——不再等 serving_reclaim 600s 周期兜底回收
         if created:
             pipeline._remove_serving_worktree(wt)
+        if old is not None:
+            # code-review 930961aee7ee：补齐与 Popen 异常分支（8e1342b22228）/
+            # 重启分支（73a34755ac94）同口径的旧实例收尾——能带 old 走到本
+            # 分支即上方复用门未满足（如实例中途死亡 ok=False、worktree 被
+            # 外部清掉），旧实例的 servers.json 登记移除与 boot.log 句柄关闭
+            # 不拖延到 serving_reclaim 600s 周期兜底（stop 对已死进程安全）
+            old_server = old.get("server")
+            if isinstance(old_server, CommandVerifyServer):
+                pipeline._unregister_serving_instance(spec_name, old_server)
+            try:
+                # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
+                # _evict_spec_serving 防御形态），不 AttributeError 炸穿
+                if old_server is not None:
+                    old_server.stop()
+            except Exception as stop_err:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"停止旧 serving 实例 '{spec_name}' 失败（不影响失败返回）: {stop_err}",
+                )
         return (
             False,
             False,
@@ -695,9 +714,13 @@ def _evict_spec_serving(pipeline, spec_name: str) -> None:
     server = old.get("server")
     try:
         if server is not None and hasattr(server, "pid"):
-            # 登记过的实例同步移除登记——缓存条目只可能是 CommandVerifyServer
-            # （兜底 spawn 的裸 Popen 只进 ServingRegistry 不进本缓存，其回收
-            # 由周期 sweep 按 liveness 收割，code-review 3e6d4b449ab8）
+            # 登记过的实例同步移除登记——缓存条目含两类：CommandVerifyServer
+            # （worktree command 与主树 command 两型，创建时经
+            # _register_serving_instance 登记）与 StaticVerifyServer
+            # （worktree static，无 pid 属性、创建时不登记），故 unregister
+            # 以 hasattr(server, "pid") 区分；兜底 spawn 的裸 Popen 只进
+            # ServingRegistry 不进本缓存，其回收由周期 sweep 按 liveness
+            # 收割（code-review 3e6d4b449ab8、62187b87a79c）
             pipeline._unregister_serving_instance(spec_name, server)
         if server is not None:
             # code-review 07bce05c191b：去掉 ok 门——CommandVerifyServer 的
