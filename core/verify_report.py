@@ -86,14 +86,37 @@ def _load_report_json(project_root, spec_name):
         return None
     if not isinstance(data, dict):
         return None
+
+    def _summary_usable(summary):
+        """summary 可采信门槛（列表/键缺失两分支共用，勿单侧漂移）：total>0
+        且显式声明 failed/errors 键（引擎 _build_report 恒写全套计数键，合法
+        截断报告必满足）；total 缺失/为 0/不可解析或缺声明一律 False，按占位
+        报告拒收（fail-closed）。"""
+        try:
+            return (
+                int(summary.get("total") or 0) > 0
+                and "failed" in summary
+                and "errors" in summary
+            )
+        except (TypeError, ValueError):
+            return False
+
     scenarios = data.get("scenarios")
     summary = data.get("summary")
     # 有效性判据（fail-closed，勿放宽为「list 或 dict 即可用」）：scenarios 须为
-    # **非空**列表，或 summary 为带计数键的 dict。「scenarios: []」且 summary
-    # 缺失/为空是截断/写坏形态——采信它会经「空场景集 + 无失败证据」一路推导
-    # 出 verified，合成出「全部场景通过」的假通过报告，与模块 fail-closed
-    # 哲学（不写空报告、阻断推进）相反。
-    if isinstance(scenarios, list) and scenarios:
+    # **非空**列表（且至少含一个 dict 元素），或 summary 为带计数键的 dict。
+    # 「scenarios: []」且 summary 缺失/为空是截断/写坏形态——采信它会经「空场景
+    # 集 + 无失败证据」一路推导出 verified，合成出「全部场景通过」的假通过报告，
+    # 与模块 fail-closed 哲学（不写空报告、阻断推进）相反。纯非 dict 元素列表
+    # （如 ["x", "y"]）同按写坏形态拒收（code-review 2a8e50608531）：summary
+    # 缺失时 _derive_status 的场景计数兜底循环对非 dict 元素 isinstance 全部
+    # 跳过、循环后落到 return "verified"，同样为损坏报告合成「全部场景通过」
+    # 的假通过——与 03296ed3a49e/cbea2bb63e40/c0bc338cd2ea 同族 fail-closed。
+    if (
+        isinstance(scenarios, list)
+        and scenarios
+        and any(isinstance(sc, dict) for sc in scenarios)
+    ):
         return data
     if isinstance(summary, dict) and any(
         key in summary for key in ("total", "passed", "failed", "errors")
@@ -111,15 +134,8 @@ def _load_report_json(project_root, spec_name):
         # 空场景集推不出 bug-found，最终仍推出 verified——「total>0 即放行」
         # 的假通过漏网变体（code-review 03296ed3a49e），同按 fail-closed 拒收。
         if isinstance(scenarios, list):
-            try:
-                if (
-                    int(summary.get("total") or 0) > 0
-                    and "failed" in summary
-                    and "errors" in summary
-                ):
-                    return data
-            except (TypeError, ValueError):
-                pass
+            if _summary_usable(summary):
+                return data
             return None
         # scenarios 为非列表形态（dict/str/int 等写坏形态）同按 fail-closed
         # 拒收：此处无条件放行会绕过上面 total>0 与 failed/errors 键门，
@@ -135,15 +151,8 @@ def _load_report_json(project_root, spec_name):
         # _derive_status 的 summary 分支推出 verified、合成「全部场景通过」
         # 的假通过报告，与上方两个相邻变体同按 fail-closed 拒收：仅 total>0
         # 且显式声明 failed/errors 键（与列表分支同门槛）才采信。
-        try:
-            if (
-                int(summary.get("total") or 0) > 0
-                and "failed" in summary
-                and "errors" in summary
-            ):
-                return data
-        except (TypeError, ValueError):
-            pass
+        if _summary_usable(summary):
+            return data
         return None
     return None
 
@@ -190,6 +199,50 @@ def _sum_verify_chain_tokens(project_root, spec_name):
 sum_verify_chain_tokens = _sum_verify_chain_tokens
 
 
+def _iter_run_result_candidates(project_root, spec_name):
+    """按统一候选序逐个产出可采信的 run-result ``(path, data, shared)``。
+
+    「采信谁就盯谁」契约的单点实现：``_load_run_result``（采信侧）与
+    ``current_round_fingerprint``（盯侧）共同消费本迭代器，候选序、可用性
+    判据与归属口径只此一份维护，不再靠注释约定两侧同步（该重复已有单侧
+    漂移史：code-review 9e616773371c 与 ad0ebe488d64 均只修了单点后再次
+    对齐，f0d377a32021 收口为共用 helper）。
+
+    候选序与口径：
+      - verify-progress 专属副本（shared=False）优先，主树共享文件
+        （shared=True）回退；
+      - 解析成功且为 JSON 对象才可用（code-review 9e616773371c）：专属副本
+        在场但空 JSON/损坏时跳过、继续回退共享文件，指纹不得只盯在场文件的
+        mtime，否则后续轮次仅共享文件更新（fast-track 全绿只写 run-result）
+        时指纹不变，上一轮合成报告被误判本轮 present 放行；
+      - 专属副本 status/bugs 均空 → 不可采信，同款跳过、回退共享文件；
+      - 共享文件仅 spec 戳显式归属本 spec 才产出（严格口径，代价不对称的
+        取舍见 ``_load_run_result`` docstring；code-review ad0ebe488d64）。
+    """
+    primary = (
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
+    )
+    fallback = Path(project_root) / ".fenix" / ".fenix-run-result.json"
+    for path, shared in ((primary, False), (fallback, True)):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if shared:
+            # 无 spec 戳的共享文件不可归属本 spec（异常写入/其它 spec 残留），
+            # 只有显式戳匹配才采信
+            stamped = data.get("spec")
+            if not (isinstance(stamped, str) and stamped == spec_name):
+                continue
+        elif not (data.get("status") or data.get("bugs")):
+            continue
+        yield path, data, shared
+
+
 def _load_run_result(project_root, spec_name):
     """读取裁决 .fenix-run-result.json（verify-progress 优先，主树 .fenix/ 回退）。
 
@@ -202,28 +255,12 @@ def _load_run_result(project_root, spec_name):
     归属会把其它 spec 的结果渲染成本 spec 的验证结论并影响状态推进放行，故
     取严格口径；展示/信号探测侧误采信的代价仅是显示错或 fail-open，两侧代价
     不对称。排障时同一结果文件在两处「采信与否」结论不同属预期。
+
+    候选序/可用性/归属判据单点在 ``_iter_run_result_candidates``，本函数返回
+    首个可采信候选的数据（无可采信候选返回 None）。
     """
-    primary = (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
-    )
-    fallback = Path(project_root) / ".fenix" / ".fenix-run-result.json"
-    for path, stamped_expected in ((primary, False), (fallback, True)):
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        if stamped_expected:
-            # 无 spec 戳的共享文件不可归属本 spec（异常写入/其它 spec 残留），
-            # 只有显式戳匹配才采信
-            stamped = data.get("spec")
-            if not (isinstance(stamped, str) and stamped == spec_name):
-                continue
-        if data.get("status") or data.get("bugs"):
-            return data
+    for _path, data, _shared in _iter_run_result_candidates(project_root, spec_name):
+        return data
     return None
 
 
@@ -362,12 +399,12 @@ def current_round_fingerprint(project_root, spec_name):
     report.json 会保持不变，上一轮残留报告被以 present 放行（2026-09-12
     事故同型）——不再单点依赖「引擎每轮重写 report.json」的跨模块契约。
 
-    run-result 成分与 ``_load_run_result`` 同一候选序与同一归属口径
-    （verify-progress 专属副本优先，主树共享文件回退）：采信谁就盯谁——共享
-    文件仅在 spec 戳显式归属本 spec 时才纳入指纹，非本 spec 内容不参与本
-    spec 的轮次身份（否则其它 spec 每轮重写共享文件都翻转本 spec 指纹，触发
-    无谓重合成）。全部成分皆不可得返回 None——此时无从判定新旧，闸门维持
-    「既有报告不改动」的保守行为。
+    run-result 成分与 ``_load_run_result`` 消费同一候选迭代器
+    ``_iter_run_result_candidates``（候选序/可用性/归属口径单点维护）：
+    采信谁就盯谁——共享文件仅在 spec 戳显式归属本 spec 时才纳入指纹，非本
+    spec 内容不参与本 spec 的轮次身份（否则其它 spec 每轮重写共享文件都翻转
+    本 spec 指纹，触发无谓重合成）。全部成分皆不可得返回 None——此时无从判定
+    新旧，闸门维持「既有报告不改动」的保守行为。
     """
     parts: list[str] = []
     report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
@@ -381,46 +418,14 @@ def current_round_fingerprint(project_root, spec_name):
                 parts.append(f"report.json@mtime{report_path.stat().st_mtime_ns}")
             except OSError:
                 pass
-    for run_result_path, shared in (
-        (
-            Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
-            False,
-        ),
-        (Path(project_root) / ".fenix" / ".fenix-run-result.json", True),
-    ):
+    for run_result_path, _data, _shared in _iter_run_result_candidates(project_root, spec_name):
         try:
-            if not run_result_path.is_file():
-                continue
-            # 可用性判据与 _load_run_result 同款（解析成功且为对象）：专属副本
-            # 在场但为空 JSON/损坏时 _load_run_result 会跳过它、继续回退共享
-            # 文件，指纹若仍只盯专属副本 mtime，后续轮次仅共享文件更新（如
-            # fast-track 全绿只写 run-result）时指纹保持不变，上一轮合成报告
-            # 被误判为本轮 present 放行（code-review 9e616773371c）。
-            try:
-                data = json.loads(run_result_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if shared:
-                # 共享文件须 spec 戳显式归属本 spec 才纳入指纹——与
-                # _load_run_result 的严格口径一致（采信谁就盯谁）：非本 spec
-                # 内容（其它 spec 重写后的共享文件，含损坏/无戳残留）不参与
-                # 本 spec 的轮次身份，否则其它 spec 每轮重写共享文件都会翻转
-                # 本 spec 指纹，把仍是本回合结论的报告误判为上一轮残留而重合成
-                # （专属副本缺失形态下与归属声明相悖，code-review ad0ebe488d64）。
-                stamped = data.get("spec")
-                if not (isinstance(stamped, str) and stamped == spec_name):
-                    continue
-            elif not (data.get("status") or data.get("bugs")):
-                # 专属副本 status/bugs 均空 → _load_run_result 不采信它、
-                # 继续回退共享文件；此处同款 continue 落到共享候选，与
-                # 「采信谁就盯谁」的归属声明真正对齐。
-                continue
             parts.append(f"run-result@mtime{run_result_path.stat().st_mtime_ns}")
-            break
         except OSError:
-            pass
+            # stat 抖动（权限/窗口异常等）：跳过该候选、继续回退下一候选，
+            # 与既有「逐候选 try/except OSError 后继续」行为一致
+            continue
+        break
     if not parts:
         return None
     return "+".join(parts)
@@ -1425,7 +1430,12 @@ def record_verdict_round(
             except OSError:
                 # flock 本身不可用（特殊文件系统不支持等）同样降级为无锁读
                 # 改写（docstring 契约：缓存尽力而为，不阻断裁决采纳流程），
-                # 不向上传播中断调用方。
+                # 不向上传播中断调用方。降级前先 close 原 fd 再置 None：只置
+                # None 不 close 会让 fd 等 GC 才回收，此路径每次调用泄漏一个
+                # （长期运行 daemon 在特殊文件系统上累积，code-review
+                # 002ddf629f96）；finally 的 ``lf is not None`` 守卫保证不会
+                # 对已关闭对象重复 close/LOCK_UN。
+                lf.close()
                 lf = None
         data = read_verdict_stability(project_root, spec_name) or {}
         rounds = data.get("rounds") or []
@@ -1437,6 +1447,13 @@ def record_verdict_round(
         if len(rounds) > _STABILITY_MIN_ROUNDS:
             rounds = rounds[-_STABILITY_MIN_ROUNDS:]
 
+        # 刷新 stamp 前先留存上一记录轮的 spec 戳（item e1db54f39158）：单槽
+        # 每轮覆盖会抹掉 round1 的出处——spec 在两轮之间变更时，round2 记录
+        # 把 stamp 刷新为最新值，is_verdict_stable 的顶层比对因此通过、两轮
+        # 比较横跨 spec 变更仍判稳定复用，违背 compute_spec_stamp「spec 变更
+        # 即缓存失效重新验证」契约。prev_stamp + stamp + 当前戳三方一致才复用
+        # （is_verdict_stable 侧检查）。
+        data["prev_stamp"] = data.get("stamp")
         data["stamp"] = stamp
         data["report_mtime_ns"] = report_mtime
         data["rounds"] = rounds
@@ -1455,7 +1472,8 @@ def record_verdict_round(
 
 
 def is_verdict_stable(project_root, spec_name) -> bool:
-    """复用判据：spec 戳未变 && report.json mtime 未变 && 最近两轮 verdict 一致。
+    """复用判据：spec 戳未变（当前 + 上一记录轮）&& report.json mtime 未变
+    && 最近两轮 verdict 一致。
 
     无缓存/单轮/两轮不一致/任一关键输入不可得 → False（保守不复用）。
     符合复用条件时 judge 派发前置守卫可跳过 run_planner。
@@ -1491,6 +1509,14 @@ def is_verdict_stable(project_root, spec_name) -> bool:
     if current_stamp is None:
         return False
     if current_stamp != data.get("stamp"):
+        return False
+    # 上一记录轮的 spec 戳（item e1db54f39158）也须与当前一致：仅比顶层 stamp
+    # 时，spec 在两轮之间变更会让 round2 记录把 stamp 刷新为最新值，两轮比较
+    # 横跨 spec 变更仍判稳定复用。prev_stamp 缺席（本字段上线前的存量缓存，
+    # 两轮出处已无从考证）沿用原顶层判据不否决——任一新记录轮即回填该字段
+    # 自愈，此后两轮出处均可验证。
+    prev_stamp = data.get("prev_stamp")
+    if prev_stamp is not None and prev_stamp != current_stamp:
         return False
 
     # report.json mtime 未变
