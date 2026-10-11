@@ -959,6 +959,7 @@ class VerificationPipeline:
                     # _dispatch_judge_or_reuse 同口径：防 MagicMock 替身
                     # 自动生成 truthy 属性误判让位）。
                     if getattr(retry_judge, "cancelled", False) is True:
+                        # 人工取消 hold-state（add-run-cancel D4，重派 judge 同语义）
                         # 补取消保持标记（code-review item 5ee56fc13640）：与
                         # 上方 frozen 分支（b7f86878b739）及首次派发路径
                         # _dispatch_judge_or_reuse 的 cancelled 分支
