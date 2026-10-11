@@ -240,21 +240,25 @@ class CliAssertionRunner:
     def _normalize_negate(self, a: dict) -> bool:
         """negate 显式归一（output_match / file_content / json_output 共用）。
 
-        与 _assert_file_exists 对 exists 的归一口径对齐：bool 原样收；字符串
-        按 "true"/"false"/"1"/"0" 解析；其余脏值显式失败——bool("false") 类
-        非空字符串恒真会静默反转断言裁决方向（contains 命中判 fail、negate
-        场景假绿），且结果 negate 字段无从察觉写的是 "false"。
+        与 _assert_file_exists 对 exists 的归一口径对齐：bool 原样收；数值
+        0/1 按布尔语义映射（与字符串 "1"/"0" 同为无歧义表示；int 分支须在
+        bool 之后——bool 是 int 子类）；字符串按 "true"/"false"/"1"/"0" 解析；
+        其余脏值显式失败——bool("false") 类非空字符串恒真会静默反转断言
+        裁决方向（contains 命中判 fail、negate 场景假绿），且结果 negate
+        字段无从察觉写的是 "false"。
         """
         raw = a.get("negate", False)
         if isinstance(raw, bool):
             return raw
+        if isinstance(raw, int) and raw in (0, 1):
+            return bool(raw)
         normalized = raw.strip().lower() if isinstance(raw, str) else raw
         if normalized in ("true", "1"):
             return True
         if normalized in ("false", "0"):
             return False
         raise ValueError(
-            f"negate 非法，须为布尔或 'true'/'false'/'1'/'0': {raw!r}"
+            f"negate 非法，须为布尔或数值 0/1 或 'true'/'false'/'1'/'0': {raw!r}"
         )
 
     def _resolve_under_root(self, raw) -> "Path | None":
@@ -682,7 +686,7 @@ class CliAssertionRunner:
         # 匹配逻辑与 _match 共用单一实现；exact 走结构相等（JSON 值可非字符串，
         # 不做 str()/strip），与文本断言的 strip 语义以 exact_strip 开关区分
         passed = self._match(actual, expected, mode, negate, exact_strip=False)
-        return {
+        result = {
             "type": "json_output",
             "layer": 3,
             "step": a.get("step"),
@@ -692,3 +696,14 @@ class CliAssertionRunner:
             "mode": mode,
             "pass": passed,
         }
+        # 证据纪律（对齐 output_match 的 160 字符 snippet / file_content 与
+        # api 侧的 [:200] 先例）：path 为空时 actual 是整棵解析文档、有 path
+        # 时是任意 JSON 子树，而 cli_runner 侧 json 由完整 stdout 解析、上限
+        # _RUN_JSON_PARSE_LIMIT 为 1MB——原样入结果会把最高 1MB 的 JSON 文本
+        # 带进 report.json 与 judge 归因上下文。判定已基于完整值完成，仅对
+        # 写入结果的 actual 截断（repr 后 200 字符 + truncated 标注）
+        actual_repr = repr(actual)
+        if len(actual_repr) > 200:
+            result["actual"] = actual_repr[:200]
+            result["actual_truncated"] = True
+        return result
