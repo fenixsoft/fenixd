@@ -1665,11 +1665,16 @@ def write_scenarios_array(entries: list, filepath) -> None:
     解包后的原始条目而非 to_dict 回环——未知顶层字段零丢失、schema 迁移
     保持读时行为；原子写惯例与 save_scenarios 一致（同目录临时文件 +
     ``os.replace``），进程写入中途被杀不会留下截断的场景 JSON。
+    ``os.replace`` 后对父目录 fsync（对齐 judge_files._fsync_dir 掉电持久化
+    纪律，code-review item 3816bf5a4005）：POSIX 语义下落盘数据不等于目录项
+    已持久化，场景文件是冻结验证权威源，掉电丢失/回退旧版会触发整轮 replan。
     """
     import json
     import os
     import tempfile
     from pathlib import Path
+
+    from core.verify_engine.judge_files import _fsync_dir
 
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1682,6 +1687,7 @@ def write_scenarios_array(entries: list, filepath) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, str(path))
+        _fsync_dir(path.parent)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -1737,7 +1743,10 @@ def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
 
     原子写（对齐 settings_routes._atomic_write_text 惯例）：同目录临时
     文件 + ``os.replace``，进程写入中途被杀不会在目标路径留下截断的
-    场景 JSON。
+    场景 JSON。``os.replace`` 后对父目录 fsync（对齐 judge_files._fsync_dir
+    掉电持久化纪律，code-review item 3816bf5a4005）：POSIX 语义下落盘数据
+    不等于目录项已持久化，场景文件是冻结验证权威源，掉电丢失/回退旧版会
+    触发整轮 replan。
 
     Args:
         scenarios: TestScenario 列表
@@ -1747,6 +1756,8 @@ def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
     import os
     import tempfile
     from pathlib import Path
+
+    from core.verify_engine.judge_files import _fsync_dir
 
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1760,6 +1771,7 @@ def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, str(path))
+        _fsync_dir(path.parent)
     except Exception:
         try:
             os.unlink(tmp_path)
