@@ -2039,7 +2039,7 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
 def _git_grep_zero_refs(project_root, path: str, spec_name: str):
     """规则 1：源码面 ``git grep`` 引用扫描（负向 pathspec 排除观测面）。
 
-    ``git grep -n -F <path> -- ':!.fenix/**' ':!spec/changes/<本 spec>/**'
+    ``git grep -n -F -e <path> -- ':!.fenix/**' ':!spec/changes/<本 spec>/**'
     ':!.history/**' ':!dist/**'``——只扫 tracked 文件（天然排除未跟踪运行时
     产物，如 .fenix/verify-serving 30G），``-F`` 关闭正则避免路径元字符被
     解释。返回值：``{"hit": False, "matches": []}`` = 零命中（规则 1 通过）；
@@ -2055,7 +2055,7 @@ def _git_grep_zero_refs(project_root, path: str, spec_name: str):
         proc = subprocess.run(
             [
                 "git", "-C", str(project_root),
-                "grep", "-n", "-F", path, "--",
+                "grep", "-n", "-F", "-e", path, "--",
                 ":!.fenix/**",
                 f":!{spec_pathspec}",
                 ":!.history/**",
