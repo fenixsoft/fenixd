@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timezone
 
 from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
+from core.state_machine import FROZEN_FIELD
 
 
 class RRollbackMixin:
@@ -64,12 +65,22 @@ class RRollbackMixin:
 
         返回 True 表示本轮不可派发；条目保留在队列中，退避过期后自然恢复，
         配合 periodic full_scan 的 recovery 兜底最多延迟一个扫描周期。
+
+        与 ``queue.py`` ``_dispatch_lock_conflict_pending`` 是对同一字段
+        ``_dispatch_backoff_until`` 的同一谓词（未到期→True）的两个落点
+        （code-review item aaf6fbb7f6d9）：本侧 staticmethod 按条目 dict 判
+        （admin_monitor 类直调 ``Dispatcher._dispatch_backoffed`` 与 engine
+        别名复用依赖此签名），queue 侧实例方法按 spec_name 自读状态——本侧
+        类级调用点无 pm 实例、无法只读引用对方实现，收敛到单一落点须改
+        queue.py（超出本修复边界），故保留双落点并把时间基准写法统一为
+        ``time.time()``（与 queue 侧同式，消除表达式漂移）；字段语义或过期
+        判定调整时两点 MUST 同步。
         """
         until = spec.get("_dispatch_backoff_until")
         if not until:
             return False
         try:
-            return float(until) > datetime.now(timezone.utc).timestamp()
+            return float(until) > time.time()
         except (TypeError, ValueError):
             return False
 
@@ -111,6 +122,86 @@ class RRollbackMixin:
         # 0<v<1 压成 0，退避窗立即过期、防振荡静默失效，故至少保留 1 秒。
         return max(1, int(v))
 
+    def _rollback_frozen_recheck(self, spec_name: str, agent_type: str) -> bool:
+        """回滚写盘前的冻结复查（code-review item 030f2c204875）。
+
+        ``_rollback_failed_dispatch`` 开头 read_one 的 status 判态与 update_spec
+        落盘之间无原子性：窗口内 spec 被并发 freeze_for_human 冻结时，回滚写会
+        落在冻结现场上——冻结剥离（state_machine._apply_updates_entry）只剥
+        status 键且 update_spec 仍返回 True，error 写入/清空照常生效、会覆盖
+        内嵌「原状态 X」的冻结 error，人工解冻经 parse_orig_status 无法还原
+        （f3a8a1249ede/a5e1c9319ad4 系列在其余失败处置站点系统性防护的同型
+        并发窗口，本方法此前完全未设防）。本守卫取「先复查冻结标记再写」的
+        最小侵入修法（state_machine 无 status 条件写公开原语；applied_out 的
+        锁内 _stripped 信号需改 update_spec 调用签名，既有测试桩按
+        ``(name, updates)`` 直替不可用）：复查发现 frozen 即放弃回滚写与重派
+        入队，冻结现场原样保留待人工解冻。
+
+        Returns: True = 复查发现已冻结，调用方直接返回（不写盘、不入队）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        if not entry.get(FROZEN_FIELD):
+            return False
+        self._pm.logger.warning(
+            "pm_engine",
+            f"Rollback abandoned for '{spec_name}' ({agent_type}): 写盘前复查"
+            "发现已冻结——放弃回滚写与重派入队，冻结现场保留待人工解冻还原",
+        )
+        return True
+
+    def _rollback_write_guarded(
+        self, spec_name: str, agent_type: str, updates: dict
+    ) -> bool:
+        """回滚状态写 + 并发冻结防护 + 返回值核对（code-review item 030f2c204875）。
+
+        三段收口（verifier/implementer 分支共用；两分支写均带 status 键与
+        error 清空语义）：
+
+        - 写前复查：``_rollback_frozen_recheck`` 发现 frozen 即放弃整段回滚；
+        - update_spec 返回值核对：False = 条目缺失/原子写失败，复位未生效
+          （此前返回值未核对，复位失败仍继续入队重派）；
+        - 写后复核：写前复查与写锁之间的残余窗口由「frozen 且 error 为 None」
+          实锤识别——frozen 条目的 error 恒非 None（freeze_spec/freeze_for_human
+          写入必带文案），None 只可能来自本回滚的清空，WARNING 留痕供人工
+          核对解冻（原始冻结文案已不可恢复）；frozen 且 error 非空 = 冻结写
+          落在回滚写之后、冻结现场完整。
+
+        仅适用带 status 键、error 清空语义的分支；spec-review 分支写不含
+        status 键（冻结剥离对它无信号）、error 为非空业务文案（error-None
+        判据不成立），只取写前复查（见分支内注释）。
+
+        Returns: True = 回滚写已生效且未检出冻结，调用方继续留痕与重派入队；
+        False = 已放弃（写前冻结/写失败/写后检出冻结），调用方直接返回。
+        """
+        if self._rollback_frozen_recheck(spec_name, agent_type):
+            return False
+        if not self._pm.state_machine.update_spec(spec_name, updates):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Rollback write failed for '{spec_name}' ({agent_type}): "
+                "update_spec 返回 False（条目缺失/原子写失败），复位未生效"
+                "——跳过重派入队",
+            )
+            return False
+        post = self._pm.state_machine.read_one(spec_name) or {}
+        if not post.get(FROZEN_FIELD):
+            return True
+        if post.get("error") is None:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Rollback raced concurrent freeze for '{spec_name}' "
+                f"({agent_type}): status 写被冻结剥离但 error 清空已生效，"
+                "冻结 error（内嵌原状态）疑被覆盖——须人工核对解冻还原",
+            )
+        else:
+            self._pm.logger.info(
+                "pm_engine",
+                f"Rollback applied then frozen for '{spec_name}' "
+                f"({agent_type}): 冻结写落在回滚写之后、冻结现场完整"
+                "——跳过重派入队",
+            )
+        return False
+
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         """派发/执行异常时回滚滞留中间态的 spec 到可重试态（fix: 伪 bug 卡死）。
 
@@ -144,8 +235,13 @@ class RRollbackMixin:
                 # 分支同口径）：非空 error 对 implemented 态恢复/展示路径是额外
                 # 噪声源，失败详情改记结构化字段 _last_dispatch_error，两条回滚
                 # 车道对 error 字段语义一致。
-                self._pm.state_machine.update_spec(
+                # 并发冻结防护与返回值核对收口到 _rollback_write_guarded
+                # （code-review item 030f2c204875）：判态后直写会把 error: None
+                # 落到窗口内并发的冻结现场上（冻结剥离只剥 status 键），覆盖
+                # 内嵌「原状态 X」的冻结 error、破坏人工解冻还原。
+                if not self._rollback_write_guarded(
                     spec_name,
+                    agent_type,
                     {
                         "status": "implemented",
                         "tester_run": None,
@@ -153,7 +249,8 @@ class RRollbackMixin:
                         "_last_dispatch_error": f"Verification dispatch failed (retryable): {exc}",
                         "_dispatch_backoff_until": backoff_until,
                     },
-                )
+                ):
+                    return
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
@@ -188,6 +285,14 @@ class RRollbackMixin:
                 # 快照路径异常这类常确定性复现的派发异常会按恢复扫描节奏
                 # 无节流 rollback→重触发循环。条目退避期内留队列、过期自然
                 # 恢复（_dispatch_backoffed 既有语义）。
+                # 并发冻结防护（code-review item 030f2c204875）：本分支写不含
+                # status 键——冻结剥离对它无信号（error/reviewer_run 会照常
+                # 生效，覆盖冻结 error 与冻结时保全的 reviewer_run 锚点），写后
+                # 复核的 error-None 判据亦不成立（本分支 error 为非空业务
+                # 文案），故只取写前复查：发现冻结即放弃整段写，残余竞态窗口
+                # 收敛到复查读与写锁之间。
+                if self._rollback_frozen_recheck(spec_name, agent_type):
+                    return
                 self._pm.state_machine.update_spec(
                     spec_name,
                     {
@@ -274,7 +379,14 @@ class RRollbackMixin:
                 }
                 if not resume_pending:
                     rollback_updates["branch"] = None
-                self._pm.state_machine.update_spec(spec_name, rollback_updates)
+                # 并发冻结防护与返回值核对收口到 _rollback_write_guarded
+                # （code-review item 030f2c204875，verifier 分支同款）：判态与
+                # 写盘之间隔着预算豁免记账等 I/O，窗口内并发的冻结现场会被
+                # error: None 与锚点清空覆盖，破坏人工解冻还原。
+                if not self._rollback_write_guarded(
+                    spec_name, agent_type, rollback_updates
+                ):
+                    return
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Rolled back '{spec_name}' implementing → ready "
