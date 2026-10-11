@@ -1011,7 +1011,7 @@ class HookEngine:
                             data = json.loads(path.read_text(encoding="utf-8"))
                             raw = data.get("hook_ids") if isinstance(data, dict) else None
                             ids = [str(x) for x in raw if x] if isinstance(raw, list) else []
-                        except (json.JSONDecodeError, OSError):
+                        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                             ids = []  # 半截/损坏标记：重建即可
                     hid = str(hook_id or "")
                     if hid and hid not in ids:
