@@ -245,14 +245,24 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "promote":
-        cmd_promote(args)
-    elif args.command == "review":
-        cmd_review(args)
-    elif args.command == "reflow":
-        cmd_reflow(args)
-    elif args.command == "activate":
-        cmd_activate(args)
+    # 兜底对齐 fenix_spec._run / fenix_archive 的统一错误口径：cmd_* 内的
+    # 延迟导入（from core...）与 ConfigLoader.resolve_config 在框架文件损坏、
+    # 配置 YAML 非法等环境问题时抛 ImportError/yaml.YAMLError 等，裸抛会以
+    # traceback 收场且让操作者无法区分 SPEC 状态问题与环境损坏。统一转
+    # stderr（附异常类型名，同 _run 泛化分支格式）+ exit 1。SystemExit 是
+    # BaseException，各 cmd_* 成功/业务拒绝路径的 sys.exit 不被此兜底吞掉。
+    try:
+        if args.command == "promote":
+            cmd_promote(args)
+        elif args.command == "review":
+            cmd_review(args)
+        elif args.command == "reflow":
+            cmd_reflow(args)
+        elif args.command == "activate":
+            cmd_activate(args)
+    except Exception as e:
+        print(f"✗ 命令执行失败：{type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
     # 未知命令分支不存在：subparsers required=True 使 parse_args 对非法/缺失
     # 命令直接报错退出（code-review item 76318b16fefc），此处四分支已穷尽。
 
