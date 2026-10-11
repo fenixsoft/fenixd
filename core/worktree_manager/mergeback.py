@@ -335,6 +335,11 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
+                # 先例）：非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError
+                # 子类）逃逸下方 except、穿出 merge_back_from_branch 闸门段。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -478,12 +483,13 @@ class G4MergebackMixin:
         把重叠集合中判定为产物的子集对齐 HEAD（使其变干净、不进 stash、pop 无
         产物冲突）——从源头消除「产物 → stash → pop 冲突 → 误报 major 告警」链路。
         """
-        # 本轮 D3b 已对齐 HEAD 的产物清单（code-review item a4946a98680a）：先
-        # 置空、产物对齐完成后再赋真实值，不残留上一轮 merge-back 的值；调用方
-        # 在后续 spec 目录在飞卫检查早退时据此补记「对齐已写主树、merge 未发生」
-        # 的留痕（escalate 拦截文案在本方法内直读局部 aligned_ok，早退路径只能
-        # 经实例属性传递）。
-        self._wip_gate_aligned_artifacts: list = []
+        # 本轮 D3b 已对齐 HEAD 的产物清单（code-review item a4946a98680a）：重置
+        # （__init__ 已显式初始化，item 106be2cef569——早退路径读取本属性不再
+        # 依赖本方法先于 _check_spec_dir_inflight 执行）、产物对齐完成后再赋
+        # 真实值，不残留上一轮 merge-back 的值；调用方在后续 spec 目录在飞卫
+        # 检查早退时据此补记「对齐已写主树、merge 未发生」的留痕（escalate
+        # 拦截文案在本方法内直读局部 aligned_ok，早退路径只能经实例属性传递）。
+        self._wip_gate_aligned_artifacts = []
         # 产物配置未裁决兜底信号（fix-artifact-paths-hardcoded-default D3）：
         # MUST 置于「无重叠早退」之前——主树干净是常态，若在早退之后判定，最
         # 常见形态永不触发起草，配置缺口被静默掩盖（本 SPEC 要消灭的「默认值
@@ -528,6 +534,11 @@ class G4MergebackMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
+                    # 先例）：非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError
+                    # 子类）逃逸下方 except、穿出 merge_back_from_branch 闸门段。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
             except (subprocess.TimeoutExpired, OSError):
@@ -544,6 +555,10 @@ class G4MergebackMixin:
                             ],
                             capture_output=True,
                             text=True,
+                            # 同批量对齐口径（item 6f235c189552）：显式 UTF-8
+                            # 免坏字节 UnicodeDecodeError 逃逸 except。
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=30,
                         )
                         if result.returncode == 0:
@@ -762,6 +777,11 @@ class G4MergebackMixin:
                 ["git", "-C", str(self.project_root), "merge-base", "HEAD", branch],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
+                # 先例）：非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError
+                # 子类）逃逸下方 except；本函数处于 merge_back_from_branch 闸门段。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if mb.returncode != 0 or not mb.stdout.strip():
@@ -778,6 +798,10 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 同上方 merge-base 口径（item 6f235c189552）：显式 UTF-8 免坏
+                # 字节 UnicodeDecodeError 逃逸 except。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if diff.returncode != 0:
@@ -1002,6 +1026,11 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
+                # 先例）：非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError
+                # 子类）逃逸下方 except。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1173,6 +1202,7 @@ class G4MergebackMixin:
         散件路径提及均返回 None（源缺失或相关性不足，fail-open 回无主）。
         """
         home = Path.home()
+        # [fenix-ignore:027b2c5e317f] munge 规则已实测核对：~/.claude/projects/ 真实目录名（如 -root-fenixd--claude-worktrees-<name>，146 个目录零字面点号）确认 / 与 . 均替换为 -，现有推导正确
         munged = str(root).replace("/", "-").replace(".", "-")
         tdir = home / ".claude" / "projects" / munged
         if not tdir.is_dir():
@@ -1251,6 +1281,11 @@ class G4MergebackMixin:
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    # 固化 C locale（item 7c9098abfdb3，与 _merge_once 同口径）：
+                    # 本探测按「退出码 + oid 形态」判定本不受信息行翻译影响，
+                    # 一并收口，消除与 _rehearse_merge_from_branch 的 locale
+                    # 口径漂移歧义。
+                    env={**os.environ, "LC_ALL": "C"},
                 )
                 # 支持的实证：退出码 0 且 stdout 首行为 40/64 位 hex tree oid
                 # （--write-tree 的成功输出形态）；旧版/本地化报错文案均落不进
@@ -1305,7 +1340,18 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
+                # 先例）：冲突路径非 ASCII 时 text=True 缺省按 locale strict 解码，
+                # 坏字节抛 UnicodeDecodeError（ValueError 子类）逃逸下方 except、
+                # 穿出 merge_back_from_branch 闸门段。
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
+                # 固化 C locale（item 7c9098abfdb3，与 _merge_once 同口径）：
+                # _parse_merge_tree_conflict_paths 对输出形态（首行 oid、空行
+                # 终止、CONFLICT 前缀终止）依赖英文 marker，本地化 git 翻译
+                # 信息行时冲突路径清单会吸入信息行或漏判终止。
+                env={**os.environ, "LC_ALL": "C"},
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -1807,6 +1853,11 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 6f235c189552）：与下方 ls-files 已修先例同款
+                # ——非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError 子类）
+                # 逃逸下方 except。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
