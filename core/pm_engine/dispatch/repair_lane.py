@@ -1095,9 +1095,33 @@ class PRepairLaneMixin:
         # 「read_one 读 → 算 +1 → 并进 update_spec 写回」读与写分处两段，
         # 两个并发 fallback（重复派发的 repair worker 同时收尾）会各持相同
         # 旧值写回同一 retries，丢一次递增、max_retries 熔断晚一轮触发。
-        retries = self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1}).get(
-            "_retry_count", 0
-        )
+        # 记账隔离（code-review item 4ba308cf06fe，与 queue.py 失败分类豁免
+        # 记账同款）：bump_counters 是锁内真实文件 IO（flock + read_all +
+        # write_all），本方法是 repair 链三条失败路径的共同收尾（且可能运行
+        # 在 worker 的 except 兜底内），裸调的 OSError 会从异常处理器中再冒
+        # 出，跳过下方 freeze_for_human/update_spec/_enqueue_front 全部收尾
+        # （finally 只摘锁），spec 悬置 implementing 且无队列条目、无冻结
+        # 标记。故记账失败仅 WARNING、retries 回退读取侧旧值继续收尾
+        # （读侧也失败则按 0 走 ready 重派兜底，熔断晚一轮触发不丢账）。
+        try:
+            retries = self._pm.state_machine.bump_counters(
+                spec_name, {"_retry_count": 1}
+            ).get("_retry_count", 0)
+        except Exception as bump_exc:  # noqa: BLE001 —— 记账失败不阻塞 fallback 收尾
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair fallback 记账失败 '{spec_name}'（按未递增继续收尾）: "
+                f"{type(bump_exc).__name__}: {bump_exc}",
+            )
+            try:
+                retries = int(
+                    (self._pm.state_machine.read_one(spec_name) or {}).get(
+                        "_retry_count", 0
+                    )
+                    or 0
+                )
+            except Exception:
+                retries = 0
         base_error = merge_error or "merge-back failed"
         if repair_error:
             full_error = (

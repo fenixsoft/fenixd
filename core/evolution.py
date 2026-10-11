@@ -1031,7 +1031,8 @@ def commit_todo_marker(project_path=None, project_name=None, message_suffix=None
     ingest_item 批量路径的标记回写不逐条 commit（避免提交风暴），由编排层在
     一轮 ingest 循环结束后对本轮涉及的每个项目各调用一次本函数合并提交；
     自动接受批路径（``auto_accept_pending``）逐条 defer 后同样经本入口对本
-    项目合并提交一次，``message_suffix`` 携带本批条目 id 明细。仅 dashboard
+    批涉及的每个源项目各合并提交一次，``message_suffix`` 携带该项目本批条目
+    id 明细。仅 dashboard
     手动单条接受与单点写路径（reject / delete）经 ``write_todo_marker`` 的
     缺省提交开关即时提交，不走本入口。
 
@@ -2246,9 +2247,14 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     MUST NOT 触碰 ``analyzed`` / ``draft_failed`` / 已决定条目。
 
     批末合并提交（evo-evolution-accept-marker-batching design D1/D3）：逐条
-    接受以 ``defer_commit=True`` 关闭标记回写的即时提交，循环结束后对本项目
-    调一次 ``commit_todo_marker`` 合并提交，消息附本批接受条目的 id 明细。
-    生产者-scoped 收集（只合并本循环自己的写入），不做文件级时间窗去抖——
+    接受以 ``defer_commit=True`` 关闭标记回写的即时提交。标记回写由
+    ``write_todo_marker`` 按条目 project 字段经 registry 解析落到各源项目的
+    ``.fenix/todo.md``，循环结束后对本批涉及的每个源项目各调一次
+    ``commit_todo_marker``（``project_name=``）合并提交，消息附该项目本批
+    接受条目的 id 明细——与 ``prune_items`` 同纪律，MUST NOT 钉死框架根
+    ``project_path``（多项目部署下源项目标记改动会滞留未提交，框架根若恰有
+    滞留改动反被卷进内容与消息不符的提交）。生产者-scoped 收集（只合并本循
+    环自己的写入），不做文件级时间窗去抖——
     ``.fenix/todo.md`` 另有 self_review 生产者，时间窗会把对方滞留改动卷进
     错误消息的提交。
 
@@ -2263,7 +2269,7 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     pending = [rec for rec in items.values() if rec.get("status") == "pending"]
     start_after = next_spec_run_at(spec_run_at)
     summary = {"total": len(pending), "accepted": 0, "failed": 0, "details": []}
-    accepted_ids: List[str] = []
+    accepted_by_project: Dict[str, List[str]] = {}
     for rec in pending:
         try:
             result = accept_item(
@@ -2283,9 +2289,12 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
         if result.get("ok"):
             summary["accepted"] += 1
             # 只有本循环内真正走完立项成功分支的条目写了标记（幂等返回的
-            # 现状条目不写），明细只收这些 id
+            # 现状条目不写），明细只收这些 id。标记回写按条目 project 字段
+            # 经 registry 解析，批末提交按同名项目收口，与写入口径对称
             if result.get("status") == "auto_accepted":
-                accepted_ids.append(rec["id"])
+                project_name = str(rec.get("project") or "")
+                if project_name:
+                    accepted_by_project.setdefault(project_name, []).append(rec["id"])
         else:
             summary["failed"] += 1
         summary["details"].append(
@@ -2297,11 +2306,13 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
                 "error": result.get("error"),
             }
         )
-    if accepted_ids:
-        detail = "\n".join(f"- {eid}" for eid in accepted_ids)
+    # 批末合并提交：每个涉及项目各一次（与 prune_items 同纪律；无变更时
+    # _commit_todo_marker 按「nothing to commit」info 收敛，不告警）
+    for project_name, ids in sorted(accepted_by_project.items()):
+        detail = "\n".join(f"- {eid}" for eid in ids)
         commit_todo_marker(
-            project_path=project_root,
-            message_suffix=f"接受条目（{len(accepted_ids)} 条）:\n{detail}",
+            project_name=project_name,
+            message_suffix=f"接受条目（{len(ids)} 条）:\n{detail}",
         )
     return summary
 

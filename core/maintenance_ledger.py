@@ -76,14 +76,40 @@ def list_maintenance_entries(project) -> list:
     return entries
 
 
-def make_maintenance_run_id(scope: str) -> str:
+def make_maintenance_run_id(scope: str, project=None) -> str:
     """生成登记型 run id：``maintenance-<scope>-<epoch 秒>``。
 
-    形态与既有 ``<prefix><spec>-<ts>`` 一致（maintenance_runs.py:215/906 同
-    款），使 run_files.infer_run_agent_type 归属 "maintenance"、
-    admin_monitor._spec_from_run_id 能还原 scope 供归因。
+    base 形态与既有 ``<prefix><spec>-<ts>`` 一致，使
+    run_files.infer_run_agent_type 归属 "maintenance"。
+
+    code-review item f22262c39d1e：秒级时间戳在「同秒同 scope 两次登记」下
+    撞名——list_entries_for_run 按 run_id 全等过滤会把两次执行的条目混在
+    一起，告警归因与复盘引用失真。初版 docstring 声称与 maintenance_runs.py
+    两处 run id 生成点「同款」，但那两处（_unique_admin_run_id /
+    _unique_evolution_run_id）实际已各自包了 ``-<n>`` 探测退避防撞，本函数
+    同步跟进：提供 project 时复用本模块读侧（list_maintenance_entries）探测
+    候选 run_id 是否已在台账出现，已存在即追加 ``-<n>``（n 从 1 起递增）。
+    探测台账而非落申领占位：台账是纯登记簿（追加行 + 读侧全量扫描），
+    run_id 只作关联键、无独立产物文件可申领。退避 run 尾段变为 ``-<n>``，
+    admin_monitor._spec_from_run_id 的 ``-\\d{9,10}(-[ar]\\d+)*$`` 尾锚不再
+    命中、scope 还原返回 None（回落泛型主体），与 code-review-<epoch>-<n>
+    退避先例同口径；未撞名时（绝大多数）形态与解析不变。
+
+    Args:
+        scope: 登记范围名（进入 run id 的归因段）。
+        project: 项目根（str/Path）；提供时启用台账探测退避，None 时仅返回
+            base 形态（无既有台账可探测，如单测/生成即落账前的调用方）。
     """
-    return f"maintenance-{scope}-{int(time.time())}"
+    base = f"maintenance-{scope}-{int(time.time())}"
+    if project is None:
+        return base
+    candidate = base
+    n = 0
+    existing = {e.get("run_id") for e in list_maintenance_entries(project)}
+    while candidate in existing:
+        n += 1
+        candidate = f"{base}-{n}"
+    return candidate
 
 
 def list_entries_for_run(project, run_id: str) -> list:

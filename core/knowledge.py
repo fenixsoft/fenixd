@@ -900,7 +900,9 @@ def _read_pending_ledger(proot: Path) -> list:
         raw = _pending_ledger_path(proot).read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # UnicodeDecodeError 非 OSError 子类：台账含非 UTF-8 字节时同样按
+        # 空表 fail-open（否则异常穿到 recover_pending 使整批恢复放弃）。
         logger.warning("knowledge-distill pending 台账读取失败，按空表处理: %s", e)
         return []
     try:

@@ -40,6 +40,12 @@ import re
 # 本次指令」此前会被并为一句，re.search 取句内首个命中会拿到历史数字或历史
 # 放行表述（code-review 83115be72911）。分句更细只会让「同句限定」更精确、
 # 更漏不误，与模块保守方向（宁可漏放行/漏回拨，不可误扣 fail_rounds）一致。
+# 逗号（，,）**不**并入此分句（code-review bad9bc188602）：逗号并列句的限定
+# 词常在先导子句、回拨声明在后子句（「本次验证失败实为 infra 误计入
+# fail_rounds，回拨 2 轮」——tests/test_infra_budget_exempt.py 既有夹具），
+# 分句变细会让合法声明整体漏判，「更漏不误」对逗号不成立。逗号并列句内的
+# 「首命中取到历史数字」改由 _pick_current_reclassify_match 在句内取「本次
+# 声明」命中解决（仅 infra 回拨侧有数字提取，waiver 无此故障模式）。
 _SENTENCE_SPLIT_RE = re.compile(r"[。！？；;\n]")
 _WAIVER_NEGATION_PHRASES = (
     "未放行",
@@ -200,6 +206,46 @@ def is_reclassify_negated(text: str) -> bool:
     return any(neg in text for neg in _RECLASSIFY_NEGATION_PHRASES)
 
 
+def _pick_current_reclassify_match(matches: list, sent: str):
+    """句内多命中时取「本次声明」对应的那个命中（code-review bad9bc188602）。
+
+    逗号并列的句子（「此前已回拨 2 轮，本次回拨 1 轮」）经
+    _SENTENCE_SPLIT_RE 分句后仍是一句，re.search 取句内首命中会拿到历史
+    数字 2 而非本次声明的 1，多扣 _verify_fail_rounds、SPEC 提前解冻。行文
+    惯例是历史叙述在前、本次声明居后，据此在句内择命中：
+      - 优先取「所在逗号子句（，,）自带 _RECLASSIFY_CURRENT_MARKERS 限定
+        词」的**首个**命中——限定词与回拨声明同子句，归属明确；同子句多
+        命中（「本次回拨 1 轮（此前已回拨 2 轮）」的历史括注在后）取首不
+        取尾，避免后置历史数字反被选中；
+      - 无子句级限定命中时（限定词在同句先导子句，如「本次验证失败实为
+        infra 误计入 fail_rounds，回拨 2 轮」，子句级限定无从谈起）按居后
+        惯例回退取句内**最后一个**命中。
+
+    Args:
+        matches: re.finditer 在 sent 上的全部命中（文档序，非空）。
+        sent: 已通过句级「本次」限定的句子。
+
+    残余窗口（如实记）：句级门过、但限定词独居无命中的子句且历史命中居后
+    （「本次决定，回拨 1 轮，先例回拨 2 轮在案」）时回退分支仍会取到历史
+    数字——窄于修复前的「恒取首命中」，且 spec 名刻意不参与子句级限定（只
+    作句级门槛）：回拨叙述的括注可携带 spec 名（「此前已回拨 2 轮（demo-
+    spec 台账可查），本次回拨 1 轮」），子句级 spec 同现会把历史数字再度置前。
+    """
+    clauses = re.split(r"[，,]", sent)
+    bounds = []
+    pos = 0
+    for clause in clauses:
+        bounds.append((pos, pos + len(clause)))
+        pos += len(clause) + 1  # +1：跳过被 re.split 消费的单字符逗号分隔符
+    for m in matches:
+        for start, end in bounds:
+            if start <= m.start() < end and any(
+                mk in sent[start:end] for mk in _RECLASSIFY_CURRENT_MARKERS
+            ):
+                return m
+    return matches[-1]
+
+
 def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     """infra 回拨文本兜底判定：返回显式声明的减回轮次（0=不触发）。
 
@@ -209,8 +255,10 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
 
     与 family_waiver_granted 同范式（code-review 666155d105ae）：按
     _SENTENCE_SPLIT_RE 分句（句末标点外加分号——分号并列的历史回拨叙述与
-    本次指令不再同句，避免句内首命中取到历史轮次，code-review 83115be72911），
-    命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_
+    本次指令不再同句，避免句内首命中取到历史轮次，code-review 83115be72911）；
+    逗号并列句仍为一句，句内多命中由 _pick_current_reclassify_match 取「本次
+    声明」对应命中——恒取首命中会把历史数字当本次声明（code-review
+    bad9bc188602）。命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_
     MARKERS）或与本次 spec 名同现才算本次回拨声明——处置叙述对历史/其他
     spec 的回拨提及（「此前已回拨 2 轮」「另一族谱已回拨 3 轮」）且不含
     否定短语不构成对本次对象的回拨指令。spec 为 None/空串/非 str 时同现
@@ -229,8 +277,8 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
         return 0
     for pattern in _RECLASSIFY_GRANT_PATTERNS:
         for sent in _SENTENCE_SPLIT_RE.split(text):
-            m = re.search(pattern, sent)
-            if not m:
+            matches = list(re.finditer(pattern, sent))
+            if not matches:
                 continue
             # 「本次处置」同句限定（与 family_waiver_granted 同款写法）。
             if not (
@@ -238,6 +286,9 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
                 or (isinstance(spec, str) and spec and spec in sent)
             ):
                 continue
+            # 句内多命中择「本次声明」对应命中：恒取首命中在逗号并列句会把
+            # 历史数字当本次声明、多扣 fail_rounds（code-review bad9bc188602）。
+            m = _pick_current_reclassify_match(matches, sent)
             try:
                 n = int(m.groupdict().get("n") or 0)
             except (TypeError, ValueError):

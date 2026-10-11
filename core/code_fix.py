@@ -4795,8 +4795,24 @@ class CodeFixOrchestrator:
         链级核销计数（chain_resolved/chain_ignored，即台账核销口径）。
         """
         prog = read_progress(self.project_root)
+        # 链级 run 清单形态守卫（code-review item 28ee3c6558b0，对齐 checkpoint
+        # 与 _chain_recent_duration_mean 对同字段既有守卫）：坏档非列表真值直接
+        # 迭代会按字符拆出假 run_id，rollup 静默产出垃圾统计（runs=字符个数）。
+        # 先判 isinstance(list) 再归一去重，非列表回退空列表（truthy 垃圾值
+        # warning 留痕；None/空值静默回退，等价旧 or [] 语义）。
+        raw_run_ids = prog.get("chain_run_ids")
+        if isinstance(raw_run_ids, list):
+            prev_run_ids = list(raw_run_ids)
+        else:
+            if raw_run_ids:
+                self._log(
+                    "warning",
+                    "code-fix 进度 chain_run_ids 字段形态异常（非列表："
+                    f"{type(raw_run_ids).__name__}），按空列表容错",
+                )
+            prev_run_ids = []
         run_ids: list[str] = []
-        for rid in (prog.get("chain_run_ids") or []):
+        for rid in prev_run_ids:
             s = str(rid)
             if s and s not in run_ids:
                 run_ids.append(s)
@@ -4812,8 +4828,27 @@ class CodeFixOrchestrator:
             total_turns += turns
             total_tools += tools
             total_text += text
-        resolved = int(prog.get("chain_resolved") or 0)
-        ignored = int(prog.get("chain_ignored") or 0)
+
+        def _chain_count_int(key: str) -> int:
+            # 链级核销计数容错解析（同条目 28ee3c6558b0，对齐 defer_count 解析
+            # 口径）：非数值坏值裸 int() 抛 ValueError 会被 _emit_chain_rollup
+            # 吞成返回 None——链终局清零字段永不落地，该链后续 rollup 永久
+            # 失效、坏值无法自愈。非数值按 0 出账（truthy 垃圾值 warning
+            # 留痕），确保链终局归零总能落地。
+            raw = prog.get(key)
+            try:
+                return int(raw or 0)
+            except (TypeError, ValueError):
+                if raw:
+                    self._log(
+                        "warning",
+                        f"code-fix 进度 {key} 字段形态异常（非数值："
+                        f"{type(raw).__name__}），按 0 容错",
+                    )
+                return 0
+
+        resolved = _chain_count_int("chain_resolved")
+        ignored = _chain_count_int("chain_ignored")
         items = resolved + ignored
         return {
             "runs": len(run_ids),
@@ -5161,11 +5196,42 @@ class CodeFixOrchestrator:
         # 无命中，坏档滞留由时间门/磁盘对账兜底）。
         _raw_ids = entry.get("item_ids")
         item_ids = [str(i) for i in _raw_ids] if isinstance(_raw_ids, list) else []
-        fixed_ids = [str(i) for i in entry.get("fixed_ids") or []]
+        # fixed_ids 形态守卫（code-review item a4e188106d9e，对齐上方 item_ids
+        # 既有守卫）：坏档非列表真值按字符拆出假 id，永不命中核销前 batch_set
+        # ——合回成功 hit=0 仍清理现场并移出台账，已合回未核销、条目下链重选
+        # 重跑（5905398dbbcb 同类危害）。先判 isinstance(list) 再归一，非列表
+        # 回退空列表（truthy 垃圾值 warning 留痕并置坏档旗标；None/空值静默
+        # 回退走既有 hit=0 防御路径）。
+        _raw_fixed = entry.get("fixed_ids")
+        fixed_ids_bad_shape = False
+        if isinstance(_raw_fixed, list):
+            fixed_ids = [str(i) for i in _raw_fixed]
+        else:
+            if _raw_fixed:
+                fixed_ids_bad_shape = True
+                self._log(
+                    "warning",
+                    "code-fix 延迟台账 fixed_ids 字段形态异常（非列表："
+                    f"{type(_raw_fixed).__name__}），按空列表容错",
+                )
+            fixed_ids = []
         wt = Path(str(entry.get("worktree") or ""))
         branch = str(entry.get("branch") or "")
         tip_sha = str(entry.get("tip_sha") or "")
-        overlap = list(entry.get("last_overlap") or [])
+        # last_overlap 同款守卫：坏档非列表真值 list() 抛 TypeError，被
+        # _process_deferred_merges 单条兜底吞成 warning——该条目每轮链边界
+        # 重试稳定复现、永久滞留且其 items 被永久排除出选批。
+        _raw_overlap = entry.get("last_overlap")
+        if isinstance(_raw_overlap, list):
+            overlap = list(_raw_overlap)
+        else:
+            if _raw_overlap:
+                self._log(
+                    "warning",
+                    "code-fix 延迟台账 last_overlap 字段形态异常（非列表："
+                    f"{type(_raw_overlap).__name__}），按空列表容错",
+                )
+            overlap = []
 
         # 磁盘真相对账：worktree 已丢失（手删/sweeper 回收）→ 条目回收 +
         # warning；条目未核销天然仍在 open 池，无需回写（D5 同款判据）。
@@ -5252,6 +5318,28 @@ class CodeFixOrchestrator:
                     ),
                 )
                 return 0, "延迟批已合回未核销（台账读失败，保留待下链边界重试）"
+            if fixed_ids_bad_shape:
+                # 已合回但核销集合坏档（code-review item a4e188106d9e）：无法
+                # 区分「确实无可核销」与「核销集合已损坏」，此刻清理现场/移除
+                # 台账会销毁坏档原文并复刻「已合回未核销、下链重选重跑」危害
+                # （5905398dbbcb 同款）。保留条目与 worktree 待人工对账（人工
+                # 修复 fixed_ids 后下一边界重试即正常核销）；持续滞留由既有
+                # 时间门/次数门降级路径兜底。
+                self._log(
+                    "warning",
+                    f"code-fix 延迟批已合回但 fixed_ids 形态异常（非列表）无法"
+                    f"核销——保留台账条目与 worktree 待人工对账"
+                    f"（branch={branch}, item_ids={item_ids}）",
+                )
+                write_progress(
+                    root,
+                    reason="",
+                    current=(
+                        f"延迟批已合回但 fixed_ids 坏档未核销，保留待人工对账"
+                        f"（branch={branch}）"
+                    ),
+                )
+                return 0, "延迟批已合回未核销（fixed_ids 坏档，保留待人工对账）"
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
             prog = read_progress(root)

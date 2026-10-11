@@ -63,6 +63,97 @@ def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     return f"fenix-{agent_type}-{spec_name}"
 
 
+def _normalized_int_value(cfg, key: str, default: int, logger=None) -> int:
+    """整型配置值归一（值级单一落点，code-review item f863e2bbcc3d）。
+
+    口径（config._normalize_transient_seconds 归一先例）：None 判空回缺省
+    （合法配置 0 不被 ``or`` 吞成缺省）→ bool 显式拒绝（裸 ``int()`` 把
+    ``true`` 折成 1、``false`` 折成 0，并发/上限被静默改写且无留痕）→
+    整值浮点按整数接受、非整值浮点拒绝（裸 ``int()`` 截断静默采信）→
+    其余非法值 WARNING 留痕回缺省。下限/非正语义由调用方按各配置键
+    既有行为处置（本读取器不做收敛），归一规则调整只改此处。
+
+    供两种读取形态共用：``_normalized_int_config``（pm 级整键读取）与
+    ``_process_queue`` 的 ``agents.max_concurrent`` 直读点——后者保留
+    ``_get_config("agents.max_concurrent", 5)`` 源码形态（吞吐治理测试
+    test_default_is_5_without_explicit_config 以该字面量钉死代码缺省 5），
+    取回的原始值交本函数归一。logger 缺省 None（调用方 getattr 守卫传入，
+    兼容仅注入 _get_config 的测试替身）。
+    """
+    if cfg is None:
+        return default
+    illegal = False
+    if isinstance(cfg, bool):
+        illegal = True
+    elif isinstance(cfg, int):
+        return cfg
+    elif isinstance(cfg, float):
+        if cfg.is_integer():
+            return int(cfg)
+        illegal = True
+    else:
+        try:
+            return int(str(cfg).strip())
+        except (TypeError, ValueError):
+            illegal = True
+    if illegal and logger is not None:
+        logger.warning(
+            "pm_engine",
+            f"配置 {key} 非法（应为整数，布尔/小数/非数字均不合法）: "
+            f"{cfg!r}，回退缺省 {default}",
+        )
+    return default
+
+
+def _normalized_int_config(pm, key: str, default: int) -> int:
+    """整型配置归一读取（pm 级读取 + 值级归一组合，code-review item f863e2bbcc3d）。
+
+    与 repair_lane._merge_breaker_threshold / _max_retries 读取器同款归一
+    口径：``pm._get_config`` 读取（TypeError/ValueError 兜底为 None）后交
+    ``_normalized_int_value`` 值级归一，WARNING 经 ``pm.logger``（getattr
+    守卫）留痕。归一口径细则见值级函数 docstring。
+    """
+    try:
+        cfg = pm._get_config(key, default)
+    except (TypeError, ValueError):
+        cfg = None
+    return _normalized_int_value(cfg, key, default, getattr(pm, "logger", None))
+
+
+def _normalized_float_config(pm, key: str, default: float) -> float:
+    """浮点配置归一读取（``_normalized_int_config`` 的 float 同构版）。
+
+    口径仅一处差异：数值分支接受 int/float（时间窗/节拍类键允许整写秒数）；
+    bool 仍显式拒绝（``float(True)`` 会把 ``true`` 折成 1.0 静默改写窗口），
+    其余非法值 WARNING 留痕回缺省。
+    """
+    try:
+        cfg = pm._get_config(key, default)
+    except (TypeError, ValueError):
+        cfg = None
+    if cfg is None:
+        return default
+    illegal = False
+    if isinstance(cfg, bool):
+        illegal = True
+    elif isinstance(cfg, (int, float)):
+        return float(cfg)
+    else:
+        try:
+            return float(str(cfg).strip())
+        except (TypeError, ValueError):
+            illegal = True
+    if illegal:
+        logger = getattr(pm, "logger", None)
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（应为数值，布尔/非数字均不合法）: "
+                f"{cfg!r}，回退缺省 {default}",
+            )
+    return default
+
+
 class QQQueueMixin:
     """Q 队列核心/worker（design D1 表 B Q 组）。"""
 
@@ -212,17 +303,14 @@ class QQQueueMixin:
         """评审车道在飞上限（evo-fix-spec-review-infra-attribution-bridge 2.1）。
 
         配置键 ``review.max_inflight``，缺省 ``_REVIEW_INFLIGHT_CAP``（3）。
-        配置容错（同 agents.max_concurrent 读取点口径）：字符串/None/非法值
-        不中断候选扫描——int() 失败或非正值回退缺省。
+        配置容错（code-review item f863e2bbcc3d：与 agents.max_concurrent
+        读取点同走 _normalized_int_config 共享归一——bool/非整值浮点显式
+        拒绝并 WARNING 留痕，不再被裸 int() 静默折算）；非正值回退缺省，
+        不中断候选扫描。
         """
-        try:
-            val = int(
-                self._pm._get_config(
-                    self._REVIEW_INFLIGHT_CAP_CONFIG_KEY, self._REVIEW_INFLIGHT_CAP
-                )
-            )
-        except (TypeError, ValueError):
-            return self._REVIEW_INFLIGHT_CAP
+        val = _normalized_int_config(
+            self._pm, self._REVIEW_INFLIGHT_CAP_CONFIG_KEY, self._REVIEW_INFLIGHT_CAP
+        )
         if val <= 0:
             return self._REVIEW_INFLIGHT_CAP
         return val
@@ -766,19 +854,30 @@ class QQQueueMixin:
         # 显式配置优先级不变——.fenix/config.yaml 写了 agents.max_concurrent
         # 即按配置值生效，代码缺省只对无配置部署生效；full-suite.lock 主机级
         # 回归锁（等待上限 600s、超时 skip）保证多 run 回归互斥语义不变。
-        # 配置侧 int() 归一（code-review item db57ee959a49，与
-        # agents.merge_breaker_threshold / agents.max_retries 读取点同款）：
-        # 字符串配置裸用于下方槽位比较（持锁临界区内）抛 TypeError，沿
-        # worker finally / 定时器线程的 _process_queue 调用链逃逸，派发整体
-        # 停摆；非法值回退缺省，max(1, ...) 收下限。
+        # 配置侧归一（code-review item db57ee959a49 收敛字符串裸用于槽位
+        # 比较抛 TypeError、沿 worker finally / 定时器线程的 _process_queue
+        # 调用链逃逸致派发停摆；item f863e2bbcc3d 改走共享归一，与
+        # agents.merge_breaker_threshold / agents.max_retries 读取点真正
+        # 同款——bool/非整值浮点显式拒绝并 WARNING 留痕：原裸 int() 会把
+        # true 折成 1，实现并发静默塌缩成串行、2.5 截成 2 均无留痕难排障）；
+        # 非法值回退缺省，max(1, ...) 收下限不变。此处保留
+        # _get_config("agents.max_concurrent", 5) 直读源码形态——吞吐治理
+        # 测试 test_default_is_5_without_explicit_config 以该字面量钉死
+        # 代码缺省 5（上一轮改走 pm 级读取器曾破坏该断言），取回的原始值
+        # 交 _normalized_int_value 值级归一，语义与共享读取器完全一致。
         try:
             cfg_max_concurrent = self._pm._get_config("agents.max_concurrent", 5)
-            max_concurrent = (
-                5 if cfg_max_concurrent is None else int(cfg_max_concurrent)
-            )
         except (TypeError, ValueError):
-            max_concurrent = 5
-        max_concurrent = max(max_concurrent, 1)
+            cfg_max_concurrent = None
+        max_concurrent = max(
+            _normalized_int_value(
+                cfg_max_concurrent,
+                "agents.max_concurrent",
+                5,
+                getattr(self._pm, "logger", None),
+            ),
+            1,
+        )
 
         # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
         # 被抑制条目保持 queued（后到抑制），但绝不能阻塞其后的条目派发
@@ -1092,10 +1191,27 @@ class QQQueueMixin:
                     if cur_status != "implementing":
                         # fix-observability-gaps 2.2：自动派发来源（run 尚未派发，
                         # trigger_run_id 暂无，派发完成后由收口路径写 run context）
-                        self._pm.state_machine.transition(
+                        # transition 返回值校验（code-review item 7493ec682a9b，
+                        # 对齐既有收口 f3a8a1249ede/a5e1c9319ad4 同型守卫）：读态
+                        # 与转移之间被并发冻结/推进时返回 False——失败即不再启动
+                        # run（否则只靠 frozen_terminated 监督兜底，白烧一轮 run
+                        # 加一轮异常收尾），条目回滚重新入队待下轮重派，状态守卫
+                        # 自然拦截（与出锁段异常兜底同款分流回滚）。
+                        if not self._pm.state_machine.transition(
                             spec_name, "implementing",
                             trigger_run_id=None, agent_type="implementer", channel="auto",
-                        )
+                        ):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"implementer 派发 transition 到 implementing 失败"
+                                f"（并发写者已推进/冻结），回滚槽位保留条目: "
+                                f"{spec_name}",
+                            )
+                            with self._queue_lock:
+                                self._pm._transient_unseal_recredit()
+                                self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                            suppressed.add((spec_name, agent_type))
+                            continue
                 elif agent_type == "fast-track":
                     # fast-track：与 implementer 同语义，派发即进入 implementing；
                     # 失败打回重派时状态已是 implementing，跳过同态转换。
@@ -1125,16 +1241,45 @@ class QQQueueMixin:
                     cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                     if cur_status != "implementing":
                         # fix-observability-gaps 2.2：fast-track 自动派发来源
-                        self._pm.state_machine.transition(
+                        # transition 返回值校验（code-review item 7493ec682a9b，
+                        # 与上方 implementer 分支同款收口）：并发冻结/推进时不再
+                        # 启动 run，条目回滚重新入队待下轮重派。
+                        if not self._pm.state_machine.transition(
                             spec_name, "implementing",
                             trigger_run_id=None, agent_type="fast-track", channel="auto",
-                        )
+                        ):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"fast-track 派发 transition 到 implementing 失败"
+                                f"（并发写者已推进/冻结），回滚槽位保留条目: "
+                                f"{spec_name}",
+                            )
+                            with self._queue_lock:
+                                self._pm._transient_unseal_recredit()
+                                self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                            suppressed.add((spec_name, agent_type))
+                            continue
                 elif agent_type == "verifier":
                     # fix-observability-gaps 2.2：verifier 自动派发来源
-                    self._pm.state_machine.transition(
+                    # transition 返回值校验（code-review item 7493ec682a9b，与
+                    # 上方 implementer/fast-track 分支同款收口）：并发冻结/推进
+                    # 时不再启动 run，回滚含 verify 单飞在飞摘除——与出队分流
+                    # 的 _active_verifies.add 及线程启动失败兜底严格互逆。
+                    if not self._pm.state_machine.transition(
                         spec_name, "testing",
                         trigger_run_id=None, agent_type="verifier", channel="auto",
-                    )
+                    ):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"verifier 派发 transition 到 testing 失败（并发写者"
+                            f"已推进/冻结），回滚槽位保留条目: {spec_name}",
+                        )
+                        with self._queue_lock:
+                            self._pm._transient_unseal_recredit()
+                            self._active_verifies.discard(spec_name)
+                            self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        suppressed.add((spec_name, agent_type))
+                        continue
                 elif agent_type == "planner-plan":
                     # 并行出题条目不迁移 spec 状态（add-verify-lane-throughput 1.1）：
                     # 出题与实现并行在飞，spec 状态机由实现车道驱动；此处零状态写。
@@ -2754,9 +2899,24 @@ class QQQueueMixin:
         # spec_dir_inflight_max_rounds 上限与窗口降级晚触发（同型修复见
         # _record_wip_defer_retry_failure / _handle_merge_back_real_failure）。
         _, first_f = self._parse_defer_accounting(entry, now)
-        count = self._pm.state_machine.bump_counters(
-            spec_name, {"_merge_retry_count": 1}
-        ).get("_merge_retry_count", 0)
+        # 记账失败不阻塞顺延处置链（code-review item 941b22736836，对齐同
+        # 函数下方 update_spec 非阻塞包裹与「记账失败不阻塞失败分类」先例）：
+        # bump_counters 内部做 flock + read_all + write_all 真实文件 IO，
+        # OSError 沿 worker 外层 except → _rollback_failed_dispatch 逃逸会把
+        # 「仅顺延重试、保留分支锚点」的处置放大成 ready 回滚并清空 branch
+        # 锚点、白烧一整轮实现 run。失败时按读取侧旧值继续参与超限判定
+        # （本轮递增未落盘，超限最晚一轮触发），不中断顺延/熔断处置。
+        try:
+            count = self._pm.state_machine.bump_counters(
+                spec_name, {"_merge_retry_count": 1}
+            ).get("_merge_retry_count", 0)
+        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"顺延轮数记账递增失败 '{spec_name}'（按未递增继续）: "
+                f"{type(e).__name__}: {e}",
+            )
+            count = self._parse_int_field(entry, "_merge_retry_count", 0)
         # 成因标签（code-review item a9a96d9d650e）：未知键原样透传，不因映射
         # 缺项吞掉成因信息。置于 try 外——超限 stuck 告警（try 之外）也要消费。
         cause_label = self._MERGEBACK_DEFER_CAUSES.get(cause, cause)
@@ -3019,35 +3179,37 @@ class QQQueueMixin:
 
     def _merge_retry_grace_minutes(self) -> float:
         """顺延窗口（分钟）：``mergeback.spec_dir_inflight_grace_minutes``，缺省 30。"""
-        try:
-            return max(
-                0.0,
-                float(
-                    self._pm._get_config("mergeback.spec_dir_inflight_grace_minutes", 30)
-                ),
-            )
-        except (TypeError, ValueError):
-            return 30.0
+        # 归一读取器单一落点（code-review item f863e2bbcc3d）：bool/非数字
+        # 拒绝并 WARNING 留痕——原裸 float() 会把 true 折成 1.0，再经
+        # max(0.0, ·) 静默把窗口缩成 1 分钟且无留痕。
+        return max(
+            0.0,
+            _normalized_float_config(
+                self._pm, "mergeback.spec_dir_inflight_grace_minutes", 30
+            ),
+        )
 
     def _merge_retry_max_rounds(self) -> int:
         """顺延/重试轮数上限：``mergeback.spec_dir_inflight_max_rounds``，缺省 3。"""
-        try:
-            return max(
-                1,
-                int(self._pm._get_config("mergeback.spec_dir_inflight_max_rounds", 3)),
-            )
-        except (TypeError, ValueError):
-            return 3
+        # 归一读取器单一落点（code-review item f863e2bbcc3d）：bool/非整值
+        # 浮点拒绝并 WARNING 留痕，max(1, ...) 收下限不变。
+        return max(
+            1,
+            _normalized_int_config(
+                self._pm, "mergeback.spec_dir_inflight_max_rounds", 3
+            ),
+        )
 
     def _merge_retry_delay_seconds(self) -> float:
         """重试节拍（秒）：``mergeback.spec_dir_inflight_retry_delay_seconds``，缺省 60。"""
-        try:
-            return max(
-                5.0,
-                float(self._pm._get_config("mergeback.spec_dir_inflight_retry_delay_seconds", 60)),
-            )
-        except (TypeError, ValueError):
-            return 60.0
+        # 归一读取器单一落点（code-review item f863e2bbcc3d）：bool/非数字
+        # 拒绝并 WARNING 留痕，max(5.0, ...) 收下限不变。
+        return max(
+            5.0,
+            _normalized_float_config(
+                self._pm, "mergeback.spec_dir_inflight_retry_delay_seconds", 60
+            ),
+        )
 
     def _schedule_merge_retry(self, spec_name: str, delay: float) -> None:
         """merge-only 重试排程（D2/task 2.3）：短程无预算定时器范式。
@@ -3409,9 +3571,21 @@ class QQQueueMixin:
         # 记账、rollback.py 写点并发时丢递增、超限降级晚触发（同型修复见
         # repair_lane._fallback_after_repair）。
         _, first_f = self._parse_defer_accounting(entry, now)
-        count = self._pm.state_machine.bump_counters(
-            spec_name, {"_merge_retry_count": 1}
-        ).get("_merge_retry_count", 0)
+        # 记账失败不阻塞 WIP 顺延处置链（code-review item 941b22736836，与
+        # _defer_merge_back / _handle_merge_back_real_failure 同批收口）：
+        # 失败时按读取侧旧值继续参与超限判定，WARNING 留痕后照常落标志与
+        # 告警，不让记账 IO 异常打断降级处置。
+        try:
+            count = self._pm.state_machine.bump_counters(
+                spec_name, {"_merge_retry_count": 1}
+            ).get("_merge_retry_count", 0)
+        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"WIP 等待轮数记账递增失败 '{spec_name}'（按未递增继续）: "
+                f"{type(e).__name__}: {e}",
+            )
+            count = self._parse_int_field(entry, "_merge_retry_count", 0)
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
         try:
             self._pm.state_machine.update_spec(
@@ -3507,10 +3681,25 @@ class QQQueueMixin:
         # 指纹切换属重置语义（绝对写 1，无丢增量面），不 bump、随后续
         # update_spec 落盘（streak_bumped=True 时各分支不再并写该字段）。
         if prev_fp == fp:
-            streak = self._pm.state_machine.bump_counters(
-                spec_name, {"_merge_streak": 1}
-            ).get("_merge_streak", 0)
-            streak_bumped = True
+            # 记账失败不阻塞熔断分类（code-review item 941b22736836，对齐
+            # 「记账失败不阻塞失败分类」先例）：递增未落盘时按读取侧旧值+1
+            # 内存参与阈值判定（本轮失败仍计数），streak_bumped 置 False——
+            # 下方各分支经既有 not streak_bumped 路径绝对写回，尽力补落盘。
+            # OSError 沿 worker 外层 except 逃逸会把指纹熔断/repair/ready
+            # 三段失败分类整体跳过，白烧一整轮实现 run，MUST NOT 放大。
+            try:
+                streak = self._pm.state_machine.bump_counters(
+                    spec_name, {"_merge_streak": 1}
+                ).get("_merge_streak", 0)
+                streak_bumped = True
+            except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"merge 熔断 streak 记账递增失败 '{spec_name}'"
+                    f"（按读取侧旧值+1 继续失败分类）: {type(e).__name__}: {e}",
+                )
+                streak = self._parse_int_field(spec_entry, "_merge_streak", 0) + 1
+                streak_bumped = False
         else:
             streak = 1
             streak_bumped = False
@@ -4149,6 +4338,16 @@ class QQQueueMixin:
                     # 旧值写回最多丢一次递增，影响被「>=1 即终止」封顶。前提钉死：若
                     # 放宽修复轮上限，MUST 先改用 bump_counters 锁内原子递增取写后值
                     # （对齐 _retry_count/_merge_streak 同型站点），防丢增量。
+                    # 复位口径钉死（code-review item 63de06935583）：本计数全仓无
+                    # 复位点、按 spec 生命期口径生效（「每 spec 至多一轮」——
+                    # add-impl-ocr-parallel-lane design/spec 明文「计数器持久化于
+                    # spec entry」，达上限后 findings 一律转台账放行承接后续链路）。
+                    # 刻意不在「新轮次派发清除旧锚点」段清零：bug_found 打回的修复
+                    # 轮重派（_do_spec_bug_found 置 implementing 后重入队）同样经过
+                    # 该段，彼处清零会把刚写入的 1 清回 0，gate 首轮打回无限复活
+                    # ——正是上限 1 + 转台账放行要防的死循环。与
+                    # TASK_GATE_REJECTIONS_FIELD「同一轮被连续拒回、全新派发清零」
+                    # 的口径差异属有意为之，勿按该先例「对齐」。
                     "_ocr_fix_rounds": rounds + 1,
                     **self._ocr_join_pending_cleared(),
                 },

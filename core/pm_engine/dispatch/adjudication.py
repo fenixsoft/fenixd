@@ -853,12 +853,14 @@ class VAdjudicationMixin:
 
         # 缺件入参兼容两种形态：守卫返回 list[dict]（path/kind/violation）与
         # 既有调用/测试的 list[str]。统一规范化为路径列表（匹配逻辑只认路径）。
-        # 缺 path 键的畸形条目兜底空串（code-review item fc62a0cdb4c3，与
-        # _redispatch_for_missing 的 .get 取值口径对齐）：单条畸形数据不得以
-        # KeyError 放大为整批裁决降级；空串不命中任何声明条目、留在 remaining
-        # 交守卫重跑对账（fail-closed，不静默丢弃缺件）。
+        # 缺 path 键或 path 值为 null 的畸形条目兜底空串（code-review item
+        # fc62a0cdb4c3，与 _redispatch_for_missing 的 .get 取值口径对齐；
+        # 0284d932e70f：`or ""` 使键存在但值为 None 的畸形条目同样兜底，
+        # 伪路径 "None" 不得流入 blocked 文案 / judge 输入 / 防洗白对账）：
+        # 单条畸形数据不得以 KeyError 放大为整批裁决降级；空串不命中任何
+        # 声明条目、留在 remaining 交守卫重跑对账（fail-closed，不静默丢弃缺件）。
         missing_paths = [
-            m.get("path", "") if isinstance(m, dict) else str(m) for m in missing
+            (m.get("path") or "") if isinstance(m, dict) else str(m) for m in missing
         ]
 
         # 分类：确定性命中 → deterministic；声明段无该条目或不命中 → 留在 remaining
@@ -1605,7 +1607,7 @@ class VAdjudicationMixin:
         # KeyError 经入口 fail-open 放大为整批预分类降级；空串不命中任何
         # 声明条目、按下方 entry is None 同款保留进 remaining。
         missing_paths = [
-            m.get("path", "") if isinstance(m, dict) else str(m) for m in missing
+            (m.get("path") or "") if isinstance(m, dict) else str(m) for m in missing
         ]
         if not missing_paths:
             return {"action": "continue", "remaining": missing}
@@ -1762,7 +1764,8 @@ class VAdjudicationMixin:
         溯源。``extra_audit`` 非 dict 时忽略。
 
         Returns:
-            重定位成功（改写或登记 + 审计 + 提交完成）返回 True；异常/失败 False。
+            重定位成功（改写或登记 + 提交完成；审计落册尽力而为，失败仅
+            WARNING 不影响成败）返回 True；异常/失败 False。
         """
         from core.deliverables import (
             register_relocation_credential,
@@ -1811,9 +1814,24 @@ class VAdjudicationMixin:
                 }
                 if isinstance(extra_audit, dict):
                     audit_rec.update(extra_audit)
-                DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
-                    audit_rec
-                )
+                # code-review item 8bbf9104ee7f：审计落册单独包 try（对齐同文件
+                # _audit_deferred_correction 及各预分类审计块「审计失败仅
+                # WARNING 非阻塞」统一口径）——此时改写已生效
+                # （tasks_md_rewrote=True）且不可回滚，审计写盘异常 MUST NOT
+                # 经外层 except 整体 return False 令调用方把旧路径留在
+                # remaining / 判 unclear 转 blocked（对已不存在的声明路径终审
+                # 白耗一轮 LLM / 误升级人工）。重定位成败只取决于改写/凭据
+                # 登记本身。
+                try:
+                    DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
+                        audit_rec
+                    )
+                except Exception as audit_exc:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"重定位审计落册失败 '{spec_name}'（{old_path} → "
+                        f"{new_path}，改写已生效不回滚，审计非阻塞）: {audit_exc}",
+                    )
             else:
                 # 3.6：凭据登记（不经文本替换）——生效声明已无该条目、或声明
                 # 来源为分支版本无落盘位置（spec_dir=None，evo-deliverable-
@@ -2040,7 +2058,7 @@ class VAdjudicationMixin:
         # _redispatch_for_missing 的 .get 取值口径对齐），单条畸形数据不得
         # 以 KeyError 放大为整批终审裁决降级。
         remaining_paths = [
-            r.get("path", "") if isinstance(r, dict) else str(r) for r in remaining
+            (r.get("path") or "") if isinstance(r, dict) else str(r) for r in remaining
         ]
         # 空缺件早退（code-review item af1bab4a33c7）：预分类后剩余缺件为空清单
         # （上游守卫复检异常返回空 remaining / 调用方直入空 missing）MUST NOT 置
@@ -2079,7 +2097,7 @@ class VAdjudicationMixin:
             # fc62a0cdb4c3）——复检权威清单同源同型，畸形条目不得令整批
             # 裁决降级。
             remaining_paths = [
-                r.get("path", "") if isinstance(r, dict) else str(r)
+                (r.get("path") or "") if isinstance(r, dict) else str(r)
                 for r in remaining
             ]
         # kind 映射：供 judge 输入携带 kind（4.5）及 delete 防洗白（4.3）。
@@ -2558,7 +2576,7 @@ class VAdjudicationMixin:
         # 与 _redispatch_for_missing 对齐）——本处位于守卫重跑 try/except
         # 之外，畸形条目不得以 KeyError 逃逸令复发对账整批降级。
         remaining_paths = [
-            r.get("path", "") if isinstance(r, dict) else str(r) for r in remaining
+            (r.get("path") or "") if isinstance(r, dict) else str(r) for r in remaining
         ]
 
         # fix-relocation-writeback-layer D5（Task 5.1/5.2）：typo 修正后同路径

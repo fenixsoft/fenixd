@@ -574,5 +574,98 @@ class TestValidateAttributionLevels(unittest.TestCase):
         self.assertNotIn("attribution_level", by_id["p1"])
 
 
+# ── 9. 引擎嵌套 screenshot_labels 形态回归（code-review fdd31d3d542d）──
+
+
+class TestEngineNestedScreenshotLabels(unittest.TestCase):
+    """引擎嵌套形态（{截图路径: 标签dict}）下白屏证据链路必须照常命中。
+
+    web_runner 写入场景级 screenshot_labels 的真实形态是按截图路径嵌套
+    （classify_screenshot 对正常截图也恒含量化指标 pixel_std /
+    dominant_color_pct / width / height），消费点按扁平 dict 直读时
+    blank_screenshot / low_contrast 恒取 None/False——白屏快速通道、
+    方向强制改写、缓存降级豁免三链路整体失灵。本组用例使用与
+    web_runner._execute_scenario 写入侧一致的嵌套形态钉死归一行为。
+    """
+
+    BLANK_PATH_LABELS = {
+        "blank_screenshot": True,
+        "pixel_std": 0.001,
+        "dominant_color_pct": 0.999,
+        "width": 1280,
+        "height": 800,
+    }
+
+    NORMAL_PATH_LABELS = {
+        "pixel_std": 0.42,
+        "dominant_color_pct": 0.31,
+        "width": 1280,
+        "height": 800,
+    }
+
+    def test_nested_blank_label_evidence_backed(self):
+        """嵌套形态的白屏标签 → evidence-backed（白屏快速通道命中）。"""
+        sc = _scenario("s1", screenshot_labels={
+            "/tmp/shots/s1_step2.png": dict(self.BLANK_PATH_LABELS)})
+        self.assertEqual(compute_attribution_level(sc),
+                         ATTRIBUTION_LEVEL_EVIDENCE_BACKED)
+
+    def test_nested_low_contrast_label_evidence_backed(self):
+        """嵌套形态的低对比度标签 → evidence-backed。"""
+        sc = _scenario("s1", screenshot_labels={
+            "/tmp/shots/s1_step1.png": {
+                "low_contrast": True, "pixel_std": 0.05,
+                "dominant_color_pct": 0.6, "width": 1280, "height": 800}})
+        self.assertEqual(compute_attribution_level(sc),
+                         ATTRIBUTION_LEVEL_EVIDENCE_BACKED)
+
+    def test_nested_normal_metrics_do_not_trigger_blank_gate(self):
+        """正常截图的量化指标（无 blank/low_contrast 键）不得凑出白屏通道。"""
+        sc = _scenario("s1", screenshot_labels={
+            "/tmp/shots/s1_step1.png": dict(self.NORMAL_PATH_LABELS)})
+        self.assertEqual(compute_attribution_level(sc),
+                         ATTRIBUTION_LEVEL_SPECULATIVE)
+
+    def test_nested_blank_label_forces_env_direction(self):
+        """嵌套形态白屏标签 → 分类强制改写 env（方向约束命中）。"""
+        sc = _scenario("s1", classification="product-bug",
+                       screenshot_labels={
+                           "/tmp/shots/s1_step2.png": dict(self.BLANK_PATH_LABELS)})
+        self.assertEqual(enforce_blank_screenshot_direction(sc), "env")
+
+    def test_nested_normal_metrics_not_forced_env(self):
+        """嵌套形态正常指标不含白屏标签 → 不改写分类。"""
+        sc = _scenario("s1", classification="product-bug",
+                       screenshot_labels={
+                           "/tmp/shots/s1_step1.png": dict(self.NORMAL_PATH_LABELS)})
+        self.assertIsNone(enforce_blank_screenshot_direction(sc))
+
+    def test_nested_blank_label_escapes_pure_cache_downgrade(self):
+        """缓存命中场景的嵌套白屏强标签 → 豁免纯缓存归因降级 speculative。"""
+        sc = {
+            "scenario_id": "s1",
+            "status": "fail",
+            "classification": "product-bug",
+            "evidence": {"first_failed_step": "navigate"},
+            "assertion_results": [{"type": "element_visible",
+                                   "pass": False, "expected": "可见",
+                                   "actual": "不可见"}],
+            "assertion_triage": _triage(),
+            "screenshot_labels": {
+                "/tmp/shots/s1_step2.png": dict(self.BLANK_PATH_LABELS)},
+            "screenshots": [],
+        }
+        fp = scenario_fingerprint(sc)
+        report = {"scenarios": [sc]}
+        cache = {"s1": {"fingerprint": fp, "classification": "product-bug",
+                        "evidence": {"first_failed_step": "navigate"}}}
+        validate_attribution_levels(report)
+        tagged = tag_cached_attributions(report, cache, "spec")
+        self.assertIn("s1", tagged)
+        self.assertEqual(sc.get("attribution_level"),
+                         ATTRIBUTION_LEVEL_EVIDENCE_BACKED)
+        self.assertFalse(sc.get("cached_override_level", False))
+
+
 if __name__ == "__main__":
     unittest.main()
