@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from core.proc_utils import guard_killpg
+from core.signals import validate_scheduling_kick_spec
 
 # 日志组件名（logger.warning(component, message) 口径）
 COMPONENT = "adjudication_narrative"
@@ -123,10 +124,19 @@ _NARRATIVE_MAX_CHARS = 8192
 # 段省略标记（超预算段砍尾后附于段尾，同 hook_engine 截断先例形态）
 _NARRATIVE_TRUNCATION_MARK = "\n…（截断）"
 
+# 首段标题前前导文本的压缩标记（见 _clip_narrative）——其字符开销须与省略
+# 标记一样参与单段预算预扣，否则四段全截断时整体可超 _NARRATIVE_MAX_CHARS
+# （code-review 97f75ae0e759）
+_NARRATIVE_LEADING_MARK = "…\n"
+_LEADING_MARK_CHARS = len(_NARRATIVE_LEADING_MARK)
+
 # 单段截断预算：整体预算均摊四段并预扣各省略标记开销，另预扣每截断段 1 字节
-# 段界换行（保下一段标题行首锚定，见 _clip_narrative）——截断后整体 ≤ _NARRATIVE_MAX_CHARS
+# 段界换行（保下一段标题行首锚定，见 _clip_narrative）与前导标记开销
+# _LEADING_MARK_CHARS——截断后整体 ≤ _NARRATIVE_MAX_CHARS
 _NARRATIVE_SECTION_MAX_CHARS = (
-    _NARRATIVE_MAX_CHARS - (len(_NARRATIVE_TRUNCATION_MARK) + 1) * len(REQUIRED_SECTIONS)
+    _NARRATIVE_MAX_CHARS
+    - (len(_NARRATIVE_TRUNCATION_MARK) + 1) * len(REQUIRED_SECTIONS)
+    - _LEADING_MARK_CHARS
 ) // len(REQUIRED_SECTIONS)
 
 # 单段验证材料预算：【验证材料】总预算均摊四产物段并预扣段头与截断标记开销
@@ -444,6 +454,10 @@ def _collect_report_path(project_root: Any, spec: str) -> Optional[str]:
     """fail-open 采集验证报告路径存在性（report_gate 同一惯例路径）。"""
     if not spec or project_root is None:
         return None
+    if validate_scheduling_kick_spec(spec) is not None:
+        # spec 名须为 kebab-case 白名单形态才能拼进产物路径（与 verify-progress
+        # 读侧防御口径对齐），含 .. 等成分的越界值按不存在处理
+        return None
     try:
         path = Path(project_root) / ".fenix" / "verify-progress" / spec / "report.json"
         return str(path) if path.exists() else None
@@ -595,6 +609,11 @@ def _collect_verification_materials(
     if not spec or project_root is None:
         return None
     if signal_type not in VERIFY_FAMILY_SIGNALS:
+        return None
+    if validate_scheduling_kick_spec(spec) is not None:
+        # spec 名须为 kebab-case 白名单形态才能拼进 spec/changes/<spec>/... 与
+        # .fenix/verify-progress/<spec>/... 产物路径（与 verify-progress 读侧
+        # 防御口径对齐），越界值按无材料处理
         return None
     root = Path(project_root)
     parts: list = []
@@ -775,7 +794,7 @@ def _clip_narrative(text: str) -> str:
     bounds = starts + [len(text)]
     pieces: list = []
     if starts[0] > 0:
-        pieces.append("…\n")
+        pieces.append(_NARRATIVE_LEADING_MARK)
     for i in range(len(REQUIRED_SECTIONS)):
         seg = text[starts[i] : bounds[i + 1]]
         if len(seg) > _NARRATIVE_SECTION_MAX_CHARS:
