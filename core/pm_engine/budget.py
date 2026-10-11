@@ -192,7 +192,13 @@ class ImplBudget:
             raw = self._pm._get_config(
                 "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
             )
-            val = BUDGET_EXEMPT_ALERT_THRESHOLD if raw is None else int(raw)
+            # bool 按非法回退（ae68484c51b3）：int(True)=1 会把阈值静默压到 1，
+            # 与 resolve_impl_run_budget_max / clamp_impl_run_budget 的排除口径对齐。
+            val = (
+                BUDGET_EXEMPT_ALERT_THRESHOLD
+                if raw is None or isinstance(raw, bool)
+                else int(raw)
+            )
         except (TypeError, ValueError):
             val = BUDGET_EXEMPT_ALERT_THRESHOLD
         return max(1, val)
