@@ -117,6 +117,11 @@ class FileWatcher:
     # ── 生命周期 ─────────────────────────────────────────────
 
     def start(self):
+        # 重入守卫：已在运行（或 stop() join 超时后旧线程仍在跑）时不得再起
+        # 第二个 _loop，否则两线程并发 scan_once 互踩基线并各自广播，前端收到
+        # 双份事件、增量漏推/重推。
+        if self._running and self._thread and self._thread.is_alive():
+            return
         self._running = True
         self._thread = threading.Thread(
             target=self._loop, name="fenixd-dashboard-watcher", daemon=True
@@ -132,6 +137,8 @@ class FileWatcher:
                 # 线程会继续完成本轮扫描（含广播）后才退出。stop() 是非阻塞尽力
                 # 停止，「返回即已停」在此分支不成立，留 warning 供日志反推。
                 logger.warning("dashboard watcher stop() join 超时（5s），扫描线程仍在运行")
+            else:
+                self._thread = None
 
     def _loop(self):
         tick = 0
@@ -463,7 +470,7 @@ class FileWatcher:
 
     # ── 变化处理 ─────────────────────────────────────────────
 
-    def _handle_state_change(self, name: str, proot: Path, removed: set = None):
+    def _handle_state_change(self, name: str, proot: Path, removed: set | None = None):
         """增量 state 事件（dashboard-incremental-watcher D2/D3）。
 
         变化发生后经 SummaryIndex.get() 做文件级签名比对（未变直返缓存、变化只
