@@ -555,6 +555,20 @@ class BrowserManager:
                 self._log(
                     "warning", f"回收本地 HTTP 服务器失败: {type(e).__name__}: {e}"
                 )
+            # launch 失败路径同步回收本轮 playwright driver（code-review item
+            # 57687aa447db）：async_playwright().start() 成功后 chromium.launch
+            # 抛错时 _playwright 已驻留，与上方服务器同理不依赖下轮 start() 重入
+            # 才释放，把回收时机提前到失败当场。容错与 stop() 的 playwright.stop
+            # 同款；_playwright 仅 start/stop 两条路径引用，置 None 无共享影响
+            # （若异常发生在 start() 本身则此处为 None，无操作）。
+            if self._playwright is not None:
+                try:
+                    await self._playwright.stop()
+                except Exception as e:
+                    self._log(
+                        "warning", f"释放 playwright 实例失败: {type(e).__name__}: {e}"
+                    )
+                self._playwright = None
             raise
         self._started = True
 

@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .path_safety import safe_component
+
 logger = logging.getLogger("fenixd.verify_engine.judge_files")
 
 # 归因条目状态常量
@@ -41,13 +43,25 @@ REQUEUE_MANIFEST_FILENAME = "requeue_manifest.json"
 
 
 def _attribution_path(project_root: Path, spec_name: str) -> Path:
-    """judge 归因产物文件路径。"""
-    return project_root / ".fenix" / "verify-progress" / spec_name / JUDGE_ATTRIBUTION_FILENAME
+    """judge 归因产物文件路径（spec_name 净化口径同 engine._safe_component）。"""
+    return (
+        project_root
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / JUDGE_ATTRIBUTION_FILENAME
+    )
 
 
 def _requeue_manifest_path(project_root: Path, spec_name: str) -> Path:
-    """回炉清单文件路径。"""
-    return project_root / ".fenix" / "verify-progress" / spec_name / REQUEUE_MANIFEST_FILENAME
+    """回炉清单文件路径（spec_name 净化口径同 engine._safe_component）。"""
+    return (
+        project_root
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / REQUEUE_MANIFEST_FILENAME
+    )
 
 
 def _fsync_dir(path: Path) -> None:

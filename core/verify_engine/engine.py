@@ -18,12 +18,12 @@ engine.py — 验证引擎主控（Runner 插件化调度，design D1）
 import asyncio
 import json
 import os
-import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .path_safety import safe_component
 from .runner import (
     VerifyRunner,
     RUNNER_REGISTRY,
@@ -423,24 +423,30 @@ class VerifyEngine:
                     f"场景'{s.id}'依赖的场景失败（{', '.join(broken)}），"
                     f"跳过执行（依赖失败传播，非产品归因）",
                 )
-                results.append(
-                    {
-                        "scenario_id": s.id,
-                        "description": s.description,
-                        "kind": s.kind,
-                        "status": "blocked-env",
-                        "error": (
-                            f"依赖场景失败，未执行: {', '.join(broken)}"
-                            f"（依赖失败传播，非本场景产品缺陷）"
-                        ),
-                        "step_results": [],
-                        "assertion_results": [],
-                        "visual_results": [],
-                        "screenshots": [],
-                        "dependency_skipped": True,
-                        "skipped_depends_on": broken,
-                    }
-                )
+                skipped_result = {
+                    "scenario_id": s.id,
+                    "description": s.description,
+                    "kind": s.kind,
+                    "status": "blocked-env",
+                    "error": (
+                        f"依赖场景失败，未执行: {', '.join(broken)}"
+                        f"（依赖失败传播，非本场景产品缺陷）"
+                    ),
+                    "step_results": [],
+                    "assertion_results": [],
+                    "visual_results": [],
+                    "screenshots": [],
+                    "dependency_skipped": True,
+                    "skipped_depends_on": broken,
+                }
+                # 互斥顺延记账回填（code-review item b8605286841f）：合成结果
+                # 不经过批次收尾的统一附加段，此前被资源组互斥顺延过的场景若
+                # 不在此回填，_build_report 的 deferred_total 将丢失其顺延批次
+                # 数。键形态照收尾段口径：仅被顺延过的场景才带键（值为 0 不落键）。
+                if s.id in mutex_waits:
+                    skipped_result["mutex_waited"] = True
+                    skipped_result["mutex_wait_batches"] = mutex_waits[s.id]
+                results.append(skipped_result)
 
             # ── 资源组在飞互斥（evo-add-verify-scenario-resource-mutex 1.2）──
             # 同 resource_group 场景在飞互斥：本批已接受某组场景时，同组其余
@@ -788,9 +794,11 @@ class VerifyEngine:
         """路径成分净化（code-review item 0f903db272c3）：与 browser.screenshot
         对 scenario.id 的同款纪律——拼入 verify-progress 路径前先替换分隔符
         与 NUL，spec_name 含 / 或 .. 时经 f-string 拼接会写到预期目录之外
-        （正常 kebab-case spec 目录名不受影响）。
+        （正常 kebab-case spec 目录名不受影响）。实现下沉 path_safety 共用
+        （code-review items baf2a275da81/7e764b3f6b50：judge_files 与
+        scenario_static_check 同口径净化，不再各自复刻正则）。
         """
-        return re.sub(r"[\\/\x00]", "_", str(name))
+        return safe_component(name)
 
     def _write_progress(self, done: int, total: int, current: str):
         """写入实时进度文件，供仪表盘读取。
