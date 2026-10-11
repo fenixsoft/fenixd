@@ -365,6 +365,20 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         s = row.strip()
         if not s or s.startswith("#"):
             continue
+        # 中止条件二（code-review item 96139bacfa21）：顶格 worktree: 后跟非空
+        # 内容（内联映射 worktree: {base_dir: /x}、标量 worktree: disabled、
+        # 段头行尾注释 worktree:  # c）时段头定位同样失配，会落入「无 worktree
+        # 段」分支在文件尾追加第二个 worktree: 段，YAML 重复顶层键后者胜出，
+        # 用户原段 base_dir 等兄弟键被静默丢弃——宁可漏写，中止写入交人工处置
+        if (
+            not row.startswith((" ", "\t"))
+            and s.startswith("worktree:")
+            and s != "worktree:"
+        ):
+            return {
+                "wrote": False,
+                "reason": "worktree 段形态无法安全解析（内联映射/标量/段头行尾注释），请人工处置",
+            }
         _, sep, val = s.partition("has_build_artifacts:")
         if not sep:
             continue
@@ -378,9 +392,32 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     def _is_block_item(s: str) -> bool:
         return s == "-" or s.startswith("- ")
 
-    has_line = f"  has_build_artifacts: {str(detection['has_build_artifacts']).lower()}"
+    # 既有缩进探测（code-review item 458df4aabd1d）：has_line/paths_line 若按
+    # 固定 2 空格缩进落进 4 空格（或其他深度）缩进的既有 worktree 段，原位替换
+    # 与段内追加都会产出段内缩进混排的 YAML，daemon/ConfigLoader 的 safe_load
+    # 随即抛缩进错误、config.yaml 整体不可读；从旧段首个段内键行探测既有缩进
+    # 宽度并以同宽生成两行。无既有段或段内无可参照键行时用 2 空格（与 yaml.dump
+    # 默认缩进一致，新段整体自洽，与他段缩进不同在 YAML 中合法）。
+    def _detect_indent() -> str:
+        for k, row in enumerate(old_lines):
+            stripped = row.strip()
+            if stripped == "worktree:" and not row.startswith((" ", "\t")):
+                for sub in old_lines[k + 1 :]:
+                    s2 = sub.strip()
+                    if not s2 or s2.startswith("#") or _is_block_item(s2):
+                        continue  # 空行/注释/块式列表值行不作缩进参照
+                    if not sub.startswith((" ", "\t")):
+                        break  # 顶格非块项 = 段已结束，段内无键行可参照
+                    if sub.startswith("\t"):
+                        break  # tab 缩进非合法 YAML，无从同宽，回退默认
+                    return sub[: len(sub) - len(sub.lstrip(" "))]
+                break
+        return "  "
+
+    indent = _detect_indent()
+    has_line = f"{indent}has_build_artifacts: {str(detection['has_build_artifacts']).lower()}"
     paths = detection["build_artifact_paths"]
-    paths_line = f"  build_artifact_paths: {json.dumps(paths, ensure_ascii=False)}"
+    paths_line = f"{indent}build_artifact_paths: {json.dumps(paths, ensure_ascii=False)}"
 
     # 定位旧 worktree: 段区间 [wt_start, wt_end)。段尾检测须放过顶格块式列表项：
     # yaml.dump 的列表子行落在键的缩进层级（可顶格 `- x`），仍属段内不能截断
@@ -475,7 +512,15 @@ def main():
 
     # expanduser：shell 引号包裹传入的 ~ 开头路径按字面落盘会误报「项目根目录不存在」，
     # 与 fenix_dashboard.py cmd_add_project 的用户输入路径解析口径对齐
-    project_root = Path(args.project_root).expanduser().resolve()
+    try:
+        # 路径解析收口进 try（与 fenix_archive.py/fenix_spec.py 同场景防护对齐）：
+        # expanduser 解析不出家目录抛 RuntimeError、含空字节路径在构造阶段抛
+        # ValueError，裸抛会绕过下方「目录不存在」分支的 JSON 错误载荷与
+        # sys.exit(1)，进程以 traceback 收场、退出码不符 docstring 契约
+        project_root = Path(args.project_root).expanduser().resolve()
+    except (ValueError, OSError, RuntimeError) as e:
+        print(json.dumps({"error": f"项目根目录无法解析: {e}", "status": "error"}))
+        sys.exit(1)
     if not project_root.is_dir():
         print(json.dumps({"error": f"项目根目录不存在: {project_root}", "status": "error"}))
         sys.exit(1)

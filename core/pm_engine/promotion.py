@@ -199,24 +199,20 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
     if not spec_dir.is_dir():
         return False
 
-    # 1. 检查 mode
-    spec_yaml = spec_dir / ".spec.yaml"
-    if not spec_yaml.exists():
-        return False
+    # 1. 检查 mode（走 core.spec_mode 单点，与引擎/派发/守卫读 mode 口径统一；
+    #    文件缺失/无 mode 字段/值非法/解析失败一律回退 "full"，即保守不跳过评审）
     try:
-        import yaml
+        from core.spec_mode import read_spec_mode
 
-        with spec_yaml.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+        if read_spec_mode(project_root, spec_name) != "fast-track":
+            return False
     except Exception as e:
-        # .spec.yaml 读取/解析异常（YAML 损坏？）：保守不跳过评审，不让异常
-        # 沿 promote_drafted 传播中断晋升链
+        # .spec.yaml 读取异常：保守不跳过评审，不让异常沿 promote_drafted
+        # 传播中断晋升链
         logger.warning(
             "pm_engine",
             f".spec.yaml 读取/解析异常 '{spec_name}'（保守不跳过评审）: {e}",
         )
-        return False
-    if data.get("mode") != "fast-track":
         return False
 
     # 2. 能力目录数 ≤ 1

@@ -77,6 +77,11 @@ def extract_imports_from_file(file_path: str) -> Set[str]:
                     imports.add(node.module)
     except (SyntaxError, UnicodeDecodeError) as e:
         print(f"Warning: Could not parse {file_path}: {e}", file=sys.stderr)
+    except OSError as e:
+        # rglob 扫描与读取之间目标可能被并发删除、权限受限，或是名为 *.py 的
+        # 目录；OSError 族按同样 fail-open 口径告警后返回空 imports，单文件
+        # 失败不中断全图构建。
+        print(f"Warning: Could not read {file_path}: {e}", file=sys.stderr)
 
     return imports
 

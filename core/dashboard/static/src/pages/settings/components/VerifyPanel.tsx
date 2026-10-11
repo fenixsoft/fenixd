@@ -1,6 +1,7 @@
 import { Alert, Button, Card, Form, Input, Radio, Space, Switch, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useEffect } from 'react';
+import type { ReactNode } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -11,7 +12,7 @@ const { Text } = Typography;
 
 // 产物路径逐项前端校验（与后端 validate_build_artifact_paths 同口径，仅为即时报错；
 // 写入权威仍在后端，非法项在 POST /api/config 被 400 拒绝）。
-function artifactPathRule(rules: unknown, value: unknown): Promise<void> {
+function artifactPathRule(_rule: unknown, value: unknown): Promise<void> {
   const v = typeof value === 'string' ? value.trim() : '';
   if (!v) return Promise.reject(new Error('路径不能为空'));
   if (v.startsWith('/')) return Promise.reject(new Error('不能是绝对路径'));
@@ -34,6 +35,54 @@ function buildArtifactsHint(state: HasBuildArtifactsState | undefined): string {
     return '有派生物：下方列出的路径会被 merge-back 当作可丢弃的生成物处理（对齐 HEAD、不进 stash）。注意：把源码目录（如 src/）也列进来会连带取消「源码变更后重建产物」的触发。';
   }
   return '无派生物：不豁免任何路径，所有 tracked 改动都按人手维护的源码处理——这对构建输出未入库的项目是正确取值。';
+}
+
+/** 用户级只读分支的三态渲染（code-review item e5a67a93590c：抽出嵌套三元为具名
+    函数，比照 buildArtifactsHint 的收敛形态——JSX 内只留一次函数调用）。 */
+function buildUserScopeArtifactsSection(
+  paths: string[] | undefined,
+  hasArtifacts: boolean | null | undefined,
+): ReactNode {
+  if (paths?.length) {
+    return (
+      <ul style={{ margin: '12px 0 0', paddingLeft: 20 }}>
+        {paths.map((p, i) => {
+          // code-review item c5b0bd57f3db：稳定 key——配置路径实际唯一，
+          // 直接用路径本身；病态重复条目回退「路径-索引」防 React 撞
+          // key。索引 key 会在重排/插入/删除时按位置复用错误 DOM 节点。
+          // 可选链：map 回调内 TS 收窄失效，非空由上方守卫保证。
+          const key = paths?.indexOf(p) === i ? p : `${p}-${i}`;
+          return (
+            <li key={key}>
+              <code>{p}</code>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+  if (hasArtifacts === true) {
+    // true + 空路径 = 三态表的「标志与路径不一致」未决态
+    //（is_artifact_config_unresolved：判定恒假、按无产物处理）。
+    // 旧实现此组合静默渲染「有派生物」、无路径亦无说明（code-review
+    // item def8b9836b7e，下方 !==true 守卫把未决提示一并抑制）——
+    // 显式说明矛盾态与其保守侧生效语义。
+    return (
+      <Text type="warning" style={{ display: 'block', marginTop: 12 }}>
+        已声明「有派生物」但豁免路径列表为空（标志与路径不一致，按未裁决处理）：
+        产物判定恒假、merge-back 全部按源码改动对待。请切到项目级作用域补全
+        路径，或把声明改为「无派生物」。
+      </Text>
+    );
+  }
+  return (
+    hasArtifacts !== false &&
+    hasArtifacts !== true && (
+      <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+        未配置豁免路径（未裁决，等待系统自动起草）
+      </Text>
+    )
+  );
 }
 
 /** has_build_artifacts 三态表单值：'unset'（未裁决）/ 'true'（有产物）/ 'false'（无产物）。
@@ -356,40 +405,9 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                   )}
                 </Text>
               </div>
-              {config.worktree?.build_artifact_paths?.length ? (
-                <ul style={{ margin: '12px 0 0', paddingLeft: 20 }}>
-                  {config.worktree.build_artifact_paths.map((p, i) => {
-                    // code-review item c5b0bd57f3db：稳定 key——配置路径实际唯一，
-                    // 直接用路径本身；病态重复条目回退「路径-索引」防 React 撞
-                    // key。索引 key 会在重排/插入/删除时按位置复用错误 DOM 节点。
-                    // 可选链：map 回调内 TS 收窄失效，外层守卫已保证非空。
-                    const key =
-                      config.worktree?.build_artifact_paths?.indexOf(p) === i ? p : `${p}-${i}`;
-                    return (
-                      <li key={key}>
-                        <code>{p}</code>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : config.worktree?.has_build_artifacts === true ? (
-                // true + 空路径 = 三态表的「标志与路径不一致」未决态
-                //（is_artifact_config_unresolved：判定恒假、按无产物处理）。
-                // 旧实现此组合静默渲染「有派生物」、无路径亦无说明（code-review
-                // item def8b9836b7e，下方 !==true 守卫把未决提示一并抑制）——
-                // 显式说明矛盾态与其保守侧生效语义。
-                <Text type="warning" style={{ display: 'block', marginTop: 12 }}>
-                  已声明「有派生物」但豁免路径列表为空（标志与路径不一致，按未裁决处理）：
-                  产物判定恒假、merge-back 全部按源码改动对待。请切到项目级作用域补全
-                  路径，或把声明改为「无派生物」。
-                </Text>
-              ) : (
-                config.worktree?.has_build_artifacts !== false &&
-                config.worktree?.has_build_artifacts !== true && (
-                  <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
-                    未配置豁免路径（未裁决，等待系统自动起草）
-                  </Text>
-                )
+              {buildUserScopeArtifactsSection(
+                config.worktree?.build_artifact_paths,
+                config.worktree?.has_build_artifacts,
               )}
             </>
           )}

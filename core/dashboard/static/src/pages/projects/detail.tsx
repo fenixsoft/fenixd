@@ -8,6 +8,9 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, STREAM_URL, statusMeta } from '@/services/dashboard';
 import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
+// 「重拉基底 + hooks 段整体替换」与设置页 HooksPanel 共用单源
+// （code-review item 7add07b1e0e8）
+import { saveHooksSection } from '@/services/hooksSection';
 import HookManager from '@/components/HookManager';
 import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
@@ -530,18 +533,17 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
     }
     setSaving(true);
     try {
-      // 基底用保存前重拉的最新配置，不用组件内 config 快照：后端对 hooks 段是
-      // 「patch 存在即整体替换」语义，快照可能已过期（页面挂载/上次保存后，
-      // 设置页或另一标签更新过项目级 hooks.global），以快照合并会静默回退他处
-      // 的修改（code-review item bf045d7ed0b9）
-      const latest = await getConfig(name);
-      const latestHooks: HooksConfig = latest?.hooks ?? {};
-      const cfg = await saveConfig(name, {
-        hooks: {
+      // 基底用保存前重拉的最新配置 + hooks 段整体替换抽为 saveHooksSection
+      // 单源（「patch 存在即整体替换」语义见该模块头注释，
+      // code-review item bf045d7ed0b9 原始修复点）
+      const cfg = await saveHooksSection(
+        name,
+        (latestHooks) => ({
           ...latestHooks,
           specs: { ...(latestHooks.specs || {}), [spec]: nextSpecHooks },
-        },
-      });
+        }),
+        (patch) => saveConfig(name, patch),
+      );
       setConfig(cfg);
       message.success('保存成功');
     } catch (e) {

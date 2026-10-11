@@ -151,7 +151,10 @@ class ReportBuilder:
             return False
         try:
             return float(next_retry) > datetime.now(timezone.utc).timestamp()
-        except (TypeError, ValueError):
+        # 补捕 OverflowError（code-review item fad622117935）：next_retry 经
+        # _coerce_int（任意精度 int）得到，error 文本损坏出 400 位数字标记时
+        # float() 抛 OverflowError 不在原元组，异常从判定点穿透中断 push 重试。
+        except (TypeError, ValueError, OverflowError):
             return False
 
     @staticmethod
@@ -165,4 +168,9 @@ class ReportBuilder:
         attempts = _coerce_int(spec.get(PUSH_ATTEMPTS_FIELD))
         if attempts is None:
             attempts = extract_push_attempts_marker(spec.get("error") or "")
-        return attempts if attempts is not None else 0
+        if attempts is None:
+            return 0
+        # 负值钳制（code-review item 27f5f4f2425a）：字段被外部直改成负数时，
+        # engine 退避表消费点 backoff_seconds[min(attempts - 1, ...)] 以负索引
+        # 取秒数抛 IndexError（持锁路径内中断该轮 push 收口），此处在源头钳 0。
+        return max(0, attempts)

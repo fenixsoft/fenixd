@@ -1230,6 +1230,10 @@ export interface AgentsModels {
 
 export interface AgentsConfig {
   models?: AgentsModels;
+  /** 子代理模型覆盖（agents.subagent_model_override）：非空时，直连 Provider 车道的
+   * 隔离 settings.json 的 env 子代理 tier 映射（CLAUDE_CODE_SUBAGENT_MODEL 等）使用
+   * 该值而非 provider 默认模型；留空 = 使用 provider model */
+  subagent_model_override?: string;
   max_concurrent?: number;
   max_turns?: number;
   run_timeout_seconds?: number;

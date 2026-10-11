@@ -351,7 +351,13 @@ class TestDispatchDeferral(unittest.TestCase):
 
         engine._on_spec_ready("demo")
 
-        engine._enqueue.assert_called_once_with("demo", "implementer")
+        # 并行出题入队经门面 _enqueue 后（code-review item 1fdb2783df6f 修复，
+        # 与直穿 _dispatcher._enqueue 语义等价），桩上合法多出一条正交的
+        # planner-plan 条目（ready 触发，行为由 test_verify_lane_throughput
+        # 覆盖）；本测试只断言被测行为：陈旧锚点放行且 implementer 恰派发一次。
+        impl_calls = [c for c in engine._enqueue.call_args_list
+                      if c.args == ("demo", "implementer")]
+        self.assertEqual(len(impl_calls), 1)
         warns = [str(c) for c in logger.warning.call_args_list]
         self.assertTrue(any("陈旧评审锚点" in c for c in warns), warns)
 
@@ -385,7 +391,14 @@ class TestDispatchDeferral(unittest.TestCase):
 
         engine._on_spec_ready("demo")
 
-        engine._enqueue.assert_called_once_with("demo", "implementer")
+        # 并行出题入队经门面 _enqueue 后（code-review item 1fdb2783df6f 修复，
+        # 与直穿 _dispatcher._enqueue 语义等价），桩上合法多出一条正交的
+        # planner-plan 条目（ready 触发，行为由 test_verify_lane_throughput
+        # 覆盖）；本测试只断言被测行为：无 reviewer_run 直接放行且 implementer
+        # 恰派发一次。
+        impl_calls = [c for c in engine._enqueue.call_args_list
+                      if c.args == ("demo", "implementer")]
+        self.assertEqual(len(impl_calls), 1)
         engine.agent_runner.reviewer_in_flight.assert_not_called()  # 空锚点不判定
 
 

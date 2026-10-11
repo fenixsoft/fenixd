@@ -134,11 +134,13 @@ function toProviders(values: FormValues): LlmProvider[] {
       .filter((r) => !isBlankPriceRow(r))
       .map((r) => ({
         model: (r.model || '').trim(),
-        // 保存前 validateFields 已保证四项单价必填，此处按数值提交
-        input_per_million: r.input_per_million as number,
-        output_per_million: r.output_per_million as number,
-        cache_read_per_million: r.cache_read_per_million as number,
-        cache_creation_per_million: r.cache_creation_per_million as number,
+        // 保存前 validateFields 已保证四项单价必填，beforeValidate 的
+        // Number()+isFinite 拦截已保证可解析（item 80ede6245f6d）；此处显式
+        // Number() 收敛残存的字符串形态，不再盲 as number 强转
+        input_per_million: Number(r.input_per_million),
+        output_per_million: Number(r.output_per_million),
+        cache_read_per_million: Number(r.cache_read_per_million),
+        cache_creation_per_million: Number(r.cache_creation_per_million),
       }));
     // 旧 env/billing 已剥离（见上），env/billing 均无条件覆盖写入：
     // env={}（用户删空全部环境变量行）也必须落盘，否则删除操作静默失效
@@ -276,6 +278,24 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
           }
           seen.add(model);
         }
+        // 单价数值合法性拦截（code-review item 80ede6245f6d）：InputNumber parser
+        // 仅剥离非 [\d.] 字符，「1.2.3」这类多小数点输入会原样留存，required 只
+        // 保证非空不保证可解析（NaN 也不算空）——盲强转后 NaN/字符串会原样写入
+        // billing.prices，本地成本计算产出 NaN。保存前 Number()+isFinite 复核，
+        // 非法即提示并中止本次保存（口径同上方重复 model 拦截：仅校验计费开启的
+        // 卡片，关闭卡片的隐藏行既不可见也不参与保存）。
+        for (const row of cardPrices) {
+          for (const f of PRICE_FIELDS) {
+            const v = row?.[f.key];
+            if (v == null || v === '') continue; // 空值交由 required 必填校验提示
+            if (Number.isFinite(Number(v))) continue;
+            message.error(
+              `价格行单价非法：Provider「${p?.name || i + 1}」的模型「${(row?.model || '').trim()}」的${f.label}单价「${v}」不是合法数字，请修正后重试`
+            );
+            expandAllSections(); // 非法行可能在折叠区内，展开让用户可见可改
+            return false;
+          }
+        }
       }
       return undefined; // 通过：显式收口（noImplicitReturns）
     },
@@ -292,13 +312,21 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     // 原有的展开视野。
     onBackfill: (next, apply) => {
       const prevRows = (form.getFieldsValue(true)?.providers || []) as ProviderRowValues[];
+      const nextRows = next.providers || [];
       apply();
       setHealthMap((m) => {
+        // providers 数量变化（「同步用户级设置」等操作中间增删 provider）时，
+        // 逐位比对必错位（item ff70835868ab）：前段身份未变行的徽标会被误清、
+        // 或留下错位徽标。新集合下旧徽标本就不可信，直接整表清空（宁可丢徽标
+        // 重测，不可保留错配结论）；等长替换才走下方逐位比对。
+        if (prevRows.length !== nextRows.length) {
+          return Object.keys(m).length > 0 ? {} : m;
+        }
         let touched = false;
         const cleared = { ...m };
         activeKeysRef.current.forEach((k, i) => {
           if (cleared[k] === undefined) return;
-          if (healthRowIdentity(prevRows[i]) === healthRowIdentity(next.providers[i])) return;
+          if (healthRowIdentity(prevRows[i]) === healthRowIdentity(nextRows[i])) return;
           delete cleared[k];
           touched = true;
         });

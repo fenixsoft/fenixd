@@ -584,23 +584,42 @@ class PMEngine:
             # 或返回拒绝原因（非 drafted）。两种情况都不派发。
             return
         # 全部通过：根据 next_status 分流
+        # transition 返回值必须接收（code-review item ec560df1bb0d，对齐
+        # check_blockers 0b464aaa47b8 / _on_spec_verified dc13e7dc5cb3 /
+        # approve_push f3173b3164ee 口径）：promote_drafted 判定到真实转移之间
+        # 存在竞窗（外部改动/并发晋升致转移被拒），被拒时不得直调收口派发——
+        # 靠下游 _process_queue 候选筛选兜底属口径不一致残留，在此断链。
         next_status = result.get("next_status", "ready")
         if next_status == "ready":
             self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
             # fix-observability-gaps 2.2：自动晋升来源（无 run，channel=auto）
-            self.state_machine.transition(
+            moved = self.state_machine.transition(
                 spec_name, "ready",
                 trigger_run_id=None, agent_type="pm-engine", channel="auto",
             )
+            if not moved:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Promotion transition '{spec_name}' drafted→ready rejected "
+                    f"(state changed externally) — skip implementer dispatch",
+                )
+                return
             # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
             self._on_spec_ready(spec_name)
         elif next_status == "reviewing":
             self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → reviewing")
             # fix-observability-gaps 2.2：自动晋升来源
-            self.state_machine.transition(
+            moved = self.state_machine.transition(
                 spec_name, "reviewing",
                 trigger_run_id=None, agent_type="pm-engine", channel="auto",
             )
+            if not moved:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Promotion transition '{spec_name}' drafted→reviewing rejected "
+                    f"(state changed externally) — skip spec-review dispatch",
+                )
+                return
             # 派发评审 run
             self._on_spec_reviewing(spec_name)
         else:
@@ -1065,7 +1084,11 @@ class PMEngine:
                 return
             if spec_name in self._active_parallel_plans:
                 return
-            self._dispatcher._enqueue(spec_name, "planner-plan")
+            # 经门面单跳（code-review item 1fdb2783df6f）：_FORWARDER_REGISTRY 已
+            # 登记 "_enqueue" → ("_dispatcher", "_enqueue")，直穿 _dispatcher 私有
+            # 链会在 _enqueue 改名/搬迁时在此处单独断链（门面化目的即断链只发生
+            # 在注册表一处）。
+            self._enqueue(spec_name, "planner-plan")
             self.logger.info(
                 "pm_engine",
                 f"并行出题已注册（ready 触发，与实现并行）: {spec_name}",
@@ -1311,8 +1334,9 @@ class PMEngine:
         MUST NOT 以分支名字面匹配单独充当判据——分支仅作防御性次级校验。
 
         Returns: True 表示已补记 implementing（status 曾是 ready 且次级校验通过）；
-        False 表示未触发（status 非 ready，或 branch 不满足 fenix/ 次级校验——此时
-        ready→implemented 依然被拒 = 真实异常暴露，不静默放行）。
+        False 表示未触发（status 非 ready，branch 不满足 fenix/ 次级校验，或
+        ready→implementing 转移被拒——此时 ready→implemented 依然被拒 = 真实异常
+        暴露，不静默放行）。
         """
         spec = self.state_machine.read_one(spec_name)
         if not spec or spec.get("status") != "ready":
@@ -1327,10 +1351,24 @@ class PMEngine:
                 f"（status=ready 但 branch={branch} 非实现分支）: {spec_name} run={run_id}",
             )
             return False
-        self.state_machine.transition(
+        # transition 返回值必须接收（code-review item 024acdd0437a，对齐
+        # _on_spec_done 0b464aaa47b8 / approve_push f3173b3164ee 口径）：上方
+        # read_one 快照到转移之间隔着竞窗，转移被拒时不得照记成功——否则落
+        # 「ready 态合并兜底：补记 implementing」假成功 WARNING 与项目日志，
+        # 调用方据 True 继续 implementing→implemented 也会被拒，事后对账被
+        # 误导。被拒记 WARNING、返回 False 暴露真实异常，不静默放行。
+        moved = self.state_machine.transition(
             spec_name, "implementing",
             trigger_run_id=run_id, agent_type=agent_type, channel="auto",
         )
+        if not moved:
+            self.logger.warning(
+                "pm_engine",
+                f"ready 态合并兜底 — transition '{spec_name}' "
+                f"ready→implementing rejected (state changed externally) — "
+                f"不落兜底日志、返回 False",
+            )
+            return False
         self.logger.warning(
             "pm_engine",
             f"ready 态合并兜底：补记 implementing（评审收尾竞态回退残留）"
@@ -1711,6 +1749,21 @@ class PMEngine:
                     "pm_engine",
                     f"验证放行门禁拦截 '{spec_name}'（保持 verified）: {blocker}",
                 )
+                # 写前重读复核（code-review item 49044ee6e490，对齐同方法逃生门
+                # dc13e7dc5cb3 与 check_blockers 313f93a4c7c1「竞争后到者视为
+                # 无需操作」先例）：自 blocker 计算到写 error 之间存在竞窗（人工
+                # CLI/Dashboard 已把 verified 推进 done 等），状态非 verified 时
+                # 不得写——否则 task-gap 拦截文案落在 done spec 的 error 字段上，
+                # 误导事后对账与看板展示。
+                fresh = self.state_machine.read_one(spec_name) or {}
+                if fresh.get("status") != "verified":
+                    self.logger.info(
+                        "pm_engine",
+                        f"门禁拦截竞争后到者：'{spec_name}' 状态已为 "
+                        f"'{fresh.get('status')}'，让位于外部进度，"
+                        f"跳过本次 error 写入（缺口留待后续周期重评）",
+                    )
+                    return
                 self.state_machine.update_spec(
                     spec_name,
                     {
@@ -1926,6 +1979,24 @@ class PMEngine:
                             "error": f"Re-verifying after fix: {spec_name}",
                         },
                     )
+                    # fast-track 父 SPEC 分流（code-review item 1d98994a6cdd，
+                    # _on_spec_implemented 同款守卫）：fast-track 单 run 全包不设
+                    # verifier 车道（fasttrack-orphan-planner-race）——queue.
+                    # _entry_ready 的 verifier 候选口径接受 implemented/testing，
+                    # 直接入队会真实派出 verifier 车道 run 与 fast-track 收尾推进
+                    # 竞态。先试恢复重入（implemented 死态恢复三条件），否则维持
+                    # 短路不落 verifier 条目。
+                    from core.spec_mode import is_fast_track
+
+                    if is_fast_track(self.project_root, original):
+                        if self._fasttrack_recovery_reentry(original):
+                            return
+                        self.logger.debug(
+                            "pm_engine",
+                            f"Skipping verifier enqueue for fast-track '{original}' "
+                            "(单 run 全包，验证在 fast-track run 内完成)",
+                        )
+                        return
                     self._enqueue(original, "verifier")
         finally:
             self._handling_events.discard(event_key)
@@ -2248,6 +2319,7 @@ class PMEngine:
             if gate_m is not None and m is not None and gate_m.group(2) == m.group(4):
                 task_lines.append((i, m))
         changed = False
+        checked_count = 0  # 本轮实际翻转的行数（日志上报口径）
 
         if done_ids:
             # 第 1 级：done_ids 精确对齐（既有行为不变）
@@ -2256,6 +2328,7 @@ class PMEngine:
                     # `- [ ]` → `- [x]`，仅当该 id 在 done_ids 且当前未勾选
                     lines[i] = f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}"
                     changed = True
+                    checked_count += 1
         else:
             # 第 2 级：flat 回退（subject 无编号 run），弱一致性校验 + 按创建序勾选
             unchecked = [(i, m) for i, m in task_lines if m and m.group(2) != "x"]
@@ -2280,6 +2353,7 @@ class PMEngine:
             for i, m in unchecked[:bound]:
                 lines[i] = f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}"
                 changed = True
+                checked_count += 1
 
         if not changed:
             self.logger.debug("pm_engine", f"任务回写跳过（无新勾选）：{spec_name}")
@@ -2313,20 +2387,26 @@ class PMEngine:
         if not ok:
             self.logger.warning("pm_engine", f"任务回写 commit 失败 '{spec_name}': {err}")
             return
-        # flat 兜底按实际写入数 bound 报告（code-review item c9632f1ba5fb）：
-        # created_count 口径在任务清单短于 run 创建序时虚大于真实勾选数。
-        level = len(done_ids) if done_ids else bound
+        # 勾选数按本轮实际翻转行数上报（code-review item c7092742360e，对齐 flat
+        # 兜底分支 c9632f1ba5fb 的实际写入数 bound 口径）：done_ids 分支取
+        # len(done_ids) 在重跑场景（部分行已勾选被跳过）虚大于真实改动数。
         self.logger.info(
             "pm_engine",
-            f"任务进度回写成功 '{spec_name}'：勾选 {level} 个任务"
+            f"任务进度回写成功 '{spec_name}'：勾选 {checked_count} 个任务"
             f"（{'done_ids 精确' if done_ids else 'flat 兜底'}）",
         )
 
     def _worktree_is_dirty(self) -> bool:
-        """主树工作区是否存在未提交改动（add-task-progress-sync 回写的安全闸门）。"""
+        """主树已跟踪内容是否存在未提交改动（add-task-progress-sync 回写的安全闸门）。
+
+        只看已跟踪内容（``--untracked-files=no``，code-review item 1cab71ff17b4）：
+        未跟踪散件（spec/knowledge 在途产物、主树常驻 WIP 散件）与本回写的
+        merge-back 基线冲突无关；计入脏会让任务勾选回写被无关散件无限期阻塞，
+        docstring 所称「留待下个调度周期重试」在该形态下永不成立。
+        """
         try:
             result = subprocess.run(
-                ["git", "status", "--porcelain"],
+                ["git", "status", "--porcelain", "--untracked-files=no"],
                 cwd=str(self.project_root),
                 capture_output=True,
                 # errors="replace"（code-review item 022c2e4ced2a，与

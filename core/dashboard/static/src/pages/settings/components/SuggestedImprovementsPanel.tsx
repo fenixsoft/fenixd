@@ -745,8 +745,11 @@ const SuggestedImprovementsPanel = forwardRef<
     const verb = BATCH_VERB[action];
     const isDestructive = action !== 'accept';
     // 批量同意无逐条弹窗，执行时刻直接取配置（spec_run_at），并在确认弹窗里
-    // 明示——否则「配了定时却被批量绕开」会让人以为设置没生效
-    const batchStartAfter = action === 'accept' ? configStartAfter() : null;
+    // 明示——否则「配了定时却被批量绕开」会让人以为设置没生效。
+    // 预览值在开窗时定格；实际提交值在 onOk 现算（code-review item
+    // 3535e67816d4）：弹窗停留跨过配置时刻后预填值已成过去时刻，现算顺延到
+    // 下一个周期，避免把过去时刻提交为 start_after。
+    const batchStartAfterPreview = action === 'accept' ? configStartAfter() : null;
     Modal.confirm({
       title: `批量${verb}`,
       content: (
@@ -765,8 +768,8 @@ const SuggestedImprovementsPanel = forwardRef<
             <div style={{ marginTop: 8 }}>
               <Text type="secondary">
                 执行时间：
-                {batchStartAfter
-                  ? `${dayjs(batchStartAfter).format('YYYY-MM-DD HH:mm')}（按设置页 SPEC 执行时间）`
+                {batchStartAfterPreview
+                  ? `${dayjs(batchStartAfterPreview).format('YYYY-MM-DD HH:mm')}（按设置页 SPEC 执行时间）`
                   : '创建后立即执行'}
               </Text>
             </div>
@@ -784,6 +787,9 @@ const SuggestedImprovementsPanel = forwardRef<
       cancelText: '取消',
       okButtonProps: isDestructive ? { danger: true } : undefined,
       onOk: async () => {
+        // 执行时刻确认时现算（code-review item 3535e67816d4）：开窗预填的
+        // batchStartAfterPreview 可能因弹窗停留跨过配置时刻而成过去值，见其上方注释
+        const batchStartAfter = action === 'accept' ? configStartAfter() : null;
         setBatchAction(action);
         setBatchRunning(true);
         let succeeded = 0;

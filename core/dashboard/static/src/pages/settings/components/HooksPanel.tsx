@@ -16,6 +16,9 @@ import { useEffect, useRef, useState } from 'react';
 import HookManager from '@/components/HookManager';
 import { getConfig, getHookAudit } from '@/services/dashboard';
 import type { ConfigData, HookAuditRecord, HookConfig } from '@/services/dashboard';
+// 「重拉基底 + hooks 段整体替换」与 SPEC 详情 SpecHooksSection 共用单源
+// （code-review item 7add07b1e0e8）
+import { saveHooksSection } from '@/services/hooksSection';
 
 const { Text } = Typography;
 
@@ -94,18 +97,14 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     savingRef.current = true;
     setSaving(true);
     try {
-      // 基底用保存前重拉的最新配置，不用组件内 config 快照：后端对 hooks 段是
-      // 「patch 存在即整体替换」语义，快照可能已过期（页面挂载/上次保存后，
-      // 另一标签的 SPEC 详情 Hook 页签或 CLI 直改过 hooks），以快照合并会静默
-      // 回退他处的修改（code-review item 26586e4395cd）
-      const latest = await getConfig(project);
-      const latestHooks = latest?.hooks ?? {};
-      await onSave({
-        hooks: {
-          ...latestHooks,
-          global: nextGlobal,
-        },
-      });
+      // 基底用保存前重拉的最新配置 + hooks 段整体替换抽为 saveHooksSection
+      // 单源（「patch 存在即整体替换」语义见该模块头注释，
+      // code-review item 26586e4395cd 原始修复点）
+      await saveHooksSection(
+        project,
+        (latestHooks) => ({ ...latestHooks, global: nextGlobal }),
+        onSave,
+      );
     } catch (e) {
       message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     } finally {

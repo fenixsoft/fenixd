@@ -96,7 +96,7 @@ function toModels(roleList: RoleValue[] = []): AgentsModels {
 function buildFormValues(agents: AgentsConfig) {
   return {
     roleList: toRoleList(agents.models),
-    subagentModelOverride: (agents as Record<string, unknown>).subagent_model_override || '',
+    subagentModelOverride: agents.subagent_model_override || '',
   };
 }
 
