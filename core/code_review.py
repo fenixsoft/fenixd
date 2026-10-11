@@ -331,7 +331,8 @@ def _read_items_unlocked(
     - ``degraded_out``：传列表则 OSError 读失败时置 ``[True]``。全量替换
       写侧 MUST 据此拒绝本次落盘（瞬时读故障窗口内的全量替换会把台账
       整体清空）；读侧容错契约不受影响。
-    - ``corrupted_out``：传列表则 JSON 损坏行的原始文本原样收集，回写侧
+    - ``corrupted_out``：传列表则无法入账行的原始文本原样收集（JSON 损坏
+      行，及解析成功但顶层非 dict / item_id 缺失或非字符串的行），回写侧
       MUST 追加回写保留现场，而非静默丢弃。
     """
     out: Dict[str, dict] = {}
@@ -360,6 +361,22 @@ def _read_items_unlocked(
             continue
         if isinstance(rec, dict) and isinstance(rec.get("item_id"), str):
             out[rec["item_id"]] = rec
+        else:
+            # 解析成功但无法入账（顶层非 dict / item_id 缺失或非字符串，如
+            # 手工编辑混入的 {} 或 {"item_id": 123}）：与 JSON 损坏行同款
+            # 待遇——记 WARNING 留痕 + 原样收进 corrupted_out 由回写侧追加
+            # 回写保留。否则下次全量重写（_mutate_items_unlocked）即被静默
+            # 清除，同为无法识别的台账内容一类留痕保留、一类无痕消失，台账
+            # 内容丢失无从排查（code-review item 1e954a7a38ec，对齐
+            # 9a358bba128c 的不静默丢弃契约）。
+            _logger.warning(
+                "code_review: items.jsonl 第 %s 行 JSON 可解析但无法入账"
+                "（顶层非 dict 或 item_id 缺失/非字符串）已跳过: %.200s",
+                lineno,
+                line,
+            )
+            if corrupted_out is not None:
+                corrupted_out.append(line)
     return out
 
 
@@ -1407,21 +1424,22 @@ def read_progress(project_root) -> dict:
                 # [fenix-ignore:90542a07fcf4] stat 已处于外层 try/except OSError 覆盖内，并发清理竞态的 FileNotFoundError 被兜底为 current=None，不会沿 read_progress 冒泡致端点 500
                 key=lambda t: (t[1].stat().st_mtime, t[0]),
             )[1]
-            lines = [
-                l
-                for l in latest.read_text(encoding="utf-8", errors="replace").splitlines()
-                if l.strip()
-            ]
-            if lines:
-                try:
-                    last = json.loads(lines[-1])
-                    if isinstance(last, dict):
-                        # 缺 file（坏行）时置 None，不回退 title——current 语义
-                        # 是被审文件路径（对齐 docstring），title 回退会让前端
-                        # 把问题标题当文件路径展示（15818a18ec23）
-                        current = last.get("file") or None
-                except (json.JSONDecodeError, IndexError):
-                    current = None
+            # 末行只取 current 一项：复用 runs.py 公开 read_run_lines 的 64KB
+            # 尾窗 seek（_read_run_tail，fix-dashboard-read-path-performance
+            # D3 同款），不再对 latest 整读第二遍——本函数被前端进度轮询与
+            # admin_monitor 巡检反复调用，上面 read_review_out_rows 已把分片+
+            # 主产物全量读了一遍，mtime 最晚者（往往恰是最大的分片）再逐字
+            # 整读第二遍是 O(文件大小) 的热路径读放大（code-review item
+            # c5aa4e019015，对齐 529bc6a8edf2 对 runs/<run_id>.jsonl 的同型
+            # 收敛）。解析容错口径不变：末行解析失败（JSON 损坏/非 dict，含
+            # 尾窗降级包装的无 file 字段 stderr 伪事件）→ current=None。
+            tail = _read_run_tail(latest, max_lines=1)
+            last = tail[-1] if tail else None
+            if isinstance(last, dict):
+                # 缺 file（坏行/解析失败行）时置 None，不回退 title——current
+                # 语义是被审文件路径（对齐 docstring），title 回退会让前端
+                # 把问题标题当文件路径展示（15818a18ec23）
+                current = last.get("file") or None
         except OSError:
             current = None
     # running 判定（终态 + stale 阈值，对齐 runs.py 口径）。末行读取复用
@@ -1513,10 +1531,13 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
 
 
 def _read_run_tail(run_file, max_lines: int = 1) -> list:
-    """run 产物末行事件（复用 runs.py 公开 read_run_lines 的 64KB 尾窗读取）。
+    """run/产物文件末行事件（复用 runs.py 公开 read_run_lines 的 64KB 尾窗读取）。
 
     延迟导入避免 core.dashboard 导入链（与 _terminal_status_map 同款）；
-    判 running 只需末行，max_lines=1 把尾窗解析成本压到最低。
+    只需末行时 max_lines=1 把尾窗解析成本压到最低。两个消费方：running
+    判定取 ``runs/<run_id>.jsonl`` 末行；read_progress 的 current 取 mtime
+    最晚产物（分片/主产物）末行——后者同款收敛对最新产物文件的二次整读
+    （code-review item c5aa4e019015）。
     """
     from core.dashboard.data.runs import read_run_lines
 
