@@ -63,22 +63,23 @@ def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     return f"fenix-{agent_type}-{spec_name}"
 
 
-def _normalized_int_config(pm, key: str, default: int) -> int:
-    """整型配置归一读取（单一落点，code-review item f863e2bbcc3d）。
+def _normalized_int_value(cfg, key: str, default: int, logger=None) -> int:
+    """整型配置值归一（值级单一落点，code-review item f863e2bbcc3d）。
 
-    与 repair_lane._merge_breaker_threshold / _max_retries 读取器同款归一
     口径（config._normalize_transient_seconds 归一先例）：None 判空回缺省
     （合法配置 0 不被 ``or`` 吞成缺省）→ bool 显式拒绝（裸 ``int()`` 把
     ``true`` 折成 1、``false`` 折成 0，并发/上限被静默改写且无留痕）→
     整值浮点按整数接受、非整值浮点拒绝（裸 ``int()`` 截断静默采信）→
-    其余非法值经 ``pm.logger`` WARNING 留痕回缺省（logger 取 getattr 守卫，
-    兼容仅注入 _get_config 的测试替身）。下限/非正语义由调用方按各配置键
+    其余非法值 WARNING 留痕回缺省。下限/非正语义由调用方按各配置键
     既有行为处置（本读取器不做收敛），归一规则调整只改此处。
+
+    供两种读取形态共用：``_normalized_int_config``（pm 级整键读取）与
+    ``_process_queue`` 的 ``agents.max_concurrent`` 直读点——后者保留
+    ``_get_config("agents.max_concurrent", 5)`` 源码形态（吞吐治理测试
+    test_default_is_5_without_explicit_config 以该字面量钉死代码缺省 5），
+    取回的原始值交本函数归一。logger 缺省 None（调用方 getattr 守卫传入，
+    兼容仅注入 _get_config 的测试替身）。
     """
-    try:
-        cfg = pm._get_config(key, default)
-    except (TypeError, ValueError):
-        cfg = None
     if cfg is None:
         return default
     illegal = False
@@ -95,15 +96,28 @@ def _normalized_int_config(pm, key: str, default: int) -> int:
             return int(str(cfg).strip())
         except (TypeError, ValueError):
             illegal = True
-    if illegal:
-        logger = getattr(pm, "logger", None)
-        if logger is not None:
-            logger.warning(
-                "pm_engine",
-                f"配置 {key} 非法（应为整数，布尔/小数/非数字均不合法）: "
-                f"{cfg!r}，回退缺省 {default}",
-            )
+    if illegal and logger is not None:
+        logger.warning(
+            "pm_engine",
+            f"配置 {key} 非法（应为整数，布尔/小数/非数字均不合法）: "
+            f"{cfg!r}，回退缺省 {default}",
+        )
     return default
+
+
+def _normalized_int_config(pm, key: str, default: int) -> int:
+    """整型配置归一读取（pm 级读取 + 值级归一组合，code-review item f863e2bbcc3d）。
+
+    与 repair_lane._merge_breaker_threshold / _max_retries 读取器同款归一
+    口径：``pm._get_config`` 读取（TypeError/ValueError 兜底为 None）后交
+    ``_normalized_int_value`` 值级归一，WARNING 经 ``pm.logger``（getattr
+    守卫）留痕。归一口径细则见值级函数 docstring。
+    """
+    try:
+        cfg = pm._get_config(key, default)
+    except (TypeError, ValueError):
+        cfg = None
+    return _normalized_int_value(cfg, key, default, getattr(pm, "logger", None))
 
 
 def _normalized_float_config(pm, key: str, default: float) -> float:
@@ -842,13 +856,27 @@ class QQQueueMixin:
         # 回归锁（等待上限 600s、超时 skip）保证多 run 回归互斥语义不变。
         # 配置侧归一（code-review item db57ee959a49 收敛字符串裸用于槽位
         # 比较抛 TypeError、沿 worker finally / 定时器线程的 _process_queue
-        # 调用链逃逸致派发停摆；item f863e2bbcc3d 改走 _normalized_int_config
-        # 共享归一读取器，与 agents.merge_breaker_threshold / agents.max_retries
-        # 读取点从此真正同款——bool/非整值浮点显式拒绝并 WARNING 留痕：
-        # 原裸 int() 会把 true 折成 1，实现并发静默塌缩成串行、2.5 截成 2
-        # 均无留痕难排障）；非法值回退缺省，max(1, ...) 收下限不变。
+        # 调用链逃逸致派发停摆；item f863e2bbcc3d 改走共享归一，与
+        # agents.merge_breaker_threshold / agents.max_retries 读取点真正
+        # 同款——bool/非整值浮点显式拒绝并 WARNING 留痕：原裸 int() 会把
+        # true 折成 1，实现并发静默塌缩成串行、2.5 截成 2 均无留痕难排障）；
+        # 非法值回退缺省，max(1, ...) 收下限不变。此处保留
+        # _get_config("agents.max_concurrent", 5) 直读源码形态——吞吐治理
+        # 测试 test_default_is_5_without_explicit_config 以该字面量钉死
+        # 代码缺省 5（上一轮改走 pm 级读取器曾破坏该断言），取回的原始值
+        # 交 _normalized_int_value 值级归一，语义与共享读取器完全一致。
+        try:
+            cfg_max_concurrent = self._pm._get_config("agents.max_concurrent", 5)
+        except (TypeError, ValueError):
+            cfg_max_concurrent = None
         max_concurrent = max(
-            _normalized_int_config(self._pm, "agents.max_concurrent", 5), 1
+            _normalized_int_value(
+                cfg_max_concurrent,
+                "agents.max_concurrent",
+                5,
+                getattr(self._pm, "logger", None),
+            ),
+            1,
         )
 
         # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
