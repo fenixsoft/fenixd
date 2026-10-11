@@ -568,6 +568,10 @@ class TestStallBudgetCriteria:
         runner = make_runner(proot)
         runner.config = {"agents": {"run_timeout_seconds": 3600}}
         assert runner._stall_budget_config() is None
+        # WIP 保全路径不在本测试靶心：cancel 收口会对 cwd（tmp 非git 目录）
+        # 做快检，沙箱里 rev-parse 吃满 10s timeout 白增 11s 耗时。打桩快检
+        # 失效即生产同语义跳过（与上方强杀用例同一处置，见其注释）。
+        runner._worktree_path_valid = lambda p: False
 
         orig_popen = runner_module.subprocess.Popen
 
