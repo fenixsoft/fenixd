@@ -117,12 +117,17 @@ class FileWatcher:
     # ── 生命周期 ─────────────────────────────────────────────
 
     def start(self):
+        self._running = True
         # 重入守卫：已在运行（或 stop() join 超时后旧线程仍在跑）时不得再起
         # 第二个 _loop，否则两线程并发 scan_once 互踩基线并各自广播，前端收到
-        # 双份事件、增量漏推/重推。
-        if self._running and self._thread and self._thread.is_alive():
+        # 双份事件、增量漏推/重推。守卫只看线程存活、不看 _running：stop() 的
+        # join 超时分支会把 _running 置 False 而 _thread 仍指向存活线程，若叠加
+        # _running 条件，此时 start() 会放行另起第二个 _loop，且旧线程的
+        # while self._running 又随 _running 复位继续跑，恰好落入本守卫要防的
+        # 双线程并发形态（code-review item 7de4656dfa6f）。
+        if self._thread and self._thread.is_alive():
+            # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
             return
-        self._running = True
         self._thread = threading.Thread(
             target=self._loop, name="fenixd-dashboard-watcher", daemon=True
         )
@@ -360,7 +365,32 @@ class FileWatcher:
                 )
             return set(), set()
         for d in entries:
-            if not _is_dir(d):
+            try:
+                is_dir = d.is_dir()
+            except OSError as e:
+                # 条目级探测失败（EIO/EACCES 等）MUST NOT 等同「非目录」（code-review
+                # item 723e418a95ab）：按 False 吞掉会让该条目进不了 seen，下方
+                # stale 清理随之误判该 spec 被删除并广播 summary:null 删除行、
+                # 下轮恢复又全量推回——与上方 iterdir OSError 守卫同族形态。此处
+                # 区分「探测失败」与「确实非目录」：补齐 seen（缓存原样保留、
+                # 跳过本轮删除判定，语义同 iterdir 分支），告警复用 _proj_scan_warn
+                # 节流（同项目 5 分钟一条，随 _prune_stale_caches 一并清退）。
+                seen.add(d.name)
+                key = proot.as_posix()
+                now = time.monotonic()
+                last_warn = self._proj_scan_warn.get(key)
+                if last_warn is None or now - last_warn >= 300:
+                    self._proj_scan_warn[key] = now
+                    logger.warning(
+                        "dashboard watcher 项目 %s spec 条目 %s 探测失败，"
+                        "跳过本轮删除判定: %s: %s",
+                        proot,
+                        d.name,
+                        type(e).__name__,
+                        e,
+                    )
+                continue
+            if not is_dir:
                 continue
             sname = d.name
             seen.add(sname)
@@ -525,13 +555,22 @@ class FileWatcher:
                     # 详情组装失败不再静默（code-review item 74be430c66cb）：
                     # 按空 detail 降级继续的语义保留，但「解析失败」与「确实无
                     # 详情」必须可区分（口径同 event_bus.py item 586896a04cd5），
-                    # 否则仪表盘数据异常无从从日志反推原因。
-                    logger.warning(
-                        "dashboard watcher 组装 spec %s 详情失败（详情缺省继续）: %s: %s",
-                        spec,
-                        type(e).__name__,
-                        e,
-                    )
+                    # 否则仪表盘数据异常无从从日志反推原因。节流复用
+                    # _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches
+                    # 一并清退；同项目两类失败 5 分钟内合并记一条，避免 STATE.md
+                    # 频繁变更且某 spec 详情持续失败时每轮刷屏——与
+                    # _handle_spec_change 同款失败处理对齐，item c6c944d1a694）。
+                    key = proot.as_posix()
+                    now = time.monotonic()
+                    last_warn = self._proj_scan_warn.get(key)
+                    if last_warn is None or now - last_warn >= 300:
+                        self._proj_scan_warn[key] = now
+                        logger.warning(
+                            "dashboard watcher 组装 spec %s 详情失败（详情缺省继续）: %s: %s",
+                            spec,
+                            type(e).__name__,
+                            e,
+                        )
         # 删除：上次基线有、合并基线（SummaryIndex D4 活跃 ∪ 清单）无的 spec
         # → summary:null 标记。目录级 removed 信号（spec/changes/<name>/ 被移入
         # 归档目录）只在合并基线不含该 spec 时才算删除——迁出后基线已含归档
