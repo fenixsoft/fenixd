@@ -267,6 +267,9 @@ class PMEngine:
         # verified 应用收口（ocr join 停等唤醒续做 queue._resume_verified_after_ocr
         # 调用）：经门面单跳（design D3 规则 3），组件不直引 _verification 私有链。
         "_apply_verified": ("_verification", "_apply_verified"),
+        # spec 终局 serving 驱逐单跳（code-review item c75a912b260f）：
+        # _on_spec_verified 的 done 落定回收经门面，不直穿 _verification 私有链。
+        "_evict_spec_serving": ("_verification", "_evict_spec_serving"),
         "_verifier_error_is_infra": ("_verification", "_verifier_error_is_infra"),
         "enrich_failure_class": ("_verification", "enrich_failure_class"),
         "_verifier_result_is_stale": ("_verification", "_verifier_result_is_stale"),
@@ -318,6 +321,10 @@ class PMEngine:
         "_get_spec_priority": ("_dispatcher", "_get_spec_priority"),
         "_enqueue": ("_dispatcher", "_enqueue"),
         "_enqueue_front": ("_dispatcher", "_enqueue_front"),
+        # 车道在队条目摘除单跳（code-review item c75a912b260f）：
+        # _stop_parallel_planning / _reclaim_verify_lane 摘在队条目经门面，
+        # 不直穿 _dispatcher 私有链。
+        "_remove_queued_entry": ("_dispatcher", "_remove_queued_entry"),
         "_aging_bonus": ("_dispatcher", "_aging_bonus"),
         "_effective_priority": ("_dispatcher", "_effective_priority"),
         "_process_queue": ("_dispatcher", "_process_queue"),
@@ -325,6 +332,11 @@ class PMEngine:
         "_rollback_failed_dispatch": ("_dispatcher", "_rollback_failed_dispatch"),
         "_report_stash_pop_conflict": ("_dispatcher", "_report_stash_pop_conflict"),
         "_run_fast_track_worker": ("_dispatcher", "_run_fast_track_worker"),
+        # fast-track 重启恢复重入单跳（code-review item c75a912b260f）。
+        "_resume_fast_track_after_restart": (
+            "_dispatcher",
+            "_resume_fast_track_after_restart",
+        ),
         "_should_enter_repair": ("_dispatcher", "_should_enter_repair"),
         "_dispatch_repair_lane": ("_dispatcher", "_dispatch_repair_lane"),
         "_claim_repair_site": ("_dispatcher", "_claim_repair_site"),
@@ -1263,7 +1275,7 @@ class PMEngine:
         自动终止在飞 run（add-freeze-stop-inflight-agents 既有机制）。
         """
         try:
-            removed = self._dispatcher._remove_queued_entry(spec_name, "planner-plan")
+            removed = self._remove_queued_entry(spec_name, "planner-plan")
             cancelled = self._cancel_lane_runs(
                 spec_name, "planner-plan", reason=reason, by="parallel-plan-lane"
             )
@@ -1302,10 +1314,7 @@ class PMEngine:
         调用方（_on_spec_verified）整体 try/except 兜底：取消失败由结果应用侧
         D6 复核兜底丢弃迟到结果（防御纵深），不影响 done → push 主链。
         """
-        removed = False
-        dispatcher = getattr(self, "_dispatcher", None)
-        if dispatcher is not None:
-            removed = dispatcher._remove_queued_entry(spec_name, "verifier")
+        removed = self._remove_queued_entry(spec_name, "verifier")
         cancelled = self._cancel_lane_runs(
             spec_name,
             "verifier",
@@ -1668,11 +1677,11 @@ class PMEngine:
             if form_stranded_testing:
                 # testing 搁浅态：已过 implemented→testing 转移点（VALID_TRANSITIONS
                 # 不允许回滚重走），跳过转移、仅重跑收尾段。
-                self._dispatcher._resume_fast_track_after_restart(
+                self._resume_fast_track_after_restart(
                     spec_name, already_testing=True
                 )
             else:
-                self._dispatcher._resume_fast_track_after_restart(spec_name)
+                self._resume_fast_track_after_restart(spec_name)
         except Exception as e:  # noqa: BLE001 — 重入失败不崩溃，事件周期重发兜底
             self.logger.warning(
                 "pm_engine",
@@ -1785,7 +1794,7 @@ class PMEngine:
                 # 回收该 spec 的被测实例——stop 登记服务 + 驱逐缓存 + 移除 serving
                 # worktree（幂等；主树 static 共享实例保留）。
                 try:
-                    self._verification._evict_spec_serving(spec_name)
+                    self._evict_spec_serving(spec_name)
                 except Exception as e:
                     self.logger.warning(
                         "pm_engine",

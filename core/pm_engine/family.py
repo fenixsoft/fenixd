@@ -248,6 +248,12 @@ class FamilyGovernor:
         非有限浮点（YAML ``.nan``/``.inf``）同样回退（code-review item
         bd02b5155058）——``int()`` 对其抛 ValueError/OverflowError；
         None 视为未配置沿用缺省、不留痕。
+
+        正整数下限守卫（code-review item 0ca7cebd251a）：整值 ``< 1``（负数
+        或 0）同样回退缺省并告警——负/零上限会让 ``_family_gate_blocked``
+        的越界比较对一切 fix 派生恒判拦截（depth 恒 > max_depth、sibling 计数
+        恒 >= max_width），自动修复派生链整体停摆且配置侧无痕；与
+        get_run_infra_breaker_config 的 ``threshold < 1`` 回退缺省口径看齐。
         """
         if raw is None:
             return default
@@ -273,6 +279,13 @@ class FamilyGovernor:
                 except (TypeError, ValueError):
                     pass
         if ok:
+            if normalized < 1:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"配置 {key} 非法（应为正整数，负数/0 会拦截全部 fix 派生）"
+                    f": {raw!r}，回退缺省 {default}",
+                )
+                return default
             return normalized
         self._pm.logger.warning(
             "pm_engine",
