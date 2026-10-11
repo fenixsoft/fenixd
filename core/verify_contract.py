@@ -388,7 +388,15 @@ def _load_verify_contract_with_raw(
             raw_cwd = step.get("cwd")
             cand_cwd = raw_cwd.strip() if isinstance(raw_cwd, str) else ""
             bad_cwd_reason = ""
-            if cand_cwd.startswith("/"):
+            if raw_cwd is not None and not isinstance(raw_cwd, str):
+                # cwd 类型守卫（code-review item 63d5e985b22d）：非字符串值
+                # （如 ``cwd: 5`` 或缩进错误写成的映射）旧实现被 str() 强转成
+                # "5"、"{'a': 1}" 字面量路径，随后以「第 N 步启动失败」等与
+                # 根因无关的运行期错误暴露——记 warning 后按空 cwd 回退项目根
+                # （走下方既有 bad_cwd_reason 路径），对齐 ready.url 同款
+                # 「告警＋回退」口径（item b26b723c2ec8）。
+                bad_cwd_reason = "非字符串值（须为相对项目根的字符串路径）"
+            elif cand_cwd.startswith("/"):
                 bad_cwd_reason = "绝对路径（须为相对项目根的路径）"
             elif ".." in cand_cwd.split("/"):
                 bad_cwd_reason = '含 ".." 段（不得逃出项目根）'
@@ -428,6 +436,23 @@ def _load_verify_contract_with_raw(
             )
         serve_data = None
     if isinstance(serve_data, dict) and serve_data.get("kind") in ("static", "command"):
+        # serve.root 类型守卫（code-review item 63d5e985b22d）：非字符串值
+        # （如 ``root: 5`` 或缩进错误写成的映射）旧实现被 str() 强转成 "5"、
+        # "{'a': 1}" 字面量路径，随后以「serve.root 不存在」等与根因无关的
+        # 运行期错误暴露（truthy 的非字符串也过不了 _raw_serve_section_errors
+        # 的「为空」拦截）——记 warning（含原文 repr）后按空 root 回退，对齐
+        # ready.url 同款「告警＋回退」口径（item b26b723c2ec8）；就地写回使
+        # raw_data 与解析结果同口径（对齐下方 6e6a1c4d4f7a 守卫），static 缺
+        # root 由既有链路大声失败。
+        raw_root = serve_data.get("root")
+        if raw_root is not None and not isinstance(raw_root, str):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"verify.yaml serve.root 非法（须为字符串路径，按空 root "
+                    f"处理）: {raw_root!r}",
+                )
+            serve_data["root"] = ""
         # serve.root 守卫（code-review item 6e6a1c4d4f7a）：kind=static 且 root
         # 为绝对路径或含 ".." 段时，消费方 ``Path(项目根) / root`` 会静默漂移到
         # 项目根之外（对齐上方 evidence_dir 同款守卫口径与理由）——记 warning
@@ -1140,7 +1165,11 @@ def read_config_deps_mode(project_root) -> str:
 # 复用 full-suite.lock 形态（core/regression.py _SuiteLock 先例）：fcntl
 # LOCK_EX 非阻塞轮询＋等待上限；获取成功后写入持有者 pid（锁残留可诊断）。
 PREPARE_LOCK_REL = ".fenix/verify-prepare.lock"
-PREPARE_LOCK_TIMEOUT = 600  # 锁等待上限（秒）：对齐 full-suite.lock 600s 先例
+PREPARE_LOCK_TIMEOUT = 600  # 锁等待下限（秒）：对齐 full-suite.lock 600s 先例。
+# run_prepare_steps 按契约 prepare 步数扩展实际等待上限（至少
+# N×PREPARE_STEP_TIMEOUT）——被保护段最坏持有时长逐步累加且步数无上限，
+# 固定 600s 会让长构建下的并发车道等满上限后误判「锁等待超时」
+# （code-review item 3d41eccb9b39）。
 
 
 def _is_main_checkout(project_root) -> bool:
@@ -1267,7 +1296,19 @@ def run_prepare_steps(
     if not _is_main_checkout(root):
         return _run_prepare_steps_unlocked(contract, root, logger)
     log_fn = (lambda msg: logger.info("verify_contract", msg)) if logger else None
-    lock = _PrepareHostLock(root, log_fn=log_fn)
+    # 锁等待上限按契约 prepare 步数动态取值（code-review item 3d41eccb9b39）：
+    # 被保护段每步上限 PREPARE_STEP_TIMEOUT 且步数无上限，持有者可合法持锁
+    # 远超固定 600s——等待上限至少覆盖 N×PREPARE_STEP_TIMEOUT 的最坏持有
+    # 时长，长构建下的并发车道不再等满 600s 被误判「prepare 主机锁等待超时」
+    # 而按验证环境错误拦截。步数（contract.prepare）在加锁前即已可得，锁的
+    # 获取时序不变。
+    lock = _PrepareHostLock(
+        root,
+        timeout=max(
+            PREPARE_LOCK_TIMEOUT, len(contract.prepare) * PREPARE_STEP_TIMEOUT
+        ),
+        log_fn=log_fn,
+    )
     if not lock.acquire():
         if lock.bypassed:
             # 锁基础设施故障（权限等）：按无锁继续（保守可用性，对齐
