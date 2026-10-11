@@ -251,6 +251,17 @@ class ApiRunner(VerifyRunner):
                         "url": url,
                         "error": f"body 非合法 JSON: {body[:100]}",
                     }
+                if json_body is None:
+                    # JSON 字面量 null（code-review item 4825b023e7ac）：解析结果
+                    # None 与「未提供 json 参数」在 httpx（json 参数按 is not None
+                    # 判定）下不可区分，直接走 json= 会把请求体静默丢成空 body——
+                    # 作者意图（发字面量 null）与实际行为悄然背离，失败被误归因
+                    # 为产品行为不符。降级按 content 原文发送（json.dumps(None)
+                    # 同为 "null"，请求体字节等价），并补 application/json 头，
+                    # 与其余 JSON 值走 json= 路径的请求头口径保持一致。
+                    content = body
+                    if not any(k.lower() == "content-type" for k in headers):
+                        headers["Content-Type"] = "application/json"
             elif not body_type and str(body).lstrip().startswith(("{", "[")):
                 # 未声明 body_type 时的首字符嗅探：解析失败不再判整步失败，
                 # 降级按 content 原文发送——body 以 {/[ 开头不代表一定是 JSON
@@ -351,6 +362,7 @@ class ApiRunner(VerifyRunner):
             # Set-Cookie 已按 _EVIDENCE_REDACT_HEADERS 遮蔽）——落证据前先
             # 把本步骤出现过的请求头值替换为占位符。
             error_text = f"请求异常: {type(e).__name__}: {e}"
+            # [fenix-ignore:7069dc3f5433] 全量 replace 是防令牌穿透证据的安全优先取舍：阈值收窄修不了清单自举示例（application/json/keep-alive 均达长度阈值），只会引入短令牌漏遮蔽的安全回归
             for header_value in headers.values():
                 if header_value:
                     error_text = error_text.replace(header_value, "<已脱敏>")
@@ -527,6 +539,7 @@ class ApiRunner(VerifyRunner):
                             )
                         event = {"data": "", "event": ""}
                         data_bytes = 0
+                        # [fenix-ignore:02355951014f] 触顶 break 前缓冲已在上方重置为空，收尾 flush 条件不成立不会二次入列，events 恒 ≤ _SSE_MAX_EVENTS，不存在 101 个事件的路径
                         if len(events) >= _SSE_MAX_EVENTS:
                             truncated = True
                             break
