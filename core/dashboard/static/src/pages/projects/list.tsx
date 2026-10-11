@@ -348,7 +348,7 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
           {sum ? (
             <Typography.Text type="secondary">
               通过 {sum.passed ?? 0} · 失败 {sum.failed ?? 0} · 错误 {sum.errors ?? 0}
-              {sum.product_bugs ? ` · 产品 bug ${sum.product_bugs}` : ''}
+              {sum.product_bugs != null ? ` · 产品 bug ${sum.product_bugs}` : ''}
             </Typography.Text>
           ) : null}
         </div>
@@ -493,7 +493,6 @@ function buildTree(specs: SpecSummary[]): SpecSummaryNode[] {
     let parent: string | null = null;
     while (candidate.startsWith('fix-')) {
       const up = candidate.slice(4);
-      if (up === s.name) break;
       if (byName.has(up)) {
         parent = up;
         break;
@@ -935,6 +934,11 @@ export default function SpecListPage() {
     // load 的失败分支只 setError 不清，切换后 A 的错误 Alert 会一直显示到
     // 新项目响应落地。
     setError('');
+    // 切换间隙呈现加载态而非空表（code-review item 3c3752ef9d70）：load 不设
+    // setLoading(true)（初始态与完成收口各一次），specMap 清空后到新项目响应
+    // 落地前表格/移动端卡片/「共 N 个 SPEC」会以无 Spin 空态呈现，被误读为
+    // 新项目没有 SPEC。置 true 由 load 的 finally 收口（币值守卫保证只归最新请求）。
+    setLoading(true);
   }, [name]);
   useEffect(() => {
     if (expandedInitRef.current) return;
