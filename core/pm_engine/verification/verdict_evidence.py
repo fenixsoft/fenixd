@@ -603,7 +603,10 @@ def _write_verdict_violations(
             try:
                 f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=2)
+                # fsync 对齐全仓原子写口径（core/signals.py / core/serving_registry.py）：
+                # 只 flush 时掉电场景下 rename 后目标可能空/截断。
                 f.flush()
+                os.fsync(f.fileno())
             finally:
                 if f is not None:
                     f.close()
@@ -766,7 +769,9 @@ def _write_resynthesis_directive(
             try:
                 f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=2)
+                # fsync 对齐全仓原子写口径（同 _write_verdict_violations）。
                 f.flush()
+                os.fsync(f.fileno())
             finally:
                 if f is not None:
                     f.close()
@@ -1227,11 +1232,30 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
             "回退按当前累计全额记账",
         )
         prev = None
+    if prev is not None and not isinstance(prev, dict):
+        # 合法 JSON 但形状非 dict（人工写坏为 '[]'/'5'/引号串）时同型威胁：
+        # (prev or {}).get 抛 AttributeError 中断采纳收尾（_clear_fail_history、
+        # on_spec_verified 被跳过）——比照 directive 计数字段损坏的兜底口径
+        # warning 留痕并 prev=None 走回退。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' _judge_token_baseline 形状非对象（{prev_raw!r}），"
+            "回退按当前累计全额记账",
+        )
+        prev = None
     cur = sum_verify_chain_tokens(pipeline._context.project_root, spec_name)
     if cur:
+        try:
+            prev_input = int((prev or {}).get("input", 0) or 0)
+        except (TypeError, ValueError):
+            prev_input = 0
+        try:
+            prev_output = int((prev or {}).get("output", 0) or 0)
+        except (TypeError, ValueError):
+            prev_output = 0
         delta = {
-            "input": max(0, cur["input"] - int((prev or {}).get("input", 0) or 0)),
-            "output": max(0, cur["output"] - int((prev or {}).get("output", 0) or 0)),
+            "input": max(0, cur["input"] - prev_input),
+            "output": max(0, cur["output"] - prev_output),
         }
         pipeline._context.state_machine.update_spec(
             spec_name,

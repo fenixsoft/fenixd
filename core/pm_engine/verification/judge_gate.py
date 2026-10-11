@@ -10,8 +10,6 @@ _clear_degrade_context）。纯结构搬移，零行为变化。
 """
 
 import json
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +17,9 @@ from core.agent_runner.run_files import run_spec_part
 # fix-env-exemption-exit-reachability 3.3：inconclusive 重验窗口的独立计数
 # 上限复用 escalation 的防御性配置读取助手（同键同缺省，防两侧调参漂移）；
 # escalation 不回引本模块，无循环导入。
+# 契约声明（code-review d6ec62e32d90）：`_read_int_config` 名虽带下划线，
+# 本处按事实公开契约消费——escalation 侧重构该助手（改名/挪位/改签名）时
+# MUST 同步本文件导入。
 from core.pm_engine.verification.escalation import _read_int_config
 from core.pm_engine.verification.scenario_gate import atomic_write_text
 
@@ -262,9 +263,21 @@ def _judge_round_escalate(pipeline, spec_name: str, state: dict) -> None:
             f"等待人工处置，不重复告警",
         )
         return
-    pipeline._context.state_machine.update_spec(
-        spec_name, {_JUDGE_ROUND_ESCALATED_FIELD: True}
-    )
+    # 标记写入失败不得炸穿派发门（code-review fa230eb24c59，与
+    # _judge_inconclusive_cap_escalate 对齐）：锁竞争超时/IO 错误仅 WARNING
+    # 留痕，不阻断停车——「停止派发、人工升级、spec 保持 testing」的停车
+    # 语义由下方告警与返回 False 兑现，STATE 旗标缺失只影响去重（重复命中
+    # 时重复告警一次，可接受）。
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name, {_JUDGE_ROUND_ESCALATED_FIELD: True}
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 轮内停派升级标记写入失败 '{spec_name}'（不阻断停车）: "
+            f"{type(e).__name__}: {e}",
+        )
     history = _judge_round_verdict_history(pipeline, spec_name)
     pipeline._context.logger.error(
         "pm_engine",
@@ -551,7 +564,11 @@ def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
     （hard cap 触发后 judge 侧计数器冻结，与 _verify_fail_rounds 一并冻结）。
     """
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    frozen = delta and entry.get("_judge_cap_frozen")
+    # 单源布尔归一读法（code-review cce595b55013）：不走裸真值判断——其
+    # 正确性隐式依赖 state_machine 布尔转换清单把本字段显式转回 bool，统一
+    # 走 _state_flag_true 使本模块布尔 STATE 读法单源化（同
+    # _judge_round_escalated/_judge_inconclusive_cap_escalated 口径）。
+    frozen = delta and _state_flag_true(entry, "_judge_cap_frozen")
     count = 0
     try:
         count = int(entry.get("_judge_rerun_count", 0) or 0)
@@ -611,22 +628,11 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
     }
     try:
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        # 原子写（对齐 _copyback_run_result 的 _write_atomic 手法）：同目录
-        # 临时文件 + os.replace，写盘瞬间读侧（Dashboard 轮询）不会读到半截 JSON。
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=".fenix-run-result.", suffix=".tmp", dir=str(result_path.parent)
-        )
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False, indent=1))
-            os.replace(tmp_path, result_path)
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
+        # 原子写（复用 scenario_gate.atomic_write_text，与 _write_degrade_context
+        # 统一，code-review 8b76a6e1eb38）：共享助手同目录 mkstemp 唯一临时
+        # 文件 + fsync + os.replace，写盘瞬间读侧（Dashboard 轮询）不会读到
+        # 半截 JSON；父目录由上一行保证（助手自身不建目录）。
+        atomic_write_text(result_path, json.dumps(payload, ensure_ascii=False, indent=1))
     except OSError as e:
         # fix-verdict-read-failclosed D6：机械写回失败 → 退化常规 judge（返回
         # None），不得按 verified 兜底放行（历史 fail-open 语义已清除）。

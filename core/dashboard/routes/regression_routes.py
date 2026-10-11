@@ -194,8 +194,10 @@ def reap_all_autodraft() -> None:
     """收割全部在飞 regression 起草进程组（dashboard serve() 退出链调用）。
 
     killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
-    _kill_process_group）；目标已退出属可预期竞态（ProcessLookupError/
-    OSError 降级 proc.kill）。不在此排干管道：SIGKILL 后 communicate 可能
+    _kill_process_group），击杀经自保护守卫（resolve 型）：守卫拒绝
+    （自身组/非正 pgid）或组已不存在（含目标已退出）一律静默，不降级
+    单 pid proc.kill（契约见 core/proc_utils.guard_killpg——os.kill(0,
+    sig) 折算为调用者自身组广播）。不在此排干管道：SIGKILL 后 communicate 可能
     被逃出进程组的孙进程无限阻塞（knowledge.py 同款已知形态），收尾交由
     持有句柄的请求线程自身超时/兜底分支完成。
     """
@@ -225,8 +227,9 @@ def _reap_autodraft_proc(proc) -> None:
     终止——只杀直接子进程不够，它派生的 bash/写文件孙进程会沦为孤儿继续
     存活，本路径返回后 finally 释放单飞锁，用户重试的新起草进程将与孤儿
     并发写 verify.yaml / git index（正是单飞锁要防的踩踏），孤儿稍后自行
-    落位还会造成「已报失败但 regression 段事后出现」。组不存在（含已退出）
-    降级 proc.kill 兜底。
+    落位还会造成「已报失败但 regression 段事后出现」。组不存在（含已退
+    出）与守卫拒绝（自身组/非正 pgid）同样静默，一律不降级单 pid
+    proc.kill（契约见 core/proc_utils.guard_killpg）。
 
     排管道必须带有限超时（``_AUTODRAFT_REAP_TIMEOUT_SECONDS``）：killpg 只
     约束同组进程，孙进程若经 setsid/nohup 逃出进程组仍持 stdout/stderr 管

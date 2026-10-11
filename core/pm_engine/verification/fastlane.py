@@ -32,12 +32,13 @@ import copy
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 
 # tmp+replace 原子写助手与 scenario_gate 写盘惯例同源：本模块 JSON 落盘点
 # （fastlane_decision.json / test_scenarios.fastlane.json）会被后续流程回读，
 # 裸写中途被 SIGKILL 会留截断文件（code-review 1eeac794401f）。
-from core.pm_engine.verification.scenario_gate import _atomic_write_text
+from core.pm_engine.verification.scenario_gate import atomic_write_text
 
 # fastlane 触发阈值：judge 归因修复影响面文件数上限（minor-defect-fastlane 条件②）
 FASTLANE_MAX_AFFECTED_FILES = 3
@@ -353,7 +354,7 @@ def record_decision(pipeline, spec_name: str, decision: dict) -> None:
         payload = dict(decision)
         payload["spec"] = spec_name
         payload["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        _atomic_write_text(
+        atomic_write_text(
             path, json.dumps(payload, ensure_ascii=False, indent=2)
         )
     except OSError as e:
@@ -481,7 +482,7 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
     ]
     subset_path = verify_dir / "test_scenarios.fastlane.json"
     try:
-        _atomic_write_text(
+        atomic_write_text(
             subset_path, json.dumps(subset_payload, ensure_ascii=False, indent=2)
         )
     except OSError as e:
@@ -639,7 +640,10 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
 
     # ① code-fix 轻量修复任务（agents/code-fix.md 车道，主树直接修复）
     failed_id = str(decision.get("failed_id") or "")
-    run_id = f"code-fix-fastlane-{spec_name}-{int(time.time())}"
+    # 随机中缀与 spec_review 同口径：秒级时间戳同秒重派会生成与上一轮逐字
+    # 相同的 run_id（下游以整串 run_id 作转录/在飞关联键）；随机段置于 epoch
+    # 尾段之前，保住尾段数字形态供按「-」尾段解析秒级时间戳的取径。
+    run_id = f"code-fix-fastlane-{spec_name}-{uuid.uuid4().hex[:6]}-{int(time.time())}"
     ctx.logger.info(
         "pm_engine",
         f"fastlane 承接 '{spec_name}': 派发 code-fix 轻量修复 run {run_id}"

@@ -776,6 +776,11 @@ class H3SpecRoutesMixin:
             # 是两种不同的失败，便于用户区分处置
             self._error(409, result.get("error") or "本项目 daemon 未受 supervisor 托管")
             return
+        # daemon_down → 409 与 run_routes._api_run_cancel / 共享守卫
+        # hosting_guard._guard_hosting_state 对同一「daemon 未运行」语义回 400
+        # 是有意的既存分叉（本端点 docstring 已钉 409 契约；已核实 spec 侧前端
+        # SpecStatusModal 仅展示后端 error 文案，不按状态码分流）。新端点为
+        # 同族故障选边时先对照两处口径，勿随机复制
         if result.get("daemon_down"):
             self._error(409, result.get("error") or "daemon 未运行，请先启动 daemon")
             return
@@ -826,6 +831,10 @@ class H3SpecRoutesMixin:
             if req.get("unmanaged"):
                 self._error(409, req.get("error") or "daemon 未托管")
                 return
+            # daemon_down → 409 与 run_routes._api_run_cancel / 共享守卫
+            # hosting_guard._guard_hosting_state 的 400（stopped）是有意的既存
+            # 分叉（各端点 docstring 已钉各自契约）；与上方 _api_spec_approve_push
+            # 同口径，新端点选边前先对照两处
             if req.get("daemon_down"):
                 self._error(409, req.get("error") or "daemon 未运行")
                 return

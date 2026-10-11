@@ -11,7 +11,6 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from core.git_base_branch import resolve_base_branch
 from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
@@ -92,7 +91,7 @@ def _implementation_branch_has_commits(pipeline, result) -> bool:
     return count is not None and count > 0
 
 
-def _branch_commit_count(pipeline, result) -> Optional[int]:
+def _branch_commit_count(pipeline, result) -> int | None:
     """实现分支相对基线分支的提交数（`git rev-list --count <基线>..<branch>`）。
 
     单一来源（fix-fasttrack-resultfile-missing-redispatch D1）：供
@@ -427,6 +426,13 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
             ],
             capture_output=True,
             text=True,
+            # 显式 UTF-8（与 worktree_manager/queries.py file_exists_on_branch
+            # 既有修复同口径）：text=True 缺省按 locale 解码，非 UTF-8 locale
+            # 下 tasks.md 的非 ASCII 输出抛 UnicodeDecodeError（ValueError
+            # 子类），不被下方 (TimeoutExpired, OSError) 守卫捕获，沿调用链
+            # 抛穿破坏本函数 fail-open 返回 [] 契约。
+            encoding="utf-8",
+            errors="replace",
             timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as e:

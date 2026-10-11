@@ -651,6 +651,18 @@ class VerificationPipeline:
                 f"裁决重试 judge 派发失败 '{spec_name}' — 保持 testing，"
                 f"留 error 待下轮重验: {dispatch_error}",
             )
+            # 写 error 前二次核对（code-review item 0a515935ee9b）：重试派发
+            # 距 _dispatch_judge_or_reuse 内 D6 检查可能已隔数分钟，窗口内
+            # spec 被人工复位/冻结接管时该写点会覆写较新状态 error——非
+            # testing 时 DEBUG 丢弃（与 report_missing 分支同口径）。
+            _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+            if _apply_status != "testing":
+                self._context.logger.debug(
+                    "pm_engine",
+                    f"裁决重试 judge 派发失败但 spec 已非 testing（当前 "
+                    f"'{_apply_status}'）'{spec_name}' — 丢弃，不写 error",
+                )
+                return
             self._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -667,6 +679,18 @@ class VerificationPipeline:
                 f"裁决证据校验重试异常早退 '{spec_name}' — 保持 testing，"
                 f"留 error 待下轮重验: {dispatch_error}",
             )
+            # 写 error 前二次核对（code-review item 0a515935ee9b）：重试派发
+            # 距 _dispatch_judge_or_reuse 内 D6 检查可能已隔数分钟，窗口内
+            # spec 被人工复位/冻结接管时该写点会覆写较新状态 error——非
+            # testing 时 DEBUG 丢弃（与 report_missing 分支同口径）。
+            _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+            if _apply_status != "testing":
+                self._context.logger.debug(
+                    "pm_engine",
+                    f"裁决重试 judge 异常早退但 spec 已非 testing（当前 "
+                    f"'{_apply_status}'）'{spec_name}' — 丢弃，不写 error",
+                )
+                return
             self._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -1073,6 +1097,19 @@ class VerificationPipeline:
                         ),
                     },
                 )
+                # result_file 与裁决复读共用同一观测序（code-review item
+                # ff325de4988d）：verdict_result_path 在重派 judge 前解析
+                # （primary 缺失时取主树共享回退路径）；重派窗口内 primary
+                # 产物可能已被写出但裁决仍不可读——evidence 若沿用重派前
+                # 路径即与实际不可读产物位置错位（item 359da5d900bd 的修复
+                # 被重派窗口打穿）。此处重新解析一次再生成 evidence；重派前
+                # 那次解析保留不动（前道使用点语义不变）。
+                from core.pm_engine.verification.report_gate import (
+                    _verify_progress_result_paths,
+                )
+
+                _vfp_primary, _vfp_shared = _verify_progress_result_paths(self, spec_name)
+                _blocked_result_path = _vfp_primary if _vfp_primary.exists() else _vfp_shared
                 # 告警通道自身失败不得抛穿 blocked 收口（code-review item
                 # ccd3ffdf1a59）：update_spec blocked 已落盘，notifier 异常
                 # 若上抛会沿 engine except e2 回滚整轮——ERROR 留痕后继续
@@ -1087,7 +1124,7 @@ class VerificationPipeline:
                             f"（reason={verifier_result.reason}）"
                         ),
                         evidence=(
-                            f"spec={spec_name}; result_file={verdict_result_path}; "
+                            f"spec={spec_name}; result_file={_blocked_result_path}; "
                             f"parse_error={verifier_result.detail}"
                             + (f"; retry_failure={retry_failure}" if retry_failure else "")
                         ),
@@ -1513,7 +1550,36 @@ class VerificationPipeline:
                     f"冻结契约迁移备份失败 '{spec_name}'（不阻断迁移）: {e}",
                 )
             base_url = self._current_instance_base_url(spec_name)
-            result = migrate_frozen_contract(raw, base_url=base_url)
+            # 迁移段内部异常兜底（code-review item 07488d9c8b8b）：登记迁移段
+            # 对未预见条目形态抛异常时（当前唯一 _migrate_contract_to_v2 已
+            # 自防御，风险面向后续迁移段演进），与本函数其余损坏路径同口径
+            # 收敛 corrupt → env_blocked 人工通道（fail-closed）——裸调上抛
+            # 会沿 _run_three_stage_verification 到 engine 层按整轮失败处置
+            # （可触发 legacy 降级再验），违背本函数 docstring 契约。
+            try:
+                result = migrate_frozen_contract(raw, base_url=base_url)
+            except Exception as e:  # noqa: BLE001 — 与下方写回失败兜底同口径
+                _entry_brief = ", ".join(
+                    str(item.get("id") or item.get("name") or "?")
+                    for item in raw[:5]
+                    if isinstance(item, dict)
+                )
+                self._context.logger.error(
+                    "pm_engine",
+                    f"冻结契约迁移异常 '{spec_name}'（维持人工通道）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                self._escalate_env_blocked(
+                    spec_name,
+                    [
+                        _corrupt_freeze_options(spec_name),
+                        f"契约迁移异常: {type(e).__name__}: {str(e)[:300]}"
+                        f"（条目摘要：共 {len(raw)} 条，contract_version="
+                        f"{set_version}，前几条: {_entry_brief or '无'}）",
+                    ],
+                    title="场景计划争议",
+                )
+                return None, True
             if result["aborted"] == "all_scenarios_stale":
                 # D3：全场景过时（含空集）→ 删除冻结文件、本轮回落到既有
                 # 出题分支——不置 blocked/env_blocked、不递归调用

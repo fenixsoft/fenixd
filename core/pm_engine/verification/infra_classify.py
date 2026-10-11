@@ -9,12 +9,11 @@
 
 import hashlib as _hash
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 
 from core.admin_store import AdminStore, DISPOSITION, SIGNAL
+from core.fs_utils import atomic_write_text
 
 # 冻结标记字段单源（code-review item 101a0ed85064）：与 branch_guard /
 # state_machine 同引 FROZEN_FIELD 常量，字面量在常量演进时会静默失配。
@@ -545,21 +544,17 @@ def _append_fail_history(
                 "run_id": run_id or "",
             }
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".fail_history.", suffix=".json.tmp"
+        # 原子写收口共享助手 core.fs_utils.atomic_write_text（code-review
+        # item 8668d3068858）：mkstemp 唯一临时名 + fsync + 目录 fsync 纪律
+        # 单点维护，替代本处手写第四套 mkstemp 实现（原实现只 flush 不
+        # fsync，掉电可丢已 replace 的台账尾部）；父目录创建由助手内部完成。
+        # inherit_existing_mode=True：既有台账文件权限原样继承不被静默放宽
+        # （对齐 verify_report 口径）；序列化文本与原 json.dump 参数逐字等价。
+        atomic_write_text(
+            path,
+            json.dumps(rounds, ensure_ascii=False, indent=2),
+            inherit_existing_mode=True,
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(rounds, f, ensure_ascii=False, indent=2)
-                f.flush()
-            os.replace(tmp_path, path)
-        except OSError:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
     except OSError as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -721,8 +716,17 @@ def reclassify_infra_rounds(
         ok=False 时 fail_rounds 为当前值（未变化），由调用方按需展示 reason。
     """
     if n <= 0:
-        fail_rounds = _read_fail_rounds(state_machine.read_one(spec_name) or {})
-        return {"ok": False, "reason": "n must be > 0", "fail_rounds": fail_rounds, "applied": 0}
+        # 早退分支同样补 status（code-review item 9ef7cac1f57a）：对齐
+        # docstring 返回契约 {ok, fail_rounds, status, applied}，避免按键
+        # 直取的调用方 KeyError。
+        entry = state_machine.read_one(spec_name) or {}
+        return {
+            "ok": False,
+            "reason": "n must be > 0",
+            "fail_rounds": _read_fail_rounds(entry),
+            "status": entry.get("status", ""),
+            "applied": 0,
+        }
 
     # ── 幂等：按 reclassify_key 去重 ──
     reclassify_key = _hash.sha256(

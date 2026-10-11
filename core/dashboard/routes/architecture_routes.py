@@ -499,12 +499,24 @@ class ArchitectureManager:
                     error="生成被中断（daemon 重启或后台线程已不存在），请重新点击「刷新架构图」",
                 )
                 return synth
+        # code-review item 31f86e2da065：state 四态白名单归一——文件为合法
+        # JSON 但 state 是白名单外值（手改/半截写入映射漂移）时不得原样透传
+        # 给前端，归一为 none 并附 error 标注（文件缺失/损坏/非 dict 已由
+        # _read_status 走 none 兜底，此处只补「合法 JSON + 非法 state」档；
+        # 空/缺失 state 维持既有 none 口径不额外标错）。
+        invalid_state = bool(state) and state not in (
+            "none", "generating", "ready", "failed",
+        )
+        if invalid_state:
+            state = "none"
         # 补齐存量六键 + stage（旧版残留文件可能缺键）
         full = _status_payload(state or "none")
         for key in ("started_at", "generated_at", "error", "duration_ms",
                     "component_count", "stage"):
             if key in data:
                 full[key] = data.get(key)
+        if invalid_state:
+            full["error"] = "状态文件 state 值非法，已按未生成处理，请重新点击「刷新架构图」"
         return full
 
     def _in_flight_alive(self, proot: Path) -> bool:
@@ -768,6 +780,11 @@ class ArchitectureManager:
 
             # ── 2) 阶段1 探索 run：evidence HEAD 命中则跳过（design D2）──
             if _evidence_head_matches(proot):
+                # code-review item c09f58e6f2a1：快路径与正常路径同序先落
+                # exploring 段标记——否则指纹命中时首个 stage 写入是下方
+                # authoring，受理至该写入之间 stage 恒为受理初态 null，
+                # 前端阶段展示缺段（纯展示口径，不影响判定）。
+                self._write_stage(proot, started_at, "exploring")
                 if logger is not None:
                     logger.info(
                         f"evidence HEAD 指纹命中，跳过阶段1 探索"

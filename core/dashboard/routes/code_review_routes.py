@@ -271,6 +271,14 @@ class H11CodeReviewRoutesMixin:
             items = [it for it in items if it.get("severity") == severity]
         total = len(items)
 
+        # [fenix-ignore:9d2d4a1e7622] 已豁免的分页语义变体：服务端分页参数
+        # 解析单源为 H0BaseMixin._parse_page_params（core/dashboard/routes/
+        # base.py），但其语义是逐参独立修复（page 在场非法回退 1、
+        # page_size 超限截到 max_size、单参在场即分页）。本端点契约（见上
+        # docstring，向后兼容旧消费者）是 page/page_size 均传且均合法才切片，
+        # 任一缺席/非法整组回退全量、响应恒带 page/page_size 键（回退为
+        # None），且上限 500 为硬拒而非截断——迁移单源会改写这三处既有
+        # 语义，故保留内联解析并在此登记豁免。
         def _page_int(name):
             raw = query.get(name, [None])[0]
             try:

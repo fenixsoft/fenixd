@@ -177,13 +177,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
     """降级方案：使用旧版单体 Verifier Agent。"""
     # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
     # 非 testing → DEBUG 丢弃（注明当前状态），不执行任何迁移/回退/重派。
-    _entry_status = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-    if _entry_status != "testing":
-        pipeline._context.logger.debug(
-            "pm_engine",
-            f"Verify result discarded for '{spec_name}': spec is "
-            f"'{_entry_status}', not testing at legacy pipeline entry — dropped",
-        )
+    # 判据与 DEBUG 文案单点收敛于 pipeline._check_entry_status（code-review
+    # 5811442b6209），与本文件 _discard_if_not_testing 同防两处演进漂移。
+    if not pipeline._check_entry_status(spec_name):
         return
 
     result = pipeline._pm.agent_runner.run_verifier(spec_name)
@@ -788,3 +784,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 "error": f"Verifier agent failed: {result.error or ''}",
             },
         )
+        # fix 派生有意依赖 recovery 兜底，非遗漏（code-review 90e23fbbec42）：
+        # 此处不调用 on_spec_bug_found——event_bus full_scan 对滞留 bug-found
+        # 态 re-trigger spec_bug_found（core/event_bus.py 339-341），经
+        # _do_spec_bug_found 统一派生 fix；在此补调会重复派发。
