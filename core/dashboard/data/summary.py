@@ -127,7 +127,13 @@ def project_summary(name: str, path: str, specs=None) -> dict:
         if entry.get("error") and entry.get("status") not in ("done", "pushed"):
             problems += 1
 
-    runs = _facade.get_runs(proot)
+    # D2（code-review item 23710380b93f）：run 读取复用上方 _runs_by_spec_sigs
+    # 预扫文件集展开，不再对 runs 目录做第二次全量 glob。归档副本随集传入，
+    # 由 get_runs 按父目录名过滤（include_archive=False 语义），与原 glob
+    # 路径同集。
+    runs = _facade.get_runs(
+        proot, files=[Path(p) for paths in runs_sigs.values() for p in paths]
+    )
     active = sum(1 for r in runs if r["status"] in ("running", "empty"))
     active_by_type = {}
     for r in runs:
@@ -648,6 +654,20 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
                 add(sf)
         except OSError:
             pass
+    # 归档回退副本树（code-review item e12df74cd57f/f089eea36163）：活跃目录
+    # 缺失时 tasks.md/场景计数/模式等经 resolve_spec_dir 回退读
+    # spec/archive/<date>-<spec>/（与 signature.spec_detail_signature 的归档
+    # 分支同读取口径），副本树被改而 STATE 条目与清单未变时也须失效摘要。
+    # 前提取舍：归档目录常规视为一次写入不可变，故扫描仅落在活跃目录缺失的
+    # spec 上（活跃态零额外开销）。
+    if not changes.is_dir():
+        arc_dir = _facade.resolve_spec_dir(proot, spec_name)
+        if arc_dir is not None:
+            # 延迟导入（summary ↔ signature 互引，与 invalidation_signature 同款）
+            from .signature import tree_sigs
+
+            for rel, mtime_ns, size in tree_sigs(arc_dir):
+                sigs[str(arc_dir / rel)] = (mtime_ns, size)
     add(proot / ".fenix" / "verify-progress" / f"{spec_name}.json")
     vp_dir = proot / ".fenix" / "verify-progress" / spec_name
     add(vp_dir / "report.json")
@@ -893,6 +913,11 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的完整详情（/api/specs/<spec>）。"""
     import core.dashboard.data as _facade
 
+    # 入口单点归一（code-review item 17624b9c3b9c，对齐 spec_summary 同款口径）：
+    # 函数内十余处 entry.get 裸取在 entry 为 None 时本就先抛 AttributeError，
+    # 末尾 cancelled_hold 的 `if entry else` 守卫不可达——入口归一后删除死守卫。
+    entry = entry or {}
+
     report = _facade.parse_report(project_root, spec_name)
     bugs = _facade.parse_bugs(project_root, spec_name)
     scenarios = (
@@ -966,7 +991,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "tester_run": entry.get("tester_run"),
         # add-cancelled-spec-resume-action 2.2：取消保持标记透传（与列表摘要
         # 同口径单点归一，零漂移；弹窗详情态渲染判据）
-        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
+        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")),
         # add-spec-manual-activation D12：与列表摘要 spec_summary 同口径单点归一——
         # STATE.md 对空依赖恒写 `depends_on: null`，透传会让详情态复现列表页
         # 已修掉的「前置依赖」误标（见 normalize_depends_on docstring）
