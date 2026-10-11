@@ -859,6 +859,12 @@ class H0BaseMixin:
         self.send_response(304)
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache")
+        # 同 _error：close_connection 在场（客户端带 Connection: close 请求
+        # 头、SSE 终结后连接的策略性关闭等）时本 304 也随连接关闭，须声明
+        # Connection: close，否则客户端会复用已被服务器关闭的连接重放
+        # If-None-Match。
+        if getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
         self.end_headers()
 
     def _handle_api(self, path: str, query: dict):
@@ -1206,6 +1212,14 @@ class H0BaseMixin:
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # close_connection=True 的分支（411/413/读体停滞超时/超限快速拒绝等，
+        # 见 _handle 与 _read_json_body 各处置点）响应后服务器即关闭连接：
+        # HTTP/1.1 缺 Connection: close 会被客户端当可复用连接，复用已死
+        # 连接的非幂等请求（POST）只能收到连接层错误而非本 4xx 语义。
+        # send_header 对 Connection 的特判会同步置 close_connection，与既有
+        # 标记一致，无副作用。
+        if getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)

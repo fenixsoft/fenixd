@@ -204,11 +204,16 @@ class H10StaticRoutesMixin:
         self.send_header("Cache-Control", cache)
         for _name, _value in (extra_headers or ()):
             self.send_header(_name, _value)
+        # Vary 无条件发送（与 base._maybe_gzip 口径对齐，同源结论
+        # f812b5255a66 / 本条 858b231045be）：响应是否压缩随 Accept-Encoding
+        # 变化，非压缩副本缺 Vary 时中介缓存可能把 identity 副本复用给支持
+        # gzip 的下游客户端——Cache-Control immutable 的 hashed bundle 上
+        # 即构成长期缓存正确性缺口。
+        self.send_header("Vary", "Accept-Encoding")
         if path.suffix.lower() in self._GZIP_EXT and self._wants_gzip():
             payload = self._hashed_gzip_payload(path, body, st)
             if payload is not None:
                 self.send_header("Content-Encoding", "gzip")
-                self.send_header("Vary", "Accept-Encoding")
                 body = payload
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

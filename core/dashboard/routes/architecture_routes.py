@@ -695,7 +695,15 @@ class ArchitectureManager:
                 # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）
                 proc.communicate(timeout=_REAP_DRAIN_TIMEOUT_SECONDS)
             except Exception:  # noqa: BLE001 — 含 TimeoutExpired（放弃排干）
-                pass
+                # 排干超时≠直连子进程未死：SIGKILL 已生效，超时只是孙进程
+                # 逃出进程组占着管道。直连子进程此时已死但尚未 wait 收尸，
+                # wait(0) 即刻收尸（regression_routes._reap_autodraft_proc
+                # 同款，item 54b12852e6bd）：缺这一步则 dashboard 进程存续
+                # 期内每次超时清场残留一个僵尸进程。
+                try:
+                    proc.wait(timeout=0)
+                except Exception:  # noqa: BLE001
+                    pass
             if logger is not None:
                 logger.warning(
                     f"架构图生成{stage_label}超时（>{timeout}s，"
@@ -725,7 +733,15 @@ class ArchitectureManager:
                 # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）
                 proc.communicate(timeout=_REAP_DRAIN_TIMEOUT_SECONDS)
             except Exception:  # noqa: BLE001 — 含 TimeoutExpired（放弃排干）
-                pass
+                # 排干超时≠直连子进程未死：SIGKILL 已生效，超时只是孙进程
+                # 逃出进程组占着管道。直连子进程此时已死但尚未 wait 收尸，
+                # wait(0) 即刻收尸（regression_routes._reap_autodraft_proc
+                # 同款，item 54b12852e6bd）：缺这一步则 dashboard 进程存续
+                # 期内每次超时清场残留一个僵尸进程。
+                try:
+                    proc.wait(timeout=0)
+                except Exception:  # noqa: BLE001
+                    pass
             if logger is not None:
                 logger.warning(
                     f"claude 进程通信异常（project={project_name}，"
