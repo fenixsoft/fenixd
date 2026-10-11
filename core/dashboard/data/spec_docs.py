@@ -37,11 +37,13 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     ff739784add1）：归档下软删除墓碑目录（``archive/<spec>`` 全等形态）与
     日期全等目录并存时，evolution 对墓碑**无条件优先**返回；本函数墓碑不
     参与 exact 优先集（exact_pattern 只匹配日期前缀全等形态），仅当无任何
-    日期命中时经 sorted 兜底胜出——并存时本函数解析到日期最新的全等归档
-    目录，evolution 解析到墓碑。理由：本模块服务文档读取回退，日期全等
-    目录是该 spec 最后一次正规归档、文档最完整；evolution 以条目 spec_name
-    为权威做知识溯源，软删除终态墓碑即其权威位置。两处只改其一会造成
-    读取漂移，维护时须同步评估。
+    exact（日期全等）命中时才与日期候选同层进入 sorted 兜底，且因字典序
+    （字母 > 数字）通常压过日期前缀候选而胜出（仅 spec 名以数字开头的
+    极端命名才可能被日期目录压过）——存在日期全等命中并存时本函数解析
+    到日期最新的全等归档目录，evolution 解析到墓碑。理由：本模块服务
+    文档读取回退，日期全等目录是该 spec 最后一次正规归档、文档最完整；
+    evolution 以条目 spec_name 为权威做知识溯源，软删除终态墓碑即其权威
+    位置。两处只改其一会造成读取漂移，维护时须同步评估。
     """
     if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
         return None

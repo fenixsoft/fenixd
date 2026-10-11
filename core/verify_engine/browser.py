@@ -779,7 +779,12 @@ class BrowserManager:
              "error_type"?: str, ...}
         """
         action = step.get("action", "")
-        target = step.get("target", "")
+        # target 与 value 同款 str 归一（code-review item 394576642420）：
+        # 数值/布尔形态的 target 此前原样透传，page.locator(target) 抛
+        # TypeError 落顶层 except 归为 unknown，报错不可定位——复用 value
+        # 的归一口径（08ef327b2c7e，仅以 is None 判缺失）
+        _raw_target = step.get("target")
+        target = "" if _raw_target is None else str(_raw_target)
         # value 归一为字符串（code-review item 08ef327b2c7e）：场景 JSON 中
         # 数值/布尔形态的 value（planner 产物并非不可能）此前会在
         # startswith/fill/select_option/json.loads 等分支抛
@@ -808,7 +813,12 @@ class BrowserManager:
                 # 同类输入的归因口径不对称。extension 的合法例外：空/about:*
                 # （下方重定向到本地 HTTP 服务）与 chrome-extension://（同款
                 # 回退），不视为非法 URL。
-                if not re.match(r"^https?://", str(value).strip()) and not (
+                # scheme 大小写不敏感匹配（code-review item bbca5c47bea6）：
+                # RFC 3986 中 scheme 大小写等价，HTTPS://EXAMPLE.com/x 为合法
+                # 绝对地址且 goto 实际可达，此前大小写敏感匹配会把它误判成
+                # invalid_navigate_url，与上方「只拦 100% 是错误形态」的
+                # 零误杀取向不符
+                if not re.match(r"^https?://", str(value).strip(), re.IGNORECASE) and not (
                     self._is_extension_project
                     and (
                         actual_url == ""
@@ -958,6 +968,22 @@ class BrowserManager:
             # route 注册在 page 上，reload/导航后仍保留（同一 page 对象）。
             if action == "mock_api":
                 try:
+                    # 响应体 JSON 合法性预检（code-review item 2039c7773f8a）：
+                    # 场景解析层 _str_field 把对象形态的 value 归一为 str(dict)
+                    # （Python repr 单引号），直接 fulfill 后前端 JSON.parse 必
+                    # 失败，错误提示类断言失败会被归因为产品缺陷——与 api_runner
+                    # body_type=json 的 json.loads 预检同口径，route 注册前按
+                    # 结构化失败拦截并附原始值
+                    try:
+                        json.loads(value)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "action": action,
+                            "target": target,
+                            "error_type": "invalid_mock_body",
+                            "error": f"mock_api 响应体非合法 JSON: {value!r}",
+                        }
                     # mock 隔离（fix-fix-stashpop 族谱爆炸根因修正）：拦截同页 SSE
                     # 推流。活体 dashboard 的 watcher 经 /api/stream 推送 'state'
                     # 消息，前端 handleSSEEvent 直接用真实 specs 调 renderView，
@@ -1232,7 +1258,11 @@ class BrowserManager:
                     hold = int(cfg.get("hold", 450))
                     dwell = int(cfg.get("dwell", 600))
                     via_wait = int(cfg.get("via_wait", 300))
-                except (TypeError, ValueError):
+                # OverflowError 并入同款拦截（code-review item e3f70f16ae5c）：
+                # json 的 1e999 解析为 inf，int(inf) 抛 OverflowError 不在原
+                # 元组内，会穿到顶层 except 归因退化为 unknown——与 wait 的
+                # 非有限值拦截同口径
+                except (TypeError, ValueError, OverflowError):
                     return {
                         "success": False,
                         "action": action,
@@ -1241,6 +1271,26 @@ class BrowserManager:
                         "error": (
                             f"drag 配置 hold/dwell/via_wait 必须为数值（毫秒）: "
                             f"hold={cfg.get('hold')!r} dwell={cfg.get('dwell')!r} "
+                            f"via_wait={cfg.get('via_wait')!r}"
+                        ),
+                    }
+                # 负值/超大值同款钳制（code-review item e3f70f16ae5c）：wait
+                # 分支对毫秒数设 _MAX_WAIT_MS（10 分钟）上限（引擎对单场景无
+                # 超时包裹，超大值长期占住并行信号量槽与浏览器 context），
+                # drag 三时长此前 int() 后直接进 wait_for_timeout，planner
+                # 毫秒/秒混写（如 450000）会让单条 drag 步骤挂起分钟级；负值
+                # 则令 wait_for_timeout 立即返回、长按/驻留被静默丢弃——均
+                # 复用既有 invalid_drag_config 结构化失败并附原始值
+                if not all(0 <= d <= _MAX_WAIT_MS for d in (hold, dwell, via_wait)):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "invalid_drag_config",
+                        "error": (
+                            f"drag 配置 hold/dwell/via_wait 须为 0~{_MAX_WAIT_MS}"
+                            f"（毫秒）: hold={cfg.get('hold')!r} "
+                            f"dwell={cfg.get('dwell')!r} "
                             f"via_wait={cfg.get('via_wait')!r}"
                         ),
                     }

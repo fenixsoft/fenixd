@@ -70,7 +70,22 @@ class CliRunner(VerifyRunner):
 
     def validate(self, scenario) -> list[str]:
         """cli 词表校验（仅 run 步骤 + CLI 断言必填字段）。"""
-        return validate_scenario(scenario)
+        errors = validate_scenario(scenario)
+        if errors:
+            return errors
+        # as 命名保留键验收（code-review item d1c601e57293）：'_latest' 是
+        # 框架保留键（断言缺省引用最近一次 run 结果）。步骤内检查在命令已
+        # 完整执行后才触发（_execute_run 在进程退出后），文件写入/外部服务
+        # 调用等命令副作用已真实落地而命名结果被整体丢弃，可能污染同一环
+        # 境上后续场景的执行前提——前移到验收期在执行前拒绝，与 api_runner
+        # 同款对称；_execute_run 运行期检查保留为兜底。
+        for i, step in enumerate(scenario.steps):
+            if step.action == "run" and step.as_ == "_latest":
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: "
+                    f"as 命名 '_latest' 是框架保留键，请改用其他名称"
+                )
+        return errors
 
     # ── 生命周期 ───────────────────────────────────────────────
 

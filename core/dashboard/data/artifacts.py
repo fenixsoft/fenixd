@@ -225,6 +225,10 @@ def _verdict_from_run_result(project_root, spec_name) -> dict:
     .fenix-run-result.json 的 verification 段（fast_track_result.py 契约）；
     full 模式 md 缺失时结果文件顶层 status 也可能是裁决值。缺失/非法一律
     fail-closed 返回 exists: False（维持空态，不伪造结论）。
+
+    summary 类型契约：本合成路径三桶计数为 int（含 0）、product_bugs=len(bugs)、
+    env_issues 恒 None；与 md 解析路径（parse_verdict）的 str/None 形态不同源
+    （同键跨路径 str|int|None 三态，消费方须容忍，详见 parse_verdict docstring）。
     """
     data = _load_run_result(project_root, spec_name)
     if data is not None:
@@ -275,7 +279,14 @@ def parse_verdict(project_root, spec_name) -> dict:
     - status: 结论标题（如 "环境不可达，无法验证" / "❌ 未通过（Bug Found）"）
     - status_detail: **状态:** 行（如 "环境问题 — Dashboard 服务未启动"）
     - conclusion: 结论段落（人类可读，避免用户只看 "0通过, 31失败"）
-    - summary: {"passed","failed","errors","product_bugs","env_issues"} 尽力解析
+    - summary: {"passed","failed","errors","product_bugs","env_issues"} 尽力解析。
+      类型契约（随产物路径漂移，消费方须按 str|int|None 三态容忍）：
+      md 解析路径各值为 str（正则捕获组原样，如 "10"）或 None（未解析到，
+      语义=「未知/不展示」，勿与 0 混做算术或严格相等）；run-result 合成路径
+      （_verdict_from_run_result）为 int（含 0 计数），env_issues 恒 None。
+      前端（detail.tsx verdictTone/VerdictPanel）以 parseInt + 模板串插值渲染，
+      对 str/int 均兼容，仅以 != null 判「是否展示」；两路径形态分别被
+      test_verify_report_gate / test_dashboard_data 断言钉死，勿单侧归一。
 
     md 文件缺失时回退 .fenix-run-result.json 的裁决段（_verdict_from_run_result）：
     fast-track 模式不产 verification-report.md，原先 verdict.exists 恒 False，

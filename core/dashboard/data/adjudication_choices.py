@@ -445,6 +445,13 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
     **中间目录**若为指向项目外的符号链接，写端 ``mkdir`` 与 ``mkstemp`` 均
     跟随、夹具内容可落到白名单之外（现状不设防）。白名单只承诺「字面路径
     不可越出供给层」，末段替换与中间目录跟随均属写端语义，非本校验兜底。
+
+    # [fenix-ignore:2cf2273e66dd] 知情接受：不做 realpath 收口——利用前提是
+    # 项目内预存恶意中间符号链接（能预置链接者已有项目写权限、可直接改产品
+    # 代码，白名单对其本不构成边界）；且本仓自身测试布局即合法地把 .fenix
+    # 符号链接到项目外（.fenix/fixtures 属白名单合法路径），realpath 越界
+    # 复核会误伤；真闭环须写端 O_NOFOLLOW（共享基建 atomic_write_text），
+    # 非本纯形态校验职责。
     """
     import os
 

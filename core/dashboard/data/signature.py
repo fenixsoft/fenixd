@@ -199,7 +199,7 @@ def spec_detail_signature(proot, spec: str) -> str:
     中本 spec 的副本树（resolve_spec_dir 归档回退）、两级 config（时间轴
     billing 配置依赖）。
     """
-    from .summary import _runs_by_spec_sigs
+    from .summary import runs_by_spec_sigs
 
     proot = Path(proot)
     sources = [
@@ -219,7 +219,7 @@ def spec_detail_signature(proot, spec: str) -> str:
         ("logs", tree_sigs(proot / ".fenix" / "logs", skip_dirs=frozenset({".idx"}))),
     ]
     # 本 spec 命名的 run 产物（含 archive/，_runs_by_spec_sigs 一并扫描）
-    runs = _runs_by_spec_sigs(proot).get(spec) or {}
+    runs = runs_by_spec_sigs(proot).get(spec) or {}
     parts.append(sorted((str(p), s[0], s[1]) for p, s in runs.items()))
     # 归档目录回退（resolve_spec_dir 同口径：目录名 == spec 或 spec- 前缀）
     arc = []

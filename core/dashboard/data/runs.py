@@ -127,6 +127,10 @@ def _load_run_metric_index(project_root: Path) -> dict:
 
     并发：读改写段（定槽/重建清空/合并推进/超限淘汰）经 _RUN_METRIC_INDEX_LOCK
     串行化，日志扫描 IO 在锁外（锁内只做内存操作）。
+
+    返回值是槽内活索引 dict（非副本）：后续调用的超限淘汰会原地删改其中
+    条目，调用方仅限同步读取（如 load_run_metric 的即时 .get），
+    MUST NOT 跨语句长期持有。
     """
     logs_dir = Path(project_root) / ".fenix" / "logs"
     log_path = logs_dir / "fenixd.log"
@@ -702,6 +706,7 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
     parsed = _parse_tail_lines(text.split("\n")[1:], max_lines)
     if len(parsed) >= max_lines:
         return parsed
+    # [fenix-ignore:d6b237f46378] info 性能项不修：流式尾读重构风险大于收益（本函数有截断末行误判 running 的事故约束），超长末行罕见且全量回退语义正确
     # 窗口内完整行不足 max_lines（单行超窗等）→ 回退全量逐行读
     return _read_run_lines_full(path, max_lines)
 
@@ -916,7 +921,7 @@ def _run_tail_insights(
                     joined = "\n".join(t for t in texts if t.strip())
                     if joined.strip():
                         last_asst = joined.strip()
-            elif t in _RUN_TERMINAL_STATUS_MAP and t != "result":
+            elif t in _RUN_TERMINAL_STATUS_MAP:
                 # 终态原因：error 事件原因在 error 字段，interrupted/cancelled
                 # 在 reason 字段；末行终态后处理，天然取末行生效
                 reason = str(e.get("error") or e.get("reason") or "").strip()

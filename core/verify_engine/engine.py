@@ -18,6 +18,7 @@ engine.py — 验证引擎主控（Runner 插件化调度，design D1）
 import asyncio
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -723,15 +724,20 @@ class VerifyEngine:
     def _build_report(self, scenario_results: list[dict]) -> dict:
         """构建最终验证报告。"""
         total = len(scenario_results)
-        passed = sum(1 for r in scenario_results if r["status"] == "pass")
-        warnings = sum(1 for r in scenario_results if r["status"] == "warning")
+        # status 键用 .get 防御口径（code-review item 2b1f9f814006）：与
+        # _execute_parallel 的结算口径（r.get("status")）对齐——验收门只校验
+        # 场景定义、不校验 Runner 结果形状，Runner.execute 返回缺 status 键的
+        # 结果时直接下标会抛 KeyError 穿出 run()（此时 teardown 已完成、报告
+        # 无法落盘）；缺键在此归入非失败档（不计入任何分档，total 仍计数）。
+        passed = sum(1 for r in scenario_results if r.get("status") == "pass")
+        warnings = sum(1 for r in scenario_results if r.get("status") == "warning")
         # 终态失败两档计数与依赖失败传播判定共用 TERMINAL_FAILURE_STATUSES
         # （code-review item 5867b3576e1f）：按序解包，第 1 位 fail、第 2 位 error
         failed, errors = (
-            sum(1 for r in scenario_results if r["status"] == st)
+            sum(1 for r in scenario_results if r.get("status") == st)
             for st in TERMINAL_FAILURE_STATUSES
         )
-        blocked_env = sum(1 for r in scenario_results if r["status"] == "blocked-env")
+        blocked_env = sum(1 for r in scenario_results if r.get("status") == "blocked-env")
 
         # blocked-env 计入 warning 统计而非 fail（spec verify-environment-sanity-gate），
         # 并以独立 blocked_env 字段供放行门禁换算（旧 report 无该字段读为 0）。
@@ -777,13 +783,23 @@ class VerifyEngine:
             }
         return report
 
+    @staticmethod
+    def _safe_component(name: str) -> str:
+        """路径成分净化（code-review item 0f903db272c3）：与 browser.screenshot
+        对 scenario.id 的同款纪律——拼入 verify-progress 路径前先替换分隔符
+        与 NUL，spec_name 含 / 或 .. 时经 f-string 拼接会写到预期目录之外
+        （正常 kebab-case spec 目录名不受影响）。
+        """
+        return re.sub(r"[\\/\x00]", "_", str(name))
+
     def _write_progress(self, done: int, total: int, current: str):
         """写入实时进度文件，供仪表盘读取。
 
         与旧版 verifier agent 写入的格式兼容：
         {"total": N, "done": D, "current": "描述"}
         """
-        progress_path = self.project_root / ".fenix" / "verify-progress" / f"{self.spec_name}.json"
+        safe_name = self._safe_component(self.spec_name)
+        progress_path = self.project_root / ".fenix" / "verify-progress" / f"{safe_name}.json"
         progress = {
             "total": total,
             "done": done,
@@ -826,7 +842,13 @@ class VerifyEngine:
         记日志留痕，保证 run() 恒返回报告对象。
         """
         try:
-            report_dir = self.project_root / ".fenix" / "verify-progress" / self.spec_name
+            # 同款净化（code-review item 0f903db272c3，见 _safe_component）
+            report_dir = (
+                self.project_root
+                / ".fenix"
+                / "verify-progress"
+                / self._safe_component(self.spec_name)
+            )
             report_dir.mkdir(parents=True, exist_ok=True)
             report_path = report_dir / "report.json"
             # 原子写（code-review item 4897aa6ba94f，同 _write_progress）

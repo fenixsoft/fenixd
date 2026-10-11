@@ -145,6 +145,51 @@ def alerts_summary(project_root) -> dict:
     }
 
 
+def merge_dispositions_by_run(records) -> dict:
+    """DISPOSITION 记录按 admin_run_id 挑代表记录（best_by_run 归并单点）。
+
+    「pending 让位于非 pending、同态取 created 最新」的归并本体此前在
+    get_admin_activities 与 timeline._admin_events_for_spec 各有一份逐行
+    副本（code-review item 55336c2a40af 收敛为本单点，两视图共同委托，
+    勿再复制第二份）；status 优先口径与单源 _merge_admin_runs
+    （core/admin_monitor.py）一致。
+
+    规则：pending 是 admin 唤起时的标记记录，同 run 一旦产生最终
+    disposition（status/result != "pending"）即以最终为准（避免界面出现
+    「永久处置中」）；同为非 pending（或同为 pending）取 created 最新
+    （字典序即时间序，写侧 UTC 单一后缀族）；无 admin_run_id 的记录以
+    ``f"run-{id(rec)}"`` 独立成组；非 DISPOSITION 记录跳过。
+
+    返回 ``{admin_run_id: (is_pending, rec)}``——消费方式两视图各异：
+    运维记录页逐组取 rec 造 item；SPEC 时间轴按记录原序以
+    ``best_by_run[rid][1] is rec`` 过滤被替代的旧记录。置顶/_pin 与
+    spec 过滤等视图差异留在各消费方，不入本助手。
+    """
+    from core.admin_store import DISPOSITION
+
+    best_by_run: dict = {}
+    for rec in records:
+        if rec.get("kind") != DISPOSITION:
+            continue
+        rid = rec.get("admin_run_id") or f"run-{id(rec)}"
+        # status 优先与单源 _merge_admin_runs（core/admin_monitor.py）一致
+        status = rec.get("status") or rec.get("result")
+        is_pending = status == "pending"
+        existing = best_by_run.get(rid)
+        if existing is None:
+            best_by_run[rid] = (is_pending, rec)
+            continue
+        # 非 pending 优先于 pending；同态取 created 最新
+        if is_pending and not existing[0]:
+            continue
+        if not is_pending and existing[0]:
+            best_by_run[rid] = (False, rec)
+        # [fenix-ignore:e40a6011ce77] created 写侧恒一：AdminStore 三个写口共用 _normalize_entry 的 setdefault("created", _utcnow_iso())（UTC +00:00 单一后缀族），全部写入点核实无显式传值/改写，同后缀族字典序即时间序
+        elif (rec.get("created") or "") > (existing[1].get("created") or ""):
+            best_by_run[rid] = (is_pending, rec)
+    return best_by_run
+
+
 def get_admin_activities(project_root, spec=None) -> list:
     """返回 Administrator 处置活动记录（运维记录时间线数据源）。
 
@@ -157,7 +202,7 @@ def get_admin_activities(project_root, spec=None) -> list:
     `rec.get("spec") == spec` 过滤，仅返回该 SPEC 相关记录（置顶语义先于
     过滤生效，保证未处理升级置顶后仍被正确过滤）。
     """
-    from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+    from core.admin_store import AdminStore, ESCALATION
 
     records = AdminStore(project_root).read_all()
 
@@ -168,28 +213,10 @@ def get_admin_activities(project_root, spec=None) -> list:
             unhandled_by_run.setdefault(rec["admin_run_id"], rec.get("id"))
 
     activities = []
-    # 按 admin_run_id 归并：pending 是 admin 唤起时的标记记录，同 run 一旦产生
-    # 最终 disposition（result != pending）即以最终为准，避免页面出现"永久处置中"。
-    best_by_run: dict = {}
-    for rec in records:
-        if rec.get("kind") != DISPOSITION:
-            continue
-        rid = rec.get("admin_run_id") or f"run-{id(rec)}"
-        # status 优先与单源 _merge_admin_runs（core/admin_monitor.py，勿二次漂移）一致；
-        # timeline.py 的同款归并副本同此约定。
-        status = rec.get("status") or rec.get("result")
-        is_pending = status == "pending"
-        existing = best_by_run.get(rid)
-        if existing is None:
-            best_by_run[rid] = (is_pending, rec)
-            continue
-        # 非 pending 优先于 pending；同为非 pending 取最新
-        if is_pending and not existing[0]:
-            continue
-        if not is_pending and existing[0]:
-            best_by_run[rid] = (False, rec)
-        elif (rec.get("created") or "") > (existing[1].get("created") or ""):
-            best_by_run[rid] = (is_pending, rec)
+    # 按 admin_run_id 归并：pending 让位于非 pending、同态取 created 最新，
+    # 避免页面出现"永久处置中"（归并本体单源 merge_dispositions_by_run，
+    # SPEC 时间轴 admin 节点同款委托，勿在此复制第二份）。
+    best_by_run = merge_dispositions_by_run(records)
 
     for _is_pending, rec in best_by_run.values():
         item = dict(rec)

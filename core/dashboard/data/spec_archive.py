@@ -15,6 +15,11 @@ from core.archive_commit import commit_archive_move
 # state 组（叶子组已搬移，直接导入无环）
 from .state import parse_state, parse_archived_state
 
+# spec_docs 组（叶子组，模块级仅标准库 import，直接导入无环）：软删除/归档
+# 入口的 spec 名防穿越白名单（code-review item 8d9727c5ef7a），与读侧
+# resolve_spec_dir/get_spec_doc/parse_tasks 同一单源
+from .spec_docs import validated_spec_name
+
 # 共享日志兜底出口（e57bb78b236c：_archive_log 与 runs.py _retention_log 同款逻辑单源）
 from ._logutil import fallback_log
 
@@ -65,6 +70,14 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 已在模块顶层导入（测试可 patch 覆盖）
     from .admin_actions import running_run_ids_for_spec
     proot = Path(project_root)
+    # 防穿越（code-review item 8d9727c5ef7a）：spec 名拼进 spec/changes/<spec>
+    # 与 spec/archive/<spec>-<Unix秒>（下方 shutil.move）前先过 kebab-case
+    # 白名单——手工编辑的 STATE.md/归档清单若含 ``../`` 形态小节名，归档移动
+    # 会把目录落到仓库布局之外。与读侧 resolve_spec_dir/parse_tasks（item
+    # 91ba50839948）同口径；非法名按本函数既有「未找到」形态返回（幂等，
+    # 不发任何文件操作，调用方 404 / spec not found 语义不变）
+    if validated_spec_name(spec) is None:
+        return {"found": False}
     # 初始在跑计数（stopped 字段：有在跑 agent 时记录回调前计数，无在跑为 None）
     initial_running_count = 0
     specs = parse_state(proot)
@@ -335,6 +348,20 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
         与 error 展示文案无耦合。
     """
     proot = Path(project_root)
+    # 防穿越（code-review item 8d9727c5ef7a）：spec_name 拼进
+    # spec/changes/<name> 与 spec/archive/<date>-<name>（下方 shutil.move）前
+    # 先过 kebab-case 白名单，与读侧 resolve_spec_dir/get_spec_doc 同口径
+    # （读侧 code-review item 91ba50839948 已确立，写侧对齐）；非法名按本函数
+    # 既有「未找到」形态返回——HTTP 层 found=False → 404，daemon 自动归档路径
+    # 按 error 跳过并记日志，不引入新返回形态
+    if validated_spec_name(spec_name) is None:
+        return {
+            "ok": False,
+            "found": False,
+            "from": None,
+            "to": None,
+            "error": f"spec not found: {spec_name}",
+        }
     specs = parse_state(proot)
     if spec_name not in specs:
         return {

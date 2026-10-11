@@ -340,12 +340,16 @@ class AssertionRunner:
             error_msg = str(e)
             # 尝试提取拦截元素信息
             intercept_detail: dict[str, Any] | None = None
+            detail_note = ""
             if "intercepts pointer events" in error_msg:
                 try:
-                    intercept_detail = await page.evaluate(
-                        """(sel) => {
-                            const el = document.querySelector(sel);
-                            if (!el) return null;
+                    # 在目标元素自身上执行 elementFromPoint 逻辑，而非
+                    # document.querySelector(selector)：selector 是 Playwright
+                    # 选择器语法（支持 :has-text() / text= 等），querySelector
+                    # 对这类语法抛 SyntaxError 被静默吞掉，含 tag/z-index 的
+                    # 拦截详情在最有价值的拦截场景反而拿不到。
+                    intercept_detail = await self._locator(page, selector).evaluate(
+                        """el => {
                             const rect = el.getBoundingClientRect();
                             const cx = rect.left + rect.width / 2;
                             const cy = rect.top + rect.height / 2;
@@ -359,11 +363,12 @@ class AssertionRunner:
                                 };
                             }
                             return null;
-                        }""",
-                        selector,
+                        }"""
                     )
                 except Exception:
-                    pass  # 拦截详情提取失败不阻塞主流程
+                    # 拦截详情提取失败不阻塞主流程，但随结果 note 注明原因，
+                    # judge 归因时可知 intercept_detail=None 并非「无遮挡详情」。
+                    detail_note = "拦截详情未提取（选择器解析失败，拦截元素 tag/z-index 未知）"
 
             return {
                 "type": "no_click_interception",
@@ -373,6 +378,7 @@ class AssertionRunner:
                 "pass": False,
                 "error": error_msg,
                 "intercept_detail": intercept_detail,
+                **({"note": detail_note} if detail_note else {}),
             }
 
     async def _assert_no_overlap(self, page, a: dict) -> dict:
@@ -406,10 +412,13 @@ class AssertionRunner:
             """(el, threshold) => {
                 const rect = el.getBoundingClientRect();
                 const parent = el.parentElement;
-                if (!parent) return [];
+                if (!parent) return { zero_size: false, results: [] };
                 const siblings = [...parent.children].filter(c => c !== el);
                 const targetArea = rect.width * rect.height;
-                if (targetArea === 0) return [];
+                // display:none 等隐藏元素 getBoundingClientRect 返回全零 rect，
+                // targetArea===0 时重叠比例无法计算、恒判「无重叠」假通过，标记
+                // zero_size 交 Python 侧显式失败（与 in_viewport 零尺寸口径一致）
+                if (targetArea === 0) return { zero_size: true, results: [] };
 
                 const results = [];
                 for (const sib of siblings) {
@@ -431,7 +440,7 @@ class AssertionRunner:
                         });
                     }
                 }
-                return results;
+                return { zero_size: false, results };
             }""",
             threshold,
         )
@@ -445,13 +454,25 @@ class AssertionRunner:
                 "pass": False,
                 "error": "元素不存在，无法检测重叠",
             }
+        if isinstance(overlaps, dict) and overlaps.get("zero_size", False):
+            # 零尺寸/隐藏目标的重叠比例无法计算，恒判「无重叠」是无信息量的
+            # 假通过，显式失败供 judge 区分「确无重叠」与「目标根本不可见」。
+            return {
+                "type": "no_overlap",
+                "layer": 2,
+                "selector": selector,
+                "threshold": threshold,
+                "pass": False,
+                "error": "元素存在但零尺寸（如 display:none / 隐藏），重叠检查无意义，不视为通过",
+            }
+        results = overlaps.get("results", []) if isinstance(overlaps, dict) else []
         return {
             "type": "no_overlap",
             "layer": 2,
             "selector": selector,
             "threshold": threshold,
-            "pass": len(overlaps) == 0,
-            "overlaps": overlaps,
+            "pass": len(results) == 0,
+            "overlaps": results,
         }
 
     async def _assert_in_viewport(self, page, a: dict) -> dict:
@@ -750,6 +771,9 @@ class AssertionRunner:
         # （code-review item 11293370e8f2）非法正则本身仍是确定性错误：
         # _text_matches 内每轮重抛匹配异常，会被下方 except 当作「元素尚未
         # 渲染」的临时态空转至超时，故进轮询前预检。
+        # [fenix-ignore:7f1d7284e123] 正则预检以 mode == "regex" 为门，mode 非法
+        # 时进不了本分支，下方「非法 mode」校验必然先于任何正则报错触发，
+        # 「双配置错误归因偏离」场景在当前代码中不存在。
         if mode == "regex":
             if _regex_mod is not None:
                 regex_compile, regex_errors = _regex_mod.compile, _regex_mod.error

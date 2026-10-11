@@ -29,4 +29,7 @@ def fallback_log(logger, level: str, msg: str) -> None:
         except Exception:
             pass
     else:
-        print(f"[fenixd] {msg}", file=sys.stderr)
+        try:
+            print(f"[fenixd] {msg}", file=sys.stderr)
+        except Exception:
+            pass

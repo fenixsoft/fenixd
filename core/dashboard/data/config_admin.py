@@ -604,7 +604,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     if scope == "project":
         result["sources"] = _managed_key_sources(raw)
 
-    # 提取受管键（白名单：llm / agents.models / agents.max_concurrent / gates.approve_mode）
+    # 提取受管键（白名单制）：受管键集单源见 _SOURCE_KEYS（来源标注 + read 回显
+    # 共用），合并口径见 _deep_merge_managed——此处不逐键列举以免再次滞后
+    # （code-review item 69e746b3264d：原行仅列举早期四键，与实际几十键范围严重滞后）
     # [fenix-ignore:6032b09cf68a] apikey 掩码需配对写侧 mask-keep，而 llm 为整段替换写入且生效视图跨 user/project 作用域（哨兵落盘毁配置或跨作用域复制密钥），属成面改动不实施
     if isinstance(raw.get("llm"), dict):
         result["llm"] = raw["llm"]
@@ -1006,6 +1008,21 @@ def read_effective_config(project_root) -> dict:
         _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
     return result
 
+def _apply_guarded_subkeys(patch_sub: dict, existing, subkey_preds: dict) -> dict:
+    """受管子段逐键守卫合并：只应用 subkey_preds 登记且谓词放行的子键。
+
+    code-review item baa0aad69634：admin.code_review 的顶层 patch 与嵌套 sync
+    （{"admin": {"code_review": {...}}}）两路合并分支曾各存一份近复制实现
+    （仅键名替换），新增子键须双处同步、漏一处即「保存被静默吞掉」（同款坑
+    实证见 5607e1eab677）。现两路都委托本助手，谓词表单源复用
+    _SYNC_DICT_SUBKEY_APPLY 同一登记——合并口径与 synced 回执裁剪口径共用一份。
+    """
+    merged_sub = dict(existing) if isinstance(existing, dict) else {}
+    for _sk, _pred in subkey_preds.items():
+        if _sk in patch_sub and _pred(patch_sub[_sk]):
+            merged_sub[_sk] = patch_sub[_sk]
+    return merged_sub
+
 def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     """把 patch 中的受管键合并到 raw_config，返回新 dict（不修改原对象）。
 
@@ -1201,42 +1218,23 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if _CL.is_valid_hhmm(run_at):
             sr["run_at"] = run_at
         merged["admin"]["self_review"] = sr
-    # add-code-review-agent-and-quality-tab：admin.code_review 两键（enabled
+    # add-code-review-agent-and-quality-tab：admin.code_review 受管子段（enabled
     # 严格 bool、max_files 正整数；非法值由 write_config 前置校验拒绝，此处只
-    # 应用合法值——对齐 self_review 合并语义）
+    # 应用合法值——对齐 self_review 合并语义）。code-review item baa0aad69634：
+    # 逐键守卫委托 _apply_guarded_subkeys，谓词表单源取 _SYNC_DICT_SUBKEY_APPLY
+    # [("admin", "code_review")]，顶层与下方嵌套 sync 两路共用同一份口径，
+    # 新增子键只改表不再双处同步（双份漂移实证见 5607e1eab677）。
+    # 键源：scope=add-code-review-scope-config；stall_alert_minutes=
+    # add-code-review-sharded-out 3.2（bool 是 int 子类显式排除）；run_at=
+    # add-code-review-run-at 4.1（is_valid_hhmm 对 None/非串均 False）
     if "code_review" in patch and isinstance(patch["code_review"], dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
-        existing_cr = merged["admin"].get("code_review")
-        if not isinstance(existing_cr, dict):
-            existing_cr = {}
-        cr = dict(existing_cr)
-        if isinstance(patch["code_review"].get("enabled"), bool):
-            cr["enabled"] = patch["code_review"]["enabled"]
-        max_files = patch["code_review"].get("max_files")
-        if (
-            isinstance(max_files, int)
-            and not isinstance(max_files, bool)
-            and max_files > 0
-        ):
-            cr["max_files"] = max_files
-        # add-code-review-scope-config：scope 白名单应用（非法值由前置校验拒绝，
-        # 此处只应用合法值——对齐 max_files 同款合并语义）
-        if patch["code_review"].get("scope") in ("window", "full"):
-            cr["scope"] = patch["code_review"]["scope"]
-        # add-code-review-sharded-out 3.2：停滞告警阈值随受管段放行（正整数才
-        # 合并，bool 是 int 子类显式排除——对齐 max_files 同款合并语义）
-        sam = patch["code_review"].get("stall_alert_minutes")
-        if isinstance(sam, int) and not isinstance(sam, bool) and sam > 0:
-            cr["stall_alert_minutes"] = sam
-        # add-code-review-run-at 4.1：触发时点随受管段放行（合法 HH:MM 才合并，
-        # 脏值由 write_config 前置校验拒绝——对齐 self_review.run_at 同款合并
-        # 语义；is_valid_hhmm 对 None/非串均 False）
-        from core.config import ConfigLoader as _CL
-
-        if _CL.is_valid_hhmm(patch["code_review"].get("run_at")):
-            cr["run_at"] = patch["code_review"]["run_at"]
-        merged["admin"]["code_review"] = cr
+        merged["admin"]["code_review"] = _apply_guarded_subkeys(
+            patch["code_review"],
+            merged["admin"].get("code_review"),
+            _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review")],
+        )
     # add-code-review-auto-fix：admin.code_review_fix 两键（enabled 严格 bool、
     # batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用合法值
     # ——对齐 code_review 合并语义）
@@ -1312,36 +1310,24 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # code-review item 46a887dedf6a：「同步用户级设置」把 quality 页白名单里
         # 的 admin.code_review 段以 {"admin": {"code_review": {...}}} 形态的 patch
         # 送入本分支——不在此显式合并子段，该值会被上面的标量白名单静默丢弃
-        # （与下方 code_review_fix 同款坑）。逐键守卫与顶层 code_review 分支一致。
+        # （与下方 code_review_fix 同款坑）。item baa0aad69634：与顶层分支共用
+        # _apply_guarded_subkeys 及同一谓词表，合并口径单源。
         cr_sync = patch["admin"].get("code_review")
         if isinstance(cr_sync, dict):
-            existing_cr = merged["admin"].get("code_review")
-            if not isinstance(existing_cr, dict):
-                existing_cr = {}
-            merged_cr = dict(existing_cr)
-            if isinstance(cr_sync.get("enabled"), bool):
-                merged_cr["enabled"] = cr_sync["enabled"]
-            _mf = cr_sync.get("max_files")
-            if isinstance(_mf, int) and not isinstance(_mf, bool) and _mf > 0:
-                merged_cr["max_files"] = _mf
-            if cr_sync.get("scope") in ("window", "full"):
-                merged_cr["scope"] = cr_sync["scope"]
-            _sam = cr_sync.get("stall_alert_minutes")
-            if isinstance(_sam, int) and not isinstance(_sam, bool) and _sam > 0:
-                merged_cr["stall_alert_minutes"] = _sam
-            # add-code-review-run-at 4.1：触发时点同口径合并（「同步用户级设置」
-            # 按用户级回显原样携带 run_at 键，非法值由 write_config 前置校验拒绝
-            # ——缺此步该键在合并阶段被静默丢弃，synced 与实际落盘不一致）
-            from core.config import ConfigLoader as _CL
-
-            if _CL.is_valid_hhmm(cr_sync.get("run_at")):
-                merged_cr["run_at"] = cr_sync["run_at"]
-            merged["admin"]["code_review"] = merged_cr
+            merged["admin"]["code_review"] = _apply_guarded_subkeys(
+                cr_sync,
+                merged["admin"].get("code_review"),
+                _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review")],
+            )
         # add-code-review-auto-fix：「同步用户级设置」按 _SYNC_PAGE_KEYS 构造
         # {"admin": {"code_review_fix": {...}}} 形态的 patch 进入本分支（顶层
         # code_review_fix 键只有设置页保存路径走）——不在此显式合并子段，该值
         # 会被上面的标量白名单静默丢弃，sync 返回 ok 但项目配置未落盘（ocr
         # 审查实证，正是上方 regression 注释点名的「缺分支静默丢弃保存」坑）。
+        # item baa0aad69634：本分支与顶层 code_review_fix 分支不同构（后者多
+        # min_immediate_severity / minor_batch_cadence / severity_batch_gate_enabled
+        # 三键，谓词表差异非纯键名替换），单表委托会改变其中一路合并行为，
+        # 故未纳入 _apply_guarded_subkeys 单源化，两份暂留。
         crf_sync = patch["admin"].get("code_review_fix")
         if isinstance(crf_sync, dict):
             existing_crf = merged["admin"].get("code_review_fix")

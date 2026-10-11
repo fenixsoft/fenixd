@@ -203,6 +203,11 @@ class TestAdminResetChannelConvergesToGuard(unittest.TestCase):
         monitor.state_machine = mock.MagicMock()
         monitor.project_root = Path(self.tmpdir)
         monitor.logger = self.logger
+        # 在飞互斥守卫（fix-recovery-path-blockers D2）经 _spec_has_active_
+        # admin_run 读 store 全库记录；__new__ 裸装配绕过 __init__ 拿不到
+        # store——替身给空库（无在飞 admin 处置），守卫放行走直通道。
+        monitor.store = mock.MagicMock()
+        monitor.store.read_all.return_value = []
         monitor.pm_engine = SimpleNamespace(
             handle_event=lambda kind, spec, entry: (
                 self.assertIs(kind, "spec_implemented"),

@@ -34,7 +34,9 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     runs_by_spec_sigs   (summary.py 公开别名，project_routes.py 经门面解析；
                          code-review c0c4df6ac475),
     degraded_project    (summary.py 公开别名，project_routes.py 经门面解析；
-                         code-review 850b89f106d6)
+                         code-review 850b89f106d6),
+    merge_dispositions_by_run (admin_alerts.py，timeline.py 经门面解析；
+                               code-review 55336c2a40af)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
@@ -250,6 +252,7 @@ from .admin_alerts import (
     alerts_summary,
     get_admin_activities,
     get_archived_activities,
+    merge_dispositions_by_run,
 )
 
 # ── tasks 组 ──

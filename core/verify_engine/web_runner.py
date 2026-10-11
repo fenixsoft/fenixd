@@ -16,6 +16,7 @@ navigate 绝对 URL 硬要求随迁至 WebRunner.validate（经 scenarios.valida
 
 import asyncio
 import re
+from typing import Optional
 from urllib.parse import urlsplit
 
 from .runner import VerifyRunner, register_runner, determine_scenario_status
@@ -34,6 +35,11 @@ def locate_app_base_url(candidates: list) -> str:
     （add-v3-spec-detail-page 教训）。
     """
     for r in candidates:
+        # code-review item 93baf5aa6007：外层候选与内层 step 同款类型防护，
+        # 非 dict 候选直接跳过，避免 AttributeError 穿出探针链路（探针
+        # 无法完成时设计口径为保守判健康，而非抛异常）。
+        if not isinstance(r, dict):
+            continue
         for step in r.get("step_results") or []:
             if not isinstance(step, dict) or step.get("action") != "navigate":
                 continue
@@ -91,7 +97,7 @@ class WebRunner(VerifyRunner):
 
     kind = "web"
 
-    def __init__(self, spec_name, project_root=None, logger=None, config: dict = None, **kwargs):
+    def __init__(self, spec_name, project_root=None, logger=None, config: Optional[dict] = None, **kwargs):
         super().__init__(spec_name, project_root, logger, config, **kwargs)
         self.browser = BrowserManager(project_root=project_root, logger=self.logger)
         self.asserter = AssertionRunner()
