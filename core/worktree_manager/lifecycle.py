@@ -989,11 +989,15 @@ class G1LifecycleMixin:
             # 未跟踪文件，先把它逐个 hash-object -w 写入对象库并打日志；失败仅
             # WARNING，不阻断 stash create 与删除主流程。
             try:
-                # -z 双侧启用（code-review item a515d30d7e9d）：默认
+                # ls-files 侧 -z（code-review item a515d30d7e9d）：默认
                 # core.quotePath=true 下非 ASCII/特殊字符路径会被 ls-files 输出
                 # 成 C 转义引号形，而 --stdin-paths 按原始行取路径、不反转义，
-                # hash-object 打不开该字面路径即 fatal、拖垮整批留档。改 NUL
-                # 分隔后两侧均拿字面路径，非 ASCII 未跟踪文件留档不再失效。
+                # hash-object 打不开该字面路径即 fatal、拖垮整批留档。-z 后
+                # ls-files 侧拿到字面路径，非 ASCII 未跟踪文件留档不再失效。
+                # hash-object 侧无 -z 开关（git 2.54 选项表实测 unknown
+                # switch，code-review item 9734ebf6c937），--stdin-paths 只能
+                # 按 LF 行读路径，故输入用 LF 分隔；路径含换行的极端形态
+                # 不在留档覆盖内。
                 others = subprocess.run(
                     ["git", "-C", str(wt_path), "ls-files", "-z", "--others",
                      "--exclude-standard"],
@@ -1011,8 +1015,8 @@ class G1LifecycleMixin:
                 if ut_paths:
                     hashed = subprocess.run(
                         ["git", "-C", str(wt_path), "hash-object", "-w",
-                         "--stdin-paths", "-z"],
-                        input="\0".join(ut_paths) + "\0",
+                         "--stdin-paths"],
+                        input="\n".join(ut_paths) + "\n",
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
