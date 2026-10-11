@@ -265,10 +265,18 @@ def _get_spec_detail(s, p, q, m):
 
 def _get_runs_watch(s, p, q, m):
     rest = urllib.parse.unquote(m.group(1))
+    run_id = rest[: -len("/watch")] if rest.endswith("/watch") else rest
+    # 空 id 与尾斜杠变体显式 400（code-review item be55988449c1）：/api/runs//watch
+    # 剥后缀得空串、/api/runs/foo/ 整体落成尾斜杠 id，原先静默下传靠下游
+    # 200+error 字典兜底。run_id 白名单（runs.py 325d0b089a9d）排除路径分隔符，
+    # 合法 id 既不会为空也不会以 / 结尾，本校验不伤合法请求。
+    if not run_id or run_id.endswith("/"):
+        s._error(400, "Invalid run id")
+        return
     if rest.endswith("/watch"):
-        s._json(s._api_run_watch(rest[: -len("/watch")], q, watch=True))
+        s._json(s._api_run_watch(run_id, q, watch=True))
     else:
-        s._json(s._api_run(rest, q))
+        s._json(s._api_run(run_id, q))
 
 def _get_events(s, p, q, m):
     s._json(s._api_events(q))
@@ -1149,9 +1157,12 @@ class H0BaseMixin:
         return "gzip" in self.headers.get("Accept-Encoding", "").lower()
 
     def _maybe_gzip(self, body: bytes) -> bytes:
+        # Vary 无条件发送（code-review item f812b5255a66）：响应是否压缩随
+        # Accept-Encoding 变化，非压缩副本缺 Vary 时中介缓存可能将其复用给
+        # 支持 gzip 的下游客户端。收敛在本单点，压缩分支不再重复发。
+        self.send_header("Vary", "Accept-Encoding")
         if len(body) >= self._GZIP_MIN and self._wants_gzip():
             self.send_header("Content-Encoding", "gzip")
-            self.send_header("Vary", "Accept-Encoding")
             return gzip.compress(body, 5)
         return body
 
