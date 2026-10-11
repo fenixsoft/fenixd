@@ -56,3 +56,9 @@ fenixd.log
 # gh CLI 本机设备标识等本地运行时状态
 .local/
 todo.txt
+
+# 组件级 tailwind 生成物不入库：static/package.json 的 prebuild 每次构建由
+# tailwind.css 再生成（claude-msg / claude-composer 共用），tracked 必随构建
+# 漂移、周期性复发 maintree_stray_wip_stale 散件告警（2026-10-08 首次处置
+# 仅提交未断根、2026-10-11 复发后按 untrack_stray_wip 断根出库）
+core/dashboard/static/src/components/claude-msg/tailwind.gen.css
