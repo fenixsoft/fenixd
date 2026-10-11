@@ -81,10 +81,14 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         ), False
     head = head_res.stdout.strip()
     old = cache.get(spec_name)
+    # code-review cd109376b90a：异形条目（外部改写 servers.json/半写残留）缺
+    # wt_path 键时复用门以 .get 防御短路——落到下方清退分支，不 KeyError 炸穿
+    # 供给主流程
     if (
         old is not None
         and old.get("head") == head
         and old.get("mode") == mode
+        and old.get("wt_path")
         and Path(old["wt_path"]).is_dir()
     ):
         return old["wt_path"], head, None, False
@@ -94,7 +98,10 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         if isinstance(old_server, CommandVerifyServer):
             pipeline._unregister_serving_instance(spec_name, old_server)
         try:
-            old_server.stop()
+            # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
+            # _evict_spec_serving 防御形态），不 AttributeError 炸穿供给
+            if old_server is not None:
+                old_server.stop()
         except Exception as e:
             # fix-deferred-findings 健壮性：stop() 失败不再静默吞掉，补日志
             # （对齐 _evict_spec_serving 样板；不调换 unregister 顺序）
@@ -107,6 +114,11 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         old_wt = old.get("wt_path")
         if old_wt:
             pipeline._remove_serving_worktree(old_wt)
+        # code-review e96dc4a61601：清退完成即驱逐缓存条目——后续 worktree
+        # add/provision/prepare 任一失败早退时，缓存不再滞留指向已 stop 实例
+        # 与已删目录的死条目（StaticVerifyServer 无 ok 门，
+        # _current_instance_base_url 会把已停止实例当现存实例返回）
+        cache.pop(spec_name, None)
     # code-review 340873fcc988：后缀用纳秒时间戳——秒级后缀在「上轮 worktree
     # 清理失败目录残留 + 本轮同秒重建」时与新路径撞名，git worktree add 因
     # 路径已存在直接失败（本轮以难懂的「worktree 创建失败」告终，下一轮才
@@ -308,6 +320,12 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 7470b5d89795）；复用态不动——旧缓存条目仍引用同一目录
         if created:
             pipeline._remove_serving_worktree(wt)
+        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
+        # （对齐正常路径 Popen 前显式 close，不依赖引用计数回收）
+        try:
+            _port_holder.close()
+        except OSError:
+            pass
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
@@ -343,7 +361,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             if isinstance(old_server, CommandVerifyServer):
                 pipeline._unregister_serving_instance(spec_name, old_server)
             try:
-                old_server.stop()
+                # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
+                # _evict_spec_serving 防御形态），不 AttributeError 炸穿
+                if old_server is not None:
+                    old_server.stop()
             except Exception as stop_err:
                 pipeline._context.logger.warning(
                     "pm_engine",
@@ -382,7 +403,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         if isinstance(old_server, CommandVerifyServer):
             pipeline._unregister_serving_instance(spec_name, old_server)
         try:
-            old_server.stop()
+            # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
+            # _evict_spec_serving 防御形态），不 AttributeError 炸穿
+            if old_server is not None:
+                old_server.stop()
         except Exception as e:
             pipeline._context.logger.warning(
                 "pm_engine",
@@ -462,6 +486,12 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
                 "按错误信息中「候选」提示修正，或确认构建产物已生成后重验"
             ),
         )
+        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
+        # （对齐正常路径 Popen 前显式 close，不依赖引用计数回收）
+        try:
+            _port_holder.close()
+        except OSError:
+            pass
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
@@ -1185,6 +1215,13 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             [preflight_err],
             title="验证环境阻塞（入口存在性预检失败）",
         )
+        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
+        # （对齐正常路径 Popen 前显式 close；本路径仅 {port} 注入时持有）
+        if _port_holder is not None:
+            try:
+                _port_holder.close()
+            except OSError:
+                pass
         return False, False, preflight_err
 
     # 启动一次（后台、脱离会话、stdout/stderr 落盘 boot.log）；
