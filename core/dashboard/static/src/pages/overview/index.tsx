@@ -100,9 +100,17 @@ export default function OverviewPage() {
     void load();
     // 30s 心跳校准：overview 仍作为本地统计的校准源（SSE 断线时心跳兜底）。
     // SSE 增量事件（state/refresh/run_meta）不再逐事件重拉 overview（2s→30s）。
-    const hb = setInterval(() => void load(), HEARTBEAT_MS);
+    // item 2056f1d0624f：心跳受可见性门控——页面隐藏时 clearInterval 暂停，
+    // 恢复可见时重启定时器并立即补刷，避免长驻后台标签持续消耗 daemon
+    let hb = setInterval(() => void load(), HEARTBEAT_MS);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void load();
+      if (document.visibilityState === 'visible') {
+        clearInterval(hb);
+        hb = setInterval(() => void load(), HEARTBEAT_MS);
+        void load();
+      } else {
+        clearInterval(hb);
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     const es = new EventSource(STREAM_URL);
