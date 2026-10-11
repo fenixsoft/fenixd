@@ -40,7 +40,8 @@ def _wt_repo_common_dir(project_root):
     try:
         out = subprocess.run(
             ["git", "-C", str(project_root), "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -61,7 +62,8 @@ def _path_git_ignored(wt_path, rel: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "-C", str(wt_path), "check-ignore", "-q", rel],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -104,7 +106,7 @@ class G1LifecycleMixin:
         project_root: Path,
         logger,
         process_scanner=None,
-        implement_branch_prefix: str = None,
+        implement_branch_prefix: Optional[str] = None,
         state_reader=None,
         mergeback_wip_overlap_policy=None,
         merge_precheck_bypass=False,
@@ -177,6 +179,11 @@ class G1LifecycleMixin:
         # D1/D2）：{"kept": bool, "sha": str}——kept=False 表示已被自动 drop（sha
         # 可 gc 前找回），kept=True 表示条目保留。dispatch 层读走并入告警文本。
         self.last_stash_entry_fate: dict = {"kept": True, "sha": ""}
+        # 本轮 WIP 重叠闸门 D3b 已对齐 HEAD 的产物清单（code-review item
+        # 106be2cef569）：__init__ 显式初始化（与上两项同批次），使
+        # merge_back_from_branch 的 spec 目录在飞卫检查早退路径读取本属性
+        # 不依赖 _wip_overlap_gate 已执行；_wip_overlap_gate 体内只做重置。
+        self._wip_gate_aligned_artifacts: list = []
         # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1；
         # add-pipeline-throughput-governance D2 缺省处置改为升级拦截）：
         # 缺省 None → escalate（交集非空即拦截，不发起 merge、人工升级告警、
@@ -315,6 +322,8 @@ class G1LifecycleMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                     # 与 queries.create_worktree_on_branch 同款固化 C locale：
                     # git gettext 在非 C locale 下会把 "already exists" 翻译成本地化
@@ -548,6 +557,8 @@ class G1LifecycleMixin:
                 ["git", "-C", str(wt_path), "add", "spec/changes/"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if result.returncode != 0:
@@ -568,6 +579,8 @@ class G1LifecycleMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if result.returncode != 0:
@@ -603,6 +616,8 @@ class G1LifecycleMixin:
                 ["git", "-C", str(self.project_root), "status", "--porcelain", "--", rel],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if status.returncode != 0:
@@ -614,6 +629,8 @@ class G1LifecycleMixin:
                 ["git", "-C", str(self.project_root), "add", "--", rel],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if add.returncode != 0:
@@ -638,6 +655,8 @@ class G1LifecycleMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if commit.returncode != 0:
@@ -648,7 +667,7 @@ class G1LifecycleMixin:
                 return False
             self.logger.info("worktree_manager", f"Committed SPEC '{spec_name}' into main tree")
             return True
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, ValueError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"SPEC commit aborted for '{spec_name}': {e}",
@@ -742,6 +761,8 @@ class G1LifecycleMixin:
                         ["git", "-C", str(wt_path), "rev-parse", "--abbrev-ref", "HEAD"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=10,
                     )
                     if br.returncode == 0:
@@ -791,6 +812,8 @@ class G1LifecycleMixin:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
 
@@ -829,6 +852,8 @@ class G1LifecycleMixin:
                     ["git", "-C", str(self.project_root), "branch", "-D", branch],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
                 if del_res.returncode == 0:
@@ -954,6 +979,8 @@ class G1LifecycleMixin:
                 ["git", "-C", str(wt_path), "status", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
             if status.returncode != 0 or not status.stdout.strip():
@@ -1031,6 +1058,8 @@ class G1LifecycleMixin:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if snap.returncode != 0 or not snap.stdout.strip():
@@ -1048,7 +1077,7 @@ class G1LifecycleMixin:
                 f"recover via: git stash store {sha}",
             )
             return sha
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (subprocess.TimeoutExpired, OSError, ValueError) as e:
             self.logger.warning(
                 "worktree_manager",
                 f"Pre-rmtree snapshot failed for {wt_path}: {e} — " f"cleanup proceeds",
@@ -1117,6 +1146,8 @@ class G1LifecycleMixin:
                         ],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=30,
                     )
                     # 返回非零（worktree locked / 权限 / 子模块残留）不抛异常：
