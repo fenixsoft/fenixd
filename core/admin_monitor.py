@@ -820,6 +820,16 @@ _ORPHAN_SPEC_NAME_TOKEN_RE = re.compile(
 # 分支名尾部派发时间戳剥离（fenix/<spec>-<ts> → spec）：仅剥 ≥10 位纯数字
 # 尾段（epoch 秒/毫秒）；-7c1997 类十六进制短后缀是 spec 名组成部分，不剥。
 _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE = re.compile(r"-[0-9]{10,}$")
+# merge commit 家族锚定的「派发时间戳」放行段（_is_orphan_merge_commit 用，
+# 与上行 _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE 的串尾锚定口径同向，code-review
+# f87ef32726a2）：spec 名后允许紧跟「连字符 + ≥10 位数字」，但数字段后必须
+# 到串尾或引号/空白/常见标点分隔符——fix-x-<ts>-backup、fix-x-<ts>abc 等
+# 「时间戳段后仍有后缀」形态不再误命中（否则窗口内恰好合并的他人同名前缀
+# 分支会被误当本 spec 的 merge-back 证据提前收口底层信号，正是 fail-closed
+# 要防的假闭环方向）。
+_ORPHAN_MERGE_TS_LOOKAHEAD = (
+    r"(?!\w|-(?!\d{10,}(?:$|[\s'\",;)])))"
+)
 # 单组 spec 名候选上限（边界防失控文本产生的候选膨胀）。
 _ORPHAN_SPEC_NAME_TOKEN_LIMIT = 5
 
@@ -947,7 +957,9 @@ def _merge_admin_runs(records, spec=None, signal_type=None, exclude_run_id=None)
     return by_run
 
 
-def _spec_has_active_admin_run(store, spec: str, logger=None, exclude_run_id=None) -> bool:
+def _spec_has_active_admin_run(
+    store, spec: str, logger=None, exclude_run_id=None, records=None
+) -> bool:
     """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
 
     fix-recovery-path-blockers D2：按 ``(spec)`` 单键聚合 store 中
@@ -966,21 +978,27 @@ def _spec_has_active_admin_run(store, spec: str, logger=None, exclude_run_id=Non
     记录是考察对象，不得自证「已有在飞 run」；仅排除该 run，不排除
     其他在飞 run。
 
+    records：调用方已持有的全库记录快照（可选，code-review c0df5dd3dbbf）
+    ——传入则免重复 ``store.read_all()``：同一巡检周期内对多候选复用入口
+    快照，消除每候选一次的全库重读（快照本就含全部 DISPOSITION 记录，
+    周期内滞后对互斥语义影响可忽略）。
+
     模块级单一实现：``AdminMonitor._has_active_admin_run_for_spec`` 与
     ``event_bus`` 的两个守卫调用点都委托本函数（store 作为入参），勿复制
     第二份归并实现。判定异常 fail-open 返回 False（守卫故障不阻断恢复路径），
     异常记 WARNING（logger 可选注入）。
     """
-    try:
-        records = store.read_all()
-    except Exception as e:
-        if logger is not None:
-            logger.warning(
-                "admin_monitor",
-                f"_spec_has_active_admin_run 判定异常 fail-open（{spec}）: "
-                f"{type(e).__name__}: {e}",
-            )
-        return False
+    if records is None:
+        try:
+            records = store.read_all()
+        except Exception as e:
+            if logger is not None:
+                logger.warning(
+                    "admin_monitor",
+                    f"_spec_has_active_admin_run 判定异常 fail-open（{spec}）: "
+                    f"{type(e).__name__}: {e}",
+                )
+            return False
     by_run = _merge_admin_runs(records, spec=spec, exclude_run_id=exclude_run_id)
     return any(info["has_pending"] and not info["final"] for info in by_run.values())
 
@@ -2578,10 +2596,11 @@ class AdminMonitor:
                     or is_spec_attached_signal(r, backfill=backfill)
                 )
             ]
-            if not pending:
-                self._lifecycle_backfilled = True  # 无待闭环告警：通道一零写回
-            else:
-                self._lifecycle_backfilled = True
+            # 回填标志两分支同值（code-review 3caf5598dc97）：上提统一赋值
+            # 一次，分支内只保留各自实际逻辑；pending 为空 = 通道一零写回
+            # （无 find_resolvable 判定与写回），直接跳过。
+            self._lifecycle_backfilled = True
+            if pending:
                 resolvable = find_resolvable(pending, specs, backfill=backfill)
                 if resolvable:
                     resolved = self.store.auto_resolve(resolvable)
@@ -2781,7 +2800,14 @@ class AdminMonitor:
         返回本次摄取的信号列表（仅审计/测试用；唤起动作在内部完成）。
         """
         signals = []
-        for rec in self.store.read_all():
+        # 入口快照复用（code-review c0df5dd3dbbf）：本循环内所有记录判定
+        # （含下方在飞互斥守卫）共用同一份 read_all() 快照，不再对每条候选
+        # 记录经 _has_active_admin_run_for_spec → _spec_has_active_admin_run
+        # 重复全库重读（O(候选×全库) → O(全库)）；循环体内的 mark_escalated /
+        # skipped 留痕写库不影响快照判定（留痕记录无 admin_run_id，不参与
+        # _merge_admin_runs 归并）。
+        records = self.store.read_all()
+        for rec in records:
             if rec.get("kind") != SIGNAL:
                 continue
             if rec.get("signal_type") not in STORED_SIGNAL_TYPES:
@@ -2897,7 +2923,7 @@ class AdminMonitor:
             # 本守卫 MUST NOT mark_escalated——源记录保持未消费（写入即待唤起
             # 语义保留），在飞 run 结束后的下一巡检周期由本摄取循环自然重评
             # （再武装路径）；落点必须在 mark_escalated 之前。
-            if spec and self._has_active_admin_run_for_spec(spec):
+            if spec and self._has_active_admin_run_for_spec(spec, records=records):
                 self.logger.warning(
                     "admin_monitor",
                     f"{stype}: 已有在飞处置，跳过本次摄取唤起 '{spec}'"
@@ -4812,7 +4838,8 @@ class AdminMonitor:
 
     # ── 孤儿处置重派（admin-disposition-reschedule） ─────────────
 
-    def _has_active_admin_run_for_spec(self, spec, exclude_run_id=None) -> bool:
+    def _has_active_admin_run_for_spec(self, spec, exclude_run_id=None,
+                                       records=None) -> bool:
         """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
 
         fix-recovery-path-blockers D2：守卫口径按 spec 单键聚合、覆盖**任意**
@@ -4826,9 +4853,13 @@ class AdminMonitor:
         「已有在飞 run」；仅排除该 run，同 spec 其他（跨类型）在飞 run 仍命中
         （fix-admin-cross-type-duplicate-dispatch：全部派发路径统一 spec 单键
         口径，按 (spec, signal_type) 精确匹配的窄口径方法已收敛删除）。
+
+        records：透传模块级函数同名参数——已持全库快照的调用方（如
+        _detect_family_explosion 摄取循环）免每候选一次重复读库。
         """
         return _spec_has_active_admin_run(
-            self.store, spec, logger=self.logger, exclude_run_id=exclude_run_id
+            self.store, spec, logger=self.logger, exclude_run_id=exclude_run_id,
+            records=records,
         )
 
     def _reschedule_count_for(self, spec, signal_type: str) -> int:
@@ -5489,11 +5520,14 @@ class AdminMonitor:
         紧跟 ``-<≥10 位数字>``（分支记法 fenix/<name>-<派发时间戳> 的既有形态，
         纯 token 边界会把真实 merge-back 误拒；≥10 位口径与
         _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE 一致，-7c1997 类十六进制短后缀仍算
-        spec 名组成部分、不误放行）。不命中由调用方回落其余家族，fail-closed
+        spec 名组成部分、不误放行；数字段尾锚定到串尾或引号/空白/常见标点
+        分隔符（code-review f87ef32726a2，模式见
+        _ORPHAN_MERGE_TS_LOOKAHEAD），「时间戳段后仍有后缀」形态与该剥离
+        正则同向不误放行）。不命中由调用方回落其余家族，fail-closed
         取向不变。
         """
         return re.search(
-            r"(?<![\w-])" + re.escape(spec_name) + r"(?!\w|-(?!\d{10}))",
+            r"(?<![\w-])" + re.escape(spec_name) + _ORPHAN_MERGE_TS_LOOKAHEAD,
             subject,
         ) is not None
 
@@ -6654,6 +6688,21 @@ class AdminMonitor:
             return
         if reset_path is None:
             return
+        # fix-recovery-path-blockers D2（code-review 195f2fa7ddef）：与
+        # _reset_orphaned_after_disposition 同款在飞互斥——同 spec 任意
+        # signal_type 已有在飞/待派发 admin 处置（正在写 STATE/
+        # test_scenarios.json）时，本复位（transition + 清 error）与 verifier
+        # 重验会与之互相踩踏、重验可能读到半成品场景文件。命中 → 记 INFO
+        # 跳过本次复位（保持原状态、MUST NOT 写额外状态），在飞 run 收尾后
+        # 下一巡检周期自然重评。本 run 自身刚落盘的 final 处置记录非 pending，
+        # 不会自证在飞（_merge_admin_runs 组内非 pending 即 final）。
+        if self._has_active_admin_run_for_spec(spec):
+            self.logger.info(
+                "admin_monitor",
+                f"env 阻塞处置复位跳过 '{spec}': admin 处置在飞，"
+                f"复位/重验派发互斥（fix-recovery-path-blockers D2）",
+            )
+            return
 
         try:
             if reset_path == "testing":
@@ -6966,8 +7015,21 @@ class AdminMonitor:
                 "admin_monitor",
                 f"choice 作用域预判不可用（执行器守卫兜底）: {e}",
             )
-            _globally_scoped = False
             _resolved_choice = None
+            # code-review d5edc8ac335e：降级分支对全局形态 spec（空值或占位
+            # 'global'，同 is_global_spec 口径）保守沿用 not-ok skipped 语义，
+            # 与非降级路径 fail-closed 方向一致——否则空 spec × spec_scoped
+            # choice 会落入下方「无关联 spec」分支返回 None，终态回写门把
+            # None 视为未执行无阻塞、信号按 resolved 收口，违背 docstring 的
+            # fail-closed 承诺（该形态下执行器守卫兜底不被触达）。具体 spec
+            # 不受影响，照常放行执行器兜底。占位常量复用本模块既有定义
+            # （导入失败场景不能依赖 adjudication_choices 的
+            # GLOBAL_SPEC_PLACEHOLDER）。
+            _spec_form = str(spec or "").strip().lower()
+            _globally_scoped = (
+                (not _spec_form)
+                or _spec_form == _ORPHAN_GLOBAL_SPEC_PLACEHOLDER
+            )
         if _globally_scoped:
             self.logger.info(
                 "admin_monitor",
