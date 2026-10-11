@@ -432,13 +432,21 @@ def _state_path(project_root) -> Path:
 
 
 def _read_json_file(path: Path) -> Dict[str, Any]:
-    """通用 JSON 读取：缺失返回空 dict，损坏返回空 dict 并记日志。"""
+    """通用 JSON 读取：缺失/损坏/根非对象返回空 dict（非对象记日志）。"""
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    # code-review item 10dcd2a6d170：合法 JSON 但根非对象（[]/字符串/null，
+    # 外部写手）没有 .get，消费侧（admin_monitor 同日防重 state.get）会
+    # AttributeError 中断回归车道周期检查点；与 marker 读取侧的 isinstance
+    # 防御（item 1e2951cac732/63b7d232dd9e）同口径，归一为空 dict。
+    if not isinstance(data, dict):
+        _logger.warning("regression: %s 为合法 JSON 但根非对象，按空状态处理", path)
+        return {}
+    return data
 
 
 def read_state(project_root) -> Dict[str, Any]:
