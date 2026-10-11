@@ -165,6 +165,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     setLoading(true);
     try {
       const result = await regenerateProjectDescription(project);
+      // 在飞切项目归属对账（code-review item 49e4dcb57ead，比照 handleYamlSave
+      // 的 projectRef 对账 916d9186a619 / PromptsPanel 的 loadedForRef 对账
+      // f0be525a11f2）：生成请求在飞期间用户已切换项目时，结果只属于发起时刻
+      // 的旧项目——继续 onSave 写盘与 setDescription 会把旧项目简介串显进新
+      // 项目视图。静默放弃，视图让给切项目后的 config 回填（保存守卫可拦跨
+      // 项目错写，此处守视图与守卫口径对齐）。
+      if (projectRef.current !== project) return;
       // description 为可选字段：空值时视为失败阻断保存，不得以 undefined 回填草稿
       // （比照 PromptsPanel 跨项目错写防护的 data 判空口径）
       if (result.ok && result.description != null) {
@@ -314,6 +321,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     // 直接覆盖），防止上一项目残留基线把新项目内容误判为「覆盖未保存修改」
     yamlDraftRef.current = '';
     yamlLoadedContentRef.current = '';
+    // 视图随切换先复位（code-review item 2eca4895de00，与详情页 proposalWhy /
+    // SPEC 列表的「切换先复位」同口径，0947e28834f6）：只清基线不清草稿时，
+    // 新项目加载返回前 textarea 仍显示上一项目契约内容（disabled 只禁编辑
+    // 不禁查看）；写盘侧 yamlDraftSourceRef 归属守卫不受影响
+    setYamlDraft('');
     setYamlLoadError(false); // 清上一个项目残留的失败标记
     // 存在性标记同复位：yamlExists 残留会让加载完成前的「AI 自动生成」按钮
     // 按上一项目的存在性决定 overwrite 语义（false=起草 / true=覆盖既有契约）
@@ -436,7 +448,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           {/* 比照「插入模板」口径（code-review item ebece58414b8）：简介草稿与已
               保存值不一致时，AI 生成会覆盖未保存的手工修改并直接落盘，先弹确认；
               草稿与已保存一致时行为不变。判脏口径与 usePanelDirty 探针一致 */}
-          {description !== (config.description || '') ? (
+          {description !== descriptionSourceRef.current.baseline ? (
             <Popconfirm
               title="AI 生成将覆盖未保存的简介修改"
               description="当前简介有未保存的修改，生成后将直接保存并覆盖，确定继续？"
@@ -515,14 +527,14 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                   cancelText="取消"
                   onConfirm={handleInsertTemplate}
                 >
-                  <Button data-testid="verify-yaml-template" disabled={yamlLoading}>
+                  <Button data-testid="verify-yaml-template" disabled={yamlLoading || yamlSaving}>
                     插入模板
                   </Button>
                 </Popconfirm>
               ) : (
                 <Button
                   onClick={handleInsertTemplate}
-                  disabled={yamlLoading}
+                  disabled={yamlLoading || yamlSaving}
                   data-testid="verify-yaml-template"
                 >
                   插入模板
@@ -577,7 +589,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             <Button
               type="primary"
               loading={yamlSaving}
-              disabled={yamlLoading || !project}
+              disabled={yamlLoading || yamlSaving || !project}
               onClick={handleYamlSave}
               data-testid="verify-yaml-save"
             >
