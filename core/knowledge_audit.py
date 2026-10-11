@@ -1549,8 +1549,14 @@ def run_audit(
                 continue
             summary = f"{finding['kind']} {finding['a']['page']} × {finding['b']['page']}"
             commit_msg = f"[fenix] knowledge: audit rewrite {summary}"
+            # pathspec 收窄为本 run 实际触达的文件（code-review 5e5e4ea03d8c）：
+            # touched ⊆ spec/knowledge/（knowledge_dirty_files 只扫该目录），整目录
+            # pathspec 会把进锁前已在场的 carryover（前序 fail-open 留盘产出、人工
+            # 未提交编辑）一并扫进「audit rewrite」提交，与上方「不收编进本笔提交」
+            # 的注释承诺矛盾；carryover 留工作区由收尾 leftover 曝光、后续 pathspec
+            # 提交自然扫入（与 backfill 车道同口径）。
             try:
-                commit(project_root, [KNOWLEDGE_DIR], commit_msg)
+                commit(project_root, sorted(touched), commit_msg)
             except Exception as e:  # noqa: BLE001
                 log.warning("knowledge", f"audit 转写提交失败（fail-open）：{e}")
             counts["rewritten"] += 1
@@ -1672,6 +1678,13 @@ def run_audit(
             if n >= LINE_CAP // 2:
                 page_lines.append({"rel": page["rel"], "lines": n})
         slim_candidates = sorted(page_lines, key=lambda x: -x["lines"])[:10]
+
+    # escalated 汇总渲染前重算（code-review 373cc9019334 / 1e00c2c85434）：
+    # details["escalated_summary"] 在语义循环前由当时台账快照定格，循环内新升级
+    # 的条目（escalated[fp] = entry）此前只进 todo 聚合行与 disputed 注记——报告
+    # 汇总少计本轮新升级条目，报告/todo/注记三个出口口径不一致。用最终 escalated
+    # 重算覆盖（escalated 为空时 _escalated_summary 返回 None，汇总节照旧不出）。
+    details["escalated_summary"] = _escalated_summary(escalated)
 
     report = _render_report(
         counts,

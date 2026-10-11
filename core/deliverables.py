@@ -173,8 +173,16 @@ _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
 
 # basename 模糊匹配排除目录（D1，add-deliverable-declaration-triage）：产物/
 # 依赖/状态目录不参与「疑似笔误」判定——node_modules/dist 的包内同名文件会在
-# 不同 spec 语境反复误命中，.fenix/git 是框架自身状态而非交付落点。
-_BASENAME_EXCLUDE_DIRS = (".git", "node_modules", "dist", ".fenix", "__pycache__")
+# 不同 spec 语境反复误命中，.fenix/git 是框架自身状态而非交付落点；.history
+# 是本项目约定的测试截图/探针脚本等临时产物目录（.gitignore 排除），孤儿判定
+# 的 git grep 侧负向 pathspec 已排除 .history/**（_git_grep_zero_refs）——
+# match_basename_in_tree 走 os.walk 文件系统遍历而非 git 跟踪面，不排除则
+# .history 内同名 .py 可成为唯一 basename 命中，晋升 lint 规则 4 以「疑似
+# 笔误」误拦合法 kind: new 声明（两侧观测面口径一致，code-review item
+# d04bbec4e9ac）。
+_BASENAME_EXCLUDE_DIRS = (
+    ".git", "node_modules", "dist", ".fenix", "__pycache__", ".history",
+)
 
 # 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
 # delete=让该路径在合并后不存在（仅限入库文件，守卫反判存在性）；
@@ -467,15 +475,72 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _scan_declared_section(lines, start):
+    """声明段 fence-first 扫描共用核（段边界 + 首个围栏块，单点实现）。
+
+    解析侧（``_extract_declared_block``）与改写侧（``_locate_declared_section``
+    背后的三处文本改写入口）段边界规则的单点收敛——原改写侧以裸 ``_H2_RE``
+    扫段尾，声明围栏内以 ``##`` 开头的行被误判为节边界：其后条目报「声明段无
+    条目匹配」上抛转人工、before/after 审计 diff 在该行截断，解析与改写段边界
+    规则漂移（code-review item e5c782cc14bb）。
+
+    围栏语义（自 _extract_declared_block 原实现收口，语义不变）：围栏开/关判定
+    先于 ``_H2_RE`` 标题截断（fence-first，对齐同文件 extract_paths_typed 的同
+    型修复 code-review item fedc3744144a，声明块侧见 item b2f75d10dde8）——开栏
+    中以 ``##`` 开头的行（yaml 注释、粘贴进来的小节标题）是块内容而非节边界；
+    未开栏的 ``## `` 行才终止段。只取节内**首个**围栏作为声明块：开栏记录完整
+    标记字符 run、同字符且不短于开栏才闭栏（CommonMark，``` 与 ~~~ 不互为翻转
+    标记）、闭栏即取完（节内后续示例/说明性围栏不并入）；闭栏后段扫描继续，
+    以定位未开栏的节边界。
+
+    Args:
+        lines: tasks.md 行列表（调用方先以 ``_DECLARED_HEADING_RE`` 定位声明
+            标题行，``start`` 传标题行的下一行索引）。
+        start: 扫描起点行索引。
+
+    Returns:
+        ``(end, block_lines)``：``end`` = 段尾行索引（首个未开栏 ``## `` 行的
+        索引，无则 ``len(lines)``）——段边界口径，``_locate_declared_section``
+        消费；``block_lines`` = 首个围栏块内容行（不含开/闭栏行，节内无围栏为
+        空列表）——声明块口径，``_extract_declared_block`` 消费。
+    """
+    end = len(lines)
+    block: List[str] = []
+    fence_char = ""  # 当前围栏的开栏标记 run（≥3 个 ` 或 ~）；空串 = 尚未进入围栏
+    first_fence_done = False  # 首个围栏已闭栏：后续示例围栏不并入声明块
+    for i in range(start, len(lines)):
+        line = lines[i]
+        m = _FENCE_RE.match(line)
+        if m:
+            if not fence_char:
+                if not first_fence_done:
+                    fence_char = m.group(1)  # 开栏：记录完整标记 run
+                continue
+            cur = m.group(1)
+            if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
+                fence_char = ""  # 闭栏即取完——声明块只取节内首个围栏
+                first_fence_done = True
+                continue
+            block.append(line)  # 同字符更短/异字符围栏行是块内容而非闭栏
+            continue
+        if fence_char:
+            block.append(line)
+        elif _H2_RE.match(line):
+            end = i
+            break
+    return end, block
+
+
 def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
     """抽取 tasks.md 文本 ``## Deliverables`` 段内的 fenced yaml 块行（单点）。
 
-    段边界（``_DECLARED_HEADING_RE`` 定位标题 + ``_H2_RE`` 截断）与围栏块切换
-    （``_FENCE_RE``）的唯一实现——条目解析（``_declared_entries_from_text``
+    段边界与围栏块切换的单点实现是 ``_scan_declared_section`` 共用核（本函数
+    只做标题定位 + 声明块口径消费）——条目解析（``_declared_entries_from_text``
     委托链）与 ``lint_declared`` 共用（code-review item aa9e700d8155：原两处各持
     一份扫描拷贝，fence 语法或段边界规则单点演进（如 ``~~~`` 支持、标题别名）会
     解析漂移——lint 放行的块下游解析为 None 静默回退正则猜测，恰是规则 0 要消灭
-    的形态）。
+    的形态）；改写侧 ``_locate_declared_section`` 的段边界同源于该共用核
+    （code-review item e5c782cc14bb）。
 
     围栏语义（code-review item 8741b4b84c82）：只取节内**首个**围栏作为声明块
     （开栏即记标记字符、同字符才闭栏、闭栏即取完）——节内后续示例/说明性围栏
@@ -503,30 +568,9 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
     if start is None:
         return None, None
 
-    block: List[str] = []
-    fence_char = ""  # 当前围栏的开栏标记 run（≥3 个 ` 或 ~）；空串 = 尚未进入围栏
-    for line in lines[start:]:
-        # 围栏开/关判定先于 _H2_RE 标题截断（fence-first，对齐同文件
-        # extract_paths_typed 的同型修复 code-review item fedc3744144a，本次
-        # item b2f75d10dde8）：开栏中以 ## 开头的行（yaml 注释、粘贴进来的
-        # 小节标题）是块内容而非节边界——标题判定先行会在此提前截断声明块、
-        # 块内后续条目被静默丢弃（守卫按缺件对账或收缩防护把仍在的条目误判
-        # removed）；未开栏时 ## 行才终止段，闭栏仍只认同字符（「闭栏即取完」
-        # 语义不变）。
-        m = _FENCE_RE.match(line)
-        if m:
-            if not fence_char:
-                fence_char = m.group(1)  # 开栏：记录完整标记 run
-                continue
-            cur = m.group(1)
-            if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
-                break  # 闭栏即取完——声明块只取节内首个围栏，后续围栏不并入
-            block.append(line)  # 同字符更短/异字符围栏行是块内容而非闭栏
-            continue
-        if fence_char:
-            block.append(line)
-        elif _H2_RE.match(line):
-            break
+    # 块抽取委托 fence-first 共用核（围栏语义注释随实现收口于
+    # _scan_declared_section，解析与改写段边界同源，item e5c782cc14bb）。
+    _, block = _scan_declared_section(lines, start)
     if not block:
         return None, (
             "Deliverables 声明段存在但未解析出 fenced yaml 块——声明条目必须写在"
@@ -828,7 +872,9 @@ def verify_correction_readback(
 
     Args:
         spec_name: spec 名。
-        corrected_path: 被修正的旧路径（typo 元素 / 软化条目）。
+        corrected_path: 被修正的旧路径（typo 元素 / 软化条目）。入参先
+            ``str().strip()`` 归一再比对（code-review item f4dc25cb8a56，
+            与 kind / 解析层 .strip() 口径一致）。
         kind: 可选；限定「原 kind」比对（None = 任何 kind 命中即算未修正）。
             入参先 ``.strip().lower()`` 归一再比对（code-review item
             24889c877ae3，与解析层/check_declaration_shrinkage 口径一致）。
@@ -844,6 +890,13 @@ def verify_correction_readback(
     # 生效。归一口径与 check_declaration_shrinkage 对基线条目一致；空串视同
     # None（任何 kind 命中即算未修正，fail-safe 不静默销账）。
     kind = (kind or "").strip().lower() or None
+    # corrected_path 归一先于比对（code-review item f4dc25cb8a56，与上方 kind
+    # 归一口径一致）：生效条目的 path 由解析层（_declared_entries_from_text）
+    # .strip() 落库，未归一的入参（如 LLM 裁决 element 原文带首尾空白）与
+    # e.get("path") 恒失配 → 循环不命中直接返回 True「修正已生效」——即使声明
+    # 段里旧路径条目实际仍在，违背本函数「写读错层 MUST NOT 判为修正成功」的
+    # fail-safe 契约（不静默销账）。
+    corrected_path = str(corrected_path or "").strip()
     resolved = resolve_effective_declaration(
         spec_name,
         branch=branch,
@@ -1469,14 +1522,21 @@ def _declared_kind_line(lines, path_idx, end):
 def _locate_declared_section(lines):
     """定位 tasks.md 行列表中 ``## Deliverables`` 声明段边界（单点助手）。
 
-    「``_DECLARED_HEADING_RE`` 定位 start（标题行下一行）→ ``_H2_RE`` 扫描
-    end（下一个二级标题行，无则 ``len(lines)``）」段边界前导的唯一实现——
+    「``_DECLARED_HEADING_RE`` 定位 start（标题行下一行）→ fence-first 扫描
+    end（``_scan_declared_section`` 共用核：首个**未开栏** ``## `` 行——围栏内
+    ``##`` 行是块内容而非节边界，无则 ``len(lines)``）」段边界前导的唯一实现——
     声明段三处文本改写（replace_declared_path / soften_declared_kind /
     remove_declared_entry）共用（code-review item 95d551db0a47：原三处各持
     一份扫描拷贝，段边界规则单点演进（如标题别名）需同步改三处，漏一处即
     出现 lint 放行而某个改写入口上抛的解析漂移），与 _extract_declared_block /
     _declared_kind_line 的单点化取向一致。条目行定位（``_path_line_re`` 等）
     各入口 pattern 与报错语境不同，保留在各入口内不抽象。
+
+    code-review item e5c782cc14bb：end 扫描原以裸 ``_H2_RE`` 进行，声明围栏内
+    以 ``##`` 开头的行（yaml 注释、粘贴进来的小节标题）被误判为节边界——其后
+    条目报「声明段无条目匹配」上抛转人工、before/after 审计 diff 在该行截断；
+    改由 ``_scan_declared_section`` 与解析侧（_extract_declared_block）同源，
+    段边界规则不再两处漂移。
 
     Returns:
         ``(start, end)``；无声明段标题返回 ``None``（调用方按各自语境上抛）。
@@ -1488,11 +1548,7 @@ def _locate_declared_section(lines):
             break
     if start is None:
         return None
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if _H2_RE.match(lines[i]):
-            end = i
-            break
+    end, _ = _scan_declared_section(lines, start)
     return start, end
 
 
@@ -1708,7 +1764,7 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
 
     以 ``Path(path).name`` 对主树文件做 basename 精确匹配（rglob），排除
     ``_BASENAME_EXCLUDE_DIRS``（``.git``/``node_modules``/``dist``/
-    ``.fenix``/``__pycache__``）目录内的命中；返回相对项目根的命中路径列表，
+    ``.fenix``/``__pycache__``/``.history``）目录内的命中；返回相对项目根的命中路径列表，
     确定性排序（字符串升序）。不引入编辑距离/模糊串匹配（D1：basename 内
     笔误如 ``verifcation.py`` 由 judge 层兜底，lint 层保持零误拦取向）。
 

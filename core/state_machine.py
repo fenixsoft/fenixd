@@ -473,7 +473,8 @@ def env_exemption_active(exemption: dict, scenario_id: str, failure_signature: s
       - 时效过期：granted_at 起超过 ``ENV_EXEMPTION_TTL_HOURS``（granted_at
         缺失/不可解析按过期，fail-closed）。
 
-    ``now`` 供测试注入时钟；缺省取当前 UTC 时刻。
+    ``now`` 供测试注入时钟；缺省取当前 UTC 时刻。naive 值按 timelib 唯一
+    naive 策略视作系统本地时区（``astimezone()``，同 parse_utc）。
     """
     if not isinstance(exemption, dict):
         return False
@@ -498,7 +499,11 @@ def env_exemption_active(exemption: dict, scenario_id: str, failure_signature: s
         return False
     now_dt = now if now is not None else datetime.now(timezone.utc)
     if now_dt.tzinfo is None:
-        now_dt = now_dt.replace(tzinfo=timezone.utc)
+        # naive → 本地 aware（astimezone 的 naive 语义：视作系统本地时区），
+        # 对齐 parse_utc/timelib 唯一 naive 策略（code-review item
+        # 25dde933dec1/8032eae4bd6e）——replace(tzinfo=utc) 是已退役的第二种
+        # naive 解读，机器时区非 UTC 时 TTL 判定时刻会偏移数小时。
+        now_dt = now_dt.astimezone()
     return (now_dt - granted).total_seconds() < ENV_EXEMPTION_TTL_HOURS * 3600.0
 
 
@@ -510,12 +515,21 @@ def find_env_exemption(entry, scenario_id: str, failure_signature: str,
     None（含清单缺省/读失败=fail-closed 无豁免）。
     """
     best = None
-    best_key = ""
+    best_key = None
     for ex in parse_env_exemptions(entry):
         if not env_exemption_active(ex, scenario_id, failure_signature,
                                     current_hash=current_hash, now=now):
             continue
-        key = str(ex.get("granted_at") or "")
+        # 同场景 id 多条取「最近 granted_at」统一经 parse_utc 折算成 aware
+        # 时刻再比较（code-review item c964b311daa7）：存量/人工手改值可能
+        # 带 ±HH:MM 偏移或微秒位数差异，原始字符串字典序≠时刻序。能走到
+        # 这里的条目已过 env_exemption_active 的 granted_at 解析门（不可
+        # 解析即按失效跳过），key 恒为 datetime；解析仍失败（防御，实际
+        # 不可达）按最早时刻参与比较，不回退字符串以免与 datetime 混型
+        # 比较抛 TypeError。
+        key = parse_utc(str(ex.get("granted_at") or ""))
+        if key is None:
+            key = datetime.min.replace(tzinfo=timezone.utc)
         if best is None or key > best_key:
             best, best_key = ex, key
     return best
@@ -739,6 +753,18 @@ class StateParser:
         """
         status = entry.get("status")
         if status in SpecStatus.ALL:
+            if name in specs and logger is not None:
+                # code-review item 014f920c27fe：同名重复条目（手工编辑冲突/
+                # 复制粘贴/合并残留）此前被静默覆盖——前一条目的 branch/run
+                # 锚点与预算计数随覆盖全部丢失且无痕，与 _admit_entry/仅标题
+                # 条目的「丢弃必留痕」显性化纪律不一致。此处仅补 warning、
+                # 不改变覆盖行为。
+                logger.warning(
+                    "state_machine",
+                    f"检测到同名重复条目 '{name}'——后一条目将覆盖前一条目"
+                    f"（前者的锚点与预算计数随覆盖丢失），疑似手工编辑冲突/"
+                    f"合并残留，请人工核对 STATE.md",
+                )
             specs[name] = entry
         elif logger is not None:
             logger.warning(
@@ -1007,6 +1033,16 @@ class StateParser:
                 if key.startswith("_"):
                     if val is None:
                         val = "null"
+                    elif isinstance(val, (list, dict, tuple)):
+                        # code-review item f463b006889b：list/dict 形态的内部
+                        # 字段（如进程内直写、尚未字符串化的 _env_exemptions）
+                        # 此前走 str(val) 落成 Python repr（单引号/True/None
+                        # 字面量），STATE.md 往返后读侧 json.loads 失败、
+                        # parse_env_exemptions fail-closed 返回空清单——已授予
+                        # 的 env 豁免静默失效。改与 serialize_env_exemptions
+                        # 同口径 JSON 落盘（紧凑分隔符防换行入行）。
+                        val = json.dumps(val, ensure_ascii=False,
+                                         separators=(",", ":"))
                     lines.append(f"- {key}: {_escape_state_value(val)}")
             lines.append("")
 
@@ -2328,7 +2364,8 @@ class StateMachine:
 
         顺序理由：崩溃/异常窗口只允许出现「清单已有 + 活跃仍有」的双源中间态
         （读侧活跃优先、存量回填下一轮收敛），绝不允许「活跃已删 + 清单没有」
-        的丢条目态。清单写入失败（OSError）→ 返回失败且 STATE.md 不动；
+        的丢条目态。清单写入失败（OSError，含清单非 UTF-8 损坏时既有清单
+        解析抛出的 UnicodeDecodeError）→ 返回失败且 STATE.md 不动；
         STATE.md 重写失败（OSError）→ 条目留活跃、清单已有副本（无害中间态，
         存量回填收敛）。
 
@@ -2376,8 +2413,13 @@ class StateMachine:
                 evicted["archived_by"] = archived_by
                 try:
                     self._upsert_archive_entry_locked(spec_name, evicted)
-                except OSError as e:
-                    # 清单写入失败 → 条目留在 STATE.md（D2 顺序天然保证不丢）
+                except (OSError, UnicodeDecodeError) as e:
+                    # 清单写入失败 → 条目留在 STATE.md（D2 顺序天然保证不丢）。
+                    # UnicodeDecodeError 一并收口（code-review item
+                    # 19c2bc1e01f3）：_upsert_archive_entry_locked 对既有清单
+                    # StateParser.parse 走 read_text(encoding="utf-8")，清单
+                    # 含坏字节时抛 UnicodeDecodeError（ValueError 子类、非
+                    # OSError），不接住会穿透本方法的失败收敛契约。
                     self.logger.error(
                         "state_machine",
                         f"归档清单写入失败，条目保留在 STATE.md: {spec_name}: {e}",
@@ -2699,6 +2741,49 @@ class StateMachine:
 
     # ── Recovery ───────────────────────────────────────────────────
 
+    def _recovery_update_spec(self, spec_name: str, updates: dict) -> bool:
+        """recover_interrupted 恢复写专用入口（code-review item d373f46756dd）。
+
+        recover_interrupted 以 get_by_status 锁外快照选取目标，快照与本写
+        之间的窗口内该 spec 若恰被冻结（status→blocked + frozen），update_spec
+        的冻结剥离只保 status——error 会携「Recovered from interrupted state:
+        ...」恢复文案整段覆盖冻结 error，「原状态 X」子串（parse_orig_status
+        解冻还原依赖）与冻结前缀（admin 豁免判据）一并丢失。本入口在
+        ``_mutate_locked`` 的锁内以最新条目复查 frozen 标记：冻结即整体跳过
+        本写（恢复让位于人工冻结；冻结条目 status 已是 blocked、不在中断态，
+        无需恢复），返回 False 由调用方按既有「不计入 recovered」口径处置。
+
+        单条目写语义仍单源 ``_apply_updates_entry``（不复制第二份）；本路径
+        已排除冻结、恢复写恒含 status（不会被剥离），applied 必有生效字段，
+        无需复刻 update_spec 的零写入口径。
+        """
+        applied: dict = {}
+        skip: dict = {}
+
+        def _mutate(specs):
+            entry = specs.get(spec_name)
+            if entry is None:
+                skip["missing"] = True
+                return False, False
+            if entry.get(FROZEN_FIELD):
+                skip["frozen"] = True
+                return False, False
+            found = self._apply_updates_entry(specs, spec_name, updates, applied)
+            return found, found
+
+        if not self._mutate_locked(_mutate):
+            if skip.get("frozen"):
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过重启恢复：'{spec_name}' 已在恢复窗口内被冻结"
+                    f"——恢复写整体放弃，冻结 error 不被恢复文案覆盖",
+                )
+            else:
+                self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
+            return False
+        self._log_update_applied(spec_name, applied)
+        return True
+
     def recover_interrupted(
         self,
         project_root=None,
@@ -2709,7 +2794,11 @@ class StateMachine:
     ) -> List[str]:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
-        Uses update_spec directly (bypasses transition validation for recovery).
+        Uses update_spec directly (bypasses transition validation for recovery);
+        the three recovery writes go through ``_recovery_update_spec`` — a spec
+        frozen inside the snapshot-to-write window is skipped whole so the
+        freeze error is not clobbered by the recovery message
+        (code-review d373f46756dd).
         Returns list of recovered SPEC names.
 
         恢复目标按中断态区分（2026-09-04 help-center 误派实证）：
@@ -2829,7 +2918,7 @@ class StateMachine:
                     # update_spec 返回 False——不计入 recovered（recovered 口径
                     # 只收「确实恢复了状态」的 spec；spec 在场时返回值恒 True，
                     # 既有行为不变），与下方清空重建路径同型守卫
-                    retested = self.update_spec(
+                    retested = self._recovery_update_spec(
                         name,
                         {
                             "status": SpecStatus.IMPLEMENTED,
@@ -2852,7 +2941,7 @@ class StateMachine:
                     # code-review 3926b50faeed：同 TESTING 分支守卫——SPEC 在
                     # 恢复窗口内被并发删除（update_spec 返回 False）不计入
                     # recovered；spec 在场时返回值恒 True，既有行为不变
-                    redrafted = self.update_spec(
+                    redrafted = self._recovery_update_spec(
                         name,
                         {
                             "status": SpecStatus.DRAFTED,
@@ -2910,7 +2999,7 @@ class StateMachine:
                 )
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
-                cleared = self.update_spec(
+                cleared = self._recovery_update_spec(
                     name,
                     {
                         "status": SpecStatus.READY,

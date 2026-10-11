@@ -1577,7 +1577,7 @@ def consume_resolved_failed_batches(project_root, logger=None) -> int:
     对 fix-failed.json 中未核销记录（缺 ``consumed_at`` 视为未核销，向后
     兼容）的被跳过条目做台账逐 id 对账：
 
-    - 全部终态（resolved/ignored）→ 锁内置 ``consumed_at``/``consumed_note``
+    - 全部终态（resolved/in_spec/ignored）→ 锁内置 ``consumed_at``/``consumed_note``
       （终态分布注记）/``open_remaining=0``，锁外收口对应
       code_fix_retry_budget_exhausted 告警（mark_signal_handled，action_taken
       附终态分布）并重写 todo.md 登记块；
@@ -1627,7 +1627,14 @@ def consume_resolved_failed_batches(project_root, logger=None) -> int:
             statuses = [
                 str((ledger.get(i) or {}).get("status") or "") for i in ids
             ]
-            terminal_n = sum(1 for s in statuses if s in ("resolved", "ignored"))
+            # 终态判定含 in_spec（code-review item b65586790d7f，与
+            # _open_ids_for_archive docstring「人工置终态」三态口径一致）：
+            # 被跳过条目经 generate-spec 链 _mark_in_spec 置 in_spec 后同样
+            # 离开 open 池，不计入则 terminal_n 恒小于 len(ids)，该失败登记
+            # 永不收口——告警与 todo 登记块永久滞留 pending。
+            terminal_n = sum(
+                1 for s in statuses if s in ("resolved", "in_spec", "ignored")
+            )
             if terminal_n != len(ids):
                 # 部分终态：只同步剩余 open 数，不收口告警、不标记核销。
                 remaining = len(ids) - terminal_n
@@ -1639,6 +1646,9 @@ def consume_resolved_failed_batches(project_root, logger=None) -> int:
                 f"{statuses.count('resolved')} resolved / "
                 f"{statuses.count('ignored')} ignored"
             )
+            in_spec_n = statuses.count("in_spec")
+            if in_spec_n:
+                note = f"{note} / {in_spec_n} in_spec"
             rec["consumed_at"] = now
             rec["consumed_note"] = note
             rec["open_remaining"] = 0
@@ -2314,8 +2324,10 @@ def _apply_test_targets(spec, test_targets: list):
 
     str 形态（经 shell 执行）：替换为空格连接、逐路径 ``shlex.quote`` 引用
     的测试路径列表；list 形态（argv 不经 shell）：元素级替换——占位元素恰
-    等占位符时展开为路径列表（路径原样不做 shell 引用），元素内含占位符时
-    以空格连接原样替换。
+    等占位符时展开为路径列表（路径原样不做 shell 引用），元素内嵌占位符时
+    以空格连接原样替换进单元素（argv 不经 shell 拆分，该 cmd 形态仅支持
+    单目标：目标数 >1 时该元素成含空格的单参数、下游按一条畸形路径收集，
+    故多目标时 warning 留痕消除静默畸形，code-review item 69eb2055cc2c）。
 
     同值导出 ``FENIX_TEST_TARGETS`` 环境变量（对齐 ``{port}`` 占位符先例，
     cmd 可二选一引用）：执行侧经 ``_with_test_targets_env`` 在回归窗口内
@@ -2339,6 +2351,18 @@ def _apply_test_targets(spec, test_targets: list):
             if s == CODE_FIX_TEST_TARGETS_PLACEHOLDER:
                 new_list.extend(targets)  # 元素级展开：占位元素 → 路径列表
             elif CODE_FIX_TEST_TARGETS_PLACEHOLDER in s:
+                # 多目标整串替换留痕（code-review item 69eb2055cc2c）：argv
+                # 不经 shell 拆分，内嵌占位符的元素按整串替换只支持单目标——
+                # 目标数 ≥2 时该元素成含空格的单参数，下游按一条畸形路径收集。
+                # 整串替换契约由冻结单测钉住（兼容既有 cmd 写法），此处
+                # warning 显式点名限制，消除静默畸形 argv。
+                if len(targets) > 1:
+                    _logger.warning(
+                        "code-fix regression.cmd list 形态元素内嵌 "
+                        f"{CODE_FIX_TEST_TARGETS_PLACEHOLDER} 占位符（元素 "
+                        f"{s!r}）仅支持单目标，本批目标数 {len(targets)} 将"
+                        "整串替换为含空格的单参数（独立占位元素可多目标展开）"
+                    )
                 new_list.append(s.replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, raw))
             else:
                 new_list.append(el)
@@ -4231,7 +4255,24 @@ class CodeFixOrchestrator:
                 activation_id = prev["activation_id"]
                 # 本轮链边界重试刚核销的延迟批条目并入 done（prev 读点在重试
                 # 之前，陈旧 done 若直传 dispatch 写点会覆掉重试的累加）。
-                done = (prev.get("done") or 0) + deferred_done
+                # done 数值形态守卫（code-review item c95bc89c37d6，与下方
+                # chain_skipped/chain_run_ids 及上方 switch_cooldown_until 同
+                # 读取点同款防御）：progress 被外部写坏成非数值标量时裸加法
+                # 在本读点抛 TypeError，checkpoint 每轮同位崩溃且无自愈路径
+                # ——读侧按「损坏不炸主流程」纪律 try int 归一，非法值重置
+                # 0（truthy 垃圾值 warning 留痕），下次链级写点即以合法数值
+                # 覆盖自愈。
+                try:
+                    prev_done = int(prev.get("done") or 0)
+                except (TypeError, ValueError):
+                    if prev.get("done"):
+                        self._log(
+                            "warning",
+                            "code-fix 进度 done 字段形态异常（非数值："
+                            f"{type(prev.get('done')).__name__}），按 0 容错",
+                        )
+                    prev_done = 0
+                done = prev_done + deferred_done
                 # 分母活口径（2026-09-25 用户事故）：total 曾沿用链起点定格
                 # 快照——链在飞期间新审查轮追加的 open 条目会被本链继续处置
                 # （select_batch 全 open 池选取），但分母不涨，done 追平定格
@@ -4240,7 +4281,19 @@ class CodeFixOrchestrator:
                 # deferred_done 已并入 done 且对应条目已离开 open 池
                 # （total_open 统计在合并之后），口径自洽不双计。
                 total = done + total_open
-                batch_no = prev.get("batch_no") or 0
+                # batch_no 同款数值形态守卫（code-review item c95bc89c37d6）：
+                # 非数值标量重置 0（truthy 垃圾值 warning 留痕），防链调度
+                # 在本读点反复崩溃。
+                try:
+                    batch_no = int(prev.get("batch_no") or 0)
+                except (TypeError, ValueError):
+                    if prev.get("batch_no"):
+                        self._log(
+                            "warning",
+                            "code-fix 进度 batch_no 字段形态异常（非数值："
+                            f"{type(prev.get('batch_no')).__name__}），按 0 容错",
+                        )
+                    batch_no = 0
                 # 链级字段形态守卫（code-review item 3f883a9ac93c，与上方
                 # switch_cooldown_until 同位置同款防御）：read_progress 对
                 # 「JSON 合法、字段被外部写坏成非列表标量」原样透传，直接
@@ -6417,14 +6470,64 @@ class CodeFixOrchestrator:
         # mark_resolved 对命中 id 无条件置 resolved、无终态保护，核销方 MUST
         # 先以 read_items 过滤——选批到合回之间被并发置 in_spec/ignored 的条目
         # 跳过（不丢 spec_name 归属），agent 产物带出的批外 id 不核销不计进度。
-        try:
-            ledger = read_items(root)
-        except Exception:  # noqa: BLE001 — 台账读失败按空集（不核销）
-            ledger = {}
         batch_set = set(item_ids)
+        resolve_candidates = [i for i in fixed_ids if i in batch_set]
+        # 台账读有限重试（code-review items 60fe0f4ddc90/6ffe17267ac5，与
+        # defer 路径 _retry_one_deferred 同口径）：merge_back 成功后此刻瞬时
+        # 读失败若按空集降级，会「已合回却不核销」且随即 cleanup(success=True)
+        # 销毁 fixed_ids 对应产物——条目仍 open 会被下链重选，agent 在已含
+        # 修复的新 HEAD 上多半零提交，跨链反复空转。短间隔重试 3 次；无候选
+        # 核销条目时读结果对核销无影响，跳过重试直走零核销收尾。
+        ledger = None
+        if resolve_candidates:
+            for attempt in range(3):
+                try:
+                    ledger = read_items(root)
+                    break
+                except Exception:  # noqa: BLE001 — 重试耗尽走「保留待下链」分支
+                    if attempt < 2:
+                        time.sleep(0.2 * (attempt + 1))
+        if resolve_candidates and ledger is None:
+            # 已合回但核销状态未知（与 defer 路径 ledger_read_failed 分支同
+            # 款）：MUST NOT 此刻以 success 清理现场——比照 _defer_merge_back
+            # 登记延迟台账 + 放锁后按 consumed 收尾，条目随 _deferred_item_ids
+            # 退出选批池，下一链边界 _retry_one_deferred 重试核销（merge_back
+            # 幂等：分支已是 HEAD 祖先时返回成功，重试无副作用；持续读失败
+            # 的极端由既有时间门降级路径兜底）。
+            branch = _worktree_branch(wt)
+            tip_sha = _worktree_head(wt)
+            record_deferred_batch(
+                root, pending_ids, fixed_ids, wt,
+                branch=branch, tip_sha=tip_sha, last_overlap=[],
+            )
+            try:
+                wm.release_spec_lock("code-review-fix", "code-fix")
+            except Exception as e:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕
+                self._log("warning", f"code-fix 台账读失败保留现场放锁异常: {e}")
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批已合回但台账读失败（重试耗尽），"
+                "已合回未核销——保留台账条目与 worktree 转延迟台账，待下一链"
+                f"边界重试核销（branch={branch}, item_ids={item_ids}）",
+            )
+            write_progress(
+                root,
+                phase="merging",
+                reason="",
+                current=(
+                    f"第 {batch_no} 批已合回但台账读失败未核销，"
+                    f"保留待下一链边界重试（branch={branch}）"
+                ),
+                # 批上下文三键清除（defer D2 同款）：现场保留由延迟台账承载，
+                # 防读侧按陈旧 run_id 合成条级进度。
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+            )
+            return "consumed"
         still_open = [
-            i for i in fixed_ids
-            if i in batch_set and (ledger.get(i) or {}).get("status") == "open"
+            i for i in resolve_candidates
+            if (ledger.get(i) or {}).get("status") == "open"
         ]
         hit = mark_resolved(root, still_open) if still_open else 0
         # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准。

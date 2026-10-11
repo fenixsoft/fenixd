@@ -53,7 +53,8 @@ def now_local() -> datetime:
 def parse_ts(value):
     """唯一时间戳解析入口；失败返回 None（house 容错风格，不抛异常）。
 
-    接受 ISO 字符串：``Z`` 后缀（含小写 ``z``）、``±HH:MM`` 偏移、无偏移
+    接受 ISO 字符串：``Z`` 后缀（含小写 ``z``）、``±HH:MM`` 偏移、
+    ``±HHMM`` 无冒号偏移（归一为 ``±HH:MM``，见下方版本差异注释）、无偏移
     naive（按**本地时区**解读——唯一策略，见模块 docstring）、纯日期串
     （``YYYY-MM-DD``，本地零点）。``None``/非字符串/空串/非法串返回 None。
     """
@@ -69,7 +70,18 @@ def parse_ts(value):
     try:
         dt = datetime.fromisoformat(text)
     except ValueError:
-        return None
+        # Python 3.10（本仓库最低版本，install.sh 依赖检查）的 fromisoformat
+        # 不认 ±HHMM 无冒号偏移，外部工具常写出 +0800 形态 → 串尾命中
+        # [+-]dddd 时补冒号归一重试一次，其余非法串维持返回 None。
+        tail = text[-5:]
+        if len(text) <= 5 or tail[0] not in "+-" or not tail[1:].isdigit():
+            return None
+        try:
+            dt = datetime.fromisoformat(
+                f"{text[:-5]}{tail[0]}{tail[1:3]}:{tail[3:]}"
+            )
+        except ValueError:
+            return None
     if dt.tzinfo is None:
         # naive → 本地 aware（astimezone() 的 naive 语义：视作系统本地时区）
         dt = dt.astimezone()
@@ -77,7 +89,14 @@ def parse_ts(value):
 
 
 def from_epoch(ts: float) -> datetime:
-    """epoch 秒 → aware UTC（替代裸 ``fromtimestamp()`` 的本地时区歧义）。"""
+    """epoch 秒 → aware UTC（替代裸 ``fromtimestamp()`` 的本地时区歧义）。
+
+    fail-fast 契约（与 ``parse_ts``/``fmt_display`` 的 fail-soft 风格刻意
+    不同）：``ts`` 必须是数值 epoch 秒（int/float）——非数值抛 ``TypeError``，
+    越界/非法数值抛 ``OverflowError``/``OSError``/``ValueError``，本函数不
+    归一不吞错；字符串形态来源（如 jsonl 回读字段）由调用方在读边界自行
+    转 float 后再传入。
+    """
     return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 

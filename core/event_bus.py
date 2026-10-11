@@ -882,23 +882,27 @@ class EventBus:
     def _periodic_scan_loop(self, interval_minutes: int):
         """Periodic full scan as fallback. 每轮热读 poll_interval（配置热更新生效）。"""
         while self._running:
+            # 非数值/非有限脏值统一回退缺省 30.0（code-review items
+            # 0033524fcb73 / 0f030f51ed6f）。float() 转换与 isfinite 判断并入
+            # 同一 try：任一抛异常未被捕获都会冲出 while 杀死扫描线程，周期
+            # 兜底全扫、悬空 run 清扫与 code-fix checkpoint 全部静默失效。
+            # - AttributeError：schedule 键存在但值为 null（YAML 空值）时首个
+            #   .get 返回 None，对其再 .get 即抛；
+            # - TypeError/ValueError：值非数值（手改 YAML 写成 "abc"），原样
+            #   透传到下方 max()/sleep() 同样抛异常；
+            # - OverflowError：手改 YAML 写成超出 float 表示范围的整数（如
+            #   400 位数字）时 float() 转换即抛，math.isfinite 对同形态的
+            #   int 同样抛 OverflowError，故 isfinite 一并纳入本 try；
+            # - isfinite 另拒绝 nan（.nan 经 float() 解析为 nan、比较恒 False
+            #   穿透 max()，sleep(nan) 抛 ValueError）与 ±inf（YAML .inf /
+            #   1e400 溢出字面量），与 config.py 既有 isfinite 防御范式同口径。
             try:
                 interval = float(
                     self.config.get("schedule", {}).get("poll_interval_minutes", interval_minutes)
                 )
-            except (TypeError, ValueError, AttributeError):
-                # AttributeError：schedule 键存在但值为 null（YAML 空值）时首个
-                # .get 返回 None，对其再 .get 即抛——不捕获会冲出循环杀死线程。
-                interval = interval_minutes
-            # 非有限/非数值脏值统一回退缺省（code-review item 0033524fcb73）：
-            # except 的回退值 interval_minutes 源自 start() 未校验的同一配置键，
-            # 手改 YAML 写成 "abc" 时字符串原样透传，下方 max() 抛 TypeError；
-            # .nan 经 float() 解析为 nan、比较恒 False 穿透 max()，sleep(nan)
-            # 抛 ValueError——两条路都会冲出循环杀死扫描线程，周期兜底全扫、
-            # 悬空 run 清扫与 code-fix checkpoint 全部静默失效。isfinite 一并
-            # 拒绝 ±inf（YAML .inf / 1e400 溢出字面量），与 config.py 既有
-            # isfinite 防御范式同口径。
-            if not isinstance(interval, (int, float)) or not math.isfinite(interval):
+                if not math.isfinite(interval):
+                    interval = 30.0
+            except (TypeError, ValueError, AttributeError, OverflowError):
                 interval = 30.0
             time.sleep(max(float(interval), 0.5) * 60)
             if self._running:

@@ -376,6 +376,11 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
                 cwd=str(project_root),
                 capture_output=True,
                 text=True,
+                # encoding/errors 固化（对齐 _git / _knowledge_dirty_files）：
+                # 裸 text=True 走 locale strict 解码，非 UTF-8 路径字节会使
+                # UnicodeDecodeError（ValueError）穿透下方 except 口径
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -390,6 +395,9 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # 同上：固化 UTF-8 解码，防非 UTF-8 文件名字节解码异常穿透 fail-open
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -467,6 +475,10 @@ def discard_knowledge_changes(
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # encoding/errors 固化（对齐 _git）：防非 UTF-8 字节解码异常
+            # 穿透 except (OSError, TimeoutExpired) 捕获口径
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
         if kdir.is_dir():
@@ -475,6 +487,9 @@ def discard_knowledge_changes(
                 cwd=str(project_root),
                 capture_output=True,
                 text=True,
+                # 同上：固化 UTF-8 解码，防解码异常穿透 fail-open 捕获口径
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
     except (OSError, subprocess.TimeoutExpired):
@@ -1210,6 +1225,11 @@ def _clean_untracked_knowledge(project_root: Path, log) -> None:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # encoding/errors 固化（对齐 _git / _knowledge_dirty_files）：裸
+            # text=True 走 locale strict 解码，删除清单含非 UTF-8 文件名字节
+            # 时抛 UnicodeDecodeError（ValueError），穿透 except 口径掀翻自举
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1232,6 +1252,9 @@ def _clean_untracked_knowledge(project_root: Path, log) -> None:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # 同上：固化 UTF-8 解码（stderr 留痕消费同受解码异常威胁）
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -1262,6 +1285,11 @@ def _domain_has_tracked_content(project_root: Path, domain_dir: Path) -> bool:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            # encoding/errors 固化（对齐 _git / _knowledge_dirty_files）：
+            # ls-files stdout 含非 UTF-8 文件名字节时 strict 解码抛
+            # UnicodeDecodeError，穿透 except 口径掀翻域剪枝
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):

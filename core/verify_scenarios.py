@@ -661,19 +661,26 @@ def _diff_planner_output_impl(
 
     # ── 首轮 / 无持久化集：直接采用 planner 产出，全量写回 ──
     if persisted is None:
+        # 同 id 重复时先按 id 收敛：值取末个（与下方有持久化集分支
+        # planner_by_id 的覆盖口径一致）、序取首次出现位（dict 插入序，
+        # 确定性）——否则重复 id 原样写进 scenarios.json 成重复条目，
+        # ids 集合与文件条目数不一致，下一轮 diff 表现随分支漂移。
+        dedup_by_id: dict = {}
+        for s in planner_scenarios:
+            # 移除声明条目（remove_reason 非空的不可执行形态）不入集，与
+            # 下方有持久化集分支的 sid in reasons 跳过同口径——否则首轮
+            # 写进 scenarios.json 成幽灵条目，下一轮被判无理由缺失。
+            if isinstance(s, dict) and s.get("id") and not s.get("remove_reason"):
+                dedup_by_id[str(s["id"])] = s
         entries = [
             ScenarioEntry(
-                id=str(s["id"]),
+                id=sid,
                 description=str(s.get("description", "")),
                 added_in_round=current_round,
                 covers=_covers_of(s),
                 kind=_kind_of(s),
             )
-            for s in planner_scenarios
-            # 移除声明条目（remove_reason 非空的不可执行形态）不入集，与
-            # 下方有持久化集分支的 sid in reasons 跳过同口径——否则首轮
-            # 写进 scenarios.json 成幽灵条目，下一轮被判无理由缺失。
-            if isinstance(s, dict) and s.get("id") and not s.get("remove_reason")
+            for sid, s in dedup_by_id.items()
         ]
         result.scenario_set = ScenarioSet(
             spec_name,

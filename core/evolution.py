@@ -81,8 +81,11 @@ _FIELD_LABEL_SET = frozenset(label for label, _k in _FIELD_LABELS)
 _FIELD_LABEL_MAP = dict(_FIELD_LABELS)
 _FIELD_RE = re.compile(r"^ {2,}-\s+([^：]+)：(.*)$")
 
-# SPEC 名 / capability 合法性（fenix-new 同源正则）
-_KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# SPEC 名 / capability 合法性（fenix-new 同源正则）。结尾锚用 \Z 而非 $：
+# Python 的 $ 亦匹配串尾换行符之前，$ 会放行带尾部换行的 name/capability
+# （agent 产出 JSON 携带 \n），进而以带换行的目录名落盘、以 ``evo-<name>\n``
+# 注册进 STATE（code-review item bd2227732d7e）。
+_KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 
 # .spec.yaml 模板（内容 schema/created/mode 三行）
 SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
@@ -717,24 +720,45 @@ def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
     return None
 
 
+def _ignorable_before_marker(line: str) -> bool:
+    """标记行「紧跟标题行」判定中可忽略的行：空白行与未知标签行。
+
+    与 parse_todo_entries 的 current_fields 收集口径对齐（code-review item
+    066161cd80de）：parse 侧未知标签行（_FIELD_RE 命中但标签不在四字段
+    集合）不写入 current_fields，其后紧跟的标记行仍判已处理（整条丢弃）；
+    strip 侧若把该行当实体行则判孤立、只剔标记整块保留——同一文件形态下
+    两侧结论相反，条目继续留在分析输入中被重复分析，apply_marker_to_lines
+    原地插新标记后旧标记沦为孤立告警源。四字段行之外，这类行在两侧都不算
+    「已收集字段」。
+    """
+    if not line.strip():
+        return True
+    fm = _FIELD_RE.match(line)
+    return bool(fm and fm.group(1).strip() not in _FIELD_LABEL_SET)
+
+
 def strip_processed_entries(text: str) -> str:
     """剥离带处理标记的条目整块（标题 + 其缩进行），供分析 run 的输入使用。
 
-    处理标记行仅在其紧跟条目标题行（标题行的下一行，其间空白行忽略）时才
-    生效：此时整块视为已处理并剥离。孤立标记行（其标题行已被手工删除/改写
-    后残留）不连坐所在块，仅剔除标记行本身并记 WARNING。
+    处理标记行仅在其紧跟条目标题行（其间空白行与未知标签行忽略，四字段行
+    挡下判定，与 parse_todo_entries 的字段收集口径一致）时才生效：此时整块
+    视为已处理并剥离。孤立标记行（其标题行已被手工删除/改写后残留）不连坐
+    所在块，仅剔除标记行本身并记 WARNING。
     """
     out: List[str] = []
     block: List[str] = []
 
     def _flush() -> None:
-        # 块首标题行（block[0]）之后的第一个非空白行是否为处理标记行
+        # 块首标题行（block[0]）之后按序扫描：遇到处理标记行即整块已处理；
+        # 遇到四字段行（非可忽略行）则标记不生效；空白行/未知标签行不阻断
+        # 判定（code-review item 066161cd80de，见 _ignorable_before_marker）
         marked = False
         for l in block[1:]:
-            if not l.strip():
-                continue
-            marked = bool(_TODO_MARKER_RE.match(l))
-            break
+            if _TODO_MARKER_RE.match(l):
+                marked = True
+                break
+            if not _ignorable_before_marker(l):
+                break
         if not marked:
             out.extend(block)
         block.clear()
@@ -748,9 +772,12 @@ def strip_processed_entries(text: str) -> str:
                 out.append(line)
             continue
         if _TODO_MARKER_RE.match(line):
-            # 标记行仅紧跟标题行（其间只夹空白行）才生效；孤立标记行不连坐
-            # 所在块，仅剔除标记行本身
-            if block and all(not l.strip() for l in block[1:]):
+            # 标记行仅紧跟标题行（其间只夹空白行/未知标签行/既有标记行，与
+            # _flush 及 parse_todo_entries 口径一致）才生效；孤立标记行不
+            # 连坐所在块，仅剔除标记行本身
+            if block and all(
+                _TODO_MARKER_RE.match(l) or _ignorable_before_marker(l) for l in block[1:]
+            ):
                 block.append(line)
             else:
                 _warn_orphan_todo_marker_once(
@@ -1071,7 +1098,7 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     """把 agent 给出的 ``spec`` 全套文本落盘到 ``.fenix/evolution/drafts/<id>/``。
 
     落盘前 MUST 完整校验：``spec`` 缺任一必备文档（proposal_md / design_md /
-    spec_md / tasks_md）、``capability`` / ``name`` 非法（``^[a-z0-9][a-z0-9-]*$``）
+    spec_md / tasks_md）、``capability`` / ``name`` 非法（``^[a-z0-9][a-z0-9-]*\Z``）
     → 返回 ``(None, 原因)`` 且 MUST NOT 半写文件。校验全部通过后才依次写
     ``proposal.md`` / ``specs/<capability>/spec.md`` / ``design.md`` /
     ``tasks.md`` / ``.spec.yaml``（``schema: spec-driven`` + ``created:
@@ -1872,10 +1899,11 @@ def reject_item(item_id_: str, project_root) -> dict:
         rec["status"] = "rejected"
         rec["decided_at"] = now
         # 锁内单条写回收口到 _write_items_unlocked（MUST NOT 再走
-        # upsert_item/read_items，理由见 helper 说明）。
-        current = _read_items_unlocked(path)
-        current[rec["id"]] = rec
-        _write_items_unlocked(path, current)
+        # upsert_item/read_items，理由见 helper 说明）；直接复用 _do 开头
+        # 读取的 items dict——持锁期间合作写者均被 flock 排除，锁内重读
+        # 必然返回同一内容，纯属重复 IO（code-review item 05ecd61b5e37）。
+        items[rec["id"]] = rec
+        _write_items_unlocked(path, items)
         marker_item.update(rec)
         return {"ok": True, "status": "rejected", "error": None}
 
@@ -1892,7 +1920,7 @@ def reject_item(item_id_: str, project_root) -> dict:
     return outcome
 
 
-def delete_item(item_id_: str, project_root) -> dict:
+def delete_item(item_id_: str, project_root, defer_commit: bool = False) -> dict:
     """删除路径：把条目记录移出 ``items.jsonl`` 并清理其草稿目录（硬删）。
 
     语义（用户确认）：
@@ -1902,6 +1930,12 @@ def delete_item(item_id_: str, project_root) -> dict:
       前端确认弹窗须向用户明示此后果。
     - 草稿目录存在则一并删除（路径经 ``_safe_draft_dir`` 校验；符号链接越界
       拒绝并保持记录不动），避免留下无主目录。
+
+    ``defer_commit``：置真时删除成功的标记回写不触发 git 提交（
+    ``write_todo_marker`` 以 ``commit=False`` 落写），由批循环消费方在批末
+    按项目调 ``commit_todo_marker`` 合并提交（当前唯一消费方 ``prune_items``，
+    code-review item 15c9a7b72fbe）；缺省 False 保持「写后即提交」（dashboard
+    手动单条删除路径语义不变）。
 
     读-改-写在同一把 flock 内完成（与 ``upsert_item`` 同范式），避免与 daemon
     侧写入交错。返回 ``{"ok", "status", "error"}``；``status`` 为删除前状态。
@@ -1952,6 +1986,7 @@ def delete_item(item_id_: str, project_root) -> dict:
                 marker_item,
                 disposition=_disposition_from_status(outcome["status"]),
                 deleted=True,
+                commit=not defer_commit,
             )
         except Exception as e:  # noqa: BLE001 —— 回写失败不影响已成功的删除
             _logger.warning("evolution: 标记回写异常（已跳过）: %s", e)
@@ -1974,6 +2009,11 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
     删除复用既有 ``delete_item``（D2：记录移出 items.jsonl + 草稿目录删除含
     越界校验 + todo.md 标记幂等回写，读-改-写在 flock 内），逐条 try/except
     ——单条异常计入 failed 不中断其余（spec「单条删除失败不中断其余清理」）。
+    逐条以 ``defer_commit=True`` 关闭标记回写的即时提交，批末对本批删出的
+    每个项目各调一次 ``commit_todo_marker`` 合并提交（``message_suffix`` 携带
+    被清理条目明细）——与 ``auto_accept_pending`` 的批处理纪律对齐，避免
+    首次清理历史积压时逐条 ls-files + add + commit + push 的提交风暴与单条
+    push 失败的重复尝试（code-review item 15c9a7b72fbe）。
 
     计数口径：``delete_item`` 以返回值（非异常）表达预期失败——ok=False（条目
     已被并发删除 / 草稿路径越界 / 草稿删除 OSError）时该记录 MUST NOT 计入
@@ -2015,16 +2055,24 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
     deleted = 0
     failed = 0
     details: List[dict] = []
+    # 生产者-scoped 收集：本循环真正删出的条目 id 按其项目名分组，供批末
+    # 合并提交的 message_suffix 明细（与 auto_accept_pending 同纪律）。标记
+    # 回写项目由 delete_item 内部按 rec["project"] 经 registry 解析，批末
+    # 提交按同名项目收口，与写入口径对称。
+    deleted_by_project: Dict[str, List[str]] = {}
     for rec in victims:
         eid = rec.get("id")
         try:
-            result = delete_item(eid, project_root)
+            result = delete_item(eid, project_root, defer_commit=True)
         except Exception as e:  # noqa: BLE001 —— 单条异常不中断其余清理
             failed += 1
             details.append({"id": eid, "ok": False, "error": str(e)})
             continue
         if result.get("ok"):
             deleted += 1
+            project_name = str(rec.get("project") or "")
+            if project_name:
+                deleted_by_project.setdefault(project_name, []).append(str(eid))
         else:
             # 预期失败（并发删除/越界/OSError）：记录仍在 items.jsonl
             failed += 1
@@ -2036,6 +2084,14 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
                     "error": result.get("error"),
                 }
             )
+    # 批末合并提交：每个涉及项目各一次（无变更时 _commit_todo_marker 按
+    # 「nothing to commit」info 收敛，不告警）
+    for project_name, ids in sorted(deleted_by_project.items()):
+        detail = "\n".join(f"- {eid}" for eid in ids)
+        commit_todo_marker(
+            project_name=project_name,
+            message_suffix=f"保留策略清理条目（{len(ids)} 条）:\n{detail}",
+        )
     return {
         "total": len(items),
         "kept": len(items) - deleted,

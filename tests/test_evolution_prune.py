@@ -253,10 +253,12 @@ class TestPruneSingleFailureResilient(_BasePruneTest):
 
         orig_delete = delete_item
 
-        def _patched(eid, project_root):
+        def _patched(eid, project_root, *args, **kwargs):
+            # 转发剩余实参（prune_items 现以 defer_commit=True 批量删除，
+            # item 15c9a7b72fbe）——替身签名与真实 delete_item 对齐
             if eid == "fail-1":
                 raise OSError("模拟草稿删除失败")
-            return orig_delete(eid, project_root)
+            return orig_delete(eid, project_root, *args, **kwargs)
 
         with mock.patch("core.evolution.delete_item", side_effect=_patched):
             result = prune_items(self.proot, now=now)
