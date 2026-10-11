@@ -163,8 +163,11 @@ def rejection_class_stats(project_root) -> dict:
 
     扫描 ``.fenix/spec-review/*/.fenix-run-result.json`` 中 ``status=rejected``
     的结果文件，按归一化分类分桶（format/substantive/unknown）。fail-open：
-    无数据/目录缺失返回空 dict、单文件损坏跳过，MUST NOT 抛异常。
-    ``format`` 桶占比用于评估「机械可预防打回」规模。
+    单文件损坏跳过、MUST NOT 抛异常。返回形状两态（code-review item
+    f2a745c96d9c）：目录缺失返回空 dict（无键）；目录存在恒为固定三键
+    {format, substantive, unknown} 桶 dict（计数可为零）——调用方按桶键迭代
+    或取占比时 MUST 同时兼容两形态。``format`` 桶占比用于评估「机械可预防
+    打回」规模。
     """
     buckets = {"format": 0, "substantive": 0, "unknown": 0}
     base = Path(project_root) / ".fenix" / "spec-review"
@@ -192,6 +195,7 @@ def _runner_result_gate(agent_runner):
     """
     if isinstance(agent_runner, AgentRunner):
         return agent_runner.check_result_artifact
+    # [fenix-ignore:a75a03b14717] 公开别名打桩尚未全仓铺开（多处手写 stub/MagicMock 仍按私有名打桩），删回退分支会破坏既有 stub 测试且迁移超出本文件可改边界
     return agent_runner._check_agent_result_artifact
 
 
@@ -505,7 +509,7 @@ class SpecReviewManager:
                 self.logger.warning(
                     "spec_review",
                     f"评审 run exit code 失败但产物已落盘，优先按产物消费"
-                    f"（exit code={run_err}）: {spec_name}",
+                    f"（error={run_err}）: {spec_name}",
                 )
                 self.consume_review_result(spec_name, run_started_at=attempt_started_at)
                 return True
@@ -1096,6 +1100,8 @@ class SpecReviewManager:
         # 非法形态按「非法产物」直接判失败（fail-closed），不进 repairs 校验循环。
         if not isinstance(repairs, list):
             return f"repairs 非列表（非法产物）: {type(repairs).__name__}"
+        # 归一化后的 repairs 路径集合（快照键同形），供步骤 2 集合比对消费。
+        repair_paths: set = set()
         for repair in repairs:
             if not isinstance(repair, dict):
                 return f"repairs 元素非对象（非法产物）: {repair!r}"
@@ -1114,11 +1120,25 @@ class SpecReviewManager:
                 return f"repairs 路径越界（须落在 {spec_name}/ 内）: {path}"
             if not resolved.exists():
                 return f"repairs 路径不存在: {path}"
+            # 归一化为快照键同形（code-review item 8477caae0977）：快照键是
+            # str(file.relative_to(project_root)) 规范形（spec/changes/<spec>/a.md），
+            # 步骤 1 归属校验只经 resolve() 判合法性——'./spec/...'、冗余分隔符等
+            # 形态可通过校验却在 _verify_snapshot 的集合比对中失配，repaired 硬门
+            # 误判「未发生实际改动」、approved/rejected 留痕比对同理误报。两侧均
+            # 已 resolve，relative_to 纯词法比较口径一致。
+            try:
+                repair_paths.add(
+                    resolved.relative_to(self.project_root.resolve()).as_posix()
+                )
+            except ValueError:
+                # 极端布局（spec/ 为符号链接等）致两侧前缀不一致时保留原始
+                # 字符串，比对口径退回旧行为，不让归一化自身引入新异常面。
+                repair_paths.add(path)
 
-        # status 与 repairs 路径集合提前取出供步骤 2 快照比对消费（approved/
-        # rejected 伴随的 SPEC 目录改动须留痕，code-review item 2ab8c934d277）。
+        # status 提前取出供步骤 2/3 消费（approved/rejected 伴随的 SPEC 目录改动
+        # 须留痕，code-review item 2ab8c934d277）；repair_paths 已在步骤 1 归一化
+        # 构造（快照键同形，code-review item 8477caae0977）。
         status = review_data.get("status")
-        repair_paths = {r["path"] for r in repairs}
 
         # 2. 快照比对（需要从临时文件加载派发前快照；读取/解析抽公共助手
         # _load_snapshot_or_none 与 _artifact_landed_valid 共用，不再各复制一份
@@ -1188,6 +1208,16 @@ class SpecReviewManager:
             snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
             if not isinstance(snapshot, dict):
                 raise TypeError(f"快照非 JSON 对象: {type(snapshot).__name__}")
+            # 子字段形态校验（code-review item cd7e15d9b3ac）：顶层是 dict 而
+            # spec_files/dirty_files 被外部写成字符串/列表/数字/null 时，
+            # _verify_snapshot 的 .get(...).items() 会抛 AttributeError 逃出调用方
+            # 仅捕 TypeError 的 except——与顶层非对象同口径抛 TypeError 归入读取
+            # 失败；键缺失时 .get 缺省 {}，与 _verify_snapshot 的缺省口径一致。
+            for key in ("spec_files", "dirty_files"):
+                if not isinstance(snapshot.get(key, {}), dict):
+                    raise TypeError(
+                        f"快照字段 {key} 非 JSON 对象: {type(snapshot[key]).__name__}"
+                    )
             return (snapshot, None, None)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
             # Non-UTF8 内容抛 UnicodeDecodeError（非 OSError 子类），显式收口。
