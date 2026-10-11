@@ -291,15 +291,23 @@ class FFastTrackMixin:
             # 文案面向人：说明发生了什么 + 系统将自动重试（轮次由
             # _handle_fast_track_failure 按实际计数追加）。"fail-closed 不推进"
             # 类状态机术语曾让用户误读为 spec 被阻塞（2026-09-04 反馈）。
+            # 豁免判据传真实归因而非上方固定人文案（code-review item
+            # 2d2da33c5b15，对齐 full 车道 queue.py 死亡 run 豁免形态：
+            # run_reason 用 result.error、error 字段用人话文案）——固定文案
+            # 永不命中监督击杀关键词，会把监督超时/停滞击杀的 run 误豁免。
+            # （code-review item f5b9219c279b）success 收工时 result.error 恒为
+            # None，裸 getattr 会把豁免判据落回上方固定人文案（缺真实终态
+            # 归因）——此形态补「正常收工但零产出」真实归因，保证豁免判据
+            # 恒为真实终态归因；豁免/重试分类行为不变（该归因同样不命中
+            # 监督击杀关键词与终态指纹）。
+            ft_run_reason = getattr(result, "error", None)
+            if not ft_run_reason and getattr(result, "success", False):
+                ft_run_reason = "run 正常收工但零提交且无结果文件（exit 0）"
             self._handle_fast_track_failure(
                 spec_name,
                 result,
                 "本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
-                # 豁免判据传真实归因而非上方固定人文案（code-review item
-                # 2d2da33c5b15，对齐 full 车道 queue.py 死亡 run 豁免形态：
-                # run_reason 用 result.error、error 字段用人话文案）——固定文案
-                # 永不命中监督击杀关键词，会把监督超时/停滞击杀的 run 误豁免。
-                run_reason=getattr(result, "error", None),
+                run_reason=ft_run_reason,
             )
             return
         # ── 诚实退出收敛（fast-track 车道，2026-09-16 改进② 补齐收敛路径）──
@@ -1367,8 +1375,16 @@ class FFastTrackMixin:
             # 下方 provider 熔断 / [provider-transient] / 模型链不可用 / 重试计数
             # 四段终态分类全部被跳过。故必须独立 try/except，豁免失败仅 WARNING、
             # 按未生效继续走失败分类链。
+            # 结果判定（code-review item ee68bdcc1740，对齐 full 车道 queue.py
+            # 死亡 run 豁免与 rollback.py 同名调用点的修复形态）：
+            # _exempt_dead_run_budget 对拒绝/幂等跳过/记账异常三条未生效路径
+            # 均**静默 return 指纹**、不抛异常，仅凭本处 except 判不出未生效
+            # ——改按返回指纹是否 "applied" 置标记，指纹原样附进审计行，
+            # 供与 budget.py 内部拒绝/跳过 WARNING/INFO 交叉对账。
+            exempt_applied = False
+            exempt_result = None
             try:
-                self._pm._exempt_dead_run_budget(
+                exempt_result = self._pm._exempt_dead_run_budget(
                     spec_name,
                     f"fast-track no run-result (error={str(final_error)[:80]})",
                     # （code-review item 867125061b61）对齐 full 车道（queue.py 死亡
@@ -1378,6 +1394,7 @@ class FFastTrackMixin:
                     # 两条车道预算记账口径不一致，被击杀 run 可无限重派烧预算。
                     run_reason=str(exempt_reason) if exempt_reason else None,
                 )
+                exempt_applied = exempt_result == "applied"
             except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞失败分类
                 self._pm.logger.warning(
                     "pm_engine",
@@ -1385,6 +1402,17 @@ class FFastTrackMixin:
                     f"继续失败分类）: {type(exempt_exc).__name__}: "
                     f"{exempt_exc}",
                 )
+            # 审计日志：可审计豁免判定（spec、终态、原因、是否豁免），
+            # 拒绝/幂等跳过/记账异常三条未生效路径据此对账，不当作已豁免
+            # （与 queue.py / rollback.py 同名 budget_exempt_audit 行同款）。
+            self._pm.logger.info(
+                "pm_engine",
+                f"budget_exempt_audit: spec={spec_name}, "
+                f"impl_status=None, exempt_applied={exempt_applied}, "
+                f"exempt_result={exempt_result}, "
+                f"final_error={str(final_error)[:120]}, "
+                f"run_reason={str(exempt_reason)[:80] if exempt_reason else ''}",
+            )
         # ── MUST 同步（code-review item 0caca76e37b1）──────────────────
         # 本方法以下四段「终态错误分类→处置动作」（provider 熔断
         # "provider circuit open" 保持原状 / [provider-transient] 延迟重派 /
