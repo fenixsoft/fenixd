@@ -36,10 +36,13 @@ MUST NOT 修改实现尝试预算计数（`_impl_run_budget_used`）、MUST NOT 
                                                                               冻结态 / 幂等重复）
 """
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.pm_engine import TASK_GAP_ERROR_PREFIX  # noqa: E402
+from core.run_task_track import is_task_id
+from core.state_machine import FROZEN_FIELD
 
 
 def reflow_spec(
@@ -62,8 +65,6 @@ def reflow_spec(
                                                       冻结态 / 写回期间被并发冻结 /
                                                       写回窗口内已被门禁放行为 done）。
     """
-    from core.state_machine import FROZEN_FIELD
-
     entry = state_machine.read_one(spec_name)
     if entry is None:
         return {"ok": False, "found": False, "reason": f"spec '{spec_name}' not found in STATE.md"}
@@ -155,7 +156,13 @@ def reflow_spec(
             "found": True,
             "reason": f"spec '{spec_name}' 写回后复核失败（SPEC 已不在 STATE.md）",
         }
-    # total_duration 用 is not None 判（门禁放行分支写 runs 求和值，合法写 0）
+    # total_duration 用 is not None 判（门禁放行分支写 runs 求和值，合法写 0）。
+    # 已知误判窗口（code-review b64b96dc15a7）：engine 对 done→done 事件回放
+    # （transition 对 old==new 幂等返回 True，见 engine D4 注释）也会重入同一
+    # total_duration 写点重算覆盖（「同值覆盖无害」正是针对该路径），故「快照
+    # 无而写后残留有」并不严格等价于「窗口内门禁放行」——写点协议无专用放行
+    # 标记可判别，回写恢复 done 前以下方 post.error 的 task-gap 复核兜底
+    # （窗口内门禁拦截路径重写缺口结论即拒绝回写、转人工）。
     _done_in_window = (
         post.get("total_duration") is not None
         and entry.get("total_duration") is None
@@ -163,39 +170,55 @@ def reflow_spec(
     if _done_in_window or post.get("status") == "done":
         _post_status = post.get("status", "")
         if _post_status == "ready":
-            # 仍是 ready → 我们的误覆盖就是当前态，回写恢复 done（有意盲写：
-            # 任务已全部可确认完成、门禁已放行，done 是该 SPEC 的真实归宿）
-            restored: dict = {}
-            _restored = state_machine.update_spec(
-                spec_name, {"status": "done"}, applied_out=restored
-            )
-            if not _restored:
-                # update_spec 仅在写成功后回填 applied_out（SPEC 被并发驱逐/
-                # 归档时返回 False 且 restored 保持空 dict）——不消费 bool 会
-                # 落入假成功分支（code-review 622e4ea865aa）
+            # 回写 done 前复核窗口痕迹（code-review b64b96dc15a7）：我们的写回已
+            # 把 error 清空，若 post 里又出现 task-gap 缺口结论，说明窗口内有门禁
+            # 拦截路径在本 SPEC 上重写了缺口 error——任务缺口仍在，此刻回写 done
+            # 会把仍有未完成交付的 SPEC 盖成已交付。拒绝回写、转人工对账（同
+            # 「已推进」分支口径：不与并发写者对打）。
+            _post_error = post.get("error")
+            if isinstance(_post_error, str) and _post_error.startswith(TASK_GAP_ERROR_PREFIX):
                 logger.warning(
                     "pm_engine",
-                    f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
-                    f"done 的写回失败（SPEC 已不在 STATE.md，可能被并发驱逐/"
-                    f"归档）——回滚未生效，须人工核对状态",
+                    f"回炉误覆盖回滚放弃 '{spec_name}'（来源={source}）：写回"
+                    f"窗口内该 SPEC 又被写回 task-gap 缺口结论（total_duration "
+                    f"残留可能来自 done→done 事件回放而非门禁放行）——不回写"
+                    f"恢复 done，须人工核对状态",
                 )
-                _rollback_note = "（回滚未生效，须人工核对）"
-            elif "_stripped" in restored:
-                logger.warning(
-                    "pm_engine",
-                    f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
-                    f"done 的写回又被并发冻结剥离——须人工核对状态",
-                )
-                _rollback_note = "（回滚未生效，须人工核对）"
+                _rollback_note = "（窗口内复现 task-gap 缺口结论，未回写，须人工核对）"
             else:
-                logger.warning(
-                    "pm_engine",
-                    f"回炉写回与门禁放行竞态 '{spec_name}'（来源={source}）："
-                    f"写回窗口内该 SPEC 已被 verified→done 门禁放行，ready 写"
-                    f"误覆盖已交付状态（total_duration 残留证实）——已回写恢"
-                    f"复 done，本次回炉不生效",
+                # 仍是 ready → 我们的误覆盖就是当前态，回写恢复 done（有意盲写：
+                # 任务已全部可确认完成、门禁已放行，done 是该 SPEC 的真实归宿）
+                restored: dict = {}
+                _restored = state_machine.update_spec(
+                    spec_name, {"status": "done"}, applied_out=restored
                 )
-                _rollback_note = "（已回写恢复 done）"
+                if not _restored:
+                    # update_spec 仅在写成功后回填 applied_out（SPEC 被并发驱逐/
+                    # 归档时返回 False 且 restored 保持空 dict）——不消费 bool 会
+                    # 落入假成功分支（code-review 622e4ea865aa）
+                    logger.warning(
+                        "pm_engine",
+                        f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
+                        f"done 的写回失败（SPEC 已不在 STATE.md，可能被并发驱逐/"
+                        f"归档）——回滚未生效，须人工核对状态",
+                    )
+                    _rollback_note = "（回滚未生效，须人工核对）"
+                elif "_stripped" in restored:
+                    logger.warning(
+                        "pm_engine",
+                        f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
+                        f"done 的写回又被并发冻结剥离——须人工核对状态",
+                    )
+                    _rollback_note = "（回滚未生效，须人工核对）"
+                else:
+                    logger.warning(
+                        "pm_engine",
+                        f"回炉写回与门禁放行竞态 '{spec_name}'（来源={source}）："
+                        f"写回窗口内该 SPEC 已被 verified→done 门禁放行，ready 写"
+                        f"误覆盖已交付状态（total_duration 残留证实）——已回写恢"
+                        f"复 done，本次回炉不生效",
+                    )
+                    _rollback_note = "（已回写恢复 done）"
         else:
             # 已被并发写者推进（如派发立即消费了误覆盖的 ready）→ 不再盲写
             # 对打在飞转移，告警交人工对账
@@ -249,10 +272,6 @@ def _extract_gap_tasks(error: str) -> list:
     任务 id 合法性判定与 parse_tasks_md 同源（core.run_task_track.is_task_id）：
     形如 ``1.1`` / ``1.2b``（字母后缀为合法补充任务形态）。
     """
-    import re
-
-    from core.run_task_track import is_task_id
-
     if not error:
         return []
     ids = []
