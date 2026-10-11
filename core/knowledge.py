@@ -966,6 +966,14 @@ class DistillManager:
 
     # ── 对外：入队（不阻塞归档主流程）───────────────────────────────
     def dispatch(self, proot: Path, archived_names: list) -> dict:
+        # 陈旧代码预检（evo-add-key-path-stale-code-preflight 2.2）：写点收在
+        # dispatch 单汇聚点（单条 dispatch_distill / 批量 dispatch_distill_batch
+        # 均经 _dispatch_via_mgr 到达此处，与本文件「台账写点收在 dispatch 单点」
+        # 惯例一致；两入口重复插桩会让单条路径双告警）。陈旧时请求重启（一条
+        # WARNING + restart_request 防重），入队与派发照常进行、不被预检阻塞。
+        from core.code_stale_flag import request_restart
+
+        request_restart(lambda msg: logger.warning("%s", msg), "知识蒸馏派发")
         key = str(Path(proot).resolve())
         names = list(archived_names)
         with self._guard:

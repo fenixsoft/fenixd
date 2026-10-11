@@ -7056,6 +7056,15 @@ class AdminMonitor:
             return None
         # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
         basis = str(getattr(disp, "actions_taken", "") or "")[:200]
+        # 陈旧代码预检（evo-add-key-path-stale-code-preflight 2.3）：choice 执行
+        # 前查询进程代码陈旧旗标；陈旧则请求重启（一条 WARNING + daemon 侧
+        # .fenix/restart_request 防重）并照常执行——执行结果与留痕不受预检影响。
+        from core.code_stale_flag import request_restart
+
+        request_restart(
+            lambda msg: self.logger.warning("admin_monitor", msg),
+            "admin 处置 choice 执行",
+        )
         try:
             from core.dashboard.data.admin_actions import execute_adjudication_choice
 

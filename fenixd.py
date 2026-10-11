@@ -651,6 +651,12 @@ class FenixDaemon:
         self._code_files = code_tracked_files(FENIX_DIR)
         self._code_baseline_ns = max_code_mtime_ns(self._code_files)
 
+        # 陈旧旗标共享通道（evo-add-key-path-stale-code-preflight 1.2）：启动
+        # 即注册，core/ 关键路径模块（收尾提交/蒸馏派发/admin choice 执行）经
+        # core.code_stale_flag.is_stale() 预检。import 方向 core←daemon 单向，
+        # daemon 只写入。
+        self._register_code_stale_flag()
+
         # 9. 知识蒸馏 pending 台账恢复（evo-knowledge-distill-resume-guard R3，
         #    design D3）：daemon 专属——dashboard --serve 进程不接入（双进程并存
         #    时恢复只等 daemon 下次启动，蒸馏本就非紧急车道）。恢复动作只重新
@@ -1356,6 +1362,21 @@ class FenixDaemon:
             f"（={aligned_value}s）",
         )
 
+    def _register_code_stale_flag(self) -> None:
+        """陈旧旗标共享通道注册（evo-add-key-path-stale-code-preflight 1.2）。
+
+        把 self._code_stale 以回调形式转发进 core.code_stale_flag 注册表（只读
+        查询通道，core←daemon 单向 import，daemon 只写入）：core/ 关键路径模块
+        （verification-report 收尾提交、知识蒸馏派发、admin choice 执行）执行
+        前经 is_stale() 预检。回调现场读最新值——启动初始化即注册即镜像，
+        _update_stale_code_state 每 30s 检测点的重算（self._code_stale = changed）
+        经直读即时同步进注册表，注册表不落第二份状态。只做旗标转发，不改任何
+        既有判定逻辑。
+        """
+        from core import code_stale_flag
+
+        code_stale_flag.register(lambda: bool(getattr(self, "_code_stale", False)))
+
     def _update_stale_code_state(self):
         """代码陈旧持续状态更新（add-stale-code-selfheal 1.1/1.2/1.3）。
 
@@ -1389,6 +1410,11 @@ class FenixDaemon:
             changed = code_files_changed_since(baseline, files)
         except Exception:  # noqa: BLE001 — 陈旧检测非关键路径，失败静默跳过
             return
+        # 下方 self._code_stale = changed 即注册表同步（evo-add-key-path-
+        # stale-code-preflight 1.2）：_register_code_stale_flag 注册的回调
+        # 直读该属性，每 30s 检测点的重算结果经此对 core/ 关键路径即时可见
+        # （只做旗标转发，不改任何既有判定逻辑；注册表不落第二份状态，
+        # 未注册语境严格 fail-open）。
         if changed == self._code_stale:
             if not changed:
                 # evo-add-stale-code-dangling-deadline 2.1：进程启动后首个「新鲜」
