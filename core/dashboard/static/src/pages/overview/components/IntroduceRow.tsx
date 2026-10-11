@@ -24,7 +24,10 @@ function compactTokens(n: number): string {
   if (n / 1e4 >= 9999.95) return (n / 1e8).toFixed(1) + '亿';
   if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
   // K→万边界同理：K 档换算值 n/1e3 ∈ [9.95,10) 时 toFixed(1) 会进位成 "10.0K"（如 9999.6），
-  // 与 n ≥ 1e4 档的 "1.0万" 数值相同却跨档自相矛盾 → 对称提前升档按万显示得 "1.0万"
+  // 与 n ≥ 1e4 档的 "1.0万" 数值相同却跨档自相矛盾 → 对称提前升档按万显示得 "1.0万"；
+  // 例外（code-review item b6edccae1a87）：档内下沿值 n/1e4 未舍入恰为 0.995（如 9950），
+  // 受浮点表示影响 toFixed(1) 会得 "0.9万"——数值仍与原值自洽，仅边界观感与上句 "1.0万"
+  // 略有出入，接受现状不另归一（万→亿升档不受此影响）
   if (n / 1e3 >= 9.95) return (n / 1e4).toFixed(1) + '万';
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return String(n);
@@ -125,6 +128,10 @@ const AGENT_CATS: [keys: string[], label: string][] = [
 // 橙/绿对白底对比度 WARN 由柱顶直接数值标签缓解
 const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#c41d7f', '#8c5f0f', '#eb2f96'];
 
+// 段内数值标签的最小占比阈值（code-review item d406b8eb16d6）：占比低于约 12% 的段
+// 放不下 fontSize 11/fontWeight 600 的白字数值（可读下限），改由悬浮 title 承载数值
+const SEGMENT_LABEL_MIN_SHARE = 0.12;
+
 /** 归一化单行堆叠条（part-to-whole）：分段宽度按占比，段内白字数值，2px 间隙，悬浮显示类型/数值/占比 */
 function NormalizedBar({
   data,
@@ -152,7 +159,7 @@ function NormalizedBar({
               color: '#fff',
             }}
           >
-            {share >= 0.12 ? d.value : ''}
+            {share >= SEGMENT_LABEL_MIN_SHARE ? d.value : ''}
           </div>
         );
       })}
