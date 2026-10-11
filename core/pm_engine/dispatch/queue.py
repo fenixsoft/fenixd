@@ -1027,10 +1027,19 @@ class QQQueueMixin:
 
                 # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
                 # 仅存量 fix-* SPEC 可达（非 fix 父 SPEC 现已走原地打回，不进入此分支）。
-                # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
-                # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
+                # fix spec 实现车道（implementer / fast-track）派发前检查同根
+                # 兄弟是否存在活跃修复活动；存在则回滚 entry 到队列、跳过本轮
+                # 派发（先到先得，后到抑制）。fast-track 一并覆盖（code-review
+                # item 17dd655b3031）：fast-track fix 兄弟的在队条目 agent_type
+                # 为 "fast-track"，探针 _sibling_repair_active 已按实现车道集合
+                # 匹配，守卫入口若不覆盖则 fast-track 派发永不进入判定、同根
+                # fast-track fix 间先到先得互斥落空。下方回滚/suppressed 及
+                # my_enqueued_at（pop 处按条目统一解包）均与车道无关；
+                # _is_fix_spec 前置保证普通 fast-track spec 不受影响。
                 # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
-                if agent_type == "implementer" and self._pm._is_fix_spec(spec_name):
+                if agent_type in ("implementer", "fast-track") and self._pm._is_fix_spec(
+                    spec_name
+                ):
                     carrier = self._pm._sibling_repair_active(spec_name, my_enqueued_at=my_enqueued_at)
                     if carrier:
                         # 回滚：把已 pop 的 entry 放回队列

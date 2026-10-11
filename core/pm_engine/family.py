@@ -347,10 +347,19 @@ class FamilyGovernor:
             if status == "implementing":
                 return sib
             if status == "ready":
-                # 仅当队列含该兄弟的实现器条目时才视为 actionable
+                # 仅当队列含该兄弟的实现车道条目时才视为 actionable。匹配实现
+                # 车道集合 (implementer, fast-track)（code-review item
+                # 17dd655b3031）：fast-track spec 的在队条目 agent_type 为
+                # "fast-track"（见 inplace 打回与 legacy 派生分支按
+                # read_spec_mode 选道的 _enqueue 通道字面量），只认 implementer
+                # 会让同根 fast-track fix 兄弟对互斥判定失明。
                 with self._pm._queue_lock:
                     sib_entry = next(
-                        (e for e in self._pm._run_queue if e[1] == sib and e[2] == "implementer"),
+                        (
+                            e
+                            for e in self._pm._run_queue
+                            if e[1] == sib and e[2] in ("implementer", "fast-track")
+                        ),
                         None,
                     )
                 if sib_entry is not None:
@@ -735,13 +744,19 @@ class FamilyGovernor:
         # ── 正常打回：重置 implementing + 注入修复任务 ──
         # 计数已由上方 bump_counters 原子递增并落盘，此处不再并入 update_spec
         # （避免覆盖并发写者——如 fastlane 失败记账——的增量）。
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "implementing",
-                "error": (f"验证失败（原地打回第 {fail_rounds} 轮），重修中"),
-            },
-        )
+        repair_fields = {
+            "status": "implementing",
+            "error": (f"验证失败（原地打回第 {fail_rounds} 轮），重修中"),
+        }
+        # 对齐下方 legacy 派生分支与 escalation / dispatch/rollback 的重置语义：
+        # 打回重置状态时剥除上一轮遗留的 run 锚点，防新轮误挂旧 run
+        # （code-review item 12142fc5cbaa）；entry 为本分支入口处 read_one
+        # 快照，与 legacy 分支的 existing_fix 同形。
+        if entry.get("implementer_run") is not None:
+            repair_fields["implementer_run"] = None
+        if entry.get("tester_run") is not None:
+            repair_fields["tester_run"] = None
+        self._pm.state_machine.update_spec(spec_name, repair_fields)
         self._pm.logger.warning(
             "pm_engine",
             f"原地打回第 {fail_rounds} 轮：'{spec_name}' 验证失败，"
