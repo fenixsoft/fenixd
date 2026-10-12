@@ -27,7 +27,6 @@ visual_diff.py — 截图视觉对比
 import asyncio
 import json
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -35,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from .browser import wait_animations_settled
+from .path_safety import safe_component
 from .screenshot_lab import classify_screenshot
 
 
@@ -73,7 +73,13 @@ class VisualDiffer:
         self.project_root = Path(project_root)
         self.config = config if isinstance(config, dict) else {}
         self.logger = logger
-        self.base_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
+        # 构造期 base_dir 同样净化 spec_name（code-review item fd57e4dcc561）：
+        # baselines/、screenshots/、baseline_streaks.json 等全部落在本前缀下，
+        # 只靠 compare() 入口净化可被 spec_name 一层绕过；kebab-case 常规名
+        # 为恒等变换，既有路径不变。
+        self.base_dir = (
+            self.project_root / ".fenix" / "verify-progress" / safe_component(spec_name)
+        )
 
     # ── 配置读取（verify_engine 段，向后兼容缺省）────────────────
 
@@ -118,17 +124,6 @@ class VisualDiffer:
                 return False
         return True
 
-    @staticmethod
-    def _safe_component(name: str) -> str:
-        """路径成分净化：滤除路径分隔符与空字节（替换为下划线）。
-
-        baseline_name/scenario_id 来自场景文件（validate_scenario 的 id
-        校验只查非空、不查字符集），含 ../ 或绝对路径形态的异常命名可经
-        f-string 拼接把截图/差异图/标记文件写出 verify-progress 目录——
-        拼接前统一净化（纵深防御，正常 kebab-case 命名不受影响）。
-        """
-        return re.sub(r"[\\/\x00]", "_", str(name))
-
     async def compare(
         self,
         page,
@@ -151,8 +146,8 @@ class VisualDiffer:
         # 路径成分净化（code-review item 8edfc0134edb）：入口处统一净化，
         # 覆盖本方法与下游 _ssim_compare/_pixel_fallback_compare/
         # _mark_suspicious 的全部拼路径位
-        baseline_name = self._safe_component(baseline_name)
-        scenario_id = self._safe_component(scenario_id)
+        baseline_name = safe_component(baseline_name)
+        scenario_id = safe_component(scenario_id)
         baseline_path = self.base_dir / "baselines" / f"{baseline_name}.png"
         screenshots_dir = self.base_dir / "screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
