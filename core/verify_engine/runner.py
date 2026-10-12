@@ -122,7 +122,7 @@ class VerifyRunner:
 def determine_scenario_status(
     step_results: list,
     assertion_results: list,
-    visual_results: list = None,
+    visual_results: Optional[list] = None,
 ) -> str:
     """判定场景整体状态（对三种 kind 一致的规则）。
 
