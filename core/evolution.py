@@ -20,6 +20,7 @@ evolution.py — 框架自进化链路（add-framework-self-evolution spec）。
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -269,22 +270,16 @@ def watermarks_path(project_root) -> Path:
     return evolution_dir(project_root) / "state.json"
 
 
-def read_watermarks(project_root) -> Dict[str, dict]:
-    """读取水位 ``state.json``：``{project: {last_analyzed_at, last_run_id}}``。
+def _normalize_watermarks(data: Any) -> Dict[str, dict]:
+    """水位字段校验/归一化单点收口，``read_watermarks`` / ``write_watermarks``
+    共用同一口径（读写往返数据不得分叉，item bd65361dc103）。
 
-    读取时字段缺失/非法按「从未分析」处理（返回空 dict / 跳过该键），
-    不抛异常。2.3。
+    逐项目校验：``wm`` 非 dict 跳过、``last_analyzed_at`` 须非空字符串、
+    ``last_run_id`` 非字符串兜底空串；顶层非 dict 返回空 dict。
     """
-    path = watermarks_path(project_root)
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
     out: Dict[str, dict] = {}
+    if not isinstance(data, dict):
+        return out
     for proj, wm in data.items():
         if not isinstance(wm, dict):
             continue
@@ -300,22 +295,26 @@ def read_watermarks(project_root) -> Dict[str, dict]:
     return out
 
 
+def read_watermarks(project_root) -> Dict[str, dict]:
+    """读取水位 ``state.json``：``{project: {last_analyzed_at, last_run_id}}``。
+
+    读取时字段缺失/非法按「从未分析」处理（返回空 dict / 跳过该键），
+    不抛异常。2.3。
+    """
+    path = watermarks_path(project_root)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return _normalize_watermarks(data)
+
+
 def write_watermarks(project_root, data: Dict[str, dict]) -> None:
     """全量写回水位 state.json（flock + 原子替换）。"""
     path = watermarks_path(project_root)
-    cleaned: Dict[str, dict] = {}
-    for proj, wm in data.items():
-        if not isinstance(wm, dict):
-            continue
-        last_at = wm.get("last_analyzed_at")
-        if not isinstance(last_at, str) or not last_at:
-            continue
-        cleaned[proj] = {
-            "last_analyzed_at": last_at,
-            "last_run_id": (
-                wm.get("last_run_id") if isinstance(wm.get("last_run_id"), str) else ""
-            ),
-        }
+    cleaned = _normalize_watermarks(data)
     content = json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
 
     def _do() -> None:
@@ -930,6 +929,20 @@ def write_todo_marker(
     return outcome["ok"]
 
 
+def _git_c_env() -> dict:
+    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
+
+    消除 ``_commit_todo_marker`` 良性无变更文案（``nothing to commit`` /
+    ``nothing added to commit``）匹配对运行环境本地化的依赖（本地化 git
+    环境下输出翻译文案，良性无变更被误记 WARNING；code-review item
+    9a333cd43cd0，与 ``deliverables._git_c_env`` 同源手法）。合并而非整体
+    替换，保留调用方的 PATH 等既有环境。
+    """
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    return env
+
+
 def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
     """对项目 ``.fenix/todo.md`` 的标记改动就地 add + commit + push（ADR-060）。
 
@@ -957,6 +970,7 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
             capture_output=True,
             text=True,
             timeout=30,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         _logger.warning("evolution: todo.md git ls-files 失败，跳过提交: %s", e)
@@ -975,6 +989,7 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
             capture_output=True,
             text=True,
             timeout=30,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         _logger.warning("evolution: todo.md git add 失败（跳过提交）: %s", e)
@@ -994,6 +1009,7 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
             capture_output=True,
             text=True,
             timeout=30,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         _logger.warning("evolution: todo.md git commit 失败: %s", e)
@@ -1013,7 +1029,13 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
             )
         return False
     try:
-        push = subprocess.run(git + ["push"], capture_output=True, text=True, timeout=30)
+        push = subprocess.run(
+            git + ["push"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_git_c_env(),
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         _logger.warning("evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: %s", e)
         return True
