@@ -16,6 +16,7 @@ admin_store.py — Administrator 告警/处置记录持久化（.fenix/admin_ale
 import fcntl
 import json
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -114,6 +115,25 @@ def _fsync_parent_dir(path: Path) -> None:
         os.close(dfd)
 
 
+def _apply_target_mode(tmp_path: Path, target: Path) -> None:
+    """rename 前校正临时文件权限位（code-review item 2e535ed632c6）。
+
+    mkstemp 恒以 0600 建文件，直接 rename 会把目标文件权限重置为 0600，
+    既不继承原文件权限也不遵循 umask 默认——当前 daemon 与 Dashboard 同
+    用户运行无实际影响，但未来若以不同用户身份部署只读读取侧（如只读
+    监控账号）文件将不可读。目标已存在时复制其权限位；首次创建时取
+    0644（不读 os.umask：读取需临时改写，线程不安全）。失败静默保持
+    0600 现状，绝不让权限校正阻断数据写回主流程。
+    """
+    try:
+        if target.exists():
+            os.chmod(str(tmp_path), stat.S_IMODE(os.stat(str(target)).st_mode))
+        else:
+            os.chmod(str(tmp_path), 0o644)
+    except OSError:
+        pass
+
+
 def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
     """JSONL 滚动裁剪的唯一实现（调用方须已持有该文件的排他锁）。
 
@@ -147,6 +167,7 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
                 f.write(ln + "\n")
             f.flush()
             os.fsync(f.fileno())
+        _apply_target_mode(tmp_path, path)
         os.rename(str(tmp_path), str(path))
         _fsync_parent_dir(path)
     except OSError:
@@ -304,6 +325,7 @@ class AdminStore:
                 f.write("\n")
                 f.flush()
                 os.fsync(f.fileno())
+            _apply_target_mode(tmp_path, self.alerts_path)
             os.rename(str(tmp_path), str(self.alerts_path))
             _fsync_parent_dir(self.alerts_path)
         finally:
