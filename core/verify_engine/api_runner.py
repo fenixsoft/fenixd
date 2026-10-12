@@ -192,7 +192,10 @@ class ApiRunner(VerifyRunner):
                 "error": f"headers 须为对象（键值映射）: {type(raw_headers).__name__}",
             }
         headers = {
-            k: _interpolate_env(str(v), self.config_env())
+            # 键同值侧 str() 归一（YAML/JSON 场景可写出数字键）：后续
+            # body_type=json 且 body 为 null 的分支会对键调 .lower()，非字
+            # 符串键即 AttributeError 穿出步骤级结构化失败。
+            str(k): _interpolate_env(str(v), self.config_env())
             for k, v in (raw_headers or {}).items()
         }
         body = step.get("body", "")
