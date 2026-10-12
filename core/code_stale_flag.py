@@ -31,6 +31,9 @@ DAEMON_ROOT = Path(__file__).absolute().parent.parent
 RESTART_REQUEST = DAEMON_ROOT / ".fenix" / "restart_request"
 
 _lock = threading.Lock()
+# request_restart 写文件段专用锁：_lock 按模块约定只护指针/布尔读写（锁内
+# 零 IO），文件存在性检查→写入的 check-then-act 段由本锁串行化
+_write_lock = threading.Lock()
 _callback: Optional[Callable[[], bool]] = None
 
 
@@ -100,18 +103,24 @@ def request_restart(log: Callable[[str], None], action: str) -> bool:
     if not is_stale():
         return False
     try:
-        existed = RESTART_REQUEST.exists()
-        if not existed:
-            RESTART_REQUEST.parent.mkdir(parents=True, exist_ok=True)
-            # 写入格式与既有自愈 touch 一致（ISO 时间戳行）；仅在缺席时写，
-            # 已在时不触碰（supervisor 侧只关心存在性，2s 轮询命中即
-            # SIGTERM → 排水 → 重启）
-            RESTART_REQUEST.write_text(
-                datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8"
-            )
-            detail = "已写入 .fenix/restart_request 请求重启"
-        else:
-            detail = "已请求重启（restart_request 已在、重启在途，不重复写入）"
+        # check-then-act 段须持锁：并发车道线程（验证收尾/知识蒸馏/admin
+        # choice）同时检测到陈旧时，无锁会让双方都看到 existed=False 并各自
+        # 写一次、刷新 mtime，违反「已存在不重复写、不刷 mtime」不变量。
+        # 调用方均在 daemon 同进程内（dashboard 未注册回调、fail-open 返回
+        # 不陈旧、零副作用），线程锁即闭合，无需跨进程 flock。
+        with _write_lock:
+            existed = RESTART_REQUEST.exists()
+            if not existed:
+                RESTART_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+                # 写入格式与既有自愈 touch 一致（ISO 时间戳行）；仅在缺席时写，
+                # 已在时不触碰（supervisor 侧只关心存在性，2s 轮询命中即
+                # SIGTERM → 排水 → 重启）
+                RESTART_REQUEST.write_text(
+                    datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8"
+                )
+                detail = "已写入 .fenix/restart_request 请求重启"
+            else:
+                detail = "已请求重启（restart_request 已在、重启在途，不重复写入）"
     except Exception as e:  # noqa: BLE001 — 写失败只降级说明，不抛出
         detail = f"请求重启失败（{type(e).__name__}: {e}），supervisor 未获请求"
     try:
