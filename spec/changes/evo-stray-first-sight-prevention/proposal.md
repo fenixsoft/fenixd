@@ -6,7 +6,7 @@
 2. build-win-configure.log 10-04 入库后三度烧 admin 处置（10-04 run admin-potplayer-base-1791048866 $0.78/12 轮、10-06 run admin-potplayer-base-1791275605 $0.92/11 轮、10-10 两 run 合计约 862 秒），10-10 由提交 a47a56a/151ff6e 根治。
 3. .debug/ 调试产物 9 entry/49-51MB 滞留 25.9-28.5 小时（告警 21c165e39b42/d9df508ec2b0/b1b9391b3295），run admin-potplayer-base-1791787013（$0.452301/12 次工具调用）执行 ignore_untracked_stray，提交 913f41b 根治。
 
-框架盘点→升级→认领闭环齐全（stray_wip.py + admin_monitor.py + adjudication_choices.py）但纯被动：major 升级要滞留 24 小时（UNTRACKED_ESCALATION_STALE_MINUTES=24*60，stray_wip.py:77）或体积超 500MB；且 sweep 对低于 entry 阈值（5）的集合直接静默返回（straw_wip.py:769/796 below_threshold 早退）——小型散件集连 info 提示都没有。交付侧同样无检查点：deliverables.py 的 check-ignore 逻辑方向相反（校验声明的交付路径不得被 ignore），不检查运行时落盘路径是否有覆盖；receiver 的 exe 相邻写盘路径至今无名字级 ignore，只因 exe 恰部署在已忽略目录而被间接覆盖。两次根治提交均自述「按先例」，被动模式在自我复制。
+框架盘点→升级→认领闭环齐全（stray_wip.py + admin_monitor.py + adjudication_choices.py）但纯被动：major 升级要滞留 24 小时（UNTRACKED_ESCALATION_STALE_MINUTES=24*60，stray_wip.py:77）或体积超 500MB；且 sweep 对低于 entry 阈值（5）的集合直接静默返回（stray_wip.py:768/796 below_threshold 早退）——小型散件集连 info 提示都没有。交付侧同样无检查点：deliverables.py 的 check-ignore 逻辑方向相反（校验声明的交付路径不得被 ignore），不检查运行时落盘路径是否有覆盖；receiver 的 exe 相邻写盘路径至今无名字级 ignore，只因 exe 恰部署在已忽略目录而被间接覆盖。两次根治提交均自述「按先例」，被动模式在自我复制。
 
 ## What Changes
 

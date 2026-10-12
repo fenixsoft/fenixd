@@ -4,7 +4,7 @@
 
 ### Requirement: 盘点首现提示
 
-untracked 散件盘点在目录型产物集合首次出现（登记表无该目录指纹的 first_seen 记录）且未被 .gitignore 覆盖时，MUST 发出一次 info 级首现提示信号（kind=maintree_untracked_stray_first_sight），evidence 携带目录清单、体积与预防性 .gitignore 条目草案（含成因注释）；集合低于既有 entry 阈值时同样提示。
+untracked 散件盘点在目录型产物集合首次出现（首现登记无该目录记录；去重键为目录路径，MUST NOT 采用随集合内容漂移的条目集指纹）且未被 .gitignore 覆盖（由上游散件清单豁免已 ignore 路径保证）时，MUST 发出一次 info 级首现提示信号（kind=maintree_untracked_stray_first_sight），evidence 携带目录清单、体积与预防性 .gitignore 条目草案（含成因注释）；集合低于既有 entry 阈值时同样提示。
 
 #### Scenario: 新目录首现
 - WHEN 主树出现新的未跟踪产物目录集合，登记表无其指纹记录且路径无 ignore 覆盖
@@ -15,7 +15,7 @@ untracked 散件盘点在目录型产物集合首次出现（登记表无该目�
 - THEN 仍发出首现提示（below_threshold 早退不适用于首现判定），但不启动升级时钟
 
 #### Scenario: 同目录不重复提示
-- WHEN 同一目录指纹已存在于登记表且未复位
+- WHEN 同一目录已存在于首现登记且未复位（含集合内容增长、跨阈值档切换导致的指纹漂移）
 - THEN 后续盘点不再发首现提示，既有 stale/escalated 语义不受影响
 
 #### Scenario: 复位后再现
@@ -24,7 +24,7 @@ untracked 散件盘点在目录型产物集合首次出现（登记表无该目�
 
 #### Scenario: 已覆盖目录不提示
 - WHEN 产物路径已被 .gitignore 规则覆盖
-- THEN 不计为首现、不发提示
+- THEN 不计为首现、不发提示（已 ignore 路径在 _untracked_stray_entries 豁免①②上游排除，不入散件清单）
 
 ### Requirement: 首现提示不升级不唤起
 
@@ -40,7 +40,7 @@ untracked 散件盘点在目录型产物集合首次出现（登记表无该目�
 
 ### Requirement: 登记与排除
 
-首现登记 MUST 复用既有未跟踪散件持久化登记表（first_seen/指纹跨 daemon 重启保持），目录消失走既有复位逻辑；排除集沿用既有散件判定名单（.fenix/、系统临时目录等），不另立名单。
+首现登记 MUST 复用既有未跟踪散件持久化机制（同持久化文件 .fenix/stray_untracked_registry.json 承载，读写与字段适配同步，跨 daemon 重启保持），去重键为目录路径；目录整轮不再贡献散件条目即复位（同既有 absent 复位模式）；排除集沿用既有散件判定名单（.fenix/、系统临时目录等），不另立名单。
 
 #### Scenario: 跨重启不重复提示
 - WHEN 首现登记后 daemon 重启
