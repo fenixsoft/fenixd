@@ -771,14 +771,19 @@ def _emit_static_findings(
     check_name: str,
     log_label: str,
 ) -> None:
-    """场景/契约两个静态检查挂点的共用骨架：扫描 → 写盘 → 分布日志（fail-open）。
+    """场景静态检查挂点的写盘/分布日志骨架：扫描 → 写盘 → 分布日志（fail-open）。
+
+    仅覆盖场景静态检查挂点（_run_scenario_static_check）；契约挂点
+    （_run_contract_static_check）因需在写盘/分布日志之后继续消费 findings
+    做 serve 缺失打回、且异常时须向调用方返回 False，有意内联同一套骨架，
+    不复用本助手——两份骨架的日志格式/fail-open 语义如需调整须同步修改。
 
     扫描（含前置产物读取）经 ``scan_fn`` 在 fail-open 保护内执行，返回
     ``(findings, info_head)``；``findings is None`` 表示前置不满足、静默
-    跳过（不写盘不记日志）。写盘复用 ``write_fn``（两套 write_* 签名一致），
-    findings 非空时按 ``rule_id_of`` 统计 rule_id 分布记 INFO（``info_head``
-    承载两个挂点 INFO 文案的措辞差异）；任何异常记 WARNING（``check_name``/
-    ``log_label`` 承载 WARNING 文案的措辞差异），不影响验证主流程。
+    跳过（不写盘不记日志）。写盘复用 ``write_fn``，findings 非空时按
+    ``rule_id_of`` 统计 rule_id 分布记 INFO（``info_head`` 承载 INFO 文案
+    措辞）；任何异常记 WARNING（``check_name``/``log_label`` 承载 WARNING
+    文案措辞），不影响验证主流程。
     """
     try:
         findings, info_head = scan_fn()
