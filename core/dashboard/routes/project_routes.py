@@ -300,7 +300,7 @@ class H2ProjectRoutesMixin:
             elif action == "stop":
                 result = _server_mod.stop_daemon(project["path"])
             elif action == "install-hosting":
-                result = self._api_project_install_hosting(project)
+                result = self._install_hosting_locked(project)
             else:  # restart
                 # 消费方校验（D8 同源）：unmanaged = 进程在跑但无 supervisor，
                 # restart_request 无人消费；拒绝而非写信号后静默滞留。
@@ -370,8 +370,12 @@ class H2ProjectRoutesMixin:
 
 
 
-    def _api_project_install_hosting(self, project: dict) -> dict:
+    def _install_hosting_locked(self, project: dict) -> dict:
         """安装 supervisor 托管：停止裸 daemon → 经 supervisor 启动。
+
+        非 HTTP 端点（原 _api_ 前缀为独立端点时代残留，code-review item
+        efe9b726c60b）：返回 dict 由 _run_project_lifecycle_locked 的
+        install-hosting 分支转发，对外端点是 _api_project_lifecycle。
 
         fix-supervisor-hosting-chain D6：存量项目（fenix-server、scheduling-
         showcase）的托管修复路径。对 managed 幂等返回已托管（不重启）；对

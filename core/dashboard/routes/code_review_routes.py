@@ -224,16 +224,6 @@ def _write_signal_exclusive(req_path, payload):
 class H11CodeReviewRoutesMixin:
     """H11 code-review（design D1 表 C H11）。"""
 
-    def _coded_error(self, status: int, msg: str, code: str) -> None:
-        """带稳定机器可读 ``code`` 的错误响应。
-
-        code-review item fbdb437a22a0：前端控制流按业务错误码分支，不依赖
-        中文消息子串（措辞改动不再静默落入通用错误分支）。先例：H12
-        regression mixin 同名 helper（item 934af264345f），错误码经
-        ApiError.code 承载。
-        """
-        self._json({"error": msg, "code": code}, status)
-
     def _api_code_review_items(self, query):
         """GET /api/code-review/items?project=<name>[&status=open,in_spec]
         [&severity=major][&page=1&page_size=10]

@@ -330,15 +330,6 @@ fenixd 自证脚本（绝对路径，任意 cwd 可用）：python3 {_self_cert_
 class H12RegressionRoutesMixin:
     """H12 regression（design 表 C H12）。"""
 
-    def _coded_error(self, status: int, msg: str, code: str) -> None:
-        """带稳定机器可读 ``code`` 的错误响应。
-
-        code-review item 934af264345f：前端控制流按业务错误码分支，不依赖
-        中文消息子串（措辞/locale 改动不再静默落入通用错误分支）。仅本
-        mixin 需要编码的业务拒绝走此helper，其余错误照旧 ``_error``。
-        """
-        self._json({"error": msg, "code": code}, status)
-
     def _api_regression_result(self, query):
         """GET /api/regression/result?project=<name>
 
