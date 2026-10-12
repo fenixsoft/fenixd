@@ -797,7 +797,11 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
     注入段各自独立）。写失败仅 WARNING，不阻断出题（fail-open）。
     """
     target = (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / CONTRACT_FINDINGS_FILENAME
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / CONTRACT_FINDINGS_FILENAME
     )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

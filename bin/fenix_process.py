@@ -453,6 +453,14 @@ def main() -> int:
     except ValueError as exc:
         print(f"❌ {exc}")
         return 1
+    except Exception as exc:
+        # code-review item 7715ccc47799：render_report 入口的 parse_state
+        # 未包裹，STATE.md 并发改写瞬间、权限/编码类 OSError 等非 ValueError
+        # 异常会从 main 裸抛 traceback。SPEC 缺失仍走上方 ValueError 专门
+        # 分支，其余环境级异常对齐 fenix_cli/fenix_status 兜底口径：
+        # stderr（附异常类型名）+ exit 1。
+        print(f"✗ 报告生成失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
     sys.stdout.write(report)
     return 0
 

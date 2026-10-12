@@ -1741,40 +1741,15 @@ def salvage_scenarios_file(filepath) -> tuple[list[TestScenario], dict]:
 def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
     """将场景列表序列化为JSON文件。
 
-    原子写（对齐 settings_routes._atomic_write_text 惯例）：同目录临时
-    文件 + ``os.replace``，进程写入中途被杀不会在目标路径留下截断的
-    场景 JSON。``os.replace`` 后对父目录 fsync（对齐 judge_files._fsync_dir
-    掉电持久化纪律，code-review item 3816bf5a4005）：POSIX 语义下落盘数据
-    不等于目录项已持久化，场景文件是冻结验证权威源，掉电丢失/回退旧版会
-    触发整轮 replan。
+    委托 write_scenarios_array 的同一原子写正文（code-review item
+    13031ed2d0bf）：先 ``to_dict()`` 序列化再落盘，与原内联实现字节等价
+    （``json.dump(..., ensure_ascii=False, indent=2)``）。原子写惯例（同
+    目录临时文件 + ``os.replace`` + 父目录 fsync 掉电持久化纪律，code-review
+    item 3816bf5a4005）详见 write_scenarios_array docstring——场景文件是
+    冻结验证权威源，掉电丢失/回退旧版会触发整轮 replan。
 
     Args:
         scenarios: TestScenario 列表
         filepath: 目标文件路径
     """
-    import json
-    import os
-    import tempfile
-    from pathlib import Path
-
-    from core.verify_engine.judge_files import _fsync_dir
-
-    path = Path(filepath)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = [s.to_dict() for s in scenarios]
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, str(path))
-        _fsync_dir(path.parent)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    write_scenarios_array([s.to_dict() for s in scenarios], filepath)

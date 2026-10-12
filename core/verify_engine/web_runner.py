@@ -25,6 +25,7 @@ from .assertions import AssertionRunner
 from .visual_diff import VisualDiffer
 from .env_gate import probe_http_health
 from .scenarios import validate_scenario
+from .path_safety import safe_component
 
 
 def locate_app_base_url(candidates: list) -> str:
@@ -329,7 +330,11 @@ class WebRunner(VerifyRunner):
         screenshots: list[str] = []
         screenshot_labels: dict[str, dict] = {}
         screenshot_dir = (
-            self.project_root / ".fenix" / "verify-progress" / self.spec_name / "screenshots"
+            self.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(self.spec_name)
+            / "screenshots"
         )
 
         # ── 执行操作步骤 ──

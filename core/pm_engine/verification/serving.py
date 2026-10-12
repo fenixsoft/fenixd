@@ -241,6 +241,7 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     )
 
 
+# [fenix-ignore:d22cbb0313a4] 与 _serve_command_in_main 已实质分叉（本侧 HEAD 缓存复用门+created worktree 生命周期+失败分支手工 unregister+stop；main 侧永不复用、失败分支无收尾、仅成功路径走 _evict_spec_serving），参数化须先裁决清退语义属行为变更，serving 为全部验证 run 关键路径，最小改动纪律下风险大于收益。
 def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) -> tuple:
     """命令型被测实例的 worktree 隔离（serve.kind=command + static_scope=worktree）。
 
@@ -443,6 +444,7 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     return pipeline._finalize_static(srv, contract, scenarios_path, "命令 worktree")
 
 
+# [fenix-ignore:d22cbb0313a4] 与 _serve_command_in_worktree 已实质分叉（本侧永不复用缓存、失败分支无 old 收尾、覆写前走 _evict_spec_serving 单一样板；worktree 侧手工 unregister+stop+worktree 生命周期），参数化须先裁决清退语义属行为变更，serving 为全部验证 run 关键路径，最小改动纪律下风险大于收益。
 def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tuple:
     """命令型被测实例的主树路径（serve.kind=command + static_scope=main）。
 
@@ -832,6 +834,10 @@ def _probe_dist_freshness(pipeline, spec_name: str) -> str:
         带 wt_path：prepare 已在本 worktree 构建，产物天然新鲜）；
       - 无被测实例登记（纯 cli 轮 / serving 未建立）；
       - dashboard static src 树不存在（被测项目非 dashboard 形态，探针无对象）；
+      - 配置显式关闭（``verify.dist_probe: false``，缺省开启）：被测项目与
+        fenixd 同布局（存在 dashboard static src 与 dist/index.html）但并非
+        dashboard 形态的「同布局异项目」，可关掉这条 fenixd 自验证专用防线
+        （code-review cd7359e31c0e）；
       - served dist 入口产物不存在（从未构建，交既有 prepare 流程兜底，
         不在本探针制造新失败模式）；
       - dist 新鲜（构建时间不早于 src 最新内容时间）。
@@ -855,6 +861,15 @@ def _probe_dist_freshness(pipeline, spec_name: str) -> str:
         entry = cache.get("main")
     if isinstance(entry, dict) and entry.get("wt_path"):
         return ""  # worktree 自建：本轮产物即 prepare 构建，探针天然新鲜
+
+    # code-review cd7359e31c0e：启用开关（缺省开启，fenixd 自验证不受影响）
+    # ——探针按被测项目根拼接 DASHBOARD_STATIC_ROOT（fenixd 自身布局常量）
+    # 判新鲜度，被测项目若恰好同布局（存在 core/dashboard/static/src 与
+    # dist/index.html 的非 dashboard 项目），会在开跑前被误判滞后并触发
+    # run_dist_build 重建。config 通道与本模块派发处 verify.static_scope /
+    # verify.deps_mode 同范式：verify.dist_probe=false 显式关闭。
+    if not pipeline._context.config_reader("verify.dist_probe", True):
+        return ""  # 显式关闭：同布局异项目不受 fenixd 自验证防线约束
 
     project_root = Path(pipeline._context.project_root)
     src_root = project_root / DASHBOARD_STATIC_ROOT / "src"

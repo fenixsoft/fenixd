@@ -348,7 +348,13 @@ def show_status() -> int:
         from core.dashboard.registry import Registry
 
         names = [p.get("name") for p in Registry().load().get("projects", [])]
-        print(f"registered: {'scheduling-showcase' in names}")
+        # 与 Registry.add_project 的 name 归一口径一致（rp.name or key，见
+        # core/dashboard/registry.py）：_ensure_registered 不传 name，登记名按
+        # basename 兜底落盘，load 读侧守卫同式。ROOT 可经 FENIX_FIXTURE_ROOT
+        # 指向改名/异机目录，此处核对须用同一派生名而非字面量
+        # 'scheduling-showcase'，否则登记成功仍误报 registered: False。
+        fixture_name = ROOT.name or str(ROOT)
+        print(f"registered: {fixture_name in names}")
     except Exception as e:  # noqa: BLE001
         print(f"registered: unknown ({e})")
     # 告警基线只读核对（fixture-project-governance 4.2）：复位后应为 0

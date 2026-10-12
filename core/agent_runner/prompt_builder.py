@@ -737,11 +737,13 @@ class PromptBuilder:
         机械检出，处置前请以源码/执行证据核实」。findings 缺失/为空/损坏 →
         返回空串（零注入，prompt 与现状逐字节一致）。
         """
+        from core.verify_engine.path_safety import safe_component
+
         path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "contract_findings.json"
         )
         if not path.exists():

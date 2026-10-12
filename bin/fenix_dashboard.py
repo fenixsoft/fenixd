@@ -75,6 +75,7 @@ STATUS_ICONS = {
     "verified": "✅",
     "reviewing": "⚖️",
     "bug-found": "🐛",
+    "blocked": "🧊",
     "done": "🎯",
     "pushed": "🚀",
 }

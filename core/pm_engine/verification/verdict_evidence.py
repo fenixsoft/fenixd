@@ -586,7 +586,9 @@ def _write_verdict_violations(
     （``derived_failed_assertions``），重试 prompt 直接给出应申报条目；重试
     次数与 blocked 推进逻辑不变。
     """
-    payload = _attach_derived_failed_assertions(report, violations) if report is not None else violations
+    # 判空由 _attach_derived_failed_assertions 内部守卫单点处理（None/非 dict
+    # 原样返回 violations，幂等），调用点不再重复判空。
+    payload = _attach_derived_failed_assertions(report, violations)
     try:
         path = pipeline._verdict_violations_path(spec_name)
         path.parent.mkdir(parents=True, exist_ok=True)

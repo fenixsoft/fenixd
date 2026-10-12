@@ -792,9 +792,11 @@ class VerifyEngine:
     @staticmethod
     def _safe_component(name: str) -> str:
         """路径成分净化（code-review item 0f903db272c3）：与 browser.screenshot
-        对 scenario.id 的同款纪律——拼入 verify-progress 路径前先替换分隔符
-        与 NUL，spec_name 含 / 或 .. 时经 f-string 拼接会写到预期目录之外
-        （正常 kebab-case spec 目录名不受影响）。实现下沉 path_safety 共用
+        对 scenario.id 的同款纪律——拼入 verify-progress 路径前先净化成分，
+        spec_name 含分隔符或点成分时经 f-string 拼接会写到预期目录之外
+        （正常 kebab-case spec 目录名不受影响）。已覆盖成分：分隔符 ``/``
+        与 ``\\``、NUL 替换为下划线；剥除空白后为空或全由 ``.`` 组成的
+        成分（含 ``.`` / ``..``）归一为下划线。实现下沉 path_safety 共用
         （code-review items baf2a275da81/7e764b3f6b50：judge_files 与
         scenario_static_check 同口径净化，不再各自复刻正则）。
         """
