@@ -3781,9 +3781,26 @@ class QQQueueMixin:
         else:
             # _retry_count 同型收口：锁内原子递增，写后值不再并入 update_spec
             # （对齐 repair_lane._fallback_after_repair 的注释先例）。
-            retries = self._pm.state_machine.bump_counters(
-                spec_name, {"_retry_count": 1}
-            ).get("_retry_count", 0)
+            # 记账失败不阻塞失败分类（code-review item 26b37d85259c，对齐上方
+            # _merge_streak bump 的 941b22736836 同款守卫）：bump_counters 是
+            # flock+read_all+write_all 真实文件 IO，异常若沿 worker 外层 except
+            # / merge-only 重试 Timer 回调外溢，会整体跳过本分支的 ready 降级
+            # 与 _enqueue_front 重入队，且 Timer 链异常后不再排程新 Timer，条目
+            # 滞留 implementing+_merge_retry_pending 直至窗口超限才由周期消费
+            # 者接手，MUST NOT 放大——递增未落盘时按读取侧旧值+1 内存继续参与
+            # 收尾（_retry_count 不参与 streak 阈值判定，回退值仅为保住本分支
+            # 收尾语义完整，与 941b22736836 口径一致）。
+            try:
+                retries = self._pm.state_machine.bump_counters(
+                    spec_name, {"_retry_count": 1}
+                ).get("_retry_count", 0)
+            except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"ready 降级 _retry_count 记账递增失败 '{spec_name}'"
+                    f"（按读取侧旧值+1 继续失败分类）: {type(e).__name__}: {e}",
+                )
+                retries = self._parse_int_field(spec_entry, "_retry_count", 0) + 1
             ready_updates: dict = {
                 "status": "ready",
                 "error": final_error,
@@ -3914,44 +3931,79 @@ class QQQueueMixin:
                 f"error 现场待收口重试/审计: {spec_name}",
             )
             return
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "implementer_run": run_id,
-                # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
-                # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
-                "branch": branch,
-                "error": None,
-                "_retry_count": 0,
-                "_merge_fp": None,
-                "_merge_streak": 0,
-                # 零变更哨「连续 3 次」计数清账（与 fast_track.py 成功收口、
-                # queue.py 确认型 no-op 分支同款，code-review item b12df5687a55）：
-                # 普通实现成功收口不清零会使非连续零变更累计进哨位，
-                # 同 spec 后续轮次首次零变更即按 3/3 熔断。
-                "_zero_change_attempts": 0,
-                # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
-                **self._pm._clear_dispatch_conflict(spec_name),
-                # 顺延记账清账（evo-merge-back-spec-dir-inflight-guard D2）：
-                # merge 成功即解除顺延态，防陈旧计数污染下一轮
-                "_merge_retry_pending": False,
-                "_merge_retry_count": 0,
-                "_merge_retry_first_at": None,
-                # WIP 等待标志清账（evo-add-wip-defer-merge-retry-consumer
-                # 1.2）：merge 成功即解除等待态（三条清除写点之一）。
-                "_wip_gate_deferred": False,
-                # repair 车道「待 re-merge」标记清账（code-review item
-                # 032abeec9d71）：repair 顺延路径（spec_dir_inflight /
-                # wip_gate_blocked 形态，repair_lane.py 明确 MUST NOT 消费）
-                # 原样保留标记，成功后统一经本方法清账——不清则合并已完成的
-                # spec 带标记进入 implemented，boot recovery
-                # _recovery_remerge_pending 会对 implementing+标记+branch 条目
-                # 直接 re-merge 旧分支（spec 此后重回 implementing 且 daemon
-                # 在新轮派发清锚点前重启时，按陈旧标记把已合并分支再次收口）。
-                # 与 _wip_gate_deferred 同款「合并成功即解除等待态」语义。
-                "_repair_awaiting_remerge": False,
-            },
-        )
+        # 成功清账段单独包 try/except（code-review item e9377c18ee85，对齐
+        # repair_lane.py:637-642 成功尾段范式）：本 update_spec（error 清空、
+        # 计数清账、_merge_retry_pending/_wip_gate_deferred/
+        # _repair_awaiting_remerge 等待态解除）是本方法尾段唯一未包 try/except
+        # 的 IO 写点——其后的 _report_stash_pop_conflict / _sync_task_progress /
+        # consume_legacy / ocr 车道均已逐个非阻塞包裹。异常外溢时下方
+        # _enqueue_front("verifier") 不再执行：spec 已 implemented 但无
+        # verifier 条目、清账字段残留（worker 路径被外层 except 接住后
+        # _rollback_failed_dispatch 因 status 已非 implementing 仅留痕，无
+        # 破坏性回滚），「Immediately queue verifier at FRONT」契约退化为
+        # 周期恢复兜底；经 merge-only 重试 Timer 线程进入时异常还会杀死回调
+        # 且不再排程新 Timer。恢复口径同 repair_lane 6a553a71ac8a：失败仅
+        # 留痕 + best-effort 补 verifier 入队后交既有周期恢复，MUST NOT
+        # 放大处置。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "implementer_run": run_id,
+                    # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
+                    # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
+                    "branch": branch,
+                    "error": None,
+                    "_retry_count": 0,
+                    "_merge_fp": None,
+                    "_merge_streak": 0,
+                    # 零变更哨「连续 3 次」计数清账（与 fast_track.py 成功收口、
+                    # queue.py 确认型 no-op 分支同款，code-review item b12df5687a55）：
+                    # 普通实现成功收口不清零会使非连续零变更累计进哨位，
+                    # 同 spec 后续轮次首次零变更即按 3/3 熔断。
+                    "_zero_change_attempts": 0,
+                    # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
+                    **self._pm._clear_dispatch_conflict(spec_name),
+                    # 顺延记账清账（evo-merge-back-spec-dir-inflight-guard D2）：
+                    # merge 成功即解除顺延态，防陈旧计数污染下一轮
+                    "_merge_retry_pending": False,
+                    "_merge_retry_count": 0,
+                    "_merge_retry_first_at": None,
+                    # WIP 等待标志清账（evo-add-wip-defer-merge-retry-consumer
+                    # 1.2）：merge 成功即解除等待态（三条清除写点之一）。
+                    "_wip_gate_deferred": False,
+                    # repair 车道「待 re-merge」标记清账（code-review item
+                    # 032abeec9d71）：repair 顺延路径（spec_dir_inflight /
+                    # wip_gate_blocked 形态，repair_lane.py 明确 MUST NOT 消费）
+                    # 原样保留标记，成功后统一经本方法清账——不清则合并已完成的
+                    # spec 带标记进入 implemented，boot recovery
+                    # _recovery_remerge_pending 会对 implementing+标记+branch 条目
+                    # 直接 re-merge 旧分支（spec 此后重回 implementing 且 daemon
+                    # 在新轮派发清锚点前重启时，按陈旧标记把已合并分支再次收口）。
+                    # 与 _wip_gate_deferred 同款「合并成功即解除等待态」语义。
+                    "_repair_awaiting_remerge": False,
+                },
+            )
+        except Exception as tail_e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge 成功清账写盘异常 '{spec_name}'（合并已成功，不回退处置，"
+                f"best-effort 补 verifier 入队后交周期恢复）: "
+                f"{type(tail_e).__name__}: {tail_e}",
+            )
+            try:
+                # verify 单飞守卫与成功尾段共用 _enqueue_front 守卫入口
+                # （evo-add-verify-dispatch-single-flight 1.3）：同 spec 已有
+                # 在飞验证时此处为空操作（_enqueue_front 内拒绝＋结构化留痕）。
+                self._enqueue_front(spec_name, "verifier")
+            except Exception as e2:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"成功清账异常恢复：verifier 重入队失败 "
+                    f"'{spec_name}'（等 full_scan 周期兜底）: "
+                    f"{type(e2).__name__}: {e2}",
+                )
+            return
         # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
         # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
         # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
