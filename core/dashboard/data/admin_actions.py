@@ -1669,13 +1669,15 @@ def _is_inconclusive_parking_form(entry: dict) -> bool:
 def reset_verification(project_root, spec: str, note: str = "", signal_type: str = "") -> dict:
     """裁决动词：人工裁定验证链输入已失真，重置验证重跑（add-human-adjudication-choices 3.1）。
 
-    执行序列：前置校验（spec 形态白名单/冻结/blocked 且属验证链信号）→ 删该
-    spec 的场景与验证进度运行时文件（精确 spec 名拼路径，禁通配）并失效
-    spec 戳匹配的项目根共享 run-result → 清 judge 重跑与验证
-    失败轮计数并剥冻结清 error（保持 blocked）→ 按
-    ``resolve_env_blocked_reset_path`` 推进（分支已合并走 BLOCKED→TESTING
-    门禁直通道重验，否则 BLOCKED→READY 回实现并写调度唤醒信号）→ 返回执行
-    步骤明细。生命周期累计字段（tokens/cost 审计）不清零。
+    执行序列：前置校验（spec 形态白名单/冻结/blocked 且属验证链信号）→ 清
+    judge 重跑与验证失败轮计数并剥冻结清 error（保持 blocked）→ 删该 spec
+    的场景与验证进度运行时文件（精确 spec 名拼路径，禁通配）并失效 spec 戳
+    匹配的项目根共享 run-result → 按 ``resolve_env_blocked_reset_path`` 推进
+    （分支已合并走 BLOCKED→TESTING 门禁直通道重验，否则 BLOCKED→READY 回
+    实现并写调度唤醒信号）→ 返回执行步骤明细。删除置于 STATE 写入成功之后
+    （code-review item bda4dafbe520）：update_spec 被拒/瞬时 IO 失败时进度
+    文件原样保留，不出现「文件已毁、状态未重置」的不可逆半途态。生命周期
+    累计字段（tokens/cost 审计）不清零。
 
     Returns:
         {"ok": bool, "found": bool, "steps": [str], "target_status": str|null,
@@ -1739,7 +1741,30 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
             }
 
     steps: list = []
-    # 2. 删该 spec 自己的场景/进度文件（路径按 spec 名精确构造，无 glob）
+    # 2. 清计数 + 剥冻结 + 清 error（自带 frozen 键走 update_spec 显式豁免，
+    # status 保持 blocked 供复位路径判定）。先于文件删除（code-review item
+    # bda4dafbe520）：update_spec 已取证不读 verify-progress 文件（纯
+    # STATE.md 锁内读改写），而删除不可逆——写入被拒/瞬时 IO 失败时进度
+    # 文件必须原样保留，避免「文件已毁、状态未重置」的半途态。
+    sm = _sm(proot)
+    updates = {"frozen": False, "error": None, "frozen_until": None}
+    updates.update(_RETRY_COUNTER_RESETS)
+    if not sm.update_spec(spec, updates):
+        # 与 resume_cancelled_spec 同口径（写入必留痕）：spec 在前置校验后被
+        # 并发软删除/写入被拒时计数清理未落盘，steps 如实陈述并提前返回失败
+        # 形状，不再走后续 transition（对缺失 spec 行为未定义）。此时验证
+        # 进度文件尚未删除（删除已后移到本分支之后），无数据丢失。
+        logger.warning(
+            "reset_verification 清计数失败：spec 已并发删除，计数清理未落盘（spec=%s）",
+            spec,
+        )
+        steps.append("spec 已并发删除，计数清理未落盘")
+        return {"ok": False, "found": True, "steps": steps,
+                "target_status": None,
+                "error": "spec 已并发删除，计数清理未落盘"}
+    steps.append("已清零 judge 重跑/验证失败轮等重试计数并解除冻结（保持 blocked）")
+
+    # 3. 删该 spec 自己的场景/进度文件（路径按 spec 名精确构造，无 glob）
     vp_dir = proot / ".fenix" / "verify-progress" / spec
     deleted_any = False
     for fname in _VERIFY_PROGRESS_RUNTIME_FILES:
@@ -1760,7 +1785,7 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                         "target_status": None,
                         "error": f"删除验证进度文件失败 {fname}"}
 
-    # 2b. 失效共享 run-result（code-review item 13304b99fea3）：读侧
+    # 3b. 失效共享 run-result（code-review item 13304b99fea3）：读侧
     # _load_run_result（artifacts.py）的第二候选是项目根共享
     # .fenix/.fenix-run-result.json，spec 戳匹配即采纳——专属副本删除后，
     # 上一轮残留的共享结果仍会经 parse_verdict/parse_bugs/
@@ -1789,25 +1814,6 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                         "error": "删除共享 run-result 文件失败"}
     if not deleted_any:
         steps.append("无场景/进度文件可删（verify-progress 目录不存在或已清）")
-
-    # 3+4a. 清计数 + 剥冻结 + 清 error（自带 frozen 键走 update_spec 显式豁免，
-    # status 保持 blocked 供复位路径判定）
-    sm = _sm(proot)
-    updates = {"frozen": False, "error": None, "frozen_until": None}
-    updates.update(_RETRY_COUNTER_RESETS)
-    if not sm.update_spec(spec, updates):
-        # 与 resume_cancelled_spec 同口径（写入必留痕）：spec 在前置校验后被
-        # 并发软删除/写入被拒时计数清理未落盘，steps 如实陈述并提前返回失败
-        # 形状，不再走后续 transition（对缺失 spec 行为未定义）。
-        logger.warning(
-            "reset_verification 清计数失败：spec 已并发删除，计数清理未落盘（spec=%s）",
-            spec,
-        )
-        steps.append("spec 已并发删除，计数清理未落盘")
-        return {"ok": False, "found": True, "steps": steps,
-                "target_status": None,
-                "error": "spec 已并发删除，计数清理未落盘"}
-    steps.append("已清零 judge 重跑/验证失败轮等重试计数并解除冻结（保持 blocked）")
 
     # 4b. 复位路径判定（基于清除后的干净 entry）
     from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
@@ -2632,6 +2638,12 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
         "error": None,
     })
     if not sm.update_spec(spec, updates):
+        # STATE 写失败也须回滚（code-review item a4702f0e5a65）：场景集与
+        # 夹具已落盘而修订计数/重验旗标未落，是修订内容与 STATE 脱钩的
+        # 半改态——按快照还原本轮已写文件，守住「不留半改状态」承诺。
+        rolled = _rollback_written()
+        if rolled:
+            steps.append(f"STATE 写入失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
         return {"ok": False, "steps": steps,
                 "error": "修订 STATE 写入未生效（update_spec 拒绝）",
                 "frozen_manual": False}
@@ -2642,6 +2654,11 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
         steps.append("spec 已在 testing，无需状态转换")
     elif old_status == "implemented":
         if not sm.transition(spec, "testing", channel="manual"):
+            # 转换失败同样回滚（code-review item a4702f0e5a65）：场景文件
+            # 已是新集而状态滞留 implemented，回滚文件使 STATE 与盘面一致。
+            rolled = _rollback_written()
+            if rolled:
+                steps.append(f"状态转换失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
             return {"ok": False, "steps": steps,
                     "error": "修订后状态转换未生效（IMPLEMENTED→TESTING 被拒）",
                     "frozen_manual": False}
@@ -2650,6 +2667,11 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
         # 冻结/blocked 等形态经显式豁免通道直改（force_advance 同款：updates
         # 自带 frozen 键过冻结剥离守卫），留 Transition 痕
         if not sm.update_spec(spec, {"status": "testing"}):
+            # 直改失败同样回滚（code-review item a4702f0e5a65）：同属 STATE
+            # 写失败分支，回滚文件避免「盘上新场景、STATE 未动」半改态。
+            rolled = _rollback_written()
+            if rolled:
+                steps.append(f"状态直改失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
             return {"ok": False, "steps": steps,
                     "error": f"状态 {old_status} → testing 直改未生效",
                     "frozen_manual": False}
@@ -2925,6 +2947,31 @@ def _path_already_ignored(proot, path: str) -> bool:
     return r.returncode == 0
 
 
+def _atomic_write_bytes(path, data: bytes) -> None:
+    """mkstemp 唯一临时文件 + fsync + os.replace 原子**字节**写。
+
+    fs_utils.atomic_write_text 的字节形态（item 41c87143c57e）：.gitignore
+    追加/还原路径须保留既有非 UTF-8 字节，不能经文本解码往返，而
+    atomic_write_text 只收 str——本助手沿用同一原子纪律（唯一临时名防并发
+    截断 + fsync + replace），供 .gitignore 字节级写回专用。
+    """
+    path = Path(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def _append_gitignore_entries(proot, paths) -> list:
     """把 paths 逐条追加进 .gitignore（去重），返回实际新增条目列表。
 
@@ -2933,8 +2980,14 @@ def _append_gitignore_entries(proot, paths) -> list:
     追加亦冗余，不写。.gitignore 不存在则新建。
     """
     gi = Path(proot) / ".gitignore"
-    existing = gi.read_text(encoding="utf-8", errors="replace") if gi.exists() else ""
-    have_lines = {ln.strip() for ln in existing.splitlines()}
+    # 字节级读入（code-review item 41c87143c57e）：.gitignore 可能含历史手工
+    # 编辑留下的非 UTF-8 字节，read_text(errors="replace") 再整文件回写会把
+    # 坏字节静默改写成 U+FFFD——追加只增行，既有字节须原样保留。去重判定仍
+    # 走文本口径（仅读侧比较，不回写）：合法行不受有损解码影响，比对不失真。
+    raw = gi.read_bytes() if gi.exists() else b""
+    have_lines = {
+        ln.strip() for ln in raw.decode("utf-8", errors="replace").splitlines()
+    }
     appended: list = []
     for p in paths:
         if p in have_lines or _path_already_ignored(proot, p):
@@ -2942,15 +2995,14 @@ def _append_gitignore_entries(proot, paths) -> list:
         appended.append(p)
         have_lines.add(p)
     if appended:
-        sep = "" if (not existing or existing.endswith("\n")) else "\n"
-        # 原子写回（code-review item c971a8de0638）：裸 write_text 非原子，
+        sep = b"" if (not raw or raw.endswith(b"\n")) else b"\n"
+        # 原子写回（code-review item c971a8de0638）：裸 write_bytes 非原子，
         # 进程中断/磁盘满可留下截断的 .gitignore（仓库忽略规则整体丢失面）
         # ——gi_backup 只覆盖 _abort 显式回滚路径，不覆盖写半程中断。改走
-        # scenario_gate.atomic_write_text（tmp+replace，模块内其余文件写入
-        # 同款）。
-        from core.pm_engine.verification.scenario_gate import atomic_write_text
-
-        atomic_write_text(gi, existing + sep + "\n".join(appended) + "\n")
+        # mkstemp+replace 原子字节写（atomic_write_text 同纪律的字节形态，
+        # item 41c87143c57e：既有字节不经解码往返）。
+        _atomic_write_bytes(
+            gi, raw + sep + ("\n".join(appended) + "\n").encode("utf-8"))
     return appended
 
 
@@ -3084,16 +3136,14 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
             if gi_backup is None:
                 gi_path.unlink(missing_ok=True)
             else:
-                # 原子写回（code-review item 55aaffc3e33b，与
-                # _append_gitignore_entries / _append_gitignore_and_commit
-                # 走 atomic_write_text 同口径）：裸 write_bytes 非原子，
-                # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore
-                # （仓库忽略规则整体丢失面）。
-                from core.pm_engine.verification.scenario_gate import atomic_write_text
-
-                atomic_write_text(
-                    gi_path, gi_backup.decode("utf-8", errors="replace"),
-                )
+                # 原子字节写回备份原始字节（code-review item 41c87143c57e）：
+                # 还原不经 decode/re-encode 往返——.gitignore 含非 UTF-8 字节
+                # 时 errors="replace" 会把坏字节改写成 U+FFFD，还原结果不再
+                # 字节级等值于备份。原子纪律沿用 item 55aaffc3e33b（与
+                # _append_gitignore_entries 同口径）：裸 write_bytes 非原子，
+                # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库
+                # 忽略规则整体丢失面）。
+                _atomic_write_bytes(gi_path, gi_backup)
         return {"ok": False, "steps": [],
                 "error": f"untrack 根治中止已回滚（主树状态已还原）: {reason}"}
 
@@ -3266,18 +3316,20 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
         restore_note = ""
         try:
             gi = proot / ".gitignore"
+            # 字节级行过滤还原（code-review item 41c87143c57e）：还原不经
+            # 文本解码往返——.gitignore 含非 UTF-8 字节时
+            # read_text(errors="replace") 再回写会把坏字节改写成 U+FFFD。
+            # 追加行是本函数新写的完整行，按字节行精确匹配剔除即可。
+            appended_lines = {p.encode("utf-8") for p in appended}
             kept = [
-                ln for ln in
-                gi.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-                if ln.strip() not in set(appended)
+                ln for ln in gi.read_bytes().splitlines(keepends=True)
+                if ln.strip() not in appended_lines
             ]
             # 原子写回（code-review item 8db336608775，与
-            # _append_gitignore_entries 走 atomic_write_text 同口径）：裸
-            # write_text 非原子，还原时刻恰逢进程被杀/磁盘满会留下截断的
-            # .gitignore（仓库忽略规则整体丢失面）。
-            from core.pm_engine.verification.scenario_gate import atomic_write_text
-
-            atomic_write_text(gi, "".join(kept))
+            # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻
+            # 恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库忽略规则
+            # 整体丢失面）。
+            _atomic_write_bytes(gi, b"".join(kept))
         except OSError:
             restore_note = "；.gitignore 还原写回失败（保留现状）"
         if gitignore_untracked:
