@@ -279,13 +279,6 @@ def _run_legacy_verification(pipeline, spec_name: str):
         return
 
     if result.success:
-        # 环境性失联门禁（legacy 路径同样生效）：旧版 verifier 若在 report.json
-        # 中标记了 blocked-env 且全批环境性失联，则同样判定 inconclusive 重派，
-        # 不判 bug-found（防假阴性派生 fix 家族）。
-        # [fenix-ignore:f6c112fcb5a5] _read_verify_report 失败恒返回 {} 哨兵（report_gate 契约，绝不为 None），report.get 无 AttributeError 风险
-        report = pipeline._read_verify_report(spec_name)
-        if pipeline._handle_env_blocked_inconclusive(spec_name, report):
-            return
         # evo-verifier-result-single-source R1（legacy 同门）：结果文件
         # 读取统一走 _read_verdict 入口——verify-progress/<spec>/
         # .fenix-run-result.json 优先（旧版 verifier 的确定性产物路径），
@@ -297,7 +290,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 陈旧/归属护栏所需路径（与 _read_verdict 同源解析：primary
         # 优先，缺失回退共享文件——_verifier_result_is_stale 据此检测
         # mtime 陈旧/spec 戳不符）。fix-deferred-findings 整洁类：路径解析
-        # 经 _verify_progress_result_paths 收敛（与 report_gate 同源）。
+        # 经公开别名 verify_progress_result_paths 收敛（与 report_gate 同源）。
         # code-review item f8ad8f7cd7ae：解析 MUST 前置到 _read_verdict 之前
         # 只做一次——原顺序（先读裁决、后 primary.exists() 重新解析）两次
         # 解析之间 primary 出现/消失时，护栏与 blocked evidence 的
@@ -305,12 +298,34 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # evidence 误导）。彻底消除残余观测窗须 _read_verdict 回传实际
         # 采信来源路径（涉及 report_gate.py，本条目文件边界外），此处按
         # 建议前置收敛，护栏/evidence 与裁决读取共用同一观测序。
-        from core.pm_engine.verification.report_gate import _verify_progress_result_paths
+        # code-review item 7e0a1ea1daf5：跨模块消费改走公开别名，不再
+        # import 私有符号（公开别名见 report_gate.py）。
+        from core.pm_engine.verification.report_gate import (
+            verify_progress_result_paths,
+        )
 
-        primary, fallback = _verify_progress_result_paths(pipeline, spec_name)
+        primary, fallback = verify_progress_result_paths(pipeline, spec_name)
         run_result_path = primary if primary.exists() else fallback
         verifier_result = pipeline._read_verdict(spec_name)
         verifier_status = verifier_result.status if verifier_result.ok else None
+        # code-review item 06a41cc7dc03：陈旧/归属护栏前置到 report.json 消费
+        # 之前（先护栏后消费）——原顺序先读 report.json 并消费环境失联判定
+        # （inconclusive 重派/计数），stale 护栏后置；裁决来源是共享回退文件
+        # 且报告产物相对陈旧时，环境失联处置会基于旧报告先行作出。布尔只
+        # 计算一次，下方 env 消费门与原护栏位两处复用：护栏语义与处置
+        # （stale → 单次 re-dispatch）不重复执行也不被跳过。
+        verifier_result_stale = pipeline._verifier_result_is_stale(
+            result, run_result_path, spec_name
+        )
+        # 环境性失联门禁（legacy 路径同样生效）：旧版 verifier 若在 report.json
+        # 中标记了 blocked-env 且全批环境性失联，则同样判定 inconclusive 重派，
+        # 不判 bug-found（防假阴性派生 fix 家族）。stale 命中时跳过本消费
+        # （不计数、不按 inconclusive 重派），交由下方既有 stale 处置路径。
+        if not verifier_result_stale:
+            # [fenix-ignore:f6c112fcb5a5] _read_verify_report 失败恒返回 {} 哨兵（report_gate 契约，绝不为 None），report.get 无 AttributeError 风险
+            report = pipeline._read_verify_report(spec_name)
+            if pipeline._handle_env_blocked_inconclusive(spec_name, report):
+                return
         # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
         # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
         # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性
@@ -396,7 +411,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 结果文件新鲜度/归属护栏：共享单文件会被任何 spec 的后续运行覆写，
         # 陈旧或异 spec 的判定重放到当前轮次 = 假 bug-found / 假 verified
         # （2026-08-28 improve-failover-model-mapping-ui 09:41 旧判定 12:21 重放实证）。
-        if pipeline._verifier_result_is_stale(result, run_result_path, spec_name):
+        # 判定已在 report.json 消费之前前置计算（code-review item
+        # 06a41cc7dc03），此处复用同一布尔，不重复观测。
+        if verifier_result_stale:
             # 陈旧/异 spec 判定重放命中 → 复用单点 re-dispatch helper
             # （状态复核/verified 放行门/重派/infra 记账见
             # _redispatch_fresh_verify）。
