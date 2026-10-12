@@ -161,7 +161,7 @@ const buildFormValues = (config: ConfigData) => {
 
 interface QualityPanelProps {
   config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<void>;
+  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
   /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
   project?: string;
   /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
