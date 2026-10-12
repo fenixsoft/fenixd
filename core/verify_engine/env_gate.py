@@ -214,10 +214,10 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
         # 健康口径（code-review 769ac7589733）。
         _logger.warning("env_probe base_url 缺 scheme，跳过探测（保守健康）: %s", base)
         return True
+    # 执行到这里 base 必然带 http(s):// 前缀（缺失/空/扩展内页均已提前返回）。
     candidates.append(base + "/")
-    if base.startswith(("http://", "https://")):
-        for ep in ("/api/state", "/api/overview"):
-            candidates.append(base + ep)
+    for ep in ("/api/state", "/api/overview"):
+        candidates.append(base + ep)
     for url in candidates:
         try:
             req = urllib.request.Request(
