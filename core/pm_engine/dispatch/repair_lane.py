@@ -977,10 +977,28 @@ class PRepairLaneMixin:
         # 相同旧值写回、丢一次递增，同指纹熔断晚一轮触发。指纹切换属重置语义
         # （绝对写 1，无丢增量面），不 bump、随后续 update_spec 落盘。
         if prev_fp == fp:
-            streak = self._pm.state_machine.bump_counters(
-                spec_name, {"_merge_streak": 1}
-            ).get("_merge_streak", 0)
-            streak_bumped = True
+            # 记账失败不阻塞熔断分类（code-review item 2917c609d8ad，对齐
+            # queue.py _handle_merge_back_real_failure 同型守卫 941b22736836）：
+            # 递增未落盘时按读取侧旧值+1 内存参与阈值判定（本轮失败仍计数），
+            # streak_bumped 置 False——下方分支经既有 not streak_bumped 路径
+            # 绝对写回，尽力补落盘。bump_counters 是真实文件 IO（flock +
+            # read_all + write_all），OSError 沿 _run_repair_worker 外层
+            # except 逃逸会把「re-merge 已真实失败」现场兜底成
+            # _fallback_after_repair 全新重派，指纹熔断与续链 repair 的
+            # 记账/分类整体被跳过、多烧一轮实现 run，MUST NOT 放大。
+            try:
+                streak = self._pm.state_machine.bump_counters(
+                    spec_name, {"_merge_streak": 1}
+                ).get("_merge_streak", 0)
+                streak_bumped = True
+            except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair re-merge 熔断 streak 记账递增失败 '{spec_name}'"
+                    f"（按读取侧旧值+1 继续失败分类）: {type(e).__name__}: {e}",
+                )
+                streak = self._parse_int_field(spec_entry, "_merge_streak", 0) + 1
+                streak_bumped = False
         else:
             streak = 1
             streak_bumped = False
