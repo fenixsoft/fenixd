@@ -96,13 +96,27 @@ class EventBus:
         self._update_known_state()
 
         # Start the inotify/polling watcher
-        self._watch_thread = threading.Thread(
-            target=self._watch_loop,
-            name="fenixd-watcher",
-            daemon=True,
-        )
-        self._watch_thread.start()
-        self.logger.info("event_bus", "File watcher started")
+        # 线程存活复用守卫（code-review item de45aae4e422）：对齐姊妹类
+        # dashboard/watcher.start() 的同族防线（其注释引用 code-review item
+        # 7de4656dfa6f）。stop() 对 _scan_thread 仅 join(timeout=0.5)，扫描线程
+        # 通常正睡在 poll_interval 长 sleep 中、join 必超时且线程仍存活；此时
+        # 同一实例再次 start() 若无条件再起新线程，旧线程睡醒后随 _running 复位
+        # 继续各自的 while self._running 循环，与新线程并发双跑（周期全扫、
+        # 恢复链、悬空清扫翻倍）。守卫只看线程存活、不看 _running（与 watcher
+        # 先例同口径：stop() 已把 _running 置 False 而旧线程仍指向存活线程，若
+        # 叠加 _running 条件会恰好放行双跑形态）；两条线程独立判定，仅存活者
+        # 复用，已退出的一条照常补起。
+        if self._watch_thread and self._watch_thread.is_alive():
+            # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
+            self.logger.info("event_bus", "Watcher thread still alive, reusing it")
+        else:
+            self._watch_thread = threading.Thread(
+                target=self._watch_loop,
+                name="fenixd-watcher",
+                daemon=True,
+            )
+            self._watch_thread.start()
+            self.logger.info("event_bus", "File watcher started")
 
         # Start periodic full scan
         # 非 dict 按空段降级（code-review item 762ab9cd9ab7）：``or {}`` 只兜住
@@ -115,14 +129,20 @@ class EventBus:
         if not isinstance(schedule, dict):
             schedule = {}
         poll_interval = schedule.get("poll_interval_minutes", 30)
-        self._scan_thread = threading.Thread(
-            target=self._periodic_scan_loop,
-            args=(poll_interval,),
-            name="fenixd-scanner",
-            daemon=True,
-        )
-        self._scan_thread.start()
-        self.logger.info("event_bus", f"Periodic scanner started (interval: {poll_interval}m)")
+        # 同上存活复用守卫（code-review item de45aae4e422）：join 超时后仍存活
+        # 的旧扫描线程复用，不再另起第二条。
+        if self._scan_thread and self._scan_thread.is_alive():
+            # 复用存活旧线程：_running 已置回 True，旧线程睡醒后继续循环。
+            self.logger.info("event_bus", "Scanner thread still alive, reusing it")
+        else:
+            self._scan_thread = threading.Thread(
+                target=self._periodic_scan_loop,
+                args=(poll_interval,),
+                name="fenixd-scanner",
+                daemon=True,
+            )
+            self._scan_thread.start()
+            self.logger.info("event_bus", f"Periodic scanner started (interval: {poll_interval}m)")
 
     def stop(self):
         """Stop monitoring."""
