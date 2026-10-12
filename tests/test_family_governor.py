@@ -541,6 +541,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _NoWaive:
             family_waiver = False
+            result = "resolved"
             actions_taken = "检测根因，未放行"
             recommended_action = ""
 
@@ -560,6 +561,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = False
+            result = "resolved"
             actions_taken = "本次经评估放行一次创建"
             recommended_action = ""
 
@@ -581,6 +583,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = False
+            result = "resolved"
             actions_taken = "确认放行：对本次父 SPEC 设置 _family_waiver=true"
             recommended_action = ""
 
@@ -602,6 +605,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = False
+            result = "resolved"
             actions_taken = "另一族谱已放行（全库唯一的 _family_waiver=true）"
             recommended_action = ""
 
@@ -622,6 +626,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = False
+            result = "resolved"
             actions_taken = ("只读诊断并修复验证基础设施；明确不发放 _family_waiver："
                              "不存在真实产品缺陷，派生第 4 层 fix 只会空转")
             recommended_action = ""
@@ -639,6 +644,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = False
+            result = "resolved"
             actions_taken = "复位误置的 _family_waiver 为 False，父 SPEC 维持 ready 重验"
             recommended_action = ""
 
@@ -661,6 +667,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = False
+            result = "resolved"
             actions_taken = (
                 "核对族谱终态：三个成员均为 pushed；"
                 "确认本族谱未发放 _family_waiver（上限拦截本身正确）；"
@@ -699,6 +706,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         class _Disp:
             family_waiver = True
+            result = "resolved"
             actions_taken = ""
             recommended_action = ""
 
