@@ -3042,8 +3042,8 @@ class ConfigLoader:
         """agent run 的生效超时（per-agent-timeout-override spec 3.1/3.2）。
 
         解析顺序 MUST：``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，
-        否则回退 ``agents.run_timeout_seconds`` 全局默认；全局缺失/非正数回退
-        RUN_TIMEOUT_FALLBACK_SECONDS（9000）。
+        否则回退 ``agents.run_timeout_seconds`` 全局默认；全局缺失/非正数/非有限浮点
+        （.inf/.nan）回退 RUN_TIMEOUT_FALLBACK_SECONDS（9000）。
 
         覆盖 MUST 适用于 TIMEOUT_OVERRIDE_AGENT_TYPES 全部键（KNOWN_AGENT_TYPES
         全集 + repair，含 implementer、verifier、planner-plan、planner-judge、
@@ -3053,6 +3053,7 @@ class ConfigLoader:
         注意：supervision-judge 键不在此处生效（那是 liveness judge 子进程超时，
         经 ``judge_timeout_seconds`` 读取，不参与 absolute_max 派生）。
         """
+        global _RUN_TIMEOUT_FALLBACK_WARNED
         overrides = cls.normalize_timeout_overrides(config)
         if agent_type and agent_type in overrides:
             return float(overrides[agent_type])
@@ -3061,9 +3062,25 @@ class ConfigLoader:
         # AttributeError，与 effective_stuck_threshold_seconds 同口径降级。
         agents = cls._segment_or_empty(config, "agents")
         rt = agents.get("run_timeout_seconds")
-        if isinstance(rt, (int, float)) and not isinstance(rt, bool) and rt > 0:
-            return float(rt)
-        return float(RUN_TIMEOUT_FALLBACK_SECONDS)
+        # bool 排除（d5c6b590a12b）与非有限浮点回退（5b7fe2708100：YAML .inf
+        # 字面量穿透 rt > 0 检查直通生效，墙钟永不触发，且经
+        # supervision_config_floor 把 absolute_max 对齐成 inf 请求持久化自传播）
+        # 均与 effective_stuck_threshold_seconds（d9e9a238696f）同键同口径。
+        if (
+            not isinstance(rt, (int, float))
+            or isinstance(rt, bool)
+            or (isinstance(rt, float) and not math.isfinite(rt))
+            or rt <= 0
+        ):
+            if not _RUN_TIMEOUT_FALLBACK_WARNED:
+                _logger.warning(
+                    "agents.run_timeout_seconds 缺失、≤0 或非有限（.inf/.nan），"
+                    "run 超时按 %ss 回退生效；建议显式配置合法的 run_timeout_seconds",
+                    RUN_TIMEOUT_FALLBACK_SECONDS,
+                )
+                _RUN_TIMEOUT_FALLBACK_WARNED = True
+            return float(RUN_TIMEOUT_FALLBACK_SECONDS)
+        return float(rt)
 
     @classmethod
     def judge_timeout_seconds(cls, config: Dict[str, Any], default: float = 120) -> float:

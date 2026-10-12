@@ -1294,8 +1294,9 @@ def write_request_result(project_root, requested_at, status, reason=None,
     回链保证前端只认本次触发。``finished_at`` 统一为「本条结果写入时刻」（对
     started 即受理时刻；daemon 不在 run 结束时回写，run 终态由 run 文件承载）。
 
-    写失败（OSError）仅经 logger 记日志并返回 False——结果文件写不进属基础
-    设施异常，无更好的用户反馈通道，MUST NOT 让调用方控制流因此中断。
+    写失败（OSError，含 payload 序列化抛出的 TypeError/ValueError）仅经
+    logger 记日志并返回 False——结果文件写不进属基础设施异常，无更好的
+    用户反馈通道，MUST NOT 让调用方控制流因此中断。
     """
     payload = {
         "requested_at": requested_at,
@@ -1311,7 +1312,7 @@ def write_request_result(project_root, requested_at, status, reason=None,
         # 目录创建与残留 tmp 清理由其内部兜底）。code-review item 629d47de2b54。
         _atomic_write(result_path, json.dumps(payload, ensure_ascii=False, indent=2))
         return True
-    except OSError as e:
+    except (OSError, TypeError, ValueError) as e:
         if logger is not None:
             logger.error("code_review", f"code_review 手动触发结果写入失败: {e}")
         return False

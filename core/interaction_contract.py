@@ -37,15 +37,20 @@ INTERACTIVE_KEYWORDS = ("button", "btn", "card", "link", "href", "clickable")
 # 主题前缀（amis/cxd/antd 主题类名前缀，归一化时剥离）
 THEME_PREFIXES = ("dark-", "cxd-", "light-", "amis-", "ant-")
 
-# cards 渲染循环模式（design D1：cards 循环）
+# cards 渲染循环模式（design D1：cards 循环）。cards 限定 ASCII 词边界（同
+# _TOKEN_RE 口径）：wildcards 这类嵌入式子串不得误判为循环候选
 _CARDS_LOOP_RE = re.compile(
-    r"(卡片|cards).{0,24}?(循环|渲染|map\(|forEach|each|列表|遍历)|"
-    r"(循环|渲染|map\(|forEach|遍历).{0,24}?(卡片|cards)",
+    r"(卡片|(?<![A-Za-z0-9_-])cards(?![A-Za-z0-9_-])).{0,24}?(循环|渲染|map\(|forEach|each|列表|遍历)|"
+    r"(循环|渲染|map\(|forEach|遍历).{0,24}?(卡片|(?<![A-Za-z0-9_-])cards(?![A-Za-z0-9_-]))",
     re.IGNORECASE,
 )
 
-# href / link 字段模式（design D1：href/link 字样）
-_HREF_FIELD_RE = re.compile(r"[\"']?(href|link)[\"']?\s*[:=]", re.IGNORECASE)
+# href / link 字段模式（design D1：href/link 字样）。词边界同上：hyperlink=、
+# mlink= 这类嵌入式子串不得误判为可交互候选
+_HREF_FIELD_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])[\"']?(href|link)[\"']?(?![A-Za-z0-9_-])\s*[:=]",
+    re.IGNORECASE,
+)
 
 # token 形态：字母开头，含字母/数字/连字符/下划线。不用 \b 边界：Python 正则中
 # 中文字符属 \w，\b 在中文与英文字母间不成立（「点击button后」会整体漏检），
@@ -372,11 +377,6 @@ def scenario_cover_channel(
             if alias in blob:
                 return 3
     return 0
-
-
-def scenario_covers(scenario: Any, candidate: InteractiveCandidate) -> bool:
-    """场景是否覆盖该候选（三通道，见模块 docstring）。"""
-    return scenario_cover_channel(scenario, candidate) != 0
 
 
 def collect_display_declarations(planner_scenarios: Any) -> List[str]:

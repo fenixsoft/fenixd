@@ -491,6 +491,24 @@ def _load_verify_contract_with_raw(
                 # _raw_serve_section_errors 的「为空」拦截——与上方 evidence_dir
                 # 分支回写 cand 同口径，就地写回兼使 raw_data 与解析结果一致。
                 serve_data["root"] = cand
+        # serve.cmd 类型守卫（code-review item d6154ca8743f）：非字符串值
+        # （如 ``cmd: 123`` 或缩进错误写成的映射）旧实现被 str() 强转成
+        # "123"、"{'a': 1}" 字面量命令，经 shell=True 启动后必然失败，只能
+        # 等端口发现超时（缺省 60s）后报「注入端口未被消费」类与根因无关的
+        # 错误（entry_preflight_error 对此类字面量也放行：exe 不在脚本运行
+        # 时名单 → None）——记 warning（含原文 repr）后按空 cmd 回退，对齐
+        # 上方 root 守卫同口径；就地写回使 raw_data 与解析结果同口径，空
+        # cmd 由既有链路大声失败（validate_contract 经
+        # _raw_serve_section_errors 报「serve.cmd 为空（kind=command 必填）」）。
+        raw_cmd = serve_data.get("cmd")
+        if raw_cmd is not None and not isinstance(raw_cmd, str):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"verify.yaml serve.cmd 非法（须为字符串命令，按空 cmd "
+                    f"处理）: {raw_cmd!r}",
+                )
+            serve_data["cmd"] = ""
         # port 是可选 legacy 端口提示：非正整数（如 port: auto）按无提示
         # 回退 None，不得从 load_verify_contract 抛 ValueError——违背
         # 「解析失败按无契约回退」约定（复用 _positive_int_or_default 范式）。

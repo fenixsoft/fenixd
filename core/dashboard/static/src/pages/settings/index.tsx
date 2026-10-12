@@ -230,6 +230,20 @@ export default function SettingsPage() {
     return true;
   };
 
+  // 项目级「同步用户级设置」回填守卫（code-review item 22a91265b49d）：各面板把
+  // onConfigSynced 直连为 setConfig，而 SyncFromUserButton 的 runAction 在 await
+  // syncConfigFromUser 返回后才回调；若在飞期间用户已切换作用域/项目（面板随即
+  // 卸载，但闭包里的回调仍会执行），迟到的旧作用域 config 会覆盖新作用域刚加载
+  // 的 config，用户在新作用域名下点保存即跨作用域写错配置。比照 handleSave 重载
+  // 路径的币值比对（code-review item f51b1468ca4f）：本回调每次渲染重建、闭包
+  // 捕获当时 scope/project，触发时与 scopeRef/projectRef 比对，已切换则丢弃迟到
+  // 回包（静默丢弃，不提示，同先例口径）。
+  const handleConfigSynced = (configData: ConfigData) => {
+    if (scopeRef.current === scope && projectRef.current === project) {
+      setConfig(configData);
+    }
+  };
+
   // 自进化页签唯一保存入口：两张卡片各自校验并收集本节配置，合并后一次提交
   // （任一卡片校验失败即中止；项目级作用域下建议改进项为只读、返回空补丁，
   // 故只提交在当前作用域可写的陈旧自愈节）。
@@ -399,7 +413,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'agents' && (
@@ -407,7 +421,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'parallel' && (
@@ -415,7 +429,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'approval' && (
@@ -423,7 +437,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'token' && (
@@ -431,7 +445,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'misc' && (
@@ -439,7 +453,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'verify' && (
@@ -447,7 +461,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'quality' && (
@@ -455,7 +469,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                     onManualEdit={() => {
                       // 「手工编辑」：跳「项目简介」页签并聚焦 verify.yaml 编辑框。
                       // 回归卡片仅项目作用域渲染，此处 activeKey 必为合法项目级页签
@@ -474,7 +488,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                   />
                 )}
                 {activeKey === 'self-review' && (

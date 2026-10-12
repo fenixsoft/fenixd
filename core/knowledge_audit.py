@@ -121,22 +121,19 @@ def _write_state(project_root: Path, state: dict) -> None:
 
 
 @contextmanager
-def _state_write_lock(project_root: Path):
-    """状态文件读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_state.lock``）。
+def _file_write_lock(project_root: Path, filename: str):
+    """``.fenix/<filename>`` 锁文件上的进程间互斥（flock）工厂。
 
-    同 _findings_write_lock 口径：atomic_write_text 只保证单次写不撕裂，不保证
-    读改写原子性——daemon 与 dashboard --serve 两进程并发收尾（消费段写
-    arbitration_history / run_audit 写 last_scale / daily_check 写
-    last_audit_date）时各持开局快照，后写者会用旧内存 state 整体覆盖先写者
-    刚落盘的键：丢 last_audit_date 当日体检重复跑（语义 run 成本翻倍），丢
-    arbitration_history 违反裁决事后可审计追溯。写方一律持锁重读盘上状态
-    合并后再回写。锁文件自身无内容语义。
+    各车道文件（state / findings / arbitration）的读改写窗口共用同一锁实现：
+    atomic_write_text 只保证单次写不撕裂，不保证读改写原子性，写方一律持锁
+    重读盘上状态合并后再回写。锁文件自身无内容语义；各锁的竞态背景说明留在
+    调用侧包装函数的 docstring。
     """
     import fcntl
 
     lock_dir = Path(project_root) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge_audit_state.lock", "w")  # noqa: SIM115 — 生命周期=with
+    fh = open(lock_dir / filename, "w")  # noqa: SIM115 — 生命周期=with
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         yield
@@ -145,6 +142,21 @@ def _state_write_lock(project_root: Path):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         finally:
             fh.close()
+
+
+@contextmanager
+def _state_write_lock(project_root: Path):
+    """状态文件读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_state.lock``）。
+
+    同 _findings_write_lock 口径：daemon 与 dashboard --serve 两进程并发收尾
+    （消费段写 arbitration_history / run_audit 写 last_scale / daily_check 写
+    last_audit_date）时各持开局快照，后写者会用旧内存 state 整体覆盖先写者
+    刚落盘的键：丢 last_audit_date 当日体检重复跑（语义 run 成本翻倍），丢
+    arbitration_history 违反裁决事后可审计追溯。锁实现走 _file_write_lock
+    单点口径。
+    """
+    with _file_write_lock(project_root, "knowledge_audit_state.lock"):
+        yield
 
 
 def _today() -> str:
@@ -175,25 +187,13 @@ def _load_findings_ledger(project_root: Path) -> dict:
 def _findings_write_lock(project_root: Path):
     """疑点台账读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_findings.lock``）。
 
-    atomic_write_text 只保证单次写不撕裂，不保证读改写原子性：daemon 与
-    dashboard --serve 两进程同日竞跑体检收尾时各持开局快照，后写者会用旧
-    内存台账整体覆盖先写者刚落盘的 verdict 与 page_hashes——no-conflict
-    豁免键随之丢失、疑点被重复派发转写 run（code-review e13450339289，
-    对齐 BackfillLedger.save 的处置）。锁文件自身无内容语义。
+    daemon 与 dashboard --serve 两进程同日竞跑体检收尾时各持开局快照，后写者
+    会用旧内存台账整体覆盖先写者刚落盘的 verdict 与 page_hashes——no-conflict
+    豁免键随之丢失、疑点被重复派发转写 run（code-review e13450339289，对齐
+    BackfillLedger.save 的处置）。锁实现走 _file_write_lock 单点口径。
     """
-    import fcntl
-
-    lock_dir = Path(project_root) / ".fenix"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge_audit_findings.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with _file_write_lock(project_root, "knowledge_audit_findings.lock"):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 def _has_verdicts(entry: dict) -> bool:
@@ -491,26 +491,15 @@ def _load_arbitration_list(project_root: Path) -> list[dict]:
 def _arbitration_write_lock(project_root: Path):
     """仲裁清单读改写窗口的进程间互斥（flock，``.fenix/knowledge_audit_arbitration.lock``）。
 
-    同 _findings_write_lock 口径：atomic_write_text 只保证单次写不撕裂，不保证
-    读改写原子性——daemon 与 dashboard --serve 两进程并发消费不同条目时各持
-    开局快照，后写者的 kept 整体覆盖先写者刚落盘的剔除结果，已消费条目被写回
-    清单且此后每轮 300s 检查点因台账条目已删恒走「指纹未知」warning 分支、
-    consumed 为空不回写，残留条目无法被框架自动摘除（code-review f619e62ef214，
-    对齐 _findings_write_lock 的处置）。锁文件自身无内容语义。
+    同 _findings_write_lock 口径：daemon 与 dashboard --serve 两进程并发消费
+    不同条目时各持开局快照，后写者的 kept 整体覆盖先写者刚落盘的剔除结果，
+    已消费条目被写回清单且此后每轮 300s 检查点因台账条目已删恒走「指纹未知」
+    warning 分支、consumed 为空不回写，残留条目无法被框架自动摘除
+    （code-review f619e62ef214，对齐 _findings_write_lock 的处置）。锁实现走
+    _file_write_lock 单点口径。
     """
-    import fcntl
-
-    lock_dir = Path(project_root) / ".fenix"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge_audit_arbitration.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with _file_write_lock(project_root, "knowledge_audit_arbitration.lock"):
         yield
-    finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
 
 
 def _arbitration_entry_key(entry: dict) -> str:
@@ -559,6 +548,11 @@ def consume_arbitration(
     ``[fenix] knowledge`` 提交路径自提交（摘除残留不成为下一轮 carryover
     告警源）。非法 decision / 未知指纹 / 非 escalated 状态：跳过留痕，不抛错
     不阻断审计。未命中零写零提交（保持周期执行的轻量）。
+
+    挂载现状：本段当前仅由 daemon 300s 检查点单进程串行调用（fenixd.py
+    knowledge 检查点，dashboard 未挂载本车道）；本文件的进程间锁与按指纹
+    合并回写按「将来可能挂载 dashboard --serve 第二写入方」防御性设计，
+    非现存并发事实。
     """
     project_root = Path(project_root)
     log = logger or null_logger()
@@ -630,12 +624,17 @@ def consume_arbitration(
         )
         state["arbitration_history"] = hist[-50:]
         _write_state(project_root, state)
+    # 只删条目不改他键：own_fingerprints 传空集，开局快照（上方 _load 得到的
+    # ledger）不参与并集、仅 deleted_fingerprints 生效——快照里他方已消费/
+    # 删除的 escalated 指纹不因盘上缺席被本方原样写回复活、人工仲裁决定不被
+    # 静默作废（同 run_audit 语义循环的己方指纹键合并纪律）。
     _save_findings_ledger(
         project_root,
         ledger,
         deleted_fingerprints={
             str(item.get("fingerprint") or "") for item in consumed
         },
+        own_fingerprints=set(),
     )
     _save_arbitration_list(project_root, consumed)
     # 摘注记按消费后台账现状重算期望态、只限涉事页：同页其余 escalated 条目

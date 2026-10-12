@@ -1,7 +1,7 @@
 """
 wip_checkpoint.py — WIP checkpoint 提交与 merge-back 塌缩（add-impl-wip-checkpoint）。
 
-框架控制的 WIP 提交只出现在三处可证明 agent 不再写盘的生命周期锚点：
+框架控制的 WIP 提交只出现在以下可证明 agent 不再写盘的生命周期锚点：
   - 锚点 A（drain-preserve）：排水超时收口路径——所有在飞 agent 进程终止
     完成后（wait_for_running_agents 返回）、cleanup_orphans 之前，对保全集
     worktree 逐个提交（D2）。
@@ -12,6 +12,15 @@ wip_checkpoint.py — WIP checkpoint 提交与 merge-back 塌缩（add-impl-wip-
     执行终止（kill 序列）后、异常收口（append_run_error + raise）前，对当前
     attempt 的 worktree 提交——保全零提交型强杀现场（add-turn-limit-anchor-c
     D1：builtin a1 84min 未提交工作滞留 worktree 的事故补位）。
+  - 锚点 E（extension-tail）：fast-track run 剩余时间进入末位窗口
+    （remaining < EXTENSION_TAIL_WINDOW_SECONDS）时、超时收口尚未到点前，
+    对当前 attempt 的 worktree 提交，run 继续轮询——超时到点后走既有
+    收口，已完成轮次工作不随超时无保全作废（add-fast-track-scale-
+    precheck D3）。
+  - 锚点 F（freeze-hold）：轮询环检测到 spec 级冻结旗标命中、对仍存活
+    的子进程执行 terminate/grace/kill 终止序列前，对当前 attempt 的
+    worktree 提交——冻结终止即停，不再有下一 attempt 的退避窗口保全
+    机会（add-freeze-stop-inflight-agents D1）。
   - 锚点 D（cancel）：run 取消路径——取消旗标在轮询环内确认命中、
     terminate/grace/kill 序列完成后、收口异常构造前，对当前 attempt 的
     worktree 提交（RunCancelledError 收口分支再兜底一次；add-run-cancel-

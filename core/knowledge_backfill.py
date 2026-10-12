@@ -1572,6 +1572,34 @@ def run_backfill(
         }
         if any(cap not in inv_caps for cap in todo_caps):
             inventory = None
+        else:
+            # 覆盖差集通过还不够：prehistoric-missing-pages 早退登记的 todo 指
+            # 引「人工检查后重跑回填」自愈，但缺页能力来自旧清单本身（求差核验
+            # 的入参），必在 inv_caps，且按构造不在 chain_index（核验对归档覆盖
+            # 能力直接 continue）——故上方差集条件对缺页能力恒 False，缺页时旧
+            # 清单仍被复用、史前段整体跳过，单纯重跑既不补页也不再报错。复用前
+            # 对磁盘旧清单再做一次缺页核验，非空即置空强制重跑史前段，与 todo
+            # 指引的自愈路径对齐（code-review e0701d24cf1b）。核验只逐条 is_file
+            # 探测、无考古/LLM 开销；异常 fail-closed 按需重跑处理——宁可多花
+            # 一次史前 run，不带病复用旧清单，也不让核验异常掀翻重入路径。
+            try:
+                stale_missing = _missing_prehistoric_pages(
+                    project_root, inventory, chain_index
+                )
+            except Exception:  # noqa: BLE001 - 核验异常 fail-closed，不外抛
+                log.warning(
+                    "knowledge",
+                    "重入复用史前清单缺页核验异常，按需重跑史前复原段处理",
+                )
+                inventory = None
+            else:
+                if stale_missing:
+                    log.warning(
+                        "knowledge",
+                        "重入检测到旧史前清单缺页（"
+                        f"{', '.join(stale_missing[:5])}），重跑史前复原段补齐",
+                    )
+                    inventory = None
     if not isinstance(inventory, list) or not inventory:
         # 写段取蒸馏锁（同聚类自举段）
         with knowledge_distill_lock(project_root):

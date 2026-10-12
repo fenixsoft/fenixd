@@ -2742,6 +2742,14 @@ class FenixDaemon:
                 f"Administrator: spec='{spec}'（积压旧请求，如仍需处置请在 "
                 f"dashboard 重新发起）",
             )
+            # 留痕（item 2b1b4683c997，对齐同车道投递被拒路径）：陈旧唤起仅
+            # 消费不执行，但用户在 dashboard 发起的动作须有界面可见回执——
+            # 落 failed disposition 供前端时间线/告警感知，不再只留 daemon 日志
+            self._record_failed_admin_disposition(
+                spec,
+                "唤起信号已过期（停机积压超过 1 小时阈值），未唤起 "
+                "Administrator；如仍需处置请在 dashboard 重新发起",
+            )
             return
 
         # 底层 signal_type 透传（fix-manual-invoke-signal-type-passthrough 1.1 +
@@ -3994,12 +4002,6 @@ class FenixDaemon:
             return
         spec = contract.regression
 
-        # 单飞：已有回归在跑 → 忽略请求（不排队、不并发）。置位/复位统一经
-        # _singleflight_lock 取同一把锁（item d51f639c500c，同 code-review 路径）
-        if self._singleflight_check_and_set("_regression_in_flight", "regression-"):
-            self.logger.info("fenixd", "regression 手动触发被忽略：已有回归在跑")
-            return
-
         requested_at = payload.get("requested_at", "")
         self.logger.info(
             "fenixd",
@@ -4071,6 +4073,17 @@ class FenixDaemon:
             finally:
                 # 复位与置位同锁（item d51f639c500c）：见 _singleflight_reset
                 self._singleflight_reset("_regression_in_flight")
+
+        # 单飞：已有回归在跑 → 忽略请求（不排队、不并发）。置位/复位统一经
+        # _singleflight_lock 取同一把锁（item d51f639c500c，同 code-review 路径）。
+        # 置位下移到 submit try 之前的最近处（item 95b67089e4f8）：置位与投递
+        # 之间不得再夹带可抛语句（scope=issues 的模块导入/快照映射等，任何一处
+        # 抛出会被主循环逐任务 try 吞掉、旗标无人复位 → 车道静默锁死至重启）；
+        # 置位前仅存闭包定义与内存读取，无请求消费副作用（信号文件已在消费时
+        # 删除，语义等价）。check 本身锁内复查在飞/在跑，竞态窗口不放宽
+        if self._singleflight_check_and_set("_regression_in_flight", "regression-"):
+            self.logger.info("fenixd", "regression 手动触发被忽略：已有回归在跑")
+            return
 
         try:
             if self._admin_executor is not None:

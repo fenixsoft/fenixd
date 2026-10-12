@@ -889,9 +889,10 @@ class TestFullSuiteSubsetSnapshotInvisible(QualityGatesTestBase):
         assert self._item(out, "full-suite")["status"] == "pending"
 
     def test_non_dict_payload_snapshot_invisible_no_exception(self):
-        # read_result 对合法 JSON 非 dict 载荷原样返回——isinstance 守卫使
-        # 非 dict 一并按不可见 (None, "") 处理，.get 直取会 AttributeError
-        # 穿透 fail-open 契约
+        # read_result 对合法 JSON 非 dict 载荷归一为 parse_error（item
+        # 222752de454d）——isinstance 守卫保持作纵深防御，非 dict 一并按
+        # 不可见 (None, "") 处理，.get 直取会 AttributeError 穿透 fail-open
+        # 契约
         d = self.root / ".fenix" / "regression"
         d.mkdir(parents=True, exist_ok=True)
         (d / "last-run.json").write_text('["not", "a", "dict"]', encoding="utf-8")

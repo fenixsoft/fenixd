@@ -1,4 +1,7 @@
-"""fast_track_result.py — fast-track 统一结果文件解析（add-fast-track-mode / D4）。
+"""fast_track_result.py — fast-track 统一结果文件解析 + 规模预检/预算配置归一化。
+
+前半部分为 fast-track 统一结果文件解析（add-fast-track-mode / D4）；后半部分为
+spec 规模预检与 turn 预算 / wrapup 宽限 / wallclock 预算的配置归一化（evo spec 追加）。
 
 fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加验证段：
 
@@ -21,8 +24,14 @@ fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加�
   - schema 常量（键名单点定义，避免与 agents/fast-track.md / 硬校验器三处漂移）
   - ``parse_fast_track_verification``：从 run 结果 dict 提取并规整验证段；
     缺失/非法返回 None（fail-closed，调用方按失败处理）
+  - 规模预检与预算配置归一化：``estimate_spec_scale`` / ``budget_tier_for_scale`` /
+    ``get_scale_precheck_config`` / ``get_turn_budget_sizing_config`` /
+    ``get_wrapup_grace_config`` / ``suggested_turn_cap_for_scale`` /
+    ``get_impl_wallclock_sizing_config`` / ``lifted_max_extensions_for_scale``
 
-纯函数模块，无外部依赖；verdict_check 硬校验器与 pm_engine 派发分支共用。
+纯函数模块：导入期无 core 依赖；``estimate_spec_scale`` /
+``_impl_wallclock_default`` 在调用期惰性导入 ``core.deliverables`` 与
+``core.config``（避免模块环）。verdict_check 硬校验器与 pm_engine 派发分支共用。
 """
 
 import logging

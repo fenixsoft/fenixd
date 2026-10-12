@@ -403,7 +403,9 @@ def start_daemon(root: str | None = None) -> dict:
     说明未检测到 daemon（code-review item e17df2678564）。
     启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
     避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
-    至多约 5 秒，命中再返回成功；窗口耗尽则经 `tmux has-session` 复核会话
+    至多约 5 秒，命中再返回成功；命中后以 `_daemon_proc_running` 复核 daemon
+    本体，仅 supervisor 先到场（daemon 未检测到）时同样附 warning（code-review
+    item 87bdc3d2f2b9）；窗口耗尽则经 `tmux has-session` 复核会话
     存活，并经 `list-panes` 校验会话确以 supervisor 命令启动，且对 supervisor
     窗格的 pane_pid 做一次 /proc 活性核对——会话已退出（启动命令失败）、
     会话内是同名残留的无关窗格、或残留会话仅余已死的 supervisor 窗格
@@ -412,7 +414,8 @@ def start_daemon(root: str | None = None) -> dict:
     语义落回轮询复核）同样直接返回 ok=False 并附 stderr，不静默忽略。
 
     返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}；
-    仅「仅 supervisor 在跑、daemon 本体未检测到」分支额外附 warning: str。
+    「仅 supervisor 在跑、daemon 本体未检测到」的分支（幂等门与新拉起轮询
+    命中）额外附 warning: str。
     任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
     """
     proot = resolve_root(root)
@@ -503,7 +506,20 @@ def start_daemon(root: str | None = None) -> dict:
     # 轮询等待进程真正起来（is_running 主判定为 /proc 进程检测）
     for _ in range(START_DAEMON_PROBE_ATTEMPTS):
         if is_running(proot):
-            return {"ok": True, "error": None, "session": session, "already": False}
+            # 与幂等门细分判定（code-review item e17df2678564）口径对齐
+            # （code-review item 87bdc3d2f2b9）：is_running 命中 daemon 或
+            # supervisor 任一，新拉起路径同样可能只等到 supervisor 先立起来
+            # （daemon 随后拉起连续失败进入退避/熔断，永不到场），不能无声
+            # 报成功；复核 daemon 本体，仅托管壳在场时附同样的 warning。
+            if _daemon_proc_running(proot):
+                return {"ok": True, "error": None, "session": session, "already": False}
+            return {
+                "ok": True,
+                "error": None,
+                "session": session,
+                "already": False,
+                "warning": "supervisor 在跑但未检测到 daemon 进程（可能处于启动退避、熔断或停止流程中），请查看 .fenix/logs/supervisor.log",
+            }
         time.sleep(START_DAEMON_PROBE_INTERVAL_SECONDS)
     # 探测窗口耗尽后区分两种情况：/proc 不可判但会话仍存活 → 维持宽容成功；
     # 会话已消失 → tmux 内命令失败退出（会话随命令退出关闭），不能误报成功。

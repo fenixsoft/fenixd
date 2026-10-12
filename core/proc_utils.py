@@ -12,7 +12,8 @@
 - ``find_bound_socket``：保留已绑定 socket 的 contextmanager（消除 TOCTOU 竞态窗口，
   concurrent-suite-isolation 4.1），绑定失败时按可重试策略重取；
 - ``kill_process_group``：start_new_session 进程组清扫纪律的单点实现
-  （SIGTERM 整组 → wait 宽限 → SIGKILL 补刀），收尸等差异化收尾留调用方；
+  （SIGTERM 整组 → wait 宽限 → SIGKILL 补刀；可选探活口径组清空免补刀），
+  收尸等差异化收尾留调用方；
 - ``guard_killpg``：清场击杀自保护守卫（add-killpg-self-guard）——目标组为
   调用者自身所在进程组、或非正 pgid 时拒绝发信号，按「组已不存在」静默降级。
 
@@ -209,6 +210,8 @@ def kill_process_group(
     popen: "subprocess.Popen",
     term_grace: float = 5,
     sigterm_only_if_alive: bool = False,
+    sigkill_only_if_group_alive: bool = False,
+    caller: str = "proc_utils.kill_process_group",
 ) -> None:
     """start_new_session 进程组清扫纪律的单点实现（SIGTERM→wait→SIGKILL 补刀）。
 
@@ -218,7 +221,8 @@ def kill_process_group(
     复刻（prepare 步骤超时、validate_contract finally 的 proc 兜底、
     CommandVerifyServer.stop、_run_npm_provision 超时），任一处修订都需同步
     四处、历史上已多次多点修复（item 7168a8391e06/2c7a3051bb99/
-    020ba8771283）——收口为单一实现（code-review item 21d8a42c21c1）。
+    020ba8771283）——收口为单一实现（code-review item 21d8a42c21c1）；
+    item b090579ac5a0 把 regression 车道的「探活后补刀」变体并入本单点。
 
     时序（与收口前四处逐字等价）：
 
@@ -227,8 +231,18 @@ def kill_process_group(
     2. SIGTERM 整组留优雅退出机会（``sigterm_only_if_alive=True`` 时仅
        leader 尚存活才发——validate_contract finally 的 proc 兜底口径）；
     3. wait(term_grace) 等优雅退出（leader 已被回收则立即返回）；
-    4. 无论 wait 成败都补一次组 SIGKILL；ProcessLookupError＝组已清空，
+    4. （仅 ``sigkill_only_if_group_alive=True``）探活整组再决定补刀：
+       经守卫单点执行跳发信号 0（不投递、纯存在性检查），组已清空即免
+       补刀收口；不以直接子进程是否在窗口内退出为前提（regression 车道
+       item 72a90eb6cb2e 的既有口径）。配合该口径，SIGTERM 守卫拒绝
+       （＝「组已不存在」语义）时提前收口——后续探活只会得到同一拒绝/
+       ESRCH。缺省 False＝无条件补刀，既有调用方语义逐位不变；
+    5. 无论 wait 成败都补一次组 SIGKILL；ProcessLookupError＝组已清空，
        静默即可。
+
+    ``caller``：守卫告警中的调用点标识，缺省即本函数名；收口适配器（如
+    regression._kill_process_group）传回自身标识，保留守卫 WARNING 的
+    取证锚点。
 
     收尸（SIGKILL 补刀后的收尾）不在本助手内：PIPE 的 communicate 管道排空
     与 DEVNULL 的 wait(timeout=2)、boot.log 句柄关闭是调用方差异化收尾，
@@ -255,16 +269,27 @@ def kill_process_group(
         # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定
         # 直传（resolve=False）；守卫拒绝（自身组/非正 pgid）与组已不存在
         # 同样静默，序列语义不变。
-        guard_killpg(
-            pgid, signal.SIGTERM, caller="proc_utils.kill_process_group", resolve=False
-        )
+        term_sent = guard_killpg(pgid, signal.SIGTERM, caller=caller, resolve=False)
         try:
             popen.wait(timeout=term_grace)
         except Exception:
             pass
-    guard_killpg(
-        pgid, signal.SIGKILL, caller="proc_utils.kill_process_group", resolve=False
-    )
+        if not term_sent and sigkill_only_if_group_alive:
+            # 探活口径专用提前收口：守卫拒绝＝「组已不存在」语义（含替身
+            # 怪值命中自身组），补刀无事可做。仅探活口径返回；缺省口径
+            # 保持既有序列（SIGKILL 守卫同样拒绝、静默）逐位不变。
+            return
+    if sigkill_only_if_group_alive and not guard_killpg(
+        pgid, 0, caller=caller, resolve=False
+    ):
+        # 探活后补刀（item b090579ac5a0）：信号 0 不投递，经守卫单点执行跳
+        # 做整组存在性检查——组已清空（SIGTERM 已清干净）即免补刀；仍有
+        # 成员（忽略 SIGTERM 的孙进程：自守护的测试 runner、xdist worker
+        # 残留）才落到下方 SIGKILL。探活不以直接子进程是否在窗口内退出为
+        # 前提（item 72a90eb6cb2e 语义保持）。到此处 pgid 已被 SIGTERM 守卫
+        # 放行（非自身组、非正），探活至多落 ESRCH 静默 False。
+        return
+    guard_killpg(pgid, signal.SIGKILL, caller=caller, resolve=False)
 
 
 def guard_killpg(target_pid: int, sig: int, *, caller: str, resolve: bool = False) -> bool:

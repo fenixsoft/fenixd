@@ -84,11 +84,25 @@ class ServingRegistry:
         )
         tmp_path = Path(tmp_path_str)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式接管（对齐 regression._atomic_write /
+            # verdict_evidence 先例 cbb57806fbfd）：with 的 close 只在 fdopen
+            # 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时
+            # 兜底 os.close。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(records, f, ensure_ascii=False, indent=2)
                 f.write("\n")
                 f.flush()
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             os.replace(str(tmp_path), str(self.path))
         finally:
             if tmp_path.exists():

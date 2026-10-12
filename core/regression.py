@@ -52,7 +52,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import tempfile
 import time
@@ -63,7 +62,7 @@ from typing import Any, Dict, List, Optional, Union
 from core import timelib
 from core.verify_contract import RegressionSpec
 
-from core.proc_utils import guard_killpg
+from core.proc_utils import kill_process_group
 
 _logger = logging.getLogger("fenixd.regression")
 
@@ -410,7 +409,7 @@ def write_result(project_root, result: Dict[str, Any]) -> None:
 
 
 def read_result(project_root) -> Dict[str, Any]:
-    """读取 last-run.json 快照；缺失返回 never_run，损坏返回 parse_error。
+    """读取 last-run.json 快照；缺失返回 never_run，损坏/根非对象返回 parse_error。
 
     对齐 test-regression-execution 读侧契约：快照缺失/损坏不报 500。
     """
@@ -418,9 +417,17 @@ def read_result(project_root) -> Dict[str, Any]:
     if not path.is_file():
         return {"status": "never_run"}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         return {"status": "parse_error", "reason": str(e)}
+    # code-review item 222752de454d：合法 JSON 但根非对象（null/[]/字符串，
+    # 外部写手可产生此形态）原样外溢非 dict 值，防御责任会外溢到每个消费方
+    # 各自补 try/isinstance 守卫。与 _read_json_file（item 10dcd2a6d170）的
+    # 归一口径对齐，读取侧统一归一为 parse_error；消费方既有守卫保持不作
+    # 纵深防御。
+    if not isinstance(data, dict):
+        return {"status": "parse_error", "reason": "快照根非对象"}
+    return data
 
 
 # ── 状态文件读写（task 2.4）───────────────────────────────────────────
@@ -746,41 +753,25 @@ class _SuiteLock:
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """中止整个进程组（start_new_session 创建的独立会话组）。
 
-    对齐 core/verify_contract.py:527 与 core/v2_dev_server.py:175 的
-    既有进程组杀树形态：先 SIGTERM 给优雅退出窗口（5s），再 SIGKILL
-    兜底。仅杀直接子进程会让 shell 形态 cmd 派生的测试进程存活，
-    回归名存实亡且产物锁被占。
+    进程组清扫纪律（SIGTERM → wait 宽限 → SIGKILL 补刀）收口于
+    core/proc_utils.kill_process_group 单点实现（item 21d8a42c21c1 收口、
+    item b090579ac5a0 把本车道变体并入单点）：本函数只是调用适配，本车道
+    既有的「SIGKILL 前先探活整组、组仍有成员才补刀」口径（item
+    72a90eb6cb2e：兜底不以直接子进程超时为前提）经
+    ``sigkill_only_if_group_alive=True`` 表达；caller 回传自身标识，保留
+    守卫告警的取证锚点。
 
-    SIGKILL 兜底不以直接子进程超时为前提（code-review item 72a90eb6cb2e）：
-    无论直接子进程是否在窗口内退出，都探活整组（killpg(pgid, 0)），
-    组内仍有成员（忽略 SIGTERM 的孙进程：自守护的测试 runner、xdist
-    worker 残留）即升级 SIGKILL 补刀。
+    仅杀直接子进程会让 shell 形态 cmd 派生的测试进程存活，回归名存实亡
+    且产物锁被占——故必须按整组收口。
     """
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        return  # 进程组已不存在
-    # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
-    # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默返回，序列语义不变。
-    if not guard_killpg(
-        pgid, signal.SIGTERM, caller="regression._kill_process_group", resolve=False
-    ):
-        return  # 进程组已不存在（或守卫拒绝发出）
-    # 给 SIGTERM 窗口（直接子进程未退则等到超时）
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
-    # 直接子进程退出 ≠ 组内已清：探活整组，仍有成员则 SIGKILL 补刀；
-    # ProcessLookupError ＝ 组已清空，静默即可。pgid 复用上文的值——
-    # wait 收尸后 getpgid(proc.pid) 会因进程消失而失效。
-    try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, OSError):
-        return
-    guard_killpg(
-        pgid, signal.SIGKILL, caller="regression._kill_process_group", resolve=False
+    kill_process_group(
+        proc,
+        sigkill_only_if_group_alive=True,
+        caller="regression._kill_process_group",
     )
+    # 收尸留调用方（单点实现约定的差异化收尾）：SIGKILL 补刀（若发生）后
+    # 留收尾窗口；未补刀（组已清空/守卫拒绝）时进程已被单点内 wait 回收，
+    # 立即返回。
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
