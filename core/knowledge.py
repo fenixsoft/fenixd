@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -940,6 +941,37 @@ def _write_pending_ledger(proot: Path, batches: list) -> None:
     )
 
 
+@contextmanager
+def _pending_ledger_lock(proot: Path):
+    """pending 台账读改写窗口的进程间互斥（flock，``.fenix/knowledge-distill-pending.lock``）。
+
+    同 knowledge_audit._findings_write_lock 口径（code-review 106b0cd5527d）：
+    _write_pending_ledger 的 tmp + os.replace 只保证单次写不撕裂，不保证读改写
+    原子性——daemon 与 dashboard --serve 各持一份 _MANAGER 单例，两进程都会走
+    到派发（dashboard 侧 spec_archive → dispatch_distill，daemon 侧自动归档同
+    链路），进程内 self._guard 挡不住跨进程：并发 append 时后写者以旧快照整文
+    件覆盖先写者刚落的批次条目（崩溃续跑丢批）；append/remove 并发时 remove
+    的整文件回写可吞掉刚 append 的条目、或复活已入库批次的条目（重启恢复对已
+    入库归档触发重蒸，正是 _ledger_remove docstring 要防的）。写方一律持锁重读
+    盘上最新 batches 再合并回写。锁文件自身无内容语义，与 knowledge-distill.lock
+    同目录不同文件、互不阻塞（不复用后者——它被整个蒸馏 run 长期持有，append
+    在 dispatch 归档主流程上，不得排队等 run 结束）。
+    """
+    import fcntl
+
+    lock_dir = Path(proot) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge-distill-pending.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 class DistillManager:
     """蒸馏 run 管理器（进程内单例）。
 
@@ -1004,18 +1036,23 @@ class DistillManager:
             return len(self._queues.get(str(Path(proot).resolve()), []))
 
     # ── pending 台账读写（evo-knowledge-distill-resume-guard R1/R2）──
-    # 两者都 MUST 在持 self._guard 时调用（单写者口径，design D1）。
+    # 两者都 MUST 在持 self._guard 时调用（单写者口径，design D1）；跨进程
+    # （daemon 与 dashboard --serve 各持 _MANAGER 单例）的读改写互斥由
+    # _pending_ledger_lock flock 兜底（code-review 106b0cd5527d）。
     def _ledger_append(self, proot: Path, names: list) -> None:
-        """入队追加台账条目（读-改-原子回写；fail-open 不阻派发）。"""
+        """入队追加台账条目（持跨进程 flock 读-改-原子回写；fail-open 不阻派发）。"""
         try:
-            batches = _read_pending_ledger(proot)
-            batches.append(
-                {
-                    "names": list(names),
-                    "queued_at": now_local().isoformat(timespec="seconds"),
-                }
-            )
-            _write_pending_ledger(proot, batches)
+            with _pending_ledger_lock(proot):
+                # 持锁重读盘上最新台账：self._guard 只是进程内单写者，双进程
+                # 并发 append 时后写者不得以旧快照覆盖先写者刚落的批次条目。
+                batches = _read_pending_ledger(proot)
+                batches.append(
+                    {
+                        "names": list(names),
+                        "queued_at": now_local().isoformat(timespec="seconds"),
+                    }
+                )
+                _write_pending_ledger(proot, batches)
         except Exception as e:  # noqa: BLE001 — 宁可丢台账不可阻归档
             logger.warning(
                 "knowledge-distill pending 台账追加失败（fail-open，不影响派发）: %s",
@@ -1023,20 +1060,25 @@ class DistillManager:
             )
 
     def _ledger_remove(self, proot: Path, archived_names: list) -> None:
-        """按本批 names 并集匹配移除台账条目（读-过滤-原子回写；fail-open）。
+        """按本批 names 并集匹配移除台账条目（持跨进程 flock 读-过滤-原子回写；fail-open）。
 
         整文件重读-过滤-回写而非「删一条重写全量快照」：避免并发归档入队的
-        追加被整文件覆盖丢条目（design D2）。并集交集匹配一次清除多条——
+        追加被整文件覆盖丢条目（design D2）。读改写窗口持 _pending_ledger_lock
+        flock：双进程并发时 remove 的回写不得吞掉另一进程刚 append 的条目、
+        或复活已入库批次的条目。并集交集匹配一次清除多条——
         worker 把同项目积压整体摘下合并为一次 run 时，只清「最后一条」会漏清
         先入队条目，陈旧条目会在重启恢复时对已入库归档触发重蒸。
         """
         try:
-            batches = _read_pending_ledger(proot)
-            kept = [
-                b for b in batches if not (set(b["names"]) & set(archived_names))
-            ]
-            if len(kept) != len(batches):
-                _write_pending_ledger(proot, kept)
+            with _pending_ledger_lock(proot):
+                batches = _read_pending_ledger(proot)
+                kept = [
+                    b
+                    for b in batches
+                    if not (set(b["names"]) & set(archived_names))
+                ]
+                if len(kept) != len(batches):
+                    _write_pending_ledger(proot, kept)
         except Exception as e:  # noqa: BLE001 — 清除失败退回现状，不阻主流程
             logger.warning(
                 "knowledge-distill pending 台账清除失败（fail-open）: %s", e
