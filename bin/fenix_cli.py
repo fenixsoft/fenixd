@@ -18,7 +18,8 @@ from pathlib import Path
 
 # 框架根（定位 core/）
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(FRAMEWORK_ROOT))
+if str(FRAMEWORK_ROOT) not in sys.path:
+    sys.path.insert(0, str(FRAMEWORK_ROOT))
 
 
 def _resolve_project_root(args_project: str | None) -> Path:
