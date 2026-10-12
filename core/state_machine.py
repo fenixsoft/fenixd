@@ -1281,7 +1281,9 @@ class StateMachine:
 
         消除「读 STATE → 改 → 写回」非原子序列在并发（恢复扫描 × 派发）下
         丢失增量的竞态（interaction-contract 复盘：used=2/4 连续出现两次）。
-        锁内完成 读→改→写→回读校验；回读不匹配时重试一次并记审计日志。
+        锁内完成 读→改→写→回读校验；回读不匹配时重试一次并记审计日志
+        （防御分支：回读在锁临界区内、serialize→parse 往返恒等，当前实现下
+        实际不可达，丢失更新防护来自锁本身）。
         结果下限 0（delta=-1 时不会把计数打成负数）。
 
         单字段薄封装（code-review 9b32a0d20a16）：本方法与 ``bump_counters``
@@ -1306,7 +1308,10 @@ class StateMachine:
         之间暴露窗口（他写者夹在中间写入，读者看到半新态）；fastlane 失败
         记账须同点同时递增 ``_fastlane_fail_streak`` 与 ``_verify_fail_rounds``
         （与整轮失败同账），走本原语保持计数路径单一范式。
-        与 ``_bump_counter`` 同范式：锁内 读→改→写→回读校验，不匹配重试一次；
+        与 ``_bump_counter`` 同范式：锁内 读→改→写→回读校验；不匹配重试一次
+        属防御分支——回读在同一把 ``.STATE.md.lock`` 的临界区内执行、计数器值
+        serialize→parse 往返恒等，当前实现下 verify == new_values 恒成立，
+        该分支（含 mismatch 告警）实际不可达，真正的丢失更新防护来自锁本身。
         各字段结果下限 0（负 delta 不会把计数打成负数）。
 
         Returns: ``{field: 最终生效值}``；spec 不存在时记 warning 并返回全 0。
@@ -1334,7 +1339,14 @@ class StateMachine:
                         entry[field] = new_values[field]
                     entry["updated"] = datetime.now(timezone.utc).isoformat()
                     self._write_all_locked(specs)
-                    # 回读校验：确认增量真正落盘（防并发写覆盖丢增量）
+                    # 回读校验：防御性断言，防 serialize/parse 往返失真与未来
+                    # 锁结构调整。回读发生在同一把 .STATE.md.lock 的
+                    # LOCK_EX..LOCK_UN 临界区内（其他写者含 dashboard 跨进程
+                    # 均被本锁串行化，无法在写盘与回读之间插入），且计数器值
+                    # 经 serialize→parse 的 int→字符串→int 往返恒等，故
+                    # verify == new_values 恒成立——下方 mismatch 告警与第二次
+                    # attempt 实际不可达；真正的丢失更新防护来自本把锁，而非
+                    # 这次回读。
                     verify = {
                         field: int((self.read_all().get(spec_name) or {}).get(field, 0) or 0)
                         for field in deltas
