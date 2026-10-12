@@ -255,6 +255,23 @@ class RRollbackMixin:
                     "pm_engine",
                     f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
                 )
+                # 重入队前先幂等摘除本 spec 的 verify 单飞登记（code-review item
+                # 056f6fb5e7d7）：本方法在 worker 的 except 段被同步调用，登记
+                # 仍在其出队分流内置位、要到 worker finally 才摘除（queue.py），
+                # 此窗口内 _enqueue 的单飞守卫必然拒绝重入队——docstring 承诺的
+                # 「队列条目 + full_scan recovery」两腿中前者结构性恒不生效，
+                # 且每次留下误导性守卫 WARNING（backoff.py 的 infra-retry 定时器
+                # 已用延迟盖窗规避同型交互，本同步路径改用先摘除）。摘除语义=
+                # 与 worker finally 的 discard 合并（finally 再摘为幂等 no-op）：
+                # 异常路径上原验证 run 已终止，摘除到新条目真正出队之间不存在
+                # 双在飞——新条目出队另受 _dispatch_entry_ready 状态守卫与
+                # _dispatch_backoffed 退避门把关（退避期内条目保留队列不丢）。
+                # getattr 兼容仅注入部分属性的测试替身；锁段与登记/摘除既有
+                # 纪律一致（_queue_lock 为 RLock，本方法无调用方持该锁）。
+                _active_verifies = getattr(self, "_active_verifies", None)
+                if _active_verifies is not None:
+                    with self._queue_lock:
+                        _active_verifies.discard(spec_name)
                 # 入队独立守卫（code-review item 01bfb767effe，与 implementer 分支
                 # 同款）：_enqueue 若裸露在大 try 内，队列写入抛错（锁/IO）会跳到
                 # 外层 except 记误导性「State rollback failed」（尽管上方 update_spec
