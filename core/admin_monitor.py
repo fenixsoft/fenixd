@@ -362,6 +362,13 @@ SIGNAL_SEVERITY = {
     # severity major、STORED_SIGNAL_TYPES 收录接入自动唤起（认领执行器：
     # 归档/追加 .gitignore/删除三裁决）。
     "maintree_untracked_stray_escalated": "major",
+    # evo-stray-first-sight-prevention 1.1：目录型产物集合首现提示——新型
+    # 产物目录首次出现（首现登记无该目录记录、未被 .gitignore 覆盖）即发
+    # 一次预防性提示（携带 gitignore 草案），填补 below_threshold 静默缺口。
+    # info 对齐 maintree_untracked_stray_stale 先例：只提示不处置、不进
+    # STORED_SIGNAL_TYPES（不自动唤起 admin run——提示本身变成新浪费形态
+    # 即与预防意图相抵）、不启动升级时钟（24h/体积阈值语义不动）。
+    "maintree_untracked_stray_first_sight": "info",
     # evo-whitelist-tracked-patrol 2.1：白名单脱落信号——被 .gitignore `!`
     # 放行规则显式放行（＝声明了入库意图）却不在 git 索引中的路径，由
     # stray_wip 白名单巡检直发。major 对齐 maintree_untracked_stray_escalated
@@ -462,6 +469,11 @@ SIGNAL_RECOMMENDATION = {
     # recommended_action 同文（文案变更两处同步，防双处漂移）；带出三裁决
     # 选项 id（admin_actions 认领执行器，signal_type 绑定白名单仅收本信号）。
     "maintree_untracked_stray_escalated": "主树 untracked 散件滞留升级（滞留时长超 24 小时或集合体积超阈值，major）：核对主树这些 untracked 文件归属后，执行裁决选项 archive_untracked_stray 显式归档（移入登记目录 .fenix/stray-archive/）、ignore_untracked_stray 追加 .gitignore 或 delete_untracked_stray 删除；文件清单、体积与滞留起点见 evidence（.fenix/ negation 放行项与已 ignore 路径不计入）。同一集合只升级一次，指纹消失后盘点状态自动复位",
+    # evo-stray-first-sight-prevention 1.1：首现提示处置指引——建议面语义
+    # （与 worktree_manager/stray_wip._write_first_sight_alert 的 inline
+    # recommended_action 同源口径：提示只携带预防性 gitignore 草案，不自动
+    # 执行 ignore 动作）。
+    "maintree_untracked_stray_first_sight": "主树 untracked 散件首现提示（目录型产物集合首次出现，info 级只提示不处置，不唤起人工）：人工核对目录归属后，将 evidence 中 gitignore 草案行（含成因注释）追加至 .gitignore（预防性 ignore，一行消除该目录后续散件告警），或将默认落盘路径移出仓库树/挪入证据落位目录 .fenix/verify-evidence/<spec>/；本提示不自动执行 ignore 动作、不启动升级时钟。同目录仅提示一次（集合内容增长不重提示），目录消失复位后再现视为新首现",
     # evo-whitelist-tracked-patrol 2.1：白名单脱落处置指引——与
     # worktree_manager/stray_wip._write_whitelist_untracked_alert 的 inline
     # recommended_action 同文（文案变更两处同步，防双处漂移）。无裁决执行器
