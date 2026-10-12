@@ -744,8 +744,12 @@ class SpecReviewManager:
             # LLM 产出、长度无上界，未经截断进 STATE error/description/evidence 会
             # 撑爆 STATE 行、影响解析与面板展示；同文件日志侧已有 [:200]、recovery.py
             # 写 evidence 有 [:120] 先例，此处源头统一截断，日志侧 [:200] 保留现状。
+            # 兜底按 join 结果判空（code-review item 458c827690de）：旧三元只在
+            # blocking 列表本身为空时写「无详情」，blocking 非空但 detail 全缺失/
+            # falsy 时 join 结果为空串，冻结 error 与人工告警 description 退化为
+            # 空详情、丢失兜底语义；空列表 join 亦为空串，天然覆盖原分支。
             blocked_summary = (
-                "; ".join(str(f.get("detail") or "") for f in blocking) if blocking else "无详情"
+                "; ".join(str(f.get("detail") or "") for f in blocking) or "无详情"
             )[:500]
 
             # 否决计数走锁内原子递增（bump_counters 返回写后值参与阈值判定，
