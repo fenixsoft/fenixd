@@ -1877,11 +1877,22 @@ def _verdict_cache_path(project_root, spec_name) -> Path:
 
 
 def scenario_fingerprint(scenario: dict) -> str:
-    """非 PASS 场景的断言指纹：scenario_id + status + 失败断言内容稳定 hash。
+    """非 PASS 场景的失败指纹：scenario_id + status + 失败断言/失败步骤稳定 hash。
 
-    取引擎侧 ``assertion_results`` 的失败条目（judge 增强前的原始执行产物，
-    跨轮稳定），不取 evidence/assertion_triage（judge 产物，轮间会重写）。
+    取引擎侧原始执行产物（judge 增强前，跨轮稳定），不取
+    evidence/assertion_triage（judge 产物，轮间会重写）：
+      - ``assertion_results`` 失败条目（type/layer/expected/actual/selector）；
+      - ``step_results`` 中 success=False 条目的稳定字段（序号 + action/target
+        标注 + error/detail 摘要，与 :func:`derive_default_failed_assertions`
+        同源取值）——引擎侧「任一步骤失败即跳过断言执行」使该形态下
+        assertion_results 必然为空表，只取失败断言会把指纹退化成
+        sid+status 的哈希（失败步骤换了位置、错误文本完全不同指纹仍逐字
+        相同），失败内容变化将无法使跨轮缓存失效。
     指纹一致 ⇒ 冻结场景与失败复现均未变，上轮结论可沿用。
+
+    步骤失败字段仅在确有失败步骤时并入载荷：无失败步骤形态的载荷逐字
+    不变（既有指纹值向后兼容）；步骤失败形态的指纹由此变化，旧缓存自然
+    未命中 → 重裁一轮后写回新指纹（fail-open，不影响正确性）。
 
     异常/缺字段返回空串（调用方按未命中处理，fail-open）。
     """
@@ -1895,12 +1906,31 @@ def scenario_fingerprint(scenario: dict) -> str:
             for a in (scenario.get("assertion_results") or [])
             if isinstance(a, dict) and not a.get("pass", True)
         ]
+        step_failures = []
+        for idx, s in enumerate(scenario.get("step_results") or [], 1):
+            if not (isinstance(s, dict) and not s.get("success", True)):
+                continue
+            # 取值按「None 才折空串」口径（与 derive_default_failed_assertions
+            # 同源）：or 链会把 0/False 等有信息量的假值回传（如退出码）先吞掉
+            error = s.get("error")
+            detail = s.get("detail")
+            step_failures.append(
+                {
+                    "label": _step_failure_label(s, idx),
+                    "error": _clip_derived_text(
+                        error if error is not None else (detail if detail is not None else "")
+                    ),
+                }
+            )
+        payload_obj = {
+            "sid": scenario.get("scenario_id"),
+            "status": scenario.get("status"),
+            "failed": failed,
+        }
+        if step_failures:
+            payload_obj["step_failures"] = step_failures
         payload = json.dumps(
-            {
-                "sid": scenario.get("scenario_id"),
-                "status": scenario.get("status"),
-                "failed": failed,
-            },
+            payload_obj,
             ensure_ascii=False,
             sort_keys=True,
         )
