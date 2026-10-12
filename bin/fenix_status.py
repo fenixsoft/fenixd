@@ -366,7 +366,17 @@ def render_report(project_root) -> str:
 
 
 def main() -> int:
-    sys.stdout.write(render_report(PROJECT_ROOT))
+    # 兜底对齐 fenix_cli.main 的统一错误口径：render_report 内 get_runs/
+    # alerts_summary/spec_summary 均已 try/except 降级，唯独入口 parse_state
+    # 未包裹——STATE.md 并发改写瞬间的解析异常、权限/编码类 OSError 裸抛会以
+    # traceback 收场，/fenix-status 报告整体不可用且无可读错误。统一转
+    # stderr（附异常类型名）+ exit 1，报告失败也给出可读错误。
+    try:
+        report = render_report(PROJECT_ROOT)
+    except Exception as e:
+        print(f"✗ 报告生成失败：{type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    sys.stdout.write(report)
     return 0
 
 
