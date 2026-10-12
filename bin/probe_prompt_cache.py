@@ -48,6 +48,14 @@ STABLE_PREFIX = (
     + "Answer with a single word."
 )
 
+# cache_supported 相对阈值判据（code-review item 26112b3db466）：模块 docstring
+# 定案「写入的缓存不可复用（第2次 cache_read≈113 或恒 0）」——113 这类零头远
+# 小于前缀规模（约 1.4-1.6K tokens），旧判据 `r2_cr > 0` 会把小额命中误裁成
+# 「支持」。改为相对阈值：第二轮 cache_read 须达到 max(绝对下限, 当轮
+# input_tokens 的比例下限) 才认定命中可复用。
+MIN_CACHE_HIT_TOKENS = 1024  # 网关最小可缓存长度量级（Anthropic 门槛，见上）
+CACHE_HIT_INPUT_RATIO = 0.5  # 命中须达到当轮 input_tokens 的比例下限
+
 
 def _build_request(provider: dict) -> dict:
     """构造带 cache_control 的请求体（system 段作缓存前缀）。
@@ -211,7 +219,9 @@ def probe(provider_name: str, config_path: Path) -> dict:
                 }
             )
 
-    # cache_supported 判据：第二轮有读取且第二轮 cache_read 显著（>0）。
+    # cache_supported 判据：第二轮 cache_read 达到相对阈值（不低于 max(
+    # MIN_CACHE_HIT_TOKENS, 当轮 input_tokens × CACHE_HIT_INPUT_RATIO)）；
+    # 只 >0 的小额零头（定案中的 ≈113）不算可复用命中。
     # 第1轮 cache_read 高而第2轮低（或恒 0）= 写入不可复用，不支持。
     # 失败轮 ≠ 阴性（code-review item d0ea5e53913c）：任一轮网络/HTTP/解析
     # 异常时该轮 usage 缺失、r2_cr 恒 0——旧实现把一次失败探测静默裁成
@@ -220,17 +230,28 @@ def probe(provider_name: str, config_path: Path) -> dict:
     # main() 据此 exit 1（与下方 rounds_distinct 的「不可信」口径一致）。
     r2 = rounds[1] if len(rounds) > 1 else {}
     r2_cr = int(r2.get("cache_read_input_tokens") or 0)
+    r2_input = int(r2.get("input_tokens") or 0)
     # 失败轮判定被下方 cache_supported 裁决与 rounds_distinct 跳过判定共用，
     # 提取局部变量避免两处口径静默分叉（code-review item b162aa42ec7f）。
     has_failed_round = any("error" in r for r in rounds)
+    cache_hit_threshold = None
     if has_failed_round:
         cache_supported = None
     else:
-        cache_supported = r2_cr > 0
+        cache_hit_threshold = max(
+            MIN_CACHE_HIT_TOKENS, r2_input * CACHE_HIT_INPUT_RATIO
+        )
+        cache_supported = r2_cr >= cache_hit_threshold
 
     evidence = {"rounds": rounds}
     if errors:
         evidence["errors"] = errors
+    # 裁决依据透明化（code-review item 26112b3db466）：evidence 并列记录本轮
+    # 判据所用阈值与 r2 两侧用量（r1/r2 的 cache_read 与 input_tokens 已在
+    # rounds[] 全量给出），供复验脚本按定案口径复核而非只看布尔结论。
+    evidence["cache_hit_threshold"] = cache_hit_threshold
+    evidence["r2_cache_read_input_tokens"] = r2_cr
+    evidence["r2_input_tokens"] = r2_input
     # D3 定案记录：网关不接受可复用前缀缓存时输出 false 与实测差异。
     # 任一轮失败时差异不可判定（成功轮子集可能缩成单元素，把真实差异
     # 掩盖为「相同」），显式标注跳过而非给出误导性 distinct=False。
