@@ -256,7 +256,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             error += "；STATE.md 条目已删除但归档清单小节未移除，可重试以完成清理"
         if rollback_err is not None:
             error += f"；归档目录回滚失败（滞留于 {archive_path}）: {rollback_err}"
-        return {
+        result = {
             "found": True,
             "running": False,
             "archived": archived,
@@ -265,6 +265,18 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             "pending": None,
             "stopped": initial_running_count if initial_running_count else None,
         }
+        # 归档自动提交（code-review item db68f681c1d0）：目录滞留 archive 的部分
+        # 完成路径（回滚失败 / STATE 条目已删而清单小节移除失败）同样入库——
+        # 错误文案引导的重试只补 STATE/清单清理，届时 spec_dir 已不在 changes/
+        # （archived=False），成功路径的 if archived 分支不再触发，首次移动产生
+        # 的归档目录将永久未入库。fail-open：提交失败仅追加告警字段，不吞原
+        # 错误信息（对齐成功路径与 archive_spec 的提交写法）。
+        if archived:
+            cr = commit_archive_move(proot, spec, archive_path)
+            result["committed"] = cr["committed"]
+            if cr["warning"]:
+                result["commit_warning"] = cr["warning"]
+        return result
     result = {
         "found": True,
         "running": False,

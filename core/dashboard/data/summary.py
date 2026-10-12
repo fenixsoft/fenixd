@@ -881,8 +881,15 @@ class SummaryIndex:
                 self._arch_snapshot[key] = _facade.parse_archived_state(proot)
                 self._arch_sigs[key] = arch_sig
             runs_sigs = _runs_by_spec_sigs(proot)
+            # 与 get() 同款合并快照（活跃 ∪ 归档清单，同名单活跃侧优先；复用
+            # 上方已刷新的 _arch_snapshot，不另建第二套清单读取）：归档 spec 的
+            # per-spec 签名（含归档目录树扫描）也参与 ETag——否则归档树文件被
+            # 改动时 get() 会重算其摘要而本哈希不翻转，/api/specs 客户端拿到
+            # 304 继续用陈旧列表（code-review item ec844aa82459）。
+            merged = dict(self._arch_snapshot.get(key) or {})
+            merged.update(specs or {})
             per_spec = []
-            for spec_name, entry in specs.items():
+            for spec_name, entry in merged.items():
                 sigs = _spec_dep_sigs(proot, spec_name, entry or {}, runs_sigs)
                 # 值含 (mtime_ns, size) 元组与 __entry__ 指纹串；键唯一，
                 # 排序只比键不比值（跨类型值不参与比较）

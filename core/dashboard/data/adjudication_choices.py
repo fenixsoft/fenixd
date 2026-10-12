@@ -507,7 +507,10 @@ def resolve_choice(choice_id, signal_type=""):
     于拷贝，不污染注册表。
     """
     cid = str(choice_id or "").strip()
-    sig = str(signal_type or "")
+    # 与 cid 同口径归一：带首尾空白的 signal_type 否则判为未注册、落入全表
+    # 反查通道，非作用域动作被放行而同 id + 无空白 signal_type 会按
+    # not-in-bucket 拒绝（code-review item 82900e54f287）
+    sig = str(signal_type or "").strip()
     for c in ADJUDICATION_CHOICES.get(sig, ()):
         if c.get("id") == cid:
             return dict(c), ""

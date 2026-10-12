@@ -130,6 +130,11 @@ _SOURCE_KEYS = [
     # add-knowledge-atlas-maintenance：知识真相源维护车道键（设置页「杂项」页签可编辑；
     # graph_enabled 已随 graphify 功能取消下线，不再受管——存量键被静默忽略）
     "knowledge.audit_enabled",
+    # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用；_SYNC_PAGE_KEYS
+    # misc 页已同步、clear_project_page_keys 已覆盖清空——code-review item
+    # 8ac7731fc9b6 补来源标注登记：缺此键时项目级显式配置后 sources 缺键，
+    # 杂项页签徽标拿不到 "project" 标注）
+    "archive.auto_threshold",
 ]
 
 # 受管 agents 标量键（来源标注 + 回显共用；配置键新条目在此登记一次即可
@@ -393,6 +398,12 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["knowledge.enabled"] = "project"
         if "audit_enabled" in kn_raw:
             sources["knowledge.audit_enabled"] = "project"
+    # add-spec-archive D5：archive.auto_threshold 存在性判定 → project（code-review
+    # item 8ac7731fc9b6：缺标注分支——项目级显式配置后 sources 缺键，杂项页签
+    # 徽标拿不到 "project" 标注；对齐 worktree 两键同款写法）
+    ar_raw = raw.get("archive")
+    if isinstance(ar_raw, dict) and "auto_threshold" in ar_raw:
+        sources["archive.auto_threshold"] = "project"
     return sources
 
 
