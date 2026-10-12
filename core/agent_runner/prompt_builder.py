@@ -865,12 +865,15 @@ class PromptBuilder:
         )
 
     def _long_task_wait_bullets(self) -> str:
-        """长任务后台等待契约句（单一来源，两处注入共用）。
+        """长任务后台等待契约句（单一来源；唯一注入点 = _long_task_wait_section）。
 
-        `_long_task_wait_section`（独立段）与 `_result_gate_section` 实现者
-        分支（结果硬门段尾部）注入同一组契约语义；此前两处手写重复，演进
-        时易单边漂移（2026-09-21 的能力事实更正即只落了一处，code-review
-        item c2a7b93f2bc8），提取为单一来源。
+        唯一注入点在 `_long_task_wait_section`（_build_prompt 统一收尾处，
+        仅 implementer / fast-track 两车道）。`_result_gate_section` 实现者
+        分支曾在结果硬门段尾部再拼一份，同一 prompt 内出现两份逐字重复块，
+        已移除（code-review item b7136122191e）。单一来源提取初衷（防多处
+        手写漂移，2026-09-21 能力事实更正即只落了一处，code-review item
+        c2a7b93f2bc8）由本函数继续承担；后续新增注入点须先确认目标车道
+        不经 _long_task_wait_section，否则会回退成同 prompt 双份。
         """
         return (
             "- **两类后台能力均不可用于等待**：非交互派发（`claude -p`）下"
@@ -902,7 +905,9 @@ class PromptBuilder:
         回归等通知 → 每轮 partial 占位 → 同因熔断）。旧文案「完成通知真实可用」
         已废弃。
 
-        仅注入实现者两条车道（implementer / fast-track）。
+        仅注入实现者两条车道（implementer / fast-track）；本段是
+        _long_task_wait_bullets 的唯一注入点（_build_prompt 统一收尾处，
+        code-review item b7136122191e）。
         """
         if agent_type not in ("implementer", "fast-track"):
             return ""
@@ -2747,10 +2752,10 @@ class PromptBuilder:
                 # deviation-reporting 1.2）：措辞单源于模块级函数，result_gate
                 # 硬门共用同一常量（implementer/fast-track 两车道同义生效）。
                 + acceptance_deviation_discipline_section()
-                # 长任务后台等待契约句与 _long_task_wait_section 共用单一来源
-                # （此前两处手写重复、演进时单边漂移——2026-09-21 的能力事实
-                # 更正即只落了一处；code-review item c2a7b93f2bc8）
-                + self._long_task_wait_bullets()
+                # 长任务后台等待契约句不在本段重复注入：_build_prompt 统一
+                # 收尾处 _long_task_wait_section 已覆盖 implementer/fast-track
+                # 两车道（同一单一来源），此处再拼会致同一 prompt 内双份
+                # （code-review item b7136122191e）。
             )
             if agent_type == "fast-track":
                 # add-fasttrack-verification-write-gate（任务 1.2）：fast-track
