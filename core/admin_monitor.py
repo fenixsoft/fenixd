@@ -7236,11 +7236,16 @@ class AdminMonitor:
         spec 名同现）——仅叙述中提及豁免位字面令牌、他族谱或历史放行不构成
         放行。豁免位由 pm_engine 族谱门在下一轮实际创建工作开始时消费并复位
         （单次）。
+          仅 result=resolved/partially-resolved 时触发（处置未成功不执行），
+        对齐 ``_apply_infra_reclassification`` 的 result 闸门——失败 run 已落盘
+        的放行表述不构成放行指令。
 
         Args:
             signal: 本次唤起信号 dict（含 signal_type/spec）。
             disp: AdminDisposition 处置结果。
         """
+        if getattr(disp, "result", None) not in ("resolved", "partially-resolved"):
+            return
         if signal.get("signal_type") != "family_explosion":
             return
         spec = signal.get("spec")
