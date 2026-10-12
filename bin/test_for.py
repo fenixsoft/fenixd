@@ -16,7 +16,6 @@ import ast
 import os
 import signal
 import sys
-import yaml
 from pathlib import Path
 from typing import Set, Dict, List, Optional
 import subprocess
@@ -149,6 +148,11 @@ def load_test_map(tests_dir: str) -> Dict[str, str]:
         return {}
 
     try:
+        # 延迟导入（同 bin/fenix_detect_artifacts.py 口径）：PyYAML 缺失的
+        # 环境里 --help/--dry-run 不再以 ImportError traceback 收场，此处
+        # ImportError 由下方 except Exception 兜住告警后降级为空映射。
+        import yaml
+
         with open(map_file, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
