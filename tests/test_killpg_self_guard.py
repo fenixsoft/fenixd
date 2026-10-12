@@ -386,9 +386,10 @@ class TestFormConsistency:
 _GUARD_MODULE = "core/proc_utils.py"
 
 # 探活调用点显式豁免清单（killpg(_, 0) 只做存在性检查、不投递信号），
-# 值＝该文件内探活调用点数量（漂移即须人工核对并同步本清单）
+# 值＝该文件内探活调用点数量（漂移即须人工核对并同步本清单）。
+# regression 车道的整组探活已并入 core.proc_utils.kill_process_group 单点
+# （item b090579ac5a0），经 guard_killpg 信号 0 表达，不再有本文件探活点。
 _PROBE_EXEMPT = {
-    "core/regression.py": 1,  # _kill_process_group 整组探活补刀判断
     "core/adjudication_narrative.py": 1,  # 同款探活
     "core/serving_registry.py": 2,  # kill_process_group 组空判定（pgid 路径 + 孤儿组接管路径）
 }
