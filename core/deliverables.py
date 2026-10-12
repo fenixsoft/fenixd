@@ -491,7 +491,8 @@ def _scan_declared_section(lines, start):
     未开栏的 ``## `` 行才终止段。只取节内**首个**围栏作为声明块：开栏记录完整
     标记字符 run、同字符且不短于开栏才闭栏（CommonMark，``` 与 ~~~ 不互为翻转
     标记）、闭栏即取完（节内后续示例/说明性围栏不并入）；闭栏后段扫描继续，
-    以定位未开栏的节边界。
+    以定位未开栏的节边界——后续围栏仍做开/闭状态跟踪（围栏内行一律不参与
+    ``_H2_RE`` 节边界判定，仅首个围栏内容并入声明块）。
 
     Args:
         lines: tasks.md 行列表（调用方先以 ``_DECLARED_HEADING_RE`` 定位声明
@@ -513,18 +514,23 @@ def _scan_declared_section(lines, start):
         m = _FENCE_RE.match(line)
         if m:
             if not fence_char:
-                if not first_fence_done:
-                    fence_char = m.group(1)  # 开栏：记录完整标记 run
+                # 开栏：全程跟踪围栏状态（首个声明围栏 + 后续示例/说明围栏），
+                # 后续围栏内容行同样不参与节边界判定（fence-first，item
+                # ecccdf0ae154），只是不并入声明块。
+                fence_char = m.group(1)  # 开栏：记录完整标记 run
                 continue
             cur = m.group(1)
             if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
-                fence_char = ""  # 闭栏即取完——声明块只取节内首个围栏
-                first_fence_done = True
+                if not first_fence_done:
+                    first_fence_done = True  # 闭栏即取完——声明块只取节内首个围栏
+                fence_char = ""  # 闭栏：恢复段边界扫描
                 continue
-            block.append(line)  # 同字符更短/异字符围栏行是块内容而非闭栏
+            if not first_fence_done:
+                block.append(line)  # 同字符更短/异字符围栏行是块内容而非闭栏
             continue
         if fence_char:
-            block.append(line)
+            if not first_fence_done:
+                block.append(line)  # 首个（声明）围栏内容行并入声明块
         elif _H2_RE.match(line):
             end = i
             break
