@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-12 03:33 UTC+8
+> 最后更新：2026-10-12 08:31 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -35,6 +35,7 @@
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义 | 2 | 2026-10-07 02:58 |
 | [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 5 | 2026-10-04 05:06 |
 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源机制与维护车道 | 10 | 2026-10-07 03:55 |
+| [build-gates](domains/build-gates/_domain.md) | 构建与交叉编译门禁 | 1 | 2026-10-12 08:31 |
 
 ## 决策记录
 
