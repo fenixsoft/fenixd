@@ -77,7 +77,7 @@ from core.code_review import (  # noqa: F401
 from core.agent_runner.provider_circuit import PROVIDER_SWITCH_COOLDOWN_SECONDS
 from core.config import ConfigLoader
 from core.git_base_branch import resolve_base_branch
-from core.verify_contract import load_verify_contract
+from core.verify_contract import RegressionSpec, load_verify_contract
 
 # 进度快照（单文件覆盖式，与 .fenix/regression/last-run.json 同型，D8）
 FIX_PROGRESS_REL = ".fenix/code-review/fix-progress.json"
@@ -193,18 +193,6 @@ FIX_PROGRESS_DEFAULT = {
     # 变更/关闭不使解除记录失真；随窗次标识一并清除。
     "night_quiet_armed_text": None,
 }
-
-# phase 合法值（spec code-fix-progress）
-FIX_PHASES = (
-    "idle",
-    "selecting",
-    "fixing",
-    "regressing",
-    "retrying",
-    "merging",
-    "blocked",
-    "failed",
-)
 
 
 def _progress_path(project_root) -> Path:
@@ -4452,15 +4440,30 @@ class CodeFixOrchestrator:
                         and open_ids_now <= sev_deferred_ids
                     )
                     if deferred_msg:
-                        # 延迟批仍在场（本轮重试刚尝试过、仍被阻断）：收敛文案
-                        # 以 defer 语义为主（D7），reason 同步 wip_gate_blocked
-                        # 供前端透传；跳过/达上限信息保留后半句。
+                        # 延迟批本轮有结果：收敛文案以 defer 语义为主（D7），
+                        # 跳过/达上限信息保留后半句。reason 按返回消息分类
+                        # （code-review item 204d1fc36266）：仅「延迟批合回待
+                        # 重试」前缀＝仍被 WIP 阻断，保持 wip_gate_blocked
+                        # 受阻态透传；已合回终态（合回成功核销/已合回未核销/
+                        # 超预算入失败档案，_retry_one_deferred 其余非空返回）
+                        # 非受阻，MUST NOT 误标 wip_gate_blocked——按排除来源
+                        # 分级 reason（与下方无延迟批分支同口径），phase 由写
+                        # 点按 severity_deferred=idle／其余=blocked 落。前缀
+                        # 须与 _retry_one_deferred 阻断文案（「延迟批合回待
+                        # 重试（主树未提交改动：…）」）保持同步。
                         current = deferred_msg + (
                             "；含已达自动重试上限条目，需人工排查"
                             if maxed
                             else "；其余跳过条目下轮自动重试"
                         ) + sev_note
-                        reason = "wip_gate_blocked"
+                        if deferred_msg.startswith("延迟批合回待重试"):
+                            reason = "wip_gate_blocked"
+                        elif maxed:
+                            reason = "failed_batch_maxed"
+                        elif sev_pure:
+                            reason = "severity_deferred"
+                        else:
+                            reason = "failed_batch_retained"
                     elif maxed:
                         current = (
                             "open 条目均已跳过（含已达自动重试上限的条目，需人工排查）；"
@@ -5343,9 +5346,26 @@ class CodeFixOrchestrator:
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
             prog = read_progress(root)
+            # done 数值形态守卫（code-review item 6d719838a2d2，对齐 checkpoint
+            # 链级读点 c95bc89c37d6 同款 try-int 口径）：or 0 只兜 None/空值，
+            # 进度被外部写坏成非数值标量（如字符串）时裸加法抛 TypeError，被
+            # _process_deferred_merges 单条兜底吞成 warning——此刻 merge_back
+            # 已成功、现场已清理、台账条目已移除，本批 hit 的进度增量与成功
+            # 文案会一并丢失。try int 归一，非法值按 0 容错并 warning 留痕，
+            # 本写点即以合法数值覆盖自愈。
+            try:
+                prev_done = int(prog.get("done") or 0)
+            except (TypeError, ValueError):
+                if prog.get("done"):
+                    self._log(
+                        "warning",
+                        "code-fix 进度 done 字段形态异常（非数值："
+                        f"{type(prog.get('done')).__name__}），按 0 容错",
+                    )
+                prev_done = 0
             write_progress(
                 root,
-                done=(prog.get("done") or 0) + hit,
+                done=prev_done + hit,
                 reason="",
                 current=f"延迟批合回成功（核销 {hit} 条）",
             )
@@ -5647,7 +5667,7 @@ class CodeFixOrchestrator:
 
     def _salvage_merge_back_conflict(
         self, wm, wt: Path, ctx: dict, orig_info,
-        eff_spec: str, targets, fixed_ids: list, pending_ids: list,
+        eff_spec: RegressionSpec, targets, fixed_ids: list, pending_ids: list,
         created_sha: str,
     ):
         """合回真冲突的定向救回（evo-add-codefix-mergeback-conflict-salvage 1.1/1.3）。
