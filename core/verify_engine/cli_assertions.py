@@ -635,7 +635,22 @@ class CliAssertionRunner:
                     "pass": False,
                     "error": f"stdout 非合法 JSON: {stdout[:120]}",
                 }
-        path = a.get("path") or ""
+        # fail-closed：非字符串 path（如 YAML 合法标量 path: 5 归一成 int）
+        # 不静默放行——原样传给 evaluate_json_path 会在路径 token 拆分时抛
+        # TypeError，被 run() 兜底归一成泛化「断言执行异常」，丢掉「path 字段
+        # 类型非法」这一可直接修复的定位信息。口径对齐 api 侧 _assert_json_path
+        # （验收期必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期
+        # 自愈/绕过验收的调用路径）
+        path = a.get("path")
+        if not isinstance(path, str) or not path:
+            return {
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": path,
+                "pass": False,
+                "error": "缺少 path 字段或类型非法（path 须为非空字符串）",
+            }
         expected = a.get("expected", _MISSING)
         # 哨兵区分「路径不存在」与「显式 null」（与 api 侧 _assert_json_path
         # 口径对齐）：expected=null 且路径缺失时 None==None 会假通过
