@@ -21,12 +21,6 @@ logger = logging.getLogger("fenixd.dashboard.run_routes")
 class H4RunRoutesMixin:
     """H4 run/events/hooks-audit。"""
 
-    def _coded_error(self, status: int, msg: str, code: str) -> None:
-        """带稳定机器可读 ``code`` 的错误响应（code-review item
-        813aa61cb08f）：前端控制流按业务错误码分支，不依赖中文消息子串。
-        先例：H12 regression / code_review mixin 同名 helper。"""
-        self._json({"error": msg, "code": code}, status)
-
     def _api_run_cancel(self, query):
         """POST /api/run-cancel?project=<name>&run_id=<id>（可选 reason）
 
@@ -56,8 +50,15 @@ class H4RunRoutesMixin:
         try:
             content_length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
+            # 报文分帧已不可解析，且 _drain_remaining_request_body 里同一处
+            # int() 同样失败得 remaining=0 跳过排空，客户端已发出的 body 字节
+            # 会残留 keep-alive 连接被下一请求当请求行（BUG-01 同类失步）。
+            # 比照 base._read_json_body（code-review item 8beb499acc56）置
+            # close_connection=True 后按无 body 继续执行，让残留字节随连接
+            # 关闭作废。
             content_length = 0
-        # [fenix-ignore:4e54263f454d] 此处不读 body 不会毒化 keep-alive：未消费 body 由 _handle_inner finally 的 _drain_remaining_request_body 统一排空（BUG-01/265e22d75797），同 regression_routes 6e9597e51e90 先例
+            self.close_connection = True
+        # [fenix-ignore:4e54263f454d] 此处不读 body 不会毒化 keep-alive：未消费 body 由 _handle_inner finally 的 _drain_remaining_request_body 统一排空（BUG-01/265e22d75797），同 regression_routes 6e9597e51e90 先例。该兜底仅覆盖 Content-Length 可解析的情形，头部不可解析时由上方 except 分支置 close_connection 让残留字节随连接关闭作废（item 6f0469e96861）
         if content_length > 0 and not reason:
             body = self._read_json_body()
             if body is None:

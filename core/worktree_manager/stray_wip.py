@@ -25,8 +25,11 @@ major 告警。设计决策：
   实证 daemon 重启间隔（最长约 11 小时）远短于 24 小时滞留升级阈值，
   重启重置使升级永不触发、同指纹一次性告警被击穿成重复多条——untracked
   注册表现落盘 ``.fenix/`` 运行时状态区（``_untracked_registry_path``），
-  重启后恢复 first_seen 与双档升级标记，跨重启连续计时/去重；tracked 流
-  维持内存态（决策原文对 tracked 流继续有效，重启重置宽限的损失仅时效）。
+  重启后恢复 first_seen 与双档升级标记，跨重启连续计时/去重；白名单脱落
+  注册表同落该文件第三分区（``_WHITELIST_SECTION_KEY``）——其「同指纹
+  一次性 major 告警」语义同样依赖 escalated_at 标记跨重启存活，重启即清空
+  会使同脱落集合重启后首轮盘点重复发射（与 untracked 流同构论证）；tracked
+  流维持内存态（决策原文对 tracked 流继续有效，重启重置宽限的损失仅时效）。
 - 全程零触碰：不 stash、不 checkout、不 clean、不 reset，tracked 工作区
   内容不变——盘点/告警前后 ``git status --porcelain`` 的 tracked 行逐字节
   一致（落盘仅两处，均属框架运行时状态目录、非主树触碰：AdminStore 告警
@@ -134,6 +137,22 @@ _FIRST_SIGHT_SECTION_KEY = "first_sight_dirs"
 # 机制）：登记只承载「目录已见过」这一去重事实与证据快照，无升级时钟、
 # 无双档标记语义。
 _FIRST_SIGHT_PERSISTED_FIELDS = ("first_seen", "first_seen_iso", "files")
+
+# 白名单脱落注册表分区键与持久化字段白名单（evo-whitelist-tracked-patrol
+# 流与 untracked/first_sight 两分区同居一个持久化文件第三分区）：告警文案
+# 「同指纹一次性告警」跨重启成立依赖 escalated_at 标记存活——注册表若仅
+# 内存态，daemon 重启清空后同脱落集合会在首轮盘点重复发射 major 告警
+# （evo-persist-stray-escalation 对 untracked 流的重启击穿论证同构适用）。
+# ``rules`` 是放行规则快照（路径 → 规则行 pattern，str→str），供告警
+# evidence 取证，随条目持久化。
+_WHITELIST_SECTION_KEY = "whitelist"
+_WHITELIST_PERSISTED_FIELDS = (
+    "first_seen",
+    "first_seen_iso",
+    "files",
+    "rules",
+    "escalated_at",
+)
 
 
 def grace_minutes(config) -> float:
@@ -306,7 +325,11 @@ class MainTreeStrayWipSweeper:
         # ``_untracked_fingerprint``，untracked 不可复用 tracked 指纹形态的
         # 同款论证适用）。与 tracked/untracked 注册表分账独立：各流按「当前
         # 指纹集」复位，混账会被他侧清空。``rules`` 键随条目留存 check-ignore
-        # 放行规则快照，供告警 evidence 取证。
+        # 放行规则快照，供告警 evidence 取证。随持久化文件第三分区落盘
+        # （``_WHITELIST_SECTION_KEY``，与 tracked 流内存态取舍不同——本流
+        # 无宽限、escalated_at 即唯一去重标记，重启清空＝同指纹重复发射
+        # major，故须跨重启存活），载入随 ``_load_untracked_registry`` 一并
+        # 恢复。
         self._whitelist_registry: dict = {}
         # 会话归因留痕去重状态（evo-maintree-stray-attribution-log-dedup 1.1）：
         # 进程内内存态，不落 AdminStore（模块注释明令不新增 signal_type）。
@@ -1246,7 +1269,10 @@ class MainTreeStrayWipSweeper:
         ``TypeError``）均回退空表并留一条告警（fail-open，不阻断主盘点
         ——损失仅为重新宽限，与 D5 决策被取代前的重启行为一致）。条目级
         形态守卫：非 dict 指纹段 / 缺 first_seen 数值 / files 非列表的
-        条目剔除（部分损坏不株连完好条目）。载入后内存态为单源
+        条目剔除（部分损坏不株连完好条目）。白名单脱落注册表分区
+        （``_WHITELIST_SECTION_KEY``）同轮一并恢复：形态守卫同款（first_seen
+        数值 / files 列表），``rules`` 非 dict 容错为空表，escalated_at 标记
+        随盘存活使「同指纹一次性告警」跨重启成立。载入后内存态为单源
         （``_untracked_registry_loaded`` 守卫），文件此后只是收尾落盘的
         镜像。
         """
@@ -1272,24 +1298,31 @@ class MainTreeStrayWipSweeper:
             if not isinstance(data, dict):
                 raise ValueError(f"registry payload is not an object: {type(data)}")
             # 分区适配（evo-stray-first-sight-prevention 1.2，读写同步）：新版
-            # 顶层两分区（untracked 指纹注册表 / first_sight_dirs 目录键首现
-            # 登记）；旧版扁平形态（顶层即指纹→条目）按 legacy 整体归入
-            # untracked 分区，首现登记空表起步。
+            # 顶层三分区（untracked 指纹注册表 / first_sight_dirs 目录键首现
+            # 登记 / whitelist 白名单脱落注册表）；旧版扁平形态（顶层即指纹→
+            # 条目，首现登记与白名单注册表尚未存在）按 legacy 整体归入
+            # untracked 分区，另两表空表起步——旧格式缺白名单分区即载入空
+            # 注册表，向后兼容不抛错。
             if (
                 _UNTRACKED_SECTION_KEY in data
                 or _FIRST_SIGHT_SECTION_KEY in data
+                or _WHITELIST_SECTION_KEY in data
             ):
                 untracked_raw = data.get(_UNTRACKED_SECTION_KEY) or {}
                 first_sight_raw = data.get(_FIRST_SIGHT_SECTION_KEY) or {}
-                if not isinstance(untracked_raw, dict) or not isinstance(
-                    first_sight_raw, dict
+                whitelist_raw = data.get(_WHITELIST_SECTION_KEY) or {}
+                if (
+                    not isinstance(untracked_raw, dict)
+                    or not isinstance(first_sight_raw, dict)
+                    or not isinstance(whitelist_raw, dict)
                 ):
                     raise ValueError(
-                        "registry sections must both be objects: "
-                        f"{type(untracked_raw)}/{type(first_sight_raw)}"
+                        "registry sections must all be objects: "
+                        f"{type(untracked_raw)}/{type(first_sight_raw)}/"
+                        f"{type(whitelist_raw)}"
                     )
             else:
-                untracked_raw, first_sight_raw = data, {}
+                untracked_raw, first_sight_raw, whitelist_raw = data, {}, {}
             restored: dict = {}
             for fp, item in untracked_raw.items():
                 if not isinstance(item, dict):
@@ -1329,9 +1362,34 @@ class MainTreeStrayWipSweeper:
                     ),
                     "files": [str(p) for p in files],
                 }
+            restored_whitelist: dict = {}
+            for fp, item in whitelist_raw.items():
+                if not isinstance(item, dict):
+                    continue
+                first_seen = item.get("first_seen")
+                files = item.get("files")
+                if not isinstance(first_seen, (int, float)) or not isinstance(
+                    files, list
+                ):
+                    continue
+                rules_raw = item.get("rules")
+                restored_whitelist[str(fp)] = {
+                    "first_seen": float(first_seen),
+                    "first_seen_iso": str(
+                        item.get("first_seen_iso") or self._iso(float(first_seen))
+                    ),
+                    "files": [str(p) for p in files],
+                    "rules": (
+                        {str(k): str(v) for k, v in rules_raw.items()}
+                        if isinstance(rules_raw, dict)
+                        else {}
+                    ),
+                    "escalated_at": str(item.get("escalated_at") or ""),
+                }
         except (ValueError, TypeError) as exc:
             self._untracked_registry = {}
             self._first_sight_dirs = {}
+            self._whitelist_registry = {}
             self._log(
                 "warning",
                 f"untracked 注册表持久化文件损坏，回退空表重新宽限"
@@ -1340,6 +1398,7 @@ class MainTreeStrayWipSweeper:
             return
         self._untracked_registry.update(restored)
         self._first_sight_dirs.update(restored_dirs)
+        self._whitelist_registry.update(restored_whitelist)
         self._prune_untracked_registry_stale_paths()
 
     def _prune_untracked_registry_stale_paths(self) -> None:
@@ -1366,10 +1425,14 @@ class MainTreeStrayWipSweeper:
         既有原子写范式）。
 
         序列化结果与上次落盘 payload 逐字节相同即跳过（无变更不写盘）。
-        顶层两分区（evo-stray-first-sight-prevention 1.2，与载入适配同步）：
-        ``untracked``＝指纹注册表（``_UNTRACKED_PERSISTED_FIELDS`` 投影），
-        ``first_sight_dirs``＝首现登记（``_FIRST_SIGHT_PERSISTED_FIELDS``
-        投影，目录键）。sizes_bytes/total_bytes 等现采值不入。任何写盘失败
+        顶层三分区（evo-stray-first-sight-prevention 1.2 起两分区，白名单
+        脱落注册表以 ``_WHITELIST_SECTION_KEY`` 第三分区并入，与载入适配
+        同步）：``untracked``＝指纹注册表（``_UNTRACKED_PERSISTED_FIELDS``
+        投影），``first_sight_dirs``＝首现登记（
+        ``_FIRST_SIGHT_PERSISTED_FIELDS`` 投影，目录键），``whitelist``＝
+        白名单脱落注册表（``_WHITELIST_PERSISTED_FIELDS`` 投影，escalated_at
+        随盘存活使「同指纹一次性告警」跨重启成立）。sizes_bytes/total_bytes
+        等现采值不入。任何写盘失败
         仅告警（fail-open）：持久化缺失的代价是重启后重新宽限（D5 被取代
         前行为），MUST NOT 放大成本轮盘点失败。临时文件放同目录（os.replace
         原子换入）且以点前缀命名，避免被任何 ``*.json`` 扫描谓词命中并发
@@ -1385,6 +1448,11 @@ class MainTreeStrayWipSweeper:
                 str(d): {k: entry[k] for k in _FIRST_SIGHT_PERSISTED_FIELDS
                          if k in entry}
                 for d, entry in self._first_sight_dirs.items()
+            },
+            _WHITELIST_SECTION_KEY: {
+                str(fp): {k: entry[k] for k in _WHITELIST_PERSISTED_FIELDS
+                          if k in entry}
+                for fp, entry in self._whitelist_registry.items()
             },
         }
         text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)

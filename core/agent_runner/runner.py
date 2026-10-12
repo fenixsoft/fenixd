@@ -2910,10 +2910,13 @@ class AgentRunner:
         任意一侧发放后另一侧不再重复发放。槽体复用轮次分支基线 dict（同一
         run_id 键）：run 终态经 _turn_branch_state_forget 摘除、直调车道由既
         有 24h 清理兜底，宽限状态不新增泄漏面。``__new__`` 绕过 ``__init__``
-        的测试实例按 _turn_limit_action 同款惰性回退建态/建锁。
+        的测试实例按 _turn_limit_action 同款惰性回退建态；互斥锁由
+        _turn_branch_state_lock property 自带惰性建锁供给，不在此显式建锁
+        （绕过描述符写实例字典同名键属死存储，code-review item 3190e2d0f3df）。
         """
         self.__dict__.setdefault("_turn_branch_state", {})
-        self.__dict__.setdefault("_turn_branch_state_lock", threading.Lock())
+        # 互斥锁不在此显式建态：_turn_branch_state_lock 是数据描述符 property
+        # （自带惰性建锁），绕过描述符往实例字典写同名键属死存储、永不被读取。
         with self._turn_branch_state_lock:
             entry = self._turn_branch_state.setdefault(run_id, {})
             entry.setdefault("created_ts", time.time())

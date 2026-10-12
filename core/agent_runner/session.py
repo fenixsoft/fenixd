@@ -130,6 +130,8 @@ class SessionTracker:
         # cost 为 None 时 float(None) 抛 TypeError，由 except 归位 None（out 初始即 None）
         try:
             out["cost_usd"] = float(cost)
-        except (TypeError, ValueError):
+        # OverflowError：JSON 任意精度往返可携带超大整数字面量（如 10**400），
+        # float() 溢出——口径对齐 _to_int 兜底（code-review item 86f44192983b）
+        except (TypeError, ValueError, OverflowError):
             out["cost_usd"] = None
         return out

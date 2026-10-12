@@ -158,7 +158,6 @@ from .runs import (
 from .artifacts import (
     parse_verify_progress,
     parse_report,
-    parse_test_scenarios,
     parse_run_result_scenarios,
     list_screenshots,
     _fold_summary,

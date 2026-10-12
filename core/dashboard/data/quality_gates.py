@@ -224,6 +224,14 @@ def _lane_fingerprint_ok(product: dict, expected) -> bool:
     return True
 
 
+# 指纹缓存共用常量（code-review item f38f2ec2ae9b 自下方 full-suite 缓存小节
+# 上移，让「共用」关系在文本顺序上先于两处首次使用点）：ocr 车道指纹缓存
+# （_LANE_FINGERPRINT_CACHE）与 full-suite 仓库指纹缓存（_FINGERPRINT_CACHE）
+# 共用同一 TTL/容量口径。
+_FINGERPRINT_CACHE_TTL_SECONDS = 5.0
+_FINGERPRINT_CACHE_MAX = 64
+
+
 # ocr 车道指纹短 TTL 缓存（code-review item f3efcd5eff76）：current_lane_fingerprint
 # 每次调用 1 次 rev-parse + 至多 2 次 merge-base 子进程（各 15s 超时），而
 # _load_lane_product 在 parse_quality_gates 内对每个 spec 各调一次——与下方
@@ -360,9 +368,9 @@ _FULL_SUITE_PRODUCT_STATUS = {
 # _RUN_META_CACHE 同款模块级 memo：TTL 内同 project_root 复用一次采集，代价是
 # HEAD 恰在移动的边界场景下门禁可见性延迟至多一个 TTL（指纹新鲜度本就按
 # 「刷新窗口内一致」语义消费）。
+# TTL/容量常量见上方「指纹缓存共用常量」小节（与 ocr 车道指纹缓存共用，
+# code-review item f38f2ec2ae9b）。
 _FINGERPRINT_CACHE: dict = {}
-_FINGERPRINT_CACHE_TTL_SECONDS = 5.0
-_FINGERPRINT_CACHE_MAX = 64
 
 
 def _cached_repo_fingerprint(project_root):

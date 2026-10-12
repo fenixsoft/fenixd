@@ -355,7 +355,11 @@ class LivenessSupervisor:
         # started_at/output_file 不入本表，权威存放处是 _liveness_snapshot
         # 的 background_calls。
         # deadline 多次到点时对同一后台调用的输出文件做增长判定——
-        # 「可观测零产出」短路需要两个采样点间 size 零增长而非单点猜测。
+        # 「可观测零产出」短路的零增长时长以文件 mtime 锚定：首次观测即以
+        # mtime（最后一次写入时刻）为零增长起点，这是文件系统层面的最后
+        # 写入证据而非单点猜测（语义权威口径见 _output_zero_growth_seconds
+        # docstring），mtime 早于 HANG_ZERO_GROWTH_WINDOW_SECONDS 时单个
+        # 采样点即可达标触发击杀；后续采样才在其上做跨采样累计/重置。
         # 终态回收：_supervision_deadline_action 每轮判定清理已不在当前
         # background_calls 集合内的 task_id 条目（历史 run 残留）。
         self._output_tracking: dict = {}

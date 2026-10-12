@@ -38,18 +38,49 @@ class G2LegacyRegistryMixin:
             worktree_path: 死亡 run 的 worktree 绝对路径（Path 或 str）；
                 仅分支模式传 None。
             branch: 死亡 run 的分支名（仅分支模式下为收编唯一线索，必填）。
+
+        并发纪律（code-review item fb49eca84deb）：覆盖判定与入册写全程持
+        _spec_lock_th，与陈锁兜底注册（``_maybe_register_legacy_for_stale_lock``
+        的「has_legacy 复核 + 登记」原子段）互斥——否则陈锁线程入口检查通过后、
+        登记写之前，同 spec 收尾线程恰经 keep_for_reuse 登记的 reuse 遗产会被
+        本处无 reuse 的覆盖登记顶掉（下轮 create 认领失效退化为全新建树，宽限
+        期后现场目录被 sweeper 当无主孤儿回收）。实际写体在
+        ``_register_legacy_unlocked``（threading.Lock 非重入，已持锁语境不得再
+        走本方法）。
         """
         if not spec_name or not branch:
             return
         wt_str = str(worktree_path) if worktree_path else ""
-        # 覆盖式更新（D5：仅留最新一份登记；旧遗产物理回收交由清扫器）
-        if spec_name in self._legacy:
-            old = self._legacy[spec_name]
+        # 覆盖式更新（D5：仅留最新一份登记；旧遗产物理回收交由清扫器）。
+        # 写段持 _spec_lock_th（code-review item fb49eca84deb，纪律同
+        # _release_spec_locks_of：锁内只做读判定与写，留痕日志移出锁外补记）。
+        with self._spec_lock_th:
+            replaced_path = self._register_legacy_unlocked(spec_name, wt_str, branch)
+        if replaced_path is not None:
             self.logger.info(
                 "worktree_manager",
-                f"Replacing prior legacy for '{spec_name}' ({old.get('path')}) "
+                f"Replacing prior legacy for '{spec_name}' ({replaced_path}) "
                 f"— superseded by newer death",
             )
+        self._log_legacy_registered(spec_name, wt_str, branch)
+
+    def _log_legacy_registered(self, spec_name: str, wt_str: str, branch: str) -> None:
+        """遗产登记成功入册的统一留痕（register_legacy / 陈锁兜底原子段共用）。"""
+        self.logger.warning(
+            "worktree_manager",
+            f"Registered legacy for '{spec_name}': "
+            f"{'worktree=' + wt_str if wt_str else 'branch-only'} branch={branch}",
+        )
+
+    def _register_legacy_unlocked(
+        self, spec_name: str, wt_str: str, branch: str,
+    ) -> Optional[str]:
+        """register_legacy 的实际写体（MUST 持 _spec_lock_th 调用）。
+
+        覆盖式更新（D5：仅留最新一份登记；旧遗产物理回收交由清扫器）。
+        返回被覆盖的旧遗产 path（无覆盖返回 None），供调用方在锁外补留痕日志。
+        """
+        old = self._legacy.get(spec_name)
         self._legacy[spec_name] = {
             "path": wt_str,
             "branch": branch or "",
@@ -59,11 +90,7 @@ class G2LegacyRegistryMixin:
             "registered_at": time.time(),
             "dirty": bool(wt_str),  # worktree 模式待刷新脏快照；仅分支模式无脏文件
         }
-        self.logger.warning(
-            "worktree_manager",
-            f"Registered legacy for '{spec_name}': "
-            f"{'worktree=' + wt_str if wt_str else 'branch-only'} branch={branch}",
-        )
+        return old.get("path") if old is not None else None
 
     def get_legacy(self, spec_name: str) -> Optional[dict]:
         """返回某 spec 的遗产记录（copy），无则 None。
@@ -209,11 +236,13 @@ class G2LegacyRegistryMixin:
     ) -> None:
         """摘除该 spec 名下（`<spec>:<agent_type>` 键按 spec 前缀精确匹配）的在册锁。
 
+        薄委托（code-review item 53b7d6a78045）：摘锁口径单源在
+        ``_release_spec_locks_core``（与 locks._release_spec_locks 同一底层
+        实现，lock_key/family/not_after 三维可选，调整摘锁纪律只改该处），
+        本方法保持既有签名与行为不变。
+
         keep_for_reuse 两条出口（登记未生效 / 正常收尾）共用单一实现
-        （code-review item fcffade60cc9）：调整摘锁口径只需改此处，两条出口
-        行为不再漂移。加锁口径对齐 cleanup finally（code-review item
-        1a7509f2653a）：计算与摘除全程持 _spec_lock_th，迭代用 sorted 快照，
-        防误删并发 create 的新锁及 "Set changed size during iteration"。
+        （code-review item fcffade60cc9）：两条出口行为不再漂移。
 
         not_after：入口时刻守卫（code-review item ede232241fe2，与 cleanup
         finally 的 cleanup_entry_ts 同款）——仅摘除 _lock_since 不晚于该时刻
@@ -228,22 +257,7 @@ class G2LegacyRegistryMixin:
         impl 族内具体 agent_type 不可辨，同族维持全摘）；None 表示不设限
         （被收尾 worktree 形状完全不可辨时的兜底）。
         """
-        with self._spec_lock_th:
-            for k in [
-                k for k in sorted(self._spec_locks)
-                if k.split(":")[0] == spec_name
-                and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
-                and (
-                    family is None
-                    or (
-                        (k.partition(":")[2] == "verifier")
-                        if family == "verifier"
-                        else (k.partition(":")[2] != "verifier")
-                    )
-                )
-            ]:
-                self._spec_locks.discard(k)
-                self._lock_since.pop(k, None)
+        self._release_spec_locks_core(spec_name, not_after=not_after, family=family)
 
     def get_reuse_record(self, spec_name: str) -> Optional[dict]:
         """返回本轮 run 已认领的复用 worktree 记录（prompt 注入用），无则 None。"""
@@ -277,18 +291,51 @@ class G2LegacyRegistryMixin:
             rec["recovery"] = True
         self._active_reuse[spec_name] = rec
 
-    def _take_reusable_worktree(self, spec_name: str) -> Optional[tuple]:
+    def _take_reusable_worktree(
+        self, spec_name: str, agent_type: str = "",
+    ) -> Optional[tuple]:
         """认领该 spec 的复用遗产；有效返回 (wt_path, branch)，无效清理后返回 None。
 
         有效性：目录存在、仍是注册的 git worktree、分支仍可解析。认领即从
         _legacy 摘出（在用目录不再是「遗产」，防 sweeper 宽限期回收正在工作的
         worktree），转入 _active_reuse 供 prompt 注入与收尾清理。
+
+        agent_type（code-review item 7f66c46fffef）：create 发起方 agent_type，
+        供家族校验——verify 族 legacy（fenix/verify- 分支 / verify- 目录前缀）
+        仅 verifier 可认领、非 verify 族 legacy 不被 verifier 认领（认领不校验
+        家族会在 verify 载体上做实现，merge-back 分支语义随之混乱）。家族按
+        keep_for_reuse / cleanup finally 同款形状反推（分支前缀优先、目录名
+        兜底；仅分支模式 path 为空时以登记的 worktree_name 兜底），形状不可辨
+        不设限（fail-open）。不匹配 → 跳过认领（不动在册遗产：verifier 后续
+        重派仍可认领，宽限期回收兜底不变）返回 None 走全新建树；agent_type 为
+        空（直调旧口径）不设限，行为同旧版。
         """
         rec = self._legacy.get(spec_name)
         if not rec or not rec.get("reuse"):
             return None
         path = rec.get("path") or ""
         branch = rec.get("branch") or ""
+        if agent_type:
+            wt_name = (
+                path.rstrip("/").rsplit("/", 1)[-1]
+                if path else str(rec.get("worktree_name") or "")
+            )
+            if branch.startswith("fenix/verify-") or wt_name.startswith("verify-"):
+                legacy_family = "verifier"
+            elif branch.startswith("fenix/") or wt_name.startswith("impl-"):
+                legacy_family = "non-verifier"
+            else:
+                legacy_family = None
+            if legacy_family is not None:
+                claimant = "verifier" if agent_type == "verifier" else "non-verifier"
+                if claimant != legacy_family:
+                    self.logger.info(
+                        "worktree_manager",
+                        f"Reusable legacy for '{spec_name}' family mismatch "
+                        f"(legacy={legacy_family}, claimant agent_type "
+                        f"'{agent_type}') — skip claim, fresh create",
+                    )
+                    return None
         wt = Path(path) if path else None
         if wt is None:
             # 仅分支模式（fix-relint-redispatch-legacy，守卫/relint 打回）：成功收工
@@ -341,6 +388,11 @@ class G2LegacyRegistryMixin:
 
         幂等：register_legacy 为覆盖式更新，已注册遗产不重复写。若该 spec 已在册
         遗产则跳过（不覆盖已有更早注册的遗产——更早注册的宽限期更短，应由其决定）。
+        入口的 has_legacy 只是无锁快检（省后续目录扫描），权威判定在登记前与
+        登记写同锁复核——code-review item fb49eca84deb：快检与登记写之间的窗口
+        内，同 spec 收尾线程可能恰经 keep_for_reuse 登记带 reuse=True 的遗产，
+        无锁覆盖会把 reuse 顶掉（下轮 create 认领失效退化为全新建树，宽限期后
+        现场目录被 sweeper 当无主孤儿回收）。
 
         例外：分支三级兜底（get_branch_name/_wt_branches/_guess_branch_from_worktree）
         皆空时 register_legacy 对空 branch 直接早退不入册——该孤儿目录不获清扫豁免、
@@ -366,7 +418,17 @@ class G2LegacyRegistryMixin:
                 f"unresolvable (wt={wt}) — no sweep exemption, orphan directory is "
                 f"subject to cleanup_stale_worktrees reclaim",
             )
-        self.register_legacy(spec_name, wt, branch or "")
+        # 原子段（code-review item fb49eca84deb）：has_legacy 复核 + 覆盖决定 +
+        # 登记写全程持 _spec_lock_th，与 keep_for_reuse / register_legacy 的登记
+        # 写互斥。写体走 _register_legacy_unlocked（本段已持锁，threading.Lock
+        # 非重入，不得再走会重复取锁的 register_legacy）；「已在册不覆盖」与
+        # 「空分支不入册」（register_legacy 对空 branch 直接早退的同语义）都在
+        # 锁内判定，登记留痕照 register_legacy 口径移出锁外补记。
+        with self._spec_lock_th:
+            if self.has_legacy(spec_name) or not branch:
+                return
+            self._register_legacy_unlocked(spec_name, str(wt), branch)
+        self._log_legacy_registered(spec_name, str(wt), branch)
 
     def _guess_branch_from_worktree(self, wt_path) -> str:
         """从 worktree 目录 HEAD 取分支名（register_legacy 兜底用）。"""

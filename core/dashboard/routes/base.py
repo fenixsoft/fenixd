@@ -780,6 +780,16 @@ class H0BaseMixin:
                     size = max_size
         return page, size
 
+    def _coded_error(self, status: int, msg: str, code: str) -> None:
+        """带稳定机器可读 ``code`` 的错误响应（H4/H11/H12 三路由 mixin 共享
+        单源，code-review item 7e3d5adae969 上提）。
+
+        前端控制流按业务错误码分支，不依赖中文消息子串（先例：item
+        813aa61cb08f / fbdb437a22a0 / 934af264345f），错误码经
+        ApiError.code 承载。
+        """
+        self._json({"error": msg, "code": code}, status)
+
     def _mark_response_started(self):
         """标记本请求已开始写响应（供 _handle 的 500 兜底判断是否可再写）。
 
@@ -978,7 +988,10 @@ class H0BaseMixin:
                 if method not in ("GET", "HEAD", "POST", "DELETE"):
                     # 排空 body 后再回 405（code-review item aace0e7e91b6）：
                     # 非 GET/HEAD/POST/DELETE 方法不落入 GET 表分派，与静态
-                    # 资源分支的 405 口径对齐。
+                    # 资源分支的 405 口径对齐。防御性保留：现行调用图只有
+                    # do_GET/do_HEAD/do_POST/do_DELETE 四入口，本分支恒不可
+                    # 达，仅当未来新增 do_<method> 入口转发到 _handle 时才
+                    # 会触发（code-review item fa099831a4e0）。
                     self._drain_remaining_request_body()
                     self._error(405, "Method Not Allowed")
                     return

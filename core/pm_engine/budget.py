@@ -199,7 +199,13 @@ class ImplBudget:
                 if raw is None or isinstance(raw, bool)
                 else int(raw)
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError（code-review item 95163767d8b0）：YAML 合法字面量
+            # .inf（float('inf')）送 int() 抛 OverflowError，不属 TypeError/
+            # ValueError，旧写法逃到 _exempt_dead_run_budget 记账段兜底 except，
+            # 把已完成退款/侧车递增的豁免误标 "failed"。口径对齐
+            # backoff._transient_redispatch_delay（item 851ba3eeed41）与
+            # infra_breaker 同构守卫。
             val = BUDGET_EXEMPT_ALERT_THRESHOLD
         return max(1, val)
 

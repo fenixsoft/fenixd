@@ -50,6 +50,12 @@ def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
             ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
             capture_output=True,
             text=True,
+            # 显式 UTF-8（item 3903036ee5c2，与本文件 6f235c189552 先例同款）：
+            # text=True 缺省按 locale strict 解码，本地化 git 的 stderr 带非
+            # ASCII 坏字节时抛 UnicodeDecodeError（ValueError 子类），不在下方
+            # except 范围内，会穿出 merge-back 闸门段。
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         # merge-base 失败（分支不存在/已清理/仓库异常）→ 静默跳过（关键约束：
@@ -70,6 +76,11 @@ def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
             ],
             capture_output=True,
             text=True,
+            # 显式 UTF-8（item 3903036ee5c2，对齐上方 merge-base 与本文件
+            # 6f235c189552 先例）：stderr 坏字节按 replace 降级，不再逃逸下方
+            # 仅捕 (TimeoutExpired, OSError) 的 except。
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if log.returncode != 0:
@@ -1374,7 +1385,10 @@ class G4MergebackMixin:
         non_artifact = self._artifacts.non_artifacts_in(conflict_paths)
         if not non_artifact:
             return None
-        if all(self._rehearsed_path_is_ignored_du(p) for p in non_artifact):
+        # 单条批量 check-ignore（item 2bde1727f26c，对齐 _backup_untracked_spec_files
+        # 批量口径）：不在 _main_tree_lock 内逐冲突路径起子进程、线性放大主树
+        # 全局合并锁持锁时长。布尔语义不变（全部命中被忽略子集才放行）。
+        if self._rehearsed_paths_all_ignored_du(non_artifact):
             return None
         # 语义冲突：主树零污染直通 repair。冲突清单只保留语义路径（与 abort 后
         # 分类一致——产物路径由框架自愈负责，不污染 repair agent 的冲突上下文）。
@@ -1416,25 +1430,50 @@ class G4MergebackMixin:
             paths.append(_unquote_git_path(line.strip()))
         return [p for p in paths if p]
 
-    def _rehearsed_path_is_ignored_du(self, path: str) -> bool:
-        """预演分类：非产物冲突路径是否为「被 .gitignore 忽略的运行时草稿」。
+    def _rehearsed_paths_all_ignored_du(self, paths: list) -> bool:
+        """预演分类（批量）：非产物冲突路径是否全部为「被 .gitignore 忽略的
+        运行时草稿」。
 
         与 abort 后 ``_resolve_ignored_modify_delete_conflicts``（仅处理 DU——
         主树删除、分支修改）口径一致：主树已删除该路径时它在 HEAD 索引中不
         存在，``git check-ignore`` 判定可靠；反向（分支删除、主树修改）路径仍
-        tracked → check-ignore 返回非零 → 判为语义冲突直通，真合并中该自愈
-        （仅接受 DU 状态码）同样不适用。命令失败保守返回 False。
+        tracked → check-ignore 不命中 → 判为语义冲突直通，真合并中该自愈
+        （仅接受 DU 状态码）同样不适用。
+
+        批量口径（item 2bde1727f26c，对齐 _backup_untracked_spec_files）：本
+        分类在 _rehearse_merge_from_branch 持 _main_tree_lock 期间执行，逐路径
+        起子进程的数量随冲突路径线性增长会无谓拉长主树全局合并锁持锁时长，
+        收敛为单条 ``check-ignore -z --stdin``（NUL 分隔免路径歧义、-z 免
+        core.quotePath 转义；不带 -q 以便按输出回填命中子集）。任一路径判定
+        失败保守返回 False（与旧单路径版命令失败语义一致）。
         """
+        if not paths:
+            return True
         try:
             chk = subprocess.run(
-                ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
+                ["git", "-C", str(self.project_root), "check-ignore", "-z", "--stdin"],
+                input="\0".join(paths),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
             return False
-        return chk.returncode == 0
+        if chk.returncode not in (0, 1):
+            return False
+        ignored = {ln for ln in chk.stdout.split("\0") if ln}
+        return all(p in ignored for p in paths)
+
+    def _rehearsed_path_is_ignored_du(self, path: str) -> bool:
+        """单路径薄包装（语义等价 ``_rehearsed_paths_all_ignored_du([path])``）。
+
+        主调用点（_rehearse_merge_from_branch）已收敛到批量版以省子进程；
+        本包装保留给 _parse_merge_tree_conflict_paths 注释引用的旧名，防概念
+        漂移。
+        """
+        return self._rehearsed_paths_all_ignored_du([path])
 
     def rehearsal_conflict_paths(self, branch: str) -> list:
         """救回路径的冲突文件集查询（evo-add-codefix-mergeback-conflict-salvage 1.2）。

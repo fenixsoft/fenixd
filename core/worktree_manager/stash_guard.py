@@ -951,6 +951,11 @@ class G6StashGuardMixin:
                 )
                 return False
             drop_sha = ""
+            # 保留归因取证位预置（code-review item 792321ce0d47）：cur/dropped
+            # 仅在 sha_before 非空时才被赋值，下方 else 分支按情形归因须可安全
+            # 读取（空基准 sha 时未复核未 drop，不属任何已尝试情形）。
+            cur = None
+            dropped = None
             if sha_before:
                 # git 超时/不可用返回 None：核不了 sha，按「栈顶已动」降级（不 drop）
                 cur = self._rev_parse_stash_top()
@@ -981,11 +986,28 @@ class G6StashGuardMixin:
                     f"dropped (commit {drop_sha}, recoverable until gc)",
                 )
             else:
+                # 保留归因按情形区分（code-review item 792321ce0d47）：「top
+                # entry moved」只在栈顶 sha 确已变化一种情形下属实——git 故障
+                # （复核不可用）与 drop 命令自身失败如实分开记，避免基础设施
+                # 故障被误述成并发插队、误导人工按 sha 去排查不存在的插入条目；
+                # 无基准 sha（pop 前就没核到）时未尝试 drop，单独归因。
+                if not sha_before:
+                    preserved_because = (
+                        "pre-pop top sha unavailable; drop not attempted"
+                    )
+                elif cur is None or cur[0] != 0:
+                    preserved_because = (
+                        "stash top recheck unavailable (git fault)"
+                    )
+                elif dropped is None or dropped.returncode != 0:
+                    preserved_because = "stash drop failed"
+                else:
+                    preserved_because = "top entry moved"
                 self.logger.warning(
                     "worktree_manager",
                     f"Stale autostash pop conflicted with merged "
                     f"implementation; healed UU files {conflict_files}, "
-                    f"stash entry preserved (top entry moved, recover via "
+                    f"stash entry preserved ({preserved_because}, recover via "
                     f"git stash show)",
                 )
             return False

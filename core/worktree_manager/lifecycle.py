@@ -245,7 +245,10 @@ class G1LifecycleMixin:
             # salvage 后的 recovery legacy（reuse=True）由同链下一批 create 经本
             # 既有认领通路继承 salvaged 分支；认领不可用 fail-open 全新建树。
             if agent_type in ("fast-track", "implementer", "planner-plan", "planner-judge", "verifier", "code-fix"):
-                reuse = self._take_reusable_worktree(spec_name)
+                # 传发起方 agent_type 供家族校验（code-review item 7f66c46fffef）：
+                # verify 族遗产仅 verifier 可认领、非 verify 族遗产不被 verifier
+                # 认领，不匹配在 _take_reusable_worktree 内跳过认领走全新建树。
+                reuse = self._take_reusable_worktree(spec_name, agent_type)
                 if reuse is not None:
                     wt_path, branch = reuse
                     self._active_worktrees.add(str(wt_path))

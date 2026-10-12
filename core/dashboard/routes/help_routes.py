@@ -11,7 +11,6 @@ from __future__ import annotations
 import errno
 import logging
 import re
-from pathlib import Path
 
 logger = logging.getLogger("fenixd.dashboard.help_routes")
 

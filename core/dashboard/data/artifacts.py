@@ -38,20 +38,6 @@ def parse_report(project_root, spec_name) -> dict:
         return {"exists": True, "error": "corrupt"}
 
 
-def parse_test_scenarios(project_root, spec_name) -> list:
-    """读取 .fenix/verify-progress/<spec>/test_scenarios.json（尽力解析）。"""
-    sp = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
-    if not sp.exists():
-        return []
-    try:
-        data = json.loads(sp.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-        return []
-    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError):
-        return []
-
-
 def parse_run_result_scenarios(project_root, spec_name) -> list:
     """读取裁决 .fenix-run-result.json 中的场景明细（report.json 缺失/无场景时兜底）。
 

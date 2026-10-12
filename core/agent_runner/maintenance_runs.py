@@ -2313,12 +2313,29 @@ def _unique_regression_run_id(runner) -> str:
 # 单 token、会被收集目标判定误收，由 _apply_pytest_subset 的「token 含
 # ``>``/``<`` 字符即 fail-closed」检查拦截（code-review item 5f9b00a4802c），
 # 不在本局限范围内。
+# -k/-m 的值可含空格（布尔表达式形态）：未加引号的多词值（如
+# ``pytest -k slow and not fast tests/``）首词被当作选项值消费后，其余词
+# （and/not/fast）会被误判为收集目标——首个误判位置被替换成失败 nodeids、
+# 其余被静默删除，命令残留 ``-k slow`` 过滤器叠加在 nodeids 子集上，目标
+# 用例不匹配即被 deselect（XML 零用例且无失败仍落 passed，回归假通过，与
+# item a6e2fcc99c8a 同形态）。该缺口已由 _apply_pytest_subset 的连接词
+# 记号探测 fail-closed 拦截（放弃子集替换回退全量，code-review item
+# 554c123ac884），不再静默改写；verify.yaml cmd 作者对多词值 MUST 加
+# 引号——引号值经 shlex 后是含空格的单 token，子集替换语义保持精确。
 _PYTEST_VALUE_OPTIONS = frozenset({
     "-c", "--config", "-o", "--override-ini", "-k", "-m", "-p", "-r", "-W",
     "--junit-xml", "--junit-prefix", "--result-log", "--basetemp",
     "--rootdir", "--durations", "--maxfail", "--html", "--css", "--tb",
     "--deselect", "--ignore", "--ignore-glob",
 })
+
+# -k/-m 的值为布尔表达式（值可含空格），未加引号的多词形态会被带值消费
+# 机制切碎（首词当值、连接词及其余词被误判为收集目标），由
+# _apply_pytest_subset 按连接词记号 fail-closed（code-review item
+# 554c123ac884）。连接词按 token 精确匹配：合法多词表达式要么以 ``not``
+# 开头（值 token 本身是连接词）、要么首个标识符后紧跟连接词。
+_PYTEST_EXPRESSION_VALUE_OPTIONS = frozenset({"-k", "-m"})
+_PYTEST_EXPR_CONNECTIVES = frozenset({"and", "not", "or"})
 
 # shell 控制操作符：命令 token 化后含任一即视为复杂 shell 形态，
 # fail-closed 不做子集替换（token 级替换在含管道/重定向/命令串的命令上
@@ -2342,6 +2359,11 @@ def _apply_pytest_subset(cmd, subset_nodeids):
     - 收集目标 = pytest 之后、非旗标、且不紧跟在带值选项后的 token；
       含 shell 控制操作符（含附着重定向/命令替换记号）、或不存在任何收集
       目标 → 返回 None（fail-closed）。
+    - 未加引号的多词 ``-k``/``-m`` 表达式（值 token 本身或其紧随 token 为
+      and/not/or 连接词）→ 返回 None（fail-closed，code-review item
+      554c123ac884）：该形态下表达式其余词会被误判为收集目标，替换后残留
+      选项过滤器叠加在 nodeids 子集上（目标用例被 deselect → 回归假通过）。
+      加引号的多词值是含空格的单 token，不受影响。
     - 替换：首个收集目标位置放全部 nodeids，其余收集目标删除（保持
       「收集目标并集」语义下的精确子集）；旗标（``-q``/``--junit-xml`` 等）
       逐字保留。
@@ -2389,7 +2411,26 @@ def _apply_pytest_subset(cmd, subset_nodeids):
             pending_value_opt = t if t in _PYTEST_VALUE_OPTIONS else None
             continue
         if pending_value_opt is not None:
-            # 带值选项的值（如 ``--junit-xml path`` 的 path）不是收集目标
+            # 带值选项的值（如 ``--junit-xml path`` 的 path）不是收集目标。
+            # 未加引号的多词 -k/-m 表达式（item 554c123ac884）：首词被当作
+            # 值消费后，其余词会被误判为收集目标——首个误判位置被替换成
+            # nodeids、其余被静默删除，命令残留 ``-k slow`` 过滤器叠加在
+            # nodeids 子集上（目标用例不匹配即被 deselect，XML 零用例且无
+            # 失败仍落 passed → 回归假通过）。合法多词表达式要么以 ``not``
+            # 开头（值 token 本身是连接词，按小写精确匹配：大写 ``AND``
+            # 等是合法的 -k 关键字过滤器，不误判）、要么值 token 之后紧跟
+            # 连接词（大小写不敏感：连接词记号不会是合法收集目标），命中
+            # 任一即 fail-closed 回退全量——坏命令在 pytest 层响亮失败，
+            # 好过被静默改写成假通过。加引号的多词值经 shlex 后是含空格的
+            # 单 token，不命中本判定，子集替换语义保持精确。
+            if pending_value_opt in _PYTEST_EXPRESSION_VALUE_OPTIONS and (
+                t in _PYTEST_EXPR_CONNECTIVES
+                or (
+                    i + 1 < len(tokens)
+                    and tokens[i + 1].lower() in _PYTEST_EXPR_CONNECTIVES
+                )
+            ):
+                return None
             pending_value_opt = None
             continue
         target_indexes.append(i)
