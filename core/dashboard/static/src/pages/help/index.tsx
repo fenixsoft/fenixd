@@ -419,6 +419,12 @@ export default function HelpPage() {
   // 文档内容就绪后执行待滚动锚点（跨文档锚点跳转）
   useEffect(() => {
     if (docLoading || !docData) return;
+    // 归属校验（口径同 renderContent 的陈旧内容守卫）：快速连续跳转时，前一篇
+    // 的响应可能在本篇响应之前落地，此刻 docData 仍归属上一篇、本稿渲染的是
+    // Skeleton——若照旧消费暂存锚点，会在错误文档语境下滚动（scrollToAnchor
+    // 静默找不到目标）并把锚点置空，待正确文档就绪后已无锚点可消费，跳转失效。
+    // 归属不匹配时保留锚点，等正确文档就绪（docData 更新为本稿）后再消费
+    if (docData.name !== currentDoc) return;
     const anchor = pendingAnchorRef.current;
     if (!anchor) return;
     pendingAnchorRef.current = null;
@@ -432,7 +438,7 @@ export default function HelpPage() {
       });
     });
     return () => { cancelled = true; };
-  }, [docData, docLoading]);
+  }, [docData, docLoading, currentDoc]);
 
   // 依赖 docData：文档内容轮次变化时重建 components（同步重置 slug 去重计数）
   const helpComponents = useMemo(() => buildHelpComponents(onNavigate, docs), [onNavigate, docs, docData]);
