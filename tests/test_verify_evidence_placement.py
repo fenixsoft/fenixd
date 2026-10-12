@@ -613,11 +613,15 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         return repo / UNTRACKED_REGISTRY_RELPATH
 
     def _inject_first_seen(self, repo, fp: str, epoch: float) -> None:
-        """向持久化文件注入旧 first_seen（spec「合成时钟命中升级」口径）。"""
+        """向持久化文件注入旧 first_seen（spec「合成时钟命中升级」口径）。
+
+        持久化文件顶层两分区（evo-stray-first-sight-prevention 1.2）：
+        ``untracked``＝指纹注册表，时钟注入落在该分区的指纹条目上。
+        """
         data = json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
-        self.assertIn(fp, data)
-        data[fp]["first_seen"] = epoch
-        data[fp]["first_seen_iso"] = time.strftime(
+        self.assertIn(fp, data["untracked"])
+        data["untracked"][fp]["first_seen"] = epoch
+        data["untracked"][fp]["first_seen_iso"] = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch)
         )
         self._registry_path(repo).write_text(
@@ -649,8 +653,11 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         persisted = json.loads(
             self._registry_path(repo).read_text(encoding="utf-8")
         )
-        self.assertIn(fp, persisted)
-        self.assertEqual(set(persisted[fp]), {
+        self.assertEqual(
+            set(persisted), {"untracked", "first_sight_dirs"}
+        )  # 顶层两分区（evo-stray-first-sight-prevention 1.2）
+        self.assertIn(fp, persisted["untracked"])
+        self.assertEqual(set(persisted["untracked"][fp]), {
             "first_seen", "first_seen_iso", "files",
             "escalated_at", "escalated_signal_at",
         })  # 白名单同构：sizes_bytes/total_bytes 现采值不持久化
@@ -702,7 +709,7 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         persisted = json.loads(
             self._registry_path(repo).read_text(encoding="utf-8")
         )
-        self.assertTrue(persisted[fp]["escalated_signal_at"])
+        self.assertTrue(persisted["untracked"][fp]["escalated_signal_at"])
         r3 = _make_sweeper(repo, grace=30.0).sweep()
         self.assertNotEqual(r3["untracked"]["status"], "escalated")
         self.assertEqual(len(self._escalated_alerts(repo)), 1)
@@ -782,7 +789,7 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         data = json.loads(
             self._registry_path(repo).read_text(encoding="utf-8")
         )
-        data[gone_fp] = {
+        data["untracked"][gone_fp] = {
             "first_seen": time.time() - (24 * 60 + 5) * 60,
             "first_seen_iso": "2026-10-01T00:00:00Z",
             "files": ["verify-evidence/gone-a.md", "verify-evidence/gone-b.md"],
@@ -800,8 +807,8 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         after = json.loads(
             self._registry_path(repo).read_text(encoding="utf-8")
         )
-        self.assertNotIn(gone_fp, after)  # 清理结果随落盘收敛
-        self.assertEqual(set(after), {live_fp})
+        self.assertNotIn(gone_fp, after["untracked"])  # 清理结果随落盘收敛
+        self.assertEqual(set(after["untracked"]), {live_fp})
 
     def test_prune_partial_removal_keeps_alive_paths(self):
         """部分剔除形态：条目内消失路径剔除、存活文件保留（集合非空不删）。"""

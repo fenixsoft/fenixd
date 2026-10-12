@@ -62,6 +62,16 @@ UNTRACKED_SIGNAL_TYPE = "maintree_untracked_stray_stale"
 # SIGNAL_RECOMMENDATION / STORED_SIGNAL_TYPES + 摄取项目名解析清单）。
 UNTRACKED_ESCALATED_SIGNAL_TYPE = "maintree_untracked_stray_escalated"
 
+# 目录型产物集合首现提示（evo-stray-first-sight-prevention 1.1）：info 级
+# 「只提示不处置」，admin_monitor 仅两表登记（SIGNAL_SEVERITY /
+# SIGNAL_RECOMMENDATION，info 先例 maintree_untracked_stray_stale），
+# **MUST NOT 收录 STORED_SIGNAL_TYPES**——不自动唤起 admin run，否则提示
+# 本身就变成新的浪费形态（proposal 风险条目）；也不启动升级时钟（24h 滞留
+# /体积阈值的既有起点不变）。消费面为告警面板展示与后续评审/处置的背景
+# 信息；建议面语义：提示只携带预防性 .gitignore 草案，ignore 动作仍走既有
+# 裁决执行器或人工（盘点零写副作用）。
+UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE = "maintree_untracked_stray_first_sight"
+
 # 白名单脱落信号（evo-whitelist-tracked-patrol 1.1）：被 .gitignore `!`
 # 放行规则显式放行（＝声明了入库意图）却不在 git 索引中的路径——白名单
 # 约定「状态文件随仓库入库」的机械反差，几乎必然是脱落事故（实证：c91213f
@@ -110,6 +120,20 @@ _UNTRACKED_PERSISTED_FIELDS = (
     "escalated_at",
     "escalated_signal_at",
 )
+
+# 持久化文件分区键（evo-stray-first-sight-prevention 1.2）：首现登记以独立
+# 目录键结构与 untracked 指纹注册表同居一个持久化文件
+# （``UNTRACKED_REGISTRY_RELPATH``），顶层两分区各司其键空间——目录路径
+# 与 sha256 指纹不共享命名空间，混排会被既有 absent 复位（按「当轮指纹集」
+# 清除）逐轮误清。载入对旧版扁平形态（顶层即指纹→条目，首现登记尚未存在）
+# 做 legacy 适配：整体归入 untracked 分区、首现登记空表起步。
+_UNTRACKED_SECTION_KEY = "untracked"
+_FIRST_SIGHT_SECTION_KEY = "first_sight_dirs"
+
+# 首现登记条目持久化字段白名单（同 ``_UNTRACKED_PERSISTED_FIELDS`` 投影
+# 机制）：登记只承载「目录已见过」这一去重事实与证据快照，无升级时钟、
+# 无双档标记语义。
+_FIRST_SIGHT_PERSISTED_FIELDS = ("first_seen", "first_seen_iso", "files")
 
 
 def grace_minutes(config) -> float:
@@ -268,6 +292,15 @@ class MainTreeStrayWipSweeper:
         self._untracked_registry: dict = {}
         self._untracked_registry_loaded = False
         self._untracked_persisted_payload: "str | None" = None
+        # 首现登记表（evo-stray-first-sight-prevention 1.2）：规范化根目录
+        # （str）-> {"first_seen": epoch 秒, "first_seen_iso": str,
+        # "files": [该目录下散件条目快照...]}。去重键为目录路径，MUST NOT
+        # 复用条目集指纹——双层指纹随集合增删/跨阈值档切换漂移
+        # （stray_wip.py::_untracked_signal），按指纹去重会在散件增长时重复
+        # 提示；且 ``_reset_untracked_registry_absent`` 只保留当轮指纹，目录
+        # 级条目混入同表会被每轮清除（独立分账）。随持久化文件分区落盘
+        # （``_FIRST_SIGHT_SECTION_KEY``），跨重启不重复提示。
+        self._first_sight_dirs: dict = {}
         # 白名单脱落注册表（evo-whitelist-tracked-patrol 1.1）：形态同上，
         # 指纹语义＝放行-未跟踪路径排序集 + 逐文件内容 sha256（复用
         # ``_untracked_fingerprint``，untracked 不可复用 tracked 指纹形态的
@@ -439,6 +472,10 @@ class MainTreeStrayWipSweeper:
         )
         if not untracked:
             self._reset_untracked_registry_absent(set())
+            # 首现登记同款 absent 复位（evo-stray-first-sight-prevention 1.2）：
+            # 零散件轮＝所有目录都不再贡献条目，整表复位——复位后再现视为
+            # 新首现（proposal：目录消失走既有复位逻辑）。
+            self._reset_first_sight_registry_absent(set())
             return result
         result["untracked"] = self._untracked_signal(untracked, running_run_ids)
         return result
@@ -793,6 +830,13 @@ class MainTreeStrayWipSweeper:
             entry["files"] = list(entries)
         self._reset_untracked_registry_absent({fp})
 
+        # 首现判定（evo-stray-first-sight-prevention 1.1）：插桩在
+        # below_threshold 早退**之前**——低于 entry 阈值的目录型集合同样
+        # 提示（below_threshold 静默缺口正是本判定的填补对象）；与既有
+        # 阈值/宽限/升级判定完全解耦（提示不启动升级时钟、不改 status
+        # 语义，两个返回分支共带 ``first_sight`` 子 dict 供消费方取用）。
+        first_sight = self._untracked_first_sight(entries)
+
         if below_threshold:
             return {
                 "status": "below-threshold",
@@ -800,6 +844,7 @@ class MainTreeStrayWipSweeper:
                 "count": count,
                 "threshold": threshold,
                 "fingerprint": fp,
+                "first_sight": first_sight,
             }
         # 越阈归因探测（evo-stray-untracked-session-attribution 1.1）：命中
         # （会话归因 / 在飞车道 holder）即复位计时并返回命中态，本轮不进宽限
@@ -856,6 +901,7 @@ class MainTreeStrayWipSweeper:
             "total_bytes": total_bytes,
             "size_threshold_bytes": size_threshold,
             "escalated_signal": bool(entry.get("escalated_signal_at")),
+            "first_sight": first_sight,
         }
 
     def _untracked_attribution_probe(
@@ -1005,6 +1051,185 @@ class MainTreeStrayWipSweeper:
         ]:
             del self._untracked_registry[fp]
 
+    # ── untracked 首现提示（evo-stray-first-sight-prevention 1.1/1.2）────
+
+    def _untracked_first_sight(self, entries: list) -> dict:
+        """目录型产物集合首现判定与一次性 info 提示（1.1/1.2）。
+
+        归组（``_untracked_first_sight_groups``）后逐目录判定：首现登记无
+        该目录记录即发一次 maintree_untracked_stray_first_sight（建议面，
+        不自动 ignore、不升级不唤起）；登记命中仅刷新条目快照——同目录
+        仅提示一次，集合内容增长（条目增删/跨阈值档指纹漂移）不视为新
+        首现。复位判据＝目录整轮不再贡献散件条目（同 absent 复位模式），
+        复位后再现视为新首现。
+
+        Returns: 子 dict（并入 ``_untracked_signal`` 返回的 ``first_sight``
+        键）：status 取 ``prompted`` / ``clean`` / ``abandoned``（归组查询
+        不可用时放弃本轮首现判定——登记不动、不提示，既有阈值流不受影响）。
+        """
+        grouped = self._untracked_first_sight_groups(entries)
+        if grouped is None:
+            return {"status": "abandoned"}
+        now = time.time()
+        prompted: list = []
+        for dir_path in sorted(grouped):
+            group = grouped[dir_path]
+            entry = self._first_sight_dirs.get(dir_path)
+            if entry is not None:
+                # 同目录仅提示一次：只刷新快照（兼供收尾落盘取最新清单），
+                # 内容增长不重提示。
+                entry["files"] = list(group)
+                continue
+            sizes = self._untracked_entry_sizes(group)
+            total_bytes = sum(sizes.values())
+            if self._write_first_sight_alert(dir_path, group, total_bytes):
+                self._first_sight_dirs[dir_path] = {
+                    "first_seen": now,
+                    "first_seen_iso": self._iso(now),
+                    "files": list(group),
+                }
+                prompted.append(dir_path)
+            # 拒写不计首现登记（下轮重试），同「不让提示静默蒸发」口径。
+        self._reset_first_sight_registry_absent(set(grouped))
+        return {
+            "status": "prompted" if prompted else "clean",
+            "dirs": sorted(grouped),
+            "prompted": prompted,
+        }
+
+    def _untracked_first_sight_groups(
+        self, entries: list
+    ) -> "dict[str, list[str]] | None":
+        """按「目录型产物集合的规范化根目录」归组散件条目（1.1 归组约定）。
+
+        既有盘点无归组，本判定新增：对每个含目录成分的散件条目，取其
+        **最浅的全 untracked 祖先目录**为规范化根目录（即「新建产物目录」
+        ——不含任何 tracked 文件的目录；git 不跟踪目录本身，以「目录下
+        无索引文件」为机械判据）；同一根目录下的条目归为一个集合。两类
+        形态不在首现面、仍走既有阈值流：顶层散文件（无目录成分，如历史
+        上入库的 build-win-configure.log 形态），与全部祖先目录都含 tracked
+        文件的散件（落在既有目录内的散文件，如源码目录里的临时笔记——
+        对其建议整目录 ignore 会误伤 tracked 文件）。
+
+        Returns: 根目录 → 条目清单（相对路径，排序不保证，发射侧 sorted）；
+        ``git ls-files`` 不可用返回 None（调用方按放弃本轮首现判定处置）。
+        无任何目录型候选时返回空 dict（零子进程开销）。
+        """
+        candidates = [str(e) for e in entries if "/" in str(e)]
+        if not candidates:
+            return {}
+        indexed = self._git_indexed_paths()
+        if indexed is None:
+            return None
+        # 索引目录前缀集一次构建（O(索引规模×路径深度)）：判据「目录下无
+        # tracked 文件」＝该目录前缀不在集合中，避免逐候选目录全索引扫描。
+        tracked_dirs: set = set()
+        for p in indexed:
+            parts = p.split("/")
+            for i in range(1, len(parts)):
+                tracked_dirs.add("/".join(parts[:i]))
+        groups: dict = {}
+        for raw in candidates:
+            parts = raw.split("/")
+            root = None
+            for i in range(1, len(parts)):
+                ancestor = "/".join(parts[:i])
+                if ancestor not in tracked_dirs:
+                    root = ancestor  # 最浅全 untracked 祖先＝规范化根目录
+                    break
+            if root is None:
+                continue  # 全部祖先含 tracked 文件＝既有目录内散文件
+            groups.setdefault(root, []).append(raw)
+        return groups
+
+    def _reset_first_sight_registry_absent(self, current_dirs: set) -> None:
+        """清除本轮不再贡献散件条目的首现登记（同 absent 复位模式，1.2）。
+
+        复位后再现视为新首现（复发场景正是提示价值所在）；调用点两处：
+        ``_untracked_first_sight`` 收尾（含当轮目录集）与 ``_sweep_locked``
+        零散件早退（空集＝全部目录都不再贡献）。
+        """
+        for d in [k for k in self._first_sight_dirs if k not in current_dirs]:
+            del self._first_sight_dirs[d]
+
+    def _write_first_sight_alert(
+        self, dir_path: str, entries: list, total_bytes: int
+    ) -> bool:
+        """目录型产物集合首现一次性 info 提示（经 AdminStore.append 落盘）。
+
+        ``signal_type=maintree_untracked_stray_first_sight``：admin_monitor
+        仅两表登记（SIGNAL_SEVERITY=info / SIGNAL_RECOMMENDATION），MUST
+        NOT 收录 STORED_SIGNAL_TYPES（不自动唤起 admin run）。evidence 携带
+        条目清单、总体积与预防性 .gitignore 条目草案（含成因注释，对齐
+        913f41b/151ff6e 预防性 ignore 先例的注释风格）。建议面语义：不自动
+        执行 ignore 动作（盘点零写副作用）。AdminStore 拒写时返回 False
+        （不计首现登记，下轮重试），不让提示静默蒸发。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+
+        files = list(entries)
+        draft_line = f"{dir_path}/"
+        draft_comment = (
+            f"主树 untracked 散件首现自动起草：运行时产物目录，"
+            f"{len(files)} 个未跟踪 entry（{int(total_bytes)} 字节）滞留，"
+            "预防性 ignore 后不再产生散件告警"
+        )
+        evidence = (
+            f"项目名={self.project_root.name}; "
+            f"目录集合={dir_path}; "
+            f"条目数={len(files)}; 体积合计={int(total_bytes)}字节; "
+            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"gitignore草案: {draft_line}（成因注释: {draft_comment}）; "
+            f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入"
+            f"（本集合未被 .gitignore 覆盖，否则不入散件清单）; "
+            f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
+            f"提示发出前后主树工作区状态未变"
+        )
+        store = AdminStore(self.project_root, logger=None)
+        rec = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE,
+                "spec": None,
+                "severity": "info",
+                "description": (
+                    "主树 untracked 散件首现提示（周期盘点，info 级只提示"
+                    f"不处置）：目录型产物集合 {dir_path} 首次出现 "
+                    f"{len(files)} 个 untracked entry。同目录仅提示一次"
+                    "（集合内容增长不重提示），目录消失复位后再现视为新"
+                    "首现；本提示不启动升级时钟、不派生任何自动处置，仅"
+                    "建议预防性 ignore"
+                ),
+                "evidence": evidence,
+                "source": "maintree-stray-wip-sweep",
+                "recommended_action": (
+                    "建议面（info 级只提示不处置，不唤起人工）：人工核对"
+                    "目录归属后，将 evidence 中 gitignore 草案行（含成因"
+                    "注释）追加至 .gitignore（预防性 ignore，一行消除该"
+                    "目录后续散件告警），或将默认落盘路径移出仓库树/挪入"
+                    "证据落位目录 .fenix/verify-evidence/<spec>/；本提示"
+                    "不自动执行 ignore 动作（ignore 仍走既有裁决执行器或"
+                    "人工）。同目录仅提示一次，目录消失复位后再现视为新"
+                    "首现"
+                ),
+            }
+        )
+        if rec is None:
+            self._log(
+                "warning",
+                f"{UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE}: 提示写入被拒"
+                f"（AdminStore 拒写），未落盘——本轮不计首现登记，下轮盘点"
+                f"重试",
+            )
+            return False
+        self._log(
+            "info",
+            f"{UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE}: 目录型产物集合首现提示"
+            f"（{len(files)} entry / {int(total_bytes)} 字节，gitignore 草案: "
+            f"{draft_line}）已发一次性 info 提示: {', '.join(files)}",
+        )
+        return True
+
     # ── untracked 注册表持久化（evo-persist-stray-escalation 1.1/1.2）────
 
     def _untracked_registry_path(self) -> Path:
@@ -1046,8 +1271,27 @@ class MainTreeStrayWipSweeper:
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError(f"registry payload is not an object: {type(data)}")
+            # 分区适配（evo-stray-first-sight-prevention 1.2，读写同步）：新版
+            # 顶层两分区（untracked 指纹注册表 / first_sight_dirs 目录键首现
+            # 登记）；旧版扁平形态（顶层即指纹→条目）按 legacy 整体归入
+            # untracked 分区，首现登记空表起步。
+            if (
+                _UNTRACKED_SECTION_KEY in data
+                or _FIRST_SIGHT_SECTION_KEY in data
+            ):
+                untracked_raw = data.get(_UNTRACKED_SECTION_KEY) or {}
+                first_sight_raw = data.get(_FIRST_SIGHT_SECTION_KEY) or {}
+                if not isinstance(untracked_raw, dict) or not isinstance(
+                    first_sight_raw, dict
+                ):
+                    raise ValueError(
+                        "registry sections must both be objects: "
+                        f"{type(untracked_raw)}/{type(first_sight_raw)}"
+                    )
+            else:
+                untracked_raw, first_sight_raw = data, {}
             restored: dict = {}
-            for fp, item in data.items():
+            for fp, item in untracked_raw.items():
                 if not isinstance(item, dict):
                     continue
                 first_seen = item.get("first_seen")
@@ -1068,8 +1312,26 @@ class MainTreeStrayWipSweeper:
                     ),
                 }
                 restored[str(fp)] = entry
+            restored_dirs: dict = {}
+            for d, item in first_sight_raw.items():
+                if not isinstance(item, dict):
+                    continue
+                first_seen = item.get("first_seen")
+                files = item.get("files")
+                if not isinstance(first_seen, (int, float)) or not isinstance(
+                    files, list
+                ):
+                    continue
+                restored_dirs[str(d)] = {
+                    "first_seen": float(first_seen),
+                    "first_seen_iso": str(
+                        item.get("first_seen_iso") or self._iso(float(first_seen))
+                    ),
+                    "files": [str(p) for p in files],
+                }
         except (ValueError, TypeError) as exc:
             self._untracked_registry = {}
+            self._first_sight_dirs = {}
             self._log(
                 "warning",
                 f"untracked 注册表持久化文件损坏，回退空表重新宽限"
@@ -1077,6 +1339,7 @@ class MainTreeStrayWipSweeper:
             )
             return
         self._untracked_registry.update(restored)
+        self._first_sight_dirs.update(restored_dirs)
         self._prune_untracked_registry_stale_paths()
 
     def _prune_untracked_registry_stale_paths(self) -> None:
@@ -1103,17 +1366,26 @@ class MainTreeStrayWipSweeper:
         既有原子写范式）。
 
         序列化结果与上次落盘 payload 逐字节相同即跳过（无变更不写盘）。
-        条目经字段白名单投影（``_UNTRACKED_PERSISTED_FIELDS``）：时钟与双档
-        标记入库，sizes_bytes/total_bytes 等现采值不入。任何写盘失败仅告警
-        （fail-open）：持久化缺失的代价是重启后重新宽限（D5 被取代前行为），
-        MUST NOT 放大成本轮盘点失败。临时文件放同目录（os.replace 原子换入）
-        且以点前缀命名，避免被任何 ``*.json`` 扫描谓词命中并发写入中的半程
-        文件。
+        顶层两分区（evo-stray-first-sight-prevention 1.2，与载入适配同步）：
+        ``untracked``＝指纹注册表（``_UNTRACKED_PERSISTED_FIELDS`` 投影），
+        ``first_sight_dirs``＝首现登记（``_FIRST_SIGHT_PERSISTED_FIELDS``
+        投影，目录键）。sizes_bytes/total_bytes 等现采值不入。任何写盘失败
+        仅告警（fail-open）：持久化缺失的代价是重启后重新宽限（D5 被取代
+        前行为），MUST NOT 放大成本轮盘点失败。临时文件放同目录（os.replace
+        原子换入）且以点前缀命名，避免被任何 ``*.json`` 扫描谓词命中并发
+        写入中的半程文件。
         """
         payload = {
-            str(fp): {k: entry[k] for k in _UNTRACKED_PERSISTED_FIELDS
-                      if k in entry}
-            for fp, entry in self._untracked_registry.items()
+            _UNTRACKED_SECTION_KEY: {
+                str(fp): {k: entry[k] for k in _UNTRACKED_PERSISTED_FIELDS
+                          if k in entry}
+                for fp, entry in self._untracked_registry.items()
+            },
+            _FIRST_SIGHT_SECTION_KEY: {
+                str(d): {k: entry[k] for k in _FIRST_SIGHT_PERSISTED_FIELDS
+                         if k in entry}
+                for d, entry in self._first_sight_dirs.items()
+            },
         }
         text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
         if text == self._untracked_persisted_payload:
