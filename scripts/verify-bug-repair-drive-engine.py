@@ -21,6 +21,7 @@ import sys
 import shutil
 import tempfile
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -60,6 +61,24 @@ def _setup_project(tmpdir: Path) -> Path:
     return proot
 
 
+@contextmanager
+def _case_env(config: dict):
+    """收口各用例共同的装配/清理脚手架：建临时目录 → 最小项目 → SM/engine 装配 → 清理。
+
+    产出 (proot, sm, engine)；engine._enqueue 已打桩。异常（含 sys.exit）时
+    仍保证临时目录被清理。
+    """
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        proot = _setup_project(tmpdir)
+        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
+        engine = PMEngine(sm, MagicMock(), config, proot, MagicMock())
+        engine._enqueue = MagicMock()
+        yield proot, sm, engine
+    finally:
+        shutil.rmtree(str(tmpdir), ignore_errors=True)
+
+
 def _write_tasks(proot: Path, name: str):
     spec_dir = proot / "spec" / "changes" / name
     spec_dir.mkdir(parents=True, exist_ok=True)
@@ -74,9 +93,7 @@ def _make_buggy_spec(sm: StateMachine, name: str):
         sm.transition(name, s)
 
 
-def _first_round(sm: StateMachine, proot: Path, spec_name: str, config: dict):
-    engine = PMEngine(sm, MagicMock(), config, proot, MagicMock())
-    engine._enqueue = MagicMock()
+def _first_round(engine: PMEngine, sm: StateMachine, proot: Path, spec_name: str):
     _make_buggy_spec(sm, spec_name)
     _write_tasks(proot, spec_name)
 
@@ -93,27 +110,17 @@ def _first_round(sm: StateMachine, proot: Path, spec_name: str, config: dict):
 
 
 def test_first_round(spec_name: str):
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        proot = _setup_project(tmpdir)
-        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
-        result = _first_round(sm, proot, spec_name, {})
+    with _case_env({}) as (proot, sm, engine):
+        result = _first_round(engine, sm, proot, spec_name)
         print(json.dumps(result, ensure_ascii=False))
-    finally:
-        shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 def test_second_round(spec_name: str):
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        proot = _setup_project(tmpdir)
-        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
+    with _case_env({}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
         sm.update_spec(spec_name, {"_verify_fail_rounds": 1, "status": "bug-found"})
 
-        engine = PMEngine(sm, MagicMock(), {}, proot, MagicMock())
-        engine._enqueue = MagicMock()
         engine._family._do_spec_bug_found(spec_name)
 
         entry = sm.read_one(spec_name) or {}
@@ -123,19 +130,10 @@ def test_second_round(spec_name: str):
             "depth": engine._family._fix_prefix_depth(spec_name),
             "fix_spawned": sm.read_one(f"fix-{spec_name}") is not None,
         }, ensure_ascii=False))
-    finally:
-        shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 def test_derive_loop(spec_name: str):
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        proot = _setup_project(tmpdir)
-        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
-        config = {"admin": {"bug_repair_mode": "derive"}}
-        engine = PMEngine(sm, MagicMock(), config, proot, MagicMock())
-        engine._enqueue = MagicMock()
-
+    with _case_env({"admin": {"bug_repair_mode": "derive"}}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
         engine._family._do_spec_bug_found(spec_name)
@@ -157,18 +155,10 @@ def test_derive_loop(spec_name: str):
             "reverified": parent.get("status") == "implemented",
             "parent_status": parent.get("status"),
         }, ensure_ascii=False))
-    finally:
-        shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 def test_third_round(spec_name: str):
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        proot = _setup_project(tmpdir)
-        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
-        engine = PMEngine(sm, MagicMock(), {}, proot, MagicMock())
-        engine._enqueue = MagicMock()
-
+    with _case_env({}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
         sm.update_spec(spec_name, {"_verify_fail_rounds": 2, "status": "bug-found"})
@@ -189,18 +179,10 @@ def test_third_round(spec_name: str):
             "alerted": len(alerts) > 0,
             "alert_count": len(alerts),
         }, ensure_ascii=False))
-    finally:
-        shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 def test_restart_persist(spec_name: str):
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        proot = _setup_project(tmpdir)
-        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
-        engine = PMEngine(sm, MagicMock(), {}, proot, MagicMock())
-        engine._enqueue = MagicMock()
-
+    with _case_env({}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
         engine._family._do_spec_bug_found(spec_name)
@@ -225,18 +207,11 @@ def test_restart_persist(spec_name: str):
             "rounds": int(entry_after.get("_verify_fail_rounds", 0)),
             "status": entry_after.get("status"),
         }, ensure_ascii=False))
-    finally:
-        shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 def test_hot_switch(spec_name: str):
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        proot = _setup_project(tmpdir)
-        sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
-        # Phase 1: derive 模式
-        engine = PMEngine(sm, MagicMock(), {"admin": {"bug_repair_mode": "derive"}}, proot, MagicMock())
-        engine._enqueue = MagicMock()
+    # Phase 1: derive 模式（config 由 _case_env 装配进 engine）
+    with _case_env({"admin": {"bug_repair_mode": "derive"}}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
 
@@ -265,8 +240,6 @@ def test_hot_switch(spec_name: str):
             "status_after_switch": entry.get("status"),
             "rounds_after_switch": int(entry.get("_verify_fail_rounds", 0)),
         }, ensure_ascii=False))
-    finally:
-        shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 COMMANDS = {
