@@ -92,6 +92,11 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
         title="同步用户级设置"
         open={open}
         onCancel={() => setOpen(false)}
+        // busy 中同步禁用右上角 X 与 ESC 收起，关闭口径与 maskClosable、
+        // 页脚「取消」按钮一致（否则在飞操作的防关闭防护被旁路，用户会
+        // 误以为操作已取消）
+        closable={!busy}
+        keyboard={busy === null}
         maskClosable={busy === null}
         footer={[
           <Button key="cancel" disabled={busy !== null} onClick={() => setOpen(false)}>

@@ -165,13 +165,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     if (project && todoDraftOwnerRef.current !== project) {
       return;
     }
-    // 加载失败态同样短路（code-review item e092a8069ea2）：失败路径不回填、
-    // todoDraft 保持空串，此刻提交会以空串整文件覆写磁盘上真实存在的 todo.md，
-    // 静默丢失夜间自省追加的历史回顾
-    if (todoLoadFailed) {
-      message.error('todo.md 加载失败，内容未回填，已阻止保存以免以空草稿覆写磁盘内容；请切换作用域重新加载后重试。');
-      return;
-    }
+    // 加载失败态已由上方归属对账覆盖（code-review item e092a8069ea2）：失败路径
+    // 不认领草稿归属（todoDraftOwnerRef 保持 undefined），恒被 165 行守卫拦截；
+    // 「已阻止保存」的用户说明由页面上的 todo-load-error-alert Alert 承担
     savingRef.current = true;
     setSaving(true);
     // 发起时的作用域快照（code-review item 522b3bd7ae53）：下方 todo.md
