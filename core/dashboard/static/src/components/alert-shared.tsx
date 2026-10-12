@@ -80,8 +80,13 @@ export function AlertTitle({
   );
 }
 
-/** 该告警是否携带正式调查报告（sidecar model 有值；null=失败/熔断终态机械说明） */
-export function hasNarrativeReport(item: AlertItem): boolean {
+/** 该告警是否携带正式调查报告（sidecar model 有值；null=失败/熔断终态机械说明）。
+ * 类型谓词收窄（code-review item 4e415b5643db）：true 分支向调用方承诺 narrative
+ * 必有且 text 为 string（剥掉 optional 外壳），调用方据此免 `!` 非空断言；
+ * 运行时判定逻辑不变（text + model 双 truthy）。 */
+export function hasNarrativeReport(
+  item: AlertItem,
+): item is AlertItem & { narrative: { text: string } } {
   return !!(item.narrative?.text && item.narrative.model);
 }
 

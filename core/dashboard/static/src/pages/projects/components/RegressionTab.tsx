@@ -47,13 +47,13 @@ import {
   isTriggerResultForRequest,
   triggerRegression,
   triggerRegressionIssues,
-} from '../../../services/dashboard';
+} from '@/services/dashboard';
 import type {
   RegressionFixRunResult,
   RegressionProgress,
   RegressionResult,
-} from '../../../services/dashboard';
-import { useIsMobile } from '../../../hooks/useIsMobile';
+} from '@/services/dashboard';
+import { useIsMobile } from '@/hooks/useIsMobile';
 // 时长格式化单源（utils/duration.ts，对齐 list.tsx/detail.tsx 既有口径）；
 // 该单源空值回退为 ''，本页展示用 '—'，在调用处以 `|| '—'` 表达
 import { fmtDuration } from '@/utils/duration';

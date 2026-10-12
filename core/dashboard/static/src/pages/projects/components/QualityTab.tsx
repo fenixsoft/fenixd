@@ -49,17 +49,17 @@ import {
   STREAM_URL,
   triggerCodeFixRun,
   triggerCodeReview,
-} from '../../../services/dashboard';
-import type { CodeFixRunResult, CodeReviewItem, CodeReviewProgress, CodeReviewRunResult } from '../../../services/dashboard';
+} from '@/services/dashboard';
+import type { CodeFixRunResult, CodeReviewItem, CodeReviewProgress, CodeReviewRunResult } from '@/services/dashboard';
 import CodeFixProgressCard from './CodeFixProgressCard';
 import ProgressBarTile from './ProgressBarTile';
 import ScheduleFields, {
   describeStartAfter,
   isStartAfterValid,
   nextRunAtISO,
-} from '../../../components/ScheduleFields';
-import type { AcceptSchedule } from '../../../components/ScheduleFields';
-import { useIsMobile } from '../../../hooks/useIsMobile';
+} from '@/components/ScheduleFields';
+import type { AcceptSchedule } from '@/components/ScheduleFields';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface QualityTabProps {
   project: string;

@@ -280,7 +280,7 @@ function AlertPanel({
               /* 操作按钮竖排列（查看调查报告/标记已处理同列、随最宽者等宽），
                  与 overview 横幅同形态（该页无裁决选择题，执行按钮在横幅侧） */
               <AlertActionColumn key="ops">
-                {hasNarrativeReport(a) && <AlertReportButton text={a.narrative!.text} />}
+                {hasNarrativeReport(a) && <AlertReportButton text={a.narrative.text} />}
                 <Button size="small" onClick={() => onMarkHandled(a)}>
                   标记已处理
                 </Button>
@@ -311,7 +311,7 @@ function AlertPanel({
                         hasNarrativeReport(a)
                           ? [
                               <AlertActionColumn key="report">
-                                <AlertReportButton text={a.narrative!.text} />
+                                <AlertReportButton text={a.narrative.text} />
                               </AlertActionColumn>,
                             ]
                           : undefined

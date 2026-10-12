@@ -23,8 +23,8 @@ import {
   getConfig,
   getKnowledgeFile,
   getKnowledgeIndex,
-} from '../../../services/dashboard';
-import type { KnowledgeIndexData } from '../../../services/dashboard';
+} from '@/services/dashboard';
+import type { KnowledgeIndexData } from '@/services/dashboard';
 import SpecDocModal, { SafeLink, markdownComponents } from './SpecDocModal';
 
 // SafeLink 的导出类型是 Components['a']（含 undefined/string 字面量宽型），

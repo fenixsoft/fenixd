@@ -24,13 +24,13 @@ import {
   architectureDiagramUrl,
   getArchitectureStatus,
   refreshArchitecture,
-} from '../../../services/dashboard';
-import type { ArchitectureStatus } from '../../../services/dashboard';
-import { useIsMobile } from '../../../hooks/useIsMobile';
+} from '@/services/dashboard';
+import type { ArchitectureStatus } from '@/services/dashboard';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import {
   PAGE_CHROME_OFFSET_DESKTOP as FRAME_OFFSET_DESKTOP,
   PAGE_CHROME_OFFSET_MOBILE as FRAME_OFFSET_MOBILE,
-} from '../../../utils/pageChrome';
+} from '@/utils/pageChrome';
 
 interface ArchitectureTabProps {
   project: string;

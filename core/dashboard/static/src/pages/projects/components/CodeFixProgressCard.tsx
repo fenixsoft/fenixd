@@ -39,8 +39,8 @@ import {
   blockedReasonInfo,
   isSelfhealWait,
 } from './codeFixGuidance';
-import { getCodeReviewFixProgress } from '../../../services/dashboard';
-import type { CodeReviewFixProgress } from '../../../services/dashboard';
+import { getCodeReviewFixProgress } from '@/services/dashboard';
+import type { CodeReviewFixProgress } from '@/services/dashboard';
 
 const POLL_INTERVAL_MS = 2000;
 // 终止态：轮询停止（spec「blocked/failed 停止轮询并刷新条目表格」）。
