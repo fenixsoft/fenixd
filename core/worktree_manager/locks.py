@@ -82,16 +82,15 @@ class G3LockMixin:
     ) -> list:
         """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。
 
+        薄委托（code-review item 53b7d6a78045）：摘锁口径单源在
+        ``_release_spec_locks_core``（与 legacy_registry._release_spec_locks_of
+        同一底层实现，lock_key/family/not_after 三维可选），本方法保持既有签名
+        （reason 供调用方表达语境、实现不消费）与行为不变。
+
         lock_key（code-review item 216784713669，refresh_locks 家族过滤回收
         专用）：传入时只摘这一把锁键——家族过滤判活只证明了本族已死，同 spec
         在飞他族锁的生死未判定，全摘会让其失去锁保护（重开双派发窗口）；None
         保持既有「按 spec 名全摘」语义（has_active_worktree 调用方不变）。
-
-        to_remove 计算与摘除全程持 _spec_lock_th（code-review item
-        776cffc0a278）：无锁迭代 _spec_locks 时并发 create/cleanup 增删
-        会抛 "Set changed size during iteration"，且摘除须与 _lock_since
-        清理原子（纪律同 lifecycle.py:593 段）。调用方（has_active_worktree
-        / refresh_locks）均未持该非重入锁，锁内取锁无死锁风险。
 
         not_after：入口时刻守卫（code-review item cec36ef4e1fb，与 cleanup
         finally 的 cleanup_entry_ts 同款）——仅摘除 _lock_since 不晚于该时刻
@@ -101,16 +100,50 @@ class G3LockMixin:
         的构建窗口内失去锁保护（重开双派发窗口）；None 表示不设限（行为同
         旧版）。
         """
+        return self._release_spec_locks_core(
+            spec_name, not_after=not_after, lock_key=lock_key,
+        )
+
+    def _release_spec_locks_core(
+        self, spec_name: str, not_after: float | None = None,
+        lock_key: str | None = None, family: str | None = None,
+    ) -> list:
+        """spec 摘锁单一底层实现（code-review item 53b7d6a78045）。
+
+        locks._release_spec_locks（lock_key 精确摘除 / spec 前缀全摘 + not_after）
+        与 legacy_registry._release_spec_locks_of（spec 前缀 + not_after + family
+        过滤）原各有一套并行实现，核心判定高度重叠、口径调整须同改两处且已出现
+        能力分叉——收敛为此单源，后续调整摘锁纪律只改此处。三个可选维度的组合
+        语义：lock_key 传入时精确匹配该键（spec_name 不参与匹配），否则按
+        ``<spec>:`` 前缀匹配；family 按 "verifier"/"non-verifier" 二族过滤锁键
+        的 agent_type 后缀；not_after 仅摘 _lock_since 不晚于该时刻的锁
+        （None 不设限）。
+
+        to_remove 计算与摘除全程持 _spec_lock_th（code-review item
+        776cffc0a278）：无锁迭代 _spec_locks 时并发 create/cleanup 增删
+        会抛 "Set changed size during iteration"，且摘除须与 _lock_since
+        清理原子（纪律同 lifecycle.py:593 段）。调用方（has_active_worktree
+        / refresh_locks / keep_for_reuse）均未持该非重入锁，锁内取锁无死锁
+        风险。迭代用 sorted 快照（对齐 _release_spec_locks_of 既有纪律，
+        消解 set 迭代序的非确定性），删除顺序不影响语义。
+        """
         with self._spec_lock_th:
             to_remove = [
-                k
-                for k in self._spec_locks
+                k for k in sorted(self._spec_locks)
                 if (
                     (k == lock_key)
                     if lock_key is not None
                     else (self._lock_spec_name(k) == spec_name)
                 )
                 and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
+                and (
+                    family is None
+                    or (
+                        (k.partition(":")[2] == "verifier")
+                        if family == "verifier"
+                        else (k.partition(":")[2] != "verifier")
+                    )
+                )
             ]
             for k in to_remove:
                 self._spec_locks.discard(k)
