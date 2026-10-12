@@ -615,7 +615,8 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
     def _inject_first_seen(self, repo, fp: str, epoch: float) -> None:
         """向持久化文件注入旧 first_seen（spec「合成时钟命中升级」口径）。
 
-        持久化文件顶层两分区（evo-stray-first-sight-prevention 1.2）：
+        持久化文件顶层分区（evo-stray-first-sight-prevention 1.2 两分区，
+        evo-whitelist-tracked-patrol 增设第三分区 ``whitelist``）：
         ``untracked``＝指纹注册表，时钟注入落在该分区的指纹条目上。
         """
         data = json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
@@ -654,8 +655,8 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
             self._registry_path(repo).read_text(encoding="utf-8")
         )
         self.assertEqual(
-            set(persisted), {"untracked", "first_sight_dirs"}
-        )  # 顶层两分区（evo-stray-first-sight-prevention 1.2）
+            set(persisted), {"untracked", "first_sight_dirs", "whitelist"}
+        )  # 顶层三分区（两分区 + evo-whitelist-tracked-patrol 白名单分区）
         self.assertIn(fp, persisted["untracked"])
         self.assertEqual(set(persisted["untracked"][fp]), {
             "first_seen", "first_seen_iso", "files",
