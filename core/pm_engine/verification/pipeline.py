@@ -844,8 +844,44 @@ class VerificationPipeline:
             )
         return
 
-    def _read_verdict_failclosed(self, spec_name: str):
+    def _read_verdict_guarded(self, spec_name: str, run_result=None):
+        """_read_verdict + 共享回退陈旧护栏（code-review item eb76bcf8e306）。
+
+        judge 主车道读取裁决：per-spec primary 缺失、_read_verdict 实际落到
+        主树共享回退文件时，补一道 _verifier_result_is_stale 复核（与 legacy
+        车道同款判据/签名形态）——同一 spec 此前 legacy 轮写入的共享裁决
+        （role=verifier、spec 戳匹配、mtime 早于本轮 run 起点）不再仅凭
+        role/spec 戳被直接采信，命中即转「不可读」交由调用方既有的
+        重派 judge 一次 → 二次仍不可读 blocked 链，不新增处置分支。
+        primary 存在（本轮 judge 正常写出产物）或无共享文件时零改动直通；
+        run_result 缺省（兼容旧调用形态）或其 run_id 不可解析时按
+        _verifier_result_is_stale 既有退化语义放行（WARNING 留痕）。
+        """
+        verifier_result = self._read_verdict(spec_name)
+        if not verifier_result.ok or run_result is None:
+            return verifier_result
+        from core.pm_engine.verification.report_gate import (
+            verify_progress_result_paths,
+        )
+
+        primary, shared = verify_progress_result_paths(self, spec_name)
+        if primary.exists() or not shared.exists():
+            return verifier_result
+        if self._verifier_result_is_stale(run_result, shared, spec_name):
+            self._context.logger.warning(
+                "pm_engine",
+                f"共享回退裁决陈旧/归属不明 '{spec_name}' — 按不可读处置"
+                f"（走重派 judge 一次链）: {shared}",
+            )
+            return VerdictReadResult.failure("stale-shared", f"{shared}")
+        return verifier_result
+
+    def _read_verdict_failclosed(self, spec_name: str, judge_run=None):
         """裁决读取与 fail-closed 防护（fix-verdict-read-failclosed D4）。
+
+        judge_run：本轮 judge run 结果（供 _read_verdict_guarded 对共享回退
+        命中做 mtime 陈旧复核，code-review item eb76bcf8e306）；缺省时跳过
+        该复核（仅 role/spec 戳校验，兼容既有调用形态）。
 
         本段承载：warning streak 升级、_read_verdict 结构化三态读取、结果应用处
         最终状态核对（D6）、裁决不可读重派一次→二次仍不可读 blocked + critical
@@ -867,8 +903,9 @@ class VerificationPipeline:
 
         # 读取判定结果（fix-verdict-read-failclosed：结构化三态；
         # evo-verifier-result-single-source R1：统一走 _read_verdict 入口，
-        # 主树共享回退须过 role/spec 戳校验——implementer 残留不采信）
-        verifier_result = self._read_verdict(spec_name)
+        # 主树共享回退须过 role/spec 戳校验——implementer 残留不采信；
+        # eb76bcf8e306：共享回退命中再补 mtime 陈旧复核，与 legacy 车道对齐）
+        verifier_result = self._read_verdict_guarded(spec_name, judge_run)
         verifier_status = verifier_result.status if verifier_result.ok else None
         # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
         # 前道守卫之后的取证校验/重试窗口内 spec 亦可能漂移，此处兜底：非 testing
@@ -1021,7 +1058,7 @@ class VerificationPipeline:
                         f"fail-closed 处置，真实根因入 blocked 留痕: {retry_failure}",
                     )
                 if retry_judge is not None and retry_judge.success:
-                    verifier_result = self._read_verdict(spec_name)
+                    verifier_result = self._read_verdict_guarded(spec_name, retry_judge)
                     verifier_status = verifier_result.status if verifier_result.ok else None
                     # 重派成功且裁决可读同样须核对（code-review item
                     # db9a50bcf07a）：重派 judge 常态 15-50 分钟，窗口内 spec
@@ -1058,7 +1095,7 @@ class VerificationPipeline:
                     # 与盘上产物一致（与主路径「先校验后读取」顺序对齐）；复读
                     # 失败（校验与复读间产物被破坏的窄窗口）落入下方二次不可读
                     # fail-closed 分支 blocked，不推进采纳。
-                    verifier_result = self._read_verdict(spec_name)
+                    verifier_result = self._read_verdict_guarded(spec_name, retry_judge)
                     verifier_status = verifier_result.status if verifier_result.ok else None
             else:
                 # 非 testing 丢弃（code-review item 3219564e2f22）：本节 docstring
@@ -1117,10 +1154,10 @@ class VerificationPipeline:
                 # 位置错位、误导人工排障——blocked 写点处按 primary.exists()
                 # 现场解析一次再生成 evidence（本函数唯一解析点）。
                 from core.pm_engine.verification.report_gate import (
-                    _verify_progress_result_paths,
+                    verify_progress_result_paths,
                 )
 
-                _vfp_primary, _vfp_shared = _verify_progress_result_paths(self, spec_name)
+                _vfp_primary, _vfp_shared = verify_progress_result_paths(self, spec_name)
                 _blocked_result_path = _vfp_primary if _vfp_primary.exists() else _vfp_shared
                 # 告警通道自身失败不得抛穿 blocked 收口（code-review item
                 # ccd3ffdf1a59）：update_spec blocked 已落盘，notifier 异常
@@ -2513,12 +2550,17 @@ class VerificationPipeline:
         _execute_stage2 fail-fast 同源，code-review item ad95fc9cdbdd）；
         True 时应用不可达门禁不自动判 blocked。
         """
-        fail_count = report["summary"]["failed"] + report["summary"]["errors"]
+        # code-review item e12b871aced5：summary 形状防御——三个 report 来源
+        # （engine.run / 裁剪合成 / dist 探针块报告）正常均含 summary 全键，
+        # 改 .get 取值只兜上游报告结构演进/测试替身注入精简 report 的退化
+        # 形态（缺键按 0 计，不再 KeyError 沿主流程穿透）；正常路径数值不变。
+        summary = report.get("summary") or {}
+        fail_count = summary.get("failed", 0) + summary.get("errors", 0)
         self._context.logger.info(
             "pm_engine",
-            f"[阶段2] 完成: {report['summary']['total']}场景, "
-            f"{report['summary']['passed']}通过, "
-            f"{report['summary']['warnings']}警告, "
+            f"[阶段2] 完成: {summary.get('total', 0)}场景, "
+            f"{summary.get('passed', 0)}通过, "
+            f"{summary.get('warnings', 0)}警告, "
             f"{fail_count}失败",
         )
 
@@ -2528,8 +2570,8 @@ class VerificationPipeline:
         # 已尝试的解决方案写入 error 暴露（而非 "0通过/31失败" 却标完成）。
         if (
             not app_reachable
-            and report["summary"]["passed"] == 0
-            and fail_count == report["summary"]["total"]
+            and summary.get("passed", 0) == 0
+            and fail_count == summary.get("total", 0)
         ):
             # 「需用户参与」型不可达让位（code-review item ad95fc9cdbdd）：
             # user_blocked 预留判定位与阶段2.5 fail-fast 处（_execute_stage2
@@ -3392,7 +3434,7 @@ class VerificationPipeline:
             self._handle_verdict_evidence_rejection(spec_name, verdict_ret)
             return
         # ── 阶段3+ 裁决采纳（judge 通道）──
-        verdict_read = self._read_verdict_failclosed(spec_name)
+        verdict_read = self._read_verdict_failclosed(spec_name, judge_run=judge_result)
         if verdict_read is None:
             return
         verifier_result, verifier_status = verdict_read
