@@ -30,7 +30,15 @@ export function knowledgeSwitchesFromConfig(section: unknown): KnowledgeSwitchSt
   };
 }
 
-/** 保存载荷：开关 → knowledge 段（局部段合并语义与 archive 段同型） */
+/**
+ * 保存载荷：开关 → knowledge 段。局部段，只含 audit_enabled 一个键；
+ * 合并语义与 archive 段同型。正确性押在后端逐键合并契约上：core/dashboard/
+ * data/config_admin.py 的 _deep_merge_managed 对 knowledge 段走显式白名单
+ * 逐键合并分支（enabled/audit_enabled，仅 bool 应用），merged 以原配置深拷贝
+ * 起步，patch 缺席的键原样保留——故只提交 audit_enabled 不会抹掉 knowledge
+ * 段内其余键（如 enabled）。若后端该段合并语义改为整段替换，此局部载荷会
+ * 静默清掉其余键，改合并语义时须同步评估本载荷的键覆盖面。
+ */
 export function knowledgeSectionFromSwitches(state: KnowledgeSwitchState): {
   knowledge: KnowledgeSection;
 } {
