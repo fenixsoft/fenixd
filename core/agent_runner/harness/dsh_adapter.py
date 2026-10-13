@@ -97,6 +97,16 @@ DSH_HEADLESS_ENTRY_MARKER = "headless-runner"
 #: 消费（is_resume_dead_error），claude 通道既有判定零改动。
 DSH_SESSION_ADOPT_DEAD_MARKER = "does not exist; omit --session-id"
 
+#: resume 采纳失败的宽松兜底正则（held/refus/cwd-mismatch 分支——错误文本
+#: 签名未逐字实测（探针仅覆盖未知 id），命中面较宽：任何同时含「session」
+#: 词干与否定词的无关错误也会判 resume 死，误判代价仅是新会话回退重跑一次
+#: （可接受）。探针下次覆盖这三类错误文本后，把实测签名收进常量表并收窄
+#: 本正则；tests/test_harness_dsh_adapter.py::TestSessionBinding 已锚定当前
+#: 兜底行为，收窄时同步改写锚点。
+DSH_SESSION_ADOPT_FALLBACK_PATTERN = (
+    r"session\b.*\b(not exist|does not exist|held|refus|mismatch)"
+)
+
 # ── init 事件工具表（probe-findings「工具注册面补充」逐字对账）────────────
 
 #: dsh session → init 投影携带的工具表（Bundle Task 工具族 + 24 原生工具）。
@@ -562,6 +572,10 @@ class DshAdapter:
 
     def __init__(self, config: Optional[DshAdapterConfig] = None) -> None:
         self._config = config or DshAdapterConfig()
+        # 上一次 spawn 落盘的 patch 临时文件路径（回收锚点，见
+        # _write_model_patch docstring：run 收尾无钩子，改在下一次 spawn 前
+        # unlink，进程内单实例至多滞留一份）。
+        self._last_patch_path: Optional[str] = None
 
     # ── 协议成员 ─────────────────────────────────────────────────────
 
@@ -635,13 +649,23 @@ class DshAdapter:
 
     def _write_model_patch(self, model: str, base_url: str) -> str:
         """渲染模型三要素 patch 落系统临时目录（仓树外，stray-first-sight
-        约束：不在 repo 树留运行时产物），返回路径。每次 spawn 新建；临时
-        目录由系统 tmp 清理机制回收。"""
+        约束：不在 repo 树留运行时产物），返回路径。每次 spawn 新建；上一
+        次的 patch 在本次 spawn 前 unlink 回收（adapter 实例缓存
+        ``_last_patch_path``）——同实例多次 spawn（resume 回退重跑等）不再
+        逐份累积；跨 dispatch 每实例首个 patch 与最后一次残留仍交系统 tmp
+        清理机制兜底。文件仅含模型三要素、无凭据。"""
         content = render_model_patch_yaml(
             model=model,
             base_url=base_url,
             api_key_env=DSH_API_KEY_ENV,
         )
+        # 回收上一次 patch：best-effort（文件已被系统 tmp 清理/进程重启换
+        # 新实例时静默跳过），回收失败绝不阻断 spawn。
+        if self._last_patch_path:
+            try:
+                os.unlink(self._last_patch_path)
+            except OSError:
+                pass
         fh = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -653,6 +677,7 @@ class DshAdapter:
             fh.write(content)
         finally:
             fh.close()
+        self._last_patch_path = fh.name
         return fh.name
 
     def build_env(self, req: SpawnRequest, api_key: str = "") -> Optional[Dict[str, str]]:
@@ -878,10 +903,14 @@ class DshAdapter:
         if DSH_SESSION_ADOPT_DEAD_MARKER in error_text:
             return True
         # 被持有 refuse / cwd 不符拒绝：同属 fail-loud 家族，签名未逐字实测
-        # （探针仅覆盖未知 id），按 session 否定语义宽松兜底。
+        # （探针仅覆盖未知 id），按 session 否定语义宽松兜底（正则收进
+        # DSH_SESSION_ADOPT_FALLBACK_PATTERN 常量，当前行为由单测锚定）。
         return bool(
-            re.search(r'session\b.*\b(not exist|does not exist|held|refus|mismatch)',
-                      error_text, re.IGNORECASE)
+            re.search(
+                DSH_SESSION_ADOPT_FALLBACK_PATTERN,
+                error_text,
+                re.IGNORECASE,
+            )
         )
 
     def session_bookkeeping_key(self, run_id: str) -> str:
@@ -921,9 +950,15 @@ class DshAdapter:
                 f" dsh（npm install -g @deepseek-ai/dsh@{DSH_VERSION_WHITELIST[0]}"
                 f"），或将 agent.harness 改回 claude"
             )
-        version = (proc.stdout or "").strip().splitlines()[0].strip() if (
-            proc.stdout or ""
-        ).strip() else ""
+        # 版本识别：取 stdout 首行；stdout 为空时回退 stderr 首行（CLI 惯例
+        # 差异——版本走 stderr 的形态不该被误报成「版本不在白名单」，排障
+        # 方向别被带偏；两通道皆空才落 version '' 分支）。
+        version = ""
+        for stream in (proc.stdout, proc.stderr):
+            stripped = (stream or "").strip()
+            if stripped:
+                version = stripped.splitlines()[0].strip()
+                break
         if version not in DSH_VERSION_WHITELIST:
             raise HarnessHealthError(
                 f"dsh 版本 {version!r} 不在兼容白名单 "
