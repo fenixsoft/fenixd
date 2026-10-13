@@ -26,8 +26,17 @@ def fallback_log(logger, level: str, msg: str) -> None:
                 getattr(logger, level)("fenixd %s", msg)
             else:
                 getattr(logger, level)("fenixd", msg)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 兜底器自身失败（level 拼错、duck-type logger 缺方法等）也要可观测，
+            # 连同原 msg 一并落到 stderr，避免整条记录被无声丢弃；
+            # 这行输出自身同样防抛（极端下 sys.stderr 可能缺失），维持「绝不抛」契约。
+            try:
+                print(
+                    f"[fenixd] log-fallback failed (level={level!r}): {exc!r}; msg={msg!r}",
+                    file=sys.stderr,
+                )
+            except Exception:
+                pass
     else:
         try:
             print(f"[fenixd] {msg}", file=sys.stderr)
