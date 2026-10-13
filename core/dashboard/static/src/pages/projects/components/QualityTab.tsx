@@ -446,12 +446,19 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // CodeFixProgressCard 1d0b747da6b2 先例）。progress 同点复位（code-review
   // item 1699f5c3678b）：否则新项目 progress 响应返回前「审查进行中」卡片
   // 仍渲染上一项目 running 态与 review_id，此时点取消会以新 project 携带旧
-  // 项目的 review_id 调 cancelRun。声明序在下方数据加载 effect 之前：
+  // 项目的 review_id 调 cancelRun。itemsPage/itemsTotal 同点复位（code-review
+  // item b3d0f1356d02）：否则项目 A 翻到高页码后切到条目较少的项目 B，loadItems
+  // 仍以旧页码请求——新后端靠越界页收敛多发一次请求自愈（收敛前先渲染空页），
+  // 旧后端（无 total）无收敛路径，antd 回退本地分页后停在空页。复位会经
+  // loadItems 依赖多触发一次重拉（仅 page>1 时），loadSeqRef 守卫保证旧页
+  // 响应按过期丢弃。声明序在下方数据加载 effect 之前：
   // project 变化时先清态再触发重查。
   useEffect(() => {
     setItems([]);
     setSelectedKeys([]);
     setProgress(null);
+    setItemsPage(1);
+    setItemsTotal(undefined);
     loadedOnceRef.current = false;
   }, [project]);
 

@@ -278,9 +278,12 @@ export default function CodeFixProgressCard(
   const batchTotal = progress.batch_total;
   const currentItem = progress.current_item;
   let itemProgressText = '';
-  if (itemDone !== null) {
+  // 用 typeof 收窄而非 !== null：后端若缺发字段（undefined）会同时绕过
+  // 两处 null 判定，渲染出「本批已处置 undefined/undefined 条」；与下方
+  // donePlusItems 的 typeof 口径统一（code-review item 3bea68686899）。
+  if (typeof itemDone === 'number') {
     itemProgressText =
-      batchTotal !== null
+      typeof batchTotal === 'number'
         ? `本批已处置 ${itemDone}/${batchTotal} 条`
         : `本批已处置 ${itemDone} 条`;
     // status/file 由后端从 agent 产物行拷贝（仅校验 item_id），可合法为空——
