@@ -15,8 +15,15 @@ import { assertDshPinned } from "./version.ts";
 
 export const name = "fenix-dsh-bundle";
 
-/** 依赖 fenixModelConfig（fail-fast 链）与 tools（注册 Task 工具族所需的服务访问）。 */
-export const inject = ["fenixModelConfig", "tools"];
+/**
+ * 依赖声明：fenixModelConfig（fail-fast 链）、tools（注册 Task 工具族所需的
+ * 服务访问）、approval（apply 链内 verifyApproval 经 ctx.get 惰性读取的策略
+ * 面——ctx.get 本身无 inject 要求，但显式声明后服务必已装配，与 cordis.patch.yml
+ * 的 entry 级 inject: [..., approval] 保持一致）。systemPrompt 不在此列：
+ * registerAgentsMdSection 经 ctx.inject(["systemPrompt"], fn) 消费，那本身就是
+ * 声明式依赖（回调仅在服务可用时执行），顶层声明只会徒增装配门控。
+ */
+export const inject = ["fenixModelConfig", "tools", "approval"];
 
 /** 本插件消费的 dsh 上下文面（结构最小集，避免直接依赖 cordis 类型）。 */
 interface FenixBundleContext extends AgentsMdContext {
