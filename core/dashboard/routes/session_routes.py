@@ -23,17 +23,25 @@ SESSION_STDERR_TAIL_LIMIT = 50
 class H_SessionRoutesMixin:
     """H_SessionRoutesMixin：会话 REST 端点。"""
 
-    def _session_context(self, query):
+    def _session_context(self, query, require_sm: bool = True):
         """统一「项目校验 + SessionManager 判空」样板。
 
         校验失败时已写好错误响应并返回 None；成功返回 (project, sm)。
         「无会话」分支语义各端点不同（JSON null / 404 / 幂等 ok），由端点
         自行处理；sm.get 带死会话清理副作用，故不在此统一取 session。
+
+        require_sm=False（item 1c1dda2ca506）：只需项目路径、不消费 sm 的
+        端点（files 补全）跳过 SessionManager 判空，sm 恒返回 None——
+        无会话能力的部署形态（session_manager 未初始化）下，@ 文件补全
+        不应被连带 500。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
             return None
+
+        if not require_sm:
+            return project, None
 
         from core.dashboard.session_manager import SessionManager
         sm: SessionManager = self.server.session_manager
@@ -248,13 +256,16 @@ class H_SessionRoutesMixin:
         """GET /api/session/files?project=<name> → 项目文件相对路径数组（只读）。
 
         供 @ 提及补全。project 校验复用 _session_context（缺参/未注册 404，
-        与既有 _session_context 样板对未注册项目的口径一致）。
+        与既有 _session_context 样板对未注册项目的口径一致）。本端点只消费
+        项目路径、不消费 sm：require_sm=False 跳过 SessionManager 判空
+        （item 1c1dda2ca506）——文件补全不依赖会话能力，session_manager
+        未初始化的部署形态下不应连带 500。
 
         截断契约（code-review item 448e7c6898a6）：上限 SESSION_FILES_LIMIT
         （5000），超出静默截断，响应体不附 truncated 标记（响应保持普通
         数组形状；_json 助手不支持自定义响应头）。
         """
-        context = self._session_context(query)
+        context = self._session_context(query, require_sm=False)
         if context is None:
             return
         project, _sm = context

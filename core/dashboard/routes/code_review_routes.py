@@ -337,6 +337,18 @@ class H11CodeReviewRoutesMixin:
             return
         proot = Path(project["path"])
 
+        # 运行中守卫（基于产物终态判定，见 core.code_review.read_progress——
+        # 已取消/已停机的 run 必须判 running=false，否则 409 恒真锁死后续触发）。
+        # 先于 backlog 守卫（item 09161dffa0ee）：审查进行中台账条目会被陆续
+        # 写成 open，running 与超阈值常同时成立——若 backlog 守卫先行，首步
+        # 回 code_review_open_backlog 并提示「confirm 后开跑」，用户照做后仍
+        # 被本守卫以 code_review_running 拒绝；running 在前使运行中请求恒返回
+        # 更准确的状态码。
+        progress = dashboard_data.read_code_review_progress(str(proot))
+        if progress.get("running"):
+            self._coded_error(409, "已有审查在进行中", "code_review_running")
+            return
+
         # 二次全仓叠加防护（evo-add-code-review-ratelimit-resume 4.1，spec
         # 「Requirement: 二次全仓叠加防护」）：上一轮全仓审查未消化完（台账
         # open 条数超阈值）时，手动 full 触发回 409 确认态而非直接开跑——
@@ -368,13 +380,6 @@ class H11CodeReviewRoutesMixin:
                         "code_review_open_backlog",
                     )
                     return
-
-        # 运行中守卫（基于产物终态判定，见 core.code_review.read_progress——
-        # 已取消/已停机的 run 必须判 running=false，否则 409 恒真锁死后续触发）
-        progress = dashboard_data.read_code_review_progress(str(proot))
-        if progress.get("running"):
-            self._coded_error(409, "已有审查在进行中", "code_review_running")
-            return
 
         # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push；
         # item 13d53dcd5440 提取 _guard_hosting_state 与 fix-run 共用）

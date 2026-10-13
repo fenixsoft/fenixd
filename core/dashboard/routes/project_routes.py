@@ -4,6 +4,20 @@
 原样搬移为 mixin（方法体零改动）。
 
 D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixin。
+
+「项目不存在」状态码的三种变体归属（code-review item ae3374a73d7a，集中
+记载防后续端点抄写漂移；前端均按 result.ok/.error 分支，三变体功能等价）：
+1) 项目级文件端点统一走 _project_query_or_error——缺参 400、未知/目录缺失
+   一律 404 "project not found"（本文件共用口径，新增端点优先抄此）；
+2) _api_project_describe 为 400/404 双档（registry 未知 400 "unknown
+   project"、目录缺失 404 "project not found"），契约由
+   TestProjectDescribeAPI 钉死（见该处 [fenix-ignore:c6597d26ac7c]）；
+3) 路径式端点 _api_project_lifecycle / _api_project_delete（经
+   _resolve_project_or_400）对未知/未监控项目回 400「项目不存在或未监控」，
+   由 test_start_stop_unknown_project_returns_400 /
+   test_restart_unknown_project_returns_400 /
+   test_install_hosting_unknown_project_400 钉住 400 契约，属既有约定
+   不擅改 404。
 """
 
 from __future__ import annotations
@@ -308,7 +322,7 @@ class H2ProjectRoutesMixin:
                 result = _server_mod.stop_daemon(project["path"])
             elif action == "install-hosting":
                 result = self._install_hosting_locked(project)
-            else:  # restart
+            elif action == "restart":
                 # 消费方校验（D8 同源）：unmanaged = 进程在跑但无 supervisor，
                 # restart_request 无人消费；拒绝而非写信号后静默滞留。
                 # 探测异常（导入失败等）同样不放行：降级 stopped 会绕过校验，
@@ -345,6 +359,12 @@ class H2ProjectRoutesMixin:
                             e,
                         )
                         result = {"ok": False, "error": "写入 restart_request 失败"}
+            else:
+                # item 9340641988bd：显式拒绝未知动作，不再裸 else 兜底为
+                # restart——路由派发面（base.py 路由表）新增动作而本分发
+                # 漏改时，静默写 restart_request 会触发 daemon 排水重启，
+                # 故障表现与根因相距很远；两侧失同步在此显式失败可观测。
+                result = {"ok": False, "error": f"未知动作 {action}"}
         except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
             # 不外泄裸异常文本（code-review item 2a32ba26780c）：环境异常的
             # str(e) 可能携带内部路径/tmux 错误细节，与 _api_project_describe
