@@ -291,27 +291,41 @@ def _escalate_inconclusive_parking(
             f"inconclusive 升级人工告警失败 '{spec_name}'（非阻塞）: "
             f"{type(e).__name__}: {e}",
         )
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "status": "implemented",
-            "tester_run": None,
-            "error": (
-                f"连续 {attempts} 轮验证失败均被裁决归类 env"
-                f"（{threshold_note}{env_note}），无 admin 放行处置记录 — "
-                f"{INCONCLUSIVE_PARKING_ERROR_MARKER}"
-                f"（choices：grant_env_exemption / manual_fixed_reverify / "
-                f"abandon）；自动重验已停止"
-            ),
-            "_inconclusive_attempts": attempts,
-            "_last_inconclusive_signature": signature or "",
-            "_in_inconclusive_reverify": True,
-            "_dispatch_backoff_until": (
-                int(datetime.now(timezone.utc).timestamp())
-                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-            ),
-        },
-    )
+    # 升级通道自身失败不得抛穿裁决流程（与同文件 _escalate_scenario_defect_reroute
+    # / _speculative_bug_found_gate 的容错口径对齐，code-review item
+    # 0bb7ab7a6f25）：update_spec 含磁盘 IO，磁盘满/权限异常若上抛会沿三个
+    # 调用点中断本轮 verdict 处置——SIGNAL 与人工告警已发出，停驶落盘失败仅
+    # ERROR 留痕，不阻断调用方收口。
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "implemented",
+                "tester_run": None,
+                "error": (
+                    f"连续 {attempts} 轮验证失败均被裁决归类 env"
+                    f"（{threshold_note}{env_note}），无 admin 放行处置记录 — "
+                    f"{INCONCLUSIVE_PARKING_ERROR_MARKER}"
+                    f"（choices：grant_env_exemption / manual_fixed_reverify / "
+                    f"abandon）；自动重验已停止"
+                ),
+                "_inconclusive_attempts": attempts,
+                "_last_inconclusive_signature": signature or "",
+                "_in_inconclusive_reverify": True,
+                "_dispatch_backoff_until": (
+                    int(datetime.now(timezone.utc).timestamp())
+                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+                ),
+            },
+        )
+    except Exception as e:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"inconclusive 升级停驶写盘失败 '{spec_name}'（spec 状态未变更、"
+            f"自动重验未停，SIGNAL/告警已发可人工介入）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return
     pipeline._context.logger.error(
         "pm_engine",
         f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决归类 env"
@@ -867,7 +881,12 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
-        sid = sc.get("scenario_id") or sc.get("id")
+        # str 归一（code-review item 366e9bc55637）：与 _warning_stale_triage_alert、
+        # _verdict_env_exemption_level2 及 triage_recheck.json 回读（仅收 str）
+        # 同口径——数字型 id 若以原始类型作 current_ids/侧车键，json.dumps 落盘
+        # 会把键转 str，下轮 int 键 get 不到致连续计数断档、剪枝因类型不等把
+        # str 键全判 stale 误删、already_recheck 去重恒真重复列入候选。
+        sid = str(sc.get("scenario_id") or sc.get("id") or "")
         if not sid:
             continue
         current_ids.add(sid)
@@ -2384,6 +2403,29 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
         # 复活 check-then-act 竞态（锁内仅 set.discard，无 IO、无重入）。
         with _REVERIFY_TIMERS_LOCK:
             timers.discard(name)
+        # 终态早退（code-review item b5cae6b2c316）：排程无 cancel 机制，延迟窗
+        # 内 spec 可能已流转到终态（abandon/verified/人工接管等），到期仍会触发
+        # 本回调——入队前读一次状态，非 implemented/testing 视为已收尾，INFO
+        # 留痕早退不再入队；状态不可得（读取异常）保持原行为照常入队，交
+        # queue.py verifier 车道状态门兜底拦截。
+        try:
+            status = str(
+                (pipeline._context.state_machine.read_one(name) or {}).get("status")
+                or ""
+            ).strip().lower()
+            if status and status not in ("implemented", "testing"):
+                pipeline._context.logger.info(
+                    "pm_engine",
+                    f"重验日程到期但 spec 已流转至 '{status}'（非 "
+                    f"implemented/testing），跳过入队 '{name}'",
+                )
+                return
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重验日程到期读 spec 状态失败，照常入队 '{name}': "
+                f"{type(e).__name__}: {e}",
+            )
         pipeline._context.logger.info(
             "pm_engine",
             f"重验日程到期，入队 verifier '{name}'（fix-recovery-path-blockers D3）",

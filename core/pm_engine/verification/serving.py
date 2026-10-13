@@ -37,6 +37,12 @@ LEGACY_START_PROBE_INTERVAL_SECONDS = 1
 # 引号边界时收集判定命中而改写不生效，重探持续失败走兜底路径。
 _PORT_BOUNDARY = r"(?=[/\?#\"']|$)"
 
+# code-review 53099fb34716：可达性探测仅认本机 origin——场景 URL 指向外部
+# 站点时跳过判定并留痕（外链不可达≠应用不可达，不得触发 commands.start
+# 自愈与端口改写）。本机归并 127.0.0.1/localhost/::1/0.0.0.0（urlparse 对
+# IPv6 字面量去方括号归一为 ::1）。
+_LOCAL_PROBE_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
 
 def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     """serving worktree 供给（static/command 两型共享）。
@@ -967,6 +973,82 @@ def _dist_probe_block_report(pipeline, spec_name: str, scenarios, probe_err: str
     return report
 
 
+def _collect_scenario_entry_urls(pipeline, data) -> tuple:
+    """收集场景实例入口 URL（web navigate / api http_request、sse_connect），
+    并按本机 origin 分桶。
+
+    code-review fbc1dbb2c634：自 _ensure_app_reachable 机械搬移的场景 URL
+    收集段，收集逻辑零改动。code-review 53099fb34716：urls 原先仅按 http
+    前缀过滤、未按被测实例 origin 过滤——场景集混入指向外部站点的导航/
+    请求步骤时，外链不可达会被误判「应用不可达」，进入 commands.start 自
+    愈启动与端口改写分支（契约路径 origin 改写统一到实例 origin，风险集
+    中在无契约 legacy 形态）。故收集后按本机 origin 归并过滤：外链目标跳
+    过可达性判定并留痕，仅本机目标参与探测与端口改写。
+
+    Returns:
+        (probe_urls, external_urls)：probe_urls 仅含本机 origin 的绝对 URL
+        （参与可达性探测与端口改写）；external_urls 为外链 origin 目标
+        （跳过判定，仅留痕）。
+    """
+    from urllib.parse import urlparse
+
+    urls: list[str] = []
+    for sc in (data if isinstance(data, list) else []):
+        if not isinstance(sc, dict):
+            continue
+        for step in sc.get("steps", []) or []:
+            if not isinstance(step, dict):
+                continue
+            action = step.get("action")
+            if action == "navigate":
+                # navigate 目标 URL 存于 value（见 scenarios.TestStep）：191 个场景
+                # 全部用 value 携带链接，target/url 为空。旧代码读 url/target 导致
+                # urls 恒空，_ensure_app_reachable 恒判可达，可达性门禁永不触发。
+                u = str(step.get("value") or step.get("url") or step.get("target") or "")
+            elif action in ("http_request", "sse_connect"):
+                # api 场景打同一实例（BASE_URL 铁律扩展：URL origin 全量改写），
+                # 入口 URL 同样参与可达性探测
+                u = str(step.get("url") or "")
+            else:
+                continue
+            if u.startswith("http") and u not in urls:
+                urls.append(u)
+
+    probe_urls: list[str] = []
+    external_urls: list[str] = []
+    for u in urls:
+        # urlparse 对 IPv6 字面量去方括号归一（http://[::1]:x/ → ::1），
+        # 与 _LOCAL_PROBE_HOSTS 同一口径
+        if (urlparse(u).hostname or "").lower() in _LOCAL_PROBE_HOSTS:
+            probe_urls.append(u)
+        else:
+            external_urls.append(u)
+    if external_urls:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景含 {len(external_urls)} 个非本机 origin URL"
+            f"（{'、'.join(external_urls)}），跳过可达性判定"
+            "（外链不可达不判应用不可达、不触发自愈/端口改写）",
+        )
+    return probe_urls, external_urls
+
+
+def _probe_url(u: str, timeout: float = 2.0, http_error_ok: bool = False) -> bool:
+    """单 URL 可达性探针（原 _ensure_app_reachable 内嵌 _probe，原样上提）。"""
+    try:
+        req = urllib.request.Request(
+            u, method="GET", headers={"User-Agent": "fenix-verify-probe"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        # 4xx/5xx 同样说明该端口已有 HTTP 服务在应答：根路径 404 的
+        # API-only 应用不应被判不可达（连接拒绝/超时仍为阴性）
+        return http_error_ok
+    except Exception:
+        return False
+
+
 def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     """验证前确保应用可达：自动启动 commands.start、处理端口冲突。
 
@@ -1055,28 +1137,10 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     if not kinds:
         return True, False, ""
 
-    # 收集场景实例入口 URL（web navigate / api http_request、sse_connect）
-    urls: list[str] = []
-    for sc in (data if isinstance(data, list) else []):
-        if not isinstance(sc, dict):
-            continue
-        for step in sc.get("steps", []) or []:
-            if not isinstance(step, dict):
-                continue
-            action = step.get("action")
-            if action == "navigate":
-                # navigate 目标 URL 存于 value（见 scenarios.TestStep）：191 个场景
-                # 全部用 value 携带链接，target/url 为空。旧代码读 url/target 导致
-                # urls 恒空，_ensure_app_reachable 恒判可达，可达性门禁永不触发。
-                u = str(step.get("value") or step.get("url") or step.get("target") or "")
-            elif action in ("http_request", "sse_connect"):
-                # api 场景打同一实例（BASE_URL 铁律扩展：URL origin 全量改写），
-                # 入口 URL 同样参与可达性探测
-                u = str(step.get("url") or "")
-            else:
-                continue
-            if u.startswith("http") and u not in urls:
-                urls.append(u)
+    # 收集场景实例入口 URL（web navigate / api http_request、sse_connect），
+    # 并按本机 origin 分桶（code-review 53099fb34716：外链 origin 跳过可达
+    # 性判定并留痕，不参与探测与端口改写）
+    urls, external_urls = _collect_scenario_entry_urls(pipeline, data)
 
     # ── 声明式验证契约（.fenix/verify.yaml，字段语义见 verify_contract.py）──
     # 场景必须打「被测实现 fresh 构建出的可运行形态」。契约存在时：prepare
@@ -1131,38 +1195,52 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # legacy 链消费，此处已无浆可流）。
             return pipeline._serve_command_in_main(spec_name, contract, scenarios_path)
 
-    def _probe(u: str, timeout: float = 2.0, http_error_ok: bool = False) -> bool:
-        try:
-            req = urllib.request.Request(
-                u, method="GET", headers={"User-Agent": "fenix-verify-probe"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout):
-                return True
-        except urllib.error.HTTPError:
-            # 4xx/5xx 同样说明该端口已有 HTTP 服务在应答：根路径 404 的
-            # API-only 应用不应被判不可达（连接拒绝/超时仍为阴性）
-            return http_error_ok
-        except Exception:
-            return False
-
     # code-review 9105bbfb5bc7：urls 为空时下方 all() 恒真（vacuous true），
     # 可达性门禁与 commands.start 自启会被整体跳过——场景集含 web/api（纯
-    # cli 已在上方 return）但步骤无 http 绝对 URL 时显式留痕，不静默放行
+    # cli 已在上方 return）但步骤无 http 绝对 URL 时显式留痕，不静默放行。
+    # code-review 53099fb34716：空集分两态——一个 http 绝对 URL 都没有时
+    # 维持既有 vacuous 放行与上方留痕；仅外链被跳过时不得经空集恒真放行
+    # （外链不参与可达性判定，但 serve/commands.start 必要性判定仍须照走，
+    # 落到下方自愈判定分支）。
     if not urls:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"场景 kind 集={','.join(sorted(kinds))} 但未收集到 http 绝对 URL，"
-            "可达性探测跳过（空集合 all() 恒真）：请检查场景 navigate/"
-            "http_request 步骤是否携带绝对地址，或补 .fenix/verify.yaml serve 契约",
-        )
-
+        if not external_urls:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"场景 kind 集={','.join(sorted(kinds))} 但未收集到 http 绝对 URL，"
+                "可达性探测跳过（空集合 all() 恒真）：请检查场景 navigate/"
+                "http_request 步骤是否携带绝对地址，或补 .fenix/verify.yaml serve 契约",
+            )
+            return True, False, ""
     # 1) 直接探测：已可达则无需自愈（4xx/5xx 同样视为服务在应答——urls 均
-    #    经上方 http 前缀过滤，语义与探活环/恢复路径统一，见 _probe 注释）
-    if all(_probe(u, http_error_ok=True) for u in urls):
+    #    经收集助手按本机 origin 过滤，语义与探活环/恢复路径统一，见
+    #    _probe_url 注释；外链 origin 已被跳过，不再逐一探测）
+    elif all(_probe_url(u, http_error_ok=True) for u in urls):
         return True, False, ""
 
     # 2) 自愈：无契约路径（契约 command 分支已在上方 return），
-    # 直接回退 commands.start（旧行为）
+    # 直接回退 commands.start（旧行为）——整段拆为模块级助手
+    # _legacy_selfheal_start（code-review fbc1dbb2c634，判定顺序与
+    # 日志文案/端口改写逻辑零改动）
+    return _legacy_selfheal_start(
+        pipeline, spec_name, kinds, urls, scenarios_path, contract
+    )
+
+
+def _legacy_selfheal_start(
+    pipeline, spec_name: str, kinds, urls, scenarios_path, contract
+) -> tuple:
+    """无契约 legacy 形态的 commands.start 自愈启动（spawn+探活+端口改写）。
+
+    code-review fbc1dbb2c634：自 _ensure_app_reachable 机械搬移的自愈段
+    （无 start_cmd → verify_contract_missing 信号派发；有 → {port} 注入/
+    入口预检/spawn/探活/外来端口改写/邻近端口扫描改写），判定顺序、日志
+    文案、端口改写逻辑零改动；kinds/urls/scenarios_path/contract 为原函数
+    跨段复用的局部变量，改经参数传入（urls 已由 _collect_scenario_entry_urls
+    按本机 origin 过滤，外链目标不参与探活与端口改写）。
+
+    Returns:
+        (reachable, user_blocked, note)，语义同 _ensure_app_reachable。
+    """
     start_cmd = str(pipeline._context.config_reader("commands.start", "") or "").strip()
     if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
         kind_label = "、".join(sorted(kinds))
@@ -1296,7 +1374,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
 
     for _ in range(LEGACY_START_PROBE_ATTEMPTS):
         time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
-        if all(_probe(u, http_error_ok=True) for u in urls):
+        if all(_probe_url(u, http_error_ok=True) for u in urls):
             boot_log.close()
             return True, False, "已自动启动应用服务"
 
@@ -1306,7 +1384,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # （base_port → 扫描到的邻近端口），对「场景写了别的端口」完全无能为力，
     # 导致应用明明已启动却被判不可达、spec 永久卡死在 testing
     # （fix-fix-improve-verify-adjudication）。
-    if base_port and _probe(f"http://127.0.0.1:{base_port}/", http_error_ok=True):
+    if base_port and _probe_url(f"http://127.0.0.1:{base_port}/", http_error_ok=True):
         foreign_ports = {
             m.group(1)
             for u in urls
@@ -1326,7 +1404,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # 「探针全部通过后才改写」纪律）——改写经 atomic_write_text
             # 持久落盘且无回滚，复核失败时残留的「外来端口→base_port」改写
             # 会让场景文件从此指向不被服务的端口、影响后续轮次。
-            if all(_probe(u, http_error_ok=True) for u in urls_new):
+            if all(_probe_url(u, http_error_ok=True) for u in urls_new):
                 # code-review c0637b767434：改写成败向上反馈——持久化失败时
                 # 内存探针虽通过，场景文件仍指向旧端口（下一轮复现同一
                 # 「不可达→改写」循环），成功文案降级为可判别的警告性 note
@@ -1358,19 +1436,19 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # 50×2s≈100s 阻塞主流程；先并发取响应端口集合再升序复核，命中语义与
     # 串行版一致（首个复核通过的响应端口）。
     if base_port:
-        # 探测口径与 _probe(http_error_ok=True) 一致：4xx/5xx 同样证明
+        # 探测口径与 _probe_url(http_error_ok=True) 一致：4xx/5xx 同样证明
         # HTTP 服务在应答（API-only 应用根路径 404 不判不响应）
         ports = sorted(
             _probe_ports_responding(
                 range(base_port + 1, base_port + 51),
-                probe=lambda p: _probe(f"http://127.0.0.1:{p}/", http_error_ok=True),
+                probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
             )
         )
         for port in ports:
             urls_new = [
                 re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
             ]
-            if all(_probe(u, http_error_ok=True) for u in urls_new):
+            if all(_probe_url(u, http_error_ok=True) for u in urls_new):
                 # code-review ce8aa74526a7：登记端口按探测结果修正——上方
                 # 以 hint_port=base_port 登记，实际监听端口是 port；不修正
                 # 的话 _current_instance_base_url（无契约形态）按登记端口
@@ -1571,7 +1649,7 @@ def _probe_ports_responding(ports, probe=None) -> set:
     并发后总耗时收敛到单端口探测上限。每个端口探测结果独立（_port_responds
     无共享状态），并发仅缩短墙钟时间，返回集合与原串行探测逐元素一致。
     probe 可注入替代判定（code-review 15745b057144：兜底邻近扫描复用本函数
-    并保持 _probe(http_error_ok=True) 的 4xx/5xx 亦算应答口径）。
+    并保持 _probe_url(http_error_ok=True) 的 4xx/5xx 亦算应答口径）。
     """
     from concurrent.futures import ThreadPoolExecutor
 

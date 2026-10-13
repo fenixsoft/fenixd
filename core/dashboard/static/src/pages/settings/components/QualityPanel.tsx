@@ -99,6 +99,29 @@ const BATCH_SIZE_RULE = {
       : Promise.reject(new Error('须为 1–1000 的整数')),
 };
 
+// code-review item 620d75c88dd9：severity 门限枚举与周批节奏上下限比照
+// BATCH_SIZE_RULE 抽模块级单源——cadence 的 1–90 边界旧实现内联散写在
+// validator 与 InputNumber min/max 两处，同族校验器逐字复制粘贴曾实际漂移
+// （见本文件头注释），调词表/上限时易单侧漂移。
+const SEVERITY_RULE = {
+  validator: (_: unknown, v: string | undefined | null) =>
+    v && (SEVERITY_OPTIONS as readonly string[]).includes(v)
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为 critical/major/minor/info')),
+};
+
+const CADENCE_BOUNDS = { min: 1, max: 90 } as const;
+
+const MINOR_CADENCE_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    typeof v === 'number' &&
+    Number.isInteger(v) &&
+    v >= CADENCE_BOUNDS.min &&
+    v <= CADENCE_BOUNDS.max
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为 1–90 的整数（天）')),
+};
+
 // 表单值的单一构建来源（code-review item 5ba46a1b4d6c，同族 ParallelSettingsPanel
 // item 3f4e251a395c / ApprovalModePanel item 3f618ddb51cb 口径）：字段映射旧实现
 // 只写在回填 effect 一处，<Form> 未传 initialValues——控件首帧空显（InputNumber
@@ -826,14 +849,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                 </span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: string | undefined | null) =>
-                  v && (SEVERITY_OPTIONS as readonly string[]).includes(v)
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为 critical/major/minor/info')),
-              },
-            ]}
+            rules={[SEVERITY_RULE]}
             style={{ marginTop: 24 }}
           >
             <Select
@@ -852,18 +868,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                 </span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: number | undefined | null) =>
-                  typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 90
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为 1–90 的整数（天）')),
-              },
-            ]}
+            rules={[MINOR_CADENCE_RULE]}
           >
             <InputNumber
-              min={1}
-              max={90}
+              min={CADENCE_BOUNDS.min}
+              max={CADENCE_BOUNDS.max}
               precision={0}
               style={{ width: '100%' }}
               addonAfter="天"

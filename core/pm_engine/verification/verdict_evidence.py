@@ -252,6 +252,56 @@ def _dispatch_failure_result(
     }
 
 
+def _dispatch_judge(pipeline, spec_name: str, violations: list, lane_label: str):
+    """judge 派发壳单源（verdict-retry 轮 / 重合成轮共用）：try run_planner →
+    except 折算 dispatch_exception → None 契约违约早退 → not success 走
+    _dispatch_failure_result 三分支让位。
+
+    返回二态：派发成功 → AgentRunResult（调用方继续 load_report 校验链）；
+    任一失败分支 → 失败 result dict（调用方原样早退——禁止继续 load_report
+    复读上一轮旧 report.json，复读会把旧违规误判为「本轮仍不合规」假 ERROR
+    并触发 blocked 处置；是否写 blocked 由调用方按 cause 决定）。
+    ``lane_label`` 为日志前缀词（"裁决重试" / "重合成"），保持各轮次既有
+    文案逐字不变。
+    """
+    try:
+        re_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
+    except Exception as e:
+        # dispatch_exception：run_planner 抛异常 → 立即早退。（run_planner
+        # 违反契约返回 None 的形态见下方分支）
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"{lane_label} judge 异常 '{spec_name}': {e}",
+        )
+        return {
+            "ok": False,
+            "cause": "dispatch_exception",
+            "violations": violations,
+            "dispatch_error": str(e),
+        }
+    if re_judge is None:
+        # run_planner 违反类型契约返回 None（区别于上方抛异常形态）：与异常
+        # 分支同处置立即早退。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"{lane_label} judge 返回 None '{spec_name}'（run_planner 违反契约）",
+        )
+        return {
+            "ok": False,
+            "cause": "dispatch_exception",
+            "violations": violations,
+            "dispatch_error": "run_planner returned None",
+        }
+    if not re_judge.success:
+        # frozen 门拦截 / 取消旗标拦截 / 其它派发失败三种让位处置与重试轮/
+        # 重合成轮共用 _dispatch_failure_result 单源实现（frozen 判据与
+        # runner.py 门共用导出常量）。
+        return _dispatch_failure_result(
+            pipeline, spec_name, re_judge, violations, lane_label
+        )
+    return re_judge
+
+
 def _adopt_report(
     pipeline,
     spec_name: str,
@@ -411,46 +461,13 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             f"记账={retry_kind}），重试 judge 一次："
             f"{[v['scenario_id'] for v in violations_1]}",
         )
-        try:
-            re_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
-        except Exception as e:
-            # dispatch_exception：run_planner 抛异常 → 立即早退。禁止继续
-            # 执行 load_report 复读第一轮违规的旧 report.json（现路径会据此
-            # 打出「重试后仍不合规」假 ERROR）；是否写 blocked 由调用方按
-            # cause 决定。（run_planner 违反契约返回 None 的形态见下方分支）
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"裁决重试 judge 异常 '{spec_name}': {e}",
-            )
-            return {
-                "ok": False,
-                "cause": "dispatch_exception",
-                "violations": violations_1,
-                "dispatch_error": str(e),
-            }
-        if re_judge is None:
-            # run_planner 违反类型契约返回 None（区别于上方抛异常形态）：
-            # 与异常分支同处置立即早退，禁止落至下方 load_report 复读第一轮
-            # 旧产物（复读会把旧违规误判为「重试后仍不合规」假 ERROR 并触发
-            # blocked 处置）。
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"裁决重试 judge 返回 None '{spec_name}'（run_planner 违反契约）",
-            )
-            return {
-                "ok": False,
-                "cause": "dispatch_exception",
-                "violations": violations_1,
-                "dispatch_error": "run_planner returned None",
-            }
-        if not re_judge.success:
-            # ── 重试派发失败三分支（fix-verdict-retry-misattribution）──
-            # frozen 门拦截 / 取消旗标拦截 / 其它派发失败三种让位处置与重合成
-            # 轮共用 _dispatch_failure_result 单源实现（frozen 判据与 runner.py
-            # 门共用导出常量）。
-            return _dispatch_failure_result(
-                pipeline, spec_name, re_judge, violations_1, "裁决重试"
-            )
+        # ── 派发壳三分支（异常 / None 契约违约 / 派发失败）单源 _dispatch_judge ──
+        # 成功 → AgentRunResult 继续下方校验链；任一失败 → 失败 result dict
+        # 原样早退，禁止 load_report 复读第一轮违规的旧 report.json（复读会
+        # 打出「重试后仍不合规」假 ERROR）；是否写 blocked 由调用方按 cause 决定。
+        re_judge = _dispatch_judge(pipeline, spec_name, violations_1, "裁决重试")
+        if isinstance(re_judge, dict):
+            return re_judge
         report2 = load_report(pipeline._context.project_root, spec_name)
         if report2 is None:
             # 重试成功但 report.json 不可读 → report_missing（产物丢失，非违规）
@@ -834,6 +851,13 @@ def _escalate_dedup_resynthesis(
     # （该段逐轮无条件注入），与 directive 侧 stale 隐患同型同治；
     # _adopt_report 采纳路径本就两者同清。
     pipeline._clear_requeue_manifest(spec_name)
+    # code-review bdfac9e49a2c：同点同 fail-open 口径清裁决驳回清单——否则
+    # blocked 解除后的全新 judge 派发经 prompt_builder._verdict_rejection_section
+    # 仍按「文件在场」注入上一 episode 的「强制修复 / 轻量重合成禁止复现与改判定」
+    # 旧纪律（该段无新鲜度判据），把新轮 judge 锁死在对旧被拒清单的轻量改写上；
+    # 计数已随 error/告警留痕，清清单不丢事实，新轮再被拒时
+    # _handle_attr_dedup_rejection 会重新写盘本轮清单，注入闭环不受影响。
+    pipeline._clear_verdict_violations(spec_name)
     pipeline._context.state_machine.update_spec(
         spec_name,
         {
@@ -976,40 +1000,12 @@ def _handle_attr_dedup_rejection(
     # 反复拒绝时轮内/全局重裁决计数必须增长，否则绕过轮内 2 次与
     # judge_rerun_count 上限治理（仅剩 _RESYNTHESIS_MAX_ATTEMPTS 独立兜底）。
     pipeline._judge_charge_verdict_retry(spec_name, violations_entries)
-    try:
-        re_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
-    except Exception as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"重合成 judge 异常 '{spec_name}': {e}",
-        )
-        return {
-            "ok": False,
-            "cause": "dispatch_exception",
-            "violations": violations_entries,
-            "dispatch_error": str(e),
-        }
-    if re_judge is None:
-        # run_planner 违反类型契约返回 None（区别于上方抛异常形态）：与异常
-        # 分支同处置立即早退，禁止落至下方 load_report 复读旧产物（复读会把
-        # 旧违规误判为重合成仍不合规）。
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"重合成 judge 返回 None '{spec_name}'（run_planner 违反契约）",
-        )
-        return {
-            "ok": False,
-            "cause": "dispatch_exception",
-            "violations": violations_entries,
-            "dispatch_error": "run_planner returned None",
-        }
-    if not re_judge.success:
-        # ── 重合成派发失败三分支（fix-verdict-retry-misattribution）──
-        # frozen 门拦截 / 取消旗标拦截 / 其它派发失败三种让位处置与重试轮
-        # 共用 _dispatch_failure_result 单源实现。
-        return _dispatch_failure_result(
-            pipeline, spec_name, re_judge, violations_entries, "重合成"
-        )
+    # ── 派发壳三分支（异常 / None 契约违约 / 派发失败）单源 _dispatch_judge，
+    # 与 verdict-retry 轮同构收敛；成功 → AgentRunResult 继续下方校验链，
+    # 任一失败 → 失败 result dict 原样早退（禁止 load_report 复读旧产物）。
+    re_judge = _dispatch_judge(pipeline, spec_name, violations_entries, "重合成")
+    if isinstance(re_judge, dict):
+        return re_judge
 
     # 4) 重合成产物回灌完整校验链（与 _verify_verdict_evidence 既有路径同源）
     report2 = load_report(pipeline._context.project_root, spec_name)

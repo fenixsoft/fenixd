@@ -235,6 +235,10 @@ def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
 # （_read_verifier_result）共用此单一来源——白名单外取值（如 implementer 共享
 # 文件残留的 "success"/"error"）一律不得视作合法裁决。语义错位 status 若被
 # 读侧当作 verified 放行即历史 fail-open 事故（add-verify-contract-autodraft）。
+# 注意：verifier 裁决读取器（core/pm_engine/verification/report_gate.
+# _read_verifier_result）亦消费本常量作裁决白名单；PLANNER 前缀系历史命名
+# （状态族单一来源落在 prompt_builder），给 verifier 增删专属 status 同样改
+# 此处，勿在验证侧另立词表。
 PLANNER_RESULT_STATUS_WHITELIST = (
     "verified",
     "bug-found",

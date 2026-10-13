@@ -41,6 +41,12 @@ function projectExtraOf(d: PromptsData | null | undefined, agentType: string): s
   return d?.project ? d.project.extras[agentType] ?? '' : '';
 }
 
+// HTTP-200 错误载荷提取单点（code-review item e0dc33bb37d4）：初始加载与保存后
+// refetch 两处共用同一提取规则，新增调用点一律复用此助手，避免漏掉错误载荷检查
+// 历史上曾静默吞错（见 9a019b10302a / 441adfad7a94）。
+const errorPayloadOf = (d: unknown): string | undefined =>
+  (d as { error?: string } | null | undefined)?.error;
+
 export default function PromptsPanel({ project }: PromptsPanelProps) {
   // 提示经 App.useApp() 取上下文实例（code-review item 3254bd677d01）：antd v5
   // 静态 message 不消费 App/ConfigProvider 上下文，与 index/useGatedFormPanel
@@ -113,7 +119,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // _api_prompts_get 出错时经 _json 返回 {error: "…"} 且 HTTP 200
           // （request() 仅在 !res.ok 时抛），旧实现静默吞掉——错误响应与
           // 「合法空提示词」不可区分（面板渲染空只读视图无反馈）。
-          const errPayload = (d as { error?: string }).error;
+          const errPayload = errorPayloadOf(d);
           if (errPayload) {
             message.warning(`提示词加载返回错误：${errPayload}`);
             setData(null);
@@ -242,7 +248,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         // projectExtraOf 返回空串静默清空用户已保存的草稿（下次保存把空串
         // 写进 .fenix/agents/<agent>.md）。检测到错误载荷仅提示刷新失败，
         // 保留现有 data/extraDraft。
-        const errPayload = (d as { error?: string }).error;
+        const errPayload = errorPayloadOf(d);
         if (errPayload) {
           message.warning(`已保存，但刷新列表返回错误：${errPayload}`);
           // 错误载荷分支同样同步已保存基线（code-review item 37cec996892e）：

@@ -16,6 +16,9 @@ import json
 import re
 from pathlib import Path
 
+# 裁决 status 白名单单源在 core.agent_runner.prompt_builder：verifier 裁决与
+# planner 裁决共用同一状态集，PLANNER 前缀系历史命名，verifier 增删 status
+# 亦改彼处（常量定义处有声明），本模块不另立词表。
 from core.agent_runner.prompt_builder import PLANNER_RESULT_STATUS_WHITELIST
 
 
@@ -276,7 +279,9 @@ def _read_verifier_result(
     → verified → done → auto-push）。不可读的处置（重试/blocked）由调用方
     决定，本方法只负责如实归因。
 
-    ok=True 时的 status 取值：
+    ok=True 时的 status 取值（词表出处 =
+    core.agent_runner.prompt_builder.PLANNER_RESULT_STATUS_WHITELIST，
+    PLANNER 前缀系历史命名，verifier 增删 status 亦改彼处）：
     - "verified" 表示全部通过；
     - "bug-found" 表示验证发现 Bug；
     - "plan-ready" 表示 Planner 已生成场景；

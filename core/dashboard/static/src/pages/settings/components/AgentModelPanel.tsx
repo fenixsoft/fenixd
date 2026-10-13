@@ -244,7 +244,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // 组合，写回前重算比对、不一致则丢弃（code-review item a62520ebd290）
     const startFingerprint = rowHealthFingerprint(index, rIdx);
     // 指纹不一致时的统一丢弃：不写结论、不播按旧参数的 toast；在飞条目可能
-    // 仍在（如角色级缺省模型输入不触发清条目），复位 loading 防按钮悬挂转圈
+    // 仍在（如拖拽换序后按发起时的旧位置重算指纹），复位 loading 防按钮悬挂转圈
     const discardStale = () => {
       setHealthRows((m) => {
         if (!(rowKey in m)) return m;
@@ -473,7 +473,21 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                         </>
                       }
                     >
-                      <Input placeholder="模型名（如 deepseek-v4-flash），可选" />
+                      <Input
+                        placeholder="模型名（如 deepseek-v4-flash），可选"
+                        onChange={() => {
+                          // 角色级默认模型变化 = 该卡内 model 留空行的「生效模型」变化
+                          // （rowHealthFingerprint 同口径），旧徽标（可能是绿色「已验证」）
+                          // 不再代表当前组合，按「行位置 → key」映射清留空行的条目，
+                          // 与粘贴路径的 roleModel 比对口径对齐
+                          // （code-review item 29d4ba80aae0）
+                          const rows = form.getFieldValue(['roleList', index, 'rows']);
+                          (rowFieldsRef.current[index] || []).forEach((f, rIdx) => {
+                            const row = (Array.isArray(rows) ? rows : [])[rIdx];
+                            if (!((row?.model || '').trim())) clearHealthRow(`${index}-${f.key}`);
+                          });
+                        }}
+                      />
                     </Form.Item>
                     <Form.List name={[field.name, 'rows']}>
                       {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => (

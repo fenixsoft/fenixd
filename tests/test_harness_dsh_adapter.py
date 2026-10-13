@@ -199,7 +199,8 @@ class TestSpawnContract:
 
     def test_spawn_same_request_byte_stable(self):
         """对同一请求逐字节稳定（protocol SpawnSpec 契约；patch 文件路径除
-        外——每次 spawn 新建临时文件）。"""
+        外——同实例多次 spawn 按 _last_patch_path 回收：下一次 spawn 前 unlink
+        上一次 patch 文件，故先建 spec 的路径可能已被回收，清理须去重+判存）。"""
         adapter = _make_adapter()
         spec_a = adapter.build_spawn_spec(_make_request())
         spec_b = adapter.build_spawn_spec(_make_request())
@@ -207,8 +208,9 @@ class TestSpawnContract:
         assert spec_a.argv[5:] == spec_b.argv[5:]  # patch 路径之后逐字节相等
         assert spec_a.stdin_payload == spec_b.stdin_payload
         assert spec_a.env == spec_b.env
-        for s in (spec_a, spec_b):
-            os.unlink(s.argv[4])
+        for path in {spec_a.argv[4], spec_b.argv[4]}:
+            if os.path.exists(path):
+                os.unlink(path)
 
     def test_render_model_patch_yaml_shape(self):
         text = render_model_patch_yaml(
@@ -444,6 +446,32 @@ class TestSessionBinding:
         assert _make_adapter().is_resume_dead_error(
             "No conversation found with session ID") is False
 
+    def test_is_resume_dead_error_fallback_branches(self):
+        """宽松兜底分支锚点：held/refus/mismatch（错误文本签名未逐字实测
+        ——本用例固化当前行为快照；探针实测签名回收并收窄
+        DSH_SESSION_ADOPT_FALLBACK_PATTERN 时同步改写本锚点）。"""
+        adapter = _make_adapter()
+        assert adapter.is_resume_dead_error(
+            'session "session-x" is held by another process') is True
+        assert adapter.is_resume_dead_error(
+            "session adoption refused by owner") is True
+        assert adapter.is_resume_dead_error(
+            "session cwd mismatch: /a != /b") is True
+        # 大小写不敏感（re.IGNORECASE）
+        assert adapter.is_resume_dead_error(
+            "SESSION HELD by another run") is True
+
+    def test_is_resume_dead_error_fallback_hit_surface(self):
+        """兜底命中面边界（已知取舍的锚定）：需同时含 session 词干与否定
+        词——只含其一不判死（误判代价仅是新会话回退重跑一次）。"""
+        adapter = _make_adapter()
+        assert adapter.is_resume_dead_error(
+            "cwd mismatch for worktree /w") is False
+        assert adapter.is_resume_dead_error(
+            "held by another process") is False
+        assert adapter.is_resume_dead_error(
+            "session resumed successfully") is False
+
     def test_fresh_session_never_passes_session_id(self):
         """全新会话 MUST NOT 传 --session-id（严格采纳语义）。"""
         spec = _make_adapter().build_spawn_spec(_make_request())
@@ -536,6 +564,59 @@ class TestCheckHealth:
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(HarnessHealthError):
             _make_adapter().check_health()
+
+    def test_version_on_stderr_fallback(self, monkeypatch):
+        """版本走 stderr 的 CLI 惯例差异：stdout 空时回退 stderr 首行做白
+        名单比对（不把输出通道差异误报成「版本不在白名单」）。"""
+        def fake_run(argv, **kwargs):
+            if "--version" in argv:
+                return _FakeCompleted(0, stdout="", stderr="0.2.0-rc.2\n")
+            return _FakeCompleted(
+                0, stdout=(f"# == @deepseek-ai/dsh-base\n"
+                           f"{DSH_HEADLESS_ENTRY_MARKER}\n"
+                           f"{DSH_BUNDLE_MOUNT_MARKER}\n"))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _make_adapter().check_health()  # 不抛即通过
+
+    def test_version_output_absent_reports_empty_version(self, monkeypatch):
+        """两通道皆空（真实的「无版本输出」而非通道差异）：version '' 仍
+        落白名单失败分支，报错文案呈现空版本号属预期。"""
+        def fake_run(argv, **kwargs):
+            if "--version" in argv:
+                return _FakeCompleted(0, stdout="", stderr="")
+            return _FakeCompleted(
+                0, stdout=(f"# == @deepseek-ai/dsh-base\n"
+                           f"{DSH_HEADLESS_ENTRY_MARKER}\n"
+                           f"{DSH_BUNDLE_MOUNT_MARKER}\n"))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(HarnessHealthError) as ei:
+            _make_adapter().check_health()
+        assert "版本" in str(ei.value)
+        assert "''" in str(ei.value)
+
+
+# ── patch 临时文件回收（_write_model_patch /tmp 累积治理）────────────────
+
+
+class TestModelPatchRecycle:
+    def test_next_spawn_unlinks_previous_patch(self):
+        """同实例多次 spawn 不向 /tmp 逐份累积（resume 回退重跑等场景）：
+        adapter 实例缓存上次 patch 路径，下一次 spawn 前回收（best-effort）
+        ——进程内单实例至多滞留一份；当前在用的 patch 不受影响。"""
+        adapter = _make_adapter()
+        first = adapter.build_spawn_spec(
+            _make_request(resume_session_id="session-r1"))
+        p1 = first.argv[first.argv.index("--patch") + 1]
+        assert os.path.exists(p1)
+        second = adapter.build_spawn_spec(
+            _make_request(resume_session_id="session-r2"))
+        p2 = second.argv[second.argv.index("--patch") + 1]
+        assert p1 != p2
+        assert not os.path.exists(p1)  # 上一次已回收
+        assert os.path.exists(p2)  # 当前在用
+        os.unlink(p2)
 
 
 class TestFactoryRegistration:
