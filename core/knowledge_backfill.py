@@ -103,6 +103,28 @@ class _NullLogger:
         pass
 
 
+class _StdLoggerAdapter:
+    """标准 ``logging.Logger`` → fenixd ``(component, message)`` 签名适配。
+
+    run_backfill 的留痕调用形如 ``log.warning("knowledge", msg)``；标准 logger
+    不能直接传入（component 会被当消息、message 当位置参数，message 含 ``%``
+    时还会格式化报错）。main() 手工激活路径经本适配传入，使破坏性清理删除前
+    告警、批次提交失败 fail-open 留痕对操作者可见。
+    """
+
+    def __init__(self, std: logging.Logger):
+        self._std = std
+
+    def info(self, component: str, message: str) -> None:
+        self._std.info("%s: %s", component, message)
+
+    def warning(self, component: str, message: str) -> None:
+        self._std.warning("%s: %s", component, message)
+
+    def error(self, component: str, message: str) -> None:
+        self._std.error("%s: %s", component, message)
+
+
 def load_knowledge_core():
     """延迟导入前置 SPEC 的 ``core.knowledge``；未合并/损坏时返回 None。
 
@@ -1190,8 +1212,14 @@ def build_batches(
     return batches
 
 
-def scale_stats(project_root: Path) -> dict[str, int]:
-    """真相源规模统计：域数 / 能力页数 / ADR 数 / 总行数（汇报与膨胀趋势共用）。"""
+def scale_stats(project_root: Path, log=None) -> dict[str, int]:
+    """真相源规模统计：域数 / 能力页数 / ADR 数 / 总行数（汇报与膨胀趋势共用）。
+
+    单个知识页不可读（权限/EIO）时 fail-open 计 0 行并 WARNING 留痕，不以未
+    处理异常掀翻调用方车道（对齐本文件其余文件读取的防护口径，
+    code-review 4fea0d88eed2）；``log`` 缺省静默替身（外部调用方传参可选）。
+    """
+    log = log or _NullLogger()
     kdir = Path(project_root) / KNOWLEDGE_DIR
     domains_dir = kdir / "domains"
     adr_dir = kdir / "adr"
@@ -1207,10 +1235,26 @@ def scale_stats(project_root: Path) -> dict[str, int]:
             if page.name == "_domain.md":
                 continue
             pages += 1
-            lines += len(page.read_text(encoding="utf-8", errors="replace").splitlines())
+            try:
+                text = page.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                log.warning(
+                    "knowledge",
+                    f"回填规模统计：知识页 {page.name} 读取失败（计 0 行跳过）：{e}",
+                )
+                continue
+            lines += len(text.splitlines())
     for nav in (kdir / "index.md",):
         if nav.is_file():
-            lines += len(nav.read_text(encoding="utf-8", errors="replace").splitlines())
+            try:
+                text = nav.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                log.warning(
+                    "knowledge",
+                    f"回填规模统计：index.md 读取失败（计 0 行跳过）：{e}",
+                )
+                continue
+            lines += len(text.splitlines())
     adrs = (
         len([p for p in adr_dir.glob("ADR-*.md") if p.is_file()])
         if adr_dir.is_dir()
@@ -1531,7 +1575,7 @@ def run_backfill(
             "reason": "converged",
             "converged": True,
             "counts": counts,
-            "scale": scale_stats(project_root),
+            "scale": scale_stats(project_root, log=log),
         }
 
     domain_map_path = project_root / DOMAIN_MAP_RELPATH
@@ -1798,8 +1842,26 @@ def run_backfill(
                     uncommitted_keys.update(CAPABILITY_PREFIX + cap for cap in batch)
                 else:
                     uncommitted_keys.clear()
+                # 回填在飞期间新登记的归档（register_archive_pending 在派发
+                # 漏斗进程并发改盘台账）可能触碰本批能力：车道入口一次性构建
+                # 的 chain_index 不含其 delta，此处若照常标 distilled，台账按
+                # 条合并以 updated_at 较新者胜、会覆盖登记进程的 pending 写入，
+                # 下轮重入收敛判定即跳过该能力，新归档的溯源行对该能力页永久
+                # 缺失。重扫链索引与提示词所用链比对，链有增变的条目保持
+                # pending，下轮重入按新链重新聚合（code-review c06e4666a93b）。
+                fresh_index = build_chain_index(project_root)
                 for cap in batch:
-                    ledger.mark(CAPABILITY_PREFIX + cap, STATUS_DISTILLED, batch=i)
+                    cap_key = CAPABILITY_PREFIX + cap
+                    if fresh_index.get(cap, []) != chain_index.get(cap, []):
+                        ledger.reset_pending(cap_key)
+                        log.warning(
+                            "knowledge",
+                            f"回填批次 {i}/{total}：能力 {cap} 在聚合期间有新登记"
+                            "归档触碰（本轮链未含其 delta），保持 pending 待重入"
+                            "按新链重新聚合",
+                        )
+                        continue
+                    ledger.mark(cap_key, STATUS_DISTILLED, batch=i)
                 ok_batches.append(i)
             else:
                 # 差集回滚只清本批新增脏路径：前批提交失败仍在盘上的产出落在
@@ -1934,7 +1996,7 @@ def run_backfill(
         uncommitted_keys.clear()
 
     counts = ledger.counts()
-    scale = scale_stats(project_root)
+    scale = scale_stats(project_root, log=log)
     converged = all(
         c[STATUS_PENDING] == 0 and c[STATUS_FAILED] == 0 for c in counts.values()
     )
@@ -2072,7 +2134,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="知识真相源存量回填车道（手工激活）")
     parser.add_argument("--project-root", default=".", help="项目主树根目录")
     args = parser.parse_args(argv)
-    summary = run_backfill(Path(args.project_root).resolve())
+    # 手工激活是本车道唯一激活路径：不装配 logging 时 run_backfill 落
+    # _NullLogger 静默替身，破坏性清理的删除前告警（自举清理未跟踪内容、
+    # 域剪枝含已入库内容）、回滚半失败与批次提交失败 fail-open 留痕对操作者
+    # 全部不可见。basicConfig（缺省 WARNING 级、stderr）+ 签名适配传入，
+    # 与 daemon 挂载路径的留痕可见性对齐（code-review 37d8ce4af524）。
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    summary = run_backfill(
+        Path(args.project_root).resolve(),
+        logger=_StdLoggerAdapter(logging.getLogger("fenixd.knowledge_backfill")),
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary.get("ok", True) else 1
 
