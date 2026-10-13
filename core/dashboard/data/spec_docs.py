@@ -9,6 +9,11 @@ import re
 from pathlib import Path
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
+# 注意：本正则是**读侧**白名单，目的是防路径穿越（点/斜杠均被排除），宽于
+# core/spec_gen.py 的 kebab-case 权威**创建**口径 ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
+# （复制见 core/signals.py，两处要求字面同步）——写侧产生不了的形态
+# （数字开头如 ``1abc``、连续/尾随连字符如 ``a--b``/``abc-``）在此也能命中
+# 活跃/归档目录解析。非同一口径，勿混同维护。
 _SPEC_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # doc 白名单：仅允许读取这些核心设计文档（tasks.md 与 proposal.md 同目录）
 _SPEC_DOC_WHITELIST = ("proposal", "design", "tasks", "verification", "scenarios")
@@ -322,7 +327,9 @@ def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | 
     数 steps/assertions 非空的（带肉）。骨架落盘即 total 达终值，done 随每批
     重写爬升，done≤total 恒成立。done>0 才返回（0 场景无进度可言）。
     """
-    if entry.get("status") != "testing":
+    # entry 形态守卫：非 dict（None/脏数据）与其他非 testing 状态一样以 None
+    # 计，与同模块计数函数的 fail-open 风格对齐
+    if not isinstance(entry, dict) or entry.get("status") != "testing":
         return None
     if vp is None:
         # 跨组引用（artifacts 组）经门面延迟解析（D4）
