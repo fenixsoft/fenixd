@@ -23,9 +23,15 @@
   kind: new
 - path: dsh-bundle/tests/fixtures/headless-events.jsonl
   kind: new
+- path: dsh-bundle/tests/fixtures/mock-model-server.mjs
+  kind: new
 - path: dsh-bundle/tests/taskTools.test.ts
   kind: new
 - path: dsh-bundle/tests/guards.test.ts
+  kind: new
+- path: dsh-bundle/tests/approval.test.ts
+  kind: new
+- path: dsh-bundle/tests/modelConfig.test.ts
   kind: new
 - path: AGENTS.md
   kind: new
@@ -33,7 +39,7 @@
 
 ## 1. 真机探针（结论约束后续任务与 SPEC-3）
 
-- [ ] 1.1 headless `--json` 事件流采集：DSH_HOME 隔离下运行 `dsh headless --json`（假任务触发 tool_call/tool_result/text/final 各类事件），样本落 dsh-bundle/tests/fixtures/headless-events.jsonl；实测 8KiB/32KiB 截断边界并记录
+- [ ] 1.1 headless `--json` 事件流采集：DSH_HOME 隔离下以 tests/fixtures/mock-model-server.mjs（OpenAI 兼容假模型端点，响应序列可脚本化编排 tool_call/tool_result/text/final 各类事件）运行 `dsh headless --json`，样本落 dsh-bundle/tests/fixtures/headless-events.jsonl；实测 8KiB/32KiB 截断边界并记录
 - [ ] 1.2 stderr 错误码表采集：无效模型名/无效 API key/不可达端点三类失败，记录 `dsh: <code>: <message>` 形态与 exit code 语义，给出→provider_circuit 分类（ratelimit/unrecognized_model/transient/…）映射建议表
 - [ ] 1.3 usage 形态结论：检查 final 事件与 session 统计是否携带 token usage；不可得时记录 `usage_source: unavailable` 降级路径与 Bundle 统计插件的后续 path
 - [ ] 1.4 原生能力盘点：dsh-tool-todo（与 claude Task 语义比对）、dsh-tool-subagent/dsh-subagent（事件形状可否对齐 claude Task 子代理）、dsh-skill、dsh-hooks-claude-code（能否直接消费现有 hooks schema）、system-prompt 分区对 AGENTS.md 的装载行为；逐项给复用 vs 自研判定
@@ -42,7 +48,7 @@
 ## 2. Bundle 骨架
 
 - [ ] 2.1 创建 dsh-bundle/ 包：package.json（dsh.profile/dsh.bundle 字段、peer 钉 @deepseek-ai/* 0.2.0-rc.2）、dsh.profile（Bundle 列表）、cordis.patch.yml（覆盖层）、src/index.ts（插件装配入口）
-- [ ] 2.2 DSH_HOME 隔离加载验证：自定义 profile 挂载 Bundle 后 `dsh tui --dump-config` 可见 Bundle 条目、headless 假端点冒烟正常退出、版本不符时 fail-fast
+- [ ] 2.2 DSH_HOME 隔离加载验证：以 `dsh --from-default-profile <模板>` 创建自定义 profile（模板名以探针实测可用集为准，勿预设 tui 模板存在）挂载 Bundle 后，`dsh --profile <自定义名> --dump-config` 可见 Bundle 条目、headless 假端点冒烟正常退出、版本不符时 fail-fast
 
 ## 3. Task 工具族插件
 
@@ -60,7 +66,7 @@
 
 - [ ] 5.1 src/approval.ts 非交互审批策略：headless 全放行（等价 bypassPermissions），无人值守零交互阻塞
 - [ ] 5.2 src/modelConfig.ts OpenAI 兼容端点模型适配：baseurl/apikey/model 三要素 schema、model 缺失 fail-fast（错误含「模型未显式配置」）；schema 与渲染说明写入 README
-- [ ] 5.3 单测 + 隔离冒烟：假端点验证显式配置生效、缺 model 拒绝启动、错误路径符合探针 1.2 的形态
+- [ ] 5.3 单测（tests/approval.test.ts、tests/modelConfig.test.ts）+ 隔离冒烟：假端点（复用探针 1.1 的 mock-model-server.mjs）验证显式配置生效、缺 model 拒绝启动、错误路径符合探针 1.2 的形态
 
 ## 6. AGENTS.md 载体
 

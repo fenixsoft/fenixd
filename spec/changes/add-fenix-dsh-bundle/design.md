@@ -2,6 +2,8 @@
 
 SPEC-1 已冻结 `HarnessAdapter` 协议与 `HarnessCapabilities`（core/agent_runner/harness/protocol.py）。本 SPEC 在 dsh 侧补齐 fenixd 车道依赖的机制等价物。dsh 一切皆插件（Cordis）：Profile 叠加 Bundle，Bundle 是配置行 + 挂载代码的分发格式（`dsh.profile` 列 Bundle、`cordis.patch.yml` 覆盖）；工具注册表（core/tools）、工具执行管道、审批策略、system-prompt 分区均可插件替换。本机 dsh 0.2.0-rc.2 已安装（母设计 §2.3），`dsh headless` 契约见母设计 §2.2。
 
+依赖时序澄清：SPEC-1 属并行实施项（母设计 §10「SPEC-2 可与 SPEC-1 并行，接口先冻结」），本 SPEC 所称「已冻结」指接口形状在 SPEC-1 的 spec 层冻结，`core/agent_runner/harness/protocol.py` 由 SPEC-1 落地；本 SPEC 零 Python 交付物、不 import 其任何产物，与 SPEC-1 的唯一耦合点是 Task 工具事件形状与 claude 语义对齐。
+
 成对契约是本 SPEC 的核心：fenixd 的 prompt 契约段（prompt_builder.py:1562+）要求 agent 调用 TaskCreate/TaskUpdate，读侧 run_task_track.py 解析 tool_use block——Bundle 的 Task 工具族让 dsh 通道的写侧成立，SPEC-3 的投影让读侧接通。
 
 ## Goals / Non-Goals
