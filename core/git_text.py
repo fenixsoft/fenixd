@@ -55,9 +55,14 @@ def unquote_git_path(p: str) -> str:
                 continue
             octal = body[i + 1 : i + 4]
             if len(octal) == 3 and all(d in "01234567" for d in octal):
-                raw.append(int(octal, 8))
-                i += 4
-                continue
+                value = int(octal, 8)
+                # git quote.c 的八进制最高 0o377；输入是任意文本行，遇到形如
+                # \777 的越界值（>0xFF）不臆造映射，与未知转义分支同口径：
+                # 不消费，整个序列按普通字符原样保留。
+                if value <= 0xFF:
+                    raw.append(value)
+                    i += 4
+                    continue
         raw += c.encode("utf-8")
         i += 1
     return raw.decode("utf-8", "surrogateescape")
