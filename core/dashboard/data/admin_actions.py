@@ -2514,6 +2514,16 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
         return {"ok": False, "steps": [],
                 "error": "载荷 fixture_files 每项须为对象（{\"path\", \"content\"}）",
                 "frozen_manual": False}
+    # 非 str content 须在任何写盘前整体拒绝：str(content or "") 会把对象/
+    # 数组/数字转成 Python repr 文本静默落盘，与调用方意图内容完全不同且无
+    # 报错——违背「任一步失败即停，不留半改状态」契约。
+    for f in fixture_files:
+        content = f.get("content")
+        if content is not None and not isinstance(content, str):
+            return {"ok": False, "steps": [],
+                    "error": ("载荷 fixture_files[].content 须为字符串"
+                              f"（path={f.get('path') or ''}）"),
+                    "frozen_manual": False}
 
     # 2. 修订预算前置（超限转人工冻结）
     specs = parse_state(proot)

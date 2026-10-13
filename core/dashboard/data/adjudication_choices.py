@@ -366,6 +366,33 @@ ADJUDICATION_CHOICES: MappingProxyType = MappingProxyType({
     for sig, choices in _ADJUDICATION_REGISTRY.items()
 })
 
+
+# 模块加载期自检（code-review item cf4b9efbae3a）：resolve_choice 的全表反查
+# 在首个命中即返回，其结论以「同一 id 在各信号下 action 语义一致、spec_scoped
+# 取值一致」为前提（见 resolve_choice docstring），该不变式此前无任何断言钉死
+# ——同一 id 若以作用域/非作用域两种形态登记在不同桶，反查判 scoped-no-reverse
+# 还是放行将取决于注册表插入顺序。此处遍历全表 fail-fast：任一 id 跨桶出现
+# spec_scoped/action 冲突即在 import 期拒绝，不留给运行期静默漂移。
+def _assert_registry_consistency() -> None:
+    first_seen: dict = {}
+    for sig, choices in ADJUDICATION_CHOICES.items():
+        for choice in choices:
+            cid = choice.get("id")
+            action = choice.get("action")
+            scoped = bool(choice.get("spec_scoped", True))
+            prev = first_seen.get(cid)
+            if prev is not None and (prev[1], prev[2]) != (action, scoped):
+                raise AssertionError(
+                    f"choice id {cid!r} 跨桶语义冲突：桶 {prev[0]!r} 声明 "
+                    f"action={prev[1]!r}/spec_scoped={prev[2]}，桶 {sig!r} 声明 "
+                    f"action={action!r}/spec_scoped={scoped}；resolve_choice "
+                    "全表反查在首个命中即返回，结论将取决于注册表插入顺序"
+                )
+            first_seen[cid] = (sig, action, scoped)
+
+
+_assert_registry_consistency()
+
 # 消费通道约定（registry spec.md）：除 build_artifact_paths_missing 外，各信号的
 # 告警记录均为 kind=ESCALATION（进前端告警区渲染下拉）；build_artifact_paths_missing
 # 写 kind=SIGNAL 记录，不进前端告警区，其 choices 由 Administrator 处置契约消费。

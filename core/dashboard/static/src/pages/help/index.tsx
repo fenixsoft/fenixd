@@ -95,9 +95,22 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
 // 渲染完成后页面布局才稳定；锚点滚动等布局敏感逻辑需等待其全部结束
 const pendingMermaidRenders = new Set<Promise<void>>();
 
-/** 等待当前所有在途 mermaid 渲染结束；无在途渲染时立即完成。 */
-function waitForMermaidRenders(): Promise<void> {
-  return Promise.all(pendingMermaidRenders).then(() => undefined);
+/** 锚点滚动等待在途渲染的时长上限：单个渲染挂起时不永久阻塞滚动。 */
+const MERMAID_RENDER_WAIT_TIMEOUT_MS = 15_000;
+
+/**
+ * 等待当前所有在途 mermaid 渲染结束；无在途渲染时立即完成。
+ * fix f8c735d6d825：等待以 15s 有界竞速封顶——mermaid.render / 动态 import 均
+ * 无超时包裹，单个渲染挂起时对应 promise 永不 settle，无界 Promise.all 会让
+ * 此后所有锚点跳转静默失效。超时只让「等待」放弃并放行滚动，不触碰
+ * pendingMermaidRenders：任务条目仍由 MermaidBlock 的 finally 正常摘除，
+ * 不干扰渲染任务自身的登记生命周期。
+ */
+async function waitForMermaidRenders(): Promise<void> {
+  await Promise.race([
+    Promise.all(pendingMermaidRenders).then(() => undefined),
+    new Promise<void>((resolve) => { setTimeout(resolve, MERMAID_RENDER_WAIT_TIMEOUT_MS); }),
+  ]);
 }
 
 // ── MermaidBlock：承接 language-mermaid 围栏块（由 pre 覆盖拦截后转入）──
@@ -207,7 +220,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
     // 其 className 含 language-mermaid。命中则直接返回图容器使其脱离 pre
     //（pre 仅允许 phrasing content，<pre><div> 属非法嵌套）；其余代码块原样渲染 pre
     pre({ node, children }: ComponentProps<'pre'> & ExtraProps) {
-      const code = node?.children[0];
+      const code = node?.children?.[0];
       if (code?.type === 'element') {
         const { className } = code.properties ?? {};
         if (Array.isArray(className) && className.includes('language-mermaid')) {

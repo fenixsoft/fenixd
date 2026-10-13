@@ -9,6 +9,13 @@ from pathlib import Path
 
 from core import timelib
 
+# 生命周期序表（本模块私有副本，canonical 状态机在 core/state_machine.py 的
+# SpecStatus/VALID_TRANSITIONS；单源上移属跨组改动，此处锚定同步纪律）：
+# **state_machine 新增/更名生命周期状态必须同步此表（对齐 core/state_machine.py）**。
+# 当前覆盖 SpecStatus.ALL 全集（含 0.5/2.5 半步与侧挂 blocked）。未登记状态由
+# _lifecycle_backward 显式按前向处理，不依赖 .get(s, 9) 哨兵默认值的隐式语义
+# ——否则新状态从其出发到已知状态的前向转移会因 frm=9 恒大于 to 被误判为
+# 回退、时间轴误发「状态回退」文案（code-review item 91cde8241935）。
 _LIFECYCLE_ORDER = {
     "drafted": 0,
     "reviewing": 0.5,
@@ -20,7 +27,24 @@ _LIFECYCLE_ORDER = {
     "verified": 5,
     "done": 6,
     "pushed": 7,
+    # 侧挂暂停态（非链上生命周期步）：显式排全链之后（>pushed 7），逐转移位
+    # 固化既有哨兵 9 语义——进入侧挂恒前向、侧挂退出到任一链上状态按回退
+    # 呈现（tests/test_spec_timeline_name_isolation.py::
+    # test_blocked_to_ready_still_backward 锁定的存量行为）
+    "blocked": 8,
 }
+
+
+def _lifecycle_backward(frm: str, to: str) -> bool:
+    """frm→to 是否为生命周期回退；frm/to 任一未登记状态显式按前向处理。
+
+    废弃 .get(s, 9) 哨兵默认值的隐式判定：未登记状态不参与序比较、直接按
+    前向返回 False——序表滞后于 state_machine 时方向不再误判（见
+    _LIFECYCLE_ORDER 锚定注释）。
+    """
+    if frm not in _LIFECYCLE_ORDER or to not in _LIFECYCLE_ORDER:
+        return False
+    return _LIFECYCLE_ORDER[to] < _LIFECYCLE_ORDER[frm]
 
 
 def _backtrack_reason(frm: str, to: str) -> str:
@@ -312,8 +336,9 @@ def get_spec_timeline(
                 if m:
                     frm, to = m.group(1), m.group(2)
                     # 方向单源：backward 按生命周期序判定（与打回重建路径
-                    # 同式），Transition 回退判定复用为该字段来源
-                    backward = _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
+                    # 同式），Transition 回退判定复用为该字段来源；frm/to
+                    # 任一未登记状态显式按前向处理（_lifecycle_backward）
+                    backward = _lifecycle_backward(frm, to)
                     reason = _backtrack_reason(frm, to) if backward else ""
                     node = {
                         "time": ts,
@@ -430,6 +455,7 @@ def get_spec_timeline(
     trans_states = [e for e in events if e.get("kind") == "state"]
     unmatched: list[tuple] = []
     for ts, new_status, err in status_updates:
+        # [fenix-ignore:b10628549731] transition() 成对两行毫秒级间隔，仅时钟步进/回拨恰好跨写入瞬间才破 2s 去重窗（低概率边界，未证实部署环境存在步进时钟），维持现状不做结构化配对
         paired = any(
             (d := _ts_delta(t2["time"], ts)) is not None and d < 2 and t2["to"] == new_status
             for t2 in trans_states
@@ -453,12 +479,12 @@ def get_spec_timeline(
             # 合并，与 Transition 前向节点行为一致）——从结构上消除前向节点
             # 被 errors_at 就近覆写传染的通道；有同行 err 时 reason=err
             # （_precise_reason 保护不被覆写）。回退节点维持现状。
-            # frm 推演不出（"?"，窗口截断）时不做序比较：任何已知目标状态
-            # （0-7）都小于默认值 9，会把前向直写（如 update_spec 直达
-            # implemented/done）误渲染成「状态回退」——视为前向/未知处理
-            # （reason 同前向节点：同行 err 优先，无 err 置空可被折叠链
-            # 合并；起始状态未知不落「状态回退」兜底文案）。
-            backward = frm != "?" and _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
+            # frm 推演不出（"?"，窗口截断）时不做序比较："?" 未登记进
+            # _LIFECYCLE_ORDER，_lifecycle_backward 显式按前向/未知处理，
+            # 不会把前向直写（如 update_spec 直达 implemented/done）误渲染
+            # 成「状态回退」（reason 同前向节点：同行 err 优先，无 err 置空
+            # 可被折叠链合并；起始状态未知不落「状态回退」兜底文案）。
+            backward = frm != "?" and _lifecycle_backward(frm, to)
             if backward:
                 reason = err[:120] if err else _backtrack_reason(frm, to)
             else:

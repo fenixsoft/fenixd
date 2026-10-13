@@ -91,16 +91,21 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
             ts_scenarios = ts_data.get("scenarios") if isinstance(ts_data, dict) else ts_data
             if isinstance(ts_scenarios, list):
                 kind_by_id = {
-                    str(s.get("id") or s.get("scenario_id")): s.get("kind")
+                    str(sid): s.get("kind")
                     for s in ts_scenarios
-                    if isinstance(s, dict) and s.get("kind")
+                    if isinstance(s, dict)
+                    and s.get("kind")
+                    # 仅真值 ID 入表：id 与 scenario_id 皆缺时不再折算成
+                    # 字面量 "None" 键，避免与缺 ID 的场景条目互相误配
+                    and (sid := s.get("id") or s.get("scenario_id"))
                 }
         except (json.JSONDecodeError, OSError, AttributeError, UnicodeDecodeError):
             kind_by_id = {}
         if kind_by_id:
             for sc in out:
-                if not sc.get("kind"):
-                    k = kind_by_id.get(str(sc.get("scenario_id")))
+                # 查询侧同样要求 scenario_id 为真值，防止命中 "None" 字面键
+                if not sc.get("kind") and sc.get("scenario_id"):
+                    k = kind_by_id.get(str(sc["scenario_id"]))
                     if k:
                         sc["kind"] = k
     return out
@@ -356,7 +361,8 @@ def parse_verdict(project_root, spec_name) -> dict:
         ]:
             if summary[field] is not None:
                 continue
-            mm = re.search(r"%s\s*[：:]\s*([\dN/A\-＋+]+)" % pat, content, re.I)
+            # f-string 拼接：% 格式化与正则里的 % 字面量混用会在词表演进时抛 ValueError
+            mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+]+)", content, re.I)
             if mm and mm.group(1).strip().lower() not in ("n/a", "-", "--"):
                 summary[field] = mm.group(1).strip()
 

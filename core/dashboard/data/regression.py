@@ -13,7 +13,7 @@
 running 字段：分面轮询期间运行中态始终可见。
 """
 
-from core.regression import (  # noqa: F401
+from core.regression import (
     is_regression_running,
     read_progress,
     read_result,
@@ -40,15 +40,23 @@ def read_regression_result(project_root) -> dict:
         result = {"status": "parse_error", "reason": f"快照读取失败: {e}"}
     if not isinstance(result, dict):
         result = {"status": "parse_error", "reason": "快照非对象"}
+    # 浅拷贝收拢所有权（code-review item 8771e71bc94e）：core.regression.
+    # read_result 现实现每次返回 json.loads 新鲜 dict，但本函数要原地附加
+    # running/progress——不耦合其内部所有权语义，未来底层引入缓存/共享
+    # 对象时 Dashboard 侧字段也不会泄漏给其他调用方。
+    result = dict(result)
     # never_run/parse_error 同样透出运行中态（触发后、快照未写盘窗口内）
     try:
         result["running"] = bool(is_regression_running(project_root))
     except Exception:
         result["running"] = False
-    # 运行中透出执行进度；任何异常吞掉（进度条缺失不应影响快照展示）
+    # 运行中透出执行进度；失败不抛（进度条缺失不应影响快照展示）但也不
+    # 静默——降级为带 detail 的可区分形态（对齐上方 parse_error 降级带
+    # reason 的口径，code-review item ac8e6b12666e），前端
+    # RunningProgressView 对缺失 percent/elapsed 本就按「进度未知」渲染。
     if result["running"]:
         try:
             result["progress"] = read_progress(project_root)
-        except Exception:
-            pass
+        except Exception as e:
+            result["progress"] = {"detail": f"进度读取失败: {e}"}
     return result

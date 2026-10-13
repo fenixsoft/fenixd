@@ -33,26 +33,11 @@ from core.agent_runner.provider_circuit import (
 )
 from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_threshold
 
-
-def _normalize_int_config(value, default: int) -> int:
-    """整型配置归一单点工具（code-review item c832188fbbac）。
-
-    「try int + except (TypeError, ValueError) 回退缺省 + None 判空防 or
-    吞 0」归一化的单一落点：字符串配置裸用于比较会抛 TypeError，非法值
-    回退缺省（code-review item 74317ab4a77a）；``None`` 判空而非 ``or``
-    兜底，合法配置 0 不被吞成缺省（code-review item c54ffbef69c5）。
-    merge_breaker_threshold 已迁往 repair_lane._merge_breaker_threshold
-    单一读取器（code-review item b45d9375b2d4，与 full/repair 车道同源，
-    bool/非整浮点显式拒绝、max(...,1) 下限、WARNING 留痕），max_retries
-    已迁往 repair_lane._max_retries；本工具现无调用点，保留供后续整型
-    配置归一复用，新副本不再复制 try/except 形态。
-    """
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+# 零变更成功哨熔断阈值（code-review item 236ad1c6122d）：fast-track 车道
+# _handle_fast_track_zero_change 的冻结/重派 twin 分支共用本常量，阈值调整
+# 只改一处；full 车道同名哨（queue.py 零变更哨 twin 分支）与本车道是注释
+# 钉住的手工双维护，跨文件调整时仍须两文件各两处同步。
+ZERO_CHANGE_BREAKER_ATTEMPTS = 3
 
 
 class FFastTrackMixin:
@@ -384,6 +369,18 @@ class FFastTrackMixin:
                     f"且分支零提交（已并入 main），走成功收口（不重派）"
                     f"run={getattr(result, 'run_id', '') or ''}",
                 )
+                # ── 硬校验（code-review item bc6d97288a27）：确认型 no-op 收口
+                # 与正常成功路径同防线——verification 段结构/场景覆盖/证据在
+                # merge 前 fail-closed 校验后才推进 verified。_env_whitewash_gate
+                # 只在场景数据存在时查 0-pass/env 洗白、无场景数据保守放行，不
+                # 覆盖结构校验，不能作等价兜底。校验失败不走 _hard_check_fast_
+                # track 内部的裸重派出口（无计数，本形态分支恒零提交会无熔断
+                # 无限重派），改落本哨既有空转重派通道（阈值内重派、超限冻结
+                # 转人工，熔断有界）。
+                verification = self._hard_check_fast_track(spec_name, ft_result)
+                if verification is None:
+                    self._handle_fast_track_zero_change(spec_name, result)
+                    return
                 merged = self._reconcile_and_merge(spec_name, result)
                 if not merged:
                     return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
@@ -396,6 +393,11 @@ class FFastTrackMixin:
                         f"'{spec_name}'（非阻塞）: {e}",
                     )
                 self._pm._cleanup_shared_result_file(spec_name)
+                if verification.get("verdict") == "bug-found":
+                    # 与正常成功路径同语义（zero-change no-op 判 bug-found 不得
+                    # 直推 verified）：升级完整模式补独立验证/修复。
+                    self._escalate_to_full_mode(spec_name, result, verification)
+                    return
                 self._fast_track_advance_to_verified(spec_name, result)
                 return
             self._handle_fast_track_zero_change(spec_name, result)
@@ -1568,7 +1570,7 @@ class FFastTrackMixin:
             # _zero_change_attempts 已由上方 bump_counters 原子递增落盘，此处
             # 不再并写（防并发写回互相覆盖丢增量）
         }
-        if attempts >= 3:
+        if attempts >= ZERO_CHANGE_BREAKER_ATTEMPTS:
             # 同型收敛（code-review item 44d5bfbf87a6，与 full 车道零变更哨 twin
             # 分支 queue.py 同款）：连续失败交人工收敛到 freeze_for_human 单一
             # 入口（frozen + 人工升级告警成对写入）。原裸 status=blocked 既无
@@ -1612,7 +1614,7 @@ class FFastTrackMixin:
             )
         else:
             self._pm.state_machine.update_spec(spec_name, updates)
-        if attempts < 3:
+        if attempts < ZERO_CHANGE_BREAKER_ATTEMPTS:
             self._enqueue_front(spec_name, "fast-track")
 
     def _handle_fast_track_deliverable_gate(

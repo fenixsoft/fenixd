@@ -15,6 +15,7 @@ import {
   Button,
   Spin,
   Typography,
+  theme,
 } from 'antd';
 import { MessageOutlined } from '@ant-design/icons';
 import {
@@ -129,6 +130,15 @@ const TRUNCATED_BAR_STYLE: CSSProperties = {
   left: 0,
   right: 0,
   textAlign: 'center',
+};
+// 截断提示条文字样式（code-review item 22baafa4128a）：原内联在渲染体每渲染
+// 重建，且硬编码 '#fff' 与主题耦合（暗色主题下是白底补丁）。静态部分提为模块级
+// 常量并入 TRUNCATED_BAR_STYLE 派生约定；背景色须用 antd token colorBgContainer
+// 随主题，而 useToken 只能在组件内调用（同 app.tsx HeaderTitle 惯例），故含
+// token 的部分在组件内经 useMemo 合成，渲染体只引用不重建。
+const TRUNCATED_TEXT_STYLE_BASE: CSSProperties = {
+  fontSize: 12,
+  padding: '0 8px',
 };
 // 实时更新不可用提示条（code-review items 2303508d27ff / a67da3eb2778 共用
 // 提示位）：SSE 断流或 watch 注册重试耗尽时的降级提示，置于面板顶部、
@@ -598,7 +608,15 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 永久停止重连——置失败态并降级低频快照轮询兜底（2303508d27ff），
       // 连接恢复由 onopen 清除失败态并停轮询
       if (disposed) return;
+      // 旧连接的 watch 随连接消亡（服务端断连即摘除整个连接），注册标记指向
+      // 已失效 cid，理应同步失效（code-review item df599f756da6）：不复位的话，
+      // 重连后新 cid 注册成功前用户切离分面，会按旧 cid 发 DELETE watch——
+      // unwatch 对不存在连接虽静默 no-op（core/dashboard/sse.py），但会话已被
+      // 服务端摘除时路由层先判无会话返回 404 → console.error，污染
+      // no_console_error 断言。重连重新注册不受影响：hello → afterHello 按
+      // 新 cid 无条件注册，不读本标记。
       sseConnectedRef.current = false;
+      watchRegisteredRef.current = false;
       setStreamDown(true);
       startStreamFallback();
     };
@@ -828,6 +846,15 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 级联渲染）都对全部事件重跑转换，长会话下是可感知的重复开销。
   const chatMessages = useMemo(() => runEventsToChatMessages(events), [events]);
 
+  // 截断提示条文字样式（code-review item 22baafa4128a）：含 token 的样式不能
+  // 是纯模块级字面量，在组件内取 token 合成并 useMemo 缓存（token 引用稳定，
+  // 不随渲染重建），供 renderBody 的截断分支引用
+  const { token } = theme.useToken();
+  const truncatedTextStyle = useMemo<CSSProperties>(
+    () => ({ ...TRUNCATED_TEXT_STYLE_BASE, background: token.colorBgContainer }),
+    [token],
+  );
+
   // 渲染分支抽具名 helper（code-review item d42f28cde496）：渲染体原为
   // loading→error→!started→默认会话视图的链式嵌套三元（项目规则禁止），
   // 分支语义不可读；改 if/else 早返回，样式引用模块级常量。
@@ -874,7 +901,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           <ClaudeMessageList messages={chatMessages} showThinking />
           {truncated ? (
             <div style={TRUNCATED_BAR_STYLE}>
-              <Typography.Text type="secondary" style={{ fontSize: 12, background: '#fff', padding: '0 8px' }}>
+              <Typography.Text type="secondary" style={truncatedTextStyle}>
                 更早的消息已省略
               </Typography.Text>
             </div>

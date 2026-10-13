@@ -329,10 +329,15 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
   }
   // 长耗时独立于 failures（一个慢但通过的用例也在其中，design D6）
   for (const lt of snapshot.long_tests ?? []) {
-    // 已在 failures 中展示的同一用例去重（名字+耗时一致判同用例）
-    const dup = rows.some(
-      (r) => r.kind !== 'timeout' && r.name === lt.name && r.time === lt.time,
-    );
+    // 已在 failures 中展示的同一用例去重（code-review item 3961343fa7e1：
+    // 名字+文件+行号+耗时一致判同用例——参数化用例、不同类的同名方法等
+    // 同名不同 file/line 形态只比名字+耗时会被误判为已展示而漏展长耗时行；
+    // 任一侧 file 缺失时退回名字+耗时旧口径，保持旧行为不变）
+    const dup = rows.some((r) => {
+      if (r.kind === 'timeout' || r.name !== lt.name || r.time !== lt.time) return false;
+      if (!lt.file || !r.file) return true;
+      return r.file === lt.file && r.line === lt.line;
+    });
     if (dup) continue;
     rows.push({
       key: `l-${rows.length}`,
@@ -373,6 +378,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<RegressionResult | null>(null);
   const [triggering, setTriggering] = useState(false);
+  const triggeringRef = useRef(false);
   // 受理已提交、daemon 尚未 mark_running 的过渡态：点击受理到服务端 running
   // 置位之间有主循环消费时延，此窗口内以「等待启动」动画条给即时反馈，
   // 按钮（及重复触发）同步禁用；running 置位或 120s 超时自动退出。
@@ -387,9 +393,28 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const pollTimerRef = useRef<number | null>(null);
   // 自动修复（add-regression-auto-fix）：触发在途 loading 态 + 回链轮询哨
   const [fixPending, setFixPending] = useState(false);
+  const fixPendingRef = useRef(false);
   const fixPollAbortedRef = useRef(false);
   // 定向子集触发（add-regression-issues-rerun）：在途 loading 态
   const [issuesTriggering, setIssuesTriggering] = useState(false);
+  const issuesTriggeringRef = useRef(false);
+  // 在途态 ref 镜像（code-review item 3c9de7427788）：useState 置位到下一次
+  // 渲染前不生效，同一事件循环内先点「全量」再点「定向子集/自动修复」，第二
+  // 个 handler 的交叉守卫读到的仍是旧 false，两份 POST 并发下发——交叉守卫
+  // 改读同步写入的 ref；置位与复位（含 finally）都经下方 mark* 同步写双份，
+  // 避免在途态卡死。渲染口径（loading/disabled）仍读 state。
+  const markTriggering = (v: boolean) => {
+    triggeringRef.current = v;
+    setTriggering(v);
+  };
+  const markFixPending = (v: boolean) => {
+    fixPendingRef.current = v;
+    setFixPending(v);
+  };
+  const markIssuesTriggering = (v: boolean) => {
+    issuesTriggeringRef.current = v;
+    setIssuesTriggering(v);
+  };
   // 请求序号守卫（对齐 QualityTab）：轮询与手动刷新并发时较慢的早期响应
   // 不得覆盖较新数据。
   const seqRef = useRef(0);
@@ -572,8 +597,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     // handleTrigger 查 actionPending||ackPending 的范式）：只查本动作在途态
     // 拦不住「点全量后立刻点定向子集/自动修复」——POST 受理返回前
     // running/awaitingStart 尚未置位，任一回归动作在途即不再受理新触发
-    if (triggering || issuesTriggering || fixPending) return;
-    setTriggering(true);
+    // （读 ref 镜像而非 state，3c9de7427788：state 到下一次渲染前不生效，
+    // 同 tick 连点两键会双双通过守卫）
+    if (triggeringRef.current || issuesTriggeringRef.current || fixPendingRef.current) return;
+    markTriggering(true);
     try {
       await triggerRegression(project);
       // 受理副作用前核对项目身份（对齐 handleFix 的 f538e7f059ec 守卫口径）：
@@ -603,7 +630,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         message.error(`触发失败: ${errMsg}`);
       }
     } finally {
-      setTriggering(false);
+      markTriggering(false);
     }
   };
 
@@ -615,8 +642,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const handleFix = async () => {
     // 交叉 pending 门控（同 handleTrigger，5cbfc2119f5a）：任一回归动作在途
     // 即不再受理；loading 防重复语义不变——在途时重复点击不产生第二个信号
-    if (fixPending || triggering || issuesTriggering) return;
-    setFixPending(true);
+    // （读 ref 镜像而非 state，3c9de7427788，同 handleTrigger 口径）
+    if (fixPendingRef.current || triggeringRef.current || issuesTriggeringRef.current) return;
+    markFixPending(true);
     fixPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     try {
       const res = await fixRegression(project);
@@ -673,7 +701,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         message.error(`自动修复失败: ${errMsg}`);
       }
     } finally {
-      setFixPending(false);
+      markFixPending(false);
     }
   };
 
@@ -684,8 +712,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const handleTriggerIssues = async () => {
     // 交叉 pending 门控（同 handleTrigger，5cbfc2119f5a）：任一回归动作在途
     // 即不再受理，杜绝 POST 在飞窗口内并发下发两份触发信号
-    if (issuesTriggering || triggering || fixPending) return;
-    setIssuesTriggering(true);
+    // （读 ref 镜像而非 state，3c9de7427788，同 handleTrigger 口径）
+    if (issuesTriggeringRef.current || triggeringRef.current || fixPendingRef.current) return;
+    markIssuesTriggering(true);
     try {
       await triggerRegressionIssues(project);
       // 受理副作用前核对项目身份（同 handleTrigger 的 f538e7f059ec 守卫口径）：
@@ -707,7 +736,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         message.error(`触发失败: ${errMsg}`);
       }
     } finally {
-      setIssuesTriggering(false);
+      markIssuesTriggering(false);
     }
   };
 
