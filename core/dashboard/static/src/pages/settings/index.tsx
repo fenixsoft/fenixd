@@ -317,7 +317,10 @@ export default function SettingsPage() {
           <Space>
             <Text>作用域：</Text>
             <Select
-              value={scope === 'user' ? USER_SCOPE : `project:${project}`}
+              // project 为空值兜底（code-review item 234fe8e987a2）：与下方
+              // menuItems.push 的 project 真值门禁同口径，避免受控 Select 显示
+              // project:undefined 且不匹配任何 option
+              value={scope === 'project' && project ? `project:${project}` : USER_SCOPE}
               onChange={handleScopeSelect}
               // 懒重试通道（code-review item 5c15a853b040）：下拉展开且项目列表
               // 为空（挂载时拉取失败或尚未注册项目）则重拉一次，无需整页刷新
@@ -472,7 +475,12 @@ export default function SettingsPage() {
                     onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                     onManualEdit={() => {
                       // 「手工编辑」：跳「项目简介」页签并聚焦 verify.yaml 编辑框。
-                      // 回归卡片仅项目作用域渲染，此处 activeKey 必为合法项目级页签
+                      // 作用域门禁（code-review item fa2e175e7e70）：不再依赖
+                      // 「回归卡片仅项目作用域渲染该按钮」的跨组件隐含契约，
+                      // scope/project 不满足时原地 no-op——否则会落在菜单无此
+                      // 项目、选中态悬空的页签上（project-profile 以
+                      // project=undefined 渲染）；守卫先于丢弃确认，不跳转不弹窗
+                      if (scope !== 'project' || !project) return;
                       // 跳转同样丢弃当前页签未保存编辑，先经同款确认（item 8a3eb01dc2b9）
                       if (!confirmDiscardPanelEdits()) return;
                       setActiveKey('project-profile');
@@ -523,7 +531,9 @@ export default function SettingsPage() {
                     </div>
                   </>
                 )}
-                {activeKey === 'project-profile' && (
+                {/* project 门禁（code-review item fa2e175e7e70）：与 hook 分支
+                    同口径，project 为空时不渲染，防面板以 project=undefined 落地 */}
+                {activeKey === 'project-profile' && project && (
                   <ProjectProfilePanel
                     config={config}
                     onSave={handleSave}
