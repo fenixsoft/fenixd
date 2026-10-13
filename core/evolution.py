@@ -32,6 +32,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from core import fs_utils
 from core import timelib
 from core.fs_utils import with_file_lock as _with_lock  # 锁原语公共归属 fs_utils（item 1a8a9328767b），别名保留内部调用面
+# todo.md 结构契约单源（code-review item 8455037f0c1f）：日期/小节标题正则、
+# 空小节占位、条目四字段标签统一从 core/todo_format.py 别名导入，本模块
+# （解析方）与 core/self_review.py（写入方）同源引用，MUST NOT 另立同值副本。
+from core.todo_format import (
+    EMPTY_MARKER as _EMPTY_MARKER,
+    FIELD_LABELS as _FIELD_LABELS,
+    TODO_DATE_RE as _TODO_DATE_RE,
+    TODO_SECTION_RE as _TODO_SECTION_RE,
+)
 
 _logger = logging.getLogger("fenixd.evolution")
 
@@ -52,13 +61,10 @@ _UNKNOWN_TODO_SECTIONS_WARNED: set = set()
 # _UNKNOWN_TODO_SECTIONS_WARNED 的模块级生命周期去重范式。
 _ORPHAN_TODO_MARKERS_WARNED: set = set()
 
-# todo.md 结构标题正则：## YYYY-MM-DD 日期节 / ### 小节 / - **标题** 条目
-_TODO_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
-_TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
+# todo.md 结构标题正则：- **标题** 条目（本模块独有；日期/小节正则与空小节
+# 占位单源自 core/todo_format.py，经顶部别名导入——code-review item
+# 8455037f0c1f，MUST NOT 在本模块另立同值副本）
 _TODO_ENTRY_RE = re.compile(r"^-\s+\*\*(.+?)\*\*\s*$")
-
-# 空小节占位（core/self_review.py 写入），解析时跳过
-_EMPTY_MARKER = "（当日无）"
 
 # 处理标记行（自进化回写）：写在条目标题行正下方的一行人可读记录——
 #   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
@@ -68,13 +74,9 @@ TODO_MARKER_KEY = "自进化"
 _TODO_MARKER_RE = re.compile(r"^ {2,}-\s*" + TODO_MARKER_KEY + "：")
 _TODO_MARKER_INDENT = "  - "
 
-# 条目四字段标签（与 core/self_review.py:_render_entry_lines 的渲染标签对齐）
-_FIELD_LABELS = (
-    ("影响", "impact"),
-    ("证据", "evidence"),
-    ("调查评估", "analysis"),
-    ("建议", "suggestion"),
-)
+# 条目四字段标签单源自 core/todo_format.py（顶部别名导入 _FIELD_LABELS，与
+# core/self_review.py:_render_entry_lines 的渲染标签同源——code-review item
+# 8455037f0c1f）。
 # 标签集合/映射的模块级预计算（code-review item 31af97a4ec41）：
 # parse_todo_entries 在就绪巡检热路径上逐条候选字段行引用，_FIELD_LABELS 是
 # 模块级不可变常量，循环内重复推导集合/构建字典纯属浪费。
