@@ -117,6 +117,25 @@ class AssertionRunner:
             f"参数越界已归一为边界值（{', '.join(parts)}）",
         )
 
+    @staticmethod
+    async def _poll_interval_sleep(page, deadline: float, interval_ms: int):
+        """轮询循环按剩余预算截断睡眠（text_match/attribute_match 共用）。
+
+        全额睡 interval_ms 时最坏时序为「读取挂满 interval + 睡 interval +
+        再读挂满 interval」，单条断言墙钟可达声明 timeout 的约 3 倍，与
+        _clamp_poll_params 注释宣称的单条断言预算量级偏离；截断后睡眠不会
+        把下一轮读取起点推过 deadline，墙钟上界收敛回 timeout + 单轮读取
+        量级（deadline 为 monotonic 秒，换算毫秒）。
+
+        只收编 deadline 判断之后的这段截断睡眠（code-review item
+        e9e91e2c23be）：两处轮询循环的读取与比较语义差异大（表单元素
+        分派、正则超时定向归因、异常复位哨兵各不相同），整环抽 _poll_until
+        需把 match 异常分流/复位值参数化，漂移风险大于收益，故公共助手
+        止于本段——第三处轮询断言复用此处即不再复制这段注释锚点。
+        """
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        await page.wait_for_timeout(min(interval_ms, max(0, remaining_ms)))
+
     # ── 断言执行入口 ──────────────────────────────────────────
 
     async def run(self, page, assertions: list[dict]) -> list[dict]:
@@ -852,14 +871,10 @@ class AssertionRunner:
 
             if time.monotonic() >= deadline:
                 break
-            # 按剩余预算截断睡眠（code-review item 9ada803767ca）：全额睡
-            # interval_ms 时最坏时序为「读取挂满 interval + 睡 interval +
-            # 再读挂满 interval」，单条断言墙钟可达声明 timeout 的约 3 倍，
-            # 与 _clamp_poll_params 注释宣称的单条断言预算量级偏离；截断后
-            # 睡眠不会把下一轮读取起点推过 deadline，墙钟上界收敛回
-            # timeout + 单轮读取量级（deadline 为 monotonic 秒，换算毫秒）。
-            remaining_ms = int((deadline - time.monotonic()) * 1000)
-            await page.wait_for_timeout(min(interval_ms, max(0, remaining_ms)))
+            # 按剩余预算截断睡眠（code-review item 9ada803767ca，公共助手
+            # 收编自本处与 attribute_match 的同构段，见
+            # _poll_interval_sleep 注释）。
+            await self._poll_interval_sleep(page, deadline, interval_ms)
 
         return {
             "type": "text_match",
@@ -925,6 +940,9 @@ class AssertionRunner:
         # 实际检查的元素计数（仅 selector 分支填充，code-review item
         # 4d31aefb1f81）：取数中断时保持 None，随结果透出供 judge 归因。
         checked_elements = None
+        # 逐元素取数外层异常文本（仅 selector 分支填充，code-review item
+        # 02b9b2b1d6e5）：locator.all() 本身抛错等异常随结果 error 带出。
+        outer_error = ""
         if selector:
             match_semantics = "selector 元素文本子串比较（大小写敏感）"
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配
@@ -982,8 +1000,15 @@ class AssertionRunner:
                 # 「渲染了但文本不含期望值」此前同为无 error 的 pass=False，
                 # judge 无法区分配置性失败与内容缺陷。
                 checked_elements = len(texts)
-            except Exception:
+            except Exception as e:
+                # 外层取数异常归因（code-review item 02b9b2b1d6e5）：异常若
+                # 只置 passed=False，结果将无 error/note、checked_elements
+                # 保持 None，judge 无法区分「确无匹配」「零命中」与「取数
+                # 中断」；异常文本随结果 error 带出（口径同 text_match 的
+                # last_error 透出）。单元素级瞬态异常已有上方 continue 的
+                # 跳过归因（e82503f5caf5），此处只兜外层这一档。
                 passed = False
+                outer_error = str(e)
         else:
             # 在整个页面中查找文本。
             # 优先按可见文本匹配（get_by_text 不计入 <script>/<style> 内容，
@@ -1024,6 +1049,11 @@ class AssertionRunner:
             # 「渲染但文本不含期望值」的内容失败——同文件 text_match/
             # attribute_match 对元素缺失均有 error 归因或存在性预检。
             result["checked_elements"] = checked_elements
+            if outer_error:
+                # 外层取数中断归因（code-review item 02b9b2b1d6e5）优先于
+                # 零命中：异常路径下 checked_elements 保持 None，与下方
+                # checked_elements == 0 分支互斥，不争写 error 键。
+                result["error"] = f"逐元素取数中断: {outer_error}"
             if checked_elements == 0:
                 result["error"] = "选择器未匹配到任何元素"
                 zero_note = (
@@ -1123,16 +1153,21 @@ class AssertionRunner:
                 )
             except Exception as e:
                 last_error = str(e)
+                # 读数异常复位为「未读到」哨兵 None（code-review item
+                # 468eb3b7de90，同 text_match except 复位空串口径）：不复位则
+                # actual 保留失败时刻之前最后一轮成功读取的旧值，元素已被
+                # 移除等场景下结果展示的 actual 与元素当前状态无关；复位后
+                # 失败时刻的 actual 语义明确。None 与 get_attribute 属性缺失
+                # 的正常返回同形（结果结构不变），且 expected 预检保证为
+                # str，复位值不会参与相等判定产生假 pass。
+                actual = None
             if actual == expected:
                 break
             if time.monotonic() >= deadline:
                 break
             # 按剩余预算截断睡眠（code-review item 9ada803767ca，同 text_match
-            # 口径）：全额睡 interval_ms 的最坏墙钟可达声明 timeout 约 3 倍；
-            # 截断后睡眠不会把下一轮读取起点推过 deadline，墙钟上界收敛回
-            # timeout + 单轮读取量级（deadline 为 monotonic 秒，换算毫秒）。
-            remaining_ms = int((deadline - time.monotonic()) * 1000)
-            await page.wait_for_timeout(min(interval_ms, max(0, remaining_ms)))
+            # 口径，公共助手 _poll_interval_sleep）。
+            await self._poll_interval_sleep(page, deadline, interval_ms)
 
         return {
             "type": "attribute_match",
@@ -1171,6 +1206,13 @@ class AssertionRunner:
         """
         errors = a.get("_console_errors", [])
         allow_network = a.get("_external_net_errors_ok", False)
+        # 数据未注入标注（code-review item 796f7244820d）：注入键缺失（未来
+        # 新 runner 直用 AssertionRunner、或 web_runner 注入段回归）时按空集
+        # 处理会让断言恒 pass 且无任何「数据未注入」痕迹——静默假通过方向
+        # 与模块头第 1-3 层「0 误判/确定性」承诺相反。以 injected 标志 + note
+        # 透出供 judge 区分「确无错误」与「未检查」；不翻转 pass：无收集
+        # 能力的 runner 变体下翻失败会把环境缺位误判为产品缺陷（假失败）。
+        injected = "_console_errors" in a
 
         # 收集侧触顶截断标记（browser._capped_append）不计入 pass：
         # external_net_errors_ok 豁免路径上，纯网络层错误风暴被截断后
@@ -1202,6 +1244,15 @@ class AssertionRunner:
             "errors": errors,
             "truncated": truncated,
             "filtered_network": filtered,
+            "injected": injected,
+            **(
+                {
+                    "note": "控制台错误收集器数据未注入"
+                    "（_console_errors 键缺失），本检查未真正执行"
+                }
+                if not injected
+                else {}
+            ),
         }
 
     async def _assert_no_network_error(self, page, a: dict) -> dict:
@@ -1211,6 +1262,10 @@ class AssertionRunner:
         通过 assertion 的 _network_errors 字段传入。
         """
         errors = a.get("_network_errors", [])
+        # 数据未注入标注（code-review item 796f7244820d，同 no_console_error
+        # 口径）：注入键缺失时按空集静默判 pass 是 fail-open 方向，以
+        # injected 标志 + note 透出供 judge 区分「确无错误」与「未检查」。
+        injected = "_network_errors" in a
         # 收集侧触顶截断标记（browser._capped_append）不计入 errors：标记是
         # 「后续还有错误被截断」的信号而非真实 4xx/5xx 记录，与 console 侧
         # （_assert_no_console_error）同口径剔除并以 truncated 标志透出
@@ -1224,6 +1279,15 @@ class AssertionRunner:
             "pass": len(errors) == 0,
             "errors": errors,
             "truncated": truncated,
+            "injected": injected,
+            **(
+                {
+                    "note": "网络错误收集器数据未注入"
+                    "（_network_errors 键缺失），本检查未真正执行"
+                }
+                if not injected
+                else {}
+            ),
         }
 
     async def _assert_no_auth_error(self, page, a: dict) -> dict:
