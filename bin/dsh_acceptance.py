@@ -292,7 +292,7 @@ def prepare_dsh_home(profile: str = "fenix",
                                  workdir else None))
     env = dict(os.environ, DSH_HOME=str(home))
     try:
-        subprocess.run(
+        added = subprocess.run(
             ["dsh", "plugin", "--profile", profile, "add", f"link:{BUNDLE}"],
             env=env, capture_output=True, text=True, timeout=180)
     except (OSError, subprocess.SubprocessError) as e:
@@ -314,7 +314,14 @@ def prepare_dsh_home(profile: str = "fenix",
     pkg.parent.mkdir(parents=True, exist_ok=True)
     pkg.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                    encoding="utf-8")
-    return {"home": str(home), "profile": profile}
+    device: Dict[str, Any] = {"home": str(home), "profile": profile}
+    if added.returncode != 0:
+        # plugin add 失败不静默滑入手工装配分支：原始失败原因留痕（供证据
+        # 与报告引用；就绪性仍由调用方 check_health 终判）
+        device["plugin_add_fallback"] = {
+            "returncode": added.returncode,
+            "stderr_head": (added.stderr or added.stdout or "").strip()[:300]}
+    return device
 
 
 def dispose_dsh_home(device: Dict[str, Any]) -> None:
@@ -402,6 +409,27 @@ def reap_lane_processes(runner) -> None:
                 break
             except subprocess.TimeoutExpired:
                 continue
+
+
+def _read_jsonl_entries(path: Path) -> Tuple[List[Dict[str, Any]], int]:
+    """jsonl 逐行容错解析（与 _last_jsonl_type 同口径）：坏行/非 dict 行跳过
+    并计数，不抛异常——证据解析失败不放大成装置失败。返回 (entries, 坏行数)。"""
+    entries: List[Dict[str, Any]] = []
+    bad_lines = 0
+    if not path.is_file():
+        return entries, bad_lines
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            bad_lines += 1
+            continue
+        if isinstance(payload, dict):
+            entries.append(payload)
+    return entries, bad_lines
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -588,8 +616,10 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
                     sampled.append(cmdline)
                 if "dsh" in cmdline and "headless" in cmdline:
                     inflight_seen = True
-            if not inflight_seen:
-                time.sleep(0.1)
+            # 观测到在飞后仍保留固定采样间隔：满速热自旋空耗 CPU，且与被
+            # 观测的 dsh 子进程争抢，反过来拉长被测车道耗时（elapsed_seconds
+            # 是基线对比输入）
+            time.sleep(0.2 if inflight_seen else 0.1)
         th.join(timeout=timeout + 60)
     finally:
         set_current_adapter(prev)
@@ -621,25 +651,18 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
         "problems": logger.problems[:5],
     })
 
-    # ── 证据 1：run jsonl（既有机制产物）────────────────────────────
+    # ── 证据 1：run jsonl（既有机制产物；逐行容错，坏行跳过+计数）──
     run_file = runs_dir / f"{run_id}.jsonl"
     ev["run_jsonl_path"] = str(run_file)
-    if run_file.is_file():
-        entries = [json.loads(l) for l in
-                   run_file.read_text(encoding="utf-8").splitlines()
-                   if l.strip()]
-        ev["run_jsonl_first"] = {"type": entries[0].get("type"),
-                                 "harness": entries[0].get("harness")} \
-            if entries else None
-        ev["run_jsonl_last_type"] = entries[-1].get("type") if entries else None
-        ev["tool_use_names"] = sorted({
-            blk.get("name") for e in entries if e["type"] == "assistant"
-            for blk in (e.get("message", {}).get("content") or [])
-            if isinstance(blk, dict) and blk.get("type") == "tool_use"})
-    else:
-        ev["run_jsonl_first"] = None
-        ev["run_jsonl_last_type"] = None
-        ev["tool_use_names"] = []
+    entries, ev["run_jsonl_bad_lines"] = _read_jsonl_entries(run_file)
+    ev["run_jsonl_first"] = {"type": entries[0].get("type"),
+                             "harness": entries[0].get("harness")} \
+        if entries else None
+    ev["run_jsonl_last_type"] = entries[-1].get("type") if entries else None
+    ev["tool_use_names"] = sorted({
+        blk.get("name") for e in entries if e.get("type") == "assistant"
+        for blk in ((e.get("message") or {}).get("content") or [])
+        if isinstance(blk, dict) and blk.get("type") == "tool_use"})
 
     # ── 证据 2：投影可观测性（run_metrics 结构化日志：逐级计数+坏事件）──
     projs = logger.projections()
@@ -650,9 +673,9 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     ev["raw_dump_path"] = str(dump)
     ev["raw_dump_exists"] = dump.is_file()
     if dump.is_file():
-        first = dump.read_text(encoding="utf-8").splitlines()[0:1]
-        ev["raw_dump_first_type"] = json.loads(first[0]).get("type") \
-            if first and first[0].strip() else None
+        dump_entries, _ = _read_jsonl_entries(dump)
+        ev["raw_dump_first_type"] = dump_entries[0].get("type") \
+            if dump_entries else None
     else:
         ev["raw_dump_first_type"] = None
 
@@ -776,14 +799,49 @@ def _parse_dsh_one_shot_stream(stdout: str) -> Tuple[str, Optional[str]]:
     return final_text, stream_error
 
 
+def _balanced_json_object(text: str) -> Optional[str]:
+    """括号配对扫描：提取 text 中首个括号平衡的 JSON 对象片段（字符串字面量
+    内的引号/转义不参与配对）。栅栏包裹、嵌套对象、前后混杂文本均容忍——
+    非贪婪正则遇嵌套对象会在首个 ``}`` 截出括号不平衡的片段，配对扫描不受
+    影响。"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 def _parse_verdict(text: str) -> Optional[Dict[str, Any]]:
-    """裁决 JSON 提取（容忍代码栅栏包裹；词表对齐 liveness 判定）。"""
+    """裁决 JSON 提取（容忍代码栅栏包裹与嵌套对象；词表对齐 liveness 判定）。"""
     if not text:
         return None
     candidates = [text.strip()]
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         candidates.insert(0, fenced.group(1))
+    balanced = _balanced_json_object(text)
+    if balanced and balanced not in candidates:
+        candidates.insert(0, balanced)
     for cand in candidates:
         try:
             payload = json.loads(cand)
@@ -800,10 +858,16 @@ def result_gate_selfcheck(result_path: Path) -> Dict[str, Any]:
     if not result_path.is_file():
         return {"exit_code": None, "passed": False,
                 "detail": f"结果文件缺失：{result_path}"}
-    chk = subprocess.run(
-        [sys.executable, "-m", "core.agent_runner.result_gate", "--selfcheck",
-         str(result_path)],
-        cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120)
+    try:
+        chk = subprocess.run(
+            [sys.executable, "-m", "core.agent_runner.result_gate",
+             "--selfcheck", str(result_path)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        # 硬门子进程挂起按该车道硬门未过计入 failures，不放大成装置失败
+        # 中止整轮验收
+        return {"exit_code": None, "passed": False,
+                "detail": "result gate selfcheck 超时（120s）"}
     return {
         "exit_code": chk.returncode,
         "passed": chk.returncode == 0,
@@ -815,15 +879,27 @@ def result_gate_selfcheck(result_path: Path) -> Dict[str, Any]:
 # 证据判定（纯函数，fail-loud）
 # ══════════════════════════════════════════════════════════════════════
 
-def evaluate_agent_lane(ev: Dict[str, Any]) -> List[str]:
-    """implementer/verifier 车道判定：返回失败明细（空 = 全过）。"""
+def evaluate_agent_lane(ev: Dict[str, Any], real: bool = False) -> List[str]:
+    """implementer/verifier 车道判定：返回失败明细（空 = 全过）。
+
+    real=True（accept --go 真实车道）：真实模型终文本与工具面不受假端点
+    步骤编排约束，去掉 smoke 专属判据（固定终文本 / TaskCreate 工具面 /
+    假端点请求对账），只保留终文本非空下限；既有机制产物判据两模式同口径
+    （真实车道由 _real_agent_lane 补采同形状证据）。
+    """
     failures: List[str] = []
     if ev.get("error"):
         failures.append(f"车道异常：{ev['error']}")
         return failures
-    expect_text = "实现冒烟完成" if ev["lane"] == "implementer" else "验证冒烟完成"
-    if ev.get("output") != expect_text:
-        failures.append(f"终态 output={ev.get('output')!r}（期望 {expect_text!r}）")
+    if real:
+        if not str(ev.get("output") or "").strip():
+            failures.append("终态 output 为空（真实车道模型无终文本）")
+    else:
+        expect_text = ("实现冒烟完成" if ev["lane"] == "implementer"
+                       else "验证冒烟完成")
+        if ev.get("output") != expect_text:
+            failures.append(
+                f"终态 output={ev.get('output')!r}（期望 {expect_text!r}）")
     if not ev.get("session_id"):
         failures.append("session_id 缺失（session 事件未投影）")
     if not (ev.get("turns") or 0) >= 1:
@@ -840,7 +916,7 @@ def evaluate_agent_lane(ev: Dict[str, Any]) -> List[str]:
         failures.append(f"run jsonl 首行异常：{rj}")
     if ev.get("run_jsonl_last_type") != "result":
         failures.append(f"run jsonl 末行非 result 终态：{ev.get('run_jsonl_last_type')}")
-    if "TaskCreate" not in (ev.get("tool_use_names") or []):
+    if not real and "TaskCreate" not in (ev.get("tool_use_names") or []):
         failures.append(
             f"Bundle Task 工具族未投影（tool_use={ev.get('tool_use_names')}）")
     proj = ev.get("projection")
@@ -864,6 +940,8 @@ def evaluate_agent_lane(ev: Dict[str, Any]) -> List[str]:
         failures.append(f"产物硬门 selfcheck 未过：{gate.get('detail')}")
     if ev["lane"] == "verifier" and not ev.get("verification_report_written"):
         failures.append("verifier 车道验证报告未落盘")
+    if real:
+        return failures
     if not ev.get("mock_requests"):
         failures.append("假模型端点零请求（交互未发生）")
     elif ev.get("mock_model_seen") != MOCK_MODEL:
@@ -876,8 +954,11 @@ def evaluate_agent_lane(ev: Dict[str, Any]) -> List[str]:
     return failures
 
 
-def evaluate_judge_lane(ev: Dict[str, Any]) -> List[str]:
-    """监督 judge 车道判定：run_one_shot 终态 + 在飞 + 裁决可解析。"""
+def evaluate_judge_lane(ev: Dict[str, Any], real: bool = False) -> List[str]:
+    """监督 judge 车道判定：run_one_shot 终态 + 在飞 + 裁决可解析。
+
+    real=True 时去掉 smoke 专属的假端点请求对账（真实车道无假端点）。
+    """
     failures: List[str] = []
     if ev.get("error"):
         failures.append(f"judge 车道异常：{ev['error']}")
@@ -898,20 +979,22 @@ def evaluate_judge_lane(ev: Dict[str, Any]) -> List[str]:
         failures.append(f"裁决词表外：{verdict.get('verdict')!r}")
     elif not verdict.get("evidence"):
         failures.append("裁决 evidence 为空")
-    if not ev.get("mock_requests"):
+    if not real and not ev.get("mock_requests"):
         failures.append("假模型端点零请求（judge 交互未发生）")
     return failures
 
 
-def evaluate_evidence(lanes: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """全量判定：任一车道任一检查不过 → 整体失败（fail-loud）。"""
+def evaluate_evidence(lanes: List[Dict[str, Any]],
+                      real: bool = False) -> Dict[str, Any]:
+    """全量判定：任一车道任一检查不过 → 整体失败（fail-loud）。real=True
+    切换真实车道判定口径（见 evaluate_agent_lane / evaluate_judge_lane）。"""
     failures: Dict[str, List[str]] = {}
     for ev in lanes:
         lane = ev.get("lane", "?")
         if lane == "judge":
-            lane_failures = evaluate_judge_lane(ev)
+            lane_failures = evaluate_judge_lane(ev, real=real)
         else:
-            lane_failures = evaluate_agent_lane(ev)
+            lane_failures = evaluate_agent_lane(ev, real=real)
         if lane_failures:
             failures[lane] = lane_failures
     return {"ok": not failures, "failures": failures}
@@ -932,6 +1015,18 @@ def compare_baseline(lanes: List[Dict[str, Any]],
     except (json.JSONDecodeError, OSError) as e:
         return {"status": "unavailable", "reason": f"基线文件不可读：{e}"}
     base_lanes = baseline.get("lanes") if isinstance(baseline, dict) else None
+    if not isinstance(base_lanes, dict) and isinstance(baseline, dict):
+        # 兼容 accept --go 产出的 rows 数组形态（{status, source, rows:
+        # [{lane, claude_seconds, ...}]}；整份 accept 证据 JSON 同样可回灌，
+        # 其 baseline 子对象即此形态）：就地投影成 lanes/duration_seconds，
+        # 两模式基线互为 --baseline-json 输入
+        rows_doc = baseline if isinstance(baseline.get("rows"), list) \
+            else baseline.get("baseline")
+        rows = rows_doc.get("rows") if isinstance(rows_doc, dict) else None
+        if isinstance(rows, list):
+            base_lanes = {
+                r.get("lane"): {"duration_seconds": r.get("claude_seconds")}
+                for r in rows if isinstance(r, dict) and r.get("lane")}
     if not isinstance(base_lanes, dict):
         return {"status": "unavailable", "reason": "基线文件缺 lanes 对象"}
     rows = []
@@ -963,8 +1058,15 @@ def render_report_md(evidence: Dict[str, Any]) -> str:
     lines.append(f"# dsh 通道验收报告（{mode}）")
     lines.append("")
     lines.append(f"- 生成时间：{evidence.get('meta', {}).get('finished_at')}")
+    fixture_cleanup = evidence.get("fixture_cleanup") or {}
+    if fixture_cleanup.get("skipped"):
+        fixture_note = (f"（--keep 保留："
+                        f"`{evidence.get('meta', {}).get('fixture_kept', '?')}`，"
+                        "需手工清理）")
+    else:
+        fixture_note = "（即测即弃，已清理）"
     lines.append(f"- 夹具前缀：`{evidence.get('meta', {}).get('prefix')}`"
-                 "（即测即弃，已清理）")
+                 f"{fixture_note}")
     lines.append(f"- 判定：**{'PASS' if evidence.get('evaluation', {}).get('ok') else 'FAIL'}**"
                  "（fail-loud：任一检查不过即 FAIL）")
     lines.append("")
@@ -1101,6 +1203,9 @@ def run_smoke(args: argparse.Namespace) -> int:
     try:
         device = prepare_dsh_home(profile=args.profile, workdir=workdir)
         evidence["meta"]["dsh_home"] = device["home"]
+        if device.get("plugin_add_fallback"):
+            evidence["meta"]["plugin_add_fallback"] = \
+                device["plugin_add_fallback"]
         for lane in lanes:
             lane_workdir = workdir / lane
             lane_workdir.mkdir()
@@ -1443,7 +1548,8 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
         evidence["residue_check"] = residue_check(prefix, fixture, holder)
 
     evidence["evaluation"] = evaluate_evidence(
-        [e for e in evidence["lanes"] if not e.get("lane").startswith("claude")])
+        [e for e in evidence["lanes"]
+         if not e.get("lane").startswith("claude")], real=True)
     if evidence.get("device_error"):
         evidence["evaluation"]["ok"] = False
         evidence["evaluation"]["failures"]["device"] = [evidence["device_error"]]
@@ -1508,8 +1614,8 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
                     sampled.append(cmdline)
                 if "dsh" in cmdline and "headless" in cmdline:
                     inflight_seen = True
-            if not inflight_seen:
-                time.sleep(0.2)
+            # 同 run_agent_lane：在飞观测后保留固定采样间隔，不做热自旋
+            time.sleep(0.4 if inflight_seen else 0.2)
         th.join(timeout=timeout + 120)
     finally:
         set_current_adapter(prev)
@@ -1537,6 +1643,28 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
     ev["run_jsonl_path"] = str(run_file)
     ev["run_jsonl_exists"] = run_file.is_file()
     ev["run_jsonl_last_type"] = _last_jsonl_type(run_file)
+    # 真实车道判定面补采（与 smoke 同判据同形状）：run jsonl 首行/tool 面、
+    # 原始事件 dump 旁路（投影器按 run 目录无条件落盘）、verifier 报告落盘
+    run_entries, ev["run_jsonl_bad_lines"] = _read_jsonl_entries(run_file)
+    first = run_entries[0] if run_entries else None
+    ev["run_jsonl_first"] = {"type": first.get("type"),
+                             "harness": first.get("harness")} \
+        if first else None
+    ev["tool_use_names"] = sorted({
+        blk.get("name") for e in run_entries
+        if e.get("type") == "assistant"
+        for blk in ((e.get("message") or {}).get("content") or [])
+        if isinstance(blk, dict) and blk.get("type") == "tool_use"})
+    dump = Path(fixture["runs_dir"]) / f"{run_id}.dsh-events.jsonl"
+    ev["raw_dump_path"] = str(dump)
+    ev["raw_dump_exists"] = dump.is_file()
+    dump_entries, _ = _read_jsonl_entries(dump)
+    ev["raw_dump_first_type"] = dump_entries[0].get("type") \
+        if dump_entries else None
+    report_path = (Path(fixture["worktree"]) / "spec" / "changes" / spec /
+                   "verification-report.md")
+    ev["verification_report_written"] = (
+        report_path.is_file() if lane == "verifier" else None)
     projs = logger.projections()
     ev["projection"] = projs[-1] if projs else None
     ev["result_file_path"] = str(result_path)
@@ -1585,6 +1713,7 @@ def _real_judge_lane(adapter, fixture: Dict[str, Any], model: str,
     ev["final_text"], ev["stream_error"] = _parse_dsh_one_shot_stream(
         result.stdout or "")
     ev["verdict"] = _parse_verdict(ev["final_text"])
+    ev["stderr_head"] = (result.stderr or "")[:300]
     return ev
 
 
@@ -1621,6 +1750,12 @@ def _real_claude_baseline_lane(fixture: Dict[str, Any], model: str,
         th.join(timeout=timeout + 120)
     finally:
         set_current_adapter(prev)
+    if th.is_alive() and "ret" not in box and "err" not in box:
+        # 驱动线程超时未归：收割在飞进程组（fail-loud 口径对齐 dsh 车道，
+        # 不遗留 daemon 驱动线程与 claude 子进程孤儿）
+        reap_lane_processes(runner)
+        box["err"] = RuntimeError(
+            f"claude 基线车道驱动线程 {timeout + 120}s 未归——已收割在飞进程组")
     ev: Dict[str, Any] = {"lane": "claude-implementer（基线）",
                           "run_id": run_id, "spec": spec,
                           "elapsed_seconds": round(time.perf_counter() - started, 3)}
