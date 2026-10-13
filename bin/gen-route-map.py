@@ -219,7 +219,10 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
         )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
-        pass
+        warning_buf.append(
+            "> ⚠️ 覆盖自检不可用：server 路由 grep 执行异常，启发式缺该分项，"
+            "差值告警可能不触发\n"
+        )
     try:
         # 与扫描器同文件集（仅 *.tsx）：宽 grep 全树会把 .ts/.json 等非扫描
         # 文件计入 heuristic，系统性抬高差值制造假覆盖告警。
@@ -237,7 +240,10 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
         )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
-        pass
+        warning_buf.append(
+            "> ⚠️ 覆盖自检不可用：testid grep 执行异常，启发式缺该分项，"
+            "差值告警可能不触发\n"
+        )
     try:
         res = subprocess.run(
             [
@@ -252,7 +258,10 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
         )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
-        pass
+        warning_buf.append(
+            "> ⚠️ 覆盖自检不可用：菜单路由 grep 执行异常，启发式缺该分项，"
+            "差值告警可能不触发\n"
+        )
     if parsed_count == 0:
         if heuristic > 0:
             warning_buf.append(
