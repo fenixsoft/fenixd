@@ -1,0 +1,17 @@
+packages:
+  - .
+# pnpm 12 默认 strict-dep-builds=true：存在被忽略构建脚本即硬错。本包测试面
+# 不消费原生构建产物（见 ignoredBuiltDependencies 注释），显式关严检恢复
+# 「警告不阻断」的旧行为。
+strictDepBuilds: false
+# pnpm 12 对依赖树中被拦截的构建脚本，在用户未表态时硬报错
+# （ERR_PNPM_IGNORED_BUILDS，--ignore-scripts 也救不了）。本 Bundle 的
+# 测试面（vitest）不消费任何原生构建产物（esbuild 平台二进制走
+# optionalDependencies，node-pty/koffi 属 dsh 官方可选能力），显式知情忽略：
+ignoredBuiltDependencies:
+  - '@deepseek-ai/dsh-subprocess-local'
+  - '@google/genai'
+  - esbuild
+  - koffi
+  - node-pty
+  - protobufjs

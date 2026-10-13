@@ -267,7 +267,7 @@ export function registerTaskTools(ctx: { tools: { register(definition: unknown):
             type: "text",
             text:
               value.tasks.length === 0
-                ? "（当前会话暂无任务）"
+                ? "[]（当前会话暂无任务）"
                 : value.tasks
                     .map((t) => `${t.taskId}. [${t.status}] ${t.subject}${t.activeForm ? `（${t.activeForm}）` : ""}`)
                     .join("\n"),

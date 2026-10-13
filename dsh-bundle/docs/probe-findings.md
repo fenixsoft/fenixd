@@ -126,3 +126,17 @@ update_goal, web_fetch, web_search, workflow, write`）。
    模型端点额外发一个请求——脚本化探针须预留牺牲步，否则步骤游标错位。
 8. **AGENTS.md 装载**（详见第四节）：软链方案实测成立，注入消息标记 `Instructions from: AGENTS.md`，
    同内容去重后单条注入。
+9. **system-prompt 分区 API**（验证打回第 1 轮补实测）：`@deepseek-ai/dsh-system-prompt` 暴露
+   `ctx.systemPrompt.section({ name, order, text })`（`text` 支持 `(context) => string` 每次
+   assembly 求值；空串 section 被 `renderPrompt` 丢弃），官方用例见
+   `dsh-file-reference-local`（`ctx.inject(["systemPrompt"], …)` + `getSectionOrder("FILE_REFERENCE")`）。
+   Bundle 据此落 `fenix:agents-md` 分区（src/agentsMd.ts）：假模型端点捕获请求体实证
+   `body.system` 含 AGENTS.md 正文与标记——原生 `dsh-agent-instructions` 只以 durable user
+   消息注入、不进 system 字段，两者互补不重复计费同一字段。
+10. **pnpm 12 strict-dep-builds**（验证打回第 1 轮补实测）：pnpm 12.11.2 对依赖树中被拦截的
+   构建脚本（esbuild/node-pty/koffi 等 6 个），在用户未表态时**硬报错**
+   `ERR_PNPM_IGNORED_BUILDS`，`--ignore-scripts` 回退也无效；package.json 的 `pnpm.*` 字段
+   已不被读取（WARN 明示）。有效出路：包目录 `pnpm-workspace.yaml` 声明
+   `strictDepBuilds: false`（恢复警告不阻断）+ `ignoredBuiltDependencies` 显式列知情忽略
+   清单。Bundle 测试面不消费任何原生构建产物（esbuild 平台二进制走 optionalDependencies），
+   忽略清单语义安全。

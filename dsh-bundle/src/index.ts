@@ -8,7 +8,8 @@
  */
 
 import { registerTaskTools } from "./taskTools.ts";
-import { registerGuards } from "./guards.ts";
+import { registerGuards, type PreToolExec, type PreToolDecision } from "./guards.ts";
+import { registerAgentsMdSection, type AgentsMdContext } from "./agentsMd.ts";
 import { apply as verifyApproval } from "./approval.ts";
 import { assertDshPinned } from "./version.ts";
 
@@ -18,11 +19,11 @@ export const name = "fenix-dsh-bundle";
 export const inject = ["fenixModelConfig", "tools"];
 
 /** 本插件消费的 dsh 上下文面（结构最小集，避免直接依赖 cordis 类型）。 */
-interface FenixBundleContext {
+interface FenixBundleContext extends AgentsMdContext {
   tools: { register(definition: unknown): unknown };
   on(
     event: "tools/pre-execute",
-    listener: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>,
+    listener: (exec: PreToolExec, next: () => Promise<PreToolDecision>) => Promise<PreToolDecision>,
     options?: { prepend?: boolean },
   ): unknown;
   get(name: string): unknown;
@@ -36,5 +37,6 @@ export function apply(ctx: FenixBundleContext): void {
   assertDshPinned();
   registerTaskTools(ctx);
   registerGuards(ctx);
+  registerAgentsMdSection(ctx);
   verifyApproval(ctx);
 }

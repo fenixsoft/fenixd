@@ -78,16 +78,26 @@ DSH_HOME=$DSH_HOME dsh plugin --profile fenix remove fenix-dsh-bundle
 
 ## ADR-269 门禁载体的 dsh 变体说明
 
-ADR-269 裁定「门禁与项目约定走入库 CLAUDE.md」。claude 通道原生读 CLAUDE.md；dsh 通道原生读
-**AGENTS.md**（`dsh-agent-instructions`，以 durable user 消息注入 `<system-reminder>…Instructions
-from: AGENTS.md…</system-reminder>`，同内容去重）。变体落地：
+ADR-269 裁定「门禁与项目约定走入库 CLAUDE.md」。claude 通道原生读 CLAUDE.md；dsh 通道经
+**双通道**装载 AGENTS.md：
+
+1. dsh 原生 `dsh-agent-instructions`——以 durable user 消息注入
+   `<system-reminder>…Instructions from: AGENTS.md…</system-reminder>`（同内容去重），
+   不进 LLM 请求的 system 字段；
+2. Bundle 补充的 **system-prompt 分区**（`src/agentsMd.ts`，分区名 `fenix:agents-md`，
+   order 取官方 `FILE_REFERENCE` 档位）——每次 prompt assembly 现读工作区（cwd）的
+   `AGENTS.md`，以同形态 `<system-reminder>` 包装进 system prompt；无文件/空文件返回
+   空串（`renderPrompt` 丢弃空 section，零影响）。
+
+变体落地：
 
 - **机制**：仓库根 `AGENTS.md` 为**实体文件**，内容与 `CLAUDE.md` 逐字节一致（sha256 全等）。
   不以软链落地的原因：fenixd 交付物守卫 `worktree_manager/queries.py file_exists_on_branch`
   判 symlink（git mode 120000）非落地交付物，软链形态会被确定性打回。claude 通道读 CLAUDE.md、
   dsh 通道读 AGENTS.md，两通道内容等价；
 - **实测**：实体文件下 DSH_HOME 隔离会话注入消息含完整 CLAUDE.md 正文且仅一条（去重生效）；
-  软链形态此前亦经真机实测注入等价（dsh 按路径读文件，两形态装载行为一致）；
+  软链形态此前亦经真机实测注入等价（dsh 按路径读文件，两形态装载行为一致）；假模型端点捕获
+  请求体实证 system prompt 含 marker 与正文（验证场景 dsh-agents-md-system-prompt-load）；
 - **局限**：
   - 双拷贝漂移：AGENTS.md 与 CLAUDE.md 是两份独立文件，无软链的单一真相源保证——修订项目
     约定时 MUST 同步两处（交付物守卫约束下的取舍，单通道场景以 CLAUDE.md 为权威源）；
@@ -97,7 +107,7 @@ from: AGENTS.md…</system-reminder>`，同内容去重）。变体落地：
 ## 测试
 
 ```bash
-cd dsh-bundle && npm install && npx vitest run   # 76 例单测（dsh 以 alias 桩解耦）
+cd dsh-bundle && npm install && npx vitest run   # 83 例单测（dsh 以 alias 桩解耦）
 ```
 
 端到端冒烟（DSH_HOME 隔离 + 假模型端点）：
