@@ -38,6 +38,7 @@ import os
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -593,6 +594,12 @@ class HookEngine:
         # 与 all-done 去重共用 _all_done_lock（均为 dispatch 阶段纯内存去重，
         # 临界区仅集合读写，锁内无 IO、无嵌套获取）。
         self._inflight_hooks: set = set()
+        # 非 dict hook 条目的审计去重（code-review item 1a975127db77）：按条目
+        # 定位记「(scope, 定位) → 条目指纹」，同一条目仅首次发现或内容变化后
+        # 落 failure 审计，重复迁移只记 debug 日志——保留「不静默蒸发」语义
+        # （首次必留痕，重启后重新审计），抑制长期不修时 append-only 审计随
+        # 状态迁移频率线性膨胀、刷屏审计尾读。
+        self._malformed_hook_audited: Dict[Tuple[str, str], str] = {}
         # 框架目录：core/hook_engine.py → 框架根（bin/fenix_dashboard.py 所在）
         self._framework_root = Path(__file__).resolve().parent.parent
         self._project_name = None
@@ -669,15 +676,17 @@ class HookEngine:
         手改 config.yaml 把 hooks.global/specs 条目写成字符串等非 dict 形态时，
         match_hooks 的 isinstance 守卫使其永远无法命中（无 events 可匹配），执行
         链 validate_hook_entry 也到不了——整条静默蒸发、无任何留痕，用户无从
-        发现 hook 未生效。每次事件分发对现存非对象条目记一条 failure 审计，口径
-        与 _execute_one 对「配置非法（不执行）」一致：不执行、不告警、审计暴露。
+        发现 hook 未生效。事件分发时对现存非对象条目记 failure 审计（按条目定位
+        进程内去重：同一条目仅首次发现或内容变化后落审计，重复迁移只记 debug
+        日志，防长期不修时审计文件随迁移频率线性膨胀）；口径与 _execute_one 对
+        「配置非法（不执行）」一致：不执行、不告警、审计暴露。
         """
         hooks = hook_config(self.config)
-        malformed: List[Tuple[str, str]] = []  # (scope, 条目定位)
+        malformed: List[Tuple[str, str, str]] = []  # (scope, 条目定位, 条目指纹)
         g = hooks.get("global")
         if isinstance(g, list):
             malformed.extend(
-                ("global", f"hooks.global[{idx}]")
+                ("global", f"hooks.global[{idx}]", _truncate(repr(h), 512))
                 for idx, h in enumerate(g)
                 if not isinstance(h, dict)
             )
@@ -687,11 +696,19 @@ class HookEngine:
                 if not isinstance(lst, list):
                     continue
                 malformed.extend(
-                    ("spec", f"hooks.specs.{name}[{idx}]")
+                    ("spec", f"hooks.specs.{name}[{idx}]", _truncate(repr(h), 512))
                     for idx, h in enumerate(lst)
                     if not isinstance(h, dict)
                 )
-        for scope, where in malformed:
+        for scope, where, fingerprint in malformed:
+            key = (scope, where)
+            if self._malformed_hook_audited.get(key) == fingerprint:
+                # 同一条目同内容已审计过：只记 debug 不再重复写审计（抑制
+                # append-only 审计随状态迁移频率线性膨胀、刷屏审计尾读）；
+                # 条目内容变化或换位后仍会重新审计，「不静默蒸发」语义保留
+                self._log_debug(f"hook 配置非法（同条目已审计过，不再重复记）: {where}")
+                continue
+            self._malformed_hook_audited[key] = fingerprint
             self._audit(
                 spec,
                 from_status,
@@ -838,7 +855,10 @@ class HookEngine:
                 live.get("action"),
                 scope,
                 STATUS_SKIPPED,
-                "同一 hook 上一事件仍在执行（在飞去重），本次跳过",
+                (
+                    "同一 hook 上一事件仍在执行（在飞去重，键为裸 hook_id、不含 spec 维度），"
+                    f"本事件（spec={spec}）被丢弃且不排队补执行，待该 hook 空闲后的下一事件重触发"
+                ),
                 0.0,
             )
             return
@@ -1019,7 +1039,16 @@ class HookEngine:
                     payload = {"ts": _utcnow_iso(), "hook_ids": ids}
                     tmp = path.with_suffix(".json.tmp")
                     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-                    tmp.replace(path)
+                    try:
+                        tmp.replace(path)
+                    except OSError:
+                        # rename 失败不残留半成品 tmp（对齐
+                        # _remove_hook_ids_from_config_files 的 tmp 清理口径）
+                        try:
+                            tmp.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        raise
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
             return None
@@ -1043,7 +1072,11 @@ class HookEngine:
             data = json.loads(path.read_text(encoding="utf-8"))
             raw = data.get("hook_ids") if isinstance(data, dict) else None
             hook_ids = {str(x) for x in raw if x} if isinstance(raw, list) else set()
-        except (json.JSONDecodeError, OSError) as e:
+        # UnicodeDecodeError（ValueError 子类）与 _mark_restart_cleanup /
+        # _remove_hook_ids_from_config_files 同口径显式列出：非 UTF-8 字节的
+        # 标记文件在 read_text 处抛出，按「标记损坏，跳过清扫」处理，而非穿到
+        # __init__ 通用兜底被误归因为「清扫失败」
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
             self._log_warning(f"hook 清理标记损坏，跳过清扫: {e}")
             return
         if hook_ids:
@@ -1280,9 +1313,12 @@ class HookEngine:
         """tmux respawn-window -k -t <target> 重启 dashboard 会话（三态返回）。
 
         固化启动命令（2026-09-06 从存活会话提取固化）：``env -u CLAUDE_PID
-        python3 <framework>/bin/fenix_dashboard.py --serve``——env -u CLAUDE_PID
-        防 claude-watchdog 绑会话自杀；保持 8787 端口（serve() 内部解析配置
-        端口，缺省 8787）与原工作目录。重启后以端口重新可服务为成功判据。
+        <sys.executable> <framework>/bin/fenix_dashboard.py --serve``——env -u
+        CLAUDE_PID 防 claude-watchdog 绑会话自杀；解释器取 daemon 当前
+        sys.executable（venv/非系统解释器部署下 respawn 出的会话依赖仍可用，
+        不受 tmux 环境 PATH 命中的裸 python3 影响）；保持 8787 端口（serve()
+        内部解析配置端口，缺省 8787）与原工作目录。重启后以端口重新可服务为
+        成功判据。
 
         dashboard-push-restart D2/D3 健壮化：
         - 去抖（D2）：入口检查进程内最近成功重启时间戳，60s 窗口内幂等跳过
@@ -1342,9 +1378,14 @@ class HookEngine:
             dash = self._framework_root / "bin" / "fenix_dashboard.py"
             if not dash.is_file():
                 return STATUS_FAILURE, f"dashboard 启动脚本不存在: {dash}"
+            # 解释器用 daemon 当前 sys.executable 而非裸 python3（后者解析的是
+            # tmux 环境 PATH 命中项，venv/非系统解释器部署下 dashboard 依赖只在
+            # daemon 环境装了，respawn 后起不来→探测必败记 failure）；
+            # sys.executable 理论上可为空串（嵌入解释器），回退裸 python3 保持旧行为
             shell_cmd = (
                 f"cd {shlex.quote(str(self.project_root))} && "
-                f"env -u CLAUDE_PID python3 {shlex.quote(str(dash))} --serve"
+                f"env -u CLAUDE_PID {shlex.quote(sys.executable or 'python3')} "
+                f"{shlex.quote(str(dash))} --serve"
             )
             try:
                 respawn = subprocess.run(
@@ -1380,6 +1421,11 @@ class HookEngine:
             from .config import ConfigLoader
 
             port = ConfigLoader.get(self.config, "dashboard.port", DEFAULT_DASHBOARD_PORT)
+            # bool 前判排除（bool 是 int 子类，True→int(True)=1 会穿透下方
+            # 0 < port < 65536 校验去探测端口 1 必败记 failure；对齐 _num 与
+            # validate_hook_entry 的 bool 显式排除口径）
+            if isinstance(port, bool):
+                return DEFAULT_DASHBOARD_PORT
             port = int(port)
             if 0 < port < 65536:
                 return port
