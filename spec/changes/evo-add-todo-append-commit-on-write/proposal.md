@@ -11,13 +11,14 @@ ADR-060-framework-artifact-commit-points（accepted）已确立「todo.md 类产
 ## What Changes
 
 - 在 append_todo_line 共享写函数内部完成实际追加后，追加一次路径限定的就地提交（形态与 core/self_review.py _commit_todo、core/evolution.py commit_todo_marker 一致：git add -- .fenix/todo.md、带 pathspec 的 git commit、尝试 push），单点覆盖全部 22 个调用方，无需逐调用方改造。
-- 仅在实际写入（幂等去重未命中）时提交；todo.md 未被 git 跟踪或 git 失败时降级 WARNING，不阻断写路径、不向调用方抛错。
+- 同文件的 upsert_todo_line（audit 升级聚合行等场景的 todo.md 写路径）在实际写盘（新增/整行替换/清理）后走同一提交助手收口——它与 append_todo_line 同属「无提交写路径写入 todo.md → 闸门阻塞」事故链，且其调用点邻近的知识提交 pathspec 为 spec/knowledge、不覆盖 todo.md。
+- 仅在实际写入（append 幂等去重未命中 / upsert 实际写盘）时提交；todo.md 未被 git 跟踪或 git 失败时降级 WARNING，不阻断写路径、不向调用方抛错。
 
 ## Scope
 
 ### In Scope
 
-- core/knowledge_backfill.py append_todo_line 的写后就地提交。
+- core/knowledge_backfill.py append_todo_line 与 upsert_todo_line 的写后就地提交。
 - tests/test_knowledge_backfill.py 覆盖：实际追加触发提交且提交仅含 todo.md、幂等去重不产生提交、untracked/无 git 降级不阻断。
 
 ### Out of Scope

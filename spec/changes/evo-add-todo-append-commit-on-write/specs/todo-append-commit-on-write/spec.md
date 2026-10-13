@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: todo 追加写路径写后即时入库
+### Requirement: todo 写路径写后即时入库
 
-append_todo_line（core/knowledge_backfill.py）对项目 .fenix/todo.md 发生实际追加后，框架 MUST 在该写路径内完成一次路径限定的就地 git 提交（git add 与 git commit 均以 .fenix/todo.md 为 pathspec）并尝试 push，使 ADR-060 的写入点即时提交原则覆盖全部追加调用方，主树不残留该文件诱发的 merge-back 重叠阻塞。
+append_todo_line（core/knowledge_backfill.py）对项目 .fenix/todo.md 发生实际追加后，框架 MUST 在该写路径内完成一次路径限定的就地 git 提交（git add 与 git commit 均以 .fenix/todo.md 为 pathspec）并尝试 push，使 ADR-060 的写入点即时提交原则覆盖全部追加调用方，主树不残留该文件诱发的 merge-back 重叠阻塞。同文件的 upsert_todo_line 发生实际写盘（新增/整行替换/清理）后 MUST 经同一助手完成同款提交；零写盘（幂等命中、纯清理无残留）MUST NOT 产生提交。
 
 #### Scenario: 实际追加产生单提交
 
@@ -13,6 +13,11 @@ append_todo_line（core/knowledge_backfill.py）对项目 .fenix/todo.md 发生�
 
 - **WHEN** 待追加行已存在、本次调用未发生实际写入
 - **THEN** 不产生任何 git 提交
+
+#### Scenario: upsert 实际写盘产生单提交
+
+- **WHEN** tracked 的 .fenix/todo.md 经 upsert_todo_line 实际写盘（聚合行整行替换、新前缀新增或历史行清理）
+- **THEN** 产生恰一个包含 .fenix/todo.md 的提交（pathspec 限定）；零写盘（同内容幂等命中、纯清理无残留）时不产生提交
 
 #### Scenario: untracked 或无 git 降级
 
