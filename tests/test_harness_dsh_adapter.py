@@ -199,7 +199,8 @@ class TestSpawnContract:
 
     def test_spawn_same_request_byte_stable(self):
         """对同一请求逐字节稳定（protocol SpawnSpec 契约；patch 文件路径除
-        外——每次 spawn 新建临时文件）。"""
+        外——同实例多次 spawn 按 _last_patch_path 回收：下一次 spawn 前 unlink
+        上一次 patch 文件，故先建 spec 的路径可能已被回收，清理须去重+判存）。"""
         adapter = _make_adapter()
         spec_a = adapter.build_spawn_spec(_make_request())
         spec_b = adapter.build_spawn_spec(_make_request())
@@ -207,8 +208,9 @@ class TestSpawnContract:
         assert spec_a.argv[5:] == spec_b.argv[5:]  # patch 路径之后逐字节相等
         assert spec_a.stdin_payload == spec_b.stdin_payload
         assert spec_a.env == spec_b.env
-        for s in (spec_a, spec_b):
-            os.unlink(s.argv[4])
+        for path in {spec_a.argv[4], spec_b.argv[4]}:
+            if os.path.exists(path):
+                os.unlink(path)
 
     def test_render_model_patch_yaml_shape(self):
         text = render_model_patch_yaml(
