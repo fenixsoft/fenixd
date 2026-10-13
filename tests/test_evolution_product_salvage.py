@@ -11,7 +11,7 @@
   （evo-add-evolution-contract-partial-accept 2.1）。
 
 run_evolution 级测试以 __new__ 绕过 __init__ 的最小 AgentRunner 替身驱动
-（同 tests/test_self_evolution.py::_FakeEvolutionRunner 形态），_run_claude
+（同 tests/test_self_evolution.py::_FakeEvolutionRunner 形态），_run_agent
 不实测真实 claude 进程。
 """
 import json
@@ -77,7 +77,7 @@ class _ListLogger:
 class _SalvageRunner(AgentRunner):
     """绕过 __init__ 装配的 AgentRunner 替身。
 
-    raises 非空时 _run_claude 抛异常（模拟 CLI 非零退出）；write_out 为真
+    raises 非空时 _run_agent 抛异常（模拟 CLI 非零退出）；write_out 为真
     时先写出契约产物再抛——覆盖「写完产物 CLI 才败」现场。
     """
 
@@ -93,7 +93,7 @@ class _SalvageRunner(AgentRunner):
         self._write_out = write_out
         self._out_items = out_items
 
-    def _run_claude(self, prompt, cwd, run_id, model_override=None,
+    def _run_agent(self, prompt, cwd, run_id, model_override=None,
                     env_overrides=None, resume_session_id=None,
                     max_turns=None, spec_name=None, agent_type=None):
         if self._write_out:

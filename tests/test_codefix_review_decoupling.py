@@ -448,9 +448,9 @@ class TestReviewCompletionActivationPreserved(unittest.TestCase):
                     reason="审查 run 双判据停滞（阈值 30 分钟）",
                     by="review_stall_watchdog")
 
-            runner._run_claude = _cancel
+            runner._run_agent = _cancel
         else:
-            runner._run_claude = lambda *a, **k: ("OUT", 3, "sess", {})
+            runner._run_agent = lambda *a, **k: ("OUT", 3, "sess", {})
         return runner
 
     def _write_out(self, findings):

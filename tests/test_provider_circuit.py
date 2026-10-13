@@ -38,20 +38,20 @@ def provider_config(provider_name: str = "volc") -> dict:
 
 
 def patch_runner_for_exec(runner: AgentRunner, proot: Path, claude_side_effect=None):
-    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_claude mock。"""
+    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_agent mock。"""
     wm = MagicMock()
     wm.create.return_value = proot / "wt"
     runner.worktree_manager = wm
     # implementer 产物硬门 stub：本文件关注熔断/半开探针状态机，与实现产物
     # 完成度正交。fix-impl-tasks-completion-gate（2026-09-14）给 implementer 加了
-    # worktree 内 .fenix-run-result.json 硬门，而这里的 _run_claude mock 只返回
+    # worktree 内 .fenix-run-result.json 硬门，而这里的 _run_agent mock 只返回
     # 成功元组、不落结果文件 → 硬门判失败 → 落入 attempt 退避 time.sleep(10)，
     # 单测试实测挂起 15s（test_probe_success_closes_circuit）。
     runner._check_agent_result_artifact = MagicMock(return_value=None)
     if claude_side_effect is not None:
-        runner._run_claude = MagicMock(side_effect=claude_side_effect)
+        runner._run_agent = MagicMock(side_effect=claude_side_effect)
     else:
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
+        runner._run_agent = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
 
 
 class TestParseApiErrorStatus:
@@ -180,7 +180,7 @@ class TestCircuitOpenSuppressesDispatch:
         assert runner._running_agents == {}
 
     def test_no_spawn_when_open(self, tmp_path, monkeypatch):
-        """熔断期派发不得启动 claude 进程（_run_claude 不被调用）。"""
+        """熔断期派发不得启动 claude 进程（_run_agent 不被调用）。"""
         runner = make_runner(tmp_path, provider_config())
         p = "volc"
         now = 1000.0
@@ -191,11 +191,11 @@ class TestCircuitOpenSuppressesDispatch:
 
         called = {"claude": False}
 
-        def fake_run_claude(*a, **k):
+        def fake_run_agent(*a, **k):
             called["claude"] = True
             raise RuntimeError("should not be called")
 
-        monkeypatch.setattr(runner, "_run_claude", fake_run_claude)
+        monkeypatch.setattr(runner, "_run_agent", fake_run_agent)
         runner.run_implementer("test-spec")
         assert called["claude"] is False
 
@@ -235,13 +235,13 @@ class TestCircuitHalfOpenRecovery:
         probe_time = now + cooldown + 5
         monkeypatch.setattr(runner, "_now", lambda: probe_time)
 
-        def fake_run_claude(*a, **k):
+        def fake_run_agent(*a, **k):
             # add-impl-selfcheck-model-probe（2.1）：unrecognized_model 现为独立
             # 判定类（确定性拒模型 → 切链，不入 4xx 熔断计数），本测试验证的是
             # 半开探针仍 4xx → 重新冷却，夹具须用纯 404（不含 unrecognized_model）。
             raise RuntimeError("claude CLI failed: HTTP 404 model_not_found")
 
-        patch_runner_for_exec(runner, tmp_path, claude_side_effect=fake_run_claude)
+        patch_runner_for_exec(runner, tmp_path, claude_side_effect=fake_run_agent)
         monkeypatch.setattr("time.sleep", lambda _s: None)  # 吞掉 attempt 间退避
         runner.run_implementer("test-spec")
         st = runner._provider_circuit.provider_circuits[p]

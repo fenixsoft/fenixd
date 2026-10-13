@@ -1,7 +1,7 @@
 # ADR-055：LLM 能力借道 claude CLI，框架不实现独立 LLM 客户端
 
 date: 2026-09-09
-status: accepted
+status: superseded（被 [ADR-271](ADR-271-pluggable-agent-harness.md) 取代，2026-10-13）
 
 ## Context
 

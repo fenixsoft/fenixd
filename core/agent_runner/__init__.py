@@ -2,7 +2,7 @@
 
 由单文件 agent_runner.py 重组为「门面 + 职责组件」结构（design D2）：
 
-- runner.py            AgentRunner 门面：_execute_agent/_run_claude 留此，组装
+- runner.py            AgentRunner 门面：_execute_agent/_run_agent 留此，组装
                        组件，为测试引用的私有方法保留一行委托（design D3 规则 4）
 - prompt_builder.py    PromptBuilder：提示词构建（准纯函数，阶段 1）
 - provider_circuit.py  ProviderCircuit：熔断/切换冷却/当日计数（阶段 2）

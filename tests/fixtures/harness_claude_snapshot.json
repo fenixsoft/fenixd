@@ -1,0 +1,135 @@
+{
+  "cases": {
+    "implementer_lane": {
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--add-dir",
+        "{WORKTREE}",
+        "--permission-mode",
+        "bypassPermissions",
+        "--settings",
+        "{PROJECT_ROOT}/.fenix/agent-settings.json"
+      ],
+      "bufsize": 1,
+      "popen": {
+        "cwd": "{WORKTREE}",
+        "encoding": "utf-8",
+        "errors": "replace",
+        "start_new_session": true,
+        "text": true
+      },
+      "stdin": "implement the thing"
+    },
+    "maintenance_default": {
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--add-dir",
+        "{WORKTREE}",
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir",
+        "{PROGRESS_DIR}"
+      ],
+      "bufsize": 1,
+      "popen": {
+        "cwd": "{WORKTREE}",
+        "encoding": "utf-8",
+        "errors": "replace",
+        "start_new_session": true,
+        "text": true
+      },
+      "stdin": "maintenance pass"
+    },
+    "provider_chain": {
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--add-dir",
+        "{WORKTREE}",
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir",
+        "{PROGRESS_DIR}"
+      ],
+      "bufsize": 1,
+      "popen": {
+        "cwd": "{WORKTREE}",
+        "encoding": "utf-8",
+        "errors": "replace",
+        "start_new_session": true,
+        "text": true
+      },
+      "stdin": "run via provider"
+    },
+    "resume_with_model": {
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--add-dir",
+        "{WORKTREE}",
+        "--permission-mode",
+        "bypassPermissions",
+        "--model",
+        "deepseek-v4-flash",
+        "--resume",
+        "sess-abc123def456"
+      ],
+      "bufsize": 1,
+      "popen": {
+        "cwd": "{WORKTREE}",
+        "encoding": "utf-8",
+        "errors": "replace",
+        "start_new_session": true,
+        "text": true
+      },
+      "stdin": "continue work"
+    },
+    "verifier_lane": {
+      "argv": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--add-dir",
+        "{WORKTREE}",
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir",
+        "{PROGRESS_DIR}"
+      ],
+      "bufsize": 1,
+      "popen": {
+        "cwd": "{WORKTREE}",
+        "encoding": "utf-8",
+        "errors": "replace",
+        "start_new_session": true,
+        "text": true
+      },
+      "stdin": "verify the thing"
+    }
+  },
+  "fixed_env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-ant-legacy-inherited-token",
+    "HOME": "/fixture-home",
+    "LANG": "C.UTF-8",
+    "PATH": "/usr/bin:/bin",
+    "TERM": "dumb"
+  },
+  "runner_entry": "_run_claude",
+  "version": 1
+}

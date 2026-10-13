@@ -204,7 +204,7 @@ class TestRunCodeFixSignatureEnvelope(unittest.TestCase):
         runner = _make_runner(proot)
         runner._get_agent_model_assignment = lambda t: None
         runner._get_admin_model = lambda: "admin-model"
-        runner._run_claude = run_claude
+        runner._run_agent = run_claude
         return runner
 
     def test_api_timeout_failure_carries_structured_signature(self):

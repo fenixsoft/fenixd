@@ -312,7 +312,7 @@ def _preset_run_id(runner, exclude=()) -> str:
 def _synthesize_item_progress(project_root, progress: dict) -> list:
     """条级进度实时合成（add-code-fix-item-level-progress D1/D3/D4）。
 
-    D5 实证结论（task 1.1；观察方法：最小夹具批 2 条 item，stub `_run_claude`
+    D5 实证结论（task 1.1；观察方法：最小夹具批 2 条 item，stub `_run_agent`
     模拟 agent 逐条 append+flush 驱动真实 `run_code_fix`，在 run 期间与收尾
     后分别探测 `<worktree>/.fenix/code-review/fix-out-<run_id>.jsonl` 的存在
     性与行数）：

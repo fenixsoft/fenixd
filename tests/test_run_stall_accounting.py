@@ -7,13 +7,13 @@
   ``tests/test_daemon_lifecycle_races.py::
   test_run_claude_poll_loop_crash_writes_error_terminal`` 同款），既有
   字段不动；
-- daemon 侧 run metrics 结构化日志（``_run_claude`` 正常收尾内联形态，
+- daemon 侧 run metrics 结构化日志（``_run_agent`` 正常收尾内联形态，
   ``metric_type: run_metrics``，不经过 ``_log_run_metrics``）context 含
   同名字段同值（复用同一 stats 结果）；
 - 零样本 run 字段回退 0/None 不抛；
 - 轮询环崩溃路径 run_metrics 行照常追加、字段缺省不抛。
 
-装配参照 ``test_daemon_lifecycle_races`` 的 ``_run_claude`` 假 Popen：
+装配参照 ``test_daemon_lifecycle_races`` 的 ``_run_agent`` 假 Popen：
 带样本用例走真实读线程（StringIO 产 stream-json 事件行），崩溃口径用例
 按权威测试同款 patch ``threading.Thread``。
 """
@@ -151,7 +151,7 @@ class TestStallMetricsAccounting:
         proc = _FakeProc(STALL_EVENTS, poll_error=TypeError("boom-poll"))
         with _patched_popen(proc):
             with pytest.raises(TypeError):
-                runner._run_claude("prompt", proot, run_id)
+                runner._run_agent("prompt", proot, run_id)
         run_file = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
         lines = _read_lines(run_file)
         # 恰一条 error 终态行 + 恰一条 run_metrics 行，且在终态行之后
@@ -191,7 +191,7 @@ class TestStallMetricsAccounting:
         proc = _FakeProc([], returncode=3)
         with _patched_popen(proc):
             with pytest.raises(RuntimeError, match="claude CLI failed"):
-                runner._run_claude("prompt", proot, run_id)
+                runner._run_agent("prompt", proot, run_id)
         run_file = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
         lines = _read_lines(run_file)
         metrics = [l for l in lines if l.get("type") == "run_metrics"]
@@ -239,7 +239,7 @@ class TestStallMetricsAccounting:
                 AgentRunner, "_normalize_run_id",
                 create=True, side_effect=lambda x: x):
             with pytest.raises(TypeError) as ctx_exc:
-                runner._run_claude(
+                runner._run_agent(
                     "prompt", Path(tmp_path), run_id,
                     spec_name="stall-crash", agent_type="impl")
         assert "boom-inside-poll-loop" in str(ctx_exc.value)

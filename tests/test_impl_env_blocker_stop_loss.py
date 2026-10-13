@@ -10,7 +10,7 @@
 - ``TaskCompletionWatcher`` 增量位点语义（跨块检测 / taskId 去重 / in_progress
   不计 / 半行持有 / 截断复位 / 损坏容错）。
 - 2.1 装配级（仿 tests/test_impl_run_budget_sizing 装置：fake Popen + 节流
-  stdout 驱动真实 ``_run_claude`` 轮询环，不启动真实 daemon/子进程）：停滞
+  stdout 驱动真实 ``_run_agent`` 轮询环，不启动真实 daemon/子进程）：停滞
   预警触发 WARNING、run_metrics ``task_stall`` 注记、观测不改变续期/击杀判定
   （无 turn_extension/timeout_extension 事件 + 判定输出逐位一致）、关闭态/
   非 impl 车道/无 TaskUpdate 能力三种静默形态。
@@ -165,10 +165,10 @@ class _FastTime:
         self._real.sleep(min(seconds, self._cap))
 
 
-def _drive_run_claude(monkeypatch, tmp_path: Path, events: list, config: dict,
+def _drive_run_agent(monkeypatch, tmp_path: Path, events: list, config: dict,
                       agent_type: str, poll_pass_after: int = 150,
                       line_delay: float = 0.02):
-    """驱动真实 ``_run_claude`` 轮询环到自然收工，返回 (runner, run_id)。"""
+    """驱动真实 ``_run_agent`` 轮询环到自然收工，返回 (runner, run_id)。"""
     import core.agent_runner.runner as rmod
 
     run_id = f"impl-stall-demo-{int(time.time() * 1000)}-a1"
@@ -192,7 +192,7 @@ def _drive_run_claude(monkeypatch, tmp_path: Path, events: list, config: dict,
     runner = make_runner(tmp_path, config)
     runner.logger = _RecordingLogger()
     # rc=0 + success result 事件 → 正常返回四元组（run 全程未被观测面打断）
-    out = runner._run_claude(
+    out = runner._run_agent(
         "prompt", tmp_path, run_id, spec_name="stall-demo",
         agent_type=agent_type)
     assert out[0] == "ok", "自然收工路径应正常返回 result 文本"
@@ -392,12 +392,12 @@ def _burst_events(tools: list = ("TaskCreate", "TaskUpdate", "Read")) -> list:
 
 
 class TestTaskStallObservationAssembly:
-    """真实 ``_run_claude`` 轮询环的停滞观测行为（tasks 2.1）。"""
+    """真实 ``_run_agent`` 轮询环的停滞观测行为（tasks 2.1）。"""
 
     def test_stall_warn_fires_and_metrics_annotated(self, monkeypatch, tmp_path):
         """超阈 → WARNING 恰一次（episode 内不刷屏）+ run_metrics task_stall
         注记（warned=True）+ run 自然收工不被观测面打断。"""
-        runner, run_id = _drive_run_claude(
+        runner, run_id = _drive_run_agent(
             monkeypatch, tmp_path, _burst_events(),
             {"agents": {"run_timeout_seconds": 3600,
                         "task_stall_warn_turns": 2}},
@@ -418,7 +418,7 @@ class TestTaskStallObservationAssembly:
 
     def test_disabled_config_silent(self, monkeypatch, tmp_path):
         """enabled=False：零观测（无 WARNING、task_stall=None）。"""
-        runner, run_id = _drive_run_claude(
+        runner, run_id = _drive_run_agent(
             monkeypatch, tmp_path, _burst_events(),
             {"agents": {"run_timeout_seconds": 3600,
                         "task_stall_warn_enabled": False,
@@ -430,7 +430,7 @@ class TestTaskStallObservationAssembly:
 
     def test_review_lane_silent(self, monkeypatch, tmp_path):
         """非 impl 车道（评审/裁决）：默认开启也不观测。"""
-        runner, run_id = _drive_run_claude(
+        runner, run_id = _drive_run_agent(
             monkeypatch, tmp_path, _burst_events(),
             {"agents": {"run_timeout_seconds": 3600,
                         "task_stall_warn_turns": 2}},
@@ -443,7 +443,7 @@ class TestTaskStallObservationAssembly:
         """harness 无 TaskUpdate 工具：「无完成」不是停滞证据，fail-open
         不观测（含 TaskUpdate 事件在场也不计）。"""
         events = _burst_events(tools=("Read", "Bash"))
-        runner, run_id = _drive_run_claude(
+        runner, run_id = _drive_run_agent(
             monkeypatch, tmp_path, events,
             {"agents": {"run_timeout_seconds": 3600,
                         "task_stall_warn_turns": 2}},
@@ -486,7 +486,7 @@ class TestObservationDecisionNeutrality:
         assert "remaining_tasks=2" in on["evidence"]
 
     def test_stall_state_not_shared_across_runs(self, tmp_path):
-        """观测态为 ``_run_claude`` 局部（每次调用重建），不落实例状态——
+        """观测态为 ``_run_agent`` 局部（每次调用重建），不落实例状态——
         跨 run/跨 attempt 不串数。"""
         from core.run_task_track import TaskCompletionWatcher
         rf = tmp_path / "run.jsonl"

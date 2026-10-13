@@ -44,6 +44,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
+# add-harness-adapter-layer 4.1：一次性 spawn 收编入口（蒸馏 run）
+from core.agent_runner.harness import (
+    ENV_MODE_CLEAN,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import (
+    OneShotCommunicateError,
+    run_one_shot,
+)
 from core.knowledge_backfill import (
     append_todo_line,
     atomic_write_text,
@@ -1234,24 +1244,41 @@ class DistillManager:
         Returns:
             (ok, error)：ok=True 进程已退出且退出码 0（产物合法性交校验脚本）。
         """
-        # 提示词经 stdin 传入，不走 argv（同 agent_runner /
-        # adjudication_narrative.default_channel 既有口径）：argv 全文驻留
-        # /proc/<pid>/cmdline 对同机其他用户可见，且 Linux 单参数受
-        # MAX_ARG_STRLEN≈128KB 约束，模板膨胀后 spawn 会以 E2BIG 失败。
-        cmd = ["claude", "-p", "--permission-mode", "bypassPermissions"]
+        # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：claude
+        # 命令构造唯一入口在 claude_adapter.build_spawn_spec——提示词经 stdin
+        # 传入（SpawnRequest 缺省传输形态；不走 argv：argv 全文驻留
+        # /proc/<pid>/cmdline 对同机其他用户可见，且单参数受 MAX_ARG_STRLEN
+        # ≈128KB 约束）。超时清场回调传自有 _kill_process_group（直 SIGKILL+
+        # 弃管道语义保持）；spawn 注入缝 self._spawn 保持（测试替身经
+        # DistillManager(spawn=...) 注入 Popen 级替身）。
+        def _popen(argv, **kwargs):
+            return self._spawn(argv, cwd=str(proot))
+
         try:
-            proc = self._spawn(cmd, cwd=str(proot))
+            outcome = run_one_shot(
+                ClaudeAdapter(),
+                SpawnRequest(
+                    prompt=prompt,
+                    cwd=str(proot),
+                    # 现状形态无 --output-format（裸文本 stdout 留痕），显式
+                    # None 压掉 SpawnRequest 的 stream-json 缺省
+                    output_format=None,
+                    permission_mode="bypassPermissions",
+                    env_mode=ENV_MODE_CLEAN,
+                    project_root=str(proot),
+                ),
+                timeout=RUN_TIMEOUT_SECONDS,
+                popen=_popen,
+                on_timeout=_kill_process_group,
+            )
+        except OneShotCommunicateError as e:
+            return False, f"claude 进程通信失败: {e.original}"
         except Exception as e:  # noqa: BLE001 — CLI 不存在等 spawn 失败
             return False, f"调用 claude CLI 失败: {e}"
-        try:
-            stdout, stderr = proc.communicate(prompt, timeout=RUN_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            _kill_process_group(proc)
+        if outcome.timed_out:
             return False, f"run 超时（>{RUN_TIMEOUT_SECONDS}s），已终止进程组"
-        except Exception as e:  # noqa: BLE001
-            _kill_process_group(proc)
-            return False, f"claude 进程通信失败: {e}"
-        if proc.returncode != 0:
+        stdout, stderr = outcome.stdout, outcome.stderr
+        if outcome.returncode != 0:
             # 失败诊断：stdout/stderr 摘要进日志，stderr 尾部随 error 一路进
             # todo.md 台账 reason（否则蒸馏失败排障拿不到 claude 的报错，
             # code-review 0d6683c2b68d）。
@@ -1259,12 +1286,12 @@ class DistillManager:
             stderr_tail = (stderr or "").strip()[-500:]
             logger.warning(
                 "knowledge-distill run 非零退出（exit=%s）stdout 摘要: %s | stderr 摘要: %s",
-                proc.returncode,
+                outcome.returncode,
                 stdout_tail[:200] or "（空）",
                 stderr_tail[:200] or "（空）",
             )
             detail = f"；stderr 尾部: {stderr_tail}" if stderr_tail else ""
-            return False, f"claude 进程非零退出（exit={proc.returncode}）{detail}"
+            return False, f"claude 进程非零退出（exit={outcome.returncode}）{detail}"
         return True, None
 
     def _give_up(self, proot: Path, archived_names: list, reason: str, before=None) -> None:

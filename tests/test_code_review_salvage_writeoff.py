@@ -14,7 +14,7 @@ scheduled 全仓核销放宽测试（evo-add-review-night-defer-snapshot-writeof
 - admin_monitor 完成日志在读到锚时追加「部分覆盖待核销（run_id=…）」
   标注。
 
-run_code_review 经最小 runner 替身驱动（_run_claude 替身写真实 out 产物
+run_code_review 经最小 runner 替身驱动（_run_agent 替身写真实 out 产物
 文件，聚合读取/落账/核销/锚链路全走生产代码）；台账断言走
 core.code_review.read_items 真实读侧。
 """
@@ -72,7 +72,7 @@ def _finding(category="correctness", title="bug", file_key=None, severity="major
 
 
 class _Runner:
-    """最小 runner 替身：_run_claude 按剧本写真实 out 产物后返回/抛出。
+    """最小 runner 替身：_run_agent 按剧本写真实 out 产物后返回/抛出。
 
     out_rows：``[{"file": ..., "findings": [...]}]`` 聚合行形态（agent 逐
     文件写一行，含零发现文件）。异常剧本（die_after_write=True）先写产物
@@ -106,7 +106,7 @@ class _Runner:
             json.dumps(r, ensure_ascii=False) + "\n" for r in self._out_rows)
         path.write_text(content, encoding="utf-8")
 
-    def _run_claude(self, prompt, root, run_id, model_override, env_overrides,
+    def _run_agent(self, prompt, root, run_id, model_override, env_overrides,
                     max_turns=None, spec_name=None, agent_type=None):
         self._write_out()
         if self._die:

@@ -36,11 +36,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
-# autodraft 起草 claude 的 env 剔除口径与 architecture_routes 同源（item
-# c6630211c148）：一次性起草与 agent-run 无关，MUST NOT 注入 agent-run 专用
-# 上下文；_build_spawn_env 为模块级函数且 architecture_routes 不反向依赖本
-# 模块，无循环导入。
-from core.dashboard.routes.architecture_routes import _build_spawn_env
+# add-harness-adapter-layer 8.2：autodraft 起草收编 run_one_shot，命令构造
+# 唯一入口经 ClaudeAdapter；env 剔除口径承自原 architecture_routes
+# ._build_spawn_env（item c6630211c148），现由 ENV_MODE_CLEAN 数据化承接。
+# 延迟解析不可用（模块级 import）：core.agent_runner 包 __init__ 拉入 runner
+# 重链，但 dashboard routes 仅由 dashboard 服务进程装配，不构成环。
+from core.agent_runner.harness import (
+    ENV_MODE_CLEAN,
+    PROMPT_TRANSPORT_ARGV,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import run_one_shot
 # 三步原子独占写与 code-review 族信号同构（写同目录唯一临时文件+fsync →
 # os.link 原子挂到轮询路径 → finally 清临时文件），共用同一实现避免同族
 # 竞态修复漂移（先例 item 422ae03395de）。
@@ -741,61 +748,55 @@ class H12RegressionRoutesMixin:
                 return
             full_contract = contract is None
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
-            proc = None  # Popen 自身抛异常（如 claude 不在 PATH）时下方兜底无进程可清场
+            # add-harness-adapter-layer 8.2：第 6 个一次性 spawn 点收编
+            # run_one_shot（design「7 个表亲」清单的遗漏面——原 4.1 收编五点 +
+            # 4.2 叙事后，本点仍直连构造 claude 命令，违背「命令构造唯一入口在
+            # harness/claude_adapter.py」核查条款）。登记收割语义经 on_spawn/
+            # spawn_guard/on_timeout 三缝原样保持（run_one_shot 的 lock_scope
+            # 对齐：guard 只罩 Popen+登记，communicate 长等待留锁外）。
+            spawned: list = []  # Popen 句柄锚点：注销/兜底清场需要句柄
+
+            def _spawn_and_register(p: subprocess.Popen) -> None:
+                spawned.append(p)
+                # 登记（item dffc01af10fa）：句柄供 dashboard 退出链收割
+                _register_autodraft_proc(p)
+
             try:
                 # [fenix-ignore:3a5492245966] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
-                # 持登记锁完成 spawn + 登记（item 87e3191349e9）：登记原来在
-                # Popen 返回之后才执行，两句之间（含 Popen 内部 fork/exec 释放
-                # GIL 的窗口，子进程彼时已以 start_new_session 独立组存在）若
-                # serve() finally 走 reap_all_autodraft()，本进程组不在快照集合
-                # 里、不会被 killpg——孤儿以 bypassPermissions 继续写目标项目
-                # verify.yaml / git index。临界区罩住整个 Popen 后，退出链在锁
-                # 上排队：要么在本进程组入集合之后才快照（必然收割），要么在
-                # 本进程组 spawn 之前就已快照（无可收割对象，残余竞态固有不
-                # 可闭合）。communicate 的长等待必须留在锁外。
-                with _AUTODRAFT_PROCS_GUARD:
-                    proc = subprocess.Popen(
-                        ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
+                # 持登记锁完成 spawn + 登记（item 87e3191349e9）：登记与 Popen
+                # 必须同临界区（详见 harness/one_shot.py lock_scope 注释）——
+                # serve() finally reap_all_autodraft() 在锁上排队：要么在本进程
+                # 组入集合之后才快照（必然收割），要么在本进程组 spawn 之前就
+                # 已快照（无可收割对象，残余竞态固有不可闭合）。communicate
+                # 的长等待必须留在锁外。
+                # env 口径 ENV_MODE_CLEAN = 原 _build_spawn_env()（item
+                # c6630211c148）：一次性起草与 agent-run 无关，MUST NOT 注入
+                # agent-run 上下文；显式 UTF-8/replace 管道解码由 SpawnSpec
+                # 缺省承接（item 8771db5cac23 不随 locale 漂移）
+                result = run_one_shot(
+                    ClaudeAdapter(),
+                    SpawnRequest(
+                        prompt,
                         cwd=str(proot),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 等
-                        # 非 UTF-8 locale 启动的 daemon 读中文管道会抛
-                        # UnicodeDecodeError（item 8771db5cac23）；errors=replace
-                        # 保证坏字节不再中断起草（对齐 ocr_status.py 同款修复）
-                        encoding="utf-8",
-                        errors="replace",
-                        # 独立会话组（对齐 verify_engine/cli_runner 惯例）：超时可
-                        # killpg 整组清场，杜绝只杀直接子进程留下的孤儿孙进程
-                        start_new_session=True,
-                        # 剥离 agent-run 专用环境键（与 architecture_routes
-                        # ._build_spawn_env 同口径，item c6630211c148）：一次性
-                        # 起草与 agent-run 无关，MUST NOT 注入 agent-run 上下文
-                        env=_build_spawn_env(),
-                    )
-                    # 登记（item dffc01af10fa）：句柄供 dashboard 退出链收割
-                    _register_autodraft_proc(proc)
-                stdout, stderr = proc.communicate(timeout=AUTODRAFT_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                # 清场收敛在 _reap_autodraft_proc（item 54b12852e6bd，此前与
-                # 下方通用异常分支各复制一份同一序列）：killpg 整组击杀 + 有
-                # 限超时排管道，锁释放时已无在途写者——孤儿孙进程踩 verify.yaml
-                # / 挂死单飞锁的根因论述见该助手 docstring
-                _reap_autodraft_proc(proc)
-                logger.warning(
-                    f"AI 生成 regression 段超时（>{AUTODRAFT_TIMEOUT_SECONDS}s，"
-                    f"project={project['name']}，full_contract={full_contract}）；"
-                    f"已终止整个进程组，无在途孤儿起草进程",
+                        prompt_transport=PROMPT_TRANSPORT_ARGV,
+                        permission_mode="bypassPermissions",
+                        output_format=None,
+                        env_mode=ENV_MODE_CLEAN,
+                    ),
+                    timeout=AUTODRAFT_TIMEOUT_SECONDS,
+                    spawn_guard=_AUTODRAFT_PROCS_GUARD,
+                    on_spawn=_spawn_and_register,
+                    on_timeout=_reap_autodraft_proc,
                 )
-                self._json({"ok": False, "error": "生成超时（AI 起草未在预算时间内完成）"})
-                return
             except Exception as exc:
                 # 兜底清场复用超时分支同一序列（item 62d7dda31633），已收敛至
                 # _reap_autodraft_proc（item 54b12852e6bd）：管道读写等任何异常
-                # 路径同样不得在 finally 释放单飞锁后留下仍在途的起草进程组；
-                # proc 为 None 即 Popen 自身失败，助手内守卫直接返回
-                _reap_autodraft_proc(proc)
+                # 路径同样不得在 finally 释放单飞锁后留下仍在途的起草进程组。
+                # 超时路径的清场已由 on_timeout 在 run_one_shot 内完成（不走此
+                # 分支）；此处兜 spawn 阶段异常（Popen 自身失败，spawned 空→
+                # 助手内守卫直接返回）与 communicate 阶段异常（进程组已被
+                # run_one_shot 清场，幂等再 reap 无害）
+                _reap_autodraft_proc(spawned[-1] if spawned else None)
                 # 不外泄裸异常文本（describe 同款）：str(exc) 可能携带内部路径/
                 # 命令细节，细节降级经服务端日志留痕，客户端收通用消息。
                 logger.warning(
@@ -807,14 +808,26 @@ class H12RegressionRoutesMixin:
             finally:
                 # 注销登记（item dffc01af10fa）：走到此处进程已终局（正常退出/
                 # 超时击杀/异常兜底击杀），句柄无需再供退出链收割；Popen 自身
-                # 失败（proc=None）无登记可注。
-                if proc is not None:
-                    _unregister_autodraft_proc(proc)
+                # 失败（无句柄）无登记可注。
+                if spawned:
+                    _unregister_autodraft_proc(spawned[-1])
 
-            if proc.returncode != 0:
+            if result.timed_out:
+                # 清场已由 on_timeout=_reap_autodraft_proc 在 run_one_shot 内
+                # 完成（item 54b12852e6bd：killpg 整组击杀 + 有限超时排管道，
+                # 锁释放时已无在途写者）
+                logger.warning(
+                    f"AI 生成 regression 段超时（>{AUTODRAFT_TIMEOUT_SECONDS}s，"
+                    f"project={project['name']}，full_contract={full_contract}）；"
+                    f"已终止整个进程组，无在途孤儿起草进程",
+                )
+                self._json({"ok": False, "error": "生成超时（AI 起草未在预算时间内完成）"})
+                return
+
+            if result.returncode != 0:
                 logger.warning(
                     f"claude CLI 非零退出码（project={project['name']}）: "
-                    f"{proc.returncode}；stderr 尾部: {(stderr or '')[-400:]}",
+                    f"{result.returncode}；stderr 尾部: {(result.stderr or '')[-400:]}",
                 )
                 self._json({"ok": False, "error": "调用 claude CLI 失败"})
                 return
@@ -822,7 +835,7 @@ class H12RegressionRoutesMixin:
             # marker 解析：取 stdout 尾部最后一个 marker 行（claude 可能用代码块
             # 包裹输出，剥反引号后前缀匹配）
             marker = ""
-            stdout_tail = (stdout or "")[-2000:]
+            stdout_tail = (result.stdout or "")[-2000:]
             for line in stdout_tail.splitlines():
                 s = line.strip().strip("`").strip()
                 if s.startswith("FENIX_REGRESSION_DRAFT_RESULT:"):

@@ -1,7 +1,7 @@
 """admin-disposition-failure-context 测试（fix-admin-disposition-empty-shell tasks 4.1）。
 
 CLI 失败 → final 记录含 error / 兜底 recommended_action / description 非空；
-成功记录不受影响；WARNING 日志在 _run_claude 异常时被调用。
+成功记录不受影响；WARNING 日志在 _run_agent 异常时被调用。
 """
 import pytest
 
@@ -191,7 +191,7 @@ class TestSuccessfulDispositionUnaffected:
 
 
 class TestRunAdministratorWarningLog:
-    """_run_claude 异常路径产生 WARNING 日志（fix-admin-disposition-empty-shell）。
+    """_run_agent 异常路径产生 WARNING 日志（fix-admin-disposition-empty-shell）。
 
     （原 test_warning_log_contains_run_id_and_error 与 test_warning_log_context_has_run_id
     同一 fixture 同一调用路径，仅分别断言 message / context 两个键——审查后合并；
@@ -212,11 +212,11 @@ class TestRunAdministratorWarningLog:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
-        def failing_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def failing_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                                max_turns, spec_name=None, agent_type=None):
             raise RuntimeError("claude CLI failed: Exit code: 143")
 
-        runner._run_claude = failing_run_claude
+        runner._run_agent = failing_run_agent
         runner.logger = logger
 
         disp = runner.run_administrator(make_signal())

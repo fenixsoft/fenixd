@@ -41,7 +41,7 @@ def make_runner(proot: Path) -> AgentRunner:
 
 def spawn_sleep(seconds: float) -> subprocess.Popen:
     """起一个长 sleep 子进程，模拟在跑 agent。"""
-    # start_new_session=True 对齐 _run_claude 的真实 spawn 纪律（agent 独立成
+    # start_new_session=True 对齐 _run_agent 的真实 spawn 纪律（agent 独立成
     # 组 pgid==pid）：替身与 pytest 同组时，wait_for_running_agents 的
     # guard_killpg 自保护守卫按「目标组=调用者自身组」拒绝击杀，替身失真。
     return subprocess.Popen(
@@ -397,7 +397,7 @@ class TestManualInterventionPrompt:
 # ── orphaned-state-probe-calibration：admin 处置失败证据 ──────
 
 
-def _make_admin_runner_stub(proot: Path, fake_run_claude=None) -> AgentRunner:
+def _make_admin_runner_stub(proot: Path, fake_run_agent=None) -> AgentRunner:
     """run_administrator 测试共用的最小 AgentRunner 替身（绕过真实 __init__）。
 
     与 tests/test_admin.py 的 make_admin_runner_stub 同构：project_root/logger/
@@ -416,8 +416,8 @@ def _make_admin_runner_stub(proot: Path, fake_run_claude=None) -> AgentRunner:
     # 的 _record_signal_kill_or_label 对非信号死法调用 reset_signal_kill，
     # 直接注入缓存实例避免构造真实 ProviderCircuit。
     runner._provider_circuit_instance = MagicMock()
-    if fake_run_claude is not None:
-        runner._run_claude = fake_run_claude
+    if fake_run_agent is not None:
+        runner._run_agent = fake_run_agent
     return runner
 
 
@@ -434,7 +434,7 @@ class TestRunAdministratorFailureEvidence:
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
 
-        def failing_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def failing_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                                max_turns, spec_name=None, agent_type=None):
             # 模拟真实失败 run 的产物：provider_marker 先行落盘、转录事件
             # 带时间戳、stderr 原始行、终态 error 行（均无 timestamp）。
@@ -457,7 +457,7 @@ class TestRunAdministratorFailureEvidence:
                 "".join(json.dumps(l, ensure_ascii=False) + "\n" for l in lines),
                 encoding="utf-8")
             exc = RuntimeError("claude CLI failed: Exit code: 1")
-            # _run_claude 失败路径携带原始信号（runner.py:2983-2985）
+            # _run_agent 失败路径携带原始信号（runner.py:2983-2985）
             exc.stderr_lines = [
                 "[claude-code:unrecognized_model] {\"model\":\"deepseek-v4.1-flash\"}",
                 "unrelated raw stderr line",
@@ -465,7 +465,7 @@ class TestRunAdministratorFailureEvidence:
             exc.exit_code = 1
             raise exc
 
-        runner = _make_admin_runner_stub(proot, fake_run_claude=failing_run_claude)
+        runner = _make_admin_runner_stub(proot, fake_run_agent=failing_run_agent)
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
 
@@ -493,14 +493,14 @@ class TestRunAdministratorFailureEvidence:
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
-        def ok_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def ok_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                           max_turns, spec_name=None, agent_type=None):
             admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"result": "resolved"}), encoding="utf-8")
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner = _make_admin_runner_stub(proot, fake_run_claude=ok_run_claude)
+        runner = _make_admin_runner_stub(proot, fake_run_agent=ok_run_agent)
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         assert disp.success is True
         assert disp.failure_evidence == {}

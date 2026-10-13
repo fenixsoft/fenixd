@@ -33,6 +33,23 @@ schedule:
 #       apikey: "sk-xxx"               # 敏感信息，.fenix/config.yaml 已 gitignore
 #       model: "deepseek-v4-flash"     # 该 Provider 的默认模型名（实际发给网关的模型名）
 
+# ---- Agent Harness（agent 进程边界选型；add-harness-adapter-layer 6.1）----
+# 注意区分两个顶层段，勿混用：
+#   agent  （本段，单数）——harness 进程边界选型：spawn 的 agent 进程由哪个
+#                          harness 适配层驱动（进程边界协议：argv/env/stdin
+#                          构造与事件归一化）。
+#   agents （下方既有段，复数）——per-agent 行为配置：max_concurrent、
+#                          impl_run_budget、timeout_overrides、退避段等，
+#                          与 harness 选型正交。
+# agent:
+#   # harness 进程边界实现。合法值 claude|dsh：
+#   #   claude —— Claude Code CLI（缺省，现状行为）
+#   #   dsh    —— 另一 harness 实现（尚未部署；dispatch 前置健康检查会
+#   #             fail-fast「dsh adapter 未部署」，设置页保存也会被拦）
+#   # 非法值回退 claude 并告警；修改后约 30s 热更新对下次 dispatch 生效，
+#   # 在飞 run 不受影响。
+#   harness: claude
+
 # ---- Agent Configuration ----
 agents:
   # per-agent 环境变量注入（agents.agent_env.<agent-type>: {ENV: value}）：

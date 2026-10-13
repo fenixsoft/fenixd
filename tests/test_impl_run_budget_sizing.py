@@ -8,7 +8,7 @@
   恒返回 base。STATE ``impl_turn_cap_override`` 的优先序见装配级
   TestImplTurnBudgetAssembly（override 优先于规模推算）。
 - 4.2 装配级（仿 tests/test_turn_limit_lifecycle 既有装置：``__new__`` 绕过
-  ``__init__`` 的最小实例态 + fake Popen 驱动真实 ``_run_claude`` 轮询环，
+  ``__init__`` 的最小实例态 + fake Popen 驱动真实 ``_run_agent`` 轮询环，
   不启动真实 daemon/子进程）：
   - 启动 sizing：大规模 spec 生效上限为 suggested_turn_cap、小规模等于
     base、override 优先、tasks.md/规模解析失败回退 base 不阻断派发；
@@ -625,7 +625,7 @@ class TestKillEarlyGuard:
 
 
 class TestTurnExtensionEventLoop:
-    """fake Popen 驱动真实 ``_run_claude`` 轮询环（tasks 4.2）：流量活性
+    """fake Popen 驱动真实 ``_run_agent`` 轮询环（tasks 4.2）：流量活性
     续期留痕事件新增 ``remaining_tasks`` 字段、既有字段不丢；run_metrics
     行同键在场。"""
 
@@ -644,7 +644,7 @@ class TestTurnExtensionEventLoop:
         _patch_popen(monkeypatch, proc)
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-1-a1",
                 max_turns=max_turns, spec_name="demo",
                 agent_type="implementer")
@@ -689,7 +689,7 @@ class TestTurnExtensionEventLoop:
         _patch_popen(monkeypatch, proc)
 
         with pytest.raises(RuntimeError):
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-2-a1",
                 max_turns=5, spec_name="ghost", agent_type="implementer")
 

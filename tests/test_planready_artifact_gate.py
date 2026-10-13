@@ -223,7 +223,7 @@ class TestPlanreadyArtifactGateIntegration:
         sc, _res = _plan_paths(tmp_path, spec)
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -234,7 +234,7 @@ class TestPlanreadyArtifactGateIntegration:
                           encoding="utf-8")
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate")
         # 进程均 exit 0——失败只能来自结果文件硬门（attempt 1 + 子重试 + attempt 2）
         assert calls["n"] == 4  # a1 + r1 + a2 + r1'（预算长度 1 × 2 attempt）
@@ -250,7 +250,7 @@ class TestPlanreadyArtifactGateIntegration:
         spec = "spec-plan"
         sc, res = _plan_paths(tmp_path, spec)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -262,7 +262,7 @@ class TestPlanreadyArtifactGateIntegration:
                            encoding="utf-8")
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate2")
         assert result.success is False
         assert "status='success' 不在白名单" in (result.error or "")
@@ -274,7 +274,7 @@ class TestPlanreadyArtifactGateIntegration:
         spec = "spec-plan"
         sc, res = _plan_paths(tmp_path, spec)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -285,7 +285,7 @@ class TestPlanreadyArtifactGateIntegration:
                            encoding="utf-8")
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate3")
         assert result.success is True
         runner.worktree_manager.cleanup.assert_called_once()
@@ -305,14 +305,14 @@ class TestPlanreadyArtifactGateIntegration:
         stale = time.time() - 100.0
         os.utime(res, (stale, stale))
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             # 本轮只写场景文件——陈旧结果文件未刷新
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate4")
         assert result.success is False
         assert "陈旧残留" in (result.error or "")
@@ -326,7 +326,7 @@ class TestPlanreadyArtifactGateIntegration:
         sc, res = _plan_paths(tmp_path, spec)
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -339,7 +339,7 @@ class TestPlanreadyArtifactGateIntegration:
                            encoding="utf-8")
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate5")
         assert result.success is True
 

@@ -311,6 +311,40 @@ class ConfigLoader:
             return cls.MAX_SAME_CAUSE_REDISPATCHES_DEFAULT
         return val
 
+    # ── harness 进程边界选择（add-harness-adapter-layer 6.1）──────────
+    # 新顶层段 agent（单数，区别于既有 agents 段——见 config.template.yaml
+    # 两段注释）：agent.harness 选 spawn 的 agent 进程边界实现。
+    HARNESS_DEFAULT = "claude"
+
+    @classmethod
+    def get_harness(cls, config: Dict[str, Any]) -> str:
+        """读取并规范化 ``agent.harness``（合法值 claude|dsh，缺省 claude）。
+
+        非法值（含非字符串/空白）回退缺省并 WARNING 告警（文案含「不支持」
+        与合法值词表）。单点归一化：dispatch 前置健康检查、设置页回显与
+        one_shot/叙事 spawn 的 adapter 解析消费同一函数，展示与生效值不脱节
+        （与 get_max_same_cause_redispatches 同模式）。
+
+        词表经 harness 包单源（VALID_HARNESS_VALUES）；函数内延迟解析——
+        core.agent_runner 包初始化即拉入 runner 重链，而 runner 反向依赖本
+        模块（SUPERVISION_DEFAULTS 等），模块级 import 会成环。
+        """
+        raw = cls.get(config, "agent.harness", None)
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return cls.HARNESS_DEFAULT
+        value = str(raw).strip().lower()
+        from core.agent_runner.harness import VALID_HARNESS_VALUES
+
+        if value in VALID_HARNESS_VALUES:
+            return value
+        _logger.warning(
+            "agent.harness 配置值不支持：%r（合法值：%s）；回退缺省 %s",
+            raw,
+            "/".join(VALID_HARNESS_VALUES),
+            cls.HARNESS_DEFAULT,
+        )
+        return cls.HARNESS_DEFAULT
+
     # ── run 停滞预算（evo-add-run-stop-loss 2.2，缺省关闭）────────────
     # agents.run_stall_budget_* 三键：复合判停（连续 N 次达到 120s 的往返，
     # 或 stall 占比达到一半且超过 M 分钟无产物 mtime 进展）的开关与阈值。
@@ -814,7 +848,7 @@ class ConfigLoader:
                 # / adjudication / runner int() 钳制）均已按整值浮点归一——同类值
                 # 在同文件两种命运。就地 int() 归一（同 _check_supervision_
                 # consistency 校验层自动对齐的原地写范式）：三键无本模块归一层，
-                # maintenance_runs 直传 _run_claude 的读取点不钳型，放行不归一会
+                # maintenance_runs 直传 _run_agent 的读取点不钳型，放行不归一会
                 # 让浮点漏进轮询环。is_integer() 对 .nan/.inf 恒 False，非有限
                 # 浮点与正负零判别同落入下方硬拒分支。
                 if isinstance(val, float) and val.is_integer() and val > 0:
@@ -3048,7 +3082,7 @@ class ConfigLoader:
         覆盖 MUST 适用于 TIMEOUT_OVERRIDE_AGENT_TYPES 全部键（KNOWN_AGENT_TYPES
         全集 + repair，含 implementer、verifier、planner-plan、planner-judge、
         fast-track、repair、administrator、self-review、spec-review、dispute-judge、
-        code-review、code-fix；经 _execute_agent 与 _run_claude 统一路径生效）。
+        code-review、code-fix；经 _execute_agent 与 _run_agent 统一路径生效）。
 
         注意：supervision-judge 键不在此处生效（那是 liveness judge 子进程超时，
         经 ``judge_timeout_seconds`` 读取，不参与 absolute_max 派生）。

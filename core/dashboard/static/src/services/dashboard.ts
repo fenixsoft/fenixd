@@ -1609,6 +1609,9 @@ export interface ConfigData {
   /** add-knowledge-atlas：知识真相源总开关 + add-knowledge-atlas-maintenance：
    维护车道开关（缺省均 true；graph_enabled 已随 graphify 取消下线，不再读写） */
   knowledge?: { enabled?: boolean; audit_enabled?: boolean };
+  /** add-harness-adapter-layer 6.3：agent 进程边界选型（claude|dsh，缺省
+   claude；dsh 未部署，后端保存被拦）。区别于 agents 段（per-agent 行为配置） */
+  agent?: { harness?: string };
   /** add-daily-self-review：每日自省（admin.self_review 三键） */
   self_review?: SelfReviewConfig;
   /** add-settings-system-tab：系统配置（admin.* 受管键） */

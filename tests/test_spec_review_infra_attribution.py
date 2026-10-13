@@ -660,7 +660,7 @@ class TestRunnerBridgeAttribution(unittest.TestCase):
         r._build_prompt = lambda *a, **k: "prompt"
         r._get_agent_model_assignment = lambda agent_type: None
         r._get_config = lambda key, default=None: default
-        r._run_claude = boom
+        r._run_agent = boom
 
     def test_bridge_threads_stderr_tail_and_exit_code(self):
         """限流失败异常：stderr_tail 摘要（原始 stderr_lines 尾行）与 exit_code

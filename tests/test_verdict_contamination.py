@@ -495,7 +495,7 @@ class TestCopybackRoleInjection:
         runner.worktree_manager.cleanup.return_value = None
         (wt / ".fenix-run-result.json").write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        runner._run_claude = MagicMock(
+        runner._run_agent = MagicMock(
             return_value=("done", 1, "sess-cb", _usage_ok()))
         result = runner._execute_agent("spec-x", agent_type, "run-cb1")
         assert result.success is True, result.error
@@ -527,7 +527,7 @@ class TestCopybackRoleInjection:
         (wt / ".fenix-run-result.json").write_text(
             json.dumps({"status": "verified", "bugs": []}, ensure_ascii=False),
             encoding="utf-8")
-        runner._run_claude = MagicMock(
+        runner._run_agent = MagicMock(
             return_value=("done", 1, "sess-cb", _usage_ok()))
         result = runner._execute_agent("spec-x", "planner-judge", "run-cb2")
         assert result.success is True, result.error
@@ -558,7 +558,7 @@ class TestCopybackRoleInjection:
         (wt / ".fenix-run-result.json").write_text(
             json.dumps({"status": "plan-ready", "summary": "scenarios generated"},
                        ensure_ascii=False), encoding="utf-8")
-        runner._run_claude = MagicMock(
+        runner._run_agent = MagicMock(
             return_value=("done", 1, "sess-cb", _usage_ok()))
         result = runner._execute_agent("spec-x", "planner-plan", "run-cb3")
         assert result.success is True, result.error
@@ -585,7 +585,7 @@ class TestCopybackRoleInjection:
             json.dumps({"status": "success", "completed_tasks": ["1.1"],
                         "summary": "impl ok"}, ensure_ascii=False),
             encoding="utf-8")
-        runner._run_claude = MagicMock(
+        runner._run_agent = MagicMock(
             return_value=("done", 1, "sess-cb", _usage_ok()))
         result = runner._execute_agent("spec-x", "implementer", "run-cb5")
         assert result.success is True, result.error
@@ -608,7 +608,7 @@ class TestCopybackRoleInjection:
         (wt / ".fenix-run-result.json").write_text(
             '{"status": "bug-found", "summary": "line1\nline2"}',
             encoding="utf-8")
-        runner._run_claude = MagicMock(
+        runner._run_agent = MagicMock(
             return_value=("done", 1, "sess-cb", _usage_ok()))
         result = runner._execute_agent("spec-x", "verifier", "run-cb4")
         assert result.success is True  # verifier 无产物硬门

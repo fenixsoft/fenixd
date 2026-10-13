@@ -94,7 +94,7 @@ class _GateRunner:
 
 
 def _conn_error_exc(**extra):
-    """携带连接类签名的 _run_claude 失败异常（runner 挂载层产物的信封形态）。"""
+    """携带连接类签名的 _run_agent 失败异常（runner 挂载层产物的信封形态）。"""
     e = RuntimeError(f"claude CLI failed: {_ENOTFOUND_TEXT}")
     e.conn_error = True
     e.api_timeout = True  # api_error 是 api_timeout 宽判分支：两布尔可同时为真
@@ -211,7 +211,7 @@ class TestConnErrorClassification(unittest.TestCase):
             def _build_prompt(self, run_id, agent_type, detail=None):
                 return "prompt"
 
-            def _run_claude(self, prompt, cwd, run_id, model_override=None,
+            def _run_agent(self, prompt, cwd, run_id, model_override=None,
                             env_overrides=None, max_turns=None,
                             spec_name=None, agent_type=None):
                 raise self._exc

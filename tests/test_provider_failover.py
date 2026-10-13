@@ -75,7 +75,7 @@ def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     runner._provider_circuit._daily_provider_attempts = {}
     runner._provider_circuit._daily_provider_warned = {}
     runner._provider_circuit.provider_circuits = {}
-    # v2 dev-server stub：本文件各测试的 fake _run_claude 让 run_implementer 走
+    # v2 dev-server stub：本文件各测试的 fake _run_agent 让 run_implementer 走
     # 完整成功收口 → _finalize_success 会 _v2_launch_for_worktree / _v2_stop_for_worktree
     # 真实 spawn/回收 node dev-server（每个测试一次），全量套件内累积到 250s+。
     # 本文件测 provider 链切换，与 worktree 测试服务器生命周期正交，stub 掉即恢复
@@ -86,7 +86,7 @@ def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     # 产物完成度正交）：fix-impl-tasks-completion-gate（2026-09-14 df8dd94c）
     # 给 implementer/fast-track 加了「worktree 内 .fenix-run-result.json 存在 +
     # status 白名单 + tasks.md 完成度对账」硬门，而本文件各测试的 fake
-    # _run_claude 只返回成功元组、从不写结果文件 → 硬门判失败 → 落入瞬态退避
+    # _run_agent 只返回成功元组、从不写结果文件 → 硬门判失败 → 落入瞬态退避
     # 通道 time.sleep(30/60/120)，单测试实测挂起 210s+（全文件 8 failed/161s，
     # 也是 run_full_suite 卡死的根因）。这些测试不关心产物完成度，stub 掉硬门
     # 即恢复其原始语义（09-14 之前该硬门对 implementer 直接 return None）。
@@ -289,7 +289,7 @@ class TestChainSelectExecute:
 
         calls = {"n": 0, "resume_seen": False, "providers": [], "fresh_after_switch": False}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None, task_progress_snapshot=None):
             calls["n"] += 1
@@ -305,7 +305,7 @@ class TestChainSelectExecute:
                 calls["fresh_after_switch"] = True
             return ("ok", 1, "sess-keep", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess-keep")
 
         result = runner.run_implementer("s")
@@ -332,7 +332,7 @@ class TestChainSelectExecute:
 
         calls = {"n": 0, "resumes": []}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None, task_progress_snapshot=None):
             calls["n"] += 1
@@ -347,7 +347,7 @@ class TestChainSelectExecute:
                 )
             return ("ok", 1, "sess-new", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess-dead")
 
         result = runner.run_implementer("s")
@@ -365,14 +365,14 @@ class TestChainSelectExecute:
 
         calls = {"providers": []}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None, task_progress_snapshot=None):
             calls["providers"].append(env_overrides.get("ANTHROPIC_BASE_URL"))
             # 始终 4xx → 不切换，链指针不动，下一 attempt 仍用首候选
             raise RuntimeError("HTTP 404")
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value=None)
         runner.run_implementer("s")
         # 三次重试都在首候选（a.com），未前进到 aliyun
@@ -394,7 +394,7 @@ class TestConfigDirSwitch:
 
         captured_dirs = []
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None, task_progress_snapshot=None):
             captured_dirs.append(env_overrides.get("CLAUDE_CONFIG_DIR"))
@@ -402,7 +402,7 @@ class TestConfigDirSwitch:
                 raise RuntimeError("unrecognized_model")
             return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess")
         runner.run_implementer("s")
         # 两次运行指向不同 provider 的隔离目录
@@ -418,14 +418,14 @@ class TestConfigDirSwitch:
         runner.worktree_manager = MagicMock()
         runner.worktree_manager.create.return_value = tmp_path / "wt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None, task_progress_snapshot=None):
             if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
                 raise RuntimeError("unrecognized_model")
             return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess")
         runner.run_implementer("mytest-spec")
         assert runner.logger.has("provider switched inferaiapi.com → aliyun for 'mytest-spec'")
@@ -453,9 +453,9 @@ class TestProviderObservability:
         monkeypatch.setattr(runner, "_now", lambda: now)
         runner.worktree_manager = MagicMock()
         runner.worktree_manager.create.return_value = tmp_path / "wt"
-        # _run_claude 契约为 4 元组 (output, turns, session_id, usage_info)——
+        # _run_agent 契约为 4 元组 (output, turns, session_id, usage_info)——
         # 旧 3 元组桩会在解包处 ValueError→被 attempt 循环吞掉走重试耗尽路径
-        runner._run_claude = MagicMock(return_value=(
+        runner._run_agent = MagicMock(return_value=(
             "ok", 1, "sess",
             {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}))
         result = runner.run_implementer("s")
@@ -509,7 +509,7 @@ class TestModelChangedLog:
         runner.worktree_manager = MagicMock()
         runner.worktree_manager.create.return_value = tmp_path / "wt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None, task_progress_snapshot=None):
             # 首候选失败 → 触发链前进到次候选
@@ -517,7 +517,7 @@ class TestModelChangedLog:
                 raise RuntimeError("unrecognized_model")
             return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess")
         runner.run_implementer("s")
         # 两个场景都包含 provider switched
@@ -752,7 +752,7 @@ class TestRatelimitRedispatch:
         def _boom(*a, **k):
             raise RuntimeError(self.REAL_429)
 
-        runner._run_claude = _boom
+        runner._run_agent = _boom
         # runs 目录生产恒存在（append_run_line 不建目录），tmp 里自建
         (tmp_path / ".fenix" / "runs").mkdir(parents=True)
         result = mr.run_code_review(
@@ -960,7 +960,7 @@ class TestRatelimitShardedResume:
         runner._read_code_review_out = lambda project_root, rid: mr._read_code_review_out(
             runner, project_root, rid)
 
-        def _run_claude(*a, **k):
+        def _run_agent(*a, **k):
             # agent 行为：本轮产物（逐文件结果行）在 run 途中落盘
             crdir = proot / ".fenix" / "code-review"
             (crdir / f"out-{run_id}.jsonl").write_text(
@@ -968,7 +968,7 @@ class TestRatelimitShardedResume:
                 encoding="utf-8")
             return "OUT", 1, "sess", {}
 
-        runner._run_claude = _run_claude
+        runner._run_agent = _run_agent
         return runner
 
     @staticmethod

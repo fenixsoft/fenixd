@@ -718,7 +718,7 @@ class TestExtensionTailPollLoop:
         monkeypatch.setattr("core.agent_runner.runner.time.sleep", _fake_sleep)
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", wt, "impl-demo-99-a1",
                 spec_name="demo", agent_type="fast-track")
         assert "Timeout" in str(cm.value)
@@ -769,7 +769,7 @@ class TestExtensionTailPollLoop:
         monkeypatch.setattr("core.agent_runner.runner.time.sleep", _fake_sleep)
 
         with pytest.raises(RuntimeError):
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", wt, "impl-demo-97-a1",
                 spec_name="demo", agent_type="fast-track")
 
@@ -815,7 +815,7 @@ class TestExtensionTailPollLoop:
         monkeypatch.setattr("core.agent_runner.runner.time.sleep", _fake_sleep)
 
         with pytest.raises(RuntimeError):
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", wt, "impl-demo-98-a1",
                 spec_name="demo", agent_type="implementer")  # 不是 fast-track
 

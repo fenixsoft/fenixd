@@ -29,11 +29,11 @@ from core.agent_runner.maintenance_runs import (
 
 
 class _RecordingRunner:
-    """最小 duck-typed runner 替身：记录 _run_claude 收到的 env_overrides。
+    """最小 duck-typed runner 替身：记录 _run_agent 收到的 env_overrides。
 
     与 test_self_evolution._FakeEvolutionRunner 同型，但显式列出
     run_evolution / run_self_review 实际触达的门面依赖（不继承
-    AgentRunner，避免隐式继承面漂移掩盖缺件）。_run_claude 不写产物文件
+    AgentRunner，避免隐式继承面漂移掩盖缺件）。_run_agent 不写产物文件
     ——契约缺失走 read_contract 的 ContractError 失败路径，供归因断言。
     """
 
@@ -55,7 +55,7 @@ class _RecordingRunner:
     def _get_config(self, key, default=None):
         return default
 
-    def _run_claude(self, prompt, cwd, run_id, model_override=None,
+    def _run_agent(self, prompt, cwd, run_id, model_override=None,
                     env_overrides=None, resume_session_id=None,
                     max_turns=None, spec_name=None, agent_type=None):
         self.calls.append({

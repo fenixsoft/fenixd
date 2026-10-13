@@ -112,7 +112,7 @@ def wait_for_event(evt: threading.Event, timeout: float = 5.0):
     assert evt.wait(timeout), "worker 未在超时内完成处置"
 
 
-def make_admin_runner_stub(proot: Path, *, fake_run_claude=None,
+def make_admin_runner_stub(proot: Path, *, fake_run_agent=None,
                            admin_model: str = "claude-sonnet-5",
                            assignment_fn=None) -> AgentRunner:
     """run_administrator 测试共用的最小 AgentRunner 替身（绕过真实 __init__）。
@@ -129,13 +129,13 @@ def make_admin_runner_stub(proot: Path, *, fake_run_claude=None,
     runner._get_admin_model = lambda: admin_model
     runner._get_agent_model_assignment = assignment_fn or (lambda agent_type: None)
     runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
-    if fake_run_claude is not None:
-        runner._run_claude = fake_run_claude
+    if fake_run_agent is not None:
+        runner._run_agent = fake_run_agent
     return runner
 
 
 def _fake_admin_writes_payload(payload: dict):
-    """构造模拟 Admin 按提示词注入的实例路径写处置文件的 _run_claude 替身。"""
+    """构造模拟 Admin 按提示词注入的实例路径写处置文件的 _run_agent 替身。"""
     def fake(prompt, cwd, run_id, model_override, env_overrides, max_turns,
              spec_name=None, agent_type=None):
         admin_disposition_path(cwd, run_id).write_text(
@@ -1766,11 +1766,11 @@ class TestRunAdministrator:
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
+        runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         recs = AdminStore(proot, FakeLogger()).read_all()
         pendings = [r for r in recs if r.get("kind") == DISPOSITION and r.get("status") == "pending"]
@@ -2099,7 +2099,7 @@ class TestRunAdministrator:
         runner = make_admin_runner_stub(
             proot,
             # Admin 按提示词注入的实例路径写入（而非旧全局文件）
-            fake_run_claude=_fake_admin_writes_payload({
+            fake_run_agent=_fake_admin_writes_payload({
                 "spec": "spec-a",
                 "problem": "卡死",
                 "actions_taken": ["kill", "reset"],
@@ -2122,7 +2122,7 @@ class TestRunAdministrator:
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
         runner = make_admin_runner_stub(
             proot,
-            fake_run_claude=_fake_admin_writes_payload({
+            fake_run_agent=_fake_admin_writes_payload({
                 "spec": "spec-a",
                 "problem": "卡死",
                 "actions_taken": ["clean", "reset"],
@@ -2141,7 +2141,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = make_admin_runner_stub(
             proot,
-            fake_run_claude=_fake_admin_writes_payload({
+            fake_run_agent=_fake_admin_writes_payload({
                 "spec": "spec-a", "result": "resolved",
             }))
         disp = runner.run_administrator(
@@ -2181,10 +2181,10 @@ class TestRunAdministrator:
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
-        def failing_run_claude(*a, **k):
+        def failing_run_agent(*a, **k):
             raise RuntimeError("claude 崩溃")
 
-        runner = make_admin_runner_stub(proot, fake_run_claude=failing_run_claude)
+        runner = make_admin_runner_stub(proot, fake_run_agent=failing_run_agent)
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
         assert disp.success is False
@@ -2200,7 +2200,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
         captured = {}
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
@@ -2210,7 +2210,7 @@ class TestRunAdministrator:
 
         runner = make_admin_runner_stub(
             proot,
-            fake_run_claude=fake_run_claude,
+            fake_run_agent=fake_run_agent,
             assignment_fn=lambda agent_type: [
                 ({"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
                  "deepseek-v4-flash"),
@@ -2229,7 +2229,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
         captured = {}
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
@@ -2238,7 +2238,7 @@ class TestRunAdministrator:
                                          "cost_usd": 0.0}
 
         runner = make_admin_runner_stub(
-            proot, fake_run_claude=fake_run_claude, admin_model="claude-opus-4")
+            proot, fake_run_agent=fake_run_agent, admin_model="claude-opus-4")
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         assert captured["model"] == "claude-opus-4"
         assert "ANTHROPIC_BASE_URL" not in captured["env"]
@@ -2252,7 +2252,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         prompts = []
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             prompts.append(prompt)
             # 模拟 Admin 按提示词注入的路径写入
             disposition_path_from_prompt(prompt).write_text(json.dumps({
@@ -2261,7 +2261,7 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
+        runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         # 本测试特例：恢复真实 prompt_builder（helper 默认桩掉 _build_prompt）
         del runner.__dict__["_prompt_builder_instance"]
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -2286,14 +2286,14 @@ class TestRunAdministrator:
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             disp_path = admin_disposition_path(cwd, run_id)
             disp_path.write_text(json.dumps({"result": "resolved"}), encoding="utf-8")
             assert disp_path.exists()
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
+        runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         assert disp.result == "resolved"
         assert not admin_disposition_path(proot, disp.run_id).exists()
@@ -2308,7 +2308,7 @@ class TestRunAdministrator:
         started = threading.Barrier(2)
         release = threading.Event()
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             disp_path = admin_disposition_path(cwd, run_id)
             seen_paths.append(disp_path)
             started.wait(timeout=10)          # 两个 run 同时在场
@@ -2322,7 +2322,7 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
+        runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         results = {}
 
         def run_once(idx):

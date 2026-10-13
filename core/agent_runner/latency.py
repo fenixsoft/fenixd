@@ -1,7 +1,7 @@
 """
 latency.py — run 级 API 延迟统计纯函数（refactor-agent-runner-module D4）。
 
-从 runner.py 拆出的模块级延迟统计纯函数与常量，供在线（_run_claude 流式循环
+从 runner.py 拆出的模块级延迟统计纯函数与常量，供在线（_run_agent 流式循环
 旁路）与事后（bin/analyze_run_latency.py）共用同一套口径：
 对事件序列 `tool_result → 下一个 assistant` 间隔采样为 API 往返样本，再计算
 直方图摘要（轮数/中位/p90/max/长尾>60s 计数与占比）。纯读侧，不改变流式事件
@@ -23,7 +23,7 @@ from core.timelib import parse_ts
 LATENCY_STALL_SECONDS = 60.0
 
 # run 期内单次 API 往返样本的 WARNING 阈值（evo-add-api-stall-observability
-# 1.1）：在飞采样点（_run_claude 流式循环旁路）对超过该值的单次样本在完成
+# 1.1）：在飞采样点（_run_agent 流式循环旁路）对超过该值的单次样本在完成
 # 时点即时打一条 WARNING（期内逐次现场），纯记录、不触发任何干预。
 #
 # 语义分离（勿合并）：
@@ -81,7 +81,7 @@ def _entry_is_tool_result(entry: dict) -> bool:
       事件如 skill 加载消息、``assistant``/``system``/``result``/``stderr``
       等）→ False，杜绝假样本/假流量。
 
-    本判定为延迟采样（``latency_samples_from_events`` / ``_run_claude`` 内联
+    本判定为延迟采样（``latency_samples_from_events`` / ``_run_agent`` 内联
     读侧）与流量活性（``_turn_traffic_active``）三处消费点的**单一真源**——
     不得在别处再次硬编码事件类型比较（design D1：根因即三处独立发散）。
     """
@@ -155,7 +155,7 @@ def latency_stats(samples) -> dict:
     口径：负样本（timestamp 非单调的无效测量，见
     ``latency_samples_from_events``）先剔除再统计——rounds/stalls/
     stall_ratio 均基于同一非负有效样本集，stall_ratio 分母 = 有效样本数，
-    语义自洽（在线旁路 runner._run_claude 内联采样亦经本函数收口）。
+    语义自洽（在线旁路 runner._run_agent 内联采样亦经本函数收口）。
 
     Returns: {"rounds": int, "median": float|None, "p90": float|None,
               "max": float|None, "stalls": int, "stall_ratio": float}

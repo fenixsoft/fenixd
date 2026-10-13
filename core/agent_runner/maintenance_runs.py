@@ -7,7 +7,7 @@ _accumulate_self_review_tokens、_delete_evolution_out、_accumulate_evolution_t
 _get_admin_model）。纯结构搬移，零行为变化。
 
 本模块 MUST NOT `import runner`（D2b 规则 1）：门面依赖（_build_prompt /
-_run_claude / _get_config / _get_agent_model_assignment / _ensure_agent_config_dir /
+_run_agent / _get_config / _get_agent_model_assignment / _ensure_agent_config_dir /
 _write_provider_marker / _extract_usage_info / logger / project_root）一律以显式
 `runner`（AgentRunner 实例）参数注入；兄弟函数间调用一律 `runner.<方法名>`
 （D2b 规则 2，实例属性打桩不被绕过）。
@@ -76,7 +76,7 @@ _ADMIN_FAILURE_TS_EVENTS = 3
 def _admin_failure_evidence(runner, run_id: str, exc: Exception) -> dict:
     """Administrator 处置 run 非零退出的可定位失败证据（orphaned-state-probe-calibration 1.5）。
 
-    四项，全部来自异常本身（`_run_claude` 抛出的 RuntimeError 携带原始信号，
+    四项，全部来自异常本身（`_run_agent` 抛出的 RuntimeError 携带原始信号，
     runner.py:2983-2985）与 run 产物：
     - ``stderr_tail``：``getattr(exc, "stderr_lines", [])`` 末 N 行原始 stderr，
       拼接后截断 4KB（不止 error-attribution-denoise 过滤后的 5 行——原始
@@ -309,10 +309,10 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     runner._clear_admin_disposition(disp_path)
     failure_evidence: dict = {}
     try:
-        # _run_claude 返回 4 元组（add-cost-observability D1 加 usage_info）；
+        # _run_agent 返回 4 元组（add-cost-observability D1 加 usage_info）；
         # admin 不消费 usage，此调用点曾漏改按 3 元组解包——admin run 一启动
         # 即崩 too many values to unpack（2026-09-05 回检发现）
-        output, turns, _session_id, _usage = runner._run_claude(
+        output, turns, _session_id, _usage = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -362,7 +362,7 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     disp = runner._read_admin_disposition(disp_path)
     # ── 产物硬门（对齐 code-review/code-fix 车道的 fail-closed 先例：
     # _check_repo_code_review_artifact / _check_code_fix_artifact）──────────
-    # _run_claude 正常退出（success=True）但管理员从未按 prompt 写入处置文件
+    # _run_agent 正常退出（success=True）但管理员从未按 prompt 写入处置文件
     # （文件缺失/不可解析 → _read_admin_disposition 返回空 dict）时，下方
     # result 兜底会把空跑折算成 "resolved"——消费侧 admin_monitor 对非 pending
     # 且非 escalate 的 result 直接 mark_signal_handled，resolved 还会触发自动
@@ -506,7 +506,7 @@ def _unique_self_review_run_id(runner, date_str: str) -> str:
     _unique_admin_run_id 的探测退避形态：候选的 run 事件流或在飞 out 文件
     任一已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。探测退避而非
     O_CREAT|O_EXCL 申领：out 文件由 agent 按 prompt 注入的路径写入且 run
-    结束即清理（_delete_self_review_out），事件流由 _run_claude 追加落盘，
+    结束即清理（_delete_self_review_out），事件流由 _run_agent 追加落盘，
     抢先落申领占位文件会污染 jsonl 事件流并改变 out 文件生命周期。
     """
     base = f"review-{date_str}"
@@ -541,7 +541,7 @@ def run_self_review(
     - token 归账到 cost-observability 独立类目
       （.fenix/cost/self_review_tokens.json，design D2 二选一），不写
       STATE（自省链路禁止注册 STATE 条目）；
-    - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效，
+    - 超时走 agents.run_timeout_seconds 全局默认（_run_agent 内生效，
       不设 override）。
     - 模型解析链：agents.models.self-review 分配优先；未配置回退
       agents.models.administrator（向后兼容，自省源自运维通道）；
@@ -603,7 +603,7 @@ def run_self_review(
 
     runner._clear_self_review_out(out_path)
     try:
-        output, turns, _session_id, usage_info = runner._run_claude(
+        output, turns, _session_id, usage_info = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -637,7 +637,7 @@ def run_self_review(
             )
     # ── 产物硬门（code-review item 791f1caf55b2，对齐同族 fail-closed 先例）──
     # 同族车道均已补产物门（run_administrator 处置硬门 / _check_repo_code_
-    # review_artifact / _check_code_fix_artifact），唯独本车道没有：_run_claude
+    # review_artifact / _check_code_fix_artifact），唯独本车道没有：_run_agent
     # 正常退出但 agent 从未写 out 文件时，_read_self_review_out 返回空 dict、
     # success 仍为 True，调度器（core/self_review.py）记「每日自省完成」并把
     # 空回顾追加进 todo.md，无任何失败告警与重试信号——与本文件多处记载的
@@ -939,9 +939,9 @@ def _log_lane_run_metrics(
     agent_type 的终态富指标行（_log_run_metrics 仅覆盖 _execute_agent 家族
     路径），离群初筛把它们整体折进 unknown 混合组、成本维度 0 样本失明
     （turns 2114 / cost 85.68 美元的全仓扫描从未被成本维度看见）。本 helper
-    在车道 run 真正终态（_run_claude 返回/抛出后）的收尾点统一补写：字段与
+    在车道 run 真正终态（_run_agent 返回/抛出后）的收尾点统一补写：字段与
     runner._log_run_metrics 同源（含 agent_type/cost_usd），落盘失败由其内部
-    吞掉不阻断收尾。组装期早退（run 未派发、_run_claude 从未进入）不落本行
+    吞掉不阻断收尾。组装期早退（run 未派发、_run_agent 从未进入）不落本行
     ——零 turns/零时长行只污染指标索引，对初筛零贡献。打桩 runner 缺该方法
     时静默跳过（车道单测免随行打桩，与 getattr(runner, "logger", None) 同
     防御口径）。
@@ -974,12 +974,12 @@ def run_evolution(
       不计入每日 agent run 计数（不走 _execute_agent）；
     - token 归账沿用 _accumulate_self_review_tokens 的既有类目（cost
       独立类目，不写 STATE）；
-    - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）；
+    - 超时走 agents.run_timeout_seconds 全局默认（_run_agent 内生效）；
     - 模型解析链：agents.models.self-review 分配优先；未配置回退
       agents.models.administrator；再回退 _get_admin_model → 默认网关
       （MUST NOT 引入新的 agents.models.* 配置键）。
     - max_turns / 超时 / 预算 / 告警 / provider 熔断全部走既有
-      _run_claude（spec「分析 run 的角色、模型链与执行形态」）。
+      _run_agent（spec「分析 run 的角色、模型链与执行形态」）。
 
     产物路径 ``.fenix/evolution/out-<run_id>.json``（契约 JSON：
     items[] 含 verdict/analysis_md/spec），run 结束**先抢救再清理**
@@ -1043,9 +1043,9 @@ def run_evolution(
     else:
         model_override = runner._get_admin_model()
 
-    turns = 0  # _run_claude 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
+    turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:
-        output, turns, _session_id, usage_info = runner._run_claude(
+        output, turns, _session_id, usage_info = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -1087,7 +1087,7 @@ def run_evolution(
                 ingest_item,
             )
 
-            # 先抢救：_run_claude 非零退出/产物半写时按分片合并配方恢复
+            # 先抢救：_run_agent 非零退出/产物半写时按分片合并配方恢复
             salvaged = _salvage_evolution_out(out_path)
 
             contract = None
@@ -1359,7 +1359,7 @@ def _evolution_bg_wait_ceiling_hit(runner, run_id: str) -> bool:
 
     add-evolution-subagent-wait-ceiling 3.1：CLI 侧退出码 0（terminal_
     reason=completed）时，产物缺失走 read_contract 的 ContractError 路径
-    （run_evolution 收尾段置 success=False），而非 _run_claude 异常路径——
+    （run_evolution 收尾段置 success=False），而非 _run_agent 异常路径——
     归因嗅探只能挂在收尾段。命中签名说明子代理是被 CLI 的后台等待上限
     （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS）强杀的，把该上限写进失败
     reason 后下轮诊断零成本。
@@ -1495,7 +1495,7 @@ def run_code_review(
     - 模型解析链：agents.models.code-review 分配优先 → 回退
       agents.models.self-review → 回退 agents.models.administrator →
       再回退 _get_admin_model → 默认网关。
-    - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）；
+    - 超时走 agents.run_timeout_seconds 全局默认（_run_agent 内生效）；
     - 429 打死 run 的自动重派（add-code-review-concurrency-and-429-resilience
       D4）：终态归因为 429 限流时经 ``_ratelimit_redispatch_on_terminal``
       登记 ``ratelimit_redispatch`` 意图（provider 限流冷却 + run jsonl 标注），
@@ -1520,7 +1520,7 @@ def run_code_review(
     opath = runner.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
     # 申领占位收尾清理（对齐 run_regression item e6a103d93b91 的 finally 形态）：
     # _unique_code_review_run_id 以 O_CREAT|O_EXCL 先落 ``{}`` 空占位，本 run
-    # 真正进入执行链（_run_claude）前的任何早退/异常路径（manifest 落盘失败、
+    # 真正进入执行链（_run_agent）前的任何早退/异常路径（manifest 落盘失败、
     # _build_prompt 失败、模型链 provider 配置缺键 KeyError 等原不在任何 try
     # 保护内）都必须清掉占位后再上抛/折算失败信封，否则空占位永久残留
     # .fenix/code-review/ 累积垃圾。组装完成置位后 finally 不再触碰（占位已被
@@ -1632,9 +1632,9 @@ def run_code_review(
     # 异常绑定即删，后续意图登记只能读这里存的值。
     claude_api_error_status = None
     claude_result_text = ""
-    turns = 0  # _run_claude 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
+    turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:
-        output, turns, _session_id, usage_info = runner._run_claude(
+        output, turns, _session_id, usage_info = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -1642,7 +1642,7 @@ def run_code_review(
             env_overrides,
             # 轮次不设限（用户 2026-09-23）：全库审查 manifest 大（240 文件级）、
             # 子代理编排轮次消耗快，800+扩展(2×25%)=1200 实测不够用且死前
-            # inserted=0（09-23 manual_full 事故）。_run_claude 对 None 跳过
+            # inserted=0（09-23 manual_full 事故）。_run_agent 对 None 跳过
             # 强制块（`if max_turns and ...`），失控兜底由超时+liveness 承担。
             max_turns=None,
             spec_name="code-review",
@@ -2841,7 +2841,7 @@ def run_code_fix(
         if not isinstance(agent_env, dict):
             # code-review item 21e3783270a2：``or {}`` 只兜住键缺失/None，yaml 误写为
             # 字符串/数字/列表时裸调 .items() 抛 AttributeError，且本处位于任何 try
-            # 保护之外（:1995 的 try 只包 _run_claude），整批 code-fix 启动即崩。
+            # 保护之外（:1995 的 try 只包 _run_agent），整批 code-fix 启动即崩。
             # 对齐 _safe_int（item dc8f109b8b60）的防御降级口径：记 WARNING 按空
             # 映射继续（零注入），不阻断维护 run 主流程。
             _log = getattr(runner, "logger", None)
@@ -2876,21 +2876,21 @@ def run_code_fix(
         api_timeout = False
         exit_code = None
         stderr_summary = ""
-        # _run_claude 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
+        # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
         turns = 0
         # evo-add-codefix-conn-error-cooldown 1.3：连接类签名同纪律（非
-        # _run_claude 失败异常恒 False/空，硬门/计数失败路径不携带）。
+        # _run_agent 失败异常恒 False/空，硬门/计数失败路径不携带）。
         conn_error = False
         result_text = ""
         try:
-            output, turns, _session_id, usage_info = runner._run_claude(
+            output, turns, _session_id, usage_info = runner._run_agent(
                 prompt,
                 wt,
                 run_id,
                 model_override,
                 env_overrides,
                 # 轮次不设限（用户 2026-09-23）：批内条目数大时 800+扩展不够用，
-                # 撞上限=整批作废。_run_claude 对 None 跳过强制块；失控兜底由
+                # 撞上限=整批作废。_run_agent 对 None 跳过强制块；失控兜底由
                 # 超时覆盖（timeout_overrides）+ liveness 承担。
                 max_turns=None,
                 spec_name="code-review-fix",
@@ -2910,7 +2910,7 @@ def run_code_fix(
             # evo-code-fix-api-timeout-salvage 1.2：结构化签名透出——失败记录与
             # 日志携带 api_timeout / exit_code / stderr 摘要，替代仅 str(e) 压扁。
             # api_timeout 判别在 runner 层完成（design D1），此处只读异常布尔标记；
-            # 三元全空（非 _run_claude 失败异常）时 error 保持原文不添噪。
+            # 三元全空（非 _run_agent 失败异常）时 error 保持原文不添噪。
             api_timeout = bool(getattr(e, "api_timeout", False))
             exit_code = getattr(e, "exit_code", None)
             stderr_summary = _stderr_tail_summary(getattr(e, "stderr_lines", None))
@@ -3268,7 +3268,7 @@ def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
 
 def _write_impl_ocr_run_events(project_root: Path, run_id: str, spec_name: str,
                                events: list) -> None:
-    """车道 run jsonl 最小生命周期（时间线可见，不经 _run_claude）。
+    """车道 run jsonl 最小生命周期（时间线可见，不经 _run_agent）。
 
     events 为 (type, extra_dict) 序列；末行为终态语义由调用方保证
     （result/error 二选一）。写失败静默（观测通道，不阻断车道）。

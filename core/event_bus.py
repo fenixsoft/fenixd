@@ -500,7 +500,7 @@ class EventBus:
           (b) ``agent_runner.running_run_ids()`` 中存在 spec 段与该 spec
               **全等**的 ``admin-<spec>-<epoch>`` run（``_admin_run_id_matches_spec``
               解析判定，前缀匹配在 spec 名互为前缀时会记错账）——admin run 经
-              ``_run_claude`` 注册进 ``_running_agents``，本通路只覆盖**进程
+              ``_run_agent`` 注册进 ``_running_agents``，本通路只覆盖**进程
               存活**的 admin run。
 
         任一成立 → 返回 True（调用方跳过本次重验派发）；两路皆异常 → fail-open
@@ -814,6 +814,8 @@ class EventBus:
         避免孪生漂移（实测：admin_monitor 曾先行补 repair 而本处遗漏会
         造成恢复链与检测链口径不一致）。行为与 admin_monitor 完全一致：
         pgrep -f "{impl,verify,repair}-<spec>-" 任一命中即判存活。
+        add-harness-adapter-layer 5.1：patterns 源头改经 current adapter
+        （worktree_pgrep_patterns），本处经上述委托同源生效，不再双写。
 
         处置记录（书面 defer，fix-robustness-edge-cases 1.1）：cmdline 子串
         匹配在 spec 名互为前缀时误判活性，判定对象是 worktree 目录名而非 run

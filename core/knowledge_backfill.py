@@ -44,6 +44,16 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+# add-harness-adapter-layer 4.1：一次性 spawn 收编入口（回填 run）
+from core.agent_runner.harness import (
+    ENV_MODE_CLEAN,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import (
+    OneShotCommunicateError,
+    run_one_shot,
+)
 from core.fs_utils import atomic_write_text as _fs_atomic_write_text
 from core.git_text import unquote_git_path
 from core.timelib import now_local
@@ -865,52 +875,59 @@ def default_spawn(project_root: Path) -> SpawnFn:
     真相源是 spec 元数据层，非产品代码，不走 worktree 实现车道）。"""
 
     def _spawn(prompt: str, run_id: str) -> str:
-        # 与 core.knowledge 蒸馏 spawn 同形态：无头 -p 必须显式提权，
-        # 否则 LLM 写域映射/页面文件被权限拒绝、产物只能落 stdout（曾致
-        # bootstrap-no-domain-map：25 分钟聚类成果随被丢弃的 stdout 蒸发）
-        env = os.environ.copy()
-        # agent-run 专用上下文键不进子进程环境（core.agent_env_keys 单一口径，
-        # 对齐 core.knowledge._build_spawn_env）：回填车道从 agent-run 会话内
-        # 手工激活时 FENIX_RUN_* / CLAUDE_CODE_ENABLE_TODO_TOOLS 已在父环境，
-        # 直传会令子 claude 误判自身运行上下文
-        for key in AGENT_RUN_BANNED_ENV_KEYS:
-            env.pop(key, None)
-        # 提示词经 stdin 传入（对齐 core.knowledge._default_spawn /
-        # agent_runner 口径）：argv 全文驻留 /proc/<pid>/cmdline 对同机其他
-        # 用户可见，且单参数受 MAX_ARG_STRLEN≈128KB 约束——回填提示词内嵌
-        # 各能力史前基线全文，超限即 spawn 以 E2BIG 失败且批次恒失败
-        proc = subprocess.Popen(
-            ["claude", "-p", "--permission-mode", "bypassPermissions"],
-            cwd=str(project_root),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            # 独立会话组：超时可 killpg 整组清场（对齐 core.knowledge
-            # DistillManager；裸 run 超时只杀直接子进程，孙进程可存活继续
-            # 写真相源）
-            start_new_session=True,
-        )
+        # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：claude
+        # 命令构造唯一入口在 claude_adapter.build_spawn_spec。与 core.knowledge
+        # 蒸馏 spawn 同形态：无头 -p 必须显式提权，否则 LLM 写域映射/页面文件
+        # 被权限拒绝、产物只能落 stdout（曾致 bootstrap-no-domain-map：25 分钟
+        # 聚类成果随被丢弃的 stdout 蒸发）；提示词经 stdin 传入（argv 全文驻留
+        # /proc/<pid>/cmdline 对同机其他用户可见，且单参数受 MAX_ARG_STRLEN
+        # ≈128KB 约束——回填提示词内嵌各能力史前基线全文，超限即 spawn 以
+        # E2BIG 失败且批次恒失败）；env 口径 ENV_MODE_CLEAN（agent-run 专用
+        # 上下文键不进子进程环境，core.agent_env_keys 单一口径，对齐
+        # core.knowledge._build_spawn_env：回填车道从 agent-run 会话内手工
+        # 激活时 FENIX_RUN_* / CLAUDE_CODE_ENABLE_TODO_TOOLS 已在父环境，直传
+        # 会令子 claude 误判自身运行上下文）；独立会话组（超时可 killpg 整组
+        # 清场，裸 run 超时只杀直接子进程，孙进程可存活继续写真相源）。
         try:
-            stdout, stderr = proc.communicate(prompt, timeout=SPAWN_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 - 超时/通信异常统一 killpg 清场再抛
-            _kill_process_group(proc)
-            raise
+            outcome = run_one_shot(
+                ClaudeAdapter(),
+                SpawnRequest(
+                    prompt=prompt,
+                    cwd=str(project_root),
+                    # 现状形态无 --output-format（裸文本 stdout 留痕），显式
+                    # None 压掉 SpawnRequest 的 stream-json 缺省
+                    output_format=None,
+                    permission_mode="bypassPermissions",
+                    env_mode=ENV_MODE_CLEAN,
+                    project_root=str(project_root),
+                ),
+                timeout=SPAWN_TIMEOUT_SECONDS,
+                on_timeout=_kill_process_group,
+            )
+        except OneShotCommunicateError as e:
+            # 通信期异常按既有语义透传原始异常类型（fail-open 调用方只看
+            # 异常消息文本，类型保真不改变其 except Exception 口径）
+            raise e.original from e.original
+        if outcome.timed_out:
+            raise RuntimeError(
+                f"claude -p 回填 run {run_id} 超时（>{SPAWN_TIMEOUT_SECONDS}s），"
+                "已终止进程组"
+            )
+        stdout, stderr = outcome.stdout, outcome.stderr
         # stdout/stderr 落盘留痕：run 失败可取证，不再依赖调用方是否消费返回值
         try:
             runs_dir = project_root / ".fenix" / "runs"
             runs_dir.mkdir(parents=True, exist_ok=True)
             (runs_dir / f"{run_id}.out").write_text(
-                f"[returncode {proc.returncode}]\n"
+                f"[returncode {outcome.returncode}]\n"
                 f"[stdout]\n{stdout or ''}\n[stderr]\n{stderr or ''}\n",
                 encoding="utf-8",
             )
         except OSError:
             pass
-        if proc.returncode != 0:
+        if outcome.returncode != 0:
             tail = _failure_attribution_tail(stdout, stderr)
-            msg = f"claude -p 回填 run {run_id} 退出码 {proc.returncode}"
+            msg = f"claude -p 回填 run {run_id} 退出码 {outcome.returncode}"
             if tail:
                 msg = f"{msg}：{tail}"
             raise RuntimeError(msg)

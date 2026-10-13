@@ -55,7 +55,7 @@ def _make_runner(tmp_path: Path, config: dict | None = None) -> AgentRunner:
     runner._v2_server._v2_inject_env.return_value = {}
     runner.__dict__["_token_accountant_instance"] = MagicMock()
     runner._build_prompt = lambda *a, **k: "test prompt"
-    # runs 产物目录：真实 _run_claude 在流写盘前创建；测试 fake 不建，此处补齐
+    # runs 产物目录：真实 _run_agent 在流写盘前创建；测试 fake 不建，此处补齐
     (tmp_path / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
     return runner
 
@@ -177,17 +177,17 @@ class TestArtifactGate:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g1")
 
-        # 进程均 exit 0（每次 _run_claude 均返回成功）——失败只能来自产物硬门
+        # 进程均 exit 0（每次 _run_agent 均返回成功）——失败只能来自产物硬门
         assert calls["n"] == 4  # a1 + r1 + a2 + r1'（预算长度 1 × 2 attempt）
         assert result.success is False
         assert "结果文件缺失" in (result.error or "")
@@ -209,14 +209,14 @@ class TestArtifactGate:
         runner.worktree_manager.create.return_value = wt
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
 
-        # 无效文件须在 fake_run_claude 内写入，确保 mtime ≥ attempt_started_at
+        # 无效文件须在 fake_run_agent 内写入，确保 mtime ≥ attempt_started_at
         # （fix-verdict-read-failclosed D2 新鲜度约束：预写文件可能因
         # mtime < run_started_at 被拦截为陈旧残留而非非法 JSON）。
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -225,7 +225,7 @@ class TestArtifactGate:
             result_path.write_text("{{not-json", encoding="utf-8")
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g2")
         assert result.success is False
         assert "非法 JSON" in (result.error or "")
@@ -242,7 +242,7 @@ class TestArtifactGate:
 
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -254,7 +254,7 @@ class TestArtifactGate:
             )
             return ("done", 1, "sess-ok", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g3")
         assert result.success is True
         # 成功后 worktree 被清理（非 fast-track/repair 类型）
@@ -272,14 +272,14 @@ class TestArtifactGate:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-plan", "run-p1")
         assert result.success is False
         # 非 PASS 即失败——错误归因到 test_scenarios.json 缺失
@@ -299,7 +299,7 @@ class TestArtifactGate:
         scenarios_path = planner_result_path(tmp_path, "spec-x", "planner-plan")
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -314,7 +314,7 @@ class TestArtifactGate:
             )
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-plan", "run-p2")
         assert result.success is True
 
@@ -338,7 +338,7 @@ class TestArtifactGate:
 
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -352,7 +352,7 @@ class TestArtifactGate:
             )
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g4")
         assert result.success is True
         assert calls["n"] == 2  # 首次 gate 失败 → 原地重试（r1）即成功
@@ -392,7 +392,7 @@ class TestVerdictReadFailClosedGate:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -403,7 +403,7 @@ class TestVerdictReadFailClosedGate:
                 encoding="utf-8")
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-v1")
         assert result.success is False
         assert "非法 JSON" in (result.error or "")
@@ -424,7 +424,7 @@ class TestVerdictReadFailClosedGate:
         wt_vp = wt / ".fenix" / "verify-progress" / "spec-x"
         wt_vp.mkdir(parents=True, exist_ok=True)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -433,7 +433,7 @@ class TestVerdictReadFailClosedGate:
                 encoding="utf-8")
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-v2")
         assert result.success is True
         # 拷回生效：主树同路径已有本轮产物（而非依赖残留）
@@ -465,7 +465,7 @@ class TestVerdictReadFailClosedGate:
         old = time.time() - 3600
         os.utime(stale_path, (old, old))
 
-        runner._run_claude = MagicMock(
+        runner._run_agent = MagicMock(
             return_value=("done", 1, "sess-gate", _usage_ok()))
         result = runner._execute_agent("spec-x", "planner-judge", "run-v3")
         assert result.success is False
@@ -662,18 +662,18 @@ class TestGateBlockedTerminal:
         runner.worktree_manager.create.return_value = wt
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
-            # 复刻真实 _run_claude 的 CLI 收尾行：门禁是在 exit 0「之后」判的，
+            # 复刻真实 _run_agent 的 CLI 收尾行：门禁是在 exit 0「之后」判的，
             # 故 result 行必然先落盘——gate-blocked MUST 成为其后的末行
             p = tmp_path / ".fenix" / "runs" / f"{run_id}.jsonl"
             with p.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "result", "result": "done"}) + "\n")
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-gb1")
         assert result.success is False
 
@@ -854,7 +854,7 @@ class TestJudgeResultPredispatchRename:
 
         seen_at_dispatch = {}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -868,7 +868,7 @@ class TestJudgeResultPredispatchRename:
                 encoding="utf-8")
             return ("done", 1, "sess-ok", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_planner("spec-x", "judge")
 
         assert result.success is True  # 本轮硬门放行（不再命中陈旧残留）
@@ -884,7 +884,7 @@ class TestJudgeResultPredispatchRename:
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
         archive_path = result_path.parent / "prev-judge-result.json"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -894,7 +894,7 @@ class TestJudgeResultPredispatchRename:
                 encoding="utf-8")
             return ("done", 1, "sess-ok", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_planner("spec-x", "judge")
 
         assert result.success is True
@@ -912,7 +912,7 @@ class TestJudgeResultPredispatchRename:
         archive_path = result_path.parent / "prev-judge-result.json"
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -922,7 +922,7 @@ class TestJudgeResultPredispatchRename:
                 encoding="utf-8")
             return ("done", 1, "sess-ok", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_planner("spec-x", "judge")
 
         assert calls["n"] == 1  # 派发未被阻断
@@ -978,14 +978,14 @@ class TestJudgeResultPredispatchRename:
         root_result.write_text(json.dumps({"status": "success"}),
                                encoding="utf-8")
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             # 始终不写产物：第一次门禁命中预置陈旧文件，此后命中「结果文件缺失」
             return ("done", 1, "sess-stale", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-stale")
 
         assert result.success is False

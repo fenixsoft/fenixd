@@ -86,6 +86,16 @@ from core.agent_runner.liveness import (
     death_kind_marker,
 )
 from core.agent_runner.session import SessionTracker
+# add-harness-adapter-layer：harness 适配层（命令构造/env 路由平移目标；
+# design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
+from core.agent_runner.harness import (
+    ENV_MODE_AGENT_RUN,
+    HarnessNotDeployedError,
+    SpawnRequest,
+    get_current_adapter,
+    resolve_adapter_from_config,
+    set_current_adapter,
+)
 from core.timelib import from_epoch, parse_ts
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
@@ -272,7 +282,7 @@ THROTTLED_WAIT_HEARTBEAT_SECONDS = 60.0
 # 这三条车道的 verify-progress 产物全在 worktree 内或别处——implementer 的
 # code-review.json 在 worktree（门读 wt_path、_copyback 单向 worktree→主树）、
 # repair 与 implementer 同工作区、spec-review 写 .fenix/spec-review/。主树
-# `<project_root>/.fenix/verify-progress` 不是它们的工作区，_run_claude 不再为
+# `<project_root>/.fenix/verify-progress` 不是它们的工作区，_run_agent 不再为
 # 它们注入 `--add-dir`，只给 verifier/planner/fast-track/dispute-judge/administrator
 # 等确有主树 verify-progress 落点的车道保留。
 _NO_MAIN_TREE_VERIFY_PROGRESS_LANES = ("implementer", "repair", "spec-review")
@@ -427,7 +437,7 @@ WRAPUP_GRACE_MAX_SECONDS = 3600.0
 def _bookkeeping_tool_share(tool_metrics: dict | None) -> float | None:
     """整 run 累计簿记占比（evo-add-impl-run-budget-sizing 2.2，design D5）。
 
-    ``TaskCreate+TaskUpdate`` 占全部工具调用比，从 ``_run_claude`` 已维护的
+    ``TaskCreate+TaskUpdate`` 占全部工具调用比，从 ``_run_agent`` 已维护的
     ``tool_metrics`` 直方图派生（整 run 累计、无尾窗粒度——与 proposal 实证
     口径一致）；工具调用总数为 0 时记 None（无法判定不注记）。直方图键即
     转录 tool_use content block 的工具名。纯读侧派生，不重扫转录。
@@ -436,7 +446,7 @@ def _bookkeeping_tool_share(tool_metrics: dict | None) -> float | None:
     if not isinstance(hist, dict):
         return None
     # code-review item 7923d95ae87d：先快照再迭代——stdout 读线程会并发向该
-    # 直方图插入新工具名键（_run_claude 读侧 tool_uses 累计处），边迭代边被
+    # 直方图插入新工具名键（_run_agent 读侧 tool_uses 累计处），边迭代边被
     # 他线程插新键会抛 RuntimeError(dictionary changed size during iteration)，
     # 落入轮询环 except 把健康 run 误判为 run thread crashed。单次 dict 拷贝
     # 由 GIL 保证原子，快照后的迭代与写侧解耦。
@@ -449,7 +459,7 @@ def _bookkeeping_tool_share(tool_metrics: dict | None) -> float | None:
                  and isinstance(v, (int, float)))
     return booked / total
 
-# _run_claude 的 stderr 环形缓冲容量（code-review item 0cbb6c8176cd）：与 stdout
+# _run_agent 的 stderr 环形缓冲容量（code-review item 0cbb6c8176cd）：与 stdout
 # 同治理（stdout 已不累积，item 85d9e72b64b3），只保留近期行供 _denoise_stderr
 # 拼装 error 文本与瞬断分类（classify_transient_error）使用，不随 run 时长无界
 # 增长。取值依据：error 文本取末 5 行、瞬断分类按全量文本匹配 switch pattern，
@@ -509,7 +519,7 @@ class _AttemptState:
     迁到 st 侧前 MUST 先补齐回写点，否则会拿到初始 dict 的陈旧值。
 
     已知豁免（code-review item f5aa32e39316）：产物门失败路径有意保留
-    _run_claude 实测 usage（区别于早期抛错按 0 计），若下一 attempt 经顶部
+    _run_agent 实测 usage（区别于早期抛错按 0 计），若下一 attempt 经顶部
     守卫（frozen/取消/chain_exhausted/熔断等）早退 return，该实测 usage 因
     无回写点在 attempt 顶 reload 时仍取建态初值、未入账即丢弃
     （_accumulate_token_usage 仅在 _finalize_success / _exhausted_result
@@ -533,12 +543,12 @@ class _AttemptState:
     chain_cursor: int = -1
     # ⚠️ 暂不回写、真实源在局部变量（code-review item 41e028ab3b35）：
     # usage_info 建态后无回写点，真实状态只活在 _execute_agent_inner 的同名
-    # 局部变量里（_run_claude 返回的 usage_info 经局部变量流转）。字段仅承载
+    # 局部变量里（_run_agent 返回的 usage_info 经局部变量流转）。字段仅承载
     # 建态初值供顶部别名读取，MUST NOT 把读写点迁到 st 侧（会拿到初始 dict）。
     # transient_retries / resume_failures / session_id / session_provider 字段
     # 已移除（建态后从不回写也从不读取的死字段，code-review item
     # 41e028ab3b35 / 5bea5c21acee）：真实状态是 _execute_agent_inner 的局部
-    # 变量（session 经 _run_claude 返回值与续跑提取回填），与状态对象无关。
+    # 变量（session 经 _run_agent 返回值与续跑提取回填），与状态对象无关。
     # worktree-reuse：fast-track 终态失败保留的复用遗产路径
     kept_wt_path: Optional[Path] = None
     # add-run-cancel D3/D5：本轮 run 是否被人工取消
@@ -756,7 +766,7 @@ class AgentRunner:
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
         # 人工取消旗标集合（add-run-cancel D1）：键为基础 run_id（已剥 -a<n>
-        # attempt 后缀）。由 cancel_run 登记、_run_claude 轮询环/attempt 循环
+        # attempt 后缀）。由 cancel_run 登记、_run_agent 轮询环/attempt 循环
         # 顶部消费、run 收尾清理。跨线程共享（dashboard/daemon 线程写、worker
         # 线程读），以独立锁保护。惰性 property（测试 __new__ 绕过 __init__）。
         self._cancel_requested = set()
@@ -817,7 +827,7 @@ class AgentRunner:
         """
         registry = self.__dict__.get("_running_agents") or {}
         # 迭代前取 list() 快照（对齐 _running_agents 其余消费点惯例）：并发 run
-        # 在 _run_claude spawn 成功后向同一登记表写入新键，迭代中途字典变长会抛
+        # 在 _run_agent spawn 成功后向同一登记表写入新键，迭代中途字典变长会抛
         # RuntimeError，使无害的判活查询异常上抛。
         return any(
             isinstance(aid, str) and aid.startswith(run_id_prefix)
@@ -888,7 +898,7 @@ class AgentRunner:
         """run 收尾互斥锁（code-review item 183ded7b526a）：注册表 pop 与停机
         interrupted 标记写入的互斥点。liveness.wait_for_running_agents 停机写
         标记持本锁完成「注册表成员复核 + 末行终态复核 + 追加」临界区，本类
-        _run_claude finally 段的注册表 pop 持本锁执行——run 线程的 result 等
+        _run_agent finally 段的注册表 pop 持本锁执行——run 线程的 result 等
         终态落盘严格后于该 pop（同线程顺序），锁排他即保证 daemon 的复核-追加
         临界区与「pop → 终态落盘」序列不交错：pop 先于临界区则复核必不通过
         （跳过标记），后于临界区则 result 落在标记之后（末行仍是 result）。
@@ -951,7 +961,7 @@ class AgentRunner:
         _stall_budget_states 建态/清理/摘除/读取的互斥点——reader 线程
         （stdout/stderr 各一，经 _stall_budget_record_sample）与各 run 轮询
         环线程（经 _stall_budget_state_for）并发进出；无锁时 24h 清理迭代
-        撞并发建键会抛 RuntimeError 沿 _run_claude 外层 except 把在飞 run
+        撞并发建键会抛 RuntimeError 沿 _run_agent 外层 except 把在飞 run
         误判成 run thread crashed，并发首建还会互顶丢样本计数。惰性
         property（测试 __new__ 绕过 __init__，对齐 _daily_count_lock 模式）。
         """
@@ -970,7 +980,7 @@ class AgentRunner:
         """轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_branch_state
         建态/24h 清理迭代（_turn_limit_action）与摘除迭代（_turn_branch_state_
         forget）的互斥点——无锁时清理迭代撞并发建键/摘除会抛 RuntimeError 沿
-        _run_claude 外层 except 把在飞 run 误判成 run thread crashed（对齐
+        _run_agent 外层 except 把在飞 run 误判成 run thread crashed（对齐
         _stall_budget_lock 先例，code-review item 54ee68cac30b）。惰性 property
         （测试 __new__ 绕过 __init__）。
         """
@@ -1060,7 +1070,7 @@ class AgentRunner:
         MUST NOT 调用本方法。
 
         本方法自身 MUST NOT 执行任何状态转换、MUST NOT 写任何 spec 的 status
-        字段；终止动作由持有该 run 的 worker 线程在 _run_claude 轮询环内完成
+        字段；终止动作由持有该 run 的 worker 线程在 _run_agent 轮询环内完成
         （调用线程不做跨线程 kill）。
 
         Returns:
@@ -1469,7 +1479,7 @@ class AgentRunner:
 
         # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
         # 的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
-        # （如 max_turns: "300"）传进 _run_claude 后，轮询环 ``turn_count[0] >=
+        # （如 max_turns: "300"）传进 _run_agent 后，轮询环 ``turn_count[0] >=
         # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
         # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
         max_turns = self._get_config("agents.max_turns", 300)
@@ -1480,7 +1490,7 @@ class AgentRunner:
 
         start_time = time.time()
         try:
-            output, turns, _session_id, _usage = self._run_claude(
+            output, turns, _session_id, _usage = self._run_agent(
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=max_turns,
                 spec_name=spec_name,
@@ -1588,9 +1598,9 @@ class AgentRunner:
                 success=False, duration_seconds=time.time() - start_time,
                 error=str(e),
                 provider_used=provider_name, model_used=model_override,
-                # 归因桥接（对齐 run_spec_review catch-all 同口径）：_run_claude
+                # 归因桥接（对齐 run_spec_review catch-all 同口径）：_run_agent
                 # 失败路径已在异常上挂 api_error_status / conn_error（挂载先例见
-                # _run_claude 的 exc 挂载段），catch-all 从异常对象回填，不再只落
+                # _run_agent 的 exc 挂载段），catch-all 从异常对象回填，不再只落
                 # error=str(e)——stderr 经降噪后文本分类对瞬态归因不可靠，结构化
                 # 字段是失败分类层唯一可靠的供给来源。stderr_tail 复用
                 # maintenance_runs._stderr_tail_summary 读异常原始 stderr_lines
@@ -1681,7 +1691,7 @@ class AgentRunner:
 
         # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
         # 的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
-        # （如 max_turns: "300"）传进 _run_claude 后，轮询环 ``turn_count[0] >=
+        # （如 max_turns: "300"）传进 _run_agent 后，轮询环 ``turn_count[0] >=
         # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
         # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
         max_turns = self._get_config("agents.max_turns", 300)
@@ -1692,7 +1702,7 @@ class AgentRunner:
 
         start_time = time.time()
         try:
-            output, turns, _session_id, _usage = self._run_claude(
+            output, turns, _session_id, _usage = self._run_agent(
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=max_turns,
                 spec_name=spec_name,
@@ -1766,8 +1776,8 @@ class AgentRunner:
                 error=str(e),
                 provider_used=provider_name, model_used=model_override,
                 # evo-fix-spec-review-infra-attribution-bridge 1.2：归因桥接——
-                # _run_claude 失败路径已在异常上挂 api_error_status / conn_error
-                # （挂载先例见本文件 _run_claude 的 exc 挂载段），catch-all 从
+                # _run_agent 失败路径已在异常上挂 api_error_status / conn_error
+                # （挂载先例见本文件 _run_agent 的 exc 挂载段），catch-all 从
                 # 异常对象回填进 AgentRunResult，不再只落 error=str(e)：stderr
                 # 经 _denoise_stderr 降噪后只剩 "Exit code: 1"，文本分类对限流
                 # 类失败恒 False，结构化字段是失败分类层（spec_review 车道
@@ -2565,7 +2575,7 @@ class AgentRunner:
 
         code-review item 9dc9195cbd73：摘除由 ``_execute_agent`` 的终态
         finally 统一调用（任意终态路径都经此外口，替代原先仅 success /
-        exhausted 两收口的遗漏）；且 ``_turn_limit_action`` 经 ``_run_claude``
+        exhausted 两收口的遗漏）；且 ``_turn_limit_action`` 经 ``_run_agent``
         以 attempt/sub-run 派生 id（``<run_id>-a<n>[-r<m>]``）记键，摘除须
         连带本 run 派生的全部子键。摘除失败不阻断收口。
         """
@@ -2641,7 +2651,7 @@ class AgentRunner:
                 remaining_tasks = None
 
         # ── 簿记占比观测（2.2，design D5：只观测不改判）──────────────────
-        # 占比由调用点从 _run_claude 已维护的 tool_metrics 直方图派生传入
+        # 占比由调用点从 _run_agent 已维护的 tool_metrics 直方图派生传入
         # （整 run 累计口径——直方图无尾窗粒度，与 proposal 实证一致；方法内
         # 不重扫转录）。≥ 阈值时在轮次上限判定点写 WARNING（本判定只在命中
         # 轮次上限的轮询轮执行，同点评估一次，不在常规轮询路径周期性发出）
@@ -2777,7 +2787,7 @@ class AgentRunner:
                 # code-review item 339b589c0bee：查-建-清理迭代持
                 # _turn_branch_state_lock——键缺失时顺带淘汰 created_ts 超
                 # 24h 的陈旧条目，兜底 dispute-judge / spec-review / 维护型
-                # 等直调 _run_claude 车道（不经 _execute_agent 终态外口
+                # 等直调 _run_agent 车道（不经 _execute_agent 终态外口
                 # forget）触达轮次上限后的条目泄漏（对齐 _stall_budget_state_for
                 # 同款过期淘汰；无锁清理迭代撞并发建键/摘除会抛 RuntimeError
                 # 误判 run crashed）。临界区内仅纯内存 dict 操作，无阻塞调用。
@@ -3062,7 +3072,7 @@ class AgentRunner:
         - 每次 attempt 使用独立 run_id（-a<attempt>），产物文件与尝试一一对应
         - implementer 失败重试复用同一 worktree + `claude --resume` 续跑，不从零
           全量重跑；其余 agent_type 维持每次全新 worktree
-        - max_turns 在 _run_claude 内强制
+        - max_turns 在 _run_agent 内强制
 
         add-provider-failover（design D1/D2/D3/D4/D5）：
         - 该 agent_type 的 provider 分配为**按序候选链**；每次 attempt 启动前用
@@ -3090,6 +3100,23 @@ class AgentRunner:
         """
         used_wts: set = set()
         handed_off: set = set()
+        # ── harness 前置健康检查（add-harness-adapter-layer 6.2）─────────
+        # dispatch 前解析 agent.harness 并装配进程级当前 adapter：
+        # - dsh（未部署）在此 fail-fast 拒派——不启动进程、不建 worktree、
+        #   不消耗 spec 重试预算，错误文案即工厂的明确指引；
+        # - claude 正常路径把解析结果装配给全进程 spawn 面（run 车道
+        #   _run_agent 与五处一次性 spawn 均经 get_current_adapter）。
+        # 每次 dispatch 现读现配即热更新语义：改值对下次 dispatch 生效，
+        # 在飞 run 已在 _run_agent 开头捕获旧 adapter 实例，不受影响。
+        try:
+            set_current_adapter(resolve_adapter_from_config(self.config))
+        except HarnessNotDeployedError as e:
+            self.logger.warning(
+                "agent_runner", f"harness 前置健康检查拦截 dispatch: {e}")
+            return AgentRunResult(
+                run_id, spec_name, agent_type, success=False,
+                duration_seconds=0.0, error=str(e),
+            )
         try:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,
@@ -3173,7 +3200,7 @@ class AgentRunner:
         wt_path = st.wt_path
         # session_id/session_provider 的 st 死字段已删除（code-review item
         # 5bea5c21acee）：建态后无回写点，真实状态只活在同名局部变量（顶部
-        # None 起步，由 _run_claude 返回值与续跑提取回填），直接局部初始化。
+        # None 起步，由 _run_agent 返回值与续跑提取回填），直接局部初始化。
         session_id = None
         session_provider = None
         # chain_cursor 不设本地别名（code-review item 41e028ab3b35）：实际
@@ -3360,7 +3387,7 @@ class AgentRunner:
                         # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
                         # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
                         model_override = DEFAULT_GATEWAY_MODEL
-                    output, turns, run_session_id, usage_info = self._run_claude(
+                    output, turns, run_session_id, usage_info = self._run_agent(
                         prompt, wt_path, sub_run_id, model_override, env_overrides,
                         resume_session_id=self._resumable_session_id(
                             session_id, session_provider, provider_name, reuse_worktree,
@@ -3374,7 +3401,7 @@ class AgentRunner:
                         session_id = run_session_id
                         session_provider = provider_name
                     # fix-impl-resultfile-contract-gap D4：实现者车道 fenced-JSON
-                    # 结果捞回——run 自然收工（_run_claude 正常返回）但结果文件
+                    # 结果捞回——run 自然收工（_run_agent 正常返回）但结果文件
                     # 未落盘时，从转录末轮 fenced JSON 代写落盘。插入点 MUST 在
                     # 拷回块之前：既有拷回块按 agent_type 注入 role/spec 戳并写
                     # 主树副本，捞回若在其后执行，代写文件将不带 role 且主树无
@@ -3382,7 +3409,7 @@ class AgentRunner:
                     if agent_type in ("implementer", "fast-track") and wt_path is not None:
                         self._salvage_impl_result(
                             spec_name, sub_run_id, wt_path, agent_type)
-                    # fix-verdict-read-failclosed D1（拷回前置）：_run_claude 返回后、
+                    # fix-verdict-read-failclosed D1（拷回前置）：_run_agent 返回后、
                     # 产物硬门**之前**立即拷回 worktree 验证产物——门检对象必须是本轮
                     # run 真实写出的结果文件。历史事故（add-verify-contract-autodraft）：
                     # 拷回晚于门检，门验到主树上一轮残留旧合法文件而放行，随后拷回把
@@ -3439,7 +3466,7 @@ class AgentRunner:
                 except RunCancelledError as e:
                     # add-run-cancel D5：RunCancelledError 专用捕获——不重试、不计秒挂、
                     # 不触发 provider 链切换，直接返回 cancelled=True 失败结果。
-                    # 取消旗标已在 _run_claude 轮询环内确认并清理 _running_agents，
+                    # 取消旗标已在 _run_agent 轮询环内确认并清理 _running_agents，
                     # 此处只负责结果收口。
                     # 兜底保全（add-run-cancel-wip-checkpoint 1.2）：轮询环锚点
                     # cancel 已在 kill 序列后提交过；此处 wt_path 尚在作用域且早于
@@ -3503,8 +3530,8 @@ class AgentRunner:
                     # 跨边界 return（让位）/ continue（原地重试）/ break（预算耗尽）
                     # 经返回值驱动，调用者据此决策（D2）。
                     output = ""
-                    # code-review item d178a0386584：turns 保留 _run_claude 实测值
-                    #（两处 gate 抛出点均在 _run_claude 返回之后，turns 已是本轮
+                    # code-review item d178a0386584：turns 保留 _run_agent 实测值
+                    #（两处 gate 抛出点均在 _run_agent 返回之后，turns 已是本轮
                     # 实测）——与 usage_info 同口径（_handle_artifact_gate_retry：
                     # usage 保留实测值，区别于早期抛错按 0 计），消除同一 metrics
                     # 行 turns=0 而 usage 非 0 的双口径矛盾。
@@ -3574,7 +3601,7 @@ class AgentRunner:
                         self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl",
                     )
                     # add-cost-observability（D1）+ add-turn-limit-anchor-c（D4）：
-                    # _run_claude 抛错（超时/kill/非 0 退出/rc==0 但 result 标记
+                    # _run_agent 抛错（超时/kill/非 0 退出/rc==0 但 result 标记
                     # error），stream-json 终态已被丢弃，usage 不可观测（unobserved
                     # 语义，非确认为零——对照 a2 实测成本证明真实消耗大概率非零），
                     # 仅 DEBUG 留痕。文案不得再写「tokens counted as 0」防审计误导。
@@ -4625,7 +4652,7 @@ class AgentRunner:
     # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON → 按瞬态
     # 失败走既有原地退避重试（fix-provider-transient-backoff 通道原样复用，
     # 不新增重试机制；不消耗 validate_report 的「裁决重试一次」预算）。
-    # run 已完整执行（exit 0），不计数秒挂；usage 保留 _run_claude 实测值
+    # run 已完整执行（exit 0），不计数秒挂；usage 保留 _run_agent 实测值
     # （区别于早期抛错按 0 计）。跨边界控制流（return 让位 / continue 重试 /
     # break 预算耗尽）经返回值驱动，调用者 MUST 据此决策（D2）。
     # 模块级名（classify_and_enrich_artifact_error / append_run_line /
@@ -5375,7 +5402,7 @@ class AgentRunner:
     # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────
 
     def _copyback_verify_progress(self, wt_path: Path, spec_name: str) -> None:
-        """_run_claude 正常返回即拷回（先于产物硬门，失败 run 同样保留进度）：
+        """_run_agent 正常返回即拷回（先于产物硬门，失败 run 同样保留进度）：
         把 worktree 的 per-spec 验证产物目录逐文件拷回主树同路径。
 
         add-worktree-verify-progress-copyback（D2 mtime 守卫 / D3 fail-open /
@@ -5604,7 +5631,7 @@ class AgentRunner:
                 f"宿主变更登记留痕读取失败（fail-open）'{spec_name}': {e}",
             )
 
-    def _run_claude(self, prompt: str, cwd: Path, run_id: str,
+    def _run_agent(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
                     env_overrides: Dict[str, str] | None = None,
                     resume_session_id: str | None = None,
@@ -5656,12 +5683,17 @@ class AgentRunner:
             unobserved=True（观测兜底而非确认为零，语义见 _extract_usage_info）。
             失败/异常路径直接抛 RuntimeError，不返回。
 
-        结构注记（code-review item e843f8818ea2）：本函数有意保持单体内联——
-        子进程生命周期、五路监督收口（超时/轮次上限/取消/冻结/判停）与多路
-        观测旁路共享大量终态局部状态，任何一处旁路调整都需通读全文确认终态行
-        次序等隐含契约（如 run_metrics 行与终态行的次序由权威测试
-        test_run_claude_poll_loop_crash_writes_error_terminal 锁定）；改动前
-        先跑对应权威测试确认行序契约，勿在此函数内做顺带重构。
+        结构注记（code-review item e843f8818ea2；add-harness-adapter-layer 3.1
+        解除原「有意单体」注记）：命令构造与 env 路由已平移至
+        core/agent_runner/harness/claude_adapter.py（build_spawn_spec，字节级
+        等价由 tests/test_harness_claude_snapshot.py 以平移前金样本锁定），本
+        方法保留段二「通用 Popen + 归一化事件写盘」。子进程生命周期、五路监
+        督收口（超时/轮次上限/取消/冻结/判停）与多路观测旁路仍共享大量终态
+        局部状态，任何一处旁路调整都需通读全文确认终态行次序等隐含契约——
+        run_metrics 行与终态行的次序由权威测试
+        test_run_claude_poll_loop_crash_writes_error_terminal 锁定（快照测试
+        只护 argv/env/stdin、不护事件行序）；改动前先跑对应权威测试确认行序
+        契约，勿在本方法内做顺带重构。
         """
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。
@@ -5672,36 +5704,6 @@ class AgentRunner:
         # 此处不再冗余校验（原读取-日志分支只打日志、从不覆盖，系死分支，已删，
         # code-review item eedfeec65a57）。
 
-        # 每线程独立 env 副本，多 agent_type 并发时环境覆盖互不串扰
-        env = os.environ.copy()
-        if env_overrides:
-            env.update(env_overrides)
-            # Provider 覆盖生效时清除继承的 ANTHROPIC_AUTH_TOKEN（如 supervisor/tmux 环境
-            # 里残留的火山 ark token）。claude-code 认证时 AUTH_TOKEN 优先于 API_KEY，
-            # 残留 token 会让请求以错误的 Bearer 认证打到 Provider → 401。
-            if "ANTHROPIC_API_KEY" in env_overrides:
-                env.pop("ANTHROPIC_AUTH_TOKEN", None)
-
-        # worktree 隔离纵深（2026-09-08 skill 基路径锚定事故）：把项目根与本次
-        # worktree 交给 PreToolUse 守卫 hook（block-main-tree-write.py），拦截
-        # 「skill 注入的主树绝对路径被模型锚定为项目根」导致的写主树。无 worktree
-        # 的 run（cwd == 项目根）置空，hook 全放行、行为不变。
-        env["FENIX_RUN_PROJECT_ROOT"] = str(self.project_root)
-        env["FENIX_RUN_WORKTREE"] = (
-            str(cwd) if str(cwd) != str(self.project_root) else ""
-        )
-
-        # 任务清单工具显式启用（2026-09-15 原地修复）。claude CLI 2.1.272 起把
-        # TaskCreate/TaskUpdate/TaskGet/TaskList 收窄为「仅第一方模型默认提供」，
-        # 网关模型（deepseek-v4-flash / claude-sonnet-5 等）不再默认注入——需
-        # CLAUDE_CODE_ENABLE_TODO_TOOLS=1 显式 opt-in（CLI changelog 原文 + 本地
-        # 实测：默认 22 工具无 TaskCreate；置 1 后 26 工具有）。整套 run-progress
-        # 链路（parse_run_task_done / run_task_progress / dashboard 叠加 /
-        # _sync_task_progress 回写 / prompt_builder 条件契约段）全部依赖该工具族，
-        # 默认关闭会让实现期间任务进度恒 0/N（无法分辨卡死与正常推进）。此处统一
-        # 注入对该族工具「不适用」的第一方模型无副作用（本就默认提供）。
-        env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] = "1"
-
         # Progress dir for verifier to write incremental progress
         progress_dir = self.project_root / ".fenix" / "verify-progress"
         progress_dir.mkdir(parents=True, exist_ok=True)
@@ -5711,39 +5713,30 @@ class AgentRunner:
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.jsonl"
 
-        # 提示词经 stdin 管道传入（code-review 75589537fb72）："-p" 不带位置
-        # 参数时 claude CLI 从 stdin 读提示词。不走 argv——argv 全文驻留
-        # /proc/<pid>/cmdline（同机用户经 ps 可见 spec 上下文等敏感内容），
-        # 且单参数受 ARG_MAX 约束，超长提示词（大 spec 全文注入）会令 Popen
-        # 以 E2BIG 直接失败。
-        cmd = [
-            "claude",
-            "-p",
-            "--output-format", "stream-json",
-            "--verbose",  # claude CLI 要求: --print + --output-format=stream-json 必须带 --verbose
-            "--add-dir", str(cwd),
-            "--permission-mode", "bypassPermissions",
-        ]
-        # --add-dir 车道化注入（fix-impl-code-review-writepath D2）：主树
-        # verify-progress 只授给确有该落点的车道（verifier/planner/fast-track/
-        # dispute-judge/administrator，见 _NO_MAIN_TREE_VERIFY_PROGRESS_LANES 注释）。
-        # implementer/repair/spec-review 的该产物在 worktree 内，主树该目录不是其
-        # 工作区——保留注入会把「verify-progress 是主树共享目录」的语义错误外溢到
-        # 这些车道（后果：实现者据"授权"写主树，门读 worktree 恒判缺失）。缺省
-        # （agent_type is None 或表外值）保持注入——maintenance/admin/dashboard
-        # 会话等既有调用点零行为变化。
-        if agent_type not in _NO_MAIN_TREE_VERIFY_PROGRESS_LANES:
-            cmd += ["--add-dir", str(progress_dir)]
-        # 注入 agent 专用 settings（PreToolUse hook：阻止 Read 图片文件）。
-        # 模型（deepseek-v4-flash 经本地代理）不支持图像输入，verifier/planner
-        # 读截图会把图片送进对话导致 400 整轮失败。
-        agent_settings = self.project_root / ".fenix" / "agent-settings.json"
-        if agent_settings.exists():
-            cmd += ["--settings", str(agent_settings)]
-        if model_override:
-            cmd += ["--model", model_override]
-        if resume_session_id:
-            cmd += ["--resume", resume_session_id]
+        # ── 段一：SpawnRequest → SpawnSpec（add-harness-adapter-layer 3.1）──
+        # 命令构造与 env 路由平移自本方法原 5675-5746 内联段（env 三注入、
+        # AUTH_TOKEN 清除、argv 全参数、stdin 传输形态与车道化 --add-dir 注入
+        # 等原注释随迁 harness/claude_adapter.py 与 protocol.py）；车道词表
+        # （_NO_MAIN_TREE_VERIFY_PROGRESS_LANES）留 runner 侧——design D8：
+        # harness 包不感知车道。
+        adapter = get_current_adapter()
+        spawn_spec = adapter.build_spawn_spec(SpawnRequest(
+            prompt=prompt,
+            cwd=str(cwd),
+            output_format="stream-json",
+            model=model_override,
+            resume_session_id=resume_session_id,
+            permission_mode="bypassPermissions",
+            env_overrides=dict(env_overrides or {}),
+            env_mode=ENV_MODE_AGENT_RUN,
+            project_root=str(self.project_root),
+            add_dir_cwd=True,
+            add_main_tree_verify_progress=(
+                agent_type not in _NO_MAIN_TREE_VERIFY_PROGRESS_LANES),
+            max_turns=max_turns,
+        ))
+        env = spawn_spec.env
+        cmd = spawn_spec.argv
 
         self.logger.debug(
             "agent_runner",
@@ -5757,36 +5750,31 @@ class AgentRunner:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            # code-review item a3a9c83e189e：显式 UTF-8 + replace——管道解码
-            # 不再随 daemon 进程 locale 漂移（C/ASCII locale 下 stream-json
-            # 转录与 stderr 的非 ASCII 内容会令读线程 readline 即抛
-            # UnicodeDecodeError：stdout 线程死亡触发 proc.kill() 快速失败、
-            # 全部带中文输出的 run 被系统性误判失败）；errors="replace" 与读侧
-            # 尾部窗口 decode（_extract_session_id/_turn_traffic_active）的
-            # 容错口径对齐。
-            encoding="utf-8",
-            errors="replace",
+            text=spawn_spec.text,
+            # 显式 UTF-8 + replace（code-review item a3a9c83e189e：管道解码
+            # 不随 daemon locale 漂移；容错口径与读侧尾部窗口 decode 对齐）
+            # ——契约收编进 SpawnSpec.encoding/errors（protocol.py 注释）。
+            encoding=spawn_spec.encoding,
+            errors=spawn_spec.errors,
             bufsize=1,  # 行缓冲，保证实时可读
             env=env,
-            cwd=str(cwd),
-            # code-review item 28640d6b8b35：独立进程组启动（对齐
-            # liveness._judge_liveness_once 的 start_new_session=True 同款）。
-            # claude 派生的工具孙进程（bash/node 等）随本子进程同组，停机/
-            # 超时清场才能经 guard_killpg 整组收割（liveness.wait_for_running_
-            # agents）；本函数轮询环与既有清扫路径的 proc.terminate()/kill()
-            # 仍按直接子进程 pid 投递，语义不变。
-            start_new_session=True,
+            cwd=spawn_spec.cwd,
+            # 独立进程组启动（code-review item 28640d6b8b35：工具孙进程随组，
+            # 停机/超时清场经 guard_killpg 整组收割；terminate()/kill() 仍按
+            # 直接子进程 pid 投递，语义不变）。
+            start_new_session=spawn_spec.start_new_session,
         )
         self._running_agents[run_id] = proc
 
-        # 提示词写 stdin 后立即关闭写端（CLI 读到 EOF 才开始跑）。独立守护
-        # 线程写入：prompt 超过管道缓冲时同步写会阻塞主线程；CLI 提前退出
-        # （或强杀路径关闭管道）时写端 BrokenPipe/OSError 静默吞掉——退出码
-        # 与错误文本仍由下方既有轮询环按原语义兜底，本线程不改变终态判定。
+        # 提示词写 stdin 后立即关闭写端（CLI 读到 EOF 才开始跑；不走 argv——
+        # argv 全文驻留 /proc/<pid>/cmdline 且受 ARG_MAX 约束，code-review
+        # 75589537fb72，传输形态契约见 protocol.py）。独立守护线程写入：prompt
+        # 超过管道缓冲时同步写会阻塞主线程；CLI 提前退出（或强杀路径关闭管道）
+        # 时写端 BrokenPipe/OSError 静默吞掉——退出码与错误文本仍由下方既有轮
+        # 询环按原语义兜底，本线程不改变终态判定。
         def _feed_stdin() -> None:
             try:
-                proc.stdin.write(prompt)
+                proc.stdin.write(spawn_spec.stdin_payload)
                 proc.stdin.close()
             except (BrokenPipeError, OSError, ValueError):
                 pass
@@ -5869,7 +5857,7 @@ class AgentRunner:
         # 纯读侧旁路：assistant 事件逐条累计 tool_use content block 按工具名
         # 计数（tool_uses 直方图）与无 tool_use 的 assistant 文本行数
         # （text_turns）。作用域与 turn_count/context_metrics 同为本函数局部
-        # （每次 _run_claude 调用重建），跨 run/跨 attempt 天然不串数；累计
+        # （每次 _run_agent 调用重建），跨 run/跨 attempt 天然不串数；累计
         # 口径与 latency.py 的 rounds/stall 一致——按转录事件逐条累计，不改
         # 变事件处理时序。
         tool_metrics: dict = {"tool_uses": {}, "text_turns": 0}
@@ -5890,9 +5878,10 @@ class AgentRunner:
                     except json.JSONDecodeError:
                         entry = {"type": "stderr", "line": line}
                     if isinstance(entry, dict):
-                        # fix-fenix-token-waste：thinking_tokens 遥测噪音不落盘
-                        if (entry.get("type") == "system"
-                                and entry.get("subtype") == "thinking_tokens"):
+                        # add-harness-adapter-layer 3.1：落盘前经 adapter 归一
+                        # （claude 为恒等映射；thinking_tokens 遥测噪音返回空
+                        # 列表不落盘——fix-fenix-token-waste 原地 continue 平移）
+                        if not adapter.normalize_event(entry):
                             continue
                         if entry.get("type") == "assistant":
                             # turn_count 不在此递增：后移到本事件转录行落盘
@@ -6850,7 +6839,7 @@ class AgentRunner:
         observed_result = None if reader_stuck else last_result
         output = observed_result.get("result", "") if observed_result else ""
         # code-review item 36b4f158ce71：reader_stuck（observed_result=None）时
-        # turns 同样按 unobserved 口径取 0，防 AttributeError 冒泡出 _run_claude
+        # turns 同样按 unobserved 口径取 0，防 AttributeError 冒泡出 _run_agent
         # 把 rc==0 的 run 误判失败 / 丢失 rc!=0 异常上的归因属性。
         turns = observed_result.get("num_turns", 0) if observed_result else 0
         session_id = observed_result.get("session_id") if observed_result else None
@@ -6947,7 +6936,7 @@ class AgentRunner:
                     + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
-        # 成本字段；失败/异常路径上 _run_claude 已抛错，此处仅成功终态能拿到 usage。
+        # 成本字段；失败/异常路径上 _run_agent 已抛错，此处仅成功终态能拿到 usage。
         return output, turns, session_id, self._extract_usage_info(observed_result)
 
 
@@ -7466,7 +7455,7 @@ class AgentRunner:
         """取/建 run 级判停状态（键=归一化 base_run_id，含 epoch）。
 
         建态时顺带淘汰 created_ts 超 24h 的陈旧条目：兜底非派发链路
-        （_run_claude 被直调、不经 _execute_agent 终态外口 forget）的状态
+        （_run_agent 被直调、不经 _execute_agent 终态外口 forget）的状态
         泄漏（对齐 _cancel_requested 无需清理的键含 epoch 语义 + 卫生性
         淘汰）。
 
@@ -7658,7 +7647,7 @@ class AgentRunner:
         if not spec_name or not error:
             return error
         # 框架自身终止排除（supervision 超时/轮次上限强杀，错误文本为
-        # `Timeout after …` / `Max turns …`，见 _run_claude 内
+        # `Timeout after …` / `Max turns …`，见 _run_agent 内
         # timeout_error / turn_limit_error 赋值处收口）。
         # 真实超时/强杀路径异常不带 exit_code（timeout/turn_limit raise 无属性），
         # 错误文本排除对有无 exit_code 一视同仁——统一先行短路。
@@ -8259,8 +8248,8 @@ class AgentRunner:
         # 一次性单向信号，只对在飞 run 有意义；消费链路核实结论：全仓检索无
         # 读取方（core/ 仅此写点，tests/ 仅断言写侧语义），「有响应语义的
         # run」的读取链路在仓内不可见。清理点选在旗标唯一写者处而非
-        # _execute_agent 终态 finally：_running_agents 的登记点在 _run_claude
-        # 内，dispute-judge / spec-review 等维护车道直调 _run_claude、不经
+        # _execute_agent 终态 finally：_running_agents 的登记点在 _run_agent
+        # 内，dispute-judge / spec-review 等维护车道直调 _run_agent、不经
         # _execute_agent 收口，终态清理会漏掉这批旗标；archive_spec_runs 只
         # 扫 *.jsonl（SPEC 生命周期口径）也不覆盖。此处按「run 已不在在飞
         # 注册表（或进程已退出）即删」回收，覆盖任意车道与跨 daemon 残留，
@@ -8385,7 +8374,7 @@ class AgentRunner:
         延迟摘要的同一 ``latency_stats`` 结果（单一真源，禁止二次采样）。本
         方法既有调用点（run_planner/_prepare_worktree/_attempt_top_guards/
         _finalize_success/_resolve_provider_candidate/_exhausted_result 等提
-        前终态路径）均在 ``_run_claude`` 之外、无样本上下文，不传参时按零样
+        前终态路径）均在 ``_run_agent`` 之外、无样本上下文，不传参时按零样
         本回退（latency_rounds=0 / latency_stalls=0 / latency_max=None）。
         """
         usage = usage_info or {}

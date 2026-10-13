@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # 共享夹具已收敛至 tests/conftest.py（make_project / _TestServer / server_fx）
 from conftest import _TestServer, make_project  # noqa: E402
 
+from core.agent_runner.harness.one_shot import OneShotResult
 from core.dashboard import data as dash_data
 from core.dashboard.registry import Registry
 from core.proc_utils import find_free_port
@@ -966,18 +967,24 @@ class TestProjectDescribeAPI:
             "# 同一个框架\n这是两个不同项目共用的说明文案。", encoding="utf-8"
         )
 
-        mock_result = type('MockResult', (), {'returncode': 0, 'stdout': '简介', 'stderr': ''})()
         captured = {}
 
-        def fake_run(args, **kwargs):
-            captured['args'] = args
-            return mock_result
+        # Mock run_one_shot（add-harness-adapter-layer 4.1 收编后的替身缝：
+        # describe 端点经 harness one_shot spawn claude，不再直连 subprocess）
+        def fake_one_shot(adapter, request, **kwargs):
+            captured['request'] = request
+            return OneShotResult(returncode=0, stdout='简介', stderr='')
 
-        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "core.dashboard.routes.project_routes.run_one_shot", fake_one_shot
+        )
 
         status, body = srv.post("/api/project/describe?project=proj-a")
         assert status == 200 and body["ok"] is True
-        prompt = captured['args'][2]  # ["claude", "-p", prompt]
+        request = captured['request']
+        # lane 语义钉死：argv 传 prompt（claude -p <prompt>，紧随 -p）
+        assert request.prompt_transport == "argv"
+        prompt = request.prompt
         assert "proj-a" in prompt, "prompt 未包含项目名"
         assert str(proot) in prompt, "prompt 未包含项目路径"
 
@@ -986,13 +993,16 @@ class TestProjectDescribeAPI:
         # 创建 README.md
         (proot / "README.md").write_text("# 测试项目\n这是一个测试项目，用于演示功能。", encoding="utf-8")
 
-        # Mock subprocess.run
-        mock_result = type('MockResult', (), {
-            'returncode': 0,
-            'stdout': '这是一个由测试生成的项目简介，用于验证 describe 接口功能。',
-            'stderr': ''
-        })()
-        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
+        # Mock run_one_shot
+        mock_result = OneShotResult(
+            returncode=0,
+            stdout='这是一个由测试生成的项目简介，用于验证 describe 接口功能。',
+            stderr='',
+        )
+        monkeypatch.setattr(
+            "core.dashboard.routes.project_routes.run_one_shot",
+            lambda *args, **kwargs: mock_result,
+        )
 
         status, body = srv.post("/api/project/describe?project=proj-a")
         assert status == 200
@@ -1012,13 +1022,16 @@ class TestProjectDescribeAPI:
         # 不创建 README.md，创建 package.json 作为 fallback
         (proot / "package.json").write_text('{"name": "test-project", "version": "1.0.0"}', encoding="utf-8")
 
-        # Mock subprocess.run
-        mock_result = type('MockResult', (), {
-            'returncode': 0,
-            'stdout': '这是一个基于 package.json 生成的项目简介。',
-            'stderr': ''
-        })()
-        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
+        # Mock run_one_shot
+        mock_result = OneShotResult(
+            returncode=0,
+            stdout='这是一个基于 package.json 生成的项目简介。',
+            stderr='',
+        )
+        monkeypatch.setattr(
+            "core.dashboard.routes.project_routes.run_one_shot",
+            lambda *args, **kwargs: mock_result,
+        )
 
         status, body = srv.post("/api/project/describe?project=proj-a")
         assert status == 200
@@ -1034,21 +1047,23 @@ class TestProjectDescribeAPI:
     ])
     def test_describe_error_returns_error_and_keeps_config(self, server_fx, monkeypatch, mock_kind, expected_frag):
         """超时 / 非零退出码 / 空输出 → 200 + error 且不写 description。"""
-        import subprocess
         proot, srv = server_fx
         (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
 
+        # Mock run_one_shot：超时在收编后以 timed_out=True 表达（不再以
+        # TimeoutExpired 异常穿透端点）
         if mock_kind == "timeout":
-            def mock_run(*args, **kwargs):
-                raise subprocess.TimeoutExpired(cmd=args[0], timeout=120)
+            mock_run = lambda *args, **kwargs: OneShotResult(
+                returncode=None, stdout='', stderr='', timed_out=True)
         elif mock_kind == "nonzero":
-            mock_result = type('MockResult', (), {
-                'returncode': 1, 'stdout': '', 'stderr': 'Error: Claude CLI failed'})()
+            mock_result = OneShotResult(
+                returncode=1, stdout='', stderr='Error: Claude CLI failed')
             mock_run = lambda *args, **kwargs: mock_result
         else:  # empty
-            mock_result = type('MockResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
-            mock_run = lambda *args, **kwargs: mock_result
-        monkeypatch.setattr("subprocess.run", mock_run)
+            mock_run = lambda *args, **kwargs: OneShotResult(
+                returncode=0, stdout='', stderr='')
+        monkeypatch.setattr(
+            "core.dashboard.routes.project_routes.run_one_shot", mock_run)
 
         status, body = srv.post("/api/project/describe?project=proj-a")
         assert status == 200

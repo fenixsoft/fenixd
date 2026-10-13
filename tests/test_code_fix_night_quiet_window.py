@@ -705,7 +705,7 @@ class TestRunMetricsDurationField(unittest.TestCase):
 
     归档行（``_metrics_line``）与日志侧 ``metric_type=run_metrics`` 行两处
     同源写入同一 ``_duration_s``（单次计算、双写点引用）——沿
-    TestSingleEntryInvariant 源码契约形态固定（真跑 ``_run_claude`` 需假
+    TestSingleEntryInvariant 源码契约形态固定（真跑 ``_run_agent`` 需假
     Popen 全套替身，该写点路径的运行时回归由 test_run_stall_accounting 覆盖，
     本处不重复取证）。读取侧缺样跳过行为由 TestPredictedCrossWindow
     「历史行未记时长」用例功能性覆盖。

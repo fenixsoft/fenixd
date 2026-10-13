@@ -536,14 +536,14 @@ class TestInPlaceRetryYields(ResynthesisHarness):
         runner = self._runner({"status": "blocked"})
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
             raise self._TransientError("connection reset by peer")
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         with mock.patch("time.sleep", lambda _: None):
             result = runner._execute_agent("spec-x", "planner-judge", "run-y")
 
@@ -559,7 +559,7 @@ class TestInPlaceRetryYields(ResynthesisHarness):
         runner = self._runner({"status": "testing"})
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -573,7 +573,7 @@ class TestInPlaceRetryYields(ResynthesisHarness):
                          encoding="utf-8")
             return ("done", 1, "sess", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         with mock.patch("time.sleep", lambda _: None):
             result = runner._execute_agent("spec-x", "planner-judge", "run-y")
 

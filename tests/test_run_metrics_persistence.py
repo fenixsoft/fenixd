@@ -90,13 +90,13 @@ class TestRunMetricsSuccess:
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
         runner.worktree_manager.cleanup.return_value = None
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             return ("output", 3, "sess-1", USAGE_WITH_COST)
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "verifier", "run-s1")
         runner.logger.close()
 
@@ -127,7 +127,7 @@ class TestRunMetricsSuccess:
 
 class TestRunMetricsFailure:
     def test_failure_run_produces_metric_with_duration(self, tmp_path, monkeypatch):
-        """_run_claude 抛异常 + max_retries=1 → 重试耗尽终态，日志含 terminal=failure。"""
+        """_run_agent 抛异常 + max_retries=1 → 重试耗尽终态，日志含 terminal=failure。"""
         monkeypatch.setattr(time, "sleep", lambda _: None)
         runner = _make_runner_with_logger(tmp_path, {"agents": {"max_retries": 1}})
         wt = tmp_path / "wt"
@@ -140,7 +140,7 @@ class TestRunMetricsFailure:
         # 分类为非瞬断 → 不进入原地重试，直接跳出 attempt 循环
         runner.classify_transient_error = lambda *a, **k: False
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -150,7 +150,7 @@ class TestRunMetricsFailure:
             exc.has_result = False
             raise exc
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "verifier", "run-f1")
         runner.logger.close()
 
@@ -186,13 +186,13 @@ class TestRunMetricsUsage:
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
         runner.worktree_manager.cleanup.return_value = None
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             return ("ok", 5, "sess-u", USAGE_WITH_COST)
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         runner._execute_agent("spec-y", "verifier", "run-u1")
         runner.logger.close()
 

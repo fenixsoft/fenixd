@@ -194,14 +194,14 @@ _CFG1 = {
 
 
 def _patch_exec(runner, tmp_path, calls, fail_models):
-    """装 worktree/硬门/_run_claude 桩；fail_models 中的 model 抛对应错误。"""
+    """装 worktree/硬门/_run_agent 桩；fail_models 中的 model 抛对应错误。"""
     from unittest.mock import MagicMock as _MM
     wm = _MM()
     wm.create.return_value = tmp_path / "wt"
     runner.worktree_manager = wm
     runner._check_agent_result_artifact = _MM(return_value=None)
 
-    def fake_run_claude(*a, **k):
+    def fake_run_agent(*a, **k):
         model = a[3] if len(a) > 3 else k.get("model_override")
         calls.append(model)
         exc = fail_models.get(model)
@@ -211,7 +211,7 @@ def _patch_exec(runner, tmp_path, calls, fail_models):
                                     "cache_creation_input_tokens": 0,
                                     "cache_read_input_tokens": 0,
                                     "cost_usd": None})
-    runner._run_claude = fake_run_claude
+    runner._run_agent = fake_run_agent
 
 
 class TestUnrecognizedFailover:

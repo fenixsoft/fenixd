@@ -326,6 +326,9 @@ interface SystemFormValues {
   transient_break_threshold: number;
   transient_break_window_seconds: number;
   transient_break_cooldown_seconds: number;
+  // add-harness-adapter-layer 6.3：agent 进程边界（agent.harness，区别于
+  // agents 段）。Select 只出两合法值；存量为非法手写值时按缺省 claude 回显
+  harness: 'claude' | 'dsh';
 }
 
 // admin.* + agents.transient_* 全字段表单映射单源（config 取值 ?? 缺省）：
@@ -356,6 +359,9 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
     transient_break_threshold: agentsSection.transient_break_threshold ?? 3,
     transient_break_window_seconds: agentsSection.transient_break_window_seconds ?? 600,
     transient_break_cooldown_seconds: agentsSection.transient_break_cooldown_seconds ?? 600,
+    // add-harness-adapter-layer 6.3：非法手写值不进 Select（后端 read_effective_config
+    // 已归一，此处再守一层，防 read_config 原文视图透传非法值撑爆受控选项）
+    harness: config.agent?.harness === 'dsh' ? 'dsh' : 'claude',
   };
 }
 
@@ -378,7 +384,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
   const { saving, initialValues, handleSave } = useGatedFormPanel<SystemFormValues>({
     form,
     buildValues: () => buildSystemFormValues(config),
-    backfillDeps: [config.admin, config.agents],
+    backfillDeps: [config.admin, config.agents, config.agent],
     onSave,
     buildPayload: (values): Partial<ConfigData> => ({
       admin: {
@@ -411,6 +417,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         transient_break_window_seconds: values.transient_break_window_seconds,
         transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
       },
+      // add-harness-adapter-layer 6.3：agent.harness 走既有保存通道（后端
+      // config_admin 受管键白名单：回显/合并/校验三处已同步；dsh 值由后端
+      // 校验拦截——adapter 未部署，不落盘）
+      agent: { harness: values.harness },
     }),
   });
 
@@ -466,6 +476,39 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
+        </Card>
+        {/* add-harness-adapter-layer 6.3：agent 进程边界（agent.harness）分组。
+            独立 Card：agent 段与 admin/agents 段键空间不同源，混进上方两组会
+            让 label-note 的段名前缀失真 */}
+        <h3 style={{ marginTop: 20 }}>Agent 进程边界</h3>
+        <Text type="secondary">
+          派发子进程（实现 / 验证 / 修复等车道）的命令构造边界。保存后约 30 秒经配置热更新生效，在飞 run 不受影响。
+        </Text>
+        <Card style={{ marginTop: 12 }}>
+          <div>
+            <Form.Item
+              name="harness"
+              label={
+                <>
+                  执行适配器
+                  <span className="label-note">（agent.harness）</span>
+                </>
+              }
+              data-testid="system-field-harness"
+            >
+              <Select
+                data-testid="system-control-harness"
+                style={{ width: '100%', maxWidth: 320 }}
+                options={[
+                  { value: 'claude', label: 'claude（缺省）' },
+                  { value: 'dsh', label: 'dsh（未部署，保存会被拒绝）' },
+                ]}
+              />
+            </Form.Item>
+            <Text type="secondary">
+              dsh adapter 由 add-dsh-adapter-integration 交付，当前未部署：选择 dsh 保存时会被后端校验拒绝，即使手工写入配置，dispatch 前置健康检查也会拦截派发。
+            </Text>
+          </div>
         </Card>
         {/* 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键分组 */}
         <h3 style={{ marginTop: 20 }}>瞬断治理</h3>

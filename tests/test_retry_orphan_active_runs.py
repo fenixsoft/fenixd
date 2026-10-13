@@ -117,11 +117,11 @@ class TestProviderTransientSuperseded:
 
         runs_dir = tmp_path / ".fenix" / "runs"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
-            # 模拟真实 _run_claude 在流文件落盘普通事件（provoke 弃置场景）
+            # 模拟真实 _run_agent 在流文件落盘普通事件（provoke 弃置场景）
             with (runs_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "assistant",
                                     "message": {"content": []}}) + "\n")
@@ -129,7 +129,7 @@ class TestProviderTransientSuperseded:
             raise _TransientError(stderr_lines=self._transient_stderr(),
                                   exit_code=1, has_result=False)
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-t1")
         assert result.success is False
 
@@ -186,7 +186,7 @@ class TestArtifactGateSuperseded:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -198,7 +198,7 @@ class TestArtifactGateSuperseded:
             # exit 0 但不写产物 → 触发 AgentArtifactGateError 重试
             return ("done", 1, f"sess-{calls['n']}", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g1")
         assert result.success is False
         assert "结果文件缺失" in (result.error or "")
