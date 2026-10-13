@@ -62,4 +62,4 @@
 ## 7. 收尾验证
 
 - [x] 7.1 端到端冒烟：DSH_HOME 隔离 + 假模型端点下 `agent.harness: dsh` 跑通 dispatch→在飞判定→终态收口→result gate 全链（含可观测性三件套产物核对）
-- [ ] 7.2 全量回归绿 + 编译自洽；全仓 grep 核查 dsh 硬编码仅存在于 harness/dsh_adapter.py
+- [x] 7.2 全量回归绿 + 编译自洽；全仓 grep 核查 dsh 硬编码仅存在于 harness/dsh_adapter.py

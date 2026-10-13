@@ -97,6 +97,10 @@ ARITY_WHITELIST = [
     #    时漏补豁免）与 verify_contract.py 缺省证据目录模板（{spec} 占位）。
     ("core/verdict_check.py", "format", "_ENGINE_CASCADE_EXEMPT_REASON"),
     ("core/verify_contract.py", "format", "DEFAULT_EVIDENCE_DIR_TEMPLATE"),
+    # 7. add-dsh-adapter-integration 3.1：provider_circuit.py dsh 错误码
+    #    改写表 template.format(message=message)（{message} 占位全关键字
+    #    展开）——同族 1/4/5/6 的 str.format 误报（引入调用点时补豁免）。
+    ("core/agent_runner/provider_circuit.py", "format", "template"),
 ]
 
 
