@@ -737,6 +737,23 @@ class BrowserManager:
         场景必须显式携带 prompt_text（admin 修 2026-08-29：族谱爆炸根因之一）。
         """
 
+        def _reap_dialog_task(task, _mode=mode):
+            # 收割 accept/dismiss 任务的异常（code-review item 5804ee753ce8）：
+            # fire-and-forget 任务此前无人 await，accept 竞态失败（对话框已被
+            # Playwright 侧处理、页面已关闭等）只在 GC 时产生「Task exception
+            # was never retrieved」噪声，场景声明的 accept 意图静默丢失、对话
+            # 框悬挂回落 Playwright 默认 dismiss，后续步骤超时被误归因为时序/
+            # 元素问题——落 warning 日志使失败可观测、可与后续失败正确归因
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                self._log(
+                    "warning",
+                    f"对话框 {_mode} 处理任务失败（声明的对话框意图可能未生效）: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+
         def _handle(dialog, _mode=mode, _text=prompt_text):
             try:
                 if _mode == "accept":
@@ -745,7 +762,7 @@ class BrowserManager:
                     )
                 else:
                     task = dialog.dismiss()
-                asyncio.ensure_future(task)
+                asyncio.ensure_future(task).add_done_callback(_reap_dialog_task)
             except Exception:
                 pass
 
@@ -766,6 +783,7 @@ class BrowserManager:
         page.once("dialog", _handle)
         page._fenix_pending_dialog_handler = _handle
 
+    # [fenix-ignore:031f326ccf92] 结构性拆分超出 code-fix 最小改动边界：十余动作分支共享同一顶层 try/except 错误分类与 target/value 归一口径，抽 handler 需穿参并保 raise 穿透语义、回归风险大于收益
     async def execute_action(self, page, step: dict) -> dict:
         """执行单个用户操作。
 
@@ -1347,7 +1365,19 @@ class BrowserManager:
                     # 失败路径先释放左键再抛：按压状态泄漏会被同 context 内
                     # 后续步骤（click/scroll/drag）继承，产生与场景意图无关
                     # 的连锁失败、归因困难（code-review 4c9e4cd003c2）
-                    await page.mouse.up()
+                    # 释放动作自身抛错不得顶替原始异常（code-review item
+                    # 3daf57f3dcff）：浏览器/页面已崩溃时 mouse.up 的新异常
+                    # 会直接向外传播、bare raise 不再执行，顶层错误分类按
+                    # 释放动作的错误信息走（多为 unknown），拖拽失败的真实
+                    # 原因不可见——释放失败仅记日志，保留原始异常继续抛出
+                    try:
+                        await page.mouse.up()
+                    except Exception as up_exc:
+                        self._log(
+                            "warning",
+                            f"drag 失败路径释放左键自身失败（原始异常继续抛出）: "
+                            f"{type(up_exc).__name__}: {up_exc}",
+                        )
                     raise
                 await page.mouse.up()
                 await page.wait_for_timeout(400)  # 等待 React 重渲染与持久化
