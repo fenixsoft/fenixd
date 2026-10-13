@@ -32,6 +32,7 @@ fix-knowledge-backfill-reconstruction：能力聚合全链蒸馏 + 史前复原�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -62,6 +63,9 @@ from core.proc_utils import guard_killpg
 
 # spawn 注入缝：run 内单测用 fake spawn 替身；生产用 _default_spawn（claude -p）。
 SpawnFn = Callable[[str, str], str]
+
+# 降级路径日志（对齐 core.knowledge / core.evolution 的 fenixd.<module> 命名）
+logger = logging.getLogger("fenixd.knowledge_backfill")
 
 # 批规模上限（spec：实现裁量建议 ≤20）
 BATCH_SIZE_MAX = 20
@@ -191,6 +195,14 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     归位到今日日期节（``## YYYY-MM-DD``）下的「### 知识真相源」小节；日期节缺失
     时在文件尾部新建。给人看的队列，不进任务门禁（对齐前置 SPEC D3 口径）。
     读改写全程持 ``_todo_write_lock`` + ``atomic_write_text`` 原子回写。
+
+    实际追加（幂等去重未命中、原子回写完成）后对 todo.md 就地 commit+push
+    （ADR-060 写入点即时提交：tracked 的未提交改动滞留主树，会与分支的
+    todo.md 改动路径重叠，被 merge-back WIP 重叠闸门拦截、烧 admin 车道
+    代提交——2026-09-30 / 2026-10-13 两次同链事故）。提交动作在 flock 释放
+    之后执行（git 子命令不进锁内临界区）；todo.md 未被 git 跟踪（含非 git
+    仓库）跳过提交，commit/push 失败降级日志，均不阻断写路径、不向调用方
+    抛错。
     """
     # 多行输入先归一为单行（spawn 失败的 stderr 尾部/失败归因 tail 天然多行）：
     # 幂等判定按整行精确比较，含换行的 line 使 f"- {line}" 跨多个物理行、与
@@ -207,6 +219,9 @@ def append_todo_line(project_root: Path, line: str) -> bool:
             return False
         lines = _todo_subsection_insert(text.splitlines(), "### 知识真相源", f"- {line}")
         atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
+    # 提交在锁外：git 子命令不进 flock 临界区，避免拉长持锁窗口阻塞 code_fix /
+    # self_review 的并发追加（与 write_todo_marker 同款约束）
+    _commit_todo_after_write(project_root, line)
     return True
 
 
@@ -227,6 +242,10 @@ def upsert_todo_line(
     比较幂等对它失效（每天追加新行，聚合行自身变成每日重述），固定前缀匹配 +
     整行替换才保证「行内容变化时替换而非追加」。读改写全程持 ``_todo_write_lock``
     + ``atomic_write_text`` 原子回写；返回是否发生实际写盘。
+
+    实际写盘（新增/整行替换/清理，返回 True）后经 ``_commit_todo_after_write``
+    同款就地提交（返回值即提交开关，零写盘路径提前返回不提交）；提交动作同样
+    在 flock 释放之后执行，降级口径与 append_todo_line 一致。
     """
     prefix = prefix.strip()
     if not prefix:
@@ -263,7 +282,44 @@ def upsert_todo_line(
             else:
                 lines = _todo_subsection_insert(lines, "### 知识真相源", item)
         atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
+    # 提交在锁外（同 append_todo_line）：走到这里即发生实际写盘；纯清理
+    # （line 为空）时来源摘要回退到前缀，git log 仍可对账到被清理的待办
+    _commit_todo_after_write(project_root, line if line else f"{prefix} 残留清理")
     return True
+
+
+def _todo_commit_subject(source: str) -> str:
+    """构造 todo.md 就地提交的固定主题行（``[fenix] todo: <来源摘要>``）。
+
+    与 ``self_review._commit_todo`` 的 ``[fenix] daily self-review``、
+    write_todo_marker 的 ``[fenix] evolution:`` 主题行同族，git log 可对账；
+    来源摘要取写入内容归一化空白后的首段（截 60 字符），空来源兜底为通用
+    文案（防御式，正常写路径不会走到）。
+    """
+    snippet = re.sub(r"\s+", " ", source or "").strip()[:60]
+    return f"[fenix] todo: {snippet}" if snippet else "[fenix] todo: todo.md 回写"
+
+
+def _commit_todo_after_write(project_root: Path, source: str) -> bool:
+    """todo.md 实际写盘后的就地提交（add-todo-append-commit-on-write 1.1/1.4）。
+
+    延迟导入复用 ``core.evolution._commit_todo_marker``（LC_ALL=C、git 子命令
+    30s 超时、pathspec 限定 ``git commit -- .fenix/todo.md``、untracked/非 git
+    仓库跳过、push 失败降级 WARNING 不重试），``subject=`` 传本车道主题行；
+    evolution 顶层仅依赖 core.fs_utils/core.timelib（无本模块/knowledge 顶层
+    依赖），延迟导入无循环依赖。MUST 在 ``_todo_write_lock`` 释放之后调用——
+    git 子命令不进锁内临界区。任何异常降级日志留痕，不向调用方抛错（最坏
+    情形回到「未提交改动滞留 → 闸门保守拦截」，不劣于提交前现状）。
+    """
+    try:
+        from core.evolution import _commit_todo_marker  # noqa: PLC0415
+
+        return _commit_todo_marker(project_root, subject=_todo_commit_subject(source))
+    except Exception as e:  # noqa: BLE001 —— 提交失败不阻断写路径、不向调用方抛错
+        logger.warning(
+            "knowledge_backfill: todo.md 就地提交异常（降级留痕，写入不回滚）: %s", e
+        )
+        return False
 
 
 # ── git 工具（pathspec 限定提交，主树直跑） ─────────────────────────────
