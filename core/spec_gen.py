@@ -252,7 +252,10 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
     artifacts.sort(key=lambda a: order_map.get(a["id"], len(build_order)))
 
     apply = schema.get("apply") or {}
-    apply_requires = apply.get("requires") or [a["id"] for a in schema["artifacts"]]
+    # 显式判空（code-review item c75680ee1793）：requires: [] 是「无前置」的
+    # 合法声明，`or` 回退会因空列表 falsy 把语义误扩为全部 artifact 前置。
+    reqs = apply.get("requires")
+    apply_requires = reqs if reqs is not None else [a["id"] for a in schema["artifacts"]]
 
     return {
         "changeName": name,
