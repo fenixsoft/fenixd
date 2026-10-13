@@ -1,6 +1,6 @@
 ## Context
 
-SPEC-3 已使 `agent.harness: dsh` 端到端可用（假端点单车道冒烟级）。主 harness 地位的切换需要：可重复的验收证据、出问题时的回退路径、以及把「真实环境验收」与「缺省值翻转」两个人工决策从自动链路中隔离出来。
+按母设计 §10 依赖链，SPEC-3（依赖 SPEC-1+2）实现后 `agent.harness: dsh` 达到假端点单车道冒烟级可用；本 SPEC 以 SPEC-1/2/3 全部合并 main 为实现前置门（见决策 6）。主 harness 地位的切换需要：可重复的验收证据、出问题时的回退路径、以及把「真实环境验收」与「缺省值翻转」两个人工决策从自动链路中隔离出来。
 
 ## Goals / Non-Goals
 
@@ -22,6 +22,7 @@ SPEC-3 已使 `agent.harness: dsh` 端到端可用（假端点单车道冒烟级
 3. **默认值决策进报告不改代码**：报告含决策申请段（证据摘要+建议+影响面），用户裁决后由后续一次性微变更执行（config 缺省值翻转 + ADR-271 补记）；本 SPEC 不含任何缺省值改动。
 4. **验收发现缺陷回归本 SPEC 修复**：验收夹具/脚本缺陷直接修；dsh 通道功能性缺陷若根源在 SPEC-2/3 交付物，修复在本 SPEC 实现分支内完成并注明来源 SPEC（避免跨 SPEC 打回循环）。
 5. **玩具项目夹具即测即弃**：临时目录注册、验收后清理（含 runs 产物），不污染真实项目注册表（孤儿实例事故教训：测试产物必须显式清理）。
+6. **实现前置门**：本 SPEC 任何任务开工前，实现 agent MUST 先核对依赖交付物已在 main——SPEC-1 的 `core/agent_runner/harness/`（protocol/claude_adapter/one_shot）与 ADR-271、SPEC-2 的 dsh-bundle（含假端点 `tests/fixtures/mock-model-server.mjs`）、SPEC-3 的 `core/agent_runner/harness/dsh_adapter.py` 与投影可观测性三件套。任一缺失即属依赖未就绪，MUST 停止实现并如实上报阻塞，MUST NOT 以 stub 自行实现依赖或提前开工。
 
 ## Risks / Trade-offs
 

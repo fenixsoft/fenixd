@@ -1,6 +1,6 @@
 ## Why
 
-依赖链前三环已就位（SPEC-1 抽象层 / SPEC-2 Bundle / SPEC-3 DshAdapter）。终态定位是「dsh 为主 harness」（母设计 §1.1），但翻转缺省前必须有真实全链验收证据与可回退的运维路径。本 SPEC 交付验收夹具/脚本/运行手册/报告模板，并以信号式交付物申请真实全链验收的执行；**默认值是否翻转由用户依据验收报告裁决，不是本 SPEC 的任务**。母设计：`docs/superpowers/specs/2026-10-13-multi-harness-adapter-design.md` §10。
+依赖链前三环（SPEC-1 抽象层 / SPEC-2 Bundle / SPEC-3 DshAdapter）已立项，按母设计 §10 依赖链顺序实现中；本 SPEC 排序其后，**进入实现的前置条件是 SPEC-1/2/3 均已合并 main**（见 design 决策 6 前置门）。终态定位是「dsh 为主 harness」（母设计 §1.1），但翻转缺省前必须有真实全链验收证据与可回退的运维路径。本 SPEC 交付验收夹具/脚本/运行手册/报告模板，并以信号式交付物申请真实全链验收的执行；**默认值是否翻转由用户依据验收报告裁决，不是本 SPEC 的任务**。母设计：`docs/superpowers/specs/2026-10-13-multi-harness-adapter-design.md` §10。
 
 ## What Changes
 
