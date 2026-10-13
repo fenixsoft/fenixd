@@ -363,6 +363,16 @@ class QQQueueMixin:
         不变量，使宽松优先级闸门 ``min(self._active_priorities)`` 取值错误。
         """
         if entry_to_dispatch is not None:
+            # 去重：回滚闸门在锁外判定，窗口内其他线程可能已 _enqueue 同
+            # (spec, agent) 条目（此刻队列已无被 pop 条目，其去重落空）——
+            # 先摘除同键条目再插回队首，与 _enqueue/_enqueue_front 的
+            # 「按 (spec, type) 去重，无双派」契约一致
+            # （code-review item 862c77bb4acf）。
+            self._run_queue = [
+                e for e in self._run_queue
+                if not (e[1] == entry_to_dispatch[1]
+                        and e[2] == entry_to_dispatch[2])
+            ]
             self._run_queue.insert(0, entry_to_dispatch)
         self._active_runs -= 1
         cnt = self._active_priority_counts.get(base_prio, 0) - 1

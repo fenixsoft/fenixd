@@ -86,6 +86,11 @@ class BBackoffMixin:
         # 冲突序号（1 起）：档位下标取 count-1、耗尽判定 idx >= len(schedule)，
         # 串行语义与原实现逐位等价；下方 update_spec 不再并写该字段（防并发
         # 写回互相覆盖丢增量）。
+        # [fenix-ignore:172764d58cb8] 周期扫描与退避定时器同刻并发遇锁会各 bump
+        # 一次（档位虚快推进），但后果仅是保守提前升级（dispatch_stalled 早触发、
+        # spec 保持 ready、无错误派发）；竞态安全的同 episode 判重须跨读判据+
+        # bump+update_spec 持进程锁（无锁时间窗判重有 TOCTOU），引入非重入锁序
+        # 风险，故接受现状不判重。
         count = self._pm.state_machine.bump_counters(
             spec_name, {"_lock_conflict_count": 1}
         ).get("_lock_conflict_count", 0)
