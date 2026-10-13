@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-11 01:50 UTC+8
+> 最后更新：2026-10-13 21:36 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -38,6 +38,7 @@
 | [multi-kind-planning-guidance](multi-kind-planning-guidance.md) | 多类型场景规划指引 | 2026-10-03 04:59 |
 | [multi-kind-report-compat](multi-kind-report-compat.md) | 多类型验证报告兼容 | 2026-10-03 04:59 |
 | [parallel-scenario-planning](parallel-scenario-planning.md) | 并行场景规划 | 2026-10-03 04:59 |
+| [verify-scenario-resource-mutex](verify-scenario-resource-mutex.md) | 场景资源组互斥（resource_group 同组在飞互斥 + flaky/env 豁免附同窗并行上下文） | 2026-10-13 21:36 |
 | [interaction-contract](interaction-contract.md) | 交互契约与逐断言分诊 | 2026-10-03 04:59 |
 | [visual-baseline-integrity](visual-baseline-integrity.md) | 视觉校验基线完整性 | 2026-10-03 04:59 |
 | [visual-capture-robustness](visual-capture-robustness.md) | 视觉采集稳健性 | 2026-10-03 04:59 |
