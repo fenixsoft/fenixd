@@ -93,6 +93,22 @@ def _baseline_committed() -> bool:
     return _git("rev-parse", "--verify", "--quiet", "HEAD").returncode == 0
 
 
+def _import_registry():
+    """惰性导入 Registry：仓根插入 sys.path 后再 import（a555561dcbc4 去重）。
+
+    仓根（本脚本 parent.parent）须先于 import 入 sys.path——脚本可从任意 cwd
+    运行（verify.yaml prepare / 手工 --status），不能依赖既有 sys.path；保持
+    惰性而非模块级 import，使 registry 缺失/损坏时由调用点 try/except 降级
+    （_ensure_registered 告警、--status 报 unknown）而非整个脚本裸崩。
+    """
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from core.dashboard.registry import Registry
+
+    return Registry
+
+
 def _ensure_registered() -> None:
     """登记到全局注册表（带夹具标记）；失败仅告警（~ auto-scan 仍可发现该项目）。
 
@@ -104,9 +120,7 @@ def _ensure_registered() -> None:
          告警聚合过滤，由 spec 场景复位契约后续覆盖）。
     """
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from core.dashboard.registry import Registry
-
+        Registry = _import_registry()
         added, msg = Registry().add_project(ROOT, fixture=True)
         if added:
             print(f"registry: added as fixture ({msg})")
@@ -168,6 +182,7 @@ def _provision_from_template() -> None:
         # 只挡顶层 README.md/conftest.py，骨架中嵌套的 conftest.py（如
         # tests/conftest.py，pytest 收集 hook 的自然位置）会被拷入运行 fixture，
         # 与「把 pytest 收集文件挡在 fixture 外」的意图相悖。
+        # [fenix-ignore:0e714b1de7e0] 现骨架无深层同名资产（README.md 仅顶层、conftest.py 尚不存在），全深度按名排除 conftest 是 769ce141db5b 既定意图，真出现合法深层资产前不改精确路径。
         if rel.name in ("README.md", "conftest.py"):
             continue  # 骨架自述/收集排除文件，非运行时资产
         dst = ROOT / rel
@@ -344,9 +359,7 @@ def show_status() -> int:
         # 探针同款处置）。
         print(f"dirty:    unknown (git unavailable: {e})")
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from core.dashboard.registry import Registry
-
+        Registry = _import_registry()
         names = [p.get("name") for p in Registry().load().get("projects", [])]
         # 与 Registry.add_project 的 name 归一口径一致（rp.name or key，见
         # core/dashboard/registry.py）：_ensure_registered 不传 name，登记名按
