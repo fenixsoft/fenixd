@@ -87,6 +87,13 @@ _GATES_FILE_NAME = "quality-gates.json"
 _TERMINAL_EXEMPT_STATUSES = ("verified", "done", "pushed")
 _TERMINAL_EXEMPT_REASON = "SPEC 已终态，全量回归跟踪移交主树"
 
+# code-review 门终态豁免（code-review item 4b33094abd96，与上方 full-suite 门
+# 终态盲区同形态）：ocr 车道上线前完成、或车道产物被清理而开关为开的终态
+# SPEC，车道产物不可见时本门恒 pending、永不计入 done。复用同一终态集合，
+# 仅在产物不可见路径短路（产物仍可见的终态 SPEC 照常显示真实三态，不在
+# 函数入口短路）；文案固化惯例，禁止同义改写。
+_CODE_REVIEW_TERMINAL_EXEMPT_REASON = "历史 SPEC 无车道记录，代码审查跟踪移交主树"
+
 
 def _int_or_none(v):
     """宽松整数读值：bool 不算 int（防 True 计数）。"""
@@ -147,6 +154,14 @@ def current_lane_fingerprint(project_root, entry=None) -> "dict | None":
     merge_base 相对主基线分支（main，回退 master）。任一环节不可计算
     （无 branch / 非 git 仓库 / 分支不存在）返回 None——读侧跳过指纹校验
     （fail-open），MUST NOT 因指纹能力缺失隐藏真实产物。
+
+    基线回退口径与 core.regression.current_repo_fingerprint（full-suite 门与
+    回归快照的指纹采集器）不同：后者只对 main 求 merge-base、无 master 回退
+    （其 docstring：无 main 分支的仓库置空串）。两套生产者字段同名但基线面
+    不同——仅 master 的仓库里 lane 指纹有 merge_base 而 full-suite 指纹恒空串。
+    各生产者只与同源快照自比较；两指纹**禁止跨源比较**（如 result_gate 对账
+    两指纹会在非 main 基线仓库失配）。共享 helper 收拢需改 regression.py，
+    code-review item b93bad8d236e 本轮未做，以本注记单侧标注该约束。
     """
     branch = str((entry or {}).get("branch") or "").strip()
     # 拦截形如选项的取值（code-review item a2dd5c66d44f）：branch 源自可手工
@@ -480,8 +495,10 @@ def _code_review_status(
     车道在飞（活跃 impl-ocr run 无终态事件）/产物 running → running；
     completed → passed（detail 附 findings 与处置计数摘要）；unavailable →
     skipped（detail 附 reason，计入 done——已了结而非未做）；产物不可见
-    （含损坏/指纹陈旧）→ pending。在飞判据优先于磁盘产物状态（重审轮
-    head 前移后上一轮产物指纹陈旧，本就不可采信）。
+    （含损坏/指纹陈旧）→ pending，唯终态 SPEC 豁免为 skipped（固定文案，
+    计入 done——车道上线前完成/产物被清理的历史 SPEC 不再恒 pending，
+    code-review item 4b33094abd96）。在飞判据优先于磁盘产物状态（重审轮
+    head 前移后上一轮产物指纹陈旧，本就不可采信），也优先于终态豁免。
     """
     if not _impl_ocr_enabled_cached(project_root):
         return ("skipped", _OCR_DISABLED_BY_SETTING_REASON)
@@ -489,6 +506,12 @@ def _code_review_status(
         return ("running", "ocr 并行审查进行中")
     product = _load_lane_product(project_root, spec_name, spec_status, entry)
     if product is None:
+        # 终态豁免（code-review item 4b33094abd96）：与 full-suite 门
+        # _TERMINAL_EXEMPT_STATUSES 短路同形态——终态 SPEC 车道产物不可见
+        # （车道上线前完成/产物被清理）→ 合成 skipped 计入 done，不再恒
+        # pending；在飞判据与产物可见路径不参与豁免，真实三态优先。
+        if str(spec_status or "").strip() in _TERMINAL_EXEMPT_STATUSES:
+            return ("skipped", _CODE_REVIEW_TERMINAL_EXEMPT_REASON)
         return ("pending", "")
     status = product.get("status")
     if status == "running":
