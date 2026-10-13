@@ -318,6 +318,14 @@ def extract_paths_typed(spec_dir) -> dict:
     ``spec_dir`` 可为 ``str`` / ``Path``（指向 spec/changes/<spec>/）。
     仅读取 tasks.md / proposal.md / specs/*.md。
 
+    tasks.md ``## Deliverables`` 声明段的围栏块不参与本提取（code-review
+    item abd205b5bf3c）：声明段语义（``kind: delete`` 反判、``reference``
+    软校验）由 ``extract_declared`` 单点承载，本函数的两桶接口表达不了
+    delete 语义——声明 token 经兜底落入 ``deliverables`` 桶（存在性硬校验）
+    会在守卫回退路径被反向解释为「必须存在」。段定位与声明解析同源：
+    ``_DECLARED_HEADING_RE`` 标题起、``##`` 级标题止、节内首个围栏块，
+    与 ``_extract_declared_block`` 的声明块口径一致。
+
     Returns:
         ``{"deliverables": [...], "references": [...]}``——各自去重、保序；
         两类均为空表示守卫应跳过。``deliverables`` 参与守卫缺件判定；
@@ -350,6 +358,14 @@ def extract_paths_typed(spec_dir) -> dict:
         fence_char = ""  # 当前围栏开栏标记 run（```/~~~~ 等）；空 = 未在围栏内
         in_tasks_header = True  # 第一个 `## ` 标题之前为头部说明段
         in_scenario = False  # 能力 spec 的 Scenario 小节
+        # 声明段围栏块跳过状态（item abd205b5bf3c）：in_declared_section 以
+        # _DECLARED_HEADING_RE 同源定位 `## Deliverables` 段（声明段语义仅
+        # tasks.md 承载）；declared_fence_taken 对齐 _extract_declared_block
+        # 的「节内首个围栏 = 声明块」口径；skip_fence_tokens 标记当前围栏
+        # 内容行不做正则提取。
+        in_declared_section = False
+        declared_fence_taken = False
+        skip_fence_tokens = False
 
         for raw_line in text.splitlines():
             # 围栏代码块：整块内所有行均视为显式路径声明，语境在块首按结构性
@@ -374,6 +390,17 @@ def extract_paths_typed(spec_dir) -> dict:
                     # 错位截断，item 575b928f818a；同字符不互为翻转标记
                     # 对齐 _extract_declared_block，item 820df5cad84b）
                     fence_char = m.group(1)
+                    # 声明段首个围栏块（= _extract_declared_block 的声明块
+                    # 口径）内容不参与正则提取：kind: delete 等声明语义由
+                    # extract_declared 单点承载，正则兜底按存在性硬校验解释
+                    # 会把 delete 反向判成「必须存在」（item abd205b5bf3c）
+                    skip_fence_tokens = (
+                        doc_kind == "tasks"
+                        and in_declared_section
+                        and not declared_fence_taken
+                    )
+                    if skip_fence_tokens:
+                        declared_fence_taken = True
                     fence_ctx = _classify_line(
                         "", doc_kind, in_tasks_header, in_scenario
                     )
@@ -382,6 +409,7 @@ def extract_paths_typed(spec_dir) -> dict:
                 cur = m.group(1)
                 if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
                     in_fence = False
+                    skip_fence_tokens = False
                     continue
                 # 同字符但更短/异字符的围栏行是块内容而非闭栏（不翻转边界），
                 # 落入下方 in_fence 分支按围栏内 token 处理
@@ -390,6 +418,12 @@ def extract_paths_typed(spec_dir) -> dict:
             else:
                 if _H2_RE.match(raw_line):
                     in_tasks_header = False
+                    # 声明段进入/退出与 _scan_declared_section 的段边界口径
+                    # 同源：仅 `## ` 级标题终止段（### 不终止），声明标题行
+                    # 本身即段起点
+                    in_declared_section = bool(
+                        _DECLARED_HEADING_RE.match(raw_line)
+                    )
                 if _SCENARIO_HEADING_RE.match(raw_line):
                     in_scenario = True
                 elif _H2_RE.match(raw_line) or raw_line.startswith("#"):
@@ -397,6 +431,9 @@ def extract_paths_typed(spec_dir) -> dict:
                 ctx = _classify_line(raw_line, doc_kind, in_tasks_header, in_scenario)
 
             if in_fence:
+                # 声明段围栏块内容行不产出提取 token（item abd205b5bf3c）
+                if skip_fence_tokens:
+                    continue
                 # 代码块内逐 token（按空白/常见分隔符切分）
                 tokens = [_normalize_token(t) for t in re.split(r"\s+", raw_line.strip())]
             else:
@@ -873,8 +910,9 @@ def verify_correction_readback(
     能看到修正**；读回仍是旧路径（写读错层，add-code-review-auto-fix 事故根因）
     → 返回 False，调用方 MUST NOT 判为修正成功。
 
-    Fail-safe 取向：解析来源为 ``None``（两处均不可用）→ 返回 False（无读取基准
-    可证修正生效，不静默销账）。
+    Fail-safe 取向：解析来源为 ``None``（两处均不可用），或 ``corrected_path``
+    归一后为空串（无比对基准）→ 返回 False（无读取基准可证修正生效，
+    不静默销账；code-review item bd24fbff4c2d）。
 
     Args:
         spec_name: spec 名。
@@ -903,6 +941,13 @@ def verify_correction_readback(
     # 段里旧路径条目实际仍在，违背本函数「写读错层 MUST NOT 判为修正成功」的
     # fail-safe 契约（不静默销账）。
     corrected_path = str(corrected_path or "").strip()
+    # 空入参守卫（code-review item bd24fbff4c2d）：无读取基准可证的修正
+    # MUST NOT 判为生效——解析层（_declared_entries_from_text）已过滤空
+    # path，生效条目路径均非空，空串与任何条目恒失配会让下方循环不命中
+    # 直接返回 True「修正已生效」（fail-open 反向销账）。与上方 source
+    # is None 的 fail-safe 同向返回 False，交由调用方走重试/人工兜底。
+    if not corrected_path:
+        return False
     resolved = resolve_effective_declaration(
         spec_name,
         branch=branch,
