@@ -25,9 +25,12 @@
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_logger = logging.getLogger("fenixd.interaction_contract")
 
 # ── 声明式候选识别模式（design D1 首版清单，可迭代）──────────────────
 
@@ -311,9 +314,10 @@ def scenario_text_blob(scenario: Any) -> str:
     covers = scenario.get("covers")
     if isinstance(covers, list):
         parts.extend(str(c) for c in covers)
-    declared = scenario.get("declared_display")
-    if isinstance(declared, list):
-        parts.extend(str(c) for c in declared)
+    # declared_display 不并入（code-review 32b066099027）：纯展示声明是豁免
+    # 语义、由 collect_display_declarations 独立通道读取；并入覆盖 blob 会让
+    # 「submit-btn」这类声明串经通道 2 为其他候选（btn）充当覆盖证据。
+
     for group in ("steps", "assertions"):
         items = scenario.get(group)
         if isinstance(items, list):
@@ -402,6 +406,11 @@ def is_legacy_scenario_set(scenario_set: Any) -> bool:
 
     存在且所有条目均无 ``covers`` 元数据、且集级无纯展示声明 → 遗留集，
     跳过强制（仅新验证轮生效）。
+
+    条目形态契约：``scenarios`` 条目 MUST 为 ScenarioEntry 属性对象
+    （core/verify_scenarios.ScenarioEntry，__slots__）——covers 判定走
+    getattr 属性访问；条目若改传 dict/裸 JSON，getattr 恒 None，任何集
+    都会被判遗留集、交互契约静默失效。命中该 miss 时打 debug 留痕。
     """
     if scenario_set is None:
         return False
@@ -410,6 +419,17 @@ def is_legacy_scenario_set(scenario_set: Any) -> bool:
         return False
     if any(getattr(e, "covers", None) for e in entries):
         return False
+    # 形态漂移留痕（code-review 8c43da322a27）：走到此处说明全部条目 covers
+    # 为空——区分「合法 ScenarioEntry 空表」与「非属性对象恒 getattr miss」，
+    # 后者按无元数据计入遗留集时落 debug，防上游形态漂移静默关闸。
+    for e in entries:
+        if not hasattr(e, "covers"):
+            _logger.debug(
+                "is_legacy_scenario_set: 条目 %r 无 covers 属性（非 "
+                "ScenarioEntry 形态），按无元数据计入遗留集判定",
+                e,
+            )
+            break
     declared = getattr(scenario_set, "display_declarations", None)
     if declared:
         return False
