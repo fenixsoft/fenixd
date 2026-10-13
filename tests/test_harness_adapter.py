@@ -19,6 +19,7 @@ import inspect
 import json
 import os
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -425,3 +426,105 @@ class TestIsolatedSettings:
         payload = json.loads(
             (cfg_dir / "settings.json").read_text(encoding="utf-8"))
         assert payload["_schema_version"] == 2
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5.2 进程识别（真实测试进程）：命中/豁免行为与 killpg 自保护守卫不受影响
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _spawn_sleeper(argv0_path, *extra_args):
+    """以 argv0=argv0_path 起一个 10s 睡眠进程（os.symlink 换名可执行）。
+
+    返回 Popen 句柄；/proc/<pid>/cmdline argv[0] 即 argv0_path（basename 判
+    定的实测锚点）。
+    """
+    return subprocess.Popen(
+        [str(argv0_path), "-c", "import time; time.sleep(10)", *extra_args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+class TestProcessIdentityLive:
+    """5.1 消费点经 adapter 后，识别命中/豁免行为不变（真实进程验证）。"""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_procs(self):
+        self._procs = []
+        yield
+        for p in self._procs:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=5)
+
+    def _wait_until(self, cond, timeout=3.0, interval=0.1):
+        import time as _time
+
+        end = _time.monotonic() + timeout
+        while _time.monotonic() < end:
+            if cond():
+                return True
+            _time.sleep(interval)
+        return False
+
+    def test_claude_named_process_is_hit(self, tmp_path):
+        """argv0 basename=claude 的存活进程 → is_claude_process 命中。"""
+        from core.proc_utils import is_claude_process
+
+        exe = tmp_path / "claude"
+        exe.symlink_to(sys.executable)
+        proc = _spawn_sleeper(exe)
+        self._procs.append(proc)
+        assert self._wait_until(
+            lambda: proc.pid and is_claude_process(str(proc.pid))
+        ), "claude 换名进程未被 is_claude_process 识别"
+
+    def test_non_claude_process_with_worktree_path_stays_exempt(self, tmp_path):
+        """豁免行为不变：非 agent 可执行（argv0=python）即使 cmdline 携带
+        worktree 形态路径（implementer 测试子进程场景）也不判为 claude。"""
+        from core.proc_utils import is_claude_process
+
+        wt = tmp_path / ".claude" / "worktrees" / "impl-spec-a-1790000000"
+        wt.mkdir(parents=True)
+        proc = _spawn_sleeper(sys.executable, str(wt))
+        self._procs.append(proc)
+        assert self._wait_until(lambda: proc.pid and proc.poll() is None)
+        assert is_claude_process(str(proc.pid)) is False
+
+    def test_worktree_pgrep_pattern_hits_live_process(self, tmp_path):
+        """admin_monitor._pgrep_live_worktree 经 adapter patterns 后命中形态
+        ``impl-<spec>-`` 的存活进程（impl/verify/repair 车道全等语义抽样）。"""
+        from core.admin_monitor import _pgrep_live_worktree
+
+        marker_dir = tmp_path / "impl-myspec-1790000000"
+        marker_dir.mkdir()
+        proc = _spawn_sleeper(sys.executable, str(marker_dir))
+        self._procs.append(proc)
+        assert self._wait_until(lambda: proc.pid and proc.poll() is None)
+        assert _pgrep_live_worktree("myspec") is True
+        # 无命中 spec → False（pgrep 退出码 1 路径）
+        assert _pgrep_live_worktree("no-such-spec") is False
+
+
+class TestKillpgGuardUnaffected:
+    """killpg 自保护守卫消费面不受 patterns 泛化影响（守卫入参是 pgid，
+    与识别名集合无耦合；此处锁进程级自保护语义仍拒绝投递自身进程组）。"""
+
+    def test_guard_rejects_own_group(self):
+        import os
+
+        from core.proc_utils import guard_killpg
+
+        assert (
+            guard_killpg(
+                os.getpgrp(),
+                0,  # signal 0 = 探活；自身组 MUST 被拒
+                caller="test_harness_adapter.TestKillpgGuardUnaffected",
+                resolve=False,
+            )
+            is False
+        )

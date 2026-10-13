@@ -83,8 +83,8 @@
 
 ## 5. 进程识别泛化
 
-- [ ] 5.1 process_patterns() 纳入协议；proc_utils.py:47、event_bus.py:810、admin_monitor.py:868、bin/fenix_dashboard.py:151-154 四处消费点改为从 adapter 获取，claude 值与现状全等
-- [ ] 5.2 测试：构造 `claude -p` 测试进程验证识别命中/豁免行为不变（killpg 自保护守卫不受影响）
+- [x] 5.1 process_patterns() 纳入协议；proc_utils.py:47、event_bus.py:810、admin_monitor.py:868、bin/fenix_dashboard.py:151-154 四处消费点改为从 adapter 获取，claude 值与现状全等
+- [x] 5.2 测试：构造 `claude -p` 测试进程验证识别命中/豁免行为不变（killpg 自保护守卫不受影响）
 
 ## 6. 配置与设置页
 

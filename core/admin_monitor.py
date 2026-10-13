@@ -886,14 +886,19 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
     code-review item 780797acccdb：spec 名经 ``re.escape`` 转义后再拼模式，
     spec 名含正则元字符不再放大匹配集（同向 fail-open 的另一失真形态，
     本侧已修；event_bus 同名方法委托本实现，两路径同口径）。
+
+    add-harness-adapter-layer 5.1：车道前缀 patterns 改经 current adapter
+    （``worktree_pgrep_patterns``，claude 值 ``{impl,verify,repair}-
+    <re.escape(spec)>-`` 与原字面量循环逐字节全等，re.escape 转义已收进
+    adapter）。
     """
+    # 函数内延迟解析：core.agent_runner 包初始化即拉入 runner 重链，
+    # admin_monitor 不可成为其导入下游（同 proc_utils.is_claude_process 理由）。
+    from core.agent_runner.harness import current_worktree_pgrep_patterns
+
     try:
-        for prefix in ("impl", "verify", "repair"):
-            # spec 名先做正则元字符转义（item 780797acccdb）：pgrep 的
-            # pattern 按正则解释，spec 名含 . + 等元字符时匹配集被放大
-            # （fail-open：无驱动 spec 被误判有存活子进程，压制
-            # orphaned_state/stuck 检测）。前缀互撞仍按上方处置记录 defer。
-            pattern = f"{prefix}-{re.escape(spec_name)}-"
+        for pattern in current_worktree_pgrep_patterns(spec_name):
+            # 前缀互撞（spec 名互为前缀）仍按上方处置记录 defer。
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
                 capture_output=True,

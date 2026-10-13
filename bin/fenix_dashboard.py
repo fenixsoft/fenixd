@@ -132,6 +132,12 @@ def cmd_list_projects() -> int:
 
 def get_active_agents():
     """获取活跃的 claude agent 进程"""
+    # add-harness-adapter-layer 5.1：agent 识别名集合经 current adapter
+    # （process_patterns，claude 值与原字面量 "claude" 全等）。函数内延迟
+    # 解析：bin 入口不提前拉 core.agent_runner 包初始化链。
+    from core.agent_runner.harness import current_process_patterns
+
+    agent_names = set(current_process_patterns())
     try:
         # 用 pid,pcpu,pmem,args 而非 aux（code-review item 7f4f7d70a4ce）：
         # aux 的 START 列对运行超 24h 的进程输出两段（如「Sep 25」），固定
@@ -151,7 +157,7 @@ def get_active_agents():
             # "claude " 会漏计无参数启动的裸 `claude` 进程——其命令行恰以
             # .../claude 结尾、不含 "claude "；改取首段命令的 basename
             # 精确判断（node 包装进程、ps 头行等非 claude 可执行不误计）
-            if parts[3].split()[0].rsplit("/", 1)[-1] != "claude":
+            if parts[3].split()[0].rsplit("/", 1)[-1] not in agent_names:
                 continue
             pid = parts[0]
             cpu = parts[1]

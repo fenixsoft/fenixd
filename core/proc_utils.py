@@ -41,10 +41,19 @@ def is_claude_process(pid_str: str) -> bool:
     2026-09-02）。清扫豁免（worktree_manager._kill_worktree_strays 与
     v2_dev_server._worktree_has_live_referencing_process）共用此判定。
     """
+    # add-harness-adapter-layer 5.1：识别名集合经 current adapter
+    # （process_patterns，claude 值与原字面量 ("claude", "claude.exe") 全等）。
+    # 函数内延迟解析：core.agent_runner 包初始化即拉入 runner 重链，本模块是
+    # 纯工具层不可成为其导入下游（harness.one_shot 的 guard_killpg 反向 lazy
+    # import 同此理由）。
+    from core.agent_runner.harness import current_process_patterns
+
     try:
         with open(f"/proc/{pid_str}/cmdline", "rb") as f:
             argv0 = f.read().split(b"\0", 1)[0]
-        return os.path.basename(argv0.decode("utf-8", "replace")) in ("claude", "claude.exe")
+        return os.path.basename(argv0.decode("utf-8", "replace")) in tuple(
+            current_process_patterns()
+        )
     except (OSError, IndexError):
         return False
 
