@@ -38,7 +38,31 @@ def _resolve_project_root() -> tuple:
     """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--project-root", dest="project_root", default=None)
-    args, _ = parser.parse_known_args()
+    args, unknown = parser.parse_known_args()
+    # code-review 8acd5e209ae2：parse_known_args 会把拼错的 --project-root
+    # （如 --project-roots / --projet-root）静默丢弃并回退 FENIX_PROJECT_ROOT /
+    # cwd 解析——cwd 恰为另一个已初始化的 fenixd 项目时，supervisor 会成功
+    # 启动并看护错误项目且无任何告警，运维脚本上静默错绑比快速失败危害大。
+    # 本脚本不向 daemon 转发任何未知参数（start_daemon 固定 argv），故只对
+    # 「形似 --project-root 拼写近似」的未知参数快速失败：分隔符归一后同时
+    # 命中 proj / root 两段即判定（覆盖 --project-roots、--project_root、
+    # --projet-root 等变体），其余未知参数维持原有静默忽略不误伤。
+    suspect_args = []
+    for arg in unknown:
+        if not arg.startswith("-"):
+            continue
+        normalized = arg.lower().replace("-", "").replace("_", "")
+        if "proj" in normalized and "root" in normalized:
+            suspect_args.append(arg)
+    if suspect_args:
+        print(
+            f"FATAL: 未识别的参数 {suspect_args}——疑似 --project-root 拼写错误，"
+            "按原逻辑会被静默丢弃并回退 FENIX_PROJECT_ROOT/cwd 解析项目根，"
+            "存在看护错误项目的风险，故拒绝启动。\n"
+            "  请改用 --project-root <项目根>（本脚本仅识别该参数）。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if args.project_root:
         return Path(args.project_root).expanduser().resolve(), "参数 --project-root"
     env_root = os.environ.get("FENIX_PROJECT_ROOT")
@@ -70,6 +94,16 @@ DRAIN_MARGIN_SECONDS = 120
 # 刻意不共用同一常数。
 SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS = 60
 SUPERVISOR_STARTUP_FAIL_THRESHOLD = 3
+
+# ── 兜底收尸等待上限（code-review 9266d3b0bff3）──────────────────────────
+# 监视循环外的兜底 proc.wait() 原为无超时：daemon 陷不可中断睡眠（D 状态，
+# NFS/存储抖动常见诱因）时 SIGKILL 也无法终结，supervisor 将无限期阻塞——
+# 此后 stop/restart 请求无人消费，看门狗职责静默失效。改为带上限的等待
+# 循环（单轮 DAEMON_REAP_WAIT_SECONDS × 至多 DAEMON_REAP_WAIT_ATTEMPTS 轮），
+# 超限仍收不到尸则记 CRITICAL 放弃看护退出。刻意不重走拉起：旧 daemon 仍
+# 存活并持有 daemon 单例锁，新拉起必秒退、被误计启动失败致假熔断。
+DAEMON_REAP_WAIT_SECONDS = 60
+DAEMON_REAP_WAIT_ATTEMPTS = 5
 
 
 def _fuse_marker() -> Path:
@@ -672,6 +706,29 @@ def _terminate_daemon(proc, sigkill_wait: int) -> None:
             )
 
 
+def _wait_daemon_exit(proc):
+    """带上限的兜底收尸：wait(timeout) 循环，超限返回 None（放弃收尸）。
+
+    code-review 9266d3b0bff3：监视循环外的兜底 proc.wait() 原为无超时——
+    daemon 陷不可中断睡眠（D 状态）时 SIGKILL 也无法终结，supervisor 无限期
+    阻塞在这一行，此后 stop/restart 请求无人消费、看门狗职责静默失效。改
+    为每轮 wait(timeout=DAEMON_REAP_WAIT_SECONDS)、至多
+    DAEMON_REAP_WAIT_ATTEMPTS 轮：单轮超时记日志留痕后继续等；累计
+    DAEMON_REAP_WAIT_ATTEMPTS × DAEMON_REAP_WAIT_SECONDS 仍收不到尸则返回
+    None，由调用方放弃看护退出（不重走拉起，理由见常数处注释）。
+    """
+    for attempt in range(1, DAEMON_REAP_WAIT_ATTEMPTS + 1):
+        try:
+            return proc.wait(timeout=DAEMON_REAP_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            log(
+                f"daemon pid {proc.pid} not reaped {DAEMON_REAP_WAIT_SECONDS}s after "
+                f"kill (reap wait {attempt}/{DAEMON_REAP_WAIT_ATTEMPTS}, "
+                "uninterruptible sleep?) — keep waiting"
+            )
+    return None
+
+
 # ── supervisor 单实例锁（code-review 8b00c1d597c4）────────────────────────
 # 锁 fd 保持全局引用，进程生命周期内持有，退出时 OS 自动释放（daemon 侧
 # _acquire_singleton_lock 同款形态）。双活 supervisor 的危害链：第二个实例
@@ -847,8 +904,10 @@ def main():
 
         rc = proc.poll()
         if rc is None:
-            # 监视循环内已处理退出，兜底再等
-            rc = proc.wait()
+            # 监视循环内已处理退出，兜底再等（code-review 9266d3b0bff3：原为
+            # 无超时 proc.wait()，daemon 陷 D 状态时看门狗永久停摆——改为带上
+            # 限的等待循环，见 _wait_daemon_exit）
+            rc = _wait_daemon_exit(proc)
         alive_seconds = time.monotonic() - started_ts
         log(
             f"daemon exited (rc={rc}, restart={'yes' if restart else 'auto'}, "
@@ -860,6 +919,20 @@ def main():
             RESTART_REQUEST.unlink()
         except OSError:
             pass
+
+        if rc is None:
+            # 兜底收尸超限（code-review 9266d3b0bff3）：不再无限阻塞（否则
+            # stop/restart 请求无人消费、看门狗静默失效），也不重走拉起——
+            # 旧 daemon 仍存活并持有 daemon 单例锁，新拉起必秒退、被误计启动
+            # 失败致假熔断。放弃该 proc 句柄退出看护，交人工/进程管理器接管
+            #（进程离开 D 状态后由 init 收尸；重启 supervisor 即恢复托管）。
+            log(
+                f"CRITICAL: daemon pid {proc.pid} 终止信号后 "
+                f"{DAEMON_REAP_WAIT_ATTEMPTS * DAEMON_REAP_WAIT_SECONDS}s 仍不可收尸"
+                "（不可中断睡眠？）——supervisor 放弃看护并退出。"
+                "请人工处理该进程（排查存储/NFS 抖动），随后重启 supervisor 恢复托管。"
+            )
+            break
 
         if STOP_FLAG.exists():
             log("stop flag present — supervisor exiting")
