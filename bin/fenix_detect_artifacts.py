@@ -117,7 +117,13 @@ def detect_build_artifacts(project_root: Path) -> dict:
         try:
             # errors="replace" 同 package.json 分支：非 UTF-8 编码不抛 UnicodeDecodeError
             content = pyproject.read_text(encoding="utf-8", errors="replace")
-            if "[build-system]" in content or "[tool.poetry]" in content:
+            # 段头判定（code-review item 85ae09234ddc）：逐行 strip 后以 startswith
+            # 匹配段头，替代全文子串包含——注释/字符串值里提到这些字样的行不再
+            # 被误判为 Python 项目在册（误判仅影响 dist/_build 归因文案，仍须收紧）
+            if any(
+                row.strip().startswith(("[build-system]", "[tool.poetry]"))
+                for row in content.splitlines()
+            ):
                 # Python 项目的常见产物目录。site-packages/ 不列为候选：根级出现
                 # site-packages/ 多为手工摆放的第三方包或 venv 残留而非构建产物，
                 # 而下游 ArtifactPathMatcher 会把命中路径当产物走 merge 自愈/重建
@@ -164,9 +170,10 @@ def detect_build_artifacts(project_root: Path) -> dict:
                         # tag 后紧跟 -/_/数字/v数字；纯子串会误命中 distribution、
                         # redistribute、buildkit-docs 等普通词
                         re.search(r"(?:^|[-_])(?:release|build|dist)(?:[-_]|\d|v\d)", name)
-                        # "v" 须带版本语义（如 v1.2.3 / project-v2.0.tar.gz）：
-                        # 裸字母 v 子串会误命中 level-data、novel 等任意含 v 的文件名
-                        or re.search(r"v\d", name)
+                        # "v" 须带版本语义且与上方分支同边界：v 前是行首或 -/_
+                        # （如 v1.2.3 / project-v2.0.tar.gz）；无边界 v\d 子串会误命中
+                        # srv12-logs、conv2-data、env5-backup 等普通文件名
+                        or re.search(r"(?:^|[-_])v\d", name)
                     )
                 ):
                     paths_found.add(name)  # 具体文件名（如 release-1.0.zip），非通配

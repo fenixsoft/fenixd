@@ -13,6 +13,10 @@ export const PAGE_LABELS = {
   verify: '验证',
   quality: '质量',
   approval: '审批',
+  // misc 键为历史遗留，勿按字面「杂项」理解：页签原为「其他」杂项段，
+  // add-spec-archive（1ccca2fc）将其更名「归档」后键名保留未迁——键同时是
+  // 后端 _SYNC_PAGE_KEYS（config_admin.py）的同步页标识，改名牵动后端契约。
+  // 现语义为「归档 + 真相源」页签（archive 与 knowledge 同步键均挂 misc）。
   misc: '归档',
   system: '系统',
   'self-evolution': '自进化',

@@ -58,7 +58,7 @@ CACHE_HIT_INPUT_RATIO = 0.5  # 命中须达到当轮 input_tokens 的比例下�
 
 
 def _build_request(provider: dict) -> dict:
-    """构造带 cache_control 的请求体（system 段作缓存前缀）。
+    """构造带 cache_control 的请求体（user 消息前缀作缓存段）。
 
     模型名取 provider 的 model，缺失时抛 ValueError 走确定性 JSON 判据输出。
     """

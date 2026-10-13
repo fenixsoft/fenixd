@@ -53,6 +53,12 @@ export function snapshotPanelDirty(): () => void {
  * 在场面板统一复位（snapshotPanelDirty）；PromptsPanel 等自持草稿的面板可传入
  * probe 按既有判脏口径注册（probe 每次实时求值，忽略内部 dirtyRef）。
  * 卸载自动注销。
+ *
+ * 复位契约：reset 只清 dirtyRef，对 probe 型面板是有意的 no-op——其脏状态由
+ * 面板自身在保存成功后同步草稿与基线/服务端快照来归零（PromptsPanel 的
+ * refetch/syncSavedExtra、ProjectProfilePanel 的基线回打），不经
+ * snapshotPanelDirty 统一复位；探针实时比对口径下外部清脏反而会掩盖仍与
+ * 落盘不一致的草稿（见 ProjectProfilePanel 对单一脏布尔连带清标记的取舍）。
  */
 export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolean) => void } {
   const dirtyRef = useRef(false);

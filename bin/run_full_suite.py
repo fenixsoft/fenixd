@@ -250,7 +250,19 @@ def run_suite(
     # stdout/stderr 键仍按截断保留（展示用途），完整失败集合经 failed_tests 键给出。
     failed_tests = collect_failed_tests(out, err)
     # 超时约定退出码 124（与 timeout(1) 惯例一致），正常按 pytest 实际退出码。
-    exit_code = 124 if timed_out else (rc if rc is not None else 1)
+    # 负 rc = 进程被信号终止（如 OOM killer 的 SIGKILL → -9）：按 shell 惯例
+    # 归一为 128+signum（code-review item a9c0cbc6eef8）——负值原样经
+    # sys.exit 会按 C 惯例对 256 取模回绕成无关退出码（-9 → 247），进程
+    # 实际退出码与 JSON 文档的 exit_code 将不一致；归一后两者同值。
+    # returncode 键保留原始负值（含基线侧）供诊断。
+    if timed_out:
+        exit_code = 124
+    elif rc is None:
+        exit_code = 1
+    elif rc < 0:
+        exit_code = 128 + abs(rc)
+    else:
+        exit_code = rc
     summary = {
         "elapsed_seconds": elapsed,
         "timed_out": timed_out,
@@ -423,8 +435,14 @@ class SuiteLock:
 
     def __exit__(self, *exc):
         try:
+            try:
+                if self._file is not None:
+                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                # 解锁失败（fd 已失效等罕见情形）不得连坐跳过 close——
+                # 句柄仍须回收，否则文件描述符泄漏到进程退出。
+                pass
             if self._file is not None:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
                 self._file.close()
         except OSError:
             pass
@@ -611,6 +629,11 @@ def main(argv=None) -> int:
         "hang_test": current.get("hanging_test"),
         "exit_code": current.get("exit_code"),
         "elapsed_seconds": current.get("elapsed_seconds"),
+        # 失败清单对非基线模式同样透出（code-review item 9df86151381a）：
+        # run_suite 已在截断前自完整输出提取 failed_tests，--json 消费方
+        # 不必重新解析套件输出。键名与基线分支对齐（基线分支下方对同键
+        # 的重复赋值同源同值，行为不变）。
+        "current_failures": current.get("failed_tests", []),
     }
 
     if args.baseline:
