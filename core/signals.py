@@ -40,6 +40,22 @@ SCHEDULING_KICK_DIR = ".fenix/scheduling_kick"
 _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
+def _existing_created(req_path) -> str | None:
+    """回读既有请求文件的 created 字段，供冲突返回对齐同族冲突语义。
+
+    读失败（文件被消费侧 rename 走 / 并发空占位 / JSON 损坏 / 编码异常）
+    一律保持 None，不抛异常（code-review item 9a1084ab005e：原三处逐字
+    重复的回读块收口于此，口径调整只改一处）。
+    """
+    try:
+        existing = json.loads(req_path.read_text(encoding="utf-8"))
+        if isinstance(existing, dict):
+            return existing.get("created")
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    return None
+
+
 def request_admin_invoke(
     project_root,
     spec: str,
@@ -99,13 +115,7 @@ def request_admin_invoke(
         # 读既有 created 供返回（对齐同族 request_run_cancel /
         # request_spec_delete / request_spec_approve_push 冲突语义；
         # 读失败保持 None，不抛异常）
-        existing_created = None
-        try:
-            existing = json.loads(req_path.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                existing_created = existing.get("created")
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            pass
+        existing_created = _existing_created(req_path)
         return {
             "ok": False,
             "found": True,
@@ -142,13 +152,7 @@ def request_admin_invoke(
     except FileExistsError:
         # 冲突时同样回读既有 created（对齐同族冲突语义）；并发空占位或
         # 读失败保持 None，不抛异常
-        existing_created = None
-        try:
-            existing = json.loads(req_path.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                existing_created = existing.get("created")
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            pass
+        existing_created = _existing_created(req_path)
         return {
             "ok": False,
             "found": True,
@@ -172,18 +176,19 @@ def request_admin_invoke(
         # inode：路径已消失（占位被消费、通道空闲，下一轮扫描拾取换入的
         # 完整内容）或仍是自家 inode → 安全换入；是他家 inode → 不覆盖，
         # unlink 临时文件按 conflict 返回（回读 created 对齐同族冲突语义）。
+        # 残余窗口（code-review item bc3025810235）：stat 复核与下方
+        # os.replace 之间仍残留微秒级窄窗——复核通过后自家占位仍可能被
+        # 消费侧 rename 走、他人 O_EXCL 重建占位，此刻 replace 会覆盖他人
+        # 请求（对方已收到 ok 却被静默丢弃）。盲 replace 已消除，窗口由
+        # 「整个写期间」收窄到微秒级，属有意收窄而非根除；根除须改
+        # os.link（O_EXCL 语义换入）或对请求文件引入 flock 协调消费侧，
+        # 均涉及消费侧协议改动，1s 扫描粒度下概率极低，维持现状。
         try:
             current_ino = req_path.stat().st_ino
         except OSError:
             current_ino = None
         if current_ino is not None and current_ino != placeholder_ino:
-            existing_created = None
-            try:
-                existing = json.loads(req_path.read_text(encoding="utf-8"))
-                if isinstance(existing, dict):
-                    existing_created = existing.get("created")
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                pass
+            existing_created = _existing_created(req_path)
             try:
                 os.unlink(tmp_path)
             except OSError:
