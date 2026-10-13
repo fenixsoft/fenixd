@@ -28,7 +28,10 @@ export function agentsMdSectionText(root: string, readFile: (p: string) => strin
     return "";
   }
   if (!body.trim()) return "";
-  return `<system-reminder>\nInstructions from: AGENTS.md\n\n${body.replace(/\s+$/, "")}\n</system-reminder>`;
+  // 正文中的闭合标记须转义（仅补一个反斜杠，语义仍可读），否则会提前终结
+  // <system-reminder> 包裹，其后内容脱离注入语境。
+  const safe = body.replace(/<\/system-reminder>/g, "<\\/system-reminder>").replace(/\s+$/, "");
+  return `<system-reminder>\nInstructions from: AGENTS.md\n\n${safe}\n</system-reminder>`;
 }
 
 /** 本插件消费的 systemPrompt 服务面（结构最小集，避免直接依赖 cordis 类型）。 */
@@ -44,16 +47,23 @@ interface AgentsMdScope {
 }
 
 /**
- * 注册 AGENTS.md 分区：text 在每次 system prompt assembly 时求值，读当前
- * 工作目录（headless spawn 已保证 cwd = 工作区）的 AGENTS.md。order 取官方
- * FILE_REFERENCE 档位（工作区文件引用语义）。
+ * 注册 AGENTS.md 分区：text 在每次 system prompt assembly 时求值；root 缺省时
+ * 读当前工作目录（隐式依赖 headless spawn 保证 cwd = 工作区），显式传 root 可
+ * 在非 headless 或 chdir 后的装配场景固定工作区根。order 取官方 FILE_REFERENCE
+ * 档位（工作区文件引用语义），宿主未提供该档位时 fail-fast。
  */
-export function registerAgentsMdSection(ctx: AgentsMdContext): void {
+export function registerAgentsMdSection(ctx: AgentsMdContext, root?: string): void {
   ctx.inject(["systemPrompt"], (scope) => {
+    const order = scope.systemPrompt.getSectionOrder("FILE_REFERENCE");
+    if (!Number.isFinite(order)) {
+      throw new Error(
+        `systemPrompt.getSectionOrder("FILE_REFERENCE") 必须返回有限数值，收到 ${String(order ?? null)}（宿主缺该档位？）`,
+      );
+    }
     scope.systemPrompt.section({
       name: AGENTS_MD_SECTION_NAME,
-      order: scope.systemPrompt.getSectionOrder("FILE_REFERENCE"),
-      text: () => agentsMdSectionText(process.cwd()),
+      order,
+      text: () => agentsMdSectionText(root ?? process.cwd()),
     });
   });
 }
