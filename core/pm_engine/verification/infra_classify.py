@@ -23,6 +23,10 @@ from core.state_machine import FROZEN_FIELD
 # 共用同一导出常量（同 pipeline.py item 17e5cb41806e 惯例，防措辞漂移静默失配）。
 from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
 
+# code-review item e23d6ef56ed8：场景分类白名单与裁决证据分类共享同一导出常量
+# （core.verdict_check），防分类枚举增删时本处字面量静默漏改。
+from core.verdict_check import VERDICT_CLASSES
+
 from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
 
 # 回拨审计留痕信号类型（幂等键前缀，admin_store DISPOSITION 按 reclassify_key 去重）
@@ -239,6 +243,16 @@ def _record_infra_failure(
         if not refund_key:
             entry0 = pipeline._context.state_machine.read_one(spec_name) or {}
             refund_key = str(entry0.get("implementer_run") or "")
+        if not refund_key:
+            # 空锚点（run_id 未传且 STATE 条目 implementer_run 为空）：budget 侧
+            # 契约「无锚点仍退款（调用方保证单轮单次）」，退款幂等完全由调用方
+            # 纪律保证且台账 run_id 失去定位键，留 warning 排查线索
+            # （code-review item f2b25a17959d）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"infra 退款无幂等锚点（refund_key 为空，单轮单次依赖调用方保证，"
+                f"台账 run_id 定位键缺失）'{spec_name}': reason={reason}",
+            )
         # 失败台账 run_id：事件标识（如 verifier attempt run），缺省回退退款锚点
         ledger_key = ledger_run_id or refund_key
 
@@ -344,6 +358,10 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         errors = int(summary.get("errors", 0) or 0)
         total = int(summary.get("total", 0) or 0)
     except (TypeError, ValueError):
+        # summary 数值字段脏值=本轮不可判定：与函数内其余非同因分支一致回落
+        # 连续计数，避免脏报告轮夹在中间时前后同因失败跨轮累计到熔断阈值
+        # （code-review item 86a1aee32a50）。
+        _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     fail_total = failed + errors
     if passed != 0:
@@ -618,7 +636,7 @@ def _scenario_classification_distribution(pipeline, spec_name: str) -> dict:
     unclassified = sum(
         1
         for _sid, cls in failed
-        if not isinstance(cls, str) or cls not in ("product-bug", "test-defect", "flaky", "env")
+        if not isinstance(cls, str) or cls not in VERDICT_CLASSES
     )
     # 全场景缺陷判定：全部失败场景均为显式 test-defect/flaky 且 product-bug=0
     # （未显式分类 / 含 env / 含产品缺陷 → False，保守不改道）。
@@ -736,8 +754,18 @@ def reclassify_infra_rounds(
     store = AdminStore(project_root, logger)
     try:
         existing = store.read_records()
-    except Exception:
+    except Exception as e:
+        # 读失败保守按「未应用」继续（不新增失败返回形态，调用方解构不变），
+        # 但留 warning 排查线索：若此处读失败而后续 append 成功，重试同键会因
+        # 幂等键查不到而二次扣减（code-review item 811ef69c8cf1）。
         existing = []
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"infra 回拨幂等检查读 admin_store 失败（按未应用继续，幂等保证"
+                f"退化）'{spec_name}': reclassify_key={reclassify_key}: "
+                f"{type(e).__name__}: {e}",
+            )
     already_applied = any(
         rec.get("kind") == DISPOSITION
         and rec.get("signal_type") == RECLASSIFY_SIGNAL_TYPE
@@ -805,10 +833,14 @@ def reclassify_infra_rounds(
         }
     )
     if rec is None:
+        # 拒写分支同样补 status（code-review item 1e4a2eab58b4）：对齐 docstring
+        # 返回契约 {ok, fail_rounds, status, applied}，避免按键直取的调用方
+        # KeyError（与 n<=0 早退分支同惯例）。
         return {
             "ok": False,
             "reason": "audit append rejected",
             "fail_rounds": current,
+            "status": entry.get("status", ""),
             "applied": 0,
         }
 
