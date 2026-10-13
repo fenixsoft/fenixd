@@ -24,6 +24,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -133,7 +134,8 @@ def _file_write_lock(project_root: Path, filename: str):
 
     lock_dir = Path(project_root) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / filename, "w")  # noqa: SIM115 — 生命周期=with
+    fd = os.open(lock_dir / filename, os.O_RDWR | os.O_CREAT, 0o644)
+    fh = os.fdopen(fd, "r+")  # noqa: SIM115 — 生命周期=with
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         yield
@@ -394,7 +396,10 @@ def _disputed_targets(escalated: dict, stale_days: int) -> dict[str, str]:
                     (str(entry.get("first_seen") or ""), str(fp)[:8])
                 )
     return {
-        rel: _disputed_line(min(seen for seen, _ in items) or today, [fp for _, fp in items])
+        rel: _disputed_line(
+            min((seen for seen, _ in items if seen), default="") or today,
+            [fp for _, fp in items],
+        )
         for rel, items in by_page.items()
     }
 
@@ -1335,7 +1340,7 @@ def run_audit(
                 f"ka-fix-{int(time.time())}",
                 repair_rounds=0,  # 机械自修无 run 语境：只验不改（显式声明）
             )
-            new_violations = [v for v in violations if v not in before_violations]
+            new_violations = [v for v in violations if str(v) not in before_violations]
             if not new_violations:
                 summary = (
                     f"悬空溯源 {sum(1 for f in fixed if '悬空' in f)} 处"
@@ -1613,7 +1618,7 @@ def run_audit(
     # 行硬顶）。写盘与提交同取蒸馏锁（同机械段/转写段/仲裁消费段口径），写完
     # 走既有 [fenix] knowledge 提交路径自提交——框架自己的注记改动不留工作区，
     # 避免成为下一轮 audit 的 dirty carryover 告警源。
-    stale_days = cfg.get("escalated_stale_days", ESCALATED_STALE_DAYS)
+    stale_days = cfg["escalated_stale_days"]
     desired = _disputed_targets(escalated, stale_days)
     annotated = {p["rel"] for p in scan["pages"] if _DISPUTED_RE.search(p["text"])}
     with knowledge_distill_lock(project_root):
