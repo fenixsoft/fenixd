@@ -1901,7 +1901,7 @@ def generate_fix_spec(
     draft_root = (
         code_review_dir(project_root)
         / "drafts"
-        / f"{name}.{os.getpid()}.{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        / f"{name}.{os.getpid()}.{now_local().strftime('%Y%m%d%H%M%S%f')}"
     )
     try:
         draft_root.mkdir(parents=True, exist_ok=False)
