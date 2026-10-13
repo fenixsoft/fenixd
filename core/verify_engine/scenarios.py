@@ -103,10 +103,21 @@ def _schema_version_notes(raw: list) -> list[str]:
             continue
         if ver != SCHEMA_VERSION:
             sid = item.get("id") or f"[{i}]"
-            notes.append(
-                f"场景'{sid}'声明未知 schema_version={ver!r}，已按旧 schema "
-                f"迁移尝试，仍失败则以下为字段差异清单"
-            )
+            if type(ver) is int and ver > SCHEMA_VERSION:
+                # 声明版本新于当前实现（如新版写出的文件被旧版读）：措辞对齐
+                # migrate_frozen_contract 对更新版本 fail-closed 的「不降级」
+                # 语义（code-review item 02ad2158ef64），不把「更新 schema」
+                # 误描述为「旧 schema 迁移尝试」误导 admin 修复方向。
+                notes.append(
+                    f"场景'{sid}'声明更新 schema_version={ver!r}"
+                    f"（当前 {SCHEMA_VERSION}），无降级迁移路径，"
+                    f"仍失败则以下为字段差异清单"
+                )
+            else:
+                notes.append(
+                    f"场景'{sid}'声明未知 schema_version={ver!r}，已按旧 schema "
+                    f"迁移尝试，仍失败则以下为字段差异清单"
+                )
     return notes
 
 
@@ -142,7 +153,7 @@ def prepare_scenarios_for_write(raw: list) -> list:
 
 
 def frozen_contract_version(scenarios: list) -> int:
-    """冻结集条目级 ``contract_version`` 的最小值（缺失/非整型视为 1）。
+    """冻结集条目级 ``contract_version`` 的最小值（缺失/非整型/非正整型视为 1）。
 
     冻结集按统一生成批次落盘，条目版本不一致本身即异常——取 **min** 保守
     迁移（任一旧条目都走迁移，D1 口径）。空集返回 1（同缺失语义），由
@@ -163,7 +174,12 @@ def frozen_contract_version(scenarios: list) -> int:
         # type(...) is int（code-review item 380e0508406d）：bool 是 int 子类，
         # isinstance 会把 contract_version:true 当成 1 放行；精确类型拒绝 bool，
         # 与「非整型→1」的文档语义一致。
-        versions.append(v if type(v) is int else 1)
+        # max(v, 1)（code-review item 03b0371dc1fb）：负/零整型不是合法契约
+        # 版本号，与「非整型→1」同口径归一为 1，兑现本函数 docstring
+        # 「Returns: 整型版本号（>= 1）」的值域承诺；正版本号（含新于目标
+        # 版本的更新声明）原样返回，migrate_frozen_contract 对更新版本的
+        # fail-closed 路由不受影响。
+        versions.append(max(v, 1) if type(v) is int else 1)
     return min(versions) if versions else 1
 
 
@@ -961,31 +977,49 @@ class TestStep:
 
     @classmethod
     def from_dict(cls, d: dict) -> "TestStep":
+        value = _str_field(d, "value")
+        if d.get("action") == "navigate":
+            # navigate URL strip 归一（code-review item 80d3812803c5）：
+            # _validate_web 以 strip 后的值做 ^https?:// 形态判据，运行层
+            # browser 消费的却是 value 本体——带首尾空白的 URL 可过验收、
+            # 运行期被浏览器以 invalid URL 拒绝导航造成场景伪失败。与
+            # _find_step_url_candidate 的 strip 先例（item 48320e6f6abb）
+            # 同口径：校验判据与运行期实际消费值一致。仅 navigate 收口，
+            # type/select 等输入值的首尾空白语义不变。
+            value = value.strip()
         return cls(
             action=d["action"],
-            # target/value/url 参与词表校验（必填判空、.strip() 形态检查），
-            # 非字符串形态经 _str_field 归一，不制造校验期 AttributeError
+            # 字符串字段统一经 _str_field 归一（code-review item 33c887286b3d）：
+            # 除参与词表校验的 target/value/url 外，description/dialog/
+            # prompt_text/cwd/stdin/as/method/body/body_type 同为运行层字符串
+            # 消费字段（runner 统一经 to_dict 回环消费），数字/布尔/对象等非
+            # 字符串形态（如 stdin: 123、body_type: {}）原样透传会穿透验收期、
+            # 拖到 cli_runner/api_runner/browser 运行层才失败，错误定位质量差；
+            # 归一后形态偏差在验收期以 str 形态进入词表/必填校验或运行层字段级
+            # 报错，与 _str_field 的字段级报错设计目标一致，不制造校验期
+            # AttributeError。command（str|list）与 env/headers（dict）形态
+            # 不同，保持原样直读。
             target=_str_field(d, "target"),
-            value=_str_field(d, "value"),
+            value=value,
             screenshot=d.get("screenshot", False),
-            description=d.get("description", ""),
-            dialog=d.get("dialog", ""),
+            description=_str_field(d, "description"),
+            dialog=_str_field(d, "dialog"),
             # [fenix-ignore:56c49c2fafae] 唯一消费点 browser.py mock_api 已对 status 做 int() 强转+非法值结构化失败（不静默回退 200），数字字符串运行期可正常 mock，所述伪失败不存在；按建议回退 0 反而复活已修复的「4xx mock 静默变 200」缺陷
             # [fenix-ignore:5a8a2db866a5] or 兜底混同显式 0/None 属纯风格提示且行为无害：status 语义与 timeout/duration 的 has-value 口径不同——0 非合法 mock 状态码且 to_dict 对 status 走真值过滤（显式 0 本就不参与序列化），唯一消费点已 int() 强转兜底，改写收益低于扰动受守卫行的风险
             status=d.get("status", 0) or 0,
-            prompt_text=d.get("prompt_text", "") or "",
+            prompt_text=_str_field(d, "prompt_text"),
             command=d.get("command"),
-            cwd=d.get("cwd", ""),
+            cwd=_str_field(d, "cwd"),
             env=d.get("env") or {},
-            stdin=d.get("stdin", ""),
+            stdin=_str_field(d, "stdin"),
             # timeout/duration 可转性守卫（_num_field）：非数值串报字段级错误
             timeout=_num_field(d, "timeout"),
-            as_=d.get("as", ""),
-            method=d.get("method", ""),
+            as_=_str_field(d, "as"),
+            method=_str_field(d, "method"),
             url=_str_field(d, "url"),
             headers=d.get("headers") or {},
-            body=d.get("body", ""),
-            body_type=d.get("body_type", ""),
+            body=_str_field(d, "body"),
+            body_type=_str_field(d, "body_type"),
             duration=_num_field(d, "duration"),
         )
 
@@ -1733,6 +1767,16 @@ def salvage_scenarios_file(filepath) -> tuple[list[TestScenario], dict]:
     # 「解包后仍不合法 MUST 照常拒收」，调用方按原错误进入 replan）。
     scenarios = validated_scenarios_from_array(entries)
 
+    # 刻意 raw 落地、不走 prepare_scenarios_for_write（code-review item
+    # 7808da60b983）：salvage 是「顶层形状归位」的最小干预救援，只解包不改写
+    # 条目内容——条目重验已在此处完成（能落地的 web 场景必已带合法 navigate，
+    # 不存在「下次加载重复合成 navigate」情形），原始条目经既有读端（schema
+    # 迁移对当前字段形态零干扰直通 + pipeline 契约迁移纯内存幂等盖戳）读时
+    # 行为不变，未知顶层字段零丢失（write_scenarios_array docstring 同口径）。
+    # 已知代价：能过重验但缺版本戳的条目落盘后仍无戳，下次加载重复走零干扰
+    # 迁移，无正确性危害；写端归一化（旧字段迁移 + 恒盖 schema_version/
+    # contract_version 双戳）由 save_scenarios / 场景补齐写回路径承担，两条
+    # 写路径的口径差异在此显式登记。
     write_scenarios_array(entries, path)
     info["rewritten"] = True
     return scenarios, info
