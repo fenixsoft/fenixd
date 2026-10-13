@@ -482,17 +482,26 @@ class DshEventProjector:
     def _project_error(self, entry: Dict[str, Any]) -> List[Dict[str, Any]]:
         """error → error 终态（append_run_error 同族形状：error 为 str）。
         探针形态：``{"type":"error","message":...}``（--session-id 采纳
-        失败等）。"""
+        失败等）；结构化形态 ``{"type":"error","error":{code,message}}``。
+        code 拼进口径串（``dsh: <code>: <message>``，与 _project_status
+        turn_end 错误分支同口径）供 stderr 分类/circuit 归因——丢码即
+        归因退化（BUG-02）。"""
         message = entry.get("message")
-        if message is None:
-            err = entry.get("error")
-            if isinstance(err, dict):
+        err = entry.get("error")
+        code = None
+        if isinstance(err, dict):
+            code = err.get("code")
+            if message is None:
                 message = err.get("message")
-            elif isinstance(err, str):
-                message = err
+        elif isinstance(err, str):
+            message = err
+        if code is None:
+            code = entry.get("code")
         rendered = message if isinstance(message, str) and message else (
             json.dumps(entry, ensure_ascii=False)
         )
+        if code:
+            rendered = f"dsh: {code}: {rendered}"
         self.saw_terminal = True
         return [
             {
@@ -668,6 +677,7 @@ class DshAdapter:
         from core.agent_env_keys import (
             AGENT_RUN_BANNED_ENV_KEYS,
             dsh_banned_env_keys,
+            is_dsh_banned_env_key,
         )
 
         env = os.environ.copy()
@@ -680,9 +690,13 @@ class DshAdapter:
             for key in AGENT_RUN_BANNED_ENV_KEYS:
                 env.pop(key, None)
 
+        # 覆写键按**键自身**匹配 dsh banned 口径（is_dsh_banned_env_key），
+        # 不按 ambient banned 清单成员判断——daemon 环境无 ANTHROPIC_* 键时
+        # 清单为空，覆写的 ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL 会原样回灌
+        # （BUG-01）。consumed 两键是 provider 链渲染来源，同样不透传。
         consumed = ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY")
         for key, value in (req.env_overrides or {}).items():
-            if key in consumed or key in banned:
+            if key in consumed or is_dsh_banned_env_key(key):
                 continue
             env[key] = value
 

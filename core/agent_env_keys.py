@@ -36,15 +36,23 @@ DSH_BANNED_ENV_EXACT_KEYS = frozenset({
 })
 
 
+def is_dsh_banned_env_key(key):
+    """键级谓词：单键是否命中 dsh 防串扰剔除口径。
+
+    env_overrides 覆写键的再注入守卫必须按**覆写键自身**判定（ambient 无
+    该键时 banned 求值清单不含它，按清单成员判断会把 ANTHROPIC_* 覆写键
+    原样回灌进 dsh 子进程——BUG-01 根因）；ambient 剔除（dsh_banned_env_keys）
+    与覆写键过滤共用同一谓词，口径单一来源。
+    """
+    return key in DSH_BANNED_ENV_EXACT_KEYS or key.startswith(
+        DSH_BANNED_ENV_PREFIXES
+    )
+
+
 def dsh_banned_env_keys(env):
     """返回 env 中命中 dsh 防串扰剔除口径的键清单（DshAdapter.build_env 消费）。
 
     与 AGENT_RUN_BANNED_ENV_KEYS 的静态 frozenset 不同，dsh 口径含前缀匹配，
     需要对实际 env 求值；返回 list（确定性顺序：env 迭代序）。
     """
-    return [
-        key
-        for key in env
-        if key in DSH_BANNED_ENV_EXACT_KEYS
-        or key.startswith(DSH_BANNED_ENV_PREFIXES)
-    ]
+    return [key for key in env if is_dsh_banned_env_key(key)]
