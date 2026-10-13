@@ -256,10 +256,15 @@ def render_report(project_root) -> str:
         runs = data.get_runs(proot)
     except Exception:
         runs = []
-    running = [r for r in runs if r["status"] in ("running", "empty")]
+    # 行级降级（code-review item adfac6f5950d）：get_runs 整体已 try/except，
+    # 行消费同样按 .get 缺键折叠（缺 status 不计入活跃、缺 agent_type 计为
+    # "?"），个别行缺键不得 KeyError 放大为主入口 exit 1 的整报告失败——
+    # 与本文件其余数据源逐项降级的策略一致。
+    running = [r for r in runs if r.get("status") in ("running", "empty")]
     by_type = {}
     for r in running:
-        by_type[r["agent_type"]] = by_type.get(r["agent_type"], 0) + 1
+        at = r.get("agent_type") or "?"
+        by_type[at] = by_type.get(at, 0) + 1
 
     # ── 守护进程 / 告警 / 全景 ──
     daemon_line = "🟢 运行中" if daemon == "running" else "🔴 已停止"
@@ -296,6 +301,7 @@ def render_report(project_root) -> str:
     if not active:
         lines.append("  （无活跃 SPEC）")
     summaries = {}  # 取一次快照：明细行渲染与 _collect_signals 共用（见其 summaries 注释）
+    summary_errors = []  # 概要读取失败的 SPEC（在信号汇总补降级提示，见 except 分支注释）
     for name, entry in sorted(active.items(), key=_active_sort_key):
         st = entry.get("status", "?")
         icon = STATUS_ICONS.get(st, "❓")
@@ -306,8 +312,13 @@ def render_report(project_root) -> str:
             pri = "?"
         try:
             s = data.spec_summary(proot, name, entry)
-        except Exception:
+        except Exception as e:
+            # 明细行省略进度属预期降级；但 _collect_signals 复用同一快照，该
+            # SPEC 的预算耗尽/剩 1 次信号会随之沉默（code-review item
+            # 1d3791fb00ef：异常被静默吞掉形成无提示盲区）——收集后在信号
+            # 汇总补一条降级提示，异常类型与消息截断保留供定位。
             s = None
+            summary_errors.append(f"{name}（{type(e).__name__}: {str(e)[:80]}）")
         summaries[name] = s
         seg = [f"{icon} {name}", f"P{pri}", st]
         if s:
@@ -354,6 +365,12 @@ def render_report(project_root) -> str:
     signals = _collect_signals(
         proot, entries, active, daemon, approve_mode, promote_mode, alerts, summaries
     )
+    if summary_errors:
+        # 概要读取失败的 SPEC 在明细行只表现为省略进度，但预算信号已缺失；
+        # 显式补一条信号，避免静默盲区（code-review item 1d3791fb00ef）。
+        signals.append(
+            ("warn", "SPEC 概要读取失败（该 SPEC 预算信号缺失）：" + "；".join(summary_errors))
+        )
     lines.append("")
     lines.append("-- 信号汇总（供分诊；🔴/⚠️=问题，ℹ️=提示，已知等待不算问题）--")
     if signals:
