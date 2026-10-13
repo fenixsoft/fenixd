@@ -4,11 +4,11 @@
   "description": "fenixd 的 dsh 通道 Bundle：Task 工具族 / 三守卫 / 非交互审批 / 模型显式配置 / AGENTS.md 载体（spec: add-fenix-dsh-bundle）",
   "type": "module",
   "private": true,
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./modelConfig": "./src/modelConfig.ts",
-    "./approval": "./src/approval.ts",
+    ".": "./dist/index.js",
+    "./modelConfig": "./dist/modelConfig.js",
+    "./approval": "./dist/approval.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -24,9 +24,12 @@
     "@deepseek-ai/cordis": "~4.0.4"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
     "vitest": "^3.2.4",
     "js-yaml": "^4.1.0"
   }

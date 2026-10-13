@@ -62,6 +62,19 @@ prepare:
   # 主路径 = worktree 内 git 跟踪的 bin/ 脚本；fallback = .fenix/bin 运行态
   # 副本（覆盖 worktree 落在旧提交、尚无该脚本的窗口）。
   - run: python3 bin/fixture_scheduling_showcase.py --reset || python3 .fenix/bin/fixture_scheduling_showcase.py --reset
+  # add-fenix-dsh-bundle BUG-01 修复（2026-10-13 验证打回第 1 轮）：Bundle 装载
+  # 入口必须是 JS——Node 拒绝对 node_modules 下文件做 type stripping
+  # （ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING）。此处 fresh 构建 dist/
+  # （全局 dist/ 不入库决策不变：每轮验证从 src 重建，永远打新鲜产物，不经
+  # git 携带陈旧 bundle）。同时本步在 bundle 目录内装出 node_modules（pnpm v10
+  # autoInstallPeers 默认开，官方 peer 精确 0.2.0-rc.2）——场景 profile 以
+  # link: 软链装消费本 bundle，其 @deepseek-ai/* 导入经 realpath 解析回这份
+  # bundle 本地副本（file: 拷贝装两态皆坏：无 deps=peer 断链、有 deps=官方包
+  # hoist 进 profile 根致运行时双副本身份分裂，实證见 rereview 记录）。
+  - run: pnpm install --prefer-offline || pnpm install --prefer-offline --ignore-scripts
+    cwd: dsh-bundle
+  - run: pnpm build
+    cwd: dsh-bundle
 
 serve:
   # command + static_scope=worktree：serving worktree 内起真实全栈实例

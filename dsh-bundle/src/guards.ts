@@ -177,12 +177,12 @@ export function evaluatePreToolCall(
 
 // ── dsh 装配：tools/pre-execute 守卫 ───────────────────────────────────────
 
-interface PreToolExec {
+export interface PreToolExec {
   name: string;
   arguments: Record<string, unknown>;
 }
 
-type PreToolDecision = { kind: "allow" } | { kind: "deny"; reason: string; info?: { name: string; code: string } };
+export type PreToolDecision = { kind: "allow" } | { kind: "deny"; reason: string; info?: { name: string; code: string } };
 
 /**
  * 注册三守卫：tools/pre-execute waterfall，prepend 抢在其它监听者（含

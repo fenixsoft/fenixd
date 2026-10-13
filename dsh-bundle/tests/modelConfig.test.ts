@@ -113,9 +113,10 @@ describe("apply 装配面", () => {
     expect(Object.keys(provided)).toEqual(["fenixModelConfig"]);
   });
 
-  it("主插件：注册恰好四工具 + pre-execute 守卫 + 审批校验", () => {
+  it("主插件：注册恰好四工具 + pre-execute 守卫 + 审批校验 + AGENTS.md 分区", () => {
     const registered: Array<{ name: string }> = [];
     const events: Array<{ event: string; options?: { prepend?: boolean } }> = [];
+    const injected: string[][] = [];
     applyMain({
       tools: { register: (d) => registered.push(d as { name: string }) },
       on: (event: string, _listener: unknown, options?: { prepend?: boolean }) => {
@@ -123,9 +124,14 @@ describe("apply 装配面", () => {
         return undefined;
       },
       get: () => ({ policy: "never" }),
+      inject: (deps: string[], _fn: (scope: unknown) => void) => {
+        injected.push(deps);
+        return undefined;
+      },
     });
     expect(registered.map((t) => t.name)).toEqual(["TaskCreate", "TaskUpdate", "TaskGet", "TaskList"]);
     expect(events).toEqual([{ event: "tools/pre-execute", options: { prepend: true } }]);
+    expect(injected).toEqual([["systemPrompt"]]);
   });
 
   it("主插件：审批策略非 never 时启动期抛错", () => {
@@ -134,6 +140,7 @@ describe("apply 装配面", () => {
         tools: { register: () => {} },
         on: () => {},
         get: () => ({ policy: "ask" }),
+        inject: () => {},
       }),
     ).toThrow(/无人值守零交互阻塞/);
   });
