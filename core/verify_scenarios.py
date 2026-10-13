@@ -46,8 +46,17 @@ from core.fs_utils import atomic_write_text
 # 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
 _logger = logging.getLogger("fenixd.verify_scenarios")
 
-# tasks.md 修复段标题正则（与 pm_engine._VERIFY_FIX_SECTION_RE 同源）
-_VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
+# tasks.md 修复段标题正则（code-review 18825900bb22：此处为唯一权威定义，
+# pm_engine._VERIFY_FIX_SECTION_RE 自本模块导入——修复段标题文案调整只改
+# 这一处，防两份同源拷贝各自漂移致 is_repair_round 与 pm_engine 侧判定分叉）。
+VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
+
+# 持久化集条目 kind 合法值白名单（code-review c2c987e7bf43：本模块加载净化/
+# 写端校验/diff 侧 kind 刷新共四处判定收口单一来源）。与 core.verify_engine.
+# scenarios 的 VALID_KINDS 同源；不直接导入是因 ``from core.verify_engine.
+# scenarios import ...`` 会先执行包 __init__、连带拉起 VerifyEngine——core 内
+# 对 verify_engine 一律函数内懒导入，两侧集合调整时须同步。
+VALID_KINDS = ("web", "cli", "api")
 
 # 修复段中声明「新增交付范围」的匹配：带「新增」字样且非纯修复的条目。
 # 设计 D2：仅当修复段声明了新增交付时，planner 才允许为该范围追加场景。
@@ -72,7 +81,11 @@ _REPAIR_PHRASE_RE = re.compile(
 # 前半句否定影响）紧邻否定前缀＝否定表述（「未新增场景」「无新增交付
 # 范围」「不增加功能」），按非声明处理，不得误开修复轮扩容闸门。多字
 # 否定词须排在单字前（正则交替从左到右，否则「不再」会被「不」截断、
-# 尾锚 ``$`` 失配漏判）。
+# 尾锚 ``$`` 失配漏判）。已知限制（code-review e7c716ff3f6f，设计取舍非
+# 缺陷）：``$`` 尾锚要求否定词紧邻动词，被衔接字隔开时不识别（如「没有
+# 为 X 新增场景」会被计为新增交付声明）；条款分隔符不含顿号「、」，顿号
+# 分句场景下否定窗口会跨子句。维持紧邻语义——开放衔接字窗口须与多字否
+# 定词排序约束并存、易把真实声明也误排除，此处仅留痕供后续权衡。
 _NEGATED_DELIVERY_RE = re.compile(
     r"(?:没有|不再|暂不|不曾|并未|并不|并非|无需|无须|不需|未|无|不)$"
 )
@@ -198,7 +211,14 @@ class ScenarioSet:
 
 
 def scenarios_path_for(project_root, spec_name: str) -> Path:
-    """返回 ``.fenix/verify-progress/<spec>/scenarios.json`` 绝对路径。"""
+    """返回 ``.fenix/verify-progress/<spec>/scenarios.json`` 绝对路径。
+
+    形状防护（code-review cd8041b34ff3）：spec_name 为空或含路径分隔符/「..」
+    时会拼出 verify-progress 目录之外的读写路径（含伴生锁文件），不合法即抛
+    ValueError，不拼逃逸路径。
+    """
+    if not spec_name or "/" in spec_name or "\\" in spec_name or ".." in spec_name:
+        raise ValueError(f"非法 spec 名（为空或含路径分隔符/..）: {spec_name!r}")
     return Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
 
 
@@ -294,7 +314,7 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
             # 记原始数组下标（非已保留计数），供 admin 按日志定位文件行（f79a6e2da286）。
             rejected.append(f"[{i}]非对象")
             continue
-        if item.get("kind") not in ("web", "cli", "api"):
+        if item.get("kind") not in VALID_KINDS:
             # b25b28a4ed8a：缺/非法 kind 兜底归类 web 保留在集（不再剔除，
             # 防存量无 kind 冻结集被清成空集后写回）；不写回文件。
             backfilled.append(str(item.get("id") or "?"))
@@ -361,7 +381,7 @@ def validate_scenario_entries(entry_dicts: list) -> list[str]:
         if not str(item.get("id") or "").strip():
             errors.append(f"场景集条目[{i}] 缺少非空 id")
         kind = item.get("kind")
-        if kind not in ("web", "cli", "api"):
+        if kind not in VALID_KINDS:
             errors.append(
                 f"场景集条目 '{sid}' 缺少合法 kind（收到 {kind!r}），"
                 f"无法路由到 Runner，属孤儿条目"
@@ -450,7 +470,7 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
         text = tasks_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    m = _VERIFY_FIX_SECTION_RE.search(text)
+    m = VERIFY_FIX_SECTION_RE.search(text)
     if not m:
         return None
     after = text[m.end() :]
@@ -586,7 +606,7 @@ def _kind_of(scenario: dict) -> str:
     """场景对象的 kind（multi-kind-report-compat：冻结条目携带 kind，
     读侧缺失缺省 web，存量冻结文件零迁移）。"""
     kind = scenario.get("kind") if isinstance(scenario, dict) else None
-    if kind not in ("web", "cli", "api"):
+    if kind not in VALID_KINDS:
         return "web"
     return str(kind)
 
@@ -595,7 +615,7 @@ def _legal_kind_of(scenario: dict) -> Optional[str]:
     """场景对象的 kind，仅当为合法值（web/cli/api）时返回；缺失/非法返回
     None（17250417a111：供既有条目保留冻结原值，不缺省改写 web）。"""
     kind = scenario.get("kind") if isinstance(scenario, dict) else None
-    if kind not in ("web", "cli", "api"):
+    if kind not in VALID_KINDS:
         return None
     return str(kind)
 
@@ -666,12 +686,29 @@ def _diff_planner_output_impl(
         # 确定性）——否则重复 id 原样写进 scenarios.json 成重复条目，
         # ids 集合与文件条目数不一致，下一轮 diff 表现随分支漂移。
         dedup_by_id: dict = {}
-        for s in planner_scenarios:
+        skipped: list[str] = []
+        for i, s in enumerate(planner_scenarios):
             # 移除声明条目（remove_reason 非空的不可执行形态）不入集，与
             # 下方有持久化集分支的 sid in reasons 跳过同口径——否则首轮
             # 写进 scenarios.json 成幽灵条目，下一轮被判无理由缺失。
             if isinstance(s, dict) and s.get("id") and not s.get("remove_reason"):
                 dedup_by_id[str(s["id"])] = s
+            elif not isinstance(s, dict):
+                skipped.append(f"[{i}]非对象")
+            elif not s.get("id"):
+                skipped.append(f"[{i}]缺 id")
+            else:
+                skipped.append(f"[{i}]{s.get('id')}（remove_reason 声明移除）")
+        if skipped:
+            # 剔除留痕（code-review 5a762fcbff17）：本分支没有有持久化集分支
+            # 的 missing→补齐路径兜底，静默跳过会让冻结集缩水且无法从日志
+            # 还原原因——与加载净化/写端校验的剔除留痕纪律对齐，含原始数组
+            # 下标供按日志定位。
+            _logger.warning(
+                "首轮场景集收敛跳过 %d 条 planner 条目（不入冻结集）: %s",
+                len(skipped),
+                "、".join(skipped),
+            )
         entries = [
             ScenarioEntry(
                 id=sid,
