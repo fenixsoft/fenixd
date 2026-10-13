@@ -204,6 +204,25 @@ def _prepare_run_valid(run) -> bool:
     return False
 
 
+def _prepare_cwd_bad_reason(cwd) -> str:
+    """prepare.cwd 非法判定（纯函数）：返回原因文案（合法为空串）。
+
+    loader 与 _run_prepare_steps_unlocked 共用（code-review item
+    75a115723804）：后者可被绕过 loader 的调用方（测试夹具、未来新入口）以
+    手工构造的 VerifyContract 直达，run 已复检而 cwd 此前未复检——绝对路径/
+    含 ".." 段的 cwd 会在 ``Path(project_root) / step.cwd`` 静默漂移到项目根
+    之外执行构建。判定口径单点维护，绕过 loader 的调用方获得同等防护。
+    """
+    if cwd is not None and not isinstance(cwd, str):
+        return "非字符串值（须为相对项目根的字符串路径）"
+    cand = cwd.strip() if isinstance(cwd, str) else ""
+    if cand.startswith("/"):
+        return "绝对路径（须为相对项目根的路径）"
+    if ".." in cand.split("/"):
+        return '含 ".." 段（不得逃出项目根）'
+    return ""
+
+
 @dataclass
 class PrepareStep:
     """一条构建步骤：``run`` 在 ``cwd``（相对项目根）下执行。"""
@@ -387,19 +406,16 @@ def _load_verify_contract_with_raw(
             # 失败归因与产物定位。
             raw_cwd = step.get("cwd")
             cand_cwd = raw_cwd.strip() if isinstance(raw_cwd, str) else ""
-            bad_cwd_reason = ""
-            if raw_cwd is not None and not isinstance(raw_cwd, str):
-                # cwd 类型守卫（code-review item 63d5e985b22d）：非字符串值
-                # （如 ``cwd: 5`` 或缩进错误写成的映射）旧实现被 str() 强转成
-                # "5"、"{'a': 1}" 字面量路径，随后以「第 N 步启动失败」等与
-                # 根因无关的运行期错误暴露——记 warning 后按空 cwd 回退项目根
-                # （走下方既有 bad_cwd_reason 路径），对齐 ready.url 同款
-                # 「告警＋回退」口径（item b26b723c2ec8）。
-                bad_cwd_reason = "非字符串值（须为相对项目根的字符串路径）"
-            elif cand_cwd.startswith("/"):
-                bad_cwd_reason = "绝对路径（须为相对项目根的路径）"
-            elif ".." in cand_cwd.split("/"):
-                bad_cwd_reason = '含 ".." 段（不得逃出项目根）'
+            # cwd 非法判定收口 _prepare_cwd_bad_reason（code-review item
+            # 75a115723804）：与 _run_prepare_steps_unlocked 共用同一守卫口径
+            # （非字符串值/绝对路径/含 ".." 段），文案单点维护。
+            # cwd 类型守卫（code-review item 63d5e985b22d）：非字符串值
+            # （如 ``cwd: 5`` 或缩进错误写成的映射）旧实现被 str() 强转成
+            # "5"、"{'a': 1}" 字面量路径，随后以「第 N 步启动失败」等与
+            # 根因无关的运行期错误暴露——记 warning 后按空 cwd 回退项目根
+            # （走下方既有 bad_cwd_reason 路径），对齐 ready.url 同款
+            # 「告警＋回退」口径（item b26b723c2ec8）。
+            bad_cwd_reason = _prepare_cwd_bad_reason(raw_cwd)
             if bad_cwd_reason and logger:
                 logger.warning(
                     "verify_contract",
@@ -509,15 +525,43 @@ def _load_verify_contract_with_raw(
                     f"处理）: {raw_cmd!r}",
                 )
             serve_data["cmd"] = ""
-        # port 是可选 legacy 端口提示：非正整数（如 port: auto）按无提示
-        # 回退 None，不得从 load_verify_contract 抛 ValueError——违背
-        # 「解析失败按无契约回退」约定（复用 _positive_int_or_default 范式）。
-        port = _positive_int_or_default(serve_data.get("port"), 0) or None
+        # port 是可选 legacy 端口提示：显式声明了非法值（非正整数，如
+        # port: auto、port: -1）记 warning 后按无提示回退 None（item
+        # 1ec46d9fe4b5，对齐同段 root/cmd 与 ready.expect/timeout 的
+        # 「告警＋回退」口径；仅键缺失时保持静默）——邻近扫描兜底以该提示
+        # 为锚，被静默吞掉后排查时看不到配置被忽略的证据。不得从
+        # load_verify_contract 抛 ValueError——违背「解析失败按无契约回退」
+        # 约定（复用 _positive_int_or_default 范式）。
+        raw_port = serve_data.get("port")
+        if (
+            raw_port is not None
+            and _positive_int_or_default(raw_port, 0) == 0
+            and logger
+        ):
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml serve.port 非法（须为正整数，按无 legacy 端口"
+                f"提示处理）: {raw_port!r}",
+            )
+        port = _positive_int_or_default(raw_port, 0) or None
         serve = ServeSpec(
             kind=serve_data["kind"],
             root=str(serve_data.get("root") or ""),
             cmd=str(serve_data.get("cmd") or ""),
             port=port,
+        )
+    elif isinstance(serve_data, dict) and logger:
+        # serve.kind 守卫（code-review item b976596e5edb）：serve 段为映射但
+        # kind 非法（如大小写笔误 Static）此前整段静默落 serve=None、回退
+        # commands.start 旧行为，单独使用 load_verify_contract 的调用方
+        # （serving 运行时路径）零提示——记 warning（含原文 repr，文案对齐
+        # _raw_serve_section_errors）对齐本函数其余片段「告警＋忽略该片段」
+        # 口径；消费期 selfcheck_contract_light 的大声失败兜底不变。
+        logger.warning(
+            "verify_contract",
+            f"verify.yaml serve 段非法（serve.kind 非法: "
+            f"{serve_data.get('kind')}（应为 static 或 command），按无 serve "
+            f"段处理）: {serve_data!r}",
         )
     # ready 段（code-review item c2d140a513b9）：先类型校验再取值——ready: 为
     # 标量/字符串（如 ready: /health）时 .get 抛 AttributeError 从本函数直接
@@ -562,14 +606,18 @@ def _load_verify_contract_with_raw(
     # （"404"、"/{'a': 1}"），probe_ready 对着无意义路径轮询满 timeout 后报
     # 「就绪探针超时」，用户难定位到 ready.url 类型写错——记 warning（含原文
     # repr）后回退缺省 "/"，与同段 expect/timeout 的「告警＋回退缺省」处理
-    # 同口径（item 97f9f0e1a56e）。
+    # 同口径（item 97f9f0e1a56e）。显式声明为空串/纯空白同样处理（item
+    # 64d8c89e428f）：旧实现是合法 str、通过类型守卫，随后下方
+    # ``raw_url or "/"`` 静默换缺省、无任何留痕。
     raw_url = ready_data.get("url")
-    if raw_url is not None and not isinstance(raw_url, str):
+    if raw_url is not None and (
+        not isinstance(raw_url, str) or not raw_url.strip()
+    ):
         if logger:
             logger.warning(
                 "verify_contract",
-                f"verify.yaml ready.url 非法（须为字符串路径，回退缺省 \"/\"）: "
-                f"{raw_url!r}",
+                f"verify.yaml ready.url 非法（须为非空字符串路径，回退缺省 "
+                f"\"/\"）: {raw_url!r}",
             )
         raw_url = None
     # expect 取值可观测性（code-review item 300c19e55fde）：探测基于 urlopen，
@@ -1380,7 +1428,24 @@ def _run_prepare_steps_unlocked(
                     f"{repr(step.run)[:200]}",
                 )
             continue
-        cwd = (Path(project_root) / step.cwd) if step.cwd else Path(project_root)
+        # cwd 形态守卫（code-review item 75a115723804）：本函数可被绕过
+        # loader 的调用方（测试夹具、未来新入口）以手工构造的 VerifyContract
+        # 直达（同上方 run 守卫动机），绝对路径/含 ".." 段的 cwd 会在
+        # ``Path(project_root) / step.cwd`` 静默漂移到项目根之外执行构建——
+        # 与 loader 共用 _prepare_cwd_bad_reason 判定，判非法记 warning 后
+        # 按空 cwd 回退项目根，对齐 loader 的「告警＋回退」口径。
+        bad_cwd_reason = _prepare_cwd_bad_reason(step.cwd)
+        if bad_cwd_reason and logger:
+            logger.warning(
+                "verify_contract",
+                f"prepare 第 {i} 步 cwd 非法（{bad_cwd_reason}，按空 cwd "
+                f"回退项目根）: {step.cwd!r}",
+            )
+        cwd = (
+            Path(project_root)
+            if bad_cwd_reason or not step.cwd
+            else (Path(project_root) / step.cwd)
+        )
         cmd = step.run if isinstance(step.run, list) else str(step.run)
         use_shell = not isinstance(step.run, list)
         try:
@@ -1989,14 +2054,17 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
     # URL，probe_ready 恒异常直至超时且用户难定位根因。
     ready_path = ready.url if ready.url.startswith("/") else f"/{ready.url}"
     url = f"{base_url.rstrip('/')}{ready_path}"
-    deadline = time.time() + max(1, ready.timeout)
+    # deadline 用单调时钟（code-review item 95c98a055b78）：对齐
+    # _discover_port/_probe_in_budget 的既有纪律——墙上时钟在 NTP 校时回拨时
+    # 会拉长就绪等待窗、跳进时骤缩误报超时。
+    deadline = time.monotonic() + max(1, ready.timeout)
     last_err = ""
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         # 轮询按时限钳制（code-review item 3898f0d542ad）：urlopen 超时按剩余
         # 预算取 min(3.0, …)、sleep 钳制为剩余预算，对齐 _discover_port.
         # _probe_in_budget 纪律（旧实现二者固定 3s/1s，timeout=60 时最坏约
         # 63-64s，突破声明时限）。
-        budget = deadline - time.time()
+        budget = deadline - time.monotonic()
         try:
             req = Request(url, method="GET", headers={"User-Agent": "fenix-verify-contract"})
             with urlopen(req, timeout=min(3.0, budget)) as resp:
@@ -2009,7 +2077,7 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
                 last_err = f"状态码 {resp.status} != {ready.expect}"
         except Exception as e:
             last_err = str(e)[:120]
-        time.sleep(min(1.0, max(0.0, deadline - time.time())))
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
     return False, f"就绪探针超时（{ready.timeout}s）: {url} — {last_err}"
 
 
