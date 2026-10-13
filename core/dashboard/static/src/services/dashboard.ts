@@ -1,5 +1,10 @@
 // Fenix Dashboard v3 API 封装 — 复用 v1 后端（/api/*，同源直连，开发期经 umi proxy）
 
+// SPEC 状态值域单源在 pages/projects/listFilters.ts（LIST_STATUS_KEYS），
+// 此处仅引入其字面量类型做 STATUS_META 键域的编译期穷尽约束（type-only，
+// 运行时零依赖，不改变本模块零 import 的形态）。
+import type { ListStatus } from '../pages/projects/listFilters';
+
 export type DaemonHealth = string;
 
 export interface ProjectSummary {
@@ -1156,6 +1161,10 @@ export async function unregisterRunWatch(runId: string, project: string, cid: st
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';
 
+// 键域编译期锁定：satisfies Record<ListStatus, …> 强制键集与 listFilters 的
+// LIST_STATUSES 值域完全一致——缺键（漏配元数据）与多键（值域已删除/拼写错）
+// 均在此处编译报错；导出签名保持 Record<string, …> 不变。声明键序无消费语义
+// （全库仅经 statusMeta() 索引访问），与 LIST_STATUSES 的顺序差异不影响行为。
 export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = {
   drafted: { label: '草稿', tone: 'muted' },
   ready: { label: '就绪', tone: 'info' },
@@ -1169,7 +1178,7 @@ export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = 
   pushed: { label: '已推送', tone: 'good' },
   // add-spec-review-gate D1：方案评审中（dedicated tone 独立于其他 info 暖色）
   reviewing: { label: '评审中', tone: 'aqua' },
-};
+} satisfies Record<ListStatus, { label: string; tone: StatusTone }>;
 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {
   return STATUS_META[status] || { label: status || '未知', tone: 'muted' };
