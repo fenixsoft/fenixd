@@ -68,3 +68,7 @@ core/dashboard/static/src/components/claude-msg/tailwind.gen.css
 # maintree_untracked_stray_stale 散件告警，2026-10-12 前置免疫断根——
 # 散件判定只认无 ignore 规则命中，目录级一条覆盖全部未来会话）
 .debug/
+
+# dsh-bundle 本地隔离
+.dsh-test/
+dsh-bundle/node_modules/
