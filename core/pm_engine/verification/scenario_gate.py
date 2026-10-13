@@ -27,6 +27,12 @@ def _atomic_write_text(path: Path, content: str) -> None:
     名保证 rename 前目标不变、rename 后内容完整。任何写失败都在 finally
     清理残留临时文件后原样上抛，由调用点按各自语义留痕（各写点日志级别/
     文案不同，收敛后调整原子写实现只改这一处）。
+
+    持久性边界（code-review item a18b40f1af36）：只 fsync 临时文件、不 fsync
+    父目录——SIGKILL/进程崩溃场景已足够（rename 前内容必已完整落盘）；极端
+    断电下目录项可能未持久化，rename 或丢失（目标缺失/回退旧版）。各写点
+    均为可重生成/可重写产物，不追断电级 durability；目录 fsync 在 Windows
+    不可用，故不做平台分支补齐。
     """
     tmp_fd, tmp_path_str = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
@@ -266,6 +272,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         }
 
     # ── 剔除留痕（第一遍，3.4 既有语义：超本轮 20% ERROR 升级）──
+    # code-review item 5ea8a25aeeae：本段比例基准为 planner 原始条目数
+    # （len(planner_scenarios)），与下方 3.9 合并统计（以写回前最终合法集
+    # len(final_valid) 为基准、两遍剔除合并）口径不同且有意并存——同轮两段
+    # 日志可能一段判超、一段判未超，排障勿据本段单边下结论。
     if rejected:
         reject_note = "、".join(rejected)
         total = len(planner_scenarios) or 1
@@ -274,7 +284,9 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         log_fn(
             "pm_engine",
             f"场景写前预校验剔除 {len(rejected)}/{len(planner_scenarios)} "
-            f"条非法条目（{'超本轮20%' if ratio > 0.2 else '未超20%'}），"
+            f"条非法条目（基准=planner 原始条目数，"
+            f"{'超本轮20%' if ratio > 0.2 else '未超20%'}；与 3.9 合并口径"
+            f"「写回前最终合法集」基准不同，两套口径有意并存），"
             f"合法部分照常执行: {reject_note}",
         )
 
@@ -361,6 +373,17 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # 回归面丢失。优先从上一轮全量备份 _scenarios_full.json 取回被丢弃
         # 场景的原始定义。
         missing_ids = {e.id for e in diff.unreasoned_missing}
+        # code-review item d41d5e55b933：id 缺失/为空的条目原先被静默丢弃
+        # （前置 validate_scenario_dicts 下合法条目恒有 id、该分支不可达；
+        # 若校验器放松 id 要求则成静默缩小验证集的暗道），补 WARNING 留痕。
+        idless = [s for s in valid_planner if isinstance(s, dict) and not s.get("id")]
+        if idless:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"场景补齐分支剔除 id 缺失/为空条目 {len(idless)} 条 "
+                f"'{spec_name}'（不进补齐写回，缩小本轮验证集；前置校验下"
+                f"不应出现）",
+            )
         reconciled = [
             s
             for s in valid_planner
