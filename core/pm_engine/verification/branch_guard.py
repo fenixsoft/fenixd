@@ -118,14 +118,22 @@ def _branch_commit_count(pipeline, result) -> int | None:
             ["git", "rev-list", "--count", f"{base}..{branch}"],
             capture_output=True,
             text=True,
+            # 显式 UTF-8（与 _tasks_md_relint_from_branch、
+            # worktree_manager/queries.py 既有修复同口径）：text=True 缺省按
+            # locale 解码，非 UTF-8 locale 下非 ASCII 输出抛 UnicodeDecodeError。
+            encoding="utf-8",
+            errors="replace",
             timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
             cwd=root,
         )
+        if r.returncode != 0:
+            return None
+        # int 解析纳入 try（docstring fail-open 契约）：returncode==0 但 stdout
+        # 混入非数字内容（如 git 被包装脚本注入告警行）时 int() 抛 ValueError，
+        # 同样按失败方向返回 None，不沿调用链抛穿。
+        return int(r.stdout.strip() or "0")
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
-    if r.returncode != 0:
-        return None
-    return int(r.stdout.strip() or "0")
 
 
 def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
@@ -196,6 +204,10 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
                 ["git", "-C", str(worktree), "status", "--porcelain"],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（与 _tasks_md_relint_from_branch 同口径）：防
+                # 非 UTF-8 locale 下非 ASCII 输出抛 UnicodeDecodeError。
+                encoding="utf-8",
+                errors="replace",
                 timeout=GIT_SUBPROCESS_TIMEOUT_SECONDS,
             )
             if r.returncode != 0:
@@ -286,7 +298,13 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     kind_by_path: dict = {}
     if decl_source != "extracted":
         for e in entries or []:
-            kind_by_path[e["path"]] = e["kind"]
+            # 条目形状防御（与 _disputed_deliverables/_implementer_zero_change
+            # 的载荷防御同口径）：非 dict 或缺 path 跳过；kind 缺省按 "new"，
+            # 与下方 kind_by_path.get(p, "new") 的回退语义一致，防 KeyError
+            # 逸出守卫。
+            if not isinstance(e, dict) or not e.get("path"):
+                continue
+            kind_by_path[e["path"]] = e.get("kind", "new")
     if not branch:
         # 无分支无法校验存活交付物：保守放行（与既有零变更哨共用缺失判定），
         # 交由零变更哨/merge 流程兜底
