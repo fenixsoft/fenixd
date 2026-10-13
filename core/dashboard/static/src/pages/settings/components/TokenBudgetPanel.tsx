@@ -306,6 +306,8 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 rules={[
                   { required: true, message: '请输入 higher 档阈值' },
                   POSITIVE_INT_RULE,
+                  // 同上口径（code-review item 5caf752e76e9）：上界拦截走 rules，max 仅作输入辅助
+                  { type: 'integer', min: 1, max: 10000, message: 'higher 档阈值须为 1-10000 的正整数' },
                   ({ getFieldValue }) => ({
                     validator(_, value) {
                       const full = getFieldValue('scale_precheck_full');
@@ -337,6 +339,8 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 rules={[
                   { required: true, message: '请输入 full 档阈值' },
                   POSITIVE_INT_RULE,
+                  // 同上口径（code-review item 5caf752e76e9）：上界拦截走 rules，max 仅作输入辅助
+                  { type: 'integer', min: 1, max: 10000, message: 'full 档阈值须为 1-10000 的正整数' },
                   ({ getFieldValue }) => ({
                     validator(_, value) {
                       const higher = getFieldValue('scale_precheck_higher');

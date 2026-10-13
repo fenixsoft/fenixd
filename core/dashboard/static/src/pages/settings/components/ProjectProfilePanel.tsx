@@ -172,9 +172,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       // 项目视图。静默放弃，视图让给切项目后的 config 回填（保存守卫可拦跨
       // 项目错写，此处守视图与守卫口径对齐）。
       if (projectRef.current !== project) return;
-      // description 为可选字段：空值时视为失败阻断保存，不得以 undefined 回填草稿
-      // （比照 PromptsPanel 跨项目错写防护的 data 判空口径）
-      if (result.ok && result.description != null) {
+      // description 为可选字段：空值（undefined/null/空串）一律视为失败阻断保存，
+      // 不得以空值回填草稿覆盖既有简介（比照 PromptsPanel 跨项目错写防护的
+      // data 判空口径；后端空输出已走 {error} 分支，真值判断兼防契约漂移）
+      if (result.ok && result.description) {
         // 先落盘再改本地状态：保存失败（父级返回 false，已由父级 toast）时
         // 不得 setDescription，否则本地简介与服务器漂移且用户无从察觉。
         const saved = await onSave({ description: result.description });
