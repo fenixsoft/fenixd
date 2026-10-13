@@ -82,11 +82,15 @@ ADR-269 裁定「门禁与项目约定走入库 CLAUDE.md」。claude 通道原�
 **AGENTS.md**（`dsh-agent-instructions`，以 durable user 消息注入 `<system-reminder>…Instructions
 from: AGENTS.md…</system-reminder>`，同内容去重）。变体落地：
 
-- **机制**：仓库根 `AGENTS.md → CLAUDE.md` 软链（git 原生支持 symlink），单一真相源，两通道读同一份内容；
-- **实测**：软链下注入消息含完整 CLAUDE.md 正文且仅一条（去重生效）；
+- **机制**：仓库根 `AGENTS.md` 为**实体文件**，内容与 `CLAUDE.md` 逐字节一致（sha256 全等）。
+  不以软链落地的原因：fenixd 交付物守卫 `worktree_manager/queries.py file_exists_on_branch`
+  判 symlink（git mode 120000）非落地交付物，软链形态会被确定性打回。claude 通道读 CLAUDE.md、
+  dsh 通道读 AGENTS.md，两通道内容等价；
+- **实测**：实体文件下 DSH_HOME 隔离会话注入消息含完整 CLAUDE.md 正文且仅一条（去重生效）；
+  软链形态此前亦经真机实测注入等价（dsh 按路径读文件，两形态装载行为一致）；
 - **局限**：
-  - Windows 检出需 `core.symlinks=true` 且开发者模式，否则软链退化为普通文件或缺失——dsh 侧将
-    读不到指令（claude 侧不受影响），fenixd 的 Windows 环境不适用本变体，须改用部署层文件复制；
+  - 双拷贝漂移：AGENTS.md 与 CLAUDE.md 是两份独立文件，无软链的单一真相源保证——修订项目
+    约定时 MUST 同步两处（交付物守卫约束下的取舍，单通道场景以 CLAUDE.md 为权威源）；
   - dsh 的指令注入是「参考性 guidance」措辞（`may be relevant… do not override`），与 claude 的
     项目指令强度不同，依赖强约束的规则仍应以工具面（三守卫）兜底而非提示词。
 
