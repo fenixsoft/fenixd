@@ -41,13 +41,15 @@ from core.agent_runner.result_gate import (
     EvolutionResult,
     RegressionResult,
     SelfReviewResult,
+    # 私有名跨模块复用（code-review item f6581e73f967）：产物硬门实现留在
+    # result_gate，此处并入同源单条 import，增删导出只改这一处
+    _check_repo_code_review_artifact,
 )
 from core.code_review import (
     clear_pending_writeoff,
     resolve_snapshot,
     upsert_findings,
 )
-from core.agent_runner.result_gate import _check_repo_code_review_artifact
 from core.agent_runner.run_files import append_run_line
 from core.proc_utils import guard_killpg
 
@@ -207,24 +209,50 @@ def _unique_admin_run_id(runner, spec: str) -> str:
     秒级时间戳在「同 spec 并行多实例」（如 manual-intervention 与 blocked_stuck
     各一）下可能撞名：admin_disposition-<run_id>.json 实例文件与
     runs/admin-<run_id>.jsonl 会互相覆盖，与 fix-admin-run-blocks-mainloop D3
-    声称的「并行实例互不覆盖」相悖。对齐 _unique_code_review_run_id 的退避
-    形态：候选的处置实例文件或在飞 run 日志任一已存在，即追加 ``-<n>`` 退避
-    （n 从 1 起递增）。探测退避而非 O_CREAT|O_EXCL 申领：处置实例文件由
-    管理员按 prompt 注入的路径写入、读取即清理，抢先落申领占位文件会改变
-    该文件的写入时序与生命周期，故不做原子抢占。
+    声称的「并行实例互不覆盖」相悖。候选的处置实例文件或在飞 run 日志任一
+    已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。
+
+    申领即创建（code-review item 6e65b3298af8）：旧版探测-然后-返回在两个
+    同 spec 同秒并发实例下可同时通过探测、取得同一 run_id，处置文件与 run
+    jsonl 仍会互相覆盖。现仅对 runs/<candidate>.jsonl 以 ``O_CREAT|O_EXCL``
+    原子申领、输者退避下一候选（对齐 _unique_code_review_run_id 等三车道已
+    收敛的申领形态）——该文件本就由 _run_agent 经 append_run_line 追加创建
+    （O_APPEND 语义对空占位透明，runner.py planner 节流路径 run_file.touch
+    先例同型），提前落空占位不改变其生命周期；处置实例文件仍只探测不申领
+    （由管理员按 prompt 注入的路径写入、读取即清理，抢先落占位会改变该文件
+    的写入时序与生命周期，item d543e3aaf129 记载的取舍保持不变）。
     """
     base = f"admin-{spec}-{int(time.time())}"
     candidate = base
     n = 0
     runs_dir = runner.project_root / ".fenix" / "runs"
     while True:
-        if (
-            admin_disposition_path(runner.project_root, candidate).exists()
-            or (runs_dir / f"{candidate}.jsonl").exists()
-        ):
+        if admin_disposition_path(runner.project_root, candidate).exists():
             n += 1
             candidate = f"{base}-{n}"
             continue
+        try:
+            runs_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # 目录建不出（权限等）：退回既有探测语义——返回候选，落盘失败
+            # 由 _run_agent 的 run jsonl 写路径统一报错
+            return candidate
+        try:
+            fd = os.open(
+                runs_dir / f"{candidate}.jsonl",
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            # 已被并发实例申领 → 退避下一候选（申领即裁决，无再撞窗口）
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        except OSError:
+            return candidate
+        # 空 jsonl 占位即申领完成（无 manifest 类读者解析内容，事件流由
+        # _run_agent 追加），fd 即关
+        os.close(fd)
         return candidate
 
 
@@ -832,7 +860,11 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
                             pass
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError):
+        # item 37eebaf5faae：json.dumps 遇不可序列化值抛 TypeError（此前不在
+        # 收口内，归账可在 agent 工作完成后的收尾记账处崩溃）；ValueError 已
+        # 覆盖其子类 JSONDecodeError。写失败静默降级承诺闭合——只丢观测、
+        # 不炸收尾。
         pass
 
 
@@ -858,16 +890,22 @@ def _token_usage_fields(usage_info: dict) -> dict:
     """把 usage_info 归整为归账记录的 token 字段（input 含三类 cache）。
 
     字段值经 ``_safe_int`` 防御转换（code-review item dc8f109b8b60）：非数值
-    回落 0，不让畸形 usage 打挂维护 run 收尾。
+    回落 0，不让畸形 usage 打挂维护 run 收尾。cost_usd 同口径类型归一
+    （item 37eebaf5faae）：仅放行 int/float（bool 剔除——非成本语义），其余
+    转 None（与 session.py「网关未回传 → None」缺省一致），不可序列化异型
+    不再直达 json.dumps 抛 TypeError。
     """
     if not isinstance(usage_info, dict):
         usage_info = {}
+    cost = usage_info.get("cost_usd")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        cost = None
     return {
         "input_tokens": _safe_int(usage_info.get("input_tokens", 0) or 0)
         + _safe_int(usage_info.get("cache_creation_input_tokens", 0) or 0)
         + _safe_int(usage_info.get("cache_read_input_tokens", 0) or 0),
         "output_tokens": _safe_int(usage_info.get("output_tokens", 0) or 0),
-        "cost_usd": usage_info.get("cost_usd"),
+        "cost_usd": cost,
     }
 
 
