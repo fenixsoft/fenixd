@@ -1047,6 +1047,12 @@ class ProviderCircuit:
                 # 依赖外部触发点——惰性到期无人查询即停摆的既有缺口在冻结层同样存在，
                 # 定时器链在到期时主动唤醒派发闸门）。
                 self._schedule_unseal_wake(cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
+                # 剩余冻结秒在临界区内先算好（code-review item 276d53d0c5dd）：
+                # 锁外 f-string 内插读 _transient_break_until 会与并发解封线程
+                # 或他线程重冻结交错——展示值可能为负或反映新一次冻结的截止
+                # 时刻，与本次触发时的实际冻结窗口不符。仅日志/告警展示，
+                # 不参与闸门判定。
+                freeze_remaining_s = int(self._transient_break_until - now)
             # 触发时构建窗口内 attempt 聚合清单（design D2，对指纹归一化免疫）：
             # ERROR 日志与升级信号上下文并列注入，可定位风暴来源 provider/run。
             attempt_summary, truncated = self._build_attempt_summary(events)
@@ -1058,7 +1064,7 @@ class ProviderCircuit:
                 f"Global transient break TRIGGERED for fingerprint '{fingerprint}' "
                 f"({len(events)} failures within {int(window)}s window) — "
                 f"freezing all new run dispatch for "
-                f"{int(self._transient_break_until - now)}s "
+                f"{freeze_remaining_s}s "
                 f"(fix-provider-transient-backoff D4); failed attempts: "
                 f"{json.dumps(attempt_summary, ensure_ascii=False)}"
                 + (f"; truncated={truncated}" if truncated else ""),

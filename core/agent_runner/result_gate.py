@@ -1030,16 +1030,20 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except OSError as e:
-            # 文件系统级读取失败 ≠ JSON 损坏（与 _check_repo_code_review_artifact
-            # 的 unreadable 归因同取向）：只记 WARNING、不落 bad-json 告警，
-            # 避免环境侧异常冒用 violation_class 污染在途身份去重、误导排障方向。
+        except (OSError, UnicodeDecodeError) as e:
+            # 文件系统级读取失败 / 编码级损坏 ≠ JSON 损坏（与
+            # _check_artifact_json_file 的 unreadable 归因同口径、与
+            # _check_repo_code_review_artifact 的分类取向一致；code-review
+            # item dd9b8603791a）：只记 WARNING、不落 bad-json 告警，避免
+            # 环境/编码侧异常冒用 violation_class 污染在途身份去重、误导
+            # 排障方向。注意 UnicodeDecodeError 是 ValueError 子类，本分支
+            # MUST 列于其后 ValueError 分支之前。
             _logger.warning(
                 "quality-gates.json 读取失败（宽松对账，仅告警放行；非 JSON 损坏）"
                 ": %s (%s)", rel, e,
             )
             continue
-        except (ValueError, UnicodeDecodeError, RecursionError) as e:
+        except (ValueError, RecursionError) as e:
             # RecursionError：超深嵌套 JSON 会让 json.loads 抛 RecursionError
             # （非 JSONDecodeError/ValueError 子类，同 _check_artifact_json_file
             # 与 _check_repo_code_review_artifact 既有先例）——quality-gates.json
