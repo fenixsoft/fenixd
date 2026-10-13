@@ -152,6 +152,10 @@ class TestLegacyGraceExpiry:
         wt.mkdir(parents=True, exist_ok=True)
         wm._wt_branches[str(wt)] = "fenix/s1-100"
         wm._spec_locks.add("s1:implementer")
+        # 与生产登记形状同形（登记路径恒配 _lock_since；缺锁龄键在
+        # _release_spec_locks_core 按「无法证明陈旧」保守不摘，陈锁释放不了
+        # 遗产兜底也不会触发）
+        wm._lock_since["s1:implementer"] = time.time() - 3600
         touch_run_stream(tmp_path, "s1", "impl-s1-100", age=200)
         released = wm.refresh_locks()
         assert released == ["s1:implementer"]
