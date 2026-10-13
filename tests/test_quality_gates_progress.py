@@ -794,8 +794,13 @@ class TestFullSuiteTerminalExempt(QualityGatesTestBase):
         item = self._item(out, "full-suite")
         assert item["status"] == "skipped"
         assert item["detail"] == "SPEC 已终态，全量回归跟踪移交主树"
-        # done 含 skipped 的 full-suite：2 框架守卫 passed + 2 skipped
-        assert out["done"] == 4
+        # code-review 门同享终态豁免（条目 4b33094abd96）：终态 + 车道产物
+        # 不可见 → skipped 固定归因，不再恒 pending 拖低 done
+        cr = self._item(out, "code-review")
+        assert cr["status"] == "skipped"
+        assert cr["detail"] == "历史 SPEC 无车道记录，代码审查跟踪移交主树"
+        # done 含 skipped：2 框架守卫 passed + full-suite/code-review 各 1 skipped
+        assert out["done"] == 5
 
     def test_pushed_fresh_failed_product_still_skipped(self):
         # 2.2②：产物指纹恰好匹配（且产物 failed）→ 仍 skipped（豁免优先于产物）
