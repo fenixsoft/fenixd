@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -276,6 +277,21 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
         if raw:
             paths.append(_unquote_git_path(raw))
     return paths
+
+
+def _evidence_file_manifest(files: list) -> str:
+    """evidence「文件清单(N): a, b」段生成单源（code-review c65487d05d8a）。
+
+    写侧五个告警构造点（_write_alert / _write_untracked_alert /
+    _write_untracked_escalated_alert / _write_first_sight_alert /
+    _write_whitelist_untracked_alert）同源引用本函数，与解析侧
+    ``admin_actions.parse_stray_wip_manifest``（按「文件清单(N):」段级解析，
+    复发计数 _prior_stray_rounds 与认领执行器的清单来源）形成写读两端的
+    成对单源——任一侧调整段名/分隔符即与对侧显式对撞，不再出现单点内联
+    改动令 re.search 匹配不到、复发型告警静默降级为首次口径的失配形态。
+    段尾 ``; `` 分隔符由调用方拼接（本函数只产段本体）。
+    """
+    return f"文件清单({len(files)}): {', '.join(files) or '无'}"
 
 
 class MainTreeStrayWipSweeper:
@@ -761,8 +777,14 @@ class MainTreeStrayWipSweeper:
         返回 路径 → 匹配规则（未匹配 ``::`` 行归一为空串）；check-ignore 退出
         码语义特殊（0=存在 ignored，1=全部未 ignored），1 是合法终态——与
         ``_git`` 的「非零即失败」不同，此处只把超时/不可用/128 视为失败返回
-        None。规则行左段形如 ``<source>:<linenum>:<pattern>``，按前两个冒号切
-        分取 pattern（源文件路径含冒号的罕见形态由末列路径回映射兜住正确性）。
+        None。规则行左段形如 ``<source>:<linenum>:<pattern>``，以 ``:<行号>:``
+        左锚切段取 pattern（code-review item 003836038272）：source 路径含
+        冒号（Linux 合法）时按前两个冒号切分会把行号卷进 pattern 段——
+        pattern 段错位对散件流无害（``!`` 放行与 非``!`` 命中均不计入），但
+        白名单脱落流 _whitelist_untracked_entries 恰以 pattern 段以 ``!``
+        开头为放行判据，错位即放行项被误判已 ignore、脱落检测静默漏报；
+        ``:<数字>:`` 左锚正则取行号之后整段作 pattern，source 含冒号与
+        pattern 自身含冒号均不受影响，两个消费面同享正确 pattern。
         """
         try:
             res = subprocess.run(
@@ -790,9 +812,15 @@ class MainTreeStrayWipSweeper:
             if "\t" not in line:
                 continue
             left, echoed = line.split("\t", 1)
-            # [fenix-ignore:6db071347e0f] source 含冒号致 pattern 段错位不改变结果：唯一消费方 _untracked_stray_entries 对「! 放行」与「非 ! 命中」均不计入散件（豁免①②同效），非空 pattern 恒走豁免，散件清单与告警可见性不受影响（实测错位/正确两种解析 entries 全等）。
-            parts = left.split(":", 2)
-            detail[echoed] = parts[2] if len(parts) == 3 else ""
+            # pattern 段按「:<行号>:」左锚正则提取（code-review item
+            # 003836038272，取代 item 6db071347e0f 的「错位无影响」豁免：
+            # 该豁免的「唯一消费方 _untracked_stray_entries」前提已失效——
+            # detail dict 还有第二个消费方 _whitelist_untracked_entries，恰以
+            # pattern 段以 ``!`` 开头为放行判据，source 含冒号时 split 错位把
+            # 行号卷进 pattern 段，白名单脱落检测即静默漏报）。无 ``:<数字>:``
+            # 形态（含未匹配 ``::`` 行）归一为空串，与原兜底同口径。
+            m = re.match(r"^.*?:(\d+):(.*)$", left)
+            detail[echoed] = m.group(2) if m else ""
         return detail
 
     def _untracked_signal(self, entries: list, running_run_ids=()) -> dict:
@@ -1201,7 +1229,7 @@ class MainTreeStrayWipSweeper:
             f"项目名={self.project_root.name}; "
             f"目录集合={dir_path}; "
             f"条目数={len(files)}; 体积合计={int(total_bytes)}字节; "
-            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"{_evidence_file_manifest(files)}; "
             f"gitignore草案: {draft_line}（成因注释: {draft_comment}）; "
             f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入"
             f"（本集合未被 .gitignore 覆盖，否则不入散件清单）; "
@@ -1624,7 +1652,7 @@ class MainTreeStrayWipSweeper:
             f"项目名={self.project_root.name}; "
             f"first_seen={entry.get('first_seen_iso') or '?'}; "
             f"指纹={fp[:16]}; "
-            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"{_evidence_file_manifest(files)}; "
             f"放行规则: "
             f"{', '.join(f'{k}={v}' for k, v in sorted(rules.items())) or '无'}; "
             f"判定口径: negation 放行即声明入库意图，放行+未跟踪＝白名单脱落"
@@ -1704,7 +1732,7 @@ class MainTreeStrayWipSweeper:
             f"滞留={round(elapsed_min, 1)}分钟; 宽限={grace:g}分钟; "
             f"阈值={threshold}个entry; 体积合计={total_bytes}字节; "
             f"指纹={fp[:16]}; "
-            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"{_evidence_file_manifest(files)}; "
             f"计时口径: 内容指纹（untracked 路径排序集 + 逐文件内容 sha256"
             f"——untracked 不进 git diff HEAD，不可复用 tracked 指纹形态）; "
             f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入; "
@@ -1786,7 +1814,7 @@ class MainTreeStrayWipSweeper:
             f"滞留={round(elapsed_min, 1)}分钟; "
             f"entry阈值={threshold}个; 体积合计={int(total_bytes)}字节; "
             f"体积阈值={size_threshold}字节; 指纹={fp[:16]}; "
-            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"{_evidence_file_manifest(files)}; "
             f"升级触发: {' + '.join(triggers) or '无'}; "
             f"条目体积(字节): "
             f"{', '.join(f'{k}={v}' for k, v in sorted(sizes.items())) or '无'}; "
@@ -1891,7 +1919,7 @@ class MainTreeStrayWipSweeper:
             f"first_seen={entry.get('first_seen_iso') or '?'}; "
             f"滞留={round(elapsed_min, 1)}分钟; 宽限={grace:g}分钟; "
             f"指纹={fp[:16]}; "
-            f"文件清单({len(files)}): {', '.join(files) or '无'}; "
+            f"{_evidence_file_manifest(files)}; "
             f"归因证据: {info.describe()}; "
             f"计时口径: 内容指纹（改动路径集 + git diff HEAD 哈希），不依赖 "
             f"mtime——autostash pop 会批量重写改动文件 mtime; "
