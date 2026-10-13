@@ -1,0 +1,45 @@
+# fenix-dsh-bundle 的 Cordis patch 层（bundle patch）。
+# 应用顺序：dsh.profile.bundles 中排在本 bundle 之前的层（dsh-base / dsh-headless）
+# 全部应用完后，再应用本文件，最后才是 profile cordis.patch.yml 与 --patch 覆盖。
+#
+# 装配链：
+#   1. fenix-model-config —— 校验模型三要素并 provide `fenixModelConfig` 服务；
+#      校验失败（model 缺失 / 版本不符）在本插件 apply 内抛错。
+#   2. llm-pi-ai / agent-default-model —— providers 与默认模型全部由
+#      fenixModelConfig 渲染（!!js 从注入服务取值），本 bundle 不留任何默认档回退。
+#   3. fenix-dsh-bundle —— Task 工具族 + 三守卫主插件。
+#   4. sandbox-policy / approval —— 非交互审批（等价 claude bypassPermissions）：
+#      沙箱 danger-full-access + 审批 never；三守卫挂在 tools/pre-execute，
+#      先于审批裁决生效，拦截不受全放行影响。
+#   5. headless-runner 追加注入 fenixModelConfig —— headless-runner 是 dsh 的
+#      required 启动条目：模型配置缺失 / 版本不符时它一起失败 → StartupError
+#      exit 1（fail-fast，不静默降级）。本 bundle 供 headless 车道专用；
+#      其它 profile（无 headless-runner 条目）挂载本 bundle 会因 patch 目标
+#      不存在而启动报错，属预期行为。
+- insert:
+    - id: fenix-model-config
+      name: fenix-dsh-bundle/modelConfig
+    - id: fenix-dsh-bundle
+      name: fenix-dsh-bundle
+      inject: [fenixModelConfig, tools, approval]
+    - id: fenix-approval
+      name: fenix-dsh-bundle/approval
+      inject: [approval]
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.cwd()
+- id: approval
+  config:
+    policy: never
+- id: llm-pi-ai
+  inject: [fenixModelConfig]
+  config:
+    providers: !!js ctx.fenixModelConfig.providers
+- id: agent-default-model
+  inject: [fenixModelConfig]
+  config:
+    provider: !!js ctx.fenixModelConfig.provider
+    model: !!js ctx.fenixModelConfig.model
+- id: headless-runner
+  inject: [headlessStartup, fenixModelConfig]

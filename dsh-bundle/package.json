@@ -1,0 +1,33 @@
+{
+  "name": "fenix-dsh-bundle",
+  "version": "0.1.0",
+  "description": "fenixd 的 dsh 通道 Bundle：Task 工具族 / 三守卫 / 非交互审批 / 模型显式配置 / AGENTS.md 载体（spec: add-fenix-dsh-bundle）",
+  "type": "module",
+  "private": true,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./modelConfig": "./src/modelConfig.ts",
+    "./approval": "./src/approval.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-app-boot": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/cordis": "~4.0.4"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4",
+    "js-yaml": "^4.1.0"
+  }
+}
