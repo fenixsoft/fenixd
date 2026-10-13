@@ -5,7 +5,7 @@ import { Button, Modal, Space, Tag, Typography } from 'antd';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AlertItem } from '@/services/dashboard';
-import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
+import { markdownComponents } from '@/components/markdown-shared';
 import { fmtEvidence } from '@/utils/evidence';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 
@@ -63,12 +63,14 @@ export function AlertTitle({
           }
         >
           {/* add-alert-self-heal-marking 5.3：auto-self-heal（自愈闭环）独立
-              徽标文案，区别于既有 auto-resolve（自动解决） */}
+              徽标文案，区别于既有 auto-resolve（自动解决）。词表外未知值显示
+              原文、仅空值兜底「人工处理」（与 SEV_LABEL 未知值口径一致，
+              避免后端新增自动化变体被误标成人工处置） */}
           {item.handled_by === 'auto-resolve'
             ? '🤖 自动解决'
             : item.handled_by === 'auto-self-heal'
               ? '♻️ 已自愈'
-              : '👤 人工处理'}
+              : item.handled_by || '👤 人工处理'}
         </Tag>
       ) : null}
       {item.project ? <Tag style={{ marginInlineEnd: 0 }}>{item.project}</Tag> : null}
@@ -121,8 +123,8 @@ export function AlertActionColumn({ children }: { children: ReactNode }) {
  * - 纯展示、Modal 内不可交互（报告仅为可读性增强，不承载任何机器语义）；
  * - 安全前提：narrative.text 为 AI 生成内容，无注入风险依赖 react-markdown
  *   默认不执行原始 HTML（跳过 raw HTML 节点、链接经 SafeLink 渲染），且共享
- *   映射 markdownComponents（SpecDocModal）不放行 raw HTML——后者不得引入
- *   rehype-raw，否则静默放开 HTML 注入面；
+ *   映射 markdownComponents（components/markdown-shared）不放行 raw HTML
+ *   ——后者不得引入 rehype-raw，否则静默放开 HTML 注入面；
  * - AI 免责声明移入弹窗底部随全文同读（入口按钮窄空间不重复占位）。
  */
 export function AlertReportButton({ text }: { text: string }) {
