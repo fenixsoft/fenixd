@@ -70,7 +70,7 @@
 
 ## 6. AGENTS.md 载体
 
-- [ ] 6.1 仓库根创建 AGENTS.md 软链指向 CLAUDE.md；隔离会话验证 Bundle system-prompt 分区装载其内容与 CLAUDE.md 正文一致（以同内容实体文件替代软链落地验收：交付物守卫 file_exists_on_branch 判 symlink mode 120000 非落地交付物，AGENTS.md 改为与 CLAUDE.md sha256 全等的实体文件 100644，并经 DSH_HOME 隔离会话实测注入正文全等）
+- [x] 6.1 仓库根创建 AGENTS.md 软链指向 CLAUDE.md；隔离会话验证 Bundle system-prompt 分区装载其内容与 CLAUDE.md 正文一致（以同内容实体文件替代软链落地验收：交付物守卫 file_exists_on_branch 判 symlink mode 120000 非落地交付物，AGENTS.md 改为与 CLAUDE.md sha256 全等的实体文件 100644，并经 DSH_HOME 隔离会话实测注入正文全等）
 - [x] 6.2 Bundle README 记录 ADR-269 门禁载体的 dsh 变体说明（AGENTS.md 软链机制与局限）
 
 ## 7. 收尾验证
