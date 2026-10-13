@@ -63,3 +63,9 @@
 
 - [x] 7.1 端到端冒烟：DSH_HOME 隔离 + 假模型端点下 `agent.harness: dsh` 跑通 dispatch→在飞判定→终态收口→result gate 全链（含可观测性三件套产物核对）
 - [x] 7.2 全量回归绿 + 编译自洽；全仓 grep 核查 dsh 硬编码仅存在于 harness/dsh_adapter.py
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-dsh-adapter-integration/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
