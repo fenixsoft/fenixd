@@ -17,7 +17,7 @@
   新增提前击杀）、impl_scale=None / 非 implementer 车道不抬升（行为与引入
   前逐位一致）、STATE 覆盖键 impl_wallclock_extension_override 优先且只抬
   不压；
-- 用量缺失注记（fake Popen 驱动真实 ``_run_claude`` 轮询环，装置仿
+- 用量缺失注记（fake Popen 驱动真实 ``_run_agent`` 轮询环，装置仿
   tests/test_impl_run_budget_sizing.py 的 _BurstFakeProc，自足不跨文件
   import）：击杀且无 CLI result 的 run_metrics 行携带 usage_missing（原因 +
   transcript_bytes/turns 粗估维度）、成功路径（result 在场）与「击杀但
@@ -458,7 +458,7 @@ class TestBudgetExemptStableAfterSizing:
         assert ImplBudget._is_exemptable_reason(reason) is True
 
 
-# ── 2.1/2.2 轮询环集成（fake Popen 驱动真实 _run_claude） ────────────
+# ── 2.1/2.2 轮询环集成（fake Popen 驱动真实 _run_agent） ────────────
 
 
 class _BurstFakeProc:
@@ -602,7 +602,7 @@ class TestWallclockSizingRunLoop:
         monkeypatch.setattr(rmod, "time", _VirtualTime(time))
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-1-a1",
                 spec_name="demo", agent_type="implementer")
         # base max_extensions=2 下第 3 次 deadline 即杀——消息带 (4/4) 即抬升生效
@@ -650,7 +650,7 @@ class TestWallclockSizingRunLoop:
         ]
         _patch_popen(monkeypatch, _DoneFakeProc(events))
 
-        out = runner._run_claude(
+        out = runner._run_agent(
             "prompt", proot, "impl-demo-2-a1",
             spec_name="demo", agent_type="implementer")
         assert out[0] == "done"
@@ -675,7 +675,7 @@ class TestWallclockSizingRunLoop:
         _patch_popen(monkeypatch, _BurstFakeProc(events))
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-3-a1",
                 max_turns=2, spec_name="ghost", agent_type="implementer")
         assert "Max turns" in str(cm.value)

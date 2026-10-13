@@ -780,7 +780,7 @@ class TestRunSelfReviewRunner:
         (proot / ".fenix").mkdir(parents=True)
         runner = self._runner(proot)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             max_turns, spec_name=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({"date": run_id.split("-")[1],
@@ -789,7 +789,7 @@ class TestRunSelfReviewRunner:
             return "out", 5, "sess", {"input_tokens": 100, "output_tokens": 20,
                                       "cost_usd": 0.02}
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-04", "摘要", None)
         assert result.success is True
         assert result.waste == ["W"] and result.mistakes == ["M"]
@@ -813,7 +813,7 @@ class TestRunSelfReviewRunner:
         (proot / ".fenix").mkdir(parents=True)
         runner = self._runner(proot)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             max_turns, spec_name=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({
@@ -827,7 +827,7 @@ class TestRunSelfReviewRunner:
             return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
                                       "cost_usd": 0.01}
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-08", "摘要", None)
         assert result.waste == [{"impact": "i", "evidence": "e",
                                  "analysis": "a", "suggestion": "s"}]
@@ -842,7 +842,7 @@ class TestRunSelfReviewRunner:
                     max_turns, spec_name=None):
             raise RuntimeError("Timeout after 120s")
 
-        runner._run_claude = failing
+        runner._run_agent = failing
         result = runner.run_self_review("2026-09-04", "摘要", None)
         assert result.success is False
         assert "Timeout" in result.error
@@ -857,7 +857,7 @@ class TestRunSelfReviewRunner:
         (proot / ".fenix").mkdir(parents=True)
         runner = self._runner(proot)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             max_turns, spec_name=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({
@@ -875,7 +875,7 @@ class TestRunSelfReviewRunner:
             return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
                                       "cost_usd": 0.01}
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-04", "摘要", None)
         assert result.resolved == [{"id": "2026-09-04#浪费#1", "reason": "fix commit abc"}]
 
@@ -884,7 +884,7 @@ class TestRunSelfReviewRunner:
         (proot / ".fenix").mkdir(parents=True)
         runner = self._runner(proot)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             max_turns, spec_name=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({"date": "2026-09-04", "waste": ["W"],
@@ -893,7 +893,7 @@ class TestRunSelfReviewRunner:
             return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
                                       "cost_usd": 0.01}
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-04", "摘要", None)
         assert result.resolved == []
 
@@ -922,7 +922,7 @@ class TestRunSelfReviewModelChain:
 
         captured = {}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             max_turns, spec_name=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
@@ -933,7 +933,7 @@ class TestRunSelfReviewModelChain:
             return "out", 1, "sess", {"input_tokens": 0, "output_tokens": 0,
                                       "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         return runner, captured
 
     def test_prefers_self_review_assignment(self, tmp_path):

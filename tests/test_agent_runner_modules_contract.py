@@ -4,7 +4,7 @@
 
 1. D6 补丁缝隙全部名字从 `core.agent_runner.runner` 可访问；
 2. 结果类 / 随迁常量经 runner re-export 且与来源模块同一对象；
-3. `_run_claude` 补丁缝隙可用（模块级 subprocess 名在位）+ docstring 可解析；
+3. `_run_agent` 补丁缝隙可用（模块级 subprocess 名在位）+ docstring 可解析；
 4. 8 组转发属性 setter/deleter 已删除、getter 保留、绕过 __init__ 实例仍可用；
 5. `_check_daily_limit` 写点不经转发 setter（无 AttributeError）；
 6. 实例属性打桩不被绕过（内部调用点一律经 self.<方法名>）：
@@ -99,7 +99,7 @@ class TestD6PatchGap:
             assert a == b, (e, a, b)
 
 
-# ── 2. _run_claude 补丁缝隙与 docstring ──────────────────────────
+# ── 2. _run_agent 补丁缝隙与 docstring ──────────────────────────
 
 class TestRunClaudeSeam:
     def test_subprocess_name_in_place(self):
@@ -107,12 +107,12 @@ class TestRunClaudeSeam:
         assert runner_mod.subprocess is sp
 
     def test_run_claude_uses_module_qualified_subprocess(self):
-        src = inspect.getsource(runner_mod.AgentRunner._run_claude)
+        src = inspect.getsource(runner_mod.AgentRunner._run_agent)
         assert "subprocess.Popen(" in src
 
     def test_run_claude_docstring_parseable(self):
         import textwrap
-        src = textwrap.dedent(inspect.getsource(runner_mod.AgentRunner._run_claude))
+        src = textwrap.dedent(inspect.getsource(runner_mod.AgentRunner._run_agent))
         node = ast.parse(src).body[0]
         assert isinstance(node, ast.FunctionDef)
         doc = ast.get_docstring(node)
@@ -202,7 +202,7 @@ class TestInstanceStubNotBypassed:
         """run_self_review 经实例访问 _get_admin_model（实例打桩生效）。"""
         runner = make_runner(tmp_path)
         runner._get_admin_model = lambda: "stub-model"
-        runner._run_claude = MagicMock(return_value=(
+        runner._run_agent = MagicMock(return_value=(
             "ok", 1, "sess-1",
             {"input_tokens": 0, "output_tokens": 0,
              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,

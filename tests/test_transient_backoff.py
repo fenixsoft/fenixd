@@ -473,7 +473,7 @@ class TestWorktreeReuseAcrossAttempts:
         attempt_n = {"n": 0}
         call_cwds = []
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -497,12 +497,12 @@ class TestWorktreeReuseAcrossAttempts:
                                           "cache_creation_input_tokens": 0,
                                           "cache_read_input_tokens": 0, "cost_usd": None})
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "planner-judge", "run-1")
 
         # create 只被调用 1 次（attempt 2 复用 attempt 1 创建的 worktree）
         assert runner.worktree_manager.create.call_count == 1
-        # 两次 _run_claude 调用的 cwd 完全相同（worktree 复用）
+        # 两次 _run_agent 调用的 cwd 完全相同（worktree 复用）
         assert len(call_cwds) >= 2
         assert call_cwds[0] == call_cwds[1] == wt
         # attempt 2 成功
@@ -535,10 +535,10 @@ class TestTransientTerminalKeepForReuse:
             "API error: unrecognized model",
         ]
 
-        def fake_run_claude(*args, **kwargs):
+        def fake_run_agent(*args, **kwargs):
             raise _TransientError(stderr_lines=stderr_real, exit_code=1, has_result=False)
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "implementer", "run-2")
 
         # 终态标记 → keep_for_reuse 被调用（传入 agent_type）
@@ -575,10 +575,10 @@ class TestNonTransientTerminalCleanup:
         runner.worktree_manager.create.return_value = wt
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
 
-        def fake_run_claude(*args, **kwargs):
+        def fake_run_agent(*args, **kwargs):
             raise _NonTransientError()
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "implementer", "run-3")
 
         # 非瞬断 → cleanup(success=False) 被调用
@@ -656,13 +656,13 @@ class TestTransientMarkerInjection:
         runner.worktree_manager.create.return_value = wt
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
 
-        def fake_run_claude(*args, **kwargs):
+        def fake_run_agent(*args, **kwargs):
             raise _TransientError(
                 stderr_lines=["[claude-code:unrecognized_model] model not found"],
                 exit_code=1, has_result=False,
             )
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "implementer", "run-m")
         # 终态错误带标记
         assert result.error is not None
@@ -677,7 +677,7 @@ class TestTransientMarkerInjection:
         def fake_run_claude2(*args, **kwargs):
             raise _NonTransientError()
 
-        runner2._run_claude = fake_run_claude2
+        runner2._run_agent = fake_run_claude2
         result2 = runner2._execute_agent("test-spec", "implementer", "run-m2")
         assert "[provider-transient]" not in (result2.error or "")
 
@@ -1137,7 +1137,7 @@ class TestTransientRetryInstantFailInteraction:
         runner.worktree_manager = MagicMock()
         runner.worktree_manager.create.return_value = tmp_path / "wt"
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
-        runner._run_claude = lambda *a, **k: (_ for _ in ()).throw(
+        runner._run_agent = lambda *a, **k: (_ for _ in ()).throw(
             _TransientError(
                 stderr_lines=["[claude-code:unrecognized_model] model not found"],
                 exit_code=1, has_result=False,
@@ -1386,15 +1386,15 @@ class TestShutdownInterruptGuard:
 
         calls = {"n": 0}
 
-        def fake_run_claude(*args, **kwargs):
+        def fake_run_agent(*args, **kwargs):
             calls["n"] += 1
             raise self._incident_signature_error()
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "implementer", "run-1")
 
         # 单次调用即终态：无原地重试、无 attempt 2
-        assert calls["n"] == 1, f"应只调用一次 _run_claude，实际 {calls['n']} 次"
+        assert calls["n"] == 1, f"应只调用一次 _run_agent，实际 {calls['n']} 次"
         assert result.success is False
         assert (result.error or "").startswith("[shutdown-interrupted]")
         # 现场保留（交 recovery/保全处置），不 cleanup 销毁未提交工作
@@ -1408,7 +1408,7 @@ class TestShutdownInterruptGuard:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -1425,9 +1425,9 @@ class TestShutdownInterruptGuard:
                 }) + "\n")
             raise self._incident_signature_error()
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "implementer", "run-2")
 
-        assert calls["n"] == 1, f"应只调用一次 _run_claude，实际 {calls['n']} 次"
+        assert calls["n"] == 1, f"应只调用一次 _run_agent，实际 {calls['n']} 次"
         assert (result.error or "").startswith("[shutdown-interrupted]")
         runner.worktree_manager.cleanup.assert_not_called()

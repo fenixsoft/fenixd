@@ -292,7 +292,7 @@ def _logged_run_duration(project_root: Path, run_file_stem: str,
 # core.agent_runner.liveness.RUN_TERMINAL_EVENT_TYPES（result=自然完成,
 # error=进程异常终止, interrupted=daemon 停机/启动终态补写, cancelled=人工取消,
 # frozen-terminated=spec 冻结终止（add-freeze-stop-inflight-agents D2，
-# 行来源：runner.py _run_claude finally 段在 join 后、与 cancelled 行同级
+# 行来源：runner.py _run_agent finally 段在 join 后、与 cancelled 行同级
 # 追加——读侧缺该映射会把已冻结终止的 run 永远判成 running）），
 # 读侧缺类型会把已终结 run 永远判成 running（overview 活跃 Agent 数虚高事故：
 # 11 个被杀 run 全部计入活跃，真实活跃仅 1）。测试锁两侧同步。
@@ -423,7 +423,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
 _RUN_META_CACHE: dict = {}
 _RUN_META_CACHE_MAX = 16384
 # code-review item 95590b3c2534：终态产物缓存固化宽限窗（秒）。run 收尾先向产物
-# 追加终态事件（_run_claude finally），后写 fenixd.log run_metrics 真实耗时指标
+# 追加终态事件（_run_agent finally），后写 fenixd.log run_metrics 真实耗时指标
 # （成功/失败路径都在其后经 worktree 清理等数秒级间隙才落盘）；两步之间读路径
 # 一旦把 mtime 推算耗时以「终态产物 mtime_ns/size」为键固化，键永不变化，指标
 # 落盘也不再被消费。窗口内对「终态且结构化指标未命中」的 run 以「临时条目」

@@ -15,7 +15,7 @@
   顺序 取消→超时→轮次→poll 不变，由既有 timeout 单测回归覆盖，此处断言
   turn_extension 事件与 timeout_extension 事件互不复用）。
 
-基于真实 git 仓库 fixture + fake Popen 驱动真实 _run_claude 轮询环（与
+基于真实 git 仓库 fixture + fake Popen 驱动真实 _run_agent 轮询环（与
 test_run_latency_stats 同构），不启动真实 daemon/子进程。
 """
 
@@ -197,8 +197,8 @@ def _patch_popen(monkeypatch, proc):
 def _patch_popen_capture(monkeypatch, proc):
     """把 runner 模块 subprocess.Popen 换成替身，并记录每次调用的 (args, kwargs)。
 
-    用于断言 _run_claude 构造子进程时注入的环境变量（如任务清单工具开关）。
-    不依赖轮询环终止：捕获后即返回，由调用方在 _run_claude 的后续流程中
+    用于断言 _run_agent 构造子进程时注入的环境变量（如任务清单工具开关）。
+    不依赖轮询环终止：捕获后即返回，由调用方在 _run_agent 的后续流程中
     自行处理（环境变量在 Popen 之前已构造完成）。
     """
     import subprocess as real_subprocess
@@ -407,7 +407,7 @@ class TestTurnLimitMatrix:
         assert action["action"] == "extend"  # fail-open：不误杀
 
 
-# ── 轮询环端到端（task 2.3 驱动真实 _run_claude） ───────────────────────────
+# ── 轮询环端到端（task 2.3 驱动真实 _run_agent） ───────────────────────────
 
 
 class TestTurnExtensionPollLoop:
@@ -429,7 +429,7 @@ class TestTurnExtensionPollLoop:
         _patch_popen(monkeypatch, proc)
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-99-a1",
                 max_turns=max_turns, spec_name="demo", agent_type="implementer")
         err = str(cm.value)
@@ -472,7 +472,7 @@ class TestTurnExtensionPollLoop:
         _patch_popen(monkeypatch, proc)
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-95-a1",
                 max_turns=max_turns, spec_name="demo", agent_type="implementer")
         assert "Max turns" in str(cm.value)
@@ -503,7 +503,7 @@ class TestTurnExtensionPollLoop:
         _patch_popen(monkeypatch, proc)
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-98-a1",
                 max_turns=5, spec_name="demo", agent_type="implementer")
         err = str(cm.value)
@@ -533,7 +533,7 @@ class TestTurnExtensionPollLoop:
         proc = _BurstFakeProc([_evt("assistant", None) for _ in range(6)])
         _patch_popen(monkeypatch, proc)
         with pytest.raises(RuntimeError):
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", wt, "impl-demo-97-a1",
                 max_turns=5, spec_name="demo", agent_type="implementer")
 
@@ -570,7 +570,7 @@ class TestTurnExtensionPollLoop:
         monkeypatch.setattr("core.agent_runner.runner.time.time", fake_clock)
 
         with pytest.raises(RuntimeError) as cm:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-demo-96-a1",
                 max_turns=5, spec_name="demo", agent_type="implementer")
         err = str(cm.value)
@@ -673,11 +673,11 @@ class TestTodoToolsEnvInjection:
     """claude CLI 2.1.272 起把 TaskCreate/TaskUpdate/TaskGet/TaskList 收窄为
     「仅第一方模型默认提供」，网关模型不再默认注入。整套 run-progress 链路
     （parse_run_task_done / run_task_progress / dashboard 叠加 / _sync_task_progress
-    回写 / prompt_builder 条件契约段）依赖该工具族，必须由 _run_claude 统一注入
+    回写 / prompt_builder 条件契约段）依赖该工具族，必须由 _run_agent 统一注入
     CLAUDE_CODE_ENABLE_TODO_TOOLS=1 显式 opt-in。
 
     断言点在 Popen 调用参数（env 在 Popen 之前构造完成），无需等轮询环终止；
-    Popen 替身返回后立即 kill 子进程替身解除 _run_claude 的等待。
+    Popen 替身返回后立即 kill 子进程替身解除 _run_agent 的等待。
     """
 
     def _capture_env(self, monkeypatch, proot, run_id, **run_kwargs):
@@ -687,7 +687,7 @@ class TestTodoToolsEnvInjection:
         proc.kill()  # 让 Popen 返回后轮询环立即看到非 None returncode 退出
         calls = _patch_popen_capture(monkeypatch, proc)
         try:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, run_id,
                 max_turns=None, spec_name="demo", agent_type="implementer",
                 **run_kwargs)

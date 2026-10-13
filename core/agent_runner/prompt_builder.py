@@ -1576,7 +1576,7 @@ class PromptBuilder:
           ``TaskUpdate status=completed`` 不得攒批。
 
         工具可用性**恒为可用**——不再按历史 run 的 ``init.tools`` 探测。
-        根因（2026-09-17 定案）：``_run_claude`` 已无条件注入
+        根因（2026-09-17 定案）：``_run_agent`` 已无条件注入
         ``CLAUDE_CODE_ENABLE_TODO_TOOLS=1``（见 runner.py，工具族恒可用），
         而旧探测读的是**派发前最新一个历史 run**——新 run 的 ``init`` 事件要等
         run 启动后才产生，故新 spec（无历史 run）/ 修复轮（历史 run 是修复前跑的）

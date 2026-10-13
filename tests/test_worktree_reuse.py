@@ -188,11 +188,11 @@ def _exec_runner(proot: Path):
     runner.worktree_manager = wm
     # implementer 产物硬门 stub：本文件覆盖 worktree 复用/失效回退语义，与实现
     # 产物完成度正交。fix-impl-tasks-completion-gate（2026-09-14 df8dd94c）给
-    # implementer 加了 worktree 内 .fenix-run-result.json 硬门，而这里 _run_claude
+    # implementer 加了 worktree 内 .fenix-run-result.json 硬门，而这里 _run_agent
     # mock 不落结果文件 → 硬门判失败 → AgentArtifactGateError 退避重试，重试途中
     # 写 .fenix/runs/ 产物又因夹具未建该目录 FileNotFoundError（本测试的既有红灯）。
     runner._check_agent_result_artifact = MagicMock(return_value=None)
-    runner._run_claude = MagicMock(return_value=(
+    runner._run_agent = MagicMock(return_value=(
         "ok", 1, "sess-1",
         {"input_tokens": 0, "output_tokens": 0,
          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
@@ -236,7 +236,7 @@ class TestStaleWorktreeValidation:
         runner.worktree_manager.create.assert_called_once_with(
             "spec-a", "implementer")
         # claude 的 cwd 是新建 worktree，而非失效路径
-        assert runner._run_claude.call_args.args[1] == tmp_path / "wt-fresh"
+        assert runner._run_agent.call_args.args[1] == tmp_path / "wt-fresh"
 
     def test_repair_stale_worktree_fails_fast(self, tmp_path):
         runner = _exec_runner(tmp_path)
@@ -247,7 +247,7 @@ class TestStaleWorktreeValidation:
         assert result.success is False
         assert "repair worktree" in result.error
         # 不烧重试额度：不派发 claude、不新建 worktree（repair 不能换分支）
-        runner._run_claude.assert_not_called()
+        runner._run_agent.assert_not_called()
         runner.worktree_manager.create.assert_not_called()
 
     def test_valid_worktree_still_reused(self, tmp_path):
@@ -260,7 +260,7 @@ class TestStaleWorktreeValidation:
             pre_wt_path=real, conflict_summary={})
         assert result.success is True
         runner.worktree_manager.create.assert_not_called()
-        assert runner._run_claude.call_args.args[1] == real
+        assert runner._run_agent.call_args.args[1] == real
 
 
 

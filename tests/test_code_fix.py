@@ -1605,7 +1605,7 @@ def _make_exec_runner(proot, run_claude):
     runner = _make_runner(proot)
     runner._get_agent_model_assignment = lambda t: None
     runner._get_admin_model = lambda: "admin-model"
-    runner._run_claude = run_claude
+    runner._run_agent = run_claude
     return runner
 
 
@@ -1726,7 +1726,7 @@ class TestRunCodeFix(unittest.TestCase):
         runner._get_agent_model_assignment = assignment
         runner._get_admin_model = lambda: "admin-model"
         runner._ensure_agent_config_dir = lambda name, model: "/tmp/cfgdir"
-        runner._run_claude = fake_claude
+        runner._run_agent = fake_claude
         result = run_code_fix(runner, wt, [_item("a")])
         self.assertTrue(result.success)
         self.assertEqual(captured["env"]["ANTHROPIC_BASE_URL"], "http://gw")
@@ -1760,7 +1760,7 @@ class TestRunCodeFix(unittest.TestCase):
         runner._get_agent_model_assignment = assignment
         runner._get_admin_model = lambda: "admin-model"
         runner._ensure_agent_config_dir = lambda name, model: "/tmp/cfgdir"
-        runner._run_claude = fake_claude
+        runner._run_agent = fake_claude
         run_code_fix(runner, wt, [_item("a")])
         self.assertEqual(captured["model"], "model-fix", "显式 code-fix 配置优先")
 
@@ -1827,7 +1827,7 @@ class TestActivationWiring(unittest.TestCase):
                 ]}) + "\n")
             return ("done", 1, "sid", {})
 
-        runner._run_claude = fake_claude
+        runner._run_agent = fake_claude
         with mock.patch.object(mr, "_accumulate_code_review_tokens",
                                lambda *a, **k: None), \
              mock.patch.object(mr, "upsert_findings",
@@ -1876,7 +1876,7 @@ class TestActivationWiring(unittest.TestCase):
                 ]}) + "\n")
             return ("done", 1, "sid", {})
 
-        runner._run_claude = fake_claude
+        runner._run_agent = fake_claude
         with mock.patch.object(mr, "_accumulate_code_review_tokens",
                                lambda *a, **k: None), \
              mock.patch.object(mr, "upsert_findings",

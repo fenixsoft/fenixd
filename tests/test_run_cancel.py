@@ -1,7 +1,7 @@
 """add-run-cancel 能力测试（对应 spec/changes/add-run-cancel tasks 5.1-5.3）。
 
 覆盖：
-- runner 取消原语：cancel_run 返回值/归一化/旗标登记/not_running、_run_claude
+- runner 取消原语：cancel_run 返回值/归一化/旗标登记/not_running、_run_agent
   轮询环终止子进程 + cancelled 终态行、_execute_agent 取消路径（无 attempt 2、
   不派发后续 attempt、不计秒挂、cancelled 序列化、不触碰 status）
 - dispatch hold-state：implementer 取消后 spec 保持 implementing、
@@ -196,7 +196,7 @@ class TestRunClaudeCancelPolling:
 
         def worker():
             try:
-                runner._run_claude(
+                runner._run_agent(
                     "prompt", proot, "impl-x-123-a1",
                     model_override="m", max_turns=50,
                     spec_name="x", agent_type="implementer",
@@ -274,7 +274,7 @@ class TestTransientRetryCancel:
 
         def worker():
             try:
-                runner._run_claude(
+                runner._run_agent(
                     "prompt", proot, "planner-judge-x-123-a1-r1",
                     model_override="m", max_turns=50,
                     spec_name="x", agent_type="judge",
@@ -314,12 +314,12 @@ class TestTransientRetryCancel:
         proot.mkdir()
         runner = make_runner(proot)
 
-        def first_run_claude(*a, **k):
+        def first_run_agent(*a, **k):
             # attempt 1 正常失败结束，attempt 2 派发前按 base id 登记旗标
             runner._cancel_requested.add("impl-spec-123")
             raise RuntimeError("普通失败")
 
-        _patch_exec_deps(runner, proot, first_run_claude)
+        _patch_exec_deps(runner, proot, first_run_agent)
 
         import core.agent_runner.runner as _rm
         orig_sleep = _rm.time.sleep
@@ -336,7 +336,7 @@ class TestTransientRetryCancel:
         assert r.cancelled is True
         assert r.success is False
         assert "cancelled by admin" in r.error
-        assert runner._run_claude.call_count == 1
+        assert runner._run_agent.call_count == 1
         assert not (proot / ".fenix" / "runs" / "impl-spec-123-a2.jsonl").exists()
 
 
@@ -372,7 +372,7 @@ class TestNormalizeRunIdSuffixes:
 
 
 def _patch_exec_deps(runner, proot, run_claude_side_effect):
-    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_claude mock。"""
+    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_agent mock。"""
     wm = MagicMock()
     wm.create.return_value = proot / "wt"
     runner.worktree_manager = wm
@@ -381,7 +381,7 @@ def _patch_exec_deps(runner, proot, run_claude_side_effect):
     runner._get_config = lambda key, default=None: {
         "agents.max_retries": 3,
     }.get(key, default)
-    runner._run_claude = MagicMock(side_effect=run_claude_side_effect)
+    runner._run_agent = MagicMock(side_effect=run_claude_side_effect)
     runner._extract_usage_info = lambda r: {}
     runner._accumulate_token_usage = lambda *a, **k: None
     runner._record_verify_progress_tokens = lambda *a, **k: None
@@ -429,12 +429,12 @@ class TestExecuteAgentCancel:
         proot.mkdir()
         runner = make_runner(proot)
 
-        def gap_run_claude(*a, **k):
+        def gap_run_agent(*a, **k):
             # 第一次调用（attempt 1）模拟正常失败，并登记取消旗标
             runner._cancel_requested.add("impl-spec-123")
             raise RuntimeError("普通失败")
 
-        self._patch_exec_deps(runner, proot, gap_run_claude)
+        self._patch_exec_deps(runner, proot, gap_run_agent)
 
         # 跳过 attempt 间 sleep(10)
         import core.agent_runner.runner as _rm
@@ -452,8 +452,8 @@ class TestExecuteAgentCancel:
         assert r.cancelled is True
         assert r.success is False
         assert "cancelled by admin" in r.error
-        # _run_claude 只被调用一次（attempt 1），attempt 2 顶部检查即返回
-        assert runner._run_claude.call_count == 1
+        # _run_agent 只被调用一次（attempt 1），attempt 2 顶部检查即返回
+        assert runner._run_agent.call_count == 1
         assert not (proot / ".fenix" / "runs" / "impl-spec-123-a2.jsonl").exists()
 
     def test_cancel_does_not_increment_instant_fail(self, tmp_path):
@@ -819,7 +819,7 @@ class TestCancelWipCheckpoint:
 
         def worker():
             try:
-                runner._run_claude(
+                runner._run_agent(
                     "prompt", wt, "impl-x-123-a1",
                     model_override="m", max_turns=50,
                     spec_name="x", agent_type="implementer",

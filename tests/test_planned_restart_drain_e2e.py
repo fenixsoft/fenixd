@@ -3,7 +3,7 @@
 
 以替身进程驱动**真实 shutdown 路径**（planned-restart-drain 3.1）：
 
-- 在飞 evo 分析 run / implementer run：真实子进程按 ``_run_claude`` 同形态
+- 在飞 evo 分析 run / implementer run：真实子进程按 ``_run_agent`` 同形态
   登记进 ``AgentRunner._running_agents``（run_id → Popen）；
 - ocr 车道：真实 ``run_impl_ocr`` 在后台线程在飞，审查子进程为伪造
   ``bin/ocr_review.py`` 替身（端到端先例同 test_impl_ocr_parallel_lane）；
@@ -161,7 +161,7 @@ def _make_daemon(monkeypatch, root: Path, run_drain: float, runner) -> fenixd.Fe
 
 def _spawn_run(seconds: float) -> subprocess.Popen:
     """在飞 run 替身进程（sleep 型，SIGTERM 可终止且返回码可判别）。"""
-    # start_new_session=True 才是 _run_claude 同形态（独立成组 pgid==pid）：
+    # start_new_session=True 才是 _run_agent 同形态（独立成组 pgid==pid）：
     # 替身与 pytest 同组时，超窗有序终止的 guard_killpg 自保护守卫按
     # 「目标组=调用者自身组」拒绝击杀，替身失真。
     return subprocess.Popen(
@@ -173,7 +173,7 @@ def _spawn_run(seconds: float) -> subprocess.Popen:
 
 
 def _register_runs(runner, seconds: float) -> dict:
-    """按 _run_claude 同形态登记 evo/implementer 两个在飞 run 替身。"""
+    """按 _run_agent 同形态登记 evo/implementer 两个在飞 run 替身。"""
     procs = {"evo": _spawn_run(seconds), "impl": _spawn_run(seconds)}
     runner._running_agents[RUN_EVO] = procs["evo"]
     runner._running_agents[RUN_IMPL] = procs["impl"]

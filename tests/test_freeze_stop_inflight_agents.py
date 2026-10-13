@@ -110,7 +110,7 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
 
     def fake_popen(cmd, **kw):
         # 只劫持 agent 主进程 spawn（claude CLI）。subprocess.Popen 是模块级
-        # 全局——无差别替换会把 _run_claude 链路里其它 subprocess.run（如
+        # 全局——无差别替换会把 _run_agent 链路里其它 subprocess.run（如
         # 冻结命中路径上 _wip_checkpoint_on_forced_kill → _worktree_path_valid
         # 的 git 探测，timeout=10）也换成 sleep(30) 假进程，烧满超时
         # （2026-09-23 取证：冻结用例被拖到 10.0s）。非 agent 调用透传。
@@ -129,7 +129,7 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
 
     def worker():
         try:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-x-123-a1",
                 model_override="m", max_turns=50,
                 spec_name="x", agent_type="implementer",
@@ -206,7 +206,7 @@ def test_not_frozen_zero_impact(tmp_path, monkeypatch):
 
     def worker():
         try:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-x-123-a1",
                 model_override="m", max_turns=50,
                 spec_name="x", agent_type="implementer",
@@ -254,7 +254,7 @@ def test_state_read_error_fail_open(tmp_path, monkeypatch):
 
     def worker():
         try:
-            runner._run_claude(
+            runner._run_agent(
                 "prompt", proot, "impl-x-123-a1",
                 model_override="m", max_turns=50,
                 spec_name="x", agent_type="implementer",

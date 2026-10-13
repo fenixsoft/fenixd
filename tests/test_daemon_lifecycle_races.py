@@ -476,7 +476,7 @@ class TestRuntimeDanglingRunSweep(unittest.TestCase):
                 AgentRunner, "_normalize_run_id",
                 create=True, side_effect=lambda x: x):
             with self.assertRaises(TypeError) as ctx:
-                runner._run_claude(
+                runner._run_agent(
                     "prompt", Path(self.tmpdir), run_id,
                     spec_name="spec-h", agent_type="impl")
         self.assertIn("boom-inside-poll-loop", str(ctx.exception),

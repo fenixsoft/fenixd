@@ -694,7 +694,7 @@ class LivenessSupervisor:
              流文件均判否，若落到陈旧锚点分支会诱导调用方清理锚点、放行并发派发。
              本前置判据 MUST 优先于判据 1 的空锚点短路（tasks 3.6）。
           1. ``reviewer_run`` 为空 → ``(False, None)``（无在飞评审）。
-          2. ``running_run_ids()``（进程表为真相，评审 run 经 ``_run_claude``
+          2. ``running_run_ids()``（进程表为真相，评审 run 经 ``_run_agent``
              注册进 ``_running_agents``）含 ``reviewer_run`` → ``(True, "process")``。
           3. 该 run 流文件「新鲜且末行非终态」（``_run_stream_alive``，与
              ``_stream_recent`` 同口径，覆盖 spec-review-/repair- 前缀）
@@ -1039,7 +1039,7 @@ class LivenessSupervisor:
         # 等后置异常（start_new_session 子进程组已在跑，必须清场）」。
         proc: subprocess.Popen | None = None
         try:
-            # 提示词经 stdin 管道传入（对齐 runner._run_claude 的约定）：argv
+            # 提示词经 stdin 管道传入（对齐 runner._run_agent 的约定）：argv
             # 全文驻留 /proc/<pid>/cmdline（同机用户可读 judge 上下文），且超长
             # prompt 受 ARG_MAX 约束会以 E2BIG 直接失败。"-p" 不带位置参数时
             # claude CLI 从 stdin 读提示词；Popen + communicate(input=) 写完即关
@@ -1783,7 +1783,7 @@ class LivenessSupervisor:
             return
 
         # 第一步：统一 SIGTERM，并行通知所有在跑 agent 收尾。
-        # code-review item 28640d6b8b35：整组清场而非单进程信号——_run_claude 已
+        # code-review item 28640d6b8b35：整组清场而非单进程信号——_run_agent 已
         # 以 start_new_session=True 独立成组（pgid==pid），claude 派生的工具孙进程
         # （bash/node 等）与直接子进程同组，只 SIGTERM 直接子进程时孙进程残留为
         # 孤儿（与 _judge_liveness_once 因同类问题改整组清场同形态）。经

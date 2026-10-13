@@ -72,8 +72,8 @@
 
 ## 3. 主通道两段化
 
-- [ ] 3.1 _run_claude 改名 _run_agent 并拆为「build_spawn_spec → 通用 Popen + 归一化事件写盘」两段，claude normalize_event 为恒等映射；attempt 环/max_turns 守护/五路监督/终态收口语义不动；解除「有意单体」注记（runner.py:5659-5664）并以指向 harness 包的注释替代，替代注释 MUST 保留行序契约警示（run_metrics 行与终态行次序由权威测试 test_run_claude_poll_loop_crash_writes_error_terminal 锁定，改动前先跑该测试；快照测试只护 argv/env/stdin、不护事件行序）
-- [ ] 3.2 回归验证：agent_runner 既有测试全绿（终态事件类型/会话提取/usage 解析/在飞判定不变）
+- [x] 3.1 _run_claude 改名 _run_agent 并拆为「build_spawn_spec → 通用 Popen + 归一化事件写盘」两段，claude normalize_event 为恒等映射；attempt 环/max_turns 守护/五路监督/终态收口语义不动；解除「有意单体」注记（runner.py:5659-5664）并以指向 harness 包的注释替代，替代注释 MUST 保留行序契约警示（run_metrics 行与终态行次序由权威测试 test_run_claude_poll_loop_crash_writes_error_terminal 锁定，改动前先跑该测试；快照测试只护 argv/env/stdin、不护事件行序）
+- [x] 3.2 回归验证：agent_runner 既有测试全绿（终态事件类型/会话提取/usage 解析/在飞判定不变）
 
 ## 4. 一次性 spawn 收编与叙事通道
 

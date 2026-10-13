@@ -74,7 +74,7 @@ def _usage_ok() -> dict:
 
 
 def _sig_exc(rc: int, text: str | None = None) -> RuntimeError:
-    """构造带 exit_code 属性的 RuntimeError（模拟 _run_claude 信号死法路径）。"""
+    """构造带 exit_code 属性的 RuntimeError（模拟 _run_agent 信号死法路径）。"""
     exc = RuntimeError(text or f"claude CLI failed: Exit code: {rc}")
     exc.exit_code = rc
     exc.stderr_lines = []
@@ -112,7 +112,7 @@ class TestExternalSignalKillLabel:
         monkeypatch.setattr(time, "sleep", lambda _: None)
         runner = _make_runner(tmp_path, _standard_chain_config("implementer"))
         _wire_worktree(runner, tmp_path)
-        runner._run_claude = lambda *a, **k: (_ for _ in ()).throw(
+        runner._run_agent = lambda *a, **k: (_ for _ in ()).throw(
             _sig_exc(rc))
 
         result = runner._execute_agent("spec-x", "implementer", "run-sig-1")
@@ -140,7 +140,7 @@ class TestShutdownGuardUnchanged:
         runner = _make_runner(tmp_path, _standard_chain_config("implementer"))
         _wire_worktree(runner, tmp_path)
         runner.shutting_down = True
-        runner._run_claude = lambda *a, **k: (_ for _ in ()).throw(
+        runner._run_agent = lambda *a, **k: (_ for _ in ()).throw(
             _sig_exc(143))
 
         result = runner._execute_agent("spec-x", "implementer", "run-sig-2")
@@ -160,7 +160,7 @@ class TestShutdownGuardUnchanged:
         attempt_file.write_text(
             json.dumps({"type": "interrupted", "reason": "daemon drain"}) + "\n",
             encoding="utf-8")
-        runner._run_claude = lambda *a, **k: (_ for _ in ()).throw(
+        runner._run_agent = lambda *a, **k: (_ for _ in ()).throw(
             _sig_exc(143))
 
         result = runner._execute_agent("spec-x", "implementer", "run-sig-3")
@@ -213,7 +213,7 @@ class TestSignalKillCooldown:
         runner = _make_runner(
             tmp_path, _standard_chain_config("implementer", max_retries=3))
         _wire_worktree(runner, tmp_path)
-        runner._run_claude = lambda *a, **k: (_ for _ in ()).throw(
+        runner._run_agent = lambda *a, **k: (_ for _ in ()).throw(
             _sig_exc(143))
 
         result = runner._execute_agent("spec-x", "implementer", "run-sig-4")
@@ -243,7 +243,7 @@ class TestSignalKillCooldown:
         from core.agent_runner.prompt_builder import planner_result_path
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -253,7 +253,7 @@ class TestSignalKillCooldown:
                 encoding="utf-8")
             return ("done", 1, "sess-ok", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-sig-5")
         assert result.success is True
         assert runner._signal_kill_counts("spec-x") == 0
@@ -274,7 +274,7 @@ class TestNetworkTransientUnchanged:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -287,7 +287,7 @@ class TestNetworkTransientUnchanged:
             exc.has_result = False
             raise exc
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "implementer", "run-sig-6")
 
         assert result.success is False
@@ -318,14 +318,14 @@ class TestArtifactGateChannelIsolation:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
             return ("done", 1, "sess-gate", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-sig-7")
 
         assert result.success is False
@@ -365,7 +365,7 @@ class TestArtifactGateChannelIsolation:
 
         calls = {"n": 0}
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -376,7 +376,7 @@ class TestArtifactGateChannelIsolation:
                 encoding="utf-8")
             return ("done", 1, "sess-tg", _usage_ok())
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "implementer", "run-sig-8")
 
         assert result.success is False
@@ -417,7 +417,7 @@ class TestFrameworkSelfKillExcluded:
         runner = _make_runner(tmp_path, _standard_chain_config("implementer"))
         _wire_worktree(runner, tmp_path)
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
@@ -429,7 +429,7 @@ class TestFrameworkSelfKillExcluded:
             exc.has_result = False
             raise exc
 
-        runner._run_claude = fake_run_claude
+        runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "implementer", "run-sig-9")
 
         assert result.success is False

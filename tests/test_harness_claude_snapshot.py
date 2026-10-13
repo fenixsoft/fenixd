@@ -42,9 +42,9 @@ from tests.helpers import create_temp_project, make_runner
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "harness_claude_snapshot.json"
 
-# 现状 runner 侧 spawn 入口（task 3.1 改名 _run_agent 后同步更新此常量；
-# 金样本 fixture 不随之重录——它锚定的是平移前行为）
-RUNNER_SPAWN_ENTRY = "_run_claude"
+# 现状 runner 侧 spawn 入口（task 3.1 已改名 _run_agent；金样本 fixture 不
+# 随之重录——它锚定的是平移前行为，runner_entry 字段保留 "_run_claude" 史实）
+RUNNER_SPAWN_ENTRY = "_run_agent"
 
 # 固定最小 env（patch.dict clear=True）：AUTH_TOKEN 故意播种——provider 链
 # 用例断言「ANTHROPIC_API_KEY 覆盖生效时清除继承的 ANTHROPIC_AUTH_TOKEN」。

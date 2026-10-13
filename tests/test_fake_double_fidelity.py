@@ -282,7 +282,7 @@ class TestFakeDoubleFidelityOnRepo(unittest.TestCase):
         # 由 tests/test_facade_delegation_contract.py 断言经门面实例路径解析到同一
         # 模块函数（守护集合变化而非产品行为变化，design 5.4 已预警）。
         for name in ("_send_human_escalation_alert",
-                     "_run_claude",
+                     "_run_agent",
                      "handle_event"):
             self.assertIn(name, seams, f"seam {name} 应从 core/ 唯一签名中检出")
         # 模块函数 seam：`_check_agent_result_artifact` 收敛后为 result_gate 模块函数

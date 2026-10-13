@@ -1883,7 +1883,7 @@ class TestRunCodeReviewErrorSalvage(unittest.TestCase):
                 "API Error: Request rejected (429) · [1302][您的账户已达到速率限制]"
             )
 
-        runner._run_claude = _boom
+        runner._run_agent = _boom
         return runner
 
     def _run(self, review_kind="manual_window"):

@@ -3,7 +3,7 @@
 覆盖：
 - 3.1 attempt 间隙取消路径：cancel_run 在 attempt 间隙（无在飞进程）按
   not_running 返回并登记取消旗标，复活 attempt 的启动守卫命中旗标以
-  cancelled 收尾——不再派发 provider 轮次（_run_claude 仅 1 次）、无 -a2
+  cancelled 收尾——不再派发 provider 轮次（_run_agent 仅 1 次）、无 -a2
   attempt 文件、旗标随 run 终态清理；attempt 后缀调用归一化同效
 - 3.2 discarded 标记让位：并行出题标记 discarded 时 in-place retry（瞬断
   通道 + 产物硬门通道）放弃重派；标记在途（dispatched）/缺失/未注入/
@@ -94,7 +94,7 @@ def read_run_file(proot: Path, run_id: str) -> list:
 
 
 def _patch_exec_deps(runner, proot, run_claude_side_effect):
-    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_claude mock。"""
+    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_agent mock。"""
     wm = MagicMock()
     wm.create.return_value = proot / "wt"
     runner.worktree_manager = wm
@@ -103,7 +103,7 @@ def _patch_exec_deps(runner, proot, run_claude_side_effect):
     runner._get_config = lambda key, default=None: {
         "agents.max_retries": 3,
     }.get(key, default)
-    runner._run_claude = MagicMock(side_effect=run_claude_side_effect)
+    runner._run_agent = MagicMock(side_effect=run_claude_side_effect)
     runner._extract_usage_info = lambda r: {}
     runner._accumulate_token_usage = lambda *a, **k: None
     runner._record_verify_progress_tokens = lambda *a, **k: None
@@ -182,7 +182,7 @@ class TestAttemptGapCancel:
         proot.mkdir()
         runner = make_runner(proot)
 
-        def gap_run_claude(*a, **k):
+        def gap_run_agent(*a, **k):
             # attempt 1 运行中：管理员取消（此刻无在飞子进程）
             ret = runner.cancel_run("impl-spec-123",
                                     reason="间隙取消", by="admin")
@@ -190,15 +190,15 @@ class TestAttemptGapCancel:
             assert ret["flag_registered"] is True
             raise RuntimeError("attempt1 正常失败")
 
-        _patch_exec_deps(runner, proot, gap_run_claude)
+        _patch_exec_deps(runner, proot, gap_run_agent)
         r = self._run_with_patched_sleep(runner)
 
         assert r.cancelled is True
         assert r.success is False
         assert "cancelled by admin" in r.error
         assert "间隙取消" in r.error
-        # 复活 attempt 未派发：_run_claude 仅 attempt 1 一次
-        assert runner._run_claude.call_count == 1
+        # 复活 attempt 未派发：_run_agent 仅 attempt 1 一次
+        assert runner._run_agent.call_count == 1
         # 无 -a2 attempt 文件（未派发 attempt 2）
         assert not (proot / ".fenix" / "runs"
                     / "impl-spec-123-a2.jsonl").exists()
@@ -212,17 +212,17 @@ class TestAttemptGapCancel:
         proot.mkdir()
         runner = make_runner(proot)
 
-        def gap_run_claude(*a, **k):
+        def gap_run_agent(*a, **k):
             ret = runner.cancel_run("impl-spec-123-a1",
                                     reason="后缀取消", by="admin")
             assert ret["status"] == "not_running"
             raise RuntimeError("attempt1 失败")
 
-        _patch_exec_deps(runner, proot, gap_run_claude)
+        _patch_exec_deps(runner, proot, gap_run_agent)
         r = self._run_with_patched_sleep(runner)
         assert r.cancelled is True
         assert "后缀取消" in r.error
-        assert runner._run_claude.call_count == 1
+        assert runner._run_agent.call_count == 1
         with runner._cancel_requested_lock:
             assert "impl-spec-123" not in runner._cancel_requested
 
@@ -513,7 +513,7 @@ class TestStallBudgetCriteria:
 
             def worker():
                 try:
-                    runner._run_claude(
+                    runner._run_agent(
                         "prompt", proot, "sb-x-123-a1",
                         model_override="m", max_turns=50,
                         spec_name="x", agent_type="implementer",
@@ -556,7 +556,7 @@ class TestStallBudgetCriteria:
         assert not any(
             l.get("type") in ("error", "cancelled", "interrupted",
                               "frozen-terminated") for l in lines)
-        # 判停统计 run 级：_run_claude 为 attempt 层，状态跨 attempt 存活
+        # 判停统计 run 级：_run_agent 为 attempt 层，状态跨 attempt 存活
         #（不随 attempt 终结重置）；摘除在 _execute_agent run 终态外口
         #（见 test_stats_persist_across_attempts 的 forget 断言）
         assert "sb-x-123" in runner._stall_budget_states
@@ -592,7 +592,7 @@ class TestStallBudgetCriteria:
 
             def worker():
                 try:
-                    runner._run_claude(
+                    runner._run_agent(
                         "prompt", proot, "sb-y-456-a1",
                         model_override="m", max_turns=50,
                         spec_name="y", agent_type="implementer",

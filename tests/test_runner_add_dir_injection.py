@@ -1,7 +1,7 @@
 """tests/test_runner_add_dir_injection.py
 --add-dir 车道化注入测试（fix-impl-code-review-writepath D2 / Task 4.1）。
 
-断言 _run_claude 构造的 cmd：
+断言 _run_agent 构造的 cmd：
 ① agent_type="implementer" 不含主树 verify-progress 的 --add-dir，
    且含 --add-dir <worktree>；
 ② agent_type="repair" 同 ①；
@@ -21,7 +21,7 @@ from core.agent_runner.runner import (
 
 
 class _ImmediateProc:
-    """立即结束的假进程，供 _run_claude 轮询环迅速退出。"""
+    """立即结束的假进程，供 _run_agent 轮询环迅速退出。"""
 
     def __init__(self):
         self.returncode = 0
@@ -44,7 +44,7 @@ class _ImmediateProc:
 
 
 def _capture_cmd(runner, cwd: Path, agent_type=None):
-    """调 _run_claude，mock Popen 捕获 cmd。"""
+    """调 _run_agent，mock Popen 捕获 cmd。"""
     run_id = f"test-add-dir-{agent_type or 'none'}"
     progress_dir = runner.project_root / ".fenix" / "verify-progress"
     progress_dir.mkdir(parents=True, exist_ok=True)
@@ -59,7 +59,7 @@ def _capture_cmd(runner, cwd: Path, agent_type=None):
         return proc
 
     with patch("core.agent_runner.runner.subprocess.Popen", side_effect=fake_popen):
-        runner._run_claude(
+        runner._run_agent(
             prompt="test",
             cwd=cwd,
             run_id=run_id,
@@ -70,7 +70,7 @@ def _capture_cmd(runner, cwd: Path, agent_type=None):
 
 
 class TestAddDirInjection:
-    """_run_claude --add-dir 条件注入断言。"""
+    """_run_agent --add-dir 条件注入断言。"""
 
     def test_constant_defined(self):
         """_NO_MAIN_TREE_VERIFY_PROGRESS_LANES 包含预期车道。"""

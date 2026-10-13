@@ -1438,7 +1438,7 @@ from core.agent_runner.runner import AgentRunner, EvolutionResult
 class _FakeEvolutionRunner(AgentRunner):
     """以 __new__ 绕过 __init__，仅按测试需要装配的最小 AgentRunner 替身。
 
-    _run_claude 被替换为记录 cwd/run_id/model 并模拟产物写盘的替身——不实测
+    _run_agent 被替换为记录 cwd/run_id/model 并模拟产物写盘的替身——不实测
     真实 claude 进程（任务 4.5「可用替身注入」）。
     """
 
@@ -1464,7 +1464,7 @@ class _FakeEvolutionRunner(AgentRunner):
         self._build_prompt_calls = []
         self.worktree_manager = None
 
-    def _run_claude(self, prompt, cwd, run_id, model_override=None,
+    def _run_agent(self, prompt, cwd, run_id, model_override=None,
                     env_overrides=None, resume_session_id=None,
                     max_turns=None, spec_name=None, agent_type=None):
         # 模拟写入契约产物（success 路径）

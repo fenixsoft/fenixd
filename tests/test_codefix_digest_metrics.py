@@ -4,7 +4,7 @@
 - 3.1 run 工具构成指标（1.1/1.2）：含 tool_use 与纯文本行的转录样本 →
   run_metrics 行的 tool_uses 直方图（按名计数）/ tool_uses_total /
   text_turns 正确，且先于 result 终态行落盘（文件末行仍是终态）；
-  metrics 落盘失败不阻断 run 终态（_run_claude 正常返回、result 行照常落盘）。
+  metrics 落盘失败不阻断 run 终态（_run_agent 正常返回、result 行照常落盘）。
 - 3.2 链级 rollup（2.1/2.2）：多 run 链末批合回成功（trigger=chain_last_batch）
   与链中途终局（run 失败跳批 → 选批为空 blocked 终局 trigger=chain_exhausted）
   两形态——run 数/轮数/tool_use/条数汇总与台账核销一致、覆盖链中全部 run
@@ -154,12 +154,12 @@ def _transcript_lines():
     return [json.dumps(e, ensure_ascii=False) for e in events]
 
 
-def _drive_run_claude(runner, proot, run_id, lines):
-    """以假 Popen 驱动真实 _run_claude（读线程/指标落盘/终态次序全真）。"""
+def _drive_run_agent(runner, proot, run_id, lines):
+    """以假 Popen 驱动真实 _run_agent（读线程/指标落盘/终态次序全真）。"""
     orig_popen = runner_module.subprocess.Popen
     runner_module.subprocess.Popen = lambda cmd, **kw: _FakeProc(lines)
     try:
-        return runner._run_claude(
+        return runner._run_agent(
             "prompt", proot, run_id,
             model_override="m", max_turns=50,
             spec_name="spec-x", agent_type="implementer",
@@ -190,7 +190,7 @@ class TestToolCompositionMetrics:
         runner = _make_runner(proot)
         rid = "code-fix-metrics-x1"
 
-        output, turns, session_id, _usage = _drive_run_claude(
+        output, turns, session_id, _usage = _drive_run_agent(
             runner, proot, rid, _transcript_lines()
         )
 
@@ -226,11 +226,11 @@ class TestToolCompositionMetrics:
 
         monkeypatch.setattr(runner_module, "append_run_line", _boom)
 
-        output, turns, _sess, _usage = _drive_run_claude(
+        output, turns, _sess, _usage = _drive_run_agent(
             runner, proot, rid, _transcript_lines()
         )
 
-        # _run_claude 正常返回（未被 OSError 打断）
+        # _run_agent 正常返回（未被 OSError 打断）
         assert output == "ok"
         assert turns == 5
         lines = _read_run_file(proot, rid)
@@ -250,7 +250,7 @@ class TestToolCompositionMetrics:
             json.dumps({"type": "result", "subtype": "success",
                         "result": "ok", "num_turns": 2, "session_id": "s"}),
         ]
-        _drive_run_claude(runner, proot, rid, lines)
+        _drive_run_agent(runner, proot, rid, lines)
         m = next(r for r in _read_run_file(proot, rid)
                  if r.get("type") == "run_metrics")
         assert m["tool_uses"] == {}

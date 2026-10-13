@@ -739,7 +739,7 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
         runner._v2_stop_for_worktree = MagicMock()
         # implementer 产物硬门 stub：本组关注 frozen 对重试链的终止语义，与实现
         # 产物完成度正交。fix-impl-tasks-completion-gate（2026-09-14）给 implementer
-        # 加了 worktree 内 .fenix-run-result.json 硬门，而 _run_claude mock 不落
+        # 加了 worktree 内 .fenix-run-result.json 硬门，而 _run_agent mock 不落
         # 结果文件 → 硬门判失败 → attempt 退避 time.sleep(10)，单测试挂起 10-15s。
         runner._check_agent_result_artifact = MagicMock(return_value=None)
         return runner
@@ -747,7 +747,7 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
     def test_frozen_terminates_before_any_attempt(self):
         """frozen spec：attempt 1 启动前即终止，不派发任何 claude。"""
         runner = self._make_runner(frozen=True)
-        with patch.object(runner, "_run_claude") as rc:
+        with patch.object(runner, "_run_agent") as rc:
             result = runner.run_implementer("spec-x")
         rc.assert_not_called()  # 不派发 attempt
         self.assertFalse(result.success)
@@ -759,7 +759,7 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
         runs_dir = self.root / ".fenix" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         with patch.object(
-            runner, "_run_claude",
+            runner, "_run_agent",
             return_value=("ok", 1, "sess-1",
                           {"input_tokens": 0, "output_tokens": 0,
                            "cache_creation_input_tokens": 0,
@@ -789,12 +789,12 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
                                       "cache_read_input_tokens": 0,
                                       "cost_usd": None})
 
-        runner._run_claude = fake_claude
+        runner._run_agent = fake_claude
         with patch.object(runner, "_record_instant_fail",
                           return_value=None) as rif, \
                 patch("time.sleep", lambda _s: None):
             result = runner.run_implementer("spec-x")
-        # a1 已执行；a2 启动前被冻结 → 不再第二次调用 _run_claude
+        # a1 已执行；a2 启动前被冻结 → 不再第二次调用 _run_agent
         self.assertEqual(attempt["n"], 1)
         self.assertFalse(result.success)
         self.assertIn("frozen", result.error)

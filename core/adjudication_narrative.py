@@ -322,7 +322,7 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 def default_channel(prompt: str, model: Optional[str], timeout: float) -> Optional[str]:
     """生产 LLM 通道：既有 claude -p spawn 通道做一次非交互单发（D2）。
 
-    - 提示词经 stdin 传入（同 agent_runner._run_claude 口径：不走 argv——
+    - 提示词经 stdin 传入（同 agent_runner._run_agent 口径：不走 argv——
       argv 全文驻留 /proc/<pid>/cmdline，且单参数受 ARG_MAX 约束）；
     - 仅解析到模型时传 ``--model``；缺省（None）用 CLI/网关默认模型（即
       「框架默认」档）；

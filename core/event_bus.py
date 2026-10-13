@@ -500,7 +500,7 @@ class EventBus:
           (b) ``agent_runner.running_run_ids()`` 中存在 spec 段与该 spec
               **全等**的 ``admin-<spec>-<epoch>`` run（``_admin_run_id_matches_spec``
               解析判定，前缀匹配在 spec 名互为前缀时会记错账）——admin run 经
-              ``_run_claude`` 注册进 ``_running_agents``，本通路只覆盖**进程
+              ``_run_agent`` 注册进 ``_running_agents``，本通路只覆盖**进程
               存活**的 admin run。
 
         任一成立 → 返回 True（调用方跳过本次重验派发）；两路皆异常 → fail-open

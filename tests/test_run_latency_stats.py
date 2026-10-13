@@ -260,7 +260,7 @@ class TestStatsAndSummary:
         assert LATENCY_STALL_SECONDS == 60.0
 
 
-# ── _run_claude 旁路摘要日志与失败证据 ─────────────────────────────
+# ── _run_agent 旁路摘要日志与失败证据 ─────────────────────────────
 
 
 class TestRunClaudeIntegration:
@@ -322,7 +322,7 @@ class TestRunClaudeIntegration:
     def test_failure_error_appends_latency_summary(self, tmp_path):
         """失败 run（rc!=0）的 RuntimeError 真实拼入「| latency:」摘要。
 
-        驱动真实 _run_claude：fake Popen 产出一轮 tool_result→assistant
+        驱动真实 _run_agent：fake Popen 产出一轮 tool_result→assistant
         事件（间隔 4.5s）后以 rc=3 退出，断言异常文本含延迟摘要、
         error 终态行落盘为最后一行（原用例自拼字符串自证，未触达
         runner.py 的拼接路径）。
@@ -337,7 +337,7 @@ class TestRunClaudeIntegration:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError) as cm:
-                runner._run_claude("prompt", proot, "impl-x-1")
+                runner._run_agent("prompt", proot, "impl-x-1")
         err = str(cm.value)
         assert "claude CLI failed" in err
         assert "Exit code: 3" in err
@@ -354,7 +354,7 @@ class TestRunClaudeIntegration:
     def test_latency_self_check_warns_on_blind_run(self, tmp_path):
         """有 assistant 轮次却配不出样本 → WARNING 含「失明」/latency_rounds=0。
 
-        驱动真实 _run_claude：fake Popen 产出仅 assistant 事件、无任何
+        驱动真实 _run_agent：fake Popen 产出仅 assistant 事件、无任何
         tool_result 形态，rc=3 退出 → finally 延迟自检命中（rounds=0
         且 turn_count>0），发出 WARNING 日志。
         """
@@ -370,7 +370,7 @@ class TestRunClaudeIntegration:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError):
-                runner._run_claude("prompt", proot, "impl-blind-1")
+                runner._run_agent("prompt", proot, "impl-blind-1")
         # WARNING 中含「失明」/「latency_rounds=0」且 turn_count=2
         # logger.warning("component", msg, {extra_dict}) → a = (component, msg, extra)
         blind_warns = [
@@ -395,7 +395,7 @@ class TestRunClaudeIntegration:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError):
-                runner._run_claude("prompt", proot, "impl-vacuum-1")
+                runner._run_agent("prompt", proot, "impl-vacuum-1")
         blind_warns = [
             a[2] for (kind, a, _) in rec_logger.records
             if kind == "warning"
@@ -461,7 +461,7 @@ class TestStallRoundWarn:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError):
-                runner._run_claude("prompt", proot, "impl-stall-warn-1")
+                runner._run_agent("prompt", proot, "impl-stall-warn-1")
         warns = self._stall_warns(rec)
         assert len(warns) == 1, f"应恰一条停滞 WARNING；records={rec.records}"
         a, _k = warns[0]
@@ -490,7 +490,7 @@ class TestStallRoundWarn:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError) as cm:
-                runner._run_claude("prompt", proot, "impl-stall-quiet-1")
+                runner._run_agent("prompt", proot, "impl-stall-quiet-1")
         assert self._stall_warns(rec) == []
         # 两个样本照常进 stats（error 摘要 2 rounds）
         assert "run impl-stall-quiet-1: 2 rounds" in str(cm.value)
@@ -511,7 +511,7 @@ class TestStallRoundWarn:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError) as cm:
-                runner._run_claude("prompt", proot, "impl-stall-invalid-1")
+                runner._run_agent("prompt", proot, "impl-stall-invalid-1")
         assert self._stall_warns(rec) == []
         # 无有效样本（error 摘要 0 rounds）
         assert "0 rounds" in str(cm.value)
@@ -534,7 +534,7 @@ class TestStallRoundWarn:
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError) as cm:
-                runner._run_claude("prompt", proot, "impl-stall-pure-1")
+                runner._run_agent("prompt", proot, "impl-stall-pure-1")
         # 恰一条告警，序数为第 2 个有效样本
         warns = self._stall_warns(rec)
         assert len(warns) == 1

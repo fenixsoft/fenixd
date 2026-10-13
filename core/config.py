@@ -814,7 +814,7 @@ class ConfigLoader:
                 # / adjudication / runner int() 钳制）均已按整值浮点归一——同类值
                 # 在同文件两种命运。就地 int() 归一（同 _check_supervision_
                 # consistency 校验层自动对齐的原地写范式）：三键无本模块归一层，
-                # maintenance_runs 直传 _run_claude 的读取点不钳型，放行不归一会
+                # maintenance_runs 直传 _run_agent 的读取点不钳型，放行不归一会
                 # 让浮点漏进轮询环。is_integer() 对 .nan/.inf 恒 False，非有限
                 # 浮点与正负零判别同落入下方硬拒分支。
                 if isinstance(val, float) and val.is_integer() and val > 0:
@@ -3048,7 +3048,7 @@ class ConfigLoader:
         覆盖 MUST 适用于 TIMEOUT_OVERRIDE_AGENT_TYPES 全部键（KNOWN_AGENT_TYPES
         全集 + repair，含 implementer、verifier、planner-plan、planner-judge、
         fast-track、repair、administrator、self-review、spec-review、dispute-judge、
-        code-review、code-fix；经 _execute_agent 与 _run_claude 统一路径生效）。
+        code-review、code-fix；经 _execute_agent 与 _run_agent 统一路径生效）。
 
         注意：supervision-judge 键不在此处生效（那是 liveness judge 子进程超时，
         经 ``judge_timeout_seconds`` 读取，不参与 absolute_max 派生）。
