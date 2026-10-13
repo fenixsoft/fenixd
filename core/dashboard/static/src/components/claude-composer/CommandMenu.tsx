@@ -5,7 +5,7 @@
 // （D8：不引入 react-i18next）。
 // portal 弹层挂 .fenix-composer-portal 注入 HSL 语义变量（tailwind 语义色
 // 依赖，面板内变量在 .claude-msg-pane、portal 到 body 后缺失——见 composer.css）。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties, ComponentType, ReactElement, RefObject } from 'react';
 import {
@@ -36,6 +36,10 @@ type CommandMenuProps = {
   /** 唤起按钮 ref：外点关闭须排除按钮自身，否则菜单打开时点按钮会被外点
    * 关闭后又被按钮 click 重新打开，按钮失去「再点收起」能力。 */
   triggerRef?: RefObject<HTMLElement | null>;
+  /** 实例级 id 前缀（code-review item 707ee867fcfb）：portal 菜单的容器/
+   * 选项 id 须带实例前缀，避免多实例同开时重复 DOM id；宿主 aria 关联用
+   * 同一前缀拼装（见 commandMenuDomIds），未传时组件自取 useId 兜底。 */
+  idPrefix?: string;
 };
 
 type CommandMenuRow = {
@@ -91,6 +95,23 @@ const MENU_MIN_HEIGHT = 160;
 // 4b90dbe0dd88）：clamp 上限与 width 必须同源，避免只改一处右缘被裁切。
 const MENU_WIDTH = 440;
 export const DEFAULT_ANCHOR_BOTTOM = 90;
+
+// code-review item 707ee867fcfb：菜单经 portal 挂 body，静态 id 在两个
+// composer 实例（如项目会话面板与输出窗格）菜单同开时会产生重复 DOM id。
+// 容器/选项 id 改由实例级前缀拼装；宿主（SessionComposer）的 aria-controls
+// 与 aria-activedescendant 须引用同一组 id，拼装规则在此单源导出。
+// React 19 的 useId 含 «» 等非 id 安全字符，统一 sanitize。
+export const sanitizeMenuIdPrefix = (prefix: string) =>
+  prefix.replace(/[^a-zA-Z0-9_-]/g, '');
+
+export const commandMenuDomIds = (prefix: string) => {
+  const sanitized = sanitizeMenuIdPrefix(prefix);
+  return {
+    listbox: `${sanitized}-command-menu-listbox`,
+    option: (commandIndex: number) =>
+      `${sanitized}-command-menu-opt-${commandIndex}`,
+  };
+};
 
 const getCommandKey = (command: CommandMenuCommand) =>
   `${command.name}::${command.namespace || command.type || 'other'}::${command.path || ''}`;
@@ -159,9 +180,14 @@ export default function CommandMenu({
   isOpen = false,
   frequentCommands: frequent = [],
   triggerRef,
+  idPrefix,
 }: CommandMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const selectedItemRef = useRef<HTMLDivElement | null>(null);
+  // 实例级 id 前缀（code-review item 707ee867fcfb）：见 commandMenuDomIds。
+  // hook 须无条件调用，置于 isOpen 提前返回之前。
+  const autoIdPrefix = useId();
+  const menuIds = commandMenuDomIds(idPrefix ?? autoIdPrefix);
   // code-review item d5ad5dadc4a6：menuPosition 基于视口尺寸仅在渲染时计算，
   // resize 时需触发重渲染重算，避免弹层停在基于旧视口的过期位置。
   const [, bumpViewportVersion] = useState(0);
@@ -299,7 +325,7 @@ export default function CommandMenu({
   return renderInPortal(
     <div
       ref={menuRef}
-      id="command-menu-listbox"
+      id={menuIds.listbox}
       role="listbox"
       aria-label="可用命令"
       className="fenix-composer-portal command-menu border border-border bg-popover/95 text-popover-foreground"
@@ -324,7 +350,7 @@ export default function CommandMenu({
               return (
                 <div
                   key={renderKey}
-                  id={`command-menu-opt-${commandIndex}`}
+                  id={menuIds.option(commandIndex)}
                   ref={isSelected ? selectedItemRef : null}
                   role="option"
                   aria-selected={isSelected}
