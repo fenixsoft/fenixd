@@ -41,7 +41,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
 # add-harness-adapter-layer 4.1：一次性 spawn 收编入口（架构图 autodraft）
 from core.agent_runner.harness import (
     ENV_MODE_CLEAN,
@@ -102,21 +101,14 @@ EVIDENCE_FILENAME = "evidence.md"
 EVIDENCE_HEAD_PREFIX = "evidence-head:"
 
 # env 剔除口径（D1.11）：一次性架构图生成与 agent-run 无关，MUST NOT 注入
-# agent-run 专用上下文。键集单一来源见 core/agent_env_keys.py（与
-# SessionManager、core.knowledge 共用同一 frozenset）。
-_BANNED_ENV_KEYS = AGENT_RUN_BANNED_ENV_KEYS
+# agent-run 专用上下文。原 _build_spawn_env/_BANNED_ENV_KEYS 助手已随 spawn
+# 链路收编进 harness.run_one_shot 删除（code-review item 4dd2fccdabd6），
+# 口径由 SpawnRequest.env_mode=ENV_MODE_CLEAN 数据化承接（见 _run_stage）、
+# 键集单一来源仍在 core/agent_env_keys.py。
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _build_spawn_env() -> dict[str, str]:
-    """构建 claude 子进程环境：os.environ.copy() 减 agent-run 专用键。"""
-    env = os.environ.copy()
-    for key in _BANNED_ENV_KEYS:
-        env.pop(key, None)
-    return env
 
 
 def _vendored_skill_root() -> Path:
@@ -449,6 +441,7 @@ class ArchitectureManager:
 
     def __init__(self) -> None:
         self._guard = threading.Lock()
+        # [fenix-ignore:fbcd65ba1a25] 锁按被访问过的项目惰性创建、每把开销字节级且项目数量级受控（上限假设：项目集有限），引入无在飞项目的惰性回收需新增加锁协议，并发风险大于收益
         self._locks: dict[str, threading.Lock] = {}
         self._procs: dict[str, subprocess.Popen] = {}
 
@@ -963,13 +956,34 @@ class H13ArchitectureRoutesMixin:
                 404,
             )
             return
+        diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
+        # code-review item 277eb5753256：diagram.html 由 claude 原地覆写（非
+        # tmp+rename），落盘是生成侧提示词驱动、代码侧无法原子化，故读侧收敛：
+        # 先完整读一遍产物，读后复核 state 仍为 ready 再下发。claude 只在单飞
+        # 锁持有期内写文件，而 refresh 持锁先落 generating 再起生成线程，故
+        # 「读后 state 仍 ready」即本次读取未与覆写并发（任何覆写必以
+        # generating 落盘为先导，先于读取结束前可见）；复核失败与首查同形
+        # （同 code，前端控制流不受影响）。复核通过后 _send_file 的二次读取
+        # 与复核间隔极短（须在该间隙内受理刷新且覆写恰好落在其 stat/read
+        # 之间），残留窗口可忽略。
+        try:
+            diagram_path.read_bytes()
+        except OSError:
+            # 缺失/不可读交 _send_file 按既有 404 形态处理（口径不变）
+            pass
+        if self._architecture_manager().status(proot).get("state") != "ready":
+            self._json(
+                {"error": "架构图尚未生成", "code": "architecture_not_generated"},
+                404,
+            )
+            return
         # code-review item 9e7b4eb16804：diagram.html 由 claude 生成、设计上内联
         # 全部 JS（同源自直发/iframe 无 sandbox 即执行），得以携 dashboard 源调用
         # 各未鉴权管理 API。CSP ``sandbox allow-scripts`` 使文档以不透明源运行：
         # 内联脚本照常渲染图（不依赖同源凭据），而 fetch/XHR/表单等同源管理 API
         # 调用被浏览器隔离阻断；浏览器直接打开与 iframe 嵌入同样受控。
         self._send_file(
-            proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME,
+            diagram_path,
             "text/html; charset=utf-8",
             extra_headers=[
                 ("Content-Security-Policy", "sandbox allow-scripts"),
