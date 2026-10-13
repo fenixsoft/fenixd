@@ -17,7 +17,9 @@
 import dataclasses
 import inspect
 import json
+import os
 import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +40,7 @@ from core.agent_runner.harness import (
     resolve_adapter_from_config,
     set_current_adapter,
 )
+from core.agent_runner.harness.claude_adapter import build_env
 
 
 @pytest.fixture(autouse=True)
@@ -240,6 +243,38 @@ class TestClaudeAdapterBasics:
         assert result["turns"] == 3
         assert result["session_id"] == "abc123"
 
+    def test_clean_env_mode_strips_banned_keys(self):
+        # AGENT_RUN_BANNED_ENV_KEYS 应用点（task 2.3）：clean 口径剔除三键，
+        # env_overrides 仍合并
+        from core.agent_runner.harness import ENV_MODE_CLEAN
+
+        req = SpawnRequest(
+            prompt="one shot",
+            cwd="/tmp/wt",
+            env_mode=ENV_MODE_CLEAN,
+            env_overrides={"ANTHROPIC_BASE_URL": "https://api.example.com"},
+        )
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/fixture-home",
+            "FENIX_RUN_PROJECT_ROOT": "/leaked/project",
+            "FENIX_RUN_WORKTREE": "/leaked/worktree",
+            "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1",
+        }, clear=True):
+            env = build_env(req)
+        assert env is not None
+        assert "FENIX_RUN_PROJECT_ROOT" not in env
+        assert "FENIX_RUN_WORKTREE" not in env
+        assert "CLAUDE_CODE_ENABLE_TODO_TOOLS" not in env
+        assert env["ANTHROPIC_BASE_URL"] == "https://api.example.com"
+
+    def test_inherit_env_mode_returns_none(self):
+        # 叙事通道现状：Popen 不带 env 参数（完整继承）
+        from core.agent_runner.harness import ENV_MODE_INHERIT
+
+        req = SpawnRequest(prompt="narrate", cwd="/tmp", env_mode=ENV_MODE_INHERIT)
+        assert build_env(req) is None
+
     def test_classify_stderr_wordlist(self):
         adapter = ClaudeAdapter()
         # 拒模型诊断行（归因口径，经 ProviderCircuit 委托判别）
@@ -254,3 +289,139 @@ class TestClaudeAdapterBasics:
         assert adapter.classify_stderr("") == "generic"
         # generic 行不误吞
         assert adapter.classify_stderr("Traceback (most recent call last)") == "generic"
+
+
+# ── 隔离 settings 构造与落盘（task 2.2 平移）──────────────────────────
+
+class TestIsolatedSettings:
+    """build_isolated_settings / ensure_agent_config_dir 平移行为。"""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, monkeypatch, tmp_path):
+        # HOME 指向 tmp：宿主 ~/.claude/settings.json 不参与断言（确定性）
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        self.home = home
+        self.project_root = tmp_path / "proj"
+        (self.project_root / ".fenix").mkdir(parents=True)
+        self.config_dir = self.project_root / ".fenix" / "agent-config" / "prov-a"
+
+    def _write_home_settings(self, payload: dict):
+        (self.home / ".claude").mkdir(parents=True, exist_ok=True)
+        (self.home / ".claude" / "settings.json").write_text(
+            json.dumps(payload), encoding="utf-8")
+
+    def test_schema_version_constant(self):
+        from core.agent_runner.harness import ISOLATED_SETTINGS_SCHEMA_VERSION
+
+        assert ISOLATED_SETTINGS_SCHEMA_VERSION == 2
+
+    def test_enabled_plugins_default_and_copy(self, monkeypatch):
+        from core.agent_runner.harness import build_isolated_settings
+
+        monkeypatch.setattr(
+            "core.config.ConfigLoader.get_subagent_model_override",
+            classmethod(lambda cls, config: ""),
+        )
+        # 宿主无 enabledPlugins → 缺省 superpowers
+        settings = build_isolated_settings(self.project_root)
+        assert settings["enabledPlugins"] == {
+            "superpowers@claude-plugins-official": True}
+        # 宿主有 → 原样复制
+        self._write_home_settings({"enabledPlugins": {"plug-a": True}})
+        settings = build_isolated_settings(self.project_root)
+        assert settings["enabledPlugins"] == {"plug-a": True}
+        # provider_model 为空 → 不写 env 段（行为与变更前逐字节一致）
+        assert "env" not in settings
+
+    def test_hooks_copied_from_agent_settings(self, monkeypatch):
+        from core.agent_runner.harness import build_isolated_settings
+
+        hooks = {"PreToolUse": [{"matcher": "Read", "hooks": []}]}
+        (self.project_root / ".fenix" / "agent-settings.json").write_text(
+            json.dumps({"hooks": hooks}), encoding="utf-8")
+        settings = build_isolated_settings(self.project_root)
+        assert settings["hooks"] == hooks
+
+    def test_provider_env_subagent_mapping(self, monkeypatch):
+        """provider_model 非空 → 四键 env 映射，override 优先于 provider model。"""
+        from core.agent_runner.harness import build_isolated_settings
+
+        monkeypatch.setattr(
+            "core.config.ConfigLoader.get_subagent_model_override",
+            classmethod(lambda cls, config: ""),
+        )
+        settings = build_isolated_settings(self.project_root, "glm-5.3-flash")
+        assert settings["env"] == {
+            "CLAUDE_CODE_SUBAGENT_MODEL": "glm-5.3-flash",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3-flash",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.3-flash",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.3-flash",
+        }
+        # agents.subagent_model_override 非空 → 优先
+        monkeypatch.setattr(
+            "core.config.ConfigLoader.get_subagent_model_override",
+            classmethod(lambda cls, config: "override-model"),
+        )
+        settings = build_isolated_settings(
+            self.project_root, "glm-5.3-flash", config={"agents": {}})
+        assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "override-model"
+
+    def test_ensure_agent_config_dir_creates_and_idempotent(self, monkeypatch):
+        from core.agent_runner.harness import ensure_agent_config_dir
+
+        monkeypatch.setattr(
+            "core.config.ConfigLoader.get_subagent_model_override",
+            classmethod(lambda cls, config: ""),
+        )
+        # 首建：目录 + settings.json（含 _schema_version）
+        cfg_dir = ensure_agent_config_dir(self.project_root, "prov-a", "glm-5.3-flash")
+        assert cfg_dir == self.config_dir
+        marker = cfg_dir / "settings.json"
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["_schema_version"] == 2
+        assert payload["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "glm-5.3-flash"
+        first_mtime = marker.stat().st_mtime_ns
+
+        # 幂等：内容一致 → 不重写（mtime 不变）
+        cfg_dir2 = ensure_agent_config_dir(self.project_root, "prov-a", "glm-5.3-flash")
+        assert cfg_dir2 == cfg_dir
+        assert marker.stat().st_mtime_ns == first_mtime
+
+        # 内容不匹配（旧版无 env）→ 原子重写为最新映射
+        marker.write_text(json.dumps({"enabledPlugins": {}}), encoding="utf-8")
+        ensure_agent_config_dir(self.project_root, "prov-a", "glm-5.3-flash")
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "glm-5.3-flash"
+
+    def test_ensure_agent_config_dir_symlinks(self, monkeypatch):
+        """~/.claude/skills 存在 → symlink 建立；不存在 → 优雅跳过。"""
+        from core.agent_runner.harness import ensure_agent_config_dir
+
+        monkeypatch.setattr(
+            "core.config.ConfigLoader.get_subagent_model_override",
+            classmethod(lambda cls, config: ""),
+        )
+        (self.home / ".claude" / "skills").mkdir(parents=True)
+        ensure_agent_config_dir(self.project_root, "prov-a")
+        assert (self.config_dir / "skills").is_symlink()
+        assert not (self.config_dir / "plugins").exists()  # 源缺失 → 跳过
+
+    def test_runner_thin_delegation_parity(self, monkeypatch):
+        """runner 保留薄委托：与 harness 模块函数产物一致（回归兼容面）。"""
+        from tests.helpers import make_runner
+
+        monkeypatch.setattr(
+            "core.config.ConfigLoader.get_subagent_model_override",
+            classmethod(lambda cls, config: ""),
+        )
+        runner = make_runner(self.project_root)
+        runner.config = {"agents": {}}
+        settings = runner._build_isolated_settings("glm-5.3-flash")
+        assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "glm-5.3-flash"
+        cfg_dir = runner._ensure_agent_config_dir("prov-a", "glm-5.3-flash")
+        assert cfg_dir == self.config_dir
+        payload = json.loads(
+            (cfg_dir / "settings.json").read_text(encoding="utf-8"))
+        assert payload["_schema_version"] == 2

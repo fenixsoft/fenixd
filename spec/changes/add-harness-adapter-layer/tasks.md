@@ -59,16 +59,16 @@
 
 ## 1. 协议层与数据类
 
-- [ ] 1.1 新建 core/agent_runner/harness/ 包：protocol.py 定义 HarnessAdapter 协议（name/build_spawn_spec/normalize_event/classify_stderr/extract_result/process_patterns/capabilities）与 SpawnRequest/SpawnSpec/HarnessCapabilities 数据类，HarnessCapabilities 可 json 序列化，__init__.py 导出公共名
-- [ ] 1.2 单测（tests/test_harness_adapter.py）：claude_adapter 实例满足协议成员完整性、HarnessCapabilities 可 json.dumps 往返
+- [x] 1.1 新建 core/agent_runner/harness/ 包：protocol.py 定义 HarnessAdapter 协议（name/build_spawn_spec/normalize_event/classify_stderr/extract_result/process_patterns/capabilities）与 SpawnRequest/SpawnSpec/HarnessCapabilities 数据类，HarnessCapabilities 可 json 序列化，__init__.py 导出公共名
+- [x] 1.2 单测（tests/test_harness_adapter.py）：claude_adapter 实例满足协议成员完整性、HarnessCapabilities 可 json.dumps 往返
 
 ## 2. claude_adapter 平移
 
-- [ ] 2.1 平移命令构造进 claude_adapter.build_spawn_spec：`claude -p --output-format stream-json --verbose --add-dir … --permission-mode bypassPermissions [--settings][--model][--resume]` 全参数、prompt 经 stdin 载荷、max_turns daemon 侧强制语义保持
-- [ ] 2.2 平移隔离 settings 构造与落盘（_build_isolated_settings/_ensure_agent_config_dir、3 个 PreToolUse hooks 注入、skills/plugins symlink、enabledPlugins、子代理模型映射、ISOLATED_SETTINGS_SCHEMA_VERSION）
-- [ ] 2.3 平移 env 路由与清理（ANTHROPIC_* 注入、ANTHROPIC_AUTH_TOKEN 清除、CLAUDE_CONFIG_DIR 隔离、AGENT_RUN_BANNED_ENV_KEYS 应用点、FENIX_RUN_PROJECT_ROOT/FENIX_RUN_WORKTREE 注入）
-- [ ] 2.4 快照测试（tests/test_harness_claude_snapshot.py）：迁移动手前先以现状 _run_claude 捕获代表性 SpawnRequest 集合（spec 车道/维护车道/resume/provider 链各至少一例）的 argv/env/stdin 金样本 fixture 并入库；迁移后以同一 SpawnRequest 集合驱动 claude_adapter.build_spawn_spec 与金样本逐字节相等对照
-- [ ] 2.5 平移 stderr 分类与结果提取进 claude_adapter：classify_stderr 承接现状 stderr 降噪/归因（unrecognized_model 分类保持经 ProviderCircuit.classify_unrecognized_model_error 委托的接入形态，runner.py:725）；extract_result 承接会话 id/usage（_extract_usage_info）/终态 result 提取的现状行为（由 3.2 既有回归覆盖）
+- [x] 2.1 平移命令构造进 claude_adapter.build_spawn_spec：`claude -p --output-format stream-json --verbose --add-dir … --permission-mode bypassPermissions [--settings][--model][--resume]` 全参数、prompt 经 stdin 载荷、max_turns daemon 侧强制语义保持
+- [x] 2.2 平移隔离 settings 构造与落盘（_build_isolated_settings/_ensure_agent_config_dir、3 个 PreToolUse hooks 注入、skills/plugins symlink、enabledPlugins、子代理模型映射、ISOLATED_SETTINGS_SCHEMA_VERSION）
+- [x] 2.3 平移 env 路由与清理（ANTHROPIC_* 注入、ANTHROPIC_AUTH_TOKEN 清除、CLAUDE_CONFIG_DIR 隔离、AGENT_RUN_BANNED_ENV_KEYS 应用点、FENIX_RUN_PROJECT_ROOT/FENIX_RUN_WORKTREE 注入）
+- [x] 2.4 快照测试（tests/test_harness_claude_snapshot.py）：迁移动手前先以现状 _run_claude 捕获代表性 SpawnRequest 集合（spec 车道/维护车道/resume/provider 链各至少一例）的 argv/env/stdin 金样本 fixture 并入库；迁移后以同一 SpawnRequest 集合驱动 claude_adapter.build_spawn_spec 与金样本逐字节相等对照
+- [x] 2.5 平移 stderr 分类与结果提取进 claude_adapter：classify_stderr 承接现状 stderr 降噪/归因（unrecognized_model 分类保持经 ProviderCircuit.classify_unrecognized_model_error 委托的接入形态，runner.py:725）；extract_result 承接会话 id/usage（_extract_usage_info）/终态 result 提取的现状行为（由 3.2 既有回归覆盖）
 
 ## 3. 主通道两段化
 
