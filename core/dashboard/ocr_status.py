@@ -159,7 +159,7 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
     )
     try:
         out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         try:
             pgid = os.getpgid(p.pid)
         except (ProcessLookupError, PermissionError, OSError):
@@ -179,11 +179,21 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
         guard_killpg(
             pgid, signal.SIGKILL, caller="ocr_status._run_npm_install", resolve=False
         )
-        # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态。
+        # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态，并把
+        # 取回的尾部输出挂回异常（code-review item a203fe415b80）：Popen.
+        # communicate 超时抛出的 TimeoutExpired 其 stdout/stderr 恒为 None
+        # （超时携带部分输出是 subprocess.run 的行为，run 在 except 里补
+        # communicate 后挂回），丢弃第二次 communicate 的返回会使调用方
+        # _install_ocr_locked 超时分支的 _partial_output 恒得空串，300s 安装
+        # 失败用户看不到任何 npm 报错细节。本处 text=True，out2/err2 为 str，
+        # 与 e.stdout 同型直接拼接（_partial_output 对 bytes 残留亦容错解码）。
         try:
-            p.communicate(timeout=5)
+            out2, err2 = p.communicate(timeout=5)
         except Exception:
             pass
+        else:
+            e.stdout = (e.stdout or "") + (out2 or "")
+            e.stderr = (e.stderr or "") + (err2 or "")
         raise
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
 

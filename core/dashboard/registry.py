@@ -166,7 +166,17 @@ class Registry:
             （code-review item 27a41212fb75）——写方法须拒绝 save。
         """
         defaults = {"port": DEFAULT_PORT, "projects": [], "scan_dirs": [], "ignored": []}
-        if not self.config_path.exists():
+        # exists() 探测守卫（code-review item 0bd6c9a89612，容错口径同
+        # _dir_exists/_state_md_is_file）：pathlib 的 exists() 只吞
+        # ENOENT/ENOTDIR/EBADF/ELOOP，配置文件 stat 遇 EIO/EBUSY（网络 home
+        # 目录抖动、挂载点故障）会直接上抛，穿透 _load_checked/_load_for_write/
+        # load，破坏写方法「返回 (bool, message)、不抛异常」契约。探测失败按
+        # 「存在但不可读」带毒处理，走 load_error 统一拒写路径。
+        try:
+            config_absent = not self.config_path.exists()
+        except OSError as exc:
+            return defaults, exc
+        if config_absent:
             return defaults, None
         try:
             data = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
@@ -377,7 +387,15 @@ class Registry:
         # 时默认以用户主目录 ~ 为唯一扫描根，遍历其一级子目录做自动发现。
         scan_dirs = data.get("scan_dirs", [])
         if not scan_dirs:
-            scan_dirs = [str(Path.home())]
+            # 默认扫描根守卫（code-review item de9a4b21d3c1，与下方用户配置
+            # 扫描根条目的 except 口径对称）：HOME 未设置且 passwd 无对应用户
+            # 的容器/服务账号环境下 Path.home() 抛 RuntimeError 会穿透
+            # discover()，此处降级为无扫描根并 WARNING 留痕。
+            try:
+                scan_dirs = [str(Path.home())]
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning("无法解析用户主目录作为默认扫描根，跳过扫描: %s", exc)
+                scan_dirs = []
         for sd in scan_dirs:
             # 类型守卫（code-review item 03bc59736158）：与上方 projects 条目
             # 同式——load() 只校验 scan_dirs 是 list 不校验元素类型，非字符串/
