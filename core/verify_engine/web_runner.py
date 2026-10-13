@@ -41,7 +41,13 @@ def locate_app_base_url(candidates: list) -> str:
         # 无法完成时设计口径为保守判健康，而非抛异常）。
         if not isinstance(r, dict):
             continue
-        for step in r.get("step_results") or []:
+        # code-review item 7d1fef294e67：step_results 类型前置收敛——`or []`
+        # 只兜 None/空值，report 损坏把 step_results 写成数字/布尔等非空标量
+        # 时 for 直接 TypeError 穿出（探针口径为保守判健康而非抛异常）。
+        steps = r.get("step_results")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
             if not isinstance(step, dict) or step.get("action") != "navigate":
                 continue
             detail = f"{step.get('detail') or ''} {step.get('error') or ''}"
@@ -525,7 +531,11 @@ async def probe_web_environment(
     优先使用契约统一供给的 base_url；无实例形态下为空，落回 navigate
     文本考古（locate_app_base_url）。
     """
-    base = base_url or browser.base_url
+    # code-review item 538544bbd784：getattr 防御——browser 为无 base_url
+    # 属性的形态（测试替身/无实例直调）时 AttributeError 会穿出探针链路，
+    # 违背「探针无法完成时保守判健康」契约；与 execute 里
+    # getattr(self, "_setup_health_ok", True) 同款防御口径。
+    base = base_url or getattr(browser, "base_url", "")
     detail = ""
     healthy = True
     if not base and project_root:

@@ -12,6 +12,7 @@ D3 patch 缝隙：`MergeConflictInfo` 从 types 模块导入（包命名空间 r
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -1241,7 +1242,16 @@ class G4MergebackMixin:
             tail = self._read_text_tail(p, self._SESSION_TRANSCRIPT_TAIL_BYTES)
             if not tail:
                 continue
-            mentions = sorted(q for q in overlap_set if q in tail)
+            # 双口径匹配（item 2709f79df0ba）：jsonl transcript 内字符串按 JSON
+            # 编码，含中文/非 ASCII 的路径在文件里以 \uXXXX 转义字节序出现，与
+            # 仓库相对路径的字面形不相等，单字面匹配对非 ASCII 路径恒漏判
+            # （fail-open 回无主的覆盖盲区）。字面形之外并检其 JSON 转义形补齐
+            # 覆盖；纯 ASCII 路径两形态相同，转义形并检为恒 False 的冗余、无副作用。
+            mentions = sorted(
+                q
+                for q in overlap_set
+                if q in tail or json.dumps(q, ensure_ascii=True)[1:-1] in tail
+            )
             if mentions:
                 return {
                     "run_ids": [],
@@ -1281,7 +1291,11 @@ class G4MergebackMixin:
         的报错文案可翻译，本地化 git（如 zh_CN 装了 translation）下旧版报错不
         含该串，按串判定会误判为支持并被类级缓存固化进程一生。探测结果类级缓
         存（多实例共享、进程一生只探一次），不支持时记一次性 WARNING（不刷屏），
-        预演闸永久跳过。
+        预演闸永久跳过。仅「拿到确定性结论」（支持 / 旧版确定性不支持）才固化
+        缓存：探测异常（fork 失败、内存压力、被 timeout 打断等瞬时
+        OSError/SubprocessError）不置探测完成位——本次按不支持保守回退现行
+        行为，下次合回重试探测，避免瞬时故障把预演闸固化进程一生
+        （item 29f26aec8c2d）。
         """
         from core.worktree_manager import WorktreeManager  # lazy import to avoid cycle
         if not WorktreeManager._rehearsal_probe_done:
@@ -1315,15 +1329,30 @@ class G4MergebackMixin:
                     and len(tree_oid) in (40, 64)
                     and all(c in "0123456789abcdef" for c in tree_oid)
                 )
-            except (subprocess.SubprocessError, OSError):
+            except (subprocess.SubprocessError, OSError) as probe_err:
+                # 瞬时探测失败≠git 版本不支持（item 29f26aec8c2d）：fork 失败、
+                # 内存压力、探测被 timeout 打断等瞬时故障若与「旧版不支持」同等
+                # 固化缓存，预演闸会在进程余生永久跳过，语义冲突只能等真合并撞上
+                # 才被发现、需重启 daemon 才能恢复。本次按不支持保守回退现行行为
+                # （失败方向不变），但不置 _rehearsal_probe_done——下次合回重试
+                # 探测；WARNING 与确定性不支持的「一次性」口径不同，按次记录以
+                # 暴露探测链路异常。
                 WorktreeManager._rehearsal_supported = False
-            WorktreeManager._rehearsal_probe_done = True
-            if not WorktreeManager._rehearsal_supported:
                 self.logger.warning(
                     "worktree_manager",
-                    "git merge-tree --write-tree 不可用（需 git ≥ 2.38）— "
-                    "merge 预演闸跳过，行为回退现行",
+                    f"git merge-tree 支持性探测失败（瞬时异常：{probe_err}）— "
+                    "本次预演闸跳过、行为回退现行，下次合回重试探测",
                 )
+            else:
+                # 探测拿到确定性结论（支持 / git < 2.38 确定性不支持）才固化
+                # 类级缓存；确定性不支持仍记一次性 WARNING（不刷屏，口径不变）。
+                WorktreeManager._rehearsal_probe_done = True
+                if not WorktreeManager._rehearsal_supported:
+                    self.logger.warning(
+                        "worktree_manager",
+                        "git merge-tree --write-tree 不可用（需 git ≥ 2.38）— "
+                        "merge 预演闸跳过，行为回退现行",
+                    )
         return WorktreeManager._rehearsal_supported
 
     def _rehearse_merge_from_branch(self, branch: str) -> Optional[MergeConflictInfo]:
@@ -1516,6 +1545,11 @@ class G4MergebackMixin:
                 ],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 8b72d5824f19，对齐 _maintree_git_out 先例）：
+                # text=True 缺省按 locale strict 解码，输出含非 ASCII 时抛
+                # UnicodeDecodeError 落入末尾通用 except，解码错误顶替真实归因。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if ancestor.returncode == 0:
@@ -1540,6 +1574,9 @@ class G4MergebackMixin:
                 ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 8b72d5824f19，同上口径收口）。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             ).stdout.strip()
 
@@ -1672,6 +1709,11 @@ class G4MergebackMixin:
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（item 8b72d5824f19，同上口径收口）：abort 的 stderr
+                # 仅透传进 error 文案，解码失败会吞掉真实 abort 失败原因。
+                # 不固化 LC_ALL=C：abort 输出不参与英文 marker 解析，仅日志透传。
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             # abort 自身失败可见性（code-review item 7480e064baab）：abort 非 0
@@ -1690,6 +1732,13 @@ class G4MergebackMixin:
                     ["git", "-C", str(self.project_root), "status", "--porcelain"],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（item 8b72d5824f19）：quotePath=false 且冲突路径
+                    # 含非 ASCII 时 porcelain 原样输出非 ASCII 字节，text=True
+                    # 缺省按 locale strict 解码抛 UnicodeDecodeError（ValueError），
+                    # 被末尾通用 except 捕获后调用方看到的是解码错误而非真实
+                    # merge/abort 归因。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 # porcelain v1 的 unmerged XY 码全集（DD/AU/UD/UA/DU/AA/UU）
@@ -1742,6 +1791,10 @@ class G4MergebackMixin:
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（item 8b72d5824f19，同上口径收口）：解码失败会
+                    # 吞掉收口分支里真实 abort/超时的失败原因。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if abort.returncode != 0:
@@ -1804,6 +1857,10 @@ class G4MergebackMixin:
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（item 8b72d5824f19，同上口径收口）：解码失败会
+                    # 吞掉收口分支里真实 abort/超时的失败原因。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if abort.returncode != 0:

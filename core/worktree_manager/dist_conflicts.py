@@ -608,7 +608,12 @@ class G5DistConflictsMixin:
             staged_paths = [
                 ln[3:].split(" -> ", 1)[-1]
                 for ln in staged.stdout.splitlines()
-                if len(ln) > 3
+                # porcelain 首位（index 列）非空格＝该条目确已暂存（item
+                # 2e8df62a8f9a）：" M"/" D" 等仅工作树态条目并非 staged，不
+                # 参与 foreign 判定——正常序列下 add -A 后静态根无未暂存残
+                # 留，过滤仅为消除对「add 与探针之间无其他写手」这一时序假设
+                # 的依赖，避免未来插入写手时把未暂存路径误判越界而跳过 amend。
+                if len(ln) > 3 and ln[0] != " "
             ]
             foreign = [
                 p for p in staged_paths
@@ -808,24 +813,36 @@ class G5DistConflictsMixin:
         # 的原样形态失配，真实存在的路径会误判「HEAD 已删」而遭 git rm。
         # 与 _resolve_build_artifact_conflicts/_collect_conflict_paths 的
         # 采集点同口径。
-        ls = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.project_root),
-                "-c",
-                "core.quotePath=false",
-                "ls-tree",
-                "-r",
-                "--name-only",
-                rev,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
+        try:
+            ls = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    rev,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            # 超时（TimeoutExpired）/git 缺失等异常路径与非零返回码同口径
+            # （item fcf3a6b13d0c）：返回 None 让调用方走「HEAD 产物集不可知，
+            # 跳过自愈」的轻量分支——异常若穿透到
+            # _resolve_build_artifact_conflicts 的外层 except 会直接 abort
+            # merge，丢弃整轮合并重试成本。
+            self.logger.warning(
+                "worktree_manager",
+                f"git ls-tree {rev} raised during artifact paths probe: {e}",
+            )
+            return None
         if ls.returncode != 0:
             # 命令失败 ≠ HEAD 无产物（item 57d34aa036b5）：瞬时故障（超时/
             # git 锁争用）下静默返回空集会让调用方把「HEAD 产物集不可知」

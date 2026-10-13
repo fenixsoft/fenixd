@@ -246,27 +246,21 @@ class G6StashGuardMixin:
         """
         # pop 前钉住栈顶 sha（fix-mergeback-stashpop-silent-loss D2）：guard 锁内
         # LIFO，此时栈顶即刚 push 的条目；drop 前以「sha 仍为栈顶」防并发插队。
+        # 钉取复用 _rev_parse_stash_top（code-review item 17bbe8ea6021）：与下方
+        # 栈顶复核共用同一子进程调用与容错，不再维护同型内联副本。
         pinned_sha = ""
-        try:
-            rev = subprocess.run(
-                ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
+        rev = self._rev_parse_stash_top()
+        if rev is None:
             # git 超时/不可用：钉不住 sha = 无法证明栈顶未动，与下方复核阶段
             # 同口径放弃本轮绝不弹（条目保留交 reclaim_stale_autostash 巡检兜底）
             self.logger.warning(
                 "worktree_manager",
-                f"Stash pop skipped, top-of-stack pin unavailable "
-                f"(stash preserved): {e}",
+                "Stash pop skipped, top-of-stack pin unavailable "
+                "(git unavailable, stash preserved)",
             )
             return False, []
-        if rev.returncode == 0:
-            pinned_sha = rev.stdout.strip()
+        if rev[0] == 0:
+            pinned_sha = rev[1].strip()
 
         # pop 前复核栈顶仍为钉住条目（code-review item c6d22fdac25f，对齐
         # _reclaim_stale_autostash_locked 的防插队口径）：pop 弹的是栈顶而非
@@ -817,29 +811,24 @@ class G6StashGuardMixin:
             )
             return False
         rev_rc, rev_out = rev
+        # sha_before 即时取自当前栈顶（stash list 已确认栈顶带 AUTOSTASH 前缀），
+        # 钉取与 pop 之间无任何语句，不再紧邻二次复核（code-review item
+        # fd53642a6ddc：紧邻复核无插队窗口、防护空转，白付一次持锁临界区内的
+        # 子进程开销）；实际防线是下方 TOCTOU 干净重查、pop 输出 sha 核对与
+        # drop 前的 sha 复核。
         sha_before = rev_out.strip() if rev_rc == 0 else ""
-        # pop 前以 sha_before 复核栈顶：与 drop 侧「sha 仍在栈顶」防插队核对同
-        # 口径；其间若有新条目插到栈顶（人工 stash push 等）则放弃本轮，绝不弹
-        # 非目标条目。
-        guard = self._rev_parse_stash_top()
-        if guard is None:
-            # 防插队复核失败（超时/不可用）无法证明栈顶未动：放弃本轮绝不弹
-            self.logger.warning(
-                "worktree_manager",
-                "Stale autostash reclaim skipped (git unavailable)",
-            )
-            return False
-        guard_rc, guard_out = guard
-        if guard_rc != 0 or guard_out.strip() != sha_before:
+        if rev_rc != 0:
+            # 栈非空（stash list 有前缀条目）却核不出栈顶 sha——git 异常态，
+            # 钉不住目标条目即无法防误弹：保守放弃本轮，条目保留交下轮巡检
+            # （原紧邻复核对同型失败的同口径放弃，改由首次钉取直接判定）。
             self.logger.error(
                 "worktree_manager",
-                f"Stale autostash reclaim aborted: stash top moved "
-                f"(expected {sha_before or 'n/a'}), skip this round to avoid "
-                f"mis-pop",
+                "Stale autostash reclaim aborted: top-of-stack sha "
+                "unavailable, skip this round to avoid mis-pop",
             )
             return False
         # TOCTOU 复核（code-review item 9a1a53693bb4）：上方干净判定与 pop 之间
-        # 还隔着 stash list / rev-parse / 防插队复核多个子进程，窗口内用户（或
+        # 还隔着 stash list / rev-parse 等多个子进程，窗口内用户（或
         # dashboard 侧进程）可能向主树落盘新改动——若与 autostash 条目触碰同一
         # 文件，pop 冲突后 _heal_unmerged_files 的 checkout -f 会把窗口内写入的
         # 未提交修改一并丢弃。pop 前重查一次 tracked 干净态（口径同函数开头：

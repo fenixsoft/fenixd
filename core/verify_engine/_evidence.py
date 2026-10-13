@@ -26,13 +26,18 @@ def _truncate(text: str) -> tuple[str, bool]:
 
 
 def _interpolate_env(value: str, env: dict) -> str:
-    """{env:VAR} 插值：未命中的占位符原样保留（防静默改写）。"""
+    """{env:VAR} 插值：未命中或命中但值为 None 的占位符均原样保留（防静默改写）。"""
     if not isinstance(value, str) or "{env:" not in value:
         return value
 
     def _repl(m):
         # str() 兜底：env 值可能非字符串（如 YAML env 映射天然产出 int/dict），
         # 原样作为 re.sub 替换串会抛 "replacement must be a string"
-        return str(env.get(m.group(1), m.group(0)))
+        val = env.get(m.group(1), m.group(0))
+        # 值为 None 时视同未命中：str(None) 会把字面量 "None" 插进证据文本，
+        # 误导判定侧归因，保留原占位符与「未命中原样保留」语义连贯
+        if val is None:
+            return m.group(0)
+        return str(val)
 
     return re.sub(r"\{env:([^}]+)\}", _repl, value)

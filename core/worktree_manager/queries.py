@@ -545,9 +545,15 @@ class G8QueryMixin:
             # main 主干仓库不再恒空/分组退化。解析器吞异常回退常量、不抛错。
             base = resolve_base_branch(self.project_root)
             for prefix in prefixes:
-                # spec 名套 glob.escape（与 locks._latest_stream_mtime 同口径），
-                # 防 for-each-ref pattern 按 fnmatch 展开元字符致枚举过配。
-                pattern = f"refs/heads/{prefix}/{glob.escape(spec_name)}-*"
+                # spec 名与命名空间前缀都套 glob.escape（与
+                # locks._latest_stream_mtime 同口径），防 for-each-ref pattern
+                # 按 fnmatch 展开元字符致枚举过配/漏配——prefix 来自配置
+                # worktree.implement_branch_prefix 原样内插，取值含 * ? [ 时
+                # 会被展开（code-review item e1018ad143ef）；普通字面量经
+                # escape 原样返回，对既有配置无行为变化。
+                pattern = (
+                    f"refs/heads/{glob.escape(prefix)}/{glob.escape(spec_name)}-*"
+                )
                 res = subprocess.run(
                     [
                         "git",
@@ -881,12 +887,30 @@ class G8QueryMixin:
         return parts[0] == spec_name
 
     def branch_exists(self, branch: str) -> bool:
-        """分支是否存在（``git rev-parse --verify``）。repair 三态判定基准。"""
+        """分支是否存在（``git show-ref --verify``）。repair 三态判定基准。
+
+        严格限定 refs/heads 命名空间（code-review item e15c05dd4ab5）：
+        ``rev-parse --verify`` 对 tag、短 hash、HEAD 等任意可解析 rev 都
+        返回 0，且解析顺序 refs/tags 先于 refs/heads（同名 tag 会遮蔽
+        分支）——与方法名/调用方语义（repair 三态「分支是否存活」）不符，
+        异常输入（误传 sha/HEAD）会得到假阳性可用分支。调用方传入的均为
+        短分支名字面量（``_guess_branch_from_worktree`` 的 abbrev-ref
+        产出 / ``create_worktree_on_branch`` 入参 / repair 载体分支），
+        收紧后对既有调用无行为变化。
+        """
         if not branch:
             return False
         try:
             verify = subprocess.run(
-                ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    f"refs/heads/{branch}",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -961,5 +985,10 @@ class G8QueryMixin:
                     pass
         if not candidates:
             return None
-        candidates.sort(reverse=True)
+        # 排序键显式取 mtime（code-review item 59ebdf72d4c4）：元素为
+        # (st_mtime, Path) 元组，裸 reverse=True 在两个目录 mtime 完全相等时
+        # （低精度文件系统同一秒内创建的两个 worktree）会比较第二个元素
+        # Path——pathlib 的 PurePath 未实现 < 排序（仅相等性），抛 TypeError
+        # 沿 repair 认领调用链上抛，违背本方法 non-blocking 降级口径。
+        candidates.sort(key=lambda t: t[0], reverse=True)
         return candidates[0][1]

@@ -40,18 +40,46 @@ function serializeSegment(events: RunEvent[], start: number, count: number): str
   return serialized;
 }
 
+// 端部序列化串的短哈希（FNV-1a 32 位，code-review item 466837ceeee1）：仅供
+// 候选重叠级的廉价预筛比较；哈希全等仍回退原串逐条比对防碰撞，不影响去重正确性
+function shortHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
 // 返回最大 overlap ∈ [0, maxOverlap] 使 aSer 的后 overlap 项逐条等于 bSer 的前
 // overlap 项（aSer/bSer 均恰含 maxOverlap 项序列化端部）；无重叠返回 0。
+// 哈希预筛（code-review item 466837ceeee1）：先单遍预计算每条串的整数短哈希
+//（O(串长)，与 serializeSegment 的单次序列化同口径），候选重叠级只比较整数，
+// 哈希全等才做一次原串逐条比对——最坏成本从 O(maxOverlap²) 次长串比较降为
+// O(maxOverlap²) 次整数比较 + 至多一次原串比对，onmessage 主线程不再被长串
+// 比较占满。
 function longestSuffixPrefixOverlap(aSer: string[], bSer: string[], maxOverlap: number): number {
+  const aHash = aSer.map(shortHash);
+  const bHash = bSer.map(shortHash);
   for (let overlap = maxOverlap; overlap > 0; overlap--) {
+    const start = maxOverlap - overlap;
     let matched = true;
     for (let i = 0; i < overlap; i++) {
-      if (aSer[maxOverlap - overlap + i] !== bSer[i]) {
+      if (aHash[start + i] !== bHash[i]) {
         matched = false;
         break;
       }
     }
-    if (matched) return overlap;
+    // 哈希全等 → 原串复核（防哈希碰撞）；复核失败继续更小的候选
+    if (matched) {
+      for (let i = 0; i < overlap; i++) {
+        if (aSer[start + i] !== bSer[i]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) return overlap;
+    }
   }
   return 0;
 }
@@ -369,6 +397,12 @@ export default function ClaudeOutputPane({
           // 失败退避重试（code-review item 11f787b2d13c）：重试耗尽不抛出，
           // 照旧走下方尾部重拉兜底
           await registerWatchWithRetry(msg.cid!);
+          // 复查守卫（code-review item 17960548f21d）：注册重试耗尽返回，或等待
+          // 退避期间已卸载/切 run 时，不再发起尾部重拉——响应侧虽有币值守卫兜底
+          // 不会污染状态，但明知实例已失效仍发请求只产生无效流量
+          if (!isMountedRef.current || activeRunIdRef.current !== runId || activeProjectRef.current !== project) {
+            return;
+          }
           // 注册后重拉一次尾部：兜底「run 在 watch 注册前已结束」或「SSE 断线
           // 重连期间错过终态事件」的场景，否则外层永远收不到完成回调。
           // 重同步改为尾部追加合并（code-review item 289e589fb89b）：整体替换
