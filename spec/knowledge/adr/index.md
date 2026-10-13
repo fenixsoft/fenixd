@@ -59,7 +59,7 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-052](ADR-052-state-md-field-whitelist-terminal-snapshot.md) | accepted | STATE.md 新字段必入序列化白名单；终态统计量在终态转换点快照进 STATE，读取仅终态采用持久值、脏值回退实时路径 |
 | [ADR-053](ADR-053-fast-track-single-run-lane-mode-in-spec-yaml.md) | accepted | fast-track：单 run 全包四段守卫保留，mode 存 `.spec.yaml` 缺省 full fail-closed；超预算升级保分支置 implemented 不重跑；判定靠确定性硬校验兜底 |
 | [ADR-054](ADR-054-mergeback-conflict-repair-branch-side-merge-main.md) | accepted | merge-back 语义冲突原地修复：git 层判定/调度层决策，repair 在分支侧合 main、主树恒干净不冻结，三态判定只信 git 事实，熔断计数不被 repair 清零 |
-| [ADR-055](ADR-055-llm-via-claude-cli-no-native-client.md) | superseded（被 ADR-271 取代） | 框架不实现独立 LLM 客户端：交互场景由执行会话完成、后台场景统一 headless claude -p（参数列表传参、超时有界、失败不改原值） |
+| [ADR-055](ADR-055-llm-via-claude-cli-no-native-client.md) | superseded | 框架不实现独立 LLM 客户端：交互场景由执行会话完成、后台场景统一 headless claude -p（参数列表传参、超时有界、失败不改原值）；已被 ADR-271（可插拔 harness）取代其 headless 措辞，不实现独立客户端纪律延续 |
 | [ADR-056](ADR-056-archive-visibility-dir-existence-periodic-governance.md) | accepted | 归档判定唯一事实源=活跃目录存在性（不写 STATE 标志）；按条目枚举 changes 必须容忍目录缺失；低频治理挂主循环周期计时而非事件埋点 |
 | [ADR-057](ADR-057-task-progress-subject-contract-read-side-fallback.md) | accepted | 任务进度协议：一个任务=一个 TaskCreate=一次汇报=一次勾选（subject 内嵌编号为契约）；读侧兜底链不依赖编号（创建序回退带弱一致性门槛） |
 | [ADR-058](ADR-058-dispatch-single-flight-inflight-state-protection.md) | accepted | 派发单飞守卫（异步操作前置位查重）+ 在飞态保护：失败回写不降级活跃验证态，verifier 结果竞态下重放合法路径或 blocked 留证，绝不静默丢弃 |
@@ -277,3 +277,5 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-269](ADR-269-repo-gate-convention-claudemd-not-hooks.md) | accepted | 仓库级门禁/约定要同时约束实现 run（worktree）与交互直改会话时载体必须是入库文件（仓库根 CLAUDE.md），不采用 git hooks（hook 不入库且对 worktree 不生效）；强制力为提示词级，机械强制走脚本加车道挂点 |
 | [ADR-270](ADR-270-codefix-delivery-guard-single-entry-schedule-window-no-probe.md) | accepted | code-fix 投递守卫一律收敛在 checkpoint() 唯一入口单点判定（四路触发汇入，新增激活路禁旁路，手动授权只越 enabled 总开关不越公共守卫）；已知周期断窗用配置化时刻静默窗前置规避（窗内拒新批窗末放行、窗次幂等武装/解除留痕），不引入上游可用性主动探测，窗外瞬态仍由冷却/salvage 兜底 |
 | [ADR-271](ADR-271-pluggable-agent-harness.md) | accepted | 可插拔 agent harness：车道与一次性 spawn 的命令构造唯一入口收口 adapter（协议边界在进程边界），run jsonl claude stream-json 为唯一 canon、自由会话与 CLAUDE_PID watchdog 豁免直连、worktree 目录约定字面冻结，agent.harness 选型 dispatch 前置健康检查（dsh 未部署 fail-fast）；取代 ADR-055 的「统一 headless claude -p」措辞、保留其「不实现独立 LLM 客户端」纪律 |
+| [ADR-272](ADR-272-mergeback-archive-residue-proxy-commit-authorization-boundary.md) | accepted | 归档残留自愈的代理提交授权边界：同 spec 两侧成对判据（归档收口宽信号上另加校验、单侧半提交不授权）、add 限定精确残留路径禁前缀通配、spec 外脏文件一票否决恒限 spec/ 两类路径、单条至多自动尝试一次 + 补提交前重查防并发踩踏；后续框架代提交类自愈受同边界约束，放宽须显式 supersede |
+| [ADR-273](ADR-273-defer-entry-single-driver-threshold-boundary.md) | accepted | 顺延条目单驱动不变式：驱动权按熔断阈值分界，未超阈值条目 Timer 链独占、周期消费者只接手无存活 Timer 的超阈值 pending 条目（与出口同判式须同源，漂移即双驱动/漏接手）、带 WIP defer 标志归 WIP 消费者车道、接手重试每条目至多一次失败维持熔断告警；新增顺延消费者须先证明目标条目无存活驱动源 |
