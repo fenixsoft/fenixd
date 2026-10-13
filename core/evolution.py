@@ -404,8 +404,9 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
     不存在」按不就绪跳过；「不可访问」（权限/IO 等 OSError 且非不存在类）
     MUST 记 WARNING 留痕后按不就绪跳过——不在本函数静默吞掉，也不因单项目
     IO 异常中断整轮扫描（code-review item 5512a028b1d1 将原「不可访问 MUST
-    抛出」契约收窄为留痕）。就绪项目 MUST 携带 todo_md 全文（同轮一个 claude
-    进程拿到多份 todo.md）。
+    抛出」契约收窄为留痕）。就绪项目 MUST 携带剥离已处理条目后的 todo.md 可
+    用文本（usable_text，不含已处理条目；同轮一个 claude 进程拿到多份
+    todo.md）。
     """
     watermarks = read_watermarks(project_root)
     ready: List[dict] = []
@@ -482,6 +483,7 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
         # 剥离已处理条目（带处理标记）：分析 run 的输入不含它们，避免重复处理；
         # 剥完一条不剩则本项目不就绪，直接省掉整轮分析
         usable_text = strip_processed_entries(todo_text)
+        # [fenix-ignore:ceeb35073a06] 此解析兼任「全部已标记则不就绪」非空门控；编排层（fenixd.py）确会二次解析同一文本，但复用需跨模块改 ready 项契约形状（todo_entries 键），单次小文件解析开销不值该扰动
         if not parse_todo_entries(usable_text):
             _logger.debug("evolution: 项目 %s 无未处理的 todo 条目（全部已标记），不就绪", name)
             continue
@@ -1201,7 +1203,10 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
             SPEC_YAML_TEMPLATE.format(created=datetime.now(timezone.utc).strftime("%Y-%m-%d")),
             encoding="utf-8",
         )
-    except OSError as e:
+    except (OSError, UnicodeEncodeError) as e:
+        # UnicodeEncodeError 非 OSError：spec 文本来自 agent 产出 JSON，可含
+        # \ud800 类孤立代理转义，write_text 编码时抛出——裸穿透会跳过清理
+        # 分支残留半写草稿，条目无标记下轮重试同一异常（a1e2bb031dae）
         shutil.rmtree(d, ignore_errors=True)
         return None, f"草稿落盘失败: {e}"
     return d, ""
