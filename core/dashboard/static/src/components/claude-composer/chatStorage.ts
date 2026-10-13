@@ -30,6 +30,7 @@ export const safeLocalStorage = {
         const composerKeys = keys.filter(
           (k) => k.startsWith(DRAFT_PREFIX) || k.startsWith(COMMAND_HISTORY_PREFIX),
         );
+        // [fenix-ignore:c01abaf4ebac] 头注释已文档化的有意取舍（与原实现同策略）：配额超限清空全部 composer 键（含其他项目草稿）后重试一次，重试失败不回写补偿——补偿写入自身也可能抛异常，会引入新的失败路径复杂度
         composerKeys.forEach((k) => localStorage.removeItem(k));
 
         try {

@@ -145,10 +145,18 @@ _RECORD_SEMANTIC_WORDS: tuple = (
 _TASKS_ITEM_RE = re.compile(r"^-\s\[[ x]\]\s+([^\s]+)")
 
 # 已登记核心产物的路径引用：.fenix/verify-progress/<spec>/<核心产物>
+# 产物名后补右边界负向预查（code-review b059ebd8ea9b）：仅排除 ASCII
+# 标识符续字符与「. + ASCII 字母数字」续段——``report.json.bak``/
+# ``test_scenarios.json.tmp`` 等以产物名为前缀的衍生物文件名不再被当作
+# 核心产物命中（叠加产出动词即误拦），与 _VP_DIR_REF_RE 的边界预查
+# 严谨度对齐。字符类沿用 _CODE_EXT_RE 的 ASCII 负向预查口径（不用
+# ``\w``：Unicode 词符下汉字属词字符，``report.json的`` 等中文直接
+# 邻接形态须仍判命中）；裸 ``.`` 不进排除类——``report.json.`` 的
+# 英文句末标点是合法边界，须保持既有命中。
 _VP_ARTIFACT_RE = re.compile(
     r"\.fenix/verify-progress/[^/\s]+/(?:"
     + "|".join(re.escape(k) for k in VERIFICATION_ARTIFACT_OWNERS)
-    + r")"
+    + r")(?![A-Za-z0-9_])(?!\.[A-Za-z0-9])"
 )
 
 # ``.fenix/verify-progress/<spec>/`` 目录级引用：

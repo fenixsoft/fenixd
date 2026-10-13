@@ -211,6 +211,11 @@ function useHoverFetch<T>(fetcher: () => Promise<T | null>) {
 
   const onEnter = () => {
     hoveredRef.current = true;
+    // 重复 enter 先清既有防抖定时器（code-review item 80985f592aff）：鼠标未
+    // 离开而行内 DOM 被 React 重建（行刷新/SSE patch 触发重挂）时 mouseenter
+    // 二次触发，直接覆盖 timerRef 会令旧定时器失去引用无法取消，叠出两次
+    // fetch。清理口径与 onLeave / 卸载路径一致。
+    if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       void fetcher().then((v) => {
         if (!aliveRef.current || !hoveredRef.current) return;
@@ -357,6 +362,13 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
       <span
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
+        // 键盘可达（code-review item aa30f83d0d76）：本单元格不承载点击交互，
+        // 悬浮结论详情是唯一信息路径——focus/blur 复用 onEnter/onLeave，让纯
+        // 键盘用户也能读到验证结论（可达性口径对齐 SpecNameCell item
+        // 3e07fb4c2b30）；不加 role/onKeyDown，避免暗示可点击。
+        tabIndex={0}
+        onFocus={onEnter}
+        onBlur={onLeave}
         style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1677ff' }}
       >
         {record.verify_done}/{record.verify_total}

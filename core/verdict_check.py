@@ -135,13 +135,22 @@ def _evidence_present(evidence: Any) -> bool:
 
 
 def _evidence_value_present(evidence: Any) -> bool:
-    """assertion_triage 条目的 evidence 是否非空（字符串非空白 / dict 非空）。"""
+    """assertion_triage 条目的 evidence 是否非空（字符串非空白 / dict 非空 /
+    list 至少一个有效元素）。"""
     if isinstance(evidence, str):
         return bool(evidence.strip())
     if isinstance(evidence, dict):
         return bool(evidence)
     if isinstance(evidence, list):
-        return bool(evidence)
+        # 元素级校验（code-review item cfe6f177d855）：比照 _evidence_present
+        # 对同形清单的口径（item 58726f4b6b33）——至少一个非空 dict 或非空白
+        # str 元素才算证据，[null]/[""] 等垃圾元素清单不得满足 triage 条目级
+        # evidence 硬门（防 judge 凑证据旁路逐条归因门）。
+        return any(
+            (isinstance(item, dict) and item)
+            or (isinstance(item, str) and item.strip())
+            for item in evidence
+        )
     return False
 
 
@@ -1199,7 +1208,14 @@ def enforce_blank_screenshot_direction(scenario: dict) -> Optional[str]:
     # False，白屏方向强制改写恒不命中；非 dict 按空处理的既有防御
     # （item acc304e9e5c4）已并入助手。
     labels = _flatten_screenshot_labels(scenario.get("screenshot_labels"))
-    if not labels.get("blank_screenshot", False):
+    # 严格 is True 判定（code-review item acefd3d40f80），与
+    # compute_attribution_level（item 94bf2c34ded9）/ tag_cached_attributions
+    # （item a9b61778a7ec）对 blank_screenshot 的消费同款防伪造纪律：引擎侧
+    # （classify_screenshot）只写布尔 True、缺标签即正常态；宽松真值判定下
+    # judge 改写标签为任意真值（"yes"/1）即可命中本分支被强制改写
+    # classification="env"，把 product-bug 归因洗成 env 方向
+    # （should_suppress_bug_found 视 env 为非驱动场景不计入打回判定）。
+    if labels.get("blank_screenshot") is not True:
         return None
     classification = scenario.get("classification") or ""
     if classification == "env":

@@ -33,6 +33,7 @@ spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅
 
 import ast
 import json
+import logging
 import os
 import re
 import statistics
@@ -42,8 +43,19 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.config import SELF_REVIEW_DEFAULT_RUN_AT
+from core.config import ConfigLoader, SELF_REVIEW_DEFAULT_RUN_AT
 from core.timelib import from_epoch, now_local, now_utc, parse_ts, to_storage
+# todo.md 结构契约单源（code-review item 8455037f0c1f）：日期/小节标题正则、
+# 空小节占位、条目四字段标签统一从 core/todo_format.py 别名导入，本模块
+# （写入方）与 core/evolution.py（解析方）同源引用，MUST NOT 另立同值副本。
+from core.todo_format import (
+    EMPTY_MARKER as _EMPTY_MARKER,
+    FIELD_LABELS as _FIELD_LABELS,
+    TODO_DATE_RE as _TODO_DATE_RE,
+    TODO_SECTION_RE as _TODO_SECTION_RE,
+)
+
+_logger = logging.getLogger("fenixd.self_review")
 
 # 状态文件（.fenix/self_review_state.json，与 admin_alerts.json 同目录同风格）
 STATE_FILE = "self_review_state.json"
@@ -60,13 +72,6 @@ CLEANUP_WINDOW_DAYS = 3
 # 缺省窗口共用）：与 todo.md 闭环移除窗口（CLEANUP_WINDOW_DAYS）是两个独立
 # 概念，独立常量避免调整其一时联动漂移。模块常量而非配置键。
 COMMIT_LOOKBACK_DAYS = 3
-
-# todo.md 结构标题正则：## YYYY-MM-DD 日期节 / ### 小节。
-_TODO_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
-_TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
-
-# 空小节占位（_append_todo 写入）；收集闭环判定条目时排除。
-_EMPTY_MARKER = "（当日无）"
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -222,13 +227,25 @@ def _in_window(
 def _parse_run_at(run_at: str, today) -> datetime:
     """把 'HH:MM' 解析为 today（本地 date）当日的本地墙钟并立即转 aware
     （design D2：人类时刻语义——本地 23:00 即当日 15:00Z，配置字面值不变，
-    窗口计算全 aware）；非法回退缺省（单源自 core.config.SELF_REVIEW_DEFAULT_RUN_AT）。"""
-    try:
-        hh, mm = str(run_at).split(":")
-        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0).astimezone()
-    except (ValueError, AttributeError):
-        hh, mm = SELF_REVIEW_DEFAULT_RUN_AT.split(":")
-        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0).astimezone()
+    窗口计算全 aware）；非法回退缺省（单源自 core.config.SELF_REVIEW_DEFAULT_RUN_AT）。
+
+    合法性判定复用 ``ConfigLoader.is_valid_hhmm``（与 evolution.next_spec_run_at
+    同一单源声明——HH:mm 规则不在本模块另立一份，code-review item
+    f57a5d35700b；含单数字小时等非规范形态一律按非法回退，两侧同口径），
+    非法值先记 WARNING 留痕再回退，使脏配置可被运维发现。正常链路上游
+    ``ConfigLoader.get_self_review_config`` 已按 ``_validated_run_at`` 过滤，
+    本判定属防御层，仅拦绕行调用方。
+    """
+    value = str(run_at)
+    if not ConfigLoader.is_valid_hhmm(value):
+        _logger.warning(
+            "self_review: admin.self_review.run_at 非法（应为 HH:MM）: %r，回退缺省 %s",
+            run_at,
+            SELF_REVIEW_DEFAULT_RUN_AT,
+        )
+        value = SELF_REVIEW_DEFAULT_RUN_AT
+    hh, mm = (int(x) for x in value.split(":"))
+    return datetime(today.year, today.month, today.day, hh, mm, 0).astimezone()
 
 
 def _run_start_ts(run_id: str) -> Optional[int]:
@@ -2196,12 +2213,7 @@ class SelfReviewScheduler:
             title = " ".join(str(item.get("title") or "").splitlines()).strip()
             if title:
                 lines.append(f"- **{title}**")
-            for label, key in (
-                ("影响", "impact"),
-                ("证据", "evidence"),
-                ("调查评估", "analysis"),
-                ("建议", "suggestion"),
-            ):
+            for label, key in _FIELD_LABELS:
                 val = str(item.get(key) or "").strip()
                 if not val:
                     continue
@@ -2435,8 +2447,17 @@ class SelfReviewScheduler:
             )
             try:
                 self.store.mark_handled(rec["id"])
-            except Exception:
-                pass
+            except Exception as e:
+                # code-review item 7da1db317e22：告警已写入但 handled 标记失败
+                # （如 admin_store 落盘瞬时故障，或 append 被下限保护拒写返回
+                # None）时不再静默吞掉——该条会以未处理状态滞留人工队列并混入
+                # 下一轮自省摘要第 3 节的 unhandled 明细，留 WARNING 供人工核对
+                # （此处不重试，防失败风暴放大）。
+                self.logger.warning(
+                    "self_review",
+                    f"失败告警已写入但 handled 标记失败"
+                    f"（id={rec.get('id') if rec else None}），需人工核对: {e}",
+                )
         except Exception as e:
             self.logger.error("self_review", f"失败告警落盘失败: {e}")
         self.logger.warning("self_review", f"每日自省失败：{message}")

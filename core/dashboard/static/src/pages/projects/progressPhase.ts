@@ -48,11 +48,9 @@ export function renderPercent(
   record: PhaseRecord,
   gen: { done: number; total: number } | null,
 ): number {
-  if (record.progress_phase === 'gates') return phasePct(record);
-  if (record.progress_phase === 'verify') {
-    return gen ? pct(gen.done, gen.total) : pct(record.verify_done, record.verify_total);
-  }
-  return pct(record.task_done, record.task_total);
+  // 仅 gen 覆盖分支独有；其余阶段口径整体回落 phasePct，口径演进只改一处
+  if (record.progress_phase === 'verify' && gen) return pct(gen.done, gen.total);
+  return phasePct(record);
 }
 
 // 进度条配色（code-review item ca92db5ea623 先例：具名函数替代嵌套三元）：

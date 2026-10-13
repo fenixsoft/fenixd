@@ -3,7 +3,7 @@
 // 权限请求横幅、模型/权限菜单、token 徽章、语音、附件拖拽区全部移除；停止
 // 语义映射到既有 stopSession（由 SessionPanel 注入 onStop）。输入区贴底全宽、
 // VisualViewport 键盘高度经 --keyboard-height 变量消费（D4）。
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, SyntheticEvent } from 'react';
 import { App, Button, Tooltip } from 'antd';
 import {
@@ -18,7 +18,10 @@ import { cn } from './cn';
 import { formatCommandCount } from './composerLogic';
 import { useVisualViewportHeight } from './useVisualViewportHeight';
 import { useComposerState } from './useComposerState';
-import CommandMenu, { DEFAULT_ANCHOR_BOTTOM } from './CommandMenu';
+import CommandMenu, {
+  DEFAULT_ANCHOR_BOTTOM,
+  commandMenuDomIds,
+} from './CommandMenu';
 import {
   PromptInput,
   PromptInputBody,
@@ -77,6 +80,12 @@ export default function SessionComposer({
   // 关闭须排除本按钮，否则菜单打开时点按钮会被外点关闭后又被 click 重新
   // 打开，按钮失去「再点收起」能力。
   const commandMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // 命令菜单实例级 id 前缀（code-review item 707ee867fcfb）：CommandMenu
+  // portal 到 body，静态 id 在多 composer 实例菜单同开时会重复 DOM id；
+  // 本组件 aria 关联与 CommandMenu 容器/选项 id 共用同一前缀拼装
+  // （commandMenuDomIds 单源），保证引用一致不断链。
+  const commandMenuIdPrefix = useId();
+  const commandMenuIds = commandMenuDomIds(commandMenuIdPrefix);
 
   // files/slashCommands/skills 端点失败静默降级（SessionPanel 已吞错给空数组）。
   const composer = useComposerState({
@@ -155,7 +164,12 @@ export default function SessionComposer({
     } else if (itemBottom > visibleBottom) {
       dropdown.scrollTop = itemBottom - dropdown.clientHeight;
     }
-  }, [composer.selectedFileIndex, composer.showFileDropdown]);
+    // filteredFiles 入 deps（code-review item 442c2d1bc995）：继续输入使候选
+    // 过滤收窄时 selectedFileIndex 不变，但 key={file.path} 列表重排会使选中项
+    // DOM 节点重挂（selectedFileRef 指向新节点），不重跑则新选中项可能停在
+    // 可视区外。filteredFiles 是 useState 持有的数组，引用仅在过滤结果真正
+    // 变化时更新，入 deps 不会引发多余重跑。
+  }, [composer.selectedFileIndex, composer.showFileDropdown, composer.filteredFiles]);
 
   const hasInput = Boolean(composer.input.trim());
   const sendDisabled = disabled || sending || !hasInput;
@@ -207,6 +221,7 @@ export default function SessionComposer({
         )}
 
         <CommandMenu
+          idPrefix={commandMenuIdPrefix}
           commands={composer.filteredCommands}
           selectedIndex={composer.selectedCommandIndex}
           onSelect={composer.handleCommandSelect}
@@ -239,17 +254,18 @@ export default function SessionComposer({
               /* 命令菜单 ARIA 关联（code-review cbffca1f7ee4）：菜单键盘导航
                  时焦点始终留在本 textarea，高亮项须靠 aria-activedescendant
                  播报、容器靠 aria-controls 关联；undefined 时 React 移除属性
-                 （菜单关闭或空候选），避免悬空引用。 */
+                 （菜单关闭或空候选），避免悬空引用。id 随实例级前缀拼装
+                 （code-review item 707ee867fcfb），与 CommandMenu 同源防断链。 */
               aria-controls={
                 composer.showCommandMenu && composer.filteredCommands.length > 0
-                  ? 'command-menu-listbox'
+                  ? commandMenuIds.listbox
                   : undefined
               }
               aria-activedescendant={
                 composer.showCommandMenu &&
                 composer.filteredCommands.length > 0 &&
                 composer.selectedCommandIndex >= 0
-                  ? `command-menu-opt-${composer.selectedCommandIndex}`
+                  ? commandMenuIds.option(composer.selectedCommandIndex)
                   : undefined
               }
               value={composer.input}
@@ -310,7 +326,11 @@ export default function SessionComposer({
                       （PromptInput.tsx 头注同款坑），外包 span 承载悬停
                       （同 RegressionTab span 承载范式）；inline-flex 使包装
                       不改变按钮在 flex 行内的尺寸与对齐。响应式隐藏迁到
-                      span，避免小屏留下空占位参与 flex gap。 */}
+                      span，避免小屏留下空占位参与 flex gap。
+                      小屏整体隐藏是有意取舍（code-review item 854dd6060f99）：
+                      移动端不提供清空按钮入口，长按/滑动手势等价方案暂无
+                      诉求依据，小屏清空走逐字删除，按钮仅 sm 及以上展示，
+                      避免挤占小屏工具行宽度。 */}
                   <span className="hidden sm:inline-flex">
                     <Button
                       icon={<ClearOutlined />}

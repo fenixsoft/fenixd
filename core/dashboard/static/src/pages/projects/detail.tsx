@@ -1514,6 +1514,8 @@ export default function SpecDetailPage() {
                         </Typography.Text>
                         {assertions.map((a, aIdx) => {
                           const ok = a.pass !== false;
+                          const detailText = assertionDetail(a);
+                          const failReason = a.message || a.detail || a.error || '';
                           return (
                             <div
                               // SSE 增量刷新可能在既有条目间增删（重跑），索引 key
@@ -1536,8 +1538,11 @@ export default function SpecDetailPage() {
                                 <Tooltip title={`断言类型: ${a.type || '?'}`}>
                                   {assertionLabel(a.type)}
                                 </Tooltip>
-                                : {assertionDetail(a)}{' '}
-                                {ok ? '' : `— ${a.message || a.detail || a.error || ''}`}
+                                {/* 明细/失败原因拼接为空时跳过分隔符，避免通过断言
+                                    （如 element_visible 无附加字段）渲染「元素可见 : 」
+                                    尾随冒号或孤立的「—」（code-review item 32bb6c687d10） */}
+                                {detailText ? `: ${detailText}` : ''}
+                                {!ok && failReason ? ` — ${failReason}` : ''}
                               </Typography.Text>
                             </div>
                           );
@@ -1994,43 +1999,45 @@ export default function SpecDetailPage() {
 
       {/* 任务清单（overview 任务进度同款控件 + 分组勾选） */}
       <Card title="任务清单" size="small" style={{ marginBottom: 16 }}>
+        {/* run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照
+            落后于 run 实际推进时叠加显示，不再静止 0/N。run_progress/run_activity
+            本就不依赖 tasks.md 编号与任务工具（code-review item bc1afc221833），
+            置于任务清单条件之外：tasks.md 缺失或空解析时活跃 run 仍有存活提示 */}
+        {detail?.run_progress && detail.run_progress.done > completedTasks ? (
+          <Typography.Text
+            type="warning"
+            data-testid="run-progress-hint"
+            style={{ display: 'block', marginTop: 6, fontSize: 12 }}
+          >
+            run {detail.run_progress.done}/{detail.run_progress.total} 已汇报
+          </Typography.Text>
+        ) : null}
+        {detail?.run_progress?.current?.length ? (
+          <Typography.Text
+            type="warning"
+            data-testid="run-progress-current"
+            style={{ display: 'block', marginTop: 6, fontSize: 12 }}
+          >
+            run 进行中 {detail.run_progress.current.join('、')}
+          </Typography.Text>
+        ) : null}
+        {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
+            TaskUpdate；该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，
+            但实现期间 agent 未必立刻建 Task、历史 run 也可能无事件。run_activity
+            用「产物是否仍在写」提供不依赖任务工具的存活线索，仅在无更细粒度
+            线索（current）时兜底显示，避免误读成「卡死」。 */}
+        {!detail?.run_progress?.current?.length && detail?.run_activity?.active ? (
+          <Typography.Text
+            type="warning"
+            data-testid="run-activity-active"
+            style={{ display: 'block', marginTop: 6, fontSize: 12 }}
+          >
+            run 进行中
+          </Typography.Text>
+        ) : null}
         {taskGroups.length > 0 ? (
           <>
             <ProgressBarTile done={completedTasks} total={totalTasks} />
-            {/* run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照
-                落后于 run 实际推进时叠加显示，不再静止 0/N */}
-            {detail?.run_progress && detail.run_progress.done > completedTasks ? (
-              <Typography.Text
-                type="warning"
-                data-testid="run-progress-hint"
-                style={{ display: 'block', marginTop: 6, fontSize: 12 }}
-              >
-                run {detail.run_progress.done}/{detail.run_progress.total} 已汇报
-              </Typography.Text>
-            ) : null}
-            {detail?.run_progress?.current?.length ? (
-              <Typography.Text
-                type="warning"
-                data-testid="run-progress-current"
-                style={{ display: 'block', marginTop: 6, fontSize: 12 }}
-              >
-                run 进行中 {detail.run_progress.current.join('、')}
-              </Typography.Text>
-            ) : null}
-            {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
-                TaskUpdate；该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，
-                但实现期间 agent 未必立刻建 Task、历史 run 也可能无事件。run_activity
-                用「产物是否仍在写」提供不依赖任务工具的存活线索，仅在无更细粒度
-                线索（current）时兜底显示，避免误读成「卡死」。 */}
-            {!detail?.run_progress?.current?.length && detail?.run_activity?.active ? (
-              <Typography.Text
-                type="warning"
-                data-testid="run-activity-active"
-                style={{ display: 'block', marginTop: 6, fontSize: 12 }}
-              >
-                run 进行中
-              </Typography.Text>
-            ) : null}
             {proposalWhy ? (
               <div
                 style={{
@@ -2046,12 +2053,22 @@ export default function SpecDetailPage() {
               </div>
             ) : null}
             {taskGroups.map((group, idx) => (
-              <div key={idx} style={{ marginBottom: idx === taskGroups.length - 1 ? 0 : 12 }}>
+              // 分组/条目同样随 SSE 刷新整表替换，tasks.md 分组中途插入或重排时
+              // 索引 key 会按位置错位复用节点。分组取标题、条目取 id（缺省回退
+              // desc）拼复合稳定前缀，索引仅作同型重复兜底（对齐断言行/Bug 卡片
+              // 口径，code-review item c5d9105ded47）
+              <div
+                key={`task-group-${group.title}-${idx}`}
+                style={{ marginBottom: idx === taskGroups.length - 1 ? 0 : 12 }}
+              >
                 <Typography.Text strong style={{ display: 'block', marginBottom: 10 }}>
                   {group.title} ({group.done}/{group.total})
                 </Typography.Text>
                 {group.tasks.map((task, taskIdx) => (
-                  <div key={taskIdx} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}>
+                  <div
+                    key={`task-${task.id || task.desc}-${taskIdx}`}
+                    style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}
+                  >
                     <Checkbox checked={task.done} disabled style={{ marginRight: 8 }} />
                     <Typography.Text
                       style={{

@@ -370,8 +370,16 @@ def _derive_status(run_result, report) -> str:
 
 
 def _summary_counts(report):
-    """提取 (passed, failed, errors, total)；缺键/空值/不可转换的字段为 None。"""
-    summary = (report or {}).get("summary") or {}
+    """提取 (passed, failed, errors, total)；缺键/空值/不可转换的字段为 None。
+
+    report/summary 为 truthy 非 dict（如非空列表）时按缺失处理置空 dict，与
+    _derive_status 的 isinstance(summary, dict) 守卫同口径——``or {}`` 只回退
+    falsy 值，拦不住 truthy 非 dict，随后 summary.get 会抛 AttributeError
+    （code-review a6b5b1d045f9）。
+    """
+    summary = (report if isinstance(report, dict) else {}).get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
 
     def _num(key):
         val = summary.get(key)
@@ -414,6 +422,12 @@ def current_round_fingerprint(project_root, spec_name):
         if isinstance(ts, str) and ts.strip():
             parts.append(f"report.json@{ts.strip()}")
         else:
+            # code-review 62075248138d：读内容（_load_report_json）与取 mtime
+            # 是两步 IO，文件在两步之间被引擎重写时，这里 stat 到的是新文件的
+            # mtime。窗口极窄且偏差方向保守：timestamp 与 mtime 两成分经
+            # if/else 互斥取用，不会拼成混合指纹；极端失配只会让稍后重算的
+            # 指纹不同而多做一次合成（误判为上一轮残留），不产生错误放行。
+            # 判已知良性，不引入同 fd fstat+read 的额外复杂度。
             try:
                 parts.append(f"report.json@mtime{report_path.stat().st_mtime_ns}")
             except OSError:
@@ -599,7 +613,13 @@ def _md_cell(v, max_len=None) -> str:
         .replace("|", "\\|")
     )
     if max_len is not None and len(text) > max_len:
-        text = text[: max_len - 3] + "..."
+        # code-review ce2d416b701d：max_len <= 3 时 max_len-3 非正，负切片会
+        # 从尾部删字符再追加省略号（结果仍可能超长且丢错位置）——短上限直接
+        # 硬切，省略号无处安放即不追加
+        if max_len <= 3:
+            text = text[:max_len]
+        else:
+            text = text[: max_len - 3] + "..."
     return text
 
 
@@ -727,6 +747,12 @@ def render_verification_report(
     source_fingerprint：本轮结构化数据的轮次指纹（``current_round_fingerprint``），
     非空时写入头部「合成源轮次指纹：」标记，供闸门判定报告是否属上一轮。
     """
+    # code-review 9aba8609cddc：run_result 为 truthy 非 dict（list/str 等）时
+    # 统一归一为 None，与 _resolve_scenarios 的 isinstance 守卫同口径——本函数
+    # 是公开复用的纯函数，下方 _derive_status / .get("bugs") / .get("summary")
+    # 均对 run_result 直接 .get，非 dict truthy 值会抛 AttributeError。
+    if not isinstance(run_result, dict):
+        run_result = None
     status = _derive_status(run_result, report)
     passed, failed, errors, total = _summary_counts(report)
     bugs = []
@@ -1498,10 +1524,16 @@ def is_verdict_stable(project_root, spec_name) -> bool:
         return False
     prev_failed = prev.get("failed_ids")
     curr_failed = curr.get("failed_ids")
-    # 脏值容错：failed_ids 损坏成非列表时与缓存损坏同判 → 保守不复用（False）
+    # 脏值容错：failed_ids 损坏成非列表，或元素类型不可互比（混合类型如
+    # [1, "a"]，sorted 在 Python 3 下抛 TypeError）时，与缓存损坏同判 →
+    # 保守不复用（False），不让脏值沿 judge_gate 调用链炸掉派发前置守卫
+    # （code-review a5774bb9ee03）
     if not isinstance(prev_failed, list) or not isinstance(curr_failed, list):
         return False
-    if sorted(prev_failed) != sorted(curr_failed):
+    try:
+        if sorted(prev_failed) != sorted(curr_failed):
+            return False
+    except TypeError:
         return False
 
     # spec 戳未变

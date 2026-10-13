@@ -573,11 +573,32 @@ IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY = "extra_extensions"
 IMPL_WALLCLOCK_INT_MIN = 0
 IMPL_WALLCLOCK_INT_MAX = 10000
 
+# 硬编码字面缺省（code-review item cc6365304445）：与 core.config.
+# IMPL_WALLCLOCK_SIZING_DEFAULTS 现值逐字段一致，仅在上游键漂移回退时使用
+# （正常路径仍单源于 core.config，行为零变化）。
+_IMPL_WALLCLOCK_FALLBACK_DEFAULTS = {
+    "enabled": True,
+    "full_scale_threshold": 45,
+    "extra_extensions": 2,
+}
+
 
 def _impl_wallclock_default(key: str):
-    """读墙钟 sizing 单点缺省（core.config；惰性导入避免模块环）。"""
+    """读墙钟 sizing 单点缺省（core.config；惰性导入避免模块环）。
+
+    KeyError 回退硬编码字面缺省：本模块 get_impl_wallclock_sizing_config /
+    lifted_max_extensions_for_scale 声明「非法值逐项回退缺省、不抛异常」，
+    core.config 侧常量键漂移时不让 KeyError 穿透读侧（与 estimate_spec_scale
+    的 KeyError 分支口径对齐，显式记「疑似上游契约漂移」）。
+    """
     from core.config import IMPL_WALLCLOCK_SIZING_DEFAULTS
-    return IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
+    try:
+        return IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
+    except KeyError as e:
+        logging.getLogger("fenixd.fast_track_scale").warning(
+            "fast-track 墙钟 sizing 缺省键缺失"
+            f"（疑似上游契约漂移，回退硬编码字面缺省）: {e}")
+        return _IMPL_WALLCLOCK_FALLBACK_DEFAULTS[key]
 
 
 def get_impl_wallclock_sizing_config(config: dict) -> dict:
