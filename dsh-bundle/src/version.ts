@@ -17,13 +17,29 @@ export const PINNED_DSH_VERSION = "0.2.0-rc.2";
 /**
  * 断言当前 dsh 运行时版本与钉扎版本一致；不一致抛明确版本错误（fail-fast，
  * 不静默降级）。
+ *
+ * 运行时版本读取本身抛错（如宿主 API 变更）时同样 fail-fast，但错误信息
+ * 会带上期望钉扎版本，便于排障时定位到本 Bundle 的钉扎防线。
  */
-export function assertDshPinned(runtimeVersion: string = getDshRuntimeVersion()): string {
-  if (runtimeVersion !== PINNED_DSH_VERSION) {
+export function assertDshPinned(runtimeVersion?: string): string {
+  const current = runtimeVersion ?? readDshRuntimeVersion();
+  if (current !== PINNED_DSH_VERSION) {
     throw new Error(
-      `fenix-dsh-bundle 版本钉扎不满足：要求 dsh ${PINNED_DSH_VERSION}，当前运行时 ${runtimeVersion}。` +
+      `fenix-dsh-bundle 版本钉扎不满足：要求 dsh ${PINNED_DSH_VERSION}，当前运行时 ${current}。` +
         `请在与之兼容的 dsh 上挂载本 Bundle，或走独立 SPEC 升级钉扎（不静默降级）。`,
     );
   }
-  return runtimeVersion;
+  return current;
+}
+
+/** 读取 dsh 运行时版本；宿主 API 抛错时转译为带期望钉扎版本的明确错误。 */
+function readDshRuntimeVersion(): string {
+  try {
+    return getDshRuntimeVersion();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `fenix-dsh-bundle 版本钉扎防线无法读取 dsh 运行时版本（期望钉扎 ${PINNED_DSH_VERSION}）：${reason}`,
+    );
+  }
 }

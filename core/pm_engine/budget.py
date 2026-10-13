@@ -21,6 +21,7 @@ from core.agent_runner.liveness import (
     death_kind_marker,
 )
 from pathlib import Path
+import glob
 import io
 import json
 
@@ -192,20 +193,23 @@ class ImplBudget:
             raw = self._pm._get_config(
                 "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
             )
-            # bool 按非法回退（ae68484c51b3）：int(True)=1 会把阈值静默压到 1，
-            # 与 resolve_impl_run_budget_max / clamp_impl_run_budget 的排除口径对齐。
+            # 严格整数口径（code-review item d769c8f9b968）：与同模块
+            # resolve_impl_run_budget_max / clamp_impl_run_budget 同判——
+            # 非 int（浮点/字符串数字等）一律非法回退缺省。旧写法 int(raw)
+            # 会把 6.9 截断为 6、接受 "7"，同一模块内两个配置键的合法性口径
+            # 相反，用户按另一边心智配置会得到静默不同的取值。
+            # bool 先排除（ae68484c51b3）：int(True)=1 会把阈值静默压到 1。
             val = (
-                BUDGET_EXEMPT_ALERT_THRESHOLD
-                if raw is None or isinstance(raw, bool)
-                else int(raw)
+                raw
+                if isinstance(raw, int) and not isinstance(raw, bool)
+                else BUDGET_EXEMPT_ALERT_THRESHOLD
             )
         except (TypeError, ValueError, OverflowError):
-            # OverflowError（code-review item 95163767d8b0）：YAML 合法字面量
-            # .inf（float('inf')）送 int() 抛 OverflowError，不属 TypeError/
-            # ValueError，旧写法逃到 _exempt_dead_run_budget 记账段兜底 except，
-            # 把已完成退款/侧车递增的豁免误标 "failed"。口径对齐
-            # backoff._transient_redispatch_delay（item 851ba3eeed41）与
-            # infra_breaker 同构守卫。
+            # 防御兜底（口径先例 item 95163767d8b0 / 851ba3eeed41）：配置读取
+            # 自身异常不外抛——旧写法 int() 的 OverflowError（YAML .inf）已随
+            # 严格整数口径消失，保留 except 防其他来源异常逃到
+            # _exempt_dead_run_budget 记账段兜底 except，把已完成退款/
+            # 侧车递增的豁免误标 "failed"。
             val = BUDGET_EXEMPT_ALERT_THRESHOLD
         return max(1, val)
 
@@ -257,9 +261,12 @@ class ImplBudget:
             豁免结果指纹（code-review item 963d40154301）：``"applied"`` 豁免
             实际生效（退款 + 侧车递增完成）；``"refused"`` run_reason 未过
             ``_is_exemptable_reason`` 被拒；``"idempotent_skip"`` 该死亡 run
-            已退款（幂等跳过）；``"failed"`` 记账段异常降级（容错不抛穿）。
-            三条未生效路径原为静默 return、调用方 except 判不出，现以返回值
-            区分，供调用方审计标记（budget_exempt_audit）按实际生效口径落盘。
+            已退款（幂等跳过）；``"partial"`` 退款已生效但侧车递增/后续记账
+            异常（半完成态：used 已回退不可撤销、幂等锚点已落盘，重试只会
+            idempotent_skip，item f7354ca95027）；``"failed"`` 退款阶段异常
+            （退款未发生，完全未生效降级，容错不抛穿）。各未生效/半完成路径
+            以返回值区分，供调用方审计标记（budget_exempt_audit）按实际生效
+            口径落盘。
         """
         if run_reason and not self._is_exemptable_reason(run_reason):
             # 监督超时/被判停滞而杀：不豁免，保持计数
@@ -284,6 +291,22 @@ class ImplBudget:
                     f"死亡 run 预算豁免幂等跳过 '{spec_name}' run={anchor}（该 run 已退款）",
                 )
                 return "idempotent_skip"
+        except Exception as e:
+            # 退款未发生（read/refund 阶段异常）——按完全未生效降级，不抛穿
+            # （容错姿态见 docstring「容错」段）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"死亡 run 预算豁免异常跳过 '{spec_name}'（退款未发生，"
+                f"不阻断主流程）: {e}",
+            )
+            return "failed"
+        # 走到此处退款已实际生效（used 已回退、幂等锚点已落盘，重试只会
+        # idempotent_skip）——侧车递增/日志/阈值判定单独窄化 try（code-review
+        # item f7354ca95027）：旧写法与上方退款段共用同一个 except，退款成功
+        # 后 bump 失败也被标 "failed"，调用方审计（budget_exempt_audit）按
+        # 「未生效」口径落盘、_budget_exempt_runs 永久少计 1，而退款不可撤销
+        # ——返回独立指纹 "partial" 让审计能区分半完成态。
+        try:
             exempt = self._pm.state_machine.bump_budget_exempt_runs(spec_name)
             self._pm.logger.warning(
                 "pm_engine",
@@ -297,9 +320,10 @@ class ImplBudget:
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"死亡 run 预算豁免异常跳过 '{spec_name}'（不阻断主流程）: {e}",
+                f"死亡 run 预算豁免侧车递增异常 '{spec_name}'（退款已生效、"
+                f"侧车递增/后续记账异常，不阻断主流程）: {e}",
             )
-            return "failed"
+            return "partial"
 
     def _exempt_infra_run_budget(self, spec_name: str, reason: str, refund_key: str = "") -> bool:
         """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
@@ -625,7 +649,14 @@ class ImplBudget:
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         for base in (runs_dir, runs_dir / "archive"):
             try:
-                if base.is_dir() and any(base.glob(f"{current_run}*.jsonl")):
+                # current_run 拼模式前做 glob 元字符转义（code-review item
+                # e94272c57d54）：run id 正常由框架生成不含 * ? [，但 STATE 被
+                # 手工改写含元字符时会过配（任意同名前缀产物均视为「产物已
+                # 可见」，在飞 run 守卫失效方向放行 used 下调）。转义先例与
+                # worktree_manager.locks 的 spec 名转义同款。
+                if base.is_dir() and any(
+                    base.glob(f"{glob.escape(current_run)}*.jsonl")
+                ):
                     return False, current_run
             except OSError:
                 # 扫描失败 ≠ 产物已可见（item dbcbc1495dc2）：按 False 处理会

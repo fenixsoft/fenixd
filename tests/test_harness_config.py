@@ -142,16 +142,28 @@ class TestDispatchHealthCheck(_RunnerBase):
 
     def test_dsh_healthy_check_passes_dispatch_to_inner(self):
         # 健康检查通过 → dispatch 放行进执行内核（全链走 DshAdapter，不回退）
-        with patch.object(DshAdapter, "check_health", return_value=None) as hc, \
-                patch.object(self.runner, "_execute_agent_inner") as inner:
-            self.runner._execute_agent("demo-spec", "implementer", "run-1")
-        hc.assert_called_once()
-        inner.assert_called_once()
-        self.assertIsInstance(get_current_adapter(), DshAdapter)
+        prev_adapter = get_current_adapter()
+        try:
+            with patch.object(DshAdapter, "check_health", return_value=None) as hc, \
+                    patch.object(self.runner, "_execute_agent_inner") as inner:
+                self.runner._execute_agent("demo-spec", "implementer", "run-1")
+            hc.assert_called_once()
+            inner.assert_called_once()
+            self.assertIsInstance(get_current_adapter(), DshAdapter)
+        finally:
+            # _execute_agent 装配的是进程级当前 adapter：不还原会把 DshAdapter
+            # 泄漏给同进程后续直调 _run_agent 的用例（get_current_adapter 的
+            # claude 惰性回退被顶掉 → DshSpawnConfigError，2026-10-14 回归实证）
+            set_current_adapter(prev_adapter)
 
     def test_heat_reload_new_value_applies_next_dispatch(self):
-        # 现读现配：同一 runner 实例的 config dict 被改后，下次 dispatch 走新值
-        with patch.object(self.runner, "_execute_agent_inner") as inner:
+        # 现读现配：同一 runner 实例的 config dict 被改后，下次 dispatch 走新值。
+        # dsh 健康门用受控失败替身——本机装有健康 dsh（版本在白名单）时真实
+        # 检查会放行，首派发直入 inner，assertFalse 前提失效（2026-10-14 回归
+        # 实证）；替身同时保证本用例不 touch 进程级 adapter。
+        with patch.object(DshAdapter, "check_health",
+                          side_effect=HarnessHealthError("受控失败：健康门替身")), \
+                patch.object(self.runner, "_execute_agent_inner") as inner:
             blocked = self.runner._execute_agent("demo-spec", "implementer", "run-1")
             self.assertFalse(blocked.success)
             inner.assert_not_called()

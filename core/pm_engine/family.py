@@ -201,18 +201,51 @@ class FamilyGovernor:
         """
         return len(self._same_root_siblings(child_name))
 
+    @staticmethod
+    def _waiver_flag_set(value) -> bool:
+        """豁免位字段值的真值判定（读取与消费原语共用同一份口径）。"""
+        raw = str(value or "").strip().lower()
+        return raw in ("true", "1", "yes")
+
     def _family_waiver_set(self, spec_name: str) -> bool:
         """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
         spec = self._pm.state_machine.read_one(spec_name) or {}
-        raw = str(spec.get("_family_waiver") or "").strip().lower()
-        return raw in ("true", "1", "yes")
+        return self._waiver_flag_set(spec.get("_family_waiver"))
 
     def _consume_family_waiver(self, spec_name: str) -> bool:
-        """消费豁免位：若存在则复位为 False，返回原值。"""
-        had = self._family_waiver_set(spec_name)
-        if had:
-            self._pm.state_machine.update_spec(spec_name, {"_family_waiver": False})
-        return had
+        """消费豁免位：若存在则复位为 False，返回原值。
+
+        「读值 → 判真 → 复位 → 带出原值」收进 state_machine 同一把
+        ``.STATE.md.lock`` 临界区（code-review item f7a110bfe0b1）：原先
+        ``_family_waiver_set`` 的 read_one 与复位 update_spec 分持两次锁，
+        同父 SPEC 的两个并发 bug-found 处置可都读到 True 并各自放行一个
+        子 SPEC（豁免位双花）。改经 ``_mutate_locked`` 锁内回调完成单点
+        CAS（bump_counters 同型）：判真与复位基于锁内最新条目，后到方
+        读到的是先到方复位后的值、不再二次放行；复位写复用
+        ``_apply_updates_entry``（updated 刷新等写语义单点维护，对齐
+        admin_actions 的锁内展开范式），落盘后锁外照常留痕
+        （``_log_update_applied`` 的「写入必留痕」约定）。
+        """
+        sm = self._pm.state_machine
+        applied: dict = {}
+
+        def _mutate(specs):
+            entry = specs.get(spec_name)
+            # 非法条目按未持有处置（与 _family_waiver_set 的 read_one 归一
+            # 口径一致），不写不改不落盘。
+            if not isinstance(entry, dict):
+                return False, False
+            if not self._waiver_flag_set(entry.get("_family_waiver")):
+                return False, False
+            found = sm._apply_updates_entry(
+                specs, spec_name, {"_family_waiver": False}, applied
+            )
+            return found, found
+
+        consumed = sm._mutate_locked(_mutate)
+        if consumed:
+            sm._log_update_applied(spec_name, applied)
+        return consumed
 
     def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
         """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。

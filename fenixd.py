@@ -3312,9 +3312,12 @@ class FenixDaemon:
         放弃本轮删除且**不再重写信号**（避免无限循环），交由用户重试或
         人工处置。
 
-        软删除以注入停止回调调 ``soft_delete_spec(stop_callback=...)`` 完成
-        ——回调内已对全部在跑 run 发 cancel_run；等待融入 soft_delete_spec
-        的既有有界窗口，删除内部完成「全部终止 → 移目录 → 剔 STATE」。
+        软删除走 _soft_delete_with_bounded_wait「先停后删」三段式：停止
+        回调由本消费方先执行（对当前在跑 run 逐个 cancel_run）；随后在
+        _soft_delete_with_bounded_wait 内轮询 running_run_ids_for_spec
+        做有界等待至全部终止；最后以无回调形态调 soft_delete_spec 收尾
+        （不传 stop_callback——避免二次 stop），删除内部完成
+        「移目录 → 剔 STATE」。
 
         消费走 _consume_request_file 原子模式（code-review item
         69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard

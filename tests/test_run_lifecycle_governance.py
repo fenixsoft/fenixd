@@ -70,6 +70,10 @@ class TestRefreshLocks:
     def test_stale_lock_reclaimed_and_dispatch_allowed(self, tmp_path):
         wm = make_wm(tmp_path, alive=False)
         wm._spec_locks.add("s1:implementer")
+        # 直改 _spec_locks 的替身须与生产登记形状同形：登记路径恒配 _lock_since
+        # （code-review 98ad40e18a38 后缺锁龄键在 _release_spec_locks_core 按
+        # 「无法证明陈旧」保守跳过摘除），缺锁龄会让本用例锁死在「永不回收」
+        wm._lock_since["s1:implementer"] = time.time() - 3600
         # 流文件早已停止增长（超过判定窗口）
         touch_run_stream(tmp_path, "s1", "impl-s1-1789000100", age=STALE_LOCK_IDLE_SECONDS + 60)
         assert wm.has_active_worktree("s1") is False
@@ -100,6 +104,12 @@ class TestRefreshLocks:
     def test_refresh_locks_releases_only_stale(self, tmp_path):
         wm = make_wm(tmp_path, alive=False)
         wm._spec_locks.update({"stale:implementer", "live:implementer"})
+        # 同 test_stale_lock_reclaimed_and_dispatch_allowed：替身锁须配锁龄
+        # （缺 _lock_since 的键保守不摘；live 锁由进程扫描命中庇护，锁龄无关）
+        wm._lock_since.update({
+            "stale:implementer": time.time() - 3600,
+            "live:implementer": time.time() - 3600,
+        })
         touch_run_stream(tmp_path, "stale", "impl-stale-1789000001", age=STALE_LOCK_IDLE_SECONDS + 1)
         touch_run_stream(tmp_path, "live", "impl-live-1789000002", age=1)
         # live spec 的进程扫描命中：换一个按 spec 名区分的替身

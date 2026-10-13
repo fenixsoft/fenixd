@@ -3204,6 +3204,19 @@ class PMEngine:
             # int() 抛 OverflowError，同上从 _push_lock 内穿透中断退避记账。
             except (TypeError, ValueError, OverflowError):
                 backoff_seconds = [300, 900]
+            # 数值范围防御（code-review item b7a3cda88ddc，与 _ready_stall_
+            # threshold_minutes 的 max(0.0, ...) 钳制、reporting.py 负值钳 0
+            # 先例同口径）：负 delay 使 next_retry = now_ts + delay 落在过去
+            # 时刻，_is_push_backoffed 按 next_retry > now 判定恒 False，退避
+            # 窗口静默失效——push 失败后每个轮询周期立即重试直至烧光
+            # max_retries 提前升级 push_failed。任一元素为负整体回退默认值。
+            if any(x < 0 for x in backoff_seconds):
+                self.logger.warning(
+                    "pm_engine",
+                    f"pm.push.retry_backoff_seconds 含负值 {cfg_backoff}，"
+                    "回退默认退避 [300, 900]",
+                )
+                backoff_seconds = [300, 900]
 
         attempts = self._get_push_retry_count(spec) + 1
         error_base = f"git push failed ({ref}): {error_msg}"

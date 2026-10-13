@@ -9,8 +9,17 @@
 #      fenixModelConfig 渲染（!!js 从注入服务取值），本 bundle 不留任何默认档回退。
 #   3. fenix-dsh-bundle —— Task 工具族 + 三守卫主插件。
 #   4. sandbox-policy / approval —— 非交互审批（等价 claude bypassPermissions）：
-#      沙箱 danger-full-access + 审批 never；三守卫挂在 tools/pre-execute，
+#      沙箱 danger-full-access + 审批 never；两块面由 fenix-approval 在启动期
+#      断言（被 --patch 覆盖回受限值即启动报错）；三守卫挂在 tools/pre-execute，
 #      先于审批裁决生效，拦截不受全放行影响。
+#      ⚠ sandbox-policy / approval 两键是 dsh 侧配置条目（本文件下方的
+#      `- id: ...` config 段），MUST NOT 写进上方任何 entry 的 inject 列表：
+#      inject 会令 cordis 等待一个「永不激活的服务」，插件 entry 卡在
+#      pending（实测报文 "waiting for service: sandbox-policy"）、Task 工具族
+#      不注册（2026-10-14 端到端冒烟实证）。approval 面由 fenix-approval 的
+#      apply 以惰性 ctx.get 读取并断言；sandbox 模式 apply 期实测不可读，
+#      由本文件写死期望值 + assertSandboxModeSafe 供装配方与测试校验
+#      （见 approval.ts 头注）。
 #   5. headless-runner 追加注入 fenixModelConfig —— headless-runner 是 dsh 的
 #      required 启动条目：模型配置缺失 / 版本不符时它一起失败 → StartupError
 #      exit 1（fail-fast，不静默降级）。本 bundle 供 headless 车道专用；
