@@ -96,8 +96,8 @@
 
 ## 7. ADR-271
 
-- [ ] 7.1 撰写 spec/knowledge/adr/ADR-271-pluggable-agent-harness.md：取代 ADR-055，记录自由会话/CLAUDE_PID watchdog 豁免、run jsonl claude stream-json canon、worktree 目录约定冻结三项决策
-- [ ] 7.2 spec/knowledge/adr/index.md 登记 ADR-271；ADR-055 引用处加「被 ADR-271 取代」注记（不重写原文）
+- [x] 7.1 撰写 spec/knowledge/adr/ADR-271-pluggable-agent-harness.md：取代 ADR-055，记录自由会话/CLAUDE_PID watchdog 豁免、run jsonl claude stream-json canon、worktree 目录约定冻结三项决策
+- [x] 7.2 spec/knowledge/adr/index.md 登记 ADR-271；ADR-055 引用处加「被 ADR-271 取代」注记（不重写原文）
 
 ## 8. 收尾验证
 
