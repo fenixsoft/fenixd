@@ -45,6 +45,15 @@ from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 # 调整使本文件多处子串匹配静默失效、熔断轮误走 blocked fail-closed）。
 from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
 
+# code-review item b3d583fb6c4f：应用不可达门禁写入 tester_run 的伪标记（非真实
+# run_id）。消费方口径已核（2026-10）：event_bus._recover_testing 有意不按
+# tester_run 硬挡（docstring 明示本标记形态）；event_bus implemented 分支 /
+# family / queue 仅做 truthy 判空或置 None 清锚；dashboard summary 原样透传、
+# 前端无消费（无按值关联 AgentRun 或链接渲染）；state_machine.transition 的
+# trigger_run_id 仅作流水留痕不回查 run。下游若新增「按 tester_run 关联
+# AgentRun / 渲染链接」逻辑，须按本常量值豁免。
+TESTER_RUN_BLOCKED_APP_UNREACHABLE = "blocked:app-unreachable"
+
 from core.timelib import from_epoch
 
 # add-blocked-reverify-lane D3：env 阻塞轮次计数清零点收敛后与 state_machine
@@ -134,6 +143,25 @@ def _parallel_plan_scenario_def(sc) -> dict:
         except Exception:  # noqa: BLE001
             return {}
     return {}
+
+
+# 场景定义视图 → sid 的无 id 兜底常量（code-review item b81fe155c73b）：裁剪侧
+# （_prune_rescan_scenarios 的缓存键/执行集标识）与合成侧
+# （_merge_cached_scenario_results 的排序查表）此前各写一份兜底（"#{i}" vs ""），
+# 同一无 id 场景两处键不同、报告顺序与裁剪决策可能错位——收敛本助手单点维护。
+_SCENARIO_SID_FALLBACK_FMT = "#{i}"
+
+
+def _parallel_plan_scenario_sid(d: dict, index: int) -> str:
+    """场景定义视图 → sid（裁剪缓存键与合成排序共用的单源口径）。
+
+    scenario_id 缺省回退 id，两者皆缺回退位置标识 ``#{index}``（裸 str(None)
+    会生成字面量 "None" 键，可写盘但永不被消费侧命中）。两侧调用点遍历的是
+    同一 full 场景列表、枚举序一致，位置兜底因此可对位。
+    """
+    return str(
+        d.get("scenario_id") or d.get("id") or _SCENARIO_SID_FALLBACK_FMT.format(i=index)
+    )
 
 
 # refactor-verification-module 阶段3.5：serving 工作树/实例/端口组已迁 serving.py，
@@ -957,89 +985,40 @@ class VerificationPipeline:
                         f"fail-closed 处置: {retry_failure}",
                     )
                 else:
-                    # 重派失败真实根因留痕（code-review item 6afab3e3a4d4）：非让位类
-                    # 失败时承接 retry_judge.error，供下方 blocked error/evidence 归因。
+                    # 派发未抛异常：此处仅占位清空——成功/失败归因统一由下方
+                    # retry_judge.success 分支处置（非让位类失败在「通用失败
+                    # 留痕」处承接 retry_judge.error，见 code-review item
+                    # 6afab3e3a4d4）。
                     retry_failure = ""
                 # ── 结果侧让位（code-review item 93fa1398fed0）──
-                # 重派 judge 被冻结终止/人工取消/provider 熔断时按让位语义处置，
-                # 与 _dispatch_judge_or_reuse（frozen/cancelled/circuit-open）
+                # 重派 judge 被冻结终止/人工取消/provider 熔断时按让位语义处置
+                # （判定/写字段单源：_yield_on_agent_failure），与
+                # _dispatch_judge_or_reuse（frozen/cancelled/circuit-open）
                 # 及 _handle_verdict_evidence_rejection（dispatch_frozen/
                 # dispatch_cancelled）同口径：不携旧「不可读」结论落入下方
                 # blocked 写入、不发 critical 告警。冻结 hold 保持原
                 # status=testing，下方 != "testing" 守卫拦不住该覆写，须在此
                 # 显式让位（人工已接管不写 blocked 不发告警）。
                 if retry_judge is not None and not retry_judge.success:
-                    if getattr(retry_judge, "frozen_terminated", False) is True:
-                        # 补 hold 标记（code-review item b7f86878b739）：与首次
-                        # 派发路径 _dispatch_judge_or_reuse 的 frozen_terminated
-                        # 分支同口径——不落 _frozen_hold 则解冻后 unfreeze_spec
-                        # 的续做判定（_resolve_preserved_branch →
-                        # _recovery_resume）不触发，重试轮恰是 spec 冻结时刻
-                        # 唯一在飞且被终止的 run 时现场降级普通重派。
-                        # mark_frozen_hold 不改 status、不清锚点，与让位语义
-                        # （不写 blocked、不发告警）兼容。
-                        j_err = retry_judge.error or ""
-                        frozen_err = (
-                            f"judge run 因 spec 冻结被终止（进度已保全，解冻后续做）"
-                            f"{': ' + j_err if j_err else ''}"
-                        )
-                        self._context.state_machine.mark_frozen_hold(
-                            spec_name, frozen_err)
+                    yield_reason, _yield_err = self._yield_on_agent_failure(
+                        spec_name, retry_judge)
+                    if yield_reason == "frozen_terminated":
                         self._context.logger.info(
                             "pm_engine",
                             f"重派 judge run 因 spec 冻结被终止 '{spec_name}' — "
                             f"让位：写 hold 保全现场，不写 blocked、不发告警: "
-                            f"{j_err}",
+                            f"{retry_judge.error or ''}",
                         )
                         return None
-                    # 判定用 `is True`（与上方 frozen_terminated 及
-                    # _dispatch_judge_or_reuse 同口径：防 MagicMock 替身
-                    # 自动生成 truthy 属性误判让位）。
-                    if getattr(retry_judge, "cancelled", False) is True:
-                        # 人工取消 hold-state（add-run-cancel D4，重派 judge 同语义）
-                        # 补取消保持标记（code-review item 5ee56fc13640）：与
-                        # 上方 frozen 分支（b7f86878b739）及首次派发路径
-                        # _dispatch_judge_or_reuse 的 cancelled 分支
-                        # （fix-cancel-holdstate-recovery D1）同口径——只留
-                        # testing 原状不落 _cancelled_hold，恢复链路
-                        # （event_bus 派发早退 / admin_monitor）不按取消保持
-                        # 语义处置，重派轮恰逢人工取消时现场降级普通 testing
-                        # 续派。
-                        c_err = retry_judge.error or ""
-                        cancelled_err = (
-                            f"run 被人工取消：{c_err}" if c_err else "run 被人工取消"
-                        )
-                        self._context.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": cancelled_err,
-                                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                                "_cancelled_hold": True,
-                            },
-                        )
+                    if yield_reason == "cancelled":
                         self._context.logger.info(
                             "pm_engine",
                             f"重派 judge run 被人工取消 '{spec_name}' — 让位："
                             f"写取消保持标记（保持 testing），不写 blocked、"
-                            f"不发告警: {c_err}",
+                            f"不发告警: {retry_judge.error or ''}",
                         )
                         return None
-                    if PROVIDER_CIRCUIT_ERROR_MARKER in (retry_judge.error or ""):
-                        # 熔断期 judge 失败属 provider 故障（与
-                        # _dispatch_judge_or_reuse 同口径）：留 error 保持
-                        # testing 等待下轮重验，挂 infra 记账，不按结构性
-                        # 不可读处置为 blocked。
-                        self._context.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": retry_judge.error,
-                            },
-                        )
-                        self._record_infra_failure(
-                            spec_name,
-                            retry_judge.error,
-                            run_id=getattr(retry_judge, "run_id", "") or "",
-                        )
+                    if yield_reason == "provider_circuit":
                         self._context.logger.warning(
                             "pm_engine",
                             f"Provider circuit open — 重派 judge 被抑制 "
@@ -1956,7 +1935,7 @@ class VerificationPipeline:
 
         full = [sc for sc in (scenarios or []) if sc is not None]
         defs = [_parallel_plan_scenario_def(sc) for sc in full]
-        ids = [str(d.get("scenario_id") or d.get("id") or f"#{i}") for i, d in enumerate(defs)]
+        ids = [_parallel_plan_scenario_sid(d, i) for i, d in enumerate(defs)]
 
         def _full(note: str):
             return full, {}, note
@@ -2111,10 +2090,10 @@ class VerificationPipeline:
             cc["cached_source"] = "verdict_cache"
             merged[sid] = cc
         ordered = []
-        for sc in full_scenarios:
+        for i, sc in enumerate(full_scenarios):
             d = _parallel_plan_scenario_def(sc)
-            sid = str(d.get("scenario_id") or d.get("id") or "")
-            if sid and sid in merged:
+            sid = _parallel_plan_scenario_sid(d, i)
+            if sid in merged:
                 ordered.append(merged.pop(sid))
         ordered.extend(merged.values())  # 防御：报告多出的 sid 保留尾部
 
@@ -2589,7 +2568,8 @@ class VerificationPipeline:
                 self._context.state_machine.update_spec(
                     spec_name,
                     {
-                        "tester_run": "blocked:app-unreachable",
+                        # 伪标记非真实 run_id（消费方豁免口径见常量定义处）。
+                        "tester_run": TESTER_RUN_BLOCKED_APP_UNREACHABLE,
                         "error": f"验证无法执行（最终用户验证未完成）: {reach_note or '应用不可达'}",
                     },
                 )
@@ -2635,6 +2615,72 @@ class VerificationPipeline:
         judge_result = self._all_green_fast_path(spec_name, report, fail_count)
         return fail_count, judge_result, False
 
+    # ── agent run 失败三让位单源（code-review item 04f7f14b2b54）──────
+    # 首次派发（下方 _dispatch_judge_or_reuse）与裁决复读重派（fail-closed
+    # 重派段）的 frozen_terminated / cancelled / provider 熔断三让位分支此前
+    # 近乎逐行复制、仅日志措辞不同，靠注释约束同源易漂移——判定口径与写字段
+    # 集合收敛本助手单点维护，调用点只保留各自差异化的日志文案。
+    def _yield_on_agent_failure(self, spec_name: str, result) -> tuple:
+        """judge/planner run 失败三让位（frozen/cancelled/provider 熔断）单源。
+
+        返回 (让位原因, 写入 spec 的 error 文本)：原因 ∈ {"frozen_terminated",
+        "cancelled", "provider_circuit"}；(None, "") 表示非让位类失败，调用点
+        按各自车道语义处置（首次派发 raise → legacy 降级；重派路径写 blocked
+        留痕）。
+
+        判定口径：frozen_terminated/cancelled 用 ``is True``（防 MagicMock
+        替身自动生成 truthy 属性误判让位，生产结果为显式 bool）；熔断按
+        PROVIDER_CIRCUIT_ERROR_MARKER 子串匹配（与 FROZEN_TERMINATED_ERROR_PREFIX
+        同一约定，防措辞漂移使匹配静默失效）。
+
+        写字段集合（与让位语义「不写 blocked、不发告警」兼容）：
+        - frozen_terminated → mark_frozen_hold（补 hold 标记：不落 _frozen_hold
+          则解冻后 unfreeze_spec 的续做判定 _resolve_preserved_branch →
+          _recovery_resume 不触发，重派侧 code-review item b7f86878b739；
+          mark_frozen_hold 不改 status、不清锚点，保持原状）；
+        - cancelled → error + _cancelled_hold 持久标记（fix-cancel-holdstate-
+          recovery D1：只留 testing 原状不落标记，恢复链路 event_bus 派发早退 /
+          admin_monitor 不按取消保持语义处置）；
+        - provider_circuit → error + _record_infra_failure（evo-infra-failure-
+          budget-exempt R2：熔断属 infra，归因入口前早退点挂预算退款与记账，
+          与阶段1 circuit-open 同款；保持 testing 等待下轮重验，不按结构性
+          失败处置为 blocked）。
+        """
+        if getattr(result, "frozen_terminated", False) is True:
+            j_err = result.error or ""
+            frozen_err = (
+                f"judge run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                f"{': ' + j_err if j_err else ''}"
+            )
+            self._context.state_machine.mark_frozen_hold(spec_name, frozen_err)
+            return "frozen_terminated", frozen_err
+        if getattr(result, "cancelled", False) is True:
+            c_err = result.error or ""
+            cancelled_err = f"run 被人工取消：{c_err}" if c_err else "run 被人工取消"
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": cancelled_err,
+                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                    "_cancelled_hold": True,
+                },
+            )
+            return "cancelled", cancelled_err
+        if PROVIDER_CIRCUIT_ERROR_MARKER in (result.error or ""):
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": result.error,
+                },
+            )
+            self._record_infra_failure(
+                spec_name,
+                result.error,
+                run_id=getattr(result, "run_id", "") or "",
+            )
+            return "provider_circuit", result.error
+        return None, ""
+
     # ── B5: judge 派发与失败三让位 + D6 二次状态核对（等价搬移）──────
     # D1 B5 段落：_judge_dispatch_gate / judge 失败三让位分支 / D6 二次状态核对。
     # 返回 judge_result（成功）或 None（让位/核对不过，调用者 MUST return）。
@@ -2662,70 +2708,34 @@ class VerificationPipeline:
                 judge_result = gate  # 稳定性复用合成结果
 
         if not judge_result.success:
-            # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.4）──
-            # judge run 因 spec 冻结被终止：独立保持分支，在 cancelled 分支之前
-            #（spec 级 > run 级）。写 _frozen_hold 标记 + error、保持原 status
-            #（testing/blocked），不复用取消的 _cancelled_hold 代码路径。
-            # 判定用 `is True`（修复验证轮 BUG：MagicMock 替身自动生成
-            # truthy 属性，裸布尔会误判）；生产结果 frozen_terminated 为
-            # 显式 bool。
-            if getattr(judge_result, "frozen_terminated", False) is True:
-                j_err = judge_result.error or ""
-                frozen_err = (
-                    f"judge run 因 spec 冻结被终止（进度已保全，解冻后续做）"
-                    f"{': ' + j_err if j_err else ''}"
-                )
-                self._context.state_machine.mark_frozen_hold(
-                    spec_name, frozen_err)
+            # ── 失败三让位（判定/写字段单源：_yield_on_agent_failure，与
+            # fail-closed 重派路径同口径）── frozen_terminated（spec 级 >
+            # run 级，在 cancelled 之前）/ cancelled / provider 熔断的让位
+            # 处置（含 hold 标记补写与 infra 记账）见助手；此处仅保留首次
+            # 派发车道的日志文案（熔断期不得 raise → legacy 降级 → bug-found
+            # → 伪 fix 级联）。
+            yield_reason, yield_err = self._yield_on_agent_failure(
+                spec_name, judge_result)
+            if yield_reason == "frozen_terminated":
                 self._context.logger.warning(
                     "pm_engine",
                     f"Planner judge run 因 spec 冻结被终止 — hold-state "
-                    f"'{spec_name}'（保持原状）: {frozen_err}",
+                    f"'{spec_name}'（保持原状）: {yield_err}",
                 )
                 return None
-            # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
-            # judge run 被取消：spec 保持 testing 原状，只写 error。
-            # 判定用 `is True`（同上 frozen_terminated：防 MagicMock 替身
-            # 自动生成 truthy 属性误判），与 legacy verifier cancelled 同口径。
-            if getattr(judge_result, "cancelled", False) is True:
-                j_err = judge_result.error or ""
-                cancelled_err = f"run 被人工取消：{j_err}" if j_err else "run 被人工取消"
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": cancelled_err,
-                        # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                        "_cancelled_hold": True,
-                    },
-                )
+            if yield_reason == "cancelled":
                 self._context.logger.warning(
                     "pm_engine",
                     f"Planner judge run 被人工取消 — hold-state '{spec_name}' "
-                    f"(保持 testing): {cancelled_err}",
+                    f"(保持 testing): {yield_err}",
                 )
                 return None
-            # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
-            # 同阶段1：熔断期 planner judge 失败属「provider 故障」，
-            # 不得 raise → legacy 降级 → bug-found → 伪 fix 级联。
-            if judge_result.error and PROVIDER_CIRCUIT_ERROR_MARKER in judge_result.error:
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": judge_result.error,
-                    },
-                )
-                # evo-infra-failure-budget-exempt R2：judge 熔断同属 infra，
-                # 归因入口前早退点挂预算退款与记账（与阶段1 circuit-open 同款）。
-                self._record_infra_failure(
-                    spec_name,
-                    judge_result.error,
-                    run_id=getattr(judge_result, "run_id", "") or "",
-                )
+            if yield_reason == "provider_circuit":
                 self._context.logger.warning(
                     "pm_engine",
                     f"Provider circuit open — planner judge suppressed for "
                     f"'{spec_name}', holding testing (recovery re-dispatch): "
-                    f"{judge_result.error}",
+                    f"{yield_err}",
                 )
                 return None
             # ── 首轮 frozen 让位分支（fix-verdict-retry-misattribution D4）──
