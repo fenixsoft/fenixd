@@ -101,5 +101,5 @@
 
 ## 8. 收尾验证
 
-- [ ] 8.1 全量测试绿 + 编译自洽（python -m compileall core）；快照测试结果作为行为零变化的对照证据写入合并说明
-- [ ] 8.2 全仓 grep 核查：五个一次性 spawn 点与叙事通道不再直接构造 claude 命令，车道与一次性 spawn 的命令构造唯一入口在 harness/claude_adapter.py；dashboard 自由会话（session_manager）与 CLAUDE_PID watchdog 为 ADR-271 豁免项、仍直连 claude，不计入本核查范围
+- [x] 8.1 全量测试绿 + 编译自洽（python -m compileall core）；快照测试结果作为行为零变化的对照证据写入合并说明
+- [x] 8.2 全仓 grep 核查：五个一次性 spawn 点与叙事通道不再直接构造 claude 命令，车道与一次性 spawn 的命令构造唯一入口在 harness/claude_adapter.py；dashboard 自由会话（session_manager）与 CLAUDE_PID watchdog 为 ADR-271 豁免项、仍直连 claude，不计入本核查范围
