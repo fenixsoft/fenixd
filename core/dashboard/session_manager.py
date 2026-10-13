@@ -58,6 +58,16 @@ class Session:
     # 活动/复用不刷新——routes 的 started_at 响应键语义为真（last_activity 随
     # send/读线程事件不断前移，不能当起始时刻用）。
     started_at: float = field(default_factory=time.time)
+    # code-review item 15da2be46889：本字段无单一保护锁，纪律如下——写侧
+    # _stdout_reader / send 持 session.lock，start 复用分支持 manager._lock
+    # （该分支在 manager._lock 内，不得再取 session.lock）；读侧 idle 回收
+    # （_scan_idle 快照 + _terminate 认领前复核）持 manager._lock。idle 复核
+    # 读与 send 的刷新刻意不做互斥：全文件维持 session.lock 与 manager._lock
+    # 从不嵌套持有（send 的 stdin.write 可在持 session.lock 期间无限阻塞，
+    # 若 idle 认领持 manager._lock 再等 session.lock，单个僵死会话会冻住
+    # 整个 manager），故 idle 复核对 in-flight send 仅为尽力收窄——残余窗口
+    # 微秒级，最坏把刚完成 send 的会话回收，后果限于一次竞态消息或一次
+    # SessionNotRunningError，不为闭合它引入锁序反转。
     last_activity: float = field(default_factory=time.time)
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=200))
     terminating: bool = False  # _terminate 已认领，防并发双终态
@@ -132,7 +142,8 @@ class SessionManager:
                 # 被 kill 的会话当可用会话复用，调用方随后的 send 大概率
                 # SessionNotRunningError——与 send/stop 的幂等语义对齐，已认领
                 # 终止的会话按已退出处理，走下方清理重建路径。
-                if existing.proc.poll() is None and not existing.terminating:
+                # 判定收拢进 _is_alive（code-review item c67a62ff28c4）。
+                if self._is_alive(existing):
                     # 进程存活，复用
                     existing.last_activity = time.time()
                     return existing
@@ -148,6 +159,7 @@ class SessionManager:
             # 工具子进程，仅 kill 直接子进程会留孤儿孙进程（与 core.knowledge
             # ._default_spawn / core.v2_dev_server 的清场范式对齐）。会话管道
             # 全为 PIPE 由读线程消费，独立进程组不影响 IO。
+            # [fenix-ignore:8cf2f2bfce9a] spawn 在 manager 全局锁内系当前规模下的有意取舍（每项目至多一会话、正常几十毫秒），per-project 锁细化收益不抵复杂度，维持现状
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -186,10 +198,14 @@ class SessionManager:
         return session
 
     def get(self, project_name: str) -> Session | None:
-        """获取存活会话（进程已退出则清理并返回 None）。"""
+        """获取存活会话（进程已退出或已认领终止则清理并返回 None）。"""
         with self._lock:
             session = self._sessions.get(project_name)
-            if session is not None and session.proc.poll() is not None:
+            # code-review item c67a62ff28c4：存活判定收拢进 _is_alive——仅凭
+            # poll() 会把 _terminate 认领后宽限窗内仍存活的会话当存活返回，
+            # 调用方随后 send 大概率 SessionNotRunningError；与 start 复用
+            # 分支口径对齐，terminating 会话按已退出处理。
+            if session is not None and not self._is_alive(session):
                 self._remove_session_nolock(project_name)
                 return None
             return session
@@ -219,6 +235,7 @@ class SessionManager:
         with session.lock:
             if session.proc.poll() is not None:
                 raise SessionNotRunningError("session process has exited")
+            # [fenix-ignore:eea05edeb272] 有界写（非阻塞/select+分片重试）须重构写循环，且引入部分写致流协议错乱、慢读但存活的会话被误折算为已退出等新失效模式；阻塞前提是子进程停读且管道写满，维持现状风险更低
             try:
                 session.proc.stdin.write(
                     json.dumps(payload, ensure_ascii=False) + "\n"
@@ -316,7 +333,9 @@ class SessionManager:
             # code-review item db06105b6496：_scan_idle 快照候选后已释放锁，与
             # _terminate 之间 send/start 可能已刷新 last_activity——idle 回收在
             # 认领前锁内重查空闲阈值，刚恢复活跃的会话放弃回收，防进行中的
-            # send 以 SessionNotRunningError 失败（TOCTOU 闭环）。
+            # send 以 SessionNotRunningError 失败（TOCTOU 尽力收窄：本读持
+            # manager._lock，与 send 的 session.lock 刷新无互斥，取舍见
+            # Session.last_activity 注）。
             if idle_only and (
                 time.time() - session.last_activity
             ) <= SESSION_IDLE_TIMEOUT_SECONDS:
@@ -412,6 +431,15 @@ class SessionManager:
         except subprocess.TimeoutExpired:
             pass
 
+    def _is_alive(self, session: Session) -> bool:
+        """会话存活判定（caller 已持有 self._lock，terminating 亦在该锁内读写）。
+
+        code-review item c67a62ff28c4：单一谓词供 start 复用分支与 get 共用，
+        消灭口径分叉——仅凭 poll() 会把 _terminate 认领后（关 stdin → 等宽限
+        → kill）宽限窗内仍存活的会话当可用（item 6f1f51a385a0 同源问题）。
+        """
+        return session.proc.poll() is None and not session.terminating
+
     def _remove_session_nolock(self, project_name: str) -> None:
         """从映射移除会话（caller 已持有 self._lock）。"""
         self._sessions.pop(project_name, None)
@@ -492,9 +520,11 @@ class SessionManager:
 
                 # [fenix-ignore:232cecb1ea26] 四处 events.append 均已持 session.lock（item 79d40459a39e 既有修复覆盖），本条所述未持锁状态不成立
                 # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
+                # code-review item 15da2be46889：last_activity 刷新同锁收编，
+                # 写侧不再有裸写（锁纪律总述见 Session.last_activity 注）。
                 with session.lock:
                     session.events.append(ev)
-                session.last_activity = time.time()
+                    session.last_activity = time.time()
 
                 # 广播
                 self._hub.broadcast(
