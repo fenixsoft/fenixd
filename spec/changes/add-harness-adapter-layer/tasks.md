@@ -77,9 +77,9 @@
 
 ## 4. 一次性 spawn 收编与叙事通道
 
-- [ ] 4.1 新建 harness/one_shot.py 的 run_one_shot(adapter, …)；收编五个一次性 spawn 点：监督 judge（liveness.py，`--output-format json` argv 传 prompt）、知识蒸馏（knowledge.py）、知识回填（knowledge_backfill.py）、架构图 autodraft（architecture_routes.py）、项目简介（project_routes.py），各自参数形态经 claude_adapter 保持
-- [ ] 4.2 adjudication_narrative 的 default_channel 改为经 set_channel 注入的 adapter 化实现，模型显式传递不依赖 CLI 默认档
-- [ ] 4.3 测试替身验证：judge/蒸馏两形态捕获 argv 与收编前一致；叙事通道触发行为一致
+- [x] 4.1 新建 harness/one_shot.py 的 run_one_shot(adapter, …)；收编五个一次性 spawn 点：监督 judge（liveness.py，`--output-format json` argv 传 prompt）、知识蒸馏（knowledge.py）、知识回填（knowledge_backfill.py）、架构图 autodraft（architecture_routes.py）、项目简介（project_routes.py），各自参数形态经 claude_adapter 保持
+- [x] 4.2 adjudication_narrative 的 default_channel 改为经 set_channel 注入的 adapter 化实现，模型显式传递不依赖 CLI 默认档
+- [x] 4.3 测试替身验证：judge/蒸馏两形态捕获 argv 与收编前一致；叙事通道触发行为一致
 
 ## 5. 进程识别泛化
 

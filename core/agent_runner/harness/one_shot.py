@@ -37,6 +37,20 @@ __all__ = ["OneShotResult", "run_one_shot"]
 TERMINATE_GRACE_SECONDS = 5.0
 
 
+class OneShotCommunicateError(Exception):
+    """communicate 阶段非超时异常（清场后包装上抛）。
+
+    与 spawn 阶段异常（原样上抛）区分，供站点保持既有两段文案（如 knowledge
+    蒸馏「调用 claude CLI 失败」vs「claude 进程通信失败」）；``original``
+    保留原异常对象，需要严格类型语义的调用方（如 knowledge_backfill 的
+    fail-open 透传）可 re-raise ``original``。
+    """
+
+    def __init__(self, original: BaseException):
+        self.original = original
+        super().__init__(str(original))
+
+
 @dataclass
 class OneShotResult:
     """run_one_shot 终态：退出码 + 两管道全文 + 是否超时收割。"""
@@ -49,18 +63,21 @@ class OneShotResult:
 
 
 def _kill_process_group(proc: subprocess.Popen, grace: float) -> None:
-    """SIGTERM 整组 → 宽限 → SIGKILL 整组（两段式，幂等容错）。"""
-    import os
+    """SIGTERM 整组 → 宽限 → SIGKILL 整组（两段式，幂等容错）。
 
-    try:
-        pgid = os.getpgid(proc.pid)
-    except OSError:
-        pgid = proc.pid  # 进程已 reap：退化按 pid 投递（幂等无害）
+    击杀经自保护守卫 ``core.proc_utils.guard_killpg``（add-killpg-self-guard，
+    resolve 型——替身 pid 怪值/组已消亡静默；仓库级源码守卫
+    test_killpg_self_guard 强制清场击杀收口至此）。
+    """
+    from core.proc_utils import guard_killpg
+
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except (OSError, ProcessLookupError):
-            return  # 组已消亡
+        # resolve 型：proc.pid 为组内成员 pid（start_new_session 下 pgid==pid）
+        if not guard_killpg(
+            proc.pid, sig, caller="harness.one_shot._kill_process_group",
+            resolve=True,
+        ):
+            return  # 组已消亡/守卫拒绝：静默收口
         if sig is signal.SIGTERM:
             try:
                 proc.wait(timeout=grace)
@@ -131,13 +148,13 @@ def run_one_shot(
 
     timed_out = False
     try:
-        # 载荷按位置传参（与既有各点 communicate(prompt, timeout=...) 调用
-        # 形态一致——测试替身以 prompt 命名形参，不经 input= 关键字）
-        stdout, stderr = proc.communicate(
-            spec.stdin_payload if request.prompt_transport == PROMPT_TRANSPORT_STDIN
-            else None,
-            timeout=timeout,
-        )
+        # stdin 载荷按位置传参（与既有各点 communicate(prompt, timeout=...)
+        # 形态一致——替身以 prompt 命名形参）；argv 传输（载荷 None）走
+        # communicate(timeout=...) 形态（project/architecture 替身签名如此）
+        if spec.stdin_payload is not None:
+            stdout, stderr = proc.communicate(spec.stdin_payload, timeout=timeout)
+        else:
+            stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         if on_timeout is not None:
@@ -148,6 +165,14 @@ def run_one_shot(
             stdout, stderr = proc.communicate(timeout=terminate_grace_seconds + 5)
         except (subprocess.TimeoutExpired, ValueError):
             stdout, stderr = "", ""
+    except Exception as e:  # noqa: BLE001
+        # 通信期非超时异常：按超时同径清场后包装上抛（spawn 阶段异常已在
+        # 上方原样穿透，站点据此区分两段文案）
+        if on_timeout is not None:
+            on_timeout(proc)
+        else:
+            _kill_process_group(proc, terminate_grace_seconds)
+        raise OneShotCommunicateError(e) from e
     return OneShotResult(
         returncode=proc.returncode,
         stdout=stdout or "",

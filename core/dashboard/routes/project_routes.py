@@ -23,14 +23,21 @@ from core.dashboard import data as dashboard_data
 # 私有名。模块级导入无环：signature.py 顶部仅 stdlib，其对门面的引用均在
 # 函数内延迟解析（与 routes/base.py 的 ETag 签名链路同一模块来源）。
 from core.dashboard.data import signature
-# describe 端点 spawn claude 的 env 剔除与 architecture_routes 同源（code-review
-# item 0ea03763257b）：HTTP 线程内 subprocess.run 若不传 env，dashboard 进程环境
-# 里的 agent-run 专用键（FENIX_RUN_PROJECT_ROOT / FENIX_RUN_WORKTREE /
-# CLAUDE_CODE_ENABLE_TODO_TOOLS，agent 自测拉起的 dashboard 即携带）会原样进入
-# 子进程，其中 CLAUDE_CODE_ENABLE_TODO_TOOLS 还会实际改变子进程工具面。
-# _build_spawn_env 为模块级函数且 architecture_routes 不反向依赖本模块，
-# 无循环导入（先例 regression_routes；server.py 本就导入两模块，零新增导入重量）。
-from core.dashboard.routes.architecture_routes import _build_spawn_env
+# add-harness-adapter-layer 4.1：项目简介 describe 一次性 spawn 收编进
+# harness/one_shot。env 剔除语义（code-review item 0ea03763257b：HTTP 线程内
+# spawn claude 若不传 env，dashboard 进程环境里的 agent-run 专用键——
+# FENIX_RUN_PROJECT_ROOT / FENIX_RUN_WORKTREE / CLAUDE_CODE_ENABLE_TODO_TOOLS，
+# agent 自测拉起的 dashboard 即携带——会原样进入子进程，其中
+# CLAUDE_CODE_ENABLE_TODO_TOOLS 还会实际改变子进程工具面）由 adapter
+# build_env 的 ENV_MODE_CLEAN 口径承接（os.environ.copy() 减 banned keys，
+# 与原 architecture_routes._build_spawn_env 逐字等价）。
+from core.agent_runner.harness import (
+    ENV_MODE_CLEAN,
+    PROMPT_TRANSPORT_ARGV,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import run_one_shot
 
 logger = logging.getLogger("fenixd.dashboard.project_routes")
 
@@ -513,7 +520,7 @@ class H2ProjectRoutesMixin:
         由后端调用 headless claude CLI 生成项目简介。
         - 读项目根 README.md（≤8KB 截断，缺失时改读 package.json/pyproject.toml 前 4KB）
         - 拼固定中文指令 prompt
-        - subprocess.run(["claude", "-p", prompt], cwd=项目根, timeout=120, shell=False)
+        - run_one_shot：claude -p <prompt>（argv 传输），cwd=项目根，timeout=120
         - 成功经 write_config 落盘返回 {ok, description}
         - 非零退出/超时/空输出返回 {error} 且不改 config
 
@@ -589,47 +596,52 @@ class H2ProjectRoutesMixin:
 4. 简介长度控制在100字左右
 5. 只输出简介文本，不要有其他内容"""
 
-            # 调用 headless claude CLI
-            import subprocess
-
+            # 调用 headless claude CLI——经 harness one_shot 收编（add-harness-
+            # adapter-layer 4.1）：argv 传 prompt（prompt_transport=ARGV，紧随
+            # -p 的现状形态）、output_format=None（不带 --output-format）、不带
+            # permission-mode、clean env 口径（item 0ea03763257b，见模块头注释）、
+            # 显式 utf-8/replace 解码（item ee8f460deb54）与非交互 DEVNULL stdin
+            # 全部是 SpawnRequest/SpawnSpec 字段；命令构造唯一入口在
+            # claude_adapter.build_spawn_spec。
+            # [fenix-ignore:c43d75c419ec] 本调用点不带 bypassPermissions（异于
+            # knowledge.py/regression_routes 同族），写入类工具默认被拒，输出仅落
+            # description 展示字段，注入面影响有限，维持现约。
+            # 有意偏差：start_new_session=True（subprocess.run 现状无独立进程组）
+            # ——超时收割随之从「杀单进程」升级为「杀整组」，方向更安全，且与其余
+            # 四个一次性 spawn 点同构。
             try:
-                result = subprocess.run(
-                    ["claude", "-p", prompt],
-                    cwd=str(proot),
-                    # env 剔除与同仓其余 spawn claude 车道同源（item
-                    # 0ea03763257b）：不传 env 会让 agent-run 专用键随 dashboard
-                    # 进程环境泄入子进程（详见模块头导入处注释）。
-                    env=_build_spawn_env(),
+                result = run_one_shot(
+                    ClaudeAdapter(),
+                    SpawnRequest(
+                        prompt,
+                        cwd=str(proot),
+                        prompt_transport=PROMPT_TRANSPORT_ARGV,
+                        output_format=None,
+                        env_mode=ENV_MODE_CLEAN,
+                    ),
                     timeout=120,
-                    shell=False,
-                    capture_output=True,
-                    # 非交互：不继承 daemon 的 stdin，避免 CLI 等待输入挂起到超时
-                    stdin=subprocess.DEVNULL,
-                    # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 启动
-                    # 的 daemon 解码中文输出会抛 UnicodeDecodeError、简介生成在该
-                    # 环境确定性失败（code-review item ee8f460deb54）。errors=replace
-                    # 保证坏字节不再中断。
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                 )
-            except subprocess.TimeoutExpired:
-                self._json({"error": "生成超时"})
-                return
             except Exception as e:
                 # 不外泄裸异常文本（code-review item 0936be83135a）：str(e) 可能
                 # 携带内部路径/命令细节，与 code_review_routes 的泛化文案策略同款
-                # ——细节降级经服务端日志留痕，客户端收通用消息。
+                # ——细节降级经服务端日志留痕，客户端收通用消息。OneShotCommunicateError
+                # 包装的通信期异常解包 original 留真实异常名。
+                orig = getattr(e, "original", e)
                 logger.warning(
                     "调用 claude CLI 异常（project=%s）: %s: %s",
                     project["name"],
-                    type(e).__name__,
-                    e,
+                    type(orig).__name__,
+                    orig,
                 )
                 self._json({"error": "调用 claude CLI 失败"})
                 return
 
             # 检查返回结果
+            if result.timed_out:
+                # 超时收割（one_shot 内已完成两段式进程组清场）；文案与原
+                # subprocess.TimeoutExpired 分支一致
+                self._json({"error": "生成超时"})
+                return
             if result.returncode != 0:
                 logger.warning(
                     "claude CLI 非零退出码（project=%s）: %s",

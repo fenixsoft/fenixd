@@ -42,6 +42,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+# add-harness-adapter-layer 4.1：一次性 spawn 收编入口（架构图 autodraft）
+from core.agent_runner.harness import (
+    ENV_MODE_CLEAN,
+    PROMPT_TRANSPORT_ARGV,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import (
+    OneShotCommunicateError,
+    run_one_shot,
+)
 from core.proc_utils import guard_killpg
 
 # ── 模块级 logger（code-review item 967909e7db47：refresh 先前以
@@ -642,53 +653,23 @@ class ArchitectureManager:
         - ok=False：spawn 失败/通信异常/超时击杀，error 为带阶段前缀的
           失败文案，调用方直接 failed 短路。
         """
-        try:
-            # 持登记锁完成 spawn + 登记（item 69eb4844d0b5）：登记原来在
-            # Popen 返回之后才执行，两句之间（含 Popen 内部 fork/exec 释放
-            # GIL 的窗口，子进程彼时已以 start_new_session 独立组存在）若
-            # serve() finally 走 reap_all()，本进程组不在快照集合里、不会被
-            # killpg——孤儿以 bypassPermissions 继续写 diagram.html/
-            # evidence.md。临界区罩住整个 Popen 后，退出链 reap_all 在锁上
-            # 排队：要么在本进程组入集合之后才快照（必然收割），要么在本
-            # 进程组 spawn 之前就已快照（无可收割对象，残余竞态固有不可闭
-            # 合）。communicate 的长等待必须留在锁外。spawn 失败时不入集合
-            # （with 体未执行到登记行），无悬挂占位句柄可供 reap_all 误杀。
-            with self._guard:
-                # [fenix-ignore:002d0de5aed2] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
-                proc = subprocess.Popen(
-                    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
-                    cwd=str(proot),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    # 显式 UTF-8：text=True 缺省按 locale 解码，LC_ALL=C 启动的
-                    # daemon 下 claude -p 的非 ASCII 回复会 decode 失败被误判
-                    # 通信失败（同 ocr_status 修复，code-review item 7ddf7e2b3ed9）
-                    encoding="utf-8",
-                    errors="replace",
-                    env=_build_spawn_env(),
-                    # 独立会话组（autodraft 同款）：超时可 killpg 整组清场，
-                    # 杜绝只杀直接子进程留下的孤儿孙进程
-                    start_new_session=True,
-                )
-                self._procs[key] = proc
-        except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
-            if logger is not None:
-                logger.warning(
-                    f"调用 claude CLI 异常（project={project_name}，"
-                    f"{stage_label}）: {type(exc).__name__}: {exc!r}",
-                )
-            return False, None, None, None, "调用 claude CLI 失败"
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：claude
+        # 命令构造唯一入口在 claude_adapter.build_spawn_spec——prompt 经 argv
+        # 传输（SpawnRequest.prompt_transport=argv，本车道现状形态）、无
+        # --output-format、bypassPermissions、env 口径 ENV_MODE_CLEAN、独立
+        # 会话组。进程组击杀/排干序列保留本文件自有助手（直 SIGKILL+短上限
+        # 排干+wait(0) 收尸，不走缺省两段式）；登记锁 scope 对齐：spawn_guard
+        # 只罩「Popen + on_spawn 登记」（item 69eb4844d0b5 临界区语义——
+        # spawn 失败时不入集合，无悬挂占位句柄可供 reap_all 误杀），长等待
+        # 留在锁外。
+        def _reap_stage_proc(proc) -> None:
             # 进程组击杀（autodraft 同款）：claude 派生的 bash/写文件孙进程
-            # 一并终止，锁释放后无在途写者
-            # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
-            # （自身组/非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill
-            # （pid=0 经 os.kill 折算同为调用者自身组广播）。
+            # 一并终止，锁释放后无在途写者。击杀经自保护守卫（add-killpg-
+            # self-guard，resolve 型）：守卫拒绝（自身组/非正 pgid）与组已不
+            # 存在同样静默，不降级单 pid proc.kill。
             guard_killpg(
-                proc.pid, signal.SIGKILL, caller="architecture_routes._run_stage", resolve=True
+                proc.pid, signal.SIGKILL,
+                caller="architecture_routes._run_stage", resolve=True,
             )
             try:
                 # 短上限排干（_REAP_DRAIN_TIMEOUT_SECONDS）：超时说明有孙进程
@@ -704,6 +685,45 @@ class ArchitectureManager:
                     proc.wait(timeout=0)
                 except Exception:  # noqa: BLE001
                     pass
+
+        try:
+            outcome = run_one_shot(
+                ClaudeAdapter(),
+                SpawnRequest(
+                    prompt=prompt,
+                    cwd=str(proot),
+                    prompt_transport=PROMPT_TRANSPORT_ARGV,
+                    output_format=None,
+                    permission_mode="bypassPermissions",
+                    env_mode=ENV_MODE_CLEAN,
+                    project_root=str(proot),
+                ),
+                timeout=timeout,
+                on_spawn=lambda proc: self._procs.__setitem__(key, proc),
+                on_timeout=_reap_stage_proc,
+                spawn_guard=self._guard,
+            )
+        except OneShotCommunicateError as exc:
+            # 通信期异常兜底清场已在 run_one_shot 内复用超时分支序列
+            # （code-review item 7ab006a03686：管道 OSError 等异常路径同样
+            # 不得在 finally 摘除句柄并释放单飞锁后留下仍在飞的生成进程组）
+            if logger is not None:
+                logger.warning(
+                    f"claude 进程通信异常（project={project_name}，"
+                    f"{stage_label}）: {type(exc.original).__name__}: {exc.original!r}",
+                )
+            return False, None, None, None, f"claude 进程通信失败（{stage_label}）"
+        except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
+            if logger is not None:
+                logger.warning(
+                    f"调用 claude CLI 异常（project={project_name}，"
+                    f"{stage_label}）: {type(exc).__name__}: {exc!r}",
+                )
+            return False, None, None, None, "调用 claude CLI 失败"
+        finally:
+            with self._guard:
+                self._procs.pop(key, None)
+        if outcome.timed_out:
             if logger is not None:
                 logger.warning(
                     f"架构图生成{stage_label}超时（>{timeout}s，"
@@ -716,42 +736,7 @@ class ArchitectureManager:
                 None,
                 f"{stage_label}超时（>{timeout}s 未完成），已终止生成进程",
             )
-        except Exception as exc:  # noqa: BLE001 — communicate 其它异常
-            # 兜底清场复用超时分支的序列（code-review item 7ab006a03686）：
-            # 管道 OSError 等异常路径同样不得在 finally 摘除句柄并释放单飞
-            # 锁后留下仍在飞的生成进程组——残留进程稍后自行写 evidence.md /
-            # diagram.html 会造成「已报 failed 但产物事后出现」，并与用户
-            # 重试的新生成进程并发写同一产物（正是单飞锁要防的踩踏）
-            # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝
-            # （自身组/非正 pgid）与组已不存在同样静默，不降级单 pid proc.kill
-            # （pid=0 经 os.kill 折算同为调用者自身组广播）。
-            guard_killpg(
-                proc.pid, signal.SIGKILL, caller="architecture_routes._run_stage", resolve=True
-            )
-            try:
-                # 短上限排干（_REAP_DRAIN_TIMEOUT_SECONDS）：超时说明有孙进程
-                # 逃出进程组占着管道，放弃排干保锁释放（进程退出兜底回收）
-                proc.communicate(timeout=_REAP_DRAIN_TIMEOUT_SECONDS)
-            except Exception:  # noqa: BLE001 — 含 TimeoutExpired（放弃排干）
-                # 排干超时≠直连子进程未死：SIGKILL 已生效，超时只是孙进程
-                # 逃出进程组占着管道。直连子进程此时已死但尚未 wait 收尸，
-                # wait(0) 即刻收尸（regression_routes._reap_autodraft_proc
-                # 同款，item 54b12852e6bd）：缺这一步则 dashboard 进程存续
-                # 期内每次超时清场残留一个僵尸进程。
-                try:
-                    proc.wait(timeout=0)
-                except Exception:  # noqa: BLE001
-                    pass
-            if logger is not None:
-                logger.warning(
-                    f"claude 进程通信异常（project={project_name}，"
-                    f"{stage_label}）: {type(exc).__name__}: {exc!r}",
-                )
-            return False, None, None, None, f"claude 进程通信失败（{stage_label}）"
-        finally:
-            with self._guard:
-                self._procs.pop(key, None)
-        return True, proc.returncode, stdout, stderr, None
+        return True, outcome.returncode, outcome.stdout, outcome.stderr, None
 
     def _run_generation(
         self,

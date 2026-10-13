@@ -39,6 +39,7 @@ from core.adjudication_narrative import (
     write_narrative_sidecar,
 )
 from core.admin_store import AdminStore
+from core.agent_runner.maintenance_runs import DEFAULT_GATEWAY_MODEL
 
 # ── 夹具助手 ────────────────────────────────────────────
 
@@ -273,10 +274,12 @@ class TestFourSectionContract:
         assert pos == sorted(pos)
         # at 为 UTC ISO 可解析
         datetime.fromisoformat(nar["at"])
-        # 模型回退链落到底=框架默认 → 记 "default"
-        assert nar["model"] == "default"
+        # 模型回退链落到底=框架默认网关模型（add-harness-adapter-layer 4.2：
+        # --model 恒显式传递，不依赖 CLI 默认档）
+        assert nar["model"] == DEFAULT_GATEWAY_MODEL
         # prompt 携带告警字段、choices 快照与 STATE 条目
         prompt, _model, timeout = calls[0]
+        assert _model == DEFAULT_GATEWAY_MODEL
         assert "failure_profile" in prompt
         assert "continue_auto_fix" in prompt and "manual_fixed_reverify" in prompt
         assert "blocked" in prompt
@@ -289,7 +292,8 @@ class TestFourSectionContract:
         set_channel(lambda p, m, t: GOOD_TEXT)
         ctx = make_ctx(tmp_path)
         result = build_narrative(ctx, make_entry())
-        assert result == {"text": GOOD_TEXT, "model": "default"}
+        # 回退链落到底=框架默认网关模型（4.2：不再记 "default"）
+        assert result == {"text": GOOD_TEXT, "model": DEFAULT_GATEWAY_MODEL}
 
     def test_validate_structure_four_sections(self):
         assert adj._validate_structure(GOOD_TEXT) is True
@@ -652,7 +656,7 @@ class TestTimeoutAndAttempts:
         assert calls["n"] == 2
         sc = load_narrative_sidecars(tmp_path)["alert-r"]
         assert sc["text"] == GOOD_TEXT
-        assert sc["model"] == "default"
+        assert sc["model"] == DEFAULT_GATEWAY_MODEL
 
     def test_two_failures_then_give_up(self, tmp_path):
         calls = {"n": 0}

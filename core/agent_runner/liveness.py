@@ -43,6 +43,13 @@ LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
 # 保持 ``from core.agent_runner.liveness import SUPERVISION_DEFAULTS`` 路径可用。
 from core.config import SUPERVISION_DEFAULTS  # noqa: E402
 from core.proc_utils import guard_killpg  # noqa: E402
+# add-harness-adapter-layer 4.1：监督 judge 一次性 spawn 收编入口
+from core.agent_runner.harness import (  # noqa: E402
+    ENV_MODE_INHERIT,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import run_one_shot  # noqa: E402
 # 活性判定 LLM 单轮调用的超时秒数（D2）：judge 卡死不能拖住监督循环
 JUDGE_TIMEOUT_SECONDS = 120
 # 活性快照 last_output 片段截断字符数（D1）
@@ -1034,125 +1041,66 @@ class LivenessSupervisor:
             "充分依据——持续产出心跳事件仅表明进程仍存活，不代表任务推进；\n"
             "4. 同参数工具调用反复失败、长时间无新输出 → stagnant。"
         )
-        # 先置 None（code-review item 241dd5ccd41c）：下方外层 except 兜底清场
-        # 据此区分「Popen 自身失败（子进程组未建立，无可清理）」与「communicate
-        # 等后置异常（start_new_session 子进程组已在跑，必须清场）」。
-        proc: subprocess.Popen | None = None
+        # 命令构造与 spawn 原语经 harness one_shot 收编（add-harness-adapter-
+        # layer 4.1）：提示词经 stdin 管道传入（对齐 runner._run_agent 的约定，
+        # 详述见 harness.SpawnRequest.prompt_transport）；--output-format json +
+        # 可选 --model 与现状 argv 逐字节同形；env 口径 inherit（现状 Popen 不
+        # 传 env，全量继承 daemon 环境）。start_new_session=True 独立进程组与
+        # 超时两段式整组清场（code-review item d916fd3aa78b：judge 超时是预期
+        # 路径——每轮 deadline 可触发且 _judge_liveness 还会减半重试一次，裸
+        # 超时击杀只及直接子进程，claude 派生的 node/shell 孙进程会残留为孤儿）
+        # 由 one_shot 缺省清场路径承接（SIGTERM→宽限→SIGKILL 整组 + 有界收割，
+        # 击杀经 guard_killpg 自保护守卫收口）。
+        # spawn 阶段异常原样上抛、communicate 阶段异常清场后经
+        # OneShotCommunicateError 包装上抛（str 即原异常文本）——此处统一降级
+        # 为 stagnant 证据（code-review item 241dd5ccd41c 的兜底清场语义已由
+        # one_shot 内部完成，这里不再触碰进程句柄）。
         try:
-            # 提示词经 stdin 管道传入（对齐 runner._run_agent 的约定）：argv
-            # 全文驻留 /proc/<pid>/cmdline（同机用户可读 judge 上下文），且超长
-            # prompt 受 ARG_MAX 约束会以 E2BIG 直接失败。"-p" 不带位置参数时
-            # claude CLI 从 stdin 读提示词；Popen + communicate(input=) 写完即关
-            # 写端并经 communicate 并发收发，超时/返回码/输出解析语义不变。
-            # start_new_session=True（code-review item d916fd3aa78b）：judge 超时
-            # 是预期路径（每轮 deadline 可触发，且 _judge_liveness 还会减半重试
-            # 一次），裸 subprocess.run 超时只 SIGKILL 直接子进程，claude 派生的
-            # node/shell 孙进程每次超时都残留为孤儿（与既往孤儿进程误报事故同
-            # 形态）。经独立进程组启动，超时整组清场（下方 TimeoutExpired 分支），
-            # 对齐 core/adjudication_narrative._kill_process_group 的同型实现。
-            cmd = ["claude", "-p", "--output-format", "json"]
             model = self._pm._get_admin_model()
-            if model:
-                cmd += ["--model", model]
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=str(self._pm.project_root),
-                start_new_session=True,
+            result = run_one_shot(
+                ClaudeAdapter(),
+                SpawnRequest(
+                    prompt,
+                    cwd=str(self._pm.project_root),
+                    output_format="json",
+                    model=model or None,
+                    env_mode=ENV_MODE_INHERIT,
+                ),
+                timeout=timeout,
             )
-            try:
-                res_stdout, res_stderr = proc.communicate(input=prompt, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                # 超时整组清场：先整组 SIGTERM 给短暂优雅窗口，未退再 SIGKILL
-                # 整组，末尾收割直接子进程并弃管道——不留僵尸、不让逃出进程组
-                # 的孙进程悬挂管道。击杀最后一跳经自保护守卫（add-killpg-
-                # self-guard）：start_new_session 下 pgid==pid，组长 pid 直传
-                # （resolve=False）；守卫拒绝（自身组/非正 pgid）与组已退出
-                # 同样静默吞掉。
-                guard_killpg(
-                    proc.pid,
-                    signal.SIGTERM,
-                    caller="liveness._judge_liveness_once",
-                    resolve=False,
-                )
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    guard_killpg(
-                        proc.pid,
-                        signal.SIGKILL,
-                        caller="liveness._judge_liveness_once",
-                        resolve=False,
-                    )
-                try:
-                    proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
-                except subprocess.TimeoutExpired:
-                    pass
-                for stream in (proc.stdin, proc.stdout, proc.stderr):
-                    try:
-                        if stream is not None:
-                            stream.close()
-                    except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
-                        pass
-                return {
-                    "verdict": "stagnant",
-                    "evidence": (
-                        f"liveness judge unavailable: judge timed out after "
-                        f"{timeout}s (claude process group terminated)"
-                    ),
-                }
-            text = res_stdout or ""
-            try:
-                payload = json.loads(text)
-                if isinstance(payload, dict) and payload.get("result"):
-                    text = str(payload["result"])
-            except json.JSONDecodeError:
-                pass
-            verdict = self._parse_verdict_json(text)
-            if verdict:
-                return {
-                    "verdict": verdict["verdict"],
-                    "evidence": str(verdict.get("evidence") or "")[:400],
-                }
+        except Exception as e:
+            return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
+
+        if result.timed_out:
+            # 超时：one_shot 已整组清场并收割；证据文案与现状 TimeoutExpired
+            # 分支逐字一致
             return {
                 "verdict": "stagnant",
                 "evidence": (
-                    f"liveness judge unavailable: unparseable output "
-                    f"(rc={proc.returncode}) {(res_stderr or '')[:160]}"
+                    f"liveness judge unavailable: judge timed out after "
+                    f"{timeout}s (claude process group terminated)"
                 ),
             }
-        except Exception as e:
-            # code-review item 241dd5ccd41c：非超时异常路径的兜底清场。上方
-            # TimeoutExpired 分支有整组清场，但 communicate 抛非超时异常（如
-            # 管道 OSError）时 judge 已由 start_new_session 独立成组——不补
-            # 击杀会让整组 claude 进程无监督继续运行并消耗 LLM 配额，且 proc
-            # 永不被 wait（僵尸）。与超时分支同型的兜底：SIGKILL 整组 + 有界
-            # wait 收割 + 关管道，清扫路径失败一律静默吞掉，stagnant 证据
-            # 语义不变。
-            if proc is not None:
-                try:
-                    guard_killpg(
-                        proc.pid,
-                        signal.SIGKILL,
-                        caller="liveness._judge_liveness_once",
-                        resolve=False,
-                    )
-                except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
-                    pass
-                try:
-                    proc.wait(timeout=5)  # 收割直接子进程，不留僵尸
-                except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
-                    pass
-                for stream in (proc.stdin, proc.stdout, proc.stderr):
-                    try:
-                        if stream is not None:
-                            stream.close()
-                    except Exception:  # noqa: BLE001 — 清扫路径绝不抛出
-                        pass
-            return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
+        text = result.stdout or ""
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and payload.get("result"):
+                text = str(payload["result"])
+        except json.JSONDecodeError:
+            pass
+        verdict = self._parse_verdict_json(text)
+        if verdict:
+            return {
+                "verdict": verdict["verdict"],
+                "evidence": str(verdict.get("evidence") or "")[:400],
+            }
+        return {
+            "verdict": "stagnant",
+            "evidence": (
+                f"liveness judge unavailable: unparseable output "
+                f"(rc={result.returncode}) {(result.stderr or '')[:160]}"
+            ),
+        }
 
     @staticmethod
     def _parse_verdict_json(text: str) -> dict | None:

@@ -60,6 +60,17 @@ from typing import Any, Callable, Dict, Optional
 
 from core.proc_utils import guard_killpg
 from core.signals import validate_scheduling_kick_spec
+# add-harness-adapter-layer 4.2：叙事通道 adapter 化（命令构造唯一入口
+# ClaudeAdapter、spawn 原语 one_shot；超时清场仍用本模块 _kill_process_group）
+from core.agent_runner.harness import (  # noqa: E402
+    ENV_MODE_INHERIT,
+    ClaudeAdapter,
+    SpawnRequest,
+)
+from core.agent_runner.harness.one_shot import (  # noqa: E402
+    OneShotCommunicateError,
+    run_one_shot,
+)
 
 # 日志组件名（logger.warning(component, message) 口径）
 COMPONENT = "adjudication_narrative"
@@ -320,12 +331,14 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 
 def default_channel(prompt: str, model: Optional[str], timeout: float) -> Optional[str]:
-    """生产 LLM 通道：既有 claude -p spawn 通道做一次非交互单发（D2）。
+    """生产 LLM 通道：claude -p 非交互单发（D2；add-harness-adapter-layer 4.2
+    adapter 化——命令构造唯一入口经 ClaudeAdapter，spawn 原语经 one_shot）。
 
-    - 提示词经 stdin 传入（同 agent_runner._run_agent 口径：不走 argv——
-      argv 全文驻留 /proc/<pid>/cmdline，且单参数受 ARG_MAX 约束）；
-    - 仅解析到模型时传 ``--model``；缺省（None）用 CLI/网关默认模型（即
-      「框架默认」档）；
+    - 提示词经 stdin 传入（SpawnRequest 缺省传输形态，同 agent_runner._run_agent
+      口径：不走 argv——argv 全文驻留 /proc/<pid>/cmdline，且单参数受 ARG_MAX
+      约束）；
+    - ``--model`` 显式传递（调用方 _resolve_model 回退链落到底为框架默认
+      DEFAULT_GATEWAY_MODEL，不依赖 CLI 默认档）；
     - MUST NOT 传 ``--max-tokens-budget`` 类危险旗标（fenixd 实测 7/8 failed
       禁传项）；
     - 超时/子进程缺失/非零退出/空输出一律返回 None，失败语义由调用方统一
@@ -336,43 +349,44 @@ def default_channel(prompt: str, model: Optional[str], timeout: float) -> Option
       系统临时目录），同 agent_runner 既有 spawn 口径——叙事生成上下文不随
       daemon 启动目录漂移；
     - 超时经独立进程组（``start_new_session=True``）先 SIGTERM 后 SIGKILL
-      收整组（:func:`_kill_process_group`，同 knowledge.py 范式），不留派生
-      孙进程孤儿。
+      收整组（on_timeout=既有 :func:`_kill_process_group`：SIGKILL 补刀带整组
+      探活前提，code-review item 72a90eb6cb2e），不留派生孙进程孤儿。
     """
-    cmd = ["claude", "-p"]
-    if model:
-        cmd += ["--model", model]
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-            cwd=_resolve_spawn_cwd(),
+        result = run_one_shot(
+            ClaudeAdapter(),
+            SpawnRequest(
+                prompt,
+                cwd=_resolve_spawn_cwd(),
+                # 现状形态无 --output-format（裸文本输出直接做四段校验），显式
+                # None 压掉 SpawnRequest 的 stream-json 缺省
+                output_format=None,
+                model=model or None,
+                env_mode=ENV_MODE_INHERIT,
+            ),
+            timeout=max(float(timeout), 1.0),
+            on_timeout=_kill_process_group,
         )
-    except OSError:
+    except (OSError, OneShotCommunicateError):
+        # spawn 阶段 OSError（CLI 缺失等）与通信阶段异常（one_shot 已整组
+        # 清场后包装上抛）——与现状超时/缺失同径 fail-open
         return None
-    try:
-        out, err = proc.communicate(prompt, timeout=max(float(timeout), 1.0))
-    except (subprocess.TimeoutExpired, OSError):
-        _kill_process_group(proc)
+    if result.timed_out:
         return None
-    if proc.returncode != 0:
-        tail = _stderr_tail(err)
+    if result.returncode != 0:
+        tail = _stderr_tail(result.stderr)
         _logger.warning(
             "叙事 claude -p 非零退出（code=%s）：%s",
-            proc.returncode,
+            result.returncode,
             tail or "stderr 为空",
         )
         return None
-    if not (out or "").strip():
-        tail = _stderr_tail(err)
+    if not (result.stdout or "").strip():
+        tail = _stderr_tail(result.stderr)
         if tail:
             _logger.warning("叙事 claude -p 输出为空，stderr 尾部：%s", tail)
         return None
-    return out.strip()
+    return result.stdout.strip()
 
 
 def _get_channel() -> Optional[Callable[[str, Optional[str], float], Optional[str]]]:
@@ -639,15 +653,23 @@ def _collect_verification_materials(
     return _clip_segment("\n\n".join(parts), _NARRATIVE_CONTEXT_MAX_CHARS)
 
 
-def _resolve_model(admin_cfg: Dict[str, Any]) -> Optional[str]:
-    """模型回退链（D2）：admin.narrative_model → admin.agent_model → 框架默认。
+def _resolve_model(admin_cfg: Dict[str, Any]) -> str:
+    """模型回退链（D2；add-harness-adapter-layer 4.2 修订）：admin.narrative_model
+    → admin.agent_model → 框架默认网关模型。
 
-    返回 None 表示两键皆空，通道不传 ``--model``（用 CLI/网关默认模型）。
+    链落到底不再返回 None（旧：通道不传 ``--model``、用 CLI 自带默认档）——
+    改为显式传框架默认 ``DEFAULT_GATEWAY_MODEL``（与 Administrator/监督 judge
+    兜底通道同源，maintenance_runs 单源常量）：叙事模型由框架决定，不依赖
+    CLI 默认档（CLI 升级/网关差异引入的默认档漂移不再影响叙事产物）。
     """
+    # 函数内延迟解析：maintenance_runs 拉入 result_gate/code_review 链，
+    # 叙事模块在测试进程被大量惰性导入，避免无谓的导入重量
+    from core.agent_runner.maintenance_runs import DEFAULT_GATEWAY_MODEL
+
     return (
         admin_cfg.get("narrative_model")
         or admin_cfg.get("agent_model")
-        or None
+        or DEFAULT_GATEWAY_MODEL
     )
 
 
@@ -877,7 +899,8 @@ def build_narrative(
     fenixd main() ``set_channel(default_channel)`` 装配。
 
     返回成功产物 ``{"text": <四段 Markdown>, "model": <实际模型>}``；
-    模型未显式配置时记 ``"default"``（通道未传 ``--model``）。
+    回退链（add-harness-adapter-layer 4.2 起）落到底为框架默认
+    ``DEFAULT_GATEWAY_MODEL``，通道恒显式传 ``--model``。
     """
     try:
         channel = _get_channel()
