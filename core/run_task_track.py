@@ -129,11 +129,11 @@ def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     调用方判据通过（与既有 _task_completion_blocker 语义一致）。
     """
     tasks_path = tasks_md_path(project_root, spec_name)
-    if not tasks_path.exists():
-        return [], set()
     all_ids: list = []
     checked_ids: set = set()
     try:
+        # 不做 exists() 预探测：其只吞 ENOENT/ENOTDIR，EIO/EACCES 会上抛穿透门禁；
+        # 直接 read_text，缺失（FileNotFoundError）与其他 OSError 一并按「无缺口概念」降级。
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
             m = _TASK_CHECKBOX_RE.match(line)
             if m:
@@ -243,11 +243,13 @@ def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
         performance D2：摘要读路径目录 glob 次数为常数）。缺省 None 走 glob。
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
-    if not runs_dir.is_dir():
-        return None
     candidates = []
     pattern = f"impl-{spec_name}-*.jsonl"
     try:
+        # is_dir() 探测也纳入守卫：其只吞 ENOENT/ENOTDIR，EIO/EBUSY 会上抛，
+        # 探测失败与目录缺失同义（返回 None）。
+        if not runs_dir.is_dir():
+            return None
         if files is None:
             for p in runs_dir.glob(pattern):
                 try:
@@ -501,10 +503,12 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
     empty = {"done_ids": set(), "tracked_ids": set(), "created_count": 0}
-    if not runs_dir.is_dir():
-        return empty
     files: list = []
     try:
+        # is_dir() 探测也纳入守卫：其只吞 ENOENT/ENOTDIR，EIO/EBUSY 会上抛，
+        # 探测失败按「无 runs 目录」返回 empty。
+        if not runs_dir.is_dir():
+            return empty
         # 函数内 import run_spec_part：模块级 import 会与 agent_runner 初始化
         # 路径（result_gate 反向引用本模块）构成循环导入（见 find_impl_run_file）
         from core.agent_runner.run_files import run_spec_part

@@ -146,7 +146,8 @@ def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
     """尝试 bind 0 端口（OS 分配），绑定失败时重试（消除 TOCTOU）。"""
     last_err = None
     s = None
-    for _ in range(max(1, retries)):
+    attempts = max(1, retries)
+    for i in range(attempts):
         try:
             s = socket.socket()
             s.bind((host, 0))
@@ -161,7 +162,8 @@ def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
                     pass
                 s = None
             last_err = e
-            time.sleep(0.05)
+            if i < attempts - 1:
+                time.sleep(0.05)
     raise last_err  # type: ignore[misc]
 
 

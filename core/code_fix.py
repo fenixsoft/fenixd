@@ -1,3 +1,4 @@
+# [fenix-ignore:86cf2dca9179] 拆出 _git_try/_write_*_alert/_map_junit_failures_to_nodeids 等叶子族属跨模块抽取：这些符号在本模块编排链十余处调用、且被 tests 按 core.code_fix 路径直接 import，迁移须同步改写全部引用面并冒导入环风险，拆分风险大于收益（同 5afcd68672ca 对批收尾「三元组」的论证口径），维持单模块。
 """code_fix — 自动修复编排车道（add-code-review-auto-fix design D2-D8）。
 
 把代码审查台账（`.fenix/code-review/items.jsonl`）的 `open` 条目按
@@ -221,7 +222,7 @@ def _atomic_write(path: Path, content: str) -> None:
                 pass
 
 
-def read_progress(project_root) -> dict:
+def read_progress(project_root, synthesize: bool = True) -> dict:
     """读取进度快照；缺失/损坏返回缺省态（不抛异常，spec code-fix-progress）。
 
     返回 dict 的字段集与 FIX_PROGRESS_DEFAULT 一致（缺字段补齐），调用方
@@ -234,6 +235,10 @@ def read_progress(project_root) -> dict:
     启动阶段（add-code-fix-startup-stage-visibility）：在条级合成之后、
     复用其已读出的 out 行集合激活域互补合成 ``startup_stage``（out 有行时
     短路 null，不重复 IO）。
+
+    ``synthesize=False``（code-review item f0d590fbfeac）：跳过上述两组实时
+    合成（省去整本台账与转录尾读的只弃不用读放大），供 ``write_progress``
+    合并基线复用——派生字段从不落盘，写点无需现算；缺省 True 读侧语义不变。
     """
     out = dict(FIX_PROGRESS_DEFAULT)
     # 可变缺省字段显式拷贝（code-review item d8f3e5cef688）：chain_skipped 是
@@ -247,15 +252,17 @@ def read_progress(project_root) -> dict:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
     except (OSError, ValueError):
-        rows = _synthesize_item_progress(project_root, out)
-        _synthesize_startup_stage(project_root, out, rows)
+        if synthesize:
+            rows = _synthesize_item_progress(project_root, out)
+            _synthesize_startup_stage(project_root, out, rows)
         return out
     if isinstance(data, dict):
         for k in FIX_PROGRESS_DEFAULT:
             if k in data:
                 out[k] = data[k]
-    rows = _synthesize_item_progress(project_root, out)
-    _synthesize_startup_stage(project_root, out, rows)
+    if synthesize:
+        rows = _synthesize_item_progress(project_root, out)
+        _synthesize_startup_stage(project_root, out, rows)
     return out
 
 
@@ -274,10 +281,13 @@ def write_progress(project_root, **fields) -> dict:
     path = _progress_path(project_root)
 
     def _do() -> dict:
-        current = read_progress(project_root)
-        # 条级合成字段是读侧实时派生值，MUST NOT 落盘：合并基线来自
-        # read_progress（已含现算结果），剥离后交由后续读侧重算，避免陈旧快照
-        # 被合并写持久化成误导性数字（add-code-fix-item-level-progress D1）。
+        # 合并基线免合成直读（code-review item f0d590fbfeac）：item_done/
+        # current_item/startup_stage 本就要在下方剥离、从不落盘，写点无需
+        # 为它们在每次进度写点重复整本台账与转录尾读。
+        current = read_progress(project_root, synthesize=False)
+        # 条级合成字段是读侧实时派生值，MUST NOT 落盘：剥离同时防御盘上
+        # 历史残留键被合并写持久化成误导性数字（add-code-fix-item-level-
+        # progress D1）。
         current.pop("item_done", None)
         current.pop("current_item", None)
         # 启动阶段同纪律（add-code-fix-startup-stage-visibility D1）：批收尾后
@@ -606,11 +616,15 @@ def _failed_item_ids(project_root) -> set:
 def _fail_count_int(value) -> int:
     """失败档案 ``fail_count`` 类型容错解析（code-review item 4ac4bea334b2）。
 
-    档案被外部直改成非数值字符串时按缺省 1 处理，MUST NOT 让 ValueError
+    仅 None/空值/解析失败按缺省 1 兜底，可解析数值（含 0）原样返回——
+    数值 0 与字符串 "0" 两种落盘形态同归 0，不再因 truthy 分叉（code-review
+    item 003716278b45）。非数值字符串按缺省 1 处理，MUST NOT 让 ValueError
     穿透炸掉 checkpoint 的「选批为空」收敛出口。
     """
+    if value is None or value == "":
+        return 1
     try:
-        return int(value or 1)
+        return int(value)
     except (TypeError, ValueError):
         return 1
 
@@ -1282,7 +1296,8 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
     整批删除注册表记录成功后的**同一调用序列内** best-effort 核销
     todo.md 对应登记块（复用 _rewrite_todo_entry_consumed 重写式核销，
     注记写明解除时刻与 fix-failed-release.jsonl 留痕行）——记录已删即
-    永远够不着既有 consume 闭环（:1379 pending 过滤按在册记录驱动），
+    永远够不着既有 consume 闭环（``consume_resolved_failed_batches`` 的
+    pending 过滤按在册记录驱动），
     不核销则登记块成孤儿（proposal 实证 2026-10-08：带外解除删记录后
     登记块无人核销、正文损毁成裸标题壳）。核销 needle 整行精确匹配，
     防同批子集与「清单为其前缀扩展」的他批登记块误命中。仅整批删除
@@ -5791,7 +5806,7 @@ class CodeFixOrchestrator:
 
     def _salvage_cherry_pick_recover(
         self, wm, wt: Path, ctx: dict, orig_info, base: str, commits: list,
-        eff_spec: str, targets, fixed_ids: list, pending_ids: list,
+        eff_spec: RegressionSpec, targets, fixed_ids: list, pending_ids: list,
         branch0: str, tip0: str,
     ):
         """救回阶段二：commit（组）粒度回收（evo-add-codefix-mergeback-conflict-salvage 2.1）。

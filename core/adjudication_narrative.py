@@ -45,6 +45,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -306,6 +307,7 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     # 进程）则 SIGKILL 补刀；ProcessLookupError ＝ 组已清空，静默即可。
     # pgid 复用上方捕获的值——wait 收尸后 getpgid(proc.pid) 会因进程
     # 消失而失效。
+    # [fenix-ignore:6c966c77e867] 复用窗口≤5s 且 Linux pid 顺序分配，无关组撞同 pgid 属极低概率理论风险，guard_killpg 已挡自身组误杀，start_time 比对收益过低保持既有取舍
     if pgid is not None:
         try:
             os.killpg(pgid, 0)
@@ -953,8 +955,19 @@ def build_narrative(
 
 
 def _safe_alert_id(alert_id: Any) -> str:
-    """alert_id 收窄为安全文件名成分（uuid4().hex[:12] 恒通过，防御人工拼装）。"""
-    return re.sub(r"[^A-Za-z0-9_-]", "", str(alert_id or ""))[:64]
+    """alert_id 收窄为安全文件名成分（uuid4().hex[:12] 恒通过，防御人工拼装）。
+
+    归一化确实发生字符剔除/截断时追加原始 id 的短哈希后缀（item
+    0e156812c1c7）：不同人工拼装 id（含 / 或 : 等）归一化后可能碰撞同一
+    文件名，os.replace 后写覆盖先写丢叙事，哈希后缀区分开。生产 uuid
+    路径恒无剔除/截断，文件名保持原样零变化。
+    """
+    raw = str(alert_id or "")
+    aid = re.sub(r"[^A-Za-z0-9_-]", "", raw)[:64]
+    if aid and aid != raw:
+        digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:8]
+        aid = f"{aid[:55]}-{digest}"
+    return aid
 
 
 def _sidecar_dir(project_root: Any) -> Path:
@@ -1161,6 +1174,10 @@ def schedule_narrative(
             return None
         admin_cfg = _resolve_admin_config(ctx)
         if not admin_cfg.get("narrative_enabled", True):
+            _logger.debug(
+                "叙事功能关闭（admin.narrative_enabled=false），跳过补叙调度（alert=%s）",
+                alert_id,
+            )
             return None
         if _get_channel() is None:
             return None

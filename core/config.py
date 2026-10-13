@@ -421,6 +421,37 @@ class ConfigLoader:
         return {"enabled": enabled, "turns": turns}
 
     @classmethod
+    def _normalize_int_value(cls, value: Any, default: int, *, positive: bool) -> int:
+        """参数化整数归一单点（code-review item 05cdb9c48227 守卫收敛）。
+
+        收敛本文件多份形态相近的「读键 → 排 bool → 排非有限浮点 → 整值浮点
+        与否 → 回退缺省」守卫：``value`` 为 int 或整值浮点（``300.0`` 按整数
+        接受，与 _normalize_transient_seconds 既有口径一致）时返回
+        ``int(value)``；bool（int 子类显式排除）、非数值（含 None）、非有限
+        浮点（YAML ``.nan``/``.inf`` 能穿透比较且 int() 抛异常）、非整值浮点
+        （``0.5``，旧 ``int()`` 截断族缺陷）一律回退 ``default``。下界域由
+        ``positive`` 参数化：True 时 ``<=0`` 回退缺省（0 不等效关闭的键），
+        否则仅 ``<0`` 回退缺省（0 合法，含 0=禁用/关闭语义的键）。
+
+        覆盖范围：仅「整值浮点按整数接受」口径的键。严格 int 键（整值浮点
+        拒绝，如 knowledge.escalate_after_rounds / archive.auto_threshold）、
+        数值字符串转换族（_num）与失败路径带告警留痕的读取器接受集/行为不同，
+        MUST NOT 迁移至本助手（行为变更单列评审）。
+        """
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        if isinstance(value, float) and (
+            not math.isfinite(value) or not value.is_integer()
+        ):
+            return default
+        if positive:
+            if value <= 0:
+                return default
+        elif value < 0:
+            return default
+        return int(value)
+
+    @classmethod
     def _normalize_stall_budget_positive(cls, config: Dict[str, Any], key: str,
                                          default, integer: bool):
         """停滞预算数值键归一：正数（integer=True 时须整值），非法回退缺省。
@@ -433,6 +464,11 @@ class ConfigLoader:
             val = cls.get(config, key, None)
         except Exception:
             return default
+        if integer:
+            # 整数档判定核心单点收敛 _normalize_int_value（code-review item
+            # 05cdb9c48227）：接受集与原内联守卫逐值一致（正整数、整值浮点
+            # 按整数接受；bool/非数值/非有限浮点/非整值浮点/≤0 回缺省）。
+            return cls._normalize_int_value(val, default, positive=True)
         if (
             val is None
             or isinstance(val, bool)
@@ -442,10 +478,6 @@ class ConfigLoader:
             return default
         if val <= 0:
             return default
-        if integer:
-            if isinstance(val, float) and not val.is_integer():
-                return default
-            return int(val)
         return float(val)
 
     @classmethod
@@ -529,15 +561,10 @@ class ConfigLoader:
             val = cls.get(config, key, None)
         except Exception:
             return default
-        if val is None:
-            return default
-        if isinstance(val, bool) or not isinstance(val, (int, float)):
-            return default
-        if val < 0:
-            return default
-        if isinstance(val, float) and not val.is_integer():
-            return default
-        return int(val)
+        # 判定核心单点收敛 _normalize_int_value（code-review item 05cdb9c48227）：
+        # 非负整数（显式 0 合法）、整值浮点按整数接受；bool/非数值/非有限浮点/
+        # 非整值浮点/负数回缺省——接受集与原内联守卫逐值一致。
+        return cls._normalize_int_value(val, default, positive=False)
 
     @classmethod
     def _normalize_transient_positive_seconds(cls, config, key: str, default: int) -> int:
@@ -679,6 +706,7 @@ class ConfigLoader:
         # 改为「先 update 新值，再删除 fresh 中已不存在的键」：任一时刻 dict 都
         # 非空，键集合为旧∪新（读到的是旧值/新值的混合，但不会出现「整树消失」）。
         # 对象身份不变（组件持有的同一引用仍生效），语义等价。
+        # [fenix-ignore:248c6e2d24fb] 全仓排查确无对共享顶层 config 的整树迭代读者（各组件均经 ConfigLoader.get 逐键导航、_validate 为 O(1) 成员判断、deep_merge 只作用于 resolve 期新造 dict），update+逐键 pop 的尺寸变化无可被打断的迭代者，引用换层/加锁加固不值得引入。
         config.update(fresh)
         for stale_key in [k for k in config if k not in fresh]:
             config.pop(stale_key, None)
@@ -1893,6 +1921,13 @@ class ConfigLoader:
         if not isinstance(enabled, bool):
             enabled = True
 
+        # 单源对齐落地（code-review item 390de4b1b6df）：下方 narrative_timeout
+        # 三处回退值复用 core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS
+        # 常量而非 180 字面量双写；函数体内延迟 import（get_harness 同款先例），
+        # 规避模块级 import 环（adjudication_narrative 经 agent_runner 链回指
+        # 本模块）。
+        from .adjudication_narrative import DEFAULT_TIMEOUT_SECONDS
+
         # add-adjudication-alert-narrative：告警叙事三键（enabled 严格 bool
         # 缺省 True；timeout 正整数缺省 180——upgrade-narrative-to-
         # investigation 3.2 由 60 上调以覆盖网关 stall 长尾，异步补叙后超时
@@ -1913,11 +1948,13 @@ class ConfigLoader:
             # threshold（item f03d70778889）/ _normalize_transient_seconds 的
             # 「非整值浮点回退缺省」口径对齐（.nan/.inf 的 is_integer() 为
             # False，同在此回缺省）。整值浮点（如 180.0）仍按整数接受。
-            narrative_timeout = 180
+            narrative_timeout = DEFAULT_TIMEOUT_SECONDS
         else:
-            narrative_timeout = _num(narrative_timeout_raw, 180, int)
+            narrative_timeout = _num(
+                narrative_timeout_raw, DEFAULT_TIMEOUT_SECONDS, int
+            )
             if narrative_timeout is None or narrative_timeout <= 0:
-                narrative_timeout = 180
+                narrative_timeout = DEFAULT_TIMEOUT_SECONDS
 
         # add-alert-self-heal-marking 3.2：告警自愈安静窗口（分钟）——瞬态
         # 告警签名安静多久后标「已自愈」。缺省 1440（design D4：盖过跨日
@@ -2036,22 +2073,12 @@ class ConfigLoader:
         仍按整数接受。
         """
         value = section.get(key, default)
-        # code-review d9e9a238696f：.nan/.inf 能穿透 isinstance 与 <=0 比较，
-        # int(nan)/int(inf) 抛 ValueError/OverflowError，违反「不抛异常」契约
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or (isinstance(value, float) and not math.isfinite(value))
-            or value <= 0
-        ):
-            return default
-        # code-review item 2460e8a27c5d：非整值浮点（如 0.5）旧实现 int() 截断
-        # 成 0 返回——阈值静默变 0（cooldown_threshold: 0.5 立即触发冷却）。
-        # 与 _normalize_transient_seconds 同口径：非整值浮点回退缺省，整值
-        # 浮点（如 30.0）按整数接受。
-        if isinstance(value, float) and not value.is_integer():
-            return default
-        return int(value)
+        # 判定核心单点收敛 _normalize_int_value（code-review item 05cdb9c48227）：
+        # bool/非数值/非有限浮点（.nan/.inf 能穿透 isinstance 与 <=0 比较、
+        # int() 抛异常，code-review d9e9a238696f）/非整值浮点（旧 int() 截断
+        # 成 0，code-review item 2460e8a27c5d）/0/负数一律回退缺省，整值浮点
+        # 按整数接受——接受集与原实现逐值一致。
+        return cls._normalize_int_value(value, default, positive=True)
 
     @classmethod
     def _stale_selfheal_dangling_seconds(
@@ -2068,22 +2095,12 @@ class ConfigLoader:
         截断把 ``0.5`` 变成 0，语义翻转成「关闭升级」而非回退缺省 14400）。
         """
         value = section.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return default
-        # code-review d9e9a238696f：.nan/.inf 穿透 ==0 与 <0 比较，int() 时抛异常
-        if isinstance(value, float) and not math.isfinite(value):
-            return default
-        if value == 0:
-            return 0
-        if value < 0:
-            return default
-        # code-review item 6a69eac80f8a：非整值浮点（如 0.5）旧实现 int() 静默
-        # 截断成 0——而本键「0 = 关闭升级」，正小数被翻转成关闭语义而非回退
-        # 缺省。与 _normalize_transient_seconds / run_infra_breaker.threshold
-        # 同口径：非整值浮点回退缺省；0.0 整值浮点已在上方按「关闭升级」放行。
-        if isinstance(value, float) and not value.is_integer():
-            return default
-        return int(value)
+        # 判定核心单点收敛 _normalize_int_value（code-review item 05cdb9c48227）：
+        # 0（含 0.0 整值浮点）合法返回 0（关闭升级）；负值/字符串/None/bool/
+        # 非整值浮点（旧 int() 截断把 0.5 翻转成关闭语义而非回退缺省，code-
+        # review item 6a69eac80f8a）/非有限浮点（穿透 ==0 与 <0 比较，code-
+        # review d9e9a238696f）回退缺省——接受集与原实现逐值一致。
+        return cls._normalize_int_value(value, default, positive=False)
 
     @classmethod
     def get_stale_code_selfheal_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -2583,16 +2600,11 @@ class ConfigLoader:
         threshold = ib.get("threshold", 3)
         cooldown = ib.get("cooldown_minutes", 30)
         # 校验：必须为整值 ≥ 1（排除 bool，code-review item 46b77a7d7e83）；
-        # 小数非整值回退缺省（code-review item f03d70778889，与
-        # _normalize_transient_seconds 同口径）——旧实现 int() 静默截断
-        # （2.5→2 阈值偏移，0.5→0 首次即判失败），整值浮点（如 3.0）按整数接受。
-        if (
-            isinstance(threshold, bool)
-            or not isinstance(threshold, (int, float))
-            or threshold < 1
-            or (isinstance(threshold, float) and not threshold.is_integer())
-        ):
-            threshold = 3
+        # 小数非整值回退缺省（code-review item f03d70778889）——旧实现 int()
+        # 静默截断（2.5→2 阈值偏移，0.5→0 首次即判失败）。判定核心已单点
+        # 收敛 _normalize_int_value（code-review item 05cdb9c48227）：接受集
+        # 与原内联守卫逐值一致（正整数、整值浮点按整数接受、.nan/.inf 同拒）。
+        threshold = cls._normalize_int_value(threshold, 3, positive=True)
         # 非有限浮点同拒（code-review item 25f2aed84a49，范式先例 a61ee2b2031e /
         # d9e9a238696f）：nan 使 <=0 比较恒 False 可穿透校验，冷却比较恒 False
         # （熔断即建即恢复或永不恢复），且经 get_admin_config 嵌套输出时以 NaN

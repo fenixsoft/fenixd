@@ -34,6 +34,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -328,15 +329,31 @@ def _read_items_unlocked(
 
     可区分失败信号（code-review item 9a358bba128c）：返回值容错形态不变
     （未感知降级的既有调用方零改动），降级细节经可选出参回传——
-    - ``degraded_out``：传列表则 OSError 读失败时置 ``[True]``。全量替换
-      写侧 MUST 据此拒绝本次落盘（瞬时读故障窗口内的全量替换会把台账
-      整体清空）；读侧容错契约不受影响。
+    - ``degraded_out``：传列表则 OSError 读失败时置 ``[True]``（含 stat 层
+      访问失败——``is_file()`` 对权限类异常同样回 False，不得与真缺失混同）。
+      全量替换写侧 MUST 据此拒绝本次落盘（瞬时读故障窗口内的全量替换会把
+      台账整体清空）；读侧容错契约不受影响。
     - ``corrupted_out``：传列表则无法入账行的原始文本原样收集（JSON 损坏
       行，及解析成功但顶层非 dict / item_id 缺失或非字符串的行），回写侧
       MUST 追加回写保留现场，而非静默丢弃。
     """
     out: Dict[str, dict] = {}
-    if not path.is_file():
+    # 「确认不存在」与「访问失败」分口（code-review item d9690f2c3475）：
+    # path.is_file() 对 stat 层异常（父目录权限不足、NFS 句柄失效等）同样
+    # 返回 False，此前与真缺失共用「空集且不置降级」路径——恒全量重写的
+    # upsert_findings 会按空集重建台账、把既有条目整体清掉。stat/read 的
+    # OSError 统一置 degraded_out，使读降级拒写契约覆盖这条旁路（对齐
+    # 9a358bba128c）；仅 FileNotFoundError 确认缺失按空集（既有语义不变）。
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return out
+    except OSError as e:
+        _logger.warning("code_review: 访问 items.jsonl 失败: %s", e)
+        if degraded_out is not None:
+            degraded_out.append(True)
+        return out
+    if not stat.S_ISREG(st.st_mode):
         return out
     try:
         # errors="replace"：坏 UTF-8 字节降级为替换符，由后续逐行 JSON 解析自然
@@ -762,11 +779,14 @@ def severity_deferred_open_ids(project_root, gate=None, now_ts=None,
     集恒空 → blocked 误落 failed_batch_retained「链内跳过/预算内失败」
     文案而非 severity_deferred 健康等待态）。
 
-    ``gate`` 为 ``None``（总开关关闭）：恒空集（无门限无挂起）。
+    ``gate`` 为 ``None``（总开关关闭）：恒空集（无门限无挂起）。调用方
+    显式传 ``None`` 即「已判定关闭」，本函数不回读磁盘配置（与
+    severity_gate_open / severity_gate_release_due 同族谓词语义一致，
+    配置解析职责在调用方，code-review item e2df6968c1ae）。
     """
-    g = gate if gate is not None else severity_gate_config(project_root)
-    if g is None:
+    if gate is None:
         return set()
+    g = gate
     try:
         items = read_items(project_root)
     except Exception:  # noqa: BLE001 — 读失败按空集（不误判收敛语义）
@@ -950,6 +970,10 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
     核销语义：台账中 ``status == "open"`` 且 fingerprint 不在
     ``observed_fingerprints`` 中的条目置 ``resolved``（记录 resolved_at）；
     MUST NOT 触碰 ``in_spec`` / ``ignored``（全仓快照核销场景）。
+    fingerprint 缺失/空/非字符串的 open 条目（手工编辑、外部直写、旧版本
+    条目）无法参与「本轮是否再观测」比对，跳过核销并 WARNING 留痕、保持
+    open 交人工或后续全仓收集确认（code-review item 05643bc7ce47，对齐
+    1e954a7a38ec 的「无法识别台账内容留痕、不无痕消失」取向）。
 
     Returns: 被核销的条目数。
     """
@@ -964,7 +988,14 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
             if rec.get("status") != "open":
                 continue
             fp = rec.get("fingerprint")
-            if isinstance(fp, str) and fp in observed_fingerprints:
+            if not isinstance(fp, str) or not fp:
+                _logger.warning(
+                    "code_review: 全仓核销跳过条目 %s（fingerprint 缺失或非字符串，"
+                    "不参与本轮再观测比对，保持 open 待人工/后续收集确认）",
+                    rec.get("item_id"),
+                )
+                continue
+            if fp in observed_fingerprints:
                 continue
             rec["status"] = "resolved"
             rec["resolved_at"] = now
@@ -1860,10 +1891,20 @@ def generate_fix_spec(
 
     capability = slug or "fix"
     created = now_local().strftime("%Y-%m-%d")  # SPEC-B 批④收拢
-    draft_root = code_review_dir(project_root) / "drafts" / name
+    # 草稿目录逐次唯一（code-review item 4ab12a3c329a）：固定按派生名共享
+    # （drafts/fix-cr-<slug>）时，两个并发 generate_fix_spec 推导出同名 SPEC
+    # 会互相 rmtree/mkdir 覆写同一草稿目录，先落地方的 lint 与 copytree 读到
+    # 的可能是对方覆写后的草稿，提交出的 SPEC 内容与 _mark_in_spec 标记的
+    # item_ids 错位。目录名拼 pid+微秒时间戳后缀保证草稿目录与候选批次
+    # 一对一；spec/changes 的 dest.exists 守卫仍负责拦截后落地一方，重名
+    # mkdir 失败走既有 OSError 错误通道（fail-safe，不覆写）。
+    draft_root = (
+        code_review_dir(project_root)
+        / "drafts"
+        / f"{name}.{os.getpid()}.{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    )
     try:
-        shutil.rmtree(draft_root, ignore_errors=True)
-        draft_root.mkdir(parents=True, exist_ok=True)
+        draft_root.mkdir(parents=True, exist_ok=False)
         spec_sub = draft_root / "specs" / capability
         spec_sub.mkdir(parents=True, exist_ok=True)
         (draft_root / "proposal.md").write_text(
@@ -2294,7 +2335,11 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         "```yaml",
     ]
     for path in _unique_deliverable_paths(items):
-        lines.append(f"- path: {path}")
+        # file 与 title 同属 agent 产出不受控输入（upsert 仅 str() 入库）：
+        # 含换行会把 deliverables yaml 块解析顶破（lint 整批失败，fail-closed
+        # 可观测）。_one_line 折叠后再内插（code-review item 44975cdf30fb，
+        # 与 1347190ca3c6 的 title 折叠同向防御）。
+        lines.append(f"- path: {_one_line(path)}")
         lines.append("  kind: modify")
     lines += [
         "```",
@@ -2308,8 +2353,12 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         # 破坏它等于任务清单在进度跟踪里静默消失（tasks.md 分组格式漂移事故）。
         # 完整内容一律以缩进子项挂在任务行下（缩进后不匹配 `^- \[`，也不
         # 参与归属校验）。
+        # file 同经 _one_line 折叠：换行会使任务行第二行起沦为裸文本、
+        # file:line 归属校验错位（44975cdf30fb）；与上方 deliverables path
+        # 同口径折叠，两处引用保持一致。
         lines.append(
-            f"- [ ] {idx}.{idx} {_one_line(it.get('title'))} — {it.get('file')}:{it.get('line')}"
+            f"- [ ] {idx}.{idx} {_one_line(it.get('title'))}"
+            f" — {_one_line(it.get('file'))}:{it.get('line')}"
         )
         lines.append("")
         lines.extend(_problem_lines(it))

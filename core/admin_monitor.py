@@ -832,7 +832,8 @@ _ORPHAN_SPEC_NAME_TOKEN_RE = re.compile(
 # 分支名尾部派发时间戳剥离（fenix/<spec>-<ts> → spec）：仅剥 ≥10 位纯数字
 # 尾段（epoch 秒/毫秒）；-7c1997 类十六进制短后缀是 spec 名组成部分，不剥。
 _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE = re.compile(r"-[0-9]{10,}$")
-# merge commit 家族锚定的「派发时间戳」放行段（_is_orphan_merge_commit 用，
+# merge commit / 归档收尾提交家族锚定的「派发时间戳」放行段（两处共用：
+# _is_orphan_merge_commit / _is_orphan_finalize_commit，
 # 与上行 _ORPHAN_SPEC_TOKEN_DISPATCH_TS_RE 的串尾锚定口径同向，code-review
 # f87ef32726a2）：spec 名后允许紧跟「连字符 + ≥10 位数字」，但数字段后必须
 # 到串尾或引号/空白/常见标点分隔符——fix-x-<ts>-backup、fix-x-<ts>abc 等
@@ -2959,6 +2960,12 @@ class AdminMonitor:
                 memo = getattr(self, "_family_intake_mutex_skip_memo", None)
                 if memo is None:
                     memo = self._family_intake_mutex_skip_memo = set()
+                # 容量封顶（比照 DAEMON_ERROR_FP_MEMORY_LIMIT 姊妹 memo 惯例，
+                # code-review item 2a34dfb74710）：长驻 daemon 下互斥跳过逐条
+                # 累积从不淘汰会无界增长；set 无序、防重语义只需近窗口，超限
+                # 整体清空即可（被清 id 最多多补一次 skipped 留痕，无正确性影响）。
+                if len(memo) > DAEMON_ERROR_FP_MEMORY_LIMIT:
+                    memo.clear()
                 if rec.get("id") not in memo:
                     memo.add(rec.get("id"))
                     # 字段拼装/异常留痕收敛到 _persist_skipped_disposition
@@ -5121,6 +5128,43 @@ class AdminMonitor:
                         # （人工显式触发不受限）。
                         if self._fixture_invocation_suppressed(signal):
                             continue
+                        # 信号死法冷却与夜间断窗/provider 瞬断冻结的预判（code-review
+                        # item 8c429de6762c，比照 _retry_due_dispatch_failures 既有
+                        # 口径）：两条跳过在 _invoke_administrator 内部均只写 skipped
+                        # 留痕，而下方 superseded 审计已先追加「自动重新入队」、
+                        # reschedule_count 已抬到 next_count——写痕后才在其内部命中
+                        # 跳过则审计与事实不符且重派配额无谓消耗。在写 superseded
+                        # 记录之前 continue，原 pending 记录保持待下轮重评（预判未
+                        # 命中仍由其内部同判定把关；命中仅日志留痕，同 fixture 抑制
+                        # 不落处置痕）。
+                        try:
+                            _sig_spec = signal.get("spec")
+                            _sig_cooled = (
+                                bool(_sig_spec)
+                                and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
+                                and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
+                            )
+                        except Exception:
+                            _sig_cooled = False
+                        if _sig_cooled:
+                            self.logger.info(
+                                "admin_monitor",
+                                f"Skipping orphan reschedule for '{_sig_spec}' (signal "
+                                f"{sig_type}): signal-kill cooldown active (run {rid})",
+                            )
+                            continue
+                        try:
+                            _block_reasons = self._night_dispatch_block_reasons()
+                        except Exception:
+                            _block_reasons = []
+                        if _block_reasons:
+                            self.logger.info(
+                                "admin_monitor",
+                                f"Skipping orphan reschedule for '{spec or 'daemon'}' (signal "
+                                f"{sig_type}): night window/provider break avoidance "
+                                f"(run {rid})",
+                            )
+                            continue
                         # 审计留痕：原 pending disposition 追加 status=superseded 记录
                         # （同 admin_run_id），携带 reschedule_count 新值；非 pending
                         # 记录即令该 run 被判 final，孤儿循环终止。MUST NOT 额外写
@@ -5525,9 +5569,18 @@ class AdminMonitor:
         """归档收尾提交判定：spec 名 ∧ 家族前缀 ∧ 收尾关键词三条件同时在场。
 
         单一条件（仅 spec 名或仅前缀）不命中——防提交消息假阳性误收口
-        （spec「提交消息假阳性不误判」场景）。
+        （spec「提交消息假阳性不误判」场景）。spec 名匹配与
+        _is_orphan_merge_commit 同款 token 边界负向前后视（code-review item
+        9251b2fb3793）：裸 ``name in subject`` 子串匹配在 spec 名互为前缀
+        （fix-x vs fix-x-y）时，窗口内前缀兄弟 spec 的归档收尾提交三条件全
+        中、被当本组处置旁证假闭环收口；仅放宽名后紧跟 ``-<≥10 位数字>``
+        派发时间戳分支记法（_ORPHAN_MERGE_TS_LOOKAHEAD），不命中由调用方
+        回落其余家族，fail-closed 取向不变。
         """
-        if spec_name not in subject:
+        if re.search(
+            r"(?<![\w-])" + re.escape(spec_name) + _ORPHAN_MERGE_TS_LOOKAHEAD,
+            subject,
+        ) is None:
             return False
         if not any(p in subject for p in _ORPHAN_EFFECT_FINALIZE_COMMIT_PREFIXES):
             return False
@@ -7118,12 +7171,24 @@ class AdminMonitor:
         # 陈旧代码预检（evo-add-key-path-stale-code-preflight 2.3）：choice 执行
         # 前查询进程代码陈旧旗标；陈旧则请求重启（一条 WARNING + daemon 侧
         # .fenix/restart_request 防重）并照常执行——执行结果与留痕不受预检影响。
-        from core.code_stale_flag import request_restart
+        # 导入/调用与相邻 adjudication_choices 导入同款受守卫（code-review item
+        # 17d5aecc7009）：异常按失败留痕上报（ok=False），不穿透本函数令终态
+        # 回写与失败留痕双双缺席（pending 处置记录滞留孤儿）。
+        try:
+            from core.code_stale_flag import request_restart
 
-        request_restart(
-            lambda msg: self.logger.warning("admin_monitor", msg),
-            "admin 处置 choice 执行",
-        )
+            request_restart(
+                lambda msg: self.logger.warning("admin_monitor", msg),
+                "admin 处置 choice 执行",
+            )
+        except Exception as e:  # noqa: BLE001 — 预检失败按失败留痕，不穿透
+            self.logger.error(
+                "admin_monitor",
+                f"陈旧代码预检（request_restart）异常 choice_id={choice_id} "
+                f"spec='{spec}': {e}",
+            )
+            return {"ok": False, "action": None,
+                    "error": f"陈旧代码预检异常: {e}"}
         try:
             from core.dashboard.data.admin_actions import execute_adjudication_choice
 

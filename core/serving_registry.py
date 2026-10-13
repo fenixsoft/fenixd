@@ -432,6 +432,18 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
             # 清扫重复跳过——记入待摘名单，收尾统一摘除保证登记表可自清。
             malformed.append(entry)
             continue
+        raw_spec = entry.get("spec")
+        if raw_spec and not isinstance(raw_spec, str):
+            # 畸形条目（手改文件变体，与上方 bool pid 同一威胁模型）：spec 非
+            # 字符串时本函数归一的 str 形态（如 str(5)="5"）与 remove 内
+            # r.get("spec") == spec 的严格值比较永不相等，remove 静默返回
+            # False——进程已亡则条目每轮清扫永久滞留空转；进程存活被收割后
+            # 登记项同样永远摘不掉。记入待摘名单，收尾统一摘除保证登记表可
+            # 自清；身份已损坏的条目不做收割投递（宁少杀，同
+            # _harvest_identity_ok 的保守纪律）。falsy 非字符串（0/False/None）
+            # 归一为空串后走 remove 的仅 pid 匹配分支，本就能被摘除，不在此列。
+            malformed.append(entry)
+            continue
         spec = str(entry.get("spec") or "")
         alive = pid_alive(pid)
         in_flight = bool(is_spec_in_flight(spec)) if is_spec_in_flight else False

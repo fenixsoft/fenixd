@@ -36,6 +36,7 @@ from core.run_task_track import (
     parse_tasks_md,
     parse_unattainable as _parse_unattainable,
 )
+from core.verify_scenarios import VERIFY_FIX_SECTION_RE
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.spec_integrity import SpecIntegrityGate
@@ -1861,7 +1862,11 @@ class PMEngine:
 
     # ── 原地打回辅助：任务注入与升级告警 ──────────────────────────────
 
-    _VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
+    # 单一来源见 core.verify_scenarios.VERIFY_FIX_SECTION_RE（code-review
+    # 18825900bb22：原此处各持一份同源拷贝，标题文案调整漏改一侧会与
+    # is_repair_round 判定分叉）。属性名保留：family.py 经
+    # ``self._pm._VERIFY_FIX_SECTION_RE`` 引用。
+    _VERIFY_FIX_SECTION_RE = VERIFY_FIX_SECTION_RE
 
     # ── 预算计数对账（fix-budget-counting-semantics D3，日志级）──────
 

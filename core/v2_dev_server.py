@@ -386,7 +386,7 @@ def _kill(proc: subprocess.Popen) -> None:
         except subprocess.TimeoutExpired:
             pass
         except OSError:
-            return
+            pass
     # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
     if pgid is not None:
         guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
@@ -805,11 +805,23 @@ def _rewrite_v2_server_entries(project_root, entries: list) -> bool:
             prefix=".v2_servers.", suffix=".tmp", dir=str(path.parent)
         )
         tmp_path = Path(tmp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(entries, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            with f:
+                json.dump(entries, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+        finally:
+            # fdopen 自身抛错时 with 未绑定文件、裸 fd 无人关闭——daemon
+            # 长生命周期内描述符泄漏，兜底 os.close（对齐
+            # write_narrative_sidecar / regression._atomic_write 口径）。
+            if f is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(str(tmp_path), str(path))
         tmp_path = None
         return True
@@ -984,6 +996,15 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
                     f"(wt={wt_text or '-'}) — left unowned across daemon "
                     f"restart",
                 )
+        elif logger:
+            # 击杀失败仍摘登记（交由周期清扫 argv 判据兜底）：补一条告警
+            # 留痕，便于排障时识别「登记已摘但进程仍在」的形态。
+            logger.warning(
+                "v2_dev_server",
+                f"reconcile kill failed for unowned dev-server pid={pid} "
+                f"(wt={wt_text or '-'}) — registry entry removed; process "
+                f"may linger until periodic sweep",
+            )
     # 摘登记回写（重新持锁）：以重读登记为基线仅剔除已判定摘除的条目键，
     # 不整表覆写判定时快照——击杀窗口内并发 register 落入的新条目不丢
     # （last-writer-wins 下整表覆写会吞并发登记）。pid 分量取 repr：畸形

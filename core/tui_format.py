@@ -28,7 +28,7 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
 
 
 def fmt_dur(seconds) -> str:
-    """秒数 → 紧凑时长（30s / 5m / 2h5m / 1d5h）；非正数或非法输入返回空串。"""
+    """秒数 → 紧凑时长（30s / 5m / 2h5m / 1d5h0m）；非正数或非法输入返回空串。"""
     try:
         s = int(seconds or 0)
     except (TypeError, ValueError, OverflowError):
@@ -39,7 +39,8 @@ def fmt_dur(seconds) -> str:
         return f"{s}s"
     if s < 3600:
         return f"{s // 60}m"
-    # 时长格式全段不补零（与分钟/天级分支同一口径，如 2h5m、1d5h）
+    # 时长格式全段不补零；小时/天级一律展开全部下级单位（整点也补 0m，
+    # 如 2h5m、1d5h0m、1h0m——两条分支对零分钟口径一致，item 4c89b35d41ce）
     if s < 86400:
         return f"{s // 3600}h{(s % 3600) // 60}m"
-    return f"{s // 86400}d{(s % 86400) // 3600}h"
+    return f"{s // 86400}d{(s % 86400) // 3600}h{(s % 3600) // 60}m"

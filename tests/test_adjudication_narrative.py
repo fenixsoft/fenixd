@@ -897,7 +897,9 @@ class TestSidecarIO:
         # 路径穿越成分收窄为安全文件名（不落子目录、不越界）
         assert write_narrative_sidecar(tmp_path, "../../etc/passwd", "t", None) is True
         sc = load_narrative_sidecars(tmp_path)
-        assert set(sc) == {"etcpasswd"}
+        # 归一化发生剔除时追加哈希后缀防碰撞（item 0e156812c1c7），仍是单文件名成分
+        assert set(sc) == {adj._safe_alert_id("../../etc/passwd")}
+        assert len(adj._safe_alert_id("../../etc/passwd").split("-")) == 2
         assert not (tmp_path / "etc").exists()
         # 空 id 拒写
         assert write_narrative_sidecar(tmp_path, "", "t", None) is False
