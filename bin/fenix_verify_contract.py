@@ -85,12 +85,20 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
         output_abs.relative_to(root)
     except ValueError:
         return False, f"regression.output 越界项目根，拒绝触达: {output_rel}"
+    # output 误指目录（code-review item 63fcb3938395）：is_file() 对目录恒为
+    # False，下方暂存保护与产物校验全部旁路，最长空跑 timeout_seconds 的回归
+    # 命令后只报「JUnit XML 产物不存在」，排查难以联想到是 output 配置成了
+    # 目录——触达前显式报配置错误（与越界/白名单同类前置守卫）。
+    if output_abs.is_dir():
+        return False, (
+            f"regression.output 配置为目录，须为 JUnit XML 产物文件路径: {output_rel}"
+        )
     # 白名单化约束（code-review item d503c2228418）：output 是 verify.yaml 里
     # 人工填写的自由路径，contained-in-root 只防外溢不防内伤——误填 src/ 源码
     # 或 .fenix/ 配置键文件时，下面的清理会先真实删除该文件且回归命令不会重写
     # 它，配置笔误升级为项目内文件丢失。unlink 前收紧为 JUnit XML 产物形态，
     # 并显式拒绝契约文件本身与 .fenix/ 下的配置键文件。
-    if not output_rel.endswith(".xml"):
+    if not output_rel.lower().endswith(".xml"):
         return False, (
             f"regression.output 须为 .xml 产物路径，拒绝清理非 XML 文件: {output_rel}"
         )
