@@ -3,9 +3,10 @@
 覆盖 tasks.md 6.5 三场景 + 热更新语义：
 - 缺省：无配置 / 空 agent 段 / 空串 → claude（零行为变化基线）
 - 非法值回退：回退缺省 + 告警日志（不静默、不抛异常——配置面容错）
-- dsh fail-fast：工厂抛 HarnessNotDeployedError「dsh adapter 未部署」；
-  dispatch 前置健康检查拦截派发（不启动进程、不进 inner、不耗预算）；
-  settings 保存路径（config_admin.write_config）拒绝 dsh 落盘
+- dsh 生命周期（add-dsh-adapter-integration 后）：工厂注册 DshAdapter
+  （解除 SPEC-1 未部署 fail-fast）；dispatch 前置健康检查不通过拦截派发
+  （不启动进程、不进 inner、不耗预算、错误含修复指引）；settings 保存路径
+  （config_admin.write_config）允许 dsh 落盘
 - 热更新：dispatch 现读现配——同 runner 实例配置被改后下次 dispatch 用新值；
   在飞 run 持旧 adapter 引用不受影响（set_current_adapter 换新不 inplace 改旧）
 """
@@ -22,6 +23,8 @@ import yaml
 from core.agent_runner.harness import (
     VALID_HARNESS_VALUES,
     ClaudeAdapter,
+    DshAdapter,
+    HarnessHealthError,
     HarnessNotDeployedError,
     get_current_adapter,
     resolve_adapter,
@@ -73,21 +76,25 @@ class TestHarnessIllegalFallback(unittest.TestCase):
             resolve_adapter("bash")
 
 
-class TestDshFailFast(unittest.TestCase):
-    """dsh 未部署阶段 fail-fast：工厂 / dispatch 健康检查 / settings 保存三面。"""
+class TestDshLifecycle(unittest.TestCase):
+    """dsh 生命周期：工厂注册（5.1 解除 SPEC-1 fail-fast）/ dispatch 健康
+    检查拦截 / settings 保存面。"""
 
-    def test_factory_raises_not_deployed(self):
-        with self.assertRaises(HarnessNotDeployedError) as ctx:
-            resolve_adapter("dsh")
-        self.assertIn("dsh adapter 未部署", str(ctx.exception))
-        self.assertIn("add-dsh-adapter-integration", str(ctx.exception))
+    def test_factory_dsh_registered(self):
+        # add-dsh-adapter-integration 5.1：工厂注册 DshAdapter（就绪性由
+        # dispatch 前置健康检查把关，工厂本体不做 IO 探测）；MUST NOT 静默
+        # 回退 claude 代跑。
+        adapter = resolve_adapter("dsh")
+        self.assertIsInstance(adapter, DshAdapter)
+        self.assertEqual(adapter.name, "dsh")
+        self.assertNotIsInstance(adapter, ClaudeAdapter)
 
     def test_factory_claude_returns_adapter(self):
         self.assertIsInstance(resolve_adapter("claude"), ClaudeAdapter)
 
     def test_resolve_from_config_dsh(self):
-        with self.assertRaises(HarnessNotDeployedError):
-            resolve_adapter_from_config({"agent": {"harness": "dsh"}})
+        adapter = resolve_adapter_from_config({"agent": {"harness": "dsh"}})
+        self.assertIsInstance(adapter, DshAdapter)
 
     def test_resolve_from_config_default(self):
         self.assertIsInstance(resolve_adapter_from_config({}), ClaudeAdapter)
@@ -111,18 +118,36 @@ class _RunnerBase(unittest.TestCase):
 
 
 class TestDispatchHealthCheck(_RunnerBase):
-    """dispatch 前置健康检查：dsh 拒派且零副作用。"""
+    """dispatch 前置健康检查：健康检查不通过拒派且零副作用（5.1/5.2）。"""
 
-    def test_dsh_config_blocks_dispatch_without_spawning(self):
+    def test_dsh_health_check_blocks_dispatch_without_spawning(self):
+        # add-dsh-adapter-integration 5.1：dsh 就绪性由健康检查把关——检查
+        # 不通过（版本不符/未挂载 Bundle）fail-fast 拒派，错误含修复指引，
+        # MUST NOT 静默回退 claude 代跑。
         with patch("subprocess.Popen") as popen, \
+                patch.object(DshAdapter, "check_health",
+                             side_effect=HarnessHealthError(
+                                 "dsh 版本 '0.9.9' 不在兼容白名单 "
+                                 "['0.2.0-rc.2']——请安装 0.2.0-rc.2，或将 "
+                                 "agent.harness 改回 claude")), \
                 patch.object(self.runner, "_execute_agent_inner") as inner:
             result = self.runner._execute_agent("demo-spec", "implementer", "run-1")
         self.assertFalse(result.success)
-        self.assertIn("dsh adapter 未部署", result.error or "")
+        self.assertIn("白名单", result.error or "")
+        self.assertIn("claude", result.error or "")
         self.assertEqual(result.duration_seconds, 0.0)
         # 零副作用：不启动进程、不进执行内核（不建 worktree / 不耗 spec 预算）
         popen.assert_not_called()
         inner.assert_not_called()
+
+    def test_dsh_healthy_check_passes_dispatch_to_inner(self):
+        # 健康检查通过 → dispatch 放行进执行内核（全链走 DshAdapter，不回退）
+        with patch.object(DshAdapter, "check_health", return_value=None) as hc, \
+                patch.object(self.runner, "_execute_agent_inner") as inner:
+            self.runner._execute_agent("demo-spec", "implementer", "run-1")
+        hc.assert_called_once()
+        inner.assert_called_once()
+        self.assertIsInstance(get_current_adapter(), DshAdapter)
 
     def test_heat_reload_new_value_applies_next_dispatch(self):
         # 现读现配：同一 runner 实例的 config dict 被改后，下次 dispatch 走新值
@@ -163,15 +188,15 @@ class TestSettingsWriteGate(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_dsh_write_rejected(self):
+    def test_dsh_write_persists(self):
+        # add-dsh-adapter-integration 交付后：DshAdapter 已注册，dsh 按词表
+        # 放行落盘（就绪性由 dispatch 前置健康检查把关，不再此处拦截）
         from core.dashboard.data import config_admin
         r = config_admin.write_config(self.root, {"agent": {"harness": "dsh"}},
                                       scope="project")
-        self.assertFalse(r["ok"])
-        self.assertIn("未部署", r["error"])
-        # 未落盘
+        self.assertTrue(r["ok"], r.get("error"))
         on_disk = yaml.safe_load((self.root / ".fenix" / "config.yaml").read_text())
-        self.assertNotIn("agent", on_disk)
+        self.assertEqual(on_disk.get("agent"), {"harness": "dsh"})
 
     def test_illegal_value_rejected(self):
         from core.dashboard.data import config_admin

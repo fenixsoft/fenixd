@@ -1122,7 +1122,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"]["subagent_model_override"] = _sro.strip()
 
     # add-harness-adapter-layer 6.3：agent.harness 合并分支（缺分支会静默丢弃
-    # 保存——历史同坑）；前置校验已拒绝 dsh 与非法值，此处只应用合法值
+    # 保存——历史同坑）；前置校验已拒绝词表外非法值，此处只应用合法值
     if isinstance(patch.get("agent"), dict) and "harness" in patch["agent"]:
         if not isinstance(merged.get("agent"), dict):
             merged["agent"] = {}
@@ -2100,18 +2100,15 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
 
     # add-harness-adapter-layer 6.3：agent.harness 前置校验（tasks.md「同校验、
     # dsh 值保存被拦」）——合并分支对形态外值是跳过语义，缺此校验会退回 ok:true
-    # 静默丢弃（D7 同款缺口）。dsh 直接拦截：adapter 未部署，写入即让下次
-    # dispatch 前置健康检查 fail-fast 空转
+    # 静默丢弃（D7 同款缺口）。add-dsh-adapter-integration 交付后 DshAdapter
+    # 已注册（就绪性由 dispatch 前置健康检查把关），dsh 按词表白名单放行，
+    # 仅拦词表外非法值
     if isinstance(config_patch.get("agent"), dict):
         from core.agent_runner.harness import VALID_HARNESS_VALUES  # 延迟解析避开 runner 重链
 
         _ah = config_patch["agent"].get("harness")
         if _ah is not None:
             _ah_norm = str(_ah).strip().lower()
-            if _ah_norm == "dsh":
-                return fail(
-                    "agent.harness='dsh' 未部署（add-dsh-adapter-integration 交付）；请选择 claude"
-                )
             if _ah_norm not in VALID_HARNESS_VALUES:
                 return fail(
                     f"agent.harness 必须是 {'/'.join(VALID_HARNESS_VALUES)} 之一: {_ah!r}"

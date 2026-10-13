@@ -25,3 +25,10 @@ entries:
   - nodeid: tests/test_run_stop_loss.py::TestStallBudgetCriteria::test_polling_loop_disabled_does_not_kill
     timeout_seconds: 30
     reason: 观察窗 3s + cancel 收尾 10s 宽限 join，天然贴近 10s 全局门（2026-10-08 实证超时源）
+  # add-dsh-adapter-integration 7.1：端到端冒烟起真实 dsh 0.2.0-rc.2 子进程
+  # （DSH_HOME 隔离 + Bundle link 挂载）与 mock 模型端点（node），多轮步骤
+  # 脚本往返 + result gate selfcheck 子进程，正常 30-90s，负载下留余量。
+  - nodeid: tests/test_dsh_e2e_smoke.py::test_dsh_e2e_smoke_full_chain
+    timeout_seconds: 420
+    reason: 真实 dsh 子进程启动（Bundle 挂载/隔离 DSH_HOME）+ mock 端点多轮
+      往返 + result gate selfcheck 子进程，远超 10s 全局门

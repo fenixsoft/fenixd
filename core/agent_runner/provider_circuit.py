@@ -240,6 +240,76 @@ def is_cli_stderr_noise(text: str) -> bool:
     return False
 
 
+# ── dsh 错误码 → claude 形状文本改写（add-dsh-adapter-integration 3.1）─────
+# dsh headless 失败时 stderr 形如 ``dsh: <CODE>: <message>``（probe-findings
+# 第二节）。design D2：不新增 per-adapter 分类器分派面，而是把 dsh 签名行
+# 改写为 claude 形状文本后走既有分类器——``dsh: <CODE>:`` 签名在 claude 输出
+# 中不可能出现，改写对 claude 通道是恒等映射（行为零变化），而 dsh 错误得以
+# 复用既有熔断/瞬断/限流/拒模型全套治理（分类枚举零改动）。
+#
+# 探针重要结论：自定义 OpenAI 兼容端点的 HTTP 错误被 pi-ai 路由**一律粗化为
+# TRANSPORT: Connection error.**（不区分 401/429/500/连接拒绝）；RATE_LIMIT /
+# SERVER / AUTH 等细分码只在官方 deepseek 路由出现。故 TRANSPORT/NO_ADAPTER
+# 保守渲染为连接类文本（transient + switch 前进），MUST NOT 伪造成 HTTP 5xx
+# 或 4xx（会把未知死因误入错误治理桶——probe 建议「保守归 transient 并以
+# 消息/状态旁路取证」）。MISSING_CREDENTIAL 是部署配置错误（非 provider 故
+# 障），不改写 → 不命中任何分类器 → 不入熔断（generic 失败收场）。
+_DSH_ERROR_LINE_RE = re.compile(r"^\s*dsh:\s*([A-Z][A-Z0-9_]*):\s*(.*)$")
+
+#: 细分错误码 → claude 形状改写文本（``{message}`` 占位原始消息；改写文本
+#: MUST 命中既有分类器签名：HTTP\s*429 / unrecognized model / 连接类 /
+#: parse_api_error_status 的 HTTP <3位码> 形态）。未列出的码（含
+#: MISSING_CREDENTIAL）不改写。
+_DSH_ERROR_CODE_TEXT_MAP = {
+    "UNKNOWN_MODEL": 'unrecognized model "{message}" (dsh UNKNOWN_MODEL)',
+    "RATE_LIMIT": "HTTP 429 rate limited: {message} (dsh RATE_LIMIT)",
+    "HTTP_429": "HTTP 429: {message} (dsh HTTP_429)",
+    "SERVER": "HTTP 500 server error: {message} (dsh SERVER)",
+    "TIMEOUT": "HTTP 504 gateway timeout: {message} (dsh TIMEOUT)",
+    "AUTH": "HTTP 401 authentication error: {message} (dsh AUTH)",
+    "INVALID_CREDENTIAL": "HTTP 401 invalid credential: {message} (dsh INVALID_CREDENTIAL)",
+    "HTTP_401": "HTTP 401: {message} (dsh HTTP_401)",
+    # 粗化族：保守按连接类处理（见上注释——不伪造 HTTP 状态码）
+    "NO_ADAPTER": "connection error (dsh NO_ADAPTER): {message}",
+    "TRANSPORT": "connection error (dsh TRANSPORT): {message}",
+}
+
+
+def translate_dsh_error_text(error_text: str) -> str:
+    """把 dsh 错误码行改写为 claude 形状文本（非 dsh 签名原样返回）。
+
+    消费方：ProviderCircuit 四个分类入口（parse_api_error_status /
+    classify_switch_error / classify_ratelimit_error /
+    classify_unrecognized_model_error）在判定前先过本函数——claude 文本
+    不含 ``dsh: <CODE>:`` 签名恒等返回；DshAdapter.classify_stderr 同源
+    消费。改写保留原始码与消息（括注形态）供失败归因取证。
+    """
+    if not error_text:
+        return error_text
+    # 逐行改写（多行错误块中仅 dsh 签名行被改写，其余行原样保留）
+    lines = str(error_text).split("\n")
+    out = []
+    for line in lines:
+        m = _DSH_ERROR_LINE_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
+        code, message = m.group(1), m.group(2)
+        # HTTP_<3位码> 泛型形态（HTTP_404/HTTP_502/…）按码值直译
+        http_match = re.fullmatch(r"HTTP_(\d{3})", code)
+        if http_match:
+            status = http_match.group(1)
+            rendered = f"HTTP {status}: {message} (dsh HTTP_{status})"
+        else:
+            template = _DSH_ERROR_CODE_TEXT_MAP.get(code)
+            if template is None:
+                out.append(line)  # 未列出的码不改写（保守：不入错误治理桶）
+                continue
+            rendered = template.format(message=message)
+        out.append(rendered)
+    return "\n".join(out)
+
+
 def annotate_model_chain_unavailable(error_text: str, provider_name, model,
                                      rejected_count: int) -> str:
     """链尾模型仍被拒时给失败归因注入「全链模型不可用」语义（2.2）。
@@ -401,6 +471,9 @@ class ProviderCircuit:
         """
         if not error_text:
             return None
+        # dsh 错误码行先改写为 claude 形状（add-dsh-adapter-integration 3.1；
+        # claude 文本恒等返回，行为零变化）
+        error_text = translate_dsh_error_text(error_text)
         # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code> /
         # 「API Error: 403」（claude CLI 经 SDK 包装的鉴权错误实际形态，
         # fix-403-auth-failover-blindspot）
@@ -455,7 +528,9 @@ class ProviderCircuit:
         """
         if not error_text:
             return False
-        text = error_text
+        # dsh 错误码行先改写为 claude 形状（add-dsh-adapter-integration 3.1；
+        # claude 文本恒等返回，行为零变化）
+        text = translate_dsh_error_text(error_text)
         # 1) unrecognized_model 文本（add-impl-selfcheck-model-probe 2.1：判定
         #    MUST 先于 4xx code 解析——拒模型几乎总伴随 404 形态，先走 code
         #    解析会命中「4xx 不切换」提前返回，链永远不前进，正是设计要修的
@@ -507,7 +582,8 @@ class ProviderCircuit:
         """
         if not error_text:
             return False
-        text = error_text
+        # dsh 错误码行先改写为 claude 形状（add-dsh-adapter-integration 3.1）
+        text = translate_dsh_error_text(error_text)
         for pat in RATELIMIT_ERROR_TEXT_PATTERNS:
             if re.search(pat, text, re.IGNORECASE):
                 return True
@@ -531,6 +607,8 @@ class ProviderCircuit:
         """
         if not error_text:
             return False
+        # dsh 错误码行先改写为 claude 形状（add-dsh-adapter-integration 3.1）
+        error_text = translate_dsh_error_text(error_text)
         for pat in UNRECOGNIZED_MODEL_TEXT_PATTERNS:
             if re.search(pat, error_text, re.IGNORECASE):
                 return True

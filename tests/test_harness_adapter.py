@@ -5,8 +5,9 @@
   全部存在，方法可调用、name 为字符串标识）
 - HarnessCapabilities 可 json.dumps 往返（SPEC-2 Bundle 侧对账前提）
 - SpawnRequest/SpawnSpec/HarnessCapabilities 为独立数据类
-- resolve_adapter 工厂：claude→ClaudeAdapter、dsh fail-fast（「dsh adapter
-  未部署」）、未知值 fail-fast
+- resolve_adapter 工厂：claude→ClaudeAdapter、dsh→DshAdapter
+  （add-dsh-adapter-integration 5.1 注册，解除 SPEC-1 未部署 fail-fast）、
+  未知值 fail-fast
 - 进程级当前 adapter 持有：注入/读取/未注入回落 claude（变更前行为）
 - SpawnSpec 形状可直接驱动 subprocess.Popen（形参名对账，不真 spawn）
 
@@ -29,6 +30,7 @@ from core.agent_runner.harness import (
     HARNESS_ADAPTER_MEMBERS,
     VALID_HARNESS_VALUES,
     ClaudeAdapter,
+    DshAdapter,
     HarnessAdapter,
     HarnessCapabilities,
     HarnessNotDeployedError,
@@ -145,12 +147,14 @@ class TestResolveAdapter:
         assert isinstance(adapter, ClaudeAdapter)
         assert isinstance(adapter, HarnessAdapter)
 
-    def test_dsh_fail_fast(self):
-        # spec harness-config「dsh 值 fail-fast（本阶段）」：明确错误、不静默
-        # 回退 claude 代跑
-        with pytest.raises(HarnessNotDeployedError) as excinfo:
-            resolve_adapter("dsh")
-        assert "dsh adapter 未部署" in str(excinfo.value)
+    def test_dsh_registered(self):
+        # add-dsh-adapter-integration 5.1：解除 SPEC-1 的 dsh fail-fast——工厂
+        # 注册 DshAdapter（就绪性由 dispatch 前置健康检查把关，工厂本体不做
+        # IO 探测）；MUST NOT 静默回退 claude 代跑。
+        adapter = resolve_adapter("dsh")
+        assert isinstance(adapter, DshAdapter)
+        assert not isinstance(adapter, ClaudeAdapter)
+        assert adapter.name == "dsh"
 
     def test_unknown_value_fail_fast(self):
         with pytest.raises(ValueError):
