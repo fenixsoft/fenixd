@@ -5,6 +5,8 @@ export interface ToolResult {
   content?: unknown;
   isError?: boolean;
   timestamp?: string | number | Date;
+  // 宽松索引签名系有意保留（code-review item 04b23cd6fe52，取舍说明同 ChatMessage）：
+  // 容纳后端附加字段；代价是拼错的字段名不会编译报错，读取端需对索引字段做存在性防御
   [key: string]: unknown;
 }
 
@@ -39,5 +41,10 @@ export interface ChatMessage {
    * toolGrouping 分组判定）据此豁免隐藏——缺了它兜底会在渲染层被击穿
    *（verification BUG-02） */
   thinkingForced?: boolean;
+  // 宽松索引签名系有意保留（code-review item 04b23cd6fe52）：数据形态迁移自
+  // claudecodeui，需容纳上游/后端附加字段，故不收窄为 Record 交叉类型；代价是
+  // 写入拼错的字段名（如 toolElapseSeconds ≠ toolElapsedSeconds）编译期不报错、
+  // 读取端拿到 undefined 只表现为功能静默缺失——新增字段必须落上方具名声明，
+  // 读取端对仅经索引访问的字段做存在性防御
   [key: string]: unknown;
 }

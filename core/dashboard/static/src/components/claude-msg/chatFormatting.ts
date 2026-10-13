@@ -55,10 +55,12 @@ export function formatUsageLimitText(text: string) {
         .replace(/\b\w/g, (char) => char.toUpperCase());
       const tzHuman = city ? `${gmt} (${city})` : gmt;
 
-      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const dateReadable = `${reset.getDate()} ${months[reset.getMonth()]} ${reset.getFullYear()}`;
+      // 日期改中文年月日（code-review item 00af222d4b2c）：不再用硬编码英文月份缩写
+      const dateReadable = `${reset.getFullYear()} 年 ${reset.getMonth() + 1} 月 ${reset.getDate()} 日`;
 
-      return `Claude usage limit reached. Your limit will reset at **${timeStr} ${tzHuman}** - ${dateReadable}`;
+      // 文案中文化（code-review item 00af222d4b2c）：与同文件 formatThinkingLabel 的
+      // 中文口径一致；上方触发正则仍匹配上游英文原文（该文本由上游产生，本控件不改写）
+      return `Claude 用量已达上限，将于 **${timeStr} ${tzHuman}**（${dateReadable}）重置`;
     });
   } catch {
     return text;
