@@ -230,6 +230,22 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     return cur
 
 
+def _missing_expected(expected: Any, mode: Any) -> bool:
+    """expected 缺失/空串的 fail-closed 拦截判定（本模块四处内容断言共用）。
+
+    语义口径（固化于此，调用点勿各自解读）：
+    - None 是 Assertion 的「未设置」哨兵（非显式 null），任何 mode 都拦截
+      ——否则 exact 与 None 判等、contains 以 "None" 子串、regex 以字面
+      None 为模式参与匹配，配置缺失被静默当作合法期望；
+    - 空串仅在 contains/regex 下拦截（空串 contains 恒真、regex 恒匹配，
+      假绿）；exact 空串是合法期望（断言值为空），放行。
+
+    调用点：json_path / response_header / body_contains / sse_event_matches；
+    语义若要调整只改此处，防四处拦截口径漂移分叉。
+    """
+    return expected is None or (expected == "" and mode in ("contains", "regex"))
+
+
 class ApiAssertionRunner:
     """执行结构化 API 断言。
 
@@ -252,6 +268,25 @@ class ApiAssertionRunner:
         """
         results: list[dict] = []
         for assertion in assertions:
+            if not isinstance(assertion, dict):
+                # fail-closed：非 dict 断言条目（planner/自愈链路产出的畸形
+                # 条目，如字符串或 None）会让下方 assertion.get 抛
+                # AttributeError，且在 run() 的 try 之外直接穿透（try 只包
+                # handler 调用）；本文件对 capture 形状（events 非 dict、
+                # schema 非 dict）都有显式防御，断言条目是同级别的不可信
+                # 输入。按「未知断言类型」同款结构返回确定性失败
+                results.append(
+                    {
+                        "type": None,
+                        "layer": 0,
+                        "pass": False,
+                        "error": (
+                            f"断言条目非法: 须为 dict，"
+                            f"实际 {type(assertion).__name__}"
+                        ),
+                    }
+                )
+                continue
             a_type = assertion.get("type", "")
             handler = getattr(self, f"_assert_{a_type}", None)
             if handler is None:
@@ -354,6 +389,12 @@ class ApiAssertionRunner:
             minimum = int(raw_min)
         except (TypeError, ValueError):
             minimum = None
+        # fail-closed：负数下限对任意事件数（含 0）恒真且不附 error，无意义
+        # 配置被静默放行为假绿，与本文件对 expected 缺失/未知 mode 的
+        # fail-closed 拦截纪律同口径；0 是合法期望（断言零事件），不在拦截之列
+        negative_min = minimum is not None and minimum < 0
+        if negative_min:
+            minimum = None
         actual = len(events)
         result = {
             "type": "sse_event_count",
@@ -362,7 +403,14 @@ class ApiAssertionRunner:
             "pass": minimum is not None and actual >= minimum,
         }
         if minimum is None:
-            result["error"] = f"sse_event_count 的 min 非数字（事件数下限）: {raw_min!r}"
+            if negative_min:
+                result["error"] = (
+                    f"sse_event_count 的 min 须为非负整数（事件数下限）: {raw_min!r}"
+                )
+            else:
+                result["error"] = (
+                    f"sse_event_count 的 min 非数字（事件数下限）: {raw_min!r}"
+                )
         return result
 
     # ═══════════════════════════════════════════════════════════════
@@ -444,8 +492,9 @@ class ApiAssertionRunner:
         # regex 以字面 None 为模式参与匹配，配置缺失被静默当作合法期望；
         # 空串 expected 加 contains/regex 同样假绿（空串 contains 恒真、
         # regex 恒匹配），与 body_contains / sse_event_matches 同口径拦截
-        # （exact 空串是合法期望，不在拦截之列）
-        if expected is None or (expected == "" and mode in ("contains", "regex")):
+        # （exact 空串是合法期望，不在拦截之列；拦截谓词统一走
+        # _missing_expected，四处调用点口径单一来源）
+        if _missing_expected(expected, mode):
             return {
                 "type": "json_path",
                 "path": path,
@@ -518,6 +567,21 @@ class ApiAssertionRunner:
         header = a.get("header", "")
         expected = a.get("expected")
         mode = a.get("mode", "exact")
+        # fail-closed：header 缺失/空串（非字符串同样不静默 str() 归一）时
+        # 下方大小写不敏感匹配必然 miss，最终落到「响应头 '' 不存在」——
+        # 场景配置缺字段被误导为「产品没返回该头」，judge 会误归因为产品
+        # 缺陷。口径对齐 json_path 的 path 预检（验收期必填表
+        # ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/绕过
+        # 验收的调用路径）
+        if not isinstance(header, str) or not header:
+            return {
+                "type": "response_header",
+                "header": header,
+                "expected": expected,
+                "actual": None,
+                "pass": False,
+                "error": "缺少 header 字段",
+            }
         actual = None
         for k, v in (resp.get("headers") or {}).items():
             if k.lower() == str(header).lower():
@@ -528,7 +592,7 @@ class ApiAssertionRunner:
         if mode not in ("exact", "contains", "regex"):
             # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐
             error = f"未知 mode: {mode}"
-        elif expected is None or (expected == "" and mode in ("contains", "regex")):
+        elif _missing_expected(expected, mode):
             # fail-closed：缺 expected 时 contains 空串恒真、regex 空串恒匹配，
             # 只要头存在即假通过（exact 与空串比较则是确定性伪失败且不附
             # error，judge 会把配置缺失误归因为产品缺陷）；口径对齐
@@ -569,7 +633,7 @@ class ApiAssertionRunner:
         # （exact 空串是合法期望——断言响应体为空，不在拦截之列）
         expected = a.get("expected")
         mode = a.get("mode", "contains")
-        if expected is None or (expected == "" and mode in ("contains", "regex")):
+        if _missing_expected(expected, mode):
             return {
                 "type": "body_contains",
                 "expected": expected,
@@ -734,7 +798,7 @@ class ApiAssertionRunner:
         # 空串会误命中窗口内的空/纯空白 data 事件（keep-alive 常见形态）；与
         # web 侧 text_match 缺参显式失败口径一致（显式设置的空串 exact 期望
         # 仍照常放行）（code-review item d6f5b0adcfc6）
-        if expected is None or (expected == "" and mode in ("contains", "regex")):
+        if _missing_expected(expected, mode):
             return {
                 "type": "sse_event_matches",
                 "expected": expected,
@@ -805,7 +869,15 @@ class ApiAssertionRunner:
             limit = int(expected)
         except (TypeError, ValueError):
             limit = None
-        passed = limit is not None and actual is not None and actual < limit
+        # fail-closed：actual（resp.get("latency_ms")）为字符串等非数字时
+        # actual < limit 抛 TypeError 被 run() 包成笼统「断言执行异常」，
+        # 恰好是本文件处处避免的误归因形态（mock/手写 capture 可能出现，
+        # 防御假设同 sse_event_matches 对 events 非 dict 的预检）；bool 是
+        # int 子类须一并排除
+        actual_numeric = isinstance(actual, (int, float)) and not isinstance(
+            actual, bool
+        )
+        passed = limit is not None and actual_numeric and actual < limit
         result = {
             "type": "latency_under",
             "expected": expected,
@@ -828,4 +900,10 @@ class ApiAssertionRunner:
                 result["error"] = "latency_under 断言不支持 SSE 捕获（无 latency_ms 延迟采样）"
             else:
                 result["error"] = "响应捕获无 latency_ms 延迟采样，无法与延迟上限对比"
+        elif not actual_numeric:
+            # 定向归因：捕获到的 latency_ms 非数字（与 expected 非数字分支
+            # 同结构），judge 须能区分「响应捕获字段畸形」与真实延迟表现
+            result["error"] = (
+                f"响应捕获 latency_ms 非数字（毫秒），无法与延迟上限对比: {actual!r}"
+            )
         return result
