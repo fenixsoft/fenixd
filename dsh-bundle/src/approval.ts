@@ -12,6 +12,12 @@
  * 对照 patch 文件断言一致；assertUnattendedSafe / assertSandboxModeSafe 供装配
  * 与测试分别校验审批策略与沙箱模式。
  *
+ * 启动期可断言面只有 approval：dsh 插件 apply 期 ctx.get("sandbox-policy")
+ * 实测不可读（服务未以该名暴露，2026-10-14 端到端冒烟实证），且插件启动期
+ * 任何 stderr 输出都会作为流首行污染 headless run 流（acceptance 首行契约
+ * fail-loud）——沙箱面由 patch 写死期望值 + assertSandboxModeSafe 供能读到
+ * mode 的装配方与测试校验，apply 不做启动期读取。
+ *
  * 三守卫挂在 tools/pre-execute（先于审批裁决），拦截路径不受全放行影响。
  *
  * 纯逻辑与 dsh 装配分离：单测零 dsh 依赖。
@@ -71,12 +77,16 @@ export function assertSandboxModeSafe(mode: string): string {
 export const name = "fenix-approval";
 
 /**
- * 插件入口：读取组合后的两块策略面（approval.policy 与 sandbox-policy.mode）
- * 并断言无人值守安全值。策略由本 bundle 的 cordis.patch.yml（approvalPatchEntries
- * 的落盘形态）设置为 sandbox danger-full-access + approval never；若上层
- * --patch 覆盖其中任何一块，这里在启动期即抛错（而非让会话中途阻塞/被拒）。
- * 服务不可读（服务形态变化）时不在启动期硬拦，降级为 warning 诊断——patch 已
- * 写死期望值，7.1 端到端冒烟对「写入不阻塞」的演示是行为面兜底。
+ * 插件入口：读取组合后的审批策略（approval.policy）并断言无人值守安全值。
+ * 策略由本 bundle 的 cordis.patch.yml（approvalPatchEntries 的落盘形态）设置
+ * 为 never；若上层 --patch 覆盖成 ask，这里在启动期即抛错（而非让会话中途
+ * 阻塞/被拒）。policy 不可读（服务形态变化）时不在启动期硬拦，降级为
+ * warning 诊断——patch 已写死 never，7.1 端到端冒烟对「写入不阻塞」的演示
+ * 是行为面兜底。
+ *
+ * 沙箱面（sandbox-policy.mode）不在此读取：apply 期 ctx.get("sandbox-policy")
+ * 实测不可读（见文件头注），启动期 warning 会污染 headless 流首行——沙箱
+ * 期望值由 patch 写死，校验走 assertSandboxModeSafe。
  */
 export function apply(ctx: { get(name: string): unknown }): void {
   const approval = ctx.get("approval") as { policy?: string; config?: { policy?: string } } | undefined;
@@ -89,27 +99,14 @@ export function apply(ctx: { get(name: string): unknown }): void {
   if (policy !== undefined) {
     assertUnattendedSafe(policy);
   } else {
-    warnUnreadable("approval", "policy");
-  }
-
-  const sandbox = ctx.get("sandbox-policy") as { mode?: string; config?: { mode?: string } } | undefined;
-  const mode =
-    typeof sandbox?.mode === "string"
-      ? sandbox.mode
-      : typeof sandbox?.config?.mode === "string"
-        ? sandbox.config.mode
-        : undefined;
-  if (mode !== undefined) {
-    assertSandboxModeSafe(mode);
-  } else {
-    warnUnreadable("sandbox-policy", "mode");
+    warnUnreadable();
   }
 }
 
-/** 策略面不可读时的降级诊断：不在启动期硬拦，但留下可事后归因的 warning。 */
-function warnUnreadable(service: string, field: string): void {
+/** 审批策略不可读时的降级诊断：不在启动期硬拦，但留下可事后归因的 warning。 */
+function warnUnreadable(): void {
   console.warn(
-    `[fenix-dsh-bundle] 无法读取 ${service} 服务的 ${field}（服务形态变化？），` +
+    `[fenix-dsh-bundle] 无法读取 approval 服务的 policy（服务形态变化？），` +
       `已跳过启动期无人值守校验；期望值由 cordis.patch.yml 写死，请核对实际策略是否被 --patch 覆盖。`,
   );
 }

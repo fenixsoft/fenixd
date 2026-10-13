@@ -18,10 +18,14 @@ export const name = "fenix-dsh-bundle";
 /**
  * 依赖声明：fenixModelConfig（fail-fast 链）、tools（注册 Task 工具族所需的
  * 服务访问）、approval（apply 链内 verifyApproval 经 ctx.get 惰性读取的策略
- * 面——ctx.get 本身无 inject 要求，但显式声明后服务必已装配，与 cordis.patch.yml
- * 的 entry 级 inject: [..., approval] 保持一致）。systemPrompt 不在此列：
+ * 面——显式声明后服务必已装配，与 cordis.patch.yml 的 entry 级
+ * inject: [..., approval] 保持一致）。systemPrompt 不在此列：
  * registerAgentsMdSection 经 ctx.inject(["systemPrompt"], fn) 消费，那本身就是
  * 声明式依赖（回调仅在服务可用时执行），顶层声明只会徒增装配门控。
+ * sandbox-policy（verifyApproval 期望读取的第二块策略面）MUST NOT 声明进
+ * 本列表（同 cordis.patch.yml 头注）：它是 dsh 侧配置条目而非先行服务，
+ * 声明成依赖会让插件 entry 永久 pending、Task 工具族不注册（2026-10-14
+ * 端到端冒烟实证）；apply 期该服务实测不可读，校验走 assertSandboxModeSafe。
  */
 export const inject = ["fenixModelConfig", "tools", "approval"];
 

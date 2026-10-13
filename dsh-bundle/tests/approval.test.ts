@@ -11,6 +11,7 @@ import yaml from "js-yaml";
 
 import {
   approvalPatchEntries,
+  assertSandboxModeSafe,
   assertUnattendedSafe,
   EXPECTED_APPROVAL_POLICY,
   EXPECTED_SANDBOX_MODE,
@@ -70,5 +71,16 @@ describe("assertUnattendedSafe", () => {
   it("空值/未知值拒绝", () => {
     expect(() => assertUnattendedSafe("")).toThrow(/无人值守零交互阻塞/);
     expect(() => assertUnattendedSafe("yolo")).toThrow(/无人值守零交互阻塞/);
+  });
+});
+
+describe("assertSandboxModeSafe（与 assertUnattendedSafe 对称的沙箱面守卫）", () => {
+  it("danger-full-access 放行", () => {
+    expect(assertSandboxModeSafe("danger-full-access")).toBe("danger-full-access");
+  });
+
+  it("受限沙箱拒绝（沙箱升级询问会阻塞无人值守运行）", () => {
+    expect(() => assertSandboxModeSafe("workspace-write")).toThrow(/无人值守零升级询问/);
+    expect(() => assertSandboxModeSafe("")).toThrow(/无人值守零升级询问/);
   });
 });
