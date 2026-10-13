@@ -640,8 +640,13 @@ def read_progress(project_root) -> Dict[str, Any]:
     percent_real: Optional[int] = None
     try:
         if output_rel:
-            log_abs = Path(str(Path(project_root) / output_rel) + ".log")
-            if log_abs.is_file():
+            # code-review item cb9951c9fc1b：output 取自 last-run.json 快照
+            # （外部可篡改），读取前校验其解析后仍位于 project_root 内——
+            # 绝对路径会整体替换根、``..`` 可越出项目目录；不合规按无真实
+            # 进度处理（percent_real 保持 None，照常回落估算/未知口径）。
+            root_abs = Path(project_root).resolve()
+            log_abs = Path(str((root_abs / str(output_rel)).resolve()) + ".log")
+            if log_abs.is_relative_to(root_abs) and log_abs.is_file():
                 with log_abs.open("rb") as f:
                     f.seek(0, os.SEEK_END)
                     size = f.tell()
@@ -688,6 +693,8 @@ class _SuiteLock:
     def __enter__(self):
         try:
             self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            # [fenix-ignore:017ff9adf2fd] 锁文件仅作 fcntl 锚点、无内容语义，"w" 截断无害；
+            # 与 bin/run_full_suite.py SuiteLock（同 "w" 打开同一路径）行为一致，均不写诊断内容
             self._file = self._lock_path.open("w")
         except OSError as e:
             # 锁文件无法创建（权限问题等）——保守继续，不阻断回归。
@@ -954,9 +961,11 @@ def run_regression(
                 )
                 if parse_result
                 else [],
+                # code-review item 384a3007b9ba：归因主句恒为超时（与上方注释
+                # 「未完成」口径一致），XML 缺失/不可解析仅作补充附于其后
                 "reason": (
-                    parse_error_reason
-                    or f"回归命令超过硬超时（>{spec.timeout_seconds}s）被中止，本次回归未完成"
+                    f"回归命令超过硬超时（>{spec.timeout_seconds}s）被中止，本次回归未完成"
+                    + (f"；{parse_error_reason}" if parse_error_reason else "")
                 ),
             }
 
