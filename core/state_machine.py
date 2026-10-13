@@ -3412,6 +3412,14 @@ class StateMachine:
         锚点复核不一致/并发删除出口不写该键。
         """
         if project_root is None or worktree_manager is None:
+            # 上下文缺失早退同样带出真实回落原因（code-review 3154878e97e2，
+            # 文案与 _resolve_preserved_branch 同源）：否则调用方 recover_
+            # interrupted 的 clear_reason 回退默认文案，把「续做上下文不可得」
+            # 误报为锚点复核不一致/SPEC 已被并发删除。
+            if reason_out is not None:
+                reason_out["reason"] = (
+                    "续做上下文不可得（project_root/worktree_manager 缺失）"
+                )
             return False
         resolved_branch, wt = self._resolve_preserved_branch(
             name, entry, project_root, worktree_manager, reason_out=reason_out)
