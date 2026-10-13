@@ -35,7 +35,7 @@ SPEC-1 的 `_run_agent` 两段结构（build_spawn_spec → 通用 Popen + 归�
 
 ## Migration Plan
 
-仓内新增 adapter + 少量 modify；`agent.harness` 缺省仍 claude，合并后无运行时切换；回滚 = revert（dsh 通道未被任何缺省路径依赖）。
+实现前置：SPEC-1（add-harness-adapter-layer）与 SPEC-2（add-fenix-dsh-bundle）MUST 先行 verified——本 SPEC 的接入点（harness 工厂与 `_run_agent` 两段结构）与契约源（Bundle fixtures/错误码表）由前两环交付，前两环未落地时以缺失 fail-fast 阻断进入实现，MUST NOT 代跑。仓内新增 adapter + 少量 modify；`agent.harness` 缺省仍 claude，合并后无运行时切换；回滚 = revert（dsh 通道未被任何缺省路径依赖）。
 
 ## Open Questions
 

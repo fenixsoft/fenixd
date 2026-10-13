@@ -1,6 +1,6 @@
 ## Why
 
-SPEC-1 已交付 harness 抽象层与 claude 平移，SPEC-2 已交付 fenix-dsh Bundle 与真机探针结论。本 SPEC（依赖链第三环）实现 `DshAdapter` 并接入 fenixd：事件投影、stderr 分类、session 绑定、健康检查、prompt harness 注记参数化——使 `agent.harness: dsh` 从 fail-fast 变为可用的第二通道，为 SPEC-4 的全链验收铺路。母设计：`docs/superpowers/specs/2026-10-13-multi-harness-adapter-design.md` §4.3/§6/§7。
+SPEC-1（add-harness-adapter-layer）交付 harness 抽象层与 claude 平移，SPEC-2（add-fenix-dsh-bundle）交付 fenix-dsh Bundle 与真机探针结论。本 SPEC（依赖链第三环）实现 `DshAdapter` 并接入 fenixd：事件投影、stderr 分类、session 绑定、健康检查、prompt harness 注记参数化——使 `agent.harness: dsh` 从 fail-fast 变为可用的第二通道，为 SPEC-4 的全链验收铺路。母设计：`docs/superpowers/specs/2026-10-13-multi-harness-adapter-design.md` §4.3/§6/§7。
 
 ## What Changes
 
@@ -27,3 +27,4 @@ SPEC-1 已交付 harness 抽象层与 claude 平移，SPEC-2 已交付 fenix-dsh
 - 测试输入：SPEC-2 的 `dsh-bundle/tests/fixtures/headless-events.jsonl` 与错误码表（投影与分类的契约源）。
 - 不受影响：run jsonl schema 与全部读侧模块、claude 通道行为、dashboard 前端（usage 降级经既有 metrics 字段流转）。
 - 对下游：SPEC-4 全链验收以本 SPEC 为前提。
+- 实现前置：SPEC-1 与 SPEC-2 MUST 先行 verified——本 SPEC 的接入点（`core/agent_runner/harness/` 工厂与 `_run_agent` 两段结构）与契约源（`dsh-bundle/tests/fixtures/headless-events.jsonl`、stderr 错误码表）均由前两环交付，前两环未落地时本 SPEC MUST NOT 进入实现（评审时点三 SPEC 同批起草、均未实现，此为依赖序约定非现状描述）。

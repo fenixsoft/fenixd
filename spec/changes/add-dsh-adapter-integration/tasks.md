@@ -3,6 +3,8 @@
 ```yaml
 - path: core/agent_runner/harness/dsh_adapter.py
   kind: new
+- path: core/agent_runner/harness/__init__.py
+  kind: modify
 - path: core/agent_runner/runner.py
   kind: modify
 - path: core/agent_runner/session.py
