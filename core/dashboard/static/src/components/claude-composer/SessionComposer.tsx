@@ -155,7 +155,12 @@ export default function SessionComposer({
     } else if (itemBottom > visibleBottom) {
       dropdown.scrollTop = itemBottom - dropdown.clientHeight;
     }
-  }, [composer.selectedFileIndex, composer.showFileDropdown]);
+    // filteredFiles 入 deps（code-review item 442c2d1bc995）：继续输入使候选
+    // 过滤收窄时 selectedFileIndex 不变，但 key={file.path} 列表重排会使选中项
+    // DOM 节点重挂（selectedFileRef 指向新节点），不重跑则新选中项可能停在
+    // 可视区外。filteredFiles 是 useState 持有的数组，引用仅在过滤结果真正
+    // 变化时更新，入 deps 不会引发多余重跑。
+  }, [composer.selectedFileIndex, composer.showFileDropdown, composer.filteredFiles]);
 
   const hasInput = Boolean(composer.input.trim());
   const sendDisabled = disabled || sending || !hasInput;
@@ -310,7 +315,11 @@ export default function SessionComposer({
                       （PromptInput.tsx 头注同款坑），外包 span 承载悬停
                       （同 RegressionTab span 承载范式）；inline-flex 使包装
                       不改变按钮在 flex 行内的尺寸与对齐。响应式隐藏迁到
-                      span，避免小屏留下空占位参与 flex gap。 */}
+                      span，避免小屏留下空占位参与 flex gap。
+                      小屏整体隐藏是有意取舍（code-review item 854dd6060f99）：
+                      移动端不提供清空按钮入口，长按/滑动手势等价方案暂无
+                      诉求依据，小屏清空走逐字删除，按钮仅 sm 及以上展示，
+                      避免挤占小屏工具行宽度。 */}
                   <span className="hidden sm:inline-flex">
                     <Button
                       icon={<ClearOutlined />}
