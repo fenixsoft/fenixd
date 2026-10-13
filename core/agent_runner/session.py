@@ -48,6 +48,19 @@ class SessionTracker:
         return session_id
 
     @staticmethod
+    def dsh_session_key(run_id: str) -> str:
+        """dsh 通道的 fenixd 侧 session 记账键（add-dsh-adapter-integration 4.1：
+        ``fenix-<run_id>`` 命名空间，design D3）。
+
+        dsh 的 ``--session-id`` 是严格采纳语义（未知 id fail-loud），全新会话
+        的 dsh 侧真实 id 由 session 事件回报（``session-<uuid>``，经投影 init
+        落 run jsonl、_extract_session_id 原样取回）；本键是 fenixd 侧
+        session 元数据的命名空间键（provider 指纹绑定的记账主体、采纳失败
+        回退留痕的关联 id），MUST NOT 作为 ``--session-id`` 传给 dsh。
+        """
+        return f"fenix-{run_id}"
+
+    @staticmethod
     def _extract_session_id(run_file: Path) -> str | None:
         """从 run 产物提取 session_id（供 --resume 续跑）。
 

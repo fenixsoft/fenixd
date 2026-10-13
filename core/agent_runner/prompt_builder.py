@@ -33,6 +33,13 @@ _logger = logging.getLogger("fenixd.agent_runner.prompt_builder")
 # 花括号字面量（如 {1}）不落入扫描。
 _PLACEHOLDER_RE = re.compile(r"\{[a-z_][a-z0-9_]*\}")
 
+# ── add-dsh-adapter-integration 6.1：{harness_notes} 占位符的 claude 注入值 ──
+# 非交互契约段与长任务等待节里 claude 行为模型描述的原文单源：claude 通道
+# 注入本常量后与改造前逐字节一致（快照测试 test_prompt_harness_notes.py
+# 锁定）；dsh 通道由 DshAdapter.harness_notes() 注入 headless 行为模型——
+# 两通道 prompt 差异全部收敛在 harness_notes 替换位（design D6）。
+CLAUDE_HARNESS_NOTES = "`claude -p`"
+
 # 全部 agent 类型 → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
 # add-deliverable-declaration-triage：新增 dispute-judge（交付物缺件 LLM 终审）类型。
@@ -379,6 +386,11 @@ class PromptBuilder:
         values = {
             "{spec_name}": spec_name,
             "{spec_dir}": f"spec/changes/{spec_name}",
+            # add-dsh-adapter-integration 6.1/6.2：模板 harness 行为注记统一
+            # 占位符化（implementer.md 长任务等待节消费；claude 注入现状原文
+            # ——快照零差异；dsh 注入 headless 行为模型）。非路径类注记，
+            # 全类型预填安全（残留扫描语义不受影响）。
+            "{harness_notes}": self._harness_notes(),
         }
         if agent_type in ("planner-judge", "verifier"):
             values["{report_path}"] = str(vp_dir / "report.json")
@@ -784,6 +796,22 @@ class PromptBuilder:
         ]
         return "\n".join(lines)
 
+    def _harness_notes(self) -> str:
+        """当前 harness 的行为注记（{harness_notes} 注入值，add-dsh-adapter-
+        integration 6.1）。
+
+        duck-typing：当前 adapter 暴露 harness_notes() 即注入其产物（dsh=
+        headless 行为模型）；claude adapter 无该方法 → 回落 CLAUDE_HARNESS_
+        NOTES 原文（快照零差异）。装配点未注入 adapter 时 get_current_adapter
+        惰性回落 claude，同现状。
+        """
+        from core.agent_runner.harness import get_current_adapter
+
+        notes_fn = getattr(get_current_adapter(), "harness_notes", None)
+        if notes_fn is not None:
+            return notes_fn()
+        return CLAUDE_HARNESS_NOTES
+
     def _noninteractive_contract_section(self) -> str:
         """中央「非交互契约」段（fix-agent-noninteractive-contract D1/D3）。
 
@@ -804,10 +832,14 @@ class PromptBuilder:
            「难以撤销的操作先确认」/ plan mode / brainstorming 等交互式
            工作流）在 Fenix run 中不适用。
         """
+        # {harness_notes} 注入（add-dsh-adapter-integration 6.1）：claude 注入
+        # `` `claude -p` `` 原文（下式逐字节还原现状）；dsh 注入 headless 行为
+        # 模型——两通道差异仅落本替换位（design D6）。
+        notes = self._harness_notes()
         return (
             "\n\n## 非交互契约（non-interactive contract，强制，"
             "fix-agent-noninteractive-contract）\n"
-            "- 你是**无人值守的 headless agent**（`claude -p`）："
+            f"- 你是**无人值守的 headless agent**（{notes}）："
             "**没有能回答你的人**。任何「是否继续 / 请确认 / 等待回复」都会"
             "整轮空转、被判失败并重烧预算。\n"
             "- 遇到计划或分叉：**直接执行**，不请求批准；难以撤销的操作按 "
@@ -875,8 +907,12 @@ class PromptBuilder:
         c2a7b93f2bc8）由本函数继续承担；后续新增注入点须先确认目标车道
         不经 _long_task_wait_section，否则会回退成同 prompt 双份。
         """
+        # {harness_notes} 注入（add-dsh-adapter-integration 6.1）：claude 原文
+        # 零差异、dsh 注入 headless 行为模型（与 _noninteractive_contract_
+        # section 同一注入源，design D6）。
+        notes = self._harness_notes()
         return (
-            "- **两类后台能力均不可用于等待**：非交互派发（`claude -p`）下"
+            f"- **两类后台能力均不可用于等待**：非交互派发（{notes}）下"
             "既无 `ScheduleWakeup` 定时唤醒，后台 Bash 任务的**完成通知也不会"
             "送达**——run 结束当前 turn 即进程终止，后台子进程随之被杀。"
             "「后台启动 + 等通知」在本模式下与「启动即忘」是同一件事。\n"

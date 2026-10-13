@@ -12,8 +12,8 @@ runner/event_bus/admin_monitor 等消费侧模块；消费侧单向 import 本�
 
 公共入口：
 
-- :func:`resolve_adapter` — harness 名 → adapter 实例（dsh 未部署阶段
-  fail-fast）
+- :func:`resolve_adapter` — harness 名 → adapter 实例（claude/dsh 双通道；
+  dsh 的就绪性由 dispatch 前置健康检查 fail-fast 把关）
 - :func:`set_current_adapter` / :func:`get_current_adapter` — 进程级当前
   adapter 持有（daemon 装配点注入一次；消费侧 proc_utils/event_bus/
   admin_monitor/fenix_dashboard 经 :func:`current_process_patterns` /
@@ -48,6 +48,13 @@ from core.agent_runner.harness.claude_adapter import (
     build_isolated_settings,
     ensure_agent_config_dir,
 )
+from core.agent_runner.harness.dsh_adapter import (
+    DSH_DEFAULT_PROFILE,
+    DshAdapter,
+    DshAdapterConfig,
+    DshSpawnConfigError,
+    HarnessHealthError,
+)
 
 __all__ = [
     # protocol
@@ -70,6 +77,12 @@ __all__ = [
     "build_env",
     "build_isolated_settings",
     "ensure_agent_config_dir",
+    # dsh_adapter（add-dsh-adapter-integration）
+    "DSH_DEFAULT_PROFILE",
+    "DshAdapter",
+    "DshAdapterConfig",
+    "DshSpawnConfigError",
+    "HarnessHealthError",
     # 工厂与进程级持有
     "VALID_HARNESS_VALUES",
     "HarnessNotDeployedError",
@@ -82,43 +95,53 @@ __all__ = [
 ]
 
 # agent.harness 合法值（config 校验/settings_routes/config_admin 三处共用单源；
-# dsh 由 add-dsh-adapter-integration 部署 adapter 后才可保存生效）
+# dsh 已由 add-dsh-adapter-integration 部署 DshAdapter，保存与生效同词表）
 VALID_HARNESS_VALUES = ("claude", "dsh")
 
 
 class HarnessNotDeployedError(RuntimeError):
-    """harness 已配置但 adapter 未部署（当前仅 agent.harness=dsh 触发）。"""
+    """harness 已配置但 adapter 未部署（历史形态：SPEC-1 期间 agent.harness=dsh
+    触发；add-dsh-adapter-integration 注册 DshAdapter 后工厂不再抛出，保留类与
+    runner 侧防御性 catch 供未来未部署通道复用）。"""
 
 
-def resolve_adapter(harness: str) -> HarnessAdapter:
+def resolve_adapter(harness: str, config: Optional[Dict[str, Any]] = None) -> HarnessAdapter:
     """harness 名 → adapter 实例（工厂唯一入口）。
 
     - ``claude`` → :class:`ClaudeAdapter`（现状平移，行为零变化）
-    - ``dsh`` → :exc:`HarnessNotDeployedError`，错误信息含「dsh adapter 未部署」
-      ——spec harness-config「dsh 值 fail-fast（本阶段）」：MUST NOT 静默回退
-      claude 代跑
+    - ``dsh`` → :class:`DshAdapter`（add-dsh-adapter-integration 5.1 注册，
+      解除 SPEC-1 的 fail-fast；部署参数 agent.dsh_profile/agent.dsh_home
+      经 config 装配，健康检查在 dispatch 前置段执行——本工厂不做 IO 探测，
+      保持纯函数语义）
     - 其余值：调用方（ConfigLoader.get_harness）负责先归一化；本工厂对未知
       值 fail-fast（ValueError），不做静默回退
     """
     if harness == "claude":
         return ClaudeAdapter()
     if harness == "dsh":
-        raise HarnessNotDeployedError(
-            "dsh adapter 未部署（add-dsh-adapter-integration 交付）；"
-            "请将 agent.harness 改回 claude"
-        )
+        from core.config import ConfigLoader
+
+        cfg = config or {}
+        # 部署参数：agent.dsh_profile（缺省 Bundle README 约定名）/ agent.dsh_home
+        # （缺省空=继承进程环境；DSH_HOME 隔离部署由此键指定）。类型误写按空值
+        # 兜底缺省（ConfigLoader.get 不做类型归一化）。
+        profile = str(ConfigLoader.get(cfg, "agent.dsh_profile", None) or "").strip()
+        dsh_home = str(ConfigLoader.get(cfg, "agent.dsh_home", None) or "").strip()
+        return DshAdapter(DshAdapterConfig(
+            profile=profile or DSH_DEFAULT_PROFILE, dsh_home=dsh_home))
     raise ValueError(f"不支持的 harness 值：{harness!r}（合法值 {VALID_HARNESS_VALUES}）")
 
 
 def resolve_adapter_from_config(config: Optional[Dict[str, Any]]) -> HarnessAdapter:
     """从 config 读 agent.harness 并解析 adapter（归一化语义在 ConfigLoader）。
 
-    ConfigLoader.get_harness 负责「缺省 claude / 非法值回退+告警」；dsh 在
-    这里经 resolve_adapter fail-fast。
+    ConfigLoader.get_harness 负责「缺省 claude / 非法值回退+告警」；dsh 经
+    注册的 DshAdapter 返回（部署参数随 config 装配），健康检查由 dispatch
+    前置段消费 adapter 的 check_health 扩展成员。
     """
     from core.config import ConfigLoader
 
-    return resolve_adapter(ConfigLoader.get_harness(config or {}))
+    return resolve_adapter(ConfigLoader.get_harness(config or {}), config)
 
 
 # ── 进程级当前 adapter 持有 ──────────────────────────────────────────────

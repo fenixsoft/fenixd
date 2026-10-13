@@ -90,6 +90,7 @@ from core.agent_runner.session import SessionTracker
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
 from core.agent_runner.harness import (
     ENV_MODE_AGENT_RUN,
+    HarnessHealthError,
     HarnessNotDeployedError,
     SpawnRequest,
     get_current_adapter,
@@ -3102,14 +3103,17 @@ class AgentRunner:
         handed_off: set = set()
         # ── harness 前置健康检查（add-harness-adapter-layer 6.2）─────────
         # dispatch 前解析 agent.harness 并装配进程级当前 adapter：
-        # - dsh（未部署）在此 fail-fast 拒派——不启动进程、不建 worktree、
-        #   不消耗 spec 重试预算，错误文案即工厂的明确指引；
         # - claude 正常路径把解析结果装配给全进程 spawn 面（run 车道
-        #   _run_agent 与五处一次性 spawn 均经 get_current_adapter）。
+        #   _run_agent 与五处一次性 spawn 均经 get_current_adapter）；
+        # - dsh（add-dsh-adapter-integration 5.1 注册）在此执行 dispatch
+        #   前置健康检查（dsh --version 白名单 + Bundle 挂载探测，
+        #   duck-typing：adapter 暴露 check_health 即执行），不满足 fail-fast
+        #   拒派——不启动进程、不建 worktree、不消耗 spec 重试预算，错误
+        #   文案含修复指引；MUST NOT 静默回退 claude 代跑。
         # 每次 dispatch 现读现配即热更新语义：改值对下次 dispatch 生效，
         # 在飞 run 已在 _run_agent 开头捕获旧 adapter 实例，不受影响。
         try:
-            set_current_adapter(resolve_adapter_from_config(self.config))
+            _resolved_adapter = resolve_adapter_from_config(self.config)
         except HarnessNotDeployedError as e:
             self.logger.warning(
                 "agent_runner", f"harness 前置健康检查拦截 dispatch: {e}")
@@ -3117,6 +3121,18 @@ class AgentRunner:
                 run_id, spec_name, agent_type, success=False,
                 duration_seconds=0.0, error=str(e),
             )
+        _health_check = getattr(_resolved_adapter, "check_health", None)
+        if _health_check is not None:
+            try:
+                _health_check()
+            except HarnessHealthError as e:
+                self.logger.warning(
+                    "agent_runner", f"harness 前置健康检查拦截 dispatch: {e}")
+                return AgentRunResult(
+                    run_id, spec_name, agent_type, success=False,
+                    duration_seconds=0.0, error=str(e),
+                )
+        set_current_adapter(_resolved_adapter)
         try:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,
@@ -3688,18 +3704,39 @@ class AgentRunner:
                     # fix 跨 provider resume：resume 报「会话不存在」说明该 session_id 已失效
                     # （典型：上一次 attempt 切换了 provider，session 在旧 CLAUDE_CONFIG_DIR 里），
                     # 若不清除，后续 attempt 会带着死 id 反复秒挂、烧尽全部重试。
-                    if error and "No conversation found with session ID" in error:
+                    # add-dsh-adapter-integration 4.1：dsh ``--session-id`` 严格
+                    # 采纳语义的失败（未知 id/被持有/cwd 不符）同属 resume 死
+                    # session——adapter 经 duck-typing 暴露判别（claude 无该方法，
+                    # 既有字面判定零改动），回退新 session 重跑并留痕。
+                    _resume_dead_check = getattr(
+                        get_current_adapter(), "is_resume_dead_error", None)
+                    if error and (
+                        "No conversation found with session ID" in error
+                        or (_resume_dead_check is not None
+                            and _resume_dead_check(error))
+                    ):
                         # 首次 resume 失败即弃用死 session（code-review item
                         # 62a08c7663fa）：本分支位于非瞬断路径 break 之前、且
                         # 每个 attempt 顶部 resume_failures 归零，计数实际最多
                         # 累到 1——原「连续 2 次」阈值分支不可达，注释与行为
                         # 按实际语义（首次即换全新会话）收口。
                         resume_failures += 1
+                        _dead_session_id = session_id
                         session_id = None
                         session_provider = None
+                        # dsh 通道回退留痕带 fenix-<run_id> 记账键（design D3
+                        # 命名空间；claude adapter 无该方法则缺省不拼）。
+                        _bookkeeping_key_fn = getattr(
+                            get_current_adapter(), "session_bookkeeping_key", None)
+                        _bookkeeping_note = (
+                            f" bookkeeping_key={_bookkeeping_key_fn(sub_run_id)}"
+                            if _bookkeeping_key_fn is not None else ""
+                        )
                         self.logger.warning(
                             "agent_runner",
                             f"Resume dead session x{resume_failures} for '{spec_name}' — "
+                            f"dead session_id={_dead_session_id!r} cleared"
+                            f"{_bookkeeping_note}, "
                             f"switching to fresh session for subsequent attempts",
                         )
                     break  # 非瞬断（或预算耗尽）退出 while 循环
@@ -4169,8 +4206,14 @@ class AgentRunner:
         # resume 死 session（No conversation found）不属网关瞬断，
         # 排除在瞬断判定之外（其处置走下方 session 清理兜底）。
         exc_stderr = exc_stderr or []
-        resume_dead = (
-            error and "No conversation found with session ID" in error)
+        # add-dsh-adapter-integration 4.1：dsh --session-id 采纳失败同属
+        # resume 死 session（不属网关瞬断）；adapter duck-typing 判别，
+        # claude 通道既有字面判定零改动。
+        _resume_dead_check = getattr(
+            get_current_adapter(), "is_resume_dead_error", None)
+        resume_dead = bool(error) and (
+            "No conversation found with session ID" in error
+            or (_resume_dead_check is not None and _resume_dead_check(error)))
         is_transient = (
             not resume_dead and self.classify_transient_error(
                 exc_stderr,
@@ -5862,6 +5905,18 @@ class AgentRunner:
         # 变事件处理时序。
         tool_metrics: dict = {"tool_uses": {}, "text_turns": 0}
 
+        # add-dsh-adapter-integration 2.1/2.2：投影管线装配（duck-typing——
+        # adapter 暴露 event_projector 即走有状态投影管线，原始行 dump 旁路 +
+        # 逐级计数 + 坏事件分类；claude 恒等路径零改动：normalize_event 直呼、
+        # 无 dump、无计数、metrics 行不增键）。dump 旁路与 run 文件同目录，
+        # 按 attempt run 文件名对齐（<sub_run_id>.dsh-events.jsonl）。
+        _projector_factory = getattr(adapter, "event_projector", None)
+        event_projector = (
+            _projector_factory(Path(run_file).stem, str(Path(run_file).parent))
+            if _projector_factory is not None
+            else None
+        )
+
         def _read_stream(stream, is_stderr: bool) -> None:
             try:
                 for line in iter(stream.readline, ""):
@@ -5876,12 +5931,27 @@ class AgentRunner:
                     try:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
-                        entry = {"type": "stderr", "line": line}
+                        # 投影管线下解析失败由 ingest 计坏事件（json_parse_failed，
+                        # 原始行已入 dump 旁路）；claude 恒等路径维持原 stderr
+                        # 兜底事件形态。
+                        entry = None
+                    if event_projector is not None:
+                        # add-dsh-adapter-integration 2.1：有状态投影管线——
+                        # 1 行 → 0/1 投影事件（投影契约，fixtures 测试锁定）；
+                        # 空列表 = 全忽略（等价 claude 路径的 continue）。
+                        _projected = event_projector.ingest(line, entry)
+                        if not _projected:
+                            continue
+                        entry = _projected[-1]
+                    else:
+                        if entry is None:
+                            entry = {"type": "stderr", "line": line}
                     if isinstance(entry, dict):
                         # add-harness-adapter-layer 3.1：落盘前经 adapter 归一
                         # （claude 为恒等映射；thinking_tokens 遥测噪音返回空
-                        # 列表不落盘——fix-fenix-token-waste 原地 continue 平移）
-                        if not adapter.normalize_event(entry):
+                        # 列表不落盘——fix-fenix-token-waste 原地 continue 平移。
+                        # 投影管线下的 entry 已是投影产物，不再过恒等归一）
+                        if event_projector is None and not adapter.normalize_event(entry):
                             continue
                         if entry.get("type") == "assistant":
                             # turn_count 不在此递增：后移到本事件转录行落盘
@@ -6476,6 +6546,32 @@ class AgentRunner:
                     f"run {run_id}: stderr 读线程 join 5s 超时仍存活——跳过 "
                     f"stderr_lines deque 迭代（stderr 不可观测）",
                 )
+            # add-dsh-adapter-integration 2.2：投影管线可观测性三件套落
+            # run_metrics 同通道结构化日志（metric_type=run_metrics + projection
+            # 载荷：逐级计数/坏事件分类/dump 旁路路径，可与投影后 run jsonl 与
+            # dump 文件对账）。claude 无投影器不落（日志行零变化）；落盘失败
+            # 不阻断收尾（与 _log_run_metrics 同契约）。
+            if event_projector is not None:
+                try:
+                    event_projector.close()
+                    self.logger.info(
+                        "agent_runner",
+                        f"projection pipeline metrics: {agent_type} '{spec_name}'",
+                        {
+                            "metric_type": "run_metrics",
+                            "run_id": run_id,
+                            "projection": event_projector.metrics(),
+                        },
+                    )
+                except Exception as e:  # 观测落盘失败不阻断 run 收尾
+                    try:
+                        self.logger.warning(
+                            "agent_runner",
+                            f"projection metrics 落盘失败 '{spec_name}' "
+                            f"({run_id}): {e}",
+                        )
+                    except Exception:
+                        pass
             # code-review item 183ded7b526a：pop 持 _run_finalize_lock，与
             # wait_for_running_agents 停机写 interrupted 标记的「成员复核 +
             # 末行复核 + 追加」临界区互斥（其后同线程的 result 等终态落盘
@@ -6937,7 +7033,15 @@ class AgentRunner:
 
         # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
         # 成本字段；失败/异常路径上 _run_agent 已抛错，此处仅成功终态能拿到 usage。
-        return output, turns, session_id, self._extract_usage_info(observed_result)
+        usage_info = self._extract_usage_info(observed_result)
+        if event_projector is not None and isinstance(observed_result, dict):
+            # add-dsh-adapter-integration 4.2：投影管线的 result 事件携带
+            # usage_source（available=step_end 求和 / unavailable=降级）→
+            # 随 usage_info 流转供 _log_run_metrics 落 usage_source 指标；
+            # claude 恒等路径无投影器、result 无该键，零改动。
+            if observed_result.get("usage_source") is not None:
+                usage_info["usage_source"] = observed_result["usage_source"]
+        return output, turns, session_id, usage_info
 
 
     @staticmethod
@@ -8412,6 +8516,20 @@ class AgentRunner:
                     "latency_max": latency.get("max"),
                 },
             )
+            # add-dsh-adapter-integration 4.2/4.3：usage 降级标记随 run_metrics
+            # 入账（dsh 通道 usage_source=available/unavailable/unobserved；
+            # claude usage_info 无该键不落，指标行零变化）。
+            if usage.get("usage_source") is not None:
+                logger.info(
+                    "agent_runner",
+                    f"run metrics usage source: {agent_type} '{spec_name}' "
+                    f"usage_source={usage.get('usage_source')}",
+                    {
+                        "metric_type": "run_metrics",
+                        "run_id": run_id,
+                        "usage_source": usage.get("usage_source"),
+                    },
+                )
         except Exception as e:  # 指标落盘失败不得阻断 run 收尾
             try:
                 logger.warning(
