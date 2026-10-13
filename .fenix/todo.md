@@ -23,7 +23,7 @@
 
 ### 浪费
 - **蒸馏重试台账未提交滞留全天，阻塞 merge-back 9 分钟并耗一次 admin run**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：dsh-primary-acceptance-switch 的 merge-back（实现分支合回主树）被 WIP 重叠闸门阻塞 22:54:45→23:03 共约 9 分钟，6 次×2 分钟自动重试全败，消耗 1 次 admin 车道 run（admin-dsh-primary-acceptance-switch-1791903542，只读诊断+代提交）并产生 6 条 ERROR 日志；复发敞口：蒸馏失败登记或任一无提交写路径写入 todo.md 后，再有任一 spec 分支（普遍追加 todo.md 节）合回即复现，单次代价约 9 分钟合回延迟加 1 次 admin run。
   - 证据：日志 6 条「Merge-back blocked by WIP overlap precheck」（2026-10-13T14:54:45Z→15:01:15Z，约 2 分钟一拍）；处置记录 7ba19ebca803（mergeback_wip_overlap 处置）诊断「主树唯一重叠改动为 .fenix/todo.md 头部一行 knowledge-distill 重试待办」；commit 517c92e1（23:01:27，仅 .fenix/todo.md 1 行）解除阻塞，合并提交 eef7f622（23:03）落主树。
   - 调查评估：问题源：dsh-primary-acceptance-switch 合回时暴露。已核实：阻塞行与 core/knowledge.py:629 蒸馏失败重试登记文本逐字吻合，该路径经 append_todo_line（knowledge_backfill.py:188，向 todo.md 追加行的共享写函数）写入且全程无 git 提交，行自 10-13 00:14 自省窗口开启时已在册、滞留至 23:01 代提交；合并 admin 诊断确认两侧改动位置不重叠（主树头部插行 vs 分支尾部追节），闸门按路径重叠保守拦截属正确行为。根因：系统性缺口——ADR-060 已确立「todo.md 类产物写入点即时 commit」原则，刚归档的 spec 2026-10-12-evo-add-todo-marker-commit-on-write 只覆盖了 write_todo_marker（自进化标记）路径，其非目标段明确把 knowledge_backfill.append_todo_line 等写路径排除（「可另行评估立项」），本次事件即该延期的成本兑现。与存量工作关系：与归档 spec 互补而非重复，是其一非目标的直接立项依据。结论：值一个独立微 SPEC，封住剩余无提交写路径。
