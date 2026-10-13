@@ -2,7 +2,7 @@
 
 ### Requirement: HarnessAdapter 协议
 
-系统 MUST 在 `core/agent_runner/harness/` 包内定义 `HarnessAdapter` 协议，至少包含：`name`、`build_spawn_spec(req) -> SpawnSpec`、`normalize_event(raw) -> list | None`、`classify_stderr(line)`、`extract_result(events)`、`process_patterns() -> list[str]`、`capabilities() -> HarnessCapabilities`。`SpawnRequest`/`SpawnSpec`/`HarnessCapabilities` MUST 为独立数据类，`HarnessCapabilities` MUST 可序列化（供 SPEC-2 的 Bundle 侧对账）。
+系统 MUST 在 `core/agent_runner/harness/` 包内定义 `HarnessAdapter` 协议，至少包含：`name`、`build_spawn_spec(req) -> SpawnSpec`、`normalize_event(raw) -> list | None`、`classify_stderr(line)`、`extract_result(events)`、`process_patterns() -> list[str]`、`capabilities() -> HarnessCapabilities`。`SpawnRequest`/`SpawnSpec`/`HarnessCapabilities` MUST 为独立数据类，`HarnessCapabilities` MUST 可序列化（供 SPEC-2 的 Bundle 侧对账）。`SpawnRequest` MUST 携带足以承载车道与一次性 spawn 形态差异的字段（prompt 传输形态 argv/stdin、output-format、model、cwd、timeout、resume 等），使五处一次性 spawn 点的 argv/stdin 差异成为 SpawnRequest 数据而非 adapter 分支代码。
 
 #### Scenario: 协议完整性
 
@@ -15,7 +15,7 @@
 
 #### Scenario: 快照测试逐字节对账
 
-- **WHEN** 以同一组代表性 SpawnRequest（覆盖 spec 车道、维护车道、resume、provider 链各至少一例）分别驱动平移前命令构造函数与 `claude_adapter.build_spawn_spec`
+- **WHEN** 迁移前以现状 `_run_claude` 捕获同一组代表性 SpawnRequest（覆盖 spec 车道、维护车道、resume、provider 链各至少一例）的 argv/env/stdin 金样本 fixture 入库，迁移后以同一 SpawnRequest 集合驱动 `claude_adapter.build_spawn_spec` 与金样本对照
 - **THEN** 每例的 argv 列表、env 字典（含清除键）、stdin 载荷全部相等，快照测试通过
 
 #### Scenario: 事件归一化为恒等映射

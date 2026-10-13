@@ -27,5 +27,5 @@ fenixd 当前把 Claude Code 当作唯一 code agent harness（ADR-055：一切 
 
 - 受影响代码：`core/agent_runner/`（runner/maintenance_runs/liveness/prompt_builder 契约段不动）、`core/knowledge.py`、`core/knowledge_backfill.py`、`core/dashboard/routes/`（architecture/project/settings）、`core/dashboard/static/src/pages/settings/components/SystemPanel.tsx`、`core/proc_utils.py`、`core/event_bus.py`、`core/admin_monitor.py`、`bin/fenix_dashboard.py`、`core/config.py`。
 - 不受影响（明确冻结）：run jsonl schema（8+ 读侧模块零改动）、Task 工具族成对契约、worktree 目录约定、provider 链配置模型、dashboard 自由会话。
-- 后续依赖：SPEC-2（fenix-dsh Bundle）依赖本 SPEC 冻结的 `HarnessCapabilities` 接口；SPEC-3（DshAdapter）依赖本 SPEC 的协议与 `_run_agent` 两段结构。
+- 后续依赖：SPEC-2（fenix-dsh Bundle）依赖本 SPEC 冻结的 `HarnessCapabilities` 接口；SPEC-3（DshAdapter）依赖本 SPEC 的协议与 `_run_agent` 两段结构。SPEC-3（DshAdapter）是依赖链中首个新采集链路里程碑，其任务与 Deliverables MUST 含可观测性交付项（输入事件 dump、管线逐级计数、坏事件分类统计至少其二，允许 dsh 等价替代形态），与功能交付同批验收。
 - 风险：daemon 自举改派发核心——以快照测试（平移前后 argv/env/stdin 逐字节零差异）+ 既有回归网护航。

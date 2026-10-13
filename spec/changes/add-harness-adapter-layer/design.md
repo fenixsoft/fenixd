@@ -34,6 +34,7 @@
 5. **进程识别走 `adapter.process_patterns()`**：proc_utils.py:47 的 basename 集合、event_bus.py:810 / admin_monitor.py:868 / bin/fenix_dashboard.py:151-154 的 pgrep pattern 改为从当前 harness adapter 获取，claude 值与现状全等。
 6. **一次性 spawn 收编为 `run_one_shot(adapter, prompt, *, model, timeout, …)`**：五处调用点的 argv 形态差异（argv 传 prompt vs stdin 传 prompt）由 adapter 内的 lane 语义保持，收编后以「同参数运行」测试钉住。备选「各处保留只改命令构造」被否：复制面不收敛，SPEC-3 要再改 5 处。
 7. **ADR-271 决策集**：取代 ADR-055；豁免自由会话/CLAUDE_PID watchdog；冻结 run jsonl canon 与 worktree 目录约定（`worktrees/{impl,verify,repair,planner}-<spec>-` 字面量被 6+ 处在飞判定依赖，与 harness 无关，不动）。
+8. **harness 包 import 方向单向**：protocol/claude_adapter/one_shot 与工厂 `_resolve_adapter` 均落 harness 包内；harness 包只依赖 stdlib 与既有纯工具模块，MUST NOT import runner/event_bus/admin_monitor（防循环 import，也防 8438 行 runner 抽取误伤共享运行态——与决策 3「只移纯函数与配置构造」互为表里）；event_bus/admin_monitor/bin/fenix_dashboard 等消费侧单向 import 工厂取 process_patterns。
 
 ## Risks / Trade-offs
 

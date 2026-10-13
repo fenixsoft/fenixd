@@ -67,11 +67,12 @@
 - [ ] 2.1 平移命令构造进 claude_adapter.build_spawn_spec：`claude -p --output-format stream-json --verbose --add-dir … --permission-mode bypassPermissions [--settings][--model][--resume]` 全参数、prompt 经 stdin 载荷、max_turns daemon 侧强制语义保持
 - [ ] 2.2 平移隔离 settings 构造与落盘（_build_isolated_settings/_ensure_agent_config_dir、3 个 PreToolUse hooks 注入、skills/plugins symlink、enabledPlugins、子代理模型映射、ISOLATED_SETTINGS_SCHEMA_VERSION）
 - [ ] 2.3 平移 env 路由与清理（ANTHROPIC_* 注入、ANTHROPIC_AUTH_TOKEN 清除、CLAUDE_CONFIG_DIR 隔离、AGENT_RUN_BANNED_ENV_KEYS 应用点、FENIX_RUN_PROJECT_ROOT/FENIX_RUN_WORKTREE 注入）
-- [ ] 2.4 快照测试（tests/test_harness_claude_snapshot.py）：代表性 SpawnRequest 集合（spec 车道/维护车道/resume/provider 链各至少一例）平移前后 argv/env/stdin 逐字节相等
+- [ ] 2.4 快照测试（tests/test_harness_claude_snapshot.py）：迁移动手前先以现状 _run_claude 捕获代表性 SpawnRequest 集合（spec 车道/维护车道/resume/provider 链各至少一例）的 argv/env/stdin 金样本 fixture 并入库；迁移后以同一 SpawnRequest 集合驱动 claude_adapter.build_spawn_spec 与金样本逐字节相等对照
+- [ ] 2.5 平移 stderr 分类与结果提取进 claude_adapter：classify_stderr 承接现状 stderr 降噪/归因（unrecognized_model 分类保持经 ProviderCircuit.classify_unrecognized_model_error 委托的接入形态，runner.py:725）；extract_result 承接会话 id/usage（_extract_usage_info）/终态 result 提取的现状行为（由 3.2 既有回归覆盖）
 
 ## 3. 主通道两段化
 
-- [ ] 3.1 _run_claude 改名 _run_agent 并拆为「build_spawn_spec → 通用 Popen + 归一化事件写盘」两段，claude normalize_event 为恒等映射；attempt 环/max_turns 守护/五路监督/终态收口语义不动；解除「有意单体」注记并以指向 harness 包的注释替代
+- [ ] 3.1 _run_claude 改名 _run_agent 并拆为「build_spawn_spec → 通用 Popen + 归一化事件写盘」两段，claude normalize_event 为恒等映射；attempt 环/max_turns 守护/五路监督/终态收口语义不动；解除「有意单体」注记（runner.py:5659-5664）并以指向 harness 包的注释替代，替代注释 MUST 保留行序契约警示（run_metrics 行与终态行次序由权威测试 test_run_claude_poll_loop_crash_writes_error_terminal 锁定，改动前先跑该测试；快照测试只护 argv/env/stdin、不护事件行序）
 - [ ] 3.2 回归验证：agent_runner 既有测试全绿（终态事件类型/会话提取/usage 解析/在飞判定不变）
 
 ## 4. 一次性 spawn 收编与叙事通道
@@ -87,7 +88,7 @@
 
 ## 6. 配置与设置页
 
-- [ ] 6.1 core/config.py 支持 agent.harness（合法值 claude|dsh、缺省 claude、非法值回退+告警日志）；.fenix/config.template.yaml 增加注释样例
+- [ ] 6.1 core/config.py 支持 agent.harness（合法值 claude|dsh、缺省 claude、非法值回退+告警日志）；.fenix/config.template.yaml 增加注释样例，且注释须显式区分新顶层段 agent（harness 进程边界选择）与既有 agents 段（按 agent 类型的 models/timeout_overrides/退避段），避免两段混用
 - [ ] 6.2 harness 工厂 _resolve_adapter：claude→claude_adapter；dsh→抛明确错误「dsh adapter 未部署（add-dsh-adapter-integration 交付）」；dispatch 前置健康检查接入该工厂
 - [ ] 6.3 settings_routes 提供 agent.harness 读写（同校验、dsh 值保存被拦）；SystemPanel.tsx 增加系统级 harness 选择控件（claude/dsh，dsh 附未部署提示文案）
 - [ ] 6.4 前端构建产物重建并冒烟验证设置页控件可见可用
@@ -101,4 +102,4 @@
 ## 8. 收尾验证
 
 - [ ] 8.1 全量测试绿 + 编译自洽（python -m compileall core）；快照测试结果作为行为零变化的对照证据写入合并说明
-- [ ] 8.2 全仓 grep 核查：五个一次性 spawn 点与叙事通道不再直接构造 claude 命令，唯一命令构造入口在 harness/claude_adapter.py
+- [ ] 8.2 全仓 grep 核查：五个一次性 spawn 点与叙事通道不再直接构造 claude 命令，车道与一次性 spawn 的命令构造唯一入口在 harness/claude_adapter.py；dashboard 自由会话（session_manager）与 CLAUDE_PID watchdog 为 ADR-271 豁免项、仍直连 claude，不计入本核查范围
