@@ -101,6 +101,14 @@ ARITY_WHITELIST = [
     #    改写表 template.format(message=message)（{message} 占位全关键字
     #    展开）——同族 1/4/5/6 的 str.format 误报（引入调用点时补豁免）。
     ("core/agent_runner/provider_circuit.py", "format", "template"),
+    # 8. 同族 1/4/5/6/7 的 str.format 全关键字展开误报（与 Formatter.format
+    #    (self, record) 同名异签名）：pipeline.py 场景 sid 兜底模板
+    #    _SCENARIO_SID_FALLBACK_FMT.format(i=index)（{i} 具名占位，只能关键字
+    #    展开）；browser.py 对话框收割回调的 task.exception()（asyncio.Task
+    #    零参签名）与 core/logger.py Logger.exception(component, message)
+    #    同名异签名（同族 3 的 stdlib 零参/单参形态）。
+    ("core/pm_engine/verification/pipeline.py", "format", "_SCENARIO_SID_FALLBACK_FMT"),
+    ("core/verify_engine/browser.py", "exception", "task"),
 ]
 
 
