@@ -873,6 +873,11 @@ class EventBus:
             try:
                 if not self.state_path.exists():
                     time.sleep(2)
+                    # 文件缺失视为正常空轮，同样复位退避（与 docstring「任一
+                    # 轮正常走完即复位」口径一致）：本分支固定睡 2s、不消费
+                    # fail_backoff，不复位会把残留高退避沿用到文件恢复后的
+                    # 首个真实失败轮。
+                    fail_backoff = 2.0
                     continue
 
                 current_hash = self._file_checksum()
