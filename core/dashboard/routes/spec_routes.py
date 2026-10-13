@@ -628,12 +628,16 @@ class H3SpecRoutesMixin:
             )
         except Exception:
             pass  # 写日志失败不阻断归档响应
-        # 归档成功日志含迁出结果（add-archive-state-migration 2.2）
+        # from/to 用 .get 兜底（code-review item a88f940cc788）：数据层 ok=true
+        # 契约恒含 from/to（spec_archive.archive_spec 成功分支硬编码），但同文件
+        # 其余端点对数据层返回值普遍不直接下标强信任——此处缺失时降级为 None
+        # 透传，不让 KeyError 穿到派发层变 500（record_project_event 处已有
+        # try/except 兜底，无需重复处理）。
         logger.info(
             "spec archive: project=%s spec=%s to=%s evicted=%s evict_warning=%s",
             project["name"],
             spec,
-            result["to"],
+            result.get("to"),
             result.get("state_evicted", False),
             result.get("evict_warning"),
         )
@@ -641,8 +645,8 @@ class H3SpecRoutesMixin:
             "ok": True,
             "project": project["name"],
             "spec": spec,
-            "from": result["from"],
-            "to": result["to"],
+            "from": result.get("from"),
+            "to": result.get("to"),
             "committed": result.get("committed", False),
             # 迁出结果透传（2.2）：迁出成功为 True，失败降级为 evict_warning
             "state_evicted": result.get("state_evicted", False),
@@ -741,6 +745,15 @@ class H3SpecRoutesMixin:
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
             return
+        # 条件不满足回 400 与同族 spec-activate / spec-resume / spec-promote /
+        # spec-task-reflow 的「200 + {ok: false, reason}」（幂等拒绝）是有意的
+        # 既存分叉：本分支除幂等拒绝（非 blocked / 非评审前缀 / 冻结）外还兜着
+        # 「转移失败」这类故障终态（见 docstring 契约行），统一 200 会把故障
+        # 伪装成受理；且已核实前端 reReviewSpec 仅按 HTTP 状态码抛错
+        # （services/dashboard.ts request 包装 !res.ok → ApiError，projects/list
+        # handleReReview 在 await 成功后即报「已重新进入评审」），200+ok:false
+        # 会被误读为成功。新端点为同族条件拒绝选边时先对照 _api_spec_approve_push
+        # 的分叉注记，勿随机复制
         if not result.get("ok"):
             self._error(400, result.get("error") or "重新评审条件不满足")
             return

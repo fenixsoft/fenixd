@@ -4,6 +4,7 @@
 // 推导：桌面 222 = 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16
 // + 底部 32（375~1920 宽 / 700~1440 高实测恒定）；移动端 234 按 390×844 实测校准。
 
+// [fenix-ignore:e6aef4e44ee9] 仓库内无共享布局 CSS 变量可派生（消费侧 SessionPanel/ArchitectureTab 均为 emotion 内联 calc 字符串插值），引入变量体系或视觉回归门改动面大于收益，推导口径已注释在文件头
 /** 桌面端偏移：配合 calc(100vh - Npx) 给分面视口填充高度 */
 export const PAGE_CHROME_OFFSET_DESKTOP = 222;
 

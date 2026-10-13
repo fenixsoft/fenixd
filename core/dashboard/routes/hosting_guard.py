@@ -25,6 +25,10 @@ def _guard_hosting_state(proot, signal_label):
     _write_signal_exclusive 先例）。
 
     - 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）；
+      兜底文案与真实 stopped 区分（item 90888da0836d）：异常时 daemon 可能
+      实际在运行，真实原因多为权限/IO 等内部错误——复用「daemon 未运行」
+      会把用户排障引向「启动 daemon」白费功夫，故返回可检索的区分文案，
+      原始异常经日志留痕；
     - unmanaged（daemon 未受 supervisor 托管）→ 409 明确拒绝——信号无人消费
       会永久滞留并在 daemon 下次启动时被消费成一次用户并未请求的触发；
     - 非 managed（stopped）→ 400「daemon 未运行」。
@@ -38,11 +42,13 @@ def _guard_hosting_state(proot, signal_label):
     try:
         state = _hosting_state(str(proot))
     except Exception as exc:
-        # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
-        state = "stopped"
+        # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）。
+        # 文案不复用「daemon 未运行」（item 90888da0836d）：异常兜底时 daemon
+        # 可能实际在跑，需给可检索的区分文案指引看服务端日志。
         logger.warning(
             "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
         )
+        return 400, "daemon 运行状态判定失败（hosting_state 异常），请查看服务端日志后重试"
     if state == "unmanaged":
         return (
             409,

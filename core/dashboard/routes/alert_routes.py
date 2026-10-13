@@ -36,7 +36,13 @@ _ARCHIVE_MAX_PAGE_SIZE = 200
 
 
 def _adjudication_lock(alert_id: str) -> threading.Lock:
-    """按 alert_id 取（懒建）进程内互斥锁；字典只在告警裁决时增长，量级有限。"""
+    """按 alert_id 取（懒建）进程内互斥锁。
+
+    条目只对 store.read_all 命中的 alert_id 创建（code-review item
+    5cc1d3d14d22）：各调用方在进锁前先做锁外存在性预检，携带随机/不存在
+    alert_id 的请求（404 路径无动作可执行、无需串行化）不再产生锁条目，
+    字典仅随真实告警增长、不随任意请求无界撑大。
+    """
     with _ADJUDICATION_LOCKS_GUARD:
         lock = _ADJUDICATION_LOCKS.get(alert_id)
         if lock is None:
@@ -348,6 +354,17 @@ class H6AlertRoutesMixin:
         # 不执行动作」的不变量被破坏。收敛到同锁后两个方向均串行化：本路径先抢到
         # 锁则 resolve 后读快照命中 409；resolve 先完成则本路径 mark 幂等返回
         # False（404 如实上报）。mark_alert_handled 内部只走 store 级锁，无重入。
+        # 存在性预检在锁外（code-review item 5cc1d3d14d22，与 _api_alert_resolve
+        # 同款）：不存在的 alert_id 不建锁条目，防随机 id 请求撑大
+        # _ADJUDICATION_LOCKS；命中后进锁再标记，串行化不变量不变。
+        from core.admin_store import AdminStore
+
+        if not any(
+            r.get("id") == alert_id
+            for r in AdminStore(Path(project["path"]), logger).read_all()
+        ):
+            self._error(404, "alert not found or already handled")
+            return
         with _adjudication_lock(alert_id):
             if not dashboard_data.mark_alert_handled(Path(project["path"]), alert_id):
                 self._error(404, "alert not found or already handled")
@@ -412,9 +429,18 @@ class H6AlertRoutesMixin:
         from core.admin_store import AdminStore, DISPOSITION, SIGNAL
         from core.dashboard.data.adjudication_choices import choices_for
 
+        # 存在性预检在锁外（code-review item 5cc1d3d14d22）：本端点曾对任意
+        # 非空 alert_id 先建锁再查存在性（404 也建锁），循环携带随机 alert_id
+        # 的请求可让 _ADJUDICATION_LOCKS 无界增长。404 无动作可执行、无需
+        # 串行化，改为先只读预检；命中后才进锁，锁内仍以下方快照复检为准
+        # （409 幂等语义不变，check→execute→mark 串行化不受影响）。
+        store = AdminStore(proot, logger)
+        if not any(r.get("id") == alert_id for r in store.read_all()):
+            self._error(404, "alert not found")
+            return
+
         # check(handled 快照)→execute→mark 全程串行化（见 docstring）
         with _adjudication_lock(alert_id):
-            store = AdminStore(proot, logger)
             alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
             if alert is None:
                 self._error(404, "alert not found")
@@ -543,18 +569,27 @@ class H6AlertRoutesMixin:
             )
         except Exception as e:
             logger.warning("SSE 广播失败（告警已处置，横幅可能滞后）: %s", e)
-        self._json(
-            {
-                "ok": True,
-                "id": alert_id,
-                "choice_id": choice_id,
-                "action": result.get("action"),
-                "steps": steps,
-                "marked": bool(marked),
-                "disposition_logged": disposition_logged,
-                "note": note,
-            }
-        )
+        resp = {
+            "ok": True,
+            "id": alert_id,
+            "choice_id": choice_id,
+            "action": result.get("action"),
+            "steps": steps,
+            "marked": bool(marked),
+            "disposition_logged": disposition_logged,
+            "note": note,
+        }
+        if not marked:
+            # mark 幂等返回 False（code-review item b0a65fc4cf01）：per-alert 锁
+            # 只串行化 HTTP 侧，daemon auto-resolve（AdminStore.auto_resolve 直写
+            # store、不取本锁）可在快照检查通过后、mark 前把告警先行闭环——此时
+            # 本请求的映射动作已执行生效，仅显式提示「告警已被并行闭环」，客户端
+            # 不再把 marked=false 误读为「未闭环」。
+            resp["warning"] = (
+                "动作已执行，但该告警已被并行路径先行闭环（handled 标记非本次"
+                "请求写入）；请以处置留痕为准核对"
+            )
+        self._json(resp)
 
     def _api_alerts_clear(self):
         """清理所有事件：把全部项目未处理升级告警标记为已处理；逐项目广播刷新横幅。

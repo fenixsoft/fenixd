@@ -4,5 +4,8 @@
 // （对齐 @/utils/duration 的抽单源先例）。
 
 export function pct(done: number, total: number): number {
-  return total > 0 ? Math.round((done / total) * 100) : 0;
+  // 非有限值（NaN/±Infinity）回 0、结果钳下限（code-review item 9b5f4f881c7f）：
+  // 与 @/utils/duration 的防御口径看齐，异常数据不透传 NaN/负百分比到展示层。
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.round((done / total) * 100));
 }

@@ -6,7 +6,9 @@
 export function fmtDuration(sec?: number | null) {
   // 显式 null/undefined 判等（code-review item 95013c6683be）：意图为只排除
   // 「null 或 undefined」两种空值（0 等合法数值须保留展示），逐值显式比较。
-  if (sec === null || sec === undefined || Number.isNaN(sec)) return '';
+  // 非有限值（NaN/±Infinity）一并回退空串（code-review item 0550d27895f6）：
+  // Infinity 会穿透进位算术产出「Infinity时NaN分」串直接进 DOM。
+  if (sec === null || sec === undefined || !Number.isFinite(sec)) return '';
   let s = Math.max(0, Math.round(sec));
   if (s < 60) return `${s}秒`;
   const m = Math.floor(s / 60);

@@ -1024,7 +1024,16 @@ class AgentRunner:
             return base_run_id in self._cancel_requested
 
     def _cancel_clear(self, base_run_id: str) -> None:
-        """run 收尾清理取消旗标（幂等，防泄漏）。"""
+        """run 收尾清理取消旗标（幂等，防泄漏）。
+
+        入参先做与 ``_cancel_is_requested`` / ``cancel_run`` 登记侧同一的
+        归一化（code-review item 0732b9279c86）：清理与判定收敛到同一 base
+        键——后续新增调用点误传带 ``-a<n>``/``-r<n>`` 后缀的 id 时，旗标与
+        meta 不再静默残留（否则仅靠 _cancel_flags_gc 的 TTL 兜底回收）。
+        当前全部调用点（run 收尾/attempt 顶守卫/耗尽路径/冻结取消路径）均传
+        基础 run_id，归一化幂等、行为不变。
+        """
+        base_run_id = self._normalize_run_id(base_run_id)
         with self._cancel_requested_lock:
             self._cancel_requested.discard(base_run_id)
             self._cancel_meta.pop(base_run_id, None)
@@ -6488,7 +6497,20 @@ class AgentRunner:
             # 形态，MUST NOT 跳过或前移，理由见下方 run_metrics 落盘处标记）。
             # 原样 re-raise 保持 attempt 循环既有失败处理（预算计数/STATE
             # 转换/异常通道）语义不变。
-            append_run_error(run_file, f"run thread crashed: {e!r}", returncode)
+            # 崩溃 error 终态行落盘统一包 OSError 防护（code-review item
+            # 22b2113dc290，对齐 finally 段 2750494abc4c「下同」守卫口径）：
+            # append_run_line 内部 open("a")/os.write 不捕获 OSError，落盘写
+            # 失败（磁盘满/权限变更/句柄耗尽）时二次异常会顶替原始崩溃异常 e
+            # 传入 attempt 层，并整体跳过其后的子进程收口块（adbf13a82678 的
+            # 孤儿 kill 唯一兜底）与 error 终态行外的收口语义。写失败仅
+            # WARNING 不阻断，原始异常仍由末尾 re-raise 上抛。
+            try:
+                append_run_error(run_file, f"run thread crashed: {e!r}", returncode)
+            except OSError as we:
+                self.logger.warning(
+                    "agent_runner",
+                    f"run {run_id}: 崩溃 error 终态行落盘失败（不阻断收口）: {we}",
+                )
             # code-review item adbf13a82678：轮询环崩溃即收口存活子进程（与
             # stdout 读线程异常的 proc.kill() 快速失败治理对齐）——否则 claude
             # 孤儿继续消耗 API token，attempt 层 sleep(10) 重派下一 attempt 复用
