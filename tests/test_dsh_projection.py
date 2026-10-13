@@ -222,6 +222,35 @@ class TestFailureSemantics:
         assert entry["type"] == "error"
         assert "MISSING_CREDENTIAL" in entry["error"]
 
+    def test_error_event_structured_code_kept(self, tmp_path):
+        """BUG-02 回归：error 事件结构化形态 ``error:{code,message}`` 投影
+        保留错误码（``dsh: <code>: <message>`` 口径，与 turn_end 错误分支
+        一致）供 circuit 归因——曾只渲染 message 丢码。"""
+        from core.agent_runner.liveness import _line_is_terminal
+
+        lines = [
+            json.dumps({"type": "session", "sessionId": "session-f3",
+                        "cwd": "/w"}),
+            json.dumps({"type": "error",
+                        "error": {"code": "TRANSPORT",
+                                  "message": "conn refused"}}),
+        ]
+        _, projected, run_file = _replay(tmp_path, lines)
+        last = run_file.read_text(encoding="utf-8").strip().splitlines()[-1]
+        assert _line_is_terminal(last) is True
+        entry = json.loads(last)
+        assert entry["type"] == "error"
+        assert "dsh: TRANSPORT: conn refused" == entry["error"]
+        # 顶层 code 字段形态同样保留
+        lines_top = [
+            json.dumps({"type": "error", "code": "TIMEOUT",
+                        "message": "timed out"}),
+        ]
+        _, _, run_file2 = _replay(tmp_path, lines_top)
+        err2 = json.loads(
+            run_file2.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert err2["error"] == "dsh: TIMEOUT: timed out"
+
 
 class TestObservabilityTriple:
     """可观测性三件套（2.2）：dump 旁路 + 逐级计数 + 坏事件分类，经

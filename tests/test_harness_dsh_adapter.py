@@ -144,6 +144,33 @@ class TestSpawnContract:
         assert env["MY_CUSTOM_OVERRIDE"] == "1"
         assert env["KEEP_ME"] == "yes"
 
+    def test_spawn_env_override_banned_dropped_without_ambient(
+            self, monkeypatch):
+        """BUG-01 回归：覆写键按**键自身**匹配 dsh banned 口径剔除，不依赖
+        ambient 是否恰好存在同名键（ambient 无 ANTHROPIC_* 时覆写的
+        ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL 曾原样回灌子进程环境）。"""
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL",
+                    "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR",
+                    "CLAUDE_CODE_ENABLE_TODO_TOOLS"):
+            monkeypatch.delenv(key, raising=False)
+        spec = _make_adapter().build_spawn_spec(_make_request(env_overrides={
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:18787/v1",
+            "ANTHROPIC_API_KEY": "sk-test-key",
+            "ANTHROPIC_AUTH_TOKEN": "tok-override",
+            "ANTHROPIC_MODEL": "glm-5.3-flash",
+            "CLAUDE_CONFIG_DIR": "/tmp/claude-agent-config",
+            "MY_CUSTOM_OVERRIDE": "1",
+        }))
+        env = spec.env
+        for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL",
+                    "CLAUDE_CONFIG_DIR"):
+            assert key not in env, key
+        # 非禁用覆写键照常透传；凭据桥接不受影响
+        assert env["MY_CUSTOM_OVERRIDE"] == "1"
+        assert env[DSH_API_KEY_ENV] == "sk-test-key"
+
     def test_spawn_dsh_home_config_injected(self, monkeypatch):
         monkeypatch.setenv("DSH_HOME", "/inherited-dsh-home")
         spec = _make_adapter(dsh_home="/opt/dsh-home").build_spawn_spec(

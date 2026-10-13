@@ -66,6 +66,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-dsh-adapter-integration/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-dsh-adapter-integration/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：两失败均系真实产品 Bug，spec.md 第 10 行「env 无 ANTHROPIC_* 残留」与第 28 行「dsh: <code>: <message> 映射」契约相符，ambient 净空复现实锤，场景文件不改）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（BUG-01：agent_env_keys 键级谓词 is_dsh_banned_env_key + build_env 覆写守卫按键自身匹配；BUG-02：_project_error 提取 error.code 拼「dsh: <code>: <message>」与 turn_end 分支对称）
+- [x] 修复后重跑验证确认通过（最小复现探针两形态转绿 + 两份交付测试 59 过 + 邻接回归面 142 过；冻结场景集复验由框架验证链重跑收口）
