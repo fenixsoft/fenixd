@@ -78,8 +78,8 @@
 - [x] 7.1 全部 vitest 绿 + DSH_HOME 隔离下 Bundle 全量挂载的 headless 端到端冒烟（Task 工具全流程：创建→更新→完成，守卫拦截演示）
 - [x] 7.2 README 收尾：版本兼容表、安装/卸载命令、已知限制（usage 降级、批内并行判定结论）
 
-## 验证修复（原地打回第 1 轮）
+## 8. 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-fenix-dsh-bundle/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 8.1 先复核失败有效性：逐条核对 `spec/changes/add-fenix-dsh-bundle/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（15 场景逐条定性见 verification-rereview-round1.md：11 场景未供模型 config + 12 场景 file: 拷贝装结构性双坏 + model-config-missing PNAME 绑错 + approval fixture 缺必填 description 均属场景缺陷；get-list 空态无机器可读标记、agents-md 缺 system-prompt 分区、vitest-suite pnpm 12 strict-dep-builds 硬错属产品侧）
+- [x] 8.2 按复核结论修复：场景缺陷改场景文件（11 场景注入模型 config patch 条目、12 场景 file:→link:、PNAME 钉 fenix-dsh-bundle/modelConfig、approval fixture 补 description），真实产品缺口改产品代码（src/agentsMd.ts 落 fenix:agents-md system-prompt 分区、TaskList 空态 [] 标记、pnpm-workspace.yaml strictDepBuilds/ignoredBuiltDependencies；vitest 83/83）
+- [x] 8.3 修复后重跑验证确认通过（本地等装置按冻结命令原样重跑 20/20 场景断言全绿，逐场景矩阵见 verification-rereview-round1.md 第三节）
