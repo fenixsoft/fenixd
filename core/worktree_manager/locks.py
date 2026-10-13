@@ -117,7 +117,13 @@ class G3LockMixin:
         语义：lock_key 传入时精确匹配该键（spec_name 不参与匹配），否则按
         ``<spec>:`` 前缀匹配；family 按 "verifier"/"non-verifier" 二族过滤锁键
         的 agent_type 后缀；not_after 仅摘 _lock_since 不晚于该时刻的锁
-        （None 不设限）。
+        （None 不设限）。锁龄缺失（键在 _spec_locks 而无 _lock_since 记录）按
+        无法证明陈旧保守跳过摘除（code-review item 98ad40e18a38，与
+        _lock_young「锁龄缺失按不年轻」同保守口径）：create /
+        _register_spec_locks 之外尚有只写 _spec_locks 不写 _lock_since 的
+        登记路径（repair_lane._claim_repair_site 的 ``<spec>:repair``），
+        旧 ``get(k, 0.0)`` 兜底把这类新锁按远古时刻处理、恒过守卫被摘，判定
+        链在飞期间并发登记的同键新锁失去保护（重开双派发窗口）。
 
         to_remove 计算与摘除全程持 _spec_lock_th（code-review item
         776cffc0a278）：无锁迭代 _spec_locks 时并发 create/cleanup 增删
@@ -135,7 +141,15 @@ class G3LockMixin:
                     if lock_key is not None
                     else (self._lock_spec_name(k) == spec_name)
                 )
-                and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
+                and (
+                    not_after is None
+                    or (
+                        # 缺 _lock_since 记录=无法证明陈旧，保守跳过摘除
+                        # （code-review item 98ad40e18a38，口径见方法 docstring）
+                        (since := self._lock_since.get(k)) is not None
+                        and since <= not_after
+                    )
+                )
                 and (
                     family is None
                     or (
@@ -214,7 +228,12 @@ class G3LockMixin:
                 "worktree_manager",
                 f"Process scan failed for '{spec_name}' (treated as absent): {e}",
             )
-            alive = False
+            # 扫描异常不落缓存（code-review item feaf4e5208a0）：瞬时故障
+            # （pgrep 超时/不可用）下的「判活不可用」不得在缓存窗口内被固化
+            # 成「确定无进程」——不写缓存让下一次调用即重试真实扫描。本次仍
+            # 按无进程返回，调用方以 run 流新鲜度做二次确认兜底；代价只是
+            # 故障期内的重复扫描，不改变放行方向的既有保守语义。
+            return False
         self._proc_scan_cache[cache_key] = (now + PROCESS_SCAN_CACHE_SECONDS, alive)
         return alive
 
