@@ -457,6 +457,11 @@ const SuggestedImprovementsPanel = forwardRef<
   useEffect(() => {
     // scope/project 变化而组件被复用时重置一次性门，让新作用域重新落默认
     hasAppliedDefaultFilter.current = false;
+    // 项目/日期过滤同轮复位（code-review item 13a40d66481c）：filterProject
+    // 残留旧作用域值时 matchesFilter 会把新作用域条目整体排除（表格假空态）；
+    // filterStatus 不在此复位——由缺省过滤 effect 随新作用域数据重新落定
+    setFilterProject(undefined);
+    setFilterDateRange(null);
   }, [scope, project]);
   useEffect(() => {
     if (hasAppliedDefaultFilter.current) return;
