@@ -90,8 +90,11 @@ from core.agent_runner.session import SessionTracker
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
 from core.agent_runner.harness import (
     ENV_MODE_AGENT_RUN,
+    HarnessNotDeployedError,
     SpawnRequest,
     get_current_adapter,
+    resolve_adapter_from_config,
+    set_current_adapter,
 )
 from core.timelib import from_epoch, parse_ts
 from core.agent_runner.provider_circuit import (
@@ -3097,6 +3100,23 @@ class AgentRunner:
         """
         used_wts: set = set()
         handed_off: set = set()
+        # ── harness 前置健康检查（add-harness-adapter-layer 6.2）─────────
+        # dispatch 前解析 agent.harness 并装配进程级当前 adapter：
+        # - dsh（未部署）在此 fail-fast 拒派——不启动进程、不建 worktree、
+        #   不消耗 spec 重试预算，错误文案即工厂的明确指引；
+        # - claude 正常路径把解析结果装配给全进程 spawn 面（run 车道
+        #   _run_agent 与五处一次性 spawn 均经 get_current_adapter）。
+        # 每次 dispatch 现读现配即热更新语义：改值对下次 dispatch 生效，
+        # 在飞 run 已在 _run_agent 开头捕获旧 adapter 实例，不受影响。
+        try:
+            set_current_adapter(resolve_adapter_from_config(self.config))
+        except HarnessNotDeployedError as e:
+            self.logger.warning(
+                "agent_runner", f"harness 前置健康检查拦截 dispatch: {e}")
+            return AgentRunResult(
+                run_id, spec_name, agent_type, success=False,
+                duration_seconds=0.0, error=str(e),
+            )
         try:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,

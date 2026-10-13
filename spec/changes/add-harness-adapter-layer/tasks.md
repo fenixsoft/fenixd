@@ -88,11 +88,11 @@
 
 ## 6. 配置与设置页
 
-- [ ] 6.1 core/config.py 支持 agent.harness（合法值 claude|dsh、缺省 claude、非法值回退+告警日志）；.fenix/config.template.yaml 增加注释样例，且注释须显式区分新顶层段 agent（harness 进程边界选择）与既有 agents 段（按 agent 类型的 models/timeout_overrides/退避段），避免两段混用
-- [ ] 6.2 harness 工厂 _resolve_adapter：claude→claude_adapter；dsh→抛明确错误「dsh adapter 未部署（add-dsh-adapter-integration 交付）」；dispatch 前置健康检查接入该工厂
-- [ ] 6.3 settings_routes 提供 agent.harness 读写（同校验、dsh 值保存被拦）；SystemPanel.tsx 增加系统级 harness 选择控件（claude/dsh，dsh 附未部署提示文案）
-- [ ] 6.4 前端构建产物重建并冒烟验证设置页控件可见可用
-- [ ] 6.5 测试（tests/test_harness_config.py）：缺省/非法回退/dsh fail-fast 三场景 + 热重载后新值对下次 dispatch 生效、在飞 run 不受影响
+- [x] 6.1 core/config.py 支持 agent.harness（合法值 claude|dsh、缺省 claude、非法值回退+告警日志）；.fenix/config.template.yaml 增加注释样例，且注释须显式区分新顶层段 agent（harness 进程边界选择）与既有 agents 段（按 agent 类型的 models/timeout_overrides/退避段），避免两段混用
+- [x] 6.2 harness 工厂 _resolve_adapter：claude→claude_adapter；dsh→抛明确错误「dsh adapter 未部署（add-dsh-adapter-integration 交付）」；dispatch 前置健康检查接入该工厂
+- [x] 6.3 settings_routes 提供 agent.harness 读写（同校验、dsh 值保存被拦）；SystemPanel.tsx 增加系统级 harness 选择控件（claude/dsh，dsh 附未部署提示文案）
+- [x] 6.4 前端构建产物重建并冒烟验证设置页控件可见可用
+- [x] 6.5 测试（tests/test_harness_config.py）：缺省/非法回退/dsh fail-fast 三场景 + 热重载后新值对下次 dispatch 生效、在飞 run 不受影响
 
 ## 7. ADR-271
 

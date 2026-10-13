@@ -31,6 +31,9 @@ _MANAGED_KEYS = ["llm", "agents", "gates", "verify", "hooks"]
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = [
     "llm",
+    # add-harness-adapter-layer 6.3：agent.harness（新顶层 agent 段，区别于
+    # 既有 agents 段；user 缺省登记使未配置时 sources 键齐、来源徽标不 undefined）
+    "agent.harness",
     "agents.models",
     "agents.max_concurrent",
     "agents.run_timeout_seconds",
@@ -755,6 +758,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
             **ConfigLoader.get_knowledge_lane_config(raw),
             **ConfigLoader.get_knowledge_config(raw),
         }
+    # add-harness-adapter-layer 6.3：agent.harness 回显（段在文件中显式出现才
+    # 覆盖缺省，与 archive/knowledge 同型）；经 ConfigLoader.get_harness 归一
+    # （非法值回退 claude 并告警，回显与生效值一致）
+    if isinstance(raw.get("agent"), dict):
+        result["agent"] = {"harness": ConfigLoader.get_harness(raw)}
     # add-daily-self-review：admin.self_review 三键（经 ConfigLoader 生效值回显）
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict):
@@ -976,6 +984,9 @@ def read_effective_config(project_root) -> dict:
         **ConfigLoader.get_knowledge_lane_config(effective),
         **ConfigLoader.get_knowledge_config(effective),
     }
+    # add-harness-adapter-layer 6.3：agent.harness 生效值回显（与 knowledge 同
+    # 形态：经 get_harness 归一，缺省/非法值回退 claude，回显与生效一致）
+    result["agent"] = {"harness": ConfigLoader.get_harness(effective)}
     # add-daily-self-review：经生效助手取值（run_at 非法值回退 02:00，回显一致）
     result["self_review"] = ConfigLoader.get_self_review_config(effective)
     # add-code-review-agent-and-quality-tab：code_review 生效值回显（与
@@ -1109,6 +1120,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         _sro = patch["agents"].get("subagent_model_override")
         if isinstance(_sro, str):
             merged["agents"]["subagent_model_override"] = _sro.strip()
+
+    # add-harness-adapter-layer 6.3：agent.harness 合并分支（缺分支会静默丢弃
+    # 保存——历史同坑）；前置校验已拒绝 dsh 与非法值，此处只应用合法值
+    if isinstance(patch.get("agent"), dict) and "harness" in patch["agent"]:
+        if not isinstance(merged.get("agent"), dict):
+            merged["agent"] = {}
+        merged["agent"]["harness"] = patch["agent"]["harness"]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
         if (
@@ -2080,6 +2098,25 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             if _nk in config_patch["admin"] and not isinstance(config_patch["admin"][_nk], dict):
                 return fail(f"admin.{_nk} must be an object: {config_patch['admin'][_nk]!r}")
 
+    # add-harness-adapter-layer 6.3：agent.harness 前置校验（tasks.md「同校验、
+    # dsh 值保存被拦」）——合并分支对形态外值是跳过语义，缺此校验会退回 ok:true
+    # 静默丢弃（D7 同款缺口）。dsh 直接拦截：adapter 未部署，写入即让下次
+    # dispatch 前置健康检查 fail-fast 空转
+    if isinstance(config_patch.get("agent"), dict):
+        from core.agent_runner.harness import VALID_HARNESS_VALUES  # 延迟解析避开 runner 重链
+
+        _ah = config_patch["agent"].get("harness")
+        if _ah is not None:
+            _ah_norm = str(_ah).strip().lower()
+            if _ah_norm == "dsh":
+                return fail(
+                    "agent.harness='dsh' 未部署（add-dsh-adapter-integration 交付）；请选择 claude"
+                )
+            if _ah_norm not in VALID_HARNESS_VALUES:
+                return fail(
+                    f"agent.harness 必须是 {'/'.join(VALID_HARNESS_VALUES)} 之一: {_ah!r}"
+                )
+
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
@@ -2120,6 +2157,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 "verify",
                 "archive",
                 "admin",
+                "agent",
                 "knowledge",
                 "hooks",
                 "stale_code_selfheal",
