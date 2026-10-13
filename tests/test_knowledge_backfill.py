@@ -18,10 +18,12 @@ import re
 import subprocess
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from core import evolution  # 写后就地提交的复用助手（add-todo-append-commit-on-write）
 from core import knowledge as knowledge_impl  # 真模块引用（排队门 e2e 用；不受替身注入影响）
 from core import knowledge_backfill as kb
 
@@ -826,3 +828,145 @@ def test_spawn_failure_attribution_falls_back_to_stdout(proj, monkeypatch):
     body = out_file.read_text(encoding="utf-8")
     assert NOISE_LINE in body  # 留证现场完整（原始 stderr 不滤）
     assert "API Error: Request rejected (429)" in body
+
+
+# ── todo.md 写后就地提交（add-todo-append-commit-on-write） ────────────────
+
+
+@pytest.fixture
+def tracked_todo_proj(tmp_path):
+    """git 仓库夹具：``.fenix/todo.md`` 已被跟踪（含基线提交），用于提交形态断言。"""
+    root = tmp_path / "todo_repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    (root / ".fenix").mkdir()
+    (root / ".fenix" / "todo.md").write_text("## 待办\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+def _todo_commit_count(root: Path) -> int:
+    """触及 .fenix/todo.md 的提交总数。"""
+    return len(_git(root, "log", "--format=%H", "--", ".fenix/todo.md").split())
+
+
+def _head_commit_files(root: Path) -> list[str]:
+    """HEAD 提交包含的文件清单（name-only，按空白切分）。"""
+    return _git(root, "show", "--name-only", "--format=", "HEAD").split()
+
+
+def test_append_commit_todo_only_and_not_sweep_staged(tracked_todo_proj):
+    """2.1 实际追加后恰一个仅含 todo.md 的提交；索引预置他物不被卷入。"""
+    root = tracked_todo_proj
+    (root / "other.txt").write_text("staged\n", encoding="utf-8")
+    _git(root, "add", "other.txt")  # 预置他物入索引（并发暂存场景）
+
+    assert kb.append_todo_line(root, "蒸馏重试登记") is True
+
+    assert _todo_commit_count(root) == 2  # 基线 + 本次，恰一个新提交
+    assert _head_commit_files(root) == [".fenix/todo.md"]
+    assert _git(root, "log", "-1", "--format=%s").strip().startswith("[fenix] todo: ")
+    # 工作区对该文件干净
+    assert _git(root, "status", "--porcelain", "--", ".fenix/todo.md").strip() == ""
+    # 预置暂存未被 pathspec 提交卷入：仍停在索引待提交
+    # （夹具无 .gitignore，flock 伴生锁文件 .fenix/.todo.md.lock 以 untracked 露出，滤除）
+    porcelain = [
+        ln
+        for ln in _git(root, "status", "--porcelain").splitlines()
+        if ".todo.md.lock" not in ln
+    ]
+    assert porcelain == ["A  other.txt"]
+
+
+def test_append_idempotent_hit_no_second_commit(tracked_todo_proj):
+    """2.2a 重复追加已存在行：幂等命中不写盘，不产生第二次提交。"""
+    root = tracked_todo_proj
+    assert kb.append_todo_line(root, "重复待办") is True
+    assert _todo_commit_count(root) == 2
+    assert kb.append_todo_line(root, "重复待办") is False
+    assert _todo_commit_count(root) == 2
+
+
+def test_append_untracked_and_non_git_degrade(tmp_path):
+    """2.2b untracked / 非 git 夹具：写入成功、无提交、无异常穿透。"""
+    # git 仓库但 todo.md 未被跟踪：跳过提交（不报错），写入照常
+    repo = tmp_path / "untracked"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "init")
+    assert kb.append_todo_line(repo, "untracked 待办") is True
+    assert "untracked 待办" in (repo / ".fenix" / "todo.md").read_text(encoding="utf-8")
+    assert len(_git(repo, "log", "--format=%H").split()) == 1  # 无新提交
+
+    # 非 git 目录：同样只写入、不提交、不抛错
+    nogit = tmp_path / "nogit"
+    nogit.mkdir()
+    assert kb.append_todo_line(nogit, "无仓库待办") is True
+    assert "无仓库待办" in (nogit / ".fenix" / "todo.md").read_text(encoding="utf-8")
+
+
+def test_upsert_commits_on_each_actual_write_path(tracked_todo_proj):
+    """2.3 upsert 三种实际写盘路径各恰一个仅含 todo.md 的提交；零写盘不提交。"""
+    root = tracked_todo_proj
+    assert kb.append_todo_line(root, "审计聚合 旧") is True  # 铺底（+1 提交）
+
+    # 替换：同前缀整行替换
+    assert kb.upsert_todo_line(root, "审计聚合", "审计聚合 新（龄期 2 天）") is True
+    assert _head_commit_files(root) == [".fenix/todo.md"]
+    # 新增：无匹配行归位追加
+    assert kb.upsert_todo_line(root, "回填批次失败", "回填批次失败：cap-x") is True
+    assert _head_commit_files(root) == [".fenix/todo.md"]
+    # 清理：残留行删除（line 为空）
+    assert (
+        kb.upsert_todo_line(root, "回填批次失败", "", cleanup_prefixes=("回填批次失败",))
+        is True
+    )
+    assert _head_commit_files(root) == [".fenix/todo.md"]
+    assert "回填批次失败" not in (root / ".fenix" / "todo.md").read_text(encoding="utf-8")
+    # 基线 1 + 铺底 1 + 三次实际写盘各 1 = 恰 5 个提交（每个实际写盘恰一个）
+    assert _todo_commit_count(root) == 5
+
+    # 零写盘路径一：同前缀单行且内容未变（幂等命中）
+    assert kb.upsert_todo_line(root, "审计聚合", "审计聚合 新（龄期 2 天）") is False
+    # 零写盘路径二：纯清理但无残留行
+    assert kb.upsert_todo_line(root, "不存在的行", "") is False
+    assert _todo_commit_count(root) == 5  # 零写盘不产生提交
+
+
+def test_commit_runs_after_flock_release(tracked_todo_proj, monkeypatch):
+    """2.4 git 子命令在 _todo_write_lock 的 flock 释放之后才执行（提交不进锁内）。"""
+    events: list[str] = []
+    real_lock = kb._todo_write_lock
+
+    @contextmanager
+    def tracked_lock(project_root):
+        events.append("flock-acquire")
+        with real_lock(project_root):
+            yield
+        events.append("flock-release")
+
+    monkeypatch.setattr(kb, "_todo_write_lock", tracked_lock)
+
+    real_run = evolution.subprocess.run
+
+    def spy_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:1] == ["git"]:
+            events.append("git:" + " ".join(str(c) for c in cmd[1:3]))
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(evolution.subprocess, "run", spy_run)
+
+    assert kb.append_todo_line(tracked_todo_proj, "锁序待办") is True
+
+    assert events[0] == "flock-acquire"
+    git_idx = [i for i, e in enumerate(events) if e.startswith("git:")]
+    assert git_idx, events  # 提交链路确实执行了 git 子命令（ls-files/add/commit/push）
+    release_idx = events.index("flock-release")
+    assert min(git_idx) > release_idx  # 全部 git 调用都在 flock 释放之后

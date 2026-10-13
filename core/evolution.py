@@ -943,7 +943,11 @@ def _git_c_env() -> dict:
     return env
 
 
-def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
+def _commit_todo_marker(
+    proot,
+    message_suffix: Optional[str] = None,
+    subject: Optional[str] = None,
+) -> bool:
     """对项目 ``.fenix/todo.md`` 的标记改动就地 add + commit + push（ADR-060）。
 
     命令形态与 ``self_review._commit_todo`` 一致（``git add -- .fenix/todo.md``
@@ -954,6 +958,12 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
     ``message_suffix``：非空时作为提交消息正文附在固定主题行之后（空行分隔，
     主题行保持不变）——批末合并提交用其携带本批条目 id 明细（design D3），
     使合并提交的 git 历史仍可对账到逐条条目。
+
+    ``subject``：非空时替换缺省主题行（``[fenix] todo: <来源摘要>`` 形态）——
+    knowledge_backfill 的 todo.md 写后就地提交（append/upsert）经延迟导入
+    复用本助手但需要自己的主题行（同族先例 _commit_todo 的
+    ``[fenix] daily self-review``）；缺省 None 维持 evolution 标记回写主题行
+    （向后兼容，既有调用方零改动）。
 
     - todo.md 未被 git 跟踪（含 ls-files 非零退出——目录非 git 仓库）→ 跳过
       提交，行为与不提交时一致，不报错；
@@ -1000,7 +1010,11 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
             add.stderr.strip()[:200],
         )
         return False
-    msg = f"[fenix] evolution: 自进化标记回写 {timelib.now_local().strftime('%Y-%m-%d')}"
+    msg = (
+        subject
+        if subject
+        else f"[fenix] evolution: 自进化标记回写 {timelib.now_local().strftime('%Y-%m-%d')}"
+    )
     if message_suffix:
         msg = f"{msg}\n\n{message_suffix}"
     try:
@@ -1047,7 +1061,12 @@ def _commit_todo_marker(proot, message_suffix: Optional[str] = None) -> bool:
     return True
 
 
-def commit_todo_marker(project_path=None, project_name=None, message_suffix=None) -> bool:
+def commit_todo_marker(
+    project_path=None,
+    project_name=None,
+    message_suffix=None,
+    subject=None,
+) -> bool:
     """按项目触发一次 todo.md 标记合并提交（编排层批末入口）。
 
     ingest_item 批量路径的标记回写不逐条 commit（避免提交风暴），由编排层在
@@ -1057,6 +1076,10 @@ def commit_todo_marker(project_path=None, project_name=None, message_suffix=None
     id 明细。仅 dashboard
     手动单条接受与单点写路径（reject / delete）经 ``write_todo_marker`` 的
     缺省提交开关即时提交，不走本入口。
+
+    ``subject``：非空时替换缺省主题行（透传 ``_commit_todo_marker``，供
+    knowledge_backfill 写后就地提交复用）；缺省维持 evolution 标记回写
+    主题行。
 
     ``project_path`` 与 ``project_name`` 均未提供、或名称经 registry 解析
     失败时返回 False。提交失败降级日志，不向调用方抛错。
@@ -1069,7 +1092,7 @@ def commit_todo_marker(project_path=None, project_name=None, message_suffix=None
         _logger.warning("evolution: todo.md 批量提交跳过——项目路径未解析: %s", project_name)
         return False
     try:
-        return _commit_todo_marker(proot, message_suffix=message_suffix)
+        return _commit_todo_marker(proot, message_suffix=message_suffix, subject=subject)
     except Exception as e:  # noqa: BLE001 —— 提交失败不向调用方抛错
         _logger.warning("evolution: todo.md 提交异常（已跳过，写入不回滚）: %s", e)
         return False
