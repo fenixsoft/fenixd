@@ -527,6 +527,13 @@ class CliRunner(VerifyRunner):
             result["read_truncated"] = (
                 f"stdout 超过读入上限（{_OUTPUT_READ_LIMIT} 字节），仅保留前缀参与解析与证据"
             )
+        # stderr 与 stdout 双流各自独立触顶，标注须同规（code-review item
+        # 63f5db958d66）：只标注 stdout 会让 stderr 失控刷屏时的证据不完整
+        # 外观完整，judge 无法把失败归因为「输出超限」
+        if stderr_read_truncated:
+            result["read_truncated_stderr"] = (
+                f"stderr 超过读入上限（{_OUTPUT_READ_LIMIT} 字节），仅保留前缀参与证据"
+            )
         if name:
             named_results[name] = result
         named_results["_latest"] = result
@@ -547,7 +554,8 @@ class CliRunner(VerifyRunner):
             "detail": f"退出码 {exit_code}"
             + ("（stdout 已截断 64KB）" if stdout_truncated else "")
             + ("（stderr 已截断 64KB）" if stderr_truncated else "")
-            + ("（stdout 超读入上限，仅保留前缀）" if stdout_read_truncated else ""),
+            + ("（stdout 超读入上限，仅保留前缀）" if stdout_read_truncated else "")
+            + ("（stderr 超读入上限，仅保留前缀）" if stderr_read_truncated else ""),
         }
 
     # ── 辅助 ───────────────────────────────────────────────────
