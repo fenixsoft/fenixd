@@ -16,21 +16,30 @@ interface SystemPanelProps {
   onConfigSynced?: (config: ConfigData) => void;
 }
 
+// 控件形态判别（code-review item fbb06aa6f869）：判别信息内聚到注解项 type 字段，
+// renderAdminField 按其分派而非 key 字符串等值链——新增条目必须声明形态，
+// 漏加分派分支时 helper 末尾的穷举守卫编译报错，不再静默落 InputNumber 兜底
+type AdminFieldControl = 'switch' | 'input' | 'select' | 'number';
+
 const ADMIN_ANNOTATIONS: {
   key: string;
   label: string;
   note: string;
+  /** 控件形态（AdminFieldControl），新增条目必填 */
+  type: AdminFieldControl;
   /** 输入单位（addonAfter 附加框）；开关 / 下拉项无单位 */
   unit?: string;
   rule?: object[];
 }[] = [
   {
     key: 'enabled',
+    type: 'switch',
     label: '自动自愈',
     note: '自动自愈总开关：关闭后困境（卡死/反复失败/预算耗尽）不再自动唤起 Administrator 处置，界面手动运维调用不受影响。',
   },
   {
     key: 'interval_minutes',
+    type: 'number',
     label: '巡检周期',
     unit: '分钟',
     note: '自愈监视器巡检周期：每这么久扫描一次困境信号；也参与卡顿判定的宽限期计算（间隔×2）。',
@@ -43,6 +52,7 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'escalation_cooldown_minutes',
+    type: 'number',
     label: '唤起冷却',
     unit: '分钟',
     note: '同一 SPEC 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
@@ -55,6 +65,7 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'stuck_silence_minutes',
+    type: 'number',
     label: 'stuck 处置后静默期',
     unit: '分钟',
     note: 'stuck 信号成功处置（resolved / partially-resolved）后的静默窗口：窗口内同 SPEC stuck 信号不复发，避免处置成功后短期反复触发。0=不静默。',
@@ -67,9 +78,10 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'merge_breaker_threshold',
+    type: 'number',
     label: 'merge 熔断阈值',
     unit: '次',
-    note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（缺省沿用 agents 同名键=2）。',
+    note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（未配置时沿用 agents 同名键，再缺省 2）。注意：本页签任意一次保存都会把回显解析值落为显式 admin.merge_breaker_threshold，此后 agents 同名键的调整不再传导到本项。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
         Number.isInteger(v) && (v as number) > 0
@@ -79,6 +91,7 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'shutdown_drain_seconds',
+    type: 'number',
     label: '重启排水窗口',
     unit: '秒',
     note: '计划性重启排水窗口（秒）：restart_request 后等在跑任务自然收工的上限，0=立即快速停机（在飞任务标记中断、重启后续做）；supervisor 强杀等待=本值+120s。',
@@ -91,16 +104,19 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'bug_repair_mode',
+    type: 'select',
     label: '验证失败修复方式',
     note: '验证裁决 bug-found 后的修复方式：原地打回（inplace，缺省）对父 SPEC 直接注入「验证修复」任务段重修；派生 fix SPEC（derive）创建/复用 fix-* 子 SPEC 并自动闭环重验。',
   },
   {
     key: 'narrative_enabled',
+    type: 'switch',
     label: '告警叙事',
     note: '转人工裁决告警的三段式叙事开关：开启后告警落盘时同步生成「发生了什么/为什么需要你决策/决策选项」人类可读说明（缺省开启）。关闭后零 LLM 调用、零额外延迟；生成失败自动兜底为既有机械文案，告警照常落盘。',
   },
   {
     key: 'narrative_timeout_seconds',
+    type: 'number',
     label: '叙事超时',
     unit: '秒',
     note: '告警叙事同步调用的硬超时（秒）：超时上限内告警保证落盘（超时按生成失败兜底）。转人工是低频事件，缺省 60 秒。',
@@ -113,11 +129,13 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'narrative_model',
+    type: 'input',
     label: '叙事模型',
     note: '告警叙事使用的模型名：留空按回退链复用 admin.agent_model，仍为空时复用框架默认网关模型。',
   },
   {
     key: 'self_heal_quiet_minutes',
+    type: 'number',
     label: '告警自愈安静窗口',
     unit: '分钟',
     note: '基础设施瞬态族告警（daemon_errors 指纹风暴 / run_infra_failure 熔断 / evo 分析失败 / 处置收敛升级）签名安静多久后自动标「已自愈」转已处理（缺省 1440，盖过跨日同刻复发节律）。',
@@ -131,22 +149,25 @@ const ADMIN_ANNOTATIONS: {
 ];
 
 // 系统分组单字段控件形态（code-review item 4b4856254978）：旧实现以嵌套三元链选择
-// 控件，违反本项目前端「禁止嵌套三元」规则，抽模块级 helper 以 if/else 表达四种形态：
-// 开关（enabled / narrative_enabled）→ 文本框（narrative_model）→ 下拉
-// （bug_repair_mode）→ 数值框（其余，带 unit 与校验 rule）。仅依赖注解字段本身，
+// 控件，违反本项目前端「禁止嵌套三元」规则，抽模块级 helper 以 if/else 表达四种形态。
+// fbb06aa6f869：分派依据从 key 字符串等值改为注解项自带的 type 判别字段
+// （AdminFieldControl：switch/input/select/number），新增字段漏加分派分支时
+// 末尾穷举守卫编译报错，不再静默落数值框兜底。仅依赖注解字段本身，
 // 无组件闭包依赖，故放模块级。
 function renderAdminField({
   key,
   label,
+  type,
   unit,
   rule,
 }: {
   key: string;
   label: string;
+  type: AdminFieldControl;
   unit?: string;
   rule?: object[];
 }) {
-  if (key === 'enabled' || key === 'narrative_enabled') {
+  if (type === 'switch') {
     return (
       <div className="switch-inline-row" data-testid={`system-field-${key}`}>
         <Form.Item name={key} valuePropName="checked" noStyle>
@@ -159,7 +180,7 @@ function renderAdminField({
       </div>
     );
   }
-  if (key === 'narrative_model') {
+  if (type === 'input') {
     return (
       <Form.Item
         name={key}
@@ -182,7 +203,7 @@ function renderAdminField({
       </Form.Item>
     );
   }
-  if (key === 'bug_repair_mode') {
+  if (type === 'select') {
     return (
       <Form.Item
         name={key}
@@ -205,27 +226,34 @@ function renderAdminField({
       </Form.Item>
     );
   }
-  return (
-    <Form.Item
-      name={key}
-      label={
-        <>
-          {label}
-          <span className="label-note">（admin.{key}）</span>
-        </>
-      }
-      rules={rule}
-      data-testid={`system-field-${key}`}
-    >
-      <InputNumber
-        data-testid={`system-control-${key}`}
-        style={{ width: '100%' }}
-        step={1}
-        precision={0}
-        addonAfter={unit}
-      />
-    </Form.Item>
-  );
+  if (type === 'number') {
+    return (
+      <Form.Item
+        name={key}
+        label={
+          <>
+            {label}
+            <span className="label-note">（admin.{key}）</span>
+          </>
+        }
+        rules={rule}
+        data-testid={`system-field-${key}`}
+      >
+        <InputNumber
+          data-testid={`system-control-${key}`}
+          style={{ width: '100%' }}
+          step={1}
+          precision={0}
+          addonAfter={unit}
+        />
+      </Form.Item>
+    );
+  }
+  // 穷举守卫（code-review item fbb06aa6f869）：AdminFieldControl 新增形态未在
+  // 上方分派时，type 收窄结果含新字面量、赋给 never 编译报错，遗漏由静默兜底
+  // 变成可查错误
+  const _exhaustive: never = type;
+  return _exhaustive;
 }
 
 // 瞬断治理（fix-provider-transient-backoff D6）：键名 = agents.transient_*，
@@ -467,12 +495,12 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
         </Text>
         <Card style={{ marginTop: 12 }}>
-          {ADMIN_ANNOTATIONS.map(({ key, label, note, unit, rule }) => (
+          {ADMIN_ANNOTATIONS.map(({ key, label, type, note, unit, rule }) => (
             // 行距由行内最后元素的下边距（24/8px）collapse 提供，此处不挂 inline
             // margin——否则末行会在卡底残留（global.less 的 :last-child 清零压不过
             // inline style）
             <div key={key}>
-              {renderAdminField({ key, label, unit, rule })}
+              {renderAdminField({ key, label, type, unit, rule })}
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
