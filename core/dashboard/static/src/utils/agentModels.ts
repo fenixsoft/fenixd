@@ -1,6 +1,9 @@
 // 模型分配编辑器的值模型与纯工具函数。
 // 抽到独立 .ts（非 .tsx）以便 node --test 直接加载做单元测试。
 
+// 注意（code-review item c0afb2885437）：下方 cloneRoleValue 对 rows 逐字段拷贝
+// （显式列举本接口字段），本接口新增字段时须同步维护该拷贝清单，否则剪贴板
+// 复制/粘贴回的卡片会静默丢失新字段且无编译期报错。
 export interface ChainRow {
   provider: string;
   model: string;

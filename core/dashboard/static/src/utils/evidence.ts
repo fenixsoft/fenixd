@@ -10,7 +10,11 @@ export function fmtEvidence(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
-    return JSON.stringify(value);
+    // JSON.stringify 对 function/symbol 类型的值不抛异常而是返回 undefined
+    // （code-review item be886b51f5e1）：判 undefined 后同样降级 String()，
+    // 否则 undefined 当 string 返回会击穿本函数的返回契约。
+    const s: string | undefined = JSON.stringify(value);
+    return s === undefined ? String(value) : s;
   } catch {
     // 循环引用等不可序列化对象：降级为 String()，绝不抛异常打断渲染
     return String(value);

@@ -2,7 +2,10 @@
 // 口径：tokens_in 已含缓存写入+命中（分项 cache 入 input，与 STATE 累计一致）。
 
 export const fmtMillions = (tokens: number) => {
-  const m = (tokens || 0) / 1e6;
+  // 非有限值守卫（code-review item 13618e49b2ea）：Infinity 会命中 G 分支输出
+  // 「InfinityG」字面量，与 NaN 走 falsy 兜底落 0.0M 的口径对齐，统一回退 0。
+  const safe = Number.isFinite(tokens) ? tokens : 0;
+  const m = safe / 1e6;
   // [fenix-ignore:218adec2de95] 999.95M~1000M 进位显示 1000.0M 是 tests/tokens.test.mjs 明确断言的既定口径（未过 G 门槛按 M 四舍五入），仅观感差异且改动会破坏既有测试
   return m >= 1000 ? (m / 1000).toFixed(2) + 'G' : m.toFixed(1) + 'M';
 };
@@ -18,6 +21,8 @@ export interface TokenUsageLike {
 export const fmtInputTokens = (usage: TokenUsageLike) => {
   const cacheRead = usage.cache_read_input_tokens;
   if (cacheRead == null || !usage.tokens_in) return fmtMillions(usage.tokens_in);
-  const pct = ((cacheRead / usage.tokens_in) * 100).toFixed(1);
-  return `${fmtMillions(usage.tokens_in - cacheRead)}（缓存命中 ${fmtMillions(cacheRead)}，命中率 ${pct}%）`;
+  // 异常数据钳制（code-review item 7991b6540abd）：cacheRead 大于 tokens_in 时
+  // 差值为负、命中率超 100%，钳到 max(0, …) / [0, 100] 避免渲染矛盾数字。
+  const pct = Math.min(100, Math.max(0, (cacheRead / usage.tokens_in) * 100)).toFixed(1);
+  return `${fmtMillions(Math.max(0, usage.tokens_in - cacheRead))}（缓存命中 ${fmtMillions(cacheRead)}，命中率 ${pct}%）`;
 };
