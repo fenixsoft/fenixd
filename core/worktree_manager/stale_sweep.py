@@ -52,8 +52,15 @@ class G7StaleSweepMixin:
         # （并非「实时监控」），清扫期间新登记的遗产目录不在集合内、仍会被本轮
         # 扫掉——后果温和（consume 侧 is_available 判无效回落全新 create，分支
         # 侧另有 _branch_protected_by_state 保护），不在循环内逐目录复核。
+        # 非 dict 记录守卫（code-review item 294379129b27）：快照推导在本函数
+        # try 保护范围之外，_legacy 混入非 dict 记录时 rec.get 会 AttributeError
+        # 直接抛穿 cleanup_stale_worktrees，违背「失败记 WARNING，不阻塞 daemon
+        # 启动」承诺（当前写入方均产出 dict，纯防御）。过滤后该记录不获豁免、
+        # 照常参与孤儿清扫，与无 worktree_name 的分支模式记录同款兜底语义。
         legacy_names = {
-            rec.get("worktree_name") for rec in list(self._legacy.values())
+            rec.get("worktree_name")
+            for rec in list(self._legacy.values())
+            if isinstance(rec, dict)
         }
         # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
         # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
