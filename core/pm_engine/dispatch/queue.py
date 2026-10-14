@@ -50,6 +50,16 @@ from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_thr
 WIP_DEFER_WINDOW_MINUTES = 90.0
 WIP_DEFER_MAX_ROUNDS = 6
 
+# ── 秒挂闸门覆盖车道（evo-add-instant-fail-cooldown-full-lane-gate 1.1）──────
+# 秒挂冷却（连续秒挂达阈值 → spec 维度冷却）在队列派发面的过闸车道全集：
+# implementer/fast-track 既有过闸 + planner-plan/verifier 新纳管。以代码内
+# 常量集合表达，与 run_id 前缀表解耦；repair 不在本集合（repair run 由
+# repair_lane._dispatch_repair_lane 自起线程执行、不经队列，其冷却在
+# repair_lane 内直查 _instant_fail_cooled，见下方闸门注释）。
+INSTANT_FAIL_GATED_ATYPES = frozenset(
+    {"implementer", "fast-track", "planner-plan", "verifier"}
+)
+
 
 def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     """agent worker 线程命名的**单点**（evo-inprocess-verify-activity-signal 1.1）。
@@ -217,6 +227,15 @@ class QQQueueMixin:
         # {spec_name}，幂等排程防重复。与 _instant_fail_timers 独立——两条冷却
         # 通道各自排程恢复，互不覆盖冷却截止（取更晚者生效）。
         self._signal_kill_timers: set = set()
+        # evo-add-instant-fail-cooldown-full-lane-gate 2.3：恢复定时器截止对账
+        # 表与在飞 Timer 句柄表（秒挂/信号死法两通道各自独立）。判重放宽为
+        # 「截止时刻变化即按新截止重排」：复诵翻倍/续写冷却后旧定时器按旧截止
+        # 排程，须 cancel 后按新截止重排，否则翻倍窗无对应定时器、恢复只能靠
+        # 周期扫描兜底。{spec_name: 排程时所依据的冷却截止单调秒}。
+        self._instant_fail_timer_deadlines: Dict[str, float] = {}
+        self._instant_fail_timer_handles: Dict[str, threading.Timer] = {}
+        self._signal_kill_timer_deadlines: Dict[str, float] = {}
+        self._signal_kill_timer_handles: Dict[str, threading.Timer] = {}
         # fix-provider-transient-backoff（D4）：transient 恢复排程定时器：{spec_name}。
         # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
         # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
@@ -681,9 +700,9 @@ class QQQueueMixin:
           implementing）、verifier（implemented/testing）；
         - 派发退避（``_dispatch_backoffed``）；
         - start_after 门控（``_start_after_blocks_entry``，debug 留痕）；
-        - 秒挂冷却（仅 implementer/fast-track，debug 留痕并排程到期
-          恢复）/ 信号死法冷却（全部 agent 类型，同款）——两处扫描经本落点
-          统一记 debug（判定不变，仅日志口径统一）；
+        - 秒挂冷却（implementer/fast-track/planner-plan/verifier，INFO 留痕
+          并排程到期恢复）/ 信号死法冷却（全部 agent 类型，同款）——两处扫描
+          经本落点统一留痕（判定不变，仅日志口径统一）；
         - 在飞评审校验（``_should_defer_for_reviewer``，仅实现车道，置于
           退避/start_after/冷却之后避免无谓进程表判定）。
 
@@ -731,19 +750,32 @@ class QQQueueMixin:
                 f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
             )
             return False
-        # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track
-        # 派发（不耗预算、不起进程），并排程到期自动恢复。
-        # （code-review item 634bc08048e4：原列表含 "repair"，但 repair run 由
+        # cli-retry-backoff 2.2：秒挂冷却期内跳过派发（不耗预算、不起进程），
+        # 并排程到期自动恢复。evo-add-instant-fail-cooldown-full-lane-gate 1.1：
+        # 门控面从 implementer/fast-track 白名单扩为按故障面覆盖——planner-plan
+        # 与 verifier 派发同过闸（2026-10-14 dsh 补丁互踩事故：非门控车道在
+        # 冷却窗内实新派 6 次、全部 3 attempt 秒死 0 token 空转，且把连续秒挂
+        # 计数推高反向延长门控面车道停摆）。命中保留既有队列语义：返回 False、
+        # 条目保留队列不 pop、attempt 预算不消耗，冷却到期由恢复定时器重判。
+        # （code-review item 634bc08048e4：repair 不在集合内——repair run 由
         # repair_lane._dispatch_repair_lane 自起线程执行、不经队列（其冷却在
         # repair_lane 内直查 _instant_fail_cooled），全仓无 "repair" 入队路径
-        # ——删除该口径分裂，防误入队条目经闸门放行后被 worker 静默吞掉。）
-        if atype in (
-            "implementer",
-            "fast-track",
-        ) and self._pm._instant_fail_cooled(sname):
-            self._pm.logger.debug(
+        # ——防误入队条目经闸门放行后被 worker 静默吞掉。）
+        # evo-add-instant-fail-cooldown-full-lane-gate 1.2：跳过留痕从 DEBUG
+        # 升 INFO（spec 名、被拦车道、剩余冷却秒数）——生产日志零 DEBUG，
+        # 旧口径下门控是否生效只能靠行为反推；对齐同文件 transient 首道闸
+        # 的 INFO 先例。
+        if atype in INSTANT_FAIL_GATED_ATYPES and self._pm._instant_fail_cooled(sname):
+            remaining = max(
+                0,
+                int(round(
+                    self._pm._instant_fail_cooldown_until(sname) - time.monotonic()
+                )),
+            )
+            self._pm.logger.info(
                 "pm_engine",
-                f"秒挂冷却中，跳过 {atype} 派发 '{sname}'",
+                f"秒挂冷却中，跳过 {atype} 派发 '{sname}'"
+                f"（剩余 {remaining}s，到期自动重判）",
             )
             self._schedule_instant_fail_recovery(sname, lock_held=True)
             return False

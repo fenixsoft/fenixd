@@ -4335,6 +4335,40 @@ class AdminMonitor:
             }
         )
 
+    def _instant_fail_gate(self, spec_name) -> tuple:
+        """秒挂冷却 spec 作用域门控判定（evo-add-instant-fail-cooldown-full-lane-gate 1.3）。
+
+        仅作用于带 spec 归属的处置唤起：spec 为空（daemon_errors 全局信号，
+        spec=null）恒放行 ``(False, 0)`` —— 全局自救通道 MUST NOT 被任一 spec
+        的秒挂冷却拦截。与既有 signal-kill 冷却检查同判定口径
+        （``agent_runner.is_instant_fail_cooldown``，查询侧到期即先复诵后
+        消费）；runner 不可用或判定异常 fail-open 放行（与
+        pm_engine._instant_fail_cooled 同构）。
+
+        Returns: ``(cooled, remaining_seconds)``——cooled=True 时 remaining 为
+        该 spec 当前冷却剩余秒（向下取整、钳非负），供 INFO 跳过留痕。
+        """
+        if not spec_name:
+            return False, 0
+        runner = getattr(self, "agent_runner", None)
+        checker = getattr(runner, "is_instant_fail_cooldown", None)
+        if not callable(checker):
+            return False, 0
+        try:
+            cooled = checker(spec_name) is True
+        except Exception:
+            return False, 0
+        if not cooled:
+            return False, 0
+        remaining = 0
+        until_fn = getattr(runner, "instant_fail_cooldown_until", None)
+        if callable(until_fn):
+            try:
+                remaining = max(0, int(float(until_fn(spec_name)) - time.monotonic()))
+            except Exception:
+                remaining = 0
+        return True, remaining
+
     def _fixture_invocation_suppressed(self, signal: dict) -> bool:
         """fixture 标记项目的自动召唤抑制（alert-noise-governance 5.1）。
 
@@ -4839,6 +4873,21 @@ class AdminMonitor:
                     f"active (escalation {rec.get('id')})",
                 )
                 continue
+            # evo-add-instant-fail-cooldown-full-lane-gate 1.3：秒挂冷却 spec
+            # 作用域门控——与上方 signal-kill 冷却预判同点位并列、同款「bump
+            # 之前 continue」语义（不消耗重试配额，下轮到期重评，命中仅日志
+            # 留痕不落处置痕）；spec=null 全局信号放行（_instant_fail_gate
+            # 恒返回 False）。
+            _if_cooled, _if_remaining = self._instant_fail_gate(
+                signal.get("spec"))
+            if _if_cooled:
+                self.logger.info(
+                    "admin_monitor",
+                    f"Skipping dispatch retry for '{signal.get('spec')}' (signal "
+                    f"{signal.get('signal_type')}): instant-fail cooldown active, "
+                    f"{_if_remaining}s remaining (escalation {rec.get('id')})",
+                )
+                continue
             try:
                 _block_reasons = self._night_dispatch_block_reasons()
             except Exception:
@@ -5151,6 +5200,22 @@ class AdminMonitor:
                                 "admin_monitor",
                                 f"Skipping orphan reschedule for '{_sig_spec}' (signal "
                                 f"{sig_type}): signal-kill cooldown active (run {rid})",
+                            )
+                            continue
+                        # evo-add-instant-fail-cooldown-full-lane-gate 1.3：秒挂
+                        # 冷却 spec 作用域门控——与上方 signal-kill 预判同点位
+                        # 并列、同款「superseded 审计写入之前 continue」语义
+                        # （不写「已重派」审计、不重入队 admin run）；spec=null
+                        # 全局信号放行。
+                        _if_cooled, _if_remaining = self._instant_fail_gate(
+                            signal.get("spec"))
+                        if _if_cooled:
+                            self.logger.info(
+                                "admin_monitor",
+                                f"Skipping orphan reschedule for "
+                                f"'{signal.get('spec')}' (signal {sig_type}): "
+                                f"instant-fail cooldown active, "
+                                f"{_if_remaining}s remaining (run {rid})",
                             )
                             continue
                         try:
@@ -6153,6 +6218,32 @@ class AdminMonitor:
             # code-review item 05825b6fe4e0：向调用方回传「未送达」——否则
             # 被冷却跳过的修订告警在冷却期内不再成条，违背上方「冷却到期
             # 自然恢复」文案的承诺。
+            return False
+
+        # evo-add-instant-fail-cooldown-full-lane-gate 1.3：秒挂冷却 spec 作用域
+        # 门控——与上方信号死法冷却检查同点位并列（该 spec 连续秒挂达阈值，
+        # 反复唤起只会再次撞运气烧预算）。spec=null 的 daemon_errors 全局信号
+        # 唤起恒放行（_instant_fail_gate 对空 spec 返回 False），不锁死故障期
+        # 的自救通道。留痕 INFO（spec 名、车道、剩余冷却秒数）+ skipped 处置痕，
+        # 同款「不虚报已唤起」约定。
+        _if_cooled, _if_remaining = self._instant_fail_gate(signal.get("spec"))
+        if _if_cooled:
+            self.logger.info(
+                "admin_monitor",
+                f"秒挂冷却中，跳过 Administrator 唤起 '{signal.get('spec')}'"
+                f"（剩余 {_if_remaining}s，到期自动恢复；"
+                f"evo-add-instant-fail-cooldown-full-lane-gate）",
+            )
+            if signal_rec is not None:
+                self._persist_skipped_disposition(
+                    signal,
+                    (
+                        "秒挂冷却中，跳过 Administrator 唤起"
+                        "（evo-add-instant-fail-cooldown-full-lane-gate）——"
+                        "实际未派发，冷却到期由恢复定时器/检测循环自然恢复"
+                    ),
+                    error_label="cooldown-skip",
+                )
             return False
 
         # evo-add-night-window-inflight-guard 2.1：夜间断窗/provider 瞬断冻结

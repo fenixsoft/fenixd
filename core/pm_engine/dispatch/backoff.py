@@ -262,16 +262,25 @@ class BBackoffMixin:
         callback,
         scheduled_log: str | None = None,
         lock_held: bool = False,
+        resolve_deadline=None,
+        deadline_table: dict | None = None,
+        handle_table: dict | None = None,
     ) -> None:
         """统一排程入口：按 ``lock_held`` 决定是否自取 ``_queue_lock``。
 
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
         跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        ``resolve_deadline`` / ``deadline_table`` / ``handle_table``：截止对账
+        通道（evo-add-instant-fail-cooldown-full-lane-gate 2.3），原样透传锁内
+        实现；缺省 None 的通道保持既有幂等早退语义。
         """
 
         def _locked(spec: str) -> None:
             self._schedule_recovery_timer_locked(
                 spec, timers, resolve_delay, min_delay, callback, scheduled_log,
+                resolve_deadline=resolve_deadline,
+                deadline_table=deadline_table,
+                handle_table=handle_table,
             )
 
         if lock_held:
@@ -288,17 +297,53 @@ class BBackoffMixin:
         min_delay: float,
         callback,
         scheduled_log: str | None = None,
+        resolve_deadline=None,
+        deadline_table: dict | None = None,
+        handle_table: dict | None = None,
     ) -> None:
         """锁内实现（调用方已持 _queue_lock）：判重 → 计算延迟 → 排程定时器。
 
-        - 已在 ``timers`` 中则幂等早退；
+        - 已在 ``timers`` 中：未接入截止对账通道（``resolve_deadline`` /
+          ``deadline_table`` 缺省 None）保持既有幂等早退；接入通道判重放宽为
+          「截止时刻变化即按新截止重排」（evo-add-instant-fail-cooldown-full-
+          lane-gate 2.3）——复诵翻倍/续写冷却把 cooldown_until 改写后，旧定时器
+          按旧截止排程，不重排则翻倍窗无对应定时器（恢复只能靠周期扫描兜底）。
+          截止未变化仍幂等早退（既有语义不变）；截止变化先 cancel 旧 Timer、
+          摘判重标记后按新截止重排；
+        - ``resolve_deadline``：``(spec_name) -> float | None``，返回该通道当前
+          冷却截止单调秒（None 表示通道未设截止——此时旧定时器保留，到期自会
+          兜底重入派发链）；
         - ``resolve_delay`` 返回 None 则本此不排程；
         - 延迟下限 ``min_delay``；
         - ``scheduled_log`` 非空时于定时器启动后记 INFO，模板可用
           ``{spec_name}`` / ``{delay}``（后者已取 int）占位。
         """
         if spec_name in timers:
-            return
+            if resolve_deadline is None or deadline_table is None:
+                return
+            try:
+                live_deadline = deadline_table.get(spec_name)
+                current_deadline = resolve_deadline(spec_name)
+            except Exception:
+                return
+            if (current_deadline is None or live_deadline is None
+                    or float(live_deadline) == float(current_deadline)):
+                # 截止未变化（或通道截止已解除）：幂等早退，旧定时器到期自会
+                # 重入派发链（闸门查询侧届时按现状判定）。
+                return
+            # 截止时刻变化（冷却被续写/翻倍）：cancel 旧 Timer、摘判重标记，
+            # 落到下方按新截止重排。
+            deadline_table[spec_name] = float(current_deadline)
+            old_timer = (
+                handle_table.pop(spec_name, None) if handle_table else None
+            )
+            if old_timer is not None:
+                try:
+                    old_timer.cancel()
+                except Exception:  # noqa: BLE001 — 已到期/竞态取消失败无碍：
+                    # 旧回调幂等（摘标记+重入派发链），至多多一次重入。
+                    pass
+            timers.discard(spec_name)
         raw_delay = resolve_delay(spec_name)
         if raw_delay is None:
             return
@@ -306,6 +351,18 @@ class BBackoffMixin:
         timer = threading.Timer(delay, callback, args=(spec_name,))
         timer.daemon = True
         timers.add(spec_name)
+        if resolve_deadline is not None and deadline_table is not None:
+            try:
+                current_deadline = resolve_deadline(spec_name)
+            except Exception:
+                current_deadline = None
+            deadline_table[spec_name] = (
+                float(current_deadline)
+                if current_deadline is not None
+                else time.monotonic() + delay
+            )
+        if handle_table is not None:
+            handle_table[spec_name] = timer
         # code-review item 488e916852e4：对齐 queue.py:989 / repair_lane.py:305
         # 的线程启动守卫——start 失败（解释器关闭期 RuntimeError、线程资源
         # 耗尽等）时回滚判重标记并记 WARNING：否则该 spec 已入 timers 而定时器
@@ -315,6 +372,10 @@ class BBackoffMixin:
             timer.start()
         except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未排程」处置
             timers.discard(spec_name)
+            if deadline_table is not None:
+                deadline_table.pop(spec_name, None)
+            if handle_table is not None:
+                handle_table.pop(spec_name, None)
             self._pm.logger.warning(
                 "pm_engine",
                 f"recovery timer start failed for '{spec_name}' — 判重标记已"
@@ -357,6 +418,12 @@ class BBackoffMixin:
             min_delay=0.5,
             callback=self._on_instant_fail_recovery,
             lock_held=lock_held,
+            # evo-add-instant-fail-cooldown-full-lane-gate 2.3：截止对账通道——
+            # 复诵翻倍续写 cooldown_until 后，排程按「截止时刻变化即重排」
+            # 换上对应新截止的定时器。
+            resolve_deadline=self._pm._instant_fail_cooldown_until,
+            deadline_table=getattr(self, "_instant_fail_timer_deadlines", None),
+            handle_table=getattr(self, "_instant_fail_timer_handles", None),
         )
 
     def _schedule_instant_fail_recovery_locked(self, spec_name: str) -> None:
@@ -395,6 +462,12 @@ class BBackoffMixin:
             min_delay=0.5,
             callback=self._on_signal_kill_recovery,
             lock_held=lock_held,
+            # 同款截止对账通道（evo-add-instant-fail-cooldown-full-lane-gate
+            # 2.3，共用排程器参数化）：信号死法冷却被 record_signal_kill 续写
+            # 截止时同样按新截止重排；截止未变化行为与既有幂等早退一致。
+            resolve_deadline=self._pm._signal_kill_cooldown_until,
+            deadline_table=getattr(self, "_signal_kill_timer_deadlines", None),
+            handle_table=getattr(self, "_signal_kill_timer_handles", None),
         )
 
     def _schedule_signal_kill_recovery_locked(self, spec_name: str) -> None:
