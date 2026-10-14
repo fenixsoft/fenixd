@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-14 14:06 UTC+8
+> 最后更新：2026-10-14 18:51 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -13,7 +13,7 @@
 | [planning-generation](domains/planning-generation/_domain.md) | 规划与出题 | 6 | 2026-10-03 04:59 |
 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 24 | 2026-10-11 03:32 |
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | 调度与派发 | 8 | 2026-10-03 04:59 |
-| [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 27 | 2026-10-08 04:02 |
+| [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 28 | 2026-10-14 18:51 |
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 52 | 2026-10-13 21:36 |
 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 23 | 2026-10-14 01:44 |
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 18 | 2026-10-06 07:14 |
