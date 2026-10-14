@@ -17,6 +17,7 @@ import 'dayjs/locale/zh-cn';
 import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
+import { isEmbedMode } from './utils/embedMount';
 
 // 自省/演进面板的 TimePicker 以 dayjs(str, 'HH:mm') 回填配置字符串，
 // 该双参解析必须注册 customParseFormat 插件才生效（缺省解析得 Invalid Date，
@@ -141,5 +142,10 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     menu: { defaultOpenAll: true, ignoreFlatMenu: true },
     // 顶栏右侧：全局面包屑，统一指示当前位置
     actionsRender: () => [<HeaderCrumb key="crumb" />],
+    // embed=1（dsh 面板桥 iframe 挂载，add-dashboard-embed-mode 2.1）：隐藏
+    // ProLayout 全局侧栏与全局顶栏（D4 标准关闭属性），导航由 dsh 侧栏承担，
+    // 页面自身内容头（PageContainer 面包屑/标题）保留。非 embed 分支不增键，
+    // 布局配置与现状逐字节一致。
+    ...(isEmbedMode() ? { menuRender: false, headerRender: false } : {}),
   };
 };

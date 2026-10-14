@@ -4,6 +4,7 @@
 // 此处仅引入其字面量类型做 STATUS_META 键域的编译期穷尽约束（type-only，
 // 运行时零依赖，不改变本模块零 import 的形态）。
 import type { ListStatus } from '../pages/projects/listFilters';
+import { withApiBase } from '../utils/embedMount.ts';
 
 export type DaemonHealth = string;
 
@@ -70,8 +71,10 @@ const OCR_INSTALL_TIMEOUT_MS = 330000;
 const PROJECT_DESCRIBE_TIMEOUT_MS = 150000;
 
 /** SSE 事件流端点（业务端点，跨视图组件复用——code-review item ba13417eb1ff：
-    以共享服务层常量单源，视图不再各自硬编码字面量）。 */
-export const STREAM_URL = '/api/stream';
+    以共享服务层常量单源，视图不再各自硬编码字面量）。经 embedMount 单点
+    前缀化（add-dashboard-embed-mode 1.2）：apiBase 缺省时仍为根相对
+    '/api/stream'，逐字节现状。 */
+export const STREAM_URL = withApiBase('/api/stream');
 
 /** API 错误：携带 HTTP 状态码与错误类别（code-review item e49991904b1f：
     旧实现把所有失败压成裸 Error，调用方无法区分网络/鉴权/业务/服务端）。 */
@@ -188,7 +191,10 @@ async function request<T>(
   try {
     let res: Response;
     try {
-      res = await fetch(path, { ...init, headers: reqHeaders, signal: controller.signal });
+      // fetch 路径经 embedMount 单点前缀化（add-dashboard-embed-mode 1.2）：
+      // apiBase 缺省恒等返回；etagCache 仍以原始 path 为键（apiBase 全会话
+      // 不变，键域不因前缀漂移，缺省行为零变化）。
+      res = await fetch(withApiBase(path), { ...init, headers: reqHeaders, signal: controller.signal });
     } catch (e) {
       // 网络失败 / 超时区分（e49991904b1f）
       if (isAbort(e)) throw classifyAbort();
@@ -2523,9 +2529,11 @@ export function refreshArchitecture(project: string) {
  *  追加 present=1：archify 模板原生参数（首屏脚本读 iframe 自身
  *  location.search → data-present，渲染前生效无闪烁，与图内右上角
  *  「演示」按钮同一状态、按钮态同步为「退出演示模式」），页签内架构图
- *  默认以演示模式展示；后端忽略多余 query，仅前端语义。 */
+ *  默认以演示模式展示；后端忽略多余 query，仅前端语义。下发 URL 经
+ *  embedMount 单点前缀化（add-dashboard-embed-mode 1.2）：该地址不经 fetch
+ *  也不属 STREAM_URL，是 iframe src 的第三处旁路，前缀化范围须覆盖。 */
 export function architectureDiagramUrl(project: string): string {
-  return `/api/architecture/diagram?project=${encodeURIComponent(project)}&present=1`;
+  return withApiBase(`/api/architecture/diagram?project=${encodeURIComponent(project)}&present=1`);
 }
 
 // ── add-knowledge-atlas：项目知识真相源（只读视图）──────────────────
