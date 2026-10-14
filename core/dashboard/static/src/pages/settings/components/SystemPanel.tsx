@@ -446,8 +446,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
       },
       // add-harness-adapter-layer 6.3：agent.harness 走既有保存通道（后端
-      // config_admin 受管键白名单：回显/合并/校验三处已同步；dsh 值由后端
-      // 校验拦截——adapter 未部署，不落盘）
+      // config_admin 受管键白名单：回显/合并/校验三处同词表消费
+      // VALID_HARNESS_VALUES；dsh 已随 add-dsh-adapter-integration 部署，
+      // 保存被接受，派发前置健康检查拦截不满足项——文案不写死部署状态断言，
+      // 部署态变化由相应 SPEC 同步更新本段）
       agent: { harness: values.harness },
     }),
   });
@@ -529,12 +531,12 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                 style={{ width: '100%', maxWidth: 320 }}
                 options={[
                   { value: 'claude', label: 'claude（缺省）' },
-                  { value: 'dsh', label: 'dsh（未部署，保存会被拒绝）' },
+                  { value: 'dsh', label: 'dsh' },
                 ]}
               />
             </Form.Item>
             <Text type="secondary">
-              dsh adapter 由 add-dsh-adapter-integration 交付，当前未部署：选择 dsh 保存时会被后端校验拒绝，即使手工写入配置，dispatch 前置健康检查也会拦截派发。
+              dsh adapter 已部署（add-dsh-adapter-integration）：选择后保存即生效。派发前置健康检查会校验 dsh 版本白名单与 fenix Bundle 挂载，不满足时拦截派发并给出修复指引；切换/回切步骤见 docs/help/dsh-harness-runbook.md。
             </Text>
           </div>
         </Card>

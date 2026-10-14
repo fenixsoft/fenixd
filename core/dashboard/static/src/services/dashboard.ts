@@ -1619,7 +1619,8 @@ export interface ConfigData {
    维护车道开关（缺省均 true；graph_enabled 已随 graphify 取消下线，不再读写） */
   knowledge?: { enabled?: boolean; audit_enabled?: boolean };
   /** add-harness-adapter-layer 6.3：agent 进程边界选型（claude|dsh，缺省
-   claude；dsh 未部署，后端保存被拦）。区别于 agents 段（per-agent 行为配置） */
+   claude；dsh 已随 add-dsh-adapter-integration 部署，保存与派发健康检查同词表）。
+   区别于 agents 段（per-agent 行为配置） */
   agent?: { harness?: string };
   /** add-daily-self-review：每日自省（admin.self_review 三键） */
   self_review?: SelfReviewConfig;
