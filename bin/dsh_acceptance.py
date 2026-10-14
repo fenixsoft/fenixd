@@ -614,7 +614,7 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
                 cmdline = _proc_cmdline(proc.pid)
                 if cmdline and (not sampled or sampled[-1] != cmdline):
                     sampled.append(cmdline)
-                if "dsh" in cmdline and "headless" in cmdline:
+                if "dsh" in cmdline and "--profile" in cmdline:
                     inflight_seen = True
             # 观测到在飞后仍保留固定采样间隔：满速热自旋空耗 CPU，且与被
             # 观测的 dsh 子进程争抢，反过来拉长被测车道耗时（elapsed_seconds
@@ -720,7 +720,7 @@ def run_judge_lane(*, device: Dict[str, Any], fixture: Dict[str, Any],
     def _on_spawn(proc) -> None:
         cmdline = _proc_cmdline(proc.pid)
         inflight["cmdline"] = cmdline
-        if "dsh" in cmdline and "headless" in cmdline:
+        if "dsh" in cmdline and "--profile" in cmdline:
             inflight["observed"] = True
 
     request = SpawnRequest(
@@ -1620,7 +1620,7 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
                 cmdline = _proc_cmdline(proc.pid)
                 if cmdline and (not sampled or sampled[-1] != cmdline):
                     sampled.append(cmdline)
-                if "dsh" in cmdline and "headless" in cmdline:
+                if "dsh" in cmdline and "--profile" in cmdline:
                     inflight_seen = True
             # 同 run_agent_lane：在飞观测后保留固定采样间隔，不做热自旋
             time.sleep(0.4 if inflight_seen else 0.2)
@@ -1696,7 +1696,7 @@ def _real_judge_lane(adapter, fixture: Dict[str, Any], model: str,
     def _on_spawn(proc) -> None:
         cmdline = _proc_cmdline(proc.pid)
         inflight["cmdline"] = cmdline
-        if "dsh" in cmdline and "headless" in cmdline:
+        if "dsh" in cmdline and "--profile" in cmdline:
             inflight["observed"] = True
 
     request = SpawnRequest(
