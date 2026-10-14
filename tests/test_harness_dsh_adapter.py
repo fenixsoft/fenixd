@@ -234,6 +234,28 @@ class TestSpawnContract:
             assert '- id: fenix-model-config' in text
             assert 'model: "m-1"' in text
 
+    def test_render_model_patch_yaml_api_field(self):
+        """api 非空渲染线协议行（anthropic-messages 场景）；空不渲染
+        （Bundle 端缺省 openai-completions，向后兼容）。"""
+        text = render_model_patch_yaml(
+            model="m-1", base_url="https://gw/api/anthropic",
+            api_key_env="K", api="anthropic-messages")
+        assert 'api: "anthropic-messages"' in text
+        text_plain = render_model_patch_yaml(
+            model="m-1", base_url="http://h:1/v1", api_key_env="K")
+        assert "\n      api:" not in text_plain
+
+    def test_spawn_config_api_threaded_into_patch(self, monkeypatch):
+        """DshAdapterConfig.api 经 _write_model_patch 渲染进 spawn patch。"""
+        adapter = _make_adapter(api="anthropic-messages")
+        spec = adapter.build_spawn_spec(_make_request())
+        assert spec.argv.count("--patch") == 1
+        patch_path = spec.argv[spec.argv.index("--patch") + 1]
+        with open(patch_path, encoding="utf-8") as fh:
+            content = fh.read()
+        assert 'api: "anthropic-messages"' in content
+        assert 'baseURL: "http://127.0.0.1:18787/v1"' in content
+
 
 # ── 1.2：process_patterns 与 capabilities ────────────────────────────────
 

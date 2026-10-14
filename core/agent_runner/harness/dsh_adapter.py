@@ -166,6 +166,7 @@ def render_model_patch_yaml(
     base_url: str,
     api_key_env: str,
     provider_name: str = DSH_ROUTE_PROVIDER_NAME,
+    api: str = "",
 ) -> str:
     """渲染 ``--patch`` 模型三要素覆盖文件（dsh-bundle/README.md 部署段形状）。
 
@@ -173,20 +174,24 @@ def render_model_patch_yaml(
     （provider/baseURL/apiKeyEnv/model）显式非空，缺失即 apply 期抛错
     （fail-fast 链）；渲染是单向的：patch 覆盖后 providers/默认模型全部由
     该服务铺开——绝不回退 dsh 默认档（spec「MUST NOT 依赖 dsh 默认档」）。
+    ``api`` 非空时追加渲染线协议字段（pi-ai api 类型，如
+    ``anthropic-messages``）；空则不渲染，Bundle 端缺省
+    ``openai-completions``。
     """
-    return "\n".join(
-        [
-            "# fenixd DshAdapter 自动生成（每次 spawn 重写）：Bundle 模型三要素显式渲染。",
-            "# 改模型只改 fenixd provider 链分配（_get_agent_model_assignment），勿手改本文件。",
-            "- id: fenix-model-config",
-            "  config:",
-            "    model:",
-            f"      provider: {_yaml_scalar(provider_name)}",
-            f"      baseURL: {_yaml_scalar(base_url)}",
-            f"      apiKeyEnv: {_yaml_scalar(api_key_env)}",
-            f"      model: {_yaml_scalar(model)}",
-        ]
-    ) + "\n"
+    lines = [
+        "# fenixd DshAdapter 自动生成（每次 spawn 重写）：Bundle 模型三要素显式渲染。",
+        "# 改模型只改 fenixd provider 链分配（_get_agent_model_assignment），勿手改本文件。",
+        "- id: fenix-model-config",
+        "  config:",
+        "    model:",
+        f"      provider: {_yaml_scalar(provider_name)}",
+        f"      baseURL: {_yaml_scalar(base_url)}",
+        f"      apiKeyEnv: {_yaml_scalar(api_key_env)}",
+        f"      model: {_yaml_scalar(model)}",
+    ]
+    if api:
+        lines.append(f"      api: {_yaml_scalar(api)}")
+    return "\n".join(lines) + "\n"
 
 
 # ── 投影层（design D1 + 可观测性三件套）──────────────────────────────────
@@ -558,6 +563,12 @@ class DshAdapterConfig:
     profile: str = DSH_DEFAULT_PROFILE
     dsh_home: str = ""
     dsh_bin: str = "dsh"
+    #: 线协议（pi-ai api 类型：anthropic-messages / openai-completions 等）。
+    #: 空 = 不渲染 api 行，Bundle 端缺省 openai-completions（向后兼容）。
+    #: provider 链 baseurl 为 Anthropic 兼容形态（claude CLI 遗产，如
+    #: bigmodel /api/anthropic）时须配 anthropic-messages，否则 OpenAI 形状
+    #: 请求打到 Anthropic 端点即 TRANSPORT 断流（2026-10-14 验收实证）。
+    api: str = ""
 
 
 class DshAdapter:
@@ -658,6 +669,7 @@ class DshAdapter:
             model=model,
             base_url=base_url,
             api_key_env=DSH_API_KEY_ENV,
+            api=self._config.api,
         )
         # 回收上一次 patch：best-effort（文件已被系统 tmp 清理/进程重启换
         # 新实例时静默跳过），回收失败绝不阻断 spawn。

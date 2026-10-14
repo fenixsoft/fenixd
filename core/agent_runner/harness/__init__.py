@@ -127,8 +127,12 @@ def resolve_adapter(harness: str, config: Optional[Dict[str, Any]] = None) -> Ha
         # 兜底缺省（ConfigLoader.get 不做类型归一化）。
         profile = str(ConfigLoader.get(cfg, "agent.dsh_profile", None) or "").strip()
         dsh_home = str(ConfigLoader.get(cfg, "agent.dsh_home", None) or "").strip()
+        # 线协议：provider 链 baseurl 为 Anthropic 兼容形态时须配
+        # anthropic-messages（pi-ai api 类型；缺省空=openai-completions）。
+        dsh_api = str(ConfigLoader.get(cfg, "agent.dsh_api", None) or "").strip()
         return DshAdapter(DshAdapterConfig(
-            profile=profile or DSH_DEFAULT_PROFILE, dsh_home=dsh_home))
+            profile=profile or DSH_DEFAULT_PROFILE, dsh_home=dsh_home,
+            api=dsh_api))
     raise ValueError(f"不支持的 harness 值：{harness!r}（合法值 {VALID_HARNESS_VALUES}）")
 
 

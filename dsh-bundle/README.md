@@ -70,6 +70,7 @@ DSH_HOME=$DSH_HOME dsh plugin --profile fenix remove fenix-dsh-bundle
 | `baseURL` | ✓ | OpenAI 兼容端点（`api` 固定 `openai-completions`） |
 | `apiKeyEnv` | ✓ | 凭据环境变量名（运行时须已导出，否则 `MISSING_CREDENTIAL`） |
 | `model` | ✓ | 模型 id，渲染为 providers models 目录唯一条目与 `agent-default-model.model` |
+| `api` | — | 线协议（pi-ai api 类型，如 `anthropic-messages` / `openai-completions`）；缺省 `openai-completions`。provider 链 baseurl 为 Anthropic 兼容形态（如 bigmodel `/api/anthropic`）时须配 `anthropic-messages`——fenixd 侧经 `agent.dsh_api` 配置键渲染（2026-10-14 验收实证：协议错配即 TRANSPORT 断流） |
 | `contextWindow` / `maxTokens` | — | 缺省 262144 / 32768 |
 | `headers` | — | 附加请求头（键值对） |
 
