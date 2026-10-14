@@ -38,12 +38,30 @@ def repo_relative(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
+# AST 解析缓存：(绝对路径, mtime_ns, size) → tree | None。同一守卫进程内
+# 多趟扫描（签名索引 → seam 参数名收集 → 调用点扫描）对同一批文件各
+# ast.parse 一遍是全守卫套件的主要耗时（约 3/4），而各趟只读遍历 AST、
+# 从不改动，共享同一棵树判定结果逐位一致。键带 mtime_ns/size：同进程内
+# 文件被改写（如单元测试向临时样例写入）不会命中陈旧缓存；解析失败的
+# None 也一并缓存，避免坏文件被反复读。进程级缓存随 pytest 进程退出释放。
+_PARSE_CACHE: dict = {}
+
+
 def parse_tree(path: Path):
     """解析单个 .py 文件为 AST；读取/语法错误返回 None（扫描静默跳过）。"""
     try:
-        return ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, UnicodeDecodeError):
+        st = path.stat()
+    except OSError:
         return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key in _PARSE_CACHE:
+        return _PARSE_CACHE[key]
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        tree = None
+    _PARSE_CACHE[key] = tree
+    return tree
 
 
 def method_signature(fn: ast.FunctionDef):
