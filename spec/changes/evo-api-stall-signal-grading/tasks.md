@@ -28,3 +28,9 @@
 - [x] 3.1 tests/test_api_stall_signal_grading.py（新建）：覆盖分级函数边界（恰 300 秒、恰连续第 2 轮、120-300 秒单轮）、发射点日志级别断言（info→INFO、escalated→WARNING）、成功终态 run metrics 日志行带非零 stall 统计
 - [x] 3.2 tests/test_run_latency_stats.py：把既有「单轮 >120 秒必打 WARNING」断言更新为新分级语义；保留 60 秒统计口径与汇总行渲染的既有断言
 - [x] 3.3 运行 pytest tests/test_api_stall_signal_grading.py tests/test_run_latency_stats.py tests/test_agent_runner_modules_contract.py 全绿（三常量同源契约不破）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-api-stall-signal-grading/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
