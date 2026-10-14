@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -81,6 +82,10 @@ DSH_ROUTE_PROVIDER_NAME = "fenix-dsh"
 #: 凭据桥接环境变量名：provider 链 apikey 经该变量交 dsh（patch 的
 #: ``apiKeyEnv`` 指名它；运行时未导出 → dsh MISSING_CREDENTIAL，不进熔断）。
 DSH_API_KEY_ENV = "FENIX_DSH_PROVIDER_API_KEY"
+
+#: patch 保留期（秒）：按龄回收阈值。patch 只在 dsh 启动首秒被读取，
+#: 3600s 是读取窗的数千倍安全边际；残留上界 ≈ 保留期 × spawn 速率。
+DSH_PATCH_RETENTION_SECONDS = 3600.0
 
 #: ``--dump-config`` 产物中判定 Bundle 已挂载的标记（fenix-model-config
 #: 插件条目 id，由 link 安装的 fenix-dsh-bundle 注入）。
@@ -587,10 +592,10 @@ class DshAdapter:
 
     def __init__(self, config: Optional[DshAdapterConfig] = None) -> None:
         self._config = config or DshAdapterConfig()
-        # 上一次 spawn 落盘的 patch 临时文件路径（回收锚点，见
-        # _write_model_patch docstring：run 收尾无钩子，改在下一次 spawn 前
-        # unlink，进程内单实例至多滞留一份）。
-        self._last_patch_path: Optional[str] = None
+        # 本实例落盘的 patch 临时文件登记表 (path, monotonic 创建时刻)。
+        # 回收按龄不按槽（见 _write_model_patch docstring：单槽回收在全局
+        # adapter 单例 + 多车道并发派发下会互踩刚写未读的 patch）。
+        self._patch_files: List[Tuple[str, float]] = []
 
     # ── 协议成员 ─────────────────────────────────────────────────────
 
@@ -667,24 +672,31 @@ class DshAdapter:
 
     def _write_model_patch(self, model: str, base_url: str) -> str:
         """渲染模型三要素 patch 落系统临时目录（仓树外，stray-first-sight
-        约束：不在 repo 树留运行时产物），返回路径。每次 spawn 新建；上一
-        次的 patch 在本次 spawn 前 unlink 回收（adapter 实例缓存
-        ``_last_patch_path``）——同实例多次 spawn（resume 回退重跑等）不再
-        逐份累积；跨 dispatch 每实例首个 patch 与最后一次残留仍交系统 tmp
-        清理机制兜底。文件仅含模型三要素、无凭据。"""
+        约束：不在 repo 树留运行时产物），返回路径。每次 spawn 新建；历史
+        patch 按**龄**回收（超过 ``DSH_PATCH_RETENTION_SECONDS`` 才 unlink，
+        best-effort，失败绝不阻断 spawn）——patch 只在 dsh 启动首秒被读取，
+        保留期是读取窗的数千倍安全边际；早期「单槽 unlink 上一份」设计在
+        全局 adapter 单例 + 多车道并发派发下会互踩刚写未读的 patch（
+        2026-10-14 夹具 daemon 实证：implementer a1 ENOENT 秒死，attempt
+        环重试兜住）。残留上界 ≈ 保留期 × spawn 速率，仍交系统 tmp 清理
+        兜底。文件仅含模型三要素、无凭据。"""
         content = render_model_patch_yaml(
             model=model,
             base_url=base_url,
             api_key_env=DSH_API_KEY_ENV,
             api=self._config.api,
         )
-        # 回收上一次 patch：best-effort（文件已被系统 tmp 清理/进程重启换
-        # 新实例时静默跳过），回收失败绝不阻断 spawn。
-        if self._last_patch_path:
+        now = time.monotonic()
+        survivors: List[Tuple[str, float]] = []
+        for path, created in self._patch_files:
+            if now - created < DSH_PATCH_RETENTION_SECONDS:
+                survivors.append((path, created))
+                continue
             try:
-                os.unlink(self._last_patch_path)
+                os.unlink(path)
             except OSError:
-                pass
+                pass  # 已被系统 tmp 清理/进程重启，静默跳过
+        self._patch_files = survivors
         fh = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -696,7 +708,7 @@ class DshAdapter:
             fh.write(content)
         finally:
             fh.close()
-        self._last_patch_path = fh.name
+        self._patch_files.append((fh.name, time.monotonic()))
         return fh.name
 
     def build_env(self, req: SpawnRequest, api_key: str = "") -> Optional[Dict[str, str]]:

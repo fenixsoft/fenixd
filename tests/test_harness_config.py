@@ -76,6 +76,47 @@ class TestHarnessIllegalFallback(unittest.TestCase):
             resolve_adapter("bash")
 
 
+class TestDshProtocolGuard(unittest.TestCase):
+    """线协议守卫：harness=dsh + Anthropic 形态 baseurl + 未配 agent.dsh_api
+    → WARNING 一次（进程级去重）；配了 dsh_api 或无 Anthropic 形态端点则不告警。"""
+
+    def setUp(self):
+        ConfigLoader._DSH_PROTOCOL_WARNED = False  # 进程级去重复位
+
+    def tearDown(self):
+        ConfigLoader._DSH_PROTOCOL_WARNED = False
+
+    _CFG = {"agent": {"harness": "dsh"},
+            "llm": {"providers": [
+                {"name": "bm", "baseurl": "https://open.bigmodel.cn/api/anthropic",
+                 "apikey": "k", "model": "glm-5.3-flash"}]}}
+
+    def test_anthropic_baseurl_without_dsh_api_warns_once(self):
+        with self.assertLogs("fenixd.config", level=logging.WARNING) as captured:
+            self.assertEqual(ConfigLoader.get_harness(dict(self._CFG)), "dsh")
+            ConfigLoader._DSH_PROTOCOL_WARNED = False  # 模拟另一进程/重启后
+            ConfigLoader.get_harness(dict(self._CFG))
+        joined = "\n".join(captured.output)
+        self.assertIn("agent.dsh_api", joined)
+        self.assertIn("anthropic-messages", joined)
+
+    def test_dsh_api_configured_no_warning(self):
+        cfg = dict(self._CFG)
+        cfg["agent"] = {"harness": "dsh", "dsh_api": "anthropic-messages"}
+        lg = logging.getLogger("fenixd.config")
+        with self.assertNoLogs(lg, level=logging.WARNING):
+            self.assertEqual(ConfigLoader.get_harness(cfg), "dsh")
+
+    def test_openai_form_baseurl_no_warning(self):
+        cfg = {"agent": {"harness": "dsh"},
+               "llm": {"providers": [
+                   {"name": "m", "baseurl": "https://api.x.com/v1",
+                    "apikey": "k", "model": "m-1"}]}}
+        lg = logging.getLogger("fenixd.config")
+        with self.assertNoLogs(lg, level=logging.WARNING):
+            self.assertEqual(ConfigLoader.get_harness(cfg), "dsh")
+
+
 class TestDshLifecycle(unittest.TestCase):
     """dsh 生命周期：工厂注册（5.1 解除 SPEC-1 fail-fast）/ dispatch 健康
     检查拦截 / settings 保存面。"""

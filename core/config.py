@@ -336,6 +336,8 @@ class ConfigLoader:
         from core.agent_runner.harness import VALID_HARNESS_VALUES
 
         if value in VALID_HARNESS_VALUES:
+            if value == "dsh":
+                cls._warn_dsh_protocol_mismatch(config)
             return value
         _logger.warning(
             "agent.harness 配置值不支持：%r（合法值：%s）；回退缺省 %s",
@@ -344,6 +346,32 @@ class ConfigLoader:
             cls.HARNESS_DEFAULT,
         )
         return cls.HARNESS_DEFAULT
+
+    #: dsh 协议守卫告警的进程级去重（热重载每 30s 重解析，不重复刷屏）。
+    _DSH_PROTOCOL_WARNED = False
+
+    @classmethod
+    def _warn_dsh_protocol_mismatch(cls, config: Dict[str, Any]) -> None:
+        """dsh 通道线协议守卫：agent.harness=dsh 且 provider baseurl 为
+        Anthropic 兼容形态（路径含 /anthropic）而 agent.dsh_api 未配置时
+        WARNING 一次——该组合会以 OpenAI 形状请求打 Anthropic 端点，dsh
+        侧 TRANSPORT 断流 0 轮（2026-10-14 真实验收 run2 实证）。告警不
+        阻断：OpenAI 形态端点不受影响，agent.dsh_api 可后配热生效。"""
+        if cls._DSH_PROTOCOL_WARNED:
+            return
+        dsh_api = str(cls.get(config, "agent.dsh_api", "") or "").strip()
+        if dsh_api:
+            return
+        providers = (config.get("llm") or {}).get("providers") or []
+        if any(isinstance(p, dict) and "/anthropic" in str(p.get("baseurl", ""))
+               for p in providers):
+            cls._DSH_PROTOCOL_WARNED = True
+            _logger.warning(
+                "agent.harness=dsh 但未配置 agent.dsh_api，而 provider 链含 "
+                "Anthropic 兼容形态 baseurl（*/anthropic）——dsh 将以 OpenAI "
+                "形状请求打 Anthropic 端点，表现为 TRANSPORT 断流（0 轮即死）。"
+                "修复：config 增配 agent.dsh_api: anthropic-messages"
+            )
 
     # ── run 停滞预算（evo-add-run-stop-loss 2.2，缺省关闭）────────────
     # agents.run_stall_budget_* 三键：复合判停（连续 N 次达到 120s 的往返，

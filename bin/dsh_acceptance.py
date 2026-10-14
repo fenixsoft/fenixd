@@ -1351,10 +1351,12 @@ def accept_selfcheck(project_root: Path, profile: str,
     else:
         if providers:
             p0 = providers[0]
+            names = [str(p.get("name")) for p in providers]
             add("provider 链凭据", True,
-                f"{len(providers)} 个可用 provider"
-                f"（首个 baseurl={p0.get('baseurl')}，"
-                f"apikey={redact(str(p0.get('apikey')))}）")
+                f"{len(providers)} 个可用 provider：{names}；缺省选中首个 "
+                f"baseurl={p0.get('baseurl')}，"
+                f"apikey={redact(str(p0.get('apikey')))}"
+                f"（首个可能已失效——用 --provider <name> 显式指定）")
         else:
             add("provider 链凭据", False, "llm.providers 无 baseurl+apikey 齐备项",
                 "在 .fenix/config.yaml 的 llm.providers 配置 baseurl+apikey")
@@ -1467,8 +1469,24 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
     产出五段证据报告。"""
     from core.config import ConfigLoader
     cfg = ConfigLoader.resolve_config(project_root)
-    provider = next(p for p in (cfg.get("llm") or {}).get("providers") or []
-                    if isinstance(p, dict) and p.get("baseurl") and p.get("apikey"))
+    # provider 选择：--provider 按 name 精确选；缺省取首个合格项——盲取
+    # providers[0] 曾选中已失效网关（404，2026-10-14 run1 实证），自检段
+    # 会列出全部候选名提示显式指定。
+    providers = [p for p in (cfg.get("llm") or {}).get("providers") or []
+                 if isinstance(p, dict) and p.get("baseurl") and p.get("apikey")]
+    wanted = str(getattr(args, "provider", "") or "").strip()
+    if wanted:
+        provider = next((p for p in providers
+                         if str(p.get("name", "")) == wanted), None)
+        if provider is None:
+            print(f"--provider {wanted!r} 不在 provider 链：可用 "
+                  f"{[str(p.get('name')) for p in providers]}", file=sys.stderr)
+            return 1
+    else:
+        provider = providers[0] if providers else None
+    if provider is None:
+        print("provider 链无 baseurl+apikey 齐备项", file=sys.stderr)
+        return 1
     model = args.model or str(provider.get("model") or "")
     if not model:
         print("未指定 --model 且 provider 缺 model 字段——dsh 通道要求显式模型",
@@ -1829,6 +1847,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_ac.add_argument("--profile", default="fenix", help="dsh profile 名")
     p_ac.add_argument("--model", default=None,
                       help="真实验收模型名（缺省取 provider 配置）")
+    p_ac.add_argument("--provider", default=None,
+                      help="provider 链按 name 选择（缺省取首个合格项；"
+                           "自检会列出全部候选名）")
     p_ac.add_argument("--timeout", type=float, default=900.0,
                       help="单车道超时秒数（真实模式放宽）")
     p_ac.add_argument("--evidence-dir", default=str(DEFAULT_EVIDENCE_DIR))

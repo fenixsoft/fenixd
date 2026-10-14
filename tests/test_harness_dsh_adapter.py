@@ -256,6 +256,28 @@ class TestSpawnContract:
         assert 'api: "anthropic-messages"' in content
         assert 'baseURL: "http://127.0.0.1:18787/v1"' in content
 
+    def test_patch_recycling_age_based_not_slot_based(self):
+        """并发 spawn 不互踩：刚写未读的 patch 不被下一次 spawn unlink
+        （单槽回收在全局 adapter 单例下曾致 a1 ENOENT 秒死）。"""
+        import os
+        import time as _time
+        adapter = _make_adapter()
+        first = adapter.build_spawn_spec(_make_request())
+        first_path = first.argv[first.argv.index("--patch") + 1]
+        second = adapter.build_spawn_spec(_make_request())
+        second_path = second.argv[second.argv.index("--patch") + 1]
+        assert first_path != second_path
+        assert os.path.exists(first_path), "新鲜 patch 被槽位回收互踩"
+        assert os.path.exists(second_path)
+        # 到龄回收：把首个条目改成超龄，第三次 spawn 应清掉它、保留新鲜的两个
+        adapter._patch_files[0] = (
+            first_path, _time.monotonic() - 3601.0)
+        third = adapter.build_spawn_spec(_make_request())
+        third_path = third.argv[third.argv.index("--patch") + 1]
+        assert not os.path.exists(first_path), "超龄 patch 未被回收"
+        assert os.path.exists(second_path), "未到期 patch 被误回收"
+        assert os.path.exists(third_path)
+
 
 # ── 1.2：process_patterns 与 capabilities ────────────────────────────────
 
@@ -624,9 +646,11 @@ class TestCheckHealth:
 
 class TestModelPatchRecycle:
     def test_next_spawn_unlinks_previous_patch(self):
-        """同实例多次 spawn 不向 /tmp 逐份累积（resume 回退重跑等场景）：
-        adapter 实例缓存上次 patch 路径，下一次 spawn 前回收（best-effort）
-        ——进程内单实例至多滞留一份；当前在用的 patch 不受影响。"""
+        """（改版）回收按龄不按槽：同实例多次 spawn 各自 patch 均在保留期
+        内共存（并发派发不互踩）；仅超龄条目在下一次 spawn 前被回收
+        （best-effort）——旧「单槽 unlink 上一份」契约在全局 adapter 单例
+        下会互踩刚写未读的 patch，已废（2026-10-14 夹具 a1 ENOENT 实证）。
+        年龄边界行为见 TestDshSpawnContract.test_patch_recycling_age_based_not_slot_based。"""
         adapter = _make_adapter()
         first = adapter.build_spawn_spec(
             _make_request(resume_session_id="session-r1"))
@@ -636,8 +660,9 @@ class TestModelPatchRecycle:
             _make_request(resume_session_id="session-r2"))
         p2 = second.argv[second.argv.index("--patch") + 1]
         assert p1 != p2
-        assert not os.path.exists(p1)  # 上一次已回收
-        assert os.path.exists(p2)  # 当前在用
+        assert os.path.exists(p1)  # 保留期内共存（不再按槽回收）
+        assert os.path.exists(p2)
+        os.unlink(p1)
         os.unlink(p2)
 
 
