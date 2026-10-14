@@ -225,6 +225,15 @@ class RunStallBudgetExceededError(Exception):
 # ≤1024 且 UTF-8 编码后 ≤4096 字节」。
 _GATE_ERROR_TRUNCATE = 1024
 
+# ── 秒挂冷却到期复诵（evo-add-instant-fail-cooldown-full-lane-gate 2.2）──────
+# 到期复诵翻倍次数上限（独立于秒挂连击 count，勿混用）与单次冷却时长封顶
+# （秒）：300→600→1200→2400 封顶，防饿死边界——最坏一个封顶窗内必恢复派发
+# （design D「兼容与风险」，与既有悬空超时兜底保持足够代差）。翻倍判定本身
+# 以「窗内有无新失败」（last_fail_at > cooldown_started_at）为准，指纹字段仅
+# 用于续冷却留痕与未来复诵扩展，不阻塞恢复。
+_INSTANT_FAIL_MAX_DOUBLINGS = 3
+_INSTANT_FAIL_COOLDOWN_CAP_SECONDS = 2400.0
+
 # ── add-impl-code-review-gate：ocr 包装器默认可执行名 ──────────────────
 # add-impl-ocr-parallel-lane：消费点随 run_impl_ocr 迁 maintenance_runs.py
 # （D2b 规则 3，同 DEFAULT_GATEWAY_MODEL），DEFAULT_OCR_BIN 改由上方导入块
@@ -3642,6 +3651,9 @@ class AgentRunner:
                         # 与上方 shutdown 守卫同源取在飞产物文件：interrupted
                         # 终态补写在 sub_run_id（原地重试后 ≠ attempt_run_id）
                         self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl",
+                        # evo-add-instant-fail-cooldown-full-lane-gate 2.1：
+                        # 失败原文供归一化故障指纹记账（路径/端口/run id 归一化）
+                        error=error,
                     )
                     # add-cost-observability（D1）+ add-turn-limit-anchor-c（D4）：
                     # _run_agent 抛错（超时/kill/非 0 退出/rc==0 但 result 标记
@@ -7830,14 +7842,37 @@ class AgentRunner:
         )
         return error
 
+    def _instant_fail_fingerprint(self, error: str) -> str:
+        """秒挂失败归一化故障指纹（evo-add-instant-fail-cooldown-full-lane-gate 2.1）。
+
+        对 error 原文做路径/端口/run id 归一化（ISO 时间戳/UUID/hex/小数+单位/
+        独立数字 → 占位符，复用 daemon_errors 指纹通道的
+        ``admin_monitor._error_fingerprint`` 保守归一集，延迟导入防模块环）后
+        sha1。error 为空或归一化异常返回空串——翻倍判定以「窗内有无新失败」
+        为准（design D），指纹仅用于续冷却留痕与未来复诵扩展，缺失不阻塞恢复。
+        """
+        if not error:
+            return ""
+        try:
+            from core.admin_monitor import _error_fingerprint
+
+            return _error_fingerprint("agent_runner", str(error))
+        except Exception:
+            return ""
+
     def _record_instant_fail(self, spec_name: str, duration_seconds: float,
-                             run_file=None) -> None:
+                             run_file=None, error: str = "") -> None:
         """attempt 失败时按进程存活时长判定秒挂并累计 spec 维度连续计数。
 
         - 框架主动 SIGTERM 的 run（产物含 interrupted 标记）不计入；
         - 存活 ≥ 阈值（或无法判定时长异常）的失败视为非秒挂 → 重置计数；
         - 秒挂连续达 cooldown_after → 进入冷却并触发首次 major 告警
-          （同 spec 同信号 15 分钟内 throttle 去重）。
+          （同 spec 同信号 15 分钟内 throttle 去重）；
+        - evo-add-instant-fail-cooldown-full-lane-gate 2.1：每次秒挂增记
+          归一化故障指纹与末次失败时刻；进入冷却时同步记冷却起点、当前冷却
+          时长与翻倍次数（独立于连击 count）——到期复诵算术的状态基底。
+          冷却已活跃期间的既有续写行为不变（仅重写截止，不动起点/时长/翻倍
+          次数——翻倍算术的基准不被失败续写重置）。
         """
         if not spec_name:
             return
@@ -7853,22 +7888,43 @@ class AgentRunner:
             self._reset_instant_fail(spec_name)
             return
 
+        fingerprint = self._instant_fail_fingerprint(error)
         # setdefault+自增持锁（code-review item 557ef1ce8559）：与成功重置
-        #（_reset_instant_fail）及派发侧到期清零并发时，无锁读改写互相丢失
-        # 更新（对齐 _daily_run_count 先例）。
+        #（_reset_instant_fail）及派发侧到期复诵/清零并发时，无锁读改写互相
+        # 丢失更新（对齐 _daily_run_count 先例）。
         # code-review item 53c98a62022b：达阈值判定 + cooldown_until 写入一并
         # 纳入临界区（对齐 _daily_count_lock 对自增+判定的整体覆盖）——两者留在
         # 锁外时与 _reset_instant_fail 的锁内 pop 并发（同 spec 并发一败一成），
         # 冷却会写进已被摘除的孤儿 dict 而静默丢失。日志/告警的文件 IO 留在锁外。
         with self._instant_fail_lock:
             st = self._instant_fail.setdefault(
-                spec_name, {"count": 0, "cooldown_until": 0.0})
+                spec_name, {
+                    "count": 0,
+                    "cooldown_until": 0.0,
+                    "last_fail_at": 0.0,
+                    "fingerprint": "",
+                    "cooldown_started_at": 0.0,
+                    "cooldown_seconds": 0.0,
+                    "doublings": 0,
+                })
+            now = self._now()
             st["count"] = st.get("count", 0) + 1
+            st["last_fail_at"] = now
+            if fingerprint:
+                st["fingerprint"] = fingerprint
             cooldown_after = self._instant_fail_cooldown_after()
             cooldown_seconds = self._instant_fail_cooldown_seconds()
             reached_cooldown = st["count"] >= cooldown_after
             if reached_cooldown:
-                st["cooldown_until"] = self._now() + cooldown_seconds
+                already_active = float(st.get("cooldown_until") or 0.0) > now
+                st["cooldown_until"] = now + cooldown_seconds
+                if not already_active:
+                    # 冷却起点 = 进入冷却的写入时刻（引发本次冷却的失败批次与
+                    # 起点同刻——复诵判定要求末次失败**严格晚于**起点，见
+                    # _instant_fail_consume_expired_locked）。
+                    st["cooldown_started_at"] = now
+                    st["cooldown_seconds"] = float(cooldown_seconds)
+                    st["doublings"] = 0
 
         if not reached_cooldown:
             self.logger.warning(
@@ -7882,8 +7938,9 @@ class AgentRunner:
         self.logger.error(
             "agent_runner",
             f"'{spec_name}' 连续 {st['count']} 次秒挂（阈值 {cooldown_after}）— "
-            f"进入 {cooldown_seconds}s 冷却，期间 implementer/fast-track/repair "
-            f"派发被跳过；到期自动恢复",
+            f"进入 {cooldown_seconds}s 冷却，期间 implementer/fast-track/repair/"
+            f"planner-plan/verifier 派发与该 spec 的管理员处置唤起被跳过；到期"
+            f"自动恢复（evo-add-instant-fail-cooldown-full-lane-gate）",
         )
         self._alert_instant_fail_storm(spec_name, st["count"], cooldown_seconds)
 
@@ -7911,7 +7968,8 @@ class AgentRunner:
                 "description": (
                     f"spec '{spec_name}' 连续 {count} 次秒挂（进程存活低于阈值即死亡）"
                     f"— 已进入 {cooldown_seconds}s 冷却，期间 implementer/fast-track/"
-                    f"repair 派发被跳过；冷却到期自动恢复"
+                    f"repair/planner-plan/verifier 派发与该 spec 的管理员处置唤起被"
+                    f"跳过；冷却到期先复诵判定再恢复（窗内有新失败则翻倍续冷却）"
                 ),
                 "evidence": (
                     f"spec={spec_name}; instant_fail_count={count}; "
@@ -7940,25 +7998,85 @@ class AgentRunner:
         st = self._instant_fail.get(spec_name)
         return int(st.get("count", 0)) if st else 0
 
+    def _instant_fail_consume_expired_locked(self, spec_name: str, st: dict,
+                                             now: float):
+        """冷却到期后的「先复诵后消费」。MUST 在 ``_instant_fail_lock`` 临界区内调用。
+
+        evo-add-instant-fail-cooldown-full-lane-gate 2.2：
+
+        - 窗内零新失败（``last_fail_at <= cooldown_started_at``；引发本次冷却的
+          失败批次与起点同刻，不触发复诵）→ pop 条目清零，返回 ``(None, …)``
+          （恢复派发，到期后从 0 重新累计）；
+        - 窗内有新失败（末次失败时刻**严格晚于**冷却起点，含非门控车道喂入）→
+          不清零：翻倍次数 +1（上限 ``_INSTANT_FAIL_MAX_DOUBLINGS``，独立于
+          秒挂连击 count）、冷却时长 ``min(当前×2, _INSTANT_FAIL_COOLDOWN_CAP_
+          SECONDS)``，续写 ``cooldown_until`` 并把冷却起点重置为本次续写时刻，
+          返回 ``(新截止, 翻倍次数, 指纹)`` 供锁外 INFO 留痕；恢复定时器由
+          派发闸门随后的排程调用按新截止重排（backoff 判重放宽为「截止时刻
+          变化即重排」）。
+
+        指纹字段不参与翻倍判定（design D：指纹归一化误差不得阻塞恢复）。
+        """
+        last_fail_at = float(st.get("last_fail_at") or 0.0)
+        started_at = float(st.get("cooldown_started_at") or 0.0)
+        if last_fail_at <= started_at:
+            self._instant_fail.pop(spec_name, None)
+            return None, 0, ""
+        doublings = int(st.get("doublings") or 0)
+        current_seconds = float(
+            st.get("cooldown_seconds") or self._instant_fail_cooldown_seconds()
+        )
+        if doublings < _INSTANT_FAIL_MAX_DOUBLINGS:
+            doublings += 1
+            new_seconds = min(
+                current_seconds * 2.0, _INSTANT_FAIL_COOLDOWN_CAP_SECONDS
+            )
+        else:
+            # 翻倍有上限（spec Scenario「翻倍有上限」）：达 3 次或已达封顶后
+            # 不再递增，按封顶/当前时长继续冷却，到期后按复诵语义重判。
+            new_seconds = min(current_seconds, _INSTANT_FAIL_COOLDOWN_CAP_SECONDS)
+        st["doublings"] = doublings
+        st["cooldown_seconds"] = new_seconds
+        st["cooldown_started_at"] = now
+        st["cooldown_until"] = now + new_seconds
+        return st["cooldown_until"], doublings, str(st.get("fingerprint") or "")
+
     def is_instant_fail_cooldown(self, spec_name: str, now: float | None = None) -> bool:
         """判断 spec 是否处于秒挂冷却期（dispatch 派发前闸门调用）。
 
-        冷却到期自动恢复并清零计数（design D2：到期后从 0 重新累计）；
-        无条目 / 未进入冷却返回 False（行为与现状一致）。
+        冷却到期先复诵后消费（evo-add-instant-fail-cooldown-full-lane-gate
+        2.2）：窗内该 spec 仍有新秒挂记录（末次失败时刻晚于冷却起点）则不清零，
+        翻倍续冷却并留 INFO 续冷却留痕；窗内零新失败才清零恢复（design D2：
+        到期后从 0 重新累计）。复诵的查询侧读改写（+1/×2/续写/清零）全程持
+        ``_instant_fail_lock`` 临界区（对齐 _record_instant_fail 丢更新修复
+        先例——原查询侧为无锁读）。无条目 / 未进入冷却返回 False。
         """
         if not spec_name:
             return False
-        st = self._instant_fail.get(spec_name)
-        if not st:
-            return False
-        until = st.get("cooldown_until") or 0.0
-        if until <= 0:
-            return False
         now = self._now() if now is None else now
-        if now >= until:
-            self._reset_instant_fail(spec_name)
-            return False
-        return True
+        with self._instant_fail_lock:
+            st = self._instant_fail.get(spec_name)
+            if not st:
+                return False
+            until = st.get("cooldown_until") or 0.0
+            if until <= 0:
+                return False
+            if now < until:
+                return True
+            renewed_until, doublings, fingerprint = (
+                self._instant_fail_consume_expired_locked(spec_name, st, now)
+            )
+        if renewed_until is not None:
+            remaining = max(0, int(round(renewed_until - now)))
+            self.logger.info(
+                "agent_runner",
+                f"'{spec_name}' 秒挂冷却到期复诵：窗内仍有新秒挂记录，续冷却剩 "
+                f"{remaining}s（翻倍 {doublings}/{_INSTANT_FAIL_MAX_DOUBLINGS} 次"
+                f"，指纹 {fingerprint or '~'}；"
+                f"evo-add-instant-fail-cooldown-full-lane-gate）",
+            )
+            return True
+        return False
 
     def instant_fail_cooldown_until(self, spec_name: str) -> float:
         """该 spec 秒挂冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""
