@@ -6,7 +6,7 @@
 // 「显示尾部 N / 共 M 条事件」计数 + 「加载更早事件」向前分页（D5）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Spin, Switch, Typography } from 'antd';
-import { getRunTail, registerRunWatch } from '@/services/dashboard';
+import { getRunTail, registerRunWatch, STREAM_URL } from '@/services/dashboard';
 import type { RunEvent } from '@/services/dashboard';
 
 import { runEventsToChatMessages } from './runEvents';
@@ -339,7 +339,10 @@ export default function ClaudeOutputPane({
   useEffect(() => {
     if (!runId || !project) return;
 
-    const eventSource = new EventSource('/api/stream');
+    // add-dashboard-embed-mode 1.3：改引 services 单源 STREAM_URL（经 embedMount
+    // withApiBase 前缀化）——消除最后一处根相对流端点直连，apiBase 缺省
+    // 时连接地址与现状逐字节一致。
+    const eventSource = new EventSource(STREAM_URL);
 
     // watch 注册失败有限次退避重试（code-review item 11f787b2d13c）：注册失败时
     // 后端 sse.broadcast 只投递给 watched_runs 命中的连接，本连接收不到该 run 的

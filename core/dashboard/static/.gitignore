@@ -5,3 +5,6 @@ dist/*.map
 .umi/
 .DS_Store
 *.log
+
+# pnpm 安装运行态（构建/装依赖生成；npm 口径锁文件才入库，与根 .gitignore:75 口径一致）
+pnpm-lock.yaml
