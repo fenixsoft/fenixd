@@ -51,3 +51,9 @@
 - [x] 4.1 node --test（core/dashboard/static/tests/harnessBrand.test.mjs）：缺省=claude、dsh 映射、未知值回退徽标三分支
 - [x] 4.2 前端构建（npm run build）+ 冒烟：浅色界面下 dsh 图标可见（品牌蓝单态；再以 prefers-color-scheme:dark 仿真复核不消失——媒体查询已移除应恒为品牌蓝）、claude run 显示不变
 - [x] 4.3 回归：现有 node --test 全绿；python 侧 runs.py/runner 相关测试全绿
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-harness-brand-projection/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
