@@ -21,6 +21,7 @@ AST 扫描 core/**/*.py（排除 node_modules vendored 代码）与 fenixd.py �
 """
 
 import ast
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,10 +40,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _core_files() -> list:
-    return [
-        f for f in sorted((REPO_ROOT / "core").rglob("*.py"))
-        if not is_vendored(f)
-    ]
+    """core/ 下全部非 vendored 生产 .py（绝对路径，排序稳定）。
+
+    用 os.walk 逐层剪除 vendored 目录后收集，再保留 `is_vendored` 终滤：
+    原实现 `rglob("*.py")` 会先完整遍历 node_modules 子树（数千个与判定
+    无关的条目）再过滤掉，仅目录列举在本用例就占约 0.8s（_prod_files
+    重复 rglob 一遍）。剪枝条件与 `is_vendored` 的全路径子串判定逐位
+    等价（标记串不含分隔符，全路径含标记 ⟺ 某目录组件含标记），且
+    core/ 下 vendored 目录之外无符号链接目录，两法文件集实测一致。
+    """
+    files = []
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT / "core"):
+        dirnames[:] = [
+            d for d in dirnames
+            if not any(m in d for m in VENDORED_DIR_MARKERS)]
+        files.extend(Path(dirpath) / n for n in filenames if n.endswith(".py"))
+    return [f for f in sorted(files) if not is_vendored(f)]
 
 
 def _prod_files() -> list:

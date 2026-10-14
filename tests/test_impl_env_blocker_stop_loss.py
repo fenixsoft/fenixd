@@ -28,6 +28,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.agent_runner.harness import (
+    ClaudeAdapter,
+    get_current_adapter,
+    set_current_adapter,
+)
 from core.agent_runner.runner import AgentRunner
 from core.config import ConfigLoader
 from core.run_task_track import TaskCompletionWatcher
@@ -40,6 +45,24 @@ _IMPLEMENTER_TEXT = (REPO_ROOT / "agents" / "implementer.md").read_text(
     encoding="utf-8")
 _PLANNER_TEXT = (REPO_ROOT / "agents" / "planner-plan.md").read_text(
     encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _claude_current_adapter():
+    """用例期间把进程级当前 adapter 钉为 claude，结束后忠实还原。
+
+    ``_run_agent`` 的 spawn 面读的是进程级全局 ``get_current_adapter()``
+    （daemon 派发装配点按 agent.harness 写入；机器级 harness=dsh 的进程里
+    它是 DshAdapter，本文件用例不传 model_override，dsh spawn 契约对缺模型
+    fail-fast 抛 DshSpawnConfigError）——直接驱动真实 ``_run_agent`` 轮询环
+    的用例因此顺序性依赖测试进程外的装配状态。钉 claude 使装置自足
+    （惯例同 tests/test_harness_adapter.py 的 _restore_current_adapter）；
+    save/restore 而非复位 None，不冲掉宿主进程的 ambient 装配。
+    """
+    prev_adapter = get_current_adapter()
+    set_current_adapter(ClaudeAdapter())
+    yield
+    set_current_adapter(prev_adapter)
 
 
 # ── 共用小装置（自足，不跨测试文件 import） ───────────────────────────

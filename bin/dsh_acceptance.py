@@ -556,10 +556,16 @@ def judge_lane_steps() -> List[Dict[str, Any]]:
 
 
 def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any],
-                   mock: MockModelServer, timeout: float) -> Dict[str, Any]:
+                   mock: MockModelServer, timeout: float,
+                   defer_result_gate: bool = False) -> Dict[str, Any]:
     """implementer/verifier 车道：经 AgentRunner._run_agent 的全链驱动
     （dispatch 面 adapter 装配 + 健康门 → 真实 dsh spawn → 在飞判定 → 终态
-    收口 → 产物硬门）。证据只取既有机制产物。"""
+    收口 → 产物硬门）。证据只取既有机制产物。
+
+    ``defer_result_gate``（并发 smoke 专用）：两 agent 车道共享
+    ``.fenix-run-result.json`` 写点，gate 读侧推迟到全部车道写点收口后由
+    run_smoke 统一补算，消除并发写-读撕裂窗口（判定对象与判据不变）。
+    """
     from core.agent_runner.harness import (
         resolve_adapter, set_current_adapter, get_current_adapter,
     )
@@ -681,7 +687,8 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
 
     # ── 证据 4：产物硬门（result gate selfcheck 同源）────────────────
     ev["result_file_path"] = str(result_path)
-    ev["result_gate"] = result_gate_selfcheck(result_path)
+    if not defer_result_gate:
+        ev["result_gate"] = result_gate_selfcheck(result_path)
     ev["verification_report_written"] = (
         report_path.is_file() if lane == "verifier" else None)
 
@@ -1206,25 +1213,65 @@ def run_smoke(args: argparse.Namespace) -> int:
         if device.get("plugin_add_fallback"):
             evidence["meta"]["plugin_add_fallback"] = \
                 device["plugin_add_fallback"]
-        for lane in lanes:
-            lane_workdir = workdir / lane
-            lane_workdir.mkdir()
-            # 步骤脚本启动前落盘（服务器启动时一次性加载）
-            steps = lane_steps(lane, fixture)
-            with MockModelServer(steps, lane_workdir) as mock:
-                if lane == "judge":
-                    ev = run_judge_lane(device=device, fixture=fixture,
-                                        mock=mock, timeout=args.timeout)
-                else:
-                    ev = run_agent_lane(lane=lane, device=device,
-                                        fixture=fixture, mock=mock,
-                                        timeout=args.timeout)
-            evidence["lanes"].append(ev)
+        # 三车道并发驱动（各车道独立 mock 端点/端口/步骤脚本/请求日志，彼此
+        # 无共享可变状态；DSH_HOME 只读共享——daemon 下 adapter 单例并发驱动
+        # 多 run 本就是适配层既定形态）。进程级当前 adapter 在整个并发窗口钉
+        # 在 dsh adapter 上：车道内 set/restore 的 prev 均为等价配置的 dsh
+        # 实例，永不落到 claude 惰性回落。两 agent 车道共享
+        # .fenix-run-result.json 写点，result gate 自检统一推迟到全部车道
+        # 收口后补算（写完再读；判据自 payload 内 spec 定位 tasks.md，两车道
+        # 种子等价，判定值不变）。
+        from core.agent_runner.harness import resolve_adapter, set_current_adapter
+        prev_adapter = set_current_adapter(resolve_adapter("dsh", {"agent": {
+            "harness": "dsh", "dsh_home": device["home"],
+            "dsh_profile": device["profile"]}}))
+        lane_evs: Dict[str, Dict[str, Any]] = {}
+
+        def _drive_lane(lane: str) -> None:
+            ev: Dict[str, Any]
+            try:
+                (workdir / lane).mkdir()
+                # 步骤脚本启动前落盘（服务器启动时一次性加载）
+                steps = lane_steps(lane, fixture)
+                with MockModelServer(steps, workdir / lane) as mock:
+                    if lane == "judge":
+                        ev = run_judge_lane(device=device, fixture=fixture,
+                                            mock=mock, timeout=args.timeout)
+                    else:
+                        ev = run_agent_lane(lane=lane, device=device,
+                                            fixture=fixture, mock=mock,
+                                            timeout=args.timeout,
+                                            defer_result_gate=True)
+            except Exception as e:  # noqa: BLE001 — 车道装置失败入证据 fail-loud
+                ev = {"lane": lane, "error": repr(e)}
+            lane_evs[lane] = ev
             # 逐车道渐进输出（Dashboard 可见性）
             print(f"[lane] {lane}: "
                   f"{'error: ' + ev['error'] if ev.get('error') else 'done'}"
                   f"（{ev.get('elapsed_seconds')}s）", file=sys.stderr,
                   flush=True)
+
+        try:
+            lane_threads = [
+                threading.Thread(target=_drive_lane, args=(lane,),
+                                 name=f"dsh-acc-{lane}", daemon=True)
+                for lane in lanes]
+            for th in lane_threads:
+                th.start()
+            for th in lane_threads:
+                th.join()
+        finally:
+            set_current_adapter(prev_adapter)
+
+        # result gate 补算（全部车道写点已收口；与串行同判据同判定对象）
+        for lane in lanes:
+            ev = lane_evs.get(lane)
+            if ev is not None and ev.get("result_file_path") \
+                    and "result_gate" not in ev:
+                ev["result_gate"] = result_gate_selfcheck(
+                    Path(ev["result_file_path"]))
+        for lane in lanes:
+            evidence["lanes"].append(lane_evs[lane])
     except Exception as e:  # noqa: BLE001 — 装置失败同样 fail-loud 入证据
         evidence["device_error"] = repr(e)
     finally:

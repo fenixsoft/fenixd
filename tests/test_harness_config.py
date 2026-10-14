@@ -197,6 +197,8 @@ class TestDispatchHealthCheck(_RunnerBase):
             # claude 惰性回退被顶掉 → DshSpawnConfigError，2026-10-14 回归实证）
             set_current_adapter(prev_adapter)
 
+    # [fenix-ignore:88495f048099] 回归快照（10-14 00:11 junit）早于同日 acc3c5e0
+    # 修复：当前测试已用受控健康门替身（环境无关、类身份单一），HEAD 上不复现。
     def test_heat_reload_new_value_applies_next_dispatch(self):
         # 现读现配：同一 runner 实例的 config dict 被改后，下次 dispatch 走新值。
         # dsh 健康门用受控失败替身——本机装有健康 dsh（版本在白名单）时真实
