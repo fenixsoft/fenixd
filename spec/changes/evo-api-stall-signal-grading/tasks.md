@@ -17,11 +17,11 @@
 
 - [ ] 1.1 core/agent_runner/latency.py：新增 STALL_ROUND_ESCALATE_SECONDS=300.0 常量与 classify_round_stall 分级纯函数（单轮 >300 秒返回 warning-escalated；连续 ≥2 轮 >120 秒返回 warning；其余 >120 秒单轮返回 info），不改动 LATENCY_STALL_SECONDS/STALL_ROUND_WARN_SECONDS/RUN_STALL_ROUND_SECONDS 三既有常量的取值与语义
 - [ ] 1.2 core/agent_runner/runner.py 发射点（:6184-6198）接入分级：info 级改以 INFO 落日志（事件名仍 api_round_stall、context 增 grade 字段），warning/warning-escalated 保留 WARNING；run 结束汇总行（format_latency_summary 渲染处）追加分级计数 warning=N info=M
-- [ ] 1.3 core/agent_runner/runner.py：成功终态调用 _log_run_metrics（:8687-8778）处传入本 run latency 统计，使终态日志行 latency_rounds/latency_stalls/latency_max 反映实际值而非 0/0/None（run 档案 jsonl 行构建处 :6819-6847 既有字段不动）
+- [ ] 1.3 core/agent_runner/runner.py：成功终态调用 _log_run_metrics（:8687-8778）处传入本 run latency 统计，使终态日志行 latency_rounds/latency_stalls/latency_max 反映实际值而非 0/0/None（run 档案 jsonl 行构建处 :6819-6847 既有字段不动；数据通路：stats 为 _run_agent 局部量，经其返回 tuple 携带 → 成功调用点 :3804 → _finalize_success 新增参数 → latency= 传 _log_run_metrics，提前终态路径维持零样本回退）
 
 ## 2. 每日自省摘要可见性
 
-- [ ] 2.1 core/self_review.py：collect_daily_summary（:1651）第 6 节（:1754-1794）新增 API 停滞聚合行，逐个列出当日 stall 计数>0 的 run（run_id、stall 次数、累计停滞秒、最大单轮秒），数据复用 latency_samples_from_events/latency_stats；不改动 MIDFLIGHT_OUTLIER_DIMS（:774）与深扫行为
+- [ ] 2.1 core/self_review.py：collect_daily_summary（:1651）第 6 节（:1754-1794）新增 API 停滞聚合行，逐个列出当日 stall 计数>0 的 run（run_id、stall 次数、累计停滞秒、最大单轮秒），数据复用 latency_samples_from_events/latency_stats；不改动 MIDFLIGHT_OUTLIER_DIMS（:774）与深扫行为（聚合环节随第 6 节既有降级契约：异常降级空产出 + warning；逐 run 扫描沿用 MIDFLIGHT_SCAN_MAX_LINES 有界流式口径，不整文件读入；累计停滞秒取 samples 中 >60s 样本之和）
 
 ## 3. 测试
 

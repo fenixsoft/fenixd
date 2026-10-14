@@ -21,3 +21,5 @@
 
 - 纯读侧：不新增自动干预、不 kill 进程、不换道、不新增配置键。
 - 三常量取值与语义不动；tests/test_agent_runner_modules_contract.py 的常量同源契约不破。
+- 第 6 节新增聚合随该节既有降级契约（聚合环节异常降级空产出 + warning，不阻断摘要与其余各节）；逐 run 扫描沿用既有有界流式口径（MIDFLIGHT_SCAN_MAX_LINES 上限、逐行解析，MUST NOT 整文件读入内存）。
+- 「stall 次数/最大单轮秒」取 latency_stats（>60s 统计口径）之 stalls/max；「累计停滞秒」取 samples 中 >LATENCY_STALL_SECONDS（60s）样本之和——三值同源自 latency_samples_from_events 产出的 samples。
