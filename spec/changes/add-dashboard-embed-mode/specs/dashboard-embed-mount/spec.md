@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: API 前缀单点
-dashboard 前端 SHALL 提供唯一的 API 路径前缀化入口：从启动 URL 的 `location.search` 解析 `apiBase` 查询参数（缺省 `''`），全部后端请求路径（`request()` 封装内的 fetch、`STREAM_URL` 常量、组件内自建的 EventSource）MUST 经该单点拼接。`apiBase` 缺省时拼接结果 MUST 与现状逐字节一致（根相对 `/api/...`）。
+dashboard 前端 SHALL 提供唯一的 API 路径前缀化入口：从启动 URL 的 `location.search` 解析 `apiBase` 查询参数（缺省 `''`），全部后端请求路径（`request()` 封装内的 fetch、`STREAM_URL` 常量、组件内自建的 EventSource、服务层构造的下发 URL——如 `architectureDiagramUrl()` 供 iframe `src` 加载的架构图地址）MUST 经该单点拼接。`apiBase` 缺省时拼接结果 MUST 与现状逐字节一致（根相对 `/api/...`）。
 
 #### Scenario: 缺省行为逐字节一致
 - **WHEN** 用户直接访问 `http://127.0.0.1:8787/#/overview`（URL 无 `apiBase` 参数）
@@ -14,6 +14,10 @@ dashboard 前端 SHALL 提供唯一的 API 路径前缀化入口：从启动 URL
 #### Scenario: 组件内自建流连接同单点
 - **WHEN** 以 `?apiBase=/fenix-dashboard` 启动并打开会话输出面板（ClaudeOutputPane）
 - **THEN** 其 EventSource 连接地址为 `/fenix-dashboard/api/stream`，不再出现硬编码根路径
+
+#### Scenario: 服务层构造的下发 URL 同单点
+- **WHEN** 以 `?apiBase=/fenix-dashboard` 启动并打开项目架构图页签（ArchitectureTab 渲染 iframe）
+- **THEN** iframe `src` 为 `/fenix-dashboard/api/architecture/diagram?...`（经同一单点前缀化），架构图正常加载
 
 ### Requirement: embed 壳层隐藏
 `location.search` 含 `embed=1` 时，运行时布局配置 SHALL 隐藏 ProLayout 全局侧栏与全局顶栏（页面自身内容头/面包屑保留）；无 `embed=1` 时布局 MUST 与现状完全一致。两参数（`embed`/`apiBase`）MUST 可独立生效、可组合。

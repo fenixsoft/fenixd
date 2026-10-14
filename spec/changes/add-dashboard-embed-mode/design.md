@@ -2,7 +2,7 @@
 
 ## Context
 
-dsh 面板桥（dsh-plugins `add-dsh-dashboard-bridge`，配套 SPEC）把 dashboard v3 以 iframe 嵌进 dsh web 主面板：宿主半在 dsh webserver 注册 `/fenix-dashboard/` 前缀反代（剥离前缀转发 `127.0.0.1:8787`），客户端半以 `<prefix>/?embed=1&apiBase=<prefix>#<route>` 形态深链。dashboard v3 现状：umi max + Ant Design Pro、hash 路由、生产 `publicPath: './'`（静态资源相对引用，前缀挂载天然可用——已核实 `config/config.ts` 与 `routes/static_routes.py` 的根路径回退映射）；API 路径根相对 `'/api/...'`，单点收敛在 `services/dashboard.ts` 的 `request()`（唯一 fetch 位点）与导出常量 `STREAM_URL`（页面 EventSource 共享单源），另一处硬编码在 `ClaudeOutputPane.tsx:342` 自建 `EventSource('/api/stream')`。布局壳为 app.tsx 导出的 `layout: RunTimeLayoutConfig`（line 112）。
+dsh 面板桥（dsh-plugins `add-dsh-dashboard-bridge`，配套 SPEC）把 dashboard v3 以 iframe 嵌进 dsh web 主面板：宿主半在 dsh webserver 注册 `/fenix-dashboard/` 前缀反代（剥离前缀转发 `127.0.0.1:8787`），客户端半以 `<prefix>/?embed=1&apiBase=<prefix>#<route>` 形态深链。dashboard v3 现状：umi max + Ant Design Pro、hash 路由、生产 `publicPath: './'`（静态资源相对引用，前缀挂载天然可用——已核实 `config/config.ts` 与 `routes/static_routes.py` 的根路径回退映射）；API 路径根相对 `'/api/...'`，单点收敛在 `services/dashboard.ts` 的 `request()`（唯一 fetch 位点）与导出常量 `STREAM_URL`（页面 EventSource 共享单源），另有两处旁路：`ClaudeOutputPane.tsx:342` 自建 `EventSource('/api/stream')` 硬编码，以及 `architectureDiagramUrl()`（`dashboard.ts:2528`）直接返回 `/api/architecture/diagram` 字符串、由 `ArchitectureTab.tsx:333` 作 iframe `src` 加载——既不经 `request()` 也不属 `STREAM_URL`，前缀化范围须覆盖之（评审补入）。布局壳为 app.tsx 导出的 `layout: RunTimeLayoutConfig`（line 112）。
 
 前端测试形态：`core/dashboard/static/tests/*.test.mjs`，node 原生 type-stripping 直载 `.ts` 源码 + mock `globalThis.fetch`（`etagCache.test.mjs` 先例），`node --test tests/*.test.mjs` 全量跑。
 
@@ -17,7 +17,7 @@ dsh 面板桥（dsh-plugins `add-dsh-dashboard-bridge`，配套 SPEC）把 dashb
 `apiBase`/`embed` 从 `location.search` 一次性解析（参数位于 hash 前，hash 路由导航不改 search）。不用 `document.baseURI` 推导（今天服务端以根路径挂载、`baseURI` 与 API base 无必然关系，推导是隐式契约）；不用 `<base>` 注入（只影响相对 URL，管不住根相对 `/api/...`）。显式参数零歧义、可测试、缺省即现状。
 
 ### D2. 单点收敛于既有 `request()` 封装 + `STREAM_URL` 常量
-全部 API 调用已经走 `request()`（唯一 fetch 位点，ETag 缓存/超时/取消分类都在里面），`STREAM_URL` 已是页面 EventSource 共享单源（code-review item ba13417eb1ff 确立的口径）——前缀化只需：`request()` 内 `fetch(withApiBase(path))`、`export const STREAM_URL = withApiBase('/api/stream')`、`ClaudeOutputPane.tsx` 硬编码改引 services 单源。无散弹式改 URL。
+全部 API 调用已经走 `request()`（唯一 fetch 位点，ETag 缓存/超时/取消分类都在里面），`STREAM_URL` 已是页面 EventSource 共享单源（code-review item ba13417eb1ff 确立的口径）——前缀化只需：`request()` 内 `fetch(withApiBase(path))`、`export const STREAM_URL = withApiBase('/api/stream')`、`ClaudeOutputPane.tsx` 硬编码改引 services 单源、`architectureDiagramUrl()` 返回值经 `withApiBase()` 前缀化（iframe `src` 下发 URL，不经 fetch，评审补入）。无散弹式改 URL。
 
 ### D3. `embedMount.ts` 一个工具模块承载两参数
 `withApiBase(path)` / `isEmbedMode()` 同源（同一次 search 解析），模块级惰性缓存 + 测试注入口（node 测试环境无 `location`，沿用 type-stripping 直载 + 先注血后动态 import 的形态）。不拆两个模块（同生命周期、同测试面）。

@@ -5,7 +5,7 @@ Fenix Dashboard v3 即将被 dsh web 面板桥（dsh-plugins 仓库 SPEC `add-ds
 ## What Changes
 
 - 新增 `src/utils/embedMount.ts`：启动参数单点——从 `location.search` 一次性解析 `apiBase`（默认 `''`，行为与现状逐字节一致）与 `embed=1` 两参数；导出 `withApiBase(path)`（API/流路径前缀化）、`isEmbedMode()`，附测试注入口。
-- `services/dashboard.ts`：`request()` 内 fetch 路径与导出常量 `STREAM_URL` 统一经 `withApiBase()` 前缀化（全部 `/api/...` 字面量收敛过单点）；`ClaudeOutputPane.tsx` 自建的 `EventSource('/api/stream')` 硬编码同改（改用 services 单源常量）。
+- `services/dashboard.ts`：`request()` 内 fetch 路径与导出常量 `STREAM_URL` 统一经 `withApiBase()` 前缀化（全部 `/api/...` 字面量收敛过单点）；`ClaudeOutputPane.tsx` 自建的 `EventSource('/api/stream')` 硬编码同改（改用 services 单源常量）；`architectureDiagramUrl()` 构造的架构图 iframe `src` 下发 URL 同经单点前缀化（评审补入）。
 - `app.tsx`：`embed=1` 时运行时布局配置隐藏 ProLayout 全局侧栏与全局顶栏（页面自身内容头保留）；无参数时行为与现状完全一致。
 - dist 重建 + 前端全量回归（`node --test tests/*.test.mjs`）。
 - 非目标：不做主题适配、不做 SPEC 级深链、不改后端 `core/dashboard/`（Python 侧零改动）、不改 dsh 侧（另一仓库 SPEC）。
