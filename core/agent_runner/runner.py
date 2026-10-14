@@ -3246,6 +3246,12 @@ class AgentRunner:
         # None 起步，由 _run_agent 返回值与续跑提取回填），直接局部初始化。
         session_id = None
         session_provider = None
+        # evo-add-verifier-infra-death-triage 1.2：verifier 车道结构化归因
+        # 素材（catch-all 从捕获异常对象提取；与上方 error 局部变量同款
+        # 「末次失败留痕」跨 attempt 语义——后续 attempt 成功则随成功终态
+        # 自然弃用，再败则被新异常覆写）。None 起步：未捕获到即不透传。
+        last_stderr_tail = None
+        last_exit_code = None
         # chain_cursor 不设本地别名（code-review item 41e028ab3b35）：实际
         # 读写全部经 st.chain_cursor（provider_marker / 链推进 /
         # _resolve_provider_candidate），原别名从未被消费，已删除。
@@ -3601,6 +3607,17 @@ class AgentRunner:
                     turns = 0
                     success = False
                     error = str(e)
+                    # evo-add-verifier-infra-death-triage 1.2：verifier 车道
+                    # （主车道）catch-all 同挂结构化归因回填（对齐 spec-review
+                    # 车道 catch-all 同机制）：_run_agent 失败路径已在异常上挂
+                    # stderr_lines / exit_code（挂载先例见 _run_agent 的 exc
+                    # 挂载段），此处提取留痕、终态经 _exhausted_result 透传进
+                    # AgentRunResult——失败分类层（infra 死亡分流台账标注）
+                    # 与人工排障不再只依赖降噪后 error 文本。非进程失败异常
+                    # （取消/冻结终止等专用通道）不经过本分支，素材保持 None。
+                    last_stderr_tail = _stderr_tail_summary(
+                        getattr(e, "stderr_lines", None))
+                    last_exit_code = getattr(e, "exit_code", None)
                     # ── shutdown-interrupted 守卫（2026-09-09 事故）──
                     # 框架主动终止/daemon 濒死期间的失败不是网关的错：不做瞬断
                     # 判定、不排原地重试、不记瞬断熔断。SIGTERM 死法（exit≠0 +
@@ -3816,6 +3833,9 @@ class AgentRunner:
             cancelled_flag=cancelled_flag, shutdown_interrupted=shutdown_interrupted,
             frozen_terminated_flag=frozen_terminated_flag,
             kept_wt_path=kept_wt_path,
+            # evo-add-verifier-infra-death-triage 1.2：末次 catch-all 捕获的
+            # 结构化归因素材透传进终态结果对象（verifier 车道消费）。
+            stderr_tail=last_stderr_tail, exit_code=last_exit_code,
         )
 
     # ── R3: worktree 复用/新建（等价搬移，D1 R3 表，部分可提取）──────
@@ -5389,8 +5409,17 @@ class AgentRunner:
                           cancelled_flag: bool = False,
                           shutdown_interrupted: bool = False,
                           frozen_terminated_flag: bool = False,
-                          kept_wt_path=None) -> AgentRunResult:
-        """全重试耗尽三型返回（等价搬移，D1 R9）：cancelled / shutdown / 全失败。"""
+                          kept_wt_path=None,
+                          stderr_tail=None, exit_code=None) -> AgentRunResult:
+        """全重试耗尽三型返回（等价搬移，D1 R9）：cancelled / shutdown / 全失败。
+
+        evo-add-verifier-infra-death-triage 1.1/1.2：
+        - ``turns_used=turns`` 回填真实累计 assistant 轮数（原恒缺省 0）——终局
+          失败结果与 ``_log_run_metrics(turns=turns)`` 同口径，使消费层（验证
+          裁决）可区分「全无产出」与「有进度后失败」；
+        - ``stderr_tail``/``exit_code`` 结构化归因素材透传（对齐 spec-review
+          车道既有回填机制，调用方自 catch-all 捕获的异常对象提取）。
+        """
         # All retries exhausted
         duration = time.time() - start_time
         # run 收尾（add-run-cancel D5）：清理取消旗标，防泄漏。
@@ -5408,6 +5437,7 @@ class AgentRunner:
             return AgentRunResult(
                 run_id, spec_name, agent_type,
                 success=False, duration_seconds=duration,
+                turns_used=turns,
                 error=error,
                 cancelled=True,
                 provider_used=provider_name, model_used=model,
@@ -5426,6 +5456,7 @@ class AgentRunner:
             return AgentRunResult(
                 run_id, spec_name, agent_type,
                 success=False, duration_seconds=duration,
+                turns_used=turns,
                 error=error,
                 frozen_terminated=True,
                 provider_used=provider_name, model_used=model,
@@ -5444,10 +5475,14 @@ class AgentRunner:
             return AgentRunResult(
                 run_id, spec_name, agent_type,
                 success=False, duration_seconds=duration,
+                turns_used=turns,
                 error=error,
                 provider_used=provider_name, model_used=model,
                 worktree_path=kept_wt_path,
                 worktree_kept=kept_wt_path is not None,
+                # evo-add-verifier-infra-death-triage 1.2：shutdown 中断同属进程
+                # 失败终态，catch-all 捕获的结构化归因素材（若有）一并透传。
+                stderr_tail=stderr_tail, exit_code=exit_code,
             )
         # add-cost-observability（D1）：终态失败也累加（末次 attempt 的 usage，
         # 异常早夭时为 0），保证预算告警在失败轮同样累计、不漏计。
@@ -5463,10 +5498,19 @@ class AgentRunner:
         return AgentRunResult(
             run_id, spec_name, agent_type,
             success=False, duration_seconds=duration,
+            # evo-add-verifier-infra-death-triage 1.1：回填真实累计 assistant
+            # 轮数（原恒缺省 0）——与上方 _log_run_metrics(turns=turns) 同口径，
+            # 验证裁决消费层据此区分「全无产出（进程级死亡）」与「有进度后失败」。
+            turns_used=turns,
             error=f"All {max_retries} attempts failed. Last error: {error}",
             provider_used=provider_name, model_used=model,
             worktree_path=kept_wt_path,
             worktree_kept=kept_wt_path is not None,
+            # evo-add-verifier-infra-death-triage 1.2：verifier 车道（主车道）
+            # 失败终态同挂结构化归因素材（对齐 spec-review 车道既有回填机制）：
+            # stderr_tail = catch-all 捕获异常的原始 stderr_lines 尾行摘要，
+            # exit_code = 进程退出码；调用方未捕获时为 None，既有行为不变。
+            stderr_tail=stderr_tail, exit_code=exit_code,
         )
 
     # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────

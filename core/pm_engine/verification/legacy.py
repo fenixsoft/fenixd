@@ -14,6 +14,14 @@ from core.state_machine import (
     VERIFY_INFRA_ROUNDS_FIELD,
 )
 from core.pm_engine.verification.fastlane import FASTLANE_STREAK_FIELD
+# evo-add-verifier-infra-death-triage：进程级死亡判定与指纹标注（同包兄弟
+# 模块直引——infra_classify 不回引 legacy，无环；不经 pipeline 门面注册表，
+# 判定是纯函数、无 pipeline 状态依赖）。
+from core.pm_engine.verification.infra_classify import (
+    VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS,
+    annotate_death_fingerprint,
+    is_verifier_process_death,
+)
 
 
 def _discard_if_not_testing(pipeline, spec_name, result, label):
@@ -771,6 +779,113 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # ── verified 一次性放行门（judge-rerun-stability R2）──
         # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
         if pipeline._verified_gate_refuses(spec_name, "bug-found"):
+            return
+        # ── 进程级死亡分流（evo-add-verifier-infra-death-triage 2.2，归因链上游）──
+        # verifier run 终局失败且满足进程级死亡特征（终局 assistant 轮数为 0，
+        # 或全部 attempt 存活低于秒挂判定阈值——存活口径取终局结果
+        # duration_seconds，run 级总存活上界）＝「验证没能发生」而非「验证
+        # 发现了缺陷」（2026-10-14 add-harness-brand-projection 实证：dsh 补丁
+        # ENOENT 秒死 3+3 试全灭，词表不命中 → unknown → 按 product 保守处置
+        # → bug-found → 原地打回，烧掉一轮 9.8 万 token 零产出复核 run）。
+        # MUST 在 enrich_failure_class 归因之前消费：死亡命中走「infra 台账
+        # 限次廉价重派 / 超限 freeze_for_human 暂挂」两出口，两路均不 transition
+        # bug-found、不消耗实现尝试预算（与 engine 双路径异常守卫同一精神——
+        # 该守卫只覆盖抛异常路径，legacy 内部消费失败不抛异常，本分流补齐）。
+        # 错误指纹（ENOENT/启动期即退）仅作台账辅助标注，不作命中条件。
+        if is_verifier_process_death(result):
+            _death_err = getattr(result, "error", "") or ""
+            _fingerprint = annotate_death_fingerprint(_death_err)
+            _death_reason = (
+                f"verifier 进程级死亡（turns_used=0 或存活<"
+                f"{VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS:.0f}s，"
+                f"指纹={_fingerprint}）: {_death_err[:200]}"
+            )
+            # ── infra 记账单点入账（retry_gate=True 兼任限次决议）──
+            # 记账（预算退款 + _verify_infra_rounds 观测账 + 失败台账）与
+            # resolve_infra_retry_decision 专用计数 +1 在同一调用完成；
+            # "escalate" 决议后 MUST NOT 二次调用（观测账/退款双计，
+            # infra_classify._record_infra_failure docstring 契约）。台账
+            # （_verify_infra_retry_streak）清零点与验证 PASS + unfreeze_spec
+            # 清单同点，不新增平行台账。
+            _decision = pipeline._record_infra_failure(
+                spec_name,
+                _death_reason,
+                retry_gate=True,
+                # 退款锚点回退 implementer_run（不传 run_id）；attempt run id
+                # 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+                ledger_run_id=getattr(result, "run_id", "") or "",
+            )
+            if _decision == "redispatch":
+                # ── 限次内廉价重派：不计 env 冻结轮、不呼叫 admin、不流转
+                # bug-found。spec 保持 testing，经既有 verifier 派发入口重新
+                # 入队（对齐 pipeline 可达性 fail-fast 车道 D5 同款机械路径；
+                # 接线缺失或派发异常 fail-open 回落 context 直接 enqueue）。
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"进程级死亡分流命中（infra-retry 限内）'{spec_name}'："
+                    f"不判 bug-found、不计 env 冻结轮，廉价重派验证 — "
+                    f"{_death_reason}",
+                )
+                _schedule = getattr(
+                    pipeline._context, "schedule_infra_retry_redispatch", None
+                )
+                try:
+                    if _schedule is not None:
+                        _schedule(spec_name)
+                    else:
+                        pipeline._context.enqueue(spec_name, "verifier")
+                except Exception as exc:
+                    pipeline._context.logger.error(
+                        "pm_engine",
+                        f"进程级死亡重派触发失败，回落直接入队 '{spec_name}': {exc}",
+                    )
+                    try:
+                        pipeline._context.enqueue(spec_name, "verifier")
+                    except Exception as exc2:
+                        pipeline._context.logger.error(
+                            "pm_engine",
+                            f"进程级死亡重派入队失败（保持 testing 由 recovery "
+                            f"兜底重排）'{spec_name}': {exc2}",
+                        )
+                return
+            # ── 超限：freeze_for_human 验证暂挂（blocked+frozen+admin 信号，
+            # 对齐 _escalate_env_blocked 既有升级形态），不 transition bug-found、
+            # 不原地打回。保留 reclassify_infra_rounds / unfreeze_spec 人工
+            # 回拨兜底（解冻清零清单含 _verify_infra_retry_streak）。
+            _freeze_note = (
+                f"verifier 进程级基础设施死亡连续达重派上限（{_death_reason}）"
+                f"— 已冻结验证转人工，未判 bug-found、未消耗实现预算"
+            )
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"进程级死亡分流超限 '{spec_name}'：freeze_for_human 暂挂验证"
+                f"（不 transition bug-found）— {_death_reason}",
+            )
+            pipeline._context.state_machine.freeze_for_human(
+                spec_name,
+                error=_freeze_note,
+                signal_type="verifier_infra_death",
+                severity="critical",
+                description=_freeze_note,
+                evidence=(
+                    f"spec={spec_name}; run={getattr(result, 'run_id', '') or ''}; "
+                    f"turns_used={getattr(result, 'turns_used', None)}; "
+                    f"duration_seconds={getattr(result, 'duration_seconds', None)}; "
+                    f"fingerprint={_fingerprint}; error={_death_err[:200]}"
+                ),
+                recommended_action=(
+                    "验证 agent 启动期即死（0 轮/秒挂），非产品缺陷：检查 runner/"
+                    "网关/CLI 环境（补丁文件缺失、二进制不可达、额度耗尽等）修复后 "
+                    "unfreeze_spec 清零重试（解冻即清零 infra 重派计数）；确认为"
+                    "实现问题时人工拨回 implemented 重实现"
+                ),
+                alert_callback=pipeline._context.escalation_notifier,
+                extra_updates={
+                    # 死亡 run 已终局：清 tester_run 防在飞判定误认（对齐
+                    # _detect_uniform_verify_failure 冻结同款收口）。
+                    "tester_run": None,
+                },
+            )
             return
         # ── 统一失败归因入口（code-review 0d478d8f37ce，与 verdict bug-found
         # 分支对齐）──
