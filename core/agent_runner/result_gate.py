@@ -200,7 +200,10 @@ class AgentRunResult:
         # api_error_status 的桥接回填先例）。stderr_tail = 异常原始 stderr_lines
         # 的尾行摘要（maintenance_runs._stderr_tail_summary 单源，追溯用非判别
         # 用）；exit_code = 进程退出码。二者随 spec-review 车道 catch-all 回填，
-        # 供失败 ERROR 行就地归因；缺省 None：既有构造点不传即兼容。
+        # 供失败 ERROR 行就地归因；evo-add-verifier-infra-death-triage 1.2 起
+        # verifier 车道（主车道 _execute_agent_inner catch-all → _exhausted_result
+        # 终态透传）同样回填，供 infra 死亡分流台账辅助标注与排障追溯；
+        # 缺省 None：既有构造点不传即兼容。
         self.stderr_tail = stderr_tail
         self.exit_code = exit_code
 

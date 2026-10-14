@@ -139,6 +139,78 @@ def enrich_failure_class(
     return "unknown"
 
 
+# ── evo-add-verifier-infra-death-triage R1：进程级死亡判定 ─────────
+
+# 进程级死亡的秒挂判定阈值（秒）。存活口径取终局结果 duration_seconds——
+# run 级总存活、全部 attempt 存活的严格上界：上界低于阈值即全部 attempt
+# 均为秒挂，无需 attempt 级明细回填（runner 侧 attempt 级 `_record_instant_fail`
+# 侧账仅辅助标注，不参与本判定）。与 runner 侧 cli-retry-backoff 的 attempt
+# 级秒挂阈值同量级，数值独立维护、互不联动。
+VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS = 60.0
+
+# 启动期错误指纹标记（仅台账辅助标注用，MUST NOT 作为死亡命中条件——
+# 形态级词表天然追不上新错误，分流主判据是进程级死亡特征本身）。
+_DEATH_FINGERPRINT_MARKERS = (
+    "enoent",
+    "no such file",
+    "file not found",
+    "permission denied",
+    "fork/exec",
+    "spawn ",
+)
+
+
+def is_verifier_process_death(result) -> bool:
+    """终局失败结果是否命中进程级死亡特征（evo-add-verifier-infra-death-triage R1）。
+
+    判据（任一命中即死亡；MUST 在 ``enrich_failure_class`` 归因链上游消费，
+    命中即不判 bug-found、走 infra 台账限次重派/超限暂挂）：
+
+    - 终局结果 assistant 轮数为 0（``turns_used == 0``，runner 侧
+      ``_exhausted_result`` 已回填真实累计轮数）；
+    - 全部 attempt 存活低于秒挂判定阈值（终局结果 ``duration_seconds``——
+      run 级总存活上界——低于 ``VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS``）。
+
+    **保守缺省**：``turns_used``/``duration_seconds`` 缺失（``None``/属性不存在）
+    或脏值（非数值）按「口径未知」处理——该项不命中，回落既有归因链按 product
+    保守处置。宁可少分流，不可把口径未知的结果误判为死亡（误分流会绕过
+    bug-found 出口）。非对象（None）恒不命中。
+    """
+    if result is None:
+        return False
+    # None（构造点未回填/替身缺属性）≠ 0（真实零轮）：未知口径不命中
+    turns = getattr(result, "turns_used", None)
+    if turns is not None:
+        try:
+            if int(turns) == 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    duration = getattr(result, "duration_seconds", None)
+    if duration is not None:
+        try:
+            if float(duration) < VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def annotate_death_fingerprint(error_text: str) -> str:
+    """启动期错误指纹辅助标注（仅写入台账留痕，MUST NOT 作为命中条件）。
+
+    返回标注串（``startup-error-fingerprint:<marker>`` / 无命中
+    ``process-death:no-fingerprint``），由调用方拼入 infra 记账 reason 与
+    暂挂 evidence，供事后排障追溯；词表追不上新错误形态是设计前提，
+    标注缺失不影响分流判定本身。
+    """
+    text = str(error_text or "").lower()
+    for marker in _DEATH_FINGERPRINT_MARKERS:
+        if marker in text:
+            return f"startup-error-fingerprint:{marker}"
+    return "process-death:no-fingerprint"
+
+
 # ── evo-verify-infra-retry-lane：infra-retry 车道判定与限次 ─────────
 
 # infra-retry 廉价重派预算缺省值（design D2）：与 ENV_BLOCK_FREEZE_THRESHOLD=2
