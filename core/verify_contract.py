@@ -129,6 +129,7 @@ from dataclasses import dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import yaml
@@ -1597,11 +1598,25 @@ class CommandVerifyServer:
 
     @staticmethod
     def _probe(url: str, timeout: float = 1.0) -> bool:
+        """端口活性探测：任何良构 HTTP 响应（含 401/404 等 4xx/5xx）＝有监听。
+
+        发现语义是「端口被消费」（有无 HTTP 监听者），不是「应用就绪」——
+        就绪判定是 probe_ready 的职责（期望状态码 + 鉴别力自检）。此前只认
+        urlopen 成功（2xx）：鉴权型应用（dsh web 对 / 无凭据恒 401，browser-trust
+        fence）即使完美启动，HTTPError 也会把探针吞成 False，端口发现必失败、
+        实例被判「未就绪」（add-dsh-dashboard-bridge 验证环境事故 2026-10-14）。
+        HTTPError 说明对端返回了完整 HTTP 响应＝监听者在场，与 serving.py
+        _probe_url(http_error_ok=True) 的既有口径对齐；连接拒绝/超时仍判不活。
+        """
         try:
             with urlopen(
                 Request(url, headers={"User-Agent": "fenix-verify-probe"}), timeout=timeout
             ):
                 return True
+        except HTTPError:
+            # 4xx/5xx 响应本身即监听证据（见 docstring）——就绪与否则交给
+            # probe_ready 按契约期望值判定
+            return True
         except Exception:
             return False
 
