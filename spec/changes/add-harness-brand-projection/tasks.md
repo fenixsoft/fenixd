@@ -54,6 +54,6 @@
 
 ## 验证修复（原地打回第 2 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-harness-brand-projection/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-harness-brand-projection/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：**产品 Bug 属实，非场景缺陷**——5 个失败 web 场景同根因：detail.tsx L1377/1379 使用 `<HarnessBrandProvider>` 而 L1-36 导入清单缺失该 import（L22 仅导入 ClaudeOutputPane），运行时 ReferenceError 整页崩溃；场景断言「页面不崩、run 卡片可点、品牌按 run meta 渲染」与产品期望相符，断言本身无缺陷）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（产品代码单行修复：detail.tsx L22 补 `HarnessBrandProvider` 导入，与 RunRecordModal/AdminRunModal 同一 barrel 导入形态 `import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg'`；场景文件零修改）
+- [x] 修复后重跑验证确认通过（run 内重跑全绿：npm run build exit 0；前端全量 node --test 238 pass / 0 fail；python 定向回归 test_run_metrics_persistence+test_dashboard_data 176 passed；dist 决定性核验——未解析裸标识符会经 minify 保留原名（上轮 chunk 的 pageerror 即字面 `HarnessBrandProvider is not defined`），新构建 dist 全目录零 `HarnessBrandProvider` 字面残留即解析成功，品牌模块（`aria-label":"dsh"`、`#4D6BFE`）在共享 chunk 与已验证通过的 Modal 路径同源；场景级验证由框架验证链在本 run 合并后独立重跑）

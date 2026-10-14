@@ -19,7 +19,7 @@ import RunRecordModal from './components/RunRecordModal';
 import RunCancelModal from './components/RunCancelModal';
 // 「任务进度」同款进度条控件 2026-09-23 抽出共享（CodeFixProgressCard 复用），原内联定义已删
 import ProgressBarTile from './components/ProgressBarTile';
-import { ClaudeOutputPane } from '@/components/claude-msg';
+import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
 // 告警裁决交互共享 hook + 执行按钮（与 overview AlertBanner 同源，
