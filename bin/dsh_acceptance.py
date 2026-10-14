@@ -1363,8 +1363,14 @@ def accept_selfcheck(project_root: Path, profile: str,
     if shutil.which("dsh") is not None:
         try:
             from core.agent_runner.harness import resolve_adapter
+            # 线协议随 config 装配（agent.dsh_api）：Anthropic 兼容形态
+            # baseurl 须配 anthropic-messages，否则健康门过的 Bundle 照样
+            # 在真实调用上 TRANSPORT 断流（2026-10-14 两轮验收实证）。
+            from core.config import ConfigLoader as _ConfigLoader
+            _cfg = _ConfigLoader.resolve_config(project_root)
             adapter = resolve_adapter("dsh", {"agent": {
-                "harness": "dsh", "dsh_profile": profile}})
+                "harness": "dsh", "dsh_profile": profile,
+                "dsh_api": str(_ConfigLoader.get(_cfg, "agent.dsh_api", "") or "").strip()}})
             adapter.check_health()
             add("dsh 健康门", True,
                 f"版本白名单 + Bundle 挂载探测通过（profile={profile}）")
@@ -1489,10 +1495,12 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
         from core.agent_runner.harness import (
             ClaudeAdapter, resolve_adapter, set_current_adapter,
         )
-        # 真实部署不隔离 home：adapter 按 ambient DSH_HOME/默认 home 装配
+        # 真实部署不隔离 home：adapter 按 ambient DSH_HOME/默认 home 装配；
+        # 线协议随 config 装配（agent.dsh_api，见 self-check 同款注释）
         adapter = resolve_adapter("dsh", {"agent": {
             "harness": "dsh", "dsh_profile": profile,
-            "dsh_home": os.environ.get("DSH_HOME", "")}})
+            "dsh_home": os.environ.get("DSH_HOME", ""),
+            "dsh_api": str(ConfigLoader.get(cfg, "agent.dsh_api", "") or "").strip()}})
         adapter.check_health()
 
         lanes = list(SMOKE_LANES)
