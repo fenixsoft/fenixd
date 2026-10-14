@@ -36,12 +36,14 @@
 
 ### 浪费
 - **dsh 补丁互踩秒挂风暴 11 分钟，验证链被误判打回一轮**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：add-harness-brand-projection 的 dsh 车道在 12:39-12:51（本地）连续秒挂（进程启动数秒内即死）11 分 18 秒：10 条车道 run、20+ 次进程秒死、20 条 ERROR（计数峰值「连续 18 次秒挂」），出题/验证/管理员车道全部零 token 空转；基础设施失败被误消费成验证拒绝，白烧一轮 implementer 复核 run（468.9 秒、98 轮、约 9.8 万 token）只为确认「打回系误判」，spec 合回推迟约 1.5 小时（原 ~12:40 应验证，实际 14:00 才合回）。
   - 证据：日志 2026-10-14T04:39:13Z 起 32 处 [Errno 2] No such file or directory: '/tmp/fenix-dsh-model-*.yml'（dsh 子进程启动时读不到刚写出的模型三要素补丁文件），ERROR「连续 18 次秒挂（阈值 3）— 进入 300s 冷却」；04:40:00 状态机 testing→bug-found、04:40:01「原地打回第 1 轮」，佐证该轮无实修的 commit b5140f0b（12:58，仅 tasks.md 3 行改动）；风暴终结于 04:50:26「陈旧自愈触发…touch restart_request」重启，04:58 起 dsh 车道连续成功。
   - 调查评估：问题源：add-harness-brand-projection（harness=dsh）验证链并发派发时暴露。已核实：core/agent_runner/harness/dsh_adapter.py:676 注释自证根因——旧版「单槽 unlink 上一份补丁」设计在全局 adapter 单例+多车道并发派发下互踩刚写未读的补丁（10-14 上午夹具 daemon 已实证同症）；修复（DSH_PATCH_RETENTION_SECONDS 按龄回收）由 dbbde7e1 于 09:50 落盘，但主 daemon（10-13 21:58 启动）悬空持旧代码 3 小时，12:39 验证链多车道并发（planner×7 / verifier×1 / implementer×1 / administrator×1）触发互踩；12:50:32 重启装载新代码后同路径不再复发，根因为确定性、非环境性。另核实两个放大器：秒挂冷却只声明门控 implementer/fast-track/repair 三车道，冷却生效的 04:45-04:50 期间调度器仍新派 5 个 planner run（1791953098/3127/3256/3316/3376）继续秒死；verifier 3 试全灭后被 fail-closed 语义推入 bug-found（见可改进条目）。与存量工作关系：悬空窗口正是在飞 spec evo-add-key-path-stale-code-preflight（关键路径派发前预检旧代码）的问题陈述，本事件是其新实例且首次造成实害；今日 12:50 陈旧自愈（空闲确认型）成功触发重启，说明昨日可改进#1 指出的「空闲自愈被连轴 run 饿死」在空闲窗口出现时机制本身有效。结论：根因已闭环（修复+重启），残余敞口是悬空窗口与两个机制缺口。
   - 建议：优先落地 evo-add-key-path-stale-code-preflight，让关键路径派发前的旧代码预检→分钟级重启通道投产，消除「修复在盘、进程持旧」的兑现窗口；秒挂冷却到期自动恢复前可复核一次 daemon 代码指纹，修复未装载则不重派。
 
 - **并行出题三跑两弃：47 万 token 场景产物压线被隔离**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：add-harness-brand-projection 一个 spec 的验证场景出题（planner-plan）三跑仅一跑被采信：36 分钟、397,585+77,094 token 的已完成产物在完成线同秒被并行出题仲裁按「半成品」隔离弃用，另一跑 1373 秒、257 轮被取消后原样重派——出题环节约 90 分钟 planner 墙钟时间有效产出仅 1/3，其中约 47.5 万 token 与 23 分钟可判定为纯弃。
   - 证据：日志 04:39:07.616「并行出题产物已隔离（不被采信）…testing 等待并行出题超时，半成品隔离」、04:39:07.687「并行出题等待超时—已取消在飞 run 并隔离半成品，转串行重出」，与 run_metrics 里 planner-plan-add-harness-brand-projection-1791950590 的 success（duration 2158.874s、252 轮）同秒；04:39:10.128「并行出题标记已被消费侧接管（discarded），放弃 completed 登记」；后续 planner-plan-…-1791953455 terminal=cancelled（1373.42s、257 轮、0 token 入账），其取消时刻（05:13:49Z）恰为替代者 1791954828（success、1893.078s、391,474+93,892 token）的起跑时刻。
   - 调查评估：问题源：add-harness-brand-projection 验证链出题阶段（并行出题=双 planner 竞速生成验证场景、testing 阶段汇合采信其一）。已核实：join（汇合点）超时与 racer 完成同秒触发，完成的 252 轮产物按「半成品」隔离且完成登记被拒，随后串行重出（1791952747）又撞上秒挂风暴全灭，出题净空转；被取消的 1791953455 与替代者之间是「取消即串行重派」衔接，取消时机不与「兄弟产物被采信」对齐。根因按归因边界写到形态层：join 无「压线完成宽限」语义、racer 取消与采信事件不对齐，两点机制事实成立；是否叠加 dsh 车道出题本身过慢（本窗口 dsh 出题 15-36 分钟、200+ 轮 vs 组中位 25 秒）未在多假说间裁决，不出单因结论。与存量工作关系：并行出题仲裁已有运营侧教训（双 planner 竞速时僵尸方勿覆盖权威场景文件），但 join 宽限与取消对齐无在飞 spec 覆盖；秒挂风暴（另一条目）放大了本轮代价。结论：机制小改可消除大部分弃产物，值立项。
@@ -52,18 +54,21 @@
 
 ### 可改进
 - **秒挂冷却漏门控出题与验证车道，冷却期内仍空烧 5 个派发**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口：任何 CLI/进程启动类基础设施故障再现场景下，300 秒秒挂冷却只暂停 implementer/fast-track/repair 三车道，出题/验证/管理员派发不受门控——本次风暴冷却生效的 5 分钟内仍空烧 5 个 planner 派发（各约 25 秒、3 次进程秒死、0 token），并把连续秒挂计数推到 18；同类事件单次代价约 5-10 个无效派发轮次加相应日志告警噪声。
   - 证据：ERROR 文案自证门控面：「连续 N 次秒挂（阈值 3）— 进入 300s 冷却，期间 implementer/fast-track/repair 派发被跳过」；计数 04:45:15→04:50:01 连续爬升 3→18，期间 run_metrics 另有 5 个独立 planner 派发失败行（planner-plan-add-harness-brand-projection-1791953098/3127/3256/3316/3376，各 duration≈25s、0 token），直到 04:50:26 才见「秒挂冷却到期，恢复调度」；风暴期失败的 10 条车道 run 中 planner×7、verifier×1、administrator×1 均不在门控面内。
   - 调查评估：问题源：10-14 秒挂风暴（见浪费条目）暴露。已核实：冷却按三车道白名单门控，而本次故障主要烧的恰是白名单外的出题/验证车道，冷却语义对本次故障基本失效。根因：系统性缺口——熔断按车道白名单而非按故障面（同一 spec 的秒挂应全车道暂停）。与存量工作关系：秒挂冷却为既有机制（阈值 3、300s），无在飞 spec 调整其覆盖面；与已落地的 evo-verify-infra-retry-lane（只收口验证 prepare 短路路径的 infra-retry，见下条）互补不重复。结论：小改动、高确定性收益，值立项。
   - 建议：把秒挂冷却门控面从三车道白名单改为「同 spec 全车道暂停派发」（至少纳入 planner/verifier/administrator），冷却到期恢复时复诵一次故障指纹，未消失则冷却翻倍，避免到期即重进故障循环。
 
 - **验证 agent 基础设施死亡被误消费成验证拒绝打回**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口：验证车道 agent 基础设施死亡（0 轮、0 token、秒挂/文件缺失类）会因 verdict（验证裁决）缺失被 fail-closed 推导直接判 bug-found 并原地打回——本次实害为多烧一轮 implementer 复核 run（468.9 秒、约 9.8 万 token）加一整轮验证周期；同类事件单次代价即一轮无效修复 run 加验证链重跑，按本轮实测约 15-20 分钟墙钟。
   - 证据：04:40:00 状态机「Transition: testing → bug-found」，error 原文「Verifier agent failed: All 3 attempts failed. Last error: [Errno 2] …fenix-dsh-model-….yml」，04:40:01「原地打回第 1 轮…重置为 implementing 并注入修复任务」；core/verify_report.py:326-333 终局推导为 fail-closed——verdict 缺失/未知取值一律判 bug-found；b5140f0b（12:58）结论「打回系验证链基础设施秒挂误判（无失败场景）」。
   - 调查评估：问题源：10-14 秒风暴中 verifier 车道 3 试全灭后的裁决消费环节。已核实：agent 层基础设施死亡产生不出任何 verdict，而 fail-closed 语义让缺失 verdict 与真实验证不通过共用同一出口（bug-found→打回）；已落地的 evo-verify-infra-retry-lane（10-06 pushed）其 proposal 明确只收口 prepare/fail-fast 短路路径、Out-of-Scope 不触后置分类，故本路径属其覆盖面外的残余缺口，非重复建设。根因：系统性缺口——runner 层失败形态（0 assistant 轮+启动期错误指纹）未在进入 verdict 推导前分流。与存量工作关系：与 evo-verify-infra-retry-lane 互补（它管验证环境预检失败，本条管验证 agent 本体死亡），可直接复用其 infra 台账限次语义；与 evo-add-review-failure-attribution（失败归因留痕）互补。结论：语义边界清晰，值立项。
   - 建议：runner 层失败（0 assistant 轮或启动期错误指纹如 ENOENT/即退 exit 1）不进 verdict 推导，改走 infra 台账限次重派（复用 evo-verify-infra-retry-lane 台账语义），超限置验证暂挂而非 bug-found，留 admin 通道处置。
 
 - **dsh 车道延迟观测失明，停滞遥测对主车道结构性无效**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：窗口内全部 dsh 车道大 run（15 个，含 252-274 轮的出题/实现 run）API 往返配对恒为 0，「延迟观测疑似失明」告警 15 次——停滞/慢往返遥测对 dsh 车道结构性失效，今日深扫 6 个 dsh run 的 stall=0 是「看不见」而非「没停滞」；dsh 已成新 spec 默认车道（add-dashboard-embed-mode 全链亦 dsh），复发敞口是离群初筛在主车道上持续缺停滞维度，每轮自省都要人工翻档案补判。
   - 证据：WARNING「run planner-plan-add-harness-brand-projection-1791950590-a1: 延迟观测疑似失明（latency_rounds=0 但 assistant 轮次=252）——有模型轮次却配对不出任何 API 往返样本」（04:39:07Z）；同警告窗口内 15 次，覆盖 impl/planner/planner-judge/spec-review/admin 各型 dsh run（如 impl-…-1791950590-a1 246 轮、planner-plan-add-dashboard-embed-mode-1791971597-a1 224 轮）；日志投影管线 metrics 证 dsh 事件流在账（harness: dsh，thinking/tool_call/tool_result 均有计数），只是不参与配对；数据摘要第六节 6 个 dsh run 深扫全部 stall=0。
   - 调查评估：问题源：dsh harness 成为主车道后全量暴露（本窗口 4 个 spec 的 dsh run 均失明）。已核实：run_metrics 的延迟配对只识别 claude 形态事件流，dsh-events（dsh 车道自有事件流）的 tool_call/tool_result 不产生 API 往返样本，252 轮的大 run 也配不出一个样本，latency_stalls/p90 恒空。根因：系统性缺口——dsh 事件流未接入延迟配对，属遥测表达力缺口而非数据缺失。与存量工作关系：昨日可改进#2（停滞区间缺事件类型注记）是 claude 车道内的表达力问题，与本案是同一停滞遥测下游的两个独立缺口——只落注记不接 dsh 流，主车道停滞维度仍为空。结论：应与停滞遥测改进合并立项，避免二次返工。
