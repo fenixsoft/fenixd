@@ -68,7 +68,7 @@ def _user_text_evt(ts: float) -> dict:
 
 
 class _RecordingLogger:
-    """记录型 logger：捕获 warning 调用（FakeLogger 静默，无法断言自检告警）。"""
+    """记录型 logger：捕获 info/warning 调用（FakeLogger 静默，无法断言分级落点）。"""
 
     def __init__(self):
         self.records = []
@@ -77,7 +77,7 @@ class _RecordingLogger:
         pass
 
     def info(self, *a, **k):
-        pass
+        self.records.append(("info", a, k))
 
     def error(self, *a, **k):
         pass
@@ -435,6 +435,16 @@ class TestStallRoundWarn:
             and a[2].get("event") == "api_round_stall"
         ]
 
+    @staticmethod
+    def _stall_infos(logger):
+        """提取 info 级停滞日志记录（event=api_round_stall，分级降级）。"""
+        return [
+            (a, k) for (kind, a, k) in logger.records
+            if kind == "info" and len(a) >= 3
+            and isinstance(a[2], dict)
+            and a[2].get("event") == "api_round_stall"
+        ]
+
     def test_stall_round_warn_constant_value(self):
         """常量值 120.0；与既有常量各自独立、既有常量未被改动。"""
         from core.agent_runner import latency as latency_mod
@@ -446,30 +456,37 @@ class TestStallRoundWarn:
         assert LATENCY_STALL_SECONDS == 60.0
         assert RUN_STALL_ROUND_SECONDS == 120.0
 
-    def test_over_threshold_sample_warns(self, tmp_path):
-        """251.1s 样本：在飞采样点产出 WARNING（含 run_id 与样本秒数），
-        样本照常进入既有样本序列。"""
+    def test_isolated_single_stall_info_graded(self, tmp_path):
+        """251.1s 孤立单轮（120-300s、连续第 1 轮）：分级降级 INFO 只计数。
+
+        evo-api-stall-signal-grading 1.2 分级语义（原「单轮 >120s 必打
+        WARNING」断言随新语义更新）：不打 WARNING；事件名仍 api_round_stall、
+        context 增 grade="info"；样本照常进入既有样本序列。"""
         proot = tmp_path / "proj"
         runner = self._make_runner(proot)
         rec = _RecordingLogger()
         runner.logger = rec
         events = [
             {"type": "tool_result", "timestamp": 100.0},
-            {"type": "assistant", "timestamp": 351.1},  # 251.1s > 120s
+            {"type": "assistant", "timestamp": 351.1},  # 251.1s：孤立单轮
         ]
         fake_ns, _proc = self._fake_subprocess(events)
         import core.agent_runner.runner as rmod
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError):
-                runner._run_agent("prompt", proot, "impl-stall-warn-1")
-        warns = self._stall_warns(rec)
-        assert len(warns) == 1, f"应恰一条停滞 WARNING；records={rec.records}"
-        a, _k = warns[0]
+                runner._run_agent("prompt", proot, "impl-stall-info-1")
+        # 新语义：无任何停滞 WARNING（120-300s 孤立单轮降级 INFO）
+        assert self._stall_warns(rec) == []
+        # INFO 级落日志：事件仍 api_round_stall，context 增 grade="info"
+        infos = self._stall_infos(rec)
+        assert len(infos) == 1, f"应恰一条 info 级停滞日志；records={rec.records}"
+        a, _k = infos[0]
         assert a[0] == "agent_runner"
-        assert "run impl-stall-warn-1" in a[1]
+        assert "run impl-stall-info-1" in a[1]
         assert "251.1" in a[1]  # 样本秒数（:.1f 格式）
         extra = a[2]
-        assert extra["run_id"] == "impl-stall-warn-1"
+        assert extra["run_id"] == "impl-stall-info-1"
+        assert extra["grade"] == "info"
         assert extra["latency_round"] == 1  # 有效样本序列中的序数（1 基）
         assert extra["latency_max"] == pytest.approx(251.1)
 
@@ -516,9 +533,10 @@ class TestStallRoundWarn:
         # 无有效样本（error 摘要 0 rounds）
         assert "0 rounds" in str(cm.value)
 
-    def test_stats_unchanged_by_warning(self, tmp_path):
-        """纯读侧：触发 WARNING 的 run 其 stats 与纯函数对同一事件序列的
-        计算逐字段一致（样本序列未被告警改变）。"""
+    def test_stats_unchanged_by_grading(self, tmp_path):
+        """纯读侧：分级落日志不改变 stats——与纯函数对同一事件序列的计算
+        逐字段一致（样本序列未被告警/分级改变）；汇总行附分级计数
+        warning=0 info=1（孤立 251.1s 单轮降级 info）。"""
         proot = tmp_path / "proj"
         runner = self._make_runner(proot)
         rec = _RecordingLogger()
@@ -527,7 +545,7 @@ class TestStallRoundWarn:
             {"type": "tool_result", "timestamp": 0.0},
             {"type": "assistant", "timestamp": 119.9},   # ≤120s：静默
             {"type": "tool_result", "timestamp": 1000.0},
-            {"type": "assistant", "timestamp": 1251.1},  # 251.1s：告警
+            {"type": "assistant", "timestamp": 1251.1},  # 251.1s：孤立单轮 → info
         ]
         expected = latency_stats(latency_samples_from_events(events))
         fake_ns, _proc = self._fake_subprocess(events)
@@ -535,12 +553,16 @@ class TestStallRoundWarn:
         with mock.patch.object(rmod, "subprocess", fake_ns):
             with pytest.raises(RuntimeError) as cm:
                 runner._run_agent("prompt", proot, "impl-stall-pure-1")
-        # 恰一条告警，序数为第 2 个有效样本
-        warns = self._stall_warns(rec)
-        assert len(warns) == 1
-        assert warns[0][0][2]["latency_round"] == 2
-        # run 末摘要与纯函数结果逐字段一致（拼入 error 上下文的同一文本）
-        expected_text = format_latency_summary("impl-stall-pure-1", expected)
+        # 无 WARNING；恰一条 info 级分级日志，序数为第 2 个有效样本
+        assert self._stall_warns(rec) == []
+        infos = self._stall_infos(rec)
+        assert len(infos) == 1
+        assert infos[0][0][2]["latency_round"] == 2
+        assert infos[0][0][2]["grade"] == "info"
+        # run 末摘要与纯函数结果逐字段一致（拼入 error 上下文的同一文本，
+        # 行尾附分级计数 warning=0 info=1）
+        expected_text = format_latency_summary(
+            "impl-stall-pure-1", expected, {"warning": 0, "info": 1})
         assert f" | latency: {expected_text}" in str(cm.value)
 
 

@@ -35,6 +35,39 @@ LATENCY_STALL_SECONDS = 60.0
 #   即把告警线改动泄漏成判停行为变更。
 STALL_ROUND_WARN_SECONDS = 120.0
 
+# 单轮停滞升级线（evo-api-stall-signal-grading 1.1）：单轮 API 往返样本超过
+# 该值（秒）时，无论是否连续，直接按 WARNING-escalated 分级告警（120-300 秒
+# 的孤立单轮降级 INFO 只计数）。独立声明、不并入上方同值不同义常量组——
+# 本常量是分级线（信号降噪面），与统计线/告警线/判停线语义互不相干；
+# modules contract 测试锁三既有常量同源，新常量不在其列。
+STALL_ROUND_ESCALATE_SECONDS = 300.0
+
+
+def classify_round_stall(streak: int, round_seconds: float) -> str:
+    """单轮停滞信号分级纯函数（evo-api-stall-signal-grading 1.1）。
+
+    规则（优先级从高到低）：
+    - ``round_seconds > STALL_ROUND_ESCALATE_SECONDS``（300s）→
+      ``"warning-escalated"``（单轮超限，无论连续与否都打 WARNING）；
+    - ``streak >= 2``（连续第 2 轮及以上停滞）→ ``"warning"``；
+    - 其余（孤立的单轮 120-300 秒）→ ``"info"``（只计数、不打 WARNING）。
+
+    纯函数：不做 I/O、不读全局状态。``streak`` 口径由调用方计得——连续 =
+    相邻样本逐个 >STALL_ROUND_WARN_SECONDS（遇 ≤120s 样本重置计数），发射点
+    从 latency_state["samples"] 尾部回溯计数。
+
+    Args:
+        streak: 含当前轮在内的连续停滞轮数（当前轮已 >120s 时 ≥1）。
+        round_seconds: 当前轮 API 往返秒数（调用方已保证 >120s 才进入分级）。
+
+    Returns: ``"info"`` | ``"warning"`` | ``"warning-escalated"``。
+    """
+    if round_seconds > STALL_ROUND_ESCALATE_SECONDS:
+        return "warning-escalated"
+    if streak >= 2:
+        return "warning"
+    return "info"
+
 
 def iter_events(entries):
     """逐条 yield（兼容既有调用方传 list 或生成器）。"""
@@ -188,13 +221,20 @@ def _percentile(ordered: list, q: float) -> float:
     return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
 
 
-def format_latency_summary(run_id: str, stats: dict) -> str:
+def format_latency_summary(run_id: str, stats: dict, grade_counts: dict | None = None) -> str:
     """把摘要渲染为日志行（设计示例同款口径）。
 
     ``run planner-plan-xxx-a1: 58 rounds, median 3.2s, p90 78s, max 185s,
     stalls>60s=15 (26%)``。无样本时标注 0 rounds（中性可诊断文案——该 run
     无 API 往返样本；「真空跑」与「解析器失明」由延迟观测自检 WARNING 区分，
     这里不得归因于输入文件/旧转录）。
+
+    ``grade_counts``（evo-api-stall-signal-grading 1.2）：可选分级计数
+    ``{"warning": int, "info": int}``（warning 桶含 warning 与
+    warning-escalated 两级信号，info 桶为降级只计数的孤立单轮）；传入时在
+    行尾追加 ``, warning=N info=M``（既有 stalls>60s 口径不变；不传则行形态
+    与历史逐字节一致——bin/analyze_run_latency.py 等无分级上下文的调用方
+    零改动）。
     """
     if stats.get("rounds", 0) <= 0:
         return f"run {run_id}: 0 rounds（无 API 往返样本）"
@@ -203,8 +243,14 @@ def format_latency_summary(run_id: str, stats: dict) -> str:
     mx = stats.get("max") or 0
     stalls = stats.get("stalls") or 0
     ratio = (stats.get("stall_ratio") or 0) * 100
-    return (
+    line = (
         f"run {run_id}: {stats['rounds']} rounds, "
         f"median {med:.1f}s, p90 {p90:.1f}s, max {mx:.1f}s, "
         f"stalls>{LATENCY_STALL_SECONDS:.0f}s={stalls} ({ratio:.0f}%)"
     )
+    if grade_counts is not None:
+        line += (
+            f", warning={int(grade_counts.get('warning') or 0)}"
+            f" info={int(grade_counts.get('info') or 0)}"
+        )
+    return line

@@ -1224,6 +1224,94 @@ def _collect_midflight_scans(
     return results
 
 
+def _scan_run_stall_totals(
+    path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES
+) -> Dict[str, Any]:
+    """单 run API 停滞聚合扫描（evo-api-stall-signal-grading 2.1，有界流式）。
+
+    与 _scan_run_midflight 同款流式口径：逐行迭代 + 单行 json.loads（坏行跳过
+    不抛）、MIDFLIGHT_SCAN_MAX_LINES 行数上限；单行可能数 MB（assistant 全量
+    消息体），MUST NOT 整文件读入内存。数据与深扫同源：延迟导入
+    latency.latency_samples_from_events 采样 API 往返，latency_stats 出
+    stalls/max；「累计停滞秒」latency_stats 不直接产出，取 samples 中
+    >LATENCY_STALL_SECONDS（60s）样本之和（与 stalls/max 同源自 samples）。
+
+    Returns: {stalls, total_stall_seconds, max_stall_seconds}；
+    文件不可读时返回零值（stalls=0 → 聚合行不列该 run，不抛异常）。
+    """
+    from core.agent_runner.latency import (  # noqa: PLC0415
+        LATENCY_STALL_SECONDS,
+        latency_samples_from_events,
+        latency_stats,
+    )
+
+    def _iter_events():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if i > max_lines:
+                        break  # 行数上限：有界流式，超限即停
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue  # 坏行跳过不抛异常
+                    if isinstance(entry, dict):
+                        yield entry
+        except OSError:
+            return  # 读取失败按空产出（零值扫描），不阻断其余 run
+
+    samples = latency_samples_from_events(_iter_events())
+    stats = latency_stats(samples)
+    return {
+        "stalls": stats["stalls"],
+        "total_stall_seconds": sum(
+            s for s in samples if s > LATENCY_STALL_SECONDS),
+        "max_stall_seconds": stats["max"],
+    }
+
+
+def _collect_api_stall_aggregates(
+    project_root,
+    window_start: datetime,
+    window_end: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """窗口内 stall 计数>0 的 run 停滞聚合（evo-api-stall-signal-grading 2.1）。
+
+    扫 .fenix/runs/*.jsonl，窗口归属复核同深扫口径（run_id 内嵌时间戳优先、
+    缺失回退 mtime）；逐 run 经 _scan_run_stall_totals 有界流式扫描，stalls==0
+    的 run 不列。已被深扫覆盖的 run 允许重复出现（不做去重——聚合行与深扫行
+    数据同源但列选口径不同：深扫只列初筛离群 run，聚合行列全部停滞 run；
+    去重会漏掉「非离群但停滞」的 run，与提案动机相悖）。结果按 run_id 排序
+    （确定性渲染，测试锁定该行为）。
+
+    Returns: [{run_id, stalls, total_stall_seconds, max_stall_seconds}]，
+    runs 目录缺失/不可读返回空（不阻断摘要与其余各节）。
+    """
+    if window_end is None:
+        window_end = now_utc()
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return []
+    results: List[Dict[str, Any]] = []
+    for p in sorted(runs_dir.glob("*.jsonl")):
+        try:
+            stat = p.stat()
+        except OSError:
+            continue  # 产物已清理/不可读 → 该 run 跳过
+        start_ts = _run_start_ts(p.stem)
+        ts = start_ts if start_ts is not None else int(stat.st_mtime)
+        if not _in_window(from_epoch(ts), window_start, window_end):
+            continue
+        try:
+            scan = _scan_run_stall_totals(p)
+        except Exception:
+            continue  # 单 run 扫描异常（latency 导入失败等）不阻断其余 run
+        if scan["stalls"] <= 0:
+            continue  # stalls=0 不列
+        results.append({"run_id": p.stem, **scan})
+    return results
+
+
 def _collect_rescue_traces(
     project_root, window_start: datetime, window_end: Optional[datetime] = None
 ) -> Dict[str, Dict[str, Any]]:
@@ -1790,7 +1878,17 @@ class SelfReviewScheduler:
         except Exception as e:
             self.logger.warning("self_review", f"中途信号痕迹归集异常（降级空产出）: {e}")
 
-        if not (outliers or scans or traces):
+        # API 停滞聚合（evo-api-stall-signal-grading 2.1）：随本节既有降级
+        # 契约——异常降级空产出 + warning，不阻断摘要与其余各节。
+        stall_runs: List[Dict[str, Any]] = []
+        try:
+            stall_runs = _collect_api_stall_aggregates(
+                self.project_root, window_start, window_end
+            )
+        except Exception as e:
+            self.logger.warning("self_review", f"中途信号 API 停滞聚合异常（降级空产出）: {e}")
+
+        if not (outliers or scans or traces or stall_runs):
             return ["- （窗口内无中途信号）"]
 
         lines: List[str] = []
@@ -1849,6 +1947,24 @@ class SelfReviewScheduler:
             for keyword, g in traces.items():
                 for smp in g["samples"]:
                     lines.append(f"  - [{keyword}] {smp}")
+            lines.append("")
+        if stall_runs:
+            # API 停滞聚合行（evo-api-stall-signal-grading 2.1）：当日 stall
+            # 计数>0 的逐 run 一行「- api-stall: <run_id> stalls=N total=Xs
+            # max=Ys」——stalls/max 取 latency_stats（>60s 统计口径），累计
+            # 停滞秒取 samples 中 >60s 样本之和（三值同源 samples）。已被深扫
+            # 覆盖的 run 允许重复出现（不去重，列选口径不同，见采集函数注）。
+            lines.append("### API 停滞聚合（stall 计数>0 的 run）")
+            for r in stall_runs:
+                total = r.get("total_stall_seconds") or 0.0
+                mx = r.get("max_stall_seconds")
+                mx_txt = (
+                    f"{mx:.1f}s" if isinstance(mx, (int, float)) else "-"
+                )
+                lines.append(
+                    f"- api-stall: {r['run_id']} stalls={r['stalls']} "
+                    f"total={total:.1f}s max={mx_txt}"
+                )
             lines.append("")
         return lines
 
