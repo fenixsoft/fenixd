@@ -5,4 +5,6 @@
 import './tailwind.gen.css';
 export { default as ClaudeMessageList } from './ClaudeMessageList';
 export { default as ClaudeOutputPane } from './ClaudeOutputPane';
+// 品牌投影（add-harness-brand-projection 1.1）：run 视图层注入点消费
+export { HarnessBrandProvider, useHarnessBrand } from './HarnessBrand';
 export { runEventsToChatMessages } from './runEvents';

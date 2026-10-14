@@ -1,17 +1,21 @@
 import { Modal } from 'antd';
 import { useEffect, useState } from 'react';
-import { ClaudeOutputPane } from '@/components/claude-msg';
+import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 
 interface AdminRunModalProps {
   project: string;
   spec?: string;
   adminRunId: string;
+  // add-harness-brand-projection 3.2：admin 车道 run meta 的 harness（经
+  // run_activity 同口径的 run_metrics 旁路行透出）；缺失时 Provider 走回退链
+  //（缺省 claude 品牌 / 未知值首字母徽标）
+  harness?: string;
   open: boolean;
   onClose: () => void;
 }
 
-export default function AdminRunModal({ project, spec, adminRunId, open, onClose }: AdminRunModalProps) {
+export default function AdminRunModal({ project, spec, adminRunId, harness, open, onClose }: AdminRunModalProps) {
   const [eventCount, setEventCount] = useState(0);
   // 关闭时 destroyOnHidden 会卸载 ClaudeOutputPane，重开瞬间标题残留上一次 run 的计数，打开即清零待重新上报。
   useEffect(() => {
@@ -66,7 +70,9 @@ export default function AdminRunModal({ project, spec, adminRunId, open, onClose
           background: '#fafafa',
         }}
       >
-        <ClaudeOutputPane runId={adminRunId} project={project} onEventsCount={setEventCount} />
+        <HarnessBrandProvider harness={harness}>
+          <ClaudeOutputPane runId={adminRunId} project={project} onEventsCount={setEventCount} />
+        </HarnessBrandProvider>
       </div>
     </Modal>
   );

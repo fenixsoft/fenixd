@@ -580,7 +580,9 @@ export default function SpecDetailPage() {
   // SPEC 下拉快速切换：项目下所有 SPEC 列表（复用列表页 getSpecs，失败静默为空）
   const [specList, setSpecList] = useState<SpecSummary[]>([]);
   const [switchOpen, setSwitchOpen] = useState(false);
-  const [recordRunId, setRecordRunId] = useState<string | null>(null);
+  // add-harness-brand-projection 3.1：弹窗目标连同 run meta 的 harness 一起
+  // 记录（时间轴 run 节点透出；存量 run 缺字段 → undefined → 回退链缺省 claude）
+  const [recordRun, setRecordRun] = useState<{ runId: string; harness?: string } | null>(null);
   // add-run-cancel（4.2）：终止运行确认弹窗的目标 run_id + 受理后行内反馈
   const [cancelRunId, setCancelRunId] = useState<string | null>(null);
   // 已受理取消的行内反馈（run_id → 文案）；弹窗关闭后仍保留直至再次刷新
@@ -1362,7 +1364,7 @@ export default function SpecDetailPage() {
                               icon={<FullscreenOutlined />}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setRecordRunId(item.run_id!);
+                                setRecordRun({ runId: item.run_id!, harness: item.harness });
                               }}
                             />
                           </span>
@@ -1370,7 +1372,11 @@ export default function SpecDetailPage() {
                         // ClaudeOutputPane 依赖父容器高度约束，这里限高滚动避免时间轴被长运行拉穿
                         children: (
                           <div style={{ maxHeight: 480, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: isMobile ? 4 : 8, background: '#fafafa' }}>
-                            <ClaudeOutputPane runId={item.run_id!} project={name} />
+                            {/* 品牌投影（add-harness-brand-projection 3.1）：内嵌 pane 与
+                                最大化弹窗同口径注入 run 节点的 harness */}
+                            <HarnessBrandProvider harness={item.harness}>
+                              <ClaudeOutputPane runId={item.run_id!} project={name} />
+                            </HarnessBrandProvider>
                           </div>
                         ),
                       },
@@ -2215,7 +2221,7 @@ export default function SpecDetailPage() {
       />
 
       {/* 运行记录最大化弹窗（时间轴「查看运行记录」旁全屏入口） */}
-      <RunRecordModal runId={recordRunId} project={name} onClose={() => setRecordRunId(null)} />
+      <RunRecordModal runId={recordRun?.runId ?? null} harness={recordRun?.harness} project={name} onClose={() => setRecordRun(null)} />
 
       {/* add-run-cancel（4.2）：终止运行确认弹窗，受理后行内反馈 */}
       <RunCancelModal

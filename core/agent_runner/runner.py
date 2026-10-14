@@ -798,6 +798,15 @@ class AgentRunner:
         # 测试以 ``AgentRunner.__new__`` 绕过 __init__ 的实例仍由
         # _turn_limit_action 的原子惰性回退兜底。
         self._turn_branch_state: Dict[str, dict] = {}
+        # run 级 harness 品牌登记（add-harness-brand-projection 2.1）：
+        # {base_run_id: adapter.name}——派发装配时（_execute_agent 前置健康
+        # 检查段 / 一次性车道 _run_agent spawn 装配段）把该 run 的 adapter.name
+        # 记入，_log_run_metrics 收尾从本登记取值写入 run_metrics 行的
+        # ``harness`` 键（品牌投影真相源）。MUST NOT 在收尾时刻读进程级
+        # get_current_adapter()：_current_adapter 为进程级全局、重复注入以最后
+        # 一次为准，并发 run 收尾会取到别的 run 的 adapter 串号。登记随 run
+        # 终态外口（_execute_agent finally / 车道 _log_lane_run_metrics）摘除。
+        self._run_harness: Dict[str, str] = {}
         # 轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_limit_action
         # 建态侧的 24h 过期清理迭代与 _execute_agent 终态外口 forget 的摘除迭代
         # 并发互斥（协议见 _turn_branch_state_lock property 注释）。
@@ -3142,6 +3151,11 @@ class AgentRunner:
                     duration_seconds=0.0, error=str(e),
                 )
         set_current_adapter(_resolved_adapter)
+        # add-harness-brand-projection 2.1：派发装配时把本 run 的 adapter.name
+        # 记入 run 自身上下文（run_metrics 收尾取值真相源）——此刻装配的
+        # adapter 即本 run 的实际驱动者，后续所有 attempt 与收尾路径均从
+        # 本登记取值，不读进程级全局（防并发 run 收尾串号）。
+        self._register_run_harness(run_id, _resolved_adapter)
         try:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,
@@ -3149,6 +3163,10 @@ class AgentRunner:
                 used_wts=used_wts, handed_off=handed_off,
             )
         finally:
+            # add-harness-brand-projection 2.1：品牌登记随 run 终态外口摘除
+            #（覆盖 success/exhausted 两收口之外的全部早退终态 return），防
+            # 长驻 daemon 下登记无界增长；惰性回退对齐 _run_harness 声明处。
+            getattr(self, "_run_harness", {}).pop(run_id, None)
             # 轮次分支基线按 run 摘除（code-review item b9f426346304 /
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
@@ -5772,6 +5790,14 @@ class AgentRunner:
         # （_NO_MAIN_TREE_VERIFY_PROGRESS_LANES）留 runner 侧——design D8：
         # harness 包不感知车道。
         adapter = get_current_adapter()
+        # add-harness-brand-projection 2.1：一次性车道同口径登记（maintenance
+        # 三车道 / admin 车道等直调 _run_agent、不经 _execute_agent 派发装配
+        # ——dispatch 家族已登记时本调用为 no-op，其条目仍由 _execute_agent
+        # 终态外口统一摘除）。spawn 装配此刻取的 adapter 即本 run 进程的实际
+        # 驱动者，此刻读进程级全局（与 build_spawn_spec 同一取值）无收尾串号
+        # 问题；直调车道的条目由 _log_lane_run_metrics 收尾消费后摘除（本方法
+        # 不摘——摘早了车道收尾的 run_metrics 行就取不到值）。
+        self._register_run_harness(run_id, adapter)
         spawn_spec = adapter.build_spawn_spec(SpawnRequest(
             prompt=prompt,
             cwd=str(cwd),
@@ -8477,6 +8503,25 @@ class AgentRunner:
     # cost_usd 只做事件留痕，页面成本口径维持 dashboard 既有计价表
     # （任务 1.6，不叠加、不双源）。
 
+    def _register_run_harness(self, run_id: str, adapter) -> None:
+        """把该 run 的 adapter.name 记入 run 级品牌登记（add-harness-brand-projection 2.1）。
+
+        派发/spawn 装配时刻调用（此刻读到的 adapter 即本 run 进程的实际驱动
+        者，读进程级全局无收尾串号问题）；登记值供 _log_run_metrics 收尾取用。
+        同 run_id 重复登记为 no-op（dispatch 装配先行、_run_agent spawn 装配
+        no-op 跟进，保持先登记者的终态外口摘除权）。
+
+        摘除责任：dispatch 家族（_execute_agent 装配）条目由其 finally 统一
+        摘除；直调 _run_agent 的一次性车道条目由 _log_lane_run_metrics 收尾
+        消费后摘除。
+
+        惰性回退（``__dict__.setdefault``）：以 ``AgentRunner.__new__`` 绕过
+        __init__ 的测试替身仍可用，对齐 _turn_branch_state 的惰性回退惯例。
+        """
+        registry = self.__dict__.setdefault("_run_harness", {})
+        if run_id not in registry:
+            registry[run_id] = getattr(adapter, "name", "") or "claude"
+
     def _log_run_metrics(
         self,
         *,
@@ -8512,31 +8557,40 @@ class AgentRunner:
         if logger is None:
             return
         try:
+            # add-harness-brand-projection 2.1：harness 键（品牌投影真相源）——
+            # 收尾从 run 自身上下文取派发/spawn 装配时登记的 adapter.name；
+            # adapter 未装配的提前终态路径（登记缺失，如排队期取消）省略该键，
+            # 读侧缺省 claude 兜底。MUST NOT 在此读进程级 get_current_adapter()
+            # （并发 run 收尾串号，见 _run_harness 声明处注释）。
+            metric_ctx = {
+                "metric_type": "run_metrics",
+                "run_id": run_id,
+                "spec": spec_name,
+                "agent_type": agent_type,
+                "duration_seconds": round(float(duration_seconds or 0), 3),
+                "turns": int(turns or 0),
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+                "cache_creation_input_tokens": int(
+                    usage.get("cache_creation_input_tokens") or 0),
+                "cache_read_input_tokens": int(
+                    usage.get("cache_read_input_tokens") or 0),
+                "cost_usd": usage.get("cost_usd"),
+                "terminal": terminal,
+                "provider": provider,
+                # evo-add-api-stall-observability 1.3③：停滞指标（零样本
+                # 回退 0/0/None）。
+                "latency_rounds": int(latency.get("rounds") or 0),
+                "latency_stalls": int(latency.get("stalls") or 0),
+                "latency_max": latency.get("max"),
+            }
+            harness = getattr(self, "_run_harness", {}).get(run_id)
+            if harness:
+                metric_ctx["harness"] = harness
             logger.info(
                 "agent_runner",
                 f"run metrics: {agent_type} {terminal} '{spec_name}'",
-                {
-                    "metric_type": "run_metrics",
-                    "run_id": run_id,
-                    "spec": spec_name,
-                    "agent_type": agent_type,
-                    "duration_seconds": round(float(duration_seconds or 0), 3),
-                    "turns": int(turns or 0),
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
-                    "cache_creation_input_tokens": int(
-                        usage.get("cache_creation_input_tokens") or 0),
-                    "cache_read_input_tokens": int(
-                        usage.get("cache_read_input_tokens") or 0),
-                    "cost_usd": usage.get("cost_usd"),
-                    "terminal": terminal,
-                    "provider": provider,
-                    # evo-add-api-stall-observability 1.3③：停滞指标（零样本
-                    # 回退 0/0/None）。
-                    "latency_rounds": int(latency.get("rounds") or 0),
-                    "latency_stalls": int(latency.get("stalls") or 0),
-                    "latency_max": latency.get("max"),
-                },
+                metric_ctx,
             )
             # add-dsh-adapter-integration 4.2/4.3：usage 降级标记随 run_metrics
             # 入账（dsh 通道 usage_source=available/unavailable/unobserved；

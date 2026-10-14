@@ -345,6 +345,9 @@ export interface ActivityItem {
   resolve_note?: string;
   status?: string;
   admin_run_id?: string;
+  // add-harness-brand-projection 3.2：admin 车道 run 的 harness（run_metrics
+  // 旁路行透出；存量记录/指标行缺键不下发，前端走回退链缺省 claude）
+  harness?: string;
   // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因
   error?: string;
 }
@@ -933,6 +936,9 @@ export interface SpecDetail {
     status?: string;
     duration_seconds?: number;
     spec?: string;
+    // add-harness-brand-projection 3.1：run meta 的 harness（run_metrics 旁路
+    // 行透出；存量 run 缺省 claude，前端回退链消费）
+    harness?: string;
     // 验证执行节点：verify_engine 报告摘要（report.json 仅引擎验证写入）
     total?: number;
     passed?: number;

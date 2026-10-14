@@ -396,6 +396,10 @@ def get_spec_timeline(
             "status": r["status"],
             "spec": r.get("spec"),
             "duration_seconds": r.get("duration_seconds"),
+            # add-harness-brand-projection 3.1：harness 随 runs 列表行透出到
+            # 时间轴 run 节点——detail 页「查看运行记录」弹窗/内嵌 pane 的
+            # 品牌投影数据源（缺省 claude 已在 get_runs 兜底）
+            "harness": r.get("harness"),
             "summary": insights["summary"],
             "llm": insights["llm"],
             "reason": insights["reason"],

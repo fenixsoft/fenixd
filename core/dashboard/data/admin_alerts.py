@@ -225,6 +225,19 @@ def get_admin_activities(project_root, spec=None) -> list:
         item["escalation_id"] = esc_id
         item["actions_taken"] = rec.get("actions_taken") or rec.get("action_taken") or ""
         item["_pin"] = esc_id is not None
+        # add-harness-brand-projection 3.2：admin 车道 run 的品牌透出（与 runs
+        # 列表同口径：run_metrics 旁路行的 harness 键，经 load_run_metric 双源
+        # 查找）；存量记录/指标行缺键时不下发，前端走回退链缺省 claude。
+        admin_run_id = rec.get("admin_run_id")
+        if admin_run_id:
+            from core.dashboard.data.runs import load_run_metric
+
+            try:
+                metric = load_run_metric(project_root, str(admin_run_id))
+            except (OSError, ValueError):
+                metric = None
+            if metric and metric.get("harness"):
+                item["harness"] = str(metric["harness"])
         activities.append(item)
 
     # 未处理升级关联置顶，组内按时间倒序

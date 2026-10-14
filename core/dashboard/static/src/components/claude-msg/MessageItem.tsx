@@ -1,6 +1,7 @@
 // 单条消息渲染 —— 迁移自 claudecodeui MessageComponent.tsx（精简版）：
 // - 去 i18n / provider logo / 语音 / 附件（图片、文件）/ 交互式 prompt
-// - 头像用固定字符（Claude / U / 工具 / 错误）
+// - 头像用固定字符（U / 工具 / 错误）与品牌图标（经 HarnessBrand context
+//   投影，add-harness-brand-projection 1.3）
 // - thinking 折叠用本目录 Reasoning（无 radix 依赖）
 import { memo, useMemo } from 'react';
 
@@ -11,14 +12,17 @@ import { formatUsageLimitText } from './chatFormatting';
 import { isThinkingHidden } from './toolGrouping';
 import { Markdown, copyToClipboard } from './Markdown';
 import { Reasoning } from './Reasoning';
-import ClaudeLogo from './ClaudeLogo';
+import { useHarnessBrand, type HarnessBrandValue } from './HarnessBrand';
 import ToolCard from './ToolCard';
 
 // 非用户消息的头像与头部文案（code-review item fd9e3ef421b4）：旧实现以三层嵌套
 // 三元链选择头像元素与文案，违反本项目前端「禁止嵌套三元」规则（先例：runEvents.ts
 // 同款展开、QualityPanel renderOcrStatus、SystemPanel renderAdminField），抽模块级
 // helper 以 if/else 表达 error / tool / system / 默认（assistant 等）四分支。
-function avatarFor(type: ChatMessageType) {
+// 品牌投影（add-harness-brand-projection 1.3）：默认（assistant 等 agent 消息）
+// 分支的头像图标与头部标签经 useHarnessBrand() 取得——错误/工具/系统等非 agent
+// 消息的既有标签语义不变；未注入 Provider 时缺省 Claude 品牌，行为与现状一致。
+function avatarFor(type: ChatMessageType, brand: HarnessBrandValue) {
   if (type === 'error') {
     return (
       <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-destructive text-sm text-white">
@@ -42,16 +46,16 @@ function avatarFor(type: ChatMessageType) {
   }
   return (
     <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-0.5">
-      <ClaudeLogo className="h-full w-full" />
+      <brand.Logo className="h-full w-full" />
     </div>
   );
 }
 
-function headerLabelFor(type: ChatMessageType) {
+function headerLabelFor(type: ChatMessageType, brandName: string) {
   if (type === 'error') return '错误';
   if (type === 'tool') return '工具';
   if (type === 'system') return '系统';
-  return 'Claude';
+  return brandName;
 }
 
 // 复制统一复用 Markdown.tsx 的 copyToClipboard（item 562395f77242）：带
@@ -77,6 +81,9 @@ type MessageItemProps = {
 };
 
 const MessageItem = memo(({ message, prevMessage, showThinking = false }: MessageItemProps) => {
+  // 品牌投影（add-harness-brand-projection 1.3）：agent 消息的头像图标与头部
+  // 标签经 context 取得；context 变更穿透 memo 传播，无需props逐层传
+  const brand = useHarnessBrand();
   // ChatMessageType 全部类型均参与相邻同类型分组，仅需相邻两条类型一致
   const isGrouped = prevMessage && prevMessage.type === message.type;
 
@@ -154,9 +161,9 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
         <div className="w-full">
           {!isGrouped && (
             <div className="mb-2 flex items-center space-x-3">
-              {avatarFor(message.type)}
+              {avatarFor(message.type, brand)}
               <div className="whitespace-nowrap text-sm font-medium text-foreground">
-                {headerLabelFor(message.type)}
+                {headerLabelFor(message.type, brand.name)}
               </div>
               <span className="ml-auto text-[11px] text-gray-400">{formattedTime}</span>
             </div>
