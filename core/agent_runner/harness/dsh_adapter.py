@@ -67,8 +67,12 @@ DSH_VERSION_WHITELIST = ("0.2.0-rc.2",)
 #: profile target」）。可用配置键 ``agent.dsh_profile`` 覆盖。
 DSH_DEFAULT_PROFILE = "fenix"
 
-#: headless app 名（argv 显式 app 位置参数；dsh-bundle/README.md L118 部署
-#: 命令同形态）。shipped profile 与自定义 profile 的 app 选择都经它显式化。
+#: headless app 名。**禁止进入 argv**：``--profile <p>`` 已完成 app 选择，
+#: argv 里的裸 ``headless`` 会被 headless 应用的启动器解析为任务 positional
+#: （dsh 契约：positional 存在即不读 stdin，prompt 载荷被整体忽略）——
+#: 模型收到的任务文本变成字面单词 "headless"（2026-10-14 真实验收 run4
+#: 实证：implementer/verifier/judge 三车道全部答非所问）。保留本常量仅作
+#: 此陷阱的注记锚点；正确形态见 build_spawn_spec。
 DSH_APP_NAME = "headless"
 
 #: patch 渲染的路由名（README：路由名任取，渲染为 llm-pi-ai providers 键）。
@@ -605,8 +609,10 @@ class DshAdapter:
     def build_spawn_spec(self, req: SpawnRequest) -> SpawnSpec:
         """SpawnRequest → SpawnSpec（spec「DshAdapter spawn 契约」）。
 
-        argv ``dsh --profile <p> --patch <yml> headless --json
-        [--session-id <id>]``；prompt 全文经 stdin 载荷；cwd=worktree；env
+        argv ``dsh --profile <p> --patch <yml> --json [--session-id <id>]``
+        （**不含裸任务词**：``--profile`` 即 app 选择，argv 里的裸
+        ``headless`` 会被解析为任务 positional、令 stdin prompt 被忽略，
+        见 DSH_APP_NAME 注记）；prompt 全文经 stdin 载荷；cwd=worktree；env
         段按 dsh 口径清除 ANTHROPIC_*/CLAUDE_* 防串扰键；模型经 Bundle
         patch 显式渲染（provider 链 name/baseurl/apikey/model），缺任一要素
         fail-fast（DshSpawnConfigError），绝不回退 dsh 默认档。
@@ -640,7 +646,8 @@ class DshAdapter:
             self._config.profile,
             "--patch",
             patch_path,
-            DSH_APP_NAME,
+            # 注意：此处 MUST NOT 插入裸 "headless"（DSH_APP_NAME 注记）——
+            # 它会占用任务 positional 槽位，stdin prompt 被忽略。
             "--json",
         ]
         # --session-id 严格采纳语义：仅 resume 传真实 dsh session id；全新

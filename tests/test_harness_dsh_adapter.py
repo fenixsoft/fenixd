@@ -83,18 +83,18 @@ class TestSpawnContract:
         显式 model。"""
         adapter = _make_adapter()
         spec = adapter.build_spawn_spec(_make_request(cwd=str(tmp_path / "wt")))
-        # argv：dsh --profile fenix --patch <yml> headless --json（全新会话
+        # argv：dsh --profile fenix --patch <yml> --json（全新会话
         # MUST NOT 传 --session-id——严格采纳语义，未知 id 秒挂）
         assert spec.argv[0] == "dsh"
         assert spec.argv[1:3] == ["--profile", "fenix"]
         patch_idx = spec.argv.index("--patch")
         assert patch_idx == 3
         patch_path = spec.argv[patch_idx + 1]
-        assert DSH_APP_NAME in spec.argv
+        # 裸 "headless" MUST NOT 出现（会占用任务 positional 槽位，stdin
+        # prompt 被忽略——run4 实证）；--patch 后直接接 --json
+        assert DSH_APP_NAME not in spec.argv
         assert "--json" in spec.argv
-        # 形态序：launcher opts → app 名 → app args（README L118 部署命令）
-        assert spec.argv.index(DSH_APP_NAME) == patch_idx + 2
-        assert spec.argv.index("--json") > spec.argv.index(DSH_APP_NAME)
+        assert spec.argv.index("--json") == patch_idx + 2
         assert "--session-id" not in spec.argv
         # prompt 全文经 stdin 载荷；cwd 为 worktree
         assert spec.stdin_payload == "实现任务 1.1：build_spawn_spec"
