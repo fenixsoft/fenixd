@@ -54,6 +54,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-harness-brand-projection/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-harness-brand-projection/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：**无失败场景可核，打回无效**——verification-report.md 不存在，fail_history.json 第 1 轮 failed_scenarios=[]，daemon 日志证实验证链从未实际执行：场景 planner 3 次 + 旧版 verifier 3 次全部启动即挂（`/tmp/fenix-dsh-model-*.yml` 缺失的基础设施秒挂，daemon 重启窗口），「原地打回」系把验证链基础设施失败误判为验证失败，非产品/场景断言失败）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（复核结论为空失败集 → 无场景缺陷、无产品 Bug，产品代码与场景文件均无需修改；worktree 内交付物完整性已逐项核对——13 项声明交付物齐备，HarnessBrand/DshLogo/MessageItem/双 Modal/runner/runs.py 关键结构抽检与 SPEC 一致）
+- [x] 修复后重跑验证确认通过（run 内重跑全绿：node --test 238 pass/0 fail（含 harnessBrand.test.mjs 三分支）、python 定向回归 test_run_metrics_persistence+test_dashboard_data 176 passed、test_agent_runner+harness adapter 107 passed、npm run build 成功且 dist 冒烟 #4D6BFE 在包、无 prefers-color-scheme 媒体查询；场景级验证由框架验证链在本 run 合并后独立重跑）
