@@ -283,10 +283,24 @@ class TestPidAccounting:
         前提，而不可归因形态无法判定引用 → 保守跳过）。"""
         proc = fake_dev_server_proc("/tmp/fake-main-tree/core/dashboard/static")
         try:
-            with patch.object(v2, "_pid_recently_started", return_value=False):
-                killed = cleanup_orphans(logger=FakeLogger())
+            kill_log = []
+
+            def _recording_kill(pids, logger=None):
+                # 只记账不真杀：断言聚焦「不可归因 pid 不进清扫 kill 列表」，
+                # 不依赖宿主机是否恰有别的孤儿 dev-server（cleanup_orphans
+                # 缺省全局扫描，会撞上他项目残留进程，2026-10-14 回归
+                # killed==1 环境性误报实证），也消除测试对宿主机进程的
+                # 真实 kill 副作用。
+                kill_log.extend(pids)
+                return len(pids)
+
+            with (
+                patch.object(v2, "_pid_recently_started", return_value=False),
+                patch.object(v2, "_kill_pids", side_effect=_recording_kill),
+            ):
+                cleanup_orphans(logger=FakeLogger())
             assert proc.poll() is None, "不可归因进程不得被清扫误杀"
-            assert killed == 0
+            assert proc.pid not in kill_log, "不可归因进程不得进入清扫 kill 列表"
         finally:
             proc.kill()
             proc.wait()
