@@ -54,14 +54,14 @@
 
 ### 可改进
 - **秒挂冷却漏门控出题与验证车道，冷却期内仍空烧 5 个派发**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：任何 CLI/进程启动类基础设施故障再现场景下，300 秒秒挂冷却只暂停 implementer/fast-track/repair 三车道，出题/验证/管理员派发不受门控——本次风暴冷却生效的 5 分钟内仍空烧 5 个 planner 派发（各约 25 秒、3 次进程秒死、0 token），并把连续秒挂计数推到 18；同类事件单次代价约 5-10 个无效派发轮次加相应日志告警噪声。
   - 证据：ERROR 文案自证门控面：「连续 N 次秒挂（阈值 3）— 进入 300s 冷却，期间 implementer/fast-track/repair 派发被跳过」；计数 04:45:15→04:50:01 连续爬升 3→18，期间 run_metrics 另有 5 个独立 planner 派发失败行（planner-plan-add-harness-brand-projection-1791953098/3127/3256/3316/3376，各 duration≈25s、0 token），直到 04:50:26 才见「秒挂冷却到期，恢复调度」；风暴期失败的 10 条车道 run 中 planner×7、verifier×1、administrator×1 均不在门控面内。
   - 调查评估：问题源：10-14 秒挂风暴（见浪费条目）暴露。已核实：冷却按三车道白名单门控，而本次故障主要烧的恰是白名单外的出题/验证车道，冷却语义对本次故障基本失效。根因：系统性缺口——熔断按车道白名单而非按故障面（同一 spec 的秒挂应全车道暂停）。与存量工作关系：秒挂冷却为既有机制（阈值 3、300s），无在飞 spec 调整其覆盖面；与已落地的 evo-verify-infra-retry-lane（只收口验证 prepare 短路路径的 infra-retry，见下条）互补不重复。结论：小改动、高确定性收益，值立项。
   - 建议：把秒挂冷却门控面从三车道白名单改为「同 spec 全车道暂停派发」（至少纳入 planner/verifier/administrator），冷却到期恢复时复诵一次故障指纹，未消失则冷却翻倍，避免到期即重进故障循环。
 
 - **验证 agent 基础设施死亡被误消费成验证拒绝打回**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：验证车道 agent 基础设施死亡（0 轮、0 token、秒挂/文件缺失类）会因 verdict（验证裁决）缺失被 fail-closed 推导直接判 bug-found 并原地打回——本次实害为多烧一轮 implementer 复核 run（468.9 秒、约 9.8 万 token）加一整轮验证周期；同类事件单次代价即一轮无效修复 run 加验证链重跑，按本轮实测约 15-20 分钟墙钟。
   - 证据：04:40:00 状态机「Transition: testing → bug-found」，error 原文「Verifier agent failed: All 3 attempts failed. Last error: [Errno 2] …fenix-dsh-model-….yml」，04:40:01「原地打回第 1 轮…重置为 implementing 并注入修复任务」；core/verify_report.py:326-333 终局推导为 fail-closed——verdict 缺失/未知取值一律判 bug-found；b5140f0b（12:58）结论「打回系验证链基础设施秒挂误判（无失败场景）」。
   - 调查评估：问题源：10-14 秒风暴中 verifier 车道 3 试全灭后的裁决消费环节。已核实：agent 层基础设施死亡产生不出任何 verdict，而 fail-closed 语义让缺失 verdict 与真实验证不通过共用同一出口（bug-found→打回）；已落地的 evo-verify-infra-retry-lane（10-06 pushed）其 proposal 明确只收口 prepare/fail-fast 短路路径、Out-of-Scope 不触后置分类，故本路径属其覆盖面外的残余缺口，非重复建设。根因：系统性缺口——runner 层失败形态（0 assistant 轮+启动期错误指纹）未在进入 verdict 推导前分流。与存量工作关系：与 evo-verify-infra-retry-lane 互补（它管验证环境预检失败，本条管验证 agent 本体死亡），可直接复用其 infra 台账限次语义；与 evo-add-review-failure-attribution（失败归因留痕）互补。结论：语义边界清晰，值立项。
