@@ -11,7 +11,7 @@ claude-msg 对话组件的消息头标签与头像图标 MUST 经 `HarnessBrand`
 
 ### Requirement: run 维度按 harness 注入
 
-run 视图（RunRecordModal/AdminRunModal）MUST 从 run meta 读取 `harness` 字段并注入对应品牌；run meta 的 harness 来自 run_metrics 旁路行的新增 `harness` 键（runner 以当前 adapter.name 写入）。
+run 视图（RunRecordModal/AdminRunModal）MUST 从 run meta 读取 `harness` 字段并注入对应品牌；run meta 的 harness 来自 run_metrics 旁路行的新增 `harness` 键（runner 以该 run 派发时确定的 adapter.name 写入，并发 run 不串号；未装配 adapter 的提前终态路径省略该键）。
 
 #### Scenario: dsh run 显示 dsh 品牌
 
@@ -34,9 +34,9 @@ run meta 无 harness 字段 MUST 回退 claude 品牌；harness 值无注册品�
 
 ### Requirement: dsh 官方图标入库
 
-DshLogo MUST 以官方资产渲染（本 change `assets/dsh-mark.svg`，源自 deepseek.com/harness/favicon.svg），MUST 保留其明暗自适应（亮色黑/暗白/基础品牌蓝），aria-label 为 `dsh`。
+DshLogo MUST 以官方资产渲染（本 change `assets/dsh-mark.svg`，源自 deepseek.com/harness/favicon.svg），填充 MUST 固化为其基础品牌蓝 `#4D6BFE` 且 MUST NOT 携带 `prefers-color-scheme` 媒体查询——dashboard 固定浅色主题，OS 暗色偏好的白色变体在浅色界面同色消失（应用引入暗色主题时再恢复自适应），aria-label 为 `dsh`。
 
 #### Scenario: 明暗两态可见
 
-- **WHEN** dashboard 分别以亮色/暗色主题渲染 dsh 消息头像
-- **THEN** 两种主题下图标均可见（非同色消失）
+- **WHEN** 浅色界面渲染 dsh 消息头像（含以 prefers-color-scheme:dark 仿真 OS 暗色偏好的环境）
+- **THEN** 图标恒为基础品牌蓝、在界面底色上可见（非同色消失）
