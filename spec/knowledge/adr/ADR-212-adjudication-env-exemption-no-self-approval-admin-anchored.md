@@ -1,7 +1,8 @@
 # ADR-212：裁决 env 豁免不得自我批准（重验穷尽 + admin 处置锚定）
 
 date: 2026-10-03
-status: accepted
+status: superseded
+Superseded by: ADR-278(env 豁免 STATE 单源双门同源消费)
 
 ## Context
 

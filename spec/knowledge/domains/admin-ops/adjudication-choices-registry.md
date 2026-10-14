@@ -1,5 +1,5 @@
-<!-- knowledge: capability=adjudication-choices-registry rev=2
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution -->
+<!-- knowledge: capability=adjudication-choices-registry rev=3
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit -->
 
 # 裁决选项静态注册表
 
@@ -15,6 +15,7 @@
 | `impl_budget_exhausted` | continue_auto_fix（解冻+调大预算继续）/ manual_fixed_reverify（人工已修复，重置验证重跑）/ force_advance（接受现状收尾推进）/ abandon（撤销丢弃） |
 | `judge_rerun_cap` | manual_fixed_reverify / force_advance / abandon |
 | `verify_fail_escalation`（验证失败升级闸门） | continue_auto_fix（解冻+重置失败轮计数）/ manual_fixed_reverify / force_advance / abandon |
+| `inconclusive_loop`（env 豁免握手 inconclusive 升级停车） | grant_env_exemption（确认失败属环境且不可修复：写 spec 级 STATE 豁免落放行+重置重验，下轮 verified 合法生效带豁免回链）/ revise_scenario_reverify（修订场景定义与夹具供给层文件·重验，白名单路径，上限 2 次超限冻结转人工）/ manual_fixed_reverify / abandon |
 | `redispatch_loop_detected` | continue_auto_fix（解冻+清同因计数）/ manual_fixed_reverify / force_advance / abandon |
 | `spec-review-rejected`（评审否决达上限） | revise_reproposal（按否决意见改方案重评）/ force_advance / abandon |
 | `spec-review-incomplete`（评审器连坏） | retry_review（解冻重派评审）/ skip_review_gate / abandon |
@@ -35,3 +36,5 @@
 
 - 2026-09-27 add-human-adjudication-choices（spec/archive/2026-09-27-add-human-adjudication-choices） — 建立静态注册表、告警 choices 字段契约与桶 0/桶 2 携带边界
 - 2026-10-09 evo-fix-global-signal-choice-execution（spec/archive/2026-10-09-evo-fix-global-signal-choice-execution） — 选项新增 spec_scoped 作用域声明（缺省 True 保守）、is_global_spec 全局形态判定单源、resolve_choice 解析单源与 spec_scoped 反查收紧、ack_self_heal 全局收口动作入 build_artifact_paths_missing 桶
+- 2026-10-08 evo-fix-env-exemption-exit-reachability（spec/archive/2026-10-08-fix-env-exemption-exit-reachability） — 新增 inconclusive_loop 裁决桶与 grant_env_exemption 授予 env 豁免选项（choices 闭环：告警下拉→alert-resolve→执行器，与 Administrator SIGNAL 通道并存）
+- 2026-10-15 evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit（spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit） — inconclusive_loop 桶新增 revise_scenario_reverify 修订场景·重验选项（JSON 载荷、夹具供给层路径白名单、修订上限默认 2 次超限冻结转人工）
