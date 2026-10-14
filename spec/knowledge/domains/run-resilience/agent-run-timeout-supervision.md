@@ -1,4 +1,4 @@
-<!-- knowledge: capability=agent-run-timeout-supervision rev=2 sources=spec/archive/2026-09-02-improve-run-lifecycle-governance,spec/archive/2026-09-19-fix-run-hang-amplification -->
+<!-- knowledge: capability=agent-run-timeout-supervision rev=3 sources=spec/archive/2026-09-02-improve-run-lifecycle-governance,spec/archive/2026-09-19-fix-run-hang-amplification,spec/archive/2026-10-15-evo-add-admin-run-wrapup-contract -->
 
 # Agent run 超时监督（活性评估与续期）
 
@@ -11,7 +11,7 @@ agent run 到达墙钟时限后的活性评估、续期与确定性停滞判定�
 - 可观测零产出确定性短路：仅当「run 阻塞等待某后台调用不短于固化阈值」「该后台调用关联输出文件可观测且窗口内零增长」「窗口内工具完成数低于固化阈值」三条件同时成立时，方可不经判定 LLM 直接判停滞进入终止路径；短路判定在 run jsonl 与 daemon 日志中标注为启发式「零产出」判定，并记录后台调用标识、输出文件路径与观测到的零增长区间。任一条件不成立（尤其输出文件不可观测）时必须走 LLM 判定路径。重复相同工具调用占比与工具结果文本重复度不得作为停滞判据。
 - 判定 LLM 调用失败（网络异常、网关拒绝）且未触发确定性短路时，本次按停滞处理终止进程，日志与 run 文件记录「liveness judge unavailable」。
 - 判定 advancing：将该 run 时限延长 `agents.timeout_supervision.extension_seconds`，并向调度器广播续期事件使 stuck 检测起始时间随之顺延。判定 stagnant：立即终止并按既有失败路径处理，run 文件包含证据摘要（实质事件数、工具完成数、心跳数，零产出判定时另含输出文件与零增长区间）。
-- 续期双重封顶：`agents.timeout_supervision.max_extensions` 次数上限与 `agents.timeout_supervision.absolute_max_seconds` 总时长上限；任一封顶命中即不再评估、直接终止并记录「extension budget exhausted」。
+- 续期双重封顶：`agents.timeout_supervision.max_extensions` 次数上限与 `agents.timeout_supervision.absolute_max_seconds` 总时长上限；任一封顶命中即不再评估、直接终止并记录「extension budget exhausted」。扩容次数封顶点（max_extensions 用满处）有一条例外：收尾宽限车道（administrator 等非 impl 车道）且 run 内自建任务全部 completed 的 run 先获一次性收尾宽限（默认 20 轮，按近期平均每轮墙钟折算秒数一次性抬升墙钟上限，evidence 注记 wrapup_grace，观测不进 reason），宽限耗尽仍无终态再按上述终止路径落终态，详见 [admin-run-wrapup-contract](../admin-ops/admin-run-wrapup-contract.md)。
 - 每次评估与续期决策写入 run 文件与 daemon 日志供审计。
 
 ## 溯源
@@ -19,3 +19,4 @@ agent run 到达墙钟时限后的活性评估、续期与确定性停滞判定�
 - 史前复原 — 迁移期基线：agent 运行超时缺省 1 小时，Dashboard 配置页可调；超时由监督线程强杀并记 interrupted 语义
 - 2026-09-02 improve-run-lifecycle-governance（spec/archive/2026-09-02-improve-run-lifecycle-governance） — 确立到限先活性评估再终止的流程：证据驱动 LLM 判定、advancing 续期与续期双重封顶、enabled 开关与失败安全回退
 - 2026-09-19 fix-run-hang-amplification（spec/archive/2026-09-19-fix-run-hang-amplification） — 判定口径改为实质事件/心跳分离，心跳不构成推进证据；新增可观测零产出确定性短路；排除重复调用形态判据
+- 2026-10-15 evo-add-admin-run-wrapup-contract（spec/archive/2026-10-15-evo-add-admin-run-wrapup-contract） — 墙钟扩容次数封顶点新增非 impl 车道收尾宽限例外（一次性、按秒折算抬升墙钟上限），完整规则归 admin-run-wrapup-contract 页

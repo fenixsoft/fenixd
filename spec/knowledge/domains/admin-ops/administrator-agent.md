@@ -1,4 +1,4 @@
-<!-- knowledge: capability=administrator-agent rev=3 sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-08-fix-admin-run-blocks-mainloop,spec/archive/2026-09-29-evo-alert-noise-governance -->
+<!-- knowledge: capability=administrator-agent rev=4 sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-08-fix-admin-run-blocks-mainloop,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-15-evo-add-admin-run-wrapup-contract -->
 
 # Administrator 自愈管理员 Agent
 
@@ -14,6 +14,7 @@
 - 高级处置权限：杀死/重启卡死的 Agent 子进程与 fenixd 本身；git 清理（worktree prune/stash/reset）与 commit；修改 Fenixd 自身代码并提交（直接主树操作）；发起新 SPEC（创建 spec/changes/<name>/ 并注册 STATE.md）；重置/修复 spec 状态（update_spec 到 ready/blocked 等）。
 - 落痕语义：唤起前落 pending disposition，结束后按 run_id 关联落 final disposition；`invoke_manual` 异常路径落 failed disposition 与升级告警，记录不因后台执行而丢失；worker 线程不因单次处置异常退出，继续领取队列后续请求。admin_alerts.json 是唯一聚合出口（watcher 监听点不变）。
 - 处置留痕：每次处置（时间、spec、问题、处置动作、结果）写入 `.fenix/admin_alerts.json`，供 Dashboard 与人类追溯；run 产物与其他 agent 一样写入 `.fenix/runs/`。
+- 收尾次序硬契约：诊断闭环判定后 MUST 先覆盖写最终处置记录，再执行环境恢复/清理/重启等长动作；自建任务全部 completed 后 MUST NOT 开启新一轮诊断实验；最终处置记录不得留作最后一个动作。预算封顶时的收尾宽限配套见 [admin-run-wrapup-contract](admin-run-wrapup-contract.md)。
 
 ## 溯源
 
@@ -21,3 +22,4 @@
 - 2026-09-02 add-administrator-agent（spec/archive/2026-09-02-add-administrator-agent） — 固化按需唤起契约、高级处置权限清单与处置留痕
 - 2026-09-08 fix-admin-run-blocks-mainloop（spec/archive/2026-09-08-fix-admin-run-blocks-mainloop） — 执行模型改后台 worker 池并行：主循环解耦、disposition 状态文件按 run 实例分离、落痕语义保持不变
 - 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 自动召唤通道新增夹具项目抑制：fixture 标记项目的升级信号不再自动召唤 Administrator（INFO 留痕、告警记录保留、人工显式触发不受限、判定 fail-open）
+- 2026-10-15 evo-add-admin-run-wrapup-contract（spec/archive/2026-10-15-evo-add-admin-run-wrapup-contract） — 提示词新增收尾次序三条硬契约（闭环先落终稿、任务清零禁开新实验、终稿不得留作最后动作）

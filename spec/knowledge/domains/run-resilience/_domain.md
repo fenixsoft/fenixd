@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-10-14 14:06 UTC+8
+> 最后更新：2026-10-15 01:55 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [agent-run-timeout-supervision](agent-run-timeout-supervision.md) | agent run 超时监督 | 2026-10-03 04:59 |
+| [agent-run-timeout-supervision](agent-run-timeout-supervision.md) | agent run 超时监督 | 2026-10-15 01:55 |
 | [timeout-supervision](timeout-supervision.md) | 超时监督配置一致性 | 2026-10-03 04:59 |
 | [hang-discrimination](hang-discrimination.md) | 挂起与慢速判别 | 2026-10-03 04:59 |
 | [run-failure-classification](run-failure-classification.md) | run 失败三级分类与熔断 | 2026-10-03 04:59 |
