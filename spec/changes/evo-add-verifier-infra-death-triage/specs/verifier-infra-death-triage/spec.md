@@ -8,7 +8,7 @@
 
 ### Requirement: 进程级死亡不进 bug-found 出口
 
-verifier run 终局失败且满足进程级死亡特征（终局结果 assistant 轮数为 0，或全部 attempt 存活时长低于秒挂判定阈值）时 MUST NOT 判 bug-found：不触发原地打回、不消耗实现尝试预算；有 assistant 轮次或场景执行的正常失败路径 MUST NOT 变化。
+verifier run 终局失败且满足进程级死亡特征（终局结果 assistant 轮数为 0，或全部 attempt 存活时长低于秒挂判定阈值——存活口径以终局结果 duration_seconds 判读，其为 run 级总存活、构成全部 attempt 存活的严格上界；attempt 级侧账（runner `_record_instant_fail`）仅辅助标注）时 MUST NOT 判 bug-found：不触发原地打回、不消耗实现尝试预算；有 assistant 轮次且存活达秒挂阈值、或场景执行有产物的正常失败路径 MUST NOT 变化。
 
 #### Scenario: 启动期 ENOENT 秒死
 
