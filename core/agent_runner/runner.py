@@ -70,9 +70,11 @@ from core.agent_runner.result_gate import (  # noqa: F401
 from core.agent_runner.latency import (  # noqa: F401
     LATENCY_STALL_SECONDS,
     STALL_ROUND_WARN_SECONDS,
+    STALL_ROUND_ESCALATE_SECONDS,
     _default_ts_parser as _latency_default_ts_parser,
     _entry_is_tool_result,
     _percentile,
+    classify_round_stall,
     format_latency_summary,
     iter_events,
     latency_samples_from_events,
@@ -1518,7 +1520,7 @@ class AgentRunner:
 
         start_time = time.time()
         try:
-            output, turns, _session_id, _usage = self._run_agent(
+            output, turns, _session_id, _usage, _latency = self._run_agent(
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=max_turns,
                 spec_name=spec_name,
@@ -1730,7 +1732,7 @@ class AgentRunner:
 
         start_time = time.time()
         try:
-            output, turns, _session_id, _usage = self._run_agent(
+            output, turns, _session_id, _usage, _latency = self._run_agent(
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=max_turns,
                 spec_name=spec_name,
@@ -3445,7 +3447,10 @@ class AgentRunner:
                         # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
                         # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
                         model_override = DEFAULT_GATEWAY_MODEL
-                    output, turns, run_session_id, usage_info = self._run_agent(
+                    # evo-api-stall-signal-grading 1.3：第 5 元素承接本 run
+                    # latency 统计（run 末延迟摘要同一 stats），随成功调用点
+                    # 传 _finalize_success → _log_run_metrics。
+                    output, turns, run_session_id, usage_info, run_latency_stats = self._run_agent(
                         prompt, wt_path, sub_run_id, model_override, env_overrides,
                         resume_session_id=self._resumable_session_id(
                             session_id, session_provider, provider_name, reuse_worktree,
@@ -3810,6 +3815,10 @@ class AgentRunner:
                     wt_path=wt_path, output=output,
                     sub_run_id=sub_run_id, branch=branch,
                     handed_off=handed_off,
+                    # evo-api-stall-signal-grading 1.3：本 run latency 统计随
+                    # 成功终态入 _log_run_metrics（提前终态路径不传、维持
+                    # 零样本回退 0/0/None）。
+                    latency=run_latency_stats,
                 )
             else:
                 # ── 失败终态分型（见 _finalize_failure_keep，D1 R8）──
@@ -5024,11 +5033,18 @@ class AgentRunner:
                           attempt_run_id: str, attempt: int, start_time: float,
                           turns: int, usage_info: dict, provider_name, model,
                           wt_path: Path, output: str, sub_run_id: str,
-                          branch, handed_off: set) -> AgentRunResult:
+                          branch, handed_off: set,
+                          latency: dict | None = None) -> AgentRunResult:
         """成功终态收割（等价搬移，D1 R7）。
 
         半开探针闭合 → wt_dirty 取证 → worktree 分型清理 → token 入账 →
         结构化指标 → 返回 success 结果。
+
+        ``latency``（evo-api-stall-signal-grading 1.3）：本 run latency 统计
+        （_run_agent 返回 tuple 第 5 元素携带的同一 stats），以 ``latency=``
+        传 _log_run_metrics，使成功终态 run metrics 日志行的
+        latency_rounds/latency_stalls/latency_max 反映实际值；None（理论不可
+        达——成功必经 _run_agent 返回）时 _log_run_metrics 自带零样本回退。
         """
         # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
         # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
@@ -5125,6 +5141,8 @@ class AgentRunner:
             run_id=run_id, spec_name=spec_name, agent_type=agent_type,
             duration_seconds=duration, turns=turns, usage_info=usage_info,
             terminal="success", provider=provider_name, model=model,
+            # evo-api-stall-signal-grading 1.3：成功终态传实际 latency 统计。
+            latency=latency,
         )
         # run 收尾清理取消旗标（add-run-cancel D5：正常完成也清，防泄漏）
         self._cancel_clear(run_id)
@@ -5972,7 +5990,13 @@ class AgentRunner:
         # 纯读侧采集：`tool_result → 下一个 assistant` 间隔样本（API 往返等待）。
         # sample_state 被 _read_stream 子线程 append，主线程在 join 后读取，
         # 同线程追加+join 后读取无竞态（类 turn_count 同模式）。
-        latency_state: dict = {"last_tool_result_ts": None, "samples": []}
+        latency_state: dict = {
+            "last_tool_result_ts": None,
+            "samples": [],
+            # evo-api-stall-signal-grading 1.2：分级计数（run 结束汇总行
+            # warning=N info=M 的数据源；warning 桶含 warning-escalated）。
+            "grade_counts": {"warning": 0, "info": 0},
+        }
 
         # ── fix-agent-lane-efficiency D3：run 级上下文经济性指标（纯读侧旁路）──
         # 累计 input_tokens / cache_read_input_tokens / context_peak_estimate，
@@ -6182,20 +6206,52 @@ class AgentRunner:
                                 # 不 kill、不重派、不触发人工告警，样本与
                                 # stats 结果与不加告警时逐字段一致。
                                 if _sb_sample > STALL_ROUND_WARN_SECONDS:
-                                    self.logger.warning(
-                                        "agent_runner",
-                                        f"run {run_id}: API round-trip stall: "
-                                        f"{_sb_sample:.1f}s (round #"
-                                        f"{len(latency_state['samples'])} > "
-                                        f"{STALL_ROUND_WARN_SECONDS:.0f}s)",
-                                        {
-                                            "run_id": run_id,
-                                            "event": "api_round_stall",
-                                            "latency_round": len(
-                                                latency_state["samples"]),
-                                            "latency_max": _sb_sample,
-                                        },
-                                    )
+                                    # evo-api-stall-signal-grading 1.2：先分级
+                                    # 再落日志。streak 口径（design 补约定）：
+                                    # latency_state["samples"] 尾部连续
+                                    # >STALL_ROUND_WARN_SECONDS 样本数（遇
+                                    # ≤120s 样本重置计数，含当前轮）；
+                                    # classify_round_stall 保持纯函数，规则
+                                    # 单轮 >300s → warning-escalated、连续
+                                    # ≥2 轮 → warning、其余孤立单轮 → info
+                                    # （INFO 只计数、不打 WARNING）。事件名
+                                    # 仍 api_round_stall，context 增 grade。
+                                    _stall_streak = 0
+                                    for _s in reversed(latency_state["samples"]):
+                                        if _s > STALL_ROUND_WARN_SECONDS:
+                                            _stall_streak += 1
+                                        else:
+                                            break
+                                    _stall_grade = classify_round_stall(
+                                        _stall_streak, _sb_sample)
+                                    _stall_ctx = {
+                                        "run_id": run_id,
+                                        "event": "api_round_stall",
+                                        "latency_round": len(
+                                            latency_state["samples"]),
+                                        "latency_max": _sb_sample,
+                                        "grade": _stall_grade,
+                                    }
+                                    if _stall_grade == "info":
+                                        latency_state["grade_counts"]["info"] += 1
+                                        self.logger.info(
+                                            "agent_runner",
+                                            f"run {run_id}: API round-trip stall: "
+                                            f"{_sb_sample:.1f}s (round #"
+                                            f"{len(latency_state['samples'])} > "
+                                            f"{STALL_ROUND_WARN_SECONDS:.0f}s)",
+                                            _stall_ctx,
+                                        )
+                                    else:
+                                        latency_state["grade_counts"]["warning"] += 1
+                                        self.logger.warning(
+                                            "agent_runner",
+                                            f"run {run_id}: API round-trip stall: "
+                                            f"{_sb_sample:.1f}s (round #"
+                                            f"{len(latency_state['samples'])} > "
+                                            f"{STALL_ROUND_WARN_SECONDS:.0f}s)",
+                                            _stall_ctx,
+                                        )
                     # code-review item c6a2b45a214d：转录事件透传改单次
                     # os.write(O_APPEND) 落盘。assistant/tool_result 事件常超
                     # append_run_line 的 TextIOWrapper 内部缓冲（约 8KiB）——
@@ -6694,7 +6750,10 @@ class AgentRunner:
             try:
                 stats = latency_stats(latency_state["samples"])
                 stall_latency = stats
-                latency_summary_text = format_latency_summary(run_id, stats)
+                # evo-api-stall-signal-grading 1.2：汇总行行尾追加分级计数
+                # warning=N info=M（既有 stalls>60s 口径不变）。
+                latency_summary_text = format_latency_summary(
+                    run_id, stats, latency_state.get("grade_counts"))
                 self.logger.info(
                     "agent_runner",
                     latency_summary_text,
@@ -7145,7 +7204,11 @@ class AgentRunner:
             # claude 恒等路径无投影器、result 无该键，零改动。
             if observed_result.get("usage_source") is not None:
                 usage_info["usage_source"] = observed_result["usage_source"]
-        return output, turns, session_id, usage_info
+        # evo-api-stall-signal-grading 1.3：stats 随返回 tuple 携带（stall_latency
+        # 为 run 末延迟摘要同一 stats 结果——禁止二次采样；延迟摘要计算失败时
+        # 为零样本回退 dict），供成功调用点传 _finalize_success → _log_run_metrics，
+        # 消除成功终态日志行 0/0/None 回退。
+        return output, turns, session_id, usage_info, stall_latency
 
 
     @staticmethod

@@ -158,7 +158,9 @@ class TestDshFullChain:
         runner = _make_runner(proot, logger)
         prev = set_current_adapter(DshAdapter(DshAdapterConfig(dsh_bin=str(stub))))
         try:
-            output, turns, session_id, usage = runner._run_agent(
+            # evo-api-stall-signal-grading 1.3：返回 tuple 扩为 5 元（末位
+            # 携带本 run latency 统计），本用例只关心前四元。
+            output, turns, session_id, usage, _latency = runner._run_agent(
                 PROMPT, proot, "impl-dsh-fc-1",
                 model_override="deepseek-v4-flash",
                 env_overrides=dict(_ENV_OVERRIDES),
@@ -166,7 +168,7 @@ class TestDshFullChain:
         finally:
             set_current_adapter(prev)
 
-        # 返回值四元组：result 文本 / turn_end 计数轮次 / init session_id /
+        # 返回值前四元：result 文本 / turn_end 计数轮次 / init session_id /
         # usage 按 step_end 求和（不伪造成本）
         assert output == "全链完成"
         assert turns == 1
@@ -237,7 +239,7 @@ class TestDshFullChain:
         runner = _make_runner(proot, logger)
         prev = set_current_adapter(DshAdapter(DshAdapterConfig(dsh_bin=str(stub))))
         try:
-            _, _, _, usage = runner._run_agent(
+            _, _, _, usage, _latency = runner._run_agent(
                 PROMPT, proot, "impl-dsh-fc-3",
                 model_override="deepseek-v4-flash",
                 env_overrides=dict(_ENV_OVERRIDES),

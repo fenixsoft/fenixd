@@ -196,7 +196,9 @@ def _exec_runner(proot: Path):
         "ok", 1, "sess-1",
         {"input_tokens": 0, "output_tokens": 0,
          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-         "cost_usd": None}))
+         "cost_usd": None},
+        # evo-api-stall-signal-grading 1.3：末位携带本 run latency 统计。
+        {"rounds": 0, "stalls": 0, "max": None}))
     runner._spec_is_frozen = lambda name: False
     runner._cancel_is_requested = lambda rid: False
     runner._cancel_clear = lambda rid: None

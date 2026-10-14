@@ -94,7 +94,10 @@ class TestRunMetricsSuccess:
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
-            return ("output", 3, "sess-1", USAGE_WITH_COST)
+            # evo-api-stall-signal-grading 1.3：返回 tuple 扩为 5 元（末位
+            # 携带本 run latency 统计），本用例无样本上下文传零样本回退 dict。
+            return ("output", 3, "sess-1", USAGE_WITH_COST,
+                    {"rounds": 0, "stalls": 0, "max": None})
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "verifier", "run-s1")
@@ -190,7 +193,8 @@ class TestRunMetricsUsage:
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
-            return ("ok", 5, "sess-u", USAGE_WITH_COST)
+            return ("ok", 5, "sess-u", USAGE_WITH_COST,
+                    {"rounds": 0, "stalls": 0, "max": None})
 
         runner._run_agent = fake_run_agent
         runner._execute_agent("spec-y", "verifier", "run-u1")
@@ -299,7 +303,8 @@ class TestRunMetricsHarness:
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
-            return ("output", 1, "sess-1", USAGE_WITH_COST)
+            return ("output", 1, "sess-1", USAGE_WITH_COST,
+                    {"rounds": 0, "stalls": 0, "max": None})
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "verifier", "run-h1")
