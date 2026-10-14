@@ -37,6 +37,7 @@ from core.run_task_track import (
     parse_unattainable as _parse_unattainable,
 )
 from core.verify_scenarios import VERIFY_FIX_SECTION_RE
+from core.worktree_manager.shape import branch_shape_is_verifier
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.spec_integrity import SpecIntegrityGate
@@ -1352,9 +1353,16 @@ class PMEngine:
         if not spec or spec.get("status") != "ready":
             return False
         # 次级校验（防御性，不是唯一判据）：实现分支属本 spec 的 `fenix/` 前缀
-        # 且非 `fenix/verify-`（worktree_manager/lifecycle.py:396-399 同款判定）。
+        # 且非 verifier 族形状（shape.py 结构消歧单源，worktree_manager/lifecycle
+        # cleanup 同款判定）。裸前缀 startswith("fenix/verify-") 会把 verify-
+        # 开头 spec 名的实现分支（fenix/verify-dsh-plugins-live-<ts>）误判为
+        # 验证分支、合并兜底被拒（admin-global-1791999865 同型）。
         # 不满足 → 不兜底，维持既有转移（ready→implemented 仍被拒 = 暴露真实异常）。
-        if not branch or not branch.startswith("fenix/") or branch.startswith("fenix/verify-"):
+        if (
+            not branch
+            or not branch.startswith("fenix/")
+            or branch_shape_is_verifier(branch, spec_hint=spec_name)
+        ):
             self.logger.warning(
                 "pm_engine",
                 f"ready 态合并兜底次级校验未通过，不补记 implementing"

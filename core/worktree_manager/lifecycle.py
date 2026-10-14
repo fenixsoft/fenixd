@@ -27,6 +27,7 @@ from core.worktree_manager.artifact_paths import (
     ArtifactPathMatcher,
     normalize_artifact_patterns,
 )
+from core.worktree_manager.shape import branch_shape_is_verifier
 
 
 def _wt_repo_common_dir(project_root):
@@ -710,8 +711,11 @@ class G1LifecycleMixin:
         # ── 恢复重派遗产（add-recovery-legacy-check D1）─────────────────────────
         # 失败的 implementer worktree 不直接销毁，而是注册为「遗产」保留：死亡 run 的
         # 半成品可被后继重派的 run 收编（design D4）。verifier / 成功路径照常清理。
-        # 判定依据分支名前缀：implementer 分支 `fenix/<spec>-<ts>`，verifier 分支
-        # `fenix/verify-<spec>-<ts>`。
+        # 判定依据分支名形状（verify- 开头 spec 名消歧，shape.py 单源）：实现
+        # 族分支 `fenix/<spec>-<ts>`，verifier 分支 `fenix/verify-<spec>-<ts>`。
+        # 裸前缀 startswith("fenix/verify-") 会把 verify- 开头 spec 名的实现
+        # 分支（fenix/verify-dsh-plugins-live-<ts>）误判为 verifier 形状——
+        # 失败路径遗产登记被跳过、分支被 -D（admin-global-1791999865 同型）。
         branch = self._wt_branches.get(wt_str)
         # 入口快照（code-review item 3413cfc5b6e3）：try 内两路收尾（遗产/常规）
         # 都已先 pop 分支表，finally 再 get(wt_str) 常规路径恒为 None，故 finally
@@ -721,7 +725,9 @@ class G1LifecycleMixin:
         # _lock_since 晚于该时刻即跳过为界，收尾期间并发的同 spec 新锁
         # （另一 agent_type）不被误删
         cleanup_entry_ts = time.time()
-        is_implementer = bool(branch) and not branch.startswith("fenix/verify-")
+        is_implementer = bool(branch) and (
+            branch_shape_is_verifier(branch, wt_path.name) is not True
+        )
 
         try:
             self.logger.info(
@@ -737,7 +743,13 @@ class G1LifecycleMixin:
                 # 口径对齐——目录保留，进程也不留。否则上一轮 dev-server 残留占着旧端口，
                 # 后继 run create() 认领继承目录后可被存活探测误判为本轮实例已就绪。
                 self._kill_worktree_strays(wt_path.name)
-                spec = self._spec_from_branch(branch)
+                # spec 解析以目录名为首选锚（admin-global-1791999865）：目录名
+                # 前缀（impl-/verify-）按 agent_type 定、与 spec 名无关，对
+                # verify- 开头 spec 名无歧义；_spec_from_branch 会把实现分支
+                # fenix/verify-<spec>-<ts> 按验证语义剥前缀回推出错 spec。
+                spec = self._spec_from_worktree_name(wt_path.name) or (
+                    self._spec_from_branch(branch)
+                )
                 if spec:
                     self.register_legacy(spec, wt_path, branch)
                 else:
@@ -896,8 +908,12 @@ class G1LifecycleMixin:
             # 扫到之间的构建窗口内失去锁保护，重开双派发事故（2026-09-03）
             # 窗口。
             with self._spec_lock_th:
-                wt_spec = self._spec_from_branch(wt_branch_at_entry or "") or (
-                    self._spec_from_worktree_name(wt_path.name)
+                # spec 解析以目录名为首选锚（admin-global-1791999865，同上方
+                # 失败路径口径）：_spec_from_branch 对 verify- 开头 spec 名的
+                # 实现分支剥错前缀，wt_spec 对不上锁键段 → 过滤恒空、锁永不
+                # 释放（与形状误判叠加的第二重泄漏机制）。
+                wt_spec = self._spec_from_worktree_name(wt_path.name) or (
+                    self._spec_from_branch(wt_branch_at_entry or "")
                 )
                 # agent_type 维度限定（code-review item 79268616af63）：锁键为
                 # "<spec>:<agent_type>"，仅按 spec 名过滤会把该 spec 名下全部
@@ -913,13 +929,21 @@ class G1LifecycleMixin:
                 # 目录前缀的载体（create_worktree_on_branch 的 repair-/judge-
                 # 产物等）自身从不登记锁，其收尾不摘任何键——同 spec 既有锁属
                 # 他人，由其自身收尾释放或 refresh_locks 陈锁清扫兜底。
+                # 形状判定单源走 shape.py 结构消歧（admin-global-1791999865
+                # 根因修复）：裸前缀 startswith("fenix/verify-") 会把 verify-
+                # 开头 spec 名的实现分支（fenix/verify-dsh-plugins-live-<ts>）
+                # 误判为 verifier 形状，收尾只摘 :verifier 族锁 → 同键
+                # :implementer 锁泄漏 → 后续重派 create() 即撞锁 early
+                # give-up（Failed to create worktree）→ 同因重派循环 → spec
+                # 冻结。
                 wt_branch_text = wt_branch_at_entry or ""
-                if wt_branch_text.startswith("fenix/verify-"):
-                    wt_is_verifier = True
-                elif wt_branch_text.startswith("fenix/"):
-                    wt_is_verifier = False
-                else:
+                _shape = branch_shape_is_verifier(
+                    wt_branch_text, wt_path.name, spec_hint=wt_spec,
+                )
+                if _shape is None:
                     wt_is_verifier = wt_path.name.startswith("verify-")
+                else:
+                    wt_is_verifier = _shape
                 wt_own_lock = wt_path.name.startswith(("impl-", "verify-"))
                 to_remove = [
                     k

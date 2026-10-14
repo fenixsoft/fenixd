@@ -17,6 +17,7 @@ from core.worktree_manager.constants import (  # noqa: E402
     LEGACY_GRACE_SECONDS,
     WT_AVAILABLE,
 )
+from core.worktree_manager.shape import branch_shape_is_verifier
 
 class G2LegacyRegistryMixin:
     def register_legacy(self, spec_name: str, worktree_path, branch: str) -> None:
@@ -170,19 +171,24 @@ class G2LegacyRegistryMixin:
         # 入口之后的新锁，挡不住入口之前他家族已持有的锁（如 verifier 收尾时
         # implementer 已重派持锁），误摘会让在飞 run 在构建窗口内失去锁保护
         # （重开 2026-09-03 双派发事故同型窗口）。调用方未传 agent_type 的
-        # 旧调用点按被收尾 worktree 形状反推（分支 fenix/verify- 前缀或目录
-        # verify- 前缀 → verifier 家族，fenix/ 或 impl- 前缀 → 非 verifier，
-        # 与 cleanup finally 的形状反推同口径）；形状完全不可辨时维持旧全摘。
+        # 旧调用点按被收尾 worktree 形状反推（shape.py 结构消歧单源，与
+        # cleanup finally 同口径）：verifier 形状 → verifier 家族，实现族
+        # 形状 → 非 verifier；形状完全不可辨时维持旧全摘。裸前缀
+        # startswith("fenix/verify-") 会把 verify- 开头 spec 名的实现分支
+        # 误判为 verifier 家族，keep_for_reuse 摘错族锁（implementer 锁
+        # 泄漏，admin-global-1791999865 同型）。
         if agent_type == "verifier":
             lock_family = "verifier"
         elif agent_type:
             lock_family = "non-verifier"
-        elif (branch or "").startswith("fenix/verify-") or wt_path.name.startswith("verify-"):
-            lock_family = "verifier"
-        elif (branch or "").startswith("fenix/") or wt_path.name.startswith("impl-"):
-            lock_family = "non-verifier"
         else:
-            lock_family = None
+            _shape = branch_shape_is_verifier(
+                branch, wt_path.name, spec_hint=spec_name,
+            )
+            if _shape is None:
+                lock_family = None
+            else:
+                lock_family = "verifier" if _shape else "non-verifier"
         # 收工清扫：agent 已退出，杀掉残留测试子进程（目录保留，进程不留）
         self._kill_worktree_strays(wt_path.name)
         self.register_legacy(spec_name, wt_path, branch)
@@ -320,12 +326,17 @@ class G2LegacyRegistryMixin:
                 path.rstrip("/").rsplit("/", 1)[-1]
                 if path else str(rec.get("worktree_name") or "")
             )
-            if branch.startswith("fenix/verify-") or wt_name.startswith("verify-"):
-                legacy_family = "verifier"
-            elif branch.startswith("fenix/") or wt_name.startswith("impl-"):
-                legacy_family = "non-verifier"
-            else:
+            # 形状判定走 shape.py 结构消歧单源：裸前缀 startswith("fenix/verify-")
+            # 会把 verify- 开头 spec 名的遗产实现分支误判为 verifier 族，被
+            # implementer 认领时家族误配跳过 → 遗产认领失效退化为全新建树
+            # （admin-global-1791999865 同型）。
+            _shape = branch_shape_is_verifier(branch, wt_name, spec_hint=spec_name)
+            if _shape is None:
                 legacy_family = None
+            elif _shape:
+                legacy_family = "verifier"
+            else:
+                legacy_family = "non-verifier"
             if legacy_family is not None:
                 claimant = "verifier" if agent_type == "verifier" else "non-verifier"
                 if claimant != legacy_family:
