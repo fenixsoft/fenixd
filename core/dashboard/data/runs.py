@@ -616,6 +616,15 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         # 元数据（status/started/duration/file_size）按 (path, mtime_ns, size) memo
         # （fix-observability-gaps 1.5：project_root 传入使 duration 优先读结构化指标）
         meta = _run_meta_cached(p, stat, now, project_root=Path(project_root))
+        # add-harness-brand-projection 2.2：harness 透出（品牌投影真相源）——
+        # 从 run_metrics 旁路行取该 run 派发时登记的 adapter.name；存量 run
+        # 指标行无该键（或指标行整体缺失）缺省 claude，前端按回退链消费
+        # （harnessBrandLogic.resolveHarness）。索引在上方 duration 指标查找
+        # 时已预热，此处为热路径 dict 直查。
+        harness = "claude"
+        metric = load_run_metric(Path(project_root), run_id)
+        if metric and metric.get("harness"):
+            harness = str(metric["harness"])
         out.append(
             {
                 "run_id": run_id,
@@ -625,6 +634,7 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
                 "duration_seconds": meta["duration_seconds"],
                 "started": meta["started"],
                 "file_size": meta["file_size"],
+                "harness": harness,
             }
         )
     return out

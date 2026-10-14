@@ -269,3 +269,106 @@ class TestRunMetricsConsumer:
         # 无指标：duration 由 mtime - start_ts 推出（>0 即可，不为 None）
         assert isinstance(meta["duration_seconds"], int)
         assert meta["duration_seconds"] >= 0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# harness 品牌（add-harness-brand-projection 2.1）：run_metrics 行 harness 键
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestRunMetricsHarness:
+    """run_metrics 结构化行的 ``harness`` 键（品牌投影真相源，写侧形态）。
+
+    契约（design Decision 2）：
+    - 派发装配时把该 run 的 adapter.name 记入 run 自身上下文（_run_harness），
+      收尾从登记取值写入；
+    - MUST NOT 收尾读进程级 get_current_adapter()——并发 run 收尾串号；
+    - adapter 未装配的提前终态路径（登记缺失）省略该键，读侧缺省 claude 兜底。
+    """
+
+    def test_dispatch_run_carries_harness(self, tmp_path):
+        """经 _execute_agent 派发的 run → 指标行携带 harness（config 缺省解析 claude）。"""
+        runner = _make_runner_with_logger(tmp_path, {"agents": {"max_retries": 1}})
+        wt = tmp_path / "wt"
+        wt.mkdir(parents=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+        runner.worktree_manager.cleanup.return_value = None
+
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None,
+                            task_progress_snapshot=None):
+            return ("output", 1, "sess-1", USAGE_WITH_COST)
+
+        runner._run_agent = fake_run_agent
+        result = runner._execute_agent("spec-x", "verifier", "run-h1")
+        runner.logger.close()
+
+        assert result.success is True
+        metrics = _read_metric_lines(tmp_path, terminal="success")
+        assert metrics, "成功收尾应产生 run_metrics 行"
+        assert metrics[-1]["harness"] == "claude"
+        # 派发登记随 run 终态外口摘除（_execute_agent finally），不残留
+        assert "run-h1" not in getattr(runner, "_run_harness", {})
+
+    def test_unregistered_run_omits_harness_key(self, tmp_path):
+        """adapter 未装配的提前终态路径（无登记）→ 指标行省略 harness 键。"""
+        logs_dir = tmp_path / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+        logger = Logger(logs_dir, "DEBUG")
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.logger = logger
+        runner._log_run_metrics(
+            run_id="run-early-cancel", spec_name="spec-x", agent_type="planner-standard",
+            duration_seconds=0.0, turns=0, usage_info={},
+            terminal="cancelled", provider=None, model=None,
+        )
+        logger.close()
+
+        metrics = _read_metric_lines(tmp_path, terminal="cancelled")
+        assert metrics, "取消终态也应产生 run_metrics 行"
+        assert "harness" not in metrics[-1], (
+            "未装配 adapter 的提前终态路径必须省略 harness 键（读侧缺省 claude 兜底）")
+
+    def test_concurrent_runs_do_not_crosstalk_harness(self, tmp_path):
+        """并发双 run 收尾各取自身登记：不串号（MUST NOT 读进程级全局）。"""
+        logs_dir = tmp_path / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+        logger = Logger(logs_dir, "DEBUG")
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.logger = logger
+        # 模拟两并发 run 各自的派发装配登记（一 claude 一 dsh）
+        runner._run_harness = {"run-cla": "claude", "run-dsh": "dsh"}
+        runner._log_run_metrics(
+            run_id="run-cla", spec_name="spec-a", agent_type="implementer",
+            duration_seconds=1.0, turns=1, usage_info={},
+            terminal="success", provider=None,
+        )
+        runner._log_run_metrics(
+            run_id="run-dsh", spec_name="spec-b", agent_type="implementer",
+            duration_seconds=1.0, turns=1, usage_info={},
+            terminal="success", provider=None,
+        )
+        logger.close()
+
+        by_run = {m["run_id"]: m for m in _read_metric_lines(tmp_path)}
+        assert by_run["run-cla"]["harness"] == "claude"
+        assert by_run["run-dsh"]["harness"] == "dsh"
+
+    def test_register_run_harness_repeat_is_noop(self):
+        """同 run_id 重复登记为 no-op（dispatch 装配先行、spawn 装配 no-op 跟进）。"""
+        runner = AgentRunner.__new__(AgentRunner)
+
+        class _Adapter:
+            name = "dsh"
+
+        runner._register_run_harness("run-x", _Adapter())
+        assert runner._run_harness == {"run-x": "dsh"}
+
+        class _ClaudeAdapter:
+            name = "claude"
+
+        # 第二次登记（模拟 _run_agent spawn 装配）不覆盖 dispatch 值
+        runner._register_run_harness("run-x", _ClaudeAdapter())
+        assert runner._run_harness == {"run-x": "dsh"}

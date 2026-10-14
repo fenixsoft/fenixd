@@ -987,16 +987,23 @@ def _log_lane_run_metrics(
     log_metrics = getattr(runner, "_log_run_metrics", None)
     if log_metrics is None:
         return
-    log_metrics(
-        run_id=run_id,
-        spec_name=spec_name,
-        agent_type=agent_type,
-        duration_seconds=max(0.0, time.monotonic() - started_monotonic),
-        turns=int(turns or 0),
-        usage_info=usage_info or {},
-        terminal="success" if run_ok else "error",
-        provider=provider_name,
-    )
+    # add-harness-brand-projection 2.1：本车道 run 的品牌登记由 _run_agent
+    # spawn 装配时写入（一次性车道同口径）；收尾消费（随 log_metrics 落入
+    # run_metrics 行 harness 键）后即摘除——直调车道没有 _execute_agent
+    # 终态外口，本函数是其唯一收尾咽喉，不摘则登记随 daemon 无界增长。
+    try:
+        log_metrics(
+            run_id=run_id,
+            spec_name=spec_name,
+            agent_type=agent_type,
+            duration_seconds=max(0.0, time.monotonic() - started_monotonic),
+            turns=int(turns or 0),
+            usage_info=usage_info or {},
+            terminal="success" if run_ok else "error",
+            provider=provider_name,
+        )
+    finally:
+        getattr(runner, "_run_harness", {}).pop(run_id, None)
 
 
 def run_evolution(

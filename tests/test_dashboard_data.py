@@ -2888,3 +2888,136 @@ class TestSpecSummaryGatesPhase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGetRunsHarness(unittest.TestCase):
+    """get_runs 条目透出 harness 字段（add-harness-brand-projection 2.2 读侧）。
+
+    真相源为 run_metrics 旁路行的 ``harness`` 键（runner 派发装配时登记的
+    adapter.name）；存量 run 指标行无该键（或指标行整体缺失）缺省 claude。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        self.runs_dir.mkdir(parents=True)
+        self.logs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_metric(self, run_id: str, harness):
+        """fenixd.log 写一条 run_metrics 指标行（harness 可为 None=缺键形态）。"""
+        ctx = {"metric_type": "run_metrics", "run_id": run_id,
+               "duration_seconds": 12.5, "terminal": "success"}
+        if harness is not None:
+            ctx["harness"] = harness
+        entry = {"timestamp": "2026-09-01T11:00:00.000000Z", "level": "INFO",
+                 "component": "agent_runner", "message": "run metrics", "context": ctx}
+        with (self.logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _write_run(self, run_id: str):
+        (self.runs_dir / f"{run_id}.jsonl").write_text(
+            '{"type": "system"}\n{"type": "result", "subtype": "success"}\n',
+            encoding="utf-8")
+
+    def test_harness_dsh_exposed(self):
+        """指标行 harness=dsh → get_runs 条目透出 dsh（前端注入 DshLogo）。"""
+        self._write_run("impl-demo-1788260731-a1")
+        self._write_metric("impl-demo-1788260731", "dsh")
+        from core.dashboard.data import get_runs
+        runs = {r["run_id"]: r for r in get_runs(self.tmpdir)}
+        self.assertEqual(runs["impl-demo-1788260731-a1"]["harness"], "dsh")
+
+    def test_harness_missing_defaults_claude(self):
+        """存量 run 指标行无 harness 键 → 缺省 claude（回退链入口）。"""
+        self._write_run("impl-demo-1788260732-a1")
+        self._write_metric("impl-demo-1788260732", None)
+        from core.dashboard.data import get_runs
+        runs = {r["run_id"]: r for r in get_runs(self.tmpdir)}
+        self.assertEqual(runs["impl-demo-1788260732-a1"]["harness"], "claude")
+
+    def test_harness_defaults_claude_without_metric_line(self):
+        """指标行整体缺失（旧日志）→ 缺省 claude，不抛错。"""
+        self._write_run("impl-demo-1788260733-a1")
+        from core.dashboard.data import get_runs
+        runs = {r["run_id"]: r for r in get_runs(self.tmpdir)}
+        self.assertEqual(runs["impl-demo-1788260733-a1"]["harness"], "claude")
+
+    def test_timeline_run_node_carries_harness(self):
+        """时间轴 run 节点透出 harness（detail 页弹窗品牌注入数据源）。"""
+        from core.dashboard.data import get_spec_timeline
+        self._write_run("impl-demo-spec-1788260734-a1")
+        self._write_metric("impl-demo-spec-1788260734", "dsh")
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        run_nodes = [e for e in timeline if e.get("kind") == "run"]
+        self.assertEqual(len(run_nodes), 1)
+        self.assertEqual(run_nodes[0]["harness"], "dsh")
+
+
+class TestAdminActivitiesHarness(unittest.TestCase):
+    """get_admin_activities 条目透出 harness（add-harness-brand-projection 3.2）。
+
+    admin 车道 run 的 meta 经 run_metrics 旁路行同口径查找（按 admin_run_id）；
+    缺失（存量记录/指标行无键）不下发，前端走回退链。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        self.runs_dir.mkdir(parents=True)
+        self.logs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_metric(self, run_id: str, harness):
+        ctx = {"metric_type": "run_metrics", "run_id": run_id,
+               "duration_seconds": 3.0, "terminal": "success"}
+        if harness is not None:
+            ctx["harness"] = harness
+        entry = {"timestamp": "2026-09-01T11:00:00.000000Z", "level": "INFO",
+                 "component": "agent_runner", "message": "run metrics", "context": ctx}
+        with (self.logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _write_disposition(self, admin_run_id: str):
+        alerts = Path(self.tmpdir) / ".fenix" / "admin_alerts.json"
+        alerts.parent.mkdir(parents=True, exist_ok=True)
+        records = [{"kind": "disposition", "spec": "demo-spec", "result": "resolved",
+                    "admin_run_id": admin_run_id,
+                    "created": "2026-09-01T11:05:00.000000Z"}]
+        alerts.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+    def _activities(self):
+        from core.dashboard.data import get_admin_activities
+        return get_admin_activities(Path(self.tmpdir))
+
+    def test_harness_dsh_exposed_for_admin_run(self):
+        self._write_disposition("admin-demo-spec-1788260700")
+        self._write_metric("admin-demo-spec-1788260700", "dsh")
+        acts = self._activities()
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["harness"], "dsh")
+
+    def test_harness_missing_not_emitted(self):
+        """无指标行/无 harness 键 → 不下发 harness 键（前端 undefined 走回退链）。"""
+        self._write_disposition("admin-demo-spec-1788260701")
+        self._write_metric("admin-demo-spec-1788260701", None)
+        acts = self._activities()
+        self.assertEqual(len(acts), 1)
+        self.assertNotIn("harness", acts[0])
+
+    def test_no_admin_run_id_no_lookup_no_error(self):
+        """无 admin_run_id 的记录跳过查找，不抛错也不下发 harness。"""
+        alerts = Path(self.tmpdir) / ".fenix" / "admin_alerts.json"
+        alerts.parent.mkdir(parents=True, exist_ok=True)
+        alerts.write_text(json.dumps(
+            [{"kind": "disposition", "spec": "demo-spec", "result": "resolved",
+              "created": "2026-09-01T11:05:00.000000Z"}]), encoding="utf-8")
+        acts = self._activities()
+        self.assertEqual(len(acts), 1)
+        self.assertNotIn("harness", acts[0])

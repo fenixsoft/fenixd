@@ -248,6 +248,9 @@ interface ViewingRun {
   project: string;
   spec?: string;
   runId: string;
+  // add-harness-brand-projection 3.2：run meta 的 harness（admin 车道 run 经
+  // run_metrics 旁路行透出；存量记录缺失 → undefined → 回退链缺省 claude）
+  harness?: string;
 }
 
 function AlertPanel({
@@ -525,7 +528,7 @@ export default function ActivitiesPage() {
   );
 
   const handleViewRun = useCallback(
-    (a: ActivityItem) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' }),
+    (a: ActivityItem) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '', harness: a.harness }),
     [],
   );
 
@@ -613,6 +616,7 @@ export default function ActivitiesPage() {
           project={viewingRun.project}
           spec={viewingRun.spec}
           adminRunId={viewingRun.runId}
+          harness={viewingRun.harness}
           open={!!viewingRun}
           onClose={() => setViewingRun(null)}
         />
