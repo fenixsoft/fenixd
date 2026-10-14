@@ -5,7 +5,7 @@ DSH_HOME 隔离（``dsh plugin --profile fenix add link:<本仓>/dsh-bundle``）
 步骤脚本化、恒回 usage）下，``agent.harness: dsh`` 跑通：
 
 dispatch（配置解析 + check_health 健康门）→ spawn 真实 dsh 0.2.0-rc.2 →
-在飞判定（_running_agents 登记 + /proc cmdline 为 dsh headless）→ 终态收口
+在飞判定（_running_agents 登记 + /proc cmdline 为 dsh spawn 形态）→ 终态收口
 （投影 result 终行）→ result gate selfcheck 全链（dsh 以 write 工具落
 .fenix-run-result.json，同源自证校验退出码 0），含可观测性三件套产物核对
 （dump 旁路 / projection 计数 / run_metrics 日志）。
@@ -199,7 +199,9 @@ def _run_smoke_chain(tmp_path, dsh_home, port, log_file, result_path, wt):
     try:
         th = threading.Thread(target=_drive, daemon=True)
         th.start()
-        # ── 在飞判定：Popen 登记在场且子进程 cmdline 是真实 dsh headless ──
+        # ── 在飞判定：Popen 登记在场且子进程 cmdline 是真实 dsh spawn ──
+        # （spawn 形态按 dsh_adapter 契约：--patch + --json；argv 不携带裸
+        # "headless"，DSH_APP_NAME 注记——特征串据此不锚 headless 词。）
         # （驱动线程结束即停表：终态先于 30s 观测窗到达同样算观测过在飞——
         # 完成 ⇒ 在飞窗口存在过，窗内采样即可。）
         deadline = time.time() + 30
@@ -217,7 +219,8 @@ def _run_smoke_chain(tmp_path, dsh_home, port, log_file, result_path, wt):
                     continue
                 if not seen_cmdlines or seen_cmdlines[-1] != cmdline:
                     seen_cmdlines.append(cmdline)
-                if "dsh" in cmdline and "headless" in cmdline:
+                if ("dsh" in cmdline and "--patch" in cmdline
+                        and "--json" in cmdline):
                     inflight_seen = True
             if not inflight_seen and ("ret" not in box and "err" not in box):
                 time.sleep(0.1)

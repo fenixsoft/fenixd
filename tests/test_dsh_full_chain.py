@@ -190,7 +190,9 @@ class TestDshFullChain:
             "apiKeyEnv": DSH_API_KEY_ENV,
             "model": "deepseek-v4-flash",
         }
-        assert argv[argv.index("--patch") + 2:] == ["headless", "--json"]
+        # argv 契约（DSH_APP_NAME 注记）：--profile 即完成 app 选择，MUST NOT
+        # 携带裸 "headless"（占任务 positional 槽位、stdin prompt 被忽略）。
+        assert argv[argv.index("--patch") + 2:] == ["--json"]
         assert "--session-id" not in argv  # 全新会话不传（严格采纳语义）
         assert rec["stdin"] == PROMPT
         assert rec["env"]["FENIX_DSH_PROVIDER_API_KEY"] == "sk-test-123"
