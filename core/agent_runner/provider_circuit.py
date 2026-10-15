@@ -368,7 +368,6 @@ class ProviderCircuit:
         #   "code": int,            # 触发熔断的 HTTP 4xx code
         #   "events": [ts, ...],     # 滚动窗口内 4xx 时间戳（单调秒）
         #   "count": int,           # 窗口内 4xx 次数
-        #   "open_since": float,     # 进入 open 的时间戳
         #   "cooldown_until": float, # 冷却到期时间戳
         #   "switch_cooldown_until": float,  # add-provider-failover 切换类错误冷却到期
         # }}
@@ -683,7 +682,6 @@ class ProviderCircuit:
                 "code": None,
                 "events": [],
                 "count": 0,
-                "open_since": 0.0,
                 "cooldown_until": 0.0,
                 "switch_cooldown_until": 0.0,  # 切换类错误冷却到期时间戳（add-provider-failover）
             }
@@ -2279,8 +2277,7 @@ class ProviderCircuit:
             st["code"] = code
 
             if st["count"] >= threshold:
-                # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却，记录 open_since。
-                st["open_since"] = now
+                # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却。
                 st["cooldown_until"] = now + cooldown
                 self._pm.logger.error(
                     "agent_runner",
@@ -2323,7 +2320,6 @@ class ProviderCircuit:
                 st["events"] = []
                 st["count"] = 0
                 st["cooldown_until"] = 0.0
-                st["open_since"] = 0.0
             else:
                 st["cooldown_until"] = now + cooldown
                 self._pm.logger.warning(
