@@ -342,7 +342,7 @@ class VerifyEngine:
             # mock 环境断流时等待类超时整批假阴性，不能逐场景烧 token 重验。
             # 探针在该轮验证中只执行一次（首个候选场景触达即 memoize），
             # 候选场景按各自 kind 的探针结论结算：失联 → 降级 blocked-env。
-            await self._post_classify_environment(normalized, results)
+            await self._post_classify_environment(results)
         finally:
             for kind in kinds:
                 try:
@@ -574,9 +574,7 @@ class VerifyEngine:
 
     # ── 环境健全性门（design D1/D2）───────────────────────────
 
-    async def _post_classify_environment(
-        self, scenarios: list[TestScenario], results: list[dict]
-    ) -> dict:
+    async def _post_classify_environment(self, results: list[dict]) -> dict:
         """对全部场景结果做统一后置分类：候选场景 → 环境探针 → blocked-env。
 
         - 候选 = 场景 status==fail 且（mock_api 步骤 + 纯等待超时失败）。
@@ -828,10 +826,23 @@ class VerifyEngine:
                 prefix=f".{progress_path.name}.", suffix=".tmp", dir=str(progress_path.parent)
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
+                # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，
+                # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+                f = None
+                try:
+                    f = os.fdopen(fd, "w", encoding="utf-8")
                     json.dump(progress, f, ensure_ascii=False)
                     f.flush()
                     os.fsync(f.fileno())
+                finally:
+                    if f is not None:
+                        f.close()
+                    else:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
                 os.replace(tmp_path, progress_path)
             finally:
                 if os.path.exists(tmp_path):
@@ -866,10 +877,23 @@ class VerifyEngine:
                 prefix=f".{report_path.name}.", suffix=".tmp", dir=str(report_dir)
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
+                # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，
+                # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+                f = None
+                try:
+                    f = os.fdopen(fd, "w", encoding="utf-8")
                     json.dump(report, f, ensure_ascii=False, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
+                finally:
+                    if f is not None:
+                        f.close()
+                    else:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
                 os.replace(tmp_path, report_path)
             finally:
                 if os.path.exists(tmp_path):

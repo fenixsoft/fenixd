@@ -27,8 +27,8 @@ class G9RepairSiteMixin:
 
         fix-repair-commit-enforcement D2：复核「冲突残留 + MERGE_HEAD」两项
         硬事实——
-        - ``unmerged``：``git ls-files -u`` 输出的未合并路径清单（stage 1/2/3
-          每冲突文件 1~3 行，按路径去重）；
+        - ``unmerged``：``git ls-files -u -z`` 输出的未合并路径清单（stage
+          1/2/3 每冲突文件 1~3 条记录，按路径去重）；
         - ``merge_head``：worktree 内 ``git rev-parse -q --verify MERGE_HEAD``
           是否成功（MERGE_HEAD 是 worktree 级 git 文件，须以 wt_path 为 -C 目标）。
 
@@ -40,9 +40,17 @@ class G9RepairSiteMixin:
             return facts
         try:
             ls = subprocess.run(
-                ["git", "-C", str(wt_path), "ls-files", "-u"],
+                ["git", "-C", str(wt_path), "ls-files", "-u", "-z"],
                 capture_output=True,
                 text=True,
+                # -z 记录以 NUL 分隔且不做路径引用（code-review item
+                # fe265f8ce9c5）：文本模式默认按 core.quotePath 把「异常字符」
+                # 路径做 C 风格引用——中文等非 ASCII 路径输出为带双引号的八进制
+                # 转义（如 "\346\226\207.txt"），含反斜杠/双引号的路径也会被加
+                # 引号转义，按行切分取到的将是转义形态而非真实路径（该引用发生
+                # 在编码层之前，仅显式 UTF-8 解码达成不了中文可读）。-z 的路径
+                # 字段即真实字节（记录终止符改为 NUL，字段内仍以 \t 分隔），
+                # 按记录切分后路径与磁盘实际路径一致。
                 # 显式 UTF-8：text=True 缺省按 locale 解码，非 UTF-8 locale
                 # 下读中文等非 ASCII 未合并路径抛 UnicodeDecodeError（ValueError
                 # 子类，逃逸下方 except，对齐 session_routes._list_project_files 同款惯例）
@@ -52,10 +60,11 @@ class G9RepairSiteMixin:
             )
             if ls.returncode == 0:
                 paths = []
-                for line in ls.stdout.splitlines():
-                    # 行格式：<mode> <sha> <stage>\t<path>
-                    if "\t" in line:
-                        path = line.split("\t", 1)[1].strip()
+                for record in ls.stdout.split("\x00"):
+                    # 记录格式：<mode> <sha> <stage>\t<path>（路径不经引用，
+                    # 不做 strip——真实路径允许首尾空格）
+                    if "\t" in record:
+                        path = record.split("\t", 1)[1]
                         if path and path not in paths:
                             paths.append(path)
                 facts["unmerged"] = paths

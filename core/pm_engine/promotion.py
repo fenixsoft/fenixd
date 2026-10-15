@@ -121,6 +121,22 @@ def promote_drafted(
             "pm_engine",
             f"Promotion lint failed '{spec_name}': {err}",
         )
+        # 写前冻结复查（code-review item 29de1ddc2fbc，对齐 dispatch/rollback
+        # ._rollback_frozen_recheck 先例）：入口 status 快照（本函数第 1 步）到
+        # 此处隔着软化编排与两项 lint 的文件 I/O，窗口内 spec 可能已被并发
+        # 冻结——frozen 条目的 update_spec 只剥 status 键，本 error 直写照常
+        # 生效，会覆盖内嵌「原状态 X」的冻结 error，人工解冻经 parse_orig_status
+        # 无法还原。发现冻结即放弃本次 error 写（violations 照常返回，由调用方
+        # 呈现），冻结现场保留待人工解冻后重新晋升。
+        from core.state_machine import FROZEN_FIELD
+
+        if (state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+            logger.warning(
+                "pm_engine",
+                f"Promotion lint error write abandoned '{spec_name}': "
+                "写盘前复查发现已冻结——放弃 error 直写，冻结现场保留待人工解冻",
+            )
+            return {"ok": False, "violations": violations + tasks_violations}
         state_machine.update_spec(spec_name, {"error": err})
         return {"ok": False, "violations": violations + tasks_violations}
 

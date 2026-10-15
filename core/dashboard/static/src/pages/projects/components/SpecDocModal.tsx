@@ -71,6 +71,13 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   });
   const cacheRef = useRef<Map<string, DocCacheEntry>>(new Map());
   const [cacheVersion, setCacheVersion] = useState(0);
+  // 各 key 的请求发起序号（code-review item 9cd221db03d7）：done 态的
+  // revalidate 既不写 loading 占位也无在途去重，快速切页签离开再回到同一文档
+  // 会同时挂起多个 revalidate 请求，后发先至时旧响应会把较新结果覆盖回陈旧
+  // 内容（如旧请求 found=false 把仍在展示的文档打成「无此文档」）。每 key
+  // 单调自增、await 返回后复核，仅最新一次请求可写缓存；loading 占位路径的
+  // 既有「loading 即跳过」去重不受影响（早退不取新号，不作废在途请求）。
+  const keyReqSeqRef = useRef<Map<string, number>>(new Map());
 
   // 当前 project+spec+doc 的缓存键（含 project 维度：组件跨项目常驻挂载，cacheRef 存活，
   // 不同项目的同名 spec 必须各自独立，避免互相串用文档内容）
@@ -104,8 +111,13 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
       setCacheVersion((v) => v + 1);
     }
 
+    // 发起序号（9cd221db03d7）：同 key 旧请求晚到按过期丢弃，不写缓存
+    const requestId = (keyReqSeqRef.current.get(key) ?? 0) + 1;
+    keyReqSeqRef.current.set(key, requestId);
+
     try {
       const d = await getSpecDoc(project, spec, activeTab);
+      if (requestId !== keyReqSeqRef.current.get(key)) return; // 过期响应丢弃
       if (d.found) {
         setCacheEntry(cacheRef.current, key, { status: 'done', content: d.content || '' });
       } else {
@@ -113,6 +125,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
       }
     } catch {
       // revalidate 失败时保留旧内容，避免清空已展示文档
+      if (requestId !== keyReqSeqRef.current.get(key)) return; // 过期响应丢弃
       if (!revalidate) {
         setCacheEntry(cacheRef.current, key, { status: 'error' });
       }

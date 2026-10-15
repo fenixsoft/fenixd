@@ -850,7 +850,8 @@ class MainTreeStrayWipSweeper:
         Returns: 子 dict（并入 sweep 返回的 ``untracked`` 键）：status 取
         ``below-threshold`` / ``timed`` / ``alerted`` / ``escalated`` /
         ``session-attributed`` / ``holder-attributed``（后两个归因命中态
-        复位计时、不进宽限告警与升级判定）。
+        复位计时、不进宽限告警与升级判定）。六个返回分支的返回契约对称，
+        均携带 ``first_sight`` 子 dict（code-review item 26ab89c5709f）。
         """
         threshold = untracked_stray_threshold(self._config)
         count = len(entries)
@@ -885,7 +886,7 @@ class MainTreeStrayWipSweeper:
         # below_threshold 早退**之前**——低于 entry 阈值的目录型集合同样
         # 提示（below_threshold 静默缺口正是本判定的填补对象）；与既有
         # 阈值/宽限/升级判定完全解耦（提示不启动升级时钟、不改 status
-        # 语义，两个返回分支共带 ``first_sight`` 子 dict 供消费方取用）。
+        # 语义，各返回分支均带 ``first_sight`` 子 dict 供消费方取用）。
         first_sight = self._untracked_first_sight(entries)
 
         if below_threshold:
@@ -905,6 +906,12 @@ class MainTreeStrayWipSweeper:
             entries, fp, threshold, running_run_ids
         )
         if attributed is not None:
+            # 归因命中两分支（holder-attributed / session-attributed）同样补带
+            # ``first_sight`` 子 dict（code-review item 26ab89c5709f）：与其余
+            # 四个返回分支的返回契约对称——probe 的返回 dict 在此统一补键，
+            # 避免按既有键形态强取的消费方在归因命中轮 KeyError / 静默取不到
+            # 首现提示结果。
+            attributed["first_sight"] = first_sight
             return attributed
         grace = grace_minutes(self._config)
         elapsed_min = (now - entry["first_seen"]) / 60.0

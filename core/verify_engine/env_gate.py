@@ -92,12 +92,12 @@ def _failed_wait_errors(scenario_result: dict, field: str) -> list[str]:
             continue
         passed = item.get("pass")
         success = item.get("success")
-        # assertions 用 pass、steps 用 success；缺失视为未失败（保守）
-        if passed is False or success is False:
-            if is_wait_timeout_error(str(item.get("error") or "")):
-                out.append(str(item.get("error") or ""))
-        elif passed is True or success is True:
-            pass  # 通过项忽略
+        # assertions 用 pass、steps 用 success；两键缺失（None）自然落入
+        # 判定之外视为未失败（保守），无需显式分支
+        if (passed is False or success is False) and is_wait_timeout_error(
+            str(item.get("error") or "")
+        ):
+            out.append(str(item.get("error") or ""))
     return out
 
 

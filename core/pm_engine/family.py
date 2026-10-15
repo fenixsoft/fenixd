@@ -802,6 +802,23 @@ class FamilyGovernor:
             repair_fields["implementer_run"] = None
         if entry.get("tester_run") is not None:
             repair_fields["tester_run"] = None
+        # 写前冻结复查（code-review item 7d53e9eacf26，仿 dispatch/rollback
+        # ._rollback_frozen_recheck/_rollback_write_guarded 收口）：入口 entry
+        # 快照到此写之间隔着 bump_counters 与 _append_fail_history 的文件 I/O
+        # （窗口比 transition 路径更宽），窗口内并发冻结时 frozen 条目的
+        # update_spec 只剥 status 键——error 覆盖与 implementer_run/tester_run
+        # 锚点清除照常生效，破坏冻结恢复语义。发现冻结即放弃打回（下方
+        # tasks.md 修复段注入与重派一并跳过），bug-found 事件留待冻结解除后
+        # 处理。
+        from core.state_machine import FROZEN_FIELD
+
+        if (self._pm.state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回放弃：'{spec_name}' 写盘前复查发现已冻结——放弃 "
+                f"implementing 重置写与重派，冻结现场保留待人工解冻",
+            )
+            return
         self._pm.state_machine.update_spec(spec_name, repair_fields)
         self._pm.logger.warning(
             "pm_engine",
@@ -930,6 +947,24 @@ class FamilyGovernor:
                     reset_fields["implementer_run"] = None
                 if existing_fix.get("tester_run") is not None:
                     reset_fields["tester_run"] = None
+                # 写前冻结复查（code-review item 7d53e9eacf26，与上方 inplace
+                # 打回及 dispatch/rollback._rollback_frozen_recheck 同款收口）：
+                # existing_fix 快照到此写之间隔着 _ensure_fix_spec_files 等文件
+                # I/O，窗口内 fix SPEC 被并发冻结时 frozen 条目的 update_spec
+                # 只剥 status 键——error 覆盖与 run 锚点清除照常生效。发现冻结
+                # 即放弃重置（_on_spec_ready 与重派一并跳过），bug-found 事件
+                # 留待冻结解除后处理。
+                from core.state_machine import FROZEN_FIELD
+
+                if (
+                    self._pm.state_machine.read_one(fix_spec_name) or {}
+                ).get(FROZEN_FIELD):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"legacy fix 重置放弃：'{fix_spec_name}' 写盘前复查发现"
+                        "已冻结——放弃 ready 重置写与重派，冻结现场保留待人工解冻",
+                    )
+                    return
                 self._pm.state_machine.update_spec(fix_spec_name, reset_fields)
                 self._pm._on_spec_ready(fix_spec_name)
                 # 入队收敛（code-review item 5e687a6085a1）：仅在实际发生重置/

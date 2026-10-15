@@ -248,6 +248,30 @@ _RUN_ID_NO_SPEC_PREFIXES = (
     "code-fix-",
     "evo-",
     "review-",
+    # maintenance-work-ledger 2.1：maintenance-<scope>-<ts>（run_files 注册表
+    # 注释明确「中段为 scope，非真实 spec 名」，同 evo- 口径）——原缺条目使
+    # 该车道在排水保全落 warning「须人工确认」，实为无 spec 绑定形态
+    # （code-review item 1352beed4415）。
+    "maintenance-",
+)
+
+# 携带 spec 段的 run_id 前缀（code-review item 1352beed4415）：canonical 前
+# 缀注册表在 core/agent_runner/run_files.py 的 RUN_ID_AGENT_PREFIXES（唯一
+# 真源，新增前缀只改那里）；本表只收录其中「剥前缀后恰为 <spec>-<ts> 形态、
+# 可安全反查 spec」的条目，供排水保全路径（_spec_from_run_id）反查。此前只
+# 认 impl/verify/repair，dispute-judge-<spec>-<ts>（judge 载体 worktree 族）
+# 与 planner-plan-/planner-judge-（planner 载体）在飞时解析不出 spec → 条目
+# 不进保全 sidecar、worktree 不进 cleanup_orphans 保护集。
+# 刻意不收录：spec-review-<spec>-<rand>-<ts>（rand 段使通用解析产出
+# 「<spec>-<rand>」脏 spec 名）与 admin- / planner-<mode>-<spec>-（mode 段
+# 同脏）/test-（形态未核实）——这些继续走 warning「须人工确认」路径。
+_RUN_ID_SPEC_CARRYING_PREFIXES = (
+    "dispute-judge-",
+    "planner-judge-",
+    "planner-plan-",
+    "impl-",
+    "verify-",
+    "repair-",
 )
 
 
@@ -804,9 +828,19 @@ class FenixDaemon:
         # worktree_base 项目收窄（fix-v2-devserver-fallback-attribution 2.1）：
         # 只考量 argv 携带本项目 worktree 基路径的 dev-server，双 daemon 主机
         # 不互刷（他项目进程不记账、不告警、不清扫）。
-        v2_cleanup_orphans(
-            self.logger, worktree_base=self.worktree_manager.base_dir
-        )
+        # non-blocking 包裹（code-review item 14fe72d23bbb）：与相邻启动步骤
+        # 同口径——清扫内部未纳入 try 的路径若在启动期抛出，传出 start() 会
+        # 被 main() FATAL 退出，supervisor 拉起即再崩循环。
+        try:
+            v2_cleanup_orphans(
+                self.logger, worktree_base=self.worktree_manager.base_dir
+            )
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"V2 dev-server orphan cleanup failed "
+                f"(non-blocking, daemon 启动继续): {e}",
+            )
         # 重启对账（fix-v2-devserver-fallback-attribution 2.3）：登记在册的
         # 重启前实例按「身份核对 + 归属引用判定」只收割无主进程，有主保留。
         try:
@@ -816,7 +850,16 @@ class FenixDaemon:
 
         # verify-process-lifecycle（D6 启动收割）：上轮 daemon 崩退时登记者全部
         # 视为非在飞——servers.json 中进程仍存活的登记实例按 /proc liveness 收割。
-        self._sweep_verify_serving_registry(use_in_flight=False)
+        # non-blocking 包裹（code-review item 14fe72d23bbb）：与周期调用点
+        # （主循环内已包裹）及相邻启动步骤同口径，启动序列不因清扫异常中断。
+        try:
+            self._sweep_verify_serving_registry(use_in_flight=False)
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Verify serving registry sweep failed "
+                f"(non-blocking, daemon 启动继续): {e}",
+            )
 
         # fix-verify-serving-disk-reclaim（D4 启动 reconcile）：登记收割之后再
         # 按「无主」判据回收 verify-serving 目录与 boot.log（启动 use_in_flight=
@@ -3352,6 +3395,18 @@ class FenixDaemon:
         if not spec:
             self.logger.warning("fenixd", "spec_delete 请求缺少 spec，忽略")
             return
+        # 纵深防御（code-review item e92148d3515e）：spec 名会被直接拼进
+        # spec/changes/<name>（soft_delete_spec 归档移目录 + 剔 STATE）。写入
+        # 方是本地可信 dashboard，消费侧仍按字符白名单校验形态——与
+        # scripts/verify-bug-repair-drive-engine.py 对同类外部输入的
+        # fullmatch 白名单同款，拦截路径分隔符 / .. 等畸形名：信号文件已经
+        # _consume_request_file 原子消费，此处仅 WARNING 留痕、不进入删除链。
+        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
+            self.logger.warning(
+                "fenixd",
+                f"spec_delete 信号 spec 名不合法，丢弃不执行删除: {spec!r}",
+            )
+            return
         # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
         # approve_push 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
         # daemon 停机期间积压的旧删除信号重启后仅消费不执行（先停后删属破坏性
@@ -5070,7 +5125,11 @@ class FenixDaemon:
 
         对每个仍存活的 in-flight run，解析其 spec 名并从 STATE 取 branch，
         组装保全条目（spec/run_id/branch/worktree/ahead_commits/reason/timestamp）
-        写入 ``.fenix/interrupted_runs.json``。写入失败降级 WARNING 不阻塞停机。
+        写入 ``.fenix/interrupted_runs.json``。写入失败降级 WARNING 不阻塞停机；
+        单条 run 的 STATE 读取 / worktree 查询异常亦逐条隔离（WARNING 后
+        continue 保全其余 run，不中断整体保全与停机收尾）——与
+        ``_preserve_implementing_specs`` 的逐条隔离口径对齐（code-review
+        item cba7d70c4397）。
         ``ahead_commits`` 以 ``git rev-list --count <基线分支>..<branch>`` 为据
         （基线分支经 _preserve_base_branch() 动态解析，不再硬编码 main——
         code-review item ec528621b2ec；recovery 保留判定同口径）；worktree 以
@@ -5100,40 +5159,51 @@ class FenixDaemon:
                         f"Preserve: cannot parse spec from run_id '{run_id}' — skip",
                     )
                 continue
-            entry = self.state_machine.read_one(spec) or {}
-            branch = entry.get("branch")
-            worktree = ""
-            if not branch and self.worktree_manager:
-                # 首轮在飞 run：STATE `branch` 未写（run 未到终态）→ 回落
-                # worktree_manager 的 spec → worktree 事实查询（git 真相，
-                # 不依赖重启即失的内存表），取在册 worktree 与其分支。
-                resolved = self.worktree_manager.find_worktree_by_spec(spec)
-                if resolved is not None:
-                    branch, worktree = resolved[1], str(resolved[0])
-                    seen_wt.add(str(resolved[0]))
-            if branch and self.worktree_manager:
-                wt = self.worktree_manager.find_worktree_path(branch)
-                worktree = str(wt) if wt else worktree
-                if wt:
-                    seen_wt.add(str(wt))
-            ahead = _ahead_commit_count(branch) if branch else 0
-            entries.append(
-                {
-                    "spec": spec,
-                    "run_id": run_id,
-                    "branch": branch or "",
-                    "worktree": worktree,
-                    "ahead_commits": ahead,
-                    "reason": reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            self.logger.warning(
-                "fenixd",
-                f"Preserving interrupted run '{run_id}' (spec '{spec}', "
-                f"branch '{branch or 'none'}', worktree '{worktree or 'none'}', "
-                f"ahead={ahead})",
-            )
+            # 逐条目异常隔离（code-review item cba7d70c4397）：read_one /
+            # find_worktree_by_spec / find_worktree_path 任一抛出只留 WARNING
+            # 并 continue，不中止其后 run 的保全、不把异常传出 shutdown()。
+            try:
+                entry = self.state_machine.read_one(spec) or {}
+                branch = entry.get("branch")
+                worktree = ""
+                if not branch and self.worktree_manager:
+                    # 首轮在飞 run：STATE `branch` 未写（run 未到终态）→ 回落
+                    # worktree_manager 的 spec → worktree 事实查询（git 真相，
+                    # 不依赖重启即失的内存表），取在册 worktree 与其分支。
+                    resolved = self.worktree_manager.find_worktree_by_spec(spec)
+                    if resolved is not None:
+                        branch, worktree = resolved[1], str(resolved[0])
+                        seen_wt.add(str(resolved[0]))
+                if branch and self.worktree_manager:
+                    wt = self.worktree_manager.find_worktree_path(branch)
+                    worktree = str(wt) if wt else worktree
+                    if wt:
+                        seen_wt.add(str(wt))
+                ahead = _ahead_commit_count(branch) if branch else 0
+                entries.append(
+                    {
+                        "spec": spec,
+                        "run_id": run_id,
+                        "branch": branch or "",
+                        "worktree": worktree,
+                        "ahead_commits": ahead,
+                        "reason": reason,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                self.logger.warning(
+                    "fenixd",
+                    f"Preserving interrupted run '{run_id}' (spec '{spec}', "
+                    f"branch '{branch or 'none'}', worktree '{worktree or 'none'}', "
+                    f"ahead={ahead})",
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"Preserve: run '{run_id}' (spec '{spec}') 保全失败 "
+                    f"（非阻塞，跳过该条继续其余 run）: {e}",
+                )
+                continue
         if not _write_preserve_sidecar(entries):
             self.logger.warning(
                 "fenixd",
@@ -5370,9 +5440,9 @@ class FenixDaemon:
         if not run_id:
             return None
         rid = run_id
-        for prefix in ("impl", "verify", "repair"):
-            if rid.startswith(f"{prefix}-"):
-                rest = rid[len(prefix) + 1 :]
+        for prefix in _RUN_ID_SPEC_CARRYING_PREFIXES:
+            if rid.startswith(prefix):
+                rest = rid[len(prefix):]
                 # 车道复合前缀（code-review item cb8408ba09ec）：impl-ocr-<spec>-<ts>
                 # （core/agent_runner/maintenance_runs._unique_impl_ocr_run_id 的
                 # 实际命名）按 impl 剥离后第二段是保留字「ocr」（车道名）而非
@@ -5380,7 +5450,7 @@ class FenixDaemon:
                 # 「ocr-<spec>」：调用方既不走 warning 留痕，还会用错误 spec 写
                 # branch/worktree 全空的保全条目。此处返回 None 交由调用方
                 # （_preserve_interrupted_runs）按 warning 留痕、提示人工确认。
-                if prefix == "impl" and rest.split("-", 1)[0] == "ocr":
+                if prefix == "impl-" and rest.split("-", 1)[0] == "ocr":
                     return None
                 break
         else:

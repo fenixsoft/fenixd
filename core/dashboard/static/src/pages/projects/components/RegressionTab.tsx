@@ -418,10 +418,19 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 请求序号守卫（对齐 QualityTab）：轮询与手动刷新并发时较慢的早期响应
   // 不得覆盖较新数据。
   const seqRef = useRef(0);
+  // 在飞去重标志（code-review item ccaadd7c9eb2，仿 ArchitectureTab
+  // 7756f9675f6a 的 loadInFlightRef 惯例）：running 轮询与等待启动窗口轮询的
+  // 2s interval 每 tick 原本无条件发起请求，统一请求超时 30s 下后端挂起时
+  // 在飞请求最多堆积约 15 个（seqRef 只拦过期响应写状态，不拦请求堆积本身）。
+  // loadResult 入口置位、finally 复位，两处 interval tick 见在飞则跳过本轮，
+  // 等上一请求落定后再发下一轮。用 ref 而非 state：不参与渲染，卸载/切离
+  // 清理路径无需额外复位（在飞响应本就被 seq 守卫丢弃）。
+  const loadInFlightRef = useRef(false);
 
   const loadResult = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++seqRef.current;
+    loadInFlightRef.current = true;
     try {
       const data = await getRegressionResult(project);
       if (seq !== seqRef.current) return;
@@ -431,6 +440,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       if (data.running) {
         if (pollTimerRef.current === null) {
           pollTimerRef.current = window.setInterval(() => {
+            // 在飞去重（ccaadd7c9eb2）：上一轮请求未落定则跳过本轮 tick，
+            // 避免后端挂起时在飞请求随 2s interval 堆积
+            if (loadInFlightRef.current) return;
             void loadResultRef.current();
           }, POLL_INTERVAL_MS);
         }
@@ -454,6 +466,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 执行」渲染且按钮禁用，提示条是 toast 之外唯一的失败痕迹与恢复指引
       setPollFailed(true);
       message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // 成功/失败两条路径都复位在飞标志（ccaadd7c9eb2，对齐 ArchitectureTab）
+      loadInFlightRef.current = false;
     }
   }, [active, project, message]);
 
@@ -538,7 +553,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 感知不到运行态置位（停在等待态直到超时）。2s 轮询直至 running 接管。
   useEffect(() => {
     if (!awaitingStart || !active) return;
-    const t = window.setInterval(() => void loadResult(), POLL_INTERVAL_MS);
+    const t = window.setInterval(() => {
+      // 在飞去重（ccaadd7c9eb2）：与 running 轮询同口径，见 loadInFlightRef 注释
+      if (loadInFlightRef.current) return;
+      void loadResult();
+    }, POLL_INTERVAL_MS);
     return () => window.clearInterval(t);
   }, [awaitingStart, active, loadResult]);
 

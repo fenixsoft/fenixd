@@ -1710,7 +1710,19 @@ class SpecReviewManager:
         # 解冻后自愈，但多一次冻结/解冻往返）。与 responsible_release 的
         # update_spec 清字段口径对齐；须先于下方入队落盘——派发闸按 STATE 计数
         # 判定。
-        self.state_machine.update_spec(spec_name, {"_review_attempts": 0})
+        self.state_machine.update_spec(
+            spec_name,
+            {
+                "_review_attempts": 0,
+                # 与 responsible_release 口径对齐清零否决计数（code-review item
+                # 8fcf35364432，同 10592411f0b1 各冻结/通过收口站点）：旧语义
+                # 遗留的 blocked（error=spec-review-rejected）条目可能带陈旧
+                # 否决计数，不清零则重评后首次 rejected 即达 MAX_REJECT_REDO
+                # 冻结转人工，跳过「初次否决 + 自动复评确认」的有界契约。
+                # _review_rejection_class 按既有口径保留作分类留痕。
+                "_review_rejections": 0,
+            },
+        )
 
         # 派发新评审（fix-spec-review-blocking-dispatch 2.7：改投队列）——
         # agent_runner 为 None 的 CLI 场景跳过派发，由 daemon full_scan
