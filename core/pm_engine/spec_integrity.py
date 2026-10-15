@@ -123,6 +123,7 @@ class SpecIntegrityGate:
         if spec_has_content(self._pm.project_root, spec_name):
             return False
 
+        # [fenix-ignore:e55afea2a5a6] read_one 经 read_all → _normalize_entries 已过滤非 dict 条目（core/state_machine.py read_all 防御层），返回值只可能是 dict 或 None（None 由 or {} 兜底），entry.get 不会抛 AttributeError
         entry = self._pm.state_machine.read_one(spec_name) or {}
         status = entry.get("status")
         if status == "blocked":

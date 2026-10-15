@@ -926,6 +926,20 @@ class PMEngine:
                         f"blocked 拦截与派发（收敛义务留待后续周期重评）",
                     )
                     return
+                # 写前冻结复查（code-review item 54d679a82fc7，对齐
+                # dispatch/rollback._rollback_frozen_recheck 先例）：上方 fresh
+                # status 复核只排除复核前已完成的冻结，复核到此写之间的残余
+                # 窗口内并发冻结时，frozen 条目的 update_spec 只剥 status 键，
+                # error 覆写照常生效、会覆盖内嵌「原状态 X」的冻结 error。
+                # 发现冻结即放弃本次收敛拦截与派发，留待下一轮周期重评。
+                latest = self.state_machine.read_one(spec_name) or {}
+                if latest.get(FROZEN_FIELD):
+                    self.logger.warning(
+                        "pm_engine",
+                        f"同源草案收敛拦截放弃：'{spec_name}' 写盘前复查发现"
+                        "已冻结——放弃 blocked 写与派发，冻结现场保留待人工解冻",
+                    )
+                    return
                 self.state_machine.update_spec(
                     spec_name,
                     {
@@ -4077,6 +4091,23 @@ class PMEngine:
                     # （上方 _attempt_still_alive 已核验）即 run 已死，拉回 ready 全新
                     # 派发。MUST NOT 消费 `_recovery_resume`：它不由本路径产出，且此时
                     # 不存在可续做的在飞 run——消费会使随后的正常派发失去续做判定资格。
+                    # 写前冻结复查（code-review item 54d679a82fc7，对齐
+                    # dispatch/rollback._rollback_frozen_recheck 先例）：上方
+                    # status 复核到此写之间隔着 _exempt_dead_run_budget 的状态
+                    # 文件 I/O（豁免有幂等锚点，冻结后重复进入也只
+                    # idempotent_skip、无重复退款），窗口内并发冻结时 frozen
+                    # 条目的 update_spec 只剥 status 键——error 覆写与
+                    # implementer_run/branch 锚点清空照常生效，人工解冻后只能
+                    # 降级为全新重派。发现冻结即放弃本次恢复写，留待下一轮
+                    # 周期重评。
+                    latest = self.state_machine.read_one(spec_name) or {}
+                    if latest.get(FROZEN_FIELD):
+                        self.logger.info(
+                            "pm_engine",
+                            f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
+                            "——放弃 stuck implementing 恢复写，留待解冻后重评",
+                        )
+                        continue
                     self.state_machine.update_spec(
                         spec_name,
                         {
@@ -4178,6 +4209,20 @@ class PMEngine:
                         f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
                     )
                     # 验证卡住：实现已完成，回 implemented 重新派发 verifier
+                    # 写前冻结复查（code-review item 54d679a82fc7，与上方
+                    # implementing 分支同款，对齐 dispatch/rollback
+                    # ._rollback_frozen_recheck 先例）：status 复核到此写之间
+                    # 并发冻结时，frozen 条目的 update_spec 只剥 status 键，
+                    # error 覆写与 tester_run 清空照常生效、破坏冻结现场。
+                    # 发现冻结即放弃本次恢复写，留待下一轮周期重评。
+                    latest = self.state_machine.read_one(spec_name) or {}
+                    if latest.get(FROZEN_FIELD):
+                        self.logger.info(
+                            "pm_engine",
+                            f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
+                            "——放弃 stuck testing 恢复写，留待解冻后重评",
+                        )
+                        continue
                     self.state_machine.update_spec(
                         spec_name,
                         {
