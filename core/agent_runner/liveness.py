@@ -15,6 +15,7 @@ from core.agent_runner.run_files import (
     strip_run_id_suffixes,
 )
 from datetime import datetime, timezone
+import glob
 import json
 import logging
 import os
@@ -631,8 +632,16 @@ class LivenessSupervisor:
         # run_files.RUN_ID_AGENT_PREFIXES 登记，下方 run_spec_part 全等守卫照常
         # 生效，防 spec 名互为前缀时误延期。
         for prefix in ("impl", "verify", "spec-review", "repair", "planner-judge", "dispute-judge"):
+            # code-review item 0a47dac19f58：spec 名可能含 ? [ ] * 等 glob 元字符，
+            # 直接拼进 glob 模式会被当模式语法解释而漏配（匹配不到任何流文件 →
+            # 本判据恒 False，pgrep 不可用/未命中时流新鲜度是 has_live_attempt
+            # 的唯一兜底，漏配会让仍在跑的 spec 被判无存活 attempt 后被重置
+            # 状态）。与 _pgrep_live_attempt 对正则元字符 re.escape（item
+            # e9a2001542af）同目的的 glob 侧对应处置，两处转义口径互指；
+            # glob.escape 不转义盘符分隔的细节在 Linux 单一根目录下无影响。
+            # 过匹配方向由下方 run_spec_part 全等守卫照常挡住。
             try:
-                paths = list(runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"))
+                paths = list(runs_dir.glob(f"{prefix}-{glob.escape(spec_name)}-*.jsonl"))
             except OSError as e:
                 # 单前缀 glob 失败（瞬时 I/O 异常）只跳过本前缀继续扫描其余车道，
                 # 不短路整体判定：此处若 return False，impl 前缀一失败就跳过
@@ -1623,6 +1632,11 @@ class LivenessSupervisor:
         # background_calls 集合内的条目清掉（与 _extension_baselines 的流新鲜
         # 度自清理同思路）；_zero_output_assessment 只消费本 snapshot 的
         # background_calls，清理其不涉及的条目不影响本轮判定。
+        # code-review item 959f2f197645（注释裁决，不改清理行为）：多 run 并发
+        # 监督下，A run 的清理会连带清掉并发监督中 B run 后台调用的跨采样零增长
+        # 记忆（last_change 丢失）——B 下次采样以输出文件 mtime 重新锚定零增长
+        # 起点，而 mtime 锚按设计支持单采样达标击杀，故该记忆重置不构成漏杀，
+        # 属可接受裁决。
         _live_calls = snapshot.get("background_calls") or {}
         # code-review item 85098e54f245：先快照再迭代（对齐 runner.py
         # _bookkeeping_tool_share 的既有范式）——LivenessSupervisor 为全 run
@@ -1871,4 +1885,12 @@ class LivenessSupervisor:
                     pass
                 except Exception:  # pragma: no cover - 防御性
                     pass
-            self._pm._running_agents.pop(name, None)
+            # code-review item 233643259b8b：收割 pop 与 run 线程收尾 pop、本函数
+            # 第一步 SIGTERM 失败分支同持 _run_finalize_lock，对齐注册表变更
+            # 单一协议（item 292556ba9499）。临界区只含非阻塞 dict pop，
+            # proc.wait 留在锁外不引入等待；收割段由 daemon shutdown 直呼
+            # （fenixd.py），不在任何持锁调用链内，无重入死锁风险。此处属
+            # 收割终局态，interrupted 标记临界区（第二步）已收口，持锁只为
+            # 注册表口径统一。
+            with self._pm._run_finalize_lock:
+                self._pm._running_agents.pop(name, None)
