@@ -247,6 +247,21 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     return True
 
 
+def _append_todo_fail_open(project_root: Path, line: str, log) -> None:
+    """``append_todo_line`` 的 fail-open 封装（run_backfill 失败分支留痕专用）。
+
+    append_todo_line 自身只对提交/推送降级（``_commit_todo_after_write``），
+    持锁、读 todo.md 与原子回写阶段的 OSError 会向外抛；失败分支调用它本意是
+    留痕后 fail-open 返回，.fenix 只读/磁盘满等二次 OSError 会替换既定返回、
+    以未处理异常掀翻车道。此处捕获 OSError 降级为日志留痕（对齐
+    ``register_archive_pending`` 的容错口径），todo 留痕失败不掩盖原失败。
+    """
+    try:
+        append_todo_line(project_root, line)
+    except OSError as e:
+        log.warning("knowledge", f"回填 todo 待办追加失败（fail-open）：{e}")
+
+
 def upsert_todo_line(
     project_root: Path,
     prefix: str,
@@ -1538,9 +1553,10 @@ def run_backfill(
         log.warning(
             "knowledge", f"回填提示词模板读取失败，本车道跳过待人工检查：{e}"
         )
-        append_todo_line(
+        _append_todo_fail_open(
             project_root,
             "回填提示词模板读取失败，请检查 core/knowledge_prompts/ 后重跑回填",
+            log,
         )
         return {"triggered": False, "reason": "prompt-template-unreadable"}
 
@@ -1553,8 +1569,10 @@ def run_backfill(
         log.warning(
             "knowledge", f"回填台账 {LEDGER_RELPATH} 读取失败，本车道跳过待人工检查"
         )
-        append_todo_line(
-            project_root, f"回填台账 {LEDGER_RELPATH} 读取失败，请人工检查后重跑回填"
+        _append_todo_fail_open(
+            project_root,
+            f"回填台账 {LEDGER_RELPATH} 读取失败，请人工检查后重跑回填",
+            log,
         )
         return {"triggered": False, "reason": "ledger-unreadable"}
     if ledger.legacy_keys:
@@ -1564,7 +1582,13 @@ def run_backfill(
             f"（v2 条目保留）：{', '.join(ledger.legacy_keys[:5])}",
         )
     ledger.reconcile(chain_index, archives)
-    ledger.save()
+    # 台账落盘失败不掀翻车道（fail-open，对齐批次循环同款防护）：.fenix 只读/
+    # 磁盘满等 OSError 不让本车道以未处理异常告终，留痕后继续——后续批次 save
+    # 持锁重读盘上全量条目重写可自愈
+    try:
+        ledger.save()
+    except OSError as e:
+        log.warning("knowledge", f"回填台账落盘失败（fail-open）：{e}")
     todo_caps = ledger.pending_capabilities()
     todo_adr = ledger.pending_adr_archives()
 
@@ -1599,16 +1623,19 @@ def run_backfill(
             try:
                 spawn(prompt, run_id)
             except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
-                append_todo_line(
-                    project_root, f"回填聚类自举 run 失败（{run_id}）：{e}"
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填聚类自举 run 失败（{run_id}）：{e}",
+                    log,
                 )
                 return {"triggered": True, "ok": False, "reason": "bootstrap-spawn-failed"}
             domain_map = _read_json(domain_map_path)
             if not isinstance(domain_map, dict) or not domain_map:
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     f"回填聚类自举 run（{run_id}）未产出域归位清单 {DOMAIN_MAP_RELPATH}，"
                     "请人工检查后重跑回填",
+                    log,
                 )
                 return {"triggered": True, "ok": False, "reason": "bootstrap-no-domain-map"}
             base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
@@ -1618,8 +1645,10 @@ def run_backfill(
                     before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
-                append_todo_line(
-                    project_root, f"回填自举校验/修正 run 失败（{run_id}）：{e}"
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填自举校验/修正 run 失败（{run_id}）：{e}",
+                    log,
                 )
                 return {
                     "triggered": True,
@@ -1628,10 +1657,11 @@ def run_backfill(
                 }
             if not ok:
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     "回填自举产出校验 "
                     f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
+                    log,
                 )
                 return {
                     "triggered": True,
@@ -1654,10 +1684,11 @@ def run_backfill(
             ]
             if prune_violations:
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     "回填自举剪枝后校验失败，已放弃本次产出待人工检查重跑："
                     f"{prune_violations[:3]}",
+                    log,
                 )
                 return {
                     "triggered": True,
@@ -1668,7 +1699,9 @@ def run_backfill(
             try:
                 commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
-                append_todo_line(project_root, f"回填自举提交失败（{run_id}）：{e}")
+                _append_todo_fail_open(
+                    project_root, f"回填自举提交失败（{run_id}）：{e}", log
+                )
                 return {
                     "triggered": True,
                     "ok": False,
@@ -1730,22 +1763,26 @@ def run_backfill(
             try:
                 spawn(prompt, run_id)
             except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
-                append_todo_line(project_root, f"回填史前复原 run 失败（{run_id}）：{e}")
+                _append_todo_fail_open(
+                    project_root, f"回填史前复原 run 失败（{run_id}）：{e}", log
+                )
                 return {"triggered": True, "ok": False, "reason": "prehistoric-spawn-failed"}
             inventory = _read_json(prehistoric_path)
             if not isinstance(inventory, list) or not inventory:
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     f"回填史前复原 run（{run_id}）未产出史前清单 "
                     f"{PREHISTORIC_JSON_RELPATH}，请人工检查后重跑回填",
+                    log,
                 )
                 return {"triggered": True, "ok": False, "reason": "prehistoric-no-inventory"}
             missing = _missing_prehistoric_pages(project_root, inventory, chain_index)
             if missing:
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     f"回填史前复原 run（{run_id}）未覆盖能力缺史前页："
                     f"{', '.join(missing[:5])}，请人工检查后重跑回填",
+                    log,
                 )
                 return {"triggered": True, "ok": False, "reason": "prehistoric-missing-pages"}
             base_prompt = build_prehistoric_prompt(project_root, chain_index)
@@ -1755,8 +1792,10 @@ def run_backfill(
                     before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
-                append_todo_line(
-                    project_root, f"回填史前复原校验/修正 run 失败（{run_id}）：{e}"
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填史前复原校验/修正 run 失败（{run_id}）：{e}",
+                    log,
                 )
                 return {
                     "triggered": True,
@@ -1765,10 +1804,11 @@ def run_backfill(
                 }
             if not ok:
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     "回填史前复原产出校验 "
                     f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
+                    log,
                 )
                 return {
                     "triggered": True,
@@ -1779,7 +1819,9 @@ def run_backfill(
             try:
                 commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
-                append_todo_line(project_root, f"回填史前复原提交失败（{run_id}）：{e}")
+                _append_todo_fail_open(
+                    project_root, f"回填史前复原提交失败（{run_id}）：{e}", log
+                )
                 return {
                     "triggered": True,
                     "ok": False,
@@ -1872,21 +1914,23 @@ def run_backfill(
                 for key in stale:
                     ledger.reset_pending(key)
                 if stale:
-                    append_todo_line(
+                    _append_todo_fail_open(
                         project_root,
                         f"回填批次 {i}/{total} 回滚保留在盘产出（差集回滚只清本批"
                         f"新增脏路径），此前提交失败批次产出未落库，相关条目"
                         f"已打回 pending 待重入对账重做："
                         f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
+                        log,
                     )
                 uncommitted_keys.clear()
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 for cap in batch:
                     ledger.mark(CAPABILITY_PREFIX + cap, STATUS_FAILED, batch=i)
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     f"回填批次 {i}/{total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败（"
                     f"{len(batch)} 个能力），已回滚半成品：{violations[:3]}",
+                    log,
                 )
                 failed_batches.append(
                     {"batch": i, "capabilities": batch, "violations": violations[:5]}
@@ -1965,21 +2009,23 @@ def run_backfill(
                 for key in stale:
                     ledger.reset_pending(key)
                 if stale:
-                    append_todo_line(
+                    _append_todo_fail_open(
                         project_root,
                         f"回填 ADR 批次 {i}/{adr_total} 回滚保留在盘产出（差集回滚"
                         f"只清本批新增脏路径），此前提交失败批次产出未落库，相关条目"
                         f"已打回 pending 待重入对账重做："
                         f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
+                        log,
                     )
                 uncommitted_keys.clear()
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 for a in batch:
                     ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
-                append_todo_line(
+                _append_todo_fail_open(
                     project_root,
                     f"回填 ADR 批次 {i}/{adr_total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败"
                     f"（{len(batch)} 个归档），已回滚半成品：{violations[:3]}",
+                    log,
                 )
                 adr_failed.append(
                     {"batch": i, "archives": batch, "violations": violations[:5]}
@@ -2004,12 +2050,18 @@ def run_backfill(
     if uncommitted_keys:
         for key in sorted(uncommitted_keys):
             ledger.reset_pending(key)
-        append_todo_line(
+        _append_todo_fail_open(
             project_root,
             "回填收尾仍有批次提交失败未落库，相关条目已打回 pending 待重入重做："
             f"{', '.join(k.split(':', 1)[1] for k in sorted(uncommitted_keys)[:5])}",
+            log,
         )
-        ledger.save()
+        # 台账落盘失败不掀翻车道（fail-open，同批次循环口径）：条目重置已在内存
+        # 且 todo 已留痕，收尾段落盘故障不让全部批次已跑完的车道沿调用链崩掉
+        try:
+            ledger.save()
+        except OSError as e:
+            log.warning("knowledge", f"回填收尾台账落盘失败（fail-open）：{e}")
         uncommitted_keys.clear()
 
     counts = ledger.counts()
