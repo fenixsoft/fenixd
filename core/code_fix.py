@@ -534,9 +534,14 @@ def _read_run_metrics(project_root, run_id: str) -> dict:
                  runs_dir / "archive" / f"{run_id}.jsonl"):
         last: dict = {}
         try:
-            with path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
+            # 二进制读 + 逐行 decode(errors="replace")（code-review item
+            # ba3af64dc703，对齐 read_fix_out 同款解码容错）：坏字节 run 归档
+            # 只废坏行（json 解析失败按既有 continue 跳过），MUST NOT 让
+            # UnicodeDecodeError 沿 _chain_recent_duration_mean → 夜静默窗判定
+            # 的 checkpoint 主链路上抛中断本轮投递。
+            with path.open("rb") as fh:
+                for raw in fh:
+                    line = raw.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
                     try:
@@ -2741,6 +2746,13 @@ def _worktree_commit_count(worktree, created_sha: str):
 
 
 def _worktree_head(worktree) -> str:
+    """worktree 当前 HEAD sha（判据不可得返回空串；code-review item 09ed10f24830）。
+
+    rev-parse 失败（无提交仓库/引用解析失败）时 git 会向 stdout 输出字面量
+    "HEAD" 且退出码非零——只取 stdout 会把垃圾值当有效 sha 返回（绕过建树点
+    ``created_sha`` 空串守卫、污染失败档案/延迟台账的 tip_sha 追溯字段），对齐
+    ``_branch_head`` 口径按非零退出返回空串，由调用方既有「判据不可得」分支兜底。
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "HEAD"],
@@ -2748,6 +2760,8 @@ def _worktree_head(worktree) -> str:
             text=True,
             timeout=30,
         )
+        if out.returncode != 0:
+            return ""
         return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -5441,11 +5455,21 @@ class CodeFixOrchestrator:
         # 置终态的条目不随批入档。
         open_ids = _open_ids_for_archive(root, item_ids)
         if open_ids:
-            record_failed_batch(
-                root, open_ids, wt,
-                reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
-                logger=self._logger,
-            )
+            # 入档收尾的触顶/降档告警在锁外经 AdminStore 落盘，磁盘满/权限类
+            # OSError 上抛会跳过紧随的 cleanup 与台账移除（code-review item
+            # ff69fd3d36ec，告警写盘失败不得劫持收尾）——异常降级留痕，收尾照常。
+            try:
+                record_failed_batch(
+                    root, open_ids, wt,
+                    reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+                    logger=self._logger,
+                )
+            except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                self._log(
+                    "warning",
+                    f"code-fix 延迟批合回冲突入档案/告警写盘异常"
+                    f"（收尾不受影响）: {e}",
+                )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
         _remove_deferred_batch(root, item_ids)
         self._log(
@@ -5472,11 +5496,20 @@ class CodeFixOrchestrator:
         open_ids = _open_ids_for_archive(root, item_ids)
         first_expire = bool(open_ids) and not _has_expired_archive(root, open_ids)
         if open_ids:
-            record_failed_batch(
-                root, open_ids, wt,
-                reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
-                logger=self._logger,
-            )
+            # 告警写盘失败不得劫持降级收尾（code-review item ff69fd3d36ec，同
+            # 下方 _write_defer_expired_alert 手法）：触顶告警经 AdminStore
+            # 落盘，OSError 上抛会跳过紧随的 cleanup 与台账移除。
+            try:
+                record_failed_batch(
+                    root, open_ids, wt,
+                    reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
+                    logger=self._logger,
+                )
+            except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                self._log(
+                    "warning",
+                    f"code-fix defer 降级入档案/告警写盘异常（收尾不受影响）: {e}",
+                )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
         _remove_deferred_batch(root, item_ids)
         if first_expire:
@@ -5659,8 +5692,9 @@ class CodeFixOrchestrator:
 
         调用前提：``_safe_cleanup(success=False)`` 已对非 verify- 前缀分支登记
         recovery legacy（lifecycle.py 既有语义）。对批建树既有 spec_name
-        "code-review-fix"（:3134）置 reuse，下一批 ``wm.create`` 经既有认领
-        通路（``_take_reusable_worktree``）继承 salvaged 分支；无在册 legacy
+        "code-review-fix"（``_run_batch_inner`` 的 ``wm.create`` 建树调用点）
+        置 reuse，下一批 ``wm.create`` 经既有认领通路
+        （``_take_reusable_worktree``）继承 salvaged 分支；无在册 legacy
         （cleanup 未登记）/标记失败只留 WARNING 不阻断（fail-open，下批按
         全新建树接续）。MUST NOT 调 ``consume_legacy``（回收端，删分支）。
         """
@@ -5813,8 +5847,8 @@ class CodeFixOrchestrator:
 
         从当前基线新建承载分支，按「提交是否触碰冲突文件」（冲突集来自
         ``wm.rehearsal_conflict_paths`` 只读预演，task 1.2）逐组 cherry-pick
-        回收；回收集重跑批回归（:4140 同参）通过后经
-        ``merge_back_from_branch`` 重走合回。条目归属以提交 body 的
+        回收；回收集重跑批回归（与 ``_run_batch_created`` 首轮回归调用同参）
+        通过后经 ``merge_back_from_branch`` 重走合回。条目归属以提交 body 的
         ``items:`` 清单解析为准：可归属到回收集的条目随调用方成功核销路径
         resolved；仍冲突提交对应条目与「无法归属到非冲突组的剩余未出账条目」
         （旧契约批解析不出清单）保守整体入失败档案计 fail_count（与现状整批
@@ -5927,13 +5961,22 @@ class CodeFixOrchestrator:
             # 与旧契约批无法归属条目（保守整批口径）。
             open_ids = _open_ids_for_archive(root, archive_ids)
             if open_ids:
-                record_failed_batch(
-                    root, open_ids, wt,
-                    reason="merge_back_conflict",
-                    branch=branch0, tip_sha=_branch_head(wt, branch0) or tip0,
-                    logger=self._logger,
-                )
-                archived = len(open_ids)
+                # 告警写盘失败不得劫持救回收尾（code-review item ff69fd3d36ec）：
+                # 异常上穿会经批 worker 兜底把「部分回收成功核销」翻成 halt。
+                try:
+                    record_failed_batch(
+                        root, open_ids, wt,
+                        reason="merge_back_conflict",
+                        branch=branch0, tip_sha=_branch_head(wt, branch0) or tip0,
+                        logger=self._logger,
+                    )
+                    archived = len(open_ids)
+                except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                    self._log(
+                        "warning",
+                        f"code-fix 救回兜底入档案/告警写盘异常"
+                        f"（收尾不受影响）: {e}",
+                    )
         self._log(
             "info",
             f"code-fix 第 {batch_no} 批合回冲突救回终局：部分回收"
@@ -6357,32 +6400,44 @@ class CodeFixOrchestrator:
                 # 性告警的名录须与真实失败条目一致；子集为空则跳过入档与告警。
                 open_ids = _open_ids_for_archive(root, archive_ids)
                 if open_ids:
-                    record_failed_batch(
-                        root, open_ids, wt,
-                        # "regression_failed_twice" 是历史兼容名（定向重试上线前的
-                        # 两次全量回归语义）：存量档案与告警检索依赖此标识，不改名；
-                        # 熔断收口取新名 "regression_parse_error_breaker"
-                        # （add-codefix-parse-error-breaker 2.2，消费侧无
-                        # regression_failed_twice 全等匹配依赖，tasks 2.3 已核）。
-                        reason=(
-                            "regression_parse_error_breaker" if breaker_triggered
-                            else "regression_failed_twice"
-                        ), branch=branch, tip_sha=tip_sha,
-                        detail_ref=last_detail_ref, logger=self._logger,
-                        # 回归终局形态入档（evo-add-codefix-anomaly-redispatch-
-                        # budget 1.1）：按最后一轮（耗尽轮）回归判定；重试收敛
-                        # 事实快照（批 worker 局部计数的终值）随档留存供审计。
-                        reg_form=(
-                            REG_FORM_ANOMALY
-                            if _is_regression_anomaly(reg, final_fail_items)
-                            else REG_FORM_MAPPED
-                        ),
-                        reg_detail={
-                            "anomaly_streak": anomaly_streak,
-                            "retry_rounds": len(attempt_run_ids),
-                            "breaker_triggered": breaker_triggered,
-                        },
-                    )
+                    # 告警写盘失败不得劫持 consumed 收尾（code-review item
+                    # ff69fd3d36ec，同下方 write_regression_failed_alert 手法）：
+                    # record_failed_batch 锁外的触顶/降档告警经 AdminStore 落盘，
+                    # OSError 上抛会跳过紧随的 _consumed_progress——经批 worker
+                    # 兜底把「链继续推进」改成 halt。
+                    try:
+                        record_failed_batch(
+                            root, open_ids, wt,
+                            # "regression_failed_twice" 是历史兼容名（定向重试上线前的
+                            # 两次全量回归语义）：存量档案与告警检索依赖此标识，不改名；
+                            # 熔断收口取新名 "regression_parse_error_breaker"
+                            # （add-codefix-parse-error-breaker 2.2，消费侧无
+                            # regression_failed_twice 全等匹配依赖，tasks 2.3 已核）。
+                            reason=(
+                                "regression_parse_error_breaker" if breaker_triggered
+                                else "regression_failed_twice"
+                            ), branch=branch, tip_sha=tip_sha,
+                            detail_ref=last_detail_ref, logger=self._logger,
+                            # 回归终局形态入档（evo-add-codefix-anomaly-redispatch-
+                            # budget 1.1）：按最后一轮（耗尽轮）回归判定；重试收敛
+                            # 事实快照（批 worker 局部计数的终值）随档留存供审计。
+                            reg_form=(
+                                REG_FORM_ANOMALY
+                                if _is_regression_anomaly(reg, final_fail_items)
+                                else REG_FORM_MAPPED
+                            ),
+                            reg_detail={
+                                "anomaly_streak": anomaly_streak,
+                                "retry_rounds": len(attempt_run_ids),
+                                "breaker_triggered": breaker_triggered,
+                            },
+                        )
+                    except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                        self._log(
+                            "warning",
+                            f"code-fix 回归耗尽入档案/告警写盘异常"
+                            f"（consumed 收尾不受影响）: {e}",
+                        )
                     # 告警写盘失败不得劫持 consumed 收尾（code-review item
                     # 2ab1bb5633f0，同 _defer_merge_back 手法）：异常上穿会经
                     # 批 worker 兜底把「链继续推进」改成 halt，本轮剩余批次不跑。
@@ -6578,11 +6633,21 @@ class CodeFixOrchestrator:
                 # 子集为空则跳过入档（ignored 已在 pending_ids 构造处排除）。
                 open_ids = _open_ids_for_archive(root, pending_ids)
                 if open_ids:
-                    record_failed_batch(
-                        root, open_ids, wt,
-                        reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
-                        logger=self._logger,
-                    )
+                    # 告警写盘失败不得劫持 consumed 收尾（code-review item
+                    # ff69fd3d36ec，同耗尽收口手法）：异常上穿会跳过紧随的
+                    # _consumed_progress，经批 worker 兜底把「链继续推进」改成 halt。
+                    try:
+                        record_failed_batch(
+                            root, open_ids, wt,
+                            reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+                            logger=self._logger,
+                        )
+                    except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                        self._log(
+                            "warning",
+                            f"code-fix 合回冲突入档案/告警写盘异常"
+                            f"（consumed 收尾不受影响）: {e}",
+                        )
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
                 self._consumed_progress(
                     current=f"第 {batch_no} 批失败已跳过（合回冲突）— 继续后续批次",
