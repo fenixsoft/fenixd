@@ -656,8 +656,12 @@ _HEX16_RE = re.compile(r"[0-9a-fA-F]{16,}")
 # 不等（10-02/10-03 两夜实测 dbd8dc91f1530046 vs 2770ed6f532f254c）。本规则把
 # 小数体整体归一为 #、单位字母保留（"23.4s"→"#s"）：仅同形不同值聚合，指纹
 # 其余部分（stderr_tail 骨架等）仍须全等，非数值差异照旧区分。负向先行/后行
-# 限定与既有保守集同口径（v1.2b、标识符内小数不动）。
-_DECIMAL_UNIT_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+\.\d+(?=[a-zA-Z])")
+# 限定与既有保守集同口径（v1.2b、标识符内小数不动）。后视含点号（code-review
+# item b45b3b7de2dc）：多段数字（"v1.2.3s"）的尾段 "2.3s" 前导是点号，后视
+# 不含点号时照常归一、首段之后全部塌缩（"v1.#s"），两个仅末段不同的多段形态
+# 误聚同指纹；点号入后视后整条不动，目标形态 "23.4s"（前导通常为空格/冒号
+# 等分隔符）不受影响。
+_DECIMAL_UNIT_RE = re.compile(r"(?<![0-9a-zA-Z_.])\d+\.\d+(?=[a-zA-Z])")
 # 独立数字 token（不被字母/下划线包围）——run_id、attempt 计数、epoch、超时秒数等
 _STANDALONE_NUMBER_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+(?![0-9a-zA-Z_])")
 
@@ -2864,6 +2868,14 @@ class AdminMonitor:
                 # 盘点（无 spec），同款「项目名=」解析——漏加则脱落记录被
                 # 丢弃、自动唤起静默落空（同款坑，以测试钉住）。
                 "whitelist_untracked",
+                # code-review item b4074810e49e：无主陈旧 WIP 宽限耗尽升级
+                # （code_fix._write_defer_orphan_alert 直发）记录固定 spec=None、
+                # evidence 以「项目名=」开头，同为项目级记录——漏加则 spec 保持
+                # None 被下方静默丢弃且未 mark_escalated（每轮巡检重复丢弃），
+                # 「MUST NOT 无限期静默等待」的人工升级通道落空（注释点名的
+                # 同款落空模式第 8 例；已登记 STORED_SIGNAL_TYPES 却漏配本表，
+                # 以端到端测试钉住）。
+                "mergeback_wip_orphan_stuck",
             ):
                 # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）。
                 # 「项目名=」字段解析单源：core.admin_store.evidence_project
@@ -3927,7 +3939,10 @@ class AdminMonitor:
                 if isinstance(k, str) and isinstance(v, (int, float)):
                     try:
                         memory[k] = float(v)
-                    except (OSError, ValueError, TypeError):
+                    except OverflowError:
+                        # 损坏记忆文件中的超大整型条目弃坏条目、不弃整份记忆；
+                        # isinstance 守卫已排除 str/None 形态，float() 无其余
+                        # 可抛异常类型（code-review item 5422628780b6）
                         continue
         return memory
 
@@ -4641,6 +4656,30 @@ class AdminMonitor:
         返回本次强制升级的 spec 列表（供审计；巡检不消费）。
         """
         escalated_specs = []
+        # 入口快照复用（code-review item 41086d72c513，比照 _detect_family_
+        # explosion 的 c0df5dd3dbbf 惯例）：本循环内所有记录判定共用同一份
+        # read_all() 快照——原先每条悬置 spec 先对悬置族逐类型调 store.
+        # unhandled_for（每次全文件读 + LOCK_EX + 全量解析）、再经
+        # _stalled_signal_first_and_latest 补一次全库读，合计 O(悬置数×全库)
+        # 互斥读；快照过滤后每轮巡检只读一次。循环体内的升级落盘写库不影响
+        # 快照判定（本函数与 unhandled_for 均只消费既有记录，同 spec 一轮至
+        # 多命中一次，无「读到自身刚写记录」的语义依赖）。
+        records = self.store.read_all()
+        # 未处理人工告警存在性索引（快照上一次构建）：kind=ESCALATION ∧ 未
+        # handled 的 (spec, signal_type) 对集合——存在性语义与逐类型
+        # store.unhandled_for 等价（本处 spec 恒非 None，判据为严格相等）。
+        # 非 str 的 spec/signal_type（人工修补/外部写入的脏形态）与 str 键
+        # 严格相等恒不命中、isinstance 过滤后集合保持可哈希。
+        unhandled_pairs = {
+            (rec.get("spec"), rec.get("signal_type"))
+            for rec in records
+            if (
+                rec.get("kind") == ESCALATION
+                and not rec.get("handled")
+                and isinstance(rec.get("spec"), str)
+                and isinstance(rec.get("signal_type"), str)
+            )
+        }
         for name, entry in specs.items():
             if entry.get("status") != "blocked":
                 continue
@@ -4657,16 +4696,19 @@ class AdminMonitor:
             if stalled_minutes < STALLED_ESCALATION_MINUTES:
                 continue
             # 未处理约束：同 spec 已有任一悬置类信号类型的未处理人工告警 → 跳过
+            # （unhandled_for 存在性判定改在入口快照的 unhandled_pairs 上内存过滤）
             if any(
-                self.store.unhandled_for(name, st) is not None
+                (name, st) in unhandled_pairs
                 for st in STALLED_ESCALATION_SIGNAL_TYPES
             ):
                 continue
             # 单点扫描（code-review 0abcbd87e154）：一次遍历同时取「信号首见
             # 时间」与「最新底层信号类型」，不再对每条命中 spec 先后做两次
             # 全量扫描；悬置族过滤条件改动只落 _stalled_signal_first_and_latest
-            # 一处。
-            first_seen, underlying = self._stalled_signal_first_and_latest(name)
+            # 一处。快照透传（item 41086d72c513）免每条命中 spec 再读全库。
+            first_seen, underlying = self._stalled_signal_first_and_latest(
+                name, records=records
+            )
             first_seen = first_seen or updated_str
             # 真实根因透传（code-review d3006f6884e0）：落盘 signal_type 恒为
             # blocked_stuck（按 signal_type 路由的既有消费口径不变），因 ENV
@@ -4711,7 +4753,9 @@ class AdminMonitor:
             escalated_specs.append(name)
         return escalated_specs
 
-    def _stalled_signal_first_and_latest(self, spec: str) -> tuple[Optional[str], str]:
+    def _stalled_signal_first_and_latest(
+        self, spec: str, records: Optional[list] = None
+    ) -> tuple[Optional[str], str]:
         """单次扫描返回 (最早悬置类信号 created, 最新悬置类信号 signal_type)。
 
         单点助手（code-review 0abcbd87e154：原 _first_signal_time 与
@@ -4719,7 +4763,8 @@ class AdminMonitor:
         spec 相等 + 悬置族过滤」循环的两个副本，仅聚合方向不同——最早
         created / 最新 created 并取类型；合并为一次遍历后过滤条件改动只落
         此处，消费方 _force_escalate_stalled 对每条命中 spec 不再先后两次
-        全量扫描）。
+        全量扫描）。records：调用方已持全库快照时透传（item 41086d72c513），
+        免每条命中 spec 重复读库；缺省 None 时自读（既有调用形态不变）。
 
         created 语义（原两函数口径逐字保持）：状态沉淀后 created 保留首次
         语义（first_seen），多轮续报只刷 last_seen——最早一条即「信号首见」，
@@ -4734,7 +4779,7 @@ class AdminMonitor:
         earliest = None
         latest = None
         latest_type = "blocked_stuck"
-        for rec in self.store.read_all():
+        for rec in (records if records is not None else self.store.read_all()):
             if (
                 rec.get("kind") != SIGNAL
                 or rec.get("spec") != spec
@@ -5714,9 +5759,18 @@ class AdminMonitor:
         spec 名与归档收尾家族前缀（+收尾关键词）。两类均须提交时间（committer
         ts）落在对账窗内。命中返回证据字符串，全不命中/git 失败返回 None
         （该家族按无证据处理，不阻塞其余家族，fail-closed）。
+
+        git 侧窗口剪枝（code-review item 503369e85097）：两条 log 均带
+        ``--since``（git 按提交者时刻剪枝，与 %ct 同字段、与 Python 侧窗口
+        过滤同口径），避免大仓库先枚举全部历史后才在 Python 侧过滤；Python
+        侧窗口过滤保留作双保险（git --since 在乱序日期的历史拓扑上有漏提交
+        可能，漏判方向与「无证据」同路 fail-closed，不加严）。
         """
-        merges = self._git_log_commit_subjects(["--merges"])
-        finalizes = self._git_log_commit_subjects(["--no-merges"])
+        since = datetime.fromtimestamp(window_start, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S+00:00"
+        )
+        merges = self._git_log_commit_subjects(["--merges", f"--since={since}"])
+        finalizes = self._git_log_commit_subjects(["--no-merges", f"--since={since}"])
         for name in spec_names:
             for ts, subject in merges:
                 if (window_start <= ts <= now
