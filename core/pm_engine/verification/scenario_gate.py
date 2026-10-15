@@ -947,6 +947,7 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
         findings, info_head = _scan()
         if findings is None:
             return False
+        # [fenix-ignore:2a856a7801d5] write_contract_findings 内部已全量 try/except（写盘失败仅 WARNING 不外抛），磁盘满/权限异常不会经本处 fail-open 短路、下方 serve 打回段照常可达
         write_contract_findings(pipeline._context.project_root, spec_name, findings)
         if findings:
             from collections import Counter

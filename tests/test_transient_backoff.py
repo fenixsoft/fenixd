@@ -495,7 +495,7 @@ class TestWorktreeReuseAcrossAttempts:
             )
             return ("done", 1, "sess-2", {"input_tokens": 0, "output_tokens": 0,
                                           "cache_creation_input_tokens": 0,
-                                          "cache_read_input_tokens": 0, "cost_usd": None})
+                                          "cache_read_input_tokens": 0, "cost_usd": None}, None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("test-spec", "planner-judge", "run-1")

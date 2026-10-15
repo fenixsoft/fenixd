@@ -933,6 +933,18 @@ def _run_legacy_verification(pipeline, spec_name: str):
             {
                 "tester_run": result.run_id,
                 "error": f"Verifier agent failed: {result.error or ''}",
+                # code-review item f7a38d6f8f25：进程失败属「验证没能发生」，
+                # inconclusive 暂停语义不应跨迁移残留——escalation 的
+                # inconclusive 重派先写非零 _inconclusive_attempts 再派
+                # verifier（escalation 写点），若该在飞 run 进程失败走到本
+                # 分支，残留计数会令 event_bus 两个自动重验恢复出口
+                # （_inconclusive_paused）按「暂停自动重验、等待人工处置」
+                # 跳过。与同目标 verdict bug-found 分支（上方 :584-587）及
+                # 主路径采纳点同款复位。
+                "_inconclusive_attempts": 0,
+                # add-verify-parallel-backoff / design D2：bug-found 属健康轮，
+                # 降档并行度同轮复位（legacy 路径同语义）。
+                "_verify_parallel_override": None,
             },
         )
         # fix 派生有意依赖 recovery 兜底，非遗漏（code-review 90e23fbbec42）：

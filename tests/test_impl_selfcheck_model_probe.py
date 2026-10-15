@@ -210,7 +210,7 @@ def _patch_exec(runner, tmp_path, calls, fail_models):
         return ("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0,
                                     "cache_creation_input_tokens": 0,
                                     "cache_read_input_tokens": 0,
-                                    "cost_usd": None})
+                                    "cost_usd": None}, None)
     runner._run_agent = fake_run_agent
 
 

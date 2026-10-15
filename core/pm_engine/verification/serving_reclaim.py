@@ -459,6 +459,8 @@ def reclaim_verify_serving(
             keep_live_process=lambda: has_live_process_for_spec(log_spec, project_root),
             is_spec_in_flight=is_spec_in_flight,
         ):
+            # 判据命中保留：同样计入 kept 留痕（与目录维度口径对齐）
+            kept.append(name)
             continue
         # 无主 → 删除
         try:

@@ -227,6 +227,10 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
         # code-review b7aa1db41ee6：与 _ensure_serving_worktree 同款目录存活
         # 校验——HEAD 未变而 worktree 被外部清掉时，旧实例服务根目录已不存在
         # （复用即场景整批 404），落到下方重建分支改用刚重建的 worktree
+        # code-review c4fe5e459fed：缺 wt_path 键的异形条目以 .get 真值短路
+        # （与 _ensure_serving_worktree 复用门同款；Path(None) 会 TypeError，
+        # 须先短路），落到下方重建分支覆写缓存，不 KeyError 炸穿供给主流程
+        and old.get("wt_path")
         and Path(old["wt_path"]).is_dir()
     ):
         return pipeline._finalize_static(
@@ -279,6 +283,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         and old["server"].ok
         # code-review b7aa1db41ee6：同 _serve_static_in_worktree——目录消失
         # 不复用，落到下方重启分支复用刚重建的 worktree
+        # code-review c4fe5e459fed：缺 wt_path 键的异形条目以 .get 真值短路
+        # （与 _ensure_serving_worktree 复用门同款；Path(None) 会 TypeError，
+        # 须先短路），落到下方重启分支覆写缓存，不 KeyError 炸穿供给主流程
+        and old.get("wt_path")
         and Path(old["wt_path"]).is_dir()
     ):
         return pipeline._finalize_static(

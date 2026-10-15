@@ -251,7 +251,7 @@ class TestSignalKillCooldown:
             result_path.write_text(
                 json.dumps({"status": "verified", "summary": "ok"}),
                 encoding="utf-8")
-            return ("done", 1, "sess-ok", _usage_ok())
+            return ("done", 1, "sess-ok", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-sig-5")
@@ -323,7 +323,7 @@ class TestArtifactGateChannelIsolation:
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-sig-7")
@@ -374,7 +374,7 @@ class TestArtifactGateChannelIsolation:
             result_path.write_text(
                 json.dumps({"status": "success", "completed_tasks": []}),
                 encoding="utf-8")
-            return ("done", 1, "sess-tg", _usage_ok())
+            return ("done", 1, "sess-tg", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "implementer", "run-sig-8")

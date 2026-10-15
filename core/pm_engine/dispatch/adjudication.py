@@ -1944,6 +1944,8 @@ class VAdjudicationMixin:
                 ["git", "-C", str(worktree_path), "add", "--", rel],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             commit = None
@@ -1961,6 +1963,8 @@ class VAdjudicationMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=120,
                 )
             # 提交结果须经校验（code-review item d75fc648a6bf）：旧实现只看

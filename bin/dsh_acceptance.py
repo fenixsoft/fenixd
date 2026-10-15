@@ -1190,6 +1190,8 @@ def run_smoke(args: argparse.Namespace) -> int:
     prefix = unique_prefix()
     lanes = [l.strip() for l in (args.lanes or ",".join(SMOKE_LANES)).split(",")
              if l.strip()]
+    # 保序去重：重复车道会让第二个线程 mkdir 撞名，报出误导性装置错误
+    lanes = list(dict.fromkeys(lanes))
     unknown = [l for l in lanes if l not in SMOKE_LANES]
     if unknown or not lanes:
         print(f"未知车道：{unknown}（合法值 {list(SMOKE_LANES)}）",

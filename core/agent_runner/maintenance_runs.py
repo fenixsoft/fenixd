@@ -103,7 +103,9 @@ def _admin_failure_evidence(runner, run_id: str, exc: Exception) -> dict:
     }
     stderr_lines = getattr(exc, "stderr_lines", None)
     if isinstance(stderr_lines, list) and stderr_lines:
-        tail = "\n".join(str(l) for l in stderr_lines[-_ADMIN_FAILURE_STDERR_TAIL_LINES:])
+        tail = "\n".join(
+            str(line) for line in stderr_lines[-_ADMIN_FAILURE_STDERR_TAIL_LINES:]
+        )
         evidence["stderr_tail"] = tail[:_ADMIN_FAILURE_STDERR_MAX_CHARS]
     run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
     if run_file.is_file():
@@ -275,77 +277,97 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     """
     spec = admin_signal.get("spec") or "global"
     run_id = _unique_admin_run_id(runner, spec)
-    # 实例路径注入提示词（prompt_builder 把写入指令指向该文件）
-    disp_path = admin_disposition_path(runner.project_root, run_id)
-    prompt_detail = dict(admin_signal)
-    prompt_detail["disposition_path"] = str(disp_path)
-    prompt = runner._build_prompt(spec, "administrator", detail=prompt_detail)
-
-    # improve-config-ui-tabs：Administrator 运行时解析链（design D4）
-    #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env（直连）
-    #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
-    assignment = runner._get_agent_model_assignment("administrator")
-    env_overrides: Dict[str, str] = {}
-    provider_name = None
-    if assignment:
-        # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
-        provider, model_override = assignment[0]
-        # 收尾富指标行 provider 维度取数（对齐 run_evolution 等三车道取法）
-        provider_name = provider.get("name")
-        _apply_provider_env(env_overrides, provider, model_override, runner)
-        # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
-        # 时间轴才能展示 Administrator 实际驱动的 model@provider；写点已提取
-        # 为 _write_lane_provider_marker 与其余四条维护车道共用（item
-        # faea95e2d494），Administrator 不接 failover，链内下标恒 0/1
-        _write_lane_provider_marker(runner, run_id, spec, "administrator", assignment)
-    else:
-        model_override = runner._get_admin_model()
-
-    # fix-admin-self-heal：唤起前先落 pending disposition，保证即使 admin 被
-    # kill（如 daemon 重启/崩溃）也有记录可回溯；monitor 会检测无最终结果的
-    # pending 并升级人工，避免「admin 死了但没有任何告警」。
+    # 申领占位收尾清理（对齐 run_code_review/run_regression/run_code_fix 三车道
+    # item e6a103d93b91 确立的 finally 形态）：_unique_admin_run_id 以
+    # O_CREAT|O_EXCL 先落 runs/<run_id>.jsonl 空占位，本 run 真正进入执行链
+    # （_run_agent）前的任何早退/异常路径（_build_prompt 失败、模型链 provider
+    # 配置缺键 KeyError 等原不在任何 try 保护内）都必须清掉空占位后再上抛，
+    # 否则零事件 run 永久残留 .fenix/runs/。组装完成置位后 finally 不再触碰
+    # （占位自 _run_agent 起即为本 run 的合法事件流载体）；missing_ok 容忍
+    # 本就未落盘的失败路径（runs 目录建不出时 _unique_admin_run_id 退回探测
+    # 语义、未落占位）。
+    claim_placeholder = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+    _claim_settled = False
     try:
-        from core.admin_store import AdminStore, DISPOSITION
+        # 实例路径注入提示词（prompt_builder 把写入指令指向该文件）
+        disp_path = admin_disposition_path(runner.project_root, run_id)
+        prompt_detail = dict(admin_signal)
+        prompt_detail["disposition_path"] = str(disp_path)
+        prompt = runner._build_prompt(spec, "administrator", detail=prompt_detail)
 
-        AdminStore(runner.project_root, getattr(runner, "logger", None)).append(
-            {
-                "kind": DISPOSITION,
-                "status": "pending",
-                "signal_type": admin_signal.get("signal_type"),
-                "spec": spec,
-                "admin_run_id": run_id,
-                "description": (
-                    f"Administrator 处置中（run {run_id}），尚未完成；"
-                    f"若长时间无最终结果，AdminMonitor 会自动升级人工"
-                ),
-                "result": "pending",
-                "recommended_action": admin_signal.get("recommended_action"),
-            }
-        )
-    except Exception as e:
-        # fix-admin-self-heal 守卫降级不可静默：若 AdminStore import/append
-        # 持续失败（权限/schema/磁盘），pending 记录从不写入但 run 照常——
-        # 整个 self-heal 告警路径静默失效（被 kill 的 admin 不留任何可升级
-        # 的痕迹）。至少 WARNING 留痕（code-review item 8353a3138b0f）；
-        # logger 判空与本文件其它调用点统一走 getattr。
-        _log = getattr(runner, "logger", None)
-        if _log is not None:
-            _log.warning(
-                "agent_runner",
-                f"Administrator pending disposition write failed (run {run_id}): "
-                f"{type(e).__name__}: {e}",
-                {"run_id": run_id, "spec": spec, "error": str(e)},
+        # improve-config-ui-tabs：Administrator 运行时解析链（design D4）
+        #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env（直连）
+        #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
+        assignment = runner._get_agent_model_assignment("administrator")
+        env_overrides: Dict[str, str] = {}
+        provider_name = None
+        if assignment:
+            # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
+            provider, model_override = assignment[0]
+            # 收尾富指标行 provider 维度取数（对齐 run_evolution 等三车道取法）
+            provider_name = provider.get("name")
+            _apply_provider_env(env_overrides, provider, model_override, runner)
+            # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
+            # 时间轴才能展示 Administrator 实际驱动的 model@provider；写点已提取
+            # 为 _write_lane_provider_marker 与其余四条维护车道共用（item
+            # faea95e2d494），Administrator 不接 failover，链内下标恒 0/1
+            _write_lane_provider_marker(runner, run_id, spec, "administrator", assignment)
+        else:
+            model_override = runner._get_admin_model()
+
+        # fix-admin-self-heal：唤起前先落 pending disposition，保证即使 admin 被
+        # kill（如 daemon 重启/崩溃）也有记录可回溯；monitor 会检测无最终结果的
+        # pending 并升级人工，避免「admin 死了但没有任何告警」。
+        try:
+            from core.admin_store import AdminStore, DISPOSITION
+
+            AdminStore(runner.project_root, getattr(runner, "logger", None)).append(
+                {
+                    "kind": DISPOSITION,
+                    "status": "pending",
+                    "signal_type": admin_signal.get("signal_type"),
+                    "spec": spec,
+                    "admin_run_id": run_id,
+                    "description": (
+                        f"Administrator 处置中（run {run_id}），尚未完成；"
+                        f"若长时间无最终结果，AdminMonitor 会自动升级人工"
+                    ),
+                    "result": "pending",
+                    "recommended_action": admin_signal.get("recommended_action"),
+                }
             )
+        except Exception as e:
+            # fix-admin-self-heal 守卫降级不可静默：若 AdminStore import/append
+            # 持续失败（权限/schema/磁盘），pending 记录从不写入但 run 照常——
+            # 整个 self-heal 告警路径静默失效（被 kill 的 admin 不留任何可升级
+            # 的痕迹）。至少 WARNING 留痕（code-review item 8353a3138b0f）；
+            # logger 判空与本文件其它调用点统一走 getattr。
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "agent_runner",
+                    f"Administrator pending disposition write failed (run {run_id}): "
+                    f"{type(e).__name__}: {e}",
+                    {"run_id": run_id, "spec": spec, "error": str(e)},
+                )
 
-    runner._clear_admin_disposition(disp_path)
-    failure_evidence: dict = {}
-    # 收尾富指标取数基线（对齐 run_evolution 等三车道）：_started 量测派发→
-    # 返回窗口；turns/usage_info 预置 0/空——_run_agent 抛出路径不产生
-    # turns（evo-add-run-metrics-lane-baseline 1.3 同款先例）；usage 由弃置
-    # 改捕获（原 _usage），供指标行成本维度取数。
-    _started = time.monotonic()
-    turns = 0
-    usage_info: dict = {}
+        runner._clear_admin_disposition(disp_path)
+        failure_evidence: dict = {}
+        # 收尾富指标取数基线（对齐 run_evolution 等三车道）：_started 量测派发→
+        # 返回窗口；turns/usage_info 预置 0/空——_run_agent 抛出路径不产生
+        # turns（evo-add-run-metrics-lane-baseline 1.3 同款先例）；usage 由弃置
+        # 改捕获（原 _usage），供指标行成本维度取数。
+        _started = time.monotonic()
+        turns = 0
+        usage_info: dict = {}
+        _claim_settled = True
+    finally:
+        if not _claim_settled:
+            try:
+                claim_placeholder.unlink(missing_ok=True)
+            except OSError:
+                pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
+
     try:
         # _run_agent 返回 5 元组（evo-api-stall-signal-grading 追加 stall_latency；
         # add-cost-observability D1 加 usage_info）；此调用点曾两度漏改解包

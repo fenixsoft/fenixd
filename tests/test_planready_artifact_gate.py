@@ -232,7 +232,7 @@ class TestPlanreadyArtifactGateIntegration:
             sc.parent.mkdir(parents=True, exist_ok=True)
             sc.write_text(json.dumps([{"id": "s1", "description": "d"}]),
                           encoding="utf-8")
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate")
@@ -260,7 +260,7 @@ class TestPlanreadyArtifactGateIntegration:
             # implementer 共享文件残留语义错位取值
             res.write_text(json.dumps({"status": "success", "spec": spec}),
                            encoding="utf-8")
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate2")
@@ -283,7 +283,7 @@ class TestPlanreadyArtifactGateIntegration:
                           encoding="utf-8")
             res.write_text(json.dumps({"status": "plan-ready", "spec": spec}),
                            encoding="utf-8")
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate3")
@@ -310,7 +310,7 @@ class TestPlanreadyArtifactGateIntegration:
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             # 本轮只写场景文件——陈旧结果文件未刷新
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate4")
@@ -337,7 +337,7 @@ class TestPlanreadyArtifactGateIntegration:
             # 第一次子 run 补上结果文件 → 后续 attempt 双产物齐备放行
             res.write_text(json.dumps({"status": "plan-ready", "spec": spec}),
                            encoding="utf-8")
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent(spec, "planner-plan", "run-pgate5")

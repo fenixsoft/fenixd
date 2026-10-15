@@ -196,7 +196,7 @@ class TestArtifactGateSuperseded:
                                     "message": {"content": []}}) + "\n")
                 f.flush()
             # exit 0 但不写产物 → 触发 AgentArtifactGateError 重试
-            return ("done", 1, f"sess-{calls['n']}", _usage_ok())
+            return ("done", 1, f"sess-{calls['n']}", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g1")

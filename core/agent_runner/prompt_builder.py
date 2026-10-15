@@ -753,13 +753,15 @@ class PromptBuilder:
         机械检出，处置前请以源码/执行证据核实」。findings 缺失/为空/损坏 →
         返回空串（零注入，prompt 与现状逐字节一致）。
         """
-        from core.verify_engine.path_safety import safe_component
-
+        # 口径统一（code-review 0dbeb4023b01）：本文件其余各段拼 .fenix 下
+        # 路径均用裸 spec_name，此处不再单点净化——spec_name 由框架状态机
+        # 保证为安全目录名，成分净化统一由写端
+        # core/verify_engine/path_safety.safe_component 承担。
         path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / safe_component(spec_name)
+            / spec_name
             / "contract_findings.json"
         )
         if not path.exists():

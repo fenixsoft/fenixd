@@ -111,7 +111,7 @@ class _Runner:
         self._write_out()
         if self._die:
             raise RuntimeError("Exit code: 1 (gateway 429)")
-        return ("output", 3, "session", {})
+        return ("output", 3, "session", {}, None)
 
     def _extract_usage_info(self, x):
         return {}
