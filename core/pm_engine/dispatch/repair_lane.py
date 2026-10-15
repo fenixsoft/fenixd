@@ -135,6 +135,16 @@ def _max_retries(pm) -> int:
     try:
         return int(cfg_max_r)
     except Exception:  # noqa: BLE001 —— 同上
+        # 字符串等 int() 失败（如配置写坏成 "abc"）同样 WARNING 留痕，
+        # 与上方布尔/浮点分支及 _merge_breaker_threshold 的 illegal 分支同款
+        # （code-review item db36b8d8fa7a：静默回退使排障无迹可寻）。
+        logger = getattr(pm, "logger", None)
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                "配置 agents.max_retries 非法（应为整数，非整数值不合法），"
+                f"回退缺省 3: {cfg_max_r!r}",
+            )
         return 3
 
 
@@ -287,7 +297,11 @@ class PRepairLaneMixin:
             repair_round = int(
                 (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
             )
-        except (TypeError, ValueError):
+        except Exception:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按 0 处理，与 _should_enter_repair 对同一数据源的降级口径对齐（code-review item 34f9abe6a1c4：窄口径使 IO 异常外溢放大为 fallback 全新重派）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"读取 '{spec_name}' 的 _repair_round 失败，按 0 处理（本轮照常派发 repair）",
+            )
             repair_round = 0
         # 兜底轮次上限（code-review item 2a26974066a9）：正常路径由
         # _should_enter_repair 前置拦截；此处防御直呼/旁路调用不得超预算。
