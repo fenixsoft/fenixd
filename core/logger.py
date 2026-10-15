@@ -133,7 +133,18 @@ class Logger:
         self._handler = None
         # 实例自身级别：级别判定只读本实例状态。多项目同进程下全局 "fenixd"
         # 日志器被各项目实例先后 setLevel，其级别是 last-wins 的共享状态。
-        self._level = getattr(logging, level.upper(), logging.INFO)
+        # getattr 未命中（配置级别拼写错误，如 "INF0"/"verbose"）时本 logger
+        # 尚未就绪、不能走日志通道，先向 stderr 打一行警告再按 INFO 宽容回退，
+        # 避免配置静默失效（code-review item c0dc5282e062）。构造期一次性
+        # 告警，重复构造重复警告可接受，无需去重。
+        _resolved_level = getattr(logging, level.upper(), None)
+        if _resolved_level is None:
+            print(
+                f"fenixd: unknown logging level {level!r}, falling back to INFO",
+                file=sys.stderr,
+            )
+            _resolved_level = logging.INFO
+        self._level = _resolved_level
 
         # 全局 "fenixd" 根日志器仅承载 fenixd.* 裸 getLogger 的传播记录；
         # 本实例的结构化写入不经它分发（见 _log）。
