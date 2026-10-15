@@ -113,10 +113,18 @@ _SUPERVISION_RUNTIME_FLOOR_WARNED = False
 # 未消费的残留记录会被下一次 _validate 覆盖，恒反映最新校验的配置。
 _SUPERVISION_LAST_ALIGNED = None
 
-# stuck 阈值回退 WARNING 的进程级一次性去重标记（code-review item 1f15450c16d9）：
-# run_timeout_seconds 缺失/≤0 时 effective_stuck_threshold_seconds 会被 admin
-# 巡检与派发周期反复调用，仿 _DEPRECATED_STUCK_WARNED「首次告警、后续静默」。
+# run 超时回退 WARNING 的进程级一次性去重标记：agents.run_timeout_seconds 缺失/
+# ≤0/非有限时 effective_run_timeout_seconds 按 RUN_TIMEOUT_FALLBACK_SECONDS 回退，
+# 派发路径高频读取，仿 _DEPRECATED_STUCK_WARNED「首次告警、后续静默」（原为
+# stuck 阈值回退所设、与后者共用；code-review item c623952c5cef 仿
+# bbfc01b9388a 拆分范式改为本读取器专属）。
 _RUN_TIMEOUT_FALLBACK_WARNED = False
+
+# stuck 阈值回退 WARNING 的独立去重标记（code-review item c623952c5cef，仿
+# bbfc01b9388a 拆分范式）：effective_stuck_threshold_seconds 与
+# effective_run_timeout_seconds 对同一坏键各打不同文案、不同回退值（9600s 派生
+# vs 9000s）的 WARNING，共用一个标记会让先触发者压制另一条诊断整个进程生命周期。
+_STUCK_FALLBACK_WARNED = False
 
 # ── improve-hot-reload-robustness D3：未知 agent 类型键降级告警去重 ──
 # 同一未知键每进程生命周期只报一次（30s 热重载重试风暴下，不去重则告警与
@@ -362,7 +370,11 @@ class ConfigLoader:
         dsh_api = str(cls.get(config, "agent.dsh_api", "") or "").strip()
         if dsh_api:
             return
-        providers = (config.get("llm") or {}).get("providers") or []
+        # 段入口经 _segment_or_empty 归一（code-review item 7be994ab259e）：
+        # `or {}` 对真值非 dict（如 llm: [1]）不回落，紧随的 .get("providers")
+        # 抛 AttributeError 击穿 get_harness「非法值回退缺省并 WARNING」的
+        # fail-open 契约，与本文件段读取纪律（_segment_or_empty）对齐。
+        providers = cls._segment_or_empty(config, "llm").get("providers") or []
         if any(isinstance(p, dict) and "/anthropic" in str(p.get("baseurl", ""))
                for p in providers):
             cls._DSH_PROTOCOL_WARNED = True
@@ -2671,8 +2683,17 @@ class ConfigLoader:
             return SELF_REVIEW_DEFAULT_RUN_AT
         if isinstance(raw, str) and _HHMM_RE.match(raw):
             return raw
-        _logger.error(
-            "admin.self_review.run_at 非法（应为 HH:MM，如 22:00）：%r，" "回退缺省 %s",
+        # 进程级 (键路径, repr(raw)) 一次性去重（code-review item 18f2c8a3f86c，
+        # 同 _warn_reader_once 范式）：本助手被 _validate 每 30s 热更新与
+        # get_self_review_config（get_admin_config / get_code_review_config 嵌套、
+        # code_review 停滞检测等周期路径）反复调用，坏 run_at 在场时同一 ERROR
+        # 逐周期重复打印。去重只作用于日志，回退缺省行为不变。
+        cls._warn_reader_once(
+            "admin.self_review.run_at",
+            raw,
+            _logger.error,
+            "admin.self_review.run_at 非法（应为 HH:MM，如 22:00）：%r，"
+            "回退缺省 %s",
             raw,
             SELF_REVIEW_DEFAULT_RUN_AT,
         )
@@ -2692,7 +2713,7 @@ class ConfigLoader:
         pm_engine.check_blockers 与 admin_monitor 的 stuck 检测 MUST 调用本助手，
         不再各自读取旧键。
         """
-        global _RUN_TIMEOUT_FALLBACK_WARNED
+        global _STUCK_FALLBACK_WARNED
         cls._maybe_warn_deprecated_stuck_keys(config)
         agents = cls._segment_or_empty(config, "agents")
         rt = agents.get("run_timeout_seconds")
@@ -2710,14 +2731,14 @@ class ConfigLoader:
             or (isinstance(rt, float) and not math.isfinite(rt))
             or rt <= 0
         ):
-            if not _RUN_TIMEOUT_FALLBACK_WARNED:
+            if not _STUCK_FALLBACK_WARNED:
                 _logger.warning(
                     "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
                     "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
                     STUCK_FALLBACK_SECONDS,
                     STUCK_GRACE_SECONDS,
                 )
-                _RUN_TIMEOUT_FALLBACK_WARNED = True
+                _STUCK_FALLBACK_WARNED = True
             return float(STUCK_FALLBACK_SECONDS)
         return float(rt) + STUCK_GRACE_SECONDS
 
@@ -3180,11 +3201,12 @@ class ConfigLoader:
         """
         global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
         global _SUPERVISION_RUNTIME_FLOOR_WARNED
-        global _RUN_TIMEOUT_FALLBACK_WARNED
+        global _RUN_TIMEOUT_FALLBACK_WARNED, _STUCK_FALLBACK_WARNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
         _SUPERVISION_RUNTIME_FLOOR_WARNED = False
         _RUN_TIMEOUT_FALLBACK_WARNED = False
+        _STUCK_FALLBACK_WARNED = False
         _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
         _SEGMENT_DIRTY_WARNED.clear()
@@ -3194,6 +3216,10 @@ class ConfigLoader:
         _TRANSIENT_BACKOFF_FALLBACK_WARNED.clear()
         _TIMEOUT_OVERRIDE_INVALID_WARNED.clear()
         _CONFIG_READER_WARNED.clear()
+        # dsh 协议守卫告警标记（code-review item 1ff17e93f028）：同为「进程级
+        # 去重、不重复刷屏」语义的类属性，纳入本助手隔离清单，使测试可重复
+        # 验证「首次告警 / 二次静默」，与其他标记口径一致。
+        cls._DSH_PROTOCOL_WARNED = False
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
