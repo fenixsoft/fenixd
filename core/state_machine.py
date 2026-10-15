@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 
+from core.admin_store import _fsync_parent_dir
 from core.git_base_branch import resolve_base_branch
 from core.timelib import parse_ts
 from datetime import datetime, timezone
@@ -2347,11 +2348,29 @@ class StateMachine:
         )
         tmp_path = Path(tmp_path_str)
         try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked /
+            # regression._atomic_write 先例 cbb57806fbfd）：with 的 close 只在
+            # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为
+            # None 时兜底 os.close。
+            f = None
+            try:
+                f = os.fdopen(tmp_fd, "w", encoding="utf-8")
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(tmp_fd)
+                    except OSError:
+                        pass
             os.rename(str(tmp_path), str(path))
+            # rename 后刷父目录项，保证替换结果掉电不回退（对齐
+            # admin_store._write_store 口径；内部吞 EINVAL 等目录 fsync
+            # 不支持的文件系统异常）。
+            _fsync_parent_dir(path)
         finally:
             if tmp_path.exists():
                 try:
