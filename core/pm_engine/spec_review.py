@@ -1518,7 +1518,11 @@ class SpecReviewManager:
         attempts = self.state_machine.bump_counters(
             spec_name, {"_review_attempts": 1}
         ).get("_review_attempts", 0)
-        if attempts <= MAX_REVIEW_ATTEMPTS:
+        # 严格小于：bump 后恰达 MAX 即落下方 else 就地冻结——终态同
+        # dispatch_review 入口闸的 >= MAX 冻结（实际 run 次数不变：首次 +
+        # MAX-1 次重试），省去空转一轮入队/出队与短退避等待
+        # （code-review item e7bc76108f09）。
+        if attempts < MAX_REVIEW_ATTEMPTS:
             # 重试：保持 reviewing 状态，清除 reviewer_run + 入队
             # （_review_attempts 已由上方 bump_counters 原子递增落盘，此处
             # 不再并写，防覆盖并发写者增量）
@@ -1539,7 +1543,8 @@ class SpecReviewManager:
             # admin 对「评审器连续失败」无操作杠杆（模型链/配置问题），
             # 改走 freeze_for_human「冻结 + 告警」成对入口，使 admin_monitor
             # 的 blocked_stuck 豁免生效。_review_attempts 已由上方
-            # bump_counters 写过 MAX+1，随本次冻结 extra_updates 显式清零
+            # bump_counters 写至恰达 MAX（严格小于判据下正常路径即冻结于此），
+            # 随本次冻结 extra_updates 显式清零
             # （清零口径不变，不覆盖并发写者增量的问题在此不存在）。
             r_id = entry.get("reviewer_run")
             # 评审专用冻结前缀（4.1）：自动冻结不自称「用户指令冻结」；
