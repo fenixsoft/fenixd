@@ -83,6 +83,13 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // loadedForRef 口径以 ref 同帧记录当前 agent，回填前对账。
   const activeAgentRef = useRef<string>('implementer');
 
+  // 保存发起帧的草稿快照（code-review item ea3dc8b8bd53）：比照上方 activeAgentRef
+  // 口径以 ref 同帧固化本次提交的 extraDraft。TextArea 的 disabled={saving} 是
+  // state 口径、setSaving 渲染生效有调度间隙（同上方 savingRef 条目结论），点击
+  // 保存同帧内键入的字符会进草稿却不在已发出的保存载荷里；回填前与快照对账，
+  // 不一致则保留现值不回填，避免这几个字符被服务端值静默覆盖。
+  const savedDraftRef = useRef<string>('');
+
   // 判脏口径单点（code-review item 5836b8df59e9）：面板当前内容相对服务端是否
   // 有未保存改动，供 usePanelDirty 探针、项目切换确认 effect、handleAgentChange
   // 三处复用，任一处调整口径只改此处，避免「切页签弹确认、切 agent 不弹」的
@@ -221,6 +228,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     const targetAgent = activeAgent;
     if (savingRef.current) return;
     savingRef.current = true;
+    // 固化提交快照（code-review item ea3dc8b8bd53）：与下方载荷读同一个闭包
+    // extraDraft，同帧原子记录，供保存成功后的 refetch 回填前对账（见回填处注释）。
+    savedDraftRef.current = extraDraft;
     setSaving(true);
     try {
       await saveProjectPrompt(project, targetAgent, extraDraft);
@@ -260,11 +270,16 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // 对账读 activeAgentRef 而非闭包 activeAgent（code-review item
           // cd7f269ddd5f）：闭包值与 targetAgent 同源恒相等，拦不住保存请求
           // 刚发起同帧内发生的切换（saving 的 disabled 尚未渲染生效）。
-          // 同 agent 上保存后继续键入的分支由 TextArea 的 disabled={saving}
-          // 兜底（code-review item cbd7e62160ec）：保存请求在飞期间输入框
-          // 已禁用，此处回填不会覆盖用户保存后键入的未保存内容。
+          // 同 agent 上保存后的键入由 TextArea 的 disabled={saving} 兜底
+          // （code-review item cbd7e62160ec），但该 state 口径同样有调度间隙
+          // （同上方 savingRef 条目结论）：点击保存同帧内键入的字符已进草稿却
+          // 不在已发出的保存载荷里，无条件回填会将其静默丢弃（code-review item
+          // ea3dc8b8bd53）。故与提交快照对账，函数式更新读取回填时刻的最新草稿，
+          // 仍与快照一致才回填，否则保留现值。
           if (targetAgent === activeAgentRef.current) {
-            setExtraDraft(projectExtraOf(d, targetAgent));
+            setExtraDraft((prev) =>
+              prev === savedDraftRef.current ? projectExtraOf(d, targetAgent) : prev,
+            );
           }
         }
       }
