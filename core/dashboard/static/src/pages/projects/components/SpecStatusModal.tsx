@@ -584,7 +584,8 @@ export default function SpecStatusModal({
         )}
 
         {/* ── 回炉区块（verified + task-gap 错误；fix-impl-tasks-completion-gate P1′） ── */}
-        {taskGapStuck && (
+        {/* summary 空值守卫为类型收窄所需（taskGapStuck 派生自 summary，语义等价） */}
+        {taskGapStuck && summary && (
           <div style={{ marginBottom: 16 }}>
             <Typography.Text strong style={{ fontSize: 14 }}>回炉（重新派发实现）</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
