@@ -281,8 +281,16 @@ def _load_provider(config_path: Path, provider_name: str):
     # 确定性 JSON 判据输出。
     if not config_path.exists():
         raise ValueError(f"配置文件不存在: {config_path}")
-    with config_path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    # 存在但不可读/IO 错误归一（code-review item 820f8b6902c8）：open 抛出的
+    # PermissionError 等 OSError 族不在 probe() 捕获的 (yaml.YAMLError,
+    # ValueError) 之列，会裸 traceback 破坏「确定性 JSON 判据」契约；与下方
+    # 结构漂移处理同口径转 ValueError（UnicodeDecodeError 属 ValueError 族
+    # 已天然覆盖，此处只补 OSError 缺口）。
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except OSError as e:
+        raise ValueError(f"配置文件无法读取: {e}") from e
     # 顶层非映射归一（code-review item fa9052277343）：config.yaml 顶层是
     # 列表/标量（合法 YAML 但结构漂移）时 raw.get 抛 AttributeError 逃过
     # probe() 的判据转换，转 ValueError 由调用方转确定性 JSON 判据。
@@ -322,7 +330,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    result = probe(args.provider, Path(args.config))
+    # expanduser（code-review item 8bf4a423c4ef）：引号包裹传入的 ~ 开头路径
+    # 按字面落盘会误报「配置文件不存在」，口径对齐 bin/fenix_detect_artifacts.py
+    try:
+        # 路径解析收口进 try（与 fenix_detect_artifacts.py/fenix_verify_contract.py
+        # 同场景防护对齐）：expanduser 解析不出家目录抛 RuntimeError、含空字节
+        # 路径在构造/resolve 阶段抛 ValueError，裸抛会以 traceback 收场、
+        # stdout 无 JSON，破坏模块「确定性 JSON 判据」契约
+        config_path = Path(args.config).expanduser().resolve()
+    except (ValueError, OSError, RuntimeError) as e:
+        print(f"错误: 配置文件路径无法解析: {e}", file=sys.stderr)
+        return 1
+
+    result = probe(args.provider, config_path)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     # 网络/参数类硬错误（provider 缺失）退出码 1；判据结果（无论支持与否）为 0
     if result.get("cache_supported") is None:
