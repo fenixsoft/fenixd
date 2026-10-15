@@ -14,6 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.run_files import run_spec_part
+# 原子写收口共享助手 core.fs_utils.atomic_write_text（code-review
+# 132bd399dd4d）：与 infra_classify 同源——mkstemp 唯一临时名 + fsync +
+# 目录 fsync 纪律单点维护。不消费 scenario_gate 局部助手（只 fsync 临时
+# 文件、不 fsync 父目录的弱持久性版）：本模块写点是裁决采纳链权威产物
+# （.fenix-run-result.json）与降级上下文，不在 scenario_gate docstring
+# 「可重生成/可重写产物」的持久性豁免范围内。
+from core.fs_utils import atomic_write_text
 # fix-env-exemption-exit-reachability 3.3：inconclusive 重验窗口的独立计数
 # 上限复用 escalation 的防御性配置读取助手（同键同缺省，防两侧调参漂移）；
 # escalation 不回引本模块，无循环导入。
@@ -21,7 +28,6 @@ from core.agent_runner.run_files import run_spec_part
 # 本处按事实公开契约消费——escalation 侧重构该助手（改名/挪位/改签名）时
 # MUST 同步本文件导入。
 from core.pm_engine.verification.escalation import _read_int_config
-from core.pm_engine.verification.scenario_gate import atomic_write_text
 
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
 _MAX_JUDGE_RERUNS = 5
@@ -169,8 +175,23 @@ def _judge_round_bump(pipeline, spec_name: str, field: str) -> int:
     ``fastlane._bump_fail_streak`` 同款）：锁外快照读改写会与其它对同字段
     的写者（验证失败记账、admin infra 回拨）互相覆盖丢增量，使轮内/生命周期
     阈值失真。
+
+    写失败容错（code-review f2c4a45f83f5，与 _judge_round_escalate /
+    _judge_inconclusive_cap_escalate 的「不得炸穿派发门」同款防护）：
+    bump_counters 内部做锁文件打开/read_all/落盘等 IO 且不吞 OSError，
+    磁盘满/权限异常仅 WARNING 留痕并返回 -1（计数不可得）——本模块调用点
+    均不消费返回值，计数缺失只影响轮内阈值判定精度（读侧
+    _judge_round_state 脏值按 0 兜底），不阻断派发主流程。
     """
-    final = pipeline._context.state_machine.bump_counters(spec_name, {field: 1})
+    try:
+        final = pipeline._context.state_machine.bump_counters(spec_name, {field: 1})
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 计数 bump 失败 '{spec_name}'（不阻断派发门，计数不可得）"
+            f"field={field}: {type(e).__name__}: {e}",
+        )
+        return -1
     return final.get(field, 0)
 
 
@@ -628,10 +649,10 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
     }
     try:
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        # 原子写（复用 scenario_gate.atomic_write_text，与 _write_degrade_context
-        # 统一，code-review 8b76a6e1eb38）：共享助手同目录 mkstemp 唯一临时
-        # 文件 + fsync + os.replace，写盘瞬间读侧（Dashboard 轮询）不会读到
-        # 半截 JSON；父目录由上一行保证（助手自身不建目录）。
+        # 原子写（共用 core.fs_utils.atomic_write_text，code-review 132bd399dd4d
+        # 收口同源）：同目录 mkstemp 唯一临时文件 + fsync + os.replace + 尽力
+        # 而为目录 fsync，写盘瞬间读侧（Dashboard 轮询）不会读到半截 JSON；
+        # 父目录助手内部亦会建（上一行 mkdir 保留为显式前置）。
         atomic_write_text(result_path, json.dumps(payload, ensure_ascii=False, indent=1))
     except OSError as e:
         # fix-verdict-read-failclosed D6：机械写回失败 → 退化常规 judge（返回
@@ -785,9 +806,10 @@ def _write_degrade_context(
             "degraded_at": datetime.now(timezone.utc).isoformat(),
         }
         ctx_path.parent.mkdir(parents=True, exist_ok=True)
-        # 原子写（mkstemp + os.replace，复用 scenario_gate.atomic_write_text）：
-        # daemon 中途被杀不留半截 JSON——该文件会被 verify_report 合成路径
-        # （G3 降级标注）回读（code-review 2bb2844a51f2，对齐 _all_green_fast_path）。
+        # 原子写（mkstemp + os.replace，共用 core.fs_utils.atomic_write_text，
+        # 132bd399dd4d 收口同源）：daemon 中途被杀不留半截 JSON——该文件会被
+        # verify_report 合成路径（G3 降级标注）回读
+        # （code-review 2bb2844a51f2，对齐 _all_green_fast_path）。
         atomic_write_text(
             ctx_path,
             json.dumps(payload, ensure_ascii=False, indent=2),
