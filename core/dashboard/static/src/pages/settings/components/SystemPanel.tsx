@@ -256,18 +256,26 @@ function renderAdminField({
   return _exhaustive;
 }
 
+// 瞬断组控件形态判别（code-review item 72ce7ba8c2ef）：比照 admin 组
+// AdminFieldControl 的注解驱动口径，判别信息内聚到注解项 type 字段；
+// 本组现只有文本/数值两形态，联合按现状收窄，不预留未用形态
+type TransientFieldControl = 'input' | 'number';
+
 // 瞬断治理（fix-provider-transient-backoff D6）：键名 = agents.transient_*，
 // 与后端 ConfigLoader.get_transient_config 缺省一致（30,60,120 / 600 / 3 / 600 / 600）。
 const TRANSIENT_ANNOTATIONS: {
   key: string;
   label: string;
   note: string;
+  /** 控件形态（TransientFieldControl），新增条目必填 */
+  type: TransientFieldControl;
   /** 输入单位（addonAfter 附加框） */
   unit?: string;
   rule?: object[];
 }[] = [
   {
     key: 'transient_backoff_schedule',
+    type: 'input',
     label: '原地退避序列',
     unit: '秒',
     note: '网关瞬断（model 拒绝 / 5xx / 断连）首败后同 provider 原地退避的秒序列，逗号分隔，长度=单 attempt 内原地重试上限。留空关闭原地退避。',
@@ -286,6 +294,7 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_redispatch_delay_seconds',
+    type: 'number',
     label: '重派等待',
     unit: '秒',
     note: '瞬断终态（[provider-transient] 标记）后排程延迟重派秒数，不写 retries exhausted。缺省 600。',
@@ -298,6 +307,7 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_break_threshold',
+    type: 'number',
     label: '熔断阈值',
     unit: '次',
     note: '全局同错误指纹在窗口内出现次数达此值触发全局派发冻结；0=关闭熔断。缺省 3。',
@@ -310,6 +320,7 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_break_window_seconds',
+    type: 'number',
     label: '熔断窗口',
     unit: '秒',
     note: '全局同错误指纹计数的滑动窗口秒数。缺省 600。',
@@ -322,6 +333,7 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_break_cooldown_seconds',
+    type: 'number',
     label: '熔断冷却',
     unit: '秒',
     note: '触发全局熔断后冻结新 run 派发的时长。缺省 600。',
@@ -333,6 +345,78 @@ const TRANSIENT_ANNOTATIONS: {
     }],
   },
 ];
+
+// 瞬断分组单字段控件形态（code-review item 72ce7ba8c2ef）：比照 renderAdminField
+// 的 type 判别 + 末尾穷举守卫，替换旧实现按 key 字符串等值的二分派——新增条目
+// 必须声明形态，漏加分派分支时编译报错，不再静默落数值框兜底。不直接复用
+// renderAdminField：本组 label-note 段名前缀是 agents.*（区别于 admin 组），
+// 文本形态的 placeholder 语义也不同，仅比照其分派机制。仅依赖注解字段本身，
+// 无组件闭包依赖，放模块级。
+function renderTransientField({
+  key,
+  label,
+  type,
+  unit,
+  rule,
+}: {
+  key: string;
+  label: string;
+  type: TransientFieldControl;
+  unit?: string;
+  rule?: object[];
+}) {
+  if (type === 'input') {
+    return (
+      <Form.Item
+        name={key}
+        label={
+          <>
+            {label}
+            <span className="label-note">（agents.{key}）</span>
+          </>
+        }
+        rules={rule}
+        data-testid={`system-field-${key}`}
+      >
+        {/* 逗号分隔序列须用文本框：InputNumber 的默认 parser 会剥离逗号，
+            "30,60,120" 会被静默并成 "3060120" 恰好骗过单段校验 */}
+        <Input
+          data-testid={`system-control-${key}`}
+          style={{ width: '100%' }}
+          placeholder="30,60,120"
+          addonAfter={unit}
+        />
+      </Form.Item>
+    );
+  }
+  if (type === 'number') {
+    return (
+      <Form.Item
+        name={key}
+        label={
+          <>
+            {label}
+            <span className="label-note">（agents.{key}）</span>
+          </>
+        }
+        rules={rule}
+        data-testid={`system-field-${key}`}
+      >
+        <InputNumber
+          data-testid={`system-control-${key}`}
+          style={{ width: '100%' }}
+          step={1}
+          precision={0}
+          addonAfter={unit}
+        />
+      </Form.Item>
+    );
+  }
+  // 穷举守卫（口径同 renderAdminField 的 fbb06aa6f869）：TransientFieldControl
+  // 新增形态未在上方分派时，type 收窄结果含新字面量、赋给 never 编译报错
+  const _exhaustive: never = type;
+  return _exhaustive;
+}
 
 // 系统页签表单值类型（code-review item 776c2c624d2c）：字段名与 ADMIN_ANNOTATIONS /
 // TRANSIENT_ANNOTATIONS 的 key 一一对应，数值字段经 InputNumber + 校验器保证非空，
@@ -546,51 +630,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           provider 网关瞬时故障（model 拒绝 / 5xx / 断连）的退避与熔断策略。保存后约 30 秒经配置热更新生效。
         </Text>
         <Card style={{ marginTop: 12 }}>
-          {TRANSIENT_ANNOTATIONS.map(({ key, label, note, unit, rule }) => (
+          {TRANSIENT_ANNOTATIONS.map(({ key, label, type, note, unit, rule }) => (
             // 行距机制与上方系统分组一致（见 ADMIN_ANNOTATIONS 处注释）：不挂 inline margin
             <div key={key}>
-              {key === 'transient_backoff_schedule' ? (
-                <Form.Item
-                  name={key}
-                  label={
-                    <>
-                      {label}
-                      <span className="label-note">（agents.{key}）</span>
-                    </>
-                  }
-                  rules={rule}
-                  data-testid={`system-field-${key}`}
-                >
-                  {/* 逗号分隔序列须用文本框：InputNumber 的默认 parser 会剥离逗号，
-                      "30,60,120" 会被静默并成 "3060120" 恰好骗过单段校验 */}
-                  <Input
-                    data-testid={`system-control-${key}`}
-                    style={{ width: '100%' }}
-                    placeholder="30,60,120"
-                    addonAfter={unit}
-                  />
-                </Form.Item>
-              ) : (
-                <Form.Item
-                  name={key}
-                  label={
-                    <>
-                      {label}
-                      <span className="label-note">（agents.{key}）</span>
-                    </>
-                  }
-                  rules={rule}
-                  data-testid={`system-field-${key}`}
-                >
-                  <InputNumber
-                    data-testid={`system-control-${key}`}
-                    style={{ width: '100%' }}
-                    step={1}
-                    precision={0}
-                    addonAfter={unit}
-                  />
-                </Form.Item>
-              )}
+              {renderTransientField({ key, label, type, unit, rule })}
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
