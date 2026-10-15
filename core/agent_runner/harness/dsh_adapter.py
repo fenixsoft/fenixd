@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -266,7 +267,6 @@ class DshEventProjector:
         self.usage_input_tokens = 0
         self.usage_output_tokens = 0
         self.usage_observed = False   # 是否见到过携带 usage 的 step_end
-        self.saw_terminal = False     # 是否已投影过终态（result/error）
         # 逐级计数：各类型 收到/投影/忽略
         self.received: Dict[str, int] = {t: 0 for t in DSH_EVENT_TYPES}
         self.projected: Dict[str, int] = {t: 0 for t in DSH_EVENT_TYPES}
@@ -365,7 +365,12 @@ class DshEventProjector:
         （保证「无 final 收场」也在投影层可终判，任务 2.4）。"""
         phase = entry.get("phase")
         if phase == "step_end":
-            usage = entry.get("usage") or {}
+            # usage 判型降级（防御粒度对齐 reason/err 的 isinstance 守卫）：
+            # 真值非 dict（list/str/int，版本漂移/流畸形）按无 usage 处理，
+            # 不让单事件异常穿透 ingest 杀死 stdout 读线程。
+            usage = entry.get("usage")
+            if not isinstance(usage, dict):
+                usage = {}
             self.usage_input_tokens += _to_int(usage.get("inputTokens"))
             self.usage_output_tokens += _to_int(usage.get("outputTokens"))
             if usage:
@@ -500,7 +505,6 @@ class DshEventProjector:
                 err.get("message") if isinstance(err, dict) else None
             ) or json.dumps(reason, ensure_ascii=False)
             out["error"] = message
-        self.saw_terminal = True
         # final.text 不截断（probe 结论）——无 truncated 透传面
         return [out]
 
@@ -527,7 +531,6 @@ class DshEventProjector:
         )
         if code:
             rendered = f"dsh: {code}: {rendered}"
-        self.saw_terminal = True
         return [
             {
                 "type": "error",
@@ -597,6 +600,10 @@ class DshAdapter:
         # 回收按龄不按槽（见 _write_model_patch docstring：单槽回收在全局
         # adapter 单例 + 多车道并发派发下会互踩刚写未读的 patch）。
         self._patch_files: List[Tuple[str, float]] = []
+        # 登记表读写锁：本 adapter 是全局单例 + 多车道并发派发，
+        # _write_model_patch 的「筛存活→整表重赋→append」读改写序列
+        # 无锁会互踩丢登记（登记丢失的 patch 失去按龄回收资格 → 泄漏）。
+        self._patch_files_lock = threading.Lock()
 
     # ── 协议成员 ─────────────────────────────────────────────────────
 
@@ -688,16 +695,20 @@ class DshAdapter:
             api=self._config.api,
         )
         now = time.monotonic()
-        survivors: List[Tuple[str, float]] = []
-        for path, created in self._patch_files:
-            if now - created < DSH_PATCH_RETENTION_SECONDS:
-                survivors.append((path, created))
-                continue
-            try:
-                os.unlink(path)
-            except OSError:
-                pass  # 已被系统 tmp 清理/进程重启，静默跳过
-        self._patch_files = survivors
+        # 锁内完成「筛存活→整表重赋」（与并发 append 互斥，杜绝基于旧
+        # 快照的整表赋值覆盖掉其它车道刚登记的 patch）；unlink 不碰共享
+        # 状态但随筛存顺带执行，锁内耗时为单个 unlink，可忽略。
+        with self._patch_files_lock:
+            survivors: List[Tuple[str, float]] = []
+            for path, created in self._patch_files:
+                if now - created < DSH_PATCH_RETENTION_SECONDS:
+                    survivors.append((path, created))
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass  # 已被系统 tmp 清理/进程重启，静默跳过
+            self._patch_files = survivors
         fh = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -709,7 +720,8 @@ class DshAdapter:
             fh.write(content)
         finally:
             fh.close()
-        self._patch_files.append((fh.name, time.monotonic()))
+        with self._patch_files_lock:
+            self._patch_files.append((fh.name, time.monotonic()))
         return fh.name
 
     def build_env(self, req: SpawnRequest, api_key: str = "") -> Optional[Dict[str, str]]:
