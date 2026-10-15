@@ -101,8 +101,11 @@ class RRollbackMixin:
         # bool 显式拒绝（code-review item f56862fd7372）：float() 把 YAML 布尔
         # true 折算成 1.0，绕过下方非正/NaN/inf 全部守卫，防振荡窗被静默从
         # 缺省 300s 缩成 1s；false 走 v<=0 回退缺省，true/false 行为不对称。
-        # 非法值 WARNING 留痕回退缺省（logger getattr 守卫，兼容仅注入
-        # _get_config 的测试替身）。
+        # 非法值（布尔/无法转数值/NaN/inf/非正数）一律 WARNING 留痕回退缺省
+        # （logger getattr 守卫，兼容仅注入 _get_config 的测试替身；与
+        # repair_lane _max_retries/_merge_breaker_threshold 的 illegal 分支
+        # 同款——code-review item f5024c77c6e3：非布尔非法值此前静默回退
+        # 无留痕，调参者无从诊断，与 01c0160765d2 可诊断性口径不一致）。
         if isinstance(cfg, bool):
             logger = getattr(self._pm, "logger", None)
             if logger is not None:
@@ -115,8 +118,23 @@ class RRollbackMixin:
         try:
             v = float(cfg)
         except (TypeError, ValueError):
+            logger = getattr(self._pm, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "pm_engine",
+                    "配置 pm.dispatch_rollback_backoff_seconds 非法（无法转数值），"
+                    f"回退缺省 {default}: {cfg!r}",
+                )
             return default
         if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+            logger = getattr(self._pm, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "pm_engine",
+                    "配置 pm.dispatch_rollback_backoff_seconds 非法"
+                    "（NaN/inf/非正数均不合法），"
+                    f"回退缺省 {default}: {cfg!r}",
+                )
             return default
         # 亚秒正值下限保护（code-review item 77be0cfcbe43）：int 截断会把
         # 0<v<1 压成 0，退避窗立即过期、防振荡静默失效，故至少保留 1 秒。
