@@ -119,6 +119,26 @@ class CliAssertionRunner:
         """
         results: list[dict] = []
         for assertion in assertions:
+            if not isinstance(assertion, dict):
+                # fail-closed：非 dict 断言条目（planner/自愈链路产出的畸形
+                # 条目，如字符串或 None）会让下方 assertion.get 抛
+                # AttributeError，且在 run() 的 try 之外直接穿透（try 只包
+                # handler 调用）；本文件对 path/glob/expected 等字段的防御
+                # 注释多处宣称兜住运行期自愈路径，断言条目是同级别的不可信
+                # 输入。按「未知断言类型」同款结构返回确定性失败（与 api 侧
+                # run() 的同款守卫口径对齐）
+                results.append(
+                    {
+                        "type": None,
+                        "layer": 0,
+                        "pass": False,
+                        "error": (
+                            f"断言条目非法: 须为 dict，"
+                            f"实际 {type(assertion).__name__}"
+                        ),
+                    }
+                )
+                continue
             a_type = assertion.get("type", "")
             handler = getattr(self, f"_assert_{a_type}", None)
             if handler is None:
