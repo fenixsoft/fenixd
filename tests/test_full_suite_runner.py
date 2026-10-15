@@ -31,11 +31,15 @@ class TestExtractHangingTest:
     """解析 faulthandler 栈输出。"""
 
     def test_extracts_stack_top_function(self):
+        # 真实 faulthandler dump 帧格式：`File "...", line N in func`（in 前无逗号，
+        # 本机 python3 实测 `File "<string>", line 4 in <module>`）；`line N, in func`
+        # 是 traceback 模块格式，勿混作 faulthandler 输出（曾致解析恒空，
+        # code-review item ec2bacdabe00）。
         stderr = (
             "Thread 0x7f1234567890 (most recent call first):\n"
-            '  File "/repo/tests/test_dispatch_aging.py", line 142, in test_deadline_action\n'
+            '  File "/repo/tests/test_dispatch_aging.py", line 142 in test_deadline_action\n'
             '    self._supervision_deadline_action(run_file, "spec", "run-1", started_at=time.time()-10000, extensions_used=0)\n'
-            '  File "/repo/core/agent_runner/liveness.py", line 100, in _supervision_deadline_action\n'
+            '  File "/repo/core/agent_runner/liveness.py", line 100 in _supervision_deadline_action\n'
             '    snapshot = self._liveness_snapshot(run_file, window)\n'
         )
         result = extract_hanging_test(stderr)
@@ -106,11 +110,12 @@ class TestRunSuite:
     def test_timeout_reports_hanging_test(self, tmp_path):
         """用 bash 输出 faulthandler 栈格式后挂起 → 超时内中止并提取挂起标识。"""
         # 构造一个自包含命令：写 faulthandler 栈到 stderr，然后 sleep 挂起
+        # （帧格式用真实 faulthandler 的无逗号形态，见 TestExtractHangingTest 注释）
         script = (
             'python3 -c "'
             "import sys, time; "
             "sys.stderr.write('Thread 0x... (most recent call first):\\n'); "
-            'sys.stderr.write(\'  File \\"/repo/tests/test_foo.py\\", line 10, in test_bar\\n\'); '
+            'sys.stderr.write(\'  File \\"/repo/tests/test_foo.py\\", line 10 in test_bar\\n\'); '
             "sys.stderr.flush(); "
             "time.sleep(999)"
             '"'

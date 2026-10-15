@@ -66,6 +66,12 @@ LOCK_WAIT_TIMEOUT_SECONDS = 600
 # 只设放大上界（7200s）防病态配置下的无限等待。
 BASELINE_TIMEOUT_SECONDS = 7200
 
+# 子进程输出回读上限（每流字节，code-review item 4865784b5be5）：正常套件输出
+# （pytest -q 全量，通常数 MB）远低于该值、原样完整回读；失控输出（死循环 print
+# 等，同 docstring 所述 I/O 事故形态）只回读尾部——FAILED 摘要与 faulthandler
+# 栈集中在输出后段，尾部足以支撑提取，父进程内存占用恒有上界。
+OUTPUT_READBACK_LIMIT_BYTES = 64 * 1024 * 1024
+
 PYTEST_BASE_ARGS = [
     "pytest",
     "tests/",
@@ -143,8 +149,12 @@ def extract_hanging_test(stderr: str) -> "str | None":
 
     faulthandler 输出形如：
         Thread 0x7f... (most recent call first):
-          File "/repo/tests/test_x.py", line 42, in test_hang
+          File "/repo/tests/test_x.py", line 42 in test_hang
           ...
+    注意 CPython faulthandler 的帧格式是 ``line N in func``（``in`` 前无逗号，
+    本机实测 ``File "<string>", line 4 in <module>``）——与 traceback 模块的
+    ``line N, in func`` 不同，正则对逗号做可选兼容（code-review item
+    ec2bacdabe00：此前误按带逗号格式匹配，真实挂起场景恒解析为空）。
     faulthandler 会为**每个线程**各打一份栈，且 dump 的首个 File 帧常是
     主线程或 pytest/faulthandler 内部帧而非挂起用例——盲取首帧会把调试
     引向完全无关的方向。故优先取**路径在 tests/ 下**的首个 File 帧（自然
@@ -155,7 +165,7 @@ def extract_hanging_test(stderr: str) -> "str | None":
     """
     first = None
     for line in (stderr or "").splitlines():
-        m = re.search(r'File "([^"]+)", line \d+, in (.+)', line)
+        m = re.search(r'File "([^"]+)", line \d+,? in (.+)', line)
         if not m:
             continue
         path = m.group(1)
@@ -171,6 +181,22 @@ def extract_hanging_test(stderr: str) -> "str | None":
 # ── 命令运行（有界）────────────────────────────────────────────────────
 
 
+def _read_back_output(stream, limit: int = OUTPUT_READBACK_LIMIT_BYTES) -> str:
+    """回读子进程输出流并解码为文本；超出上限只保留尾部 limit 字节。
+
+    输出经临时文件落盘（见 run_command），回读设上限保证父进程内存有界：
+    FAILED 摘要与 faulthandler 栈集中在输出后段，尾部截取不损害提取。
+    截断起点可能落在多字节字符中间，``errors="replace"`` 容忍。
+    """
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(max(0, size - limit))
+    text = stream.read(limit).decode("utf-8", errors="replace")
+    if size > limit:
+        text = f"[run_full_suite] 子进程输出超过 {limit} 字节回读上限，仅保留尾部\n" + text
+    return text
+
+
 def run_command(cmd, timeout, cwd, env=None) -> tuple:
     """运行命令并在超时时中止（进程组 SIGTERM→SIGKILL 兜底）；返回 (rc, stdout, stderr, timed_out)。
 
@@ -178,46 +204,50 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
     SIGTERM 给短暂优雅窗口，未退出再 SIGKILL 整组——pytest 拉起的孙进程
     （v2 dev server、daemon 集成类测试等）一并中止，不留孤儿继续占端口/内存。
     进程已退出（ProcessLookupError）等 killpg 失败静默吞掉。
-    超时 kill 后仍收集已产出的输出（faulthandler 栈对挂起定位是关键证据）。
+    超时 kill 后仍读取已产出的输出（faulthandler 栈对挂起定位是关键证据）。
+
+    输出经系统匿名临时文件落盘而非管道（code-review item 4865784b5be5）：
+    失控输出（死循环 print 等）只涨文件不涨内存，回读另有上限
+    （_read_back_output）——管道方案下 communicate 全量缓冲可在硬超时窗口
+    内被撑到 OOM，且游离孙进程持有管道写端会让 EOF 迟迟不到。收割纪律与
+    bin/test_for.run_bounded 同口径：SIGTERM/SIGKILL 阶梯后无条件 wait 收尾，
+    不留僵尸（code-review item 05c30167fbc9）。
     """
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=str(cwd),
-        env=env,
-        start_new_session=True,
-    )
-    try:
-        out, err = proc.communicate(timeout=timeout)
-        return proc.returncode, out, err, False
-    except subprocess.TimeoutExpired:
+    # 匿名临时文件（系统临时目录、创建即 unlink、随 with 块关闭）：
+    # 不经 .fenix/ 也不在系统 /tmp 留命名残留；游离孙进程逃过 killpg 时
+    # 仍持继承 fd 继续写，只影响文件内容不影响本函数返回（不阻塞）。
+    with tempfile.TemporaryFile("w+b") as out_file, tempfile.TemporaryFile("w+b") as err_file:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=out_file,
+            stderr=err_file,
+            cwd=str(cwd),
+            env=env,
+            start_new_session=True,
+        )
+        timed_out = False
         try:
-            os.killpg(proc.pid, signal.SIGTERM)  # start_new_session=True ⇒ pgid==pid
-        except OSError:
-            pass  # 进程已退出，无需再中止
-        try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            timed_out = True
             try:
-                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+                os.killpg(proc.pid, signal.SIGTERM)  # start_new_session=True ⇒ pgid==pid
             except OSError:
-                pass  # 进程组已不存在
-        try:
-            out, err = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired as exc:
-            # EOF 迟迟不到（游离孙进程仍持有管道写端）时保留已读到的部分输出：
-            # faulthandler 栈是挂起定位的关键证据，置空会让 extract_hanging_test
-            # 无从提取。注意 text=True 下 Popen 的 TimeoutExpired 携带的是 bytes
-            # （解码只发生在成功路径），须按实际类型归一为 str（兼容 None/str）。
-            out = exc.stdout or ""
-            err = exc.stderr or ""
-            if isinstance(out, bytes):
-                out = out.decode(errors="replace")
-            if isinstance(err, bytes):
-                err = err.decode(errors="replace")
-        return None, out, err, True
+                pass  # 进程已退出，无需再中止
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+                except OSError:
+                    pass  # 进程组已不存在
+            try:
+                proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
+            except subprocess.TimeoutExpired:
+                pass
+        out = _read_back_output(out_file)
+        err = _read_back_output(err_file)
+        return (None if timed_out else proc.returncode), out, err, timed_out
 
 
 def run_suite(
@@ -247,6 +277,9 @@ def run_suite(
     # 失败集合须在截断**前**从完整原始输出提取（code-review item c00c0572529d）：
     # pytest 的 FAILED 摘要集中在输出末段，失败条目多时最早的 FAILED 行会被
     # 下方截尾丢掉，基于截断文本提取会让 cur ⊆ base 误判「存量」而漏报本次引入。
+    # 提取输入是 run_command 的回读文本：回读上限（64MB）远大于下方展示截尾，
+    # 常规套件即完整输出；仅输出超限的失控场景降级为尾部尽力提取（此时全量
+    # 已不可得，内存有界优先，见 _read_back_output）。
     # stdout/stderr 键仍按截断保留（展示用途），完整失败集合经 failed_tests 键给出。
     failed_tests = collect_failed_tests(out, err)
     # 超时约定退出码 124（与 timeout(1) 惯例一致），正常按 pytest 实际退出码。
