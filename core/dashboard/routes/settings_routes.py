@@ -291,7 +291,7 @@ class H5SettingsRoutesMixin:
     def _api_prompts_get(self, query) -> None:
         """GET /api/prompts[?project=<name>] — agent 提示词读取（自含响应）。
 
-        缺省 → 仅通用层六文件（用户级只读视图）；带 project → 追加项目级
+        缺省 → 仅通用层文件（用户级只读视图）；带 project → 追加项目级
         .fenix/agents/ 附加内容，project 在场但解析不到/不存在 → 404。
         通用层一律只读，端点不提供通用层写入。
 
