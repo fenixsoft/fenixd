@@ -3075,68 +3075,40 @@ class VerificationPipeline:
                 plan_result = self._pm.agent_runner.run_planner(spec_name, "plan")
 
                 if not plan_result.success:
-                    # ── 冻结终止让位（code-review item 3a96e083bf0d）──
-                    # plan run 在飞期间 spec 被人工冻结、run 完成返回 frozen
-                    # 失败：比照 _dispatch_judge_or_reuse 的 frozen_terminated
-                    # 分支让位——INFO 留痕后静默退出，不 raise（raise 会触发
-                    # legacy verifier 降级，对已冻结 spec 再起一轮验证）、不改
-                    # 状态、不重派，与 judge 同场景「静默让位」语义对称。
-                    # 判定用 `is True`（防 MagicMock 替身自动生成 truthy 属性
-                    # 误判，与 judge 同口径）。
-                    if getattr(plan_result, "frozen_terminated", False) is True:
-                        self._context.logger.info(
+                    # ── 失败三让位（判定/写字段单源：_yield_on_agent_failure，
+                    # code-review item d2bce687564b，与 judge 车道
+                    # _dispatch_judge_or_reuse 同口径）── frozen_terminated
+                    # （spec 级 > run 级，在 cancelled 之前；助手补
+                    # mark_frozen_hold 锚点，解冻时 unfreeze_spec 据此走
+                    # _resolve_preserved_branch 续做恢复，原 code-review item
+                    # 3a96e083bf0d 的让位语义不变）/ cancelled（error +
+                    # _cancelled_hold 保持标记，add-run-cancel D4）/ provider
+                    # 熔断（error + infra 记账，fix-fix-stashpop-deadlock +
+                    # evo-infra-failure-budget-exempt R2）的写字段集合均由
+                    # 助手单点承载；此处仅保留 plan 车道的日志文案（不得
+                    # raise → legacy 降级 → bug-found → 伪 fix 级联）。
+                    yield_reason, yield_err = self._yield_on_agent_failure(
+                        spec_name, plan_result)
+                    if yield_reason == "frozen_terminated":
+                        self._context.logger.warning(
                             "pm_engine",
-                            f"Planner plan run 因 spec 冻结被终止 — 让位退出 "
-                            f"'{spec_name}'（保持原状，不降级不重派）: "
-                            f"{plan_result.error or ''}",
+                            f"Planner plan run 因 spec 冻结被终止 — hold-state "
+                            f"'{spec_name}'（进度已保全，解冻后续做，不降级不重派）: "
+                            f"{yield_err}",
                         )
                         return
-                    # ── 人工取消 hold-state（add-run-cancel D4）──
-                    # planner run 被取消：spec 保持 testing 原状，只写 error，
-                    # 不流转 bug-found、不降级 legacy、不入队。
-                    # 判定用 `is True`（防 MagicMock 替身自动生成 truthy
-                    # 属性误判），与 legacy verifier cancelled 同口径。
-                    if getattr(plan_result, "cancelled", False) is True:
-                        p_err = plan_result.error or ""
-                        cancelled_err = f"run 被人工取消：{p_err}" if p_err else "run 被人工取消"
-                        self._context.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": cancelled_err,
-                                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                                "_cancelled_hold": True,
-                            },
-                        )
+                    if yield_reason == "cancelled":
                         self._context.logger.warning(
                             "pm_engine",
                             f"Planner plan run 被人工取消 — hold-state '{spec_name}' "
-                            f"(保持 testing): {cancelled_err}",
+                            f"(保持 testing): {yield_err}",
                         )
                         return
-                    # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
-                    # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
-                    # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
-                    # 只写 error 保持 spec 在 testing（由 full_scan recovery 探测
-                    # 卡死/孤儿 testing 后重排——此处无 transition，不回 implemented）。
-                    if plan_result.error and PROVIDER_CIRCUIT_ERROR_MARKER in plan_result.error:
-                        self._context.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": plan_result.error,
-                            },
-                        )
-                        # evo-infra-failure-budget-exempt R2：provider 熔断属 infra，
-                        # 在归因入口前早退的既有 infra 判定点挂预算退款与记账
-                        # （否则 provider infra 轮仍耗实现预算，与目标 2 不符）。
-                        self._record_infra_failure(
-                            spec_name,
-                            plan_result.error,
-                            run_id=getattr(plan_result, "run_id", "") or "",
-                        )
+                    if yield_reason == "provider_circuit":
                         self._context.logger.warning(
                             "pm_engine",
                             f"Provider circuit open — planner suppressed for '{spec_name}', "
-                            f"holding testing (recovery re-dispatch): {plan_result.error}",
+                            f"holding testing (recovery re-dispatch): {yield_err}",
                         )
                         return
                     raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
@@ -3274,6 +3246,13 @@ class VerificationPipeline:
                 if contract is not None and not contract.get("ok"):
                     if replan_left > 0:
                         replan_feedback = contract.get("feedback") or ""
+                        # 内容类缺失（交互契约覆盖缺口，design D3 同空集兜底
+                        # 口径）：比照上方空集分支复位格式类侧车——上一验证
+                        # 轮格式类失败置 True 后预算耗尽 return 残留 True 时，
+                        # 本分支发生在 _execute_stage2 复位点之前，不复位会把
+                        # 内容类反馈渲染成「最小修复」指引（code-review item
+                        # 9d08c65949f2）。
+                        self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = False
                         replan_left -= 1
                         self._context.logger.warning(
                             "pm_engine",
