@@ -55,8 +55,9 @@ def classify_screenshot(
         low_contrast_upper: 低对比度判定的 std 上限
 
     Returns:
-        dict: 标签字典，至少含 blank_screenshot / low_contrast 之一（bool），
+        dict: 标签字典，可能含 blank_screenshot / low_contrast 标签（bool），
               及量化指标（pixel_std, dominant_color_pct, width, height）；
+              正常截图两键皆缺（消费方以「缺标签」为正常态）；
               判定异常时返回空 dict。
     """
     try:

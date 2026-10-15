@@ -142,6 +142,26 @@ class AssertionRunner:
         """执行断言列表，返回每个断言的结果。"""
         results: list[dict] = []
         for assertion in assertions:
+            if not isinstance(assertion, dict):
+                # fail-closed（code-review item dce263839d91，同 api 侧
+                # ApiAssertionRunner.run 的非 dict 条目守卫口径）：非 dict
+                # 断言条目（planner/运行期自愈链路产出的畸形条目，如字符串
+                # 或 None）会让下方 assertion.get 抛 AttributeError，且位于
+                # run() 的 try 之外直接穿透（try 只包 handler 调用），单场景
+                # 全部断言以异常收场而非归一为本条的结构化失败。按「未知
+                # 断言类型」同款结构返回确定性失败。
+                results.append(
+                    {
+                        "type": None,
+                        "layer": 0,
+                        "pass": False,
+                        "error": (
+                            f"断言条目非法: 须为 dict，"
+                            f"实际 {type(assertion).__name__}"
+                        ),
+                    }
+                )
+                continue
             a_type = assertion.get("type", "")
             handler_name = f"_assert_{a_type}"
             handler = getattr(self, handler_name, None)

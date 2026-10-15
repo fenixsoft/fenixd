@@ -369,7 +369,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="token" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="token-save">
           保存
         </Button>
       </div>

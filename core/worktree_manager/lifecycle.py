@@ -1010,7 +1010,18 @@ class G1LifecycleMixin:
                 errors="replace",
                 timeout=15,
             )
-            if status.returncode != 0 or not status.stdout.strip():
+            if status.returncode != 0:
+                # 探测失败（超时/锁争用/git 故障）≠ 干净：脏 worktree 上静默
+                # 跳过即现场毁灭后取证盲区，按失败降级口径 WARNING 留档。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Pre-rmtree snapshot skipped for {wt_path}: "
+                    f"git status failed rc={status.returncode} "
+                    f"{(status.stderr or '').strip() or 'no stderr'} — "
+                    f"snapshot not attempted, cleanup proceeds",
+                )
+                return ""
+            if not status.stdout.strip():
                 return ""  # 干净，无快照价值
             # untracked 留档（code-review item c61688ecd88a）：stash create 不含
             # 未跟踪文件，先把它逐个 hash-object -w 写入对象库并打日志；失败仅

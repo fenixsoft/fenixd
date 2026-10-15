@@ -528,9 +528,10 @@ export default function SpecStatusModal({
     });
   }, [project, spec, onDone, message, appModal]);
 
-  // 按状态无可用区块时直接返回 null（不应出现，菜单入口按状态屏蔽）
-  if (!summary || open === false) return null;
-
+  // Modal 常挂载（code-review item 4dec1650864f）：关闭只交给 open prop，让 antd
+  // 走标准关闭流程播放淡出动画（与 SpecDocModal 一致）。summary 为空时各区块
+  // 均按状态条件渲染（不应出现，菜单入口按状态屏蔽），无空转副作用；内部状态
+  // 由 destroyOnHidden 清理。
   return (
     <Modal
       title={`修改状态 · ${spec}`}
@@ -583,7 +584,8 @@ export default function SpecStatusModal({
         )}
 
         {/* ── 回炉区块（verified + task-gap 错误；fix-impl-tasks-completion-gate P1′） ── */}
-        {taskGapStuck && (
+        {/* summary 空值守卫为类型收窄所需（taskGapStuck 派生自 summary，语义等价） */}
+        {taskGapStuck && summary && (
           <div style={{ marginBottom: 16 }}>
             <Typography.Text strong style={{ fontSize: 14 }}>回炉（重新派发实现）</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>

@@ -445,6 +445,11 @@ class TestExtractResult:
         assert out["usage_info"]["input_tokens"] == 0
         assert out["usage_info"]["unobserved"] is True
         assert out["usage_info"]["usage_source"] == "unobserved"
+        # unobserved 归因方向与 claude 通道有意分歧（dsh 契约「error 无
+        # final」→ 无 result 即异常终态，见 extract_result docstring）——
+        # 锚定防后续按「键形状全等」顺手统一改错方向
+        assert out["is_error"] is True
+        assert out["subtype"] == ""
 
     def test_usage_unavailable_marked_not_fabricated(self, tmp_path):
         """无 step_end usage 的流（error 先于任何 step_end）→ usage_source

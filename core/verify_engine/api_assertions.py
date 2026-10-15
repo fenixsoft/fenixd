@@ -78,10 +78,29 @@ class _TimeoutRegex:
     def __init__(self, source: str, compiled: re.Pattern):
         self._source = source
         self._compiled = compiled
+        # regex 库可用时按同 pattern 预编译一次，search 复用编译产物——否则
+        # 每次匹配（sse_event_matches 逐事件各调一次）都经模块级 search 重新
+        # 解析编译同一 pattern（code-review item bbe2c304be8e）。预编译意外
+        # 失败（regex 与 re 语法判定的罕见分歧）时回退模块级 search，timeout
+        # 防护语义不变
+        self._regex_compiled = None
+        if _regex_lib is not None:
+            try:
+                self._regex_compiled = _regex_lib.compile(source)
+            except Exception:
+                self._regex_compiled = None
 
     def search(self, text: str) -> bool:
         if _regex_lib is not None:
+            compiled = self._regex_compiled
             try:
+                if compiled is not None:
+                    return (
+                        compiled.search(
+                            text, timeout=_REGEX_MATCH_TIMEOUT_SECONDS
+                        )
+                        is not None
+                    )
                 return (
                     _regex_lib.search(
                         self._source, text, timeout=_REGEX_MATCH_TIMEOUT_SECONDS

@@ -18,6 +18,7 @@ lane 语义（design D6）：五处一次性 spawn 点的 argv/stdin 形态差�
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -158,9 +159,10 @@ STDERR_CLASS_GENERIC = "generic"
 class HarnessAdapter:
     """harness adapter 协议（typing.Protocol 语义的结构化契约）。
 
-    七个协议成员（spec「HarnessAdapter 协议」）：name / build_spawn_spec /
+    协议成员（spec「HarnessAdapter 协议」）：name / build_spawn_spec /
     normalize_event / classify_stderr / extract_result / process_patterns /
-    capabilities。用显式方法集而非 typing.Protocol 类的原因：协议成员完整性
+    worktree_pgrep_patterns / capabilities。用显式方法集而非
+    typing.Protocol 类的原因：协议成员完整性
     测试（task 1.2）以 isinstance 协议结构比对最直观，且 isinstance 检查对
     「少实现一个成员」的 adapter 在运行期即可判（fail-fast 优于运行到一半
     AttributeError）。子类 MUST 全量实现，缺成员由测试与运行期双路拦截。
@@ -174,6 +176,10 @@ class HarnessAdapter:
     - extract_result(events, exit_code=None) -> dict：终态 result 提取
       （output/turns/session_id/usage_info/归因字段）
     - process_patterns() -> list[str]：agent 进程 argv[0] 识别 patterns
+    - worktree_pgrep_patterns(spec_name) -> list[str]：worktree 存活 pgrep
+      -f patterns（admin_monitor 判活消费；spec 七成员之外的扩展成员，
+      一并收进 HARNESS_ADAPTER_MEMBERS 单源清单——只实现 spec 七成员的
+      adapter 在判活路径会运行期 NotImplementedError，不能留在清单外）
     - capabilities() -> HarnessCapabilities：能力对账卡
     """
 
@@ -199,7 +205,8 @@ class HarnessAdapter:
     def worktree_pgrep_patterns(self, spec_name: str) -> List[str]:  # pragma: no cover
         """worktree 存活 pgrep -f patterns（admin_monitor/event_bus 消费）。
 
-        spec 规定的七成员之外的扩展成员（「至少包含」）：admin_monitor
+        spec 规定的七成员之外的扩展成员（「至少包含」），已收进
+        HARNESS_ADAPTER_MEMBERS 单源清单：admin_monitor
         _pgrep_live_worktree 的车道前缀 pattern 由 adapter 供给，消费侧零
         硬编码。 """
         raise NotImplementedError
@@ -208,7 +215,24 @@ class HarnessAdapter:
         raise NotImplementedError
 
 
-# 协议成员清单（协议完整性测试 task 1.2 与运行期结构校验共用此单源）
+def default_worktree_pgrep_patterns(spec_name: str) -> List[str]:
+    """worktree 存活 pgrep -f patterns 的默认构造（两通道单一来源）。
+
+    三车道前缀 ``{impl,verify,repair}-<escaped_spec>-``（admin_monitor
+    _pgrep_live_worktree 平移值）：spec 名先 ``re.escape`` 转义（code-review
+    item 780797acccdb），run_id 段出现在 argv 中由 ``-`` 连接，子串匹配语义
+    与 admin_monitor 既有判定一致。ClaudeAdapter 与 DshAdapter 的
+    worktree_pgrep_patterns 共同引用本助手，前缀族或转义策略演进只改此处
+    （原先两 adapter 逐行复制，漏改即通道间判活口径分裂）。
+    """
+    return [
+        f"{prefix}-{re.escape(spec_name)}-"
+        for prefix in ("impl", "verify", "repair")
+    ]
+
+
+# 协议成员清单（单源；当前唯一消费方是协议完整性测试 task 1.2，core 侧
+# 无运行期结构校验消费点）
 HARNESS_ADAPTER_MEMBERS = (
     "name",
     "build_spawn_spec",
@@ -216,5 +240,6 @@ HARNESS_ADAPTER_MEMBERS = (
     "classify_stderr",
     "extract_result",
     "process_patterns",
+    "worktree_pgrep_patterns",
     "capabilities",
 )

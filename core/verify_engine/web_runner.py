@@ -406,7 +406,9 @@ class WebRunner(VerifyRunner):
 
             # 断言真正执行且至少一个失败 → 截图取证（真实产品缺陷）。
             # 断言全部通过则不截图。步骤失败已在上方 break，不进入此分支。
-            if any(not a.get("pass", True) for a in assertion_results):
+            # 非 dict 条目（上游畸形）视为有失败、触发取证，与
+            # determine_scenario_status 的非 dict 按 fail 兜底取向一致。
+            if any(isinstance(a, dict) and not a.get("pass", True) for a in assertion_results):
                 try:
                     ss = await self.browser.screenshot(
                         page, f"{scenario.id}_assert_fail", screenshot_dir

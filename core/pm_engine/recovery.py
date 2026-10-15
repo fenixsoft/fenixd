@@ -35,6 +35,10 @@ RECOVERY_WATCH_FILE = "recovery_watch.json"
 DEFAULT_FOLLOWUP_CHECK_MINUTES = 15
 # 同 spec 同指纹的巡检/滞留信号冷却（分钟）：指纹未变且冷却期内只记日志
 DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
+# escalation_cooldown_minutes 的权威缺省（分钟）：与 core/config.py
+# get_admin_config 缺省（60）同值。_signal_dispatch_stalled 的取值容错
+# 回落统一引用本常量，避免字面量多处硬编码、权威缺省调整时静默漂移。
+DEFAULT_ESCALATION_COOLDOWN_MINUTES = 60.0
 
 # 恢复复查「已恢复推进」的后续态集合（post-recovery-patrol D4）：观察窗口
 # 到达时 spec 已进入 ready 之后的这些状态之一 → 视为已真实恢复推进，关闭
@@ -287,9 +291,13 @@ class RecoveryWatch:
         # 助手保留 0 值的口径不一致；畸形（非数值）此前会让 float() 抛
         # ValueError 逃出登记路径、中断 auto-recovery 收尾，同样由此兜住。
         minutes = self._followup_check_minutes()
-        due = time.time() + max(0.5, minutes) * 60
+        # 复查间隔下限钳制（30 秒）：钳制值同时驱动 due 与登记日志（code-review
+        # item b10705ef1280）——配置 0/0.3 时日志若展示原始值会显示 0m，与
+        # 实际 30 秒后复查不符，运维按日志推断复查时机会有半分钟级偏差。
+        effective_minutes = max(0.5, minutes)
+        due = time.time() + effective_minutes * 60
         with self._watch_lock:
-            self._register_watch_entry(spec_name, reason, minutes, due)
+            self._register_watch_entry(spec_name, reason, effective_minutes, due)
         return
 
     def _register_watch_entry(self, spec_name, reason, minutes, due) -> None:
@@ -329,7 +337,8 @@ class RecoveryWatch:
         self._pm.logger.info(
             "pm_engine",
             f"Recovery watch registered for '{spec_name}' "
-            f"(recheck in {minutes:.0f}m): {reason}",
+            # 一位小数：0.5 分钟下限钳制后仍能按实际值展示（:.0f 会把 0.5 抹成 0）
+            f"(recheck in {minutes:.1f}m): {reason}",
         )
 
     def check_recovery_watch(self) -> list:
@@ -1158,9 +1167,9 @@ class RecoveryWatch:
                 )
             )
         except (TypeError, ValueError):
-            store_cooldown = 60.0
+            store_cooldown = DEFAULT_ESCALATION_COOLDOWN_MINUTES
         if not store_cooldown or store_cooldown <= 0:
-            store_cooldown = 60.0
+            store_cooldown = DEFAULT_ESCALATION_COOLDOWN_MINUTES
         store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
             if store.latest_signal(spec_name, "dispatch_stalled", store_cooldown) is not None:

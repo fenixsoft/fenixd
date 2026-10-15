@@ -14,8 +14,14 @@ export type HarnessResolution =
   | { kind: 'registered'; name: string }
   | { kind: 'fallback'; name: string; letter: string };
 
-// 已注册图标品牌的 harness 集（组件装配表见 HarnessBrand.tsx）
-const REGISTERED_HARNESSES = new Set(['claude', 'dsh']);
+// 已注册图标品牌的 harness 名单（单源：HarnessBrand.tsx 品牌装配表的
+// 键集由 RegisteredHarnessName 类型约束，新增注册品牌漏配装配表时
+// 编译期即报错，不再依赖人工同步两处）
+export const REGISTERED_HARNESS_NAMES = ['claude', 'dsh'] as const;
+
+export type RegisteredHarnessName = (typeof REGISTERED_HARNESS_NAMES)[number];
+
+const REGISTERED_HARNESSES: ReadonlySet<string> = new Set(REGISTERED_HARNESS_NAMES);
 
 // context 缺省品牌名（= Claude 品牌，spec「缺省品牌等于现状」Scenario：
 // 未注入 Provider 的使用点渲染结果与改造前一致）

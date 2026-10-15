@@ -864,11 +864,15 @@ class H0BaseMixin:
         等于对应 200 将发送的体长，恒写 0 属协议语义偏差
         （code-review item 06228e8ac652）。Cache-Control 与 _json 一致
         （no-cache：ETag 协商是唯一复用通道，不引入启发式缓存）。
+        Vary 与 200 路径对齐：RFC 7232 §4.1 要求 304 复制对应 200 本应
+        携带的 Vary（_json 经 _maybe_gzip 无条件发送，code-review item
+        52fce875f77e）。
         """
         self._mark_response_started()
         self.send_response(304)
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Vary", "Accept-Encoding")
         # 同 _error：close_connection 在场（客户端带 Connection: close 请求
         # 头、SSE 终结后连接的策略性关闭等）时本 304 也随连接关闭，须声明
         # Connection: close，否则客户端会复用已被服务器关闭的连接重放

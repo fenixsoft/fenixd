@@ -3217,11 +3217,20 @@ class PMEngine:
             # 先例同口径）：负 delay 使 next_retry = now_ts + delay 落在过去
             # 时刻，_is_push_backoffed 按 next_retry > now 判定恒 False，退避
             # 窗口静默失效——push 失败后每个轮询周期立即重试直至烧光
-            # max_retries 提前升级 push_failed。任一元素为负整体回退默认值。
-            if any(x < 0 for x in backoff_seconds):
+            # max_retries 提前升级 push_failed。
+            # 零值/布尔同型静默失效（code-review item 6b7afbb90212，与
+            # rollback.py _dispatch_rollback_backoff_seconds 的布尔显式拒绝
+            # 同口径）：int() 接受 YAML 布尔（False→0、True→1），0 非负、
+            # 通过全部防御后 delay=0，next_retry_at 落在当前时刻，退避窗口
+            # 同样静默失效；True 折算的 1s 窗与缺省 5min/15min 行为不对称。
+            # 布尔按原始元素判（int() 转换后已是纯 int）。任一元素非正或为
+            # 布尔整体回退默认值。
+            if any(isinstance(x, bool) for x in cfg_backoff) or any(
+                x <= 0 for x in backoff_seconds
+            ):
                 self.logger.warning(
                     "pm_engine",
-                    f"pm.push.retry_backoff_seconds 含负值 {cfg_backoff}，"
+                    f"pm.push.retry_backoff_seconds 含负值/零值/布尔 {cfg_backoff}，"
                     "回退默认退避 [300, 900]",
                 )
                 backoff_seconds = [300, 900]
@@ -3591,17 +3600,24 @@ class PMEngine:
     def _ready_stall_threshold_minutes(self) -> float:
         """假就绪巡检阈值：pm.recovery.ready_stall_threshold_minutes（默认 20）。"""
         try:
-            return max(
-                0.0,
-                float(
-                    self._get_config(
-                        "pm.recovery.ready_stall_threshold_minutes",
-                        DEFAULT_READY_STALL_THRESHOLD_MINUTES,
-                    )
-                ),
+            v = float(
+                self._get_config(
+                    "pm.recovery.ready_stall_threshold_minutes",
+                    DEFAULT_READY_STALL_THRESHOLD_MINUTES,
+                )
             )
-        except (TypeError, ValueError):
+        # 补捕 OverflowError：巨大 int（如 10**400）float() 抛 OverflowError
+        # 不在原元组，异常从巡检调用点穿透中断假就绪巡检。
+        except (TypeError, ValueError, OverflowError):
             return float(DEFAULT_READY_STALL_THRESHOLD_MINUTES)
+        # 非有限值/非正数防御（code-review item 9b6fb2a32176，与 rollback.py
+        # _dispatch_rollback_backoff_seconds 归一口径同款）：.inf 经
+        # max(0.0, inf) 仍为 inf，elapsed > stall_threshold 恒假，假就绪巡检
+        # 永久静默失效；NaN 经 max(0.0, nan) 塌缩为 0.0、负值钳 0 同为阈值
+        # 归零，放大误报面——均回退缺省阈值。
+        if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+            return float(DEFAULT_READY_STALL_THRESHOLD_MINUTES)
+        return v
 
     def _spec_has_recent_run_activity(self, spec_name: str, window_minutes: float) -> bool:
         """窗口内该 spec 是否有任何 run 产物活动（前缀取 RUN_ID_AGENT_PREFIXES 全集）。

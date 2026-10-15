@@ -148,3 +148,12 @@ class SessionTracker:
         except (TypeError, ValueError, OverflowError):
             out["cost_usd"] = None
         return out
+
+    @staticmethod
+    def extract_usage_info(result_event: dict | None) -> dict:
+        """跨模块消费 ``_extract_usage_info`` 的公开入口（code-review item
+        9795d1041268：harness 适配层按 design D8 只承诺依赖公开纯工具模块，
+        不应锚定本类下划线私有成员）。产物与 ``_extract_usage_info`` 完全
+        同一（直通转发）；类内既有消费路径与 runner 门面委托别名均不动。
+        """
+        return SessionTracker._extract_usage_info(result_event)

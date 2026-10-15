@@ -217,6 +217,18 @@ class G8QueryMixin:
         """
         if not branch:
             return None
+        # spec_name falsy 校验（code-review item 6f5c762e08eb）：spec_name 为空
+        # 产出形如 repair--<ts> 的目录名，_spec_from_worktree_name rsplit 后前段
+        # 为空串返回 None、_wt_name_matches_spec 对任意 spec 恒 False——载体建成
+        # 后 boot 保全/恢复归属漏收、清扫侧又保守永不清删（与 prefix 校验同型的
+        # 不可归属孤儿入口）。fail-fast：记 WARNING 拒绝创建。
+        if not spec_name:
+            self.logger.warning(
+                "worktree_manager",
+                f"create_worktree_on_branch: empty spec_name for branch "
+                f"'{branch}' — refusing to create an unattributable worktree",
+            )
+            return None
         # prefix 合法性校验（code-review item 5a206c5d242e）：docstring 声明的
         # 「合法取值即 _WT_NAME_PREFIXES」在此处落地——未登记前缀产出的
         # {prefix}-<spec>-<ts> 不被 _spec_from_worktree_name /
@@ -780,6 +792,7 @@ class G8QueryMixin:
         # → 最终 None，与既有 fail-closed 一致）。
         base = resolve_base_branch(self.project_root)
         latest: Optional[int] = None
+        # [fenix-ignore:d0ec07620175] 性能余量非缺陷：候选仅归属该 spec 的数条分支，本地 git 子进程毫秒级，串行延迟可接受；批量改写在 boot/recovery 关键路径上的回归风险大于收益，保持现状
         for cand in res.stdout.splitlines():
             cand = cand.strip()
             if not self._impl_branch_owned_by_spec(cand, spec_name, prefixes):

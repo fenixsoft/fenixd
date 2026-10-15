@@ -34,6 +34,7 @@ from core.agent_runner.harness.protocol import (
     HarnessCapabilities,
     SpawnRequest,
     SpawnSpec,
+    default_worktree_pgrep_patterns,
 )
 
 __all__ = [
@@ -390,37 +391,35 @@ class ClaudeAdapter(HarnessAdapter):
             output          result 文本（无 result 时 ""）
             turns           num_turns（无 result/缺键时 0）
             session_id      会话 id（无 result 时 None）
-            usage_info      _extract_usage_info 产物（unobserved 时四数值键 0
-                            + unobserved=True 观测兜底）
+            usage_info      SessionTracker.extract_usage_info 产物（unobserved
+                            时四数值键 0 + unobserved=True 观测兜底）
             is_error/subtype/api_error_status/result_text
                             rc==0 伪装成功检测与异常归因素材（原样透传字段）
         """
+        from core.agent_runner.session import SessionTracker
+
         last: Optional[Dict[str, Any]] = None
         for e in events:
             if isinstance(e, dict) and e.get("type") == "result":
                 last = e
         if last is None:
-            from core.agent_runner.session import SessionTracker
-
             return {
                 "observed": False,
                 "output": "",
                 "turns": 0,
                 "session_id": None,
-                "usage_info": SessionTracker._extract_usage_info(None),
+                "usage_info": SessionTracker.extract_usage_info(None),
                 "is_error": False,
                 "subtype": "success",
                 "api_error_status": None,
                 "result_text": "",
             }
-        from core.agent_runner.session import SessionTracker
-
         return {
             "observed": True,
             "output": last.get("result", ""),
             "turns": last.get("num_turns", 0),
             "session_id": last.get("session_id"),
-            "usage_info": SessionTracker._extract_usage_info(last),
+            "usage_info": SessionTracker.extract_usage_info(last),
             "is_error": last.get("is_error", False),
             "subtype": last.get("subtype", "success"),
             "api_error_status": last.get("api_error_status"),
@@ -440,17 +439,12 @@ class ClaudeAdapter(HarnessAdapter):
         """worktree 存活 pgrep -f patterns（admin_monitor/event_bus 消费）。
 
         与现状全等（admin_monitor._pgrep_live_worktree 平移）：三个车道前缀
-        ``{impl,verify,repair}-<escaped_spec>-`` 任一命中即判存活；spec 名先
-        re.escape（code-review item 780797acccdb）。前缀互撞的 cmdline 子串
-        误判按既有处置记录 defer（fix-robustness-edge-cases 1.1），本平移不改
-        判定语义。
+        任一命中即判存活；构造单一来源为
+        :func:`default_worktree_pgrep_patterns`（与 dsh 通道同构，演进只改
+        一处）。前缀互撞的 cmdline 子串误判按既有处置记录 defer
+        （fix-robustness-edge-cases 1.1），本平移不改判定语义。
         """
-        import re
-
-        return [
-            f"{prefix}-{re.escape(spec_name)}-"
-            for prefix in ("impl", "verify", "repair")
-        ]
+        return default_worktree_pgrep_patterns(spec_name)
 
     # ── 能力对账卡 ────────────────────────────────────────────────────
     def capabilities(self) -> HarnessCapabilities:
