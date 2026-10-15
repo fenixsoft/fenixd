@@ -586,10 +586,13 @@ class ApiRunner(VerifyRunner):
                 "error": f"响应中途断连（连接失败类，环境候选，待环境探针复核）: {e}",
             }
         except Exception as e:
+            # 已收集事件随失败结果保留供归因（与 ReadError/RemoteProtocolError
+            # 分支同口径）：窗口中途非连接类异常同样已有局部事件证据。
             return {
                 "success": False,
                 "action": "sse_connect",
                 "url": url,
+                "events": events,
                 "error": f"SSE 收集异常: {type(e).__name__}: {e}",
             }
 
