@@ -205,11 +205,19 @@ def _adr_body(text: str) -> str:
 def _git_show(proot: Path, rel_path: str) -> str | None:
     """读 HEAD 版本文件内容；非 git / 未跟踪 / 失败 → None（跳过 diff 检查）。"""
     try:
+        # encoding/errors 固化（与 _git 同口径，code-review 0f9cddb901b2）：裸
+        # text=True 走 locale 编码 + strict 解码，HEAD blob 含非 UTF-8 字节时抛
+        # UnicodeDecodeError（ValueError 而非 OSError），穿透调用方 except 捕获
+        # 口径并中断整个 validate_knowledge。替换字符不会造成不可变性比对误报：
+        # 工作区侧在 validate_knowledge 中已按 strict utf-8 读取（失败即记违规
+        # 并跳过该 ADR），能到达比对的两侧文本若不一致即真实字节差异。
         r = subprocess.run(
             ["git", "show", f"HEAD:{rel_path}"],
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
