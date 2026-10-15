@@ -222,6 +222,11 @@ class AdminStore:
         self._lockfile = Path(str(self.alerts_path) + ".lock")
         self._thread_lock = threading.Lock()  # 进程内互斥（跨线程）
         self._logger = logger
+        # 最近一次 _mutate 的拒写原因（None=未拒写；见 _mutate docstring）。
+        # 拒写与「skip_unchanged 无变更」在 refuse_returns_none=True 调用方
+        # 眼里同为返回 None（code-review item be0d21670e4d），本属性让
+        # 调用方不破坏既有签名即可区分两种语义。
+        self.last_write_refusal = None
 
     # ── 内部：加锁读/写 ───────────────────────────────────────────
 
@@ -357,7 +362,15 @@ class AdminStore:
         append_if_absent / merge_signal）据此把返回按未落地处理，不再把拒写
         伪装成成功（merge_signal 把 None 转译为 (None, False) 元组）。
         默认 False：其余调用方（mark_* 的布尔/计数返回值）行为保持不变。
+
+        拒写原因留痕（code-review item be0d21670e4d）：每次调用入口把
+        ``self.last_write_refusal`` 复位为 None，corrupt 拒写分支置为原因串
+        ——``skip_unchanged`` 无变更与 corrupt 拒写在 refuse_returns_none=True
+        调用方眼里同为 None，调用方读该属性即可区分「在途已存在/无变更」与
+        「记录未落盘的拒写」两种语义。每次调用先复位，属性只反映最近一次
+        _mutate；仅诊断用途，不参与任何既有返回值/控制流。
         """
+        self.last_write_refusal = None
         with self._thread_lock:
             with self._lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
@@ -369,6 +382,9 @@ class AdminStore:
                     if corrupt:
                         # [fenix-ignore:4c8e1dfdd3f6] mark 族 mutate 全部带 skip_unchanged=True 且 corrupt 读取恒返回空记录，fn 对空记录必返假值并提前 return，本分支对 mark 族不可达，其 False/0 返回值已是如实的「未落盘」信号，不存在假成功
                         # 旧记录整体不可读（已留底取证）：拒绝本次写回
+                        # 拒写原因留痕（item be0d21670e4d）：让调用方把本分支
+                        # 的 None 与 skip_unchanged 无变更的 None 区分开
+                        self.last_write_refusal = "告警文件损坏留底后拒绝写回"
                         if self._logger is not None:
                             self._logger.error(
                                 "admin_store",
@@ -555,6 +571,8 @@ class AdminStore:
         ``is_inflight(record)`` 以已读取的记录逐条判定是否在途；无在途才写入。
         返回落地的记录；存在在途（未写）或文件损坏留底被下限保护拒写
         （记录未落盘，item 2570ca391771）时返回 None。
+        两种 None 语义经 ``self.last_write_refusal`` 区分（None=在途已存在，
+        非空=拒写原因，item be0d21670e4d）。
         """
         rec = self._normalize_entry(entry)
 

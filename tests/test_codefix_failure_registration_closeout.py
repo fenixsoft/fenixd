@@ -10,8 +10,9 @@
 
 覆盖 codefix-release-consume-todo-block（解除路径对齐）：
 - 1.1: 人工整批解除→登记块同步核销（注记含解除时刻与留痕行指引）、部分
-  解除不核销且他批块原样保留、核销 needle 整行精确匹配（前缀扩展清单不
-  误命中）、todo 写失败不阻断解除、裸标题壳兜底移除。
+  解除不核销、ids 行同步收缩为余量清单（f60e3189e664）且他批块不被
+  误命中、核销 needle 整行精确匹配（前缀扩展清单不误命中）、todo 写
+  失败不阻断解除、裸标题壳兜底移除。
 - 1.2: 预算内自动释放留痕（released_by=auto-budget）且不触 todo 登记块。
 - 1.3: 留痕行携 todo 块处理结果字段（consumed / not_found）。
 
@@ -433,8 +434,14 @@ class TestReleaseConsumesTodoBlock(unittest.TestCase):
         self.assertEqual(len(recs), 2)
         self.assertIn(["b"], [r["item_ids"] for r in recs], "余量仍在册")
         todo = self._todo(proot)
-        self.assertIn("被跳过的条目集合（保持 open）：a, b", todo,
-                      "收缩批登记块 MUST 原样保留（留待既有 consume 闭环）")
+        # 收缩批登记块不同步核销（无「人工解除核销」注记），但 ids 行同步
+        # 收缩为记录当前清单（f60e3189e664）——否则余量全部终态后既有
+        # consume 的整行锚对触顶时写入的全集行永不命中、登记块滞留孤儿。
+        self.assertIn("被跳过的条目集合（保持 open）：b", todo,
+                      "收缩批登记块保留待核销态，ids 行同步收缩为余量清单")
+        self.assertNotIn(
+            "被跳过的条目集合（保持 open）：a, b", todo,
+            "触顶时写入的全集 ids 行 MUST 已原位收缩")
         self.assertIn("被跳过的条目集合（保持 open）：c", todo,
                       "他批登记块 MUST 原样保留")
         self.assertEqual(todo.count(_TODO_ENTRY_TITLE), 2)
@@ -459,10 +466,15 @@ class TestReleaseConsumesTodoBlock(unittest.TestCase):
         self.assertEqual(
             [r["item_ids"] for r in recs], [["b"]], "他批收缩为 [b] 在册")
         todo = self._todo(proot)
-        # 子串包含口径下 needle「：a」会同时命中「：a, b」块并误重写；
-        # 整行锚后本批块核销、他批块原样保留。
-        self.assertIn("被跳过的条目集合（保持 open）：a, b", todo,
-                      "前缀扩展的他批登记块 MUST NOT 被误命中")
+        # 子串包含口径下 needle「：a」会同时命中「：a, b」块并误核销；整行锚后
+        # 本批块核销、他批块不被误核销——仅 ids 行按整行精确匹配同步收缩为
+        # 余量清单（f60e3189e664，不收缩则 consume 整行锚不可达），标题与
+        # 追溯线索原样保留。
+        self.assertIn("被跳过的条目集合（保持 open）：b", todo,
+                      "前缀扩展的他批块 MUST NOT 被误核销，ids 行收缩为余量清单")
+        self.assertNotIn(
+            "被跳过的条目集合（保持 open）：a, b", todo,
+            "他批块全集 ids 行 MUST 已按收缩口径原位替换")
         self.assertEqual(
             todo.count(_TODO_ENTRY_TITLE), 1, "仅本批块被核销移除")
         self.assertEqual(todo.count("人工解除核销"), 1)

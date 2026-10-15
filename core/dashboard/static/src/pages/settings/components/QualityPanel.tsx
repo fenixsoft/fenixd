@@ -276,6 +276,14 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   const severityGateOn = Form.useWatch('code_review_fix_severity_gate', form) === true;
   // ocr 环境探测状态：null=加载中；未安装时开关置灰并给出「一键安装」
   const [ocr, setOcr] = useState<OcrStatus | null>(null);
+  // 探测失败标记（code-review item 734b69fd30ff）：getOcrStatus 网络异常/接口
+  // 故障与「确实未安装」不可混谈——失败态单独标记，状态行文案区分并提供
+  // 「重新探测」而非一键安装（探测接口故障时装不上也解不了）。开关置灰仍按
+  // installed:false fail-closed（口径不变，见下方 ocrReady）。
+  const [ocrProbeFailed, setOcrProbeFailed] = useState(false);
+  // 重新探测触发器：自增使挂载 effect 重跑（探测逻辑单源留在 effect 内，
+  // alive 守卫与卸载清理随之复用）
+  const [ocrProbeTick, setOcrProbeTick] = useState(0);
   const [installing, setInstalling] = useState(false);
   // 安装重入同帧加固（code-review item 7e689f7abd2d，比照 useGatedFormPanel 的
   // savingRef（原 item b780337cdc73）/ regressionDraftInFlight 口径）：setInstalling 渲染生效存在
@@ -307,12 +315,17 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         if (alive) setOcr(s);
       })
       .catch(() => {
-        if (alive) setOcr({ installed: false, bin: null, version: null });
+        // fail-closed 保留（按未安装置灰），但 probeFailed 让状态行区分
+        // 「探测失败」与「未安装」，不再一律引导重复安装
+        if (alive) {
+          setOcr({ installed: false, bin: null, version: null });
+          setOcrProbeFailed(true);
+        }
       });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [ocrProbeTick]);
 
   // 项目作用域：拉取 verify.yaml 的 regression 段配置状态（切换项目重拉；
   // alive 守卫丢弃被取代的旧响应）
@@ -373,6 +386,14 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     }
   };
 
+  // 重新探测（code-review item 734b69fd30ff）：探测失败态的入口——清空状态回
+  // 「正在检测」并自增 tick 重跑挂载 effect（探测逻辑单源），不直接引导安装
+  const handleReprobe = () => {
+    setOcr(null);
+    setOcrProbeFailed(false);
+    setOcrProbeTick((t) => t + 1);
+  };
+
   // 「AI 自动生成」：同步生成 regression 段（后端 HTTP 线程内 headless claude
   // 起草 + 自证 + 落位 verify.yaml，返回即终态；约数分钟，按钮 loading 覆盖全程）
   const handleRegressionAutodraft = async () => {
@@ -422,7 +443,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   const ocrReady = ocr?.installed === true;
 
   // ocr 环境状态行（code-review item 2f3f9bd1b013）：旧实现嵌套三元违反前端
-  // 规则，抽 helper 以 if/else 表达「加载中 / 已装 / 未装」三分支。
+  // 规则，抽 helper 以 if/else 表达「加载中 / 已装 / 探测失败 / 未装」四分支
+  //（探测失败分支为 item 734b69fd30ff 新增，见上方 ocrProbeFailed 注释）。
   const renderOcrStatus = () => {
     if (ocr === null) {
       return <Text type="secondary">正在检测 open-code-review 环境…</Text>;
@@ -438,6 +460,22 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           // 否则它会紧贴下方开关行，视觉上「上松下紧」。
           style={{ marginBottom: 24 }}
           data-testid="ocr-installed-alert"
+        />
+      );
+    }
+    if (ocrProbeFailed) {
+      return (
+        <Alert
+          type="error"
+          showIcon
+          message="探测 open-code-review 环境失败"
+          description="探测接口请求失败（daemon 异常或网络问题），无法确认 ocr 是否已安装，该开关已暂时置灰。请检查 daemon 后重试。"
+          action={
+            <Button size="small" onClick={handleReprobe} data-testid="ocr-reprobe-btn">
+              重新探测
+            </Button>
+          }
+          data-testid="ocr-probe-error-alert"
         />
       );
     }
@@ -498,7 +536,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           </div>
           {!ocrReady && ocr !== null && (
             <Text type="warning" style={{ display: 'block', marginBottom: 8 }}>
-              请先安装 open-code-review 后再开启此项。
+              {ocrProbeFailed
+                ? 'ocr 环境探测失败，请「重新探测」确认环境后再开启此项。'
+                : '请先安装 open-code-review 后再开启此项。'}
             </Text>
           )}
           <Text type="secondary">

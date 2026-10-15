@@ -620,8 +620,12 @@ const SuggestedImprovementsPanel = forwardRef<
 
   // ── 接受 / 拒绝（7.5 二次确认）──────────────────────────────────
   //
-  // 成功回调走 nextAfterAction（有下一条则转过去、否则关窗），失败时不调，
-  // 弹窗原样留着——用户看清错误文案再决定重试还是翻页。操作列菜单不传回调。
+  // 成功回调走 nextAfterAction（有下一条则转过去、否则关窗），失败时不调：
+  // message 报错后让 onOk 正常返回、弹窗随即关闭（code-review item
+  // b150b78eb115——旧实现 return Promise.reject 维持开窗，antd ActionButton
+  // 会把该 rejection 再向外抛出，落成 console 的「Uncaught (in promise)」，
+  // 违反同族面板 no_console_error 口径；关窗丢的只是窗内执行时间选择，
+  // 重开按配置预填重选，查看弹窗仍停在原条目可一键重试）。操作列菜单不传回调。
 
   const handleAccept = (item: EvolutionItem, onDone?: () => void) => {
     // 本次执行时刻按配置预填（spec_run_at 为空 = 立即），弹窗里可临时改
@@ -641,7 +645,8 @@ const SuggestedImprovementsPanel = forwardRef<
         // 哨兵 manual 不参与时刻校验（见 D11）；仅 ISO 定时需晚于当前时刻
         if (!isStartAfterValid(holder.startAfter)) {
           message.error('执行时间必须晚于当前时间');
-          return Promise.reject(new Error('invalid start time'));
+          // 校验失败同样关窗（见小节头注释）：重开时按配置预填重选
+          return;
         }
         const result = await execOne(item, 'accept', holder.startAfter);
         if (result.ok) {
@@ -650,11 +655,11 @@ const SuggestedImprovementsPanel = forwardRef<
           );
         } else {
           message.error(result.error || '接受失败');
-          // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着（同上方「接受 / 拒绝」小节头注释）
-          return Promise.reject(new Error(result.error || 'accept failed'));
+          // 失败即关窗（见小节头注释），错误文案经 message 呈现
+          return;
         }
         const next = await loadItems();
-        // 此处 result.ok 恒真（非 ok 已在上方提前 reject）
+        // 此处 result.ok 恒真（非 ok 已在上方提前返回）
         nextAfterAction(next, item, onDone);
       },
     });
@@ -673,11 +678,11 @@ const SuggestedImprovementsPanel = forwardRef<
           message.success('已拒绝');
         } else {
           message.error(result.error || '拒绝失败');
-          // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着（同上方「接受 / 拒绝」小节头注释）
-          return Promise.reject(new Error(result.error || 'reject failed'));
+          // 失败即关窗（见小节头注释），错误文案经 message 呈现
+          return;
         }
         const next = await loadItems();
-        // 此处 result.ok 恒真（非 ok 已在上方提前 reject）
+        // 此处 result.ok 恒真（非 ok 已在上方提前返回）
         nextAfterAction(next, item, onDone);
       },
     });
@@ -708,11 +713,11 @@ const SuggestedImprovementsPanel = forwardRef<
           message.success('已删除');
         } else {
           message.error(result.error || '删除失败');
-          // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着（同上方「接受 / 拒绝」小节头注释）
-          return Promise.reject(new Error(result.error || 'delete failed'));
+          // 失败即关窗（见小节头注释），错误文案经 message 呈现
+          return;
         }
         const next = await loadItems();
-        // 此处 result.ok 恒真（非 ok 已在上方提前 reject）
+        // 此处 result.ok 恒真（非 ok 已在上方提前返回）
         nextAfterAction(next, item, onDone);
       },
     });

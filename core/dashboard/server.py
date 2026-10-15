@@ -207,35 +207,56 @@ def _find_dashboard_occupant(port: int) -> dict | None:
     返回 {"pid": int, "cmdline": str} 或 None（无占用 / 无法判定）。
 
     判定（inode 映射，避免 /proc/<pid>/net/tcp 按网络命名空间而非进程返回错误 PID）：
-    1. 读 /proc/net/tcp 找到监听 127.0.0.1:port 的 socket inode；
+    1. 读 /proc/net/tcp（及 /proc/net/tcp6）找到监听目标端口的 socket inode，
+       地址匹配 127.0.0.1 / 0.0.0.0 通配（IPv4）与 :: 通配 / ::1（IPv6）
+       （code-review item 9df14cc4442f）；
     2. 遍历 /proc/<pid>/fd/* 软链接，匹配 socket:[inode] 得到真正持有该
        端口的 PID；
     3. 读取该进程 cmdline。
     """
     try:
         port_hex = f"{port & 0xffff:04X}"
+        # 匹配形态放宽（code-review item 9df14cc4442f）：bind 127.0.0.1:port 对
+        # 0.0.0.0 通配、IPv6 通配（::）或 ::1 上的监听同样 EADDRINUSE，旧实现
+        # 只扫 IPv4 表 /proc/net/tcp 且仅认 0100007F，此时定位不到占用者、
+        # serve() 只能报「未知进程（PID ?）」。现补充扫描 /proc/net/tcp6（禁用
+        # IPv6 的机器上该文件不存在，按无此表跳过）；IPv6 地址列 32 hex、按
+        # 32 位字小端打印，通配 :: 为全零、::1 为 …01000000。匹配不上仍返回
+        # None——「匹配不上即不接管」的保守语义不变。
+        v4_addrs = ("0100007F", "00000000")  # 127.0.0.1 / 0.0.0.0 通配
+        v6_addrs = (
+            "0" * 32,  # :: 通配
+            "00000000000000000000000001000000",  # ::1
+        )
         inode = None
-        net_tcp = Path("/proc/net/tcp")
-        if not net_tcp.exists():
-            return None
-        for line in net_tcp.read_text(encoding="utf-8", errors="replace").split("\n")[1:]:
-            parts = line.split()
-            # 字段数护栏按实际取用下标（inode 是第 10 列）判定（code-review item
-            # aaf3f304a0de）：旧实现只查 `len(parts) < 4`，而下方读 `parts[9]`——
-            # 4~9 个字段的截断/畸形行会抛 IndexError，被外层 `except Exception:
-            # return None` 吞掉，使「解析失败」与「无占用者」不可区分；调用方据此
-            # 打印误导性的「未知进程」并非 0 退出，而不是接管陈旧 dashboard 实例。
-            if len(parts) < 10:
+        for net_table, listen_addrs in (
+            (Path("/proc/net/tcp"), v4_addrs),
+            (Path("/proc/net/tcp6"), v6_addrs),
+        ):
+            if not net_table.exists():
                 continue
-            local = parts[1]
-            state = parts[3]
-            if state != "0A":  # 0A = LISTEN
-                continue
-            if ":" not in local:
-                continue
-            addr, p = local.split(":", 1)
-            if p.upper() == port_hex and addr.upper() == "0100007F":
-                inode = parts[9]
+            for line in net_table.read_text(
+                encoding="utf-8", errors="replace"
+            ).split("\n")[1:]:
+                parts = line.split()
+                # 字段数护栏按实际取用下标（inode 是第 10 列）判定（code-review item
+                # aaf3f304a0de）：旧实现只查 `len(parts) < 4`，而下方读 `parts[9]`——
+                # 4~9 个字段的截断/畸形行会抛 IndexError，被外层 `except Exception:
+                # return None` 吞掉，使「解析失败」与「无占用者」不可区分；调用方据此
+                # 打印误导性的「未知进程」并非 0 退出，而不是接管陈旧 dashboard 实例。
+                if len(parts) < 10:
+                    continue
+                local = parts[1]
+                state = parts[3]
+                if state != "0A":  # 0A = LISTEN
+                    continue
+                if ":" not in local:
+                    continue
+                addr, p = local.split(":", 1)
+                if p.upper() == port_hex and addr.upper() in listen_addrs:
+                    inode = parts[9]
+                    break
+            if inode:
                 break
         if not inode:
             return None

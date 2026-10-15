@@ -1956,8 +1956,10 @@ export interface ProjectPromptsMeta {
 }
 
 export interface PromptsData {
-  agents: AgentPrompt[];
+  /** 项目缺档等场景接口以 HTTP 200 返回 {error: "..."}，此时不含 agents */
+  agents?: AgentPrompt[];
   project?: ProjectPromptsMeta;
+  error?: string;
 }
 
 export async function getPrompts(project?: string): Promise<PromptsData> {

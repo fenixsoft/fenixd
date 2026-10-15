@@ -554,18 +554,19 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
       okText: '重启',
       cancelText: '取消',
       onOk: async () => {
+        // 失败分支仅 message.error 后正常 resolve（code-review item 4b69df19efff）：
+        // return Promise.reject 虽能让弹窗留着供重试，但 antd 会把 onOk 的拒绝再
+        // 向外抛，应用无全局 unhandledrejection 兜底，console 落「Uncaught
+        // (in promise)」错误条目；重试由用户重按「重启 Fenix Daemon」触发
         try {
           const res = await restartProjectDaemon(project);
           if (res?.ok) {
             message.success('重启请求已写入，daemon 将排水后自动重启');
           } else {
             message.error(`重启失败：${res?.error ?? '未知错误'}`);
-            // 失败时拒绝 resolve，modal.confirm 不自动关闭，弹窗原样留着供直接重试
-            return Promise.reject(new Error(res?.error ?? 'restart failed'));
           }
         } catch (err) {
           message.error(`重启失败：${err instanceof Error ? err.message : String(err)}`);
-          return Promise.reject(err instanceof Error ? err : new Error(String(err)));
         }
       },
     });

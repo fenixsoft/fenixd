@@ -239,10 +239,13 @@ export function useSlashCommands({
 
       if (event.key === 'Tab' || event.key === 'Enter') {
         event.preventDefault();
-        if (selectedCommandIndex >= 0) {
-          insertCommandIntoInput(filteredCommands[selectedCommandIndex]);
-        } else if (filteredCommands.length > 0) {
-          insertCommandIntoInput(filteredCommands[0]);
+        // filteredCommands 经 effect 重算（debounce 到期 / sortedCommands 引用
+        // 变化收缩候选集）时 selectedCommandIndex 不随之收敛，可能越界命中
+        // undefined——确认前统一取 picked 守卫：越界不动作，未选中回退首个候选。
+        const picked =
+          selectedCommandIndex >= 0 ? filteredCommands[selectedCommandIndex] : filteredCommands[0];
+        if (picked) {
+          insertCommandIntoInput(picked);
         }
         return true;
       }

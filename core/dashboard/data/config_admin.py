@@ -1305,10 +1305,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # code_review_fix 键只有设置页保存路径走）——不在此显式合并子段，该值
         # 会被上面的标量白名单静默丢弃，sync 返回 ok 但项目配置未落盘（ocr
         # 审查实证，正是上方 regression 注释点名的「缺分支静默丢弃保存」坑）。
-        # item baa0aad69634：本分支与顶层 code_review_fix 分支不同构（后者多
-        # min_immediate_severity / minor_batch_cadence / severity_batch_gate_enabled
-        # 三键，谓词表差异非纯键名替换），单表委托会改变其中一路合并行为，
-        # 故未纳入 _apply_guarded_subkeys 单源化，两份暂留。
+        # item baa0aad69634：本分支曾与顶层 code_review_fix 分支不同构（缺
+        # severity 门限三键）——item 63cd90ee7a6d 已补齐三键，两分支现同构；
+        # 仍维持两份内联（未委托 _apply_guarded_subkeys 单源化），键谓词与
+        # _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review_fix")] 逐键对齐
+        # （synced 回执裁剪同表单源）。
         crf_sync = patch["admin"].get("code_review_fix")
         if isinstance(crf_sync, dict):
             existing_crf = merged["admin"].get("code_review_fix")
@@ -1331,6 +1332,19 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             # add-codefix-affinity-batching 4.3：定向回归开关同口径合并
             if isinstance(crf_sync.get("targeted_regression"), bool):
                 merged_crf["targeted_regression"] = crf_sync["targeted_regression"]
+            # code-review item 63cd90ee7a6d：severity 门限三键同口径合并
+            #（词表白名单/正整数/严格 bool 才合并——非法值由 write_config
+            # 前置校验拒绝；缺此步 QualityPanel 保存的用户级三键经「同步
+            # 用户级设置」在合并阶段被静默丢弃，项目级文件缺键）
+            _mis = crf_sync.get("min_immediate_severity")
+            if _mis in ("critical", "major", "minor", "info"):
+                merged_crf["min_immediate_severity"] = _mis
+            _mbc = crf_sync.get("minor_batch_cadence")
+            if isinstance(_mbc, int) and not isinstance(_mbc, bool) and _mbc > 0:
+                merged_crf["minor_batch_cadence"] = _mbc
+            # 2026-10-11：severity-batch-gate 总开关严格 bool（同顶层分支口径）
+            if isinstance(crf_sync.get("severity_batch_gate_enabled"), bool):
+                merged_crf["severity_batch_gate_enabled"] = crf_sync["severity_batch_gate_enabled"]
             merged["admin"]["code_review_fix"] = merged_crf
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     # （非 str 非 None 由 write_config 前置校验拒绝，此处只应用合法值）
@@ -1990,12 +2004,18 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     # 由 merged-view 容器守卫以「存量非法段」文案拒绝：结果 400 正确，但文案把
     # 本次提交的问题误归因为存量 config.yaml（基线归因对不上时仍返回带误导括注
     # 的原文案），故前移至此以同款「must be an object」口径拒绝
+    # code-review item 2b00883258c3：agent 段同款纳入——其合并分支
+    # （agent.harness）与 harness 词表前置校验均以 isinstance dict 为前置，
+    # 非 dict 真值 patch（如 {"agent": "claude"}）走静默跳过路径仍返回
+    # ok:true，merged 视图容器守卫只兜存量非 dict、兜不住 patch 驱动的
+    # 非 dict（D7 同款缺口）
     for _ck in (
         "llm",
         "gates",
         "verify",
         "archive",
         "admin",
+        "agent",
         "self_review",
         "code_review",
         "code_review_fix",
@@ -2099,7 +2119,9 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             # worktree 无 merged 视图校验——存量非 dict 真值被静默保留并原样
             # 回写（运行时靠读取器 fail-safe 回落缺省），纳入本守卫统一报
             # 「存量非法段请先修正 config.yaml」（段形态均不受本次 patch 影响：
-            # 非 dict patch 已由前置「must be an object」守卫拒绝）
+            # 本元组各段的非 dict patch 均已由前置「must be an object」守卫拒绝
+            # ——hooks / self_evolution 走各自专属前置守卫，其余含 agent 段在
+            # 上方容器守卫元组内，item 2b00883258c3 补入）
             for _seg in (
                 "llm",
                 "gates",
@@ -2827,6 +2849,13 @@ _SYNC_DICT_SUBKEY_APPLY = {
             lambda v: isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 5
         ),
         "targeted_regression": lambda v: isinstance(v, bool),
+        # code-review item 63cd90ee7a6d：severity 门限三键随嵌套合并分支补齐
+        # 登记（谓词与合并分支逐键同口径），synced 回执不再静默少三键
+        "min_immediate_severity": lambda v: v in ("critical", "major", "minor", "info"),
+        "minor_batch_cadence": (
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0
+        ),
+        "severity_batch_gate_enabled": lambda v: isinstance(v, bool),
     },
 }
 

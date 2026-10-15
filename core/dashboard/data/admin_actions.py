@@ -395,6 +395,7 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     非阻塞 STATE 更新，计数基于冻结写入前的 run 文件快照；在冻结写入与
     runner 轮询环感知之间的短暂窗口内，仍有 run 文件非终态但已不可见
     对新 freeze_spec 调用的影响极小（daemon 下一轮 watcher 触发）。
+    已冻结的幂等成功分支同样返回该计数（ok:true 响应键集与执行分支一致）。
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
@@ -406,7 +407,14 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
         }
     entry = specs[spec_name]
     if is_spec_frozen(entry):
-        return {"ok": True, "found": True, "frozen": True, "error": None}
+        # 幂等成功分支与真正执行分支响应键集一致（code-review item
+        # efbe048eb155）：路由 _api_spec_freeze docstring 契约「成功 →
+        # {ok: true, frozen: true, stopped_agents: N}」对已冻结 spec 重复
+        # 冻结同样成立，缺键会让前端「已停止 N 个在跑 agent」提示静默缺席。
+        # 计数口径同下方执行分支：冻结时刻在跑 run 文件快照。
+        running = running_run_ids_for_spec(project_root, spec_name)
+        return {"ok": True, "found": True, "frozen": True, "error": None,
+                "stopped_agents": len(running)}
     if entry.get("status") in ("done", "pushed"):
         return {
             "ok": True,
@@ -3110,6 +3118,8 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     SIGNAL 记录（execute_adjudication_choice 契约不携带告警 id，同
     commit 执行器按记录自取）。结果记录 untrack 文件清单（untracked_files）、
     .gitignore 实际新增条目（gitignore_appended）与提交号（commit_hash）。
+    提交已落库而哈希回读失败（如超时）不回滚，commit_hash 为空串并在
+    steps 说明。
     """
     # D4 绑定守卫：在任何 git 读/写之前 fail-closed。
     sig = str(signal_type or "").strip()
@@ -3262,14 +3272,6 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         if note:
             msg += f"\n\n裁决依据：{note}"
         _git_out(proot, "commit", "-m", msg)
-        # pathspec 锚定读哈希（code-review item 7fe327348b37，同
-        # _exec_commit_stray_wip / archive_commit.commit_archive_move 口径）：
-        # 提交本体因 rm --cached 后 pathspec 解析必 fatal 而只能裸 commit
-        # （stash_guard 同款教训），读哈希按被出库路径锚定，同样防
-        # commit→读取窗口内并发提交记到别人头上。
-        commit_hash = _git_out(
-            proot, "log", "-1", "--format=%H", "--", *to_untrack,
-        ).strip()
     except OSError as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：OSError 可携带
         # 内部路径/errno，细节经服务端日志留痕，客户端收固定文案。
@@ -3290,6 +3292,29 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         )
         return _abort("git 操作失败（详见服务端日志）")
 
+    # pathspec 锚定读哈希（code-review item 7fe327348b37，同
+    # _exec_commit_stray_wip / archive_commit.commit_archive_move 口径）：
+    # 提交本体因 rm --cached 后 pathspec 解析必 fatal 而只能裸 commit
+    # （stash_guard 同款教训），读哈希按被出库路径锚定，同样防
+    # commit→读取窗口内并发提交记到别人头上。
+    # 回读 MUST 与上方 commit 分离（code-review item dd2262c17587）：此处
+    # 失败时提交已落库，若仍走 _abort 会把 .gitignore 还原为写前备份并对
+    # 已不在索引的出库路径复位索引（ignore 规则在 HEAD 有、工作区无，被
+    # 出库文件在后续盘点重新浮现），且「主树状态已还原」文案失实、调用方
+    # 收失败结论而提交已发生——_abort 的回滚范围以「提交是否已落库」为界。
+    # 回读失败仅 WARNING 留痕，按成功收尾并在 steps 说明哈希缺失。
+    commit_hash = ""
+    try:
+        commit_hash = _git_out(
+            proot, "log", "-1", "--format=%H", "--", *to_untrack,
+        ).strip()
+    except (OSError, RuntimeError) as e:
+        # 不外泄裸异常文本（code-review item e584a2ede367 同口径）。
+        logger.warning(
+            "untrack_stray_wip 提交已落库但哈希回读失败: %s: %s",
+            type(e).__name__, e,
+        )
+
     steps = [
         f"untrack 出库 {len(to_untrack)} 个文件（信号清单∩当刻改动∩索引）："
         f"{', '.join(to_untrack)}",
@@ -3299,7 +3324,10 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
                      f"{', '.join(appended)}")
     else:
         steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
-    steps.append(f"提交 hash: {commit_hash}")
+    if commit_hash:
+        steps.append(f"提交 hash: {commit_hash}")
+    else:
+        steps.append("提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）")
     if skipped_stale:
         steps.append(
             f"清单内已不在当刻改动、跳过 {len(skipped_stale)} 个: "
@@ -3407,6 +3435,7 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
     # 否则残留 staged 半程改动。ls-files 失败时入库态未知，按「已跟踪」保守
     # 处理（不补 reset——git 已异常，再补写只会放大）。
     gitignore_untracked = False
+    commit_hash = ""
     try:
         tracked = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
         gitignore_untracked = ".gitignore" not in tracked
@@ -3414,12 +3443,6 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             _git_out(proot, "add", "--", ".gitignore")
         msg = f"[fenix] admin: {header}（{len(appended)} 条）"
         _git_out(proot, "commit", "-m", msg, "--", ".gitignore")
-        # pathspec 锚定读哈希（code-review item 7fe327348b37，同
-        # _exec_commit_stray_wip / archive_commit.commit_archive_move 口径：
-        # 不用 rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上）。
-        commit_hash = _git_out(
-            proot, "log", "-1", "--format=%H", "--", ".gitignore",
-        ).strip()
     except RuntimeError as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
         # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
@@ -3460,6 +3483,23 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
         return {"appended": [], "commit_hash": "",
                 "error": (f".gitignore 追加提交失败（已尽力还原追加行"
                           f"{restore_note}；详见服务端日志）")}
+    # pathspec 锚定读哈希（code-review item 7fe327348b37，同
+    # _exec_commit_stray_wip / archive_commit.commit_archive_move 口径：
+    # 不用 rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上）。
+    # 回读移出上方 try（code-review item dd2262c17587 同形轻症）：此处失败
+    # 时提交已落库，走还原分支会把已入库的追加行从工作区剔除（工作区与
+    # HEAD 脱钩）。失败仅 WARNING 留痕，commit_hash 置空由调用方 steps
+    # 如实展示。
+    try:
+        commit_hash = _git_out(
+            proot, "log", "-1", "--format=%H", "--", ".gitignore",
+        ).strip()
+    except RuntimeError as e:
+        logger.warning(
+            "_append_gitignore_and_commit 提交已落库但哈希回读失败"
+            "（header=%s）: %s: %s",
+            header, type(e).__name__, e,
+        )
     return {"appended": appended, "commit_hash": commit_hash, "error": ""}
 
 
