@@ -1768,8 +1768,9 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
 
         def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                          "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -2206,8 +2207,9 @@ class TestRunAdministrator:
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                          "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = make_admin_runner_stub(
             proot,
@@ -2235,8 +2237,9 @@ class TestRunAdministrator:
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                          "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = make_admin_runner_stub(
             proot, fake_run_agent=fake_run_agent, admin_model="claude-opus-4")
@@ -2259,8 +2262,9 @@ class TestRunAdministrator:
             disposition_path_from_prompt(prompt).write_text(json.dumps({
                 "spec": "spec-a", "problem": "注入链路", "result": "resolved",
             }), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                          "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         # 本测试特例：恢复真实 prompt_builder（helper 默认桩掉 _build_prompt）
@@ -2291,8 +2295,9 @@ class TestRunAdministrator:
             disp_path = admin_disposition_path(cwd, run_id)
             disp_path.write_text(json.dumps({"result": "resolved"}), encoding="utf-8")
             assert disp_path.exists()
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                          "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -2320,8 +2325,9 @@ class TestRunAdministrator:
                 "problem": f"问题-{idx}",
                 "result": "resolved",
             }), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                          "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = make_admin_runner_stub(proot, fake_run_agent=fake_run_agent)
         results = {}

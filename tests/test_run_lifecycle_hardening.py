@@ -763,7 +763,8 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
             return_value=("ok", 1, "sess-1",
                           {"input_tokens": 0, "output_tokens": 0,
                            "cache_creation_input_tokens": 0,
-                           "cache_read_input_tokens": 0, "cost_usd": None}),
+                           "cache_read_input_tokens": 0, "cost_usd": None},
+                          {"rounds": 1, "stalls": 0, "max": 0.3}),
         ) as rc:
             result = runner.run_implementer("spec-x")
         rc.assert_called_once()
@@ -787,7 +788,8 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
             return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0,
                                       "cache_creation_input_tokens": 0,
                                       "cache_read_input_tokens": 0,
-                                      "cost_usd": None})
+                                      "cost_usd": None},
+                {"rounds": 1, "stalls": 0, "max": 0.3})
 
         runner._run_agent = fake_claude
         with patch.object(runner, "_record_instant_fail",
