@@ -4387,6 +4387,12 @@ class AgentRunner:
             except json.JSONDecodeError:
                 continue
             if isinstance(ev, dict):
+                # code-review item 39f9902e47f8：与读侧（本文件 result 事件
+                # 消费处 entry.get("type") == "result"）同口径复核 type 字段
+                # ——转录伪命中行（嵌入代码/JSON 样例/prompt 回显）仅含字面
+                # 子串，不复核会顶替真实 result 事件伪造 429 归因。
+                if ev.get("type") != "result":
+                    continue
                 last_event = ev
         if last_event is None:
             return False
@@ -5572,21 +5578,32 @@ class AgentRunner:
         if not wt_vp.is_dir():
             return
         root_vp = self.project_root / ".fenix" / "verify-progress" / spec_name
-        for src in wt_vp.rglob("*"):
-            if not src.is_file():
-                continue
-            dst = root_vp / src.relative_to(wt_vp)
-            try:
-                if not dst.exists() or src.stat().st_mtime_ns > dst.stat().st_mtime_ns:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-            except OSError:
-                self.logger.warning(
-                    "agent_runner",
-                    f"verify-progress copyback failed for '{spec_name}' "
-                    f"(add-worktree-verify-progress-copyback): "
-                    f"{src} -> {dst}",
-                )
+        # code-review item 61091db463ad：rglob 生成器遍历级 OSError（如子目录
+        # 权限拒绝）原在循环语句处抛出并外泄，会让已成功收工的 run 被误判失败
+        # ——循环整体兜底，兑现 docstring「不抛出、不阻塞 run 收尾」承诺。
+        try:
+            for src in wt_vp.rglob("*"):
+                if not src.is_file():
+                    continue
+                dst = root_vp / src.relative_to(wt_vp)
+                try:
+                    if not dst.exists() or src.stat().st_mtime_ns > dst.stat().st_mtime_ns:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+                except OSError:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"verify-progress copyback failed for '{spec_name}' "
+                        f"(add-worktree-verify-progress-copyback): "
+                        f"{src} -> {dst}",
+                    )
+        except OSError as exc:
+            self.logger.warning(
+                "agent_runner",
+                f"verify-progress copyback aborted for '{spec_name}' "
+                f"(traversal error, add-worktree-verify-progress-copyback): {exc}",
+            )
+            return
 
     # ── R4 子段: 结果文件 role/spec 戳拷回（D1 R4 表，零粘合可提取）──────
     # 仅覆盖「worktree .fenix-run-result.json → 主树共享文件」的戳注入 + 拷回
