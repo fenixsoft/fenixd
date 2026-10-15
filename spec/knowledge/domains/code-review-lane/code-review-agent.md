@@ -1,9 +1,9 @@
 # 周期性代码审查 agent
 
-<!-- knowledge: capability=code-review-agent rev=3
-     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out -->
+<!-- knowledge: capability=code-review-agent rev=4
+     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at -->
 
-项目级周期性代码审查的一等公民 agent 车道：由框架调度层按与每日自省同源的周期口径派发，对主树代码逐文件审查并增量落盘，支撑质量分面台账与手动触发。
+项目级周期性代码审查的一等公民 agent 车道：由框架调度层按独立周期配置（触发时点缺省回退每日自省时点）派发，对主树代码逐文件审查并增量落盘，支撑质量分面台账与手动触发。
 
 ## 规则
 
@@ -14,10 +14,14 @@
   - `.fenix/config.template.yaml` 的 `agents.models` 含 `code-review` 模型分配示例，框架根 `agents/code-review.md` 提示词文件存在。
 - run_id 采用 `code-review-<epoch>` 形态；`infer_run_agent_type` 能将其归属到 `code-review`，Dashboard 时间线显示该 agent 类型而非泛型 `agent`。
 - 模型分配回退链：`agents.models.code-review` → `self-review` → `administrator` → 默认网关；配置缺失时逐级回退，不静默直落默认网关。
-- 周期口径与每日自省（`admin.self_review`）完全同源，不另立周期：`window_start` 取 `.fenix/self_review_state.json` 的 `last_run_at`，缺失（首跑/旧格式）回退 `now - 24h`；触发时点与自省 `run_at` 对齐；同一自然日不重复触发；`admin.code_review.enabled` 为 false 时全链路零动作（不派发、不写任何产物）。
-- 审查范围经 `admin.code_review.scope` 配置，取值 `window`（缺省）| `full`；非法值（含缺失/类型错误）回退 `window`，不报错中断巡检。两档共用同一套调度守卫（`run_at` 对齐、自然日去重、单飞、开关零动作），`review_kind` 均保持 `scheduled`。
+- 触发时点读独立配置键 `admin.code_review.run_at`（本地时间 HH:MM）；键缺失或一切非法取值（非字符串、不可解析字面量、"25:00" 等越界值）回退 `admin.self_review.run_at`，缺省路径与自省同点触发逐位一致。回退解析由 `ConfigLoader.get_code_review_config` 单源完成，检查点不二次解析；配置脏值不中断巡检。设置页「质量」页签提供该键的触发时点输入（HH:MM），`.fenix/config.template.yaml` 文档化该键。
+- 触发时点独立生效、两车道互不连带：自省照常在其生效时点触发，code-review 在其生效时点触发；未到生效时点的巡检轮返回 `before_run_at` 不派发，任一车道触发不连带另一方。
+- 审查窗口水位由审查车道自身承载：调度收尾将本轮审查完成时刻写入 `.fenix/code_review_state.json` 的 `last_run_at`（aware ISO8601 本地时区表述，与自省状态文件口径一致；`last_run_date` 自然日防重字段保留）。scope=`window`（缺省）时 `window_start` 优先读该字段；字段缺失（首跑/存量状态）回退读 `.fenix/self_review_state.json` 的 `last_run_at`，再缺失回退 `now - 24h`。`window_kind` 映射不变：读到任一水位（审查自身或自省回退）返回 `last_run`，双缺失返回 `fallback`。
+- 巡检循环中 code-review 检查点先于自省检查点执行（自省收尾覆写自身 `last_run_at` 会退化窗口）；时点错开后两检查点在不同巡检轮各自判定，同轮相遇时该次序约束兜底。
+- 审查范围经 `admin.code_review.scope` 配置，取值 `window`（缺省）| `full`；非法值（含缺失/类型错误）回退 `window`，不报错中断巡检。两档共用同一套调度守卫（生效 `run_at` 阈值、同一自然日不重复触发、单飞、开关零动作），`review_kind` 均保持 `scheduled`。
   - scope=`window`：审查对象为 `window_start` 之后合并/产出到主树的 SPEC 所变更的文件集合。
   - scope=`full`：审查对象为全仓受控源码文件（`collect_manifest(scope="full")`），经 `max_files` 上限截断；`window_start` 以 None 参与 run，manifest 审计字段如实记录 `full`。
+- `admin.code_review.enabled` 为 false 时全链路零动作（不派发、不写任何产物），任意 scope 与 `run_at` 取值下均成立。
 - 派发逻辑位于框架调度层（daemon/admin_monitor）；`core/self_review.py` 硬约束不派发 agent。
 - 框架侧在派发前算出审查 manifest（待审文件清单）并写入 prompt；manifest 长度是进度 `total` 的权威来源。
 - 审查结果以「主产物 + 子代理分片」双轨落盘：主 agent 的汇总写主产物 `.fenix/code-review/out-<run_id>.jsonl`（逐文件追加，不等 run 结束一次性写出），并行子代理各自直写自己的分片 `.fenix/code-review/out-<run_id>-b<N>.jsonl`（`N` 为正整数）；落盘义务为「谁审谁写、审完即写」，不以主 agent 最后统一汇总为唯一落盘路径。
@@ -35,3 +39,4 @@
 - 2026-09-24 add-code-review-agent-and-quality-tab（spec/archive/2026-09-24-add-code-review-agent-and-quality-tab） — 新建周期代码审查 agent：类型四处注册与模型回退链、自省同源周期调度、manifest 驱动逐文件增量落盘、真实进度与取消。
 - 2026-09-27 add-code-review-scope-config（spec/archive/2026-09-27-add-code-review-scope-config） — 审查范围经 `admin.code_review.scope` 扩为 window/full 两档（共用调度守卫），设置页「质量」页签新增「审查范围」下拉（当期审查/全库审查，非法回退 window）。
 - 2026-09-29 add-code-review-sharded-out（spec/archive/2026-09-29-add-code-review-sharded-out） — 产物落盘契约扩为主产物+分片双轨直写（落盘义务「谁审谁写」），追加禁 async 等待收工条款与产物硬门聚合口径；进度/台账/硬门三侧改聚合消费（读侧口径另立 code-review-progress-visibility 页）。
+- 2026-10-15 add-code-review-run-at（spec/archive/2026-10-15-add-code-review-run-at） — 触发时点与窗口水位同自省解耦：触发时点读独立键 `admin.code_review.run_at`（缺失/脏值回退自省 run_at，解析单源收口），窗口水位改由 `code_review_state.json` 的 `last_run_at` 自承载（回退自省水位、再回退 24h）；检查点先于自省的次序约束保留；设置页质量页签新增触发时点输入。
