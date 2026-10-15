@@ -133,8 +133,9 @@ def determine_scenario_status(
     - 视觉对比不可用（error / size_mismatch）→ "warning"
     - 全部通过 → "pass"
 
-    失败断言的 layer 缺失或越 1-4 界（上游畸形结果，如未知断言类型
-    回退 layer=0）时按 fail 兜底，保守判失败，避免静默放行为 pass。
+    失败断言的 layer 缺失、非数值（None/字符串等上游畸形）或越 1-4
+    界（如未知断言类型回退 layer=0）时按 fail 兜底，保守判失败，避免
+    静默放行为 pass。
     步骤结果缺 ``success`` 键（上游畸形结果）同理按 fail 兜底，取向一致。
     步骤/断言混入非 dict 条目（上游畸形）亦按 fail 兜底，防御口径与
     env_gate._failed_wait_errors 的 isinstance 逐条防御对齐。视觉条目混入
@@ -155,13 +156,14 @@ def determine_scenario_status(
             continue
         if a.get("pass", False):
             continue
-        layer = a.get("layer", 0)
-        if 1 <= layer <= 3:
+        layer = a.get("layer")
+        if not isinstance(layer, int) or not 1 <= layer <= 4:
+            # 层缺失/None/非数值/越界（含未知类型回退的 layer=0）→
+            # 保守按 fail 兜底，不因畸形取值抛 TypeError 中断判定。
             has_layer_1_3_fail = True
         elif layer == 4:
             has_layer_4_fail = True
         else:
-            # 层缺失/越界（含未知类型回退的 layer=0）→ 保守按 fail 兜底。
             has_layer_1_3_fail = True
 
     if has_layer_1_3_fail:
