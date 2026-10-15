@@ -1095,8 +1095,9 @@ def _apply_mechanical(
     """执行机械自修（悬空溯源行/越界 sources、格式、ADR index 状态对齐），
     返回 ``(修复明细, 待人工明细, 实际改写页 relpath 集合)``：前者只收确实完成
     改写的条目（修复计数与提交摘要的依据），槽位定位失败等无法机械处置的场景
-    入后者转待人工；relpath 集合只收盘上发生实际改写的文件（sources 全悬空
-    保留原值转待人工的页不在其中），供「本批已纠偏页」判定使用。
+    入后者转待人工；relpath 集合只收盘上发生实际改写的文件（仅 sources 全悬空
+    保留原值转待人工、无其他改写的页不在其中；混合场景删行页在内，悬空
+    sources 保留原值部分另行转待人工），供「本批已纠偏页」判定使用。
     只写 spec/knowledge/ 内文件。"""
     archives = _existing_archives(project_root)
     fixed: list[str] = []
@@ -1139,13 +1140,14 @@ def _apply_mechanical(
             return f"<!-- knowledge: {new_fields}-->"
 
         text = _MARKER_RE.sub(_clean_sources, text)
+        all_dangling_msg = (
+            f"{item['rel']}：marker sources 全部悬空（{len(item['missing_sources'])} 项），"
+            f"保留原值待人工处置"
+        )
         if text == orig_text:
             # sources 全悬空保留原值且无悬空引用行可删：无实际改写，不写盘、
             # 不计修复明细，转待人工（补建归档目录或人工清理 sources）。
-            manual.append(
-                f"{item['rel']}：marker sources 全部悬空（{len(item['missing_sources'])} 项），"
-                f"保留原值待人工处置"
-            )
+            manual.append(all_dangling_msg)
             continue
         atomic_write_text(item["path"], text)
         rewritten.add(item["rel"])
@@ -1153,6 +1155,13 @@ def _apply_mechanical(
             f"{item['rel']}：删除悬空溯源 {len(drop)} 行"
             + (f"、剔除越界 sources {removed_sources} 项" if removed_sources else "")
         )
+        if removed_sources == 0 and item["missing_sources"]:
+            # 混合场景（悬空引用行已删 + sources 全悬空保留原值）：上面 fixed
+            # 只计删行，被保留的悬空 sources 当轮无留痕；missing_sources 非空
+            # 且 removed_sources == 0 即 kept_names 为空（全悬空未被剔除），
+            # 与上方 text == orig_text 分支同文案当轮即转待人工，不等下一轮
+            # 体检（删行后 text 不再变化）才补出。
+            manual.append(all_dangling_msg)
     for rel in scan["format"]:
         path = Path(project_root) / rel
         text = path.read_text(encoding="utf-8", errors="replace")
