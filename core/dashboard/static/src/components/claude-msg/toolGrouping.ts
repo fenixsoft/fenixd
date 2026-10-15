@@ -247,11 +247,17 @@ export function groupConsecutiveTools(
     }
 
     if (run.length >= TOOL_GROUP_THRESHOLD) {
+      // 编辑组计数口径（code-review item 256863dd44ef）：标题「N 个文件」与
+      // 收起态去重路径列表（editFilePaths）同口径，同一文件连续多次 Edit/Write
+      // 不再按消息条数虚报；去重为 0（输入缺 file_path/path）时回落消息条数
+      // 兜底。其余类沿用消息条数（每条即一次查阅/命令，无去重语义）。
+      const titleCount =
+        firstClass === 'edit' ? editFilePaths(run).length || run.length : run.length;
       items.push({
         _isGroup: true,
         toolName: message.toolName,
         groupKind: firstClass ?? undefined,
-        groupTitle: firstClass ? toolGroupTitle(firstClass, run.length) : undefined,
+        groupTitle: firstClass ? toolGroupTitle(firstClass, titleCount) : undefined,
         messages: run,
         timestamp: message.timestamp,
       });

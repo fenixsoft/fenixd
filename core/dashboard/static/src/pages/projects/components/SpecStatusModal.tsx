@@ -394,9 +394,9 @@ export default function SpecStatusModal({
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
           {`确认恢复运行 SPEC「${summary.name}」？\n\n`}
-          该 SPEC 因 run 被人工取消而挂起等待。恢复将复位为 ready 并即时唤醒派发：
-          有保留分支时在保留分支上续做（已提交成果不丢失）；无可保留分支时
-          降级为全新重派。
+          该 SPEC 因 run 被人工取消而挂起等待。恢复将复位为 ready，由 daemon
+          拾取派发：有保留分支时在保留分支上续做（已提交成果不丢失）；
+          无可保留分支时降级为全新重派。
           {'\n'}恢复会消耗一次实现尝试预算。
         </div>
       ),
@@ -412,12 +412,18 @@ export default function SpecStatusModal({
               message.warning(
                 `SPEC「${spec}」无可保留分支，已降级全新重派：${result.reason || ''}`,
               );
+            } else if (result.warning) {
+              // fix-scheduling-kick-single-slot D3 对齐（code-review item
+              // f3cf514cacb9）：即时唤醒信号写出失败时如实告知（warning 自带
+              // 「将由下次扫描派发」语义），不以确定性成功文案替代
+              message.warning(result.warning);
             } else {
               message.success(`SPEC「${spec}」已复位 ready，daemon 将在保留分支上续做`);
             }
-            // 即时唤醒信号写出失败：成功/降级两分支均须如实告知
-            // （降级消息本身不携带「由下次扫描派发」语义，单独提示）
-            if (result.warning) {
+            // 即时唤醒信号写出失败：降级分支的消息不携带「由下次扫描派发」
+            // 语义，仍须单独补提示；非降级分支已由上方 warning 替代成功文案，
+            // 不重复提示
+            if (result.warning && result.degraded) {
               message.warning(result.warning);
             }
             onDone();
@@ -530,8 +536,12 @@ export default function SpecStatusModal({
 
   // Modal 常挂载（code-review item 4dec1650864f）：关闭只交给 open prop，让 antd
   // 走标准关闭流程播放淡出动画（与 SpecDocModal 一致）。summary 为空时各区块
-  // 均按状态条件渲染（不应出现，菜单入口按状态屏蔽），无空转副作用；内部状态
-  // 由 destroyOnHidden 清理。
+  // 均按状态条件渲染（不应出现，菜单入口按状态屏蔽），无空转副作用。
+  // 内部状态并不随 destroyOnHidden 重置（它只卸载 Modal 的 children 子树，
+  // 不触及宿主组件的 useState，code-review item 7c1f36b39bd8）：预算覆盖/
+  // 晋升违规/冻结各态由上方打开时初始化 effect 复位；pendingAction 例外——
+  // 在飞动作的 promise 结算经各 handler 的 finally 复位，期间保持置位以维持
+  // 4011bc5fcc60 的「同一时刻只有一个确认动作在跑」单飞 UI 不变式。
   return (
     <Modal
       title={`修改状态 · ${spec}`}
@@ -568,9 +578,9 @@ export default function SpecStatusModal({
             <Typography.Text strong style={{ fontSize: 14 }}>恢复运行</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
               该 SPEC 因 run 被人工取消而处于取消保持态，daemon 全部自动恢复链路
-              对其跳过，需显式恢复。恢复将复位为 ready 并即时唤醒派发：有保留
-              分支时在保留分支上续做（已提交成果不丢失）；无可保留分支时降级为
-              全新重派。恢复会消耗一次实现尝试预算。
+              对其跳过，需显式恢复。恢复将复位为 ready，由 daemon 拾取派发：
+              有保留分支时在保留分支上续做（已提交成果不丢失）；无可保留分支
+              时降级为全新重派。恢复会消耗一次实现尝试预算。
             </Typography.Paragraph>
             <Button
               danger

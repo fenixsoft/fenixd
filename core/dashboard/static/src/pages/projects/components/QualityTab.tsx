@@ -398,9 +398,19 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 一律过期——含切到非激活态（effect 早退不调用本函数）的窗口。
   const progressSeqRef = useRef(0);
 
+  // 在飞去重标志（code-review item 269005cbcda4，仿 ArchitectureTab
+  // 7756f9675f6a 的 loadInFlightRef 惯例）：running 轮询的 2s interval 每 tick
+  // 原本无条件发起请求，统一请求超时 30s 下后端挂起时在飞请求最多堆积约 15 个
+  // （progressSeqRef 只拦过期响应写状态，不拦请求堆积本身）。loadProgress
+  // 入口与轮询 tick 置位、各自 finally 复位，tick 见在飞则跳过本轮，等上一
+  // 请求落定后再发下一轮。用 ref 而非 state：不参与渲染，卸载/切页签清理
+  // 路径无需额外复位（在飞响应本就被 seq 守卫丢弃）。
+  const progressInFlightRef = useRef(false);
+
   const loadProgress = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++progressSeqRef.current;
+    progressInFlightRef.current = true;
     try {
       const p = await getCodeReviewProgress(project);
       if (seq !== progressSeqRef.current) return; // 过期响应丢弃（陈旧覆盖/旧轮询重建防护）
@@ -409,6 +419,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         // 运行中：轮询进度（2s），结束兜底刷新表格
         if (pollTimerRef.current !== null) return;
         pollTimerRef.current = window.setInterval(async () => {
+          // 在飞去重（code-review item 269005cbcda4）：上一轮请求未落定则跳过
+          // 本轮 tick，避免后端挂起时在飞请求随 2s interval 堆积
+          if (progressInFlightRef.current) return;
+          progressInFlightRef.current = true;
           try {
             // 过期守卫（code-review item bcdc14169759）：cleanup（卸载/切项目/
             // 切页签）自增 progressSeqRef 并清 interval，但已发出的在飞轮询响应
@@ -430,11 +444,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             }
           } catch {
             // 轮询失败继续（下轮重试）
+          } finally {
+            progressInFlightRef.current = false;
           }
         }, PROGRESS_POLL_INTERVAL_MS);
       }
     } catch {
       // 进度读取失败静默（非关键路径）
+    } finally {
+      // 成功/失败两条路径都复位在飞标志（269005cbcda4，对齐 ArchitectureTab）
+      progressInFlightRef.current = false;
     }
   }, [active, project]);
 
