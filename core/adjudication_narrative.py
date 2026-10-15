@@ -36,7 +36,7 @@
   通道单发（禁传 ``--max-tokens-budget`` 类危险旗标），测试=假通道，测试 MUST
   NOT 真调网关；不直连网关 HTTP——避免第二套凭据/UA/代理面；
 - **模型回退链**：``admin.narrative_model`` → ``admin.agent_model`` → 框架默认
-  （两者皆空时不传 ``--model``，用 CLI/网关默认模型）；
+  ``DEFAULT_GATEWAY_MODEL``（恒显式传 ``--model``，不依赖 CLI 默认档）；
 - **配置口径**：pm_engine 既有口径 ``ConfigLoader.get_admin_config(config).get(...)``
   （先例 family.py:563）；MUST NOT 反向导入 dashboard data 层私有助手
   ``_cached_config_value``；热更新经 daemon 主循环 ``_maybe_reload_config``
@@ -133,8 +133,11 @@ _STDERR_TAIL_CHARS = 500
 # 惯例（regression.py _PROGRESS_TAIL_BYTES=8192）。
 _NARRATIVE_MAX_CHARS = 8192
 
-# 段省略标记（超预算段砍尾后附于段尾，同 hook_engine 截断先例形态）
-_NARRATIVE_TRUNCATION_MARK = "\n…（截断）"
+# 段省略标记（超预算段砍尾后附于段尾，同 hook_engine 截断先例形态）：
+# 裸文本与带段界换行的完整形态单源拆分（_clip_segment 用裸文本形态，
+# 预扣预算按完整形态派生——两处共享同一字面量防漂移）
+_NARRATIVE_TRUNCATION_MARK_TEXT = "…（截断）"
+_NARRATIVE_TRUNCATION_MARK = "\n" + _NARRATIVE_TRUNCATION_MARK_TEXT
 
 # 首段标题前前导文本的压缩标记（见 _clip_narrative）——其字符开销须与省略
 # 标记一样参与单段预算预扣，否则四段全截断时整体可超 _NARRATIVE_MAX_CHARS
@@ -486,7 +489,7 @@ def _collect_report_path(project_root: Any, spec: str) -> Optional[str]:
 
 def _clip_segment(text: str, budget: int) -> str:
     """单段材料截断：超预算砍尾附截断标记（标记计入预算——截断后整段 ≤ budget）。"""
-    mark = "…（截断）"
+    mark = _NARRATIVE_TRUNCATION_MARK_TEXT
     if len(text) <= budget:
         return text
     return text[: max(budget - len(mark), 1)].rstrip() + mark
