@@ -179,17 +179,112 @@ def _echo_agents_int_keys(agents_src) -> dict:
     return out
 
 
-def _echo_agents_str_key(agents_src, key: str) -> str:
-    """回显 agents 字符串标量键（subagent_model_override：仅 str 值回显，缺省空串）。
+def _echo_agents_view(config: dict) -> dict:
+    """agents 段回显视图提取（read_config / read_effective_config 共用单源）。
 
-    fix-agent-lane-efficiency D1：子代理模型覆盖键为字符串（模型名），
-    非法类型（非 str）视为未配置 → 回显空串（语义 = 使用 provider model）。
+    code-review item 064990ee9f00：两读路径的 agents 提取块曾逐键手工镜像
+    （models 规范化、数值标量键、subagent_model_override、
+    max_same_cause_redispatches、瞬断治理五键、scale_precheck），每新增一个
+    受管键都须双处同步，漏一处即一侧回显缺失/口径漂移。抽此助手供两路委托：
+    入参为完整配置 dict（read_config 传项目/用户级 raw，read_effective_config
+    传 resolve_config 的 effective——读取器/归一化助手对缺失段与非 dict 段
+    均回缺省/空串，两路语义一致）。agents 段缺失或非 dict 时返回空 dict，
+    由调用方 update 进缺省回显段（不整段替换，保留缺省键——code-review item
+    d73ee0a33fbe）。
     """
-    if isinstance(agents_src, dict):
-        val = agents_src.get(key)
-        if isinstance(val, str):
-            return val.strip()
-    return ""
+    agents_section = config.get("agents") if isinstance(config, dict) else None
+    if not isinstance(agents_section, dict):
+        return {}
+    from core.config import ConfigLoader
+
+    out = {}
+    if isinstance(agents_section.get("models"), dict):
+        # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
+        # 回显视图（str/list/对象统一为对象数组 + resolved model）
+        llm_section = config.get("llm")
+        llm_providers = (
+            (llm_section.get("providers") or []) if isinstance(llm_section, dict) else []
+        )
+        out["models"] = ConfigLoader.normalize_agent_models(
+            agents_section["models"], llm_providers
+        )
+    out.update(_echo_agents_int_keys(agents_section))
+    # fix-agent-lane-efficiency D1：子代理模型覆盖键回显（str 剥空白，非法类型
+    # 回空串，缺省空串 = 使用 provider model）——统一经
+    # get_subagent_model_override 单点归一化（read_config 侧原为同口径局部
+    # 实现，随单源化收编删除）
+    out["subagent_model_override"] = ConfigLoader.get_subagent_model_override(config)
+    # 同因重派熔断阈值回显（agents.max_same_cause_redispatches）——经
+    # ConfigLoader 单点归一化（正整数 1–100，非法回退缺省 3）
+    out["max_same_cause_redispatches"] = ConfigLoader.get_max_same_cause_redispatches(config)
+    # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
+    # （缺省填充，语义与 get_transient_config 一致——非法值回退缺省）
+    _transient = ConfigLoader.get_transient_config(config)
+    for _tk in (
+        "transient_backoff_schedule",
+        "transient_redispatch_delay_seconds",
+        "transient_break_threshold",
+        "transient_break_window_seconds",
+        "transient_break_cooldown_seconds",
+    ):
+        out[_tk] = _transient[_tk]
+    # 规模预检三键回显（agents.scale_precheck，缺省填充 + 非法值回退同读侧归一化）
+    from core.fast_track_result import get_scale_precheck_config as _get_sp
+
+    out["scale_precheck"] = _get_sp(config)
+    return out
+
+def _echo_verify_view(config: dict) -> dict:
+    """verify 段回显视图提取（read_config / read_effective_config 共用单源）。
+
+    code-review item 064990ee9f00：两读路径的 verify 提取块曾逐键手工镜像，
+    且已实际漂移一处——verify.context_cost_per_turn_threshold 只在 read_config
+    回显，read_effective_config 单侧缺失（有效视图恒显示缺省 200000，不随
+    配置值变化）。抽此助手供两路委托，该漂移随单源化补齐：入参为完整配置
+    dict（raw 或 effective）。枚举/布尔/整数键按形态守卫回显（非法值不覆盖，
+    留缺省段兜底）；运行参数七键经 ConfigLoader 读取器取生效值（非法值回退
+    缺省，回显与生效值一致）。verify 段缺失或非 dict 时返回空 dict（保留
+    缺省回显段，与原两路的段级守卫一致）。
+    """
+    verify_section = config.get("verify") if isinstance(config, dict) else None
+    if not isinstance(verify_section, dict):
+        return {}
+    from core.config import ConfigLoader
+
+    out = {}
+    if verify_section.get("static_scope") in ("main", "worktree"):
+        out["static_scope"] = verify_section["static_scope"]
+    if verify_section.get("deps_mode") in ("prefer-offline", "hardlink"):
+        out["deps_mode"] = verify_section["deps_mode"]
+    # add-planner-efficiency（planner-generation-throttle 2.3）：节流上限读回。
+    # 与写路径（write_config merge_verify）白名单对称——写了能读回来（BUG-01 修复）。
+    pmc = verify_section.get("planner_max_concurrent")
+    if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
+        out["planner_max_concurrent"] = pmc
+    # add-impl-code-review-gate：严格 bool 才回显，缺省不填充（与
+    # planner_max_concurrent「缺省不回显」同款，不破坏既有严格相等断言）
+    if isinstance(verify_section.get("impl_code_review"), bool):
+        out["impl_code_review"] = verify_section["impl_code_review"]
+    # add-impl-code-review-tuning：三运行参数恒回显——缺省段已含 600/2/low，
+    # 读取器读显式定义值覆盖（非法值回退缺省，回显与生效值一致）
+    out["impl_code_review_timeout_sec"] = ConfigLoader.get_impl_code_review_timeout_sec(config)
+    out["impl_code_review_concurrency"] = ConfigLoader.get_impl_code_review_concurrency(config)
+    # add-code-review-concurrency-and-429-resilience：全仓审查并发生效值回显
+    out["repo_code_review_concurrency"] = ConfigLoader.get_repo_code_review_concurrency(config)
+    out["impl_code_review_effort"] = ConfigLoader.get_impl_code_review_effort(config)
+    # add-impl-ocr-parallel-lane：join 双档模式生效值回显（非法值回退缺省 gate）
+    out["impl_code_review_mode"] = ConfigLoader.get_impl_code_review_mode(config)
+    # ocr 审查 finding#1：车道级硬超时生效值回显（非法值回退缺省 2400）
+    out["impl_code_review_lane_timeout_sec"] = ConfigLoader.get_impl_code_review_lane_timeout_sec(config)
+    # fix-agent-lane-efficiency D3：上下文经济性告警阈值回显（正整数才回显，
+    # 缺省 200000 由缺省段兜底；0 = 关闭告警）
+    _cct = verify_section.get("context_cost_per_turn_threshold")
+    if isinstance(_cct, int) and not isinstance(_cct, bool) and _cct >= 0:
+        out["context_cost_per_turn_threshold"] = _cct
+    sr_section = verify_section.get("serving_reclaim")
+    if isinstance(sr_section, dict) and isinstance(sr_section.get("enabled"), bool):
+        out["serving_reclaim"] = {"enabled": sr_section["enabled"]}
+    return out
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -624,47 +719,13 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # [fenix-ignore:6032b09cf68a] apikey 掩码需配对写侧 mask-keep，而 llm 为整段替换写入且生效视图跨 user/project 作用域（哨兵落盘毁配置或跨作用域复制密钥），属成面改动不实施
     if isinstance(raw.get("llm"), dict):
         result["llm"] = raw["llm"]
-    agents_raw = raw.get("agents")
-    if isinstance(agents_raw, dict):
-        agents_result = {}
-        if isinstance(agents_raw.get("models"), dict):
-            # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
-            # 回显视图（str/list/对象统一为对象数组 + resolved model）
-            llm_raw = raw.get("llm")
-            llm_providers = (
-                (llm_raw.get("providers") or []) if isinstance(llm_raw, dict) else []
-            )
-            agents_result["models"] = ConfigLoader.normalize_agent_models(
-                agents_raw["models"], llm_providers
-            )
-        agents_result.update(_echo_agents_int_keys(agents_raw))
-        # fix-agent-lane-efficiency D1：子代理模型覆盖键回显（str 才回显，缺省空串）
-        agents_result["subagent_model_override"] = _echo_agents_str_key(
-            agents_raw, "subagent_model_override"
-        )
-        # 同因重派熔断阈值回显（agents.max_same_cause_redispatches）——经
-        # ConfigLoader 单点归一化（正整数 1–100，非法回退缺省 3）
-        agents_result["max_same_cause_redispatches"] = ConfigLoader.get_max_same_cause_redispatches(raw)
-        # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
-        # （缺省填充，语义与 read_effective_config 的 get_transient_config 一致）
-        _transient = ConfigLoader.get_transient_config(raw)
-        for _tk in (
-            "transient_backoff_schedule",
-            "transient_redispatch_delay_seconds",
-            "transient_break_threshold",
-            "transient_break_window_seconds",
-            "transient_break_cooldown_seconds",
-        ):
-            agents_result[_tk] = _transient[_tk]
-        # 规模预检三键回显（agents.scale_precheck，缺省填充 + 非法值回退同读侧归一化）
-        from core.fast_track_result import get_scale_precheck_config as _get_sp
-
-        agents_result["scale_precheck"] = _get_sp(raw)
-        # code-review item d73ee0a33fbe：本分支内 subagent_model_override 等键
-        # 无条件写入，agents_result 必非空（原恒真守卫已删）；逐键覆盖默认，
-        # 避免整段替换清空默认值
-        for k, v in agents_result.items():
-            result["agents"][k] = v
+    # agents 段提取单源（code-review item 064990ee9f00）：与
+    # read_effective_config 共用 _echo_agents_view，杜绝逐键手工镜像漂移。
+    # 分档边界：verify/agents 两段已单源收编；gates/archive/knowledge/agent/
+    # admin*/hooks/stale_code_selfheal/self_evolution/worktree 段两路机制有差
+    # （枚举过滤 vs getter 生效值、段级显式守卫），仍为镜像暂不收编。
+    # update 覆盖默认（不整段替换，避免清空缺省值——code-review item d73ee0a33fbe）
+    result["agents"].update(_echo_agents_view(raw))
     gates_raw = raw.get("gates")
     # code-review item 775c04d26905：合法枚举才回显（非法值留空由缺省段 manual
     # 兜底，与运行时 get_approve_mode 回退 manual 口径一致；对齐同段 promote_mode
@@ -697,55 +758,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["start_after_scope"] = gates_raw["start_after_scope"]
-    verify_raw = raw.get("verify")
-    if isinstance(verify_raw, dict):
-        if verify_raw.get("static_scope") in ("main", "worktree"):
-            result["verify"]["static_scope"] = verify_raw["static_scope"]
-        if verify_raw.get("deps_mode") in ("prefer-offline", "hardlink"):
-            result["verify"]["deps_mode"] = verify_raw["deps_mode"]
-        # add-planner-efficiency（planner-generation-throttle 2.3）：节流上限读回。
-        # 与写路径（write_config merge_verify）白名单对称——写了能读回来（BUG-01 修复）。
-        pmc = verify_raw.get("planner_max_concurrent")
-        if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
-            result["verify"]["planner_max_concurrent"] = pmc
-        # add-impl-code-review-gate：严格 bool 才回显，缺省不填充（与
-        # planner_max_concurrent「缺省不回显」同款，不破坏既有严格相等断言）
-        if isinstance(verify_raw.get("impl_code_review"), bool):
-            result["verify"]["impl_code_review"] = verify_raw["impl_code_review"]
-        # add-impl-code-review-tuning：三运行参数恒回显——缺省段已含 600/2/low，
-        # 此处读回显式定义值覆盖（读取器对非法值回退缺省，回显与生效值一致；
-        # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
-        result["verify"]["impl_code_review_timeout_sec"] = (
-            ConfigLoader.get_impl_code_review_timeout_sec(raw)
-        )
-        result["verify"]["impl_code_review_concurrency"] = (
-            ConfigLoader.get_impl_code_review_concurrency(raw)
-        )
-        # add-code-review-concurrency-and-429-resilience：全仓审查并发生效值回显
-        result["verify"]["repo_code_review_concurrency"] = (
-            ConfigLoader.get_repo_code_review_concurrency(raw)
-        )
-        result["verify"]["impl_code_review_effort"] = (
-            ConfigLoader.get_impl_code_review_effort(raw)
-        )
-        # add-impl-ocr-parallel-lane：join 双档模式生效值回显（读取器对非法值
-        # 回退缺省 gate，回显与生效值一致；与三运行参数「缺省回显」同款）
-        result["verify"]["impl_code_review_mode"] = (
-            ConfigLoader.get_impl_code_review_mode(raw)
-        )
-        # ocr 审查 finding#1：车道级硬超时生效值回显（读取器对非法值回退
-        # 缺省 2400，与 timeout_sec 同款正整数语义）
-        result["verify"]["impl_code_review_lane_timeout_sec"] = (
-            ConfigLoader.get_impl_code_review_lane_timeout_sec(raw)
-        )
-        # fix-agent-lane-efficiency D3：上下文经济性告警阈值回显（正整数才回显，
-        # 缺省 200000 由缺省段兜底；0 = 关闭告警）
-        _cct = verify_raw.get("context_cost_per_turn_threshold")
-        if isinstance(_cct, int) and not isinstance(_cct, bool) and _cct >= 0:
-            result["verify"]["context_cost_per_turn_threshold"] = _cct
-        sr_raw = verify_raw.get("serving_reclaim")
-        if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
-            result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
+    # verify 段提取单源（code-review item 064990ee9f00）：与
+    # read_effective_config 共用 _echo_verify_view（含七运行参数键），杜绝
+    # 逐键手工镜像漂移；verify 段缺失/非 dict 时助手返回空覆盖（保留缺省段）
+    result["verify"].update(_echo_verify_view(raw))
     archive_raw = raw.get("archive")
     if isinstance(archive_raw, dict):
         result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(raw)}
@@ -879,45 +895,15 @@ def read_effective_config(project_root) -> dict:
     # [fenix-ignore:6032b09cf68a] apikey 掩码需配对写侧 mask-keep，而 llm 为整段替换写入且生效视图跨 user/project 作用域（哨兵落盘毁配置或跨作用域复制密钥），属成面改动不实施
     if isinstance(effective.get("llm"), dict):
         result["llm"] = effective["llm"]
-    agents_eff = effective.get("agents")
-    if isinstance(agents_eff, dict):
-        if isinstance(agents_eff.get("models"), dict):
-            # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
-            # 回显视图（str/list/对象统一为对象数组 + resolved model）
-            from core.config import ConfigLoader as _CL
-
-            llm_eff = effective.get("llm")
-            result["agents"]["models"] = _CL.normalize_agent_models(
-                agents_eff["models"],
-                (llm_eff.get("providers") or []) if isinstance(llm_eff, dict) else [],
-            )
-        result["agents"].update(_echo_agents_int_keys(agents_eff))
-        # fix-agent-lane-efficiency D1：子代理模型覆盖生效值回显（code-review
-        # item d1b9c5631669）——缺省视图恒空串，不回填则项目作用域覆盖值在
-        # 有效配置视图恒显示空串，且 merge 分支把空串定义为「显式清除覆盖」，
-        # 前端基于有效视图构造 agents patch 保存会静默清掉磁盘配置值。经
-        # get_subagent_model_override 单点归一化（str 剥空白，非法类型回空串），
-        # 与 read_config 回显口径一致。
-        result["agents"]["subagent_model_override"] = ConfigLoader.get_subagent_model_override(effective)
-        # 同因重派熔断阈值有效值回显（经 ConfigLoader 单点归一化，非法回退缺省 3）
-        result["agents"]["max_same_cause_redispatches"] = (
-            ConfigLoader.get_max_same_cause_redispatches(effective)
-        )
-        # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
-        # （缺省填充，语义与 ConfigLoader.get_transient_config 一致——非法值回退缺省）。
-        _transient = ConfigLoader.get_transient_config(effective)
-        for _tk in (
-            "transient_backoff_schedule",
-            "transient_redispatch_delay_seconds",
-            "transient_break_threshold",
-            "transient_break_window_seconds",
-            "transient_break_cooldown_seconds",
-        ):
-            result["agents"][_tk] = _transient[_tk]
-        # 规模预检三键回显（缺省填充 + 非法值回退，与读侧同源归一化）
-        from core.fast_track_result import get_scale_precheck_config as _get_sp_eff
-
-        result["agents"]["scale_precheck"] = _get_sp_eff(effective)
+    # agents 段提取单源（code-review item 064990ee9f00）：与 read_config 共用
+    # _echo_agents_view（分档边界见 read_config 同名注释处），杜绝逐键手工
+    # 镜像漂移；update 覆盖默认（不整段替换，保留缺省键）。
+    # 子代理模型覆盖生效值回显语义不变（code-review item d1b9c5631669）：
+    # 缺省视图恒空串，经 get_subagent_model_override 单点归一化（str 剥空白，
+    # 非法类型回空串）——不回填则项目作用域覆盖值在有效配置视图恒显示空串，
+    # 且 merge 分支把空串定义为「显式清除覆盖」，前端基于有效视图构造
+    # agents patch 保存会静默清掉磁盘配置值。
+    result["agents"].update(_echo_agents_view(effective))
     # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
     # （同 read_config 既有缺陷——其余 gates 键在分支后丢失），单键赋值。
     # code-review item 775c04d26905：经 get_approve_mode 生效值归一（缺失/非法
@@ -936,46 +922,12 @@ def read_effective_config(project_root) -> dict:
     # add-start-after-scope-config：start_after 门控覆盖范围回显（经
     # get_start_after_scope 生效值，缺失/非法回退 dispatch——与 getter 单点同源）
     result["gates"]["start_after_scope"] = ConfigLoader.get_start_after_scope(effective)
-    verify_eff = effective.get("verify")
-    if isinstance(verify_eff, dict):
-        if verify_eff.get("static_scope") in ("main", "worktree"):
-            result["verify"]["static_scope"] = verify_eff["static_scope"]
-        if verify_eff.get("deps_mode") in ("prefer-offline", "hardlink"):
-            result["verify"]["deps_mode"] = verify_eff["deps_mode"]
-        # add-planner-efficiency：节流上限有效值回显（与 write_config 白名单对称）
-        pmc = verify_eff.get("planner_max_concurrent")
-        if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
-            result["verify"]["planner_max_concurrent"] = pmc
-        # add-impl-code-review-gate：严格 bool 才回显，缺省不填充
-        if isinstance(verify_eff.get("impl_code_review"), bool):
-            result["verify"]["impl_code_review"] = verify_eff["impl_code_review"]
-        # add-impl-code-review-tuning：三运行参数恒回显——缺省段已含 600/2/low，
-        # 此处读有效合并值覆盖（读取器对非法值回退缺省，回显与生效值一致）
-        result["verify"]["impl_code_review_timeout_sec"] = (
-            ConfigLoader.get_impl_code_review_timeout_sec(effective)
-        )
-        result["verify"]["impl_code_review_concurrency"] = (
-            ConfigLoader.get_impl_code_review_concurrency(effective)
-        )
-        # add-code-review-concurrency-and-429-resilience：全仓审查并发生效值回显
-        result["verify"]["repo_code_review_concurrency"] = (
-            ConfigLoader.get_repo_code_review_concurrency(effective)
-        )
-        result["verify"]["impl_code_review_effort"] = (
-            ConfigLoader.get_impl_code_review_effort(effective)
-        )
-        # add-impl-ocr-parallel-lane：join 双档模式生效值回显（非法值回退缺省
-        # gate，回显与生效值一致）
-        result["verify"]["impl_code_review_mode"] = (
-            ConfigLoader.get_impl_code_review_mode(effective)
-        )
-        # ocr 审查 finding#1：车道级硬超时生效值回显（非法值回退缺省 2400）
-        result["verify"]["impl_code_review_lane_timeout_sec"] = (
-            ConfigLoader.get_impl_code_review_lane_timeout_sec(effective)
-        )
-        sr_eff = verify_eff.get("serving_reclaim")
-        if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
-            result["verify"]["serving_reclaim"]["enabled"] = sr_eff["enabled"]
+    # verify 段提取单源（code-review item 064990ee9f00）：与 read_config 共用
+    # _echo_verify_view（含七运行参数键），杜绝逐键手工镜像漂移。原单侧缺失的
+    # verify.context_cost_per_turn_threshold 生效值回显随单源化补齐——有效
+    # 视图不再恒显示缺省 200000（即条目所述「漏一处即一侧回显缺失」的现存
+    # 漂移实例）。
+    result["verify"].update(_echo_verify_view(effective))
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
     # add-knowledge-atlas：经生效助手取值（非法值回退 true，设置页回显一致）；
