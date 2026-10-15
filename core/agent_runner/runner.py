@@ -780,7 +780,13 @@ class AgentRunner:
         # 人工取消旗标集合（add-run-cancel D1）：键为基础 run_id（已剥 -a<n>
         # attempt 后缀）。由 cancel_run 登记、_run_agent 轮询环/attempt 循环
         # 顶部消费、run 收尾清理。跨线程共享（dashboard/daemon 线程写、worker
-        # 线程读），以独立锁保护。惰性 property（测试 __new__ 绕过 __init__）。
+        # 线程读），以独立锁保护——锁协议口径（code-review item ca1907460e27）：
+        # 写侧与成对维护（cancel_run 登记写、_cancel_clear/_cancel_flags_gc
+        # 清理、_cancel_is_requested 判定）持 _cancel_requested_lock；
+        # _cancel_meta 的消费侧单键 get 容忍锁外直读（单键原子性由 GIL 保证，
+        # 本表仅约定单键操作、不做锁外读改写——最坏读到尚未写入/刚被清理的
+        # 空 meta，取消原因等观测字段偶发为空，属良性竞态，不为观测性读取
+        # 引入锁开销）。惰性 property（测试 __new__ 绕过 __init__）。
         self._cancel_requested = set()
         self._cancel_meta = {}
         self._cancel_requested_lock = threading.Lock()
@@ -816,7 +822,9 @@ class AgentRunner:
         # ``harness`` 键（品牌投影真相源）。MUST NOT 在收尾时刻读进程级
         # get_current_adapter()：_current_adapter 为进程级全局、重复注入以最后
         # 一次为准，并发 run 收尾会取到别的 run 的 adapter 串号。登记随 run
-        # 终态外口（_execute_agent finally / 车道 _log_lane_run_metrics）摘除。
+        # 终态外口摘除（_execute_agent finally / maintenance·admin 车道的
+        # _log_lane_run_metrics / dispute-judge·spec-review 直调车道各自收尾
+        # finally，code-review item 7d45c6cd8be2）。
         self._run_harness: Dict[str, str] = {}
         # 轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_limit_action
         # 建态侧的 24h 过期清理迭代与 _execute_agent 终态外口 forget 的摘除迭代
@@ -1507,16 +1515,10 @@ class AgentRunner:
         else:
             model_override = DEFAULT_GATEWAY_MODEL
 
-        # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
-        # 的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
-        # （如 max_turns: "300"）传进 _run_agent 后，轮询环 ``turn_count[0] >=
-        # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
-        # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
-        max_turns = self._get_config("agents.max_turns", 300)
-        try:
-            max_turns = int(max_turns)
-        except (TypeError, ValueError):
-            max_turns = 300
+        # 类型钳制收敛单点（63835b81527f 修复的 DRY 收敛，code-review item
+        # b52339ebef51）：agents.max_turns 非法值回落缺省 300，钳制缘由与
+        # 口径见 _clamped_max_turns。
+        max_turns = self._clamped_max_turns()
 
         start_time = time.time()
         try:
@@ -1641,6 +1643,14 @@ class AgentRunner:
                 stderr_tail=_stderr_tail_summary(getattr(e, "stderr_lines", None)),
                 exit_code=getattr(e, "exit_code", None),
             )
+        finally:
+            # 品牌登记随直调车道终态外口摘除（code-review item 7d45c6cd8be2，
+            # 对齐 _execute_agent finally 的惰性回退写法）：本车道不经
+            # _execute_agent、也无 _log_lane_run_metrics 收尾咽喉，不摘则
+            # _run_harness 条目（run_id → adapter 名）随 dispute-judge run 数
+            # 在长驻 daemon 中无界累积。覆盖成功/取消/冻结/判停/异常全部
+            # 收口；组装期早退（_run_agent 从未进入）无登记，pop 幂等无副作用。
+            getattr(self, "_run_harness", {}).pop(run_id, None)
 
     def run_spec_review(self, spec_name: str, run_id: str | None = None) -> AgentRunResult:
         """Run the Spec Review Agent for a SPEC (add-spec-review-gate).
@@ -1719,16 +1729,10 @@ class AgentRunner:
         else:
             model_override = DEFAULT_GATEWAY_MODEL
 
-        # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
-        # 的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
-        # （如 max_turns: "300"）传进 _run_agent 后，轮询环 ``turn_count[0] >=
-        # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
-        # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
-        max_turns = self._get_config("agents.max_turns", 300)
-        try:
-            max_turns = int(max_turns)
-        except (TypeError, ValueError):
-            max_turns = 300
+        # 类型钳制收敛单点（63835b81527f 修复的 DRY 收敛，code-review item
+        # b52339ebef51）：agents.max_turns 非法值回落缺省 300，钳制缘由与
+        # 口径见 _clamped_max_turns。
+        max_turns = self._clamped_max_turns()
 
         start_time = time.time()
         try:
@@ -1825,6 +1829,14 @@ class AgentRunner:
                 stderr_tail=_stderr_tail_summary(getattr(e, "stderr_lines", None)),
                 exit_code=getattr(e, "exit_code", None),
             )
+        finally:
+            # 品牌登记随直调车道终态外口摘除（code-review item 7d45c6cd8be2，
+            # 对齐 _execute_agent finally 的惰性回退写法）：本车道不经
+            # _execute_agent、也无 _log_lane_run_metrics 收尾咽喉，不摘则
+            # _run_harness 条目（run_id → adapter 名）随 spec-review run 数
+            # 在长驻 daemon 中无界累积。覆盖成功/取消/冻结/判停/异常全部
+            # 收口；组装期早退（_run_agent 从未进入）无登记，pop 幂等无副作用。
+            getattr(self, "_run_harness", {}).pop(run_id, None)
 
     def _planner_throttle_semaphore(self) -> Optional[threading.BoundedSemaphore]:
         """按配置惰性重建 planner 节流信号量（0/缺省=不节流）。
@@ -5869,8 +5881,9 @@ class AgentRunner:
         # ——dispatch 家族已登记时本调用为 no-op，其条目仍由 _execute_agent
         # 终态外口统一摘除）。spawn 装配此刻取的 adapter 即本 run 进程的实际
         # 驱动者，此刻读进程级全局（与 build_spawn_spec 同一取值）无收尾串号
-        # 问题；直调车道的条目由 _log_lane_run_metrics 收尾消费后摘除（本方法
-        # 不摘——摘早了车道收尾的 run_metrics 行就取不到值）。
+        # 问题；maintenance/admin 车道的条目由 _log_lane_run_metrics 收尾消费
+        # 后摘除，dispute-judge/spec-review 车道由各自收尾 finally 摘除（本
+        # 方法不摘——摘早了车道收尾的 run_metrics 行就取不到值）。
         self._register_run_harness(run_id, adapter)
         spawn_spec = adapter.build_spawn_spec(SpawnRequest(
             prompt=prompt,
@@ -5952,7 +5965,8 @@ class AgentRunner:
         # 存在 UnboundLocalError 竞态，故整体前移到线程定义之前）。
         base_run_id = self._normalize_run_id(run_id)
         # 停滞预算配置一次读取（run 内静态；缺省关闭 → None，轮询环零开销
-        # 短路）。关闭态同样不建态、不采样（record_sample 首次调用才建）。
+        # 短路）。关闭态同样不建态、不采样：reader 采样旁挂以 stall_cfg 门控
+        #（code-review item a7892369a712），不为每次往返持锁建态/累加。
         stall_cfg = self._stall_budget_config()
 
         # ── impl 任务进度停滞观测（evo-add-impl-env-blocker-stop-loss 2.1）──
@@ -6194,8 +6208,12 @@ class AgentRunner:
                                 # evo-add-run-stop-loss 2.1：停滞预算样本旁挂
                                 # 采集（run 级累积、不随 attempt 重置；reader
                                 # 单写者，内部异常仅 WARNING 不阻断读流）。
-                                self._stall_budget_record_sample(
-                                    base_run_id, _sb_sample)
+                                # 关闭态门控（code-review item a7892369a712）：
+                                # stall_cfg=None 时不建态、不采样、零锁开销，
+                                # 兑现 stall_cfg 读取处注释的零开销承诺。
+                                if stall_cfg is not None:
+                                    self._stall_budget_record_sample(
+                                        base_run_id, _sb_sample)
                                 # evo-add-api-stall-observability 1.2：单次
                                 # API 往返停滞的期内时点 WARNING（纯读侧旁
                                 # 路）。阈值 STALL_ROUND_WARN_SECONDS（120s，
@@ -7461,6 +7479,25 @@ class AgentRunner:
         except Exception:
             return None
 
+    def _clamped_max_turns(self, default: int = 300) -> int:
+        """读取 ``agents.max_turns`` 并做类型钳制（全部读点单点，DRY）。
+
+        类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
+        的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
+        （如 max_turns: "300"）传进 _run_agent 后，轮询环 ``turn_count[0] >=
+        current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
+        真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
+
+        消费方 run_dispute_judge / run_spec_review / _impl_turn_budget——钳制
+        块此前三处逐字复制，收敛为单点防后续单独改动产生行为漂移（code-review
+        item b52339ebef51）。
+        """
+        value = self._get_config("agents.max_turns", default)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def _impl_turn_budget(self, spec_name: Optional[str],
                           agent_type: Optional[str]) -> tuple:
         """实现车道 run 启动点轮数上限 sizing（1.2）+ 任务进度快照（3.1 基线）。
@@ -7482,15 +7519,7 @@ class AgentRunner:
             ``(effective_turn_cap, task_progress_snapshot)``；非实现车道返回
             ``(base, None)``（快照亦不取——守卫不消费，省一次文件读）。
         """
-        base = self._get_config("agents.max_turns", 300)
-        # 类型钳制（code-review item 63835b81527f）：对齐 max_retries/daily_run_limit
-        # 的既有钳制写法——配置误写成字符串时，轮询环 ``turn_count[0] >=
-        # current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
-        # 真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
-        try:
-            base = int(base)
-        except (TypeError, ValueError):
-            base = 300
+        base = self._clamped_max_turns()
         if agent_type not in IMPL_LANE_AGENT_TYPES or not spec_name:
             return base, None
 
