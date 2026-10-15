@@ -13,6 +13,7 @@
 
 import io
 import json
+import logging
 import shutil
 import subprocess
 import sys
@@ -549,3 +550,58 @@ class TestSelfReviewStallAggregation:
                 now - timedelta(hours=1), now + timedelta(minutes=5))
         assert "- （窗口内无中途信号）" in lines
         assert any("API 停滞聚合异常" in str(w) for w in logger.warnings)
+
+    def test_sampling_failure_escalates_to_degradation_warning(self, tmp_path):
+        """采样整体故障（latency_samples_from_events 抛异常）：聚合升级上抛、
+        随外层降级契约留 warning——逐 run 静默吞异常曾致降级零留痕（BUG-01）。"""
+        now = datetime.now().astimezone()
+        root = tmp_path / "proj"
+        runs_dir = root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        _write_run(runs_dir, f"impl-boom-{int(now.timestamp()) - 60}",
+                   _stall_events(now.timestamp(), [70.0]))
+        logger = _FakeLogger()
+        sched = _make_scheduler(root, logger)
+        with mock.patch(
+            "core.agent_runner.latency.latency_samples_from_events",
+            side_effect=RuntimeError("sampling boom"),
+        ):
+            lines = sched._collect_midflight_section(
+                now - timedelta(hours=1), now + timedelta(minutes=5))
+        # 摘要不阻断：占位行形态保持（异常降级空产出）
+        assert "- （窗口内无中途信号）" in lines
+        # 降级可观测：外层 handler 留 warning 且含原始异常文本
+        assert any(
+            "API 停滞聚合异常" in str(w) and "sampling boom" in str(w)
+            for w in logger.warnings
+        )
+
+    def test_partial_scan_failure_warns_and_keeps_rest(self, tmp_path, caplog):
+        """部分 run 扫描失败：逐 run warning 留痕并跳过，其余 run 照常聚合
+       （单 run 退化不静默、也不因个别坏产物牺牲整窗聚合）。"""
+        now = datetime.now().astimezone()
+        root = tmp_path / "proj"
+        runs_dir = root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        good = f"impl-good-{int(now.timestamp()) - 60}"
+        bad = f"impl-bad-{int(now.timestamp()) - 30}"
+        _write_run(runs_dir, good, _stall_events(now.timestamp(), [70.0]))
+        _write_run(runs_dir, bad, _stall_events(now.timestamp(), [80.0]))
+        real_scan = _scan_run_stall_totals
+
+        def flaky(path, max_lines=MIDFLIGHT_SCAN_MAX_LINES):
+            if "bad" in Path(path).stem:
+                raise RuntimeError("single run boom")
+            return real_scan(path, max_lines)
+
+        with caplog.at_level(logging.WARNING, logger="fenixd.self_review"):
+            with mock.patch("core.self_review._scan_run_stall_totals",
+                            side_effect=flaky):
+                results = _collect_api_stall_aggregates(
+                    root, now - timedelta(hours=1), now + timedelta(minutes=5))
+        assert [r["run_id"] for r in results] == [good]
+        assert results[0]["stalls"] == 1
+        assert any(
+            "单 run 扫描异常" in r.getMessage() and bad in r.getMessage()
+            for r in caplog.records
+        )
