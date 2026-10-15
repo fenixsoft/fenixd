@@ -16,6 +16,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -171,18 +172,30 @@ class TestSelfcheckContractLight(unittest.TestCase):
         self.assertIsNone(selfcheck_contract_light(self.tmp))
 
     def test_mtime_snapshot_hit_skips_second_round(self):
-        """首轮自证写快照；契约 mtime 未变 → 次轮零开销命中。"""
+        """首轮自证写快照；契约 mtime 未变 → 次轮零开销命中。
+
+        快照仅在鉴别力自检实际执行（base_url 非空）且通过后落盘
+        （item c8b16b879684），probe 打桩免起实例。
+        """
         _write(self.tmp, "static/index.html", "<h1>x</h1>")
         self._mk_contract("serve:\n  kind: static\n  root: static\n")
-        self.assertIsNone(selfcheck_contract_light(self.tmp))
+        with mock.patch("core.verify_contract.probe_ready", return_value=(True, "ok")):
+            self.assertIsNone(selfcheck_contract_light(self.tmp, base_url="http://127.0.0.1:1"))
         self.assertTrue(self.check_path.is_file())
-        self.assertIsNone(selfcheck_contract_light(self.tmp))  # 快照命中
+        # 快照命中：次轮直接放行，不再发起鉴别力自检（probe 零调用）
+        with mock.patch("core.verify_contract.probe_ready", return_value=(True, "ok")) as probe:
+            self.assertIsNone(selfcheck_contract_light(self.tmp, base_url="http://127.0.0.1:1"))
+        probe.assert_not_called()
 
     def test_mtime_change_triggers_reselfcheck(self):
-        """改契约内容（mtime 变化）→ 强制重新自证，不写坏快照。"""
+        """改契约内容（mtime 变化）→ 强制重新自证，不写坏快照。
+
+        首轮快照需鉴别力自检实际执行（base_url 非空 + probe 打桩）才落盘。
+        """
         _write(self.tmp, "static/index.html", "<h1>x</h1>")
         self._mk_contract("serve:\n  kind: static\n  root: static\n")
-        self.assertIsNone(selfcheck_contract_light(self.tmp))
+        with mock.patch("core.verify_contract.probe_ready", return_value=(True, "ok")):
+            self.assertIsNone(selfcheck_contract_light(self.tmp, base_url="http://127.0.0.1:1"))
         old_mtime = (self.tmp / ".fenix" / "verify.yaml").stat().st_mtime_ns
         self._mk_contract("serve:\n  kind: static\n  root: missing_dir\n")
         # 写后显式把 mtime 推到明显不同于快照的值（os.utime，不真实 sleep；
@@ -209,9 +222,17 @@ class TestSelfcheckContractLight(unittest.TestCase):
         self.assertIn("cmd 为空", err)
 
     def test_static_valid_writes_snapshot(self):
+        """静态合法且鉴别力自检实际执行 → 落快照；无实例的通过路径不落。
+
+        快照落盘门（item c8b16b879684）：base_url 为空时通过也不落快照，
+        避免该契约代际内永久旁路鉴别力自检。
+        """
         _write(self.tmp, "site/index.html", "x")
         self._mk_contract("serve:\n  kind: static\n  root: site\n")
         self.assertIsNone(selfcheck_contract_light(self.tmp))
+        self.assertFalse(self.check_path.is_file())  # 无实例：不落快照
+        with mock.patch("core.verify_contract.probe_ready", return_value=(True, "ok")):
+            self.assertIsNone(selfcheck_contract_light(self.tmp, base_url="http://127.0.0.1:1"))
         self.assertTrue(self.check_path.is_file())
         snap = json.loads(self.check_path.read_text(encoding="utf-8"))
         self.assertIn("mtime_ns", snap)
