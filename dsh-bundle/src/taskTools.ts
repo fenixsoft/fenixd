@@ -68,6 +68,11 @@ export class TaskStore {
     this.sessions.delete(sessionId);
   }
 
+  /** 是否仍持有任何会话键（含空表，语义对齐 reset 的「无任务也清键」）；供启动期校验。 */
+  isPristine(): boolean {
+    return this.sessions.size === 0;
+  }
+
   create(sessionId: string, input: TaskCreateInput): FenixTask {
     const subject = requireNonEmptyString(input?.subject, "subject");
     const task: FenixTask = {
@@ -157,6 +162,17 @@ function sessionIdOf(exec: { agent?: { id?: string } | null }): string {
 
 /** 注册 TaskCreate/TaskUpdate/TaskGet/TaskList 四工具（签名对齐 claude 语义）。 */
 export function registerTaskTools(ctx: { tools: { register(definition: unknown): unknown } }): void {
+  // 启动期校验：「进程单会话」假设的显式化（见文件头注——headless 车道会话即一次 run）。
+  // 模块级单例只在进程生命周期覆盖单次 run 的前提下安全；dsh 侧无会话/run 终态事件，
+  // reset() 无生产调用方。若进程模型变为同进程串行多 run 而重装配本插件，上一 run 的
+  // 任务清单与 1 基 taskId 序列会经 sharedStore 泄漏进下一 run（读侧 run_task_track.py
+  // 按 taskId 关联的记账随之串号）——此处立即抛错显式暴露，而不是静默串号。
+  if (!sharedStore.isPristine()) {
+    throw new Error(
+      "TaskStore 存在跨 run 任务残留：本 Bundle 依赖「进程单会话」假设，同进程二次装配即假设被打破；" +
+        "重装配前请先调用 TaskStore.reset(sessionId) 清理上一 run 的任务表。",
+    );
+  }
   ctx.tools.register(
     defineTool({
       name: "TaskCreate",
