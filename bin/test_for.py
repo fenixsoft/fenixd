@@ -115,6 +115,12 @@ def find_affected_tests(
     Handles partial matches (e.g., core.pm_engine.dispatch matches core.pm_engine).
     """
     affected = set()
+    # 目标本身是被索引的测试模块（如直接编辑 tests/test_x.py 自身）时必然要跑
+    # 自己：下方循环只按 imports 反查 importer，目标自身永不命中——否则改测试
+    # 文件会零命中，以「No tests affected」exit 0 收场（虚假绿色）。graph 键即
+    # tests/ 下符合 test_*.py / *_test.py 命名的测试模块，成员判断已含该口径。
+    if target_module in import_graph:
+        affected.add(target_module)
     queue = [(target_module, 0)]
     visited = set()
 
@@ -352,7 +358,11 @@ def main():
         if timed_out:
             _print_timeout_hint()
             sys.exit(1)
-        sys.exit(returncode)
+        # 负 rc = pytest 子进程被信号终止（如 OOM killer 的 SIGKILL → -9）：按
+        # shell 惯例归一为 128+signum（同 bin/run_full_suite.py 的归一口径）——
+        # 负值原样经 sys.exit 会按 C 惯例对 256 取模回绕成无关退出码（-9 → 247），
+        # 调用方无法识别。超时分支已在上方退出，此处 returncode 必为 int。
+        sys.exit(128 + abs(returncode) if returncode < 0 else returncode)
 
     if not target_files:
         print("Error: No files specified. Use --all to run all tests.")
