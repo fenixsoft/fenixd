@@ -836,10 +836,13 @@ def _check_impl_code_review_artifact(
             try:
                 raw = path.read_text(encoding="utf-8")
                 cr_data = json.loads(raw)
-            # UnicodeDecodeError 与主树候选 _check_artifact_json_file 的防御口径
-            # 对齐（该函数显式捕之）：非 UTF-8 字节同样归因为「无法解析」而非
-            # 从硬门逸出（fail-closed 契约）。
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            # UnicodeDecodeError / RecursionError 与主树候选
+            # _check_artifact_json_file 的防御口径对齐（该函数显式捕之）：
+            # 非 UTF-8 字节、超深嵌套 JSON（RecursionError 非 JSONDecodeError
+            # 子类，同 _check_artifact_json_file 先例）同样归因为「无法解析」
+            # 而非从硬门逸出（fail-closed 契约）。
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError,
+                    RecursionError) as e:
                 if first_err is None:
                     first_err = (
                         f"exit 0 但收尾审查报告无法解析（impl-code-review-gate）: "
@@ -2143,6 +2146,35 @@ def _clear_task_gate_rejections(runner, spec_name: str) -> None:
 # daemon 侧硬门判定保持不变（本入口只加出口，不改判定）。
 
 
+class _SelfcheckLoggerAdapter:
+    """门族函数的 (channel, message) 双参 logger 约定 → 标准 logging 适配。
+
+    门族函数按仓库自研 logger 的 ``logger.warning(channel, msg)`` 双参约定
+    调用（_check_impl_code_review_artifact 门开关降级 / _register_task_gate_
+    rejection 降级路径 / _bump_task_gate_rejections / _alert_task_gate_degraded
+    / _clear_task_gate_rejections，其中 _alert_task_gate_degraded 用 debug）。
+    标准 ``logging.Logger.warning`` 首参是 message、其余是 %s 参数——shim 若
+    直接复用 ``_logger``，channel 会被当格式串、msg 当参数，args 非空时
+    ``LogRecord.getMessage`` 抛「not all arguments converted」且消息经
+    handleError 丢失（code-review item c9827668d555）。本薄适配对齐门面
+    logger 签名；未列方法经 ``__getattr__`` 透传标准 logger（单参约定）。
+    """
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def warning(self, channel, msg, *args, **kwargs):
+        self._logger.warning("%s: %s", channel, msg, *args, **kwargs)
+
+    def debug(self, channel, msg, *args, **kwargs):
+        self._logger.debug("%s: %s", channel, msg, *args, **kwargs)
+
+    def __getattr__(self, name):
+        if name == "_logger":
+            raise AttributeError(name)
+        return getattr(self._logger, name)
+
+
 class _SelfcheckShim:
     """自检 CLI 的门面依赖替身（D2b 规则 1 的离线等价物）。
 
@@ -2165,7 +2197,10 @@ class _SelfcheckShim:
     def __init__(self, project_root):
         self.project_root = project_root
         self.state_machine = None
-        self.logger = _logger
+        # logger 走 (channel, msg) 双参适配（code-review item c9827668d555）：
+        # 门族函数按仓库自研 logger 双参约定调用 runner.logger，直接复用标准
+        # _logger 会签名失配（见 _SelfcheckLoggerAdapter docstring）。
+        self.logger = _SelfcheckLoggerAdapter(_logger)
         # 惰性导入（函数运行期，非模块加载期——本模块 MUST NOT import runner）：
         # 白名单以 AgentRunner 类属性为单源，禁止在本处另写一份字面量。
         from core.agent_runner.runner import AgentRunner
