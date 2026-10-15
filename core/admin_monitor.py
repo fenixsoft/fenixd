@@ -2614,10 +2614,9 @@ class AdminMonitor:
                     or is_spec_attached_signal(r, backfill=backfill)
                 )
             ]
-            # 回填标志两分支同值（code-review 3caf5598dc97）：上提统一赋值
-            # 一次，分支内只保留各自实际逻辑；pending 为空 = 通道一零写回
-            # （无 find_resolvable 判定与写回），直接跳过。
-            self._lifecycle_backfilled = True
+            # pending 为空 = 通道一零写回（无 find_resolvable 判定与写回），
+            # 直接跳过；回填标志两分支同值（code-review 3caf5598dc97）的
+            # 统一置位收进本 try 块末尾（见下，code-review 5c6103677e02）。
             if pending:
                 resolvable = find_resolvable(pending, specs, backfill=backfill)
                 if resolvable:
@@ -2635,6 +2634,13 @@ class AdminMonitor:
                             f"stale alert(s)" + ("（存量回填）" if backfill else ""),
                         )
                     resolved_total += resolved
+            # 回填标志置于判定与写回成功之后（code-review item
+            # 5c6103677e02）：find_resolvable/auto_resolve/写回异常路径不
+            # 消耗标志，下一轮巡检仍以 backfill=True 重试一次——否则 daemon
+            # 启动首轮异常即令无 trigger 字段存量条目的一次性回填在本
+            # 生命周期内永久丢失。pending 为空 = 零判定零写回，同值置位
+            # （3caf5598dc97 两分支同值约定不变）。
+            self._lifecycle_backfilled = True
         except Exception as e:
             self.logger.warning(
                 "admin_monitor", f"alert lifecycle spec 附着通道失败（跳过）: {e}"
@@ -4856,15 +4862,12 @@ class AdminMonitor:
             # continue，不消耗重试配额，下轮到期重评（判定复用
             # _invoke_administrator 既有口径，预判未命中仍由其内部同判定
             # 把关；命中仅日志留痕，同互斥守卫不落处置痕）。
-            try:
-                _sig_spec = signal.get("spec")
-                _sig_cooled = (
-                    bool(_sig_spec)
-                    and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
-                    and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
-                )
-            except Exception:
-                _sig_cooled = False
+            # 判定谓词单源 _dispatch_precheck_guards（code-review item
+            # 052de970a16f）：冷却与下方断窗两预判收编为同一辅助，上方
+            # 「复用 _invoke_administrator 既有口径」的注释约定至此落到
+            # 共享代码本身，不再靠三处手写同构对齐。
+            _sig_spec = signal.get("spec")
+            _sig_cooled, _block_reasons = self._dispatch_precheck_guards(signal)
             if _sig_cooled:
                 self.logger.info(
                     "admin_monitor",
@@ -4888,10 +4891,7 @@ class AdminMonitor:
                     f"{_if_remaining}s remaining (escalation {rec.get('id')})",
                 )
                 continue
-            try:
-                _block_reasons = self._night_dispatch_block_reasons()
-            except Exception:
-                _block_reasons = []
+            # _block_reasons 已由上方 _dispatch_precheck_guards 一并求值。
             if _block_reasons:
                 self.logger.info(
                     "admin_monitor",
@@ -5186,15 +5186,11 @@ class AdminMonitor:
                         # 记录之前 continue，原 pending 记录保持待下轮重评（预判未
                         # 命中仍由其内部同判定把关；命中仅日志留痕，同 fixture 抑制
                         # 不落处置痕）。
-                        try:
-                            _sig_spec = signal.get("spec")
-                            _sig_cooled = (
-                                bool(_sig_spec)
-                                and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
-                                and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
-                            )
-                        except Exception:
-                            _sig_cooled = False
+                        # 判定谓词单源 _dispatch_precheck_guards（code-review
+                        # item 052de970a16f，与 _retry_due_dispatch_failures
+                        # 同批收编）。
+                        _sig_spec = signal.get("spec")
+                        _sig_cooled, _block_reasons = self._dispatch_precheck_guards(signal)
                         if _sig_cooled:
                             self.logger.info(
                                 "admin_monitor",
@@ -5218,10 +5214,8 @@ class AdminMonitor:
                                 f"{_if_remaining}s remaining (run {rid})",
                             )
                             continue
-                        try:
-                            _block_reasons = self._night_dispatch_block_reasons()
-                        except Exception:
-                            _block_reasons = []
+                        # _block_reasons 已由上方 _dispatch_precheck_guards
+                        # 一并求值。
                         if _block_reasons:
                             self.logger.info(
                                 "admin_monitor",
@@ -6013,6 +6007,43 @@ class AdminMonitor:
         )
         return ["restart_failed"]
 
+    def _dispatch_precheck_guards(self, signal: dict) -> tuple:
+        """唤起前预判守卫判定单源（code-review item 052de970a16f）。
+
+        信号死法冷却与夜间断窗/provider 瞬断冻结两个预判此前在
+        _retry_due_dispatch_failures（占锚 bump 前）、孤儿处置重派
+        （superseded 审计写入前）与 _invoke_administrator（权威判定）三处
+        各手写一份同构 try 兜底，判定口径靠注释约定一致——单点演进漏改
+        任一副本即出现「预判放行而权威拦截」或反向的口径漂移。收编为本
+        辅助后三处复用同一谓词；各调用点保留差异化日志、落痕与控制流
+        （continue / return False），取用次序与原手写序一致（冷却在前、
+        断窗在后，两预判之间的秒挂冷却门控留在各调用点原位）。
+
+        返回二元组 ``(sig_cooled, block_reasons)``：
+
+        - ``sig_cooled``：spec 处信号死法冷却期为 True（spec 为空/替身缺
+          方法/调用异常一律 False，fail-open 不误伤半初始化实例）。
+        - ``block_reasons``：夜间断窗/provider 瞬断冻结命中原因短语列表
+          （``_night_dispatch_block_reasons`` 的 try 兜底结果，异常按空表
+          处理）。两谓词均先行求值，调用点按各自原次序取用。
+
+        只判定不落痕——落痕与控制流由调用方按通道形态补。
+        """
+        try:
+            _sig_spec = signal.get("spec")
+            sig_cooled = (
+                bool(_sig_spec)
+                and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
+                and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
+            )
+        except Exception:
+            sig_cooled = False
+        try:
+            block_reasons = self._night_dispatch_block_reasons()
+        except Exception:
+            block_reasons = []
+        return sig_cooled, block_reasons
+
     def _night_dispatch_block_reasons(self) -> list:
         """admin 唤起避让判定（evo-add-night-window-inflight-guard 2.1）。
 
@@ -6180,15 +6211,12 @@ class AdminMonitor:
         # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过 admin 处置
         # 唤起（该 spec 连续信号死法已达阈值——反复唤起只会再次撞运气烧预算）。
         # spec 保持原状，冷却到期由恢复定时器 / 检测循环自然恢复。
-        try:
-            _sig_spec = signal.get("spec")
-            _sig_cooled = (
-                bool(_sig_spec)
-                and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
-                and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
-            )
-        except Exception:
-            _sig_cooled = False
+        # 判定谓词单源 _dispatch_precheck_guards（code-review item
+        # 052de970a16f）：冷却与下方断窗两预判收编为同一辅助，
+        # _retry_due_dispatch_failures 占锚前预判与孤儿重派车道复用本
+        # 权威判定同一口径，不再靠三处手写同构对齐。
+        _sig_spec = signal.get("spec")
+        _sig_cooled, _block_reasons = self._dispatch_precheck_guards(signal)
         if _sig_cooled:
             self.logger.debug(
                 "admin_monitor",
@@ -6252,10 +6280,7 @@ class AdminMonitor:
         # enabled 总开关）。跳过属非失败路径：MUST NOT 增 retry_count、
         # MUST NOT 落升级告警，仅留痕原因；spec 保持原状，下一轮盘点/检测
         # 循环自然重试。
-        try:
-            _block_reasons = self._night_dispatch_block_reasons()
-        except Exception:
-            _block_reasons = []
+        # _block_reasons 已由上方 _dispatch_precheck_guards 一并求值。
         if _block_reasons:
             _reason_text = "、".join(_block_reasons)
             self.logger.info(
