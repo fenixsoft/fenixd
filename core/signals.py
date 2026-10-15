@@ -21,6 +21,7 @@ import re
 import tempfile
 from pathlib import Path
 
+from core.admin_store import _fsync_parent_dir
 from core.timelib import now_utc, to_storage
 
 # ADMIN_INVOKE_REQUEST 常量（信号文件路径）
@@ -165,10 +166,24 @@ def request_admin_invoke(
         dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked /
+        # regression._atomic_write 先例 cbb57806fbfd）：with 的 close 只在
+        # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None
+        # 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         # 成功路径复核（code-review item d150f1541f22）：O_EXCL 占位只保证
         # 「检查+占位」原子，不封锁到 os.replace 为止——若自家占位已被消费
         # 侧 rename 走、他人 O_EXCL 重建占位/换入内容，此处盲 replace 会
@@ -202,6 +217,10 @@ def request_admin_invoke(
                 "error": "已有进行中的 Admin 处置",
             }
         os.replace(tmp_path, req_path)
+        # rename 后刷父目录项，保证换入结果掉电不回退（复用
+        # admin_store._fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持
+        # 的异常；对齐 admin_store._write_store 原子写四段式）。
+        _fsync_parent_dir(req_path)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -286,11 +305,29 @@ def write_scheduling_kick(project_root, spec: str) -> dict:
     except OSError as exc:
         return {"ok": False, "file": None, "error": f"无法创建信号目录/临时文件: {exc}"}
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked /
+        # regression._atomic_write 先例 cbb57806fbfd）：with 的 close 只在
+        # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None
+        # 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, req_path)
+        # rename 后刷父目录项，保证换入结果掉电不回退（复用
+        # admin_store._fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持
+        # 的异常；对齐 admin_store._write_store 原子写四段式）。
+        _fsync_parent_dir(req_path)
     except Exception as exc:  # 任何异常不外抛，转为 ok:false
         try:
             os.unlink(tmp_path)
