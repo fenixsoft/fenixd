@@ -156,7 +156,18 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
         if current_key is not None:
             reset[_JUDGE_ROUND_REPORT_KEY_FIELD] = current_key
         # [fenix-ignore:77163ea07645] update_spec 与 bump_counters 同锁域（各自都在 .STATE.md.lock 的 flock(LOCK_EX) 内读改写），且本重置写的是常量 0 而非锁外快照计算值，无丢增量窗口。
-        pipeline._context.state_machine.update_spec(spec_name, reset)
+        # 写失败容错（code-review item f4ca8b4c7df2，与 _judge_round_bump 的
+        # 「写失败不阻断派发门」同款防护）：update_spec 属 IO 且不吞 OSError，
+        # 磁盘满/权限异常仅 WARNING 留痕——重置语义按内存返回值成立（计数从
+        # 零起），落盘缺失只影响下次重入的计数连续性，不得放大为整轮验证降级。
+        try:
+            pipeline._context.state_machine.update_spec(spec_name, reset)
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"judge 轮次计数重置写入失败 '{spec_name}'（不阻断派发门）: "
+                f"{type(e).__name__}: {e}",
+            )
         return {"round": current_round, "real": 0, "expanded": 0, "escalated": False}
     return {
         "round": current_round,
@@ -207,9 +218,20 @@ def _judge_charge_real_dispatch(pipeline, spec_name: str) -> int:
     _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_REAL_FIELD)
     key = _judge_report_context_key(pipeline, spec_name)
     if key is not None:
-        pipeline._context.state_machine.update_spec(
-            spec_name, {_JUDGE_ROUND_REPORT_KEY_FIELD: key}
-        )
+        # 键刷新写入容错（code-review item f4ca8b4c7df2，与 _judge_round_bump
+        # 同款「写失败不阻断派发门」）：落盘失败仅 WARNING 留痕——键缺失使
+        # 下次重入按 stored_key 比对退回重置分支（计数清零），偏保守方向，
+        # 不得因簿记写失败放大为整轮验证降级。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name, {_JUDGE_ROUND_REPORT_KEY_FIELD: key}
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"judge 判定上下文键刷新写入失败 '{spec_name}'（不阻断派发门）: "
+                f"{type(e).__name__}: {e}",
+            )
     return _judge_round_bump(pipeline, spec_name, _JUDGE_REAL_DISPATCHES_FIELD)
 
 
@@ -496,12 +518,25 @@ def _judge_inconclusive_dispatches_bump(pipeline, spec_name: str) -> int:
     """重验窗口内 judge 派发计入独立计数器（不烧 _judge_rerun_count 生命周期账）。
 
     锁内原子递增（与 _judge_round_bump 同款）；读侧脏值按 0 兜底。
+
+    写失败容错（code-review item f4ca8b4c7df2，与 _judge_round_bump 同款
+    防护）：bump_counters 属 IO 且不吞 OSError，磁盘满/权限异常仅 WARNING
+    留痕并返回 -1（计数不可得），不炸穿派发门。
     """
     from core.state_machine import JUDGE_INCONCLUSIVE_DISPATCHES_FIELD
 
-    return pipeline._context.state_machine.bump_counters(
-        spec_name, {JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 1}
-    ).get(JUDGE_INCONCLUSIVE_DISPATCHES_FIELD, 0)
+    try:
+        final = pipeline._context.state_machine.bump_counters(
+            spec_name, {JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 1}
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 重验计数 bump 失败 '{spec_name}'（不阻断派发门，计数不可得）"
+            f"field={JUDGE_INCONCLUSIVE_DISPATCHES_FIELD}: {type(e).__name__}: {e}",
+        )
+        return -1
+    return final.get(JUDGE_INCONCLUSIVE_DISPATCHES_FIELD, 0)
 
 
 def _judge_inconclusive_dispatches_read(pipeline, spec_name: str) -> int:
@@ -602,9 +637,22 @@ def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
         # 锁内原子递增（与 _judge_round_bump 同款）：锁外快照读改写会与
         # 其它对同字段的写者（verified 归零、admin 重置清零）互相覆盖丢
         # 增量，使 hard cap 阈值失真。
-        return pipeline._context.state_machine.bump_counters(
-            spec_name, {"_judge_rerun_count": delta}
-        ).get("_judge_rerun_count", 0)
+        # 写失败容错（code-review item f4ca8b4c7df2，与 _judge_round_bump
+        # 同款防护）：bump_counters 属 IO 且不吞 OSError，磁盘满/权限异常仅
+        # WARNING 留痕并返回 -1（计数不可得）——gate 侧仅做
+        # count > _MAX_JUDGE_RERUNS 比较，-1 不会误触发 hard cap 冻结，
+        # 计数缺失只影响上限判定精度，不阻断派发门。
+        try:
+            return pipeline._context.state_machine.bump_counters(
+                spec_name, {"_judge_rerun_count": delta}
+            ).get("_judge_rerun_count", 0)
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"judge 重跑计数 bump 失败 '{spec_name}'（不阻断派发门，计数不可得）"
+                f"delta={delta}: {type(e).__name__}: {e}",
+            )
+            return -1
     return count
 
 
@@ -622,7 +670,21 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
     「按 verified 兜底」的旧语义（读侧缺失文件按通过放行即历史事故根因）。
     """
     summary = report.get("summary") or {}
-    if fail_count != 0 or (summary.get("warnings") or 0) != 0 or (summary.get("passed") or 0) <= 0:
+    # summary 数值字段脏值防御（code-review item 73f3b554171b）：report.json
+    # 被外部改写/损坏时 passed/warnings/total 可能是非数值字符串，直接比较会
+    # 抛 TypeError 中断快道判定——比照 infra_classify._detect_uniform_verify_failure
+    # 的同源口径先经 int() 容错归一，脏值=不可判定全绿，保守走常规 judge。
+    try:
+        passed = int(summary.get("passed", 0) or 0)
+        warnings = int(summary.get("warnings", 0) or 0)
+        total = int(summary.get("total", 0) or 0)
+    except (TypeError, ValueError):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"全绿快道 summary 数值字段脏值 '{spec_name}' — 不可判定全绿，走常规 judge",
+        )
+        return None
+    if fail_count != 0 or warnings != 0 or passed <= 0:
         return None
     result_path = (
         pipeline._context.project_root
@@ -632,7 +694,7 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
         / ".fenix-run-result.json"
     )
     text = (
-        f"全绿快道: {summary.get('passed')}/{summary.get('total')} 场景通过、"
+        f"全绿快道: {passed}/{total} 场景通过、"
         "0 失败 0 警告——无分类对象，跳过 judge 机械 verified"
     )
     payload = {
