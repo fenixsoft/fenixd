@@ -173,11 +173,9 @@ def _file_has_terminal_event(run_file: Path) -> bool:
                 line = line.strip()
                 if not line:
                     continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(entry, dict) and entry.get("type") in RUN_TERMINAL_EVENT_TYPES:
+                # 行级终态判别单源委托 _line_is_terminal（code-review item
+                # 6db2cd964c18），损坏行按非终态跳过的口径与其一致，不再内联副本。
+                if _line_is_terminal(line):
                     return True
     except OSError:
         return False
@@ -1055,6 +1053,14 @@ class LivenessSupervisor:
         # OneShotCommunicateError 包装上抛（str 即原异常文本）——此处统一降级
         # 为 stagnant 证据（code-review item 241dd5ccd41c 的兜底清场语义已由
         # one_shot 内部完成，这里不再触碰进程句柄）。
+        # judge 通道现状钉死 claude、有意不走 resolve_adapter/get_current_adapter
+        # 装配点（code-review item f30b26413466）：监督判活只读 run 流统计快照做
+        # 裁决，不依赖 harness 差异化行为，与 knowledge/adjudication 等辅助一次性
+        # LLM 通道同款现状。已知失效形态：agent.harness=dsh 且宿主无 claude CLI
+        # 的部署下，每轮 deadline 的 judge spawn 都会失败，经 _judge_liveness
+        # 「减半重试一次 → 仍故障 fail-closed」链路把 advancing 的 run 判为
+        # stagnant 终止——dsh 独部署形态须保证 claude CLI 可用；长期可让 judge
+        # 通道按 harness 能力选型或降级纯启发式判定（架构改动，超出本次最小修复）。
         try:
             model = self._pm._get_admin_model()
             result = run_one_shot(
