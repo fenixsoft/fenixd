@@ -12,58 +12,41 @@
 """
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
+# 原子写收口共享助手 core.fs_utils.atomic_write_text（code-review item
+# abfbfb073153）：本模块原自持一份无 chmod 的 mkstemp+fsync+replace 实现，
+# 落盘产物恒为 mkstemp 缺省 0600、os.replace 整体替换静默收紧既有 0644
+# 文件，与收口单点的权限口径持续漂移。收口为薄委托（对齐
+# deliverables._atomic_write_text 先例 e42aabcf003a），mkstemp 唯一临时名
+# + fsync + 权限修复 + 尽力而为目录 fsync 纪律单点维护于 fs_utils。
+# 别名 import：模块尾部 ``atomic_write_text = _atomic_write_text`` 公开
+# 别名会遮蔽同名 import，直名 import 将令薄委托自递归。
+from core.fs_utils import atomic_write_text as _fs_atomic_write_text
 
-def _atomic_write_text(path: Path, content: str) -> None:
-    """mkstemp 唯一临时文件 + fsync + os.replace 原子写（verify_report._atomic_write 同款）。
+
+def _atomic_write_text(
+    path: Path, content: str, inherit_existing_mode: bool = False
+) -> None:
+    """mkstemp 唯一临时文件 + fsync + os.replace 原子写（薄委托 fs_utils 收口版）。
 
     本文件四处写点共用助手（写点收敛 code-review 83f6bb98613c；实现收敛
-    63f474ae0e08）。临时名用 mkstemp 唯一名而非固定 ``<name>.tmp``：固定
-    临时名在并发写同一目标时互相截断——进程 A 完成写入后、进程 B 在同一
-    .tmp 上截断改写，随后任一方的 replace 都可能把截断内容落盘；唯一临时
-    名保证 rename 前目标不变、rename 后内容完整。任何写失败都在 finally
+    63f474ae0e08）。唯一临时名保证并发写不产生截断产物；任何写失败都在
     清理残留临时文件后原样上抛，由调用点按各自语义留痕（各写点日志级别/
     文案不同，收敛后调整原子写实现只改这一处）。
 
-    持久性边界（code-review item a18b40f1af36）：只 fsync 临时文件、不 fsync
-    父目录——SIGKILL/进程崩溃场景已足够（rename 前内容必已完整落盘）；极端
-    断电下目录项可能未持久化，rename 或丢失（目标缺失/回退旧版）。各写点
-    均为可重生成/可重写产物，不追断电级 durability；目录 fsync 在 Windows
-    不可用，故不做平台分支补齐。
+    权限口径（item abfbfb073153）：缺省 False 无条件 chmod 0644——mkstemp
+    缺省 0600 经 os.replace 整体替换会静默收紧既有 0644 文件，而 JSON
+    场景产物须对非 root 辅助进程/人工其它账号可读；True 继承既有文件
+    权限（新文件放宽 0644），用于运维可能刻意收紧权限的既有产物
+    （verification-report.md 场景变更小节写点）。
+
+    持久性边界：随收口升级为 fs_utils 版纪律——SIGKILL/进程崩溃场景
+    rename 前内容必已完整落盘，rename 后尽力而为 fsync 父目录（失败不
+    阻断写入）。各写点均为可重生成/可重写产物，不追断电级 durability
+    （item a18b40f1af36 的取舍不变，纪律细节由 fs_utils 单点承载）。
     """
-    tmp_fd, tmp_path_str = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    tmp_path = Path(tmp_path_str)
-    try:
-        # fdopen 失败路径显式接管（对齐 verdict_evidence._write_verdict_violations
-        # 先例 cbb57806fbfd，code-review item 5021154cf4ff）：with 的 close 只在
-        # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时
-        # 兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, path)
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+    _fs_atomic_write_text(path, content, inherit_existing_mode=inherit_existing_mode)
 
 
 # 公开别名（跨模块消费走公开名，不 import 私有符号；同 commit_verification_report
@@ -720,8 +703,14 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
     # 此处为框架追加小节，直接写回（Agent 漏写场景变更时由框架补）。
     # tmp+replace 原子写（共用 _atomic_write_text 助手）：裸写中途崩溃会
     # 留下截断报告，截断残留仍携带本轮轮次指纹，会被报告闸门以 present 放行。
+    # inherit_existing_mode=True（item abfbfb073153）：报告文件可能被运维
+    # 刻意收紧权限，os.replace 整体替换不得静默改动既有权限口径。
     try:
-        _atomic_write_text(report_path, content.rstrip("\n") + "\n" + section + "\n")
+        _atomic_write_text(
+            report_path,
+            content.rstrip("\n") + "\n" + section + "\n",
+            inherit_existing_mode=True,
+        )
     except OSError as e:
         pipeline._context.logger.warning("pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
         return
@@ -853,7 +842,20 @@ def _run_scenario_static_check(pipeline, spec_name: str) -> None:
     def _scan():
         if not scenarios_path.exists():
             return None, ""
-        data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            # 解析失败就地留专名 WARNING 后跳过（比照契约挂点
+            # _run_contract_static_check._scan，两份骨架的同步约定要求解析
+            # 容错口径一致，不依赖 _emit_static_findings 的通用 fail-open
+            # 归因文案）。load_scenarios 验收与执行期门禁各自有既有处置，
+            # 此处不重复拦截。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"场景静态扫描跳过 '{spec_name}'（场景文件不可解析）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return None, ""
         if not isinstance(data, list):
             return None, ""
         serving_port = pipeline._serving_port_for_spec(spec_name)
