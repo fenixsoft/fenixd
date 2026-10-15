@@ -537,10 +537,23 @@ def _atomic_write_text(path: Path, data: str) -> None:
         dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
+        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
+        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, str(path))
     except Exception:
         try:

@@ -512,17 +512,36 @@ class ApiRunner(VerifyRunner):
                         if v.startswith(" "):
                             v = v[1:]
                         # 单事件 data 64KB 截断纪律（与 http_request body 同源
-                        # _truncate）：超限后停止拼接，防高速流式端点把单条
-                        # 事件推到任意大、撑爆 capture 与 judge 归因上下文。
-                        if data_bytes <= _EVIDENCE_LIMIT:
-                            data_bytes += len((v + "\n").encode("utf-8", errors="replace"))
+                        # _truncate）：拼接前按「已累计 + 本行字节数」预判，超限
+                        # 只取停在边界内的行前缀，防高速流式端点把单条事件推到
+                        # 任意大、在本步骤内存里全量驻留到分帧/收尾才被裁剪
+                        # （读入侧触顶即停，对齐 http_request 的
+                        # _RESPONSE_READ_LIMIT 读入硬上限纪律）。
+                        line_bytes = len((v + "\n").encode("utf-8", errors="replace"))
+                        if data_bytes + line_bytes <= _EVIDENCE_LIMIT:
+                            data_bytes += line_bytes
                             event["data"] += v + "\n"
-                        else:
+                        elif data_bytes >= _EVIDENCE_LIMIT:
                             # 触顶后同一事件的后续 data 行被丢弃：此处显式置标。
                             # 收尾 _truncate 复判的是去掉尾部换行后的保留前缀，
                             # 恰停在边界内（如一行 65536 字节后接续行）会判不超
                             # 限而漏标，judge 拿到外观完整的截断事件做归因。
                             data_truncated = True
+                        else:
+                            # 首次触顶：截取本行 UTF-8 前缀使累计恰停在边界内
+                            # （errors="ignore" 丢弃被切半的多字节尾部，不产生
+                            # 替换字符挤占预算），本行剩余部分连同后续 data 行
+                            # 一并丢弃并置标。
+                            data_truncated = True
+                            allowed = _EVIDENCE_LIMIT - data_bytes - 1  # 留尾部换行
+                            if allowed > 0:
+                                prefix = v.encode("utf-8", errors="replace")[
+                                    :allowed
+                                ].decode("utf-8", errors="ignore")
+                                data_bytes += len(
+                                    (prefix + "\n").encode("utf-8", errors="replace")
+                                )
+                                event["data"] += prefix + "\n"
                     elif line.startswith("event:"):
                         event["event"] = line[6:].strip()
                     elif line == "":

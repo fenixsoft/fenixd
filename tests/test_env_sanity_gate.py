@@ -385,7 +385,7 @@ class TestEnginePostClassify(unittest.TestCase):
         self.engine.browser = _FakeBrowser(base_url="http://127.0.0.1:1/")
         results = [self._scenario("p1", status="pass", wait_error=False)]
         with mock.patch("core.verify_engine.engine.probe_http_health") as m:
-            out = asyncio.run(self.engine._post_classify_environment([], results))
+            out = asyncio.run(self.engine._post_classify_environment(results))
         m.assert_not_called()
         self.assertEqual(out["blocked_env"], 0)
         self.assertEqual(results[0]["status"], "pass")
@@ -399,7 +399,7 @@ class TestEnginePostClassify(unittest.TestCase):
         with mock.patch(
             "core.verify_engine.engine.probe_http_health", return_value=False
         ) as m:
-            out = asyncio.run(self.engine._post_classify_environment([], results))
+            out = asyncio.run(self.engine._post_classify_environment(results))
         m.assert_called_once()
         self.assertEqual(out["blocked_env"], 2)
         self.assertEqual(cand1["status"], "blocked-env")
@@ -414,7 +414,7 @@ class TestEnginePostClassify(unittest.TestCase):
         with mock.patch(
             "core.verify_engine.engine.probe_http_health", return_value=True
         ) as m:
-            out = asyncio.run(self.engine._post_classify_environment([], [cand]))
+            out = asyncio.run(self.engine._post_classify_environment([cand]))
         m.assert_called_once()
         self.assertEqual(out["blocked_env"], 0)
         self.assertEqual(cand["status"], "fail")
@@ -426,8 +426,8 @@ class TestEnginePostClassify(unittest.TestCase):
         with mock.patch(
             "core.verify_engine.engine.probe_http_health", return_value=False
         ) as m:
-            asyncio.run(self.engine._post_classify_environment([], [cand]))
-            asyncio.run(self.engine._post_classify_environment([], [cand]))
+            asyncio.run(self.engine._post_classify_environment([cand]))
+            asyncio.run(self.engine._post_classify_environment([cand]))
         m.assert_called_once()
         self.assertIsNotNone(self.engine._env_probe)
 
@@ -536,7 +536,7 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
         with mock.patch(
             "core.verify_engine.engine.probe_http_health", return_value=False
         ):
-            probe_out = asyncio.run(engine._post_classify_environment([], scenarios))
+            probe_out = asyncio.run(engine._post_classify_environment(scenarios))
 
         self.assertGreaterEqual(
             probe_out["blocked_env"], 12,

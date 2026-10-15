@@ -81,6 +81,45 @@ def _fsync_dir(path: Path) -> None:
         pass
 
 
+def _atomic_write_json(path: Path, payload: Any, *, tmp_prefix: str) -> None:
+    """mkstemp 原子写盘统一正文（save_attribution 与 build_requeue_manifest
+    共用，code-review item 794cfb6f999c）：同目录临时文件 + fdopen 失败路径
+    接管（cbb57806fbfd 口径）+ flush/fsync + ``os.replace`` + _fsync_dir，
+    异常时清理临时文件后原样上抛。临时文件前缀由调用方传入（归因
+    ``.judge_attr.`` / 回炉清单 ``.requeue.``）；异常降级策略（上抛 / 告警
+    降级返回）属调用方语义，由调用方在捕获侧落实。
+    """
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=tmp_prefix, suffix=".json.tmp"
+    )
+    try:
+        # fdopen 失败路径显式接管（同 maintenance_runs._append_token_run 的
+        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
+        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        os.replace(tmp_path, path)
+        _fsync_dir(path.parent)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def load_attribution(project_root: Path, spec_name: str) -> dict[str, Any] | None:
     """读取 judge 归因产物，自动兼容新旧格式。
 
@@ -189,33 +228,11 @@ def save_attribution(
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".judge_attr.", suffix=".json.tmp")
-    try:
-        # fdopen 失败路径显式接管（同 maintenance_runs._append_token_run 的
-        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
-        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, path)
-        _fsync_dir(path.parent)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    # 原子写盘正文与 build_requeue_manifest 共用 _atomic_write_json（含
+    # fdopen 失败接管 + flush/fsync + os.replace + _fsync_dir + 异常清理临时
+    # 文件，code-review item 794cfb6f999c）；写失败清理后原样抛出（OSError
+    # 或 JSON 序列化异常，由调用方处理）。
+    _atomic_write_json(path, payload, tmp_prefix=".judge_attr.")
 
 
 def get_requeue_scenarios(project_root: Path, spec_name: str) -> list[dict[str, Any]]:
@@ -300,16 +317,12 @@ def build_requeue_manifest(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".requeue.", suffix=".json.tmp"
-        )
     except OSError as exc:
-        # 目录创建/临时文件创建失败与写入失败同样降级，不影响主流程；
-        # 但清单整体丢失比条目剔除后果更重（下轮回炉子集全丢），环境故障
-        # 须可从日志区分，沿用本文件「降级但留痕」口径告警
+        # 目录创建失败与写入失败同样降级，不影响主流程；但清单整体丢失比
+        # 条目剔除后果更重（下轮回炉子集全丢），环境故障须可从日志区分，
+        # 沿用本文件「降级但留痕」口径告警
         logger.warning(
-            "回炉清单写入前置失败（目录/临时文件创建），清单未落盘"
+            "回炉清单写入前置失败（目录创建），清单未落盘"
             "（回炉子集可能丢失）: %s: %s",
             path,
             exc,
@@ -317,33 +330,13 @@ def build_requeue_manifest(
         return manifest
 
     try:
-        # fdopen 失败路径显式接管（同 maintenance_runs._append_token_run 的
-        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
-        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
-            f.flush()
-            # 与 save_attribution 同纪律：replace 前刷数据落盘，防掉电后
-            # rename 到位而内容为空/截断（清单驱动下轮回炉子集，丢失后果
-            # 是回炉信息缺失）
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, path)
-        _fsync_dir(path.parent)
+        # mkstemp/写入/原子落盘正文与 save_attribution 共用 _atomic_write_json
+        # （fdopen 失败接管 + flush/fsync + os.replace + _fsync_dir + 异常
+        # 清理临时文件，code-review item 794cfb6f999c）：replace 前刷数据
+        # 落盘，防掉电后 rename 到位而内容为空/截断（清单驱动下轮回炉子集，
+        # 丢失后果是回炉信息缺失）
+        _atomic_write_json(path, manifest, tmp_prefix=".requeue.")
     except OSError as exc:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
         # 写失败同样降级，不影响主流程；但清单整体丢失比条目剔除后果更重，
         # 沿用本文件「降级但留痕」口径告警（带路径与异常摘要）
         logger.warning(
