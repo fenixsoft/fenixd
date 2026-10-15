@@ -140,11 +140,17 @@ class G2LegacyRegistryMixin:
         无在册遗产时安全返回 False（幂等，不抛异常）；fast-track 车道不走本方法
         （其现场保留经 ``keep_for_reuse`` 已置 reuse，若此处再置不改变语义）。
         """
-        rec = self._legacy.get(spec_name)
-        if rec is None:
-            return False
-        rec["reuse"] = True
-        return True
+        # 读条目与置 reuse 全程持 _spec_lock_th（code-review item 80b803df0a91，
+        # 纪律同 register_legacy）：锁外 get-then-set 与并发 register_legacy /
+        # 陈锁兜底的覆盖登记交错时，get 到的旧 dict 已被顶出册，置位丢失、
+        # reuse 认领失效退化为全新建树。_spec_lock_th 为 threading.Lock 非重入，
+        # 锁内只做字典读判定与写，不调用任何会重复取锁的方法。
+        with self._spec_lock_th:
+            rec = self._legacy.get(spec_name)
+            if rec is None:
+                return False
+            rec["reuse"] = True
+            return True
 
     def keep_for_reuse(self, spec_name: str, wt_path: Path, agent_type: str = "") -> None:
         """保留 worktree 目录与分支，登记供下轮重派继承。
@@ -201,10 +207,19 @@ class G2LegacyRegistryMixin:
         # 认领旧 path，落入正常收尾分支又会把当前 wt_path 误摘活动集成无登记
         # 孤儿。按 path 归属校验取到的确属本次登记才置 reuse，否则归入下方的
         # 登记未生效出口（置 None 复用同一判定，正常/告警两出口结构不变）。
-        if rec is not None and rec.get("path") == wt_str:
-            rec["reuse"] = True
-        else:
-            rec = None
+        # 读条目与置 reuse 收进 _spec_lock_th 临界区（code-review item
+        # 80b803df0a91，纪律同 register_legacy）：register_legacy 返回后锁已
+        # 释放，get 与置位留在锁外时，间隙内并发的覆盖登记（register_legacy /
+        # 陈锁兜底）会把本线程 get 到的 dict 顶出册，置位丢失、reuse 认领失效
+        # 退化为全新建树。锁内只做字典读判定与写（_spec_lock_th 为
+        # threading.Lock 非重入，锁内不调用任何会重复取锁的方法），后续出口
+        # 分支与留痕日志均留在锁外。
+        with self._spec_lock_th:
+            rec = self._legacy.get(spec_name)
+            if rec is not None and rec.get("path") == wt_str:
+                rec["reuse"] = True
+            else:
+                rec = None
         if rec is None:
             # 登记未生效（_wt_branches 与 _guess_branch_from_worktree 双兜底皆空，
             # register_legacy 对空分支直接 return；rec 非 None 时为同 spec 更早的
