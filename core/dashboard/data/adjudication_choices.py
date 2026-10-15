@@ -399,6 +399,16 @@ _assert_registry_consistency()
 SIGNAL_CHANNEL_SIGNAL_TYPES = ("build_artifact_paths_missing",)
 
 
+def _norm_signal_type(signal_type) -> str:
+    """signal_type 归一口径单源：str 后 strip。
+
+    choices_for / is_adjudicable / resolve_choice 三处共用，防止带首尾
+    空白的信号名在「是否注册」判别与选项解析间口径漂移
+    （code-review item b968f70a98cc）。
+    """
+    return str(signal_type or "").strip()
+
+
 def choices_for(signal_type) -> tuple:
     """按 signal_type 查询裁决选项集。
 
@@ -410,13 +420,13 @@ def choices_for(signal_type) -> tuple:
     即便就地改写也只作用于拷贝，不污染注册表（code-review item fb6a53a88d08）。
     """
     return tuple(
-        dict(choice) for choice in ADJUDICATION_CHOICES.get(str(signal_type or ""), ())
+        dict(choice) for choice in ADJUDICATION_CHOICES.get(_norm_signal_type(signal_type), ())
     )
 
 
 def is_adjudicable(signal_type) -> bool:
     """该 signal_type 是否在注册表内（桶 2 真裁决类判别）。"""
-    return str(signal_type or "") in ADJUDICATION_CHOICES
+    return _norm_signal_type(signal_type) in ADJUDICATION_CHOICES
 
 
 def registered_signal_types() -> tuple:
@@ -537,7 +547,7 @@ def resolve_choice(choice_id, signal_type=""):
     # 与 cid 同口径归一：带首尾空白的 signal_type 否则判为未注册、落入全表
     # 反查通道，非作用域动作被放行而同 id + 无空白 signal_type 会按
     # not-in-bucket 拒绝（code-review item 82900e54f287）
-    sig = str(signal_type or "").strip()
+    sig = _norm_signal_type(signal_type)
     for c in ADJUDICATION_CHOICES.get(sig, ()):
         if c.get("id") == cid:
             return dict(c), ""
