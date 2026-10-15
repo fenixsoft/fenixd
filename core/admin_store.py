@@ -1238,6 +1238,14 @@ class DisputeAuditStore:
         self._thread_lock = threading.Lock()
         self._logger = logger
 
+    def _acquire_lock(self):
+        """取跨进程排他锁的 fd（与 AdminStore._lock 同型，单点收敛）。
+
+        只负责 open 锁文件；目录创建由调用方在各自语境下处理（append
+        带容错、read_all 依赖数据文件已存在）。
+        """
+        return self._lockfile.open("w", encoding="utf-8")
+
     def append(self, entry: dict) -> None:
         """追加一条审计记录（排他锁内 append + flush + fsync）。入口字段就地补齐。"""
         # kind/created 为审计默认值，不接受入口覆盖：created 须反映实际落盘
@@ -1250,7 +1258,7 @@ class DisputeAuditStore:
         except OSError:
             pass
         with self._thread_lock:
-            with self._lockfile.open("w", encoding="utf-8") as lf:
+            with self._acquire_lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 try:
                     with self.audit_path.open("a", encoding="utf-8") as f:
@@ -1285,7 +1293,7 @@ class DisputeAuditStore:
         out: list = []
         try:
             with self._thread_lock:
-                with self._lockfile.open("w", encoding="utf-8") as lf:
+                with self._acquire_lock() as lf:
                     fcntl.flock(lf, fcntl.LOCK_EX)
                     try:
                         out = _read_jsonl_locked(self.audit_path)
