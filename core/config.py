@@ -2016,6 +2016,20 @@ class ConfigLoader:
             ):
                 self_heal_quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
 
+        # interrupt-recovery-preserve D1：显式提供的 shutdown_drain_seconds
+        # 非整值浮点回缺省（code-review item e3dbb81371ea）——旧实现经 _num 的
+        # int() 静默截断（1799.9 → 1799；更糟的是 0.5 → 0，语义从「排水 0.5 秒」
+        # 翻转成 0 =「快速停机不排水」），与 narrative_timeout_seconds（item
+        # ed7dedfe5a87）/ run_infra_breaker.threshold（item f03d70778889）/
+        # _normalize_transient_seconds 的「非整值浮点回退缺省」口径对齐。
+        # .nan/.inf 的 is_integer() 恒 False，同在此回缺省（_validate 只拒非
+        # 有限浮点，非整值浮点合法通过加载，本门面是唯一守卫点）。显式 0 仍
+        # 合法（快速停机）、负数仍由下方 max(0, …) 夹 0，既有取值语义不变；
+        # bool 已由 _num 既有护栏回缺省，此处不重复判定。
+        shutdown_drain_raw = admin.get("shutdown_drain_seconds")
+        if isinstance(shutdown_drain_raw, float) and not shutdown_drain_raw.is_integer():
+            shutdown_drain_raw = 1800
+
         return {
             "enabled": enabled,
             "interval_minutes": _num(admin.get("interval_minutes"), 5.0, float),
@@ -2043,9 +2057,7 @@ class ConfigLoader:
             "shutdown_drain_seconds": max(
                 0,
                 _num(
-                    1800
-                    if admin.get("shutdown_drain_seconds") is None
-                    else admin["shutdown_drain_seconds"],
+                    1800 if shutdown_drain_raw is None else shutdown_drain_raw,
                     1800,
                     int,
                 ),

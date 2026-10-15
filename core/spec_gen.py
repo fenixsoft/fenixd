@@ -33,7 +33,13 @@ _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
 def load_schema() -> Dict[str, Any]:
-    """读取 vendored `schema.yaml` 并返回解析后的 dict。"""
+    """读取 vendored `schema.yaml` 并返回解析后的 dict。
+
+    Raises:
+        ValueError: schema 缺 'artifacts'，或某 artifact 条目缺必需键
+            （id/generates/template）。在加载期集中校验，让 schema 漂移
+            可直读定位，而非散落在 status/instructions 里以裸 KeyError 失败。
+    """
     schema_path = SCHEMA_DIR / "schema.yaml"
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
@@ -41,6 +47,23 @@ def load_schema() -> Dict[str, Any]:
         schema = yaml.safe_load(f)
     if not isinstance(schema, dict) or "artifacts" not in schema:
         raise ValueError(f"Invalid schema (missing 'artifacts'): {schema_path}")
+    if not isinstance(schema["artifacts"], list):
+        raise ValueError(
+            f"Invalid schema ('artifacts' is not a list): {schema_path}"
+        )
+    for index, artifact in enumerate(schema["artifacts"]):
+        if not isinstance(artifact, dict):
+            raise ValueError(
+                f"Invalid schema: artifacts[{index}] is not a mapping: {schema_path}"
+            )
+        missing = [key for key in ("id", "generates", "template") if key not in artifact]
+        if missing:
+            # id 缺失时用索引占位，保证错误信息仍可定位到具体条目。
+            label = artifact.get("id", f"#{index}")
+            raise ValueError(
+                f"Invalid schema: artifact '{label}' missing required keys "
+                f"{missing}: {schema_path}"
+            )
     return schema
 
 

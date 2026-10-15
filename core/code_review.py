@@ -2214,8 +2214,9 @@ def _problem_lines(it: dict, detail_prefix: str = "  ") -> List[str]:
     """单条问题的结构化详情块（严重度 / 位置 / 描述 / 建议 / 证据）。
 
     修复 agent 需要问题**内容**而不仅是标题：只给一行标题会丢失
-    description 里的复现路径与建议（2026-09-20 用户反馈）。四字段各自可选
-    ——suggestion 实测大量为空，缺失时整段不渲染。
+    description 里的复现路径与建议（2026-09-20 用户反馈）。严重度与位置由
+    调用方各自渲染，本函数只负责描述/建议/证据三段（各自可选——suggestion
+    实测大量为空，缺失时整段不渲染）。
     """
     lines: List[str] = []
     for label, key in (("问题描述", "description"), ("修复建议", "suggestion"), ("证据", "evidence")):

@@ -174,7 +174,9 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
     - failures: 失败/错误用例列表（name/file/line/time/kind/message）
     - cases: 全部用例（供 extract_long_tests 消费）
 
-    解析失败抛出 ValueError（调用方据此归为 parse_error）。
+    文件缺失抛出 FileNotFoundError；其余解析期文件异常（XML 存在但
+    打开/读取失败等）与格式错误均归一为 ValueError（调用方据此归为
+    parse_error）。
     """
     path = Path(path)
     if not path.is_file():
@@ -184,6 +186,14 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
         tree = ET.parse(str(path))
     except ET.ParseError as e:
         raise ValueError(f"JUnit XML 解析失败: {e}") from e
+    except FileNotFoundError:
+        # 缺失契约保持 FileNotFoundError（测试与调用方分别断言），不归一
+        raise
+    except OSError as e:
+        # code-review item e78e0a401797：文件存在但打开/读取失败（权限、
+        # 被测命令写一半的竞态等）同样归一为 ValueError，否则 OSError
+        # 炸穿 run_regression 捕获元组，整轮回归蒸发且无 parse_error 留痕
+        raise ValueError(f"JUnit XML 无法读取: {e}") from e
 
     root = tree.getroot()
     failures: List[Dict[str, Any]] = []

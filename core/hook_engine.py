@@ -215,10 +215,11 @@ def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
 def _terminate_proc_group(proc: subprocess.Popen) -> Tuple[str, str]:
     """超时强杀进程组并回收（_run_git 与 _action_shell 共享的收尾实现）。
 
-    killpg(SIGKILL) 连孙进程一并回收（ProcessLookupError/PermissionError 回退
-    proc.kill）；复杀后 communicate 仍超时——守护化孙进程（setsid 脱离进程组）
-    继承管道且杀不掉——则关闭读端放弃读取，保证执行线程必然返回。返回已收集
-    的 (out, err)，管道被放弃时为 ("", "")。
+    killpg(SIGKILL) 经自保护守卫连孙进程一并回收（守卫拒绝或组已不存在时
+    静默返回，MUST NOT 再降级单 pid proc.kill）；复杀后 communicate 仍超时
+    ——守护化孙进程（setsid 脱离进程组）继承管道且杀不掉——则关闭读端放弃
+    读取，保证执行线程必然返回。返回已收集的 (out, err)，管道被放弃时为
+    ("", "")。
     """
     # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：getpgid 内联点
     # 收口；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默——MUST NOT
@@ -240,6 +241,25 @@ def _terminate_proc_group(proc: subprocess.Popen) -> Tuple[str, str]:
         except subprocess.TimeoutExpired:
             pass
         return "", ""
+
+
+def _traverses_symlink_dir(root: Path, rel: str) -> bool:
+    """词法相对路径 rel 的目录分量（不含末段）是否含软链。
+
+    子项目布局中项目内 `.fenix/` 是指向框架主树的软链（fenix_session.
+    _normalize docstring）：磁盘上 `.fenix/STATE.md` 经软链恒 exists()，但
+    git 视 `.fenix` 为单个 symlink 文件、不沿目录软链枚举工作区——pathspec
+    `.fenix/STATE.md` 恒「did not match any files」，单一坏 pathspec 即令
+    整条 git add fatal。故磁盘存在性之外还需此类路径可被 git pathspec
+    解析：逐段（不 resolve()，避免被软链牵回主树误判）检查目录分量是否
+    软链，含软链即不可解析。实体目录形态不受影响（逐段均非软链）。
+    """
+    cur = root
+    for comp in Path(rel).parts[:-1]:
+        cur = cur / comp
+        if cur.is_symlink():
+            return True
+    return False
 
 
 def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -1235,9 +1255,9 @@ class HookEngine:
         """解析 commit/commit-push 的 add/commit pathspec（缺省仅收口产物）。
 
         hook 配置 paths 字段为非空字符串列表时原样采用（用户显式扩大范围）；
-        否则用 DEFAULT_COMMIT_PATHS 过滤——仅保留磁盘存在或已有跟踪文件的
-        路径，规避「pathspec matches nothing」令整条 git add fatal（同
-        archive_commit 的处理）。
+        否则用 DEFAULT_COMMIT_PATHS 过滤——仅保留磁盘存在（且不穿越目录软链）
+        或已有跟踪文件的路径，规避「pathspec matches nothing」令整条
+        git add fatal（同 archive_commit 的处理）。
         """
         configured = cfg.get("paths")
         if isinstance(configured, list) and configured and all(
@@ -1246,7 +1266,9 @@ class HookEngine:
             return [p.strip() for p in configured]
         paths: List[str] = []
         for p in DEFAULT_COMMIT_PATHS:
-            if (self.project_root / p).exists():
+            if (self.project_root / p).exists() and not _traverses_symlink_dir(
+                self.project_root, p
+            ):
                 paths.append(p)
                 continue
             try:
@@ -1516,7 +1538,16 @@ class HookEngine:
             except OSError:
                 pass
             return STATUS_FAILURE, f"webhook 非 2xx: HTTP {e.code}"
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+        ) as e:
+            # HTTPException 家族（如读响应体的 IncompleteRead）非 OSError：
+            # 读体失败按请求失败处置（POST 可能已送达），口径对齐
+            # _probe_dashboard——不上抛 _execute_one 通用兜底误报
+            # 「hook 执行异常」
             return STATUS_FAILURE, f"webhook 请求失败: {e}"
         if not (200 <= code < 300):
             return STATUS_FAILURE, f"webhook 非 2xx: HTTP {code}"

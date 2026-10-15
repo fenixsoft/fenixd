@@ -32,6 +32,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.fs_utils import atomic_write_text
+# verify-progress 路径成分净化（读取侧与写侧 engine._safe_component 同口径，
+# code-review item f19f580d2734）：spec_name 含分隔符或纯点成分时，读侧裸拼
+# 会与写侧净化后路径错位，闸门恒判 report.json 缺失。仅收敛 verify-progress
+# 拼接点；spec/changes/<spec_name> 侧路径须与既有 spec 目录名逐字一致，不净化。
+from core.verify_engine.path_safety import safe_component
 
 # 告警 signal_type（human-escalation-alerts 能力，.fenix/admin_alerts.json）
 SIGNAL_MISSING = "verify_report_missing"
@@ -77,7 +82,13 @@ def _atomic_write(path: Path, content: str) -> None:
 
 def _load_report_json(project_root, spec_name):
     """读取验证引擎 report.json；不可用返回 None（不抛出）。"""
-    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
+    path = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "report.json"
+    )
     if not path.exists():
         return None
     try:
@@ -165,7 +176,13 @@ def _sum_verify_chain_tokens(project_root, spec_name):
     """
     if not project_root or not spec_name:
         return None
-    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "tokens.json"
+    path = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "tokens.json"
+    )
     if not path.is_file():
         return None
     try:
@@ -220,7 +237,11 @@ def _iter_run_result_candidates(project_root, spec_name):
         取舍见 ``_load_run_result`` docstring；code-review ad0ebe488d64）。
     """
     primary = (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / ".fenix-run-result.json"
     )
     fallback = Path(project_root) / ".fenix" / ".fenix-run-result.json"
     for path, shared in ((primary, False), (fallback, True)):
@@ -272,7 +293,13 @@ def _load_degrade_context(project_root, spec_name):
     降级标注（G3）。文件缺失/损坏 → 返回 None（零注入零渲染，正常报告不含
     该字段）。
     """
-    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "degrade_context.json"
+    path = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "degrade_context.json"
+    )
     if not path.exists():
         return None
     try:
@@ -293,7 +320,13 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
     报告页/CLI）能还原降级事实与代价。写入失败静默跳过（annotation 是纯观测量，
     不得阻断报告合成主流程）。
     """
-    report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
+    report_path = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "report.json"
+    )
     try:
         data = {}
         if report_path.is_file():
@@ -415,7 +448,13 @@ def current_round_fingerprint(project_root, spec_name):
     新旧，闸门维持「既有报告不改动」的保守行为。
     """
     parts: list[str] = []
-    report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
+    report_path = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "report.json"
+    )
     report = _load_report_json(project_root, spec_name)
     if isinstance(report, dict):
         ts = report.get("timestamp")
@@ -1303,7 +1342,11 @@ _STABILITY_MIN_ROUNDS = 2
 def _verdict_stability_path(project_root, spec_name) -> Path:
     """verdict_stability.json 路径（verify-progress/<spec>/）。"""
     return (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / VERDICT_STABILITY_FILENAME
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / VERDICT_STABILITY_FILENAME
     )
 
 
@@ -1335,7 +1378,11 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
 
     # 2) scenarios.json 内容
     scenarios_path = (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "scenarios.json"
     )
     try:
         parts.append(scenarios_path.read_bytes())
@@ -1350,7 +1397,13 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
 
 def report_mtime_ns(project_root, spec_name) -> int | None:
     """report.json mtime 纳秒；缺失返回 None（用于稳定性缓存判据）。"""
-    report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
+    report_path = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "report.json"
+    )
     try:
         return report_path.stat().st_mtime_ns
     except OSError:

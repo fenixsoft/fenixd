@@ -1306,9 +1306,12 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
     不核销则登记块成孤儿（proposal 实证 2026-10-08：带外解除删记录后
     登记块无人核销、正文损毁成裸标题壳）。核销 needle 整行精确匹配，
     防同批子集与「清单为其前缀扩展」的他批登记块误命中。仅整批删除
-    触发核销；部分解除（收缩）剩余条目仍在册仍跳过，登记块留待既有
-    consume 闭环。fix-failed 锁与 todo 锁是两把锁、不嵌套（核销在
-    _with_lock 返回、fix-failed 锁已释放后执行）；核销 best-effort、
+    触发核销；部分解除（收缩）剩余条目仍在册仍跳过、登记块不同步核销，
+    但 ids 行同步收缩为记录当前清单（_rewrite_todo_entry_ids）——否则剩余
+    条目全部终态时既有 consume 的整行锚对触顶时写入的全集行永不命中，
+    登记块滞留成孤儿（code-review item f60e3189e664）。fix-failed 锁与
+    todo 锁是两把锁、不嵌套（核销/收缩同步在 _with_lock 返回、fix-failed
+    锁已释放后执行）；核销 best-effort、
     OSError 容错同 _append_todo_entry 口径（失败不阻断解除主流程），
     后果由留痕行 todo_result 字段审计。登记块已损毁成裸标题壳时由
     _rewrite_todo_entry_consumed 既有兜底移除（不新造、不波及他批块）。
@@ -1336,6 +1339,7 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
             released = 0
             changed = 0
             batches: list = []
+            shrunk: list = []
             for rec in records:
                 # item_ids 形态守卫（code-review item 3bf751ec88d9，对齐
                 # _record_item_ids 先判后拷纪律）：坏档非列表标量直接迭代
@@ -1350,6 +1354,9 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
                     rec["item_ids"] = ids
                     kept.append(rec)  # 部分解除，保留余量
                     changed += 1
+                    # 收缩对（原全集 → 收缩后清单）：登记块 ids 行据此同步
+                    # 收缩，保住既有 consume 的整行核销锚可达（f60e3189e664）。
+                    shrunk.append(([str(i) for i in rec_ids], ids))
                 else:
                     released += 1  # 整批解除
                     # 记录整批删除 → 收集其实际条目清单（非请求超集）：
@@ -1361,9 +1368,9 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
                     path,
                     json.dumps(kept, ensure_ascii=False, indent=2),
                 )
-            return released, batches
+            return released, batches, shrunk
 
-        released, released_batches = _with_lock(path, _do)
+        released, released_batches, shrunk_batches = _with_lock(path, _do)
         # 整批删除成功 → 同一调用序列内 best-effort 核销 todo 登记块
         # （1.1）。此刻 fix-failed 锁已随 _with_lock 返回释放，todo 锁
         # （.fenix/.todo.md.lock）独立持有，两把锁不嵌套、无锁序风险；
@@ -1383,6 +1390,13 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
                 ),
             ):
                 todo_consumed = False
+        # 部分解除收缩同步（code-review item f60e3189e664）：登记块 ids 行
+        # 原位收缩为记录当前清单——剩余条目全部终态时既有 consume 凭收缩后
+        # 行整行命中闭环（触顶时写入的全集行对收缩后记录永不命中）。todo 锁
+        # 独立、此刻 fix-failed 锁已释放（同上方整批核销）；best-effort，
+        # OSError 由重写器内部容错（返回 False 不上穿），不阻断解除主流程。
+        for old_rec_ids, new_ids in shrunk_batches:
+            _rewrite_todo_entry_ids(project_root, old_rec_ids, new_ids)
     # 留痕锁外写（异文件，不占 fix-failed 锁；无条件含零命中调用），
     # todo_result 携核销结果（1.3）：consumed=整批解除且登记块已核销 /
     # not_found=未核销（含零命中、部分解除不触发核销、块缺失、todo 写
@@ -1463,6 +1477,23 @@ def _append_release_trace(
             pass
 
 
+def _evidence_item_ids(evidence) -> set:
+    """从告警 evidence 串解析 ``item_ids=<清单>;`` 字段为 id 集合（无字段空集）。
+
+    字段形态由 _write_retry_exhausted_alert 写入（分号分隔字段、item_ids=
+    恰出现一次）；解析口径对齐 core.admin_store.evidence_project 先例。
+    """
+    for seg in str(evidence or "").split(";"):
+        seg = seg.strip()
+        if seg.startswith("item_ids="):
+            return {
+                p.strip()
+                for p in seg[len("item_ids="):].split(",")
+                if p.strip()
+            }
+    return set()
+
+
 def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> int:
     """核销时收口对应 code_fix_retry_budget_exhausted 告警（1.2）。
 
@@ -1470,13 +1501,28 @@ def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> 
     仅 evidence 文本含 ``item_ids=<清单>``），经 read_all 过滤 signal_type 后按
     evidence 内 ``item_ids=<清单>;`` 精确子串匹配——带分号后缀避免条目集
     前缀的批间误命中（``item_ids=a, b`` 是 ``item_ids=a, b, c`` evidence 的
-    前缀子串）。action_taken 附终态分布注记；已 handled 告警跳过（重复核销
-    幂等）。告警收口失败不回滚核销记账（核销为只增记账动作），仅 logger
-    （可选）留痕。返回收口条数。
+    前缀子串）。部分解除收缩记录清单后（code-review item f60e3189e664）
+    精确锚对触顶时写入的全集名录永不命中、告警成孤儿，追加收缩兜底：
+    evidence 名录**包含**记录当前清单（真超集）且多出条目不属于任何其他
+    未核销记录（收口不得连带剥掉他批登记的唯一人工关注信号）时同样放行；
+    名录多出条目全部已出册（被解除/已随他批终态），不再有在册归属。卸下
+    精确锚的既有批间语义不变。action_taken 附终态分布注记；已 handled 告警
+    跳过（重复核销幂等）。告警收口失败不回滚核销记账（核销为只增记账动
+    作），仅 logger（可选）留痕。返回收口条数。
     """
     from core.admin_store import AdminStore, SIGNAL
 
+    ids_set = {str(i) for i in item_ids}
     needle = f"item_ids={', '.join(str(i) for i in item_ids)};"
+    # 收缩兜底的误收口守卫判据：其他未核销记录的条目清单（本记录此刻已置
+    # consumed_at，天然不在其中；load_failed_batches 对坏档 fail-open）。
+    other_pending: list = []
+    for rec in load_failed_batches(project_root):
+        if not rec.get("consumed_at"):
+            raw = rec.get("item_ids")
+            other_pending.append(
+                {str(i) for i in raw} if isinstance(raw, list) else set()
+            )
     closed = 0
     try:
         store = AdminStore(project_root, logger=None)
@@ -1487,8 +1533,17 @@ def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> 
                 continue
             if rec.get("handled"):
                 continue
-            if needle not in str(rec.get("evidence") or ""):
-                continue
+            evidence_txt = str(rec.get("evidence") or "")
+            if needle not in evidence_txt:
+                ev_ids = _evidence_item_ids(evidence_txt)
+                if not (
+                    ids_set
+                    and ids_set < ev_ids
+                    and not any(
+                        p & (ev_ids - ids_set) for p in other_pending
+                    )
+                ):
+                    continue
             if store.mark_signal_handled(
                 rec.get("id"),
                 action_taken=(
@@ -1571,6 +1626,42 @@ def _rewrite_todo_entry_consumed(
             i = j
         if changed:
             _atomic_write(todo_path, "".join(out))
+        return changed
+
+    try:
+        return _with_lock(todo_path, _rewrite_locked)
+    except OSError:
+        return False
+
+
+def _rewrite_todo_entry_ids(project_root, old_ids, new_ids) -> bool:
+    """部分解除时把登记块的 ids 行同步收缩为记录当前清单（收缩口径）。
+
+    定位锚与核销重写器同款（ids 行**整行精确匹配**，防前缀子串误命中他批
+    登记块），仅把命中行原位替换为收缩后清单行——块保持待核销态。不收缩
+    则剩余条目全部终态时，既有 consume 的整行锚对触顶时写入的全集行永不
+    命中，登记块滞留成孤儿（code-review item f60e3189e664）。持
+    ``.fenix/.todo.md.lock`` 同锁，OSError 容错与 _rewrite_todo_entry_consumed
+    同口径（同步失败不阻断解除主流程）。行不存在（块已核销/未登记/已手工
+    改动）返回 False。
+    """
+    todo_path = Path(project_root) / ".fenix" / "todo.md"
+    old_line = f"{_TODO_ENTRY_IDS_LINE}{', '.join(str(i) for i in old_ids)}"
+    new_line = f"{_TODO_ENTRY_IDS_LINE}{', '.join(str(i) for i in new_ids)}\n"
+
+    def _rewrite_locked() -> bool:
+        try:
+            text = todo_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        lines = text.splitlines(keepends=True)
+        changed = False
+        for idx, line in enumerate(lines):
+            if line.rstrip("\r\n") == old_line:
+                lines[idx] = new_line
+                changed = True
+        if changed:
+            _atomic_write(todo_path, "".join(lines))
         return changed
 
     try:
@@ -2724,6 +2815,37 @@ def _split_fix_rows(rows: list) -> tuple:
     return fixed_ids, skip_reasons
 
 
+def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids) -> tuple:
+    """LLM 拒绝出口共用分区（批收尾合回路径与定向重试耗尽收口共用）。
+
+    读取首轮与各定向轮产物行**并集**（定向轮产物是独立文件
+    ``fix-out-<retry_run_id>.jsonl``：首轮与各定向轮改动都落在同一 worktree、
+    随同一次收尾出账，只读首次 run 会漏掉「重试才修复/重试才标注」的条目）
+    → ``_split_fix_rows`` 分区 → 本批 ``item_ids`` 批界过滤（mark_ignored
+    对命中 id 无条件置终态、无批界保护，agent 产物行带出的批外 open 条目
+    MUST NOT 被置终态，与核销前 batch_set 守卫同口径）→ ``mark_ignored``
+    置终态。
+
+    返回 ``(ignored 命中数, ignore_set, fixed_ids)``：链级核销计数累加
+    （``_chain_bump``）与批内排除集续接由调用方按各自收尾语义完成。模块内
+    去重（code-review item a65abf0929ce）：白名单/后行覆盖/批界过滤的判定
+    口径单源，两条收尾路径不再各自复刻（86cf2dca9179 的不拆分裁决针对跨
+    模块抽取，不适用于此）。
+    """
+    rows = read_fix_out(wt, run_ids[0]) if run_ids else []
+    for rid in run_ids[1:]:
+        rows.extend(read_fix_out(wt, rid))
+    fixed_ids, skip_reasons = _split_fix_rows(rows)
+    batch_set = set(batch_item_ids)
+    ignore_ids = [i for i in skip_reasons if i in batch_set]
+    ignored = (
+        mark_ignored(root, ignore_ids, reasons=skip_reasons)
+        if ignore_ids
+        else 0
+    )
+    return ignored, set(ignore_ids), fixed_ids
+
+
 def _worktree_commit_count(worktree, created_sha: str):
     """worktree 分支相对建树点的提交数（零有效修复守卫的 git 侧判据，5.8）。
 
@@ -2768,7 +2890,15 @@ def _worktree_head(worktree) -> str:
 
 
 def _worktree_branch(worktree) -> str:
-    """worktree 分支名（失败档案的追溯线索之一，selfheal D2；异常返回空串）。"""
+    """worktree 分支名（失败档案的追溯线索之一，selfheal D2；判据不可得返回空串）。
+
+    rev-parse 失败（无提交仓库/引用解析失败）时 git 会向 stdout 输出字面量
+    "HEAD" 且退出码非零——只取 stdout 会把垃圾值当分支名返回（写入失败档案
+    /延迟台账的 branch 追溯字段、甚至成为 _salvage_restore_branch 的 checkout
+    目标而分离头），对齐 ``_worktree_head``/``_branch_head`` 口径按非零退出
+    返回空串（code-review item 8793c23ff014），由调用方既有「判据不可得」
+    分支兜底。
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -2776,6 +2906,8 @@ def _worktree_branch(worktree) -> str:
             text=True,
             timeout=30,
         )
+        if out.returncode != 0:
+            return ""
         return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -2834,12 +2966,19 @@ def _git_try(worktree, args: list, timeout: float = 120):
     """worktree 内跑一条 git 命令，返回 CompletedProcess。
 
     超时/OSError 返回 None——调用方按「判据不可得」保守处理（救回降级/放弃，
-    回落既有整批入档案兜底），MUST NOT 向批 worker 上抛。"""
+    回落既有整批入档案兜底），MUST NOT 向批 worker 上抛。text 解码按
+    ``errors="replace"`` 容错（对齐同模块 read_fix_out/_read_run_metrics 纪律，
+    code-review item 83e76f5ab735）：git 输出含非 UTF-8 字节（提交消息原文
+    可含任意字节）时，严格解码会在 run() 内部抛 UnicodeDecodeError——既非
+    OSError 也非 SubprocessError，不在本函数捕获面内，会直接上穿炸掉救回与
+    收尾流程；容错后坏字节只废该条输出。
+    """
     try:
         return subprocess.run(
             ["git", "-C", str(worktree), *args],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
@@ -3893,6 +4032,15 @@ class CodeFixOrchestrator:
         两个回退出口返回消毒副本（add-codefix-test-targets-fallback-
         sanitization）：cmd 含占位符时替换为缺省 ``tests/`` 后再执行，无
         占位符 spec 原样返回——回退路径不再把字面占位符透传给执行层。
+
+        第三个返回值（targets）仅供定向轮的 FENIX_TEST_TARGETS 同值双轨导出
+        与救回重跑复用，两个回退出口恒返回空列表：回退全量语义下 MUST NOT
+        导出该环境变量——env 形态 cmd（收集通道写作
+        ``${FENIX_TEST_TARGETS:-缺省}``，占位符以注释哨兵形态 inert 存在）
+        的实际收集面由它驱动，导出首轮映射的陈旧 targets 会把声明的「全量」
+        静默收窄成子集、不可映射的失败用例未复跑即合回（code-review item
+        5f88b3b78f7c）；不导出时 env 形态 cmd 按自身缺省目标收集，与占位符
+        形态的消毒语义对齐。
         """
         if is_last_batch or not self._targeted_regression_enabled():
             return _sanitize_test_targets(reg_spec), False, []
@@ -3914,7 +4062,9 @@ class CodeFixOrchestrator:
         # [fenix-ignore:f87f64aeca2e] 回退出口已经 _sanitize_test_targets 消毒：
         # 占位符替换为缺省 tests/ 再执行（add-codefix-test-targets-fallback-
         # sanitization），字面占位符不再透传执行层，问题不成立
-        return _sanitize_test_targets(reg_spec), False, targets
+        # targets 恒返回空列表：回退全量不导出 FENIX_TEST_TARGETS（env 形态
+        # cmd 不被首轮映射的陈旧目标集收窄，item 5f88b3b78f7c）。
+        return _sanitize_test_targets(reg_spec), False, []
 
     def _code_fix_running(self) -> bool:
         """在途判据：编排器单飞标记或 runner 侧存在 code-fix- 前缀 run。"""
@@ -4066,6 +4216,12 @@ class CodeFixOrchestrator:
             deferred_done, deferred_msg = self._process_deferred_merges()
             total_open = count_open_items(root)
             if total_open == 0:
+                # 失败登记闭环核销（code-review item 3798ed26db5c）：空转车道
+                # 此后不再产生新链启动簿记块，被跳过条目被人工在台账侧全部置
+                # 终态后，本收敛 checkpoint 是唯一收敛写点——在此即时核销，
+                # 失败登记/todo 登记块/告警不再滞留到未来某次新链启动（项目
+                # 不再产生新发现时即无限期滞留）。fail-open，不阻断收敛出口。
+                self._consume_failed_registrations(root)
                 # 链收尾（无 open 条目）：进度落 running=false（若曾有链）；
                 # 链上状态（授权旗标/链内跳过集）随链终止一并清除。本轮刚有
                 # 延迟批核销时 current 携带其结果文案（spec：进度显示「延迟批
@@ -6285,11 +6441,14 @@ class CodeFixOrchestrator:
                 # 回退路径消毒（add-codefix-test-targets-fallback-sanitization）：
                 # 重试轮两态（mapped 真假）原共用 ctx 原件 reg_spec，占位符
                 # 在参数位时字面透传必挂——统一改用消毒副本（无占位符零
-                # 迁移），并纳入 FENIX_TEST_TARGETS 窗口（targets 非空保持
-                # 同值双轨；消毒后 cmd 已无占位符，窗口对 cmd inert）。
-                # mapped 态子集语义不受影响：subset_nodeids 由门面按消毒后
-                # cmd 的既有收集目标替换（消毒后 tests/ 成为可替换目标）。
-                with _with_test_targets_env(targets):
+                # 迁移）。FENIX_TEST_TARGETS 窗口只在 mapped 态进入：env 形态
+                # cmd 的实际收集通道就是该变量，mapped=False 声明全量重试时
+                # 仍导出首轮映射的陈旧 targets 会把收集面静默收窄成子集、
+                # 不可映射的失败用例未复跑即合回（code-review item
+                # 5f88b3b78f7c）。mapped 态子集语义不变：subset_nodeids 由
+                # 门面按消毒后 cmd 的既有收集目标替换（消毒后 tests/ 成为
+                # 可替换目标），targets 保持同值双轨。
+                with _with_test_targets_env(targets if mapped else []):
                     reg = runner.run_regression(
                         _sanitize_test_targets(reg_spec),
                         reason="code-fix", project_root=wt, lock_root=root,
@@ -6368,28 +6527,17 @@ class CodeFixOrchestrator:
                 branch = _worktree_branch(wt)
                 # LLM 拒绝出口在耗尽路径同样生效（code-review item
                 # 95a9442e0a55）：本路径提前 return，到不了下方合回路径的产物
-                # 行分区/mark_ignored——入档前补读产物行（首轮 + 各定向轮
-                # 并集，与合回路径同口径）做同款分区，把 skipped 且标注误报/
-                # 不值得修的条目先置 ignored 终态（链级核销计数同口径累加），
-                # 再从入档集合排除——已终态条目 MUST NOT 随批烧 fail_count
-                # 预算/进告警名录（与 merge_back_conflict 路径 pending_ids
-                # 排除 ignored 的口径一致）。
-                exhaust_rows = read_fix_out(wt, result.run_id)
-                for rid in attempt_run_ids:
-                    exhaust_rows.extend(read_fix_out(wt, rid))
-                _, exhaust_skips = _split_fix_rows(exhaust_rows)
-                exhaust_batch = set(item_ids)
-                exhaust_ignore_ids = [
-                    i for i in exhaust_skips if i in exhaust_batch
-                ]
-                exhaust_ignored = (
-                    mark_ignored(root, exhaust_ignore_ids, reasons=exhaust_skips)
-                    if exhaust_ignore_ids
-                    else 0
+                # 行分区/mark_ignored——入档前走与合回路径共用的
+                # _apply_llm_reject_exits（首轮 + 各定向轮并集，同款分区），
+                # 把 skipped 且标注误报/不值得修的条目先置 ignored 终态（链级
+                # 核销计数同口径累加），再从入档集合排除——已终态条目 MUST
+                # NOT 随批烧 fail_count 预算/进告警名录（与 merge_back_conflict
+                # 路径 pending_ids 排除 ignored 的口径一致）。
+                exhaust_ignored, exhaust_ignore_set, _ = _apply_llm_reject_exits(
+                    root, wt, [result.run_id, *attempt_run_ids], item_ids
                 )
                 if exhaust_ignored:
                     self._chain_bump(root, chain_ignored=exhaust_ignored)
-                exhaust_ignore_set = set(exhaust_ignore_ids)
                 archive_ids = [
                     iid for iid in item_ids if iid not in exhaust_ignore_set
                 ]
@@ -6480,25 +6628,14 @@ class CodeFixOrchestrator:
         # 5.8 零有效修复守卫（合回之前）：产物行至少一条 fixed 且分支相对
         # 建树点有提交。merge_back 对「分支已是 HEAD 祖先」返回成功——无此
         # 守卫，全 skipped 的批会以「零改动合并成功 + 回归必过」白洗 resolved。
-        rows = read_fix_out(wt, result.run_id)
-        if attempt_run_ids:
-            # 定向轮产物是独立文件（fix-out-<retry_run_id>.jsonl）：首轮与
-            # 各定向轮改动都落在同一 worktree、随同一次合回进主树，故核销按
-            # **并集**口径；只读首次 run 会漏掉「重试才修复」的条目（已合回
-            # 却仍留 open，被反复重派）。
-            for rid in attempt_run_ids:
-                rows.extend(read_fix_out(wt, rid))
         # LLM 拒绝出口（2026-09-23）：skipped 且显式标注可忽略原因的条目在
         # 批收尾即置 ignored 终态（不等合回——ignored 与代码变更无关），从
         # 本批后续的失败档案/chain_skipped 集合中排除（已终态，MUST NOT 随批
-        # 作废被重试重做）。分区口径见 _split_fix_rows。
-        fixed_ids, skip_reasons = _split_fix_rows(rows)
-        # mark_ignored 对命中 id 无条件置 ignored 终态（无批界保护），先以
-        # 本批 item_ids 过滤——agent 产物行带出的批外 open 条目不置终态
-        # （与下方核销前 batch_set 守卫同口径）。
-        batch_set = set(item_ids)
-        ignore_ids = [i for i in skip_reasons if i in batch_set]
-        ignored = mark_ignored(root, ignore_ids, reasons=skip_reasons) if ignore_ids else 0
+        # 作废被重试重做）。产物行并集读取/分区/批界过滤/mark_ignored 走与
+        # 定向重试耗尽收口共用的 _apply_llm_reject_exits（单源判定口径）。
+        ignored, ignore_set, fixed_ids = _apply_llm_reject_exits(
+            root, wt, [result.run_id, *attempt_run_ids], item_ids
+        )
         # 链级核销计数累加（2.1）：以 mark_ignored 真实命中为准（条目计数与
         # 台账核销一致），rollup 时点读出。
         if ignored:
@@ -6507,7 +6644,6 @@ class CodeFixOrchestrator:
         # ignored 终态可能补齐某失败登记的全终态判定，核销点即时检查
         # （fail-open，不阻断批收尾主流程）。
         self._consume_failed_registrations(root)
-        ignore_set = set(ignore_ids)
         pending_ids = [iid for iid in item_ids if iid not in ignore_set]
         # 建树点瞬时失败兜底（code-review item e992bc1af898）：created_sha 为
         # 空串会使提交数判据恒按 0 处理（有效修复批被误判拒合回），先对

@@ -297,7 +297,13 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     # 端口被并发进程抢占会致实例启动失败。hold_free_port 占住端口直到下方
     # Popen 前一刻才释放（任意 shell 命令无法经 fd 移交继承绑定，空窗收敛
     # 到 close→spawn 一瞬；与 _serve_command_in_main 同构，两侧改动须同步）。
-    _port_holder = hold_free_port()
+    # code-review 36ef6311efcc：端口分配失败（_bind_retry 3 次 bind 仍
+    # OSError：fd/临时端口耗尽等）走既有 (False, False, err) 失败路径，
+    # 由调用方可达性 fail-fast 升级通道兜底，不炸穿阶段 2.5。
+    try:
+        _port_holder = hold_free_port()
+    except OSError as e:
+        return False, False, f"验证端口分配失败: {e}"
     port = _port_holder.getsockname()[1]
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
     # 启动前监听快照（跳过既有实例端口）。cmd 引用 {port} 后两者皆不需要
@@ -488,7 +494,13 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     # 端口被并发进程抢占会致实例启动失败。hold_free_port 占住端口直到下方
     # Popen 前一刻才释放（任意 shell 命令无法经 fd 移交继承绑定，空窗收敛
     # 到 close→spawn 一瞬；与 _serve_command_in_worktree 同构，两侧改动须同步）。
-    _port_holder = hold_free_port()
+    # code-review 36ef6311efcc：端口分配失败（_bind_retry 3 次 bind 仍
+    # OSError：fd/临时端口耗尽等）走既有 (False, False, err) 失败路径，
+    # 由调用方可达性 fail-fast 升级通道兜底，不炸穿阶段 2.5。
+    try:
+        _port_holder = hold_free_port()
+    except OSError as e:
+        return False, False, f"验证端口分配失败: {e}"
     port = _port_holder.getsockname()[1]
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
     # 启动前监听快照（跳过既有实例端口）。cmd 引用 {port} 后两者皆不需要
@@ -1019,7 +1031,10 @@ def _collect_scenario_entry_urls(pipeline, data) -> tuple:
                 u = str(step.get("url") or "")
             else:
                 continue
-            if u.startswith("http") and u not in urls:
+            # code-review 1b58822fd4c0：仅认 http/https 绝对 URL（与下方
+            # urlparse hostname 归一口径对齐），"httpx" 等以 http 开头的
+            # 非 URL 文本不再误入 urls→external_urls 触发误导性外链告警
+            if u.startswith(("http://", "https://")) and u not in urls:
                 urls.append(u)
 
     probe_urls: list[str] = []
@@ -1300,7 +1315,13 @@ def _legacy_selfheal_start(
         # 释放，预检到 Popen 之间存在 TOCTOU 窗口。hold_free_port 占住端口
         # 直到下方 Popen 前一刻才释放（任意 shell 命令无法经 fd 移交继承
         # 绑定，空窗收敛到 close→spawn 一瞬）。
-        _port_holder = hold_free_port()
+        # code-review 36ef6311efcc：分配失败（_bind_retry 3 次 bind 仍
+        # OSError）走 (False, False, err) 失败路径交调用方升级通道兜底；
+        # _port_holder 已在上方置 None，早退分支的 close 守卫不受影响。
+        try:
+            _port_holder = hold_free_port()
+        except OSError as e:
+            return False, False, f"验证端口分配失败: {e}"
         injected_port = _port_holder.getsockname()[1]
         start_cmd = start_cmd.replace("{port}", str(injected_port))
         base_port = injected_port
@@ -1334,11 +1355,13 @@ def _legacy_selfheal_start(
                 "产物已生成后重验"
             ),
         )
-        pipeline._escalate_env_blocked(
-            spec_name,
-            [preflight_err],
-            title="验证环境阻塞（入口存在性预检失败）",
-        )
+        # code-review c8a27355ed68：升级统一收敛到调用方单点（pipeline 可达性
+        # fail-fast 短路处的 _escalate_env_blocked，infra_retry 车道决议）——
+        # 本分支内层全价升级会与调用方同轮双升级（首轮即写 blocked+呼叫
+        # admin，击穿 infra-retry 廉价重派车道），且同轮双计
+        # _verify_infra_rounds（infra_classify 两分支共用唯一入账点，
+        # 调用方 MUST NOT 二次调用）。与 _serve_command_in_worktree/_main
+        # 预检分支「仅写 verify_contract_missing、升级交调用方」口径对齐。
         # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
         # （对齐正常路径 Popen 前显式 close；本路径仅 {port} 注入时持有）
         if _port_holder is not None:

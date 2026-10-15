@@ -199,6 +199,15 @@ class EventBus:
         线程句柄由 EventBus 持有（``_initial_scan_thread``），``stop()`` 收口语义
         覆盖它。
         """
+        # 线程存活复用守卫（code-review item 3d35d7b0be10）：对齐 start() 中
+        # _watch_thread/_scan_thread 的同族防线（item de45aae4e422）。stop() 对
+        # 初扫线程仅 join(timeout=1)，长扫描下 join 超时后线程仍存活；同一实例
+        # stop() 后再 start()+start_initial_scan() 若无条件另起，会与旧初扫线程
+        # 并发双跑 _run_full_scan_body（dispatch + recovery 翻倍）。守卫只看线程
+        # 存活、不看 _running（与 start() 先例同口径）。
+        if self._initial_scan_thread and self._initial_scan_thread.is_alive():
+            self.logger.info("event_bus", "Initial scan thread still alive, reusing it")
+            return
         self._initial_scan_thread = threading.Thread(
             target=self._run_full_scan_body,
             name="fenixd-initial-scan",

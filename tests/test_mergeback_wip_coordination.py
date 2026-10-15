@@ -749,5 +749,73 @@ class TestSessionAttributionCoordination(unittest.TestCase):
         self.assertIn(WipOccupantInfo.BLIND_SPOT_NOTE, evidence)
 
 
+class TestAdminMonitorIngestion(unittest.TestCase):
+    """写入侧 → AdminMonitor 摄取唤起端到端（code-review item b4074810e49e）。
+
+    code-fix 直发的 mergeback_wip_orphan_stuck 记录固定 spec=None、evidence 以
+    「项目名=」开头——_detect_family_explosion 的「项目名=」解析白名单须收录
+    该类型：漏配时 spec 保持 None 被静默丢弃且未 mark_escalated（每轮巡检
+    重复丢弃），「MUST NOT 无限期静默等待」的人工升级通道静默落空。
+    """
+
+    _STYPE = "mergeback_wip_orphan_stuck"
+
+    def test_written_record_ingested_and_invoked_once(self):
+        from core.admin_monitor import SIGNAL, AdminMonitor
+        from core.admin_store import AdminStore, evidence_project
+        from core.code_fix import _write_defer_orphan_alert
+
+        proot = _make_project_root()
+        # 写入侧：code-fix defer 消费者直发（真实 AdminStore 落盘，非手搓记录）
+        _write_defer_orphan_alert(
+            proot,
+            ["i1"],
+            [("a.tsx", "both")],
+            branch="fenix/spec-x-1700000000",
+            tip_sha="abc1234",
+            grace_minutes=30,
+            owner_note="无主（在飞实现车道分支改动集零命中）",
+            logger=_FakeLogger(),
+        )
+        store = AdminStore(proot, None)
+        recs = [
+            r for r in store.read_all() if r.get("signal_type") == self._STYPE
+        ]
+        self.assertEqual(
+            len(recs), 1, "写入侧须恰落一条 mergeback_wip_orphan_stuck 记录"
+        )
+        rec = recs[0]
+        self.assertEqual(rec.get("kind"), SIGNAL)
+        self.assertIsNone(rec.get("spec"), "写入侧固定 spec=None（批无 spec 可归属）")
+        # 摄取门前提：evidence 以「项目名=」开头且可解析出项目名
+        self.assertTrue((rec.get("evidence") or "").startswith("项目名="))
+        self.assertEqual(evidence_project(rec.get("evidence") or ""), proot.name)
+
+        class _SM:
+            def read_one(self, spec):
+                return {}
+
+        mon = AdminMonitor({}, _SM(), proot, _FakeLogger(), store=store)
+        with mock.patch.object(
+            mon, "_invoke_administrator", return_value=None,
+        ) as invoke:
+            raw = mon._detect_family_explosion()
+        self.assertEqual(
+            len(raw), 1, "记录须被摄取（项目名解析出 spec），不得静默丢弃"
+        )
+        self.assertEqual(raw[0]["signal_type"], self._STYPE)
+        self.assertEqual(raw[0]["spec"], proot.name)
+        # 摄取即 mark_escalated（同记录只唤起一次，下一巡检周期不再重捞）
+        marked = [
+            r for r in store.read_all()
+            if r.get("signal_type") == self._STYPE and r.get("escalated")
+        ]
+        self.assertEqual(len(marked), 1, "摄取须 mark_escalated 防重复捞取")
+        self.assertEqual(invoke.call_count, 1)
+        # 二次巡检不重复摄取唤起
+        with mock.patch.object(mon, "_invoke_administrator", return_value=None):
+            self.assertEqual(mon._detect_family_explosion(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

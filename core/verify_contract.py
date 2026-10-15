@@ -2398,6 +2398,8 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     True
     >>> resolve_entry_path("node ~/server.js", Path("/prj")) is None
     True
+    >>> resolve_entry_path("node dist/servers/*.js", Path("/prj")) is None
+    True
     """
     if not cmd or not isinstance(cmd, str):
         return None
@@ -2438,6 +2440,13 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
         # 对字面路径必然落空——按「无法静态解析」跳过预检，与引号不配对
         # 分支同口径（零误杀，spawn 后交给既有探活兜底）。
         if "$" in arg or arg.startswith("~"):
+            return None
+        # glob 通配符形态（code-review item d64ab4da5a96）：serve.cmd 写
+        # ``node dist/servers/*.js`` 这类 glob 启动时由 shell 展开本可正常
+        # 启动，静态存在性检查对字面路径必然落空（把字面量当入口会 spawn 前
+        # 误报「入口不存在」拦截本可正常启动的服务）——与 $VAR/~ 分支同口径
+        # 按「无法静态解析」跳过预检（零误杀，spawn 后交给既有探活兜底）。
+        if any(ch in arg for ch in "*?["):
             return None
         # 名单之外的未知取值 flag 兜底：非脚本扩展名结尾的候选无法机械判定
         # 为入口 → 跳过预检（零误杀）
@@ -2529,7 +2538,9 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
        同 ``validate_contract`` 第 2 步口径）；
     3. ready 探测鉴别力自检：``base_url`` 非空时复用 ``probe_ready``
        （含 SPA fallback 无鉴别力判定）；为空则跳过（无实例，不起实例）；
-    4. 通过 → 写 mtime 快照；失败 → 返回错误串（含段落与原因）且不写快照
+    4. 通过 → 写 mtime 快照（仅第 3 步实际执行过——``base_url`` 非空——时
+       落快照；为空的通过路径不落，避免无实例轮次把鉴别力自检在该契约
+       代际内永久旁路）；失败 → 返回错误串（含段落与原因）且不写快照
        （下轮 mtime 仍落后，自动重证）。
 
     Returns:
@@ -2594,7 +2605,10 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
         if not serve.cmd:
             return "轻量自证失败（serve 段）: serve.cmd 为空（kind=command 必填）"
 
-    # 3. ready 探针鉴别力自检（仅现存可达实例，不起实例）
+    # 3. ready 探针鉴别力自检（仅现存可达实例，不起实例）。ran_ready_check
+    # 记录鉴别力自检是否实际执行（code-review item c8b16b879684）：仅执行过
+    # 才在第 4 步落快照。
+    ran_ready_check = bool(base_url)
     if base_url:
         # 消费期探测窗口钳制（code-review item bf322f67f5dd）：base_url 非空只
         # 代表上游记录过地址，实例可能已被回收——直接复用 probe_ready 会按契约
@@ -2613,14 +2627,19 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
         if not ok:
             return f"轻量自证失败（ready 鉴别力）: {note}"
 
-    # 4. 通过 → 写 mtime 快照
-    try:
-        (project_root / ".fenix" / "verify-serving").mkdir(parents=True, exist_ok=True)
-        # 非原子写（本文件 rewrite_scenarios_origin 用 mkstemp+fsync+os.replace）：
-        # 快照损坏由上方读取侧 except Exception 容错兜住（照常重证，代价仅多
-        # 一轮自证），低价值快照不为此引入原子写复杂度（item 79fdee435fdc）。
-        selfcheck_path.write_text(json.dumps({"mtime_ns": mtime_ns}), encoding="utf-8")
-    except OSError as e:
-        if logger:
-            logger.warning("verify_contract", f"契约自证快照写入失败（下轮重证）: {e}")
+    # 4. 通过 → 写 mtime 快照。base_url 为空（实例暂不可达/记录已回收）的
+    # 通过路径不落快照（code-review item c8b16b879684）：否则同一契约版本
+    # （mtime 不变）此后快照门直接放行，实例恢复在线后 SPA fallback 鉴别力
+    # 自检在该代际内不再补跑、防御纵深被静默旁路——不落快照的代价仅是带
+    # 实例的下轮重跑一遍 serve 段静态检查。
+    if ran_ready_check:
+        try:
+            (project_root / ".fenix" / "verify-serving").mkdir(parents=True, exist_ok=True)
+            # 非原子写（本文件 rewrite_scenarios_origin 用 mkstemp+fsync+os.replace）：
+            # 快照损坏由上方读取侧 except Exception 容错兜住（照常重证，代价仅多
+            # 一轮自证），低价值快照不为此引入原子写复杂度（item 79fdee435fdc）。
+            selfcheck_path.write_text(json.dumps({"mtime_ns": mtime_ns}), encoding="utf-8")
+        except OSError as e:
+            if logger:
+                logger.warning("verify_contract", f"契约自证快照写入失败（下轮重证）: {e}")
     return None

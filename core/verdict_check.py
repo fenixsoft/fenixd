@@ -33,6 +33,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, List, Optional, Set
 
+from core.admin_store import _fsync_parent_dir
 from core.fast_track_result import SCENARIO_STATUSES
 
 # 四分类取值（design D1）
@@ -1863,13 +1864,30 @@ def save_report(project_root, spec_name, report: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
     try:
-        with open(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked 先例）：
+        # with 的 close 只在 fdopen 成功接管后才生效，fdopen 自身抛错时裸 fd
+        # 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(report, f, ensure_ascii=False, indent=2)
             f.flush()
             # fsync 落盘后再 rename：掉电时防止 rename 已生效而内容未写盘，
             # 留下截断的裁决证据文件（与 state_machine/self_review 原子写同口径）
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, path)
+        # rename 生效后刷父目录项，防掉电后裁决证据整体回退为旧内容
+        # （复用 admin_store._fsync_parent_dir，内部吞 EINVAL 等目录 fsync
+        # 不支持的异常，尽力而为）
+        _fsync_parent_dir(path)
     except (OSError, TypeError, ValueError):
         # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品
         try:
@@ -1987,13 +2005,30 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
         # 互不覆盖，避免固定 .tmp 文件名下另一进程 write_text 轮中截断导致空文件落盘。
         fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), prefix=".verdict_cache.", suffix=".json.tmp")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked
+            # 先例）：fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底
+            # os.close。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=1)
                 f.flush()
                 # fsync 落盘后再 rename（与 save_report/state_machine 原子写同口径，
                 # 防掉电留下截断缓存）
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             os.replace(tmp_path, p)
+            # rename 生效后刷父目录项，防掉电后缓存整体回退为旧内容
+            # （复用 admin_store._fsync_parent_dir，内部吞目录 fsync 不支持
+            # 的异常，尽力而为；缓存侧本就 fail-open，不影响正确性）
+            _fsync_parent_dir(p)
         except (OSError, TypeError, ValueError):
             # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理
             # .tmp 半成品（code-review item c48f3a21b953，与 save_report 原子写

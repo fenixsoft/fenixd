@@ -108,6 +108,7 @@ def request_restart(log: Callable[[str], None], action: str) -> bool:
         # 写一次、刷新 mtime，违反「已存在不重复写、不刷 mtime」不变量。
         # 调用方均在 daemon 同进程内（dashboard 未注册回调、fail-open 返回
         # 不陈旧、零副作用），线程锁即闭合，无需跨进程 flock。
+        # [fenix-ignore:0a5e2a27e2ff] 理由：注释已声明单进程前提，supervisor 仅判文件存在性，重复写不改变行为
         with _write_lock:
             existed = RESTART_REQUEST.exists()
             if not existed:

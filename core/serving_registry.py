@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 
+from core.admin_store import _fsync_parent_dir
 from core.proc_utils import guard_killpg, pid_alive_signal, proc_start_ticks
 
 SERVERS_FILENAME = "servers.json"
@@ -104,6 +105,10 @@ class ServingRegistry:
                     except OSError:
                         pass
             os.replace(str(tmp_path), str(self.path))
+            # rename 生效后刷父目录项，防掉电后 servers.json 整体回退为旧
+            # 内容（对齐 admin_store 原子写四段式；复用 _fsync_parent_dir，
+            # 内部吞 EINVAL 等目录 fsync 不支持的异常，尽力而为）
+            _fsync_parent_dir(self.path)
         finally:
             if tmp_path.exists():
                 try:
@@ -422,6 +427,9 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
     reg = ServingRegistry(project_root, logger)
     harvested = 0
     malformed = []
+    # 待摘名单（收割/死亡条目的 (pid, spec) 对）：收尾与 malformed 合并为
+    # 单次 _mutate 批量摘除，避免逐条 remove 造成的一轮清扫 N+1 次完整落盘
+    stale = []
     for entry in reg.entries():
         pid = entry.get("pid")
         if not (isinstance(pid, int) and not isinstance(pid, bool)) or pid <= 0:
@@ -464,19 +472,30 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                     f"mismatch — pid likely reused; removed registry entry "
                     f"without killing",
                 )
-        reg.remove(pid, spec)
-    if malformed:
-        # 按值相等匹配（entries() 快照与 _mutate 内重读是两次独立 json 解析，
-        # 对象身份必然不同）；pid 须类型精确一致——bool 是 int 子类，畸形
-        # {"pid": true} 与合法 pid=1 值相等，纯值匹配会把合法条目一并误摘，
-        # 类型锚定后无误摘风险，并发 register 的新条目同样不受波及。
+        # 记入待摘名单（匹配语义同 remove：_pid_eq 严格 pid 匹配，spec 非空
+        # 时叠加同值限定），收尾统一批量摘除
+        stale.append((pid, spec))
+    if malformed or stale:
+        # stale 按 (pid, spec) 匹配（语义同 remove），malformed 按值相等匹配
+        # （entries() 快照与 _mutate 内重读是两次独立 json 解析，对象身份必然
+        # 不同）；pid 须类型精确一致——bool 是 int 子类，畸形 {"pid": true} 与
+        # 合法 pid=1 值相等，纯值匹配会把合法条目一并误摘，类型锚定后无误摘
+        # 风险，并发 register 的新条目同样不受波及。
         def _purge(records):
             before = len(records)
             records[:] = [
                 r
                 for r in records
-                if not any(
-                    type(r.get("pid")) is type(m.get("pid")) and r == m for m in malformed
+                if not (
+                    any(
+                        type(r.get("pid")) is type(m.get("pid")) and r == m
+                        for m in malformed
+                    )
+                    or any(
+                        _pid_eq(r.get("pid"), pid)
+                        and (not spec or r.get("spec") == spec)
+                        for pid, spec in stale
+                    )
                 )
             ]
             return len(records) != before

@@ -170,7 +170,7 @@ _VP_ARTIFACT_RE = re.compile(
 # spec 段尾斜杠是区分「目录本身」与「未登记文件名」（如 ``<spec>.json``）
 # 的唯一可靠信号，设为可选会误吞文件级引用作目录级命中。
 _VP_DIR_REF_RE = re.compile(
-    r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)）】`'\"」』\]]|$)"
+    r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)】`'\"」』\]]|$)"
 )
 
 # 代码扩展名出现（遮蔽后扫描）——由 _CODE_EXTENSIONS 动态拼接（同

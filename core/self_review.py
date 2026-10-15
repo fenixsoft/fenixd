@@ -1191,10 +1191,18 @@ def _collect_midflight_scans(
         first_stderr, truncated}]。
         无离群 run 返回空；path 不存在/读取失败按该 run 空产出跳过（不阻断
         其余 run）。
+
+        降级留痕（对齐 _collect_api_stall_aggregates BUG-01 同款口径）：单
+        run 深扫异常不再静默吞——部分失败逐 run ``_logger.warning`` 留痕并
+        跳过失败 run；全部 run 深扫失败属采样整体故障（如 latency 导入损
+        坏），上抛首个异常交由调用方（第 6 节 ``_collect_midflight_section``）
+        既有降级契约「异常降级空产出 + warning」留痕——降级必须可观测。
     """
     if window_end is None:
         window_end = now_utc()
     results: List[Dict[str, Any]] = []
+    scan_failures: List[Tuple[str, Exception]] = []
+    scanned = 0
     for o in outliers or []:
         path = o.get("path")
         if not path:
@@ -1208,10 +1216,13 @@ def _collect_midflight_scans(
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
         if not _in_window(from_epoch(ts), window_start, window_end):
             continue
+        scanned += 1
         try:
             scan = _scan_run_midflight(p)
-        except Exception:
-            continue  # 单 run 深扫异常（latency 导入失败等）不阻断其余 run
+        except Exception as e:
+            # 先登记不阻断其余 run（部分失败仅留痕；全失败在循环后升级）
+            scan_failures.append((p.stem, e))
+            continue
         results.append(
             {
                 "run_id": o.get("run_id"),
@@ -1221,6 +1232,16 @@ def _collect_midflight_scans(
                 **scan,
             }
         )
+    if scan_failures:
+        if scanned and len(scan_failures) == scanned:
+            # 采样整体故障（零成功）：升级上抛，随外层降级契约留 warning
+            raise scan_failures[0][1]
+        for run_id, err in scan_failures:  # 部分失败：逐 run warning 留痕
+            _logger.warning(
+                "self_review: 深扫单 run 异常（跳过该 run） run_id=%s error=%s",
+                run_id,
+                err,
+            )
     return results
 
 

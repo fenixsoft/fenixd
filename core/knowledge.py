@@ -1035,8 +1035,10 @@ class DistillManager:
             # R1（evo-knowledge-distill-resume-guard）：入队即落盘 pending 台账。
             # 写点收在 dispatch 单点（单条/批量入口经 _dispatch_via_mgr 汇聚于
             # 此）；回填期排队与各门控拒绝路径不达此处，天然不写台账（R2）。
-            # 单写者 = 持 self._guard 的本线程（追加与 worker 收尾清除都在锁内），
-            # 进程内竞态窗口由此消除；台账写失败 fail-open 不阻派发。
+            # 单写者 = 持 self._guard 的本线程（追加在锁内；worker 收尾的台账
+            # 清除在锁外执行，append/remove 的读改写互斥由 _pending_ledger_lock
+            # flock 持锁重读-回写兜底，见 _ledger_remove）；台账写失败
+            # fail-open 不阻派发。
             self._ledger_append(proot, names)
             if worker is None or not worker.is_alive():
                 worker = threading.Thread(
@@ -1054,9 +1056,12 @@ class DistillManager:
             return len(self._queues.get(str(Path(proot).resolve()), []))
 
     # ── pending 台账读写（evo-knowledge-distill-resume-guard R1/R2）──
-    # 两者都 MUST 在持 self._guard 时调用（单写者口径，design D1）；跨进程
-    # （daemon 与 dashboard --serve 各持 _MANAGER 单例）的读改写互斥由
-    # _pending_ledger_lock flock 兜底（code-review 106b0cd5527d）。
+    # 调用锁纪律：_ledger_append 在 dispatch 持 self._guard 的锁内调用；
+    # _ledger_remove 的调用点（_run_batch 收尾与 _give_up，经 _worker 在
+    # with self._guard 块外执行）不持 self._guard。进程内与跨进程（daemon
+    # 与 dashboard --serve 各持 _MANAGER 单例）的读改写互斥均由
+    # _pending_ledger_lock flock 的持锁重读-回写兜底（code-review
+    # 106b0cd5527d）——不得按「锁内单写者」口径省掉 remove 路径的持锁重读。
     def _ledger_append(self, proot: Path, names: list) -> None:
         """入队追加台账条目（持跨进程 flock 读-改-原子回写；fail-open 不阻派发）。"""
         try:

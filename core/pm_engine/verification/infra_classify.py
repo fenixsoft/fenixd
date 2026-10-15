@@ -226,6 +226,11 @@ def _read_infra_retry_max(pipeline) -> int:
 
     None 显式判空回退缺省、非数字回退缺省（口径对齐 escalation._read_int_config
     同款防御）；非正值非法，同样回退缺省（0/负值会使「重派」决议不可达）。
+    捕获放宽为 Exception（code-review item da53efad04e1）：config_reader 系
+    context 晚绑定转发（from_pm 内联转发 pm._get_config），桩缺属性/组合变更
+    时抛 AttributeError 等非转换类异常——本函数在 resolve_infra_retry_decision
+    中位于 bump 计数 try 块之外，异常穿出会连带 _record_infra_failure 跳过
+    退款/轮次/台账三步记账，故此处必须自行兜住。
     """
     try:
         value = pipeline._context.config_reader(
@@ -234,7 +239,12 @@ def _read_infra_retry_max(pipeline) -> int:
         if value is None:
             return INFRA_RETRY_MAX_DEFAULT
         n = int(value)
-    except (TypeError, ValueError):
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"infra-retry 预算读取失败（回退缺省 {INFRA_RETRY_MAX_DEFAULT}）: "
+            f"{type(e).__name__}: {e}",
+        )
         return INFRA_RETRY_MAX_DEFAULT
     return n if n > 0 else INFRA_RETRY_MAX_DEFAULT
 

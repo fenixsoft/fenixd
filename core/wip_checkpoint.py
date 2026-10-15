@@ -67,11 +67,14 @@ def commit_wip_checkpoint(
     - ``git status --porcelain`` 为空 → 跳过（不产生空提交，幂等）
     - ``git add -A``（尊重 worktree gitignore）+ ``git commit``
     - 每个 git 操作限时 ``timeout`` 秒；失败/超时 → WARNING 留痕、返回 False
+    - index 回滚（git reset）仅在 ``git add`` 已实际发出后的失败/超时路径
+      执行；status 阶段失败/超时不动 index，不误撤销 agent 既有 staged 现场
     - 子树已在 git 内不可见/目录丢失等，一律按失败降级
 
     Returns: True 表示产生了一次提交；False 表示跳过（无变更）或失败。
     """
     path = str(wt_path)
+    added = False  # add 已实际发出后置 True：index 回滚仅覆盖被本函数改写过的 index
     try:
         st = subprocess.run(
             ["git", "-C", path, "status", "--porcelain"],
@@ -91,6 +94,7 @@ def commit_wip_checkpoint(
             return False
         if not st.stdout.strip():
             return False  # 空变更：幂等跳过
+        added = True
         add = subprocess.run(
             ["git", "-C", path, "add", "-A"],
             capture_output=True,
@@ -165,12 +169,17 @@ def commit_wip_checkpoint(
             f"under the worktree gitdir) — if later git ops keep failing with "
             f"lock conflicts, inspect and remove it manually",
         )
-        # 超时同样可能落在 add 已完成、commit 卡住/被杀的窗口：此刻 index
-        # 已是全量 staged 态，与上方 commit 失败分支要防的现场一致（被
-        # keep_for_reuse 后继继承后使以 HEAD 为基准的留证链路判读失真）。
-        # 补一次尽力而为的 mixed reset 回滚 index，使「失败不留副作用」
-        # 契约覆盖超时路径；本分支已在原 try 的 except 内，reset 自身的
-        # 二次超时/OS/解码异常须就地兜住，失败仅追加留痕，不改返回值。
+        # 超时可能落在 status / add / commit 任一阶段：仅当 add 已实际发出
+        # （added=True）后 index 才被本函数改写过（add 已完成、commit 卡住/
+        # 被杀的窗口内为全量 staged 态，与上方 commit 失败分支要防的现场
+        # 一致——被 keep_for_reuse 后继继承后使以 HEAD 为基准的留证链路
+        # 判读失真），此刻补一次尽力而为的 mixed reset 回滚；status 阶段
+        # 超时则 index 仍是 agent 既有现场（staged 删除、intent-to-add 等
+        # 摘索引形态），reset 会误撤销之——直接留痕返回。本分支已在原 try
+        # 的 except 内，reset 自身的二次超时/OS/解码异常须就地兜住，失败
+        # 仅追加留痕，不改返回值。
+        if not added:
+            return False
         try:
             reset = subprocess.run(
                 ["git", "-C", path, "reset", "-q"],
