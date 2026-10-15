@@ -175,6 +175,14 @@ SIDECAR_DIRNAME = "admin_alerts_narrative"
 # 后台补叙至多尝试次数（task 3.2：2 次封顶防重试风暴，熔断器是第二道闸）
 _MAX_ATTEMPTS = 2
 
+# 后台补叙并发上限（code-review 312029acd096）：每条带 choices 的告警各起
+# 一个 daemon 线程、线程内各起一个 claude -p 子进程直连网关，批量回归失败
+# 等突发多条告警时若无封顶即 N 路并发打网关。信号量把同时在飞的生成数封
+# 顶——acquire 放线程体内排队等空位（schedule_narrative 调用方零阻塞、
+# 排队期间不产生子进程），排队而非跳过（补叙留痕不丢）。
+_NARRATIVE_MAX_CONCURRENCY = 2
+_narrative_slots = threading.Semaphore(_NARRATIVE_MAX_CONCURRENCY)
+
 # 2 次尝试全败的终态侧车文案（机械说明，model=null——失败告警 MUST NOT 以
 # narrative_pending 悬挂「调查生成中」假态）
 GENERATION_FAILED_TEXT = "调查未能生成（连续超时/生成失败，已放弃重试）。"
@@ -509,7 +517,7 @@ def _read_text_material(path: Path, budget: int) -> Optional[str]:
 
 
 def _summarize_verify_report(path: Path) -> Optional[str]:
-    """fail-open 摘要 report.json：summary + 失败/警告场景表（含 classification 分布）。"""
+    """fail-open 摘要 report.json：summary + 非 pass 场景表（含 classification 分布）。"""
     try:
         if not path.is_file():
             return None
@@ -525,6 +533,9 @@ def _summarize_verify_report(path: Path) -> Optional[str]:
         scenarios = data.get("scenarios")
         if not isinstance(scenarios, list):
             scenarios = []
+        # 非 pass 口径（code-review 82e5559f9dee）：report.json 状态值域含
+        # skipped（如 visual_diff 跳过）等非失败档，逐条明细仍带 status 原值，
+        # 聚合标签统一称「非 pass 场景」，不得写成「失败/警告」误导归因
         bad = [
             s
             for s in scenarios
@@ -538,7 +549,7 @@ def _summarize_verify_report(path: Path) -> Optional[str]:
             counts[cls] = counts.get(cls, 0) + 1
         if bad:
             dist = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-            lines.append(f"失败/警告场景 classification 分布：{dist}")
+            lines.append(f"非 pass 场景 classification 分布：{dist}")
         shown = bad[:20]
         for s in shown:
             sid = str(s.get("scenario_id") or "?")
@@ -546,7 +557,7 @@ def _summarize_verify_report(path: Path) -> Optional[str]:
             cls = str(s.get("classification") or "").strip() or "unclassified"
             lines.append(f"- {sid}: status={status} classification={cls}")
         if len(bad) > len(shown):
-            lines.append(f"（其余 {len(bad) - len(shown)} 条失败/警告场景略）")
+            lines.append(f"（其余 {len(bad) - len(shown)} 条非 pass 场景略）")
         if not lines:
             return None
         return _clip_segment("\n".join(lines), _MATERIAL_SECTION_MAX_CHARS)
@@ -615,7 +626,7 @@ def _collect_verification_materials(
 
     验证族信号从标准产物路径采集四段材料：
     - ``spec/changes/<spec>/verification-report.md`` 全文；
-    - ``.fenix/verify-progress/<spec>/report.json`` summary + 失败/警告场景表
+    - ``.fenix/verify-progress/<spec>/report.json`` summary + 非 pass 场景表
       （含 classification 分布）；
     - ``.fenix/verify-progress/<spec>/verdict_stability.json`` 判定轮次历史；
     - ``.fenix/verify-progress/<spec>/fail_history.json`` 失败轮次演进。
@@ -1118,15 +1129,21 @@ def _narrative_worker(
     try:
         result: Optional[Dict[str, str]] = None
         breaker_skip = False
-        for _attempt in range(_MAX_ATTEMPTS):
-            if _breaker_gate():
-                # 尝试间隙熔断生效：立即放弃（冷却期零调用）
-                breaker_skip = True
-                result = None
-                break
-            result = build_narrative(ctx, entry, admin_cfg, facts=facts)
-            if result:
-                break
+        # 并发封顶：线程体内排队等空位（不阻塞 schedule_narrative 调用方，
+        # 排队期间不产生子进程）；侧车落盘不经网关，无需占位
+        _narrative_slots.acquire()
+        try:
+            for _attempt in range(_MAX_ATTEMPTS):
+                if _breaker_gate():
+                    # 尝试间隙熔断生效：立即放弃（冷却期零调用）
+                    breaker_skip = True
+                    result = None
+                    break
+                result = build_narrative(ctx, entry, admin_cfg, facts=facts)
+                if result:
+                    break
+        finally:
+            _narrative_slots.release()
         if result:
             write_narrative_sidecar(
                 project_root, alert_id, result["text"], result["model"]
