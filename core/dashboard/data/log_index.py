@@ -423,6 +423,9 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
             events.extend(_iter_tail_log_entries(proot=Path(project_root), lf=lf, cutoff=cutoff))
         except (OSError, UnicodeDecodeError):
             continue
+    if limit <= 0:
+        # limit=0 语义为「不返回事件」；events[-0:] 会退化为 events[0:] 返回全量
+        return []
     return events[-limit:]
 
 

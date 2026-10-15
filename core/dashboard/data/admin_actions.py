@@ -2731,6 +2731,35 @@ def parse_stray_wip_manifest(evidence) -> list:
     return out
 
 
+def _stray_manifest_comma_fragments(candidates, probe) -> list:
+    """检测清单疑似因文件名含逗号被按逗号切散的碎片路径（item 86cda9326ae7）。
+
+    写侧 stray_wip._evidence_file_manifest 以 ``', '.join(files)`` 生成清单段
+    且无转义，本模块 parse_stray_wip_manifest 按逗号切分——文件名本身含逗号
+    时被拆成不存在的碎片路径，各执行器与当刻 status/磁盘求交全部落空，该
+    散件永远无法经裁决动作处置。根治须写读两侧成对改（NUL 分隔或结构化
+    清单字段），stray_wip.py 在修复清单外；本模块单侧缓解：把相邻候选按
+    ``,`` 与 ``, ``（写侧 join 的两种分隔形态）重新拼合，probe（当刻 status
+    路径集成员判定或磁盘存在判定）命中即视为疑似拆散碎片返回，供调用方在
+    求交失败的 error/steps 附提示。只提示不改执行集合——重新拼合是对含糊
+    文本的猜测性再分割（无法区分 'a,b.py'+'c' 与 'a'+'b,c.py'），不据此
+    放行 git 写/文件触碰。连续拼合窗口限 6 段（覆盖单文件名至多 5 个逗号），
+    防全量两两拼合的平方级膨胀。
+    """
+    frags: list = []
+    n = len(candidates)
+    for i in range(n):
+        acc_cs = str(candidates[i])
+        acc_cs_sp = acc_cs
+        for j in range(i + 1, min(i + 6, n)):
+            acc_cs = f"{acc_cs},{candidates[j]}"
+            acc_cs_sp = f"{acc_cs_sp}, {candidates[j]}"
+            for cand in (acc_cs, acc_cs_sp):
+                if cand not in frags and probe(cand):
+                    frags.append(cand)
+    return frags
+
+
 def _git_out(project_root, *args: str) -> str:
     """在 project_root 跑 git 命令，返回 stdout；非零退出抛 RuntimeError。
 
@@ -2861,16 +2890,33 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     try:
         dirty = _git_status_paths(proot)
     except RuntimeError as e:
-        return {"ok": False, "steps": [], "error": f"读取 git status 失败: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
+        # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
+        # 路径，细节经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "commit_stray_wip 读取 git status 失败: %s: %s",
+            type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [],
+                "error": "读取 git status 失败（详见服务端日志）"}
     to_commit = [p for p in candidates if p in dirty]
     skipped = [p for p in candidates if p not in dirty]
+    # 含逗号文件名拆散检测（item 86cda9326ae7，见 helper docstring）：碎片
+    # 落空时在拒绝 error/steps 附提示，不据此改写执行集合。
+    comma_frags = (
+        _stray_manifest_comma_fragments(candidates, dirty.__contains__)
+        if skipped else []
+    )
     if not to_commit:
-        return {
-            "ok": False, "steps": [],
-            "error": ("信号清单内文件已全部不在当刻工作区改动中（同指纹一次性"
-                      "告警，清单陈旧），不产生空提交；"
-                      f"清单({len(manifest)}): {', '.join(manifest)}"),
-        }
+        err = ("信号清单内文件已全部不在当刻工作区改动中（同指纹一次性"
+               "告警，清单陈旧），不产生空提交；"
+               f"清单({len(manifest)}): {', '.join(manifest)}")
+        if comma_frags:
+            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
+                    f"{len(comma_frags)} 个碎片路径"
+                    f"（{', '.join(comma_frags)}），本动作无法处置"
+                    "（清单段按逗号切分、写侧无转义的格式限制）")
+        return {"ok": False, "steps": [], "error": err}
 
     # 未跟踪分流（code-review item 48fc7cf0837c）：porcelain 交集自然混入
     # 未跟踪（??）条目，而 ``git commit -- <path>`` 对未跟踪文件报 fatal
@@ -2881,7 +2927,14 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     try:
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
     except RuntimeError as e:
-        return {"ok": False, "steps": [], "error": f"读取 git 索引失败: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：同上，git stderr
+        # 原文经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "commit_stray_wip 读取 git 索引失败: %s: %s",
+            type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [],
+                "error": "读取 git 索引失败（详见服务端日志）"}
     untracked = [p for p in to_commit if p not in indexed]
     to_commit = [p for p in to_commit if p in indexed]
     if not to_commit:
@@ -2907,7 +2960,13 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
             proot, "log", "-1", "--format=%H", "--", *to_commit,
         ).strip()
     except RuntimeError as e:
-        return {"ok": False, "steps": [], "error": f"git 提交失败: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：同上，git stderr
+        # 原文经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "commit_stray_wip git 提交失败: %s: %s", type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [],
+                "error": "git 提交失败（详见服务端日志）"}
     steps = [
         f"提交主树散件 WIP {len(to_commit)} 个文件（信号清单∩当刻改动）："
         f"{', '.join(to_commit)}",
@@ -2916,6 +2975,12 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     if skipped:
         steps.append(
             f"清单内已不在当刻改动、跳过 {len(skipped)} 个：{', '.join(skipped)}"
+        )
+    if comma_frags:
+        steps.append(
+            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
+            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
+            "切分、写侧无转义的格式限制）"
         )
     if untracked:
         steps.append(
@@ -3087,17 +3152,33 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         dirty = _git_status_paths(proot)
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
     except RuntimeError as e:
-        return {"ok": False, "steps": [], "error": f"读取 git 状态失败: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
+        # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
+        # 路径，细节经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "untrack_stray_wip 读取 git 状态失败: %s: %s",
+            type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [],
+                "error": "读取 git 状态失败（详见服务端日志）"}
     to_untrack = [p for p in candidates if p in dirty and p in indexed]
     skipped_stale = [p for p in candidates if p not in dirty]
     already_untracked = [p for p in candidates if p in dirty and p not in indexed]
+    # 含逗号文件名拆散检测（item 86cda9326ae7，同 commit 执行器口径）。
+    comma_frags = (
+        _stray_manifest_comma_fragments(candidates, dirty.__contains__)
+        if skipped_stale else []
+    )
     if not to_untrack:
-        return {
-            "ok": False, "steps": [],
-            "error": ("信号清单内文件均已不在 git 索引（已根治过或已删除），"
-                      f"无需重复执行 untrack；清单({len(manifest)}): "
-                      f"{', '.join(manifest)}"),
-        }
+        err = ("信号清单内文件均已不在 git 索引（已根治过或已删除），"
+               f"无需重复执行 untrack；清单({len(manifest)}): "
+               f"{', '.join(manifest)}")
+        if comma_frags:
+            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
+                    f"{len(comma_frags)} 个碎片路径"
+                    f"（{', '.join(comma_frags)}），本动作无法处置"
+                    "（清单段按逗号切分、写侧无转义的格式限制）")
+        return {"ok": False, "steps": [], "error": err}
 
     gi_path = proot / ".gitignore"
     gi_backup = gi_path.read_bytes() if gi_path.exists() else None
@@ -3190,13 +3271,24 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
             proot, "log", "-1", "--format=%H", "--", *to_untrack,
         ).strip()
     except OSError as e:
-        return _abort(f"git 执行异常: {e}")
+        # 不外泄裸异常文本（code-review item e584a2ede367）：OSError 可携带
+        # 内部路径/errno，细节经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "untrack_stray_wip git/文件操作失败: %s: %s",
+            type(e).__name__, e,
+        )
+        return _abort("git 操作失败（详见服务端日志）")
     except RuntimeError as e:
         # subprocess.TimeoutExpired 不可达（code-review item 87fd1a921031）：
         # try 内全部 git 调用经 _git_out（内部已把超时归一为 RuntimeError
         # 抛出），.gitignore 判定的 _path_already_ignored 自吞
         # TimeoutExpired/OSError——超时由本 RuntimeError 分支兜底。
-        return _abort(str(e))
+        # 不外泄裸异常文本（code-review item e584a2ede367）：同上，_git_out
+        # 的 RuntimeError 含 git stderr 原文，日志留痕、客户端收固定文案。
+        logger.warning(
+            "untrack_stray_wip git 命令失败: %s: %s", type(e).__name__, e,
+        )
+        return _abort("git 操作失败（详见服务端日志）")
 
     steps = [
         f"untrack 出库 {len(to_untrack)} 个文件（信号清单∩当刻改动∩索引）："
@@ -3212,6 +3304,12 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         steps.append(
             f"清单内已不在当刻改动、跳过 {len(skipped_stale)} 个: "
             f"{', '.join(skipped_stale)}"
+        )
+    if comma_frags:
+        steps.append(
+            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
+            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
+            "切分、写侧无转义的格式限制）"
         )
     if already_untracked:
         steps.append(
@@ -3323,6 +3421,14 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             proot, "log", "-1", "--format=%H", "--", ".gitignore",
         ).strip()
     except RuntimeError as e:
+        # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
+        # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
+        # 路径，细节经服务端日志留痕，客户端（认领裁决 alert-resolve 端点）
+        # 收固定文案。
+        logger.warning(
+            "_append_gitignore_and_commit 提交失败（header=%s）: %s: %s",
+            header, type(e).__name__, e,
+        )
         restore_note = ""
         try:
             gi = proot / ".gitignore"
@@ -3346,10 +3452,14 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             try:
                 _git_out(proot, "reset", "-q", "--", ".gitignore")
             except RuntimeError as reset_err:
-                restore_note += f"；撤销 .gitignore 暂存失败: {reset_err}"
+                logger.warning(
+                    "_append_gitignore_and_commit 撤销 .gitignore 暂存失败: "
+                    "%s: %s", type(reset_err).__name__, reset_err,
+                )
+                restore_note += "；撤销 .gitignore 暂存失败（详见服务端日志）"
         return {"appended": [], "commit_hash": "",
                 "error": (f".gitignore 追加提交失败（已尽力还原追加行"
-                          f"{restore_note}）: {e}")}
+                          f"{restore_note}；详见服务端日志）")}
     return {"appended": appended, "commit_hash": commit_hash, "error": ""}
 
 
@@ -3421,6 +3531,11 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
             not_plain.append(p)
         else:
             existing.append(p)
+    # 含逗号文件名拆散检测（item 86cda9326ae7，求交探针改磁盘存在判定）。
+    comma_frags = (
+        _stray_manifest_comma_fragments(compliant, lambda p: (proot / p).exists())
+        if skipped else []
+    )
     # tracked 复核防线（code-review item 6715a1facae4，同 commit/untrack 执行器
     # 的 ls-files 求交）：清单+磁盘存在不代表仍 untracked——同指纹一次性告警的
     # 清单会陈旧，文件可能在告警后已被 commit_stray_wip 等途径提交跟踪（同一
@@ -3429,7 +3544,14 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     try:
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
     except RuntimeError as e:
-        return {"ok": False, "steps": [], "error": f"读取 git 索引失败: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：git stderr 原文
+        # 经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "archive_untracked_stray 读取 git 索引失败: %s: %s",
+            type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [],
+                "error": "读取 git 索引失败（详见服务端日志）"}
     newly_tracked = [p for p in existing if p in indexed]
     existing = [p for p in existing if p not in indexed]
     if not existing:
@@ -3442,6 +3564,11 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
             err += f"；其中 {len(not_plain)} 个在盘但非普通文件（跳过不触碰）"
         if escapes:
             err += f"；其中 {len(escapes)} 条路径不合规已剔除"
+        if comma_frags:
+            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
+                    f"{len(comma_frags)} 个碎片路径"
+                    f"（{', '.join(comma_frags)}），本动作无法处置"
+                    "（清单段按逗号切分、写侧无转义的格式限制）")
         return {"ok": False, "steps": [], "error": err}
     gi = _append_gitignore_and_commit(
         proot, [f"{UNTRACKED_STRAY_ARCHIVE_DIR}/"], "登记 untracked 散件归档目录",
@@ -3458,7 +3585,14 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
             shutil.move(str(proot / p), str(dest))
             moved.append(p)
     except OSError as e:
-        failed = f"归档移动失败（已移动 {len(moved)} 个留在登记目录，重试续移）: {e}"
+        # 不外泄裸异常文本（code-review item e584a2ede367）：OSError 可携带
+        # 内部路径/errno，细节经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "archive_untracked_stray 归档移动失败（已移动 %d 个）: %s: %s",
+            len(moved), type(e).__name__, e,
+        )
+        failed = (f"归档移动失败（已移动 {len(moved)} 个留在登记目录，"
+                  f"重试续移；详见服务端日志）")
     steps = []
     if gi["appended"]:
         steps.append(
@@ -3473,6 +3607,12 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     )
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if comma_frags:
+        steps.append(
+            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
+            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
+            "切分、写侧无转义的格式限制）"
+        )
     if not_plain:
         steps.append(
             f"清单内在盘但非普通文件（目录等）、跳过不触碰 {len(not_plain)} 个"
@@ -3506,16 +3646,32 @@ def _exec_ignore_untracked_stray(project_root, note: str = "", signal_type: str 
                                  paths=None) -> dict:
     """ignore_untracked_stray：清单内 untracked 路径追加 .gitignore（去重）。
 
-    约束同认领族（白名单守卫/清单单源/pathspec 独立提交）。去重双重口径
-    复用 _append_gitignore_entries：条目字面行已存在或既有规则（含通配）
-    已覆盖的不重复写。清单内路径无须仍在磁盘（ignore 规则对路径生效）。
+    约束同认领族（白名单守卫/清单单源/pathspec 独立提交）。清单条目先经
+    _stray_manifest_path_escapes 纵深校验（archive/delete 执行器同款防线，
+    code-review item 97f425982d6e 对齐同族一致性）：不合规条目剔除并进
+    steps 说明，全部不合规返回明确 error（对齐 archive/delete 空集拒绝口径）。
+    去重双重口径复用 _append_gitignore_entries：条目字面行已存在或既有规则
+    （含通配）已覆盖的不重复写。清单内路径无须仍在磁盘（ignore 规则对路径
+    生效）。
     """
     pre = _claim_untracked_manifest(project_root, signal_type, paths)
     if pre["error"]:
         return {"ok": False, "steps": [], "error": pre["error"]}
     proot = Path(project_root)
+    # 路径纵深校验（code-review item a2e84e9e166c 同型防线，同 archive/delete
+    # 执行器）：不合规条目剔除、不阻断其余合规条目。
+    escapes = _stray_manifest_path_escapes(proot, pre["candidates"])
+    candidates = [p for p in pre["candidates"] if p not in escapes]
+    if not candidates:
+        return {
+            "ok": False, "steps": [],
+            "error": (f"信号清单内全部 {len(escapes)} 条路径不合规"
+                      f"（绝对路径/越出项目根），无可忽略条目；"
+                      f"清单({len(pre['manifest'])}): "
+                      f"{', '.join(pre['manifest'])}"),
+        }
     gi = _append_gitignore_and_commit(
-        proot, pre["candidates"], "追加 untracked 散件 ignore 规则",
+        proot, candidates, "追加 untracked 散件 ignore 规则",
     )
     if gi["error"]:
         return {"ok": False, "steps": [], "error": gi["error"]}
@@ -3528,6 +3684,11 @@ def _exec_ignore_untracked_stray(project_root, note: str = "", signal_type: str 
         steps.append(f"独立提交 hash: {gi['commit_hash']}")
     else:
         steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
+    if escapes:
+        steps.append(
+            f"清单内 {len(escapes)} 条路径不合规（绝对路径/越出项目根），"
+            f"跳过不触碰: {', '.join(escapes)}"
+        )
     if note:
         steps.append(f"裁决依据：{note}")
     return {
@@ -3570,13 +3731,25 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
             }
         else:
             targets.append(p)
+    # 含逗号文件名拆散检测（item 86cda9326ae7，同 archive 执行器口径）。
+    comma_frags = (
+        _stray_manifest_comma_fragments(compliant, lambda p: (proot / p).exists())
+        if skipped else []
+    )
     # tracked 复核防线（code-review item 6715a1facae4，同 commit/untrack/
     # archive 执行器的 ls-files 求交）：告警后已被提交跟踪的路径不再删除，
     # 否则会把 tracked 文件的工作区副本直接 unlink 制造 git 可见删改。
     try:
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
     except RuntimeError as e:
-        return {"ok": False, "steps": [], "error": f"读取 git 索引失败: {e}"}
+        # 不外泄裸异常文本（code-review item e584a2ede367）：git stderr 原文
+        # 经服务端日志留痕，客户端收固定文案。
+        logger.warning(
+            "delete_untracked_stray 读取 git 索引失败: %s: %s",
+            type(e).__name__, e,
+        )
+        return {"ok": False, "steps": [],
+                "error": "读取 git 索引失败（详见服务端日志）"}
     newly_tracked = [p for p in targets if p in indexed]
     targets = [p for p in targets if p not in indexed]
     if not targets:
@@ -3587,6 +3760,11 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
             err += f"；其中 {len(newly_tracked)} 个已变 tracked（不执行删除）"
         if escapes:
             err += f"；其中 {len(escapes)} 条路径不合规已剔除"
+        if comma_frags:
+            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
+                    f"{len(comma_frags)} 个碎片路径"
+                    f"（{', '.join(comma_frags)}），本动作无法处置"
+                    "（清单段按逗号切分、写侧无转义的格式限制）")
         return {"ok": False, "steps": [], "error": err}
     deleted, failed = [], ""
     try:
@@ -3596,11 +3774,23 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
     except OSError as e:
         # 部分删除如实回传（code-review item a527df01d2de，与 archive 执行器
         # 「已移动 N 个、重试续移」的部分进度口径对齐）：本轮已删清单并入
-        # steps，不留对操作者不可见的半程删除状态。
-        failed = f"删除失败（已删除 {len(deleted)} 个，重试续删剩余）: {e}"
+        # steps，不留对操作者不可见的半程删除状态。不外泄裸异常文本
+        # （code-review item e584a2ede367）：OSError 细节日志留痕，客户端收
+        # 固定文案。
+        logger.warning(
+            "delete_untracked_stray 删除失败（已删除 %d 个）: %s: %s",
+            len(deleted), type(e).__name__, e,
+        )
+        failed = f"删除失败（已删除 {len(deleted)} 个，重试续删剩余；详见服务端日志）"
     steps = [f"删除 {len(deleted)} 个 untracked 散件文件: {', '.join(deleted)}"]
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
+    if comma_frags:
+        steps.append(
+            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
+            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
+            "切分、写侧无转义的格式限制）"
+        )
     if newly_tracked:
         steps.append(
             f"清单内已变 tracked、跳过 {len(newly_tracked)} 个（告警后已被提交"

@@ -766,6 +766,29 @@ def v2_servers_registry_path(project_root) -> Path:
     return Path(project_root) / ".fenix" / "v2-serving" / V2_SERVERS_FILENAME
 
 
+def _registry_pid_valid(pid) -> bool:
+    """登记 pid 形状校验：真整型（显式排除 bool）且 >0。
+
+    bool 是 int 子类：手改 v2_servers.json 写入的 ``{"pid": true}`` 在纯
+    isinstance/>0 检查下会被当作 pid=1 走判活路径（True > 0，os.kill(1, 0)
+    探的是 pid 1）——对齐 serving_registry.sweep 的显式加固口径。
+    """
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
+def _registry_pid_eq(stored, pid) -> bool:
+    """登记 pid 严格比对：双侧都须为真整型才允许值比较。
+
+    纯 ``==`` 下 True == 1 与整型 pid=1 互相匹配（register 幂等误命中），
+    形态同 serving_registry._pid_eq。
+    """
+    return (
+        _registry_pid_valid(stored)
+        and _registry_pid_valid(pid)
+        and stored == pid
+    )
+
+
 def load_v2_server_entries(project_root, logger=None) -> list:
     """读登记条目（文件缺失/损坏返回空；非 dict 条目剔除）。
 
@@ -779,6 +802,18 @@ def load_v2_server_entries(project_root, logger=None) -> list:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return []  # 缺失/不可读：非损坏，无需留痕
+    except UnicodeDecodeError as exc:
+        # 坏字节与非法 JSON 同口径（UnicodeDecodeError 是 ValueError 子类、
+        # 非 OSError，不接住会打断「下次 register 重写自愈」闭环，形态同
+        # serving_registry._read_unlocked）：WARNING 留痕后返回空列表。
+        if logger:
+            logger.warning(
+                "v2_dev_server",
+                f"v2 server registry file corrupt (invalid UTF-8: {exc}), "
+                f"treating as empty: {path} — 重启前在册条目线索丢失，"
+                f"对账覆盖缺口留痕（下次 register 重写自愈）",
+            )
+        return []
     try:
         data = json.loads(text)
     except ValueError:
@@ -846,7 +881,7 @@ def register_v2_server(project_root, wt_path, pid: int, port: int, logger=None) 
 
     def _upsert(entries: list) -> None:
         for e in entries:
-            if e.get("pid") == pid and e.get("wt_path") == str(wt_path):
+            if _registry_pid_eq(e.get("pid"), pid) and e.get("wt_path") == str(wt_path):
                 e["port"] = port
                 e["start_ticks"] = proc_start_ticks(pid)
                 e["registered_at"] = int(time.time())
@@ -939,8 +974,8 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     for entry in entries:
         pid = entry.get("pid")
         wt_text = str(entry.get("wt_path") or "")
-        if not isinstance(pid, int) or pid <= 0:
-            continue  # 形状非法条目：丢弃
+        if not _registry_pid_valid(pid):
+            continue  # 形状非法条目（含 bool 形态）：丢弃
         if not _pid_alive(pid):
             continue  # 已消亡：摘登记
         snapshot = entry.get("start_ticks")

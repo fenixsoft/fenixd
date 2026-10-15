@@ -475,8 +475,12 @@ def _mutate_items_unlocked(
     current = _read_items_unlocked(path, corrupted_out=corrupted, degraded_out=read_degraded)
     if read_degraded:
         if strict_degraded:
-            _logger.warning("code_review: items.jsonl 读取降级，%s", degraded_note)
-            raise OSError(f"items.jsonl 读取降级，{degraded_note}（{path}）")
+            # 防呆（code-review item 946b6afbed2e）：docstring 契约要求
+            # strict_degraded 须与 degraded_note 同传，此处固化为代码约束——
+            # 漏传时回退固定文案，避免日志/异常渲染出字面 None。
+            note = degraded_note if degraded_note is not None else "原因未注明"
+            _logger.warning("code_review: items.jsonl 读取降级，%s", note)
+            raise OSError(f"items.jsonl 读取降级，{note}（{path}）")
         if degraded_note is not None:
             _logger.warning("code_review: items.jsonl 读取降级，%s", degraded_note)
             return

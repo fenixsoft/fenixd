@@ -358,13 +358,15 @@ def extract_paths_typed(spec_dir) -> dict:
         fence_char = ""  # 当前围栏开栏标记 run（```/~~~~ 等）；空 = 未在围栏内
         in_tasks_header = True  # 第一个 `## ` 标题之前为头部说明段
         in_scenario = False  # 能力 spec 的 Scenario 小节
-        # 声明段围栏块跳过状态（item abd205b5bf3c）：in_declared_section 以
+        # 声明段围栏跳过状态（item abd205b5bf3c）：in_declared_section 以
         # _DECLARED_HEADING_RE 同源定位 `## Deliverables` 段（声明段语义仅
-        # tasks.md 承载）；declared_fence_taken 对齐 _extract_declared_block
-        # 的「节内首个围栏 = 声明块」口径；skip_fence_tokens 标记当前围栏
-        # 内容行不做正则提取。
+        # tasks.md 承载）；skip_fence_tokens 标记当前围栏内容行不做正则提取。
+        # 节内**所有**围栏（首个声明块 + 后续示例/说明围栏）都跳过，对齐
+        # _scan_declared_section「闭栏即取完——节内后续围栏不并入声明块」的
+        # 口径（item ffa4b684ad12）：后续围栏语境按 _classify_line("") 计算
+        # 会兜底归 deliverables，示例路径被误入存在性硬校验桶；声明段之外
+        # 正文不受影响（in_declared_section 已随 `## ` 节边界翻转）。
         in_declared_section = False
-        declared_fence_taken = False
         skip_fence_tokens = False
 
         for raw_line in text.splitlines():
@@ -390,17 +392,16 @@ def extract_paths_typed(spec_dir) -> dict:
                     # 错位截断，item 575b928f818a；同字符不互为翻转标记
                     # 对齐 _extract_declared_block，item 820df5cad84b）
                     fence_char = m.group(1)
-                    # 声明段首个围栏块（= _extract_declared_block 的声明块
-                    # 口径）内容不参与正则提取：kind: delete 等声明语义由
-                    # extract_declared 单点承载，正则兜底按存在性硬校验解释
-                    # 会把 delete 反向判成「必须存在」（item abd205b5bf3c）
+                    # 声明段内围栏块内容不参与正则提取：首个围栏（=
+                    # _extract_declared_block 的声明块口径）的 kind: delete 等
+                    # 声明语义由 extract_declared 单点承载，正则兜底按存在性
+                    # 硬校验解释会把 delete 反向判成「必须存在」（item
+                    # abd205b5bf3c）；后续示例/说明围栏同跳，对齐
+                    # _scan_declared_section「闭栏即取完」口径（item
+                    # ffa4b684ad12）
                     skip_fence_tokens = (
-                        doc_kind == "tasks"
-                        and in_declared_section
-                        and not declared_fence_taken
+                        doc_kind == "tasks" and in_declared_section
                     )
-                    if skip_fence_tokens:
-                        declared_fence_taken = True
                     fence_ctx = _classify_line(
                         "", doc_kind, in_tasks_header, in_scenario
                     )

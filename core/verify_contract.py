@@ -754,6 +754,20 @@ def _load_verify_contract_with_raw(
                         f"verify.yaml regression 段 cmd 非法（须为非空字符串或全"
                         f"字符串列表，整段按未配置处理）: {cmd!r}",
                     )
+            elif not isinstance(output, str):
+                # output 类型守卫（code-review item efb05e01fd87）：映射/数字
+                # 等 truthy 非字符串值此前只经真值校验放行，被 str() 强转成
+                # "{'a': 1}" 形态字面量路径存入 RegressionSpec.output，后续
+                # JUnit XML 解析只能报「结果文件不存在」类与根因（类型写错）
+                # 无关的 parse_error——记 warning 后整段按未配置处理，对齐
+                # 上方 cmd 形态守卫与 serve.cmd 类型守卫（item d6154ca8743f）
+                # 的「告警＋回退」口径。
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        f"verify.yaml regression 段 output 非法（须为字符串"
+                        f"路径，整段按未配置处理）: {output!r}",
+                    )
             elif fmt != "junit":
                 # design D2 边界：只支持 junit 一值。声明其它格式整段无效，
                 # 不得降级成 junit 去解析（会产出无解释的 parse_error）。
@@ -1295,8 +1309,12 @@ class _PrepareHostLock:
             self._bypassed = True
             self._log(f"verify-prepare: 无法创建主机级锁文件（跳过锁，无串行保证）: {e}")
             return False
-        start = time.time()
-        while time.time() - start < self._timeout:
+        # 锁等待 deadline 用单调时钟（code-review item ee14c2595f61）：对齐
+        # _discover_port/probe_ready 的既有纪律——墙上时钟在 NTP 校时回拨时
+        # 会拉长并发 prepare 车道的锁等待窗、跳进时骤缩提前误判「锁等待
+        # 超时」（未获锁被调用方映射为 prepare 环境错误拦截）。
+        start = time.monotonic()
+        while time.monotonic() - start < self._timeout:
             try:
                 fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self._acquired = True
@@ -1320,7 +1338,7 @@ class _PrepareHostLock:
         except OSError:
             pass
         self._log(
-            f"verify-prepare: 主机级锁获取成功（wait={round(time.time() - start, 1)}s）"
+            f"verify-prepare: 主机级锁获取成功（wait={round(time.monotonic() - start, 1)}s）"
         )
         return True
 

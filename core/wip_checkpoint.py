@@ -210,7 +210,7 @@ def commit_wip_checkpoint(
 # ── merge-back 前塌缩（D4）───────────────────────────────────────────────────
 
 
-def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS):
+def _collapse_message(project_root, commits, timeout=WIP_TIMEOUT_SECONDS):
     """塌缩单提交的提交消息：取自塌缩前最终提交。
 
     - 分支上有非 WIP 最终提交 → 使用其完整消息（Spec 3.2「消息取自最终提交」）；
@@ -342,7 +342,7 @@ def collapse_wip_commits(
                 f"merge-back continues on uncollapsed branch (non-blocking)",
             )
             return False
-        message, ok = _collapse_message(project_root, commits, logger, timeout=timeout)
+        message, ok = _collapse_message(project_root, commits, timeout=timeout)
         if not ok:
             logger.warning(
                 "wip_checkpoint",

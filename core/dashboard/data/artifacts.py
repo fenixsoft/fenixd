@@ -12,6 +12,11 @@ from pathlib import Path
 
 # ── 验证产物（容错解析） ──────────────────────────────────────────
 
+# 空值/占位标记排除表（小写比较）：值命中即视为「未知/不展示」忽略不计。
+# 表格折叠（_fold_summary）与兜底计数（parse_verdict 兜底搜索）两路必须
+# 同源引用本常量，防止词表演进时出现同一报告两种计数口径。
+_EMPTY_VALUE_MARKERS = ("n/a", "-", "--", "—")
+
 
 # fix-deferred-findings CYC-1：parse_verify_progress 已迁入中性模块
 # core.signals（pm_engine 侧消费点不再反向 import dashboard.data），
@@ -144,20 +149,21 @@ def _fold_summary(summary: dict, key: str, val: str) -> dict:
     键名先剥离括号别名（如「通过 (PASS)」「产品缺陷 (BUG)」，v3 验证报告方言）
     再匹配；全角/半角括号均支持。
     """
-    if val.lower() in ("n/a", "-", "--", "—"):
+    if val.lower() in _EMPTY_VALUE_MARKERS:
         return summary
     k = key.lower()
     k = re.sub(r"[（(][^（）)]*[）)]", "", k)
+    # 「数」尾缀在此归一剥除（如「通过数」→「通过」），下方词表不再列数尾缀变体
     k = k.replace(" ", "").replace("数", "")
     if k in ("产品bug", "产品", "bug", "产品缺陷", "缺陷"):
         summary["product_bugs"] = val
     elif k in ("环境问题", "环境"):
         summary["env_issues"] = val
-    elif k in ("通过", "passed", "通过数"):
+    elif k in ("通过", "passed"):
         summary["passed"] = val
-    elif k in ("失败", "failed", "失败数"):
+    elif k in ("失败", "failed"):
         summary["failed"] = val
-    elif k in ("错误", "error", "errors", "错误数"):
+    elif k in ("错误", "error", "errors"):
         summary["errors"] = val
     return summary
 
@@ -362,8 +368,10 @@ def parse_verdict(project_root, spec_name) -> dict:
             if summary[field] is not None:
                 continue
             # f-string 拼接：% 格式化与正则里的 % 字面量混用会在词表演进时抛 ValueError
-            mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+]+)", content, re.I)
-            if mm and mm.group(1).strip().lower() not in ("n/a", "-", "--"):
+            # 字符类含 em dash「—」：与 _EMPTY_VALUE_MARKERS 同源覆盖，em dash 占位值
+            # 捕获后由下方共享排除表过滤（原字符类不含时该项在兜底路不可达）
+            mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+—]+)", content, re.I)
+            if mm and mm.group(1).strip().lower() not in _EMPTY_VALUE_MARKERS:
                 summary[field] = mm.group(1).strip()
 
     return {

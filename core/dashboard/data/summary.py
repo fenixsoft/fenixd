@@ -907,13 +907,9 @@ class SummaryIndex:
 
 # ── SPEC 生命周期时间轴 ──────────────────────────────────────────
 
-# 生命周期线性序（状态机文档 drafted → [reviewing →] ready → … 一致）。
-# 未登记的键走 .get(s, 9) 哨兵 9（高于 pushed=7）——add-spec-review-gate 新增
-# reviewing 态时漏登记，reviewing→ready 被算成 1<9 的假回退并落「状态回退」
-# 兜底文案（2026-09-15 evo-admin-dispatch-failure-escalation 实测：草稿→评审中
-# →就绪的正常推进被挂回退徽标）。reviewing 为评审门，位于 drafted 与 ready 之间。
-# blocked 有意不登记（哨兵）：进入 blocked 为前向（如 implementing→blocked），
-# 离开 blocked（blocked→ready / blocked→testing / blocked→reviewing）判回退。
+# 生命周期序与回退判定以 timeline._LIFECYCLE_ORDER 为唯一权威源（含 blocked=8
+# 侧挂态与未登记状态按前向处理），本文件不重复登记序表；时间轴数据经门面
+# _facade.get_spec_timeline 获取（见下方 spec_detail）。
 
 
 def spec_detail(project_root, spec_name: str, entry: dict) -> dict:

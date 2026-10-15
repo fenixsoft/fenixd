@@ -1277,9 +1277,10 @@ def _collect_api_stall_aggregates(
 ) -> List[Dict[str, Any]]:
     """窗口内 stall 计数>0 的 run 停滞聚合（evo-api-stall-signal-grading 2.1）。
 
-    扫 .fenix/runs/*.jsonl，窗口归属复核同深扫口径（run_id 内嵌时间戳优先、
-    缺失回退 mtime）；逐 run 经 _scan_run_stall_totals 有界流式扫描，stalls==0
-    的 run 不列。已被深扫覆盖的 run 允许重复出现（不做去重——聚合行与深扫行
+    扫 .fenix/runs 当前目录 ∪ 归档并集去重（口径同 _iter_window_runs /
+    _collect_run_files，窗口内 run 在自省执行前被归档不漏列），窗口归属复核
+    同深扫口径（run_id 内嵌时间戳优先、缺失回退 mtime）；逐 run 经
+    _scan_run_stall_totals 有界流式扫描，stalls==0 的 run 不列。已被深扫覆盖的 run 允许重复出现（不做去重——聚合行与深扫行
     数据同源但列选口径不同：深扫只列初筛离群 run，聚合行列全部停滞 run；
     去重会漏掉「非离群但停滞」的 run，与提案动机相悖）。结果按 run_id 排序
     （确定性渲染，测试锁定该行为）。
@@ -1301,7 +1302,7 @@ def _collect_api_stall_aggregates(
     results: List[Dict[str, Any]] = []
     scan_failures: List[Tuple[str, Exception]] = []
     scanned = 0
-    for p in sorted(runs_dir.glob("*.jsonl")):
+    for p in sorted(_collect_run_files(runs_dir), key=lambda p: p.stem):
         try:
             stat = p.stat()
         except OSError:
