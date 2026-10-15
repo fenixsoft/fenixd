@@ -626,24 +626,42 @@ class PRepairLaneMixin:
                 return
 
             # repair 成功：对分支重新执行 merge-back（分支已含 main 历史）
-            self._pm._reconcile_impl_budget(spec_name)
-            # ── 锚点提前落盘（fix-recovery-branch-anchor D1）─────────
-            # repair run 终态成功后、re-merge-back 之前写入 branch/implementer_run，
-            # 使恢复链在「repair 成功待 re-merge」窗口内可命中实现分支。
-            # 同时写入 _repair_awaiting_remerge 标记（D3），标识「仅剩合并」。
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "branch": branch,
-                    "implementer_run": getattr(r, "run_id", None) or None,
-                    "_repair_awaiting_remerge": True,
-                },
-            )
-            self._pm.logger.info(
-                "pm_engine",
-                f"锚点已提前落盘（repair）'{spec_name}': "
-                f"branch={branch}, _repair_awaiting_remerge=True",
-            )
+            # code-review item 038450d792f1：执行到此处时 repair run 已成功、
+            # 分支已含冲突解决，预算对账与锚点写盘均属 STATE IO（flock +
+            # read/write 的瞬时 OSError 等），裸调抛错会外溢到 worker 外层
+            # except 被兜底成 _fallback_after_repair 全新重派——分支按遗产登记
+            # 不丢失，但把一轮已成功的 repair 放大成整轮重派、白烧预算。对齐
+            # 同文件同型写点的既有守卫（388-405 记账写点 5859406dd4b6 / 成功
+            # 尾段 6a553a71ac8a）：异常按「repair 已成功、仅锚点/记账写失败」
+            # 降级——保留分支继续 re-merge（成功尾段本就重写 branch/
+            # implementer_run 锚点，预写缺失只影响恢复窗口命中；re-merge 失败
+            # 仍走 _handle_remerge_failure 续链），不做整轮 fallback 重派。
+            try:
+                self._pm._reconcile_impl_budget(spec_name)
+                # ── 锚点提前落盘（fix-recovery-branch-anchor D1）─────────
+                # repair run 终态成功后、re-merge-back 之前写入 branch/implementer_run，
+                # 使恢复链在「repair 成功待 re-merge」窗口内可命中实现分支。
+                # 同时写入 _repair_awaiting_remerge 标记（D3），标识「仅剩合并」。
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "branch": branch,
+                        "implementer_run": getattr(r, "run_id", None) or None,
+                        "_repair_awaiting_remerge": True,
+                    },
+                )
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"锚点已提前落盘（repair）'{spec_name}': "
+                    f"branch={branch}, _repair_awaiting_remerge=True",
+                )
+            except Exception as anchor_exc:  # noqa: BLE001 —— 写失败降级继续 re-merge
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair 预算对账/锚点写盘失败 '{spec_name}'"
+                    f"（repair 已成功，保留分支继续 re-merge，不回退重派）: "
+                    f"{type(anchor_exc).__name__}: {anchor_exc}",
+                )
             remerge_info = wm.merge_back_from_branch(branch)
             remerge_ok, remerge_error = remerge_info
 
@@ -1183,6 +1201,18 @@ class PRepairLaneMixin:
             # branch/implementer_run（二者保持原值，不新增清锚点），也**不消费**
             # _recovery_resume（恢复标记在 dispatch 入口一次性消费，此处不触碰）。
             "_repair_awaiting_remerge": False,
+            # 清除 merge 顺延记账（code-review item e8d6c0b1c4c2）：经 merge-only
+            # 重试失败 → _handle_merge_back_real_failure 转入 repair 车道 → repair
+            # 再失败走本 fallback 的条目会带着 pending 记账回 ready，而派发前预清
+            # 不覆盖这组字段；下一轮 implementing 期间 _recheck_inflight_deferred_merges
+            # 会按超限判式误接手——branch 锚点已被派发清空时触发
+            # mergeback_branch_anchor_missing 误告警，锚点在飞窗口内则对在飞轮
+            # 分支提前发起 merge-only 重试。与 _repair_awaiting_remerge 清除同族：
+            # fallback 重派后由新 implementer 正常收口，不再由恢复/重试链接手
+            # （清除值形态对齐 queue.py 顺延摘除点）。
+            "_merge_retry_pending": False,
+            "_merge_retry_count": 0,
+            "_merge_retry_first_at": None,
             # _retry_count 已由上方 bump_counters 原子递增并落盘，此处不再
             # 并入 update_spec（避免并发 fallback 间互相覆盖丢增量）。
         }

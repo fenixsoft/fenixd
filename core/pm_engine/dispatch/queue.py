@@ -1842,6 +1842,11 @@ class QQQueueMixin:
                                     f"确认型 no-op impl-result 快照写入失败 "
                                     f"'{spec_name}'（非阻塞）: {e}",
                                 )
+                            # 快照后即清理共享结果文件（对齐 fast-track 确认型
+                            # no-op 分支与本文件通用成功路径的「快照后清理」序列）：
+                            # 本分支已消费共享文件，残留可致后续无新结果文件的
+                            # 死亡 run 被读侧误采信旧结果。删除失败不阻塞（同口径）。
+                            self._pm._cleanup_shared_result_file(spec_name)
                         self._enqueue_front(spec_name, "verifier")
                         return
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}

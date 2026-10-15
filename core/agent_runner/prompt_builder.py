@@ -1,7 +1,8 @@
 """prompt_builder.py — PromptBuilder：Agent 提示词构建。
 
-通用 prompt 主体文件化（add-agent-prompt-files D1）：六类 agent 的静态主体
-存于框架根 agents/<agent-type>.md（唯一真相，无内置副本），加载时以
+通用 prompt 主体文件化（add-agent-prompt-files D1）：全部
+AGENT_PROMPT_FILES 白名单类型的静态主体存于框架根
+agents/<agent-type>.md（唯一真相，无内置副本），加载时以
 str.replace 填充路径类占位符（{spec_name}/{spec_dir}/{scenarios_path}/
 {result_path}/{report_path}/{progress_path}，administrator 另有困境信号
 字段占位符）；不用 str.format——prompt 正文含大量 {} JSON 示例。条件动态段
@@ -1200,7 +1201,13 @@ class PromptBuilder:
         except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入不阻断派发
             return ""
 
-        statuses = " / ".join(f'`"{s}"`' for s in AgentRunner._IMPL_RESULT_STATUSES)
+        statuses_src = getattr(AgentRunner, "_IMPL_RESULT_STATUSES", None)
+        if statuses_src is None:
+            # 属性漂移防御（code-review item 954b4802838b）：模块导入成功而私有
+            # 属性被重命名/收编时按缺段返回空串——与上方 from-import 的 except
+            # 口径一致，兑现「缺段零注入不阻断派发」的 fail-open 承诺。
+            return ""
+        statuses = " / ".join(f'`"{s}"`' for s in statuses_src)
         dispositions = " / ".join(f'`"{d}"`' for d in DISPOSITION_WHITELIST)
         return (
             "\n\n## 结果文件收工自证（result-gate selfcheck，强制，"
@@ -1863,6 +1870,11 @@ class PromptBuilder:
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
+        # 项目级附加提示词（code-review item 46a07114e4f4）：独立构建路径此前
+        # 从不经过 _build_prompt 模板路径的统一注入点，Dashboard 可编辑的项目
+        # 附加内容对本车道静默 no-op——与模板路径调用点同形态就地追加（置于
+        # 收尾，维持「项目级附加段位于 prompt 末尾」约定；缺席零注入）。
+        prompt += self._project_extra_section("self-review", token)
         return prompt
 
     def _build_evolution_prompt(self, spec_name: str, detail: dict) -> str:
@@ -1938,6 +1950,11 @@ class PromptBuilder:
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
+        # 项目级附加提示词（code-review item 46a07114e4f4）：独立构建路径此前
+        # 从不经过 _build_prompt 模板路径的统一注入点，Dashboard 可编辑的项目
+        # 附加内容对本车道静默 no-op——与模板路径调用点同形态就地追加（置于
+        # 收尾，维持「项目级附加段位于 prompt 末尾」约定；缺席零注入）。
+        prompt += self._project_extra_section("evolution", spec_name)
         return prompt
 
     def _build_code_review_prompt(self, token: str, detail: dict) -> str:
@@ -2004,6 +2021,11 @@ class PromptBuilder:
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
+        # 项目级附加提示词（code-review item 46a07114e4f4）：独立构建路径此前
+        # 从不经过 _build_prompt 模板路径的统一注入点，Dashboard 可编辑的项目
+        # 附加内容对本车道静默 no-op——与模板路径调用点同形态就地追加（置于
+        # 收尾，维持「项目级附加段位于 prompt 末尾」约定；缺席零注入）。
+        prompt += self._project_extra_section("code-review", token)
         return prompt
 
     def _build_code_fix_prompt(self, run_id: str, detail: dict) -> str:
@@ -2077,6 +2099,11 @@ class PromptBuilder:
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
+        # 项目级附加提示词（code-review item 46a07114e4f4）：独立构建路径此前
+        # 从不经过 _build_prompt 模板路径的统一注入点，Dashboard 可编辑的项目
+        # 附加内容对本车道静默 no-op——与模板路径调用点同形态就地追加（置于
+        # 收尾，维持「项目级附加段位于 prompt 末尾」约定；缺席零注入）。
+        prompt += self._project_extra_section("code-fix", run_id)
         return prompt
 
     def _fast_track_reuse_note(self, spec_name: str) -> str:

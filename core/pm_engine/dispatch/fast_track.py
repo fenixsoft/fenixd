@@ -873,6 +873,23 @@ class FFastTrackMixin:
                 # 与 full 车道零变更成功收口同款清零（queue.py 确认型 no-op
                 # 分支）：非连续的零变更不应累计进「连续 3 次」哨。
                 "_zero_change_attempts": 0,
+                # 顺延/等待记账清账（code-review item 86290ef5c6af，对齐
+                # queue.py _finalize_merge_success 的成功清账字段集）：本车道
+                # merge 失败路径会写这组记账——spec_dir_inflight 顺延分支
+                # （_defer_merge_back 写 _merge_retry_pending/_merge_retry_count/
+                # _merge_retry_first_at）、wip_gate_blocked 分支（rollback.py
+                # _report_mergeback_wip_overlap 写 _wip_gate_deferred）、repair
+                # 通道（_repair_awaiting_remerge）。成功收口不清则残留的
+                # _merge_retry_pending 会在 spec 下一轮 implementing 期间被
+                # _recheck_inflight_deferred_merges 按超限判式接手（branch 锚点
+                # 已被派发清空 → mergeback_branch_anchor_missing 误告警；锚点
+                # 在飞 → 对当前在飞轮分支提前发起 merge-only 重试）。merge 成功
+                # 即解除顺延/等待态，防陈旧计数污染下一轮。
+                "_merge_retry_pending": False,
+                "_merge_retry_count": 0,
+                "_merge_retry_first_at": None,
+                "_wip_gate_deferred": False,
+                "_repair_awaiting_remerge": False,
                 **self._pm._clear_dispatch_conflict(spec_name),
             },
         )
@@ -917,6 +934,69 @@ class FFastTrackMixin:
     # 计数**在本层决策。修复方向反转（D2）：repair agent 在实现分支一侧把 main
     # 合入分支并解决冲突，主树在派发前已 abort 保持干净。
 
+    def _hard_check_fail_accounting(self, spec_name: str, err: str) -> bool:
+        """硬校验失败出口共用重试记账：递增 _retry_count + max_retries 封顶冻结。
+
+        （code-review item dcddb2783911）_hard_check_fast_track 的三个失败出口
+        （完成度判据拦截 / verification 解析失败 / validate 不通过）原先只写
+        error + _enqueue_front 原地重派，不递增 _retry_count、不进 max_retries
+        封顶冻结与重试治理——结果文件持续非法时每轮烧掉一个完整 fast-track run
+        （含 impl_run_budget 计量），仅由预算闸门兜底置 blocked，弱于同文件
+        其它失败出口「重试 max_retries 次即 freeze_for_human + 升级告警」的
+        收敛口径。
+
+        Returns:
+            True：未达封顶，调用方按既有原地重派语义继续（写 error + 入队；
+            不翻转 status、不改写 error 文案，对齐 4.1 出口矩阵「fail-closed
+            不推进」契约，spec 保持 in-flight）。
+            False：已达封顶并已 freeze_for_human，调用方 MUST 终止重派
+            （不再写 error / 入队；冻结 error 内嵌「原状态 X」供
+            parse_orig_status 解冻还原的锚点，不得被覆写）。
+        """
+        # _retry_count 锁内原子递增、消费写后值判阈值（对齐 _handle_fast_track_
+        # failure 同型收口，防并发写回互相覆盖丢增量）；bump 自带 int 归一。
+        retries = self._pm.state_machine.bump_counters(
+            spec_name, {"_retry_count": 1}
+        ).get("_retry_count", 0)
+        # 归一统一 repair_lane._max_retries 单一读取器（0=不自动重试为合法
+        # 语义，与 _handle_fast_track_failure 同口径）。
+        max_r = _max_retries(self._pm)
+        if retries < max_r:
+            return True
+        fp = self._pm._redispatch_cause_fingerprint(err)
+        orig_status = (
+            (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+            or "implementing"
+        )
+        self._pm.state_machine.freeze_for_human(
+            spec_name,
+            error=(
+                f"原状态 {orig_status} · fast-track 硬校验失败重试耗尽"
+                f"（{max_r}/{max_r} 轮，指纹 {fp}）：{err}"
+            ),
+            signal_type="redispatch_loop_detected",
+            severity="major",
+            description=(
+                f"'{spec_name}' fast-track 结果文件持续未通过硬校验，连续重试 "
+                f"{max_r} 轮已达上限（max_retries），自动重试终止——已冻结转人工处置"
+            ),
+            evidence=(
+                f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                f"fp={fp}; final_error={err}"
+            ),
+            recommended_action=(
+                "检查结果文件持续非法的根因（runner 产出契约/场景集漂移）；处置后"
+                "解冻（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
+            ),
+            alert_callback=self._pm._send_human_escalation_alert,
+        )
+        self._pm.logger.error(
+            "pm_engine",
+            f"fast-track hard-check retries exhausted '{spec_name}' — 冻结转人工，"
+            f"不再重派（{retries}/{max_r}，fp={fp}）",
+        )
+        return False
+
     def _hard_check_fast_track(self, spec_name: str, ft_result: dict):
         """对 fast-track 结果做框架侧硬校验；失败记原因并按失败重派。
 
@@ -942,7 +1022,8 @@ class FFastTrackMixin:
 
         # ── 完成度叠加判据（fix-impl-tasks-completion-gate 5.1）──
         # （fix-fasttrack-recovery-resume 4.1 出口矩阵：完成度判据拦截分支）
-        # 本出口仅写 error + _enqueue_front 重派，对 branch/implementer_run/
+        # 本出口除重试记账（_hard_check_fail_accounting）外仅写 error +
+        # _enqueue_front 重派，对 branch/implementer_run/
         # _recovery_resume 均**不触碰**——重派走 dispatch 入口，由其按续做
         # 标记决定是否清锚点；不新增清锚点、不消费恢复标记。
         try:
@@ -955,6 +1036,11 @@ class FFastTrackMixin:
                 # 非 None 非 str，按通过处理——产品环境恒返回 str|None）。
                 if isinstance(gate_err, str):
                     err = f"fast-track 完成度判据未通过：{gate_err}"
+                    # 重试记账 + max_retries 封顶冻结（code-review item
+                    # dcddb2783911，与同文件其它失败出口的收敛口径对齐）；
+                    # 返回 False = 已冻结转人工，终止原地重派。
+                    if not self._hard_check_fail_accounting(spec_name, err):
+                        return None
                     self._pm.state_machine.update_spec(spec_name, {"error": err})
                     self._enqueue_front(spec_name, "fast-track")
                     self._pm.logger.error(
@@ -985,11 +1071,15 @@ class FFastTrackMixin:
 
         verification = parse_fast_track_verification(ft_result or {})
         # （fix-fasttrack-recovery-resume 4.1 出口矩阵：verification 解析失败
-        # 拦截分支）本出口与下方校验失败分支同——仅写 error + _enqueue_front
+        # 拦截分支）本出口与下方校验失败分支同——除重试记账
+        # （_hard_check_fail_accounting）外仅写 error + _enqueue_front
         # 重派，对 branch/implementer_run/_recovery_resume 均**不触碰**，不新增
         # 清锚点、不消费恢复标记。
         if verification is None:
             err = "fast-track 结果文件非法（verification 段缺失或结构不完整）"
+            # 重试记账 + max_retries 封顶冻结（code-review item dcddb2783911）
+            if not self._hard_check_fail_accounting(spec_name, err):
+                return None
             self._pm.state_machine.update_spec(spec_name, {"error": err})
             self._enqueue_front(spec_name, "fast-track")
             self._pm.logger.error(
@@ -1039,13 +1129,17 @@ class FFastTrackMixin:
 
         check = validate_fast_track_result(ft_result, designed_ids or None)
         # （fix-fasttrack-recovery-resume 4.1 出口矩阵：硬校验失败重派分支）
-        # 本出口仅写 error + _enqueue_front 重派（validate 不通过 / bug-found
+        # 本出口除重试记账（_hard_check_fail_accounting）外仅写 error +
+        # _enqueue_front 重派（validate 不通过 / bug-found
         # 升级完整模式由更下的 _escalate_to_full_mode 处理），对
         # branch/implementer_run/_recovery_resume 均**不触碰**，不新增清锚点、
         # 不消费恢复标记。
         if not check["ok"]:
             violations_str = "；".join(check["violations"])
             err = f"fast-track 硬校验失败（fail-closed）：{violations_str}"
+            # 重试记账 + max_retries 封顶冻结（code-review item dcddb2783911）
+            if not self._hard_check_fail_accounting(spec_name, err):
+                return None
             self._pm.state_machine.update_spec(spec_name, {"error": err})
             self._enqueue_front(spec_name, "fast-track")
             self._pm.logger.error(

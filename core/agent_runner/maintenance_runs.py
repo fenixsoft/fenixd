@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
@@ -109,31 +110,35 @@ def _admin_failure_evidence(runner, run_id: str, exc: Exception) -> dict:
         evidence["stderr_tail"] = tail[:_ADMIN_FAILURE_STDERR_MAX_CHARS]
     run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
     if run_file.is_file():
-        try:
-            rows = run_file.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            rows = []
+        # 逐行流式读取（code-review item ff75971a42b2）：本函数挂在失败收尾
+        # 路径（非零退出），整文件 read_text 会把含全部工具输出、可达数百 MB
+        # 的转录一次性驻留内存；逐行判定 + 定长尾窗（deque(maxlen=3) 恒存
+        # 末 N 条）与原实现返回内容逐点等价，峰值内存 O(1)。
         provider_marker = None
-        timestamped: list = []
-        for line in rows:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("type") == "provider_marker":
-                provider_marker = entry
-            ts = entry.get("timestamp")
-            if isinstance(ts, str) and ts:
-                timestamped.append(ts)
+        timestamped = deque(maxlen=_ADMIN_FAILURE_TS_EVENTS)
+        try:
+            with run_file.open("r", encoding="utf-8", errors="replace") as run_f:
+                for line in run_f:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("type") == "provider_marker":
+                        provider_marker = entry
+                    ts = entry.get("timestamp")
+                    if isinstance(ts, str) and ts:
+                        timestamped.append(ts)
+        except OSError:
+            pass
         if provider_marker is not None:
             evidence["provider_model"] = {
                 "provider": provider_marker.get("provider"),
                 "model": provider_marker.get("model"),
                 "agent_type": provider_marker.get("agent_type"),
             }
-        evidence["recent_event_timestamps"] = timestamped[-_ADMIN_FAILURE_TS_EVENTS:]
+        evidence["recent_event_timestamps"] = list(timestamped)
     return evidence
 
 
@@ -582,26 +587,32 @@ def _unique_self_review_run_id(runner, date_str: str) -> str:
     """生成不冲突的 ``review-<date>`` run_id（code-review item 61ab4fea1b86）。
 
     固定 ``review-<date>`` 在同日重跑（手动补跑 + 周期触发）下撞名：新旧
-    两轮共用 runs/review-<date>.jsonl 事件流与台账归属。对齐
-    _unique_admin_run_id 的探测退避形态：候选的 run 事件流或在飞 out 文件
-    任一已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。探测退避而非
-    O_CREAT|O_EXCL 申领：out 文件由 agent 按 prompt 注入的路径写入且 run
-    结束即清理（_delete_self_review_out），事件流由 _run_agent 追加落盘，
-    抢先落申领占位文件会污染 jsonl 事件流并改变 out 文件生命周期。
+    两轮共用 runs/review-<date>.jsonl 事件流与台账归属。候选的在飞 out 文
+    件已存在，或 runs/<candidate>.jsonl 已被并发实例申领，即追加 ``-<n>``
+    退避（n 从 1 起递增）。
+
+    申领即创建（code-review item be4de163aa74，对齐 _unique_admin_run_id /
+    item 6e65b3298af8 的现行 ``O_CREAT|O_EXCL`` 形态）：旧版「先探测后返回」
+    与 admin 车道已修缺陷同型——同日重跑（手动补跑 + 周期触发）或同秒双
+    触发的两个实例可同时通过探测、取得同一 run_id，runs 事件流互相追加、
+    out 文件互相读取/删除。现仅对 runs/<candidate>.jsonl 原子申领、输者退
+    避下一候选——该文件本就由 _run_agent 经 append_run_line 追加创建
+    （O_APPEND 语义对空占位透明，空占位即申领凭据）；out 产物文件维持探测
+    不申领：它由 agent 按 prompt 注入的路径写入且 run 结束即清理
+    （_delete_self_review_out），抢先落占位会改变其生命周期。申领机制收敛
+    于 _claim_run_path（item b15e0a4af66c，runs 事件流申领走空占位形态）。
     """
-    base = f"review-{date_str}"
-    candidate = base
-    n = 0
     runs_dir = runner.project_root / ".fenix" / "runs"
-    while True:
-        if (
-            (runs_dir / f"{candidate}.jsonl").exists()
-            or (runner.project_root / ".fenix" / f"self_review_out-{candidate}.json").exists()
-        ):
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        return candidate
+    return _claim_run_path(
+        runner,
+        f"review-{date_str}",
+        runs_dir,
+        "{}.jsonl",
+        probe=lambda candidate: (
+            runner.project_root / ".fenix" / f"self_review_out-{candidate}.json"
+        ).exists(),
+        placeholder=None,
+    )
 
 
 def run_self_review(
@@ -812,7 +823,8 @@ def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
     描述符泄漏。对齐 routes 侧 _write_signal_exclusive 的显式接管形态
     （item 71d502440d3b，先例 regression_routes item 655c860e2e6e）：f 为
     None（fdopen 未成功）时兜底 os.close；成功后统一经 finally close
-    （等价 with 语义）。三个 _unique_*_run_id 申领点共用。
+    （等价 with 语义）。申领机制收敛于 _claim_run_path（item b15e0a4af66c），
+    五条维护车道共用。
     """
     f = None
     try:
@@ -826,6 +838,89 @@ def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
                 os.close(fd)
             except OSError:
                 pass
+
+
+def _claim_run_path(
+    runner,
+    base: str,
+    target_dir: Path,
+    claim_name: str,
+    probe=None,
+    placeholder: str | None = "{}\n",
+) -> str:
+    """探测退避 + ``O_CREAT|O_EXCL`` 原子申领不冲突 run_id 的公共收敛
+    （code-review item b15e0a4af66c）。
+
+    _unique_code_review_run_id / _unique_regression_run_id /
+    _unique_code_fix_run_id 三者的目录解析、探测退避、O_EXCL 申领、占位写
+    失败 unlink 退痕后上抛的整段逻辑此前逐字同构（各约 60 行），本模块
+    _apply_provider_env（item 8303928771e4）确立的惯例正是「同段组装提取
+    共用助手，防多处复制单边演进」；item 96ce97853f55（占位写失败退痕）这
+    类修复就须三处同步落同一段代码，漏一处即车道行为分裂。本助手收敛为一
+    处，self-review/evolution 两车道亦对齐 _unique_admin_run_id 的现行申领
+    形态接入（item be4de163aa74），调用点只保留 base 命名、目录、申领文件
+    名模板与探针差异。
+
+    流程（与各车道原实现逐点等价）：
+    - ``probe(candidate)``：申领前的额外冲突探测（在飞产物/在飞集/exclude/
+      不申领的产物文件），命中即退避下一候选；None 表示无额外探针。申领
+      文件自身的占用无需探测——``O_CREAT|O_EXCL`` 申领即裁决；
+    - 目录建不出（权限等 OSError）：退回既有探测语义返回候选，落盘失败由
+      调用方执行路径统一报错；
+    - ``FileExistsError``（已被并发实例申领）→ 退避下一候选（n=0 起始、
+      冲突分支先自增再拼候选 → 首个退避候选为 ``base-1``，n 从 1 起递增）；
+    - 其他 OSError → 返回候选；
+    - 申领成功后落占位：``placeholder`` 非 None 走 _write_claim_placeholder
+      （fd 生命周期由其 finally 接管）；None 为空占位仅关 fd——runs 事件流
+      文件本就由 _run_agent 经 append_run_line 追加创建（O_APPEND 语义对空
+      占位透明），_unique_admin_run_id 同型。占位写失败（磁盘满等，item
+      96ce97853f55）时 O_CREAT|O_EXCL 已创建的申领文件就此残留半写占位，
+      而调用点的 try/finally 占位清理区起于本函数返回之后、够不着这条路径
+      ——此处 unlink 退痕后原样上抛（「申领即落好占位」或「无痕上抛」二者
+      其一，对齐 item e6a103d93b91 的占位收尾清理约定）。不退避下一候选：
+      占位写失败多为 ENOSPC 类持续故障，逐候选退避会无界空转。
+    """
+    candidate = base
+    n = 0
+    while True:
+        if probe is not None and probe(candidate):
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return candidate
+        claim_path = target_dir / claim_name.format(candidate)
+        try:
+            fd = os.open(
+                claim_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            # 已被并发实例申领 → 退避下一候选（申领即裁决，无再撞窗口）
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        except OSError:
+            return candidate
+        if placeholder is None:
+            # 空 jsonl 占位即申领完成（无 manifest 类读者解析内容，事件流由
+            # _run_agent 追加），fd 即关（_unique_admin_run_id 同型）
+            os.close(fd)
+            return candidate
+        try:
+            _write_claim_placeholder(fd, placeholder)
+        except BaseException:
+            # 占位写失败退痕后原样上抛（见 docstring；fd 生命周期由
+            # _write_claim_placeholder 的 finally 接管，此处不重复 close）
+            try:
+                os.unlink(claim_path)
+            except OSError:
+                pass
+            raise
+        return candidate
 
 
 # token 归账 runs 数组的条数上限（code-review item f597c1e03461）：归账文件
@@ -988,27 +1083,31 @@ def _unique_evolution_run_id(runner) -> str:
 
     秒级时间戳在「手动触发 + 定时触发同秒到达（或快速连续两次调用）」下
     撞名：runs/evo-<run_id>.jsonl 事件流与 out-<run_id>.json 契约产物会互相
-    覆盖。对齐 _unique_self_review_run_id 的探测退避形态：候选的 run 事件流
-    或在飞 out 文件任一已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。探测
-    退避而非 O_CREAT|O_EXCL 申领：out 文件由 agent 按 prompt 注入的路径写入
-    且 run 结束即清理（_delete_evolution_out），抢先落申领占位文件会改变该
-    文件生命周期并可能被 read_contract 误读为合法契约。
+    覆盖。候选的在飞 out 契约产物已存在，或 runs/<candidate>.jsonl 已被并
+    发实例申领，即追加 ``-<n>`` 退避（n 从 1 起递增）。
+
+    申领即创建（code-review item be4de163aa74，对齐 _unique_admin_run_id /
+    item 6e65b3298af8 的现行 ``O_CREAT|O_EXCL`` 形态）：旧版「先探测后返回」
+    与 admin 车道已修缺陷同型——同秒双触发的两个实例可同时通过探测、取得
+    同一 run_id，runs 事件流互相追加、契约产物互相覆盖。现仅对
+    runs/<candidate>.jsonl 原子申领、输者退避下一候选——该文件本就由
+    _run_agent 经 append_run_line 追加创建（O_APPEND 语义对空占位透明，空
+    占位即申领凭据）；out 契约产物维持探测不申领：它由 agent 按 prompt 注
+    入的路径写入且 run 结束即清理（_delete_evolution_out），抢先落占位会改
+    变该文件生命周期并可能被 read_contract 误读为合法契约。申领机制收敛于
+    _claim_run_path（item b15e0a4af66c，runs 事件流申领走空占位形态）。
     """
-    base = f"evo-{int(time.time())}"
-    candidate = base
-    n = 0
     runs_dir = runner.project_root / ".fenix" / "runs"
-    while True:
-        if (
-            (runs_dir / f"{candidate}.jsonl").exists()
-            or (
-                runner.project_root / ".fenix" / "evolution" / f"out-{candidate}.json"
-            ).exists()
-        ):
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        return candidate
+    return _claim_run_path(
+        runner,
+        f"evo-{int(time.time())}",
+        runs_dir,
+        "{}.jsonl",
+        probe=lambda candidate: (
+            runner.project_root / ".fenix" / "evolution" / f"out-{candidate}.json"
+        ).exists(),
+        placeholder=None,
+    )
 
 
 def _log_lane_run_metrics(
@@ -1471,27 +1570,32 @@ def _evolution_bg_wait_ceiling_hit(runner, run_id: str) -> bool:
     模块级辅助函数（与 _salvage_evolution_out 同型），供单测不经完整
     run_evolution 装配直接调用。
     """
+    # 逐行流式读取（code-review item ff75971a42b2）：evolution 车道轮次不设
+    # 限（run_code_review 注释记载曾有 turns=2114 的 run），转录含全部工具
+    # 输出时可达数百 MB，整文件 read_text 在失败收尾路径（产物缺失恰是
+    # daemon 已承压的时刻）上会造成内存尖峰；命中即 return，逐行判定与原
+    # 实现逐点等价，峰值内存 O(1)。
     try:
         run_file = (
             runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
         )
-        raw = run_file.read_text(encoding="utf-8", errors="replace")
+        with run_file.open("r", encoding="utf-8", errors="replace") as run_f:
+            for raw_line in run_f:
+                line = raw_line.strip()
+                # 前滤只做廉价子串判断，行类型以解析后的 type 字段为准（对
+                # json.dumps 分隔符变体健壮），确保只扫 stderr 行不误判引用。
+                if "stderr" not in line or '"type"' not in line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(ev, dict) or ev.get("type") != "stderr":
+                    continue
+                if _BG_WAIT_CEILING_SIGNATURE in str(ev.get("line") or "").lower():
+                    return True
     except OSError:
         return False
-    for line in raw.splitlines():
-        line = line.strip()
-        # 前滤只做廉价子串判断，行类型以解析后的 type 字段为准（对
-        # json.dumps 分隔符变体健壮），确保只扫 stderr 行不误判引用。
-        if "stderr" not in line or '"type"' not in line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(ev, dict) or ev.get("type") != "stderr":
-            continue
-        if _BG_WAIT_CEILING_SIGNATURE in str(ev.get("line") or "").lower():
-            return True
     return False
 
 
@@ -2124,53 +2228,18 @@ def _unique_code_review_run_id(runner) -> str:
     本身（原子），输者退避下一候选；占位内容为合法空 JSON ``{}``（
     read_progress 等读者对未完成 manifest 按 ``{}`` 兜底，不会解析失败），
     随后 run_code_review 的 write_text 以完整 manifest 原地覆盖。
+
+    申领机制收敛于 _claim_run_path（item b15e0a4af66c），本函数只保留
+    base 命名、目录、申领文件名与在飞产物探针差异。
     """
-    base = f"code-review-{int(time.time())}"
-    candidate = base
-    # n=0 起始、冲突分支先自增再拼候选 → 首个退避候选为 base-1（与
-    # docstring「n 从 1 起递增」及 _unique_code_fix_run_id 同口径对齐）
-    n = 0
     cr_dir = runner.project_root / ".fenix" / "code-review"
-    while True:
-        if (cr_dir / f"out-{candidate}.jsonl").exists():
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        try:
-            cr_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # 目录建不出（权限等）：退回既有语义——返回候选，落盘失败由
-            # run_code_review 的 manifest 落盘路径统一报错
-            return candidate
-        try:
-            fd = os.open(
-                cr_dir / f"manifest-{candidate}.json",
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
-            # 已被并发触发申领 → 退避下一候选（申领即裁决，无再撞窗口）
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        except OSError:
-            return candidate
-        try:
-            _write_claim_placeholder(fd)
-        except BaseException:
-            # 占位写失败（磁盘满等，item 96ce97853f55）：O_CREAT|O_EXCL 已创建
-            # 的申领文件就此残留半写占位，而调用点 run_code_review 的 try/finally
-            # 占位清理区起于本函数返回之后、够不着这条路径——此处 unlink 退痕后
-            # 原样上抛（「申领即落好占位」或「无痕上抛」二者其一，对齐 item
-            # e6a103d93b91 的占位收尾清理约定）。不退避下一候选：占位写失败多为
-            # ENOSPC 类持续故障，逐候选退避会无界空转。fd 生命周期由
-            # _write_claim_placeholder 的 finally 接管，此处不重复 close。
-            try:
-                os.unlink(cr_dir / f"manifest-{candidate}.json")
-            except OSError:
-                pass
-            raise
-        return candidate
+    return _claim_run_path(
+        runner,
+        f"code-review-{int(time.time())}",
+        cr_dir,
+        "manifest-{}.json",
+        probe=lambda candidate: (cr_dir / f"out-{candidate}.jsonl").exists(),
+    )
 
 
 def _read_code_review_out(runner, project_root, run_id: str) -> list:
@@ -2347,52 +2416,19 @@ def _unique_regression_run_id(runner) -> str:
     下一候选；占位内容为合法空 JSON ``{}``（无读者按 run 文件聚合，占位
     不破坏任何消费方）。占位仅作申领凭据，不回填真实 run 记录——由
     run_regression 收尾 finally 清理（item e6a103d93b91），不留空占位。
+
+    申领机制收敛于 _claim_run_path（item b15e0a4af66c），本函数只保留
+    base 命名、目录、申领文件名与残留文件探针差异（探针与申领同一文件，
+    O_EXCL 申领即裁决，保留探针不改变行为）。
     """
-    base = f"regression-{int(time.time())}"
-    candidate = base
-    # n=0 起始、冲突分支先自增再拼候选 → 首个退避候选为 base-1
-    # （对齐 _unique_code_review_run_id / _unique_code_fix_run_id 同族口径）
-    n = 0
     reg_dir = runner.project_root / ".fenix" / "regression"
-    while True:
-        if (reg_dir / f"run-{candidate}.json").exists():
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        try:
-            reg_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # 目录建不出（权限等）：退回探测语义，落盘失败由回归执行路径统一报错
-            return candidate
-        try:
-            fd = os.open(
-                reg_dir / f"run-{candidate}.json",
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
-            # 已被并发触发申领 → 退避下一候选（申领即裁决，无再撞窗口）
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        except OSError:
-            return candidate
-        try:
-            _write_claim_placeholder(fd)
-        except BaseException:
-            # 占位写失败（磁盘满等，item 96ce97853f55）：O_CREAT|O_EXCL 已创建
-            # 的申领文件就此残留半写占位，而调用点 run_regression 的 try/finally
-            # 占位清理区起于本函数返回之后、够不着这条路径——此处 unlink 退痕后
-            # 原样上抛（「申领即落好占位」或「无痕上抛」二者其一，对齐 item
-            # e6a103d93b91 的占位收尾清理约定）。不退避下一候选：占位写失败多为
-            # ENOSPC 类持续故障，逐候选退避会无界空转。fd 生命周期由
-            # _write_claim_placeholder 的 finally 接管，此处不重复 close。
-            try:
-                os.unlink(reg_dir / f"run-{candidate}.json")
-            except OSError:
-                pass
-            raise
-        return candidate
+    return _claim_run_path(
+        runner,
+        f"regression-{int(time.time())}",
+        reg_dir,
+        "run-{}.json",
+        probe=lambda candidate: (reg_dir / f"run-{candidate}.json").exists(),
+    )
 
 
 # pytest 中需要独立参数值（空格分隔形态）的选项（add-codefix-targeted-retry 2.1）：
@@ -2713,56 +2749,24 @@ def _unique_code_fix_run_id(runner, exclude=()) -> str:
     方；真实产物落 worktree 同名路径，不会与占位同文件）。占位仅作申领
     凭据，不回填真实产物——由 run_code_fix 收尾 finally 清理（对齐
     run_regression / item e6a103d93b91），不留空占位。
+
+    申领机制收敛于 _claim_run_path（item b15e0a4af66c），本函数只保留
+    base 命名、目录、申领文件名与在飞集/exclude/主树残留探针差异（探针
+    含申领文件自身，O_EXCL 申领即裁决，保留探针不改变行为）。
     """
-    base = f"code-fix-{int(time.time())}"
-    candidate = base
-    n = 0
     cr_dir = runner.project_root / ".fenix" / "code-review"
     running = getattr(runner, "_running_agents", None) or {}
-    while True:
-        if (
+    return _claim_run_path(
+        runner,
+        f"code-fix-{int(time.time())}",
+        cr_dir,
+        "fix-out-{}.jsonl",
+        probe=lambda candidate: (
             candidate in running
             or candidate in exclude
             or (cr_dir / f"fix-out-{candidate}.jsonl").exists()
-        ):
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        try:
-            cr_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # 目录建不出（权限等）：退回既有探测语义，落盘失败由
-            # run_code_fix 的 out 目录创建路径统一报错
-            return candidate
-        try:
-            fd = os.open(
-                cr_dir / f"fix-out-{candidate}.jsonl",
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
-            # 已被并发触发申领 → 退避下一候选（申领即裁决，无再撞窗口）
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        except OSError:
-            return candidate
-        try:
-            _write_claim_placeholder(fd)
-        except BaseException:
-            # 占位写失败（磁盘满等，item 96ce97853f55）：O_CREAT|O_EXCL 已创建
-            # 的申领文件就此残留半写占位，而调用点 run_code_fix 的 try/finally
-            # 占位清理区起于本函数返回之后、够不着这条路径——此处 unlink 退痕后
-            # 原样上抛（「申领即落好占位」或「无痕上抛」二者其一，对齐 item
-            # e6a103d93b91 的占位收尾清理约定）。不退避下一候选：占位写失败多为
-            # ENOSPC 类持续故障，逐候选退避会无界空转。fd 生命周期由
-            # _write_claim_placeholder 的 finally 接管，此处不重复 close。
-            try:
-                os.unlink(cr_dir / f"fix-out-{candidate}.jsonl")
-            except OSError:
-                pass
-            raise
-        return candidate
+        ),
+    )
 
 
 def _check_code_fix_artifact(items, out_path: Path) -> str | None:
@@ -3347,6 +3351,13 @@ def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
         # date 统一为日期语义（item f6ba9c4dccef）：此前写 run_id
         # （impl-ocr-<spec>-<epoch>），run_id 另立字段承载（对齐其余归账
         # 函数的 YYYY-MM-DD 口径，按日聚合不再错组）。
+        # cost_usd 同 _token_usage_fields 归一口径（code-review item
+        # d0423bd766df）：仅放行 int/float（bool 剔除——非成本语义），其余
+        # 转 None，畸形值不再直达 _append_token_run 的 json.dumps 抛
+        # TypeError、被其 except 收口后连 token 计数一并丢掉整条记录。
+        cost = summary.get("cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            cost = None
         entry = {
             "agent_type": "impl-ocr",
             "date": now.date().isoformat(),
@@ -3356,7 +3367,7 @@ def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
             # dc8f109b8b60）：ocr summary 畸形值回落 0，保住整条记账记录
             "input_tokens": _safe_int(summary.get("input_tokens", 0) or 0),
             "output_tokens": _safe_int(summary.get("output_tokens", 0) or 0),
-            "cost_usd": summary.get("cost_usd"),
+            "cost_usd": cost,
         }
         _append_token_run(tokens_json, entry)
     except Exception:  # noqa: BLE001 — 记账失败不影响车道结论

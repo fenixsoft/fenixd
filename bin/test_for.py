@@ -57,8 +57,13 @@ def normalize_module_path(file_path: str, project_root: Path) -> Optional[str]:
     return ".".join(parts)
 
 
-def extract_imports_from_file(file_path: str) -> Set[str]:
-    """Extract all imports from a Python file using AST."""
+def extract_imports_from_file(file_path: str, package: Optional[str] = None) -> Set[str]:
+    """Extract all imports from a Python file using AST.
+
+    ``package`` 是该文件所在包的绝对模块路径（如 tests/helpers.py 属于包
+    tests），用于把相对导入归一为绝对模块名；无包信息时相对导入不记边
+    （不再退回按可能撞名的顶层名记边）。
+    """
     imports = set()
 
     try:
@@ -72,7 +77,25 @@ def extract_imports_from_file(file_path: str) -> Set[str]:
                 for alias in node.names:
                     imports.add(alias.name)
             elif isinstance(node, ast.ImportFrom):
-                if node.module:
+                if node.level:
+                    # 相对导入归一口径：level 为相对所在包的上溯层数（level=1
+                    # 基准即所在包本身，先剥 level-1 层包前缀），结合所在文件
+                    # 包路径归一成绝对模块名再记边——`from .pkg import y` 不
+                    # 再按顶层 'pkg' 撞名误配；`from . import x`（module 为
+                    # None）至少记录所在包自身依赖边，并补 alias 级子模块边
+                    # 防漏配。过度上溯（剥空包前缀）不记边。
+                    if package:
+                        base_parts = package.split(".")
+                        anchor = base_parts[: len(base_parts) - (node.level - 1)]
+                        if anchor:
+                            base = ".".join(anchor)
+                            if node.module:
+                                imports.add(f"{base}.{node.module}")
+                            else:
+                                imports.add(base)
+                                for alias in node.names:
+                                    imports.add(f"{base}.{alias.name}")
+                elif node.module:
                     imports.add(node.module)
     except (SyntaxError, UnicodeDecodeError) as e:
         print(f"Warning: Could not parse {file_path}: {e}", file=sys.stderr)
@@ -85,22 +108,36 @@ def extract_imports_from_file(file_path: str) -> Set[str]:
     return imports
 
 
+def _is_executable_test_module(module_path: str) -> bool:
+    """模块键是否对应 pytest 可收集执行的测试文件（末段 test_* / *_test 命名）。
+
+    图节点含 conftest/helpers/__init__ 等非测试命名中转模块，仅在最终把
+    选中项转成可执行文件列表（及 conftest 作用域选测）时按此口径过滤。
+    """
+    last_segment = module_path.rsplit(".", 1)[-1]
+    return last_segment.startswith("test_") or last_segment.endswith("_test")
+
+
 def build_import_graph(tests_dir: str) -> Dict[str, Set[str]]:
-    """Build import graph for all test files."""
+    """Build import graph for all Python modules under tests/.
+
+    tests/ 下全部 .py（含 conftest.py、helpers.py、__init__.py 等非测试
+    命名模块）都入图作中转节点：helpers 等中转模块的依赖边靠图遍历传递
+    到间接 import 它们的测试，conftest 目标靠作用域特判选中（见
+    find_affected_tests）；仅最终出口按 test_*.py / *_test.py 命名过滤成
+    可执行文件列表。隐藏文件（. 开头的探针脚本）不可被导入，不入图。
+    """
     graph = {}
 
-    # 与 pytest 收集口径对齐：rglob 递归覆盖嵌套测试目录（如 tests/v2/），
-    # 且只收 test_*.py / *_test.py 命名的文件——conftest/helpers 等非测试模块
-    # 不再混入图（pytest 选中它们只会空跑），非测试命名的 .py 也不误入。
+    # rglob 递归覆盖嵌套测试目录（如 tests/v2/、tests/fixtures/…/tests/）。
     for py_file in sorted(Path(tests_dir).rglob("*.py")):
-        if py_file.name.startswith("_"):
-            continue
-        if not (py_file.name.startswith("test_") or py_file.name.endswith("_test.py")):
+        if py_file.name.startswith("."):
             continue
 
-        imports = extract_imports_from_file(str(py_file))
         rel_module = ".".join(py_file.relative_to(Path(tests_dir)).with_suffix("").parts)
         module_path = f"tests.{rel_module}"
+        # 所在包路径 = 模块路径剥掉自身末段（module_path 至少含 tests.x，包至少为 tests）
+        imports = extract_imports_from_file(str(py_file), module_path.rsplit(".", 1)[0])
         graph[module_path] = imports
 
     return graph
@@ -115,10 +152,21 @@ def find_affected_tests(
     Handles partial matches (e.g., core.pm_engine.dispatch matches core.pm_engine).
     """
     affected = set()
-    # 目标本身是被索引的测试模块（如直接编辑 tests/test_x.py 自身）时必然要跑
+    # conftest.py 目标特判：conftest 变更实际作用于其所在目录（含子目录）
+    # 作用域内的全部测试，而没有任何测试显式 import conftest——仅靠导入链
+    # 匹配必然零命中（虚假绿色）。工具无 pytest 收集器，按目录映射为该作用
+    # 域下全部可执行测试模块（tests/conftest.py → tests. 前缀全部；嵌套
+    # conftest 如 tests.v2.conftest → tests.v2. 前缀）。
+    if target_module.endswith(".conftest"):
+        scope_prefix = target_module[: -len(".conftest")] + "."
+        for test_module in import_graph:
+            if _is_executable_test_module(test_module) and test_module.startswith(scope_prefix):
+                affected.add(test_module)
+    # 目标本身是被索引的模块（如直接编辑 tests/test_x.py 自身）时必然要跑
     # 自己：下方循环只按 imports 反查 importer，目标自身永不命中——否则改测试
     # 文件会零命中，以「No tests affected」exit 0 收场（虚假绿色）。graph 键即
-    # tests/ 下符合 test_*.py / *_test.py 命名的测试模块，成员判断已含该口径。
+    # tests/ 下全部 .py 模块（含 conftest/helpers 等非测试命名中转节点，
+    # 出口处再按可执行命名过滤），成员判断已含该口径。
     if target_module in import_graph:
         affected.add(target_module)
     queue = [(target_module, 0)]
@@ -434,6 +482,11 @@ def main():
     test_files = []
     for test_module in affected_tests:
         if test_module.startswith("tests."):
+            # 图中非测试命名节点（conftest/helpers/__init__ 等中转模块）不转
+            # 可执行文件——pytest 选中它们只会空跑或报错；选中项出口统一按
+            # test_*.py / *_test.py 命名过滤（显式映射来的模块同样过此关）。
+            if not _is_executable_test_module(test_module):
+                continue
             # 模块段的 '.' 全部来自路径分隔符拼接（见 build_import_graph），
             # 回转时须还原为 '/'，否则嵌套测试目录（如
             # tests/fixtures/scheduling-showcase/tests/）的测试被折叠成

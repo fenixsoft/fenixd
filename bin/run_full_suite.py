@@ -457,7 +457,8 @@ class SuiteLock:
         waited = round(time.time() - start, 1)
         self.acquired = acquired
         if acquired:
-            # 阻塞等待中拿到锁（说明曾与其他并发套件争抢）
+            # acquired 分支含两种情形：首次 flock 即成功（wait≈0，无争抢）
+            # 与阻塞等待后拿到锁（曾与其他并发套件争抢）；以 wait 秒数区分。
             self._log(f"[run_full_suite] 主机级锁获取成功（wait={waited}s）")
         else:
             self._log(
@@ -496,7 +497,7 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, l
             保证 stdout 只含最终 JSON 文档。
 
     Returns: {"ref", "baseline_failures", "baseline_rc",
-              "baseline_timed_out", "classification", "hanging"}。
+              "baseline_timed_out", "classification", "hanging_test"}。
     """
     with tempfile.TemporaryDirectory(prefix="fenix-baseline-") as tmp:
         wt = Path(tmp) / "baseline_wt"
@@ -513,7 +514,7 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, l
                 "ref": ref,
                 "baseline_failures": [],
                 "classification": "baseline-worktree-error",
-                "hanging": None,
+                "hanging_test": None,
                 "error": (add.stderr or add.stdout)[-300:],
             }
         try:
@@ -546,7 +547,7 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, l
                 "baseline_rc": baseline.get("returncode"),
                 "baseline_timed_out": baseline.get("timed_out"),
                 "classification": classification,
-                "hanging": baseline.get("hanging_test"),
+                "hanging_test": baseline.get("hanging_test"),
             }
         finally:
             remove = subprocess.run(
@@ -659,7 +660,7 @@ def main(argv=None) -> int:
 
     result = {
         "timed_out": current.get("timed_out"),
-        "hang_test": current.get("hanging_test"),
+        "hanging_test": current.get("hanging_test"),
         "exit_code": current.get("exit_code"),
         "elapsed_seconds": current.get("elapsed_seconds"),
         # 失败清单对非基线模式同样透出（code-review item 9df86151381a）：

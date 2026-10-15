@@ -46,6 +46,8 @@ import {
 import type { SpecDetail, SpecSummary } from '@/services/dashboard';
 // 时长格式化与详情页共用单源（code-review item f8307715a795）
 import { fmtDuration } from '@/utils/duration';
+// 刷新/心跳节奏常量与详情页共用单源（code-review item 73395d34f3de）
+import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
@@ -72,11 +74,8 @@ import {
 } from './listFilters';
 import type { ListTab, ListTypeFilter as TypeFilter } from './listFilters';
 
-const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
 const PATCH_COALESCE_MS = 1000;
-// 兜底心跳间隔（30s）：SSE 断线 / 事件丢帧时仍能校准
-const HEARTBEAT_MS = 30000;
 // 搜索/筛选输入防抖
 const SEARCH_DEBOUNCE_MS = 300;
 // 未完成（非 done/pushed 终态）spec 行底色：浅蓝紫提示仍在进行中
@@ -1591,7 +1590,7 @@ export default function SpecListPage() {
       <Modal
         title="调整优先级"
         open={!!priorityEdit}
-        onOk={() => void handlePriorityOk()}
+        onOk={handlePriorityOk}
         onCancel={() => setPriorityEdit(null)}
         okText="确定"
         cancelText="取消"
@@ -1621,7 +1620,7 @@ export default function SpecListPage() {
         // manual 哨兵态未选定时间前禁用「确定」，防误点静默清除哨兵（提交侧
         // handleStartAfterOk 另有拦截兜底）
         okButtonProps={{ disabled: !!startAfterEdit?.manual && !saDate }}
-        onOk={() => void handleStartAfterOk()}
+        onOk={handleStartAfterOk}
         onCancel={() => setStartAfterEdit(null)}
         okText="确定"
         cancelText="取消"

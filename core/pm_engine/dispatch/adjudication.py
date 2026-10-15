@@ -2359,7 +2359,8 @@ class VAdjudicationMixin:
                         diff_by_element[m] = diff
                         # Task 3.2：修正后以守卫读取基准复检；读回仍是旧路径
                         # → 不判修正成功（不落 executed_verdicts、转 unclear，
-                        # 守卫重跑按仍缺件走打回），复发计数交守卫重跑后判定。
+                        # 末段归宿分类按 unclear 置 blocked 待人工而非打回），
+                        # 复发计数交守卫重跑后判定。
                         rb_ok, _rb_detail = self._readback_correction(
                             spec_name, result, m, kind=kind_m
                         )
@@ -2371,7 +2372,9 @@ class VAdjudicationMixin:
                             # dispute 审计块对其失明），并并入
                             # deferred_typo_elements 使「修正未生效于读取基准」
                             # 复发形态对 D5 熔断可见。verdict 仍转 unclear
-                            # （守卫重跑按仍缺件走打回）。
+                            # （末段归宿分类按 unclear 置 blocked 待人工而非
+                            # 打回；streak 不清零，人工解冻续走后 D5 逐轮
+                            # 累计至熔断）。
                             self._audit_deferred_correction(
                                 spec_name,
                                 [m],
@@ -2464,7 +2467,9 @@ class VAdjudicationMixin:
                         # （readback-failed 标注）使已落盘的软化事实可追溯
                         #（code-review item 0fcdd3476318，与 typo 分支同型——
                         # 不落 executed_verdicts 时 dispute 审计块对其失明）。
-                        # verdict 仍转 unclear（守卫重跑按仍缺件走打回）。
+                        # verdict 仍转 unclear（末段归宿分类按 unclear 置
+                        # blocked 待人工而非打回；本分支不入
+                        # deferred_typo_elements，不参与 D5 复发计数）。
                         self._audit_deferred_correction(
                             spec_name,
                             [m],
