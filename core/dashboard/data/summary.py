@@ -573,6 +573,10 @@ runs_by_spec_sigs = _runs_by_spec_sigs
 # 实际读 entry 的字段一一对应。
 _ENTRY_SIG_KEYS = (
     "status",
+    # code-review item 88dfea51db70：branch 经 parse_quality_gates →
+    # _code_review_status → _load_lane_product → current_lane_fingerprint
+    # 读侧消费（ocr 车道产物可采信性按 branch 比对），仅 branch 变化时也须失效
+    "branch",
     "priority",
     "created",
     "updated",
@@ -599,6 +603,9 @@ _ENTRY_SIG_KEYS = (
     "total_duration",
     "archived_at",
     "archived_by",
+    # 已知盲区：current_lane_fingerprint 的 head_commit/merge_base 随分支尖端
+    # 移动（commit/push/merge-back）变化，不经条目字段触发；由其短 TTL memo
+    # 兜底，纳入 __entry__ 指纹成本高，暂不处理
 )
 
 
