@@ -235,6 +235,10 @@ class MockModelServer:
             self.proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)  # kill 后收割退出状态，不留僵尸
+            except subprocess.TimeoutExpired:
+                pass
         self.proc = None
 
     def requests(self) -> List[Dict[str, Any]]:
@@ -306,6 +310,11 @@ def prepare_dsh_home(profile: str = "fenix",
             data = json.loads(pkg.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             data = {}
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"profile 清单 {pkg} 顶层不是 JSON 对象"
+                f"（{type(data).__name__}）：请手工装配 profile"
+                f"（dsh plugin --profile {profile} add link:{BUNDLE}）后重试")
     bundles = (data.setdefault("dsh", {}).setdefault("profile", {})
                .setdefault("bundles", []))
     for required in ("@deepseek-ai/dsh-headless", "fenix-dsh-bundle"):
@@ -1628,6 +1637,15 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
     if evidence.get("device_error"):
         evidence["evaluation"]["ok"] = False
         evidence["evaluation"]["failures"]["device"] = [evidence["device_error"]]
+    cleanup = evidence["fixture_cleanup"]
+    if cleanup.get("residue_free") is False:
+        evidence["evaluation"]["ok"] = False
+        evidence["evaluation"]["failures"]["fixture_cleanup"] = [
+            "夹具清理后仍有残留"]
+    if evidence["residue_check"].get("residue_free") is False:
+        evidence["evaluation"]["ok"] = False
+        evidence["evaluation"]["failures"]["residue_check"] = \
+            evidence["residue_check"].get("problems") or ["残留核对未过"]
     evidence["meta"]["finished_at"] = utc_iso()
 
     evidence_dir = Path(args.evidence_dir or DEFAULT_EVIDENCE_DIR)
@@ -1798,7 +1816,7 @@ def _real_claude_baseline_lane(fixture: Dict[str, Any], model: str,
     """claude 基线车道（--go）：同夹具同 provider 链走 claude 通道。"""
     spec = fixture["impl_spec"]
     run_id = f"impl-{spec}-claude-base"
-    result_path = Path(fixture["worktree"]) / f".fenix-run-result-claude.json"
+    result_path = Path(fixture["worktree"]) / ".fenix-run-result-claude.json"
     prompt = (f"实现 {spec}：完成 tasks.md 1.1（在 {fixture['worktree']} 下"
               f"创建 hello-claude.txt 内容 claude-ok），完成后把结果 JSON 写"
               f"入 {result_path}（status=success, spec={spec}, "
