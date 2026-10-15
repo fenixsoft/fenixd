@@ -182,7 +182,7 @@ class TestArtifactGate:
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g1")
@@ -223,7 +223,7 @@ class TestArtifactGate:
             calls["n"] += 1
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text("{{not-json", encoding="utf-8")
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g2")
@@ -252,7 +252,7 @@ class TestArtifactGate:
                 json.dumps({"status": "verified", "summary": "ok"}),
                 encoding="utf-8",
             )
-            return ("done", 1, "sess-ok", _usage_ok())
+            return ("done", 1, "sess-ok", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g3")
@@ -277,7 +277,7 @@ class TestArtifactGate:
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             calls["n"] += 1
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-plan", "run-p1")
@@ -312,7 +312,7 @@ class TestArtifactGate:
                 json.dumps({"status": "plan-ready", "spec": "spec-x"}),
                 encoding="utf-8",
             )
-            return ("plan-ready", 1, "sess-plan", _usage_ok())
+            return ("plan-ready", 1, "sess-plan", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-plan", "run-p2")
@@ -344,13 +344,13 @@ class TestArtifactGate:
                             task_progress_snapshot=None):
             calls["n"] += 1
             if calls["n"] == 1:
-                return ("done", 1, "sess-gate", _usage_ok())  # 无产物 → gate 失败
+                return ("done", 1, "sess-gate", _usage_ok(), None)  # 无产物 → gate 失败
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(
                 json.dumps({"status": "bug-found", "summary": "ok"}),
                 encoding="utf-8",
             )
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-g4")
@@ -401,7 +401,7 @@ class TestVerdictReadFailClosedGate:
             (wt_vp / ".fenix-run-result.json").write_text(
                 '{"status": "bug-found", "summary": "line1\nline2"}',
                 encoding="utf-8")
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-v1")
@@ -431,7 +431,7 @@ class TestVerdictReadFailClosedGate:
             (wt_vp / ".fenix-run-result.json").write_text(
                 json.dumps({"status": "bug-found", "summary": "found"}),
                 encoding="utf-8")
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-v2")
@@ -466,7 +466,7 @@ class TestVerdictReadFailClosedGate:
         os.utime(stale_path, (old, old))
 
         runner._run_agent = MagicMock(
-            return_value=("done", 1, "sess-gate", _usage_ok()))
+            return_value=("done", 1, "sess-gate", _usage_ok(), None))
         result = runner._execute_agent("spec-x", "planner-judge", "run-v3")
         assert result.success is False
         # 首次门禁失败仍归因陈旧残留（重试事件留痕）
@@ -671,7 +671,7 @@ class TestGateBlockedTerminal:
             p = tmp_path / ".fenix" / "runs" / f"{run_id}.jsonl"
             with p.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "result", "result": "done"}) + "\n")
-            return ("done", 1, "sess-gate", _usage_ok())
+            return ("done", 1, "sess-gate", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-gb1")
@@ -866,7 +866,7 @@ class TestJudgeResultPredispatchRename:
             result_path.write_text(
                 json.dumps({"status": "verified", "summary": "本轮裁决"}),
                 encoding="utf-8")
-            return ("done", 1, "sess-ok", _usage_ok())
+            return ("done", 1, "sess-ok", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner.run_planner("spec-x", "judge")
@@ -892,7 +892,7 @@ class TestJudgeResultPredispatchRename:
             result_path.write_text(
                 json.dumps({"status": "verified", "summary": "ok"}),
                 encoding="utf-8")
-            return ("done", 1, "sess-ok", _usage_ok())
+            return ("done", 1, "sess-ok", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner.run_planner("spec-x", "judge")
@@ -920,7 +920,7 @@ class TestJudgeResultPredispatchRename:
             result_path.write_text(
                 json.dumps({"status": "verified", "summary": "本轮"}),
                 encoding="utf-8")
-            return ("done", 1, "sess-ok", _usage_ok())
+            return ("done", 1, "sess-ok", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner.run_planner("spec-x", "judge")
@@ -983,7 +983,7 @@ class TestJudgeResultPredispatchRename:
                             spec_name=None, agent_type=None,
                             task_progress_snapshot=None):
             # 始终不写产物：第一次门禁命中预置陈旧文件，此后命中「结果文件缺失」
-            return ("done", 1, "sess-stale", _usage_ok())
+            return ("done", 1, "sess-stale", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         result = runner._execute_agent("spec-x", "planner-judge", "run-stale")

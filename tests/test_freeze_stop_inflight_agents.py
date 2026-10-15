@@ -340,7 +340,7 @@ def test_cancelled_hold_and_cancelled_hold_not_both_true(tmp_path):
 
 
 def test_cancelled_hold_true_literal_count_unchanged():
-    """7.3 补充：全库 core/ 下 '_cancelled_hold": True' 字面命中恰为 7 处。
+    """7.3 补充：全库 core/ 下 '_cancelled_hold": True' 字面命中恰为 6 处。
 
     与既有 test_cancel_holdstate_recovery.py::test_no_new_holdstate_write_point_missed
     同口径（只扫 core/，不含测试自身字面量）：冻结终止 MUST 写 _frozen_hold:
@@ -356,6 +356,10 @@ def test_cancelled_hold_true_literal_count_unchanged():
     收敛 _yield_on_agent_failure 单源（e3688f85，code-review item
     04f7f14b2b54），pipeline.py 写点 3→2，取消保持语义不变，非冻结路径，
     口径不变。
+    基线 7→6：pipeline.py plan 车道 frozen_terminated/cancelled 让位分支
+    同样收敛 _yield_on_agent_failure 单源（code-fix batch，code-review item
+    d2bce687564b），pipeline.py 写点 2→1，取消保持语义不变（同一字面写点
+    移入单源助手），非冻结路径，口径不变。
     """
     repo = Path(__file__).resolve().parent.parent
     hits = 0
@@ -366,7 +370,7 @@ def test_cancelled_hold_true_literal_count_unchanged():
             continue
         hits += sum(1 for ln in text.splitlines()
                     if '"_cancelled_hold": True' in ln)
-    assert hits == 7, f"_cancelled_hold True 字面命中 {hits}（预期 7）"
+    assert hits == 6, f"_cancelled_hold True 字面命中 {hits}（预期 6）"
 
 
 # ── 7.4/7.5：解冻续做接线与共享判定零漂移 ────────────────────────

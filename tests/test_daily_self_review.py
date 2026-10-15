@@ -787,7 +787,7 @@ class TestRunSelfReviewRunner:
                             "waste": ["W"], "mistakes": ["M"], "improvements": ["I"]}),
                 encoding="utf-8")
             return "out", 5, "sess", {"input_tokens": 100, "output_tokens": 20,
-                                      "cost_usd": 0.02}
+                                      "cost_usd": 0.02}, None
 
         runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-04", "摘要", None)
@@ -825,7 +825,7 @@ class TestRunSelfReviewRunner:
                 }),
                 encoding="utf-8")
             return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
-                                      "cost_usd": 0.01}
+                                      "cost_usd": 0.01}, None
 
         runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-08", "摘要", None)
@@ -873,7 +873,7 @@ class TestRunSelfReviewRunner:
                 }),
                 encoding="utf-8")
             return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
-                                      "cost_usd": 0.01}
+                                      "cost_usd": 0.01}, None
 
         runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-04", "摘要", None)
@@ -891,7 +891,7 @@ class TestRunSelfReviewRunner:
                             "mistakes": [], "improvements": []}),
                 encoding="utf-8")
             return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
-                                      "cost_usd": 0.01}
+                                      "cost_usd": 0.01}, None
 
         runner._run_agent = fake_run_agent
         result = runner.run_self_review("2026-09-04", "摘要", None)
@@ -931,7 +931,7 @@ class TestRunSelfReviewModelChain:
                             "improvements": []}),
                 encoding="utf-8")
             return "out", 1, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                      "cost_usd": 0.0}
+                                      "cost_usd": 0.0}, None
 
         runner._run_agent = fake_run_agent
         return runner, captured

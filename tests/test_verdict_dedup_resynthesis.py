@@ -571,7 +571,7 @@ class TestInPlaceRetryYields(ResynthesisHarness):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps({"status": "verified", "summary": "ok"}),
                          encoding="utf-8")
-            return ("done", 1, "sess", _usage_ok())
+            return ("done", 1, "sess", _usage_ok(), None)
 
         runner._run_agent = fake_run_agent
         with mock.patch("time.sleep", lambda _: None):

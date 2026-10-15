@@ -303,7 +303,7 @@ class TestChainSelectExecute:
                 calls["resume_seen"] = True
             else:
                 calls["fresh_after_switch"] = True
-            return ("ok", 1, "sess-keep", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
+            return ("ok", 1, "sess-keep", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}, None)
 
         runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess-keep")
@@ -345,7 +345,7 @@ class TestChainSelectExecute:
                 raise RuntimeError(
                     "claude CLI failed: No conversation found with session ID: sess-dead"
                 )
-            return ("ok", 1, "sess-new", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
+            return ("ok", 1, "sess-new", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}, None)
 
         runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess-dead")
@@ -400,7 +400,7 @@ class TestConfigDirSwitch:
             captured_dirs.append(env_overrides.get("CLAUDE_CONFIG_DIR"))
             if len(captured_dirs) == 1:
                 raise RuntimeError("unrecognized_model")
-            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
+            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}, None)
 
         runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess")
@@ -423,7 +423,7 @@ class TestConfigDirSwitch:
                             agent_type=None, task_progress_snapshot=None):
             if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
                 raise RuntimeError("unrecognized_model")
-            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
+            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}, None)
 
         runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess")
@@ -517,7 +517,7 @@ class TestModelChangedLog:
             # 首候选失败 → 触发链前进到次候选
             if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
                 raise RuntimeError("unrecognized_model")
-            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
+            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}, None)
 
         runner._run_agent = fake_run_agent
         runner._extract_session_id = MagicMock(return_value="sess")
