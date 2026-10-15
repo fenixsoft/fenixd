@@ -535,6 +535,8 @@ export default function HookManager({
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
+        // 保存中禁止遮罩点击关闭：onSave 请求继续落盘，弹窗被关会让用户误以为保存已取消
+        maskClosable={!submitting && !saving}
         okText={saving || submitting ? '保存中...' : '保存'}
         confirmLoading={saving || submitting}
         destroyOnHidden
