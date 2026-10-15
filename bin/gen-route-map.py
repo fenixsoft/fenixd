@@ -284,7 +284,14 @@ def main() -> int:
         return 2
     # expanduser（code-review item e1db212ea3fe）：引号包裹传入的 ~ 开头路径
     # 按字面解析会误报「worktree 根不存在」，对齐仓库其他 CLI 的路径解析口径
-    root = Path(sys.argv[1]).expanduser().resolve()
+    try:
+        # 路径解析收口进 try（与 fenix_detect_artifacts.py 等仓库 CLI 惯例对齐）：
+        # 含空字节路径在构造阶段抛 ValueError、expanduser 解析不出家目录抛
+        # RuntimeError，裸抛会以 traceback 收场而非下方可读错误 + return 1
+        root = Path(sys.argv[1]).expanduser().resolve()
+    except (ValueError, OSError, RuntimeError) as e:
+        print(f"worktree 根路径无法解析: {e}", file=sys.stderr)
+        return 1
     if not root.is_dir():
         print(f"worktree 根不存在: {root}", file=sys.stderr)
         return 1
