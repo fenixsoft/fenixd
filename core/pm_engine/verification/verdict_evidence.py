@@ -467,10 +467,22 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # 打出「重试后仍不合规」假 ERROR）；是否写 blocked 由调用方按 cause 决定。
         re_judge = _dispatch_judge(pipeline, spec_name, violations_1, "裁决重试")
         if isinstance(re_judge, dict):
+            # code-review b430dc4aa9d4：重试派发失败即终局早退，上方落盘的
+            # verdict_violations.json 若滞留，spec 被人工处置/下轮重验后的首
+            # judge 派发经 prompt_builder._verdict_rejection_section 仍按
+            # 「文件在场」注入上一 episode 的旧违规清单与「强制修复」纪律
+            # （该段无新鲜度判据）——与升级点对 directive/manifest/violations
+            # 三件套的同型清除纪律对齐（_escalate_dedup_resynthesis 清除点）；
+            # 违规明细已随本返回 dict 交调用方按 cause 留痕，清清单不丢事实。
+            pipeline._clear_verdict_violations(spec_name)
             return re_judge
         report2 = load_report(pipeline._context.project_root, spec_name)
         if report2 is None:
             # 重试成功但 report.json 不可读 → report_missing（产物丢失，非违规）
+            # code-review b430dc4aa9d4：终局早退同口径清驳回清单（同上方派发
+            # 失败出口——blocked 交人工后，下一 episode 首 judge 不得被旧清单
+            # 「强制修复」纪律锚定）。
+            pipeline._clear_verdict_violations(spec_name)
             return {
                 "ok": False,
                 "cause": "report_missing",
@@ -499,6 +511,13 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             f"裁决重试后证据分类仍不合规 '{spec_name}'："
             f"{[v['scenario_id'] for v in result2['violations']]}",
         )
+        # code-review b430dc4aa9d4：二次违规终局返回前同口径清掉本轮落盘的
+        # 驳回清单——result2 明细已随返回 dict 供调用方 blocked +
+        # verdict_evidence_invalid 告警留痕（pipeline 侧
+        # _verdict_violations_evidence），滞留磁盘会让下一 episode 首 judge
+        # 被旧清单「强制修复」纪律锚定（同上方派发失败出口，与
+        # _escalate_dedup_resynthesis 清除点对齐）。
+        pipeline._clear_verdict_violations(spec_name)
         return {
             "ok": False,
             "cause": "violations",
