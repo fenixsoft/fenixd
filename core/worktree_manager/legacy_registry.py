@@ -198,7 +198,6 @@ class G2LegacyRegistryMixin:
         # 收工清扫：agent 已退出，杀掉残留测试子进程（目录保留，进程不留）
         self._kill_worktree_strays(wt_path.name)
         self.register_legacy(spec_name, wt_path, branch)
-        rec = self._legacy.get(spec_name)
         # 登记生效判定（code-review item a35088c8bdbb）：不能只凭 rec 非 None——
         # 同 spec 已有更早遗产记录（如前次死亡登记后经 resolve_resume_site 续做/
         # mark_reused 路径复用，两者均不出册 _legacy）且本次 branch 双兜底皆空时，
@@ -312,6 +311,28 @@ class G2LegacyRegistryMixin:
             rec["recovery"] = True
         self._active_reuse[spec_name] = rec
 
+    def _pop_legacy_if_current(self, spec_name: str, rec: dict) -> bool:
+        """认领路径的出册动作（code-review item d6c32c0b63b6）：锁内复核快照
+        条目未被并发覆盖后才 pop。
+
+        登记侧覆盖写（``_register_legacy_unlocked``）以新 dict 对象整体替换
+        ``_legacy`` 条目，原地写仅 reuse 标记（``mark_legacy_reusable`` /
+        ``keep_for_reuse``）——按对象同一性复核即可区分「仍是认领探测时的
+        那条遗产」与「已被陈锁兜底 / keep_for_reuse 覆盖登记的新遗产」。
+
+        复核失败不出册（返回 False）：新登记的 reuse 认领与清扫豁免保持完整，
+        本轮认领放弃走全新建树；MUST NOT 无条件 pop——否则窗口内覆盖登记的
+        新遗产被顶出册后既无 reuse 认领也无清扫豁免，宽限期后被 sweeper 回收
+        （fb49eca84deb 要防的「reuse 顶掉→全新建树+孤儿回收」同型）。临界区
+        内只做字典读判定与写（``_spec_lock_th`` 为 threading.Lock 非重入，
+        不得调用任何会重复取锁或走 subprocess 的方法）。
+        """
+        with self._spec_lock_th:
+            if self._legacy.get(spec_name) is not rec:
+                return False
+            self._legacy.pop(spec_name, None)
+            return True
+
     def _take_reusable_worktree(
         self, spec_name: str, agent_type: str = "",
     ) -> Optional[tuple]:
@@ -330,10 +351,24 @@ class G2LegacyRegistryMixin:
         不设限（fail-open）。不匹配 → 跳过认领（不动在册遗产：verifier 后续
         重派仍可认领，宽限期回收兜底不变）返回 None 走全新建树；agent_type 为
         空（直调旧口径）不设限，行为同旧版。
+
+        并发纪律（code-review item d6c32c0b63b6）：对 ``_legacy`` 的读改写与
+        登记侧同一持锁纪律——锁内快照（读判定）、锁外做家族判定与
+        ``create_worktree_on_branch`` / ``is_available`` 等 subprocess 探测、
+        出册前经 ``_pop_legacy_if_current`` 锁内复核同一条目未被覆盖才 pop；
+        复核失败＝快照遗产已被覆盖登记顶替，放弃认领走全新建树，新登记的
+        reuse 认领与清扫豁免不受影响。
         """
-        rec = self._legacy.get(spec_name)
-        if not rec or not rec.get("reuse"):
-            return None
+        # ── 第一段：锁内快照（code-review item d6c32c0b63b6）──
+        # 与登记侧（register_legacy / mark_legacy_reusable /
+        # _maybe_register_legacy_for_stale_lock 的 fb49eca84deb / 80b803df0a91
+        # 原子段）同一持锁纪律：对 _legacy 的读取持 _spec_lock_th。快照条目的
+        # path/branch/worktree_name 登记后不再原地改写（仅 reuse 标记原地置位），
+        # 锁外读取不失真；threading.Lock 非重入，临界区内只做字典读判定。
+        with self._spec_lock_th:
+            rec = self._legacy.get(spec_name)
+            if rec is None or not rec.get("reuse"):
+                return None
         path = rec.get("path") or ""
         branch = rec.get("branch") or ""
         if agent_type:
@@ -371,18 +406,23 @@ class G2LegacyRegistryMixin:
             # 工作）。仅在 path 为空时启用，worktree 模式语义不变；分支不可解析或
             # 换壳失败 → fail-open 回退全新 create（遗产清除，防 sweeper 误豁免）。
             if not branch:
-                self._legacy.pop(spec_name, None)
+                self._pop_legacy_if_current(spec_name, rec)
                 return None
             wt_path = self.create_worktree_on_branch(spec_name, branch, prefix="impl")
             if wt_path is None:
-                self._legacy.pop(spec_name, None)
+                self._pop_legacy_if_current(spec_name, rec)
                 self.logger.info(
                     "worktree_manager",
                     f"Branch-only legacy for '{spec_name}' cannot be re-checked out "
                     f"(branch={branch or 'none'}) — fresh create",
                 )
                 return None
-            self._legacy.pop(spec_name, None)
+            # ── 第三段：出册（code-review item d6c32c0b63b6）──锁内复核快照
+            # 条目未被覆盖登记顶替后才 pop；复核失败＝新登记在场，不认领、
+            # 不写 _active_reuse，交全新建树（新遗产的 reuse 认领与清扫豁免
+            # 保持完整）。
+            if not self._pop_legacy_if_current(spec_name, rec):
+                return None
             self._active_reuse[spec_name] = {"path": str(wt_path), "branch": branch}
             return wt_path, branch
         # 有效性判定收敛到 is_available 单源（interrupt-recovery-preserve D5）：
@@ -394,14 +434,20 @@ class G2LegacyRegistryMixin:
         except Exception:
             valid = False
         if not valid:
-            self._legacy.pop(spec_name, None)
+            # 失败出口同走复核出册（code-review item d6c32c0b63b6）：复核失败
+            # ＝快照遗产已被覆盖登记顶替，不出册、新登记不受影响。
+            self._pop_legacy_if_current(spec_name, rec)
             self.logger.info(
                 "worktree_manager",
                 f"Reusable legacy for '{spec_name}' no longer valid "
                 f"(path={path or 'none'}, branch={branch or 'none'}) — fresh create",
             )
             return None
-        self._legacy.pop(spec_name, None)
+        # ── 第三段：出册（code-review item d6c32c0b63b6）──锁内复核快照条目
+        # 未被覆盖登记顶替后才 pop；复核失败＝新登记在场，不认领、不写
+        # _active_reuse，交全新建树（新遗产的 reuse 认领与清扫豁免保持完整）。
+        if not self._pop_legacy_if_current(spec_name, rec):
+            return None
         self._active_reuse[spec_name] = {"path": str(wt), "branch": branch}
         return wt, branch
 

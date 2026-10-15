@@ -935,7 +935,16 @@ class G8QueryMixin:
             return False
 
     def branch_tip(self, branch: str) -> Optional[str]:
-        """分支 tip SHA（``git rev-parse --verify``），异常/不存在返回 None。
+        """分支 tip SHA（``git rev-parse --verify refs/heads/<branch>``），异常/不存在返回 None。
+
+        显式限定 refs/heads 命名空间（code-review item 285f9f841681，口径
+        对齐 ``branch_exists`` 的 e15c05dd4ab5 收紧）：裸 ``rev-parse
+        --verify`` 对 tag、短 hash、HEAD 等任意可解析 rev 都返回 0，且解析
+        顺序 refs/tags 先于 refs/heads——实现分支被同名 tag 遮蔽时，repair
+        派发前后两次取到的基准 tip 都指向 tag 而非真实分支 tip，「分支 tip
+        前进」校验被遮蔽值污染（误放行或误判未前进）。调用方传入的均为短
+        分支名字面量，收紧后对既有调用无行为变化（refs/heads 全名解析仍
+        输出该分支指向的 sha）。
 
         fix-repair-commit-enforcement D2：repair git 事实复核的「分支 tip 前进」
         判定基准——repair 派发前记录基准 tip，repair 后与当前 tip 比较。只读
@@ -946,7 +955,14 @@ class G8QueryMixin:
             return None
         try:
             rev = subprocess.run(
-                ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "rev-parse",
+                    "--verify",
+                    f"refs/heads/{branch}",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
