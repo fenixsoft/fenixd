@@ -210,15 +210,26 @@ class ScenarioSet:
 # ── 路径与读写 ──────────────────────────────────────────────────────
 
 
+def _validate_spec_name(spec_name: str) -> str:
+    """spec_name 形状防护：为空或含路径分隔符/「..」即抛 ValueError。
+
+    形状防护（code-review cd8041b34ff3）：这类 spec_name 会拼出目标目录之外
+    的读写路径，不合法即拒绝、不拼逃逸路径。scenarios_path_for 与
+    read_verify_fix_section（code-review 5cb1e4a798f1）共用同一口径。
+    """
+    if not spec_name or "/" in spec_name or "\\" in spec_name or ".." in spec_name:
+        raise ValueError(f"非法 spec 名（为空或含路径分隔符/..）: {spec_name!r}")
+    return spec_name
+
+
 def scenarios_path_for(project_root, spec_name: str) -> Path:
     """返回 ``.fenix/verify-progress/<spec>/scenarios.json`` 绝对路径。
 
     形状防护（code-review cd8041b34ff3）：spec_name 为空或含路径分隔符/「..」
     时会拼出 verify-progress 目录之外的读写路径（含伴生锁文件），不合法即抛
-    ValueError，不拼逃逸路径。
+    ValueError，不拼逃逸路径（校验见 :func:`_validate_spec_name`）。
     """
-    if not spec_name or "/" in spec_name or "\\" in spec_name or ".." in spec_name:
-        raise ValueError(f"非法 spec 名（为空或含路径分隔符/..）: {spec_name!r}")
+    _validate_spec_name(spec_name)
     return Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
 
 
@@ -462,7 +473,13 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
 
 
 def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
-    """读取 tasks.md 的「## 验证修复」段全文；不存在返回 None。"""
+    """读取 tasks.md 的「## 验证修复」段全文；不存在返回 None。
+
+    spec_name 形状防护与 scenarios_path_for 同口径（code-review 5cb1e4a798f1）：
+    为空或含路径分隔符/「..」即抛 ValueError，不拼 changes 目录之外的逃逸
+    读取路径（校验见 :func:`_validate_spec_name`）。
+    """
+    _validate_spec_name(spec_name)
     tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
     if not tasks_path.exists():
         return None
