@@ -1827,6 +1827,66 @@ class TestArchivedSpecDocReadback(unittest.TestCase):
         from core.dashboard.data import resolve_spec_dir
         self.assertIsNone(resolve_spec_dir(self.tmpdir, self.SPEC))
 
+    # ── resolve_spec_dir 归档清单 memo（签名失效缓存） ─────────────────────
+
+    def test_archive_listing_cached_across_calls(self):
+        """归档根签名未变时，重复解析不再重扫归档根（缓存热路径契约）。
+
+        /api/specs 每请求对全部归档 spec 逐个调 resolve_spec_dir；无缓存时
+        每个 spec 都全量 iterdir 归档根（生产 416 归档目录 × ~404 无活跃目录
+        spec ≈ 每请求 ~17 万次 stat，服务端 2.7s 的主体）。钉死「归档根
+        (mtime_ns, size) 签名未变 → 归档根只扫描一次」。
+        """
+        from core.dashboard.data import resolve_spec_dir
+        archive_dir = self._archived_layout()
+        real_iterdir = Path.iterdir
+        scans = []
+
+        def counting_iterdir(path_self):
+            scans.append(str(path_self))
+            return real_iterdir(path_self)
+
+        with patch.object(Path, "iterdir", counting_iterdir):
+            first = resolve_spec_dir(self.tmpdir, self.SPEC)
+            second = resolve_spec_dir(self.tmpdir, self.SPEC)
+        self.assertEqual(first, archive_dir)
+        self.assertEqual(second, archive_dir)
+        root_scans = [s for s in scans if s == str(self.archive_root)]
+        self.assertEqual(
+            len(root_scans), 1,
+            f"归档根签名未变时应只扫描一次，实际 {len(root_scans)} 次",
+        )
+
+    def test_archive_cache_invalidates_on_root_change(self):
+        """归档清单 memo 自愈：根目录直接子项增删后无需显式清缓存即解析到新状态。
+
+        失效键 = 归档根 (mtime_ns, size, nlink) + TTL 兜底。1)2) 覆盖框架写
+        入口（归档落盘 / 软删除墓碑新增）——子目录增删必翻 nlink，即使 mtime/
+        size 同刻碰撞也即时失效。3) 覆盖键全等的唯一残留面「根内等长改名」
+        （框架写入口不产生，运维手工场景）：陈旧窗口被 TTL 封顶——过期后首
+        次调用即重扫。本用例在无缓存实现上天然通过，是缓存引入后的陈旧解析
+        回归锚（首版仅 (mtime_ns, size) 键的实现在 3) 上真实翻车）。
+        """
+        from core.dashboard.data import resolve_spec_dir
+        from core.dashboard.data import spec_docs as spec_docs_mod
+        with patch.object(spec_docs_mod, "_ARCHIVE_LIST_TTL", 0.05):
+            # 归档前 None
+            self.assertIsNone(resolve_spec_dir(self.tmpdir, self.SPEC))
+            # 1) 正常归档落盘 → 立即可解析
+            archive_dir = self._archived_layout()
+            self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), archive_dir)
+            # 2) 软删除墓碑新增（同根另一 spec 名）→ 立即可解析
+            tomb_spec = self.SPEC + "-1788260731"
+            tomb = self.archive_root / tomb_spec
+            tomb.mkdir()
+            self.assertEqual(resolve_spec_dir(self.tmpdir, tomb_spec), tomb)
+            # 3) 归档目录搬走改名（等长名：mtime/size/nlink 全不翻）→ TTL
+            #    过期后首扫即见新名，陈旧窗口有界
+            renamed = self.archive_root / ("2026-09-10-" + self.SPEC)
+            archive_dir.rename(renamed)
+            time.sleep(0.08)
+            self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), renamed)
+
     # ── get_spec_doc 归档回退 ─────────────────────────────────────────────
 
     def test_archived_spec_five_docs_all_found(self):

@@ -4,8 +4,11 @@ refactor-dashboard-data-module D3 分组：本模块承载 SPEC 文档/场景职
 resolve_spec_dir / 文档白名单 / 场景计数与生成进度。
 """
 
+import functools
 import json
 import re
+import threading
+import time
 from pathlib import Path
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
@@ -17,6 +20,81 @@ from pathlib import Path
 _SPEC_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # doc 白名单：仅允许读取这些核心设计文档（tasks.md 与 proposal.md 同目录）
 _SPEC_DOC_WHITELIST = ("proposal", "design", "tasks", "verification", "scenarios")
+
+
+# ── 归档清单 memo（resolve_spec_dir 热路径，2026-10-15 性能诊断） ──────────
+# resolve_spec_dir 对活跃目录缺失的 spec 逐个全量 iterdir 归档根；/api/specs
+# 每请求对全部归档 spec 调用一次（生产 416 归档目录 × ~404 无活跃目录 spec ≈
+# 每请求 ~17.8 万次 stat，服务端 2.7s 的主体）。归档根的直接子项只在三类写入
+# 时变化：正常归档落盘 / 软删除墓碑新增 / 归档回退搬动——三者都是**子目录
+# 增删**，必翻 nlink（目录 nlink = 2 + 直接子目录数，stat 免费拿到），mtime/
+# size 同刻碰撞（Linux 目录时间戳为 jiffy 级粗时钟）也兜得住。失效键 = 根
+# 目录 (mtime_ns, size, nlink) + TTL：命中路径只剩每 spec 一次根目录 stat，
+# 无需侵入归档动作做事件钩子。键全等而内容仍变仅剩「根内等长改名」一角
+# （框架写入口不产生），由 TTL 把最坏陈旧窗口压到秒级。进程级共享（dashboard
+# 摘要索引 / 详情签名 / 文档读取同进程消费），按归档根绝对路径分键；键数以
+# 项目根数为界（生产个位数），内存量级每键数百个 Path，无需上限治理。
+_ARCHIVE_LIST_TTL = 1.0  # 秒；同刻时间戳碰撞的兜底陈旧窗口
+_ARCHIVE_LIST_CACHE: dict = {}  # archive_root 路径串 -> (根目录签名, [Path 子目录], 构建时刻 monotonic)
+_ARCHIVE_LIST_LOCK = threading.Lock()
+
+
+def _stat_sig(path: Path):
+    """目录失效签名 (mtime_ns, size, nlink)；缺失/不可 stat 返回 None。
+
+    与 summary._stat_sig 同源约定加 nlink 位（不跨组引用下划线私有名，本地
+    同形复制）：nlink 覆盖「同刻批量归档/删除」下 mtime+size 双双不翻转的
+    粗时钟碰撞面，子目录增删必变 nlink。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_nlink)
+
+
+def _archive_dir_entries(archive_root: Path) -> list:
+    """归档根的直接子目录清单（签名 + TTL 失效 memo）。
+
+    返回列表为共享缓存对象，调用方只读遍历、不得修改。命中条件 = 根目录
+    签名全等且缓存未过 TTL（TTL 只兜根内改名的同刻碰撞角，常规写入口经
+    nlink/mtime 即时失效）。根目录 stat 失败（竞态消失等）不读写缓存，
+    本调用退化为现扫空表，与无缓存行为一致。
+    """
+    sig = _stat_sig(archive_root)
+    key = str(archive_root)
+    now = time.monotonic()
+    if sig is not None:
+        with _ARCHIVE_LIST_LOCK:
+            hit = _ARCHIVE_LIST_CACHE.get(key)
+            if (
+                hit is not None
+                and hit[0] == sig
+                and now - hit[2] < _ARCHIVE_LIST_TTL
+            ):
+                return hit[1]
+    try:
+        entries = [d for d in archive_root.iterdir() if d.is_dir()]
+    except OSError:
+        return []
+    if sig is not None:
+        with _ARCHIVE_LIST_LOCK:
+            _ARCHIVE_LIST_CACHE[key] = (sig, entries, now)
+    return entries
+
+
+@functools.lru_cache(maxsize=4096)
+def _archive_name_patterns(spec: str):
+    """spec 名 → 归档目录匹配正则对（编译缓存）。
+
+    resolve_spec_dir 每次调用重复 re.compile 两个按名构造的正则（每请求
+    ~800 次编译）；语义与原内联构造完全一致，仅提升编译产物复用。
+    """
+    escaped = re.escape(spec)
+    return (
+        re.compile(r"^\d{4}-\d{2}-\d{2}-" + escaped + r"(-\d+)*$"),
+        re.compile(r"^\d{4}-\d{2}-\d{2}-" + escaped + r"$"),
+    )
 
 
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
@@ -58,13 +136,11 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     archive_root = Path(project_root) / "spec" / "archive"
     if not archive_root.is_dir():
         return None
-    pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"(-\d+)*$")
-    exact_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"$")
-    try:
-        matches = [d for d in archive_root.iterdir() if d.is_dir() and pattern.match(d.name)]
-    except OSError:
-        # 遍历失败（IO/权限等）等价无归档命中，与 _read_spec_scenarios 兜底口径一致
-        matches = []
+    pattern, exact_pattern = _archive_name_patterns(spec)
+    # 归档根清单走签名失效 memo（模块头注释）：签名未变零 iterdir，不再
+    # 每 spec 全量扫描归档根。遍历失败（IO/权限等）等价无归档命中，与
+    # _read_spec_scenarios 兜底口径一致（_archive_dir_entries 内处理）。
+    matches = [d for d in _archive_dir_entries(archive_root) if pattern.match(d.name)]
     # 软删除墓碑形态（soft_delete_spec 的 ``<spec>-<Unix秒>`` 命名同样落
     # archive/）：目录名与 spec 名**全等**即命中——知识溯源链接以归档目录名
     # 剥日期前缀引用软删除 SPEC（无日期可剥，名字原样传入）。spec 已过
