@@ -230,3 +230,109 @@ class TestRunAdministratorWarningLog:
         # context 结构化字段同样携带 run_id 与异常文本
         assert warn["context"]["run_id"] == disp.run_id
         assert "Exit code: 143" in warn["context"]["error"]
+
+
+# ── run_administrator 收尾富指标行（admin 车道品牌投影写侧补链） ──────────
+
+
+class RecordingLogger(FakeLogger):
+    """FakeLogger 基础上记录 info 调用（收尾 run_metrics 行断言用）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.infos = []
+
+    def info(self, component, message, context=None):
+        self.infos.append(
+            {"component": component, "message": message, "context": context})
+
+
+class TestRunAdministratorLaneMetrics:
+    """admin 车道收尾写 harness 富指标行（品牌投影数据源补链）。
+
+    run_administrator 此前从不写带 agent_type/harness 的终态富指标行——
+    run_metrics 索引里只有 projection/context 两条注记行，品牌投影读侧取不
+    到 harness（admin dsh run 恒回退 Claude 品牌）；且 _run_agent spawn 装配
+    写入的 _run_harness 登记无收尾咽喉消费，随 daemon 无界增长。
+    """
+
+    def _make_runner(self, tmp_path, logger, run_agent):
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+        runner._run_agent = run_agent
+        runner.logger = logger
+        runner._run_harness = {}
+        return runner
+
+    @staticmethod
+    def _terminal_metrics(logger):
+        return [
+            e for e in logger.infos
+            if isinstance(e["context"], dict)
+            and e["context"].get("metric_type") == "run_metrics"
+            and e["context"].get("terminal")
+        ]
+
+    def test_success_path_emits_harness_and_pops_registration(self, tmp_path):
+        logger = RecordingLogger()
+        holder = {}
+
+        def success_run_agent(prompt, cwd, run_id, model_override,
+                              env_overrides, max_turns,
+                              spec_name=None, agent_type=None):
+            # 模拟 _run_agent spawn 装配的品牌登记（runner.py 一次性车道同款）
+            holder["runner"]._run_harness[run_id] = "dsh"
+            # 按 prompt 契约写合法处置文件（result 枚举内 → 硬门放行）
+            admin_disposition_path(holder["runner"].project_root, run_id).write_text(
+                '{"result": "resolved", "summary": "ok"}', encoding="utf-8")
+            return "output", 7, None, {"input_tokens": 100, "output_tokens": 20}
+
+        runner = self._make_runner(tmp_path, logger, success_run_agent)
+        holder["runner"] = runner
+
+        disp = runner.run_administrator(make_signal())
+
+        assert disp.success is True
+        metrics = self._terminal_metrics(logger)
+        assert len(metrics) == 1
+        ctx = metrics[0]["context"]
+        assert ctx["run_id"] == disp.run_id
+        assert ctx["agent_type"] == "administrator"
+        assert ctx["harness"] == "dsh"
+        assert ctx["terminal"] == "success"
+        assert ctx["turns"] == 7
+        assert ctx["input_tokens"] == 100
+        # 登记随收尾消费摘除（无界增长缺口闭合）
+        assert runner._run_harness == {}
+
+    def test_agent_failure_path_emits_error_terminal_and_pops(self, tmp_path):
+        logger = RecordingLogger()
+        holder = {}
+
+        def failing_run_agent(prompt, cwd, run_id, model_override,
+                              env_overrides, max_turns,
+                              spec_name=None, agent_type=None):
+            holder["runner"]._run_harness[run_id] = "dsh"
+            raise RuntimeError("claude CLI failed: Exit code: 143")
+
+        runner = self._make_runner(tmp_path, logger, failing_run_agent)
+        holder["runner"] = runner
+
+        disp = runner.run_administrator(make_signal())
+
+        assert disp.success is False
+        metrics = self._terminal_metrics(logger)
+        assert len(metrics) == 1
+        ctx = metrics[0]["context"]
+        assert ctx["run_id"] == disp.run_id
+        assert ctx["harness"] == "dsh"
+        assert ctx["terminal"] == "error"
+        # 抛出路径 turns 预置 0（不 NameError、零样本入账）
+        assert ctx["turns"] == 0
+        assert runner._run_harness == {}

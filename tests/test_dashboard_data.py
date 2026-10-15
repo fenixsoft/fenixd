@@ -2956,6 +2956,49 @@ class TestGetRunsHarness(unittest.TestCase):
         self.assertEqual(len(run_nodes), 1)
         self.assertEqual(run_nodes[0]["harness"], "dsh")
 
+    def _write_usage_source_line(self, rid: str):
+        """追加一条 usage_source 附加行（add-dsh-adapter-integration 4.2/4.3
+        真实形态：紧随终态指标行，context 仅 metric_type/run_id/usage_source）。"""
+        entry = {"timestamp": "2026-09-01T11:00:00.000001Z", "level": "INFO",
+                 "component": "agent_runner",
+                 "message": "run metrics usage source: implementer 'demo'",
+                 "context": {"metric_type": "run_metrics", "run_id": rid,
+                             "usage_source": "available"}}
+        with (self.logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def test_harness_survives_usage_source_annotation_line(self):
+        """dsh 收尾双行形态：终态行（含 harness/duration）后跟 usage_source
+        附加行，附加行只补键 MUST NOT 整体覆盖富终态行——覆盖会把索引条目
+        替换成裸附加行，harness 回退 claude（2026-10-14 线上事故：全部 dsh
+        run 显示 Claude 品牌的根因）、duration 静默回退 mtime 推算。
+        """
+        rid = "impl-demo-1788260735"
+        self._write_run(rid + "-a1")
+        self._write_metric(rid, "dsh")
+        self._write_usage_source_line(rid)
+        from core.dashboard.data import get_runs
+        runs = {r["run_id"]: r for r in get_runs(self.tmpdir)}
+        self.assertEqual(runs[rid + "-a1"]["harness"], "dsh")
+        # 读侧既有契约：logged duration 经 int(round()) 取整（runs.py 消费点）；
+        # 判别点是值来自指标行（12），被覆盖丢时回退 mtime 推算≈0
+        self.assertEqual(runs[rid + "-a1"]["duration_seconds"], 12)
+
+    def test_annotation_line_in_later_scan_chunk_merges(self):
+        """跨增量扫描块：终态行已入账后 usage_source 附加行经追加块补扫——
+        落账合并同样按 run_id 补键，不得用裸附加行整体替换已入账的富终态行。
+        """
+        from core.dashboard.data.runs import load_run_metric
+        rid = "impl-demo-1788260736"
+        self._write_metric(rid, "dsh")
+        m = load_run_metric(Path(self.tmpdir), rid)
+        self.assertEqual(m.get("harness"), "dsh")
+        self._write_usage_source_line(rid)
+        m = load_run_metric(Path(self.tmpdir), rid)
+        self.assertEqual(m.get("usage_source"), "available")
+        self.assertEqual(m.get("harness"), "dsh")
+        self.assertEqual(m.get("duration_seconds"), 12.5)
+
 
 class TestAdminActivitiesHarness(unittest.TestCase):
     """get_admin_activities 条目透出 harness（add-harness-brand-projection 3.2）。

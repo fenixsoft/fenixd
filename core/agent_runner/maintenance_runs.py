@@ -286,9 +286,12 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
     assignment = runner._get_agent_model_assignment("administrator")
     env_overrides: Dict[str, str] = {}
+    provider_name = None
     if assignment:
         # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
         provider, model_override = assignment[0]
+        # 收尾富指标行 provider 维度取数（对齐 run_evolution 等三车道取法）
+        provider_name = provider.get("name")
         _apply_provider_env(env_overrides, provider, model_override, runner)
         # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
         # 时间轴才能展示 Administrator 实际驱动的 model@provider；写点已提取
@@ -336,11 +339,18 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
 
     runner._clear_admin_disposition(disp_path)
     failure_evidence: dict = {}
+    # 收尾富指标取数基线（对齐 run_evolution 等三车道）：_started 量测派发→
+    # 返回窗口；turns/usage_info 预置 0/空——_run_agent 抛出路径不产生
+    # turns（evo-add-run-metrics-lane-baseline 1.3 同款先例）；usage 由弃置
+    # 改捕获（原 _usage），供指标行成本维度取数。
+    _started = time.monotonic()
+    turns = 0
+    usage_info: dict = {}
     try:
         # _run_agent 返回 4 元组（add-cost-observability D1 加 usage_info）；
-        # admin 不消费 usage，此调用点曾漏改按 3 元组解包——admin run 一启动
-        # 即崩 too many values to unpack（2026-09-05 回检发现）
-        output, turns, _session_id, _usage = runner._run_agent(
+        # 此调用点曾漏改按 3 元组解包——admin run 一启动即崩 too many values
+        # to unpack（2026-09-05 回检发现）
+        output, turns, _session_id, usage_info = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -446,6 +456,25 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
     # final 记录，文件不再有读者；不清理会随并行实例累积成垃圾。
     runner._delete_admin_disposition(disp_path)
+    # 收尾富指标行（对齐三车道 _log_lane_run_metrics 收尾咽喉口径）：admin
+    # 车道此前从不写带 agent_type/harness 的终态富指标行——run_metrics 索引
+    # 里只有 projection/context 两条注记行，品牌投影读侧取不到 harness（admin
+    # dsh run 在运维记录恒回退 Claude 品牌），且 _run_agent spawn 装配写入的
+    # _run_harness 登记无收尾消费、随 daemon 无界增长（登记声明处「直调车道
+    # 条目由 _log_lane_run_metrics 收尾消费后摘除」约定的收尾咽喉在本车道
+    # 缺席）。本调用同时闭合两缺口；run_ok 取硬门折算后的最终判定，终态与
+    # 判定一致；落盘失败由 _log_run_metrics 内部吞掉不阻断收尾。
+    _log_lane_run_metrics(
+        runner,
+        run_id=run_id,
+        spec_name=spec,
+        agent_type="administrator",
+        started_monotonic=_started,
+        turns=turns,
+        usage_info=usage_info,
+        run_ok=success,
+        provider_name=provider_name,
+    )
     return AdminDisposition(
         run_id=run_id,
         spec=disp.get("spec") or spec,

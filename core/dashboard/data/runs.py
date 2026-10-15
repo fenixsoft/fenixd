@@ -95,7 +95,16 @@ def _parse_run_metric_stream(f) -> dict:
         # index[rid] 抛 TypeError 穿透段 2 OSError-only except 致接口 500——
         # 非 str 降级跳过，与 6fd55ebbc869 非 object 行跳过口径对齐。
         if isinstance(rid, str) and rid:
-            index[rid] = ctx
+            # 同 run_id 多行按 run_id 合并而非整体覆盖（2026-10-14 事故根因）：
+            # dsh run 收尾连写两条 run_metrics 形态行——先终态指标行（含
+            # harness/duration，add-harness-brand-projection 2.1），紧随
+            # usage_source 附加行（add-dsh-adapter-integration 4.2/4.3，仅
+            # 三键）。整体覆盖会把富终态行替换成裸附加行：harness 双丢回退
+            # claude（全部 dsh run 显示 Claude 品牌）、duration 静默回退
+            # mtime 推算。合并语义下附加行只补键；同名字段后行刷新（重试
+            # 链多条终态行时新终态值仍胜出）。
+            prev = index.get(rid)
+            index[rid] = {**prev, **ctx} if prev else ctx
     return index
 
 
@@ -164,17 +173,22 @@ def _load_run_metric_index(project_root: Path) -> dict:
             scanned = _parse_run_metric_stream(f)
     except OSError:
         # 3c9c40ef135f：扫描中途读失败不推进 key——下一轮从旧 offset 重扫同一
-        # 区间（_parse_run_metric_stream 产物按 run_id 覆盖式写入，重扫幂等）；
+        # 区间（_parse_run_metric_stream 按 run_id 键级合并写产物，重扫幂等）；
         # 轮转/首扫重建分支已清空的本槽索引由下轮（指纹不符/size 判定）重判
         # 重建自愈。对齐 log_index._update_log_block_index「读取失败不推进」口径。
         pass
     # 段 3（锁内，纯内存）：合并落账 + 推进 key + 超限淘汰。段 1/3 锁间隙内其他
-    # 线程可能已清空/推进本槽，合并始终写 slot["index"] 现取的本槽 dict（覆盖式
-    # 按 run_id 写入，重扫/并发双扫幂等收敛），不持段 1 的旧引用。
+    # 线程可能已清空/推进本槽，合并始终写 slot["index"] 现取的本槽 dict，不持
+    # 段 1 的旧引用。落账按 run_id 键级合并（与 _parse_run_metric_stream 同
+    # 口径）：增量块的行可能与前块同 run_id（如收尾连写的 usage_source 附加行
+    # 落在终态行入账后的下一扫描块），整体 update 会用后块条目替换前块富终态
+    # 行——harness/duration 双丢；键级合并下重扫/并发双扫同样幂等收敛。
     with _RUN_METRIC_INDEX_LOCK:
         index = slot["index"]
         if scanned is not None:
-            index.update(scanned)
+            for rid, ctx in scanned.items():
+                prev = index.get(rid)
+                index[rid] = {**prev, **ctx} if prev else ctx
             slot["key"] = key
         # 容量上限：各槽合计超限按最旧淘汰（槽按出现序、槽内 dict 保插入序＝日志
         # 出现序），保近期 run 指标
