@@ -263,12 +263,10 @@ _DSH_ERROR_LINE_RE = re.compile(r"^\s*dsh:\s*([A-Z][A-Z0-9_]*):\s*(.*)$")
 _DSH_ERROR_CODE_TEXT_MAP = {
     "UNKNOWN_MODEL": 'unrecognized model "{message}" (dsh UNKNOWN_MODEL)',
     "RATE_LIMIT": "HTTP 429 rate limited: {message} (dsh RATE_LIMIT)",
-    "HTTP_429": "HTTP 429: {message} (dsh HTTP_429)",
     "SERVER": "HTTP 500 server error: {message} (dsh SERVER)",
     "TIMEOUT": "HTTP 504 gateway timeout: {message} (dsh TIMEOUT)",
     "AUTH": "HTTP 401 authentication error: {message} (dsh AUTH)",
     "INVALID_CREDENTIAL": "HTTP 401 invalid credential: {message} (dsh INVALID_CREDENTIAL)",
-    "HTTP_401": "HTTP 401: {message} (dsh HTTP_401)",
     # 粗化族：保守按连接类处理（见上注释——不伪造 HTTP 状态码）
     "NO_ADAPTER": "connection error (dsh NO_ADAPTER): {message}",
     "TRANSPORT": "connection error (dsh TRANSPORT): {message}",
@@ -1174,6 +1172,7 @@ class ProviderCircuit:
         expired_summary: tuple = ([], 0)
         expired_involved: set = set()
         expired_hold = 0.0
+        expired_unseal_snapshot = "-"
         # 到期推进的状态变更段持锁（item 62a1c4e3e71f）：并发闸门查询此前可
         # 双进到期分支（解封次数双计）或与记账线程的解封态读写交错。副作用
         # （唤醒派发/核销/排程）MUST 锁外执行——_wake_dispatch_after_break 经
@@ -1201,6 +1200,14 @@ class ProviderCircuit:
                     fp for fp, evs in self._transient_break_events.items() if evs
                 }
                 expired_hold = self._apply_unseal_counts_and_hold(expired_involved, now)
+                # 解封次数快照持锁先算（code-review item a271de6e1a40）：展示值
+                # 与记账同临界区，锁外读会与并发 _bump_unseal_count（到期解封/
+                # 探针判败两路均持锁）交错致日志偏旧——同款先例 freeze_remaining_s
+                # 收锁内（item 276d53d0c5dd）。纯只读快照（无嵌套锁无回调），
+                # 持锁合法、不违反下方锁序纪律。
+                expired_unseal_snapshot = self._unseal_counts_snapshot(
+                    now, expired_involved
+                )
                 self._transient_hold_until = (
                     (now + expired_hold) if expired_hold > 0 else 0.0
                 )
@@ -1226,7 +1233,7 @@ class ProviderCircuit:
                 "agent_runner",
                 f"Global transient break expired — dispatch resume gated by "
                 f"post-unseal hold {int(expired_hold)}s then single-probe release "
-                f"(unseal counts={self._unseal_counts_snapshot(now, expired_involved)}), "
+                f"(unseal counts={expired_unseal_snapshot}), "
                 f"fingerprint window reset (evo-fix-transient-break-unseal-backoff)",
             )
         else:
@@ -2090,6 +2097,17 @@ class ProviderCircuit:
         # （负数钳 1/非法串兜缺省）不变。
         if raw == 0 or raw == "0":
             raw = 0
+        # inf/NaN 前置排除（code-review item 9be89a3bb96d）：与 _positive_number
+        # 同款——int(float('inf')) 抛 OverflowError 不在下方 except 族内，yaml 误写
+        # .inf 的 signal_kill_cooldown_* 键会让信号死法记账/派发闸门路径以未捕获
+        # 异常中断而非按畸形回缺省。仅排除非有限值，有限值仍走原 int() 转换
+        # （如 "600.5" 串的 ValueError 兜缺省口径不变）。
+        try:
+            fv = float(raw)
+        except (TypeError, ValueError):
+            fv = None
+        if fv is not None and (fv != fv or fv in (float("inf"), float("-inf"))):
+            return default
         try:
             v = int(raw or default)
         except (TypeError, ValueError):
