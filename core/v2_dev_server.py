@@ -918,7 +918,7 @@ def unregister_v2_server(project_root, wt_path, pid=None, logger=None) -> None:
             e for e in entries
             if not (
                 e.get("wt_path") == str(wt_path)
-                and (pid is None or e.get("pid") == pid)
+                and (pid is None or _registry_pid_eq(e.get("pid"), pid))
             )
         ]
         if len(kept) != len(entries):
