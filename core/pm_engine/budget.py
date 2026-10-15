@@ -725,7 +725,13 @@ class ImplBudget:
             archive_dir = runs_dir / "archive"
             try:
                 if archive_dir.is_dir():
-                    for p in archive_dir.glob(f"impl-{spec_name}-*.jsonl"):
+                    # spec_name 拼模式前做 glob 元字符转义（code-review item
+                    # 8993cf9d4318，与同文件 _impl_run_unmaterialized 的
+                    # current_run 转义同口径）：spec 名含 * ? [ 时字符类语义
+                    # 漏配真实归档产物，误判「无豁免」后改写 used。
+                    for p in archive_dir.glob(
+                        f"impl-{glob.escape(spec_name)}-*.jsonl"
+                    ):
                         # 精确归属守卫（run 流归属全等匹配，范式见 recovery.py）：
                         # spec 名互为前缀（fix-x vs fix-x-y）时 glob 命中不得直接认定
                         if run_spec_part(p.stem) != spec_name:
@@ -761,7 +767,11 @@ class ImplBudget:
         # _impl_run_unmaterialized / _budget_reconcile_has_exemption 对齐：
         # 扫描失败返回 None（非 0），调用方据此跳过本轮对账不改数。
         try:
-            for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
+            # spec_name 拼模式前做 glob 元字符转义（code-review item
+            # 8993cf9d4318，与同文件 _impl_run_unmaterialized（行 658）对
+            # current_run 的转义同口径）：spec 名含 * ? [ 时字符类语义漏配
+            # 真实产物，completed 少计后纯漂移分支把 used 改成更小值。
+            for p in runs_dir.glob(f"impl-{glob.escape(spec_name)}-*.jsonl"):
                 if run_spec_part(p.stem) != spec_name:
                     continue  # 精确归属守卫（fix-x vs fix-x-y 前缀误命中全部排除）
                 # 归并键剥除 attempt/瞬态重试后缀：-a1 与 -a1-r2 同属一个 run
