@@ -5,7 +5,7 @@
 - 取消收尾分支写入 _cancelled_hold 标记且不改既有取消语义（任务 1.3；
   2026-10-12 item 5ee56fc13640 补齐重派 judge 车道后为八处；2026-10-14
   code-review item 04f7f14b2b54 三让位分支收敛 _yield_on_agent_failure
-  单源后为七处）
+  单源后为七处；2026-10-15 item d2bce687564b plan 车道并入同单源后为六处）
 - recover_interrupted 遇标记跳过复位/重派/重启重验计数，无标记回归不变（任务 2.2）
 - update_spec 显式携带 status 清标记、仅 error 隐式更新不清（任务 3.2）
 - admin_monitor._detect_stuck 对保持态豁免，无标记回归不变（任务 4.2）
@@ -60,7 +60,7 @@ def _stale(sm: StateMachine, name: str, hours: float = 3.0) -> None:
 class CancelFinalizeMarkerContract(unittest.TestCase):
     """取消收尾分支 update_spec 调用必须携带 _cancelled_hold=True。
 
-    收尾分支形态各异（缩进/上下文不同），静态钉七处写点：
+    收尾分支形态各异（缩进/上下文不同），静态钉六处写点：
     对每处断言其 update_spec 调用字典含 "_cancelled_hold": True 键，
     且紧邻的 error 键在同一个调用内（同层写入，逐字段一致契约）。
 
@@ -68,7 +68,10 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     hold-state 写点，与首次派发路径对齐——写点增至八处，锚点表同步登记。
     2026-10-14 code-review item 04f7f14b2b54：pipeline.py 三让位分支
     （首次派发/重派 judge/fail-closed 重派）收敛 _yield_on_agent_failure
-    单源，写点八→七处，锚点表两 judge 条目并为一源条目「三让位单源」。）
+    单源，写点八→七处，锚点表两 judge 条目并为一源条目「三让位单源」。
+    2026-10-15 code-review item d2bce687564b：pipeline.py plan 车道取消
+    分支并入同一单源，写点七→六处，锚点表 planner-plan 条目移除——其
+    取消保持写点由「三让位单源」条目继续覆盖。）
 
     写点定位使用语义锚点（_locate 按锚点串动态检索），免疫行号漂移：
     历史上写点行号随并行合并三次漂移并手工重钉（14380774 / 2e98e052 /
@@ -84,7 +87,7 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     # 例外：三让位单源条目的锚点是 _yield_on_agent_failure 的 cancelled
     # 判定行字面（其分支注释随单源收敛删除，code-review 04f7f14b2b54）。
     # 锚点行 → 写点行偏移：implementer +23 / fast-track +20 / repair
-    # +19（dispatch.py），planner-plan +13 / 三让位单源 +8（verification/
+    # +19（dispatch.py），三让位单源 +8（verification/
     # pipeline.py），legacy-verifier +17（verification/_legacy.py），
     # reroute-judge +16（verification/escalation.py，code-review
     # 9affa1c31b7c 补齐改道车道取消 hold-state 留痕），全部落在
@@ -100,9 +103,6 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         ("core/pm_engine/dispatch/repair_lane.py",
          "人工取消 hold-state（add-run-cancel D4，repair worker）",
          "repair"),
-        ("core/pm_engine/verification/pipeline.py",
-         "人工取消 hold-state（add-run-cancel D4）",
-         "planner-plan"),
         ("core/pm_engine/verification/pipeline.py",
          'getattr(result, "cancelled", False) is True',
          "三让位单源"),
@@ -164,13 +164,15 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
                 )
 
     def test_no_new_holdstate_write_point_missed(self):
-        """全库 hold-state 收尾写点恰好七处，与锚点表条目数/文件集合互为印证。
+        """全库 hold-state 收尾写点恰好六处，与锚点表条目数/文件集合互为印证。
 
         与 test_holdstate_write_points_carry_marker 的锚点表并行：
-        文件集合一致（无新增/删减文件）+ 写点总数恰好七处（无漏入表）。
+        文件集合一致（无新增/删减文件）+ 写点总数恰好六处（无漏入表）。
         未来新增 run 类型时，此处与锚点表会同时红。
         （基线 8→7：2026-10-14 code-review item 04f7f14b2b54 三让位分支
-        收敛 _yield_on_agent_failure 单源，取消保持语义不变。）
+        收敛 _yield_on_agent_failure 单源，取消保持语义不变。
+        基线 7→6：2026-10-15 item d2bce687564b plan 车道并入同一单源，
+        取消保持语义不变。）
         """
         root = Path(__file__).resolve().parent.parent / "core"
         hits = {}
@@ -188,14 +190,14 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
             sorted({rel for rel, _, _ in self.WRITE_POINTS}),
             "全库 hold-state 写点文件集合与锚点表不一致",
         )
-        # 写点总数恰好七处，与锚点表条目数互为印证
+        # 写点总数恰好六处，与锚点表条目数互为印证
         self.assertEqual(
-            sum(hits.values()), 7,
-            "全库 _cancelled_hold 写点总数非七处：新增/删除了写点而未同步锚点表",
+            sum(hits.values()), 6,
+            "全库 _cancelled_hold 写点总数非六处：新增/删除了写点而未同步锚点表",
         )
         self.assertEqual(
-            len(self.WRITE_POINTS), 7,
-            "锚点表条目数非七处：与全库写点总数不一致",
+            len(self.WRITE_POINTS), 6,
+            "锚点表条目数非六处：与全库写点总数不一致",
         )
 
 
