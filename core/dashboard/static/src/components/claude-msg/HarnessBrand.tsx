@@ -14,7 +14,11 @@ import { createContext, useContext, useMemo, type ComponentType, type ReactNode 
 
 import ClaudeLogo from './ClaudeLogo';
 import DshLogo from './DshLogo';
-import { DEFAULT_BRAND_NAME, resolveHarness } from './harnessBrandLogic';
+import {
+  DEFAULT_BRAND_NAME,
+  resolveHarness,
+  type RegisteredHarnessName,
+} from './harnessBrandLogic';
 
 export type HarnessBrandValue = {
   name: string;
@@ -36,18 +40,27 @@ function makeInitialLetterBrand(name: string, letter: string): HarnessBrandValue
   return { name, Logo: InitialLetterBadge };
 }
 
-// 品牌注册表：harness 名 → 品牌值。claude 缺省（label 保持 'Claude' 与
-// 现状一致）；dsh 用官方鲸鱼图标（DshLogo.tsx）。
+// 品牌注册表：claude 缺省（label 保持 'Claude' 与现状一致）；dsh 用官方
+// 鲸鱼图标（DshLogo.tsx）。
 const CLAUDE_BRAND: HarnessBrandValue = { name: DEFAULT_BRAND_NAME, Logo: ClaudeLogo };
 const DSH_BRAND: HarnessBrandValue = { name: 'dsh', Logo: DshLogo };
+
+// 装配表：harness 名 → 品牌值。键集单源自 harnessBrandLogic 的
+// REGISTERED_HARNESS_NAMES——新增注册品牌只报名单一处，漏配本表
+// 编译期即报错。
+const BRANDS_BY_HARNESS: Record<RegisteredHarnessName, HarnessBrandValue> = {
+  claude: CLAUDE_BRAND,
+  dsh: DSH_BRAND,
+};
 
 function brandForHarness(harness?: string | null): HarnessBrandValue {
   const resolution = resolveHarness(harness);
   if (resolution.kind === 'registered') {
-    if (resolution.name === 'dsh') {
-      return DSH_BRAND;
+    // 运行时兜底（装配表与注册表漂移时）：走首字母徽标，不静默误配 Claude
+    if (resolution.name in BRANDS_BY_HARNESS) {
+      return BRANDS_BY_HARNESS[resolution.name as RegisteredHarnessName];
     }
-    return CLAUDE_BRAND;
+    return makeInitialLetterBrand(resolution.name, resolution.name.charAt(0).toUpperCase());
   }
   if (resolution.kind === 'fallback') {
     return makeInitialLetterBrand(resolution.name, resolution.letter);
