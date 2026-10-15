@@ -622,6 +622,7 @@ def _is_v2_key(key: str) -> bool:
     return key.startswith((CAPABILITY_PREFIX, ADR_PREFIX))
 
 
+# [fenix-ignore:783148c7ec9e] 本地朴素时间是有意取舍：updated_at 仅在本机 save() 合并中做字典序比较（同机同tz），若改用 timelib to_storage(now_utc()) 的 UTC/Z 后缀格式，同一时刻的新写入会比盘上既有 naive 本地串（UTC+8）字典序落后 8 小时，mark() 更新在按条合并（entry.updated_at >= other.updated_at）中永久落败、格式永远无法迁移，属行为回归故维持现状。
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -1894,7 +1895,15 @@ def run_backfill(
                     "knowledge",
                     f"回填批次 {i}/{total} 失败（{len(batch)} 能力），继续后续批次",
                 )
-        ledger.save()
+        # 台账落盘失败不掀翻车道（fail-open，对齐入口台账读防护 1b907a3d581e）：
+        # .fenix 只读/磁盘满等 OSError 不让已跑完的批次沿调用链变成未捕获异常，
+        # 本批留痕后继续后续批，下一批 save 持锁重读盘上全量条目重写可自愈
+        try:
+            ledger.save()
+        except OSError as e:
+            log.warning(
+                "knowledge", f"回填批次 {i}/{total} 台账落盘失败（fail-open）：{e}"
+            )
 
     # ── ADR 抽取批次（模式三：design.md 决策扫描，归档粒度）──
     no_design = [
@@ -1979,7 +1988,15 @@ def run_backfill(
                     "knowledge",
                     f"回填 ADR 批次 {i}/{adr_total} 失败（{len(batch)} 归档），继续后续批次",
                 )
-        ledger.save()
+        # 同能力批次循环：台账落盘失败按批留痕继续（fail-open），下一批 save
+        # 重写全量台账可自愈
+        try:
+            ledger.save()
+        except OSError as e:
+            log.warning(
+                "knowledge",
+                f"回填 ADR 批次 {i}/{adr_total} 台账落盘失败（fail-open）：{e}",
+            )
 
     # 收尾对账：仍有提交失败未落库的有效产出时，不能让台账停在 distilled
     # （内容在盘上未提交，后续任何一次回滚都会把它清掉而台账宣称已完成）——
@@ -2016,7 +2033,12 @@ def run_backfill(
         "counts": counts,
         "scale": scale,
     }
-    _write_report(project_root, summary)
+    # 收敛报告缺盘不推翻台账事实（fail-open，对齐全文件防护纪律）：报告写盘
+    # 的 OSError 不在全部批次跑完、台账已落盘之后沿调用链掀翻车道
+    try:
+        _write_report(project_root, summary)
+    except OSError as e:
+        log.warning("knowledge", f"回填收敛报告落盘失败（fail-open）：{e}")
     log.info(
         "knowledge",
         f"回填车道收敛汇报：能力批 {len(ok_batches)}/{total} 成功、"
