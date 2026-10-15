@@ -7,8 +7,12 @@ scenarios.py — 测试场景数据结构定义与校验
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
-import re
+import json
 import math
+import os
+import re
+import tempfile
+from pathlib import Path
 
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
 # 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
@@ -1609,9 +1613,6 @@ def load_scenarios(filepath) -> list[TestScenario]:
     Raises:
         ValueError: 场景文件格式错误或场景定义不合法
     """
-    import json
-    from pathlib import Path
-
     path = Path(filepath)
     if not path.exists():
         raise FileNotFoundError(f"场景文件不存在: {path}")
@@ -1703,11 +1704,9 @@ def write_scenarios_array(entries: list, filepath) -> None:
     纪律，code-review item 3816bf5a4005）：POSIX 语义下落盘数据不等于目录项
     已持久化，场景文件是冻结验证权威源，掉电丢失/回退旧版会触发整轮 replan。
     """
-    import json
-    import os
-    import tempfile
-    from pathlib import Path
-
+    # _fsync_dir 保留函数内局部导入（code-review item ea4284000dd3）：
+    # scenarios 是底层模块，不在模块顶部反向依赖 runner 侧 judge_files，
+    # 仅在原子写落地时按需取用。
     from core.verify_engine.judge_files import _fsync_dir
 
     path = Path(filepath)
@@ -1748,9 +1747,6 @@ def salvage_scenarios_file(filepath) -> tuple[list[TestScenario], dict]:
         FileNotFoundError: 场景文件不存在（同 load_scenarios）
         ValueError: 不可拯救形态，或解包后未通过既有全部校验（不落地）
     """
-    import json
-    from pathlib import Path
-
     path = Path(filepath)
     if not path.exists():
         raise FileNotFoundError(f"场景文件不存在: {path}")
