@@ -232,7 +232,7 @@ def _run_smoke_chain(tmp_path, dsh_home, port, log_file, result_path, wt):
     assert inflight_seen, (
         "未观测到在飞 dsh 进程（在飞判定失效）；"
         f"观测窗采样 cmdline={seen_cmdlines[:3]!r}")
-    output, turns, session_id, usage = box["ret"]
+    output, turns, session_id, usage, _stall = box["ret"]
 
     # ── 终态收口：result 文本 / init session / usage 求和（mock 恒回 usage）──
     assert output == "冒烟完成"

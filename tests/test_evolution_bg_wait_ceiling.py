@@ -65,7 +65,7 @@ class _RecordingRunner:
         })
         if self._claude_fn is not None:
             return self._claude_fn(run_id)
-        return "", 1, "session-1", {"input_tokens": 0, "output_tokens": 0}
+        return "", 1, "session-1", {"input_tokens": 0, "output_tokens": 0}, {"rounds": 1, "stalls": 0, "max": 0.2}
 
     def _extract_usage_info(self, result_event):
         return {"input_tokens": 0, "output_tokens": 0}
@@ -184,7 +184,7 @@ class TestEvolutionBgWaitCeilingAttribution(unittest.TestCase):
             ]) + "\n",
             encoding="utf-8",
         )
-        return "", 1, "session-1", {"input_tokens": 0, "output_tokens": 0}
+        return "", 1, "session-1", {"input_tokens": 0, "output_tokens": 0}, {"rounds": 1, "stalls": 0, "max": 0.2}
 
     def test_missing_contract_with_signature_attributes_ceiling(self):
         """产物缺失且转录含 600 秒签名 → reason 附上限归因文案。"""
@@ -201,7 +201,7 @@ class TestEvolutionBgWaitCeilingAttribution(unittest.TestCase):
         """产物缺失但转录无签名 → reason 维持原文案，不附上限归因。"""
 
         def _claude_clean(run_id):
-            return "", 1, "session-1", {"input_tokens": 0, "output_tokens": 0}
+            return "", 1, "session-1", {"input_tokens": 0, "output_tokens": 0}, {"rounds": 1, "stalls": 0, "max": 0.2}
 
         runner = _RecordingRunner(self.proot, claude_fn=_claude_clean)
         result = run_evolution(runner, [], [])

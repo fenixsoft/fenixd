@@ -1628,7 +1628,7 @@ class TestRunCodeFix(unittest.TestCase):
             calls["cwd"] = cwd
             calls["spec_name"] = kw.get("spec_name")
             calls["agent_type"] = kw.get("agent_type")
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner = _make_exec_runner(proot, fake_claude)
         items = [_item("a")]
@@ -1648,7 +1648,7 @@ class TestRunCodeFix(unittest.TestCase):
         def fake_claude(prompt, cwd, run_id, model, env, **kw):
             out = Path(cwd) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
             _write_out(out, ["garbage-not-json", ""])
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner = _make_exec_runner(proot, fake_claude)
         result = run_code_fix(runner, wt, [_item("a")])
@@ -1668,7 +1668,7 @@ class TestRunCodeFix(unittest.TestCase):
                 {"item_id": "b", "status": "fixed", "file": "y.py"},
                 {"item_id": "c", "status": "skipped", "file": "z.py"},
             ])
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner = _make_exec_runner(proot, fake_claude)
         result = run_code_fix(runner, wt, [_item("a"), _item("b"), _item("c")])
@@ -1720,7 +1720,7 @@ class TestRunCodeFix(unittest.TestCase):
             captured["model"] = model
             out = Path(cwd) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
             _write_out(out, [{"item_id": "a", "status": "fixed", "file": "x.py"}])
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner = _make_runner(proot)
         runner._get_agent_model_assignment = assignment
@@ -1754,7 +1754,7 @@ class TestRunCodeFix(unittest.TestCase):
             captured["model"] = model
             out = Path(cwd) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
             _write_out(out, [{"item_id": "a", "status": "fixed", "file": "x.py"}])
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner = _make_runner(proot)
         runner._get_agent_model_assignment = assignment
@@ -1785,7 +1785,7 @@ class TestRunCodeFix(unittest.TestCase):
             prompts.append(prompt)
             out = Path(cwd) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
             _write_out(out, [{"item_id": "a", "status": "fixed", "file": "x.py"}])
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner = _make_exec_runner(proot, fake_claude)
         run_code_fix(runner, wt, [_item("a")], failure_summary="status=failed\n- t::x: boom")
@@ -1825,7 +1825,7 @@ class TestActivationWiring(unittest.TestCase):
                      "category": "correctness", "line": 1, "description": "d",
                      "suggestion": "s"},
                 ]}) + "\n")
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner._run_agent = fake_claude
         with mock.patch.object(mr, "_accumulate_code_review_tokens",
@@ -1874,7 +1874,7 @@ class TestActivationWiring(unittest.TestCase):
                      "category": "correctness", "line": 1, "description": "d",
                      "suggestion": "s"},
                 ]}) + "\n")
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         runner._run_agent = fake_claude
         with mock.patch.object(mr, "_accumulate_code_review_tokens",

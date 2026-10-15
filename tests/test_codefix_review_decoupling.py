@@ -450,7 +450,8 @@ class TestReviewCompletionActivationPreserved(unittest.TestCase):
 
             runner._run_agent = _cancel
         else:
-            runner._run_agent = lambda *a, **k: ("OUT", 3, "sess", {})
+            runner._run_agent = lambda *a, **k: (
+                "OUT", 3, "sess", {}, {"rounds": 3, "stalls": 0, "max": 0.5})
         return runner
 
     def _write_out(self, findings):

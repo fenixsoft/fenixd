@@ -347,10 +347,11 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     turns = 0
     usage_info: dict = {}
     try:
-        # _run_agent 返回 4 元组（add-cost-observability D1 加 usage_info）；
-        # 此调用点曾漏改按 3 元组解包——admin run 一启动即崩 too many values
-        # to unpack（2026-09-05 回检发现）
-        output, turns, _session_id, usage_info = runner._run_agent(
+        # _run_agent 返回 5 元组（evo-api-stall-signal-grading 追加 stall_latency；
+        # add-cost-observability D1 加 usage_info）；此调用点曾两度漏改解包
+        # 宽度——3→4 元（2026-09-05）与 4→5 元（2026-10-15）都崩 too many
+        # values to unpack，现由 tests/test_run_agent_call_site_arity.py 契约钉死
+        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -660,7 +661,7 @@ def run_self_review(
 
     runner._clear_self_review_out(out_path)
     try:
-        output, turns, _session_id, usage_info = runner._run_agent(
+        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -1119,7 +1120,7 @@ def run_evolution(
 
     turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:
-        output, turns, _session_id, usage_info = runner._run_agent(
+        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -1708,7 +1709,7 @@ def run_code_review(
     claude_result_text = ""
     turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:
-        output, turns, _session_id, usage_info = runner._run_agent(
+        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
             runner.project_root,
             run_id,
@@ -2957,7 +2958,7 @@ def run_code_fix(
         conn_error = False
         result_text = ""
         try:
-            output, turns, _session_id, usage_info = runner._run_agent(
+            output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
                 prompt,
                 wt,
                 run_id,

@@ -1489,7 +1489,7 @@ class _FakeEvolutionRunner(AgentRunner):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(out, ensure_ascii=False),
                             encoding="utf-8")
-        return "", 3, "session-1", {"input_tokens": 10, "output_tokens": 5}
+        return "", 3, "session-1", {"input_tokens": 10, "output_tokens": 5}, {"rounds": 3, "stalls": 0, "max": 0.4}
 
     def _build_prompt(self, spec_name, agent_type, detail=None, wt_path=None):
         self._build_prompt_calls.append(agent_type)

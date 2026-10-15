@@ -648,7 +648,7 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
         ev["problems"] = logger.problems[:5]
         return ev
 
-    output, turns, session_id, usage = box.get("ret") or ("", 0, None, {})
+    output, turns, session_id, usage, _stall = box.get("ret") or ("", 0, None, {}, {"rounds": 0, "stalls": 0, "max": None})
     ev.update({
         "output": output, "turns": turns, "session_id": session_id,
         "usage_source": usage.get("usage_source"),
@@ -1705,7 +1705,7 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
     if "err" in box:
         ev["error"] = repr(box["err"])
         return ev
-    output, turns, session_id, usage = box.get("ret") or ("", 0, None, {})
+    output, turns, session_id, usage, _stall = box.get("ret") or ("", 0, None, {}, {"rounds": 0, "stalls": 0, "max": None})
     ev.update({"output": output[:500], "turns": turns,
                "session_id": session_id,
                "usage_source": usage.get("usage_source"),
@@ -1835,7 +1835,7 @@ def _real_claude_baseline_lane(fixture: Dict[str, Any], model: str,
     if "err" in box:
         ev["error"] = repr(box["err"])
         return ev
-    output, turns, session_id, usage = box.get("ret") or ("", 0, None, {})
+    output, turns, session_id, usage, _stall = box.get("ret") or ("", 0, None, {}, {"rounds": 0, "stalls": 0, "max": None})
     ev.update({"turns": turns, "session_id": session_id,
                "usage_source": usage.get("usage_source"),
                "result_gate": result_gate_selfcheck(result_path)})

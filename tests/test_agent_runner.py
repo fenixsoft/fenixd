@@ -497,8 +497,9 @@ class TestRunAdministratorFailureEvidence:
                           max_turns, spec_name=None, agent_type=None):
             admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"result": "resolved"}), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
+            return ("output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0},
+                    {"rounds": 5, "stalls": 0, "max": 0.5})
 
         runner = _make_admin_runner_stub(proot, fake_run_agent=ok_run_agent)
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})

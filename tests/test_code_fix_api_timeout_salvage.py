@@ -268,7 +268,7 @@ class TestRunCodeFixSignatureEnvelope(unittest.TestCase):
         from core.agent_runner.maintenance_runs import run_code_fix
 
         def fake_claude(prompt, cwd, run_id, model, env, **kw):
-            return ("done", 1, "sid", {})
+            return ("done", 1, "sid", {}, {"rounds": 1, "stalls": 0, "max": 0.0})
 
         result = run_code_fix(
             self._runner_with(_make_project_root(), fake_claude),

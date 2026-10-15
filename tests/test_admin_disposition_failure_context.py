@@ -291,7 +291,8 @@ class TestRunAdministratorLaneMetrics:
             # 按 prompt 契约写合法处置文件（result 枚举内 → 硬门放行）
             admin_disposition_path(holder["runner"].project_root, run_id).write_text(
                 '{"result": "resolved", "summary": "ok"}', encoding="utf-8")
-            return "output", 7, None, {"input_tokens": 100, "output_tokens": 20}
+            return ("output", 7, None, {"input_tokens": 100, "output_tokens": 20},
+                    {"rounds": 7, "stalls": 0, "max": 0.5})
 
         runner = self._make_runner(tmp_path, logger, success_run_agent)
         holder["runner"] = runner

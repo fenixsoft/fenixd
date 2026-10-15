@@ -100,7 +100,7 @@ class _SalvageRunner(AgentRunner):
             self._write_contract(cwd, run_id)
         if self._raises:
             raise RuntimeError(self._raises)
-        return "", 3, "session-1", {"input_tokens": 1, "output_tokens": 1}
+        return "", 3, "session-1", {"input_tokens": 1, "output_tokens": 1}, {"rounds": 3, "stalls": 0, "max": 0.4}
 
     def _write_contract(self, cwd, run_id):
         out = {

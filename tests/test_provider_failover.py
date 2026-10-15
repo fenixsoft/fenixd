@@ -453,11 +453,13 @@ class TestProviderObservability:
         monkeypatch.setattr(runner, "_now", lambda: now)
         runner.worktree_manager = MagicMock()
         runner.worktree_manager.create.return_value = tmp_path / "wt"
-        # _run_agent 契约为 4 元组 (output, turns, session_id, usage_info)——
-        # 旧 3 元组桩会在解包处 ValueError→被 attempt 循环吞掉走重试耗尽路径
+        # _run_agent 契约为 5 元组 (output, turns, session_id, usage_info,
+        # stall_latency)——旧宽度桩会在解包处 ValueError→被 attempt 循环吞掉
+        # 走重试耗尽路径（宽度契约由 tests/test_run_agent_call_site_arity.py 钉死）
         runner._run_agent = MagicMock(return_value=(
             "ok", 1, "sess",
-            {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}))
+            {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+            {"rounds": 1, "stalls": 0, "max": 0.3}))
         result = runner.run_implementer("s")
         assert result.provider_used == "inferaiapi.com"
         assert result.model_used == "deepseek-v4-flash"
@@ -966,7 +968,7 @@ class TestRatelimitShardedResume:
             (crdir / f"out-{run_id}.jsonl").write_text(
                 "".join(json.dumps(r) + "\n" for r in artifact_rows),
                 encoding="utf-8")
-            return "OUT", 1, "sess", {}
+            return "OUT", 1, "sess", {}, {"rounds": 1, "stalls": 0, "max": 0.3}
 
         runner._run_agent = _run_agent
         return runner

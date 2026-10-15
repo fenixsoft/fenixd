@@ -190,7 +190,7 @@ class TestToolCompositionMetrics:
         runner = _make_runner(proot)
         rid = "code-fix-metrics-x1"
 
-        output, turns, session_id, _usage = _drive_run_agent(
+        output, turns, session_id, _usage, _stall = _drive_run_agent(
             runner, proot, rid, _transcript_lines()
         )
 
@@ -226,7 +226,7 @@ class TestToolCompositionMetrics:
 
         monkeypatch.setattr(runner_module, "append_run_line", _boom)
 
-        output, turns, _sess, _usage = _drive_run_agent(
+        output, turns, _sess, _usage, _stall = _drive_run_agent(
             runner, proot, rid, _transcript_lines()
         )
 
