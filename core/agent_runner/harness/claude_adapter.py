@@ -233,7 +233,16 @@ def build_env(req: SpawnRequest) -> Optional[Dict[str, str]]:
         for key in AGENT_RUN_BANNED_ENV_KEYS:
             env.pop(key, None)
         if req.env_overrides:
-            env.update(req.env_overrides)
+            # 覆写键按**键自身**再过同一剔除口径（对齐 dsh 侧
+            # is_dsh_banned_env_key 的 BUG-01 修复形态）：否则覆写字典
+            # 可把剔除键回灌进一次性子进程环境。
+            env.update(
+                {
+                    key: value
+                    for key, value in req.env_overrides.items()
+                    if key not in AGENT_RUN_BANNED_ENV_KEYS
+                }
+            )
         return env
     # ── ENV_MODE_AGENT_RUN（主车道）────────────────────────────────────
     env = os.environ.copy()
@@ -346,7 +355,9 @@ class ClaudeAdapter(HarnessAdapter):
             return []
         if isinstance(raw, dict):
             return [raw]
-        return [raw] if raw is not None else []
+        # 非 dict（含 None）丢弃、不透传裸类型：与 dsh_adapter.normalize_event
+        # 的丢弃语义对齐，canon 事件恒为 dict（注解 Optional[List[Dict]]）。
+        return []
 
     # ── stderr 分类 ───────────────────────────────────────────────────
     def classify_stderr(self, line: str) -> str:
