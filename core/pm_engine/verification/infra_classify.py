@@ -838,12 +838,30 @@ def reclassify_infra_rounds(
                 f"退化）'{spec_name}': reclassify_key={reclassify_key}: "
                 f"{type(e).__name__}: {e}",
             )
+    # 归档侧兜底（code-review item cae980a7ffe1）：活跃池写回时自动裁剪到
+    # MAX_RECORDS=150、被裁记录移入归档（read_records 不合并归档）——daemon
+    # 长跑积累超 150 条后，早期回拨的幂等键被裁出活跃查重窗口，同键重复提交
+    # 会二次扣减 _verify_fail_rounds。查重合并 read_archive()（归档侧
+    # MAX_ARCHIVE_RECORDS=2000，覆盖裁剪逃逸），恢复 docstring「重复回拨不
+    # 二次扣减」承诺；归档读自身软失败（缺失/不可读返回空列表），此处异常
+    # 兜底与上方活跃读失败降级同口径。
+    try:
+        archived = store.read_archive()
+    except Exception as e:
+        archived = []
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"infra 回拨幂等检查读 admin_store 归档失败（按无归档继续，幂等保证"
+                f"退化）'{spec_name}': reclassify_key={reclassify_key}: "
+                f"{type(e).__name__}: {e}",
+            )
     already_applied = any(
         rec.get("kind") == DISPOSITION
         and rec.get("signal_type") == RECLASSIFY_SIGNAL_TYPE
         and rec.get("spec") == spec_name
         and rec.get("reclassify_key") == reclassify_key
-        for rec in existing
+        for rec in existing + archived
     )
     if already_applied:
         entry = state_machine.read_one(spec_name) or {}
