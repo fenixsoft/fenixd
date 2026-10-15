@@ -41,10 +41,19 @@ def read_spec_mode(project_root, spec_name: str) -> str:
     Returns:
         ``"fast-track"`` 或 ``"full"``。文件缺失 / 无 mode 字段 / 值非法 /
         解析失败均返回 ``"full"``（读侧容错，不抛异常）。``spec_name`` 含
-        路径成分（空值、``.``、``..`` 或路径分隔符）时同样返回 ``"full"``。
+        路径成分（空值、``.``、``..``、路径分隔符或 NUL 字节）时同样返回
+        ``"full"``。
     """
-    if not spec_name or spec_name == "." or "/" in spec_name or ".." in spec_name:
-        # 保守拒绝路径成分：防止名称拼接过 spec/changes 越界读到其他目录。
+    if (
+        not spec_name
+        or spec_name == "."
+        or "/" in spec_name
+        or ".." in spec_name
+        or "\0" in spec_name
+    ):
+        # 保守拒绝路径成分：防止名称拼接过 spec/changes 越界读到其他目录；
+        # NUL 字节则会让 stat()/resolve() 抛 ValueError（embedded null byte，
+        # 非 OSError，except OSError 兜不住），同样在入口拒绝以守住「不抛异常」契约。
         return DEFAULT_SPEC_MODE
     yaml_path = Path(project_root) / "spec" / "changes" / spec_name / ".spec.yaml"
     try:
