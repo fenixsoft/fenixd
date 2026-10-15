@@ -582,7 +582,9 @@ class H5SettingsRoutesMixin:
         项目名入 evidence，响应 dispatched；
         契约有效且无 overwrite 响应 skipped（附「契约已有效」文案）不写信号；
         写前在途去重（D2）：同项目同 signal_type 未消费信号已存在则不重复写，
-        响应仍 dispatched 且 message 注明已有在途请求。
+        响应仍 dispatched 且 message 注明已有在途请求；
+        写盘失败回 500 + 固定文案（OSError 见 item 4bd26f653108；损坏留底
+        拒写经 store.last_write_refusal 与在途区分，item be0d21670e4d）。
         contract is None 时 evidence 附「契约状态=」成因（code-review item
         d190fab69dc9）：缺失 vs 解析失败（含异常摘要）vs 内容无效，合并写
         verify_contract_missing 的语义不变，仅补充证据信息。
@@ -668,20 +670,43 @@ class H5SettingsRoutesMixin:
         # 在途查重与写入在单次排他锁内完成（code-review item 0d7c2ef12e33）：
         # 旧 read_all() 查重后 append() 是 check-then-act（两次独立锁获取），
         # 并发同参 POST 可都观测空在飞集、各自落一条重复信号。
-        rec = store.append_if_absent(
-            {
-                "kind": SIGNAL,
-                "signal_type": signal_type,
-                "spec": None,
-                "severity": "major",
-                "description": "AI 起草验证契约请求（UI 手动触发）",
-                "evidence": evidence_detail,
-                "source": "ui-manual",
-                "overwrite": overwrite,
-                "recommended_action": "Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
-            },
-            _is_inflight,
-        )
+        # 写失败（磁盘满/权限等 OSError）转可读 500（code-review item
+        # 4bd26f653108）：对齐同文件 _api_prompts_post 口径——固定语境文案
+        # 对外、异常原文经 logger.warning 服务端留痕，不让 OSError 逃到通用
+        # 兜底产出不透明的 "Internal Server Error"。
+        try:
+            rec = store.append_if_absent(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": signal_type,
+                    "spec": None,
+                    "severity": "major",
+                    "description": "AI 起草验证契约请求（UI 手动触发）",
+                    "evidence": evidence_detail,
+                    "source": "ui-manual",
+                    "overwrite": overwrite,
+                    "recommended_action": "Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
+                },
+                _is_inflight,
+            )
+        except OSError as e:
+            logger.warning("AI 起草请求写入失败（%s）: %s", project["name"], e)
+            self._error(500, "AI 起草请求写入失败")
+            return
+        if rec is None and store.last_write_refusal is not None:
+            # 拒写≠在途（code-review item be0d21670e4d）：append_if_absent 返回
+            # None 有两义——在途已存在（skip_unchanged 跳过写回）与告警文件
+            # 损坏留底被下限保护拒写（refuse_returns_none，记录未落盘）。后者
+            # 复用「已有在途」文案会把本次起草触发静默丢失伪装成已排队
+            # （Administrator 永不会拾取）；经 store.last_write_refusal 区分，
+            # 拒写回可读 500，原因串经 logger 留服务端日志、不随响应透出。
+            logger.warning(
+                "AI 起草请求写入被拒（%s）: %s",
+                project["name"],
+                store.last_write_refusal,
+            )
+            self._error(500, "AI 起草请求写入失败（记录未落盘，请稍后重试）")
+            return
         if rec is None:
             self._json(
                 {
