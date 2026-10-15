@@ -514,7 +514,7 @@ def _pid_alive(pid: int):
     return True
 
 
-def _adopt_leftover_daemon() -> None:
+def _adopt_leftover_daemon() -> bool:
     """拉起新 daemon 前收编 SIGKILL 遗留的存活旧 daemon（先收编再拉起）。
 
     读 daemon_runtime.json 记录的 pid：文件缺失/损坏按无旧 daemon 处理；
@@ -531,17 +531,26 @@ def _adopt_leftover_daemon() -> None:
     cmdline 不可读按存活保守处理（宁可多等不双拉）。os.kill(pid, 0) 对
     zombie 仍返回真，但旧 supervisor 死后 daemon 已 re-parent 由 init 收尸，
     本进程通常见不到 zombie，不特判。
+
+    返回 True=可放行拉起；False=放弃拉起（code-review 0c19b214e411）：SIGKILL
+    后不再盲等 5s 即放行，改为轮询 _pid_alive 复核死亡（总时限与兜底收尸
+    _wait_daemon_exit 同款：DAEMON_REAP_WAIT_ATTEMPTS × DAEMON_REAP_WAIT_SECONDS）
+    ——旧 daemon 陷不可中断睡眠（D 状态）时 SIGKILL 不生效，放行拉起会因 daemon
+    单例锁秒退、被误计启动失败连计假熔断，且主循环随即以新 pid 覆写
+    daemon_runtime.json、旧 D 状态 pid 线索丢失。超限仍存活按「兜底收尸超限」
+    同款处置：返回 False 放弃拉起，调用方退出看护（daemon_runtime.json 保持
+    指向旧 pid 供人工处置）。
     """
     try:
         data = json.loads(_daemon_runtime_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return
+        return True
     pid = data.get("pid") if isinstance(data, dict) else None
     if not isinstance(pid, int) or pid <= 0:
-        return
+        return True
     alive = _pid_alive(pid)
     if alive is False:
-        return
+        return True
     if alive is None:
         # EPERM：进程存在但不可发信号（其它用户 / 容器 uid 边界）。按已死亡
         # 跳过收编随后无条件拉起 → 双 daemon 并发写 .fenix，恰是本函数要防的
@@ -565,13 +574,13 @@ def _adopt_leftover_daemon() -> None:
                 f"daemon_runtime pid {pid} alive but start time mismatch "
                 "(pid reuse) — skip adopt"
             )
-            return
+            return True
     else:
         try:
             cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
             if b"fenixd" not in cmdline:
                 log(f"daemon_runtime pid {pid} alive but not fenixd (pid reuse) — skip adopt")
-                return
+                return True
         except OSError:
             log(f"daemon_runtime pid {pid} alive, cmdline unreadable — adopt conservatively")
         # code-review c6ac6582df44：proc_starttime 记录缺失（旧版 runtime /
@@ -588,7 +597,7 @@ def _adopt_leftover_daemon() -> None:
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        return True
     except PermissionError:
         # 信号被拒（跨 uid，code-review 15557c8e364a）：无法收编，但不立即
         # 放行拉起（双 daemon）——按保守取向等满 sigkill_wait 窗口再放行。
@@ -599,14 +608,14 @@ def _adopt_leftover_daemon() -> None:
     while True:
         if _pid_alive(pid) is False:
             log(f"leftover daemon (pid {pid}) exited after SIGTERM")
-            return
+            return True
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
     if term_denied:
         # 信号被拒无法升级 SIGKILL，保守窗口已耗尽 → 放行拉起
         log(f"pid {pid} unresponsive to denied signals — proceeding after {sigkill_wait}s")
-        return
+        return True
     log(
         f"leftover daemon (pid {pid}) did not exit within {sigkill_wait}s "
         "after SIGTERM — SIGKILL"
@@ -624,13 +633,13 @@ def _adopt_leftover_daemon() -> None:
                 f"daemon_runtime pid {pid} gone before SIGKILL "
                 "(exited after SIGTERM?) — skip SIGKILL"
             )
-            return
+            return True
         if now_starttime != recorded_starttime:
             log(
                 f"daemon_runtime pid {pid} alive but start time mismatch before "
                 "SIGKILL (pid reuse) — skip SIGKILL"
             )
-            return
+            return True
     else:
         # code-review c6ac6582df44：会话内基线也未能建立（上面现读 starttime
         # 失败）时，SIGKILL 前至少重读 cmdline 复核仍含 fenixd，避免把等待窗
@@ -640,22 +649,46 @@ def _adopt_leftover_daemon() -> None:
             cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
         except OSError:
             log(f"daemon_runtime pid {pid} gone or unreadable before SIGKILL — skip SIGKILL")
-            return
+            return True
         if b"fenixd" not in cmdline:
             log(
                 f"daemon_runtime pid {pid} alive but not fenixd before "
                 "SIGKILL (pid reuse) — skip SIGKILL"
             )
-            return
+            return True
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
-        return
+        # SIGKILL 落在空档（SIGTERM 等待窗末才退）：已死亡，直接放行拉起
+        return True
     except PermissionError:
-        # SIGKILL 同被拒：sigkill_wait 窗口已耗尽，按保守取向放行拉起
+        # SIGKILL 同被拒：无法终结旧 daemon，落入下方复核循环超时后的放弃
+        # 路径（保守取向，不带着存活旧 daemon 放行拉起）
         pass
-    # SIGKILL 后短等收尸（与 _terminate_daemon 的 5s 收尸窗口同量级）
-    time.sleep(5)
+    # SIGKILL 后复核死亡（code-review 0c19b214e411）：原为盲等 5s 即放行拉起，
+    # 旧 daemon 陷不可中断睡眠（D 状态）时 SIGKILL 不生效——新 daemon 因 daemon
+    # 单例锁秒退、被误计启动失败连计 3 次假熔断，且主循环随即以新 pid 覆写
+    # daemon_runtime.json、旧 D 状态 pid 线索丢失。改为轮询 _pid_alive 复核
+    # （总时限与兜底收尸 _wait_daemon_exit 同款），确认死亡才放行；超限仍存活
+    # 按「兜底收尸超限」同款放弃拉起并退出看护（宁可多等不双拉/不假熔断）。
+    for attempt in range(1, DAEMON_REAP_WAIT_ATTEMPTS + 1):
+        bucket_end = time.monotonic() + DAEMON_REAP_WAIT_SECONDS
+        while time.monotonic() < bucket_end:
+            if _pid_alive(pid) is False:
+                return True
+            time.sleep(0.5)
+        log(
+            f"daemon pid {pid} still alive {attempt * DAEMON_REAP_WAIT_SECONDS}s "
+            f"after SIGKILL (adopt verify {attempt}/{DAEMON_REAP_WAIT_ATTEMPTS}, "
+            "uninterruptible sleep?) — keep waiting"
+        )
+    log(
+        f"CRITICAL: 遗留 daemon pid {pid} SIGKILL 后 "
+        f"{DAEMON_REAP_WAIT_ATTEMPTS * DAEMON_REAP_WAIT_SECONDS}s 仍存活"
+        "（不可中断睡眠？）——放弃拉起，daemon_runtime.json 保持指向该 pid。"
+        "请人工处理该进程（排查存储/NFS 抖动），随后重启 supervisor 恢复托管。"
+    )
+    return False
 
 
 # ── supervisor 自身停机信号（code-review 09d6ed559666）────────────────────
@@ -829,10 +862,19 @@ def main():
             break
 
         # 先收编再拉起（SIGKILL supervisor 后旧 daemon 可能仍存活，见
-        # _adopt_leftover_daemon）：避免双 daemon 与启动失败误熔断。
-        _adopt_leftover_daemon()
+        # _adopt_leftover_daemon）：避免双 daemon 与启动失败误熔断。返回
+        # False＝收编复核超限（SIGKILL 后旧 daemon 仍存活，不可中断睡眠？，
+        # code-review 0c19b214e411）——与兜底收尸超限（下方 rc is None 分支）
+        # 同款取向不重走拉起：旧 daemon 仍持有 daemon 单例锁，新拉起必秒退、
+        # 被误计启动失败致假熔断，且会以新 pid 覆写 daemon_runtime.json、
+        # 旧 D 状态 pid 线索丢失。放弃看护退出交人工/进程管理器接管（重启
+        # supervisor 即恢复托管）。
+        if not _adopt_leftover_daemon():
+            break
 
-        # 收编等待窗（最长 sigkill_wait+5s）内到达的停机/stop 请求在此复查
+        # 收编等待窗（最长 sigkill_wait + 收编复核上限
+        # DAEMON_REAP_WAIT_ATTEMPTS × DAEMON_REAP_WAIT_SECONDS）内到达的
+        # 停机/stop 请求在此复查
         # （code-review 127aca02d9df）：循环开头的检查已过、等待期间标记只被
         # 置位不复查，直接 start_daemon 会闪现一次完整 daemon 启动（单例锁、
         # 启动扫描等副作用照常执行），与停机语义相悖。收编已让旧 daemon 退出，
