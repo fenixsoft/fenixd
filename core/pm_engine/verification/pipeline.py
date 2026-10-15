@@ -1214,6 +1214,13 @@ class VerificationPipeline:
         # 由框架合成兜底，合成失败则阻断推进（下游修复引用的路径必然可读）
         report_blocker = self._ensure_verification_report(spec_name)
         if report_blocker:
+            # 写点前状态复核（code-review item 5cbe3d1c8e6d，与 plan-ready
+            # 分支同口径收敛于 _discard_if_not_testing）：_read_verdict_failclosed
+            # 入口核对到本写点之间隔着场景缺陷改道门/报告合成等多次文件读，
+            # 窗口内 spec 被人工冻结/复位接管时 DEBUG 丢弃，不覆写较新状态
+            # 的 error/tester_run（阻断分支不经 transition，无 TOCTOU 保护）。
+            if _discard_if_not_testing(self, spec_name, judge_result, "bug-found"):
+                return
             # tester_run 与 _apply_verified 同类阻断分支同口径（code-review item
             # 28e2f027965e）：阻断轮亦留 run 关联，dashboard/排障不错失采纳路径。
             self._context.state_machine.update_spec(
@@ -1257,10 +1264,14 @@ class VerificationPipeline:
                 f"归因入口判 infra：'{spec_name}' 按 infra 记账，"
                 f"不流转 bug-found、不派生 fix",
             )
+            # 退款锚点回退 implementer_run（不传 run_id，87cfffac1d3c 契约）：
+            # judge attempt run id 作锚点会使每个 attempt 各自退款一次、按实现
+            # run 的幂等去重失效；attempt id 经 ledger_run_id 只进失败台账，
+            # 与 legacy/escalation 合规调用点同口径。
             self._record_infra_failure(
                 spec_name,
                 "infra at attribution entry (judge)",
-                run_id=getattr(judge_result, "run_id", "") or "",
+                ledger_run_id=getattr(judge_result, "run_id", "") or "",
             )
             return
         # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
@@ -1364,6 +1375,13 @@ class VerificationPipeline:
         # D6: testing→verified 前置进度核对：done>=total 才晋级
         vblocker = self._check_verification_gate(spec_name)
         if vblocker:
+            # 写点前状态复核（code-review item 5cbe3d1c8e6d，与 plan-ready
+            # 分支同口径收敛于 _discard_if_not_testing）：入口核对到本写点
+            # 之间隔着豁免握手/进度核对等多次文件读，窗口内 spec 被人工
+            # 冻结/复位接管时 DEBUG 丢弃，不覆写较新状态的 error/tester_run
+            # （阻断分支不经 transition，无 TOCTOU 保护）。
+            if _discard_if_not_testing(self, spec_name, judge_result, "verified"):
+                return
             # 不完整：按 verifier 失败处理，写 error 摘要，不晋级 verified
             self._context.state_machine.update_spec(
                 spec_name,
@@ -1380,6 +1398,10 @@ class VerificationPipeline:
         # 验证报告产物闸门（add-verify-report-gate）
         report_blocker = self._ensure_verification_report(spec_name)
         if report_blocker:
+            # 写点前状态复核（code-review item 5cbe3d1c8e6d，与上方进度核对
+            # 写点及 plan-ready 分支同款 _discard_if_not_testing）。
+            if _discard_if_not_testing(self, spec_name, judge_result, "verified"):
+                return
             self._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -2673,10 +2695,15 @@ class VerificationPipeline:
                     "error": result.error,
                 },
             )
+            # 退款锚点回退 implementer_run（不传 run_id，87cfffac1d3c 契约）：
+            # 本分支被 judge 首派/重派与 plan 首派三条车道共用，result 均为
+            # attempt run 结果——attempt run id 作锚点会使每个 attempt 各自
+            # 退款一次、按实现 run 的幂等去重失效；attempt id 经
+            # ledger_run_id 只进失败台账，与 legacy/escalation 合规调用点同口径。
             self._record_infra_failure(
                 spec_name,
                 result.error,
-                run_id=getattr(result, "run_id", "") or "",
+                ledger_run_id=getattr(result, "run_id", "") or "",
             )
             return "provider_circuit", result.error
         return None, ""
