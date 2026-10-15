@@ -102,13 +102,11 @@ export function createModelConfigService(config: unknown): {
   providers: Record<string, unknown>;
   provider: string;
   model: string;
-  reasoningEffort: string | undefined;
 } {
   const seg = assertModelExplicit((config as { model?: unknown })?.model);
   return {
     providers: buildProviderSegment(seg),
     ...buildDefaultModelSegment(seg),
-    reasoningEffort: undefined,
   };
 }
 
