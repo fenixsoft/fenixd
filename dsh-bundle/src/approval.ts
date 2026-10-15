@@ -81,14 +81,18 @@ export const name = "fenix-approval";
  * 策略由本 bundle 的 cordis.patch.yml（approvalPatchEntries 的落盘形态）设置
  * 为 never；若上层 --patch 覆盖成 ask，这里在启动期即抛错（而非让会话中途
  * 阻塞/被拒）。policy 不可读（服务形态变化）时不在启动期硬拦，降级为
- * warning 诊断——patch 已写死 never，7.1 端到端冒烟对「写入不阻塞」的演示
- * 是行为面兜底。
+ * 宿主 logger 通道的 warning 诊断（非 stderr，见 warnUnreadable）——patch
+ * 已写死 never，7.1 端到端冒烟对「写入不阻塞」的演示是行为面兜底。
  *
  * 沙箱面（sandbox-policy.mode）不在此读取：apply 期 ctx.get("sandbox-policy")
- * 实测不可读（见文件头注），启动期 warning 会污染 headless 流首行——沙箱
- * 期望值由 patch 写死，校验走 assertSandboxModeSafe。
+ * 实测不可读（见文件头注），无从校验——沙箱期望值由 patch 写死，校验走
+ * assertSandboxModeSafe。
  */
-export function apply(ctx: { get(name: string): unknown }): void {
+export function apply(ctx: {
+  get(name: string): unknown;
+  /** 宿主诊断通道（cordis LoggerService）：降级 warning 走这里，不写 stderr。 */
+  logger?: { warn(...args: unknown[]): unknown };
+}): void {
   const approval = ctx.get("approval") as { policy?: string; config?: { policy?: string } } | undefined;
   const policy =
     typeof approval?.policy === "string"
@@ -99,13 +103,19 @@ export function apply(ctx: { get(name: string): unknown }): void {
   if (policy !== undefined) {
     assertUnattendedSafe(policy);
   } else {
-    warnUnreadable();
+    warnUnreadable(ctx.logger);
   }
 }
 
-/** 审批策略不可读时的降级诊断：不在启动期硬拦，但留下可事后归因的 warning。 */
-function warnUnreadable(): void {
-  console.warn(
+/**
+ * 审批策略不可读时的降级诊断：不在启动期硬拦，但留下可事后归因的 warning。
+ * 经宿主 logger 通道输出——cordis LoggerService 的默认 exporter 只落内存
+ * 环形 buffer（启动失败时随 StartupError 诊断留存），不写 stderr；头注的
+ * 「启动期任何 stderr 输出都会污染 headless run 流首行」约束因此不被本路径
+ * 破坏。通道不可得（裸 ctx 的单测/异常装配）时宁可舍弃诊断也不写 stderr。
+ */
+function warnUnreadable(logger?: { warn(...args: unknown[]): unknown }): void {
+  logger?.warn(
     `[fenix-dsh-bundle] 无法读取 approval 服务的 policy（服务形态变化？），` +
       `已跳过启动期无人值守校验；期望值由 cordis.patch.yml 写死，请核对实际策略是否被 --patch 覆盖。`,
   );
