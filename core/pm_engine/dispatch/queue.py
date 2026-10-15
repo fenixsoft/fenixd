@@ -3855,9 +3855,24 @@ class QQQueueMixin:
             # fast_track.py _reconcile_and_merge ready 分支的 6e6259821f64
             # 收口——只翻状态不入队＝自动重试承诺落空，spec 悬挂 ready 只能
             # 等周期性 full_scan 降级兜底（event_bus → _recover_one），恢复
-            # 延迟取决于 scan 周期）。full 车道 merge 失败重派对象是
-            # implementer（与本文件契约违反分支同款）。
-            self._enqueue_front(spec_name, "implementer")
+            # 延迟取决于 scan 周期）。重派通道按 spec 实现模式选择（与
+            # repair_lane._fallback_after_repair 同口径）：本方法被 worker
+            # 失败链与 merge-only 重试链共享，后者的条目来源还包括
+            # fast-track/repair 车道的 _defer_merge_back——fast-track mode
+            # spec 回派 "fast-track"（与 fast_track.py 各失败出口统一回派
+            # 同口径），其余（full 车道）维持 "implementer"（与本文件契约
+            # 违反分支同款）。读侧异常按保守默认回 "implementer"。
+            try:
+                from core.spec_mode import read_spec_mode
+
+                channel = (
+                    "fast-track"
+                    if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
+                    else "implementer"
+                )
+            except Exception:
+                channel = "implementer"
+            self._enqueue_front(spec_name, channel)
             # 本分支重试不受 agents.max_retries 约束，仅由 _merge_streak
             # 同指纹熔断兜底——日志只报 streak/阈值，避免误导。
             self._pm.logger.warning(
