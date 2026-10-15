@@ -76,8 +76,12 @@ class AssertionRunner:
         供 count/expected/timeout/interval 等数字参数进轮询前预检使用，
         非数值形态（如 "two"/null/"3s"）在此被拦下按确定性失败上报，
         而不是在方法体内抛 ValueError/TypeError 被 run() 包成缺 selector
-        的「断言执行异常」。
+        的「断言执行异常」。bool 须在 int() 前显式排除（bool 是 int 子类，
+        先例 verify_contract._positive_int_or_default）：否则 count: true
+        之类 YAML 笔误会被静默折算成 1 按正常断言裁决。
         """
+        if isinstance(value, bool):
+            return None
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -194,7 +198,10 @@ class AssertionRunner:
                     results.append(
                         {
                             "type": a_type,
-                            "layer": 0,
+                            # 与正常路径出口的词表覆盖单点同源（code-review
+                            # item d2b223e5f4dc）：已知断言类型异常时层归属
+                            # 不得回落 0 与正常失败路径分叉
+                            "layer": WEB_ASSERTION_LAYERS.get(a_type, 0),
                             "selector": assertion.get("selector", ""),
                             "label": assertion.get("label", ""),
                             "pass": False,
@@ -1421,7 +1428,15 @@ class AssertionRunner:
             page,
             selector,
             """el => {
+            // display:none 等隐藏元素 getBoundingClientRect 与
+            // scrollWidth/clientWidth 全为零，溢出不等式恒为 false，恒判
+            // 「无溢出」是无信息量的假通过；zero_size 标记交 Python 侧
+            // 显式失败（与 no_overlap / in_viewport 零尺寸口径一致）
+            if (el.clientWidth === 0 && el.clientHeight === 0) {
+                return { zero_size: true };
+            }
             return {
+                zero_size: false,
                 has_horizontal_overflow: el.scrollWidth > el.clientWidth + 1,
                 has_vertical_overflow: el.scrollHeight > el.clientHeight + 1,
                 scroll_width: el.scrollWidth,
@@ -1438,6 +1453,16 @@ class AssertionRunner:
                 "selector": selector,
                 "pass": False,
                 "error": "元素不存在",
+            }
+        if isinstance(overflow_info, dict) and overflow_info.get("zero_size", False):
+            # 零尺寸/隐藏目标的溢出比较恒判「无溢出」是无信息量的假通过，
+            # 显式失败供 judge 区分「确无溢出」与「目标根本不可见」。
+            return {
+                "type": "no_overflow",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
+                "error": "元素存在但零尺寸（如 display:none / 隐藏），溢出检查无意义，不视为通过",
             }
         passed = (
             not overflow_info["has_horizontal_overflow"]

@@ -404,10 +404,16 @@ class ApiAssertionRunner:
         # fail-closed：min 非数字时不得让 int() 抛 ValueError 被 run() 包成
         # 笼统「断言执行异常」，judge 须能区分场景配置错误与产品缺陷
         # （口径对齐 _assert_latency_under 的 expected 预检）
-        try:
-            minimum = int(raw_min)
-        except (TypeError, ValueError):
+        # bool 是 int 子类须在 int() 前显式排除（先例
+        # verify_contract._positive_int_or_default）：min: true 否则被静默
+        # 折算成 1 按正常下限裁决，配置改写无定向归因
+        if isinstance(raw_min, bool):
             minimum = None
+        else:
+            try:
+                minimum = int(raw_min)
+            except (TypeError, ValueError):
+                minimum = None
         # fail-closed：负数下限对任意事件数（含 0）恒真且不附 error，无意义
         # 配置被静默放行为假绿，与本文件对 expected 缺失/未知 mode 的
         # fail-closed 拦截纪律同口径；0 是合法期望（断言零事件），不在拦截之列
@@ -884,10 +890,16 @@ class ApiAssertionRunner:
         # fail-closed：expected 缺失或非数字时不得让 int() 抛 TypeError 被
         # run() 包成笼统「断言执行异常」，judge 须能区分场景配置错误与产品
         # 缺陷（口径对齐 status_code 的 expected 校验）
-        try:
-            limit = int(expected)
-        except (TypeError, ValueError):
+        # bool 是 int 子类须在 int() 前显式排除（同 actual_numeric 对 bool
+        # 的排除口径、先例 verify_contract._positive_int_or_default）：
+        # expected: true 否则被静默折算成 1 按「<1ms」裁决
+        if isinstance(expected, bool):
             limit = None
+        else:
+            try:
+                limit = int(expected)
+            except (TypeError, ValueError):
+                limit = None
         # fail-closed：actual（resp.get("latency_ms")）为字符串等非数字时
         # actual < limit 抛 TypeError 被 run() 包成笼统「断言执行异常」，
         # 恰好是本文件处处避免的误归因形态（mock/手写 capture 可能出现，

@@ -308,6 +308,11 @@ class CliAssertionRunner:
     async def _assert_exit_code(self, step, a: dict) -> dict:
         """断言命令退出码等于期望值（缺省期望 0）。"""
         expected = a.get("expected", 0)
+        # bool 是 int 子类，须在 int() 前显式排除（同 _normalize_negate 的
+        # 先-bool-后-int 纪律、verify_contract._positive_int_or_default 先例）：
+        # expected: true 否则被静默折算成 1 改写断言目标而非显式报错
+        if isinstance(expected, bool):
+            raise ValueError(f"expected 非法，须为整数: {expected!r}")
         try:
             expected = int(expected)
         except (TypeError, ValueError):
@@ -407,6 +412,12 @@ class CliAssertionRunner:
         count = len(paths)
         minimum = a.get("min")
         maximum = a.get("max")
+        # bool 是 int 子类，须在 int() 前显式排除（同 _assert_exit_code 的
+        # bool 前判口径）：min/max: true 否则被静默折算成 1 改写断言边界
+        if isinstance(minimum, bool) or isinstance(maximum, bool):
+            raise ValueError(
+                f"min/max 非法，须为整数: min={minimum!r}, max={maximum!r}"
+            )
         try:
             min_n = None if minimum is None else int(minimum)
             max_n = None if maximum is None else int(maximum)
