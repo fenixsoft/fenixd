@@ -724,7 +724,7 @@ def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
 
 
 def _ignorable_before_marker(line: str) -> bool:
-    """标记行「紧跟标题行」判定中可忽略的行：空白行与未知标签行。
+    """标记行「紧跟标题行」判定中可忽略的行：空白行、未知标签行与裸缩进行。
 
     与 parse_todo_entries 的 current_fields 收集口径对齐（code-review item
     066161cd80de）：parse 侧未知标签行（_FIELD_RE 命中但标签不在四字段
@@ -733,18 +733,29 @@ def _ignorable_before_marker(line: str) -> bool:
     两侧结论相反，条目继续留在分析输入中被重复分析，apply_marker_to_lines
     原地插新标记后旧标记沦为孤立告警源。四字段行之外，这类行在两侧都不算
     「已收集字段」。
+
+    裸缩进续行同理（code-review item cdc2b0693d6b）：parse 侧四字段未收集
+    前的裸缩进行（无「- 标签：」形态，如手工编辑残留的续行）同样不写入
+    current_fields（:620 要求 current_fields 非空才并入续行），其后的标记
+    行仍判已处理；strip 侧保持同判。已收集四字段之后的续行不受此处豁免
+    影响——_flush 按序扫描，四字段行（非可忽略行）先阻断，与 parse 侧
+    「有字段后标记即孤立」的口径一致。
     """
     if not line.strip():
         return True
     fm = _FIELD_RE.match(line)
-    return bool(fm and fm.group(1).strip() not in _FIELD_LABEL_SET)
+    if fm:
+        return fm.group(1).strip() not in _FIELD_LABEL_SET
+    # 无「- 标签：」形态的缩进行（与 parse 侧续行判定的缩进谓词一致）
+    return line.startswith((" ", "\t"))
 
 
 def strip_processed_entries(text: str) -> str:
     """剥离带处理标记的条目整块（标题 + 其缩进行），供分析 run 的输入使用。
 
-    处理标记行仅在其紧跟条目标题行（其间空白行与未知标签行忽略，四字段行
-    挡下判定，与 parse_todo_entries 的字段收集口径一致）时才生效：此时整块
+    处理标记行仅在其紧跟条目标题行（其间空白行、未知标签行与裸缩进续行忽
+    略，四字段行挡下判定，与 parse_todo_entries 的字段收集口径一致）时才
+    生效：此时整块
     视为已处理并剥离。孤立标记行（其标题行已被手工删除/改写后残留）不连坐
     所在块，仅剔除标记行本身并记 WARNING。
     """
@@ -753,8 +764,9 @@ def strip_processed_entries(text: str) -> str:
 
     def _flush() -> None:
         # 块首标题行（block[0]）之后按序扫描：遇到处理标记行即整块已处理；
-        # 遇到四字段行（非可忽略行）则标记不生效；空白行/未知标签行不阻断
-        # 判定（code-review item 066161cd80de，见 _ignorable_before_marker）
+        # 遇到四字段行（非可忽略行）则标记不生效；空白行/未知标签行/裸缩进
+        # 续行不阻断判定（code-review item 066161cd80de、cdc2b0693d6b，见
+        # _ignorable_before_marker）
         marked = False
         for l in block[1:]:
             if _TODO_MARKER_RE.match(l):
@@ -775,9 +787,9 @@ def strip_processed_entries(text: str) -> str:
                 out.append(line)
             continue
         if _TODO_MARKER_RE.match(line):
-            # 标记行仅紧跟标题行（其间只夹空白行/未知标签行/既有标记行，与
-            # _flush 及 parse_todo_entries 口径一致）才生效；孤立标记行不
-            # 连坐所在块，仅剔除标记行本身
+            # 标记行仅紧跟标题行（其间只夹空白行/未知标签行/裸缩进续行/既
+            # 有标记行，与 _flush 及 parse_todo_entries 口径一致）才生效；
+            # 孤立标记行不连坐所在块，仅剔除标记行本身
             if block and all(
                 _TODO_MARKER_RE.match(l) or _ignorable_before_marker(l) for l in block[1:]
             ):
