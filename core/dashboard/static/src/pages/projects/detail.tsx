@@ -31,6 +31,8 @@ import { SEV_COLOR, SEV_LABEL } from '@/components/alert-shared';
 // 时长格式化与列表页「耗时」列共用单源（code-review item f8307715a795：
 // 两页逐行重复实现抽公共模块，本页不再在组件体内每渲染重建）
 import { fmtDuration } from '@/utils/duration';
+// 刷新/心跳节奏常量与列表页共用单源（code-review item 73395d34f3de）
+import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fmtEvidence } from '@/utils/evidence';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
@@ -84,10 +86,6 @@ const TONE_TAG_COLOR: Record<string, string> = {
   good: 'success',
   aqua: 'cyan',
 };
-
-// SSE 断线兜底轮询周期（同 list.tsx HEARTBEAT_MS）：详情页无其他轮询，
-// SSE 彻底断开后靠它维持刷新（见主 effect 内心跳注释）
-const HEARTBEAT_MS = 30000;
 
 // 断言类型中文标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）
 const ASSERTION_LABELS: Record<string, string> = {
@@ -715,7 +713,6 @@ export default function SpecDetailPage() {
     // refresh 为全局心跳兜底信号、事件流持续到来，最终一致性可恢复，仅存在
     // 一段滞后窗口。属信息级且自愈，不设尾沿定时器（code-review item
     // 6058215a190e）
-    const REFRESH_THROTTLE_MS = 500;
     let lastRefresh = 0;
     const throttledLoad = () => {
       const now = Date.now();
