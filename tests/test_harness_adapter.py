@@ -1,8 +1,8 @@
 """harness 适配层协议完整性测试（add-harness-adapter-layer task 1.2）。
 
 覆盖：
-- claude_adapter 实例满足协议成员完整性（HARNESS_ADAPTER_MEMBERS 单源七成员
-  全部存在，方法可调用、name 为字符串标识）
+- claude_adapter 实例满足协议成员完整性（HARNESS_ADAPTER_MEMBERS 单源成员
+  清单全部存在，方法可调用、name 为字符串标识）
 - HarnessCapabilities 可 json.dumps 往返（SPEC-2 Bundle 侧对账前提）
 - SpawnRequest/SpawnSpec/HarnessCapabilities 为独立数据类
 - resolve_adapter 工厂：claude→ClaudeAdapter、dsh→DshAdapter
@@ -60,9 +60,9 @@ class TestProtocolCompleteness:
     """spec agent-harness-adapter「HarnessAdapter 协议」Scenario：协议完整性。"""
 
     def test_members_single_source_matches_spec(self):
-        # 协议成员清单与 spec 列举的七成员一致（name/build_spawn_spec/
-        # normalize_event/classify_stderr/extract_result/process_patterns/
-        # capabilities）
+        # 协议成员清单：spec 列举的七成员 + 扩展成员 worktree_pgrep_patterns
+        # （admin_monitor 判活消费的扩展成员一并收进单源，防「七成员齐备
+        # 仍过协议完整性测试、判活路径运行期 NotImplementedError」的盲区）
         assert HARNESS_ADAPTER_MEMBERS == (
             "name",
             "build_spawn_spec",
@@ -70,6 +70,7 @@ class TestProtocolCompleteness:
             "classify_stderr",
             "extract_result",
             "process_patterns",
+            "worktree_pgrep_patterns",
             "capabilities",
         )
 

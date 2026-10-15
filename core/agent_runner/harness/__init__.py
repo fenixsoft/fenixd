@@ -3,7 +3,8 @@
 包内结构（ADR-271）：
 
 - :mod:`.protocol` — 进程边界协议与数据类（SpawnRequest/SpawnSpec/
-  HarnessCapabilities、HarnessAdapter 七成员协议、分类词表）
+  HarnessCapabilities、HarnessAdapter 协议（spec 七成员 + 扩展成员
+  worktree_pgrep_patterns，同收 HARNESS_ADAPTER_MEMBERS 单源）、分类词表）
 - :mod:`.claude_adapter` — claude CLI adapter（现状全量平移，字节级等价）
 - :mod:`.one_shot` — 一次性 spawn 收编入口 run_one_shot
 

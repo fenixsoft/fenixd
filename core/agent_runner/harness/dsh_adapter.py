@@ -55,6 +55,7 @@ from .protocol import (
     HarnessCapabilities,
     SpawnRequest,
     SpawnSpec,
+    default_worktree_pgrep_patterns,
 )
 
 # ── 部署常量（design D5：白名单不做配置键，随 Bundle README 版本表走代码）──
@@ -820,6 +821,13 @@ class DshAdapter:
         ``usage_source``（available/unavailable）；本成员原样透传 result 事件
         的 usage 与 usage_source，unavailable 时不伪造数值（usage 数值键保持
         求和产物或 0，cost_usd 恒 None），metrics 标记由 runner 消费。
+
+        unobserved 分支取值与 claude 通道有意分歧（键形状全等、取值不同）：
+        dsh 事件流契约「``final`` 结尾 / ``error`` 无 final」——无 result
+        事件即异常终态，故 is_error=True、subtype=""；claude 通道无 result
+        通常是强杀/超时的观测兜底而非失败确证（现状平移 is_error=False）。
+        该方向由 test_unobserved_returns_zero_not_fabricated 锚定，防后续按
+        「键形状全等」顺手统一改错归因。
         """
         last: Optional[Dict[str, Any]] = None
         for e in events:
@@ -880,13 +888,10 @@ class DshAdapter:
         return ["dsh", "dsh.exe"]
 
     def worktree_pgrep_patterns(self, spec_name: str) -> List[str]:
-        """worktree 存活 pgrep -f patterns（与 claude 通道同构：三车道前缀
-        + escaped spec 名；run_id 段出现在 argv 中由 ``-`` 连接，子串匹配
-        语义与 admin_monitor 既有判定一致）。"""
-        return [
-            f"{prefix}-{re.escape(spec_name)}-"
-            for prefix in ("impl", "verify", "repair")
-        ]
+        """worktree 存活 pgrep -f patterns（与 claude 通道同构：构造单一
+        来源为 :func:`default_worktree_pgrep_patterns`；run_id 段出现在
+        argv 中由 ``-`` 连接，子串匹配语义与 admin_monitor 既有判定一致）。"""
+        return default_worktree_pgrep_patterns(spec_name)
 
     def capabilities(self) -> HarnessCapabilities:
         """能力对账卡（probe-findings 判定）：
