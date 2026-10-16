@@ -303,7 +303,10 @@ def render_report(project_root) -> str:
     summaries = {}  # 取一次快照：明细行渲染与 _collect_signals 共用（见其 summaries 注释）
     summary_errors = []  # 概要读取失败的 SPEC（在信号汇总补降级提示，见 except 分支注释）
     for name, entry in sorted(active.items(), key=_active_sort_key):
-        st = entry.get("status", "?")
+        # 与统计行（.get("status", "?") or "?"）同口径：parse_state 把 `- status:`
+        # 空值折叠为 None 且条目仍进活跃集，须折叠为 "?"，避免 join(None) 抛
+        # TypeError 令整份报告退化为报错退出
+        st = entry.get("status") or "?"
         icon = STATUS_ICONS.get(st, "❓")
         # 与 _active_sort_key 同口径：priority 为 null/非法时折叠为 "?"，避免渲染出 PNone
         try:
