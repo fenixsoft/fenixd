@@ -288,12 +288,18 @@ class AssertionRunner:
                 actual = await locator.count()
                 if actual == expected:
                     break
+        # 声明字段名透出（code-review item e3c2ca53264a）：与上方确定性失败
+        # 路径的 **{count_field: expected_raw} 对齐——正常路径结果恒写
+        # expected 键，用 count 声明的场景经 judge/报告证据回看时无法还原
+        # 原字段口径；按加法键 expected_field 附带声明字段名，不改动既有
+        # expected 键，存量读取该键的断言不受影响。
         return {
             "type": "element_count",
             "layer": 1,
             "selector": selector,
             "label": a.get("label", ""),
             "expected": expected,
+            "expected_field": count_field,
             "actual": actual,
             "pass": actual == expected,
         }
@@ -1241,6 +1247,27 @@ class AssertionRunner:
         # 能力的 runner 变体下翻失败会把环境缺位误判为产品缺陷（假失败）。
         injected = "_console_errors" in a
 
+        # 注入数据形态防御（code-review item 90b055a2072a）：键缺失已有上方
+        # injected 标志防御，形态防御此前缺位——注入值非 list（新 runner 变体
+        # 直用 AssertionRunner、web_runner 注入段回归）时下方 truncated 的
+        # startswith 遍历与网络错误分拣遍历抛 TypeError/AttributeError，被
+        # run() 统一包装成「断言执行异常」，error 归因是裸异常文本而非「注入
+        # 数据形态非法」，judge 难以归因；进分拣前按确定性失败上报并注明。
+        if not isinstance(errors, list):
+            return {
+                "type": "no_console_error",
+                "layer": 3,
+                "pass": False,
+                "errors": [],
+                "truncated": False,
+                "filtered_network": [],
+                "injected": injected,
+                "error": (
+                    f"注入数据形态非法: _console_errors 须为 list，"
+                    f"实际 {type(errors).__name__}"
+                ),
+            }
+
         # 收集侧触顶截断标记（browser._capped_append）不计入 pass：
         # external_net_errors_ok 豁免路径上，纯网络层错误风暴被截断后
         # 标记若留在 errors 里会被误计为控制台错误（误报）
@@ -1293,6 +1320,23 @@ class AssertionRunner:
         # 口径）：注入键缺失时按空集静默判 pass 是 fail-open 方向，以
         # injected 标志 + note 透出供 judge 区分「确无错误」与「未检查」。
         injected = "_network_errors" in a
+        # 注入数据形态防御（code-review item 90b055a2072a，同 no_console_error
+        # 口径）：注入值非 list 时下方 truncated 的 startswith 遍历抛
+        # TypeError，被 run() 包装成裸异常文本的「断言执行异常」，进分拣前
+        # 按确定性失败上报并注明注入形态非法。
+        if not isinstance(errors, list):
+            return {
+                "type": "no_network_error",
+                "layer": 3,
+                "pass": False,
+                "errors": [],
+                "truncated": False,
+                "injected": injected,
+                "error": (
+                    f"注入数据形态非法: _network_errors 须为 list，"
+                    f"实际 {type(errors).__name__}"
+                ),
+            }
         # 收集侧触顶截断标记（browser._capped_append）不计入 errors：标记是
         # 「后续还有错误被截断」的信号而非真实 4xx/5xx 记录，与 console 侧
         # （_assert_no_console_error）同口径剔除并以 truncated 标志透出
