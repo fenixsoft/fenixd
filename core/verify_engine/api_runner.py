@@ -191,6 +191,20 @@ class ApiRunner(VerifyRunner):
                 "url": url,
                 "error": f"headers 须为对象（键值映射）: {type(raw_headers).__name__}",
             }
+        for k, v in (raw_headers or {}).items():
+            if isinstance(v, (dict, list)):
+                # 容器形态头值（YAML/JSON 均可自然写出）经下方 str() 归一会
+                # 以 Python repr 形态（如 "['a', 'b']"）静默作为头值发送，
+                # 作者意图与实际请求悄然背离，失败被误归因为产品行为——与
+                # 非 dict headers/body 分支同款，归一为本步骤结构化失败
+                # （数字/布尔标量的 str() 归一保留）。
+                return {
+                    "success": False,
+                    "action": "http_request",
+                    "method": method,
+                    "url": url,
+                    "error": f"头值须为标量（容器形态请写成字符串）: headers[{k!r}] 为 {type(v).__name__}",
+                }
         headers = {
             # 键同值侧 str() 归一（YAML/JSON 场景可写出数字键）：后续
             # body_type=json 且 body 为 null 的分支会对键调 .lower()，非字
