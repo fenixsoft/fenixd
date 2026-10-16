@@ -705,7 +705,10 @@ async function runUITests(context, page, consoleErrors = []) {
 function buildSummary(anomalies, uiTests = []) {
   // codeDefects 与 success 判定同口径：只计 high（即 hasCriticalAnomalies 的判定范围）
   const codeAnomalies = anomalies.filter(a => a.severity === 'high');
-  // warning 级问题（如 missing-header）单列，不混入 codeDefects
+  // warning 级问题单列，不混入 codeDefects。当前唯一产生源 missing-header 依赖
+  // checkRequiredHeaders 的规则表（现为空，见其函数注释），故 warnings 现阶段恒 0；
+  // medium（HTTP 404）/low 异常不入任何分档，仅计入 totalAnomalies，分档之和可与
+  // totalAnomalies 不一致（预期口径，needsAttention 与 success 判定不依赖分档）
   const warningAnomalies = anomalies.filter(a => a.severity === 'warning');
   const serviceAnomalies = anomalies.filter(a => a.severity === 'external-service');
   const uiFailures = uiTests.filter(t => t.status === 'fail' || t.status === 'error');
