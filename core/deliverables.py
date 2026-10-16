@@ -179,9 +179,13 @@ _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
 # match_basename_in_tree 走 os.walk 文件系统遍历而非 git 跟踪面，不排除则
 # .history 内同名 .py 可成为唯一 basename 命中，晋升 lint 规则 4 以「疑似
 # 笔误」误拦合法 kind: new 声明（两侧观测面口径一致，code-review item
-# d04bbec4e9ac）。
+# d04bbec4e9ac）。spec/ 是 spec 文档树（历史 spec 文档与归档夹具），声明
+# 路径前缀（_DELIVERABLE_PREFIXES）不含 spec/、属非交付落点——不排除则
+# 未来入库的 spec 夹具同名文件可成为唯一 basename 命中、同型误拦合法
+# kind: new 声明（与 .history 同型收口，code-review item 620164c1e5a6）。
 _BASENAME_EXCLUDE_DIRS = (
     ".git", "node_modules", "dist", ".fenix", "__pycache__", ".history",
+    "spec",
 )
 
 # 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
@@ -532,6 +536,14 @@ def _scan_declared_section(lines, start):
     以定位未开栏的节边界——后续围栏仍做开/闭状态跟踪（围栏内行一律不参与
     ``_H2_RE`` 节边界判定，仅首个围栏内容并入声明块）。
 
+    终态检查（code-review item 3d6976a4604b）：段内首个围栏开栏后直到 EOF 仍未
+    闭栏时，声明块按空列表返回——否则段尾边界被抑制到 EOF，后续小节内容被静默
+    并入声明块交 yaml.safe_load（``#`` 行被当注释、``- path:``/``kind:`` 形态行
+    可被解析为合法声明条目进入存在性硬校验，lint 规则 0 的「yaml 语法错/非列表」
+    拦不住该形态）。空 block 使解析侧回退正则语境猜测、lint 侧落入规则 0 形态
+    违规（与「段内无 fenced 块」同族），不再静默吞并。段边界 ``end`` 维持
+    CommonMark「未闭合围栏延伸到文档尾」口径不变（改写侧不受影响）。
+
     Args:
         lines: tasks.md 行列表（调用方先以 ``_DECLARED_HEADING_RE`` 定位声明
             标题行，``start`` 传标题行的下一行索引）。
@@ -572,6 +584,14 @@ def _scan_declared_section(lines, start):
         elif _H2_RE.match(line):
             end = i
             break
+    if fence_char and not first_fence_done:
+        # 终态检查（code-review item 3d6976a4604b）：首个（声明）围栏开栏后
+        # 直到 EOF 仍未闭栏——上循环已把段尾「边界」之后的全部行（后续小节
+        # 内容）静默吞进 block，照常返回会把这些行交 yaml.safe_load。按声明段
+        # 形态违规返回空 block（解析侧回退正则语境猜测、lint 侧落入规则 0），
+        # 不静默吞并后续内容；仅首个围栏未闭时才清空——首个围栏已闭
+        # （first_fence_done=True）、后续示例围栏未闭的正常声明不受影响。
+        block = []
     return end, block
 
 
@@ -698,6 +718,27 @@ def _typed_from_entries(entries) -> dict:
     return typed
 
 
+def _is_unsafe_spec_name(spec_name) -> bool:
+    """spec_name 路径成分校验（单点谓词，code-review item 8b94021f93b1）。
+
+    参照 core/spec_mode.read_spec_mode 的既有防线形态在本模块内实现（不 import
+    该模块——避免跨模块状态耦合）：拒收空值、``.``、``..``、路径分隔符与 NUL。
+    spec_name 在本模块多处直接拼进文件路径（``spec/changes/<name>/tasks.md``）、
+    git 对象路径（``<branch>:spec/changes/<name>/tasks.md``）与
+    ``.fenix/verify-progress/<name>/`` 快照路径，含路径成分时可越出 spec/changes
+    指向其他目录（含 .fenix/ 状态面）。非法名由各公共入口按各自 fail-safe 语义
+    处置：「无声明段」空结果 / 不落快照 / 非孤儿 fail-open。
+    """
+    s = spec_name if isinstance(spec_name, str) else str(spec_name or "")
+    return bool(
+        not s
+        or s == "."
+        or "/" in s
+        or ".." in s
+        or "\0" in s
+    )
+
+
 def _git_show_tasks_text(branch: str, spec_name: str, project_root) -> "str | None":
     """只读 ``git show <branch>:spec/changes/<spec>/tasks.md``（D1 分支来源）。
 
@@ -777,6 +818,16 @@ def resolve_effective_declaration(
                                        # worktree 挂载提交路径，见 D2）
             }
     """
+    if _is_unsafe_spec_name(spec_name):
+        # 路径成分校验（code-review item 8b94021f93b1）：非法名直接按
+        # 「无声明段」空结果返回，消除三层来源的逐调用点拼接越界面。
+        return {
+            "deliverables": [],
+            "references": [],
+            "entries": [],
+            "source": None,
+            "spec_dir": None,
+        }
     # 1) worktree 内文件
     if worktree_path:
         try:
@@ -1009,6 +1060,15 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
         快照 dict（含 entries）；写入失败返回 None。
     """
     root = Path(project_root)
+    if _is_unsafe_spec_name(spec_name):
+        # 路径成分校验（code-review item 8b94021f93b1）：非法名不落快照
+        # （拼接可越出 spec/changes 与 .fenix/verify-progress/<spec>/），
+        # 收缩防护该轮降级保守。
+        _resolution_logger.warning(
+            "deliverables",
+            f"基线快照 spec 名含路径成分，拒绝 '{spec_name}'（不落快照，收缩防护该轮降级）",
+        )
+        return None
     spec_dir = root / "spec" / "changes" / spec_name
     try:
         entries = extract_declared_entries(spec_dir) or []
@@ -1041,6 +1101,14 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
 
 def load_declaration_baseline(spec_name, project_root) -> "dict | None":
     """读取基线快照（D3 读取侧）；缺失/损坏/读取失败 → None（守卫降级保守）。"""
+    if _is_unsafe_spec_name(spec_name):
+        # 路径成分校验（code-review item 8b94021f93b1）：非法名不按拼接路径
+        # 读快照（可越出 .fenix/verify-progress/<spec>/），守卫降级保守。
+        _resolution_logger.warning(
+            "deliverables",
+            f"基线快照读取 spec 名含路径成分，拒绝 '{spec_name}'（守卫降级保守）",
+        )
+        return None
     target = (
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / "declaration-baseline.json"
     )
@@ -1789,34 +1857,12 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
     return {"element": element, "before": before, "after": after}
 
 
-def extract_paths(spec_dir) -> List[str]:
-    """从 SPEC 目录提取声明交付的文件路径清单（去重、保序）。
-
-    兼容包装（add-deliverable-extractor-semantics D2）：等价于
-    ``extract_paths_typed`` 的 deliverables 与 references 拼接去重——
-    平面列表不再区分语境，语境语义由 typed 版本与守卫调用点承接。
-    既有调用方与测试行为不变。
-
-    ``spec_dir`` 可为 ``str`` / ``Path``（指向 spec/changes/<spec>/）。
-    仅读取 tasks.md / proposal.md / specs/*.md；无任何可提取路径时返回空列表。
-
-    Returns:
-        相对项目根的去重路径列表；为空列表表示守卫应跳过。
-    """
-    typed = extract_paths_typed(spec_dir)
-    ordered: List[str] = []
-    for path in typed["deliverables"] + typed["references"]:
-        if path not in ordered:
-            ordered.append(path)
-    return ordered
-
-
 def match_basename_in_tree(project_root, path: str) -> List[str]:
     """主树 basename 精确匹配（add-deliverable-declaration-triage D1）。
 
     以 ``Path(path).name`` 对主树文件做 basename 精确匹配（rglob），排除
     ``_BASENAME_EXCLUDE_DIRS``（``.git``/``node_modules``/``dist``/
-    ``.fenix``/``__pycache__``/``.history``）目录内的命中；返回相对项目根的命中路径列表，
+    ``.fenix``/``__pycache__``/``.history``/``spec``）目录内的命中；返回相对项目根的命中路径列表，
     确定性排序（字符串升序）。不引入编辑距离/模糊串匹配（D1：basename 内
     笔误如 ``verifcation.py`` 由 judge 层兜底，lint 层保持零误拦取向）。
 
@@ -2223,6 +2269,13 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
         # delete 不参与预分类；缺 path 无判定对象 → 非孤儿
         return {"orphan": False, "evidence": evidence}
 
+    if _is_unsafe_spec_name(spec_name):
+        # 路径成分校验（code-review item 8b94021f93b1）：非法名使规则 1 负向
+        # pathspec 与规则 3 的 tasks.md 回退目录拼接越出 spec/changes，判定
+        # 基准不可信 → 与 git 故障同向 fail-open 非孤儿。
+        evidence["skipped"] = "invalid-spec-name"
+        return {"orphan": False, "evidence": evidence}
+
     # gitignored / 仓库外路径不参与孤儿判定（design「边界」节：运行时产物路径
     # 仍需语义判断，走人工，不预分类）——规则 1 的引用面被负向 pathspec 排除
     # （.fenix/** 等）或路径本身不可能在仓内（仓库外），git grep 恒零命中对
@@ -2260,8 +2313,14 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
         tasks_path = Path(project_root) / "spec" / "changes" / spec_name
     tasks_file = tasks_path / "tasks.md"
     try:
-        if tasks_file.exists():
-            task_hits = _task_lines_mention(tasks_file.read_text(encoding="utf-8"), path)
+        if not tasks_file.exists():
+            # tasks.md 不存在 → 任务面同样是未知态（source=branch 的声明无落盘
+            # 位置时以主树回退目录作判定基准，该目录可能没有 tasks.md），与
+            # 不可读分支同向 fail-open：未知态按「零出现」推进会误判孤儿，
+            # 不保守（code-review item 9a6142bb9703）。
+            evidence["skipped"] = "tasks-md-missing"
+            return {"orphan": False, "evidence": evidence}
+        task_hits = _task_lines_mention(tasks_file.read_text(encoding="utf-8"), path)
     except (OSError, UnicodeDecodeError):
         # tasks.md 不可读 → 任务面未知，与 git 故障同向 fail-open 判非孤儿：
         # 未知态按「零出现」推进会误把本应回人工的条目判成孤儿，不保守。

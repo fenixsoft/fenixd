@@ -27,6 +27,7 @@ code_review_state.json 写入失败）走裸 ``logging.getLogger("fenixd.code_re
 """
 
 import fcntl
+import glob
 import hashlib
 import json
 import logging
@@ -99,14 +100,16 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
     # run_id 去掉已知前缀后的同素材错名文件存在时 WARNING 点名——只告警
     # 不消费（读侧口径 fail-显式不 fail-静默，也不放宽 glob 兜错名）。
     # glob 列举全部批次候选（-b2/-b3 等错名分片同样点名），排除与正名
-    # ``out-<run_id>-b<N>.jsonl`` 同形的路径（rest 退化拼出正名不误报）。
+    # ``out-<run_id>-b<N>.jsonl`` 同形的路径（rest 退化拼出正名不误报）；
+    # rest 拼模式前经 glob.escape 转义（与 legit_re 的 re.escape 对称），
+    # run_id 含 [ ] * ? 等元字符时不被按通配/字符集语义误配。
     rest = run_id[len("code-review-"):] if run_id.startswith("code-review-") else ""
     if rest:
         try:
             legit_re = re.compile(re.escape(f"out-{run_id}-b") + r"[0-9]+\.jsonl")
             strays = sorted(
                 p
-                for p in d.glob(f"out-{rest}-b*.jsonl")
+                for p in d.glob(f"out-{glob.escape(rest)}-b*.jsonl")
                 if p.is_file() and not legit_re.fullmatch(p.name)
             )
             for stray in strays:
@@ -1436,6 +1439,11 @@ def read_progress(project_root) -> dict:
     mpath = manifest_path(project_root, run_id)
     mdata = _read_json_file(mpath)
     files = mdata.get("files") if isinstance(mdata.get("files"), list) else []
+    # 归一为纯字符串列表再求交（对齐 read_manifest_files 的归一口径）：
+    # set.intersection 逐元素哈希，手工编辑/外部直写的畸形清单混入数组/
+    # 对象等 unhashable 元素会抛 TypeError，穿透本函数「清单缺失/损坏按
+    # 0 兜底」的容错契约（前端进度轮询与 admin_monitor 巡检热路径）
+    files = [f for f in files if isinstance(f, str)]
     total = len(files)
     review_kind = mdata.get("review_kind")
     # 读产物（done/current：聚合分片 + 主产物；主产物缺失时进度不归零——
@@ -1488,7 +1496,13 @@ def read_progress(project_root) -> dict:
     if run_file.is_file():
         # _read_run_lines 全程容错不抛错（OSError/空文件 → []，损坏行降级
         # stderr 条目），「末行解析失败/空文件 → last_ev=None」容错口径不变
-        tail = _read_run_tail(run_file)
+        # max_lines=3（与 runs.py classify 消费方 _run_meta_cached/run_activity
+        # 同口径）：只取末 1 行时，被 64KB 尾窗截断的超长 result 终态行恰产出
+        # 1 条伪 stderr 事件即满足 _read_run_lines「窗口内完整行数 >= max_lines」
+        # 而返回，全量逐行读回退永不触发——已完成 run 被误判为 running（runs.py
+        # _read_run_lines docstring 记载的事故形态），直到 stale 阈值才自愈，
+        # 期间叠加 check_progress_stall 的零进度误告警
+        tail = _read_run_tail(run_file, max_lines=3)
         last_ev = tail[-1] if tail else None
         terminal = _terminal_status_map()
         if isinstance(last_ev, dict) and last_ev.get("type") in terminal:
@@ -1571,9 +1585,11 @@ def _read_run_tail(run_file, max_lines: int = 1) -> list:
 
     延迟导入避免 core.dashboard 导入链（与 _terminal_status_map 同款）；
     只需末行时 max_lines=1 把尾窗解析成本压到最低。两个消费方：running
-    判定取 ``runs/<run_id>.jsonl`` 末行；read_progress 的 current 取 mtime
-    最晚产物（分片/主产物）末行——后者同款收敛对最新产物文件的二次整读
-    （code-review item c5aa4e019015）。
+    判定取 ``runs/<run_id>.jsonl`` 末行（传 max_lines=3，与 runs.py classify
+    消费方同口径——只取末 1 行时被尾窗截断的超长终态行产出唯一伪事件即
+    返回，会绕过全量逐行读回退，详见调用点注释）；read_progress 的 current
+    取 mtime 最晚产物（分片/主产物）末行（max_lines=1）——后者同款收敛对
+    最新产物文件的二次整读（code-review item c5aa4e019015）。
     """
     from core.dashboard.data.runs import read_run_lines
 

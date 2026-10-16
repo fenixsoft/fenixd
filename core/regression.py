@@ -428,7 +428,11 @@ def read_result(project_root) -> Dict[str, Any]:
         return {"status": "never_run"}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        # UnicodeDecodeError（code-review item 2ad57cac768d）属 ValueError 族、
+        # 非 OSError 子类：非 UTF-8 快照（外部写手）原本会穿出本函数、违背
+        # docstring「损坏返回 parse_error」契约。与 is_regression_running/
+        # read_progress 捕 ValueError 的口径对齐，在源头归一损坏降级。
         return {"status": "parse_error", "reason": str(e)}
     # code-review item 222752de454d：合法 JSON 但根非对象（null/[]/字符串，
     # 外部写手可产生此形态）原样外溢非 dict 值，防御责任会外溢到每个消费方
@@ -454,7 +458,10 @@ def _read_json_file(path: Path) -> Dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        # 同 read_result（code-review item 2ad57cac768d）：补捕非 UTF-8 文件的
+        # UnicodeDecodeError，归一为空 dict，不让异常穿破「损坏返回空 dict」
+        # 契约（坏档 state.json 曾令 admin_monitor 回归检查点每周期报错）。
         return {}
     # code-review item 10dcd2a6d170：合法 JSON 但根非对象（[]/字符串/null，
     # 外部写手）没有 .get，消费侧（admin_monitor 同日防重 state.get）会

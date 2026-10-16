@@ -319,6 +319,13 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
     降级合成报告必须随 report.json 持久化（非仅日志），后续读取报告（时间轴/
     报告页/CLI）能还原降级事实与代价。写入失败静默跳过（annotation 是纯观测量，
     不得阻断报告合成主流程）。
+
+    读-改-写在伴生 ``.lock`` 的 fcntl 排他锁内完成（record_verdict_round 同款
+    范式）：_atomic_write 只保证文件不撕裂，不保证读-改-写原子；验证引擎同窗
+    重写 report.json（每轮刷新 timestamp 属常规路径）时，无锁读改写会以读到的
+    旧底稿覆盖引擎新写的报告，丢掉新报告的场景明细/计数。锁文件不可用、或
+    flock 本身抛 OSError（特殊文件系统不支持等）时降级为无锁读改写——
+    annotation 是纯观测量，尽力而为不阻断合成主流程。
     """
     report_path = (
         Path(project_root)
@@ -328,26 +335,50 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
         / "report.json"
     )
     try:
-        data = {}
-        if report_path.is_file():
-            try:
-                loaded = json.loads(report_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                # 文件在场但不可读（权限抖动/读取窗口异常等暂态）：跳过本次
-                # 持久化，绝不用仅含标注的空底稿原子覆盖——那会把可能完整的
-                # 既有报告永久替换成空壳，时间轴/报告页从此拿不到场景明细。
-                # annotation 是纯观测量（见 docstring），丢弃不阻断合成主流程。
-                return
-            if not isinstance(loaded, dict):
-                # 合法 JSON 但非对象（写坏形态）：同属「存在但不可用作报告
-                # 底稿」，同上跳过、保留原文件，不覆盖。
-                return
-            data = loaded
-        data["degrade_annotation"] = annotation
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        # mkstemp 唯一临时文件原子写（_atomic_write）：进程中途崩溃不会留下
-        # 截断的 report.json；固定 .tmp 名并发写会互相截断后 replace
-        _atomic_write(report_path, json.dumps(data, ensure_ascii=False, indent=2))
+        # 伴生锁文件（record_verdict_round 同款）：每次新开 fd 的 flock 在
+        # 同进程跨 fd 亦互斥，单文件锁即覆盖跨进程与跨线程并发
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            lf = open(report_path.parent / f".{report_path.name}.lock", "w")
+        except OSError:
+            lf = None
+        try:
+            if lf is not None:
+                try:
+                    fcntl.flock(lf, fcntl.LOCK_EX)
+                except OSError:
+                    # flock 本身不可用（特殊文件系统不支持等）：降级前先 close
+                    # 原 fd 再置 None（只置 None 不 close 会让 fd 等 GC 才回收，
+                    # record_verdict_round 对 code-review 002ddf629f96 同款处置）
+                    lf.close()
+                    lf = None
+            data = {}
+            if report_path.is_file():
+                try:
+                    loaded = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                    # 文件在场但不可读（权限抖动/读取窗口异常等暂态）：跳过本次
+                    # 持久化，绝不用仅含标注的空底稿原子覆盖——那会把可能完整的
+                    # 既有报告永久替换成空壳，时间轴/报告页从此拿不到场景明细。
+                    # annotation 是纯观测量（见 docstring），丢弃不阻断合成主流程。
+                    return
+                if not isinstance(loaded, dict):
+                    # 合法 JSON 但非对象（写坏形态）：同属「存在但不可用作报告
+                    # 底稿」，同上跳过、保留原文件，不覆盖。
+                    return
+                data = loaded
+            data["degrade_annotation"] = annotation
+            # mkstemp 唯一临时文件原子写（_atomic_write）：进程中途崩溃不会留下
+            # 截断的 report.json；固定 .tmp 名并发写会互相截断后 replace
+            _atomic_write(report_path, json.dumps(data, ensure_ascii=False, indent=2))
+        finally:
+            if lf is not None:
+                # LOCK_UN 失败不掩盖原始异常（close 即隐式释放 flock）
+                try:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                lf.close()
     except (OSError, TypeError, ValueError):
         pass
 
@@ -1018,15 +1049,33 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
 
 
 def _append_alert(
-    project_root, spec_name, signal_type, severity, description, evidence, logger=None
+    project_root,
+    spec_name,
+    signal_type,
+    severity,
+    description,
+    evidence,
+    recommended_action=None,
+    logger=None,
 ) -> None:
-    """落一条 human-escalation-alerts 告警（节流：同 spec 同类信号冷却期内不重复）。"""
+    """落一条 human-escalation-alerts 告警（节流：同 spec 同类信号冷却期内不重复）。
+
+    recommended_action 缺省沿用「Agent 未写报告」的劣化提示——只适配报告缺失
+    路径；报告在场但不可读/上一轮残留重合成失败等调用点须按各自故障形态传入
+    （根因是读取/编码/时效问题，非 Agent 未写报告），避免把人工排障引向
+    「催 Agent 重写报告」的错误方向。
+    """
     try:
         from .admin_store import AdminStore, ESCALATION
 
         store = AdminStore(project_root, logger)
         if store.latest_signal(spec_name, signal_type, _ALERT_COOLDOWN_MINUTES) is not None:
             return
+        if recommended_action is None:
+            recommended_action = (
+                "留意验证裁决 Agent 未遵守 prompt 步骤 6（写 verification-report.md）"
+                "的劣化信号；合成报告内容以结构化 JSON 为准，无叙述性分析"
+            )
         store.append(
             {
                 "kind": ESCALATION,
@@ -1035,10 +1084,7 @@ def _append_alert(
                 "severity": severity,
                 "description": description,
                 "evidence": evidence,
-                "recommended_action": (
-                    "留意验证裁决 Agent 未遵守 prompt 步骤 6（写 verification-report.md）"
-                    "的劣化信号；合成报告内容以结构化 JSON 为准，无叙述性分析"
-                ),
+                "recommended_action": recommended_action,
             }
         )
     except Exception as e:  # 告警失败不阻断主流程（闸门结论已定）
@@ -1267,6 +1313,12 @@ def ensure_verification_report(project_root, spec_name, logger=None, pre_commit=
                     "验证裁决放行被阻断，等待人工裁决"
                 ),
                 error,
+                recommended_action=(
+                    "报告文件在场但不可读/空白（权限、编码损坏或写入截断）且框架"
+                    "重新合成失败：排查报告文件完好性与结构化数据"
+                    "（.fenix-run-result.json）可用性——读取/编码/暂态问题，"
+                    "非 Agent 未写报告"
+                ),
                 logger=logger,
             )
         else:
@@ -1282,6 +1334,12 @@ def ensure_verification_report(project_root, spec_name, logger=None, pre_commit=
                     "验证裁决放行被阻断，等待人工裁决"
                 ),
                 error,
+                recommended_action=(
+                    "报告属上一轮残留、框架用本轮结构化数据重新合成失败：排查"
+                    "报告文件完好性与结构化数据（.fenix-run-result.json）可用性"
+                    "——本轮数据是否就绪/可读（读取/编码/时效问题），"
+                    "非 Agent 未写报告"
+                ),
                 logger=logger,
             )
         return {"ok": False, "error": error}

@@ -1091,9 +1091,11 @@ def project_state_logger(project_root):
     daemon 同源的 ``core.logger.Logger``（JSON 行落
     ``.fenix/logs/fenixd.log``，即 dashboard 的日志观测通道）。
 
-    按项目根缓存实例：``core.logger.Logger.__init__`` 会重绑全局 "fenixd" 根
-    日志器的 handler，重复构造会关掉前一实例的 handler；缓存后每个项目只构造
-    一次（多项目部署下不再互相踩 handler）。
+    按项目根缓存实例：``core.logger.Logger.__init__`` 会把全局 "fenixd" 根
+    日志器的 handler 重绑为最后构造实例的 handler（logger.py 的 last-wins 已知
+    局限：仅 removeHandler 不 close，前一实例经自身 ``_handler`` 直写不受影响，
+    code-review item 3617b2ee430b）；缓存后每个项目只构造一次（多项目部署下
+    不再互相翻转全局 handler）。
 
     Args:
         project_root: 目标项目根（STATE.md 所在 ``.fenix/`` 的父目录）。
@@ -1104,14 +1106,16 @@ def project_state_logger(project_root):
     key = str(Path(project_root).resolve())
     with _STATE_LOGGER_CACHE_LOCK:
         cached = _STATE_LOGGER_CACHE.get(key)
-    if cached is not None:
-        return cached
-    from core.logger import Logger  # 延迟 import：仅跨进程写入点需要
+        if cached is not None:
+            return cached
+        # 构造收进锁内（code-review item 0103e1c748ec）：锁外 check-then-build
+        # 的窗口里并发首构同项目会各构造一次——输者实例被丢弃、全局根日志器
+        # handler 额外多翻转一次（last-wins），双检消除该竞态窗口。
+        from core.logger import Logger  # 延迟 import：仅跨进程写入点需要
 
-    built = Logger(Path(project_root) / ".fenix" / "logs")
-    with _STATE_LOGGER_CACHE_LOCK:
-        # 并发构造同项目：先到者生效，二者语义等价（同路径同格式）
-        return _STATE_LOGGER_CACHE.setdefault(key, built)
+        built = Logger(Path(project_root) / ".fenix" / "logs")
+        _STATE_LOGGER_CACHE[key] = built
+        return built
 
 
 class StateMachine:
@@ -1293,7 +1297,8 @@ class StateMachine:
         校验口径、重试次数、下限钳零等语义调整须双点同步、漏改一侧即行为
         漂移（同 ``_refund_run_once`` 的收敛理由）。收敛为委托
         ``bump_counters`` 单字段 dict，语义单点维护：返回值取返回 dict 中的
-        单值，三个出口（匹配→新值 / SPEC 缺失→0 / 重试后仍不匹配→磁盘值）
+        单值，四个出口（匹配→新值 / SPEC 缺失→0 / CAS 复核基线已变→磁盘现值 /
+        重试后仍不匹配→磁盘值）
         与旧实现逐一等价；verify 不匹配与 SPEC-not-found 两处告警改由
         ``bump_counters`` 输出，触发条件/级别/次数不变，仅字段标签渲染为
         单元素列表（``bump ['<field>'] …``）。
@@ -1313,13 +1318,19 @@ class StateMachine:
         属防御分支——回读在同一把 ``.STATE.md.lock`` 的临界区内执行、计数器值
         serialize→parse 往返恒等，当前实现下 verify == new_values 恒成立，
         该分支（含 mismatch 告警）实际不可达，真正的丢失更新防护来自锁本身。
+        重试为 CAS 语义（code-review item 1e0547fd361d）：重试前以首次应用前
+        的磁盘基线复核——基线未变（首次写入被并发覆盖丢失）才重加 delta；
+        基线已变（首次增量可能已并入其中）则不重加，以磁盘现值收敛返回，
+        避免同一逻辑增量被累计两次（预算计数系统性偏大）。
         各字段结果下限 0（负 delta 不会把计数打成负数）。
 
         Returns: ``{field: 最终生效值}``；spec 不存在时记 warning 并返回全 0。
         """
         lock_path = self._lockfile
         verify: Dict[str, int] = {field: 0 for field in deltas}
+        baseline: Dict[str, int] = {}
         missing = False
+        cas_converged = False
         for attempt in (1, 2):
             new_values: Dict[str, int] = {}
             with open(lock_path, "w") as lock_f:
@@ -1331,12 +1342,28 @@ class StateMachine:
                         missing = True
                         break
                     entry = specs[spec_name]
-                    for field, delta in deltas.items():
+                    current_values: Dict[str, int] = {}
+                    for field in deltas:
                         try:
-                            current = int(entry.get(field, 0) or 0)
+                            current_values[field] = int(entry.get(field, 0) or 0)
                         except (TypeError, ValueError):
-                            current = 0
-                        new_values[field] = max(0, current + delta)
+                            current_values[field] = 0
+                    if attempt == 1:
+                        # CAS 基线：首次应用前的磁盘现值，供重试前复核
+                        # 「期望值未变才重加 delta」
+                        baseline = current_values
+                    elif current_values != baseline:
+                        # 期望基线已变（code-review item 1e0547fd361d）：他写者
+                        # 在窗口内动过这些字段，我方首次增量是否已并入无从判定
+                        # ——MUST NOT 无条件重加 delta（若首次增量已在其中，
+                        # 同一逻辑增量会被累计两次，预算计数系统性偏大）。以
+                        # 磁盘现值为准收敛返回（与重试耗尽出口「以落盘为准」
+                        # 同口径）。
+                        verify = current_values
+                        cas_converged = True
+                        break
+                    for field, delta in deltas.items():
+                        new_values[field] = max(0, current_values[field] + delta)
                         entry[field] = new_values[field]
                     entry["updated"] = datetime.now(timezone.utc).isoformat()
                     self._write_all_locked(specs)
@@ -1346,8 +1373,8 @@ class StateMachine:
                     # 均被本锁串行化，无法在写盘与回读之间插入），且计数器值
                     # 经 serialize→parse 的 int→字符串→int 往返恒等，故
                     # verify == new_values 恒成立——下方 mismatch 告警与第二次
-                    # attempt 实际不可达；真正的丢失更新防护来自本把锁，而非
-                    # 这次回读。
+                    # attempt（CAS 基线复核）实际不可达；真正的丢失更新防护
+                    # 来自本把锁，而非这次回读。
                     verify = {
                         field: int((self.read_all().get(spec_name) or {}).get(field, 0) or 0)
                         for field in deltas
@@ -1369,6 +1396,15 @@ class StateMachine:
                 f"bump {sorted(deltas)} failed: SPEC not found: {spec_name}",
             )
             return {field: 0 for field in deltas}
+        if cas_converged:
+            # CAS 复核结论带出锁外留痕（锁内不输出日志）
+            self.logger.warning(
+                "state_machine",
+                f"bump {sorted(deltas)} CAS recheck for '{spec_name}': 期望基线 "
+                f"已被并发改写（baseline={baseline}，磁盘现值={verify}）"
+                f"——不重加 delta，以落盘现值收敛返回",
+            )
+            return verify
         # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
         return verify
 
@@ -2022,17 +2058,36 @@ class StateMachine:
         - MUST NOT 清 branch / implementer_run（解冻续做判定依据）；
         - MUST 清 _cancelled_hold（与取消保持**互不读写**：冻结终止路径先清
           后者，避免解冻后恢复链路按取消保持跳过）。
+        error 保留口径（code-review item 3b71b920920b）：既有 error 已带冻结
+        痕迹（「原状态 X」子串或冻结前缀）时**不整段覆盖**，改为在其后以
+        「 · 」追加本次终止原因——「原状态 X」是 parse_orig_status 解冻还原
+        的解析锚点（testing/reviewing 冻结的 spec 据此还原，缺失即误回退
+        ready）、冻结前缀是 admin 豁免判据，均不得被终止文案抹掉；分隔符用
+        「 · 」与既有冻结文案字段分隔形态一致，且保证「原状态 X」值 token
+        后总有空白/可 rstrip 边界，不被追加文本粘连导致解析回退。仅既有
+        error 为空白时才写本次文案（缺省 ``_frozen_hold flagged``）。
         形态约束（tests/test_cancel_holdstate_recovery.py 静态守卫）：MUST 写
         ``_frozen_hold: True`` 并**清** ``_cancelled_hold`` 为 False，而非两字段
         同写 True——全库取消保持写点字面命中恰为 6 处（守卫要求），
         新增该字面即红灯。
         """
+        prev_error = str((self.read_one(spec_name) or {}).get("error") or "")
+        stop_reason = error or (FROZEN_HOLD_FIELD + " flagged")
+        if prev_error and (
+            "原状态" in prev_error
+            or FREEZE_ERROR_PREFIX in prev_error
+            or REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX in prev_error
+            or REVIEW_REJECTED_FREEZE_ERROR_PREFIX in prev_error
+        ):
+            new_error = f"{prev_error} · {stop_reason}"
+        else:
+            new_error = stop_reason
         return self.update_spec(
             spec_name,
             {
                 FROZEN_HOLD_FIELD: True,
                 "_cancelled_hold": False,
-                "error": error or (FROZEN_HOLD_FIELD + " flagged"),
+                "error": new_error,
             },
         )
 
@@ -2536,11 +2591,25 @@ class StateMachine:
                 path = self._archive_path
                 if not path.exists():
                     return False
-                entries = StateParser.parse(path, self.logger)
-                if spec_name not in entries:
+                # 与 evict_spec 同口径（code-review item 74dd11a681b5）：清单
+                # 可能含坏字节（StateParser.parse 走 read_text(encoding="utf-8")
+                # 抛 UnicodeDecodeError，ValueError 子类、非 OSError）或解析/
+                # 重写遇 OSError——不接住会裸抛给直接调用方，穿透本方法的失败
+                # 收敛契约。收敛为 False（幂等语义不变：清单未动、条目保留）。
+                try:
+                    entries = StateParser.parse(path, self.logger)
+                    if spec_name not in entries:
+                        return False
+                    entries.pop(spec_name)
+                    self._atomic_write_text(
+                        path, self._render_archive_manifest(entries)
+                    )
+                except (OSError, UnicodeDecodeError) as e:
+                    self.logger.error(
+                        "state_machine",
+                        f"归档清单解析/重写失败，条目保留: {spec_name}: {e}",
+                    )
                     return False
-                entries.pop(spec_name)
-                self._atomic_write_text(path, self._render_archive_manifest(entries))
                 self.logger.info(
                     "state_machine",
                     f"Removed archived entry '{spec_name}' from manifest",
@@ -3018,11 +3087,22 @@ class StateMachine:
                 # 不派发 implementer（tasks 4.1）。失败已清除标记，回落下方
                 # 保留续做路径（tasks 4.3，spec 不滞留 implementing）。
                 if entry.get("_repair_awaiting_remerge"):
+                    _remerge_defer: dict = {}
                     remerged = self._recovery_remerge_pending(
-                        name, entry, project_root, worktree_manager, remerge_callback
+                        name, entry, project_root, worktree_manager, remerge_callback,
+                        deferred_out=_remerge_defer,
                     )
                     if remerged:
                         recovered.append(name)
+                        continue
+                    if _remerge_defer.get("deferred"):
+                        # spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-
+                        # guard D1）：标记已被声明原样保留待下一轮，MUST NOT 落入
+                        # 下方保留/清空分支——保留判定再失败（如载体三态不可用
+                        # wt=None）时清空重建会写 _repair_awaiting_remerge=False
+                        # 并清空 branch/implementer_run，恰好消费掉刚被声明保留
+                        # 的标记，把「仅剩合并」的 spec 打回全新派发（code-review
+                        # item d2671999d33c）。直接跳过，等下一轮恢复/重排再试。
                         continue
                 # ── 中断恢复保留续做（interrupt-recovery-preserve D4）──
                 # 有提交分支 → 保留 branch/implementer_run 并按 resume 续做；
@@ -3095,6 +3175,7 @@ class StateMachine:
         project_root=None,
         worktree_manager=None,
         remerge_callback=None,
+        deferred_out: Optional[dict] = None,
     ) -> bool:
         """恢复期 re-merge-back（fix-recovery-branch-anchor D4）。
 
@@ -3123,6 +3204,11 @@ class StateMachine:
         re-merge 失败（调用方清除标记后回落保留续做路径，spec 不滞留
         implementing），或 SPEC 已在本方法的 git 窗口内被并发删除
         （code-review 1b4fc51aac73：跳过收口回调与成功日志，不计成功）。
+        ``deferred_out``（可选出参，code-review item d2671999d33c）：spec 目录
+        在飞编辑顺延时写 ``deferred_out["deferred"] = True`` 带出顺延事实——
+        顺延已声明标记原样保留待下一轮，调用方据此**直接跳过**本 spec 的后续
+        保留/清空分支（清空重建会写 ``_repair_awaiting_remerge=False``，恰好
+        消费掉刚被声明保留的标记）。
         """
         branch = entry.get("branch")
         if not branch:
@@ -3152,6 +3238,10 @@ class StateMachine:
             # 有界短窗（不自旋），由下一次重启/人工提交解除。
             # [fenix-ignore:143b2435ac7b] 非缺陷：2015 行元组解包只给新名字赋值、不重绑 merge_info，其仍是 MergeConflictInfo 对象，getattr 读到真实 spec_dir_inflight（test_state_machine_recovery_remerge_keeps_marker 已覆盖此分支）
             if getattr(merge_info, "spec_dir_inflight", False):
+                # 顺延事实带出（code-review item d2671999d33c）：调用方据
+                # deferred_out["deferred"] 跳过本 spec 的后续保留/清空分支。
+                if deferred_out is not None:
+                    deferred_out["deferred"] = True
                 self.logger.warning(
                     "state_machine",
                     f"恢复期 re-merge-back 顺延 '{name}'（branch '{branch}'）: "
@@ -3249,6 +3339,11 @@ class StateMachine:
                 f"{_fresh.get('implementer_run')!r}）——放弃快照锚点回写，"
                 f"以最新条目为准推进 implemented",
             )
+            # 本分支 updates 仍经 _apply_updates_entry 应用并全量落盘，MUST
+            # 同步留痕（code-review item 6c9884409d1b，与 unfreeze_spec 出口
+            # 对齐：先 WARNING 后无条件 _log_update_applied）——否则「有写必有
+            # Updated SPEC 记录」的审计口径对该次推进不可见。
+            self._log_update_applied(name, applied)
         else:
             self._log_update_applied(name, applied)
         # 收口副作用回调（PMEngine 侧注入；tasks 4.2 依赖接线）

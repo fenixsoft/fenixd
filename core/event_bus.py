@@ -1149,7 +1149,7 @@ class EventBus:
                 # （add-spec-hooks D1：新 spec 进入状态同样产生 hook 事件，from=None；
                 # 锁内只采集，派发在调用方锁外，code-review item 592f948a8b25）
                 hook_events.append((name, None, new_status, entry))
-                event_kind = EventBus._status_to_event(new_status)
+                event_kind = self._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
                 # 1.1：新 SPEC 以接受态初次出现（登记时即 done/pushed/...，如

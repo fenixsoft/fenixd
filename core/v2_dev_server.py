@@ -245,7 +245,7 @@ def start(
             # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
         )
     except OSError as e:
-        raise V2DevServerError(f"failed to spawn dev-server: {e}")
+        raise V2DevServerError(f"failed to spawn dev-server: {e}") from e
 
     # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
     # 连通成功后还须做实例身份收口：allocate_port 的 bind 探测与 node 实际 bind

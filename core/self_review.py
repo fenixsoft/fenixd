@@ -61,7 +61,9 @@ _logger = logging.getLogger("fenixd.self_review")
 STATE_FILE = "self_review_state.json"
 
 # review 输出实例文件前缀：每 run 独立 .fenix/self_review_out-<run_id>.json，
-# 与 admin_disposition-<run_id>.json 同模式（并行实例互不覆盖）。
+# 与 admin_disposition-<run_id>.json 同模式（并行实例互不覆盖）。写入方
+# core/agent_runner/maintenance_runs 引用本常量拼产物路径（code-review
+# item e1a91dbd3334 前缀单点接线，改前缀一处生效）。
 REVIEW_OUT_PREFIX = "self_review_out-"
 
 # 闭环移除窗口（自省启动时处理「前面 3 天」的记录）：只收集/移除运行日
@@ -170,8 +172,10 @@ _BUSINESS_FAIL_SIGNALS = (
 _RUN_TS_RE = re.compile(r"-(\d{9,10})(?:-(?:a|r)\d+)*$")
 
 
-# 结构化条目契约键（_rescue_structured_entry 判定 + dict 渲染共用）。
-_STRUCTURED_ENTRY_KEYS = {"impact", "evidence", "analysis", "suggestion"}
+# 结构化条目契约键（_rescue_structured_entry 判定 + dict 渲染共用）：派生自
+# 单源 todo_format.FIELD_LABELS 键集（code-review item 1d6ee092cd15），标签
+# 契约增删键时抢救门同源演进，MUST NOT 手抄同值副本。
+_STRUCTURED_ENTRY_KEYS = {k for _, k in _FIELD_LABELS}
 
 
 def _rescue_structured_entry(text: str) -> Optional[dict]:
@@ -1071,6 +1075,15 @@ def _collect_metrics_outliers(
     return outliers
 
 
+def _outlier_baseline_label(entry: dict) -> str:
+    """初筛离群行基线标签（code-review item 845de9d2971b）：按 baseline_kind
+    分支，与 _collect_metrics_outliers 的注记口径对齐——批量车道 turns 维为
+    近期批 P90（p90_recent_batches），缺省即组中位。"""
+    if entry.get("baseline_kind") == "p90_recent_batches":
+        return "近期批 P90"
+    return "组中位"
+
+
 def _midflight_event_summary(entry: dict) -> str:
     """error/stderr 事件首条摘要（≤ _MIDFLIGHT_EVENT_SUMMARY_MAX 字符）。
 
@@ -1420,6 +1433,10 @@ def collect_log_errors(
     首跑回退 24h）fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
     （含时间戳/组件/消息）。
 
+    窗口跨轮转时补扫 fenixd.log.1（code-review item 2a855b65782c，对齐
+    load_run_metric 读侧轮转回退口径），窗口内早于当前日志起点的 ERROR
+    不再漏计；更深的轮转（.2..）与 load_run_metric 同样不回扫。
+
     window_end 为调用侧贯穿传入的冻结快照值（code-review item
     bf3b2bc56a05：与同一份日报其余各节共用同一上界）；None 时函数入口
     冻结 now_utc() 兜底（直调兼容）。
@@ -1428,9 +1445,13 @@ def collect_log_errors(
     if window_end is None:
         window_end = now_utc()
 
-    log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
+    # .1 先于主日志扫描（时间序：轮转在前、当前在后），样本截尾仍取最近
+    # limit 条，与单文件口径一致。
+    logs_dir = Path(project_root) / ".fenix" / "logs"
     errors: List[dict] = []
-    if log_path.is_file():
+    for log_path in (logs_dir / "fenixd.log.1", logs_dir / "fenixd.log"):
+        if not log_path.is_file():
+            continue
         try:
             with log_path.open("r", encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -1480,6 +1501,21 @@ def parse_todo_blocks(text: str) -> Tuple[List[str], List[Tuple[str, List[str]]]
     if cur_date is not None:
         blocks.append((cur_date, cur_lines))
     return preamble, blocks
+
+
+def _has_todo_date_section(text: str, date_str: str) -> bool:
+    """todo.md 是否已存在指定日期节（单源 _TODO_DATE_RE 逐行判定）。
+
+    「当日节已存在」防护共用判定（_append_todo/_skip_review，code-review
+    item db701aa8be67）：不再各写内联正则同值副本——契约正则放宽时内联
+    形态不认的标题会让防护漏检、重复追加日期节（重复节使条目 id 撞车，
+    正是该检查要防的事故形态）。
+    """
+    for line in text.splitlines():
+        m = _TODO_DATE_RE.match(line)
+        if m and m.group(1) == date_str:
+            return True
+    return False
 
 
 def _load_existing_with_head_rescue(
@@ -1754,7 +1790,7 @@ class SelfReviewScheduler:
                 existing = _load_existing_with_head_rescue(
                     todo, self.project_root, todo_head_restore, self.logger
                 )
-                if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
+                if not _has_todo_date_section(existing, today):
                     block = f"## {today}\n\n- 自上次自省以来无 SPEC 活动，跳过自省。\n"
                     if existing.strip():
                         _atomic_write_text(todo, existing.rstrip("\n") + "\n\n" + block)
@@ -1944,7 +1980,8 @@ class SelfReviewScheduler:
             for o in outliers:
                 success = str(o.get("terminal") or "").strip().lower() == "success"
                 dims = "、".join(
-                    f"{dim}={d['value']}（组中位 {d['median']}{'，成功收尾' if success else ''}）"
+                    f"{dim}={d['value']}（{_outlier_baseline_label(d)} "
+                    f"{d['median']}{'，成功收尾' if success else ''}）"
                     for dim, d in o["outliers"].items()
                 )
                 lines.append(f"- {o['run_id']}（{o['agent_type']}）：{dims}")
@@ -2432,15 +2469,17 @@ class SelfReviewScheduler:
             # 与 _skip_review 同防护：当日节已存在（状态文件丢失重跑）不重复
             # 追加，否则重复日期节使同小节条目 id（日期#小节#序号）撞车，
             # 闭环移除按 id 匹配产生歧义。
-            if re.search(rf"(?m)^## {re.escape(date_str)}\s*$", existing):
+            if _has_todo_date_section(existing, date_str):
                 self.logger.warning("self_review", f"{date_str}: todo.md 当日节已存在，跳过追加")
                 return
             if existing and existing.strip():
-                body = "\n\n" + content
+                # 尾部换行归一（code-review item 9b48bcc5f1c6，与 _skip_review
+                # 同式）：existing 以单个换行收尾时直拼会产生两个空行。
+                body = existing.rstrip("\n") + "\n\n" + content
             else:
                 body = content
             todo.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write_text(todo, existing + body)
+            _atomic_write_text(todo, body)
 
         with_file_lock(todo, _do)
         return todo

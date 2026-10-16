@@ -395,10 +395,17 @@ def evaluate_alert(
         # NOT 承诺纯 status 判定无法达成的「补内容即自动闭环」）。
         if status not in DELIVERED_ADJUDICATED_TERMINAL_STATUSES:
             return None
-        return (
+        # 与 _resolve_note_for_condition 同一审计口径（evo-add-signal-subject-
+        # terminal-close 1.1）：终态收口备注附状态变更时刻（updated 缺失时
+        # 保持既有表述，不硬造时刻）。
+        reason = (
             f"spec {spec_name} 已到达终态 {status}，"
             f"spec_delivered_no_content 人工裁决完成（终态收口）"
         )
+        updated = str(entry.get("updated") or "")
+        if updated:
+            reason += f"（状态变更时刻 {updated}）"
+        return reason
     if status == "blocked":
         return None  # 条件未解除
     return _resolve_note_for_condition(spec_name, entry, backfill=not has_trigger)

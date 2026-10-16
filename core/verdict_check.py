@@ -64,6 +64,10 @@ EXEMPTION_REASON = {
 NON_DRIVING_VISUAL_STATUSES = ("baseline_deferred", "baseline_rejected")
 
 
+# 预留判别单源（当前全仓无生产消费点）：仅 tests/test_visual_baseline_integrity.py
+# 引用钉死契约；「judge 不得将非驱动视觉状态计入 bug-found 打回依据」的实际承接点
+# 在引擎侧 determine_scenario_status，失败信号侧由 _scenario_has_failure_signal
+# 按同源口径独立判定（见其 docstring）。后续消费方接入时以本函数为单源，勿另立口径。
 def has_only_non_driving_visual_indicators(scenario: dict) -> bool:
     """场景的失败信号是否仅来自非驱动视觉状态（无 DOM/步骤失败）。
 

@@ -691,7 +691,7 @@ class HookEngine:
     def _audit_malformed_hook_entries(
         self, spec: str, from_status: Optional[str], to_status: str
     ) -> None:
-        """hooks 段存在非对象条目时逐条记 failure 审计（code-review item 5e0fb9aa037a）。
+        """hooks 段形态损坏时按定位记 failure 审计（code-review item 5e0fb9aa037a）。
 
         手改 config.yaml 把 hooks.global/specs 条目写成字符串等非 dict 形态时，
         match_hooks 的 isinstance 守卫使其永远无法命中（无 events 可匹配），执行
@@ -700,19 +700,35 @@ class HookEngine:
         进程内去重：同一条目仅首次发现或内容变化后落审计，重复迁移只记 debug
         日志，防长期不修时审计文件随迁移频率线性膨胀）；口径与 _execute_one 对
         「配置非法（不执行）」一致：不执行、不告警、审计暴露。
+
+        段级形态损坏（code-review item 72f28ce36fe1）：hooks.global 非列表 /
+        hooks.specs 非对象在 match_hooks 同样被整段按空处理、蒸发面比条目级更大，
+        一并记 failure 审计（validate_hooks_config 只覆盖 dashboard 保存路径，
+        手改文件不经过该闸门）。枚举基于原始 self.config 的 hooks 段而非
+        hook_config 注入视图（code-review item f28092ccd3bf）：注入会把内置条目
+        插到 global[0]，按注入后视图编号会使定位符相对 config.yaml 偏移一位、
+        去重键随之漂移（用户在坏条目前插入合法条目即重复落审计）；注入条目恒为
+        dict、本就不参与该审计，直接读原始配置即可。
         """
-        hooks = hook_config(self.config)
+        # isinstance 守卫对齐 hook_config：config/hooks 段非 dict 时视为无配置
+        hooks = self.config.get("hooks") if isinstance(self.config, dict) else None
         malformed: List[Tuple[str, str, str]] = []  # (scope, 条目定位, 条目指纹)
-        g = hooks.get("global")
-        if isinstance(g, list):
+        g = hooks.get("global") if isinstance(hooks, dict) else None
+        if g is not None and not isinstance(g, list):
+            # 段级：非列表 global 被按空处理、整段未执行，补审计留痕
+            malformed.append(("global", "hooks.global", _truncate(repr(g), 512)))
+        else:
             malformed.extend(
                 ("global", f"hooks.global[{idx}]", _truncate(repr(h), 512))
-                for idx, h in enumerate(g)
+                for idx, h in enumerate(g or [])
                 if not isinstance(h, dict)
             )
-        specs = hooks.get("specs")
-        if isinstance(specs, dict):
-            for name, lst in specs.items():
+        specs = hooks.get("specs") if isinstance(hooks, dict) else None
+        if specs is not None and not isinstance(specs, dict):
+            # 段级：非对象 specs 被按空处理、整段未执行，补审计留痕
+            malformed.append(("spec", "hooks.specs", _truncate(repr(specs), 512)))
+        else:
+            for name, lst in (specs or {}).items():
                 if not isinstance(lst, list):
                     continue
                 malformed.extend(
@@ -729,6 +745,16 @@ class HookEngine:
                 self._log_debug(f"hook 配置非法（同条目已审计过，不再重复记）: {where}")
                 continue
             self._malformed_hook_audited[key] = fingerprint
+            # 文案按形态区分：段级定位符无下标，口径对齐 validate_hooks_config
+            section_reason = {
+                "hooks.global": "必须为列表（非列表按空处理，整段未执行）",
+                "hooks.specs": "必须为对象（非对象按空处理，整段未执行）",
+            }.get(where)
+            detail = (
+                f"hook 配置非法（不执行）: {where} {section_reason}"
+                if section_reason
+                else f"hook 配置非法（不执行）: {where} 条目必须为对象（非对象条目不参与匹配，未执行）"
+            )
             self._audit(
                 spec,
                 from_status,
@@ -737,7 +763,7 @@ class HookEngine:
                 None,  # 同理提取不到 action
                 scope,
                 STATUS_FAILURE,
-                f"hook 配置非法（不执行）: {where} 条目必须为对象（非对象条目不参与匹配，未执行）",
+                detail,
                 0.0,
             )
 

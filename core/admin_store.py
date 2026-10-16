@@ -850,10 +850,10 @@ class AdminStore:
         """
         if not admin_run_id:
             return 0
-        closed_at = _utcnow_iso()
 
         def mutate(records):
             changed = 0
+            closed_at = _utcnow_iso()
             for rec in records:
                 if (
                     rec.get("kind") == ESCALATION
@@ -1186,10 +1186,10 @@ class AdminStore:
         """
         if not spec:
             return 0
-        resolved_at = _utcnow_iso()
 
         def mutate(records):
             changed = 0
+            resolved_at = _utcnow_iso()
             for rec in records:
                 if rec.get("kind") != ESCALATION or rec.get("handled"):
                     continue
