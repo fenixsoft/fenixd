@@ -1457,8 +1457,8 @@ def accept_selfcheck(project_root: Path, profile: str,
     return checks
 
 
-def dry_run_plan(lanes: List[str], args: argparse.Namespace,
-                 project_root: Path) -> List[Dict[str, Any]]:
+def dry_run_plan(lanes: List[str],
+                 args: argparse.Namespace) -> List[Dict[str, Any]]:
     """dry-run 计划（预演输出；不发起任何调用）。"""
     plan: List[Dict[str, Any]] = []
     baseline = not args.no_claude_baseline
@@ -1491,7 +1491,7 @@ def run_accept(args: argparse.Namespace) -> int:
     checks = accept_selfcheck(project_root, profile,
                               with_claude_baseline=not args.no_claude_baseline)
     missing = [c for c in checks if not c["ok"]]
-    plan = dry_run_plan(list(SMOKE_LANES), args, project_root)
+    plan = dry_run_plan(list(SMOKE_LANES), args)
 
     if not args.go:
         # 预演：自检 + dry-run 计划；缺项列出修复指引；**零真实模型调用**
