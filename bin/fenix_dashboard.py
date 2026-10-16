@@ -43,7 +43,7 @@ if str(_FENIX_DIR) not in sys.path:
 from core.agent_runner.run_files import run_spec_part  # noqa: E402
 from core.dashboard import data as dash_data  # noqa: E402
 from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
-from core.dashboard.server import serve, STATIC_DIR  # noqa: E402
+from core.dashboard.server import serve  # noqa: E402
 from core.timelib import now_local  # noqa: E402
 # 展示层助手单点在 core.tui_format（code-review item 50a1202e3e91 同款
 # 收拢）：私有 _local_ts 副本退役，转发 tui_format.local_ts（内部渲染
