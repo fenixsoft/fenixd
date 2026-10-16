@@ -347,8 +347,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     # ── 写回 test_scenarios.json 的合法子集（3.2/3.6/3.9）──
     # 两处写点互斥 3.2：补齐分支（无理由缺场景时以持久化集补齐后写回）与
     # 主路径写回；两处内容均为过滤后集合。第二遍剔除（write_rejected，补齐
-    # pass 对备份取回条目再剔一批）与第一遍合并统计 3.9。
+    # pass 对备份取回条目再剔一批 + id 缺失/为空防御剔除）与第一遍合并统计
+    # 3.9；covers 累积供 3.10 去噪登记。
     write_rejected: list[str] = []
+    write_rejected_covers: set = set()
     final_valid: list = []
     if not diff.ok and diff.unreasoned_missing:
         # 无理由缺场景 → 以持久化集补齐 test_scenarios.json（不中断验证，
@@ -359,7 +361,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # code-review item d41d5e55b933：id 缺失/为空的条目原先被静默丢弃
         # （前置 validate_scenario_dicts 下合法条目恒有 id、该分支不可达；
         # 若校验器放松 id 要求则成静默缩小验证集的暗道），补 WARNING 留痕。
-        idless = [s for s in valid_planner if isinstance(s, dict) and not s.get("id")]
+        idless = [
+            (i, s)
+            for i, s in enumerate(valid_planner)
+            if isinstance(s, dict) and not s.get("id")
+        ]
         if idless:
             pipeline._context.logger.warning(
                 "pm_engine",
@@ -367,6 +373,17 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 f"'{spec_name}'（不进补齐写回，缩小本轮验证集；前置校验下"
                 f"不应出现）",
             )
+            # code-review b5b04c5c291d：并入两遍剔除台账——write_rejected
+            # 计数进 3.9 合并比例统计（经下方「补齐写回剔除」WARNING/
+            # change_lines 留痕），covers 进 write_rejected_covers 供 3.10
+            # 去噪；否则该防御剔除游离于台账外，条目携带 covers 时其候选
+            # 会被交互契约误判「设计漏项」退回 replan。条目无 id 可登记，
+            # 仅 covers 入集合（[i] 定位为 valid_planner 下标）。
+            for i, s in idless:
+                write_rejected.append(f"[{i}]id 缺失/为空")
+                covers = s.get("covers")
+                if isinstance(covers, list):
+                    write_rejected_covers.update(str(c) for c in covers if c)
         reconciled = [
             s
             for s in valid_planner
@@ -426,7 +443,6 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # 合法部分照常落盘，不整批拒绝。
         write_valid: list = []
         write_rejected_ids: list[str] = []
-        write_rejected_covers: set = set()
         for idx, item in enumerate(reconciled):
             if not isinstance(item, dict):
                 write_rejected.append(f"[{idx}]非对象({type(item).__name__})")
@@ -448,8 +464,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 continue
             write_valid.append(item)
         # 与第一遍登记处（3.10）同形状合并：id 追加进 _last_freeze_rejected
-        # 列表、covers 并入 _last_freeze_rejected_covers 字符串集合。
-        if write_rejected_ids:
+        # 列表、covers 并入 _last_freeze_rejected_covers 字符串集合（id 缺失/
+        # 为空防御剔除条目无 id 可登记、仅 covers 入集合，条件不能只看
+        # write_rejected_ids）。
+        if write_rejected_ids or write_rejected_covers:
             pipeline._last_freeze_rejected.extend(write_rejected_ids)
             pipeline._last_freeze_rejected_covers.update(write_rejected_covers)
         if write_rejected:
