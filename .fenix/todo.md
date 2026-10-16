@@ -45,16 +45,7 @@
   - 调查评估：问题源：dsh harness 成为主车道后全量暴露（本窗口 4 个 spec 的 dsh run 均失明）。已核实：run_metrics 的延迟配对只识别 claude 形态事件流，dsh-events（dsh 车道自有事件流）的 tool_call/tool_result 不产生 API 往返样本，252 轮的大 run 也配不出一个样本，latency_stalls/p90 恒空。根因：系统性缺口——dsh 事件流未接入延迟配对，属遥测表达力缺口而非数据缺失。与存量工作关系：昨日可改进#2（停滞区间缺事件类型注记）是 claude 车道内的表达力问题，与本案是同一停滞遥测下游的两个独立缺口——只落注记不接 dsh 流，主车道停滞维度仍为空。结论：应与停滞遥测改进合并立项，避免二次返工。
   - 建议：run_metrics 延迟配对增加 dsh-events 事件形态识别（tool_call/tool_result 对、thinking 边界），使 stall/p90 对 dsh 车道生效；「失明」告警按（车道,事件形态）收敛为一次性免噪。
 
-
 ## 2026-10-16
-
-### 浪费
-- **_run_agent 解包漏改 22 连崩，code-fix 链空转 12 小时**
-  - 自进化：问题成立 / 建议合理 / — 不需要
-  - 影响：维护五车道 run 一收尾即崩，code-fix 链自首崩到人工修复空转约 12 小时：25 个 code-fix run 与 1 个 admin run 崩溃弃置，有成本档案的 10 个合计 $129.05（单个 $10.1-14.7、API 时长 74-100 分钟），agent 已实际完成的修复全部弃置重修，95 条台账 0 核销；另有 1 个 run 死于账户级 429 限流、1 个 run（588 轮）死于重启排水 SIGTERM。
-  - 证据：错误指纹「too many values to unpack (expected 4)」首现 10-14T21:27Z（本地 05:27，run code-fix-1792012044）、末现 10-15T09:33Z（本地 17:33）；修复 commit 63d952e74（本地 18:10）自述根因并给出 diff：dd78b1b82（evo-api-stall-signal-grading，本地 02:46）把 _run_agent（维护车道共用的 agent 进程封装）返回值从 4 元扩为 5 元，runner.py 三处调用点同步而 maintenance_runs.py 五处全部漏改；修复后链 rollup（链收尾汇总监算行）20:41 本地 resolved=66、21:27 本地 resolved=27，约 3 小时补核销 93 条。
-  - 调查评估：问题源：code-review 台账的 code-fix 批量核销链（evolution/self_review/administrator/code-review 四条维护车道同款崩溃）。已核实：63d952e74 的 diff 确认五处调用点补第 5 元绑定、bin/dsh_acceptance.py 三处与 12 个测试文件的旧 4 元桩同步，并新增 tests/test_run_agent_call_site_arity.py——读源码语法树（AST）的契约测试，断言全部调用点解包宽度必须等于 _run_agent 返回宽度，任一侧漂移即红。根因：dd78b1b82 的 proposal 交付物只声明 runner.py/latency.py/self_review.py，改共享函数返回宽度时没有「全调用点清单核验」步骤，spec 验证的测试面也不覆盖维护车道调用点（须真实维护 run 跑到收尾才暴露）——且此为同族第二次（2026-09-05 曾 3→4 元同款崩溃，fenixd.log.3 可查），说明仅靠细心不可持续，家族复发面已被本次 AST 契约测试钉死。与存量工作关系：修改源头 spec evo-api-stall-signal-grading 的范围声明本身不含 maintenance_runs.py，属范围划定盲区而非执行走样；检测面缺口（22 次同指纹崩溃 12 小时零升级）单列为同日可改进条目，不在此重复。结论：损失确定性成立（成本档案在案），复发面已闭环，残余敞口仅检测面。
-  - 建议：无需新 SPEC：63d952e74 已补齐五处调用点并以 AST 元数契约测试钉死同族复发；确认该契约测试进入后续触碰 agent_runner 的 spec 验证必跑面即可，检测面缺口见同日可改进条目。
 
 ### 失误
 - （当日无）
@@ -73,3 +64,23 @@
   - 证据：run code-review-1791997425 档案：total_cost_usd=82.983、duration_api_ms=19842 秒、terminal_reason=api_error；日志 10-14T20:32Z「error 收场抢救落账: shards=30 inserted=95 updated=0」「部分覆盖待核销」；该行之后至窗口末（10-16 00:03 本地）无第二条「周期审查完成」记录；数据摘要第六节显示该 run 44 次 API 停滞、累计 3756.2 秒、最长 152.5 秒。
   - 调查评估：问题源：code-review 周期审查链（夜间全量审查）。已核实：抢救落账按设计工作，台账 95 条当日即被 code-fix 链消费（修复后 rollup 合计 resolved=93），本次实际损失有限——主要是收尾阶段综合产出丢失与覆盖缺口悬置。归因边界：44 次停滞合计 62.6 分钟无法区分长工具执行与 API 等待（停滞遥测无边界事件类型注记，即 2026-10-14#可改进#2 的既有缺口，不重复立项）；收尾 api_error 的具体根因（provider 错误/限流/进程被杀）档案仅有 Exit code 1，证据不足以裁决，不作单因结论。与存量工作关系：error 收场抢救机制已存在且有效；「部分覆盖待核销」目前只是台账注记，无信号、无续审安排。结论：单次损失小，但 $80+ 量级大 run 以 api_error 收场一旦抢救也失败即为全损，值得加一层廉价的可见性与续审兜底；先观测，若连续两轮同形态收尾失败则立项。
   - 建议：给「部分覆盖待核销」加一条 admin INFO 信号并在下轮审查提示词中携带未覆盖 shards 清单；周期审查连续两轮收尾失败时，按 infra 台账限次语义只对未覆盖 shards 派发续审，避免整轮重烧。
+
+
+## 2026-10-17
+
+### 浪费
+- **夜间大 run 合计 80 分钟 API 停滞，单轮最长 453.5 秒**
+  - 影响：窗口内 10 个 run 全部成功、零失败，但过程信号显示成功 run 内部 >60 秒的 API 往返停滞合计约 80 分钟：夜间自进化三 run 32.0 分钟、code-review 周期审查 run 39.7 分钟、code-fix 批修复链 8.6 分钟；其中 2 次单轮超 300 秒（453.5 秒与 337.9 秒），最长一次占所在 run 运行时长的 26%。损失形态是成功 run 内部的挂钟消耗与延迟尾部风险，无 run 因停滞失败或被重派。
+  - 证据：run 收尾延迟摘要行（agent_runner 落盘的每 run API 往返统计）：evo-1792088086（夜间自进化分析 run）132 轮 median 2.0s max 453.5s warning=1；evo-1792089889（同夜第二个自进化 run）590 轮 median 2.1s max 276.5s；code-review-1792083854（code-review 周期审查 run）1144 轮 median 3.2s max 337.9s warning=1 info=4。期内时点 WARNING 按设计发射：18:39:45Z「API round-trip stall: 453.5s (round #124 > 120s)」、17:56:47Z 337.9s（round #275）。归档重放配对核实：evo-1792088086 的 453.5 秒停滞紧跟一条仅 17KB 的工具结果——等待发生在 API 侧而非工具执行。
+  - 调查评估：问题源：夜间自进化与周期审查两条大 run 的离群初筛与停滞深扫。已核实事实：①停滞配对口径是 tool_result→下一个 assistant 事件的间隔，天然不含工具执行时长——2026-10-14#可改进#1「33 次停滞无法区分工具执行与 API 等待」的两分法前提部分不成立，本轮实测停滞全部是 API 侧等待（以此更正该条目框架，历史原文不回改）；②逐轮档案事件无 usage/ttft 响应侧字段（网关 bigmodel.cn 事件不带 usage），「网关排队/重试 vs 模型正常长生成」不可判，根因未定、多假说并存，不作单因结论；③期内分级告警（单轮 >300s 计 warning）与汇总行按设计工作、纯观测不干预，全部 run 成功收尾。与存量工作关系：evo-add-api-stall-observability（停滞指标入账）、evo-api-stall-signal-grading（停滞分级告警）、evo-add-run-stop-loss（run 级停滞预算）已覆盖观测与预算面，无重复；缺的是逐轮根因观测字段。结论：损失真实但量级中等（成功 run 内约 80 分钟挂钟），先补观测再谈干预。
+  - 建议：给 run 档案事件补逐轮响应侧观测（把 ttft/usage 落入 assistant 事件或 run 收尾延迟摘要明细），使 >300 秒单轮可判「网关排队 vs 长生成」；停滞区间边界注记与 2026-10-14#可改进#1 合并立项，避免二次返工。
+
+### 失误
+- （当日无）
+
+### 可改进
+- **维护车道收尾丢弃 stall 统计，run_metrics 延迟字段恒零**
+  - 影响：复发敞口+已发生：run_metrics（run 收尾结构化指标行）的 latency_rounds/latency_stalls/latency_max 三字段在保留日志全部 907 行（2026-09-17 至 10-15，覆盖 code-fix/code-review/evolution/administrator 四条维护车道与 implementer/planner 车道、claude 与 dsh 两种 harness）恒为 0/None——凡维护车道 run，离群初筛与延迟维度基线永远拿不到数据，自省框架被迫对档案事件流二次配对（本窗口 7 个 run 全部重复计算），违反 run_metrics「单一真源、禁止二次采样」的设计契约。
+  - 证据：core/agent_runner/maintenance_runs.py（维护车道实现文件）五处调用点（381/697/1244/1838/2987 行）把 _run_agent（agent 进程封装）第 5 元 stall 统计绑定到 _stall_latency 后丢弃；_log_lane_run_metrics（维护车道 run 收尾指标写入函数，maintenance_runs.py:1113）签名无 latency 形参，直调 _log_run_metrics 时按零样本回退。同窗口延迟摘要行有完整数据（「run code-review-1792083854: 1144 rounds, median 3.2s, max 337.9s」），而同一 run 的 run_metrics 行 latency_rounds=0；窗口内「延迟观测疑似失明」告警零触发，证明 claude 车道活体配对正常产出样本。用同配对函数重放归档事件流复现一致结果（code-review-1792083854：23 stalls / max 337.9s，与自省深扫逐位一致）。
+  - 调查评估：问题源：本窗口 10 个 run 全部为维护车道，离群初筛暴露。已核实事实：①dd78b1b82（10-15 02:46 本地，evo-api-stall-signal-grading 的落地提交）自述「成功终态 run metrics 带实际 latency 统计」，但只接通了 runner 车道成功路径（runner.py:3833 latency=run_latency_stats），且该提交落地后尚无 runner 车道成功 run 收尾（其后 37 行 run_metrics 全是维护车道），特性至今零非零产出；②63d952e74（10-15 18:10，解包崩溃修复提交）只补了五处调用点的 4→5 元解包宽度，未接统计穿透。根因：维护车道收尾接口缺 latency 形参——数据在握、写入面丢弃，属系统性接口缺口而非一次性失误。与存量工作关系：本条更正 2026-10-15#可改进#1 的范围论断（该条目称「run_metrics 的延迟配对只识别 claude 形态事件流，失明是 dsh 特有」）——实测 claude 维护车道的统计也在写入面被丢弃，失明不限于 dsh 形态识别一层；该条目的 dsh 事件流接线主旨仍独立成立、继续跟进不据此闭环；与 2026-10-14#可改进#1（停滞区间边界事件注记，深扫表达力）互补不重复。结论：一处形参穿透加一条契约测试即可闭环，值立项。
+  - 建议：_log_lane_run_metrics 增加 latency 形参，五处调用点透传 _stall_latency；补契约测试断言维护车道 run_metrics 行的 latency_rounds 与同 run 延迟摘要日志行一致（防同族回归）；dsh 车道配对接线按 2026-10-15#可改进#1 另行立项。
