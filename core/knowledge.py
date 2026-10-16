@@ -401,6 +401,15 @@ def validate_knowledge(project_root) -> list:
                         continue
                     if not (proot / src).is_dir():
                         violations.append(f"{label}: sources 指向不存在的归档目录: {src}")
+                        continue
+                    # 归一化复核（code-review b349a3a0000a）：src 含 ".." 相对
+                    # 段时上两道检查均通过，OS 层解析后实际指向归档目录之外的
+                    # 真实目录；resolve 后复核仍在归档目录内（与本函数
+                    # _check_links 的越界判定及 _gate_distill 拒绝 ".." 同强度）。
+                    try:
+                        (proot / src).resolve().relative_to(arch_root.resolve())
+                    except ValueError:
+                        violations.append(f"{label}: sources 越出归档目录: {src}")
             elif origin == ORIGIN_PREHISTORIC:
                 # 史前页：sources 允许 git 区间锚点（不要求归档目录存在）
                 for src in marker["sources"]:
@@ -754,6 +763,8 @@ def _discard_output(proot: Path, before=None) -> bool:
 # verify.yaml / config.template.yaml）不留任何 WARNING，监控承诺失真。列举口径：
 # - .fenix/knowledge-distill.lock：跨进程单飞 flock 锁（_acquire_file_lock）
 # - .fenix/knowledge-distill-pending.json：pending 台账（dispatch/收尾清除）
+# - .fenix/knowledge-distill-pending.lock：pending 台账读改写 flock 锁
+#   （_pending_ledger_lock，code-review 968bbb6b7458 收录）
 # - .fenix/todo.md 与伴生锁 .fenix/.todo.md.lock：todo.md 重试台账
 #   （_register_todo_retry → append_todo_line）
 # 这些运行时文件被 .gitignore 的 .fenix/* 规则忽略、本不进 git status，仍逐项
@@ -762,6 +773,7 @@ _STRAY_AUDIT_IGNORE_PREFIXES = (
     KNOWLEDGE_DIR + "/",
     ".fenix/knowledge-distill.lock",
     ".fenix/knowledge-distill-pending.json",
+    ".fenix/knowledge-distill-pending.lock",
     ".fenix/todo.md",
     ".fenix/.todo.md.lock",
 )
@@ -1364,7 +1376,16 @@ class DistillManager:
         if not batches:
             return 0
         try:
-            _write_pending_ledger(proot, [])
+            # 清空写点持跨进程 flock（code-review 4bba473fbc23）：裸写空表若落
+            # 在 dashboard --serve 侧持锁 _ledger_append 的重读与回写之间，刚落
+            # 盘的批次条目会被 {"batches": []} 整文件覆盖丢失（进程随后崩溃即
+            # 重演 R1 要防的批次重启蒸发）。与 _ledger_append/_ledger_remove 已
+            # 确立的写纪律对齐：持锁重读盘上最新台账再回写空表，窗口内新到的
+            # 条目并入下方逐条重派。
+            with _pending_ledger_lock(proot):
+                batches = _read_pending_ledger(proot)
+                if batches:
+                    _write_pending_ledger(proot, [])
         except Exception as e:  # noqa: BLE001 — 清空失败则放弃恢复（避免裸奔放大）
             logger.warning(
                 "knowledge-distill 恢复放弃（pending 台账清空失败，"
@@ -1533,7 +1554,12 @@ def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=Non
 
 # 兼容批量入口：auto_archive_check 一轮归档多条时可合并为一次批量 run
 def dispatch_distill_batch(project_root, archived_names: list, config=None, *, dispatcher=None) -> dict:
-    """批量派发（多条归档合并为一次 run，spec「实现裁量」）。"""
+    """批量派发（多条归档合并为一次 run，spec「实现裁量」）。
+
+    当前仅测试消费（code-review 5d6705c37989）：docstring 所述
+    auto_archive_check 批量合并接线未发生，生产代码零调用方；单条/批量
+    行为一致性由共用的 _gate_distill / _dispatch_via_mgr 与测试锁定。
+    """
     if not archived_names:
         return {"dispatched": False, "reason": "empty"}
     if len(archived_names) == 1:
