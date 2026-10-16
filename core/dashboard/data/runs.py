@@ -374,7 +374,9 @@ def classify_run(lines: list) -> str:
 # `<spec/admin 前缀>-<epoch>(-a<n>/-r<n>)` 形态构成，字符集仅字母数字与
 # `. _ -`。显式排除路径分隔符——HTTP 查询参数 run_id 原样透传进本函数，
 # `run_id=../../foo` 形态可拼出 runs 目录之外的 .jsonl 读取路径。
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# 尾锚用 \Z 而非 $（code-review item 898d72a30cc5）：Python re 的 $ 在字符串
+# 末尾换行之前也匹配，"x\n" 形态的 run_id 会漏过白名单，\Z 绝对锚定堵住该缝。
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
 
 
 def _resolve_run_file(project_root, run_id: str) -> Path:
@@ -1191,6 +1193,10 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     Returns:
         {"moved": int, "deleted": int, "archive_total": int,
          "deleted_names": [str, ...], "error": str | None}
+
+    ``error`` 为本轮清理的降级摘要（活跃目录/spec/changes/归档目录扫描失败
+    等扫描级失败，多项以 ``"; "`` 连接；全成功为 None）——调用方可据此感知
+    本轮清理是否降级，无须翻日志。
     """
     proot = Path(project_root)
     runs_dir = proot / ".fenix" / "runs"
@@ -1206,6 +1212,10 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     # 1. 终态 run 移入归档（同 run_id 归档副本已存在时改为删除顶层副本——
     #    判等后仍以归档为准，不计入 moved）
     moved = 0
+    # 扫描级失败摘要（code-review item b15df4b11c6c）：失败态此前只落 WARNING
+    # 日志、error 恒 None，调用方无法感知本轮清理已降级——各扫描失败分支在此
+    # 追加摘要，返回时 "; " 连接（全成功为 None）。
+    errors: list = []
     try:
         actions = 0  # 每周期动作量上限计数（移入 + 去重删除），与返回值 moved 解耦
         for p in runs_dir.glob("*.jsonl"):
@@ -1244,6 +1254,7 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                 _retention_log(logger, "warning", f"runs 保留: 移入归档失败 {p.name}: {e}")
     except OSError as e:
         _retention_log(logger, "warning", f"runs 保留: 活跃目录扫描失败: {e}")
+        errors.append(f"活跃目录扫描失败: {e}")
 
     # 2. 无主车道归档产物天龄兜底（fix-run-cleanup-attach-spec-archive D2/D3）
     deleted = 0
@@ -1258,6 +1269,7 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
         _retention_log(
             logger, "warning", f"runs 保留: spec/changes 扫描失败，本轮跳过无主产物兜底: {e}"
         )
+        errors.append(f"spec/changes 扫描失败，本轮跳过无主产物兜底: {e}")
         active_specs = None
     if active_specs is not None:
         try:
@@ -1296,11 +1308,12 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                         )
         except OSError as e:
             _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
+            errors.append(f"归档目录扫描失败: {e}")
 
     return {
         "moved": moved,
         "deleted": deleted,
         "archive_total": archive_total,
         "deleted_names": deleted_names,
-        "error": None,
+        "error": "; ".join(errors) or None,
     }

@@ -414,11 +414,14 @@ class ApiAssertionRunner:
                 minimum = int(raw_min)
             except (TypeError, ValueError):
                 minimum = None
-        # fail-closed：负数下限对任意事件数（含 0）恒真且不附 error，无意义
-        # 配置被静默放行为假绿，与本文件对 expected 缺失/未知 mode 的
-        # fail-closed 拦截纪律同口径；0 是合法期望（断言零事件），不在拦截之列
-        negative_min = minimum is not None and minimum < 0
-        if negative_min:
+        # fail-closed：负数下限对任意事件数（含 0）恒真；0 下限在「actual >=
+        # minimum」语义下对任意事件数（含非零）同样恒真——按「0 是合法期望
+        # （断言零事件）」写 min=0 的场景将永远通过、恒真假绿。两者均不附
+        # error 即静默放行，与本文件对 expected 缺失/未知 mode 的 fail-closed
+        # 拦截纪律同口径；「断言零事件」须由相等语义断言承载，不在本下限
+        # 词表表达范围内（code-review item 820f6cc34f42）
+        invalid_min = minimum is not None and minimum <= 0
+        if invalid_min:
             minimum = None
         actual = len(events)
         result = {
@@ -428,9 +431,10 @@ class ApiAssertionRunner:
             "pass": minimum is not None and actual >= minimum,
         }
         if minimum is None:
-            if negative_min:
+            if invalid_min:
                 result["error"] = (
-                    f"sse_event_count 的 min 须为非负整数（事件数下限）: {raw_min!r}"
+                    f"sse_event_count 的 min 须为正整数（事件数下限；min=0 恒真、"
+                    f"零事件断言不支持）: {raw_min!r}"
                 )
             else:
                 result["error"] = (
@@ -900,6 +904,13 @@ class ApiAssertionRunner:
                 limit = int(expected)
             except (TypeError, ValueError):
                 limit = None
+        # fail-closed：非正上限（<=0）对任意非负延迟恒假（负上限恒假、0 上限
+        # 对 latency_ms >= 0 恒假），静默 pass=False 且无定向归因会逼 judge 从
+        # expected 自行推断是场景配置错误；口径对齐 sse_event_count 的负/零
+        # min 拦截（code-review item 2b1741d66255）
+        non_positive_limit = limit is not None and limit <= 0
+        if non_positive_limit:
+            limit = None
         # fail-closed：actual（resp.get("latency_ms")）为字符串等非数字时
         # actual < limit 抛 TypeError 被 run() 包成笼统「断言执行异常」，
         # 恰好是本文件处处避免的误归因形态（mock/手写 capture 可能出现，
@@ -920,9 +931,14 @@ class ApiAssertionRunner:
                 "latency_under 缺少数字型 expected，无法与延迟上限对比（fail-closed）"
             )
         elif limit is None:
-            result["error"] = (
-                f"latency_under 的 expected 非数字（毫秒），无法与延迟上限对比: {expected!r}"
-            )
+            if non_positive_limit:
+                result["error"] = (
+                    f"latency_under 的 expected 须为正整数毫秒（延迟上限）: {expected!r}"
+                )
+            else:
+                result["error"] = (
+                    f"latency_under 的 expected 非数字（毫秒），无法与延迟上限对比: {expected!r}"
+                )
         elif actual is None:
             # 无载荷定向归因：SSE 捕获（{type: sse, events, duration}）无
             # latency_ms 采样，静默 pass=False 会逼 judge 自行推断捕获类型

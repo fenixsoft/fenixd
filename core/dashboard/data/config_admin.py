@@ -368,13 +368,18 @@ def _managed_key_sources(raw: dict) -> dict:
         if isinstance(agents_raw.get("subagent_model_override"), str):
             sources["agents.subagent_model_override"] = "project"
     gates_raw = raw.get("gates")
-    if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
+    # code-review item e81d0bce264c：四键统一按合法枚举判定（与 read_config
+    # gates 提取段逐键同款、ConfigLoader 同源）——存在性判定会把手工脏值标成
+    # project，而读侧回显与生效值均已回退缺省，徽标与展示值互相矛盾
+    from core.config import ConfigLoader
+
+    if isinstance(gates_raw, dict) and gates_raw.get("approve_mode") in ConfigLoader.VALID_APPROVE_MODES:
         sources["gates.approve_mode"] = "project"
     # add-draft-promotion-gate：草稿晋升模式显式定义 → project
-    if isinstance(gates_raw, dict) and "promote_mode" in gates_raw:
+    if isinstance(gates_raw, dict) and gates_raw.get("promote_mode") in ConfigLoader.VALID_PROMOTE_MODES:
         sources["gates.promote_mode"] = "project"
     # add-spec-review-gate：方案评审模式显式定义 → project
-    if isinstance(gates_raw, dict) and "spec_review_mode" in gates_raw:
+    if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ("auto", "never"):
         sources["gates.spec_review_mode"] = "project"
     # add-start-after-scope-config：start_after 门控覆盖范围（full/dispatch）
     if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ("full", "dispatch"):
@@ -1074,8 +1079,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"]["subagent_model_override"] = _sro.strip()
 
     # add-harness-adapter-layer 6.3：agent.harness 合并分支（缺分支会静默丢弃
-    # 保存——历史同坑）；前置校验已拒绝词表外非法值，此处只应用合法值
-    if isinstance(patch.get("agent"), dict) and "harness" in patch["agent"]:
+    # 保存——历史同坑）；前置校验已拒绝词表外非法值，此处只应用合法值。
+    # code-review item 87cc1fcac728：显式 null 与「未提交」同义（前置校验对
+    # None 放行），不落盘以免静默覆写存量词表值、读侧归一回缺省
+    if isinstance(patch.get("agent"), dict) and patch["agent"].get("harness") is not None:
         if not isinstance(merged.get("agent"), dict):
             merged["agent"] = {}
         merged["agent"]["harness"] = patch["agent"]["harness"]
@@ -1356,24 +1363,31 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     if "hooks" in patch:
         merged["hooks"] = copy.deepcopy(patch["hooks"])
     # add-stale-code-selfheal：stale_code_selfheal 节两键合并（前置校验已拒绝
-    # 非法值，此处只应用合法值；缺省透传由 get_stale_code_selfheal_config 兜底）
+    # 非法值，此处只应用合法值；缺省透传由 get_stale_code_selfheal_config 兜底）。
+    # code-review item 87cc1fcac728：两键显式 null 与「未提交」同义（前置校验
+    # 对 None 放行），不落盘以免读侧归一回缺省静默翻转存量值
     if "stale_code_selfheal" in patch and isinstance(patch["stale_code_selfheal"], dict):
         if not isinstance(merged.get("stale_code_selfheal"), dict):
             merged["stale_code_selfheal"] = {}
         scs = patch["stale_code_selfheal"]
-        if "enabled" in scs:
+        if scs.get("enabled") is not None:
             merged["stale_code_selfheal"]["enabled"] = scs["enabled"]
-        if "idle_confirm_seconds" in scs:
+        if scs.get("idle_confirm_seconds") is not None:
             merged["stale_code_selfheal"]["idle_confirm_seconds"] = scs["idle_confirm_seconds"]
     # add-framework-self-evolution：self_evolution 三键合并（项目级被拒，此处仅用户级）
     if "self_evolution" in patch and isinstance(patch["self_evolution"], dict):
         if not isinstance(merged.get("self_evolution"), dict):
             merged["self_evolution"] = {}
         se_p = patch["self_evolution"]
-        if "auto_accept" in se_p:
+        # auto_accept / max_items_per_run：显式 null 与「未提交」同义（前置校验
+        # 对 None 放行），不落盘以免读侧归一回缺省静默翻转存量值
+        # （code-review item 87cc1fcac728）
+        if se_p.get("auto_accept") is not None:
             merged["self_evolution"]["auto_accept"] = se_p["auto_accept"]
-        if "max_items_per_run" in se_p:
+        if se_p.get("max_items_per_run") is not None:
             merged["self_evolution"]["max_items_per_run"] = se_p["max_items_per_run"]
+        # spec_run_at 豁免：显式 null 写回 null 是有意设计（取消定时、回到立即
+        # 执行），不受上述 None 守卫约束
         if "spec_run_at" in se_p:
             # null 显式写回 null（= 取消定时，回到立即执行）：不能因「假值不可写」
             # 而保留旧时刻，否则 UI 上关不掉定时

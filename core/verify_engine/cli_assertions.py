@@ -257,17 +257,15 @@ class CliAssertionRunner:
                 m = str(expected) in text
         return (not m) if negate else m
 
-    def _normalize_negate(self, a: dict) -> bool:
-        """negate 显式归一（output_match / file_content / json_output 共用）。
+    def _normalize_bool_field(self, raw, field: str) -> bool:
+        """布尔字段显式归一单实现（negate / exists 共用，防多内联口径漂移）。
 
-        与 _assert_file_exists 对 exists 的归一口径对齐：bool 原样收；数值
-        0/1 按布尔语义映射（与字符串 "1"/"0" 同为无歧义表示；int 分支须在
-        bool 之后——bool 是 int 子类）；字符串按 "true"/"false"/"1"/"0" 解析；
-        其余脏值显式失败——bool("false") 类非空字符串恒真会静默反转断言
-        裁决方向（contains 命中判 fail、negate 场景假绿），且结果 negate
-        字段无从察觉写的是 "false"。
+        bool 原样收；数值 0/1 按布尔语义映射（与字符串 "1"/"0" 同为无歧义
+        表示；int 分支须在 bool 之后——bool 是 int 子类）；字符串按
+        "true"/"false"/"1"/"0" 解析；其余脏值显式失败——bool("false") 类
+        非空字符串恒真会静默反转断言裁决方向（contains 命中判 fail、negate
+        场景假绿），且结果字段无从察觉写的是 "false"。
         """
-        raw = a.get("negate", False)
         if isinstance(raw, bool):
             return raw
         if isinstance(raw, int) and raw in (0, 1):
@@ -278,8 +276,17 @@ class CliAssertionRunner:
         if normalized in ("false", "0"):
             return False
         raise ValueError(
-            f"negate 非法，须为布尔或数值 0/1 或 'true'/'false'/'1'/'0': {raw!r}"
+            f"{field} 非法，须为布尔或数值 0/1 或 'true'/'false'/'1'/'0': {raw!r}"
         )
+
+    def _normalize_negate(self, a: dict) -> bool:
+        """negate 显式归一（output_match / file_content / json_output 共用）。
+
+        与 _assert_file_exists 对 exists 的归一口径对齐：二者共用
+        _normalize_bool_field 单实现（bool 原样收；数值 0/1 按布尔语义映射；
+        字符串四值解析；其余脏值显式失败，详见其 docstring）。
+        """
+        return self._normalize_bool_field(a.get("negate", False), "negate")
 
     def _resolve_under_root(self, raw) -> "Path | None":
         """文件类断言 path/glob 的统一解析护栏：限定在验证树根内。
@@ -329,22 +336,11 @@ class CliAssertionRunner:
 
     async def _assert_file_exists(self, a: dict) -> dict:
         """断言文件/目录存在（exists 缺省 true；path 相对验证树根）。"""
-        # exists 显式归一：bool 原样收；字符串按 "true"/"false"/"1"/"0" 解析；
-        # 其余脏值显式失败——bool("false") 类非空字符串恒真会静默反转断言
-        # 语义产出假失败，与 _assert_exit_code 对非法 expected 的口径对齐
-        raw = a.get("exists", True)
-        if isinstance(raw, bool):
-            want = raw
-        else:
-            normalized = raw.strip().lower() if isinstance(raw, str) else raw
-            if normalized in ("true", "1"):
-                want = True
-            elif normalized in ("false", "0"):
-                want = False
-            else:
-                raise ValueError(
-                    f"exists 非法，须为布尔或 'true'/'false'/'1'/'0': {raw!r}"
-                )
+        # exists 显式归一：与 negate 共用 _normalize_bool_field 单实现
+        # （bool 原样收；数值 0/1 按布尔语义映射；字符串四值解析；其余脏值
+        # 显式失败，防 bool("false") 类非空字符串恒真静默反转断言语义产出
+        # 假失败，与 _assert_exit_code 对非法 expected 的口径对齐）
+        want = self._normalize_bool_field(a.get("exists", True), "exists")
         raw_path = a.get("path", "")
         if raw_path is None or (isinstance(raw_path, str) and not raw_path.strip()):
             # 空/空白 path 经 Path("") 归一为 "." 落回验证树根本体——根本体

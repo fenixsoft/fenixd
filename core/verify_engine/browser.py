@@ -327,7 +327,14 @@ class BrowserManager:
         self._dev_server_port = self._dev_server.server_address[1]
         self._base_url = f"http://127.0.0.1:{self._dev_server_port}"
 
-        thread = threading.Thread(target=self._dev_server.serve_forever, daemon=True)
+        # poll_interval 调小（code-review item 359d056ab56f）：_stop_dev_server
+        # 在 async stop()/start() 失败路径内同步调用 shutdown()，后者会等
+        # serve_forever 线程走到下一个轮询点才返回，缺省 0.5s 间隔使事件循环
+        # 最坏被阻塞约 0.5s（并行场景的事件回调随之延迟）——缩到 50ms 量级，
+        # 轮询开销可忽略
+        thread = threading.Thread(
+            target=self._dev_server.serve_forever, args=(0.05,), daemon=True
+        )
         thread.start()
 
         # 生成独立可运行的 HTML 入口点（绕过 CRXJS 扩展外壳）
@@ -1281,6 +1288,23 @@ class BrowserManager:
                         "error": "drag 缺少目标选择器（value 或 value.to）",
                     }
                 via_sel = cfg.get("via", "")
+                # to/via 选择器 str 归一（code-review item d31c43f215ee）：
+                # 步骤级 value 已 str 归一（08ef327b2c7e），非字符串脏值只会
+                # 出现在 JSON 配置内（{"to": 123}、{"via": ["x"]}），此前原样
+                # 传入 page.locator()，抛 TypeError/PlaywrightError 后被顶层
+                # except 归为 error_type=unknown——与 hold/dwell/via_wait 的
+                # int 归一（44b3d43812ab）同口径，结构化失败并附原始值
+                if not isinstance(to_sel, str) or not isinstance(via_sel, str):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "invalid_drag_config",
+                        "error": (
+                            f"drag 配置 to/via 必须为字符串（选择器）: "
+                            f"to={cfg.get('to')!r} via={cfg.get('via')!r}"
+                        ),
+                    }
                 # hold/dwell/via_wait 的 int 转换单独捕获（code-review item
                 # 44b3d43812ab）：脏值（如 "450ms"、null）此前落入顶层 except
                 # 归为 unknown——与 invalid_wait_value / invalid_scroll_value /

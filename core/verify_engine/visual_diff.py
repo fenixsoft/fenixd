@@ -545,7 +545,18 @@ class VisualDiffer:
             trigger = build_trigger("visual_baseline_suspicious", self.spec_name)
             if trigger:
                 entry["trigger"] = trigger
-            store.append(entry)
+            written = store.append(entry)
+            if written is None:
+                # 下限保护拒写（code-review item f143ae9dbf3d）：append 返回
+                # None＝记录未落盘；newly_suspicious 置位后本告警不再重复
+                # 触发，拒写即永久丢失，须记 WARNING 留痕（与 rollback.py
+                # _emit_mergeback_alert 同口径），不伪造「已写入」。
+                refusal = getattr(store, "last_write_refusal", None)
+                reason = f"：{refusal}" if refusal else ""
+                self._log_warning(
+                    f"visual_baseline_suspicious 告警未落盘 "
+                    f"（admin store 下限保护拒写{reason}，非阻塞）"
+                )
         except Exception as e:
             self._log_warning(f"suspicious 告警发送失败: {type(e).__name__}: {e}")
 

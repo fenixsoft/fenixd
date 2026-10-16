@@ -17,23 +17,24 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）
+# 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）。
+# env 豁免字段与纯函数顶层单点导入（grant_env_exemption 写路径与
+# _env_exemption_candidates / _write_env_exemptions_state 共用；函数内不再
+# 局部重复导入，消除双点漂移面——code-review item 0146da4fe51e。零使用的
+# scenario_definition_hash 不再导入）。
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     parse_orig_status,
     START_AFTER_MANUAL,
     BUDGET_MANUAL_RESET_BASELINE_FIELD,
-    # env 豁免 STATE 字段与纯函数单源（evo-fix-env-exemption-gate-conflict-…
-    # 1.1/1.4：豁免写入、签名推导、场景定义 hash 与校验同源共用）
-    ENV_EXEMPTIONS_FIELD,
-    ENV_EXEMPTION_MAX_ENTRIES,
     SCENARIO_REVISION_COUNT_FIELD,
     SCENARIO_REVISION_MAX_COUNT,
     SCENARIO_REVISION_PENDING_FIELD,
+    ENV_EXEMPTIONS_FIELD,
+    ENV_EXEMPTION_MAX_ENTRIES,
     parse_env_exemptions,
-    scenario_definition_hash,
-    scenario_fail_signature_body,
     serialize_env_exemptions,
+    scenario_fail_signature_body,
 )
 
 # 跨组引用（D4：叶子→中枢，直接导入无环）
@@ -1770,7 +1771,16 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
         return {"ok": False, "found": True, "steps": steps,
                 "target_status": None,
                 "error": "spec 已并发删除，计数清理未落盘"}
-    steps.append("已清零 judge 重跑/验证失败轮等重试计数并解除冻结（保持 blocked）")
+    # 步骤文案按清零后实际 status 回显（code-review item 029ab9a75deb）：
+    # 前置门除 blocked 外还放行 frozen reviewing 与 inconclusive 停车形态
+    # （status=reviewing/implemented），清零 updates 不带 status 键、状态
+    # 保持原值——固定写「保持 blocked」与盘面不符，从清零后最新 entry 取值。
+    kept_status = str(
+        (parse_state(proot).get(spec) or {}).get("status")
+        or entry.get("status") or ""
+    )
+    steps.append(f"已清零 judge 重跑/验证失败轮等重试计数并解除冻结"
+                 f"（保持 {kept_status}）")
 
     # 3. 删该 spec 自己的场景/进度文件（路径按 spec 名精确构造，无 glob）
     vp_dir = proot / ".fenix" / "verify-progress" / spec
@@ -2262,10 +2272,7 @@ def _env_exemption_candidates(project_root, spec: str, disposition_id) -> list:
     report.json 缺位/无场景时返回 []（不臆造豁免对象——下游双门读空清单
     fail-closed，放行退回 disposition 存量通道，行为与历史版本一致）。
     """
-    from core.state_machine import (
-        load_frozen_scenario_hashes,
-        scenario_fail_signature_body,
-    )
+    from core.state_machine import load_frozen_scenario_hashes
     from core.verdict_check import load_report
 
     report = load_report(project_root, spec) or {}
@@ -2310,12 +2317,6 @@ def _write_env_exemptions_state(project_root, spec: str, disposition_id) -> str:
     条目的丢更新面），返回空串=成功、非空=错误文本（调用方 fail-closed
     不执行重置）。
     """
-    from core.state_machine import (
-        ENV_EXEMPTION_MAX_ENTRIES,
-        parse_env_exemptions,
-        serialize_env_exemptions,
-    )
-
     try:
         # 候选构建（报告/冻结定义读取）保持在锁外（resume_cancelled_spec 同款
         # 口径：锁内只做纯内存合并与落盘）。
@@ -2494,6 +2495,16 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
 
     proot = Path(project_root)
     steps: list = []
+    # spec 形态白名单前置（code-review item 9aadf4f53148）：步骤 5b 以裸
+    # spec 拼 verify-progress 写路径并 mkdir 后原子写成对定义文件，仅靠
+    # 「须在 STATE.md 注册」一道门禁不足——手改塞入含路径分隔符/「..」的
+    # 名字可越出 verify-progress 甚至项目根。复用 kebab-case 权威正则白名单
+    # （与 reset_verification 删除路径同防线，item a1e09f8181cd）；合规律
+    # 名字不可能注册进 STATE.md，故按既有 not-found 形状拒绝。
+    spec_shape_error = validate_scheduling_kick_spec(spec)
+    if spec_shape_error:
+        return {"ok": False, "steps": [], "error": spec_shape_error,
+                "frozen_manual": False}
     # 1. 载荷解析（note 传 JSON；裸文本视为缺载荷拒绝——修订 MUST 以结构化
     # 场景集为输入，凭一句「改一下」执行会让修订内容无据可查）
     payload = None
@@ -3392,12 +3403,20 @@ def _claim_untracked_manifest(project_root, signal_type: str, paths=None) -> dic
                       "tracked 桶与 info 信号零 git 写零文件触碰，design D4）"),
         }
     proot = Path(project_root)
-    manifest = _latest_stray_wip_manifest(proot, UNTRACKED_CLAIM_SIGNAL_TYPES[0])
+    # 清单解析与上方绑定守卫共用同一来源（code-review item a830be215f12）：
+    # 遍历白名单各信号类型取最新可解析清单——固定取 [0] 会在白名单扩容时
+    # 让新信号过守卫却永远解析不到自己的记录、恒以「未找到信号记录」失败。
+    manifest: list = []
+    for claim_sig in UNTRACKED_CLAIM_SIGNAL_TYPES:
+        manifest = _latest_stray_wip_manifest(proot, claim_sig)
+        if manifest:
+            break
     if not manifest:
         return {
             "manifest": [], "candidates": [],
-            "error": ("未找到含可解析文件清单的 maintree_untracked_stray_escalated "
-                      "信号记录（清单解析自记录 evidence「文件清单(N):」段），"
+            "error": (f"未找到含可解析文件清单的 "
+                      f"{', '.join(UNTRACKED_CLAIM_SIGNAL_TYPES)} 信号记录"
+                      "（清单解析自记录 evidence「文件清单(N):」段），"
                       "不执行认领写"),
         }
     if paths is not None:

@@ -185,7 +185,9 @@ def merge_dispositions_by_run(records) -> dict:
         if not is_pending and existing[0]:
             best_by_run[rid] = (False, rec)
         # [fenix-ignore:e40a6011ce77] created 写侧恒一：AdminStore 三个写口共用 _normalize_entry 的 setdefault("created", _utcnow_iso())（UTC +00:00 单一后缀族），全部写入点核实无显式传值/改写，同后缀族字典序即时间序
-        elif (rec.get("created") or "") > (existing[1].get("created") or ""):
+        # str(...) or ""：对 created 脏形态（数字等）与字符串同批混排设防，
+        # 与 AdminStore.read_all 同口径，避免异类型比较抛 TypeError
+        elif str(rec.get("created") or "") > str(existing[1].get("created") or ""):
             best_by_run[rid] = (is_pending, rec)
     return best_by_run
 
@@ -241,7 +243,9 @@ def get_admin_activities(project_root, spec=None) -> list:
         activities.append(item)
 
     # 未处理升级关联置顶，组内按时间倒序
-    activities.sort(key=lambda a: (a["_pin"], a.get("created") or ""), reverse=True)
+    activities.sort(
+        key=lambda a: (a["_pin"], str(a.get("created") or "")), reverse=True
+    )
     for a in activities:
         a.pop("_pin", None)
 
@@ -266,6 +270,6 @@ def get_archived_activities(project_root, spec=None) -> list:
     records = AdminStore(project_root).read_archive()
     if spec is not None:
         records = [r for r in records if r.get("spec") == spec]
-    # or ""：对 "created": null 设防，避免 None 与 str 比较抛 TypeError
-    records.sort(key=lambda r: r.get("created") or "", reverse=True)
+    # str(...) or ""：对 created 脏形态（null/数字等）设防，与 read_all 同口径
+    records.sort(key=lambda r: str(r.get("created") or ""), reverse=True)
     return records

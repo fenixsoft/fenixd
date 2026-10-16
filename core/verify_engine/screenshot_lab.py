@@ -16,17 +16,17 @@ from pathlib import Path
 from typing import Any, Dict, Union
 
 # ── 阈值常量 ───────────────────────────────────────────────────
-# 像素标准差阈值（uint8 [0,255] 归一化后 [0,1]）
-# std < 3/255 ≈ 0.0118：纯色图（含纯白/纯黑）的典型值
-BLANK_STD_THRESHOLD = 3.0 / 255.0
-
-# 主色占比阈值：> 99% 像素属于同一颜色 → 纯色图
+# 主色占比阈值：> 99% 像素属于同一颜色 → 纯色图（blank_screenshot 标签）
+# 纯色判定只看主色占比，不以通道值 std 设门槛：std 按跨 RGB 通道展开的
+# 全部通道值计算，灰阶纯色（纯白/纯黑/灰）std=0 固然可命中，但饱和色纯色
+# 图跨通道展开 std 虚高（整屏 (0,128,0) ≈ 0.24、整屏 (0,80,255) ≈ 0.42），
+# 按 std 判定会漏判渲染失败/伪造证据中常见的整屏单色形态
 BLANK_DOMINANT_COLOR_PCT = 0.99
 
 # 低对比度阈值（对齐 skimage exposure.is_low_contrast 的 int8 口径）
 # skimage 默认 low_contrast_limit=0.4（对应直方图累积范围占比）
 # 此处用像素值范围 / std 近似：std < 0.08 且未命中纯色判定即视为低对比度
-# （std 低于 BLANK_STD_THRESHOLD 但主色占比未过线的画面同样归入此标签）
+# （std 很低但主色占比未过线的画面，如 ~98% 单色图，同样归入此标签）
 LOW_CONTRAST_STD_UPPER = 0.08
 
 logger = logging.getLogger("fenixd.verify_engine.screenshot_lab")
@@ -35,22 +35,22 @@ logger = logging.getLogger("fenixd.verify_engine.screenshot_lab")
 def classify_screenshot(
     path: Union[str, Path],
     *,
-    blank_std_threshold: float = BLANK_STD_THRESHOLD,
     blank_dominant_pct: float = BLANK_DOMINANT_COLOR_PCT,
     low_contrast_upper: float = LOW_CONTRAST_STD_UPPER,
 ) -> Dict[str, Any]:
     """对截图做健全性判定，返回结构化标签字典。
 
     标签规则：
-      - blank_screenshot: std < blank_std_threshold 且主色占比 > blank_dominant_pct
+      - blank_screenshot: 主色占比 > blank_dominant_pct（纯色图判定，
+        涵盖灰阶与饱和色纯色；不设通道值 std 门槛——饱和色纯色图跨通道
+        展开 std 虚高，按 std 判定会漏判，见 BLANK_DOMINANT_COLOR_PCT 注释）
       - low_contrast: std < low_contrast_upper 且未命中 blank_screenshot
-        （边界：std 已低于 blank_std_threshold 但主色占比未过 blank_dominant_pct
+        （边界：std 已低于低对比上限但主色占比未过 blank_dominant_pct
         的画面，如 ~98% 单色图，同样归入 low_contrast）
       - 无标签: 正常截图（消费方以「缺标签」为正常态，向后兼容）
 
     Args:
         path: 截图 PNG 文件路径
-        blank_std_threshold: 纯色判定的像素标准差上限（uint8 归一化到 [0,1]）
         blank_dominant_pct: 纯色判定的主色占比下限
         low_contrast_upper: 低对比度判定的 std 上限
 
@@ -63,7 +63,6 @@ def classify_screenshot(
     try:
         return _classify_impl(
             path,
-            blank_std_threshold,
             blank_dominant_pct,
             low_contrast_upper,
         )
@@ -77,7 +76,6 @@ def classify_screenshot(
 
 def _classify_impl(
     path: Union[str, Path],
-    blank_std_threshold: float,
     blank_dominant_pct: float,
     low_contrast_upper: float,
 ) -> Dict[str, Any]:
@@ -137,10 +135,13 @@ def _classify_impl(
         "height": height,
     }
 
-    if pixel_std < blank_std_threshold and dominant_color_pct > blank_dominant_pct:
+    if dominant_color_pct > blank_dominant_pct:
+        # 主色占比过线即独立判定纯色图，不以通道值 std 一票否决：
+        # 饱和色纯色图跨通道展开 std 虚高（如整屏 (0,128,0) ≈ 0.24），
+        # 按 std 判定会漏判整屏单色这类渲染失败/伪造证据形态
         labels["blank_screenshot"] = True
     elif pixel_std < low_contrast_upper:
-        # 未命中纯色判定（含 std 低于纯色阈值但主色占比未过线）且 std 低于低对比上限
+        # 未命中纯色判定（含 std 很低但主色占比未过线）且 std 低于低对比上限
         labels["low_contrast"] = True
     # else: 无标签（正常截图）
 

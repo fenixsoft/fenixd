@@ -183,7 +183,13 @@ class BBackoffMixin:
                 pending = self._backoff_timer_specs = {}
             stale = pending.pop(spec_name, None)
             self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
-            if stale is not None and stale.is_alive():
+            # code-review item 879ad0f12602：对 stale 无条件 cancel（对齐
+            # _schedule_recovery_timer_locked 的重排路径）——cancel 对未 start
+            # 的 Timer 同样生效（run 见 finished 已置位即跳过回调）；原 is_alive()
+            # 门控会漏掉「已登记尚未 start」（start 在锁外执行）的 stale 定时器，
+            # 周期扫描与退避定时器同刻并发重排时残留双在飞定时器，违背本函数
+            # 判重不变式（_on_spec_ready 重复触发、_lock_conflict_count 虚快推进）。
+            if stale is not None:
                 stale.cancel()
             self._backoff_timers.append(timer)
             pending[spec_name] = timer
