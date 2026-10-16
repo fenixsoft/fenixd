@@ -1123,11 +1123,14 @@ def build_prompt(
     text = text.replace(
         "{{DOMAIN_MAP_PATH}}", DOMAIN_MAP_RELPATH
     ).replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
-    # [fenix-ignore:8980a66d334c] 条目描述的两次独立调用 _now_local_parts 在当前代码中不存在：已取一次解包为 now_local/now_tz 复用（见下注）
-    now_local, now_tz = _now_local_parts()
+    # [fenix-ignore:8980a66d334c] 条目描述的两次独立调用 _now_local_parts 在当前代码中不存在：已取一次解包为 now_stamp/now_tz 复用（见下注）
+    # 局部改名 now_stamp：避免与模块级 timelib 原语 now_local 同名遮蔽（函数
+    # 作用域静态绑定，遮蔽后赋值前误用即 UnboundLocalError，code-review
+    # 7d9ab531a3b8）。
+    now_stamp, now_tz = _now_local_parts()
     # 同一份提示词内时间与时区标注取自同一次时钟读数：分两次取值跨分钟/
     # DST 切换边界时两段会不一致（code-review 8980a66d334c）。
-    return text.replace("{{NOW_LOCAL}}", now_local).replace("{{NOW_TZ}}", now_tz)
+    return text.replace("{{NOW_LOCAL}}", now_stamp).replace("{{NOW_TZ}}", now_tz)
 
 
 def _batch_list_block(
@@ -1645,6 +1648,10 @@ def run_backfill(
                     before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                # 异常路径同 not ok 分支差集回滚：否则本段已落盘产出残留，
+                # 重入时落入新段基线被后续 pathspec 提交连带落库、绕过校验
+                # 闸门（code-review 60c14868984d）
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root,
                     f"回填自举校验/修正 run 失败（{run_id}）：{e}",
@@ -1792,6 +1799,10 @@ def run_backfill(
                     before_violations=before_violations,
                 )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                # 异常路径同 not ok 分支差集回滚（同自举段口径，
+                # code-review 60c14868984d）：不让本段残留脏页被后续 pathspec
+                # 提交连带落库
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root,
                     f"回填史前复原校验/修正 run 失败（{run_id}）：{e}",
@@ -1959,10 +1970,20 @@ def run_backfill(
         # 无 design.md 无决策可抽：直接标 distilled 留痕跳过（对齐既有口径），
         # 否则 adr 条目永久 pending——回填无法收敛且排队门不释放
         ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED)
+    no_design_saved = True
     if no_design:
         # 留痕必须落盘：全部归档无 design 时下方批次循环不执行，循环内 save
         # 覆盖不到，台账文件会停在 pending（排队门被永久顶住）
-        ledger.save()
+        try:
+            ledger.save()
+        except OSError as e:
+            # 台账落盘失败不掀翻车道（fail-open，对齐批次循环同款防护）：
+            # distilled 标记已在内存而盘上停在 pending，无 ADR 批次循环 save
+            # 兜底重写时由收尾段受保护重试（code-review 9af86b82d9b7）
+            no_design_saved = False
+            log.warning(
+                "knowledge", f"回填 no_design 台账留痕落盘失败（fail-open）：{e}"
+            )
     adr_batches = [
         with_design[i : i + BATCH_SIZE_MAX]
         for i in range(0, len(with_design), BATCH_SIZE_MAX)
@@ -2063,6 +2084,17 @@ def run_backfill(
         except OSError as e:
             log.warning("knowledge", f"回填收尾台账落盘失败（fail-open）：{e}")
         uncommitted_keys.clear()
+
+    if not no_design_saved and not adr_batches:
+        # no_design 留痕兜底重试（code-review 9af86b82d9b7）：上方落盘失败且
+        # 无 ADR 批次循环 save 覆盖时，收尾段受保护重写全量台账补落 distilled
+        # 标记；仍失败仅再留痕，不让已跑完的车道以未处理异常告终
+        try:
+            ledger.save()
+        except OSError as e:
+            log.warning(
+                "knowledge", f"回填收尾 no_design 台账留痕兜底落盘失败（fail-open）：{e}"
+            )
 
     counts = ledger.counts()
     scale = scale_stats(project_root, log=log)
