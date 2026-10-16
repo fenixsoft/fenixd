@@ -44,6 +44,27 @@ _PORT_BOUNDARY = r"(?=[/\?#\"']|$)"
 _LOCAL_PROBE_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 
 
+def _spec_name_path_error(spec_name: str):
+    """spec 名路径分量校验：合法返回 None，非法返回人类可读原因。
+
+    code-review 2c579adb670f：spec 名直接内插 serving worktree 目录名与
+    boot.log 文件名，含路径分隔符或 ``..`` 分量的名字会把 ``git worktree
+    add``/``open`` 引到 verify-serving 之外或嵌套出子目录。上游 state_machine.
+    add_spec 无字符集约束（evolution/code-review 立项路径有 kebab-case 门，
+    但 spec/changes 目录名等旁路无），故在拼点前按分量拒绝——不做 slug
+    改写（改写目录命名会破坏既有 worktree 与缓存条目的复用确定性）。
+    """
+    if (
+        not spec_name
+        or spec_name in (".", "..")
+        or os.sep in spec_name
+        or (os.altsep and os.altsep in spec_name)
+        or ".." in Path(spec_name).parts
+    ):
+        return f"spec 名含路径分隔符或 '..' 分量，拒绝拼入 serving 路径: {spec_name!r}"
+    return None
+
+
 def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     """serving worktree 供给（static/command 两型共享）。
 
@@ -56,6 +77,13 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         供调用方失败早退分支清理孤儿目录（code-review e3d99b7b7862）。
         server 生命周期（启动/复用/停止）由调用方按 mode 管理。
     """
+    # code-review 2c579adb670f：spec 名先过路径分量校验再拼目录名（下方
+    # f"{spec_name}-{time.time_ns()}"），不合法走既有 (None, None, err)
+    # 失败路径，不把 worktree add 引到 verify-serving 之外
+    unsafe = _spec_name_path_error(spec_name)
+    if unsafe:
+        pipeline._context.logger.warning("pm_engine", unsafe)
+        return None, None, unsafe, False
     serve_root = Path(pipeline._context.project_root) / ".fenix" / "verify-serving"
     # code-review 214ffd2f4934：mkdir 的 OSError（磁盘满/父目录权限/只读 fs）
     # 不再炸穿验证主流程，走既有 (None, None, err) 失败路径——与下方
@@ -223,7 +251,16 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
         old is not None
         and old.get("mode") == "static"
         and old.get("head") == head
+        # code-review 45cdbe96ea1e：HEAD 未变而 verify.yaml serve 段被改动
+        # （落位后、git 提交前的自证重验窗口）时不得复用旧契约实例——对齐
+        # 主树侧 _serve_static_in_main 的 srv.root 比对：复用门前比对写侧
+        # 补存的 serve.root；旧条目缺键 .get 判不匹配触发重建（既有容错口径）
+        and old.get("serve_root") == contract.serve.root
         and isinstance(old.get("server"), StaticVerifyServer)
+        # code-review 3d75f84caf3c：静态服务线程存活门（对齐 command 侧
+        # old["server"].ok 门）——线程意外退出后不再把死实例逐轮复用；
+        # 门不过时仅重建静态服务实例，worktree 目录与产物复用不动
+        and old["server"].alive
         # code-review b7aa1db41ee6：与 _ensure_serving_worktree 同款目录存活
         # 校验——HEAD 未变而 worktree 被外部清掉时，旧实例服务根目录已不存在
         # （复用即场景整批 404），落到下方重建分支改用刚重建的 worktree
@@ -240,11 +277,14 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     if not root_dir.is_dir():
         pipeline._remove_serving_worktree(wt)
         return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
+    # serve_root 补存供复用门比对 verify.yaml serve 段改动
+    # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重建）
     cache[spec_name] = {
         "server": StaticVerifyServer(root_dir),
         "wt_path": wt,
         "head": head,
         "mode": "static",
+        "serve_root": contract.serve.root,
     }
     return pipeline._finalize_static(
         cache[spec_name]["server"], contract, scenarios_path, "验证 worktree"
@@ -279,6 +319,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         old is not None
         and old.get("mode") == "command"
         and old.get("head") == head
+        # code-review 45cdbe96ea1e：HEAD 未变而 verify.yaml serve.cmd 被改动
+        # 时不得复用旧命令实例（与 static 门 serve_root 比对同口径，值补存
+        # 于写侧；旧条目缺键 .get 判不匹配触发重启分支）
+        and old.get("serve_cmd") == (contract.serve.cmd or "")
         and isinstance(old.get("server"), CommandVerifyServer)
         and old["server"].ok
         # code-review b7aa1db41ee6：同 _serve_static_in_worktree——目录消失
@@ -452,11 +496,14 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
                 "pm_engine",
                 f"停止旧 serving 实例 '{spec_name}' 失败（不影响重启）: {e}",
             )
+    # serve_cmd 补存供复用门比对 verify.yaml serve 段改动
+    # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重启）
     cache[spec_name] = {
         "server": srv,
         "wt_path": wt,
         "head": head,
         "mode": "command",
+        "serve_cmd": orig_cmd,
     }
     # verify-process-lifecycle D6：command 型实例创建时登记
     # （pid/port/spec/worktree），终局/周期清扫按 liveness 收割。
@@ -1330,10 +1377,19 @@ def _legacy_selfheal_start(
         if pm:
             base_port = int(pm.group(1))
 
-    pipeline._context.logger.warning(
-        "pm_engine",
-        f"验证目标应用不可达，自动启动服务: {start_cmd}",
-    )
+    # code-review e50ef3822d93：入口告警按探测依据收敛——urls 非空才是
+    # 「探测确认不可达」；urls 为空（仅外链场景集，本机 URL 已被
+    # 53099fb34716 过滤）没有任何本机探测依据，不得宣称「不可达」
+    if urls:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"验证目标应用不可达，自动启动服务: {start_cmd}",
+        )
+    else:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景集无本机入口 URL（仅外链），按兜底执行 commands.start: {start_cmd}",
+        )
 
     # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（与契约
     # spawn 路径同口径——{port} 不在路径段）；主树兜底自启同样在 spawn
@@ -1402,6 +1458,16 @@ def _legacy_selfheal_start(
     # （pid/spec/worktree 空、端口先按 hint；若服务实际监听在邻近端口，
     # 由下方端口上探分支按探测结果修正登记，code-review ce8aa74526a7）
     pipeline._register_serving_instance(spec_name, proc, hint_port=base_port)
+
+    # code-review e50ef3822d93：urls 为空（仅外链场景集——本机 URL 被
+    # 53099fb34716 过滤后零剩余才路由进本助手，见 _ensure_app_reachable
+    # 空集两态分流）时下方探活环 all(...) 空集首轮恒真：sleep 1s 后即宣称
+    # 「已自动启动应用服务」，本地可达性零确认，且会穿透进无意义的邻近
+    # 端口改写分支。显式分流：跳过探活与端口改写，返回可判别的中性 note
+    # （区分「已 spawn」与「已确认可达」）
+    if not urls:
+        boot_log.close()
+        return True, False, "已执行 commands.start，场景集无本机入口 URL，跳过可达性确认"
 
     for _ in range(LEGACY_START_PROBE_ATTEMPTS):
         time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
@@ -1538,6 +1604,15 @@ def _open_boot_log(pipeline, spec_name: str):
     控制单轮大小（验证实例生命周期短，分钟级，接受无界增长）。
     """
     log_dir = Path(pipeline._context.project_root) / ".fenix" / "verify-serving"
+    # code-review 2c579adb670f：与 _ensure_serving_worktree 同一助手——
+    # 非法 spec 名按既有 OSError 兜底口径回退写 os.devnull（保持可 close
+    # 的文件对象语义），不把 open 引到 verify-serving 之外
+    unsafe = _spec_name_path_error(spec_name)
+    if unsafe:
+        pipeline._context.logger.warning(
+            "pm_engine", f"{unsafe}（boot.log 回退写 os.devnull）"
+        )
+        return open(os.devnull, "wb")
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         return open(log_dir / f"{spec_name}-boot.log", "wb")
