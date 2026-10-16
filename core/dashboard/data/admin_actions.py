@@ -18,11 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）。
-# env 豁免字段与纯函数（ENV_EXEMPTIONS_FIELD、parse_env_exemptions、
-# serialize_env_exemptions、ENV_EXEMPTION_MAX_ENTRIES、
-# scenario_fail_signature_body）及场景定义 hash（scenario_definition_hash）
-# 只由消费函数局部导入（_env_exemption_candidates / _write_env_exemptions_state），
-# 顶层不重复持有（code-review item 0146da4fe51e）。
+# env 豁免字段与纯函数顶层单点导入（grant_env_exemption 写路径与
+# _env_exemption_candidates / _write_env_exemptions_state 共用；函数内不再
+# 局部重复导入，消除双点漂移面——code-review item 0146da4fe51e。零使用的
+# scenario_definition_hash 不再导入）。
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     parse_orig_status,
@@ -31,6 +30,11 @@ from core.state_machine import (
     SCENARIO_REVISION_COUNT_FIELD,
     SCENARIO_REVISION_MAX_COUNT,
     SCENARIO_REVISION_PENDING_FIELD,
+    ENV_EXEMPTIONS_FIELD,
+    ENV_EXEMPTION_MAX_ENTRIES,
+    parse_env_exemptions,
+    serialize_env_exemptions,
+    scenario_fail_signature_body,
 )
 
 # 跨组引用（D4：叶子→中枢，直接导入无环）
@@ -2268,10 +2272,7 @@ def _env_exemption_candidates(project_root, spec: str, disposition_id) -> list:
     report.json 缺位/无场景时返回 []（不臆造豁免对象——下游双门读空清单
     fail-closed，放行退回 disposition 存量通道，行为与历史版本一致）。
     """
-    from core.state_machine import (
-        load_frozen_scenario_hashes,
-        scenario_fail_signature_body,
-    )
+    from core.state_machine import load_frozen_scenario_hashes
     from core.verdict_check import load_report
 
     report = load_report(project_root, spec) or {}
@@ -2316,12 +2317,6 @@ def _write_env_exemptions_state(project_root, spec: str, disposition_id) -> str:
     条目的丢更新面），返回空串=成功、非空=错误文本（调用方 fail-closed
     不执行重置）。
     """
-    from core.state_machine import (
-        ENV_EXEMPTION_MAX_ENTRIES,
-        parse_env_exemptions,
-        serialize_env_exemptions,
-    )
-
     try:
         # 候选构建（报告/冻结定义读取）保持在锁外（resume_cancelled_spec 同款
         # 口径：锁内只做纯内存合并与落盘）。
