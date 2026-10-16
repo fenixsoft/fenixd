@@ -90,6 +90,14 @@ _FIELD_RE = re.compile(r"^ {2,}-\s+([^：]+)：(.*)$")
 # 注册进 STATE（code-review item bd2227732d7e）。
 _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 
+# 条目 id 形态白名单：item_id 产出的 12 位小写 hex（结尾锚用 \Z 同 _KEBAB_RE
+# 纪律——$ 会放行尾部换行，恰是本白名单要挡的形态）。契约层对 agent 产出
+# 字符串 id 的内容面校验：任意多行文本 id 会经批末合并提交的 message_suffix
+# （``- {eid}``）原样写进源项目 git commit 正文，污染「按条目 id 对账」的
+# 审计线索（code-review item 2b0d1be7bb07）。不满足白名单不硬拒：摘除该 id
+# 让落库侧按 item_id 复算回落（既有合法 id 均为本形态，不会被拒收）。
+_ENTRY_ID_RE = re.compile(r"^[0-9a-f]{12}\Z")
+
 # .spec.yaml 模板（内容 schema/created/mode 三行）
 SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
 
@@ -112,6 +120,19 @@ def item_id(project: str, date_section: str, section: str, title: str) -> str:
         f"{project}\x1f{date_section}\x1f{section}\x1f{title}".encode("utf-8")
     ).hexdigest()
     return digest[:12]
+
+
+def _resolve_entry_id(item: dict) -> str:
+    """条目 id 解析单点：缺失/空回落 ``item_id`` 复算（materialize_draft /
+    ingest_item 共用，code-review item 3fa3a1e7625a）——身份键构成字段调整
+    只改此处，防两份内联回落改一漏一。"""
+    eid = item.get("id") or item_id(
+        str(item.get("project", "")),
+        str(item.get("date_section", "")),
+        str(item.get("section", "")),
+        str(item.get("title", "")),
+    )
+    return str(eid or "")
 
 
 # ── 任务 2.2：items.jsonl 读写 ──────────────────────────────────────
@@ -274,7 +295,9 @@ def watermarks_path(project_root) -> Path:
 
 def _normalize_watermarks(data: Any) -> Dict[str, dict]:
     """水位字段校验/归一化单点收口，``read_watermarks`` / ``write_watermarks``
-    共用同一口径（读写往返数据不得分叉，item bd65361dc103）。
+    / ``advance_watermark`` 锁内读取共用同一口径（读写往返数据不得分叉，
+    item bd65361dc103；advance_watermark 的内联副本已收编至此，code-review
+    item c1bd7a65fa15）。
 
     逐项目校验：``wm`` 非 dict 跳过、``last_analyzed_at`` 须非空字符串、
     ``last_run_id`` 非字符串兜底空串；顶层非 dict 返回空 dict。
@@ -307,7 +330,12 @@ def read_watermarks(project_root) -> Dict[str, dict]:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # errors="replace"：坏字节降级为替换符、由 json.loads 判失败走上方容
+        # 错分支——UnicodeDecodeError 非 OSError、不在捕获列表内，裸穿透会
+        # 掀翻循环外调用方（scan_ready_projects）的整轮就绪扫描（与
+        # items.jsonl/todo.md 同口径，code-review 365a1932a94c，item
+        # 649eda334961）
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return {}
     return _normalize_watermarks(data)
@@ -338,13 +366,15 @@ def advance_watermark(project_root, project: str, snapshot_at: str, run_id: str)
         current: Dict[str, dict] = {}
         if path.is_file():
             try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
+                # errors="replace"：坏字节降级为替换符、由 json.loads 判失败走
+                # 下方容错分支——UnicodeDecodeError 非 OSError、不在捕获列表
+                # 内（与 365a1932a94c 同口径，code-review item 649eda334961）
+                loaded = json.loads(path.read_text(encoding="utf-8", errors="replace"))
             except (OSError, json.JSONDecodeError):
                 loaded = {}
-            if isinstance(loaded, dict):
-                for proj, wm in loaded.items():
-                    if isinstance(wm, dict) and isinstance(wm.get("last_analyzed_at"), str):
-                        current[proj] = wm
+            # 归一化收口到 _normalize_watermarks（与读写路径同口径防形态漂移，
+            # item bd65361dc103；code-review item c1bd7a65fa15 删内联副本）
+            current = _normalize_watermarks(loaded)
         current[project] = {
             "last_analyzed_at": snapshot_at,
             "last_run_id": run_id,
@@ -1185,16 +1215,10 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     if missing:
         return None, f"spec 内容缺必备文档: {', '.join(missing)}"
 
-    eid = item.get("id") or item_id(
-        str(item.get("project", "")),
-        str(item.get("date_section", "")),
-        str(item.get("section", "")),
-        str(item.get("title", "")),
-    )
-    eid = str(eid or "")
+    eid = _resolve_entry_id(item)
     # 路径越界校验（code-review item 79a8a0a141f5，与 reject_item/delete_item
-    # 同款防护）：eid 来自 agent 产出 JSON（read_contract 只校验 id 为字符串，
-    # 不校验内容），可携带
+    # 同款防护）：eid 源自 agent 产出 JSON（契约层已做单行形态白名单，非契约
+    # 入口/历史库内条目仍可能不合规），可携带
     # ``..`` 或路径分隔符——直接拼草稿路径可写出 drafts 基目录。越界拒绝落盘
     # （调用方置 draft_failed）。
     d = _safe_draft_dir(project_root, eid)
@@ -1320,12 +1344,7 @@ def ingest_item(item: dict, project_root) -> str:
     verdict = item.get("verdict") if isinstance(item, dict) else None
     worth_spec = bool(isinstance(verdict, dict) and verdict.get("worth_spec"))
     title = str(item.get("title", ""))
-    eid = item.get("id") or item_id(
-        str(item.get("project", "")),
-        str(item.get("date_section", "")),
-        str(item.get("section", "")),
-        title,
-    )
+    eid = _resolve_entry_id(item)
 
     base = {
         "id": eid,
@@ -1383,7 +1402,10 @@ def ingest_item(item: dict, project_root) -> str:
             eid, base["worth_gate_reason"],
         )
         upsert_item(project_root, base)
-        write_todo_marker(base, commit=False)
+        # 处置文案可区分（code-review item 82c54e2f68ac）：闸门拦下即终态
+        # analyzed（accept_item 只受理 pending/accept_failed），todo.md 标记
+        # 不得再渲染「处理：待处理」误导人类读者以为框架仍将立项
+        write_todo_marker(base, disposition="闸门拦下", commit=False)
         return "analyzed"
 
     # B2 同名在途：spec/changes/evo-<name>/ 已存在 → 同一问题域重复立项
@@ -1405,7 +1427,7 @@ def ingest_item(item: dict, project_root) -> str:
                 eid, inflight,
             )
             upsert_item(project_root, base)
-            write_todo_marker(base, commit=False)
+            write_todo_marker(base, disposition="闸门拦下", commit=False)
             return "analyzed"
 
     d, reason = materialize_draft(base, project_root)
@@ -2351,11 +2373,14 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
             summary["details"].append({"id": rec["id"], "ok": False, "error": str(e)})
             continue
         if result.get("ok"):
-            summary["accepted"] += 1
-            # 只有本循环内真正走完立项成功分支的条目写了标记（幂等返回的
-            # 现状条目不写），明细只收这些 id。标记回写按条目 project 字段
-            # 经 registry 解析，批末提交按同名项目收口，与写入口径对称
+            # accepted 只计真正走完立项成功分支的 auto_accepted：幂等返回的
+            # 现状条目（并发下已被他方接受/拒绝/分析等）不算本方接受，否则
+            # 双消费者竞态下汇总虚报、极端时把 rejected 计成 accepted
+            # （code-review item 9b358fdd4d78）。只有这些条目写了标记，明细
+            # 同口径只收这些 id；标记回写按条目 project 字段经 registry 解析，
+            # 批末提交按同名项目收口，与写入口径对称
             if result.get("status") == "auto_accepted":
+                summary["accepted"] += 1
                 project_name = str(rec.get("project") or "")
                 if project_name:
                     accepted_by_project.setdefault(project_name, []).append(rec["id"])
@@ -2402,7 +2427,10 @@ def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     - ``id`` 若提供必须为字符串（缺失回落 ``item_id`` 复算）。非字符串真值
       id 直达 ``upsert_item`` 会使 ``sorted()`` 混排 str/int 键抛 TypeError，
       该条目每轮复现同一异常成永久阻塞（code-review item a29d89428f7f），
-      故在契约层整轮拒绝。
+      故在契约层整轮拒绝。字符串 id 另过单行形态白名单（``_ENTRY_ID_RE``，
+      item_id 同款 12 位小写 hex）：不满足不硬拒，摘除该 id 由落库侧回落
+      复算——任意多行文本 id 会经批末合并提交的 message_suffix 原样写进
+      源项目 git commit 正文（code-review item 2b0d1be7bb07）。
 
     单条目契约错误（上面后三条）默认（``lenient=False``）保持整份拒绝，
     既有调用方行为不变；``lenient=True``（evo-add-evolution-contract-
@@ -2465,6 +2493,14 @@ def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     for idx, item in enumerate(items):
         msg = _validate_item(item, idx)
         if msg is None:
+            # 字符串 id 再过形态白名单（code-review item 2b0d1be7bb07）：任意
+            # 多行文本 id 会经批末合并提交的 message_suffix（``- {eid}``）
+            # 原样写进源项目 git commit 正文，污染按条目 id 对账的审计线索
+            # （design D3）。不满足白名单不硬拒——既有合法 id 均为 item_id
+            # 的 12 位 hex 形态，摘除后由落库侧 _resolve_entry_id 回落复算。
+            raw_id = item.get("id")
+            if isinstance(raw_id, str) and raw_id and not _ENTRY_ID_RE.match(raw_id):
+                del item["id"]
             valid_items.append(item)
         elif lenient:
             # 宽口径：单条非法只牺牲该条，错误清单随返回值上交落库侧归因。
