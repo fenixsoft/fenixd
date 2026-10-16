@@ -901,6 +901,7 @@ const SuggestedImprovementsPanel = forwardRef<
   const latestViewStateRef = useRef({
     viewVisible,
     viewIndex,
+    viewItem,
     filterStatus,
     filterProject,
     filterDateRange,
@@ -909,6 +910,7 @@ const SuggestedImprovementsPanel = forwardRef<
     latestViewStateRef.current = {
       viewVisible,
       viewIndex,
+      viewItem,
       filterStatus,
       filterProject,
       filterDateRange,
@@ -941,7 +943,7 @@ const SuggestedImprovementsPanel = forwardRef<
     // 翻页或改过滤，闭包捕获的 viewVisible/viewIndex/过滤值已过时，「窗内
     // 翻页 vs 关窗」决策与回退 seq[viewIndex] 可能出错。统一经 ref 取最新
     // 提交态。
-    const { viewVisible: visibleNow, viewIndex: idxNow,
+    const { viewVisible: visibleNow, viewIndex: idxNow, viewItem: viewingNow,
       filterStatus: statusNow, filterProject: projectNow,
       filterDateRange: dateRangeNow } = latestViewStateRef.current;
     const seq = items.filter((item) =>
@@ -957,7 +959,17 @@ const SuggestedImprovementsPanel = forwardRef<
     // 当前条目仍在过滤结果里 → 取其后的那一条；已被过滤掉（状态变了，例如
     // 「待决策」筛选下同意后的条目）→ 后续条目整体前移一格，原下标处就是它的
     // 后继（也是用户眼里原来位于下方的那一行）。
-    const target = idx >= 0 ? seq[idx + 1] : seq[idxNow];
+    //
+    // 「原下标」只在用户仍停在动作条目上时成立：在飞窗口内已翻到别的条目时
+    // （viewingNow ≠ current），current 被移除会令其后继再前移一格，原下标处
+    // 反而是所看条目的下一条——兜底改按最新查看条目在 seq 里的位置取后继
+    // （它也被过滤冲掉时才退回 idxNow）。
+    let fallbackIdx = idxNow;
+    if (idx < 0 && viewingNow && viewingNow.id !== current.id) {
+      const viewIdx = seq.findIndex((i) => i.id === viewingNow.id);
+      if (viewIdx >= 0) fallbackIdx = viewIdx + 1;
+    }
+    const target = idx >= 0 ? seq[idx + 1] : seq[fallbackIdx];
     // 只有「查看」弹窗开着时才在窗内翻页——操作列菜单发起的同名动作没有
     // 弹窗可翻，保持原行为（仅刷新表格）。
     if (target && visibleNow) {
@@ -1170,8 +1182,11 @@ const SuggestedImprovementsPanel = forwardRef<
                 <Form.Item
                   name="spec_run_at"
                   noStyle
-                  // 表单内以 "HH:mm" 字符串存取（配置同形态），控件收发 dayjs
-                  normalize={(v: Dayjs | null) => (v ? v.format('HH:mm') : null)}
+                  // 表单内以 "HH:mm" 字符串存取（配置同形态），控件收发 dayjs。
+                  // 删空输入文本会以 null 触发 onChange（allowClear 挡不住），
+                  // 此时回写上一值：否则 collect 以 || DEFAULT 折叠，配置被静默
+                  // 改成缺省时刻
+                  normalize={(v: Dayjs | null, prev: string | null) => (v ? v.format('HH:mm') : prev ?? null)}
                   getValueProps={(v: string | null) => ({ value: v ? dayjs(v, 'HH:mm') : null })}
                 >
                   {/* allowClear=false：noStyle 字段不渲染校验文案，若允许清空会
