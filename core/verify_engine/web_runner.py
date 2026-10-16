@@ -547,7 +547,11 @@ async def probe_web_environment(
         healthy = await asyncio.to_thread(probe_http_health, base, timeout=2.0)
         detail = f"HTTP 探测 {base}: {'连通' if healthy else '失联'}"
     # 推流检查（扩展项目 / 浏览器可用时）
-    if healthy and browser.is_extension_project:
+    # code-review item af9a13d07f10：同款 getattr 防御，替身缺
+    # is_extension_project 时 AttributeError 会穿出探针链路，违背
+    # 「探针无法完成时保守判健康」契约；与 engine._fallback_environment_probe
+    # 的 getattr(self.browser, "is_extension_project", False) 同口径。
+    if healthy and getattr(browser, "is_extension_project", False):
         try:
             push_ok = await _probe_web_push(browser, logger=logger)
             healthy = healthy and push_ok
