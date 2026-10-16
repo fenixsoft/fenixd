@@ -246,6 +246,15 @@ class VerifyEngine:
                         f"场景'{s.id}' depends_on 元素必须为场景ID字符串，"
                         f"收到 {type(dep).__name__}"
                     )
+                elif dep == s.id:
+                    # 自依赖（code-review item 1c64a79fa74f）：场景自身 id 已
+                    # 在 seen_ids 内，悬空校验拦不住；放行到执行期就绪判定
+                    # all(dep in completed_ids) 永不满足，落入「ready 为空 →
+                    # 全部并发」兜底，绕过资源组互斥与依赖失败传播——与悬空
+                    # 依赖同口径在此打回 plan。
+                    acceptance_errors.append(
+                        f"场景'{s.id}' depends_on 自引用（场景不能依赖自身）"
+                    )
                 elif dep not in seen_ids:
                     acceptance_errors.append(
                         f"场景'{s.id}' depends_on 引用不存在的场景 id '{dep}'"
@@ -732,7 +741,8 @@ class VerifyEngine:
         # _execute_parallel 的结算口径（r.get("status")）对齐——验收门只校验
         # 场景定义、不校验 Runner 结果形状，Runner.execute 返回缺 status 键的
         # 结果时直接下标会抛 KeyError 穿出 run()（此时 teardown 已完成、报告
-        # 无法落盘）；缺键在此归入非失败档（不计入任何分档，total 仍计数）。
+        # 无法落盘）；缺键在此归入 errors 分档（保守判失败而非静默放行，保证
+        # total 恒等于各分档之和，code-review item 18ccbdcf225b）。
         passed = sum(1 for r in scenario_results if r.get("status") == "pass")
         warnings = sum(1 for r in scenario_results if r.get("status") == "warning")
         # 终态失败两档计数与依赖失败传播判定共用 TERMINAL_FAILURE_STATUSES
@@ -741,6 +751,9 @@ class VerifyEngine:
             sum(1 for r in scenario_results if r.get("status") == st)
             for st in TERMINAL_FAILURE_STATUSES
         )
+        # 缺 status 键的畸形 Runner 结果计入 errors 档（见上），分档和与
+        # total 对账一致，不再出现 total > 分档和的缺口
+        errors += sum(1 for r in scenario_results if "status" not in r)
         blocked_env = sum(1 for r in scenario_results if r.get("status") == "blocked-env")
 
         # blocked-env 计入 warning 统计而非 fail（spec verify-environment-sanity-gate），
