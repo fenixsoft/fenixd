@@ -2419,8 +2419,8 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
     重验计时器在 daemon 重启后丢失（进程内对象）——属于预期，兜底由
     ``_dispatch_backoff_until`` + ``event_bus._recover_testing`` 周期扫描承担；
     MUST NOT 依赖「定时器与周期扫描只触发其一」——两者可能同时到期，幂等由
-    `_enqueue` 按 (spec, agent_type) 去重与 queue.py `_process_queue` 内
-    `self._pm._dispatch_backoffed(spec)` 门保证只起一次 verifier run。
+    `_enqueue` 按 (spec, agent_type) 去重与 queue.py `_process_queue` 内的
+    `_dispatch_backoffed(spec)` 门保证只起一次 verifier run。
 
     Args:
         pipeline: VerificationPipeline 实例（经 `_context` 触达 state_machine/
