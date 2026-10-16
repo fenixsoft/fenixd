@@ -53,6 +53,7 @@ from core.code_review import (
 )
 from core.agent_runner.run_files import append_run_line
 from core.proc_utils import guard_killpg
+from core.self_review import REVIEW_OUT_PREFIX as _SELF_REVIEW_OUT_PREFIX
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
 # 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
@@ -609,7 +610,7 @@ def _unique_self_review_run_id(runner, date_str: str) -> str:
         runs_dir,
         "{}.jsonl",
         probe=lambda candidate: (
-            runner.project_root / ".fenix" / f"self_review_out-{candidate}.json"
+            runner.project_root / ".fenix" / f"{_SELF_REVIEW_OUT_PREFIX}{candidate}.json"
         ).exists(),
         placeholder=None,
     )
@@ -655,7 +656,9 @@ def run_self_review(
             （历史调用方）归一空串，落 prompt_builder 意外空值兜底。
     """
     run_id = _unique_self_review_run_id(runner, date_str)
-    out_path = runner.project_root / ".fenix" / f"self_review_out-{run_id}.json"
+    out_path = (
+        runner.project_root / ".fenix" / f"{_SELF_REVIEW_OUT_PREFIX}{run_id}.json"
+    )
     prompt = runner._build_prompt(
         date_str,
         "self-review",
