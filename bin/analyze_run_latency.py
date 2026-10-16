@@ -82,7 +82,7 @@ def expand_globs(paths) -> list:
             out.append(p)
             continue
         # 尝试 glob（含递归）
-        matched = sorted(Path(m) for m in glob.glob(str(p)))
+        matched = sorted(Path(m) for m in glob.glob(str(p), recursive=True))
         if not matched:
             # 既不存在也无 glob 匹配：向 stderr 告警后跳过，与文档一致
             print(f"[analyze_run_latency] 路径无匹配，跳过: {raw}", file=sys.stderr)

@@ -76,6 +76,13 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+  // 保存发起帧的草稿快照（code-review item d1a83d92adf1，比照 PromptsPanel
+  // ea3dc8b8bd53 口径）：以 ref 同帧固化本次提交的 todoDraft。TextArea 的
+  // disabled={todoLoading || saving} 是 state 口径、setSaving 渲染生效有调度
+  // 间隙（同上方 savingRef 条目结论），点击保存同帧内键入的字符会进草稿却不
+  // 在已提交的 saveTodo 载荷里；回读回填前与快照对账，不一致则保留现值不回
+  // 填，避免这几个字符被磁盘值静默覆盖。
+  const savedDraftRef = useRef<string>('');
   // 上次回填的 self_review 序列化值（配合下方 effect 的回填门控）
   const lastSelfReviewBackfillRef = useRef('');
 
@@ -169,6 +176,10 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // 不认领草稿归属（todoDraftOwnerRef 保持 undefined），恒被 165 行守卫拦截；
     // 「已阻止保存」的用户说明由页面上的 todo-load-error-alert Alert 承担
     savingRef.current = true;
+    // 固化提交快照（code-review item d1a83d92adf1）：与下方 saveTodo 载荷读
+    // 同一个闭包 todoDraft，同帧原子记录，供保存成功后的回读回填前对账（见
+    // 回填处注释）。
+    savedDraftRef.current = todoDraft;
     setSaving(true);
     // 发起时的作用域快照（code-review item 522b3bd7ae53）：下方 todo.md
     // 覆写/回读续段执行前与 projectRef 比对，作用域已切换即中止——否则
@@ -229,7 +240,13 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         // saveTodo await 期间作用域再切换：丢弃迟到的旧项目回读，
         // 不回填新作用域面板（code-review item 522b3bd7ae53）
         if (projectRef.current !== projectAtStart) return;
-        setTodoDraft(d.content);
+        // 回填前与提交快照对账（code-review item d1a83d92adf1，比照 PromptsPanel
+        // ea3dc8b8bd53）：TextArea 的 disabled={todoLoading || saving} 是 state
+        // 口径、setSaving 渲染生效有调度间隙（同上方 savingRef 条目结论），点击
+        // 保存同帧内键入的字符已进草稿却不在已提交的 saveTodo 载荷里，无条件
+        // 回填会将其静默覆盖。故函数式更新读取回填时刻的最新草稿，仍与快照一致
+        // 才回填磁盘内容，否则保留现值。
+        setTodoDraft((prev) => (prev === savedDraftRef.current ? d.content : prev));
         setTodoExists(d.exists);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);

@@ -1570,6 +1570,13 @@ class StaticVerifyServer:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._port}"
 
+    @property
+    def alive(self) -> bool:
+        """服务线程存活（code-review 3d75f84caf3c）：serving 复用门据此
+        对齐 CommandVerifyServer.ok 门——服务线程意外退出后不得把死实例
+        当现存实例逐轮复用。"""
+        return self._thread.is_alive()
+
     def stop(self):
         try:
             self._httpd.shutdown()

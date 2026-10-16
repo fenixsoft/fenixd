@@ -9,8 +9,10 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
 - 以硬超时运行全量套件，启用 faulthandler（``-p faulthandler
   -o faulthandler_timeout=<N>``，pytest 9 起 CLI 参数 ``--faulthandler-timeout``
   已移除、改为 ini 配置项），挂起时打印各线程栈；
-- 超时/挂起时中止子进程**组**（SIGTERM 优雅窗口后 SIGKILL 兜底，孙进程一并
-  中止）并输出**挂起测试标识**（faulthandler 栈顶用例）；
+- 超时/挂起时中止子进程**组**（SIGTERM 优雅窗口后对整组补发 SIGKILL，孙进程
+  一并中止）并输出**挂起测试标识**（faulthandler 栈顶用例）；
+- 子进程输出落盘匿名临时文件，回读与磁盘占用双有界（回读留尾部窗口，收割
+  线程周期截断回收磁盘，失控输出不再无界涨盘）；
 - 正常结束返回 pytest 完整输出与退出码；
 - ``--baseline <ref>``：在基线 ref 的临时 worktree 跑同一套件，输出两侧失败集合
   差异并给出「存量 / 本次引入」归类（混合情形判为存在本次引入回归）；
@@ -35,6 +37,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -71,6 +74,14 @@ BASELINE_TIMEOUT_SECONDS = 7200
 # 等，同 docstring 所述 I/O 事故形态）只回读尾部——FAILED 摘要与 faulthandler
 # 栈集中在输出后段，尾部足以支撑提取，父进程内存占用恒有上界。
 OUTPUT_READBACK_LIMIT_BYTES = 64 * 1024 * 1024
+
+# 输出临时文件的磁盘收割窗口（code-review item 77429f359c2d）：子进程对临时
+# 文件的写入量本身不受限，失控输出在硬超时窗口内可持续涨盘。收割线程
+# （_drain_output_disk）周期把文件截到尾部该窗口：ftruncate 不回退子进程
+# 写偏移，被截区间留稀疏洞、不占实际磁盘块（tmpfs 亦不占页），磁盘占用
+# 上界 ≈ 窗口 + 单个轮询周期内的新增写入。窗口 ≥ 回读上限（4 倍冗余），
+# _read_back_output 的尾部回读不受影响。
+OUTPUT_DISK_KEEP_BYTES = 4 * OUTPUT_READBACK_LIMIT_BYTES
 
 PYTEST_BASE_ARGS = [
     "pytest",
@@ -197,25 +208,52 @@ def _read_back_output(stream, limit: int = OUTPUT_READBACK_LIMIT_BYTES) -> str:
     return text
 
 
+def _drain_output_disk(fds, stop_event, keep=OUTPUT_DISK_KEEP_BYTES, poll_seconds=1.0) -> None:
+    """收割线程体：周期把输出临时文件截到尾部 keep 窗口，回收磁盘（有界收割）。
+
+    子进程（含逃过 killpg 的游离孙进程）对输出临时文件的写入量本身不受限，
+    本线程周期把文件截到尾部 keep 字节，使失控输出的磁盘占用有界（内存/
+    磁盘双有界）。截断只丢尾部窗口之外的旧数据：ftruncate 不回退子进程写
+    偏移，被截区间成为稀疏洞（不占实际块），末段 keep ≥ 回读上限，
+    _read_back_output 的尾部回读不受影响。任何异常（fd 失效等）直接停机——
+    fail-open 退化为「磁盘维度无界」的现状，不干扰主流程。
+    """
+    while not stop_event.wait(poll_seconds):
+        try:
+            for fd in fds:
+                size = os.fstat(fd).st_size
+                if size > keep:
+                    os.ftruncate(fd, size - keep)
+        except Exception:
+            return
+
+
 def run_command(cmd, timeout, cwd, env=None) -> tuple:
     """运行命令并在超时时中止（进程组 SIGTERM→SIGKILL 兜底）；返回 (rc, stdout, stderr, timed_out)。
 
     子进程以独立进程组启动（``start_new_session=True``）：超时先对整组发
-    SIGTERM 给短暂优雅窗口，未退出再 SIGKILL 整组——pytest 拉起的孙进程
-    （v2 dev server、daemon 集成类测试等）一并中止，不留孤儿继续占端口/内存。
-    进程已退出（ProcessLookupError）等 killpg 失败静默吞掉。
+    SIGTERM 给短暂优雅窗口，宽限期结束再对整组**无条件**补发 SIGKILL（不
+    论组长是否已退出——组长通常即刻退出，SIGKILL 若只挂在 wait 超时分支，
+    组内忽略 SIGTERM 的幸存孙进程会逃过清扫；组已空时补发是无害 no-op）
+    ——pytest 拉起的孙进程（v2 dev server、daemon 集成类测试等）一并中止，
+    不留孤儿继续占端口/内存。进程已退出（ProcessLookupError）等 killpg
+    失败静默吞掉。
     超时 kill 后仍读取已产出的输出（faulthandler 栈对挂起定位是关键证据）。
 
     输出经系统匿名临时文件落盘而非管道（code-review item 4865784b5be5）：
     失控输出（死循环 print 等）只涨文件不涨内存，回读另有上限
     （_read_back_output）——管道方案下 communicate 全量缓冲可在硬超时窗口
-    内被撑到 OOM，且游离孙进程持有管道写端会让 EOF 迟迟不到。收割纪律与
-    bin/test_for.run_bounded 同口径：SIGTERM/SIGKILL 阶梯后无条件 wait 收尾，
-    不留僵尸（code-review item 05c30167fbc9）。
+    内被撑到 OOM，且游离孙进程持有管道写端会让 EOF 迟迟不到。收割线程
+    （_drain_output_disk）另把临时文件周期截到尾部窗口，磁盘占用同样有界
+    （code-review item 77429f359c2d）。收割纪律与 bin/test_for.run_bounded
+    同口径：SIGTERM/SIGKILL 阶梯后无条件 wait 收尾，不留僵尸（code-review
+    item 05c30167fbc9）。
     """
     # 匿名临时文件（系统临时目录、创建即 unlink、随 with 块关闭）：
     # 不经 .fenix/ 也不在系统 /tmp 留命名残留；游离孙进程逃过 killpg 时
     # 仍持继承 fd 继续写，只影响文件内容不影响本函数返回（不阻塞）。
+    # 子进程写入量本身不受限，磁盘维度由收割线程截到尾部窗口有界化
+    # （见 _drain_output_disk / OUTPUT_DISK_KEEP_BYTES）。
     with tempfile.TemporaryFile("w+b") as out_file, tempfile.TemporaryFile("w+b") as err_file:
         proc = subprocess.Popen(
             cmd,
@@ -225,6 +263,21 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
             env=env,
             start_new_session=True,
         )
+        # 有界收割（code-review item 77429f359c2d）：后台线程周期把输出临时
+        # 文件截到尾部窗口回收磁盘（子进程写入量本身无上限）；线程起不来或
+        # 中途异常均 fail-open 退化为磁盘维度无界的现状，不干扰主流程。
+        stop_drain = threading.Event()
+        drainer = None
+        try:
+            thread = threading.Thread(
+                target=_drain_output_disk,
+                args=([out_file.fileno(), err_file.fileno()], stop_drain),
+                daemon=True,
+            )
+            thread.start()
+            drainer = thread
+        except Exception:
+            drainer = None
         timed_out = False
         try:
             proc.wait(timeout=timeout)
@@ -237,14 +290,25 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
-                except OSError:
-                    pass  # 进程组已不存在
+                pass
+            # 宽限期结束无论组长是否已退出都对整组补发 SIGKILL（与
+            # bin/test_for.run_bounded 同构）：组长通常即刻响应 SIGTERM 退出，
+            # SIGKILL 若只留在 wait 超时分支，组内忽略 SIGTERM 的幸存孙进程
+            # （及窗口期新拉起的子进程）会逃过清扫成为孤儿；组已空时 killpg
+            # 抛 ProcessLookupError，静默吞掉（无害 no-op）。
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+            except OSError:
+                pass  # 进程组已不存在
             try:
                 proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
             except subprocess.TimeoutExpired:
                 pass
+        # 回读前停机收割线程，避免截断与下方回读竞争（set 立即生效，join
+        # 兜足一个轮询周期余量；线程未启动/已退出时不执行）。
+        stop_drain.set()
+        if drainer is not None:
+            drainer.join(timeout=5)
         out = _read_back_output(out_file)
         err = _read_back_output(err_file)
         return (None if timed_out else proc.returncode), out, err, timed_out

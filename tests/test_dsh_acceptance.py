@@ -369,7 +369,7 @@ def test_accept_selfcheck_missing_providers(mod, tmp_path, monkeypatch):
 def test_dry_run_plan_shape(mod):
     args = argparse.Namespace(no_claude_baseline=False, timeout=900.0,
                               evidence_dir=str(tmp_evidence()))
-    plan = mod.dry_run_plan(list(mod.SMOKE_LANES), args, Path("."))
+    plan = mod.dry_run_plan(list(mod.SMOKE_LANES), args)
     assert plan[0]["lane"].startswith("claude-implementer")
     assert plan[0]["harness"] == "claude"
     by_lane = {p["lane"]: p for p in plan}
@@ -385,7 +385,7 @@ def test_dry_run_plan_shape(mod):
 def test_dry_run_plan_no_baseline_lane(mod):
     args = argparse.Namespace(no_claude_baseline=True, timeout=1.0,
                               evidence_dir=str(tmp_evidence()))
-    plan = mod.dry_run_plan(["implementer"], args, Path("."))
+    plan = mod.dry_run_plan(["implementer"], args)
     assert not any(p["lane"].startswith("claude") for p in plan)
 
 

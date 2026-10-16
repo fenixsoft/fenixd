@@ -97,7 +97,10 @@ def extract_imports_from_file(file_path: str, package: Optional[str] = None) -> 
                                     imports.add(f"{base}.{alias.name}")
                 elif node.module:
                     imports.add(node.module)
-    except (SyntaxError, UnicodeDecodeError) as e:
+    # ValueError：ast.parse 对含 NUL 字节等非法源文本抛 ValueError 而非
+    # SyntaxError（source code string cannot contain null bytes），并入同一
+    # 单文件 fail-open 口径告警后跳过，不让单个坏文件打断全图构建。
+    except (SyntaxError, UnicodeDecodeError, ValueError) as e:
         print(f"Warning: Could not parse {file_path}: {e}", file=sys.stderr)
     except OSError as e:
         # rglob 扫描与读取之间目标可能被并发删除、权限受限，或是名为 *.py 的
@@ -277,11 +280,13 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
     """有界运行命令，硬超时时中止**整个进程组**（同 bin/run_full_suite.run_command）。
 
     子进程以独立进程组启动（``start_new_session=True``）：超时先对整组发
-    SIGTERM 给短暂优雅窗口，未退出再 SIGKILL 整组——pytest 拉起的孙进程
-    （v2 dev server、daemon 集成类测试等）一并中止，不留孤儿继续占端口/内存
-    （本仓库已知残留 daemon 占端口会让下一次运行恒失败）。进程已退出
-    （ProcessLookupError）等 killpg 失败静默吞掉。输出不经管道、直接透传
-    终端，faulthandler 栈仍实时可见。
+    SIGTERM 给短暂优雅窗口，宽限期结束再对整组**无条件**补发 SIGKILL（不
+    论组长是否已退出——组长通常即刻退出，SIGKILL 若只挂在 wait 超时分支，
+    组内忽略 SIGTERM 的幸存孙进程会逃过清扫；组已空时补发是无害 no-op）
+    ——pytest 拉起的孙进程（v2 dev server、daemon 集成类测试等）一并中止，
+    不留孤儿继续占端口/内存（本仓库已知残留 daemon 占端口会让下一次运行
+    恒失败）。进程已退出、进程组已空（ProcessLookupError）等 killpg 失败
+    静默吞掉。输出不经管道、直接透传终端，faulthandler 栈仍实时可见。
 
     返回 ``(returncode, timed_out)``；超时中止时 returncode 为 None。
     """
@@ -297,10 +302,15 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
-            except OSError:
-                pass  # 进程组已不存在
+            pass
+        # 宽限期结束无论组长是否已退出都对整组补发 SIGKILL：pytest 组长通常
+        # 即刻响应 SIGTERM 退出（上方 wait 正常返回），SIGKILL 若只留在 wait
+        # 超时分支，组内忽略 SIGTERM 的孙进程（及窗口期新拉起的子进程）会
+        # 逃过清扫成为孤儿；组已空时 killpg 抛 ProcessLookupError，静默吞掉。
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+        except OSError:
+            pass  # 进程组已不存在
         try:
             proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
         except subprocess.TimeoutExpired:

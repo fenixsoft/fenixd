@@ -46,8 +46,9 @@ from core.timelib import parse_ts
 # MUST NOT 误引 `check_scheduling_deadlines`——它只覆盖 drafted/ready 拾取，
 # testing 态不在其覆盖范围。
 # 注：env 阻塞 inconclusive 升级路径写 `_dispatch_backoff_until` 的退避窗
-# （本文件 4 处）复用同一时长——共用「30 分钟 / poll_interval 对齐」语义，
-# 调参在此一处生效。
+# （写点见 `_escalate_inconclusive_parking` 与
+# `_schedule_scenario_repair_reverify`）复用同一时长——共用
+# 「30 分钟 / poll_interval 对齐」语义，调参在此一处生效。
 _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS = 1800
 
 # 重验定时器排程互斥锁：判重（check）与占位（act）须同锁原子完成——并发
@@ -102,7 +103,7 @@ def _escalate_threshold_note(
     """按实际命中的升级条件生成阈值文案（code-review 974c5b39ad17）。
 
     升级分支条件是 ``attempts >= escalate_attempts or attempts >= max_attempts``：
-    缺省（max_attempts=3、escalate_attempts=4）下第 3 轮即经重验上限升级，
+    缺省（max_attempts=2、escalate_attempts=4）下第 2 轮即经重验上限升级，
     文案若固定写「已达升级阈值 4」会虚报重验轮数，干扰人工对重验预算的
     判断。三处 inconclusive 升级处理器共用本构造点，避免分支文案各自漂移。
     """
@@ -399,9 +400,12 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
     if blocked_env <= 0 or (failed + errors) > 0:
         # add-verify-parallel-backoff / design D2：非 inconclusive 判定即
-        # 健康轮（出现真实 verdict），复位降档并行度——存在才清，避免每轮
-        # 无谓写盘（与 _inconclusive_attempts 同生命周期：链条断即复位）。
-        if "_verify_parallel_override" in spec:
+        # 健康轮（出现真实 verdict），复位降档并行度——降档值在场才清，避免
+        # 每轮无谓写盘（与 _inconclusive_attempts 同生命周期：链条断即复位）。
+        # 按取值判定而非键存在性：state_machine 复位写 None 后键仍保留在条目
+        # （null 恒落盘、解析归一 None），键存在性判定会在首次清零后每轮
+        # 健康裁决重复触发 update_spec 全量落盘。
+        if spec.get("_verify_parallel_override") is not None:
             pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -1420,17 +1424,27 @@ def _escalate_scenario_defect_reroute(
     """
     if stoploss:
         prev_failed = [str(s) for s in (prev_failed_ids or [])]
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "error": (
-                    f"场景缺陷改道重入轮重跑失败集与改道前同批（改道前 "
-                    f"{len(prev_failed)} 个失败场景无一被修复）— 判改道无效，"
-                    f"提前止损升级人工裁决，spec 保持 testing，不再消耗剩余"
-                    f"改道预算"
-                ),
-            },
-        )
+        # update_spec 含磁盘 IO，磁盘满/权限异常若上抛会沿改道门调用点中断
+        # 本轮 judge 裁决——比照 _escalate_inconclusive_parking 容错口径包裹，
+        # 写盘失败仅 ERROR 留痕，不改本收口恒返回 True 的语义。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"场景缺陷改道重入轮重跑失败集与改道前同批（改道前 "
+                        f"{len(prev_failed)} 个失败场景无一被修复）— 判改道无效，"
+                        f"提前止损升级人工裁决，spec 保持 testing，不再消耗剩余"
+                        f"改道预算"
+                    ),
+                },
+            )
+        except Exception as e:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"改道止损升级写盘失败 '{spec_name}'（error 留痕未落盘，"
+                f"SIGNAL/告警仍照常发出）: {type(e).__name__}: {e}",
+            )
         pipeline._context.logger.error(
             "pm_engine",
             f"场景缺陷改道同批失败止损 '{spec_name}'（深度 {_repair_depth}）— "
@@ -1482,16 +1496,26 @@ def _escalate_scenario_defect_reroute(
     escalate_head = (
         "场景缺陷改道预算耗尽" if budget_exhausted else "场景缺陷改道未达预算上限即升级"
     )
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "error": (
-                f"{escalate_head}（实际改道 {_repair_depth} 轮），"
-                f"仍为纯场景缺陷（product-bug=0）— 已升级人工裁决，spec 保持"
-                f"testing，不再消耗实现轮预算"
-            ),
-        },
-    )
+    # update_spec 含磁盘 IO，磁盘满/权限异常若上抛会沿改道门调用点中断本轮
+    # judge 裁决——比照 _escalate_inconclusive_parking 容错口径包裹，写盘失败
+    # 仅 ERROR 留痕，不改本收口恒返回 True 的语义。
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "error": (
+                    f"{escalate_head}（实际改道 {_repair_depth} 轮），"
+                    f"仍为纯场景缺陷（product-bug=0）— 已升级人工裁决，spec 保持"
+                    f"testing，不再消耗实现轮预算"
+                ),
+            },
+        )
+    except Exception as e:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"改道预算耗尽升级写盘失败 '{spec_name}'（error 留痕未落盘，"
+            f"SIGNAL/告警仍照常发出）: {type(e).__name__}: {e}",
+        )
     pipeline._context.logger.error(
         "pm_engine",
         f"{escalate_head} '{spec_name}'（实际改道 {_repair_depth} 轮）— "
@@ -1763,6 +1787,13 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                     ),
                     "_credibility_gate_attempts": gate_attempts + 1,
                     "_inconclusive_attempts": 0,
+                    # 计数清零处同步清签名比较基准（与 _handle_judge_env_declared
+                    # 同款显式空串回写）：_last_inconclusive_signature 与
+                    # _inconclusive_attempts 同生命周期（state_machine 人工清零
+                    # 清单声明），不回写会残留上一 episode 的旧签名，新 episode
+                    # 首个 blocked-env 轮同签名复现时被误判「环境未变化」跳过
+                    # 重验直接升级停车。
+                    "_last_inconclusive_signature": "",
                     # add-verify-parallel-backoff / design D2：计数清零处同步清
                     # 降档并行度（_inconclusive_attempts 同生命周期）。
                     "_verify_parallel_override": None,
@@ -2388,8 +2419,8 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
     重验计时器在 daemon 重启后丢失（进程内对象）——属于预期，兜底由
     ``_dispatch_backoff_until`` + ``event_bus._recover_testing`` 周期扫描承担；
     MUST NOT 依赖「定时器与周期扫描只触发其一」——两者可能同时到期，幂等由
-    `_enqueue` 按 (spec, agent_type) 去重与 `_process_queue` 的
-    `_dispatch_backoffed` 门（queue.py:228/312）保证只起一次 verifier run。
+    `_enqueue` 按 (spec, agent_type) 去重与 queue.py `_process_queue` 内的
+    `_dispatch_backoffed(spec)` 门保证只起一次 verifier run。
 
     Args:
         pipeline: VerificationPipeline 实例（经 `_context` 触达 state_machine/

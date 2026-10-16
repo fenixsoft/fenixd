@@ -678,6 +678,11 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
         passed = int(summary.get("passed", 0) or 0)
         warnings = int(summary.get("warnings", 0) or 0)
         total = int(summary.get("total", 0) or 0)
+        # fail_count 是调用方原值（summary.failed+errors，未经归一），下方分档
+        # 和校验参与求和前比照同款 int 容错——脏值非数值落入上方 except 同走
+        # 常规 judge；归一只用于本校验（局部 fail_total），原 fail_count 门
+        # 判定语义不变。
+        fail_total = int(fail_count or 0)
     except (TypeError, ValueError):
         pipeline._context.logger.warning(
             "pm_engine",
@@ -685,6 +690,21 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
         )
         return None
     if fail_count != 0 or warnings != 0 or passed <= 0:
+        return None
+    # 分档和一致性防御（code-review item 0cfbb5a6cd02）：三来源报告正常均
+    # 保证 total == passed+warnings+failed+errors（engine._build_report 缺
+    # status 键计入 errors 档；裁剪合成按同口径重算；dist 探针块报告全批
+    # blocked-env 不入快道）——不等即存在未入任何分档的场景（上游形状漂移/
+    # 报告被改写），此形态机械 verified 会连带放行未验证场景，且洗白门禁
+    # （仅 0 通过或 env 失败触发）与进度核对均不拦截，故比照上方脏值口径
+    # 判不可判定全绿，退化为常规 judge。
+    if total != passed + warnings + fail_total:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"全绿快道 summary 分档和与 total 不一致 '{spec_name}'"
+            f"（total={total} ≠ passed {passed} + warnings {warnings} "
+            f"+ 失败 {fail_total}）— 不可判定全绿，走常规 judge",
+        )
         return None
     result_path = (
         pipeline._context.project_root

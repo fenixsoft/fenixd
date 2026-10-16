@@ -29,6 +29,10 @@ from core.verdict_check import VERDICT_CLASSES
 
 from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
 
+# code-review item fae612654f4f：per-spec verify-progress 目录解析与 report_gate
+# 单源共享——fail_history 台账与裁决产物恒同目录，防目录名/层级调整漏改其一。
+from core.pm_engine.verification.report_gate import verify_progress_dir
+
 # 回拨审计留痕信号类型（幂等键前缀，admin_store DISPOSITION 按 reclassify_key 去重）
 RECLASSIFY_SIGNAL_TYPE = "infra_reclassify"
 
@@ -172,9 +176,11 @@ def is_verifier_process_death(result) -> bool:
       run 级总存活上界——低于 ``VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS``）。
 
     **保守缺省**：``turns_used``/``duration_seconds`` 缺失（``None``/属性不存在）
-    或脏值（非数值）按「口径未知」处理——该项不命中，回落既有归因链按 product
-    保守处置。宁可少分流，不可把口径未知的结果误判为死亡（误分流会绕过
-    bug-found 出口）。非对象（None）恒不命中。
+    或脏值（非数值；负值 ``duration_seconds`` 同口径——数值合法但语义非法，
+    视为 runner 计时异常/mock 脏值，code-review item 89a982b09a33）按「口径
+    未知」处理——该项不命中，回落既有归因链按 product 保守处置。宁可少分流，
+    不可把口径未知的结果误判为死亡（误分流会绕过 bug-found 出口）。
+    非对象（None）恒不命中。
     """
     if result is None:
         return False
@@ -189,7 +195,10 @@ def is_verifier_process_death(result) -> bool:
     duration = getattr(result, "duration_seconds", None)
     if duration is not None:
         try:
-            if float(duration) < VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS:
+            seconds = float(duration)
+            # 负值数值合法但语义非法（runner 计时异常/mock 脏值）：与脏值同按
+            # 「口径未知」不命中，宁少分流（code-review item 89a982b09a33）
+            if 0 <= seconds < VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS:
                 return True
         except (TypeError, ValueError):
             pass
@@ -576,13 +585,10 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
 
 
 def _fail_history_path(pipeline, spec_name: str) -> Path:
-    return (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / _FAIL_HISTORY_FILENAME
-    )
+    # 目录解析单源走 report_gate.verify_progress_dir（code-review item
+    # fae612654f4f）：原手写拼接与裁决产物路径两套口径，调整时漏改其一
+    # 会使 fail_history 台账与 .fenix-run-result.json 落不同目录。
+    return verify_progress_dir(pipeline, spec_name) / _FAIL_HISTORY_FILENAME
 
 
 def _read_fail_history(pipeline, spec_name: str) -> list:
