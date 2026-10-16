@@ -70,9 +70,9 @@ MAX_SEMANTIC_RUNS = 10
 
 # escalated 超龄注记阈值天数（add-knowledge-audit-escalation-consumption 2.1，
 # 缺省 7）：escalated 挂起超过该天数即对涉事知识页顶部写 disputed 机器可读
-# 注记；knowledge.escalated_stale_days 可覆盖（get_knowledge_lane_config
-# 白名单解析，非法值回退本缺省）。
-ESCALATED_STALE_DAYS = 7
+# 注记；knowledge.escalated_stale_days 可覆盖。缺省值与非法值回退的唯一事实
+# 来源是 core/config.py 的 ConfigLoader.get_knowledge_lane_config（白名单解析，
+# 非法值回退缺省 7）——此处不设本文件常量，避免两处 7 单侧修改静默漂移。
 # 人工仲裁清单（本 SPEC 2.2：人工仲裁唯一入口）。.fenix/ 整体 gitignore
 # （仅 todo.md/verify.yaml/config.template.yaml 白名单入库），人工本地裁决
 # 不入库；条目形态 {fingerprint, decision, decided_at, note}。
@@ -167,12 +167,11 @@ def _today() -> str:
 
 # ── 疑点台账（add-knowledge-audit-finding-ledger） ────────────────────────
 
-# 条目状态五态：
+# 条目状态五态（词表以此注释为文档，各读写处按字面量比较，不设独立常量）：
 # suspected（复核中/待复核）→ exempt（no-conflict 且两页内容未变，初筛跳派）
 # / fixed（重写提交纠偏）；superseded-in-batch（同批快照滞后重复，跳过）；
 # escalated（连续两轮复核无确定性判定，挂起等人工——终态，人工删除台账条目
 # 即消费清除，无自动恢复）。
-FINDING_STATUSES = ("suspected", "exempt", "fixed", "superseded-in-batch", "escalated")
 
 
 def _load_findings_ledger(project_root: Path) -> dict:
@@ -819,6 +818,7 @@ def _scan_pages(project_root: Path) -> dict:
     pages = _collect_pages(project_root)
     archives = _existing_archives(project_root)
     dangling_pages: list[dict] = []  # 机械：页 rel → 待删行/待删 sources
+    dangling_suspect: list[str] = []  # 报告：带尾缀（句点/.md）疑似悬空引用，不机械删行
     overcap: list[dict] = []  # 报告：超 150 行
     format_pages: list[str] = []  # 机械：尾随空白/缺 EOF 换行
     no_marker: list[str] = []  # 报告：能力页 marker 缺失/不可解析（待人工）
@@ -867,9 +867,27 @@ def _scan_pages(project_root: Path) -> dict:
             if i in marker_lines:
                 continue
             for m in _ARCHIVE_REF_RE.finditer(ln):
-                if m.group(1).strip("\"'`") not in archives:
-                    drop_lines.append(i)
-                    break
+                name = m.group(1).strip("\"'`")
+                # 捕获字符类含 ``.``：正文以 ASCII 句点收尾会捕获尾点、
+                # ``spec/archive/foo.md`` 会带 .md 后缀，直接对归档基名集合
+                # （无点号/无 .md）比对即误判悬空 → _apply_mechanical 把整行
+                # 删除并随 audit fix 自动提交，误删内容只能靠 git 历史找回。
+                # 归一（剥尾随点号与 .md 后缀）后再比对：归一后命中视为有效
+                # 引用；仍不中且捕获带上述尾缀（标点污染与真悬空不可分）时
+                # 降级为报告项，不做机械删行。
+                bare = name.rstrip(".")
+                if bare.endswith(".md"):
+                    bare = bare[: -len(".md")]
+                if bare in archives:
+                    continue
+                if name != bare:
+                    dangling_suspect.append(
+                        f"{page['rel']}：正文 spec/archive 引用带尾缀（句点/.md），"
+                        f"疑似悬空待人工核实：{m.group(0)}"
+                    )
+                    continue
+                drop_lines.append(i)
+                break
         if missing_sources or drop_lines:
             dangling_pages.append(
                 {
@@ -888,6 +906,7 @@ def _scan_pages(project_root: Path) -> dict:
     return {
         "pages": pages,
         "dangling": dangling_pages,
+        "dangling_suspect": dangling_suspect,
         "overcap": overcap,
         "format": format_pages,
         "no_marker": no_marker,
@@ -1205,7 +1224,7 @@ def _apply_mechanical(
 
 
 def build_audit_prompt(kind: str, context_a: str, context_b: str) -> str:
-    text = PROMPT_PATH.read_text(encoding="utf-8")
+    text = PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
     return (
         text.replace("{{FINDING_KIND}}", kind)
         .replace("{{CONTEXT_A}}", context_a)
@@ -1471,19 +1490,6 @@ def run_audit(
         # 整体与 DistillManager / run_backfill 串行（与 run_backfill 批次同款
         # 粒度），转写产出在提交前不再可能被并发蒸馏 run 的 discard 清掉。
         with knowledge_distill_lock(project_root):
-            prompt = build_audit_prompt(
-                finding["kind"],
-                _context_block("页面甲", {
-                    "page": finding["a"]["page"],
-                    "rule": finding["a"]["rule"],
-                    "text": _page_text_by_rel(project_root, finding["a"]["page"]),
-                }),
-                _context_block("页面乙", {
-                    "page": finding["b"]["page"],
-                    "rule": finding["b"]["rule"],
-                    "text": _page_text_by_rel(project_root, finding["b"]["page"]),
-                }),
-            )
             run_id = f"ka-rewrite{idx}-{int(time.time())}"
             # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
             # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
@@ -1494,6 +1500,24 @@ def run_audit(
             # 里与 carryover 无关的既有违规（marker 缺失等报告类病灶）不拦。
             before_violations = {str(v) for v in (validate(project_root) or [])}
             try:
+                # prompt 构建纳入同一 try（code-review 52c1a762cce9）：audit.md
+                # 缺失/混入非 UTF-8 字节、涉事页在 is_file 检查后被删除或权限
+                # 变化（read_text 抛 OSError）都会在此抛异常——位于 try 块之外
+                # 会穿出循环与 run_audit，整轮体检中止、日戳不落盘，当日每个
+                # 检查点重跑重报；纳入后按既有转写失败路径单点隔离。
+                prompt = build_audit_prompt(
+                    finding["kind"],
+                    _context_block("页面甲", {
+                        "page": finding["a"]["page"],
+                        "rule": finding["a"]["rule"],
+                        "text": _page_text_by_rel(project_root, finding["a"]["page"]),
+                    }),
+                    _context_block("页面乙", {
+                        "page": finding["b"]["page"],
+                        "rule": finding["b"]["rule"],
+                        "text": _page_text_by_rel(project_root, finding["b"]["page"]),
+                    }),
+                )
                 spawn(prompt, run_id)
                 # 透传进锁后采集的违规基线（与 backfill 批次同款差集口径）：修正
                 # 反馈与最终否决只看本轮新引入的违规——真相源既有的报告类病灶
@@ -1665,6 +1689,7 @@ def run_audit(
     # ── 报告项与规模趋势 ──
     manual_items = (
         [f"{item['rel']}：超 {LINE_CAP} 行硬顶（{item['lines']} 行）" for item in scan["overcap"]]
+        + list(scan["dangling_suspect"])
         + [f"{rel}：能力页 marker 缺失或不可解析" for rel in scan["no_marker"]]
         + [f"ADR supersede 链断裂：{item}" for item in scan["adr"]["broken_chain"]]
         + (
@@ -1680,6 +1705,7 @@ def run_audit(
         1
         for v in (
             scan["dangling"],
+            scan["dangling_suspect"],
             scan["overcap"],
             scan["format"],
             scan["no_marker"],
@@ -1698,18 +1724,16 @@ def run_audit(
         (scale["lines"] - prev_lines) / prev_lines if prev_lines > 0 else 0.0
     )
     slim = growth > GROWTH_FLAG_RATIO
-    slim_candidates = [
-        {"rel": item["rel"], "lines": item["lines"]}
-        for item in sorted(scan["overcap"], key=lambda x: -x["lines"])
-    ]
-    if not slim:
-        # 候选清单：按行数降序前列页（供下一轮蒸馏/audit 处置）
-        page_lines = []
-        for page in scan["pages"]:
-            n = len(page["text"].splitlines())
-            if n >= LINE_CAP // 2:
-                page_lines.append({"rel": page["rel"], "lines": n})
-        slim_candidates = sorted(page_lines, key=lambda x: -x["lines"])[:10]
+    # 候选清单统一来源：≥ LINE_CAP//2 行的页按行数降序取前列 10（供下一轮
+    # 蒸馏/audit 处置），slim 与否只影响「需精简」结论。此前 slim 分支仅取
+    # 超 150 行硬顶页——总行数增长达标但无超限页时清单为空、人工无从下手，
+    # 且与 not slim 分支（≥半硬顶取前列）口径不一致。
+    page_lines = []
+    for page in scan["pages"]:
+        n = len(page["text"].splitlines())
+        if n >= LINE_CAP // 2:
+            page_lines.append({"rel": page["rel"], "lines": n})
+    slim_candidates = sorted(page_lines, key=lambda x: -x["lines"])[:10]
 
     # escalated 汇总渲染前重算（code-review 373cc9019334 / 1e00c2c85434）：
     # details["escalated_summary"] 在语义循环前由当时台账快照定格，循环内新升级
