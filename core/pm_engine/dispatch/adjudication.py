@@ -1265,7 +1265,7 @@ class VAdjudicationMixin:
                 "remaining_missing": [
                     g
                     for g in missing
-                    if (g["path"] if isinstance(g, dict) else str(g))
+                    if ((g.get("path") or "") if isinstance(g, dict) else str(g))
                     not in deleted_set
                 ],
                 "remaining_disputed": list(non_orphans),
@@ -1281,7 +1281,10 @@ class VAdjudicationMixin:
 
         # 仍有缺件 → 以重跑后的 remaining 续走既有后续（remaining_disputed 供
         # 调用方判断 blocked vs LLM 终审；非孤儿 disputed 项同样计入）
-        remaining_paths = [g["path"] if isinstance(g, dict) else str(g) for g in gate_result]
+        remaining_paths = [
+            (g.get("path") or "") if isinstance(g, dict) else str(g)
+            for g in gate_result
+        ]
         remaining_disputed = [r for r in remaining_paths if r in (disputed + non_orphans)]
         return {
             "action": "continue",
@@ -1470,10 +1473,12 @@ class VAdjudicationMixin:
             remaining_missing = [
                 g
                 for g in missing
-                if (g["path"] if isinstance(g, dict) else str(g)) not in aligned_set
+                if ((g.get("path") or "") if isinstance(g, dict) else str(g))
+                not in aligned_set
             ]
             remaining_paths = [
-                g["path"] if isinstance(g, dict) else str(g) for g in remaining_missing
+                (g.get("path") or "") if isinstance(g, dict) else str(g)
+                for g in remaining_missing
             ]
             return {
                 "action": "continue",
@@ -1495,7 +1500,8 @@ class VAdjudicationMixin:
         # 仍有缺件 → 以重跑后的 remaining 续走既有后续（remaining_disputed 供
         # 调用方判断 blocked vs LLM 终审）
         remaining_paths = [
-            g["path"] if isinstance(g, dict) else str(g) for g in gate_result
+            (g.get("path") or "") if isinstance(g, dict) else str(g)
+            for g in gate_result
         ]
         remaining_disputed = [r for r in remaining_paths if r in (disputed + remaining)]
         return {
@@ -2118,7 +2124,9 @@ class VAdjudicationMixin:
         # judge 输入快照：需基于 judge 的输入清单（路径列表）
         judge_input_paths = list(remaining_paths)
 
-        judge_run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
+        # time_ns 亚秒分量（code-review item a26a8087cbec）：秒级 id 同秒重入时
+        # 与残留旧结果文件的 run stamp 同串，393 行严格匹配会误放行陈旧裁决。
+        judge_run_id = f"dispute-judge-{spec_name}-{time.time_ns()}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
         self._pm.state_machine.update_spec(
             spec_name,
