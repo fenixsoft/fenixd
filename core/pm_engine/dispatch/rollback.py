@@ -328,14 +328,28 @@ class RRollbackMixin:
                 # 收敛到复查读与写锁之间。
                 if self._rollback_frozen_recheck(spec_name, agent_type):
                     return
-                self._pm.state_machine.update_spec(
+                # 返回值核对（code-review item 90b4004274a9，与 verifier/
+                # implementer 分支 _rollback_write_guarded 内的返回值核对段
+                # 同口径）：False = 条目缺失/原子写失败，reviewer_run/error
+                # 均未落盘——不记成功回滚文案，改记「复位未生效」WARNING。
+                # 本分支写不含 status 键、error 为非空业务文案，不能走
+                # _rollback_write_guarded 的写后复核，故只 inline 返回值核对；
+                # 状态保持 reviewing，恢复仍由 recovery 的 reviewing 分支兜底。
+                if not self._pm.state_machine.update_spec(
                     spec_name,
                     {
                         "reviewer_run": None,
                         "error": f"spec-review-incomplete: dispatch exception: {exc}",
                         "_dispatch_backoff_until": backoff_until,
                     },
-                )
+                ):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Rollback write failed for '{spec_name}' ({agent_type}): "
+                        "update_spec 返回 False（条目缺失/原子写失败），复位未生效"
+                        "（reviewing 恢复仍由 recovery 兜底）",
+                    )
+                    return
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Rolled back '{spec_name}' reviewing（评审 worker 异常，"
