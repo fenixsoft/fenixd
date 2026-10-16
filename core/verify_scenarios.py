@@ -746,6 +746,28 @@ def _diff_planner_output_impl(
         # append 而非整体重赋值：保留 declares_new_delivery 已写入的
         # 修复语境审计留痕行（与有持久化集分支行为一致）。
         result.change_lines.append(f"- 首轮写入 {len(entries)} 个场景")
+        # 非法 kind 留痕（code-review 284c5f40f6a9）：kind 字段在场但非法
+        # （如误写 gui）与缺失不同——缺失归一 web 是合理缺省，非法值属
+        # planner 误写，首轮无声固化进 scenarios.json 会以 web 路由到
+        # WebRunner，与有持久化集分支的防误路口径（17250417a111：非法不
+        # 刷新、cli/api 保留原值留痕）不对称。首轮无冻结原值可保留，仍归一
+        # web 入集，但比照本分支 skipped 剔除留痕纪律记 WARNING 与场景集
+        # 变更行供审计、下轮 planner 纠正。
+        illegal_kinds: list[str] = []
+        for sid, s in dedup_by_id.items():
+            raw_kind = s.get("kind")
+            if raw_kind is not None and raw_kind not in VALID_KINDS:
+                illegal_kinds.append(f"{sid}（kind={raw_kind}）")
+        if illegal_kinds:
+            _logger.warning(
+                "首轮场景集收敛 %d 条条目携带非法 kind（归一 web 入冻结集）: %s",
+                len(illegal_kinds),
+                "、".join(illegal_kinds),
+            )
+            result.change_lines.append(
+                f"- {len(illegal_kinds)} 个首轮条目 kind 非法（planner 误写），"
+                f"归一 web：{'、'.join(illegal_kinds)}"
+            )
         return result
 
     persisted_ids = persisted.ids
