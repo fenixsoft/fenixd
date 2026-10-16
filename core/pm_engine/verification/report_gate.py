@@ -348,6 +348,17 @@ def _read_verifier_result(
     return VerdictReadResult.success(status)
 
 
+def verify_progress_dir(pipeline, spec_name: str) -> Path:
+    """per-spec verify-progress 目录单源解析（``<root>/.fenix/verify-progress/<spec>``）。
+
+    code-review item fae612654f4f：裁决结果路径（本模块）与 fail_history
+    台账路径（infra_classify._fail_history_path）原先各自手写同款拼接，
+    目录名/层级调整时漏改其一会使台账与裁决产物落不同目录、回拨参考失配
+    ——收敛到本助手后两处恒同源。
+    """
+    return pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name
+
+
 def _verify_progress_result_paths(pipeline, spec_name: str) -> tuple:
     """verifier 结果文件路径解析：per-spec primary 优先 + 主树共享 fallback。
 
@@ -356,13 +367,7 @@ def _verify_progress_result_paths(pipeline, spec_name: str) -> tuple:
     「verify-progress/<spec>/.fenix-run-result.json → 共享文件」解析
     收敛到本助手。
     """
-    primary = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / ".fenix-run-result.json"
-    )
+    primary = verify_progress_dir(pipeline, spec_name) / ".fenix-run-result.json"
     fallback = pipeline._context.project_root / ".fenix" / ".fenix-run-result.json"
     return primary, fallback
 
