@@ -3306,6 +3306,15 @@ class VerificationPipeline:
                     self._context.project_root,
                     self._context.logger,
                     base_url=self._current_instance_base_url(spec_name),
+                    # 与 serving 层同口径（serving._ensure_serving_worktree 调用
+                    # 侧的 static_scope 读取）：worktree 作用域下 serve.root 的
+                    # 存在性以 serving worktree 侧为准（code-review item
+                    # 1846f874b03c），主树侧缺失不在此判死
+                    static_scope=str(
+                        self._context.config_reader("verify.static_scope", "main") or "main"
+                    )
+                    .strip()
+                    .lower(),
                 )
             except Exception as e:
                 # 自证自身异常 fail-open：不因自证代码缺陷牵连验证主流程

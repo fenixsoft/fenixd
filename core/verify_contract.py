@@ -2139,7 +2139,11 @@ _ORIGIN_TARGET_FIELDS = {
 
 
 def _rewrite_origin_in_scenarios(raw, base_url: str, logger=None) -> tuple[list, int]:
-    """在场景 dict 列表上就地改写目标地址 origin，返回 (新列表, 改写处数)。
+    """改写场景 dict 列表的目标地址 origin，返回 (新列表, 改写处数)。
+
+    改写结果以**新列表**返回（经 ``_rewrite_scenario_target_values`` 以浅拷贝
+    条目构造），入参 ``raw`` 及其元素不被修改——调用方须捕获返回值，勿按
+    「就地改写」语义省略。
 
     只动作于 ``navigate`` / ``http_request`` / ``sse_connect`` 步骤的目标字段
     （见上方作用域说明）；其余字段——CSS 属性选择器（``target``）、注入
@@ -2524,7 +2528,9 @@ SELFCHECK_FILENAME = "contract_selfcheck.json"
 SELFCHECK_READY_TIMEOUT = 5
 
 
-def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = "") -> Optional[str]:
+def selfcheck_contract_light(
+    project_root: Path, logger=None, base_url: str = "", static_scope: str = "main"
+) -> Optional[str]:
     """契约消费期轻量自证：mtime 快照门 + serve 段合法性 + ready 鉴别力自检。
 
     与 ``validate_contract`` 三段自证的关键差异：**不执行 prepare、不起实例**
@@ -2533,9 +2539,11 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
 
     判定流程（design D2）：
     1. mtime 快照门：契约 mtime 与上次自证记录一致 → 返回 None（零开销）；
-    2. serve 段合法性：kind 枚举、static 模式 root 目录存在、command 模式
-       cmd 非空（复用 load 后的 VerifyContract + 原始 YAML serve 段，
-       同 ``validate_contract`` 第 2 步口径）；
+    2. serve 段合法性：kind 枚举、static 模式 root 目录存在（仅
+       ``static_scope="main"``——``"worktree"`` 时实际被服务的是 serving
+       worktree 内的 root，主树侧缺失放行，见 serve 段静态分支注释）、
+       command 模式 cmd 非空（复用 load 后的 VerifyContract + 原始 YAML
+       serve 段，同 ``validate_contract`` 第 2 步口径）；
     3. ready 探测鉴别力自检：``base_url`` 非空时复用 ``probe_ready``
        （含 SPA fallback 无鉴别力判定）；为空则跳过（无实例，不起实例）；
     4. 通过 → 写 mtime 快照（仅第 3 步实际执行过——``base_url`` 非空——时
@@ -2598,8 +2606,14 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
     if serve.kind == "static":
         if not serve.root:
             return "轻量自证失败（serve 段）: serve.root 为空（kind=static 必填）"
+        # static_scope=worktree 时实际被服务的是 serving worktree 内的
+        # Path(wt) / serve.root（serving._serve_static_in_worktree），worktree
+        # 内 prepare 首次构建且被 gitignore 的产物目录在主树侧不存在——主树
+        # 侧缺失不构成自证失败（code-review item 1846f874b03c），此处放行；
+        # 真实缺失由该供给路径的同名校验大声失败（worktree 构建后仍缺 →
+        # 「验证契约 serve.root 不存在」），fail-fast 不降级为静默回退。
         root_dir = project_root / serve.root
-        if not root_dir.is_dir():
+        if not root_dir.is_dir() and static_scope != "worktree":
             return f"轻量自证失败（serve 段）: serve.root 不存在: " f"{serve.root}（{root_dir}）"
     elif serve.kind == "command":
         if not serve.cmd:
