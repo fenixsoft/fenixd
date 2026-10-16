@@ -63,6 +63,18 @@ def _resolve_project_root() -> tuple:
             file=sys.stderr,
         )
         sys.exit(2)
+    # code-review 6b192d4a918d：显式传参但值为空（--project-root "" /
+    # --project-root=）与上方拼写近似参数同属静默错绑——default=None 下
+    # args.project_root == "" 只可能来自显式传空，按 8acd5e209ae2 同一口径
+    # 快速失败，拒绝启动。
+    if args.project_root == "":
+        print(
+            "FATAL: --project-root 显式传入了空值——按原逻辑会被静默忽略并回退 "
+            "FENIX_PROJECT_ROOT/cwd 解析项目根，存在看护错误项目的风险，故拒绝启动。\n"
+            "  请改用 --project-root <项目根>（本脚本仅识别该参数）。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if args.project_root:
         return Path(args.project_root).expanduser().resolve(), "参数 --project-root"
     env_root = os.environ.get("FENIX_PROJECT_ROOT")
@@ -287,8 +299,18 @@ def _load_shutdown_drain_seconds() -> int:
         raw = admin.get("shutdown_drain_seconds")
         if raw is None:
             return 0
-        value = int(raw)
-        return value if value >= 0 else 0
+        # 严格整数口径（code-review item 71b46f333912，比照 core/pm_engine/
+        # budget.py d769c8f9b968/ae68484c51b3）：仅 int 且非 bool 合法，非 int
+        # （数字字符串/浮点/bool）一律非法回退 0。旧写法 int(raw) 会接受 "300"、
+        # 把 300.7 截断为 300、把 true 折算为 1——true 时静默得到排水 1s、
+        # SIGKILL 等待窗 121s，既非配置真值也非回退缺省。
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            log(
+                f"解析 {cfg_path} 的 admin.shutdown_drain_seconds 失败，回退 0 "
+                f"(non-blocking): 非整数类型 {type(raw).__name__}（仅接受整数）"
+            )
+            return 0
+        return raw if raw >= 0 else 0
     except ImportError:
         # PyYAML 缺失时按契约回退 0（= 现行快速停机），仅告警不中断看门狗
         log("PyYAML 未安装，无法解析 admin.shutdown_drain_seconds，回退 0 (non-blocking)")
