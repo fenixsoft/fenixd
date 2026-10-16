@@ -1151,6 +1151,16 @@ class ConfigLoader:
         # （回退主循环内同步执行）。负数与非法类型拒绝。
         if "workers" in admin and admin["workers"] is not None:
             workers = admin["workers"]
+            # 整值浮点就地 int() 归一放行（code-review item 4d60068a423f，同上方
+            # agents.max_concurrent/max_retries/max_turns 口径）：YAML
+            # ``admin.workers: 4.0`` 此前被严格 int 硬拒、整份配置加载/热更新失败
+            # 旧值锁死，而读取侧（fenixd.py get_finite_number → int(4.0)）本就能
+            # 兜住整值浮点，加载侧硬拒并非必要的唯一防线；is_integer() 对
+            # .nan/.inf 恒 False，非有限浮点同落入下方硬拒分支。0.0 → 0 语义不变
+            # （0 = 不启用后台池）。
+            if isinstance(workers, float) and workers.is_integer() and workers >= 0:
+                workers = int(workers)
+                admin["workers"] = workers
             if not isinstance(workers, int) or isinstance(workers, bool) or workers < 0:
                 raise ValueError(f"admin.workers must be a non-negative integer: {workers}")
         # interrupt-recovery-preserve D1：规划性重启排水窗口；0 = 不排水、保持现行
@@ -1512,11 +1522,21 @@ class ConfigLoader:
           _load_optional_yaml 哲学），其余段照常校验应用。
         """
         if not isinstance(models, dict):
-            _logger.error(
-                "agents.models 整段非 dict（%s），该段已忽略、不参与校验；其余配置"
-                "照常应用（如需生效请修正后重启：touch .fenix/restart_request）",
-                type(models).__name__,
-            )
+            # 进程级 (键路径, 脏值类型) 一次性去重（code-review item 3b309e745aa4，
+            # 同 _SEGMENT_DIRTY_WARNED 范式，复用同集合——本分支即「整段非 dict
+            # 降级」语义的嵌套段形态）：resolve_config 每 30s 热更新全量重跑
+            # _validate → 本函数，坏配置（如 agents.models: [1]）在场时该 ERROR
+            # 逐周期重复打印、稀释文案内「请修正后重启」处方可见性；去重只作用于
+            # 日志，忽略该段的降级行为不变（同函数未知键告警 _warn_unknown_agent_
+            # model_key 已先行去重，唯此分支漏配）。
+            dedup_key = ("agents.models", type(models).__name__)
+            if dedup_key not in _SEGMENT_DIRTY_WARNED:
+                _SEGMENT_DIRTY_WARNED.add(dedup_key)
+                _logger.error(
+                    "agents.models 整段非 dict（%s），该段已忽略、不参与校验；其余配置"
+                    "照常应用（如需生效请修正后重启：touch .fenix/restart_request）",
+                    type(models).__name__,
+                )
             return
 
         provider_names = set()
@@ -2192,7 +2212,17 @@ class ConfigLoader:
             cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT,
         )
         if seconds > cls.STALE_CODE_SELFHEAL_MAX_SECONDS:
-            _logger.warning(
+            # 进程级一次性去重（code-review item ad3db9843fac，同 _warn_reader_once
+            # 范式）：本读取器被 fenixd.py 主循环 _maybe_stale_selfheal_tick（主循环
+            # 1s 粒度轮询）、_stale_selfheal_healthy 与 Dashboard 回显反复调用，
+            # 配置大值在场时同一 WARNING 逐秒刷屏；与同文件 _warn_backoff_schedule_
+            # fallback 等已去重的同族场景纪律对齐。键取 (键路径, repr(值))，同一
+            # 坏点只在首次告警；去重只作用于日志，生效行为不变（该值本就不拒绝、
+            # 按配置生效）。
+            cls._warn_reader_once(
+                "stale_code_selfheal.idle_confirm_seconds",
+                seconds,
+                _logger.warning,
                 "stale_code_selfheal.idle_confirm_seconds 过大 (%ss，建议 ≤ %s)："
                 "自愈将在长时间空闲后才触发（不拒绝，按配置生效）",
                 seconds,
@@ -3091,7 +3121,26 @@ class ConfigLoader:
         """
         agents = cls._segment_or_empty(config, "agents")
         raw = agents.get("timeout_overrides")
-        if not isinstance(raw, dict) or not raw:
+        if not isinstance(raw, dict):
+            if raw:
+                # 真值非 dict（如手改 YAML ``timeout_overrides: abc``）时全部
+                # per-agent 超时覆盖被忽略、回退全局超时——按 _TIMEOUT_OVERRIDE_
+                # INVALID_WARNED 范式 ERROR 一次性留痕（code-review item
+                # 82e5b147074a，对照 _warn_backoff_schedule_fallback「回退必告警」；
+                # 本函数下方三处非法键值告警均已去重，唯此分支漏配）。键缺失/None
+                # 与空 dict 属正常缺省语义，不打日志噪声。去重只作用于日志，
+                # 回退 {} 行为不变；本函数经 supervision_config_floor 与派发链
+                # 高频调用，留痕必须走既有去重范式。
+                dedup_key = ("agents.timeout_overrides", type(raw).__name__)
+                if dedup_key not in _TIMEOUT_OVERRIDE_INVALID_WARNED:
+                    _TIMEOUT_OVERRIDE_INVALID_WARNED.add(dedup_key)
+                    _logger.error(
+                        "agents.timeout_overrides 真值非 dict（%s），全部 per-agent "
+                        "超时覆盖被忽略、回退全局超时；其余配置照常生效",
+                        type(raw).__name__,
+                    )
+            return {}
+        if not raw:
             return {}
         out: Dict[str, int] = {}
         for key, val in raw.items():
@@ -3227,6 +3276,10 @@ class ConfigLoader:
         _VALIDATE_SOFT_WARNED.clear()
         _TRANSIENT_BACKOFF_FALLBACK_WARNED.clear()
         _TIMEOUT_OVERRIDE_INVALID_WARNED.clear()
+        # verify 段正整数键去重集合（code-review item 83732e1a3117）：与上方 8 个
+        # 去重集合同属「进程级一次性告警」语义，漏清会让前一用例留在集合中的
+        # (键, repr(值)) 键压制后续用例对 verify 段键的首告警断言。
+        _VERIFY_POSITIVE_INT_WARNED.clear()
         _CONFIG_READER_WARNED.clear()
         # dsh 协议守卫告警标记（code-review item 1ff17e93f028）：同为「进程级
         # 去重、不重复刷屏」语义的类属性，纳入本助手隔离清单，使测试可重复
@@ -3421,19 +3474,27 @@ class ConfigLoader:
     def get_context_cost_per_turn_threshold(
         cls, config: Dict[str, Any], default: int = 200000
     ) -> int:
-        """读取 ``verify.context_cost_per_turn_threshold``：上下文经济性告警阈值（0=关闭），缺省 200000，仅非负整数 int（fix-agent-lane-efficiency D3）。
+        """读取 ``verify.context_cost_per_turn_threshold``：上下文经济性告警阈值（0=关闭），缺省 200000，仅非负整数（整值浮点按整数接受；fix-agent-lane-efficiency D3）。
 
         单点读取器（code-review item 431081458861）：dashboard 缺省回显视图与
         agent_runner 运行时告警双侧均经本读取器取值——该键缺省曾以手写字面量
         双处镜像（config_admin._default_echo_view 与 runner 内联 `get(..., 200000)`），
-        构成会实际漂移的双源。非法值回落缺省（bool 是 int 子类显式排除），与
-        effective_auto_archive_threshold 同口径；WARNING 经 _VERIFY_POSITIVE_INT_WARNED
-        同款进程级去重（运行时逐 run 调用，防同一坏值刷屏）。
+        构成会实际漂移的双源。非法值回落缺省（bool 是 int 子类显式排除）、WARNING
+        经 _VERIFY_POSITIVE_INT_WARNED 同款进程级去重（运行时逐 run 调用，防同一
+        坏值刷屏），回退语义与 effective_auto_archive_threshold 同口径；整值浮点
+        按整数接受（code-review item 066cbb6353ef），对齐同段 _positive_int_reader
+        族口径而不复刻该读取器的严格 int——此前 200000.0 恰与缺省同值无声偏差、
+        非缺省整值浮点则配置实际失效。
         """
         verify = cls._segment_or_empty(config, "verify")
         val = verify.get("context_cost_per_turn_threshold")
         if val is None:
             return default
+        # 整值浮点按整数接受（code-review item 066cbb6353ef，同段 _positive_int_
+        # reader 口径）；is_integer() 对 .nan/.inf 恒 False，非有限浮点同落入下方
+        # 非法分支。0.0 → 0（0=关闭）语义不变。
+        if isinstance(val, float) and val.is_integer() and val >= 0:
+            return int(val)
         if isinstance(val, bool) or not isinstance(val, int) or val < 0:
             dedup_key = ("verify.context_cost_per_turn_threshold", repr(val))
             if dedup_key not in _VERIFY_POSITIVE_INT_WARNED:
