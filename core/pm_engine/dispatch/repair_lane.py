@@ -485,6 +485,31 @@ class PRepairLaneMixin:
         if branch and hasattr(wm, "_wt_branches"):
             wm._wt_branches[str(wt_path)] = branch
 
+    def _repair_closeout_updates(self, spec_name: str, r, branch: str) -> dict:
+        """repair 链收口字段表（单一落点，成功尾段与异常恢复尾段共用）。
+
+        两处尾段此前各持一份同构 update_spec 字面量、仅靠注释人工约束同步
+        （code-review item 09afd3293531）：后补字段（如 _repair_base_tip）
+        漏改一侧即异常恢复路径与正常收尾状态分叉（残留 stale 计数或锚点）。
+        收敛为单一构造点，与「写语义单点维护」纪律
+        （state_machine._apply_updates_entry 范式）对齐。
+        """
+        return {
+            "implementer_run": getattr(r, "run_id", None) or None,
+            "branch": branch,
+            "error": None,
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+            "_repair_round": 0,
+            "_repair_merge_error": None,
+            # repair 链成功收口：基准 tip 随 _repair_round 一并清零
+            # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
+            "_repair_base_tip": None,
+            "_repair_awaiting_remerge": False,
+            **self._pm._clear_dispatch_conflict(spec_name),
+        }
+
     def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:
         """repair worker：派发 repair agent → re-merge-back → 状态推进。
 
@@ -708,21 +733,7 @@ class PRepairLaneMixin:
                         return
                     self._pm.state_machine.update_spec(
                         spec_name,
-                        {
-                            "implementer_run": getattr(r, "run_id", None) or None,
-                            "branch": branch,
-                            "error": None,
-                            "_retry_count": 0,
-                            "_merge_fp": None,
-                            "_merge_streak": 0,
-                            "_repair_round": 0,
-                            "_repair_merge_error": None,
-                            # repair 链成功收口：基准 tip 随 _repair_round 一并清零
-                            # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
-                            "_repair_base_tip": None,
-                            "_repair_awaiting_remerge": False,
-                            **self._pm._clear_dispatch_conflict(spec_name),
-                        },
+                        self._repair_closeout_updates(spec_name, r, branch),
                     )
                     # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
                     # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
@@ -794,24 +805,13 @@ class PRepairLaneMixin:
                             f"'{spec_name}'（非阻塞）: {e2}",
                         )
                     try:
-                        # best-effort 补齐收口字段（与成功尾段 update_spec 同族
-                        # 复位，含 _clear_dispatch_conflict 锁冲突收口；已写过的
-                        # 字段幂等重写无害）。写面与成功尾段一致，仅触发时机不同。
+                        # best-effort 补齐收口字段（与成功尾段共用
+                        # _repair_closeout_updates 单一字段表，含
+                        # _clear_dispatch_conflict 锁冲突收口；已写过的字段
+                        # 幂等重写无害，仅触发时机不同）。
                         self._pm.state_machine.update_spec(
                             spec_name,
-                            {
-                                "implementer_run": getattr(r, "run_id", None) or None,
-                                "branch": branch,
-                                "error": None,
-                                "_retry_count": 0,
-                                "_merge_fp": None,
-                                "_merge_streak": 0,
-                                "_repair_round": 0,
-                                "_repair_merge_error": None,
-                                "_repair_base_tip": None,
-                                "_repair_awaiting_remerge": False,
-                                **self._pm._clear_dispatch_conflict(spec_name),
-                            },
+                            self._repair_closeout_updates(spec_name, r, branch),
                         )
                     except Exception as e3:
                         self._pm.logger.warning(
@@ -999,7 +999,22 @@ class PRepairLaneMixin:
             )
             self._defer_merge_back(spec_name, remerge_info, branch, merge_error)
             return False
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item af519c42ee6f，与下方 bump_counters
+        # 守卫 2917c609d8ad 同款论证）：read_one 同为 STATE 文件 IO（flock+read，
+        # 同 _dispatch_repair_lane 读取 _repair_round 处 noqa 注释的认知），瞬时
+        # OSError 沿 _run_repair_worker 外层 except 逃逸会把「re-merge 已真实
+        # 失败」现场兜底成 _fallback_after_repair 全新重派，fp/streak 记账、
+        # 熔断分类与续链 repair 整体被跳过、多烧一轮实现 run，MUST NOT 放大。
+        # 降级空表 → prev_fp=None 走指纹重置路径，streak 分类与熔断/续链照常。
+        try:
+            spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair re-merge 熔断记账读取 spec 现场失败 '{spec_name}'"
+                f"（按空表继续失败分类，指纹走重置路径）: {type(e).__name__}: {e}",
+            )
+            spec_entry = {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
         # _merge_streak 走锁内原子递增（bump_counters 返回写后值参与阈值判定，
