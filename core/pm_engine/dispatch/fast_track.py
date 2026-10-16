@@ -373,14 +373,18 @@ class FFastTrackMixin:
                 # 与正常成功路径同防线——verification 段结构/场景覆盖/证据在
                 # merge 前 fail-closed 校验后才推进 verified。_env_whitewash_gate
                 # 只在场景数据存在时查 0-pass/env 洗白、无场景数据保守放行，不
-                # 覆盖结构校验，不能作等价兜底。校验失败不走 _hard_check_fast_
-                # track 内部的裸重派出口（无计数，本形态分支恒零提交会无熔断
-                # 无限重派），改落本哨既有空转重派通道（阈值内重派、超限冻结
-                # 转人工，熔断有界）。
+                # 覆盖结构校验，不能作等价兜底。校验失败与正常成功路径同款处置：
+                # _hard_check_fast_track 失败出口现经 _hard_check_fail_accounting
+                # 记账（code-review item dcddb2783911）——未达封顶时其内部已写
+                # error + 入队原地重派，达封顶时已 freeze_for_human（按其契约
+                # MUST 终止重派）；本形态分支恒零提交，不得再落零变更哨双计
+                # _retry_count/_zero_change_attempts 两套熔断、覆写冻结锚点。
                 verification = self._hard_check_fast_track(spec_name, ft_result)
                 if verification is None:
-                    self._handle_fast_track_zero_change(spec_name, result)
-                    return
+                    # worktree-reuse：打回保留 worktree，重派在同一目录继承上一
+                    # 轮成果（幂等，上方零变更哨入口已保留过一次）。
+                    self._keep_fast_track_worktree(spec_name, result)
+                    return  # _hard_check 已设 error + enqueue（或已冻结转人工）
                 merged = self._reconcile_and_merge(spec_name, result)
                 if not merged:
                     return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
