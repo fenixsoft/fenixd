@@ -159,8 +159,12 @@ def _rejection_closure(
     的标签约定一致）。
     """
     # [fenix-code-fix:4a5ffe0439c9] 防御取用：兜底收口自身不得因上游查重
-    # 结果缺 violations 键裸外溢 KeyError（与下方 except 分支同口径）。
+    # 结果缺 violations 键裸外溢 KeyError（与下方 except 分支同口径）；
+    # 元素形态同口径过滤（_verdict_violations_evidence 先例）：非 dict
+    # 跳过，不以 v.get 裸外溢 AttributeError。
     for v in dedup.get("violations") or []:
+        if not isinstance(v, dict):
+            continue
         pipeline._context.logger.error(
             "pm_engine",
             f"批量归因查重拒绝采纳{lane_label}'{spec_name}': {v.get('reason')}",
@@ -1029,6 +1033,16 @@ def _handle_attr_dedup_rejection(
     # 4) 重合成产物回灌完整校验链（与 _verify_verdict_evidence 既有路径同源）
     report2 = load_report(pipeline._context.project_root, spec_name)
     if report2 is None:
+        # code-review e92461050ae5：终局早退前与 _escalate_dedup_resynthesis
+        # 清除点同口径清三件套注入文件——本轮落盘的 verdict_violations /
+        # directive /（场景级路径的）requeue_manifest 若滞留，blocked 解除后
+        # 新 episode 首 judge 经 prompt_builder 各注入段仍按「文件在场」无条件
+        # 注入上一 episode 旧纪律，resynthesis_attempts 亦跨接管周期永久累计、
+        # 截断新 episode 本应从零计的自愈预算；明细已随本返回 dict 交调用方
+        # blocked 留痕，清文件不丢事实（清点均 fail-open，文件缺失不报错）。
+        pipeline._clear_resynthesis_directive(spec_name)
+        pipeline._clear_requeue_manifest(spec_name)
+        pipeline._clear_verdict_violations(spec_name)
         return {
             "ok": False,
             "cause": "report_missing",
@@ -1043,6 +1057,15 @@ def _handle_attr_dedup_rejection(
             f"重合成产物证据分类仍不合规 '{spec_name}'："
             f"{[v['scenario_id'] for v in result2['violations']]}",
         )
+        # code-review e92461050ae5：二次违规终局返回前同口径清三件套（与上方
+        # report_missing 出口及 _escalate_dedup_resynthesis 清除点对齐）——
+        # blocked 交人工后，下一 episode 首 judge 不得被上一 episode 的
+        # violations/directive/manifest 旧纪律锚定（prompt_builder 各注入段
+        # 均按「文件在场」无条件注入、无新鲜度判据），attempts 亦不得跨接管
+        # 周期永久累计；明细已随本返回 dict 留痕，清文件不丢事实。
+        pipeline._clear_resynthesis_directive(spec_name)
+        pipeline._clear_requeue_manifest(spec_name)
+        pipeline._clear_verdict_violations(spec_name)
         return {
             "ok": False,
             "cause": "violations",
