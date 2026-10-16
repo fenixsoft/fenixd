@@ -575,9 +575,7 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     ``.fenix-run-result.json`` 写点，gate 读侧推迟到全部车道写点收口后由
     run_smoke 统一补算，消除并发写-读撕裂窗口（判定对象与判据不变）。
     """
-    from core.agent_runner.harness import (
-        resolve_adapter, set_current_adapter, get_current_adapter,
-    )
+    from core.agent_runner.harness import resolve_adapter, set_current_adapter
 
     spec = fixture["impl_spec"] if lane == "implementer" else \
         fixture["verify_spec"]
@@ -760,11 +758,13 @@ def run_judge_lane(*, device: Dict[str, Any], fixture: Dict[str, Any],
         err = e
     elapsed = time.perf_counter() - started
 
+    # 与 agent 车道同形：首条完整 cmdline 的单元素列表（未观测为空列表）
     ev: Dict[str, Any] = {
         "lane": "judge", "run_id": "judge-one-shot",
         "elapsed_seconds": round(elapsed, 3),
         "inflight_observed": inflight["observed"],
-        "inflight_cmdline_sample": inflight["cmdline"][:1],
+        "inflight_cmdline_sample": ([inflight["cmdline"]]
+                                    if inflight["cmdline"] else []),
     }
     if err is not None:
         ev["error"] = repr(err)
@@ -1564,13 +1564,13 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
                  "prefix": prefix, "started_at": started,
                  "repo_root": str(REPO_ROOT), "dsh_profile": profile,
                  "model": model,
-                 "baseurl_host": _host_of(str(provider["baseurl"]))},
+                 "baseurl_host": _host_of(str(provider["baseurl"])),
+                 # 自检基线随证据落档：--go 可追溯执行时刻的自检结论（已脱敏）
+                 "selfcheck": checks},
         "lanes": [],
     }
     try:
-        from core.agent_runner.harness import (
-            ClaudeAdapter, resolve_adapter, set_current_adapter,
-        )
+        from core.agent_runner.harness import resolve_adapter, set_current_adapter
         # 真实部署不隔离 home：adapter 按 ambient DSH_HOME/默认 home 装配；
         # 线协议随 config 装配（agent.dsh_api，见 self-check 同款注释）
         adapter = resolve_adapter("dsh", {"agent": {
@@ -1579,6 +1579,9 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
             "dsh_api": str(ConfigLoader.get(cfg, "agent.dsh_api", "") or "").strip()}})
         adapter.check_health()
 
+        # 与同文件车道纪律一致：进入循环前装配并记录 prev，每条车道收口恢复
+        # prev（此前 finally 硬编码新建 ClaudeAdapter()，不随调用方上下文走）
+        prev_adapter = set_current_adapter(adapter)
         lanes = list(SMOKE_LANES)
         for lane in lanes:
             started_lane = time.perf_counter()
@@ -1587,11 +1590,10 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
                     ev = _real_judge_lane(adapter, fixture, model,
                                           env_overrides, args.timeout)
                 else:
-                    set_current_adapter(adapter)
                     ev = _real_agent_lane(lane, adapter, fixture,
                                           model, env_overrides, args.timeout)
             finally:
-                set_current_adapter(ClaudeAdapter())
+                set_current_adapter(prev_adapter)
             ev["elapsed_seconds"] = round(time.perf_counter() - started_lane, 3)
             evidence["lanes"].append(ev)
             print(f"[lane] {lane}: "
@@ -1795,9 +1797,12 @@ def _real_judge_lane(adapter, fixture: Dict[str, Any], model: str,
                               on_spawn=_on_spawn)
     except Exception as e:  # noqa: BLE001
         err = e
+    # 与 agent 车道同形：首条完整 cmdline 的单元素列表（未观测为空列表）
     ev: Dict[str, Any] = {"lane": "judge", "run_id": "judge-one-shot",
                           "inflight_observed": inflight["observed"],
-                          "inflight_cmdline_sample": inflight["cmdline"][:1]}
+                          "inflight_cmdline_sample": ([inflight["cmdline"]]
+                                                      if inflight["cmdline"]
+                                                      else [])}
     if err is not None:
         ev["error"] = repr(err)
         return ev
@@ -1871,9 +1876,11 @@ def _last_jsonl_type(run_file: Path) -> Optional[str]:
         if not line:
             continue
         try:
-            last = json.loads(line).get("type")
+            payload = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(payload, dict):
+            last = payload.get("type")
     return last
 
 
