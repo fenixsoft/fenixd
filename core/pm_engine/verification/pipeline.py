@@ -283,13 +283,17 @@ from core.pm_engine.verification.branch_guard import ENV_BLOCK_MERGE_CHECK_TIMEO
 
 
 # ── 冻结场景损坏升级文案单源（code-review item 928d8348a5be）────────────
-def _corrupt_freeze_options(spec_name: str, extra: str = "") -> str:
+def _corrupt_freeze_options(
+    spec_name: str, extra: str = "", reason: str = "冻结场景文件损坏或验收失败"
+) -> str:
     """「冻结场景文件损坏或验收失败」处置选项文案（_load_frozen_or_escalate
     五个升级点复用单源，防内联复制漂移）；extra 拼接在②之后的附加条目
-    （如迁移轮的第③条回退指引）。
+    （如迁移轮的第③条回退指引）；reason 为首句原因（code-review item
+    a81f30195697：空集分支以「冻结场景文件为空（无任何场景）」复用同一
+    ①②选项单源，防内联副本漂移）。
     """
     return (
-        "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+        f"{reason}。处置选项：① 确认场景集已过时 → "
         f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
         "批准重新出题；② 文件可修复 → 修复后保持冻结。" + extra
     )
@@ -1765,13 +1769,14 @@ class VerificationPipeline:
             return None, True
         if not frozen:
             # 空集不出现在迁移后（空文件/全过时已被 all_scenarios_stale
-            # 分支删除回落到出题），防御性维持既有 corrupt 语义
+            # 分支删除回落到出题），防御性维持既有 corrupt 语义（reason 换
+            # 空集首句，①②选项复用单源——code-review item a81f30195697）
             self._escalate_env_blocked(
                 spec_name,
                 [
-                    "冻结场景文件为空（无任何场景）。处置选项：① 确认场景集已过时 → "
-                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    _corrupt_freeze_options(
+                        spec_name, reason="冻结场景文件为空（无任何场景）"
+                    ),
                 ],
                 title="场景计划争议",
             )
@@ -2266,8 +2271,10 @@ class VerificationPipeline:
         # 已被 fastlane 子集重验解包消费，扩元组属跨文件签名变更（超本组边界），
         # 故经实例属性携带、门禁调用点读取（缺省 False 兜底）。以 spec_name
         # 键控 dict 承载（code-review item e1b9182aa7dc：并发验证轮隔离，
-        # 理由同 _stage2_scenarios_override 注）。
-        self.__dict__.setdefault("_stage2_user_blocked", {})[spec_name] = False
+        # 理由同 _stage2_scenarios_override 注）。轮次入口 pop 清残留
+        # （code-review item 88d58ec1565d）：读侧缺省 False 兜底，清键与置
+        # False 等价，防已归档/删除 spec 的条目常驻累积。
+        self.__dict__.get("_stage2_user_blocked", {}).pop(spec_name, None)
 
         # 写回失败轮消费内存迁移集（code-review item 4f886aa7c126）：
         # _load_frozen_or_escalate 契约迁移写回失败时盘上仍是未迁移旧集，
@@ -2277,7 +2284,7 @@ class VerificationPipeline:
         # 循环后续轮误消费陈旧 override。
         _override_cache = self.__dict__.setdefault("_stage2_scenarios_override", {})
         scenarios_override = _override_cache.get(spec_name)
-        _override_cache[spec_name] = None  # 一次性读取即清位
+        _override_cache.pop(spec_name, None)  # 一次性读取即清位（pop 连键清理，防整份场景列表滞留常驻累积——code-review item 88d58ec1565d）
 
         # ── 阶段2: 验证引擎执行 ──
         self._context.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
@@ -2290,7 +2297,9 @@ class VerificationPipeline:
         # REPLAN_FEEDBACK 据此给「最小修复」指引；分类按失败发生阶段判定，
         # 不解析错误文本（design D3）。以 spec_name 键控 dict 承载
         # （code-review item e1b9182aa7dc：并发验证轮隔离，理由同上）。
-        self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = False
+        # 入口 pop 清残留（code-review item 88d58ec1565d）：读侧缺省 False
+        # 兜底，清键与置 False 等价。
+        self.__dict__.get("_replan_error_format_class", {}).pop(spec_name, None)
         try:
             if scenarios_override is not None:
                 scenarios = scenarios_override
@@ -2587,6 +2596,15 @@ class VerificationPipeline:
                     f"（user_blocked）— 不自动判 blocked，跳过本门禁: {reach_note}",
                 )
             else:
+                # ── 纵深防御写点（code-review item eceab97ec436）：当前主流程
+                # 不可达——唯一调用点 _run_three_stage_verification 的
+                # app_reachable 实参来自 _execute_stage2，其 fail-fast 段
+                # （「not app_reachable and not user_blocked」→ aborted=True）
+                # 已把该组合短路，能到达本门禁的 not app_reachable 必伴随
+                # user_blocked=True（走上方让位分支）。保留本写点作 fail-fast
+                # 条件将来放宽时的兜底；注意其升级语义与 fail-fast 车道已分叉
+                # （不走 infra-retry 限次决议、写伪 tester_run 标记），启用前
+                # 应先对齐口径。
                 self._context.state_machine.update_spec(
                     spec_name,
                     {
@@ -3049,6 +3067,12 @@ class VerificationPipeline:
                         ],
                         title="场景计划争议",
                     )
+                    # 早退前清侧车（code-review item 88d58ec1565d）：本轮到不了
+                    # _execute_stage2 消费点，写回失败轮随行携带的整份内存迁移
+                    # 集在此 pop，防滞留实例字典至下轮（常驻进程累积）。
+                    self.__dict__.get("_stage2_scenarios_override", {}).pop(
+                        spec_name, None
+                    )
                     return
                 # 覆盖完整 → 落入下方阶段2（共享执行段）
             else:
@@ -3341,6 +3365,11 @@ class VerificationPipeline:
                     spec_name,
                     [selfcheck_err],
                     title="验证环境阻塞（契约轻量自证失败）",
+                )
+                # 早退前清侧车（code-review item 88d58ec1565d）：同覆盖缺口
+                # 早退口径——本轮到不了 _execute_stage2 消费点。
+                self.__dict__.get("_stage2_scenarios_override", {}).pop(
+                    spec_name, None
                 )
                 return
 
