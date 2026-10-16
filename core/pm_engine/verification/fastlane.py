@@ -151,7 +151,9 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
     )
     if checked:
         hits = [h for _p, path_hits in checked for h in path_hits]
-        names = ", ".join(str(p.name) for p, _h in checked)
+        # 罗列用完整路径（与下方 unreadable 留痕同口径）：三个候选文件名
+        # 相同，仅凭 name 无法区分命中 spec 专属副本还是共享根残留
+        names = ", ".join(str(p) for p, _h in checked)
         if hits:
             types = sorted({str(h.get("type")) for h in hits})
             return True, f"{names} findings 含争议条目: {types}{note}"
