@@ -1005,7 +1005,11 @@ class TestStep:
             # 不同，保持原样直读。
             target=_str_field(d, "target"),
             value=value,
-            screenshot=d.get("screenshot", False),
+            # 严格 bool 归一（口径对齐 external_net_errors_ok）：真值字符串
+            # （"false"/"0" 等非空串）按 d.get 原样放行会意外启用截图，且经
+            # to_dict 真值过滤（if self.screenshot → d["screenshot"] = True）
+            # 回写后被静默改写成 true，坏档形态被抹掉，故仅接受布尔 True
+            screenshot=d.get("screenshot") is True,
             description=_str_field(d, "description"),
             dialog=_str_field(d, "dialog"),
             # [fenix-ignore:56c49c2fafae] 唯一消费点 browser.py mock_api 已对 status 做 int() 强转+非法值结构化失败（不静默回退 200），数字字符串运行期可正常 mock，所述伪失败不存在；按建议回退 0 反而复活已修复的「4xx mock 静默变 200」缺陷
@@ -1597,7 +1601,9 @@ def _parse_and_validate_scenario_dicts(raw: list) -> tuple:
             # 差异清单精准修冻结文件。
             sid = item.get("id") if isinstance(item, dict) else ""
             prefix = f"场景'{sid}'" if sid else f"场景[{i}]"
-            all_errors.append(f"{prefix}[{i}]解析失败: {e}")
+            # 下标由 prefix 统一携带（无 id 分支），此处不再重复拼接，避免
+            # 「场景[3][3]解析失败」式双重定位
+            all_errors.append(f"{prefix}解析失败: {e}")
     return scenarios, all_errors
 
 
