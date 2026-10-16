@@ -260,12 +260,16 @@ def archive_residue_spec(rel_path: str) -> str:
     """
     if rel_path.startswith("spec/archive/"):
         seg = rel_path[len("spec/archive/") :].split("/", 1)[0]
-        # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
-        m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
+        # 归档命名：YYYY-MM-DD-<spec>；剥离日期前缀。日期前缀段须优先走本分支
+        # （code-review item 3fb781c010f1）：规格名本身可含数字尾段（如
+        # code-review-fix-1792101520），若先套下方软删除正则会把规格名自身的
+        # 尾段当 Unix 秒剥掉，与 changes 侧解析出的 spec 名失配，成对残留被
+        # 误判「仅单侧（半提交形态）」拒绝 merge-back 自愈
+        m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)$", seg)
         if m:
             return m.group(1)
-        # 归档命名：YYYY-MM-DD-<spec>；剥离日期前缀
-        m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)$", seg)
+        # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
+        m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
         return m.group(1) if m else seg
     if rel_path.startswith("spec/changes/"):
         return rel_path[len("spec/changes/") :].split("/", 1)[0]
