@@ -49,7 +49,7 @@ def _discard_if_not_testing(pipeline, spec_name, result, label):
         pipeline._context.logger.debug(
             "pm_engine",
             f"Stale/foreign verify result discarded for '{spec_name}' "
-            f"(run {result.run_id}, current state '{_cur}', result "
+            f"(run {getattr(result, 'run_id', '') or ''}, current state '{_cur}', result "
             f"{label}) — spec no longer in testing, result dropped",
         )
         return True
