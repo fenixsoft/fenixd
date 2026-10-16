@@ -70,6 +70,7 @@
 
 ### 浪费
 - **夜间大 run 合计 80 分钟 API 停滞，单轮最长 453.5 秒**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：窗口内 10 个 run 全部成功、零失败，但过程信号显示成功 run 内部 >60 秒的 API 往返停滞合计约 80 分钟：夜间自进化三 run 32.0 分钟、code-review 周期审查 run 39.7 分钟、code-fix 批修复链 8.6 分钟；其中 2 次单轮超 300 秒（453.5 秒与 337.9 秒），最长一次占所在 run 运行时长的 26%。损失形态是成功 run 内部的挂钟消耗与延迟尾部风险，无 run 因停滞失败或被重派。
   - 证据：run 收尾延迟摘要行（agent_runner 落盘的每 run API 往返统计）：evo-1792088086（夜间自进化分析 run）132 轮 median 2.0s max 453.5s warning=1；evo-1792089889（同夜第二个自进化 run）590 轮 median 2.1s max 276.5s；code-review-1792083854（code-review 周期审查 run）1144 轮 median 3.2s max 337.9s warning=1 info=4。期内时点 WARNING 按设计发射：18:39:45Z「API round-trip stall: 453.5s (round #124 > 120s)」、17:56:47Z 337.9s（round #275）。归档重放配对核实：evo-1792088086 的 453.5 秒停滞紧跟一条仅 17KB 的工具结果——等待发生在 API 侧而非工具执行。
   - 调查评估：问题源：夜间自进化与周期审查两条大 run 的离群初筛与停滞深扫。已核实事实：①停滞配对口径是 tool_result→下一个 assistant 事件的间隔，天然不含工具执行时长——2026-10-14#可改进#1「33 次停滞无法区分工具执行与 API 等待」的两分法前提部分不成立，本轮实测停滞全部是 API 侧等待（以此更正该条目框架，历史原文不回改）；②逐轮档案事件无 usage/ttft 响应侧字段（网关 bigmodel.cn 事件不带 usage），「网关排队/重试 vs 模型正常长生成」不可判，根因未定、多假说并存，不作单因结论；③期内分级告警（单轮 >300s 计 warning）与汇总行按设计工作、纯观测不干预，全部 run 成功收尾。与存量工作关系：evo-add-api-stall-observability（停滞指标入账）、evo-api-stall-signal-grading（停滞分级告警）、evo-add-run-stop-loss（run 级停滞预算）已覆盖观测与预算面，无重复；缺的是逐轮根因观测字段。结论：损失真实但量级中等（成功 run 内约 80 分钟挂钟），先补观测再谈干预。
@@ -80,6 +81,7 @@
 
 ### 可改进
 - **维护车道收尾丢弃 stall 统计，run_metrics 延迟字段恒零**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口+已发生：run_metrics（run 收尾结构化指标行）的 latency_rounds/latency_stalls/latency_max 三字段在保留日志全部 907 行（2026-09-17 至 10-15，覆盖 code-fix/code-review/evolution/administrator 四条维护车道与 implementer/planner 车道、claude 与 dsh 两种 harness）恒为 0/None——凡维护车道 run，离群初筛与延迟维度基线永远拿不到数据，自省框架被迫对档案事件流二次配对（本窗口 7 个 run 全部重复计算），违反 run_metrics「单一真源、禁止二次采样」的设计契约。
   - 证据：core/agent_runner/maintenance_runs.py（维护车道实现文件）五处调用点（381/697/1244/1838/2987 行）把 _run_agent（agent 进程封装）第 5 元 stall 统计绑定到 _stall_latency 后丢弃；_log_lane_run_metrics（维护车道 run 收尾指标写入函数，maintenance_runs.py:1113）签名无 latency 形参，直调 _log_run_metrics 时按零样本回退。同窗口延迟摘要行有完整数据（「run code-review-1792083854: 1144 rounds, median 3.2s, max 337.9s」），而同一 run 的 run_metrics 行 latency_rounds=0；窗口内「延迟观测疑似失明」告警零触发，证明 claude 车道活体配对正常产出样本。用同配对函数重放归档事件流复现一致结果（code-review-1792083854：23 stalls / max 337.9s，与自省深扫逐位一致）。
   - 调查评估：问题源：本窗口 10 个 run 全部为维护车道，离群初筛暴露。已核实事实：①dd78b1b82（10-15 02:46 本地，evo-api-stall-signal-grading 的落地提交）自述「成功终态 run metrics 带实际 latency 统计」，但只接通了 runner 车道成功路径（runner.py:3833 latency=run_latency_stats），且该提交落地后尚无 runner 车道成功 run 收尾（其后 37 行 run_metrics 全是维护车道），特性至今零非零产出；②63d952e74（10-15 18:10，解包崩溃修复提交）只补了五处调用点的 4→5 元解包宽度，未接统计穿透。根因：维护车道收尾接口缺 latency 形参——数据在握、写入面丢弃，属系统性接口缺口而非一次性失误。与存量工作关系：本条更正 2026-10-15#可改进#1 的范围论断（该条目称「run_metrics 的延迟配对只识别 claude 形态事件流，失明是 dsh 特有」）——实测 claude 维护车道的统计也在写入面被丢弃，失明不限于 dsh 形态识别一层；该条目的 dsh 事件流接线主旨仍独立成立、继续跟进不据此闭环；与 2026-10-14#可改进#1（停滞区间边界事件注记，深扫表达力）互补不重复。结论：一处形参穿透加一条契约测试即可闭环，值立项。
