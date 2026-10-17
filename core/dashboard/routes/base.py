@@ -178,6 +178,14 @@ def _sig_alerts(s, q, m):
     project = _resolve_project_for_sig(s, q)
     if project is not None:
         return _sig.admin_alerts_signature(Path(project["path"]))
+    # 两种 None 须区分（比照 _sig_config，code-review item 6580b243990d）：
+    # 带 project 但解析不到（未知/不存在）→ 响应本就是 200+error 错误体
+    # （_api_alerts 有意 200 契约），返回 None 退出协商——否则错误体会挂上
+    # 随任意项目告警翻转的聚合 ETag，携带 If-None-Match 的条件请求永不稳定
+    # 命中，且跨 URL 共享同一假签名（宁缺 304 不假 304）；仅 query 缺
+    # project 才是合法聚合作用域。
+    if q.get("project", [None])[0]:
+        return None
     # 跨项目聚合：同口径循环单点在 _aggregate_alerts_sig
     return _aggregate_alerts_sig(s, _sig.admin_alerts_signature)
 
@@ -196,6 +204,11 @@ def _sig_admin_activities(s, q, m):
         project = _resolve_project_for_sig(s, q)
         if project is not None:
             base = _sig.admin_alerts_archive_signature(Path(project["path"]))
+        elif q.get("project", [None])[0]:
+            # 带 project 但解析不到 → 响应本就是 200+error 错误体（_api_
+            # admin_activities/_api_archived_activities 与 _api_alerts 同一
+            # 有意 200 契约），退出协商（同 _sig_alerts 的两种 None 区分）
+            return None
         else:
             # 跨项目聚合：与 _sig_alerts 聚合分支同一循环（单点 _aggregate_alerts_sig）
             base = _aggregate_alerts_sig(s, _sig.admin_alerts_archive_signature)
@@ -204,6 +217,10 @@ def _sig_admin_activities(s, q, m):
         # 本端点响应表示还随 ?spec=（服务端过滤）/?page=/?page_size=（切片）
         # 变化，/api/alerts 不消费这些参数（_sig_alerts 故不并入），见末尾。
         base = _sig_alerts(s, q, m)
+        if base is None:
+            # 错误体退出协商由 _sig_alerts 判定，None 直传（勿入 combine：
+            # None 部件会哈希出 ETag，破坏「None=不参与协商」语义）
+            return None
     # 签名与响应表示一一对应（code-review item 4522e48e239d）：spec/page/
     # page_size 的原始值并入稳定串后组合——原始值直入哈希（非法值归一属更细
     # 粒度方向：语义等价变体宁少 304，不可跨变体假 304）；缺省时该串恒定，
@@ -700,7 +717,7 @@ _API_POST_ROUTES = [
     ("exact", "/api/session/start",      _post_session_start),
     ("exact", "/api/session/send",       _post_session_send),
     ("exact", "/api/session/stop",       _post_session_stop),
-    ("regex", "^/api/session/watch$",   _post_session_watch),
+    ("regex", r"^/api/session/watch$",   _post_session_watch),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
     ("suffix", "/start",        _post_start),
     ("suffix", "/stop",         _post_stop),
@@ -710,7 +727,7 @@ _API_POST_ROUTES = [
 
 _API_DELETE_ROUTES = [
     ("regex",  r"^/api/runs/(.+)/watch$", _del_run_watch),
-    ("regex",  "^/api/session/watch$",   _del_session_watch),
+    ("regex",  r"^/api/session/watch$",  _del_session_watch),
     ("regex",  r"^/api/projects/([^/]+)$", _del_project),
 ]
 
