@@ -534,9 +534,15 @@ export default function HookManager({
         title={editIdx !== null ? '编辑 Hook' : '新增 Hook'}
         open={modalOpen}
         onOk={handleSubmit}
-        onCancel={() => setModalOpen(false)}
-        // 保存中禁止遮罩点击关闭：onSave 请求继续落盘，弹窗被关会让用户误以为保存已取消
+        onCancel={() => {
+          // 保存进行中拒绝关闭：onSave 请求继续落盘，弹窗被关会让用户误以为保存已取消
+          if (submitting || saving) return;
+          setModalOpen(false);
+        }}
+        // 保存中三路关闭一并禁掉（遮罩点击 / Esc / 取消按钮，见 onCancel 守卫）：
+        // onSave 请求继续落盘，弹窗被关会让用户误以为保存已取消
         maskClosable={!submitting && !saving}
+        keyboard={!submitting && !saving}
         okText={saving || submitting ? '保存中...' : '保存'}
         confirmLoading={saving || submitting}
         destroyOnHidden
