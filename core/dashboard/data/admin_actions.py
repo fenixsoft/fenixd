@@ -619,7 +619,10 @@ def promote_spec(project_root, spec_name: str) -> dict:
     if "reason" in result:
         # 非 drafted 或不存在
         return {"ok": False, "found": True, "reason": result["reason"], "error": result["reason"]}
-    # lint 违规（STATE error 已由 promote_drafted 写入）
+    # lint 违规：STATE error 通常已由 promote_drafted 写入（error_written=True）；
+    # 但 spec 已冻结时 promote_drafted 放弃 error 直写（error_written=False，
+    # 冻结现场保留待人工解冻）——此处 violations 呈现不受影响，但 MUST NOT
+    # 据本分支形态推断 STATE error 已更新
     return {
         "ok": False,
         "found": True,
