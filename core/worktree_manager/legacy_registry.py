@@ -1,7 +1,7 @@
 """legacy_registry.py — G2 遗产/复用注册表（refactor-giant-classes D1/D5）。
 
 原为 WorktreeManager 的 11 个方法，原样搬移为 mixin（方法体零改动）。
-宿主实例 `self._legacy` 字典为遗产存储载体，`self._reused_worktrees` 为复用记录。
+宿主实例 `self._legacy` 字典为遗产存储载体，`self._active_reuse` 为复用记录。
 """
 
 from __future__ import annotations
@@ -422,6 +422,41 @@ class G2LegacyRegistryMixin:
             # 不写 _active_reuse，交全新建树（新遗产的 reuse 认领与清扫豁免
             # 保持完整）。
             if not self._pop_legacy_if_current(spec_name, rec):
+                # code-review item 7de4a90300f2：放弃认领前回收上方
+                # create_worktree_on_branch 刚建好的载体（该调用已把新
+                # worktree 登记进 _active_worktrees 并 checkout 目标分支）
+                # ——git 不允许同分支双 worktree，遗弃残留会钉住分支，令
+                # 后续对同一分支的仅分支认领失败、fail-open 退化为全新建树，
+                # 丢掉该路径要继承的首轮已提交成果。remove 只回收载体、
+                # 不删分支（分支承载首轮已提交成果，绝不能 branch -D）；
+                # remove 失败/异常仅留痕不抛出，discard/_wt_branches 摘除
+                # 无条件执行，不留清扫豁免残留。
+                try:
+                    res = subprocess.run(
+                        ["git", "-C", str(self.project_root), "worktree", "remove",
+                         str(wt_path), "--force"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=30,
+                    )
+                    if res.returncode != 0:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Branch-only legacy re-shell reclaim failed for "
+                            f"'{spec_name}' ({wt_path}): "
+                            f"{(res.stderr or '').strip()} — fresh create",
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Branch-only legacy re-shell reclaim error for "
+                        f"'{spec_name}' ({wt_path}): {e} — fresh create",
+                    )
+                finally:
+                    self._active_worktrees.discard(str(wt_path))
+                    self._wt_branches.pop(str(wt_path), None)
                 return None
             self._active_reuse[spec_name] = {"path": str(wt_path), "branch": branch}
             return wt_path, branch
