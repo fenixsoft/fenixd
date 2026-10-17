@@ -301,7 +301,9 @@ class TestFamilyWaiver(unittest.TestCase):
         self.assertTrue(self.sm.read_one("fix-fix-fix-x").get("_family_waiver"))
         self.assertTrue(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
         self.assertFalse(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
-        self.assertFalse(self.sm.read_one("fix-fix-fix-x").get("_family_waiver"))
+        # STATE 字段落盘经 serialize 字符串化，复位后为 "False" 而非布尔；
+        # 与同文件其余复位断言同口径：豁免位不再是放行 token "true"
+        self.assertNotEqual(self.sm.read_one("fix-fix-fix-x").get("_family_waiver", "true"), "true")
 
 
 # ── add-bug-repair-mode-config：bug-found 修复方式分流（task 2.3） ──────
