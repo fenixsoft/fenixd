@@ -177,6 +177,13 @@ def run_dist_build(
                 p.communicate(timeout=5)
             except Exception:
                 pass
+            # 尽力回收：二次 communicate 超时（逃逸组外的孙进程持管道致 EOF
+            # 不到来）时 leader 已被 SIGKILL，补 wait 即时回收其退出状态，
+            # 不依赖 Popen.__del__ 挂入 subprocess._active 延迟轮询。
+            try:
+                p.wait(timeout=1)
+            except Exception:
+                pass
             raise
         if p.returncode != 0:
             # 回退构建失败时保留输出尾部现场（截断口径与 commit 失败取
