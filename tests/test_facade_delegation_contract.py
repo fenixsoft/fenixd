@@ -263,7 +263,6 @@ ENGINE_INST_TARGETS = {
         "_resolve_fix_spec_name": "_family._resolve_fix_spec_name",
         "_ensure_fix_spec_files": "_family._ensure_fix_spec_files",
         "_family_width": "_family._family_width",
-        "_family_waiver_set": "_family._family_waiver_set",
         "_consume_family_waiver": "_family._consume_family_waiver",
         "_family_gate_blocked": "_family._family_gate_blocked",
         "_same_root_siblings": "_family._same_root_siblings",
@@ -692,14 +691,16 @@ class TestCoverageHardGate(unittest.TestCase):
         # 收敛对象 267 = 237 实例式 + 30 静态式；+2 stdlib 保留 + 1 薄包装真方法 = 270
         # （deliverable-dispute-orphan-preclassify：+1 实例式 _preclassify_orphan → 271）
         # （e3841db4c1c7：删除 _load_frozen_scenarios 静态转发 → 270）
-        self.assertEqual(total, 270, f"全集枚举数量错误: {total}")
+        # （f355cfaf723f：删除 _family_waiver_set 实例转发——生产零调用，豁免位
+        # 读取已收口进 _consume_family_waiver 锁内 → 269）
+        self.assertEqual(total, 269, f"全集枚举数量错误: {total}")
 
     def test_counts_match_inventory(self):
         self.assertEqual(len(PIPELINE_INST_TARGETS), 85)
         self.assertEqual(len(PIPELINE_STATIC_TARGETS), 4)
         self.assertEqual(len(RUNNER_INST_TARGETS), 52)
         self.assertEqual(len(RUNNER_STATIC_TARGETS), 15)
-        self.assertEqual(len(ENGINE_INST_TARGETS), 101)
+        self.assertEqual(len(ENGINE_INST_TARGETS), 100)
         self.assertEqual(len(ENGINE_STATIC_TARGETS), 10)
 
     def test_hasattr_semantics(self):

@@ -298,10 +298,10 @@ class TestFamilyWaiver(unittest.TestCase):
     def test_family_waiver_consumed_once_only(self):
         """_consume_family_waiver 幂等：单次消费后返回 False。"""
         self._build_four_layer_family(waiver=True)
-        self.assertTrue(self.engine._family._family_waiver_set("fix-fix-fix-x"))
+        self.assertTrue(self.sm.read_one("fix-fix-fix-x").get("_family_waiver"))
         self.assertTrue(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
         self.assertFalse(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
-        self.assertFalse(self.engine._family._family_waiver_set("fix-fix-fix-x"))
+        self.assertFalse(self.sm.read_one("fix-fix-fix-x").get("_family_waiver"))
 
 
 # ── add-bug-repair-mode-config：bug-found 修复方式分流（task 2.3） ──────
