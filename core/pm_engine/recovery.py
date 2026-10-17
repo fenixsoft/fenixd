@@ -7,6 +7,7 @@ SPEC 状态经门面回引 self._pm.state_machine（design D3 规则 3）；
 """
 
 from pathlib import Path
+import glob
 import hashlib
 import json
 import os
@@ -494,10 +495,16 @@ class RecoveryWatch:
                         )
                         continue
                     # 升级成功才关闭观察项（与既有升级路径「pop + 落盘持锁」
-                    # 同款）；失败路径上方已保留观察项并 continue。
+                    # 同款）；失败路径上方已保留观察项并 continue。pop 前做身份
+                    # 比对（code-review item bbfc26f4c0c3）：锁外处理快照期间，
+                    # 并发 register_recovery_watch 可对该 spec 整条覆盖式重新
+                    # 登记（新建 dict，身份不等）——按名无条件 pop 会误删新观察
+                    # 项，该 spec 后续卡死无人复查。现值已非本快照条目时保留现值
+                    # （dict 未变，无需落盘）。
                     with self._watch_lock:
-                        self._recovery_watch.pop(spec_name, None)
-                        self._pm._save_recovery_watch()
+                        if self._recovery_watch.get(spec_name) is item:
+                            self._recovery_watch.pop(spec_name, None)
+                            self._pm._save_recovery_watch()
                     raised.append(spec_name)
                     continue
                 retry_due = now + self._inflight_retry_minutes() * 60
@@ -515,9 +522,15 @@ class RecoveryWatch:
             # 交错巡检否则会把对方刚 pop 的项写回（复活）或丢失未落盘的变更。
             # 读取成功后才 pop（read_one 异常隔离，code-review item 3c7ed59e424d
             # 语义保持：单条失败仅跳过该条并记 WARNING，其余观察项继续）。
+            # pop 前做身份比对（code-review item bbfc26f4c0c3）：锁外处理快照
+            # 期间，并发 register_recovery_watch 可对该 spec 整条覆盖式重新登记
+            # （新建 dict，身份不等）——按名无条件 pop 会误删新观察项，该 spec
+            # 后续卡死无人复查。现值已非本快照条目时保留现值（dict 未变，无需
+            # 落盘）。
             with self._watch_lock:
-                self._recovery_watch.pop(spec_name, None)
-                self._pm._save_recovery_watch()
+                if self._recovery_watch.get(spec_name) is item:
+                    self._recovery_watch.pop(spec_name, None)
+                    self._pm._save_recovery_watch()
             if not entry:
                 continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
             status = entry.get("status")
@@ -852,7 +865,12 @@ class RecoveryWatch:
             if not base.is_dir():
                 continue
             try:
-                for p in base.glob(f"impl-{spec_name}-*.jsonl"):
+                # spec 名拼模式前做 glob 元字符转义（code-review item
+                # d17e9a7ae3ed，与 budget.py 既有口径对齐）：spec 名含 [*?] 时
+                # fnmatch 字符类语义既可能配不中自己的流文件（下方豁免判据静默
+                # 失效 → 保守误升级），也可能配中他 spec 的文件（归属精确守卫
+                # 仅排除误命中，救不回漏命中）。
+                for p in base.glob(f"impl-{glob.escape(spec_name)}-*.jsonl"):
                     if run_spec_part(p.stem) != spec_name:
                         continue  # 精确归属守卫：他 spec 的前缀命中全部排除
                     try:
@@ -1197,8 +1215,11 @@ class RecoveryWatch:
                     # 事故里该 spec 从未获得过 worktree 锁（依赖未满足，等待定向唤醒），
                     # 信号文案却把 Administrator 引向「清理残留 worktree 锁」这一无关
                     # 方向。处置方向由 evidence 给出（各调用点自带现场），描述只陈述
-                    # 共性事实，不再断言单一根因。
-                    "description": (f"'{spec_name}' 长期滞留 ready 且派发未成立（处置方向见 evidence）"),
+                    # 共性事实，不再断言单一根因。状态断言一并去除（code-review item
+                    # 414b5fded803）：STATE 不可读升级分支（check_recovery_watch）的
+                    # status 未知，「滞留 ready」是无判据断言；恢复复查主路径亦存在
+                    # 无活跃派发的 implementing 卡死形态，并非恒为 ready。
+                    "description": (f"'{spec_name}' 派发长期未成立（处置方向见 evidence）"),
                     "evidence": evidence,
                     "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
                 }
