@@ -826,7 +826,8 @@ class MainTreeStrayWipSweeper:
             # pattern 自身内嵌 ``:<数字>:`` 见 docstring）。无 ``:<数字>:``
             # 形态（含未匹配 ``::`` 行）归一为空串，与原兜底同口径。
             m = re.match(r"^(.+):(\d+):(.*)$", left)
-            detail[echoed] = m.group(2) if m else ""
+            # 右锚正则三组：source / 行号 / pattern——pattern 取 group(3)。
+            detail[echoed] = m.group(3) if m else ""
         return detail
 
     def _untracked_signal(self, entries: list, running_run_ids=()) -> dict:
