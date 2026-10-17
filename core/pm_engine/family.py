@@ -208,7 +208,16 @@ class FamilyGovernor:
         return raw in ("true", "1", "yes")
 
     def _family_waiver_set(self, spec_name: str) -> bool:
-        """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
+        """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。
+
+        口径归属（code-review item f355cfaf723f）：生产主链的「读值 → 判真 →
+        复位」已收口进 `_consume_family_waiver` 的 ``.STATE.md.lock`` 锁内
+        临界区（基于锁内最新条目，防豁免位双花）；本方法是锁外 read_one
+        一次性快照的只读查询面，与锁内口径在并发下可相差一次复位——仅限
+        非消费性探测（诊断/测试断言）使用，不得作为放行依据。它同时是门面
+        委托表与 test_facade_delegation_contract.py 覆盖性硬门的清单条目，
+        删除须同步改契约测试与 facade-inventory.md，勿单点摘除。
+        """
         spec = self._pm.state_machine.read_one(spec_name) or {}
         return self._waiver_flag_set(spec.get("_family_waiver"))
 
@@ -384,7 +393,10 @@ class FamilyGovernor:
         裁决（design D2「先到先得，后到抑制」）。批量入队现场（full_scan 一次排入
         同根双 ready）若不做此裁决，兄弟双方都会把对方判为 actionable 而互相抑制
         ——双方永远无法派发（2026-08-28 实证队列死锁）。规则：仅当兄弟的实现器
-        条目入队不晚于我时，才由兄弟承载；兄弟更新则我来承载。
+        条目入队不晚于我时，才由兄弟承载；兄弟更新则我来承载。同刻入队（相等
+        边界）先到先得失效——双方互判对方承载即双双抑制，改由 spec_name 字典序
+        稳定次序裁决：字典序小者承载、大者自我抑制（code-review item
+        fa1186427415），对同一对条目两方裁决互补。
         my_enqueued_at 为 None（非派发路径调用）保持原判，全部计 actionable。
         """
         for sib in self._same_root_siblings(spec_name):
@@ -409,9 +421,21 @@ class FamilyGovernor:
                         None,
                     )
                 if sib_entry is not None:
-                    if my_enqueued_at is None or sib_entry[3] <= my_enqueued_at:
+                    if my_enqueued_at is None:
                         return sib
-                    # 兄弟条目晚于我入队：先到先得，由我承载，不计 actionable
+                    if sib_entry[3] < my_enqueued_at:
+                        return sib
+                    if sib_entry[3] > my_enqueued_at:
+                        # 兄弟条目晚于我入队：先到先得，由我承载，不计 actionable
+                        continue
+                    # 同刻入队（full_scan 同轮两次 _enqueue 取到同一时刻）：
+                    # 先到先得在相等边界失效，双方互判对方「不晚于我」即由
+                    # 对方承载、双双回滚成互斥死锁（code-review item
+                    # fa1186427415）——相等边界改由 spec_name 字典序稳定次序
+                    # 裁决：字典序小者判对方承载（自我抑制）、大者判自己
+                    # 承载，同一对条目两方裁决互补，同根修复链不停摆。
+                    if sib < spec_name:
+                        return sib
                     continue
                 # ready 但无队列条目：进一步探测活跃 worktree/agent 进程
                 # 经门面回引：测试在门面实例上 patch 的补丁缝保持有效
@@ -1063,6 +1087,15 @@ class FamilyGovernor:
                 return ""
         summary = str(data.get("summary") or "").strip()[:800]
         findings = data.get("findings") or []
+        # findings 形状守卫（code-review item 29af31a59dfa）：根文件跨 spec/
+        # 跨车道共享，findings 为非 list 真值（dict/int 等）时下方 findings[:5]
+        # 抛 TypeError 穿透 _inject_verify_fix_task 打断 bug-found 打回主链
+        # （此时状态已重置 implementing、修复段未注入、重派未入队）——非 list
+        # 按空清单降级，与 _same_root_siblings 的 STATE 坏条目防御
+        # （item 18a70e5931b4）及 runs._parse_run_metric_stream 非 dict 行
+        # 降级口径同族对齐。
+        if not isinstance(findings, list):
+            findings = []
         if not summary and not findings:
             return ""
         lines = ["", "### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）", ""]

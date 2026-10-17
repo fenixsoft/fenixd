@@ -409,11 +409,26 @@ class SpecReviewManager:
                 dir=str(snapshot_dir),
             )
             tmp_path = Path(tmp_name)
+            # fdopen 失败路径显式接管（同 scenarios.write_scenarios_array /
+            # judge_files.save_attribution 的 cbb57806fbfd 口径，code-review item
+            # 8d3d45a9b9ab）：with 的 close 只在 fdopen 成功后才生效，fdopen 自身
+            # 抛错（fd 非法等罕见路径）时裸 fd 无人关闭，长驻 daemon 进程下泄漏
+            # 累积——f 为 None 时兜底 os.close 并吞 OSError。
+            f = None
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                try:
+                    f = os.fdopen(fd, "w", encoding="utf-8")
                     json.dump(snapshot, f, ensure_ascii=False, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
+                finally:
+                    if f is not None:
+                        f.close()
+                    else:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
                 os.replace(str(tmp_path), str(snapshot_path))
             finally:
                 if tmp_path.exists():
@@ -596,8 +611,13 @@ class SpecReviewManager:
             # 与 runner 硬门 _check_agent_result_artifact 是两套独立实现，判据
             # 分歧时回流会走 artifact 分类 → 再次 consume → 再次硬门失败 → 无限
             # 递归（4b9f59b8717f 同形防递归口径，与上下两个失败分支同参形态）。
+            # content_failure=True（code-review item 4a086cfce2e9）：硬门文案内嵌
+            # 产物 status/解析器行号/产物路径（如 "status='429' 不在白名单"），
+            # 不可按文本指纹判 infra——硬门失败是产物落盘/格式/取值问题，恒归
+            # content 走重试预算。
             self._handle_review_failure(
-                spec_name, err, allow_artifact=False, run_started_at=run_started_at
+                spec_name, err, allow_artifact=False, run_started_at=run_started_at,
+                content_failure=True,
             )
             return False
 
@@ -611,7 +631,12 @@ class SpecReviewManager:
             # 按读取失败走 _handle_review_failure 的分类/重试/冻结收口，不逃出
             # 本方法。
             self.logger.warning("spec_review", f"结果文件读取失败: {spec_name}: {e}")
-            self._handle_review_failure(spec_name, f"结果文件读取失败: {e}")
+            # content_failure=True（code-review item 4a086cfce2e9）：异常文案内嵌
+            # JSON 解析器行号（"Expecting value: line 429 column 3"），行号随产物
+            # 内容变化，不得按文本指纹判 infra。
+            self._handle_review_failure(
+                spec_name, f"结果文件读取失败: {e}", content_failure=True
+            )
             return False
 
         # 写入边界校验。MUST NOT 再走 artifact 分类（code-review item 4b9f59b8717f）：
@@ -634,7 +659,12 @@ class SpecReviewManager:
         status = data.get("status")
         if status not in SPEC_REVIEW_RESULT_STATUS_WHITELIST:
             self.logger.warning("spec_review", f"未知 status: {status}")
-            self._handle_review_failure(spec_name, f"未知 status: {status}")
+            # content_failure=True（code-review item 4a086cfce2e9）：status 回显值
+            # 来自产物 JSON（不可信内容），"未知 status: 429" 形态会被数字指纹
+            # 误判 infra——白名单外恒为产物取值问题，归 content。
+            self._handle_review_failure(
+                spec_name, f"未知 status: {status}", content_failure=True
+            )
             return False
 
         if status in ("approved", "repaired"):
@@ -864,7 +894,11 @@ class SpecReviewManager:
             return True
         else:
             # 理论上不会到这里
-            self._handle_review_failure(spec_name, f"未知 status: {status}")
+            # content_failure=True（code-review item 4a086cfce2e9）：同上方
+            # 未知 status 通道——status 回显值来自产物，不按文本指纹判 infra。
+            self._handle_review_failure(
+                spec_name, f"未知 status: {status}", content_failure=True
+            )
             return False
 
     # ── 写入边界校验 ────────────────────────────────────────────
@@ -1337,6 +1371,7 @@ class SpecReviewManager:
         *,
         api_error_status=None,
         conn_error=None,
+        content_failure: bool = False,
     ) -> str:
         """三类失败分类（evo-run-failure-classification-circuitbreaker D1）。
 
@@ -1363,6 +1398,10 @@ class SpecReviewManager:
             conn_error: 可选结构化归因（连接类标记，来自
                 AgentRunResult.conn_error）；仅显式 True 判 infra（`is True`
                 严格等值，防 MagicMock 等替身对象误判，见实现处注释）。
+            content_failure: 可选短路标记（code-review item 4a086cfce2e9）——
+                本模块自产文案（硬门回显/结果文件读取失败/未知 status）内嵌
+                不可信产物内容（解析器行号/回显 status），置 True 跳过文本指纹
+                匹配恒归 content；结构化归因优先级不变。
 
         Returns: "artifact" | "infra" | "content"。
         """
@@ -1392,6 +1431,17 @@ class SpecReviewManager:
         # content 失败误判 infra——生产结果该字段为显式 bool/None，不受影响。
         if conn_error is True:
             return "infra"
+        # 本模块自产文案短路（code-review item 4a086cfce2e9）：结果文件读取失败/
+        # 硬门文案/未知 status 三个通道的 reason 由本模块拼接且内嵌不可信产物
+        # 内容——JSON 解析器行号（"Expecting value: line 429 column 3"）与回显
+        # 产物 status（"status='429' 不在白名单"）两侧为空格/引号，会被
+        # _NUMERIC_INFRA_RE / _INFRA_FINGERPRINT_RE 判 infra，纯 content/格式类
+        # 失败由此不递增 _review_attempts、重试预算被跳过并持续计入熔断。这些
+        # 通道只反映产物落盘/格式/取值问题——真实链路失败走 run error 通路
+        # （dispatch 侧带结构化归因，见上方两检查，优先级不变），不取道于此，
+        # 故仅对文本词表短路归 content，infra 判定对真实网络错误文案语义保留。
+        if content_failure:
+            return "content"
         low = (reason or "").lower()
         # 监督超时前置排除（code-review item 4b0176280b0a）：须在指纹匹配之前——
         # "extension budget exhausted" 含裸指纹 "budget" 会被误判 infra；归 content
@@ -1425,6 +1475,7 @@ class SpecReviewManager:
         self, spec_name: str, reason: str, *, allow_artifact: bool = True,
         run_started_at: float | None = None,
         api_error_status=None, conn_error=None,
+        content_failure: bool = False,
     ):
         """处理评审失败：按失败分类落点（D1/D2）。
 
@@ -1437,6 +1488,12 @@ class SpecReviewManager:
         attribution-bridge 1.3）：AgentRunResult 的结构化归因字段原样透传给
         ``_classify_run_failure``——归因桥接的最后一段，缺省 None 时分类走
         既有文本词表回退，既有调用形态（不传这两个关键字）行为不变。
+
+        ``content_failure``（code-review item 4a086cfce2e9）：本模块自产文案
+        （硬门回显/结果文件读取失败/未知 status）调用时置 True——reason 内嵌的
+        解析器行号与回显产物 status 来自不可信产物内容，分类跳过文本指纹匹配
+        恒归 content；真实链路失败（run error 通路，带结构化归因）不传该标志，
+        infra 判定语义不受影响。
 
         - artifact：产物已落盘合法 → 直接消费（不重试，run-failure-artifact-first
           承接；`_artifact_landed_valid` 缺失时回退 content）；
@@ -1453,6 +1510,7 @@ class SpecReviewManager:
         failure_type = self._classify_run_failure(
             reason, spec_name if allow_artifact else None,
             api_error_status=api_error_status, conn_error=conn_error,
+            content_failure=content_failure,
         )
 
         if failure_type == "artifact":

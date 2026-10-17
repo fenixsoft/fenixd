@@ -348,7 +348,6 @@ class Registry:
                 continue
             if key in seen:
                 continue
-            seen.add(key)
             # 类型守卫（code-review item a5535e261c2c）：与上方 path、下方
             # scan_dirs 同式——name 非字符串（手改/畸形 YAML 的 name: 123、
             # name: [a]）会绕过 falsy 回退把 int/list 原样放进监控列表，
@@ -373,6 +372,10 @@ class Registry:
                 )
                 continue
             seen_names[name] = key
+            # seen.add 置于别名冲突判定之后（与下方扫描分支同序，item
+            # a52b34b06bbb）：路径仅在条目实际注册时占用 seen，被别名冲突
+            # 跳过的路径仍可由扫描按其目录名发现，不致整轮静默退出监控列表。
+            seen.add(key)
             projects.append(
                 {
                     "name": name,

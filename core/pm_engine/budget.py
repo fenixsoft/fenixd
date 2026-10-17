@@ -690,6 +690,7 @@ class ImplBudget:
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         try:
+            # [fenix-ignore:cc00b299dbb4] 误报：STATE.md 解析侧对未登记的 _ 前缀字段恒回读字符串（serialize→parse 的 int→字符串→int 往返恒等），浮点/布尔写值落盘后为 "2.5"/"True"，int() 即抛 ValueError 走下方既有损坏路径，原生 float/bool 到不了本读点；强加 isinstance(int) 判定反而把合法整数字符串全判损坏（对账永久跳过/used 恒 0 闸门 fail-open）
             exempt = int(entry.get(BUDGET_EXEMPT_RUNS_FIELD, 0) or 0)
         except (TypeError, ValueError):
             # 侧车字段损坏＝豁免因素不可知 ≠ 无豁免（item c903cac4ac2e）：

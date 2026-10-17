@@ -472,6 +472,16 @@ function PriorityCell({
   return (
     <span
       onClick={() => onEdit(record)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        // 键盘可达（code-review item 3ff7b6d80f6f）：Enter/Space 触发优先级
+        // 弹窗，口径对齐 SpecNameCell（item 3e07fb4c2b30）
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onEdit(record);
+        }
+      }}
       style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1677ff' }}
     >
       P{record.priority ?? '?'}

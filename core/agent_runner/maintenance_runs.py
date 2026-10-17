@@ -656,44 +656,72 @@ def run_self_review(
             （历史调用方）归一空串，落 prompt_builder 意外空值兜底。
     """
     run_id = _unique_self_review_run_id(runner, date_str)
-    out_path = (
-        runner.project_root / ".fenix" / f"{_SELF_REVIEW_OUT_PREFIX}{run_id}.json"
-    )
-    prompt = runner._build_prompt(
-        date_str,
-        "self-review",
-        detail={
-            "review_date": date_str,
-            "daily_summary": daily_summary or "",
-            "todo_md": todo_md or "",
-            # 显式未收集陈述（read_todo=false，evo-add-self-review-todo-
-            # fallback-honesty）为非空串，or-归一原样透传不吞；None 仍归一空串。
-            "todo_entries": todo_entries or "",
-            "out_path": str(out_path),
-        },
-    )
-
-    # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
-    # （向后兼容：自省未单独配置时继承运维通道分配）> admin.agent_model → 默认网关
-    # 同构车道评估（add-evolution-subagent-wait-ceiling 1.2，2026-10-05）：
-    # 本车道**不注入** CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS。证据：模板
-    # agents/self-review.md 全文无 Task 子代理派发（「亲自回顾聚合数据」单
-    # 进程形态），不存在「派子代理-结束回合-后台被 600 秒上限击杀」暴露面。
-    # 默认不改变未发生问题的车道行为（D2）。
-    env_overrides: Dict[str, str] = {}
-    assignment = runner._get_agent_model_assignment(
-        "self-review"
-    ) or runner._get_agent_model_assignment("administrator")
-    if assignment:
-        provider, model_override = assignment[0]
-        _apply_provider_env(env_overrides, provider, model_override, runner)
-        # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
-        # 车道观测口径一致；写失败不阻断，见助手 docstring）
-        _write_lane_provider_marker(
-            runner, run_id, "self-review", "self-review", assignment
+    # 申领占位收尾清理（对齐 run_administrator item e6a103d93b91 确立的
+    # _claim_settled finally 形态，code-review item 3f06f3fdec69）：
+    # _unique_self_review_run_id 以 O_CREAT|O_EXCL 先落 runs/<run_id>.jsonl
+    # 空占位，本 run 真正进入执行链（_run_agent）前的任何早退/异常路径
+    # （_build_prompt 失败、模型链 provider 配置缺键 KeyError 等原不在任何
+    # try 保护内）都必须清掉空占位后再上抛，否则零事件 run 永久残留
+    # .fenix/runs/。组装完成置位后 finally 不再触碰（占位自 _run_agent 起
+    # 即为本 run 的合法事件流载体）；missing_ok 容忍本就未落盘的失败路径
+    # （runs 目录建不出时 _claim_run_path 退回探测语义、未落占位）。
+    claim_placeholder = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+    _claim_settled = False
+    try:
+        out_path = (
+            runner.project_root / ".fenix" / f"{_SELF_REVIEW_OUT_PREFIX}{run_id}.json"
         )
-    else:
-        model_override = runner._get_admin_model()
+        prompt = runner._build_prompt(
+            date_str,
+            "self-review",
+            detail={
+                "review_date": date_str,
+                "daily_summary": daily_summary or "",
+                "todo_md": todo_md or "",
+                # 显式未收集陈述（read_todo=false，evo-add-self-review-todo-
+                # fallback-honesty）为非空串，or-归一原样透传不吞；None 仍归一空串。
+                "todo_entries": todo_entries or "",
+                "out_path": str(out_path),
+            },
+        )
+
+        # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
+        # （向后兼容：自省未单独配置时继承运维通道分配）> admin.agent_model → 默认网关
+        # 同构车道评估（add-evolution-subagent-wait-ceiling 1.2，2026-10-05）：
+        # 本车道**不注入** CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS。证据：模板
+        # agents/self-review.md 全文无 Task 子代理派发（「亲自回顾聚合数据」单
+        # 进程形态），不存在「派子代理-结束回合-后台被 600 秒上限击杀」暴露面。
+        # 默认不改变未发生问题的车道行为（D2）。
+        env_overrides: Dict[str, str] = {}
+        assignment = runner._get_agent_model_assignment(
+            "self-review"
+        ) or runner._get_agent_model_assignment("administrator")
+        provider_name = None
+        if assignment:
+            provider, model_override = assignment[0]
+            # 收尾富指标行 provider 维度取数（对齐 run_administrator/run_evolution）
+            provider_name = provider.get("name")
+            _apply_provider_env(env_overrides, provider, model_override, runner)
+            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
+            # 车道观测口径一致；写失败不阻断，见助手 docstring）
+            _write_lane_provider_marker(
+                runner, run_id, "self-review", "self-review", assignment
+            )
+        else:
+            model_override = runner._get_admin_model()
+
+        # 收尾富指标取数基线（对齐 run_administrator 361-368 同款先例）：
+        # _started 量测派发→返回窗口；turns 预置 0——_run_agent 抛出路径不
+        # 产生 turns（evo-add-run-metrics-lane-baseline 1.3 同款先例）。
+        _started = time.monotonic()
+        turns = 0
+        _claim_settled = True
+    finally:
+        if not _claim_settled:
+            try:
+                claim_placeholder.unlink(missing_ok=True)
+            except OSError:
+                pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
 
     runner._clear_self_review_out(out_path)
     try:
@@ -758,6 +786,24 @@ def run_self_review(
                 f"每日自省 {run_id} 产物硬门拦截: {error}",
                 {"run_id": run_id, "date": date_str},
             )
+    # 收尾富指标行（对齐 run_administrator 等四条直调车道收尾咽喉口径，
+    # code-review item 9813aa2b9f3c）：自省车道此前从不写带 agent_type 的
+    # 终态富指标行，且 _run_agent spawn 装配写入的 _run_harness 登记无收尾
+    # 消费、随 daemon 无界增长（登记声明处「直调 _run_agent 的一次性车道
+    # 条目由 _log_lane_run_metrics 收尾消费后摘除」约定的收尾咽喉在本车道
+    # 缺席）。本调用同时闭合两缺口；run_ok 取产物硬门折算后的最终判定，
+    # 终态与判定一致；落盘失败由 _log_run_metrics 内部吞掉不阻断收尾。
+    _log_lane_run_metrics(
+        runner,
+        run_id=run_id,
+        spec_name="self-review",
+        agent_type="self-review",
+        started_monotonic=_started,
+        turns=turns,
+        usage_info=usage_info,
+        run_ok=success,
+        provider_name=provider_name,
+    )
     return SelfReviewResult(
         run_id=run_id,
         date=date_str,
@@ -1197,50 +1243,71 @@ def run_evolution(
         pending_entries: 待分析条目（含 id），None 由调用方传入。
     """
     run_id = _unique_evolution_run_id(runner)
-    # 富指标行墙钟计时起点（evo-add-run-metrics-lane-baseline 1.3，与
-    # runner.py run_metrics 行同口径：monotonic 差值，不受系统对钟影响）
-    _started = time.monotonic()
-    out_path = runner.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
-    prompt = runner._build_prompt(
-        run_id,
-        "evolution",
-        detail={
-            "ready_projects": ready_projects or [],
-            "pending_entries": pending_entries or [],
-            "out_path": str(out_path),
-        },
-    )
-
-    # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
-    # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
-    env_overrides: Dict[str, str] = {}
-    # evolution 车道专属 env：后台子代理等待上限归零（
-    # add-evolution-subagent-wait-ceiling 1.1）。本车道强制「逐条子代理」核查
-    # （agents/evolution.md 执行模式），Claude Code CLI 对未显式指定的 Task
-    # 子代理默认转后台，主 run 结束回合后 CLI 至多再等 600 秒
-    # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省 600000ms）即强杀仍在跑的
-    # 子代理——evo-1791048570 实证：主 run 以中期文案充当终局（CLI 侧
-    # completed、退出码 0），产物 json 与 .parts 分片零落盘，_salvage_evolution_
-    # out 无从合并，整任务重跑双倍消耗。置 "0" = 无限等待后台任务。只注入本
-    # 车道（D1）：其他维护车道若残留后台任务，等待上限归零会让 run 永不主动
-    # 退出、烧满 run_timeout，故不放 runner.py 全局 env 构造位
-    # （CLAUDE_CODE_ENABLE_TODO_TOOLS 所在，runner.py:5063 附近）。
-    env_overrides["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
-    assignment = runner._get_agent_model_assignment(
-        "self-review"
-    ) or runner._get_agent_model_assignment("administrator")
-    provider_name = None
-    if assignment:
-        provider, model_override = assignment[0]
-        provider_name = provider.get("name")
-        _apply_provider_env(env_overrides, provider, model_override, runner)
-        # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
-        # 车道观测口径一致；写失败不阻断，见助手 docstring）
-        _write_lane_provider_marker(
-            runner, run_id, "evolution", "evolution", assignment
+    # 申领占位收尾清理（对齐 run_administrator item e6a103d93b91 确立的
+    # _claim_settled finally 形态，code-review item b7646f2e7237）：
+    # _unique_evolution_run_id 以 O_CREAT|O_EXCL 先落 runs/<run_id>.jsonl
+    # 空占位，本 run 真正进入执行链（_run_agent）前的任何早退/异常路径
+    # （_build_prompt 失败、_apply_provider_env provider 配置缺键 KeyError
+    # 等原不在任何 try 保护内）都必须清掉空占位后再上抛，否则零事件 run
+    # 永久残留 .fenix/runs/。组装完成置位后 finally 不再触碰——占位自
+    # _run_agent 起即为本 run 的合法事件流载体，MUST NOT 挂进下方收尾
+    # finally（该处清的是 out 产物与 .parts 残片，运行期申领占位承载事件
+    # 流，删除会丢事件流）；missing_ok 容忍本就未落盘的失败路径。
+    claim_placeholder = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+    _claim_settled = False
+    try:
+        # 富指标行墙钟计时起点（evo-add-run-metrics-lane-baseline 1.3，与
+        # runner.py run_metrics 行同口径：monotonic 差值，不受系统对钟影响）
+        _started = time.monotonic()
+        out_path = runner.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
+        prompt = runner._build_prompt(
+            run_id,
+            "evolution",
+            detail={
+                "ready_projects": ready_projects or [],
+                "pending_entries": pending_entries or [],
+                "out_path": str(out_path),
+            },
         )
-    else:
-        model_override = runner._get_admin_model()
+
+        # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
+        # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
+        env_overrides: Dict[str, str] = {}
+        # evolution 车道专属 env：后台子代理等待上限归零（
+        # add-evolution-subagent-wait-ceiling 1.1）。本车道强制「逐条子代理」核查
+        # （agents/evolution.md 执行模式），Claude Code CLI 对未显式指定的 Task
+        # 子代理默认转后台，主 run 结束回合后 CLI 至多再等 600 秒
+        # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省 600000ms）即强杀仍在跑的
+        # 子代理——evo-1791048570 实证：主 run 以中期文案充当终局（CLI 侧
+        # completed、退出码 0），产物 json 与 .parts 分片零落盘，_salvage_evolution_
+        # out 无从合并，整任务重跑双倍消耗。置 "0" = 无限等待后台任务。只注入本
+        # 车道（D1）：其他维护车道若残留后台任务，等待上限归零会让 run 永不主动
+        # 退出、烧满 run_timeout，故不放 runner.py 全局 env 构造位
+        # （CLAUDE_CODE_ENABLE_TODO_TOOLS 所在，runner.py:5063 附近）。
+        env_overrides["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
+        assignment = runner._get_agent_model_assignment(
+            "self-review"
+        ) or runner._get_agent_model_assignment("administrator")
+        provider_name = None
+        if assignment:
+            provider, model_override = assignment[0]
+            provider_name = provider.get("name")
+            _apply_provider_env(env_overrides, provider, model_override, runner)
+            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
+            # 车道观测口径一致；写失败不阻断，见助手 docstring）
+            _write_lane_provider_marker(
+                runner, run_id, "evolution", "evolution", assignment
+            )
+        else:
+            model_override = runner._get_admin_model()
+
+        _claim_settled = True
+    finally:
+        if not _claim_settled:
+            try:
+                claim_placeholder.unlink(missing_ok=True)
+            except OSError:
+                pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
 
     turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     try:

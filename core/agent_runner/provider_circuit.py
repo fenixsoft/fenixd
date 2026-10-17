@@ -861,10 +861,23 @@ class ProviderCircuit:
             # 为默认值，会复活显式关闭的告警）。
             warn: int | None = None
             if raw_warn is not None and type(raw_warn) is not bool:
+                # inf/NaN 前置排除（code-review item 7ff98f1589cd，与
+                # _positive_int_config 同款）：int(float('inf')) 抛 OverflowError
+                # 不在下方 except 族内，yaml 误写 .inf 会让 attempt 记账在
+                # _provider_circuit_lock 临界区内以未捕获异常中断而非按畸形回
+                # 缺省。非有限值回 PROVIDER_DAILY_ATTEMPTS_WARN；有限值仍走原
+                # int() 转换（数字字符串/浮点的既有口径不变）。
                 try:
-                    warn = int(raw_warn)
+                    fv = float(raw_warn)
                 except (TypeError, ValueError):
+                    fv = None
+                if fv is not None and (fv != fv or fv in (float("inf"), float("-inf"))):
                     warn = PROVIDER_DAILY_ATTEMPTS_WARN
+                else:
+                    try:
+                        warn = int(raw_warn)
+                    except (TypeError, ValueError):
+                        warn = PROVIDER_DAILY_ATTEMPTS_WARN
             if (
                 warn is not None
                 and warn > 0
@@ -2314,9 +2327,6 @@ class ProviderCircuit:
         """
         if not provider_name:
             return
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return
         now = self._pm._now() if now is None else now
         # 数值钳制（code-review item 7729e93d1efe，与 _record_provider_4xx 同口径）：
         # 非数值配置会让 now + cooldown 抛 TypeError，0/负数静默禁用重冷却。
@@ -2328,7 +2338,14 @@ class ProviderCircuit:
         )
         # 状态回写加锁（code-review item 8f5a6e6e02bf）：与 _record_provider_4xx 的
         # 记账临界区互斥，防探针闭合清空 events 与并发 4xx append 交错互相覆盖。
+        # st 存在性检查同收进临界区（code-review item a8410c7a7b01）：读侧同纪律
+        # （item 63ff3c6e0d87），取用与回写取同代快照（与 _record_provider_4xx 的
+        # _circuit_state 同口径），消除锁外存在性检查与加锁回写之间的间隙；临界区
+        # 内仅 dict 读改写与日志，无网络等慢操作。
         with self._provider_circuit_lock:
+            st = self.provider_circuits.get(provider_name)
+            if st is None:
+                return
             if success:
                 self._pm.logger.info(
                     "agent_runner",

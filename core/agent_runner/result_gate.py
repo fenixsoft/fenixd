@@ -1895,8 +1895,18 @@ def _check_partial_consistency(
 
     completed_tasks 集合 == 已勾选集合；unfinished 集合 ⊆ 未勾选集合；且
     「未勾选 − unfinished − unattainable」为空（每个未勾任务都必须被申报为
-    unfinished 或 unattainable）；三集合互斥且并集 == 全部数字任务 id。
-    任一不满足返回失败归因（防 partial 成为绕过 success 判据的缺口）。
+    unfinished 或 unattainable）；completed ∩ unfinished 互斥、三集合并集
+    == 全部数字任务 id。任一不满足返回失败归因（防 partial 成为绕过
+    success 判据的缺口）。
+
+    互斥范围说明（勿按「三集合全互斥」推理补拦）：completed ∩ unattainable
+    由调用方 _check_impl_result_artifact 的 bogus 判定传递保证（unattainable
+    ⊆ 未勾选、completed == 勾选）；unfinished ∩ unattainable 双申报则**有意
+    放行**——unattainable 已豁免该任务的完成义务，双申报无门禁绕过后果，
+    拒回只会把诚实申报者逼回原地重试烧预算
+    （tests/test_honest_exit_convergence.py 的
+    test_partial_unattainable_also_listed_in_unfinished_passes 显式固化
+    该形态放行）。
 
     诚实退出衔接（2026-09-16 改进② 补齐 partial 路径）：``unattainable`` 申报
     的任务**不要求**出现在 unfinished 里——它客观上不可由 agent 完成（如

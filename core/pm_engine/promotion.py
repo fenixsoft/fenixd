@@ -29,7 +29,13 @@ def promote_drafted(
         （调用方须按 next_status 决定 transition 目标再派发；取值由评审门禁判定：
         should_skip_review 判定跳过评审（gates.spec_review_mode / fast-track）→ "ready"，
         否则 → "reviewing"；config 为 None 时不做评审判定，恒 "ready"）
-        {"ok": False, "violations": [...]} — lint 违规，STATE error 已写入
+        {"ok": False, "violations": [...], "error_written": True} — lint 违规，
+        STATE error 已写入
+        {"ok": False, "violations": [...], "error_written": False} — lint 违规，
+        但写前冻结复查发现 spec 已冻结：放弃 error 直写（冻结现场保留待人工解冻），
+        violations 照常返回由调用方呈现，STATE error 保留原值。消费方 MUST NOT
+        依赖 ok=False + violations 形态推断 STATE error 已写入，须以 error_written
+        区分两种子情况
         {"ok": False, "reason": "..."} — 拒绝（不存在 / 非 drafted / 其它原因）
     """
     # 1. 检查 SPEC 是否存在且处于 drafted 状态
@@ -136,9 +142,11 @@ def promote_drafted(
                 f"Promotion lint error write abandoned '{spec_name}': "
                 "写盘前复查发现已冻结——放弃 error 直写，冻结现场保留待人工解冻",
             )
-            return {"ok": False, "violations": violations + tasks_violations}
+            return {"ok": False, "violations": violations + tasks_violations,
+                    "error_written": False}
         state_machine.update_spec(spec_name, {"error": err})
-        return {"ok": False, "violations": violations + tasks_violations}
+        return {"ok": False, "violations": violations + tasks_violations,
+                "error_written": True}
 
     # 5. 全部通过，返回可晋升，并确定 next_status
     next_status = "ready"
