@@ -292,7 +292,9 @@ interface CaseRow {
   name: string;
   file: string;
   line: number;
-  time: number;
+  // 整体超时伪行在快照 duration_seconds 缺失时为 null（耗时列渲染 '—'），
+  // 其余行恒为 number
+  time: number | null;
   kind: string;
   message?: string;
 }
@@ -322,7 +324,9 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
       name: '（本次回归整体超时）',
       file: '',
       line: 0,
-      time: snapshot.duration_seconds ?? 0,
+      // duration 缺失兜底 null（非 0）：耗时列已有判空 '—' 分支，0 会被
+      // 渲染成误导性的 "0s"
+      time: snapshot.duration_seconds ?? null,
       kind: 'timeout',
       message: snapshot.reason,
     });
