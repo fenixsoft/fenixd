@@ -429,13 +429,27 @@ class H2ProjectRoutesMixin:
             # 响应只转发 ok/session/already/was_running，前端也不消费本端点
             # 响应体，透传托管态属死数据；托管态以项目列表轮询为准。
             return {"ok": True, "error": None, "already": True}
-        # unmanaged / stopped：先停裸 daemon（幂等），再经 supervisor 启动
+        # unmanaged / stopped：先停裸 daemon（幂等），再经 supervisor 启动。
+        # 返回值分支同款降级（code-review item d46b9929bb4e）：启停函数返回的
+        # error 内嵌裸 OSError 原文与绝对路径（如 f"写 .fenix/stop 失败: {e}"、
+        # tmux stderr），与本文件 except 分支的泛化策略对齐——客户端收固定
+        # 文案，细节经服务端日志留痕。
         stop_result = _server_mod.stop_daemon(project["path"])
         if not stop_result.get("ok"):
-            return {"ok": False, "error": f"停止裸 daemon 失败: {stop_result.get('error')}"}
+            logger.warning(
+                "停止裸 daemon 失败（project=%s）: %s",
+                project["name"],
+                stop_result.get("error", "未知错误"),
+            )
+            return {"ok": False, "error": "停止裸 daemon 失败"}
         start_result = _server_mod.start_daemon(project["path"])
         if not start_result.get("ok"):
-            return {"ok": False, "error": f"经 supervisor 启动失败: {start_result.get('error')}"}
+            logger.warning(
+                "经 supervisor 启动失败（project=%s）: %s",
+                project["name"],
+                start_result.get("error", "未知错误"),
+            )
+            return {"ok": False, "error": "经 supervisor 启动失败"}
         return {"ok": True, "error": None, "already": False}
 
 
@@ -474,7 +488,15 @@ class H2ProjectRoutesMixin:
                 try:
                     stop_result = _server_mod.stop_daemon(project["path"])
                     if not stop_result.get("ok"):
-                        errors.append(stop_result.get("error", "停止 daemon 失败"))
+                        # 返回值分支同款降级（code-review item d46b9929bb4e）：
+                        # stop_daemon 返回的 error 内嵌裸异常原文与绝对路径，
+                        # 客户端收固定文案，细节经服务端日志留痕。
+                        logger.warning(
+                            "停止 daemon 失败（project=%s）: %s",
+                            project["name"],
+                            stop_result.get("error", "未知错误"),
+                        )
+                        errors.append("停止 daemon 失败")
                 except Exception as e:
                     # 不外泄裸异常文本（code-review item 1825f4bcd251）：str(e)
                     # 可能携带内部路径/命令/errno 细节，客户端收固定文案，
@@ -504,7 +526,15 @@ class H2ProjectRoutesMixin:
             try:
                 add_result = self.server.registry.add_ignored(project["path"])
                 if not add_result[0]:
-                    errors.append(add_result[1])
+                    # 返回值分支同款降级（code-review item d46b9929bb4e）：
+                    # registry 的 load/save error 内嵌裸异常原文与绝对路径，
+                    # 客户端收固定文案，细节经服务端日志留痕。
+                    logger.warning(
+                        "写入忽略列表失败（path=%s）: %s",
+                        project["path"],
+                        add_result[1],
+                    )
+                    errors.append("写入忽略列表失败")
             except Exception as e:
                 # 不外泄裸异常文本（code-review item 1825f4bcd251）：同停止 daemon
                 # 分支，客户端收固定文案，异常详情经服务端日志留痕。
@@ -675,6 +705,20 @@ class H2ProjectRoutesMixin:
             if not description:
                 self._json({"error": "生成的简介为空"})
                 return
+
+            # 落盘前长度截断（code-review item 654753a47272）：CLI 异常输出（如
+            # 误回显全文）无上限，原样写入会把 config.yaml 的 description 撑到
+            # 任意大并随 read_effective_config 等读侧传播。与输入侧同量级截
+            # 4KB：按字节截断后 errors="replace" 解码，写法与上方 README
+            # read_bytes()[:8192]/回退 [:4096] 同款；超限经服务端日志留痕。
+            raw_desc = description.encode("utf-8")
+            if len(raw_desc) > 4096:
+                logger.warning(
+                    "生成的简介超 4KB，落盘前截断（project=%s, bytes=%d）",
+                    project["name"],
+                    len(raw_desc),
+                )
+                description = raw_desc[:4096].decode("utf-8", errors="replace")
 
             # 写入配置
             write_result = dashboard_data.write_config(
