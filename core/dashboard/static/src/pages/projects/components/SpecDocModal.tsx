@@ -59,10 +59,16 @@ interface SpecDocModalProps {
 export default function SpecDocModal({ project, spec, open, onClose, initialDoc }: SpecDocModalProps) {
   const [activeTab, setActiveTab] = useState<DocType>('proposal');
 
-  // 指定 initialDoc 时，每次打开定位到该页签（验证报告链接入口）
-  useEffect(() => {
+  // 指定 initialDoc 时，每次打开定位到该页签（验证报告链接入口）。
+  // 在渲染期同步改写而非用 effect 定位（code-review item be76833a695a）：
+  // effect 定位晚文档加载 effect 一拍，open 翻真的同一轮提交里 loadDoc 仍以
+  // 旧 activeTab 先发一次冗余请求、下一轮才按目标页签重发；渲染期改写 state
+  // 会在提交前立即重渲染，首次提交即为目标页签，加载只发目标页签一个请求
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open && initialDoc) setActiveTab(initialDoc);
-  }, [open, initialDoc]);
+  }
   const { modalProps, maximizeButton } = useMaximizeModal({
     defaultWidth: '80%',
     defaultBodyHeight: 'calc(80vh - 80px)',
