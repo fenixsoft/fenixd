@@ -340,6 +340,9 @@ export default function HelpPage() {
   const [docsError, setDocsError] = useState('');
   // 清单加载重试序号：递增驱动加载 effect 重跑（保留 cancelled 守卫结构）
   const [docsRetrySeq, setDocsRetrySeq] = useState(0);
+  // 单篇文档加载重试序号：递增驱动加载 effect 重跑（同名重选 setCurrentDoc 值不变、
+  // 目录仅一篇文档时依赖不变化，须靠此序号触发当前文档重新加载）
+  const [docRetrySeq, setDocRetrySeq] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // 跨文档锚点跳转：待滚动锚点暂存，内容就绪后消费（见下方 effect）。
@@ -402,7 +405,8 @@ export default function HelpPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [currentDoc, docs]);
+    // docRetrySeq：失败 Alert 重试按钮递增此序号强制重载当前文档
+  }, [currentDoc, docs, docRetrySeq]);
 
   // 文档目录项点击
   const handleDocChange = useCallback((name: string) => {
@@ -475,7 +479,22 @@ export default function HelpPage() {
     }
     if (!docs.length) return <Empty description="暂无帮助文档" />;
     if (docLoading) return <Skeleton active paragraph={{ rows: 8 }} />;
-    if (error) return <Alert type="error" message="文档加载失败" description={error} />;
+    // fix 6ef007e36f2e：单篇失败与清单失败口径对齐，提供重试入口（重试序号驱动
+    // 加载 effect 重跑），避免只能切走再切回或整页刷新才能重试
+    if (error) {
+      return (
+        <Alert
+          type="error"
+          message="文档加载失败"
+          description={error}
+          action={(
+            <Button size="small" onClick={() => setDocRetrySeq((n) => n + 1)}>
+              重试
+            </Button>
+          )}
+        />
+      );
+    }
     // docs 就绪但单篇文档尚未开始/完成加载（docData 为空，清单 effect 的 loading=false
     // 与单篇加载 effect 的 docLoading=true 之间隔一帧），或刚切换文档、加载 effect
     // 尚未生效（docData 仍归属上一篇）：一律按加载中渲染，避免闪现
