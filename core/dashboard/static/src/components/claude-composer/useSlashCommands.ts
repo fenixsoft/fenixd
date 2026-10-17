@@ -245,7 +245,11 @@ export function useSlashCommands({
         const picked =
           selectedCommandIndex >= 0 ? filteredCommands[selectedCommandIndex] : filteredCommands[0];
         if (picked) {
-          insertCommandIntoInput(picked);
+          // 复用 selectCommand（= handleCommandSelect，isHover=false）走
+          // trackCommandUsage + 插入，与鼠标点击路径的频次记录口径一致
+          // （code-review item 2464aa93c426：键盘确认此前绕过频次历史，
+          // 常用命令面板低估键盘用户的真实使用频次）。
+          selectCommand(picked, selectedCommandIndex, false);
         }
         return true;
       }
@@ -262,7 +266,7 @@ export function useSlashCommands({
       showCommandMenu,
       filteredCommands,
       resetCommandMenuState,
-      insertCommandIntoInput,
+      selectCommand,
       selectedCommandIndex,
     ],
   );
