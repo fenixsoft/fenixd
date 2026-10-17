@@ -82,6 +82,8 @@ const SEVERITY_COLOR: Record<string, string> = {
   info: 'blue',
 };
 
+// 恒等占位映射（code-review item db49364585bf）：键值相同、当前不改变任何
+// 渲染结果，保留作将来中文化预留位（真映射见下方 REVIEW_KIND_TEXT）
 const STATUS_TEXT: Record<string, string> = {
   open: 'open',
   in_spec: 'in_spec',
@@ -948,8 +950,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         try {
           const result = await generateFixSpec(project, latestOpenKeys, holder.startAfter);
           if (result.ok) {
+            // 文案带复核后的实际提交条数（code-review item dc04881f9aa7）：弹窗
+            // 停留期间台账可刷新，实际提交数可能少于打开时承诺的 count
             message.success(
-              `已生成修复 SPEC：${result.spec_name}${describeStartAfter(holder.startAfter)}`,
+              `已生成修复 SPEC（${latestOpenKeys.length} 条）：${result.spec_name}${describeStartAfter(holder.startAfter)}`,
             );
             setSelectedKeys([]);
             // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
