@@ -94,7 +94,10 @@ from core.agent_runner.harness import (
     ENV_MODE_AGENT_RUN,
     HarnessHealthError,
     HarnessNotDeployedError,
+    ISOLATED_SETTINGS_SCHEMA_VERSION as _ISOLATED_SETTINGS_SCHEMA_VERSION,
     SpawnRequest,
+    build_isolated_settings,
+    ensure_agent_config_dir,
     get_current_adapter,
     resolve_adapter_from_config,
     set_current_adapter,
@@ -2052,6 +2055,10 @@ class AgentRunner:
     def _build_isolated_settings(self, provider_model: str = "") -> dict:
         """构造隔离 settings.json：enabledPlugins / hooks / env 子代理模型映射（spec D2/D3）。
 
+        code-review item de34cae90516：实现单一来源在
+        core.agent_runner.harness.claude_adapter，本方法仅薄委托（self.project_root
+        /self.config 注入显式参数），签名与产物不变，调用点零改动。
+
         从 ~/.claude/settings.json 复制 enabledPlugins（缺省 superpowers）。hooks 从
         .fenix/agent-settings.json 复制（PreToolUse block-image-read）。不复制宿主
         ~/.claude/settings.json 的 env 模型名映射——那属于 cc-switch 网关、对直连
@@ -2066,58 +2073,24 @@ class AgentRunner:
         模型 → model_not_found 404）。provider_model 为空（未分配 provider，走默认
         网关）时不写任何 env——该路径行为与变更前逐字节一致。
         """
-        settings: Dict[str, Any] = {}
-        source: Dict[str, Any] = {}
-        home_settings = Path.home() / ".claude" / "settings.json"
-        try:
-            if home_settings.is_file():
-                loaded = json.loads(home_settings.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    source = loaded
-        except (OSError, json.JSONDecodeError):
-            source = {}
-
-        plugins = source.get("enabledPlugins")
-        if isinstance(plugins, dict) and plugins:
-            settings["enabledPlugins"] = plugins
-        else:
-            settings["enabledPlugins"] = {"superpowers@claude-plugins-official": True}
-
-        agent_settings = self.project_root / ".fenix" / "agent-settings.json"
-        if agent_settings.is_file():
-            try:
-                loaded = json.loads(agent_settings.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict) and isinstance(loaded.get("hooks"), dict):
-                    settings["hooks"] = loaded["hooks"]
-            except (OSError, json.JSONDecodeError):
-                pass
-
-        if provider_model:
-            # D1：provider 作用域内重建的子代理模型映射（非复制宿主 cc-switch 映射）。
-            # 取值优先级：agents.subagent_model_override（非空）→ provider 自身 model。
-            from core.config import ConfigLoader as _CLSubagentModel
-
-            config = getattr(self, "config", None) or {}
-            subagent_model = (
-                _CLSubagentModel.get_subagent_model_override(config)
-                or provider_model
-            )
-            settings["env"] = {
-                "CLAUDE_CODE_SUBAGENT_MODEL": subagent_model,
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": subagent_model,
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": subagent_model,
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": subagent_model,
-            }
-        return settings
+        return build_isolated_settings(
+            self.project_root, provider_model, getattr(self, "config", None))
 
     # fix-agent-lane-efficiency D1：隔离 settings.json 内容版本标记。旧版本（无 env
     # 子代理模型映射）settings.json 在已部署机器上已存在（_ensure_agent_config_dir 现行
     # 「marker 已存在即 return」会永不重建）——实现版本标记 + 内容不匹配时原子重写，
-    # 使新映射在存量隔离目录上也生效。
-    ISOLATED_SETTINGS_SCHEMA_VERSION = 2
+    # 使新映射在存量隔离目录上也生效。code-review item de34cae90516：常量只保留
+    # core.agent_runner.harness.claude_adapter 一份定义，此处类属性转发维持既有
+    # 消费面（双份独立定义会被另一侧旧实现按内容不匹配来回重写同一 settings.json）。
+    ISOLATED_SETTINGS_SCHEMA_VERSION = _ISOLATED_SETTINGS_SCHEMA_VERSION
 
     def _ensure_agent_config_dir(self, provider_name: str, provider_model: str = "") -> Path:
         """按需生成并返回 Provider 的隔离配置目录（spec D1/D2/D5）。
+
+        code-review item de34cae90516：实现单一来源在
+        core.agent_runner.harness.claude_adapter（此前 runner 侧保留的逐行等价
+        副本与生产车道实际写入口双源并存），本方法仅薄委托——self.project_root
+        /self.config 注入显式参数，签名与产物不变，调用点零改动。
 
         目录：.fenix/agent-config/<provider_name>/，含 settings.json 与指向
         ~/.claude 的 skills/plugins symlink（源目录不存在则跳过，优雅降级）。
@@ -2129,70 +2102,9 @@ class AgentRunner:
         settings.json 含按 provider 重算的 env 子代理模型映射；存量旧 settings.json
         （无 env 段）会被内容比对识别并原子重写为最新映射。
         """
-        cfg_dir = self.project_root / ".fenix" / "agent-config" / provider_name
-        marker = cfg_dir / "settings.json"
-        settings = self._build_isolated_settings(provider_model)
-        settings["_schema_version"] = self.ISOLATED_SETTINGS_SCHEMA_VERSION
-        try:
-            cfg_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return cfg_dir
-
-        def _write_atomic() -> None:
-            # code-review item a340597064c9：mkstemp 生成唯一临时文件（固定
-            # .settings.tmp 在并发首建/重写时交错截断写坏 settings.json），
-            # 与 _copyback_run_result 的 _write_atomic 同款手法。
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=".settings.", suffix=".tmp", dir=str(cfg_dir))
-            tmp_path = Path(tmp_name)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(settings, ensure_ascii=False, indent=2))
-                os.replace(tmp_path, marker)
-            finally:
-                if tmp_path.exists():
-                    try:
-                        tmp_path.unlink()
-                    except OSError:
-                        pass
-
-        # code-review item 41cd6584f63f：symlink 补建提取为小函数，marker 已
-        # 存在的两条早退 return 路径同样执行——首次创建时建链失败（OSError
-        # 被吞）或事后被清理的隔离目录借此自愈，子代理能力不再静默降级。
-        def _ensure_symlinks() -> None:
-            # 幂等：源目录不存在则跳过（优雅降级）；链接已在则不重建
-            for name in ("skills", "plugins"):
-                src = Path.home() / ".claude" / name
-                dst = cfg_dir / name
-                try:
-                    if src.is_dir() and not dst.exists():
-                        dst.symlink_to(src, target_is_directory=True)
-                except OSError:
-                    pass
-
-        if marker.is_file():
-            try:
-                existing = json.loads(marker.read_text(encoding="utf-8"))
-                if isinstance(existing, dict) and existing == settings:
-                    _ensure_symlinks()
-                    return cfg_dir
-            except (OSError, json.JSONDecodeError):
-                pass
-            # 内容不匹配（旧版无 env / 用户改过 / 损坏）→ 原子重写（幂等陷阱处置）
-            try:
-                _write_atomic()
-            except OSError:
-                pass
-            _ensure_symlinks()
-            return cfg_dir
-
-        try:
-            _write_atomic()
-        except OSError:
-            pass
-
-        _ensure_symlinks()
-        return cfg_dir
+        return ensure_agent_config_dir(
+            self.project_root, provider_name, provider_model,
+            getattr(self, "config", None))
 
     # ── add-impl-code-review-gate：run 级 ocr 配置写入 ─────────────────────
     # 写一份 run 级 .opencodereview/config.json 到 provider 隔离目录的
