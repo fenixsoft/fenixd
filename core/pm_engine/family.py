@@ -203,30 +203,16 @@ class FamilyGovernor:
 
     @staticmethod
     def _waiver_flag_set(value) -> bool:
-        """豁免位字段值的真值判定（读取与消费原语共用同一份口径）。"""
+        """豁免位字段值的真值判定（豁免位消费原语的锁内判真口径）。"""
         raw = str(value or "").strip().lower()
         return raw in ("true", "1", "yes")
-
-    def _family_waiver_set(self, spec_name: str) -> bool:
-        """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。
-
-        口径归属（code-review item f355cfaf723f）：生产主链的「读值 → 判真 →
-        复位」已收口进 `_consume_family_waiver` 的 ``.STATE.md.lock`` 锁内
-        临界区（基于锁内最新条目，防豁免位双花）；本方法是锁外 read_one
-        一次性快照的只读查询面，与锁内口径在并发下可相差一次复位——仅限
-        非消费性探测（诊断/测试断言）使用，不得作为放行依据。它同时是门面
-        委托表与 test_facade_delegation_contract.py 覆盖性硬门的清单条目，
-        删除须同步改契约测试与 facade-inventory.md，勿单点摘除。
-        """
-        spec = self._pm.state_machine.read_one(spec_name) or {}
-        return self._waiver_flag_set(spec.get("_family_waiver"))
 
     def _consume_family_waiver(self, spec_name: str) -> bool:
         """消费豁免位：若存在则复位为 False，返回原值。
 
         「读值 → 判真 → 复位 → 带出原值」收进 state_machine 同一把
         ``.STATE.md.lock`` 临界区（code-review item f7a110bfe0b1）：原先
-        ``_family_waiver_set`` 的 read_one 与复位 update_spec 分持两次锁，
+        「read_one 锁外读值 + update_spec 锁外复位」分持两次锁，
         同父 SPEC 的两个并发 bug-found 处置可都读到 True 并各自放行一个
         子 SPEC（豁免位双花）。改经 ``_mutate_locked`` 锁内回调完成单点
         CAS（bump_counters 同型）：判真与复位基于锁内最新条目，后到方
@@ -240,8 +226,7 @@ class FamilyGovernor:
 
         def _mutate(specs):
             entry = specs.get(spec_name)
-            # 非法条目按未持有处置（与 _family_waiver_set 的 read_one 归一
-            # 口径一致），不写不改不落盘。
+            # 非法条目按未持有处置，不写不改不落盘。
             if not isinstance(entry, dict):
                 return False, False
             if not self._waiver_flag_set(entry.get("_family_waiver")):

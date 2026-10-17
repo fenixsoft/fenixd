@@ -157,15 +157,20 @@ STDERR_CLASS_GENERIC = "generic"
 
 
 class HarnessAdapter:
-    """harness adapter 协议（typing.Protocol 语义的结构化契约）。
+    """harness adapter 协议（名义基类 + 继承桩的结构化契约）。
 
     协议成员（spec「HarnessAdapter 协议」）：name / build_spawn_spec /
     normalize_event / classify_stderr / extract_result / process_patterns /
-    worktree_pgrep_patterns / capabilities。用显式方法集而非
-    typing.Protocol 类的原因：协议成员完整性
-    测试（task 1.2）以 isinstance 协议结构比对最直观，且 isinstance 检查对
-    「少实现一个成员」的 adapter 在运行期即可判（fail-fast 优于运行到一半
-    AttributeError）。子类 MUST 全量实现，缺成员由测试与运行期双路拦截。
+    worktree_pgrep_patterns / capabilities。本类是普通基类而非
+    typing.Protocol：桩方法体统一 raise NotImplementedError，「少实现一个
+    成员」的 adapter 要到**调用该成员时**才在运行期暴露；「是否全量实现」
+    由测试静态把关——协议成员完整性测试（task 1.2，
+    tests/test_harness_adapter.py）以 hasattr 逐成员结构比对。isinstance
+    在这里只做名义继承判断（缺成员的子类照样通过），MUST NOT 用作协议
+    校验；另一注册通道 DshAdapter（dsh_adapter.py）以 duck-typing 满足
+    协议、并不继承本类，isinstance(x, HarnessAdapter) 对其为 False——
+    消费方一律按成员结构（duck-typing）调用，不做名义类型检查。子类
+    MUST 全量实现，缺成员由测试与运行期双路拦截。
 
     member 定义（详见 spec delta agent-harness-adapter）：
     - name: harness 标识（与 agent.harness 配置值一致，如 "claude"）

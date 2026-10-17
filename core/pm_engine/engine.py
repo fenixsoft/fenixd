@@ -232,7 +232,6 @@ class PMEngine:
         "_resolve_fix_spec_name": ("_family", "_resolve_fix_spec_name"),
         "_ensure_fix_spec_files": ("_family", "_ensure_fix_spec_files"),
         "_family_width": ("_family", "_family_width"),
-        "_family_waiver_set": ("_family", "_family_waiver_set"),
         "_consume_family_waiver": ("_family", "_consume_family_waiver"),
         "_family_gate_blocked": ("_family", "_family_gate_blocked"),
         "_same_root_siblings": ("_family", "_same_root_siblings"),

@@ -86,6 +86,16 @@ export const SafeLink: Components['a'] = ({ node: _node, href, children, ...prop
   return <span>{children}</span>;
 };
 
+// 给映射组件挂标签名（供 collectTableText 把映射后的函数型元素归一成标签名，见
+// HEADER_TEXT_ELEMENTS 处说明）：react-markdown v10 下映射命中的元素渲染成函数
+// 组件、元素 type 是函数，只能靠 displayName 认回标签名。经 unknown 断言写入，
+// 绕开 Components['a'] 等宽联合（含 string 成员）上的直赋类型误差；displayName
+// 仅是识别标签，不参与渲染
+const setDisplayName = (component: unknown, tagName: string): void => {
+  (component as { displayName?: string }).displayName = tagName;
+};
+setDisplayName(SafeLink, 'a');
+
 // 内联代码 chip（GitHub 风格）：`xx` 渲染为灰底圆角等宽片段，与正文可区分
 const codeChipStyle: CSSProperties = {
   padding: '0.15em 0.4em',
@@ -101,17 +111,33 @@ const codeChipStyle: CSSProperties = {
 // 渲染为 <thead><tr><th>、表体在 <tbody> 内，指纹特征词必须落在表头才算命中
 // ——若连表体全文一起匹配，普通表格正文恰好出现「编号」「摘要」等特征词就会
 // 被误套知识表定宽布局。表头内的行内格式元素（`code`、**strong** 等 GFM 内联
-// 语法产物及 SafeLink 降级 span）同样下钻取纯文本，含格式的表头不失宽。
+// 语法产物、链接及 SafeLink 降级 span）同样下钻取纯文本，含格式的表头不失宽。
+// 注意下钻名单按「标签名」判定：未映射宿主元素（strong/em/del/span/br）的元素
+// type 就是标签名字符串；而 markdownComponents 映射命中的元素（th、a→SafeLink、
+// code→内联 chip）在 react-markdown v10 下渲染成函数组件，元素 type 是函数、
+// String(type) 是函数源码、永不等于标签名——按字符串查集合会在这些节点连同其
+// 后文本一起截断（th 被截断则连指纹都收集不到）。映射组件统一经 setDisplayName
+// 挂上标签名，elementTagName 按其归一后再查集合。
 const HEADER_TEXT_ELEMENTS = new Set([
   'thead', 'tr', 'th',
   'code', 'strong', 'em', 'del', 'a', 'span', 'br',
 ]);
+// 元素 type → 参与表头取文本判定的标签名：字符串 type 即标签名；映射出的函数型
+// 组件取挂上的 displayName（字符串字面量不受构建压缩改名影响，函数 name 属性会
+// 被改写，不可依赖）
+const elementTagName = (type: unknown): string => {
+  // 先按 unknown 断言取 displayName 形状（unknown 断言恒合法；映射组件皆是函数，
+  // 字符串 type 已在下方先行返回）
+  const comp = type as { displayName?: string };
+  if (typeof type === 'string') return type;
+  return comp.displayName ?? '';
+};
 const collectTableText = (node: ReactNode): string => {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(collectTableText).join('');
   if (isValidElement(node)) {
     const el = node as ReactElement<{ children?: ReactNode }>;
-    if (!HEADER_TEXT_ELEMENTS.has(String(el.type))) return '';
+    if (!HEADER_TEXT_ELEMENTS.has(elementTagName(el.type))) return '';
     return collectTableText(el.props.children);
   }
   return '';
@@ -221,3 +247,8 @@ export const markdownComponents: Components = {
     </td>
   ),
 };
+
+// code/th 经 markdownComponents 映射后元素 type 是函数（collectTableText 处
+// elementTagName 说明），挂标签名供其归一进表头取文本名单；仅识别用，不改渲染
+setDisplayName(markdownComponents.code, 'code');
+setDisplayName(markdownComponents.th, 'th');

@@ -114,7 +114,13 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
       try {
         values = await form.validateFields();
       } catch {
-        onValidateError?.();
+        // onValidateError 意外异常同 onSave 兜底口径，不无声穿透 handleSave
+        try {
+          onValidateError?.();
+        } catch (error) {
+          message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
         return;
       }
       // checkValues 意外异常同 onSave 兜底口径，不无声穿透 handleSave

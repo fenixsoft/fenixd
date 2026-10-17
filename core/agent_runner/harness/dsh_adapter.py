@@ -333,7 +333,15 @@ class DshEventProjector:
             "tool_result": self._project_tool_result,
             "final": self._project_final,
             "error": self._project_error,
-        }[ev_type]
+        }.get(ev_type)
+        if handler is None:
+            # 词表漂移兜底（code-review item 6babd9c1790d）：DSH_EVENT_TYPES 与
+            # 本表两份人工同步，未来追加类型漏配 handler 时该类型已过 ingest 的
+            # received 判定，精确取键会以 KeyError 冲出 stdout 读线程——此处
+            # 复用 unknown_type 坏事件路径（计数 + 返回空列表）兜底，不中断流。
+            self.received_unknown += 1
+            self.bad_events["unknown_type"] += 1
+            return []
         return handler(entry)
 
     def _with_truncated(

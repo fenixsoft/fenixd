@@ -236,10 +236,15 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
     if not runs_dir.is_dir():
         return 0
     try:
+        # dsh 原始事件 dump 旁路（<run_id>.dsh-events.jsonl）显式排除（code-review
+        # item c8be48d57864）：它是投影层取证产物、非 run 产物，SPEC 归档不回收
+        # （其残留交 runs 保留清理——终态/stale 移入 archive/ 后按无主天龄兜底
+        # 删除），与 get_runs/_runs_by_spec_sigs 读侧排除同口径。
         candidates = [
             p
             for p in list(runs_dir.glob("*.jsonl")) + list((runs_dir / "archive").glob("*.jsonl"))
-            if run_spec_part(p.stem) == spec_name
+            if not p.stem.endswith(".dsh-events")
+            and run_spec_part(p.stem) == spec_name
         ]
     except OSError as e:
         # 扫描失败与「runs_dir 不存在」旧实现同返回 0 且无日志（code-review

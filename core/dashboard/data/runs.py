@@ -610,6 +610,14 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
     now = time.time()
     for p in files:
         run_id = p.stem
+        # dsh 原始事件 dump 旁路（<run_id>.dsh-events.jsonl，add-dsh-adapter-
+        # integration 可观测性三件套）不是 run 产物：不带 spec 过滤的裸 glob 会
+        # 把它当「spec 名带 .dsh-events 尾巴的幻影 run」混入运行时间轴（
+        # code-review item c8be48d57864），读侧按 stem 后缀排除（glob 路径与
+        # 调用方预选集共用本过滤点）；其回收交 runs 保留清理——终态/stale 移入
+        # archive/ 后按无主天龄兜底删除。
+        if run_id.endswith(".dsh-events"):
+            continue
         # 精确归属守卫（code-review item 78dc8a67623f）：子串包含在 spec 名互为
         # 前缀时（如 add-foo 与 add-foo-bar）互相串入对方 run；与读侧既有口径
         # 一致（recovery.py 活性探针、budget.py 预算计数均用 run_files.
