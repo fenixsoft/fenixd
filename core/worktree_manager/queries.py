@@ -247,16 +247,15 @@ class G8QueryMixin:
         wt_name = f"{prefix}-{spec_name}-{timestamp}"
         wt_path = self.base_dir / wt_name
         try:
-            # 分支必须存在（rev-parse --verify 精确校验，防 typo 分支名）
-            verify = subprocess.run(
-                ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-            )
-            if verify.returncode != 0:
+            # 分支必须存在（严格限定 refs/heads 命名空间，防 typo 分支名）。
+            # code-review item 502de8b111b4：裸 rev-parse --verify 对 tag、短
+            # hash、HEAD 等任意可解析 rev 都返回 0，且解析顺序 refs/tags 先于
+            # refs/heads——分支被同名 tag 遮蔽或误传 sha 时校验通过，随后
+            # worktree add 会按 DWIM 规则建成 detached-HEAD 载体（指向 tag/sha
+            # 内容），而 _wt_branches 仍把该路径记为该分支。校验统一走
+            # branch_exists（e15c05dd4ab5 收紧口径）：查询失败（超时/OSError）
+            # 按不存在保守拒绝，返回形态（None + WARNING）不变。
+            if not self.branch_exists(branch):
                 self.logger.warning(
                     "worktree_manager",
                     f"create_worktree_on_branch: branch '{branch}' not found — "
