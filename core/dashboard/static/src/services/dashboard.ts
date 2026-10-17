@@ -452,7 +452,15 @@ export async function getAlerts(): Promise<AlertsData> {
 }
 
 export function markAlertHandled(project: string | undefined, id: string) {
-  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  // 后端硬约束：_api_alert_handled 对缺 project 无条件 400（"unknown project"），
+  // 告警均按项目归档（AdminStore per-project），不存在项目无关的告警发射点。
+  // 签名无法收紧为必填——现网调用面（AlertBanner/activities/SPEC 详情）传的是
+  // AlertItem.project（可选字段，类型 string | undefined）——改为封装内对空值
+  // 显式报错，避免静默发出确定性失败的请求（code-review item 54cd19ca3bb3）。
+  if (!project) {
+    throw new Error('markAlertHandled: project 必填（后端对缺 project 恒 400）');
+  }
+  const q = `?project=${encodeURIComponent(project)}`;
   return request(`/api/alerts/${encodeURIComponent(id)}/handled${q}`, { method: 'POST' });
 }
 
@@ -478,6 +486,14 @@ export async function resolveAlert(
   choiceId: string,
   note = '',
 ): Promise<AlertResolveResult> {
+  // 后端硬约束：_api_alert_resolve 对缺 project 无条件 400（"missing project"），
+  // 告警均按项目归档，不存在项目无关的可裁决发射点。签名无法收紧为必填——
+  // 现网调用面（useAlertAdjudication）传的是 AlertItem.project（可选字段，
+  // 类型 string | undefined）——改为封装内对空值显式报错，避免类型层邀请
+  // 非法调用（code-review item 54cd19ca3bb3）。
+  if (!project) {
+    throw new Error('resolveAlert: project 必填（后端对缺 project 恒 400）');
+  }
   // project 只走 body 通道（code-review item 7045ef4ae4c7）：POST 载荷本就
   // 内聚 project/alert_id/choice_id/note，旧的 ?project= 双通道系冗余
   //（后端 query 优先、body 兜底，两通道并存只会邀请日后失配）
@@ -1599,16 +1615,6 @@ export interface HooksConfig {
   specs?: Record<string, HookConfig[]>;
 }
 
-export const HOOK_ACTIONS: HookAction[] = [
-  'restart-daemon',
-  'restart-dashboard',
-  'commit',
-  'push',
-  'commit-push',
-  'webhook',
-  'shell',
-];
-
 export const HOOK_ACTION_LABELS: Record<HookAction, string> = {
   'restart-daemon': '重启 daemon',
   'restart-dashboard': '重启 dashboard',
@@ -2278,13 +2284,6 @@ export interface RegressionLongTest {
   time: number;
 }
 
-/** GET /api/regression/result 快照（design D6 结构）。
- *
- * status 五态：passed（全绿）/ failed（有失败或错误）/ timeout（硬超时中止）/
- * parse_error（XML 缺失或不可解析，附 reason）/ never_run（尚未执行过）。
- * running 为读侧补充的「是否正在执行」标记（marker 新鲜度判定），
- * 供分面在跨刷新后仍能显示运行中态（task 5.6：MUST NOT 依赖前端本地计时）。
- */
 /**
  * 运行中执行进度（read_progress 三级口径）：
  * - percent 非 null + estimated=false → stdout 终端标记的真实进度
@@ -2299,6 +2298,13 @@ export interface RegressionProgress {
   last_duration_seconds?: number | null;
 }
 
+/** GET /api/regression/result 快照（design D6 结构）。
+ *
+ * status 五态：passed（全绿）/ failed（有失败或错误）/ timeout（硬超时中止）/
+ * parse_error（XML 缺失或不可解析，附 reason）/ never_run（尚未执行过）。
+ * running 为读侧补充的「是否正在执行」标记（marker 新鲜度判定），
+ * 供分面在跨刷新后仍能显示运行中态（task 5.6：MUST NOT 依赖前端本地计时）。
+ */
 export interface RegressionResult {
   status: 'passed' | 'failed' | 'timeout' | 'parse_error' | 'never_run';
   running?: boolean;
