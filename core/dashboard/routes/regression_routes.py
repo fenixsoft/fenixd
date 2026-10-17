@@ -1,9 +1,10 @@
 """regression_routes.py — 全量回归 (test-regression-tab) routes（add-test-regression-tab）。
 
-承载 6 个端点：
+承载 7 个端点：
 - GET  /api/regression/result    （query project）→ 最近一次回归快照
 - GET  /api/regression/config    （query project）→ verify.yaml regression 段配置状态
 - POST /api/regression/run       （query project）→ 写手动触发信号
+- POST /api/regression/run-issues（query project）→ 写定向子集回归触发信号（add-regression-issues-rerun）
 - POST /api/regression/autodraft （query project）→ 同步 AI 生成 regression 段
 - POST /api/regression/fix       （query project）→ 写回归问题自动修复触发信号（add-regression-auto-fix）
 - GET  /api/regression/fix-result（query project）→ 只读修复触发判定结果（add-regression-auto-fix）
@@ -28,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import signal
 import subprocess
 import threading
@@ -860,7 +860,13 @@ class H12RegressionRoutesMixin:
                 )
                 return
 
-            if marker == "no_test_system":
+            # 仅补段路径（full_contract=False，起草前契约有效）反查：若起草
+            # 过程把 verify.yaml 改坏到契约不再可解析（contract_after is
+            # None），不得以 no_test_system 成功结案掩盖既有契约被破坏——
+            # 落到下方失败回包，warning 留痕（item e55bba81efde）
+            if marker == "no_test_system" and (
+                full_contract or contract_after is not None
+            ):
                 self._json(
                     {
                         "ok": True,

@@ -218,7 +218,7 @@ export function registerTaskTools(ctx: { tools: { register(definition: unknown):
         subject: { type: "string", description: "新标题" },
         description: { type: "string", description: "新描述" },
         activeForm: { type: "string", description: "进行中时 spinner 展示的短语" },
-        metadata: { type: "object", additionalProperties: true, description: "合并/替换的元数据对象" },
+        metadata: { type: "object", additionalProperties: true, description: "整体替换的元数据对象（未随本次更新重发的键会丢失）" },
       },
       output: {
         schema: {

@@ -51,6 +51,11 @@ const STREAM_FALLBACK_MS = 30000;
 // 全部耗尽置「实时推送不可用」失败态并同样降级轮询（与 SSE 断流共用提示位）。
 const WATCH_RETRY_MAX = 3;
 const WATCH_RETRY_INTERVAL_MS = 5000;
+// 本地事件保留上限（code-review item 28d5d8c4adc8）：对齐服务端事件环形缓冲
+// deque(maxlen=4000)（core/dashboard/session_manager.py SESSION_EVENT_BUFFER）
+// 并留 200 余量——余量容纳快照合并（applySnapshotCarried）前插保留的窗口外
+// 早期事件，避免上限边界反复触顶回裁抖动。裁剪收口见 trimLocalEvents。
+const MAX_LOCAL_EVENTS = 4200;
 
 interface SessionPanelProps {
   project: string;
@@ -187,7 +192,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 事件列表镜像 ref（code-review item 1371d6ca978a）：afterHello 第二次重拉
   // 跑在 effect 闭包里，闭包捕获的 events state 是挂载时快照（stale closure）
   // 读不到窗口内 SSE 增量——经本 ref 读取替换前的实时列表，供快照合并补回。
-  // events state 仅有 syncEvents / appendEvents 两个变更点，两处同步维护本 ref。
+  // events state 的变更点（syncEvents / appendEvents / applySnapshotCarried 的
+  // carried 前插合并与 trimLocalEvents 收口裁剪）均同步维护本 ref。
   const eventsRef = useRef<SessionEvent[]>([]);
   // cid 由服务端在 SSE hello 中分配（design D3：自造 cid 会静默失效）。初值必须为
   // null——分面未激活时无任何订阅可注销；若预置自造 cid，下方 [active] 清理
@@ -279,8 +285,34 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
     if (fresh.length > 0) {
       eventsRef.current = [...eventsRef.current, ...fresh];
+      // 追加后的统一收口裁剪（上限内为 no-op，不触发额外渲染）
+      trimLocalEvents();
       setEvents(eventsRef.current);
     }
+  };
+
+  // 本地保留事件数上限裁剪（code-review item 28d5d8c4adc8）：eventsRef/
+  // seenUuidsRef 原本只增不减——applySnapshotCarried 刻意前插保留已滑出服务端
+  // 窗口的早期事件（item 51f0857322b5 的正确性取舍），长会话（daemon 可连续
+  // 运行数日）下客户端内存与列表无上限增长，chatMessages 的 useMemo 以 events
+  // 为键，每帧 SSE 对全量重跑 runEventsToChatMessages 的成本随之线性上升。
+  // 取舍：本地只保留与服务端环形窗（SESSION_EVENT_BUFFER = 4000）同量级的
+  // 最近事件，超限从最旧端裁剪、不重排，carried 合并的时序语义不受影响——
+  // 被裁事件均已滑出服务端 4000 窗口，不会再经后续快照/SSE 复现，可安全同步
+  // 从 seenUuidsRef 删除其 uuid，使去重集合与列表同界。增长点只有 appendEvents
+  // （SSE / 尾补回）与 applySnapshotCarried（前插合并），两处落盘后各自调用
+  // 本 helper 统一收口。
+  const trimLocalEvents = () => {
+    const current = eventsRef.current;
+    if (current.length <= MAX_LOCAL_EVENTS) return;
+    const overflow = current.length - MAX_LOCAL_EVENTS;
+    for (let i = 0; i < overflow; i++) {
+      const ev = current[i];
+      const uuid = ev ? (ev.uuid as string | undefined) : undefined;
+      if (uuid) seenUuidsRef.current.delete(uuid);
+    }
+    eventsRef.current = current.slice(overflow);
+    setEvents(eventsRef.current);
   };
 
   // 快照应用单源（code-review item a4bbea6af729）：会话状态更新块曾在
@@ -354,7 +386,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     const local = eventsRef.current;
     // 时序边界（code-review item 51f0857322b5）：服务端缓冲是
     // deque(maxlen=4000) 环形缓冲（session_manager.py SESSION_EVENT_BUFFER），
-    // 长会话下早期事件已从快照滑出而 eventsRef 只增不减，carried 若一律尾
+    // 长会话下早期事件已从快照滑出而本地列表仍保有窗口外近期事件（eventsRef
+    // 已设 MAX_LOCAL_EVENTS 上限、超限裁最旧端，item 28d5d8c4adc8），carried 若一律尾
     // 追加，会把最老的滑出事件排到最新消息之后且每次重连都维持错序。快照是
     // 服务端事件序列的连续尾窗、本地到达序与之同序，故以「快照首事件 uuid
     // 在本地列表中的下标」为边界：carried 中位于该下标之前的事件早于快照
@@ -387,6 +420,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       const merged = [...older, ...eventsRef.current];
       eventsRef.current = merged;
       setEvents(merged);
+      // 前插保留的窗口外事件可使本地列表超出上限：合并后的统一收口裁剪
+      // （尾追加路径由 appendEvents 内部收口），uuid 随裁剪同步收缩
+      trimLocalEvents();
     }
     appendEvents(newer);
   };

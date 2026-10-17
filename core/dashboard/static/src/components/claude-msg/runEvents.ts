@@ -443,11 +443,21 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
             out[idx].toolResult = result;
           } else {
             // 无匹配工具卡片（卡片被分页窗口截断、上游 tool_use_id 形态漂移）时
-            // 兜底为系统条，不静默丢失（item ea030ea275c2）：与下方 task_started/
+            // 兜底为独立条，不静默丢失（item ea030ea275c2）：与下方 task_started/
             // task_notification 分支同一「不静默丢失」口径；content 类型标注为
-            // unknown，经 resultContentToText 文本化再截断
+            // unknown，经 resultContentToText 文本化再截断。
+            // isError 结果改推 error 行（消费端 MessageItem 渲染红色「错误」头，
+            // 与上方终态 error 分支同形态），不以中性系统行掩盖失败状态（item
+            // 4aef6dc57a79）；digest 为空时省略冒号尾巴（与 :624 task_started
+            // 兜底同口径）
             const digest = truncateText(resultContentToText(result.content), 80);
-            pushSystem(`工具结果：${digest}`, timestamp);
+            const text = digest ? `工具结果：${digest}` : '工具结果';
+            if (result.isError) {
+              flushThinking();
+              out.push({ type: 'error', content: text, timestamp });
+            } else {
+              pushSystem(text, timestamp);
+            }
           }
         }
         // tool_result 消息不再渲染文本行（除非另有文本内容）

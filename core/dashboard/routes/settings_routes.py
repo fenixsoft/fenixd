@@ -22,9 +22,7 @@ d190fab69dc9，见 _api_verify_yaml_autodraft_post 的「契约状态=」分支�
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 import yaml
@@ -32,6 +30,9 @@ import yaml
 from core.dashboard import data as dashboard_data
 from core.dashboard.llm_health import run_llm_health_check
 from core.dashboard.ocr_status import check_ocr_installed, install_ocr
+# 原子写收口单点（别名 import 对齐 scenario_gate 先例，item 0974649bc54b）：
+# 别名避免与本模块同名薄委托助手语义混淆，fs_utils 只依赖 stdlib 无环风险
+from core.fs_utils import atomic_write_text as _fs_atomic_write_text
 from core.admin_store import AdminStore, SIGNAL, evidence_project  # noqa: E402
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
@@ -44,60 +45,18 @@ logger = logging.getLogger("fenixd.dashboard.routes.settings_routes")
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
-    """整文件原子覆写：同目录临时文件 + ``os.replace``（对齐
-    config_admin.write_config 的 temp+os.replace 模式）。
+    """整文件原子覆写（薄委托 fs_utils 收口单点，code-review item
+    0974649bc54b）：mkstemp 唯一临时名 + fsync + os.replace + 尽力而为
+    fsync 父目录的纪律单点维护于 core.fs_utils。此前本地自持副本从不
+    chmod（产物恒 mkstemp 缺省 0600）且 rename 后不 fsync 父目录，与
+    单点纪律漂移，就此删除。
 
-    code-review item efb4c656783a：直接 ``Path.write_text`` 非原子——崩溃/
-    ENOSPC 中途会留截断文件；verify.yaml 非纯装饰（``load_verify_contract``
-    可能并发读到部分文档而静默回退「无契约」），todo.md 同理。写失败时
-    清理半写临时文件后原样抛出，由调用方统一报告。
+    权限口径 inherit_existing_mode=True（仓库「新文件 0644/继承既有模式」，
+    verify_report 口径）：覆写既有 verify.yaml/todo.md/agents 提示词时
+    继承原权限（运维刻意收紧的 0600 不被静默重置），新文件放宽 0644——
+    todo.md 双写者（daemon 侧同走 fs_utils）权限不再来回跳动。
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.name}-", suffix=".tmp"
-    )
-    try:
-        # fdopen 失败路径显式关 fd（code-review item 71d502440d3b，对齐
-        # code_review_routes._write_signal_exclusive 先例）：fdopen() 自身
-        # 抛错时 with 未进入、裸 fd 无人关闭（with 的 close 只在 fdopen
-        # 成功后才生效）——描述符泄漏。f=None 哨兵接管，fdopen 未成功时
-        # 兜底 os.close；成功后统一经 finally close（等价 with 语义）。
-        f = None
-        body_error = False
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        except BaseException:
-            body_error = True
-            raise
-        finally:
-            if f is not None:
-                try:
-                    f.close()
-                except OSError:
-                    # code-review item e16236fc45c4：写体已抛错时，close() 的
-                    # 隐式 flush 可再次抛 OSError 并在 finally 中替换原始异常
-                    # 向上传播——调用方 logger.warning 记到的是 close 报错而非
-                    # 真实写失败原因，排查归因偏差。故写体已失败时吞掉 close
-                    # 的二次错误（原始异常优先传播）；写体成功时 close 错误
-                    # 照常上抛（flush/close 失败是真实写失败，吞掉会让下方
-                    # os.replace 把可能未落盘的临时文件假成功发布）。
-                    if not body_error:
-                        raise
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, str(target))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _fs_atomic_write_text(target, content, inherit_existing_mode=True)
 
 
 def _warn_if_todo_overwrite_empties(target: Path, content: str) -> None:

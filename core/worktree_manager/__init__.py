@@ -105,17 +105,3 @@ class WorktreeManager(
     # 需 git ≥ 2.38，进程内一次性探测（类级缓存，多实例共享，不重复探测/不刷屏）。
     _rehearsal_probe_done = False
     _rehearsal_supported = False
-
-    # ── 待合并分支信号（evo-recovery-watch-transition-guard D1）──────────────
-    # recovery watch 判定 stale 前的过渡窗口豁免依据：「该 spec 存在未并入
-    # main 的实现分支」= 过渡窗口内（implementer 成功收工 → merge-back 完成）。
-    # 判据 = 归属该 spec 的实现分支存在未并入 main 的提交（rev-list > 0），
-    # **不是**分支存在性——仓库 1014 条 fenix/* 历史分支中 933 条已并入 main，
-    # 存在性判据会把已合并分支也算作待合并，永久抑制真实 stale 检出。
-    # 前缀硬编码 "fenix/" 与分支创建端同源（lifecycle.G1LifecycleMixin.create
-    # 内 _names 闭包的分支名拼装，code-review item ded13afb19bb：拆包后失效
-    # 行号引用改方法级定位），不读配置——
-    # worktree.implement_branch_prefix 仅 engine._resolve_push_branch 读取、
-    # 非创建端事实源（design D1「前缀来源」，非 fenix 配置下按配置枚举会
-    # 扫空命名空间、豁免静默失效）。
-    PENDING_MERGE_BRANCH_PREFIX = "fenix/"

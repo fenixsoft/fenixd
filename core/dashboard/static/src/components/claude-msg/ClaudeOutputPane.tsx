@@ -302,7 +302,14 @@ export default function ClaudeOutputPane({
       const data = await getRunTail(reqRunId, reqProject, tail, events.length);
       // 过期分页响应（item f9b3f56a1e32）：更新的重拉/重同步快照已落地时整包
       // 丢弃，防旧窗口前置拼进重置后列表
-      if (snapSeq <= tailSnapAppliedRef.current) return;
+      if (snapSeq <= tailSnapAppliedRef.current) {
+        // 丢弃反馈（code-review item 21313b409388）：重连叠加分页时本轮结果被
+        // 重同步静默覆盖，用户无从分辨「已取到」还是「没生效」（同 item
+        // 1717797b5fc1 的零进展/失败路径提示），列表已被重同步快照整体覆盖、
+        // canLoadOlder 仍可重试
+        message.info('本轮加载更早事件被运行流重同步覆盖，请稍后重试');
+        return;
+      }
       if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
         setTotalEvents(data.total_events || 0);
         reportStatus(data.status || '');

@@ -1168,14 +1168,18 @@ class G1LifecycleMixin:
                     )
                     continue
                 self.logger.info("worktree_manager", f"Cleaning up orphan: {wt_dir}")
-                # 收尾清扫（code-review item 11c4366528dc，与 cleanup() 口径对齐）：
-                # 删除目录前先杀掉其残留测试子进程（dev-server 孤儿），否则目录
-                # 删除后它们成为 cwd 失效的永生孤儿（曾致存活检测永久受骗）
-                self._kill_worktree_strays(wt_dir.name)
-                # 硬删前留档（D2）：git worktree remove --force 成功路径同样先
-                # 留快照引用，消灭「先删后查」取证盲区；失败仅 WARNING 不阻塞。
-                self._snapshot_dirty_worktree(wt_dir, self._wt_branches.get(str(wt_dir)))
                 try:
+                    # 收尾清扫（code-review item 11c4366528dc，与 cleanup() 口径对齐）：
+                    # 删除目录前先杀掉其残留测试子进程（dev-server 孤儿），否则目录
+                    # 删除后它们成为 cwd 失效的永生孤儿（曾致存活检测永久受骗）
+                    # 杀残留与留档两调用移入 try（code-review item 5f3dee9b3ef8）：
+                    # 与 cleanup() 把收尾全程包进 except Exception 的口径一致，二者的
+                    # 未预期异常不再穿出 for 循环中断剩余孤儿目录的清理与登记清空，
+                    # 改由下方 except 分支 WARNING 留痕并 rmtree 兜底后继续下一目录。
+                    self._kill_worktree_strays(wt_dir.name)
+                    # 硬删前留档（D2）：git worktree remove --force 成功路径同样先
+                    # 留快照引用，消灭「先删后查」取证盲区；失败仅 WARNING 不阻塞。
+                    self._snapshot_dirty_worktree(wt_dir, self._wt_branches.get(str(wt_dir)))
                     result = subprocess.run(
                         [
                             "git",
@@ -1212,8 +1216,9 @@ class G1LifecycleMixin:
                                     f"fallback: {wt_dir}",
                                 )
                 except Exception as e:
-                    # subprocess 直接抛异常（如 git 挂起 TimeoutExpired / OSError）
-                    # 不静默吞掉：先记 WARNING 留痕（异常类型 + stderr 现场），对齐
+                    # subprocess 直接抛异常（如 git 挂起 TimeoutExpired / OSError），
+                    # 上方杀残留/留档调用的未预期异常（item 5f3dee9b3ef8）同样落到
+                    # 这里，均不静默吞掉：先记 WARNING 留痕（异常类型 + 现场），对齐
                     # cleanup() 与上方 returncode 分支「remove 失败必记 WARNING」
                     # 的口径（code-review item 67b788923b6e）；rmtree 兜底后复核
                     # 残留，目录仍在（如被占用删不掉）时追加留痕——否则下游存活

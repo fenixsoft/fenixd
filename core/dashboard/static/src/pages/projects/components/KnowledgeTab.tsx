@@ -188,17 +188,10 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // 守卫槽并经 seqRef 作废前一响应，以最后一次点击为准。
   const pageLoadingRef = useRef<string | null>(null);
 
-  // active 门控拉取：先 config 判 enabled，再拉 index
+  // active 门控拉取：先 config 判 enabled，再拉 index。inactive 时不会被调用
+  // （effect 先行 return、重试按钮仅 active 分支渲染），在飞请求作废由下方
+  // effect 的 inactive 早退分支负责（code-review item 0976e6b64596）。
   const load = useCallback(async () => {
-    if (!active || !project) {
-      // inactive 早退也作废在飞请求（code-review item 3ac5cd53eb73）：切项目且
-      // 分面未选中时，项目切换重置 effect 只清视图态不动序号，旧项目在途
-      // openPage 的响应会通过 seq 守卫把上个项目页面内容写进新项目视图，且切回
-      // 分面后 load 只更新 indexData 不重置 view，持续串页；此处递增使在飞响应
-      // 一律判过期丢弃（active 门控语义不变，仅收窄过期响应的落盘）。
-      ++seqRef.current;
-      return;
-    }
     const seq = ++seqRef.current;
     setLoading(true);
     try {
@@ -222,10 +215,19 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, [active, project]);
+  }, [project]);
 
   useEffect(() => {
-    if (!active || !project) return;
+    if (!active || !project) {
+      // inactive 早退也作废在飞请求（code-review item 0976e6b64596）：作废不能
+      // 放在 load 内——load 仅在下方 active 分支与重试按钮处被调用，inactive
+      // 时不可达。切项目且分面未选中时，项目切换重置 effect 只清视图态不动
+      // 序号，旧项目在途 openPage 的响应会通过 seq 守卫把上个项目页面内容写
+      // 进新项目视图，且切回分面后 load 只更新 indexData 不重置 view，持续串
+      // 页；此处无条件递增使在飞响应一律判过期丢弃。
+      ++seqRef.current;
+      return;
+    }
     void load();
   }, [active, project, load]);
 

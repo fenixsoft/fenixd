@@ -159,23 +159,22 @@ _WHITELIST_PERSISTED_FIELDS = (
 def grace_minutes(config) -> float:
     """散件 WIP 滞留宽限（分钟）：``admin.maintree_stray_wip_grace_minutes``。
 
-    经 ConfigLoader 点号键读取，缺省 30（对齐 code_fix._orphan_grace_minutes
-    同款守卫语义）：解析失败/负值/NaN/inf/超一天上限一律回退缺省——配置事故
-    MUST NOT 放大成「无限期静默等待」极端。``0`` 是合法配置＝「耗尽即升级」
-    （告警按指纹一次性去重，秒升级无刷屏风险）。
+    经 ConfigLoader.get_finite_number 读取（数值守卫统一助手，code-review
+    item 4f9cfdf0235d 收编），缺省 30（对齐 code_fix._orphan_grace_minutes
+    同款守卫语义）：解析失败/NaN/±inf/负值/超一天上限一律回退缺省——配置
+    事故 MUST NOT 放大成「无限期静默等待」极端。``0`` 是合法配置＝「耗尽
+    即升级」（告警按指纹一次性去重，秒升级无刷屏风险）。
     """
     from core.config import ConfigLoader
 
-    try:
-        raw = ConfigLoader.get(
-            config, "admin.maintree_stray_wip_grace_minutes",
-            DEFAULT_GRACE_MINUTES,
-        )
-        val = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_GRACE_MINUTES
-    # NaN 由 val != val 判别（NaN 使宽限比较恒假，退化为被声明禁止的极端）。
-    if val != val or val < 0 or val == float("inf") or val > _MAX_GRACE_MINUTES:
+    val = ConfigLoader.get_finite_number(
+        config, "admin.maintree_stray_wip_grace_minutes",
+        conv=float, get_default=DEFAULT_GRACE_MINUTES,
+        fallback=DEFAULT_GRACE_MINUTES,
+    )
+    # 范围守卫在助手之外（助手只收口非有限预检与转换回退）：负值/超上限
+    # 回退缺省，NaN/±inf 已由助手 isfinite 预检挡下。
+    if val < 0 or val > _MAX_GRACE_MINUTES:
         return DEFAULT_GRACE_MINUTES
     return val
 
@@ -183,24 +182,24 @@ def grace_minutes(config) -> float:
 def untracked_stray_threshold(config) -> int:
     """untracked 散件告警阈值（entry 个数）：``admin.maintree_untracked_stray_threshold``。
 
-    经 ConfigLoader 点号键读取，缺省 5（info 级降噪起步）：解析失败/负值/
-    NaN/inf/小于 1 一律回退缺省——阈值是降噪闸门，``0`` 会把任意 untracked
-    散件都升级成告警、等同关闭降噪，按配置事故回退处理（与 grace_minutes
+    经 ConfigLoader.get_finite_number 读取（守卫统一助手，item
+    4f9cfdf0235d 收编），缺省 5（info 级降噪起步）：解析失败/NaN/±inf/
+    小于 1 一律回退缺省——阈值是降噪闸门，``0`` 会把任意 untracked 散件
+    都升级成告警、等同关闭降噪，按配置事故回退处理（与 grace_minutes
     允许 ``0`` 的「耗尽即升级」语义刻意不同：阈值小了只会更吵，宽限小了
     只会更早报，方向相反）。
     """
     from core.config import ConfigLoader
 
-    try:
-        raw = ConfigLoader.get(
-            config, "admin.maintree_untracked_stray_threshold",
-            DEFAULT_UNTRACKED_THRESHOLD,
-        )
-        val = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_UNTRACKED_THRESHOLD
-    # NaN 由 val != val 判别；<1（含 0/负值）按配置事故回退，见 docstring。
-    if val != val or val < 1 or val == float("inf"):
+    val = ConfigLoader.get_finite_number(
+        config, "admin.maintree_untracked_stray_threshold",
+        conv=float, get_default=DEFAULT_UNTRACKED_THRESHOLD,
+        fallback=DEFAULT_UNTRACKED_THRESHOLD,
+    )
+    # 范围守卫在助手之外：<1（含 0/负值）按配置事故回退，见 docstring。
+    # conv=float + 手动 int 而非 conv=int：保留「"5.9" → 5」截断语义
+    # （conv=int 遇小数字符串会 ValueError 回退，行为分叉）。
+    if val < 1:
         return DEFAULT_UNTRACKED_THRESHOLD
     return int(val)
 
@@ -209,24 +208,23 @@ def untracked_stray_size_threshold_bytes(config) -> int:
     """untracked 散件第二档升级体积阈值（字节）：
     ``admin.maintree_untracked_stray_size_threshold_bytes``。
 
-    经 ConfigLoader 点号键读取，缺省 524288000（500MB，proposal 验收口径，
-    仿 ``untracked_stray_threshold`` 的可配范式）：解析失败/负值/NaN/inf/
-    小于 1 一律回退缺省——阈值是升级降噪闸门，``0`` 会把任意体积的滞留
-    集合都升级成 major 唤起、等同关闭降噪，按配置事故回退处理（与
+    经 ConfigLoader.get_finite_number 读取（守卫统一助手，item
+    4f9cfdf0235d 收编），缺省 524288000（500MB，proposal 验收口径，仿
+    ``untracked_stray_threshold`` 的可配范式）：解析失败/NaN/±inf/小于 1
+    一律回退缺省——阈值是升级降噪闸门，``0`` 会把任意体积的滞留集合都
+    升级成 major 唤起、等同关闭降噪，按配置事故回退处理（与
     untracked_stray_threshold 同款守卫哲学）。
     """
     from core.config import ConfigLoader
 
-    try:
-        raw = ConfigLoader.get(
-            config, "admin.maintree_untracked_stray_size_threshold_bytes",
-            DEFAULT_UNTRACKED_ESCALATION_BYTES,
-        )
-        val = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_UNTRACKED_ESCALATION_BYTES
-    # NaN 由 val != val 判别；<1（含 0/负值）按配置事故回退，见 docstring。
-    if val != val or val < 1 or val == float("inf"):
+    val = ConfigLoader.get_finite_number(
+        config, "admin.maintree_untracked_stray_size_threshold_bytes",
+        conv=float, get_default=DEFAULT_UNTRACKED_ESCALATION_BYTES,
+        fallback=DEFAULT_UNTRACKED_ESCALATION_BYTES,
+    )
+    # 范围守卫在助手之外：<1（含 0/负值）按配置事故回退，见 docstring；
+    # conv=float + 手动 int 截断语义同 untracked_stray_threshold。
+    if val < 1:
         return DEFAULT_UNTRACKED_ESCALATION_BYTES
     return int(val)
 
@@ -783,8 +781,15 @@ class MainTreeStrayWipSweeper:
         pattern 段错位对散件流无害（``!`` 放行与 非``!`` 命中均不计入），但
         白名单脱落流 _whitelist_untracked_entries 恰以 pattern 段以 ``!``
         开头为放行判据，错位即放行项被误判已 ignore、脱落检测静默漏报；
-        ``:<数字>:`` 左锚正则取行号之后整段作 pattern，source 含冒号与
-        pattern 自身含冒号均不受影响，两个消费面同享正确 pattern。
+        切分取**最后一个** ``:<数字>:``（贪婪前缀右锚正则，code-review
+        item 589a995c72c6）：source 路径自身含 ``:<数字>:`` 形态（如目录
+        名 ``foo:123``、文件名 ``a:1:b``）时非贪婪左锚会切在第一个序列、
+        行号后的真实 pattern 整段卷入错位段——放行项即被误判已 ignore、
+        脱落检测静默漏报；右锚后 source 含冒号（含 ``:<数字>:`` 形态）均
+        切在行号位。残余歧义如实记录：pattern 段自身内嵌 ``:<数字>:``（且
+        其后还有内容）时会切进 pattern 尾段，单串无法机械消歧，``!`` 开头
+        判据在该形态下失真；source 侧形态远比 pattern 内嵌数字冒号常见，
+        右锚取代价最小侧。两个消费面同享正确 pattern。
         """
         try:
             res = subprocess.run(
@@ -812,15 +817,17 @@ class MainTreeStrayWipSweeper:
             if "\t" not in line:
                 continue
             left, echoed = line.split("\t", 1)
-            # pattern 段按「:<行号>:」左锚正则提取（code-review item
-            # 003836038272，取代 item 6db071347e0f 的「错位无影响」豁免：
-            # 该豁免的「唯一消费方 _untracked_stray_entries」前提已失效——
-            # detail dict 还有第二个消费方 _whitelist_untracked_entries，恰以
-            # pattern 段以 ``!`` 开头为放行判据，source 含冒号时 split 错位把
-            # 行号卷进 pattern 段，白名单脱落检测即静默漏报）。无 ``:<数字>:``
+            # pattern 段按「:<行号>:」右锚正则提取（取**最后一个**
+            # ``:<数字>:`` 序列，code-review item 589a995c72c6 取代 item
+            # 003836038272 的非贪婪左锚：source 路径自身含 ``:<数字>:`` 形态
+            # 时左锚切在第一个序列、行号后的真实 pattern 整段卷入错位段，
+            # detail dict 的消费方 _whitelist_untracked_entries 恰以 pattern
+            # 段以 ``!`` 开头为放行判据，白名单脱落检测即静默漏报；残余歧义
+            # pattern 自身内嵌 ``:<数字>:`` 见 docstring）。无 ``:<数字>:``
             # 形态（含未匹配 ``::`` 行）归一为空串，与原兜底同口径。
-            m = re.match(r"^.*?:(\d+):(.*)$", left)
-            detail[echoed] = m.group(2) if m else ""
+            m = re.match(r"^(.+):(\d+):(.*)$", left)
+            # 右锚正则三组：source / 行号 / pattern——pattern 取 group(3)。
+            detail[echoed] = m.group(3) if m else ""
         return detail
 
     def _untracked_signal(self, entries: list, running_run_ids=()) -> dict:
@@ -1562,7 +1569,13 @@ class MainTreeStrayWipSweeper:
 
         全量取回而非逐路径查询：ls-files 实参按 pathspec 语义解析（glob/
         ``:`` magic），直传文件名有误读风险；-z 输出无引号包装，与 porcelain
-        反转义路径直接可比。仅在放行候选非空时才被调用（常态零开销）。
+        反转义路径直接可比。消费方两个：``_whitelist_untracked_entries``
+        （放行候选非空才调用）与 ``_untracked_first_sight_groups``
+        （evo-stray-first-sight-prevention 起的第二消费方：当轮存在含目录
+        成分的 untracked 散件即调用，含低于 entry 阈值、目录早已登记过的
+        常态轮）——目录型散件在场时每轮盘点都会在主树锁内多跑一次全量
+        ls-files（耗时随索引规模线性，拉长与 merge-back 写互斥的主树锁
+        持有时间），「常态零开销」仅对纯顶层散文件轮成立。
         """
         out = self._git("ls-files", "-z")
         if out is None:
