@@ -24,6 +24,7 @@ runner/event_bus/admin_monitor 等消费侧模块；消费侧单向 import 本�
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -56,6 +57,8 @@ from core.agent_runner.harness.dsh_adapter import (
     DshSpawnConfigError,
     HarnessHealthError,
 )
+
+_logger = logging.getLogger("fenixd.agent_runner.harness")
 
 __all__ = [
     # protocol
@@ -106,6 +109,28 @@ class HarnessNotDeployedError(RuntimeError):
     runner 侧防御性 catch 供未来未部署通道复用）。"""
 
 
+def _dsh_str_param(config: Dict[str, Any], key: str) -> str:
+    """dsh 部署参数读取归一化（resolve_adapter 三键共用）：仅字符串采纳。
+
+    ConfigLoader.get 不做类型归一化：未配置（None）/空串/纯空白静默兜底
+    空串（由调用方落各自缺省，既有行为）；非字符串类型误写（如 123/true/
+    非空列表）经 ``str()`` 会变成 ``"123"``/``"True"``/``"['a']"`` 垃圾值
+    流入 spawn 参数，dsh 健康检查或 spawn 报错携带该值时易误判为配置
+    「被改过」——故 WARNING 告警（口径同 get_harness 非法值「回退+告警」
+    的配置面容错）并回退空串。
+    """
+    from core.config import ConfigLoader
+
+    raw = ConfigLoader.get(config, key, None)
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    _logger.warning(
+        "dsh 部署参数 %s 类型误写：%r（应为字符串）；按空值兜底缺省", key, raw)
+    return ""
+
+
 def resolve_adapter(harness: str, config: Optional[Dict[str, Any]] = None) -> HarnessAdapter:
     """harness 名 → adapter 实例（工厂唯一入口）。
 
@@ -124,13 +149,13 @@ def resolve_adapter(harness: str, config: Optional[Dict[str, Any]] = None) -> Ha
 
         cfg = config or {}
         # 部署参数：agent.dsh_profile（缺省 Bundle README 约定名）/ agent.dsh_home
-        # （缺省空=继承进程环境；DSH_HOME 隔离部署由此键指定）。类型误写按空值
-        # 兜底缺省（ConfigLoader.get 不做类型归一化）。
-        profile = str(ConfigLoader.get(cfg, "agent.dsh_profile", None) or "").strip()
-        dsh_home = str(ConfigLoader.get(cfg, "agent.dsh_home", None) or "").strip()
-        # 线协议：provider 链 baseurl 为 Anthropic 兼容形态时须配
-        # anthropic-messages（pi-ai api 类型；缺省空=openai-completions）。
-        dsh_api = str(ConfigLoader.get(cfg, "agent.dsh_api", None) or "").strip()
+        # （缺省空=继承进程环境；DSH_HOME 隔离部署由此键指定）/ agent.dsh_api
+        # （线协议：provider 链 baseurl 为 Anthropic 兼容形态时须配
+        # anthropic-messages；缺省空=openai-completions）。归一口径见
+        # _dsh_str_param：未配置/空串静默兜底缺省，非字符串类型误写告警回退。
+        profile = _dsh_str_param(cfg, "agent.dsh_profile")
+        dsh_home = _dsh_str_param(cfg, "agent.dsh_home")
+        dsh_api = _dsh_str_param(cfg, "agent.dsh_api")
         return DshAdapter(DshAdapterConfig(
             profile=profile or DSH_DEFAULT_PROFILE, dsh_home=dsh_home,
             api=dsh_api))
