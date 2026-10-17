@@ -8,7 +8,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 - REST JSON API + 截图等静态资源服务。
 - 所有 API 容错：数据源损坏以字段标记返回，不 500。
 
-端点：
+端点（代表性摘录，非完整清单；完整端点以 core/dashboard/routes/ 各 mixin 的实际注册为准）：
     GET /                          → v3 dashboard 首页
     GET /api/projects              → 监控项目列表 + 各自聚合摘要
     GET /api/overview              → 跨项目状态统计 / 任务进度 / 问题 / 活跃运行
@@ -41,6 +41,12 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/alerts/clear → 清理所有事件：全部项目未处理告警一次标记已处理
     GET /api/admin-activities?project=<name> → Administrator 活动记录（运维记录时间线，未处理升级关联置顶）
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
+
+    ……以上仅为代表性摘录：spec-freeze / spec-activate / spec-resume /
+    spec-task-reflow / spec-promote / spec-re-review / spec-unfreeze、
+    run-cancel、hooks/audit 以及 code-review / regression / evolution /
+    session / knowledge / architecture 等路由 mixin 的端点族均未列入，
+    完整清单以 routes/ 各 mixin 的实际注册为准，此处不逐一维护。
 """
 
 import contextlib
@@ -735,6 +741,16 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
         # 下方 finally 的 server_close()，泄漏已绑定的监听 socket（in-process
         # 调用方——验证脚本/测试——常见）。此处显式清理后重抛
         # （code-review item 1a0dcb04539b）。
+        # 首先拆除 claude-watchdog 自杀扳机（code-review item da7574bc8958）：
+        # _bind_parent_lifecycle 在 FENIX_DASHBOARD_DETACH=1 且带 CLAUDE_PID 时
+        # 先于绑定即已装配 watchdog；本异常若被进程内调用方捕获后继续运行，
+        # 泄漏的 watchdog 线程仍可能此后误判 CLAUDE_PID 死亡而向本进程发
+        # SIGTERM（与 finally 收尾链已设防的形态同型）。收割失败不得阻断
+        # 后续清理（同 finally 收尾链纪律）。
+        try:
+            stop_all_claude_watchdogs()
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f"dashboard 启动段收割 claude-watchdog 失败: {e}\n")
         try:
             if httpd.session_manager is not None:
                 httpd.session_manager.shutdown()
