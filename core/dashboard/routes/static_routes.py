@@ -57,7 +57,9 @@ class H10StaticRoutesMixin:
         if not target.is_file():
             # v3 SPA 直接挂载在 / 时，index.html 内相对资源（./umi.js）
             # 会以根路径请求；回退映射到 dist/ 目录
-            target = static_root / "dist" / filename
+            # 与主分支同纪律：先 resolve 再包含检查（不 resolve 的词法
+            # 前缀匹配不归一化「..」、不跟随 symlink，防线形同虚设）
+            target = (static_root / "dist" / filename).resolve()
             if not target.is_relative_to(static_root) or not target.is_file():
                 self._error(404, "Not Found")
                 return
