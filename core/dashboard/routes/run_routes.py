@@ -146,7 +146,9 @@ class H4RunRoutesMixin:
             tail = 300
         # 向前分页窗口（add-run-record-readability 4.2）：缺省 0 = 既有尾部截取
         try:
-            offset_from_end = max(int(query.get("offset_from_end", ["0"])[0]), 0)
+            # 上界钳制与同函数 tail / _api_events minutes 的防御口径对齐：
+            # 数据层窗口为 deque(maxlen=tail+offset)，超大 offset 会驻留整条事件流
+            offset_from_end = min(max(int(query.get("offset_from_end", ["0"])[0]), 0), 50000)
         except (TypeError, ValueError):
             offset_from_end = 0
         run = dashboard_data.get_run_events(
