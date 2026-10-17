@@ -7330,23 +7330,31 @@ class AgentRunner:
         # 线程 A 判定翻转后、清零前，线程 B 可刚在 _finalize_success 完成一次
         # 自增，A 的清零把 B 的计数一并抹掉；A 锁外写日期的窗口还允许第三个
         # 线程再次清零。锁内二次确认日期仍为旧值再清零，与自增互斥后不再交错。
+        limit = self._get_config("agents.daily_run_limit", 50)
+        # 类型钳制（code-review item 6d450d30e77c）：对齐 max_retries 的既有
+        # 钳制写法——配置误写成字符串/列表等类型时 ``limit > 0`` 抛 TypeError，
+        # 异常沿 attempt 循环顶裸冒泡，run 收口为与真实死因（配置非法）无关的
+        # 错误形态。非法值统一回落缺省 50。钳制只读静态 config（无共享可变
+        # 状态），留在锁外以收窄临界区。
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 50
+        # 清零与「读取 _daily_run_count + >= limit 判定」整体同一临界区（code-
+        # review item b027503bc8d2，对齐自增侧 152ca97a293a 及秒挂「判定+写入
+        # 入临界区」先例 53c98a62022b）：判定留在锁外时与 _finalize_success 的
+        # 锁内自增不互斥，并发收工/派发下派发线程可都读到自增前旧值而同时
+        # 通过判定，daily_run_limit 软护栏被小幅越过。挪入同锁后判定与自增
+        # 串行，读到的不再是自增窗口内的中间值。临界区内无阻塞操作（日期
+        # 比较/清零/计数读+比较），limit 已在锁外钳制为 int、判定不抛
+        # TypeError，raise 沿 with 正常释放锁。
         with self._daily_count_lock:
             if today != self._daily_reset_date:
                 self._daily_run_count = 0
                 # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
                 self._provider_circuit._daily_reset_date = today
-
-        limit = self._get_config("agents.daily_run_limit", 50)
-        # 类型钳制（code-review item 6d450d30e77c）：对齐 max_retries 的既有
-        # 钳制写法——配置误写成字符串/列表等类型时 ``limit > 0`` 抛 TypeError，
-        # 异常沿 attempt 循环顶裸冒泡，run 收口为与真实死因（配置非法）无关的
-        # 错误形态。非法值统一回落缺省 50。
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 50
-        if limit > 0 and self._daily_run_count >= limit:
-            raise RuntimeError(f"Daily agent run limit ({limit}) reached")
+            if limit > 0 and self._daily_run_count >= limit:
+                raise RuntimeError(f"Daily agent run limit ({limit}) reached")
 
     def _get_agent_model_assignment(self, agent_type: str):
         """Return (provider_dict, model_name) for agent_type, or None if unassigned.
