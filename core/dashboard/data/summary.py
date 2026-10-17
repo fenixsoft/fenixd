@@ -548,6 +548,10 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
     except OSError:
         return out
     for p in paths:
+        # dsh 原始事件 dump 旁路（<run_id>.dsh-events.jsonl）非 run 产物，不入
+        # spec 分组（与 get_runs 读侧排除同口径，code-review item c8be48d57864）。
+        if p.stem.endswith(".dsh-events"):
+            continue
         sig = _stat_sig(p)
         if sig is None:
             continue
