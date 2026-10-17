@@ -244,6 +244,15 @@ class FileWatcher:
         prev_top_sigs = dict(top_sigs)
         spec_dirs = self._spec_dirs.setdefault(skey, {})
         prev_spec_dirs = dict(spec_dirs)
+        # 初始化轮标记（code-review item 430b112e9e99）：prev 快照为空 = 本项目
+        # 尚无 spec 目录基线（daemon 启动或项目后挂载的首轮）。此轮 _scan_spec_dirs
+        # 会因 prev_dsig 缺失把全部 spec 目录判为 changed，详情已随 _handle_state_change
+        # 的 state 事件一次性下发（details 全量随事件携带）；再逐 spec 推 detail 是
+        # O(N) 次文件级解析 + N 次广播，且首轮通常尚无 SSE 订阅者、事件多被丢弃
+        # （前端初始全量本就走 REST）。初始化轮跳过逐 spec detail 广播；目录签名
+        # 基线在 _scan_spec_dirs 内照常提交、摘要基线由 _handle_state_change 照常
+        # 落盘，下轮起恢复正常逐 spec detail 推送。
+        first_spec_scan = not prev_spec_dirs
         prev_summaries = self._last_summaries.get(skey)
         admin_changed = False
 
@@ -294,9 +303,12 @@ class FileWatcher:
                 )
             # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）；
             # 传入本轮 _handle_state_change 已解析的 cur 复用（spec_dir_changed 非空
-            # 时该 handler 必已执行，cur 非 None），避免 O(N) 次全量重解析
-            for spec in spec_dir_changed:
-                self._handle_spec_change(name, proot, spec, cur=cur)
+            # 时该 handler 必已执行，cur 非 None），避免 O(N) 次全量重解析。
+            # 初始化轮（first_spec_scan）跳过：详情已随 state 事件一次性下发，
+            # 逐 spec detail 广播在无基线首轮无消费价值（item 430b112e9e99）。
+            if not first_spec_scan:
+                for spec in spec_dir_changed:
+                    self._handle_spec_change(name, proot, spec, cur=cur)
             for run_id in run_changed:
                 self._handle_run_change(name, proot, run_id)
             if admin_changed:
