@@ -40,19 +40,21 @@ _INSTALL_TIMEOUT = 300
 _INSTALL_LOCK = threading.Lock()
 
 
+def _as_text(v) -> str:
+    """None→空串；bytes 按 UTF-8 容错解码；其余 str() 归一为 str（幂等）。"""
+    if v is None:
+        return ""
+    if isinstance(v, bytes):
+        return v.decode("utf-8", errors="replace")
+    return str(v)
+
+
 def _partial_output(exc) -> str:
     """从 TimeoutExpired 取出子进程已产出的部分 stdout/stderr（尾部 4000 字符）。
 
     `capture_output+text=True` 时 exc.stdout/stderr 为 str；若 bytes（未设 text）
     则容错解码。任一为空按空串参与拼接。code-review item 95afe353e7d3。
     """
-    def _as_text(v) -> str:
-        if v is None:
-            return ""
-        if isinstance(v, bytes):
-            return v.decode("utf-8", errors="replace")
-        return str(v)
-
     combined = (_as_text(getattr(exc, "stdout", None)) + "\n"
                 + _as_text(getattr(exc, "stderr", None))).strip()
     return combined[-4000:]
@@ -185,15 +187,18 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
         # （超时携带部分输出是 subprocess.run 的行为，run 在 except 里补
         # communicate 后挂回），丢弃第二次 communicate 的返回会使调用方
         # _install_ocr_locked 超时分支的 _partial_output 恒得空串，300s 安装
-        # 失败用户看不到任何 npm 报错细节。本处 text=True，out2/err2 为 str，
-        # 与 e.stdout 同型直接拼接（_partial_output 对 bytes 残留亦容错解码）。
+        # 失败用户看不到任何 npm 报错细节。拼接前经 _as_text 归一类型：本处
+        # text=True，out2/err2 为 str，而超时异常携带的部分输出是 bytes
+        # （管道层恒 bytes，text 解码只作用于 communicate 的正常返回值），
+        # 直接 bytes+str 拼接会抛 TypeError 使超时降级失效（code-review item
+        # d2afa59a4771，CPython 3.10.12 实测）。
         try:
             out2, err2 = p.communicate(timeout=5)
         except Exception:
             pass
         else:
-            e.stdout = (e.stdout or "") + (out2 or "")
-            e.stderr = (e.stderr or "") + (err2 or "")
+            e.stdout = _as_text(e.stdout) + _as_text(out2)
+            e.stderr = _as_text(e.stderr) + _as_text(err2)
         raise
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
 
