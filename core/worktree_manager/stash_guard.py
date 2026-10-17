@@ -17,7 +17,7 @@ from core.timelib import now_local  # noqa: E402
 from core.worktree_manager import (  # noqa: E402
     AUTOSTASH_MSG_PREFIX,
 )
-from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
+from core.git_text import unquote_git_path  # noqa: E402
 
 
 def _split_rename_sides(field: str) -> list:
@@ -31,7 +31,7 @@ def _split_rename_sides(field: str) -> list:
 
     只把**引号外**的「 -> 」视为分隔符：引号内的字符原样归入当前侧
     （``\\"``/``\\\\`` 等转义序列成对跳过，不误判引号闭合），两侧各自保留
-    引号形交由调用方 ``_unquote_git_path`` 反转义。无引号载荷的切分结果
+    引号形交由调用方 ``unquote_git_path`` 反转义。无引号载荷的切分结果
     与旧 ``split(" -> ")`` 逐字节一致（git ≥ 2.25 起含空格路径必带引号，
     无引号却含「 -> 」的载荷仅见于更老 git，彼时文本本身不可判定）。
     """
@@ -83,8 +83,8 @@ class G6StashGuardMixin:
         （调用方按「无重叠」处理，不阻塞流程）。
 
         路径反转义：porcelain 对含非 ASCII/特殊字符的路径默认输出 C-quoted
-        转义形（如 "core/\346\226\207.tsx"），逐段经 `_unquote_git_path`
-        （mergeback 同源反转义）还原为真实路径——消费方（mergeback WIP 闸门 /
+        转义形（如 "core/\346\226\207.tsx"），逐段经 `unquote_git_path`
+        （core.git_text 反转义，与 mergeback 同源）还原为真实路径——消费方（mergeback WIP 闸门 /
         code-fix 批 WIP 重叠预检）拿真实路径比对求交，带引号转义形会永不命中。
 
         Args:
@@ -114,18 +114,16 @@ class G6StashGuardMixin:
         for line in status_stdout.splitlines():
             if len(line) < 3 or line.startswith("?? "):
                 continue
-            if line[0] == " " and line[1] == " ":
-                continue
             path = line[3:].strip()
             if " -> " in path:
                 # porcelain 对 rename 两侧各自 C-quote，按段逐个反转义；
                 # 切分须 C-quote 感知——引号内路径自含「 -> 」不参与切分
                 # （code-review item f2804188bd68），无引号载荷行为不变
                 files.extend(
-                    _unquote_git_path(p) for p in _split_rename_sides(path)
+                    unquote_git_path(p) for p in _split_rename_sides(path)
                 )
             else:
-                files.append(_unquote_git_path(path))
+                files.append(unquote_git_path(path))
         return sorted(p for p in files if p)
 
     def ensure_clean_tree(self, prefix: str | None = None) -> bool:
@@ -614,6 +612,7 @@ class G6StashGuardMixin:
             return 1, "state-1 three-way merge resolved all conflict files"
 
         # ── 态 2：取回 stash 版 + 路径作用域恢复 commit ──
+        checkout_failed: list = []
         for f in remaining:
             try:
                 co = subprocess.run(
@@ -626,26 +625,37 @@ class G6StashGuardMixin:
                 )
             except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
                 # 本调用链常在 guard 的 finally 中执行，绝不能外抛（会吞掉已
-                # 成功的 merge 结果并中断清理链）——超时/不可用按态 3 兜底降级
-                # （同下方对态 2 恢复 commit 的处置口径）：stash 版仍在 index
-                # stage 3 + 工作区冲突标记，不丢数据，显式登记 disposition。
+                # 成功的 merge 结果并中断清理链）——超时/不可用记 warning 后
+                # continue 处理其余文件（全部尝试完再统一转态 3，见下方归因）：
+                # stash 版仍在 index stage 3 + 工作区冲突标记，不丢数据。
                 self.logger.warning(
                     "worktree_manager",
                     f"State-2 checkout --theirs failed for '{f}' ({e}) — "
-                    f"stash content preserved in worktree/index, falling to "
-                    f"state-3 disposition",
+                    f"stash content preserved in worktree/index",
                 )
-                return 3, f"state-2 checkout --theirs failed for '{f}'"
+                checkout_failed.append(f)
+                continue
             if co.returncode != 0:
                 # --theirs 失败（罕见：路径仍 UU）：stash 版在 index stage 3 +
-                # 工作区冲突标记仍保留两侧，不丢数据；放弃本次 commit 走态 3
+                # 工作区冲突标记仍保留两侧，不丢数据；记 warning 继续其余文件
                 self.logger.warning(
                     "worktree_manager",
                     f"State-2 checkout --theirs failed for '{f}' "
                     f"({co.stderr.strip()}) — stash content preserved in "
-                    f"worktree/index, falling to state-3 disposition",
+                    f"worktree/index",
                 )
-                return 3, f"state-2 checkout --theirs failed for '{f}'"
+                checkout_failed.append(f)
+        if checkout_failed:
+            # 全部 remaining 均已尝试落盘后才统一转态 3（code-review item
+            # 4b3b7dde58ce：此前首个失败即返回，其余文件不再尝试取回 stash 版，
+            # 自愈覆盖面静默缩水）。任一失败即放弃本次恢复 commit——对仍 UU 的
+            # 路径 git add 会把冲突标记内容入库、洗白半合并状态骗过调用方的
+            # 残留复查；失败文件 stash 版仍在 index stage 3 + 工作区冲突标记，
+            # 条目保留，调用方尾部残留复查对 UU 残留按 False 交人工。
+            return 3, (
+                "state-2 checkout --theirs failed for: "
+                + ", ".join(f"'{f}'" for f in checkout_failed)
+            )
         try:
             add = subprocess.run(
                 ["git", "-C", str(self.project_root), "add", "--", *conflict_files],
@@ -1113,7 +1123,7 @@ class G6StashGuardMixin:
                 timeout=30,
             )
             staged_set = {
-                _unquote_git_path(ln) for ln in staged.stdout.splitlines()
+                unquote_git_path(ln) for ln in staged.stdout.splitlines()
             }
             if staged.returncode != 0:
                 # 命令本身失败（index.lock 争用、git 不可用等）：暂存集内容不可信，
@@ -1376,7 +1386,7 @@ class G6StashGuardMixin:
             # ls-files/check-ignore/rm --cached 的 pathspec 永不命中，purge
             # 对该类文件静默跳过。
             for rel in [
-                _unquote_git_path(ln.strip())
+                unquote_git_path(ln.strip())
                 for ln in diff.stdout.splitlines()
                 if ln.strip()
             ]:
