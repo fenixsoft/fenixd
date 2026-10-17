@@ -129,6 +129,17 @@ describe("场景批处理（planner-scenario-batching.py 语义）", () => {
     const wrapped = JSON.stringify({ version: 2, scenarios: [{ id: "s1", steps: [{ a: 1 }], assertions: [] }] });
     expect(scenarioBatchingDecision("test_scenarios.json", wrapped, false).blocked).toBe(true);
   });
+
+  it("非数组真值形态（steps 非空串/字典）同样判带肉（对齐 _has_fleshed_scenario 的 Python 真值口径）", () => {
+    const stringSteps = JSON.stringify({
+      scenarios: [{ id: "s1", kind: "ui", description: "串形态 steps", steps: "click x", assertions: [] }],
+    });
+    expect(scenarioBatchingDecision("test_scenarios.json", stringSteps, false).blocked).toBe(true);
+    const dictSteps = JSON.stringify({
+      scenarios: [{ id: "s1", kind: "ui", description: "字典形态 steps", steps: { action: "click" }, assertions: null }],
+    });
+    expect(scenarioBatchingDecision("test_scenarios.json", dictSteps, false).blocked).toBe(true);
+  });
 });
 
 // ── 分发与装配 ─────────────────────────────────────────────────────────────
@@ -140,9 +151,10 @@ describe("evaluatePreToolCall：按工具名路由", () => {
     ).toBe(true);
   });
 
-  it("edit 落主树 → 拦；read 图片 → 拦；write 带肉场景 → 拦", () => {
+  it("edit 落主树 → 拦；read/read_image 图片 → 拦；write 带肉场景 → 拦", () => {
     expect(evaluatePreToolCall("edit", { file_path: "/root/fenixd/core/x.py" }, ENV).blocked).toBe(true);
     expect(evaluatePreToolCall("read", { file_path: "/shots/a.png" }, ENV).blocked).toBe(true);
+    expect(evaluatePreToolCall("read_image", { file_path: "/shots/a.png" }, ENV).blocked).toBe(true);
     expect(
       evaluatePreToolCall(
         "write",

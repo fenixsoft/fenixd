@@ -4,8 +4,9 @@
  * 语义对齐 .fenix/hooks/ 下三个 PreToolUse 脚本（判定逻辑逐条复刻）：
  * 1. 主树写守卫（block-main-tree-write.py）：消费 FENIX_RUN_PROJECT_ROOT /
  *    FENIX_RUN_WORKTREE 两个 env，拦截 write/edit 对主树的写入；无 env 直通。
- * 2. 读图拦截（block-image-read.py）：read 工具目标为图片扩展名时阻断（模型
- *    不支持图像输入，图片内容块进对话即整会话 400）。
+ * 2. 读图拦截（block-image-read.py）：read/read_image 工具目标为图片扩展名时
+ *    阻断（模型不支持图像输入，图片内容块进对话即整会话 400）。read_image 为
+ *    dsh 原生读图工具（dsh-tool-fs 注册），参数同为 file_path，复用同一判定。
  * 3. 场景批处理（planner-scenario-batching.py）：write 场景文件 test_scenarios.json
  *    首次落盘必须是骨架（任一场景带 steps/assertions 即拦）。
  *
@@ -91,8 +92,8 @@ export function mainTreeWriteDecision(filePath: string, env: GuardEnv): GuardDec
 }
 
 /**
- * 读图拦截：read 工具目标为图片扩展名时阻断（对齐 block-image-read.py 的
- * Read matcher 语义：按扩展名判定，大小写不敏感）。
+ * 读图拦截：read/read_image 工具目标为图片扩展名时阻断（对齐
+ * block-image-read.py 的 Read matcher 语义：按扩展名判定，大小写不敏感）。
  */
 export function imageReadDecision(filePath: string): GuardDecision {
   if (!filePath) return { blocked: false };
@@ -103,6 +104,17 @@ export function imageReadDecision(filePath: string): GuardDecision {
     blocked: true,
     reason: "当前模型不支持图像输入，已阻止读取图片文件（截图请作为证据文件保存，勿查看）",
   };
+}
+
+/**
+ * Python 真值口径（对齐 _has_fleshed_scenario 的 `sc.get("steps") or
+ * sc.get("assertions")`）：非空数组，或任意其它非 null/undefined/空串真值
+ * ——非空串/字典/非零数值等非数组形态同样判带肉，防 dsh 通道对非数组
+ * 形态漏拦（0/false 退化形态从宽判带肉，仅偏向过拦一侧）。
+ */
+function fleshedValue(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0;
+  return v !== null && v !== undefined && v !== "";
 }
 
 /**
@@ -135,8 +147,7 @@ export function scenarioBatchingDecision(
     (sc) =>
       typeof sc === "object" &&
       sc !== null &&
-      (Array.isArray((sc as { steps?: unknown }).steps) && (sc as { steps: unknown[] }).steps.length > 0 ||
-       Array.isArray((sc as { assertions?: unknown }).assertions) && (sc as { assertions: unknown[] }).assertions.length > 0),
+      (fleshedValue((sc as { steps?: unknown }).steps) || fleshedValue((sc as { assertions?: unknown }).assertions)),
   );
   if (!hasFleshed) return { blocked: false };
 
@@ -163,7 +174,9 @@ export function evaluatePreToolCall(
     const hit = mainTreeWriteDecision(filePath, env);
     if (hit.blocked) return hit;
   }
-  if (toolName === "read") {
+  // read_image：dsh 原生读图工具（dsh-tool-fs 注册，参数同为 file_path），与
+  // read 复用同一判定收口读图路径；未挂 attachments 服务不注册时路由空转无害。
+  if (toolName === "read" || toolName === "read_image") {
     const hit = imageReadDecision(filePath);
     if (hit.blocked) return hit;
   }
