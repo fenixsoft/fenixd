@@ -8831,8 +8831,11 @@ class AgentRunner:
         latency = latency or {}
         # logger 未装配（最小装配替身/降级态）时整体跳过：指标落盘是纯观测，
         # 且 except 分支再调 self.logger.warning 会对 None 二次抛 AttributeError
-        # 穿透 run 收尾——违背本方法「绝不阻断 run 收尾」契约
-        logger = self.logger
+        # 穿透 run 收尾——违背本方法「绝不阻断 run 收尾」契约。取值走
+        # getattr：经门面 __getattr__ 的裸访问在未装配名上抛 AttributeError
+        # 而非得 None，恰好击穿本处「未装配即跳过」前提（AgentRunner.__new__
+        # 替身即此形态，见 _register_run_harness 惰性回退注释）
+        logger = getattr(self, "logger", None)
         if logger is None:
             return
         try:
