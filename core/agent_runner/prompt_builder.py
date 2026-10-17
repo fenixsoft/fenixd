@@ -88,6 +88,27 @@ def _str_field(value) -> str:
         return str(value)
 
 
+def _load_json_lenient(path) -> object | None:
+    """宽松 JSON 读取共享 helper：读文件 + json.loads，缺失/不可读/损坏 → None。
+
+    code-review item 55833364d23c：「JSON 损坏 → 空串零注入」兜底契约
+    （OSError/json.JSONDecodeError/UnicodeDecodeError/RecursionError 四元组 +
+    「RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐 result_gate
+    同口径）」注释）曾在 8 处逐字手写并并存两套等价写法，新增段落易再漂移
+    （_impl_diagnosis_section 漏 RecursionError 即同族漂移实例）。统一收敛到
+    本 helper：四元组任一命中返回 None，调用方按各自降级语义兜底（多为
+    「None 即空串零注入」单行）；顶层形状判定（isinstance）仍留在调用方。
+    UnicodeDecodeError / json.JSONDecodeError 均为 ValueError 子类，显式列出
+    仅为口径自文档（对齐 result_gate 同口径）。
+    """
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (
+        OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
+    ):
+        return None
+
+
 def _single_pass_replace(template: str, values: dict[str, str]) -> str:
     """单趟多模式占位符填充：dict→compiled alternation，一次 re.sub 扫完。
 
@@ -767,13 +788,8 @@ class PromptBuilder:
         )
         if not path.exists():
             return ""
-        try:
-            findings = json.loads(path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        findings = _load_json_lenient(path)
+        if findings is None:
             return ""
         if not isinstance(findings, list) or not findings:
             return ""
@@ -986,12 +1002,8 @@ class PromptBuilder:
             / spec_name
             / "ocr_findings_directive.json"
         )
-        try:
-            raw = directive_path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except (OSError, ValueError, RecursionError):
-            # RecursionError：超深嵌套 JSON 非 ValueError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(directive_path)
+        if data is None:
             return ""
         if not isinstance(data, dict):
             return ""
@@ -1193,8 +1205,14 @@ class PromptBuilder:
         """
         if wt_path is not None:
             result_path = str(impl_result_path(wt_path))
+            wt_note = ""
         else:
-            result_path = ".fenix-run-result.json（worktree 根目录）"
+            # wt_path 不可得（测试/异常构建路径）→ 命令模板只用纯相对路径，
+            # worktree 位置说明放命令行外散文（code-review item 2797b67b5935）：
+            # 全角括号说明嵌进反引号命令会被照抄执行、整体当路径实参，自检必
+            # 以文件不存在失败并误导修复方向。
+            result_path = ".fenix-run-result.json"
+            wt_note = "  （路径为 worktree 根目录下的相对路径）\n"
         try:
             from core.agent_runner.runner import AgentRunner
             from core.agent_runner.result_gate import DISPOSITION_WHITELIST
@@ -1215,6 +1233,7 @@ class PromptBuilder:
             "- **结果文件写完必跑自检、非零退出不得收工**：`.fenix-run-result.json` "
             "写完（含每次修复改写后）MUST 立即运行：\n"
             f"  `python3 -m core.agent_runner.result_gate --selfcheck {result_path}`\n"
+            f"{wt_note}"
             "  它与 daemon 侧收工硬门同源（同一校验函数对象，零网络零 daemon 依赖，"
             "只读不写）。退出码 0=PASS；**非零退出不得收工**——按 stderr 逐条违规"
             "明细（含字段路径与期望形态）修复后重跑自检，直至退出码 0 再继续收尾。\n"
@@ -1250,9 +1269,15 @@ class PromptBuilder:
         不放弃取证）。
         """
         base = ""
+        # 白名单外类型（repair 等无 agents/*.md 模板主体的独立构建车道）无文件
+        # 名映射 → 安全返回空串零注入，不 KeyError（code-review item
+        # 81254b74082a）；日后白名单纳管 repair 即自动生效。
+        fname = AGENT_PROMPT_FILES.get(agent_type)
+        if fname is None:
+            return base
         agents_dir = self._project_agents_dir()
         if agents_dir is not None:
-            path = agents_dir / AGENT_PROMPT_FILES[agent_type]
+            path = agents_dir / fname
             if path.is_file():
                 try:
                     content = path.read_text(encoding="utf-8").strip()
@@ -1396,9 +1421,13 @@ class PromptBuilder:
             return ""
         try:
             diag = json.loads(diag_raw)
-        except (ValueError, TypeError):
-            # 解析失败：降级为原文截断呈现（2.2），MUST NOT 抛错——重派轮仍
-            # 携带上轮死因文本（哪怕结构损坏），不静默丢弃。
+        except (ValueError, TypeError, RecursionError):
+            # RecursionError：超深嵌套 JSON 非 ValueError 子类，补齐与本文件
+            # 其余 JSON 读取段（_load_json_lenient 口径）一致的异常面（code-
+            # review item f15166900fef）；字符串解析无文件读取面，OSError/
+            # UnicodeDecodeError 不适用。解析失败：降级为原文截断呈现（2.2），
+            # MUST NOT 抛错——重派轮仍携带上轮死因文本（哪怕结构损坏），
+            # 不静默丢弃。
             return (
                 f"\n\n## Previous run diagnosis (raw, inherited by this attempt)\n"
                 f"Use this raw diagnosis text to adjust your strategy — do NOT "
@@ -1809,6 +1838,13 @@ class PromptBuilder:
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
+        # 项目级附加提示词（code-review item 81254b74082a）：repair 同属独立
+        # 构建路径（不走 _build_prompt 统一注入点），与 self-review/evolution/
+        # code-review/code-fix 四车道（item 46a07114e4f4）同形态就地追加，置于
+        # 收尾维持「项目级附加段位于 prompt 末尾」约定。repair 无模板白名单
+        # 条目（prompt 完全代码内构建，见 _build_prompt 分派处注释），本调用
+        # 今日按白名单外类型零注入落地——日后纳管自动生效，无 KeyError 面。
+        prompt += self._project_extra_section("repair", spec_name)
         return prompt
 
     def _build_self_review_prompt(self, token: str, detail: dict) -> str:
@@ -2542,13 +2578,8 @@ class PromptBuilder:
         )
         if not recheck_path.exists():
             return ""
-        try:
-            data = json.loads(recheck_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(recheck_path)
+        if data is None:
             return ""
         if not isinstance(data, list) or not data:
             return ""
@@ -2585,13 +2616,8 @@ class PromptBuilder:
         )
         if not rejection_path.exists():
             return ""
-        try:
-            data = json.loads(rejection_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(rejection_path)
+        if data is None:
             return ""
         if not isinstance(data, list) or not data:
             return ""
@@ -2668,13 +2694,8 @@ class PromptBuilder:
         )
         if not directive_path.exists():
             return ""
-        try:
-            data = json.loads(directive_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(directive_path)
+        if data is None:
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2734,13 +2755,8 @@ class PromptBuilder:
         )
         if not manifest_path.exists():
             return ""
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(manifest_path)
+        if data is None:
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2891,13 +2907,8 @@ class PromptBuilder:
         report_path = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
         )
-        try:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(report_path)
+        if data is None:
             return ""
         if not isinstance(data, dict):
             return ""
@@ -2942,13 +2953,8 @@ class PromptBuilder:
         report_path = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
         )
-        try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        report = _load_json_lenient(report_path)
+        if report is None:
             return ""
         if not isinstance(report, dict):
             return ""
@@ -3053,13 +3059,8 @@ class PromptBuilder:
         )
         if not directive_path.exists():
             return ""
-        try:
-            data = json.loads(directive_path.read_text(encoding="utf-8"))
-        except (
-            OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
-        ):
-            # RecursionError：超深嵌套 JSON 非 JSONDecodeError 子类（对齐
-            # result_gate 同口径），命中按「损坏 → 空串零注入」契约兜底
+        data = _load_json_lenient(directive_path)
+        if data is None:
             return ""
         if not isinstance(data, dict):
             return ""
