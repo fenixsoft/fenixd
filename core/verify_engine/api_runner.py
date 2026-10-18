@@ -20,6 +20,7 @@ httpx 依赖：setup 时检查（缺失=验证环境错误，引擎不判 bug-fo
 
 import asyncio
 import json
+import math
 import time
 from urllib.parse import urlparse
 
@@ -240,6 +241,31 @@ class ApiRunner(VerifyRunner):
                 "method": method,
                 "url": url,
                 "error": f"timeout 须为数字（秒）: {step.get('timeout')!r} ({e})",
+            }
+        if timeout < 0:
+            # 负值 timeout 传 httpx 语义未定义（连接前即超时），验收层
+            # （scenarios 词表校验已同拦负值）是前置防线，此处兜住运行期
+            # 自愈/绕过验收的调用路径（手工构造 TestScenario 直达），归一为
+            # 本步骤结构化失败，口径对齐 cli_runner 运行层同款拦截
+            # （code-review item 2d1fde35ee0e）。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"timeout 须为正数（秒）: {step.get('timeout')!r}",
+            }
+        if not math.isfinite(timeout):
+            # 非有限值（float() 接受 "inf"/"nan"/"1e999"→inf，负值检查放行）：
+            # inf 进 httpx Timeout(read=inf)＝无限等待，本文件与 engine 外层
+            # 均无 per-scenario 兜底，单场景即挂起整轮验证——与 cli_runner
+            # 运行层 math.isfinite 兜底同口径（code-review item 2d1fde35ee0e）。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"timeout 须为有限数字（秒）: {step.get('timeout')!r}",
             }
         if body and not isinstance(body, str):
             # 结构化 body（dict/list）进 json.loads 会抛 TypeError（仅捕获
@@ -489,6 +515,28 @@ class ApiRunner(VerifyRunner):
                 "action": "sse_connect",
                 "url": url,
                 "error": f"duration 须为数字（秒）: {step.get('duration')!r} ({e})",
+            }
+        if duration < 0:
+            # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场、
+            # judge 归因不到「窗口秒数为负」的配置根因；验收层（scenarios
+            # 词表校验已同拦负值）是前置防线，此处兜住绕过验收的调用路径，
+            # 口径对齐 cli_runner 运行层同款拦截（code-review item 2d1fde35ee0e）。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error": f"duration 须为正数（秒）: {step.get('duration')!r}",
+            }
+        if not math.isfinite(duration):
+            # 非有限值（float() 接受 "inf"/"nan"/"1e999"→inf）：inf 窗口
+            # deadline 落在无穷远、httpx read 超时 max(10, inf+10)=inf，事件
+            # 不触顶即无限等待，单场景占住并行槽挂起整轮验证——与 cli_runner
+            # 运行层 math.isfinite 兜底同口径（code-review item 2d1fde35ee0e）。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error": f"duration 须为有限数字（秒）: {step.get('duration')!r}",
             }
         events: list[dict] = []
         truncated = False
