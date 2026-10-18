@@ -1697,7 +1697,9 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
 
     Returns:
         {"ok": bool, "found": bool, "steps": [str], "target_status": str|null,
-         "error": str|null}
+         "error": str|null}；删除失败半途态额外携带 ``leftover_files``
+        [str]（相对项目根的残留文件清单，error 同步标注「STATE 已重置但
+        文件残留」，code-review item 280d3f26aae7；向后兼容新增字段）。
     """
     proot = Path(project_root)
     # 形态白名单前置（code-review item a1e09f8181cd）：spec 名直接拼
@@ -1792,6 +1794,11 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
     # 3. 删该 spec 自己的场景/进度文件（路径按 spec 名精确构造，无 glob）
     vp_dir = proot / ".fenix" / "verify-progress" / spec
     deleted_any = False
+    # 残留清单（code-review item 280d3f26aae7）：删除已置于 STATE 重置之后，
+    # unlink 失败时 STATE 已不可逆变更（计数清零/冻结剥除/error 清空），
+    # 不存在「失败即无损」的回退——改为逐文件尝试（各带一次重试）后把残留
+    # 清单带回失败体，显式标注半途态，避免调用方误判为可安全重放旧验证结果。
+    leftover_files: list = []
     for fname in _VERIFY_PROGRESS_RUNTIME_FILES:
         fpath = vp_dir / fname
         if fpath.is_file():
@@ -1801,14 +1808,35 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                 steps.append(f"已删除 {fpath.relative_to(proot)}")
             except OSError as e:
                 # 不外泄裸异常文本（code-review item e584a2ede367）：OSError
-                # 可携带内部路径/errno，细节降级经服务端日志留痕
-                logger.warning(
-                    "reset_verification 删除验证进度文件失败（spec=%s file=%s）: %s: %s",
-                    spec, fname, type(e).__name__, e,
-                )
-                return {"ok": False, "found": True, "steps": steps,
-                        "target_status": None,
-                        "error": f"删除验证进度文件失败 {fname}"}
+                # 可携带内部路径/errno，细节降级经服务端日志留痕；先一次重试
+                # （瞬时 IO 失败可自愈），重试仍失败才计入残留清单
+                try:
+                    fpath.unlink()
+                except OSError:
+                    logger.warning(
+                        "reset_verification 删除验证进度文件失败（重试后仍失败，"
+                        "spec=%s file=%s）: %s: %s",
+                        spec, fname, type(e).__name__, e,
+                    )
+                    leftover_files.append(str(fpath.relative_to(proot)))
+                else:
+                    deleted_any = True
+                    steps.append(f"已删除 {fpath.relative_to(proot)}（重试成功）")
+    if leftover_files:
+        # 半途态如实上报（code-review item 280d3f26aae7）：陈旧场景/报告仍
+        # 在盘会被读侧兜底链（_load_run_result/parse_verdict/parse_bugs）采纳
+        # 而复活旧裁决，与步骤 3b 失效共享 run-result 的意图相悖。失败体携带
+        # 残留清单（新字段向后兼容，现有调用方只读 ok/steps/error 不受影响）
+        # 供前端/人工定向清理；STATE 更新幂等、删除可重试且前置门仍放行
+        # blocked，调用方重试本动作即可自愈。
+        steps.append(f"{len(leftover_files)} 个验证进度文件删除失败残留，"
+                     "STATE 已重置（计数清零/冻结已剥除/error 已清空）")
+        return {"ok": False, "found": True, "steps": steps,
+                "target_status": None,
+                "error": ("删除验证进度文件失败：STATE 已重置但以下文件残留，"
+                          "旧验证结果可能被兜底链复活，可重试本操作或人工定向清理："
+                          + "、".join(leftover_files)),
+                "leftover_files": list(leftover_files)}
 
     # 3b. 失效共享 run-result（code-review item 13304b99fea3）：读侧
     # _load_run_result（artifacts.py）的第二候选是项目根共享
@@ -1829,14 +1857,30 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                 deleted_any = True
                 steps.append(f"已删除 {shared_run_result.relative_to(proot)}")
             except OSError as e:
-                # 同上：OSError 细节降级，经服务端日志留痕
-                logger.warning(
-                    "reset_verification 删除共享 run-result 失败（spec=%s）: %s: %s",
-                    spec, type(e).__name__, e,
-                )
-                return {"ok": False, "found": True, "steps": steps,
-                        "target_status": None,
-                        "error": "删除共享 run-result 文件失败"}
+                # 同上：OSError 细节降级，经服务端日志留痕；一次重试后再失败
+                # 才按半途态上报（code-review item 280d3f26aae7，同步骤 3 口径）
+                try:
+                    shared_run_result.unlink()
+                except OSError:
+                    logger.warning(
+                        "reset_verification 删除共享 run-result 失败（重试后仍失败，"
+                        "spec=%s）: %s: %s",
+                        spec, type(e).__name__, e,
+                    )
+                    steps.append("共享 run-result 删除失败（重试后仍失败），"
+                                 "STATE 已重置，旧共享裁决仍可能被兜底链采纳")
+                    return {"ok": False, "found": True, "steps": steps,
+                            "target_status": None,
+                            "error": ("删除共享 run-result 文件失败：STATE 已重置"
+                                      "但文件残留，旧验证结果可能被兜底链复活，"
+                                      "可重试本操作或人工定向清理："
+                                      + str(shared_run_result.relative_to(proot))),
+                            "leftover_files": [
+                                str(shared_run_result.relative_to(proot))]}
+                else:
+                    deleted_any = True
+                    steps.append(
+                        f"已删除 {shared_run_result.relative_to(proot)}（重试成功）")
     if not deleted_any:
         steps.append("无场景/进度文件可删（verify-progress 目录不存在或已清）")
 
