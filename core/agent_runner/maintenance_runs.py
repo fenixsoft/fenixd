@@ -220,48 +220,26 @@ def _unique_admin_run_id(runner, spec: str) -> str:
     声称的「并行实例互不覆盖」相悖。候选的处置实例文件或在飞 run 日志任一
     已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。
 
-    申领即创建（code-review item 6e65b3298af8）：旧版探测-然后-返回在两个
-    同 spec 同秒并发实例下可同时通过探测、取得同一 run_id，处置文件与 run
-    jsonl 仍会互相覆盖。现仅对 runs/<candidate>.jsonl 以 ``O_CREAT|O_EXCL``
-    原子申领、输者退避下一候选（对齐 _unique_code_review_run_id 等三车道已
-    收敛的申领形态）——该文件本就由 _run_agent 经 append_run_line 追加创建
-    （O_APPEND 语义对空占位透明，runner.py planner 节流路径 run_file.touch
-    先例同型），提前落空占位不改变其生命周期；处置实例文件仍只探测不申领
-    （由管理员按 prompt 注入的路径写入、读取即清理，抢先落占位会改变该文件
-    的写入时序与生命周期，item d543e3aaf129 记载的取舍保持不变）。
+    申领机制收敛于 _claim_run_path（code-review item b15e0a4af66c /
+    c0c5a2c7e318，与其余五条维护车道共用同段实现）：仅对
+    runs/<candidate>.jsonl 以 ``O_CREAT|O_EXCL`` 原子申领（申领即创建，
+    item 6e65b3298af8）、空占位形态，输者退避下一候选——该文件本就由
+    _run_agent 经 append_run_line 追加创建（O_APPEND 语义对空占位透明），
+    提前落空占位不改变其生命周期。探针只覆盖处置实例文件：它由管理员按
+    prompt 注入的路径写入、读取即清理，维持只探测不申领（抢先落占位会
+    改变该文件的写入时序与生命周期，item d543e3aaf129 记载的取舍保持不变）。
     """
-    base = f"admin-{spec}-{int(time.time())}"
-    candidate = base
-    n = 0
     runs_dir = runner.project_root / ".fenix" / "runs"
-    while True:
-        if admin_disposition_path(runner.project_root, candidate).exists():
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        try:
-            runs_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # 目录建不出（权限等）：退回既有探测语义——返回候选，落盘失败
-            # 由 _run_agent 的 run jsonl 写路径统一报错
-            return candidate
-        try:
-            fd = os.open(
-                runs_dir / f"{candidate}.jsonl",
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
-            # 已被并发实例申领 → 退避下一候选（申领即裁决，无再撞窗口）
-            n += 1
-            candidate = f"{base}-{n}"
-            continue
-        except OSError:
-            return candidate
-        # 空 jsonl 占位即申领完成（无 manifest 类读者解析内容，事件流由
-        # _run_agent 追加），fd 即关
-        os.close(fd)
-        return candidate
+    return _claim_run_path(
+        runner,
+        f"admin-{spec}-{int(time.time())}",
+        runs_dir,
+        "{}.jsonl",
+        probe=lambda candidate: admin_disposition_path(
+            runner.project_root, candidate
+        ).exists(),
+        placeholder=None,
+    )
 
 
 def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
@@ -873,7 +851,7 @@ def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
     （item 71d502440d3b，先例 regression_routes item 655c860e2e6e）：f 为
     None（fdopen 未成功）时兜底 os.close；成功后统一经 finally close
     （等价 with 语义）。申领机制收敛于 _claim_run_path（item b15e0a4af66c），
-    五条维护车道共用。
+    六条维护车道共用（admin/self-review/evolution 走空占位分支，不经本助手）。
     """
     f = None
     try:
@@ -907,8 +885,9 @@ def _claim_run_path(
     共用助手，防多处复制单边演进」；item 96ce97853f55（占位写失败退痕）这
     类修复就须三处同步落同一段代码，漏一处即车道行为分裂。本助手收敛为一
     处，self-review/evolution 两车道亦对齐 _unique_admin_run_id 的现行申领
-    形态接入（item be4de163aa74），调用点只保留 base 命名、目录、申领文件
-    名模板与探针差异。
+    形态接入（item be4de163aa74），admin 车道自身亦于 item c0c5a2c7e318
+    收敛接入（_unique_admin_run_id 现为本助手的一次调用，空占位形态），共
+    六条维护车道；调用点只保留 base 命名、目录、申领文件名模板与探针差异。
 
     流程（与各车道原实现逐点等价）：
     - ``probe(candidate)``：申领前的额外冲突探测（在飞产物/在飞集/exclude/
@@ -1082,6 +1061,20 @@ def _safe_int(value) -> int:
         return 0
 
 
+def _normalize_cost_usd(value):
+    """cost_usd 类型归一（code-review item d0423bd766df / 69611e5b9ef8）。
+
+    仅放行 int/float（bool 剔除——非成本语义），其余转 None（与 session.py
+    「网关未回传 → None」缺省一致），不可序列化异型不再直达 json.dumps 抛
+    TypeError。_token_usage_fields 与 _accumulate_impl_ocr_tokens 两车道
+    共用（input_tokens 口径两车道有差异，留在各自调用点），归一口径演进
+    （如接受 Decimal）只改此处。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
 def _token_usage_fields(usage_info: dict) -> dict:
     """把 usage_info 归整为归账记录的 token 字段（input 含三类 cache）。
 
@@ -1093,15 +1086,12 @@ def _token_usage_fields(usage_info: dict) -> dict:
     """
     if not isinstance(usage_info, dict):
         usage_info = {}
-    cost = usage_info.get("cost_usd")
-    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
-        cost = None
     return {
         "input_tokens": _safe_int(usage_info.get("input_tokens", 0) or 0)
         + _safe_int(usage_info.get("cache_creation_input_tokens", 0) or 0)
         + _safe_int(usage_info.get("cache_read_input_tokens", 0) or 0),
         "output_tokens": _safe_int(usage_info.get("output_tokens", 0) or 0),
-        "cost_usd": cost,
+        "cost_usd": _normalize_cost_usd(usage_info.get("cost_usd")),
     }
 
 
@@ -1484,9 +1474,15 @@ def run_evolution(
                         run_ok = False
                         error = "CLI 退出异常且契约产物无条目"
         except Exception as e:
-            # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
+            # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因。
+            # 先取 prev_error 再拼装（code-review item 350af222efd8，口径与
+            # 上方 ContractError / partial 两分支一致）：CLI 非零退出的归因
+            # 文本（429/信号死法等）不因落地侧异常整体覆盖而丢失。
             run_ok = False
+            prev_error = error
             error = f"分析落地异常: {e}"
+            if prev_error and prev_error != error:
+                error = f"{error}（CLI 退出异常: {prev_error}）"
             contract = None
     finally:
         # 清理放外层 finally 且后移到「先抢救」之后（code-review item
@@ -3352,11 +3348,11 @@ def _read_ocr_cursor(cursor_path: Path) -> str | None:
 
 def _write_ocr_cursor(cursor_path: Path, commit: str, run_id: str = "") -> None:
     """审查成功后推进游标（原子替换；失败静默——下次回退全量，不影响正确性）。"""
+    # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下双实例
+    # 并发 write_text 可交错半写、被对方 os.replace 原子发布。
+    tmp = cursor_path.with_name(f".ocr-cursor-{run_id}.json.tmp")
     try:
         cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下双实例
-        # 并发 write_text 可交错半写、被对方 os.replace 原子发布。
-        tmp = cursor_path.with_name(f".ocr-cursor-{run_id}.json.tmp")
         tmp.write_text(
             json.dumps(
                 {
@@ -3370,6 +3366,14 @@ def _write_ocr_cursor(cursor_path: Path, commit: str, run_id: str = "") -> None:
         os.replace(tmp, cursor_path)
     except OSError:
         pass
+    finally:
+        # 失败路径退痕（code-review item 9e49b026b1a4，对齐 _append_token_run
+        # 的清理形态）：write_text 半写或 replace 失败都不残留 tmp 垃圾文件；
+        # 成功发布后 tmp 已不存在，missing_ok 下为 no-op。
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _git_is_ancestor(project_root: Path, ancestor: str, descendant: str) -> bool:
@@ -3422,12 +3426,10 @@ def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
         # （impl-ocr-<spec>-<epoch>），run_id 另立字段承载（对齐其余归账
         # 函数的 YYYY-MM-DD 口径，按日聚合不再错组）。
         # cost_usd 同 _token_usage_fields 归一口径（code-review item
-        # d0423bd766df）：仅放行 int/float（bool 剔除——非成本语义），其余
-        # 转 None，畸形值不再直达 _append_token_run 的 json.dumps 抛
-        # TypeError、被其 except 收口后连 token 计数一并丢掉整条记录。
-        cost = summary.get("cost_usd")
-        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
-            cost = None
+        # d0423bd766df，共用 _normalize_cost_usd）：畸形值不再直达
+        # _append_token_run 的 json.dumps 抛 TypeError、被其 except 收口后
+        # 连 token 计数一并丢掉整条记录。
+        cost = _normalize_cost_usd(summary.get("cost_usd"))
         entry = {
             "agent_type": "impl-ocr",
             "date": now.date().isoformat(),
@@ -3910,6 +3912,7 @@ def run_impl_ocr(
     # communicate 返回即注销，持久化窗口内车道对排水收口不可见）。finally
     # 只做收尾不吞异常，既有错误传播行为不变。
     try:
+        artifact_persisted = True
         try:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下
@@ -3920,6 +3923,7 @@ def run_impl_ocr(
             )
             os.replace(tmp, artifact_path)
         except OSError as e:
+            artifact_persisted = False
             if log is not None:
                 log.warning(
                     "agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}"
@@ -3936,6 +3940,10 @@ def run_impl_ocr(
                         "status": artifact["status"],
                         "findings": len(artifact["findings"]),
                         "reason": artifact["reason"],
+                        # 落盘失败时 status 取内存值，可能与磁盘实况（旧内容
+                        # 或缺失）不一致（code-review item 74189e02c2fa）：
+                        # 补布尔标记供时间线读者判别，不改变既有 status 语义。
+                        "artifact_persisted": artifact_persisted,
                     },
                 )
             ],
