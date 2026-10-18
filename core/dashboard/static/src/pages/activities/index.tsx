@@ -20,7 +20,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
-import { getAdminActivities, getAlerts, markAlertHandled, STREAM_URL } from '@/services/dashboard';
+import { getAdminActivities, getAlerts, STREAM_URL } from '@/services/dashboard';
 import type {
   AdminActivitiesData,
   ActivityItem,
@@ -29,6 +29,9 @@ import type {
   ProjectActivities,
 } from '@/services/dashboard';
 import { useIsMobile } from '@/hooks/useIsMobile';
+// 乐观遮蔽/标记已处理收敛共享 hook（code-review items d9c50f5bcc38、
+// e673281b0b03）：与 overview AlertBanner 同源逻辑单点维护，两页复用
+import { useOptimisticAlerts } from '@/hooks/useOptimisticAlerts';
 // 告警标题/明细/SEV 常量与 fmtDate 收敛单源（code-review item 5478d16d70c7；
 // variant="page" 保留本页既有布局：spec 蓝标签、明细字段分行、完整年月日）
 import {
@@ -341,7 +344,9 @@ export default function ActivitiesPage() {
   const isMobile = useIsMobile();
   const [data, setData] = useState<AdminActivitiesData | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
-  const [optimistic, setOptimistic] = useState<string[]>([]);
+  // 乐观遮蔽单源（items d9c50f5bcc38、e673281b0b03）：optimistic、收敛 effect
+  //（确认消失/超时兜底）与 markHandled 包装都在共享 hook 内，与横幅同源
+  const { optimistic, markHandled } = useOptimisticAlerts(alertsData);
   const [viewMode, setViewMode] = useState<ViewMode>('auto');
   const [current, setCurrent] = useState(1);
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
@@ -470,28 +475,15 @@ export default function ActivitiesPage() {
     };
   }, [load]);
 
-  // 乐观移除：后端确认已消失才真正清除，绝不永久遮蔽
-  useEffect(() => {
-    if (!optimistic.length || !alertsData) return;
-    const stillThere = new Set((alertsData.alerts || []).map((a) => a.id));
-    const next = optimistic.filter((id) => stillThere.has(id));
-    if (next.length !== optimistic.length) setOptimistic(next);
-  }, [alertsData, optimistic]);
-
   const handleMarkHandled = useCallback(
     async (a: AlertItem) => {
-      setOptimistic((prev) => [...prev, a.id]);
-      try {
-        await markAlertHandled(a.project, a.id);
-        message.success('已标记处理');
-      } catch (err) {
-        message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
-        // fix df39d8bbc138: 标记失败立即撤销乐观遮蔽，防止 id 滞留 optimistic 永久隐藏告警
-        setOptimistic((prev) => prev.filter((id) => id !== a.id));
-      }
+      // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案
+      const err = await markHandled(a);
+      if (err == null) message.success('已标记处理');
+      else message.error(`标记失败：${err}`);
       void load();
     },
-    [load, message],
+    [load, markHandled, message],
   );
 
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
