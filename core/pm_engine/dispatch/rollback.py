@@ -562,13 +562,19 @@ class RRollbackMixin:
         if not conflict_files:
             return
         msg = f"stash pop conflict: files={conflict_files}"
-        # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
-        # guard 段已结束、无并发写者）。kept 缺键时按 **True** 保守默认
+        # 条目去向从 worktree_manager 读，读取对 _main_tree_lock 短暂加锁
+        # （code-review item 82f9406f7516）：该属性是共享实例状态，他 spec 的
+        # merge-back 入口会在同把锁内 _reset_stash_state()，无锁读窗口内可把
+        # 他 spec 的重置确定态误读为本 spec 条目去向（已 auto-drop 被报成
+        # 「保留在栈中」）——与 guard 段写入及入口重置同锁串行后再读。
+        # kept 缺键时按 **True** 保守默认
         # （code-review item f09a5bfeb402）：旧实现 `fate.get("kept")` 缺键
         # 回 None（falsy）会误报「已被自动 drop」并写 stash_kept=False，
         # 编造数据丢失声明；缺键与读取失败同属「无法确证 drop」，一律按保留。
         try:
-            fate = dict(self._pm.agent_runner.worktree_manager.last_stash_entry_fate)
+            wm = self._pm.agent_runner.worktree_manager
+            with wm._main_tree_lock:
+                fate = dict(wm.last_stash_entry_fate)
         except Exception:
             fate = {"kept": True, "sha": ""}
         sha = fate.get("sha", "") or ""
@@ -673,7 +679,8 @@ class RRollbackMixin:
         # f64b8009ab7b）：提交/stash 重叠改动后由周期复查消费者自动重试，
         # ready 重派仅在自动重试超限降级后使用。
         description = (
-            f"SPEC '{spec_name}' merge-back 被 WIP 重叠闸门阻塞（策略=block）："
+            f"SPEC '{spec_name}' merge-back 被 WIP 重叠闸门阻塞"
+            f"（策略=escalate 升级拦截）："
             f"主树 {len(overlap)} 个已跟踪文件存在未提交改动，与分支 "
             f"'{branch}' 的改动路径重叠（{overlap}）——为避免 pop 冲突静默丢弃，"
             f"已中止合并（主树零污染，未 stash/未 merge/未 pop）。"
@@ -699,7 +706,7 @@ class RRollbackMixin:
             entry = self._pm.state_machine.read_one(spec_name) or {}
             count, first_f = self._parse_defer_accounting(entry, time.time())  # 首阻缺省=now，写侧回填与原 int(time.time()) 同口径
             return {
-                "error": f"mergeback wip overlap blocked (policy=block): files={overlap}",
+                "error": f"mergeback wip overlap blocked (policy=escalate): files={overlap}",
                 "_wip_gate_deferred": True,
                 "_merge_retry_count": count,
                 "_merge_retry_first_at": int(first_f),
@@ -717,7 +724,7 @@ class RRollbackMixin:
             description,
             {
                 "overlap_files": overlap,
-                "policy": "block",
+                "policy": "escalate",
                 "branch": branch,
                 "merge_error": str(merge_error),
             },
