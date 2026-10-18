@@ -31,7 +31,17 @@ from pathlib import Path
 logger = logging.getLogger("fenixd.dashboard.registry")
 
 DEFAULT_PORT = 8787
-DEFAULT_CONFIG = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
+# 默认配置路径不得在 import 期裸调 Path.home()（code-review item 6a253f87f603）：
+# HOME 未设置且 passwd 无对应用户的容器/服务账号环境下 Path.home() 抛
+# RuntimeError 会让 import 本身直接失败，discover 内为同一环境写的默认扫描根
+# 守卫（item de9a4b21d3c1）永远执行不到。此处按同一异常口径降级为主目录不可
+# 解析时改用相对路径——通常不存在，load 视为无配置，扫描交由 discover 守卫
+# 跳过并 WARNING 留痕，两处口径对齐。
+try:
+    DEFAULT_CONFIG = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
+except (OSError, RuntimeError, TypeError, ValueError) as _home_exc:
+    logger.warning("无法解析用户主目录作为默认配置路径，降级为相对路径: %s", _home_exc)
+    DEFAULT_CONFIG = Path(".config") / "fenixd" / "dashboard.yaml"
 
 
 def _fsync_parent_dir(path: Path) -> None:
