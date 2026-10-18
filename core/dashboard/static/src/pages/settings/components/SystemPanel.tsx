@@ -3,6 +3,7 @@ import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { usePanelDirty } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
+import type { Rule } from 'antd/es/form';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -29,7 +30,7 @@ const ADMIN_ANNOTATIONS: {
   type: AdminFieldControl;
   /** 输入单位（addonAfter 附加框）；开关 / 下拉项无单位 */
   unit?: string;
-  rule?: object[];
+  rule?: Rule[];
 }[] = [
   {
     key: 'enabled',
@@ -165,7 +166,7 @@ function renderAdminField({
   label: string;
   type: AdminFieldControl;
   unit?: string;
-  rule?: object[];
+  rule?: Rule[];
 }) {
   if (type === 'switch') {
     return (
@@ -271,7 +272,7 @@ const TRANSIENT_ANNOTATIONS: {
   type: TransientFieldControl;
   /** 输入单位（addonAfter 附加框） */
   unit?: string;
-  rule?: object[];
+  rule?: Rule[];
 }[] = [
   {
     key: 'transient_backoff_schedule',
@@ -363,7 +364,7 @@ function renderTransientField({
   label: string;
   type: TransientFieldControl;
   unit?: string;
-  rule?: object[];
+  rule?: Rule[];
 }) {
   if (type === 'input') {
     return (
