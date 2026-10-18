@@ -36,7 +36,7 @@ import re
 # SPEC 误写 _family_waiver=true（与上文两次实证误判同型）。现赋值型兜底复用与
 # 动词型相同的「本次处置」同句限定（_WAIVER_CURRENT_MARKERS 或本 spec 名同现）。
 # 处置文本分句分隔符（family_waiver_granted / infra_reclassify_rounds 共用）：
-# 句末标点（。！？\n）外补中文/英文分号——分号并列的「历史回拨/放行叙述；
+# 句末标点（。！？\n 与半角 ! ? .）外补中文/英文分号——分号并列的「历史回拨/放行叙述；
 # 本次指令」此前会被并为一句，re.search 取句内首个命中会拿到历史数字或历史
 # 放行表述（code-review 83115be72911）。分句更细只会让「同句限定」更精确、
 # 更漏不误，与模块保守方向（宁可漏放行/漏回拨，不可误扣 fail_rounds）一致。
@@ -46,7 +46,13 @@ import re
 # 分句变细会让合法声明整体漏判，「更漏不误」对逗号不成立。逗号并列句内的
 # 「首命中取到历史数字」改由 _pick_current_reclassify_match 在句内取「本次
 # 声明」命中解决（仅 infra 回拨侧有数字提取，waiver 无此故障模式）。
-_SENTENCE_SPLIT_RE = re.compile(r"[。！？；;\n]")
+# 半角句末标点 ! ? . 并入分句（code-review c6d5b79edb5c）：模块同时服务英文
+# 回拨模式（reclassify N (infra) rounds），半角句号行文下「本次处置」句级限
+# 定退化为段落级、_pick_current_reclassify_match 的逗号子句限定无从建立，
+# 回退分支会把历史数字当本次声明。`.` 以负向环视 (?<!\d)\.(?!\d) 收录——
+# 小数/版本号（1.5、v2.0）不被腰斩；分句更细只收紧句级限定边界（子句是原句
+# 子串，限定判定只会更严），全角主路径文本不含半角句末标点、结果不变。
+_SENTENCE_SPLIT_RE = re.compile(r"[。！？；;\n!?]|(?<!\d)\.(?!\d)")
 _WAIVER_NEGATION_PHRASES = (
     "未放行",
     "不放行",
@@ -167,7 +173,8 @@ def family_waiver_granted(text: str, spec: str) -> bool:
         错开派生口子）；
       - 否则动词型/赋值型模式按句（_SENTENCE_SPLIT_RE 分句：句末标点外加
         分号）判定，命中句须为本次处置的
-        显式放行表述：含「本次/该族」限定词或与本次父 SPEC 名同现——叙述
+        显式放行表述：含 _WAIVER_CURRENT_MARKERS 全部限定词（本次/该族/
+        本族）或与本次父 SPEC 名同现——叙述
         提及其他族谱/历史放行（「另一族谱已同意放行」「父 SPEC 此前已放行过
         一次」）且不含否定短语不构成对本次对象的放行（code-review
         4dd652206902）；

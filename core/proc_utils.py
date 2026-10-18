@@ -274,7 +274,14 @@ def kill_process_group(
         )
         pgid = popen.pid
     except (PermissionError, OSError):
-        # 权限不可判等情形：目标大概率仍在，回退口径同上。
+        # 权限不可判等情形：目标大概率仍在，回退口径同上。同样记 WARNING
+        # 保持两个回退分支取证口径一致（pid 复用误杀窗口同上）。
+        _logger.warning(
+            "kill_process_group: getpgid(%d) PermissionError/OSError（权限不"
+            "可判等），回退 pgid=pid 补刀整组 — 存在 pid 复用误杀他人组的极"
+            "窄窗口",
+            popen.pid,
+        )
         pgid = popen.pid
     if not (sigterm_only_if_alive and popen.poll() is not None):
         # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定

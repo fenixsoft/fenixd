@@ -14,8 +14,8 @@
 import { App, Card, Checkbox, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import HookManager from '@/components/HookManager';
-import { getConfig, getHookAudit } from '@/services/dashboard';
-import type { ConfigData, HookAuditRecord, HookConfig } from '@/services/dashboard';
+import { getHookAudit } from '@/services/dashboard';
+import type { ConfigData, HookAuditRecord, HookConfig, HooksConfig } from '@/services/dashboard';
 // 「重拉基底 + hooks 段整体替换」与 SPEC 详情 SpecHooksSection 共用单源
 // （code-review item 7add07b1e0e8）
 import { saveHooksSection } from '@/services/hooksSection';
@@ -120,10 +120,16 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     savingRef.current = true;
     setSaving(true);
     try {
-      // 基底用保存前重拉的最新配置（同 handleSave：patch 存在即整体替换，
-      // 快照合并会静默回退他处的修改）（code-review item 26586e4395cd）
-      const latest = await getConfig(project);
-      await onSave(pushRestartSavePayload(latest?.hooks, on));
+      // 基底用保存前重拉的最新配置（同 handleSave 走 saveHooksSection 单源：
+      // patch 存在即整体替换，快照合并会静默回退他处的修改）
+      // （code-review item 26586e4395cd；单源收敛 f37b4973a131）
+      await saveHooksSection(
+        project,
+        // payload 仍复用 pushRestartSavePayload（含 hooks 段非对象兜底 {} 口径）；
+        // saveHooksSection 以 { hooks: <段> } 收口，故取 .hooks 段
+        (latestHooks) => pushRestartSavePayload(latestHooks, on).hooks as HooksConfig,
+        onSave,
+      );
     } catch (e) {
       message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     } finally {

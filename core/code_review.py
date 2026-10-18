@@ -333,7 +333,8 @@ def _read_items_unlocked(
     可区分失败信号（code-review item 9a358bba128c）：返回值容错形态不变
     （未感知降级的既有调用方零改动），降级细节经可选出参回传——
     - ``degraded_out``：传列表则 OSError 读失败时置 ``[True]``（含 stat 层
-      访问失败——``is_file()`` 对权限类异常同样回 False，不得与真缺失混同）。
+      访问失败——``is_file()`` 对权限类异常同样回 False，不得与真缺失混同；
+      stat 成功但非普通文件——目录/FIFO 等——同口径置降级）。
       全量替换写侧 MUST 据此拒绝本次落盘（瞬时读故障窗口内的全量替换会把
       台账整体清空）；读侧容错契约不受影响。
     - ``corrupted_out``：传列表则无法入账行的原始文本原样收集（JSON 损坏
@@ -357,6 +358,18 @@ def _read_items_unlocked(
             degraded_out.append(True)
         return out
     if not stat.S_ISREG(st.st_mode):
+        # 非普通文件（目录/FIFO 等，病理性场景）与 OSError 分支同款待遇：
+        # 记 WARNING 并置 degraded_out，让「读降级拒写」契约覆盖这条旁路。
+        # 否则此处静默返回空集，upsert_findings 的 mutator 在空集上恒 True、
+        # _atomic_write 的 os.replace 目标为目录时抛 IsADirectoryError 穿透
+        # （读侧未按降级拒写、写侧以未捕获异常收场，code-review item
+        # 7459ded06ce2）。
+        _logger.warning(
+            "code_review: items.jsonl 非普通文件（目录/FIFO 等），按读降级处理: %s",
+            path,
+        )
+        if degraded_out is not None:
+            degraded_out.append(True)
         return out
     try:
         # errors="replace"：坏 UTF-8 字节降级为替换符，由后续逐行 JSON 解析自然
@@ -581,6 +594,19 @@ def severity_gate_rank(value) -> int:
     return _SEVERITY_GATE_RANK.get(str(value or ""), -1)
 
 
+def _normalize_cadence(value) -> int:
+    """minor_batch_cadence 归一：正整数原样返回，否则回退缺省。
+
+    bool 是 int 子类须显式排除（True 会被当 1 天窗口）；0/负数/非 int 一律
+    回退 MINOR_BATCH_CADENCE_DEFAULT。severity_gate_from_config_segment /
+    severity_gate_open / severity_gate_release_due 三处共用，校验口径单源
+    （code-review item f164f3716dca，纯收敛零行为变化）。
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return MINOR_BATCH_CADENCE_DEFAULT
+
+
 def is_regression_finding(rec) -> bool:
     """regression- 前缀条目判别：回归来源豁免 severity 门限。
 
@@ -595,12 +621,20 @@ def severity_meets_gate(rec, gate) -> bool:
     """达门限判别（不含周批窗口）：regression- 豁免恒真。
 
     severity 档位序达到 ``min_immediate_severity`` 即为真；未知/缺失档位
-    （rank -1）低于任何门限恒假（fail-open 挂起）。
+    （rank -1）低于任何门限恒假（fail-open 挂起）。门限值本身为词表外
+    （直传 gate dict 绕过 severity_gate_from_config_segment 归一的形态，
+    如测试替身/未来调用方）时回退缺省门限——否则 min_rank -1 使任何条目
+    恒判达门限，门限整体失效，方向与「未知档位按低于门限」fail-open 相反
+    （与 core/config.py 及 severity_gate_from_config_segment 的非法值回退
+    口径一致，同输入无论是否经上游归一判别结果相同）。
     """
     if is_regression_finding(rec):
         return True
     min_sev = (gate or {}).get("min_immediate_severity") or SEVERITY_GATE_MIN_DEFAULT
-    return severity_gate_rank((rec or {}).get("severity")) >= severity_gate_rank(min_sev)
+    min_rank = severity_gate_rank(min_sev)
+    if min_rank < 0:
+        min_rank = severity_gate_rank(SEVERITY_GATE_MIN_DEFAULT)
+    return severity_gate_rank((rec or {}).get("severity")) >= min_rank
 
 
 def severity_gate_from_config_segment(seg) -> Optional[dict]:
@@ -624,13 +658,7 @@ def severity_gate_from_config_segment(seg) -> Optional[dict]:
     min_sev = segd.get("min_immediate_severity")
     if not (isinstance(min_sev, str) and min_sev in _SEVERITY_GATE_RANK):
         min_sev = SEVERITY_GATE_MIN_DEFAULT
-    cadence = segd.get("minor_batch_cadence")
-    if (
-        not isinstance(cadence, int)
-        or isinstance(cadence, bool)
-        or cadence <= 0
-    ):
-        cadence = MINOR_BATCH_CADENCE_DEFAULT
+    cadence = _normalize_cadence(segd.get("minor_batch_cadence"))
     return {"min_immediate_severity": min_sev, "minor_batch_cadence": cadence}
 
 
@@ -683,9 +711,7 @@ def severity_gate_open(rec, gate=None, now_ts=None, release_due=False) -> bool:
         return True
     if release_due:
         return True
-    cadence = (gate or {}).get("minor_batch_cadence")
-    if not isinstance(cadence, int) or isinstance(cadence, bool) or cadence <= 0:
-        cadence = MINOR_BATCH_CADENCE_DEFAULT
+    cadence = _normalize_cadence((gate or {}).get("minor_batch_cadence"))
     anchor = _parse_gate_ts(
         (rec or {}).get(SEVERITY_DEFERRED_SINCE_FIELD)
         or (rec or {}).get("first_seen_at")
@@ -711,9 +737,7 @@ def severity_gate_release_due(recs, gate=None, now_ts=None) -> bool:
     """
     if gate is None:
         return False
-    cadence = (gate or {}).get("minor_batch_cadence")
-    if not isinstance(cadence, int) or isinstance(cadence, bool) or cadence <= 0:
-        cadence = MINOR_BATCH_CADENCE_DEFAULT
+    cadence = _normalize_cadence((gate or {}).get("minor_batch_cadence"))
     earliest = None
     for rec in recs or ():
         if not isinstance(rec, dict) or severity_meets_gate(rec, gate):
@@ -1448,6 +1472,7 @@ def read_progress(project_root) -> dict:
     review_kind = mdata.get("review_kind")
     # 读产物（done/current：聚合分片 + 主产物；主产物缺失时进度不归零——
     # 只要有分片行，done 即分片去重行数）
+    # [fenix-ignore:56eabf5a8dbe] 已知取舍非缺陷：done 语义需全量覆盖集，进程内 TTL 缓存属行为面新增（失效窗口/并发语义），不值得为此冒语义风险
     covered = {str(r.get("file") or "") for r in read_review_out_rows(project_root, run_id)}
     covered.discard("")
     # done 与 manifest 清单求交：agent 幻觉写出的清单外路径不计入进度，
@@ -1864,8 +1889,15 @@ def generate_fix_spec(
         candidates.append(rec)
 
     if not candidates:
-        # 幂等：全部已 in_spec 且同一 spec_name → 返回既有结果
-        if len(in_spec_names) == 1:
+        # 幂等：跳过原因全部为 already_in_spec 且同一 spec_name → 返回既有
+        # 结果（docstring 契约「全部 in_spec 且同 spec_name」）。混合批
+        # （混入 resolved/ignored/缺 file/status 漂移等被跳过条目）不得误判
+        # 幂等成功——那些条目并未被该 SPEC 承接，据 ok=True 展示「SPEC 已
+        # 生成」会误导（code-review item cd1783aa3f68）；混合批落入下方错误
+        # 分支，skipped 中保留各自原因。
+        if len(in_spec_names) == 1 and all(
+            s.get("reason") == "already_in_spec" for s in skipped
+        ):
             return {
                 "ok": True,
                 "spec_name": next(iter(in_spec_names)),

@@ -163,7 +163,10 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
         )
         tmp_path = Path(tmp_str)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            for ln in lines[-keep:]:
+            # 不写 lines[-keep:]：keep=0 时 -0 即 0，切片取全表与「保留末尾
+            # keep 行」相反；len(lines)-keep 在 keep=0 时得空列表（清空），
+            # keep>0 时与 lines[-keep:] 逐字一致（item 7376da192776）
+            for ln in lines[len(lines) - keep:]:
                 f.write(ln + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -370,8 +373,12 @@ class AdminStore:
         「记录未落盘的拒写」两种语义。每次调用先复位，属性只反映最近一次
         _mutate；仅诊断用途，不参与任何既有返回值/控制流。
         """
-        self.last_write_refusal = None
         with self._thread_lock:
+            # 复位与 corrupt 分支的置位同在 _thread_lock 互斥域内（item
+            # f05f83ca6b6d）：锁外复位会和并发调用的锁内置位交错，把别的
+            # 线程刚留下的拒写原因清掉，破坏 append_if_absent 依赖的
+            # 「None=在途 / 非空=拒写」区分
+            self.last_write_refusal = None
             with self._lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 try:

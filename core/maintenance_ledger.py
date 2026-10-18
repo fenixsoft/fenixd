@@ -13,6 +13,7 @@
 
 from pathlib import Path
 import json
+import secrets
 import time
 
 # 原子追加复用 run_files 的成文约定（单行单次写入；行超
@@ -95,20 +96,31 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     命中、scope 还原返回 None（回落泛型主体），与 code-review-<epoch>-<n>
     退避先例同口径；未撞名时（绝大多数）形态与解析不变。
 
+    code-review item 8a1e2c8bfa1e：探测与实际 append 之间无互斥/原子申领，
+    两进程（执行者进程与 daemon 可并存并发写）同秒同 scope 并发落账时双方
+    探测均未命中、各取同一 base，残余竞态仍产生同 run_id。混入短随机段把
+    并发撞名概率降为可忽略（固定 ``x`` 引导 + 4 位 hex，65536 取值空间）：
+    ``x`` 引导保证尾段不落入 run_files.RUN_ID_SUFFIX_RE 的 ``-a<n>``/``-r<n>``
+    attempt 形态、也不满足 admin_monitor._spec_from_run_id 的 ``-\\d{9,10}``
+    尾锚（与既有 ``-<n>`` 退避同口径回落泛型主体）；随机段居尾，时间前缀
+    保序。探测退避保留：串行的同秒同 scope 重复登记仍走确定性 ``-<n>`` 防撞。
+    project=None 时保持纯 base 形态不变（无台账可探测的调用方形态稳定）。
+
     Args:
         scope: 登记范围名（进入 run id 的归因段）。
-        project: 项目根（str/Path）；提供时启用台账探测退避，None 时仅返回
-            base 形态（无既有台账可探测，如单测/生成即落账前的调用方）。
+        project: 项目根（str/Path）；提供时启用台账探测退避与随机段，None
+            时仅返回 base 形态（无既有台账可探测，如单测/生成即落账前的调用方）。
     """
     base = f"maintenance-{scope}-{int(time.time())}"
     if project is None:
         return base
-    candidate = base
+    rand = f"x{secrets.token_hex(2)}"
+    candidate = f"{base}-{rand}"
     n = 0
     existing = {e.get("run_id") for e in list_maintenance_entries(project)}
     while candidate in existing:
         n += 1
-        candidate = f"{base}-{n}"
+        candidate = f"{base}-{rand}-{n}"
     return candidate
 
 

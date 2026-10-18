@@ -406,13 +406,11 @@ def _decode_git_quoted_path(rel: str) -> str:
     return unquote_git_path(rel)
 
 
-def _knowledge_dirty_files(project_root: Path) -> set[str]:
-    """``spec/knowledge/`` 内未提交改动的 relpath 集合（tracked 改动 + 未跟踪
-    新增，未跟踪目录以整体目录条目出现）。
-
-    差集回滚的基线/现状快照共用单实现（knowledge_audit 亦 import 本函数，
-    code-review b2e9ede6adec / 36eb21ca1661）；git 不可用/超时 fail-open
-    返回空集。
+def _knowledge_dirty_files_or_none(project_root: Path) -> Optional[set[str]]:
+    """``_knowledge_dirty_files`` 的严格变体：采集失败（git 不可用/超时/状态
+    非零）返回 None，供回滚基线调用方区分「确无脏文件」的空集——基线不可得
+    时以空集继续，失败差集回滚会把用户未提交改动当本车道产出连带清除
+    （code-review 90e35f54ac7b）。
     """
     try:
         proc = subprocess.run(
@@ -438,9 +436,9 @@ def _knowledge_dirty_files(project_root: Path) -> set[str]:
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return set()
+        return None
     if proc.returncode != 0:
-        return set()
+        return None
     files: set[str] = set()
     for ln in proc.stdout.splitlines():
         if len(ln) <= 3:
@@ -456,6 +454,18 @@ def _knowledge_dirty_files(project_root: Path) -> set[str]:
         if rel:
             files.add(rel)
     return files
+
+
+def _knowledge_dirty_files(project_root: Path) -> set[str]:
+    """``spec/knowledge/`` 内未提交改动的 relpath 集合（tracked 改动 + 未跟踪
+    新增，未跟踪目录以整体目录条目出现）。
+
+    差集回滚的基线/现状快照共用单实现（knowledge_audit 亦 import 本函数，
+    code-review b2e9ede6adec / 36eb21ca1661）；git 不可用/超时 fail-open
+    返回空集（回滚基线调用方以 _knowledge_dirty_files_or_none 区分采集失败）。
+    """
+    files = _knowledge_dirty_files_or_none(project_root)
+    return files if files is not None else set()
 
 
 def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
@@ -807,7 +817,13 @@ class BackfillLedger:
         ``updated_at`` 较新的一方——新登记条目与 pending 重置不再被覆盖丢失。
         """
         with _ledger_write_lock(self.path.parent.parent):
-            merged = dict(BackfillLedger.load(self.path).entries)
+            try:
+                merged = dict(BackfillLedger.load(self.path).entries)
+            except (OSError, ValueError):
+                # 盘上台账不可读（坏字节抛 UnicodeDecodeError，是 ValueError 子类，
+                # 不在各调用点 except OSError 口径内）：降级为空台账按条合并，
+                # 不让长跑车道的 save 以未处理异常告终（code-review 8bbaa467462d）
+                merged = {}
             for name, entry in self.entries.items():
                 other = merged.get(name)
                 if (
@@ -1076,7 +1092,10 @@ def build_prompt(
     - ``batch``：``batch`` = 本批能力名；``chains`` = 能力 → 归档链；
       ``baselines`` = 能力 → 史前基线文本（链头输入，聚合成文时一并聚合）。
     """
-    text = PROMPT_PATH.read_text(encoding="utf-8")
+    # errors="replace"：模板坏字节的 UnicodeDecodeError（ValueError 子类）不在
+    # 调用方 OSError 口径内，会以裸异常掀翻车道（对齐本文件解码防护纪律，
+    # code-review 25ee049fff83）
+    text = PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
     if mode == "bootstrap":
         capabilities = capabilities or []
         text = text.replace(
@@ -1169,7 +1188,8 @@ def build_prehistoric_prompt(
     violations: Optional[list[str]] = None,
 ) -> str:
     """史前复原提示词 = prehistoric.md 契约 + 动态段（窗口锚点 / 求差基准）。"""
-    text = PREHISTORIC_PROMPT_PATH.read_text(encoding="utf-8")
+    # errors="replace"：同 build_prompt（code-review 25ee049fff83）
+    text = PREHISTORIC_PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
     text = text.replace("{{UNTIL_DATE}}", PREHISTORIC_UNTIL)
     text = text.replace("{{FIRST_REF}}", first_commit_ref(project_root) or "<首提交ref>")
     text = text.replace("{{PREHISTORIC_JSON_PATH}}", PREHISTORIC_JSON_RELPATH)
@@ -1551,7 +1571,10 @@ def run_backfill(
     # 提示词派发 run。
     try:
         for _tpl in (PROMPT_PATH, PREHISTORIC_PROMPT_PATH):
-            _tpl.read_text(encoding="utf-8")
+            # errors="replace"：坏字节的 UnicodeDecodeError（ValueError 子类）
+            # 不在下方 except OSError 口径内（对齐本文件解码防护纪律，
+            # code-review 25ee049fff83）
+            _tpl.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         log.warning(
             "knowledge", f"回填提示词模板读取失败，本车道跳过待人工检查：{e}"
@@ -1613,7 +1636,27 @@ def run_backfill(
         # 写段取蒸馏锁：与 DistillManager 串行，防两车道并发写 spec/knowledge/
         with knowledge_distill_lock(project_root):
             # 本段 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
-            dirty_baseline = _knowledge_dirty_files(project_root)
+            dirty_baseline = _knowledge_dirty_files_or_none(project_root)
+            if dirty_baseline is None:
+                # 基线不可得（与「确无脏文件」的空集不可区分）：以空集继续会让
+                # 失败差集回滚把用户未提交改动当本车道产出连带清除，中止本段
+                # 待人工，不做清场/派发/回滚（code-review 90e35f54ac7b）
+                log.warning(
+                    "knowledge",
+                    "回填聚类自举段脏文件基线采集失败（git status 不可用/超时），"
+                    "本段跳过待人工重跑",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    "回填聚类自举段脏文件基线采集失败，本段未执行，"
+                    "请人工检查后重跑回填",
+                    log,
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "bootstrap-baseline-unavailable",
+                }
             # 自举重跑清场：fixture 遗留（未跟踪）先清，跑完再按真实聚类删遗留域
             _clean_untracked_knowledge(project_root, log)
             # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规，真相源既有
@@ -1621,10 +1664,12 @@ def run_backfill(
             # 84727f16ab35）
             before_violations = {str(v) for v in (validate(project_root) or [])}
             chain_caps = sorted(chain_index)
-            prompt = build_prompt("bootstrap", capabilities=chain_caps)
+            # 修正环复用同一基础提示词（同能力批/ADR 批段的 base_prompt 用法，
+            # 不二次构建，code-review 879ec62ecbad）
+            base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
             run_id = f"kb-bootstrap-{int(time.time())}"
             try:
-                spawn(prompt, run_id)
+                spawn(base_prompt, run_id)
             except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
                 _append_todo_fail_open(
                     project_root,
@@ -1641,7 +1686,6 @@ def run_backfill(
                     log,
                 )
                 return {"triggered": True, "ok": False, "reason": "bootstrap-no-domain-map"}
-            base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
             try:
                 ok, violations = _validate_with_repair(
                     project_root, validate, spawn, base_prompt, run_id,
@@ -1762,7 +1806,26 @@ def run_backfill(
         # 写段取蒸馏锁（同聚类自举段）
         with knowledge_distill_lock(project_root):
             # 本段 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
-            dirty_baseline = _knowledge_dirty_files(project_root)
+            dirty_baseline = _knowledge_dirty_files_or_none(project_root)
+            if dirty_baseline is None:
+                # 同自举段口径：基线不可得时中止本段待人工，不派发不做破坏性
+                # 回滚（code-review 90e35f54ac7b）
+                log.warning(
+                    "knowledge",
+                    "回填史前复原段脏文件基线采集失败（git status 不可用/超时），"
+                    "本段跳过待人工重跑",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    "回填史前复原段脏文件基线采集失败，本段未执行，"
+                    "请人工检查后重跑回填",
+                    log,
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "prehistoric-baseline-unavailable",
+                }
             # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
             before_violations = {str(v) for v in (validate(project_root) or [])}
             prompt = build_prehistoric_prompt(project_root, chain_index)
@@ -1862,7 +1925,32 @@ def run_backfill(
         # 防两车道并发写 spec/knowledge/（code-review 2443e98dc1f0）
         with knowledge_distill_lock(project_root):
             # 本批 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
-            dirty_baseline = _knowledge_dirty_files(project_root)
+            dirty_baseline = _knowledge_dirty_files_or_none(project_root)
+            if dirty_baseline is None:
+                # 同自举段口径：基线不可得时中止本批（不执行 run、不做破坏性
+                # 回滚）待人工，不以空集继续让失败回滚连带清除用户未提交改动
+                # （code-review 90e35f54ac7b）
+                log.warning(
+                    "knowledge",
+                    f"回填批次 {i}/{total} 脏文件基线采集失败（git status 不可用/"
+                    "超时），本批跳过待人工重跑",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填批次 {i}/{total} 脏文件基线采集失败，本批未执行，"
+                    "请人工检查后重跑回填",
+                    log,
+                )
+                failed_batches.append(
+                    {
+                        "batch": i,
+                        "capabilities": batch,
+                        "violations": [
+                            "脏文件基线采集失败（git status 不可用/超时）"
+                        ],
+                    }
+                )
+                continue
             # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规，真相源既有
             # 无关违规不拦提交（差集口径对齐 knowledge_audit，code-review
             # 84727f16ab35）
@@ -1995,7 +2083,31 @@ def run_backfill(
         # 写段取蒸馏锁（同能力聚合批次）
         with knowledge_distill_lock(project_root):
             # 本批 run 前的脏文件基线（失败时差集回滚只清本车道触达文件）
-            dirty_baseline = _knowledge_dirty_files(project_root)
+            dirty_baseline = _knowledge_dirty_files_or_none(project_root)
+            if dirty_baseline is None:
+                # 同能力批次循环口径：基线不可得时中止本批（不执行 run、不做
+                # 破坏性回滚）待人工（code-review 90e35f54ac7b）
+                log.warning(
+                    "knowledge",
+                    f"回填 ADR 批次 {i}/{adr_total} 脏文件基线采集失败"
+                    "（git status 不可用/超时），本批跳过待人工重跑",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填 ADR 批次 {i}/{adr_total} 脏文件基线采集失败，"
+                    "本批未执行，请人工检查后重跑回填",
+                    log,
+                )
+                adr_failed.append(
+                    {
+                        "batch": i,
+                        "archives": batch,
+                        "violations": [
+                            "脏文件基线采集失败（git status 不可用/超时）"
+                        ],
+                    }
+                )
+                continue
             # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
             before_violations = {str(v) for v in (validate(project_root) or [])}
             base_prompt = build_prompt("adr", batch=batch)

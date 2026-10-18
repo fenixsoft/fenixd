@@ -17,11 +17,11 @@ NOT 搬入（登记为「不搬」，见 findings-ledger.md）：
 
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 
 from core.admin_store import _fsync_parent_dir
+from core.spec_naming import KEBAB_RE
 from core.timelib import now_utc, to_storage
 
 # ADMIN_INVOKE_REQUEST 常量（信号文件路径）
@@ -34,11 +34,9 @@ ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
 # 消费侧仍识别并消费存量旧文件（消费后删除），新写入一律走本目录。
 SCHEDULING_KICK_DIR = ".fenix/scheduling_kick"
 
-# SPEC 名合法性判据：复制自 core/spec_gen.py 的 kebab-case 权威正则
-# （^[a-z][a-z0-9]*(-[a-z0-9]+)*$）。core.signals 须为中性模块（不依赖
-# core.dashboard.data / core.spec_gen），故在此复制而非导入——两份正则
-# 保持字面一致，若 spec_gen 侧正则变更须同步更新此处。
-_KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+# SPEC 名合法性判据：kebab-case 权威正则单源于 core/spec_naming.py
+# （code-review item a26570d2bf14），core.spec_gen 与本模块同源引用，
+# 命名规则演进改一处即全链生效。
 
 
 def _existing_created(req_path) -> str | None:
@@ -55,6 +53,23 @@ def _existing_created(req_path) -> str | None:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
     return None
+
+
+def _conflict_result(req_path) -> dict:
+    """request_admin_invoke 三处 conflict 返回体的单点构造。
+
+    exists 快路径 / O_EXCL FileExistsError / inode 复核失配共用同一结构，
+    回读既有 created 对齐同族冲突语义（读失败保持 None）；增删返回键只改
+    此处。
+    """
+    return {
+        "ok": False,
+        "found": True,
+        "conflict": True,
+        "file": str(req_path),
+        "created": _existing_created(req_path),
+        "error": "已有进行中的 Admin 处置",
+    }
 
 
 def request_admin_invoke(
@@ -116,15 +131,7 @@ def request_admin_invoke(
         # 读既有 created 供返回（对齐同族 request_run_cancel /
         # request_spec_delete / request_spec_approve_push 冲突语义；
         # 读失败保持 None，不抛异常）
-        existing_created = _existing_created(req_path)
-        return {
-            "ok": False,
-            "found": True,
-            "conflict": True,
-            "file": str(req_path),
-            "created": existing_created,
-            "error": "已有进行中的 Admin 处置",
-        }
+        return _conflict_result(req_path)
 
     created = to_storage(now_utc())
     payload = {"spec": spec, "source": "manual", "created": created}
@@ -153,15 +160,7 @@ def request_admin_invoke(
     except FileExistsError:
         # 冲突时同样回读既有 created（对齐同族冲突语义）；并发空占位或
         # 读失败保持 None，不抛异常
-        existing_created = _existing_created(req_path)
-        return {
-            "ok": False,
-            "found": True,
-            "conflict": True,
-            "file": str(req_path),
-            "created": existing_created,
-            "error": "已有进行中的 Admin 处置",
-        }
+        return _conflict_result(req_path)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
     )
@@ -203,19 +202,11 @@ def request_admin_invoke(
         except OSError:
             current_ino = None
         if current_ino is not None and current_ino != placeholder_ino:
-            existing_created = _existing_created(req_path)
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-            return {
-                "ok": False,
-                "found": True,
-                "conflict": True,
-                "file": str(req_path),
-                "created": existing_created,
-                "error": "已有进行中的 Admin 处置",
-            }
+            return _conflict_result(req_path)
         os.replace(tmp_path, req_path)
         # rename 后刷父目录项，保证换入结果掉电不回退（复用
         # admin_store._fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持
@@ -260,7 +251,7 @@ def validate_scheduling_kick_spec(spec: str) -> str | None:
         return f"spec 名必须为字符串（当前类型 {type(spec).__name__}）"
     if not spec:
         return "spec 名为空"
-    if not _KEBAB_RE.fullmatch(spec):
+    if not KEBAB_RE.fullmatch(spec):
         return (
             f"spec 名不合法（须为 kebab-case，如 'fix-foo-bar'）：{spec!r}"
         )

@@ -379,8 +379,8 @@ def _kill(proc: subprocess.Popen) -> None:
             proc.wait(timeout=5)
             # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
             # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
-            # 成立；组已空（全员随 SIGTERM 退出）抛 ProcessLookupError，属
-            # 常态按已清算处理。
+            # 成立；组已空（全员随 SIGTERM 退出）按已清算静默处理（守卫对
+            # ESRCH/自身组/非正 pgid 返回 False 不抛）。
             guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
             return
         except subprocess.TimeoutExpired:

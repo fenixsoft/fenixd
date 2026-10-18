@@ -454,14 +454,31 @@ def _sync_disputed_annotations(
         lines = text.splitlines()
         idx = next((i for i, ln in enumerate(lines) if _DISPUTED_RE.search(ln)), None)
         new_line = desired.get(rel)
+        # 摘除/更新按行内注记子串操作而非盲删/整行覆盖：_DISPUTED_RE 是行内
+        # 子串匹配，注记与正文同行（人工编辑/外部工具写入）时整行删除会连带
+        # 丢正文、整行覆盖会把正文抹成纯注记行。仅当注记独占整行（strip 后与
+        # 匹配全等，框架写入侧形态）才整行删/换。
         if new_line is None:
             if idx is None:
                 continue
-            del lines[idx]
+            old = lines[idx]
+            matched = _DISPUTED_RE.search(old).group(0)
+            if old.strip() == matched:
+                del lines[idx]
+            else:
+                # 只剔除行内注记子串，不连带丢同行正文；顺带剥掉注记摘除后
+                # 露出的行尾空白（免得给下轮 format 扫描留脏行）。
+                lines[idx] = old.replace(matched, "").rstrip()
         elif idx is not None:
-            if lines[idx].strip() == new_line:
+            old = lines[idx]
+            matched = _DISPUTED_RE.search(old).group(0)
+            if old.strip() == new_line:
                 continue
-            lines[idx] = new_line
+            if old.strip() == matched:
+                lines[idx] = new_line
+            else:
+                # 只替换行内注记子串，保留同行正文
+                lines[idx] = old.replace(matched, new_line)
         else:
             # 150 行硬顶（红线三）：写入前查行数，新增一行不得越顶
             if len(lines) + 1 > LINE_CAP:
@@ -1060,6 +1077,7 @@ def _scan_semantic(pages: list[dict]) -> list[dict]:
             )
     findings: list[dict] = []
     seen_pairs: set[tuple[str, str]] = set()
+    # [fenix-ignore:1a3eaa1a3dc9] 规模敏感性提示非现行缺陷（页数受 150 行硬顶约束）；建议的 (subject, digits) 桶化不可证语义等价——same_text 配对不要求同 subject（_normalize_rule 剥冒号，"限速：60" 与 "限速 60" 同 norm 异 subject）、fuzzy_dup 亦不要求同 subject，按该键建桶会漏配对，全量等价桶化需 norm/subject/digits 三族键加配对序复原，非低风险局部改动。
     for i, a in enumerate(entries):
         for b in entries[i + 1 :]:
             if a["page"] == b["page"] and a["norm"] == b["norm"]:
@@ -1124,7 +1142,22 @@ def _apply_mechanical(
     rewritten: set[str] = set()
     # [fenix-ignore:9c26e33a4a68] 病灶快照已在 run_audit 蒸馏锁内采集，扫描与删行同临界区，并发蒸馏 run 无法在两者之间插写错位行号。
     for item in scan["dangling"]:
-        orig_text = item["path"].read_text(encoding="utf-8", errors="replace")
+        # 页文件在扫描快照后被外部删除/权限变化（锁外人工与 git 操作不受蒸馏
+        # 锁约束）时 read_text 抛 OSError 穿出 run_audit，整轮体检中止、日戳不
+        # 落盘、后续每个检查点重复失败。读不到按「盘面已变、转待人工」计入
+        # manual 明细，不中断本轮机械修复与其余页面处置（对齐 _page_text_by_rel
+        # 的 is_file 防护口径）。
+        orig_text: Optional[str] = None
+        if item["path"].is_file():
+            try:
+                orig_text = item["path"].read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                orig_text = None
+        if orig_text is None:
+            manual.append(
+                f"{item['rel']}：盘面已变（文件不可读或已删除），悬空溯源转待人工"
+            )
+            continue
         lines = orig_text.splitlines()
         drop = set(item["drop_lines"])
         kept = [ln for i, ln in enumerate(lines) if i not in drop]
@@ -1183,7 +1216,17 @@ def _apply_mechanical(
             manual.append(all_dangling_msg)
     for rel in scan["format"]:
         path = Path(project_root) / rel
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # 同悬空段口径：扫描后盘面已变（文件不可读/已删除）时转待人工，
+        # 不让 OSError 中断本轮机械修复（code-review 00f39dd6903d）。
+        text: Optional[str] = None
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = None
+        if text is None:
+            manual.append(f"{rel}：盘面已变（文件不可读或已删除），格式清理转待人工")
+            continue
         # 只剥脏行尾空白，保留恰好两个空格的 Markdown 硬换行（与扫描同口径）
         cleaned = "\n".join(
             ln.rstrip() if _trailing_ws_dirty(ln) else ln for ln in text.splitlines()
@@ -1291,7 +1334,7 @@ def run_audit(
         "superseded": 0,
         "pending_manual": 0,
     }
-    details: dict[str, list] = {
+    details: dict[str, object] = {
         "fixed": [],
         "rewritten": [],
         "manual": [],
@@ -1326,10 +1369,24 @@ def run_audit(
         # 疑点上，新候选当日零入账）；剔除后 escalated 不再计入转写预算。
         ledger = _load_findings_ledger(project_root)
         escalated = _escalated_entries(ledger)
+        escalated_open = bool(escalated)
         escalated_fps = set(escalated)
-        semantic_pending = [
-            f for f in semantic_all if _finding_fingerprint(f) not in escalated_fps
-        ]
+        # 同指纹候选去重（code-review fa6043ce1992，与 escalated 剔除一趟完成）：
+        # _scan_semantic 的 seen_pairs 按「page|原始 rule 文本」拼对去重，同一
+        # 规则行在同页出现两次时（A副本1,B）与（A副本2,B）是不同 pair 键、产出
+        # 两条候选，但 _finding_fingerprint 输入为（page, 归一化 rule, digits），
+        # 两条候选指纹完全相同——不去重则第一条走 fixed 提交后，第二条命中
+        # entry.status=="fixed" 重开 suspected 分支再消耗一个名额、再 spawn 一个
+        # run 重复复核同一矛盾。同指纹只保留首条（发现顺序不变，豁免路径因哈希
+        # 未变不受影响），名额消耗语义对正常单条路径完全不变。
+        semantic_pending: list[dict] = []
+        seen_candidate_fps: set[str] = set()
+        for f in semantic_all:
+            fp = _finding_fingerprint(f)
+            if fp in escalated_fps or fp in seen_candidate_fps:
+                continue
+            seen_candidate_fps.add(fp)
+            semantic_pending.append(f)
 
         # 语义初筛候选消费序 = semantic_pending；单轮转写名额（MAX_SEMANTIC_RUNS）
         # 由语义循环按实际派发 run 数消耗（游标/名额见语义循环处注释），此处
@@ -1742,6 +1799,12 @@ def run_audit(
     # 不一致。用最终 escalated 重算覆盖（escalated 为空时 _escalated_summary
     # 返回 None，汇总节照旧不出）。
     details["escalated_summary"] = _escalated_summary(escalated)
+    if escalated_open and not escalated:
+        # 开局 escalated 非空时 pending_manual 已 +1；收尾按盘上重读的最终
+        # escalated 重算汇总后若已清空（循环期间被外部消费者消费/删除），回撤
+        # 该笔幻影计数，与汇总节「共 0 条待人工仲裁」口径对齐（code-review
+        # 2d4029f87294）。
+        counts["pending_manual"] -= 1
 
     report = _render_report(
         counts,

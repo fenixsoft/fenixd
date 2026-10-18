@@ -1005,6 +1005,20 @@ def write_narrative_sidecar(
     try:
         d = _sidecar_dir(project_root)
         d.mkdir(parents=True, exist_ok=True)
+        # 崩溃窗口残留清理（item 925284c4f2ae）：mkstemp 与 os.replace 之间
+        # 进程被 SIGKILL 时 .narrative-*.tmp 永久残留于侧车目录。写入方（低频
+        # 路径）顺手清理超龄（>1 天）残留，不越界到读侧 load_narrative_sidecars；
+        # 清理自身失败不影响本次写入。
+        try:
+            now_ts = time.time()
+            for stale in d.glob(".narrative-*.tmp"):
+                try:
+                    if now_ts - stale.stat().st_mtime > 86400:
+                        stale.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            pass
         payload = {
             "alert_id": aid,
             "text": text,
@@ -1044,7 +1058,11 @@ def write_narrative_sidecar(
         except OSError:
             pass
         return True
-    except OSError as e:
+    # docstring「绝不抛出」契约（item 5b6c8a68e631）：除 OSError 外，函数体
+    # 还有裸抛点——Path(project_root) 对 None/非路径抛 TypeError、嵌入空字节
+    # 与 json.dump 非 ASCII 孤代理（ensure_ascii=False 直写 utf-8）抛
+    # ValueError/UnicodeEncodeError——一并纳入口径。
+    except (TypeError, ValueError, OSError) as e:
         _logger.warning("叙事侧车写入失败（alert=%s）: %s", aid, e)
         return False
 

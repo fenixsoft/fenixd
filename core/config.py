@@ -44,6 +44,15 @@ SUPERVISION_DEFAULTS = {
     "absolute_max_seconds": 7200,
     "judge_window": 600,
 }
+# 归一层单点负责的数字键（code-review item e5d79d80f32c）：_supervision_settings
+# 第一层拷贝跳过本键集（其写入被归一层无条件覆盖，属死效果），键集与归一层
+# 循环结构化共用，避免两份名单漂移。
+_SUPERVISION_NUMERIC_KEYS = (
+    "extension_seconds",
+    "max_extensions",
+    "judge_window",
+    "absolute_max_seconds",
+)
 # fast-track higher 档（_fast_track_scale_tier == "higher"）的续期预算加成：
 # 默认 max_extensions 2 → 4，使大任务面 spec 获得更充足超时预算。配置校验层
 # 下限按「最大可达续期预算」取 max_extensions + 该加成（保守口径，与 liveness
@@ -695,7 +704,8 @@ class ConfigLoader:
 
         读取用户级 `~/.fenix/config.yaml` 与项目级 `<project_root>/.fenix/config.yaml`，
         任一或全部缺失按空 dict 兜底；解析失败记录错误日志但不阻断。
-        有效配置缺失 `project.name` 时以项目根目录名补齐（用户级 project 键不参与身份）。
+        有效配置缺失 `project.name`（或为非字符串/空白名）时以项目根目录名补齐
+        （用户级 project 键不参与身份）。
         校验采用宽松模式（require_project=False）：不强制顶层必填键，已存在键做值级校验。
 
         Returns: 有效配置 dict，始终含 `project.name`。
@@ -723,7 +733,13 @@ class ConfigLoader:
         proj_project = proj.get("project")
         if isinstance(proj_project, dict):
             proj_name = proj_project.get("name")
-        project["name"] = proj_name or proot.name
+        # 仅采用非空白字符串名（code-review item 6df61ea790d5）：手改 YAML 的
+        # 非字符串标量（如 name: 123 或列表）旧实现经 ``or`` 原样成为生效项目
+        # 身份，流入 webhook payload 等对外形态；非字符串/空白名回退项目根
+        # 目录名（合法字符串名路径行为不变，_validate 不新增硬失败）。
+        if not (isinstance(proj_name, str) and proj_name.strip()):
+            proj_name = proot.name
+        project["name"] = proj_name
 
         cls._validate(effective, require_project=False)
         return effective
@@ -2856,8 +2872,14 @@ class ConfigLoader:
             # 拷全部 SUPERVISION_DEFAULTS 键（code-review item b724b5ae63a4）：
             # 旧实现只拷 enabled/extension_seconds/max_extensions，用户配置的
             # absolute_max_seconds / judge_window 被静默忽略（调用方读到的恒为
-            # 硬编码缺省 7200 / 600）——静默覆盖用户配置。改为按键表全量拷贝。
+            # 硬编码缺省 7200 / 600）——静默覆盖用户配置。改为按键表拷贝；
+            # 其中数字键由下方归一层从 sup 单点重取并无条件覆盖（item
+            # e5d79d80f32c：第一层对数字键的写入永不生效，b724b5ae63a4 全量
+            # 拷键意图已被归一层吸收），故跳过 _SUPERVISION_NUMERIC_KEYS，
+            # 仅 enabled 等非数字键从本层生效。
             for key in SUPERVISION_DEFAULTS:
+                if key in _SUPERVISION_NUMERIC_KEYS:
+                    continue
                 if key in sup and sup[key] is not None:
                     cfg[key] = sup[key]
             # 数字键类型归一（code-review item a167cbc7bfe9）：手改配置的脏值
@@ -2867,7 +2889,7 @@ class ConfigLoader:
             # 直接失败（报错为 int 解析错误，难以定位）——与本文件「脏值回退
             # 缺省、不中断加载」的 fail-open 哲学相悖。与 _normalize_transient_
             # seconds 同款归一：bool 排除（bool 是 int 子类）、非法回退缺省。
-            for key in ("extension_seconds", "max_extensions", "judge_window", "absolute_max_seconds"):
+            for key in _SUPERVISION_NUMERIC_KEYS:
                 cfg[key] = cls._normalize_transient_seconds(sup, key, SUPERVISION_DEFAULTS[key])
             # enabled 严格 bool 归一（code-review item 6b032f4596e5）：YAML 引号串
             # enabled: "false" 经真值判定恒按启用生效（bool("false") 亦为 True），

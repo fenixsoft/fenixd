@@ -588,6 +588,38 @@ STORED_SIGNAL_TYPES = (
     "whitelist_untracked",
 )
 
+# 「signal_type → 是否 spec-less（记录固定无 spec、摄取时须从 evidence「项目名=」
+# 解析还原 spec）」伴生单源（code-review item ca9aa220b3b8）：与上方真源
+# STORED_SIGNAL_TYPES 紧邻共存，是唯一登记点——摄取循环
+# （_detect_family_explosion）引用本表，不再维护内联副本。新增
+# STORED_SIGNAL_TYPES 成员时若其记录固定 spec=None（项目级盘点 / UI 手动 /
+# pm_engine 直发无 spec），须同步在此登记，否则 spec 保持 None 被摄取循环
+# 静默丢弃且未 mark_escalated（每轮巡检重复丢弃、自动唤起落空——内联副本
+# 时代已累计 8 例同款落空模式，见各成员注释）。本表必须是 STORED_SIGNAL_TYPES
+# 的子集（静态一致性由本注释与摄取循环只引用单源共同钉住）。
+SPEC_LESS_STORED_SIGNAL_TYPES = frozenset({
+    # 验证契约请求型（UI 手动触发无关联 spec）与仅补 redraft 同形态。
+    "verify_contract_missing",
+    "verify_contract_redraft",
+    # add-test-regression-tab 增强：UI 手动「仅补 regression 段」信号同无 spec。
+    "verify_regression_missing",
+    # fix-artifact-paths-hardcoded-default D3：WIP 闸门信号无 spec
+    # （非常规分支名退化为仅靠 evidence）。
+    "build_artifact_paths_missing",
+    # evo-add-maintree-stray-wip-sweep 2.2：主树散件 WIP 信号为项目级盘点
+    # （无 spec）——内联副本时代同款落空模式例证之一。
+    "maintree_stray_wip_stale",
+    # evo-stray-untracked-escalation 2.1：untracked 散件第二档升级信号同为
+    # 项目级盘点（无 spec）。
+    "maintree_untracked_stray_escalated",
+    # evo-whitelist-tracked-patrol 2.1：白名单脱落信号同为项目级盘点（无 spec）。
+    "whitelist_untracked",
+    # code-review item b4074810e49e：无主陈旧 WIP 宽限耗尽升级
+    # （code_fix._write_defer_orphan_alert 直发）记录固定 spec=None——
+    # 内联副本时代点名的同款落空模式第 8 例。
+    "mergeback_wip_orphan_stuck",
+})
+
 # 前置探测白名单（evo-signal-preprobe-handled-writeback R1）：请求型
 # 「产物存在性」可探测信号——摄取循环在 mark_escalated / 唤起 Administrator
 # 之前先做只读探测，诉求已被事实满足（产物/配置已存在）即闭环免唤起。
@@ -2845,38 +2877,13 @@ class AdminMonitor:
             stype = rec.get("signal_type")
             # 手动触发信号（source=ui-manual）无关联 spec，项目名从 evidence 携带
             spec = rec.get("spec")
-            if not spec and stype in (
-                "verify_contract_missing",
-                "verify_contract_redraft",
-                # add-test-regression-tab 增强：UI 手动「仅补 regression 段」信号同
-                # 无 spec，按「项目名=」解析（未加入则 spec=None → 被丢弃）。
-                "verify_regression_missing",
-                # fix-artifact-paths-hardcoded-default D3：WIP 闸门信号无 spec
-                # （非常规分支名退化为仅靠 evidence）时同样从「项目名=」解析。
-                "build_artifact_paths_missing",
-                # evo-add-maintree-stray-wip-sweep 2.2：主树散件 WIP 信号为
-                # 项目级盘点（无 spec），按「项目名=」解析——未加入则
-                # spec=None → 被下方丢弃、记录落 store 后无人唤起，告警浮出
-                # 目标静默落空（与三表漏登记同款落空模式）。
-                "maintree_stray_wip_stale",
-                # evo-stray-untracked-escalation 2.1：untracked 散件第二档
-                # 升级信号同为项目级盘点（无 spec），同款「项目名=」解析——
-                # 漏加则升级记录被丢弃、自动唤起静默落空（源码注释点名的
-                # 同款坑，以测试钉住）。
-                "maintree_untracked_stray_escalated",
-                # evo-whitelist-tracked-patrol 2.1：白名单脱落信号同为项目级
-                # 盘点（无 spec），同款「项目名=」解析——漏加则脱落记录被
-                # 丢弃、自动唤起静默落空（同款坑，以测试钉住）。
-                "whitelist_untracked",
-                # code-review item b4074810e49e：无主陈旧 WIP 宽限耗尽升级
-                # （code_fix._write_defer_orphan_alert 直发）记录固定 spec=None、
-                # evidence 以「项目名=」开头，同为项目级记录——漏加则 spec 保持
-                # None 被下方静默丢弃且未 mark_escalated（每轮巡检重复丢弃），
-                # 「MUST NOT 无限期静默等待」的人工升级通道落空（注释点名的
-                # 同款落空模式第 8 例；已登记 STORED_SIGNAL_TYPES 却漏配本表，
-                # 以端到端测试钉住）。
-                "mergeback_wip_orphan_stuck",
-            ):
+            # spec-less 类型清单已收敛为伴生单源 SPEC_LESS_STORED_SIGNAL_TYPES
+            # （紧邻真源 STORED_SIGNAL_TYPES 定义处，code-review item
+            # ca9aa220b3b8）——判定「哪些类型走项目名解析、哪些 continue」
+            # 只看该单源；漏登单源则 spec 保持 None 被下方静默丢弃且未
+            # mark_escalated（每轮巡检重复丢弃、自动唤起落空，历史同款
+            # 落空模式 8 例）。
+            if not spec and stype in SPEC_LESS_STORED_SIGNAL_TYPES:
                 # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）。
                 # 「项目名=」字段解析单源：core.admin_store.evidence_project
                 # （原内联副本已收敛，code_fix / mergeback / settings_routes 同款）。

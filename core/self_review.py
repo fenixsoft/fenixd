@@ -272,6 +272,12 @@ _RUN_TAIL_WINDOW_BYTES = 64 * 1024
 # ≈ 4/3 × 终态窗口），重读次数 O(log)。
 _RUN_TAIL_WINDOW_GROWTH = 4
 
+# 尾窗上限（code-review item 2dcd297954e3）：指数扩窗不得无界膨胀——凑不足
+# max_lines 个完整行且窗口到顶（如末行为数十 MB 单条 assistant 消息体）时
+# 停止扩窗，整文件兜底一次取末几行（decode 后立即释放 bytes 引用，避免
+# bytes+str 双份驻留）。8MB 对齐单条超长消息体的实证量级。
+_RUN_TAIL_WINDOW_MAX_BYTES = 8 * 1024 * 1024
+
 
 def _parse_run_tail_lines(raw_lines) -> list:
     """逐行 JSON 解析 run 产物行（跳过噪声行），只保留 dict 事件。"""
@@ -296,8 +302,10 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
     偶发一次多余重读），丢弃不解析；丢弃后窗口内完整行不足 max_lines
     （末行超窗，如单条超大 JSON 行）→ 按 ``_RUN_TAIL_WINDOW_GROWTH``
     倍数指数扩窗重读（b4f2e8c47390：
-    不回退整文件流读，IO 不再与转录总量成正比），直到凑足行数或窗口覆盖
-    全文件。返回内容与旧整文件 ``read_text().splitlines()[-max_lines:]``
+    不回退整文件流读，IO 不再与转录总量成正比），直到凑足行数、窗口覆盖
+    全文件或扩窗到 ``_RUN_TAIL_WINDOW_MAX_BYTES`` 上限（到顶仍凑不足 →
+    整文件兜底一次，decode 后立即释放 bytes 引用避免双份驻留）。返回内容
+    与旧整文件 ``read_text().splitlines()[-max_lines:]``
     一致：窗口覆盖全文件（start=0）时不丢弃首行；起点压行尾时空串首片段
     丢弃不占位；位置切片先于解析（噪声行占位）。
     """
@@ -311,13 +319,25 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
                 f.seek(start)
                 chunk = f.read()
                 raw = chunk.decode("utf-8", errors="replace").splitlines()
+                del chunk  # decode 后立即释放 bytes 引用（避免 bytes+str 双份驻留）
                 if start == 0:
                     # 窗口已覆盖全文件：全量行、不丢首片段（同旧整文件口径）
                     return _parse_run_tail_lines(raw[-max_lines:])
                 raw = raw[1:]  # 首片段是残段/空串/压行首时的完整行，丢弃（扩窗补偿）
                 if len(raw) >= max_lines:
                     return _parse_run_tail_lines(raw[-max_lines:])
-                window *= _RUN_TAIL_WINDOW_GROWTH
+                if window >= _RUN_TAIL_WINDOW_MAX_BYTES:
+                    # 扩窗到顶仍凑不足（末行超窗，如单条数十 MB 的 assistant
+                    # 消息体）：整文件兜底一次取末几行，窗口不再无界翻倍
+                    # （语义同旧实现扩窗到 start==0 的全文件口径）。
+                    f.seek(0)
+                    chunk = f.read()
+                    raw = chunk.decode("utf-8", errors="replace").splitlines()
+                    del chunk
+                    return _parse_run_tail_lines(raw[-max_lines:])
+                window = min(
+                    window * _RUN_TAIL_WINDOW_GROWTH, _RUN_TAIL_WINDOW_MAX_BYTES
+                )
     except OSError:
         return []
 
@@ -1270,7 +1290,9 @@ def _scan_run_stall_totals(
     stalls/max；「累计停滞秒」latency_stats 不直接产出，取 samples 中
     >LATENCY_STALL_SECONDS（60s）样本之和（与 stalls/max 同源自 samples）。
 
-    Returns: {stalls, total_stall_seconds, max_stall_seconds}；
+    Returns: {stalls, total_stall_seconds, max_stall_seconds, truncated}；
+    truncated 触达行数上限时置 True（与深扫行「 [truncated]」注记同口径，
+    聚合行据此区分「全量统计」与「前 max_lines 行统计」）；
     文件不可读时返回零值（stalls=0 → 聚合行不列该 run，不抛异常）。
     """
     from core.agent_runner.latency import (  # noqa: PLC0415
@@ -1279,12 +1301,16 @@ def _scan_run_stall_totals(
         latency_stats,
     )
 
+    truncated = False
+
     def _iter_events():
+        nonlocal truncated
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 for i, line in enumerate(f, 1):
                     if i > max_lines:
-                        break  # 行数上限：有界流式，超限即停
+                        truncated = True  # 行数上限：有界流式，截断标注后停止
+                        break
                     try:
                         entry = json.loads(line)
                     except (json.JSONDecodeError, ValueError):
@@ -1301,6 +1327,7 @@ def _scan_run_stall_totals(
         "total_stall_seconds": sum(
             s for s in samples if s > LATENCY_STALL_SECONDS),
         "max_stall_seconds": stats["max"],
+        "truncated": truncated,
     }
 
 
@@ -1319,7 +1346,8 @@ def _collect_api_stall_aggregates(
     去重会漏掉「非离群但停滞」的 run，与提案动机相悖）。结果按 run_id 排序
     （确定性渲染，测试锁定该行为）。
 
-    Returns: [{run_id, stalls, total_stall_seconds, max_stall_seconds}]，
+    Returns: [{run_id, stalls, total_stall_seconds, max_stall_seconds,
+    truncated}]，
     runs 目录缺失/不可读返回空（不阻断摘要与其余各节）。
 
     降级留痕（verification BUG-01 修复）：逐 run 扫描异常不再静默吞——
@@ -2035,6 +2063,8 @@ class SelfReviewScheduler:
             # max=Ys」——stalls/max 取 latency_stats（>60s 统计口径），累计
             # 停滞秒取 samples 中 >60s 样本之和（三值同源 samples）。已被深扫
             # 覆盖的 run 允许重复出现（不去重，列选口径不同，见采集函数注）。
+            # 超 MIDFLIGHT_SCAN_MAX_LINES 行的 run 追加「 [truncated]」注记
+            # （与深扫行同口径，1f12586d0cfb：截断统计不冒充全量）。
             lines.append("### API 停滞聚合（stall 计数>0 的 run）")
             for r in stall_runs:
                 total = r.get("total_stall_seconds") or 0.0
@@ -2042,9 +2072,10 @@ class SelfReviewScheduler:
                 mx_txt = (
                     f"{mx:.1f}s" if isinstance(mx, (int, float)) else "-"
                 )
+                trunc = " [truncated]" if r.get("truncated") else ""
                 lines.append(
                     f"- api-stall: {r['run_id']} stalls={r['stalls']} "
-                    f"total={total:.1f}s max={mx_txt}"
+                    f"total={total:.1f}s max={mx_txt}{trunc}"
                 )
             lines.append("")
         return lines

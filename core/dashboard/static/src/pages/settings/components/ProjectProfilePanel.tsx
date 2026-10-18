@@ -367,6 +367,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       // 序号，重载失败后也无需先「重新加载」即可再次保存。
       yamlLoadedContentRef.current = yamlDraft;
       await loadVerifyYaml(true);
+      // 静默重载往返期间用户已切换项目时（code-review item 9214c24a5464），
+      // 本次静默响应已被切项目加载的 seq 自增顶成过期丢弃，此时推进归属会把
+      // 旧项目名盖掉新项目已认领的 yamlDraftSourceRef（seq 仍最新但 project
+      // 不符），新项目的保存被上方守卫误拦须手动「重新加载」解锁——比照保存
+      // 往返前的 projectRef 对账，await 恢复后二次对账不匹配则静默跳过推进。
+      if (projectRef.current !== project) return;
       yamlDraftSourceRef.current = { project, seq: yamlLoadSeq.current };
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);

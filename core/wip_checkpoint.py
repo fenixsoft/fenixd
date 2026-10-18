@@ -51,6 +51,22 @@ ANCHOR_FREEZE_HOLD = "freeze-hold"
 ANCHOR_CANCEL = "cancel"
 
 
+def _git(args: list, cwd: str, timeout: int) -> subprocess.CompletedProcess:
+    """模块内 git 子进程调用统一入口：集中承载 capture_output/text/
+    encoding/errors/timeout 五件套（D6 编码容错与超时口径的唯一出处），
+    调用点只保留 git 子命令与语义判断。返回 CompletedProcess，由调用点
+    按 returncode/stdout/stderr 判定；TimeoutExpired/OSError/ValueError
+    仍由调用方既有 try/except 兜底降级。"""
+    return subprocess.run(
+        ["git", "-C", cwd, *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+
+
 # ── 锚点提交（锚点 A / B 共用，D5/D6）───────────────────────────────────────
 
 
@@ -76,14 +92,7 @@ def commit_wip_checkpoint(
     path = str(wt_path)
     added = False  # add 已实际发出后置 True：index 回滚仅覆盖被本函数改写过的 index
     try:
-        st = subprocess.run(
-            ["git", "-C", path, "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        st = _git(["status", "--porcelain"], path, timeout)
         if st.returncode != 0:
             logger.warning(
                 "wip_checkpoint",
@@ -95,14 +104,7 @@ def commit_wip_checkpoint(
         if not st.stdout.strip():
             return False  # 空变更：幂等跳过
         added = True
-        add = subprocess.run(
-            ["git", "-C", path, "add", "-A"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        add = _git(["add", "-A"], path, timeout)
         if add.returncode != 0:
             logger.warning(
                 "wip_checkpoint",
@@ -112,14 +114,7 @@ def commit_wip_checkpoint(
             )
             return False
         message = f"{WIP_COMMIT_PREFIX} checkpoint {anchor} {spec}"
-        cm = subprocess.run(
-            ["git", "-C", path, "commit", "-m", message],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        cm = _git(["commit", "-m", message], path, timeout)
         if cm.returncode != 0:
             logger.warning(
                 "wip_checkpoint",
@@ -133,14 +128,7 @@ def commit_wip_checkpoint(
             # 使 _snapshot_dirty_worktree/collapse 等以 HEAD 为基准的留证
             # 链路判读失真。尽力而为的失败不留副作用：reset 自身失败仅
             # 追加留痕，不改变本函数返回值与既有降级语义。
-            reset = subprocess.run(
-                ["git", "-C", path, "reset", "-q"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
+            reset = _git(["reset", "-q"], path, timeout)
             if reset.returncode != 0:
                 logger.warning(
                     "wip_checkpoint",
@@ -181,14 +169,7 @@ def commit_wip_checkpoint(
         if not added:
             return False
         try:
-            reset = subprocess.run(
-                ["git", "-C", path, "reset", "-q"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
+            reset = _git(["reset", "-q"], path, timeout)
             if reset.returncode != 0:
                 logger.warning(
                     "wip_checkpoint",
@@ -234,14 +215,7 @@ def _collapse_message(project_root, commits, timeout=WIP_TIMEOUT_SECONDS):
         ((h, s) for h, s in commits if not s.startswith(WIP_COMMIT_PREFIX)),
         commits[0],
     )
-    body = subprocess.run(
-        ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
+    body = _git(["log", "-1", "--format=%B", final_hash], str(project_root), timeout)
     if body.returncode == 0 and body.stdout.strip():
         if final_subject.startswith(WIP_COMMIT_PREFIX):
             # 仅 WIP 无最终提交：以最新 WIP 的完整消息改写前缀生成塌缩消息。
@@ -282,14 +256,7 @@ def collapse_wip_commits(
     降级，merge-back 以未塌缩分支继续，行为与现行一致）。
     """
     try:
-        mb = subprocess.run(
-            ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        mb = _git(["merge-base", "HEAD", branch], str(project_root), timeout)
         if mb.returncode != 0 or not mb.stdout.strip():
             return False
         mb_sha = mb.stdout.strip()
@@ -300,14 +267,7 @@ def collapse_wip_commits(
         # 闭合两读窗口——否则 log 与 tip 之间新落的提交会被 CAS 放行折叠
         # 丢失其提交消息，或使 WIP 判定按旧区间漏判（仅窗口内有 WIP 时
         # 零动作放行，wip 前缀提交进入主树合并历史）。
-        tip = subprocess.run(
-            ["git", "-C", str(project_root), "rev-parse", f"refs/heads/{branch}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        tip = _git(["rev-parse", f"refs/heads/{branch}"], str(project_root), timeout)
         if tip.returncode != 0 or not tip.stdout.strip():
             logger.warning(
                 "wip_checkpoint",
@@ -315,13 +275,10 @@ def collapse_wip_commits(
                 f"merge-back continues on uncollapsed branch (non-blocking)",
             )
             return False
-        log = subprocess.run(
-            ["git", "-C", str(project_root), "log", "--format=%H\t%s", f"{mb_sha}..{tip.stdout.strip()}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
+        log = _git(
+            ["log", "--format=%H\t%s", f"{mb_sha}..{tip.stdout.strip()}"],
+            str(project_root),
+            timeout,
         )
         if log.returncode != 0 or not log.stdout.strip():
             return False
@@ -336,13 +293,10 @@ def collapse_wip_commits(
             return False  # 无 WIP：零动作
         # 树以该 tip 解析而非现读 branch^{tree}：树与 CAS 旧值同一时点，
         # 否则两读之间新落的提交会被「旧树+新 tip 旧值」的 CAS 放行整笔丢弃。
-        tree = subprocess.run(
-            ["git", "-C", str(project_root), "rev-parse", f"{tip.stdout.strip()}^{{tree}}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
+        tree = _git(
+            ["rev-parse", f"{tip.stdout.strip()}^{{tree}}"],
+            str(project_root),
+            timeout,
         )
         if tree.returncode != 0 or not tree.stdout.strip():
             logger.warning(
@@ -360,23 +314,10 @@ def collapse_wip_commits(
                 f"branch (non-blocking)",
             )
             return False
-        ct = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "commit-tree",
-                tree.stdout.strip(),
-                "-p",
-                mb_sha,
-                "-m",
-                message,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
+        ct = _git(
+            ["commit-tree", tree.stdout.strip(), "-p", mb_sha, "-m", message],
+            str(project_root),
+            timeout,
         )
         if ct.returncode != 0 or not ct.stdout.strip():
             logger.warning(
@@ -386,21 +327,15 @@ def collapse_wip_commits(
                 f"continues on uncollapsed branch (non-blocking)",
             )
             return False
-        upd = subprocess.run(
+        upd = _git(
             [
-                "git",
-                "-C",
-                str(project_root),
                 "update-ref",
                 f"refs/heads/{branch}",
                 ct.stdout.strip(),
                 tip.stdout.strip(),
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
+            str(project_root),
+            timeout,
         )
         if upd.returncode != 0:
             logger.warning(
