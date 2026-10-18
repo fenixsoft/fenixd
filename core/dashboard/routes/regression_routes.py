@@ -470,7 +470,8 @@ class H12RegressionRoutesMixin:
         proot = guards[1]
 
         # 键名与消费者契约一致（fenixd._check_regression_requests 读
-        # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
+        # requested_at；item 117af27b759a：旧实现误写 created 键使 daemon
+        # 恒记空时间戳，已改写 requested_at）
         created = datetime.now(timezone.utc).isoformat()
         payload = {"source": "dashboard", "requested_at": created}
         req_path = proot / REGRESSION_REQUEST
