@@ -129,6 +129,7 @@ from core.wip_checkpoint import (
     ANCHOR_CANCEL,
     ANCHOR_EXTENSION_TAIL,
     ANCHOR_FREEZE_HOLD,
+    ANCHOR_STALL_BUDGET,
     ANCHOR_TRANSIENT_BACKOFF,
     ANCHOR_TURN_LIMIT,
     commit_wip_checkpoint,
@@ -759,6 +760,27 @@ class AgentRunner:
     _read_admin_disposition = staticmethod(_read_admin_disposition)
     _read_self_review_out = staticmethod(_read_self_review_out)
     _check_artifact_json_file = staticmethod(_check_artifact_json_file)
+
+    # ── resume 死 session 判定（单一真源，code-review item 3b795bcc82c7）──
+    # attempt 环（弃用死 session 换新重跑）与瞬断分类（排除在网关瞬断之外）
+    # 两处 MUST 恒等共用本谓词，防口径分裂漂移。
+    def _is_resume_dead_session(self, error: str) -> bool:
+        """error 是否为 resume 死 session（会话已失效、续跑必秒挂）。
+
+        claude 通道：字面量 ``No conversation found with session ID``（上一次
+        attempt 切换 provider 后 session 留在旧 CLAUDE_CONFIG_DIR）；
+        dsh 通道（add-dsh-adapter-integration 4.1）：``--session-id`` 严格采纳
+        失败（未知 id/被持有/cwd 不符）经 adapter duck-typing
+        ``is_resume_dead_error`` 判别——claude 无该方法，既有字面判定零改动。
+        """
+        if not error:
+            return False
+        _resume_dead_check = getattr(
+            get_current_adapter(), "is_resume_dead_error", None)
+        return (
+            "No conversation found with session ID" in error
+            or (_resume_dead_check is not None
+                and _resume_dead_check(error)))
 
     def __init__(self, config: dict, worktree_manager, state_machine,
                  project_root: Path, logger):
@@ -1418,6 +1440,13 @@ class AgentRunner:
           上一轮裁决）；
         - 裁决的机械执行（D4）由调用方（dispatch）完成——本方法只派发与收工。
 
+        镜像结构锚点（code-review item bd2b7a402b0e）：本方法与 run_spec_review
+        的「模型路由与缺省模型兜底 → env_overrides 装配 → provider marker 写入
+        → max_turns 钳制 → spawn → 瞬断/切换/产物硬门 except 链 → finally 摘除
+        harness 登记」骨架为复制粘贴关系（仅提示词/agent_type/期望产物不同）
+        ——新增一类共性行为（env 注入项、可重试错误分类等）MUST 两处同步修改，
+        历史上已多次被迫双处同步修补（先例 b5f807775ab0 / 7d45c6cd8be2）。
+
         Args:
             spec_name: SPEC 名。
             judge_input: 裁决输入 dict（missing/spec_context/findings 等）。
@@ -1666,6 +1695,13 @@ class AgentRunner:
         - 输出契约：``.fenix/spec-review/<spec>/.fenix-run-result.json``
           顶层 ``status`` 三取一（approved/repaired/rejected）+ findings/repairs 等；
         - 结果硬门复用 _check_agent_result_artifact。
+
+        镜像结构锚点（code-review item bd2b7a402b0e）：本方法与 run_dispute_judge
+        的「模型路由与缺省模型兜底 → env_overrides 装配 → provider marker 写入
+        → max_turns 钳制 → spawn → 瞬断/切换/产物硬门 except 链 → finally 摘除
+        harness 登记」骨架为复制粘贴关系（仅提示词/agent_type/期望产物不同）
+        ——新增一类共性行为（env 注入项、可重试错误分类等）MUST 两处同步修改，
+        历史上已多次被迫双处同步修补（先例 b5f807775ab0 / 7d45c6cd8be2）。
 
         Args:
             spec_name: SPEC 名。
@@ -2478,7 +2514,9 @@ class AgentRunner:
                                        anchor: str = ANCHOR_TURN_LIMIT) -> None:
         """锚点 C（add-turn-limit-anchor-c D1）：强杀收口前的 WIP 提交。
 
-        turn-limit / timeout 两强杀路径共用：轮询环已 kill 子进程、读线程
+        turn-limit / timeout / stall-budget 三强杀路径共用（stall-budget 为
+        code-review item c162e63ba9b2 从 kill 前挪入本时序并引入独立锚点
+        ANCHOR_STALL_BUDGET）：轮询环已 kill 子进程、读线程
         已 join（finally 语义保证 worktree 静默）后、``append_run_error``
         之前调用——此刻 agent 已可证明不再写盘（事故取证：第 12 提交与
         SIGKILL 同秒落盘，kill 前提交可能纳入半写文件）。对当前 attempt
@@ -3074,6 +3112,18 @@ class AgentRunner:
                 run_id, spec_name, agent_type, success=False,
                 duration_seconds=0.0, error=str(e),
             )
+        except Exception as e:
+            # code-review item e0715ea72f98：装配意外异常同样收口为结构化拒派
+            # ——本段位于 _register_run_harness 与 try/finally 之前（无资源
+            # 泄漏），裸冒泡会让调用方拿到原始异常而非 fail-fast 拒派口径的
+            # AgentRunResult。
+            self.logger.warning(
+                "agent_runner", f"harness 前置装配意外失败（fail-fast 拒派）: {e}")
+            return AgentRunResult(
+                run_id, spec_name, agent_type, success=False,
+                duration_seconds=0.0,
+                error=f"harness 前置装配意外失败: {e}",
+            )
         _health_check = getattr(_resolved_adapter, "check_health", None)
         if _health_check is not None:
             try:
@@ -3084,6 +3134,18 @@ class AgentRunner:
                 return AgentRunResult(
                     run_id, spec_name, agent_type, success=False,
                     duration_seconds=0.0, error=str(e),
+                )
+            except Exception as e:
+                # code-review item e0715ea72f98：健康探测意外异常同样收口为
+                # 结构化拒派——check_health 已把 OSError/SubprocessError 包成
+                # HarnessHealthError，但其他异常类型（配置解析错误等）不保证。
+                self.logger.warning(
+                    "agent_runner",
+                    f"harness 前置健康检查意外失败（fail-fast 拒派）: {e}")
+                return AgentRunResult(
+                    run_id, spec_name, agent_type, success=False,
+                    duration_seconds=0.0,
+                    error=f"harness 健康检查意外失败: {e}",
                 )
         set_current_adapter(_resolved_adapter)
         # add-harness-brand-projection 2.1：派发装配时把本 run 的 adapter.name
@@ -3693,13 +3755,9 @@ class AgentRunner:
                     # 采纳语义的失败（未知 id/被持有/cwd 不符）同属 resume 死
                     # session——adapter 经 duck-typing 暴露判别（claude 无该方法，
                     # 既有字面判定零改动），回退新 session 重跑并留痕。
-                    _resume_dead_check = getattr(
-                        get_current_adapter(), "is_resume_dead_error", None)
-                    if error and (
-                        "No conversation found with session ID" in error
-                        or (_resume_dead_check is not None
-                            and _resume_dead_check(error))
-                    ):
+                    # 判定谓词收敛单点（code-review item 3b795bcc82c7）：
+                    # _is_resume_dead_session 与瞬断分类共用。
+                    if self._is_resume_dead_session(error):
                         # 首次 resume 失败即弃用死 session（code-review item
                         # 62a08c7663fa）：本分支位于非瞬断路径 break 之前、且
                         # 每个 attempt 顶部 resume_failures 归零，计数实际最多
@@ -4200,12 +4258,9 @@ class AgentRunner:
         exc_stderr = exc_stderr or []
         # add-dsh-adapter-integration 4.1：dsh --session-id 采纳失败同属
         # resume 死 session（不属网关瞬断）；adapter duck-typing 判别，
-        # claude 通道既有字面判定零改动。
-        _resume_dead_check = getattr(
-            get_current_adapter(), "is_resume_dead_error", None)
-        resume_dead = bool(error) and (
-            "No conversation found with session ID" in error
-            or (_resume_dead_check is not None and _resume_dead_check(error)))
+        # claude 通道既有字面判定零改动。判定谓词收敛单点（code-review
+        # item 3b795bcc82c7）：_is_resume_dead_session 与 attempt 环共用。
+        resume_dead = self._is_resume_dead_session(error)
         is_transient = (
             not resume_dead and self.classify_transient_error(
                 exc_stderr,
@@ -5762,10 +5817,14 @@ class AgentRunner:
                 在 1.2 同一读点顺带产出）。None（评审/裁决车道或无数字任务）
                 时守卫侧视为无基线不判不济。
 
-        Returns: (output, turns_used, session_id, usage_info)。usage_info 为终态
-            result 事件提取的 usage/成本（add-cost-observability D1，经
-            _extract_usage_info）；强杀等无 result 终态事件的路径四数值键全 0 且置
-            unobserved=True（观测兜底而非确认为零，语义见 _extract_usage_info）。
+        Returns: (output, turns_used, session_id, usage_info, stall_latency)。
+            usage_info 为终态 result 事件提取的 usage/成本（add-cost-observability
+            D1，经 _extract_usage_info）；强杀等无 result 终态事件的路径四数值键
+            全 0 且置 unobserved=True（观测兜底而非确认为零，语义见
+            _extract_usage_info）。stall_latency 为 run 末延迟摘要 stats
+            （evo-api-stall-signal-grading 1.3：与延迟摘要同一 stats 结果、禁止
+            二次采样；延迟摘要计算失败时为零样本回退 dict），供成功调用点传
+            _finalize_success → _log_run_metrics。
             失败/异常路径直接抛 RuntimeError，不返回。
 
         结构注记（code-review item e843f8818ea2；add-harness-adapter-layer 3.1
@@ -6419,9 +6478,9 @@ class AgentRunner:
                                 "criterion": _sb_criterion,
                             },
                         )
-                        # 强杀收口前的 WIP 保全（对齐超时/turn-limit 锚点）：
-                        # 失败降级不阻断判停收口。
-                        self._wip_checkpoint_on_forced_kill(spec_name, cwd)
+                        # 强杀在即，WIP 保全挪到 kill 与读线程 join 之后的收尾段
+                        # （code-review item c162e63ba9b2：对齐超时/turn-limit
+                        # 锚点时序——kill 前提交可能纳入半写文件或撞 index.lock）。
                         proc.kill()
                         try:
                             proc.wait(timeout=5)
@@ -6744,7 +6803,14 @@ class AgentRunner:
                 # 工具构成（evo-add-codefix-digest-cost-metrics 1.1）：直方图
                 # 按名排序稳定输出（同输入必同输出，diff/断言友好），总数为
                 # 直方图求和（单一真源，不另记计数器防漂移）。
-                _tool_hist = dict(sorted(tool_metrics["tool_uses"].items()))
+                # code-review item 090e6cc2a76d：先快照再排序迭代（对齐
+                # _bookkeeping_tool_share 的 item 7923d95ae87d 惯例）——
+                # reader_stuck 时 stdout 读线程仍存活、可继续向该直方图插新
+                # 工具名键，边迭代边被插键会抛 RuntimeError(dictionary
+                # changed size during iteration)，中断 finally 段后续
+                # run_metrics 计算与终态行落盘；单次 dict 拷贝由 GIL 保证原子。
+                _tool_hist = dict(sorted(
+                    dict(tool_metrics["tool_uses"]).items()))
                 _text_turns = tool_metrics["text_turns"]
                 _tools_total = sum(_tool_hist.values())
                 # 剩余工作量观测（evo-add-impl-run-budget-sizing 2.2）：run
@@ -6976,6 +7042,15 @@ class AgentRunner:
             # 保证为文件末行级终态；命中判据与统计快照入行可审计（判停
             # 不新增 admin 告警，run 转录即唯一落点）。
             if stall_error is not None:
+                # 锚点 C（add-turn-limit-anchor-c D1）：停滞判停强杀收口前的
+                # WIP 保全（code-review item c162e63ba9b2）：此刻子进程已 kill
+                # （轮询环 stall 分支）、读线程已 join（finally 语义保证
+                # worktree 静默可证明），对齐超时/turn-limit 两锚点的调用时序
+                # （kill 前提交可能纳入半写文件/撞 index.lock）；anchor 用独立
+                # 的 ANCHOR_STALL_BUDGET 使提交消息可归因真实诱因（不再误标
+                # turn-limit）。失败降级不阻断判停收口。
+                self._wip_checkpoint_on_forced_kill(
+                    spec_name, cwd, anchor=ANCHOR_STALL_BUDGET)
                 try:
                     append_run_line(run_file, {
                         "type": "stall-budget-terminated",
@@ -7263,8 +7338,12 @@ class AgentRunner:
         with self._daily_count_lock:
             if today != self._daily_reset_date:
                 self._daily_run_count = 0
-                # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
-                self._provider_circuit._daily_reset_date = today
+                # D5：AgentRunner 不另行持有第二份（转发 setter 已删）。写侧经
+                # ProviderCircuit 自持锁的 set_daily_reset_date（code-review
+                # item 6d95c3d83fe1）：与 _record_daily_provider_attempt 的跨天
+                # 重置读改写同锁互斥，不再在 _daily_count_lock 临界区内直写其
+                # 私有属性绕过封装（两锁之间本不互斥）。
+                self._provider_circuit.set_daily_reset_date(today)
             if limit > 0 and self._daily_run_count >= limit:
                 raise RuntimeError(f"Daily agent run limit ({limit}) reached")
 
@@ -7293,19 +7372,22 @@ class AgentRunner:
 
     # ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.2）──────
 
-    def _impl_turn_cap_override(self, spec_name: str) -> Optional[int]:
-        """STATE per-spec 轮数上限覆写（正整数；沿 impl_run_budget_override 先例）。
+    def _read_positive_int_override(
+        self, spec_name: str, field_const: str, label: str,
+    ) -> Optional[int]:
+        """STATE per-spec 正整数覆写字段读取（两个覆写方法收敛单点，code-review
+        item 53485e5839d3）。
 
         state_machine 缺失/读取异常/字段非法（bool、非正整数、非数字字符串）
-        一律等价 override=None——覆写不可用不放大为 run 故障（spec「缺失 STATE
-        访问或字段非法时等价 override=None」）。
+        一律等价 override=None——覆写不可用不放大为 run/监督故障（spec「缺失
+        STATE 访问或字段非法时等价 override=None」）。字段常量由调用方就地
+        导入传入，日志前缀经 label 区分，容错规则单点维护。
         """
         try:
             if self.state_machine is None:
                 return None
-            from core.state_machine import IMPL_TURN_CAP_OVERRIDE_FIELD
             entry = self.state_machine.read_one(spec_name) or {}
-            raw = entry.get(IMPL_TURN_CAP_OVERRIDE_FIELD)
+            raw = entry.get(field_const)
             if isinstance(raw, bool):
                 return None
             if isinstance(raw, str) and raw.strip().isdigit():
@@ -7316,37 +7398,22 @@ class AgentRunner:
         except Exception as e:
             self.logger.debug(
                 "agent_runner",
-                f"impl_turn_cap_override 读取失败（等价 override=None）: {e}",
+                f"{label} 读取失败（等价 override=None）: {e}",
             )
             return None
+
+    def _impl_turn_cap_override(self, spec_name: str) -> Optional[int]:
+        """STATE per-spec 轮数上限覆写（正整数；沿 impl_run_budget_override 先例）。"""
+        from core.state_machine import IMPL_TURN_CAP_OVERRIDE_FIELD
+        return self._read_positive_int_override(
+            spec_name, IMPL_TURN_CAP_OVERRIDE_FIELD, "impl_turn_cap_override")
 
     def _impl_wallclock_extension_override(self, spec_name: str) -> Optional[int]:
-        """STATE per-spec 墙钟续期预算覆写（正整数；沿 impl_turn_cap_override 先例）。
-
-        state_machine 缺失/读取异常/字段非法（bool、非正整数、非数字字符串）
-        一律等价 override=None——覆写不可用不放大为监督故障（与
-        ``_impl_turn_cap_override`` 同款容错）。
-        """
-        try:
-            if self.state_machine is None:
-                return None
-            from core.state_machine import IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD
-            entry = self.state_machine.read_one(spec_name) or {}
-            raw = entry.get(IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD)
-            if isinstance(raw, bool):
-                return None
-            if isinstance(raw, str) and raw.strip().isdigit():
-                raw = int(raw.strip())
-            if isinstance(raw, int) and raw > 0:
-                return raw
-            return None
-        except Exception as e:
-            self.logger.debug(
-                "agent_runner",
-                f"impl_wallclock_extension_override 读取失败"
-                f"（等价 override=None）: {e}",
-            )
-            return None
+        """STATE per-spec 墙钟续期预算覆写（正整数；沿 impl_turn_cap_override 先例）。"""
+        from core.state_machine import IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD
+        return self._read_positive_int_override(
+            spec_name, IMPL_WALLCLOCK_EXTENSION_OVERRIDE_FIELD,
+            "impl_wallclock_extension_override")
 
     def _impl_wallclock_scale(
         self, spec_name: str | None, agent_type: str | None,
@@ -7824,20 +7891,30 @@ class AgentRunner:
         路径写入）。秒挂退避不计入被框架主动终止的 run（design D2）。"""
         if run_file is None:
             return False
+        # code-review item a12ad94170c2：与 _ratelimit_terminal_hit /
+        # _turn_traffic_active / _extract_session_id 同口径——只读尾部 64KiB
+        # 窗口。interrupted 标记由框架 SIGTERM 前追加、恒在文件尾部附近，其后
+        # 仅少量收尾行，窗口内判定语义等价；本函数位于秒挂/失败判定路径、按
+        # attempt 反复调用，免去长 run 转录（数 MB）全量逐行 JSON 解析。
         try:
-            with Path(run_file).open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(entry, dict) and entry.get("type") == "interrupted":
-                        return True
+            path = Path(run_file)
+            size = path.stat().st_size
+            with path.open("rb") as f:
+                if size > 65536:
+                    f.seek(size - 65536)
+                raw = f.read().decode("utf-8", "replace")
         except OSError:
             return False
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and entry.get("type") == "interrupted":
+                return True
         return False
 
     # ── 信号死法来源判定（evo-sigterm-source-tracking-cooldown）──────────
@@ -8172,22 +8249,24 @@ class AgentRunner:
         文件损坏时移除该文件，避免污染后续 attempt（设计 D1 / 安全降级）。
         """
         progress_path = self.project_root / ".fenix" / "verify-progress" / f"{spec_name}.json"
+
+        def _drop_corrupt_progress() -> None:
+            # 坏文件不留痕（三处失败分支收敛单点，code-review item
+            # a737f4d8b1dc）：移除以免后续 attempt 反复解析失败，移除失败不阻断。
+            try:
+                if progress_path.exists():
+                    progress_path.unlink()
+            except OSError:
+                pass
+
         try:
             data = json.loads(progress_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             # 损坏文件：移除以免后续 attempt 读到半截内容
-            try:
-                if progress_path.exists():
-                    progress_path.unlink()
-            except OSError:
-                pass
+            _drop_corrupt_progress()
             return None
         if not isinstance(data, dict):
-            try:
-                if progress_path.exists():
-                    progress_path.unlink()
-            except OSError:
-                pass
+            _drop_corrupt_progress()
             return None
         done = data.get("done")
         total = data.get("total")
@@ -8198,11 +8277,7 @@ class AgentRunner:
         if not total_is_int or not done_is_int:
             # schema 非法与 JSON 损坏同语义（code-review item 680bbf7cde75）：
             # 坏文件不留痕——移除以免后续 attempt 反复解析失败、拿不到干净基线。
-            try:
-                if progress_path.exists():
-                    progress_path.unlink()
-            except OSError:
-                pass
+            _drop_corrupt_progress()
             return None
         return data
 
