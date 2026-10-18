@@ -25,11 +25,13 @@ class H8HelpRoutesMixin:
         兼容「#标题」「#\t标题」等无空格 ATX 变体（code-review fcff933f40ad）；
         ## 及更深层级不视为一级标题。围栏代码块（```/~~~，行首或缩进≤3 空格，
         开头可带语言标注）内的行不参与标题匹配，避免 `# install` 之类代码注释
-        被误认为文档标题（code-review 69c2b5524b13）。无一级标题时回退为
+        被误认为文档标题（code-review 69c2b5524b13）。缩进代码块（缩进≥4 空格的
+        非空行）同样不参与匹配（code-review 1aed8324cfe7）。无一级标题时回退为
         去后缀文件名，保证清单端点始终有可展示标题。
         """
         in_fence = False
         fence_marker = ""
+        in_indented_code = False
         for line in content.splitlines():
             # 围栏判定（常见形态，非完整 CommonMark）：缩进≤3 空格的 ``` / ~~~ 行；
             # 围栏内仅同符号围栏行可闭合，异符号行视为代码内容
@@ -43,6 +45,14 @@ class H8HelpRoutesMixin:
                     in_fence, fence_marker = False, ""
                 continue
             if in_fence:
+                continue
+            # 缩进代码块判定（code-review 1aed8324cfe7）：缩进≥4 空格的非空行
+            # 进入代码态，首个非缩进（<4）非空行退出；简化处理（非完整
+            # CommonMark）：空行不打断代码态。态内行不参与标题匹配，避免
+            # 「    # install foo」之类缩进代码注释被误认为文档标题
+            if bare.strip():
+                in_indented_code = indent >= 4
+            if in_indented_code:
                 continue
             # code-review fcff933f40ad：#(?!#) 排除 ## 及更深层级，\s* 兼容无空格写法
             m = re.match(r"#(?!#)\s*(.+)", line.strip())
