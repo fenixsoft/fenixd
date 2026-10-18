@@ -144,7 +144,15 @@ def run_one_shot(
             **popen_kwargs,
         )
         if on_spawn is not None:
-            on_spawn(proc)
+            try:
+                on_spawn(proc)
+            except BaseException:
+                # 回调失败同样不遗留活子进程：先按超时同径两段式清场再原样
+                # 上抛（清场自身异常不吞原异常），否则已 spawn 的子进程
+                # （start_new_session 独立进程组）无人登记、无人收割成孤儿
+                with contextlib.suppress(Exception):
+                    _kill_process_group(proc, terminate_grace_seconds)
+                raise
 
     timed_out = False
     try:
