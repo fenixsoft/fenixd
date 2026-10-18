@@ -132,8 +132,10 @@ class ScenarioEntry:
         # id 统一 str 归一（a17eb298933c，与 covers/kind 同款）：scenarios.json
         # 数字 id 原样保留 int 会与 diff 侧 str(s["id"])（_parse_reasons 同款
         # 口径）错位——恒判「无理由缺失」补齐 + planner 同名场景按新增并入，
-        # 场景集出现重复条目。
-        self.id = str(id or "")
+        # 场景集出现重复条目。显式判空而非 ``or`` 回退（code-review
+        # 144ec547f48f）：数字 id 0 / False 属合法 falsy 值，``or`` 会吞成
+        # 空串无声改写场景身份；仅 None（缺省）归空串。
+        self.id = str(id) if id is not None else ""
         self.description = description
         self.added_in_round = added_in_round
         self.covers = [str(c) for c in (covers or [])]
@@ -153,7 +155,9 @@ class ScenarioEntry:
     def from_dict(cls, d: dict) -> "ScenarioEntry":
         covers = d.get("covers")
         return cls(
-            id=d.get("id", ""),
+            # 缺省 None 委托构造器归一（144ec547f48f 同款显式判空：数字 id
+            # 0/False 不吞，仅 None→""）。
+            id=d.get("id"),
             description=d.get("description", ""),
             added_in_round=_int_or(d.get("added_in_round", 1) or 1, 1),
             covers=covers if isinstance(covers, list) else None,
@@ -244,19 +248,21 @@ def _scenarios_lock_path(project_root, spec_name: str) -> Path:
     return scenarios_path_for(project_root, spec_name).parent / ".scenarios.json.lock"
 
 
-def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> bool:
-    """在已打开的锁文件上限时抢排他锁；抢不到/不支持 flock 返回 False（降级无锁）。"""
+def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> Optional[str]:
+    """在已打开的锁文件上限时抢排他锁；成功返回 None，失败返回降级原因文案
+    （文件系统不支持 flock / 限时未抢到，两因可区分）供调用方留痕（降级无锁，
+    不阻断验证流程）。"""
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         try:
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
+            return None
         except OSError as e:
             if e.errno not in (errno.EACCES, errno.EAGAIN):
                 # 特殊文件系统不支持 flock 等：降级无锁（不阻断验证流程）
-                return False
+                return f"文件系统不支持 flock（errno={e.errno}）"
             if time.monotonic() >= deadline:
-                return False
+                return f"限时 {timeout:g}s 内未抢到锁（他方持锁）"
             time.sleep(0.05)
 
 
@@ -277,14 +283,29 @@ def _hold_scenarios_write_lock(project_root, spec_name: str):
 
     锁目录缺失（首轮、``.fenix/verify-progress/<spec>/`` 未建）时不代建目录
     （mkdir 属写副作用，diff 是只读操作）按降级无锁处理——首轮写本就是全量
-    覆盖，无可丢失的并发合并基线。
+    覆盖，无可丢失的并发合并基线。降级返回 None 前记 WARNING（spec+原因，
+    code-review ae9a5da4bd29）：读改写原子性保障（item 2b598a6d5134）一旦
+    降级即静默失效，须可从事后日志对账某轮覆盖是否发生在无锁窗口。
     """
     try:
         lf = open(_scenarios_lock_path(project_root, spec_name), "w")
-    except OSError:
+    except OSError as e:
+        _logger.warning(
+            "scenarios.json 伴生写锁降级无锁（spec=%s）：锁文件打开失败（%s），"
+            "本轮读-合并-整档覆写失去并发互斥保障",
+            spec_name,
+            e,
+        )
         return None
-    if not _acquire_scenarios_lock(lf):
+    acquire_fail = _acquire_scenarios_lock(lf)
+    if acquire_fail is not None:
         _release_scenarios_lock(lf)
+        _logger.warning(
+            "scenarios.json 伴生写锁降级无锁（spec=%s）：%s，"
+            "本轮读-合并-整档覆写失去并发互斥保障",
+            spec_name,
+            acquire_fail,
+        )
         return None
     return lf
 
@@ -496,6 +517,20 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     return text[m.start() : end]
 
 
+def _note_excerpt(fix_section: str, m: "re.Match", reason_text: str) -> str:
+    """排除留痕行：命中处所在行摘录（strip 后截 60 字符）+ 排除原因文案。
+
+    修复语境与否定语境两类排除共用同一摘录口径（code-review 6b2089384b1b，
+    仅原因文案不同），防两份拷贝各自漂移。
+    """
+    line_start = fix_section.rfind("\n", 0, m.start()) + 1
+    line_end = fix_section.find("\n", m.end())
+    if line_end == -1:
+        line_end = len(fix_section)
+    excerpt = fix_section[line_start:line_end].strip()[:60]
+    return f"- 「{excerpt}」{reason_text}"
+
+
 def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = None) -> bool:
     """修复段是否声明了「新增交付范围」。
 
@@ -514,14 +549,13 @@ def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = No
     for m in _NEW_DELIVERY_RE.finditer(fix_section):
         if _REPAIR_PHRASE_RE.match(fix_section, m.end(1)):
             if notes is not None:
-                line_start = fix_section.rfind("\n", 0, m.start()) + 1
-                line_end = fix_section.find("\n", m.end())
-                if line_end == -1:
-                    line_end = len(fix_section)
-                excerpt = fix_section[line_start:line_end].strip()[:60]
                 notes.append(
-                    f"- 「{excerpt}」命中新增交付词形但属修复语境"
-                    f"（对…的修复），该处不计入新增交付声明"
+                    _note_excerpt(
+                        fix_section,
+                        m,
+                        "命中新增交付词形但属修复语境"
+                        "（对…的修复），该处不计入新增交付声明",
+                    )
                 )
             continue
         # 否定语境排除（cec71a4419ae）：自上一句读/换行到动词前的同条款
@@ -531,14 +565,13 @@ def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = No
         ) + 1
         if _NEGATED_DELIVERY_RE.search(fix_section[clause_start : m.start(1)]):
             if notes is not None:
-                line_start = fix_section.rfind("\n", 0, m.start()) + 1
-                line_end = fix_section.find("\n", m.end())
-                if line_end == -1:
-                    line_end = len(fix_section)
-                excerpt = fix_section[line_start:line_end].strip()[:60]
                 notes.append(
-                    f"- 「{excerpt}」命中新增交付词形但属否定表述"
-                    f"（未/无/不…），该处不计入新增交付声明"
+                    _note_excerpt(
+                        fix_section,
+                        m,
+                        "命中新增交付词形但属否定表述"
+                        "（未/无/不…），该处不计入新增交付声明",
+                    )
                 )
             continue
         return True
@@ -605,7 +638,9 @@ def _parse_reasons(planner_scenarios: list) -> dict:
         raw_sid = s.get("id")
         # str 归一：与 diff_planner_output 的 sid = str(s["id"]) 口径对齐，
         # 否则 planner 把 id 写成数字等非字符串形态时移除声明查不到（8a8a338f653a）。
-        sid = str(raw_sid) if raw_sid else ""
+        # 显式判空而非 ``or`` 回退（code-review 144ec547f48f）：数字 id 0
+        # 不吞成空串，与 diff 侧 str(0)="0" 保持一致。
+        sid = str(raw_sid) if raw_sid is not None else ""
         if sid and s.get("remove_reason"):
             reasons[sid] = str(s["remove_reason"])
     return reasons
