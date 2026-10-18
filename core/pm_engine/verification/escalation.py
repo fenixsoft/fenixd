@@ -65,13 +65,26 @@ def _read_int_config(pipeline, key: str, default: int) -> int:
     ValueError 沿裁决路径上抛；且 `or N` 把合法的 0 归一为缺省，无法用 0
     关闭自动重验。此处与 _handle_*_inconclusive 的 attempts 解析同款防御：
     None 显式判空回退缺省、非数字回退缺省、0 原样透传。
+
+    捕获放宽为 Exception（code-review item 30923a7afa18，口径对齐
+    infra_classify._read_infra_retry_max / item da53efad04e1）：config_reader
+    系 context 晚绑定转发（from_pm 内联转发 pm._get_config），桩缺属性/
+    组合变更时可抛 AttributeError 等非转换类异常；本函数全部消费点
+    （_handle_env_blocked_inconclusive / _handle_judge_env_declared /
+    _speculative_bug_found_gate / judge_gate 重验预算）都位于裁决路径且无
+    局部兜底，异常穿出会中断本轮 verdict 处置——统一回退缺省并留 WARNING。
     """
     try:
         value = pipeline._context.config_reader(key, default)
         if value is None:
             return default
         return int(value)
-    except (TypeError, ValueError):
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"配置 '{key}' 读取失败（回退缺省 {default}）: "
+            f"{type(e).__name__}: {e}",
+        )
         return default
 
 
@@ -696,22 +709,26 @@ def _escalate_env_blocked(
         # 纯文本前缀（code-review 9249ef7f583b：emoji 装饰符在终端/日志通道
         # 渲染不一，且与同文件升级文案纯文本风格不一致）
         cost_note = f"\n\n> [成本参考] 重新出题成本：{planner_cost}" if planner_cost else ""
-        exemption_note = (
-            "env 豁免有效命中（豁免期内不累计冻结轮次，TTL 过期或场景变更后恢复计数）— "
-            if exemption_effective
-            else ""
-        )
         # violations 拼接统一 str(v) 归一（code-review ad6e029c0827，对齐上方
         # _record_infra_failure 调用与函数入口归一注释的口径）：非 str 元素
         # 不再抛 TypeError 击穿函数级 except 跳过 blocked 落盘。
-        error_msg = (
-            f"{FREEZE_ERROR_PREFIX}{title}连续 {rounds} 轮，"
-            f"admin 处置未奏效，转人工 — {'；'.join(str(v) for v in violations[:3])}"
-            f"{cost_note}"
-            if frozen
-            else f"{exemption_note}{title}（第 {rounds} 轮）："
-            f"{'；'.join(str(v) for v in violations[:3])}"
-        )
+        violations_note = "；".join(str(v) for v in violations[:3])
+        # 冻结与非冻结两套 error 文案结构不同（code-review item 46029d016859：
+        # 勿合并回单个三元式），分支条件显式化——exemption_effective=True 恒有
+        # frozen=False，豁免注记只在非冻结形态出现。
+        if frozen:
+            error_msg = (
+                f"{FREEZE_ERROR_PREFIX}{title}连续 {rounds} 轮，"
+                f"admin 处置未奏效，转人工 — {violations_note}"
+                f"{cost_note}"
+            )
+        else:
+            exemption_note = (
+                "env 豁免有效命中（豁免期内不累计冻结轮次，TTL 过期或场景变更后恢复计数）— "
+                if exemption_effective
+                else ""
+            )
+            error_msg = f"{exemption_note}{title}（第 {rounds} 轮）：{violations_note}"
         entry = {
             "status": "blocked",
             "error": error_msg,
