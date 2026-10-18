@@ -318,7 +318,19 @@ class ApiAssertionRunner:
                     }
                 )
                 continue
-            resp = self._resolve_response(captures, assertion)
+            resp, ref_error = self._resolve_response(captures, assertion)
+            if ref_error is not None:
+                # fail-closed：response 字段为 list/dict 等畸形形态（不可哈希）
+                # 归一为单条确定性失败，不冲垮整批断言（口径对齐非 dict 条目）
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": ASSERTION_LAYERS.get(a_type, 0),
+                        "pass": False,
+                        "error": ref_error,
+                    }
+                )
+                continue
             if resp is None:
                 ref = assertion.get("response") or "_latest"
                 results.append(
@@ -347,10 +359,22 @@ class ApiAssertionRunner:
                 )
         return results
 
-    def _resolve_response(self, captures: dict, assertion: dict) -> Any:
-        """断言引用的响应：response 字段指定命名捕获，缺省=最近一次。"""
+    def _resolve_response(self, captures: dict, assertion: dict) -> tuple[Any, str | None]:
+        """断言引用的响应：response 字段指定命名捕获，缺省=最近一次。
+
+        返回 (捕获, error)：error 非 None 时捕获为 None。非字符串 ref
+        （YAML 场景把 response 写成序列/映射的畸形形态）对 dict.get 是
+        不可哈希键，会抛 TypeError 且本方法在 run() 逐条 try 之外被调用，
+        单条畸形断言会冲垮整批——预检归一为定向 error（code-review
+        item dd263a2dbc01）。
+        """
         ref = assertion.get("response") or "_latest"
-        return captures.get(ref)
+        if not isinstance(ref, str):
+            return None, (
+                f"断言引用的响应字段非法: response 须为字符串捕获名，"
+                f"实际 {type(ref).__name__}"
+            )
+        return captures.get(ref), None
 
     # ═══════════════════════════════════════════════════════════════
     # 第1层：存在性/状态（确定性，0误判）
@@ -368,10 +392,11 @@ class ApiAssertionRunner:
 
         expected = a.get("expected")
         actual = resp.get("status")
+        norm_expected = _numeric(expected) if expected is not None else None
         # fail-closed：expected 缺失时不得借 None==None 蒙混判 pass（验收期
         # 必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/
         # 绕过验收的调用路径），口径对齐 json_path 断言的 fail-closed
-        passed = expected is not None and _numeric(actual) == _numeric(expected)
+        passed = expected is not None and _numeric(actual) == norm_expected
         result = {
             "type": "status_code",
             "expected": expected,
@@ -380,6 +405,14 @@ class ApiAssertionRunner:
         }
         if expected is None:
             result["error"] = "断言缺 expected，无法与实际状态码对比（fail-closed）"
+        elif not isinstance(norm_expected, int) or isinstance(norm_expected, bool):
+            # fail-closed：expected 不可整型化（如 "2xx" 通配形态）时原值
+            # 参与严格不等比较恒 False 且无 error，judge 须能区分场景配置
+            # 错误与产品缺陷（口径对齐 sse_event_count 的 min 非数字定向
+            # 归因；bool 是 int 子类须排除，先例同 sse_event_count）
+            result["error"] = (
+                f"status_code 期望须为整型状态码，不支持通配形态: {expected!r}"
+            )
         return result
 
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:
