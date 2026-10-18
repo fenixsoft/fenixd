@@ -1,7 +1,7 @@
 import { Alert, App, Button, Card, Collapse, Input, List, Select, Space, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
-import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
+import { clearAllAlerts, getAlerts } from '@/services/dashboard';
 // 告警标题/明细展示单源（code-review item 5478d16d70c7，SEV 常量与 fmtDate 同源收敛）
 import {
   AlertActionColumn,
@@ -13,11 +13,15 @@ import {
 // 裁决交互收敛共享 hook（code-review item f86171cc149d）：状态四元组、结果
 // 文案、destructive 二次确认门与 SPEC 详情页同源，本组件只注入刷新回调
 import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
+// 乐观遮蔽/标记已处理收敛共享 hook（code-review items d9c50f5bcc38、
+// e673281b0b03）：与 activities 页同源逻辑单点维护，两页复用
+import { useOptimisticAlerts } from '@/hooks/useOptimisticAlerts';
 
 /**
  * 人工升级告警横幅（对齐 v1：/api/alerts + SSE alerts 事件驱动刷新）。
  * antd 组合：Alert banner（条）+ List（待处理项，含标记已处理）+ Collapse（已解决折叠区）。
- * 乐观移除：点击标记后先前端隐藏，后端确认消失后才真正清除（防 3s 收敛窗口内重现）。
+ * 乐观移除：点击标记后先前端隐藏，标记成功后由共享 hook 收敛（后端确认消失或
+ * 超时兜底解除，防 3s 收敛窗口内重现；失败立即回滚，见 useOptimisticAlerts）。
  * add-human-adjudication-choices 5.4：带 choices 的告警内嵌裁决选择题
  * （Select + note + 执行，与 SPEC 详情页同一 alert-resolve 闭环端点），
  * abandon / skip_review_gate 执行前二次确认；无 choices 保持「标记已处理」。
@@ -35,7 +39,9 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   // 告警拉取失败提示（code-review item f6ef9d6c2c12）：对齐 activities 页口径
   // （fix df39d8bbc138）——人工告警接口失败必须提示，不再静默吞掉；主视图不受阻断
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [optimistic, setOptimistic] = useState<string[]>([]);
+  // 乐观遮蔽单源（items d9c50f5bcc38、e673281b0b03）：optimistic、inOptimistic、
+  // 收敛 effect（确认消失/超时兜底）与 markHandled 包装都在共享 hook 内
+  const { optimistic, inOptimistic, markHandled } = useOptimisticAlerts(data);
   const [expanded, setExpanded] = useState(true);
   // add-human-adjudication-choices 5.4：裁决选择题交互状态经共享 hook
   //（按告警 id 分键；与 SPEC 详情页同源，item f86171cc149d）
@@ -77,16 +83,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
     void load();
   }, [load, refreshTick]);
 
-  const inOptimistic = (id: string) => optimistic.includes(id);
   const alerts = (data?.alerts || []).filter((a) => !inOptimistic(a.id));
-
-  // 后端确认已消失的乐观 id 才真正移除，绝不永久遮蔽
-  useEffect(() => {
-    if (!optimistic.length || !data) return;
-    const stillThere = new Set((data.alerts || []).map((a) => a.id));
-    const next = optimistic.filter((id) => stillThere.has(id));
-    if (next.length !== optimistic.length) setOptimistic(next);
-  }, [data, optimistic]);
 
   // 轻量错误提示（item f6ef9d6c2c12）：文案对齐 activities 页「人工告警加载失败」，
   // 保留主视图不阻断——有告警时与横幅并存，无告警时单独呈现不静默
@@ -104,16 +101,10 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const resolved = (data?.resolved || []).filter((a) => !inOptimistic(a.id));
 
   const handleOne = async (a: AlertItem) => {
-    setOptimistic((prev) => [...prev, a.id]);
-    try {
-      await markAlertHandled(a.project, a.id);
-      message.success('已标记处理');
-    } catch (err) {
-      // 失败即回滚乐观遮蔽：后端列表仍含该 id，收敛逻辑（上）不会清 optimistic，
-      // 不回滚会让未处理告警被永久隐藏（违背上方「绝不永久遮蔽」）
-      setOptimistic((prev) => prev.filter((id) => id !== a.id));
-      message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
-    }
+    // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案
+    const err = await markHandled(a);
+    if (err == null) message.success('已标记处理');
+    else message.error(`标记失败：${err}`);
     void load();
   };
 
@@ -149,7 +140,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
       await clearAllAlerts();
       // 不整组清空 optimistic：若另有 handleOne 的 markAlertHandled 在途，
       // 其 id 已入遮蔽、尚未获后端确认，整组清空会让它提前露出并以
-      // 「未处理」闪现。复用上方收敛 effect 的口径——保留遮蔽，待下方
+      // 「未处理」闪现。复用共享 hook 收敛 effect 的口径——保留遮蔽，待下方
       // load 拉到后端已无该告警的数据后由收敛 effect 统一移除（绝不永久遮蔽）。
       message.success('已清理所有事件');
     } catch (err) {
