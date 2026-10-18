@@ -199,6 +199,13 @@ class CliAssertionRunner:
         """断言引用的 run 结果：step 字段指定命名，缺省=最近一次。"""
         ref = assertion.get("step")
         if ref:
+            # 不可哈希 step（list/dict，YAML 合法表达）会让 dict.get 抛
+            # TypeError，且本函数调用在 run() 的 per-assertion try 之外，
+            # 异常整批穿透使全部断言结果被场景级 error 取代（同 122-141 行
+            # 非 dict 守卫口径：断言字段是同级别的不可信输入）——按下方
+            # 「引用的 run 结果不存在」同款定向失败归一为 None
+            if not isinstance(ref, str):
+                return None
             return named_results.get(ref)
         return named_results.get("_latest")
 
@@ -301,7 +308,14 @@ class CliAssertionRunner:
         rel = Path(str(raw))
         if rel.is_absolute() or ".." in rel.parts:
             return None
-        resolved = (self.project_root / rel).resolve()
+        # NUL 字节等非法路径（YAML 双引号串 "\0" 可合法表达）会让 resolve()
+        # 抛 ValueError（OSError 为文件系统层兜底），违背本函数「不抛异常
+        # 破坏断言收集流程」的契约——归一为 None（路径非法），调用方走既有
+        # 「path 非法」定向失败分支而非泛化「断言执行异常」
+        try:
+            resolved = (self.project_root / rel).resolve()
+        except (ValueError, OSError):
+            return None
         try:
             resolved.relative_to(self.project_root.resolve())
         except ValueError:
