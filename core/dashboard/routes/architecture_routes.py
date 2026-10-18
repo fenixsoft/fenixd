@@ -823,6 +823,21 @@ class ArchitectureManager:
 
             # ── 3) 阶段2 出图 run ────────────────────────────────────
             self._write_stage(proot, started_at, "authoring")
+            # code-review item 6271296f09ad：spawn 前清理上一轮残留的旧图，
+            # 使「产物存在」本身即代表本轮写入——阶段2 claude 自述完成
+            # （exit=0 + ARCHIFY_DONE marker）但写盘被静默拒绝时，判定链的
+            # 缺失分支即判 failed，旧图不再原样穿链混入本轮 ready。清理
+            # 尽力而为：失败不阻塞本轮（降级为修复前行为），细节留服务端
+            # 日志；判 failed 后重新触发 refresh 即重出图（既有 failed
+            # 恢复语义）。
+            try:
+                diagram_path.unlink(missing_ok=True)
+            except OSError as exc:
+                if logger is not None:
+                    logger.warning(
+                        f"架构图旧产物清理失败（project={project_name}）: "
+                        f"{type(exc).__name__}: {exc!r}",
+                    )
             ok, rc, stdout, stderr, err = self._run_stage(
                 proot, project_name, key,
                 prompt=_build_author_prompt(proot, project_name),
