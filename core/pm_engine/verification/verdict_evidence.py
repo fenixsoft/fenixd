@@ -611,6 +611,49 @@ def _attach_derived_failed_assertions(report: Optional[dict], violations: list) 
     return enriched
 
 
+def _write_json_atomic(path: Path, payload: object, prefix: str) -> None:
+    """JSON 原子写单点（``_write_verdict_violations`` /
+    ``_write_resynthesis_directive`` 共用，此前两处近逐字复制约 30 行）。
+
+    mkstemp 同目录临时文件 → fdopen → fsync → os.replace 原子替换：写入
+    中途崩溃不留截断 JSON（两处读侧均 fail-open，截断文件会静默丢失违规
+    明细/重合成素材致 judge 盲重试）。失败清理临时文件后按
+    ``(OSError, TypeError, ValueError)`` 上抛，由调用方统一 WARNING 留痕。
+    """
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=prefix, suffix=".json.tmp"
+    )
+    try:
+        # fdopen 失败路径显式接管（对齐 agent_runner _write_claim_placeholder
+        # 先例 cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，fdopen
+        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            # fsync 对齐全仓原子写口径（core/signals.py / core/serving_registry.py）：
+            # 只 flush 时掉电场景下 rename 后目标可能空/截断。
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        os.replace(tmp_path, path)
+    except (OSError, TypeError, ValueError):
+        # 清理临时文件后上抛：写盘/替换失败（含 json.dump 遇不可序列化载荷
+        # 抛 TypeError/ValueError），调用方外层 WARNING 留痕，.json.tmp 不残留。
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _write_verdict_violations(
     pipeline, spec_name: str, violations: list, report: Optional[dict] = None
 ) -> None:
@@ -632,43 +675,10 @@ def _write_verdict_violations(
     try:
         path = pipeline._verdict_violations_path(spec_name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # 原子替换（与 _write_resynthesis_directive 同款）：写入中途崩溃
-        # 不留截断 JSON——读侧 fail-open 会丢违规明细致重试 judge 盲重试。
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".verdictv.", suffix=".json.tmp"
-        )
-        try:
-            # fdopen 失败路径显式接管（对齐 agent_runner _write_claim_placeholder
-            # 先例 cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，
-            # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-            f = None
-            try:
-                f = os.fdopen(fd, "w", encoding="utf-8")
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-                # fsync 对齐全仓原子写口径（core/signals.py / core/serving_registry.py）：
-                # 只 flush 时掉电场景下 rename 后目标可能空/截断。
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                if f is not None:
-                    f.close()
-                else:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-            os.replace(tmp_path, path)
-        except (OSError, TypeError, ValueError):
-            # 清理临时文件后上抛：写盘/替换失败（含 json.dump 遇不可序列化
-            # 载荷抛 TypeError/ValueError）与 mkdir/mkstemp 失败统一由外层
-            # WARNING 留痕（本清单是重试 prompt 的违规明细注入源，读侧
-            # fail-open 会丢违规明细，写失败零留痕无法归因，且 .json.tmp
-            # 会残留）。
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        # 原子替换（与 _write_resynthesis_directive 同口径，样板收编至
+        # _write_json_atomic）：写入中途崩溃不留截断 JSON——读侧 fail-open
+        # 会丢违规明细致重试 judge 盲重试；写失败由外层 WARNING 统一留痕。
+        _write_json_atomic(path, payload, prefix=".verdictv.")
     except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -799,40 +809,10 @@ def _write_resynthesis_directive(
         }
         path = pipeline._resynthesis_directive_path(spec_name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".resynth.", suffix=".json.tmp"
-        )
-        try:
-            # fdopen 失败路径显式接管（对齐 _write_verdict_violations 及
-            # agent_runner _write_claim_placeholder 先例 cbb57806fbfd）：
-            # with 的 close 只在 fdopen 成功后才生效，fdopen 自身抛错时裸
-            # fd 无人关闭——f 为 None 时兜底 os.close。
-            f = None
-            try:
-                f = os.fdopen(fd, "w", encoding="utf-8")
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-                # fsync 对齐全仓原子写口径（同 _write_verdict_violations）。
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                if f is not None:
-                    f.close()
-                else:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-            os.replace(tmp_path, path)
-        except (OSError, TypeError, ValueError):
-            # 清理临时文件后上抛交外层 WARNING 留痕（对齐 _write_verdict_violations
-            # 口径）：replace/dump 阶段失败零留痕时重试 judge 收不到定向修复
-            # 素材，会白烧满重合成预算才升级且排障无线索。含 json.dump 遇
-            # 不可序列化载荷抛 TypeError/ValueError（否则 .json.tmp 残留）。
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        # 原子替换样板收编至 _write_json_atomic（同 _write_verdict_violations
+        # 口径）：写失败由外层 WARNING 统一留痕——零留痕时重试 judge 收不到
+        # 定向修复素材，会白烧满重合成预算才升级且 .json.tmp 残留。
+        _write_json_atomic(path, payload, prefix=".resynth.")
     except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -1209,11 +1189,17 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
     # 3) 全量重复（回炉子集 = 全量，模板化硬编码）→ 记录全量回炉语境，
     #    escalation 沿既有预算路径照发（design D3，防御语义不弱化；与
     #    整批拒绝 escalation 同源，预算耗尽时触发 _escalate_dedup_resynthesis）。
-    is_full = (
-        counts.get("total")
-        and counts.get("requeue")
-        and counts.get("requeue") >= counts.get("total")
-    )
+    # 显式布尔（code-review dea990c4ffb7）：and 链真值赋值在 total/requeue
+    # 缺失或为 0 时会把 None/0 赋给 is_full 而非 False；计数被写坏为非数值
+    # 串时 int() 抛错，同上 rejection_round 先例按 0 兜底（损坏计数不判
+    # 全量回炉）。
+    try:
+        total = int(counts.get("total") or 0)
+        requeue = int(counts.get("requeue") or 0)
+    except (TypeError, ValueError):
+        total = 0
+        requeue = 0
+    is_full = total > 0 and requeue >= total
     if is_full:
         pipeline._context.logger.error(
             "pm_engine",
