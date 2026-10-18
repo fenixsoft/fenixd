@@ -374,11 +374,13 @@ class CliRunner(VerifyRunner):
             }
 
         async def _read_capped(stream):
-            # 读入侧硬上限：按块累积、触顶停止累积但继续排空管道。只停读不
-            # 排空会让超限输出写满管道阻塞子进程、把退出语义改写成「写阻塞
-            # 超时被强杀」，归因失真；排空丢弃只约束内存驻留，不改变子进程
-            # 行为。触顶标注随结果透出供 judge 归因（code-review item
-            # cba7e5aca858）。
+            # 读入侧硬上限：先收下当前块再判触顶，与 api_runner capture 的
+            # 「append 后判 >=」同口径——恰好越界的那个读取块保留在证据前缀
+            # 里，最终字节量至多为 limit + 一个读取块，触顶标注在收下越界块
+            # 后置位。触顶后停止累积但继续排空管道：只停读不排空会让超限
+            # 输出写满管道阻塞子进程、把退出语义改写成「写阻塞超时被强杀」，
+            # 归因失真；排空丢弃只约束内存驻留，不改变子进程行为。触顶标注
+            # 随结果透出供 judge 归因（code-review item cba7e5aca858）。
             chunks = []
             total = 0
             read_truncated = False
@@ -386,10 +388,12 @@ class CliRunner(VerifyRunner):
                 chunk = await stream.read(65536)
                 if not chunk:
                     return b"".join(chunks), read_truncated
+                if read_truncated:
+                    # 已触顶：只排空不再累积
+                    continue
+                chunks.append(chunk)
                 total += len(chunk)
-                if total <= _OUTPUT_READ_LIMIT:
-                    chunks.append(chunk)
-                else:
+                if total >= _OUTPUT_READ_LIMIT:
                     read_truncated = True
 
         stdin_data = stdin.encode() if stdin else None
