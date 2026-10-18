@@ -3,7 +3,10 @@
 各组方法按资源拆分为 mixin，DashboardHandler 继承它们（D5：MRO 中
 资源组须排在 BaseHTTPRequestHandler 之前）。server.py 从各子模块直接
 导入 mixin；下方 __init__ 级 re-export 仅为包级导入便利/兼容保留，
-并非完整门面——新增 mixin（如 H11+）时须在此同步追加。
+并非完整门面——新增 mixin（如 H11+）时须在此同步追加。编号命名的
+唯一例外是 session 组：H_SessionRoutesMixin 沿用引入时
+（dashboard-live-session D3）的无编号类名，不占用 H 序号，在下方
+列表与 server.py 的 MRO 中均位于 H10 与 H11 之间。
 """
 
 from .base import H0BaseMixin
