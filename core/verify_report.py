@@ -823,6 +823,11 @@ def render_verification_report(
     # 均对 run_result 直接 .get，非 dict truthy 值会抛 AttributeError。
     if not isinstance(run_result, dict):
         run_result = None
+    # code-review fa6cf80392bf：report 同口径归一——truthy 非 dict（如非空
+    # 列表）时置 None，与上方 run_result、_summary_counts 的 isinstance 防护
+    # 同口径。本函数是公开复用的纯函数，下方 _render_scenarios_table 等处的
+    # ``report or {}`` 只回退 falsy 值，拦不住 truthy 非 dict 的 .get。
+    report = report if isinstance(report, dict) else None
     status = _derive_status(run_result, report)
     passed, failed, errors, total = _summary_counts(report)
     bugs = []
