@@ -634,6 +634,24 @@ class G2LegacyRegistryMixin:
         branch = rec.get("branch", "")
         if path:
             wt = Path(path)
+
+            def _rmtree_fallback() -> None:
+                # rmtree 兜底失败留痕（code-review item 8775e28ca392）：
+                # ignore_errors=True 会把权限不足/文件被占用等部分或全部
+                # 删除失败静默吞掉，目录残留无任何日志。失败仅记 WARNING
+                # （含未删残留说明），不向上抛——与 branch -D / prune 同口径。
+                # exists 判定保守前置：目录已消失则不做无条件 rmtree。
+                if not wt.exists():
+                    return
+                try:
+                    shutil.rmtree(str(wt))
+                except OSError as e:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Legacy {failure_label} rmtree fallback failed for "
+                        f"'{spec_name}': {e} — residual dir may remain at {wt}",
+                    )
+
             # 删除前收尾清扫（code-review item d50610627782）：登记遗产的孤儿
             # 目录（daemon 重启、attempt 已死、cleanup 从未跑过）其残留子进程
             # 从未被收割——目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检
@@ -657,19 +675,8 @@ class G2LegacyRegistryMixin:
                     errors="replace",
                     timeout=30,
                 )
-                if res.returncode != 0 and wt.exists():
-                    # rmtree 兜底失败留痕（code-review item 8775e28ca392）：
-                    # ignore_errors=True 会把权限不足/文件被占用等部分或全部
-                    # 删除失败静默吞掉，目录残留无任何日志。失败仅记 WARNING
-                    # （含未删残留说明），不向上抛——与 branch -D / prune 同口径。
-                    try:
-                        shutil.rmtree(str(wt))
-                    except OSError as e:
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"Legacy {failure_label} rmtree fallback failed for "
-                            f"'{spec_name}': {e} — residual dir may remain at {wt}",
-                        )
+                if res.returncode != 0:
+                    _rmtree_fallback()
             except Exception as e:
                 self.logger.warning(
                     "worktree_manager",
@@ -680,15 +687,7 @@ class G2LegacyRegistryMixin:
                 # （TimeoutExpired / OSError）时目录可能仍在，与 returncode != 0
                 # 分支同款做 rmtree 兜底——否则残留目录继续被存活探测当作有效
                 # worktree 且无重试入口；兜底失败按同款口径留痕，不向上抛。
-                if wt.exists():
-                    try:
-                        shutil.rmtree(str(wt))
-                    except OSError as e:
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"Legacy {failure_label} rmtree fallback failed for "
-                            f"'{spec_name}': {e} — residual dir may remain at {wt}",
-                        )
+                _rmtree_fallback()
         # prune 提前到 branch -D 之前（code-review item 41d5c0def055）：remove
         # 失败而 rmtree 兜底成功时，该 worktree 的注册（.git/worktrees 条目）
         # 尚未清理，branch -D 会因「分支仍被该 worktree checkout」被 git 拒绝
