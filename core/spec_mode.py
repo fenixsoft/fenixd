@@ -62,10 +62,14 @@ def read_spec_mode(project_root, spec_name: str) -> str:
     except OSError:
         # resolve() 在祖先目录符号链接成环（ELOOP）等罕见 FS 异常下自身也会抛
         # OSError，兜底退回原始路径作缓存键，保证读侧容错「不抛异常」契约。
-        key = (str(yaml_path), None)
-    cached = _SPEC_MODE_CACHE.get(key)
-    if cached is not None:
-        return cached
+        # 该哨兵键与文件真实状态无关联，一旦落缓存便同键永久命中、无法自愈
+        # （如 EACCES 事后修复仍会返回过期模式），故 key=None 表示本次只计算
+        # 不读写缓存——下次调用重新 stat，与键取自真实 stat 的路径同享自愈性。
+        key = None
+    if key is not None:
+        cached = _SPEC_MODE_CACHE.get(key)
+        if cached is not None:
+            return cached
     mode = DEFAULT_SPEC_MODE
     if yaml_path.is_file():
         try:
@@ -74,9 +78,10 @@ def read_spec_mode(project_root, spec_name: str) -> str:
             data = None
         if isinstance(data, dict) and data.get("mode") in VALID_SPEC_MODES:
             mode = data["mode"]
-    if len(_SPEC_MODE_CACHE) > _SPEC_MODE_CACHE_MAX:
-        _SPEC_MODE_CACHE.clear()
-    _SPEC_MODE_CACHE[key] = mode
+    if key is not None:
+        if len(_SPEC_MODE_CACHE) > _SPEC_MODE_CACHE_MAX:
+            _SPEC_MODE_CACHE.clear()
+        _SPEC_MODE_CACHE[key] = mode
     return mode
 
 
