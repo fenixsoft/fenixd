@@ -2043,7 +2043,9 @@ def ensure_main_tree_deps(
     return done
 
 
-def _probe_vacuity_note(base_url: str, ready: ReadyProbe, probe_body: bytes) -> str:
+def _probe_vacuity_note(
+    base_url: str, ready: ReadyProbe, probe_body: bytes, deadline: float
+) -> str:
     """就绪探针鉴别力自检：探针响应与任意不存在路径完全一致 → 无鉴别力。
 
     add-spec-hooks 第 1 轮 4 个 web 场景白屏 env 事故防复发（2026-09-06）：
@@ -2064,7 +2066,13 @@ def _probe_vacuity_note(base_url: str, ready: ReadyProbe, probe_body: bytes) -> 
             method="GET",
             headers={"User-Agent": "fenix-verify-contract"},
         )
-        with urlopen(req, timeout=3) as resp:
+        # 自检探测同样受 deadline 预算钳制（code-review item 56a1b7ebc12b）：
+        # 旧实现固定 timeout=3，探针在 deadline 将尽时才命中的话，鉴别力自检
+        # 最多再把总时长顶过 ready.timeout 约 3s——按剩余预算取 min（下限
+        # 0.5s 保探测自身有完成机会），对齐 _discover_port 的预算纪律。
+        with urlopen(
+            req, timeout=min(3.0, max(0.5, deadline - time.monotonic()))
+        ) as resp:
             if resp.status != ready.expect:
                 return ""
             body = resp.read(4096)
@@ -2110,7 +2118,7 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
             with urlopen(req, timeout=min(3.0, budget)) as resp:
                 if resp.status == ready.expect:
                     body = resp.read(4096)
-                    vacuity = _probe_vacuity_note(base_url, ready, body)
+                    vacuity = _probe_vacuity_note(base_url, ready, body, deadline)
                     if vacuity:
                         return False, vacuity
                     return True, f"就绪探针通过: {url}"
