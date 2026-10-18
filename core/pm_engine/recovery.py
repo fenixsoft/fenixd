@@ -10,7 +10,9 @@ from pathlib import Path
 import glob
 import hashlib
 import json
+import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -131,6 +133,17 @@ def _parse_event_timestamp(ts):
     不可解析返回 None。
     """
     if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        # 数值守卫（code-review item fc044b3faeba）：json.loads 默认接受
+        # NaN/Infinity 字面量，非有限 ts 使 now - ts > retry_window 恒 False
+        # （在途重试误判顺延）；巨大 int 送 float() 抛 OverflowError，逃出
+        # 唯一调用点的 except (ValueError, TypeError) 后中止整轮复查循环。
+        # 与 infra_breaker._is_valid_state_number 口径对齐：超界/非有限返回
+        # None（调用方「无正向证据 → 保守升级」）。
+        if isinstance(ts, float) and not math.isfinite(ts):
+            return None
+        if abs(ts) > sys.float_info.max:
+            # 仅巨大 int 命中（有限 float 恒 <= max，inf 已被上方 isfinite 拒绝）
+            return None
         return float(ts)
     dt = parse_ts(str(ts))
     return dt.timestamp() if dt is not None else None
