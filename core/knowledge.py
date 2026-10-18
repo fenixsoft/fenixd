@@ -40,7 +40,7 @@ import threading
 import time
 import urllib.parse
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
@@ -138,10 +138,6 @@ MAX_FIX_ROUNDS = 2
 
 # _BANNED_ENV_KEYS 单一来源见 core/agent_env_keys.py（与 SessionManager、
 # architecture_routes 共用同一 frozenset）；蒸馏 run 与 agent-run 无关。
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _in_pytest() -> bool:
@@ -859,6 +855,32 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
     try:
         add = _git(proot, ["add", "--", KNOWLEDGE_DIR])
         if add.returncode != 0:
+            # add 失败先区分「pathspec 零命中」：蒸馏 run 空产出（或仅建了空
+            # 目录）时 spec/knowledge 无可加文件，git add 以 fatal 退出非零——
+            # 这不是提交失败，工作区并无产出滞留，按空产出 noop 返回 ""（同
+            # 下方 nothing-to-commit 口径），避免误登「产出滞留」重试台账且
+            # pending 条目经 recover_pending 每轮重蒸永不收敛
+            # （code-review 0acc8a12d881）。
+            # 零命中判据不用 status --porcelain：同目录下与 add 无关的用户既有
+            # 脏文件会使其非空，把真实零命中误判回 add 故障。改用只读的
+            # ls-files 枚举「已跟踪 + 未跟踪（排除 ignore）」文件——与 add 的
+            # pathspec 命中集一致，空输出即零命中；探测自身失败（returncode
+            # 非 0）或有命中时仍按真实 add 故障返回 None 走重试台账。
+            probe = _git(
+                proot,
+                [
+                    "--no-optional-locks", "ls-files",
+                    "--cached", "--others", "--exclude-standard",
+                    "--", KNOWLEDGE_DIR,
+                ],
+            )
+            if probe.returncode == 0 and not probe.stdout.strip():
+                logger.info(
+                    "knowledge-distill git add pathspec 零命中（%s 无产出），"
+                    "按空产出跳过提交",
+                    names,
+                )
+                return ""
             logger.warning("knowledge-distill git add 失败: %s", add.stderr.strip())
             return None
         commit = _git(proot, ["commit", "-m", commit_msg, "--", KNOWLEDGE_DIR], timeout=120)
