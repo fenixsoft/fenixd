@@ -278,15 +278,28 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
        tail -f <wt>/x.log、grep ... <wt>/src 这类仅引用路径的无关进程
        argv 同样命中），须叠加 cwd 同域第二信号才判命中。
 
-    有快照却读不到当前读数（非 Linux 无 /proc 等）→ 不匹配（宁可少杀）。
+    有快照而当前读数读不到（/proc/<pid>/stat 瞬时不可读等）→ 返回 None
+    （「读不到＝无法核实」，≠「核实为另一实例」）：sweep 侧跳过本轮收割
+    且不摘登记、下轮重试——刚被 pid_alive 确认存活的实例不因瞬时读失败
+    被永久摘出登记、失去唯一收割通道。非 Linux 无 /proc 的登记项
+    start_ticks 快照本就为 None、不进快照分支（仍走下方 worktree/放行
+    路径），恒 None 形态不受影响。
     两信号皆不可得（旧格式登记项且 worktree 为空、或非 Linux）→ 放行收割
     保持既有行为：登记制收割是该形态（兜底 spawn 登记空 worktree）唯一的
     孤儿清理通道，保守少杀等于永久放弃清算；新登记项一律带 starttime
     快照，pid 复用主风险面已封。
+
+    Returns: True＝允许收割；False＝身份失配（摘登记不杀组）；None＝
+    无法核实（快照在而读数缺失，跳过本轮收割且保留登记）。
     """
     recorded = entry.get("start_ticks")
     if isinstance(recorded, int) and recorded > 0:
-        return _proc_start_ticks(pid) == recorded
+        cur = _proc_start_ticks(pid)
+        if cur is None:
+            # 「读不到＝无法核实」不在此判失配：返回 None 让 sweep 跳过
+            # 本轮收割且保留登记（下轮重试），仅读数存在且不等才摘除。
+            return None
+        return cur == recorded
     wt_text = str(entry.get("worktree") or "")
     if wt_text:
         wt_real = os.path.realpath(wt_text)
@@ -328,6 +341,14 @@ def kill_process_group(pid: int, logger=None) -> bool:
 
     就绪等待以「进程组非空」（killpg(pgid, 0)）为判据而非组长存活，避免
     shell 形态命令后台化实例后组长先退、组内存活成员逃过 SIGKILL 兜底。
+
+    与 core.proc_utils.kill_process_group（「SIGTERM→等待→SIGKILL」收口
+    单点，item 21d8a42c21c1）构成并行的两套实现，未并入的差异清单：本
+    函数句柄是裸 pid（登记条目无 Popen 句柄，无 wait/收尸环节）、等待
+    时长固定 3 秒 vs 单点 term_grace=5、就绪判据是进程组非空轮询
+    （killpg(pgid, 0)，覆盖组长先退的组内孤儿）vs 单点 popen.poll()（leader
+    回收即返回，组内孤儿另由 sig=0 探活补刀口径覆盖）。两套时序参数与
+    语义今后演化须两侧同步修订，防单侧漂移。
 
     Args:
         pid: 目标进程组长 pid。
@@ -460,7 +481,21 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
         if alive:
             # 进程仍存活但属主 spec 不在飞：核对身份后收割进程组再移除登记
             # （pid 复用防误杀：身份不匹配只移除登记，不动无关进程组）
-            if _harvest_identity_ok(entry, pid):
+            identity_ok = _harvest_identity_ok(entry, pid)
+            if identity_ok is None:
+                # starttime 快照在而当前读数读不到（瞬时 /proc 读失败）：
+                # 无法核实≠身份失配，本轮跳过收割且不摘登记（下轮重试）
+                # ——否则刚被 pid_alive 确认存活的实例会被永久摘出登记、
+                # 失去唯一收割通道（command 型 serve 无 marker pgrep 兜底）。
+                if logger:
+                    logger.warning(
+                        "serving_registry",
+                        f"skip harvest pid={pid} (spec={spec or '-'}) identity "
+                        f"unverifiable (proc stat unreadable) — keeping entry "
+                        f"for next sweep",
+                    )
+                continue
+            if identity_ok:
                 # 仅在真正向进程组发出过信号时计数（进程在 pid_alive 与
                 # getpgid 之间已退出的 already-gone 情形不算，避免虚报）
                 if kill_process_group(pid, logger):
