@@ -797,17 +797,29 @@ class LivenessSupervisor:
             f"{from_epoch(new_deadline).isoformat()}",
         )
 
-    def get_extension_baseline(self, spec_name: str) -> float | None:
+    def get_extension_baseline(
+        self, spec_name: str, current_run_id: str | None = None
+    ) -> float | None:
         """返回该 spec 的续期基准（epoch 秒）；无条目或 run 已结束返回 None。
 
         新鲜度自清理：关联 run 流文件已停止增长（超过 LIVE_ATTEMPT_STREAM_
         WINDOW_SECONDS）说明 run 已结束——基准随即失效并移除，调用方回退到
         既有 updated 起点（行为与无注册表时一致）。
+
+        run 归属守卫（code-review item 9ba11be6ca6b）：注册表按 spec 键控，
+        旧 run 被监督杀死/收尾后流文件 mtime 仍在 120 秒新鲜窗口内时，同 spec
+        派生的新 run 会读到旧 run 的残留基准（早于新 run 启动），stuck 起点
+        被错误顺延、新 run 被提前判 stuck。``current_run_id`` 非空时须与条目
+        ``run_id`` 全等才认有效，不匹配按无条目处理（返回 None；不清理条目，
+        仍由其自身流新鲜度自清理）；缺省 None 不启用该守卫，既有调用方行为
+        不变。
         """
         entry = self._extension_baselines.get(spec_name)
         if not entry:
             return None
         run_id = entry.get("run_id") or ""
+        if current_run_id and run_id != current_run_id:
+            return None
         run_file = self._pm.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
         try:
             mtime = run_file.stat().st_mtime

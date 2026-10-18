@@ -205,13 +205,22 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
 
     Args:
         page: Playwright Page 对象。
-        timeout_ms: 等待上限（毫秒）；0/负值跳过等待。
+        timeout_ms: 等待上限（毫秒）；0/负值跳过等待；非有限/超 _MAX_WAIT_MS
+            收敛为 _MAX_WAIT_MS。
 
     Returns:
         True=动画全部静置（或跳过等待）；False=达上限仍有未完成动画（或注入失败）。
     """
     if not timeout_ms or timeout_ms <= 0:
         return True
+    # 非有限/超上限收敛（code-review item c728b2991374）：与任何数比较恒为
+    # False 的脏值（inf/nan）绕过上方入口守卫，timeout_ms=+inf 会同时抬升
+    # 页内 deadline 与外层 wait_for 上限，页面主线程挂起时「下限 10s 逃逸
+    # 通道」彻底失效、永久挂起。回落到 _MAX_WAIT_MS（与 execute_action 的
+    # wait/drag 分支对毫秒数的上限同口径）而非按注入失败返回 False，helper
+    # 自身满足「任何输入都有界等待」，不依赖调用方自律
+    if not math.isfinite(timeout_ms) or timeout_ms > _MAX_WAIT_MS:
+        timeout_ms = _MAX_WAIT_MS
     try:
         settled = await asyncio.wait_for(
             page.evaluate(

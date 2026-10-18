@@ -49,6 +49,7 @@ ANCHOR_TURN_LIMIT = "turn-limit"
 ANCHOR_EXTENSION_TAIL = "extension-tail"
 ANCHOR_FREEZE_HOLD = "freeze-hold"
 ANCHOR_CANCEL = "cancel"
+ANCHOR_STALL_BUDGET = "stall-budget"
 
 
 def _git(args: list, cwd: str, timeout: int) -> subprocess.CompletedProcess:

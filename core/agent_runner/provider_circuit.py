@@ -93,10 +93,13 @@ UNRECOGNIZED_MODEL_TEXT_PATTERNS = (
 # 零有），与失败/停滞零区分度——定噪。收口为**独立兄弟常量**供消费端（
 # self_review 深扫 first_stderr、knowledge_backfill 失败归因）统一判别，新噪声
 # 按具体 pattern 枚举追加即可。上方 UNRECOGNIZED_MODEL_TEXT_PATTERNS 原样保留，
-# 仍是 classify_unrecognized_model_error（:420 全仓唯一 pattern 引用点）的判据
+# 仍是 classify_unrecognized_model_error（全仓唯一 pattern 引用点）的判据
 # 源——两边语义有意不同、互不替代：那边是裸子串形态（供全量 error 文本匹配、
 # 驱动瞬态收窄分类），这边是结构化行首形态（供逐行过滤），本常量 MUST NOT 反向
-# 喂给瞬态分类，也不得原地收窄上方的裸子串形态（会静默改变瞬态分类行为）。
+# 喂给瞬态分类作**正向信号**，也不得原地收窄上方的裸子串形态（会静默改变瞬态
+# 分类行为）；classify_transient_error 通道 1 匹配前经 is_cli_stderr_noise
+# 逐行剥离属 sanctioned 的过滤消费（code-review item a050b6923bb4）——只收窄
+# 瞬断判定面，不改任何裸子串形态的语义。
 # MUST NOT 裸 `[claude-code:` 前缀一刀切：诊断行可能携带真实错误语义，且
 # classify_transient_error 通道 2 依赖该前缀作瞬断信号。
 CLI_STDERR_NOISE_TEXT_PATTERNS = (
@@ -123,7 +126,7 @@ SWITCH_ERROR_CONN_PATTERNS = (
 # SWITCH_ERROR_CONN_PATTERNS 对该死因文本全部漏判（ENOTFOUND 形态不在其列）。
 # 本词表是 **code-fix 车道本地** 常量：仅供连接类失败分类（runner 挂载
 # conn_error 布尔，is_code_fix_conn_error 判别单源）消费。MUST NOT 扩充共享
-# SWITCH_ERROR_CONN_PATTERNS——该词表被 classify_switch_error（:418）消费、
+# SWITCH_ERROR_CONN_PATTERNS——该词表被 classify_switch_error 消费、
 # runner 以其判定驱动 spec/impl 车道切链与 provider switch 短冷却，扩充即改变
 # spec/impl 车道既有切换行为（proposal Non-Goal）；且 ENOTFOUND 属本地 DNS
 # 故障，切链无济于事只会烧尽链候选（design D1）。
@@ -489,7 +492,14 @@ class ProviderCircuit:
         # 不受该回视影响。
         for pat in (
             r"HTTP\s+(\d{3})(?!\d)",
-            r"\((\d{3})\)",
+            # 括号模式的语境约束（code-review item 279583edab07）：裸
+            # "\((\d{3})\)" 对错误文本中任意「(三位数)」形态都命中——包裹退出码/
+            # 信号号的括号文本、与 HTTP 无关的工具输出片段会误入 4xx 熔断计数或
+            # 驱动链前进。要求括号前邻近 HTTP/status/error/reject 语境词（间隔
+            # ≤24 字符、不跨行、不跨括号，与裸 code 模式的 (?<!exit ) 同为收窄
+            # 口径）：「API error (404)」「Request rejected (429)」等既有合法
+            # 形态仍命中；语境词随匹配消费，状态码仍取 group(1)。
+            r"(?:HTTP|status|error|reject\w*)[^\n(]{0,24}\((\d{3})\)",
             r"status\s*code\s*[:=]?\s*(\d{3})(?!\d)",
             r"(?<!exit )\bcode\s*[:=]?\s*(\d{3})(?!\d)",
             r"[Ee]rror:?\s*(\d{3})(?!\d)",
@@ -636,7 +646,10 @@ class ProviderCircuit:
         判定信号（任一命中即瞬断）：
         - 全量 stderr_lines 命中 switch 类 pattern（unrecognized_model / 5xx /
           连接类），从**全量** stderr 匹配而非末 5 行（末 5 行含 `[claude-code:...]`
-          诊断噪音行的 run 会漏判）；
+          诊断噪音行的 run 会漏判）；匹配前先经 is_cli_stderr_noise 逐行剥离
+          启动期诊断噪声行（code-review item a050b6923bb4）——glm/deepseek
+          链每 run 恰 1 条 `[claude-code:unrecognized_model]` 定噪行，裸匹配
+          会使本通道对这些链退化成「非干净退出即命中」；
         - 或（exit≠0 且本进程无 result 事件且 stderr 存在 `[claude-code:...]`
           诊断行）——CLI 实验实证：400 fatal / 500 耗尽 / 流断耗尽三种形态均为
           exit 1 + 无 result + stderr 仅剩诊断行。
@@ -656,10 +669,16 @@ class ProviderCircuit:
         # 前置：CLI 成功完成（exit=0 + 有 result 事件）→ 不是瞬断
         if exit_code == 0 and has_result:
             return False
-        full_text = "\n".join(str(l) for l in stderr_lines)
-        # 通道 1：全量 stderr 命中 switch 类 pattern（复用 switch 文本匹配语义，
-        # 4xx 配额/鉴权类自动排除——那属熔断面，不判瞬断）。
-        if full_text and ProviderCircuit.classify_switch_error(full_text):
+        # 通道 1 匹配前逐行剥离 CLI 启动期诊断噪声行（code-review item
+        # a050b6923bb4）：SWITCH_ERROR_TEXT_PATTERNS 首条即 unrecognized_model，
+        # 噪声行在场会让通道 1 对 glm/deepseek 链的非干净退出恒真。剥离只作用于
+        # 本通道匹配文本；通道 2 仍读原始行（`[claude-code:` 前缀族正是其信号）。
+        signal_text = "\n".join(
+            str(l) for l in stderr_lines if not is_cli_stderr_noise(str(l))
+        )
+        # 通道 1：全量 stderr（剥离噪声行后）命中 switch 类 pattern（复用
+        # switch 文本匹配语义，4xx 配额/鉴权类自动排除——那属熔断面，不判瞬断）。
+        if signal_text and ProviderCircuit.classify_switch_error(signal_text):
             return True
         # 通道 2：非零退出 + 无 result 事件 + stderr 含 `[claude-code:` 诊断行。
         if exit_code != 0 and not has_result:
@@ -830,6 +849,18 @@ class ProviderCircuit:
                 "agent_runner",
                 f"provider_marker 写入失败 {run_file}（不阻断 attempt）: {e}",
             )
+
+    def set_daily_reset_date(self, today) -> None:
+        """跨组件写 daily reset 日期（code-review item 6d95c3d83fe1）。
+
+        AgentRunner 的日限清零路径需改写本字段——经本方法自持
+        ``_provider_circuit_lock`` 写入，与 ``_record_daily_provider_attempt``
+        的跨天重置读改写互斥（此前 AgentRunner 在自己的 _daily_count_lock
+        临界区内直写私有属性，两个写者分属两把锁不互斥，日期翻转窗口内可能
+        双清零/丢清零）。调用方不持有本锁，无锁序耦合。
+        """
+        with self._provider_circuit_lock:
+            self._daily_reset_date = today
 
     def _record_daily_provider_attempt(self, provider_name: str) -> None:
         """per-provider 当日 attempt 计数 + 单次 WARNING 告警（design D5 / spec 4.2）。
@@ -1390,8 +1421,12 @@ class ProviderCircuit:
 
     def transient_unseal_count(self, fingerprint: str, now: float | None = None) -> int:
         """指纹当前解封次数（测试/观测辅助）。"""
+        # 读侧同纪律（code-review item b2baf233e014）：同 signal_kill_counts，
+        # 与 _bump_unseal_count 等记账临界区互斥——两字段无锁连读可与并发累加
+        # 交错取到跨代快照；RLock 可重入，测试/观测调用点在临界区外，无同线程重入。
         now = self._pm._now() if now is None else now
-        return self._effective_unseal_count(fingerprint, now)
+        with self._unseal_lock:
+            return self._effective_unseal_count(fingerprint, now)
 
     def _bump_unseal_count(self, fingerprint: str, now: float) -> None:
         """指纹解封次数 +1 并保温（到期解封与探针失败两条累加路径共用）。"""
@@ -1686,12 +1721,13 @@ class ProviderCircuit:
         daemon=True 随进程消亡；无 PMEngine 回引（测试/CLI）时唤醒零操作，
         排程无害。
 
-        「读旧引 → 造新 → 存新 → cancel 旧」序列持锁（item 62a1c4e3e71f）：
-        并发排程的交错此前可留下两活定时器只跟踪其一；cancel/start 在锁外
-        （cancel 已 fire 定时器为无操作；start 后回调线程经 _on_unseal_wake
-        再取锁，不持 _queue_lock，无锁序风险）。start 失败（线程资源耗尽/
-        解释器关停期可抛 RuntimeError）按身份清登记并 WARNING 留痕
-        （item fac3f4dfaeb4），交下一次状态迁移重新排程，自驱链不静默断裂。
+        「读旧引 → 造新 → 存新」持锁，cancel 旧/start 在锁外（item
+        62a1c4e3e71f）：并发排程的交错此前可留下两活定时器只跟踪其一。
+        锁外安全：cancel 已 fire 定时器为无操作；start 后回调线程经
+        _on_unseal_wake 再取锁，不持 _queue_lock，无锁序风险。start 失败
+        （线程资源耗尽/解释器关停期可抛 RuntimeError）按身份清登记并
+        WARNING 留痕（item fac3f4dfaeb4），交下一次状态迁移重新排程，
+        自驱链不静默断裂。
         """
         with self._unseal_lock:
             prior = self._unseal_wake_timer

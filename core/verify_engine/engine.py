@@ -16,13 +16,11 @@ engine.py — 验证引擎主控（Runner 插件化调度，design D1）
 """
 
 import asyncio
-import json
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .fs_ops import atomic_write_json
 from .path_safety import safe_component
 from .runner import (
     VerifyRunner,
@@ -829,40 +827,22 @@ class VerifyEngine:
         # 原子写（code-review item 4897aa6ba94f，对齐 regression._atomic_write
         # 的 mkstemp+os.replace 范式）：进度文件随每个场景完成高频重写，裸
         # open("w") 原地截断会让并发读取侧（dashboard/质量门）读到半截 JSON。
+        # 正文下沉共享实现 fs_ops.atomic_write_json（code-review item
+        # 24106d6108e2）；进度文件保持原无缩进形态，统一后新增的目录 fsync
+        # 属口径收敛的可接受增强。
         try:
             # mkdir 一并纳入兜底（对齐 _save_report 与下方写盘段的「非致命」
             # 口径）：磁盘满/权限等 OSError 若穿出，会把 run() 的「验收失败
             # 打回 plan」等出口变成未捕获异常，run_one finally 中抛出更会吞
             # 掉 runner.execute 的正常结果、令场景被误记为 error。
             progress_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(
-                prefix=f".{progress_path.name}.", suffix=".tmp", dir=str(progress_path.parent)
+            atomic_write_json(
+                progress_path,
+                progress,
+                tmp_prefix=f".{progress_path.name}.",
+                tmp_suffix=".tmp",
+                indent=None,
             )
-            try:
-                # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
-                # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，
-                # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-                f = None
-                try:
-                    f = os.fdopen(fd, "w", encoding="utf-8")
-                    json.dump(progress, f, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                finally:
-                    if f is not None:
-                        f.close()
-                    else:
-                        try:
-                            os.close(fd)
-                        except OSError:
-                            pass
-                os.replace(tmp_path, progress_path)
-            finally:
-                if os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
         except Exception as e:
             self.logger.debug("verify_engine", f"进度文件写入失败（非致命）: {e}")
 
@@ -885,35 +865,15 @@ class VerifyEngine:
             )
             report_dir.mkdir(parents=True, exist_ok=True)
             report_path = report_dir / "report.json"
-            # 原子写（code-review item 4897aa6ba94f，同 _write_progress）
-            fd, tmp_path = tempfile.mkstemp(
-                prefix=f".{report_path.name}.", suffix=".tmp", dir=str(report_dir)
+            # 原子写（code-review item 4897aa6ba94f，同 _write_progress）：正文
+            # 下沉共享实现 fs_ops.atomic_write_json（code-review item
+            # 24106d6108e2），统一后新增的目录 fsync 属口径收敛的可接受增强。
+            atomic_write_json(
+                report_path,
+                report,
+                tmp_prefix=f".{report_path.name}.",
+                tmp_suffix=".tmp",
             )
-            try:
-                # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
-                # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，
-                # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-                f = None
-                try:
-                    f = os.fdopen(fd, "w", encoding="utf-8")
-                    json.dump(report, f, ensure_ascii=False, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                finally:
-                    if f is not None:
-                        f.close()
-                    else:
-                        try:
-                            os.close(fd)
-                        except OSError:
-                            pass
-                os.replace(tmp_path, report_path)
-            finally:
-                if os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
         except Exception as e:
             self.logger.error(
                 "verify_engine",

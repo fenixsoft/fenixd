@@ -22,12 +22,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .fs_ops import atomic_write_json, fsync_dir
 from .path_safety import safe_component
 
 logger = logging.getLogger("fenixd.verify_engine.judge_files")
@@ -65,59 +64,24 @@ def _requeue_manifest_path(project_root: Path, spec_name: str) -> Path:
 
 
 def _fsync_dir(path: Path) -> None:
-    """fsync 父目录，持久化 rename 的目录项元数据。
-
-    POSIX 语义下 os.replace 落盘数据不等于目录项已持久化，主机掉电后
-    可能 tmp 与目标文件一起消失。judge 归因/回炉清单属可重算产物，故
-    尽力而为：fsync 目录失败不阻断主流程。
+    """fsync 父目录，持久化 rename 的目录项元数据（code-review item
+    d1a142dccb99：正文下沉共享实现 fs_ops.fsync_dir，本名保留为委托别名
+    以兼容既有引用路径）。judge 归因/回炉清单属可重算产物，故尽力而为：
+    fsync 目录失败不阻断主流程。
     """
-    try:
-        dir_fd = os.open(str(path), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except OSError:
-        pass
+    fsync_dir(path)
 
 
 def _atomic_write_json(path: Path, payload: Any, *, tmp_prefix: str) -> None:
     """mkstemp 原子写盘统一正文（save_attribution 与 build_requeue_manifest
     共用，code-review item 794cfb6f999c）：同目录临时文件 + fdopen 失败路径
-    接管（cbb57806fbfd 口径）+ flush/fsync + ``os.replace`` + _fsync_dir，
-    异常时清理临时文件后原样上抛。临时文件前缀由调用方传入（归因
-    ``.judge_attr.`` / 回炉清单 ``.requeue.``）；异常降级策略（上抛 / 告警
-    降级返回）属调用方语义，由调用方在捕获侧落实。
+    接管（cbb57806fbfd 口径）+ flush/fsync + ``os.replace`` + 目录 fsync +
+    异常清理，正文下沉共享实现 fs_ops.atomic_write_json（code-review item
+    24106d6108e2），此处仅保留原函数名/签名与调用方前缀。临时文件前缀由
+    调用方传入（归因 ``.judge_attr.`` / 回炉清单 ``.requeue.``）；异常降级
+    策略（上抛 / 告警降级返回）属调用方语义，由调用方在捕获侧落实。
     """
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=tmp_prefix, suffix=".json.tmp"
-    )
-    try:
-        # fdopen 失败路径显式接管（同 maintenance_runs._append_token_run 的
-        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
-        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, path)
-        _fsync_dir(path.parent)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path, payload, tmp_prefix=tmp_prefix)
 
 
 def load_attribution(project_root: Path, spec_name: str) -> dict[str, Any] | None:

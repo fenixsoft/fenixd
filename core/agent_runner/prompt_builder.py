@@ -382,15 +382,12 @@ class PromptBuilder:
 
     def _fill_placeholders(
         self, template: str, agent_type: str, spec_name: str, detail: dict | None,
-        wt_path: Path | None = None,
     ) -> str:
         """占位符填充：单趟多模式替换（正文含大量 {} JSON 示例，禁用 str.format）。
 
         progress_path 语义按 agent 现行为保持：verifier 写
         verify-progress/<spec>.json；fast-track 写 verify-progress/<spec>/<spec>.json。
         administrator 困境信号字段由 detail 注入（其余 agent 文件不含这些占位符）。
-        wt_path: fast-track 的 {result_path} 落点（impl_result_path，与收工硬门
-            _result_gate_section 同源）；不可得时降级相对路径表述。
         """
         root = self._pm.project_root
         vp_dir = root / ".fenix" / "verify-progress" / spec_name
@@ -398,14 +395,15 @@ class PromptBuilder:
         # add-judge-artifact-gate D1：planner 产物路径经 planner_result_path 统一
         # 计算（注入侧与 runner 硬门校验侧同源，防双实现漂移）。{result_path}/
         # {scenarios_path} 值按两类型产物文件名恒定——judge/plan 共用的
-        # .fenix-run-result.json 与 test_scenarios.json 同此路径；fast-track 的
-        # {result_path} 例外（下方分支改填 worktree 根——收工硬门唯一落点）。
+        # .fenix-run-result.json 与 test_scenarios.json 同此路径。
         # 四键按 agent_type 白名单装配（code-review item e6a50ee450b3；{report_path}/
         # {judge_attribution_path} 一并纳入 = item 3f3a0b605c32）：仅现状真正引用
         # 它们的模板拿到值（agents/*.md 逐一核对）——{scenarios_path}：
         # planner-plan/planner-judge/fast-track/verifier；{result_path}：
-        # planner-plan/planner-judge（fast-track/spec-review 由下方分支按车道
-        # 覆写）；{report_path}：planner-judge/verifier；{judge_attribution_path}：
+        # planner-plan/planner-judge/spec-review（spec-review 由下方分支按车道
+        # 覆写为评审结果路径；fast-track 模板不引用 {result_path}——结果文件落点
+        # 在模板内以字面量 .fenix-run-result.json 描述，item 0f3cc16d840f 起不再
+        # 预填）；{report_path}：planner-judge/verifier；{judge_attribution_path}：
         # planner-judge。其余类型不预填——未来模板误引用该占位符时键缺失，自然
         # 落入 _fill_and_scan_placeholders 残留扫描告警，不再静默填成主树 planner
         # 产物路径误导 agent。
@@ -437,15 +435,9 @@ class PromptBuilder:
             )
         elif agent_type == "fast-track":
             values["{progress_path}"] = str(vp_dir / f"{spec_name}.json")
-            # fast-track 结果文件唯一交付落点是 worktree 根（fix-impl-resultfile-
-            # contract-gap D1：impl_result_path，收工硬门同源检查）——不得沿用上方
-            # 主树 planner-judge 产物路径，agent 据此写主树会被硬门判产物缺失
-            # 整轮重烧。wt_path 不可得时降级相对路径表述（同 _result_gate_section）。
-            values["{result_path}"] = (
-                str(impl_result_path(wt_path))
-                if wt_path is not None
-                else ".fenix-run-result.json（worktree 根目录）"
-            )
+            # 不预填 {result_path}：fast-track 模板不引用该占位符（item
+            # 0f3cc16d840f）——结果文件落点在模板内以字面量 .fenix-run-result.json
+            # 描述，收工硬门段由 _result_gate_section 按车道另行注入。
         elif agent_type == "dispute-judge":
             # 交付物缺件 LLM 终审（add-deliverable-declaration-triage D3）：
             # 输入（缺件清单 + spec 语境 + findings + basename 候选）由 dispatch
@@ -453,9 +445,9 @@ class PromptBuilder:
             values["{dispute_input_path}"] = str(vp_dir / "dispute_judge_input.json")
             values["{dispute_result_path}"] = str(vp_dir / "dispute_judge_result.json")
         elif agent_type == "spec-review":
-            # SPEC 方案评审（add-spec-review-gate）
+            # SPEC 方案评审（add-spec-review-gate）；不预填 {state_path}——
+            # agents/*.md 无任何模板引用该占位符（item 0f3cc16d840f）。
             values["{result_path}"] = str(spec_review_result_path(root, spec_name))
-            values["{state_path}"] = str(root / ".fenix" / "STATE.md")
             # 自动复评上下文（2026-09-15 评审误判事故）：上一轮被否决时 STATE 的
             # error 内携带 blocking 摘要，注入复评 prompt 的「上轮否决结论」段。
             # 复评者据此逐条回答「是前提被证伪（判 blocking）还是文档内部不一致
@@ -550,8 +542,7 @@ class PromptBuilder:
             return self._build_code_fix_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
-        prompt = self._fill_placeholders(
-            template, agent_type, spec_name, detail, wt_path=wt_path)
+        prompt = self._fill_placeholders(template, agent_type, spec_name, detail)
 
         if agent_type == "implementer":
             # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）+
@@ -2856,6 +2847,18 @@ class PromptBuilder:
                     "缺段/不完整当场拒收并要求原地补写。\n"
                 )
             return text
+        if agent_type not in ("planner-plan", "planner-judge"):
+            # 未知车道白名单拦截（code-review item 229d2ae6428b）：此前任何其余
+            # agent_type（未来新增车道误调/调用方拼错）都会静默落到本段 planner
+            # 硬门，误导 agent 向主树 planner 产物路径写文件——与 _fill_placeholders
+            # 的 fail-loud 白名单纪律同口径。选返回空串 + WARNING 而非抛错：调用点
+            # （_build_prompt）以 prompt += 拼接，抛错会中断整次 prompt 构建，
+            # 空串仅缺本段并留告警痕迹，不影响其余段落照常注入。
+            _logger.warning(
+                "_result_gate_section 收到未知 agent_type=%r，跳过产物硬门段注入",
+                agent_type,
+            )
+            return ""
         result_path = planner_result_path(self._pm.project_root, spec_name, "planner-judge")
         scenarios_path = planner_result_path(self._pm.project_root, spec_name, "planner-plan")
         return (
