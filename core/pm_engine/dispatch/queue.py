@@ -2951,8 +2951,11 @@ class QQQueueMixin:
         # bump_counters 内部做 flock + read_all + write_all 真实文件 IO，
         # OSError 沿 worker 外层 except → _rollback_failed_dispatch 逃逸会把
         # 「仅顺延重试、保留分支锚点」的处置放大成 ready 回滚并清空 branch
-        # 锚点、白烧一整轮实现 run。失败时按读取侧旧值继续参与超限判定
-        # （本轮递增未落盘，超限最晚一轮触发），不中断顺延/熔断处置。
+        # 锚点、白烧一整轮实现 run。失败时按读取侧旧值+1 内存参与超限判定
+        # （本轮顺延仍计数；与 _handle_merge_back_real_failure 对 _merge_streak
+        # 的同型兜底同一约定——code-review item d204a091eb61 统一两处口径，
+        # 防后续单侧修改漂移；本轮递增未落盘，超限最晚下一轮 bump_counters
+        # 补齐触发），不中断顺延/熔断处置。
         try:
             count = self._pm.state_machine.bump_counters(
                 spec_name, {"_merge_retry_count": 1}
@@ -2960,10 +2963,10 @@ class QQQueueMixin:
         except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
             self._pm.logger.warning(
                 "pm_engine",
-                f"顺延轮数记账递增失败 '{spec_name}'（按未递增继续）: "
+                f"顺延轮数记账递增失败 '{spec_name}'（按读取侧旧值+1 继续）: "
                 f"{type(e).__name__}: {e}",
             )
-            count = self._parse_int_field(entry, "_merge_retry_count", 0)
+            count = self._parse_int_field(entry, "_merge_retry_count", 0) + 1
         # 成因标签（code-review item a9a96d9d650e）：未知键原样透传，不因映射
         # 缺项吞掉成因信息。置于 try 外——超限 stuck 告警（try 之外）也要消费。
         cause_label = self._MERGEBACK_DEFER_CAUSES.get(cause, cause)
@@ -3263,9 +3266,14 @@ class QQQueueMixin:
 
         与 ``_schedule_backoff_retry``（backoff.py:107）同构：``threading.Timer``
         到期回调 ``_on_merge_retry``（仅重试合并、不重派实现 run），定时器登记进
-        ``_backoff_timers`` 惰性清理。不递增 ``_retry_count``、不递增实现尝试预算
-        （未派生新 run）。MUST NOT 复用 ``_schedule_transient_recovery``（该通道带
-        ``agents.transient_*`` 熔断与预算语义，语义不同）。
+        ``_backoff_timers`` 惰性清理。幂等判重（code-review item 4c4f8b72b917）：
+        登记前按 spec_name 查 merge-only 专用判重登记表
+        ``_merge_retry_timer_specs``（与退避通道的 ``_backoff_timer_specs`` 形态
+        对齐、相互独立），已存在待到期 Timer 则先 cancel 旧 Timer 再登记新
+        Timer——同 spec 同时至多一个待到期 merge-only 定时器。不递增
+        ``_retry_count``、不递增实现尝试预算（未派生新 run）。MUST NOT 复用
+        ``_schedule_transient_recovery``（该通道带 ``agents.transient_*`` 熔断
+        与预算语义，语义不同）。
         """
         timer = threading.Timer(
             max(0.5, float(delay)),
@@ -3274,8 +3282,27 @@ class QQQueueMixin:
         )
         timer.daemon = True
         with self._queue_lock:
+            # 幂等判重（code-review item 4c4f8b72b917）：判重登记表与 backoff.py
+            # _schedule_backoff_retry 的 ``_backoff_timer_specs`` 形态对齐、独立建表
+            # （merge-only 专用，不与退避判重共表）。先摘同 spec 旧登记并无条件
+            # cancel（对已到期/在途回调是 no-op，不回退已发生的重试；对尚未 start
+            # 的 Timer 同样生效），再登记新 Timer——不变式：同 spec 同时至多一个
+            # 待到期 merge-only 定时器。原先仅 is_alive 惰性清理后直接 append，旧
+            # Timer 未到期窗口内两个 defer 来源先后顺延（如顺延期间 admin 复位
+            # ready 重派再遇 retryable merge 失败，或 repair 车道与 full/fast-track
+            # 车道先后触发）即叠加第二个 Timer，到期后 _retry_merge_back_only 的
+            # 状态守卫（仅看 status==implementing）挡不住并发重入，重复 merge 尝试
+            # 经 _defer_merge_back 使 _merge_retry_count 每窗口虚增两次，提前触发
+            # 超限 stuck 告警/窗口降级。
+            pending: dict = getattr(self, "_merge_retry_timer_specs", None)
+            if pending is None:
+                pending = self._merge_retry_timer_specs = {}
+            stale = pending.pop(spec_name, None)
             self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
+            if stale is not None:
+                stale.cancel()
             self._backoff_timers.append(timer)
+            pending[spec_name] = timer
         # （code-review item 53c202982773）start 守卫：裸 timer.start() 的启动异常
         # （如环境性 RuntimeError can't start new thread）会沿 _defer_merge_back →
         # _handle_retryable_mergeback_failure → worker 外层 except 转
@@ -3295,6 +3322,11 @@ class QQQueueMixin:
                 self._backoff_timers = [
                     t for t in self._backoff_timers if t is not timer
                 ]
+                # 判重登记表同步回滚（对齐 _schedule_backoff_retry start 失败路径）：
+                # 失败的 Timer 未运行，残留登记只占位（下轮排程会替换），摘除保持
+                # 登记表与在飞定时器一致。
+                if getattr(self, "_merge_retry_timer_specs", {}).get(spec_name) is timer:
+                    self._merge_retry_timer_specs.pop(spec_name, None)
             try:
                 self._pm.state_machine.update_spec(
                     spec_name, {"_merge_retry_pending": False},
@@ -3730,8 +3762,11 @@ class QQQueueMixin:
         if prev_fp == fp:
             # 记账失败不阻塞熔断分类（code-review item 941b22736836，对齐
             # 「记账失败不阻塞失败分类」先例）：递增未落盘时按读取侧旧值+1
-            # 内存参与阈值判定（本轮失败仍计数），streak_bumped 置 False——
-            # 下方各分支经既有 not streak_bumped 路径绝对写回，尽力补落盘。
+            # 内存参与阈值判定（本轮失败仍计数；与 _defer_merge_back 对
+            # _merge_retry_count 的同型兜底同一约定——code-review item
+            # d204a091eb61 统一两处口径，防后续单侧修改漂移），streak_bumped
+            # 置 False——下方各分支经既有 not streak_bumped 路径绝对写回，尽力
+            # 补落盘。
             # OSError 沿 worker 外层 except 逃逸会把指纹熔断/repair/ready
             # 三段失败分类整体跳过，白烧一整轮实现 run，MUST NOT 放大。
             try:
