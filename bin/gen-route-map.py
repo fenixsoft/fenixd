@@ -90,10 +90,14 @@ def scan_server_routes(root: Path) -> tuple:
             # r? 前缀兼容（code-review item 1fd7cf361e88）：base.py 参数化路由
             # 条目多为 raw-string 写法（r"^/api/..."），条目正则须同时兼容
             # 普通串与 raw-string 两种形态，否则全部 regex 条目落入 skipped。
-            rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*r?"([^"]+)"', line)
+            # 捕获组支持转义双引号（code-review item acb5981470af）：
+            # (?:[^"\\]|\\.)* 令 pattern 内的 \" 不提前终止捕获，避免产出
+            # 截断条目（如 ^/api/x\ ）静默混入地图；普通 pattern 捕获结果
+            # 与旧正则 [^"]+ 逐字一致
+            rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*r?"((?:[^"\\]|\\.)*)"', line)
             if not rm:
-                # 条目行未被条目正则收录（可能为转义双引号、跨行元组等写法
-                # 形态）：累计计数上报，防地图静默缺条目
+                # 条目行未被条目正则收录（可能为跨行元组等写法形态）：
+                # 累计计数上报，防地图静默缺条目
                 skipped += 1
                 continue
             pattern = rm.group(2)
