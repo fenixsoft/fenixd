@@ -20,13 +20,13 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
+from core.spec_naming import KEBAB_RE
+
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas" / "spec-driven"
 
 DEFAULT_SCHEMA = "spec-driven"
 
 _LOGGER = logging.getLogger("fenixd.spec_gen")
-
-_KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
 # ── Schema 加载 ────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ def _validate_name(name: str) -> Optional[str]:
     """kebab-case 名称校验；合法返回 None，否则返回具体错误信息。"""
     if not name:
         return "Change name cannot be empty"
-    if not _KEBAB_RE.fullmatch(name):
+    if not KEBAB_RE.fullmatch(name):
         if re.search(r"[A-Z]", name):
             return "Change name must be lowercase (use kebab-case)"
         if re.search(r"\s", name):
