@@ -51,6 +51,7 @@ from .protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
     ENV_MODE_INHERIT,
+    STDERR_CLASS_CLI_NOISE,
     STDERR_CLASS_GENERIC,
     STDERR_CLASS_UNRECOGNIZED_MODEL,
     HarnessCapabilities,
@@ -448,7 +449,10 @@ class DshEventProjector:
                         "type": "tool_use",
                         "id": call_id,
                         "name": tool,
-                        "input": entry.get("input") or {},
+                        # 判型降级对齐 usage 的 isinstance 守卫（非 dict 真值归 {}）。
+                        "input": entry.get("input")
+                        if isinstance(entry.get("input"), dict)
+                        else {},
                     }
                 ]
             },
@@ -827,8 +831,6 @@ class DshAdapter:
         # dsh 无 [claude-code:*] 前缀族；is_cli_stderr_noise 对 dsh 行恒 False，
         # 保留调用形态与 claude 通道对齐（降噪口径单一来源）。
         if line.startswith("[claude-code:") or is_cli_stderr_noise(line):
-            from .protocol import STDERR_CLASS_CLI_NOISE
-
             return STDERR_CLASS_CLI_NOISE
         return STDERR_CLASS_GENERIC
 

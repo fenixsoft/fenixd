@@ -27,6 +27,8 @@ from core.agent_runner.harness.protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
     ENV_MODE_INHERIT,
+    PROMPT_TRANSPORT_ARGV,
+    PROMPT_TRANSPORT_STDIN,
     STDERR_CLASS_CLI_NOISE,
     STDERR_CLASS_UNRECOGNIZED_MODEL,
     STDERR_CLASS_GENERIC,
@@ -82,7 +84,9 @@ def build_isolated_settings(
             loaded = json.loads(home_settings.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 source = loaded
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # 非法 UTF-8 字节（磁盘损坏/外部工具误写）与坏 JSON 同路降级为空
+        # source（口径对齐 admin_store._read_unlocked）。
         source = {}
 
     plugins = source.get("enabledPlugins")
@@ -97,7 +101,7 @@ def build_isolated_settings(
             loaded = json.loads(agent_settings.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and isinstance(loaded.get("hooks"), dict):
                 settings["hooks"] = loaded["hooks"]
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     if provider_model:
@@ -296,6 +300,16 @@ class ClaudeAdapter(HarnessAdapter):
         /proc/<pid>/cmdline，且单参数受 ARG_MAX 约束；transport=argv 保持
         autodraft/describe 现状形态（prompt 紧随 -p）。
         """
+        # 未知 prompt_transport fail-fast（与 resolve_adapter 对未知 harness
+        # 同口径）：静默落 None 会让 prompt 既不进 argv 也不进 stdin，子进程
+        # 以空输入启动（claude -p 挂起等待 stdin 或空跑）。
+        if req.prompt_transport not in (
+            PROMPT_TRANSPORT_STDIN, PROMPT_TRANSPORT_ARGV
+        ):
+            raise ValueError(
+                f"不支持的 prompt_transport 值：{req.prompt_transport!r}"
+                f"（合法值：{PROMPT_TRANSPORT_STDIN!r}/{PROMPT_TRANSPORT_ARGV!r}）"
+            )
         argv: List[str] = ["claude", "-p"]
         if req.prompt_transport == "argv":
             argv.append(req.prompt)
@@ -427,7 +441,7 @@ class ClaudeAdapter(HarnessAdapter):
             }
         return {
             "observed": True,
-            "output": last.get("result", ""),
+            "output": last.get("result") or "",
             "turns": last.get("num_turns", 0),
             "session_id": last.get("session_id"),
             "usage_info": SessionTracker.extract_usage_info(last),

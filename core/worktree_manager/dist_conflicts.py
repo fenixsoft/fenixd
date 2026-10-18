@@ -480,6 +480,32 @@ class G5DistConflictsMixin:
         """
         return run_dist_build(self.project_root, DASHBOARD_STATIC_ROOT, self.logger)
 
+    def _unstage_static_root(self) -> None:
+        """pathspec 限定 unstage 静态根（item 8bb77946bb6b/75e4515b7204）。
+
+        不带 pathspec 的 reset 会把主树既有暂存（stash 降级残留等）一并
+        unstage——限定 ``-- DASHBOARD_STATIC_ROOT`` 与 add -A 的 static 根
+        作用域对称。``_rebuild_dist_after_merge`` 的 foreign 越界、HEAD 已在
+        upstream、amend 失败恢复三个分支共用同一 unstage 语义，收敛于此
+        （原为三处逐字重复调用）。
+        """
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.project_root),
+                "reset",
+                "-q",
+                "--",
+                DASHBOARD_STATIC_ROOT,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+
     def _rebuild_dist_after_merge(self) -> None:
         """merge 后从合并后 src 确定性重建主树产物（dist 冲突根治 B）。
 
@@ -633,46 +659,14 @@ class G5DistConflictsMixin:
                     f"({foreign[:10]}) — amend skipped, rebuilt dist kept in "
                     f"working tree only",
                 )
-                # pathspec 限定 unstage 范围（item 8bb77946bb6b）：不带 pathspec
-                # 的 reset 会把主树既有暂存（stash 降级残留等）一并 unstage，
-                # 与上方 add -A 的 static 根作用域对称。
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "reset",
-                        "-q",
-                        "--",
-                        DASHBOARD_STATIC_ROOT,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
-                )
+                # pathspec 限定 unstage 范围，语义见 _unstage_static_root。
+                self._unstage_static_root()
                 return
             # merge 提交已在 upstream 上（已被外部推送）时，amend 会改写已发布
             # 历史——跳过 amend，unstage 后仅保留工作区重建。
             if self._head_on_upstream():
-                # 同 foreign 分支：pathspec 限定 unstage 范围（item 8bb77946bb6b）。
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "reset",
-                        "-q",
-                        "--",
-                        DASHBOARD_STATIC_ROOT,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
-                )
+                # 同 foreign 分支：unstage 语义见 _unstage_static_root。
+                self._unstage_static_root()
                 self.logger.warning(
                     "worktree_manager",
                     "merge commit already on upstream — dist rebuild kept in "
@@ -703,26 +697,8 @@ class G5DistConflictsMixin:
             )
             if amend.returncode != 0:
                 # 恢复干净：unstage + dist 回到提交版，不让脏树阻塞后续 merge。
-                # pathspec 限定 unstage 范围（item 75e4515b7204）：与上方
-                # foreign/upstream 分支同款——不带 pathspec 的 reset 会把主树
-                # 既有暂存（stash 降级残留等）一并 unstage，与 add -A 的
-                # static 根作用域对称。
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "reset",
-                        "-q",
-                        "--",
-                        DASHBOARD_STATIC_ROOT,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
-                )
+                # （reset 语义见 _unstage_static_root，与 foreign/upstream 同款。）
+                self._unstage_static_root()
                 subprocess.run(
                     [
                         "git",

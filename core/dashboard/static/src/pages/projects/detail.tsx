@@ -48,6 +48,11 @@ import {
   shouldRenderGatesCard,
 } from './qualityGates';
 
+// 测试截图 URL 单源（code-review item 53b349d82505）：本页四处拼接收敛于此，
+// 前缀如需调整（加子路径/签名参数）只改这一处
+const screenshotUrl = (project: string, spec: string, file: string) =>
+  `/screenshots/${encodeURIComponent(project)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`;
+
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
 // 避免与 AntD Tag 的配色语义重复；产品Bug>0 → error，环境问题>0 → warning，其余 → success。
@@ -425,7 +430,7 @@ function FilteredFailuresBlock({
                   // 文件名即稳定 key：索引 key 在 SSE 增量刷新下错位复用
                   // Image 实例，预览等内部状态串到语义已变的截图
                   key={file}
-                  src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`}
+                  src={screenshotUrl(name, spec, file)}
                   alt={`被过滤场景 ${f.scenario_id} 截图 ${sIdx + 1}`}
                   width={150}
                   height={100}
@@ -1652,7 +1657,7 @@ export default function SpecDetailPage() {
                           // 文件名即稳定 key：索引 key 在 SSE 增量刷新下错位复用
                           // Image 实例，预览等内部状态串到语义已变的截图
                           key={file}
-                          src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`}
+                          src={screenshotUrl(name, spec, file)}
                           alt={`Bug ${idx + 1} 截图 ${sIdx + 1}`}
                           width={150}
                           height={100}
@@ -1714,7 +1719,7 @@ export default function SpecDetailPage() {
               </div>
               <Image.PreviewGroup
                 items={detail.screenshots.map((s) => ({
-                  src: `/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(s.file)}`,
+                  src: screenshotUrl(name, spec, s.file),
                   alt: s.file,
                 }))}
               >
@@ -1725,7 +1730,7 @@ export default function SpecDetailPage() {
                       // 索引 key 在 SSE 增量刷新下错位复用 Image 实例，预览等
                       // 内部状态串到语义已变的截图（对齐 Bug 截图同款修法）
                       key={s.file}
-                      src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(s.file)}`}
+                      src={screenshotUrl(name, spec, s.file)}
                       alt={s.file}
                       width={150}
                       height={100}

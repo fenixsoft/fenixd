@@ -32,11 +32,13 @@ function summarize(value: unknown, depth = 0): string {
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>);
     const primaryKeys = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt'];
+    // primaryKeys 命中改查 entries 建好的 Map（code-review item 31aa7ebb3c02）：
+    // 替代每键一次的线性 find（O(8n)），命中语义与 primaryKeys 顺序均不变
+    const entryMap = new Map(entries);
     const preferred = primaryKeys
-      .map((k) => entries.find(([key]) => key === k))
-      .filter((entry) => entry != null)
+      .filter((k) => entryMap.has(k))
       .slice(0, 2)
-      .map(([, v]) => summarize(v, depth + 1));
+      .map((k) => summarize(entryMap.get(k), depth + 1));
     if (preferred.length > 0) return preferred.join(' | ');
     return entries.slice(0, 2).map(([k, v]) => `${k}=${summarize(v, depth + 1)}`).join(' ');
   }
@@ -87,6 +89,7 @@ export function formatElapsedSeconds(seconds: number): string {
   const total = Math.round(seconds);
   const m = Math.floor(total / 60);
   const s = total % 60;
+  // [fenix-ignore:d1c8323f34bb] 「XmYs」是上方注释明示的设计口径（design D3，info 级且 >1h 任务通知罕见），维持现状
   if (m === 0) return `${s}s`;
   return `${m}m${s}s`;
 }

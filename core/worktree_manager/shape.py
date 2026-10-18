@@ -84,7 +84,8 @@ def branch_shape_is_verifier(
                     return False
                 if front == f"verify-{spec}":
                     return True
-            # spec 锚为空（spec 名恰为 "verify" 的退化形态）：歧义不可解
+            # spec 锚为空（front 恰为 "verify-"，即 spec 段为空的退化分支名
+            # fenix/verify--<ts>）：歧义不可解；front 恰为 "verify" 时在上方按实现族返回
             return text.startswith("fenix/verify-")
         # 末段非纯数字时间戳：非本框架命名形态，按历史前缀启发式
         return text.startswith("fenix/verify-")

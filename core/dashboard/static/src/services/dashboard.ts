@@ -458,7 +458,16 @@ export function markAlertHandled(project: string | undefined, id: string) {
   // AlertItem.project（可选字段，类型 string | undefined）——改为封装内对空值
   // 显式报错，避免静默发出确定性失败的请求（code-review item 54cd19ca3bb3）。
   if (!project) {
-    throw new Error('markAlertHandled: project 必填（后端对缺 project 恒 400）');
+    // 改抛 ApiError 对齐本文件「对外恒抛 ApiError」契约（code-review item
+    // cf487bc6ec59、29fcb06957b6）：ApiError 是 Error 子类，现网调用面均为
+    // instanceof Error 泛捕获，行为兼容；status=400/kind='client' 与后端
+    // 「缺 project 恒 400」语义一致，code 供调用方按稳定机器码分支。
+    throw new ApiError(
+      'markAlertHandled: project 必填（后端对缺 project 恒 400）',
+      400,
+      'client',
+      'missing_project',
+    );
   }
   const q = `?project=${encodeURIComponent(project)}`;
   return request(`/api/alerts/${encodeURIComponent(id)}/handled${q}`, { method: 'POST' });
@@ -492,7 +501,16 @@ export async function resolveAlert(
   // 类型 string | undefined）——改为封装内对空值显式报错，避免类型层邀请
   // 非法调用（code-review item 54cd19ca3bb3）。
   if (!project) {
-    throw new Error('resolveAlert: project 必填（后端对缺 project 恒 400）');
+    // 改抛 ApiError 对齐本文件「对外恒抛 ApiError」契约（code-review item
+    // cf487bc6ec59、29fcb06957b6）：ApiError 是 Error 子类，现网调用面均为
+    // instanceof Error 泛捕获，行为兼容；status=400/kind='client' 与后端
+    // 「缺 project 恒 400」语义一致，code 供调用方按稳定机器码分支。
+    throw new ApiError(
+      'resolveAlert: project 必填（后端对缺 project 恒 400）',
+      400,
+      'client',
+      'missing_project',
+    );
   }
   // project 只走 body 通道（code-review item 7045ef4ae4c7）：POST 载荷本就
   // 内聚 project/alert_id/choice_id/note，旧的 ?project= 双通道系冗余
@@ -1769,8 +1787,11 @@ export async function getCodeReviewItems(
   const severityQ = opts?.severity ? `&severity=${encodeURIComponent(opts.severity)}` : '';
   const sortQ =
     opts?.sortBy ? `&sort_by=${opts.sortBy}&sort_order=${opts.sortOrder || 'asc'}` : '';
+  // 分页参数判空与 getAdminActivities 同口径（code-review item 5a2cbd5c0537）：
+  // 用 != null 显式判空而非真值判断，避免 page=0/pageSize=0 被当成「未传」
+  // 静默降级为不分页请求（当前分页 1-based、0 非合法入参，无现网缺陷）。
   const pageQ =
-    opts?.page && opts?.pageSize
+    opts?.page != null && opts?.pageSize != null
       ? `&page=${opts.page}&page_size=${opts.pageSize}`
       : '';
   return request<{ items: CodeReviewItem[]; total?: number }>(

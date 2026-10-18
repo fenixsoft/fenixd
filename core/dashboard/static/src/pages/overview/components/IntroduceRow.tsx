@@ -55,6 +55,7 @@ function Tile({
       styles={{ body: CARD_BODY, header: { borderBottom: 'none', paddingInline: 16 } }}
     >
       {/* 原有自绘标题行：浅灰小字（头部 title 为 ant-card-head-title 默认黑粗大字） */}
+      {/* [fenix-ignore:b030eabc4dc8] 非迁移残留：头部黑粗标题+正文浅灰眉题系 commit 92f919697「双轨定稿」的有意视觉层次，窄屏眉题由 global.less 隐藏、由头部 title 承担语义 */}
       <div className="overview-tile-eyebrow" style={{ fontSize: 14, color: TITLE_GRAY, marginBottom: 4 }}>{title}</div>
       {children}
     </Card>

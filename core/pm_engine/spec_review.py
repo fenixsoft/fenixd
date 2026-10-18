@@ -354,7 +354,8 @@ class SpecReviewManager:
                 ),
                 # pm_engine None 守卫（code-review item a74a3c85dec1）：CLI 与
                 # Dashboard 均以 SpecReviewManager(proot, sm, None, None, {},
-                # logger) 构造（与 :480/:1182 先例同款），缺守卫会在冻结前取属性
+                # logger) 构造（与 approved 收尾/responsible_release 的 None
+                # 守卫先例同款），缺守卫会在冻结前取属性
                 # 抛 AttributeError，spec 停在 reviewing 既不冻结也不告警。
                 # freeze_for_human 对 None 回调按静默冻结处理（记 ERROR 审计）。
                 alert_callback=(
@@ -382,9 +383,9 @@ class SpecReviewManager:
         # 时会生成与上一轮逐字相同的 run_id，下游以整串 run_id 作锚点/salvage/
         # 在飞关联键，同 id 复用会把上一轮终态 run 的转录/存活状态误关联到本轮。
         # 随机段 MUST 放在 epoch 尾段**之前**：_artifact_landed_valid 的回落
-        # 锚点解析按 ``rsplit("-", 1)[-1].isdigit()`` 取尾段秒级 epoch（见下方
-        # :1113），尾段若被非数字后缀占据会让解析静默失效、产物 mtime 新鲜度
-        # 校验被跳过。
+        # 锚点解析按 ``rsplit("-", 1)[-1].isdigit()`` 取尾段秒级 epoch（见该
+        # 方法锚点回落解析段），尾段若被非数字后缀占据会让解析静默失效、产物
+        # mtime 新鲜度校验被跳过。
         run_id = f"spec-review-{spec_name}-{uuid.uuid4().hex[:6]}-{int(time.time())}"
         self.state_machine.update_spec(spec_name, {"reviewer_run": run_id})
 
@@ -697,12 +698,12 @@ class SpecReviewManager:
                         "_review_skipped_result": f"{status}@result-path={result_path}",
                     },
                 )
-                # 早于下方 :300 的 _on_spec_ready 调用返回（MUST NOT 调用它：
+                # 早于下方 approved 收尾分支的 _on_spec_ready 调用返回（MUST NOT 调用它：
                 # 此刻无待派发实现 run，且若调用会被 D2 判定为在飞评审而顺延，
                 # 语义重复）。
                 return True
             # 转 ready 并触发实现调度（fix-observability-gaps 2.2：自动来源标注）
-            # transition 返回值校验：读态守卫（:445）与 transition 之间存在
+            # transition 返回值校验：入口 read_one 读态守卫与 transition 之间存在
             # TOCTOU 窗口，并发写者可能已把 spec 推进到别的状态（或冻结剥离）
             # 致非法转移返回 False。失败时保留 reviewer_run 锚点与重试计数
             # （交由收口重试/审计），不继续清字段、不触发实现调度——与
@@ -728,7 +729,7 @@ class SpecReviewManager:
                 },
             )
             # 触发实现调度（pm_engine None 守卫，code-review item b110838b85e0）：
-            # 与 rejected 分支（:541）及 responsible_release（:1139）同款——CLI 与
+            # 与 rejected 分支及 responsible_release 的 None 守卫同款——CLI 与
             # Dashboard 均以 SpecReviewManager(proot, sm, None, None, {}, logger)
             # 构造（bin/fenix_cli.py cmd_review、core/dashboard/data/admin_actions.py
             # re_review_spec），缺守卫会在状态已转 ready 后抛 AttributeError，调用方
@@ -1383,7 +1384,8 @@ class SpecReviewManager:
           conn_error 显式 True——evo-fix-spec-review-infra-attribution-bridge 1.3，
           优先于文本词表）或指纹匹配（403/402/429/quota/budget/余额/insufficient
           balance/ rate limit / 既有 provider 熔断信号 "provider circuit open" /
-          "provider chain exhausted"——runner.py:2458/2473，供侧熔断同属 infra）
+          "provider chain exhausted"——runner 的 _resolve_provider_candidate
+          circuit/chain_exhausted 分支，供侧熔断同属 infra）
           或 CLI 进程级崩溃（error 含 "Exit code: N" 且 N 非 0/1——"Exit code: 1"
           不得一律判 infra，评审器内容失败同样 exit 1）；或 probe 标记
           model_chain_preflight_failed；
@@ -1426,7 +1428,7 @@ class SpecReviewManager:
                 status_code = None
             if status_code in _STRUCTURED_INFRA_API_STATUS:
                 return "infra"
-        # 严格等值判定（对齐 :414 frozen_terminated `is True` 先例）：MagicMock
+        # 严格等值判定（对齐 dispatch_review frozen_terminated `is True` 先例）：MagicMock
         # 等替身在属性访问时自动生成 truthy 子对象，裸布尔会把无结构化归因的
         # content 失败误判 infra——生产结果该字段为显式 bool/None，不受影响。
         if conn_error is True:
@@ -1501,7 +1503,7 @@ class SpecReviewManager:
           （熔断前与冷却期均不计入——infra 属链路级问题而非 spec 内容问题；若递增，
           第 3 次 infra 会同时触 MAX_REVIEW_ATTEMPTS=3 freeze 破坏「冷却后自动
           恢复」；若不清锚点，冷却到期后 dispatch_review 见 reviewer_run 非空拒派
-          （spec_review.py:67-69），spec 永久卡 reviewing）；
+          （其 reviewer_run 在飞判据段），spec 永久卡 reviewing）；
         - content：维持既有重试语义（递增 _review_attempts，达上限转冻结转人工）。
 
         error 保留 ``spec-review-incomplete:`` 前缀不变（复用 re_review 的
@@ -1627,7 +1629,8 @@ class SpecReviewManager:
                     "daemon 自动重派评审；或直接撤销该 spec"
                 ),
                 # pm_engine None 守卫（code-review item a74a3c85dec1）：与本文件
-                # dispatch_review 耗尽分支及 :480/:1182 先例同款——CLI 形态
+                # dispatch_review 耗尽分支及 approved 收尾、responsible_release
+                # 守卫先例同款——CLI 形态
                 # pm_engine=None，缺守卫会在冻结前取属性抛 AttributeError。
                 # freeze_for_human 对 None 回调按静默冻结处理（记 ERROR 审计）。
                 alert_callback=(

@@ -1454,7 +1454,7 @@ class G4MergebackMixin:
             # 与同文件其余 git 文本输出解析（_detect_wip_overlap /
             # _backup_untracked_spec_files）同口径反转义 quotePath 转义形：
             # 非 ASCII 冲突路径残留带引号八进制转义形时，_artifacts.is_artifact
-            # 与 _rehearsed_path_is_ignored_du（check-ignore）拿到的是转义字面量，
+            # 与 _rehearsed_paths_all_ignored_du（check-ignore）拿到的是转义字面量，
             # 判定必然失真，被忽略草稿会被误判为语义冲突直通 repair。
             paths.append(_unquote_git_path(line.strip()))
         return [p for p in paths if p]
@@ -1494,15 +1494,6 @@ class G4MergebackMixin:
             return False
         ignored = {ln for ln in chk.stdout.split("\0") if ln}
         return all(p in ignored for p in paths)
-
-    def _rehearsed_path_is_ignored_du(self, path: str) -> bool:
-        """单路径薄包装（语义等价 ``_rehearsed_paths_all_ignored_du([path])``）。
-
-        主调用点（_rehearse_merge_from_branch）已收敛到批量版以省子进程；
-        本包装保留给 _parse_merge_tree_conflict_paths 注释引用的旧名，防概念
-        漂移。
-        """
-        return self._rehearsed_paths_all_ignored_du([path])
 
     def rehearsal_conflict_paths(self, branch: str) -> list:
         """救回路径的冲突文件集查询（evo-add-codefix-mergeback-conflict-salvage 1.2）。
@@ -2064,7 +2055,10 @@ class G4MergebackMixin:
         if not backup.is_dir():
             return
 
-        # 字节级比对：读文件 bytes 相等即可，无需 git 命令。
+        # 字节级比对：读文件 bytes 相等即可，无需 git 命令。按固定块循环比对，
+        # 避免把整文件读进内存（备份对象可能是未忽略的构建产物，可达数十 MB）
+        # 而拉长 _main_tree_lock 持锁时长（code-review item 624c8d0952f4）。
+        chunk_size = 1024 * 1024
         inconsistent = []
         for p in list(backup.rglob("*")):
             if not p.is_file():
@@ -2076,8 +2070,14 @@ class G4MergebackMixin:
                     inconsistent.append(str(rel))
                     continue
                 with open(p, "rb") as src_f, open(head_file, "rb") as head_f:
-                    if src_f.read() != head_f.read():
-                        inconsistent.append(str(rel))
+                    while True:
+                        src_blk = src_f.read(chunk_size)
+                        head_blk = head_f.read(chunk_size)
+                        if src_blk != head_blk:
+                            inconsistent.append(str(rel))
+                            break
+                        if not src_blk:  # 两块相等且同时读到 EOF → 完全一致
+                            break
             except OSError:
                 # 读取失败：保守视为不一致，保留备份由人工裁决
                 inconsistent.append(str(rel))
