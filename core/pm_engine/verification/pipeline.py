@@ -1598,7 +1598,7 @@ class VerificationPipeline:
                 (verify_dir / f"test_scenarios.json.contract-v{set_version}.bak").write_text(
                     path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
-            except OSError as e:
+            except (OSError, UnicodeDecodeError) as e:
                 self._context.logger.warning(
                     "pm_engine",
                     f"冻结契约迁移备份失败 '{spec_name}'（不阻断迁移）: {e}",
@@ -2105,9 +2105,12 @@ class VerificationPipeline:
         """
         from core.verdict_check import save_report
 
+        # 报告键与裁剪缓存键同源（code-review item 84c25f12379b）：统一走
+        # _parallel_plan_scenario_sid 单源口径，字面量 str(None) 键会让无 id
+        # 场景的引擎副本与缓存副本（"#{i}" 兜底键）互不命中、重复入报告。
         merged = {
-            str(sc.get("scenario_id")): sc
-            for sc in (report.get("scenarios") or [])
+            _parallel_plan_scenario_sid(_parallel_plan_scenario_def(sc), i): sc
+            for i, sc in enumerate(report.get("scenarios") or [])
             if isinstance(sc, dict)
         }
         for sid, prev in cached_results.items():
@@ -2168,11 +2171,6 @@ class VerificationPipeline:
         )
         return report
 
-    # ── B3: 阶段2 引擎执行段（等价搬移，不含 env_error 回写段）──────
-    # D1 B3 段落（D2：引擎执行段可提，env_error 回写段含 continue/break 留循环体）。
-    # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
-    # D4：VerifyEngine / load_scenarios 的 import 保留在本方法体内（运行时函数体内），
-    # 测试靠 patch("core.verify_engine.VerifyEngine") 在本方法执行时生效。
     def _salvage_top_level_dict(self, scenarios_path):
         """顶层 dict 包裹形态机械拯救（evo-scenario-product-toplevel-contract 2.2）。
 
