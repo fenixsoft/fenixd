@@ -32,7 +32,7 @@ from core.dashboard import data as dashboard_data
 # ``code_review_routes._guard_hosting_state`` 属性路径可解析。
 from core.dashboard.routes.hosting_guard import _guard_hosting_state
 
-logger = logging.getLogger("fenixd.dashboard.code_review_routes")
+logger = logging.getLogger("fenixd.dashboard.routes.code_review_routes")
 
 # 手动触发信号文件（daemon 主循环经 fenixd._check_code_review_requests 消费）。
 # 与 admin_invoke_request / cancel_run_request / approve_push_request 同属
@@ -426,7 +426,8 @@ class H11CodeReviewRoutesMixin:
         # 胜出；返回 None 表示 FileExistsError（已有未消费请求）→ 409。
         created = datetime.now(timezone.utc).isoformat()
         # 键名与消费者契约一致（fenixd._check_code_review_requests 读
-        # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
+        # requested_at；item 117af27b759a：旧实现误写 created 键使 daemon
+        # 恒记空时间戳，现已改写 requested_at）
         payload = {"scope": scope, "source": "dashboard", "requested_at": created}
         req_path = proot / CODE_REVIEW_REQUEST
         try:
