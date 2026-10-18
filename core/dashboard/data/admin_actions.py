@@ -1515,7 +1515,9 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     同时刷新 updated 时间戳，并返回写入后的 priority。
 
     Returns:
-        {"found": bool, "priority": int}  — found=False 表示 spec 不在 STATE.md
+        {"found": True, "ok": True, "priority": int}  — 写入成功（ok 与失败
+        分支对称，路由侧以 ok 分流，缺键会把成功恒判 409，b8d68056999e）
+        {"found": False}                  — spec 不在 STATE.md
         写入失败（前置校验后并发软删除/写入被拒）→
         {"found": True, "ok": False, "priority": None, "error": ...}
         （WARNING 留痕，STATE 零变更；路由侧按 ok 分流 409）
@@ -1549,7 +1551,9 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
         )
         return {"found": True, "ok": False, "priority": None,
                 "error": "spec 已并发删除或写入被拒，写入未落盘"}
-    return {"found": True, "priority": p}
+    # ok 与失败分支对称（b8d68056999e）：路由 /api/spec-priority 以
+    # result.get("ok") 分流 409，成功返回缺 ok 键会被恒判写入失败
+    return {"found": True, "ok": True, "priority": p}
 
 
 # ── 裁决动词（add-human-adjudication-choices 3.x）────────────────────────

@@ -2612,6 +2612,42 @@ class TestSpecBudgetData(unittest.TestCase):
         self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 3)
 
 
+class TestSpecPriorityData(unittest.TestCase):
+    """set_spec_priority 返回形状钉住（code-review b8d68056999e：跨层 ok 契约）。
+
+    路由 /api/spec-priority 以 result.get("ok") 分流 409，成功/写入失败
+    两形状都必须带 ok 键——任一侧缺键都会把成功写入恒判失败。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", None)
+        self.sm.add_spec("demo-spec", {"priority": 5})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_success_returns_ok_true_and_writes(self):
+        from core.dashboard.data import set_spec_priority, parse_state
+        result = set_spec_priority(self.project_root, "demo-spec", 2)
+        self.assertEqual(result, {"found": True, "ok": True, "priority": 2})
+        self.assertEqual(
+            parse_state(self.project_root)["demo-spec"].get("priority"), 2)
+
+    def test_write_failure_returns_ok_false(self):
+        from core.dashboard.data import set_spec_priority
+        with patch("core.dashboard.data.admin_actions._sm") as sm_factory:
+            sm_factory.return_value.update_spec.return_value = False
+            result = set_spec_priority(self.project_root, "demo-spec", 3)
+        self.assertEqual(
+            result,
+            {"found": True, "ok": False, "priority": None,
+             "error": "spec 已并发删除或写入被拒，写入未落盘"},
+        )
+
+
 class TestSpecSummaryBudgetFields(unittest.TestCase):
     """spec_summary 三预算字段（覆盖/无覆盖/非法覆盖三态，与闸门口径一致）。"""
 
