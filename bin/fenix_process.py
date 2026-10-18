@@ -277,7 +277,10 @@ def render_report(project_root, spec_name: str) -> str:
     lines = []
 
     # ── 头部 ──
-    status = entry.get("status", "?")
+    # 与 fenix_status.render_report（.get("status") or "?"）同口径：parse_state
+    # 把 `- status:` 空值折叠为 None，.get 默认值只在键缺失时生效，None 会把
+    # 头部渲染出字面量 None 并令 NEXT_STEPS.get(None) 落「未知状态」。
+    status = entry.get("status") or "?"
     icon = STATUS_ICONS.get(status, "❓")
     try:
         summary = data.spec_summary(proot, spec_name, entry)
