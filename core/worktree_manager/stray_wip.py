@@ -1843,7 +1843,9 @@ class MainTreeStrayWipSweeper:
             f"告警发出前后主树工作区状态未变"
         )
         if attribution_note:
-            evidence += f"归因探测: {attribution_note}; "
+            # 基串末段（零触碰注记）无尾部分隔符，追加段自带 "; " 前缀
+            # （对齐 _write_alert 复发注记段形态），防两段文本粘连
+            evidence += f"; 归因探测: {attribution_note}"
         store = AdminStore(self.project_root, logger=None)
         rec = store.append(
             {
