@@ -268,7 +268,12 @@ def render_overview(specs, daemon_ok, agents=None):
     # 计算总体实现进度
     grand_total = grand_done = 0
     for name in specs:
-        d, t = dash_data.task_progress(PROJECT_ROOT, name)
+        # 透传 spec_status（与 Web 数据层 summary.py 同语义）：implementing
+        # 优先读活跃 implementer worktree 的 tasks.md，且命中叠加时用最新
+        # impl run 记录实时补全进度，避免与 Web 端同一 SPEC 显示漂移
+        d, t = dash_data.task_progress(
+            PROJECT_ROOT, name, (specs.get(name) or {}).get("status") or ""
+        )
         grand_total += t
         grand_done += d
 
@@ -345,7 +350,9 @@ def render_active_specs(specs):
         error = entry.get("error")
 
         # 任务进度
-        groups = dash_data.parse_tasks(PROJECT_ROOT, name)
+        groups = dash_data.parse_tasks(
+            PROJECT_ROOT, name, (entry or {}).get("status") or ""
+        )
         all_tasks = []
         for g in groups:
             all_tasks.extend(g["tasks"])
