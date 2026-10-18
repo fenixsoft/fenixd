@@ -153,11 +153,14 @@ function nodeText(node: MdNodeLike): string {
 
 /** GitHub 风格 slug：小写、去标点（保留 Unicode 字母/数字/空格/连字符/下划线）、空格转连字符。 */
 function githubSlug(text: string): string {
-  return text
+  const slug = text
     .trim()
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]/gu, '')
     .replace(/\s+/g, '-');
+  // 纯标点/emoji 标题剔除后为空串：回退 GitHub 同款 "section"，避免产出 id="" 的
+  // 无效 HTML 且锚点永远找不到目标；多个此类标题由 allocHeadingId 去重为 section-1…
+  return slug || 'section';
 }
 
 // 重复标题 slug 去重计数（GitHub 规则：同名依次追加 -1、-2…）。
