@@ -225,6 +225,49 @@ def _clear_preserve_sidecar() -> None:
         pass
 
 
+def _load_preserve_entries() -> tuple:
+    """读保全 sidecar 并初始化 seen_wt 集合（两保全路径共用收口）。
+
+    ``_preserve_interrupted_runs`` 与 ``_preserve_implementing_specs`` 的
+    「读 sidecar → 增量并入（先读后写不覆盖）」前奏逐字重复（code-review
+    item 838d4f9f76ba），收口此处，条目演进只改一处。
+
+    Returns: ``(entries, seen_wt)``——entries 为既有保全条目副本；seen_wt 为
+    其中非空 worktree 集合（去重基准）。
+    """
+    entries = list(_read_preserve_sidecar())
+    seen_wt = {e.get("worktree") for e in entries if e.get("worktree")}
+    return entries, seen_wt
+
+
+def _preserve_entry(spec, run_id, branch, worktree, ahead, reason: str) -> dict:
+    """组装保全条目（两保全路径共用收口，字段演进只改这里）。
+
+    item 838d4f9f76ba：条目结构原在两处逐字重复，仅 ``branch`` 归一口径微差
+    （run 驱动路径 ``branch or ""``、spec 驱动路径上游已 ``or ""``），统一为
+    ``branch or ""``——对已是字符串的输入无行为差异。
+    """
+    return {
+        "spec": spec,
+        "run_id": run_id,
+        "branch": branch or "",
+        "worktree": worktree,
+        "ahead_commits": ahead,
+        "reason": reason,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _persist_preserve_entries(logger, entries: list) -> None:
+    """落盘保全 sidecar，失败降级 WARNING 不阻塞停机（两保全路径共用文案）。"""
+    if not _write_preserve_sidecar(entries):
+        logger.warning(
+            "fenixd",
+            f"Preserve sidecar write failed (non-blocking) — "
+            f"{len(entries)} entry/ies not persisted",
+        )
+
+
 def _strict_bool(value, default: bool) -> bool:
     """严格 bool 读取（对齐 core.config get_admin_config 的严格 bool 范式，
     code-review item 2f257c49fa5c）：bool() 直转会把任何 truthy 非 bool 值
@@ -403,6 +446,11 @@ class FenixDaemon:
         # 宿主守卫去重（add-framework-self-evolution D1/5.2）：非自托管部署
         # 只记一次日志，不刷屏。
         self._evolution_host_guard_logged = False
+        # 主循环 admin.interval_minutes 非法留痕的边沿去重键（code-review item
+        # fafb1efa215a）：主循环每轮（≈1s）重读该键，非法值留痕按 (raw, reason)
+        # 边沿触发——键值不变只打一次，恢复合法即复位，修复后复发可再留痕。
+        # 读取走 getattr，容忍未走 initialize 的裸对象（既有测试形态）。
+        self._evo_interval_invalid_key = None
         # 代码陈旧持续状态（add-stale-code-selfheal D1）：每检测周期重算的
         # self._code_stale 取代「每进程一次性提示」的模块级旗标；为真期间保持
         # 可见（WARNING 仅状态边沿落一次 + 未处置 escalation 告警去重），并作为
@@ -1200,14 +1248,21 @@ class FenixDaemon:
                 # YAML 合法标量、float() 不报错，令下方检查点节拍比较恒 False、
                 # 自进化检查点含条目保留清理 prune_items 静默停摆——code-review
                 # item b80e1bf206f9）各自保留原有留痕文案，回退缺省 5.0。
-                interval_minutes = ConfigLoader.get_finite_number(
-                    self.config,
-                    "admin.interval_minutes",
-                    conv=float,
-                    get_default=5,
-                    or_default=5,
-                    fallback=5.0,
-                    on_invalid=lambda raw, reason: self.logger.error(
+                # item fafb1efa215a：本读取位于 while 主循环体内、所有周期节拍
+                # 条件之外，主循环每轮（≈1s）都执行——非法值期间 on_invalid 逐轮
+                # 触发，约 8.6 万条 ERROR/天持续刷盘。留痕改状态边沿触发（同
+                # _heal_block_reason 边沿日志先例：(raw, reason) 不变只打一次；
+                # 本轮读取合法即复位边沿记忆，修复后复发可再留痕一次）。
+                # 回退值 5.0 的节拍语义不变。
+                _evo_invalid: list = []
+
+                def _on_evo_interval_invalid(raw, reason):
+                    _evo_invalid.append((raw, reason))
+                    edge_key = (repr(raw), reason)
+                    if getattr(self, "_evo_interval_invalid_key", None) == edge_key:
+                        return
+                    self._evo_interval_invalid_key = edge_key
+                    self.logger.error(
                         "fenixd",
                         (
                             f"admin.interval_minutes 非法（应为有限数值分钟）: "
@@ -1218,8 +1273,21 @@ class FenixDaemon:
                             f"admin.interval_minutes 非法（应为数值分钟）: "
                             f"{raw!r}，回退 5"
                         ),
-                    ),
+                    )
+
+                interval_minutes = ConfigLoader.get_finite_number(
+                    self.config,
+                    "admin.interval_minutes",
+                    conv=float,
+                    get_default=5,
+                    or_default=5,
+                    fallback=5.0,
+                    on_invalid=_on_evo_interval_invalid,
                 )
+                if not _evo_invalid:
+                    # 本轮配置合法：复位边沿记忆（状态解除清零，同
+                    # _heal_block_reason 先例），此后复发可再次留痕
+                    self._evo_interval_invalid_key = None
                 evo_interval = max(interval_minutes, 0.5) * 60
                 if time.time() - evolution_check_ts >= evo_interval:
                     evolution_check_ts = time.time()
@@ -2599,18 +2667,29 @@ class FenixDaemon:
             # 8f6bf8446388，同主循环守卫范式，缺省口径一致回退 5 分钟）：裸
             # float() 在逐轮 run_once 的 try/except 之外抛出会击穿整个巡检
             # 线程，admin 监视永久停摆（code-review item 0c251f8d00a5）。
-            # [fenix-ignore:0c251f8d00a5] 已修复（code-fix 批次 61dd54b8 落地）：interval 读取已纳入逐轮 try/except (TypeError, ValueError)，非法值回退 5.0 并 ERROR 留痕，所指巡检线程击穿不复存在
+            # item 3ac24f300fbf：守卫扩为 (TypeError, ValueError, OverflowError)
+            # 并对非有限值显式回退——.inf/.nan 是 YAML 合法标量、float() 不报
+            # 错：.inf 使 max 保持 inf、time.sleep(inf*60) 抛 OverflowError；
+            # .nan 使 max 返回 nan、time.sleep(nan) 抛 ValueError，两者原均在
+            # except 覆盖之外。admin_cfg 快照经 get_admin_config._num 归一后
+            # 正常链下非有限值不可达（_num 对非有限回缺省 5.0），本守卫属与
+            # 主循环同口径的纵深对齐，兼兜旁路塞入与极大有限值 interval*60
+            # 溢出 inf 的残余形态——time.sleep 一并纳入防御，异常回退 5.0
+            # 重睡，admin 巡检线程不再被击穿（daemon 线程无重启机制）。
+            # [fenix-ignore:0c251f8d00a5] 已修复（code-fix 批次 61dd54b8 落地；item 3ac24f300fbf 补齐非有限值与 OverflowError 口径并将 time.sleep 纳入防御）：interval 读取有逐轮守卫，非法/非有限/溢出形态均回退 5.0 并 ERROR 留痕，所指巡检线程击穿不复存在
             try:
                 interval = max(float(self.admin_monitor.interval_minutes), 0.5)
-            except (TypeError, ValueError):
+                if not math.isfinite(interval):
+                    raise ValueError("non-finite interval")
+                time.sleep(interval * 60)
+            except (TypeError, ValueError, OverflowError):
                 self.logger.error(
                     "admin_monitor",
-                    f"admin.interval_minutes 非法（应为数值分钟）: "
+                    f"admin.interval_minutes 非法（应为有限数值分钟）: "
                     f"{self.admin_monitor.admin_cfg.get('interval_minutes')!r}，"
                     "回退 5",
                 )
-                interval = 5.0
-            time.sleep(interval * 60)
+                time.sleep(5.0 * 60)
             if not self.running:
                 break
 
@@ -5137,8 +5216,9 @@ class FenixDaemon:
 
         Returns: 已登记保全的 worktree 路径列表（供 cleanup_orphans 保护集）。
         """
-        entries = list(_read_preserve_sidecar())
-        seen_wt = {e.get("worktree") for e in entries if e.get("worktree")}
+        # sidecar 前奏与条目落盘已收口共享助手（item 838d4f9f76ba，与
+        # _preserve_implementing_specs 同源）
+        entries, seen_wt = _load_preserve_entries()
         for run_id in run_ids:
             spec = self._spec_from_run_id(run_id)
             if not spec:
@@ -5181,15 +5261,7 @@ class FenixDaemon:
                         seen_wt.add(str(wt))
                 ahead = _ahead_commit_count(branch) if branch else 0
                 entries.append(
-                    {
-                        "spec": spec,
-                        "run_id": run_id,
-                        "branch": branch or "",
-                        "worktree": worktree,
-                        "ahead_commits": ahead,
-                        "reason": reason,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
+                    _preserve_entry(spec, run_id, branch, worktree, ahead, reason)
                 )
                 self.logger.warning(
                     "fenixd",
@@ -5204,12 +5276,7 @@ class FenixDaemon:
                     f"（非阻塞，跳过该条继续其余 run）: {e}",
                 )
                 continue
-        if not _write_preserve_sidecar(entries):
-            self.logger.warning(
-                "fenixd",
-                f"Preserve sidecar write failed (non-blocking) — "
-                f"{len(entries)} entry/ies not persisted",
-            )
+        _persist_preserve_entries(self.logger, entries)
         return sorted(seen_wt)
 
     def _build_remerge_callback(self):
@@ -5323,8 +5390,9 @@ class FenixDaemon:
 
         Returns: 新增保全条目的 worktree 路径列表（供保护集 / WIP checkpoint）。
         """
-        entries = list(_read_preserve_sidecar())
-        seen_wt = {e.get("worktree") for e in entries if e.get("worktree")}
+        # sidecar 前奏与条目落盘已收口共享助手（item 838d4f9f76ba，与
+        # _preserve_interrupted_runs 同源）
+        entries, seen_wt = _load_preserve_entries()
         added_wt: list = []
         try:
             implementing = self.state_machine.get_by_status("implementing")
@@ -5367,15 +5435,7 @@ class FenixDaemon:
                     seen_wt.add(worktree)
                     added_wt.append(worktree)
                 entries.append(
-                    {
-                        "spec": spec,
-                        "run_id": run_id,
-                        "branch": branch,
-                        "worktree": worktree,
-                        "ahead_commits": ahead,
-                        "reason": reason,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
+                    _preserve_entry(spec, run_id, branch, worktree, ahead, reason)
                 )
             self.logger.warning(
                 "fenixd",
@@ -5384,12 +5444,7 @@ class FenixDaemon:
                 f"{[wt for wt in worktrees if wt] or ['none']}, "
                 f"ahead={ahead})",
             )
-        if not _write_preserve_sidecar(entries):
-            self.logger.warning(
-                "fenixd",
-                f"Preserve sidecar write failed (non-blocking) — "
-                f"{len(entries)} entry/ies not persisted",
-            )
+        _persist_preserve_entries(self.logger, entries)
         return sorted(added_wt)
 
     def _wip_checkpoint_preserved_worktrees(self, preserved_wts: list) -> None:
@@ -5647,7 +5702,24 @@ class FenixDaemon:
             # （SIGTERM→interrupted 标记→≤10s 缓冲→SIGKILL），默认 grace 窗口即收口，
             # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s。
             # 排水到期残留 run 在此收口（sidecar 保全已先行落盘）。
-            self.agent_runner.wait_for_running_agents()
+            # code-review item 262904f93832：本调用是收口序列中唯一无异常包裹的
+            # 一步（后续 terminate_lane_processes / _v2_stop_all / 保护集构造均
+            # 有独立容错）。其内部 SIGTERM / interrupted 标记 / SIGKILL / 收割各
+            # 段虽逐段 try/except，仍有未覆盖面（注册表快照、缓冲窗口轮询等）；
+            # 且本方法处于 start() 的 finally——此处抛出会替换在途异常，并跳过
+            # 下方车道进程终止、dev-server 端口回收、保全 worktree 的 WIP
+            # checkpoint 提交与 cleanup_orphans 保护集构造：保全 worktree 缺
+            # ahead≥1 锚点提交时，下一 daemon 的保留续做判定可能不命中而降级
+            # 清空重建。独立容错对齐紧邻步骤口径：留痕后继续收口序列。
+            try:
+                self.agent_runner.wait_for_running_agents()
+            except Exception as e:
+                _safe_log(
+                    "error",
+                    f"Agent terminate flow on shutdown failed (non-blocking, "
+                    f"继续车道进程终止 / WIP checkpoint / dev-server 回收 / "
+                    f"保护集构造): {e}",
+                )
             # planned-restart-drain B/D3：登记车道进程（ocr 等）有序终止收口——
             # SIGTERM → 短宽限 → SIGKILL，并等车道线程落终态（bounded），
             # 车道产物/serving worktree 不再被当无主回收。登记 API 为本 SPEC
