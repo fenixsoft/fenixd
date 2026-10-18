@@ -3549,7 +3549,25 @@ class PMEngine:
         getter = getattr(self.agent_runner, "get_extension_baseline", None)
         if callable(getter):
             try:
-                baseline_ts = getter(spec_name)
+                # code-review item 9ba11be6ca6b：传入当前在跑 run_id 供读取侧
+                # run 归属守卫——旧 run 死后 120 秒流新鲜窗口内同 spec 新派 run
+                # 时，跨 run 残留基准不得当成本 run 的 stuck 起点。在跑注册表
+                # 不可用/异常/无匹配时传 None，保持既有流新鲜度代理行为。
+                current_run_id = ""
+                rids_getter = getattr(self.agent_runner, "running_run_ids", None)
+                if callable(rids_getter):
+                    try:
+                        current_run_id = next(
+                            (
+                                str(rid)
+                                for rid in rids_getter()
+                                if run_spec_part(str(rid)) == spec_name
+                            ),
+                            "",
+                        )
+                    except Exception:
+                        current_run_id = ""
+                baseline_ts = getter(spec_name, current_run_id or None)
             except Exception as e:
                 self.logger.debug(
                     "pm_engine",
