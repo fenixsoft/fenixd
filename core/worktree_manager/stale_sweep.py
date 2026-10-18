@@ -198,23 +198,41 @@ class G7StaleSweepMixin:
                             f"worktree 目录已清理，分支留待恢复/后继 run 收编",
                         )
                     else:
-                        del_res = subprocess.run(
-                            ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                            capture_output=True,
-                            text=True,
-                            # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
-                            encoding="utf-8",
-                            errors="replace",
-                            timeout=10,
-                        )
-                        if del_res.returncode != 0:
-                            # 与同函数其它失败分支同款降级口径：删除失败不阻塞
-                            # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
+                        # ── 框架归属校验（code-review item f01986d21d5c）──
+                        # 目录名能按 impl-/verify- 约定解析出 spec，不代表其
+                        # HEAD 分支属框架：外部（人工/其他工具）创建的合规命名
+                        # 目录可停在任意非框架分支（release-1.2、主库未 checkout
+                        # 的 main 等，且 STATE 无引用）。branch -D 不可逆，对齐
+                        # 「宁可不清理，不可误删」口径：仅当分支命中「创建端
+                        # fenix ∪ 配置 implement_branch_prefix」命名空间（与
+                        # _branch_protected_by_state (b) 的前缀并集同口径）才删，
+                        # 否则保守保留分支（worktree 目录照常已清）并 WARNING
+                        # 留痕。
+                        prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
+                        if not any(branch.startswith(f"{p}/") for p in prefixes):
                             self.logger.warning(
                                 "worktree_manager",
-                                f"Stale branch delete failed (non-blocking): "
-                                f"'{branch}' — {del_res.stderr.strip()}",
+                                f"Skip stale branch delete for '{branch}' — "
+                                f"non-framework branch namespace, conservative keep",
                             )
+                        else:
+                            del_res = subprocess.run(
+                                ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                                capture_output=True,
+                                text=True,
+                                # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
+                                encoding="utf-8",
+                                errors="replace",
+                                timeout=10,
+                            )
+                            if del_res.returncode != 0:
+                                # 与同函数其它失败分支同款降级口径：删除失败不阻塞
+                                # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
+                                self.logger.warning(
+                                    "worktree_manager",
+                                    f"Stale branch delete failed (non-blocking): "
+                                    f"'{branch}' — {del_res.stderr.strip()}",
+                                )
                 elif not branch and not wt_dir.exists():
                     # 分支名识别失败（rev-parse 非零退出，gitdir 损坏等）且
                     # worktree 已删：分支处置（在飞引用保护 + 删除）整体跳过，
