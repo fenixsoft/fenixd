@@ -782,6 +782,24 @@ def _read_file_text(path) -> "str | None":
         return None
 
 
+def _is_file_safe(path) -> bool:
+    """is_file() 的 OSError 容错版（仿 core/dashboard/watcher.py:_is_dir）。
+
+    pathlib 的 is_file() 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，其余 OSError
+    （EACCES/EIO 等）直接上抛；resolve_effective_declaration 的分层回退
+    fail-safe 契约要求单层探测故障按「该来源不可用」走回退链而非冲出统一
+    入口，故显式吞掉按 False 处理并留 WARNING（code-review 4b65a2ac45f6）。
+    """
+    try:
+        return path.is_file()
+    except OSError as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"resolve_effective_declaration 文件探测失败（按该来源不可用回退）{path}: {e}",
+        )
+        return False
+
+
 def resolve_effective_declaration(
     spec_name, *, branch=None, worktree_path=None, project_root=None
 ) -> dict:
@@ -835,7 +853,7 @@ def resolve_effective_declaration(
         except (OSError, TypeError, ValueError):
             # worktree_path 不可用（非路径形态/非法对象）→ 回退下一来源
             wt_tasks = None
-        if wt_tasks is not None and wt_tasks.is_file():
+        if wt_tasks is not None and _is_file_safe(wt_tasks):
             text = _read_file_text(wt_tasks)
             if text is not None:
                 entries = _declared_entries_from_text(text)
@@ -862,7 +880,7 @@ def resolve_effective_declaration(
     if project_root:
         main_spec_dir = Path(project_root) / "spec" / "changes" / spec_name
         main_tasks = main_spec_dir / "tasks.md"
-        if main_tasks.is_file():
+        if _is_file_safe(main_tasks):
             text = _read_file_text(main_tasks)
             if text is not None:
                 entries = _declared_entries_from_text(text)
@@ -2876,13 +2894,14 @@ def lint_declared(spec_dir, project_root) -> List[str]:
 
 
 # tasks.md 分组标题正则（task-track D2「同源规则」）：与
-# core/dashboard/data.py:parse_tasks 及 bin/fenix_process.py:parse_tasks 的
+# core/dashboard/data/tasks.py:parse_tasks 及 bin/fenix_process.py:parse_tasks 的
 # 分组正则字面量互指，三处必须保持一致（点号可选双历史格式兼容：
 # `## 1. 标题` 与 `## 1 标题`）。漂移由 tests/test_task_track.py 双格式
 # Scenario 兜底。
 _TASKS_GROUP_RE = re.compile(r"^##\s+\d+\.?\s+(.+)$")
 
-# 任务项正则：与 data.py:parse_tasks / fenix_process.py:parse_tasks 同源。
+# 任务项正则：与 data/tasks.py:parse_tasks / fenix_process.py:parse_tasks 同源。
+# （tasks.py 处为带后缀捕获组的前缀超集，前缀字面量一致，非漂移。）
 # 严口径（仅行首 `- [x]`/`- [ ]`）专用于任务行计数与孤儿判定；语境分类用
 # 文件头部 _CHECKBOX_RE 宽口径，差异有意、勿混用（item 6e387df34df1）。
 _TASKS_ITEM_RE = re.compile(r"^- \[(x| )\]")
