@@ -162,9 +162,16 @@ export const markdownComponents: Components = {
   // react-markdown v10 无 inline prop：以 className（language-*）或内容含换行
   // 判围栏块（CommonMark 围栏内容恒以换行结尾），其余按内联 chip 渲染
   code: ({ node: _node, className, children, ...props }) => {
+    // 换行探测只对字符串 children 做（code-review 0ead74c7ce53）：children 为
+    // 含 React 元素的数组时 String() 会把元素 type（映射组件下是函数）String
+    // 化出函数源码字符串、常含换行，可能把内联 code 误判为块级
     const isBlock =
       (typeof className === 'string' && className.includes('language-')) ||
-      /\n/.test(String(children));
+      (typeof children === 'string'
+        ? /\n/.test(children)
+        : Array.isArray(children) &&
+          children.every((c) => typeof c === 'string') &&
+          /\n/.test(children.join('')));
     if (isBlock) {
       return (
         <code className={className} {...props}>
@@ -224,6 +231,7 @@ export const markdownComponents: Components = {
   // 取文本与 table 指纹识别同口径（collectTableText），行内格式表头不失宽
   th: ({ node: _node, children, ...props }) => {
     const widths = useContext(TableWidthContext);
+    // [fenix-ignore:c2d36490f051] 映射组件拿不到列 index，按序号下发需新增 tr 映射+行内计数，而定宽仅指纹命中的内置受控表格（列名唯一）启用，重复列名歧义不可达，改动风险大于收益
     const width = widths ? widths[collectTableText(children).trim()] : undefined;
     return (
       <th
