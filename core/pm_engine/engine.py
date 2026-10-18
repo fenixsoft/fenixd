@@ -1739,8 +1739,11 @@ class PMEngine:
                 blocker = (blocker + "; " if blocker else "") + vblocker
             if blocker:
                 # 验证完成度闸门（vblocker）触发时走 D7 逃生门：VERIFIED→TESTING
-                # 自动回退重新派发验证器，断点续跑（保留 implementer_run 与 progress），
-                # 消除「verified 无出口」死锁。仅进度不完整走此路径；任务缺口
+                # 回退断点续跑（保留 implementer_run 与 progress）。此处不直接
+                # 派发验证器：状态转移不触发事件驱动（_status_to_event 无
+                # "testing" 键），重派交由 event_bus 周期 full_scan 的
+                # _recover_testing 按无驱动判定异步兜底（带暂停/互斥守卫，
+                # 存在扫描周期级延迟）。仅进度不完整走此路径；任务缺口
                 # （blocker 但非 vblocker）保持 verified 供人工裁决，不自动回退。
                 # blocker == vblocker（同串）即任务缺口闸门已放行、仅剩进度不完整；
                 # 两闸门同中时 blocker 为 "task-gap:…; " + vblocker 合并文案，走下方
@@ -3206,6 +3209,17 @@ class PMEngine:
             # 显式判 None（code-review item 95c429d664e3）：`or 3` 会把合法的 0
             # （首次失败即停止自动重试）吞成默认 3，仅缺省时才回退默认值。
             max_retries = 3 if raw_max_retries is None else int(raw_max_retries)
+            # 布尔/负值拒绝（code-review item 28cef84516d4，与下方 backoff 元素
+            # 及 rollback.py _dispatch_rollback_backoff_seconds 的布尔显式拒绝
+            # 同口径）：int() 接受 YAML 布尔（True→1、False→0），True 折算的
+            # 1 次重试、负值等效 0（首次失败即升级）都在无留痕下改变重试语义
+            # ——WARNING 留痕后回退默认值。0 仍为合法显式配置（见上）。
+            if isinstance(raw_max_retries, bool) or max_retries < 0:
+                self.logger.warning(
+                    "pm_engine",
+                    f"pm.push.max_retries 含布尔/负值 {raw_max_retries}，回退默认 3",
+                )
+                max_retries = 3
         # 补捕 OverflowError（code-review item e09138583cd4）：.inf 解析为 float
         # 后 int() 抛 OverflowError 不在原元组，异常仍从 _push_lock 内穿透
         # approve_push 炸到 _on_spec_done——与 infra_breaker 归一先例同口径。
@@ -4451,6 +4465,17 @@ class PMEngine:
                 # 显式判 None（code-review item 95c429d664e3）：`or 30` 会把
                 # 合法的 cooldown_minutes=0（不冷却）吞成默认 30，仅缺省才回退。
                 cooldown_minutes = 30 if raw_cooldown is None else int(raw_cooldown)
+                # 布尔/负值拒绝（code-review item 28cef84516d4，与
+                # _handle_push_failure 的 max_retries 同款）：int() 接受 YAML
+                # 布尔（True→1、False→0），负值冷却把熔断窗口文案失真——
+                # WARNING 留痕后回退默认 30。0（不冷却）仍为合法显式配置。
+                if isinstance(raw_cooldown, bool) or cooldown_minutes < 0:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"admin.run_infra_breaker.cooldown_minutes 含布尔/负值 "
+                        f"{raw_cooldown}，回退默认 30",
+                    )
+                    cooldown_minutes = 30
             # 补捕 OverflowError（code-review item e09138583cd4）：.inf 配置
             # int() 抛 OverflowError 不在原元组，异常从 recovered 分支穿透
             # _on_spec_reviewing 中断当轮评审入队（infra_breaker 先例同口径）。
