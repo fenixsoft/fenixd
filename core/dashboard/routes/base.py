@@ -254,6 +254,10 @@ def _sig_config(s, q, m):
 
 def _if_none_match_hit(header_value: str, etag: str) -> bool:
     """RFC 7232 If-None-Match 比对：`*` 命中任意；列表逐项比对；弱化符 W/ 剥离。"""
+    # 裸逗号切分成立的前提：内部 ETag（_route_etag 包裹的签名哈希）不含逗号
+    # （code-review item 691adb60fb10）。RFC 7232 允许含逗号的带引号 opaque
+    # ETag（如 "a,b"），届时须改引号感知解析（逐段扫描引号边界而非裸切分）；
+    # 当前最坏后果仅是漏匹配回退 200 全量响应，不会假 304。
     for candidate in header_value.split(","):
         candidate = candidate.strip()
         if not candidate:
@@ -1245,6 +1249,9 @@ class H0BaseMixin:
         self._mark_response_started()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        # 与 _json/_write_304 三点对齐的缓存纪律（code-review item c80c569a6181）：
+        # 4xx 错误体按 RFC 7234 属可启发式缓存响应，no-cache 关闭中介缓存通道。
+        self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         # close_connection=True 的分支（411/413/读体停滞超时/超限快速拒绝等，
         # 见 _handle 与 _read_json_body 各处置点）响应后服务器即关闭连接：
