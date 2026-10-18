@@ -59,6 +59,15 @@ _PROBE_MAX_TOKENS = 256
 _PROBE_USER_AGENT = "claude-cli/2.1.277 (external, cli)"
 
 
+def _effective_host_port(part: urllib.parse.SplitResult) -> tuple[str, int | None]:
+    """归一 netloc 为 (hostname, 有效端口)：默认端口按 scheme 补齐，
+    使 http://host 与 http://host:80（https 同理 :443）判为同主机。"""
+    port = part.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(part.scheme)
+    return (part.hostname or "", port)
+
+
 class _NoCrossHostRedirectHandler(urllib.request.HTTPRedirectHandler):
     """拒绝跟随跨主机重定向（redirect_request 返回 None → urllib 抛 HTTPError，
     由 run_llm_health_check 的既有 http_error 分类接住）。
@@ -73,7 +82,13 @@ class _NoCrossHostRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         origin = urllib.parse.urlsplit(req.full_url)
         target = urllib.parse.urlsplit(newurl)
-        if origin.netloc.lower() != target.netloc.lower():
+        try:
+            same_host = _effective_host_port(origin) == _effective_host_port(target)
+        except ValueError:
+            # netloc 端口非法（.port 对非数字/越界端口抛 ValueError）：
+            # 保守按跨主机拦截，不跟随
+            return None
+        if not same_host:
             return None
         if origin.scheme == "https" and target.scheme != "https":
             return None
@@ -249,7 +264,7 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     raw = raw_bytes.decode("utf-8", errors="replace")
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as e:
+    except ValueError as e:
         return _fail(started, "empty_reply", error=f"响应非合法 JSON: {e}")
     text = _reply_text(data)
     if not text and _thinking_text(data):
