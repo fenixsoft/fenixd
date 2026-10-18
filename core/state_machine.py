@@ -2070,26 +2070,64 @@ class StateMachine:
         ``_frozen_hold: True`` 并**清** ``_cancelled_hold`` 为 False，而非两字段
         同写 True——全库取消保持写点字面命中恰为 6 处（守卫要求），
         新增该字面即红灯。
+
+        prev_error 快照与 error 回写收进同一 ``.STATE.md.lock`` 临界区
+        （code-review 92cf6f8ce875，与 freeze_spec/unfreeze_spec 的锁内锚点
+        复核同口径）：update_spec 的单条目写语义在此显式展开（_mutate_locked
+        + _apply_updates_entry + _log_update_applied，无第二份实现），锁内取
+        最新 error 拼接——锁外快照与落盘之间的窗口内并发写者（人工 unfreeze
+        等）对 error 的改写不再被陈旧 prev_error 拼出的 new_error 盲写覆盖。
+        锁内不落日志（持锁窗口不含 I/O），防御出口带出锁外留痕。
         """
-        prev_error = str((self.read_one(spec_name) or {}).get("error") or "")
         stop_reason = error or (FROZEN_HOLD_FIELD + " flagged")
-        if prev_error and (
-            "原状态" in prev_error
-            or FREEZE_ERROR_PREFIX in prev_error
-            or REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX in prev_error
-            or REVIEW_REJECTED_FREEZE_ERROR_PREFIX in prev_error
-        ):
-            new_error = f"{prev_error} · {stop_reason}"
-        else:
-            new_error = stop_reason
-        return self.update_spec(
-            spec_name,
-            {
-                FROZEN_HOLD_FIELD: True,
-                "_cancelled_hold": False,
-                "error": new_error,
-            },
-        )
+        applied: dict = {}
+        frozen_cleared: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(spec_name)
+            if fresh is None:
+                return False, False
+            if not fresh.get(FROZEN_FIELD):
+                # 防御（与 unfreeze_spec 锚点复核同源的并发口径）：条目在窗口内
+                # 已被并发解冻（frozen 已清）时，MUST NOT 把 _frozen_hold 连同
+                # 含「原状态 X」的冻结旧文案回写到已解冻条目上——放弃本写。
+                frozen_cleared["aborted"] = True
+                return False, False
+            prev_error = str(fresh.get("error") or "")
+            if prev_error and (
+                "原状态" in prev_error
+                or FREEZE_ERROR_PREFIX in prev_error
+                or REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX in prev_error
+                or REVIEW_REJECTED_FREEZE_ERROR_PREFIX in prev_error
+            ):
+                new_error = f"{prev_error} · {stop_reason}"
+            else:
+                new_error = stop_reason
+            found = self._apply_updates_entry(
+                specs,
+                spec_name,
+                {
+                    FROZEN_HOLD_FIELD: True,
+                    "_cancelled_hold": False,
+                    "error": new_error,
+                },
+                applied,
+            )
+            return found, found
+
+        if not self._mutate_locked(_mutate):
+            if frozen_cleared.get("aborted"):
+                self.logger.warning(
+                    "state_machine",
+                    f"mark_frozen_hold skip: spec '{spec_name}' 已在窗口内被并发"
+                    f"解冻（frozen 已清除）——放弃 _frozen_hold 写入，防冻结旧"
+                    f"文案回写已解冻条目",
+                )
+            else:
+                self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
+            return False
+        self._log_update_applied(spec_name, applied)
+        return True
 
     def unfreeze_spec(self, spec_name: str, status: str = None,
                       project_root=None, worktree_manager=None) -> bool:
@@ -3003,7 +3041,7 @@ class StateMachine:
                         # 「冻结 + 告警」成对入口——恢复路径首次补齐人工升级告警
                         # （逐 SPEC 触发不聚合；signal_type=verify_redo_exhausted），
                         # 反复重启仍无法收敛的毒 spec 必须有人被告知。
-                        self.freeze_for_human(
+                        frozen_ok = self.freeze_for_human(
                             name,
                             # 内嵌「原状态 implemented」子串（code-review a2cf023df335）：
                             # dashboard/CLI 解冻按 parse_orig_status 还原目标，缺失
@@ -3038,7 +3076,12 @@ class StateMachine:
                             f"({redo_count}/{verify_redo_budget}) — 冻结为 "
                             f"blocked 等待人工裁决（unfreeze_spec 可解冻并清零计数）",
                         )
-                        recovered.append(name)
+                        # code-review c649ac7eb82e：SPEC 在恢复窗口内被并发删除
+                        # 时 freeze_for_human（内部 update_spec）返回 False——
+                        # 不计入 recovered，与下方 TESTING/REVIEWING/清空重建
+                        # 分支的并发删除守卫同口径
+                        if frozen_ok:
+                            recovered.append(name)
                         continue
                     # 清 tester_run 让验证流水线全新重入；branch/implementer_run
                     # 保留（实现的身份事实，验证不重做实现）。
@@ -3414,7 +3457,7 @@ class StateMachine:
             return None, None
         branch = entry.get("branch")
         ns_candidates: list = []
-        if not branch and worktree_manager is not None:
+        if not branch:
             # 首轮在飞 run（STATE branch 未写，run 未到终态即被强杀）→ 回落
             # worktree_manager 的 spec → worktree 事实查询（git 真相，不依赖
             # 重启即失的内存表），反查该 spec 在册 worktree 归属分支。
@@ -3426,7 +3469,7 @@ class StateMachine:
                     f"{context}: STATE branch 缺失，经 git 事实查询回落 "
                     f"spec '{name}' 在册 worktree → branch '{branch}'",
                 )
-        if not branch and worktree_manager is not None:
+        if not branch:
             # 第三层：git 分支命名空间枚举（worktree 已清只剩分支的窗口）。
             # 候选已按「已含基线」优先排序、零提交候选剔除（D2/tasks 2.5）。
             ns_candidates = worktree_manager.find_branches_by_spec(name)
