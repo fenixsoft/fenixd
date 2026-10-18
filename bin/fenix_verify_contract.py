@@ -244,7 +244,10 @@ def main():
     contract_path = project_root / ".fenix" / "verify.yaml"
     if not contract_path.is_file():
         print(f"错误: 验证契约不存在: {contract_path}", file=sys.stderr)
-        print("提示: 请先创建 .fenix/verify.yaml（参见 verify_contract.py 文档模板）")
+        print(
+            "提示: 请先创建 .fenix/verify.yaml（参见 verify_contract.py 文档模板）",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # 运行校验
