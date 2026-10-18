@@ -47,6 +47,7 @@ core/v2_dev_server.py:175——start_new_session=True 创建独立会话组，
 """
 
 import datetime
+import errno
 import fcntl
 import json
 import logging
@@ -219,11 +220,15 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
         error_el = tc.find("error")
         skipped_el = tc.find("skipped")
 
-        if failure_el is not None:
-            kind = "failure"
+        # failure 与 error 两个分类分支除 kind 外完全一致，合并为单循环
+        # 避免字段集/截断长度双处维护漂移（item 72536d64a662）。
+        # 顺序保持 failure 在前：与旧 elif 链一致，两者并存时只记 failure。
+        for el, kind in ((failure_el, "failure"), (error_el, "error")):
+            if el is None:
+                continue
             # message 属性与 text 兜底统一截断（jest-junit 等会把整段堆栈
             # 塞进 message，超长原文会撑爆单文件覆盖式快照 last-run.json）
-            msg = (failure_el.get("message") or (failure_el.text or "").strip())[:500]
+            msg = (el.get("message") or (el.text or "").strip())[:500]
             case_info["kind"] = kind
             case_info["message"] = msg
             failures.append({
@@ -239,24 +244,12 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
                 # ::TestFoo::<name>）。cases 侧本就携带，failures 侧补齐对齐。
                 "classname": tc_classname,
             })
-        elif error_el is not None:
-            kind = "error"
-            msg = (error_el.get("message") or (error_el.text or "").strip())[:500]
-            case_info["kind"] = kind
-            case_info["message"] = msg
-            failures.append({
-                "name": name,
-                "file": tc_file,
-                "line": tc_line,
-                "time": tc_time,
-                "kind": kind,
-                "message": msg,
-                "classname": tc_classname,
-            })
-        elif skipped_el is not None:
-            case_info["kind"] = "skipped"
+            break
         else:
-            case_info["kind"] = "passed"
+            if skipped_el is not None:
+                case_info["kind"] = "skipped"
+            else:
+                case_info["kind"] = "passed"
 
         cases.append(case_info)
 
@@ -730,7 +723,22 @@ class _SuiteLock:
                 fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
                 break
-            except OSError:
+            except OSError as e:
+                # code-review item 599356fb5fa1：仅「锁被占」类 errno 值得
+                # 空转重试（EACCES 保守纳入——flock 文档虽只列 EWOULDBLOCK，
+                # 但不确定现网实现差异，宁可多试不误杀）。其余 errno
+                # （ENOLCK、EBADF 等）是持久性基础设施故障，按 2s 间隔
+                # 空转满 600s 只会把故障误报成「锁等待超时」，带偏排障
+                # 方向——记 WARNING 后立即放弃。放弃路径与超时放弃同构
+                # （acquired=False，调用方照旧走 skipped 分支），仅日志与
+                # 时机不同。
+                if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                    _logger.warning(
+                        f"regression: 主机级锁不可用（errno={e.errno}: "
+                        f"{e.strerror}），放弃本次回归（供复盘）"
+                    )
+                    self._acquired = False
+                    return self
                 time.sleep(2)
         waited = round(time.time() - start, 1)
         if acquired:
