@@ -766,7 +766,9 @@ export function detectTier2Trigger(specDir, projectRoot, distManifestPath = null
       // 数组形式绕开 shell，避免含空格/元字符的路径被拆词或注入
       const result = execFileSync(
         'grep',
-        ['-rl', 'fetch\\s*(', srcDir, '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx', '--exclude-dir=node_modules'],
+        // POSIX ERE 写法（[[:space:]] 而非 GNU 扩展 \s），BSD/macOS grep 下同样生效；
+        // 与原 BRE fetch\s*( 在 GNU grep 下匹配行为等价
+        ['-rl', '-E', 'fetch[[:space:]]*\\(', srcDir, '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx', '--exclude-dir=node_modules'],
         { encoding: 'utf-8', timeout: 5000 }
       ).trim();
       if (result) {
