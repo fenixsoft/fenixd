@@ -146,6 +146,33 @@ def build_import_graph(tests_dir: str) -> Dict[str, Set[str]]:
     return graph
 
 
+def _module_suffix_to_test_file(base: Path, module_suffix: str) -> Optional[Path]:
+    """把模块键剥掉 ``tests.`` 前缀后的后缀回转成 ``base`` 下实际存在的测试文件。
+
+    模块键由 build_import_graph 把路径分隔符全拼成 "." 生成（仅剥文件自身的
+    .py 后缀），键内的 "." 因此既可能是目录边界，也可能是文件名/目录名自带的
+    点号（如 tests/test_v1.2.py → tests.test_v1.2、tests/pkg.v2/test_x.py →
+    tests.pkg.v2.test_x）：机械地把全部 "." 当分隔符回转会折成不存在的路径
+    （test_v1/2.py、pkg/v2/test_x.py），该测试被排除出增量选测。这里在键内
+    每个 "." 逐位置区分段边界，优先按目录边界解释、无可命中再回退整段作文件
+    名——无点号场景两个解释重合，结果与旧机械回转完全一致；返回第一个实际
+    存在的文件，无任何解释命中时返回 None（由调用方按「回转后文件不存在」告警）。
+    """
+    start = 0
+    while True:
+        dot = module_suffix.find(".", start)
+        if dot == -1:
+            break
+        sub = _module_suffix_to_test_file(
+            base / module_suffix[:dot], module_suffix[dot + 1:]
+        )
+        if sub is not None:
+            return sub
+        start = dot + 1
+    whole = base / (module_suffix + ".py")
+    return whole if whole.exists() else None
+
+
 def find_affected_tests(
     target_module: str, import_graph: Dict[str, Set[str]], max_depth: int = 3
 ) -> Set[str]:
@@ -367,6 +394,17 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
     if timed_out:
         _print_timeout_hint()
         return False
+    if returncode < 0:
+        # 负 rc = pytest 子进程被信号终止（如 OOM killer 的 SIGKILL → -9）：布尔
+        # 返回值会把这种终态与普通测试失败同样折叠成 False（exit 1），信号信息
+        # 在此按 shell 惯例补一行 128+signum 提示（同 main --all 分支的归一口径），
+        # 不再完全丢失。
+        print(
+            f"Warning: pytest was terminated by signal {-returncode} "
+            f"(shell-convention exit code {128 - returncode}); "
+            "this is not an ordinary test failure.",
+            file=sys.stderr,
+        )
     return returncode == 0
 
 
@@ -497,18 +535,20 @@ def main():
             # test_*.py / *_test.py 命名过滤（显式映射来的模块同样过此关）。
             if not _is_executable_test_module(test_module):
                 continue
-            # 模块段的 '.' 全部来自路径分隔符拼接（见 build_import_graph），
-            # 回转时须还原为 '/'，否则嵌套测试目录（如
-            # tests/fixtures/scheduling-showcase/tests/）的测试被折叠成
-            # 不存在的单段路径而被静默丢弃。
-            test_file = tests_dir / Path(*test_module[6:].split(".")).with_suffix(".py")
-            if test_file.exists():
+            # 模块段的 '.' 既来自路径分隔符拼接（见 build_import_graph），也可能
+            # 是文件名/目录名自带的点号；回转须还原 '/' 且保住点号名——否则嵌套
+            # 测试目录（如 tests/fixtures/scheduling-showcase/tests/）的测试被
+            # 折叠成不存在的单段路径而被静默丢弃，点号名文件（tests/test_v1.2.py）
+            # 则被 with_suffix 截断改写成 test_v1/2.py 同样漏跑。
+            test_file = _module_suffix_to_test_file(tests_dir, test_module[6:])
+            if test_file is not None:
                 test_files.append(str(test_file))
             else:
-                # 选中项回转后文件不存在：告警避免静默漏测后给出虚假绿色结论。
+                # 选中项回转后无任何解释命中实际文件：告警避免静默漏测后给出虚假
+                # 绿色结论。
                 print(
-                    f"Warning: selected test {test_module!r} maps to missing file "
-                    f"{test_file}; it will not run.",
+                    f"Warning: selected test {test_module!r} maps to no existing "
+                    f"file under {tests_dir}; it will not run.",
                     file=sys.stderr,
                 )
 
