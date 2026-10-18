@@ -1089,7 +1089,23 @@ class PRepairLaneMixin:
             }
             if not streak_bumped:
                 breaker_updates["_merge_streak"] = streak
-            self._pm.state_machine.update_spec(spec_name, breaker_updates)
+            # 补账写点守卫（code-review item b072a0f618f0，与上方 read
+            # af519c42ee6f / bump 2917c609d8ad 同款论证）：此处裸调若 flock IO
+            # 瞬时抛错，异常沿 _run_repair_worker 外层 except 逃逸，
+            # _fallback_after_repair 会把已 blocked 的 spec 覆盖回 ready
+            # （retries 未达上限时）——刚完成的熔断转移被撤销，且 _merge_fp
+            # 未持久化致下一轮指纹比对走重置路径、熔断计数实质丢失。失败时
+            # 仅 WARNING 留痕并早退：spec 已 blocked，熔断目的已达成。
+            try:
+                self._pm.state_machine.update_spec(spec_name, breaker_updates)
+            except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair re-merge 熔断已触发但补账写入失败 '{spec_name}'"
+                    f"（spec 已 blocked，保留现场早退，不落入 fallback 覆盖 ready）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return False
             self._pm.logger.error(
                 "pm_engine",
                 f"Circuit breaker tripped after repair for '{spec_name}' (fp={fp}) "
@@ -1239,9 +1255,22 @@ class PRepairLaneMixin:
             # admin_monitor 的 blocked_stuck 豁免判据一条不占，冷却期满会被按
             # stuck 自动召唤 admin run，与 full 车道同场景处置机制分裂。error
             # 内嵌「原状态 X」供 parse_orig_status 解冻还原。
-            orig_status = (self._pm.state_machine.read_one(spec_name) or {}).get(
-                "status"
-            ) or "implementing"
+            # 读取守卫（code-review item db8dcf54c94e，对齐同文件 af519c42ee6f/
+            # 34f9abe6a1c4 既有宽口径降级）：本方法可能运行在 worker 的 except
+            # 兜底内（4ba308cf06fe），裸调 read_one 若 flock IO 瞬时抛错会从
+            # 失败收尾路径再冒出，跳过 freeze_for_human/_enqueue_front 全部
+            # 收尾——重试耗尽冻结转人工不落地，spec 悬置。失败按缺省值收尾。
+            try:
+                orig_status = (self._pm.state_machine.read_one(spec_name) or {}).get(
+                    "status"
+                ) or "implementing"
+            except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair 链回退冻结转人工读取原状态失败 '{spec_name}'"
+                    f"（按 'implementing' 缺省继续收尾）: {type(e).__name__}: {e}",
+                )
+                orig_status = "implementing"
             self._pm.state_machine.freeze_for_human(
                 spec_name,
                 error=(
@@ -1307,7 +1336,12 @@ class PRepairLaneMixin:
             repair_round = int(
                 (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
             )
-        except (TypeError, ValueError):
+        except Exception:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按 0 处理，与 _dispatch_repair_lane / _should_enter_repair 对同一数据源的降级口径对齐（code-review item c878d3945dbe：窄口径使 IO 异常沿调用点 _run_repair_worker 内层 try 外溢，被当成 repair agent 派发异常放大为 fallback 全新重派）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"读取 '{spec_name}' 的 _repair_round 失败，冲突摘要按 0 处理"
+                f"（不影响 repair 派发）",
+            )
             repair_round = 0
         return {
             "spec": spec_name,
