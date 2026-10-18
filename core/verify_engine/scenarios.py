@@ -9,10 +9,10 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 import json
 import math
-import os
 import re
-import tempfile
 from pathlib import Path
+
+from .fs_ops import atomic_write_json
 
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
 # 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
@@ -1704,48 +1704,18 @@ def write_scenarios_array(entries: list, filepath) -> None:
 
     顶层拯救助手落地用（evo-scenario-product-toplevel-contract 2.2）：写
     解包后的原始条目而非 to_dict 回环——未知顶层字段零丢失、schema 迁移
-    保持读时行为；原子写惯例与 save_scenarios 一致（同目录临时文件 +
-    ``os.replace``），进程写入中途被杀不会留下截断的场景 JSON。
-    ``os.replace`` 后对父目录 fsync（对齐 judge_files._fsync_dir 掉电持久化
-    纪律，code-review item 3816bf5a4005）：POSIX 语义下落盘数据不等于目录项
-    已持久化，场景文件是冻结验证权威源，掉电丢失/回退旧版会触发整轮 replan。
+    保持读时行为；原子写正文下沉共享实现 fs_ops.atomic_write_json
+    （code-review item d1a142dccb99，消除第四份样板复刻与对 judge_files
+    私有符号 _fsync_dir 的反向知识耦合——fs_ops 与本模块同属
+    verify_engine、只依赖标准库，模块顶部导入无反向依赖），进程写入中途
+    被杀不会留下截断的场景 JSON。``os.replace`` 后对父目录 fsync（掉电
+    持久化纪律，code-review item 3816bf5a4005）：POSIX 语义下落盘数据不等
+    于目录项已持久化，场景文件是冻结验证权威源，掉电丢失/回退旧版会触发
+    整轮 replan。
     """
-    # _fsync_dir 保留函数内局部导入（code-review item ea4284000dd3）：
-    # scenarios 是底层模块，不在模块顶部反向依赖 runner 侧 judge_files，
-    # 仅在原子写落地时按需取用。
-    from core.verify_engine.judge_files import _fsync_dir
-
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
-    )
-    try:
-        # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
-        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
-        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(entries, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, str(path))
-        _fsync_dir(path.parent)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path, entries, tmp_prefix=f".{path.name}-", tmp_suffix=".tmp")
 
 
 def salvage_scenarios_file(filepath) -> tuple[list[TestScenario], dict]:

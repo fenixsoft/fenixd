@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from .browser import wait_animations_settled
+from .fs_ops import atomic_write_json
 from .path_safety import safe_component
 from .screenshot_lab import classify_screenshot
 
@@ -447,20 +448,12 @@ class VisualDiffer:
         path = self._streaks_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), prefix=".baseline_streaks.", suffix=".json.tmp"
+            # 原子写正文下沉共享实现（fs_ops.atomic_write_json，code-review
+            # item 0b7c1aa62ab1）：原裸 with 在 fdopen 抛错时泄漏 fd，统一后
+            # 接管兜底消除；新增的文件/目录 fsync 属口径收敛的可接受增强。
+            atomic_write_json(
+                path, streaks, tmp_prefix=".baseline_streaks.", tmp_suffix=".json.tmp"
             )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(streaks, f, ensure_ascii=False, indent=2)
-                    f.flush()
-                os.replace(tmp_path, path)
-            except OSError as e:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                self._log_warning(f"baseline_streaks 写回失败: {e}")
         except OSError as e:
             self._log_warning(f"baseline_streaks 写回失败: {e}")
 
@@ -472,33 +465,22 @@ class VisualDiffer:
         try:
             marker = self._suspicious_marker_path(baseline_name)
             marker.parent.mkdir(parents=True, exist_ok=True)
-            # 原子写（与 _save_baseline_streaks 同型）：标记写一半被杀会留下
-            # 截断 JSON 误导人工核实，temp + rename 保证读者只见完整内容。
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(marker.parent), prefix=f".{marker.name}.", suffix=".tmp"
+            # 原子写正文下沉共享实现（与 _save_baseline_streaks 同型，
+            # fs_ops.atomic_write_json，code-review item 0b7c1aa62ab1）：标记
+            # 写一半被杀会留下截断 JSON 误导人工核实；原裸 with 在 fdopen
+            # 抛错时泄漏 fd，统一后接管兜底消除。
+            atomic_write_json(
+                marker,
+                {
+                    "baseline": baseline_name,
+                    "scenario_id": scenario_id,
+                    "suspicious": True,
+                    "note": "连续多轮 diff_detected 且 DOM 断言全过，基线疑似污染；"
+                    "重建需人工确认（框架不会自动覆盖/删除基线）",
+                },
+                tmp_prefix=f".{marker.name}.",
+                tmp_suffix=".tmp",
             )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {
-                            "baseline": baseline_name,
-                            "scenario_id": scenario_id,
-                            "suspicious": True,
-                            "note": "连续多轮 diff_detected 且 DOM 断言全过，基线疑似污染；"
-                            "重建需人工确认（框架不会自动覆盖/删除基线）",
-                        },
-                        f,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                    f.flush()
-                os.replace(tmp_path, marker)
-            except OSError as e:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                self._log_warning(f"suspicious 标记写失败: {e}")
         except OSError as e:
             self._log_warning(f"suspicious 标记写失败: {e}")
 
