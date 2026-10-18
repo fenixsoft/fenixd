@@ -24,22 +24,28 @@ import json
 import re
 from pathlib import Path
 
+# 任务 id 语法单一片段（code-review item d5eb2d18e472）：三个正则
+# （_TASK_CHECKBOX_RE / _TASK_ID_RE / _TASK_ID_FULL_RE）全部经 f-string
+# 复用此处，语法扩展（多字母后缀、组号位数等）只有这一处改动点——
+# 「禁止两套正则漂移」在本文件内由构造保证，不再只靠注释约定。
+# 字母后缀（[a-z]?）为任务 id 合法形态，见模块 docstring。
+_TASK_ID_PATTERN = r"\d+\.\d+[a-z]?"
+
 # tasks.md 数字任务勾选行的单一正则（D2）。engine._task_completion_blocker
 # 既内联逻辑与本模块共用此映射，禁止两套实现。
-# 字母后缀（[a-z]?）为任务 id 合法形态，见模块 docstring。
-_TASK_CHECKBOX_RE = re.compile(r"^- \[(x| )\] (\d+\.\d+[a-z]?)")
+_TASK_CHECKBOX_RE = re.compile(rf"^- \[(x| )\] ({_TASK_ID_PATTERN})")
 
 # run 产物中 TaskCreate subject 内嵌 tasks.md id 的提取正则
 # （自 core/dashboard/data.py 随 parse_run_task_done 一并下沉；与勾选行正则
 # 同步接受字母后缀，参数 id 覆盖率比对依赖两处口径一致）。
-_TASK_ID_RE = re.compile(r"Task\s+#?\s*(\d+\.\d+[a-z]?)")
+_TASK_ID_RE = re.compile(rf"Task\s+#?\s*({_TASK_ID_PATTERN})")
 
 # 任务 id 的**整体**形态（用于「某字符串是不是合法任务 id」的判定点：
 # 产物硬门的 completed_tasks/unfinished 合法性、回写行的 id 提取、task-gap
 # 文案的缺口 id 反解）。与 _TASK_CHECKBOX_RE / _TASK_ID_RE 同源同语法——
 # 三处口径必须一致，否则「解析得出、判定判非法」的互斥结论会再次出现
 # （2026-09-15 事故形态：勾选行正则截断出 "1.2"，整体判定又拒绝 "1.2b"）。
-_TASK_ID_FULL_RE = re.compile(r"\d+\.\d+[a-z]?")
+_TASK_ID_FULL_RE = re.compile(_TASK_ID_PATTERN)
 
 
 def is_task_id(value) -> bool:
