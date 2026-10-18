@@ -6,14 +6,10 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
-from core.state_machine import (
-    ENV_BLOCK_ROUNDS_FIELD,
-    ENV_EXEMPTIONS_FIELD,
-    SCENARIO_REVISION_PENDING_FIELD,
-    VERIFY_INFRA_RETRY_STREAK_FIELD,
-    VERIFY_INFRA_ROUNDS_FIELD,
-)
-from core.pm_engine.verification.fastlane import FASTLANE_STREAK_FIELD
+# verified 收口清零/复位字段集单源（code-review item e143213f2b45）：
+# fastlane.VERIFIED_RESET_FIELDS 收编 state_machine 与 fastlane 两侧字段，
+# 与主路径 pipeline._apply_verified 同引一张表，字段演进只改该表。
+from core.pm_engine.verification.fastlane import VERIFIED_RESET_FIELDS
 # evo-add-verifier-infra-death-triage：进程级死亡判定与指纹标注（同包兄弟
 # 模块直引——infra_classify 不回引 legacy，无环；不经 pipeline 门面注册表，
 # 判定是纯函数、无 pipeline 状态依赖）。
@@ -40,9 +36,12 @@ def _discard_if_not_testing(pipeline, spec_name, result, label):
     pushed 终态，在飞 LLM verifier 42 分钟后完成，结果文件被判 stale 后仍
     直接覆写 implemented，触发终态回退 + 冗余全量重验。
 
-    ``label``：DEBUG 丢弃消息中的结果标签（foreign-role/unknown-status+stale/
-    stale/bug-found/verified/process-failure/plan-ready/scenario-repaired/
-    unknown-status/unreadable）。
+    ``label``：DEBUG 丢弃消息中的结果标签，由调用点自定、不在此穷举担保
+    （新增调用点自带新标签即可，避免枚举清单随调用点演进漂移——cancelled/
+    infra 等标签曾漏出早期枚举）；排查 DEBUG 丢弃文案时以各调用点实参为准，
+    现有点位含 foreign-role/unknown-status+stale/stale/bug-found/verified/
+    process-failure/cancelled/infra/plan-ready/scenario-repaired/
+    unknown-status/unreadable。
     """
     _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
     if _cur != "testing":
@@ -700,33 +699,14 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 {
                     "tester_run": result.run_id,
                     "error": None,
-                    "_inconclusive_attempts": 0,
-                    # add-verify-parallel-backoff / design D2：verified 属健康轮，
-                    # 降档并行度同轮复位（legacy 路径同语义）。
-                    "_verify_parallel_override": None,
-                    # add-fail-counter-budget D1：PASS 唯一归零点（legacy 路径同语义）。
-                    "_verify_fail_rounds": 0,
-                    # evo-infra-failure-budget-exempt R3：_verify_infra_rounds
-                    # 与 _verify_fail_rounds 同清零点（legacy 路径同语义）。
-                    VERIFY_INFRA_ROUNDS_FIELD: 0,
-                    # fix-daemon-lifecycle-races D3：验证自然通过清零点（legacy 同语义）。
-                    "_verify_redo_count": 0,
-                    # add-blocked-reverify-lane D3：env 阻塞轮次清零点（legacy 同语义）。
-                    ENV_BLOCK_ROUNDS_FIELD: 0,
-                    # evo-verify-infra-retry-lane D2：infra-retry 专用连续重派计数
-                    # 随验证 PASS 清零（legacy 路径同语义，与 _apply_verified 同点）。
-                    VERIFY_INFRA_RETRY_STREAK_FIELD: 0,
-                    # evo-fix-env-exemption-gate-conflict-… 2.2：豁免生命周期随
-                    # verified 落定收口——豁免只在被验周期内生效，跨周期残留会把
-                    # 后续无关 env 失败洗白；修订待重验旗标同点清除（legacy 同语义）。
-                    ENV_EXEMPTIONS_FIELD: None,
-                    SCENARIO_REVISION_PENDING_FIELD: False,
-                    # minor-defect-fastlane：verified 收口同步清零 fastlane 连败
-                    # 计数（code-review item bfe2b17dcfe2，与 _apply_verified 的
-                    # efbdab0801f3 同款）：正常整轮 verified 不经 fastlane 收敛点，
-                    # 跨验证周期残留旧连击会让后续 fastlane 首败即被误判逼近
-                    # 熔断阈值提前回落整轮。与收敛点清零并存幂等。
-                    FASTLANE_STREAK_FIELD: 0,
+                    # verified 收口清零/复位字段集单源（code-review item
+                    # e143213f2b45，fastlane.VERIFIED_RESET_FIELDS）：含
+                    # inconclusive/fail/infra/redo/env-block/infra-retry
+                    # 计数、降档并行度复位、豁免与修订旗标、fastlane 连败
+                    # 计数（bfe2b17dcfe2/efbdab0801f3）；与主路径
+                    # _apply_verified 同引一张表，字段演进只改该表
+                    # （legacy 车道清零语义同表同点）。
+                    **VERIFIED_RESET_FIELDS,
                 },
             )
             # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）

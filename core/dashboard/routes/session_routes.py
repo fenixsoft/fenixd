@@ -301,14 +301,25 @@ class H_SessionRoutesMixin:
             return
         project, sm = context
 
-        session = sm.get(project["name"])
-        if session is None:
-            self._error(404, "session not found")
-            return
-
         cid = query.get("cid", [None])[0]
         if not cid:
             self._error(400, "missing cid parameter")
+            return
+
+        session = sm.get(project["name"])
+        if session is None:
+            if watch:
+                self._error(404, "session not found")
+                return
+            # unwatch 对死会话/无会话幂等成功（code-review item c41a3389171f）：
+            # sm.get 带死会话清理副作用，Session 已从映射移除、订阅键
+            # session_id 无从恢复，hub.discard 无从执行；该订阅随会话死亡
+            # 已无意义（不再有定向事件），直接返回 ok——与 _api_run_watch
+            # 的 unwatch 方向对齐（仅校验 project/cid，无运行级存在性
+            # 校验），也避免前端关闭弹窗对死会话发 DELETE 收 404 打
+            # console.error 污染 no_console_error 断言。残留的 watched_runs
+            # 条目由连接断开时 hub.unregister 整连接清除兜底。
+            self._json({"ok": True})
             return
 
         if watch:

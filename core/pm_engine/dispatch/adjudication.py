@@ -300,8 +300,17 @@ class VAdjudicationMixin:
             if p.is_file():
                 try:
                     docs[name] = p.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    pass
+                except (OSError, UnicodeDecodeError) as e:
+                    # 顶层文档读取失败不再静默吞（code-review item
+                    # 883212783043）：与下方 specs 循环及 bb46425e6eae 的留痕
+                    # 口径对齐——tasks.md 是裁决最核心的声明文档，文件存在但
+                    # 读取失败（权限/解码）会使 judge 输入静默缺失主声明文档，
+                    # 劣化须可诊断。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"dispute 语境读文档失败 '{p}'（跳过单文件）: "
+                        f"{type(e).__name__}: {e}",
+                    )
         specs_dir = spec_dir / "specs"
         if specs_dir.is_dir():
             # 键用相对 specs/ 的路径而非 basename（code-review item
@@ -2309,6 +2318,29 @@ class VAdjudicationMixin:
                             spec_name, result, m, kind=kind_m
                         )
                         if not rb_ok:
+                            # 陈日重定位已落生效层但复检失败：与同型 typo/reference
+                            # 分支对齐（code-review item 0fcdd3476318 口径，本条
+                            # b4ea54fe50a2）——复用 _audit_deferred_correction 落
+                            # readback-failed 标注（不落 executed_verdicts 时
+                            # dispute 审计块对其失明），并并入 deferred_typo_elements
+                            # 使「修正未生效于读取基准」复发形态对 D5 熔断可见。
+                            # verdict 仍转 unclear（末段归宿分类按 unclear 置
+                            # blocked 待人工，不改归宿分类；streak 不清零，人工
+                            # 解冻续走后 D5 逐轮累计至熔断）。
+                            self._audit_deferred_correction(
+                                spec_name,
+                                [m],
+                                verdict="typo",
+                                reason=(
+                                    f"judge-typo-readback-failed: 陈日重定位已落"
+                                    f"生效层（文本改写或凭据登记）但复检失败，修正"
+                                    f"未生效于读取基准: {_rb_detail}"
+                                ),
+                                actual_paths={m: actual_path},
+                                trigger_run_id=getattr(result, "run_id", "") or "",
+                                judge_run_id=judge_run_id,
+                            )
+                            deferred_typo_elements.append(m)
                             verdict_by_element[m] = {"verdict": "unclear"}
                             continue
                         self._writeback_recur_reset(spec_name)

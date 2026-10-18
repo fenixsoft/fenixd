@@ -29,10 +29,11 @@ logger = logging.getLogger("fenixd.dashboard.alert_routes")
 _ADJUDICATION_LOCKS_GUARD = threading.Lock()
 _ADJUDICATION_LOCKS: dict = {}
 
-# 归档分页契约（add-alerts-archive-and-overview-cache 2.2）：与活跃路径
-# 同构的分页语义，缺省 50、上限 200（防止一次拉穿全部归档记录）。
-_ARCHIVE_DEFAULT_PAGE_SIZE = 50
-_ARCHIVE_MAX_PAGE_SIZE = 200
+# 活动分页契约（add-alerts-archive-and-overview-cache 2.2 引入；活跃与归档
+# 路径共用同一常量单源，code-review item 05811a19064d）：与活跃路径同构的
+# 分页语义，缺省 50、上限 200（防止一次拉穿全部归档记录）。
+_ACTIVITY_PAGE_DEFAULT_SIZE = 50
+_ACTIVITY_PAGE_MAX_SIZE = 200
 
 
 def _adjudication_lock(alert_id: str) -> threading.Lock:
@@ -86,6 +87,20 @@ def _sort_activities_frontend(items: list) -> None:
 class H6AlertRoutesMixin:
     """H6 alerts/admin-activities。"""
 
+    def _aggregatable_projects(self) -> list:
+        """可进人工聚合视图的项目列表：跳过 fixture 项目与不存在项目。
+
+        聚合口径单源（code-review item f0e4a302f6cf）：_api_alerts、
+        _api_admin_activities（分页/非分页分支）与 _api_archived_activities
+        四处复用，口径调整只改此处。fixture-project-governance：夹具项目
+        的告警/处置记录属验证噪音，不进人工聚合。
+        """
+        return [
+            p
+            for p in self.server.projects()
+            if not p.get("fixture") and p.get("exists")
+        ]
+
     def _api_alerts(self, query) -> dict:
         """读取 Administrator 告警。
 
@@ -117,11 +132,7 @@ class H6AlertRoutesMixin:
         all_unhandled = []
         all_resolved = []
         total = 0
-        for p in self.server.projects():
-            if p.get("fixture"):
-                continue  # fixture-project-governance：夹具项目告警为验证噪音，不进人工聚合
-            if not p.get("exists"):
-                continue
+        for p in self._aggregatable_projects():
             proot = Path(p["path"])
             summary = dashboard_data.alerts_summary(proot)
             projects_out.append({"name": p["name"], **summary})
@@ -191,8 +202,8 @@ class H6AlertRoutesMixin:
             query.get("page_size", [None])[0],
             # 与归档路径共用同一常量单源承载「缺省 50、上限 200」契约
             #（code-review item 05811a19064d，防两处字面量静默分叉）
-            default_size=_ARCHIVE_DEFAULT_PAGE_SIZE,
-            max_size=_ARCHIVE_MAX_PAGE_SIZE,
+            default_size=_ACTIVITY_PAGE_DEFAULT_SIZE,
+            max_size=_ACTIVITY_PAGE_MAX_SIZE,
         )
         if project_name:
             project = self.server.project_by_name(project_name)
@@ -228,11 +239,7 @@ class H6AlertRoutesMixin:
             # 分页路径：跨项目合并 → 全局排序（前端语义）→ 切片 → 按项目
             # 分组（首现顺序 = 全局相对顺序，平铺还原全局序）
             merged: list = []
-            for p in self.server.projects():
-                if p.get("fixture"):
-                    continue  # fixture-project-governance：夹具项目处置记录不进人工聚合视图
-                if not p.get("exists"):
-                    continue
+            for p in self._aggregatable_projects():
                 acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
                 for a in acts:
                     a["project"] = p["name"]
@@ -259,11 +266,7 @@ class H6AlertRoutesMixin:
             }
 
         projects_out = []
-        for p in self.server.projects():
-            if p.get("fixture"):
-                continue  # fixture-project-governance：夹具项目处置记录不进人工聚合视图
-            if not p.get("exists"):
-                continue
+        for p in self._aggregatable_projects():
             acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
             for a in acts:
                 a["project"] = p["name"]
@@ -286,8 +289,8 @@ class H6AlertRoutesMixin:
         page, page_size = self._parse_page_params(
             query.get("page", [None])[0],
             query.get("page_size", [None])[0],
-            default_size=_ARCHIVE_DEFAULT_PAGE_SIZE,
-            max_size=_ARCHIVE_MAX_PAGE_SIZE,
+            default_size=_ACTIVITY_PAGE_DEFAULT_SIZE,
+            max_size=_ACTIVITY_PAGE_MAX_SIZE,
             # 归档响应恒分页（total/page/page_size/has_more 必在）：page
             # 缺席回退 1，而非活跃路径的 None=全量兼容模式
             default_page=1,
@@ -302,11 +305,7 @@ class H6AlertRoutesMixin:
             )
         else:
             records = []
-            for p in self.server.projects():
-                if p.get("fixture"):
-                    continue  # fixture-project-governance：夹具项目归档为验证噪音，不进人工聚合
-                if not p.get("exists"):
-                    continue
+            for p in self._aggregatable_projects():
                 for r in dashboard_data.get_archived_activities(Path(p["path"]), spec=spec_name):
                     item = dict(r)
                     item["project"] = p["name"]

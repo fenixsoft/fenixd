@@ -94,9 +94,10 @@ export function useMaximizeModal({
 // span 转 block 后 auto 宽度天然受限于容器（不依赖 box-sizing），ellipsis 截在按钮
 // 留白之前，悬停 title 属性保留全文可读。还原态无此预算，维持断词换行。
 export function MaximizeTitle({ text, extra, button }: { text: ReactNode; extra?: ReactNode; button: ReactNode }) {
-  // 全屏态信号：hook 给最大化按钮打 data-maximized 标记；移动端按钮为 null（同全屏几何）
+  // 全屏态信号：hook 给最大化按钮打 data-maximized 标记；移动端按钮为 null（同全屏几何）。
+  // == null 同时覆盖 undefined（漏传 prop 或条件表达式透传 undefined），避免静默退回非全屏布局
   const fullscreen =
-    button === null ||
+    button == null ||
     (isValidElement(button) &&
       (button.props as { 'data-maximized'?: unknown })['data-maximized'] !== undefined);
   return (

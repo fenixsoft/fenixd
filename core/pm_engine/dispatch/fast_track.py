@@ -341,7 +341,7 @@ class FFastTrackMixin:
             self._pm.logger.warning(
                 "pm_engine",
                 f"诚实退出收敛（fast-track）'{spec_name}'：partial 缺口全部 ⊆ "
-                f"unattainable 申报 {honest_exit_gap} —— 不重派，按成功收口",
+                f"unattainable 申报 {honest_exit_gap} —— 降级完整模式补独立验证",
             )
             try:
                 self._pm._note_unattainable_todos(spec_name, ft_result, honest_exit_gap)
@@ -1535,6 +1535,11 @@ class FFastTrackMixin:
         # provider 熔断拦截（code-review item 6cc1577c5086：子串匹配共用
         # PROVIDER_CIRCUIT_ERROR_MARKER 常量，防上游文案调整使本消费点静默失配）
         if classify_error and PROVIDER_CIRCUIT_ERROR_MARKER in classify_error:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track provider circuit open '{spec_name}' — holding "
+                f"state, no retry/state flip: {final_error}",
+            )
             self._pm.state_machine.update_spec(spec_name, {"error": final_error})
             return
         # provider 瞬断终态延迟重派（code-review item 498a7c7432f1）：与 full 车道

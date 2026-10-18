@@ -379,7 +379,30 @@ class H2ProjectRoutesMixin:
             self._json({"ok": False, "error": "操作失败"})
             return
         if not result.get("ok"):
-            self._json({"ok": False, "error": result.get("error", "未知错误")})
+            if action in ("start", "stop"):
+                # 返回值分支同款降级（code-review item 48251584dbe5）：启停函数
+                # 返回的 error 内嵌裸 OSError 原文与绝对路径（如 f"写 .fenix/stop
+                # 失败: {e}"、tmux stderr），与本文件 _install_hosting_locked /
+                # _api_project_delete 的泛化策略对齐——客户端收按动作区分的固定
+                # 文案，细节经服务端日志留痕。install-hosting/restart/未知动作
+                # 的 error 均为本文件内自造的固定文案（restart 未托管指引须原样
+                # 达客户端），维持透传。
+                logger.warning(
+                    "%s daemon 失败（project=%s）: %s",
+                    "启动" if action == "start" else "停止",
+                    project["name"],
+                    result.get("error", "未知错误"),
+                )
+                self._json(
+                    {
+                        "ok": False,
+                        "error": (
+                            "启动 daemon 失败" if action == "start" else "停止 daemon 失败"
+                        ),
+                    }
+                )
+            else:
+                self._json({"ok": False, "error": result.get("error", "未知错误")})
             return
         # 成功：广播 refresh，概览在自动刷新周期内跟随更新 daemon 状态
         try:

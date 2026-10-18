@@ -40,6 +40,19 @@ from pathlib import Path
 # 裸写中途被 SIGKILL 会留截断文件（code-review 1eeac794401f）。
 from core.pm_engine.verification.scenario_gate import atomic_write_text
 
+# VERIFIED_RESET_FIELDS（下方）引用的 STATE 字段常量：state_machine 是共同
+# 底层、不反向依赖 pm_engine（经包 __init__ `from .engine import PMEngine`
+# 拉起 engine 会成环），本模块向下单向引用无环。
+from core.state_machine import (
+    ENV_BLOCK_ROUNDS_FIELD,
+    ENV_EXEMPTIONS_FIELD,
+    INCONCLUSIVE_ATTEMPTS_FIELD,
+    SCENARIO_REVISION_PENDING_FIELD,
+    VERIFY_INFRA_RETRY_STREAK_FIELD,
+    VERIFY_INFRA_ROUNDS_FIELD,
+    VERIFY_REDO_COUNT_FIELD,
+)
+
 # fastlane 触发阈值：judge 归因修复影响面文件数上限（minor-defect-fastlane 条件②）
 FASTLANE_MAX_AFFECTED_FILES = 3
 # 同一验证轮连续 fastlane 修复失败回落阈值（minor-defect-fastlane 条款：
@@ -50,10 +63,60 @@ FASTLANE_STREAK_FIELD = "_fastlane_fail_streak"
 # findings 中视为「judge 争议/裁决」的条目 type 关键词（不区分大小写子串匹配）
 DISPUTED_FINDING_KEYWORDS = ("dispute", "adjudication")
 
+# ── verified 收口清零/复位字段集（code-review item e143213f2b45）单源 ──────
+# 主路径 pipeline._apply_verified 与 legacy 车道 verified 收口两处 update_spec
+# 的清零清单此前逐字手工镜像维护，历史上已发生过单侧漏改的漂移（fastlane
+# streak：legacy 侧 bfe2b17dcfe2 补漏、主路径 efbdab0801f3 补漏）——收敛为
+# 本表，两消费点同引 `**VERIFIED_RESET_FIELDS`，字段演进只改本表。
+# 置于 fastlane 而非 state_machine：表须收编 FASTLANE_STREAK_FIELD（本模块
+# 字段），而 state_machine 反向 import 本模块会经 core.pm_engine 包
+# __init__（from .engine import PMEngine）拉起 engine 成环依赖；fastlane 仅
+# 向下依赖 stdlib + scenario_gate + core.state_machine，无环。
+VERIFIED_RESET_FIELDS = {
+    # add-fail-counter-budget D1：inconclusive（含 judge 自述环境暂停）连续
+    # 轮次计数随 verified 放行清零，恢复 judge 生命周期正计。
+    INCONCLUSIVE_ATTEMPTS_FIELD: 0,
+    # add-verify-parallel-backoff / design D2：verified 属健康轮，降档并行度
+    # 同轮复位（与 _inconclusive_attempts 同生命周期）。
+    "_verify_parallel_override": None,
+    # add-fail-counter-budget D1：验证 PASS 是 _verify_fail_rounds 的唯一
+    # 归零点——跨修复周期累计的失败计数在此清零并持久化，打回重派/修复
+    # 收工等中间转换不再归零。
+    "_verify_fail_rounds": 0,
+    # evo-infra-failure-budget-exempt R3：_verify_infra_rounds 与
+    # _verify_fail_rounds 同生命周期——验证 PASS 唯一归零点，避免跨周期
+    # 累计导致 dashboard 展示失真。
+    VERIFY_INFRA_ROUNDS_FIELD: 0,
+    # fix-daemon-lifecycle-races D3：验证自然通过（verified 落定）是
+    # _verify_redo_count（重启恢复重验计数）的清零点，与 _verify_fail_rounds
+    # 清零点对齐；人工 unfreeze_spec 亦清零。
+    VERIFY_REDO_COUNT_FIELD: 0,
+    # add-blocked-reverify-lane D3：env 阻塞轮次唯一自动清零点=验证通过
+    # （PASS 唯一归零点同语义）；处置复位/恢复/fix 链等中间转换不清零。
+    ENV_BLOCK_ROUNDS_FIELD: 0,
+    # evo-verify-infra-retry-lane D2：infra-retry 专用连续重派计数随验证
+    # PASS 清零（两个清零点之一；另一清零点=unfreeze_spec 清零清单，
+    # 同一原子写）。
+    VERIFY_INFRA_RETRY_STREAK_FIELD: 0,
+    # evo-fix-env-exemption-gate-conflict-… 2.2：豁免生命周期随 verified
+    # 落定收口——豁免只在被验周期内生效（场景级豁免若跨周期残留，会把
+    # 后续无关 env 失败在 TTL 窗口内一并洗白）；修订待重验旗标同点清除
+    # （修订后场景已收敛，不再留给下一 episode 的升级入口消费）。
+    ENV_EXEMPTIONS_FIELD: None,
+    SCENARIO_REVISION_PENDING_FIELD: False,
+    # minor-defect-fastlane：verified 收口同步清零 fastlane 连败计数
+    # （efbdab0801f3）。streak 此前仅在 fastlane 收敛点清零——正常整轮
+    # verified 不经该点，跨验证周期残留的旧连击会让后续 fastlane 首败即被
+    # 误判逼近熔断阈值、提前回落整轮。与收敛点清零并存幂等。
+    FASTLANE_STREAK_FIELD: 0,
+}
+
 # 仓库相对路径形态（judge 归因文本中的影响面文件）：
-# 目录前缀形态（core/…、tests/…、bin/…）或带可识别扩展名的文件名。
+# 目录前缀形态（core/…、tests/…、bin/…；前缀后必须出现路径分隔符，
+# 纯点分模块链如 core.pm_engine.verification.x 不计入影响面）或带可识别
+# 扩展名的文件名。
 _AFFECTED_PATH_RE = re.compile(
-    r"\b(?:core|bin|docs|tests|agents|scripts|src|fenixd)[\w\-./]*\.[A-Za-z0-9]+"
+    r"\b(?:core|bin|docs|tests|agents|scripts|src|fenixd)[\w\-]*/[\w\-./]*\.[A-Za-z0-9]+"
     r"|\b[A-Za-z0-9_\-]+\.(?:py|md|ya?ml|json|toml|ts|tsx|js|jsx|vue|html|css|scss|svelte)\b"
 )
 

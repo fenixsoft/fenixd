@@ -56,17 +56,15 @@ TESTER_RUN_BLOCKED_APP_UNREACHABLE = "blocked:app-unreachable"
 
 from core.timelib import from_epoch
 
-# add-blocked-reverify-lane D3：env 阻塞轮次计数清零点收敛后与 state_machine
-# 共用同一字段常量（防字符串漂移；唯一清零点=verified 落定与 unfreeze_spec）。
+# verified 收口清零/复位字段集已收敛单源（code-review item e143213f2b45）：
+# 各计数/豁免/旗标字段常量改经 fastlane.VERIFIED_RESET_FIELDS 统一引用
+# （与 legacy 车道同表），门面不再直引；唯一清零点=verified 落定与
+# unfreeze_spec 的语义不变。
 from core.state_machine import (
-    ENV_BLOCK_ROUNDS_FIELD,
     FREEZE_ERROR_PREFIX,
-    VERIFY_INFRA_ROUNDS_FIELD,
-    VERIFY_INFRA_RETRY_STREAK_FIELD,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
     # env 豁免 STATE 字段/修订生命周期字段单源（evo-fix-env-exemption-gate-
     # conflict-and-scenario-revision-exit：与 admin_actions/escalation 同源）
-    ENV_EXEMPTIONS_FIELD,
     SCENARIO_REVISION_PENDING_FIELD,
     # judge-scenario-repair：修复预算单点定义在 state_machine（与 escalation.py 同源）
     _SCENARIO_REPAIR_MAX_ROUNDS,
@@ -107,7 +105,7 @@ from core.pm_engine.verification.fastlane import (
     evaluate_fastlane,
     dispatch_minor_defect_fastlane,
     fastlane_decision_path,
-    FASTLANE_STREAK_FIELD,
+    VERIFIED_RESET_FIELDS,
 )
 
 # refactor-verification-module 阶段3.6：judge 派发门/重跑上限/降级上下文组已迁 judge_gate.py，
@@ -1451,44 +1449,13 @@ class VerificationPipeline:
             {
                 "tester_run": judge_result.run_id,
                 "error": None,
-                "_inconclusive_attempts": 0,
-                # add-verify-parallel-backoff / design D2：verified 属健康轮，
-                # 降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
-                "_verify_parallel_override": None,
-                # add-fail-counter-budget D1：验证 PASS 是 _verify_fail_rounds
-                # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
-                # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
-                "_verify_fail_rounds": 0,
-                # evo-infra-failure-budget-exempt R3：_verify_infra_rounds 与
-                # _verify_fail_rounds 同生命周期——验证 PASS 唯一归零点两处同写，
-                # 避免跨周期累计导致 dashboard 展示失真。
-                VERIFY_INFRA_ROUNDS_FIELD: 0,
-                # fix-daemon-lifecycle-races D3：验证自然通过（verified 落定）是
-                # _verify_redo_count（重启恢复重验计数）的清零点，与
-                # _verify_fail_rounds 清零点对齐；人工 unfreeze_spec 亦清零。
-                "_verify_redo_count": 0,
-                # add-blocked-reverify-lane D3：env 阻塞轮次唯一自动清零点=验证
-                # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
-                # 恢复/fix 链等中间转换不清零。
-                ENV_BLOCK_ROUNDS_FIELD: 0,
-                # evo-verify-infra-retry-lane D2：infra-retry 专用连续重派计数
-                # 随验证 PASS 清零（D2 两个清零点之一，与上面 env 阻塞轮同点同
-                # 生命周期；另一清零点=unfreeze_spec 清零清单，同一原子写）。
-                VERIFY_INFRA_RETRY_STREAK_FIELD: 0,
-                # evo-fix-env-exemption-gate-conflict-… 2.2：豁免生命周期随
-                # verified 落定收口——豁免只在被验周期内生效（场景级豁免若跨
-                # 周期残留，会把后续无关 env 失败在 TTL 窗口内一并洗白）；
-                # 修订待重验旗标同点清除（修订后场景已收敛，不再留给下一
-                # episode 的升级入口消费）。
-                ENV_EXEMPTIONS_FIELD: None,
-                SCENARIO_REVISION_PENDING_FIELD: False,
-                # minor-defect-fastlane：verified 收口同步清零 fastlane 连败计数
-                # （code-review item efbdab0801f3）。streak 此前仅在 fastlane
-                # 收敛点清零（fastlane.py：transition 与 _apply_verified 全部
-                # 成功后）——正常整轮 verified 不经该点，跨验证周期残留的旧
-                # 连击会让后续 fastlane 首败即被误判逼近熔断阈值、提前回落
-                # 整轮。与收敛点清零并存幂等（fastlane 收敛亦经本函数）。
-                FASTLANE_STREAK_FIELD: 0,
+                # verified 收口清零/复位字段集单源（code-review item
+                # e143213f2b45，fastlane.VERIFIED_RESET_FIELDS）：含
+                # inconclusive/fail/infra/redo/env-block/infra-retry 计数、
+                # 降档并行度复位、豁免与修订旗标、fastlane 连败计数
+                # （efbdab0801f3）；与 legacy 车道 verified 收口同引一张表，
+                # 字段演进只改该表，清零键序与单字段语义注释同在表内。
+                **VERIFIED_RESET_FIELDS,
             },
         )
         # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
@@ -1598,7 +1565,7 @@ class VerificationPipeline:
                 (verify_dir / f"test_scenarios.json.contract-v{set_version}.bak").write_text(
                     path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
-            except OSError as e:
+            except (OSError, UnicodeDecodeError) as e:
                 self._context.logger.warning(
                     "pm_engine",
                     f"冻结契约迁移备份失败 '{spec_name}'（不阻断迁移）: {e}",
@@ -2105,9 +2072,12 @@ class VerificationPipeline:
         """
         from core.verdict_check import save_report
 
+        # 报告键与裁剪缓存键同源（code-review item 84c25f12379b）：统一走
+        # _parallel_plan_scenario_sid 单源口径，字面量 str(None) 键会让无 id
+        # 场景的引擎副本与缓存副本（"#{i}" 兜底键）互不命中、重复入报告。
         merged = {
-            str(sc.get("scenario_id")): sc
-            for sc in (report.get("scenarios") or [])
+            _parallel_plan_scenario_sid(_parallel_plan_scenario_def(sc), i): sc
+            for i, sc in enumerate(report.get("scenarios") or [])
             if isinstance(sc, dict)
         }
         for sid, prev in cached_results.items():
@@ -2168,11 +2138,6 @@ class VerificationPipeline:
         )
         return report
 
-    # ── B3: 阶段2 引擎执行段（等价搬移，不含 env_error 回写段）──────
-    # D1 B3 段落（D2：引擎执行段可提，env_error 回写段含 continue/break 留循环体）。
-    # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
-    # D4：VerifyEngine / load_scenarios 的 import 保留在本方法体内（运行时函数体内），
-    # 测试靠 patch("core.verify_engine.VerifyEngine") 在本方法执行时生效。
     def _salvage_top_level_dict(self, scenarios_path):
         """顶层 dict 包裹形态机械拯救（evo-scenario-product-toplevel-contract 2.2）。
 

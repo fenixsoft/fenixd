@@ -277,6 +277,23 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     if not root_dir.is_dir():
         pipeline._remove_serving_worktree(wt)
         return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
+    if old is not None:
+        # code-review b53dc36cb6cc：覆写缓存前对旧静态实例补 stop 收尾（对齐
+        # command 侧 73a34755ac94/930961aee7ee 同款）——旧实例的守护线程与
+        # 已 bind 的 ThreadingHTTPServer 监听 socket 仅由 stop 关闭，直接
+        # 覆写缓存会令旧端口被永久占用、线程滞留至 daemon 退出
+        old_server = old.get("server")
+        try:
+            # isinstance 守卫：缓存 dict 与 command 侧共用（_contract_static_
+            # servers），serve.kind 两轮间翻转时旧条目可能是命令实例，其收尾
+            # 由 command 侧自身负责，不在此误停
+            if isinstance(old_server, StaticVerifyServer):
+                old_server.stop()
+        except Exception as stop_err:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"停止旧静态服务实例 '{spec_name}' 失败（不影响重建）: {stop_err}",
+            )
     # serve_root 补存供复用门比对 verify.yaml serve 段改动
     # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重建）
     cache[spec_name] = {
@@ -362,8 +379,16 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         if "{port}" in orig_cmd
         else contract.serve.port or (int(m.group(1)) if m else None)
     )
+    # code-review 6cea9255ff17：pre 快照剔除口径与发现侧 _probe 对齐——
+    # 注入 http_error_ok=True（对齐 _legacy_selfheal_start 同款），4xx/5xx
+    # 同样证明 HTTP 监听在场；默认 _port_responds 会把窗口内既有 4xx-only
+    # 服务判出快照，邻近扫描反将其当「本轮新出现的监听」命中，base_url 可
+    # 锁到无关服务上
     pre = (
-        _probe_ports_responding(range(legacy_hint, legacy_hint + 51))
+        _probe_ports_responding(
+            range(legacy_hint, legacy_hint + 51),
+            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
+        )
         if legacy_hint
         else set()
     )
@@ -562,8 +587,16 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
         if "{port}" in orig_cmd
         else contract.serve.port or (int(m.group(1)) if m else None)
     )
+    # code-review 6cea9255ff17：pre 快照剔除口径与发现侧 _probe 对齐——
+    # 注入 http_error_ok=True（对齐 _legacy_selfheal_start 同款），4xx/5xx
+    # 同样证明 HTTP 监听在场；默认 _port_responds 会把窗口内既有 4xx-only
+    # 服务判出快照，邻近扫描反将其当「本轮新出现的监听」命中，base_url 可
+    # 锁到无关服务上
     pre = (
-        _probe_ports_responding(range(legacy_hint, legacy_hint + 51))
+        _probe_ports_responding(
+            range(legacy_hint, legacy_hint + 51),
+            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
+        )
         if legacy_hint
         else set()
     )
