@@ -379,10 +379,13 @@ def _managed_key_sources(raw: dict) -> dict:
     if isinstance(gates_raw, dict) and gates_raw.get("promote_mode") in ConfigLoader.VALID_PROMOTE_MODES:
         sources["gates.promote_mode"] = "project"
     # add-spec-review-gate：方案评审模式显式定义 → project
-    if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ("auto", "never"):
+    # code-review item 7ed7a7eef548：枚举集改引 ConfigLoader.VALID_SPEC_REVIEW_MODES
+    # 单源，对齐上方 approve_mode/promote_mode 的常量写法，杜绝枚举扩充时硬编码处先漂移
+    if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ConfigLoader.VALID_SPEC_REVIEW_MODES:
         sources["gates.spec_review_mode"] = "project"
     # add-start-after-scope-config：start_after 门控覆盖范围（full/dispatch）
-    if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ("full", "dispatch"):
+    # code-review item 7ed7a7eef548：同上改引 VALID_START_AFTER_SCOPES 单源
+    if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ConfigLoader.VALID_START_AFTER_SCOPES:
         sources["gates.start_after_scope"] = "project"
     verify_src = raw.get("verify")
     if isinstance(verify_src, dict):
@@ -752,14 +755,17 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["promote_mode"] = gates_raw["promote_mode"]
-    # add-spec-review-gate：spec_review_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底）
-    if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ("auto", "never"):
+    # add-spec-review-gate：spec_review_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底；
+    # code-review item 7ed7a7eef548：枚举集改引 ConfigLoader.VALID_SPEC_REVIEW_MODES
+    # 单源，对齐上方 approve_mode/promote_mode 的常量写法，杜绝枚举扩充时硬编码处先漂移）
+    if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ConfigLoader.VALID_SPEC_REVIEW_MODES:
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["spec_review_mode"] = gates_raw["spec_review_mode"]
     # add-start-after-scope-config：start_after_scope 提取（合法枚举才回显，
-    # 非法留空由读侧缺省兜底，对齐 spec_review_mode 写法）
-    if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ("full", "dispatch"):
+    # 非法留空由读侧缺省兜底，对齐 spec_review_mode 写法；
+    # code-review item 7ed7a7eef548：同上改引 VALID_START_AFTER_SCOPES 单源）
+    if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ConfigLoader.VALID_START_AFTER_SCOPES:
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["start_after_scope"] = gates_raw["start_after_scope"]
@@ -1905,24 +1911,28 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 f"{g_patch['promote_mode']!r}"
             )
         # add-spec-review-gate：gates.spec_review_mode 前置校验（枚举拒绝，
-        # 与 promote_mode 同模式；None 视为「未提交」，不校验）
+        # 与 promote_mode 同模式；None 视为「未提交」，不校验；
+        # code-review item 7ed7a7eef548：枚举集改引 ConfigLoader.VALID_SPEC_REVIEW_MODES 单源）
         if (
             "spec_review_mode" in g_patch
             and g_patch["spec_review_mode"] is not None
-            and g_patch["spec_review_mode"] not in ("auto", "never")
+            and g_patch["spec_review_mode"] not in ConfigLoader.VALID_SPEC_REVIEW_MODES
         ):
             return fail(
-                f"gates.spec_review_mode must be one of ['auto', 'never']: {g_patch['spec_review_mode']!r}"
+                f"gates.spec_review_mode must be one of {ConfigLoader.VALID_SPEC_REVIEW_MODES}: "
+                f"{g_patch['spec_review_mode']!r}"
             )
         # add-start-after-scope-config：gates.start_after_scope 前置校验（枚举拒绝
-        # full/dispatch，与 promote_mode 同模式；None 视为「未提交」，不校验）
+        # full/dispatch，与 promote_mode 同模式；None 视为「未提交」，不校验；
+        # code-review item 7ed7a7eef548：同上改引 VALID_START_AFTER_SCOPES 单源）
         if (
             "start_after_scope" in g_patch
             and g_patch["start_after_scope"] is not None
-            and g_patch["start_after_scope"] not in ("full", "dispatch")
+            and g_patch["start_after_scope"] not in ConfigLoader.VALID_START_AFTER_SCOPES
         ):
             return fail(
-                f"gates.start_after_scope must be one of ['full', 'dispatch']: {g_patch['start_after_scope']!r}"
+                f"gates.start_after_scope must be one of {ConfigLoader.VALID_START_AFTER_SCOPES}: "
+                f"{g_patch['start_after_scope']!r}"
             )
 
     # 非 dict 的 hooks patch 直接拒绝（对齐 agents 同款「must be an object」守卫：
@@ -2674,6 +2684,23 @@ def _pred_promote_mode(v) -> bool:
     return v in ConfigLoader.VALID_PROMOTE_MODES
 
 
+def _pred_spec_review_mode(v) -> bool:
+    """spec_review_mode 谓词（延迟 import 引 ConfigLoader.VALID_SPEC_REVIEW_MODES
+    单源，与 write_config 前置校验同口径；延迟 import 形态同 _pred_promote_mode，
+    code-review item 7ed7a7eef548）。"""
+    from core.config import ConfigLoader
+
+    return v in ConfigLoader.VALID_SPEC_REVIEW_MODES
+
+
+def _pred_start_after_scope(v) -> bool:
+    """start_after_scope 谓词（延迟 import 引 ConfigLoader.VALID_START_AFTER_SCOPES
+    单源，同上；code-review item 7ed7a7eef548）。"""
+    from core.config import ConfigLoader
+
+    return v in ConfigLoader.VALID_START_AFTER_SCOPES
+
+
 # 「同步用户级设置」逐键形态谓词（code-review item b4686d41625c，前身是
 # fd7178c8666c 的段内复合值键白名单）：sync 以用户级文件原值构造 patch，部分
 # 形态（枚举/布尔键显式 null、serving_reclaim 为 dict 但缺 enabled 布尔）能通过
@@ -2817,11 +2844,15 @@ _SYNC_PAGE_APPLY_PREDICATES = {
             "must be one of ['manual', 'auto']",
         ),
         "spec_review_mode": (
-            lambda v: v in ("auto", "never"),
+            # code-review item 7ed7a7eef548：lambda 硬编码改命名谓词引
+            # ConfigLoader.VALID_SPEC_REVIEW_MODES 单源（对齐上方 approve_mode/
+            # promote_mode 的 _pred_* 写法），杜绝枚举扩充时硬编码处先漂移
+            _pred_spec_review_mode,
             "must be one of ['auto', 'never']",
         ),
         "start_after_scope": (
-            lambda v: v in ("full", "dispatch"),
+            # code-review item 7ed7a7eef548：同上改引 VALID_START_AFTER_SCOPES
+            _pred_start_after_scope,
             "must be one of ['full', 'dispatch']",
         ),
     },
