@@ -425,6 +425,15 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       trimLocalEvents();
     }
     appendEvents(newer);
+    // 终态复扫（code-review item 1c9e0dab5454）：快照 GET 发起后、应用前经 SSE
+    // 先行到达的 session_ended 落在 newer 中，而上方 applySnapshot 的快照终态
+    // 扫描只看快照缓冲（不含该事件），会把已判终态的 ended 回退为 false，输入
+    // 区/停止按钮误恢复可用，直到下一次快照/轮询才自愈。与 onmessage 增量扫描
+    // 同口径补扫 newer，命中即复置终态并清 watch 注册标记（服务端会话已移除）。
+    if (newer.some((e) => e?.type === 'session_ended')) {
+      setEnded(true);
+      watchRegisteredRef.current = false;
+    }
   };
 
   // 拉全量 + 建立 SSE（分面激活时执行；切离后重新接回）
@@ -628,6 +637,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       if (msg.type === 'session_events' && msg.session_id === sid && msg.events) {
         // 终态事件先置状态（输入区禁用）
         for (const e of msg.events) {
+          // 空元素守卫与 appendEvents 同口径（code-review item b4e12a0fc804）：
+          // 单帧混入 null/undefined 时跳过该元素而非抛 TypeError 中断本帧
+          // 后续事件的 append
+          if (!e) continue;
           if (e.type === 'session_ended') {
             setEnded(true);
             // 会话已终止（用户停止 / 空闲超时回收 / 进程退出）：服务端会话

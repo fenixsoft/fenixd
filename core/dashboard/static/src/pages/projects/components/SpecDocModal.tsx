@@ -30,14 +30,23 @@ interface DocCacheEntry {
 // 文档缓存条目上限：超出后按最旧淘汰，避免长会话跨 spec 浏览时大文本（验证报告/tasks 等）持续累积
 const MAX_CACHE_ENTRIES = 50;
 
-// 写入缓存并淘汰超限旧条目；先删后写以刷新该键的新近度（Map 迭代按插入序）
-const setCacheEntry = (cache: Map<string, DocCacheEntry>, key: string, entry: DocCacheEntry) => {
+// 写入缓存并淘汰超限旧条目；先删后写以刷新该键的新近度（Map 迭代按插入序）。
+// reqSeq 为各 key 的请求序号表：淘汰缓存条目时同步删号，避免其条目随长会话
+// 跨 spec 浏览无界增长（28af22dbcfe5）；序号全局单调发放、不复用（见
+// keyReqSeqRef 声明处），删号不会令陈旧在途请求被误判为最新
+const setCacheEntry = (
+  cache: Map<string, DocCacheEntry>,
+  key: string,
+  entry: DocCacheEntry,
+  reqSeq: Map<string, number>,
+) => {
   cache.delete(key);
   cache.set(key, entry);
   while (cache.size > MAX_CACHE_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined || oldest === key) break;
     cache.delete(oldest);
+    reqSeq.delete(oldest);
   }
 };
 
@@ -80,10 +89,14 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   // 各 key 的请求发起序号（code-review item 9cd221db03d7）：done 态的
   // revalidate 既不写 loading 占位也无在途去重，快速切页签离开再回到同一文档
   // 会同时挂起多个 revalidate 请求，后发先至时旧响应会把较新结果覆盖回陈旧
-  // 内容（如旧请求 found=false 把仍在展示的文档打成「无此文档」）。每 key
-  // 单调自增、await 返回后复核，仅最新一次请求可写缓存；loading 占位路径的
-  // 既有「loading 即跳过」去重不受影响（早退不取新号，不作废在途请求）。
+  // 内容（如旧请求 found=false 把仍在展示的文档打成「无此文档」）。序号由
+  // reqSeqCounterRef 全局单调发放、不复用（而非每 key 从 0 重计），await 返回
+  // 后复核，仅最新一次请求可写缓存；loading 占位路径的既有「loading 即跳过」
+  // 去重不受影响（早退不取新号，不作废在途请求）。条目随缓存淘汰同步清理
+  // （见 setCacheEntry，code-review item 28af22dbcfe5），Map 不随长会话无界
+  // 增长；也正因 ID 不复用，删号后旧在途请求不会被误判为最新
   const keyReqSeqRef = useRef<Map<string, number>>(new Map());
+  const reqSeqCounterRef = useRef(0);
 
   // 当前 project+spec+doc 的缓存键（含 project 维度：组件跨项目常驻挂载，cacheRef 存活，
   // 不同项目的同名 spec 必须各自独立，避免互相串用文档内容）
@@ -113,27 +126,28 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
 
     if (!revalidate) {
       // 设置 loading 状态
-      setCacheEntry(cacheRef.current, key, { status: 'loading' });
+      setCacheEntry(cacheRef.current, key, { status: 'loading' }, keyReqSeqRef.current);
       setCacheVersion((v) => v + 1);
     }
 
     // 发起序号（9cd221db03d7）：同 key 旧请求晚到按过期丢弃，不写缓存
-    const requestId = (keyReqSeqRef.current.get(key) ?? 0) + 1;
+    reqSeqCounterRef.current += 1;
+    const requestId = reqSeqCounterRef.current;
     keyReqSeqRef.current.set(key, requestId);
 
     try {
       const d = await getSpecDoc(project, spec, activeTab);
       if (requestId !== keyReqSeqRef.current.get(key)) return; // 过期响应丢弃
       if (d.found) {
-        setCacheEntry(cacheRef.current, key, { status: 'done', content: d.content || '' });
+        setCacheEntry(cacheRef.current, key, { status: 'done', content: d.content || '' }, keyReqSeqRef.current);
       } else {
-        setCacheEntry(cacheRef.current, key, { status: 'empty' });
+        setCacheEntry(cacheRef.current, key, { status: 'empty' }, keyReqSeqRef.current);
       }
     } catch {
       // revalidate 失败时保留旧内容，避免清空已展示文档
       if (requestId !== keyReqSeqRef.current.get(key)) return; // 过期响应丢弃
       if (!revalidate) {
-        setCacheEntry(cacheRef.current, key, { status: 'error' });
+        setCacheEntry(cacheRef.current, key, { status: 'error' }, keyReqSeqRef.current);
       }
     } finally {
       setCacheVersion((v) => v + 1);

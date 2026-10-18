@@ -992,6 +992,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # tasks 与 tasks_note 共享一次解析（code-review item 6d2eca146f3c）：
     # tasks_note 传 groups 免去对 tasks.md 的第二次完整 parse_tasks
     tasks = _facade.parse_tasks(project_root, spec_name, spec_status)
+    # verify_progress 与 generation 共享一次解析（code-review item 8234973ddaac）：
+    # generation 传 vp 免去对 verify-progress 的第二次完整 parse_verify_progress
+    vp = _facade.parse_verify_progress(project_root, spec_name)
     return {
         "name": spec_name,
         "status": entry.get("status"),
@@ -1014,7 +1017,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status, groups=tasks),
         "run_progress": _facade.run_task_progress(project_root, spec_name),
         "run_activity": _facade.run_activity(project_root, spec_name),
-        "verify_progress": _facade.parse_verify_progress(project_root, spec_name),
+        "verify_progress": vp,
         # add-quality-gates-visibility：详情页「质量门禁」Card 数据源
         # （{exists, done, total, current, items}；SSE 全量 detail 推送自动携带）
         "quality_gates": _facade.parse_quality_gates(
@@ -1022,7 +1025,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         ),
         # verification-phase-progress：出题进度（生成阶段 verify_progress 为空态，
         # 详情页验证进度卡片据此展示「出题 N/M」而非「暂无验证进度」）
-        "generation": _facade.spec_generation_progress(project_root, spec_name, entry),
+        "generation": _facade.spec_generation_progress(project_root, spec_name, entry, vp=vp),
         "report": {
             "exists": report.get("exists", False),
             "error": report.get("error"),

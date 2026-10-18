@@ -1054,7 +1054,15 @@ def compare_baseline(lanes: List[Dict[str, Any]],
                          "claude_seconds": None, "ratio": None})
             continue
         dsh_s = ev.get("elapsed_seconds") or 0
-        claude_s = float(base["duration_seconds"])
+        try:
+            claude_s = float(base["duration_seconds"])
+        except (TypeError, ValueError) as e:
+            # 基线文件是调用方任意提供的路径：畸形 duration_seconds 与缺
+            # lanes 对象同款降级 unavailable（本函数在 run_smoke 的
+            # try/except 之外调用，不裸抛 traceback）
+            return {"status": "unavailable",
+                    "reason": f"基线文件 lanes[{lane}].duration_seconds "
+                              f"非数值（{base['duration_seconds']!r}）：{e}"}
         rows.append({
             "lane": lane, "dsh_seconds": dsh_s, "claude_seconds": claude_s,
             "ratio": round(dsh_s / claude_s, 3) if claude_s else None,
@@ -1098,6 +1106,11 @@ def render_report_md(evidence: Dict[str, Any]) -> str:
             inflight = "✓" if ev.get("inflight_observed") else "✗"
             lines.append(f"| judge | {terminal} | {inflight} | - | - | "
                          f"{ev.get('elapsed_seconds')} |")
+        elif ev.get("lane", "").startswith("claude"):
+            # claude 基线车道（--go 现场采集）非 dsh 证据面：标注基线并只
+            # 展示耗时，不按 dsh 车道字段取值（避免成片 None 单元格）
+            lines.append(f"| {ev.get('lane')} | -（claude 基线车道）| - | - | "
+                         f"- | {ev.get('elapsed_seconds')} |")
         else:
             inflight = "✓" if ev.get("inflight_observed") else "✗"
             lines.append(
@@ -1111,6 +1124,10 @@ def render_report_md(evidence: Dict[str, Any]) -> str:
     lines.append("| 车道 | final 收到 | 投影各类型 | 坏事件（解析失败/未知类型/超限截断） |")
     lines.append("|---|---|---|---|")
     for ev in evidence.get("lanes", []):
+        if ev.get("lane", "").startswith("claude"):
+            lines.append(
+                f"| {ev.get('lane')} | -（claude 基线车道不落投影）| - | - |")
+            continue
         proj = ev.get("projection")
         if ev.get("lane") == "judge" or not proj:
             lines.append(f"| {ev.get('lane')} | -（one-shot 通道不落投影）| - | - |")
@@ -1129,6 +1146,10 @@ def render_report_md(evidence: Dict[str, Any]) -> str:
     for ev in evidence.get("lanes", []):
         if ev.get("lane") == "judge":
             lines.append(f"| judge | -（judge 通道不落 run usage）| - | - | - |")
+            continue
+        if ev.get("lane", "").startswith("claude"):
+            lines.append(
+                f"| {ev.get('lane')} | -（claude 基线车道）| - | - | - |")
             continue
         usage = ev.get("usage") or {}
         lines.append(
@@ -1155,6 +1176,12 @@ def render_report_md(evidence: Dict[str, Any]) -> str:
     for ev in evidence.get("lanes", []):
         if ev.get("lane") == "judge":
             lines.append("| judge | -（judge 通道无结果文件产物）| - |")
+            continue
+        if ev.get("lane", "").startswith("claude"):
+            # 基线车道有 result_gate（成功路径），照常展示自检结论
+            gate = ev.get("result_gate") or {}
+            lines.append(f"| {ev.get('lane')} | -（claude 基线车道）| "
+                         f"{'PASS' if gate.get('passed') else 'FAIL'} |")
             continue
         gate = ev.get("result_gate") or {}
         lines.append(f"| {ev.get('lane')} | `{ev.get('result_file_path')}` | "

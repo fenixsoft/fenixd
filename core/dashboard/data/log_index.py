@@ -64,6 +64,65 @@ def _boundary_at_line_start(f, boundary: int) -> bool:
     return f.read(1) == b"\n"
 
 
+def _sample_block_boundary(
+    f,
+    boundary: int,
+    size: int,
+    offsets: list,
+    pending_start: int,
+    old_size: "int | None" = None,
+) -> int:
+    """对单个块边界采样，把应入索引的偏移 append 进 offsets，返回新 pending_start。
+
+    _build_log_block_index 与 _update_log_block_index 共用的采样主循环体（原为
+    两份仅靠注释人工同步的拷贝，单侧改动即判法漂移）：pending_start 续读缓存
+    命中（boundary 落进已定位的超长行）时直接复用其下一行首且缓存保持不重置；
+    采样窗内无换行 → 单行超过 64KB，续读取真实行首，EOF 仍无换行 → 沿用前一
+    偏移；boundary 恰为行首时直接以 boundary 入索引，避免把该行整条踢出索引。
+    old_size 非 None（_update 热更新路径）时额外特判接缝块 boundary == old_size：
+    回扫一字节确认行首后才直接入索引——新增首块起点恰为旧 size（JSONL 行边界）
+    时直接指到 boundary，避免 seek-forward 把新增首行整行跳过；上一轮写入若因
+    进程中断留下无换行半行，old_size 落在行中而非行首，沿用常规 seek-forward
+    路径定位真实行首。
+    """
+    if pending_start != -1 and boundary < pending_start:
+        offsets.append(pending_start)
+        return pending_start
+    pending_start = -1
+    if old_size is not None and boundary == old_size:
+        at_line_start = boundary == 0
+        if not at_line_start:
+            f.seek(boundary - 1)
+            at_line_start = f.read(1) == b"\n"
+        if at_line_start:
+            offsets.append(boundary)
+            return pending_start
+    f.seek(boundary)
+    chunk = f.read(LOG_INDEX_BLOCK)
+    nl = chunk.find(b"\n")
+    if nl == -1:
+        # 采样窗内无换行 → 单行超过 64KB（如整段错误转储），boundary 落在大行
+        # 中间。不可把行中偏移当行首入索引（违背「块内首行偏移」不变量：读窗
+        # 首行为残缺 JSON 被静默丢弃、_first_ts 探测失败退化全文件读），续读取
+        # 真实行首；EOF 仍无换行（超长行直达文件尾、无后续行首）→ 沿用前一
+        # 偏移，读窗自行首覆盖至 EOF。
+        next_start = _next_line_start(f, boundary + LOG_INDEX_BLOCK, size)
+        if next_start != -1:
+            offsets.append(next_start)
+            return next_start
+        offsets.append(offsets[-1])
+        return pending_start
+    # boundary 恰为行首（上一行换行是前一字节）时，nl 命中的是这一行自己的
+    # 换行，boundary+nl+1 指到再下一行——该行被整条踢出索引，读窗锚定该块
+    # 即丢一条完整行；判行首后直接以 boundary 入索引（判法见
+    # _boundary_at_line_start）。
+    if _boundary_at_line_start(f, boundary):
+        offsets.append(boundary)
+    else:
+        offsets.append(boundary + nl + 1)
+    return pending_start
+
+
 def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
     """全量扫描日志一次，构建 {size, offsets}；构建失败返回 None。
 
@@ -73,8 +132,8 @@ def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
     不把行中偏移当行首入索引。
     """
     offsets = [0]
-    # 超长行续读缓存：boundary 落进已定位的超长行时直接复用其下一行首，避免
-    # 每边界重复向前扫描（最坏 O(块数×行长)）；-1 表示当前不在超长行内。
+    # 超长行续读缓存：-1 表示当前不在超长行内；采样判法统一走
+    # _sample_block_boundary（与 _update_log_block_index 共用同一份主循环体）。
     pending_start = -1
     try:
         with log_path.open("rb") as f:
@@ -83,34 +142,9 @@ def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
                 boundary = i * LOG_INDEX_BLOCK
                 if boundary >= size:
                     break
-                if pending_start != -1 and boundary < pending_start:
-                    offsets.append(pending_start)
-                    continue
-                pending_start = -1
-                f.seek(boundary)
-                chunk = f.read(LOG_INDEX_BLOCK)
-                nl = chunk.find(b"\n")
-                if nl == -1:
-                    # 采样窗内无换行 → 单行超过 64KB（如整段错误转储），boundary
-                    # 落在大行中间。不可把行中偏移当行首入索引（违背「块内首行
-                    # 偏移」不变量：读窗首行为残缺 JSON 被静默丢弃、_first_ts 探
-                    # 测失败退化全文件读），续读取真实行首；EOF 仍无换行（超长
-                    # 行直达文件尾、无后续行首）→ 沿用前一偏移，读窗自行首覆盖
-                    # 至 EOF。
-                    next_start = _next_line_start(f, boundary + LOG_INDEX_BLOCK, size)
-                    if next_start != -1:
-                        pending_start = next_start
-                        offsets.append(next_start)
-                    else:
-                        offsets.append(offsets[-1])
-                else:
-                    # boundary 恰为行首（上一行换行是前一字节）时，nl 命中的是这一
-                    # 行自己的换行，boundary+nl+1 指到再下一行——该行被整条踢出
-                    # 索引，读窗锚定该块即丢一条完整行；判行首后直接以 boundary 入索引。
-                    if _boundary_at_line_start(f, boundary):
-                        offsets.append(boundary)
-                    else:
-                        offsets.append(boundary + nl + 1)
+                pending_start = _sample_block_boundary(
+                    f, boundary, size, offsets, pending_start
+                )
     except OSError:
         # 不可返回 {size: size, offsets: [0]} 的不一致索引：一旦被 _load_log_index
         # 落盘复用，size 持平的后续查询在 _read_log_tail_window 被钳位到块 0 退化成
@@ -172,7 +206,7 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
         return idx
     offsets = list(idx.get("offsets", [0]))
     old_blocks = old_size // LOG_INDEX_BLOCK
-    pending_start = -1  # 同 _build_log_block_index 的超长行续读缓存
+    pending_start = -1  # 超长行续读缓存（同 _build_log_block_index，共用采样体）
     try:
         with log_path.open("rb") as f:
             nblocks = size // LOG_INDEX_BLOCK
@@ -182,43 +216,9 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
                     break
                 if boundary < old_size:
                     continue  # 旧块已覆盖
-                if pending_start != -1 and boundary < pending_start:
-                    offsets.append(pending_start)
-                    continue
-                pending_start = -1
-                # 新增首块起点恰为旧 size（JSONL 行边界）：直接指到 boundary，
-                # 避免 seek-forward 把新增首行整行跳过。回扫一字节确认行首：
-                # 上一轮写入若因进程中断留下无换行半行，old_size 落在行中而非
-                # 行首，直接入索引会让读窗首行为残缺 JSON 被静默丢弃、_first_ts
-                # 探测退化全文件读；非行首沿用下方常规 seek-forward 路径定位真实行首。
-                if boundary == old_size:
-                    at_line_start = boundary == 0
-                    if not at_line_start:
-                        f.seek(boundary - 1)
-                        at_line_start = f.read(1) == b"\n"
-                    if at_line_start:
-                        offsets.append(boundary)
-                        continue
-                f.seek(boundary)
-                chunk = f.read(LOG_INDEX_BLOCK)
-                nl = chunk.find(b"\n")
-                if nl == -1:
-                    # 同 _build_log_block_index：超长行（单行 > 64KB 采样窗）跨块
-                    # 时续读取真实行首，不把行中偏移当行首入索引；EOF 仍无换行
-                    # → 沿用前一偏移。
-                    next_start = _next_line_start(f, boundary + LOG_INDEX_BLOCK, size)
-                    if next_start != -1:
-                        pending_start = next_start
-                        offsets.append(next_start)
-                    else:
-                        offsets.append(offsets[-1])
-                else:
-                    # 同 _build_log_block_index：boundary 恰为行首时直接入索引，
-                    # 避免把该行整条踢出索引（读窗锚定该块丢一条完整行）。
-                    if _boundary_at_line_start(f, boundary):
-                        offsets.append(boundary)
-                    else:
-                        offsets.append(boundary + nl + 1)
+                pending_start = _sample_block_boundary(
+                    f, boundary, size, offsets, pending_start, old_size
+                )
     except OSError:
         return idx
     # 同 _build_log_block_index：末条采样可能越过 EOF（boundary+nl+1 == size，非
@@ -230,18 +230,36 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
 
 
 def _is_valid_log_index(data: object) -> bool:
-    """校验落盘索引结构：offsets 非空、元素为非负 int 且单调不减。
+    """校验落盘索引结构：size 为非 bool 的非负 int、offsets 非空、元素为不超过
+    size 的非负 int 且单调不减、长度不越过「块数 + 1」上界。
 
     仅查容器类型会放行「结构合法的损坏索引」（手工改动/部分写入恰逢 size 一致），
     错位偏移使读窗错位、事件静默丢失且不触发重建自愈；不满足按损坏处理，
     由调用方走重建分支（code-review item fc3f9b53c8e4）。
+
+    size 排除 bool（isinstance(True, int) 为真，否则 {"size": true} 可通过校验，
+    热更新拿它当 old_size 参与块号算术）；元素补 o <= size 上界（合法索引各项
+    均 ≤ size，越界项使 _read_log_tail_window seek 到 EOF 静默读空）。长度只查
+    上界 len(offsets) <= size//LOG_INDEX_BLOCK + 1（每个采样边界至多入一条 +
+    首偏移 0，_build/_update 两路皆然，超出即列表位置与块号错位的损坏）；
+    不查下界：超长行续读偏移 == size 的尾随项会被逐一弹出（两路构建末尾的
+    while pop），合法索引可远短于块数（如单行贯穿尾部各块的整段错误转储），
+    按「≥ 块数」校验会对合法索引永久误判损坏、每次查询退化全量重建。
     """
-    if not isinstance(data, dict) or not isinstance(data.get("size"), int):
+    if not isinstance(data, dict):
+        return False
+    size = data.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
         return False
     offsets = data.get("offsets")
     if not isinstance(offsets, list) or not offsets:
         return False
-    if any(not isinstance(o, int) or isinstance(o, bool) or o < 0 for o in offsets):
+    if any(
+        not isinstance(o, int) or isinstance(o, bool) or o < 0 or o > size
+        for o in offsets
+    ):
+        return False
+    if len(offsets) > size // LOG_INDEX_BLOCK + 1:
         return False
     return all(a <= b for a, b in zip(offsets, offsets[1:]))
 

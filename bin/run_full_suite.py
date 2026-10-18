@@ -83,7 +83,13 @@ OUTPUT_READBACK_LIMIT_BYTES = 64 * 1024 * 1024
 # _read_back_output 的尾部回读不受影响。
 OUTPUT_DISK_KEEP_BYTES = 4 * OUTPUT_READBACK_LIMIT_BYTES
 
+# 以当前解释器起子进程（``sys.executable -m pytest``，与 bin/test_for.py 的
+# _build_pytest_cmd 同形态内联，code-review item a3b6cb6e85c5）：裸 "pytest"
+# 经 PATH 解析，调用方经某虚拟环境 python3 运行本脚本而 PATH 上的 pytest 属
+# 另一环境时，套件会跑在与框架 python 不同的解释器/插件集下。
 PYTEST_BASE_ARGS = [
+    sys.executable,
+    "-m",
     "pytest",
     "tests/",
     "-q",

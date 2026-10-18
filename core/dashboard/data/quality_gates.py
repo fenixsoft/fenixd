@@ -100,6 +100,18 @@ def _int_or_none(v):
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
+def _format_pass_fail_counts(p, f) -> str:
+    """「通过 X，失败 Y」计数文案：None→'?' 兜底，p/f 任一非空才产出。
+
+    run 自查源（_run_gate_detail）与框架产物源（_full_suite_product_status）
+    共用同一拼装（契约固化，禁止单侧改写致同一门跨数据源口径漂移）；
+    p/f 皆缺返回空串。
+    """
+    if p is None and f is None:
+        return ""
+    return f"通过 {p if p is not None else '?'}，失败 {f if f is not None else '?'}"
+
+
 # ── 双位置候选读取（worktree 优先、主树兜底） ───────────────────────
 
 
@@ -298,8 +310,8 @@ def _run_gate_detail(raw: dict, gid: str) -> str:
     reason = str(raw.get("reason") or raw.get("detail") or "").strip()
     if gid == "full-suite":
         p, f = _int_or_none(raw.get("passed")), _int_or_none(raw.get("failed"))
-        if p is not None or f is not None:
-            counts = f"通过 {p if p is not None else '?'}，失败 {f if f is not None else '?'}"
+        counts = _format_pass_fail_counts(p, f)
+        if counts:
             return f"{counts}（{reason}）" if reason else counts
     return reason
 
@@ -448,9 +460,11 @@ def _full_suite_product_status(project_root) -> tuple:
         return None, ""  # 指纹陈旧：产物对应旧 HEAD / merge-base
     status = _FULL_SUITE_PRODUCT_STATUS[status_raw]
     parts = ["框架侧回归产物 .fenix/regression/last-run.json（分支指纹匹配）"]
-    p, f = _int_or_none(data.get("passed")), _int_or_none(data.get("failed"))
-    if p is not None or f is not None:
-        parts.append(f"通过 {p if p is not None else '?'}，失败 {f if f is not None else '?'}")
+    counts = _format_pass_fail_counts(
+        _int_or_none(data.get("passed")), _int_or_none(data.get("failed"))
+    )
+    if counts:
+        parts.append(counts)
     if status_raw == "skipped":
         reason = str(data.get("reason") or "").strip()
         if reason:
