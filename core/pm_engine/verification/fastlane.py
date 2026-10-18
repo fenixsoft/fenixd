@@ -51,9 +51,11 @@ FASTLANE_STREAK_FIELD = "_fastlane_fail_streak"
 DISPUTED_FINDING_KEYWORDS = ("dispute", "adjudication")
 
 # 仓库相对路径形态（judge 归因文本中的影响面文件）：
-# 目录前缀形态（core/…、tests/…、bin/…）或带可识别扩展名的文件名。
+# 目录前缀形态（core/…、tests/…、bin/…；前缀后必须出现路径分隔符，
+# 纯点分模块链如 core.pm_engine.verification.x 不计入影响面）或带可识别
+# 扩展名的文件名。
 _AFFECTED_PATH_RE = re.compile(
-    r"\b(?:core|bin|docs|tests|agents|scripts|src|fenixd)[\w\-./]*\.[A-Za-z0-9]+"
+    r"\b(?:core|bin|docs|tests|agents|scripts|src|fenixd)[\w\-]*/[\w\-./]*\.[A-Za-z0-9]+"
     r"|\b[A-Za-z0-9_\-]+\.(?:py|md|ya?ml|json|toml|ts|tsx|js|jsx|vue|html|css|scss|svelte)\b"
 )
 
