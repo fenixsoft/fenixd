@@ -285,15 +285,16 @@ def write_progress(project_root, **fields) -> dict:
         # current_item/startup_stage 本就要在下方剥离、从不落盘，写点无需
         # 为它们在每次进度写点重复整本台账与转录尾读。
         current = read_progress(project_root, synthesize=False)
-        # 条级合成字段是读侧实时派生值，MUST NOT 落盘：剥离同时防御盘上
-        # 历史残留键被合并写持久化成误导性数字（add-code-fix-item-level-
-        # progress D1）。
-        current.pop("item_done", None)
-        current.pop("current_item", None)
-        # 启动阶段同纪律（add-code-fix-startup-stage-visibility D1）：批收尾后
-        # 进度文件若残留陈旧阶段文案，前端会在非准备期误渲染。
-        current.pop("startup_stage", None)
         current.update(fields)
+        # 条级合成字段是读侧实时派生值，MUST NOT 落盘：对合并结果统一剥离
+        # （code-review item 3b31234d485c）——既防御盘上历史残留键被合并写
+        # 持久化成误导性数字（add-code-fix-item-level-progress D1），也覆盖
+        # 调用方显式传入（如整体回写 read_progress 结果）的路径，使「合成
+        # 字段不落盘」由实现保证而非依赖调用方自觉。启动阶段同纪律
+        # （add-code-fix-startup-stage-visibility D1）：批收尾后进度文件若
+        # 残留陈旧阶段文案，前端会在非准备期误渲染。
+        for _key in ("item_done", "current_item", "startup_stage"):
+            current.pop(_key, None)
         _atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2))
         return current
 
@@ -752,7 +753,14 @@ def record_failed_batch(
             target.pop("consumed_note", None)
             target.pop("open_remaining", None)
         else:
-            target = {"item_ids": list(item_ids), "fail_count": 1}
+            target = {
+                # item_ids 落盘归一（code-review item a088527130fc）：与
+                # record_deferred_batch / _append_release_trace 同口径——
+                # 读取侧 _failed_item_ids 只收 str，非字符串 id 原样落盘会被
+                # 静默跳过、永久失去排除资格。
+                "item_ids": [str(i) for i in item_ids],
+                "fail_count": 1,
+            }
             records.append(target)
         # 回归终局形态入档（分档预算依据，evo-add-codefix-anomaly-redispatch-
         # budget）：仅合法值刷新（未提供不写键），合档以最近一次失败为准。
@@ -4900,15 +4908,19 @@ class CodeFixOrchestrator:
     # -- 批 worker（5.4/5.6/5.8）-------------------------------------------
 
     def _finish(self, phase: str, reason: str = "", **fields) -> None:
-        """halt 收尾（链终止）：复位单飞 + 刷新进度（running 由下次 checkpoint 收尾）。
+        """halt 收尾（链终止）：刷新进度（running 由下次 checkpoint 收尾）。
 
         仅环境性失败路径使用（worktree_manager_missing / worktree_create_failed /
         批 worker 异常，selfheal D1）：链终止、不自驱动，授权旗标一并清除；
         批上下文三键同步清除——不清则读侧会带着陈旧 worktree/run_id 继续合成
         条级字段（D2 防陈旧索引）。consumed 失败收尾走 ``_consumed_progress``
         （链继续，不请旗标）。
+
+        不在此处复位单飞（code-review item 427ea0851b63）：唯一调用方在
+        ``_run_batch`` 内，其 finally 无条件复位且严格覆盖到本批 worker 线程
+        退出——提前复位会在收尾尾窗（本函数之后的进度写盘等）打开并发
+        checkpoint 绕过单飞派新批的窗口竞态。
         """
-        self._in_flight = False
         write_progress(
             self.project_root,
             phase=phase,
@@ -5102,7 +5114,9 @@ class CodeFixOrchestrator:
         选中，新链启动时重置）；批上下文三键同步清除（worktree 已 cleanup，
         D2 防陈旧索引）。
         """
-        self._in_flight = False
+        # 不在此处复位单飞（code-review item 427ea0851b63，理由同 ``_finish``）：
+        # 复位统一由 ``_run_batch`` 的 finally 在 worker 线程退出前执行，提前
+        # 复位会让后续写盘/冷却武装尾窗对并发 checkpoint 敞开。
         fields = {}
         if chain_skip_ids is not None:
             # 字段形态守卫与 checkpoint 链级读侧同口径（code-review item
