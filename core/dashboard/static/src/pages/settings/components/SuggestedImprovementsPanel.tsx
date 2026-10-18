@@ -402,8 +402,13 @@ const SuggestedImprovementsPanel = forwardRef<
   // id 找回目标——旧 items 里目标仍带着动作前的状态，直接复用会渲染出陈旧禁用态。
   const loadItems = useCallback(async (): Promise<EvolutionItem[]> => {
     const reqSeq = ++itemsReqSeqRef.current;
-    setLoading(true);
-    setError(null);
+    // unmount 守卫（code-review item 001e54a6465c）：批量/单条动作的 onOk 在多段
+    // await 之后才调用本函数，期间面板可能已卸载（切走页签），入口 setState 不得
+    // 打到已卸载实例——与下方响应写入点的 mountedRef 口径一致
+    if (mountedRef.current) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const next = (await getEvolutionItems(project)).items || [];
       // 序号落后 = 已有更新的请求（新作用域）接管列表，本响应过期整体丢弃
