@@ -441,6 +441,12 @@ export default function SpecStatusModal({
 
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
+    // antd InputNumber 的 min/max 不拦截 onChange，失焦前键入的越界值仍可被提交，保存前须校验
+    const budgetMax = summary?.budget_max ?? BUDGET_MAX_FALLBACK;
+    if (budgetOverride !== null && (budgetOverride < 1 || budgetOverride > budgetMax)) {
+      message.warning(`预算覆盖须在 1-${budgetMax} 范围内（或留空跟随全局），请修正后再保存`);
+      return;
+    }
     setPendingAction('budget-save');
     try {
       await setSpecBudget(project, spec, budgetOverride);
@@ -451,7 +457,7 @@ export default function SpecStatusModal({
     } finally {
       setPendingAction(null);
     }
-  }, [project, spec, budgetOverride, onDone, message]);
+  }, [project, spec, budgetOverride, summary, onDone, message]);
 
   const handleBudgetReset = useCallback(async () => {
     setPendingAction('budget-reset');
