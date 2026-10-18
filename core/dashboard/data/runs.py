@@ -167,10 +167,18 @@ def _load_run_metric_index(project_root: Path) -> dict:
     # 段 2（锁外，IO）：补扫新增块 / 重建全量扫描，解析结果先落局部 dict。
     scanned = None
     try:
-        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+        # 二进制模式 + 手动 decode（对齐 log_index 的偏移读取口径）：start 来自
+        # 上轮 stat 的字节 size，对文本流 seek 任意整数依赖 TextIOWrapper 接受
+        # 非 tell() cookie 的实现细节；"rb" 下偏移语义完全自控（start 落多字节
+        # UTF-8 序列中间时首行 U+FFFD 解析失败被跳过，与文本模式行为一致）。
+        # \n 不可能是多字节序列的组成字节，逐行 decode 等价整块 decode，且保持
+        # 流式内存轮廓（重建分支不整读大日志）。
+        with log_path.open("rb") as f:
             if start:
                 f.seek(start)
-            scanned = _parse_run_metric_stream(f)
+            scanned = _parse_run_metric_stream(
+                raw.decode("utf-8", errors="replace") for raw in f
+            )
     except OSError:
         # 3c9c40ef135f：扫描中途读失败不推进 key——下一轮从旧 offset 重扫同一
         # 区间（_parse_run_metric_stream 按 run_id 键级合并写产物，重扫幂等）；
