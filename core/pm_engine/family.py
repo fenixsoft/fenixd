@@ -9,6 +9,7 @@ from typing import Optional
 import json
 import os
 import re
+import sys
 import tempfile
 
 # ── 原地打回升级阈值（inplace-bug-repair D2）────────────────────
@@ -241,7 +242,7 @@ class FamilyGovernor:
             sm._log_update_applied(spec_name, applied)
         return consumed
 
-    def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
+    def _family_gate_blocked(self, child_name: str) -> bool:
         """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。
 
         深度 > max_depth（默认 3）或 宽度 >= max_width（默认 2，新成员将越界）
@@ -281,6 +282,14 @@ class FamilyGovernor:
         的越界比较对一切 fix 派生恒判拦截（depth 恒 > max_depth、sibling 计数
         恒 >= max_width），自动修复派生链整体停摆且配置侧无痕；与
         get_run_infra_breaker_config 的 ``threshold < 1`` 回退缺省口径看齐。
+
+        巨大 int 拦截（code-review item b981d1dee4d1）：YAML 任意精度大整数
+        （如 10**400）或等值数字字符串穿透类型守卫与 ``< 1`` 比较后原样
+        返回，max_depth/max_width 被抬到不可达、``_family_gate_blocked`` 对
+        一切派生恒判放行，族谱收敛保护静默失效且无留痕——补
+        ``abs(val) > sys.float_info.max`` 拦截回退缺省，与
+        infra_breaker.threshold / _is_valid_state_number 的巨大 int 裁决
+        （code-review item 8c2855513307）对齐。
         """
         if raw is None:
             return default
@@ -306,6 +315,17 @@ class FamilyGovernor:
                 except (TypeError, ValueError):
                     pass
         if ok:
+            # 巨大 int（YAML 任意精度或等值数字字符串）穿透类型与下限守卫后
+            # 原样返回，上限被抬到不可达、族谱门对一切派生恒判放行（code-review
+            # item b981d1dee4d1），按 infra_breaker.threshold 的同款裁决以
+            # abs(val) > sys.float_info.max 拦截回退缺省，与非法值同口径留痕。
+            if abs(normalized) > sys.float_info.max:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"配置 {key} 非法（巨大整数会使上限不可达，族谱收敛保护失效）"
+                    f": {raw!r}，回退缺省 {default}",
+                )
+                return default
             if normalized < 1:
                 self._pm.logger.warning(
                     "pm_engine",
@@ -384,6 +404,7 @@ class FamilyGovernor:
         fa1186427415），对同一对条目两方裁决互补。
         my_enqueued_at 为 None（非派发路径调用）保持原判，全部计 actionable。
         """
+        probed_dead: set = set()
         for sib in self._same_root_siblings(spec_name):
             sib_spec = self._pm.state_machine.read_one(sib) or {}
             status = sib_spec.get("status", "")
@@ -426,8 +447,16 @@ class FamilyGovernor:
                 # 经门面回引：测试在门面实例上 patch 的补丁缝保持有效
                 if self._pm._sibling_has_live_agent(sib):
                     return sib
-        # 兜底：直接探测自身/兄弟是否仍有存活 agent 进程（覆盖非 ready 但卡死的边缘态）
+                # 已探测且判不存活：记入集合，兜底循环跳过免重复探测
+                probed_dead.add(sib)
+        # 兜底：直接探测自身/兄弟是否仍有存活 agent 进程（覆盖非 ready 但卡死
+        # 的边缘态）。第一轮已探测且判定不存活的兄弟不再重复探测（每次探测
+        # 遍历 worktrees 目录并对每个匹配目录各起一个 timeout=10 的 pgrep
+        # 子进程，重复探测使互斥判定的进程表扫描开销翻倍，code-review item
+        # 69f0a027b493）。
         for sib in self._same_root_siblings(spec_name):
+            if sib in probed_dead:
+                continue
             if self._pm._sibling_has_live_agent(sib):
                 return sib
         return ""
@@ -885,7 +914,7 @@ class FamilyGovernor:
 
         # ── fix 族谱收敛治理（design D4 legacy）──
         if self._pm.state_machine.read_one(fix_spec_name) is None:
-            if self._family_gate_blocked(spec_name, fix_spec_name):
+            if self._family_gate_blocked(fix_spec_name):
                 if self._consume_family_waiver(spec_name):
                     self._pm.logger.warning(
                         "pm_engine",
@@ -1206,7 +1235,13 @@ class FamilyGovernor:
             # 修复段重复堆积。此处补回段落分隔（与追加分支 \n\n 形态一致）；
             # start==0（段落在文件头）时不补，避免文件首出现多余空行。
             sep = "\n\n" if start > 0 else ""
-            new_text = text[:start] + sep + section.strip() + "\n" + text[end:]
+            # 段尾同样回补空行分隔（code-review item ecc1436a1615）：end 落在
+            # 下一个二级标题行首，原区间内标题前的空行被一并吞掉，段尾只补
+            # 单 \n 会让修复段与后续标题贴合成单换行相接、tasks.md 版式逐轮
+            # 退化——与段前 sep 的 \n\n 形态对称。end 抵文件末尾（段后无
+            # 后续标题）时不补，避免文件尾堆积空行。
+            sep_tail = "\n\n" if end < len(text) else "\n"
+            new_text = text[:start] + sep + section.strip() + sep_tail + text[end:]
         else:
             # 无现有段：追加到末尾
             new_text = text.rstrip("\n") + section
